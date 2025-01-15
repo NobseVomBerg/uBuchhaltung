@@ -4,8 +4,11 @@ from db import Database
 
 class SimpleWebServer(BaseHTTPRequestHandler):
     def Header():
-        s = "<!DOCTYPE html>"
-        s+= "<html><head><title>Contabilidad simple</title></head><body>"
+        s = "<!DOCTYPE html>\n"
+        s+= "<html>\n <head>\n  <title>Contabilidad simple</title>\n"
+        s+= "  <link rel='stylesheet' href='buch.css'>\n"
+        s+= "  <link rel='icon' sizes='32x32' href='favicon.ico'>\n"
+        s+= " </head>\n <body>"
         s+= '<a href="/">Home</a> | <a href="/belege">Belege</a> | <a href="/skr">Skr</a> | <a href="/about">About</a>'
         return s
     
@@ -62,7 +65,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if not beleg:
             return "Beleg not found."
 
-        s = SimpleWebServer.Header
+        s = SimpleWebServer.Header()
         s+= "<h1>Edit Beleg</h1>"
         s+= f'''
             <form method="POST" action="/update_beleg">
@@ -116,7 +119,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         s+= f'''
             <form method="POST" action="/update_skr">
                 ID: <input type="text" name="id" value="{skr[0]}" readonly><br>
-                Kontorahmen: <input type="text" name="rid" value="{skr[1]}"><br>
+                RId: <input type="text" name="rid" value="{skr[1]}"><br>
                 Konto: <input type="text" name="konto" value="{skr[2]}"><br>
                 Name: <input type="text" name="name" value="{skr[3]}"><br>
                 Gruppe: <input type="text" name="gruppe" value="{skr[4]}"><br>
@@ -145,8 +148,22 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             query_components = parse_qs(self.path.split('?')[1])
             id = query_components["id"][0]
             self.respond(200, SimpleWebServer.PageSkrEdit(db, id))
+        elif self.path == "/buch.css":
+            self.serve_static_file("buch.css", "text/css")
+        elif self.path == "/favicon.ico":
+            self.serve_static_file("favicon.ico", "image/x-icon")
         else:
-            self.respond(404, "Page "+ self.path + " not found.")
+            self.respond(404, "Page not found.")
+
+    def serve_static_file(self, filename, content_type):
+        try:
+            with open(filename, 'rb') as file:
+                self.send_response(200)
+                self.send_header("Content-type", content_type)
+                self.end_headers()
+                self.wfile.write(file.read())
+        except FileNotFoundError:
+            self.respond(404, "File not found.")
 
     def do_POST(self):
         db = Database()

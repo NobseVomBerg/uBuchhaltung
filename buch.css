@@ -1,0 +1,38 @@
+/* dark mode */
+@media (prefers-color-scheme: dark) {
+	body				{ background-color: #101010; color: #FFFFFF; }
+	h1 					{ color: #B09090; }
+	h2 					{ color: #B09090; }
+	table				{ margin-top: 8px; border: 4px solid #606060; border-style: ridge;}
+	tr 					{ background-color: #000000; }
+	td, th				{ padding-top: 0px; padding-bottom: 0px; padding-left: 8px; padding-right: 8px; border: 0px solid #404040; }
+	th					{ background-color: #101010; text-align: left;}
+}
+
+/* light mode */
+@media (prefers-color-scheme: light) {
+	body				{ background-color: #F0F0F0; color: #000000}
+	h1 					{ color: #705050; }
+	h2 					{ color: #705050; }
+	table				{ margin-top: 8px; border: 8px solid #E0E0E0; border-style: ridge;}
+	tr 					{ background-color: #FFFFFF; }
+	td, th				{ padding-top: 0px; padding-bottom: 0px; padding-left: 8px; padding-right: 8px; border: 0px solid #E0E0E0; }
+	th					{ background-color: #F0F0F0; text-align: left;}
+}
+
+/* common for light and dark modes */
+h1 						{ font-size: 14; font-size: 1em; margin-left: 8px; }
+h2 						{ font-size: 12; font-size: 1em; margin-left: 16px; }
+a:link					{ color: #4040FF; text-decoration: none; }
+a:visited				{ color: #8040FF; text-decoration: none; }
+a:hover					{ color: #FF4080; text-decoration: none; }
+a:focus					{ color: #FF4080; text-decoration: none; }
+#note					{ background-color: #FF4444; font-weight: bold; }
+#Comment				{ color: #40C040; }
+
+@media print {
+	h1 					{ font-size: 12; font-size: 1em; }
+	h2 					{ font-size: 11; font-size: 1em; }
+	table				{ border: none;}
+	td, th				{ border: none; border-top: 1px solid #C0C0C0;}
+}
