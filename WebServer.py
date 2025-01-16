@@ -20,6 +20,11 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         s = SimpleWebServer.Header()
         s+= "<h1>Welcome to the homepage!</h1>"
         s+= "<p>This is the homepage of our webserver.</p>"
+        s+= '''
+        <form method="POST" action="/init_content">
+            <input type="submit" value="Initialize DB Content">
+        </form>
+        '''
         s+= SimpleWebServer.Footer()
         return s
 
@@ -94,7 +99,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         s+= '''
             <h2>Add New Skr</h2>
             <form method="POST" action="/add_skr">
-                Kontorahmen: <input type="text" name="rid"><br>
+                RahmenNr: <input type="text" name="RahmenNr"><br>
                 Konto: <input type="text" name="konto"><br>
                 Name: <input type="text" name="name"><br>
                 Gruppe: <input type="text" name="gruppe"><br>
@@ -119,7 +124,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         s+= f'''
             <form method="POST" action="/update_skr">
                 ID: <input type="text" name="id" value="{skr[0]}" readonly><br>
-                RId: <input type="text" name="rid" value="{skr[1]}"><br>
+                RahmenNr: <input type="text" name="RahmenNr" value="{skr[1]}"><br>
                 Konto: <input type="text" name="konto" value="{skr[2]}"><br>
                 Name: <input type="text" name="name" value="{skr[3]}"><br>
                 Gruppe: <input type="text" name="gruppe" value="{skr[4]}"><br>
@@ -202,6 +207,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             gruppe = post_data["gruppe"][0]
             db.update_skr(id, rid, konto, name, gruppe)
             self.respond(303, "", headers={"Location": "/skr"})
+        if self.path == "/init_content":
+            db.init_content()
+            self.respond(303, "", headers={"Location": "/"})
         else:
             self.respond(404, "Page not found.")
 
