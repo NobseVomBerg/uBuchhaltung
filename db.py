@@ -57,8 +57,24 @@ class Database:
             )
         ''')
 
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS Konten (
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                Bezeichnung TEXT NOT NULL,
+                Inhaber TEXT,
+                IBAN TEXT,
+                BIC TEXT,
+                BankName TEXT,
+                IstKasse INTEGER DEFAULT 0,
+                UNIQUE(Bezeichnung)
+            )
+        ''')
+
         conn.commit()
         conn.close()
+        
+        # Ensure the default "Kasse" account exists
+        self.ensure_kasse_exists()
 
     # Table Belege
     def fetch_belege(self):
@@ -154,15 +170,15 @@ class Database:
         finally:
             conn.close()
 
-    def update_skr(self, rid, konto, name, gruppe):
+    def update_skr(self, id, rid, konto, name, gruppe):
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         try:
             cursor.execute('''
                 UPDATE Skr
-                SET Name = ?, Gruppe = ?
-                WHERE RahmenNr = ? AND Konto = ?
-            ''', (name, gruppe, rid, konto))
+                SET RahmenNr = ?, Konto = ?, Name = ?, Gruppe = ?
+                WHERE ID = ?
+            ''', (rid, konto, name, gruppe, id))
             conn.commit()
         except sqlite3.IntegrityError as e:
             print("Error updating Skr:", e)
@@ -208,3 +224,73 @@ class Database:
         self.insert_beleg("12F126", "2012-05-04", "testBeleg04.pdf", "./2012/", "")
 
         self.insert_skr(4, 6815, "Betriebsbedarf", "1")
+
+    # Table Konten
+    def ensure_kasse_exists(self):
+        """Ensure the default 'Kasse' account exists and cannot be deleted"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM Konten WHERE IstKasse = 1')
+        count = cursor.fetchone()[0]
+        if count == 0:
+            cursor.execute('''
+                INSERT INTO Konten (Bezeichnung, Inhaber, IBAN, BIC, BankName, IstKasse)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', ("Kasse", "", "", "", "", 1))
+            conn.commit()
+        conn.close()
+
+    def fetch_konten(self):
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM Konten ORDER BY IstKasse DESC, Bezeichnung ASC')
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
+    def get_konto_by_id(self, konto_id):
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM Konten WHERE ID = ?', (konto_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row
+
+    def insert_konto(self, bezeichnung, inhaber, iban, bic, bankname, ist_kasse=0):
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                INSERT INTO Konten (Bezeichnung, Inhaber, IBAN, BIC, BankName, IstKasse)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (bezeichnung, inhaber, iban, bic, bankname, ist_kasse))
+            conn.commit()
+        except sqlite3.IntegrityError as e:
+            print("Error inserting Konto:", e)
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def update_konto(self, konto_id, bezeichnung, inhaber, iban, bic, bankname):
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                UPDATE Konten
+                SET Bezeichnung = ?, Inhaber = ?, IBAN = ?, BIC = ?, BankName = ?
+                WHERE ID = ? AND IstKasse = 0
+            ''', (bezeichnung, inhaber, iban, bic, bankname, konto_id))
+            conn.commit()
+        except sqlite3.IntegrityError as e:
+            print("Error updating Konto:", e)
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def delete_konto(self, konto_id):
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        # Only allow deletion if it's not the Kasse account
+        cursor.execute('DELETE FROM Konten WHERE ID = ? AND IstKasse = 0', (konto_id,))
+        conn.commit()
+        conn.close()
