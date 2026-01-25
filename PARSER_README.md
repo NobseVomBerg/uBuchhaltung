@@ -98,8 +98,31 @@ print(f"Transaktionen: {len(result['transactions'])}")
 
 ## Datenbank-Integration
 
-Die extrahierten Transaktionen können in die `Zahlung`-Tabelle eingefügt werden.
-Dies ist aktuell noch nicht automatisch implementiert, kann aber leicht ergänzt werden.
+Die extrahierten Transaktionen werden automatisch in die `Zahlung`-Tabelle eingefügt:
+
+1. **Upload**: PDF-Datei über Web-Interface hochladen
+2. **Parsing**: `DocumentParser` analysiert VBR-Kontoauszug
+3. **Organisation**: Datei wird nach `./data/Belege/YYYY/Konten/VBR/` verschoben
+4. **Bestätigung**: Benutzer prüft erkannte Transaktionen auf `/confirm_transactions`
+5. **Import**: Nach Bestätigung werden Transaktionen in DB gespeichert
+6. **Duplikat-Check**: Bereits existierende Transaktionen werden übersprungen
+
+### Integration in modularer Struktur
+
+Der Parser ist in `server/upload_handler.py` integriert:
+```python
+from document_parser import DocumentParser
+
+def handle_file_upload(request_handler):
+    parser = DocumentParser()
+    new_path, parsed_data = parser.process_and_organize(filepath)
+    
+    # Transaktionen für Bestätigung speichern
+    import_id = parser.save_parsed_data(filename, parsed_data)
+    # Benutzer zu Bestätigungsseite weiterleiten
+```
+
+Die Bestätigung erfolgt über `server/handlers.py` → `handle_confirm_import()`.
 
 ## Bekannte Einschränkungen
 

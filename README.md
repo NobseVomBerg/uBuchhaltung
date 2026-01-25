@@ -99,11 +99,26 @@ Die Anwendung verwendet SQLite mit folgenden Tabellen:
 
 ```
 PyBuch/
-├── WebServer.py      # Haupt-Webserver mit HTTP-Routing und HTML-Generierung
-├── db.py             # Datenbank-Layer mit allen CRUD-Operationen
-├── buch.css          # Stylesheet für die Weboberfläche
-├── README.md         # Diese Datei
-└── buch.db           # SQLite-Datenbank (wird automatisch erstellt)
+├── main.py                    # Entry Point - Startet den Webserver
+├── db.py                      # Datenbank-Layer mit allen CRUD-Operationen
+├── document_parser.py         # PDF-Parser für Kontoauszüge (VBR)
+├── buch.css                   # Stylesheet für die Weboberfläche
+├── README.md                  # Diese Datei
+├── PARSER_README.md           # Dokumentation für den PDF-Parser
+├── requirements_parser.txt    # Python-Abhängigkeiten für Parser
+├── server/                    # Modularer Webserver (refactored)
+│   ├── __init__.py           # Package initialization
+│   ├── app.py                # HTTP-Server-Klasse mit Routing
+│   ├── pages.py              # HTML-Seiten-Generierung (alle 15 Seiten)
+│   ├── handlers.py           # POST-Request-Handler für Formulare
+│   └── upload_handler.py     # File-Upload mit PDF-Parsing
+└── data/                      # Daten-Verzeichnis (im .gitignore)
+    ├── buch.db               # SQLite-Datenbank (automatisch erstellt)
+    ├── Belege/               # Hochgeladene Belege
+    │   └── 2025/
+    │       └── Konten/
+    │           └── VBR/      # Organisierte Bank-Statements
+    └── pending_imports/      # Temp. Transaktionen vor Bestätigung
 ```
 
 ## Installation und Start
@@ -115,7 +130,7 @@ PyBuch/
 ### Server starten
 
 ```bash
-python WebServer.py
+python main.py
 ```
 
 Der Server startet standardmäßig auf `http://localhost:8080`
@@ -123,17 +138,26 @@ Der Server startet standardmäßig auf `http://localhost:8080`
 ### Alternative Konfiguration
 
 ```python
-# In WebServer.py am Ende der Datei:
-if __name__ == "__main__":
-    run_server(host="0.0.0.0", port=8000)  # Für anderen Host/Port
+# In server/app.py die run_server() Funktion anpassen:
+run_server(host="0.0.0.0", port=8000)  # Für anderen Host/Port
 ```
+
+### PDF-Parser aktivieren (optional)
+
+```bash
+pip install -r requirements_parser.txt
+```
+
+Damit werden VBR-Kontoauszüge automatisch geparst und Transaktionen importiert.
 
 ## Verwendung
 
-1. **Server starten**: `python WebServer.py`
+1. **Server starten**: `python main.py`
 2. **Browser öffnen**: Navigieren Sie zu `http://localhost:8080`
 3. **Initialisierung**: Klicken Sie auf "Initialize DB Content" um Testdaten zu laden (optional)
 4. **Navigation**: Nutzen Sie das Menü zur Navigation zwischen den verschiedenen Bereichen
+5. **PDF-Upload**: Laden Sie VBR-Kontoauszüge hoch - Transaktionen werden automatisch erkannt
+6. **Import bestätigen**: Prüfen Sie erkannte Transaktionen und bestätigen Sie den Import
 
 ## Sicherheitshinweise
 
@@ -147,15 +171,30 @@ Diese Anwendung ist für lokale Verwendung konzipiert:
 
 ### Architektur
 - **Webserver**: Python's `http.server.BaseHTTPRequestHandler`
+- **Modularer Aufbau**: Separation of Concerns
+  - `server/app.py`: Routing und HTTP-Handler
+  - `server/pages.py`: HTML-Generierung (15 Seiten)
+  - `server/handlers.py`: Form-Verarbeitung (POST)
+  - `server/upload_handler.py`: File-Upload mit Multipart-Parsing
 - **Datenbank**: SQLite mit `sqlite3` Modul
-- **Frontend**: Server-seitig generiertes HTML ohne JavaScript-Frameworks
+- **PDF-Parsing**: pdfplumber für VBR-Kontoauszüge
+- **Frontend**: Server-seitig generiertes HTML mit minimalem JavaScript (Drag & Drop)
 - **Styling**: Externes CSS (`buch.css`)
 
 ### Erweiterungen
 Die modulare Struktur erlaubt einfache Erweiterungen:
-- Neue Seiten: Fügen Sie Methoden wie `PageXXX()` hinzu
-- Neue Routen: Erweitern Sie `do_GET()` oder `do_POST()`
-- Neue Tabellen: Erweitern Sie `db.py` mit entsprechenden CRUD-Methoden
+- **Neue Seiten**: Fügen Sie Funktionen in `server/pages.py` hinzu (z.B. `PageXXX()`)
+- **Neue Routes**: Erweitern Sie `do_GET()` in `server/app.py`
+- **Neue Handler**: Fügen Sie Funktionen in `server/handlers.py` hinzu
+- **Neue Tabellen**: Erweitern Sie `db.py` mit entsprechenden CRUD-Methoden
+- **Neue Parser**: Erweitern Sie `document_parser.py` für weitere Banken
+
+### Vorteile der Modularisierung
+- ✅ Kleinere Dateien (~150-750 Zeilen statt 1048)
+- ✅ Klare Trennung der Verantwortlichkeiten
+- ✅ Bessere KI/Copilot-Unterstützung (vollständiger Kontext)
+- ✅ Einfachere Wartung und Debugging
+- ✅ Parallel-Entwicklung möglich
 
 ## Lizenz
 
