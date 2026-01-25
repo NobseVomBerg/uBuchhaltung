@@ -1,8 +1,13 @@
 import sqlite3
+import os
 
 class Database:
-    def __init__(self, db_name="buch.db"):
+    def __init__(self, db_name="./data/buch.db"):
         self.db_name = db_name
+        # Ensure the directory exists
+        db_dir = os.path.dirname(self.db_name)
+        if db_dir and not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
         self.initialize_database()
 
     def initialize_database(self):
@@ -76,8 +81,8 @@ class Database:
         # Ensure the default "Kasse" account exists
         self.ensure_kasse_exists()
 
-    # Table Belege
-    def fetch_belege(self):
+    # Table Belege (Receipts)
+    def fetch_receipts(self):
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM Belege')
@@ -85,22 +90,22 @@ class Database:
         conn.close()
         return rows
 
-    def insert_beleg(self, nummer, datum, dateiname, pfad, info):
+    def insert_receipt(self, number, date, filename, path, info):
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         try:
             cursor.execute('''
                 INSERT INTO Belege (Nummer, Datum, Dateiname, Pfad, Info)
                 VALUES (?, ?, ?, ?, ?)
-            ''', (nummer, datum, dateiname, pfad, info))
+            ''', (number, date, filename, path, info))
             conn.commit()
         except sqlite3.IntegrityError as e:
-            print("Error inserting Beleg:", e)
+            print("Error inserting receipt:", e)
             conn.rollback()
         finally:
             conn.close()
 
-    def update_beleg(self, nummer, datum, dateiname, pfad, info):
+    def update_receipt(self, number, date, filename, path, info):
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         try:
@@ -108,10 +113,10 @@ class Database:
                 UPDATE Belege
                 SET Datum = ?, Dateiname = ?, Pfad = ?, Info = ?
                 WHERE Nummer = ?
-            ''', (datum, dateiname, pfad, info, nummer))
+            ''', (date, filename, path, info, number))
             conn.commit()
         except sqlite3.IntegrityError as e:
-            print("Error updating Beleg:", e)
+            print("Error updating receipt:", e)
             conn.rollback()
         finally:
             conn.close()
@@ -125,15 +130,85 @@ class Database:
         conn.close()
         return rows
 
-    def insert_zahlung(self, datum1, datum2, bank_eigen, bank_fremd, zweck, beleg_nummer, betrag, skr_buch_join_id):
+    def insert_transaction(self, date, amount, own_iban="", foreign_iban="", note="", receipt_number=None, date2=None, skr_join_id=None):
+        """Insert a transaction into Zahlung table
+        
+        Args:
+            date: Transaction date (Datum1)
+            amount: Amount in EUR (positive = credit/Haben, negative = debit/Soll)
+            own_iban: Own bank account IBAN
+            foreign_iban: Foreign bank account IBAN
+            note: Transaction note/purpose (Zweck)
+            receipt_number: Receipt reference number
+            date2: Secondary date (Datum2), optional
+            skr_join_id: SKR book join ID, optional
+        """
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO Zahlung (Datum1, Datum2, BankEigen, BankFremd, Zweck, BelegNummer, Betrag, SkrBuchJoinId)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (datum1, datum2, bank_eigen, bank_fremd, zweck, beleg_nummer, betrag, skr_buch_join_id))
+        ''', (date, date2, own_iban, foreign_iban, note, receipt_number, amount, skr_join_id))
+        conn.commit()
+        last_id = cursor.lastrowid
+        conn.close()
+        return last_id
+    
+    def check_transaction_exists(self, date, amount, own_iban, foreign_iban="", note=""):
+        """Check if a transaction with same date, amount, IBANs, and note already exists
+        
+        Args:
+            date: Transaction date (Datum1)
+            amount: Amount in EUR
+            own_iban: Own bank account IBAN
+            foreign_iban: Foreign bank account IBAN (optional)
+            note: Transaction note/purpose (Zweck) for additional uniqueness check
+            
+        Returns:
+            True if duplicate exists, False otherwise
+        """
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT COUNT(*) FROM Zahlung
+            WHERE Datum1=? AND Betrag=? AND BankEigen=? AND BankFremd=? AND Zweck=?
+        ''', (date, amount, own_iban, foreign_iban, note))
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count > 0
+    
+    def update_transaction(self, transaction_id, date, amount, own_iban="", foreign_iban="", note="", receipt_number=None, date2=None, skr_join_id=None):
+        """Update an existing transaction in Zahlung table
+        
+        Args:
+            transaction_id: ID of the transaction to update
+            date: Transaction date (Datum1)
+            amount: Amount in EUR (positive = credit/Haben, negative = debit/Soll)
+            own_iban: Own bank account IBAN
+            foreign_iban: Foreign bank account IBAN
+            note: Transaction note/purpose (Zweck)
+            receipt_number: Receipt reference number
+            date2: Secondary date (Datum2), optional
+            skr_join_id: SKR book join ID, optional
+        """
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE Zahlung
+            SET Datum1=?, Datum2=?, BankEigen=?, BankFremd=?, Zweck=?, BelegNummer=?, Betrag=?, SkrBuchJoinId=?
+            WHERE ID=?
+        ''', (date, date2, own_iban, foreign_iban, note, receipt_number, amount, skr_join_id, transaction_id))
         conn.commit()
         conn.close()
+    
+    def get_transaction_by_id(self, transaction_id):
+        """Get a single transaction by ID"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM Zahlung WHERE ID=?', (transaction_id,))
+        transaction = cursor.fetchone()
+        conn.close()
+        return transaction
 
     def update_zahlung(self, id, datum1, datum2, bank_eigen, bank_fremd, zweck, beleg_nummer, betrag, skr_buch_join_id):
         conn = sqlite3.connect(self.db_name)
@@ -218,10 +293,10 @@ class Database:
 
     # Initialize the database with some content
     def init_content(self):
-        self.insert_beleg("12F123", "2012-05-01", "testBeleg01.pdf", "./2012/", "Testbeleg")
-        self.insert_beleg("12F124", "2012-05-02", "testBeleg02.pdf", "./2012/", "noch ein Testbeleg")
-        self.insert_beleg("12F125", "2012-05-03", "testBeleg03.pdf", "./2012/", "und noch einer")
-        self.insert_beleg("12F126", "2012-05-04", "testBeleg04.pdf", "./2012/", "")
+        self.insert_receipt("12F123", "2012-05-01", "testBeleg01.pdf", "./2012/", "Testbeleg")
+        self.insert_receipt("12F124", "2012-05-02", "testBeleg02.pdf", "./2012/", "noch ein Testbeleg")
+        self.insert_receipt("12F125", "2012-05-03", "testBeleg03.pdf", "./2012/", "und noch einer")
+        self.insert_receipt("12F126", "2012-05-04", "testBeleg04.pdf", "./2012/", "")
 
         self.insert_skr(4, 6815, "Betriebsbedarf", "1")
 
@@ -240,7 +315,7 @@ class Database:
             conn.commit()
         conn.close()
 
-    def fetch_konten(self):
+    def fetch_accounts(self):
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM Konten ORDER BY IstKasse DESC, Bezeichnung ASC')
@@ -248,30 +323,30 @@ class Database:
         conn.close()
         return rows
 
-    def get_konto_by_id(self, konto_id):
+    def get_account_by_id(self, account_id):
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM Konten WHERE ID = ?', (konto_id,))
+        cursor.execute('SELECT * FROM Konten WHERE ID = ?', (account_id,))
         row = cursor.fetchone()
         conn.close()
         return row
 
-    def insert_konto(self, bezeichnung, inhaber, iban, bic, bankname, ist_kasse=0):
+    def insert_account(self, name, holder, iban, bic, bank_name, is_cash=0):
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         try:
             cursor.execute('''
                 INSERT INTO Konten (Bezeichnung, Inhaber, IBAN, BIC, BankName, IstKasse)
                 VALUES (?, ?, ?, ?, ?, ?)
-            ''', (bezeichnung, inhaber, iban, bic, bankname, ist_kasse))
+            ''', (name, holder, iban, bic, bank_name, is_cash))
             conn.commit()
         except sqlite3.IntegrityError as e:
-            print("Error inserting Konto:", e)
+            print("Error inserting account:", e)
             conn.rollback()
         finally:
             conn.close()
 
-    def update_konto(self, konto_id, bezeichnung, inhaber, iban, bic, bankname):
+    def update_account(self, account_id, name, holder, iban, bic, bank_name):
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         try:
@@ -279,18 +354,18 @@ class Database:
                 UPDATE Konten
                 SET Bezeichnung = ?, Inhaber = ?, IBAN = ?, BIC = ?, BankName = ?
                 WHERE ID = ? AND IstKasse = 0
-            ''', (bezeichnung, inhaber, iban, bic, bankname, konto_id))
+            ''', (name, holder, iban, bic, bank_name, account_id))
             conn.commit()
         except sqlite3.IntegrityError as e:
-            print("Error updating Konto:", e)
+            print("Error updating account:", e)
             conn.rollback()
         finally:
             conn.close()
 
-    def delete_konto(self, konto_id):
+    def delete_account(self, account_id):
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         # Only allow deletion if it's not the Kasse account
-        cursor.execute('DELETE FROM Konten WHERE ID = ? AND IstKasse = 0', (konto_id,))
+        cursor.execute('DELETE FROM Konten WHERE ID = ? AND IstKasse = 0', (account_id,))
         conn.commit()
         conn.close()

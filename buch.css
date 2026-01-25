@@ -31,6 +31,14 @@ a:focus					{ color: #FF4080; text-decoration: none; }
 #note					{ background-color: #FF4444; font-weight: bold; }
 #Comment				{ color: #40C040; }
 
+/* Accounts page styles */
+.accounts-container 	{ display: flex; gap: 20px; margin: 20px 0; max-width: 1000px; }
+#dropZone 				{ border: 2px dashed #ccc; padding: 40px; text-align: center; background-color: #f9f9f9; min-width: 300px; }
+#dropZone:hover 		{ background-color: #e0e0e0; }
+#fileInput 				{ display: none; }
+.upload-success 		{ color: green; }
+.upload-error 			{ color: red; }
+
 @media print {
 	h1 					{ font-size: 12; font-size: 1em; }
 	h2 					{ font-size: 11; font-size: 1em; }
