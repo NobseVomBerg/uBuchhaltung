@@ -114,20 +114,52 @@ class Database:
         # BookingGroups (Helper for linking Documents and Bookings with m:n together)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS BookingGroups (
-                ID INTEGER PRIMARY KEY AUTOINCREMENT
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                Description TEXT,
+                CreatedDate DATE,
+                TotalAmount REAL
             )
         ''')
 
+        # Bookings (replaces Zahlung with enhanced structure)
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Zahlung (
+            CREATE TABLE IF NOT EXISTS Bookings (
                 ID INTEGER PRIMARY KEY AUTOINCREMENT,
-                DatumBuch DATE,
-                DatumSteuer DATE,
-                BankEigen TEXT,
-                BankFremd TEXT,
-                Zweck TEXT,
-                BelegNummer TEXT,
-                Betrag REAL
+                DateBooking DATE NOT NULL,
+                DateTax DATE,
+                BookingGroup_ID INTEGER,
+                Account_ID INTEGER,
+                ForeignBankAccount TEXT,
+                RecipientClient TEXT,
+                Customer_ID INTEGER,
+                COA_ID INTEGER,
+                Category_ID INTEGER,
+                Amount REAL NOT NULL,
+                Currency TEXT DEFAULT 'EUR',
+                TaxRate REAL,
+                TaxAmount REAL,
+                Text TEXT,
+                DocumentNumber TEXT,
+                BookingType TEXT,
+                Status TEXT DEFAULT 'posted',
+                FOREIGN KEY (BookingGroup_ID) REFERENCES BookingGroups(ID),
+                FOREIGN KEY (Account_ID) REFERENCES Accounts(ID),
+                FOREIGN KEY (Customer_ID) REFERENCES Customers(ID),
+                FOREIGN KEY (COA_ID) REFERENCES ChartOfAccounts(ID),
+                FOREIGN KEY (Category_ID) REFERENCES Categories(ID)
+            )
+        ''')
+
+        # BookingDocuments (Junction table for many-to-many relationship)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS BookingDocuments (
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                Booking_ID INTEGER NOT NULL,
+                Document_ID INTEGER NOT NULL,
+                RelationType TEXT,
+                FOREIGN KEY (Booking_ID) REFERENCES Bookings(ID),
+                FOREIGN KEY (Document_ID) REFERENCES Documents(ID),
+                UNIQUE(Booking_ID, Document_ID)
             )
         ''')
 
@@ -177,34 +209,58 @@ class Database:
         finally:
             conn.close()
 
-    # Table Zahlung
-    def fetch_zahlung(self):
+    # Table Bookings
+    def fetch_bookings(self):
+        """Fetch all bookings ordered by date descending"""
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM Zahlung ORDER BY DatumBuch DESC')
+        cursor.execute('SELECT * FROM Bookings ORDER BY DateBooking DESC')
         rows = cursor.fetchall()
         conn.close()
         return rows
 
-    def insert_transaction(self, dateBooking, amount, own_iban="", foreign_iban="", note="", receipt_number=None, dateTax=None, log_description=None):
-        """Insert a transaction into Zahlung table
+    def insert_booking(self, date_booking, amount, account_id=None, foreign_bank_account="", 
+                       recipient_client="", customer_id=None, coa_id=None, category_id=None,
+                       currency="EUR", tax_rate=None, tax_amount=None, text="", 
+                       document_number=None, booking_type=None, status="posted", 
+                       date_tax=None, booking_group_id=None, log_description=None):
+        """Insert a new booking into Bookings table
         
         Args:
-            dateBooking: Transaction date (DatumBuch)
-            amount: Amount in EUR (positive = credit/Haben, negative = debit/Soll)
-            own_iban: Own bank account IBAN
-            foreign_iban: Foreign bank account IBAN
-            note: Transaction note/purpose (Zweck)
-            receipt_number: Receipt reference number
-            dateTax: Secondary date (DatumSteuer), optional
+            date_booking: Transaction date (required)
+            amount: Amount (positive = credit/Haben, negative = debit/Soll)
+            account_id: FK to Accounts table
+            foreign_bank_account: External IBAN/account number
+            recipient_client: Name of recipient/client
+            customer_id: FK to Customers table
+            coa_id: FK to ChartOfAccounts (SKR)
+            category_id: FK to Categories
+            currency: Currency code (default: EUR)
+            tax_rate: Tax rate as decimal (e.g., 0.19 for 19%)
+            tax_amount: Calculated tax amount
+            text: Notes/purpose
+            document_number: External document reference
+            booking_type: 'income' or 'expense'
+            status: 'draft', 'posted', 'cancelled' (default: posted)
+            date_tax: Tax date (optional)
+            booking_group_id: FK to BookingGroups (for split bookings)
             log_description: Description for SQL logging (optional)
+        
+        Returns:
+            int: ID of inserted booking
         """
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         
-        sql_template = '''INSERT INTO Zahlung (DatumBuch, DatumSteuer, BankEigen, BankFremd, Zweck, BelegNummer, Betrag)
-            VALUES (?, ?, ?, ?, ?, ?, ?)'''
-        params = (dateBooking, dateTax, own_iban, foreign_iban, note, receipt_number, amount)
+        sql_template = '''INSERT INTO Bookings 
+            (DateBooking, DateTax, BookingGroup_ID, Account_ID, ForeignBankAccount, 
+             RecipientClient, Customer_ID, COA_ID, Category_ID, Amount, Currency, 
+             TaxRate, TaxAmount, Text, DocumentNumber, BookingType, Status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
+        
+        params = (date_booking, date_tax, booking_group_id, account_id, foreign_bank_account,
+                  recipient_client, customer_id, coa_id, category_id, amount, currency,
+                  tax_rate, tax_amount, text, document_number, booking_type, status)
         
         cursor.execute(sql_template, params)
         conn.commit()
@@ -217,50 +273,52 @@ class Database:
         
         return last_id
     
-    def check_transaction_exists(self, date, amount, own_iban, foreign_iban="", note=""):
-        """Check if a transaction with same date, amount, IBANs, and note already exists
+    def check_booking_exists(self, date, amount, account_id=None, foreign_bank_account="", text=""):
+        """Check if a booking with same parameters already exists
         
         Args:
-            date: Transaction date (DatumBuch)
-            amount: Amount in EUR
-            own_iban: Own bank account IBAN
-            foreign_iban: Foreign bank account IBAN (optional)
-            note: Transaction note/purpose (Zweck) for additional uniqueness check
+            date: Booking date
+            amount: Amount
+            account_id: Account ID
+            foreign_bank_account: Foreign bank account
+            text: Text/notes
             
         Returns:
-            True if duplicate exists, False otherwise
+            bool: True if duplicate exists, False otherwise
         """
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT COUNT(*) FROM Zahlung
-            WHERE DatumBuch=? AND Betrag=? AND BankEigen=? AND BankFremd=? AND Zweck=?
-        ''', (date, amount, own_iban, foreign_iban, note))
+            SELECT COUNT(*) FROM Bookings
+            WHERE DateBooking=? AND Amount=? AND Account_ID=? AND ForeignBankAccount=? AND Text=?
+        ''', (date, amount, account_id, foreign_bank_account, text))
         count = cursor.fetchone()[0]
         conn.close()
         return count > 0
     
-    def update_transaction(self, transaction_id, dateBooking, amount, own_iban="", foreign_iban="", note="", receipt_number=None, dateSteuer=None, log_description=None):
-        """Update an existing transaction in Zahlung table
+    def update_booking(self, booking_id, date_booking, amount, account_id=None, 
+                       foreign_bank_account="", recipient_client="", customer_id=None, 
+                       coa_id=None, category_id=None, currency="EUR", tax_rate=None, 
+                       tax_amount=None, text="", document_number=None, booking_type=None, 
+                       status="posted", date_tax=None, booking_group_id=None, log_description=None):
+        """Update an existing booking
         
         Args:
-            transaction_id: ID of the transaction to update
-            dateBooking: Transaction date (DatumBuch)
-            amount: Amount in EUR (positive = credit/Haben, negative = debit/Soll)
-            own_iban: Own bank account IBAN
-            foreign_iban: Foreign bank account IBAN
-            note: Transaction note/purpose (Zweck)
-            receipt_number: Receipt reference number
-            dateSteuer: Secondary date (DatumSteuer), optional
-            log_description: Description for SQL logging (optional)
+            booking_id: ID of booking to update
+            [same parameters as insert_booking]
         """
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         
-        sql_template = '''UPDATE Zahlung
-            SET DatumBuch=?, DatumSteuer=?, BankEigen=?, BankFremd=?, Zweck=?, BelegNummer=?, Betrag=?
+        sql_template = '''UPDATE Bookings
+            SET DateBooking=?, DateTax=?, BookingGroup_ID=?, Account_ID=?, ForeignBankAccount=?,
+                RecipientClient=?, Customer_ID=?, COA_ID=?, Category_ID=?, Amount=?, Currency=?,
+                TaxRate=?, TaxAmount=?, Text=?, DocumentNumber=?, BookingType=?, Status=?
             WHERE ID=?'''
-        params = (dateBooking, dateSteuer, own_iban, foreign_iban, note, receipt_number, amount, transaction_id)
+        
+        params = (date_booking, date_tax, booking_group_id, account_id, foreign_bank_account,
+                  recipient_client, customer_id, coa_id, category_id, amount, currency,
+                  tax_rate, tax_amount, text, document_number, booking_type, status, booking_id)
         
         cursor.execute(sql_template, params)
         conn.commit()
@@ -270,14 +328,120 @@ class Database:
         if log_description:
             self._log_sql(sql_template, params, log_description)
     
-    def get_transaction_by_id(self, transaction_id):
-        """Get a single transaction by ID"""
+    def get_booking_by_id(self, booking_id):
+        """Get a single booking by ID"""
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM Zahlung WHERE ID=?', (transaction_id,))
-        transaction = cursor.fetchone()
+        cursor.execute('SELECT * FROM Bookings WHERE ID=?', (booking_id,))
+        booking = cursor.fetchone()
         conn.close()
-        return transaction
+        return booking
+
+    # Table BookingGroups
+    def create_booking_group(self, description="", total_amount=None):
+        """Create a new booking group for split bookings
+        
+        Args:
+            description: Description of the booking group
+            total_amount: Expected total amount for validation
+            
+        Returns:
+            int: ID of created booking group
+        """
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        
+        from datetime import date
+        created_date = date.today().isoformat()
+        
+        cursor.execute('''
+            INSERT INTO BookingGroups (Description, CreatedDate, TotalAmount)
+            VALUES (?, ?, ?)
+        ''', (description, created_date, total_amount))
+        conn.commit()
+        group_id = cursor.lastrowid
+        conn.close()
+        return group_id
+    
+    def fetch_booking_groups(self):
+        """Fetch all booking groups"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM BookingGroups ORDER BY CreatedDate DESC')
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+    
+    def get_bookings_in_group(self, group_id):
+        """Get all bookings belonging to a specific group"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM Bookings WHERE BookingGroup_ID=?', (group_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
+    # Table BookingDocuments
+    def link_booking_to_document(self, booking_id, document_id, relation_type="receipt"):
+        """Create a link between a booking and a document
+        
+        Args:
+            booking_id: ID of the booking
+            document_id: ID of the document
+            relation_type: Type of relation (e.g., 'invoice', 'receipt', 'contract')
+        """
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                INSERT INTO BookingDocuments (Booking_ID, Document_ID, RelationType)
+                VALUES (?, ?, ?)
+            ''', (booking_id, document_id, relation_type))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            # Link already exists
+            conn.rollback()
+        finally:
+            conn.close()
+    
+    def get_documents_for_booking(self, booking_id):
+        """Get all documents linked to a booking"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT d.*, bd.RelationType 
+            FROM Documents d
+            JOIN BookingDocuments bd ON d.ID = bd.Document_ID
+            WHERE bd.Booking_ID = ?
+        ''', (booking_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+    
+    def get_bookings_for_document(self, document_id):
+        """Get all bookings linked to a document"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT b.*, bd.RelationType 
+            FROM Bookings b
+            JOIN BookingDocuments bd ON b.ID = bd.Booking_ID
+            WHERE bd.Document_ID = ?
+        ''', (document_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+    
+    def unlink_booking_from_document(self, booking_id, document_id):
+        """Remove link between booking and document"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('''
+            DELETE FROM BookingDocuments 
+            WHERE Booking_ID = ? AND Document_ID = ?
+        ''', (booking_id, document_id))
+        conn.commit()
+        conn.close()
 
     # Table ChartOfAccounts
     def fetch_chart_of_accounts(self):

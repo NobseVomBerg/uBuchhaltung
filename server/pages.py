@@ -39,6 +39,12 @@ def Header1(active_page=None):
     else:
         nav_items.append('<a href="/transactions">Zahlungen</a>')
     
+    # Split-Buchungen
+    if active_page == 'bookinggroups':
+        nav_items.append('<span id="ActivePage">Split-Buchungen</span>')
+    else:
+        nav_items.append('<a href="/bookinggroups">Split-Buchungen</a>')
+    
     # SKR
     if active_page == 'skr':
         nav_items.append('<span id="ActivePage">SKR</span>')
@@ -324,6 +330,56 @@ def PageReceiptEdit(db: Database, number):
             </table>
         </form>
     '''
+    
+    # Show linked bookings
+    document_id = receipt[0]  # ID is at index 0 based on Documents table structure
+    linked_bookings = db.get_bookings_for_document(document_id)
+    
+    s+= "<h2>Verknüpfte Buchungen</h2>"
+    if linked_bookings:
+        s+= "<table border='1'>"
+        s+= "<tr><th>ID</th><th>Datum</th><th>Empfänger</th><th>Betrag</th><th>Typ</th><th>Aktionen</th></tr>"
+        for booking in linked_bookings:
+            booking_id = booking[0]
+            date_booking = booking[1]
+            recipient = booking[6] or ""
+            amount = booking[10]
+            relation_type = booking[-1]  # RelationType from JOIN
+            
+            amount_color = "green" if amount > 0 else "red"
+            s+= f"<tr>"
+            s+= f"<td>{booking_id}</td>"
+            s+= f"<td>{date_booking}</td>"
+            s+= f"<td>{recipient}</td>"
+            s+= f"<td style='color:{amount_color}'>{amount:.2f}</td>"
+            s+= f"<td>{relation_type or '-'}</td>"
+            s+= f"<td><a href='/transactions/edit?id={booking_id}'>Bearbeiten</a> | "
+            s+= f"<a href='/documents/unlink?doc_id={document_id}&booking_id={booking_id}'>Entfernen</a></td>"
+            s+= f"</tr>"
+        s+= "</table>"
+    else:
+        s+= "<p>Keine verknüpften Buchungen.</p>"
+    
+    # Form to link new booking
+    s+= "<h3>Buchung verknüpfen</h3>"
+    s+= f'''
+        <form method="POST" action="/documents/link">
+            <input type="hidden" name="document_id" value="{document_id}">
+            <table>
+                <tr><td>Buchungs-ID:</td><td><input type="number" name="booking_id" required></td></tr>
+                <tr><td>Typ:</td><td>
+                    <select name="relation_type">
+                        <option value="receipt">Beleg</option>
+                        <option value="invoice">Rechnung</option>
+                        <option value="contract">Vertrag</option>
+                        <option value="other">Sonstiges</option>
+                    </select>
+                </td></tr>
+                <tr><td></td><td><input type="submit" value="Verknüpfung hinzufügen"></td></tr>
+            </table>
+        </form>
+    '''
+    
     s+= Footer()
     return s
 
@@ -342,31 +398,76 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     s = Header1('transactions')
     s+= Header2(header2_content)
     
-    # Header3 with date filter
+    # Header3 with filters
     import datetime
     current_year = datetime.datetime.now().year
+    
+    # Get filter data
+    customers = db.fetch_customers()
+    coa_accounts = db.fetch_chart_of_accounts()
+    
     header3_content = f'''
-        Von: <input type="date" id="dateFrom" onchange="filterTransactionsByDate()"> 
-        Bis: <input type="date" id="dateTo" onchange="filterTransactionsByDate()"> &nbsp;
-        <button onclick="setTransactionYear({current_year})">{current_year}</button>
-        <button onclick="setTransactionYear({current_year-1})">{current_year-1}</button>
-        <button onclick="setTransactionYear({current_year-2})">{current_year-2}</button>
-        <button onclick="setTransactionYear({current_year-3})">{current_year-3}</button>
+        <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+            <div>
+                <label>Von:</label> <input type="date" id="dateFrom" onchange="filterTransactions()"> 
+                <label>Bis:</label> <input type="date" id="dateTo" onchange="filterTransactions()">
+                <button onclick="setTransactionYear({current_year})">{current_year}</button>
+                <button onclick="setTransactionYear({current_year-1})">{current_year-1}</button>
+            </div>
+            <div>
+                <label>Status:</label>
+                <select id="statusFilter" onchange="filterTransactions()">
+                    <option value="">Alle</option>
+                    <option value="posted" selected>Gebucht</option>
+                    <option value="draft">Entwurf</option>
+                    <option value="cancelled">Storniert</option>
+                </select>
+            </div>
+            <div>
+                <label>Kunde:</label>
+                <select id="customerFilter" onchange="filterTransactions()">
+                    <option value="">Alle Kunden</option>
+    '''
+    for customer in customers:
+        customer_display = f"{customer[2]} ({customer[3] or 'Privat'})" if customer[2] else customer[3] or f"ID {customer[0]}"
+        header3_content += f'<option value="{customer[0]}">{customer_display}</option>'
+    
+    header3_content += '''
+                </select>
+            </div>
+            <div>
+                <label>Währung:</label>
+                <select id="currencyFilter" onchange="filterTransactions()">
+                    <option value="">Alle</option>
+                    <option value="EUR" selected>EUR</option>
+                    <option value="USD">USD</option>
+                    <option value="GBP">GBP</option>
+                    <option value="CHF">CHF</option>
+                </select>
+            </div>
+            <div>
+                <label>Min. Betrag:</label> <input type="number" step="0.01" id="minAmount" onchange="filterTransactions()" style="width: 80px;">
+                <label>Max. Betrag:</label> <input type="number" step="0.01" id="maxAmount" onchange="filterTransactions()" style="width: 80px;">
+            </div>
+        </div>
     '''
     s+= Header3(header3_content)
     
     # Load transaction for editing if ID provided
     edit_trans = None
     edit_recipient = ""
-    edit_reference = ""
+    edit_text = ""
     if edit_transaction_id:
-        edit_trans = db.get_transaction_by_id(edit_transaction_id)
+        edit_trans = db.get_booking_by_id(edit_transaction_id)
         if edit_trans:
-            # Split note into recipient and reference
-            note = edit_trans[5] or ""
-            note_lines = note.split('\n', 1)
-            edit_recipient = note_lines[0] if len(note_lines) > 0 else ""
-            edit_reference = note_lines[1] if len(note_lines) > 1 else ""
+            # Extract data from booking structure
+            edit_recipient = edit_trans[6] or ""  # RecipientClient
+            edit_text = edit_trans[14] or ""  # Text
+    
+    # Get dropdown data (reuse customers variable from above)
+    customers = db.fetch_customers()
+    coa_accounts = db.fetch_chart_of_accounts()
+    booking_groups = db.fetch_booking_groups()
     
     # Determine form title and button text
     form_title = "Transaktion bearbeiten" if edit_trans else "Neue Transaktion"
@@ -381,30 +482,130 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             <form method="POST" action="/transactions/add">
                 <table>
                     <tr><td>ID:</td><td><input type="text" name="transaction_id" value="{transaction_id}" readonly style="background-color: #f0f0f0;"></td></tr>
-                    <tr><td>Datum:</td><td><input type="date" name="date" value="{edit_trans[1] if edit_trans else ""}" required></td></tr>
-                    <tr><td>Empfänger/Auftragg.:</td><td><input type="text" name="recipient" value="{edit_recipient}"></td></tr>
-                    <tr><td>Verwendungszweck:</td><td><input type="text" name="reference" value="{edit_reference}"></td></tr>
-                    <tr><td>Betrag:</td><td><input type="number" step="0.01" name="amount" value="{edit_trans[7] if edit_trans else ""}"></td></tr>
+                    <tr><td>Buchungsdatum:</td><td><input type="date" name="date" value="{edit_trans[1] if edit_trans else ""}" required></td></tr>
+                    <tr><td>Steuerdatum:</td><td><input type="date" name="date_tax" value="{edit_trans[2] if edit_trans and edit_trans[2] else ""}"></td></tr>
+                    
+                    <tr><td>Empfänger/Auftragg.:</td><td><input type="text" name="recipient" value="{edit_recipient}" size="40"></td></tr>
+                    <tr><td>Verwendungszweck:</td><td><textarea name="text" rows="3" cols="40">{edit_text}</textarea></td></tr>
+                    
                     <tr><td>Bankkonto:</td><td><select name="account">
+                        <option value="">-- Kein Konto --</option>
     '''
-    # Get selected IBAN for comparison
-    selected_iban = edit_trans[3] if edit_trans else None
+    # Get selected account_id for comparison
+    selected_account_id = edit_trans[4] if edit_trans else None
     for account in accounts:
-        selected = 'selected' if selected_iban and account[3] == selected_iban else ''
+        selected = 'selected' if selected_account_id and account[0] == selected_account_id else ''
         s+= f'<option value="{account[0]}" {selected}>{account[1]}</option>'
-    
-    neu_button = '<a href="/transactions" style="margin-left: 10px; padding: 5px 10px; background-color: #888; color: white; text-decoration: none; display: inline-block;">Neu</a>' if edit_trans else ''
-    receipt_value = edit_trans[6] if edit_trans and edit_trans[6] else ''
     
     s+= f'''
                     </select></td></tr>
-                    <tr><td>Beleg-Nr.:</td><td><input type="text" name="receipt_nr" value="{receipt_value}"></td></tr>
+                    <tr><td>Fremdes Konto/IBAN:</td><td><input type="text" name="foreign_account" value="{edit_trans[5] if edit_trans and edit_trans[5] else ""}" size="40"></td></tr>
+                    
+                    <tr><td>Kunde:</td><td><select name="customer_id">
+                        <option value="">-- Kein Kunde --</option>
+    '''
+    selected_customer_id = edit_trans[7] if edit_trans else None
+    for customer in customers:
+        selected = 'selected' if selected_customer_id and customer[0] == selected_customer_id else ''
+        customer_display = f"{customer[2]} ({customer[3] or 'Privat'})" if customer[2] else customer[3] or f"ID {customer[0]}"
+        s+= f'<option value="{customer[0]}" {selected}>{customer_display}</option>'
+    
+    s+= f'''
+                    </select></td></tr>
+                    
+                    <tr><td>Split-Buchung:</td><td><select name="booking_group_id">
+                        <option value="">-- Keine Gruppierung --</option>
+    '''
+    selected_booking_group_id = edit_trans[3] if edit_trans else None
+    for bg in booking_groups:
+        selected = 'selected' if selected_booking_group_id and bg[0] == selected_booking_group_id else ''
+        bg_display = f"#{bg[0]} - {bg[1] or 'Ohne Beschreibung'}"
+        s+= f'<option value="{bg[0]}" {selected}>{bg_display}</option>'
+    
+    s+= f'''
+                    </select></td></tr>
+                    
+                    <tr><td>SKR-Konto:</td><td><select name="coa_id">
+                        <option value="">-- Kein SKR-Konto --</option>
+    '''
+    selected_coa_id = edit_trans[8] if edit_trans else None
+    for coa in coa_accounts:
+        selected = 'selected' if selected_coa_id and coa[0] == selected_coa_id else ''
+        coa_display = f"{coa[2]} - {coa[3]}" if coa[3] else f"{coa[2]}"
+        s+= f'<option value="{coa[0]}" {selected}>{coa_display}</option>'
+    
+    s+= f'''
+                    </select></td></tr>
+                    
+                    <tr><td>Betrag:</td><td><input type="number" step="0.01" name="amount" value="{edit_trans[10] if edit_trans else ""}" required></td></tr>
+                    <tr><td>Währung:</td><td><input type="text" name="currency" value="{edit_trans[11] if edit_trans else "EUR"}" size="5"></td></tr>
+                    
+                    <tr><td>Steuersatz (%):</td><td><input type="number" step="0.01" name="tax_rate" value="{edit_trans[12]*100 if edit_trans and edit_trans[12] else ""}" placeholder="z.B. 19 für 19%"></td></tr>
+                    <tr><td>Steuerbetrag:</td><td><input type="number" step="0.01" name="tax_amount" value="{edit_trans[13] if edit_trans and edit_trans[13] else ""}"></td></tr>
+                    
+                    <tr><td>Beleg-Nr.:</td><td><input type="text" name="document_nr" value="{edit_trans[15] if edit_trans and edit_trans[15] else ""}"></td></tr>
+                    
+                    <tr><td>Buchungstyp:</td><td><select name="booking_type">
+                        <option value="">-- Automatisch --</option>
+    '''
+    selected_booking_type = edit_trans[16] if edit_trans else None
+    for btype in [('income', 'Einnahme'), ('expense', 'Ausgabe')]:
+        selected = 'selected' if selected_booking_type == btype[0] else ''
+        s+= f'<option value="{btype[0]}" {selected}>{btype[1]}</option>'
+    
+    s+= f'''
+                    </select></td></tr>
+                    
+                    <tr><td>Status:</td><td><select name="status">
+    '''
+    selected_status = edit_trans[17] if edit_trans else 'posted'
+    for status in [('draft', 'Entwurf'), ('posted', 'Gebucht'), ('cancelled', 'Storniert')]:
+        selected = 'selected' if selected_status == status[0] else ''
+        s+= f'<option value="{status[0]}" {selected}>{status[1]}</option>'
+    
+    neu_button = '<a href="/transactions" style="margin-left: 10px; padding: 5px 10px; background-color: #888; color: white; text-decoration: none; display: inline-block;">Neu</a>' if edit_trans else ''
+    
+    s+= f'''
+                    </select></td></tr>
+                    
                     <tr><td></td><td>
                         <input type="submit" value="{submit_text}">
                         {neu_button}
                     </td></tr>
                 </table>
             </form>
+    '''
+    
+    # Show linked documents if editing
+    if edit_trans:
+        booking_id = edit_trans[0]
+        linked_documents = db.get_documents_for_booking(booking_id)
+        
+        s+= "<h3>Verknüpfte Dokumente</h3>"
+        if linked_documents:
+            s+= "<table border='1'>"
+            s+= "<tr><th>ID</th><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Typ</th><th>Aktionen</th></tr>"
+            for doc in linked_documents:
+                doc_id = doc[0]
+                doc_number = doc[1]
+                doc_date = doc[2]
+                doc_filename = doc[3]
+                relation_type = doc[-1]  # RelationType from JOIN
+                
+                s+= f"<tr>"
+                s+= f"<td>{doc_id}</td>"
+                s+= f"<td>{doc_number}</td>"
+                s+= f"<td>{doc_date}</td>"
+                s+= f"<td>{doc_filename}</td>"
+                s+= f"<td>{relation_type or '-'}</td>"
+                s+= f"<td><a href='/edit_receipt?number={doc_number}'>Ansehen</a> | "
+                s+= f"<a href='/documents/unlink?doc_id={doc_id}&booking_id={booking_id}'>Entfernen</a></td>"
+                s+= f"</tr>"
+            s+= "</table>"
+        else:
+            s+= "<p>Keine verknüpften Dokumente.</p>"
+    
+    s+= '''
         </div>
 
         <div>
@@ -485,44 +686,67 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     
     s+= "<h2>Kontobewegungen</h2>"
     s+= "<table border='1'>"
-    s+= "<tr><th>Buchungs-Datum</th><th>Empfänger/Auftragg.</th><th>Verwendungszweck</th><th>Betrag</th><th>Fremdkonto</th><th>Beleg-Nr.</th><th>Aktionen</th></tr>"
+    s+= "<tr><th>Datum</th><th>Empfänger/Auftragg.</th><th>Text</th><th>Betrag</th><th>Währung</th><th>Konto</th><th>Kunde</th><th>SKR</th><th>Status</th><th>Aktionen</th></tr>"
     
-    # Load transactions from database
-    transactions = db.fetch_zahlung()
+    # Load bookings from database
+    bookings = db.fetch_bookings()
     
-    # Create IBAN to account name mapping
+    # Create account ID to account name mapping
     account_map = {}
     for account in accounts:
-        account_map[account[3]] = account[1]  # IBAN -> Name
+        account_map[account[0]] = account[1]  # ID -> Name
     
-    for trans in transactions:
-        trans_id = trans[0]
-        date = trans[1]
-        bank_eigen = trans[3]
-        note = trans[5] or ""
-        receipt_nr = trans[6] or ""
-        amount = trans[7]
+    # Create customer mapping
+    customers = db.fetch_customers()
+    customer_map = {}
+    for customer in customers:
+        customer_map[customer[0]] = customer[2] or customer[3]  # Name or Company
+    
+    # Create COA mapping
+    coa_accounts = db.fetch_chart_of_accounts()
+    coa_map = {}
+    for coa in coa_accounts:
+        coa_map[coa[0]] = f"{coa[2]}"  # AccountNumber
+    
+    for booking in bookings:
+        booking_id = booking[0]
+        date_booking = booking[1]
+        account_id = booking[4]
+        recipient = booking[6] or ""
+        customer_id = booking[7]
+        coa_id = booking[8]
+        amount = booking[10]
+        currency = booking[11] or "EUR"
+        text = booking[14] or ""
+        status = booking[17] or "posted"
         
-        # Split note into recipient and reference
-        note_lines = note.split('\n', 1)
-        recipient = note_lines[0] if len(note_lines) > 0 else ""
-        reference = note_lines[1] if len(note_lines) > 1 else ""
-        
-        # Get account name from IBAN
-        account_name = account_map.get(bank_eigen, bank_eigen[:10] + "..." if bank_eigen else "")
+        # Get mapped names
+        account_name = account_map.get(account_id, "") if account_id else ""
+        customer_name = customer_map.get(customer_id, "") if customer_id else ""
+        coa_number = coa_map.get(coa_id, "") if coa_id else ""
         
         # Color code amount
         amount_color = "green" if amount > 0 else "red"
         
-        # Add data-iban and data-date attributes for filtering
-        s+= f"<tr class='transaction-row' data-iban='{bank_eigen}' data-date='{date}'>"
-        s+= f"<td>{date}</td>"
-        s+= f"<td>{recipient[:30]}</td>"
-        s+= f"<td>{reference[:40]}</td>"
-        s+= f"<td style='color:{amount_color}'>{amount:.2f} €</td>"
-        s+= f"<td>{account_name}</td>"
-        s+= f"<td>{receipt_nr}</td>"
-        s+= f"<td><a href='/transactions/edit?id={trans_id}'>Bearbeiten</a></td>"
+        # Status color
+        status_colors = {'draft': 'orange', 'posted': 'black', 'cancelled': 'gray'}
+        status_color = status_colors.get(status, 'black')
+        status_text = {'draft': 'Entwurf', 'posted': 'Gebucht', 'cancelled': 'Storniert'}.get(status, status)
+        
+        # Add data attributes for filtering
+        account_id_str = account_id or ''
+        customer_id_str = customer_id or ''
+        s+= f"<tr class='transaction-row' data-account-id='{account_id_str}' data-date='{date_booking}' data-status='{status}' data-customer-id='{customer_id_str}' data-currency='{currency}' data-amount='{amount}'>"
+        s+= f"<td>{date_booking}</td>"
+        s+= f"<td>{recipient[:25]}</td>"
+        s+= f"<td>{text[:35]}</td>"
+        s+= f"<td style='color:{amount_color}'>{amount:.2f}</td>"
+        s+= f"<td>{currency}</td>"
+        s+= f"<td>{account_name[:20]}</td>"
+        s+= f"<td>{customer_name[:20]}</td>"
+        s+= f"<td>{coa_number}</td>"
+        s+= f"<td style='color:{status_color}'>{status_text}</td>"
+        s+= f"<td><a href='/transactions/edit?id={booking_id}'>Bearbeiten</a></td>"
         s+= f"</tr>"
     
     s+= "</table>"
@@ -533,37 +757,56 @@ def PageTransactions(db: Database, edit_transaction_id=None):
         function setTransactionYear(year) {
             document.getElementById('dateFrom').value = year + '-01-01';
             document.getElementById('dateTo').value = year + '-12-31';
-            filterTransactionsByDate();
+            filterTransactions();
         }
         
-        function filterTransactionsByDate() {
+        function filterTransactions() {
             const dateFrom = document.getElementById('dateFrom').value;
             const dateTo = document.getElementById('dateTo').value;
+            const statusFilter = document.getElementById('statusFilter').value;
+            const customerFilter = document.getElementById('customerFilter').value;
+            const currencyFilter = document.getElementById('currencyFilter').value;
+            const minAmount = parseFloat(document.getElementById('minAmount').value) || null;
+            const maxAmount = parseFloat(document.getElementById('maxAmount').value) || null;
+            
             const rows = document.querySelectorAll('.transaction-row');
             
             rows.forEach(row => {
                 const rowDate = row.getAttribute('data-date');
+                const rowStatus = row.getAttribute('data-status');
+                const rowCustomerId = row.getAttribute('data-customer-id');
+                const rowCurrency = row.getAttribute('data-currency');
+                const rowAmount = parseFloat(row.getAttribute('data-amount'));
+                const rowAccountId = row.getAttribute('data-account-id');
+                
                 let show = true;
                 
                 // Check date filter
-                if (dateFrom && rowDate < dateFrom) {
-                    show = false;
-                }
-                if (dateTo && rowDate > dateTo) {
-                    show = false;
-                }
+                if (dateFrom && rowDate < dateFrom) show = false;
+                if (dateTo && rowDate > dateTo) show = false;
                 
-                // Check IBAN filter (existing functionality)
+                // Check status filter
+                if (statusFilter && rowStatus !== statusFilter) show = false;
+                
+                // Check customer filter
+                if (customerFilter && rowCustomerId !== customerFilter) show = false;
+                
+                // Check currency filter
+                if (currencyFilter && rowCurrency !== currencyFilter) show = false;
+                
+                // Check amount range
+                if (minAmount !== null && rowAmount < minAmount) show = false;
+                if (maxAmount !== null && rowAmount > maxAmount) show = false;
+                
+                // Check account filter (existing checkboxes)
                 if (show) {
-                    const checkedIbans = new Set();
-                    const checkboxes = document.querySelectorAll('input[type="checkbox"][data-iban]');
-                    checkboxes.forEach(cb => {
-                        if (cb.checked) {
-                            checkedIbans.add(cb.getAttribute('data-iban'));
-                        }
+                    const checkedAccounts = new Set();
+                    document.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+                        const accountId = cb.id.replace('account_', '');
+                        checkedAccounts.add(accountId);
                     });
-                    const iban = row.getAttribute('data-iban');
-                    if (!checkedIbans.has(iban)) {
+                    
+                    if (checkedAccounts.size > 0 && !checkedAccounts.has(rowAccountId)) {
                         show = false;
                     }
                 }
@@ -572,9 +815,14 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             });
         }
         
-        function filterTransactions() {
-            // Combined filter that also considers date range
-            filterTransactionsByDate();
+        // Also filter on account checkbox changes
+        function filterTransactionsByAccount() {
+            filterTransactions();
+        }
+        
+        // Update old filter function name for compatibility
+        function filterTransactionsByDate() {
+            filterTransactions();
         }
     </script>
     '''
@@ -760,3 +1008,141 @@ def PageConfirmTransactions(import_id: str):
     
     s+= Footer()
     return s
+
+def PageBookingGroups(db: Database):
+    """Page for managing split bookings (BookingGroups)"""
+    s = Header1('bookinggroups')
+    s += Header2()
+    s += Header3()
+    
+    s += "<h1>Split-Buchungen verwalten</h1>"
+    s += "<p>Hier können Sie zusammengehörige Buchungen gruppieren (z.B. Rechnungssplitting).</p>"
+    
+    # Form to create new booking group
+    s += '''
+    <h2>Neue Split-Buchung erstellen</h2>
+    <form method="POST" action="/bookinggroups/create">
+        <table>
+            <tr><td>Beschreibung:</td><td><input type="text" name="description" size="60" placeholder="z.B. Rechnung XY123 aufgeteilt"></td></tr>
+            <tr><td>Erwarteter Gesamtbetrag:</td><td><input type="number" step="0.01" name="total_amount" placeholder="Optional für Kontrolle"></td></tr>
+            <tr><td></td><td><input type="submit" value="Gruppe erstellen"></td></tr>
+        </table>
+    </form>
+    '''
+    
+    # List existing booking groups
+    groups = db.fetch_booking_groups()
+    
+    s += "<h2>Vorhandene Split-Buchungen</h2>"
+    if groups:
+        s += "<table border='1'>"
+        s += "<tr><th>ID</th><th>Beschreibung</th><th>Erstellt am</th><th>Erwarteter Betrag</th><th>Tatsächlicher Betrag</th><th>Anzahl Buchungen</th><th>Aktionen</th></tr>"
+        
+        for group in groups:
+            group_id = group[0]
+            description = group[1] or ""
+            created_date = group[2] or ""
+            expected_amount = group[3]
+            
+            # Get bookings in this group and calculate actual total
+            bookings = db.get_bookings_in_group(group_id)
+            actual_amount = sum(b[10] for b in bookings)  # Amount is at index 10
+            booking_count = len(bookings)
+            
+            # Check if amounts match
+            match_color = "green" if expected_amount and abs(expected_amount - actual_amount) < 0.01 else "black"
+            
+            s += f"<tr>"
+            s += f"<td>{group_id}</td>"
+            s += f"<td>{description}</td>"
+            s += f"<td>{created_date}</td>"
+            s += f"<td>{expected_amount:.2f if expected_amount else '-'}</td>"
+            s += f"<td style='color:{match_color}'>{actual_amount:.2f}</td>"
+            s += f"<td>{booking_count}</td>"
+            s += f"<td><a href='/bookinggroups/view?id={group_id}'>Details</a></td>"
+            s += f"</tr>"
+        
+        s += "</table>"
+    else:
+        s += "<p>Noch keine Split-Buchungen vorhanden.</p>"
+    
+    s += Footer()
+    return s
+
+def PageBookingGroupDetails(db: Database, group_id):
+    """Page showing details of a specific booking group"""
+    s = Header1('bookinggroups')
+    s += Header2()
+    s += Header3()
+    
+    # Get group info
+    groups = db.fetch_booking_groups()
+    group = None
+    for g in groups:
+        if g[0] == group_id:
+            group = g
+            break
+    
+    if not group:
+        s += "<h1>Gruppe nicht gefunden</h1>"
+        s += f"<p><a href='/bookinggroups'>Zurück zur Übersicht</a></p>"
+        s += Footer()
+        return s
+    
+    description = group[1] or "Ohne Beschreibung"
+    created_date = group[2] or ""
+    expected_amount = group[3]
+    
+    s += f"<h1>Split-Buchung: {description}</h1>"
+    s += f"<p>Erstellt am: {created_date}</p>"
+    
+    # Get bookings in this group
+    bookings = db.get_bookings_in_group(group_id)
+    
+    if bookings:
+        actual_amount = sum(b[10] for b in bookings)
+        
+        s += f"<p><strong>Erwarteter Gesamtbetrag:</strong> {expected_amount:.2f if expected_amount else '-'} EUR</p>"
+        s += f"<p><strong>Tatsächlicher Gesamtbetrag:</strong> {actual_amount:.2f} EUR</p>"
+        
+        if expected_amount and abs(expected_amount - actual_amount) > 0.01:
+            diff = actual_amount - expected_amount
+            s += f"<p style='color:red'><strong>Differenz:</strong> {diff:.2f} EUR</p>"
+        
+        s += "<h2>Buchungen in dieser Gruppe</h2>"
+        s += "<table border='1'>"
+        s += "<tr><th>ID</th><th>Datum</th><th>Empfänger</th><th>Text</th><th>Betrag</th><th>Konto</th><th>Aktionen</th></tr>"
+        
+        # Get account names
+        accounts = db.fetch_accounts()
+        account_map = {acc[0]: acc[1] for acc in accounts}
+        
+        for booking in bookings:
+            booking_id = booking[0]
+            date_booking = booking[1]
+            account_id = booking[4]
+            recipient = booking[6] or ""
+            amount = booking[10]
+            text = booking[14] or ""
+            
+            account_name = account_map.get(account_id, "") if account_id else ""
+            amount_color = "green" if amount > 0 else "red"
+            
+            s += f"<tr>"
+            s += f"<td>{booking_id}</td>"
+            s += f"<td>{date_booking}</td>"
+            s += f"<td>{recipient[:30]}</td>"
+            s += f"<td>{text[:40]}</td>"
+            s += f"<td style='color:{amount_color}'>{amount:.2f}</td>"
+            s += f"<td>{account_name}</td>"
+            s += f"<td><a href='/transactions/edit?id={booking_id}'>Bearbeiten</a></td>"
+            s += f"</tr>"
+        
+        s += "</table>"
+    else:
+        s += "<p>Keine Buchungen in dieser Gruppe.</p>"
+    
+    s += "<p><a href='/bookinggroups'>Zurück zur Übersicht</a></p>"
+    s += Footer()
+    return s
+

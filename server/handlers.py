@@ -89,32 +89,34 @@ def handle_confirm_import(db, post_data):
         skipped_count = 0
         skipped_transactions = []
         
-        # Get own IBAN for duplicate check
-        own_iban = ""
+        # Get account info for duplicate check
+        account_id_int = None
         for acc in accounts:
             if acc[0] == account_id:
-                own_iban = acc[3]
+                account_id_int = acc[0]
                 break
         
         for trans in import_data.get('transactions', []):
-            # Build note
-            note = f"{trans['recipient']}\n{trans['reference']}"
+            # Build text from recipient and reference
+            recipient = trans['recipient']
+            text = trans['reference']
             foreign_iban = trans.get('foreign_iban', '')
             
-            # Check if transaction already exists (including note for uniqueness)
-            if db.check_transaction_exists(trans['date'], trans['amount'], own_iban, foreign_iban, note):
+            # Check if booking already exists
+            if db.check_booking_exists(trans['date'], trans['amount'], account_id_int, foreign_iban, text):
                 skipped_count += 1
                 skipped_transactions.append(trans)
                 continue
             
             # Execute insert with automatic SQL logging
-            db.insert_transaction(
-                dateBooking=trans['date'],
+            db.insert_booking(
+                date_booking=trans['date'],
                 amount=trans['amount'],
-                own_iban=own_iban,
-                foreign_iban=foreign_iban,
-                note=note,
-                receipt_number=None,
+                account_id=account_id_int,
+                foreign_bank_account=foreign_iban,
+                recipient_client=recipient,
+                text=text,
+                document_number=None,
                 log_description="VBR bank statement import"
             )
             inserted_count += 1
@@ -154,50 +156,79 @@ def handle_confirm_import(db, post_data):
         return 500, f"Fehler beim Import: {str(e)}"
 
 def handle_add_transaction(db, post_data):
-    """Handle manual transaction entry (insert or update)"""
+    """Handle manual booking entry (insert or update)"""
     transaction_id = int(post_data.get("transaction_id", ["0"])[0])
     date = post_data.get("date", [""])[0]
+    date_tax = post_data.get("date_tax", [""])[0] or None
     recipient = post_data.get("recipient", [""])[0]
-    reference = post_data.get("reference", [""])[0]
+    text = post_data.get("text", [""])[0]
     amount = post_data.get("amount", ["0"])[0]
+    currency = post_data.get("currency", ["EUR"])[0]
     account_id = post_data.get("account", [""])[0]
-    receipt_nr = post_data.get("receipt_nr", [""])[0]
+    foreign_account = post_data.get("foreign_account", [""])[0]
+    customer_id = post_data.get("customer_id", [""])[0]
+    coa_id = post_data.get("coa_id", [""])[0]
+    booking_group_id = post_data.get("booking_group_id", [""])[0]
+    tax_rate = post_data.get("tax_rate", [""])[0]
+    tax_amount = post_data.get("tax_amount", [""])[0]
+    document_nr = post_data.get("document_nr", [""])[0]
+    booking_type = post_data.get("booking_type", [""])[0] or None
+    status = post_data.get("status", ["posted"])[0]
     
     try:
-        # Get account IBAN
-        accounts = db.fetch_accounts()
-        own_iban = None
-        for acc in accounts:
-            if str(acc[0]) == account_id:
-                own_iban = acc[3]  # IBAN is at index 3
-                break
+        # Convert IDs to int or None
+        account_id = int(account_id) if account_id else None
+        customer_id = int(customer_id) if customer_id else None
+        coa_id = int(coa_id) if coa_id else None
+        booking_group_id = int(booking_group_id) if booking_group_id else None
         
-        # Build note
-        note = f"{recipient}\n{reference}" if recipient and reference else (recipient or reference or "")
+        # Convert tax_rate from percentage to decimal
+        tax_rate = float(tax_rate) / 100 if tax_rate else None
+        tax_amount = float(tax_amount) if tax_amount else None
         
-        # Update or insert transaction
+        # Update or insert booking
         if transaction_id > 0:
-            # Update existing transaction
-            db.update_transaction(
-                transaction_id=transaction_id,
-                dateBooking=date,
+            # Update existing booking
+            db.update_booking(
+                booking_id=transaction_id,
+                date_booking=date,
+                date_tax=date_tax,
+                booking_group_id=booking_group_id,
                 amount=float(amount),
-                own_iban=own_iban or "",
-                foreign_iban="",
-                note=note,
-                receipt_number=receipt_nr or None,
-                log_description="Manual transaction update"
+                account_id=account_id,
+                foreign_bank_account=foreign_account,
+                recipient_client=recipient,
+                customer_id=customer_id,
+                coa_id=coa_id,
+                currency=currency,
+                tax_rate=tax_rate,
+                tax_amount=tax_amount,
+                text=text,
+                document_number=document_nr or None,
+                booking_type=booking_type,
+                status=status,
+                log_description="Manual booking update"
             )
         else:
-            # Insert new transaction
-            transaction_id = db.insert_transaction(
-                dateBooking=date,
+            # Insert new booking
+            transaction_id = db.insert_booking(
+                date_booking=date,
+                date_tax=date_tax,
+                booking_group_id=booking_group_id,
                 amount=float(amount),
-                own_iban=own_iban or "",
-                foreign_iban="",
-                note=note,
-                receipt_number=receipt_nr or None,
-                log_description="Manual transaction entry"
+                account_id=account_id,
+                foreign_bank_account=foreign_account,
+                recipient_client=recipient,
+                customer_id=customer_id,
+                coa_id=coa_id,
+                currency=currency,
+                tax_rate=tax_rate,
+                tax_amount=tax_amount,
+                text=text,
+                document_number=document_nr or None,
+                booking_type=booking_type,
+                status=status,
+                log_description="Manual booking entry"
             )
         
         return 303, "/transactions"
@@ -215,6 +246,35 @@ def handle_add_bankaccount(db, post_data):
     bank_name = post_data.get("bank_name", [""])[0]
     db.insert_account(name, holder, iban, bic, bank_name)
     return 303, "/settings/bankaccounts"
+
+def handle_create_booking_group(db, post_data):
+    """Handle creating a new booking group"""
+    description = post_data.get("description", [""])[0]
+    total_amount = post_data.get("total_amount", [""])[0]
+    
+    try:
+        total_amount = float(total_amount) if total_amount else None
+        group_id = db.create_booking_group(description, total_amount)
+        return 303, f"/bookinggroups/view?id={group_id}"
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return 500, f"Fehler beim Erstellen der Gruppe: {str(e)}"
+
+def handle_link_document(db, post_data):
+    """Handle linking a document to a booking"""
+    booking_id = int(post_data.get("booking_id", ["0"])[0])
+    document_id = int(post_data.get("document_id", ["0"])[0])
+    relation_type = post_data.get("relation_type", ["receipt"])[0]
+    
+    try:
+        db.link_booking_to_document(booking_id, document_id, relation_type)
+        # Redirect back to the booking edit page
+        return 303, f"/transactions/edit?id={booking_id}"
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return 500, f"Fehler beim Verknüpfen: {str(e)}"
 
 def handle_update_bankaccount(db, post_data):
     """Handle updating bank account"""

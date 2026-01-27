@@ -98,14 +98,36 @@ print(f"Transaktionen: {len(result['transactions'])}")
 
 ## Datenbank-Integration
 
-Die extrahierten Transaktionen werden automatisch in die `Zahlung`-Tabelle eingefügt:
+Die extrahierten Transaktionen werden automatisch in die `Bookings`-Tabelle eingefügt:
 
 1. **Upload**: PDF-Datei über Web-Interface hochladen
 2. **Parsing**: `DocumentParser` analysiert VBR-Kontoauszug
 3. **Organisation**: Datei wird nach `./data/Belege/YYYY/Konten/VBR/` verschoben
 4. **Bestätigung**: Benutzer prüft erkannte Transaktionen auf `/confirm_transactions`
 5. **Import**: Nach Bestätigung werden Transaktionen in DB gespeichert
-6. **Duplikat-Check**: Bereits existierende Transaktionen werden übersprungen
+6. **Duplikat-Check**: Bereits existierende Transaktionen werden übersprungen (basierend auf Datum, Betrag, Konto, fremde IBAN und Verwendungszweck)
+
+### Buchungsfelder beim Import
+
+Die folgenden Felder werden beim Import automatisch gesetzt:
+- **DateBooking**: Buchungsdatum aus Kontoauszug
+- **DateTax**: Gleich wie DateBooking (kann später manuell angepasst werden)
+- **Account_ID**: Identifiziert durch IBAN-Matching
+- **ForeignBankAccount**: Fremde IBAN oder Kontonummer
+- **RecipientClient**: Empfänger/Auftraggeber
+- **Amount**: Betrag (positiv für Eingänge, negativ für Ausgänge)
+- **Currency**: 'EUR' (Standard)
+- **Text**: Verwendungszweck
+- **Status**: 'draft' (Entwurf) - muss manuell auf 'posted' gesetzt werden
+- **BookingType**: Automatisch bestimmt ('income' für positive, 'expense' für negative Beträge)
+
+Weitere Felder können nach dem Import manuell ergänzt werden:
+- Customer_ID (Kunde/Lieferant)
+- COA_ID (SKR-Kontenzuordnung)
+- Category_ID (Kategorie)
+- TaxRate und TaxAmount (Steuerberechnung)
+- DocumentNumber (Belegnummer)
+- BookingGroup_ID (für Split-Buchungen)
 
 ### Integration in modularer Struktur
 
@@ -122,7 +144,8 @@ def handle_file_upload(request_handler):
     # Benutzer zu Bestätigungsseite weiterleiten
 ```
 
-Die Bestätigung erfolgt über `server/handlers.py` → `handle_confirm_import()`.
+Die Bestätigung erfolgt über `server/handlers.py` → `handle_confirm_import()`, welches die Methoden
+`db.check_booking_exists()` und `db.insert_booking()` verwendet.
 
 ## Bekannte Einschränkungen
 

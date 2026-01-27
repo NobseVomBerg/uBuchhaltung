@@ -42,6 +42,19 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 transaction_id = int(query_components["id"][0])
                 db.delete_transaction(transaction_id)
                 self.respond(303, "", headers={"Location": "/transactions"})
+            elif self.path == "/bookinggroups":
+                self.respond(200, pages.PageBookingGroups(db))
+            elif self.path.startswith("/bookinggroups/view"):
+                query_components = parse_qs(self.path.split('?')[1])
+                group_id = int(query_components["id"][0])
+                self.respond(200, pages.PageBookingGroupDetails(db, group_id))
+            elif self.path.startswith("/documents/unlink"):
+                query_components = parse_qs(self.path.split('?')[1])
+                doc_id = int(query_components["doc_id"][0])
+                booking_id = int(query_components["booking_id"][0])
+                db.unlink_booking_from_document(booking_id, doc_id)
+                # Redirect back to referrer or transactions
+                self.respond(303, "", headers={"Location": self.headers.get('Referer', '/transactions')})
             elif self.path == "/skr":
                 self.respond(200, pages.PageSkr(db))
             elif self.path == "/settings/bankaccounts":
@@ -115,6 +128,12 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     self.respond(status_code, response)
             elif self.path == "/transactions/add":
                 status_code, location = handlers.handle_add_transaction(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/bookinggroups/create":
+                status_code, location = handlers.handle_create_booking_group(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/documents/link":
+                status_code, location = handlers.handle_link_document(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/settings/bankaccounts/add":
                 status_code, location = handlers.handle_add_bankaccount(db, post_data)
