@@ -2,6 +2,7 @@
 HTML page generation functions
 All functions return complete HTML strings
 """
+from db import Database
 
 def Header1(active_page=None):
     """Generate main header with navigation
@@ -84,17 +85,38 @@ def Footer():
     s = "</body></html>"
     return s
 
-def PageRoot():
+def PageRoot(db: Database):
     """Generate dashboard page"""
     s = Header1('dashboard')
     s+= Header2()
     s+= Header3()
-    s+= "<h1>Dashboard</h1>"
-    s+= "<p>Hier fehlen noch ein paar Dinge.</p>"
+    
+    # Database statistics
+    stats = db.get_table_statistics()
+    s+= "<h2>Datenbank-Übersicht</h2>"
+    s+= "<table border='1'>"
+    s+= "<tr><th>Tabelle</th><th>Anzahl Einträge</th></tr>"
+    for table_name, count in stats:
+        s+= f"<tr><td>{table_name}</td><td style='text-align: right;'>{count}</td></tr>"
+    s+= "</table>"
+    
     s+= '''
+    <h2>Datenbank mit einigen Testdaten befüllen</h2>
     <form method="POST" action="/init_content">
         <input type="submit" value="Datenbank initialisieren">
     </form>
+    
+    <h2>SQL-Befehle ausführen</h2>
+    <form method="POST" action="/execute_sql">
+        <p>Geben Sie hier SQL-Befehle ein (mehrere Befehle durch Semikolon getrennt):</p>
+        <textarea name="sql_commands" rows="15" cols="100" style="font-family: monospace; width: 100%; max-width: 1000px;" placeholder="INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description) VALUES (4, 1000, 'Kasse', 'Barkasse');
+INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description) VALUES (4, 1200, 'Bank', 'Bankguthaben');"></textarea>
+        <br>
+        <input type="submit" value="SQL ausführen" style="margin-top: 10px; padding: 8px 20px; background-color: #4CAF50; color: white; border: none; cursor: pointer;">
+        <span style="color: red; margin-left: 20px;">⚠️ Vorsicht: SQL-Befehle werden direkt ausgeführt!</span>
+    </form>
+    
+    <div id="sql_result" style="margin-top: 20px;"></div>
     '''
     s+= Footer()
     return s
@@ -104,7 +126,6 @@ def PageAbout():
     s = Header1('about')
     s+= Header2()
     s+= Header3()
-    s+= "<h1>About</h1>"
     s+= "<p>Einfache Buchführungssoftware.</p>"
     s+= Footer()
     return s
@@ -115,7 +136,6 @@ def PageSettings():
     submenu = '<a href="/settings/bankaccounts">Bankkonten</a>'
     s+= Header2(submenu)
     s+= Header3()
-    s+= "<h1>Einstellungen</h1>"
     s+= "<p>Hier können Sie verschiedene Einstellungen vornehmen.</p>"
     s+= "<h2>Datenbankeinstellungen</h2>"
     s+= "<p>Datenbank: buch.db</p>"
@@ -124,7 +144,7 @@ def PageSettings():
     s+= Footer()
     return s
 
-def PageReceipts(db):
+def PageReceipts(db: Database):
     """Generate receipts page with upload functionality"""
     rows = db.fetch_receipts()
     s = Header1('receipts')
@@ -142,7 +162,6 @@ def PageReceipts(db):
         <button onclick="setReceiptYear({current_year-3})">{current_year-3}</button>
     '''
     s+= Header3(header3_content)
-    s+= "<h1>Belege</h1>"
     
     # Container for side-by-side areas
     s+= '''
@@ -278,7 +297,7 @@ def PageReceipts(db):
     s+= Footer()
     return s
 
-def PageReceiptEdit(db, number):
+def PageReceiptEdit(db: Database, number):
     """Generate receipt edit page"""
     rows = db.fetch_receipts()
     receipt = None
@@ -308,7 +327,7 @@ def PageReceiptEdit(db, number):
     s+= Footer()
     return s
 
-def PageTransactions(db, edit_transaction_id=None):
+def PageTransactions(db: Database, edit_transaction_id=None):
     """Generate transactions page with edit functionality"""
     # Generate Header2 with account checkboxes
     accounts = db.fetch_accounts()
@@ -335,7 +354,6 @@ def PageTransactions(db, edit_transaction_id=None):
         <button onclick="setTransactionYear({current_year-3})">{current_year-3}</button>
     '''
     s+= Header3(header3_content)
-    s+= "<h1>Zahlungen</h1>"
     
     # Load transaction for editing if ID provided
     edit_trans = None
@@ -376,12 +394,10 @@ def PageTransactions(db, edit_transaction_id=None):
         s+= f'<option value="{account[0]}" {selected}>{account[1]}</option>'
     
     neu_button = '<a href="/transactions" style="margin-left: 10px; padding: 5px 10px; background-color: #888; color: white; text-decoration: none; display: inline-block;">Neu</a>' if edit_trans else ''
-    skr_value = edit_trans[8] if edit_trans and edit_trans[8] else ''
     receipt_value = edit_trans[6] if edit_trans and edit_trans[6] else ''
     
     s+= f'''
                     </select></td></tr>
-                    <tr><td>SKR-Konto:</td><td><input type="text" name="skr_account" value="{skr_value}"></td></tr>
                     <tr><td>Beleg-Nr.:</td><td><input type="text" name="receipt_nr" value="{receipt_value}"></td></tr>
                     <tr><td></td><td>
                         <input type="submit" value="{submit_text}">
@@ -469,7 +485,7 @@ def PageTransactions(db, edit_transaction_id=None):
     
     s+= "<h2>Kontobewegungen</h2>"
     s+= "<table border='1'>"
-    s+= "<tr><th>Buchungs-Datum</th><th>Empfänger/Auftragg.</th><th>Verwendungszweck</th><th>Betrag</th><th>Fremdkonto</th><th>SKR-Kto</th><th>Beleg-Nr.</th><th>Aktionen</th></tr>"
+    s+= "<tr><th>Buchungs-Datum</th><th>Empfänger/Auftragg.</th><th>Verwendungszweck</th><th>Betrag</th><th>Fremdkonto</th><th>Beleg-Nr.</th><th>Aktionen</th></tr>"
     
     # Load transactions from database
     transactions = db.fetch_zahlung()
@@ -486,7 +502,6 @@ def PageTransactions(db, edit_transaction_id=None):
         note = trans[5] or ""
         receipt_nr = trans[6] or ""
         amount = trans[7]
-        skr_join_id = trans[8] or ""
         
         # Split note into recipient and reference
         note_lines = note.split('\n', 1)
@@ -506,7 +521,6 @@ def PageTransactions(db, edit_transaction_id=None):
         s+= f"<td>{reference[:40]}</td>"
         s+= f"<td style='color:{amount_color}'>{amount:.2f} €</td>"
         s+= f"<td>{account_name}</td>"
-        s+= f"<td>{skr_join_id}</td>"
         s+= f"<td>{receipt_nr}</td>"
         s+= f"<td><a href='/transactions/edit?id={trans_id}'>Bearbeiten</a></td>"
         s+= f"</tr>"
@@ -568,24 +582,13 @@ def PageTransactions(db, edit_transaction_id=None):
     s+= Footer()
     return s
 
-def PageSettingsBankAccounts(db):
+def PageSettingsBankAccounts(db: Database):
     """Generate bank accounts settings page"""
     rows = db.fetch_accounts()
     s = Header1('settings')
-    submenu = '<a href="/settings">Einstellungen</a> | <a href="/settings/bankaccounts">Bankkonten</a>'
+    submenu = '<a href="/settings">Einstellungen</a> -> <span id="ActivePage">Bankkonten</span>'
     s+= Header2(submenu)
     s+= Header3()
-    s+= "<h1>Bankkonten</h1>"
-    s+= "<table border='1'>"
-    s+= "<tr><th>ID</th><th>Bezeichnung</th><th>Inhaber</th><th>IBAN</th><th>BIC</th><th>Bank</th><th>Typ</th><th>Aktionen</th></tr>"
-    for row in rows:
-        account_type = "Kasse" if row[6] == 1 else "Bank"
-        s+= f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td><td>{row[5]}</td><td>{account_type}</td>"
-        if row[6] == 1:  # is_cash
-            s+= f"<td><span style='color:gray;'>Kann nicht gelöscht werden</span></td></tr>"
-        else:
-            s+= f"<td><a href='/settings/bankaccounts/edit?id={row[0]}'>Bearbeiten</a> | <a href='/settings/bankaccounts/delete?id={row[0]}'>Löschen</a></td></tr>"
-    s+= "</table>"
     s+= '''
         <h2>Neues Bankkonto anlegen</h2>
         <form method="POST" action="/settings/bankaccounts/add">
@@ -599,10 +602,21 @@ def PageSettingsBankAccounts(db):
             </table>
         </form>
     '''
+    s+= "<h2>Vorhandene Konten</h2>"
+    s+= "<table border='1'>"
+    s+= "<tr><th>ID</th><th>Bezeichnung</th><th>Inhaber</th><th>IBAN</th><th>BIC</th><th>Bank</th><th>Typ</th><th>Aktionen</th></tr>"
+    for row in rows:
+        account_type = "Kasse" if row[6] == 1 else "Bank"
+        s+= f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td><td>{row[5]}</td><td>{account_type}</td>"
+        if row[6] == 1:  # is_cash
+            s+= f"<td><span style='color:gray;'>Kann nicht gelöscht werden</span></td></tr>"
+        else:
+            s+= f"<td><a href='/settings/bankaccounts/edit?id={row[0]}'>Bearbeiten</a> | <a href='/settings/bankaccounts/delete?id={row[0]}'>Löschen</a></td></tr>"
+    s+= "</table>"
     s+= Footer()
     return s
 
-def PageSettingsBankAccountEdit(db, account_id):
+def PageSettingsBankAccountEdit(db: Database, account_id):
     """Generate bank account edit page"""
     account = db.get_account_by_id(account_id)
     if not account:
@@ -634,19 +648,12 @@ def PageSettingsBankAccountEdit(db, account_id):
     s+= Footer()
     return s
 
-def PageSkr(db):
+def PageSkr(db: Database):
     """Generate SKR (chart of accounts) page"""
-    rows = db.fetch_skr()
+    rows = db.fetch_chart_of_accounts()
     s = Header1('skr')
     s+= Header2()
     s+= Header3()
-    s+= "<h1>SKR (Standardkontorahmen)</h1>"
-    s+= "<table border='1'>"
-    s+= "<tr><th>ID</th><th>SKR-Nr.</th><th>Konto</th><th>Name</th><th>Gruppe</th><th>Aktionen</th></tr>"
-    for row in rows:
-        s+= f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td>"
-        s+= f"<td><a href='/edit_skr?id={row[0]}'>Bearbeiten</a></td></tr>"
-    s+= "</table>"
     s+= '''
         <h2>Neues SKR-Konto anlegen</h2>
         <form method="POST" action="/add_skr">
@@ -659,12 +666,19 @@ def PageSkr(db):
             </table>
         </form>
     '''
+    s+= "<h2>Standardkontorahmen, definierte Konten</h2>"
+    s+= "<table border='1'>"
+    s+= "<tr><th>ID</th><th>SKR-Nr.</th><th>Konto</th><th>Name</th><th>Gruppe</th><th>Aktionen</th></tr>"
+    for row in rows:
+        s+= f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td>"
+        s+= f"<td><a href='/edit_skr?id={row[0]}'>Bearbeiten</a></td></tr>"
+    s+= "</table>"
     s+= Footer()
     return s
 
-def PageSkrEdit(db, id):
+def PageSkrEdit(db: Database, id):
     """Generate SKR edit page"""
-    rows = db.fetch_skr()
+    rows = db.fetch_chart_of_accounts()
     skr = None
     for row in rows:
         if row[0] == id:

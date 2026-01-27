@@ -15,7 +15,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         db = Database()
         try:
             if self.path == "/":
-                self.respond(200, pages.PageRoot())
+                self.respond(200, pages.PageRoot(db))
             elif self.path == "/about":
                 self.respond(200, pages.PageAbout())
             elif self.path == "/settings":
@@ -131,6 +131,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path == "/init_content":
                 status_code, location = handlers.handle_init_content(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/execute_sql":
+                content = handlers.handle_execute_sql(db, post_data)
+                self.respond(200, content)
             else:
                 self.respond(404, "Seite nicht gefunden.")
         except Exception as e:

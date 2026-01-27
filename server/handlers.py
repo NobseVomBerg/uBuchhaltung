@@ -161,7 +161,6 @@ def handle_add_transaction(db, post_data):
     reference = post_data.get("reference", [""])[0]
     amount = post_data.get("amount", ["0"])[0]
     account_id = post_data.get("account", [""])[0]
-    skr_account = post_data.get("skr_account", [""])[0]
     receipt_nr = post_data.get("receipt_nr", [""])[0]
     
     try:
@@ -251,3 +250,70 @@ def handle_init_content(db, post_data):
     """Handle database initialization"""
     db.init_content()
     return 303, "/"
+
+def handle_execute_sql(db, post_data):
+    """Handle SQL command execution"""
+    import sqlite3
+    
+    sql_commands = post_data.get("sql_commands", [""])[0]
+    
+    if not sql_commands.strip():
+        return generate_sql_result_page("Fehler: Keine SQL-Befehle eingegeben.", False)
+    
+    # Split commands by semicolon and filter out empty ones
+    commands = [cmd.strip() for cmd in sql_commands.split(';') if cmd.strip()]
+    
+    results = []
+    errors = []
+    success_count = 0
+    
+    conn = sqlite3.connect(db.db_name)
+    cursor = conn.cursor()
+    
+    try:
+        for i, command in enumerate(commands, 1):
+            try:
+                cursor.execute(command)
+                success_count += 1
+                results.append(f"✓ Befehl {i}: Erfolgreich ausgeführt")
+                results.append(f"  {command[:100]}{'...' if len(command) > 100 else ''}")
+            except sqlite3.Error as e:
+                errors.append(f"✗ Befehl {i}: Fehler - {str(e)}")
+                errors.append(f"  {command[:100]}{'...' if len(command) > 100 else ''}")
+        
+        conn.commit()
+        
+        # Build result message
+        message = f"<h2>Ergebnis</h2>"
+        message += f"<p><strong>{success_count} von {len(commands)} Befehlen erfolgreich ausgeführt</strong></p>"
+        
+        if results:
+            message += "<h3 style='color: green;'>Erfolgreiche Befehle:</h3>"
+            message += "<pre style='background-color: #e8f5e9; padding: 10px;'>"
+            message += "\n".join(results)
+            message += "</pre>"
+        
+        if errors:
+            message += "<h3 style='color: red;'>Fehler:</h3>"
+            message += "<pre style='background-color: #ffebee; padding: 10px;'>"
+            message += "\n".join(errors)
+            message += "</pre>"
+        
+        message += "<p><a href='/'>Zurück zum Dashboard</a></p>"
+        
+        return generate_sql_result_page(message, len(errors) == 0)
+        
+    except Exception as e:
+        conn.rollback()
+        return generate_sql_result_page(f"<h2>Fehler</h2><p style='color: red;'>{str(e)}</p><p><a href='/'>Zurück zum Dashboard</a></p>", False)
+    finally:
+        conn.close()
+
+def generate_sql_result_page(message, success):
+    """Generate result page for SQL execution"""
+    s = Header1('dashboard')
+    s += Header2()
+    s += "<h1>SQL-Ausführung</h1>"
+    s += message
+    s += Footer()
+    return s

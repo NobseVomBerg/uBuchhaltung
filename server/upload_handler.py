@@ -15,7 +15,7 @@ def handle_file_upload(request_handler):
     from email.parser import BytesParser
     
     # Create directory if it doesn't exist
-    upload_dir = "./data/Belege"
+    upload_dir = "./data/Documents"
     os.makedirs(upload_dir, exist_ok=True)
     
     # Parse multipart/form-data
