@@ -3,20 +3,75 @@ HTML page generation functions
 All functions return complete HTML strings
 """
 
-def Header1():
-    """Generate main header with navigation"""
+def Header1(active_page=None):
+    """Generate main header with navigation
+    
+    Args:
+        active_page: Name of active page ('dashboard', 'receipts', 'transactions', 'skr', 'settings', 'about')
+                     Active page will be highlighted without link
+    """
     s = "<!DOCTYPE html>\n"
     s+= "<html>\n <head>\n  <meta charset='UTF-8'>\n"
     s+= "  <title>Contabilidad simple</title>\n"
     s+= "  <link rel='stylesheet' href='/buch.css'>\n"
     s+= "  <link rel='icon' sizes='32x32' href='favicon.ico'>\n"
     s+= " </head>\n <body>"
-    s+= '<a href="/">Dashboard</a> | <a href="/receipts">Belege</a> | <a href="/transactions">Zahlungen</a> | <a href="/skr">SKR</a> | <a href="/settings">Einstellungen</a> | <a href="/about">About</a>'
+    
+    # Build navigation menu with active page highlighting
+    nav_items = []
+    
+    # Dashboard
+    if active_page == 'dashboard':
+        nav_items.append('<span id="ActivePage">Dashboard</span>')
+    else:
+        nav_items.append('<a href="/">Dashboard</a>')
+    
+    # Belege
+    if active_page == 'receipts':
+        nav_items.append('<span id="ActivePage">Belege</span>')
+    else:
+        nav_items.append('<a href="/receipts">Belege</a>')
+    
+    # Zahlungen
+    if active_page == 'transactions':
+        nav_items.append('<span id="ActivePage">Zahlungen</span>')
+    else:
+        nav_items.append('<a href="/transactions">Zahlungen</a>')
+    
+    # SKR
+    if active_page == 'skr':
+        nav_items.append('<span id="ActivePage">SKR</span>')
+    else:
+        nav_items.append('<a href="/skr">SKR</a>')
+    
+    # Einstellungen
+    if active_page == 'settings':
+        nav_items.append('<span id="ActivePage">Einstellungen</span>')
+    else:
+        nav_items.append('<a href="/settings">Einstellungen</a>')
+    
+    # About
+    if active_page == 'about':
+        nav_items.append('<span id="ActivePage">About</span>')
+    else:
+        nav_items.append('<a href="/about">About</a>')
+    
+    s += ' | '.join(nav_items)
     return s
 
 def Header2(content=""):
     """Generate secondary header/submenu"""
     s = "<div class='header2'>"
+    if content:
+        s += content
+    else:
+        s += "&nbsp;"
+    s += "</div>"
+    return s
+
+def Header3(content=""):
+    """Generate third header line for filters"""
+    s = "<div class='header3'>"  # Use header3 styling (no border)
     if content:
         s += content
     else:
@@ -31,8 +86,9 @@ def Footer():
 
 def PageRoot():
     """Generate dashboard page"""
-    s = Header1()
+    s = Header1('dashboard')
     s+= Header2()
+    s+= Header3()
     s+= "<h1>Dashboard</h1>"
     s+= "<p>Hier fehlen noch ein paar Dinge.</p>"
     s+= '''
@@ -45,8 +101,9 @@ def PageRoot():
 
 def PageAbout():
     """Generate about page"""
-    s = Header1()
+    s = Header1('about')
     s+= Header2()
+    s+= Header3()
     s+= "<h1>About</h1>"
     s+= "<p>Einfache Buchführungssoftware.</p>"
     s+= Footer()
@@ -54,9 +111,10 @@ def PageAbout():
 
 def PageSettings():
     """Generate settings page"""
-    s = Header1()
+    s = Header1('settings')
     submenu = '<a href="/settings/bankaccounts">Bankkonten</a>'
     s+= Header2(submenu)
+    s+= Header3()
     s+= "<h1>Einstellungen</h1>"
     s+= "<p>Hier können Sie verschiedene Einstellungen vornehmen.</p>"
     s+= "<h2>Datenbankeinstellungen</h2>"
@@ -69,8 +127,21 @@ def PageSettings():
 def PageReceipts(db):
     """Generate receipts page with upload functionality"""
     rows = db.fetch_receipts()
-    s = Header1()
+    s = Header1('receipts')
     s+= Header2()
+    
+    # Header3 with date filter
+    import datetime
+    current_year = datetime.datetime.now().year
+    header3_content = f'''
+        Von: <input type="date" id="dateFrom" onchange="filterReceiptsByDate()"> 
+        Bis: <input type="date" id="dateTo" onchange="filterReceiptsByDate()"> &nbsp;
+        <button onclick="setReceiptYear({current_year})">{current_year}</button>
+        <button onclick="setReceiptYear({current_year-1})">{current_year-1}</button>
+        <button onclick="setReceiptYear({current_year-2})">{current_year-2}</button>
+        <button onclick="setReceiptYear({current_year-3})">{current_year-3}</button>
+    '''
+    s+= Header3(header3_content)
     s+= "<h1>Belege</h1>"
     
     # Container for side-by-side areas
@@ -170,9 +241,40 @@ def PageReceipts(db):
     s+= "<table border='1'>"
     s+= "<tr><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Pfad</th><th>Info</th><th>Aktionen</th></tr>"
     for row in rows:
-        s+= f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td>"
-        s+= f"<td><a href='/edit_receipt?number={row[0]}'>Bearbeiten</a></td></tr>"
+        s+= f"<tr class='receipt-row' data-date='{row[2]}'><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td><td>{row[5]}</td>"
+        s+= f"<td><a href='/edit_receipt?number={row[1]}'>Bearbeiten</a></td></tr>"
     s+= "</table>"
+    
+    # Add date filter JavaScript
+    s+= '''
+    <script>
+        function setReceiptYear(year) {
+            document.getElementById('dateFrom').value = year + '-01-01';
+            document.getElementById('dateTo').value = year + '-12-31';
+            filterReceiptsByDate();
+        }
+        
+        function filterReceiptsByDate() {
+            const dateFrom = document.getElementById('dateFrom').value;
+            const dateTo = document.getElementById('dateTo').value;
+            const rows = document.querySelectorAll('.receipt-row');
+            
+            rows.forEach(row => {
+                const rowDate = row.getAttribute('data-date');
+                let show = true;
+                
+                if (dateFrom && rowDate < dateFrom) {
+                    show = false;
+                }
+                if (dateTo && rowDate > dateTo) {
+                    show = false;
+                }
+                
+                row.style.display = show ? '' : 'none';
+            });
+        }
+    </script>
+    '''
     s+= Footer()
     return s
 
@@ -189,6 +291,7 @@ def PageReceiptEdit(db, number):
 
     s = Header1()
     s+= Header2()
+    s+= Header3()
     s+= "<h1>Beleg bearbeiten</h1>"
     s+= f'''
         <form method="POST" action="/update_receipt">
@@ -205,7 +308,7 @@ def PageReceiptEdit(db, number):
     s+= Footer()
     return s
 
-def PageTransactions(db, edit_id=None):
+def PageTransactions(db, edit_transaction_id=None):
     """Generate transactions page with edit functionality"""
     # Generate Header2 with account checkboxes
     accounts = db.fetch_accounts()
@@ -213,19 +316,33 @@ def PageTransactions(db, edit_id=None):
     for account in accounts:
         account_id = account[0]
         account_name = account[1]
-        header2_content += f'<input type="checkbox" id="account_{account_id}" name="account_{account_id}" checked> '
+        account_iban = account[3]  # Store IBAN for filtering
+        header2_content += f'<input type="checkbox" id="account_{account_id}" name="account_{account_id}" data-iban="{account_iban}" checked onchange="filterTransactions()"> '
         header2_content += f'<label for="account_{account_id}">{account_name}</label> &nbsp; '
     
-    s = Header1()
+    s = Header1('transactions')
     s+= Header2(header2_content)
+    
+    # Header3 with date filter
+    import datetime
+    current_year = datetime.datetime.now().year
+    header3_content = f'''
+        Von: <input type="date" id="dateFrom" onchange="filterTransactionsByDate()"> 
+        Bis: <input type="date" id="dateTo" onchange="filterTransactionsByDate()"> &nbsp;
+        <button onclick="setTransactionYear({current_year})">{current_year}</button>
+        <button onclick="setTransactionYear({current_year-1})">{current_year-1}</button>
+        <button onclick="setTransactionYear({current_year-2})">{current_year-2}</button>
+        <button onclick="setTransactionYear({current_year-3})">{current_year-3}</button>
+    '''
+    s+= Header3(header3_content)
     s+= "<h1>Zahlungen</h1>"
     
     # Load transaction for editing if ID provided
     edit_trans = None
     edit_recipient = ""
     edit_reference = ""
-    if edit_id:
-        edit_trans = db.get_transaction_by_id(edit_id)
+    if edit_transaction_id:
+        edit_trans = db.get_transaction_by_id(edit_transaction_id)
         if edit_trans:
             # Split note into recipient and reference
             note = edit_trans[5] or ""
@@ -352,7 +469,7 @@ def PageTransactions(db, edit_id=None):
     
     s+= "<h2>Kontobewegungen</h2>"
     s+= "<table border='1'>"
-    s+= "<tr><th>Datum</th><th>Empfänger/Auftragg.</th><th>Verwendungszw.</th><th>Betrag</th><th>Bankkonto</th><th>SKR-Kto</th><th>Beleg-Nr.</th><th>Aktionen</th></tr>"
+    s+= "<tr><th>Buchungs-Datum</th><th>Empfänger/Auftragg.</th><th>Verwendungszweck</th><th>Betrag</th><th>Fremdkonto</th><th>SKR-Kto</th><th>Beleg-Nr.</th><th>Aktionen</th></tr>"
     
     # Load transactions from database
     transactions = db.fetch_zahlung()
@@ -382,7 +499,8 @@ def PageTransactions(db, edit_id=None):
         # Color code amount
         amount_color = "green" if amount > 0 else "red"
         
-        s+= f"<tr>"
+        # Add data-iban and data-date attributes for filtering
+        s+= f"<tr class='transaction-row' data-iban='{bank_eigen}' data-date='{date}'>"
         s+= f"<td>{date}</td>"
         s+= f"<td>{recipient[:30]}</td>"
         s+= f"<td>{reference[:40]}</td>"
@@ -394,15 +512,69 @@ def PageTransactions(db, edit_id=None):
         s+= f"</tr>"
     
     s+= "</table>"
+    
+    # Add JavaScript for filtering
+    s+= '''
+    <script>
+        function setTransactionYear(year) {
+            document.getElementById('dateFrom').value = year + '-01-01';
+            document.getElementById('dateTo').value = year + '-12-31';
+            filterTransactionsByDate();
+        }
+        
+        function filterTransactionsByDate() {
+            const dateFrom = document.getElementById('dateFrom').value;
+            const dateTo = document.getElementById('dateTo').value;
+            const rows = document.querySelectorAll('.transaction-row');
+            
+            rows.forEach(row => {
+                const rowDate = row.getAttribute('data-date');
+                let show = true;
+                
+                // Check date filter
+                if (dateFrom && rowDate < dateFrom) {
+                    show = false;
+                }
+                if (dateTo && rowDate > dateTo) {
+                    show = false;
+                }
+                
+                // Check IBAN filter (existing functionality)
+                if (show) {
+                    const checkedIbans = new Set();
+                    const checkboxes = document.querySelectorAll('input[type="checkbox"][data-iban]');
+                    checkboxes.forEach(cb => {
+                        if (cb.checked) {
+                            checkedIbans.add(cb.getAttribute('data-iban'));
+                        }
+                    });
+                    const iban = row.getAttribute('data-iban');
+                    if (!checkedIbans.has(iban)) {
+                        show = false;
+                    }
+                }
+                
+                row.style.display = show ? '' : 'none';
+            });
+        }
+        
+        function filterTransactions() {
+            // Combined filter that also considers date range
+            filterTransactionsByDate();
+        }
+    </script>
+    '''
+    
     s+= Footer()
     return s
 
 def PageSettingsBankAccounts(db):
     """Generate bank accounts settings page"""
     rows = db.fetch_accounts()
-    s = Header1()
+    s = Header1('settings')
     submenu = '<a href="/settings">Einstellungen</a> | <a href="/settings/bankaccounts">Bankkonten</a>'
     s+= Header2(submenu)
+    s+= Header3()
     s+= "<h1>Bankkonten</h1>"
     s+= "<table border='1'>"
     s+= "<tr><th>ID</th><th>Bezeichnung</th><th>Inhaber</th><th>IBAN</th><th>BIC</th><th>Bank</th><th>Typ</th><th>Aktionen</th></tr>"
@@ -439,6 +611,7 @@ def PageSettingsBankAccountEdit(db, account_id):
     s = Header1()
     submenu = '<a href="/settings">Einstellungen</a> | <a href="/settings/bankaccounts">Bankkonten</a>'
     s+= Header2(submenu)
+    s+= Header3()
     s+= "<h1>Bankkonto bearbeiten</h1>"
     
     if account[6] == 1:  # is_cash
@@ -464,8 +637,9 @@ def PageSettingsBankAccountEdit(db, account_id):
 def PageSkr(db):
     """Generate SKR (chart of accounts) page"""
     rows = db.fetch_skr()
-    s = Header1()
+    s = Header1('skr')
     s+= Header2()
+    s+= Header3()
     s+= "<h1>SKR (Standardkontorahmen)</h1>"
     s+= "<table border='1'>"
     s+= "<tr><th>ID</th><th>SKR-Nr.</th><th>Konto</th><th>Name</th><th>Gruppe</th><th>Aktionen</th></tr>"
@@ -501,6 +675,7 @@ def PageSkrEdit(db, id):
 
     s = Header1()
     s+= Header2()
+    s+= Header3()
     s+= "<h1>SKR-Konto bearbeiten</h1>"
     s+= f'''
         <form method="POST" action="/update_skr">
@@ -533,6 +708,7 @@ def PageConfirmTransactions(import_id: str):
     
     s = Header1()
     s+= Header2()
+    s+= Header3()
     s+= "<h1>Transaktionen bestätigen</h1>"
     s+= f"<p><strong>Datei:</strong> {data.get('original_filename', 'Unbekannt')}</p>"
     s+= f"<p><strong>IBAN:</strong> {data.get('iban', 'Nicht erkannt')}</p>"
@@ -557,7 +733,7 @@ def PageConfirmTransactions(import_id: str):
         
         s+= "</table>"
         s+= f'''
-            <form method="POST" action="/confirm_import">
+            <form method="POST" action="/confirm_transactions">
                 <input type="hidden" name="import_id" value="{import_id}">
                 <p>
                     <input type="submit" name="action" value="Importieren" style="background-color: green; color: white; padding: 10px 20px; font-size: 16px;">

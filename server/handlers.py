@@ -107,25 +107,15 @@ def handle_confirm_import(db, post_data):
                 skipped_transactions.append(trans)
                 continue
             
-            # Prepare parameters tuple for logging
-            parameters = (account_id, trans['date'], trans['amount'], None, note, foreign_iban)
-            
-            # Prepare SQL statement for logging
-            sql_statement = f"""INSERT INTO Zahlung (KontoId, Datum, Betrag, Beleg, Notiz, FremdIban) 
-                              VALUES ({account_id}, '{trans['date']}', {trans['amount']}, 
-                              NULL, '{note.replace("'", "''")}', '{foreign_iban}')"""
-            
-            # Log SQL before execution
-            parser.log_sql(sql_statement, parameters, "VBR bank statement import")
-            
-            # Execute insert
+            # Execute insert with automatic SQL logging
             db.insert_transaction(
-                date=trans['date'],
+                dateBooking=trans['date'],
                 amount=trans['amount'],
                 own_iban=own_iban,
                 foreign_iban=foreign_iban,
                 note=note,
-                receipt_number=None
+                receipt_number=None,
+                log_description="VBR bank statement import"
             )
             inserted_count += 1
         
@@ -191,33 +181,25 @@ def handle_add_transaction(db, post_data):
             # Update existing transaction
             db.update_transaction(
                 transaction_id=transaction_id,
-                date=date,
+                dateBooking=date,
                 amount=float(amount),
                 own_iban=own_iban or "",
                 foreign_iban="",
                 note=note,
-                receipt_number=receipt_nr or None
+                receipt_number=receipt_nr or None,
+                log_description="Manual transaction update"
             )
-            log_desc = "Manual transaction update"
-            sql_statement = f'''UPDATE Zahlung SET Datum1='{date}', Datum2=NULL, BankEigen='{own_iban or ""}', BankFremd='', Zweck='{note.replace("'", "''")}', BelegNummer={f"'{receipt_nr}'" if receipt_nr else "NULL"}, Betrag={amount}, SkrBuchJoinId=NULL WHERE ID={transaction_id}'''
         else:
             # Insert new transaction
             transaction_id = db.insert_transaction(
-                date=date,
+                dateBooking=date,
                 amount=float(amount),
                 own_iban=own_iban or "",
                 foreign_iban="",
                 note=note,
-                receipt_number=receipt_nr or None
+                receipt_number=receipt_nr or None,
+                log_description="Manual transaction entry"
             )
-            log_desc = "Manual transaction entry"
-            sql_statement = f'''INSERT INTO Zahlung (Datum1, Datum2, BankEigen, BankFremd, Zweck, BelegNummer, Betrag, SkrBuchJoinId)
-VALUES ('{date}', NULL, '{own_iban or ""}', '', '{note.replace("'", "''")}', {f"'{receipt_nr}'" if receipt_nr else "NULL"}, {amount}, NULL)'''
-        
-        # Log the operation
-        if PARSER_AVAILABLE:
-            parser = DocumentParser()
-            parser.log_sql(sql_statement, (date, None, own_iban or "", "", note, receipt_nr, float(amount), None), log_desc)
         
         return 303, "/transactions"
     except Exception as e:

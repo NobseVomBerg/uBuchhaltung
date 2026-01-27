@@ -79,8 +79,8 @@ Die Anwendung verwendet SQLite mit folgenden Tabellen:
 
 **Zahlung**
 - ID (INTEGER PRIMARY KEY AUTOINCREMENT)
-- Datum1 (DATE)
-- Datum2 (DATE)
+- DatumBuch (DATE)
+- DatumSteuer (DATE)
 - BankEigen (TEXT)
 - BankFremd (TEXT)
 - Zweck (TEXT)
