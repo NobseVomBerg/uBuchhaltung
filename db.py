@@ -10,6 +10,12 @@ class Database:
             os.makedirs(db_dir, exist_ok=True)
         self.initialize_database()
     
+    def _get_connection(self):
+        """Get a database connection with foreign keys enabled"""
+        conn = sqlite3.connect(self.db_name)
+        conn.execute('PRAGMA foreign_keys = ON')
+        return conn
+    
     def _log_sql(self, sql_template, params, description):
         """Helper function to log SQL statements
         
@@ -39,7 +45,7 @@ class Database:
             pass  # Parser not available, skip logging
 
     def initialize_database(self):
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         # Chart of Accounts = Standard Konto Rahmen, 03/04 in Germany or 07 for Austria
@@ -171,7 +177,7 @@ class Database:
 
     # Table Documents (Receipts)
     def fetch_receipts(self):
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM Documents')
         rows = cursor.fetchall()
@@ -179,7 +185,7 @@ class Database:
         return rows
 
     def insert_receipt(self, number, date, filename, path, info):
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute('''
@@ -193,15 +199,15 @@ class Database:
         finally:
             conn.close()
 
-    def update_receipt(self, number, date, filename, path, info):
-        conn = sqlite3.connect(self.db_name)
+    def update_receipt(self, receipt_id, number, date, filename, path, info):
+        conn = self._get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute('''
                 UPDATE Documents
-                SET Date = ?, Filename = ?, Path = ?, Info = ?
-                WHERE Number = ?
-            ''', (date, filename, path, info, number))
+                SET Number = ?, Date = ?, Filename = ?, Path = ?, Info = ?
+                WHERE ID = ?
+            ''', (number, date, filename, path, info, receipt_id))
             conn.commit()
         except sqlite3.IntegrityError as e:
             print("Error updating receipt:", e)
@@ -209,10 +215,27 @@ class Database:
         finally:
             conn.close()
 
+    def get_receipt_by_number(self, number):
+        """Get a single receipt by number"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM Documents WHERE Number = ?', (number,))
+        row = cursor.fetchone()
+        conn.close()
+        return row
+
+    def delete_receipt(self, number):
+        """Delete a receipt by number"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM Documents WHERE Number = ?', (number,))
+        conn.commit()
+        conn.close()
+
     # Table Bookings
     def fetch_bookings(self):
         """Fetch all bookings ordered by date descending"""
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM Bookings ORDER BY DateBooking DESC')
         rows = cursor.fetchall()
@@ -249,7 +272,7 @@ class Database:
         Returns:
             int: ID of inserted booking
         """
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         
         sql_template = '''INSERT INTO Bookings 
@@ -286,7 +309,7 @@ class Database:
         Returns:
             bool: True if duplicate exists, False otherwise
         """
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
             SELECT COUNT(*) FROM Bookings
@@ -307,7 +330,7 @@ class Database:
             booking_id: ID of booking to update
             [same parameters as insert_booking]
         """
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         
         sql_template = '''UPDATE Bookings
@@ -330,7 +353,7 @@ class Database:
     
     def get_booking_by_id(self, booking_id):
         """Get a single booking by ID"""
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM Bookings WHERE ID=?', (booking_id,))
         booking = cursor.fetchone()
@@ -348,7 +371,7 @@ class Database:
         Returns:
             int: ID of created booking group
         """
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         
         from datetime import date
@@ -365,7 +388,7 @@ class Database:
     
     def fetch_booking_groups(self):
         """Fetch all booking groups"""
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM BookingGroups ORDER BY CreatedDate DESC')
         rows = cursor.fetchall()
@@ -374,7 +397,7 @@ class Database:
     
     def get_bookings_in_group(self, group_id):
         """Get all bookings belonging to a specific group"""
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM Bookings WHERE BookingGroup_ID=?', (group_id,))
         rows = cursor.fetchall()
@@ -390,7 +413,7 @@ class Database:
             document_id: ID of the document
             relation_type: Type of relation (e.g., 'invoice', 'receipt', 'contract')
         """
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute('''
@@ -406,7 +429,7 @@ class Database:
     
     def get_documents_for_booking(self, booking_id):
         """Get all documents linked to a booking"""
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
             SELECT d.*, bd.RelationType 
@@ -420,7 +443,7 @@ class Database:
     
     def get_bookings_for_document(self, document_id):
         """Get all bookings linked to a document"""
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
             SELECT b.*, bd.RelationType 
@@ -434,7 +457,7 @@ class Database:
     
     def unlink_booking_from_document(self, booking_id, document_id):
         """Remove link between booking and document"""
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
             DELETE FROM BookingDocuments 
@@ -445,7 +468,7 @@ class Database:
 
     # Table ChartOfAccounts
     def fetch_chart_of_accounts(self):
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM ChartOfAccounts')
         rows = cursor.fetchall()
@@ -453,7 +476,7 @@ class Database:
         return rows
 
     def insert_chart_of_accounts(self, framework, account_number, name, description):
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute('''
@@ -468,7 +491,7 @@ class Database:
             conn.close()
 
     def update_chart_of_accounts(self, id, framework, account_number, name, description):
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute('''
@@ -495,7 +518,7 @@ class Database:
     # Table Accounts
     def ensure_kasse_exists(self):
         """Ensure the default 'Kasse' account exists and cannot be deleted"""
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*) FROM Accounts WHERE IsCash = 1')
         count = cursor.fetchone()[0]
@@ -508,7 +531,7 @@ class Database:
         conn.close()
 
     def fetch_accounts(self):
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM Accounts ORDER BY IsCash DESC, Name ASC')
         rows = cursor.fetchall()
@@ -516,7 +539,7 @@ class Database:
         return rows
 
     def get_account_by_id(self, account_id):
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM Accounts WHERE ID = ?', (account_id,))
         row = cursor.fetchone()
@@ -524,7 +547,7 @@ class Database:
         return row
 
     def insert_account(self, name, holder, number, bic, bank_name, is_cash=0):
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute('''
@@ -539,7 +562,7 @@ class Database:
             conn.close()
 
     def update_account(self, account_id, name, holder, number, bic, bank_name):
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute('''
@@ -555,7 +578,7 @@ class Database:
             conn.close()
 
     def delete_account(self, account_id):
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         # Only allow deletion if it's not the Kasse account
         cursor.execute('DELETE FROM Accounts WHERE ID = ? AND IsCash = 0', (account_id,))
@@ -568,7 +591,7 @@ class Database:
         Returns:
             list: List of tuples (table_name, row_count)
         """
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         
         # Get all table names
@@ -593,7 +616,7 @@ class Database:
     # Table Customers
     def fetch_customers(self):
         """Fetch all customers"""
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM Customers ORDER BY Name ASC')
         rows = cursor.fetchall()
@@ -602,7 +625,7 @@ class Database:
 
     def get_customer_by_id(self, customer_id):
         """Get customer by ID"""
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM Customers WHERE ID = ?', (customer_id,))
         row = cursor.fetchone()
@@ -611,7 +634,7 @@ class Database:
 
     def insert_customer(self, customer_number, name, company="", street="", postal_code="", city="", country="", email="", phone="", tax_id="", notes=""):
         """Insert new customer"""
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute('''
@@ -627,7 +650,7 @@ class Database:
 
     def update_customer(self, customer_id, customer_number, name, company="", street="", postal_code="", city="", country="", email="", phone="", tax_id="", notes=""):
         """Update existing customer"""
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute('''
@@ -644,7 +667,7 @@ class Database:
 
     def delete_customer(self, customer_id):
         """Delete customer"""
-        conn = sqlite3.connect(self.db_name)
+        conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('DELETE FROM Customers WHERE ID = ?', (customer_id,))
         conn.commit()

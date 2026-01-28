@@ -31,6 +31,11 @@ def handle_file_upload(request_handler):
     # Parse multipart data
     parts = post_data.split(b'--' + boundary)
     uploaded_files = []
+    all_transactions = []  # Collect all transactions from all files
+    combined_import_data = {
+        'files': [],
+        'transactions': []
+    }
     
     for part in parts:
         if b'Content-Disposition' in part:
@@ -64,13 +69,24 @@ def handle_file_upload(request_handler):
                             parser = DocumentParser()
                             new_path, parsed_data = parser.process_and_organize(filepath)
                             
-                            # If bank statement with transactions, save for confirmation
+                            # If bank statement with transactions, collect them
                             if parsed_data.get('transactions') and len(parsed_data['transactions']) > 0:
-                                import_id = parser.save_parsed_data(filename, parsed_data)
+                                combined_import_data['files'].append({
+                                    'filename': filename,
+                                    'iban': parsed_data.get('iban'),
+                                    'document_date': parsed_data.get('document_date'),
+                                    'transaction_count': len(parsed_data['transactions'])
+                                })
+                                # Add all transactions to combined list
+                                combined_import_data['transactions'].extend(parsed_data['transactions'])
+                                
+                                # Keep IBAN from first file (or use last one if they differ)
+                                if 'iban' not in combined_import_data or not combined_import_data['iban']:
+                                    combined_import_data['iban'] = parsed_data.get('iban')
+                                
                                 uploaded_files.append({
                                     'filename': filename,
                                     'status': 'parsed',
-                                    'import_id': import_id,
                                     'transaction_count': len(parsed_data['transactions'])
                                 })
                             else:
@@ -107,12 +123,30 @@ def handle_file_upload(request_handler):
         s+= Header2()
         s+= "<h1>Upload erfolgreich</h1>"
         
-        for file_info in uploaded_files:
-            if isinstance(file_info, dict):
-                if file_info['status'] == 'parsed':
-                    s+= f"<p>✓ <strong>{file_info['filename']}</strong>: {file_info['transaction_count']} Transaktionen erkannt</p>"
-                    s+= f"<p><a href='/confirm_transactions?import_id={file_info['import_id']}' style='background-color: green; color: white; padding: 10px 20px; text-decoration: none; display: inline-block;'>Transaktionen bestätigen</a></p>"
-                elif file_info['status'] == 'organized':
+        # Check if we have transactions to import
+        has_transactions = len(combined_import_data['transactions']) > 0
+        
+        if has_transactions:
+            # Save combined import data with single import_id
+            parser = DocumentParser()
+            combined_filename = f"combined_{len(combined_import_data['files'])}_files"
+            import_id = parser.save_parsed_data(combined_filename, combined_import_data)
+            
+            s+= "<h2>Gefundene Transaktionen:</h2>"
+            s+= "<ul>"
+            for file_info in combined_import_data['files']:
+                s+= f"<li><strong>{file_info['filename']}</strong>: {file_info['transaction_count']} Transaktionen</li>"
+            s+= "</ul>"
+            s+= f"<p><strong>Gesamt: {len(combined_import_data['transactions'])} Transaktionen</strong></p>"
+            s+= f"<p><a href='/confirm_transactions?import_id={import_id}' style='background-color: green; color: white; padding: 10px 20px; text-decoration: none; display: inline-block; border-radius: 5px;'>Alle Transaktionen bestätigen</a></p>"
+        
+        # Show other files (non-parsed or errors)
+        other_files = [f for f in uploaded_files if f.get('status') != 'parsed']
+        if other_files:
+            if has_transactions:
+                s+= "<h2>Weitere Dateien:</h2>"
+            for file_info in other_files:
+                if file_info['status'] == 'organized':
                     s+= f"<p>✓ <strong>{file_info['filename']}</strong> verschoben nach {file_info['path']}</p>"
                 elif file_info['status'] == 'warning':
                     s+= f"<p style='color: orange;'>⚠ <strong>{file_info['filename']}</strong>: {file_info['error']}</p>"
@@ -120,8 +154,6 @@ def handle_file_upload(request_handler):
                     s+= f"<p>⚠ <strong>{file_info['filename']}</strong>: Fehler beim Parsen - {file_info['error']}</p>"
                 else:
                     s+= f"<p>✓ <strong>{file_info['filename']}</strong> hochgeladen</p>"
-            else:
-                s+= f"<p>✓ {file_info}</p>"
         
         s+= "<p><a href='/receipts'>Zurück zu Belegen</a></p>"
         s+= Footer()

@@ -98,6 +98,8 @@ print(f"Transaktionen: {len(result['transactions'])}")
 
 ## Datenbank-Integration
 
+> **Hinweis zur Namensgebung**: Die interne Datenbankstruktur verwendet **englische** Tabellen- und Feldnamen (Accounts, Bookings, Name, Owner, etc.), während die Benutzeroberfläche auf **Deutsch** bleibt. Dies dient der Code-Wartbarkeit und internationalen Standards.
+
 Die extrahierten Transaktionen werden automatisch in die `Bookings`-Tabelle eingefügt:
 
 1. **Upload**: PDF-Datei über Web-Interface hochladen

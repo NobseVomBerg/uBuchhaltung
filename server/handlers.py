@@ -23,12 +23,13 @@ def handle_add_receipt(db, post_data):
 
 def handle_update_receipt(db, post_data):
     """Handle updating receipt"""
+    receipt_id = int(post_data["id"][0])
     number = post_data["number"][0]
     date = post_data["date"][0]
     filename = post_data["filename"][0]
     path = post_data["path"][0]
     info = post_data["info"][0]
-    db.update_receipt(number, date, filename, path, info)
+    db.update_receipt(receipt_id, number, date, filename, path, info)
     return 303, "/receipts"
 
 def handle_confirm_import(db, post_data):

@@ -2,13 +2,15 @@
 
 Eine einfache webbasierte Buchhaltungsanwendung für kleine Unternehmen und Selbstständige.
 
+> **Hinweis zur Namensgebung**: Die interne Datenbankstruktur und der Code verwenden **englische** Bezeichnungen (Accounts, Bookings, Name, Owner, IsCash etc.) für bessere Wartbarkeit und Einhaltung internationaler Standards. Die Benutzeroberfläche bleibt jedoch vollständig auf **Deutsch**.
+
 ## Überblick
 
 PyBuch ist eine schlanke, webbasierte Buchhaltungssoftware, die in Python entwickelt wurde. Sie ermöglicht die Verwaltung von Belegen, Konten, Buchungen und nutzt den deutschen Standardkontenrahmen (SKR).
 
 ## Features
 
-### 1. Belege-Verwaltung (`/belege`)
+### 1. Belege-Verwaltung (`/receipts`)
 Verwalten Sie Ihre Buchhaltungsbelege:
 - **Anzeigen**: Übersicht aller Belege mit Nummer, Datum, Dateiname, Pfad und zusätzlichen Informationen
 - **Hinzufügen**: Neue Belege mit eindeutiger Nummer erfassen
@@ -37,9 +39,9 @@ Verwalten Sie Ihre Buchungstransaktionen:
   - Betragsbereich (Min/Max)
   - Konto-Filter (Checkboxen)
 
-### 3. Konten-Verwaltung (`/konten`)
+### 3. Konten-Verwaltung (`/settings/bankaccounts`)
 Verwalten Sie Ihre Bankkonten und Kasse:
-- **Anzeigen**: Übersicht aller Konten mit Bezeichnung, Inhaber, IBAN, BIC und Bankname
+- **Anzeigen**: Übersicht aller Konten mit Name, Owner, IBAN, BIC und BankName
 - **Hinzufügen**: Neue Bankkonten anlegen
 - **Bearbeiten**: Bestehende Konten aktualisieren
 - **Löschen**: Konten entfernen (außer Kasse)
@@ -48,13 +50,13 @@ Verwalten Sie Ihre Bankkonten und Kasse:
   - Kann nicht gelöscht oder bearbeitet werden
   - Immer als erstes in der Liste angezeigt
 
-**Kontenfelder:**
-- Bezeichnung (Pflichtfeld)
-- Inhaber
+**Account-Felder:**
+- Name (Pflichtfeld)
+- Owner (Inhaber)
 - IBAN
 - BIC
 - BankName
-- Typ (Kasse/Bank)
+- IsCash (Typ: Kasse/Bank)
 
 ### 4. Standardkontenrahmen (SKR) (`/skr`)
 Verwaltung des Kontenrahmens nach deutschem Standard:
@@ -94,30 +96,31 @@ Informationen über die Anwendung.
 
 Die Anwendung verwendet SQLite mit folgenden Tabellen:
 
-**Belege**
-- Nummer (TEXT, UNIQUE)
-- Datum (DATE)
-- Dateiname (TEXT)
-- Pfad (TEXT)
-- Info (TEXT)
-- UNIQUE(Dateiname, Pfad)
-
-**Konten**
+**Documents (Belege)**
 - ID (INTEGER PRIMARY KEY AUTOINCREMENT)
-- Bezeichnung (TEXT NOT NULL, UNIQUE)
-- Inhaber (TEXT)
+- DocumentNumber (TEXT, UNIQUE)
+- Date (DATE)
+- Filename (TEXT)
+- Path (TEXT)
+- Info (TEXT)
+- UNIQUE(Filename, Path)
+
+**Accounts (Bankkonten/Kasse)**
+- ID (INTEGER PRIMARY KEY AUTOINCREMENT)
+- Name (TEXT NOT NULL, UNIQUE)
+- Owner (TEXT)
 - IBAN (TEXT)
 - BIC (TEXT)
 - BankName (TEXT)
-- IstKasse (INTEGER DEFAULT 0)
+- IsCash (INTEGER DEFAULT 0)
 
 **Skr (Standardkontenrahmen)**
 - ID (INTEGER PRIMARY KEY AUTOINCREMENT)
-- RahmenNr (INTEGER) - z.B. 03, 04 oder 07
-- Konto (INTEGER)
+- FrameworkNumber (INTEGER) - z.B. 03, 04 oder 07
+- AccountNumber (INTEGER)
 - Name (TEXT)
-- Gruppe (TEXT)
-- UNIQUE(RahmenNr, Konto)
+- AccountGroup (TEXT)
+- UNIQUE(FrameworkNumber, AccountNumber)
 
 **Customers (Kunden/Lieferanten)**
 - ID (INTEGER PRIMARY KEY AUTOINCREMENT)
@@ -172,7 +175,7 @@ Die Anwendung verwendet SQLite mit folgenden Tabellen:
 **BookingDocuments (Many-to-Many Verknüpfung)**
 - ID (INTEGER PRIMARY KEY AUTOINCREMENT)
 - Booking_ID (INTEGER, FOREIGN KEY zu Bookings)
-- Document_ID (INTEGER, FOREIGN KEY zu Belege)
+- Document_ID (INTEGER, FOREIGN KEY zu Documents)
 - RelationType (TEXT) - z.B. 'invoice', 'receipt', 'contract'
 - UNIQUE(Booking_ID, Document_ID)
 
@@ -238,10 +241,10 @@ Damit werden VBR-Kontoauszüge automatisch geparst und Transaktionen importiert.
 1. **Server starten**: `python main.py`
 2. **Browser öffnen**: Navigieren Sie zu `http://localhost:8080`
 3. **Initialisierung**: Klicken Sie auf "Initialize DB Content" um Testdaten zu laden (optional)
-4. **Konten einrichten**: Erfassen Sie Ihre Bankkonten unter `/konten`
+4. **Konten einrichten**: Erfassen Sie Ihre Bankkonten unter `/settings/bankaccounts`
 5. **Kunden/Lieferanten**: Legen Sie Geschäftspartner unter `/customers` an (optional)
 6. **Belege hochladen**: 
-   - Navigieren Sie zu `/belege`
+   - Navigieren Sie zu `/receipts`
    - Laden Sie PDF-Kontoauszüge hoch (Drag & Drop oder Dateiauswahl)
    - Bei VBR-Kontoauszügen werden Transaktionen automatisch erkannt
 7. **Transaktionen bestätigen**: 
@@ -264,7 +267,7 @@ Damit werden VBR-Kontoauszüge automatisch geparst und Transaktionen importiert.
 
 ### Tägliche Nutzung
 
-1. **Neue Belege hochladen** unter `/belege`
+1. **Neue Belege hochladen** unter `/receipts`
 2. **Import bestätigen** und prüfen
 3. **Buchungen ergänzen** mit Zusatzinformationen (Kunde, SKR, Kategorie)
 4. **Filter nutzen** um spezifische Buchungen zu finden
@@ -294,18 +297,18 @@ Diese Anwendung ist für lokale Verwendung konzipiert:
 
 ### Hauptseiten der Anwendung
 1. **Dashboard** (`/`) - Übersicht und Initialisierung
-2. **Belege** (`/belege`) - Dokumentenverwaltung mit Upload
-3. **Belege bearbeiten** (`/edit_receipt`) - Detail-Ansicht mit Verknüpfungen
+2. **Belege** (`/receipts`) - Dokumentenverwaltung mit Upload
+3. **Belege bearbeiten** (`/receipts/edit`) - Detail-Ansicht mit Verkn\u00fcpfungen
 4. **Buchungen** (`/transactions`) - Haupt-Buchungsinterface mit Filtern
 5. **Buchungen bearbeiten** (`/transactions/edit`) - Buchungs-Editor
-6. **Split-Buchungen** (`/bookinggroups`) - Buchungsgruppen-Übersicht
+6. **Split-Buchungen** (`/bookinggroups`) - Buchungsgruppen-\u00dcbersicht
 7. **Split-Buchungen Details** (`/bookinggroups/view`) - Gruppen-Details mit Validierung
-8. **Import-Bestätigung** (`/confirm_transactions`) - Transaktions-Import aus PDF
-9. **Einstellungen** (`/settings`) - Hauptmenü für Konfiguration
-10. **Konten** (`/konten`) - Bankkonten-Verwaltung
-11. **Konten bearbeiten** (`/konten/edit`) - Konto-Editor
+8. **Import-Best\u00e4tigung** (`/confirm_transactions`) - Transaktions-Import aus PDF
+9. **Einstellungen** (`/settings`) - Hauptmen\u00fc f\u00fcr Konfiguration
+10. **Konten** (`/settings/bankaccounts`) - Bankkonten-Verwaltung
+11. **Konten bearbeiten** (`/settings/bankaccounts/edit`) - Konto-Editor
 12. **SKR** (`/skr`) - Standardkontenrahmen-Verwaltung
-13. **SKR bearbeiten** (`/skr/edit`) - SKR-Editor
+13. **SKR bearbeiten** (`/edit_skr`) - SKR-Editor
 14. **About** (`/about`) - Informationen
 
 ### Besondere Features

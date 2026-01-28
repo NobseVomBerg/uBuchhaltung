@@ -190,7 +190,7 @@ def PageReceipts(db: Database):
             <h2>Belege hochladen</h2>
             <div id="dropZone">
                 <p>Dateien hier ablegen (Drag & Drop)</p>
-                <input type="file" id="fileInput" multiple>
+                <input type="file" id="fileInput" multiple accept=".pdf,application/pdf">
                 <button onclick="document.getElementById('fileInput').click()">Oder Dateien auswählen</button>
             </div>
             <div id="uploadStatus"></div>
@@ -198,33 +198,56 @@ def PageReceipts(db: Database):
     </div>
     
     <script>
+        // Prevent default browser behavior for drag and drop on entire page
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            document.body.addEventListener(eventName, (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            }, false);
+        });
+        
         const dropZone = document.getElementById('dropZone');
         const fileInput = document.getElementById('fileInput');
         const uploadStatus = document.getElementById('uploadStatus');
         
         // Drag & Drop Events
-        dropZone.addEventListener('dragover', (e) => {
+        dropZone.addEventListener('dragenter', (e) => {
             e.preventDefault();
+            e.stopPropagation();
             dropZone.classList.add('hover');
+            console.log('dragenter');
         });
         
-        dropZone.addEventListener('dragleave', () => {
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            console.log('dragover');
+        });
+        
+        dropZone.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
             dropZone.classList.remove('hover');
+            console.log('dragleave');
         });
         
         dropZone.addEventListener('drop', (e) => {
             e.preventDefault();
+            e.stopPropagation();
             dropZone.classList.remove('hover');
+            console.log('drop', e.dataTransfer.files);
             const files = e.dataTransfer.files;
             uploadFiles(files);
         });
         
         // File Input Change
         fileInput.addEventListener('change', (e) => {
+            console.log('file input change', e.target.files);
             uploadFiles(e.target.files);
         });
         
         function uploadFiles(files) {
+            console.log('uploadFiles called with', files.length, 'files');
             if (files.length === 0) return;
             
             uploadStatus.innerHTML = '<p>Uploading...</p>';
@@ -266,8 +289,9 @@ def PageReceipts(db: Database):
     s+= "<table border='1'>"
     s+= "<tr><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Pfad</th><th>Info</th><th>Aktionen</th></tr>"
     for row in rows:
+        # Documents: ID(0), Number(1), Date(2), Filename(3), Path(4), Info(5)
         s+= f"<tr class='receipt-row' data-date='{row[2]}'><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td><td>{row[5]}</td>"
-        s+= f"<td><a href='/edit_receipt?number={row[1]}'>Bearbeiten</a></td></tr>"
+        s+= f"<td><a href='/receipts/edit?number={row[1]}'>Bearbeiten</a></td></tr>"
     s+= "</table>"
     
     # Add date filter JavaScript
@@ -305,34 +329,31 @@ def PageReceipts(db: Database):
 
 def PageReceiptEdit(db: Database, number):
     """Generate receipt edit page"""
-    rows = db.fetch_receipts()
-    receipt = None
-    for row in rows:
-        if row[0] == number:
-            receipt = row
-            break
+    receipt = db.get_receipt_by_number(number)
     if not receipt:
         return "Beleg nicht gefunden."
 
+    # Documents: ID(0), Number(1), Date(2), Filename(3), Path(4), Info(5)
     s = Header1()
     s+= Header2()
     s+= Header3()
     s+= "<h1>Beleg bearbeiten</h1>"
     s+= f'''
         <form method="POST" action="/update_receipt">
+            <input type="hidden" name="id" value="{receipt[0]}">
             <table>
-                <tr><td>Nummer:</td><td><input type="text" name="number" value="{receipt[0]}" readonly></td></tr>
-                <tr><td>Datum:</td><td><input type="date" name="date" value="{receipt[1]}"></td></tr>
-                <tr><td>Dateiname:</td><td><input type="text" name="filename" value="{receipt[2]}"></td></tr>
-                <tr><td>Pfad:</td><td><input type="text" name="path" value="{receipt[3]}"></td></tr>
-                <tr><td>Info:</td><td><input type="text" name="info" value="{receipt[4]}"></td></tr>
+                <tr><td>Nummer:</td><td><input type="text" name="number" value="{receipt[1]}"></td></tr>
+                <tr><td>Datum:</td><td><input type="date" name="date" value="{receipt[2]}"></td></tr>
+                <tr><td>Dateiname:</td><td><input type="text" name="filename" value="{receipt[3]}"></td></tr>
+                <tr><td>Pfad:</td><td><input type="text" name="path" value="{receipt[4]}"></td></tr>
+                <tr><td>Info:</td><td><input type="text" name="info" value="{receipt[5]}"></td></tr>
                 <tr><td></td><td><input type="submit" value="Beleg aktualisieren"></td></tr>
             </table>
         </form>
     '''
     
     # Show linked bookings
-    document_id = receipt[0]  # ID is at index 0 based on Documents table structure
+    document_id = receipt[0]  # ID is at index 0
     linked_bookings = db.get_bookings_for_document(document_id)
     
     s+= "<h2>Verknüpfte Buchungen</h2>"
@@ -598,7 +619,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                 s+= f"<td>{doc_date}</td>"
                 s+= f"<td>{doc_filename}</td>"
                 s+= f"<td>{relation_type or '-'}</td>"
-                s+= f"<td><a href='/edit_receipt?number={doc_number}'>Ansehen</a> | "
+                s+= f"<td><a href='/receipts/edit?number={doc_number}'>Ansehen</a> | "
                 s+= f"<a href='/documents/unlink?doc_id={doc_id}&booking_id={booking_id}'>Entfernen</a></td>"
                 s+= f"</tr>"
             s+= "</table>"
@@ -612,7 +633,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             <h2>Kontoauszüge hochladen</h2>
             <div id="dropZone">
                 <p>Dateien hier ablegen (Drag & Drop)</p>
-                <input type="file" id="fileInput" multiple>
+                <input type="file" id="fileInput" multiple accept=".pdf,application/pdf">
                 <button onclick="document.getElementById('fileInput').click()">Oder Dateien auswählen</button>
             </div>
             <div id="uploadStatus"></div>
@@ -620,67 +641,90 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     </div>
     
     <script>
+        // Prevent default browser behavior for drag and drop on entire page
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            document.body.addEventListener(eventName, (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            }, false);
+        });
+        
         const dropZone = document.getElementById('dropZone');
         const fileInput = document.getElementById('fileInput');
         const uploadStatus = document.getElementById('uploadStatus');
         
         // Drag & Drop Events
-        dropZone.addEventListener('dragover', (e) => {{
+        dropZone.addEventListener('dragenter', (e) => {
             e.preventDefault();
+            e.stopPropagation();
             dropZone.classList.add('hover');
-        }});
+            console.log('dragenter');
+        });
         
-        dropZone.addEventListener('dragleave', () => {{
-            dropZone.classList.remove('hover');
-        }});
-        
-        dropZone.addEventListener('drop', (e) => {{
+        dropZone.addEventListener('dragover', (e) => {
             e.preventDefault();
+            e.stopPropagation();
+            console.log('dragover');
+        });
+        
+        dropZone.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
             dropZone.classList.remove('hover');
+            console.log('dragleave');
+        });
+        
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropZone.classList.remove('hover');
+            console.log('drop', e.dataTransfer.files);
             const files = e.dataTransfer.files;
             uploadFiles(files);
-        }});
+        });
         
         // File Input Change
-        fileInput.addEventListener('change', (e) => {{
+        fileInput.addEventListener('change', (e) => {
+            console.log('file input change', e.target.files);
             uploadFiles(e.target.files);
-        }});
+        });
         
-        function uploadFiles(files) {{
+        function uploadFiles(files) {
+            console.log('uploadFiles called with', files.length, 'files');
             if (files.length === 0) return;
             
             uploadStatus.innerHTML = '<p>Uploading...</p>';
             
             const formData = new FormData();
-            for (let i = 0; i < files.length; i++) {{
+            for (let i = 0; i < files.length; i++) {
                 formData.append('files', files[i]);
-            }}
+            }
             
-            fetch('/upload_receipts', {{
+            fetch('/upload_receipts', {
                 method: 'POST',
                 body: formData
-            }})
+            })
             .then(response => response.text())
-            .then(data => {{
+            .then(data => {
                 // Check if response contains confirmation link
-                if (data.includes('confirm_transactions')) {{
+                if (data.includes('confirm_transactions')) {
                     // Replace entire page with response
                     document.open();
                     document.write(data);
                     document.close();
-                }} else {{
+                } else {
                     // Show temporary success message
                     uploadStatus.innerHTML = '<p class="upload-success">' + data + '</p>';
-                    setTimeout(() => {{ 
+                    setTimeout(() => { 
                         uploadStatus.innerHTML = ''; 
                         location.reload();
-                    }}, 3000);
-                }}
-            }})
-            .catch(error => {{
+                    }, 3000);
+                }
+            })
+            .catch(error => {
                 uploadStatus.innerHTML = '<p class="upload-error">Fehler beim Hochladen: ' + error + '</p>';
-            }});
-        }}
+            });
+        }
     </script>
     '''
     
