@@ -86,10 +86,11 @@ class Database:
             )
         ''')
 
-        # Customer table for managing customers
+        # Contacts table for managing customers, suppliers, own data, and other contacts
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Customers (
+            CREATE TABLE IF NOT EXISTS Contacts (
                 ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                ContactType TEXT DEFAULT 'customer',
                 CustomerNumber TEXT,
                 Name TEXT NOT NULL,
                 Company TEXT,
@@ -150,7 +151,7 @@ class Database:
                 Status TEXT DEFAULT 'posted',
                 FOREIGN KEY (BookingGroup_ID) REFERENCES BookingGroups(ID),
                 FOREIGN KEY (Account_ID) REFERENCES Accounts(ID),
-                FOREIGN KEY (Customer_ID) REFERENCES Customers(ID),
+                FOREIGN KEY (Customer_ID) REFERENCES Contacts(ID),
                 FOREIGN KEY (COA_ID) REFERENCES ChartOfAccounts(ID),
                 FOREIGN KEY (Category_ID) REFERENCES Categories(ID)
             )
@@ -613,62 +614,98 @@ class Database:
         conn.close()
         return statistics
 
-    # Table Customers
-    def fetch_customers(self):
-        """Fetch all customers"""
+    # Table Contacts (replaces Customers)
+    def fetch_contacts(self, contact_type=None):
+        """Fetch all contacts, optionally filtered by type
+        
+        Args:
+            contact_type: Filter by type ('customer', 'supplier', 'insurance', 'own', 'other')
+                         If None, returns all contacts
+        """
         conn = self._get_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM Customers ORDER BY Name ASC')
+        if contact_type:
+            cursor.execute('SELECT * FROM Contacts WHERE ContactType = ? ORDER BY Name ASC', (contact_type,))
+        else:
+            cursor.execute('SELECT * FROM Contacts ORDER BY Name ASC')
         rows = cursor.fetchall()
         conn.close()
         return rows
 
-    def get_customer_by_id(self, customer_id):
-        """Get customer by ID"""
+    def get_contact_by_id(self, contact_id):
+        """Get contact by ID"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM Customers WHERE ID = ?', (customer_id,))
+        cursor.execute('SELECT * FROM Contacts WHERE ID = ?', (contact_id,))
         row = cursor.fetchone()
         conn.close()
         return row
 
-    def insert_customer(self, customer_number, name, company="", street="", postal_code="", city="", country="", email="", phone="", tax_id="", notes=""):
-        """Insert new customer"""
+    def insert_contact(self, name, contact_type="customer", customer_number="", company="", street="", postal_code="", city="", country="", email="", phone="", tax_id="", notes=""):
+        """Insert new contact
+        
+        Args:
+            name: Name (required)
+            contact_type: Type of contact ('customer', 'supplier', 'insurance', 'own', 'other')
+            customer_number: Optional customer number (for customers)
+            [other contact fields]
+        """
         conn = self._get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute('''
-                INSERT INTO Customers (CustomerNumber, Name, Company, Street, PostalCode, City, Country, Email, Phone, TaxID, Notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (customer_number, name, company, street, postal_code, city, country, email, phone, tax_id, notes))
+                INSERT INTO Contacts (ContactType, CustomerNumber, Name, Company, Street, PostalCode, City, Country, Email, Phone, TaxID, Notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (contact_type, customer_number, name, company, street, postal_code, city, country, email, phone, tax_id, notes))
             conn.commit()
         except sqlite3.IntegrityError as e:
-            print("Error inserting customer:", e)
+            print("Error inserting contact:", e)
             conn.rollback()
         finally:
             conn.close()
 
-    def update_customer(self, customer_id, customer_number, name, company="", street="", postal_code="", city="", country="", email="", phone="", tax_id="", notes=""):
-        """Update existing customer"""
+    def update_contact(self, contact_id, name, contact_type="customer", customer_number="", company="", street="", postal_code="", city="", country="", email="", phone="", tax_id="", notes=""):
+        """Update existing contact"""
         conn = self._get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute('''
-                UPDATE Customers
-                SET CustomerNumber = ?, Name = ?, Company = ?, Street = ?, PostalCode = ?, City = ?, Country = ?, Email = ?, Phone = ?, TaxID = ?, Notes = ?
+                UPDATE Contacts
+                SET ContactType = ?, CustomerNumber = ?, Name = ?, Company = ?, Street = ?, PostalCode = ?, City = ?, Country = ?, Email = ?, Phone = ?, TaxID = ?, Notes = ?
                 WHERE ID = ?
-            ''', (customer_number, name, company, street, postal_code, city, country, email, phone, tax_id, notes, customer_id))
+            ''', (contact_type, customer_number, name, company, street, postal_code, city, country, email, phone, tax_id, notes, contact_id))
             conn.commit()
         except sqlite3.IntegrityError as e:
-            print("Error updating customer:", e)
+            print("Error updating contact:", e)
             conn.rollback()
         finally:
             conn.close()
 
-    def delete_customer(self, customer_id):
-        """Delete customer"""
+    def delete_contact(self, contact_id):
+        """Delete contact"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        cursor.execute('DELETE FROM Customers WHERE ID = ?', (customer_id,))
+        cursor.execute('DELETE FROM Contacts WHERE ID = ?', (contact_id,))
         conn.commit()
         conn.close()
+
+    # Legacy method names for backward compatibility
+    def fetch_customers(self):
+        """Legacy method - fetch only customers"""
+        return self.fetch_contacts(contact_type='customer')
+    
+    def get_customer_by_id(self, customer_id):
+        """Legacy method - get contact by ID"""
+        return self.get_contact_by_id(customer_id)
+    
+    def insert_customer(self, customer_number, name, company="", street="", postal_code="", city="", country="", email="", phone="", tax_id="", notes=""):
+        """Legacy method - insert customer"""
+        return self.insert_contact(name, 'customer', customer_number, company, street, postal_code, city, country, email, phone, tax_id, notes)
+    
+    def update_customer(self, customer_id, customer_number, name, company="", street="", postal_code="", city="", country="", email="", phone="", tax_id="", notes=""):
+        """Legacy method - update customer"""
+        return self.update_contact(customer_id, name, 'customer', customer_number, company, street, postal_code, city, country, email, phone, tax_id, notes)
+    
+    def delete_customer(self, customer_id):
+        """Legacy method - delete contact"""
+        return self.delete_contact(customer_id)

@@ -378,3 +378,69 @@ def generate_sql_result_page(message, success):
     s += message
     s += Footer()
     return s
+
+def handle_add_contact(db, post_data):
+    """Handle adding a new contact"""
+    contact_type = post_data.get('contact_type', ['customer'])[0]
+    customer_number = post_data.get('customer_number', [''])[0]
+    name = post_data.get('name', [''])[0]
+    company = post_data.get('company', [''])[0]
+    street = post_data.get('street', [''])[0]
+    postal_code = post_data.get('postal_code', [''])[0]
+    city = post_data.get('city', [''])[0]
+    country = post_data.get('country', [''])[0]
+    email = post_data.get('email', [''])[0]
+    phone = post_data.get('phone', [''])[0]
+    tax_id = post_data.get('tax_id', [''])[0]
+    notes = post_data.get('notes', [''])[0]
+    
+    db.insert_contact(
+        name=name,
+        contact_type=contact_type,
+        customer_number=customer_number,
+        company=company,
+        street=street,
+        postal_code=postal_code,
+        city=city,
+        country=country,
+        email=email,
+        phone=phone,
+        tax_id=tax_id,
+        notes=notes
+    )
+    
+    return 303, "/contacts"
+
+def handle_update_contact(db, post_data):
+    """Handle updating an existing contact"""
+    contact_id = int(post_data.get('contact_id', [0])[0])
+    contact_type = post_data.get('contact_type', ['customer'])[0]
+    customer_number = post_data.get('customer_number', [''])[0]
+    name = post_data.get('name', [''])[0]
+    company = post_data.get('company', [''])[0]
+    street = post_data.get('street', [''])[0]
+    postal_code = post_data.get('postal_code', [''])[0]
+    city = post_data.get('city', [''])[0]
+    country = post_data.get('country', [''])[0]
+    email = post_data.get('email', [''])[0]
+    phone = post_data.get('phone', [''])[0]
+    tax_id = post_data.get('tax_id', [''])[0]
+    notes = post_data.get('notes', [''])[0]
+    
+    db.update_contact(
+        contact_id=contact_id,
+        name=name,
+        contact_type=contact_type,
+        customer_number=customer_number,
+        company=company,
+        street=street,
+        postal_code=postal_code,
+        city=city,
+        country=country,
+        email=email,
+        phone=phone,
+        tax_id=tax_id,
+        notes=notes
+    )
+    
+    return 303, "/contacts"

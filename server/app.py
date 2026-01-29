@@ -57,6 +57,18 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(303, "", headers={"Location": self.headers.get('Referer', '/transactions')})
             elif self.path == "/skr":
                 self.respond(200, pages.PageSkr(db))
+            elif self.path.startswith("/contacts"):
+                if self.path == "/contacts" or self.path.startswith("/contacts?"):
+                    self.respond(200, pages.PageContacts(db))
+                elif self.path.startswith("/contacts/edit"):
+                    query_components = parse_qs(self.path.split('?')[1])
+                    contact_id = int(query_components["id"][0])
+                    self.respond(200, pages.PageContactEdit(db, contact_id))
+                elif self.path.startswith("/contacts/delete"):
+                    query_components = parse_qs(self.path.split('?')[1])
+                    contact_id = int(query_components["id"][0])
+                    db.delete_contact(contact_id)
+                    self.respond(303, "", headers={"Location": "/contacts"})
             elif self.path == "/settings/bankaccounts":
                 self.respond(200, pages.PageSettingsBankAccounts(db))
             elif self.path.startswith("/settings/bankaccounts/edit"):
@@ -146,6 +158,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/update_skr":
                 status_code, location = handlers.handle_update_skr(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/add_contact":
+                status_code, location = handlers.handle_add_contact(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/update_contact":
+                status_code, location = handlers.handle_update_contact(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
                 self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/init_content":
                 status_code, location = handlers.handle_init_content(db, post_data)

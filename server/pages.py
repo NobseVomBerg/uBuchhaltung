@@ -51,6 +51,12 @@ def Header1(active_page=None):
     else:
         nav_items.append('<a href="/skr">SKR</a>')
     
+    # Kontakte
+    if active_page == 'contacts':
+        nav_items.append('<span id="ActivePage">Kontakte</span>')
+    else:
+        nav_items.append('<a href="/contacts">Kontakte</a>')
+    
     # Einstellungen
     if active_page == 'settings':
         nav_items.append('<span id="ActivePage">Einstellungen</span>')
@@ -992,6 +998,149 @@ def PageSkrEdit(db: Database, id):
                 <tr><td>Name:</td><td><input type="text" name="name" value="{skr[3]}"></td></tr>
                 <tr><td>Gruppe:</td><td><input type="text" name="group" value="{skr[4]}"></td></tr>
                 <tr><td></td><td><input type="submit" value="SKR-Konto aktualisieren"></td></tr>
+            </table>
+        </form>
+    '''
+    s+= Footer()
+    return s
+
+def PageContacts(db: Database):
+    """Generate contacts management page"""
+    contacts = db.fetch_contacts()
+    s = Header1('contacts')
+    s+= Header2()
+    
+    # Filter tabs for contact types
+    header3_content = f'''
+        <strong>Filter:</strong> 
+        <a href="/contacts">Alle</a>
+        <a href="/contacts?type=customer">Kunden</a>
+        <a href="/contacts?type=supplier">Lieferanten</a>
+        <a href="/contacts?type=own">Eigene Daten</a>
+        <a href="/contacts?type=insurance">Versicherungen</a>
+        <a href="/contacts?type=other">Sonstige</a>
+    '''
+    s+= Header3(header3_content)
+
+    s+= '''
+        <h2>Neuen Kontakt anlegen</h2>
+        <form method="POST" action="/add_contact">
+            <table>
+                <tr><td>Typ:</td><td>
+                    <select name="contact_type">
+                        <option value="customer">Kunde</option>
+                        <option value="supplier">Lieferant</option>
+                        <option value="own">Eigene Daten</option>
+                        <option value="insurance">Versicherung</option>
+                        <option value="other">Sonstiges</option>
+                    </select>
+                </td></tr>
+                <tr><td>Kundennummer:</td><td><input type="text" name="customer_number" placeholder="Optional, z.B. K-12345"></td></tr>
+                <tr><td>Name:</td><td><input type="text" name="name" required></td></tr>
+                <tr><td>Firma:</td><td><input type="text" name="company"></td></tr>
+                <tr><td>Straße:</td><td><input type="text" name="street"></td></tr>
+                <tr><td>PLZ:</td><td><input type="text" name="postal_code"></td></tr>
+                <tr><td>Stadt:</td><td><input type="text" name="city"></td></tr>
+                <tr><td>Land:</td><td><input type="text" name="country"></td></tr>
+                <tr><td>E-Mail:</td><td><input type="email" name="email"></td></tr>
+                <tr><td>Telefon:</td><td><input type="tel" name="phone"></td></tr>
+                <tr><td>Steuernummer:</td><td><input type="text" name="tax_id"></td></tr>
+                <tr><td>Notizen:</td><td><textarea name="notes" rows="3" cols="40"></textarea></td></tr>
+                <tr><td></td><td><input type="submit" value="Kontakt hinzufügen"></td></tr>
+            </table>
+        </form>
+    '''
+    
+    s+= "<h2>Kontakte</h2>"
+    s+= "<table border='1'>"
+    s+= "<tr><th>ID</th><th>Typ</th><th>Nr.</th><th>Name</th><th>Firma</th><th>E-Mail</th><th>Telefon</th><th>Aktionen</th></tr>"
+    
+    # Contact type labels in German
+    type_labels = {
+        'customer': 'Kunde',
+        'supplier': 'Lieferant',
+        'own': 'Eigene Daten',
+        'insurance': 'Versicherung',
+        'other': 'Sonstiges'
+    }
+    
+    for contact in contacts:
+        contact_id = contact[0]
+        contact_type = contact[1] or 'customer'
+        customer_number = contact[2] or ''
+        name = contact[3]
+        company = contact[4] or ''
+        email = contact[8] or ''
+        phone = contact[9] or ''
+        
+        type_label = type_labels.get(contact_type, contact_type)
+        
+        s+= f"<tr>"
+        s+= f"<td>{contact_id}</td>"
+        s+= f"<td>{type_label}</td>"
+        s+= f"<td>{customer_number}</td>"
+        s+= f"<td>{name}</td>"
+        s+= f"<td>{company}</td>"
+        s+= f"<td>{email}</td>"
+        s+= f"<td>{phone}</td>"
+        s+= f"<td><a href='/contacts/edit?id={contact_id}'>Bearbeiten</a> | <a href='/contacts/delete?id={contact_id}' onclick='return confirm(\"Wirklich löschen?\")'>Löschen</a></td>"
+        s+= f"</tr>"
+    
+    s+= "</table>"
+    s+= Footer()
+    return s
+
+def PageContactEdit(db: Database, contact_id):
+    """Generate contact edit page"""
+    contact = db.get_contact_by_id(contact_id)
+    if not contact:
+        return "Kontakt nicht gefunden."
+    
+    s = Header1('contacts')
+    submenu = '<a href="/contacts">Kontakte</a> -> <span id="ActivePage">Bearbeiten</span>'
+    s+= Header2(submenu)
+    s+= Header3()
+    
+    # Extract contact data (ID=0, ContactType=1, CustomerNumber=2, Name=3, Company=4, Street=5, PostalCode=6, City=7, Country=8, Email=9, Phone=10, TaxID=11, Notes=12)
+    contact_type = contact[1] or 'customer'
+    customer_number = contact[2] or ''
+    name = contact[3]
+    company = contact[4] or ''
+    street = contact[5] or ''
+    postal_code = contact[6] or ''
+    city = contact[7] or ''
+    country = contact[8] or ''
+    email = contact[9] or ''
+    phone = contact[10] or ''
+    tax_id = contact[11] or ''
+    notes = contact[12] or ''
+    
+    s+= "<h1>Kontakt bearbeiten</h1>"
+    s+= f'''
+        <form method="POST" action="/update_contact">
+            <input type="hidden" name="contact_id" value="{contact_id}">
+            <table>
+                <tr><td>Typ:</td><td>
+                    <select name="contact_type">
+                        <option value="customer" {"selected" if contact_type == "customer" else ""}>Kunde</option>
+                        <option value="supplier" {"selected" if contact_type == "supplier" else ""}>Lieferant</option>
+                        <option value="own" {"selected" if contact_type == "own" else ""}>Eigene Daten</option>
+                        <option value="insurance" {"selected" if contact_type == "insurance" else ""}>Versicherung</option>
+                        <option value="other" {"selected" if contact_type == "other" else ""}>Sonstiges</option>
+                    </select>
+                </td></tr>
+                <tr><td>Kundennummer:</td><td><input type="text" name="customer_number" value="{customer_number}"></td></tr>
+                <tr><td>Name:</td><td><input type="text" name="name" value="{name}" required></td></tr>
+                <tr><td>Firma:</td><td><input type="text" name="company" value="{company}"></td></tr>
+                <tr><td>Straße:</td><td><input type="text" name="street" value="{street}"></td></tr>
+                <tr><td>PLZ:</td><td><input type="text" name="postal_code" value="{postal_code}"></td></tr>
+                <tr><td>Stadt:</td><td><input type="text" name="city" value="{city}"></td></tr>
+                <tr><td>Land:</td><td><input type="text" name="country" value="{country}"></td></tr>
+                <tr><td>E-Mail:</td><td><input type="email" name="email" value="{email}"></td></tr>
+                <tr><td>Telefon:</td><td><input type="tel" name="phone" value="{phone}"></td></tr>
+                <tr><td>Steuernummer:</td><td><input type="text" name="tax_id" value="{tax_id}"></td></tr>
+                <tr><td>Notizen:</td><td><textarea name="notes" rows="3" cols="40">{notes}</textarea></td></tr>
+                <tr><td></td><td><input type="submit" value="Kontakt aktualisieren"></td></tr>
             </table>
         </form>
     '''
