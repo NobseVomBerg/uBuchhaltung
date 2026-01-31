@@ -18,6 +18,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(200, pages.PageRoot(db))
             elif self.path == "/about":
                 self.respond(200, pages.PageAbout())
+            elif self.path == "/invoice":
+                self.respond(200, pages.PageInvoice(db))
             elif self.path == "/settings":
                 self.respond(200, pages.PageSettings())
             elif self.path == "/receipts":
@@ -92,6 +94,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.serve_static_file("buch.css", "text/css")
             elif self.path == "/favicon.ico":
                 self.serve_static_file("favicon.ico", "image/x-icon")
+            elif self.path.startswith("/static/"):
+                # Serve static files (e.g., logo)
+                filename = self.path[1:]  # Remove leading /
+                self.serve_static_file(filename, self.guess_content_type(filename))
             else:
                 self.respond(404, "Seite nicht gefunden.")
         except Exception as e:
@@ -109,6 +115,23 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.wfile.write(file.read())
         except FileNotFoundError:
             self.respond(404, "Datei nicht gefunden.")
+    
+    def guess_content_type(self, filename):
+        """Guess content type based on file extension"""
+        if filename.endswith('.png'):
+            return 'image/png'
+        elif filename.endswith('.jpg') or filename.endswith('.jpeg'):
+            return 'image/jpeg'
+        elif filename.endswith('.gif'):
+            return 'image/gif'
+        elif filename.endswith('.svg'):
+            return 'image/svg+xml'
+        elif filename.endswith('.css'):
+            return 'text/css'
+        elif filename.endswith('.js'):
+            return 'application/javascript'
+        else:
+            return 'application/octet-stream'
 
     def do_POST(self):
         db = Database()
@@ -117,6 +140,19 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if self.path == "/upload_receipts":
             status_code, response = upload_handler.handle_file_upload(self)
             self.respond(status_code, response)
+            return
+        
+        # Handle PDF generation (JSON body)
+        if self.path == "/invoice/pdf":
+            content_length = int(self.headers['Content-Length'])
+            post_body = self.rfile.read(content_length)
+            pdf_data = handlers.handle_generate_invoice_pdf(post_body)
+            self.send_response(200)
+            self.send_header("Content-type", "application/pdf")
+            self.send_header("Content-Disposition", "attachment; filename=invoice.pdf")
+            self.send_header("Content-Length", str(len(pdf_data)))
+            self.end_headers()
+            self.wfile.write(pdf_data)
             return
         
         # Parse regular form data

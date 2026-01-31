@@ -56,6 +56,7 @@ class Database:
                 AccountNumber INTEGER,
                 Name TEXT,
                 Description TEXT,
+                IsStandard INTEGER DEFAULT 0,
                 UNIQUE(Framework, AccountNumber)
             )
         ''')
@@ -138,7 +139,7 @@ class Database:
                 Account_ID INTEGER,
                 ForeignBankAccount TEXT,
                 RecipientClient TEXT,
-                Customer_ID INTEGER,
+                Contact_ID INTEGER,
                 COA_ID INTEGER,
                 Category_ID INTEGER,
                 Amount REAL NOT NULL,
@@ -147,11 +148,9 @@ class Database:
                 TaxAmount REAL,
                 Text TEXT,
                 DocumentNumber TEXT,
-                BookingType TEXT,
-                Status TEXT DEFAULT 'posted',
                 FOREIGN KEY (BookingGroup_ID) REFERENCES BookingGroups(ID),
                 FOREIGN KEY (Account_ID) REFERENCES Accounts(ID),
-                FOREIGN KEY (Customer_ID) REFERENCES Contacts(ID),
+                FOREIGN KEY (Contact_ID) REFERENCES Contacts(ID),
                 FOREIGN KEY (COA_ID) REFERENCES ChartOfAccounts(ID),
                 FOREIGN KEY (Category_ID) REFERENCES Categories(ID)
             )
@@ -244,10 +243,9 @@ class Database:
         return rows
 
     def insert_booking(self, date_booking, amount, account_id=None, foreign_bank_account="", 
-                       recipient_client="", customer_id=None, coa_id=None, category_id=None,
+                       recipient_client="", contact_id=None, coa_id=None, category_id=None,
                        currency="EUR", tax_rate=None, tax_amount=None, text="", 
-                       document_number=None, booking_type=None, status="posted", 
-                       date_tax=None, booking_group_id=None, log_description=None):
+                       document_number=None, date_tax=None, booking_group_id=None, log_description=None):
         """Insert a new booking into Bookings table
         
         Args:
@@ -256,7 +254,7 @@ class Database:
             account_id: FK to Accounts table
             foreign_bank_account: External IBAN/account number
             recipient_client: Name of recipient/client
-            customer_id: FK to Customers table
+            contact_id: FK to Contacts table
             coa_id: FK to ChartOfAccounts (SKR)
             category_id: FK to Categories
             currency: Currency code (default: EUR)
@@ -264,8 +262,6 @@ class Database:
             tax_amount: Calculated tax amount
             text: Notes/purpose
             document_number: External document reference
-            booking_type: 'income' or 'expense'
-            status: 'draft', 'posted', 'cancelled' (default: posted)
             date_tax: Tax date (optional)
             booking_group_id: FK to BookingGroups (for split bookings)
             log_description: Description for SQL logging (optional)
@@ -278,13 +274,13 @@ class Database:
         
         sql_template = '''INSERT INTO Bookings 
             (DateBooking, DateTax, BookingGroup_ID, Account_ID, ForeignBankAccount, 
-             RecipientClient, Customer_ID, COA_ID, Category_ID, Amount, Currency, 
-             TaxRate, TaxAmount, Text, DocumentNumber, BookingType, Status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
+             RecipientClient, Contact_ID, COA_ID, Category_ID, Amount, Currency, 
+             TaxRate, TaxAmount, Text, DocumentNumber)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
         
         params = (date_booking, date_tax, booking_group_id, account_id, foreign_bank_account,
-                  recipient_client, customer_id, coa_id, category_id, amount, currency,
-                  tax_rate, tax_amount, text, document_number, booking_type, status)
+                  recipient_client, contact_id, coa_id, category_id, amount, currency,
+                  tax_rate, tax_amount, text, document_number)
         
         cursor.execute(sql_template, params)
         conn.commit()
@@ -321,10 +317,10 @@ class Database:
         return count > 0
     
     def update_booking(self, booking_id, date_booking, amount, account_id=None, 
-                       foreign_bank_account="", recipient_client="", customer_id=None, 
+                       foreign_bank_account="", recipient_client="", contact_id=None, 
                        coa_id=None, category_id=None, currency="EUR", tax_rate=None, 
-                       tax_amount=None, text="", document_number=None, booking_type=None, 
-                       status="posted", date_tax=None, booking_group_id=None, log_description=None):
+                       tax_amount=None, text="", document_number=None, 
+                       date_tax=None, booking_group_id=None, log_description=None):
         """Update an existing booking
         
         Args:
@@ -336,13 +332,13 @@ class Database:
         
         sql_template = '''UPDATE Bookings
             SET DateBooking=?, DateTax=?, BookingGroup_ID=?, Account_ID=?, ForeignBankAccount=?,
-                RecipientClient=?, Customer_ID=?, COA_ID=?, Category_ID=?, Amount=?, Currency=?,
-                TaxRate=?, TaxAmount=?, Text=?, DocumentNumber=?, BookingType=?, Status=?
+                RecipientClient=?, contact_id=?, COA_ID=?, Category_ID=?, Amount=?, Currency=?,
+                TaxRate=?, TaxAmount=?, Text=?, DocumentNumber=?
             WHERE ID=?'''
         
         params = (date_booking, date_tax, booking_group_id, account_id, foreign_bank_account,
-                  recipient_client, customer_id, coa_id, category_id, amount, currency,
-                  tax_rate, tax_amount, text, document_number, booking_type, status, booking_id)
+                  recipient_client, contact_id, coa_id, category_id, amount, currency,
+                  tax_rate, tax_amount, text, document_number, booking_id)
         
         cursor.execute(sql_template, params)
         conn.commit()
@@ -476,14 +472,14 @@ class Database:
         conn.close()
         return rows
 
-    def insert_chart_of_accounts(self, framework, account_number, name, description):
+    def insert_chart_of_accounts(self, framework, account_number, name, description, is_standard=0):
         conn = self._get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute('''
-                INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description)
-                VALUES (?, ?, ?, ?)
-            ''', (framework, account_number, name, description))
+                INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStandard)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (framework, account_number, name, description, is_standard))
             conn.commit()
         except sqlite3.IntegrityError as e:
             print("Error inserting into ChartOfAccounts:", e)
@@ -498,9 +494,11 @@ class Database:
             cursor.execute('''
                 UPDATE ChartOfAccounts
                 SET Framework = ?, AccountNumber = ?, Name = ?, Description = ?
-                WHERE ID = ?
+                WHERE ID = ? AND IsStandard = 0
             ''', (framework, account_number, name, description, id))
             conn.commit()
+            if cursor.rowcount == 0:
+                print("Warning: Cannot update standard account or account not found")
         except sqlite3.IntegrityError as e:
             print("Error updating ChartOfAccounts:", e)
             conn.rollback()
@@ -513,8 +511,6 @@ class Database:
         self.insert_receipt("12F124", "2012-05-02", "testBeleg02.pdf", "./2012/", "noch ein Testbeleg")
         self.insert_receipt("12F125", "2012-05-03", "testBeleg03.pdf", "./2012/", "und noch einer")
         self.insert_receipt("12F126", "2012-05-04", "testBeleg04.pdf", "./2012/", "")
-
-        self.insert_chart_of_accounts(4, 6815, "Betriebsbedarf", "")
 
     # Table Accounts
     def ensure_kasse_exists(self):
@@ -550,12 +546,15 @@ class Database:
     def insert_account(self, name, holder, number, bic, bank_name, is_cash=0):
         conn = self._get_connection()
         cursor = conn.cursor()
-        try:
-            cursor.execute('''
+        sql_template = '''
                 INSERT INTO Accounts (Name, Owner, Number, BIC, BankName, IsCash)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (name, holder, number, bic, bank_name, is_cash))
+                VALUES (?, ?, ?, ?, ?, ?)'''
+        params = (name, holder, number, bic, bank_name, is_cash)
+        try:
+            cursor.execute(sql_template, params)
             conn.commit()
+            # Log SQL after successful commit
+            self._log_sql(sql_template, params, "Insert new account")
         except sqlite3.IntegrityError as e:
             print("Error inserting account:", e)
             conn.rollback()
@@ -565,13 +564,16 @@ class Database:
     def update_account(self, account_id, name, holder, number, bic, bank_name):
         conn = self._get_connection()
         cursor = conn.cursor()
-        try:
-            cursor.execute('''
+        sql_template = '''
                 UPDATE Accounts
                 SET Name = ?, Owner = ?, Number = ?, BIC = ?, BankName = ?
-                WHERE ID = ? AND IsCash = 0
-            ''', (name, holder, number, bic, bank_name, account_id))
+                WHERE ID = ? AND IsCash = 0'''
+        params = (name, holder, number, bic, bank_name, account_id)
+        try:
+            cursor.execute(sql_template, params)
             conn.commit()
+            # Log SQL after successful commit
+            self._log_sql(sql_template, params, "Update account")
         except sqlite3.IntegrityError as e:
             print("Error updating account:", e)
             conn.rollback()
@@ -652,12 +654,15 @@ class Database:
         """
         conn = self._get_connection()
         cursor = conn.cursor()
-        try:
-            cursor.execute('''
+        sql_template = '''
                 INSERT INTO Contacts (ContactType, CustomerNumber, Name, Company, Street, PostalCode, City, Country, Email, Phone, TaxID, Notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (contact_type, customer_number, name, company, street, postal_code, city, country, email, phone, tax_id, notes))
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
+        params = (contact_type, customer_number, name, company, street, postal_code, city, country, email, phone, tax_id, notes)
+        try:
+            cursor.execute(sql_template, params)
             conn.commit()
+            # Log SQL after successful commit
+            self._log_sql(sql_template, params, "Insert new contact")
         except sqlite3.IntegrityError as e:
             print("Error inserting contact:", e)
             conn.rollback()
@@ -668,13 +673,16 @@ class Database:
         """Update existing contact"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        try:
-            cursor.execute('''
+        sql_template = '''
                 UPDATE Contacts
                 SET ContactType = ?, CustomerNumber = ?, Name = ?, Company = ?, Street = ?, PostalCode = ?, City = ?, Country = ?, Email = ?, Phone = ?, TaxID = ?, Notes = ?
-                WHERE ID = ?
-            ''', (contact_type, customer_number, name, company, street, postal_code, city, country, email, phone, tax_id, notes, contact_id))
+                WHERE ID = ?'''
+        params = (contact_type, customer_number, name, company, street, postal_code, city, country, email, phone, tax_id, notes, contact_id)
+        try:
+            cursor.execute(sql_template, params)
             conn.commit()
+            # Log SQL after successful commit
+            self._log_sql(sql_template, params, "Update contact")
         except sqlite3.IntegrityError as e:
             print("Error updating contact:", e)
             conn.rollback()
@@ -688,24 +696,3 @@ class Database:
         cursor.execute('DELETE FROM Contacts WHERE ID = ?', (contact_id,))
         conn.commit()
         conn.close()
-
-    # Legacy method names for backward compatibility
-    def fetch_customers(self):
-        """Legacy method - fetch only customers"""
-        return self.fetch_contacts(contact_type='customer')
-    
-    def get_customer_by_id(self, customer_id):
-        """Legacy method - get contact by ID"""
-        return self.get_contact_by_id(customer_id)
-    
-    def insert_customer(self, customer_number, name, company="", street="", postal_code="", city="", country="", email="", phone="", tax_id="", notes=""):
-        """Legacy method - insert customer"""
-        return self.insert_contact(name, 'customer', customer_number, company, street, postal_code, city, country, email, phone, tax_id, notes)
-    
-    def update_customer(self, customer_id, customer_number, name, company="", street="", postal_code="", city="", country="", email="", phone="", tax_id="", notes=""):
-        """Legacy method - update customer"""
-        return self.update_contact(customer_id, name, 'customer', customer_number, company, street, postal_code, city, country, email, phone, tax_id, notes)
-    
-    def delete_customer(self, customer_id):
-        """Legacy method - delete contact"""
-        return self.delete_contact(customer_id)

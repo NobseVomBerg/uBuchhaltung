@@ -65,14 +65,49 @@ Verwaltung des Kontenrahmens nach deutschem Standard:
 - **Bearbeiten**: Bestehende Einträge aktualisieren
 - **UNIQUE-Constraint**: Kombination aus RahmenNr und Kontonummer muss eindeutig sein
 
-### 5. Kunden-Verwaltung (`/customers`)
-Verwaltung von Kunden und Lieferanten:
+### 5. Kontakte-Verwaltung (`/contacts`)
+Verwaltung von Kunden, Lieferanten und eigenen Firmendaten:
+- **Kontakttypen**: Kunde, Lieferant, Eigene Daten, Versicherung, Sonstiges
 - **Anzeigen**: Übersicht mit Name, Firma, Kontaktdaten
-- **Hinzufügen**: Neue Geschäftspartner anlegen
+- **Hinzufügen**: Neue Kontakte mit vollständigen Adress- und Kontaktdaten
 - **Bearbeiten**: Bestehende Einträge aktualisieren
-- **Buchungs-Zuordnung**: Kunden können Buchungen zugewiesen werden
+- **Eigene Daten**: Firmendaten für Rechnungskopf und -fuß
+- **Filter**: Nach Kontakttyp filterbar
 
-### 6. Kategorien-Verwaltung (`/categories`)
+**Kontaktfelder:**
+- Typ (customer/supplier/own/insurance/other)
+- Kundennummer
+- Name, Firma
+- Straße, PLZ, Stadt, Land
+- E-Mail, Telefon
+- Steuernummer/UStIdNr
+- Notizen
+
+### 6. Rechnungserstellung (`/invoice`)
+Professionelle Rechnungserstellung mit PDF-Export:
+- **Rechnungskopf**: Logo, Datum, Rechnungsnummer, Kundennummer
+- **Kundenauswahl**: Dropdown mit automatischer Adressübernahme
+- **Absenderzeile**: Kompakte Absenderinfo für Brieffenster
+- **Positionstabelle**: 
+  - Beliebig viele Positionen hinzufügen/entfernen
+  - Pos., Menge, Einheit, Bezeichnung, Einzelpreis, Gesamt
+  - Automatische Berechnung der Zeilensummen
+- **Summenbereich**:
+  - Nettosumme (automatisch berechnet)
+  - Mehrwertsteuer mit einstellbarem Steuersatz
+  - Gesamtbetrag (Brutto)
+- **Zahlungsbedingungen**: Editierbares Textfeld
+- **Bankverbindung**: Auswahl aus angelegten Bankkonten
+- **Footer**: Firmendaten, Kontaktdaten, Bankdaten
+
+**PDF-Export:**
+- Professionelles PDF-Layout (A4)
+- Logo-Einbettung (PNG/JPEG)
+- Deutsche Umlaute und €-Zeichen werden korrekt dargestellt
+- Anpassbare Seitenränder
+- Sofortiger Download
+
+### 7. Kategorien-Verwaltung (`/categories`)
 Verwaltung von Buchungskategorien:
 - **Hierarchische Struktur**: Parent-Child-Beziehungen
 - **Flexible Kategorisierung**: Individuell erweiterbar
@@ -85,7 +120,7 @@ Gruppierung mehrerer Buchungen:
 - **Übersicht**: Liste aller Gruppen mit Gesamtbeträgen
 - **Detail-Ansicht**: Alle Buchungen einer Gruppe mit Validierung
 
-### 8. About-Seite (`/about`)
+### 9. About-Seite (`/about`)
 Informationen über die Anwendung.
 
 ## Technische Details
@@ -119,15 +154,19 @@ Die Anwendung verwendet SQLite mit folgenden Tabellen:
 - Gruppe (TEXT)
 - UNIQUE(RahmenNr, Konto)
 
-**Customers (Kunden/Lieferanten)**
+**Customers (Kontakte)**
 - ID (INTEGER PRIMARY KEY AUTOINCREMENT)
+- ContactType (TEXT) - 'customer', 'supplier', 'own', 'insurance', 'other'
 - CustomerNumber (TEXT)
 - Name (TEXT)
 - Company (TEXT)
+- Street (TEXT)
+- PostalCode (TEXT)
+- City (TEXT)
+- Country (TEXT)
 - Email (TEXT)
 - Phone (TEXT)
-- Address (TEXT)
-- TaxID (TEXT)
+- TaxID (TEXT) - Steuernummer/UStIdNr
 - Notes (TEXT)
 
 **Categories (Buchungskategorien)**
@@ -157,7 +196,7 @@ Die Anwendung verwendet SQLite mit folgenden Tabellen:
 - Account_ID (INTEGER, FOREIGN KEY zu Konten) - Eigenes Konto
 - ForeignBankAccount (TEXT) - Fremdes Konto (IBAN oder Name)
 - RecipientClient (TEXT) - Empfänger/Auftraggeber
-- Customer_ID (INTEGER, FOREIGN KEY zu Customers) - Kunde/Lieferant
+- Contact_id (INTEGER, FOREIGN KEY zu Customers) - Kunde/Lieferant
 - COA_ID (INTEGER, FOREIGN KEY zu ChartOfAccounts) - SKR-Konto
 - Category_ID (INTEGER, FOREIGN KEY zu Categories) - Kategorie
 - Amount (REAL NOT NULL) - Betrag
@@ -190,9 +229,11 @@ PyBuch/
 ├── server/                    # Modularer Webserver (refactored)
 │   ├── __init__.py           # Package initialization
 │   ├── app.py                # HTTP-Server-Klasse mit Routing
-│   ├── pages.py              # HTML-Seiten-Generierung (13+ Seiten)
-│   ├── handlers.py           # POST-Request-Handler für Formulare
+│   ├── pages.py              # HTML-Seiten-Generierung (15+ Seiten)
+│   ├── handlers.py           # POST-Request-Handler inkl. PDF-Generierung
 │   └── upload_handler.py     # File-Upload mit PDF-Parsing
+├── static/                    # Statische Dateien
+│   └── logo.png              # Firmenlogo für Rechnungen
 └── data/                      # Daten-Verzeichnis (im .gitignore)
     ├── buch.db               # SQLite-Datenbank (automatisch erstellt)
     ├── Belege/               # Hochgeladene Belege
@@ -206,7 +247,8 @@ PyBuch/
 
 ### Voraussetzungen
 - Python 3.x
-- Keine externen Abhängigkeiten (nutzt nur Python Standard Library)
+- Pillow (für PDF-Logo-Einbettung): `pip install Pillow`
+- Keine weiteren externen Abhängigkeiten (nutzt nur Python Standard Library)
 
 ### Server starten
 
@@ -294,19 +336,21 @@ Diese Anwendung ist für lokale Verwendung konzipiert:
 
 ### Hauptseiten der Anwendung
 1. **Dashboard** (`/`) - Übersicht und Initialisierung
-2. **Belege** (`/belege`) - Dokumentenverwaltung mit Upload
-3. **Belege bearbeiten** (`/edit_receipt`) - Detail-Ansicht mit Verknüpfungen
-4. **Buchungen** (`/transactions`) - Haupt-Buchungsinterface mit Filtern
-5. **Buchungen bearbeiten** (`/transactions/edit`) - Buchungs-Editor
-6. **Split-Buchungen** (`/bookinggroups`) - Buchungsgruppen-Übersicht
-7. **Split-Buchungen Details** (`/bookinggroups/view`) - Gruppen-Details mit Validierung
-8. **Import-Bestätigung** (`/confirm_transactions`) - Transaktions-Import aus PDF
-9. **Einstellungen** (`/settings`) - Hauptmenü für Konfiguration
-10. **Konten** (`/konten`) - Bankkonten-Verwaltung
-11. **Konten bearbeiten** (`/konten/edit`) - Konto-Editor
-12. **SKR** (`/skr`) - Standardkontenrahmen-Verwaltung
-13. **SKR bearbeiten** (`/skr/edit`) - SKR-Editor
-14. **About** (`/about`) - Informationen
+2. **Rechnung** (`/invoice`) - Rechnungserstellung mit PDF-Export
+3. **Belege** (`/receipts`) - Dokumentenverwaltung mit Upload
+4. **Belege bearbeiten** (`/receipts/edit`) - Detail-Ansicht mit Verknüpfungen
+5. **Buchungen** (`/transactions`) - Haupt-Buchungsinterface mit Filtern
+6. **Buchungen bearbeiten** (`/transactions/edit`) - Buchungs-Editor
+7. **Split-Buchungen** (`/bookinggroups`) - Buchungsgruppen-Übersicht
+8. **Split-Buchungen Details** (`/bookinggroups/view`) - Gruppen-Details mit Validierung
+9. **Import-Bestätigung** (`/confirm_transactions`) - Transaktions-Import aus PDF
+10. **SKR** (`/skr`) - Standardkontenrahmen-Verwaltung
+11. **SKR bearbeiten** (`/edit_skr`) - SKR-Editor
+12. **Kontakte** (`/contacts`) - Kunden/Lieferanten/Eigene Daten
+13. **Kontakte bearbeiten** (`/contacts/edit`) - Kontakt-Editor
+14. **Einstellungen** (`/settings`) - Hauptmenü für Konfiguration
+15. **Bankkonten** (`/settings/bankaccounts`) - Bankkonten-Verwaltung
+16. **About** (`/about`) - Informationen
 
 ### Besondere Features
 
@@ -337,6 +381,16 @@ Diese Anwendung ist für lokale Verwendung konzipiert:
 - Beziehungstypen (invoice, receipt, contract, etc.)
 - Bidirektionale Ansicht (Beleg → Buchungen, Buchung → Belege)
 - Einfaches Verknüpfen/Entfernen in der UI
+
+**Rechnungs-PDF-Generierung**
+- Professionelles A4-Layout ohne externe PDF-Bibliotheken
+- Firmenlogo (PNG/JPEG) mit automatischer Skalierung
+- Deutsche Umlaute (ä, ö, ü, ß) und €-Zeichen
+- Absenderzeile für Brieffenster-Position
+- Dynamische Positionstabelle mit hellblauem Tabellenkopf
+- Automatische Summen- und MwSt-Berechnung
+- Dreispaltiger Footer mit Firmendaten, Kontakt, Bankverbindung
+- Konfigurierbare Seitenränder
 
 **Erweiterte Filterung**
 - Datumsbereich mit Jahr-Schnell-Buttons

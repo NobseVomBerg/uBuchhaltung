@@ -8,6 +8,14 @@ Um die automatische Dokumentenanalyse zu nutzen, installieren Sie die erforderli
 pip install pdfplumber
 ```
 
+### Für PDF-Rechnungserstellung mit Logo
+
+```bash
+pip install Pillow
+```
+
+Pillow wird benötigt, um das Firmenlogo (PNG/JPEG) in die PDF-Rechnung einzubetten. Legen Sie Ihr Logo als `static/logo.png` ab.
+
 ### Optional: OCR-Unterstützung für gescannte PDFs
 
 ```bash
@@ -122,7 +130,7 @@ Die folgenden Felder werden beim Import automatisch gesetzt:
 - **BookingType**: Automatisch bestimmt ('income' für positive, 'expense' für negative Beträge)
 
 Weitere Felder können nach dem Import manuell ergänzt werden:
-- Customer_ID (Kunde/Lieferant)
+- Contact_id (Kunde/Lieferant)
 - COA_ID (SKR-Kontenzuordnung)
 - Category_ID (Kategorie)
 - TaxRate und TaxAmount (Steuerberechnung)

@@ -19,6 +19,7 @@ class DocumentParser:
     
     def log_sql(self, sql_statement: str, parameters: tuple, description: str = ""):
         """Log SQL statements to file for audit trail"""
+        # Detailed log with timestamps and descriptions
         log_file = os.path.join(self.log_dir, "sql_operations.log")
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
@@ -30,6 +31,13 @@ class DocumentParser:
             f.write(f"SQL: {sql_statement}\n")
             f.write(f"Parameters: {parameters}\n")
             f.write(f"{'='*80}\n")
+        
+        # Compact SQL-only log (one statement per line)
+        sql_only_file = os.path.join(self.log_dir, "sql_operations.sql")
+        # Clean up SQL statement: remove leading/trailing whitespace and normalize to single line
+        clean_sql = ' '.join(sql_statement.split())
+        with open(sql_only_file, 'a', encoding='utf-8') as f:
+            f.write(f"{clean_sql};\n")
     
     def save_parsed_data(self, filename: str, parsed_data: Dict) -> str:
         """Save parsed data to temporary JSON file for review"""

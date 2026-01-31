@@ -7,6 +7,10 @@
 	tr 					{ background-color: #000000; }
 	td, th				{ padding-top: 0px; padding-bottom: 0px; padding-left: 8px; padding-right: 8px; border: 0px solid #404040; }
 	th					{ background-color: #101010; text-align: left;}
+	.sql-success-title	{ color: #4CAF50; }
+	.sql-success-box	{ background-color: #1B5E20; color: #A5D6A7; padding: 10px; }
+	.sql-error-title	{ color: #F44336; }
+	.sql-error-box		{ background-color: #5D1F1A; color: #FFCDD2; padding: 10px; }
 }
 
 /* light mode */
@@ -18,6 +22,10 @@
 	tr 					{ background-color: #FFFFFF; }
 	td, th				{ padding-top: 0px; padding-bottom: 0px; padding-left: 8px; padding-right: 8px; border: 0px solid #E0E0E0; }
 	th					{ background-color: #F0F0F0; text-align: left;}
+	.sql-success-title	{ color: #2E7D32; }
+	.sql-success-box	{ background-color: #E8F5E9; color: #1B5E20; padding: 10px; }
+	.sql-error-title	{ color: #C62828; }
+	.sql-error-box		{ background-color: #FFEBEE; color: #B71C1C; padding: 10px; }
 }
 
 /* common for light and dark modes */
@@ -40,6 +48,42 @@ a:focus					{ color: #8040FF; text-decoration: none; }
 #fileInput 				{ display: none; }
 .upload-success 		{ color: green; }
 .upload-error 			{ color: red; }
+
+/* Invoice page styles - use white backgrounds even in dark mode */
+.invoice-container 		{ max-width: 800px; margin: 20px auto; padding: 20px; background-color: #FFF; color: #000; }
+.invoice-header 		{ display: flex; justify-content: space-between; margin-bottom: 30px; }
+.invoice-logo 			{ flex: 1; }
+.invoice-meta 			{ text-align: right; }
+.invoice-meta-table 	{ border: none !important; background-color: #FFF !important; }
+.invoice-meta-table tr	{ background-color: #FFF !important; }
+.invoice-meta-table td 	{ border: none !important; padding: 2px 8px !important; text-align: left; background-color: #FFF !important; }
+.invoice-meta-table td:first-child { padding-right: 15px !important; }
+.invoice-sender-line 	{ font-size: 0.75em; color: #555; margin-bottom: 3px; }
+.invoice-customer-address { min-height: 100px; margin-bottom: 30px; }
+.invoice-title 			{ text-align: left; font-size: 1.5em; margin: 30px 0 20px 0; color: #000; }
+.invoice-items 			{ width: 100%; border-collapse: collapse; margin-bottom: 0; background-color: #FFF !important; }
+.invoice-items thead th { background-color: #e6f0ff !important; color: #000 !important; padding: 8px; text-align: left; border: 1px solid #ccc; border-top: none; }
+.invoice-items tbody tr { background-color: #FFF !important; }
+.invoice-items tbody td { padding: 5px; border: 1px solid #ddd; background-color: #FFF !important; }
+.invoice-items tfoot tr { background-color: #FFF !important; }
+.invoice-items tfoot td { padding: 5px; border: none; background-color: #FFF !important; }
+.invoice-items input 	{ border: 1px solid #ccc; padding: 2px; }
+.item-total 			{ text-align: right; font-weight: bold; }
+.invoice-payment-terms 	{ margin: 20px 0; font-size: 0.9em; }
+.invoice-footer 		{ margin-top: 40px; font-size: 0.85em; color: #444; }
+.invoice-footer hr		{ border: none; border-top: 1px solid #666; margin-bottom: 15px; }
+.footer-table 			{ width: 100%; border: none !important; background-color: #FFF !important; }
+.footer-table tr		{ background-color: #FFF !important; }
+.footer-table td 		{ vertical-align: top; border: none !important; padding: 5px 10px !important; background-color: #FFF !important; color: #444; }
+.footer-col-left 		{ width: 33%; }
+.footer-col-center 		{ width: 33%; }
+.footer-col-right 		{ width: 33%; }
+.footer-label			{ display: inline-block; width: 55px; }
+.totals-row td			{ background-color: #FFF !important; text-align: right; }
+.totals-row-border td	{ border-top: 2px solid #000 !important; padding-top: 10px !important; }
+.totals-row-final td	{ border-top: 1px solid #000 !important; border-bottom: 3px double #000 !important; padding: 10px 5px !important; font-size: 1.1em; }
+.pdf-button				{ margin: 20px 0; padding: 10px 20px; background-color: #4CAF50; color: white; border: none; cursor: pointer; font-size: 1em; }
+.pdf-button:hover		{ background-color: #45a049; }
 
 @media print {
 	h1 					{ font-size: 12; font-size: 1em; }

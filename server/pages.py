@@ -27,6 +27,12 @@ def Header1(active_page=None):
     else:
         nav_items.append('<a href="/">Dashboard</a>')
     
+    # Rechnung
+    if active_page == 'invoice':
+        nav_items.append('<span id="ActivePage">Rechnung</span>')
+    else:
+        nav_items.append('<a href="/invoice">Rechnung</a>')
+    
     # Belege
     if active_page == 'receipts':
         nav_items.append('<span id="ActivePage">Belege</span>')
@@ -121,8 +127,8 @@ def PageRoot(db: Database):
     <h2>SQL-Befehle ausführen</h2>
     <form method="POST" action="/execute_sql">
         <p>Geben Sie hier SQL-Befehle ein (mehrere Befehle durch Semikolon getrennt):</p>
-        <textarea name="sql_commands" rows="15" cols="100" style="font-family: monospace; width: 100%; max-width: 1000px;" placeholder="INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description) VALUES (4, 1000, 'Kasse', 'Barkasse');
-INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description) VALUES (4, 1200, 'Bank', 'Bankguthaben');"></textarea>
+        <textarea name="sql_commands" rows="15" cols="100" style="font-family: monospace; width: 100%; max-width: 1000px;" placeholder="INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStandard) VALUES (4, 1000, 'Kasse', 'Barkasse', 1);
+INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStandard) VALUES (4, 1200, 'Bank', 'Bankguthaben', 1);"></textarea>
         <br>
         <input type="submit" value="SQL ausführen" style="margin-top: 10px; padding: 8px 20px; background-color: #4CAF50; color: white; border: none; cursor: pointer;">
         <span style="color: red; margin-left: 20px;">⚠️ Vorsicht: SQL-Befehle werden direkt ausgeführt!</span>
@@ -430,7 +436,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     current_year = datetime.datetime.now().year
     
     # Get filter data
-    customers = db.fetch_customers()
+    customers = db.fetch_contacts(contact_type='customer')
     coa_accounts = db.fetch_chart_of_accounts()
     
     header3_content = f'''
@@ -440,15 +446,6 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                 <label>Bis:</label> <input type="date" id="dateTo" onchange="filterTransactions()">
                 <button onclick="setTransactionYear({current_year})">{current_year}</button>
                 <button onclick="setTransactionYear({current_year-1})">{current_year-1}</button>
-            </div>
-            <div>
-                <label>Status:</label>
-                <select id="statusFilter" onchange="filterTransactions()">
-                    <option value="">Alle</option>
-                    <option value="posted" selected>Gebucht</option>
-                    <option value="draft">Entwurf</option>
-                    <option value="cancelled">Storniert</option>
-                </select>
             </div>
             <div>
                 <label>Kunde:</label>
@@ -492,7 +489,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             edit_text = edit_trans[14] or ""  # Text
     
     # Get dropdown data (reuse customers variable from above)
-    customers = db.fetch_customers()
+    customers = db.fetch_contacts(contact_type='customer')
     coa_accounts = db.fetch_chart_of_accounts()
     booking_groups = db.fetch_booking_groups()
     
@@ -502,13 +499,15 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     transaction_id = edit_trans[0] if edit_trans else 0
     
     # Container for side-by-side areas
+    id_display = f'<tr><td>ID:</td><td style="color: #666;">{transaction_id}<input type="hidden" name="transaction_id" value="{transaction_id}"></td></tr>' if edit_trans else ''
+    
     s+= f'''
     <div class="accounts-container">
         <div>
             <h2>{form_title}</h2>
             <form method="POST" action="/transactions/add">
                 <table>
-                    <tr><td>ID:</td><td><input type="text" name="transaction_id" value="{transaction_id}" readonly style="background-color: #f0f0f0;"></td></tr>
+                    {id_display}
                     <tr><td>Buchungsdatum:</td><td><input type="date" name="date" value="{edit_trans[1] if edit_trans else ""}" required></td></tr>
                     <tr><td>Steuerdatum:</td><td><input type="date" name="date_tax" value="{edit_trans[2] if edit_trans and edit_trans[2] else ""}"></td></tr>
                     
@@ -528,14 +527,14 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                     </select></td></tr>
                     <tr><td>Fremdes Konto/IBAN:</td><td><input type="text" name="foreign_account" value="{edit_trans[5] if edit_trans and edit_trans[5] else ""}" size="40"></td></tr>
                     
-                    <tr><td>Kunde:</td><td><select name="customer_id">
+                    <tr><td>Kunde:</td><td><select name="contact_id">
                         <option value="">-- Kein Kunde --</option>
     '''
-    selected_customer_id = edit_trans[7] if edit_trans else None
-    for customer in customers:
-        selected = 'selected' if selected_customer_id and customer[0] == selected_customer_id else ''
-        customer_display = f"{customer[2]} ({customer[3] or 'Privat'})" if customer[2] else customer[3] or f"ID {customer[0]}"
-        s+= f'<option value="{customer[0]}" {selected}>{customer_display}</option>'
+    selected_contact_id = edit_trans[7] if edit_trans else None
+    for contact in customers:
+        selected = 'selected' if selected_contact_id and contact[0] == selected_contact_id else ''
+        contact_display = f"{contact[2]} ({contact[3] or 'Privat'})" if contact[2] else contact[3] or f"ID {contact[0]}"
+        s+= f'<option value="{contact[0]}" {selected}>{contact_display}</option>'
     
     s+= f'''
                     </select></td></tr>
@@ -564,43 +563,42 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     s+= f'''
                     </select></td></tr>
                     
-                    <tr><td>Betrag:</td><td><input type="number" step="0.01" name="amount" value="{edit_trans[10] if edit_trans else ""}" required></td></tr>
+                    <tr><td>Betrag:</td><td><input type="number" step="0.01" name="amount" id="amount" value="{edit_trans[10] if edit_trans else ""}" required></td></tr>
                     <tr><td>Währung:</td><td><input type="text" name="currency" value="{edit_trans[11] if edit_trans else "EUR"}" size="5"></td></tr>
                     
-                    <tr><td>Steuersatz (%):</td><td><input type="number" step="0.01" name="tax_rate" value="{edit_trans[12]*100 if edit_trans and edit_trans[12] else ""}" placeholder="z.B. 19 für 19%"></td></tr>
-                    <tr><td>Steuerbetrag:</td><td><input type="number" step="0.01" name="tax_amount" value="{edit_trans[13] if edit_trans and edit_trans[13] else ""}"></td></tr>
+                    <tr><td>Steuersatz (%):</td><td><input type="number" step="0.01" name="tax_rate" id="tax_rate" value="{edit_trans[12]*100 if edit_trans and edit_trans[12] else ""}" placeholder="z.B. 19 für 19%"></td></tr>
+                    <tr><td>Steuerbetrag:</td><td><input type="number" step="0.01" name="tax_amount" id="tax_amount" value="{edit_trans[13] if edit_trans and edit_trans[13] else ""}"></td></tr>
                     
                     <tr><td>Beleg-Nr.:</td><td><input type="text" name="document_nr" value="{edit_trans[15] if edit_trans and edit_trans[15] else ""}"></td></tr>
                     
-                    <tr><td>Buchungstyp:</td><td><select name="booking_type">
-                        <option value="">-- Automatisch --</option>
     '''
-    selected_booking_type = edit_trans[16] if edit_trans else None
-    for btype in [('income', 'Einnahme'), ('expense', 'Ausgabe')]:
-        selected = 'selected' if selected_booking_type == btype[0] else ''
-        s+= f'<option value="{btype[0]}" {selected}>{btype[1]}</option>'
-    
-    s+= f'''
-                    </select></td></tr>
-                    
-                    <tr><td>Status:</td><td><select name="status">
-    '''
-    selected_status = edit_trans[17] if edit_trans else 'posted'
-    for status in [('draft', 'Entwurf'), ('posted', 'Gebucht'), ('cancelled', 'Storniert')]:
-        selected = 'selected' if selected_status == status[0] else ''
-        s+= f'<option value="{status[0]}" {selected}>{status[1]}</option>'
     
     neu_button = '<a href="/transactions" style="margin-left: 10px; padding: 5px 10px; background-color: #888; color: white; text-decoration: none; display: inline-block;">Neu</a>' if edit_trans else ''
     
     s+= f'''
-                    </select></td></tr>
-                    
                     <tr><td></td><td>
                         <input type="submit" value="{submit_text}">
                         {neu_button}
                     </td></tr>
                 </table>
             </form>
+            
+            <script>
+                // Automatische Berechnung des Steuerbetrags
+                function calculateTax() {{
+                    const amount = parseFloat(document.getElementById('amount').value) || 0;
+                    const taxRate = parseFloat(document.getElementById('tax_rate').value) || 0;
+                    
+                    if (amount !== 0 && taxRate !== 0) {{
+                        const taxAmount = amount * (taxRate / 100);
+                        document.getElementById('tax_amount').value = taxAmount.toFixed(2);
+                    }}
+                }}
+                
+                // Event Listener für Betrag und Steuersatz
+                document.getElementById('amount').addEventListener('input', calculateTax);
+                document.getElementById('tax_rate').addEventListener('input', calculateTax);
+            </script>
     '''
     
     # Show linked documents if editing
@@ -736,7 +734,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     
     s+= "<h2>Kontobewegungen</h2>"
     s+= "<table border='1'>"
-    s+= "<tr><th>Datum</th><th>Empfänger/Auftragg.</th><th>Text</th><th>Betrag</th><th>Währung</th><th>Konto</th><th>Kunde</th><th>SKR</th><th>Status</th><th>Aktionen</th></tr>"
+    s+= "<tr><th>Datum</th><th>Empfänger/Auftragg.</th><th>Text</th><th>Betrag</th><th>Währung</th><th>Konto</th><th>Kunde</th><th>SKR</th><th>Aktionen</th></tr>"
     
     # Load bookings from database
     bookings = db.fetch_bookings()
@@ -747,7 +745,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
         account_map[account[0]] = account[1]  # ID -> Name
     
     # Create customer mapping
-    customers = db.fetch_customers()
+    customers = db.fetch_contacts(contact_type='customer')
     customer_map = {}
     for customer in customers:
         customer_map[customer[0]] = customer[2] or customer[3]  # Name or Company
@@ -763,39 +761,32 @@ def PageTransactions(db: Database, edit_transaction_id=None):
         date_booking = booking[1]
         account_id = booking[4]
         recipient = booking[6] or ""
-        customer_id = booking[7]
+        contact_id = booking[7]
         coa_id = booking[8]
         amount = booking[10]
         currency = booking[11] or "EUR"
         text = booking[14] or ""
-        status = booking[17] or "posted"
         
         # Get mapped names
         account_name = account_map.get(account_id, "") if account_id else ""
-        customer_name = customer_map.get(customer_id, "") if customer_id else ""
+        contact_name = customer_map.get(contact_id, "") if contact_id else ""
         coa_number = coa_map.get(coa_id, "") if coa_id else ""
         
         # Color code amount
         amount_color = "green" if amount > 0 else "red"
         
-        # Status color
-        status_colors = {'draft': 'orange', 'posted': 'black', 'cancelled': 'gray'}
-        status_color = status_colors.get(status, 'black')
-        status_text = {'draft': 'Entwurf', 'posted': 'Gebucht', 'cancelled': 'Storniert'}.get(status, status)
-        
         # Add data attributes for filtering
         account_id_str = account_id or ''
-        customer_id_str = customer_id or ''
-        s+= f"<tr class='transaction-row' data-account-id='{account_id_str}' data-date='{date_booking}' data-status='{status}' data-customer-id='{customer_id_str}' data-currency='{currency}' data-amount='{amount}'>"
+        contact_id_str = contact_id or ''
+        s+= f"<tr class='transaction-row' data-account-id='{account_id_str}' data-date='{date_booking}' data-contact-id='{contact_id_str}' data-currency='{currency}' data-amount='{amount}'>"
         s+= f"<td>{date_booking}</td>"
         s+= f"<td>{recipient[:25]}</td>"
         s+= f"<td>{text[:35]}</td>"
         s+= f"<td style='color:{amount_color}'>{amount:.2f}</td>"
         s+= f"<td>{currency}</td>"
         s+= f"<td>{account_name[:20]}</td>"
-        s+= f"<td>{customer_name[:20]}</td>"
+        s+= f"<td>{contact_name[:20]}</td>"
         s+= f"<td>{coa_number}</td>"
-        s+= f"<td style='color:{status_color}'>{status_text}</td>"
         s+= f"<td><a href='/transactions/edit?id={booking_id}'>Bearbeiten</a></td>"
         s+= f"</tr>"
     
@@ -813,7 +804,6 @@ def PageTransactions(db: Database, edit_transaction_id=None):
         function filterTransactions() {
             const dateFrom = document.getElementById('dateFrom').value;
             const dateTo = document.getElementById('dateTo').value;
-            const statusFilter = document.getElementById('statusFilter').value;
             const customerFilter = document.getElementById('customerFilter').value;
             const currencyFilter = document.getElementById('currencyFilter').value;
             const minAmount = parseFloat(document.getElementById('minAmount').value) || null;
@@ -823,7 +813,6 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             
             rows.forEach(row => {
                 const rowDate = row.getAttribute('data-date');
-                const rowStatus = row.getAttribute('data-status');
                 const rowCustomerId = row.getAttribute('data-customer-id');
                 const rowCurrency = row.getAttribute('data-currency');
                 const rowAmount = parseFloat(row.getAttribute('data-amount'));
@@ -834,9 +823,6 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                 // Check date filter
                 if (dateFrom && rowDate < dateFrom) show = false;
                 if (dateTo && rowDate > dateTo) show = false;
-                
-                // Check status filter
-                if (statusFilter && rowStatus !== statusFilter) show = false;
                 
                 // Check customer filter
                 if (customerFilter && rowCustomerId !== customerFilter) show = false;
@@ -966,10 +952,13 @@ def PageSkr(db: Database):
     '''
     s+= "<h2>Standardkontorahmen, definierte Konten</h2>"
     s+= "<table border='1'>"
-    s+= "<tr><th>ID</th><th>SKR-Nr.</th><th>Konto</th><th>Name</th><th>Gruppe</th><th>Aktionen</th></tr>"
+    s+= "<tr><th>ID</th><th>SKR-Nr.</th><th>Konto</th><th>Name</th><th>Gruppe</th><th>Standard</th><th>Aktionen</th></tr>"
     for row in rows:
-        s+= f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td>"
-        s+= f"<td><a href='/edit_skr?id={row[0]}'>Bearbeiten</a></td></tr>"
+        is_standard = row[5] if len(row) > 5 else 0
+        standard_text = "✓" if is_standard else ""
+        edit_link = "<span style='color: #888;'>Standard (nicht bearbeitbar)</span>" if is_standard else f"<a href='/edit_skr?id={row[0]}'>Bearbeiten</a>"
+        s+= f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td><td>{standard_text}</td>"
+        s+= f"<td>{edit_link}</td></tr>"
     s+= "</table>"
     s+= Footer()
     return s
@@ -1002,6 +991,408 @@ def PageSkrEdit(db: Database, id):
         </form>
     '''
     s+= Footer()
+    return s
+
+def PageInvoice(db: Database):
+    """Generate invoice page"""
+    # Get company data (own contact)
+    own_contacts = db.fetch_contacts(contact_type='own')
+    own_contact = own_contacts[0] if own_contacts else None
+    
+    # Get customers for selection
+    customers = db.fetch_contacts(contact_type='customer')
+    
+    # Get bank accounts for selection
+    accounts = db.fetch_accounts()
+    
+    s = Header1('invoice')
+    s += Header2()
+    s += '''
+    <div class="invoice-container" id="invoice_container">
+        <div class="invoice-header">
+            <div class="invoice-logo">
+                <img src="/static/logo.png" alt="Firmenlogo" style="max-width: 150px; max-height: 80px;" onerror="this.style.display='none';">
+            </div>
+            <div class="invoice-meta">
+                <table class="invoice-meta-table">
+                    <tr><td>Datum:</td><td><input type="date" id="invoice_date" value="" style="width: 150px;"></td></tr>
+                    <tr><td>Rechnungs-Nr.:</td><td><input type="text" id="invoice_number" style="width: 150px;"></td></tr>
+                    <tr><td>Kunden-Nr.:</td><td><input type="text" id="customer_number" readonly style="width: 150px; background-color: #f0f0f0;"></td></tr>
+                </table>
+            </div>
+        </div>
+        
+        <div class="invoice-address-block">
+            <div class="invoice-sender-line">
+    '''
+    
+    if own_contact:
+        sender_street = own_contact[5] or ''
+        sender_postal = own_contact[6] or ''
+        sender_city = own_contact[7] or ''
+        sender_name = own_contact[4] or own_contact[3] or ''
+        s += f'{sender_name} · {sender_street} · {sender_postal} {sender_city}'
+    else:
+        s += 'Eigene Adresse in Kontakte anlegen (Typ: own)'
+    
+    s += '''            </div>
+            <div class="invoice-customer-address">
+                <select id="customer_select" onchange="updateCustomerAddress()" style="margin-bottom: 10px; width: 100%;" class="no-pdf">
+                    <option value="">-- Kunde auswählen --</option>
+    '''
+    
+    for customer in customers:
+        cust_name = customer[3] or customer[4] or f"ID {customer[0]}"
+        s += f'<option value="{customer[0]}">{cust_name}</option>'
+    
+    s += '''                </select>
+                <div id="customer_address_display" style="min-height: 80px; white-space: pre-line;">
+                    
+                </div>
+            </div>
+        </div>
+        
+        <h1 class="invoice-title">Rechnung</h1>
+        
+        <table class="invoice-items" id="invoice_table">
+            <thead>
+                <tr>
+                    <th style="width: 40px;">Pos.</th>
+                    <th style="width: 70px;">Menge</th>
+                    <th style="width: 70px;">Einheit</th>
+                    <th>Bezeichnung</th>
+                    <th style="width: 100px;">Einzelpreis</th>
+                    <th style="width: 100px;">Gesamt</th>
+                    <th style="width: 30px;" class="no-pdf"></th>
+                </tr>
+            </thead>
+            <tbody id="invoice_items_body">
+                <tr class="invoice-item-row" data-row="1">
+                    <td>1</td>
+                    <td><input type="number" class="item-quantity" value="1" min="0" step="0.01" style="width: 60px;"></td>
+                    <td><input type="text" class="item-unit" value="Stk." style="width: 60px;"></td>
+                    <td><input type="text" class="item-description" style="width: 100%;"></td>
+                    <td><input type="number" class="item-price" value="0" min="0" step="0.01" style="width: 80px;"> €</td>
+                    <td class="item-total" style="text-align: right;">0,00 €</td>
+                    <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color: red;">✕</button></td>
+                </tr>
+            </tbody>
+            <tfoot>
+                <tr><td colspan="7" style="height: 10px; border: none;"></td></tr>
+                <tr class="totals-row totals-row-border">
+                    <td colspan="5" style="text-align: right; border: none;">Summe netto:</td>
+                    <td id="sum_net" style="text-align: right; font-weight: bold;">0,00 €</td>
+                    <td class="no-pdf" style="border: none;"></td>
+                </tr>
+                <tr class="totals-row">
+                    <td colspan="4" style="text-align: right; border: none;">Mehrwertsteuer</td>
+                    <td style="text-align: right; border: none;"><input type="number" id="tax_rate" value="19" min="0" max="100" step="0.1" style="width: 50px;">% auf <span id="tax_base">0,00</span> € netto:</td>
+                    <td id="tax_amount" style="text-align: right; font-weight: bold;">0,00 €</td>
+                    <td class="no-pdf" style="border: none;"></td>
+                </tr>
+                <tr class="totals-row totals-row-final">
+                    <td colspan="5" style="text-align: right; border: none;"><strong>Gesamtbetrag:</strong></td>
+                    <td id="sum_gross" style="text-align: right; font-weight: bold;"><strong>0,00 €</strong></td>
+                    <td class="no-pdf" style="border: none;"></td>
+                </tr>
+            </tfoot>
+        </table>
+        
+        <button type="button" onclick="addRow()" style="margin: 10px 0;" class="no-pdf">+ Position hinzufügen</button>
+        
+        <div class="invoice-payment-terms">
+            <textarea id="payment_terms" rows="3" style="width: 100%;">Bitte überweisen Sie den Gesamtbetrag ohne jeden Abzug unter Angabe der Rechnungsnummer innerhalb von 14 Tagen ab Rechnungsdatum auf das unten angegebene Konto. Vielen Dank.</textarea>
+        </div>
+        
+        <div class="invoice-footer">
+            <hr>
+            <table class="footer-table">
+                <tr>
+                    <td class="footer-col-left">
+    '''
+    
+    if own_contact:
+        s += f'''                        <strong>{own_contact[4] or own_contact[3] or 'Firmenname'}</strong><br>
+                        {own_contact[3] or 'Ansprechpartner'}<br>
+                        {own_contact[5] or 'Straße'}<br>
+                        {own_contact[6] or 'PLZ'} {own_contact[7] or 'Ort'}'''
+    else:
+        s += '                        <em>Eigene Firmendaten in Kontakte anlegen</em>'
+    
+    s += '''                    </td>
+                    <td class="footer-col-center">
+    '''
+    
+    if own_contact:
+        s += f'''                        <span class="footer-label">Tel</span> {own_contact[10] or '-'}<br>
+                        <span class="footer-label">E-Mail</span> {own_contact[9] or '-'}<br>
+                        <span class="footer-label">UStIdNr</span> {own_contact[11] or '-'}'''
+    else:
+        s += '                        <em>Kontaktdaten fehlen</em>'
+    
+    s += '''                    </td>
+                    <td class="footer-col-right">
+                        <strong>Bankverbindung</strong><br>
+                        <select id="bank_account_select" onchange="updateBankDetails()" style="width: 100%; margin-top: 5px;" class="no-pdf">
+                            <option value="">-- Konto auswählen --</option>
+    '''
+    
+    for account in accounts:
+        if not account[6]:  # Skip cash accounts (IsCash=1)
+            s += f'<option value="{account[0]}">{account[1]}</option>'
+    
+    s += '''                        </select>
+                        <div id="bank_details" style="margin-top: 5px;">
+                            
+                        </div>
+                    </td>
+                </tr>
+            </table>
+        </div>
+    </div>
+    
+    <div style="text-align: center; margin: 20px 0;">
+        <button type="button" onclick="generatePDF()" class="pdf-button no-pdf">📄 Als PDF exportieren</button>
+    </div>
+    
+    <script>
+        // Customer data from server
+        const customersData = {'''
+    
+    # Build JavaScript customer data object
+    customer_js_data = []
+    for customer in customers:
+        cust_data = {
+            'id': customer[0],
+            'customer_number': customer[2] or '',
+            'name': customer[3] or '',
+            'company': customer[4] or '',
+            'street': customer[5] or '',
+            'postal': customer[6] or '',
+            'city': customer[7] or ''
+        }
+        customer_js_data.append(f'{customer[0]}: {cust_data}')
+    
+    s += ',\n            '.join(customer_js_data)
+    
+    s += '''
+        };
+        
+        // Bank accounts data from server
+        const banksData = {'''
+    
+    # Build JavaScript bank data object
+    bank_js_data = []
+    for account in accounts:
+        if not account[6]:  # Skip cash accounts
+            bank_data = {
+                'name': account[1],
+                'bank_name': account[5] or '',
+                'iban': account[3] or '',
+                'bic': account[4] or ''
+            }
+            bank_js_data.append(f'{account[0]}: {bank_data}')
+    
+    s += ',\n            '.join(bank_js_data)
+    
+    s += '''
+        };
+        
+        // Set today's date
+        document.getElementById('invoice_date').valueAsDate = new Date();
+        
+        // Update customer address
+        function updateCustomerAddress() {
+            const customerId = document.getElementById('customer_select').value;
+            const addressDisplay = document.getElementById('customer_address_display');
+            const customerNumberField = document.getElementById('customer_number');
+            
+            if (!customerId) {
+                addressDisplay.innerHTML = '';
+                customerNumberField.value = '';
+                return;
+            }
+            
+            const customer = customersData[customerId];
+            if (customer) {
+                const displayName = customer.company || customer.name;
+                let address = displayName + '\\n';
+                if (customer.street) address += customer.street + '\\n';
+                if (customer.postal || customer.city) address += (customer.postal + ' ' + customer.city).trim();
+                
+                addressDisplay.textContent = address;
+                customerNumberField.value = customer.customer_number;
+            }
+        }
+        
+        // Update bank details
+        function updateBankDetails() {
+            const bankId = document.getElementById('bank_account_select').value;
+            const bankDetails = document.getElementById('bank_details');
+            
+            if (!bankId) {
+                bankDetails.innerHTML = '';
+                return;
+            }
+            
+            const bank = banksData[bankId];
+            if (bank) {
+                let details = '<span class="footer-label">Bank</span> ' + bank.bank_name + '<br>';
+                details += '<span class="footer-label">IBAN</span> ' + bank.iban + '<br>';
+                details += '<span class="footer-label">BIC</span> ' + bank.bic;
+                bankDetails.innerHTML = details;
+            }
+        }
+        
+        let rowCounter = 1;
+        
+        // Add new row
+        function addRow() {
+            rowCounter++;
+            const tbody = document.getElementById('invoice_items_body');
+            const newRow = document.createElement('tr');
+            newRow.className = 'invoice-item-row';
+            newRow.setAttribute('data-row', rowCounter);
+            newRow.innerHTML = `
+                <td>${rowCounter}</td>
+                <td><input type="number" class="item-quantity" value="1" min="0" step="0.01" style="width: 60px;"></td>
+                <td><input type="text" class="item-unit" value="Stk." style="width: 60px;"></td>
+                <td><input type="text" class="item-description" style="width: 100%;"></td>
+                <td><input type="number" class="item-price" value="0" min="0" step="0.01" style="width: 80px;"> €</td>
+                <td class="item-total" style="text-align: right;">0,00 €</td>
+                <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color: red;">✕</button></td>
+            `;
+            tbody.appendChild(newRow);
+            attachCalculationListeners(newRow);
+            calculateTotals();
+        }
+        
+        // Remove row
+        function removeRow(button) {
+            const row = button.closest('tr');
+            row.remove();
+            renumberRows();
+            calculateTotals();
+        }
+        
+        // Renumber rows
+        function renumberRows() {
+            const rows = document.querySelectorAll('.invoice-item-row');
+            rows.forEach((row, index) => {
+                row.querySelector('td:first-child').textContent = index + 1;
+                row.setAttribute('data-row', index + 1);
+            });
+            rowCounter = rows.length;
+        }
+        
+        // Calculate row total
+        function calculateRowTotal(row) {
+            const quantity = parseFloat(row.querySelector('.item-quantity').value) || 0;
+            const price = parseFloat(row.querySelector('.item-price').value) || 0;
+            const total = quantity * price;
+            row.querySelector('.item-total').textContent = total.toFixed(2).replace('.', ',') + ' €';
+        }
+        
+        // Calculate all totals
+        function calculateTotals() {
+            // Calculate sum of all items
+            let sumNet = 0;
+            document.querySelectorAll('.invoice-item-row').forEach(row => {
+                calculateRowTotal(row);
+                const totalText = row.querySelector('.item-total').textContent;
+                const total = parseFloat(totalText.replace(' €', '').replace(',', '.')) || 0;
+                sumNet += total;
+            });
+            
+            // Update net sum
+            document.getElementById('sum_net').textContent = sumNet.toFixed(2).replace('.', ',') + ' €';
+            document.getElementById('tax_base').textContent = sumNet.toFixed(2).replace('.', ',');
+            
+            // Calculate tax
+            const taxRate = parseFloat(document.getElementById('tax_rate').value) || 0;
+            const taxAmount = sumNet * (taxRate / 100);
+            document.getElementById('tax_amount').textContent = taxAmount.toFixed(2).replace('.', ',') + ' €';
+            
+            // Calculate gross sum
+            const sumGross = sumNet + taxAmount;
+            document.getElementById('sum_gross').innerHTML = '<strong>' + sumGross.toFixed(2).replace('.', ',') + ' €</strong>';
+        }
+        
+        // Attach listeners to row inputs
+        function attachCalculationListeners(row) {
+            row.querySelector('.item-quantity').addEventListener('input', calculateTotals);
+            row.querySelector('.item-price').addEventListener('input', calculateTotals);
+        }
+        
+        // Attach listeners to tax rate
+        document.getElementById('tax_rate').addEventListener('input', calculateTotals);
+        
+        // Attach listeners to initial row
+        document.querySelectorAll('.invoice-item-row').forEach(attachCalculationListeners);
+        
+        // Initial calculation
+        calculateTotals();
+        
+        // Generate PDF
+        function generatePDF() {
+            // Get selected customer name
+            const customerId = document.getElementById('customer_select').value;
+            let customerName = '';
+            if (customerId && customersData[customerId]) {
+                customerName = customersData[customerId].name || '';
+            }
+            
+            // Collect invoice data
+            const invoiceData = {
+                date: document.getElementById('invoice_date').value,
+                number: document.getElementById('invoice_number').value,
+                customerNumber: document.getElementById('customer_number').value,
+                customerAddress: document.getElementById('customer_address_display').textContent,
+                customerName: customerName,
+                items: [],
+                taxRate: parseFloat(document.getElementById('tax_rate').value) || 19,
+                sumNet: document.getElementById('sum_net').textContent,
+                taxAmount: document.getElementById('tax_amount').textContent,
+                sumGross: document.getElementById('sum_gross').textContent.replace(/<[^>]*>/g, ''),
+                paymentTerms: document.getElementById('payment_terms').value,
+                bankDetails: document.getElementById('bank_details').innerHTML
+            };
+            
+            // Collect items
+            document.querySelectorAll('.invoice-item-row').forEach(row => {
+                invoiceData.items.push({
+                    pos: row.querySelector('td:first-child').textContent,
+                    quantity: row.querySelector('.item-quantity').value,
+                    unit: row.querySelector('.item-unit').value,
+                    description: row.querySelector('.item-description').value,
+                    price: row.querySelector('.item-price').value,
+                    total: row.querySelector('.item-total').textContent
+                });
+            });
+            
+            // Send to server for PDF generation
+            fetch('/invoice/pdf', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(invoiceData)
+            })
+            .then(response => response.blob())
+            .then(blob => {
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'Rechnung_' + (invoiceData.number || 'Entwurf') + '.pdf';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                window.URL.revokeObjectURL(url);
+            })
+            .catch(err => alert('Fehler beim PDF-Export: ' + err));
+        }
+    </script>
+    '''
+    
+    s += Footer()
     return s
 
 def PageContacts(db: Database):
