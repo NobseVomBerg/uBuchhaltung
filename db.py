@@ -103,6 +103,7 @@ class Database:
                 Phone TEXT,
                 TaxID TEXT,
                 Notes TEXT,
+                Logo TEXT,
                 UNIQUE(CustomerNumber)
             )
         ''')
@@ -169,12 +170,62 @@ class Database:
             )
         ''')
 
+        # Articles table for product/service catalog
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS Articles (
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                Name TEXT NOT NULL,
+                Unit TEXT DEFAULT 'Stk.',
+                UnitPrice REAL DEFAULT 0,
+                TaxRate REAL DEFAULT 19,
+                Description TEXT,
+                Active INTEGER DEFAULT 1
+            )
+        ''')
+
+        # NumberRanges table for invoice/receipt numbering
+        # Type: 'invoice' (Ausgangsrechnungen), 'receipt_company' (Belege Firma), 'receipt_category' (Belege Kategorien)
+        # Format: e.g., 'R' for Rechnungen, 'B' for Belege, etc.
+        # Prefix: optional prefix for subdivision (e.g., '_A', '_B')
+        # CurrentNumber: the last used number in this range
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS NumberRanges (
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                Type TEXT NOT NULL,
+                Year INTEGER NOT NULL,
+                Letter TEXT NOT NULL,
+                Prefix TEXT DEFAULT '',
+                CurrentNumber INTEGER DEFAULT 0,
+                Description TEXT,
+                UNIQUE(Type, Year, Letter, Prefix)
+            )
+        ''')
+
         conn.commit()
         conn.close()
         
+        # Run migrations
+        self._migrate_contacts_logo_column()
+        
         # Ensure the default "Kasse" account exists
         self.ensure_kasse_exists()
-
+    
+    def _migrate_contacts_logo_column(self):
+        """Add Logo column to Contacts table if it doesn't exist"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        # Check if Logo column exists
+        cursor.execute("PRAGMA table_info(Contacts)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'Logo' not in columns:
+            try:
+                cursor.execute('ALTER TABLE Contacts ADD COLUMN Logo TEXT')
+                conn.commit()
+                print("Migration: Added Logo column to Contacts table")
+            except sqlite3.OperationalError as e:
+                print(f"Migration warning: {e}")
+        conn.close()
+        
     # Table Documents (Receipts)
     def fetch_receipts(self):
         conn = self._get_connection()
@@ -669,15 +720,15 @@ class Database:
         finally:
             conn.close()
 
-    def update_contact(self, contact_id, name, contact_type="customer", customer_number="", company="", street="", postal_code="", city="", country="", email="", phone="", tax_id="", notes=""):
+    def update_contact(self, contact_id, name, contact_type="customer", customer_number="", company="", street="", postal_code="", city="", country="", email="", phone="", tax_id="", notes="", logo=""):
         """Update existing contact"""
         conn = self._get_connection()
         cursor = conn.cursor()
         sql_template = '''
                 UPDATE Contacts
-                SET ContactType = ?, CustomerNumber = ?, Name = ?, Company = ?, Street = ?, PostalCode = ?, City = ?, Country = ?, Email = ?, Phone = ?, TaxID = ?, Notes = ?
+                SET ContactType = ?, CustomerNumber = ?, Name = ?, Company = ?, Street = ?, PostalCode = ?, City = ?, Country = ?, Email = ?, Phone = ?, TaxID = ?, Notes = ?, Logo = ?
                 WHERE ID = ?'''
-        params = (contact_type, customer_number, name, company, street, postal_code, city, country, email, phone, tax_id, notes, contact_id)
+        params = (contact_type, customer_number, name, company, street, postal_code, city, country, email, phone, tax_id, notes, logo, contact_id)
         try:
             cursor.execute(sql_template, params)
             conn.commit()
@@ -696,3 +747,277 @@ class Database:
         cursor.execute('DELETE FROM Contacts WHERE ID = ?', (contact_id,))
         conn.commit()
         conn.close()
+
+    # Table Articles
+    def fetch_articles(self, active_only=False):
+        """Fetch all articles
+        
+        Args:
+            active_only: If True, only return active articles (default: False)
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        if active_only:
+            cursor.execute('SELECT * FROM Articles WHERE Active = 1 ORDER BY Name')
+        else:
+            cursor.execute('SELECT * FROM Articles ORDER BY Name')
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
+    def get_article_by_id(self, article_id):
+        """Get article by ID"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM Articles WHERE ID = ?', (article_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row
+
+    def insert_article(self, name, unit="Stk.", unit_price=0, tax_rate=19, description="", active=1):
+        """Insert new article
+        
+        Args:
+            name: Article name (required)
+            unit: Unit of measurement (default: Stk.)
+            unit_price: Net unit price (default: 0)
+            tax_rate: Tax rate in percent (default: 19)
+            description: Optional description
+            active: Whether article is active (default: 1=True)
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                INSERT INTO Articles (Name, Unit, UnitPrice, TaxRate, Description, Active)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (name, unit, unit_price, tax_rate, description, active))
+            conn.commit()
+        except sqlite3.IntegrityError as e:
+            print("Error inserting article:", e)
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def update_article(self, article_id, name, unit="Stk.", unit_price=0, tax_rate=19, description="", active=1):
+        """Update existing article"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                UPDATE Articles
+                SET Name = ?, Unit = ?, UnitPrice = ?, TaxRate = ?, Description = ?, Active = ?
+                WHERE ID = ?
+            ''', (name, unit, unit_price, tax_rate, description, active, article_id))
+            conn.commit()
+        except sqlite3.IntegrityError as e:
+            print("Error updating article:", e)
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def delete_article(self, article_id):
+        """Delete article"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM Articles WHERE ID = ?', (article_id,))
+        conn.commit()
+        conn.close()
+
+    # Table NumberRanges
+    def fetch_number_ranges(self, range_type=None):
+        """Fetch all number ranges, optionally filtered by type
+        
+        Args:
+            range_type: Optional filter ('invoice', 'receipt_company', 'receipt_category')
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        if range_type:
+            cursor.execute('SELECT * FROM NumberRanges WHERE Type = ? ORDER BY Year DESC, Letter, Prefix', (range_type,))
+        else:
+            cursor.execute('SELECT * FROM NumberRanges ORDER BY Type, Year DESC, Letter, Prefix')
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
+    def get_number_range(self, range_type, year, letter, prefix=''):
+        """Get a specific number range"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM NumberRanges 
+            WHERE Type = ? AND Year = ? AND Letter = ? AND Prefix = ?
+        ''', (range_type, year, letter, prefix))
+        row = cursor.fetchone()
+        conn.close()
+        return row
+
+    def get_number_range_by_id(self, range_id):
+        """Get number range by ID"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM NumberRanges WHERE ID = ?', (range_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row
+
+    def insert_number_range(self, range_type, year, letter, prefix='', current_number=0, description=''):
+        """Insert a new number range
+        
+        Args:
+            range_type: 'invoice', 'receipt_company', or 'receipt_category'
+            year: 4-digit year (will be stored as-is, displayed as 2-digit)
+            letter: Single letter identifier (e.g., 'R' for Rechnung)
+            prefix: Optional prefix for subdivision (e.g., '_A')
+            current_number: Starting number (default: 0)
+            description: Optional description
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                INSERT INTO NumberRanges (Type, Year, Letter, Prefix, CurrentNumber, Description)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (range_type, year, letter, prefix, current_number, description))
+            conn.commit()
+        except sqlite3.IntegrityError as e:
+            print("Error inserting number range:", e)
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def update_number_range(self, range_id, year, letter, prefix='', current_number=0, description=''):
+        """Update existing number range"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                UPDATE NumberRanges
+                SET Year = ?, Letter = ?, Prefix = ?, CurrentNumber = ?, Description = ?
+                WHERE ID = ?
+            ''', (year, letter, prefix, current_number, description, range_id))
+            conn.commit()
+        except sqlite3.IntegrityError as e:
+            print("Error updating number range:", e)
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def delete_number_range(self, range_id):
+        """Delete number range"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM NumberRanges WHERE ID = ?', (range_id,))
+        conn.commit()
+        conn.close()
+
+    def get_next_number(self, range_type, year, letter, prefix=''):
+        """Get the next available number in a range and increment the counter
+        
+        Returns the full formatted number string (e.g., '26R001' or '26R_A001')
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        # Try to get existing range
+        cursor.execute('''
+            SELECT ID, CurrentNumber FROM NumberRanges 
+            WHERE Type = ? AND Year = ? AND Letter = ? AND Prefix = ?
+        ''', (range_type, year, letter, prefix))
+        row = cursor.fetchone()
+        
+        if row:
+            range_id, current = row
+            next_num = current + 1
+            cursor.execute('UPDATE NumberRanges SET CurrentNumber = ? WHERE ID = ?', (next_num, range_id))
+        else:
+            # Create new range for this combination
+            next_num = 1
+            cursor.execute('''
+                INSERT INTO NumberRanges (Type, Year, Letter, Prefix, CurrentNumber, Description)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (range_type, year, letter, prefix, next_num, ''))
+        
+        conn.commit()
+        conn.close()
+        
+        # Format: YY[Letter]###[Prefix] (e.g., 26R001 or 26R001_A)
+        year_short = str(year)[-2:]
+        return f"{year_short}{letter}{next_num:03d}{prefix}"
+
+    def format_number(self, year, letter, prefix, number):
+        """Format a number according to the pattern YY[Letter]###[Prefix]"""
+        year_short = str(year)[-2:]
+        return f"{year_short}{letter}{number:03d}{prefix}"
+
+    def parse_number(self, number_str):
+        """Parse a formatted number string back to components
+        
+        Returns: (year, letter, prefix, number) or None if invalid
+        """
+        import re
+        # Pattern: 2-digit year, 1 letter, 3+ digits, optional prefix (_Letter)
+        match = re.match(r'^(\d{2})([A-Z])(\d{3,})(_[A-Z])?$', number_str)
+        if match:
+            year_short = int(match.group(1))
+            # Convert 2-digit year to 4-digit (assuming 2000s)
+            year = 2000 + year_short if year_short < 100 else year_short
+            letter = match.group(2)
+            number = int(match.group(3))
+            prefix = match.group(4) or ''
+            return (year, letter, prefix, number)
+        return None
+
+    def shift_numbers_up(self, range_type, year, letter, prefix, from_number):
+        """Shift all numbers >= from_number up by 1 in the specified range
+        
+        This is used when inserting a number that already exists.
+        Note: This updates the stored CurrentNumber if needed.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        # Get current max number
+        cursor.execute('''
+            SELECT ID, CurrentNumber FROM NumberRanges 
+            WHERE Type = ? AND Year = ? AND Letter = ? AND Prefix = ?
+        ''', (range_type, year, letter, prefix))
+        row = cursor.fetchone()
+        
+        if row:
+            range_id, current = row
+            if from_number <= current:
+                # Increment current number since we're inserting
+                cursor.execute('UPDATE NumberRanges SET CurrentNumber = ? WHERE ID = ?', (current + 1, range_id))
+        
+        conn.commit()
+        conn.close()
+        
+        # Return the new number that was inserted
+        return from_number
+
+    def get_current_number_info(self, range_type, year, letter, prefix=''):
+        """Get info about the current state of a number range
+        
+        Returns: dict with 'current_number', 'next_number', 'formatted_next'
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT CurrentNumber FROM NumberRanges 
+            WHERE Type = ? AND Year = ? AND Letter = ? AND Prefix = ?
+        ''', (range_type, year, letter, prefix))
+        row = cursor.fetchone()
+        conn.close()
+        
+        current = row[0] if row else 0
+        next_num = current + 1
+        year_short = str(year)[-2:]
+        
+        return {
+            'current_number': current,
+            'next_number': next_num,
+            'formatted_next': f"{year_short}{letter}{prefix}{next_num:03d}"
+        }

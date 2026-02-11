@@ -33,6 +33,12 @@ def Header1(active_page=None):
     else:
         nav_items.append('<a href="/invoice">Rechnung</a>')
     
+    # Artikel
+    if active_page == 'articles':
+        nav_items.append('<span id="ActivePage">Artikel</span>')
+    else:
+        nav_items.append('<a href="/articles">Artikel</a>')
+    
     # Belege
     if active_page == 'receipts':
         nav_items.append('<span id="ActivePage">Belege</span>')
@@ -151,7 +157,7 @@ def PageAbout():
 def PageSettings():
     """Generate settings page"""
     s = Header1('settings')
-    submenu = '<a href="/settings/bankaccounts">Bankkonten</a>'
+    submenu = '<a href="/settings/bankaccounts">Bankkonten</a> | <a href="/settings/numberranges">Nummernkreise</a>'
     s+= Header2(submenu)
     s+= Header3()
     s+= "<p>Hier können Sie verschiedene Einstellungen vornehmen.</p>"
@@ -164,13 +170,37 @@ def PageSettings():
 
 def PageReceipts(db: Database):
     """Generate receipts page with upload functionality"""
+    import datetime
+    current_year = datetime.datetime.now().year
+    
     rows = db.fetch_receipts()
+    
+    # Get next receipt number from number ranges (company receipts)
+    receipt_ranges = db.fetch_number_ranges('receipt_company')
+    next_receipt_number = ''
+    if receipt_ranges:
+        # Find the range for current year, or use the first available
+        current_range = None
+        for r in receipt_ranges:
+            if r[2] == current_year:
+                current_range = r
+                break
+        if not current_range and receipt_ranges:
+            current_range = receipt_ranges[0]
+        
+        if current_range:
+            year = current_range[2]
+            letter = current_range[3]
+            prefix = current_range[4] or ''
+            current_num = current_range[5] or 0
+            next_num = current_num + 1
+            year_short = str(year)[-2:]
+            next_receipt_number = f"{year_short}{letter}{prefix}{next_num:03d}"
+    
     s = Header1('receipts')
     s+= Header2()
     
     # Header3 with date filter
-    import datetime
-    current_year = datetime.datetime.now().year
     header3_content = f'''
         Von: <input type="date" id="dateFrom" onchange="filterReceiptsByDate()"> 
         Bis: <input type="date" id="dateTo" onchange="filterReceiptsByDate()"> &nbsp;
@@ -188,7 +218,9 @@ def PageReceipts(db: Database):
             <h2>Neuen Beleg anlegen</h2>
             <form method="POST" action="/add_receipt">
                 <table>
-                    <tr><td>Nummer:</td><td><input type="text" name="number"></td></tr>
+    '''
+    s+= f'<tr><td>Nummer:</td><td><input type="text" name="number" value="{next_receipt_number}"></td></tr>'
+    s+= '''
                     <tr><td>Datum:</td><td><input type="date" name="date"></td></tr>
                     <tr><td>Dateiname:</td><td><input type="text" name="filename"></td></tr>
                     <tr><td>Pfad:</td><td><input type="text" name="path"></td></tr>
@@ -813,7 +845,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             
             rows.forEach(row => {
                 const rowDate = row.getAttribute('data-date');
-                const rowCustomerId = row.getAttribute('data-customer-id');
+                const rowCustomerId = row.getAttribute('data-contact-id');
                 const rowCurrency = row.getAttribute('data-currency');
                 const rowAmount = parseFloat(row.getAttribute('data-amount'));
                 const rowAccountId = row.getAttribute('data-account-id');
@@ -932,6 +964,154 @@ def PageSettingsBankAccountEdit(db: Database, account_id):
     s+= Footer()
     return s
 
+
+def PageSettingsNumberRanges(db: Database):
+    """Generate number ranges management page"""
+    import datetime
+    current_year = datetime.datetime.now().year
+    
+    ranges = db.fetch_number_ranges()
+    s = Header1('settings')
+    submenu = '<a href="/settings">Einstellungen</a> -> <span id="ActivePage">Nummernkreise</span>'
+    s+= Header2(submenu)
+    s+= Header3()
+    
+    s+= '''
+        <h2>Nummernkreise</h2>
+        <p>Nummernkreise definieren die Nummerierung für Rechnungen und Belege.</p>
+        <p><strong>Format:</strong> JJ[Buchstabe][Präfix]### (z.B. 26R001 oder 26B_A001)</p>
+        <ul>
+            <li><strong>JJ</strong> = Jahr (2-stellig)</li>
+            <li><strong>Buchstabe</strong> = Kennzeichen für den Typ (z.B. R=Rechnung, B=Beleg)</li>
+            <li><strong>Präfix</strong> = Optional, für Unterteilungen (z.B. _A, _B)</li>
+            <li><strong>###</strong> = Fortlaufende Nummer (mind. 3 Stellen)</li>
+        </ul>
+        
+        <h3>Neuen Nummernkreis anlegen</h3>
+        <form method="POST" action="/settings/numberranges/add">
+            <table>
+                <tr><td>Typ:</td><td>
+                    <select name="type" required>
+                        <option value="invoice">Ausgangsrechnungen</option>
+                        <option value="receipt_company">Belegnummern Firma</option>
+                        <option value="receipt_category">Belegnummern Kategorien</option>
+                    </select>
+                </td></tr>
+    '''
+    s+= f'<tr><td>Jahr:</td><td><input type="number" name="year" value="{current_year}" min="2000" max="2099" required></td></tr>'
+    s+= '''
+                <tr><td>Buchstabe:</td><td><input type="text" name="letter" maxlength="1" pattern="[A-Z]" required placeholder="z.B. R" style="width: 50px; text-transform: uppercase;"> (A-Z)</td></tr>
+                <tr><td>Präfix (optional):</td><td><input type="text" name="prefix" maxlength="2" pattern="_[A-Z]" placeholder="z.B. _A" style="width: 50px; text-transform: uppercase;"> (Format: _X)</td></tr>
+                <tr><td>Aktuelle Nummer:</td><td><input type="number" name="current_number" value="0" min="0"> (letzte vergebene Nummer)</td></tr>
+                <tr><td>Beschreibung:</td><td><input type="text" name="description" size="40"></td></tr>
+                <tr><td></td><td><input type="submit" value="Nummernkreis hinzufügen"></td></tr>
+            </table>
+        </form>
+        
+        <h3>Bestehende Nummernkreise</h3>
+    '''
+    
+    # Group by type
+    type_names = {
+        'invoice': 'Ausgangsrechnungen',
+        'receipt_company': 'Belegnummern Firma',
+        'receipt_category': 'Belegnummern Kategorien'
+    }
+    
+    for range_type, type_name in type_names.items():
+        type_ranges = [r for r in ranges if r[1] == range_type]
+        s+= f"<h4>{type_name}</h4>"
+        
+        if type_ranges:
+            s+= "<table border='1'>"
+            s+= "<tr><th>ID</th><th>Jahr</th><th>Buchstabe</th><th>Präfix</th><th>Aktuelle Nr.</th><th>Nächste Nr.</th><th>Beschreibung</th><th>Aktionen</th></tr>"
+            
+            for r in type_ranges:
+                # r: ID=0, Type=1, Year=2, Letter=3, Prefix=4, CurrentNumber=5, Description=6
+                range_id = r[0]
+                year = r[2]
+                letter = r[3]
+                prefix = r[4] or ''
+                current_num = r[5] or 0
+                description = r[6] or ''
+                
+                year_short = str(year)[-2:]
+                next_num = current_num + 1
+                next_formatted = f"{year_short}{letter}{prefix}{next_num:03d}"
+                
+                s+= f"<tr>"
+                s+= f"<td>{range_id}</td>"
+                s+= f"<td>{year}</td>"
+                s+= f"<td>{letter}</td>"
+                s+= f"<td>{prefix}</td>"
+                s+= f"<td style='text-align: right;'>{current_num}</td>"
+                s+= f"<td><strong>{next_formatted}</strong></td>"
+                s+= f"<td>{description}</td>"
+                s+= f"<td><a href='/settings/numberranges/edit?id={range_id}'>Bearbeiten</a> | "
+                s+= f"<a href='/settings/numberranges/delete?id={range_id}' onclick='return confirm(\"Nummernkreis wirklich löschen?\")'>Löschen</a></td>"
+                s+= f"</tr>"
+            
+            s+= "</table>"
+        else:
+            s+= "<p><em>Keine Nummernkreise definiert.</em></p>"
+    
+    s+= Footer()
+    return s
+
+
+def PageSettingsNumberRangesEdit(db: Database, range_id):
+    """Generate number range edit page"""
+    nr = db.get_number_range_by_id(range_id)
+    if not nr:
+        return "Nummernkreis nicht gefunden."
+
+    # nr: ID=0, Type=1, Year=2, Letter=3, Prefix=4, CurrentNumber=5, Description=6
+    range_type = nr[1]
+    year = nr[2]
+    letter = nr[3]
+    prefix = nr[4] or ''
+    current_num = nr[5] or 0
+    description = nr[6] or ''
+    
+    type_names = {
+        'invoice': 'Ausgangsrechnungen',
+        'receipt_company': 'Belegnummern Firma',
+        'receipt_category': 'Belegnummern Kategorien'
+    }
+    type_name = type_names.get(range_type, range_type)
+    
+    year_short = str(year)[-2:]
+    next_num = current_num + 1
+    next_formatted = f"{year_short}{letter}{prefix}{next_num:03d}"
+
+    s = Header1('settings')
+    submenu = '<a href="/settings">Einstellungen</a> -> <a href="/settings/numberranges">Nummernkreise</a> -> <span id="ActivePage">Bearbeiten</span>'
+    s+= Header2(submenu)
+    s+= Header3()
+    
+    s+= f'''
+        <h2>Nummernkreis bearbeiten</h2>
+        <p>Typ: <strong>{type_name}</strong></p>
+        <p>Nächste Nummer wird sein: <strong>{next_formatted}</strong></p>
+        
+        <form method="POST" action="/settings/numberranges/update">
+            <input type="hidden" name="id" value="{range_id}">
+            <input type="hidden" name="type" value="{range_type}">
+            <table>
+                <tr><td>Jahr:</td><td><input type="number" name="year" value="{year}" min="2000" max="2099" required></td></tr>
+                <tr><td>Buchstabe:</td><td><input type="text" name="letter" value="{letter}" maxlength="1" pattern="[A-Z]" required style="width: 50px; text-transform: uppercase;"></td></tr>
+                <tr><td>Präfix (optional):</td><td><input type="text" name="prefix" value="{prefix}" maxlength="2" pattern="_[A-Z]" style="width: 50px; text-transform: uppercase;"></td></tr>
+                <tr><td>Aktuelle Nummer:</td><td><input type="number" name="current_number" value="{current_num}" min="0"> (letzte vergebene Nummer)</td></tr>
+                <tr><td>Beschreibung:</td><td><input type="text" name="description" value="{description}" size="40"></td></tr>
+                <tr><td></td><td><input type="submit" value="Nummernkreis aktualisieren"></td></tr>
+            </table>
+        </form>
+        <p><a href="/settings/numberranges">Zurück zur Übersicht</a></p>
+    '''
+    s+= Footer()
+    return s
+
+
 def PageSkr(db: Database):
     """Generate SKR (chart of accounts) page"""
     rows = db.fetch_chart_of_accounts()
@@ -995,6 +1175,10 @@ def PageSkrEdit(db: Database, id):
 
 def PageInvoice(db: Database):
     """Generate invoice page"""
+    import datetime
+    import json
+    current_year = datetime.datetime.now().year
+    
     # Get company data (own contact)
     own_contacts = db.fetch_contacts(contact_type='own')
     own_contact = own_contacts[0] if own_contacts else None
@@ -1005,25 +1189,52 @@ def PageInvoice(db: Database):
     # Get bank accounts for selection
     accounts = db.fetch_accounts()
     
+    # Get only active articles for selection in invoices
+    articles = db.fetch_articles(active_only=True)
+    
+    # Get next invoice number from number ranges
+    invoice_ranges = db.fetch_number_ranges('invoice')
+    next_invoice_number = ''
+    if invoice_ranges:
+        # Find the range for current year, or use the first available
+        current_range = None
+        for r in invoice_ranges:
+            if r[2] == current_year:
+                current_range = r
+                break
+        if not current_range and invoice_ranges:
+            current_range = invoice_ranges[0]
+        
+        if current_range:
+            # r: ID=0, Type=1, Year=2, Letter=3, Prefix=4, CurrentNumber=5, Description=6
+            year = current_range[2]
+            letter = current_range[3]
+            prefix = current_range[4] or ''
+            current_num = current_range[5] or 0
+            next_num = current_num + 1
+            year_short = str(year)[-2:]
+            next_invoice_number = f"{year_short}{letter}{prefix}{next_num:03d}"
+    
     s = Header1('invoice')
     s += Header2()
-    s += '''
-    <div class="invoice-container" id="invoice_container">
+    s += '''<div class="invoice-container" id="invoice_container">
         <div class="invoice-header">
             <div class="invoice-logo">
-                <img src="/static/logo.png" alt="Firmenlogo" style="max-width: 150px; max-height: 80px;" onerror="this.style.display='none';">
+                <img id="company_logo" src="" alt="Firmenlogo" style="max-width: 150px; max-height: 80px;" onerror="this.style.display='none';">
             </div>
             <div class="invoice-meta">
                 <table class="invoice-meta-table">
                     <tr><td>Datum:</td><td><input type="date" id="invoice_date" value="" style="width: 150px;"></td></tr>
-                    <tr><td>Rechnungs-Nr.:</td><td><input type="text" id="invoice_number" style="width: 150px;"></td></tr>
+    '''
+    s += f'<tr><td>Rechnungs-Nr.:</td><td><input type="text" id="invoice_number" value="{next_invoice_number}" style="width: 150px;"></td></tr>'
+    s += '''
                     <tr><td>Kunden-Nr.:</td><td><input type="text" id="customer_number" readonly style="width: 150px; background-color: #f0f0f0;"></td></tr>
                 </table>
             </div>
         </div>
         
         <div class="invoice-address-block">
-            <div class="invoice-sender-line">
+            <div class="invoice-sender-line" id="sender_line">
     '''
     
     if own_contact:
@@ -1037,6 +1248,17 @@ def PageInvoice(db: Database):
     
     s += '''            </div>
             <div class="invoice-customer-address">
+                <select id="own_company_select" onchange="updateOwnCompany()" style="margin-bottom: 10px; width: 100%;" class="no-pdf">
+                    <option value="">-- Eigene Firma auswählen --</option>
+    '''
+    
+    for own in own_contacts:
+        own_name = own[4] or own[3] or f"ID {own[0]}"
+        selected = 'selected' if own_contact and own[0] == own_contact[0] else ''
+        s += f'<option value="{own[0]}" {selected}>{own_name}</option>'
+    
+    s += '''
+                </select>
                 <select id="customer_select" onchange="updateCustomerAddress()" style="margin-bottom: 10px; width: 100%;" class="no-pdf">
                     <option value="">-- Kunde auswählen --</option>
     '''
@@ -1098,7 +1320,39 @@ def PageInvoice(db: Database):
             </tfoot>
         </table>
         
-        <button type="button" onclick="addRow()" style="margin: 10px 0;" class="no-pdf">+ Position hinzufügen</button>
+        <div style="margin: 10px 0;" class="no-pdf">
+            <button type="button" onclick="addFreeRow()" style="margin-right: 10px;">+ Position frei editierbar hinzufügen</button>
+            <button type="button" onclick="showArticleModal()">+ Position aus Artikelverzeichnis</button>
+        </div>
+        
+        <!-- Article selection modal -->
+        <div id="articleModal" class="modal-overlay no-pdf">
+            <div class="modal-content">
+                <h3>Artikel aus Verzeichnis auswählen</h3>
+                <table border="1" style="width: 100%;">
+                    <tr><th>Bezeichnung</th><th>Einheit</th><th>Preis (netto)</th><th>MwSt</th><th></th></tr>
+    '''
+    
+    for article in articles:
+        art_id = article[0]
+        art_name = article[1] or ''
+        art_unit = article[2] or 'Stk.'
+        art_price = article[3] or 0
+        art_tax = article[4] or 19
+        s += f'''                    <tr>
+                        <td>{art_name}</td>
+                        <td>{art_unit}</td>
+                        <td style="text-align: right;">{art_price:.2f} €</td>
+                        <td>{art_tax:.0f}%</td>
+                        <td><button type="button" class="modal-button-add" onclick="addArticleRow({art_id})">Hinzufügen</button></td>
+                    </tr>
+    '''
+    
+    s += '''                </table>
+                <br>
+                <button type="button" class="modal-button-close" onclick="hideArticleModal()">Schließen</button>
+            </div>
+        </div>
         
         <div class="invoice-payment-terms">
             <textarea id="payment_terms" rows="3" style="width: 100%;">Bitte überweisen Sie den Gesamtbetrag ohne jeden Abzug unter Angabe der Rechnungsnummer innerhalb von 14 Tagen ab Rechnungsdatum auf das unten angegebene Konto. Vielen Dank.</textarea>
@@ -1109,18 +1363,22 @@ def PageInvoice(db: Database):
             <table class="footer-table">
                 <tr>
                     <td class="footer-col-left">
+                        <strong>Anschrift</strong><br>
+                        <div id="footer_company_address">
     '''
     
     if own_contact:
-        s += f'''                        <strong>{own_contact[4] or own_contact[3] or 'Firmenname'}</strong><br>
-                        {own_contact[3] or 'Ansprechpartner'}<br>
+        s += f'''                        {own_contact[4] or own_contact[3] or 'Firma'}<br>
                         {own_contact[5] or 'Straße'}<br>
                         {own_contact[6] or 'PLZ'} {own_contact[7] or 'Ort'}'''
     else:
         s += '                        <em>Eigene Firmendaten in Kontakte anlegen</em>'
     
-    s += '''                    </td>
+    s += '''                        </div>
+                    </td>
                     <td class="footer-col-center">
+                        <strong>Kontakt</strong><br>
+                        <div id="footer_company_contact">
     '''
     
     if own_contact:
@@ -1130,7 +1388,8 @@ def PageInvoice(db: Database):
     else:
         s += '                        <em>Kontaktdaten fehlen</em>'
     
-    s += '''                    </td>
+    s += '''                        </div>
+                    </td>
                     <td class="footer-col-right">
                         <strong>Bankverbindung</strong><br>
                         <select id="bank_account_select" onchange="updateBankDetails()" style="width: 100%; margin-top: 5px;" class="no-pdf">
@@ -1156,13 +1415,36 @@ def PageInvoice(db: Database):
     </div>
     
     <script>
+        // Own company data from server
+        const ownCompaniesData = '''
+    
+    # Build JavaScript own companies data object
+    own_companies_dict = {}
+    for own in own_contacts:
+        own_companies_dict[str(own[0])] = {
+            'id': own[0],
+            'name': own[3] or '',
+            'company': own[4] or '',
+            'street': own[5] or '',
+            'postal': own[6] or '',
+            'city': own[7] or '',
+            'email': own[9] or '',
+            'phone': own[10] or '',
+            'tax_id': own[11] or '',
+            'logo': own[13] if len(own) > 13 and own[13] else ''
+        }
+    
+    s += json.dumps(own_companies_dict)
+    
+    s += ''';
+        
         // Customer data from server
-        const customersData = {'''
+        const customersData = '''
     
     # Build JavaScript customer data object
-    customer_js_data = []
+    customers_dict = {}
     for customer in customers:
-        cust_data = {
+        customers_dict[str(customer[0])] = {
             'id': customer[0],
             'customer_number': customer[2] or '',
             'name': customer[3] or '',
@@ -1171,41 +1453,114 @@ def PageInvoice(db: Database):
             'postal': customer[6] or '',
             'city': customer[7] or ''
         }
-        customer_js_data.append(f'{customer[0]}: {cust_data}')
     
-    s += ',\n            '.join(customer_js_data)
+    s += json.dumps(customers_dict)
     
-    s += '''
-        };
+    s += ''';
         
         // Bank accounts data from server
-        const banksData = {'''
+        const banksData = '''
     
     # Build JavaScript bank data object
-    bank_js_data = []
+    banks_dict = {}
     for account in accounts:
         if not account[6]:  # Skip cash accounts
-            bank_data = {
+            banks_dict[str(account[0])] = {
                 'name': account[1],
                 'bank_name': account[5] or '',
                 'iban': account[3] or '',
                 'bic': account[4] or ''
             }
-            bank_js_data.append(f'{account[0]}: {bank_data}')
     
-    s += ',\n            '.join(bank_js_data)
+    s += json.dumps(banks_dict)
     
-    s += '''
-        };
+    s += ''';
+        
+        // Articles data from server
+        const articlesData = '''
+    
+    # Build JavaScript articles data object
+    articles_dict = {}
+    for article in articles:
+        articles_dict[str(article[0])] = {
+            'id': article[0],
+            'name': article[1] or '',
+            'unit': article[2] or 'Stk.',
+            'price': article[3] or 0,
+            'taxRate': article[4] or 19,
+            'description': article[5] or ''
+        }
+    
+    s += json.dumps(articles_dict)
+    
+    s += ''';
         
         // Set today's date
         document.getElementById('invoice_date').valueAsDate = new Date();
+        
+        // Update own company data (logo, sender line, footer)
+        function updateOwnCompany() {
+            const companyId = document.getElementById('own_company_select').value;
+            const logoImg = document.getElementById('company_logo');
+            const senderLine = document.getElementById('sender_line');
+            const footerAddress = document.getElementById('footer_company_address');
+            const footerContact = document.getElementById('footer_company_contact');
+            
+            if (!companyId) {
+                // Reset to default
+                logoImg.src = '';
+                logoImg.style.display = 'none';
+                senderLine.textContent = 'Eigene Adresse in Kontakte anlegen (Typ: own)';
+                footerAddress.innerHTML = '<em>Eigene Firmendaten in Kontakte anlegen</em>';
+                footerContact.innerHTML = '<em>Kontaktdaten fehlen</em>';
+                return;
+            }
+            
+            const company = ownCompaniesData[companyId];
+            console.log('Selected company:', company);
+            
+            if (company) {
+                // Update logo
+                if (company.logo) {
+                    console.log('Loading logo from:', company.logo);
+                    logoImg.src = company.logo;
+                    logoImg.style.display = '';
+                    logoImg.onerror = function() {
+                        console.error('Failed to load logo from:', this.src);
+                        this.style.display = 'none';
+                    };
+                } else {
+                    console.log('No logo specified for this company');
+                    logoImg.src = '';
+                    logoImg.style.display = 'none';
+                }
+                
+                // Update sender line
+                const displayName = company.company || company.name;
+                senderLine.textContent = displayName + ' · ' + company.street + ' · ' + company.postal + ' ' + company.city;
+                
+                // Update footer address
+                let addressHtml = displayName + '<br>';
+                addressHtml += company.street + '<br>';
+                addressHtml += company.postal + ' ' + company.city;
+                footerAddress.innerHTML = addressHtml;
+                
+                // Update footer contact
+                let contactHtml = '<span class="footer-label">Tel</span> ' + (company.phone || '-') + '<br>';
+                contactHtml += '<span class="footer-label">E-Mail</span> ' + (company.email || '-') + '<br>';
+                contactHtml += '<span class="footer-label">UStIdNr</span> ' + (company.tax_id || '-');
+                footerContact.innerHTML = contactHtml;
+            }
+        }
         
         // Update customer address
         function updateCustomerAddress() {
             const customerId = document.getElementById('customer_select').value;
             const addressDisplay = document.getElementById('customer_address_display');
             const customerNumberField = document.getElementById('customer_number');
+            
+            console.log('updateCustomerAddress called, customerId:', customerId);
+            console.log('customersData:', customersData);
             
             if (!customerId) {
                 addressDisplay.innerHTML = '';
@@ -1214,6 +1569,7 @@ def PageInvoice(db: Database):
             }
             
             const customer = customersData[customerId];
+            console.log('Selected customer:', customer);
             if (customer) {
                 const displayName = customer.company || customer.name;
                 let address = displayName + '\\n';
@@ -1244,10 +1600,27 @@ def PageInvoice(db: Database):
             }
         }
         
+        // Modal functions
+        function showArticleModal() {
+            document.getElementById('articleModal').style.display = 'block';
+        }
+        
+        function hideArticleModal() {
+            document.getElementById('articleModal').style.display = 'none';
+        }
+        
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const modal = document.getElementById('articleModal');
+            if (event.target == modal) {
+                hideArticleModal();
+            }
+        }
+        
         let rowCounter = 1;
         
-        // Add new row
-        function addRow() {
+        // Add new free editable row
+        function addFreeRow() {
             rowCounter++;
             const tbody = document.getElementById('invoice_items_body');
             const newRow = document.createElement('tr');
@@ -1265,6 +1638,35 @@ def PageInvoice(db: Database):
             tbody.appendChild(newRow);
             attachCalculationListeners(newRow);
             calculateTotals();
+        }
+        
+        // Add row from article catalog (only quantity editable)
+        function addArticleRow(articleId) {
+            const article = articlesData[articleId];
+            if (!article) return;
+            
+            rowCounter++;
+            const tbody = document.getElementById('invoice_items_body');
+            const newRow = document.createElement('tr');
+            newRow.className = 'invoice-item-row';
+            newRow.setAttribute('data-row', rowCounter);
+            newRow.setAttribute('data-article-id', articleId);
+            
+            const displayName = article.description ? article.name + ' - ' + article.description : article.name;
+            
+            newRow.innerHTML = `
+                <td>${rowCounter}</td>
+                <td><input type="number" class="item-quantity" value="1" min="0" step="0.01" style="width: 60px;"></td>
+                <td><span class="item-unit-display">${article.unit}</span><input type="hidden" class="item-unit" value="${article.unit}"></td>
+                <td><span class="item-description-display">${displayName}</span><input type="hidden" class="item-description" value="${displayName}"></td>
+                <td><span class="item-price-display">${article.price.toFixed(2).replace('.', ',')} €</span><input type="hidden" class="item-price" value="${article.price}"></td>
+                <td class="item-total" style="text-align: right;">0,00 €</td>
+                <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color: red;">✕</button></td>
+            `;
+            tbody.appendChild(newRow);
+            attachCalculationListeners(newRow);
+            calculateTotals();
+            hideArticleModal();
         }
         
         // Remove row
@@ -1333,8 +1735,14 @@ def PageInvoice(db: Database):
         // Initial calculation
         calculateTotals();
         
+        // Initialize own company (load logo and data for preselected company)
+        updateOwnCompany();
+        
         // Generate PDF
         function generatePDF() {
+            // Get selected own company ID
+            const ownCompanyId = document.getElementById('own_company_select').value;
+            
             // Get selected customer name
             const customerId = document.getElementById('customer_select').value;
             let customerName = '';
@@ -1344,6 +1752,7 @@ def PageInvoice(db: Database):
             
             // Collect invoice data
             const invoiceData = {
+                ownCompanyId: ownCompanyId,
                 date: document.getElementById('invoice_date').value,
                 number: document.getElementById('invoice_number').value,
                 customerNumber: document.getElementById('customer_number').value,
@@ -1436,6 +1845,12 @@ def PageContacts(db: Database):
                 <tr><td>E-Mail:</td><td><input type="email" name="email"></td></tr>
                 <tr><td>Telefon:</td><td><input type="tel" name="phone"></td></tr>
                 <tr><td>Steuernummer:</td><td><input type="text" name="tax_id"></td></tr>
+                <tr><td>Logo:</td><td>
+                    <input type="text" id="logo_path" name="logo" placeholder="/static/logo.png oder URL" style="width: 300px;">
+                    <button type="button" onclick="document.getElementById('logo_file_picker').click()">Datei wählen</button>
+                    <input type="file" id="logo_file_picker" accept="image/*" style="display: none;" onchange="updateLogoPath(this)">
+                    <div id="logo_preview" style="margin-top: 5px;"></div>
+                </td></tr>
                 <tr><td>Notizen:</td><td><textarea name="notes" rows="3" cols="40"></textarea></td></tr>
                 <tr><td></td><td><input type="submit" value="Kontakt hinzufügen"></td></tr>
             </table>
@@ -1478,6 +1893,44 @@ def PageContacts(db: Database):
         s+= f"</tr>"
     
     s+= "</table>"
+    s+= '''<script>
+        function updateLogoPath(input) {
+            if (input.files && input.files[0]) {
+                const file = input.files[0];
+                const filePath = input.value;
+                
+                // Try to extract relative path if it's in project directory
+                let displayPath = filePath;
+                
+                // For Windows paths, extract filename and try common patterns
+                if (filePath.includes('\\\\')) {
+                    const parts = filePath.split('\\\\');
+                    const filename = parts[parts.length - 1];
+                    
+                    // Check if it contains common project folders
+                    if (filePath.toLowerCase().includes('\\\\static\\\\')) {
+                        displayPath = 'static/' + filename;
+                    } else if (filePath.toLowerCase().includes('\\\\pybuch\\\\')) {
+                        const idx = filePath.toLowerCase().indexOf('\\\\pybuch\\\\');
+                        displayPath = filePath.substring(idx + 8).replace(/\\\\/g, '/');
+                    } else {
+                        displayPath = 'static/' + filename;
+                    }
+                }
+                
+                document.getElementById('logo_path').value = displayPath;
+                
+                // Show preview
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const preview = document.getElementById('logo_preview');
+                    preview.innerHTML = '<img src="' + e.target.result + '" style="max-width: 150px; max-height: 80px; border: 1px solid #ccc;">';
+                };
+                reader.readAsDataURL(file);
+            }
+        }
+    </script>
+    '''
     s+= Footer()
     return s
 
@@ -1492,7 +1945,7 @@ def PageContactEdit(db: Database, contact_id):
     s+= Header2(submenu)
     s+= Header3()
     
-    # Extract contact data (ID=0, ContactType=1, CustomerNumber=2, Name=3, Company=4, Street=5, PostalCode=6, City=7, Country=8, Email=9, Phone=10, TaxID=11, Notes=12)
+    # Extract contact data (ID=0, ContactType=1, CustomerNumber=2, Name=3, Company=4, Street=5, PostalCode=6, City=7, Country=8, Email=9, Phone=10, TaxID=11, Notes=12, Logo=13)
     contact_type = contact[1] or 'customer'
     customer_number = contact[2] or ''
     name = contact[3]
@@ -1505,6 +1958,7 @@ def PageContactEdit(db: Database, contact_id):
     phone = contact[10] or ''
     tax_id = contact[11] or ''
     notes = contact[12] or ''
+    logo = contact[13] or '' if len(contact) > 13 else ''
     
     s+= "<h1>Kontakt bearbeiten</h1>"
     s+= f'''
@@ -1530,10 +1984,59 @@ def PageContactEdit(db: Database, contact_id):
                 <tr><td>E-Mail:</td><td><input type="email" name="email" value="{email}"></td></tr>
                 <tr><td>Telefon:</td><td><input type="tel" name="phone" value="{phone}"></td></tr>
                 <tr><td>Steuernummer:</td><td><input type="text" name="tax_id" value="{tax_id}"></td></tr>
+                <tr><td>Logo:</td><td>
+                    <input type="text" id="logo_path_edit" name="logo" value="{logo}" placeholder="/static/logo.png oder URL" style="width: 300px;">
+                    <button type="button" onclick="document.getElementById('logo_file_picker_edit').click()">Datei wählen</button>
+                    <input type="file" id="logo_file_picker_edit" accept="image/*" style="display: none;" onchange="updateLogoPathEdit(this)">
+                    <div id="logo_preview_edit" style="margin-top: 5px;">
+    '''
+    
+    if logo:
+        s+= f'<img src="{logo}" style="max-width: 150px; max-height: 80px; border: 1px solid #ccc;" onerror="this.style.display=\'none\';">'
+    
+    s+= '''                    </div>
+                </td></tr>
                 <tr><td>Notizen:</td><td><textarea name="notes" rows="3" cols="40">{notes}</textarea></td></tr>
                 <tr><td></td><td><input type="submit" value="Kontakt aktualisieren"></td></tr>
             </table>
         </form>
+        <script>
+            function updateLogoPathEdit(input) {
+                if (input.files && input.files[0]) {
+                    const file = input.files[0];
+                    const filePath = input.value;
+                    
+                    // Try to extract relative path if it's in project directory
+                    let displayPath = filePath;
+                    
+                    // For Windows paths, extract filename and try common patterns
+                    if (filePath.includes('\\\\')) {
+                        const parts = filePath.split('\\\\');
+                        const filename = parts[parts.length - 1];
+                        
+                        // Check if it contains common project folders
+                        if (filePath.toLowerCase().includes('\\\\static\\\\')) {
+                            displayPath = 'static/' + filename;
+                        } else if (filePath.toLowerCase().includes('\\\\pybuch\\\\')) {
+                            const idx = filePath.toLowerCase().indexOf('\\\\pybuch\\\\');
+                            displayPath = filePath.substring(idx + 8).replace(/\\\\/g, '/');
+                        } else {
+                            displayPath = 'static/' + filename;
+                        }
+                    }
+                    
+                    document.getElementById('logo_path_edit').value = displayPath;
+                    
+                    // Show preview
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        const preview = document.getElementById('logo_preview_edit');
+                        preview.innerHTML = '<img src="' + e.target.result + '" style="max-width: 150px; max-height: 80px; border: 1px solid #ccc;">';
+                    };
+                    reader.readAsDataURL(file);
+                }
+            }
+        </script>
     '''
     s+= Footer()
     return s
@@ -1730,3 +2233,128 @@ def PageBookingGroupDetails(db: Database, group_id):
     s += Footer()
     return s
 
+
+def PageArticles(db: Database):
+    """Generate articles management page"""
+    articles = db.fetch_articles()
+    s = Header1('articles')
+    s+= Header2()
+    s+= Header3()
+    
+    s+= '''
+        <h2>Neuen Artikel anlegen</h2>
+        <form method="POST" action="/articles/add">
+            <table>
+                <tr><td>Bezeichnung:</td><td><input type="text" name="name" required size="50"></td></tr>
+                <tr><td>Einheit:</td><td>
+                    <select name="unit">
+                        <option value="Stk.">Stk. (Stück)</option>
+                        <option value="Std.">Std. (Stunde)</option>
+                        <option value="kg">kg (Kilogramm)</option>
+                        <option value="g">g (Gramm)</option>
+                        <option value="m">m (Meter)</option>
+                        <option value="m²">m² (Quadratmeter)</option>
+                        <option value="l">l (Liter)</option>
+                        <option value="Psch.">Psch. (Pauschale)</option>
+                    </select>
+                </td></tr>
+                <tr><td>Einzelpreis (netto):</td><td><input type="number" step="0.01" name="unit_price" value="0.00"> €</td></tr>
+                <tr><td>MwSt (%):</td><td>
+                    <select name="tax_rate">
+                        <option value="19" selected>19%</option>
+                        <option value="7">7%</option>
+                        <option value="0">0%</option>
+                    </select>
+                </td></tr>
+                <tr><td>Beschreibung:</td><td><textarea name="description" rows="2" cols="50"></textarea></td></tr>
+                <tr><td>Aktiv:</td><td><input type="checkbox" name="active" value="1" checked> (nur aktive Artikel werden in Rechnungen angezeigt)</td></tr>
+                <tr><td></td><td><input type="submit" value="Artikel hinzufügen"></td></tr>
+            </table>
+        </form>
+    '''
+    
+    s+= "<h2>Artikelverzeichnis</h2>"
+    s+= "<table border='1'>"
+    s+= "<tr><th>ID</th><th>Bezeichnung</th><th>Einheit</th><th>Einzelpreis (netto)</th><th>MwSt</th><th>Beschreibung</th><th>Aktiv</th><th>Aktionen</th></tr>"
+    
+    for article in articles:
+        article_id = article[0]
+        name = article[1] or ''
+        unit = article[2] or 'Stk.'
+        unit_price = article[3] or 0
+        tax_rate = article[4] or 19
+        description = article[5] or ''
+        active = article[6] if len(article) > 6 else 1
+        active_display = "✓" if active else "✗"
+        active_style = "color: green;" if active else "color: red;"
+        
+        s+= f"<tr>"
+        s+= f"<td>{article_id}</td>"
+        s+= f"<td>{name}</td>"
+        s+= f"<td>{unit}</td>"
+        s+= f"<td style='text-align: right;'>{unit_price:.2f} €</td>"
+        s+= f"<td>{tax_rate:.0f}%</td>"
+        s+= f"<td>{description[:50]}</td>"
+        s+= f"<td style='text-align: center; {active_style}'>{active_display}</td>"
+        s+= f"<td><a href='/articles/edit?id={article_id}'>Bearbeiten</a> | <a href='/articles/delete?id={article_id}' onclick='return confirm(\"Artikel wirklich löschen?\")'>Löschen</a></td>"
+        s+= f"</tr>"
+    
+    s+= "</table>"
+    s+= Footer()
+    return s
+
+
+def PageArticleEdit(db: Database, article_id):
+    """Generate article edit page"""
+    article = db.get_article_by_id(article_id)
+    if not article:
+        return "Artikel nicht gefunden."
+    
+    s = Header1('articles')
+    submenu = '<a href="/articles">Artikel</a> -> <span id="ActivePage">Bearbeiten</span>'
+    s+= Header2(submenu)
+    s+= Header3()
+    
+    # Extract article data (ID=0, Name=1, Unit=2, UnitPrice=3, TaxRate=4, Description=5, Active=6)
+    name = article[1] or ''
+    unit = article[2] or 'Stk.'
+    unit_price = article[3] or 0
+    tax_rate = article[4] or 19
+    description = article[5] or ''
+    active = article[6] if len(article) > 6 else 1
+    
+    # Unit options with selection
+    unit_options = ['Stk.', 'Std.', 'kg', 'g', 'm', 'm²', 'l', 'Psch.']
+    unit_select = ""
+    for u in unit_options:
+        selected = 'selected' if u == unit else ''
+        unit_select += f'<option value="{u}" {selected}>{u}</option>'
+    
+    # Tax rate options with selection
+    tax_options = [(19, '19%'), (7, '7%'), (0, '0%')]
+    tax_select = ""
+    for rate, label in tax_options:
+        selected = 'selected' if rate == tax_rate else ''
+        tax_select += f'<option value="{rate}" {selected}>{label}</option>'
+    
+    active_checked = 'checked' if active else ''
+    
+    s+= f'''
+        <h2>Artikel bearbeiten</h2>
+        <form method="POST" action="/articles/update">
+            <input type="hidden" name="id" value="{article_id}">
+            <table>
+                <tr><td>ID:</td><td>{article_id}</td></tr>
+                <tr><td>Bezeichnung:</td><td><input type="text" name="name" value="{name}" required size="50"></td></tr>
+                <tr><td>Einheit:</td><td><select name="unit">{unit_select}</select></td></tr>
+                <tr><td>Einzelpreis (netto):</td><td><input type="number" step="0.01" name="unit_price" value="{unit_price:.2f}"> €</td></tr>
+                <tr><td>MwSt (%):</td><td><select name="tax_rate">{tax_select}</select></td></tr>
+                <tr><td>Beschreibung:</td><td><textarea name="description" rows="2" cols="50">{description}</textarea></td></tr>
+                <tr><td>Aktiv:</td><td><input type="checkbox" name="active" value="1" {active_checked}> (nur aktive Artikel werden in Rechnungen angezeigt)</td></tr>
+                <tr><td></td><td><input type="submit" value="Artikel aktualisieren"></td></tr>
+            </table>
+        </form>
+        <p><a href="/articles">Zurück zum Artikelverzeichnis</a></p>
+    '''
+    s+= Footer()
+    return s

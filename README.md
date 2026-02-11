@@ -71,7 +71,11 @@ Verwaltung von Kunden, Lieferanten und eigenen Firmendaten:
 - **Anzeigen**: Übersicht mit Name, Firma, Kontaktdaten
 - **Hinzufügen**: Neue Kontakte mit vollständigen Adress- und Kontaktdaten
 - **Bearbeiten**: Bestehende Einträge aktualisieren
-- **Eigene Daten**: Firmendaten für Rechnungskopf und -fuß
+- **Eigene Daten**: Mehrere Firmendaten für Multi-Company-Support
+- **Logo-Verwaltung**:
+  - File-Picker für einfache Logo-Auswahl
+  - Automatische Pfadkonvertierung (absolut → relativ)
+  - Live-Vorschau des gewählten Logos
 - **Filter**: Nach Kontakttyp filterbar
 
 **Kontaktfelder:**
@@ -81,31 +85,42 @@ Verwaltung von Kunden, Lieferanten und eigenen Firmendaten:
 - Straße, PLZ, Stadt, Land
 - E-Mail, Telefon
 - Steuernummer/UStIdNr
+- Logo (Pfad für Firmenlogo)
 - Notizen
 
 ### 6. Rechnungserstellung (`/invoice`)
-Professionelle Rechnungserstellung mit PDF-Export:
-- **Rechnungskopf**: Logo, Datum, Rechnungsnummer, Kundennummer
+Professionelle Rechnungserstellung mit PDF-Export und Multi-Company-Support:
+- **Multi-Company-Unterstützung**: 
+  - Auswahl der eigenen Firma aus Kontakten (Typ: "Eigene Daten")
+  - Dynamisches Logo pro Firma
+  - Automatische Aktualisierung von Absenderzeile und Footer
+- **Rechnungskopf**: Firmenlogo, Datum, Rechnungsnummer (aus Nummernkreis), Kundennummer
 - **Kundenauswahl**: Dropdown mit automatischer Adressübernahme
 - **Absenderzeile**: Kompakte Absenderinfo für Brieffenster
 - **Positionstabelle**: 
   - Beliebig viele Positionen hinzufügen/entfernen
+  - Freie Positionen oder aus Artikelverzeichnis
   - Pos., Menge, Einheit, Bezeichnung, Einzelpreis, Gesamt
   - Automatische Berechnung der Zeilensummen
+- **Artikelverzeichnis-Integration**:
+  - Modal zur Auswahl vordefinierter Artikel
+  - Automatische Preisübernahme
+  - Nur aktive Artikel werden angezeigt
 - **Summenbereich**:
   - Nettosumme (automatisch berechnet)
   - Mehrwertsteuer mit einstellbarem Steuersatz
   - Gesamtbetrag (Brutto)
 - **Zahlungsbedingungen**: Editierbares Textfeld
-- **Bankverbindung**: Auswahl aus angelegten Bankkonten
-- **Footer**: Firmendaten, Kontaktdaten, Bankdaten
+- **Bankverbindung**: Auswahl aus angelegten Bankkonten mit dynamischer Anzeige
+- **Footer**: Firmendaten, Kontaktdaten, Bankdaten (dynamisch je nach gewählter Firma)
 
 **PDF-Export:**
 - Professionelles PDF-Layout (A4)
-- Logo-Einbettung (PNG/JPEG)
+- Firmenspezifisches Logo-Einbettung (PNG/JPEG)
 - Deutsche Umlaute und €-Zeichen werden korrekt dargestellt
 - Anpassbare Seitenränder
 - Sofortiger Download
+- Automatische Nummernkreis-Inkrementierung
 
 ### 7. Kategorien-Verwaltung (`/categories`)
 Verwaltung von Buchungskategorien:
@@ -113,14 +128,43 @@ Verwaltung von Buchungskategorien:
 - **Flexible Kategorisierung**: Individuell erweiterbar
 - **Buchungs-Zuordnung**: Kategorien können Buchungen zugewiesen werden
 
-### 7. Split-Buchungen (`/bookinggroups`)
+### 8. Artikelverzeichnis (`/articles`)
+Verwaltung von Artikeln und Dienstleistungen für Rechnungen:
+- **Artikelstammdaten**: Bezeichnung, Einheit, Nettopreis, Steuersatz
+- **Beschreibung**: Detaillierte Artikelbeschreibung
+- **Active-Flag**: Nur aktive Artikel in Rechnungen verfügbar
+- **Integration**: Direkte Übernahme in Rechnungspositionen
+- **Bearbeitung**: Vollständige CRUD-Funktionalität
+
+### 9. Nummernkreise (`/settings/numberranges`)
+Automatische Nummerierung für Rechnungen und Belege:
+- **Format**: YY[Buchstabe][Präfix]### (z.B. 26R001, 26B_A001)
+- **Typen**: 
+  - Ausgangsrechnungen
+  - Belegnummern Firma
+  - Belegnummern Kategorien
+- **Komponenten**:
+  - Jahr (2-stellig)
+  - Buchstabe (A-Z) als Typ-Kennzeichen
+  - Optionaler Präfix für Unterteilungen
+  - Fortlaufende Nummer (3-stellig)
+- **Automatische Inkrementierung**: Nächste Nummer wird automatisch vorgeschlagen
+- **Jahreswechsel-Support**: Separate Nummernkreise pro Jahr
+
+### 10. Split-Buchungen (`/bookinggroups`)
 Gruppierung mehrerer Buchungen:
 - **Erstellen**: Neue Buchungsgruppen mit Beschreibung
 - **Validierung**: Prüfung der Soll/Haben-Summen
 - **Übersicht**: Liste aller Gruppen mit Gesamtbeträgen
 - **Detail-Ansicht**: Alle Buchungen einer Gruppe mit Validierung
 
-### 9. About-Seite (`/about`)
+### 11. Einstellungen (`/settings`)
+Zentrale Konfiguration:
+- **Bankkonten**: Verwaltung von Bankkonten und Kasse
+- **Nummernkreise**: Konfiguration der automatischen Nummerierung
+- **Erweiterbar**: Weitere Einstellungen können hinzugefügt werden
+
+### 12. About-Seite (`/about`)
 Informationen über die Anwendung.
 
 ## Technische Details
@@ -168,6 +212,26 @@ Die Anwendung verwendet SQLite mit folgenden Tabellen:
 - Phone (TEXT)
 - TaxID (TEXT) - Steuernummer/UStIdNr
 - Notes (TEXT)
+- Logo (TEXT) - Pfad zum Firmenlogo (für Multi-Company)
+
+**Articles (Artikelverzeichnis)**
+- ID (INTEGER PRIMARY KEY AUTOINCREMENT)
+- Name (TEXT NOT NULL) - Artikelbezeichnung
+- Unit (TEXT) - Einheit (z.B. "Stk.", "Std.")
+- PriceNet (REAL) - Nettopreis
+- TaxRate (REAL) - Steuersatz (als Dezimalzahl)
+- Description (TEXT) - Detailbeschreibung
+- Active (INTEGER DEFAULT 1) - Aktiv-Flag (0=inaktiv, 1=aktiv)
+
+**NumberRanges (Nummernkreise)**
+- ID (INTEGER PRIMARY KEY AUTOINCREMENT)
+- Type (TEXT NOT NULL) - 'invoice', 'receipt_company', 'receipt_category'
+- Year (INTEGER NOT NULL) - Jahr (4-stellig)
+- Letter (TEXT NOT NULL) - Buchstabe (A-Z)
+- Prefix (TEXT) - Optionaler Präfix (z.B. "_A")
+- CurrentNumber (INTEGER DEFAULT 0) - Letzte vergebene Nummer
+- Description (TEXT) - Beschreibung
+- UNIQUE(Type, Year, Letter, Prefix)
 
 **Categories (Buchungskategorien)**
 - ID (INTEGER PRIMARY KEY AUTOINCREMENT)
@@ -222,18 +286,18 @@ PyBuch/
 ├── main.py                    # Entry Point - Startet den Webserver
 ├── db.py                      # Datenbank-Layer mit allen CRUD-Operationen
 ├── document_parser.py         # PDF-Parser für Kontoauszüge (VBR)
-├── buch.css                   # Stylesheet für die Weboberfläche
+├── buch.css                   # Stylesheet für die Weboberfläche (inkl. Dark Mode)
 ├── README.md                  # Diese Datei
 ├── PARSER_README.md           # Dokumentation für den PDF-Parser
 ├── requirements_parser.txt    # Python-Abhängigkeiten für Parser
 ├── server/                    # Modularer Webserver (refactored)
 │   ├── __init__.py           # Package initialization
 │   ├── app.py                # HTTP-Server-Klasse mit Routing
-│   ├── pages.py              # HTML-Seiten-Generierung (15+ Seiten)
+│   ├── pages.py              # HTML-Seiten-Generierung (20+ Seiten)
 │   ├── handlers.py           # POST-Request-Handler inkl. PDF-Generierung
 │   └── upload_handler.py     # File-Upload mit PDF-Parsing
 ├── static/                    # Statische Dateien
-│   └── logo.png              # Firmenlogo für Rechnungen
+│   └── *.png                 # Firmenlogos für Rechnungen (mehrere möglich)
 └── data/                      # Daten-Verzeichnis (im .gitignore)
     ├── buch.db               # SQLite-Datenbank (automatisch erstellt)
     ├── Belege/               # Hochgeladene Belege
@@ -336,7 +400,7 @@ Diese Anwendung ist für lokale Verwendung konzipiert:
 
 ### Hauptseiten der Anwendung
 1. **Dashboard** (`/`) - Übersicht und Initialisierung
-2. **Rechnung** (`/invoice`) - Rechnungserstellung mit PDF-Export
+2. **Rechnung** (`/invoice`) - Rechnungserstellung mit PDF-Export und Multi-Company
 3. **Belege** (`/receipts`) - Dokumentenverwaltung mit Upload
 4. **Belege bearbeiten** (`/receipts/edit`) - Detail-Ansicht mit Verknüpfungen
 5. **Buchungen** (`/transactions`) - Haupt-Buchungsinterface mit Filtern
@@ -346,13 +410,39 @@ Diese Anwendung ist für lokale Verwendung konzipiert:
 9. **Import-Bestätigung** (`/confirm_transactions`) - Transaktions-Import aus PDF
 10. **SKR** (`/skr`) - Standardkontenrahmen-Verwaltung
 11. **SKR bearbeiten** (`/edit_skr`) - SKR-Editor
-12. **Kontakte** (`/contacts`) - Kunden/Lieferanten/Eigene Daten
-13. **Kontakte bearbeiten** (`/contacts/edit`) - Kontakt-Editor
-14. **Einstellungen** (`/settings`) - Hauptmenü für Konfiguration
-15. **Bankkonten** (`/settings/bankaccounts`) - Bankkonten-Verwaltung
-16. **About** (`/about`) - Informationen
+12. **Kontakte** (`/contacts`) - Kunden/Lieferanten/Eigene Daten mit Logo
+13. **Kontakte bearbeiten** (`/contacts/edit`) - Kontakt-Editor mit File-Picker
+14. **Artikel** (`/articles`) - Artikelverzeichnis-Verwaltung
+15. **Artikel bearbeiten** (`/articles/edit`) - Artikel-Editor
+16. **Einstellungen** (`/settings`) - Hauptmenü für Konfiguration
+17. **Bankkonten** (`/settings/bankaccounts`) - Bankkonten-Verwaltung
+18. **Bankkonten bearbeiten** (`/settings/bankaccounts/edit`) - Bankkonto-Editor
+19. **Nummernkreise** (`/settings/numberranges`) - Nummernkreis-Verwaltung
+20. **Nummernkreise bearbeiten** (`/settings/numberranges/edit`) - Nummernkreis-Editor
+21. **About** (`/about`) - Informationen
 
 ### Besondere Features
+
+**Multi-Company-Support**
+- Mehrere eigene Firmendaten in Kontakten (Typ: "own")
+- Auswahl der Firma bei Rechnungserstellung
+- Dynamisches Logo je nach gewählter Firma
+- Automatische Anpassung von Absenderzeile und Footer
+- Getrennte Logos pro Firma möglich
+
+**Artikelverzeichnis**
+- Vordefinierte Artikel und Dienstleistungen
+- Nettopreis und Steuersatz pro Artikel
+- Active-Flag zur Deaktivierung ohne Löschen
+- Direkte Integration in Rechnungserstellung
+- Modal-Dialog zur Artikelauswahl
+
+**Automatische Nummerierung**
+- Nummernkreise für Rechnungen und Belege
+- Flexibles Format: YY[Buchstabe][Präfix]###
+- Jahresbasierte Nummerierung
+- Automatische Inkrementierung
+- Mehrere Nummernkreise parallel möglich
 
 **Multi-Währung-Support**
 - Unterstützung für EUR (Standard), USD, GBP, CHF
@@ -384,13 +474,22 @@ Diese Anwendung ist für lokale Verwendung konzipiert:
 
 **Rechnungs-PDF-Generierung**
 - Professionelles A4-Layout ohne externe PDF-Bibliotheken
-- Firmenlogo (PNG/JPEG) mit automatischer Skalierung
+- Firmenspezifisches Logo (PNG/JPEG) mit automatischer Skalierung
 - Deutsche Umlaute (ä, ö, ü, ß) und €-Zeichen
 - Absenderzeile für Brieffenster-Position
 - Dynamische Positionstabelle mit hellblauem Tabellenkopf
 - Automatische Summen- und MwSt-Berechnung
 - Dreispaltiger Footer mit Firmendaten, Kontakt, Bankverbindung
 - Konfigurierbare Seitenränder
+- Multi-Company-Support: Logo und Daten der gewählten Firma
+
+**User Interface**
+- Dark Mode-Unterstützung (CSS-Optimierungen)
+- File-Picker mit Live-Vorschau für Logos
+- Drag & Drop für PDF-Upload
+- Modal-Dialoge für Artikelauswahl
+- Responsive Layout
+- JavaScript-basierte Filter ohne Page-Reload
 
 **Erweiterte Filterung**
 - Datumsbereich mit Jahr-Schnell-Buttons

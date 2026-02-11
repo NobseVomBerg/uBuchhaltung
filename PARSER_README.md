@@ -14,7 +14,7 @@ pip install pdfplumber
 pip install Pillow
 ```
 
-Pillow wird benötigt, um das Firmenlogo (PNG/JPEG) in die PDF-Rechnung einzubetten. Legen Sie Ihr Logo als `static/logo.png` ab.
+Pillow wird benötigt, um Firmenlogos (PNG/JPEG) in die PDF-Rechnung einzubetten. Legen Sie Ihre Logos im `static/` Verzeichnis ab (z.B. `static/logo.png`, `static/firma2.png`). Die Logos werden in den Kontakten (Typ: "Eigene Daten") über den File-Picker ausgewählt und automatisch in Rechnungen verwendet.
 
 ### Optional: OCR-Unterstützung für gescannte PDFs
 

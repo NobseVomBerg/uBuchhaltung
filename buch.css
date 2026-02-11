@@ -50,13 +50,15 @@ a:focus					{ color: #8040FF; text-decoration: none; }
 .upload-error 			{ color: red; }
 
 /* Invoice page styles - use white backgrounds even in dark mode */
-.invoice-container 		{ max-width: 800px; margin: 20px auto; padding: 20px; background-color: #FFF; color: #000; }
+.invoice-container 		{ max-width: 800px; margin: 20px auto; padding: 20px; background-color: #FFF !important; color: #000 !important; }
+.invoice-container *, .invoice-container input, .invoice-container textarea, .invoice-container select, .invoice-container button 				{ background-color: #FFF !important; color: #000 !important; }
+.invoice-container input, .invoice-container textarea, .invoice-container select 				{ border: 1px solid #ccc !important; }
+.invoice-container input[readonly] 	{ background-color: #f0f0f0 !important; }
 .invoice-header 		{ display: flex; justify-content: space-between; margin-bottom: 30px; }
 .invoice-logo 			{ flex: 1; }
 .invoice-meta 			{ text-align: right; }
-.invoice-meta-table 	{ border: none !important; background-color: #FFF !important; }
-.invoice-meta-table tr	{ background-color: #FFF !important; }
-.invoice-meta-table td 	{ border: none !important; padding: 2px 8px !important; text-align: left; background-color: #FFF !important; }
+.invoice-meta-table 	{ border: none !important; }
+.invoice-meta-table td 	{ border: none !important; padding: 2px 8px !important; text-align: left; }
 .invoice-meta-table td:first-child { padding-right: 15px !important; }
 .invoice-sender-line 	{ font-size: 0.75em; color: #555; margin-bottom: 3px; }
 .invoice-customer-address { min-height: 100px; margin-bottom: 30px; }
@@ -71,6 +73,14 @@ a:focus					{ color: #8040FF; text-decoration: none; }
 .item-total 			{ text-align: right; font-weight: bold; }
 .invoice-payment-terms 	{ margin: 20px 0; font-size: 0.9em; }
 .invoice-footer 		{ margin-top: 40px; font-size: 0.85em; color: #444; }
+
+/* Modal styles - override dark mode */
+.modal-overlay 			{ display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; }
+.modal-content 			{ background: #FFF !important; color: #000 !important; margin: 100px auto; padding: 20px; width: 600px; max-height: 70%; overflow-y: auto; border-radius: 5px; }
+.modal-content h3 		{ color: #000 !important; }
+.modal-content table, .modal-content th, .modal-content td 	{ background: #FFF !important; color: #000 !important; border: 1px solid #ccc !important; }
+.modal-button-add 		{ background: #4CAF50 !important; color: #FFF !important; border: none !important; padding: 5px 10px !important; cursor: pointer; }
+.modal-button-close 	{ background: #888 !important; color: #FFF !important; border: none !important; padding: 8px 15px !important; cursor: pointer; }
 .invoice-footer hr		{ border: none; border-top: 1px solid #666; margin-bottom: 15px; }
 .footer-table 			{ width: 100%; border: none !important; background-color: #FFF !important; }
 .footer-table tr		{ background-color: #FFF !important; }

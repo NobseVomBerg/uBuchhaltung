@@ -20,6 +20,17 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(200, pages.PageAbout())
             elif self.path == "/invoice":
                 self.respond(200, pages.PageInvoice(db))
+            elif self.path == "/articles":
+                self.respond(200, pages.PageArticles(db))
+            elif self.path.startswith("/articles/edit"):
+                query_components = parse_qs(self.path.split('?')[1])
+                article_id = int(query_components["id"][0])
+                self.respond(200, pages.PageArticleEdit(db, article_id))
+            elif self.path.startswith("/articles/delete"):
+                query_components = parse_qs(self.path.split('?')[1])
+                article_id = int(query_components["id"][0])
+                db.delete_article(article_id)
+                self.respond(303, "", headers={"Location": "/articles"})
             elif self.path == "/settings":
                 self.respond(200, pages.PageSettings())
             elif self.path == "/receipts":
@@ -82,6 +93,17 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 account_id = int(query_components["id"][0])
                 db.delete_account(account_id)
                 self.respond(303, "", headers={"Location": "/settings/bankaccounts"})
+            elif self.path == "/settings/numberranges":
+                self.respond(200, pages.PageSettingsNumberRanges(db))
+            elif self.path.startswith("/settings/numberranges/edit"):
+                query_components = parse_qs(self.path.split('?')[1])
+                range_id = int(query_components["id"][0])
+                self.respond(200, pages.PageSettingsNumberRangesEdit(db, range_id))
+            elif self.path.startswith("/settings/numberranges/delete"):
+                query_components = parse_qs(self.path.split('?')[1])
+                range_id = int(query_components["id"][0])
+                db.delete_number_range(range_id)
+                self.respond(303, "", headers={"Location": "/settings/numberranges"})
             elif self.path.startswith("/edit_skr"):
                 query_components = parse_qs(self.path.split('?')[1])
                 id = query_components["id"][0]
@@ -189,6 +211,12 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path == "/settings/bankaccounts/update":
                 status_code, location = handlers.handle_update_bankaccount(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/settings/numberranges/add":
+                status_code, location = handlers.handle_add_number_range(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/settings/numberranges/update":
+                status_code, location = handlers.handle_update_number_range(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/add_skr":
                 status_code, location = handlers.handle_add_skr(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
@@ -201,6 +229,11 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path == "/update_contact":
                 status_code, location = handlers.handle_update_contact(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/articles/add":
+                status_code, location = handlers.handle_add_article(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/articles/update":
+                status_code, location = handlers.handle_update_article(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/init_content":
                 status_code, location = handlers.handle_init_content(db, post_data)

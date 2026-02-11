@@ -388,6 +388,7 @@ def handle_add_contact(db: Database, post_data):
     phone = post_data.get('phone', [''])[0]
     tax_id = post_data.get('tax_id', [''])[0]
     notes = post_data.get('notes', [''])[0]
+    logo = post_data.get('logo', [''])[0]
     
     db.insert_contact(
         name=name,
@@ -401,7 +402,8 @@ def handle_add_contact(db: Database, post_data):
         email=email,
         phone=phone,
         tax_id=tax_id,
-        notes=notes
+        notes=notes,
+        logo=logo
     )
     
     return 303, "/contacts"
@@ -421,6 +423,7 @@ def handle_update_contact(db: Database, post_data):
     phone = post_data.get('phone', [''])[0]
     tax_id = post_data.get('tax_id', [''])[0]
     notes = post_data.get('notes', [''])[0]
+    logo = post_data.get('logo', [''])[0]
     
     db.update_contact(
         contact_id=contact_id,
@@ -435,20 +438,110 @@ def handle_update_contact(db: Database, post_data):
         email=email,
         phone=phone,
         tax_id=tax_id,
-        notes=notes
+        notes=notes,
+        logo=logo
     )
     
     return 303, "/contacts"
+
+def handle_add_article(db: Database, post_data):
+    """Handle adding a new article"""
+    name = post_data.get('name', [''])[0]
+    unit = post_data.get('unit', ['Stk.'])[0]
+    unit_price = float(post_data.get('unit_price', ['0'])[0] or 0)
+    tax_rate = float(post_data.get('tax_rate', ['19'])[0] or 19)
+    description = post_data.get('description', [''])[0]
+    active = 1 if 'active' in post_data else 0
+    
+    db.insert_article(
+        name=name,
+        unit=unit,
+        unit_price=unit_price,
+        tax_rate=tax_rate,
+        description=description,
+        active=active
+    )
+    
+    return 303, "/articles"
+
+def handle_update_article(db: Database, post_data):
+    """Handle updating an existing article"""
+    article_id = int(post_data.get('id', [0])[0])
+    name = post_data.get('name', [''])[0]
+    unit = post_data.get('unit', ['Stk.'])[0]
+    unit_price = float(post_data.get('unit_price', ['0'])[0] or 0)
+    tax_rate = float(post_data.get('tax_rate', ['19'])[0] or 19)
+    description = post_data.get('description', [''])[0]
+    active = 1 if 'active' in post_data else 0
+    
+    db.update_article(
+        article_id=article_id,
+        name=name,
+        unit=unit,
+        unit_price=unit_price,
+        tax_rate=tax_rate,
+        description=description,
+        active=active
+    )
+    
+    return 303, "/articles"
+
+
+def handle_add_number_range(db: Database, post_data):
+    """Handle adding a new number range"""
+    range_type = post_data.get('type', ['invoice'])[0]
+    year = int(post_data.get('year', ['2026'])[0])
+    letter = post_data.get('letter', ['R'])[0].upper()
+    prefix = post_data.get('prefix', [''])[0].upper()
+    current_number = int(post_data.get('current_number', ['0'])[0] or 0)
+    description = post_data.get('description', [''])[0]
+    
+    db.insert_number_range(
+        range_type=range_type,
+        year=year,
+        letter=letter,
+        prefix=prefix,
+        current_number=current_number,
+        description=description
+    )
+    
+    return 303, "/settings/numberranges"
+
+
+def handle_update_number_range(db: Database, post_data):
+    """Handle updating an existing number range"""
+    range_id = int(post_data.get('id', [0])[0])
+    year = int(post_data.get('year', ['2026'])[0])
+    letter = post_data.get('letter', ['R'])[0].upper()
+    prefix = post_data.get('prefix', [''])[0].upper()
+    current_number = int(post_data.get('current_number', ['0'])[0] or 0)
+    description = post_data.get('description', [''])[0]
+    
+    db.update_number_range(
+        range_id=range_id,
+        year=year,
+        letter=letter,
+        prefix=prefix,
+        current_number=current_number,
+        description=description
+    )
+    
+    return 303, "/settings/numberranges"
+
 
 def handle_generate_invoice_pdf(post_body: bytes) -> bytes:
     """Generate a simple PDF invoice from JSON data"""
     import base64
     data = json.loads(post_body.decode('utf-8'))
     
-    # Get own contact data for sender info
+    # Get own contact data - use selected company if provided
     db = Database()
-    own_contacts = db.fetch_contacts(contact_type='own')
-    own_contact = own_contacts[0] if own_contacts else None
+    own_company_id = data.get('ownCompanyId')
+    if own_company_id:
+        own_contact = db.get_contact_by_id(int(own_company_id))
+    else:
+        own_contacts = db.fetch_contacts(contact_type='own')
+        own_contact = own_contacts[0] if own_contacts else None
     
     # Try to load logo using PIL - convert to JPEG for PDF compatibility
     logo_data = None
@@ -460,7 +553,21 @@ def handle_generate_invoice_pdf(post_body: bytes) -> bytes:
         import io
         import os
         
+        # Use logo from selected company if available
         logo_path = 'static/logo.png'
+        if own_contact and len(own_contact) > 13 and own_contact[13]:
+            logo_path = own_contact[13]
+            # Ensure the path is relative to the project directory
+            if not os.path.isabs(logo_path) and not os.path.exists(logo_path):
+                # Try prepending common paths
+                for prefix in ['', './', '../']:
+                    test_path = prefix + logo_path
+                    if os.path.exists(test_path):
+                        logo_path = test_path
+                        break
+        
+        print(f"Trying to load logo from: {os.path.abspath(logo_path)}")
+        
         if os.path.exists(logo_path):
             with Image.open(logo_path) as img:
                 # Convert to RGB if necessary (remove alpha channel)
@@ -672,26 +779,26 @@ def handle_generate_invoice_pdf(post_body: bytes) -> bytes:
         content_lines.append(add_text(col_qty, table_y, item.get('quantity', ''), "F1", 9))
         content_lines.append(add_text(col_unit, table_y, item.get('unit', ''), "F1", 9))
         content_lines.append(add_text(col_desc, table_y, item.get('description', '')[:45], "F1", 9))
-        content_lines.append(add_text(col_price, table_y, item.get('price', '0') + ' \u20ac', "F1", 9))
+        content_lines.append(add_text(col_price, table_y, item.get('price', '') + ' \u20ac', "F1", 9))
         content_lines.append(add_text(col_total, table_y, item.get('total', ''), "F1", 9))
         table_y -= 14
     
     # --- TOTALS ---
     table_y -= 5
-    content_lines.append(add_line(350, table_y, table_right, table_y, 0.5))
+    content_lines.append(add_line(col_pos, table_y, table_right, table_y, 0.5))
     table_y -= 14
-    content_lines.append(add_text(350, table_y, "Summe netto", "F1", 10))
-    content_lines.append(add_text(500, table_y, data.get('sumNet', '0,00 EUR'), "F2", 10))
+    content_lines.append(add_text(col_pos, table_y, "Summe netto", "F1", 10))
+    content_lines.append(add_text(col_total, table_y, data.get('sumNet', '0,00 EUR'), "F2", 10))
     table_y -= 14
     tax_rate = data.get('taxRate', 19)
-    content_lines.append(add_text(350, table_y, f"MwSt. {tax_rate}%", "F1", 10))
-    content_lines.append(add_text(500, table_y, data.get('taxAmount', '0,00 EUR'), "F1", 10))
+    content_lines.append(add_text(col_pos, table_y, f"MwSt. {tax_rate}%", "F1", 10))
+    content_lines.append(add_text(col_total, table_y, data.get('taxAmount', '0,00 EUR'), "F1", 10))
     table_y -= 5
-    content_lines.append(add_line(350, table_y, table_right, table_y, 0.3))
+    content_lines.append(add_line(col_pos, table_y, table_right, table_y, 0.3))
     table_y -= 14
-    content_lines.append(add_text(350, table_y, "Gesamtbetrag", "F2", 11))
-    content_lines.append(add_text(500, table_y, data.get('sumGross', '0,00 EUR'), "F2", 11))
-    content_lines.append(add_line(350, table_y - 3, table_right, table_y - 3, 1.0))
+    content_lines.append(add_text(col_pos, table_y, "Gesamtbetrag", "F2", 10))
+    content_lines.append(add_text(col_total, table_y, data.get('sumGross', '0,00 EUR'), "F2", 10))
+    content_lines.append(add_line(col_pos, table_y - 3, table_right, table_y - 3, 1.0))
     
     # --- PAYMENT TERMS (full page width like table: 50 to 560 = 510pt) ---
     table_y -= 35
@@ -699,7 +806,7 @@ def handle_generate_invoice_pdf(post_body: bytes) -> bytes:
     if payment_terms:
         words = payment_terms.split()
         line = ""
-        max_chars = 95  # Full width (510pt / ~5.4pt per char)
+        max_chars = 110  # Full width (510pt / ~5.4pt per char gives 95 chars, but than the line is not full, so we can allow more chars and it will just wrap to next line)
         for word in words:
             if len(line + " " + word) > max_chars:
                 content_lines.append(add_text(table_left, table_y, line, "F1", 9))
