@@ -3,6 +3,7 @@ POST request handlers for form submissions
 """
 import os
 import json
+import datetime
 from .pages import Header1, Header2, Footer
 from db import Database
 
@@ -383,30 +384,36 @@ def handle_add_contact(db: Database, post_data):
     street = post_data.get('street', [''])[0]
     postal_code = post_data.get('postal_code', [''])[0]
     city = post_data.get('city', [''])[0]
-    country = post_data.get('country', [''])[0]
+    country = post_data.get('country', ['DE'])[0]
     email = post_data.get('email', [''])[0]
     phone = post_data.get('phone', [''])[0]
     tax_id = post_data.get('tax_id', [''])[0]
     notes = post_data.get('notes', [''])[0]
     logo = post_data.get('logo', [''])[0]
+    buyer_route_id = post_data.get('buyer_route_id', [''])[0]
     
-    db.insert_contact(
-        name=name,
-        contact_type=contact_type,
-        customer_number=customer_number,
-        company=company,
-        street=street,
-        postal_code=postal_code,
-        city=city,
-        country=country,
-        email=email,
-        phone=phone,
-        tax_id=tax_id,
-        notes=notes,
-        logo=logo
-    )
-    
-    return 303, "/contacts"
+    try:
+        db.insert_contact(
+            name=name,
+            contact_type=contact_type,
+            customer_number=customer_number,
+            company=company,
+            street=street,
+            postal_code=postal_code,
+            city=city,
+            country=country,
+            email=email,
+            phone=phone,
+            tax_id=tax_id,
+            notes=notes,
+            logo=logo,
+            buyer_route_id=buyer_route_id
+        )
+        return 303, "/contacts"
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return 500, f"Fehler beim Hinzufügen des Kontakts: {str(e)}"
 
 def handle_update_contact(db: Database, post_data):
     """Handle updating an existing contact"""
@@ -418,31 +425,37 @@ def handle_update_contact(db: Database, post_data):
     street = post_data.get('street', [''])[0]
     postal_code = post_data.get('postal_code', [''])[0]
     city = post_data.get('city', [''])[0]
-    country = post_data.get('country', [''])[0]
+    country = post_data.get('country', ['DE'])[0]
     email = post_data.get('email', [''])[0]
     phone = post_data.get('phone', [''])[0]
     tax_id = post_data.get('tax_id', [''])[0]
     notes = post_data.get('notes', [''])[0]
     logo = post_data.get('logo', [''])[0]
+    buyer_route_id = post_data.get('buyer_route_id', [''])[0]
     
-    db.update_contact(
-        contact_id=contact_id,
-        name=name,
-        contact_type=contact_type,
-        customer_number=customer_number,
-        company=company,
-        street=street,
-        postal_code=postal_code,
-        city=city,
-        country=country,
-        email=email,
-        phone=phone,
-        tax_id=tax_id,
-        notes=notes,
-        logo=logo
-    )
-    
-    return 303, "/contacts"
+    try:
+        db.update_contact(
+            contact_id=contact_id,
+            name=name,
+            contact_type=contact_type,
+            customer_number=customer_number,
+            company=company,
+            street=street,
+            postal_code=postal_code,
+            city=city,
+            country=country,
+            email=email,
+            phone=phone,
+            tax_id=tax_id,
+            notes=notes,
+            logo=logo,
+            buyer_route_id=buyer_route_id
+        )
+        return 303, "/contacts"
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return 500, f"Fehler beim Aktualisieren des Kontakts: {str(e)}"
 
 def handle_add_article(db: Database, post_data):
     """Handle adding a new article"""
@@ -527,6 +540,223 @@ def handle_update_number_range(db: Database, post_data):
     )
     
     return 303, "/settings/numberranges"
+
+
+def handle_save_invoice(data: dict, pdf_path: str = None) -> int:
+    """Save invoice to database with all metadata
+    
+    Args:
+        data: Invoice data dictionary from frontend
+        pdf_path: Path to generated PDF file
+        
+    Returns:
+        invoice_id: ID of inserted invoice
+    """
+    import datetime
+    db = Database()
+    
+    # Get own company data (seller)
+    own_company_id = data.get('ownCompanyId')
+    if own_company_id:
+        own_contact = db.get_contact_by_id(int(own_company_id))
+    else:
+        own_contacts = db.fetch_contacts(contact_type='own')
+        own_contact = own_contacts[0] if own_contacts else None
+    
+    if not own_contact:
+        raise ValueError("No seller contact found")
+    
+    # Extract seller data (snapshot)
+    seller_name = own_contact[4] or own_contact[3] or ''
+    seller_street = own_contact[5] or ''
+    seller_postal = own_contact[6] or ''
+    seller_city = own_contact[7] or ''
+    seller_country = own_contact[8] if len(own_contact) > 8 else 'DE'
+    seller_vat_id = own_contact[11] or ''
+    
+    # Get buyer data - try to find by customer number or parse from address
+    buyer_name = ''
+    buyer_street = ''
+    buyer_postal = ''
+    buyer_city = ''
+    buyer_country = 'DE'  # Default
+    buyer_vat_id = ''
+    buyer_route_id = data.get('buyerRouteId') or ''
+    
+    customer_number = data.get('customerNumber', '')
+    if customer_number:
+        # Try to find customer by number
+        contacts = db.fetch_contacts(contact_type='customer')
+        for contact in contacts:
+            if contact[2] == customer_number:  # CustomerNumber
+                buyer_name = contact[3] or ''
+                buyer_street = contact[5] or ''
+                buyer_postal = contact[6] or ''
+                buyer_city = contact[7] or ''
+                buyer_country = contact[8] if len(contact) > 8 else 'DE'
+                buyer_vat_id = contact[11] or ''
+                if not buyer_route_id and len(contact) > 14:
+                    buyer_route_id = contact[14] or ''
+                break
+    
+    # If no customer found, parse from address text
+    if not buyer_name:
+        customer_address = data.get('customerAddress', '')
+        customer_name = data.get('customerName', '')
+        address_lines = customer_address.split('\n')
+        if len(address_lines) >= 1:
+            buyer_name = address_lines[0].strip()
+        if len(address_lines) >= 2:
+            buyer_street = address_lines[1].strip()
+        if len(address_lines) >= 3:
+            # Parse postal code and city
+            last_line = address_lines[2].strip()
+            parts = last_line.split(' ', 1)
+            if len(parts) >= 2:
+                buyer_postal = parts[0]
+                buyer_city = parts[1]
+            else:
+                buyer_city = last_line
+    
+    # Get bank account data (snapshot) - parse from HTML
+    import re
+    bank_html = data.get('bankDetails', '')
+    bank_text = re.sub(r'<[^>]+>', ' ', bank_html)
+    bank_parts = bank_text.replace('\n', ' ').split()
+    
+    bank_account_holder = seller_name  # Default to seller name
+    bank_iban = ''
+    bank_bic = ''
+    bank_name = ''
+    
+    i = 0
+    while i < len(bank_parts):
+        part = bank_parts[i]
+        if part.upper() == 'BANK':
+            i += 1
+            name_parts = []
+            while i < len(bank_parts) and bank_parts[i].upper() not in ['IBAN', 'BIC']:
+                name_parts.append(bank_parts[i])
+                i += 1
+            bank_name = ' '.join(name_parts)
+        elif part.upper() == 'IBAN':
+            i += 1
+            if i < len(bank_parts):
+                bank_iban = bank_parts[i]
+                i += 1
+        elif part.upper() == 'BIC':
+            i += 1
+            if i < len(bank_parts):
+                bank_bic = bank_parts[i]
+                i += 1
+        else:
+            i += 1
+    
+    # Extract numeric values from formatted strings
+    def parse_amount(amount_str):
+        """Parse amount like '1.234,56 €' to float 1234.56"""
+        if not amount_str:
+            return 0.0
+        # Remove currency symbol and whitespace
+        amount_str = str(amount_str).replace('€', '').replace(' ', '').strip()
+        # Replace comma with dot
+        amount_str = amount_str.replace(',', '.')
+        try:
+            return float(amount_str)
+        except ValueError:
+            return 0.0
+    
+    sum_net = parse_amount(data.get('sumNet', '0'))
+    sum_gross = parse_amount(data.get('sumGross', '0'))
+    tax_amount = parse_amount(data.get('taxAmount', '0'))
+    tax_rate = float(data.get('taxRate', 19))
+    
+    # Determine tax category based on rate
+    if tax_rate == 0:
+        tax_category = 'Z'  # Zero rate
+    elif tax_rate == 19 or tax_rate == 7:
+        tax_category = 'S'  # Standard rate
+    else:
+        tax_category = 'S'  # Default to standard
+    
+    # Payment terms
+    payment_term_days = data.get('paymentTermDays') or 14
+    payment_due_date = data.get('paymentDueDate') or None
+    discount_percentage = data.get('discountPercentage') or None
+    discount_days = data.get('discountDays') or None
+    
+    # Build invoice data dictionary
+    invoice_data = {
+        'InvoiceNumber': data.get('number', ''),
+        'InvoiceDate': data.get('date', ''),
+        'Currency': 'EUR',
+        'OrderNumber': data.get('orderNumber') or None,
+        'DeliveryDate': data.get('deliveryDate') or None,
+        'SellerName': seller_name,
+        'SellerStreet': seller_street,
+        'SellerPostalCode': seller_postal,
+        'SellerCity': seller_city,
+        'SellerCountry': seller_country,
+        'SellerVATID': seller_vat_id,
+        'BuyerName': buyer_name,
+        'BuyerStreet': buyer_street,
+        'BuyerPostalCode': buyer_postal,
+        'BuyerCity': buyer_city,
+        'BuyerCountry': buyer_country,
+        'BuyerVATID': buyer_vat_id,
+        'BuyerRouteID': buyer_route_id,
+        'PaymentTermDays': payment_term_days,
+        'PaymentDueDate': payment_due_date,
+        'DiscountPercentage': discount_percentage,
+        'DiscountDays': discount_days,
+        'BankAccountHolder': bank_account_holder,
+        'BankIBAN': bank_iban,
+        'BankBIC': bank_bic,
+        'BankName': bank_name,
+        'PaymentTerms': data.get('paymentTerms', ''),
+        'Notes': None,
+        'TaxCategory': tax_category,
+        'TaxRate': tax_rate,
+        'SumNet': sum_net,
+        'TaxAmount': tax_amount,
+        'SumGross': sum_gross,
+        'AmountDue': sum_gross,  # Initially same as gross
+        'Status': 'draft',  # Always start as draft
+        'PDFPath': pdf_path,
+        'XMLPath': None
+    }
+    
+    # Insert invoice
+    invoice_id = db.insert_invoice(invoice_data)
+    
+    # Insert invoice items
+    for item in data.get('items', []):
+        # Parse quantity and price
+        quantity = float(item.get('quantity', 1))
+        price_str = item.get('price', '0')
+        try:
+            price = float(price_str)
+        except ValueError:
+            price = 0.0
+        
+        total_net = quantity * price
+        
+        item_data = {
+            'InvoiceID': invoice_id,
+            'Position': int(item.get('pos', 1)),
+            'ArticleID': None,  # We don't track article IDs in current implementation
+            'Description': item.get('description', ''),
+            'Quantity': quantity,
+            'Unit': item.get('unit', 'Stk'),
+            'PricePerUnit': price,
+            'TotalNet': total_net,
+            'TaxCategory': tax_category,
+            'TaxRate': tax_rate
+        }
+        
+        db.insert_invoice_item(item_data)
+    
+    return invoice_id
 
 
 def handle_generate_invoice_pdf(post_body: bytes) -> bytes:
@@ -775,11 +1005,18 @@ def handle_generate_invoice_pdf(post_body: bytes) -> bytes:
     
     # Table items
     for item in data.get('items', []):
+        # Format price: convert to float, format with 2 decimals, replace . with ,
+        price_value = item.get('price', '0')
+        try:
+            price_formatted = f"{float(price_value):.2f}".replace('.', ',') + ' €'
+        except (ValueError, TypeError):
+            price_formatted = str(price_value) + ' €'
+        
         content_lines.append(add_text(col_pos, table_y, item.get('pos', ''), "F1", 9))
         content_lines.append(add_text(col_qty, table_y, item.get('quantity', ''), "F1", 9))
         content_lines.append(add_text(col_unit, table_y, item.get('unit', ''), "F1", 9))
         content_lines.append(add_text(col_desc, table_y, item.get('description', '')[:45], "F1", 9))
-        content_lines.append(add_text(col_price, table_y, item.get('price', '') + ' \u20ac', "F1", 9))
+        content_lines.append(add_text(col_price, table_y, price_formatted, "F1", 9))
         content_lines.append(add_text(col_total, table_y, item.get('total', ''), "F1", 9))
         table_y -= 14
     
@@ -955,4 +1192,457 @@ def handle_generate_invoice_pdf(post_body: bytes) -> bytes:
     # Combine PDF
     full_pdf = pdf_header.encode('latin-1') + pdf_body + xref.encode('latin-1') + trailer.encode('latin-1')
     
+    # Save invoice to database
+    import os
+    try:
+        # Create PDF storage directory
+        current_year = datetime.datetime.now().year
+        pdf_dir = f"data/invoices/{current_year}"
+        os.makedirs(pdf_dir, exist_ok=True)
+        
+        # Generate PDF filename
+        invoice_number = data.get('number', 'Entwurf')
+        # Sanitize filename (remove special characters)
+        safe_number = "".join(c for c in invoice_number if c.isalnum() or c in ['-', '_'])
+        pdf_filename = f"Rechnung_{safe_number}.pdf"
+        pdf_path = os.path.join(pdf_dir, pdf_filename)
+        
+        # Save PDF file
+        with open(pdf_path, 'wb') as f:
+            f.write(full_pdf)
+        
+        print(f"PDF saved to: {pdf_path}")
+        
+        # Save invoice to database
+        invoice_id = handle_save_invoice(data, pdf_path)
+        print(f"Invoice saved to database with ID: {invoice_id}")
+        
+    except Exception as e:
+        import traceback
+        print(f"Error saving invoice: {e}")
+        traceback.print_exc()
+        # Continue and return PDF even if saving fails
+    
     return full_pdf
+
+
+def handle_update_invoice_status(post_body: bytes):
+    """Update invoice status and increment number range if finalizing
+    
+    Returns tuple: (status_code, redirect_path)
+    """
+    data = json.loads(post_body.decode('utf-8'))
+    invoice_id = int(data.get('invoice_id'))
+    new_status = data.get('status')
+    
+    if not invoice_id or not new_status:
+        return 400, "/invoice"
+    
+    db = Database()
+    
+    # Validate status
+    valid_statuses = ['draft', 'finalized', 'sent', 'paid', 'cancelled']
+    if new_status not in valid_statuses:
+        return 400, "/invoice"
+    
+    # Get current invoice
+    invoice = db.get_invoice_by_id(invoice_id)
+    if not invoice:
+        return 404, "/invoice"
+    
+    current_status = invoice[37] or 'draft'
+    
+    # If transitioning from draft to finalized, increment number range
+    if current_status == 'draft' and new_status == 'finalized':
+        invoice_number = invoice[1]  # InvoiceNumber
+        
+        # Parse invoice number to find matching range
+        # Format: YYLPnnn (e.g., 26R001)
+        if invoice_number and len(invoice_number) >= 3:
+            year_short = invoice_number[:2]
+            letter = invoice_number[2] if len(invoice_number) > 2 else ''
+            
+            # Find corresponding number range
+            try:
+                current_year = datetime.datetime.now().year
+                year_full = 2000 + int(year_short) if int(year_short) >= 0 else current_year
+                
+                ranges = db.fetch_number_ranges('invoice')
+                for r in ranges:
+                    if r[2] == year_full and r[3] == letter:
+                        # Increment this range
+                        new_number = (r[5] or 0) + 1
+                        db.update_number_range(
+                            range_id=r[0],
+                            range_type='invoice',
+                            year=r[2],
+                            letter=r[3],
+                            prefix=r[4] or '',
+                            current_number=new_number,
+                            description=r[6] or ''
+                        )
+                        print(f"Incremented number range {r[0]} to {new_number}")
+                        break
+            except Exception as e:
+                print(f"Warning: Could not increment number range: {e}")
+                # Continue with status update even if increment fails
+    
+    # Update status
+    db.update_invoice_status(invoice_id, new_status)
+    print(f"Invoice {invoice_id} status updated to: {new_status}")
+    
+    return 303, f"/invoice/view?id={invoice_id}"
+
+
+def handle_link_invoice_payment(post_body: bytes):
+    """Link invoice to a payment transaction
+    
+    Returns tuple: (status_code, redirect_path)
+    """
+    data = json.loads(post_body.decode('utf-8'))
+    invoice_id = int(data.get('invoice_id'))
+    transaction_id = int(data.get('transaction_id'))
+    amount_paid = float(data.get('amount_paid'))
+    
+    if not invoice_id or not transaction_id or not amount_paid:
+        return 400, "/invoice"
+    
+    db = Database()
+    
+    try:
+        db.link_invoice_to_transaction(invoice_id, transaction_id, amount_paid)
+        return 200, f"/invoice/view?id={invoice_id}"
+    except Exception as e:
+        print(f"Error linking payment: {e}")
+        return 500, "/invoice"
+
+
+def handle_invoice_save(post_body: bytes):
+    """Save or update invoice to database
+    
+    Returns JSON response with invoice_id
+    """
+    try:
+        data = json.loads(post_body.decode('utf-8'))
+        
+        # Check if this is an update (invoiceId present) or new invoice
+        invoice_id = data.get('invoiceId')
+        is_update = invoice_id is not None
+        
+        # Extract invoice data
+        invoice_number = data.get('invoiceNumber')
+        invoice_date = data.get('invoiceDate')
+        customer_id = data.get('customerId')
+        customer_number = data.get('customerNumber')
+        own_company_id = data.get('ownCompanyId')
+        buyer_reference = data.get('buyerReference')
+        payment_terms = data.get('paymentTerms')
+        payment_terms_days = data.get('paymentTermsDays', 14)
+        due_date = data.get('dueDate')
+        bank_account_id = data.get('bankAccountId')
+        net_amount = data.get('netAmount')
+        tax_rate = data.get('taxRate')
+        tax_amount = data.get('taxAmount')
+        gross_amount = data.get('grossAmount')
+        currency = data.get('currency', 'EUR')
+        status = data.get('status', 'draft')
+        payment_means_code = data.get('paymentMeansCode', '58')
+        payment_means_text = data.get('paymentMeansText', 'SEPA Überweisung')
+        items = data.get('items', [])
+        
+        # XRechnung optional fields
+        order_number = data.get('orderNumber')
+        delivery_date = data.get('deliveryDate')
+        discount_percentage = data.get('discountPercentage')
+        discount_days = data.get('discountDays')
+        
+        # Validate required fields
+        if not invoice_number or not invoice_date or not customer_id or not own_company_id:
+            return json.dumps({'success': False, 'error': 'Pflichtfelder fehlen'}).encode()
+        
+        if not items or len(items) == 0:
+            return json.dumps({'success': False, 'error': 'Mindestens eine Position erforderlich'}).encode()
+        
+        db = Database()
+        
+        # Get customer data for invoice
+        customer = db.get_contact_by_id(customer_id)
+        if not customer:
+            return json.dumps({'success': False, 'error': 'Kunde nicht gefunden'}).encode()
+        
+        # Build customer name and address
+        customer_name = customer[4] or customer[3] or ''  # Company or Name
+        customer_address_parts = []
+        if customer[4]:  # Company
+            customer_address_parts.append(customer[4])
+        if customer[3]:  # Name
+            customer_address_parts.append(customer[3])
+        if customer[5]:  # Street
+            customer_address_parts.append(customer[5])
+        if customer[6] or customer[7]:  # PostalCode, City
+            city_line = f"{customer[6] or ''} {customer[7] or ''}".strip()
+            if city_line:
+                customer_address_parts.append(city_line)
+        if customer[8]:  # Country
+            customer_address_parts.append(customer[8])
+        customer_address = '\n'.join(customer_address_parts)
+        
+        # Get own company for sender line
+        own_company = db.get_contact_by_id(own_company_id)
+        if not own_company:
+            return json.dumps({'success': False, 'error': 'Eigene Firma nicht gefunden'}).encode()
+        
+        sender_name = own_company[4] or own_company[3] or ''
+        sender_street = own_company[5] or ''
+        sender_postal = own_company[6] or ''
+        sender_city = own_company[7] or ''
+        sender_line = f"{sender_name}, {sender_street}, {sender_postal} {sender_city}".strip()
+        
+        # Get bank account data
+        iban = None
+        account_name = None
+        bic = None
+        if bank_account_id:
+            account = db.get_account_by_id(bank_account_id)
+            if account:
+                iban = account[3]  # IBAN
+                bic = account[4]  # BIC
+                account_name = account[2]  # Inhaber
+        
+        # Calculate remaining amount (initially = gross amount)
+        remaining_amount = gross_amount
+        
+        # Prepare invoice data dictionary
+        invoice_data = {
+            'invoice_number': invoice_number,
+            'invoice_date': invoice_date,
+            'own_company_id': own_company_id,
+            'seller_name': own_company[4] or own_company[3] or '',
+            'seller_street': own_company[5] or '',
+            'seller_postal_code': own_company[6] or '',
+            'seller_city': own_company[7] or '',
+            'seller_country': own_company[8] or 'DE',
+            'seller_vat_id': own_company[11] or '',
+            'seller_email': own_company[9] or '',
+            'seller_phone': own_company[10] or '',
+            'customer_id': customer_id,
+            'buyer_name': customer[4] or customer[3] or '',
+            'buyer_street': customer[5] or '',
+            'buyer_postal_code': customer[6] or '',
+            'buyer_city': customer[7] or '',
+            'buyer_country': customer[8] or 'DE',
+            'buyer_vat_id': customer[11] or '',
+            'buyer_reference': buyer_reference,
+            'buyer_route_id': buyer_reference,  # Same as buyer_reference for XRechnung
+            'order_number': order_number,
+            'currency': currency,
+            'delivery_date': delivery_date,
+            'payment_terms': payment_terms,
+            'payment_due_date': due_date,
+            'skonto_days': discount_days,
+            'skonto_percent': discount_percentage,
+            'bank_account_id': bank_account_id,
+            'bank_name': account[5] if bank_account_id and account else '',
+            'bank_iban': iban or '',
+            'bank_bic': bic or '',
+            'tax_category': 'S',  # Standard tax
+            'tax_rate': tax_rate,
+            'sum_net': net_amount,
+            'tax_amount': tax_amount,
+            'sum_gross': gross_amount,
+            'amount_due': remaining_amount,
+            'status': status,
+            'pdf_path': None,
+            'xml_path': None
+        }
+        
+        # Insert or update invoice
+        if is_update:
+            # Update existing invoice
+            # First, delete old invoice items
+            conn = db._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM InvoiceItems WHERE InvoiceId = ?', (invoice_id,))
+            conn.commit()
+            conn.close()
+            
+            # Update invoice (we need to add an update_invoice method to db.py)
+            # For now, we'll do it manually
+            conn = db._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE Invoices SET
+                    InvoiceNumber=?, InvoiceDate=?, OwnCompanyId=?,
+                    SellerName=?, SellerStreet=?, SellerPostalCode=?, SellerCity=?, SellerCountry=?,
+                    SellerVATID=?, SellerEmail=?, SellerPhone=?,
+                    CustomerId=?, BuyerName=?, BuyerStreet=?, BuyerPostalCode=?, BuyerCity=?, BuyerCountry=?,
+                    BuyerVATID=?, BuyerReference=?, BuyerRouteID=?,
+                    OrderNumber=?, Currency=?, DeliveryDate=?,
+                    PaymentTerms=?, PaymentDueDate=?, SkontoDays=?, SkontoPercent=?,
+                    BankAccountId=?, BankName=?, BankIBAN=?, BankBIC=?,
+                    TaxCategory=?, TaxRate=?, SumNet=?, TaxAmount=?, SumGross=?, AmountDue=?,
+                    Status=?
+                WHERE ID=?
+            ''', (
+                invoice_data['invoice_number'], invoice_data['invoice_date'], invoice_data['own_company_id'],
+                invoice_data['seller_name'], invoice_data['seller_street'], invoice_data['seller_postal_code'],
+                invoice_data['seller_city'], invoice_data['seller_country'],
+                invoice_data['seller_vat_id'], invoice_data['seller_email'], invoice_data['seller_phone'],
+                invoice_data['customer_id'], invoice_data['buyer_name'], invoice_data['buyer_street'],
+                invoice_data['buyer_postal_code'], invoice_data['buyer_city'], invoice_data['buyer_country'],
+                invoice_data['buyer_vat_id'], invoice_data['buyer_reference'], invoice_data['buyer_route_id'],
+                invoice_data['order_number'], invoice_data['currency'], invoice_data['delivery_date'],
+                invoice_data['payment_terms'], invoice_data['payment_due_date'],
+                invoice_data['skonto_days'], invoice_data['skonto_percent'],
+                invoice_data['bank_account_id'], invoice_data['bank_name'], invoice_data['bank_iban'], invoice_data['bank_bic'],
+                invoice_data['tax_category'], invoice_data['tax_rate'], invoice_data['sum_net'],
+                invoice_data['tax_amount'], invoice_data['sum_gross'], invoice_data['amount_due'],
+                invoice_data['status'],
+                invoice_id
+            ))
+            conn.commit()
+            conn.close()
+        else:
+            # Insert new invoice
+            invoice_id = db.insert_invoice(invoice_data)
+        
+        # Insert invoice items
+        for item in items:
+            item_data = {
+                'invoice_id': invoice_id,
+                'position': item.get('position'),
+                'article_id': None,  # No article linkage for now
+                'description': item.get('description'),
+                'quantity': item.get('quantity'),
+                'unit': item.get('unit', 'C62'),  # C62 = piece
+                'price_per_unit': item.get('unitPrice'),
+                'total_net': item.get('totalPrice'),
+                'tax_category': 'S',
+                'tax_rate': item.get('taxRate', tax_rate)
+            }
+            db.insert_invoice_item(item_data)
+        
+        # If status is 'finalized' and this is a NEW invoice, increment number range
+        if status == 'finalized' and not is_update:
+            # Extract year and letter from invoice number (e.g., "26R001" -> year=2026, letter="R")
+            if len(invoice_number) >= 2:
+                year_short = invoice_number[:2]
+                current_year = datetime.datetime.now().year
+                year = 2000 + int(year_short) if int(year_short) <= 99 else int(year_short)
+                
+                if len(invoice_number) > 2:
+                    letter = invoice_number[2]
+                    # Find and increment the number range
+                    ranges = db.fetch_number_ranges('invoice')
+                    for r in ranges:
+                        if r[2] == year and r[3] == letter:
+                            # Extract number from invoice_number
+                            num_part = invoice_number[3:].lstrip('_ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+                            try:
+                                current_num = int(num_part)
+                                db.update_number_range(r[0], current_num)
+                            except:
+                                pass
+                            break
+        
+        return json.dumps({'success': True, 'invoice_id': invoice_id}).encode()
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return json.dumps({'success': False, 'error': str(e)}).encode()
+
+
+def handle_send_invoice_email(post_body: bytes):
+    """Send invoice via email
+    
+    Returns JSON response with success status
+    """
+    data = json.loads(post_body.decode('utf-8'))
+    invoice_id = int(data.get('invoice_id'))
+    recipient_email = data.get('recipient_email')
+    recipient_name = data.get('recipient_name', '')
+    message_text = data.get('message_text')
+    
+    if not invoice_id or not recipient_email:
+        return json.dumps({'success': False, 'error': 'Fehlende Parameter'}).encode()
+    
+    db = Database()
+    invoice = db.get_invoice_by_id(invoice_id)
+    
+    if not invoice:
+        return json.dumps({'success': False, 'error': 'Rechnung nicht gefunden'}).encode()
+    
+    pdf_path = invoice[38]  # PDFPath
+    if not pdf_path:
+        return json.dumps({'success': False, 'error': 'Keine PDF-Datei vorhanden'}).encode()
+    
+    invoice_number = invoice[1]  # InvoiceNumber
+    
+    # Get seller contact for sender information
+    own_contacts = db.fetch_contacts(contact_type='own')
+    if not own_contacts:
+        return json.dumps({'success': False, 'error': 'Keine Absender-Kontaktdaten gefunden'}).encode()
+    
+    own_contact = own_contacts[0]
+    sender_name = own_contact[4] or own_contact[3] or 'Ihre Firma'
+    sender_email = own_contact[9] or ''  # Email
+    
+    # Send email
+    try:
+        from email_sender import EmailSender
+        email_sender = EmailSender()
+        success, error = email_sender.send_invoice_email(
+            recipient_email=recipient_email,
+            recipient_name=recipient_name,
+            invoice_number=invoice_number,
+            pdf_path=pdf_path,
+            sender_name=sender_name,
+            sender_email=sender_email,
+            message_text=message_text
+        )
+        
+        if success:
+            return json.dumps({'success': True}).encode()
+        else:
+            return json.dumps({'success': False, 'error': error}).encode()
+            
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return json.dumps({'success': False, 'error': str(e)}).encode()
+
+
+def handle_invoice_pdf_by_id(invoice_id: int):
+    """Generate PDF for an existing invoice by ID
+    
+    Args:
+        invoice_id: ID of the invoice to generate PDF for
+        
+    Returns:
+        tuple: (pdf_bytes, filename) or (None, None) if error
+    """
+    from pdf_generator import generate_invoice_pdf
+    
+    db = Database()
+    
+    try:
+        # Generate PDF from database
+        pdf_bytes, pdf_path = generate_invoice_pdf(db, invoice_id)
+        
+        if pdf_bytes is None:
+            print(f"Failed to generate PDF for invoice {invoice_id}")
+            return None, None
+        
+        # Extract filename from path
+        import os
+        filename = os.path.basename(pdf_path) if pdf_path else f"Rechnung_{invoice_id}.pdf"
+        
+        print(f"Successfully generated PDF for invoice {invoice_id}: {filename}")
+        return pdf_bytes, filename
+        
+    except Exception as e:
+        import traceback
+        print(f"Error generating PDF for invoice {invoice_id}: {e}")
+        traceback.print_exc()
+        return None, None

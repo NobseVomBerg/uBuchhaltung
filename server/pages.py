@@ -1173,11 +1173,209 @@ def PageSkrEdit(db: Database, id):
     s+= Footer()
     return s
 
-def PageInvoice(db: Database):
-    """Generate invoice page"""
+def PageInvoice(db: Database, filters: dict = None):
+    """Generate invoice list page with search and filter"""
+    filters = filters or {}
+    
+    # Get filter parameters
+    status_filter = filters.get('status', '')
+    search_query = filters.get('search', '')
+    date_from = filters.get('date_from', '')
+    date_to = filters.get('date_to', '')
+    
+    # Fetch invoices with optional status filter
+    if status_filter and status_filter != 'all':
+        invoices = db.fetch_invoices(status=status_filter)
+    else:
+        invoices = db.fetch_invoices()
+    
+    # Apply additional filters in Python
+    if search_query:
+        search_lower = search_query.lower()
+        invoices = [inv for inv in invoices 
+                   if search_lower in str(inv[1]).lower()  # InvoiceNumber
+                   or search_lower in str(inv[12]).lower()]  # BuyerName
+    
+    if date_from:
+        invoices = [inv for inv in invoices if inv[2] >= date_from]  # InvoiceDate
+    
+    if date_to:
+        invoices = [inv for inv in invoices if inv[2] <= date_to]
+    
+    s = Header1('invoice')
+    submenu = '<span id="ActivePage">Rechnungen</span> | <a href="/invoice/new">Neue Rechnung</a>'
+    s+= Header2(submenu)
+    s+= Header3()
+    
+    s+= "<h2>Rechnungen</h2>"
+    
+    # Search and filter form
+    s+= '''
+    <form method="get" action="/invoice" style="margin-bottom: 20px; padding: 15px; background-color: #f5f5f5; border-radius: 5px;">
+        <table style="border: none;">
+            <tr>
+                <td style="padding: 5px; border: none;"><label>Suche:</label></td>
+                <td style="padding: 5px; border: none;">
+                    <input type="text" name="search" value="{search}" placeholder="RE-Nr. oder Kunde" style="width: 200px;">
+                </td>
+                <td style="padding: 5px; border: none;"><label>Status:</label></td>
+                <td style="padding: 5px; border: none;">
+                    <select name="status" style="width: 150px;">
+                        <option value="all" {sel_all}>Alle</option>
+                        <option value="draft" {sel_draft}>Entwurf</option>
+                        <option value="finalized" {sel_finalized}>Abgeschlossen</option>
+                        <option value="sent" {sel_sent}>Versendet</option>
+                        <option value="paid" {sel_paid}>Bezahlt</option>
+                        <option value="cancelled" {sel_cancelled}>Storniert</option>
+                    </select>
+                </td>
+            </tr>
+            <tr>
+                <td style="padding: 5px; border: none;"><label>Von Datum:</label></td>
+                <td style="padding: 5px; border: none;">
+                    <input type="date" name="date_from" value="{date_from}" style="width: 150px;">
+                </td>
+                <td style="padding: 5px; border: none;"><label>Bis Datum:</label></td>
+                <td style="padding: 5px; border: none;">
+                    <input type="date" name="date_to" value="{date_to}" style="width: 150px;">
+                </td>
+                <td style="padding: 5px; border: none;">
+                    <input type="submit" value="🔍 Filtern" style="padding: 5px 15px;">
+                    <a href="/invoice" style="margin-left: 10px; padding: 5px 15px; background-color: #ddd; text-decoration: none; border-radius: 3px;">✖ Zurücksetzen</a>
+                </td>
+            </tr>
+        </table>
+    </form>
+    '''.format(
+        search=search_query,
+        date_from=date_from,
+        date_to=date_to,
+        sel_all='selected' if not status_filter or status_filter == 'all' else '',
+        sel_draft='selected' if status_filter == 'draft' else '',
+        sel_finalized='selected' if status_filter == 'finalized' else '',
+        sel_sent='selected' if status_filter == 'sent' else '',
+        sel_paid='selected' if status_filter == 'paid' else '',
+        sel_cancelled='selected' if status_filter == 'cancelled' else ''
+    )
+    
+    # Statistics summary
+    total_count = len(invoices)
+    total_sum = sum(inv[36] for inv in invoices if len(inv) > 36 and inv[36])  # SumGross is at index 36
+    paid_sum = sum(inv[36] for inv in invoices if len(inv) > 36 and inv[36] and len(inv) > 38 and inv[38] == 'paid')  # Status at 38
+    open_sum = sum(inv[36] for inv in invoices if len(inv) > 36 and inv[36] and len(inv) > 38 and inv[38] not in ['paid', 'cancelled'])
+    
+    s+= f'''
+    <div style="margin-bottom: 15px; padding: 10px; background-color: #e8f4f8; border-radius: 5px;">
+        <strong>Statistik:</strong> 
+        {total_count} Rechnung(en) | 
+        Gesamtsumme: {total_sum:.2f} € | 
+        Bezahlt: {paid_sum:.2f} € | 
+        Offen: {open_sum:.2f} €
+    </div>
+    '''
+    
+    if not invoices:
+        s+= "<p><em>Keine Rechnungen gefunden.</em></p>"
+        s+= "<p><a href='/invoice/new'>Neue Rechnung erstellen</a></p>"
+    else:
+        s+= "<table border='1' style='width: 100%;'>"
+        s+= "<tr><th>RE-Nr.</th><th>Datum</th><th>Kunde</th><th>Netto</th><th>Brutto</th><th>Status</th><th>Aktionen</th></tr>"
+        
+        for invoice in invoices:
+            # invoice: ID=0, InvoiceNumber=1, InvoiceDate=2, OwnCompanyId=3, SellerName=4, ..., CustomerId=12, ..., BuyerName=14, ..., TaxRate=33, SumNet=34, TaxAmount=35, SumGross=36, AmountDue=37, Status=38, PDFPath=39
+            inv_id = invoice[0]
+            inv_number = invoice[1]
+            inv_date = invoice[2]
+            buyer_name = invoice[14]  # BuyerName is at index 14, not 12
+            sum_net = invoice[34]  # SumNet is at index 34, not 33
+            sum_gross = invoice[36]  # SumGross is at index 36, not 35
+            status = invoice[38]  # Status is at index 38, not 37
+            pdf_path = invoice[39] if len(invoice) > 39 else None  # PDFPath is at index 39
+            
+            # Status color
+            status_colors = {
+                'draft': '#888',
+                'finalized': '#0066cc',
+                'sent': '#ff9900',
+                'paid': '#00aa00',
+                'cancelled': '#cc0000'
+            }
+            status_text = {
+                'draft': 'Entwurf',
+                'finalized': 'Abgeschlossen',
+                'sent': 'Versendet',
+                'paid': 'Bezahlt',
+                'cancelled': 'Storniert'
+            }
+            status_color = status_colors.get(status, '#888')
+            status_label = status_text.get(status, status)
+            
+            s+= f"<tr>"
+            s+= f"<td>{inv_number}</td>"
+            s+= f"<td>{inv_date}</td>"
+            s+= f"<td>{buyer_name[:30]}</td>"
+            s+= f"<td style='text-align: right;'>{sum_net:.2f} €</td>"
+            s+= f"<td style='text-align: right;'><strong>{sum_gross:.2f} €</strong></td>"
+            s+= f"<td style='color: {status_color};'><strong>{status_label}</strong></td>"
+            s+= f"<td>"
+            # PDF button - check if PDF actually exists in filesystem
+            import os
+            pdf_exists = "true" if (pdf_path and os.path.exists(pdf_path)) else "false"
+            s+= f'<a href="javascript:void(0);" onclick="handlePDF({inv_id}, {pdf_exists})">📄 PDF</a> | '
+            s+= f"<a href='/invoice/view?id={inv_id}'>Ansicht</a>"
+            s+= f"</td>"
+            s+= f"</tr>"
+        
+        s+= "</table>"
+    
+    s+= '''
+    <script>
+        function handlePDF(invoiceId, pdfExists) {
+            if (pdfExists) {
+                // PDF exists - ask if user wants to regenerate
+                if (confirm('PDF-Datei existiert bereits. Möchten Sie die Datei überschreiben und neu generieren?')) {
+                    generatePDFInFilesystem(invoiceId);
+                }
+            } else {
+                // PDF doesn't exist - generate it
+                generatePDFInFilesystem(invoiceId);
+            }
+        }
+        
+        function generatePDFInFilesystem(invoiceId) {
+            // Generate PDF in filesystem (no download)
+            fetch('/invoice/pdf_generate?id=' + invoiceId)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('PDF erfolgreich erstellt:\\n' + data.pdf_path);
+                    } else {
+                        alert('Fehler beim Erstellen der PDF: ' + (data.error || 'Unbekannter Fehler'));
+                    }
+                })
+                .catch(err => {
+                    alert('Fehler: ' + err.message);
+                });
+        }
+    </script>
+    '''
+    
+    s+= Footer()
+    return s
+
+def PageInvoiceNew(db: Database, invoice_id=None):
+    """Generate invoice creation/edit page"""
     import datetime
     import json
     current_year = datetime.datetime.now().year
+    
+    # Load existing invoice if invoice_id is provided
+    existing_invoice = None
+    existing_items = []
+    if invoice_id:
+        existing_invoice = db.get_invoice_by_id(invoice_id)
+        if existing_invoice:
+            existing_items = db.get_invoice_items(invoice_id)
     
     # Get company data (own contact)
     own_contacts = db.fetch_contacts(contact_type='own')
@@ -1192,31 +1390,59 @@ def PageInvoice(db: Database):
     # Get only active articles for selection in invoices
     articles = db.fetch_articles(active_only=True)
     
-    # Get next invoice number from number ranges
-    invoice_ranges = db.fetch_number_ranges('invoice')
-    next_invoice_number = ''
-    if invoice_ranges:
-        # Find the range for current year, or use the first available
-        current_range = None
-        for r in invoice_ranges:
-            if r[2] == current_year:
-                current_range = r
-                break
-        if not current_range and invoice_ranges:
-            current_range = invoice_ranges[0]
+    # Determine invoice number and initial values
+    if existing_invoice:
+        # Editing existing invoice - use existing data
+        # existing_invoice structure: ID=0, InvoiceNumber=1, InvoiceDate=2, OwnCompanyId=3, ..., CustomerId=12, ...
+        invoice_number = existing_invoice[1]
+        invoice_date = existing_invoice[2]
+        selected_own_company_id = existing_invoice[3]
+        selected_customer_id = existing_invoice[12]
+        invoice_status = existing_invoice[37]
+        pdf_path = existing_invoice[39] if len(existing_invoice) > 39 else None
+        page_title = f"Rechnung {invoice_number} bearbeiten"
+        is_edit_mode = True
+    else:
+        # Creating new invoice - generate next number
+        invoice_ranges = db.fetch_number_ranges('invoice')
+        invoice_number = ''
+        if invoice_ranges:
+            # Find the range for current year, or use the first available
+            current_range = None
+            for r in invoice_ranges:
+                if r[2] == current_year:
+                    current_range = r
+                    break
+            if not current_range and invoice_ranges:
+                current_range = invoice_ranges[0]
+            
+            if current_range:
+                # r: ID=0, Type=1, Year=2, Letter=3, Prefix=4, CurrentNumber=5, Description=6
+                year = current_range[2]
+                letter = current_range[3]
+                prefix = current_range[4] or ''
+                current_num = current_range[5] or 0
+                next_num = current_num + 1
+                year_short = str(year)[-2:]
+                invoice_number = f"{year_short}{letter}{prefix}{next_num:03d}"
         
-        if current_range:
-            # r: ID=0, Type=1, Year=2, Letter=3, Prefix=4, CurrentNumber=5, Description=6
-            year = current_range[2]
-            letter = current_range[3]
-            prefix = current_range[4] or ''
-            current_num = current_range[5] or 0
-            next_num = current_num + 1
-            year_short = str(year)[-2:]
-            next_invoice_number = f"{year_short}{letter}{prefix}{next_num:03d}"
+        invoice_date = ''
+        selected_own_company_id = own_contact[0] if own_contact else None
+        selected_customer_id = None
+        invoice_status = 'draft'
+        pdf_path = None
+        page_title = "Neue Rechnung erstellen"
+        is_edit_mode = False
     
     s = Header1('invoice')
     s += Header2()
+    s += f'<input type="hidden" id="invoice_id" value="{invoice_id or ""}">'
+    s += f'<input type="hidden" id="is_edit_mode" value="{str(is_edit_mode).lower()}">'
+    # Check if PDF actually exists in filesystem
+    import os
+    pdf_file_exists = bool(pdf_path and os.path.exists(pdf_path))
+    s += f'<input type="hidden" id="pdf_exists" value="{str(pdf_file_exists).lower()}">'
+    s += f'<h2>{page_title}</h2>'
     s += '''<div class="invoice-container" id="invoice_container">
         <div class="invoice-header">
             <div class="invoice-logo">
@@ -1224,9 +1450,11 @@ def PageInvoice(db: Database):
             </div>
             <div class="invoice-meta">
                 <table class="invoice-meta-table">
-                    <tr><td>Datum:</td><td><input type="date" id="invoice_date" value="" style="width: 150px;"></td></tr>
+                    <tr><td>Datum:</td><td><input type="date" id="invoice_date" value="'''
+    s += invoice_date if invoice_date else ''
+    s += '''" style="width: 150px;"></td></tr>
     '''
-    s += f'<tr><td>Rechnungs-Nr.:</td><td><input type="text" id="invoice_number" value="{next_invoice_number}" style="width: 150px;"></td></tr>'
+    s += f'<tr><td>Rechnungs-Nr.:</td><td><input type="text" id="invoice_number" value="{invoice_number}" style="width: 150px;"></td></tr>'
     s += '''
                     <tr><td>Kunden-Nr.:</td><td><input type="text" id="customer_number" readonly style="width: 150px; background-color: #f0f0f0;"></td></tr>
                 </table>
@@ -1254,7 +1482,7 @@ def PageInvoice(db: Database):
     
     for own in own_contacts:
         own_name = own[4] or own[3] or f"ID {own[0]}"
-        selected = 'selected' if own_contact and own[0] == own_contact[0] else ''
+        selected = 'selected' if (existing_invoice and own[0] == selected_own_company_id) or (not existing_invoice and own_contact and own[0] == own_contact[0]) else ''
         s += f'<option value="{own[0]}" {selected}>{own_name}</option>'
     
     s += '''
@@ -1265,7 +1493,8 @@ def PageInvoice(db: Database):
     
     for customer in customers:
         cust_name = customer[3] or customer[4] or f"ID {customer[0]}"
-        s += f'<option value="{customer[0]}">{cust_name}</option>'
+        selected = 'selected' if existing_invoice and customer[0] == selected_customer_id else ''
+        s += f'<option value="{customer[0]}" {selected}>{cust_name}</option>'
     
     s += '''                </select>
                 <div id="customer_address_display" style="min-height: 80px; white-space: pre-line;">
@@ -1288,7 +1517,29 @@ def PageInvoice(db: Database):
                     <th style="width: 30px;" class="no-pdf"></th>
                 </tr>
             </thead>
-            <tbody id="invoice_items_body">
+            <tbody id="invoice_items_body">'''
+    
+    # Add existing items or one empty row
+    if existing_items:
+        for idx, item in enumerate(existing_items, 1):
+            # item: ID=0, InvoiceId=1, Position=2, ArticleId=3, Description=4, Quantity=5, Unit=6, PricePerUnit=7, TotalNet=8, TaxCategory=9, TaxRate=10
+            quantity = item[5]
+            unit = item[6] or 'Stk.'
+            description = item[4] or ''
+            price = item[7]
+            total = item[8]
+            s += f'''
+                <tr class="invoice-item-row" data-row="{idx}">
+                    <td>{idx}</td>
+                    <td><input type="number" class="item-quantity" value="{quantity}" min="0" step="0.01" style="width: 60px;"></td>
+                    <td><input type="text" class="item-unit" value="{unit}" style="width: 60px;"></td>
+                    <td><input type="text" class="item-description" value="{description}" style="width: 100%;"></td>
+                    <td><input type="number" class="item-price" value="{price}" min="0" step="0.01" style="width: 80px;"> €</td>
+                    <td class="item-total" style="text-align: right;">{total:.2f} €</td>
+                    <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color: red;">✕</button></td>
+                </tr>'''
+    else:
+        s += '''
                 <tr class="invoice-item-row" data-row="1">
                     <td>1</td>
                     <td><input type="number" class="item-quantity" value="1" min="0" step="0.01" style="width: 60px;"></td>
@@ -1297,7 +1548,9 @@ def PageInvoice(db: Database):
                     <td><input type="number" class="item-price" value="0" min="0" step="0.01" style="width: 80px;"> €</td>
                     <td class="item-total" style="text-align: right;">0,00 €</td>
                     <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color: red;">✕</button></td>
-                </tr>
+                </tr>'''
+    
+    s += '''
             </tbody>
             <tfoot>
                 <tr><td colspan="7" style="height: 10px; border: none;"></td></tr>
@@ -1354,8 +1607,13 @@ def PageInvoice(db: Database):
             </div>
         </div>
         
-        <div class="invoice-payment-terms">
-            <textarea id="payment_terms" rows="3" style="width: 100%;">Bitte überweisen Sie den Gesamtbetrag ohne jeden Abzug unter Angabe der Rechnungsnummer innerhalb von 14 Tagen ab Rechnungsdatum auf das unten angegebene Konto. Vielen Dank.</textarea>
+        <div class="invoice-payment-terms">'''
+    
+    # Payment terms text
+    payment_terms_text = existing_invoice[26] if existing_invoice and existing_invoice[26] else 'Bitte überweisen Sie den Gesamtbetrag ohne jeden Abzug unter Angabe der Rechnungsnummer innerhalb von 14 Tagen ab Rechnungsdatum auf das unten angegebene Konto. Vielen Dank.'
+    s += f'<textarea id="payment_terms" rows="3" style="width: 100%;">{payment_terms_text}</textarea>'
+    
+    s += '''
         </div>
         
         <div class="invoice-footer">
@@ -1396,9 +1654,12 @@ def PageInvoice(db: Database):
                             <option value="">-- Konto auswählen --</option>
     '''
     
+    # BankAccountId is at index 28 (NOT 29!)
+    selected_bank_id = existing_invoice[28] if existing_invoice and len(existing_invoice) > 28 and existing_invoice[28] else None
     for account in accounts:
         if not account[6]:  # Skip cash accounts (IsCash=1)
-            s += f'<option value="{account[0]}">{account[1]}</option>'
+            selected = 'selected' if selected_bank_id and account[0] == selected_bank_id else ''
+            s += f'<option value="{account[0]}" {selected}>{account[1]}</option>'
     
     s += '''                        </select>
                         <div id="bank_details" style="margin-top: 5px;">
@@ -1410,8 +1671,111 @@ def PageInvoice(db: Database):
         </div>
     </div>
     
+    <!-- XRechnung / E-Rechnung Zusatzdaten (optional) -->
+    <div class="xrechnung-section no-pdf" style="margin: 20px 0; padding: 20px; background-color: #f9f9f9; border: 1px solid #ddd; border-radius: 5px;">
+        <h3 style="margin-top: 0; cursor: pointer;" onclick="toggleXRechnungFields()">
+            ⚙️ XRechnung / E-Rechnung Zusatzdaten (optional) <span id="xrechnung_toggle">▼</span>
+        </h3>
+        <div id="xrechnung_fields" style="display: none;">
+            <table style="width: 100%; border-collapse: collapse;">
+                <tr>
+                    <td style="padding: 8px; width: 200px; vertical-align: top;"><strong>Bestellnummer:</strong></td>
+                    <td style="padding: 8px;">
+                        <input type="text" id="order_number" style="width: 300px;" placeholder="z.B. PO-2026-12345" value="'''
+    s += existing_invoice[21] if existing_invoice and len(existing_invoice) > 21 and existing_invoice[21] else ''
+    s += '''">
+                        <br><small style="color: #666;">Bestellnummer des Kunden (falls vorhanden)</small>
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; vertical-align: top;"><strong>Leitweg-ID:</strong></td>
+                    <td style="padding: 8px;">
+                        <input type="text" id="buyer_route_id" style="width: 300px;" placeholder="z.B. 991-ABCDE-12" readonly value="'''
+    s += existing_invoice[20] if existing_invoice and len(existing_invoice) > 20 and existing_invoice[20] else ''
+    s += '''">
+                        <br><small style="color: #666;">Wird automatisch vom Kunden übernommen (nur bei B2G-Rechnungen erforderlich)</small>
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; vertical-align: top;"><strong>Lieferdatum:</strong></td>
+                    <td style="padding: 8px;">
+                        <input type="date" id="delivery_date" style="width: 200px;" value="'''
+    s += existing_invoice[23] if existing_invoice and len(existing_invoice) > 23 and existing_invoice[23] else ''
+    s += '''">
+                        <br><small style="color: #666;">Datum der Lieferung/Leistungserbringung (optional)</small>
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; vertical-align: top;"><strong>Zahlungsart (Code):</strong></td>
+                    <td style="padding: 8px;">
+                        <select id="payment_means_code" style="width: 300px;">
+                            <option value="58" selected>58 - SEPA Überweisung</option>
+                            <option value="30">30 - Banküberweisung</option>
+                            <option value="48">48 - Debitkarte</option>
+                            <option value="54">54 - Kreditkarte</option>
+                            <option value="49">49 - Lastschrift</option>
+                            <option value="1">1 - Bargeld</option>
+                        </select>
+                        <br><small style="color: #666;">XRechnung Zahlungsart-Code (Standard: 58)</small>
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; vertical-align: top;"><strong>Zahlungsart (Text):</strong></td>
+                    <td style="padding: 8px;">
+                        <input type="text" id="payment_means_text" value="SEPA Überweisung" style="width: 300px;">
+                        <br><small style="color: #666;">Beschreibung der Zahlungsart</small>
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; vertical-align: top;"><strong>Zahlungsziel (Tage):</strong></td>
+                    <td style="padding: 8px;">
+                        <input type="number" id="payment_term_days" value="'''
+    # Calculate payment term days from due date and invoice date if available
+    if existing_invoice and existing_invoice[25] and existing_invoice[2]:
+        from datetime import datetime
+        try:
+            due_date = datetime.strptime(existing_invoice[25], '%Y-%m-%d')
+            inv_date = datetime.strptime(existing_invoice[2], '%Y-%m-%d')
+            term_days = (due_date - inv_date).days
+            s += str(term_days)
+        except:
+            s += '14'
+    else:
+        s += '14'
+    s += '''" min="0" style="width: 100px;"> Tage
+                        <br><small style="color: #666;">Anzahl der Tage bis zur Fälligkeit (Standard: 14 Tage)</small>
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; vertical-align: top;"><strong>Fälligkeitsdatum:</strong></td>
+                    <td style="padding: 8px;">
+                        <input type="date" id="payment_due_date" style="width: 200px;" value="'''
+    s += existing_invoice[25] if existing_invoice and len(existing_invoice) > 25 and existing_invoice[25] else ''
+    s += '''">
+                        <br><small style="color: #666;">Wird automatisch berechnet oder kann manuell festgelegt werden</small>
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px; vertical-align: top;"><strong>Skonto:</strong></td>
+                    <td style="padding: 8px;">
+                        <input type="number" id="discount_percentage" min="0" max="100" step="0.1" style="width: 80px;" placeholder="z.B. 2" value="'''
+    s += str(existing_invoice[27]) if existing_invoice and len(existing_invoice) > 27 and existing_invoice[27] else ''
+    s += '''"> %
+                        bei Zahlung innerhalb von
+                        <input type="number" id="discount_days" min="0" style="width: 80px;" placeholder="z.B. 7" value="'''
+    s += str(existing_invoice[26]) if existing_invoice and len(existing_invoice) > 26 and existing_invoice[26] else ''
+    s += '''"> Tagen
+                        <br><small style="color: #666;">Skonto-Abzug bei frühzeitiger Zahlung (optional)</small>
+                    </td>
+                </tr>
+            </table>
+        </div>
+    </div>
+    
     <div style="text-align: center; margin: 20px 0;">
-        <button type="button" onclick="generatePDF()" class="pdf-button no-pdf">📄 Als PDF exportieren</button>
+        <button type="button" onclick="saveInvoice('draft')" class="save-button" style="background-color: #4CAF50; color: white; padding: 12px 24px; margin: 0 10px; border: none; cursor: pointer; border-radius: 4px;">💾 Als Entwurf speichern</button>
+        <button type="button" onclick="saveInvoice('finalized')" class="save-button" style="background-color: #2196F3; color: white; padding: 12px 24px; margin: 0 10px; border: none; cursor: pointer; border-radius: 4px;">✓ Finalisieren und speichern</button>
+        <button type="button" onclick="generatePDF()" class="pdf-button no-pdf" style="background-color: #FF9800; color: white; padding: 12px 24px; margin: 0 10px; border: none; cursor: pointer; border-radius: 4px;">📄 Als PDF exportieren</button>
     </div>
     
     <script>
@@ -1451,7 +1815,8 @@ def PageInvoice(db: Database):
             'company': customer[4] or '',
             'street': customer[5] or '',
             'postal': customer[6] or '',
-            'city': customer[7] or ''
+            'city': customer[7] or '',
+            'buyer_route_id': customer[14] if len(customer) > 14 else ''
         }
     
     s += json.dumps(customers_dict)
@@ -1495,8 +1860,22 @@ def PageInvoice(db: Database):
     
     s += ''';
         
-        // Set today's date
-        document.getElementById('invoice_date').valueAsDate = new Date();
+        // Set today's date only for new invoices
+        const invoiceDate = document.getElementById('invoice_date').value;
+        if (!invoiceDate) {
+            document.getElementById('invoice_date').valueAsDate = new Date();
+        }
+        
+        // Initialize own company and customer on page load for edit mode
+        const isEditMode = document.getElementById('is_edit_mode').value === 'true';
+        if (isEditMode) {
+            // Trigger updates to populate address fields
+            updateOwnCompany();
+            updateCustomerAddress();
+            updateBankDetails();
+            // Recalculate totals
+            calculateTotals();
+        }
         
         // Update own company data (logo, sender line, footer)
         function updateOwnCompany() {
@@ -1558,6 +1937,7 @@ def PageInvoice(db: Database):
             const customerId = document.getElementById('customer_select').value;
             const addressDisplay = document.getElementById('customer_address_display');
             const customerNumberField = document.getElementById('customer_number');
+            const buyerRouteIdField = document.getElementById('buyer_route_id');
             
             console.log('updateCustomerAddress called, customerId:', customerId);
             console.log('customersData:', customersData);
@@ -1565,6 +1945,7 @@ def PageInvoice(db: Database):
             if (!customerId) {
                 addressDisplay.innerHTML = '';
                 customerNumberField.value = '';
+                if (buyerRouteIdField) buyerRouteIdField.value = '';
                 return;
             }
             
@@ -1578,6 +1959,11 @@ def PageInvoice(db: Database):
                 
                 addressDisplay.textContent = address;
                 customerNumberField.value = customer.customer_number;
+                
+                // Update Leitweg-ID from customer (for B2G invoices)
+                if (buyerRouteIdField) {
+                    buyerRouteIdField.value = customer.buyer_route_id || '';
+                }
             }
         }
         
@@ -1599,6 +1985,41 @@ def PageInvoice(db: Database):
                 bankDetails.innerHTML = details;
             }
         }
+        
+        // Toggle XRechnung fields visibility
+        function toggleXRechnungFields() {
+            const fields = document.getElementById('xrechnung_fields');
+            const toggle = document.getElementById('xrechnung_toggle');
+            if (fields.style.display === 'none') {
+                fields.style.display = 'block';
+                toggle.textContent = '▲';
+            } else {
+                fields.style.display = 'none';
+                toggle.textContent = '▼';
+            }
+        }
+        
+        // Auto-calculate payment due date when invoice date or payment terms change
+        function updatePaymentDueDate() {
+            const invoiceDate = document.getElementById('invoice_date').value;
+            const paymentTermDays = parseInt(document.getElementById('payment_term_days').value) || 14;
+            
+            if (invoiceDate) {
+                const date = new Date(invoiceDate);
+                date.setDate(date.getDate() + paymentTermDays);
+                const year = date.getFullYear();
+                const month = String(date.getMonth() + 1).padStart(2, '0');
+                const day = String(date.getDate()).padStart(2, '0');
+                document.getElementById('payment_due_date').value = year + '-' + month + '-' + day;
+            }
+        }
+        
+        // Attach listeners for automatic due date calculation
+        document.getElementById('invoice_date').addEventListener('change', updatePaymentDueDate);
+        document.getElementById('payment_term_days').addEventListener('input', updatePaymentDueDate);
+        
+        // Initial due date calculation
+        updatePaymentDueDate();
         
         // Modal functions
         function showArticleModal() {
@@ -1738,65 +2159,175 @@ def PageInvoice(db: Database):
         // Initialize own company (load logo and data for preselected company)
         updateOwnCompany();
         
-        // Generate PDF
-        function generatePDF() {
+        // Save invoice to database
+        function saveInvoice(status) {
+            // Check if we're editing an existing invoice
+            const invoiceId = document.getElementById('invoice_id').value;
+            const isEdit = invoiceId !== '';
+            
             // Get selected own company ID
             const ownCompanyId = document.getElementById('own_company_select').value;
+            if (!ownCompanyId) {
+                alert('Bitte wählen Sie eine eigene Firma aus.');
+                return;
+            }
             
-            // Get selected customer name
+            // Get selected customer
             const customerId = document.getElementById('customer_select').value;
-            let customerName = '';
-            if (customerId && customersData[customerId]) {
-                customerName = customersData[customerId].name || '';
+            if (!customerId) {
+                alert('Bitte wählen Sie einen Kunden aus.');
+                return;
+            }
+            
+            // Get invoice number
+            const invoiceNumber = document.getElementById('invoice_number').value;
+            if (!invoiceNumber) {
+                alert('Bitte geben Sie eine Rechnungsnummer ein.');
+                return;
+            }
+            
+            // Get invoice date
+            const invoiceDate = document.getElementById('invoice_date').value;
+            if (!invoiceDate) {
+                alert('Bitte wählen Sie ein Rechnungsdatum.');
+                return;
+            }
+            
+            // Collect items
+            const items = [];
+            document.querySelectorAll('.invoice-item-row').forEach((row, index) => {
+                const description = row.querySelector('.item-description').value;
+                if (description) {  // Only include rows with description
+                    items.push({
+                        position: index + 1,
+                        quantity: parseFloat(row.querySelector('.item-quantity').value) || 1,
+                        unit: row.querySelector('.item-unit').value,
+                        description: description,
+                        unitPrice: parseFloat(row.querySelector('.item-price').value) || 0,
+                        totalPrice: parseFloat(row.querySelector('.item-total').textContent.replace('€', '').replace(',', '.').trim()) || 0,
+                        taxRate: parseFloat(document.getElementById('tax_rate').value) || 19
+                    });
+                }
+            });
+            
+            if (items.length === 0) {
+                alert('Bitte fügen Sie mindestens eine Position hinzu.');
+                return;
+            }
+            
+            // Get bank account ID
+            const bankAccountId = document.getElementById('bank_account_select').value || null;
+            
+            // Calculate amounts (replace comma with dot for German number format)
+            const taxRate = parseFloat(document.getElementById('tax_rate').value) || 19;
+            const netAmount = parseFloat(document.getElementById('sum_net').textContent.replace('€', '').replace(',', '.').trim());
+            const taxAmount = parseFloat(document.getElementById('tax_amount').textContent.replace('€', '').replace(',', '.').trim());
+            const grossAmount = parseFloat(document.getElementById('sum_gross').textContent.replace(/<[^>]*>/g, '').replace('€', '').replace(',', '.').trim());
+            
+            // Get payment terms
+            const paymentTermDays = parseInt(document.getElementById('payment_term_days').value) || 14;
+            const paymentTerms = document.getElementById('payment_terms').value;
+            
+            // Calculate due date
+            const dueDateField = document.getElementById('payment_due_date').value;
+            let dueDate = dueDateField;
+            if (!dueDate && invoiceDate) {
+                const d = new Date(invoiceDate);
+                d.setDate(d.getDate() + paymentTermDays);
+                dueDate = d.toISOString().split('T')[0];
             }
             
             // Collect invoice data
             const invoiceData = {
-                ownCompanyId: ownCompanyId,
-                date: document.getElementById('invoice_date').value,
-                number: document.getElementById('invoice_number').value,
+                invoiceNumber: invoiceNumber,
+                invoiceDate: invoiceDate,
+                customerId: parseInt(customerId),
                 customerNumber: document.getElementById('customer_number').value,
-                customerAddress: document.getElementById('customer_address_display').textContent,
-                customerName: customerName,
-                items: [],
-                taxRate: parseFloat(document.getElementById('tax_rate').value) || 19,
-                sumNet: document.getElementById('sum_net').textContent,
-                taxAmount: document.getElementById('tax_amount').textContent,
-                sumGross: document.getElementById('sum_gross').textContent.replace(/<[^>]*>/g, ''),
-                paymentTerms: document.getElementById('payment_terms').value,
-                bankDetails: document.getElementById('bank_details').innerHTML
+                ownCompanyId: parseInt(ownCompanyId),
+                buyerReference: document.getElementById('buyer_route_id').value || null,
+                paymentTerms: paymentTerms,
+                paymentTermsDays: paymentTermDays,
+                dueDate: dueDate,
+                bankAccountId: bankAccountId ? parseInt(bankAccountId) : null,
+                netAmount: netAmount,
+                taxRate: taxRate / 100,  // Convert percentage to decimal
+                taxAmount: taxAmount,
+                grossAmount: grossAmount,
+                currency: 'EUR',
+                status: status,
+                paymentMeansCode: document.getElementById('payment_means_code').value || '58',
+                paymentMeansText: document.getElementById('payment_means_text').value || 'SEPA Überweisung',
+                items: items,
+                // XRechnung optional fields
+                orderNumber: document.getElementById('order_number').value || null,
+                deliveryDate: document.getElementById('delivery_date').value || null,
+                discountPercentage: parseFloat(document.getElementById('discount_percentage').value) || null,
+                discountDays: parseInt(document.getElementById('discount_days').value) || null
             };
             
-            // Collect items
-            document.querySelectorAll('.invoice-item-row').forEach(row => {
-                invoiceData.items.push({
-                    pos: row.querySelector('td:first-child').textContent,
-                    quantity: row.querySelector('.item-quantity').value,
-                    unit: row.querySelector('.item-unit').value,
-                    description: row.querySelector('.item-description').value,
-                    price: row.querySelector('.item-price').value,
-                    total: row.querySelector('.item-total').textContent
-                });
-            });
+            // Add invoice ID if editing
+            if (isEdit) {
+                invoiceData.invoiceId = parseInt(invoiceId);
+            }
             
-            // Send to server for PDF generation
-            fetch('/invoice/pdf', {
+            // Send to server
+            fetch('/invoice/save', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(invoiceData)
             })
-            .then(response => response.blob())
-            .then(blob => {
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'Rechnung_' + (invoiceData.number || 'Entwurf') + '.pdf';
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                window.URL.revokeObjectURL(url);
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    const message = isEdit ? 'Rechnung erfolgreich aktualisiert!' : 'Rechnung erfolgreich gespeichert!\\nRechnungs-ID: ' + data.invoice_id;
+                    alert(message);
+                    // Redirect to invoice list
+                    window.location.href = '/invoice';
+                } else {
+                    alert('Fehler beim Speichern: ' + (data.error || 'Unbekannter Fehler'));
+                }
             })
-            .catch(err => alert('Fehler beim PDF-Export: ' + err));
+            .catch(err => {
+                alert('Fehler beim Speichern: ' + err);
+                console.error('Save error:', err);
+            });
+        }
+        
+        // Generate PDF
+        function generatePDF() {
+            // Check if we're editing an existing invoice
+            const invoiceId = document.getElementById('invoice_id').value;
+            
+            if (!invoiceId) {
+                alert('Bitte speichern Sie die Rechnung zuerst, bevor Sie ein PDF erstellen.');
+                return;
+            }
+            
+            // Check if PDF already exists
+            const pdfExists = document.getElementById('pdf_exists').value === 'true';
+            
+            if (pdfExists) {
+                // PDF exists - ask if user wants to regenerate
+                if (!confirm('PDF-Datei existiert bereits. Möchten Sie die Datei überschreiben und neu generieren?')) {
+                    return;
+                }
+            }
+            
+            // Generate PDF in filesystem (no download)
+            fetch('/invoice/pdf_generate?id=' + invoiceId)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // Update pdf_exists flag
+                        document.getElementById('pdf_exists').value = 'true';
+                        alert('PDF erfolgreich erstellt:\\n' + data.pdf_path);
+                    } else {
+                        alert('Fehler beim Erstellen der PDF: ' + (data.error || 'Unbekannter Fehler'));
+                    }
+                })
+                .catch(err => {
+                    alert('Fehler: ' + err.message);
+                });
         }
     </script>
     '''
@@ -1827,7 +2358,7 @@ def PageContacts(db: Database):
         <form method="POST" action="/add_contact">
             <table>
                 <tr><td>Typ:</td><td>
-                    <select name="contact_type">
+                    <select name="contact_type" id="contact_type" onchange="toggleBuyerRouteID()">
                         <option value="customer">Kunde</option>
                         <option value="supplier">Lieferant</option>
                         <option value="own">Eigene Daten</option>
@@ -1841,10 +2372,31 @@ def PageContacts(db: Database):
                 <tr><td>Straße:</td><td><input type="text" name="street"></td></tr>
                 <tr><td>PLZ:</td><td><input type="text" name="postal_code"></td></tr>
                 <tr><td>Stadt:</td><td><input type="text" name="city"></td></tr>
-                <tr><td>Land:</td><td><input type="text" name="country"></td></tr>
+                <tr><td>Land (ISO):</td><td>
+                    <select name="country">
+                        <option value="DE" selected>Deutschland (DE)</option>
+                        <option value="AT">Österreich (AT)</option>
+                        <option value="CH">Schweiz (CH)</option>
+                        <option value="FR">Frankreich (FR)</option>
+                        <option value="NL">Niederlande (NL)</option>
+                        <option value="BE">Belgien (BE)</option>
+                        <option value="PL">Polen (PL)</option>
+                        <option value="IT">Italien (IT)</option>
+                        <option value="ES">Spanien (ES)</option>
+                        <option value="GB">Großbritannien (GB)</option>
+                        <option value="US">USA (US)</option>
+                    </select>
+                </td></tr>
                 <tr><td>E-Mail:</td><td><input type="email" name="email"></td></tr>
                 <tr><td>Telefon:</td><td><input type="tel" name="phone"></td></tr>
-                <tr><td>Steuernummer:</td><td><input type="text" name="tax_id"></td></tr>
+                <tr><td>USt-IdNr / Steuer-Nr:</td><td><input type="text" name="tax_id" placeholder="z.B. DE123456789"></td></tr>
+                <tr id="buyer_route_id_row" style="display: table-row;">
+                    <td>Leitweg-ID (B2G):</td>
+                    <td>
+                        <input type="text" name="buyer_route_id" placeholder="Optional, nur für öffentliche Auftraggeber" style="width: 300px;">
+                        <small style="color: #666; display: block;">Format: 12-stellige Nummer-5stellige Prüfziffer (z.B. 991-ABCDE-12)</small>
+                    </td>
+                </tr>
                 <tr><td>Logo:</td><td>
                     <input type="text" id="logo_path" name="logo" placeholder="/static/logo.png oder URL" style="width: 300px;">
                     <button type="button" onclick="document.getElementById('logo_file_picker').click()">Datei wählen</button>
@@ -1855,6 +2407,17 @@ def PageContacts(db: Database):
                 <tr><td></td><td><input type="submit" value="Kontakt hinzufügen"></td></tr>
             </table>
         </form>
+        
+        <script>
+            function toggleBuyerRouteID() {
+                const contactType = document.getElementById('contact_type').value;
+                const routeIdRow = document.getElementById('buyer_route_id_row');
+                // Show Leitweg-ID only for customers (could be B2G)
+                routeIdRow.style.display = (contactType === 'customer') ? 'table-row' : 'none';
+            }
+            // Initialize on page load
+            toggleBuyerRouteID();
+        </script>
     '''
     
     s+= "<h2>Kontakte</h2>"
@@ -1945,7 +2508,7 @@ def PageContactEdit(db: Database, contact_id):
     s+= Header2(submenu)
     s+= Header3()
     
-    # Extract contact data (ID=0, ContactType=1, CustomerNumber=2, Name=3, Company=4, Street=5, PostalCode=6, City=7, Country=8, Email=9, Phone=10, TaxID=11, Notes=12, Logo=13)
+    # Extract contact data (ID=0, ContactType=1, CustomerNumber=2, Name=3, Company=4, Street=5, PostalCode=6, City=7, Country=8, Email=9, Phone=10, TaxID=11, Notes=12, Logo=13, BuyerRouteID=14)
     contact_type = contact[1] or 'customer'
     customer_number = contact[2] or ''
     name = contact[3]
@@ -1953,12 +2516,13 @@ def PageContactEdit(db: Database, contact_id):
     street = contact[5] or ''
     postal_code = contact[6] or ''
     city = contact[7] or ''
-    country = contact[8] or ''
+    country = contact[8] or 'DE'
     email = contact[9] or ''
     phone = contact[10] or ''
     tax_id = contact[11] or ''
     notes = contact[12] or ''
     logo = contact[13] or '' if len(contact) > 13 else ''
+    buyer_route_id = contact[14] or '' if len(contact) > 14 else ''
     
     s+= "<h1>Kontakt bearbeiten</h1>"
     s+= f'''
@@ -1966,7 +2530,7 @@ def PageContactEdit(db: Database, contact_id):
             <input type="hidden" name="contact_id" value="{contact_id}">
             <table>
                 <tr><td>Typ:</td><td>
-                    <select name="contact_type">
+                    <select name="contact_type" id="contact_type_edit" onchange="toggleBuyerRouteIDEdit()">
                         <option value="customer" {"selected" if contact_type == "customer" else ""}>Kunde</option>
                         <option value="supplier" {"selected" if contact_type == "supplier" else ""}>Lieferant</option>
                         <option value="own" {"selected" if contact_type == "own" else ""}>Eigene Daten</option>
@@ -1980,10 +2544,31 @@ def PageContactEdit(db: Database, contact_id):
                 <tr><td>Straße:</td><td><input type="text" name="street" value="{street}"></td></tr>
                 <tr><td>PLZ:</td><td><input type="text" name="postal_code" value="{postal_code}"></td></tr>
                 <tr><td>Stadt:</td><td><input type="text" name="city" value="{city}"></td></tr>
-                <tr><td>Land:</td><td><input type="text" name="country" value="{country}"></td></tr>
+                <tr><td>Land (ISO):</td><td>
+                    <select name="country">
+                        <option value="DE" {"selected" if country == "DE" else ""}>Deutschland (DE)</option>
+                        <option value="AT" {"selected" if country == "AT" else ""}>Österreich (AT)</option>
+                        <option value="CH" {"selected" if country == "CH" else ""}>Schweiz (CH)</option>
+                        <option value="FR" {"selected" if country == "FR" else ""}>Frankreich (FR)</option>
+                        <option value="NL" {"selected" if country == "NL" else ""}>Niederlande (NL)</option>
+                        <option value="BE" {"selected" if country == "BE" else ""}>Belgien (BE)</option>
+                        <option value="PL" {"selected" if country == "PL" else ""}>Polen (PL)</option>
+                        <option value="IT" {"selected" if country == "IT" else ""}>Italien (IT)</option>
+                        <option value="ES" {"selected" if country == "ES" else ""}>Spanien (ES)</option>
+                        <option value="GB" {"selected" if country == "GB" else ""}>Großbritannien (GB)</option>
+                        <option value="US" {"selected" if country == "US" else ""}>USA (US)</option>
+                    </select>
+                </td></tr>
                 <tr><td>E-Mail:</td><td><input type="email" name="email" value="{email}"></td></tr>
                 <tr><td>Telefon:</td><td><input type="tel" name="phone" value="{phone}"></td></tr>
-                <tr><td>Steuernummer:</td><td><input type="text" name="tax_id" value="{tax_id}"></td></tr>
+                <tr><td>USt-IdNr / Steuer-Nr:</td><td><input type="text" name="tax_id" value="{tax_id}" placeholder="z.B. DE123456789"></td></tr>
+                <tr id="buyer_route_id_row_edit" style="display: {"table-row" if contact_type == "customer" else "none"};">
+                    <td>Leitweg-ID (B2G):</td>
+                    <td>
+                        <input type="text" name="buyer_route_id" value="{buyer_route_id}" placeholder="Optional, nur für öffentliche Auftraggeber" style="width: 300px;">
+                        <small style="color: #666; display: block;">Format: 12-stellige Nummer-5stellige Prüfziffer (z.B. 991-ABCDE-12)</small>
+                    </td>
+                </tr>
                 <tr><td>Logo:</td><td>
                     <input type="text" id="logo_path_edit" name="logo" value="{logo}" placeholder="/static/logo.png oder URL" style="width: 300px;">
                     <button type="button" onclick="document.getElementById('logo_file_picker_edit').click()">Datei wählen</button>
@@ -2036,6 +2621,14 @@ def PageContactEdit(db: Database, contact_id):
                     reader.readAsDataURL(file);
                 }
             }
+            
+            function toggleBuyerRouteIDEdit() {
+                const contactType = document.getElementById('contact_type_edit').value;
+                const routeIdRow = document.getElementById('buyer_route_id_row_edit');
+                routeIdRow.style.display = (contactType === 'customer') ? 'table-row' : 'none';
+            }
+            // Initialize on page load
+            toggleBuyerRouteIDEdit();
         </script>
     '''
     s+= Footer()
@@ -2357,4 +2950,825 @@ def PageArticleEdit(db: Database, article_id):
         <p><a href="/articles">Zurück zum Artikelverzeichnis</a></p>
     '''
     s+= Footer()
+    return s
+
+
+def PageInvoiceView(db, invoice_id):
+    """Detail view for a single invoice with all metadata and items."""
+    invoice = db.get_invoice_by_id(invoice_id)
+    if not invoice:
+        return f'''
+            <h2>Rechnung nicht gefunden</h2>
+            <p>Die angeforderte Rechnung existiert nicht.</p>
+            <p><a href="/invoice">Zurück zur Rechnungsliste</a></p>
+        '''
+    
+    items = db.get_invoice_items(invoice_id)
+    
+    # Status badge with color
+    status_colors = {
+        'draft': '#888888',
+        'finalized': '#0066cc',
+        'sent': '#ff9900',
+        'paid': '#00aa00',
+        'cancelled': '#cc0000'
+    }
+    status_labels = {
+        'draft': 'Entwurf',
+        'finalized': 'Finalisiert',
+        'sent': 'Versendet',
+        'paid': 'Bezahlt',
+        'cancelled': 'Storniert'
+    }
+    status = invoice[37] or 'draft'
+    status_color = status_colors.get(status, '#888888')
+    status_label = status_labels.get(status, status)
+    
+    s = f'''
+        <style>
+            .invoice-header {{
+                background-color: #f0f0f0;
+                padding: 15px;
+                margin-bottom: 20px;
+                border-radius: 5px;
+            }}
+            .invoice-header h2 {{
+                margin: 0 0 10px 0;
+            }}
+            .status-badge {{
+                display: inline-block;
+                padding: 5px 10px;
+                background-color: {status_color};
+                color: white;
+                border-radius: 3px;
+                font-weight: bold;
+                margin-left: 10px;
+            }}
+            .metadata-table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-bottom: 20px;
+            }}
+            .metadata-table td {{
+                padding: 5px 10px;
+                border-bottom: 1px solid #ddd;
+            }}
+            .metadata-table td:first-child {{
+                font-weight: bold;
+                width: 200px;
+            }}
+            .items-table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-bottom: 20px;
+            }}
+            .items-table th {{
+                background-color: #4CAF50;
+                color: white;
+                padding: 10px;
+                text-align: left;
+            }}
+            .items-table td {{
+                padding: 8px;
+                border-bottom: 1px solid #ddd;
+            }}
+            .items-table tr:hover {{
+                background-color: #f5f5f5;
+            }}
+            .totals-box {{
+                float: right;
+                width: 300px;
+                background-color: #f9f9f9;
+                padding: 15px;
+                border: 1px solid #ddd;
+                border-radius: 5px;
+            }}
+            .totals-box table {{
+                width: 100%;
+            }}
+            .totals-box td {{
+                padding: 5px 0;
+            }}
+            .totals-box td:last-child {{
+                text-align: right;
+            }}
+            .totals-box .total-row {{
+                font-weight: bold;
+                font-size: 1.2em;
+                border-top: 2px solid #333;
+                padding-top: 10px;
+            }}
+            .action-buttons {{
+                clear: both;
+                margin-top: 20px;
+                padding-top: 20px;
+                border-top: 1px solid #ddd;
+            }}
+            .action-buttons a, .action-buttons button {{
+                display: inline-block;
+                padding: 10px 20px;
+                margin-right: 10px;
+                background-color: #4CAF50;
+                color: white;
+                text-decoration: none;
+                border-radius: 5px;
+                border: none;
+                cursor: pointer;
+            }}
+            .action-buttons a:hover, .action-buttons button:hover {{
+                background-color: #45a049;
+            }}
+            .action-buttons .secondary {{
+                background-color: #008CBA;
+            }}
+            .action-buttons .secondary:hover {{
+                background-color: #007399;
+            }}
+        </style>
+        
+        <div class="invoice-header">
+            <h2>Rechnung {invoice[1]}<span class="status-badge">{status_label}</span></h2>
+            <p>Erstellt am: {invoice[39]} | Letzte Änderung: {invoice[40] or 'N/A'}</p>
+        </div>
+        
+        <h3>Rechnungsinformationen</h3>
+        <table class="metadata-table">
+            <tr><td>Rechnungsnummer:</td><td>{invoice[1]}</td></tr>
+            <tr><td>Rechnungsdatum:</td><td>{invoice[2]}</td></tr>
+            <tr><td>Währung:</td><td>{invoice[3] or 'EUR'}</td></tr>
+            <tr><td>Bestellnummer:</td><td>{invoice[4] or 'N/A'}</td></tr>
+            <tr><td>Lieferdatum:</td><td>{invoice[5] or 'N/A'}</td></tr>
+        </table>
+        
+        <h3>Verkäufer (Snapshot)</h3>
+        <table class="metadata-table">
+            <tr><td>Name:</td><td>{invoice[6]}</td></tr>
+            <tr><td>Straße:</td><td>{invoice[7]}</td></tr>
+            <tr><td>PLZ/Ort:</td><td>{invoice[8]} {invoice[9]}</td></tr>
+            <tr><td>Land:</td><td>{invoice[10] or 'N/A'}</td></tr>
+            <tr><td>USt-IdNr:</td><td>{invoice[11] or 'N/A'}</td></tr>
+        </table>
+        
+        <h3>Käufer (Snapshot)</h3>
+        <table class="metadata-table">
+            <tr><td>Name:</td><td>{invoice[12]}</td></tr>
+            <tr><td>Straße:</td><td>{invoice[13]}</td></tr>
+            <tr><td>PLZ/Ort:</td><td>{invoice[14]} {invoice[15]}</td></tr>
+            <tr><td>Land:</td><td>{invoice[16] or 'N/A'}</td></tr>
+            <tr><td>USt-IdNr:</td><td>{invoice[17] or 'N/A'}</td></tr>
+            <tr><td>Leitweg-ID:</td><td>{invoice[18] or 'N/A'}</td></tr>
+        </table>
+        
+        <h3>Rechnungspositionen</h3>
+        <table class="items-table">
+            <tr>
+                <th>Pos.</th>
+                <th>Artikel-Nr.</th>
+                <th>Beschreibung</th>
+                <th>Menge</th>
+                <th>Einheit</th>
+                <th>Einzelpreis</th>
+                <th>Gesamt (netto)</th>
+                <th>MwSt</th>
+            </tr>
+    '''
+    
+    for item in items:
+        # item structure: ID=0, InvoiceId=1, Position=2, ArticleId=3, Description=4, Quantity=5, Unit=6, PricePerUnit=7, TotalNet=8, TaxCategory=9, TaxRate=10
+        article_id = item[3] or '-'
+        description = item[4] or ''
+        
+        # Safely convert numeric fields
+        try:
+            quantity = f"{float(item[5]):.2f}".replace('.', ',') if item[5] else '0,00'
+        except (ValueError, TypeError):
+            quantity = str(item[5]) if item[5] else '0,00'
+            
+        unit = item[6] or 'Stk'
+        
+        try:
+            price = f"{float(item[7]):.2f}".replace('.', ',') if item[7] else '0,00'
+        except (ValueError, TypeError):
+            price = str(item[7]) if item[7] else '0,00'
+            
+        try:
+            total = f"{float(item[8]):.2f}".replace('.', ',') if item[8] else '0,00'
+        except (ValueError, TypeError):
+            total = str(item[8]) if item[8] else '0,00'
+            
+        try:
+            tax_rate = f"{float(item[10]):.0f}%" if item[10] else 'N/A'
+        except (ValueError, TypeError):
+            tax_rate = str(item[10]) if item[10] else 'N/A'
+        
+        s += f'''
+            <tr>
+                <td>{item[2]}</td>
+                <td>{article_id}</td>
+                <td>{description}</td>
+                <td style="text-align: right;">{quantity}</td>
+                <td>{unit}</td>
+                <td style="text-align: right;">{price} €</td>
+                <td style="text-align: right;">{total} €</td>
+                <td style="text-align: right;">{tax_rate}</td>
+            </tr>
+        '''
+    
+    # Totals box
+    sum_net = f"{invoice[33]:.2f}".replace('.', ',') if invoice[33] else '0,00'
+    tax_amount = f"{invoice[34]:.2f}".replace('.', ',') if invoice[34] else '0,00'
+    sum_gross = f"{invoice[35]:.2f}".replace('.', ',') if invoice[35] else '0,00'
+    amount_due = f"{invoice[36]:.2f}".replace('.', ',') if invoice[36] else sum_gross
+    
+    s += f'''
+        </table>
+        
+        <div class="totals-box">
+            <table>
+                <tr><td>Summe (netto):</td><td>{sum_net} €</td></tr>
+                <tr><td>MwSt ({invoice[31] or 'N/A'}) {invoice[32] or ''}%:</td><td>{tax_amount} €</td></tr>
+                <tr class="total-row"><td>Summe (brutto):</td><td>{sum_gross} €</td></tr>
+                <tr class="total-row"><td>Fälliger Betrag:</td><td>{amount_due} €</td></tr>
+            </table>
+        </div>
+        
+        <div style="clear: both;"></div>
+    '''
+    
+    # Payment terms if available
+    if invoice[19] or invoice[20]:
+        s += '''
+            <h3>Zahlungsbedingungen</h3>
+            <table class="metadata-table">
+        '''
+        if invoice[19]:
+            s += f'<tr><td>Zahlungsziel:</td><td>{invoice[19]} Tage</td></tr>'
+        if invoice[20]:
+            s += f'<tr><td>Fälligkeitsdatum:</td><td>{invoice[20]}</td></tr>'
+        if invoice[21]:
+            s += f'<tr><td>Skonto (%):</td><td>{invoice[21]:.1f}%</td></tr>'
+        if invoice[22]:
+            s += f'<tr><td>Skonto-Frist:</td><td>{invoice[22]} Tage</td></tr>'
+        s += '</table>'
+    
+    # Bank details snapshot if available
+    if invoice[23]:
+        s += f'''
+            <h3>Bankverbindung (Snapshot)</h3>
+            <table class="metadata-table">
+                <tr><td>Kontoinhaber:</td><td>{invoice[23]}</td></tr>
+                <tr><td>IBAN:</td><td>{invoice[24] or 'N/A'}</td></tr>
+                <tr><td>BIC:</td><td>{invoice[25] or 'N/A'}</td></tr>
+                <tr><td>Bank:</td><td>{invoice[26] or 'N/A'}</td></tr>
+            </table>
+        '''
+    
+    # Payment status section
+    amount_due_float = invoice[36] if invoice[36] is not None else invoice[35]
+    sum_gross_float = invoice[35] or 0
+    amount_paid = sum_gross_float - amount_due_float
+    
+    if amount_paid > 0 or status == 'paid':
+        payment_color = '#00aa00' if amount_due_float <= 0.01 else '#ff9900'
+        s += f'''
+            <h3>Zahlungsstatus</h3>
+            <div style="padding: 15px; background-color: #f9f9f9; border-left: 4px solid {payment_color}; margin-bottom: 20px;">
+                <table class="metadata-table" style="margin: 0;">
+                    <tr><td>Rechnungsbetrag:</td><td>{sum_gross:.replace(",", ".")} €</td></tr>
+                    <tr><td>Bereits gezahlt:</td><td style="color: #00aa00;">{amount_paid:.2f} €</td></tr>
+                    <tr><td><strong>Offener Betrag:</strong></td><td style="color: {payment_color}; font-size: 1.2em;"><strong>{amount_due} €</strong></td></tr>
+                </table>
+            </div>
+        '''
+    
+    # Action buttons
+    pdf_link = ''
+    if invoice[38]:
+        pdf_link = f'<a href="/{invoice[38]}" target="_blank">PDF anzeigen</a>'
+    
+    # XML download button for finalized invoices
+    xml_button = ''
+    if status in ['finalized', 'sent', 'paid']:
+        xml_button = f'''
+            <a href="/invoice/xml?id={invoice_id}" style="background-color: #28a745; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">📄 XRechnung XML</a>
+        '''
+    
+    # Payment button for unpaid invoices
+    payment_button = ''
+    if status in ['finalized', 'sent'] and amount_due_float > 0.01:
+        payment_button = f'''
+            <button onclick="showPaymentModal()" style="background-color: #00aa00;">💶 Zahlung buchen</button>
+        '''
+    
+    # Email button for finalized invoices (with PDF)
+    email_button = ''
+    if status in ['finalized', 'sent'] and invoice[38]:
+        email_button = f'''
+            <button onclick="showEmailModal()" style="background-color: #0066cc;">📧 Per E-Mail versenden</button>
+        '''
+    
+    # Status transition buttons based on current status
+    status_buttons = ''
+    if status == 'draft':
+        status_buttons = f'''
+            <button onclick="updateStatus({invoice_id}, 'finalized')" style="background-color: #0066cc;">✓ Finalisieren</button>
+            <button onclick="updateStatus({invoice_id}, 'cancelled')" style="background-color: #cc0000;">✗ Stornieren</button>
+        '''
+    elif status == 'finalized':
+        status_buttons = f'''
+            <button onclick="updateStatus({invoice_id}, 'sent')" style="background-color: #ff9900;">📧 Als versendet markieren</button>
+            <button onclick="updateStatus({invoice_id}, 'paid')" style="background-color: #00aa00;">💶 Als bezahlt markieren</button>
+            <button onclick="updateStatus({invoice_id}, 'cancelled')" style="background-color: #cc0000;">✗ Stornieren</button>
+        '''
+    elif status == 'sent':
+        status_buttons = f'''
+            <button onclick="updateStatus({invoice_id}, 'paid')" style="background-color: #00aa00;">💶 Als bezahlt markieren</button>
+            <button onclick="updateStatus({invoice_id}, 'finalized')" style="background-color: #0066cc;">↩ Zurück zu finalisiert</button>
+        '''
+    elif status == 'paid':
+        status_buttons = f'''
+            <button onclick="updateStatus({invoice_id}, 'sent')" style="background-color: #ff9900;">↩ Zurück zu versendet</button>
+        '''
+    # cancelled has no transitions
+    
+    s += f'''
+        <script>
+            function updateStatus(invoiceId, newStatus) {{
+                if (!confirm('Status wirklich ändern?')) return;
+                
+                fetch('/invoice/status', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{
+                        invoice_id: invoiceId,
+                        status: newStatus
+                    }})
+                }})
+                .then(response => {{
+                    if (response.ok) {{
+                        // Reload page to show updated status
+                        window.location.reload();
+                    }} else {{
+                        alert('Fehler beim Statusupdate');
+                    }}
+                }})
+                .catch(err => alert('Fehler: ' + err));
+            }}
+            
+            function showPaymentModal() {{
+                document.getElementById('paymentModal').style.display = 'block';
+            }}
+            
+            function hidePaymentModal() {{
+                document.getElementById('paymentModal').style.display = 'none';
+            }}
+            
+            function linkPayment() {{
+                const transactionId = document.getElementById('transaction_id').value;
+                const amount = document.getElementById('payment_amount').value;
+                
+                if (!transactionId || !amount) {{
+                    alert('Bitte Transaktions-ID und Betrag angeben');
+                    return;
+                }}
+                
+                fetch('/invoice/link-payment', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{
+                        invoice_id: {invoice_id},
+                        transaction_id: parseInt(transactionId),
+                        amount_paid: parseFloat(amount)
+                    }})
+                }})
+                .then(response => {{
+                    if (response.ok) {{
+                        alert('Zahlung erfolgreich verknüpft');
+                        window.location.reload();
+                    }} else {{
+                        alert('Fehler beim Verknüpfen der Zahlung');
+                    }}
+                }})
+                .catch(err => alert('Fehler: ' + err));
+            }}
+            
+            function showEmailModal() {{
+                document.getElementById('emailModal').style.display = 'block';
+            }}
+            
+            function hideEmailModal() {{
+                document.getElementById('emailModal').style.display = 'none';
+            }}
+            
+            function sendInvoiceEmail() {{
+                const recipientEmail = document.getElementById('recipient_email').value;
+                const recipientName = document.getElementById('recipient_name').value;
+                const messageText = document.getElementById('email_message').value;
+                
+                if (!recipientEmail) {{
+                    alert('Bitte E-Mail-Adresse angeben');
+                    return;
+                }}
+                
+                fetch('/invoice/send-email', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{
+                        invoice_id: {invoice_id},
+                        recipient_email: recipientEmail,
+                        recipient_name: recipientName,
+                        message_text: messageText
+                    }})
+                }})
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.success) {{
+                        alert('Rechnung erfolgreich per E-Mail versendet');
+                        hideEmailModal();
+                        // Update status to 'sent' if it was 'finalized'
+                        if (confirm('Status auf "Versendet" setzen?')) {{
+                            updateStatus({invoice_id}, 'sent');
+                        }}
+                    }} else {{
+                        alert('Fehler: ' + (data.error || 'Unbekannter Fehler'));
+                    }}
+                }})
+                .catch(err => alert('Fehler: ' + err));
+            }}
+        </script>
+        
+        <!-- Email Modal -->
+        <div id="emailModal" class="modal-overlay" style="display: none;">
+            <div class="modal-content" style="max-width: 600px;">
+                <h3>Rechnung per E-Mail versenden</h3>
+                <p>Versenden Sie die Rechnung {invoice[1]} per E-Mail an den Kunden.</p>
+                <table style="width: 100%; border: none;">
+                    <tr>
+                        <td style="padding: 10px; border: none; width: 150px;"><strong>Empfänger Name:</strong></td>
+                        <td style="padding: 10px; border: none;">
+                            <input type="text" id="recipient_name" value="{invoice[12]}" style="width: 100%;">
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border: none;"><strong>E-Mail-Adresse:</strong></td>
+                        <td style="padding: 10px; border: none;">
+                            <input type="email" id="recipient_email" style="width: 100%;" placeholder="kunde@example.com">
+                            <br><small style="color: #666;">E-Mail-Adresse des Empfängers</small>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border: none; vertical-align: top;"><strong>Nachricht:</strong></td>
+                        <td style="padding: 10px; border: none;">
+                            <textarea id="email_message" rows="8" style="width: 100%;">Sehr geehrte Damen und Herren,
+
+anbei erhalten Sie die Rechnung {invoice[1]}.
+
+Bitte überweisen Sie den Rechnungsbetrag unter Angabe der Rechnungsnummer 
+innerhalb der angegebenen Zahlungsfrist.
+
+Bei Rückfragen stehen wir Ihnen gerne zur Verfügung.
+
+Mit freundlichen Grüßen</textarea>
+                        </td>
+                    </tr>
+                </table>
+                <div style="margin-top: 20px;">
+                    <button onclick="sendInvoiceEmail()" style="background-color: #0066cc; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">📧 E-Mail senden</button>
+                    <button onclick="hideEmailModal()" style="background-color: #ccc; color: black; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; margin-left: 10px;">Abbrechen</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Payment Modal -->
+        <div id="paymentModal" class="modal-overlay" style="display: none;">
+            <div class="modal-content" style="max-width: 500px;">
+                <h3>Zahlung buchen</h3>
+                <p>Verknüpfen Sie diese Rechnung mit einer Transaktion aus dem Transaktionsverlauf.</p>
+                <table style="width: 100%; border: none;">
+                    <tr>
+                        <td style="padding: 10px; border: none;"><strong>Transaktions-ID:</strong></td>
+                        <td style="padding: 10px; border: none;">
+                            <input type="number" id="transaction_id" style="width: 100px;" placeholder="z.B. 123">
+                            <br><small style="color: #666;">ID aus der Transaktionsliste</small>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border: none;"><strong>Gezahlter Betrag:</strong></td>
+                        <td style="padding: 10px; border: none;">
+                            <input type="number" id="payment_amount" step="0.01" value="{amount_due_float:.2f}" style="width: 150px;"> €
+                            <br><small style="color: #666;">Betrag der Zahlung</small>
+                        </td>
+                    </tr>
+                </table>
+                <div style="margin-top: 20px;">
+                    <button onclick="linkPayment()" style="background-color: #00aa00; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">✓ Zahlung verknüpfen</button>
+                    <button onclick="hidePaymentModal()" style="background-color: #ccc; color: black; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; margin-left: 10px;">Abbrechen</button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="action-buttons">
+            {pdf_link}
+            {xml_button}
+            {email_button}
+            {payment_button}
+            {status_buttons}
+            <a href="/invoice" class="secondary">Zurück zur Liste</a>
+        </div>
+    '''
+    
+    s += Footer()
+    return s
+
+
+def PageReminders(db: Database):
+    """Generate reminders/dunning page for overdue invoices"""
+    from datetime import date, timedelta
+    
+    overdue = db.get_overdue_invoices()
+    due_soon = db.get_invoices_due_soon(days=7)
+    
+    s = Header1('invoice')
+    submenu = '<a href="/invoice">Rechnungen</a> | <span id="ActivePage">Mahnwesen</span>'
+    s += Header2(submenu)
+    s += Header3()
+    
+    s += "<h2>Mahnwesen & Fälligkeiten</h2>"
+    
+    # Statistics
+    total_overdue_amount = sum(inv[36] or inv[35] for inv in overdue if inv[35])
+    overdue_count = len(overdue)
+    
+    s += f'''
+    <div style="margin-bottom: 20px; padding: 15px; background-color: #fff3cd; border-left: 4px solid #ffc107; border-radius: 5px;">
+        <h3 style="margin-top: 0; color: #856404;">⚠️ Überfällige Rechnungen</h3>
+        <p style="margin: 0;"><strong>{overdue_count} Rechnung(en)</strong> überfällig | 
+        Offener Betrag: <strong style="color: #dc3545;">{total_overdue_amount:.2f} €</strong></p>
+    </div>
+    '''
+    
+    if overdue:
+        s += "<h3>Überfällige Rechnungen (Mahnung erforderlich)</h3>"
+        s += "<table border='1' style='width: 100%;'>"
+        s += "<tr><th>RE-Nr.</th><th>Datum</th><th>Fällig seit</th><th>Kunde</th><th>Betrag</th><th>Überfällig (Tage)</th><th>Aktionen</th></tr>"
+        
+        today = date.today()
+        for inv in overdue:
+            inv_id = inv[0]
+            inv_number = inv[1]
+            inv_date = inv[2]
+            due_date = inv[20]  # PaymentDueDate
+            buyer_name = inv[12]
+            amount = inv[36] or inv[35]
+            
+            # Calculate days overdue
+            if due_date:
+                due = date.fromisoformat(due_date)
+                days_overdue = (today - due).days
+            else:
+                days_overdue = 0
+            
+            # Color code by severity
+            if days_overdue > 60:
+                row_style = "background-color: #f8d7da;"  # Red - 3rd reminder
+                severity = "🔴 Mahnstufe 3"
+            elif days_overdue > 30:
+                row_style = "background-color: #fff3cd;"  # Yellow - 2nd reminder
+                severity = "🟡 Mahnstufe 2"
+            else:
+                row_style = "background-color: #d1ecf1;"  # Blue - 1st reminder
+                severity = "🔵 Mahnstufe 1"
+            
+            s += f"<tr style='{row_style}'>"
+            s += f"<td>{inv_number}</td>"
+            s += f"<td>{inv_date}</td>"
+            s += f"<td>{due_date}</td>"
+            s += f"<td>{buyer_name[:30]}</td>"
+            s += f"<td style='text-align: right;'><strong>{amount:.2f} €</strong></td>"
+            s += f"<td>{days_overdue} Tage<br><small>{severity}</small></td>"
+            s += f"<td>"
+            s += f"<a href='/invoice/view?id={inv_id}'>Ansicht</a> | "
+            s += f"<a href='/invoice/reminder?id={inv_id}' style='color: #dc3545;'>Mahnung erstellen</a>"
+            s += f"</td>"
+            s += f"</tr>"
+        
+        s += "</table>"
+    else:
+        s += "<p style='color: #28a745;'>✓ Keine überfälligen Rechnungen vorhanden.</p>"
+    
+    # Invoices due soon
+    s += "<h3 style='margin-top: 30px;'>Rechnungen fällig in den nächsten 7 Tagen</h3>"
+    
+    if due_soon:
+        s += "<table border='1' style='width: 100%;'>"
+        s += "<tr><th>RE-Nr.</th><th>Datum</th><th>Fälligkeitsdatum</th><th>Kunde</th><th>Betrag</th><th>Verbleibende Tage</th><th>Aktionen</th></tr>"
+        
+        for inv in due_soon:
+            inv_id = inv[0]
+            inv_number = inv[1]
+            inv_date = inv[2]
+            due_date = inv[20]
+            buyer_name = inv[12]
+            amount = inv[36] or inv[35]
+            
+            if due_date:
+                due = date.fromisoformat(due_date)
+                days_remaining = (due - today).days
+            else:
+                days_remaining = 0
+            
+            s += f"<tr>"
+            s += f"<td>{inv_number}</td>"
+            s += f"<td>{inv_date}</td>"
+            s += f"<td>{due_date}</td>"
+            s += f"<td>{buyer_name[:30]}</td>"
+            s += f"<td style='text-align: right;'>{amount:.2f} €</td>"
+            s += f"<td>{days_remaining} Tage</td>"
+            s += f"<td><a href='/invoice/view?id={inv_id}'>Ansicht</a></td>"
+            s += f"</tr>"
+        
+        s += "</table>"
+    else:
+        s += "<p><em>Keine Rechnungen in den nächsten 7 Tagen fällig.</em></p>"
+    
+    s += Footer()
+    return s
+
+
+def PageDashboard(db: Database):
+    """Generate dashboard with statistics and charts"""
+    from datetime import date, timedelta, datetime
+    
+    # Get all invoices
+    all_invoices = db.fetch_invoices()
+    
+    # Current year statistics
+    current_year = datetime.now().year
+    current_year_invoices = [inv for inv in all_invoices if inv[2] and inv[2].startswith(str(current_year))]
+    
+    # Status counts
+    draft_count = len([inv for inv in all_invoices if inv[37] == 'draft'])
+    finalized_count = len([inv for inv in all_invoices if inv[37] == 'finalized'])
+    sent_count = len([inv for inv in all_invoices if inv[37] == 'sent'])
+    paid_count = len([inv for inv in all_invoices if inv[37] == 'paid'])
+    cancelled_count = len([inv for inv in all_invoices if inv[37] == 'cancelled'])
+    
+    # Financial statistics
+    total_revenue = sum(inv[35] for inv in all_invoices if inv[35] and inv[37] in ['finalized', 'sent', 'paid'])
+    paid_revenue = sum(inv[35] for inv in all_invoices if inv[35] and inv[37] == 'paid')
+    open_amount = sum(inv[36] or inv[35] for inv in all_invoices if inv[35] and inv[37] in ['finalized', 'sent'])
+    
+    # Current year revenue
+    year_revenue = sum(inv[35] for inv in current_year_invoices if inv[35] and inv[37] in ['finalized', 'sent', 'paid'])
+    year_paid = sum(inv[35] for inv in current_year_invoices if inv[35] and inv[37] == 'paid')
+    
+    # Overdue
+    overdue = db.get_overdue_invoices()
+    overdue_amount = sum(inv[36] or inv[35] for inv in overdue if inv[35])
+    
+    # Monthly revenue for current year
+    monthly_revenue = {}
+    for month in range(1, 13):
+        month_str = f"{current_year}-{month:02d}"
+        month_invoices = [inv for inv in current_year_invoices 
+                         if inv[2] and inv[2].startswith(month_str) 
+                         and inv[37] in ['finalized', 'sent', 'paid']]
+        monthly_revenue[month] = sum(inv[35] for inv in month_invoices if inv[35])
+    
+    s = Header1('home')
+    s += Header2()
+    s += Header3()
+    
+    s += "<h2>Dashboard - Übersicht</h2>"
+    
+    # Key metrics cards
+    s += f'''
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px;">
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+            <div style="font-size: 14px; opacity: 0.9;">Gesamtumsatz ({current_year})</div>
+            <div style="font-size: 32px; font-weight: bold; margin: 10px 0;">{year_revenue:.2f} €</div>
+            <div style="font-size: 12px; opacity: 0.8;">Davon bezahlt: {year_paid:.2f} €</div>
+        </div>
+        
+        <div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+            <div style="font-size: 14px; opacity: 0.9;">Offene Forderungen</div>
+            <div style="font-size: 32px; font-weight: bold; margin: 10px 0;">{open_amount:.2f} €</div>
+            <div style="font-size: 12px; opacity: 0.8;">{sent_count + finalized_count} unbezahlte Rechnung(en)</div>
+        </div>
+        
+        <div style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); color: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+            <div style="font-size: 14px; opacity: 0.9;">Überfällige Rechnungen</div>
+            <div style="font-size: 32px; font-weight: bold; margin: 10px 0;">{overdue_amount:.2f} €</div>
+            <div style="font-size: 12px; opacity: 0.8;">{len(overdue)} Rechnung(en) überfällig</div>
+        </div>
+        
+        <div style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+            <div style="font-size: 14px; opacity: 0.9;">Gesamt Rechnungen</div>
+            <div style="font-size: 32px; font-weight: bold; margin: 10px 0;">{len(all_invoices)}</div>
+            <div style="font-size: 12px; opacity: 0.8;">{len(current_year_invoices)} in {current_year}</div>
+        </div>
+    </div>
+    '''
+    
+    # Status distribution & Recent invoices
+    s += '<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px;">'
+    
+    # Left: Status pie chart (simple bar representation)
+    s += '''
+    <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+        <h3 style="margin-top: 0;">Status-Verteilung</h3>
+        <div style="margin: 20px 0;">
+    '''
+    
+    status_data = [
+        ('Entwurf', draft_count, '#888'),
+        ('Finalisiert', finalized_count, '#0066cc'),
+        ('Versendet', sent_count, '#ff9900'),
+        ('Bezahlt', paid_count, '#00aa00'),
+        ('Storniert', cancelled_count, '#cc0000')
+    ]
+    
+    total_status = sum(count for _, count, _ in status_data)
+    for label, count, color in status_data:
+        if total_status > 0:
+            percentage = (count / total_status) * 100
+        else:
+            percentage = 0
+        s += f'''
+        <div style="margin-bottom: 15px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                <span>{label}</span>
+                <span><strong>{count}</strong> ({percentage:.1f}%)</span>
+            </div>
+            <div style="background: #f0f0f0; height: 20px; border-radius: 10px; overflow: hidden;">
+                <div style="background: {color}; height: 100%; width: {percentage}%;"></div>
+            </div>
+        </div>
+        '''
+    
+    s += '</div></div>'
+    
+    # Right: Recent invoices
+    recent_invoices = sorted(all_invoices, key=lambda x: x[39] or '', reverse=True)[:5]  # CreatedAt
+    s += '''
+    <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+        <h3 style="margin-top: 0;">Letzte Rechnungen</h3>
+        <table style="width: 100%; border-collapse: collapse;">
+    '''
+    
+    for inv in recent_invoices:
+        status_colors = {'draft': '#888', 'finalized': '#0066cc', 'sent': '#ff9900', 'paid': '#00aa00', 'cancelled': '#cc0000'}
+        status_color = status_colors.get(inv[38], '#888')  # Status is at index 38
+        s += f'''
+        <tr style="border-bottom: 1px solid #eee;">
+            <td style="padding: 10px 0;">{inv[1]}</td>
+            <td>{inv[13][:20] if inv[13] else ''}</td>
+            <td style="text-align: right;">{inv[36]:.2f} €</td>
+            <td><span style="color: {status_color};">●</span></td>
+            <td><a href="/invoice/view?id={inv[0]}">Ansicht</a></td>
+        </tr>
+        '''
+    
+    s += '</table></div></div>'
+    
+    # Monthly revenue chart
+    s += f'''
+    <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px;">
+        <h3 style="margin-top: 0;">Monatlicher Umsatz {current_year}</h3>
+        <div style="height: 250px; position: relative; margin-top: 20px;">
+    '''
+    
+    # Simple bar chart
+    max_revenue = max(monthly_revenue.values()) if monthly_revenue.values() else 1
+    month_names = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez']
+    
+    s += '<div style="display: flex; align-items: flex-end; justify-content: space-around; height: 200px; border-left: 2px solid #ddd; border-bottom: 2px solid #ddd; padding: 10px;">'
+    
+    for month in range(1, 13):
+        revenue = monthly_revenue[month]
+        height = (revenue / max_revenue * 180) if max_revenue > 0 else 0
+        s += f'''
+        <div style="display: flex; flex-direction: column; align-items: center; flex: 1;">
+            <div style="font-size: 11px; margin-bottom: 5px;">{revenue:.0f}€</div>
+            <div style="background: linear-gradient(180deg, #4facfe 0%, #00f2fe 100%); width: 80%; height: {height}px; border-radius: 5px 5px 0 0;"></div>
+            <div style="font-size: 12px; margin-top: 5px;">{month_names[month-1]}</div>
+        </div>
+        '''
+    
+    s += '</div></div></div>'
+    
+    # Quick actions
+    s += '''
+    <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+        <h3 style="margin-top: 0;">Schnellzugriff</h3>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <a href="/invoice/new" style="padding: 10px 20px; background: #4CAF50; color: white; text-decoration: none; border-radius: 5px;">+ Neue Rechnung</a>
+            <a href="/invoice?status=sent" style="padding: 10px 20px; background: #ff9900; color: white; text-decoration: none; border-radius: 5px;">Versendete Rechnungen</a>
+            <a href="/invoice/reminders" style="padding: 10px 20px; background: #dc3545; color: white; text-decoration: none; border-radius: 5px;">⚠️ Mahnwesen</a>
+            <a href="/invoice" style="padding: 10px 20px; background: #0066cc; color: white; text-decoration: none; border-radius: 5px;">Alle Rechnungen</a>
+        </div>
+    </div>
+    '''
+    
+    s += Footer()
     return s

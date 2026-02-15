@@ -89,7 +89,9 @@ Verwaltung von Kunden, Lieferanten und eigenen Firmendaten:
 - Notizen
 
 ### 6. Rechnungserstellung (`/invoice`)
-Professionelle Rechnungserstellung mit PDF-Export und Multi-Company-Support:
+Professionelle Rechnungserstellung mit PDF-Generierung, Multi-Company-Support und erweiterten Funktionen:
+
+**Rechnungsformular:**
 - **Multi-Company-Unterstützung**: 
   - Auswahl der eigenen Firma aus Kontakten (Typ: "Eigene Daten")
   - Dynamisches Logo pro Firma
@@ -97,6 +99,7 @@ Professionelle Rechnungserstellung mit PDF-Export und Multi-Company-Support:
 - **Rechnungskopf**: Firmenlogo, Datum, Rechnungsnummer (aus Nummernkreis), Kundennummer
 - **Kundenauswahl**: Dropdown mit automatischer Adressübernahme
 - **Absenderzeile**: Kompakte Absenderinfo für Brieffenster
+- **XRechnung-Felder**: EN 16931 konforme Felder (BuyerReference, PaymentMeans, etc.)
 - **Positionstabelle**: 
   - Beliebig viele Positionen hinzufügen/entfernen
   - Freie Positionen oder aus Artikelverzeichnis
@@ -114,21 +117,91 @@ Professionelle Rechnungserstellung mit PDF-Export und Multi-Company-Support:
 - **Bankverbindung**: Auswahl aus angelegten Bankkonten mit dynamischer Anzeige
 - **Footer**: Firmendaten, Kontaktdaten, Bankdaten (dynamisch je nach gewählter Firma)
 
-**PDF-Export:**
-- Professionelles PDF-Layout (A4)
-- Firmenspezifisches Logo-Einbettung (PNG/JPEG)
-- Deutsche Umlaute und €-Zeichen werden korrekt dargestellt
-- Anpassbare Seitenränder
-- Sofortiger Download
-- Automatische Nummernkreis-Inkrementierung
+**PDF-Generierung:**
+- **Separates Modul** (`pdf_generator.py`): Saubere Trennung der PDF-Logik
+- **Datenbankbasiert**: PDF wird direkt aus gespeicherten Rechnungsdaten erstellt
+- **Kein Download**: PDF wird nur im Dateisystem gespeichert (`data/invoices/YYYY/Rechnung_XXX.pdf`)
+- **Dateisystem-Prüfung**: Überprüft physische Dateiexistenz, nicht nur Datenbank-Eintrag
+- **Überschreiben-Dialog**: Warnung wenn PDF bereits existiert (mit Option zum Abbrechen)
+- **Erfolgsbestätigung**: Alert zeigt Dateipfad nach erfolgreicher Generierung
+- **Professionelles Layout**: A4-Format mit korrekten deutschen Umlauten und €-Zeichen
+- **Logo-Einbettung**: Firmenspezifisches Logo (PNG/JPEG) wird automatisch eingebunden
+- **Automatische Pfadaktualisierung**: PDFPath-Feld in Datenbank wird aktualisiert
 
-### 7. Kategorien-Verwaltung (`/categories`)
+**E-Mail-Versand:**
+- Direkter E-Mail-Versand von Rechnungen aus der Rechnungsansicht
+- PDF-Anhang wird automatisch mitgeschickt
+- Empfängerauswahl aus Kontakten
+- Anpassbare E-Mail-Nachricht
+- SMTP-Konfiguration über Umgebungsvariablen
+
+**XRechnung XML-Export:**
+- EN 16931 konformer XML-Export
+- Vollständige Strukturierung nach Standard
+- Download-Button auf jeder Rechnung
+- Automatische Generierung aller Pflichtfelder
+- Kompatibel mit ZUGFeRD und XRechnung-Validatoren
+
+**Rechnungsstatus:**
+- **Entwurf** (draft): Rechnung in Bearbeitung
+- **Finalisiert** (finalized): Rechnung fertiggestellt, kann nicht mehr bearbeitet werden
+- **Versendet** (sent): Rechnung wurde verschickt (E-Mail/Post)
+- **Bezahlt** (paid): Rechnung wurde vollständig bezahlt
+- **Teilweise bezahlt** (partially_paid): Teilzahlung erfolgt
+- **Überfällig** (overdue): Zahlungsfrist überschritten
+- **Storniert** (cancelled): Rechnung wurde storniert
+- Farbcodierung für schnelle Übersicht
+- Automatische Nummernkreis-Inkrementierung nur bei Finalisierung
+
+### 7. Dashboard (`/` und `/dashboard`)
+Zentrale Übersicht über alle wichtigen Kennzahlen:
+- **Finanz-Statistiken**:
+  - Gesamtumsatz (finalisierte/versendete/bezahlte Rechnungen)
+  - Bezahlter Umsatz
+  - Offene Beträge
+  - Umsatz laufendes Jahr
+- **Rechnungsstatus-Verteilung**:
+  - Balkendiagramm mit Anzahl pro Status
+  - Farbcodierung: Entwürfe, finalisiert, versendet, bezahlt, überfällig, storniert
+- **Überfällige Rechnungen**:
+  - Anzahl und Gesamtbetrag
+  - Direktlink zur Mahnungsübersicht
+- **Monatlicher Umsatzverlauf**:
+  - Balkendiagramm für laufendes Jahr
+  - Monatsweise Aufschlüsselung
+- **Neueste Rechnungen**: Tabelle mit den letzten 10 Rechnungen
+- **Quick Actions**: Schnellzugriff auf häufige Aktionen
+
+### 8. Mahnwesen (`/invoice/reminders`)
+Automatische Mahnstufen-Verwaltung für überfällige Rechnungen:
+- **3-Stufen-Mahnsystem**:
+  - **Stufe 1** (1-14 Tage überfällig): Gelb - Zahlungserinnerung
+  - **Stufe 2** (15-30 Tage überfällig): Orange - 1. Mahnung
+  - **Stufe 3** (>30 Tage überfällig): Rot - 2. Mahnung / Inkasso
+- **Fälligkeitsvorschau**: Rechnungen, die in den nächsten 7 Tagen fällig werden
+- **Übersichtliche Darstellung**:
+  - Rechnungsnummer, Kunde, Betrag
+  - Fälligkeitsdatum und Tage überfällig
+  - Offener Restbetrag
+  - Farbcodierung nach Dringlichkeit
+- **Direktverlinkung**: Klick auf Rechnung öffnet Detail-Ansicht
+- **Automatische Berechnung**: System berechnet Überfälligkeit anhand Fälligkeitsdatum
+
+### 9. Zahlungsverknüpfung
+Verknüpfung von Rechnungen mit Bankbuchungen:
+- **Zahlung zuordnen**: Aus Rechnungsansicht direkt Zahlung verknüpfen
+- **Automatische Berechnung**: Restbetrag wird automatisch aktualisiert
+- **Mehrfachzahlungen**: Unterstützung für Teilzahlungen
+- **Status-Update**: Bei vollständiger Zahlung automatisch auf "bezahlt" setzen
+- **Übersicht verknüpfter Zahlungen**: Liste aller Zahlungen einer Rechnung
+
+### 10. Kategorien-Verwaltung (`/categories`)
 Verwaltung von Buchungskategorien:
 - **Hierarchische Struktur**: Parent-Child-Beziehungen
 - **Flexible Kategorisierung**: Individuell erweiterbar
 - **Buchungs-Zuordnung**: Kategorien können Buchungen zugewiesen werden
 
-### 8. Artikelverzeichnis (`/articles`)
+### 11. Artikelverzeichnis (`/articles`)
 Verwaltung von Artikeln und Dienstleistungen für Rechnungen:
 - **Artikelstammdaten**: Bezeichnung, Einheit, Nettopreis, Steuersatz
 - **Beschreibung**: Detaillierte Artikelbeschreibung
@@ -136,7 +209,7 @@ Verwaltung von Artikeln und Dienstleistungen für Rechnungen:
 - **Integration**: Direkte Übernahme in Rechnungspositionen
 - **Bearbeitung**: Vollständige CRUD-Funktionalität
 
-### 9. Nummernkreise (`/settings/numberranges`)
+### 12. Nummernkreise (`/settings/numberranges`)
 Automatische Nummerierung für Rechnungen und Belege:
 - **Format**: YY[Buchstabe][Präfix]### (z.B. 26R001, 26B_A001)
 - **Typen**: 
@@ -151,20 +224,20 @@ Automatische Nummerierung für Rechnungen und Belege:
 - **Automatische Inkrementierung**: Nächste Nummer wird automatisch vorgeschlagen
 - **Jahreswechsel-Support**: Separate Nummernkreise pro Jahr
 
-### 10. Split-Buchungen (`/bookinggroups`)
+### 13. Split-Buchungen (`/bookinggroups`)
 Gruppierung mehrerer Buchungen:
 - **Erstellen**: Neue Buchungsgruppen mit Beschreibung
 - **Validierung**: Prüfung der Soll/Haben-Summen
 - **Übersicht**: Liste aller Gruppen mit Gesamtbeträgen
 - **Detail-Ansicht**: Alle Buchungen einer Gruppe mit Validierung
 
-### 11. Einstellungen (`/settings`)
+### 14. Einstellungen (`/settings`)
 Zentrale Konfiguration:
 - **Bankkonten**: Verwaltung von Bankkonten und Kasse
 - **Nummernkreise**: Konfiguration der automatischen Nummerierung
 - **Erweiterbar**: Weitere Einstellungen können hinzugefügt werden
 
-### 12. About-Seite (`/about`)
+### 15. About-Seite (`/about`)
 Informationen über die Anwendung.
 
 ## Technische Details
@@ -233,6 +306,56 @@ Die Anwendung verwendet SQLite mit folgenden Tabellen:
 - Description (TEXT) - Beschreibung
 - UNIQUE(Type, Year, Letter, Prefix)
 
+**Invoice (Rechnungen)**
+- ID (INTEGER PRIMARY KEY AUTOINCREMENT)
+- InvoiceNumber (TEXT UNIQUE NOT NULL) - Rechnungsnummer
+- InvoiceDate (DATE NOT NULL) - Rechnungsdatum
+- CustomerID (INTEGER, FOREIGN KEY zu Customers)
+- CustomerNumber (TEXT) - Kundennummer
+- OwnCompanyID (INTEGER, FOREIGN KEY zu Customers) - Eigene Firma
+- SenderLine (TEXT) - Absenderzeile
+- CustomerName (TEXT) - Kundenname
+- CustomerAddress (TEXT) - Kundenadresse (mehrzeilig)
+- BuyerReference (TEXT) - Leitweg-ID / Buyer Reference (XRechnung)
+- PaymentTerms (TEXT) - Zahlungsbedingungen
+- PaymentTermsDays (INTEGER) - Zahlungsziel in Tagen
+- DueDate (DATE) - Fälligkeitsdatum
+- BankAccountID (INTEGER, FOREIGN KEY zu Konten) - Bankverbindung
+- NetAmount (REAL) - Nettobetrag
+- TaxRate (REAL) - Steuersatz (als Dezimalzahl)
+- TaxAmount (REAL) - Steuerbetrag
+- GrossAmount (REAL) - Bruttobetrag
+- Currency (TEXT DEFAULT 'EUR') - Währung
+- Status (TEXT DEFAULT 'draft') - Status (draft/finalized/sent/paid/partially_paid/overdue/cancelled)
+- RemainingAmount (REAL) - Restbetrag (bei Teilzahlungen)
+- PaymentMeansCode (TEXT) - XRechnung Zahlungsart-Code
+- PaymentMeansText (TEXT) - XRechnung Zahlungsart-Text
+- IBAN (TEXT) - IBAN für XRechnung
+- AccountName (TEXT) - Kontoinhaber
+- BIC (TEXT) - BIC
+- Notes (TEXT) - Notizen
+- CreatedDate (DATETIME) - Erstellungsdatum
+- LastModified (DATETIME) - Letzte Änderung
+
+**InvoiceItems (Rechnungspositionen)**
+- ID (INTEGER PRIMARY KEY AUTOINCREMENT)
+- InvoiceID (INTEGER, FOREIGN KEY zu Invoice)
+- Position (INTEGER) - Positionsnummer
+- Quantity (REAL) - Menge
+- Unit (TEXT) - Einheit
+- Description (TEXT) - Beschreibung
+- UnitPrice (REAL) - Einzelpreis (Netto)
+- TotalPrice (REAL) - Gesamtpreis (Netto)
+- TaxRate (REAL) - Steuersatz
+
+**InvoicePayments (Zahlungsverknüpfungen)**
+- ID (INTEGER PRIMARY KEY AUTOINCREMENT)
+- InvoiceID (INTEGER, FOREIGN KEY zu Invoice)
+- BookingID (INTEGER, FOREIGN KEY zu Bookings)
+- Amount (REAL) - Zahlungsbetrag
+- PaymentDate (DATE) - Zahlungsdatum
+- Notes (TEXT) - Notizen
+
 **Categories (Buchungskategorien)**
 - ID (INTEGER PRIMARY KEY AUTOINCREMENT)
 - Name (TEXT NOT NULL)
@@ -286,6 +409,8 @@ PyBuch/
 ├── main.py                    # Entry Point - Startet den Webserver
 ├── db.py                      # Datenbank-Layer mit allen CRUD-Operationen
 ├── document_parser.py         # PDF-Parser für Kontoauszüge (VBR)
+├── email_sender.py            # E-Mail-Versand mit SMTP
+├── xrechnung_generator.py     # XRechnung XML-Generierung (EN 16931)
 ├── buch.css                   # Stylesheet für die Weboberfläche (inkl. Dark Mode)
 ├── README.md                  # Diese Datei
 ├── PARSER_README.md           # Dokumentation für den PDF-Parser
@@ -313,6 +438,31 @@ PyBuch/
 - Python 3.x
 - Pillow (für PDF-Logo-Einbettung): `pip install Pillow`
 - Keine weiteren externen Abhängigkeiten (nutzt nur Python Standard Library)
+
+### E-Mail-Versand konfigurieren (optional)
+
+Für den E-Mail-Versand müssen SMTP-Zugangsdaten als Umgebungsvariablen gesetzt werden:
+
+**Windows (PowerShell):**
+```powershell
+$env:SMTP_HOST = "smtp.gmail.com"
+$env:SMTP_PORT = "587"
+$env:SMTP_USER = "ihre-email@gmail.com"
+$env:SMTP_PASSWORD = "ihr-app-passwort"
+```
+
+**Linux/Mac:**
+```bash
+export SMTP_HOST="smtp.gmail.com"
+export SMTP_PORT="587"
+export SMTP_USER="ihre-email@gmail.com"
+export SMTP_PASSWORD="ihr-app-passwort"
+```
+
+**Hinweise:**
+- Für Gmail: Verwenden Sie ein App-Passwort, nicht Ihr normales Passwort
+- Andere Provider: Passen Sie SMTP_HOST und SMTP_PORT entsprechend an
+- Umgebungsvariablen müssen vor dem Serverstart gesetzt werden
 
 ### Server starten
 
@@ -399,9 +549,12 @@ Diese Anwendung ist für lokale Verwendung konzipiert:
 - **Styling**: Externes CSS (`buch.css`)
 
 ### Hauptseiten der Anwendung
-1. **Dashboard** (`/`) - Übersicht und Initialisierung
-2. **Rechnung** (`/invoice`) - Rechnungserstellung mit PDF-Export und Multi-Company
-3. **Belege** (`/receipts`) - Dokumentenverwaltung mit Upload
+1. **Dashboard** (`/` und `/dashboard`) - Finanzübersicht mit Statistiken und Diagrammen
+2. **Rechnung** (`/invoice`) - Rechnungsübersicht mit Such- und Filterfunktionen
+3. **Rechnung erstellen** (`/invoice/new`) - Rechnungserstellung mit PDF-Export und Multi-Company
+4. **Rechnung anzeigen** (`/invoice/view`) - Detailansicht mit E-Mail-Versand und XML-Export
+5. **Mahnwesen** (`/invoice/reminders`) - Überfällige Rechnungen mit 3-Stufen-Mahnsystem
+6. **Belege** (`/receipts`) - Dokumentenverwaltung mit Upload
 4. **Belege bearbeiten** (`/receipts/edit`) - Detail-Ansicht mit Verknüpfungen
 5. **Buchungen** (`/transactions`) - Haupt-Buchungsinterface mit Filtern
 6. **Buchungen bearbeiten** (`/transactions/edit`) - Buchungs-Editor
@@ -473,15 +626,32 @@ Diese Anwendung ist für lokale Verwendung konzipiert:
 - Einfaches Verknüpfen/Entfernen in der UI
 
 **Rechnungs-PDF-Generierung**
-- Professionelles A4-Layout ohne externe PDF-Bibliotheken
-- Firmenspezifisches Logo (PNG/JPEG) mit automatischer Skalierung
-- Deutsche Umlaute (ä, ö, ü, ß) und €-Zeichen
-- Absenderzeile für Brieffenster-Position
-- Dynamische Positionstabelle mit hellblauem Tabellenkopf
-- Automatische Summen- und MwSt-Berechnung
-- Dreispaltiger Footer mit Firmendaten, Kontakt, Bankverbindung
-- Konfigurierbare Seitenränder
-- Multi-Company-Support: Logo und Daten der gewählten Firma
+- **Separates Modul**: `pdf_generator.py` - saubere Trennung der PDF-Logik vom Rest der Anwendung
+- **Datenbankbasiert**: PDF wird direkt aus gespeicherten Rechnungsdaten erstellt, nicht aus Formulardaten
+- **Dateisystem-Speicherung**: PDFs werden nur lokal gespeichert (`data/invoices/YYYY/Rechnung_XXX.pdf`)
+- **Kein automatischer Download**: PDFs werden nur im Dateisystem abgelegt, kein Browser-Download
+- **Dateisystem-Prüfung**: Überprüft physische Dateiexistenz, nicht nur Datenbank-Eintrag
+- **Überschreiben-Dialog**: Warnung wenn PDF bereits existiert (mit Option zum Abbrechen oder Neu-Generieren)
+- **Erfolgsbestätigung**: Alert zeigt vollständigen Dateipfad nach erfolgreicher Generierung
+- **Professionelles A4-Layout**: Ohne externe PDF-Bibliotheken implementiert
+- **Firmenspezifisches Logo**: PNG/JPEG mit automatischer Skalierung und Konvertierung
+- **Deutsche Umlaute**: Korrekte Darstellung von ä, ö, ü, ß und €-Zeichen (WinAnsiEncoding)
+- **Absenderzeile**: Optimiert für Standard-Brieffenster-Position
+- **Dynamische Positionstabelle**: Hellblauer Tabellenkopf, automatische Zeilenberechnung
+- **Automatische Summenberechnung**: MwSt und Gesamtbetrag mit korrekter Formatierung
+- **Dreispaltiger Footer**: Firmendaten, Kontaktdaten, Bankverbindung
+- **Multi-Company-Support**: Logo und Daten der jeweils gewählten Firma
+- **Datenbank-Integration**: PDFPath-Feld wird automatisch aktualisiert
+
+**Workflow PDF-Generierung:**
+1. Klick auf "📄 PDF" in Rechnungsliste oder "Als PDF exportieren" in Rechnungsansicht
+2. System prüft physische Dateiexistenz im Dateisystem
+3. Falls vorhanden: Dialog "PDF-Datei existiert bereits. Möchten Sie die Datei überschreiben?"
+4. Bei Bestätigung oder Neuanlage: `pdf_generator.generate_invoice_pdf(db, invoice_id)` wird aufgerufen
+5. Modul lädt Rechnung und Positionen direkt aus Datenbank
+6. PDF wird im Dateisystem gespeichert und PDFPath in DB aktualisiert
+7. Erfolgsmeldung zeigt vollständigen Dateipfad
+8. Keine Browser-Tabs, kein Download - nur lokale Datei
 
 **User Interface**
 - Dark Mode-Unterstützung (CSS-Optimierungen)

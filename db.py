@@ -201,11 +201,101 @@ class Database:
             )
         ''')
 
+        # Invoices table for storing issued invoices (XRechnung-compliant)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS Invoices (
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                InvoiceNumber TEXT UNIQUE NOT NULL,
+                InvoiceDate DATE NOT NULL,
+                
+                -- Seller (own company) - Snapshot
+                OwnCompanyId INTEGER,
+                SellerName TEXT NOT NULL,
+                SellerStreet TEXT,
+                SellerPostalCode TEXT,
+                SellerCity TEXT,
+                SellerCountry TEXT DEFAULT 'DE',
+                SellerVATID TEXT,
+                SellerEmail TEXT,
+                SellerPhone TEXT,
+                
+                -- Buyer (customer) - Snapshot
+                CustomerId INTEGER,
+                BuyerName TEXT NOT NULL,
+                BuyerStreet TEXT,
+                BuyerPostalCode TEXT,
+                BuyerCity TEXT,
+                BuyerCountry TEXT DEFAULT 'DE',
+                BuyerVATID TEXT,
+                BuyerReference TEXT,
+                BuyerRouteID TEXT,
+                
+                -- Order reference
+                OrderNumber TEXT,
+                
+                -- XRechnung specific
+                Currency TEXT DEFAULT 'EUR',
+                DeliveryDate DATE,
+                
+                -- Payment terms
+                PaymentTerms TEXT,
+                PaymentDueDate DATE,
+                SkontoDays INTEGER,
+                SkontoPercent REAL,
+                
+                -- Bank details - Snapshot
+                BankAccountId INTEGER,
+                BankName TEXT,
+                BankIBAN TEXT,
+                BankBIC TEXT,
+                
+                -- Totals
+                TaxCategory TEXT DEFAULT 'S',
+                TaxRate REAL NOT NULL,
+                SumNet REAL NOT NULL,
+                TaxAmount REAL NOT NULL,
+                SumGross REAL NOT NULL,
+                AmountDue REAL NOT NULL,
+                
+                -- Management
+                Status TEXT DEFAULT 'draft',
+                PDFPath TEXT,
+                XMLPath TEXT,
+                CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UpdatedAt DATETIME,
+                
+                FOREIGN KEY (OwnCompanyId) REFERENCES Contacts(ID),
+                FOREIGN KEY (CustomerId) REFERENCES Contacts(ID),
+                FOREIGN KEY (BankAccountId) REFERENCES Accounts(ID)
+            )
+        ''')
+
+        # InvoiceItems table for invoice line items
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS InvoiceItems (
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                InvoiceId INTEGER NOT NULL,
+                Position INTEGER NOT NULL,
+                ArticleId INTEGER,
+                Description TEXT NOT NULL,
+                Quantity REAL NOT NULL,
+                Unit TEXT DEFAULT 'C62',
+                PricePerUnit REAL NOT NULL,
+                TotalNet REAL NOT NULL,
+                TaxCategory TEXT DEFAULT 'S',
+                TaxRate REAL NOT NULL,
+                FOREIGN KEY (InvoiceId) REFERENCES Invoices(ID) ON DELETE CASCADE,
+                FOREIGN KEY (ArticleId) REFERENCES Articles(ID)
+            )
+        ''')
+
         conn.commit()
         conn.close()
         
         # Run migrations
         self._migrate_contacts_logo_column()
+        self._migrate_contacts_country_column()
+        self._migrate_contacts_buyer_route_id()
         
         # Ensure the default "Kasse" account exists
         self.ensure_kasse_exists()
@@ -222,6 +312,36 @@ class Database:
                 cursor.execute('ALTER TABLE Contacts ADD COLUMN Logo TEXT')
                 conn.commit()
                 print("Migration: Added Logo column to Contacts table")
+            except sqlite3.OperationalError as e:
+                print(f"Migration warning: {e}")
+        conn.close()
+
+    def _migrate_contacts_country_column(self):
+        """Add Country column to Contacts table if it doesn't exist (for XRechnung)"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(Contacts)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'Country' not in columns:
+            try:
+                cursor.execute('ALTER TABLE Contacts ADD COLUMN Country TEXT DEFAULT "DE"')
+                conn.commit()
+                print("Migration: Added Country column to Contacts table")
+            except sqlite3.OperationalError as e:
+                print(f"Migration warning: {e}")
+        conn.close()
+
+    def _migrate_contacts_buyer_route_id(self):
+        """Add BuyerRouteID column to Contacts table if it doesn't exist (for XRechnung B2G)"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(Contacts)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'BuyerRouteID' not in columns:
+            try:
+                cursor.execute('ALTER TABLE Contacts ADD COLUMN BuyerRouteID TEXT')
+                conn.commit()
+                print("Migration: Added BuyerRouteID column to Contacts table")
             except sqlite3.OperationalError as e:
                 print(f"Migration warning: {e}")
         conn.close()
@@ -694,49 +814,77 @@ class Database:
         conn.close()
         return row
 
-    def insert_contact(self, name, contact_type="customer", customer_number="", company="", street="", postal_code="", city="", country="", email="", phone="", tax_id="", notes=""):
+    def insert_contact(self, name, contact_type="customer", customer_number="", company="", street="", postal_code="", city="", country="DE", email="", phone="", tax_id="", notes="", logo="", buyer_route_id=""):
         """Insert new contact
         
         Args:
             name: Name (required)
             contact_type: Type of contact ('customer', 'supplier', 'insurance', 'own', 'other')
             customer_number: Optional customer number (for customers)
+            country: Country code (ISO 3166-1 Alpha-2, default: DE)
+            tax_id: Tax ID / USt-IdNr (for XRechnung)
+            buyer_route_id: Leitweg-ID for B2G invoices (XRechnung)
             [other contact fields]
+            logo: Path to company logo (optional)
         """
         conn = self._get_connection()
         cursor = conn.cursor()
+        
+        # Convert empty customer_number to None for UNIQUE constraint to work properly
+        if not customer_number or customer_number.strip() == '':
+            customer_number = None
+        
         sql_template = '''
-                INSERT INTO Contacts (ContactType, CustomerNumber, Name, Company, Street, PostalCode, City, Country, Email, Phone, TaxID, Notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
-        params = (contact_type, customer_number, name, company, street, postal_code, city, country, email, phone, tax_id, notes)
+                INSERT INTO Contacts (ContactType, CustomerNumber, Name, Company, Street, PostalCode, City, Country, Email, Phone, TaxID, Notes, Logo, BuyerRouteID)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
+        params = (contact_type, customer_number, name, company, street, postal_code, city, country or 'DE', email, phone, tax_id, notes, logo, buyer_route_id or None)
         try:
             cursor.execute(sql_template, params)
             conn.commit()
             # Log SQL after successful commit
             self._log_sql(sql_template, params, "Insert new contact")
         except sqlite3.IntegrityError as e:
-            print("Error inserting contact:", e)
+            print(f"IntegrityError inserting contact: {e}")
+            print(f"Params: {params}")
             conn.rollback()
+            raise
+        except Exception as e:
+            print(f"Error inserting contact: {e}")
+            print(f"Params: {params}")
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
-    def update_contact(self, contact_id, name, contact_type="customer", customer_number="", company="", street="", postal_code="", city="", country="", email="", phone="", tax_id="", notes="", logo=""):
-        """Update existing contact"""
+    def update_contact(self, contact_id, name, contact_type="customer", customer_number="", company="", street="", postal_code="", city="", country="DE", email="", phone="", tax_id="", notes="", logo="", buyer_route_id=""):
+        """Update existing contact with all fields including logo and XRechnung fields"""
         conn = self._get_connection()
         cursor = conn.cursor()
+        
+        # Convert empty customer_number to None for UNIQUE constraint to work properly
+        if not customer_number or customer_number.strip() == '':
+            customer_number = None
+        
         sql_template = '''
                 UPDATE Contacts
-                SET ContactType = ?, CustomerNumber = ?, Name = ?, Company = ?, Street = ?, PostalCode = ?, City = ?, Country = ?, Email = ?, Phone = ?, TaxID = ?, Notes = ?, Logo = ?
+                SET ContactType = ?, CustomerNumber = ?, Name = ?, Company = ?, Street = ?, PostalCode = ?, City = ?, Country = ?, Email = ?, Phone = ?, TaxID = ?, Notes = ?, Logo = ?, BuyerRouteID = ?
                 WHERE ID = ?'''
-        params = (contact_type, customer_number, name, company, street, postal_code, city, country, email, phone, tax_id, notes, logo, contact_id)
+        params = (contact_type, customer_number, name, company, street, postal_code, city, country or 'DE', email, phone, tax_id, notes, logo, buyer_route_id or None, contact_id)
         try:
             cursor.execute(sql_template, params)
             conn.commit()
             # Log SQL after successful commit
             self._log_sql(sql_template, params, "Update contact")
         except sqlite3.IntegrityError as e:
-            print("Error updating contact:", e)
+            print(f"IntegrityError updating contact: {e}")
+            print(f"Params: {params}")
             conn.rollback()
+            raise
+        except Exception as e:
+            print(f"Error updating contact: {e}")
+            print(f"Params: {params}")
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -1021,3 +1169,314 @@ class Database:
             'next_number': next_num,
             'formatted_next': f"{year_short}{letter}{prefix}{next_num:03d}"
         }
+
+    # ==================== INVOICES ====================
+    
+    def fetch_invoices(self, status=None):
+        """Fetch invoices, optionally filtered by status"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        if status:
+            cursor.execute('SELECT * FROM Invoices WHERE Status = ? ORDER BY InvoiceDate DESC, InvoiceNumber DESC', (status,))
+        else:
+            cursor.execute('SELECT * FROM Invoices ORDER BY InvoiceDate DESC, InvoiceNumber DESC')
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
+    def get_invoice_by_id(self, invoice_id):
+        """Get a single invoice by ID"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM Invoices WHERE ID = ?', (invoice_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row
+
+    def get_invoice_items(self, invoice_id):
+        """Get all items for an invoice"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM InvoiceItems WHERE InvoiceId = ? ORDER BY Position', (invoice_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
+    def insert_invoice(self, invoice_data):
+        """Insert a new invoice with all fields
+        
+        Args:
+            invoice_data: Dictionary with all invoice fields
+        
+        Returns:
+            invoice_id: The ID of the newly created invoice
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        sql_template = '''
+            INSERT INTO Invoices (
+                InvoiceNumber, InvoiceDate,
+                OwnCompanyId, SellerName, SellerStreet, SellerPostalCode, SellerCity, SellerCountry, SellerVATID, SellerEmail, SellerPhone,
+                CustomerId, BuyerName, BuyerStreet, BuyerPostalCode, BuyerCity, BuyerCountry, BuyerVATID, BuyerReference, BuyerRouteID,
+                OrderNumber, Currency, DeliveryDate,
+                PaymentTerms, PaymentDueDate, SkontoDays, SkontoPercent,
+                BankAccountId, BankName, BankIBAN, BankBIC,
+                TaxCategory, TaxRate, SumNet, TaxAmount, SumGross, AmountDue,
+                Status, PDFPath, XMLPath
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+        '''
+        
+        params = (
+            invoice_data.get('invoice_number'),
+            invoice_data.get('invoice_date'),
+            invoice_data.get('own_company_id'),
+            invoice_data.get('seller_name'),
+            invoice_data.get('seller_street'),
+            invoice_data.get('seller_postal_code'),
+            invoice_data.get('seller_city'),
+            invoice_data.get('seller_country', 'DE'),
+            invoice_data.get('seller_vat_id'),
+            invoice_data.get('seller_email'),
+            invoice_data.get('seller_phone'),
+            invoice_data.get('customer_id'),
+            invoice_data.get('buyer_name'),
+            invoice_data.get('buyer_street'),
+            invoice_data.get('buyer_postal_code'),
+            invoice_data.get('buyer_city'),
+            invoice_data.get('buyer_country', 'DE'),
+            invoice_data.get('buyer_vat_id'),
+            invoice_data.get('buyer_reference'),
+            invoice_data.get('buyer_route_id'),
+            invoice_data.get('order_number'),
+            invoice_data.get('currency', 'EUR'),
+            invoice_data.get('delivery_date'),
+            invoice_data.get('payment_terms'),
+            invoice_data.get('payment_due_date'),
+            invoice_data.get('skonto_days'),
+            invoice_data.get('skonto_percent'),
+            invoice_data.get('bank_account_id'),
+            invoice_data.get('bank_name'),
+            invoice_data.get('bank_iban'),
+            invoice_data.get('bank_bic'),
+            invoice_data.get('tax_category', 'S'),
+            invoice_data.get('tax_rate'),
+            invoice_data.get('sum_net'),
+            invoice_data.get('tax_amount'),
+            invoice_data.get('sum_gross'),
+            invoice_data.get('amount_due'),
+            invoice_data.get('status', 'finalized'),
+            invoice_data.get('pdf_path'),
+            invoice_data.get('xml_path')
+        )
+        
+        try:
+            cursor.execute(sql_template, params)
+            invoice_id = cursor.lastrowid
+            conn.commit()
+            self._log_sql(sql_template, params, "Insert invoice")
+            return invoice_id
+        except Exception as e:
+            print(f"Error inserting invoice: {e}")
+            print(f"Params: {params}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def insert_invoice_item(self, item_data):
+        """Insert an invoice item
+        
+        Args:
+            item_data: Dictionary with item fields
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        sql_template = '''
+            INSERT INTO InvoiceItems (
+                InvoiceId, Position, ArticleId, Description, Quantity, Unit, PricePerUnit, TotalNet, TaxCategory, TaxRate
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        '''
+        
+        params = (
+            item_data.get('invoice_id'),
+            item_data.get('position'),
+            item_data.get('article_id'),
+            item_data.get('description'),
+            item_data.get('quantity'),
+            item_data.get('unit', 'C62'),
+            item_data.get('price_per_unit'),
+            item_data.get('total_net'),
+            item_data.get('tax_category', 'S'),
+            item_data.get('tax_rate')
+        )
+        
+        try:
+            cursor.execute(sql_template, params)
+            conn.commit()
+            self._log_sql(sql_template, params, "Insert invoice item")
+        except Exception as e:
+            print(f"Error inserting invoice item: {e}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def update_invoice_status(self, invoice_id, status):
+        """Update invoice status"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('UPDATE Invoices SET Status = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE ID = ?', (status, invoice_id))
+            conn.commit()
+        except Exception as e:
+            print(f"Error updating invoice status: {e}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def delete_invoice(self, invoice_id):
+        """Delete an invoice and its items (cascade)"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('DELETE FROM Invoices WHERE ID = ?', (invoice_id,))
+            conn.commit()
+        except Exception as e:
+            print(f"Error deleting invoice: {e}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def link_invoice_to_transaction(self, invoice_id, transaction_id, amount_paid):
+        """Link an invoice to a payment transaction and update AmountDue
+        
+        Args:
+            invoice_id: ID of the invoice
+            transaction_id: ID of the transaction (payment)
+            amount_paid: Amount paid in this transaction
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            # Get current invoice data
+            cursor.execute('SELECT AmountDue, SumGross FROM Invoices WHERE ID = ?', (invoice_id,))
+            invoice_data = cursor.fetchone()
+            if not invoice_data:
+                raise ValueError(f"Invoice {invoice_id} not found")
+            
+            current_due = invoice_data[0] or invoice_data[1]  # Use SumGross if AmountDue is None
+            new_due = current_due - amount_paid
+            
+            # Update AmountDue
+            cursor.execute('''
+                UPDATE Invoices 
+                SET AmountDue = ?,
+                    UpdatedAt = CURRENT_TIMESTAMP
+                WHERE ID = ?
+            ''', (new_due, invoice_id))
+            
+            # Update transaction to reference invoice (if Notes field exists)
+            cursor.execute('''
+                UPDATE Transactions 
+                SET Info = 'Rechnung: ' || (SELECT InvoiceNumber FROM Invoices WHERE ID = ?)
+                WHERE ID = ?
+            ''', (invoice_id, transaction_id))
+            
+            # If fully paid, update status
+            if abs(new_due) < 0.01:  # Allow for rounding errors
+                cursor.execute('''
+                    UPDATE Invoices 
+                    SET Status = 'paid',
+                        UpdatedAt = CURRENT_TIMESTAMP
+                    WHERE ID = ?
+                ''', (invoice_id,))
+            
+            conn.commit()
+            print(f"Invoice {invoice_id} linked to transaction {transaction_id}, new due: {new_due:.2f}")
+            
+        except Exception as e:
+            print(f"Error linking invoice to transaction: {e}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def update_invoice_pdf_path(self, invoice_id, pdf_path):
+        """Update PDFPath field for an invoice
+        
+        Args:
+            invoice_id: ID of the invoice
+            pdf_path: Path to the PDF file
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                UPDATE Invoices 
+                SET PDFPath = ?,
+                    UpdatedAt = CURRENT_TIMESTAMP
+                WHERE ID = ?
+            ''', (pdf_path, invoice_id))
+            
+            conn.commit()
+        except Exception as e:
+            print(f"Error updating invoice PDF path: {e}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def get_overdue_invoices(self):
+        """Get all overdue invoices (sent status, past due date, amount due > 0)
+        
+        Returns:
+            List of invoice tuples with overdue invoices
+        """
+        from datetime import date
+        today = date.today().isoformat()
+        
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM Invoices 
+            WHERE Status IN ('finalized', 'sent') 
+            AND PaymentDueDate < ?
+            AND (AmountDue IS NULL OR AmountDue > 0.01)
+            ORDER BY PaymentDueDate ASC
+        ''', (today,))
+        invoices = cursor.fetchall()
+        conn.close()
+        return invoices
+    
+    def get_invoices_due_soon(self, days=7):
+        """Get invoices due within the next N days
+        
+        Args:
+            days: Number of days to look ahead
+            
+        Returns:
+            List of invoice tuples
+        """
+        from datetime import date, timedelta
+        today = date.today()
+        future_date = (today + timedelta(days=days)).isoformat()
+        today_str = today.isoformat()
+        
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM Invoices 
+            WHERE Status IN ('finalized', 'sent') 
+            AND PaymentDueDate BETWEEN ? AND ?
+            AND (AmountDue IS NULL OR AmountDue > 0.01)
+            ORDER BY PaymentDueDate ASC
+        ''', (today_str, future_date))
+        invoices = cursor.fetchall()
+        conn.close()
+        return invoices

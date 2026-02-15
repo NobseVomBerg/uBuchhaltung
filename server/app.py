@@ -15,11 +15,119 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         db = Database()
         try:
             if self.path == "/":
-                self.respond(200, pages.PageRoot(db))
+                self.respond(200, pages.PageDashboard(db))
+            elif self.path == "/dashboard":
+                self.respond(200, pages.PageDashboard(db))
             elif self.path == "/about":
                 self.respond(200, pages.PageAbout())
-            elif self.path == "/invoice":
-                self.respond(200, pages.PageInvoice(db))
+            elif self.path == "/invoice" or self.path.startswith("/invoice?"):
+                # Parse query parameters for filters
+                filters = {}
+                if '?' in self.path:
+                    query_string = self.path.split('?', 1)[1]
+                    query_components = parse_qs(query_string)
+                    if 'search' in query_components:
+                        filters['search'] = query_components['search'][0]
+                    if 'status' in query_components:
+                        filters['status'] = query_components['status'][0]
+                    if 'date_from' in query_components:
+                        filters['date_from'] = query_components['date_from'][0]
+                    if 'date_to' in query_components:
+                        filters['date_to'] = query_components['date_to'][0]
+                self.respond(200, pages.PageInvoice(db, filters))
+            elif self.path == "/invoice/new":
+                self.respond(200, pages.PageInvoiceNew(db))
+            elif self.path.startswith("/invoice/edit"):
+                query_components = parse_qs(self.path.split('?')[1])
+                invoice_id = int(query_components["id"][0])
+                self.respond(200, pages.PageInvoiceNew(db, invoice_id))
+            elif self.path.startswith("/invoice/view"):
+                # Redirect to edit page (view and edit are the same now)
+                query_components = parse_qs(self.path.split('?')[1])
+                invoice_id = int(query_components["id"][0])
+                self.respond(200, pages.PageInvoiceNew(db, invoice_id))
+            elif self.path.startswith("/invoice/xml"):
+                # Generate and download XRechnung XML
+                query_components = parse_qs(self.path.split('?')[1])
+                invoice_id = int(query_components["id"][0])
+                
+                invoice = db.get_invoice_by_id(invoice_id)
+                if invoice:
+                    from xrechnung_generator import XRechnungGenerator
+                    items = db.get_invoice_items(invoice_id)
+                    generator = XRechnungGenerator()
+                    xml_content = generator.generate_xml(invoice, items)
+                    
+                    invoice_number = invoice[1] or 'DRAFT'
+                    filename = f"XRechnung_{invoice_number}.xml"
+                    
+                    self.send_response(200)
+                    self.send_header("Content-type", "application/xml")
+                    self.send_header("Content-Disposition", f"attachment; filename={filename}")
+                    self.send_header("Content-Length", str(len(xml_content.encode('utf-8'))))
+                    self.end_headers()
+                    self.wfile.write(xml_content.encode('utf-8'))
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+                return
+            elif self.path.startswith("/invoice/pdf_download"):
+                # Generate and download PDF for existing invoice
+                query_components = parse_qs(self.path.split('?')[1])
+                invoice_id = int(query_components["id"][0])
+                
+                pdf_bytes, filename = handlers.handle_invoice_pdf_by_id(invoice_id)
+                
+                if pdf_bytes:
+                    self.send_response(200)
+                    self.send_header("Content-type", "application/pdf")
+                    self.send_header("Content-Disposition", f"attachment; filename={filename}")
+                    self.send_header("Content-Length", str(len(pdf_bytes)))
+                    self.end_headers()
+                    self.wfile.write(pdf_bytes)
+                else:
+                    self.send_response(500)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"Error generating PDF")
+                return
+            elif self.path.startswith("/invoice/pdf_generate"):
+                # Generate PDF in filesystem only (no download)
+                query_components = parse_qs(self.path.split('?')[1])
+                invoice_id = int(query_components["id"][0])
+                
+                from pdf_generator import generate_invoice_pdf
+                
+                pdf_bytes, pdf_path = generate_invoice_pdf(db, invoice_id)
+                
+                if pdf_bytes and pdf_path:
+                    import json
+                    response = json.dumps({
+                        'success': True,
+                        'pdf_path': pdf_path,
+                        'message': 'PDF erfolgreich erstellt'
+                    })
+                    self.send_response(200)
+                    self.send_header("Content-type", "application/json")
+                    self.send_header("Content-Length", str(len(response.encode())))
+                    self.end_headers()
+                    self.wfile.write(response.encode())
+                else:
+                    import json
+                    response = json.dumps({
+                        'success': False,
+                        'error': 'Fehler beim Erstellen der PDF'
+                    })
+                    self.send_response(500)
+                    self.send_header("Content-type", "application/json")
+                    self.send_header("Content-Length", str(len(response.encode())))
+                    self.end_headers()
+                    self.wfile.write(response.encode())
+                return
+            elif self.path == "/invoice/reminders":
+                self.respond(200, pages.PageReminders(db))
+            elif self.path == "/dashboard":
+                self.respond(200, pages.PageDashboard(db))
             elif self.path == "/articles":
                 self.respond(200, pages.PageArticles(db))
             elif self.path.startswith("/articles/edit"):
@@ -162,6 +270,52 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if self.path == "/upload_receipts":
             status_code, response = upload_handler.handle_file_upload(self)
             self.respond(status_code, response)
+            return
+        
+        # Handle invoice save
+        if self.path == "/invoice/save":
+            content_length = int(self.headers['Content-Length'])
+            post_body = self.rfile.read(content_length)
+            response_data = handlers.handle_invoice_save(post_body)
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(response_data)
+            return
+        
+        # Handle invoice email sending
+        if self.path == "/invoice/send-email":
+            content_length = int(self.headers['Content-Length'])
+            post_body = self.rfile.read(content_length)
+            response_data = handlers.handle_send_invoice_email(post_body)
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(response_data)
+            return
+        
+        # Handle invoice payment linking
+        if self.path == "/invoice/link-payment":
+            content_length = int(self.headers['Content-Length'])
+            post_body = self.rfile.read(content_length)
+            status_code, redirect_path = handlers.handle_link_invoice_payment(post_body)
+            self.send_response(status_code)
+            if status_code in [200, 303]:
+                self.send_header("Content-type", "application/json")
+            self.end_headers()
+            if status_code == 200:
+                self.wfile.write(b'{"success": true}')
+            return
+        
+        # Handle invoice status updates
+        if self.path == "/invoice/status":
+            content_length = int(self.headers['Content-Length'])
+            post_body = self.rfile.read(content_length)
+            status_code, redirect_path = handlers.handle_update_invoice_status(post_body)
+            self.send_response(status_code)
+            if status_code == 303:
+                self.send_header("Location", redirect_path)
+            self.end_headers()
             return
         
         # Handle PDF generation (JSON body)
