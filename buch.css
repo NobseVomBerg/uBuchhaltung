@@ -6,7 +6,8 @@
 	table				{ margin-top: 8px; border: 4px solid #606060; border-style: ridge;}
 	tr 					{ background-color: #000000; }
 	td, th				{ padding-top: 0px; padding-bottom: 0px; padding-left: 8px; padding-right: 8px; border: 0px solid #404040; }
-	th					{ background-color: #101010; text-align: left;}
+	th					{ background-color: #222; text-align: left;}
+	.rectRounded		{ background-color: #222;}
 	.sql-success-title	{ color: #4CAF50; }
 	.sql-success-box	{ background-color: #1B5E20; color: #A5D6A7; padding: 10px; }
 	.sql-error-title	{ color: #F44336; }
@@ -21,7 +22,8 @@
 	table				{ margin-top: 8px; border: 8px solid #E0E0E0; border-style: ridge;}
 	tr 					{ background-color: #FFFFFF; }
 	td, th				{ padding-top: 0px; padding-bottom: 0px; padding-left: 8px; padding-right: 8px; border: 0px solid #E0E0E0; }
-	th					{ background-color: #F0F0F0; text-align: left;}
+	th					{ background-color: #DDD; text-align: left;}
+	.rectRounded		{ background-color: #DDD;}
 	.sql-success-title	{ color: #2E7D32; }
 	.sql-success-box	{ background-color: #E8F5E9; color: #1B5E20; padding: 10px; }
 	.sql-error-title	{ color: #C62828; }
@@ -31,6 +33,7 @@
 /* common for light and dark modes */
 .header2				{ min-height: 1.5em; padding: 5px 0 0 0; margin: 0; }
 .header3				{ min-height: 1.5em; padding: 0 0px 0 0; border-bottom: 1px solid #ccc; }
+.rectRounded			{ margin-bottom: 15px; padding: 10px; border-radius: 5px;}
 h1 						{ font-size: 14; font-size: 1em; margin-left: 8px; }
 h2 						{ font-size: 12; font-size: 1em; margin-left: 16px; }
 a:link					{ color: #4040FF; text-decoration: none; }

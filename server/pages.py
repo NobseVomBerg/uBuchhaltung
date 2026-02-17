@@ -1211,7 +1211,7 @@ def PageInvoice(db: Database, filters: dict = None):
     
     # Search and filter form
     s+= '''
-    <form method="get" action="/invoice" style="margin-bottom: 20px; padding: 15px; background-color: #f5f5f5; border-radius: 5px;">
+    <form method="get" action="/invoice" class="rectRounded">
         <table style="border: none;">
             <tr>
                 <td style="padding: 5px; border: none;"><label>Suche:</label></td>
@@ -1265,7 +1265,7 @@ def PageInvoice(db: Database, filters: dict = None):
     open_sum = sum(inv[36] for inv in invoices if len(inv) > 36 and inv[36] and len(inv) > 38 and inv[38] not in ['paid', 'cancelled'])
     
     s+= f'''
-    <div style="margin-bottom: 15px; padding: 10px; background-color: #e8f4f8; border-radius: 5px;">
+    <div class="rectRounded">
         <strong>Statistik:</strong> 
         {total_count} Rechnung(en) | 
         Gesamtsumme: {total_sum:.2f} € | 
@@ -3675,7 +3675,7 @@ def PageDashboard(db: Database):
     
     # Left: Status pie chart (simple bar representation)
     s += '''
-    <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+    <div class="rectRounded">
         <h3 style="margin-top: 0;">Status-Verteilung</h3>
         <div style="margin: 20px 0;">
     '''
@@ -3711,7 +3711,7 @@ def PageDashboard(db: Database):
     # Right: Recent invoices
     recent_invoices = sorted(all_invoices, key=lambda x: x[39] or '', reverse=True)[:5]  # CreatedAt
     s += '''
-    <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+    <div class="rectRounded">
         <h3 style="margin-top: 0;">Letzte Rechnungen</h3>
         <table style="width: 100%; border-collapse: collapse;">
     '''
@@ -3733,7 +3733,7 @@ def PageDashboard(db: Database):
     
     # Monthly revenue chart
     s += f'''
-    <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px;">
+    <div class="rectRounded">
         <h3 style="margin-top: 0;">Monatlicher Umsatz {current_year}</h3>
         <div style="height: 250px; position: relative; margin-top: 20px;">
     '''
@@ -3759,7 +3759,7 @@ def PageDashboard(db: Database):
     
     # Quick actions
     s += '''
-    <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+    <div class="rectRounded">
         <h3 style="margin-top: 0;">Schnellzugriff</h3>
         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
             <a href="/invoice/new" style="padding: 10px 20px; background: #4CAF50; color: white; text-decoration: none; border-radius: 5px;">+ Neue Rechnung</a>
