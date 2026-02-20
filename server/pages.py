@@ -57,6 +57,12 @@ def Header1(active_page=None):
     else:
         nav_items.append('<a href="/bookinggroups">Split-Buchungen</a>')
     
+    # Anlagen
+    if active_page == 'assets':
+        nav_items.append('<span id="ActivePage">Anlagen</span>')
+    else:
+        nav_items.append('<a href="/assets">Anlagen</a>')
+    
     # SKR
     if active_page == 'skr':
         nav_items.append('<span id="ActivePage">SKR</span>')
@@ -109,12 +115,27 @@ def Footer():
     s = "</body></html>"
     return s
 
-def PageRoot(db: Database):
-    """Generate dashboard page"""
-    s = Header1('dashboard')
+def PageAbout():
+    """Generate about page"""
+    s = Header1('about')
     s+= Header2()
     s+= Header3()
-    
+    s+= "<p>Einfache Buchführungssoftware.</p>"
+    s+= Footer()
+    return s
+
+def PageSettings(db: Database):
+    """Generate settings page"""
+    s = Header1('settings')
+    submenu = '<a href="/settings/bankaccounts">Bankkonten</a> | <a href="/settings/numberranges">Nummernkreise</a>'
+    s+= Header2(submenu)
+    s+= Header3()
+    s+= "<h2>Datenbankeinstellungen</h2>"
+    s+= "<p>Datenbank: buch.db</p>"
+    s+= "<p>Platzhalter für Einstellungen ...</p>"
+    s+= "<h2>Systemeinstellungen</h2>"
+    s+= "<p>Platzhalter für Einstellungen ...</p>"
+
     # Database statistics
     stats = db.get_table_statistics()
     s+= "<h2>Datenbank-Übersicht</h2>"
@@ -142,29 +163,6 @@ INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStan
     
     <div id="sql_result" style="margin-top: 20px;"></div>
     '''
-    s+= Footer()
-    return s
-
-def PageAbout():
-    """Generate about page"""
-    s = Header1('about')
-    s+= Header2()
-    s+= Header3()
-    s+= "<p>Einfache Buchführungssoftware.</p>"
-    s+= Footer()
-    return s
-
-def PageSettings():
-    """Generate settings page"""
-    s = Header1('settings')
-    submenu = '<a href="/settings/bankaccounts">Bankkonten</a> | <a href="/settings/numberranges">Nummernkreise</a>'
-    s+= Header2(submenu)
-    s+= Header3()
-    s+= "<p>Hier können Sie verschiedene Einstellungen vornehmen.</p>"
-    s+= "<h2>Datenbankeinstellungen</h2>"
-    s+= "<p>Datenbank: buch.db</p>"
-    s+= "<h2>Systemeinstellungen</h2>"
-    s+= "<p>Weitere Einstellungen folgen hier...</p>"
     s+= Footer()
     return s
 
@@ -1203,60 +1201,50 @@ def PageInvoice(db: Database, filters: dict = None):
         invoices = [inv for inv in invoices if inv[2] <= date_to]
     
     s = Header1('invoice')
-    submenu = '<span id="ActivePage">Rechnungen</span> | <a href="/invoice/new">Neue Rechnung</a>'
+    submenu = '<span id="ActivePage">Liste</span> | <a href="/invoice/new">Neu</a>'
     s+= Header2(submenu)
-    s+= Header3()
+
+    # Header3 with filters (date, status, search)
+    import datetime
+    current_year = datetime.datetime.now().year
+    
+    # Prepare status selection
+    status_options = {
+        'all': 'Alle',
+        'draft': 'Entwurf',
+        'finalized': 'Abgeschlossen',
+        'sent': 'Versendet',
+        'paid': 'Bezahlt',
+        'cancelled': 'Storniert'
+    }
+    
+    status_dropdown = '<select id="statusFilter" onchange="applyInvoiceFilters()" style="width: 120px;">'
+    for value, label in status_options.items():
+        selected = 'selected' if status_filter == value or (not status_filter and value == 'all') else ''
+        status_dropdown += f'<option value="{value}" {selected}>{label}</option>'
+    status_dropdown += '</select>'
+    
+    header3_content = f'''
+        <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+            <div>
+                <label>Von:</label> <input type="date" id="dateFrom" value="{date_from}" onchange="applyInvoiceFilters()"> 
+                <label> Bis:</label> <input type="date" id="dateTo" value="{date_to}" onchange="applyInvoiceFilters()">
+                <button onclick="setInvoiceYear({current_year})">{current_year}</button>
+                <button onclick="setInvoiceYear({current_year-1})">{current_year-1}</button>
+                <button onclick="setInvoiceYear({current_year-2})">{current_year-2}</button>
+                <button onclick="setInvoiceYear({current_year-3})">{current_year-3}</button>
+            </div>
+            <div>
+                <label>Status:</label> {status_dropdown}
+            </div>
+            <div>
+                <label>🔍 Suche:</label> <input type="text" id="searchQuery" value="{search_query}" placeholder="RE-Nr. oder Kunde" onchange="applyInvoiceFilters()" style="width: 200px;">
+            </div>
+        </div>
+    '''
+    s+= Header3(header3_content)
     
     s+= "<h2>Rechnungen</h2>"
-    
-    # Search and filter form
-    s+= '''
-    <form method="get" action="/invoice" class="rectRounded">
-        <table style="border: none;">
-            <tr>
-                <td style="padding: 5px; border: none;"><label>Suche:</label></td>
-                <td style="padding: 5px; border: none;">
-                    <input type="text" name="search" value="{search}" placeholder="RE-Nr. oder Kunde" style="width: 200px;">
-                </td>
-                <td style="padding: 5px; border: none;"><label>Status:</label></td>
-                <td style="padding: 5px; border: none;">
-                    <select name="status" style="width: 150px;">
-                        <option value="all" {sel_all}>Alle</option>
-                        <option value="draft" {sel_draft}>Entwurf</option>
-                        <option value="finalized" {sel_finalized}>Abgeschlossen</option>
-                        <option value="sent" {sel_sent}>Versendet</option>
-                        <option value="paid" {sel_paid}>Bezahlt</option>
-                        <option value="cancelled" {sel_cancelled}>Storniert</option>
-                    </select>
-                </td>
-            </tr>
-            <tr>
-                <td style="padding: 5px; border: none;"><label>Von Datum:</label></td>
-                <td style="padding: 5px; border: none;">
-                    <input type="date" name="date_from" value="{date_from}" style="width: 150px;">
-                </td>
-                <td style="padding: 5px; border: none;"><label>Bis Datum:</label></td>
-                <td style="padding: 5px; border: none;">
-                    <input type="date" name="date_to" value="{date_to}" style="width: 150px;">
-                </td>
-                <td style="padding: 5px; border: none;">
-                    <input type="submit" value="🔍 Filtern" style="padding: 5px 15px;">
-                    <a href="/invoice" style="margin-left: 10px; padding: 5px 15px; background-color: #ddd; text-decoration: none; border-radius: 3px;">✖ Zurücksetzen</a>
-                </td>
-            </tr>
-        </table>
-    </form>
-    '''.format(
-        search=search_query,
-        date_from=date_from,
-        date_to=date_to,
-        sel_all='selected' if not status_filter or status_filter == 'all' else '',
-        sel_draft='selected' if status_filter == 'draft' else '',
-        sel_finalized='selected' if status_filter == 'finalized' else '',
-        sel_sent='selected' if status_filter == 'sent' else '',
-        sel_paid='selected' if status_filter == 'paid' else '',
-        sel_cancelled='selected' if status_filter == 'cancelled' else ''
-    )
     
     # Statistics summary
     total_count = len(invoices)
@@ -1276,21 +1264,20 @@ def PageInvoice(db: Database, filters: dict = None):
     
     if not invoices:
         s+= "<p><em>Keine Rechnungen gefunden.</em></p>"
-        s+= "<p><a href='/invoice/new'>Neue Rechnung erstellen</a></p>"
     else:
         s+= "<table border='1' style='width: 100%;'>"
         s+= "<tr><th>RE-Nr.</th><th>Datum</th><th>Kunde</th><th>Netto</th><th>Brutto</th><th>Status</th><th>Aktionen</th></tr>"
         
         for invoice in invoices:
-            # invoice: ID=0, InvoiceNumber=1, InvoiceDate=2, OwnCompanyId=3, SellerName=4, ..., CustomerId=12, ..., BuyerName=14, ..., TaxRate=33, SumNet=34, TaxAmount=35, SumGross=36, AmountDue=37, Status=38, PDFPath=39
+            # invoice: ID=0, InvoiceNumber=1, InvoiceDate=2, OwnCompanyId=3, SellerName=4, SellerCompany=5, ..., CustomerId=13, BuyerName=14, BuyerCompany=15, ..., TaxRate=35, SumNet=36, TaxAmount=37, SumGross=38, AmountDue=39, Status=40, PDFPath=41
             inv_id = invoice[0]
             inv_number = invoice[1]
             inv_date = invoice[2]
-            buyer_name = invoice[14]  # BuyerName is at index 14, not 12
-            sum_net = invoice[34]  # SumNet is at index 34, not 33
-            sum_gross = invoice[36]  # SumGross is at index 36, not 35
-            status = invoice[38]  # Status is at index 38, not 37
-            pdf_path = invoice[39] if len(invoice) > 39 else None  # PDFPath is at index 39
+            buyer_name = invoice[14]  # BuyerName is now at index 14 (was 13)
+            sum_net = invoice[36]  # SumNet is at index 36 (was 34)
+            sum_gross = invoice[38]  # SumGross is at index 38 (was 36)
+            status = invoice[40]  # Status is at index 40 (was 38)
+            pdf_path = invoice[41] if len(invoice) > 41 else None  # PDFPath is at index 41 (was 39)
             
             # Status color
             status_colors = {
@@ -1357,6 +1344,33 @@ def PageInvoice(db: Database, filters: dict = None):
                     alert('Fehler: ' + err.message);
                 });
         }
+        
+        function setInvoiceYear(year) {
+            document.getElementById('dateFrom').value = year + '-01-01';
+            document.getElementById('dateTo').value = year + '-12-31';
+            applyInvoiceFilters();
+        }
+        
+        function applyInvoiceFilters() {
+            const dateFrom = document.getElementById('dateFrom').value;
+            const dateTo = document.getElementById('dateTo').value;
+            const status = document.getElementById('statusFilter').value;
+            const search = document.getElementById('searchQuery').value;
+            
+            // Build query string
+            const params = new URLSearchParams();
+            if (dateFrom) params.append('date_from', dateFrom);
+            if (dateTo) params.append('date_to', dateTo);
+            if (status && status !== 'all') params.append('status', status);
+            if (search) params.append('search', search);
+            
+            // Reload page with filters
+            window.location.href = '/invoice' + (params.toString() ? '?' + params.toString() : '');
+        }
+        
+        function resetInvoiceFilters() {
+            window.location.href = '/invoice';
+        }
     </script>
     '''
     
@@ -1393,13 +1407,13 @@ def PageInvoiceNew(db: Database, invoice_id=None):
     # Determine invoice number and initial values
     if existing_invoice:
         # Editing existing invoice - use existing data
-        # existing_invoice structure: ID=0, InvoiceNumber=1, InvoiceDate=2, OwnCompanyId=3, ..., CustomerId=12, ...
+        # existing_invoice structure: ID=0, InvoiceNumber=1, InvoiceDate=2, OwnCompanyId=3, SellerName=4, SellerCompany=5, ..., CustomerId=13, BuyerName=14, BuyerCompany=15, ..., Status=40, PDFPath=41
         invoice_number = existing_invoice[1]
         invoice_date = existing_invoice[2]
         selected_own_company_id = existing_invoice[3]
-        selected_customer_id = existing_invoice[12]
-        invoice_status = existing_invoice[37]
-        pdf_path = existing_invoice[39] if len(existing_invoice) > 39 else None
+        selected_customer_id = existing_invoice[13]  # CustomerId is now at index 13 (was 12)
+        invoice_status = existing_invoice[40]  # Status is now at index 40 (was 37)
+        pdf_path = existing_invoice[41] if len(existing_invoice) > 41 else None  # PDFPath is now at index 41 (was 39)
         page_title = f"Rechnung {invoice_number} bearbeiten"
         is_edit_mode = True
     else:
@@ -1435,7 +1449,9 @@ def PageInvoiceNew(db: Database, invoice_id=None):
         is_edit_mode = False
     
     s = Header1('invoice')
-    s += Header2()
+    submenu = '<a href="/invoice">Liste</a> | <span id="ActivePage">Neu</span>'
+    s+= Header2(submenu)
+    s+= Header3()
     s += f'<input type="hidden" id="invoice_id" value="{invoice_id or ""}">'
     s += f'<input type="hidden" id="is_edit_mode" value="{str(is_edit_mode).lower()}">'
     # Check if PDF actually exists in filesystem
@@ -1462,6 +1478,18 @@ def PageInvoiceNew(db: Database, invoice_id=None):
         </div>
         
         <div class="invoice-address-block">
+            <div class="invoice-customer-address">
+                <select id="own_company_select" onchange="updateOwnCompany()" style="margin-bottom: 10px; width: 100%;" class="no-pdf">
+                    <option value="">-- Eigene Firma auswählen --</option>
+    '''
+    
+    for own in own_contacts:
+        own_name = own[4] or own[3] or f"ID {own[0]}"
+        selected = 'selected' if (existing_invoice and own[0] == selected_own_company_id) or (not existing_invoice and own_contact and own[0] == own_contact[0]) else ''
+        s += f'<option value="{own[0]}" {selected}>{own_name}</option>'
+    
+    s += '''
+                </select>
             <div class="invoice-sender-line" id="sender_line">
     '''
     
@@ -1475,18 +1503,6 @@ def PageInvoiceNew(db: Database, invoice_id=None):
         s += 'Eigene Adresse in Kontakte anlegen (Typ: own)'
     
     s += '''            </div>
-            <div class="invoice-customer-address">
-                <select id="own_company_select" onchange="updateOwnCompany()" style="margin-bottom: 10px; width: 100%;" class="no-pdf">
-                    <option value="">-- Eigene Firma auswählen --</option>
-    '''
-    
-    for own in own_contacts:
-        own_name = own[4] or own[3] or f"ID {own[0]}"
-        selected = 'selected' if (existing_invoice and own[0] == selected_own_company_id) or (not existing_invoice and own_contact and own[0] == own_contact[0]) else ''
-        s += f'<option value="{own[0]}" {selected}>{own_name}</option>'
-    
-    s += '''
-                </select>
                 <select id="customer_select" onchange="updateCustomerAddress()" style="margin-bottom: 10px; width: 100%;" class="no-pdf">
                     <option value="">-- Kunde auswählen --</option>
     '''
@@ -1654,8 +1670,8 @@ def PageInvoiceNew(db: Database, invoice_id=None):
                             <option value="">-- Konto auswählen --</option>
     '''
     
-    # BankAccountId is at index 28 (NOT 29!)
-    selected_bank_id = existing_invoice[28] if existing_invoice and len(existing_invoice) > 28 and existing_invoice[28] else None
+    # BankAccountId is now at index 30 (was 28)
+    selected_bank_id = existing_invoice[30] if existing_invoice and len(existing_invoice) > 30 and existing_invoice[30] else None
     for account in accounts:
         if not account[6]:  # Skip cash accounts (IsCash=1)
             selected = 'selected' if selected_bank_id and account[0] == selected_bank_id else ''
@@ -1682,7 +1698,7 @@ def PageInvoiceNew(db: Database, invoice_id=None):
                     <td style="padding: 8px; width: 200px; vertical-align: top;"><strong>Bestellnummer:</strong></td>
                     <td style="padding: 8px;">
                         <input type="text" id="order_number" style="width: 300px;" placeholder="z.B. PO-2026-12345" value="'''
-    s += existing_invoice[21] if existing_invoice and len(existing_invoice) > 21 and existing_invoice[21] else ''
+    s += existing_invoice[23] if existing_invoice and len(existing_invoice) > 23 and existing_invoice[23] else ''  # OrderNumber is now at index 23 (was 21)
     s += '''">
                         <br><small style="color: #666;">Bestellnummer des Kunden (falls vorhanden)</small>
                     </td>
@@ -1691,7 +1707,7 @@ def PageInvoiceNew(db: Database, invoice_id=None):
                     <td style="padding: 8px; vertical-align: top;"><strong>Leitweg-ID:</strong></td>
                     <td style="padding: 8px;">
                         <input type="text" id="buyer_route_id" style="width: 300px;" placeholder="z.B. 991-ABCDE-12" readonly value="'''
-    s += existing_invoice[20] if existing_invoice and len(existing_invoice) > 20 and existing_invoice[20] else ''
+    s += existing_invoice[22] if existing_invoice and len(existing_invoice) > 22 and existing_invoice[22] else ''  # BuyerRouteID is now at index 22 (was 20)
     s += '''">
                         <br><small style="color: #666;">Wird automatisch vom Kunden übernommen (nur bei B2G-Rechnungen erforderlich)</small>
                     </td>
@@ -1700,7 +1716,7 @@ def PageInvoiceNew(db: Database, invoice_id=None):
                     <td style="padding: 8px; vertical-align: top;"><strong>Lieferdatum:</strong></td>
                     <td style="padding: 8px;">
                         <input type="date" id="delivery_date" style="width: 200px;" value="'''
-    s += existing_invoice[23] if existing_invoice and len(existing_invoice) > 23 and existing_invoice[23] else ''
+    s += existing_invoice[25] if existing_invoice and len(existing_invoice) > 25 and existing_invoice[25] else ''  # DeliveryDate is now at index 25 (was 23)
     s += '''">
                         <br><small style="color: #666;">Datum der Lieferung/Leistungserbringung (optional)</small>
                     </td>
@@ -1731,10 +1747,10 @@ def PageInvoiceNew(db: Database, invoice_id=None):
                     <td style="padding: 8px;">
                         <input type="number" id="payment_term_days" value="'''
     # Calculate payment term days from due date and invoice date if available
-    if existing_invoice and existing_invoice[25] and existing_invoice[2]:
+    if existing_invoice and existing_invoice[27] and existing_invoice[2]:  # PaymentDueDate is now at index 27 (was 25)
         from datetime import datetime
         try:
-            due_date = datetime.strptime(existing_invoice[25], '%Y-%m-%d')
+            due_date = datetime.strptime(existing_invoice[27], '%Y-%m-%d')
             inv_date = datetime.strptime(existing_invoice[2], '%Y-%m-%d')
             term_days = (due_date - inv_date).days
             s += str(term_days)
@@ -1750,7 +1766,7 @@ def PageInvoiceNew(db: Database, invoice_id=None):
                     <td style="padding: 8px; vertical-align: top;"><strong>Fälligkeitsdatum:</strong></td>
                     <td style="padding: 8px;">
                         <input type="date" id="payment_due_date" style="width: 200px;" value="'''
-    s += existing_invoice[25] if existing_invoice and len(existing_invoice) > 25 and existing_invoice[25] else ''
+    s += existing_invoice[27] if existing_invoice and len(existing_invoice) > 27 and existing_invoice[27] else ''  # PaymentDueDate is now at index 27 (was 25)
     s += '''">
                         <br><small style="color: #666;">Wird automatisch berechnet oder kann manuell festgelegt werden</small>
                     </td>
@@ -1759,11 +1775,11 @@ def PageInvoiceNew(db: Database, invoice_id=None):
                     <td style="padding: 8px; vertical-align: top;"><strong>Skonto:</strong></td>
                     <td style="padding: 8px;">
                         <input type="number" id="discount_percentage" min="0" max="100" step="0.1" style="width: 80px;" placeholder="z.B. 2" value="'''
-    s += str(existing_invoice[27]) if existing_invoice and len(existing_invoice) > 27 and existing_invoice[27] else ''
+    s += str(existing_invoice[29]) if existing_invoice and len(existing_invoice) > 29 and existing_invoice[29] else ''  # SkontoPercent is now at index 29 (was 27)
     s += '''"> %
                         bei Zahlung innerhalb von
                         <input type="number" id="discount_days" min="0" style="width: 80px;" placeholder="z.B. 7" value="'''
-    s += str(existing_invoice[26]) if existing_invoice and len(existing_invoice) > 26 and existing_invoice[26] else ''
+    s += str(existing_invoice[28]) if existing_invoice and len(existing_invoice) > 28 and existing_invoice[28] else ''  # SkontoDays is now at index 28 (was 26)
     s += '''"> Tagen
                         <br><small style="color: #666;">Skonto-Abzug bei frühzeitiger Zahlung (optional)</small>
                     </td>
@@ -2579,13 +2595,14 @@ def PageContactEdit(db: Database, contact_id):
     if logo:
         s+= f'<img src="{logo}" style="max-width: 150px; max-height: 80px; border: 1px solid #ccc;" onerror="this.style.display=\'none\';">'
     
-    s+= '''                    </div>
+    s+= f'''                    </div>
                 </td></tr>
                 <tr><td>Notizen:</td><td><textarea name="notes" rows="3" cols="40">{notes}</textarea></td></tr>
                 <tr><td></td><td><input type="submit" value="Kontakt aktualisieren"></td></tr>
             </table>
         </form>
-        <script>
+        '''
+    s+= '''        <script>
             function updateLogoPathEdit(input) {
                 if (input.files && input.files[0]) {
                     const file = input.files[0];
@@ -2695,9 +2712,6 @@ def PageBookingGroups(db: Database):
     s += Header2()
     s += Header3()
     
-    s += "<h1>Split-Buchungen verwalten</h1>"
-    s += "<p>Hier können Sie zusammengehörige Buchungen gruppieren (z.B. Rechnungssplitting).</p>"
-    
     # Form to create new booking group
     s += '''
     <h2>Neue Split-Buchung erstellen</h2>
@@ -2732,11 +2746,14 @@ def PageBookingGroups(db: Database):
             # Check if amounts match
             match_color = "green" if expected_amount and abs(expected_amount - actual_amount) < 0.01 else "black"
             
+            # Format expected amount
+            expected_amount_str = f"{expected_amount:.2f}" if expected_amount else '-'
+            
             s += f"<tr>"
             s += f"<td>{group_id}</td>"
             s += f"<td>{description}</td>"
             s += f"<td>{created_date}</td>"
-            s += f"<td>{expected_amount:.2f if expected_amount else '-'}</td>"
+            s += f"<td>{expected_amount_str}</td>"
             s += f"<td style='color:{match_color}'>{actual_amount:.2f}</td>"
             s += f"<td>{booking_count}</td>"
             s += f"<td><a href='/bookinggroups/view?id={group_id}'>Details</a></td>"
@@ -2782,7 +2799,10 @@ def PageBookingGroupDetails(db: Database, group_id):
     if bookings:
         actual_amount = sum(b[10] for b in bookings)
         
-        s += f"<p><strong>Erwarteter Gesamtbetrag:</strong> {expected_amount:.2f if expected_amount else '-'} EUR</p>"
+        # Format expected amount
+        expected_amount_str = f"{expected_amount:.2f}" if expected_amount else '-'
+        
+        s += f"<p><strong>Erwarteter Gesamtbetrag:</strong> {expected_amount_str} EUR</p>"
         s += f"<p><strong>Tatsächlicher Gesamtbetrag:</strong> {actual_amount:.2f} EUR</p>"
         
         if expected_amount and abs(expected_amount - actual_amount) > 0.01:
@@ -2953,532 +2973,532 @@ def PageArticleEdit(db: Database, article_id):
     return s
 
 
-def PageInvoiceView(db, invoice_id):
-    """Detail view for a single invoice with all metadata and items."""
-    invoice = db.get_invoice_by_id(invoice_id)
-    if not invoice:
-        return f'''
-            <h2>Rechnung nicht gefunden</h2>
-            <p>Die angeforderte Rechnung existiert nicht.</p>
-            <p><a href="/invoice">Zurück zur Rechnungsliste</a></p>
-        '''
+# def PageInvoiceView(db, invoice_id):
+#     """Detail view for a single invoice with all metadata and items."""
+#     invoice = db.get_invoice_by_id(invoice_id)
+#     if not invoice:
+#         return f'''
+#             <h2>Rechnung nicht gefunden</h2>
+#             <p>Die angeforderte Rechnung existiert nicht.</p>
+#             <p><a href="/invoice">Zurück zur Rechnungsliste</a></p>
+#         '''
     
-    items = db.get_invoice_items(invoice_id)
+#     items = db.get_invoice_items(invoice_id)
     
-    # Status badge with color
-    status_colors = {
-        'draft': '#888888',
-        'finalized': '#0066cc',
-        'sent': '#ff9900',
-        'paid': '#00aa00',
-        'cancelled': '#cc0000'
-    }
-    status_labels = {
-        'draft': 'Entwurf',
-        'finalized': 'Finalisiert',
-        'sent': 'Versendet',
-        'paid': 'Bezahlt',
-        'cancelled': 'Storniert'
-    }
-    status = invoice[37] or 'draft'
-    status_color = status_colors.get(status, '#888888')
-    status_label = status_labels.get(status, status)
+#     # Status badge with color
+#     status_colors = {
+#         'draft': '#888888',
+#         'finalized': '#0066cc',
+#         'sent': '#ff9900',
+#         'paid': '#00aa00',
+#         'cancelled': '#cc0000'
+#     }
+#     status_labels = {
+#         'draft': 'Entwurf',
+#         'finalized': 'Finalisiert',
+#         'sent': 'Versendet',
+#         'paid': 'Bezahlt',
+#         'cancelled': 'Storniert'
+#     }
+#     status = invoice[37] or 'draft'
+#     status_color = status_colors.get(status, '#888888')
+#     status_label = status_labels.get(status, status)
     
-    s = f'''
-        <style>
-            .invoice-header {{
-                background-color: #f0f0f0;
-                padding: 15px;
-                margin-bottom: 20px;
-                border-radius: 5px;
-            }}
-            .invoice-header h2 {{
-                margin: 0 0 10px 0;
-            }}
-            .status-badge {{
-                display: inline-block;
-                padding: 5px 10px;
-                background-color: {status_color};
-                color: white;
-                border-radius: 3px;
-                font-weight: bold;
-                margin-left: 10px;
-            }}
-            .metadata-table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin-bottom: 20px;
-            }}
-            .metadata-table td {{
-                padding: 5px 10px;
-                border-bottom: 1px solid #ddd;
-            }}
-            .metadata-table td:first-child {{
-                font-weight: bold;
-                width: 200px;
-            }}
-            .items-table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin-bottom: 20px;
-            }}
-            .items-table th {{
-                background-color: #4CAF50;
-                color: white;
-                padding: 10px;
-                text-align: left;
-            }}
-            .items-table td {{
-                padding: 8px;
-                border-bottom: 1px solid #ddd;
-            }}
-            .items-table tr:hover {{
-                background-color: #f5f5f5;
-            }}
-            .totals-box {{
-                float: right;
-                width: 300px;
-                background-color: #f9f9f9;
-                padding: 15px;
-                border: 1px solid #ddd;
-                border-radius: 5px;
-            }}
-            .totals-box table {{
-                width: 100%;
-            }}
-            .totals-box td {{
-                padding: 5px 0;
-            }}
-            .totals-box td:last-child {{
-                text-align: right;
-            }}
-            .totals-box .total-row {{
-                font-weight: bold;
-                font-size: 1.2em;
-                border-top: 2px solid #333;
-                padding-top: 10px;
-            }}
-            .action-buttons {{
-                clear: both;
-                margin-top: 20px;
-                padding-top: 20px;
-                border-top: 1px solid #ddd;
-            }}
-            .action-buttons a, .action-buttons button {{
-                display: inline-block;
-                padding: 10px 20px;
-                margin-right: 10px;
-                background-color: #4CAF50;
-                color: white;
-                text-decoration: none;
-                border-radius: 5px;
-                border: none;
-                cursor: pointer;
-            }}
-            .action-buttons a:hover, .action-buttons button:hover {{
-                background-color: #45a049;
-            }}
-            .action-buttons .secondary {{
-                background-color: #008CBA;
-            }}
-            .action-buttons .secondary:hover {{
-                background-color: #007399;
-            }}
-        </style>
+#     s = f'''
+#         <style>
+#             .invoice-header {{
+#                 background-color: #f0f0f0;
+#                 padding: 15px;
+#                 margin-bottom: 20px;
+#                 border-radius: 5px;
+#             }}
+#             .invoice-header h2 {{
+#                 margin: 0 0 10px 0;
+#             }}
+#             .status-badge {{
+#                 display: inline-block;
+#                 padding: 5px 10px;
+#                 background-color: {status_color};
+#                 color: white;
+#                 border-radius: 3px;
+#                 font-weight: bold;
+#                 margin-left: 10px;
+#             }}
+#             .metadata-table {{
+#                 width: 100%;
+#                 border-collapse: collapse;
+#                 margin-bottom: 20px;
+#             }}
+#             .metadata-table td {{
+#                 padding: 5px 10px;
+#                 border-bottom: 1px solid #ddd;
+#             }}
+#             .metadata-table td:first-child {{
+#                 font-weight: bold;
+#                 width: 200px;
+#             }}
+#             .items-table {{
+#                 width: 100%;
+#                 border-collapse: collapse;
+#                 margin-bottom: 20px;
+#             }}
+#             .items-table th {{
+#                 background-color: #4CAF50;
+#                 color: white;
+#                 padding: 10px;
+#                 text-align: left;
+#             }}
+#             .items-table td {{
+#                 padding: 8px;
+#                 border-bottom: 1px solid #ddd;
+#             }}
+#             .items-table tr:hover {{
+#                 background-color: #f5f5f5;
+#             }}
+#             .totals-box {{
+#                 float: right;
+#                 width: 300px;
+#                 background-color: #f9f9f9;
+#                 padding: 15px;
+#                 border: 1px solid #ddd;
+#                 border-radius: 5px;
+#             }}
+#             .totals-box table {{
+#                 width: 100%;
+#             }}
+#             .totals-box td {{
+#                 padding: 5px 0;
+#             }}
+#             .totals-box td:last-child {{
+#                 text-align: right;
+#             }}
+#             .totals-box .total-row {{
+#                 font-weight: bold;
+#                 font-size: 1.2em;
+#                 border-top: 2px solid #333;
+#                 padding-top: 10px;
+#             }}
+#             .action-buttons {{
+#                 clear: both;
+#                 margin-top: 20px;
+#                 padding-top: 20px;
+#                 border-top: 1px solid #ddd;
+#             }}
+#             .action-buttons a, .action-buttons button {{
+#                 display: inline-block;
+#                 padding: 10px 20px;
+#                 margin-right: 10px;
+#                 background-color: #4CAF50;
+#                 color: white;
+#                 text-decoration: none;
+#                 border-radius: 5px;
+#                 border: none;
+#                 cursor: pointer;
+#             }}
+#             .action-buttons a:hover, .action-buttons button:hover {{
+#                 background-color: #45a049;
+#             }}
+#             .action-buttons .secondary {{
+#                 background-color: #008CBA;
+#             }}
+#             .action-buttons .secondary:hover {{
+#                 background-color: #007399;
+#             }}
+#         </style>
         
-        <div class="invoice-header">
-            <h2>Rechnung {invoice[1]}<span class="status-badge">{status_label}</span></h2>
-            <p>Erstellt am: {invoice[39]} | Letzte Änderung: {invoice[40] or 'N/A'}</p>
-        </div>
+#         <div class="invoice-header">
+#             <h2>Rechnung {invoice[1]}<span class="status-badge">{status_label}</span></h2>
+#             <p>Erstellt am: {invoice[39]} | Letzte Änderung: {invoice[40] or 'N/A'}</p>
+#         </div>
         
-        <h3>Rechnungsinformationen</h3>
-        <table class="metadata-table">
-            <tr><td>Rechnungsnummer:</td><td>{invoice[1]}</td></tr>
-            <tr><td>Rechnungsdatum:</td><td>{invoice[2]}</td></tr>
-            <tr><td>Währung:</td><td>{invoice[3] or 'EUR'}</td></tr>
-            <tr><td>Bestellnummer:</td><td>{invoice[4] or 'N/A'}</td></tr>
-            <tr><td>Lieferdatum:</td><td>{invoice[5] or 'N/A'}</td></tr>
-        </table>
+#         <h3>Rechnungsinformationen</h3>
+#         <table class="metadata-table">
+#             <tr><td>Rechnungsnummer:</td><td>{invoice[1]}</td></tr>
+#             <tr><td>Rechnungsdatum:</td><td>{invoice[2]}</td></tr>
+#             <tr><td>Währung:</td><td>{invoice[3] or 'EUR'}</td></tr>
+#             <tr><td>Bestellnummer:</td><td>{invoice[4] or 'N/A'}</td></tr>
+#             <tr><td>Lieferdatum:</td><td>{invoice[5] or 'N/A'}</td></tr>
+#         </table>
         
-        <h3>Verkäufer (Snapshot)</h3>
-        <table class="metadata-table">
-            <tr><td>Name:</td><td>{invoice[6]}</td></tr>
-            <tr><td>Straße:</td><td>{invoice[7]}</td></tr>
-            <tr><td>PLZ/Ort:</td><td>{invoice[8]} {invoice[9]}</td></tr>
-            <tr><td>Land:</td><td>{invoice[10] or 'N/A'}</td></tr>
-            <tr><td>USt-IdNr:</td><td>{invoice[11] or 'N/A'}</td></tr>
-        </table>
+#         <h3>Verkäufer (Snapshot)</h3>
+#         <table class="metadata-table">
+#             <tr><td>Name:</td><td>{invoice[6]}</td></tr>
+#             <tr><td>Straße:</td><td>{invoice[7]}</td></tr>
+#             <tr><td>PLZ/Ort:</td><td>{invoice[8]} {invoice[9]}</td></tr>
+#             <tr><td>Land:</td><td>{invoice[10] or 'N/A'}</td></tr>
+#             <tr><td>USt-IdNr:</td><td>{invoice[11] or 'N/A'}</td></tr>
+#         </table>
         
-        <h3>Käufer (Snapshot)</h3>
-        <table class="metadata-table">
-            <tr><td>Name:</td><td>{invoice[12]}</td></tr>
-            <tr><td>Straße:</td><td>{invoice[13]}</td></tr>
-            <tr><td>PLZ/Ort:</td><td>{invoice[14]} {invoice[15]}</td></tr>
-            <tr><td>Land:</td><td>{invoice[16] or 'N/A'}</td></tr>
-            <tr><td>USt-IdNr:</td><td>{invoice[17] or 'N/A'}</td></tr>
-            <tr><td>Leitweg-ID:</td><td>{invoice[18] or 'N/A'}</td></tr>
-        </table>
+#         <h3>Käufer (Snapshot)</h3>
+#         <table class="metadata-table">
+#             <tr><td>Name:</td><td>{invoice[12]}</td></tr>
+#             <tr><td>Straße:</td><td>{invoice[13]}</td></tr>
+#             <tr><td>PLZ/Ort:</td><td>{invoice[14]} {invoice[15]}</td></tr>
+#             <tr><td>Land:</td><td>{invoice[16] or 'N/A'}</td></tr>
+#             <tr><td>USt-IdNr:</td><td>{invoice[17] or 'N/A'}</td></tr>
+#             <tr><td>Leitweg-ID:</td><td>{invoice[18] or 'N/A'}</td></tr>
+#         </table>
         
-        <h3>Rechnungspositionen</h3>
-        <table class="items-table">
-            <tr>
-                <th>Pos.</th>
-                <th>Artikel-Nr.</th>
-                <th>Beschreibung</th>
-                <th>Menge</th>
-                <th>Einheit</th>
-                <th>Einzelpreis</th>
-                <th>Gesamt (netto)</th>
-                <th>MwSt</th>
-            </tr>
-    '''
+#         <h3>Rechnungspositionen</h3>
+#         <table class="items-table">
+#             <tr>
+#                 <th>Pos.</th>
+#                 <th>Artikel-Nr.</th>
+#                 <th>Beschreibung</th>
+#                 <th>Menge</th>
+#                 <th>Einheit</th>
+#                 <th>Einzelpreis</th>
+#                 <th>Gesamt (netto)</th>
+#                 <th>MwSt</th>
+#             </tr>
+#     '''
     
-    for item in items:
-        # item structure: ID=0, InvoiceId=1, Position=2, ArticleId=3, Description=4, Quantity=5, Unit=6, PricePerUnit=7, TotalNet=8, TaxCategory=9, TaxRate=10
-        article_id = item[3] or '-'
-        description = item[4] or ''
+#     for item in items:
+#         # item structure: ID=0, InvoiceId=1, Position=2, ArticleId=3, Description=4, Quantity=5, Unit=6, PricePerUnit=7, TotalNet=8, TaxCategory=9, TaxRate=10
+#         article_id = item[3] or '-'
+#         description = item[4] or ''
         
-        # Safely convert numeric fields
-        try:
-            quantity = f"{float(item[5]):.2f}".replace('.', ',') if item[5] else '0,00'
-        except (ValueError, TypeError):
-            quantity = str(item[5]) if item[5] else '0,00'
+#         # Safely convert numeric fields
+#         try:
+#             quantity = f"{float(item[5]):.2f}".replace('.', ',') if item[5] else '0,00'
+#         except (ValueError, TypeError):
+#             quantity = str(item[5]) if item[5] else '0,00'
             
-        unit = item[6] or 'Stk'
+#         unit = item[6] or 'Stk'
         
-        try:
-            price = f"{float(item[7]):.2f}".replace('.', ',') if item[7] else '0,00'
-        except (ValueError, TypeError):
-            price = str(item[7]) if item[7] else '0,00'
+#         try:
+#             price = f"{float(item[7]):.2f}".replace('.', ',') if item[7] else '0,00'
+#         except (ValueError, TypeError):
+#             price = str(item[7]) if item[7] else '0,00'
             
-        try:
-            total = f"{float(item[8]):.2f}".replace('.', ',') if item[8] else '0,00'
-        except (ValueError, TypeError):
-            total = str(item[8]) if item[8] else '0,00'
+#         try:
+#             total = f"{float(item[8]):.2f}".replace('.', ',') if item[8] else '0,00'
+#         except (ValueError, TypeError):
+#             total = str(item[8]) if item[8] else '0,00'
             
-        try:
-            tax_rate = f"{float(item[10]):.0f}%" if item[10] else 'N/A'
-        except (ValueError, TypeError):
-            tax_rate = str(item[10]) if item[10] else 'N/A'
+#         try:
+#             tax_rate = f"{float(item[10]):.0f}%" if item[10] else 'N/A'
+#         except (ValueError, TypeError):
+#             tax_rate = str(item[10]) if item[10] else 'N/A'
         
-        s += f'''
-            <tr>
-                <td>{item[2]}</td>
-                <td>{article_id}</td>
-                <td>{description}</td>
-                <td style="text-align: right;">{quantity}</td>
-                <td>{unit}</td>
-                <td style="text-align: right;">{price} €</td>
-                <td style="text-align: right;">{total} €</td>
-                <td style="text-align: right;">{tax_rate}</td>
-            </tr>
-        '''
+#         s += f'''
+#             <tr>
+#                 <td>{item[2]}</td>
+#                 <td>{article_id}</td>
+#                 <td>{description}</td>
+#                 <td style="text-align: right;">{quantity}</td>
+#                 <td>{unit}</td>
+#                 <td style="text-align: right;">{price} €</td>
+#                 <td style="text-align: right;">{total} €</td>
+#                 <td style="text-align: right;">{tax_rate}</td>
+#             </tr>
+#         '''
     
-    # Totals box
-    sum_net = f"{invoice[33]:.2f}".replace('.', ',') if invoice[33] else '0,00'
-    tax_amount = f"{invoice[34]:.2f}".replace('.', ',') if invoice[34] else '0,00'
-    sum_gross = f"{invoice[35]:.2f}".replace('.', ',') if invoice[35] else '0,00'
-    amount_due = f"{invoice[36]:.2f}".replace('.', ',') if invoice[36] else sum_gross
+#     # Totals box
+#     sum_net = f"{invoice[33]:.2f}".replace('.', ',') if invoice[33] else '0,00'
+#     tax_amount = f"{invoice[34]:.2f}".replace('.', ',') if invoice[34] else '0,00'
+#     sum_gross = f"{invoice[35]:.2f}".replace('.', ',') if invoice[35] else '0,00'
+#     amount_due = f"{invoice[36]:.2f}".replace('.', ',') if invoice[36] else sum_gross
     
-    s += f'''
-        </table>
+#     s += f'''
+#         </table>
         
-        <div class="totals-box">
-            <table>
-                <tr><td>Summe (netto):</td><td>{sum_net} €</td></tr>
-                <tr><td>MwSt ({invoice[31] or 'N/A'}) {invoice[32] or ''}%:</td><td>{tax_amount} €</td></tr>
-                <tr class="total-row"><td>Summe (brutto):</td><td>{sum_gross} €</td></tr>
-                <tr class="total-row"><td>Fälliger Betrag:</td><td>{amount_due} €</td></tr>
-            </table>
-        </div>
+#         <div class="totals-box">
+#             <table>
+#                 <tr><td>Summe (netto):</td><td>{sum_net} €</td></tr>
+#                 <tr><td>MwSt ({invoice[31] or 'N/A'}) {invoice[32] or ''}%:</td><td>{tax_amount} €</td></tr>
+#                 <tr class="total-row"><td>Summe (brutto):</td><td>{sum_gross} €</td></tr>
+#                 <tr class="total-row"><td>Fälliger Betrag:</td><td>{amount_due} €</td></tr>
+#             </table>
+#         </div>
         
-        <div style="clear: both;"></div>
-    '''
+#         <div style="clear: both;"></div>
+#     '''
     
-    # Payment terms if available
-    if invoice[19] or invoice[20]:
-        s += '''
-            <h3>Zahlungsbedingungen</h3>
-            <table class="metadata-table">
-        '''
-        if invoice[19]:
-            s += f'<tr><td>Zahlungsziel:</td><td>{invoice[19]} Tage</td></tr>'
-        if invoice[20]:
-            s += f'<tr><td>Fälligkeitsdatum:</td><td>{invoice[20]}</td></tr>'
-        if invoice[21]:
-            s += f'<tr><td>Skonto (%):</td><td>{invoice[21]:.1f}%</td></tr>'
-        if invoice[22]:
-            s += f'<tr><td>Skonto-Frist:</td><td>{invoice[22]} Tage</td></tr>'
-        s += '</table>'
+#     # Payment terms if available
+#     if invoice[19] or invoice[20]:
+#         s += '''
+#             <h3>Zahlungsbedingungen</h3>
+#             <table class="metadata-table">
+#         '''
+#         if invoice[19]:
+#             s += f'<tr><td>Zahlungsziel:</td><td>{invoice[19]} Tage</td></tr>'
+#         if invoice[20]:
+#             s += f'<tr><td>Fälligkeitsdatum:</td><td>{invoice[20]}</td></tr>'
+#         if invoice[21]:
+#             s += f'<tr><td>Skonto (%):</td><td>{invoice[21]:.1f}%</td></tr>'
+#         if invoice[22]:
+#             s += f'<tr><td>Skonto-Frist:</td><td>{invoice[22]} Tage</td></tr>'
+#         s += '</table>'
     
-    # Bank details snapshot if available
-    if invoice[23]:
-        s += f'''
-            <h3>Bankverbindung (Snapshot)</h3>
-            <table class="metadata-table">
-                <tr><td>Kontoinhaber:</td><td>{invoice[23]}</td></tr>
-                <tr><td>IBAN:</td><td>{invoice[24] or 'N/A'}</td></tr>
-                <tr><td>BIC:</td><td>{invoice[25] or 'N/A'}</td></tr>
-                <tr><td>Bank:</td><td>{invoice[26] or 'N/A'}</td></tr>
-            </table>
-        '''
+#     # Bank details snapshot if available
+#     if invoice[23]:
+#         s += f'''
+#             <h3>Bankverbindung (Snapshot)</h3>
+#             <table class="metadata-table">
+#                 <tr><td>Kontoinhaber:</td><td>{invoice[23]}</td></tr>
+#                 <tr><td>IBAN:</td><td>{invoice[24] or 'N/A'}</td></tr>
+#                 <tr><td>BIC:</td><td>{invoice[25] or 'N/A'}</td></tr>
+#                 <tr><td>Bank:</td><td>{invoice[26] or 'N/A'}</td></tr>
+#             </table>
+#         '''
     
-    # Payment status section
-    amount_due_float = invoice[36] if invoice[36] is not None else invoice[35]
-    sum_gross_float = invoice[35] or 0
-    amount_paid = sum_gross_float - amount_due_float
+#     # Payment status section
+#     amount_due_float = invoice[36] if invoice[36] is not None else invoice[35]
+#     sum_gross_float = invoice[35] or 0
+#     amount_paid = sum_gross_float - amount_due_float
     
-    if amount_paid > 0 or status == 'paid':
-        payment_color = '#00aa00' if amount_due_float <= 0.01 else '#ff9900'
-        s += f'''
-            <h3>Zahlungsstatus</h3>
-            <div style="padding: 15px; background-color: #f9f9f9; border-left: 4px solid {payment_color}; margin-bottom: 20px;">
-                <table class="metadata-table" style="margin: 0;">
-                    <tr><td>Rechnungsbetrag:</td><td>{sum_gross:.replace(",", ".")} €</td></tr>
-                    <tr><td>Bereits gezahlt:</td><td style="color: #00aa00;">{amount_paid:.2f} €</td></tr>
-                    <tr><td><strong>Offener Betrag:</strong></td><td style="color: {payment_color}; font-size: 1.2em;"><strong>{amount_due} €</strong></td></tr>
-                </table>
-            </div>
-        '''
+#     if amount_paid > 0 or status == 'paid':
+#         payment_color = '#00aa00' if amount_due_float <= 0.01 else '#ff9900'
+#         s += f'''
+#             <h3>Zahlungsstatus</h3>
+#             <div style="padding: 15px; background-color: #f9f9f9; border-left: 4px solid {payment_color}; margin-bottom: 20px;">
+#                 <table class="metadata-table" style="margin: 0;">
+#                     <tr><td>Rechnungsbetrag:</td><td>{sum_gross:.replace(",", ".")} €</td></tr>
+#                     <tr><td>Bereits gezahlt:</td><td style="color: #00aa00;">{amount_paid:.2f} €</td></tr>
+#                     <tr><td><strong>Offener Betrag:</strong></td><td style="color: {payment_color}; font-size: 1.2em;"><strong>{amount_due} €</strong></td></tr>
+#                 </table>
+#             </div>
+#         '''
     
-    # Action buttons
-    pdf_link = ''
-    if invoice[38]:
-        pdf_link = f'<a href="/{invoice[38]}" target="_blank">PDF anzeigen</a>'
+#     # Action buttons
+#     pdf_link = ''
+#     if invoice[38]:
+#         pdf_link = f'<a href="/{invoice[38]}" target="_blank">PDF anzeigen</a>'
     
-    # XML download button for finalized invoices
-    xml_button = ''
-    if status in ['finalized', 'sent', 'paid']:
-        xml_button = f'''
-            <a href="/invoice/xml?id={invoice_id}" style="background-color: #28a745; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">📄 XRechnung XML</a>
-        '''
+#     # XML download button for finalized invoices
+#     xml_button = ''
+#     if status in ['finalized', 'sent', 'paid']:
+#         xml_button = f'''
+#             <a href="/invoice/xml?id={invoice_id}" style="background-color: #28a745; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">📄 XRechnung XML</a>
+#         '''
     
-    # Payment button for unpaid invoices
-    payment_button = ''
-    if status in ['finalized', 'sent'] and amount_due_float > 0.01:
-        payment_button = f'''
-            <button onclick="showPaymentModal()" style="background-color: #00aa00;">💶 Zahlung buchen</button>
-        '''
+#     # Payment button for unpaid invoices
+#     payment_button = ''
+#     if status in ['finalized', 'sent'] and amount_due_float > 0.01:
+#         payment_button = f'''
+#             <button onclick="showPaymentModal()" style="background-color: #00aa00;">💶 Zahlung buchen</button>
+#         '''
     
-    # Email button for finalized invoices (with PDF)
-    email_button = ''
-    if status in ['finalized', 'sent'] and invoice[38]:
-        email_button = f'''
-            <button onclick="showEmailModal()" style="background-color: #0066cc;">📧 Per E-Mail versenden</button>
-        '''
+#     # Email button for finalized invoices (with PDF)
+#     email_button = ''
+#     if status in ['finalized', 'sent'] and invoice[38]:
+#         email_button = f'''
+#             <button onclick="showEmailModal()" style="background-color: #0066cc;">📧 Per E-Mail versenden</button>
+#         '''
     
-    # Status transition buttons based on current status
-    status_buttons = ''
-    if status == 'draft':
-        status_buttons = f'''
-            <button onclick="updateStatus({invoice_id}, 'finalized')" style="background-color: #0066cc;">✓ Finalisieren</button>
-            <button onclick="updateStatus({invoice_id}, 'cancelled')" style="background-color: #cc0000;">✗ Stornieren</button>
-        '''
-    elif status == 'finalized':
-        status_buttons = f'''
-            <button onclick="updateStatus({invoice_id}, 'sent')" style="background-color: #ff9900;">📧 Als versendet markieren</button>
-            <button onclick="updateStatus({invoice_id}, 'paid')" style="background-color: #00aa00;">💶 Als bezahlt markieren</button>
-            <button onclick="updateStatus({invoice_id}, 'cancelled')" style="background-color: #cc0000;">✗ Stornieren</button>
-        '''
-    elif status == 'sent':
-        status_buttons = f'''
-            <button onclick="updateStatus({invoice_id}, 'paid')" style="background-color: #00aa00;">💶 Als bezahlt markieren</button>
-            <button onclick="updateStatus({invoice_id}, 'finalized')" style="background-color: #0066cc;">↩ Zurück zu finalisiert</button>
-        '''
-    elif status == 'paid':
-        status_buttons = f'''
-            <button onclick="updateStatus({invoice_id}, 'sent')" style="background-color: #ff9900;">↩ Zurück zu versendet</button>
-        '''
-    # cancelled has no transitions
+#     # Status transition buttons based on current status
+#     status_buttons = ''
+#     if status == 'draft':
+#         status_buttons = f'''
+#             <button onclick="updateStatus({invoice_id}, 'finalized')" style="background-color: #0066cc;">✓ Finalisieren</button>
+#             <button onclick="updateStatus({invoice_id}, 'cancelled')" style="background-color: #cc0000;">✗ Stornieren</button>
+#         '''
+#     elif status == 'finalized':
+#         status_buttons = f'''
+#             <button onclick="updateStatus({invoice_id}, 'sent')" style="background-color: #ff9900;">📧 Als versendet markieren</button>
+#             <button onclick="updateStatus({invoice_id}, 'paid')" style="background-color: #00aa00;">💶 Als bezahlt markieren</button>
+#             <button onclick="updateStatus({invoice_id}, 'cancelled')" style="background-color: #cc0000;">✗ Stornieren</button>
+#         '''
+#     elif status == 'sent':
+#         status_buttons = f'''
+#             <button onclick="updateStatus({invoice_id}, 'paid')" style="background-color: #00aa00;">💶 Als bezahlt markieren</button>
+#             <button onclick="updateStatus({invoice_id}, 'finalized')" style="background-color: #0066cc;">↩ Zurück zu finalisiert</button>
+#         '''
+#     elif status == 'paid':
+#         status_buttons = f'''
+#             <button onclick="updateStatus({invoice_id}, 'sent')" style="background-color: #ff9900;">↩ Zurück zu versendet</button>
+#         '''
+#     # cancelled has no transitions
     
-    s += f'''
-        <script>
-            function updateStatus(invoiceId, newStatus) {{
-                if (!confirm('Status wirklich ändern?')) return;
+#     s += f'''
+#         <script>
+#             function updateStatus(invoiceId, newStatus) {{
+#                 if (!confirm('Status wirklich ändern?')) return;
                 
-                fetch('/invoice/status', {{
-                    method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{
-                        invoice_id: invoiceId,
-                        status: newStatus
-                    }})
-                }})
-                .then(response => {{
-                    if (response.ok) {{
-                        // Reload page to show updated status
-                        window.location.reload();
-                    }} else {{
-                        alert('Fehler beim Statusupdate');
-                    }}
-                }})
-                .catch(err => alert('Fehler: ' + err));
-            }}
+#                 fetch('/invoice/status', {{
+#                     method: 'POST',
+#                     headers: {{'Content-Type': 'application/json'}},
+#                     body: JSON.stringify({{
+#                         invoice_id: invoiceId,
+#                         status: newStatus
+#                     }})
+#                 }})
+#                 .then(response => {{
+#                     if (response.ok) {{
+#                         // Reload page to show updated status
+#                         window.location.reload();
+#                     }} else {{
+#                         alert('Fehler beim Statusupdate');
+#                     }}
+#                 }})
+#                 .catch(err => alert('Fehler: ' + err));
+#             }}
             
-            function showPaymentModal() {{
-                document.getElementById('paymentModal').style.display = 'block';
-            }}
+#             function showPaymentModal() {{
+#                 document.getElementById('paymentModal').style.display = 'block';
+#             }}
             
-            function hidePaymentModal() {{
-                document.getElementById('paymentModal').style.display = 'none';
-            }}
+#             function hidePaymentModal() {{
+#                 document.getElementById('paymentModal').style.display = 'none';
+#             }}
             
-            function linkPayment() {{
-                const transactionId = document.getElementById('transaction_id').value;
-                const amount = document.getElementById('payment_amount').value;
+#             function linkPayment() {{
+#                 const transactionId = document.getElementById('transaction_id').value;
+#                 const amount = document.getElementById('payment_amount').value;
                 
-                if (!transactionId || !amount) {{
-                    alert('Bitte Transaktions-ID und Betrag angeben');
-                    return;
-                }}
+#                 if (!transactionId || !amount) {{
+#                     alert('Bitte Transaktions-ID und Betrag angeben');
+#                     return;
+#                 }}
                 
-                fetch('/invoice/link-payment', {{
-                    method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{
-                        invoice_id: {invoice_id},
-                        transaction_id: parseInt(transactionId),
-                        amount_paid: parseFloat(amount)
-                    }})
-                }})
-                .then(response => {{
-                    if (response.ok) {{
-                        alert('Zahlung erfolgreich verknüpft');
-                        window.location.reload();
-                    }} else {{
-                        alert('Fehler beim Verknüpfen der Zahlung');
-                    }}
-                }})
-                .catch(err => alert('Fehler: ' + err));
-            }}
+#                 fetch('/invoice/link-payment', {{
+#                     method: 'POST',
+#                     headers: {{'Content-Type': 'application/json'}},
+#                     body: JSON.stringify({{
+#                         invoice_id: {invoice_id},
+#                         transaction_id: parseInt(transactionId),
+#                         amount_paid: parseFloat(amount)
+#                     }})
+#                 }})
+#                 .then(response => {{
+#                     if (response.ok) {{
+#                         alert('Zahlung erfolgreich verknüpft');
+#                         window.location.reload();
+#                     }} else {{
+#                         alert('Fehler beim Verknüpfen der Zahlung');
+#                     }}
+#                 }})
+#                 .catch(err => alert('Fehler: ' + err));
+#             }}
             
-            function showEmailModal() {{
-                document.getElementById('emailModal').style.display = 'block';
-            }}
+#             function showEmailModal() {{
+#                 document.getElementById('emailModal').style.display = 'block';
+#             }}
             
-            function hideEmailModal() {{
-                document.getElementById('emailModal').style.display = 'none';
-            }}
+#             function hideEmailModal() {{
+#                 document.getElementById('emailModal').style.display = 'none';
+#             }}
             
-            function sendInvoiceEmail() {{
-                const recipientEmail = document.getElementById('recipient_email').value;
-                const recipientName = document.getElementById('recipient_name').value;
-                const messageText = document.getElementById('email_message').value;
+#             function sendInvoiceEmail() {{
+#                 const recipientEmail = document.getElementById('recipient_email').value;
+#                 const recipientName = document.getElementById('recipient_name').value;
+#                 const messageText = document.getElementById('email_message').value;
                 
-                if (!recipientEmail) {{
-                    alert('Bitte E-Mail-Adresse angeben');
-                    return;
-                }}
+#                 if (!recipientEmail) {{
+#                     alert('Bitte E-Mail-Adresse angeben');
+#                     return;
+#                 }}
                 
-                fetch('/invoice/send-email', {{
-                    method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{
-                        invoice_id: {invoice_id},
-                        recipient_email: recipientEmail,
-                        recipient_name: recipientName,
-                        message_text: messageText
-                    }})
-                }})
-                .then(response => response.json())
-                .then(data => {{
-                    if (data.success) {{
-                        alert('Rechnung erfolgreich per E-Mail versendet');
-                        hideEmailModal();
-                        // Update status to 'sent' if it was 'finalized'
-                        if (confirm('Status auf "Versendet" setzen?')) {{
-                            updateStatus({invoice_id}, 'sent');
-                        }}
-                    }} else {{
-                        alert('Fehler: ' + (data.error || 'Unbekannter Fehler'));
-                    }}
-                }})
-                .catch(err => alert('Fehler: ' + err));
-            }}
-        </script>
+#                 fetch('/invoice/send-email', {{
+#                     method: 'POST',
+#                     headers: {{'Content-Type': 'application/json'}},
+#                     body: JSON.stringify({{
+#                         invoice_id: {invoice_id},
+#                         recipient_email: recipientEmail,
+#                         recipient_name: recipientName,
+#                         message_text: messageText
+#                     }})
+#                 }})
+#                 .then(response => response.json())
+#                 .then(data => {{
+#                     if (data.success) {{
+#                         alert('Rechnung erfolgreich per E-Mail versendet');
+#                         hideEmailModal();
+#                         // Update status to 'sent' if it was 'finalized'
+#                         if (confirm('Status auf "Versendet" setzen?')) {{
+#                             updateStatus({invoice_id}, 'sent');
+#                         }}
+#                     }} else {{
+#                         alert('Fehler: ' + (data.error || 'Unbekannter Fehler'));
+#                     }}
+#                 }})
+#                 .catch(err => alert('Fehler: ' + err));
+#             }}
+#         </script>
         
-        <!-- Email Modal -->
-        <div id="emailModal" class="modal-overlay" style="display: none;">
-            <div class="modal-content" style="max-width: 600px;">
-                <h3>Rechnung per E-Mail versenden</h3>
-                <p>Versenden Sie die Rechnung {invoice[1]} per E-Mail an den Kunden.</p>
-                <table style="width: 100%; border: none;">
-                    <tr>
-                        <td style="padding: 10px; border: none; width: 150px;"><strong>Empfänger Name:</strong></td>
-                        <td style="padding: 10px; border: none;">
-                            <input type="text" id="recipient_name" value="{invoice[12]}" style="width: 100%;">
-                        </td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 10px; border: none;"><strong>E-Mail-Adresse:</strong></td>
-                        <td style="padding: 10px; border: none;">
-                            <input type="email" id="recipient_email" style="width: 100%;" placeholder="kunde@example.com">
-                            <br><small style="color: #666;">E-Mail-Adresse des Empfängers</small>
-                        </td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 10px; border: none; vertical-align: top;"><strong>Nachricht:</strong></td>
-                        <td style="padding: 10px; border: none;">
-                            <textarea id="email_message" rows="8" style="width: 100%;">Sehr geehrte Damen und Herren,
+#         <!-- Email Modal -->
+#         <div id="emailModal" class="modal-overlay" style="display: none;">
+#             <div class="modal-content" style="max-width: 600px;">
+#                 <h3>Rechnung per E-Mail versenden</h3>
+#                 <p>Versenden Sie die Rechnung {invoice[1]} per E-Mail an den Kunden.</p>
+#                 <table style="width: 100%; border: none;">
+#                     <tr>
+#                         <td style="padding: 10px; border: none; width: 150px;"><strong>Empfänger Name:</strong></td>
+#                         <td style="padding: 10px; border: none;">
+#                             <input type="text" id="recipient_name" value="{invoice[12]}" style="width: 100%;">
+#                         </td>
+#                     </tr>
+#                     <tr>
+#                         <td style="padding: 10px; border: none;"><strong>E-Mail-Adresse:</strong></td>
+#                         <td style="padding: 10px; border: none;">
+#                             <input type="email" id="recipient_email" style="width: 100%;" placeholder="kunde@example.com">
+#                             <br><small style="color: #666;">E-Mail-Adresse des Empfängers</small>
+#                         </td>
+#                     </tr>
+#                     <tr>
+#                         <td style="padding: 10px; border: none; vertical-align: top;"><strong>Nachricht:</strong></td>
+#                         <td style="padding: 10px; border: none;">
+#                             <textarea id="email_message" rows="8" style="width: 100%;">Sehr geehrte Damen und Herren,
 
-anbei erhalten Sie die Rechnung {invoice[1]}.
+# anbei erhalten Sie die Rechnung {invoice[1]}.
 
-Bitte überweisen Sie den Rechnungsbetrag unter Angabe der Rechnungsnummer 
-innerhalb der angegebenen Zahlungsfrist.
+# Bitte überweisen Sie den Rechnungsbetrag unter Angabe der Rechnungsnummer 
+# innerhalb der angegebenen Zahlungsfrist.
 
-Bei Rückfragen stehen wir Ihnen gerne zur Verfügung.
+# Bei Rückfragen stehen wir Ihnen gerne zur Verfügung.
 
-Mit freundlichen Grüßen</textarea>
-                        </td>
-                    </tr>
-                </table>
-                <div style="margin-top: 20px;">
-                    <button onclick="sendInvoiceEmail()" style="background-color: #0066cc; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">📧 E-Mail senden</button>
-                    <button onclick="hideEmailModal()" style="background-color: #ccc; color: black; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; margin-left: 10px;">Abbrechen</button>
-                </div>
-            </div>
-        </div>
+# Mit freundlichen Grüßen</textarea>
+#                         </td>
+#                     </tr>
+#                 </table>
+#                 <div style="margin-top: 20px;">
+#                     <button onclick="sendInvoiceEmail()" style="background-color: #0066cc; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">📧 E-Mail senden</button>
+#                     <button onclick="hideEmailModal()" style="background-color: #ccc; color: black; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; margin-left: 10px;">Abbrechen</button>
+#                 </div>
+#             </div>
+#         </div>
         
-        <!-- Payment Modal -->
-        <div id="paymentModal" class="modal-overlay" style="display: none;">
-            <div class="modal-content" style="max-width: 500px;">
-                <h3>Zahlung buchen</h3>
-                <p>Verknüpfen Sie diese Rechnung mit einer Transaktion aus dem Transaktionsverlauf.</p>
-                <table style="width: 100%; border: none;">
-                    <tr>
-                        <td style="padding: 10px; border: none;"><strong>Transaktions-ID:</strong></td>
-                        <td style="padding: 10px; border: none;">
-                            <input type="number" id="transaction_id" style="width: 100px;" placeholder="z.B. 123">
-                            <br><small style="color: #666;">ID aus der Transaktionsliste</small>
-                        </td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 10px; border: none;"><strong>Gezahlter Betrag:</strong></td>
-                        <td style="padding: 10px; border: none;">
-                            <input type="number" id="payment_amount" step="0.01" value="{amount_due_float:.2f}" style="width: 150px;"> €
-                            <br><small style="color: #666;">Betrag der Zahlung</small>
-                        </td>
-                    </tr>
-                </table>
-                <div style="margin-top: 20px;">
-                    <button onclick="linkPayment()" style="background-color: #00aa00; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">✓ Zahlung verknüpfen</button>
-                    <button onclick="hidePaymentModal()" style="background-color: #ccc; color: black; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; margin-left: 10px;">Abbrechen</button>
-                </div>
-            </div>
-        </div>
+#         <!-- Payment Modal -->
+#         <div id="paymentModal" class="modal-overlay" style="display: none;">
+#             <div class="modal-content" style="max-width: 500px;">
+#                 <h3>Zahlung buchen</h3>
+#                 <p>Verknüpfen Sie diese Rechnung mit einer Transaktion aus dem Transaktionsverlauf.</p>
+#                 <table style="width: 100%; border: none;">
+#                     <tr>
+#                         <td style="padding: 10px; border: none;"><strong>Transaktions-ID:</strong></td>
+#                         <td style="padding: 10px; border: none;">
+#                             <input type="number" id="transaction_id" style="width: 100px;" placeholder="z.B. 123">
+#                             <br><small style="color: #666;">ID aus der Transaktionsliste</small>
+#                         </td>
+#                     </tr>
+#                     <tr>
+#                         <td style="padding: 10px; border: none;"><strong>Gezahlter Betrag:</strong></td>
+#                         <td style="padding: 10px; border: none;">
+#                             <input type="number" id="payment_amount" step="0.01" value="{amount_due_float:.2f}" style="width: 150px;"> €
+#                             <br><small style="color: #666;">Betrag der Zahlung</small>
+#                         </td>
+#                     </tr>
+#                 </table>
+#                 <div style="margin-top: 20px;">
+#                     <button onclick="linkPayment()" style="background-color: #00aa00; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">✓ Zahlung verknüpfen</button>
+#                     <button onclick="hidePaymentModal()" style="background-color: #ccc; color: black; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; margin-left: 10px;">Abbrechen</button>
+#                 </div>
+#             </div>
+#         </div>
         
-        <div class="action-buttons">
-            {pdf_link}
-            {xml_button}
-            {email_button}
-            {payment_button}
-            {status_buttons}
-            <a href="/invoice" class="secondary">Zurück zur Liste</a>
-        </div>
-    '''
+#         <div class="action-buttons">
+#             {pdf_link}
+#             {xml_button}
+#             {email_button}
+#             {payment_button}
+#             {status_buttons}
+#             <a href="/invoice" class="secondary">Zurück zur Liste</a>
+#         </div>
+#     '''
     
-    s += Footer()
-    return s
+#     s += Footer()
+#     return s
 
 
 def PageReminders(db: Database):
@@ -3635,7 +3655,7 @@ def PageDashboard(db: Database):
                          and inv[37] in ['finalized', 'sent', 'paid']]
         monthly_revenue[month] = sum(inv[35] for inv in month_invoices if inv[35])
     
-    s = Header1('home')
+    s = Header1('dashboard')
     s += Header2()
     s += Header3()
     
@@ -3718,12 +3738,12 @@ def PageDashboard(db: Database):
     
     for inv in recent_invoices:
         status_colors = {'draft': '#888', 'finalized': '#0066cc', 'sent': '#ff9900', 'paid': '#00aa00', 'cancelled': '#cc0000'}
-        status_color = status_colors.get(inv[38], '#888')  # Status is at index 38
+        status_color = status_colors.get(inv[40], '#888')  # Status is now at index 40 (was 38)
         s += f'''
         <tr style="border-bottom: 1px solid #eee;">
             <td style="padding: 10px 0;">{inv[1]}</td>
-            <td>{inv[13][:20] if inv[13] else ''}</td>
-            <td style="text-align: right;">{inv[36]:.2f} €</td>
+            <td>{inv[14][:20] if inv[14] else ''}</td>
+            <td style="text-align: right;">{inv[38]:.2f} €</td>
             <td><span style="color: {status_color};">●</span></td>
             <td><a href="/invoice/view?id={inv[0]}">Ansicht</a></td>
         </tr>

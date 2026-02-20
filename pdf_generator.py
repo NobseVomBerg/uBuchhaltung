@@ -48,30 +48,30 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     seller_street = invoice[6] or ''
     seller_postal = invoice[7] or ''
     seller_city = invoice[8] or ''
-    seller_email = invoice[10] or ''
-    seller_phone = invoice[11] or ''
+    seller_email = invoice[11] or ''
+    seller_phone = invoice[12] or ''
     seller_tax_id = ''  # Need to load from contacts table if needed
     
     # Buyer (customer) data
-    buyer_name = invoice[13] or ''
-    buyer_company = invoice[14] or ''
-    buyer_street = invoice[15] or ''
-    buyer_postal = invoice[16] or ''
-    buyer_city = invoice[17] or ''
+    buyer_name = invoice[14] or ''
+    buyer_company = invoice[15] or ''
+    buyer_street = invoice[16] or ''
+    buyer_postal = invoice[17] or ''
+    buyer_city = invoice[18] or ''
     
     # Bank details
-    bank_name = invoice[29] or ''
-    bank_iban = invoice[30] or ''
-    bank_bic = invoice[31] or ''
+    bank_name = invoice[31] or ''
+    bank_iban = invoice[32] or ''
+    bank_bic = invoice[33] or ''
     
     # Amounts
-    tax_rate = invoice[33] or 0.19
-    sum_net = invoice[34] or 0
-    tax_amount = invoice[35] or 0
-    sum_gross = invoice[36] or 0
+    tax_rate = invoice[35] or 0.19
+    sum_net = invoice[36] or 0
+    tax_amount = invoice[37] or 0
+    sum_gross = invoice[38] or 0
     
     # Payment terms
-    payment_terms = invoice[24] or 'Bitte überweisen Sie den Gesamtbetrag ohne jeden Abzug unter Angabe der Rechnungsnummer innerhalb von 14 Tagen ab Rechnungsdatum auf das unten angegebene Konto. Vielen Dank.'
+    payment_terms = invoice[26] or 'Bitte überweisen Sie den Gesamtbetrag ohne jeden Abzug unter Angabe der Rechnungsnummer innerhalb von 14 Tagen ab Rechnungsdatum auf das unten angegebene Konto. Vielen Dank.'
     
     # Load own company logo if available
     logo_data = None

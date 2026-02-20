@@ -96,8 +96,10 @@ Professionelle Rechnungserstellung mit PDF-Generierung, Multi-Company-Support un
   - Auswahl der eigenen Firma aus Kontakten (Typ: "Eigene Daten")
   - Dynamisches Logo pro Firma
   - Automatische Aktualisierung von Absenderzeile und Footer
+  - **Snapshot-Prinzip**: Bei Speicherung werden alle Verkäufer- und Käuferdaten (inkl. Firmennamen) als Kopie in der Rechnung gespeichert
+  - **SellerCompany & BuyerCompany**: Die Firmennamen sind die wichtigsten Felder und als NOT NULL definiert
 - **Rechnungskopf**: Firmenlogo, Datum, Rechnungsnummer (aus Nummernkreis), Kundennummer
-- **Kundenauswahl**: Dropdown mit automatischer Adressübernahme
+- **Kundenauswahl**: Dropdown mit automatischer Adressübernahme (Name + Firma)
 - **Absenderzeile**: Kompakte Absenderinfo für Brieffenster
 - **XRechnung-Felder**: EN 16931 konforme Felder (BuyerReference, PaymentMeans, etc.)
 - **Positionstabelle**: 
@@ -237,8 +239,56 @@ Zentrale Konfiguration:
 - **Nummernkreise**: Konfiguration der automatischen Nummerierung
 - **Erweiterbar**: Weitere Einstellungen können hinzugefügt werden
 
-### 15. About-Seite (`/about`)
+### 15. Anlagenverzeichnis (`/assets`)
+Vollständiges Anlagenmanagement mit gesetzeskonformer AfA-Berechnung:
+
+**Übersicht (`/assets`):**
+- Statusfilter: Aktiv / Verkauft / Abgang
+- Statistik-Header: Gesamte Anschaffungskosten, Gesamtrestbuchwert, AfA gebucht/geplant im laufenden Jahr
+- Tabelle: Inventarnummer, Bezeichnung, Kategorie, Anschaffungsdatum, Anschaffungskosten, Restbuchwert, AfA aktuelles Jahr (mit „gebucht/offen"-Badge), Status, Aktionen
+
+**Anlage anlegen / bearbeiten (`/assets/new`, `/assets/edit?id=`):**
+- Pflichtfelder: Bezeichnung, Anschaffungsdatum, Anschaffungskosten (netto), Nutzungsdauer
+- Automatische Inventarnummer-Vergabe im Format `INV-YY-###` (z.B. `INV-26-001`)
+- Kategorie-Dropdown mit automatischer Vorbefüllung von Nutzungsdauer und AfA-Methode
+- AfA-Methode: Linear oder Degressiv (25% fester Satz)
+- **GWG-Hinweis**: Bei Anschaffungskosten ≤ 800 € automatisch Sofortabschreibung
+- **Live-AfA-Vorschau**: JavaScript-basierte Echtzeit-Berechnung des kompletten AfA-Plans im Formular
+- Verknüpfung mit Lieferant (Kontakte), Beleg (Dokumente), übergeordneter Anlage (Erweiterung)
+- Seriennummer, Standort, Notizen, SKR-Konto
+
+**Detailansicht (`/assets/view?id=`):**
+- Stammdaten-Block mit allen Anlageninformationen
+- Vollständiger AfA-Plan (alle Jahre): Buchwert Anfang | AfA-Betrag | Buchwert Ende | Methode | Status | Aktion
+- Inline-Buchungsformular je Jahr (Buchungskonto + SKR-Aufwandskonto)
+- Erweiterungen/Nachkäufe (Sub-Anlagen mit eigener Abschreibung)
+- Verkauf/Abgang-Formular mit Datum und Erlös
+
+**AfA-Kategorien (`/asset_categories`):**
+- BMF-konforme Liste mit 30 vordefinierten Kategorien (IT, Büro, Fahrzeuge, Maschinen, Gebäude, etc.)
+- Felder: Bezeichnung, Nutzungsdauer (Jahre), AfA-Methode, Standard-SKR-Konto, Notizen
+- Vollständige CRUD-Funktionalität
+
+**AfA-Berechnungsregeln:**
+- **Linear**: `Jahres-AfA = AK / Nutzungsdauer`, erstes Jahr anteilig nach Monatsmethode (`(13 - Anschaffungsmonat) / 12`)
+- **Degressiv (25%)**: 25% auf Restbuchwert, automatischer Wechsel zu linear sobald lineare AfA ≥ degressive AfA
+- **GWG (Geringwertige Wirtschaftsgüter)**: Anschaffungskosten ≤ 800 € netto → Sofortabschreibung im Anschaffungsjahr
+- **Anteiligkeitsregel**: Im ersten Jahr wird immer monatsgenau berechnet
+
+**Buchungsintegration (Ansatz C):**
+- AfA-Buchung erzeugt Eintrag in Bookings-Tabelle (BookingType='expense', Status='posted')
+- Gleichzeitig Eintrag in AssetDepreciations mit Verweis auf die Buchung
+- AfA-Buchungen erscheinen automatisch in Buchungsübersicht
+- Status je Jahr: „Geplant" (nur kalkuliert) → „Gebucht" (Buchung vorhanden)
+
+**Erweiterungen / Nachkäufe:**
+- Sub-Anlagen über Parent_ID-Verknüpfung
+- Eigene AfA-Berechnung pro Erweiterungs-Objekt
+- Anzeige in Detailansicht der Hauptanlage
+
+### 16. About-Seite (`/about`)
 Informationen über die Anwendung.
+
 
 ## Technische Details
 
@@ -310,32 +360,56 @@ Die Anwendung verwendet SQLite mit folgenden Tabellen:
 - ID (INTEGER PRIMARY KEY AUTOINCREMENT)
 - InvoiceNumber (TEXT UNIQUE NOT NULL) - Rechnungsnummer
 - InvoiceDate (DATE NOT NULL) - Rechnungsdatum
-- CustomerID (INTEGER, FOREIGN KEY zu Customers)
-- CustomerNumber (TEXT) - Kundennummer
-- OwnCompanyID (INTEGER, FOREIGN KEY zu Customers) - Eigene Firma
-- SenderLine (TEXT) - Absenderzeile
-- CustomerName (TEXT) - Kundenname
-- CustomerAddress (TEXT) - Kundenadresse (mehrzeilig)
-- BuyerReference (TEXT) - Leitweg-ID / Buyer Reference (XRechnung)
-- PaymentTerms (TEXT) - Zahlungsbedingungen
-- PaymentTermsDays (INTEGER) - Zahlungsziel in Tagen
-- DueDate (DATE) - Fälligkeitsdatum
-- BankAccountID (INTEGER, FOREIGN KEY zu Konten) - Bankverbindung
-- NetAmount (REAL) - Nettobetrag
-- TaxRate (REAL) - Steuersatz (als Dezimalzahl)
-- TaxAmount (REAL) - Steuerbetrag
-- GrossAmount (REAL) - Bruttobetrag
-- Currency (TEXT DEFAULT 'EUR') - Währung
-- Status (TEXT DEFAULT 'draft') - Status (draft/finalized/sent/paid/partially_paid/overdue/cancelled)
-- RemainingAmount (REAL) - Restbetrag (bei Teilzahlungen)
-- PaymentMeansCode (TEXT) - XRechnung Zahlungsart-Code
-- PaymentMeansText (TEXT) - XRechnung Zahlungsart-Text
-- IBAN (TEXT) - IBAN für XRechnung
-- AccountName (TEXT) - Kontoinhaber
-- BIC (TEXT) - BIC
-- Notes (TEXT) - Notizen
-- CreatedDate (DATETIME) - Erstellungsdatum
-- LastModified (DATETIME) - Letzte Änderung
+- **Verkäufer (Eigene Firma) - Snapshot:**
+  - OwnCompanyId (INTEGER, FOREIGN KEY zu Contacts)
+  - SellerName (TEXT NOT NULL) - Kontaktname
+  - SellerCompany (TEXT NOT NULL) - **Firmenname** (wichtigstes Feld)
+  - SellerStreet (TEXT) - Straße
+  - SellerPostalCode (TEXT) - PLZ
+  - SellerCity (TEXT) - Stadt
+  - SellerCountry (TEXT DEFAULT 'DE') - Land
+  - SellerVATID (TEXT) - USt-ID
+  - SellerEmail (TEXT) - E-Mail
+  - SellerPhone (TEXT) - Telefon
+- **Käufer (Kunde) - Snapshot:**
+  - CustomerId (INTEGER, FOREIGN KEY zu Contacts)
+  - BuyerName (TEXT NOT NULL) - Kontaktname
+  - BuyerCompany (TEXT NOT NULL) - **Firmenname** (wichtigstes Feld)
+  - BuyerStreet (TEXT) - Straße
+  - BuyerPostalCode (TEXT) - PLZ
+  - BuyerCity (TEXT) - Stadt
+  - BuyerCountry (TEXT DEFAULT 'DE') - Land
+  - BuyerVATID (TEXT) - USt-ID
+  - BuyerReference (TEXT) - Kundenreferenz
+  - BuyerRouteID (TEXT) - Leitweg-ID (XRechnung)
+- **Bestellung:**
+  - OrderNumber (TEXT) - Bestellnummer
+- **XRechnung:**
+  - Currency (TEXT DEFAULT 'EUR') - Währung
+  - DeliveryDate (DATE) - Lieferdatum
+- **Zahlungsbedingungen:**
+  - PaymentTerms (TEXT) - Zahlungsbedingungen-Text
+  - PaymentDueDate (DATE) - Fälligkeitsdatum
+  - SkontoDays (INTEGER) - Skonto-Tage
+  - SkontoPercent (REAL) - Skonto-Prozentsatz
+- **Bankverbindung - Snapshot:**
+  - BankAccountId (INTEGER, FOREIGN KEY zu Accounts)
+  - BankName (TEXT) - Bankname
+  - BankIBAN (TEXT) - IBAN
+  - BankBIC (TEXT) - BIC
+- **Beträge:**
+  - TaxCategory (TEXT DEFAULT 'S') - Steuerkategorie
+  - TaxRate (REAL NOT NULL) - Steuersatz (als Dezimalzahl)
+  - SumNet (REAL NOT NULL) - Nettobetrag
+  - TaxAmount (REAL NOT NULL) - Steuerbetrag
+  - SumGross (REAL NOT NULL) - Bruttobetrag
+  - AmountDue (REAL) - Fälliger Betrag
+- **Status und Dateien:**
+  - Status (TEXT DEFAULT 'draft') - Status (draft/finalized/sent/paid/cancelled)
+  - PDFPath (TEXT) - Pfad zur PDF-Datei
+  - XMLPath (TEXT) - Pfad zur XRechnung-XML
+  - CreatedAt (DATETIME DEFAULT CURRENT_TIMESTAMP)
+  - UpdatedAt (DATETIME DEFAULT CURRENT_TIMESTAMP)
 
 **InvoiceItems (Rechnungspositionen)**
 - ID (INTEGER PRIMARY KEY AUTOINCREMENT)
@@ -402,12 +476,56 @@ Die Anwendung verwendet SQLite mit folgenden Tabellen:
 - RelationType (TEXT) - z.B. 'invoice', 'receipt', 'contract'
 - UNIQUE(Booking_ID, Document_ID)
 
+**AssetCategories (AfA-Kategorien)**
+- ID (INTEGER PRIMARY KEY AUTOINCREMENT)
+- Name (TEXT NOT NULL) - Kategoriebezeichnung (z.B. "PC / Laptop", "PKW")
+- UsefulLifeYears (INTEGER NOT NULL) - Standardnutzungsdauer in Jahren
+- DepreciationMethod (TEXT NOT NULL) - 'linear', 'degressive' oder 'both'
+- COA_ID (INTEGER, FOREIGN KEY zu ChartOfAccounts) - Standard-SKR-Konto
+- Notes (TEXT) - Notizen / Quelle (z.B. "AfA-Tabelle BMF")
+- 30 vordefinierte BMF-Kategorien werden beim ersten Start automatisch eingefügt
+
+**Assets (Anlagegüter)**
+- ID (INTEGER PRIMARY KEY AUTOINCREMENT)
+- InventoryNumber (TEXT UNIQUE) - Inventarnummer, auto-generiert: `INV-YY-###`
+- Name (TEXT NOT NULL) - Bezeichnung
+- Description (TEXT) - Beschreibung
+- AssetCategory_ID (INTEGER, FOREIGN KEY zu AssetCategories)
+- COA_ID (INTEGER, FOREIGN KEY zu ChartOfAccounts) - SKR-Anlagenkonto
+- PurchaseDate (DATE NOT NULL) - Anschaffungsdatum
+- PurchasePrice (REAL NOT NULL) - Anschaffungskosten (netto)
+- UsefulLifeYears (INTEGER NOT NULL) - Nutzungsdauer in Jahren
+- DepreciationMethod (TEXT NOT NULL) - 'linear', 'degressive' oder 'GWG'
+- SerialNumber (TEXT) - Seriennummer
+- Location (TEXT) - Standort
+- Supplier_ID (INTEGER, FOREIGN KEY zu Contacts) - Lieferant
+- Document_ID (INTEGER, FOREIGN KEY zu Documents) - Verknüpfter Beleg
+- Booking_ID (INTEGER, FOREIGN KEY zu Bookings) - Anschaffungsbuchung
+- SaleDate (DATE) - Verkaufsdatum
+- SalePrice (REAL) - Verkaufserlös
+- Status (TEXT DEFAULT 'active') - 'active', 'sold', 'scrapped'
+- Notes (TEXT) - Notizen
+- Parent_ID (INTEGER, FOREIGN KEY zu Assets) - Übergeordnete Anlage (für Erweiterungen)
+- CreatedAt (DATETIME DEFAULT CURRENT_TIMESTAMP)
+
+**AssetDepreciations (AfA-Buchungen)**
+- ID (INTEGER PRIMARY KEY AUTOINCREMENT)
+- Asset_ID (INTEGER NOT NULL, FOREIGN KEY zu Assets)
+- Year (INTEGER NOT NULL) - Abschreibungsjahr
+- DepreciationAmount (REAL) - AfA-Betrag des Jahres
+- BookValue (REAL) - Restbuchwert nach AfA
+- Booking_ID (INTEGER, FOREIGN KEY zu Bookings) - Verknüpfte Buchung
+- Status (TEXT DEFAULT 'planned') - 'planned' oder 'posted'
+- BookedAt (DATETIME) - Buchungszeitpunkt
+- UNIQUE(Asset_ID, Year)
+
 ### Projektstruktur
 
 ```
 PyBuch/
 ├── main.py                    # Entry Point - Startet den Webserver
 ├── db.py                      # Datenbank-Layer mit allen CRUD-Operationen
+│                              #   inkl. Asset-Management, AfA-Berechnung, Migrations-System
 ├── document_parser.py         # PDF-Parser für Kontoauszüge (VBR)
 ├── email_sender.py            # E-Mail-Versand mit SMTP
 ├── xrechnung_generator.py     # XRechnung XML-Generierung (EN 16931)
@@ -419,6 +537,7 @@ PyBuch/
 │   ├── __init__.py           # Package initialization
 │   ├── app.py                # HTTP-Server-Klasse mit Routing
 │   ├── pages.py              # HTML-Seiten-Generierung (20+ Seiten)
+│   ├── pages_assets.py       # HTML-Seiten für Anlagenverzeichnis
 │   ├── handlers.py           # POST-Request-Handler inkl. PDF-Generierung
 │   └── upload_handler.py     # File-Upload mit PDF-Parsing
 ├── static/                    # Statische Dateien
@@ -517,6 +636,12 @@ Damit werden VBR-Kontoauszüge automatisch geparst und Transaktionen importiert.
    - Verknüpfen Sie zusammengehörige Buchungen
    - System validiert automatisch Soll/Haben-Ausgleich
 10. **Status setzen**: Ändern Sie Buchungsstatus von "Entwurf" auf "Gebucht" wenn finalisiert
+11. **Anlagen erfassen**: 
+    - Navigieren Sie zu `/assets`
+    - Legen Sie Anlagegüter unter `/assets/new` an
+    - Wählen Sie eine AfA-Kategorie (Nutzungsdauer und Methode werden vorbelegt)
+    - Live-Vorschau zeigt den kompletten AfA-Plan sofort an
+    - Buchen Sie die jährliche AfA direkt aus der Detailansicht
 
 ### Tägliche Nutzung
 
@@ -540,12 +665,13 @@ Diese Anwendung ist für lokale Verwendung konzipiert:
 - **Webserver**: Python's `http.server.BaseHTTPRequestHandler`
 - **Modularer Aufbau**: Separation of Concerns
   - `server/app.py`: Routing und HTTP-Handler
-  - `server/pages.py`: HTML-Generierung (13+ Seiten)
-  - `server/handlers.py`: Form-Verarbeitung (POST)
+  - `server/pages.py`: HTML-Generierung (20+ Seiten)
+  - `server/pages_assets.py`: HTML-Generierung für Anlagenverzeichnis (5 Seiten)
+  - `server/handlers.py`: Form-Verarbeitung (POST), inkl. Asset-Handler
   - `server/upload_handler.py`: File-Upload mit Multipart-Parsing
-- **Datenbank**: SQLite mit `sqlite3` Modul
+- **Datenbank**: SQLite mit `sqlite3` Modul, Migrations-System in `db.py`
 - **PDF-Parsing**: pdfplumber für VBR-Kontoauszüge
-- **Frontend**: Server-seitig generiertes HTML mit JavaScript für Filter und Drag & Drop
+- **Frontend**: Server-seitig generiertes HTML mit JavaScript für Filter, AfA-Vorschau und Drag & Drop
 - **Styling**: Externes CSS (`buch.css`)
 
 ### Hauptseiten der Anwendung
@@ -555,26 +681,45 @@ Diese Anwendung ist für lokale Verwendung konzipiert:
 4. **Rechnung anzeigen** (`/invoice/view`) - Detailansicht mit E-Mail-Versand und XML-Export
 5. **Mahnwesen** (`/invoice/reminders`) - Überfällige Rechnungen mit 3-Stufen-Mahnsystem
 6. **Belege** (`/receipts`) - Dokumentenverwaltung mit Upload
-4. **Belege bearbeiten** (`/receipts/edit`) - Detail-Ansicht mit Verknüpfungen
-5. **Buchungen** (`/transactions`) - Haupt-Buchungsinterface mit Filtern
-6. **Buchungen bearbeiten** (`/transactions/edit`) - Buchungs-Editor
-7. **Split-Buchungen** (`/bookinggroups`) - Buchungsgruppen-Übersicht
-8. **Split-Buchungen Details** (`/bookinggroups/view`) - Gruppen-Details mit Validierung
-9. **Import-Bestätigung** (`/confirm_transactions`) - Transaktions-Import aus PDF
-10. **SKR** (`/skr`) - Standardkontenrahmen-Verwaltung
-11. **SKR bearbeiten** (`/edit_skr`) - SKR-Editor
-12. **Kontakte** (`/contacts`) - Kunden/Lieferanten/Eigene Daten mit Logo
-13. **Kontakte bearbeiten** (`/contacts/edit`) - Kontakt-Editor mit File-Picker
-14. **Artikel** (`/articles`) - Artikelverzeichnis-Verwaltung
-15. **Artikel bearbeiten** (`/articles/edit`) - Artikel-Editor
-16. **Einstellungen** (`/settings`) - Hauptmenü für Konfiguration
-17. **Bankkonten** (`/settings/bankaccounts`) - Bankkonten-Verwaltung
-18. **Bankkonten bearbeiten** (`/settings/bankaccounts/edit`) - Bankkonto-Editor
-19. **Nummernkreise** (`/settings/numberranges`) - Nummernkreis-Verwaltung
-20. **Nummernkreise bearbeiten** (`/settings/numberranges/edit`) - Nummernkreis-Editor
-21. **About** (`/about`) - Informationen
+7. **Belege bearbeiten** (`/receipts/edit`) - Detail-Ansicht mit Verknüpfungen
+8. **Buchungen** (`/transactions`) - Haupt-Buchungsinterface mit Filtern
+9. **Buchungen bearbeiten** (`/transactions/edit`) - Buchungs-Editor
+10. **Split-Buchungen** (`/bookinggroups`) - Buchungsgruppen-Übersicht
+11. **Split-Buchungen Details** (`/bookinggroups/view`) - Gruppen-Details mit Validierung
+12. **Anlagen** (`/assets`) - Anlagenverzeichnis-Übersicht mit Statistiken und Statusfilter
+13. **Anlage anlegen** (`/assets/new`) - Formular mit Live-AfA-Vorschau
+14. **Anlage bearbeiten** (`/assets/edit?id=`) - Bearbeitungsformular
+15. **Anlage Detailansicht** (`/assets/view?id=`) - AfA-Plan, Buchung, Erweiterungen, Abgang
+16. **AfA-Kategorien** (`/asset_categories`) - Kategorien-Verwaltung mit 30 BMF-Vorlagen
+17. **AfA-Kategorie bearbeiten** (`/asset_categories/edit?id=`) - Kategorie-Editor
+18. **Import-Bestätigung** (`/confirm_transactions`) - Transaktions-Import aus PDF
+19. **SKR** (`/skr`) - Standardkontenrahmen-Verwaltung
+20. **SKR bearbeiten** (`/edit_skr`) - SKR-Editor
+21. **Kontakte** (`/contacts`) - Kunden/Lieferanten/Eigene Daten mit Logo
+22. **Kontakte bearbeiten** (`/contacts/edit`) - Kontakt-Editor mit File-Picker
+23. **Artikel** (`/articles`) - Artikelverzeichnis-Verwaltung
+24. **Artikel bearbeiten** (`/articles/edit`) - Artikel-Editor
+25. **Einstellungen** (`/settings`) - Hauptmenü für Konfiguration
+26. **Bankkonten** (`/settings/bankaccounts`) - Bankkonten-Verwaltung
+27. **Bankkonten bearbeiten** (`/settings/bankaccounts/edit`) - Bankkonto-Editor
+28. **Nummernkreise** (`/settings/numberranges`) - Nummernkreis-Verwaltung
+29. **Nummernkreise bearbeiten** (`/settings/numberranges/edit`) - Nummernkreis-Editor
+30. **About** (`/about`) - Informationen
 
 ### Besondere Features
+
+**Anlagenverzeichnis mit AfA-Berechnung**
+- Vollständiges Anlagen-Management mit gesetzeskonformer Abschreibung
+- **Inventarnummern** automatisch generiert: `INV-YY-###`
+- **30 BMF-Kategorien** vorinstalliert (IT, Büro, Fahrzeuge, Maschinen, Gebäude, Sonstiges)
+- **AfA-Methoden**:
+  - Linear mit anteiliger Berechnung im ersten Jahr (Monatsmethode)
+  - Degressiv (25%) mit automatischem Methodenwechsel zu linear
+  - GWG-Sofortabschreibung bei Anschaffungskosten ≤ 800 € netto
+- **Live-Vorschau**: JavaScript berechnet den kompletten AfA-Plan während der Eingabe
+- **Buchungsintegration (Ansatz C)**: AfA-Buchung erscheint direkt in der Buchungsübersicht
+- **Erweiterungen**: Sub-Anlagen (Nachkäufe) über Parent_ID-Verknüpfung
+- **Datenbankbasiertes Migrations-System** (`_run_migrations()`) für Schema-Erweiterungen
 
 **Multi-Company-Support**
 - Mehrere eigene Firmendaten in Kontakten (Typ: "own")
@@ -582,6 +727,11 @@ Diese Anwendung ist für lokale Verwendung konzipiert:
 - Dynamisches Logo je nach gewählter Firma
 - Automatische Anpassung von Absenderzeile und Footer
 - Getrennte Logos pro Firma möglich
+- **Snapshot-Architektur**: Bei Rechnungserstellung werden alle Firmendaten (Verkäufer + Käufer) als Snapshot in der Rechnung gespeichert
+  - **SellerCompany** und **BuyerCompany** als Pflichtfelder (NOT NULL)
+  - Firmennamen sind das wichtigste Identifikationsmerkmal
+  - Unveränderliche Rechnungsdaten auch bei späteren Änderungen in Kontakten
+  - Historische Datenintegrität gewährleistet
 
 **Artikelverzeichnis**
 - Vordefinierte Artikel und Dienstleistungen

@@ -104,6 +104,7 @@ class Database:
                 TaxID TEXT,
                 Notes TEXT,
                 Logo TEXT,
+                BuyerRouteID TEXT,
                 UNIQUE(CustomerNumber)
             )
         ''')
@@ -211,6 +212,7 @@ class Database:
                 -- Seller (own company) - Snapshot
                 OwnCompanyId INTEGER,
                 SellerName TEXT NOT NULL,
+                SellerCompany TEXT NOT NULL,
                 SellerStreet TEXT,
                 SellerPostalCode TEXT,
                 SellerCity TEXT,
@@ -222,6 +224,7 @@ class Database:
                 -- Buyer (customer) - Snapshot
                 CustomerId INTEGER,
                 BuyerName TEXT NOT NULL,
+                BuyerCompany TEXT NOT NULL,
                 BuyerStreet TEXT,
                 BuyerPostalCode TEXT,
                 BuyerCity TEXT,
@@ -293,59 +296,85 @@ class Database:
         conn.close()
         
         # Run migrations
-        self._migrate_contacts_logo_column()
-        self._migrate_contacts_country_column()
-        self._migrate_contacts_buyer_route_id()
+        self._run_migrations()
         
         # Ensure the default "Kasse" account exists
         self.ensure_kasse_exists()
+
+    def _run_migrations(self):
+        """Run database migrations for new tables and columns"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # AssetCategories table (AfA-Tabellen nach BMF)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS AssetCategories (
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                Name TEXT NOT NULL,
+                UsefulLifeYears INTEGER NOT NULL,
+                DepreciationMethod TEXT DEFAULT 'linear',
+                COA_ID INTEGER,
+                Notes TEXT,
+                FOREIGN KEY (COA_ID) REFERENCES ChartOfAccounts(ID)
+            )
+        ''')
+
+        # Assets table (Anlagenverzeichnis)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS Assets (
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                InventoryNumber TEXT UNIQUE,
+                Name TEXT NOT NULL,
+                Description TEXT,
+                AssetCategory_ID INTEGER,
+                COA_ID INTEGER,
+                PurchaseDate DATE NOT NULL,
+                PurchasePrice REAL NOT NULL,
+                UsefulLifeYears INTEGER NOT NULL,
+                DepreciationMethod TEXT DEFAULT 'linear',
+                SerialNumber TEXT,
+                Location TEXT,
+                Supplier_ID INTEGER,
+                Document_ID INTEGER,
+                Booking_ID INTEGER,
+                SaleDate DATE,
+                SalePrice REAL,
+                Status TEXT DEFAULT 'active',
+                Notes TEXT,
+                Parent_ID INTEGER,
+                CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (AssetCategory_ID) REFERENCES AssetCategories(ID),
+                FOREIGN KEY (COA_ID) REFERENCES ChartOfAccounts(ID),
+                FOREIGN KEY (Supplier_ID) REFERENCES Contacts(ID),
+                FOREIGN KEY (Document_ID) REFERENCES Documents(ID),
+                FOREIGN KEY (Booking_ID) REFERENCES Bookings(ID),
+                FOREIGN KEY (Parent_ID) REFERENCES Assets(ID)
+            )
+        ''')
+
+        # AssetDepreciations table (AfA-Plan)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS AssetDepreciations (
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                Asset_ID INTEGER NOT NULL,
+                Year INTEGER NOT NULL,
+                DepreciationAmount REAL NOT NULL,
+                BookValue REAL NOT NULL,
+                Booking_ID INTEGER,
+                Status TEXT DEFAULT 'planned',
+                BookedAt DATETIME,
+                FOREIGN KEY (Asset_ID) REFERENCES Assets(ID) ON DELETE CASCADE,
+                FOREIGN KEY (Booking_ID) REFERENCES Bookings(ID),
+                UNIQUE(Asset_ID, Year)
+            )
+        ''')
+
+        conn.commit()
+        conn.close()
+
+        # Seed default AssetCategories if empty
+        self._seed_asset_categories()
     
-    def _migrate_contacts_logo_column(self):
-        """Add Logo column to Contacts table if it doesn't exist"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        # Check if Logo column exists
-        cursor.execute("PRAGMA table_info(Contacts)")
-        columns = [col[1] for col in cursor.fetchall()]
-        if 'Logo' not in columns:
-            try:
-                cursor.execute('ALTER TABLE Contacts ADD COLUMN Logo TEXT')
-                conn.commit()
-                print("Migration: Added Logo column to Contacts table")
-            except sqlite3.OperationalError as e:
-                print(f"Migration warning: {e}")
-        conn.close()
-
-    def _migrate_contacts_country_column(self):
-        """Add Country column to Contacts table if it doesn't exist (for XRechnung)"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(Contacts)")
-        columns = [col[1] for col in cursor.fetchall()]
-        if 'Country' not in columns:
-            try:
-                cursor.execute('ALTER TABLE Contacts ADD COLUMN Country TEXT DEFAULT "DE"')
-                conn.commit()
-                print("Migration: Added Country column to Contacts table")
-            except sqlite3.OperationalError as e:
-                print(f"Migration warning: {e}")
-        conn.close()
-
-    def _migrate_contacts_buyer_route_id(self):
-        """Add BuyerRouteID column to Contacts table if it doesn't exist (for XRechnung B2G)"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(Contacts)")
-        columns = [col[1] for col in cursor.fetchall()]
-        if 'BuyerRouteID' not in columns:
-            try:
-                cursor.execute('ALTER TABLE Contacts ADD COLUMN BuyerRouteID TEXT')
-                conn.commit()
-                print("Migration: Added BuyerRouteID column to Contacts table")
-            except sqlite3.OperationalError as e:
-                print(f"Migration warning: {e}")
-        conn.close()
-        
     # Table Documents (Receipts)
     def fetch_receipts(self):
         conn = self._get_connection()
@@ -698,6 +727,416 @@ class Database:
             conn.commit()
         conn.close()
 
+    def _seed_asset_categories(self):
+        """Seed default AfA categories from BMF table if empty"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM AssetCategories')
+        count = cursor.fetchone()[0]
+        if count == 0:
+            categories = [
+                # IT & Elektronik
+                ("EDV-Hardware (PC, Notebook, Server)", 3, "both", None, "BMF AV-Tabelle: 3 Jahre"),
+                ("Drucker, Scanner, Kopierer", 3, "both", None, "BMF AV-Tabelle: 3 Jahre"),
+                ("Tablets und Smartphones", 3, "both", None, "BMF AV-Tabelle: 3 Jahre"),
+                ("Bildschirme / Monitore", 3, "both", None, "BMF AV-Tabelle: 3 Jahre"),
+                ("Netzwerktechnik (Router, Switch)", 3, "both", None, "BMF AV-Tabelle: 3 Jahre"),
+                ("Software (ERP, kaufm. Software)", 3, "linear", None, "BMF AV-Tabelle: 3 Jahre, nur linear"),
+                ("Software (sonstige)", 3, "linear", None, "BMF AV-Tabelle: 3 Jahre, nur linear"),
+                # Büro & Einrichtung
+                ("Büromöbel (Schreibtisch, Regal)", 13, "both", None, "BMF AV-Tabelle: 13 Jahre"),
+                ("Bürostühle", 13, "both", None, "BMF AV-Tabelle: 13 Jahre"),
+                ("Aktenschränke, Tresore", 10, "both", None, "BMF AV-Tabelle: 10 Jahre"),
+                ("Beleuchtung", 10, "both", None, "BMF AV-Tabelle: 10 Jahre"),
+                # Kommunikation
+                ("Telefonanlage", 10, "both", None, "BMF AV-Tabelle: 10 Jahre"),
+                ("Fax, Anrufbeantworter", 5, "both", None, "BMF AV-Tabelle: 5 Jahre"),
+                # Fahrzeuge
+                ("PKW (Personenkraftwagen)", 6, "both", None, "BMF AV-Tabelle: 6 Jahre"),
+                ("LKW (bis 3,5t)", 9, "both", None, "BMF AV-Tabelle: 9 Jahre"),
+                ("LKW (über 3,5t)", 9, "both", None, "BMF AV-Tabelle: 9 Jahre"),
+                ("Anhänger", 10, "both", None, "BMF AV-Tabelle: 10 Jahre"),
+                ("Motorrad / Motorroller", 7, "both", None, "BMF AV-Tabelle: 7 Jahre"),
+                ("Fahrrad / E-Bike (betrieblich)", 7, "both", None, "BMF AV-Tabelle: 7 Jahre"),
+                # Maschinen & Geräte
+                ("Maschinen (allgemein)", 13, "both", None, "BMF AV-Tabelle: 13 Jahre"),
+                ("Werkzeug (elektrisch)", 8, "both", None, "BMF AV-Tabelle: 8 Jahre"),
+                ("Messgeräte, Laborgeräte", 5, "both", None, "BMF AV-Tabelle: 5 Jahre"),
+                ("Produktionsanlagen", 15, "both", None, "BMF AV-Tabelle: 15 Jahre"),
+                # Gebäude & Ausstattung
+                ("Ladeneinrichtung", 10, "both", None, "BMF AV-Tabelle: 10 Jahre"),
+                ("Klimaanlagen", 15, "both", None, "BMF AV-Tabelle: 15 Jahre"),
+                ("Solaranlage (Photovoltaik)", 20, "both", None, "BMF AV-Tabelle: 20 Jahre"),
+                # Sonstiges
+                ("Kamera, Foto-/Videoequipment", 7, "both", None, "BMF AV-Tabelle: 7 Jahre"),
+                ("Musikinstrumente (betrieblich)", 10, "both", None, "BMF AV-Tabelle: 10 Jahre"),
+                ("Werbeanlagen, Schilder", 10, "both", None, "BMF AV-Tabelle: 10 Jahre"),
+                ("Sonstige Wirtschaftsgüter", 10, "both", None, "Eigener Eintrag – bitte Nutzungsdauer prüfen"),
+            ]
+            for cat in categories:
+                cursor.execute('''
+                    INSERT INTO AssetCategories (Name, UsefulLifeYears, DepreciationMethod, COA_ID, Notes)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', cat)
+            conn.commit()
+        conn.close()
+
+    # ─── Asset Categories ────────────────────────────────────────────────────
+
+    def fetch_asset_categories(self):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM AssetCategories ORDER BY Name ASC')
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
+    def get_asset_category_by_id(self, category_id):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM AssetCategories WHERE ID = ?', (category_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row
+
+    def insert_asset_category(self, name, useful_life_years, depreciation_method='linear', coa_id=None, notes=''):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO AssetCategories (Name, UsefulLifeYears, DepreciationMethod, COA_ID, Notes)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (name, useful_life_years, depreciation_method, coa_id, notes))
+        conn.commit()
+        conn.close()
+
+    def update_asset_category(self, category_id, name, useful_life_years, depreciation_method, coa_id, notes):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE AssetCategories SET Name=?, UsefulLifeYears=?, DepreciationMethod=?, COA_ID=?, Notes=?
+            WHERE ID=?
+        ''', (name, useful_life_years, depreciation_method, coa_id, notes, category_id))
+        conn.commit()
+        conn.close()
+
+    def delete_asset_category(self, category_id):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM AssetCategories WHERE ID = ?', (category_id,))
+        conn.commit()
+        conn.close()
+
+    # ─── Assets ─────────────────────────────────────────────────────────────
+
+    def _generate_inventory_number(self, purchase_date):
+        """Generate inventory number: INV-YY-###"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        year_short = str(purchase_date)[:4][-2:]  # e.g. '25' from '2025-01-01'
+        pattern = f"INV-{year_short}-%"
+        cursor.execute("SELECT COUNT(*) FROM Assets WHERE InventoryNumber LIKE ?", (pattern,))
+        count = cursor.fetchone()[0]
+        conn.close()
+        return f"INV-{year_short}-{count + 1:03d}"
+
+    def fetch_assets(self, status=None, parent_only=True):
+        """Fetch assets with optional status filter. By default only top-level assets."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        if status:
+            if parent_only:
+                cursor.execute('''
+                    SELECT a.*, ac.Name as CategoryName, c.Name as SupplierName
+                    FROM Assets a
+                    LEFT JOIN AssetCategories ac ON a.AssetCategory_ID = ac.ID
+                    LEFT JOIN Contacts c ON a.Supplier_ID = c.ID
+                    WHERE a.Status = ? AND a.Parent_ID IS NULL
+                    ORDER BY a.PurchaseDate DESC
+                ''', (status,))
+            else:
+                cursor.execute('''
+                    SELECT a.*, ac.Name as CategoryName, c.Name as SupplierName
+                    FROM Assets a
+                    LEFT JOIN AssetCategories ac ON a.AssetCategory_ID = ac.ID
+                    LEFT JOIN Contacts c ON a.Supplier_ID = c.ID
+                    WHERE a.Status = ?
+                    ORDER BY a.PurchaseDate DESC
+                ''', (status,))
+        else:
+            if parent_only:
+                cursor.execute('''
+                    SELECT a.*, ac.Name as CategoryName, c.Name as SupplierName
+                    FROM Assets a
+                    LEFT JOIN AssetCategories ac ON a.AssetCategory_ID = ac.ID
+                    LEFT JOIN Contacts c ON a.Supplier_ID = c.ID
+                    WHERE a.Parent_ID IS NULL
+                    ORDER BY a.PurchaseDate DESC
+                ''')
+            else:
+                cursor.execute('''
+                    SELECT a.*, ac.Name as CategoryName, c.Name as SupplierName
+                    FROM Assets a
+                    LEFT JOIN AssetCategories ac ON a.AssetCategory_ID = ac.ID
+                    LEFT JOIN Contacts c ON a.Supplier_ID = c.ID
+                    ORDER BY a.PurchaseDate DESC
+                ''')
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
+    def get_asset_by_id(self, asset_id):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT a.*, ac.Name as CategoryName, c.Name as SupplierName
+            FROM Assets a
+            LEFT JOIN AssetCategories ac ON a.AssetCategory_ID = ac.ID
+            LEFT JOIN Contacts c ON a.Supplier_ID = c.ID
+            WHERE a.ID = ?
+        ''', (asset_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row
+
+    def get_asset_children(self, parent_id):
+        """Fetch sub-assets (extensions) of a parent asset"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT a.*, ac.Name as CategoryName, c.Name as SupplierName
+            FROM Assets a
+            LEFT JOIN AssetCategories ac ON a.AssetCategory_ID = ac.ID
+            LEFT JOIN Contacts c ON a.Supplier_ID = c.ID
+            WHERE a.Parent_ID = ?
+            ORDER BY a.PurchaseDate ASC
+        ''', (parent_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
+    def insert_asset(self, name, purchase_date, purchase_price, useful_life_years,
+                     description='', asset_category_id=None, coa_id=None,
+                     depreciation_method='linear', serial_number='', location='',
+                     supplier_id=None, document_id=None, booking_id=None,
+                     notes='', parent_id=None):
+        inv_number = self._generate_inventory_number(purchase_date)
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO Assets (InventoryNumber, Name, Description, AssetCategory_ID, COA_ID,
+                PurchaseDate, PurchasePrice, UsefulLifeYears, DepreciationMethod,
+                SerialNumber, Location, Supplier_ID, Document_ID, Booking_ID,
+                Notes, Parent_ID, Status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+        ''', (inv_number, name, description, asset_category_id, coa_id,
+              purchase_date, purchase_price, useful_life_years, depreciation_method,
+              serial_number, location, supplier_id, document_id, booking_id,
+              notes, parent_id))
+        asset_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return asset_id
+
+    def update_asset(self, asset_id, name, purchase_date, purchase_price, useful_life_years,
+                     description='', asset_category_id=None, coa_id=None,
+                     depreciation_method='linear', serial_number='', location='',
+                     supplier_id=None, document_id=None, booking_id=None,
+                     notes='', status='active'):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE Assets SET
+                Name=?, Description=?, AssetCategory_ID=?, COA_ID=?,
+                PurchaseDate=?, PurchasePrice=?, UsefulLifeYears=?, DepreciationMethod=?,
+                SerialNumber=?, Location=?, Supplier_ID=?, Document_ID=?, Booking_ID=?,
+                Notes=?, Status=?
+            WHERE ID=?
+        ''', (name, description, asset_category_id, coa_id,
+              purchase_date, purchase_price, useful_life_years, depreciation_method,
+              serial_number, location, supplier_id, document_id, booking_id,
+              notes, status, asset_id))
+        conn.commit()
+        conn.close()
+
+    def sell_asset(self, asset_id, sale_date, sale_price):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE Assets SET SaleDate=?, SalePrice=?, Status='sold' WHERE ID=?
+        ''', (sale_date, sale_price, asset_id))
+        conn.commit()
+        conn.close()
+
+    def delete_asset(self, asset_id):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM Assets WHERE ID = ?', (asset_id,))
+        conn.commit()
+        conn.close()
+
+    # ─── Asset Depreciations ─────────────────────────────────────────────────
+
+    def get_depreciations_for_asset(self, asset_id):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM AssetDepreciations WHERE Asset_ID = ? ORDER BY Year ASC
+        ''', (asset_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
+    def calculate_depreciation_plan(self, purchase_price, purchase_date, useful_life_years,
+                                     depreciation_method='linear'):
+        """Calculate full AfA plan. Returns list of dicts per year.
+        purchase_date: 'YYYY-MM-DD'
+        Handles partial first/last year (months-based).
+        Degressive: 25% fixed, switches to linear when linear is higher.
+        GWG: if purchase_price <= 800, full write-off in purchase year.
+        """
+        import datetime as dt
+        plan = []
+
+        if not purchase_price or not purchase_date or not useful_life_years:
+            return plan
+
+        try:
+            pd = dt.date.fromisoformat(str(purchase_date)[:10])
+        except Exception:
+            return plan
+
+        purchase_year = pd.year
+        # Months remaining in purchase year (including purchase month)
+        months_in_first_year = 13 - pd.month  # e.g. March → 10 months
+
+        # GWG: Sofortabschreibung up to 800 €
+        if purchase_price <= 800.0:
+            plan.append({
+                'year': purchase_year,
+                'book_value_start': purchase_price,
+                'depreciation': round(purchase_price, 2),
+                'book_value_end': 0.0,
+                'method': 'GWG',
+            })
+            return plan
+
+        if depreciation_method == 'linear':
+            annual = purchase_price / useful_life_years
+            remaining = purchase_price
+            first_depr = round(annual * months_in_first_year / 12, 2)
+            plan.append({
+                'year': purchase_year,
+                'book_value_start': round(remaining, 2),
+                'depreciation': first_depr,
+                'book_value_end': round(remaining - first_depr, 2),
+                'method': 'linear',
+            })
+            remaining -= first_depr
+            year = purchase_year + 1
+            while remaining > 0.005:
+                depr = round(min(annual, remaining), 2)
+                plan.append({
+                    'year': year,
+                    'book_value_start': round(remaining, 2),
+                    'depreciation': depr,
+                    'book_value_end': round(remaining - depr, 2),
+                    'method': 'linear',
+                })
+                remaining = round(remaining - depr, 2)
+                year += 1
+
+        else:  # degressive
+            deg_rate = 0.25  # 25% fixed (§ 7 Abs. 2 EStG 2025)
+            linear_annual = purchase_price / useful_life_years
+            remaining = purchase_price
+            year = purchase_year
+            first = True
+            while remaining > 0.005:
+                deg_depr = remaining * deg_rate
+                lin_depr = remaining / max(1, useful_life_years - (year - purchase_year))
+                # Switch to linear when linear is higher
+                if lin_depr >= deg_depr:
+                    method = 'linear'
+                    annual_depr = lin_depr
+                else:
+                    method = 'degressiv'
+                    annual_depr = deg_depr
+                # Partial first year
+                if first:
+                    annual_depr = annual_depr * months_in_first_year / 12
+                    first = False
+                annual_depr = round(min(annual_depr, remaining), 2)
+                plan.append({
+                    'year': year,
+                    'book_value_start': round(remaining, 2),
+                    'depreciation': annual_depr,
+                    'book_value_end': round(remaining - annual_depr, 2),
+                    'method': method,
+                })
+                remaining = round(remaining - annual_depr, 2)
+                year += 1
+
+        return plan
+
+    def get_book_value_at_date(self, asset_id, at_date=None):
+        """Calculate current book value of an asset at a given date."""
+        import datetime as dt
+        asset = self.get_asset_by_id(asset_id)
+        if not asset:
+            return 0.0
+        purchase_price = asset[7]   # PurchasePrice
+        purchase_date = asset[6]    # PurchaseDate
+        useful_life = asset[8]      # UsefulLifeYears
+        method = asset[9]           # DepreciationMethod
+        if at_date is None:
+            at_date = dt.date.today()
+        plan = self.calculate_depreciation_plan(purchase_price, purchase_date, useful_life, method)
+        current_year = at_date.year
+        book_value = purchase_price
+        for entry in plan:
+            if entry['year'] <= current_year:
+                book_value = entry['book_value_end']
+            else:
+                break
+        return max(0.0, book_value)
+
+    def book_depreciation(self, asset_id, year, account_id, coa_id_expense,
+                          coa_id_asset, description=None):
+        """Book an AfA entry: creates a Booking and marks depreciation as posted."""
+        import datetime as dt
+        asset = self.get_asset_by_id(asset_id)
+        if not asset:
+            raise ValueError(f"Asset {asset_id} not found")
+        plan = self.calculate_depreciation_plan(
+            asset[7], asset[6], asset[8], asset[9])
+        year_entry = next((e for e in plan if e['year'] == year), None)
+        if not year_entry:
+            raise ValueError(f"No depreciation planned for year {year}")
+        amount = year_entry['depreciation']
+        if not description:
+            description = f"AfA {asset[2]} {year} ({asset[1]})"
+        booking_date = f"{year}-12-31"
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO Bookings (DateBooking, DateTax, Account_ID, COA_ID,
+                Amount, Currency, Text, BookingType, Status)
+            VALUES (?, ?, ?, ?, ?, 'EUR', ?, 'expense', 'posted')
+        ''', (booking_date, booking_date, account_id, coa_id_expense,
+              -abs(amount), description))
+        booking_id = cursor.lastrowid
+        # Upsert into AssetDepreciations
+        cursor.execute('''
+            INSERT INTO AssetDepreciations (Asset_ID, Year, DepreciationAmount, BookValue, Booking_ID, Status, BookedAt)
+            VALUES (?, ?, ?, ?, ?, 'posted', CURRENT_TIMESTAMP)
+            ON CONFLICT(Asset_ID, Year) DO UPDATE SET
+                Booking_ID=excluded.Booking_ID, Status='posted', BookedAt=CURRENT_TIMESTAMP,
+                DepreciationAmount=excluded.DepreciationAmount, BookValue=excluded.BookValue
+        ''', (asset_id, year, amount, year_entry['book_value_end'], booking_id))
+        conn.commit()
+        conn.close()
+        return booking_id
+
     def fetch_accounts(self):
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -935,12 +1374,16 @@ class Database:
         """
         conn = self._get_connection()
         cursor = conn.cursor()
+
+        sql_template = '''
+            INSERT INTO Articles (Name, Unit, UnitPrice, TaxRate, Description, Active)
+            VALUES (?, ?, ?, ?, ?, ?)'''
+        params = (name, unit, unit_price, tax_rate, description, active)
+
         try:
-            cursor.execute('''
-                INSERT INTO Articles (Name, Unit, UnitPrice, TaxRate, Description, Active)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (name, unit, unit_price, tax_rate, description, active))
+            cursor.execute(sql_template, params)
             conn.commit()
+            self._log_sql(sql_template, params, "Insert article")
         except sqlite3.IntegrityError as e:
             print("Error inserting article:", e)
             conn.rollback()
@@ -952,12 +1395,14 @@ class Database:
         conn = self._get_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute('''
+            sql_template = '''
                 UPDATE Articles
                 SET Name = ?, Unit = ?, UnitPrice = ?, TaxRate = ?, Description = ?, Active = ?
-                WHERE ID = ?
-            ''', (name, unit, unit_price, tax_rate, description, active, article_id))
+                WHERE ID = ?'''
+            params = (name, unit, unit_price, tax_rate, description, active, article_id)
+            cursor.execute(sql_template, params)
             conn.commit()
+            self._log_sql(sql_template, params, "Update article")
         except sqlite3.IntegrityError as e:
             print("Error updating article:", e)
             conn.rollback()
@@ -1217,15 +1662,15 @@ class Database:
         sql_template = '''
             INSERT INTO Invoices (
                 InvoiceNumber, InvoiceDate,
-                OwnCompanyId, SellerName, SellerStreet, SellerPostalCode, SellerCity, SellerCountry, SellerVATID, SellerEmail, SellerPhone,
-                CustomerId, BuyerName, BuyerStreet, BuyerPostalCode, BuyerCity, BuyerCountry, BuyerVATID, BuyerReference, BuyerRouteID,
+                OwnCompanyId, SellerName, SellerCompany, SellerStreet, SellerPostalCode, SellerCity, SellerCountry, SellerVATID, SellerEmail, SellerPhone,
+                CustomerId, BuyerName, BuyerCompany, BuyerStreet, BuyerPostalCode, BuyerCity, BuyerCountry, BuyerVATID, BuyerReference, BuyerRouteID,
                 OrderNumber, Currency, DeliveryDate,
                 PaymentTerms, PaymentDueDate, SkontoDays, SkontoPercent,
                 BankAccountId, BankName, BankIBAN, BankBIC,
                 TaxCategory, TaxRate, SumNet, TaxAmount, SumGross, AmountDue,
                 Status, PDFPath, XMLPath
             ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
         '''
         
@@ -1234,6 +1679,7 @@ class Database:
             invoice_data.get('invoice_date'),
             invoice_data.get('own_company_id'),
             invoice_data.get('seller_name'),
+            invoice_data.get('seller_company'),
             invoice_data.get('seller_street'),
             invoice_data.get('seller_postal_code'),
             invoice_data.get('seller_city'),
@@ -1243,6 +1689,7 @@ class Database:
             invoice_data.get('seller_phone'),
             invoice_data.get('customer_id'),
             invoice_data.get('buyer_name'),
+            invoice_data.get('buyer_company'),
             invoice_data.get('buyer_street'),
             invoice_data.get('buyer_postal_code'),
             invoice_data.get('buyer_city'),

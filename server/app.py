@@ -9,6 +9,10 @@ import os
 from . import pages
 from . import handlers
 from . import upload_handler
+from .pages_assets import (
+    PageAssets, PageAssetView, PageAssetEdit,
+    PageAssetCategories, PageAssetCategoryEdit,
+)
 
 class SimpleWebServer(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -140,7 +144,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 db.delete_article(article_id)
                 self.respond(303, "", headers={"Location": "/articles"})
             elif self.path == "/settings":
-                self.respond(200, pages.PageSettings())
+                self.respond(200, pages.PageSettings(db))
             elif self.path == "/receipts":
                 self.respond(200, pages.PageReceipts(db))
             elif self.path.startswith("/receipts/edit"):
@@ -220,6 +224,45 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 query_components = parse_qs(self.path.split('?')[1])
                 import_id = query_components["import_id"][0]
                 self.respond(200, pages.PageConfirmTransactions(import_id))
+            # ── Assets / Anlagenverzeichnis ───────────────────────────────
+            elif self.path == "/assets" or self.path.startswith("/assets?"):
+                status_filter = ''
+                if '?' in self.path:
+                    qc = parse_qs(self.path.split('?', 1)[1])
+                    status_filter = qc.get('status', [''])[0]
+                self.respond(200, PageAssets(db, status_filter=status_filter))
+            elif self.path == "/assets/new" or self.path.startswith("/assets/new?"):
+                parent_id = None
+                if '?' in self.path:
+                    qc = parse_qs(self.path.split('?', 1)[1])
+                    pid = qc.get('parent_id', [None])[0]
+                    parent_id = int(pid) if pid else None
+                self.respond(200, PageAssetEdit(db, asset_id=None, parent_id=parent_id))
+            elif self.path.startswith("/assets/edit"):
+                qc = parse_qs(self.path.split('?', 1)[1])
+                asset_id = int(qc["id"][0])
+                self.respond(200, PageAssetEdit(db, asset_id=asset_id))
+            elif self.path.startswith("/assets/view"):
+                qc = parse_qs(self.path.split('?', 1)[1])
+                asset_id = int(qc["id"][0])
+                self.respond(200, PageAssetView(db, asset_id))
+            elif self.path.startswith("/assets/delete"):
+                qc = parse_qs(self.path.split('?', 1)[1])
+                asset_id = int(qc["id"][0])
+                db.delete_asset(asset_id)
+                self.respond(303, "", headers={"Location": "/assets"})
+            elif self.path == "/asset_categories" or self.path.startswith("/asset_categories?"):
+                self.respond(200, PageAssetCategories(db))
+            elif self.path.startswith("/asset_categories/edit"):
+                qc = parse_qs(self.path.split('?', 1)[1])
+                cat_id = int(qc["id"][0])
+                self.respond(200, PageAssetCategoryEdit(db, cat_id))
+            elif self.path.startswith("/asset_categories/delete"):
+                qc = parse_qs(self.path.split('?', 1)[1])
+                cat_id = int(qc["id"][0])
+                db.delete_asset_category(cat_id)
+                self.respond(303, "", headers={"Location": "/asset_categories"})
+            # ─────────────────────────────────────────────────────────────
             elif self.path == "/buch.css":
                 self.serve_static_file("buch.css", "text/css")
             elif self.path == "/favicon.ico":
@@ -389,6 +432,26 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path == "/articles/update":
                 status_code, location = handlers.handle_update_article(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
+            # ── Assets ────────────────────────────────────────────────────
+            elif self.path == "/assets/add":
+                status_code, location = handlers.handle_add_asset(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/assets/update":
+                status_code, location = handlers.handle_update_asset(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/assets/depreciate":
+                status_code, location = handlers.handle_book_depreciation(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/assets/sell":
+                status_code, location = handlers.handle_asset_sale(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/asset_categories/add":
+                status_code, location = handlers.handle_add_asset_category(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/asset_categories/update":
+                status_code, location = handlers.handle_update_asset_category(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            # ─────────────────────────────────────────────────────────────
             elif self.path == "/init_content":
                 status_code, location = handlers.handle_init_content(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
@@ -417,7 +480,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
 
 # Start web server
 def run_server(host="localhost", port=8080):
-    db = Database()
+    #db = Database()
     server_address = (host, port)
     httpd = HTTPServer(server_address, SimpleWebServer)
     print(f"Starting server on {host}:{port}...")

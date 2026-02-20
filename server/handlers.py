@@ -4,7 +4,7 @@ POST request handlers for form submissions
 import os
 import json
 import datetime
-from .pages import Header1, Header2, Footer
+from .pages import Header1, Header2, Header3, Footer
 from db import Database
 
 try:
@@ -341,36 +341,37 @@ def handle_execute_sql(db: Database, post_data):
         conn.commit()
         
         # Build result message
-        message = f"<h2>Ergebnis</h2>"
-        message += f"<p><strong>{success_count} von {len(commands)} Befehlen erfolgreich ausgeführt</strong></p>"
+        message = f"<p><strong>{success_count} von {len(commands)} Befehlen erfolgreich ausgeführt</strong></p>"
         
         if results:
-            message += "<h3 class='sql-success-title'>Erfolgreiche Befehle:</h3>"
+            message += "<h2 class='successTitle'>Erfolgreiche Befehle:</h2>"
             message += "<pre class='sql-success-box'>"
             message += "\n".join(results)
             message += "</pre>"
         
         if errors:
-            message += "<h3 class='sql-error-title'>Fehler:</h3>"
+            message += "<h2 class='errorTitle'>Fehler:</h2>"
             message += "<pre class='sql-error-box'>"
             message += "\n".join(errors)
             message += "</pre>"
         
-        message += "<p><a href='/'>Zurück zum Dashboard</a></p>"
+        message += "<p><a href='/settings'>Zurück zu den Einstellungen</a></p>"
         
         return generate_sql_result_page(message, len(errors) == 0)
         
     except Exception as e:
         conn.rollback()
-        return generate_sql_result_page(f"<h2>Fehler</h2><p class='sql-error-title'>{str(e)}</p><p><a href='/'>Zurück zum Dashboard</a></p>", False)
+        return generate_sql_result_page(f"<h2 class='errorTitle'>Fehler</h2><p class='errorTitle'>{str(e)}</p><p><a href='/settings'>Zurück zu den Einstellungen</a></p>", False)
     finally:
         conn.close()
 
 def generate_sql_result_page(message, success):
     """Generate result page for SQL execution"""
-    s = Header1('dashboard')
-    s += Header2()
-    s += "<h1>SQL-Ausführung</h1>"
+    s = Header1('settings')
+    submenu = '<span id="ActivePage">SQL</span>'
+    s += Header2(submenu)
+    s += Header3()
+    s += "<h1>Ergebnis SQL-Ausführung</h1>"
     s += message
     s += Footer()
     return s
@@ -568,6 +569,7 @@ def handle_save_invoice(data: dict, pdf_path: str = None) -> int:
     
     # Extract seller data (snapshot)
     seller_name = own_contact[4] or own_contact[3] or ''
+    seller_company = own_contact[4] or ''  # Company name
     seller_street = own_contact[5] or ''
     seller_postal = own_contact[6] or ''
     seller_city = own_contact[7] or ''
@@ -576,6 +578,7 @@ def handle_save_invoice(data: dict, pdf_path: str = None) -> int:
     
     # Get buyer data - try to find by customer number or parse from address
     buyer_name = ''
+    buyer_company = ''
     buyer_street = ''
     buyer_postal = ''
     buyer_city = ''
@@ -590,6 +593,7 @@ def handle_save_invoice(data: dict, pdf_path: str = None) -> int:
         for contact in contacts:
             if contact[2] == customer_number:  # CustomerNumber
                 buyer_name = contact[3] or ''
+                buyer_company = contact[4] or ''  # Company name
                 buyer_street = contact[5] or ''
                 buyer_postal = contact[6] or ''
                 buyer_city = contact[7] or ''
@@ -693,12 +697,14 @@ def handle_save_invoice(data: dict, pdf_path: str = None) -> int:
         'OrderNumber': data.get('orderNumber') or None,
         'DeliveryDate': data.get('deliveryDate') or None,
         'SellerName': seller_name,
+        'SellerCompany': seller_company,
         'SellerStreet': seller_street,
         'SellerPostalCode': seller_postal,
         'SellerCity': seller_city,
         'SellerCountry': seller_country,
         'SellerVATID': seller_vat_id,
         'BuyerName': buyer_name,
+        'BuyerCompany': buyer_company,
         'BuyerStreet': buyer_street,
         'BuyerPostalCode': buyer_postal,
         'BuyerCity': buyer_city,
@@ -1418,6 +1424,7 @@ def handle_invoice_save(post_body: bytes):
             'invoice_date': invoice_date,
             'own_company_id': own_company_id,
             'seller_name': own_company[4] or own_company[3] or '',
+            'seller_company': own_company[4] or '',
             'seller_street': own_company[5] or '',
             'seller_postal_code': own_company[6] or '',
             'seller_city': own_company[7] or '',
@@ -1427,6 +1434,7 @@ def handle_invoice_save(post_body: bytes):
             'seller_phone': own_company[10] or '',
             'customer_id': customer_id,
             'buyer_name': customer[4] or customer[3] or '',
+            'buyer_company': customer[4] or '',
             'buyer_street': customer[5] or '',
             'buyer_postal_code': customer[6] or '',
             'buyer_city': customer[7] or '',
@@ -1473,9 +1481,9 @@ def handle_invoice_save(post_body: bytes):
             cursor.execute('''
                 UPDATE Invoices SET
                     InvoiceNumber=?, InvoiceDate=?, OwnCompanyId=?,
-                    SellerName=?, SellerStreet=?, SellerPostalCode=?, SellerCity=?, SellerCountry=?,
+                    SellerName=?, SellerCompany=?, SellerStreet=?, SellerPostalCode=?, SellerCity=?, SellerCountry=?,
                     SellerVATID=?, SellerEmail=?, SellerPhone=?,
-                    CustomerId=?, BuyerName=?, BuyerStreet=?, BuyerPostalCode=?, BuyerCity=?, BuyerCountry=?,
+                    CustomerId=?, BuyerName=?, BuyerCompany=?, BuyerStreet=?, BuyerPostalCode=?, BuyerCity=?, BuyerCountry=?,
                     BuyerVATID=?, BuyerReference=?, BuyerRouteID=?,
                     OrderNumber=?, Currency=?, DeliveryDate=?,
                     PaymentTerms=?, PaymentDueDate=?, SkontoDays=?, SkontoPercent=?,
@@ -1485,10 +1493,10 @@ def handle_invoice_save(post_body: bytes):
                 WHERE ID=?
             ''', (
                 invoice_data['invoice_number'], invoice_data['invoice_date'], invoice_data['own_company_id'],
-                invoice_data['seller_name'], invoice_data['seller_street'], invoice_data['seller_postal_code'],
+                invoice_data['seller_name'], invoice_data['seller_company'], invoice_data['seller_street'], invoice_data['seller_postal_code'],
                 invoice_data['seller_city'], invoice_data['seller_country'],
                 invoice_data['seller_vat_id'], invoice_data['seller_email'], invoice_data['seller_phone'],
-                invoice_data['customer_id'], invoice_data['buyer_name'], invoice_data['buyer_street'],
+                invoice_data['customer_id'], invoice_data['buyer_name'], invoice_data['buyer_company'], invoice_data['buyer_street'],
                 invoice_data['buyer_postal_code'], invoice_data['buyer_city'], invoice_data['buyer_country'],
                 invoice_data['buyer_vat_id'], invoice_data['buyer_reference'], invoice_data['buyer_route_id'],
                 invoice_data['order_number'], invoice_data['currency'], invoice_data['delivery_date'],
@@ -1612,6 +1620,151 @@ def handle_send_invoice_email(post_body: bytes):
         traceback.print_exc()
         return json.dumps({'success': False, 'error': str(e)}).encode()
 
+
+# ─── Asset-Handler ───────────────────────────────────────────────────────────
+
+def handle_add_asset(db: Database, post_data: dict):
+    """Neue Anlage anlegen"""
+    name              = post_data.get('name', [''])[0].strip()
+    description       = post_data.get('description', [''])[0].strip()
+    cat_id            = post_data.get('asset_category_id', [None])[0] or None
+    coa_id            = post_data.get('coa_id', [None])[0] or None
+    purchase_date     = post_data.get('purchase_date', [''])[0].strip()
+    purchase_price    = float(post_data.get('purchase_price', ['0'])[0] or 0)
+    useful_life       = int(post_data.get('useful_life_years', ['1'])[0] or 1)
+    method            = post_data.get('depreciation_method', ['linear'])[0]
+    serial            = post_data.get('serial_number', [''])[0].strip()
+    location          = post_data.get('location', [''])[0].strip()
+    supplier_id       = post_data.get('supplier_id', [None])[0] or None
+    document_id       = post_data.get('document_id', [None])[0] or None
+    notes             = post_data.get('notes', [''])[0].strip()
+    parent_id         = post_data.get('parent_id', [None])[0] or None
+
+    db.insert_asset(
+        name=name,
+        description=description,
+        asset_category_id=int(cat_id) if cat_id else None,
+        coa_id=int(coa_id) if coa_id else None,
+        purchase_date=purchase_date,
+        purchase_price=purchase_price,
+        useful_life_years=useful_life,
+        depreciation_method=method,
+        serial_number=serial,
+        location=location,
+        supplier_id=int(supplier_id) if supplier_id else None,
+        document_id=int(document_id) if document_id else None,
+        notes=notes,
+        parent_id=int(parent_id) if parent_id else None,
+    )
+    return 303, '/assets'
+
+
+def handle_update_asset(db: Database, post_data: dict):
+    """Bestehende Anlage aktualisieren"""
+    asset_id          = int(post_data.get('asset_id', ['0'])[0])
+    name              = post_data.get('name', [''])[0].strip()
+    description       = post_data.get('description', [''])[0].strip()
+    cat_id            = post_data.get('asset_category_id', [None])[0] or None
+    coa_id            = post_data.get('coa_id', [None])[0] or None
+    purchase_date     = post_data.get('purchase_date', [''])[0].strip()
+    purchase_price    = float(post_data.get('purchase_price', ['0'])[0] or 0)
+    useful_life       = int(post_data.get('useful_life_years', ['1'])[0] or 1)
+    method            = post_data.get('depreciation_method', ['linear'])[0]
+    serial            = post_data.get('serial_number', [''])[0].strip()
+    location          = post_data.get('location', [''])[0].strip()
+    supplier_id       = post_data.get('supplier_id', [None])[0] or None
+    document_id       = post_data.get('document_id', [None])[0] or None
+    notes             = post_data.get('notes', [''])[0].strip()
+    status            = post_data.get('status', ['active'])[0]
+
+    db.update_asset(
+        asset_id=asset_id,
+        name=name,
+        description=description,
+        asset_category_id=int(cat_id) if cat_id else None,
+        coa_id=int(coa_id) if coa_id else None,
+        purchase_date=purchase_date,
+        purchase_price=purchase_price,
+        useful_life_years=useful_life,
+        depreciation_method=method,
+        serial_number=serial,
+        location=location,
+        supplier_id=int(supplier_id) if supplier_id else None,
+        document_id=int(document_id) if document_id else None,
+        notes=notes,
+        status=status,
+    )
+    return 303, f'/assets/edit?id={asset_id}'
+
+
+def handle_book_depreciation(db: Database, post_data: dict):
+    """AfA für ein Jahr buchen"""
+    asset_id    = int(post_data.get('asset_id', ['0'])[0])
+    year        = int(post_data.get('year', ['0'])[0])
+    account_id  = int(post_data.get('account_id', ['0'])[0])
+    coa_id      = int(post_data.get('coa_id', ['0'])[0])
+    description = post_data.get('description', [''])[0].strip() or None
+
+    db.book_depreciation(
+        asset_id=asset_id,
+        year=year,
+        account_id=account_id,
+        coa_id_expense=coa_id,
+        coa_id_asset=coa_id,
+        description=description,
+    )
+    return 303, f'/assets/view?id={asset_id}'
+
+
+def handle_asset_sale(db: Database, post_data: dict):
+    """Anlage verkaufen oder abgehen"""
+    asset_id   = int(post_data.get('asset_id', ['0'])[0])
+    sale_date  = post_data.get('sale_date', [''])[0].strip()
+    sale_price = float(post_data.get('sale_price', ['0'])[0] or 0)
+
+    db.sell_asset(asset_id, sale_date, sale_price)
+    return 303, f'/assets/view?id={asset_id}'
+
+
+def handle_add_asset_category(db: Database, post_data: dict):
+    """Neue AfA-Kategorie anlegen"""
+    name        = post_data.get('name', [''])[0].strip()
+    years       = int(post_data.get('useful_life_years', ['1'])[0] or 1)
+    method      = post_data.get('depreciation_method', ['linear'])[0]
+    coa_id      = post_data.get('coa_id', [None])[0] or None
+    notes       = post_data.get('notes', [''])[0].strip()
+
+    db.insert_asset_category(
+        name=name,
+        useful_life_years=years,
+        depreciation_method=method,
+        coa_id=int(coa_id) if coa_id else None,
+        notes=notes,
+    )
+    return 303, '/asset_categories'
+
+
+def handle_update_asset_category(db: Database, post_data: dict):
+    """Bestehende AfA-Kategorie aktualisieren"""
+    cat_id  = int(post_data.get('category_id', ['0'])[0])
+    name    = post_data.get('name', [''])[0].strip()
+    years   = int(post_data.get('useful_life_years', ['1'])[0] or 1)
+    method  = post_data.get('depreciation_method', ['linear'])[0]
+    coa_id  = post_data.get('coa_id', [None])[0] or None
+    notes   = post_data.get('notes', [''])[0].strip()
+
+    db.update_asset_category(
+        category_id=cat_id,
+        name=name,
+        useful_life_years=years,
+        depreciation_method=method,
+        coa_id=int(coa_id) if coa_id else None,
+        notes=notes,
+    )
+    return 303, '/asset_categories'
+
+
+# ─── (end of Asset-Handler) ───────────────────────────────────────────────────
 
 def handle_invoice_pdf_by_id(invoice_id: int):
     """Generate PDF for an existing invoice by ID
