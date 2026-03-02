@@ -102,8 +102,6 @@ def PageAssets(db: Database, status_filter=''):
     </div>
     '''
 
-    s += '<h2>Anlagenverzeichnis</h2>'
-
     if not asset_rows:
         s += '<p><em>Keine Anlagen gefunden.</em></p>'
     else:

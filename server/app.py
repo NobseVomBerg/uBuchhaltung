@@ -13,6 +13,14 @@ from .pages_assets import (
     PageAssets, PageAssetView, PageAssetEdit,
     PageAssetCategories, PageAssetCategoryEdit,
 )
+from .pages_masterdata import (
+    PageMasterData, PageArticles, PageArticleEdit,
+    PageSkr, PageSkrEdit,
+    PageBankAccounts, PageBankAccountEdit,
+    PageNumberRanges, PageNumberRangesEdit,
+)
+from .pages_contacts import PageContacts, PageContactNew, PageContactEdit
+from .pages_miscellaneous import PageMiscellaneous
 
 class SimpleWebServer(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -132,19 +140,65 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(200, pages.PageReminders(db))
             elif self.path == "/dashboard":
                 self.respond(200, pages.PageDashboard(db))
-            elif self.path == "/articles":
-                self.respond(200, pages.PageArticles(db))
-            elif self.path.startswith("/articles/edit"):
+            # ── Master Data (Stammdaten) ──────────────────────────────────
+            elif self.path == "/masterdata":
+                self.respond(200, PageMasterData(db))
+            # Articles
+            elif self.path == "/masterdata/articles":
+                self.respond(200, PageArticles(db))
+            elif self.path.startswith("/masterdata/articles/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 article_id = int(query_components["id"][0])
-                self.respond(200, pages.PageArticleEdit(db, article_id))
-            elif self.path.startswith("/articles/delete"):
+                self.respond(200, PageArticleEdit(db, article_id))
+            elif self.path.startswith("/masterdata/articles/delete"):
                 query_components = parse_qs(self.path.split('?')[1])
                 article_id = int(query_components["id"][0])
                 db.delete_article(article_id)
-                self.respond(303, "", headers={"Location": "/articles"})
-            elif self.path == "/settings":
-                self.respond(200, pages.PageSettings(db))
+                self.respond(303, "", headers={"Location": "/masterdata/articles"})
+            # Contacts
+            elif self.path == "/masterdata/contacts" or self.path.startswith("/masterdata/contacts?"):
+                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                c_type  = qs.get('type',   [None])[0]
+                c_entity= qs.get('entity', [None])[0]
+                self.respond(200, PageContacts(db, contact_type_filter=c_type, entity_type_filter=c_entity))
+            elif self.path.startswith("/masterdata/contacts/new"):
+                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                entity = qs.get('entity', ['company'])[0]
+                self.respond(200, PageContactNew(db, entity_type=entity))
+            elif self.path.startswith("/masterdata/contacts/edit"):
+                query_components = parse_qs(self.path.split('?')[1])
+                contact_id = int(query_components["id"][0])
+                self.respond(200, PageContactEdit(db, contact_id))
+            elif self.path.startswith("/masterdata/contacts/delete"):
+                query_components = parse_qs(self.path.split('?')[1])
+                contact_id = int(query_components["id"][0])
+                db.delete_contact(contact_id)
+                self.respond(303, "", headers={"Location": "/masterdata/contacts"})
+            # SKR (Chart of Accounts)
+            elif self.path == "/masterdata/skr":
+                self.respond(200, PageSkr(db))
+            elif self.path.startswith("/masterdata/skr/edit"):
+                query_components = parse_qs(self.path.split('?')[1])
+                id = query_components["id"][0]
+                self.respond(200, PageSkrEdit(db, id))
+            # Bank Accounts
+            elif self.path == "/masterdata/bankaccounts":
+                self.respond(200, PageBankAccounts(db))
+            elif self.path.startswith("/masterdata/bankaccounts/edit"):
+                query_components = parse_qs(self.path.split('?')[1])
+                account_id = int(query_components["id"][0])
+                self.respond(200, PageBankAccountEdit(db, account_id))
+            elif self.path.startswith("/masterdata/bankaccounts/delete"):
+                query_components = parse_qs(self.path.split('?')[1])
+                account_id = int(query_components["id"][0])
+                db.delete_account(account_id)
+                self.respond(303, "", headers={"Location": "/masterdata/bankaccounts"})
+            # ──────────────────────────────────────────────────────────────
+            elif self.path == "/miscellaneous" or self.path.startswith("/miscellaneous?"):
+                self.respond(200, PageMiscellaneous(db))
+            elif self.path == "/db_export":
+                status_code, location = handlers.handle_db_export(db)
+                self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/receipts":
                 self.respond(200, pages.PageReceipts(db))
             elif self.path.startswith("/receipts/edit"):
@@ -180,46 +234,17 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 db.unlink_booking_from_document(booking_id, doc_id)
                 # Redirect back to referrer or transactions
                 self.respond(303, "", headers={"Location": self.headers.get('Referer', '/transactions')})
-            elif self.path == "/skr":
-                self.respond(200, pages.PageSkr(db))
-            elif self.path.startswith("/contacts"):
-                if self.path == "/contacts" or self.path.startswith("/contacts?"):
-                    self.respond(200, pages.PageContacts(db))
-                elif self.path.startswith("/contacts/edit"):
-                    query_components = parse_qs(self.path.split('?')[1])
-                    contact_id = int(query_components["id"][0])
-                    self.respond(200, pages.PageContactEdit(db, contact_id))
-                elif self.path.startswith("/contacts/delete"):
-                    query_components = parse_qs(self.path.split('?')[1])
-                    contact_id = int(query_components["id"][0])
-                    db.delete_contact(contact_id)
-                    self.respond(303, "", headers={"Location": "/contacts"})
-            elif self.path == "/settings/bankaccounts":
-                self.respond(200, pages.PageSettingsBankAccounts(db))
-            elif self.path.startswith("/settings/bankaccounts/edit"):
-                query_components = parse_qs(self.path.split('?')[1])
-                account_id = int(query_components["id"][0])
-                self.respond(200, pages.PageSettingsBankAccountEdit(db, account_id))
-            elif self.path.startswith("/settings/bankaccounts/delete"):
-                query_components = parse_qs(self.path.split('?')[1])
-                account_id = int(query_components["id"][0])
-                db.delete_account(account_id)
-                self.respond(303, "", headers={"Location": "/settings/bankaccounts"})
-            elif self.path == "/settings/numberranges":
-                self.respond(200, pages.PageSettingsNumberRanges(db))
-            elif self.path.startswith("/settings/numberranges/edit"):
+            elif self.path == "/masterdata/numberranges":
+                self.respond(200, PageNumberRanges(db))
+            elif self.path.startswith("/masterdata/numberranges/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 range_id = int(query_components["id"][0])
-                self.respond(200, pages.PageSettingsNumberRangesEdit(db, range_id))
-            elif self.path.startswith("/settings/numberranges/delete"):
+                self.respond(200, PageNumberRangesEdit(db, range_id))
+            elif self.path.startswith("/masterdata/numberranges/delete"):
                 query_components = parse_qs(self.path.split('?')[1])
                 range_id = int(query_components["id"][0])
                 db.delete_number_range(range_id)
-                self.respond(303, "", headers={"Location": "/settings/numberranges"})
-            elif self.path.startswith("/edit_skr"):
-                query_components = parse_qs(self.path.split('?')[1])
-                id = query_components["id"][0]
-                self.respond(200, pages.PageSkrEdit(db, id))
+                self.respond(303, "", headers={"Location": "/masterdata/numberranges"})
             elif self.path.startswith("/confirm_transactions"):
                 query_components = parse_qs(self.path.split('?')[1])
                 import_id = query_components["import_id"][0]
@@ -263,6 +288,24 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 db.delete_asset_category(cat_id)
                 self.respond(303, "", headers={"Location": "/asset_categories"})
             # ─────────────────────────────────────────────────────────────
+            # ── Legacy Redirects (Compatibility) ──────────────────────────
+            # Old URLs redirect to new Master Data structure
+            elif self.path == "/articles" or self.path.startswith("/articles?"):
+                self.respond(301, "", headers={"Location": "/masterdata/articles"})
+            elif self.path.startswith("/articles/"):
+                new_path = self.path.replace("/articles/", "/masterdata/articles/")
+                self.respond(301, "", headers={"Location": new_path})
+            elif self.path == "/contacts" or self.path.startswith("/contacts?"):
+                self.respond(301, "", headers={"Location": "/masterdata/contacts"})
+            elif self.path.startswith("/contacts/"):
+                new_path = self.path.replace("/contacts/", "/masterdata/contacts/")
+                self.respond(301, "", headers={"Location": new_path})
+            elif self.path == "/skr":
+                self.respond(301, "", headers={"Location": "/masterdata/skr"})
+            elif self.path.startswith("/edit_skr"):
+                new_path = self.path.replace("/edit_skr", "/masterdata/skr/edit")
+                self.respond(301, "", headers={"Location": new_path})
+            # ──────────────────────────────────────────────────────────────
             elif self.path == "/buch.css":
                 self.serve_static_file("buch.css", "text/css")
             elif self.path == "/favicon.ico":
@@ -402,36 +445,41 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path == "/documents/link":
                 status_code, location = handlers.handle_link_document(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
-            elif self.path == "/settings/bankaccounts/add":
+            elif self.path == "/masterdata/bankaccounts/add":
                 status_code, location = handlers.handle_add_bankaccount(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
-            elif self.path == "/settings/bankaccounts/update":
+                self.respond(status_code, "", headers={"Location": "/masterdata/bankaccounts"})
+            elif self.path == "/masterdata/bankaccounts/update":
                 status_code, location = handlers.handle_update_bankaccount(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
-            elif self.path == "/settings/numberranges/add":
+                self.respond(status_code, "", headers={"Location": "/masterdata/bankaccounts"})
+            elif self.path == "/masterdata/numberranges/add":
                 status_code, location = handlers.handle_add_number_range(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
-            elif self.path == "/settings/numberranges/update":
+                self.respond(status_code, "", headers={"Location": "/masterdata/numberranges"})
+            elif self.path == "/masterdata/numberranges/update":
                 status_code, location = handlers.handle_update_number_range(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
-            elif self.path == "/add_skr":
+                self.respond(status_code, "", headers={"Location": "/masterdata/numberranges"})
+            # ── Master Data POST Routes ───────────────────────────────────
+            # SKR
+            elif self.path == "/masterdata/skr/add":
                 status_code, location = handlers.handle_add_skr(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
-            elif self.path == "/update_skr":
+                self.respond(status_code, "", headers={"Location": "/masterdata/skr"})
+            elif self.path == "/masterdata/skr/update":
                 status_code, location = handlers.handle_update_skr(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
-            elif self.path == "/add_contact":
+                self.respond(status_code, "", headers={"Location": "/masterdata/skr"})
+            # Contacts
+            elif self.path == "/masterdata/contacts/add":
                 status_code, location = handlers.handle_add_contact(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
-            elif self.path == "/update_contact":
+                self.respond(status_code, "", headers={"Location": "/masterdata/contacts"})
+            elif self.path == "/masterdata/contacts/update":
                 status_code, location = handlers.handle_update_contact(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
-            elif self.path == "/articles/add":
+                self.respond(status_code, "", headers={"Location": "/masterdata/contacts"})
+            # Articles
+            elif self.path == "/masterdata/articles/add":
                 status_code, location = handlers.handle_add_article(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
-            elif self.path == "/articles/update":
+                self.respond(status_code, "", headers={"Location": "/masterdata/articles"})
+            elif self.path == "/masterdata/articles/update":
                 status_code, location = handlers.handle_update_article(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self.respond(status_code, "", headers={"Location": "/masterdata/articles"})
+            # ──────────────────────────────────────────────────────────────
             # ── Assets ────────────────────────────────────────────────────
             elif self.path == "/assets/add":
                 status_code, location = handlers.handle_add_asset(db, post_data)
@@ -452,9 +500,27 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 status_code, location = handlers.handle_update_asset_category(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
             # ─────────────────────────────────────────────────────────────
-            elif self.path == "/init_content":
-                status_code, location = handlers.handle_init_content(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+            # ──────────────────────────────────────────────────────────────
+            # ── Legacy POST Redirects (Compatibility) ─────────────────────
+            elif self.path == "/add_skr":
+                status_code, location = handlers.handle_add_skr(db, post_data)
+                self.respond(status_code, "", headers={"Location": "/masterdata/skr"})
+            elif self.path == "/update_skr":
+                status_code, location = handlers.handle_update_skr(db, post_data)
+                self.respond(status_code, "", headers={"Location": "/masterdata/skr"})
+            elif self.path == "/add_contact":
+                status_code, location = handlers.handle_add_contact(db, post_data)
+                self.respond(status_code, "", headers={"Location": "/masterdata/contacts"})
+            elif self.path == "/update_contact":
+                status_code, location = handlers.handle_update_contact(db, post_data)
+                self.respond(status_code, "", headers={"Location": "/masterdata/contacts"})
+            elif self.path == "/articles/add":
+                status_code, location = handlers.handle_add_article(db, post_data)
+                self.respond(status_code, "", headers={"Location": "/masterdata/articles"})
+            elif self.path == "/articles/update":
+                status_code, location = handlers.handle_update_article(db, post_data)
+                self.respond(status_code, "", headers={"Location": "/masterdata/articles"})
+            # ──────────────────────────────────────────────────────────────
             elif self.path == "/execute_sql":
                 content = handlers.handle_execute_sql(db, post_data)
                 self.respond(200, content)

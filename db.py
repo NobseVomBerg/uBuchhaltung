@@ -87,25 +87,64 @@ class Database:
             )
         ''')
 
-        # Contacts table for managing customers, suppliers, own data, and other contacts
+        # ── Contacts: normalized 4-table structure (Option C) ─────────────────────
+        # Base table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS Contacts (
-                ID INTEGER PRIMARY KEY AUTOINCREMENT,
-                ContactType TEXT DEFAULT 'customer',
+                ID           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ContactType  TEXT NOT NULL DEFAULT 'customer',
+                EntityType   TEXT NOT NULL DEFAULT 'company',
+                DisplayName  TEXT,
                 CustomerNumber TEXT,
-                Name TEXT NOT NULL,
-                Company TEXT,
-                Street TEXT,
-                PostalCode TEXT,
-                City TEXT,
-                Country TEXT,
-                Email TEXT,
-                Phone TEXT,
-                TaxID TEXT,
-                Notes TEXT,
-                Logo TEXT,
-                BuyerRouteID TEXT,
+                Email        TEXT,
+                Phone        TEXT,
+                Notes        TEXT,
+                Logo         TEXT,
                 UNIQUE(CustomerNumber)
+            )
+        ''')
+
+        # Addresses (1:n – AddressType='main' is the primary address)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ContactAddresses (
+                ID           INTEGER PRIMARY KEY AUTOINCREMENT,
+                ContactID    INTEGER NOT NULL,
+                AddressType  TEXT NOT NULL DEFAULT 'main',
+                AddressLine1 TEXT,
+                Street       TEXT,
+                PostalCode   TEXT,
+                City         TEXT,
+                Country      TEXT DEFAULT 'DE',
+                UNIQUE(ContactID, AddressType),
+                FOREIGN KEY (ContactID) REFERENCES Contacts(ID) ON DELETE CASCADE
+            )
+        ''')
+
+        # Person-specific fields (1:1)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS PersonDetails (
+                ContactID        INTEGER PRIMARY KEY,
+                Salutation       TEXT,
+                Title            TEXT,
+                FirstName        TEXT,
+                LastName         TEXT,
+                DateOfBirth      TEXT,
+                CompanyContactID INTEGER,
+                CompanyName_Free TEXT,
+                FOREIGN KEY (ContactID) REFERENCES Contacts(ID) ON DELETE CASCADE,
+                FOREIGN KEY (CompanyContactID) REFERENCES Contacts(ID)
+            )
+        ''')
+
+        # Company-specific fields (1:1)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS CompanyDetails (
+                ContactID    INTEGER PRIMARY KEY,
+                CompanyName  TEXT,
+                LegalForm    TEXT,
+                TaxID        TEXT,
+                BuyerRouteID TEXT,
+                FOREIGN KEY (ContactID) REFERENCES Contacts(ID) ON DELETE CASCADE
             )
         ''')
 
@@ -705,13 +744,6 @@ class Database:
         finally:
             conn.close()
 
-    # Initialize the database with some content
-    def init_content(self):
-        self.insert_receipt("12F123", "2012-05-01", "testBeleg01.pdf", "./2012/", "Testbeleg")
-        self.insert_receipt("12F124", "2012-05-02", "testBeleg02.pdf", "./2012/", "noch ein Testbeleg")
-        self.insert_receipt("12F125", "2012-05-03", "testBeleg03.pdf", "./2012/", "und noch einer")
-        self.insert_receipt("12F126", "2012-05-04", "testBeleg04.pdf", "./2012/", "")
-
     # Table Accounts
     def ensure_kasse_exists(self):
         """Ensure the default 'Kasse' account exists and cannot be deleted"""
@@ -846,7 +878,7 @@ class Database:
         if status:
             if parent_only:
                 cursor.execute('''
-                    SELECT a.*, ac.Name as CategoryName, c.Name as SupplierName
+                    SELECT a.*, ac.Name as CategoryName, c.DisplayName as SupplierName
                     FROM Assets a
                     LEFT JOIN AssetCategories ac ON a.AssetCategory_ID = ac.ID
                     LEFT JOIN Contacts c ON a.Supplier_ID = c.ID
@@ -855,7 +887,7 @@ class Database:
                 ''', (status,))
             else:
                 cursor.execute('''
-                    SELECT a.*, ac.Name as CategoryName, c.Name as SupplierName
+                    SELECT a.*, ac.Name as CategoryName, c.DisplayName as SupplierName
                     FROM Assets a
                     LEFT JOIN AssetCategories ac ON a.AssetCategory_ID = ac.ID
                     LEFT JOIN Contacts c ON a.Supplier_ID = c.ID
@@ -865,7 +897,7 @@ class Database:
         else:
             if parent_only:
                 cursor.execute('''
-                    SELECT a.*, ac.Name as CategoryName, c.Name as SupplierName
+                    SELECT a.*, ac.Name as CategoryName, c.DisplayName as SupplierName
                     FROM Assets a
                     LEFT JOIN AssetCategories ac ON a.AssetCategory_ID = ac.ID
                     LEFT JOIN Contacts c ON a.Supplier_ID = c.ID
@@ -874,7 +906,7 @@ class Database:
                 ''')
             else:
                 cursor.execute('''
-                    SELECT a.*, ac.Name as CategoryName, c.Name as SupplierName
+                    SELECT a.*, ac.Name as CategoryName, c.DisplayName as SupplierName
                     FROM Assets a
                     LEFT JOIN AssetCategories ac ON a.AssetCategory_ID = ac.ID
                     LEFT JOIN Contacts c ON a.Supplier_ID = c.ID
@@ -888,7 +920,7 @@ class Database:
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT a.*, ac.Name as CategoryName, c.Name as SupplierName
+            SELECT a.*, ac.Name as CategoryName, c.DisplayName as SupplierName
             FROM Assets a
             LEFT JOIN AssetCategories ac ON a.AssetCategory_ID = ac.ID
             LEFT JOIN Contacts c ON a.Supplier_ID = c.ID
@@ -1226,109 +1258,255 @@ class Database:
         conn.close()
         return statistics
 
-    # Table Contacts (replaces Customers)
-    def fetch_contacts(self, contact_type=None):
-        """Fetch all contacts, optionally filtered by type
-        
-        Args:
-            contact_type: Filter by type ('customer', 'supplier', 'insurance', 'own', 'other')
-                         If None, returns all contacts
-        """
+    def export_to_sql(self, filepath: str) -> tuple[int, int]:
+        """Export all table data as INSERT statements to a .sql file.
+        Skips sqlite internal tables and tables with 0 rows.
+        Returns (tables_exported, rows_exported)."""
+        import os
         conn = self._get_connection()
         cursor = conn.cursor()
+
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        tables = [row[0] for row in cursor.fetchall() if not row[0].startswith('sqlite_')]
+
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+
+        tables_exported = 0
+        rows_exported = 0
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            import datetime
+            f.write(f"-- DB-Export {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("-- Direkt verwendbar im SQL-Konsolenbereich (INSERT-Statements)\n\n")
+
+            for table in tables:
+                cursor.execute(f"SELECT * FROM [{table}]")
+                rows = cursor.fetchall()
+                if not rows:
+                    continue
+
+                col_names = [d[0] for d in cursor.description]
+                cols_sql = ', '.join(f'[{c}]' for c in col_names)
+
+                f.write(f"-- {table}\n")
+                for row in rows:
+                    vals = []
+                    for v in row:
+                        if v is None:
+                            vals.append('NULL')
+                        elif isinstance(v, (int, float)):
+                            vals.append(str(v))
+                        else:
+                            escaped = str(v).replace("'", "''")
+                            vals.append(f"'{escaped}'")
+                    vals_sql = ', '.join(vals)
+                    f.write(f"INSERT INTO [{table}] ({cols_sql}) VALUES ({vals_sql});\n")
+                    rows_exported += 1
+                f.write("\n")
+                tables_exported += 1
+
+        conn.close()
+        return tables_exported, rows_exported
+
+    # ── Table Contacts (normalized Option C) ───────────────────────────────────
+
+    _CONTACTS_QUERY = '''
+        SELECT
+            c.ID,                          -- 0  id
+            c.ContactType,                 -- 1  contact_type
+            c.CustomerNumber,              -- 2  customer_number
+            COALESCE(
+                c.DisplayName,
+                CASE c.EntityType
+                    WHEN 'company' THEN cd.CompanyName
+                    WHEN 'person'  THEN TRIM(
+                        COALESCE(pd.Title      || ' ', '') ||
+                        COALESCE(pd.FirstName  || ' ', '') ||
+                        COALESCE(pd.LastName,           '')
+                    )
+                    ELSE c.DisplayName
+                END
+            )                          AS display_name,  -- 3
+            CASE c.EntityType
+                WHEN 'company' THEN cd.CompanyName
+                WHEN 'person'  THEN COALESCE(
+                    (SELECT cd2.CompanyName FROM CompanyDetails cd2
+                     WHERE cd2.ContactID = pd.CompanyContactID),
+                    pd.CompanyName_Free
+                )
+                ELSE NULL
+            END                        AS company_name,  -- 4
+            ca.Street,                     -- 5  street
+            ca.PostalCode,                 -- 6  postal_code
+            ca.City,                       -- 7  city
+            COALESCE(ca.Country, 'DE')  AS country,       -- 8
+            c.Email,                       -- 9  email
+            c.Phone,                       -- 10 phone
+            COALESCE(cd.TaxID,       '') AS tax_id,        -- 11
+            c.Notes,                       -- 12 notes
+            c.Logo,                        -- 13 logo
+            COALESCE(cd.BuyerRouteID,'') AS buyer_route_id,-- 14
+            c.EntityType,                  -- 15 entity_type  (NEW)
+            c.DisplayName AS display_name_manual, -- 16      (NEW)
+            cd.LegalForm,                  -- 17 legal_form   (NEW)
+            pd.Salutation,                 -- 18 salutation   (NEW)
+            pd.Title,                      -- 19 title        (NEW)
+            pd.FirstName,                  -- 20 first_name   (NEW)
+            pd.LastName,                   -- 21 last_name    (NEW)
+            pd.DateOfBirth,                -- 22 date_of_birth(NEW)
+            pd.CompanyContactID,           -- 23              (NEW)
+            pd.CompanyName_Free,           -- 24              (NEW)
+            ca.AddressLine1                -- 25 address_line1(NEW)
+        FROM Contacts c
+        LEFT JOIN CompanyDetails    cd ON c.ID = cd.ContactID
+        LEFT JOIN PersonDetails     pd ON c.ID = pd.ContactID
+        LEFT JOIN ContactAddresses  ca ON c.ID = ca.ContactID AND ca.AddressType = 'main'
+    '''
+
+    def fetch_contacts(self, contact_type=None, entity_type=None):
+        """Fetch contacts, optionally filtered by ContactType and/or EntityType.
+        Returns sqlite3.Row objects (support both index and column-name access)."""
+        conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        conditions = []
+        params = []
         if contact_type:
-            cursor.execute('SELECT * FROM Contacts WHERE ContactType = ? ORDER BY Name ASC', (contact_type,))
-        else:
-            cursor.execute('SELECT * FROM Contacts ORDER BY Name ASC')
+            conditions.append('c.ContactType = ?')
+            params.append(contact_type)
+        if entity_type:
+            conditions.append('c.EntityType = ?')
+            params.append(entity_type)
+
+        where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
+        cursor.execute(f'{self._CONTACTS_QUERY} {where} ORDER BY display_name ASC', params)
         rows = cursor.fetchall()
         conn.close()
         return rows
 
     def get_contact_by_id(self, contact_id):
-        """Get contact by ID"""
+        """Get full contact row by ID (same column layout as fetch_contacts)."""
         conn = self._get_connection()
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM Contacts WHERE ID = ?', (contact_id,))
+        cursor.execute(f'{self._CONTACTS_QUERY} WHERE c.ID = ?', (contact_id,))
         row = cursor.fetchone()
         conn.close()
         return row
 
-    def insert_contact(self, name, contact_type="customer", customer_number="", company="", street="", postal_code="", city="", country="DE", email="", phone="", tax_id="", notes="", logo="", buyer_route_id=""):
-        """Insert new contact
-        
-        Args:
-            name: Name (required)
-            contact_type: Type of contact ('customer', 'supplier', 'insurance', 'own', 'other')
-            customer_number: Optional customer number (for customers)
-            country: Country code (ISO 3166-1 Alpha-2, default: DE)
-            tax_id: Tax ID / USt-IdNr (for XRechnung)
-            buyer_route_id: Leitweg-ID for B2G invoices (XRechnung)
-            [other contact fields]
-            logo: Path to company logo (optional)
-        """
+    def insert_contact(self, contact_type='customer', entity_type='company',
+                       display_name=None, customer_number=None,
+                       email='', phone='', notes='', logo='',
+                       # address
+                       address_line1='', street='', postal_code='', city='', country='DE',
+                       # company
+                       company_name='', legal_form='', tax_id='', buyer_route_id='',
+                       # person
+                       salutation='', title='', first_name='', last_name='',
+                       date_of_birth='', company_contact_id=None, company_name_free=''):
+        """Insert a new contact with sub-table records."""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
-        # Convert empty customer_number to None for UNIQUE constraint to work properly
-        if not customer_number or customer_number.strip() == '':
+        if not customer_number or not str(customer_number).strip():
             customer_number = None
-        
-        sql_template = '''
-                INSERT INTO Contacts (ContactType, CustomerNumber, Name, Company, Street, PostalCode, City, Country, Email, Phone, TaxID, Notes, Logo, BuyerRouteID)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
-        params = (contact_type, customer_number, name, company, street, postal_code, city, country or 'DE', email, phone, tax_id, notes, logo, buyer_route_id or None)
         try:
-            cursor.execute(sql_template, params)
+            cursor.execute(
+                'INSERT INTO Contacts (ContactType, EntityType, DisplayName, CustomerNumber, Email, Phone, Notes, Logo) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                (contact_type, entity_type, display_name or None, customer_number,
+                 email, phone, notes, logo)
+            )
+            contact_id = cursor.lastrowid
+
+            cursor.execute(
+                'INSERT INTO ContactAddresses (ContactID, AddressType, AddressLine1, Street, PostalCode, City, Country) '
+                'VALUES (?, \'main\', ?, ?, ?, ?, ?)',
+                (contact_id, address_line1 or None, street, postal_code, city, country or 'DE')
+            )
+
+            if entity_type == 'company':
+                cursor.execute(
+                    'INSERT INTO CompanyDetails (ContactID, CompanyName, LegalForm, TaxID, BuyerRouteID) '
+                    'VALUES (?, ?, ?, ?, ?)',
+                    (contact_id, company_name or None, legal_form or None,
+                     tax_id or None, buyer_route_id or None)
+                )
+            elif entity_type == 'person':
+                cursor.execute(
+                    'INSERT INTO PersonDetails '
+                    '(ContactID, Salutation, Title, FirstName, LastName, DateOfBirth, CompanyContactID, CompanyName_Free) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                    (contact_id, salutation or None, title or None,
+                     first_name, last_name, date_of_birth or None,
+                     int(company_contact_id) if company_contact_id else None,
+                     company_name_free or None)
+                )
             conn.commit()
-            # Log SQL after successful commit
-            self._log_sql(sql_template, params, "Insert new contact")
-        except sqlite3.IntegrityError as e:
-            print(f"IntegrityError inserting contact: {e}")
-            print(f"Params: {params}")
-            conn.rollback()
-            raise
         except Exception as e:
-            print(f"Error inserting contact: {e}")
-            print(f"Params: {params}")
             conn.rollback()
+            print(f'Error inserting contact: {e}')
             raise
         finally:
             conn.close()
 
-    def update_contact(self, contact_id, name, contact_type="customer", customer_number="", company="", street="", postal_code="", city="", country="DE", email="", phone="", tax_id="", notes="", logo="", buyer_route_id=""):
-        """Update existing contact with all fields including logo and XRechnung fields"""
+    def update_contact(self, contact_id, contact_type='customer', entity_type='company',
+                       display_name=None, customer_number=None,
+                       email='', phone='', notes='', logo='',
+                       address_line1='', street='', postal_code='', city='', country='DE',
+                       company_name='', legal_form='', tax_id='', buyer_route_id='',
+                       salutation='', title='', first_name='', last_name='',
+                       date_of_birth='', company_contact_id=None, company_name_free=''):
+        """Update an existing contact and all sub-table records."""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
-        # Convert empty customer_number to None for UNIQUE constraint to work properly
-        if not customer_number or customer_number.strip() == '':
+        if not customer_number or not str(customer_number).strip():
             customer_number = None
-        
-        sql_template = '''
-                UPDATE Contacts
-                SET ContactType = ?, CustomerNumber = ?, Name = ?, Company = ?, Street = ?, PostalCode = ?, City = ?, Country = ?, Email = ?, Phone = ?, TaxID = ?, Notes = ?, Logo = ?, BuyerRouteID = ?
-                WHERE ID = ?'''
-        params = (contact_type, customer_number, name, company, street, postal_code, city, country or 'DE', email, phone, tax_id, notes, logo, buyer_route_id or None, contact_id)
         try:
-            cursor.execute(sql_template, params)
+            cursor.execute(
+                'UPDATE Contacts SET ContactType=?, EntityType=?, DisplayName=?, CustomerNumber=?, '
+                'Email=?, Phone=?, Notes=?, Logo=? WHERE ID=?',
+                (contact_type, entity_type, display_name or None, customer_number,
+                 email, phone, notes, logo, contact_id)
+            )
+            # Address: delete + re-insert
+            cursor.execute('DELETE FROM ContactAddresses WHERE ContactID=? AND AddressType=\'main\'',
+                           (contact_id,))
+            cursor.execute(
+                'INSERT INTO ContactAddresses (ContactID, AddressType, AddressLine1, Street, PostalCode, City, Country) '
+                'VALUES (?, \'main\', ?, ?, ?, ?, ?)',
+                (contact_id, address_line1 or None, street, postal_code, city, country or 'DE')
+            )
+            # Entity details: delete + re-insert
+            cursor.execute('DELETE FROM CompanyDetails WHERE ContactID=?', (contact_id,))
+            cursor.execute('DELETE FROM PersonDetails  WHERE ContactID=?', (contact_id,))
+            if entity_type == 'company':
+                cursor.execute(
+                    'INSERT INTO CompanyDetails (ContactID, CompanyName, LegalForm, TaxID, BuyerRouteID) '
+                    'VALUES (?, ?, ?, ?, ?)',
+                    (contact_id, company_name or None, legal_form or None,
+                     tax_id or None, buyer_route_id or None)
+                )
+            elif entity_type == 'person':
+                cursor.execute(
+                    'INSERT INTO PersonDetails '
+                    '(ContactID, Salutation, Title, FirstName, LastName, DateOfBirth, CompanyContactID, CompanyName_Free) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                    (contact_id, salutation or None, title or None,
+                     first_name, last_name, date_of_birth or None,
+                     int(company_contact_id) if company_contact_id else None,
+                     company_name_free or None)
+                )
             conn.commit()
-            # Log SQL after successful commit
-            self._log_sql(sql_template, params, "Update contact")
-        except sqlite3.IntegrityError as e:
-            print(f"IntegrityError updating contact: {e}")
-            print(f"Params: {params}")
-            conn.rollback()
-            raise
         except Exception as e:
-            print(f"Error updating contact: {e}")
-            print(f"Params: {params}")
             conn.rollback()
+            print(f'Error updating contact: {e}')
             raise
         finally:
             conn.close()
 
     def delete_contact(self, contact_id):
-        """Delete contact"""
+        """Delete contact (sub-tables are CASCADE deleted)."""
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('DELETE FROM Contacts WHERE ID = ?', (contact_id,))

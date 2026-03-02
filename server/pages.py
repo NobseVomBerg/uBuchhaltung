@@ -8,7 +8,7 @@ def Header1(active_page=None):
     """Generate main header with navigation
     
     Args:
-        active_page: Name of active page ('dashboard', 'receipts', 'transactions', 'skr', 'settings', 'about')
+        active_page: Name of active page ('dashboard', 'receipts', 'transactions', 'skr', 'miscellaneous', 'about')
                      Active page will be highlighted without link
     """
     s = "<!DOCTYPE html>\n"
@@ -33,11 +33,11 @@ def Header1(active_page=None):
     else:
         nav_items.append('<a href="/invoice">Rechnung</a>')
     
-    # Artikel
-    if active_page == 'articles':
-        nav_items.append('<span id="ActivePage">Artikel</span>')
+    # Stammdaten (Master Data)
+    if active_page == 'masterdata':
+        nav_items.append('<span id="ActivePage">Stammdaten</span>')
     else:
-        nav_items.append('<a href="/articles">Artikel</a>')
+        nav_items.append('<a href="/masterdata">Stammdaten</a>')
     
     # Belege
     if active_page == 'receipts':
@@ -63,23 +63,11 @@ def Header1(active_page=None):
     else:
         nav_items.append('<a href="/assets">Anlagen</a>')
     
-    # SKR
-    if active_page == 'skr':
-        nav_items.append('<span id="ActivePage">SKR</span>')
+    # Sonstiges
+    if active_page == 'miscellaneous':
+        nav_items.append('<span id="ActivePage">Sonstiges</span>')
     else:
-        nav_items.append('<a href="/skr">SKR</a>')
-    
-    # Kontakte
-    if active_page == 'contacts':
-        nav_items.append('<span id="ActivePage">Kontakte</span>')
-    else:
-        nav_items.append('<a href="/contacts">Kontakte</a>')
-    
-    # Einstellungen
-    if active_page == 'settings':
-        nav_items.append('<span id="ActivePage">Einstellungen</span>')
-    else:
-        nav_items.append('<a href="/settings">Einstellungen</a>')
+        nav_items.append('<a href="/miscellaneous">Sonstiges</a>')
     
     # About
     if active_page == 'about':
@@ -125,46 +113,9 @@ def PageAbout():
     return s
 
 def PageSettings(db: Database):
-    """Generate settings page"""
-    s = Header1('settings')
-    submenu = '<a href="/settings/bankaccounts">Bankkonten</a> | <a href="/settings/numberranges">Nummernkreise</a>'
-    s+= Header2(submenu)
-    s+= Header3()
-    s+= "<h2>Datenbankeinstellungen</h2>"
-    s+= "<p>Datenbank: buch.db</p>"
-    s+= "<p>Platzhalter für Einstellungen ...</p>"
-    s+= "<h2>Systemeinstellungen</h2>"
-    s+= "<p>Platzhalter für Einstellungen ...</p>"
-
-    # Database statistics
-    stats = db.get_table_statistics()
-    s+= "<h2>Datenbank-Übersicht</h2>"
-    s+= "<table border='1'>"
-    s+= "<tr><th>Tabelle</th><th>Anzahl Einträge</th></tr>"
-    for table_name, count in stats:
-        s+= f"<tr><td>{table_name}</td><td style='text-align: right;'>{count}</td></tr>"
-    s+= "</table>"
-    
-    s+= '''
-    <h2>Datenbank mit einigen Testdaten befüllen</h2>
-    <form method="POST" action="/init_content">
-        <input type="submit" value="Datenbank initialisieren">
-    </form>
-    
-    <h2>SQL-Befehle ausführen</h2>
-    <form method="POST" action="/execute_sql">
-        <p>Geben Sie hier SQL-Befehle ein (mehrere Befehle durch Semikolon getrennt):</p>
-        <textarea name="sql_commands" rows="15" cols="100" style="font-family: monospace; width: 100%; max-width: 1000px;" placeholder="INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStandard) VALUES (4, 1000, 'Kasse', 'Barkasse', 1);
-INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStandard) VALUES (4, 1200, 'Bank', 'Bankguthaben', 1);"></textarea>
-        <br>
-        <input type="submit" value="SQL ausführen" style="margin-top: 10px; padding: 8px 20px; background-color: #4CAF50; color: white; border: none; cursor: pointer;">
-        <span style="color: red; margin-left: 20px;">⚠️ Vorsicht: SQL-Befehle werden direkt ausgeführt!</span>
-    </form>
-    
-    <div id="sql_result" style="margin-top: 20px;"></div>
-    '''
-    s+= Footer()
-    return s
+    """Alias kept for backward compatibility – delegates to PageMiscellaneous."""
+    from .pages_miscellaneous import PageMiscellaneous
+    return PageMiscellaneous(db)
 
 def PageReceipts(db: Database):
     """Generate receipts page with upload functionality"""
@@ -896,218 +847,6 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     s+= Footer()
     return s
 
-def PageSettingsBankAccounts(db: Database):
-    """Generate bank accounts settings page"""
-    rows = db.fetch_accounts()
-    s = Header1('settings')
-    submenu = '<a href="/settings">Einstellungen</a> -> <span id="ActivePage">Bankkonten</span>'
-    s+= Header2(submenu)
-    s+= Header3()
-    s+= '''
-        <h2>Neues Bankkonto anlegen</h2>
-        <form method="POST" action="/settings/bankaccounts/add">
-            <table>
-                <tr><td>Bezeichnung:</td><td><input type="text" name="name" required></td></tr>
-                <tr><td>Inhaber:</td><td><input type="text" name="holder"></td></tr>
-                <tr><td>IBAN:</td><td><input type="text" name="iban"></td></tr>
-                <tr><td>BIC:</td><td><input type="text" name="bic"></td></tr>
-                <tr><td>Bank:</td><td><input type="text" name="bank_name"></td></tr>
-                <tr><td></td><td><input type="submit" value="Konto hinzufügen"></td></tr>
-            </table>
-        </form>
-    '''
-    s+= "<h2>Vorhandene Konten</h2>"
-    s+= "<table border='1'>"
-    s+= "<tr><th>ID</th><th>Bezeichnung</th><th>Inhaber</th><th>IBAN</th><th>BIC</th><th>Bank</th><th>Typ</th><th>Aktionen</th></tr>"
-    for row in rows:
-        account_type = "Kasse" if row[6] == 1 else "Bank"
-        s+= f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td><td>{row[5]}</td><td>{account_type}</td>"
-        if row[6] == 1:  # is_cash
-            s+= f"<td><span style='color:gray;'>Kann nicht gelöscht werden</span></td></tr>"
-        else:
-            s+= f"<td><a href='/settings/bankaccounts/edit?id={row[0]}'>Bearbeiten</a> | <a href='/settings/bankaccounts/delete?id={row[0]}'>Löschen</a></td></tr>"
-    s+= "</table>"
-    s+= Footer()
-    return s
-
-def PageSettingsBankAccountEdit(db: Database, account_id):
-    """Generate bank account edit page"""
-    account = db.get_account_by_id(account_id)
-    if not account:
-        return "Konto nicht gefunden."
-
-    s = Header1()
-    submenu = '<a href="/settings">Einstellungen</a> | <a href="/settings/bankaccounts">Bankkonten</a>'
-    s+= Header2(submenu)
-    s+= Header3()
-    s+= "<h1>Bankkonto bearbeiten</h1>"
-    
-    if account[6] == 1:  # is_cash
-        s+= "<p style='color:red;'>Hinweis: Das Kasse-Konto kann nicht bearbeitet werden.</p>"
-        s+= "<a href='/settings/bankaccounts'>Zurück zur Kontenübersicht</a>"
-    else:
-        s+= f'''
-            <form method="POST" action="/settings/bankaccounts/update">
-                <table>
-                    <tr><td>ID:</td><td><input type="text" name="id" value="{account[0]}" readonly></td></tr>
-                    <tr><td>Bezeichnung:</td><td><input type="text" name="name" value="{account[1]}" required></td></tr>
-                    <tr><td>Inhaber:</td><td><input type="text" name="holder" value="{account[2]}"></td></tr>
-                    <tr><td>IBAN:</td><td><input type="text" name="iban" value="{account[3]}"></td></tr>
-                    <tr><td>BIC:</td><td><input type="text" name="bic" value="{account[4]}"></td></tr>
-                    <tr><td>Bank:</td><td><input type="text" name="bank_name" value="{account[5]}"></td></tr>
-                    <tr><td></td><td><input type="submit" value="Konto aktualisieren"></td></tr>
-                </table>
-            </form>
-        '''
-    s+= Footer()
-    return s
-
-
-def PageSettingsNumberRanges(db: Database):
-    """Generate number ranges management page"""
-    import datetime
-    current_year = datetime.datetime.now().year
-    
-    ranges = db.fetch_number_ranges()
-    s = Header1('settings')
-    submenu = '<a href="/settings">Einstellungen</a> -> <span id="ActivePage">Nummernkreise</span>'
-    s+= Header2(submenu)
-    s+= Header3()
-    
-    s+= '''
-        <h2>Nummernkreise</h2>
-        <p>Nummernkreise definieren die Nummerierung für Rechnungen und Belege.</p>
-        <p><strong>Format:</strong> JJ[Buchstabe][Präfix]### (z.B. 26R001 oder 26B_A001)</p>
-        <ul>
-            <li><strong>JJ</strong> = Jahr (2-stellig)</li>
-            <li><strong>Buchstabe</strong> = Kennzeichen für den Typ (z.B. R=Rechnung, B=Beleg)</li>
-            <li><strong>Präfix</strong> = Optional, für Unterteilungen (z.B. _A, _B)</li>
-            <li><strong>###</strong> = Fortlaufende Nummer (mind. 3 Stellen)</li>
-        </ul>
-        
-        <h3>Neuen Nummernkreis anlegen</h3>
-        <form method="POST" action="/settings/numberranges/add">
-            <table>
-                <tr><td>Typ:</td><td>
-                    <select name="type" required>
-                        <option value="invoice">Ausgangsrechnungen</option>
-                        <option value="receipt_company">Belegnummern Firma</option>
-                        <option value="receipt_category">Belegnummern Kategorien</option>
-                    </select>
-                </td></tr>
-    '''
-    s+= f'<tr><td>Jahr:</td><td><input type="number" name="year" value="{current_year}" min="2000" max="2099" required></td></tr>'
-    s+= '''
-                <tr><td>Buchstabe:</td><td><input type="text" name="letter" maxlength="1" pattern="[A-Z]" required placeholder="z.B. R" style="width: 50px; text-transform: uppercase;"> (A-Z)</td></tr>
-                <tr><td>Präfix (optional):</td><td><input type="text" name="prefix" maxlength="2" pattern="_[A-Z]" placeholder="z.B. _A" style="width: 50px; text-transform: uppercase;"> (Format: _X)</td></tr>
-                <tr><td>Aktuelle Nummer:</td><td><input type="number" name="current_number" value="0" min="0"> (letzte vergebene Nummer)</td></tr>
-                <tr><td>Beschreibung:</td><td><input type="text" name="description" size="40"></td></tr>
-                <tr><td></td><td><input type="submit" value="Nummernkreis hinzufügen"></td></tr>
-            </table>
-        </form>
-        
-        <h3>Bestehende Nummernkreise</h3>
-    '''
-    
-    # Group by type
-    type_names = {
-        'invoice': 'Ausgangsrechnungen',
-        'receipt_company': 'Belegnummern Firma',
-        'receipt_category': 'Belegnummern Kategorien'
-    }
-    
-    for range_type, type_name in type_names.items():
-        type_ranges = [r for r in ranges if r[1] == range_type]
-        s+= f"<h4>{type_name}</h4>"
-        
-        if type_ranges:
-            s+= "<table border='1'>"
-            s+= "<tr><th>ID</th><th>Jahr</th><th>Buchstabe</th><th>Präfix</th><th>Aktuelle Nr.</th><th>Nächste Nr.</th><th>Beschreibung</th><th>Aktionen</th></tr>"
-            
-            for r in type_ranges:
-                # r: ID=0, Type=1, Year=2, Letter=3, Prefix=4, CurrentNumber=5, Description=6
-                range_id = r[0]
-                year = r[2]
-                letter = r[3]
-                prefix = r[4] or ''
-                current_num = r[5] or 0
-                description = r[6] or ''
-                
-                year_short = str(year)[-2:]
-                next_num = current_num + 1
-                next_formatted = f"{year_short}{letter}{prefix}{next_num:03d}"
-                
-                s+= f"<tr>"
-                s+= f"<td>{range_id}</td>"
-                s+= f"<td>{year}</td>"
-                s+= f"<td>{letter}</td>"
-                s+= f"<td>{prefix}</td>"
-                s+= f"<td style='text-align: right;'>{current_num}</td>"
-                s+= f"<td><strong>{next_formatted}</strong></td>"
-                s+= f"<td>{description}</td>"
-                s+= f"<td><a href='/settings/numberranges/edit?id={range_id}'>Bearbeiten</a> | "
-                s+= f"<a href='/settings/numberranges/delete?id={range_id}' onclick='return confirm(\"Nummernkreis wirklich löschen?\")'>Löschen</a></td>"
-                s+= f"</tr>"
-            
-            s+= "</table>"
-        else:
-            s+= "<p><em>Keine Nummernkreise definiert.</em></p>"
-    
-    s+= Footer()
-    return s
-
-
-def PageSettingsNumberRangesEdit(db: Database, range_id):
-    """Generate number range edit page"""
-    nr = db.get_number_range_by_id(range_id)
-    if not nr:
-        return "Nummernkreis nicht gefunden."
-
-    # nr: ID=0, Type=1, Year=2, Letter=3, Prefix=4, CurrentNumber=5, Description=6
-    range_type = nr[1]
-    year = nr[2]
-    letter = nr[3]
-    prefix = nr[4] or ''
-    current_num = nr[5] or 0
-    description = nr[6] or ''
-    
-    type_names = {
-        'invoice': 'Ausgangsrechnungen',
-        'receipt_company': 'Belegnummern Firma',
-        'receipt_category': 'Belegnummern Kategorien'
-    }
-    type_name = type_names.get(range_type, range_type)
-    
-    year_short = str(year)[-2:]
-    next_num = current_num + 1
-    next_formatted = f"{year_short}{letter}{prefix}{next_num:03d}"
-
-    s = Header1('settings')
-    submenu = '<a href="/settings">Einstellungen</a> -> <a href="/settings/numberranges">Nummernkreise</a> -> <span id="ActivePage">Bearbeiten</span>'
-    s+= Header2(submenu)
-    s+= Header3()
-    
-    s+= f'''
-        <h2>Nummernkreis bearbeiten</h2>
-        <p>Typ: <strong>{type_name}</strong></p>
-        <p>Nächste Nummer wird sein: <strong>{next_formatted}</strong></p>
-        
-        <form method="POST" action="/settings/numberranges/update">
-            <input type="hidden" name="id" value="{range_id}">
-            <input type="hidden" name="type" value="{range_type}">
-            <table>
-                <tr><td>Jahr:</td><td><input type="number" name="year" value="{year}" min="2000" max="2099" required></td></tr>
-                <tr><td>Buchstabe:</td><td><input type="text" name="letter" value="{letter}" maxlength="1" pattern="[A-Z]" required style="width: 50px; text-transform: uppercase;"></td></tr>
-                <tr><td>Präfix (optional):</td><td><input type="text" name="prefix" value="{prefix}" maxlength="2" pattern="_[A-Z]" style="width: 50px; text-transform: uppercase;"></td></tr>
-                <tr><td>Aktuelle Nummer:</td><td><input type="number" name="current_number" value="{current_num}" min="0"> (letzte vergebene Nummer)</td></tr>
-                <tr><td>Beschreibung:</td><td><input type="text" name="description" value="{description}" size="40"></td></tr>
-                <tr><td></td><td><input type="submit" value="Nummernkreis aktualisieren"></td></tr>
-            </table>
-        </form>
-        <p><a href="/settings/numberranges">Zurück zur Übersicht</a></p>
-    '''
-    s+= Footer()
-    return s
 
 
 def PageSkr(db: Database):
@@ -1243,9 +982,7 @@ def PageInvoice(db: Database, filters: dict = None):
         </div>
     '''
     s+= Header3(header3_content)
-    
-    s+= "<h2>Rechnungen</h2>"
-    
+
     # Statistics summary
     total_count = len(invoices)
     total_sum = sum(inv[36] for inv in invoices if len(inv) > 36 and inv[36])  # SumGross is at index 36
@@ -1484,7 +1221,7 @@ def PageInvoiceNew(db: Database, invoice_id=None):
     '''
     
     for own in own_contacts:
-        own_name = own[4] or own[3] or f"ID {own[0]}"
+        own_name = own[3] or f"ID {own[0]}"  # display_name at index 3
         selected = 'selected' if (existing_invoice and own[0] == selected_own_company_id) or (not existing_invoice and own_contact and own[0] == own_contact[0]) else ''
         s += f'<option value="{own[0]}" {selected}>{own_name}</option>'
     
@@ -1496,8 +1233,8 @@ def PageInvoiceNew(db: Database, invoice_id=None):
     if own_contact:
         sender_street = own_contact[5] or ''
         sender_postal = own_contact[6] or ''
-        sender_city = own_contact[7] or ''
-        sender_name = own_contact[4] or own_contact[3] or ''
+        sender_city   = own_contact[7] or ''
+        sender_name   = own_contact[3] or ''  # display_name
         s += f'{sender_name} · {sender_street} · {sender_postal} {sender_city}'
     else:
         s += 'Eigene Adresse in Kontakte anlegen (Typ: own)'
@@ -1508,7 +1245,7 @@ def PageInvoiceNew(db: Database, invoice_id=None):
     '''
     
     for customer in customers:
-        cust_name = customer[3] or customer[4] or f"ID {customer[0]}"
+        cust_name = customer[3] or f"ID {customer[0]}"  # display_name at index 3
         selected = 'selected' if existing_invoice and customer[0] == selected_customer_id else ''
         s += f'<option value="{customer[0]}" {selected}>{cust_name}</option>'
     
@@ -1642,8 +1379,9 @@ def PageInvoiceNew(db: Database, invoice_id=None):
     '''
     
     if own_contact:
-        s += f'''                        {own_contact[4] or own_contact[3] or 'Firma'}<br>
-                        {own_contact[5] or 'Straße'}<br>
+        addr_line1_html = f'{own_contact[25]}<br>' if (len(own_contact) > 25 and own_contact[25]) else ''
+        s += f'''                        {own_contact[3] or 'Firma'}<br>
+                        {addr_line1_html}                        {own_contact[5] or 'Straße'}<br>
                         {own_contact[6] or 'PLZ'} {own_contact[7] or 'Ort'}'''
     else:
         s += '                        <em>Eigene Firmendaten in Kontakte anlegen</em>'
@@ -1802,16 +1540,17 @@ def PageInvoiceNew(db: Database, invoice_id=None):
     own_companies_dict = {}
     for own in own_contacts:
         own_companies_dict[str(own[0])] = {
-            'id': own[0],
-            'name': own[3] or '',
-            'company': own[4] or '',
-            'street': own[5] or '',
-            'postal': own[6] or '',
-            'city': own[7] or '',
-            'email': own[9] or '',
-            'phone': own[10] or '',
-            'tax_id': own[11] or '',
-            'logo': own[13] if len(own) > 13 and own[13] else ''
+            'id':      own[0],
+            'name':    own[3] or '',             # display_name
+            'company': own[4] or own[3] or '',   # company_name fallback to display_name
+            'address_line1': own[25] if len(own) > 25 and own[25] else '',
+            'street':  own[5] or '',
+            'postal':  own[6] or '',
+            'city':    own[7] or '',
+            'email':   own[9] or '',
+            'phone':   own[10] or '',
+            'tax_id':  own[11] or '',
+            'logo':    own[13] if len(own) > 13 and own[13] else ''
         }
     
     s += json.dumps(own_companies_dict)
@@ -1825,14 +1564,15 @@ def PageInvoiceNew(db: Database, invoice_id=None):
     customers_dict = {}
     for customer in customers:
         customers_dict[str(customer[0])] = {
-            'id': customer[0],
-            'customer_number': customer[2] or '',
-            'name': customer[3] or '',
-            'company': customer[4] or '',
-            'street': customer[5] or '',
-            'postal': customer[6] or '',
-            'city': customer[7] or '',
-            'buyer_route_id': customer[14] if len(customer) > 14 else ''
+            'id':             customer[0],
+            'customer_number':customer[2] or '',
+            'name':           customer[3] or '',   # display_name
+            'company':        customer[4] or '',   # company_name
+            'address_line1':  customer[25] if len(customer) > 25 and customer[25] else '',
+            'street':         customer[5] or '',
+            'postal':         customer[6] or '',
+            'city':           customer[7] or '',
+            'buyer_route_id': customer[14] or ''
         }
     
     s += json.dumps(customers_dict)
@@ -2973,534 +2713,6 @@ def PageArticleEdit(db: Database, article_id):
     return s
 
 
-# def PageInvoiceView(db, invoice_id):
-#     """Detail view for a single invoice with all metadata and items."""
-#     invoice = db.get_invoice_by_id(invoice_id)
-#     if not invoice:
-#         return f'''
-#             <h2>Rechnung nicht gefunden</h2>
-#             <p>Die angeforderte Rechnung existiert nicht.</p>
-#             <p><a href="/invoice">Zurück zur Rechnungsliste</a></p>
-#         '''
-    
-#     items = db.get_invoice_items(invoice_id)
-    
-#     # Status badge with color
-#     status_colors = {
-#         'draft': '#888888',
-#         'finalized': '#0066cc',
-#         'sent': '#ff9900',
-#         'paid': '#00aa00',
-#         'cancelled': '#cc0000'
-#     }
-#     status_labels = {
-#         'draft': 'Entwurf',
-#         'finalized': 'Finalisiert',
-#         'sent': 'Versendet',
-#         'paid': 'Bezahlt',
-#         'cancelled': 'Storniert'
-#     }
-#     status = invoice[37] or 'draft'
-#     status_color = status_colors.get(status, '#888888')
-#     status_label = status_labels.get(status, status)
-    
-#     s = f'''
-#         <style>
-#             .invoice-header {{
-#                 background-color: #f0f0f0;
-#                 padding: 15px;
-#                 margin-bottom: 20px;
-#                 border-radius: 5px;
-#             }}
-#             .invoice-header h2 {{
-#                 margin: 0 0 10px 0;
-#             }}
-#             .status-badge {{
-#                 display: inline-block;
-#                 padding: 5px 10px;
-#                 background-color: {status_color};
-#                 color: white;
-#                 border-radius: 3px;
-#                 font-weight: bold;
-#                 margin-left: 10px;
-#             }}
-#             .metadata-table {{
-#                 width: 100%;
-#                 border-collapse: collapse;
-#                 margin-bottom: 20px;
-#             }}
-#             .metadata-table td {{
-#                 padding: 5px 10px;
-#                 border-bottom: 1px solid #ddd;
-#             }}
-#             .metadata-table td:first-child {{
-#                 font-weight: bold;
-#                 width: 200px;
-#             }}
-#             .items-table {{
-#                 width: 100%;
-#                 border-collapse: collapse;
-#                 margin-bottom: 20px;
-#             }}
-#             .items-table th {{
-#                 background-color: #4CAF50;
-#                 color: white;
-#                 padding: 10px;
-#                 text-align: left;
-#             }}
-#             .items-table td {{
-#                 padding: 8px;
-#                 border-bottom: 1px solid #ddd;
-#             }}
-#             .items-table tr:hover {{
-#                 background-color: #f5f5f5;
-#             }}
-#             .totals-box {{
-#                 float: right;
-#                 width: 300px;
-#                 background-color: #f9f9f9;
-#                 padding: 15px;
-#                 border: 1px solid #ddd;
-#                 border-radius: 5px;
-#             }}
-#             .totals-box table {{
-#                 width: 100%;
-#             }}
-#             .totals-box td {{
-#                 padding: 5px 0;
-#             }}
-#             .totals-box td:last-child {{
-#                 text-align: right;
-#             }}
-#             .totals-box .total-row {{
-#                 font-weight: bold;
-#                 font-size: 1.2em;
-#                 border-top: 2px solid #333;
-#                 padding-top: 10px;
-#             }}
-#             .action-buttons {{
-#                 clear: both;
-#                 margin-top: 20px;
-#                 padding-top: 20px;
-#                 border-top: 1px solid #ddd;
-#             }}
-#             .action-buttons a, .action-buttons button {{
-#                 display: inline-block;
-#                 padding: 10px 20px;
-#                 margin-right: 10px;
-#                 background-color: #4CAF50;
-#                 color: white;
-#                 text-decoration: none;
-#                 border-radius: 5px;
-#                 border: none;
-#                 cursor: pointer;
-#             }}
-#             .action-buttons a:hover, .action-buttons button:hover {{
-#                 background-color: #45a049;
-#             }}
-#             .action-buttons .secondary {{
-#                 background-color: #008CBA;
-#             }}
-#             .action-buttons .secondary:hover {{
-#                 background-color: #007399;
-#             }}
-#         </style>
-        
-#         <div class="invoice-header">
-#             <h2>Rechnung {invoice[1]}<span class="status-badge">{status_label}</span></h2>
-#             <p>Erstellt am: {invoice[39]} | Letzte Änderung: {invoice[40] or 'N/A'}</p>
-#         </div>
-        
-#         <h3>Rechnungsinformationen</h3>
-#         <table class="metadata-table">
-#             <tr><td>Rechnungsnummer:</td><td>{invoice[1]}</td></tr>
-#             <tr><td>Rechnungsdatum:</td><td>{invoice[2]}</td></tr>
-#             <tr><td>Währung:</td><td>{invoice[3] or 'EUR'}</td></tr>
-#             <tr><td>Bestellnummer:</td><td>{invoice[4] or 'N/A'}</td></tr>
-#             <tr><td>Lieferdatum:</td><td>{invoice[5] or 'N/A'}</td></tr>
-#         </table>
-        
-#         <h3>Verkäufer (Snapshot)</h3>
-#         <table class="metadata-table">
-#             <tr><td>Name:</td><td>{invoice[6]}</td></tr>
-#             <tr><td>Straße:</td><td>{invoice[7]}</td></tr>
-#             <tr><td>PLZ/Ort:</td><td>{invoice[8]} {invoice[9]}</td></tr>
-#             <tr><td>Land:</td><td>{invoice[10] or 'N/A'}</td></tr>
-#             <tr><td>USt-IdNr:</td><td>{invoice[11] or 'N/A'}</td></tr>
-#         </table>
-        
-#         <h3>Käufer (Snapshot)</h3>
-#         <table class="metadata-table">
-#             <tr><td>Name:</td><td>{invoice[12]}</td></tr>
-#             <tr><td>Straße:</td><td>{invoice[13]}</td></tr>
-#             <tr><td>PLZ/Ort:</td><td>{invoice[14]} {invoice[15]}</td></tr>
-#             <tr><td>Land:</td><td>{invoice[16] or 'N/A'}</td></tr>
-#             <tr><td>USt-IdNr:</td><td>{invoice[17] or 'N/A'}</td></tr>
-#             <tr><td>Leitweg-ID:</td><td>{invoice[18] or 'N/A'}</td></tr>
-#         </table>
-        
-#         <h3>Rechnungspositionen</h3>
-#         <table class="items-table">
-#             <tr>
-#                 <th>Pos.</th>
-#                 <th>Artikel-Nr.</th>
-#                 <th>Beschreibung</th>
-#                 <th>Menge</th>
-#                 <th>Einheit</th>
-#                 <th>Einzelpreis</th>
-#                 <th>Gesamt (netto)</th>
-#                 <th>MwSt</th>
-#             </tr>
-#     '''
-    
-#     for item in items:
-#         # item structure: ID=0, InvoiceId=1, Position=2, ArticleId=3, Description=4, Quantity=5, Unit=6, PricePerUnit=7, TotalNet=8, TaxCategory=9, TaxRate=10
-#         article_id = item[3] or '-'
-#         description = item[4] or ''
-        
-#         # Safely convert numeric fields
-#         try:
-#             quantity = f"{float(item[5]):.2f}".replace('.', ',') if item[5] else '0,00'
-#         except (ValueError, TypeError):
-#             quantity = str(item[5]) if item[5] else '0,00'
-            
-#         unit = item[6] or 'Stk'
-        
-#         try:
-#             price = f"{float(item[7]):.2f}".replace('.', ',') if item[7] else '0,00'
-#         except (ValueError, TypeError):
-#             price = str(item[7]) if item[7] else '0,00'
-            
-#         try:
-#             total = f"{float(item[8]):.2f}".replace('.', ',') if item[8] else '0,00'
-#         except (ValueError, TypeError):
-#             total = str(item[8]) if item[8] else '0,00'
-            
-#         try:
-#             tax_rate = f"{float(item[10]):.0f}%" if item[10] else 'N/A'
-#         except (ValueError, TypeError):
-#             tax_rate = str(item[10]) if item[10] else 'N/A'
-        
-#         s += f'''
-#             <tr>
-#                 <td>{item[2]}</td>
-#                 <td>{article_id}</td>
-#                 <td>{description}</td>
-#                 <td style="text-align: right;">{quantity}</td>
-#                 <td>{unit}</td>
-#                 <td style="text-align: right;">{price} €</td>
-#                 <td style="text-align: right;">{total} €</td>
-#                 <td style="text-align: right;">{tax_rate}</td>
-#             </tr>
-#         '''
-    
-#     # Totals box
-#     sum_net = f"{invoice[33]:.2f}".replace('.', ',') if invoice[33] else '0,00'
-#     tax_amount = f"{invoice[34]:.2f}".replace('.', ',') if invoice[34] else '0,00'
-#     sum_gross = f"{invoice[35]:.2f}".replace('.', ',') if invoice[35] else '0,00'
-#     amount_due = f"{invoice[36]:.2f}".replace('.', ',') if invoice[36] else sum_gross
-    
-#     s += f'''
-#         </table>
-        
-#         <div class="totals-box">
-#             <table>
-#                 <tr><td>Summe (netto):</td><td>{sum_net} €</td></tr>
-#                 <tr><td>MwSt ({invoice[31] or 'N/A'}) {invoice[32] or ''}%:</td><td>{tax_amount} €</td></tr>
-#                 <tr class="total-row"><td>Summe (brutto):</td><td>{sum_gross} €</td></tr>
-#                 <tr class="total-row"><td>Fälliger Betrag:</td><td>{amount_due} €</td></tr>
-#             </table>
-#         </div>
-        
-#         <div style="clear: both;"></div>
-#     '''
-    
-#     # Payment terms if available
-#     if invoice[19] or invoice[20]:
-#         s += '''
-#             <h3>Zahlungsbedingungen</h3>
-#             <table class="metadata-table">
-#         '''
-#         if invoice[19]:
-#             s += f'<tr><td>Zahlungsziel:</td><td>{invoice[19]} Tage</td></tr>'
-#         if invoice[20]:
-#             s += f'<tr><td>Fälligkeitsdatum:</td><td>{invoice[20]}</td></tr>'
-#         if invoice[21]:
-#             s += f'<tr><td>Skonto (%):</td><td>{invoice[21]:.1f}%</td></tr>'
-#         if invoice[22]:
-#             s += f'<tr><td>Skonto-Frist:</td><td>{invoice[22]} Tage</td></tr>'
-#         s += '</table>'
-    
-#     # Bank details snapshot if available
-#     if invoice[23]:
-#         s += f'''
-#             <h3>Bankverbindung (Snapshot)</h3>
-#             <table class="metadata-table">
-#                 <tr><td>Kontoinhaber:</td><td>{invoice[23]}</td></tr>
-#                 <tr><td>IBAN:</td><td>{invoice[24] or 'N/A'}</td></tr>
-#                 <tr><td>BIC:</td><td>{invoice[25] or 'N/A'}</td></tr>
-#                 <tr><td>Bank:</td><td>{invoice[26] or 'N/A'}</td></tr>
-#             </table>
-#         '''
-    
-#     # Payment status section
-#     amount_due_float = invoice[36] if invoice[36] is not None else invoice[35]
-#     sum_gross_float = invoice[35] or 0
-#     amount_paid = sum_gross_float - amount_due_float
-    
-#     if amount_paid > 0 or status == 'paid':
-#         payment_color = '#00aa00' if amount_due_float <= 0.01 else '#ff9900'
-#         s += f'''
-#             <h3>Zahlungsstatus</h3>
-#             <div style="padding: 15px; background-color: #f9f9f9; border-left: 4px solid {payment_color}; margin-bottom: 20px;">
-#                 <table class="metadata-table" style="margin: 0;">
-#                     <tr><td>Rechnungsbetrag:</td><td>{sum_gross:.replace(",", ".")} €</td></tr>
-#                     <tr><td>Bereits gezahlt:</td><td style="color: #00aa00;">{amount_paid:.2f} €</td></tr>
-#                     <tr><td><strong>Offener Betrag:</strong></td><td style="color: {payment_color}; font-size: 1.2em;"><strong>{amount_due} €</strong></td></tr>
-#                 </table>
-#             </div>
-#         '''
-    
-#     # Action buttons
-#     pdf_link = ''
-#     if invoice[38]:
-#         pdf_link = f'<a href="/{invoice[38]}" target="_blank">PDF anzeigen</a>'
-    
-#     # XML download button for finalized invoices
-#     xml_button = ''
-#     if status in ['finalized', 'sent', 'paid']:
-#         xml_button = f'''
-#             <a href="/invoice/xml?id={invoice_id}" style="background-color: #28a745; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">📄 XRechnung XML</a>
-#         '''
-    
-#     # Payment button for unpaid invoices
-#     payment_button = ''
-#     if status in ['finalized', 'sent'] and amount_due_float > 0.01:
-#         payment_button = f'''
-#             <button onclick="showPaymentModal()" style="background-color: #00aa00;">💶 Zahlung buchen</button>
-#         '''
-    
-#     # Email button for finalized invoices (with PDF)
-#     email_button = ''
-#     if status in ['finalized', 'sent'] and invoice[38]:
-#         email_button = f'''
-#             <button onclick="showEmailModal()" style="background-color: #0066cc;">📧 Per E-Mail versenden</button>
-#         '''
-    
-#     # Status transition buttons based on current status
-#     status_buttons = ''
-#     if status == 'draft':
-#         status_buttons = f'''
-#             <button onclick="updateStatus({invoice_id}, 'finalized')" style="background-color: #0066cc;">✓ Finalisieren</button>
-#             <button onclick="updateStatus({invoice_id}, 'cancelled')" style="background-color: #cc0000;">✗ Stornieren</button>
-#         '''
-#     elif status == 'finalized':
-#         status_buttons = f'''
-#             <button onclick="updateStatus({invoice_id}, 'sent')" style="background-color: #ff9900;">📧 Als versendet markieren</button>
-#             <button onclick="updateStatus({invoice_id}, 'paid')" style="background-color: #00aa00;">💶 Als bezahlt markieren</button>
-#             <button onclick="updateStatus({invoice_id}, 'cancelled')" style="background-color: #cc0000;">✗ Stornieren</button>
-#         '''
-#     elif status == 'sent':
-#         status_buttons = f'''
-#             <button onclick="updateStatus({invoice_id}, 'paid')" style="background-color: #00aa00;">💶 Als bezahlt markieren</button>
-#             <button onclick="updateStatus({invoice_id}, 'finalized')" style="background-color: #0066cc;">↩ Zurück zu finalisiert</button>
-#         '''
-#     elif status == 'paid':
-#         status_buttons = f'''
-#             <button onclick="updateStatus({invoice_id}, 'sent')" style="background-color: #ff9900;">↩ Zurück zu versendet</button>
-#         '''
-#     # cancelled has no transitions
-    
-#     s += f'''
-#         <script>
-#             function updateStatus(invoiceId, newStatus) {{
-#                 if (!confirm('Status wirklich ändern?')) return;
-                
-#                 fetch('/invoice/status', {{
-#                     method: 'POST',
-#                     headers: {{'Content-Type': 'application/json'}},
-#                     body: JSON.stringify({{
-#                         invoice_id: invoiceId,
-#                         status: newStatus
-#                     }})
-#                 }})
-#                 .then(response => {{
-#                     if (response.ok) {{
-#                         // Reload page to show updated status
-#                         window.location.reload();
-#                     }} else {{
-#                         alert('Fehler beim Statusupdate');
-#                     }}
-#                 }})
-#                 .catch(err => alert('Fehler: ' + err));
-#             }}
-            
-#             function showPaymentModal() {{
-#                 document.getElementById('paymentModal').style.display = 'block';
-#             }}
-            
-#             function hidePaymentModal() {{
-#                 document.getElementById('paymentModal').style.display = 'none';
-#             }}
-            
-#             function linkPayment() {{
-#                 const transactionId = document.getElementById('transaction_id').value;
-#                 const amount = document.getElementById('payment_amount').value;
-                
-#                 if (!transactionId || !amount) {{
-#                     alert('Bitte Transaktions-ID und Betrag angeben');
-#                     return;
-#                 }}
-                
-#                 fetch('/invoice/link-payment', {{
-#                     method: 'POST',
-#                     headers: {{'Content-Type': 'application/json'}},
-#                     body: JSON.stringify({{
-#                         invoice_id: {invoice_id},
-#                         transaction_id: parseInt(transactionId),
-#                         amount_paid: parseFloat(amount)
-#                     }})
-#                 }})
-#                 .then(response => {{
-#                     if (response.ok) {{
-#                         alert('Zahlung erfolgreich verknüpft');
-#                         window.location.reload();
-#                     }} else {{
-#                         alert('Fehler beim Verknüpfen der Zahlung');
-#                     }}
-#                 }})
-#                 .catch(err => alert('Fehler: ' + err));
-#             }}
-            
-#             function showEmailModal() {{
-#                 document.getElementById('emailModal').style.display = 'block';
-#             }}
-            
-#             function hideEmailModal() {{
-#                 document.getElementById('emailModal').style.display = 'none';
-#             }}
-            
-#             function sendInvoiceEmail() {{
-#                 const recipientEmail = document.getElementById('recipient_email').value;
-#                 const recipientName = document.getElementById('recipient_name').value;
-#                 const messageText = document.getElementById('email_message').value;
-                
-#                 if (!recipientEmail) {{
-#                     alert('Bitte E-Mail-Adresse angeben');
-#                     return;
-#                 }}
-                
-#                 fetch('/invoice/send-email', {{
-#                     method: 'POST',
-#                     headers: {{'Content-Type': 'application/json'}},
-#                     body: JSON.stringify({{
-#                         invoice_id: {invoice_id},
-#                         recipient_email: recipientEmail,
-#                         recipient_name: recipientName,
-#                         message_text: messageText
-#                     }})
-#                 }})
-#                 .then(response => response.json())
-#                 .then(data => {{
-#                     if (data.success) {{
-#                         alert('Rechnung erfolgreich per E-Mail versendet');
-#                         hideEmailModal();
-#                         // Update status to 'sent' if it was 'finalized'
-#                         if (confirm('Status auf "Versendet" setzen?')) {{
-#                             updateStatus({invoice_id}, 'sent');
-#                         }}
-#                     }} else {{
-#                         alert('Fehler: ' + (data.error || 'Unbekannter Fehler'));
-#                     }}
-#                 }})
-#                 .catch(err => alert('Fehler: ' + err));
-#             }}
-#         </script>
-        
-#         <!-- Email Modal -->
-#         <div id="emailModal" class="modal-overlay" style="display: none;">
-#             <div class="modal-content" style="max-width: 600px;">
-#                 <h3>Rechnung per E-Mail versenden</h3>
-#                 <p>Versenden Sie die Rechnung {invoice[1]} per E-Mail an den Kunden.</p>
-#                 <table style="width: 100%; border: none;">
-#                     <tr>
-#                         <td style="padding: 10px; border: none; width: 150px;"><strong>Empfänger Name:</strong></td>
-#                         <td style="padding: 10px; border: none;">
-#                             <input type="text" id="recipient_name" value="{invoice[12]}" style="width: 100%;">
-#                         </td>
-#                     </tr>
-#                     <tr>
-#                         <td style="padding: 10px; border: none;"><strong>E-Mail-Adresse:</strong></td>
-#                         <td style="padding: 10px; border: none;">
-#                             <input type="email" id="recipient_email" style="width: 100%;" placeholder="kunde@example.com">
-#                             <br><small style="color: #666;">E-Mail-Adresse des Empfängers</small>
-#                         </td>
-#                     </tr>
-#                     <tr>
-#                         <td style="padding: 10px; border: none; vertical-align: top;"><strong>Nachricht:</strong></td>
-#                         <td style="padding: 10px; border: none;">
-#                             <textarea id="email_message" rows="8" style="width: 100%;">Sehr geehrte Damen und Herren,
-
-# anbei erhalten Sie die Rechnung {invoice[1]}.
-
-# Bitte überweisen Sie den Rechnungsbetrag unter Angabe der Rechnungsnummer 
-# innerhalb der angegebenen Zahlungsfrist.
-
-# Bei Rückfragen stehen wir Ihnen gerne zur Verfügung.
-
-# Mit freundlichen Grüßen</textarea>
-#                         </td>
-#                     </tr>
-#                 </table>
-#                 <div style="margin-top: 20px;">
-#                     <button onclick="sendInvoiceEmail()" style="background-color: #0066cc; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">📧 E-Mail senden</button>
-#                     <button onclick="hideEmailModal()" style="background-color: #ccc; color: black; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; margin-left: 10px;">Abbrechen</button>
-#                 </div>
-#             </div>
-#         </div>
-        
-#         <!-- Payment Modal -->
-#         <div id="paymentModal" class="modal-overlay" style="display: none;">
-#             <div class="modal-content" style="max-width: 500px;">
-#                 <h3>Zahlung buchen</h3>
-#                 <p>Verknüpfen Sie diese Rechnung mit einer Transaktion aus dem Transaktionsverlauf.</p>
-#                 <table style="width: 100%; border: none;">
-#                     <tr>
-#                         <td style="padding: 10px; border: none;"><strong>Transaktions-ID:</strong></td>
-#                         <td style="padding: 10px; border: none;">
-#                             <input type="number" id="transaction_id" style="width: 100px;" placeholder="z.B. 123">
-#                             <br><small style="color: #666;">ID aus der Transaktionsliste</small>
-#                         </td>
-#                     </tr>
-#                     <tr>
-#                         <td style="padding: 10px; border: none;"><strong>Gezahlter Betrag:</strong></td>
-#                         <td style="padding: 10px; border: none;">
-#                             <input type="number" id="payment_amount" step="0.01" value="{amount_due_float:.2f}" style="width: 150px;"> €
-#                             <br><small style="color: #666;">Betrag der Zahlung</small>
-#                         </td>
-#                     </tr>
-#                 </table>
-#                 <div style="margin-top: 20px;">
-#                     <button onclick="linkPayment()" style="background-color: #00aa00; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">✓ Zahlung verknüpfen</button>
-#                     <button onclick="hidePaymentModal()" style="background-color: #ccc; color: black; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; margin-left: 10px;">Abbrechen</button>
-#                 </div>
-#             </div>
-#         </div>
-        
-#         <div class="action-buttons">
-#             {pdf_link}
-#             {xml_button}
-#             {email_button}
-#             {payment_button}
-#             {status_buttons}
-#             <a href="/invoice" class="secondary">Zurück zur Liste</a>
-#         </div>
-#     '''
-    
-#     s += Footer()
-#     return s
-
-
 def PageReminders(db: Database):
     """Generate reminders/dunning page for overdue invoices"""
     from datetime import date, timedelta
@@ -3659,11 +2871,9 @@ def PageDashboard(db: Database):
     s += Header2()
     s += Header3()
     
-    s += "<h2>Dashboard - Übersicht</h2>"
-    
     # Key metrics cards
     s += f'''
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px;">
+    <div class="grid-container">
         <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
             <div style="font-size: 14px; opacity: 0.9;">Gesamtumsatz ({current_year})</div>
             <div style="font-size: 32px; font-weight: bold; margin: 10px 0;">{year_revenue:.2f} €</div>
@@ -3782,10 +2992,10 @@ def PageDashboard(db: Database):
     <div class="rectRounded">
         <h3 style="margin-top: 0;">Schnellzugriff</h3>
         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-            <a href="/invoice/new" style="padding: 10px 20px; background: #4CAF50; color: white; text-decoration: none; border-radius: 5px;">+ Neue Rechnung</a>
-            <a href="/invoice?status=sent" style="padding: 10px 20px; background: #ff9900; color: white; text-decoration: none; border-radius: 5px;">Versendete Rechnungen</a>
-            <a href="/invoice/reminders" style="padding: 10px 20px; background: #dc3545; color: white; text-decoration: none; border-radius: 5px;">⚠️ Mahnwesen</a>
-            <a href="/invoice" style="padding: 10px 20px; background: #0066cc; color: white; text-decoration: none; border-radius: 5px;">Alle Rechnungen</a>
+            <a href="/invoice/new" class="coloredButton btn-green">+ Neue Rechnung</a>
+            <a href="/invoice?status=sent" class="coloredButton btn-orange">Versendete Rechnungen</a>
+            <a href="/invoice/reminders" class="coloredButton btn-red">⚠️ Mahnwesen</a>
+            <a href="/invoice" class="coloredButton btn-blue">Alle Rechnungen</a>
         </div>
     </div>
     '''

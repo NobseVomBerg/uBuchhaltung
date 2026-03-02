@@ -65,28 +65,24 @@ Verwaltung des Kontenrahmens nach deutschem Standard:
 - **Bearbeiten**: Bestehende Einträge aktualisieren
 - **UNIQUE-Constraint**: Kombination aus RahmenNr und Kontonummer muss eindeutig sein
 
-### 5. Kontakte-Verwaltung (`/contacts`)
-Verwaltung von Kunden, Lieferanten und eigenen Firmendaten:
+### 5. Kontakte-Verwaltung (`/masterdata/contacts`)
+Verwaltung von Kunden, Lieferanten und eigenen Firmendaten in einem normalisierten 3NF-Schema (4 Tabellen):
+- **Entitätstypen**: Unternehmen (`company`) und Personen (`person`) mit separaten Formularmasken
 - **Kontakttypen**: Kunde, Lieferant, Eigene Daten, Versicherung, Sonstiges
-- **Anzeigen**: Übersicht mit Name, Firma, Kontaktdaten
-- **Hinzufügen**: Neue Kontakte mit vollständigen Adress- und Kontaktdaten
-- **Bearbeiten**: Bestehende Einträge aktualisieren
-- **Eigene Daten**: Mehrere Firmendaten für Multi-Company-Support
+- **Anzeigen**: Übersicht mit kombiniertem Filter nach Typ und Entitätstyp
+- **Anlegen**: Separate „Neu“-Buttons für Unternehmen und Personen
+- **Bearbeiten**: Vollständiges, kontextabhängiges Bearbeitungsformular
 - **Logo-Verwaltung**:
   - File-Picker für einfache Logo-Auswahl
   - Automatische Pfadkonvertierung (absolut → relativ)
   - Live-Vorschau des gewählten Logos
-- **Filter**: Nach Kontakttyp filterbar
+- **Filter**: Nach Kontakttyp und Entitätstyp filterbar
 
-**Kontaktfelder:**
-- Typ (customer/supplier/own/insurance/other)
-- Kundennummer
-- Name, Firma
-- Straße, PLZ, Stadt, Land
-- E-Mail, Telefon
-- Steuernummer/UStIdNr
-- Logo (Pfad für Firmenlogo)
-- Notizen
+**Datenbankstruktur (normalisiert, 4 Tabellen):**
+- `Contacts` – Basis: ContactType, EntityType, DisplayName, CustomerNumber, Email, Phone, Notes, Logo
+- `ContactAddresses` – 1:n Adressen: AddressLine1, Street, PostalCode, City, Country
+- `CompanyDetails` – 1:1 für Unternehmen: CompanyName, LegalForm, TaxID, BuyerRouteID
+- `PersonDetails` – 1:1 für Personen: Salutation, Title, FirstName, LastName, DateOfBirth, CompanyContactID
 
 ### 6. Rechnungserstellung (`/invoice`)
 Professionelle Rechnungserstellung mit PDF-Generierung, Multi-Company-Support und erweiterten Funktionen:
@@ -211,7 +207,7 @@ Verwaltung von Artikeln und Dienstleistungen für Rechnungen:
 - **Integration**: Direkte Übernahme in Rechnungspositionen
 - **Bearbeitung**: Vollständige CRUD-Funktionalität
 
-### 12. Nummernkreise (`/settings/numberranges`)
+### 12. Nummernkreise (`/masterdata/numberranges`)
 Automatische Nummerierung für Rechnungen und Belege:
 - **Format**: YY[Buchstabe][Präfix]### (z.B. 26R001, 26B_A001)
 - **Typen**: 
@@ -233,11 +229,11 @@ Gruppierung mehrerer Buchungen:
 - **Übersicht**: Liste aller Gruppen mit Gesamtbeträgen
 - **Detail-Ansicht**: Alle Buchungen einer Gruppe mit Validierung
 
-### 14. Einstellungen (`/settings`)
-Zentrale Konfiguration:
-- **Bankkonten**: Verwaltung von Bankkonten und Kasse
-- **Nummernkreise**: Konfiguration der automatischen Nummerierung
-- **Erweiterbar**: Weitere Einstellungen können hinzugefügt werden
+### 14. Sonstiges (`/miscellaneous`)
+Verschiedene Hilfsfunktionen und Entwickler-Tools:
+- **Datenbank-Übersicht**: Tabellenstatistiken (Anzahl Einträge pro Tabelle)
+- **DB-Export**: Exportiert alle Tabelleninhalte als INSERT-Statements nach `./data/db-export.sql` – direkt verwendbar in der SQL-Konsole
+- **SQL-Konsole**: Direktausführung beliebiger SQL-Befehle (⚠️ nur für Entwickler/Administration)
 
 ### 15. Anlagenverzeichnis (`/assets`)
 Vollständiges Anlagenmanagement mit gesetzeskonformer AfA-Berechnung:
@@ -321,21 +317,45 @@ Die Anwendung verwendet SQLite mit folgenden Tabellen:
 - Gruppe (TEXT)
 - UNIQUE(RahmenNr, Konto)
 
-**Customers (Kontakte)**
+**Contacts (Basis)**
 - ID (INTEGER PRIMARY KEY AUTOINCREMENT)
 - ContactType (TEXT) - 'customer', 'supplier', 'own', 'insurance', 'other'
+- EntityType (TEXT) - 'company' oder 'person'
+- DisplayName (TEXT) - Anzeigename
 - CustomerNumber (TEXT)
-- Name (TEXT)
-- Company (TEXT)
+- Email (TEXT)
+- Phone (TEXT)
+- Notes (TEXT)
+- Logo (TEXT) - Pfad zum Firmenlogo
+
+**ContactAddresses (Adressen, 1:n)**
+- ID (INTEGER PRIMARY KEY AUTOINCREMENT)
+- ContactID (INTEGER, FK → Contacts ON DELETE CASCADE)
+- AddressType (TEXT DEFAULT 'main')
+- AddressLine1 (TEXT) - Adresszusatz / c/o
 - Street (TEXT)
 - PostalCode (TEXT)
 - City (TEXT)
-- Country (TEXT)
-- Email (TEXT)
-- Phone (TEXT)
-- TaxID (TEXT) - Steuernummer/UStIdNr
-- Notes (TEXT)
-- Logo (TEXT) - Pfad zum Firmenlogo (für Multi-Company)
+- Country (TEXT DEFAULT 'DE')
+
+**CompanyDetails (Unternehmensdetails, 1:1)**
+- ID (INTEGER PRIMARY KEY AUTOINCREMENT)
+- ContactID (INTEGER, FK → Contacts ON DELETE CASCADE)
+- CompanyName (TEXT)
+- LegalForm (TEXT) - z.B. GmbH, AG, UG
+- TaxID (TEXT) - Umsatzsteuer-ID / Steuernummer
+- BuyerRouteID (TEXT) - XRechnung: Leitweg-ID
+
+**PersonDetails (Personendetails, 1:1)**
+- ID (INTEGER PRIMARY KEY AUTOINCREMENT)
+- ContactID (INTEGER, FK → Contacts ON DELETE CASCADE)
+- Salutation (TEXT)
+- Title (TEXT)
+- FirstName (TEXT)
+- LastName (TEXT)
+- DateOfBirth (TEXT)
+- CompanyContactID (INTEGER, FK → Contacts) - Zugehöriges Unternehmen
+- CompanyName_Free (TEXT) - Freier Firmenname
 
 **Articles (Artikelverzeichnis)**
 - ID (INTEGER PRIMARY KEY AUTOINCREMENT)
@@ -536,8 +556,11 @@ PyBuch/
 ├── server/                    # Modularer Webserver (refactored)
 │   ├── __init__.py           # Package initialization
 │   ├── app.py                # HTTP-Server-Klasse mit Routing
-│   ├── pages.py              # HTML-Seiten-Generierung (20+ Seiten)
+│   ├── pages.py              # HTML-Seiten-Generierung (Dashboard, Rechnungen, Buchungen, ...)
+│   ├── pages_masterdata.py   # HTML-Seiten für Stammdaten (Artikel, SKR, Bankkonten, ...)
+│   ├── pages_contacts.py     # HTML-Seiten für Kontaktverwaltung (normalisiertes Schema)
 │   ├── pages_assets.py       # HTML-Seiten für Anlagenverzeichnis
+│   ├── pages_miscellaneous.py # HTML-Seiten für Sonstiges (DB-Export, SQL-Konsole)
 │   ├── handlers.py           # POST-Request-Handler inkl. PDF-Generierung
 │   └── upload_handler.py     # File-Upload mit PDF-Parsing
 ├── static/                    # Statische Dateien
@@ -665,8 +688,11 @@ Diese Anwendung ist für lokale Verwendung konzipiert:
 - **Webserver**: Python's `http.server.BaseHTTPRequestHandler`
 - **Modularer Aufbau**: Separation of Concerns
   - `server/app.py`: Routing und HTTP-Handler
-  - `server/pages.py`: HTML-Generierung (20+ Seiten)
+  - `server/pages.py`: HTML-Generierung (Dashboard, Rechnungen, Buchungen, ...)
+  - `server/pages_masterdata.py`: HTML-Generierung für Stammdaten (Artikel, SKR, Bankkonten, Nummernkreise)
+  - `server/pages_contacts.py`: HTML-Generierung für Kontaktverwaltung (normalisiertes Schema)
   - `server/pages_assets.py`: HTML-Generierung für Anlagenverzeichnis (5 Seiten)
+  - `server/pages_miscellaneous.py`: HTML-Generierung für Sonstiges (DB-Export, SQL-Konsole)
   - `server/handlers.py`: Form-Verarbeitung (POST), inkl. Asset-Handler
   - `server/upload_handler.py`: File-Upload mit Multipart-Parsing
 - **Datenbank**: SQLite mit `sqlite3` Modul, Migrations-System in `db.py`
@@ -695,16 +721,18 @@ Diese Anwendung ist für lokale Verwendung konzipiert:
 18. **Import-Bestätigung** (`/confirm_transactions`) - Transaktions-Import aus PDF
 19. **SKR** (`/skr`) - Standardkontenrahmen-Verwaltung
 20. **SKR bearbeiten** (`/edit_skr`) - SKR-Editor
-21. **Kontakte** (`/contacts`) - Kunden/Lieferanten/Eigene Daten mit Logo
-22. **Kontakte bearbeiten** (`/contacts/edit`) - Kontakt-Editor mit File-Picker
-23. **Artikel** (`/articles`) - Artikelverzeichnis-Verwaltung
-24. **Artikel bearbeiten** (`/articles/edit`) - Artikel-Editor
-25. **Einstellungen** (`/settings`) - Hauptmenü für Konfiguration
-26. **Bankkonten** (`/settings/bankaccounts`) - Bankkonten-Verwaltung
-27. **Bankkonten bearbeiten** (`/settings/bankaccounts/edit`) - Bankkonto-Editor
-28. **Nummernkreise** (`/settings/numberranges`) - Nummernkreis-Verwaltung
-29. **Nummernkreise bearbeiten** (`/settings/numberranges/edit`) - Nummernkreis-Editor
-30. **About** (`/about`) - Informationen
+21. **Kontakte** (`/masterdata/contacts`) - Kunden/Lieferanten/Eigene Daten (normalisiert)
+22. **Kontakt neu Unternehmen** (`/masterdata/contacts/new?entity=company`) - Unternehmensformular
+23. **Kontakt neu Person** (`/masterdata/contacts/new?entity=person`) - Personenformular
+24. **Kontakt bearbeiten** (`/masterdata/contacts/edit?id=`) - Kontakt-Editor
+25. **Artikel** (`/masterdata/articles`) - Artikelverzeichnis-Verwaltung
+26. **Artikel bearbeiten** (`/masterdata/articles/edit?id=`) - Artikel-Editor
+27. **Bankkonten** (`/masterdata/bankaccounts`) - Bankkonten-Verwaltung
+28. **Bankkonten bearbeiten** (`/masterdata/bankaccounts/edit?id=`) - Bankkonto-Editor
+29. **Nummernkreise** (`/masterdata/numberranges`) - Nummernkreis-Verwaltung
+30. **Nummernkreise bearbeiten** (`/masterdata/numberranges/edit?id=`) - Nummernkreis-Editor
+31. **Sonstiges** (`/miscellaneous`) - DB-Übersicht, DB-Export, SQL-Konsole
+32. **About** (`/about`) - Informationen
 
 ### Besondere Features
 
