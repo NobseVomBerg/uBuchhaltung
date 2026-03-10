@@ -32,7 +32,7 @@ def PageMiscellaneous(db: Database):
     # Database statistics
     stats = db.get_table_statistics()
     s += "<h2>Datenbank-Übersicht</h2>"
-    s += "<table border='1'>"
+    s += "<table>"
     s += "<tr><th>Tabelle</th><th>Anzahl Einträge</th></tr>"
     for table_name, count in stats:
         s += f"<tr><td>{table_name}</td><td style='text-align: right;'>{count}</td></tr>"

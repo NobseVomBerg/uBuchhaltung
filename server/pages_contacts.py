@@ -448,7 +448,7 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
 
     type_labels = dict(CONTACT_TYPES)
 
-    s += "<table border='1' style='width:100%;border-collapse:collapse;'>"
+    s += "<table style='width:100%;border-collapse:collapse;'>"
     s += ("<tr><th>ID</th><th>Entität</th><th>Typ</th><th>Anzeigename</th>"
           "<th>Kd-Nr.</th><th>Firma / Zuordnung</th><th>E-Mail</th><th>Telefon</th><th>Aktionen</th></tr>")
 
