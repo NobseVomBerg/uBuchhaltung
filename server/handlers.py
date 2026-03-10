@@ -135,7 +135,7 @@ def handle_confirm_import(db: Database, post_data):
         
         if skipped_count > 0:
             s += f"<p style='color: orange;'>{skipped_count} Duplikate wurden übersprungen:</p>"
-            s += "<table border='1'>"
+            s += "<table>"
             s += "<tr><th>Datum</th><th>Empfänger</th><th>Verwendungszweck</th><th>Betrag</th><th>Fremd-IBAN</th></tr>"
             for trans in skipped_transactions:
                 date_str = trans['date'][:10] if isinstance(trans['date'], str) else trans['date']
@@ -351,13 +351,13 @@ def handle_execute_sql(db: Database, post_data):
         message = f"<p><strong>{success_count} von {len(commands)} Befehlen erfolgreich ausgeführt</strong></p>"
         
         if results:
-            message += "<h2 class='successTitle'>Erfolgreiche Befehle:</h2>"
+            message += "<h2 class='successColor'>Erfolgreiche Befehle:</h2>"
             message += "<pre class='sql-success-box'>"
             message += "\n".join(results)
             message += "</pre>"
         
         if errors:
-            message += "<h2 class='errorTitle'>Fehler:</h2>"
+            message += "<h2 class='errorColor'>Fehler:</h2>"
             message += "<pre class='sql-error-box'>"
             message += "\n".join(errors)
             message += "</pre>"
@@ -368,7 +368,7 @@ def handle_execute_sql(db: Database, post_data):
         
     except Exception as e:
         conn.rollback()
-        return generate_sql_result_page(f"<h2 class='errorTitle'>Fehler</h2><p class='errorTitle'>{str(e)}</p><p><a href='/miscellaneous'>Zurück zu Sonstiges</a></p>", False)
+        return generate_sql_result_page(f"<h2 class='errorColor'>Fehler</h2><p class='errorColor'>{str(e)}</p><p><a href='/miscellaneous'>Zurück zu Sonstiges</a></p>", False)
     finally:
         conn.close()
 

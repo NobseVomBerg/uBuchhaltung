@@ -5,22 +5,18 @@ Contains: Articles, Contacts, Chart of Accounts (SKR)
 from db import Database
 
 def Header1(active_page=None):
-    """Import Header1 from pages.py"""
     from server.pages import Header1 as BaseHeader1
     return BaseHeader1(active_page)
 
 def Header2(content=""):
-    """Import Header2 from pages.py"""
     from server.pages import Header2 as BaseHeader2
     return BaseHeader2(content)
 
 def Header3(content=""):
-    """Import Header3 from pages.py"""
     from server.pages import Header3 as BaseHeader3
     return BaseHeader3(content)
 
 def Footer():
-    """Import Footer from pages.py"""
     from server.pages import Footer as BaseFooter
     return BaseFooter()
 
@@ -114,7 +110,7 @@ def PageArticles(db: Database):
     '''
     
     s += "<h2>Artikelverzeichnis</h2>"
-    s += "<table border='1'>"
+    s += "<table>"
     s += "<tr><th>ID</th><th>Bezeichnung</th><th>Einheit</th><th>Einzelpreis (netto)</th><th>MwSt</th><th>Beschreibung</th><th>Aktiv</th><th>Aktionen</th></tr>"
     
     for article in articles:
@@ -126,7 +122,7 @@ def PageArticles(db: Database):
         description = article[5] or ''
         active = article[6] if len(article) > 6 else 1
         active_display = "✓" if active else "✗"
-        active_style = "color: green;" if active else "color: red;"
+        active_style = "successColor" if active else "errorColor"
         
         s += f"<tr>"
         s += f"<td>{article_id}</td>"
@@ -135,7 +131,7 @@ def PageArticles(db: Database):
         s += f"<td style='text-align: right;'>{unit_price:.2f} €</td>"
         s += f"<td>{tax_rate:.0f}%</td>"
         s += f"<td>{description[:50]}</td>"
-        s += f"<td style='text-align: center; {active_style}'>{active_display}</td>"
+        s += f"<td style='text-align: center;' class='{active_style}'>{active_display}</td>"
         s += f"<td><a href='/masterdata/articles/edit?id={article_id}'>Bearbeiten</a> | <a href='/masterdata/articles/delete?id={article_id}' onclick='return confirm(\"Artikel wirklich löschen?\")'>Löschen</a></td>"
         s += f"</tr>"
     
@@ -232,7 +228,7 @@ def PageSkr(db: Database):
         </form>
     '''
     s += "<h2>Standardkontorahmen, definierte Konten</h2>"
-    s += "<table border='1'>"
+    s += "<table>"
     s += "<tr><th>ID</th><th>SKR-Nr.</th><th>Konto</th><th>Name</th><th>Gruppe</th><th>Standard</th><th>Aktionen</th></tr>"
     for row in rows:
         is_standard = row[5] if len(row) > 5 else 0
@@ -303,7 +299,7 @@ def PageBankAccounts(db: Database):
         </form>
     '''
     s += "<h2>Vorhandene Konten</h2>"
-    s += "<table border='1'>"
+    s += "<table>"
     s += "<tr><th>ID</th><th>Bezeichnung</th><th>Inhaber</th><th>IBAN</th><th>BIC</th><th>Bank</th><th>Typ</th><th>Aktionen</th></tr>"
     for row in rows:
         account_type = "Kasse" if row[6] == 1 else "Bank"
@@ -412,7 +408,7 @@ def PageNumberRanges(db: Database):
         s += f"<h4>{type_name}</h4>"
 
         if type_ranges:
-            s += "<table border='1'>"
+            s += "<table>"
             s += "<tr><th>ID</th><th>Jahr</th><th>Buchstabe</th><th>Präfix</th><th>Aktuelle Nr.</th><th>Nächste Nr.</th><th>Beschreibung</th><th>Aktionen</th></tr>"
 
             for r in type_ranges:

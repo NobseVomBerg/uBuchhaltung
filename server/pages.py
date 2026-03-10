@@ -264,7 +264,7 @@ def PageReceipts(db: Database):
                     document.close();
                 } else {
                     // Show temporary success message
-                    uploadStatus.innerHTML = '<p class="upload-success">' + data + '</p>';
+                    uploadStatus.innerHTML = '<p class="successColor">' + data + '</p>';
                     setTimeout(() => { 
                         uploadStatus.innerHTML = ''; 
                         location.reload();
@@ -272,14 +272,14 @@ def PageReceipts(db: Database):
                 }
             })
             .catch(error => {
-                uploadStatus.innerHTML = '<p class="upload-error">Fehler beim Hochladen: ' + error + '</p>';
+                uploadStatus.innerHTML = '<p class="errorColor">Fehler beim Hochladen: ' + error + '</p>';
             });
         }
     </script>
     '''
     
     s+= "<h2>Vorhandene Belege</h2>"
-    s+= "<table border='1'>"
+    s+= "<table>"
     s+= "<tr><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Pfad</th><th>Info</th><th>Aktionen</th></tr>"
     for row in rows:
         # Documents: ID(0), Number(1), Date(2), Filename(3), Path(4), Info(5)
@@ -351,7 +351,7 @@ def PageReceiptEdit(db: Database, number):
     
     s+= "<h2>Verknüpfte Buchungen</h2>"
     if linked_bookings:
-        s+= "<table border='1'>"
+        s+= "<table>"
         s+= "<tr><th>ID</th><th>Datum</th><th>Empfänger</th><th>Betrag</th><th>Typ</th><th>Aktionen</th></tr>"
         for booking in linked_bookings:
             booking_id = booking[0]
@@ -589,7 +589,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
         
         s+= "<h3>Verknüpfte Dokumente</h3>"
         if linked_documents:
-            s+= "<table border='1'>"
+            s+= "<table>"
             s+= "<tr><th>ID</th><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Typ</th><th>Aktionen</th></tr>"
             for doc in linked_documents:
                 doc_id = doc[0]
@@ -699,7 +699,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                     document.close();
                 } else {
                     // Show temporary success message
-                    uploadStatus.innerHTML = '<p class="upload-success">' + data + '</p>';
+                    uploadStatus.innerHTML = '<p class="successColor">' + data + '</p>';
                     setTimeout(() => { 
                         uploadStatus.innerHTML = ''; 
                         location.reload();
@@ -707,14 +707,14 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                 }
             })
             .catch(error => {
-                uploadStatus.innerHTML = '<p class="upload-error">Fehler beim Hochladen: ' + error + '</p>';
+                uploadStatus.innerHTML = '<p class="errorColor">Fehler beim Hochladen: ' + error + '</p>';
             });
         }
     </script>
     '''
     
     s+= "<h2>Kontobewegungen</h2>"
-    s+= "<table border='1'>"
+    s+= "<table>"
     s+= "<tr><th>Datum</th><th>Empfänger/Auftragg.</th><th>Text</th><th>Betrag</th><th>Währung</th><th>Konto</th><th>Kunde</th><th>SKR</th><th>Aktionen</th></tr>"
     
     # Load bookings from database
@@ -868,7 +868,7 @@ def PageSkr(db: Database):
         </form>
     '''
     s+= "<h2>Standardkontorahmen, definierte Konten</h2>"
-    s+= "<table border='1'>"
+    s+= "<table>"
     s+= "<tr><th>ID</th><th>SKR-Nr.</th><th>Konto</th><th>Name</th><th>Gruppe</th><th>Standard</th><th>Aktionen</th></tr>"
     for row in rows:
         is_standard = row[5] if len(row) > 5 else 0
@@ -1002,7 +1002,7 @@ def PageInvoice(db: Database, filters: dict = None):
     if not invoices:
         s+= "<p><em>Keine Rechnungen gefunden.</em></p>"
     else:
-        s+= "<table border='1' style='width: 100%;'>"
+        s+= "<table style='width: 100%;'>"
         s+= "<tr><th>RE-Nr.</th><th>Datum</th><th>Kunde</th><th>Netto</th><th>Brutto</th><th>Status</th><th>Aktionen</th></tr>"
         
         for invoice in invoices:
@@ -2177,7 +2177,7 @@ def PageContacts(db: Database):
     '''
     
     s+= "<h2>Kontakte</h2>"
-    s+= "<table border='1'>"
+    s+= "<table>"
     s+= "<tr><th>ID</th><th>Typ</th><th>Nr.</th><th>Name</th><th>Firma</th><th>E-Mail</th><th>Telefon</th><th>Aktionen</th></tr>"
     
     # Contact type labels in German
@@ -2416,7 +2416,7 @@ def PageConfirmTransactions(import_id: str):
     
     if data.get('transactions'):
         s+= f"<h2>Gefundene Transaktionen: {len(data['transactions'])}</h2>"
-        s+= "<table border='1'>"
+        s+= "<table>"
         s+= "<tr><th>Datum</th><th>Empfänger/Auftragg.</th><th>Verwendungszweck</th><th>Betrag</th><th>Fremd-IBAN</th></tr>"
         
         for trans in data['transactions']:
@@ -2469,7 +2469,7 @@ def PageBookingGroups(db: Database):
     
     s += "<h2>Vorhandene Split-Buchungen</h2>"
     if groups:
-        s += "<table border='1'>"
+        s += "<table>"
         s += "<tr><th>ID</th><th>Beschreibung</th><th>Erstellt am</th><th>Erwarteter Betrag</th><th>Tatsächlicher Betrag</th><th>Anzahl Buchungen</th><th>Aktionen</th></tr>"
         
         for group in groups:
@@ -2550,7 +2550,7 @@ def PageBookingGroupDetails(db: Database, group_id):
             s += f"<p style='color:red'><strong>Differenz:</strong> {diff:.2f} EUR</p>"
         
         s += "<h2>Buchungen in dieser Gruppe</h2>"
-        s += "<table border='1'>"
+        s += "<table>"
         s += "<tr><th>ID</th><th>Datum</th><th>Empfänger</th><th>Text</th><th>Betrag</th><th>Konto</th><th>Aktionen</th></tr>"
         
         # Get account names
@@ -2627,7 +2627,7 @@ def PageArticles(db: Database):
     '''
     
     s+= "<h2>Artikelverzeichnis</h2>"
-    s+= "<table border='1'>"
+    s+= "<table>"
     s+= "<tr><th>ID</th><th>Bezeichnung</th><th>Einheit</th><th>Einzelpreis (netto)</th><th>MwSt</th><th>Beschreibung</th><th>Aktiv</th><th>Aktionen</th></tr>"
     
     for article in articles:
@@ -2741,7 +2741,7 @@ def PageReminders(db: Database):
     
     if overdue:
         s += "<h3>Überfällige Rechnungen (Mahnung erforderlich)</h3>"
-        s += "<table border='1' style='width: 100%;'>"
+        s += "<table style='width: 100%;'>"
         s += "<tr><th>RE-Nr.</th><th>Datum</th><th>Fällig seit</th><th>Kunde</th><th>Betrag</th><th>Überfällig (Tage)</th><th>Aktionen</th></tr>"
         
         today = date.today()
@@ -2792,7 +2792,7 @@ def PageReminders(db: Database):
     s += "<h3 style='margin-top: 30px;'>Rechnungen fällig in den nächsten 7 Tagen</h3>"
     
     if due_soon:
-        s += "<table border='1' style='width: 100%;'>"
+        s += "<table style='width: 100%;'>"
         s += "<tr><th>RE-Nr.</th><th>Datum</th><th>Fälligkeitsdatum</th><th>Kunde</th><th>Betrag</th><th>Verbleibende Tage</th><th>Aktionen</th></tr>"
         
         for inv in due_soon:
