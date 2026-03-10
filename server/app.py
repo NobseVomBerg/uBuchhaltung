@@ -357,11 +357,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             status_code, response = upload_handler.handle_file_upload(self)
             self.respond(status_code, response)
             return
-        
-        # Handle invoice save
-        if self.path == "/invoice/save":
-            content_length = int(self.headers['Content-Length'])
-            post_body = self.rfile.read(content_length)
+
             response_data = handlers.handle_invoice_save(post_body)
             self.send_response(200)
             self.send_header("Content-type", "application/json")
@@ -524,6 +520,21 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path == "/execute_sql":
                 content = handlers.handle_execute_sql(db, post_data)
                 self.respond(200, content)
+            elif self.path == "/datev/export":
+                result = handlers.handle_datev_export(db, post_data)
+                if isinstance(result[0], bytes):
+                    csv_data, filename = result
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/plain; charset=windows-1252")
+                    self.send_header("Content-Disposition",
+                                     f'attachment; filename="{filename}"')
+                    self.send_header("Content-Length", str(len(csv_data)))
+                    self.end_headers()
+                    self.wfile.write(csv_data)
+                else:
+                    status_code, location = result
+                    self.respond(status_code, "", headers={"Location": location})
+                return
             else:
                 self.respond(404, "Seite nicht gefunden.")
         except Exception as e:

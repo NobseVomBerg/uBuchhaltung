@@ -315,6 +315,58 @@ def handle_db_export(db: Database):
         traceback.print_exc()
         return 303, f"/miscellaneous?export=error&msg={str(e)}"
 
+
+def handle_datev_export(db: Database, post_data: dict):
+    """DATEV Buchungsstapel-CSV für einen Datumsbereich erzeugen.
+
+    Setzt dabei für alle exportierten Buchungen das Steuerdatum (DateTax)
+    auf das heutige Datum.
+
+    Returns:
+        (csv_bytes, filename)  – für einen Datei-Download, oder
+        (303, location_str)    – bei Fehler (Redirect)
+    """
+    import datetime
+    import sys
+    import traceback
+    sys.path.insert(0, '.')
+    try:
+        import datev as datev_module
+    except ImportError:
+        import importlib.util, os
+        spec = importlib.util.spec_from_file_location("datev", os.path.join(os.getcwd(), "datev.py"))
+        datev_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(datev_module)
+
+    try:
+        date_from = post_data.get('date_from', [''])[0].strip()
+        date_to   = post_data.get('date_to',   [''])[0].strip()
+        if not date_from or not date_to:
+            return 303, '/miscellaneous?datev_export=error&msg=Datumsbereich+fehlt'
+
+        bookings = db.fetch_bookings_range(date_from, date_to)
+        if not bookings:
+            return 303, f'/miscellaneous?datev_export=error&msg=Keine+Buchungen+im+Zeitraum+{date_from}+bis+{date_to}'
+
+        coa_map = db.get_coa_id_to_number_map()
+        csv_bytes, exported_ids = datev_module.export_to_datev(
+            bookings, coa_map, date_from, date_to
+        )
+
+        # Steuerdatum der exportierten Buchungen auf heute setzen
+        today_iso = datetime.date.today().isoformat()
+        db.update_bookings_date_tax_batch(exported_ids, today_iso)
+
+        year = date_from[:4]
+        filename = f"DATEV_Buchungsstapel_{year}_{date_from.replace('-','')}-{date_to.replace('-','')}.csv"
+        return csv_bytes, filename
+
+    except Exception as e:
+        traceback.print_exc()
+        msg = str(e).replace(' ', '+')
+        return 303, f'/miscellaneous?datev_export=error&msg={msg}'
+
+
 def handle_execute_sql(db: Database, post_data):
     """Handle SQL command execution"""
     import sqlite3

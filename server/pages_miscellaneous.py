@@ -66,6 +66,36 @@ def PageMiscellaneous(db: Database):
     </script>
     '''
 
+    # ── DATEV Export ──────────────────────────────────────────────────────────
+    import datetime
+    cur_year = datetime.date.today().year
+    s += f'''
+    <hr>
+    <h2>DATEV Export</h2>
+    <p>Exportiert Buchungen als <strong>DATEV Buchungsstapel-CSV</strong> (EXTF 700, Encoding CP1252).<br>
+       Das Feld <em>Datum Zuord. Steuerperiode</em> (Spalte 115) wird für alle exportierten
+       Buchungen auf das <strong>heutige Datum</strong> gesetzt.</p>
+    <form method="POST" action="/datev/export">
+        <label>Von:&nbsp;<input type="date" name="date_from" value="{cur_year}-01-01" required></label>
+        &nbsp;&nbsp;
+        <label>Bis:&nbsp;<input type="date" name="date_to" value="{cur_year}-12-31" required></label>
+        &nbsp;&nbsp;
+        <button type="submit" class="coloredButton btn-blue">&#x1F4E5; DATEV-CSV exportieren</button>
+    </form>
+    <script>
+    (function() {{
+        const p = new URLSearchParams(window.location.search);
+        const status = p.get('datev_export');
+        if (status === 'error') {{
+            const div = document.createElement('div');
+            div.style = 'margin-top:10px; padding:8px 14px; background:#f8d7da; color:#721c24; border-radius:4px; display:inline-block;';
+            div.textContent = '❌ DATEV-Export Fehler: ' + decodeURIComponent(p.get('msg') || '');
+            document.currentScript.parentNode.insertBefore(div, document.currentScript);
+        }}
+    }})();
+    </script>
+    '''
+
     s += '''
     <h2>SQL-Befehle ausführen</h2>
     <form method="POST" action="/execute_sql">

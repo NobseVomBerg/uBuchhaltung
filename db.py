@@ -1308,6 +1308,83 @@ class Database:
         conn.close()
         return tables_exported, rows_exported
 
+    # ── DATEV-Methoden ────────────────────────────────────────────────────────
+
+    def fetch_bookings_range(self, date_from: str, date_to: str):
+        """Buchungen eines Datumsbereichs für den DATEV-Export laden.
+
+        Args:
+            date_from: 'YYYY-MM-DD' – einschließlich
+            date_to:   'YYYY-MM-DD' – einschließlich
+
+        Returns:
+            List of tuples (SELECT * FROM Bookings ORDER BY DateBooking)
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT * FROM Bookings WHERE DateBooking >= ? AND DateBooking <= ? '
+            'ORDER BY DateBooking ASC',
+            (date_from, date_to),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
+    def get_coa_id_to_number_map(self) -> dict:
+        """Liefert {coa_id: account_number} für alle ChartOfAccounts-Einträge."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT ID, AccountNumber FROM ChartOfAccounts')
+        result = {row[0]: row[1] for row in cursor.fetchall()}
+        conn.close()
+        return result
+
+    def get_coa_id_by_account_number(self, account_number, framework: int = None):
+        """COA-ID anhand der Kontonummer nachschlagen.
+
+        Args:
+            account_number: SKR-Kontonummer (int oder str)
+            framework:      Kontenrahmen-Nr. (z.B. 3, 4, 7) – optional
+
+        Returns:
+            int COA-ID oder None
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        if framework is not None:
+            cursor.execute(
+                'SELECT ID FROM ChartOfAccounts WHERE AccountNumber=? AND Framework=? LIMIT 1',
+                (int(account_number), int(framework)),
+            )
+        else:
+            cursor.execute(
+                'SELECT ID FROM ChartOfAccounts WHERE AccountNumber=? LIMIT 1',
+                (int(account_number),),
+            )
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+
+    def update_bookings_date_tax_batch(self, booking_ids: list, date_tax: str):
+        """DateTax für mehrere Buchungen auf einmal setzen (nach DATEV-Export).
+
+        Args:
+            booking_ids: Liste von Booking-IDs
+            date_tax:    'YYYY-MM-DD'
+        """
+        if not booking_ids:
+            return
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        placeholders = ','.join('?' * len(booking_ids))
+        cursor.execute(
+            f'UPDATE Bookings SET DateTax=? WHERE ID IN ({placeholders})',
+            [date_tax] + list(booking_ids),
+        )
+        conn.commit()
+        conn.close()
+
     # ── Table Contacts (normalized Option C) ───────────────────────────────────
 
     _CONTACTS_QUERY = '''
