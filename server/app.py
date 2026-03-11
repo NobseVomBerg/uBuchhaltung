@@ -358,6 +358,12 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             self.respond(status_code, response)
             return
 
+        # Handle WISO CSV import (multipart file upload)
+        if self.path == "/wiso/import":
+            status_code, location = handlers.handle_wiso_import(self, db)
+            self.respond(status_code, "", headers={"Location": location})
+            return
+
             response_data = handlers.handle_invoice_save(post_body)
             self.send_response(200)
             self.send_header("Content-type", "application/json")

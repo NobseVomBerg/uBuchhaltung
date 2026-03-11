@@ -83,6 +83,7 @@ class Database:
                 BIC TEXT,
                 BankName TEXT,
                 IsCash INTEGER DEFAULT 0,
+                SKRAccount INTEGER,
                 UNIQUE(Name)
             )
         ''')
@@ -407,6 +408,12 @@ class Database:
                 UNIQUE(Asset_ID, Year)
             )
         ''')
+
+        # Migration: Add SKRAccount column to Accounts if not exists
+        try:
+            cursor.execute('ALTER TABLE Accounts ADD COLUMN SKRAccount INTEGER')
+        except Exception:
+            pass  # Column already exists
 
         conn.commit()
         conn.close()
@@ -1185,13 +1192,13 @@ class Database:
         conn.close()
         return row
 
-    def insert_account(self, name, holder, number, bic, bank_name, is_cash=0):
+    def insert_account(self, name, holder, number, bic, bank_name, is_cash=0, skr_account=None):
         conn = self._get_connection()
         cursor = conn.cursor()
         sql_template = '''
-                INSERT INTO Accounts (Name, Owner, Number, BIC, BankName, IsCash)
-                VALUES (?, ?, ?, ?, ?, ?)'''
-        params = (name, holder, number, bic, bank_name, is_cash)
+                INSERT INTO Accounts (Name, Owner, Number, BIC, BankName, IsCash, SKRAccount)
+                VALUES (?, ?, ?, ?, ?, ?, ?)'''
+        params = (name, holder, number, bic, bank_name, is_cash, skr_account)
         try:
             cursor.execute(sql_template, params)
             conn.commit()
@@ -1203,14 +1210,14 @@ class Database:
         finally:
             conn.close()
 
-    def update_account(self, account_id, name, holder, number, bic, bank_name):
+    def update_account(self, account_id, name, holder, number, bic, bank_name, skr_account=None):
         conn = self._get_connection()
         cursor = conn.cursor()
         sql_template = '''
                 UPDATE Accounts
-                SET Name = ?, Owner = ?, Number = ?, BIC = ?, BankName = ?
-                WHERE ID = ? AND IsCash = 0'''
-        params = (name, holder, number, bic, bank_name, account_id)
+                SET Name = ?, Owner = ?, Number = ?, BIC = ?, BankName = ?, SKRAccount = ?
+                WHERE ID = ?'''
+        params = (name, holder, number, bic, bank_name, skr_account, account_id)
         try:
             cursor.execute(sql_template, params)
             conn.commit()
@@ -1384,6 +1391,171 @@ class Database:
         )
         conn.commit()
         conn.close()
+
+    def get_account_id_by_skr(self, skr_number: int):
+        """Account-ID anhand der SKRAccount-Nummer nachschlagen.
+
+        Args:
+            skr_number: SKR-Kontonummer (z.B. 1810, 1460)
+
+        Returns:
+            int Account-ID oder None
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT ID FROM Accounts WHERE SKRAccount=? LIMIT 1', (int(skr_number),))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+
+    def import_wiso_csv(self, csv_bytes: bytes) -> dict:
+        """WISO Mein Büro CSV-Export in die Bookings-Tabelle importieren.
+
+        CSV-Spalten:
+            ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER
+
+        Mapping:
+            KONTO      → ChartOfAccounts.AccountNumber → COA_ID
+            GEGENKONTO → Accounts.SKRAccount           → Account_ID
+            SCHLUESSEL → BU-Schlüssel → TaxRate (401=19%, 402=7%, 121=0%)
+
+        Duplikat-Erkennung: gleiche REFERENZNUMMER + COA_ID + Betrag → überspringen
+
+        Returns:
+            dict: {imported: int, skipped: int, errors: list[str]}
+        """
+        import csv, io, datetime
+
+        # Encoding-Erkennung: CP1252 zuerst, dann Fallback
+        text = None
+        for enc in ('cp1252', 'utf-8-sig', 'utf-8', 'latin-1'):
+            try:
+                text = csv_bytes.decode(enc)
+                break
+            except (UnicodeDecodeError, LookupError):
+                continue
+        if text is None:
+            return {'imported': 0, 'skipped': 0,
+                    'errors': ['Encoding der Datei nicht erkennbar']}
+
+        # BU-Schlüssel → Steuersatz
+        BU_TO_TAXRATE = {'401': 0.19, '402': 0.07, '121': 0.0}
+
+        # Lookup-Maps einmalig aufbauen
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT AccountNumber, ID FROM ChartOfAccounts')
+        coa_map = {row[0]: row[1] for row in cursor.fetchall()}
+        cursor.execute('SELECT SKRAccount, ID FROM Accounts WHERE SKRAccount IS NOT NULL')
+        skr_map = {row[0]: row[1] for row in cursor.fetchall()}
+        conn.close()
+
+        reader = csv.DictReader(io.StringIO(text), delimiter=';', quotechar='"')
+        imported = 0
+        skipped = 0
+        skipped_rows = []       # Liste übersprungener Zeilen mit Details
+        missing_coa = set()     # SKR-Kontonummern, die nicht in ChartOfAccounts gefunden wurden
+        missing_skr = set()     # Gegenkontonummern, die nicht in Accounts.SKRAccount gefunden wurden
+        errors = []
+
+        for i, row in enumerate(reader, 1):
+            try:
+                # Datum parsen (DD.MM.YYYY oder DD.MM.YYYY HH:MM)
+                date_str = row.get('DATUM', '').strip()[:10]
+                try:
+                    booking_date = datetime.datetime.strptime(date_str, '%d.%m.%Y').strftime('%Y-%m-%d')
+                except ValueError:
+                    errors.append(f"Zeile {i}: Ungültiges Datum '{date_str}'")
+                    continue
+
+                # Betrag parsen (Dezimalpunkt oder -komma)
+                amount_str = row.get('BRUTTOBETRAG', '').strip().replace(',', '.')
+                try:
+                    amount = float(amount_str)
+                except ValueError:
+                    errors.append(f"Zeile {i}: Ungültiger Betrag '{amount_str}'")
+                    continue
+
+                # COA_ID aus KONTO
+                konto_str = row.get('KONTO', '').strip()
+                try:
+                    konto_nr = int(konto_str) if konto_str else None
+                    coa_id = coa_map.get(konto_nr) if konto_nr is not None else None
+                    if konto_nr is not None and coa_id is None:
+                        missing_coa.add(konto_nr)
+                except (ValueError, TypeError):
+                    coa_id = None
+                    konto_nr = None
+
+                # Account_ID aus GEGENKONTO (via SKRAccount)
+                gegenkonto_str = row.get('GEGENKONTO', '').strip()
+                try:
+                    gegenkonto_nr = int(gegenkonto_str) if gegenkonto_str else None
+                    account_id = skr_map.get(gegenkonto_nr) if gegenkonto_nr is not None else None
+                    if gegenkonto_nr is not None and account_id is None:
+                        missing_skr.add(gegenkonto_nr)
+                except (ValueError, TypeError):
+                    account_id = None
+                    gegenkonto_nr = None
+
+                # Steuersatz aus BU-Schlüssel
+                schluessel = row.get('SCHLUESSEL', '').strip()
+                tax_rate = BU_TO_TAXRATE.get(schluessel)
+
+                text_val = row.get('TEXT', '').strip()
+                doc_number = row.get('REFERENZNUMMER', '').strip()
+
+                # Duplikat-Prüfung: gleiche REFERENZNUMMER + COA_ID + Betrag
+                # Funktioniert auch wenn COA_ID None ist (unmappte Konten)
+                if doc_number:
+                    dup_conn = self._get_connection()
+                    dup_cur = dup_conn.cursor()
+                    if coa_id is not None:
+                        dup_cur.execute(
+                            'SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND COA_ID=? AND Amount=?',
+                            (doc_number, coa_id, amount)
+                        )
+                    else:
+                        dup_cur.execute(
+                            'SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND COA_ID IS NULL AND Amount=?',
+                            (doc_number, amount)
+                        )
+                    dup_count = dup_cur.fetchone()[0]
+                    dup_conn.close()
+                    if dup_count > 0:
+                        skipped += 1
+                        skipped_rows.append({
+                            'zeile':    i,
+                            'datum':    booking_date,
+                            'ref':      doc_number,
+                            'konto':    konto_str,
+                            'betrag':   amount,
+                            'text':     text_val[:60],
+                        })
+                        continue
+
+                self.insert_booking(
+                    date_booking=booking_date,
+                    amount=amount,
+                    account_id=account_id,
+                    coa_id=coa_id,
+                    tax_rate=tax_rate,
+                    text=text_val,
+                    document_number=doc_number,
+                )
+                imported += 1
+
+            except Exception as e:
+                errors.append(f"Zeile {i}: {str(e)}")
+
+        return {
+            'imported':     imported,
+            'skipped':      skipped,
+            'skipped_rows': skipped_rows,
+            'missing_coa':  sorted(missing_coa),
+            'missing_skr':  sorted(missing_skr),
+            'errors':       errors,
+        }
 
     # ── Table Contacts (normalized Option C) ───────────────────────────────────
 

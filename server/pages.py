@@ -715,7 +715,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     
     s+= "<h2>Kontobewegungen</h2>"
     s+= "<table>"
-    s+= "<tr><th>Datum</th><th>Empfänger/Auftragg.</th><th>Text</th><th>Betrag</th><th>Währung</th><th>Konto</th><th>Kunde</th><th>SKR</th><th>Aktionen</th></tr>"
+    s+= "<tr><th>Datum</th><th>Empfänger/Auftragg.</th><th>Text</th><th>Betrag</th><th>Währung</th><th>Konto</th><th>Kunde</th><th>SKR</th><th>Beleg-Nr.</th><th>Aktionen</th></tr>"
     
     # Load bookings from database
     bookings = db.fetch_bookings()
@@ -752,6 +752,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
         account_name = account_map.get(account_id, "") if account_id else ""
         contact_name = customer_map.get(contact_id, "") if contact_id else ""
         coa_number = coa_map.get(coa_id, "") if coa_id else ""
+        doc_number = booking[15] or "" if len(booking) > 15 else ""
         
         # Color code amount
         amount_color = "green" if amount > 0 else "red"
@@ -768,6 +769,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
         s+= f"<td>{account_name[:20]}</td>"
         s+= f"<td>{contact_name[:20]}</td>"
         s+= f"<td>{coa_number}</td>"
+        s+= f"<td>{doc_number}</td>"
         s+= f"<td><a href='/transactions/edit?id={booking_id}'>Bearbeiten</a></td>"
         s+= f"</tr>"
     

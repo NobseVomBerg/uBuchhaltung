@@ -241,7 +241,9 @@ def handle_add_bankaccount(db: Database, post_data):
     iban = post_data.get("iban", [""])[0]
     bic = post_data.get("bic", [""])[0]
     bank_name = post_data.get("bank_name", [""])[0]
-    db.insert_account(name, holder, iban, bic, bank_name)
+    skr_raw = post_data.get("skr_account", [""])[0]
+    skr_account = int(skr_raw) if skr_raw.strip() else None
+    db.insert_account(name, holder, iban, bic, bank_name, skr_account=skr_account)
     return 303, "/masterdata/bankaccounts"
 
 def handle_create_booking_group(db: Database, post_data):
@@ -281,7 +283,9 @@ def handle_update_bankaccount(db: Database, post_data):
     iban = post_data.get("iban", [""])[0]
     bic = post_data.get("bic", [""])[0]
     bank_name = post_data.get("bank_name", [""])[0]
-    db.update_account(account_id, name, holder, iban, bic, bank_name)
+    skr_raw = post_data.get("skr_account", [""])[0]
+    skr_account = int(skr_raw) if skr_raw.strip() else None
+    db.update_account(account_id, name, holder, iban, bic, bank_name, skr_account=skr_account)
     return 303, "/masterdata/bankaccounts"
 
 def handle_add_skr(db: Database, post_data):
@@ -365,6 +369,73 @@ def handle_datev_export(db: Database, post_data: dict):
         traceback.print_exc()
         msg = str(e).replace(' ', '+')
         return 303, f'/miscellaneous?datev_export=error&msg={msg}'
+
+
+def handle_wiso_import(request_handler, db: Database):
+    """WISO Mein Büro CSV-Datei importieren (Multipart-Upload).
+
+    Erwartet eine Datei im Formularfeld „csvfile" (enctype=multipart/form-data).
+
+    Returns:
+        (303, location_str) – immer ein Redirect zu /miscellaneous
+    """
+    from urllib.parse import quote
+
+    content_type = request_handler.headers.get('Content-Type', '')
+    if 'multipart/form-data' not in content_type:
+        return 303, '/miscellaneous?wiso_import=error&msg=Kein+Multipart+Form+Data'
+
+    try:
+        boundary = content_type.split('boundary=')[1].strip().encode()
+    except IndexError:
+        return 303, '/miscellaneous?wiso_import=error&msg=Boundary+fehlt'
+
+    content_length = int(request_handler.headers['Content-Length'])
+    raw = request_handler.rfile.read(content_length)
+
+    # Datei-Inhalt aus Multipart-Body extrahieren
+    csv_bytes = None
+    for part in raw.split(b'--' + boundary):
+        if b'Content-Disposition' in part and b'filename=' in part:
+            header_end = part.find(b'\r\n\r\n')
+            if header_end == -1:
+                continue
+            content = part[header_end + 4:]
+            if content.endswith(b'\r\n'):
+                content = content[:-2]
+            if content:
+                csv_bytes = content
+            break
+
+    if not csv_bytes:
+        return 303, '/miscellaneous?wiso_import=error&msg=Keine+Datei+im+Upload'
+
+    try:
+        import json, os
+        result = db.import_wiso_csv(csv_bytes)
+        imported  = result['imported']
+        skipped   = result['skipped']
+        errs      = result['errors']
+
+        # Detailergebnis für Anzeige auf der Seite persistieren
+        result_path = os.path.join('data', 'wiso_import_result.json')
+        try:
+            with open(result_path, 'w', encoding='utf-8') as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass  # Nicht kritisch
+
+        return 303, (
+            f'/miscellaneous?wiso_import=ok'
+            f'&imported={imported}&skipped={skipped}'
+            f'&err_count={len(errs)}'
+            f'&missing_coa={len(result.get("missing_coa", []))}'
+            f'&missing_skr={len(result.get("missing_skr", []))}'
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return 303, f'/miscellaneous?wiso_import=error&msg={quote(str(e))}'
 
 
 def handle_execute_sql(db: Database, post_data):

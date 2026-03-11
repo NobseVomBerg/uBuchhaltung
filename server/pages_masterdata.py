@@ -294,18 +294,20 @@ def PageBankAccounts(db: Database):
                 <tr><td>IBAN:</td><td><input type="text" name="iban"></td></tr>
                 <tr><td>BIC:</td><td><input type="text" name="bic"></td></tr>
                 <tr><td>Bank:</td><td><input type="text" name="bank_name"></td></tr>
+                <tr><td>SKR-Gegenkonto:</td><td><input type="number" name="skr_account" placeholder="z.B. 1810" style="width:120px;"></td></tr>
                 <tr><td></td><td><input type="submit" value="Konto hinzufügen"></td></tr>
             </table>
         </form>
     '''
     s += "<h2>Vorhandene Konten</h2>"
     s += "<table>"
-    s += "<tr><th>ID</th><th>Bezeichnung</th><th>Inhaber</th><th>IBAN</th><th>BIC</th><th>Bank</th><th>Typ</th><th>Aktionen</th></tr>"
+    s += "<tr><th>ID</th><th>Bezeichnung</th><th>Inhaber</th><th>IBAN</th><th>BIC</th><th>Bank</th><th>Typ</th><th>SKR-Konto</th><th>Aktionen</th></tr>"
     for row in rows:
         account_type = "Kasse" if row[6] == 1 else "Bank"
-        s += f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td><td>{row[5]}</td><td>{account_type}</td>"
+        skr_display = row[7] if len(row) > 7 and row[7] else "–"
+        s += f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td><td>{row[5]}</td><td>{account_type}</td><td>{skr_display}</td>"
         if row[6] == 1:  # is_cash
-            s += f"<td><span style='color:gray;'>Kann nicht gelöscht werden</span></td></tr>"
+            s += f"<td><a href='/masterdata/bankaccounts/edit?id={row[0]}'>SKR zuweisen</a></td></tr>"
         else:
             s += f"<td><a href='/masterdata/bankaccounts/edit?id={row[0]}'>Bearbeiten</a> | <a href='/masterdata/bankaccounts/delete?id={row[0]}'>Löschen</a></td></tr>"
     s += "</table>"
@@ -325,9 +327,26 @@ def PageBankAccountEdit(db: Database, account_id):
     s += Header3()
     s += "<h1>Bankkonto bearbeiten</h1>"
 
-    if account[6] == 1:  # is_cash
-        s += "<p style='color:red;'>Hinweis: Das Kasse-Konto kann nicht bearbeitet werden.</p>"
-        s += "<a href='/masterdata/bankaccounts'>Zurück zur Kontenübersicht</a>"
+    skr_val = account[7] if len(account) > 7 and account[7] is not None else ''
+    if account[6] == 1:  # is_cash – nur SKR-Konto kann geändert werden
+        s += "<p style='color:#666;'>Kasse-Konto: Name und Typ können nicht geändert werden.</p>"
+        s += f'''
+            <form method="POST" action="/masterdata/bankaccounts/update">
+                <table>
+                    <input type="hidden" name="id" value="{account[0]}">
+                    <input type="hidden" name="name" value="{account[1]}">
+                    <input type="hidden" name="holder" value="{account[2] or ''}"> 
+                    <input type="hidden" name="iban" value="{account[3] or ''}">
+                    <input type="hidden" name="bic" value="{account[4] or ''}">
+                    <input type="hidden" name="bank_name" value="{account[5] or ''}">
+                    <tr><td>Bezeichnung:</td><td>{account[1]}</td></tr>
+                    <tr><td>Typ:</td><td>Kasse</td></tr>
+                    <tr><td>SKR-Gegenkonto:</td><td><input type="number" name="skr_account" value="{skr_val}" placeholder="z.B. 1460" style="width:120px;"></td></tr>
+                    <tr><td></td><td><input type="submit" value="SKR-Konto speichern"></td></tr>
+                </table>
+            </form>
+            <p><a href="/masterdata/bankaccounts">Zurück zur Kontenübersicht</a></p>
+        '''
     else:
         s += f'''
             <form method="POST" action="/masterdata/bankaccounts/update">
@@ -338,6 +357,7 @@ def PageBankAccountEdit(db: Database, account_id):
                     <tr><td>IBAN:</td><td><input type="text" name="iban" value="{account[3]}"></td></tr>
                     <tr><td>BIC:</td><td><input type="text" name="bic" value="{account[4]}"></td></tr>
                     <tr><td>Bank:</td><td><input type="text" name="bank_name" value="{account[5]}"></td></tr>
+                    <tr><td>SKR-Gegenkonto:</td><td><input type="number" name="skr_account" value="{skr_val}" placeholder="z.B. 1810" style="width:120px;"></td></tr>
                     <tr><td></td><td><input type="submit" value="Konto aktualisieren"></td></tr>
                 </table>
             </form>

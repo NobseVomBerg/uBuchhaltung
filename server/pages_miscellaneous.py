@@ -95,7 +95,102 @@ def PageMiscellaneous(db: Database):
     }})();
     </script>
     '''
+    # ── WISO Mein Büro Import ─────────────────────────────────────────────────
+    import json as _json, os as _os
+    from urllib.parse import parse_qs as _parse_qs, urlparse as _urlparse
 
+    # Letztes Import-Ergebnis einlesen (falls vorhanden)
+    _result_path = _os.path.join('data', 'wiso_import_result.json')
+    _last_result = None
+    if _os.path.exists(_result_path):
+        try:
+            with open(_result_path, encoding='utf-8') as _f:
+                _last_result = _json.load(_f)
+        except Exception:
+            _last_result = None
+
+    s += '''
+    <hr>
+    <h2>WISO Mein Büro Import</h2>
+    <p>Importiert Buchungen aus dem <strong>WISO Mein Büro Bewegungsdaten-Export</strong>
+       (Datei &rarr; Export &rarr; &bdquo;Buchungsdaten als CSV&ldquo;).<br>
+       Voraussetzung: Jedes Konto in der <strong>Kontenverwaltung</strong>
+       muss ein <em>SKR-Gegenkonto</em> hinterlegt haben
+       (z.&nbsp;B. 1810 für Bankkonto VBR, 1460 für Kasse).<br>
+       Duplikate (gleiche Referenznummer&nbsp;+ Konto&nbsp;+ Betrag) werden automatisch übersprungen.</p>
+    <form method="POST" action="/wiso/import" enctype="multipart/form-data">
+        <label>CSV-Datei:&nbsp;<input type="file" name="csvfile" accept=".txt,.csv" required></label>
+        &nbsp;&nbsp;
+        <button type="submit" class="coloredButton btn-green">&#x1F4C2; WISO Import starten</button>
+    </form>
+    <script>
+    (function() {
+        const p = new URLSearchParams(window.location.search);
+        const status = p.get('wiso_import');
+        if (!status) return;
+        const div = document.createElement('div');
+        div.style = 'margin-top:10px; padding:8px 14px; border-radius:4px; display:inline-block;';
+        if (status === 'ok') {
+            const ec  = parseInt(p.get('err_count')    || '0');
+            const mc  = parseInt(p.get('missing_coa')  || '0');
+            const ms  = parseInt(p.get('missing_skr')  || '0');
+            const warn = ec > 0 || mc > 0 || ms > 0;
+            let msg = '\u2705 Import abgeschlossen: '
+                    + p.get('imported') + ' importiert, '
+                    + p.get('skipped')  + ' \u00fcbersprungen (Duplikat)';
+            if (mc > 0) msg += ', ' + mc + ' fehlende SKR-Konten';
+            if (ms > 0) msg += ', ' + ms + ' fehlende Gegenkonten';
+            if (ec > 0) msg += ', ' + ec + ' Fehler';
+            msg += '. Siehe Details unten.';
+            div.style.background = warn ? '#fff3cd' : '#d4edda';
+            div.style.color      = warn ? '#856404' : '#155724';
+            div.textContent = msg;
+        } else {
+            div.style.background = '#f8d7da';
+            div.style.color = '#721c24';
+            div.textContent = '\u274c Fehler: ' + decodeURIComponent(p.get('msg') || '');
+        }
+        document.currentScript.parentNode.insertBefore(div, document.currentScript);
+    })();
+    </script>
+    '''
+
+    # Detail-Tabellen aus letztem Ergebnis rendern
+    if _last_result:
+        _skipped_rows = _last_result.get('skipped_rows', [])
+        _missing_coa  = _last_result.get('missing_coa', [])
+        _missing_skr  = _last_result.get('missing_skr', [])
+        _errors       = _last_result.get('errors', [])
+
+        if _skipped_rows:
+            s += f'<h3>\u26a0\ufe0f Übersprungene Zeilen (Duplikate) &ndash; {len(_skipped_rows)} Einträge</h3>'
+            s += '<table><tr><th>CSV-Zeile</th><th>Datum</th><th>Referenz</th><th>KONTO</th><th>Betrag</th><th>Text</th></tr>'
+            for _r in _skipped_rows:
+                s += (f"<tr><td>{_r.get('zeile','')}</td><td>{_r.get('datum','')}</td>"
+                      f"<td>{_r.get('ref','')}</td><td>{_r.get('konto','')}</td>"
+                      f"<td>{_r.get('betrag','')}</td><td>{_r.get('text','')}</td></tr>")
+            s += '</table>'
+
+        if _missing_coa:
+            s += f'<h3>\u26a0\ufe0f Fehlende SKR-Konten (KONTO nicht in Kontenrahmen) &ndash; {len(_missing_coa)} Einträge</h3>'
+            s += '<p>Diese Kontonummern wurden in den Buchungen verwendet, sind aber noch nicht im Kontenrahmen hinterlegt.<br>'
+            s += 'Die Buchungen wurden trotzdem importiert (ohne COA-Zuweisung). Bitte <a href="/masterdata/skr">in der SKR-Verwaltung</a> ergänzen:</p>'
+            s += '<p style="font-family:monospace;">'
+            s += ', '.join(str(_n) for _n in _missing_coa)
+            s += '</p>'
+
+        if _missing_skr:
+            s += f'<h3>\u26a0\ufe0f Fehlende Gegenkonten (GEGENKONTO nicht in Kontenverwaltung) &ndash; {len(_missing_skr)} Einträge</h3>'
+            s += '<p>Diese SKR-Nummern stehen in der GEGENKONTO-Spalte, sind aber keinem Konto in der <a href="/masterdata/bankaccounts">Kontenverwaltung</a> zugewiesen:</p>'
+            s += '<p style="font-family:monospace;">'
+            s += ', '.join(str(_n) for _n in _missing_skr)
+            s += '</p>'
+
+        if _errors:
+            s += f'<h3>\u274c Parse-Fehler &ndash; {len(_errors)} Einträge</h3><ul>'
+            for _e in _errors:
+                s += f'<li>{_e}</li>'
+            s += '</ul>'
     s += '''
     <h2>SQL-Befehle ausführen</h2>
     <form method="POST" action="/execute_sql">
