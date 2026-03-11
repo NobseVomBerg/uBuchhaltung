@@ -28,7 +28,7 @@ def PageMasterData(db: Database):
     s += Header3()
     
     s += '''
-        <div class="grid-container">
+        <div class="grid-1RowPrefered">
             <div class="rectRounded">
                 <h3>📦 Artikel</h3>
                 <p>Verwaltung des Produkt- und Dienstleistungskatalogs</p>

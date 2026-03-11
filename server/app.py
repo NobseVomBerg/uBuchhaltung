@@ -196,9 +196,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             # ──────────────────────────────────────────────────────────────
             elif self.path == "/miscellaneous" or self.path.startswith("/miscellaneous?"):
                 self.respond(200, PageMiscellaneous(db))
-            elif self.path == "/db_export":
-                status_code, location = handlers.handle_db_export(db)
-                self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/receipts":
                 self.respond(200, pages.PageReceipts(db))
             elif self.path.startswith("/receipts/edit"):
@@ -526,6 +523,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path == "/execute_sql":
                 content = handlers.handle_execute_sql(db, post_data)
                 self.respond(200, content)
+            elif self.path == "/db_export":
+                status_code, location = handlers.handle_db_export(db)
+                self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/datev/export":
                 result = handlers.handle_datev_export(db, post_data)
                 if isinstance(result[0], bytes):

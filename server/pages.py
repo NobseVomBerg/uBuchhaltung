@@ -451,8 +451,8 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                 </select>
             </div>
             <div>
-                <label>Min. Betrag:</label> <input type="number" step="0.01" id="minAmount" onchange="filterTransactions()" style="width: 80px;">
-                <label>Max. Betrag:</label> <input type="number" step="0.01" id="maxAmount" onchange="filterTransactions()" style="width: 80px;">
+                <label>Min. Betrag:</label> <input type="number" step="0.01" class="noButtons" id="minAmount" onchange="filterTransactions()" style="width: 80px;">
+                <label>Max. Betrag:</label> <input type="number" step="0.01" class="noButtons" id="maxAmount" onchange="filterTransactions()" style="width: 80px;">
             </div>
         </div>
     '''
@@ -491,10 +491,8 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                     {id_display}
                     <tr><td>Buchungsdatum:</td><td><input type="date" name="date" value="{edit_trans[1] if edit_trans else ""}" required></td></tr>
                     <tr><td>Steuerdatum:</td><td><input type="date" name="date_tax" value="{edit_trans[2] if edit_trans and edit_trans[2] else ""}"></td></tr>
-                    
                     <tr><td>Empfänger/Auftragg.:</td><td><input type="text" name="recipient" value="{edit_recipient}" size="40"></td></tr>
-                    <tr><td>Verwendungszweck:</td><td><textarea name="text" rows="3" cols="40">{edit_text}</textarea></td></tr>
-                    
+                    <tr><td>Verwendungszweck:</td><td><textarea name="text" rows="3" cols="42">{edit_text}</textarea></td></tr>
                     <tr><td>Bankkonto:</td><td><select name="account">
                         <option value="">-- Kein Konto --</option>
     '''
@@ -544,11 +542,11 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     s+= f'''
                     </select></td></tr>
                     
-                    <tr><td>Betrag:</td><td><input type="number" step="0.01" name="amount" id="amount" value="{edit_trans[10] if edit_trans else ""}" required></td></tr>
+                    <tr><td>Betrag:</td><td><input type="number" step="0.01" class="noButtons" name="amount" id="amount" value="{edit_trans[10] if edit_trans else ""}" required></td></tr>
                     <tr><td>Währung:</td><td><input type="text" name="currency" value="{edit_trans[11] if edit_trans else "EUR"}" size="5"></td></tr>
                     
-                    <tr><td>Steuersatz (%):</td><td><input type="number" step="0.01" name="tax_rate" id="tax_rate" value="{edit_trans[12]*100 if edit_trans and edit_trans[12] else ""}" placeholder="z.B. 19 für 19%"></td></tr>
-                    <tr><td>Steuerbetrag:</td><td><input type="number" step="0.01" name="tax_amount" id="tax_amount" value="{edit_trans[13] if edit_trans and edit_trans[13] else ""}"></td></tr>
+                    <tr><td>Steuersatz (%):</td><td><input type="number" step="0.01" class="noButtons" name="tax_rate" id="tax_rate" value="{edit_trans[12]*100 if edit_trans and edit_trans[12] else ""}" placeholder="z.B. 19 für 19%"></td></tr>
+                    <tr><td>Steuerbetrag:</td><td><input type="number" step="0.01" class="noButtons" name="tax_amount" id="tax_amount" value="{edit_trans[13] if edit_trans and edit_trans[13] else ""}"></td></tr>
                     
                     <tr><td>Beleg-Nr.:</td><td><input type="text" name="document_nr" value="{edit_trans[15] if edit_trans and edit_trans[15] else ""}"></td></tr>
                     
@@ -2875,7 +2873,7 @@ def PageDashboard(db: Database):
     
     # Key metrics cards
     s += f'''
-    <div class="grid-container">
+    <div class="grid-1RowPrefered">
         <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
             <div style="font-size: 14px; opacity: 0.9;">Gesamtumsatz ({current_year})</div>
             <div style="font-size: 32px; font-weight: bold; margin: 10px 0;">{year_revenue:.2f} €</div>

@@ -29,72 +29,97 @@ def PageMiscellaneous(db: Database):
     s += Header2()
     s += Header3()
 
-    # Database statistics
+    s += '<div class="grid-1RowPrefered">'
+    # ── Database statistics ───────────────────────────────────────────────────
+    s += '\t<div class="rectRounded">'
     stats = db.get_table_statistics()
-    s += "<h2>Datenbank-Übersicht</h2>"
-    s += "<table>"
-    s += "<tr><th>Tabelle</th><th>Anzahl Einträge</th></tr>"
+    s += "\t\t<h2>Datenbank-Übersicht</h2>"
+    s += "\t\t<table>"
+    s += "\t\t\t<tr><th>Tabelle</th><th>Anzahl Einträge</th></tr>"
     for table_name, count in stats:
-        s += f"<tr><td>{table_name}</td><td style='text-align: right;'>{count}</td></tr>"
-    s += "</table>"
-
+        s += f"\t\t\t<tr><td>{table_name}</td><td style='text-align: right;'>{count}</td></tr>"
+    s += "\t\t</table>"
+    s += '\t</div>'
+    # ── SQL Input Field ───────────────────────────────────────────────────────
+    s += '\t<div class="rectRounded" style="grid-column: span 2">'
     s += '''
-    <h2>DB-Export</h2>
-    <p>Exportiert alle Tabelleninhalte als INSERT-Statements nach <code>./data/db-export.sql</code>.
-       Die Datei kann direkt im SQL-Konsolenbereich unten eingefügt werden.</p>
-    <a href="/db_export" class="coloredButton btn-blue">&#x1F4BE; DB-Export</a>
-    '''
+        <h2>SQL-Befehle ausführen</h2>
+        <form method="POST" action="/execute_sql">
+            <p>Gib hier SQL-Befehle ein (mehrere Befehle durch Semikolon getrennt):</p>
+            <textarea name="sql_commands" rows="15" cols="100" style="font-family: monospace; width: 100%; max-width: 1000px;" placeholder="INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStandard) VALUES (4, 1000, 'Kasse', 'Barkasse', 1);
+INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStandard) VALUES (4, 1200, 'Bank', 'Bankguthaben', 1);"></textarea>
+            <br>
+            <input type="submit" value="SQL ausführen" class="coloredButton btn-orange">
+            <span style="color: red; margin-left: 20px;">⚠️ Vorsicht: SQL-Befehle werden direkt ausgeführt!</span>
+        </form>
 
+        <div id="sql_result" style="margin-top: 20px;"></div>
+        '''
+    s += '\t</div>'
+    s += '</div>'
+
+    s += '<div class="grid-1RowPrefered">'
+    # ── DB Export as SQL ──────────────────────────────────────────────────────
+    s += '\t<div class="rectRounded">'
+    s += '''
+        <h2>DB-Export</h2>
+        <p>Exportiert alle Tabelleninhalte als INSERT-Statements nach <code>./data/db-export.sql</code>.
+        Die Datei kann direkt im SQL-Konsolenbereich unten eingefügt werden.</p>
+        <form method="POST" action="/db_export">
+            <button type="submit" class="coloredButton btn-blue">&#x1F4BE; DB-Export</button>
+        </form>
+        '''
     # Show export result message if redirected back with status
     s += '''
-    <script>
-    (function() {
-        const p = new URLSearchParams(window.location.search);
-        const status = p.get('export');
-        if (status === 'ok') {
-            const div = document.createElement('div');
-            div.style = 'margin-top:10px; padding:8px 14px; background:#d4edda; color:#155724; border-radius:4px; display:inline-block;';
-            div.textContent = '✅ Export erfolgreich: ' + p.get('tables') + ' Tabellen, ' + p.get('rows') + ' Zeilen.';
-            document.currentScript.parentNode.insertBefore(div, document.currentScript);
-        } else if (status === 'error') {
-            const div = document.createElement('div');
-            div.style = 'margin-top:10px; padding:8px 14px; background:#f8d7da; color:#721c24; border-radius:4px; display:inline-block;';
-            div.textContent = '❌ Fehler beim Export: ' + p.get('msg');
-            document.currentScript.parentNode.insertBefore(div, document.currentScript);
-        }
-    })();
-    </script>
-    '''
-
+        <script>
+        (function() {
+            const p = new URLSearchParams(window.location.search);
+            const status = p.get('export');
+            if (status === 'ok') {
+                const div = document.createElement('div');
+                div.style = 'margin-top:10px; padding:8px 14px; background:#d4edda; color:#155724; border-radius:4px; display:inline-block;';
+                div.textContent = '✅ Export erfolgreich: ' + p.get('tables') + ' Tabellen, ' + p.get('rows') + ' Zeilen.';
+                document.currentScript.parentNode.insertBefore(div, document.currentScript);
+            } else if (status === 'error') {
+                const div = document.createElement('div');
+                div.style = 'margin-top:10px; padding:8px 14px; background:#f8d7da; color:#721c24; border-radius:4px; display:inline-block;';
+                div.textContent = '❌ Fehler beim Export: ' + p.get('msg');
+                document.currentScript.parentNode.insertBefore(div, document.currentScript);
+            }
+        })();
+        </script>
+        '''
+    s += '\t</div>'
+    s += '\t<div class="rectRounded">'
     # ── DATEV Export ──────────────────────────────────────────────────────────
     import datetime
     cur_year = datetime.date.today().year
     s += f'''
-    <hr>
-    <h2>DATEV Export</h2>
-    <p>Exportiert Buchungen als <strong>DATEV Buchungsstapel-CSV</strong> (EXTF 700, Encoding CP1252).<br>
-       Das Feld <em>Datum Zuord. Steuerperiode</em> (Spalte 115) wird für alle exportierten
-       Buchungen auf das <strong>heutige Datum</strong> gesetzt.</p>
-    <form method="POST" action="/datev/export">
-        <label>Von:&nbsp;<input type="date" name="date_from" value="{cur_year}-01-01" required></label>
-        &nbsp;&nbsp;
-        <label>Bis:&nbsp;<input type="date" name="date_to" value="{cur_year}-12-31" required></label>
-        &nbsp;&nbsp;
-        <button type="submit" class="coloredButton btn-blue">&#x1F4E5; DATEV-CSV exportieren</button>
-    </form>
-    <script>
-    (function() {{
-        const p = new URLSearchParams(window.location.search);
-        const status = p.get('datev_export');
-        if (status === 'error') {{
-            const div = document.createElement('div');
-            div.style = 'margin-top:10px; padding:8px 14px; background:#f8d7da; color:#721c24; border-radius:4px; display:inline-block;';
-            div.textContent = '❌ DATEV-Export Fehler: ' + decodeURIComponent(p.get('msg') || '');
-            document.currentScript.parentNode.insertBefore(div, document.currentScript);
-        }}
-    }})();
-    </script>
-    '''
+        <h2>DATEV Export</h2>
+        <p>Exportiert Buchungen als <strong>DATEV Buchungsstapel-CSV</strong> (EXTF 700, Encoding CP1252).<br>
+        Das Feld <em>Datum Zuord. Steuerperiode</em> wird für alle exportierten Buchungen auf das <strong>heutige Datum</strong> gesetzt.</p>
+        <form method="POST" action="/datev/export">
+            <label>Von:&nbsp;<input type="date" name="date_from" value="{cur_year}-01-01" required></label>
+            &nbsp;&nbsp;
+            <label>Bis:&nbsp;<input type="date" name="date_to" value="{cur_year}-12-31" required></label>
+            &nbsp;&nbsp;
+            <button type="submit" class="coloredButton btn-blue">&#x1F4E5; DATEV-CSV exportieren</button>
+        </form>
+        <script>
+        (function() {{
+            const p = new URLSearchParams(window.location.search);
+            const status = p.get('datev_export');
+            if (status === 'error') {{
+                const div = document.createElement('div');
+                div.style = 'margin-top:10px; padding:8px 14px; background:#f8d7da; color:#721c24; border-radius:4px; display:inline-block;';
+                div.textContent = '❌ DATEV-Export Fehler: ' + decodeURIComponent(p.get('msg') || '');
+                document.currentScript.parentNode.insertBefore(div, document.currentScript);
+            }}
+        }})();
+        </script>
+        '''
+    s += '\t</div>'
+    s += '\t<div class="rectRounded">'
     # ── WISO Mein Büro Import ─────────────────────────────────────────────────
     import json as _json, os as _os
     from urllib.parse import parse_qs as _parse_qs, urlparse as _urlparse
@@ -110,50 +135,48 @@ def PageMiscellaneous(db: Database):
             _last_result = None
 
     s += '''
-    <hr>
-    <h2>WISO Mein Büro Import</h2>
-    <p>Importiert Buchungen aus dem <strong>WISO Mein Büro Bewegungsdaten-Export</strong>
-       (Datei &rarr; Export &rarr; &bdquo;Buchungsdaten als CSV&ldquo;).<br>
-       Voraussetzung: Jedes Konto in der <strong>Kontenverwaltung</strong>
-       muss ein <em>SKR-Gegenkonto</em> hinterlegt haben
-       (z.&nbsp;B. 1810 für Bankkonto VBR, 1460 für Kasse).<br>
-       Duplikate (gleiche Referenznummer&nbsp;+ Konto&nbsp;+ Betrag) werden automatisch übersprungen.</p>
-    <form method="POST" action="/wiso/import" enctype="multipart/form-data">
-        <label>CSV-Datei:&nbsp;<input type="file" name="csvfile" accept=".txt,.csv" required></label>
-        &nbsp;&nbsp;
-        <button type="submit" class="coloredButton btn-green">&#x1F4C2; WISO Import starten</button>
-    </form>
-    <script>
-    (function() {
-        const p = new URLSearchParams(window.location.search);
-        const status = p.get('wiso_import');
-        if (!status) return;
-        const div = document.createElement('div');
-        div.style = 'margin-top:10px; padding:8px 14px; border-radius:4px; display:inline-block;';
-        if (status === 'ok') {
-            const ec  = parseInt(p.get('err_count')    || '0');
-            const mc  = parseInt(p.get('missing_coa')  || '0');
-            const ms  = parseInt(p.get('missing_skr')  || '0');
-            const warn = ec > 0 || mc > 0 || ms > 0;
-            let msg = '\u2705 Import abgeschlossen: '
-                    + p.get('imported') + ' importiert, '
-                    + p.get('skipped')  + ' \u00fcbersprungen (Duplikat)';
-            if (mc > 0) msg += ', ' + mc + ' fehlende SKR-Konten';
-            if (ms > 0) msg += ', ' + ms + ' fehlende Gegenkonten';
-            if (ec > 0) msg += ', ' + ec + ' Fehler';
-            msg += '. Siehe Details unten.';
-            div.style.background = warn ? '#fff3cd' : '#d4edda';
-            div.style.color      = warn ? '#856404' : '#155724';
-            div.textContent = msg;
-        } else {
-            div.style.background = '#f8d7da';
-            div.style.color = '#721c24';
-            div.textContent = '\u274c Fehler: ' + decodeURIComponent(p.get('msg') || '');
-        }
-        document.currentScript.parentNode.insertBefore(div, document.currentScript);
-    })();
-    </script>
-    '''
+        <h2>WISO Mein Büro Import</h2>
+        <p>Importiert Buchungen aus dem <strong>WISO Mein Büro Bewegungsdaten-Export</strong>
+        (Datei &rarr; Export &rarr; &bdquo;Buchungsdaten als CSV&ldquo;).<br>
+        Voraussetzung: Jedes Konto in der <strong>Kontenverwaltung</strong>
+        muss ein <em>SKR-Gegenkonto</em> hinterlegt haben (z.B. 1810 für 2. Bankkonto, 1460 für Kasse).<br>
+        Duplikate (gleiche Referenznummer + Konto + Betrag) werden automatisch übersprungen.</p>
+        <form method="POST" action="/wiso/import" enctype="multipart/form-data">
+            <label>CSV-Datei:&nbsp;<input type="file" name="csvfile" accept=".txt,.csv" required></label>
+            &nbsp;&nbsp;
+            <button type="submit" class="coloredButton btn-green">&#x1F4C2; WISO Import starten</button>
+        </form>
+        <script>
+        (function() {
+            const p = new URLSearchParams(window.location.search);
+            const status = p.get('wiso_import');
+            if (!status) return;
+            const div = document.createElement('div');
+            div.style = 'margin-top:10px; padding:8px 14px; border-radius:4px; display:inline-block;';
+            if (status === 'ok') {
+                const ec  = parseInt(p.get('err_count')    || '0');
+                const mc  = parseInt(p.get('missing_coa')  || '0');
+                const ms  = parseInt(p.get('missing_skr')  || '0');
+                const warn = ec > 0 || mc > 0 || ms > 0;
+                let msg = '\u2705 Import abgeschlossen: '
+                        + p.get('imported') + ' importiert, '
+                        + p.get('skipped')  + ' \u00fcbersprungen (Duplikat)';
+                if (mc > 0) msg += ', ' + mc + ' fehlende SKR-Konten';
+                if (ms > 0) msg += ', ' + ms + ' fehlende Gegenkonten';
+                if (ec > 0) msg += ', ' + ec + ' Fehler';
+                msg += '. Siehe Details unten.';
+                div.style.background = warn ? '#fff3cd' : '#d4edda';
+                div.style.color      = warn ? '#856404' : '#155724';
+                div.textContent = msg;
+            } else {
+                div.style.background = '#f8d7da';
+                div.style.color = '#721c24';
+                div.textContent = '\u274c Fehler: ' + decodeURIComponent(p.get('msg') || '');
+            }
+            document.currentScript.parentNode.insertBefore(div, document.currentScript);
+        })();
+        </script>
+        '''
 
     # Detail-Tabellen aus letztem Ergebnis rendern
     if _last_result:
@@ -191,18 +214,8 @@ def PageMiscellaneous(db: Database):
             for _e in _errors:
                 s += f'<li>{_e}</li>'
             s += '</ul>'
-    s += '''
-    <h2>SQL-Befehle ausführen</h2>
-    <form method="POST" action="/execute_sql">
-        <p>Geben Sie hier SQL-Befehle ein (mehrere Befehle durch Semikolon getrennt):</p>
-        <textarea name="sql_commands" rows="15" cols="100" style="font-family: monospace; width: 100%; max-width: 1000px;" placeholder="INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStandard) VALUES (4, 1000, 'Kasse', 'Barkasse', 1);
-INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStandard) VALUES (4, 1200, 'Bank', 'Bankguthaben', 1);"></textarea>
-        <br>
-        <input type="submit" value="SQL ausführen" class="coloredButton btn-green">
-        <span style="color: red; margin-left: 20px;">⚠️ Vorsicht: SQL-Befehle werden direkt ausgeführt!</span>
-    </form>
+    s += '\t</div>'
+    s += '</div>'
 
-    <div id="sql_result" style="margin-top: 20px;"></div>
-    '''
     s += Footer()
     return s
