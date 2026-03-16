@@ -1293,7 +1293,7 @@ class Database:
                     continue
 
                 col_names = [d[0] for d in cursor.description]
-                cols_sql = ', '.join(f'{c}' for c in col_names)
+                cols_sql = ', '.join(f'[{c}]' for c in col_names)
 
                 f.write(f"-- {table}\n")
                 f.write(f"INSERT INTO {table} ({cols_sql}) VALUES\n")
