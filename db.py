@@ -1293,10 +1293,12 @@ class Database:
                     continue
 
                 col_names = [d[0] for d in cursor.description]
-                cols_sql = ', '.join(f'[{c}]' for c in col_names)
+                cols_sql = ', '.join(f'{c}' for c in col_names)
 
                 f.write(f"-- {table}\n")
-                for row in rows:
+                f.write(f"INSERT INTO {table} ({cols_sql}) VALUES\n")
+                
+                for idx, row in enumerate(rows):
                     vals = []
                     for v in row:
                         if v is None:
@@ -1307,7 +1309,12 @@ class Database:
                             escaped = str(v).replace("'", "''")
                             vals.append(f"'{escaped}'")
                     vals_sql = ', '.join(vals)
-                    f.write(f"INSERT INTO [{table}] ({cols_sql}) VALUES ({vals_sql});\n")
+                    
+                    # Letzte Zeile bekommt Semikolon, alle anderen ein Komma
+                    if idx == len(rows) - 1:
+                        f.write(f"({vals_sql});\n")
+                    else:
+                        f.write(f"({vals_sql}),\n")
                     rows_exported += 1
                 f.write("\n")
                 tables_exported += 1
