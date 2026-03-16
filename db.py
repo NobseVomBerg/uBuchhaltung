@@ -415,6 +415,12 @@ class Database:
         except Exception:
             pass  # Column already exists
 
+        # Migration: Add CounterCOA_ID column to Bookings for double-entry bookkeeping
+        try:
+            cursor.execute('ALTER TABLE Bookings ADD COLUMN CounterCOA_ID INTEGER REFERENCES ChartOfAccounts(ID)')
+        except Exception:
+            pass  # Column already exists
+
         conn.commit()
         conn.close()
 
@@ -491,7 +497,8 @@ class Database:
     def insert_booking(self, date_booking, amount, account_id=None, foreign_bank_account="", 
                        recipient_client="", contact_id=None, coa_id=None, category_id=None,
                        currency="EUR", tax_rate=None, tax_amount=None, text="", 
-                       document_number=None, date_tax=None, booking_group_id=None, log_description=None):
+                       document_number=None, date_tax=None, booking_group_id=None, 
+                       counter_coa_id=None, log_description=None):
         """Insert a new booking into Bookings table
         
         Args:
@@ -501,7 +508,8 @@ class Database:
             foreign_bank_account: External IBAN/account number
             recipient_client: Name of recipient/client
             contact_id: FK to Contacts table
-            coa_id: FK to ChartOfAccounts (SKR)
+            coa_id: FK to ChartOfAccounts (SKR) - Sollkonto
+            counter_coa_id: FK to ChartOfAccounts (SKR) - Habenkonto/Gegenkonto
             category_id: FK to Categories
             currency: Currency code (default: EUR)
             tax_rate: Tax rate as decimal (e.g., 0.19 for 19%)
@@ -520,12 +528,12 @@ class Database:
         
         sql_template = '''INSERT INTO Bookings 
             (DateBooking, DateTax, BookingGroup_ID, Account_ID, ForeignBankAccount, 
-             RecipientClient, Contact_ID, COA_ID, Category_ID, Amount, Currency, 
+             RecipientClient, Contact_ID, COA_ID, CounterCOA_ID, Category_ID, Amount, Currency, 
              TaxRate, TaxAmount, Text, DocumentNumber)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
         
         params = (date_booking, date_tax, booking_group_id, account_id, foreign_bank_account,
-                  recipient_client, contact_id, coa_id, category_id, amount, currency,
+                  recipient_client, contact_id, coa_id, counter_coa_id, category_id, amount, currency,
                   tax_rate, tax_amount, text, document_number)
         
         cursor.execute(sql_template, params)
@@ -566,7 +574,7 @@ class Database:
                        foreign_bank_account="", recipient_client="", contact_id=None, 
                        coa_id=None, category_id=None, currency="EUR", tax_rate=None, 
                        tax_amount=None, text="", document_number=None, 
-                       date_tax=None, booking_group_id=None, log_description=None):
+                       date_tax=None, booking_group_id=None, counter_coa_id=None, log_description=None):
         """Update an existing booking
         
         Args:
@@ -578,12 +586,12 @@ class Database:
         
         sql_template = '''UPDATE Bookings
             SET DateBooking=?, DateTax=?, BookingGroup_ID=?, Account_ID=?, ForeignBankAccount=?,
-                RecipientClient=?, contact_id=?, COA_ID=?, Category_ID=?, Amount=?, Currency=?,
+                RecipientClient=?, contact_id=?, COA_ID=?, CounterCOA_ID=?, Category_ID=?, Amount=?, Currency=?,
                 TaxRate=?, TaxAmount=?, Text=?, DocumentNumber=?
             WHERE ID=?'''
         
         params = (date_booking, date_tax, booking_group_id, account_id, foreign_bank_account,
-                  recipient_client, contact_id, coa_id, category_id, amount, currency,
+                  recipient_client, contact_id, coa_id, counter_coa_id, category_id, amount, currency,
                   tax_rate, tax_amount, text, document_number, booking_id)
         
         cursor.execute(sql_template, params)
@@ -1423,7 +1431,7 @@ class Database:
 
         Mapping:
             KONTO      → ChartOfAccounts.AccountNumber → COA_ID
-            GEGENKONTO → Accounts.SKRAccount           → Account_ID
+            GEGENKONTO → ChartOfAccounts.AccountNumber → CounterCOA_ID
             SCHLUESSEL → BU-Schlüssel → TaxRate (401=19%, 402=7%, 121=0%)
 
         Duplikat-Erkennung: gleiche REFERENZNUMMER + COA_ID + Betrag → überspringen
@@ -1453,16 +1461,14 @@ class Database:
         cursor = conn.cursor()
         cursor.execute('SELECT AccountNumber, ID FROM ChartOfAccounts')
         coa_map = {row[0]: row[1] for row in cursor.fetchall()}
-        cursor.execute('SELECT SKRAccount, ID FROM Accounts WHERE SKRAccount IS NOT NULL')
-        skr_map = {row[0]: row[1] for row in cursor.fetchall()}
         conn.close()
 
         reader = csv.DictReader(io.StringIO(text), delimiter=';', quotechar='"')
         imported = 0
         skipped = 0
         skipped_rows = []       # Liste übersprungener Zeilen mit Details
-        missing_coa = set()     # SKR-Kontonummern, die nicht in ChartOfAccounts gefunden wurden
-        missing_skr = set()     # Gegenkontonummern, die nicht in Accounts.SKRAccount gefunden wurden
+        missing_coa = set()     # SKR-Kontonummern (KONTO), die nicht in ChartOfAccounts gefunden wurden
+        missing_counter_coa = set()  # SKR-Kontonummern (GEGENKONTO), die nicht in ChartOfAccounts gefunden wurden
         errors = []
 
         for i, row in enumerate(reader, 1):
@@ -1494,15 +1500,15 @@ class Database:
                     coa_id = None
                     konto_nr = None
 
-                # Account_ID aus GEGENKONTO (via SKRAccount)
+                # CounterCOA_ID aus GEGENKONTO (ebenfalls aus ChartOfAccounts)
                 gegenkonto_str = row.get('GEGENKONTO', '').strip()
                 try:
                     gegenkonto_nr = int(gegenkonto_str) if gegenkonto_str else None
-                    account_id = skr_map.get(gegenkonto_nr) if gegenkonto_nr is not None else None
-                    if gegenkonto_nr is not None and account_id is None:
-                        missing_skr.add(gegenkonto_nr)
+                    counter_coa_id = coa_map.get(gegenkonto_nr) if gegenkonto_nr is not None else None
+                    if gegenkonto_nr is not None and counter_coa_id is None:
+                        missing_counter_coa.add(gegenkonto_nr)
                 except (ValueError, TypeError):
-                    account_id = None
+                    counter_coa_id = None
                     gegenkonto_nr = None
 
                 # Steuersatz aus BU-Schlüssel
@@ -1544,8 +1550,8 @@ class Database:
                 self.insert_booking(
                     date_booking=booking_date,
                     amount=amount,
-                    account_id=account_id,
                     coa_id=coa_id,
+                    counter_coa_id=counter_coa_id,
                     tax_rate=tax_rate,
                     text=text_val,
                     document_number=doc_number,
@@ -1560,7 +1566,7 @@ class Database:
             'skipped':      skipped,
             'skipped_rows': skipped_rows,
             'missing_coa':  sorted(missing_coa),
-            'missing_skr':  sorted(missing_skr),
+            'missing_counter_coa':  sorted(missing_counter_coa),
             'errors':       errors,
         }
 
