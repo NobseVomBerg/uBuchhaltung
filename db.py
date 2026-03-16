@@ -183,6 +183,7 @@ class Database:
                 RecipientClient TEXT,
                 Contact_ID INTEGER,
                 COA_ID INTEGER,
+                CounterCOA_ID INTEGER,
                 Category_ID INTEGER,
                 Amount REAL NOT NULL,
                 Currency TEXT DEFAULT 'EUR',
@@ -194,6 +195,7 @@ class Database:
                 FOREIGN KEY (Account_ID) REFERENCES Accounts(ID),
                 FOREIGN KEY (Contact_ID) REFERENCES Contacts(ID),
                 FOREIGN KEY (COA_ID) REFERENCES ChartOfAccounts(ID),
+                FOREIGN KEY (CounterCOA_ID) REFERENCES ChartOfAccounts(ID),
                 FOREIGN KEY (Category_ID) REFERENCES Categories(ID)
             )
         ''')
@@ -410,16 +412,16 @@ class Database:
         ''')
 
         # Migration: Add SKRAccount column to Accounts if not exists
-        try:
-            cursor.execute('ALTER TABLE Accounts ADD COLUMN SKRAccount INTEGER')
-        except Exception:
-            pass  # Column already exists
+        # try:
+        #     cursor.execute('ALTER TABLE Accounts ADD COLUMN SKRAccount INTEGER')
+        # except Exception:
+        #     pass  # Column already exists
 
         # Migration: Add CounterCOA_ID column to Bookings for double-entry bookkeeping
-        try:
-            cursor.execute('ALTER TABLE Bookings ADD COLUMN CounterCOA_ID INTEGER REFERENCES ChartOfAccounts(ID)')
-        except Exception:
-            pass  # Column already exists
+        # try:
+        #     cursor.execute('ALTER TABLE Bookings ADD COLUMN CounterCOA_ID INTEGER REFERENCES ChartOfAccounts(ID)')
+        # except Exception:
+        #     pass  # Column already exists
 
         conn.commit()
         conn.close()
