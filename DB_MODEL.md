@@ -1,6 +1,6 @@
 # Datenbankmodell PyBuch - AI-Readable Database Schema
 
-**Status:** Aktuell (Stand: 2. März 2026)  
+**Status:** Aktuell (Stand: 17. März 2026)  
 **DBMS:** SQLite 3  
 **File:** `data/buch.db`
 
@@ -586,9 +586,41 @@ data/
 
 ---
 
+## SQL-Export & Import
+
+### SQL-Export (`export_to_sql()`)
+
+Exportiert alle Tabellendaten als INSERT-Statements:
+- **Kompaktes Format**: Multi-Value INSERT-Syntax für kürzere Dateien
+  ```sql
+  INSERT INTO TableName (col1, col2, col3) VALUES
+  (val1, val2, val3),
+  (val1, val2, val3),
+  (val1, val2, val3);
+  ```
+- **Direkt verwendbar**: Statements können direkt in SQL-Konsole eingefügt werden
+- **Ausgabe**: `data/db-export.sql`
+- **Überspringt**: Leere Tabellen und SQLite-interne Tabellen
+
+### WISO Mein Büro CSV-Import (`import_wiso_csv()`)
+
+Importiert Buchungen aus WISO Mein Büro CSV-Export:
+- **CSV-Format**: ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER
+- **Mapping**:
+  - KONTO → ChartOfAccounts.AccountNumber → COA_ID (Sollkonto)
+  - GEGENKONTO → ChartOfAccounts.AccountNumber → CounterCOA_ID (Habenkonto)
+  - SCHLUESSEL → BU-Schlüssel → TaxRate (401=19%, 402=7%, 121=0%)
+- **Duplikat-Erkennung**: REFERENZNUMMER + Datum + COA_ID + Betrag
+  - Datum ist wichtig für wiederkehrende Transaktionen (z.B. monatliche Abos)
+- **Encoding**: Automatische Erkennung (CP1252, UTF-8-SIG, UTF-8, Latin-1)
+- **Fehlerbehandlung**: 
+  - Fehlende SKR-Konten werden gemeldet (missing_coa, missing_counter_coa)
+  - Duplikate werden übersprungen mit Details (skipped_rows)
+  - Fehlerhafte Zeilen werden protokolliert
+
 ## SQL-Logging
 
-Die Klasse `Database` unterstützt optionales SQL-Logging über `document_parser.DocumentParser()`:
+Die Klasse `Database` unterstützt optionales SQL-Logging:
 - Automatische Ersetzung von Parametern in Templates
 - Formatierung für lesbare Logs
 - Aktiviert durch `log_description` Parameter in insert/update Methoden
@@ -625,6 +657,19 @@ Die Klasse `Database` unterstützt optionales SQL-Logging über `document_parser
 
 ---
 
-**Dokumentversion:** 1.0  
+**Dokumentversion:** 1.1  
 **Erstellt:** 26. Februar 2026  
+**Letzte Aktualisierung:** 17. März 2026  
 **Wartung:** Bei Schemaänderungen aktualisieren!
+
+---
+
+## Änderungshistorie
+
+**v1.1 (17. März 2026)**
+- Neues Feld `CounterCOA_ID` in Bookings-Tabelle für doppelte Buchführung
+- Kompaktes SQL-Export-Format (Multi-Value INSERT)
+- WISO Mein Büro CSV-Import mit Duplikat-Erkennung nach Datum
+
+**v1.0 (26. Februar 2026)**
+- Initiale Dokumentation

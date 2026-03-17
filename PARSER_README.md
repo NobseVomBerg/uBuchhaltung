@@ -1,6 +1,8 @@
-# Dokumentenparser Installation & Verwendung
+# Dokumentenparser & CSV-Import Installation & Verwendung
 
 ## Installation
+
+### 1. PDF-Parser für Kontoauszüge
 
 Um die automatische Dokumentenanalyse zu nutzen, installieren Sie die erforderlichen Pakete:
 
@@ -98,6 +100,87 @@ from document_parser import DocumentParser
 
 parser = DocumentParser()
 result = parser.parse_document('./data/Belege/kontoauszug.pdf')
+```
+
+---
+
+## 2. WISO Mein Büro CSV-Import
+
+### Funktionsweise
+
+Der CSV-Import ermöglicht den direkten Import von Buchungen aus WISO Mein Büro:
+
+**CSV-Format:**
+```
+ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER
+```
+
+**Automatisches Mapping:**
+- **KONTO** → ChartOfAccounts.AccountNumber → COA_ID (Sollkonto)
+- **GEGENKONTO** → ChartOfAccounts.AccountNumber → CounterCOA_ID (Habenkonto)
+- **SCHLUESSEL** → BU-Schlüssel → TaxRate
+  - 401 = 19% Umsatzsteuer
+  - 402 = 7% Umsatzsteuer
+  - 121 = 0% (steuerfrei)
+
+**Duplikat-Erkennung:**
+- Prüfung anhand: REFERENZNUMMER + Datum + COA_ID + Betrag
+- Datum ist wichtig für wiederkehrende Transaktionen (z.B. monatliche Abos)
+- Bereits vorhandene Buchungen werden übersprungen
+
+**Fehlerbehandlung:**
+- Fehlende SKR-Konten werden gemeldet (KONTO und GEGENKONTO)
+- Duplikate werden mit Details aufgelistet
+- Fehlerhafte Zeilen werden protokolliert
+
+**Encoding:**
+- Automatische Erkennung: CP1252 (Standard), UTF-8-SIG, UTF-8, Latin-1
+
+### Verwendung über Web-Interface
+
+1. Navigieren Sie zu `/miscellaneous`
+2. Klicken Sie auf "WISO Import"
+3. Wählen Sie die CSV-Datei aus
+4. Überprüfen Sie das Import-Ergebnis:
+   - Anzahl importierter Buchungen
+   - Liste übersprungener Duplikate
+   - Fehlende SKR-Konten (müssen zuerst angelegt werden)
+   - Fehlerhafte Zeilen
+
+### Programmatische Verwendung
+
+```python
+from db import Database
+
+db = Database()
+
+# CSV-Datei einlesen
+with open('export_wiso.csv', 'rb') as f:
+    csv_bytes = f.read()
+
+# Import durchführen
+result = db.import_wiso_csv(csv_bytes)
+
+print(f"Importiert: {result['imported']}")
+print(f"Übersprungen: {result['skipped']}")
+print(f"Fehlende Konten: {result['missing_coa']}")
+print(f"Fehlende Gegenkonten: {result['missing_counter_coa']}")
+print(f"Fehler: {result['errors']}")
+```
+
+### Vorbereitung
+
+**Vor dem Import sicherstellen:**
+1. Alle verwendeten SKR-Konten sind in ChartOfAccounts angelegt
+2. Sowohl KONTO als auch GEGENKONTO müssen vorhanden sein
+3. Bei fehlenden Konten erscheint eine Liste mit den fehlenden Kontonummern
+4. Diese können unter `/skr` nachträglich angelegt werden
+
+**Empfohlener Workflow:**
+1. Ersten Import-Versuch starten
+2. Liste fehlender Konten notieren
+3. Fehlende Konten unter `/skr` anlegen
+4. Import erneut durchführen
 
 print(f"IBAN: {result['iban']}")
 print(f"Datum: {result['document_date']}")

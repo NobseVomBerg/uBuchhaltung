@@ -232,7 +232,14 @@ Gruppierung mehrerer Buchungen:
 ### 14. Sonstiges (`/miscellaneous`)
 Verschiedene Hilfsfunktionen und Entwickler-Tools:
 - **Datenbank-Übersicht**: Tabellenstatistiken (Anzahl Einträge pro Tabelle)
-- **DB-Export**: Exportiert alle Tabelleninhalte als INSERT-Statements nach `./data/db-export.sql` – direkt verwendbar in der SQL-Konsole
+- **DB-Export**: Exportiert alle Tabelleninhalte als INSERT-Statements nach `./data/db-export.sql`
+  - Kompaktes Format mit Multi-Value INSERT-Syntax
+  - Direkt verwendbar in der SQL-Konsole
+  - Beispiel: `INSERT INTO Table (col1, col2) VALUES (v1, v2), (v3, v4);`
+- **WISO Import**: Importiert Buchungen aus WISO Mein Büro CSV-Export
+  - Automatisches Mapping von KONTO und GEGENKONTO auf SKR-Konten
+  - Duplikat-Erkennung nach Referenznummer + Datum
+  - Fehlerbehandlung für fehlende SKR-Konten
 - **SQL-Konsole**: Direktausführung beliebiger SQL-Befehle (⚠️ nur für Entwickler/Administration)
 
 ### 15. Anlagenverzeichnis (`/assets`)
@@ -478,7 +485,8 @@ Die Anwendung verwendet SQLite mit folgenden Tabellen:
 - ForeignBankAccount (TEXT) - Fremdes Konto (IBAN oder Name)
 - RecipientClient (TEXT) - Empfänger/Auftraggeber
 - Contact_id (INTEGER, FOREIGN KEY zu Customers) - Kunde/Lieferant
-- COA_ID (INTEGER, FOREIGN KEY zu ChartOfAccounts) - SKR-Konto
+- COA_ID (INTEGER, FOREIGN KEY zu ChartOfAccounts) - SKR-Sollkonto
+- CounterCOA_ID (INTEGER, FOREIGN KEY zu ChartOfAccounts) - SKR-Habenkonto/Gegenkonto (doppelte Buchführung)
 - Category_ID (INTEGER, FOREIGN KEY zu Categories) - Kategorie
 - Amount (REAL NOT NULL) - Betrag
 - Currency (TEXT DEFAULT 'EUR') - Währung

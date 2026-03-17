@@ -1520,20 +1520,20 @@ class Database:
                 text_val = row.get('TEXT', '').strip()
                 doc_number = row.get('REFERENZNUMMER', '').strip()
 
-                # Duplikat-Prüfung: gleiche REFERENZNUMMER + COA_ID + Betrag
-                # Funktioniert auch wenn COA_ID None ist (unmappte Konten)
+                # Duplikat-Prüfung: gleiche REFERENZNUMMER + Datum + COA_ID + Betrag
+                # Datum ist wichtig für wiederkehrende Transaktionen (z.B. Abos)
                 if doc_number:
                     dup_conn = self._get_connection()
                     dup_cur = dup_conn.cursor()
                     if coa_id is not None:
                         dup_cur.execute(
-                            'SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND COA_ID=? AND Amount=?',
-                            (doc_number, coa_id, amount)
+                            'SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND DateBooking=? AND COA_ID=? AND Amount=?',
+                            (doc_number, booking_date, coa_id, amount)
                         )
                     else:
                         dup_cur.execute(
-                            'SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND COA_ID IS NULL AND Amount=?',
-                            (doc_number, amount)
+                            'SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND DateBooking=? AND COA_ID IS NULL AND Amount=?',
+                            (doc_number, booking_date, amount)
                         )
                     dup_count = dup_cur.fetchone()[0]
                     dup_conn.close()
