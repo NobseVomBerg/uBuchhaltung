@@ -236,10 +236,19 @@ Verschiedene Hilfsfunktionen und Entwickler-Tools:
   - Kompaktes Format mit Multi-Value INSERT-Syntax
   - Direkt verwendbar in der SQL-Konsole
   - Beispiel: `INSERT INTO Table (col1, col2) VALUES (v1, v2), (v3, v4);`
-- **WISO Import**: Importiert Buchungen aus WISO Mein Büro CSV-Export
-  - Automatisches Mapping von KONTO und GEGENKONTO auf SKR-Konten
-  - Duplikat-Erkennung nach Referenznummer + Datum
+- **WISO Import**: Importiert Buchungen aus WISO Mein Büro mit automatischer Format-Erkennung
+  - **Original-Export**: Vollständige Buchhaltungsdaten (9 Spalten)
+    - Automatisches Mapping von KONTO und GEGENKONTO auf SKR-Konten
+    - BU-Schlüssel werden in Steuersätze umgewandelt
+    - Duplikat-Erkennung nach Referenznummer + Datum
+  - **Tabellen-Export**: Ergänzt bestehende Buchungen (6 Spalten)
+    - Fügt Empfänger/Auftraggeber und Verwendungszweck hinzu
+    - Sucht nach Datum + Belegnummer + Betrag
+    - UPDATE statt INSERT bei bestehenden Buchungen
+    - Nur leere Felder werden ergänzt (keine Überschreibung)
+  - Format wird automatisch erkannt (kein manuelles Umschalten nötig)
   - Fehlerbehandlung für fehlende SKR-Konten
+  - Detailliertes Ergebnis-Reporting (importiert/aktualisiert/übersprungen)
 - **SQL-Konsole**: Direktausführung beliebiger SQL-Befehle (⚠️ nur für Entwickler/Administration)
 
 ### 15. Anlagenverzeichnis (`/assets`)

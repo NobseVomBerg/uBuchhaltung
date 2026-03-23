@@ -357,10 +357,10 @@ def PageReceiptEdit(db: Database, number):
             booking_id = booking[0]
             date_booking = booking[1]
             recipient = booking[6] or ""
-            amount = booking[10]
+            amount = booking[11]
             relation_type = booking[-1]  # RelationType from JOIN
             
-            amount_color = "green" if amount > 0 else "red"
+            amount_color = "green" if (amount or 0) > 0 else "red"
             s+= f"<tr>"
             s+= f"<td>{booking_id}</td>"
             s+= f"<td>{date_booking}</td>"
@@ -467,7 +467,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
         if edit_trans:
             # Extract data from booking structure
             edit_recipient = edit_trans[6] or ""  # RecipientClient
-            edit_text = edit_trans[14] or ""  # Text
+            edit_text = edit_trans[15] or ""  # Text
     
     # Get dropdown data (reuse customers variable from above)
     customers = db.fetch_contacts(contact_type='customer')
@@ -542,13 +542,13 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     s+= f'''
                     </select></td></tr>
                     
-                    <tr><td>Betrag:</td><td><input type="number" step="0.01" class="noButtons" name="amount" id="amount" value="{edit_trans[10] if edit_trans else ""}" required></td></tr>
-                    <tr><td>Währung:</td><td><input type="text" name="currency" value="{edit_trans[11] if edit_trans else "EUR"}" size="5"></td></tr>
+                    <tr><td>Betrag:</td><td><input type="number" step="0.01" class="noButtons" name="amount" id="amount" value="{edit_trans[11] if edit_trans else ""}" required></td></tr>
+                    <tr><td>Währung:</td><td><input type="text" name="currency" value="{edit_trans[12] if edit_trans else "EUR"}" size="5"></td></tr>
                     
-                    <tr><td>Steuersatz (%):</td><td><input type="number" step="0.01" class="noButtons" name="tax_rate" id="tax_rate" value="{edit_trans[12]*100 if edit_trans and edit_trans[12] else ""}" placeholder="z.B. 19 für 19%"></td></tr>
-                    <tr><td>Steuerbetrag:</td><td><input type="number" step="0.01" class="noButtons" name="tax_amount" id="tax_amount" value="{edit_trans[13] if edit_trans and edit_trans[13] else ""}"></td></tr>
+                    <tr><td>Steuersatz (%):</td><td><input type="number" step="0.01" class="noButtons" name="tax_rate" id="tax_rate" value="{edit_trans[13]*100 if edit_trans and edit_trans[13] else ""}" placeholder="z.B. 19 für 19%"></td></tr>
+                    <tr><td>Steuerbetrag:</td><td><input type="number" step="0.01" class="noButtons" name="tax_amount" id="tax_amount" value="{edit_trans[14] if edit_trans and edit_trans[14] else ""}"></td></tr>
                     
-                    <tr><td>Beleg-Nr.:</td><td><input type="text" name="document_nr" value="{edit_trans[15] if edit_trans and edit_trans[15] else ""}"></td></tr>
+                    <tr><td>Beleg-Nr.:</td><td><input type="text" name="document_nr" value="{edit_trans[16] if edit_trans and edit_trans[16] else ""}"></td></tr>
                     
     '''
     
@@ -742,18 +742,18 @@ def PageTransactions(db: Database, edit_transaction_id=None):
         recipient = booking[6] or ""
         contact_id = booking[7]
         coa_id = booking[8]
-        amount = booking[10]
-        currency = booking[11] or "EUR"
-        text = booking[14] or ""
+        amount = booking[11]
+        currency = booking[12] or "EUR"
+        text = booking[15] or ""
         
         # Get mapped names
         account_name = account_map.get(account_id, "") if account_id else ""
         contact_name = customer_map.get(contact_id, "") if contact_id else ""
         coa_number = coa_map.get(coa_id, "") if coa_id else ""
-        doc_number = booking[15] or "" if len(booking) > 15 else ""
+        doc_number = booking[16] or "" if len(booking) > 16 else ""
         
         # Color code amount
-        amount_color = "green" if amount > 0 else "red"
+        amount_color = "green" if (amount or 0) > 0 else "red"
         
         # Add data attributes for filtering
         account_id_str = account_id or ''
@@ -762,7 +762,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
         s+= f"<td>{date_booking}</td>"
         s+= f"<td>{recipient[:25]}</td>"
         s+= f"<td>{text[:35]}</td>"
-        s+= f"<td style='color:{amount_color}'>{amount:.2f}</td>"
+        s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
         s+= f"<td>{currency}</td>"
         s+= f"<td>{account_name[:20]}</td>"
         s+= f"<td>{contact_name[:20]}</td>"
@@ -2562,11 +2562,11 @@ def PageBookingGroupDetails(db: Database, group_id):
             date_booking = booking[1]
             account_id = booking[4]
             recipient = booking[6] or ""
-            amount = booking[10]
-            text = booking[14] or ""
+            amount = booking[11]
+            text = booking[15] or ""
             
             account_name = account_map.get(account_id, "") if account_id else ""
-            amount_color = "green" if amount > 0 else "red"
+            amount_color = "green" if (amount or 0) > 0 else "red"
             
             s += f"<tr>"
             s += f"<td>{booking_id}</td>"

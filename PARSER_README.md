@@ -106,9 +106,14 @@ result = parser.parse_document('./data/Belege/kontoauszug.pdf')
 
 ## 2. WISO Mein Büro CSV-Import
 
-### Funktionsweise
+### Übersicht
 
-Der CSV-Import ermöglicht den direkten Import von Buchungen aus WISO Mein Büro:
+Der CSV-Import unterstützt **zwei verschiedene Export-Formate** aus WISO Mein Büro mit **automatischer Format-Erkennung**:
+
+1. **Original-Export** (9 Spalten) - Komplette Buchhaltungsdaten
+2. **Tabellen-Export** (6 Spalten) - Zusätzliche Details zu bestehenden Buchungen
+
+### Format 1: Original-Export
 
 **CSV-Format:**
 ```
@@ -128,13 +133,71 @@ ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNU
 - Datum ist wichtig für wiederkehrende Transaktionen (z.B. monatliche Abos)
 - Bereits vorhandene Buchungen werden übersprungen
 
+**Aktion:** Neue Buchungen werden angelegt (INSERT)
+
+---
+
+### Format 2: Tabellen-Export (NEU)
+
+**Zweck:** Ergänzt bestehende Buchungen mit fehlenden Details (Empfänger, Verwendungszweck)
+
+**CSV-Format:**
+```
+Buchungsdatum;Empf./Auft.;Verwendungszweck;Kategorie;Beleg Nr./opt. Beleg Nr.;Betrag
+```
+
+**Hinweis:** Die Spalte "Beleg Nr." kann auch als "opt. Beleg Nr." benannt sein (WISO-Varianten).
+
+**Vorbereitung der Datei:**
+1. Tabellen-Ansicht in WISO Mein Büro öffnen (für ein Bank-/Verrechnungskonto)
+2. Als XLS exportieren
+3. In Excel/LibreOffice Calc öffnen
+4. **Spalte 1 (Status)** und **Spalte 8 (Saldo)** löschen
+5. Als CSV mit Semikolon-Trennung speichern
+
+**Zeilenumbrüche in Textfeldern:**
+- Verwendungszwecke enthalten oft Zeilenumbrüche (z.B. bei Überweisungen)
+- Diese werden automatisch in Leerzeichen konvertiert
+- LibreOffice Calc setzt solche Felder korrekt in Anführungszeichen
+- Der Import verarbeitet dies automatisch - kein manueller Eingriff notwendig
+
+**Automatisches Mapping:**
+- **Empf./Auft.** → RecipientClient (Empfänger/Auftraggeber)
+- **Verwendungszweck** → Text (Buchungstext)
+- **Kategorie** → COA_ID (automatisches Matching über SKR-Beschreibung)
+- **Beleg Nr.** → DocumentNumber
+
+**Matching-Logik:**
+- Sucht bestehende Buchung nach: **Datum + Belegnummer + Betrag**
+- Falls gefunden: **UPDATE** (nur leere Felder werden ergänzt)
+- Falls nicht gefunden: **INSERT** (neue Buchung anlegen)
+
+**Wichtig:**
+- Bestehende Daten werden NICHT überschrieben
+- Nur NULL/leere Felder werden mit neuen Werten gefüllt
+- Ideal zum Nachträglichen Ergänzen von Empfänger/Verwendungszweck
+
 **Fehlerbehandlung:**
 - Fehlende SKR-Konten werden gemeldet (KONTO und GEGENKONTO)
 - Duplikate werden mit Details aufgelistet
 - Fehlerhafte Zeilen werden protokolliert
+- Format-Erkennung fehlgeschlagen zeigt gefundene Spalten
 
 **Encoding:**
 - Automatische Erkennung: CP1252 (Standard), UTF-8-SIG, UTF-8, Latin-1
+
+---
+
+### Format-Erkennung
+
+Die Funktion `import_wiso_csv()` erkennt das Format automatisch anhand der Spaltenüberschriften:
+
+- **Original-Export**: Erkennt "KONTO" und "GEGENKONTO"
+- **Tabellen-Export**: Erkennt "Empf./Auft." und "Verwendungszweck"
+
+**Kein manuelles Umschalten notwendig!** Einfach die CSV-Datei hochladen.
+
+---
 
 ### Verwendung über Web-Interface
 

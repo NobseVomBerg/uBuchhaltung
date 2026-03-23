@@ -157,10 +157,13 @@ INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStan
                 const ec  = parseInt(p.get('err_count')    || '0');
                 const mc  = parseInt(p.get('missing_coa')  || '0');
                 const ms  = parseInt(p.get('missing_skr')  || '0');
-                const warn = ec > 0 || mc > 0 || ms > 0;
+                const nf  = parseInt(p.get('not_found')    || '0');
+                const warn = ec > 0 || mc > 0 || ms > 0 || nf > 0;
                 let msg = '\u2705 Import abgeschlossen: '
                         + p.get('imported') + ' importiert, '
-                        + p.get('skipped')  + ' \u00fcbersprungen (Duplikat)';
+                        + p.get('updated')  + ' aktualisiert, '
+                        + p.get('skipped')  + ' \u00fcbersprungen';
+                if (nf > 0) msg += ', ' + nf + ' nicht gefunden';
                 if (mc > 0) msg += ', ' + mc + ' fehlende SKR-Konten';
                 if (ms > 0) msg += ', ' + ms + ' fehlende Gegenkonten';
                 if (ec > 0) msg += ', ' + ec + ' Fehler';
@@ -181,6 +184,7 @@ INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStan
     # Detail-Tabellen aus letztem Ergebnis rendern
     if _last_result:
         _skipped_rows = _last_result.get('skipped_rows', [])
+        _not_found    = _last_result.get('not_found', [])
         _missing_coa  = _last_result.get('missing_coa', [])
         _missing_skr  = _last_result.get('missing_skr', [])
         _errors       = _last_result.get('errors', [])
@@ -208,7 +212,15 @@ INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStan
             s += '<p style="font-family:monospace;">'
             s += ', '.join(str(_n) for _n in _missing_skr)
             s += '</p>'
-
+        if _not_found:
+            s += f'<h3>\u26a0\ufe0f Nicht gefunden (kein Treffer in DB) &ndash; {len(_not_found)} Eintr\u00e4ge</h3>'
+            s += '<p>Diese Zeilen konnten keiner bestehenden Buchung zugeordnet werden (Datum + Belegr./Betrag stimmt nicht \u00fcberein).</p>'
+            s += '<table><tr><th>CSV-Zeile</th><th>Datum</th><th>Beleg-Nr.</th><th>Betrag</th><th>Text</th></tr>'
+            for _r in _not_found:
+                s += (f"<tr><td>{_r.get('zeile','')}</td><td>{_r.get('datum','')}</td>"
+                      f"<td>{_r.get('beleg','')}</td><td>{_r.get('betrag','')}</td>"
+                      f"<td>{_r.get('text','')}</td></tr>")
+            s += '</table>'
         if _errors:
             s += f'<h3>\u274c Parse-Fehler &ndash; {len(_errors)} Einträge</h3><ul>'
             for _e in _errors:

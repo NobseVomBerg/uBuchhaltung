@@ -427,8 +427,9 @@ def handle_wiso_import(request_handler, db: Database):
 
         return 303, (
             f'/miscellaneous?wiso_import=ok'
-            f'&imported={imported}&skipped={skipped}'
+            f'&imported={imported}&updated={result.get("updated",0)}&skipped={skipped}'
             f'&err_count={len(errs)}'
+            f'&not_found={len(result.get("not_found", []))}'
             f'&missing_coa={len(result.get("missing_coa", []))}'
             f'&missing_skr={len(result.get("missing_skr", []))}'
         )

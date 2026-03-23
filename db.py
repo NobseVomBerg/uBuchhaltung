@@ -1427,19 +1427,19 @@ class Database:
 
     def import_wiso_csv(self, csv_bytes: bytes) -> dict:
         """WISO Mein Büro CSV-Export in die Bookings-Tabelle importieren.
-
-        CSV-Spalten:
-            ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER
-
-        Mapping:
-            KONTO      → ChartOfAccounts.AccountNumber → COA_ID
-            GEGENKONTO → ChartOfAccounts.AccountNumber → CounterCOA_ID
-            SCHLUESSEL → BU-Schlüssel → TaxRate (401=19%, 402=7%, 121=0%)
-
-        Duplikat-Erkennung: gleiche REFERENZNUMMER + COA_ID + Betrag → überspringen
+        
+        Unterstützt zwei Formate:
+        
+        1. Original-Export (9 Spalten):
+           ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER
+           
+        2. Tabellen-Export (6 Spalten):
+           Buchungsdatum;Empf./Auft.;Verwendungszweck;Kategorie;Beleg Nr.;Betrag
+           
+        Format wird automatisch erkannt. Tabellen-Export aktualisiert bestehende Buchungen.
 
         Returns:
-            dict: {imported: int, skipped: int, errors: list[str]}
+            dict: {imported: int, updated: int, skipped: int, errors: list[str], format: str}
         """
         import csv, io, datetime
 
@@ -1452,8 +1452,40 @@ class Database:
             except (UnicodeDecodeError, LookupError):
                 continue
         if text is None:
-            return {'imported': 0, 'skipped': 0,
-                    'errors': ['Encoding der Datei nicht erkennbar']}
+            return {'imported': 0, 'updated': 0, 'skipped': 0,
+                    'errors': ['Encoding der Datei nicht erkennbar'], 'format': 'unknown'}
+        
+        # Format-Erkennung über Header-Zeile
+        # Anführungszeichen und Whitespace aus den Spaltenbezeichnungen entfernen
+        first_line = text.split('\n')[0].strip()
+        headers = [h.strip().strip('"').strip("'") for h in first_line.split(';')]
+        
+        # Tabellen-Format erkennen (Empf./Auft. + Verwendungszweck vorhanden)
+        if any('Empf' in h or 'Auft' in h for h in headers) and any('Verwendungszweck' in h for h in headers):
+            return self._import_wiso_table_format(text)
+        # Original-Format erkennen (KONTO + GEGENKONTO vorhanden)
+        elif 'KONTO' in headers and 'GEGENKONTO' in headers:
+            return self._import_wiso_original_format(text)
+        else:
+            return {'imported': 0, 'updated': 0, 'skipped': 0,
+                    'errors': [f'Unbekanntes Format. Gefundene Spalten: {", ".join(headers)}'], 
+                    'format': 'unknown'}
+    
+    def _import_wiso_original_format(self, text: str) -> dict:
+        """Import des Original WISO-Exports (9 Spalten).
+        
+        CSV-Spalten:
+            ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER
+
+        Mapping:
+            KONTO      → ChartOfAccounts.AccountNumber → COA_ID
+            GEGENKONTO → ChartOfAccounts.AccountNumber → CounterCOA_ID
+            SCHLUESSEL → BU-Schlüssel → TaxRate (401=19%, 402=7%, 121=0%)
+
+        Returns:
+            dict: {imported: int, updated: int, skipped: int, errors: list[str]}
+        """
+        import csv, io, datetime
 
         # BU-Schlüssel → Steuersatz
         BU_TO_TAXRATE = {'401': 0.19, '402': 0.07, '121': 0.0}
@@ -1466,7 +1498,11 @@ class Database:
         conn.close()
 
         reader = csv.DictReader(io.StringIO(text), delimiter=';', quotechar='"')
+        # Spaltennamen normalisieren (führende/nachgestellte Leerzeichen entfernen)
+        if reader.fieldnames:
+            reader.fieldnames = [f.strip() for f in reader.fieldnames]
         imported = 0
+        updated = 0
         skipped = 0
         skipped_rows = []       # Liste übersprungener Zeilen mit Details
         missing_coa = set()     # SKR-Kontonummern (KONTO), die nicht in ChartOfAccounts gefunden wurden
@@ -1474,6 +1510,8 @@ class Database:
         errors = []
 
         for i, row in enumerate(reader, 1):
+            # Zeilenwerte normalisieren
+            row = {k.strip(): (v.strip() if isinstance(v, str) else v) for k, v in row.items() if k}
             try:
                 # Datum parsen (DD.MM.YYYY oder DD.MM.YYYY HH:MM)
                 date_str = row.get('DATUM', '').strip()[:10]
@@ -1483,8 +1521,10 @@ class Database:
                     errors.append(f"Zeile {i}: Ungültiges Datum '{date_str}'")
                     continue
 
-                # Betrag parsen (Dezimalpunkt oder -komma)
-                amount_str = row.get('BRUTTOBETRAG', '').strip().replace(',', '.')
+                # Betrag parsen (Dezimalpunkt oder deutsches Format z.B. 1.234,56)
+                amount_str = row.get('BRUTTOBETRAG', '').strip()
+                if ',' in amount_str:
+                    amount_str = amount_str.replace('.', '').replace(',', '.')
                 try:
                     amount = float(amount_str)
                 except ValueError:
@@ -1564,12 +1604,178 @@ class Database:
                 errors.append(f"Zeile {i}: {str(e)}")
 
         return {
-            'imported':     imported,
-            'skipped':      skipped,
-            'skipped_rows': skipped_rows,
-            'missing_coa':  sorted(missing_coa),
-            'missing_counter_coa':  sorted(missing_counter_coa),
-            'errors':       errors,
+            'imported':          imported,
+            'updated':           updated,
+            'skipped':           skipped,
+            'skipped_rows':      skipped_rows,
+            'missing_coa':       sorted(missing_coa),
+            'missing_counter_coa': sorted(missing_counter_coa),
+            'errors':            errors,
+            'format':            'original'
+        }
+    
+    def _import_wiso_table_format(self, text: str) -> dict:
+        """Import des WISO Tabellen-Exports (6 Spalten).
+        
+        CSV-Spalten:
+            Buchungsdatum;Empf./Auft.;Verwendungszweck;Kategorie;Beleg Nr./opt. Beleg Nr.;Betrag
+        
+        Dieser Import aktualisiert bestehende Buchungen mit zusätzlichen Daten:
+        - RecipientClient (Empf./Auft.)
+        - Text (Verwendungszweck) - Zeilenumbrüche werden in Leerzeichen konvertiert
+        - Kategorie → COA_ID Mapping
+        - Suche nach: Datum + DocumentNumber + Amount
+        
+        Hinweis: Zeilenumbrüche in Textfeldern (z.B. bei Überweisungstexten) werden 
+        automatisch durch Leerzeichen ersetzt, um Kompatibilität zu gewährleisten.
+        
+        Returns:
+            dict: {imported: int, updated: int, skipped: int, errors: list[str]}
+        """
+        import csv, io, datetime
+        
+        # Lookup-Map für Kategorie-Beschreibung → COA_ID
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT Name, ID FROM ChartOfAccounts')
+        coa_name_map = {row[0].lower(): row[1] for row in cursor.fetchall()}
+        conn.close()
+        
+        reader = csv.DictReader(io.StringIO(text), delimiter=';', quotechar='"')
+        # Spaltennamen normalisieren (führende/nachgestellte Leerzeichen entfernen)
+        if reader.fieldnames:
+            reader.fieldnames = [f.strip() for f in reader.fieldnames]
+        imported = 0
+        updated = 0
+        skipped = 0
+        not_found = []
+        errors = []
+        
+        for i, row in enumerate(reader, 1):
+            # Zeilenwerte normalisieren
+            row = {k.strip(): (v.strip() if isinstance(v, str) else v) for k, v in row.items() if k}
+            try:
+                # Datum parsen – Footer-Zeilen (reine Ziffernfolge als Datum) überspringen
+                date_str = row.get('Buchungsdatum', '').strip()[:10]
+                if not date_str or date_str.lstrip('-').isdigit():
+                    skipped += 1
+                    continue
+                try:
+                    booking_date = datetime.datetime.strptime(date_str, '%d.%m.%Y').strftime('%Y-%m-%d')
+                except ValueError:
+                    errors.append(f"Zeile {i}: Ungültiges Datum '{date_str}'")
+                    continue
+                
+                # Empfänger/Auftraggeber (Zeilenumbrüche normalisieren)
+                recipient = ' '.join(row.get('Empf./Auft.', '').split())
+                
+                # Verwendungszweck (Zeilenumbrüche normalisieren)
+                purpose = ' '.join(row.get('Verwendungszweck', '').split())
+                
+                # Belegnummer (flexibel für beide Varianten)
+                doc_number = row.get('opt. Beleg Nr.', row.get('Beleg Nr.', '')).strip()
+                
+                # Betrag parsen – deutsches Format z.B. -41,25 oder 1.234,56
+                amount_str = row.get('Betrag', '').strip()
+                if ',' in amount_str:
+                    amount_str = amount_str.replace('.', '').replace(',', '.')
+                try:
+                    amount = float(amount_str)
+                except ValueError:
+                    errors.append(f"Zeile {i}: Ungültiger Betrag '{amount_str}'")
+                    continue
+                
+                # Kategorie → COA_ID
+                category_desc = ' '.join(row.get('Kategorie', '').split())
+                coa_id_from_category = coa_name_map.get(category_desc.lower()) if category_desc else None
+                
+                # Suche nach bestehender Buchung: Datum + Belegnummer + Betrag
+                # Betrag-Suche mit ABS(), da Original-Export positive und
+                # Tabellen-Export negative Vorzeichen verwenden kann.
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                
+                if doc_number:
+                    cursor.execute('''
+                        SELECT ID, RecipientClient, Text, COA_ID 
+                        FROM Bookings 
+                        WHERE DateBooking=? AND DocumentNumber=? AND ABS(Amount)=ABS(?)
+                        LIMIT 1
+                    ''', (booking_date, doc_number, amount))
+                else:
+                    # Ohne Belegnummer: Datum + |Betrag| (LIMIT 2 für Mehrdeutigkeitsprüfung)
+                    cursor.execute('''
+                        SELECT ID, RecipientClient, Text, COA_ID 
+                        FROM Bookings 
+                        WHERE DateBooking=? AND ABS(Amount)=ABS(?) AND (DocumentNumber IS NULL OR DocumentNumber='')
+                        LIMIT 2
+                    ''', (booking_date, amount))
+                
+                rows = cursor.fetchall()
+                conn.close()
+                
+                if len(rows) == 0:
+                    not_found.append({
+                        'zeile':  i,
+                        'datum':  booking_date,
+                        'beleg':  doc_number,
+                        'betrag': amount,
+                        'text':   purpose[:60],
+                    })
+                    continue
+                
+                if len(rows) > 1:
+                    # Ohne Belegnummer und mehrdeutig → überspringen
+                    skipped += 1
+                    continue
+                
+                existing = rows[0]
+                booking_id        = existing[0]
+                current_recipient = existing[1] or ''
+                current_coa_id    = existing[3]
+                
+                update_fields = []
+                update_values = []
+                
+                # Empfänger immer überschreiben, wenn im Tabellen-Export vorhanden
+                if recipient:
+                    update_fields.append('RecipientClient=?')
+                    update_values.append(recipient)
+                
+                # Verwendungszweck nur setzen, wenn noch leer (Original-Text bleibt erhalten)
+                if purpose and not (existing[2] or ''):
+                    update_fields.append('Text=?')
+                    update_values.append(purpose)
+                
+                # COA nur setzen, wenn noch nicht vorhanden
+                if coa_id_from_category and not current_coa_id:
+                    update_fields.append('COA_ID=?')
+                    update_values.append(coa_id_from_category)
+                
+                if update_fields:
+                    update_values.append(booking_id)
+                    conn = self._get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        f'UPDATE Bookings SET {", ".join(update_fields)} WHERE ID=?',
+                        update_values
+                    )
+                    conn.commit()
+                    conn.close()
+                    updated += 1
+                else:
+                    skipped += 1
+                
+            except Exception as e:
+                errors.append(f"Zeile {i}: {str(e)}")
+        
+        return {
+            'imported':  imported,
+            'updated':   updated,
+            'skipped':   skipped,
+            'not_found': not_found,
+            'errors':    errors,
+            'format':    'table'
         }
 
     # ── Table Contacts (normalized Option C) ───────────────────────────────────

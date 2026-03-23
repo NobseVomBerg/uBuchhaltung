@@ -604,19 +604,56 @@ Exportiert alle Tabellendaten als INSERT-Statements:
 
 ### WISO Mein Büro CSV-Import (`import_wiso_csv()`)
 
-Importiert Buchungen aus WISO Mein Büro CSV-Export:
+Importiert Buchungen aus WISO Mein Büro mit automatischer Format-Erkennung:
+
+#### Unterstützte Formate:
+
+**1. Original-Export (9 Spalten):**
 - **CSV-Format**: ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER
 - **Mapping**:
   - KONTO → ChartOfAccounts.AccountNumber → COA_ID (Sollkonto)
   - GEGENKONTO → ChartOfAccounts.AccountNumber → CounterCOA_ID (Habenkonto)
   - SCHLUESSEL → BU-Schlüssel → TaxRate (401=19%, 402=7%, 121=0%)
 - **Duplikat-Erkennung**: REFERENZNUMMER + Datum + COA_ID + Betrag
-  - Datum ist wichtig für wiederkehrende Transaktionen (z.B. monatliche Abos)
+- **Aktion**: Neue Buchungen anlegen
+
+**2. Tabellen-Export (6 Spalten):**
+- **CSV-Format**: Buchungsdatum;Empf./Auft.;Verwendungszweck;Kategorie;Beleg Nr./opt. Beleg Nr.;Betrag
+  - Spalte 1 (Status) und 8 (Saldo) sollten vor dem Export entfernt werden
+  - Spaltenname "Beleg Nr." oder "opt. Beleg Nr." wird automatisch erkannt
+- **Mapping**:
+  - Empf./Auft. → RecipientClient
+  - Verwendungszweck → Text (Zeilenumbrüche werden in Leerzeichen konvertiert)
+  - Kategorie (SKR-Beschreibung) → COA_ID (automatisches Matching)
+  - Beleg Nr. → DocumentNumber
+- **Suche**: Datum + DocumentNumber + Betrag
+- **Aktion**: 
+  - Bestehende Buchungen aktualisieren (UPDATE)
+  - Neue Buchungen anlegen wenn nicht gefunden (INSERT)
+  - Nur leere Felder werden ergänzt (keine Überschreibung)
+- **Zeilenumbrüche**: Textfelder mit Zeilenumbrüchen (z.B. Überweisungstexte) werden automatisch normalisiert
+
+#### Format-Erkennung:
+- Automatisch anhand der Spaltenüberschriften
+- Original: erkennt "KONTO" und "GEGENKONTO"
+- Tabelle: erkennt "Empf./Auft." und "Verwendungszweck"
+
+#### Gemeinsame Features:
 - **Encoding**: Automatische Erkennung (CP1252, UTF-8-SIG, UTF-8, Latin-1)
 - **Fehlerbehandlung**: 
-  - Fehlende SKR-Konten werden gemeldet (missing_coa, missing_counter_coa)
-  - Duplikate werden übersprungen mit Details (skipped_rows)
+  - Fehlende SKR-Konten werden gemeldet
+  - Duplikate werden übersprungen mit Details
   - Fehlerhafte Zeilen werden protokolliert
+- **Rückgabe**: 
+  ```python
+  {
+    'imported': int,        # Neu angelegte Buchungen
+    'updated': int,         # Aktualisierte Buchungen (nur Tabellen-Format)
+    'skipped': int,         # Übersprungene Duplikate
+    'errors': list[str],    # Fehlermeldungen
+    'format': str          # 'original' oder 'table'
+  }
+  ```
 
 ## SQL-Logging
 
