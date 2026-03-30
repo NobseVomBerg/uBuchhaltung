@@ -87,7 +87,7 @@ def handle_confirm_import(db: Database, post_data):
         if not account_id:
             return 400, f"Kein Konto gefunden für IBAN: {account_iban}"
         
-        # Insert transactions
+        linked_count = 0
         inserted_count = 0
         skipped_count = 0
         skipped_transactions = []
@@ -104,17 +104,46 @@ def handle_confirm_import(db: Database, post_data):
             recipient = trans['recipient']
             text = trans['reference']
             foreign_iban = trans.get('foreign_iban', '')
-            
-            # Check if booking already exists
-            if db.check_booking_exists(trans['date'], trans['amount'], account_id_int, foreign_iban, text):
+            trans_date = trans['date']
+            trans_amount = trans['amount']
+
+            # Check if banking already exists (exact duplicate)
+            if db.check_booking_exists(trans_date, trans_amount, account_id_int, foreign_iban, text):
                 skipped_count += 1
                 skipped_transactions.append(trans)
                 continue
-            
-            # Execute insert with automatic SQL logging
+
+            # Versuche, eine passende WISO-Buchung/-Gruppe zu finden und zu verknüpfen
+            # Stufe 1: Einzelbuchung (Datum + Betrag exact)
+            # Stufe 2: Split-Gruppe (Datum + SUM der Teilbeträge)
+            match = db.find_unlinked_booking_by_date_amount(trans_date, trans_amount)
+            if match:
+                match_type, match_id = match
+                conn = db._get_connection()
+                cur = conn.cursor()
+                update_sql = '''
+                    UPDATE Bookings
+                    SET Account_ID=?,
+                        ForeignBankAccount=?,
+                        RecipientClient=CASE WHEN (RecipientClient IS NULL OR RecipientClient='')
+                                             THEN ? ELSE RecipientClient END
+                    WHERE {where}
+                '''
+                if match_type == 'single':
+                    cur.execute(update_sql.format(where='ID=?'),
+                                (account_id_int, foreign_iban, recipient, match_id))
+                else:  # 'group' → alle Teilbuchungen der Gruppe verknüpfen
+                    cur.execute(update_sql.format(where='BookingGroup_ID=?'),
+                                (account_id_int, foreign_iban, recipient, match_id))
+                conn.commit()
+                conn.close()
+                linked_count += 1
+                continue
+
+            # Kein Match → neue Buchung anlegen
             db.insert_booking(
-                date_booking=trans['date'],
-                amount=trans['amount'],
+                date_booking=trans_date,
+                amount=trans_amount,
                 account_id=account_id_int,
                 foreign_bank_account=foreign_iban,
                 recipient_client=recipient,
@@ -131,7 +160,9 @@ def handle_confirm_import(db: Database, post_data):
         s = Header1()
         s += Header2()
         s += f"<h1>Import erfolgreich</h1>"
-        s += f"<p>{inserted_count} Transaktionen wurden importiert.</p>"
+        s += f"<p>{inserted_count} Transaktionen neu angelegt.</p>"
+        if linked_count > 0:
+            s += f"<p style='color: green;'>{linked_count} WISO-Buchungen mit Bankdaten verknüpft.</p>"
         
         if skipped_count > 0:
             s += f"<p style='color: orange;'>{skipped_count} Duplikate wurden übersprungen:</p>"
@@ -259,6 +290,40 @@ def handle_create_booking_group(db: Database, post_data):
         import traceback
         traceback.print_exc()
         return 500, f"Fehler beim Erstellen der Gruppe: {str(e)}"
+
+def handle_update_booking_group(db: Database, post_data):
+    """Beschreibung/Betrag einer bestehenden Gruppe speichern."""
+    try:
+        group_id    = int(post_data.get("group_id", ["0"])[0])
+        description = post_data.get("description", [""])[0]
+        total_amount_str = post_data.get("total_amount", [""])[0]
+        total_amount = float(total_amount_str) if total_amount_str else None
+        db.update_booking_group(group_id, description, total_amount)
+        return 303, f"/bookinggroups/view?id={group_id}"
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return 500, f"Fehler beim Aktualisieren der Gruppe: {str(e)}"
+
+def handle_delete_booking_group(db: Database, group_id: int):
+    """Gruppe löschen (Buchungen bleiben, werden nur aus Gruppe gelöst)."""
+    try:
+        db.delete_booking_group(group_id)
+        return 303, "/bookinggroups"
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return 500, f"Fehler beim Löschen der Gruppe: {str(e)}"
+
+def handle_unlink_booking_from_group(db: Database, booking_id: int, group_id: int):
+    """Buchung aus Gruppe herauslösen."""
+    try:
+        db.unlink_booking_from_group(booking_id)
+        return 303, f"/bookinggroups/view?id={group_id}"
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return 500, f"Fehler beim Herauslösen der Buchung: {str(e)}"
 
 def handle_link_document(db: Database, post_data):
     """Handle linking a document to a booking"""

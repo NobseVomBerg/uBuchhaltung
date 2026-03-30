@@ -496,6 +496,100 @@ class Database:
         conn.close()
         return rows
 
+    def fetch_bookings_grouped(self):
+        """Fetch bookings for display, with split groups aggregated.
+
+        Returns a flat list of dicts, each with a 'type' key:
+
+        - 'normal': ungrouped booking  →  {'type': 'normal',  'date': str, 'booking': tuple}
+        - 'group':  split group header →  {'type': 'group',   'date': str, 'group_id': int,
+                                            'description': str, 'amount': float, 'count': int,
+                                            'account_id': int|None, 'currency': str,
+                                            'contact_id': int|None}
+        - 'child':  individual split   →  {'type': 'child',   'group_id': int, 'date': str,
+                                            'booking': tuple}
+
+        Group rows appear before their children, all sorted by date descending.
+        Filtering in the UI should apply to 'normal' and 'group' rows only;
+        'child' rows follow their group's visibility.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # 1. Normal (ungrouped) bookings
+        cursor.execute('''
+            SELECT * FROM Bookings
+            WHERE BookingGroup_ID IS NULL
+            ORDER BY DateBooking DESC
+        ''')
+        normal = [{'type': 'normal', 'date': r[1] or '', 'booking': r}
+                  for r in cursor.fetchall()]
+
+        # 2. Group summaries (one row per BookingGroup that has at least one booking)
+        cursor.execute('''
+            SELECT
+                bg.ID,
+                COALESCE(bg.Description, ''),
+                MIN(b.DateBooking),
+                SUM(b.Amount),
+                COUNT(*),
+                MAX(b.Account_ID),
+                MAX(b.Currency),
+                MAX(b.Contact_ID)
+            FROM BookingGroups bg
+            JOIN Bookings b ON b.BookingGroup_ID = bg.ID
+            GROUP BY bg.ID
+            ORDER BY MIN(b.DateBooking) DESC
+        ''')
+        groups_raw = cursor.fetchall()
+
+        # 3. All child bookings, keyed by group_id
+        cursor.execute('''
+            SELECT * FROM Bookings
+            WHERE BookingGroup_ID IS NOT NULL
+            ORDER BY BookingGroup_ID, DateBooking
+        ''')
+        children_by_group = {}
+        for r in cursor.fetchall():
+            gid = r[3]  # BookingGroup_ID is column index 3
+            children_by_group.setdefault(gid, []).append(r)
+
+        conn.close()
+
+        # Build group dicts
+        groups = []
+        for g in groups_raw:
+            gid, desc, date, total, count, account_id, currency, contact_id = g
+            children = [
+                {'type': 'child', 'group_id': gid, 'date': c[1] or '', 'booking': c}
+                for c in children_by_group.get(gid, [])
+            ]
+            groups.append({
+                'type':        'group',
+                'date':        date or '',
+                'group_id':    gid,
+                'description': desc,
+                'amount':      total,
+                'count':       count,
+                'account_id':  account_id,
+                'currency':    currency or 'EUR',
+                'contact_id':  contact_id,
+                'children':    children,
+            })
+
+        # Merge top-level items (groups + normals) sorted by date descending
+        top_level = groups + normal
+        top_level.sort(key=lambda x: x['date'], reverse=True)
+
+        # Build flat result: group header immediately followed by its children
+        result = []
+        for item in top_level:
+            result.append(item)
+            if item['type'] == 'group':
+                result.extend(item['children'])
+
+        return result
+
     def insert_booking(self, date_booking, amount, account_id=None, foreign_bank_account="", 
                        recipient_client="", contact_id=None, coa_id=None, category_id=None,
                        currency="EUR", tax_rate=None, tax_amount=None, text="", 
@@ -550,18 +644,7 @@ class Database:
         return last_id
     
     def check_booking_exists(self, date, amount, account_id=None, foreign_bank_account="", text=""):
-        """Check if a booking with same parameters already exists
-        
-        Args:
-            date: Booking date
-            amount: Amount
-            account_id: Account ID
-            foreign_bank_account: Foreign bank account
-            text: Text/notes
-            
-        Returns:
-            bool: True if duplicate exists, False otherwise
-        """
+        """Check if a booking with same parameters already exists"""
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
@@ -571,7 +654,60 @@ class Database:
         count = cursor.fetchone()[0]
         conn.close()
         return count > 0
-    
+
+    def find_unlinked_booking_by_date_amount(self, date: str, amount: float):
+        """Suche nach einer WISO-Buchung/-Gruppe (Account_ID IS NULL) anhand Datum + Betrag.
+
+        Stufe 1 – Einzelbuchung: exakter Treffer auf DateBooking + Amount.
+        Stufe 2 – Split-Gruppe:  SUM(Amount) der Gruppe entspricht dem Bankbetrag,
+                                  alle Mitglieder sind noch unverknüpft (Account_ID IS NULL).
+
+        Sonderfall Mehrreferenz (z.B. DocumentNumber = '25F009, 25F073'):
+        Die Buchungen teilen sich eine kombinierte Referenz und landen dadurch
+        bereits in einer BookingGroup → wird automatisch über Stufe 2 abgedeckt.
+
+        Returns:
+            ('single', booking_id)  – eindeutige Einzelbuchung
+            ('group',  group_id)    – eindeutige Split-Gruppe
+            None                    – kein eindeutiger Treffer
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # Stufe 1: einzelne, noch nicht verknüpfte Buchung (kein Split)
+        cursor.execute('''
+            SELECT ID FROM Bookings
+            WHERE DateBooking = ? AND Amount = ?
+              AND Account_ID IS NULL AND BookingGroup_ID IS NULL
+        ''', (date, amount))
+        rows = cursor.fetchall()
+        if len(rows) == 1:
+            conn.close()
+            return ('single', rows[0][0])
+
+        # Stufe 2: Split-Gruppe, bei der der Gesamtbetrag passt
+        # Bedingung: ALLE Mitglieder der Gruppe sind noch unverknüpft
+        #            UND mindestens eine Buchung liegt auf dem gesuchten Datum
+        #            (erlaubt leichte Datumsabweichungen innerhalb der Gruppe)
+        cursor.execute('''
+            SELECT b.BookingGroup_ID,
+                   ROUND(SUM(b.Amount), 2)                              AS total,
+                   COUNT(*)                                             AS cnt,
+                   SUM(CASE WHEN b.Account_ID IS NULL THEN 1 ELSE 0 END) AS unlinked
+            FROM Bookings b
+            WHERE b.BookingGroup_ID IS NOT NULL
+              AND b.DateBooking = ?
+            GROUP BY b.BookingGroup_ID
+            HAVING cnt = unlinked
+               AND total = ROUND(?, 2)
+        ''', (date, amount))
+        rows = cursor.fetchall()
+        conn.close()
+        if len(rows) == 1:
+            return ('group', rows[0][0])
+
+        return None   # 0 oder mehrere Treffer → nicht verlässlich verknüpfbar
+
     def update_booking(self, booking_id, date_booking, amount, account_id=None, 
                        foreign_bank_account="", recipient_client="", contact_id=None, 
                        coa_id=None, category_id=None, currency="EUR", tax_rate=None, 
@@ -652,10 +788,38 @@ class Database:
         """Get all bookings belonging to a specific group"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM Bookings WHERE BookingGroup_ID=?', (group_id,))
+        cursor.execute('SELECT * FROM Bookings WHERE BookingGroup_ID=? ORDER BY DateBooking, ID', (group_id,))
         rows = cursor.fetchall()
         conn.close()
         return rows
+
+    def update_booking_group(self, group_id, description, total_amount=None):
+        """Beschreibung und Erwartungsbetrag einer Gruppe aktualisieren."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'UPDATE BookingGroups SET Description=?, TotalAmount=? WHERE ID=?',
+            (description, total_amount, group_id)
+        )
+        conn.commit()
+        conn.close()
+
+    def delete_booking_group(self, group_id):
+        """Gruppe löschen. Zugehörige Buchungen werden aus der Gruppe gelöst (nicht gelöscht)."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE Bookings SET BookingGroup_ID=NULL WHERE BookingGroup_ID=?', (group_id,))
+        cursor.execute('DELETE FROM BookingGroups WHERE ID=?', (group_id,))
+        conn.commit()
+        conn.close()
+
+    def unlink_booking_from_group(self, booking_id):
+        """Buchung aus ihrer Gruppe lösen (BookingGroup_ID auf NULL setzen)."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('UPDATE Bookings SET BookingGroup_ID=NULL WHERE ID=?', (booking_id,))
+        conn.commit()
+        conn.close()
 
     # Table BookingDocuments
     def link_booking_to_document(self, booking_id, document_id, relation_type="receipt"):
@@ -1509,11 +1673,14 @@ class Database:
         missing_counter_coa = set()  # SKR-Kontonummern (GEGENKONTO), die nicht in ChartOfAccounts gefunden wurden
         errors = []
 
+        def _is_liquid(nr):
+            return nr is not None and 1460 <= nr <= 1940
+
+        # ── Pass 1: alle Zeilen parsen ───────────────────────────────────────
+        parsed_rows = []  # list of dicts
         for i, row in enumerate(reader, 1):
-            # Zeilenwerte normalisieren
             row = {k.strip(): (v.strip() if isinstance(v, str) else v) for k, v in row.items() if k}
             try:
-                # Datum parsen (DD.MM.YYYY oder DD.MM.YYYY HH:MM)
                 date_str = row.get('DATUM', '').strip()[:10]
                 try:
                     booking_date = datetime.datetime.strptime(date_str, '%d.%m.%Y').strftime('%Y-%m-%d')
@@ -1521,7 +1688,6 @@ class Database:
                     errors.append(f"Zeile {i}: Ungültiges Datum '{date_str}'")
                     continue
 
-                # Betrag parsen (Dezimalpunkt oder deutsches Format z.B. 1.234,56)
                 amount_str = row.get('BRUTTOBETRAG', '').strip()
                 if ',' in amount_str:
                     amount_str = amount_str.replace('.', '').replace(',', '.')
@@ -1531,7 +1697,6 @@ class Database:
                     errors.append(f"Zeile {i}: Ungültiger Betrag '{amount_str}'")
                     continue
 
-                # COA_ID aus KONTO
                 konto_str = row.get('KONTO', '').strip()
                 try:
                     konto_nr = int(konto_str) if konto_str else None
@@ -1542,7 +1707,6 @@ class Database:
                     coa_id = None
                     konto_nr = None
 
-                # CounterCOA_ID aus GEGENKONTO (ebenfalls aus ChartOfAccounts)
                 gegenkonto_str = row.get('GEGENKONTO', '').strip()
                 try:
                     gegenkonto_nr = int(gegenkonto_str) if gegenkonto_str else None
@@ -1553,18 +1717,63 @@ class Database:
                     counter_coa_id = None
                     gegenkonto_nr = None
 
-                # Steuersatz aus BU-Schlüssel
+                # Vorzeichen: GEGENKONTO = liquides Konto → Abgang (negativ)
+                #             KONTO      = liquides Konto → Zugang (positiv)
+                if _is_liquid(gegenkonto_nr) and not _is_liquid(konto_nr):
+                    amount = -abs(amount)
+                elif _is_liquid(konto_nr) and not _is_liquid(gegenkonto_nr):
+                    amount = abs(amount)
+
                 schluessel = row.get('SCHLUESSEL', '').strip()
                 tax_rate = BU_TO_TAXRATE.get(schluessel)
-
                 text_val = row.get('TEXT', '').strip()
                 doc_number = row.get('REFERENZNUMMER', '').strip()
 
-                # Duplikat-Prüfung: gleiche REFERENZNUMMER + Datum + COA_ID + Betrag
-                # Datum ist wichtig für wiederkehrende Transaktionen (z.B. Abos)
+                parsed_rows.append({
+                    'zeile': i, 'date': booking_date, 'amount': amount,
+                    'coa_id': coa_id, 'counter_coa_id': counter_coa_id,
+                    'konto_nr': konto_nr, 'konto_str': konto_str,
+                    'tax_rate': tax_rate, 'text': text_val, 'doc': doc_number,
+                })
+            except Exception as e:
+                errors.append(f"Zeile {i}: {str(e)}")
+
+        # ── Pass 2: Split-Gruppen erkennen (gleiche REFERENZNUMMER + Datum) ──
+        # Mehrere Zeilen mit gleicher Referenz = eine Kontoauszugs-Buchung
+        # wurde buchhalterisch auf mehrere Konten aufgeteilt.
+        from collections import defaultdict
+        ref_groups = defaultdict(list)
+        for pr in parsed_rows:
+            key = (pr['doc'], pr['date']) if pr['doc'] else None
+            if key:
+                ref_groups[key].append(pr)
+
+        # booking_group_id_for_key: key → int (wird bei Bedarf angelegt)
+        group_id_cache = {}
+
+        dup_conn = self._get_connection()
+        dup_cur  = dup_conn.cursor()
+
+        def _get_or_create_group(key, total_amount, date):
+            if key in group_id_cache:
+                return group_id_cache[key]
+            dup_cur.execute(
+                'INSERT INTO BookingGroups (Description, CreatedDate, TotalAmount) VALUES (?,?,?)',
+                (key[0], date, total_amount)  # key = (doc_number, date)
+            )
+            gid = dup_cur.lastrowid
+            group_id_cache[key] = gid
+            return gid
+
+        for pr in parsed_rows:
+            try:
+                doc_number   = pr['doc']
+                booking_date = pr['date']
+                amount       = pr['amount']
+                coa_id       = pr['coa_id']
+
+                # Duplikat-Prüfung
                 if doc_number:
-                    dup_conn = self._get_connection()
-                    dup_cur = dup_conn.cursor()
                     if coa_id is not None:
                         dup_cur.execute(
                             'SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND DateBooking=? AND COA_ID=? AND Amount=?',
@@ -1575,33 +1784,37 @@ class Database:
                             'SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND DateBooking=? AND COA_ID IS NULL AND Amount=?',
                             (doc_number, booking_date, amount)
                         )
-                    dup_count = dup_cur.fetchone()[0]
-                    dup_conn.close()
-                    if dup_count > 0:
+                    if dup_cur.fetchone()[0] > 0:
                         skipped += 1
                         skipped_rows.append({
-                            'zeile':    i,
-                            'datum':    booking_date,
-                            'ref':      doc_number,
-                            'konto':    konto_str,
-                            'betrag':   amount,
-                            'text':     text_val[:60],
+                            'zeile': pr['zeile'], 'datum': booking_date,
+                            'ref': doc_number, 'konto': pr['konto_str'],
+                            'betrag': amount, 'text': pr['text'][:60],
                         })
                         continue
 
-                self.insert_booking(
-                    date_booking=booking_date,
-                    amount=amount,
-                    coa_id=coa_id,
-                    counter_coa_id=counter_coa_id,
-                    tax_rate=tax_rate,
-                    text=text_val,
-                    document_number=doc_number,
-                )
+                # BookingGroup_ID ermitteln wenn zugehörige Gruppe >1 Zeile hat
+                booking_group_id = None
+                if doc_number:
+                    key = (doc_number, booking_date)
+                    if len(ref_groups.get(key, [])) > 1:
+                        total = sum(abs(r['amount']) for r in ref_groups[key])
+                        booking_group_id = _get_or_create_group(key, total, booking_date)
+
+                dup_cur.execute('''
+                    INSERT INTO Bookings
+                        (DateBooking, BookingGroup_ID, COA_ID, CounterCOA_ID,
+                         Amount, TaxRate, Text, DocumentNumber)
+                    VALUES (?,?,?,?,?,?,?,?)
+                ''', (booking_date, booking_group_id, coa_id, pr['counter_coa_id'],
+                      amount, pr['tax_rate'], pr['text'], doc_number))
                 imported += 1
 
             except Exception as e:
-                errors.append(f"Zeile {i}: {str(e)}")
+                errors.append(f"Zeile {pr['zeile']}: {str(e)}")
+
+        dup_conn.commit()
+        dup_conn.close()
 
         return {
             'imported':          imported,
@@ -1669,6 +1882,9 @@ class Database:
                 # Empfänger/Auftraggeber (Zeilenumbrüche normalisieren)
                 recipient = ' '.join(row.get('Empf./Auft.', '').split())
                 
+                # Konto-Nr. / IBAN (neues Feld im erweiterten Tabellen-Export)
+                iban = ' '.join(row.get('Konto-Nr. / IBAN', '').split())
+                
                 # Verwendungszweck (Zeilenumbrüche normalisieren)
                 purpose = ' '.join(row.get('Verwendungszweck', '').split())
                 
@@ -1696,16 +1912,24 @@ class Database:
                 cursor = conn.cursor()
                 
                 if doc_number:
+                    # Beleg-Nr. kann im Original als Mehrfach-Ref gespeichert sein,
+                    # z.B. "25F009, 25F073" – LIKE-Suche fängt alle Varianten ab.
                     cursor.execute('''
-                        SELECT ID, RecipientClient, Text, COA_ID 
+                        SELECT ID, RecipientClient, Text, COA_ID, ForeignBankAccount
                         FROM Bookings 
-                        WHERE DateBooking=? AND DocumentNumber=? AND ABS(Amount)=ABS(?)
+                        WHERE DateBooking=? AND ABS(Amount)=ABS(?)
+                          AND (
+                            DocumentNumber = ?
+                            OR DocumentNumber LIKE (? || ',%')
+                            OR DocumentNumber LIKE ('%,' || ?)
+                            OR DocumentNumber LIKE ('%,' || ? || ',%')
+                          )
                         LIMIT 1
-                    ''', (booking_date, doc_number, amount))
+                    ''', (booking_date, amount, doc_number, doc_number, doc_number, doc_number))
                 else:
                     # Ohne Belegnummer: Datum + |Betrag| (LIMIT 2 für Mehrdeutigkeitsprüfung)
                     cursor.execute('''
-                        SELECT ID, RecipientClient, Text, COA_ID 
+                        SELECT ID, RecipientClient, Text, COA_ID, ForeignBankAccount
                         FROM Bookings 
                         WHERE DateBooking=? AND ABS(Amount)=ABS(?) AND (DocumentNumber IS NULL OR DocumentNumber='')
                         LIMIT 2
@@ -1730,9 +1954,10 @@ class Database:
                     continue
                 
                 existing = rows[0]
-                booking_id        = existing[0]
-                current_recipient = existing[1] or ''
-                current_coa_id    = existing[3]
+                booking_id           = existing[0]
+                current_recipient    = existing[1] or ''
+                current_coa_id       = existing[3]
+                current_foreign_bank = existing[4] or ''
                 
                 update_fields = []
                 update_values = []
@@ -1741,6 +1966,11 @@ class Database:
                 if recipient:
                     update_fields.append('RecipientClient=?')
                     update_values.append(recipient)
+                
+                # IBAN/Konto-Nr. immer überschreiben, wenn im Tabellen-Export vorhanden
+                if iban:
+                    update_fields.append('ForeignBankAccount=?')
+                    update_values.append(iban)
                 
                 # Verwendungszweck nur setzen, wenn noch leer (Original-Text bleibt erhalten)
                 if purpose and not (existing[2] or ''):

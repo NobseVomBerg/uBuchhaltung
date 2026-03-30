@@ -21,15 +21,18 @@ from .pages_masterdata import (
 )
 from .pages_contacts import PageContacts, PageContactNew, PageContactEdit
 from .pages_miscellaneous import PageMiscellaneous
+from .pages_booking_groups import PageBookingGroups, PageBookingGroupDetails
+from .pages_transactions import PageTransactions, PageConfirmTransactions
+from .pages_dashboard import PageDashboard
 
 class SimpleWebServer(BaseHTTPRequestHandler):
     def do_GET(self):
         db = Database()
         try:
             if self.path == "/":
-                self.respond(200, pages.PageDashboard(db))
+                self.respond(200, PageDashboard(db))
             elif self.path == "/dashboard":
-                self.respond(200, pages.PageDashboard(db))
+                self.respond(200, PageDashboard(db))
             elif self.path == "/about":
                 self.respond(200, pages.PageAbout())
             elif self.path == "/invoice" or self.path.startswith("/invoice?"):
@@ -208,22 +211,33 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 db.delete_receipt(number)
                 self.respond(303, "", headers={"Location": "/receipts"})
             elif self.path == "/transactions":
-                self.respond(200, pages.PageTransactions(db))
+                self.respond(200, PageTransactions(db))
             elif self.path.startswith("/transactions/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 transaction_id = int(query_components["id"][0])
-                self.respond(200, pages.PageTransactions(db, edit_transaction_id=transaction_id))
+                self.respond(200, PageTransactions(db, edit_transaction_id=transaction_id))
             elif self.path.startswith("/transactions/delete"):
                 query_components = parse_qs(self.path.split('?')[1])
                 transaction_id = int(query_components["id"][0])
                 db.delete_transaction(transaction_id)
                 self.respond(303, "", headers={"Location": "/transactions"})
             elif self.path == "/bookinggroups":
-                self.respond(200, pages.PageBookingGroups(db))
+                self.respond(200, PageBookingGroups(db))
             elif self.path.startswith("/bookinggroups/view"):
                 query_components = parse_qs(self.path.split('?')[1])
                 group_id = int(query_components["id"][0])
-                self.respond(200, pages.PageBookingGroupDetails(db, group_id))
+                self.respond(200, PageBookingGroupDetails(db, group_id))
+            elif self.path.startswith("/bookinggroups/delete"):
+                query_components = parse_qs(self.path.split('?')[1])
+                group_id = int(query_components["id"][0])
+                status, location = handlers.handle_delete_booking_group(db, group_id)
+                self.respond(status, "", headers={"Location": location})
+            elif self.path.startswith("/bookinggroups/unlink_booking"):
+                query_components = parse_qs(self.path.split('?')[1])
+                booking_id = int(query_components["booking_id"][0])
+                grp_id     = int(query_components["group_id"][0])
+                status, location = handlers.handle_unlink_booking_from_group(db, booking_id, grp_id)
+                self.respond(status, "", headers={"Location": location})
             elif self.path.startswith("/documents/unlink"):
                 query_components = parse_qs(self.path.split('?')[1])
                 doc_id = int(query_components["doc_id"][0])
@@ -245,7 +259,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path.startswith("/confirm_transactions"):
                 query_components = parse_qs(self.path.split('?')[1])
                 import_id = query_components["import_id"][0]
-                self.respond(200, pages.PageConfirmTransactions(import_id))
+                self.respond(200, PageConfirmTransactions(import_id))
             # ── Assets / Anlagenverzeichnis ───────────────────────────────
             elif self.path == "/assets" or self.path.startswith("/assets?"):
                 status_filter = ''
@@ -440,6 +454,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/bookinggroups/create":
                 status_code, location = handlers.handle_create_booking_group(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/bookinggroups/update":
+                status_code, location = handlers.handle_update_booking_group(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/documents/link":
                 status_code, location = handlers.handle_link_document(db, post_data)

@@ -24,6 +24,16 @@ a:focus					{ color: #84F; text-decoration: none; }
 #dropZone:hover 		{ background-color: #EEE; }
 #fileInput 				{ display: none; }
 
+/* Splitbuchungen (Gruppenansicht in PageTransactions) */
+.group-row                  { cursor: pointer; }
+.split-badge                { display: inline-block; background: #2196F3; color: white;
+                              font-size: 0.72em; font-weight: 700; padding: 2px 6px;
+                              border-radius: 10px; vertical-align: middle; margin-right: 5px; }
+.split-toggle-icon          { font-size: 0.8em; color: #2196F3; user-select: none; }
+.child-row td.child-indent  { padding-left: 6px; }
+.child-row td               { border-left: 3px solid #2196F3; font-size: 0.95em; }
+.child-row td:not(:first-child) { border-left: none; }
+
 
 /* dark mode */
 @media (prefers-color-scheme: dark) {
@@ -31,6 +41,7 @@ a:focus					{ color: #84F; text-decoration: none; }
 	h1, h2				{ color: #B99; }
 	table				{ border-color: #666;}
 	tr 					{ background-color: #000; }
+	tr:hover			{ background-color: #222; }
 	td, th				{ border-color: #444; }
 	th					{ background-color: #222; text-align: left;}
 	input, select		{ background-color: #000; color: #FFF; }
@@ -40,6 +51,10 @@ a:focus					{ color: #84F; text-decoration: none; }
 	.sql-error-box		{ background-color: #5D1F1A; color: #FFCDD2; padding: 10px; }
 	#dropZone 			{ background-color: #222; }
 	#dropZone:hover 	{ background-color: #444; }
+
+	/* Splitbuchungen (Gruppenansicht in PageTransactions) */
+	.group-row          { background: #111; }
+	.group-row:hover    { background: #222; }
 
 	/* Input Spin-Buttons*/
 	input[type=number].noButtons::-webkit-inner-spin-button,
@@ -68,6 +83,10 @@ a:focus					{ color: #84F; text-decoration: none; }
 	.rectRounded		{ background-color: #DDD;}
 	.sql-success-box	{ background-color: #E8F5E9; color: #1B5E20; padding: 10px; }
 	.sql-error-box		{ background-color: #FFEBEE; color: #B71C1C; padding: 10px; }
+
+	/* Splitbuchungen (Gruppenansicht in PageTransactions) */
+	.group-row          { background: #EEE; }
+	.group-row:hover    { background: #DDD; }
 }
 
 /* Invoice page styles - use white backgrounds even in dark mode */
