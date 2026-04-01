@@ -139,6 +139,21 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             edit_recipient = edit_trans[6] or ""  # RecipientClient
             edit_text = edit_trans[15] or ""      # Text
 
+            # Für Bank-Buchungen: verknüpfte Entry-Daten laden
+            if edit_trans[17] == 'bank':  # BookingType
+                entry_data = db.get_linked_entry_for_bank(edit_transaction_id)
+                if entry_data:
+                    # Fehlende Felder aus dem Entry übernehmen
+                    edit_trans = list(edit_trans)
+                    if not edit_trans[8]:   edit_trans[8]  = entry_data[0]  # COA_ID
+                    if not edit_trans[9]:   edit_trans[9]  = entry_data[1]  # CounterCOA_ID
+                    if not edit_trans[13]:  edit_trans[13] = entry_data[2]  # TaxRate
+                    if not edit_trans[14]:  edit_trans[14] = entry_data[3]  # TaxAmount
+                    if not edit_trans[16]:  edit_trans[16] = entry_data[4]  # DocumentNumber
+                    if not edit_trans[7]:   edit_trans[7]  = entry_data[5]  # Contact_ID
+                    if not edit_trans[10]:  edit_trans[10] = entry_data[6]  # Category_ID
+                    edit_trans = tuple(edit_trans)
+
     # Get dropdown data
     customers = db.fetch_contacts(contact_type='customer')
     coa_accounts = db.fetch_chart_of_accounts()
@@ -386,6 +401,95 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             s+= f"<td>{description[:35]}</td>"
             s+= f"<td><span class='split-toggle-icon' id='toggle-icon-{gid}'>▶</span></td>"
             s+= f"</tr>"
+
+        elif row_type == 'bank':
+            # ── Bank-Buchung (merged mit Entry-Daten wenn verknüpft) ──────
+            booking      = item['booking']
+            bank_id      = booking[0]
+            date_booking = booking[1]
+            account_id   = booking[4]
+            recipient    = booking[6] or ''
+            amount       = booking[11]
+            currency     = booking[12] or 'EUR'
+            bank_text    = booking[15] or ''
+            is_linked    = item.get('linked', False)
+            children     = item.get('children', [])
+            count        = len(children)
+            bid          = f'b{bank_id}'
+            account_name = account_map.get(account_id, '') if account_id else ''
+            amount_color = 'green' if (amount or 0) > 0 else 'red'
+
+            # Merged: Entry-Daten übernehmen (aus fetch_bookings_grouped)
+            entry_text    = item.get('entry_text') or bank_text
+            entry_coa_id  = item.get('entry_coa_id')
+            entry_docnr   = item.get('entry_docnr') or ''
+            entry_contact = item.get('entry_contact_id')
+            entry_coa_nr  = coa_map.get(entry_coa_id, '') if entry_coa_id else ''
+            entry_contact_name = customer_map.get(entry_contact, '') if entry_contact else ''
+
+            if is_linked:
+                # Verknüpft: einzeilige Merged-Darstellung
+                status_badge = "<span class='status-badge-ok' title='Bank + Buchung verknüpft'>✓</span>"
+                if count > 1:
+                    # Split: aufklappbar
+                    s+= (f"<tr class='transaction-row bank-linked-row' "
+                         f"data-group-id='{bid}' "
+                         f"data-account-id='{account_id or ''}' "
+                         f"data-date='{date_booking}' "
+                         f"data-contact-id='{entry_contact or ''}' "
+                         f"data-currency='{currency}' "
+                         f"data-amount='{amount}' "
+                         f"onclick='toggleGroup(\"{bid}\")' "
+                         f"title='Verknüpfte Split-Buchung aufklappen'>")
+                    s+= f"<td>{date_booking}</td>"
+                    s+= f"<td>{recipient[:25]}</td>"
+                    s+= f"<td>{entry_text[:35]}</td>"
+                    s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
+                    s+= f"<td>{currency}</td>"
+                    s+= f"<td>{account_name[:20]}</td>"
+                    s+= f"<td>{entry_contact_name[:20]}</td>"
+                    s+= f"<td><span class='split-badge'>Split {count}×</span></td>"
+                    s+= f"<td>{entry_docnr}</td>"
+                    s+= f"<td>{status_badge} <span class='split-toggle-icon' id='toggle-icon-{bid}'>▶</span></td>"
+                    s+= f"</tr>"
+                else:
+                    # Einzelne verknüpfte Buchung: eine Zeile, kein Toggle
+                    s+= (f"<tr class='transaction-row bank-linked-row' "
+                         f"data-account-id='{account_id or ''}' "
+                         f"data-date='{date_booking}' "
+                         f"data-contact-id='{entry_contact or ''}' "
+                         f"data-currency='{currency}' "
+                         f"data-amount='{amount}'>")
+                    s+= f"<td>{date_booking}</td>"
+                    s+= f"<td>{recipient[:25]}</td>"
+                    s+= f"<td>{entry_text[:35]}</td>"
+                    s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
+                    s+= f"<td>{currency}</td>"
+                    s+= f"<td>{account_name[:20]}</td>"
+                    s+= f"<td>{entry_contact_name[:20]}</td>"
+                    s+= f"<td>{entry_coa_nr}</td>"
+                    s+= f"<td>{entry_docnr}</td>"
+                    s+= f"<td>{status_badge} <a href='/transactions/edit?id={bank_id}'>Bearbeiten</a></td>"
+                    s+= f"</tr>"
+            else:
+                # Nicht verknüpft: als offene Bank-Buchung anzeigen
+                status_badge = "<span class='status-badge-open' title='Noch nicht verbucht'>offen</span>"
+                s+= (f"<tr class='transaction-row bank-open-row' "
+                     f"data-account-id='{account_id or ''}' "
+                     f"data-date='{date_booking}' "
+                     f"data-currency='{currency}' "
+                     f"data-amount='{amount}'>")
+                s+= f"<td>{date_booking}</td>"
+                s+= f"<td>{recipient[:25]}</td>"
+                s+= f"<td>{bank_text[:35]}</td>"
+                s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
+                s+= f"<td>{currency}</td>"
+                s+= f"<td>{account_name[:20]}</td>"
+                s+= f"<td></td>"
+                s+= f"<td></td>"
+                s+= f"<td></td>"
+                s+= f"<td>{status_badge} <a href='/transactions/edit?id={bank_id}'>Bearbeiten</a></td>"
+                s+= f"</tr>"
 
         elif row_type == 'child':
             # ── Teilbuchung einer Split-Gruppe ────────────────────────────

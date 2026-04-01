@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import json
 
 class Database:
     def __init__(self, db_name="./data/buch.db"):
@@ -191,12 +192,16 @@ class Database:
                 TaxAmount REAL,
                 Text TEXT,
                 DocumentNumber TEXT,
+                BookingType TEXT DEFAULT 'entry',
+                ParentBooking_ID INTEGER,
+                Status TEXT,
                 FOREIGN KEY (BookingGroup_ID) REFERENCES BookingGroups(ID),
                 FOREIGN KEY (Account_ID) REFERENCES Accounts(ID),
                 FOREIGN KEY (Contact_ID) REFERENCES Contacts(ID),
                 FOREIGN KEY (COA_ID) REFERENCES ChartOfAccounts(ID),
                 FOREIGN KEY (CounterCOA_ID) REFERENCES ChartOfAccounts(ID),
-                FOREIGN KEY (Category_ID) REFERENCES Categories(ID)
+                FOREIGN KEY (Category_ID) REFERENCES Categories(ID),
+                FOREIGN KEY (ParentBooking_ID) REFERENCES Bookings(ID)
             )
         ''')
 
@@ -411,6 +416,16 @@ class Database:
             )
         ''')
 
+        # DATEV Steuerschlüssel (BU-Schlüssel) → Steuersatz-Zuordnung
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS TaxKeys (
+                Code TEXT PRIMARY KEY,
+                Description TEXT NOT NULL,
+                TaxRate REAL,
+                TaxType TEXT
+            )
+        ''')
+
         # Migration: Add SKRAccount column to Accounts if not exists
         # try:
         #     cursor.execute('ALTER TABLE Accounts ADD COLUMN SKRAccount INTEGER')
@@ -426,9 +441,71 @@ class Database:
         conn.commit()
         conn.close()
 
-        # Seed default AssetCategories if empty
+        # Seed-Daten aus seed_data/ laden
+        self._seed_chart_of_accounts()
         self._seed_asset_categories()
+        self._seed_tax_keys()
     
+    def _load_seed_json(self, filename):
+        """Lädt eine JSON-Datei aus dem seed_data/-Verzeichnis."""
+        seed_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'seed_data')
+        filepath = os.path.join(seed_dir, filename)
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+    def _seed_tax_keys(self):
+        """Seed der DATEV-Steuerschlüssel (BU-Schlüssel) aus seed_data/tax_keys.json.
+
+        Quelle: https://help-center.apps.datev.de/documents/1008613
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM TaxKeys')
+        if cursor.fetchone()[0] > 0:
+            conn.close()
+            return
+
+        data = self._load_seed_json('tax_keys.json')
+        rows = [(e['code'], e['description'], e['tax_rate'], e['tax_type']) for e in data]
+        cursor.executemany(
+            'INSERT OR IGNORE INTO TaxKeys (Code, Description, TaxRate, TaxType) VALUES (?,?,?,?)',
+            rows)
+        conn.commit()
+        conn.close()
+
+    def get_tax_rate_for_bu(self, bu_code: str):
+        """Steuersatz für einen BU-Schlüssel aus DB holen.
+
+        Returns:
+            float | None: Steuersatz als Dezimalzahl (0.19) oder None.
+        """
+        if not bu_code:
+            return None
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT TaxRate FROM TaxKeys WHERE Code=?', (bu_code,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+
+    def _get_bank_coa_ids(self, cursor):
+        """Ermittelt COA-IDs die echten Bankkonten entsprechen.
+
+        Basiert auf der Accounts-Tabelle (SKRAccount-Nr.), nicht auf
+        einem hart codierten Bereich.  Dadurch wird z.B. 1460
+        (Verrechnungskonto) korrekt NICHT als Bankkonto eingestuft.
+
+        Returns:
+            set[int]: COA-IDs die Bankkonten sind.
+        """
+        cursor.execute('''
+            SELECT c.ID
+            FROM ChartOfAccounts c
+            JOIN Accounts a ON c.AccountNumber = a.SKRAccount
+            WHERE a.SKRAccount IS NOT NULL
+        ''')
+        return {row[0] for row in cursor.fetchall()}
+
     # Table Documents (Receipts)
     def fetch_receipts(self):
         conn = self._get_connection()
@@ -508,24 +585,60 @@ class Database:
                                             'contact_id': int|None}
         - 'child':  individual split   →  {'type': 'child',   'group_id': int, 'date': str,
                                             'booking': tuple}
+        - 'bank':   bank transaction   →  {'type': 'bank',    'date': str, 'booking': tuple,
+                                            'children': list, 'linked': bool,
+                                            'entry_text': str|None, 'entry_coa_id': int|None,
+                                            'entry_counter_coa_id': int|None,
+                                            'entry_docnr': str|None,
+                                            'entry_category_id': int|None,
+                                            'entry_contact_id': int|None}
 
-        Group rows appear before their children, all sorted by date descending.
-        Filtering in the UI should apply to 'normal' and 'group' rows only;
-        'child' rows follow their group's visibility.
+        Bank rows with linked entries carry merged data from the first child so
+        the template can render a single merged row.  Doppik entries (COA
+        1460-1940) are hidden from the normal list.
         """
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # 1. Normal (ungrouped) bookings
+        # Doppik-COA-IDs laden — nur echte Bankkonten (aus Accounts-Tabelle)
+        doppik_coa_ids = self._get_bank_coa_ids(cursor)
+
+        # 1. Bank transactions (top-level parents via ParentBooking_ID)
         cursor.execute('''
             SELECT * FROM Bookings
-            WHERE BookingGroup_ID IS NULL
+            WHERE BookingType = 'bank'
             ORDER BY DateBooking DESC
         ''')
-        normal = [{'type': 'normal', 'date': r[1] or '', 'booking': r}
-                  for r in cursor.fetchall()]
+        bank_rows = cursor.fetchall()
 
-        # 2. Group summaries (one row per BookingGroup that has at least one booking)
+        # 2. Child bookings linked to bank transactions via ParentBooking_ID
+        cursor.execute('''
+            SELECT * FROM Bookings
+            WHERE ParentBooking_ID IS NOT NULL
+            ORDER BY ParentBooking_ID, DateBooking
+        ''')
+        children_by_parent = {}
+        for r in cursor.fetchall():
+            pid = r[18]  # ParentBooking_ID
+            children_by_parent.setdefault(pid, []).append(r)
+
+        # 3. Normal (ungrouped) bookings — not bank, not child, not in legacy group
+        #    Doppik entries (bank-side journal, COA 1460-1940) are hidden.
+        cursor.execute('''
+            SELECT * FROM Bookings
+            WHERE (BookingType IS NULL OR BookingType = 'entry')
+              AND ParentBooking_ID IS NULL
+              AND BookingGroup_ID IS NULL
+            ORDER BY DateBooking DESC
+        ''')
+        normal = []
+        for r in cursor.fetchall():
+            coa_id = r[8]  # COA_ID index
+            if coa_id in doppik_coa_ids:
+                continue  # Doppik-Eintrag verbergen
+            normal.append({'type': 'normal', 'date': r[1] or '', 'booking': r})
+
+        # 4. Legacy group summaries (BookingGroup_ID, for old imports)
         cursor.execute('''
             SELECT
                 bg.ID,
@@ -538,31 +651,65 @@ class Database:
                 MAX(b.Contact_ID)
             FROM BookingGroups bg
             JOIN Bookings b ON b.BookingGroup_ID = bg.ID
+            WHERE b.ParentBooking_ID IS NULL
             GROUP BY bg.ID
             ORDER BY MIN(b.DateBooking) DESC
         ''')
         groups_raw = cursor.fetchall()
 
-        # 3. All child bookings, keyed by group_id
+        # 5. Legacy children (BookingGroup_ID) — only unlinked
         cursor.execute('''
             SELECT * FROM Bookings
             WHERE BookingGroup_ID IS NOT NULL
+              AND ParentBooking_ID IS NULL
             ORDER BY BookingGroup_ID, DateBooking
         ''')
         children_by_group = {}
         for r in cursor.fetchall():
-            gid = r[3]  # BookingGroup_ID is column index 3
+            gid = r[3]  # BookingGroup_ID
             children_by_group.setdefault(gid, []).append(r)
 
         conn.close()
 
-        # Build group dicts
+        # Build bank dicts with merged entry data
+        banks = []
+        for b in bank_rows:
+            bid = b[0]
+            raw_children = children_by_parent.get(bid, [])
+            children = [
+                {'type': 'child', 'group_id': f'b{bid}', 'date': c[1] or '', 'booking': c}
+                for c in raw_children
+            ]
+            # Merge: ersten (nicht-Doppik) Child als Entry-Quelle nutzen
+            entry_src = None
+            for c in raw_children:
+                if c[8] not in doppik_coa_ids:  # COA_ID
+                    entry_src = c
+                    break
+            banks.append({
+                'type':     'bank',
+                'date':     b[1] or '',
+                'booking':  b,
+                'children': children,
+                'linked':   len(raw_children) > 0,
+                'entry_text':             entry_src[15] if entry_src else None,
+                'entry_coa_id':           entry_src[8]  if entry_src else None,
+                'entry_counter_coa_id':   entry_src[9]  if entry_src else None,
+                'entry_docnr':            entry_src[16] if entry_src else None,
+                'entry_category_id':      entry_src[10] if entry_src else None,
+                'entry_contact_id':       entry_src[7]  if entry_src else None,
+            })
+
+        # Build legacy group dicts — skip empty groups (all members linked)
         groups = []
         for g in groups_raw:
             gid, desc, date, total, count, account_id, currency, contact_id = g
+            group_children = children_by_group.get(gid, [])
+            if not group_children:
+                continue  # alle Mitglieder sind bereits verknüpft
             children = [
                 {'type': 'child', 'group_id': gid, 'date': c[1] or '', 'booking': c}
-                for c in children_by_group.get(gid, [])
+                for c in group_children
             ]
             groups.append({
                 'type':        'group',
@@ -577,16 +724,16 @@ class Database:
                 'children':    children,
             })
 
-        # Merge top-level items (groups + normals) sorted by date descending
-        top_level = groups + normal
+        # Merge top-level items sorted by date descending
+        top_level = banks + groups + normal
         top_level.sort(key=lambda x: x['date'], reverse=True)
 
-        # Build flat result: group header immediately followed by its children
+        # Build flat result: parent row immediately followed by its children
         result = []
         for item in top_level:
             result.append(item)
-            if item['type'] == 'group':
-                result.extend(item['children'])
+            if item['type'] in ('group', 'bank'):
+                result.extend(item.get('children', []))
 
         return result
 
@@ -594,7 +741,8 @@ class Database:
                        recipient_client="", contact_id=None, coa_id=None, category_id=None,
                        currency="EUR", tax_rate=None, tax_amount=None, text="", 
                        document_number=None, date_tax=None, booking_group_id=None, 
-                       counter_coa_id=None, log_description=None):
+                       counter_coa_id=None, log_description=None,
+                       booking_type='entry', parent_booking_id=None):
         """Insert a new booking into Bookings table
         
         Args:
@@ -615,6 +763,8 @@ class Database:
             date_tax: Tax date (optional)
             booking_group_id: FK to BookingGroups (for split bookings)
             log_description: Description for SQL logging (optional)
+            booking_type: 'bank', 'entry', or 'split_child' (default: 'entry')
+            parent_booking_id: FK to parent Bookings row (bank transaction)
         
         Returns:
             int: ID of inserted booking
@@ -625,12 +775,12 @@ class Database:
         sql_template = '''INSERT INTO Bookings 
             (DateBooking, DateTax, BookingGroup_ID, Account_ID, ForeignBankAccount, 
              RecipientClient, Contact_ID, COA_ID, CounterCOA_ID, Category_ID, Amount, Currency, 
-             TaxRate, TaxAmount, Text, DocumentNumber)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
+             TaxRate, TaxAmount, Text, DocumentNumber, BookingType, ParentBooking_ID)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
         
         params = (date_booking, date_tax, booking_group_id, account_id, foreign_bank_account,
                   recipient_client, contact_id, coa_id, counter_coa_id, category_id, amount, currency,
-                  tax_rate, tax_amount, text, document_number)
+                  tax_rate, tax_amount, text, document_number, booking_type, parent_booking_id)
         
         cursor.execute(sql_template, params)
         conn.commit()
@@ -654,6 +804,33 @@ class Database:
         count = cursor.fetchone()[0]
         conn.close()
         return count > 0
+
+    def get_linked_entry_for_bank(self, bank_booking_id: int):
+        """Hole die wichtigsten Felder des ersten verknüpften Entry-Bookings.
+
+        Für Bank-Buchungen, die über ParentBooking_ID mit Entry-Buchungen
+        verknüpft sind.  Doppik-Einträge (COA = Bankkonto) werden übersprungen.
+
+        Returns:
+            tuple(COA_ID, CounterCOA_ID, TaxRate, TaxAmount, DocumentNumber,
+                  Contact_ID, Category_ID) oder None.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        bank_coa_ids = self._get_bank_coa_ids(cursor)
+        cursor.execute('''
+            SELECT COA_ID, CounterCOA_ID, TaxRate, TaxAmount,
+                   DocumentNumber, Contact_ID, Category_ID
+            FROM Bookings
+            WHERE ParentBooking_ID = ?
+            ORDER BY ID
+        ''', (bank_booking_id,))
+        for row in cursor.fetchall():
+            if row[0] not in bank_coa_ids:  # Nicht-Doppik-Eintrag
+                conn.close()
+                return row
+        conn.close()
+        return None
 
     def find_unlinked_booking_by_date_amount(self, date: str, amount: float):
         """Suche nach einer WISO-Buchung/-Gruppe (Account_ID IS NULL) anhand Datum + Betrag.
@@ -712,12 +889,15 @@ class Database:
                        foreign_bank_account="", recipient_client="", contact_id=None, 
                        coa_id=None, category_id=None, currency="EUR", tax_rate=None, 
                        tax_amount=None, text="", document_number=None, 
-                       date_tax=None, booking_group_id=None, counter_coa_id=None, log_description=None):
+                       date_tax=None, booking_group_id=None, counter_coa_id=None, log_description=None,
+                       booking_type=None, parent_booking_id=None):
         """Update an existing booking
         
         Args:
             booking_id: ID of booking to update
             [same parameters as insert_booking]
+            booking_type: 'bank', 'entry', or 'split_child' (None = keep current)
+            parent_booking_id: FK to parent Bookings row (None = keep current)
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -725,12 +905,12 @@ class Database:
         sql_template = '''UPDATE Bookings
             SET DateBooking=?, DateTax=?, BookingGroup_ID=?, Account_ID=?, ForeignBankAccount=?,
                 RecipientClient=?, contact_id=?, COA_ID=?, CounterCOA_ID=?, Category_ID=?, Amount=?, Currency=?,
-                TaxRate=?, TaxAmount=?, Text=?, DocumentNumber=?
+                TaxRate=?, TaxAmount=?, Text=?, DocumentNumber=?, BookingType=COALESCE(?, BookingType), ParentBooking_ID=COALESCE(?, ParentBooking_ID)
             WHERE ID=?'''
         
         params = (date_booking, date_tax, booking_group_id, account_id, foreign_bank_account,
                   recipient_client, contact_id, coa_id, counter_coa_id, category_id, amount, currency,
-                  tax_rate, tax_amount, text, document_number, booking_id)
+                  tax_rate, tax_amount, text, document_number, booking_type, parent_booking_id, booking_id)
         
         cursor.execute(sql_template, params)
         conn.commit()
@@ -941,57 +1121,58 @@ class Database:
         conn.close()
 
     def _seed_asset_categories(self):
-        """Seed default AfA categories from BMF table if empty"""
+        """Seed der BMF-AfA-Kategorien aus seed_data/asset_categories.json."""
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*) FROM AssetCategories')
-        count = cursor.fetchone()[0]
-        if count == 0:
-            categories = [
-                # IT & Elektronik
-                ("EDV-Hardware (PC, Notebook, Server)", 3, "both", None, "BMF AV-Tabelle: 3 Jahre"),
-                ("Drucker, Scanner, Kopierer", 3, "both", None, "BMF AV-Tabelle: 3 Jahre"),
-                ("Tablets und Smartphones", 3, "both", None, "BMF AV-Tabelle: 3 Jahre"),
-                ("Bildschirme / Monitore", 3, "both", None, "BMF AV-Tabelle: 3 Jahre"),
-                ("Netzwerktechnik (Router, Switch)", 3, "both", None, "BMF AV-Tabelle: 3 Jahre"),
-                ("Software (ERP, kaufm. Software)", 3, "linear", None, "BMF AV-Tabelle: 3 Jahre, nur linear"),
-                ("Software (sonstige)", 3, "linear", None, "BMF AV-Tabelle: 3 Jahre, nur linear"),
-                # Büro & Einrichtung
-                ("Büromöbel (Schreibtisch, Regal)", 13, "both", None, "BMF AV-Tabelle: 13 Jahre"),
-                ("Bürostühle", 13, "both", None, "BMF AV-Tabelle: 13 Jahre"),
-                ("Aktenschränke, Tresore", 10, "both", None, "BMF AV-Tabelle: 10 Jahre"),
-                ("Beleuchtung", 10, "both", None, "BMF AV-Tabelle: 10 Jahre"),
-                # Kommunikation
-                ("Telefonanlage", 10, "both", None, "BMF AV-Tabelle: 10 Jahre"),
-                ("Fax, Anrufbeantworter", 5, "both", None, "BMF AV-Tabelle: 5 Jahre"),
-                # Fahrzeuge
-                ("PKW (Personenkraftwagen)", 6, "both", None, "BMF AV-Tabelle: 6 Jahre"),
-                ("LKW (bis 3,5t)", 9, "both", None, "BMF AV-Tabelle: 9 Jahre"),
-                ("LKW (über 3,5t)", 9, "both", None, "BMF AV-Tabelle: 9 Jahre"),
-                ("Anhänger", 10, "both", None, "BMF AV-Tabelle: 10 Jahre"),
-                ("Motorrad / Motorroller", 7, "both", None, "BMF AV-Tabelle: 7 Jahre"),
-                ("Fahrrad / E-Bike (betrieblich)", 7, "both", None, "BMF AV-Tabelle: 7 Jahre"),
-                # Maschinen & Geräte
-                ("Maschinen (allgemein)", 13, "both", None, "BMF AV-Tabelle: 13 Jahre"),
-                ("Werkzeug (elektrisch)", 8, "both", None, "BMF AV-Tabelle: 8 Jahre"),
-                ("Messgeräte, Laborgeräte", 5, "both", None, "BMF AV-Tabelle: 5 Jahre"),
-                ("Produktionsanlagen", 15, "both", None, "BMF AV-Tabelle: 15 Jahre"),
-                # Gebäude & Ausstattung
-                ("Ladeneinrichtung", 10, "both", None, "BMF AV-Tabelle: 10 Jahre"),
-                ("Klimaanlagen", 15, "both", None, "BMF AV-Tabelle: 15 Jahre"),
-                ("Solaranlage (Photovoltaik)", 20, "both", None, "BMF AV-Tabelle: 20 Jahre"),
-                # Sonstiges
-                ("Kamera, Foto-/Videoequipment", 7, "both", None, "BMF AV-Tabelle: 7 Jahre"),
-                ("Musikinstrumente (betrieblich)", 10, "both", None, "BMF AV-Tabelle: 10 Jahre"),
-                ("Werbeanlagen, Schilder", 10, "both", None, "BMF AV-Tabelle: 10 Jahre"),
-                ("Sonstige Wirtschaftsgüter", 10, "both", None, "Eigener Eintrag – bitte Nutzungsdauer prüfen"),
-            ]
-            for cat in categories:
-                cursor.execute('''
-                    INSERT INTO AssetCategories (Name, UsefulLifeYears, DepreciationMethod, COA_ID, Notes)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', cat)
-            conn.commit()
+        if cursor.fetchone()[0] > 0:
+            conn.close()
+            return
+
+        data = self._load_seed_json('asset_categories.json')
+        rows = [(e['name'], e['useful_life_years'], e['depreciation_method'],
+                 e['coa_id'], e['notes']) for e in data]
+        cursor.executemany('''
+            INSERT INTO AssetCategories (Name, UsefulLifeYears, DepreciationMethod, COA_ID, Notes)
+            VALUES (?, ?, ?, ?, ?)
+        ''', rows)
+        conn.commit()
+        conn.close()
+
+    def _seed_chart_of_accounts(self):
+        """Seed der Standard-SKR-Konten aus seed_data/chart_of_accounts_skr04.json.
+
+        Falls seed_data/private/chart_of_accounts_custom.json existiert,
+        werden zusätzlich benutzerspezifische Konten geladen.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM ChartOfAccounts')
+        if cursor.fetchone()[0] > 0:
+            conn.close()
+            return
+
+        # Standard-Kontenrahmen
+        data = self._load_seed_json('chart_of_accounts_skr04.json')
+        framework = data['framework']
+        rows = [(framework, e['account_number'], e['name'], e['description'],
+                 1 if e['is_standard'] else 0) for e in data['accounts']]
+
+        # Private Ergänzungen (optional)
+        seed_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'seed_data', 'private')
+        private_file = os.path.join(seed_dir, 'chart_of_accounts_custom.json')
+        if os.path.exists(private_file):
+            with open(private_file, 'r', encoding='utf-8') as f:
+                pdata = json.load(f)
+            pfw = pdata.get('framework', framework)
+            rows += [(pfw, e['account_number'], e['name'], e['description'],
+                      1 if e.get('is_standard') else 0) for e in pdata['accounts']]
+
+        cursor.executemany('''
+            INSERT OR IGNORE INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStandard)
+            VALUES (?, ?, ?, ?, ?)
+        ''', rows)
+        conn.commit()
         conn.close()
 
     # ─── Asset Categories ────────────────────────────────────────────────────
@@ -1512,6 +1693,7 @@ class Database:
         cursor = conn.cursor()
         cursor.execute(
             'SELECT * FROM Bookings WHERE DateBooking >= ? AND DateBooking <= ? '
+            "AND BookingType != 'bank' "
             'ORDER BY DateBooking ASC',
             (date_from, date_to),
         )
@@ -1651,14 +1833,19 @@ class Database:
         """
         import csv, io, datetime
 
-        # BU-Schlüssel → Steuersatz
-        BU_TO_TAXRATE = {'401': 0.19, '402': 0.07, '121': 0.0}
-
-        # Lookup-Maps einmalig aufbauen
+        # BU-Schlüssel → Steuersatz aus DB-Tabelle laden
         conn = self._get_connection()
         cursor = conn.cursor()
+        cursor.execute('SELECT Code, TaxRate FROM TaxKeys')
+        BU_TO_TAXRATE = {row[0]: row[1] for row in cursor.fetchall()}
+
+        # Lookup-Maps einmalig aufbauen
         cursor.execute('SELECT AccountNumber, ID FROM ChartOfAccounts')
         coa_map = {row[0]: row[1] for row in cursor.fetchall()}
+
+        # Bankkonten-SKR-Nummern für Vorzeichen-Logik
+        cursor.execute('SELECT SKRAccount FROM Accounts WHERE SKRAccount IS NOT NULL')
+        liquid_account_nrs = {row[0] for row in cursor.fetchall()}
         conn.close()
 
         reader = csv.DictReader(io.StringIO(text), delimiter=';', quotechar='"')
@@ -1674,7 +1861,12 @@ class Database:
         errors = []
 
         def _is_liquid(nr):
-            return nr is not None and 1460 <= nr <= 1940
+            """Prüft ob die SKR-Nummer ein liquides Konto ist (Bank/Kasse/Verrechnungskonto)."""
+            return nr is not None and (
+                nr in liquid_account_nrs  # aus Accounts-Tabelle (z.B. 1810)
+                or 1000 <= nr <= 1099     # Kasse (SKR04)
+                or nr == 1460             # Verrechnungskonto
+            )
 
         # ── Pass 1: alle Zeilen parsen ───────────────────────────────────────
         parsed_rows = []  # list of dicts
@@ -1726,6 +1918,12 @@ class Database:
 
                 schluessel = row.get('SCHLUESSEL', '').strip()
                 tax_rate = BU_TO_TAXRATE.get(schluessel)
+                # Steuerbetrag berechnen (Brutto → MwSt-Anteil)
+                tax_amount = None
+                if tax_rate is not None and tax_rate > 0 and amount != 0:
+                    tax_amount = round(abs(amount) - abs(amount) / (1 + tax_rate), 2)
+                    if amount < 0:
+                        tax_amount = -tax_amount
                 text_val = row.get('TEXT', '').strip()
                 doc_number = row.get('REFERENZNUMMER', '').strip()
 
@@ -1733,7 +1931,8 @@ class Database:
                     'zeile': i, 'date': booking_date, 'amount': amount,
                     'coa_id': coa_id, 'counter_coa_id': counter_coa_id,
                     'konto_nr': konto_nr, 'konto_str': konto_str,
-                    'tax_rate': tax_rate, 'text': text_val, 'doc': doc_number,
+                    'tax_rate': tax_rate, 'tax_amount': tax_amount,
+                    'text': text_val, 'doc': doc_number,
                 })
             except Exception as e:
                 errors.append(f"Zeile {i}: {str(e)}")
@@ -1804,10 +2003,11 @@ class Database:
                 dup_cur.execute('''
                     INSERT INTO Bookings
                         (DateBooking, BookingGroup_ID, COA_ID, CounterCOA_ID,
-                         Amount, TaxRate, Text, DocumentNumber)
-                    VALUES (?,?,?,?,?,?,?,?)
+                         Amount, TaxRate, TaxAmount, Text, DocumentNumber, BookingType)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)
                 ''', (booking_date, booking_group_id, coa_id, pr['counter_coa_id'],
-                      amount, pr['tax_rate'], pr['text'], doc_number))
+                      amount, pr['tax_rate'], pr['tax_amount'], pr['text'],
+                      doc_number, 'entry'))
                 imported += 1
 
             except Exception as e:
@@ -2007,6 +2207,221 @@ class Database:
             'errors':    errors,
             'format':    'table'
         }
+
+    # ── Auto-Linking: Bank ↔ Entry ────────────────────────────────────────────
+
+    def link_bank_to_entries(self) -> dict:
+        """Verknüpft Bank-Buchungen (BookingType='bank') mit passenden
+        Entry-Buchungen (BookingType='entry') über ParentBooking_ID.
+
+        Matching-Strategien (in dieser Reihenfolge):
+
+        Stufe 1 – Datum + normalisierter Empfänger + ABS(Betrag):
+            Leerzeichen in RecipientClient werden komprimiert (REPLACE+LOWER).
+            Doppik-Entries (COA 1460-1940) werden rausgefiltert.
+            Mehrfach-Treffer (z.B. Fraenk) werden 1:1 zugeordnet.
+
+        Stufe 2 – Datum + ABS(Betrag):
+            Ohne Empfänger-Bedingung, Doppik-Filter aktiv.
+            Eindeutiger Treffer wird verknüpft.
+
+        Stufe 3 – Split-Gruppe: Datum + ABS(SUM der Gruppenmitglieder):
+            Für Bank-Buchungen die einer BookingGroup (Split) entsprechen.
+
+        Stufe 4 – DocumentNumber als Tiebreaker:
+            Falls Stufe 2 mehrere Treffer liefert, wird versucht
+            ob genau einer die passende Belegnummer enthält.
+
+        Nach dem Linken wird der Text der Bank-Buchung durch den Text der
+        Entry-Buchung ersetzt (WISO-kuratierter Text hat Vorrang).
+
+        Returns:
+            dict mit { 'linked': int, 'skipped': int, 'repaired': int,
+                        'errors': list[str] }
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # ── Schritt 0: Altdaten-Reparatur ─────────────────────────────────
+        cursor.execute('''
+            UPDATE Bookings SET BookingType = 'bank'
+            WHERE (BookingType IS NULL OR BookingType = 'entry')
+              AND Account_ID IS NOT NULL
+              AND COA_ID IS NULL
+              AND CounterCOA_ID IS NULL
+        ''')
+        repaired = cursor.rowcount
+        if repaired:
+            conn.commit()
+
+        # Doppik-COA-IDs — nur echte Bankkonten (aus Accounts-Tabelle)
+        bank_coa_ids = self._get_bank_coa_ids(cursor)
+
+        # ── Schritt 1: Alle unverknüpften Bank-Buchungen laden ───────────
+        cursor.execute('''
+            SELECT b.ID, b.DateBooking, b.Amount, b.Account_ID,
+                   b.DocumentNumber, b.ForeignBankAccount,
+                   b.RecipientClient, b.Text
+            FROM Bookings b
+            WHERE b.BookingType = 'bank'
+              AND b.ID NOT IN (
+                  SELECT ParentBooking_ID FROM Bookings
+                  WHERE ParentBooking_ID IS NOT NULL
+              )
+            ORDER BY b.DateBooking, b.Amount
+        ''')
+        bank_bookings = cursor.fetchall()
+
+        linked = 0
+        skipped = 0
+        errors = []
+        already_linked_entry_ids = set()  # Für 1:1 Multi-Match (Fraenk)
+
+        def _norm(s):
+            """Empfänger normalisieren: Leerzeichen komprimieren + lowercase."""
+            return ' '.join((s or '').split()).lower()
+
+        def _filter_doppik(entries):
+            """Doppik-Entries (COA im Bankbereich) rausfiltern."""
+            return [e for e in entries if e[3] not in bank_coa_ids]
+
+        def _filter_already(entries):
+            """Bereits in diesem Durchlauf verknüpfte Entries rausfiltern."""
+            return [e for e in entries if e[0] not in already_linked_entry_ids]
+
+        def _do_link(bank_id, entry_id, entry_group_id, entry_text):
+            """Verknüpfe entry (oder ganze Gruppe) mit bank."""
+            if entry_group_id:
+                # Alle Gruppenmitglieder verknüpfen
+                cursor.execute('''
+                    UPDATE Bookings SET ParentBooking_ID = ?
+                    WHERE BookingGroup_ID = ? AND BookingType = 'entry'
+                ''', (bank_id, entry_group_id))
+                # Alle Gruppen-IDs als bereits verknüpft markieren
+                cursor.execute(
+                    'SELECT ID FROM Bookings WHERE BookingGroup_ID = ?',
+                    (entry_group_id,))
+                for r in cursor.fetchall():
+                    already_linked_entry_ids.add(r[0])
+            else:
+                cursor.execute('''
+                    UPDATE Bookings SET ParentBooking_ID = ?
+                    WHERE ID = ?
+                ''', (bank_id, entry_id))
+                already_linked_entry_ids.add(entry_id)
+            # WISO-Text auf die Bank-Buchung übernehmen (manuell kuratiert)
+            if entry_text:
+                cursor.execute(
+                    'UPDATE Bookings SET Text = ? WHERE ID = ?',
+                    (entry_text, bank_id))
+
+        for bank in bank_bookings:
+            (bank_id, bank_date, bank_amount, bank_account_id,
+             bank_docnr, bank_iban, bank_recipient, bank_text) = bank
+
+            abs_amount = round(abs(bank_amount), 2)
+            recip_norm = _norm(bank_recipient)
+
+            # ── Stufe 1: Datum + Empfänger (normalisiert) + ABS(Betrag) ──
+            if recip_norm:
+                cursor.execute('''
+                    SELECT ID, BookingGroup_ID, Text, COA_ID FROM Bookings
+                    WHERE BookingType = 'entry'
+                      AND ParentBooking_ID IS NULL
+                      AND DateBooking = ?
+                      AND ABS(ABS(Amount) - ?) < 0.005
+                ''', (bank_date, abs_amount))
+                raw = cursor.fetchall()
+                entries = _filter_already(_filter_doppik(
+                    [e for e in raw if _norm(self._get_recipient(cursor, e[0])) == recip_norm
+                     or _norm(e[2]) != '' and recip_norm in _norm(e[2])]
+                ))
+                if not entries:
+                    # Fallback: direkter DB-Vergleich (REPLACE normalisiert)
+                    cursor.execute('''
+                        SELECT ID, BookingGroup_ID, Text, COA_ID FROM Bookings
+                        WHERE BookingType = 'entry'
+                          AND ParentBooking_ID IS NULL
+                          AND DateBooking = ?
+                          AND ABS(ABS(Amount) - ?) < 0.005
+                          AND LOWER(REPLACE(REPLACE(REPLACE(TRIM(
+                              COALESCE(RecipientClient,'')), '  ', ' '), '  ', ' '), '  ', ' '))
+                            = ?
+                    ''', (bank_date, abs_amount, recip_norm))
+                    entries = _filter_already(_filter_doppik(cursor.fetchall()))
+                if len(entries) >= 1:
+                    # 1:1 Zuordnung: ersten verfügbaren nehmen (Fraenk-Fall)
+                    _do_link(bank_id, entries[0][0], entries[0][1], entries[0][2])
+                    linked += 1
+                    continue
+
+            # ── Stufe 2: Datum + ABS(Betrag) ─────────────────────────────
+            cursor.execute('''
+                SELECT ID, BookingGroup_ID, Text, COA_ID, DocumentNumber
+                FROM Bookings
+                WHERE BookingType = 'entry'
+                  AND ParentBooking_ID IS NULL
+                  AND DateBooking = ?
+                  AND ABS(ABS(Amount) - ?) < 0.005
+            ''', (bank_date, abs_amount))
+            entries = _filter_already(_filter_doppik(cursor.fetchall()))
+            if len(entries) == 1:
+                _do_link(bank_id, entries[0][0], entries[0][1], entries[0][2])
+                linked += 1
+                continue
+
+            # ── Stufe 4: DocumentNumber als Tiebreaker ───────────────────
+            if len(entries) > 1 and bank_docnr:
+                doc_match = [e for e in entries
+                             if e[4] and (bank_docnr in e[4] or e[4] in bank_docnr)]
+                if len(doc_match) == 1:
+                    _do_link(bank_id, doc_match[0][0], doc_match[0][1], doc_match[0][2])
+                    linked += 1
+                    continue
+
+            # ── Stufe 3: Split-Gruppe — SUM(Betrag) passt ────────────────
+            cursor.execute('''
+                SELECT b.BookingGroup_ID, COUNT(*) AS cnt
+                FROM Bookings b
+                WHERE b.BookingType = 'entry'
+                  AND b.ParentBooking_ID IS NULL
+                  AND b.BookingGroup_ID IS NOT NULL
+                  AND b.DateBooking = ?
+                GROUP BY b.BookingGroup_ID
+                HAVING ABS(ABS(SUM(b.Amount)) - ?) < 0.005
+            ''', (bank_date, abs_amount))
+            groups = cursor.fetchall()
+            # Bereits verknüpfte Gruppen rausfiltern
+            groups = [g for g in groups if g[0] not in
+                      {eid for eid in already_linked_entry_ids}]
+            if len(groups) == 1:
+                group_id = groups[0][0]
+                cursor.execute('''
+                    UPDATE Bookings SET ParentBooking_ID = ?
+                    WHERE BookingGroup_ID = ? AND BookingType = 'entry'
+                ''', (bank_id, group_id))
+                cursor.execute(
+                    'SELECT ID FROM Bookings WHERE BookingGroup_ID = ?',
+                    (group_id,))
+                for r in cursor.fetchall():
+                    already_linked_entry_ids.add(r[0])
+                linked += 1
+                continue
+
+            skipped += 1
+
+        conn.commit()
+        conn.close()
+        return {'linked': linked, 'skipped': skipped, 'repaired': repaired,
+                'errors': errors}
+
+    @staticmethod
+    def _get_recipient(cursor, booking_id):
+        """Hilfsfunktion: RecipientClient einer Buchung holen."""
+        cursor.execute('SELECT RecipientClient FROM Bookings WHERE ID=?',
+                       (booking_id,))
+        row = cursor.fetchone()
+        return row[0] if row else ''
 
     # ── Table Contacts (normalized Option C) ───────────────────────────────────
 

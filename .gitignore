@@ -1,6 +1,9 @@
 # Database and data files
 data/
 
+# Private configuration files
+seed_data/private/
+
 # Python cache
 __pycache__/
 *.pyc

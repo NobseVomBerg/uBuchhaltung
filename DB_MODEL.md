@@ -1,14 +1,14 @@
-# Datenbankmodell PyBuch - AI-Readable Database Schema
+# Datenbankmodell PyBuch
 
-**Status:** Aktuell (Stand: 17. März 2026)  
-**DBMS:** SQLite 3  
-**File:** `data/buch.db`
+**Status:** Aktuell (Stand: 1. April 2026)
+**DBMS:** SQLite 3
+**Datei:** `data/buch.db`
 
 ---
 
 ## Übersicht
 
-Das PyBuch-System verwaltet eine doppelte Buchführung für kleine bis mittlere Unternehmen mit Fokus auf deutsche/österreichische Buchhaltungsstandards (SKR03/SKR04/SKR07). Es unterstützt XRechnung-konforme Rechnungserstellung, Anlagenverwaltung (AfA) und Belegmanagement.
+PyBuch verwaltet Buchführung für kleine/mittlere Unternehmen mit Fokus auf deutsche Buchhaltungsstandards (SKR03/SKR04). Es unterstützt XRechnung-konforme Rechnungserstellung, Anlagenverwaltung (AfA), automatische Bank↔Entry-Verknüpfung und Belegmanagement.
 
 ---
 
@@ -19,7 +19,7 @@ Das PyBuch-System verwaltet eine doppelte Buchführung für kleine bis mittlere 
 │ STAMMDATEN          │
 ├─────────────────────┤
 │ • ChartOfAccounts   │ Kontenrahmen (SKR03/04/07)
-│ • Accounts          │ Bankkonten/Kasse
+│ • Accounts          │ Bankkonten/Kasse (mit SKRAccount-Zuordnung)
 │ • Contacts          │ Kunden/Lieferanten/Eigene Firma (Basis)
 │ • ContactAddresses  │ Adressen zu Kontakten (1:n)
 │ • CompanyDetails    │ Unternehmensdetails (1:1)
@@ -27,12 +27,13 @@ Das PyBuch-System verwaltet eine doppelte Buchführung für kleine bis mittlere 
 │ • Articles          │ Artikel-/Dienstleistungskatalog
 │ • Categories        │ Kategorien für Privatbelege
 │ • AssetCategories   │ AfA-Kategorien nach BMF
+│ • TaxKeys           │ DATEV-Steuerschlüssel (BU-Codes)
 └─────────────────────┘
 
 ┌─────────────────────┐
 │ GESCHÄFTSVORFÄLLE   │
 ├─────────────────────┤
-│ • Bookings          │ Buchungssätze
+│ • Bookings          │ Buchungssätze (bank + entry)
 │ • BookingGroups     │ Splitbuchungen-Gruppen
 │ • Documents         │ Belege/Dokumente
 │ • BookingDocuments  │ n:m Verknüpfung Buchungen↔Belege
@@ -44,6 +45,7 @@ Das PyBuch-System verwaltet eine doppelte Buchführung für kleine bis mittlere 
 │ • NumberRanges      │ Nummernkreise
 │ • Invoices          │ Ausgangsrechnungen (XRechnung)
 │ • InvoiceItems      │ Rechnungspositionen
+│ • InvoicePayments   │ Zahlungsverknüpfungen
 └─────────────────────┘
 
 ┌─────────────────────┐
@@ -56,23 +58,32 @@ Das PyBuch-System verwaltet eine doppelte Buchführung für kleine bis mittlere 
 
 ---
 
+## Seed-Daten
+
+Beim Erstellen der Datenbank werden folgende Tabellen automatisch befüllt (nur wenn leer):
+
+| Tabelle | Quelle | Einträge |
+|---------|--------|----------|
+| ChartOfAccounts | `seed_data/chart_of_accounts_skr04.json` + optional `seed_data/private/chart_of_accounts_custom.json` | 47 Standard + eigene |
+| AssetCategories | `seed_data/asset_categories.json` | 30 BMF-Kategorien |
+| TaxKeys | `seed_data/tax_keys.json` | 50 DATEV-BU-Schlüssel |
+
+---
+
 ## Detaillierte Tabellendefinitionen
 
 ### 1. ChartOfAccounts (Kontenrahmen)
 
-**Zweck:** Speichert Standard-Kontenrahmen (SKR03/04 für DE, SKR07 für AT)
+**Zweck:** Standard-Kontenrahmen (SKR03/04 für DE, SKR07 für AT). Wird beim DB-Erstellen aus `seed_data/` geseeded.
 
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment ID |
-| Framework | INTEGER | UNIQUE(Framework, AccountNumber) | Kontenrahmen (3=SKR03, 4=SKR04, 7=SKR07) |
+| ID | INTEGER | PRIMARY KEY | Auto-Increment |
+| Framework | INTEGER | UNIQUE(Framework, AccountNumber) | 3=SKR03, 4=SKR04, 7=SKR07 |
 | AccountNumber | INTEGER | UNIQUE(Framework, AccountNumber) | Kontonummer |
 | Name | TEXT | | Kontobezeichnung |
 | Description | TEXT | | Zusätzliche Beschreibung |
-| IsStandard | INTEGER | DEFAULT 0 | Flag: Standard-Konto |
-
-**Indizes:** UNIQUE(Framework, AccountNumber)  
-**Foreign Keys:** Keine
+| IsStandard | INTEGER | DEFAULT 0 | 1=Standard-Konto, 0=eigene Ergänzung |
 
 ---
 
@@ -82,50 +93,44 @@ Das PyBuch-System verwaltet eine doppelte Buchführung für kleine bis mittlere 
 
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment ID |
-| Name | TEXT | NOT NULL, UNIQUE | Kontoname (z.B. "Geschäftskonto", "Kasse") |
+| ID | INTEGER | PRIMARY KEY | Auto-Increment |
+| Name | TEXT | NOT NULL, UNIQUE | Kontoname |
 | Owner | TEXT | | Kontoinhaber |
 | Number | TEXT | | IBAN oder Kreditkartennummer |
 | BIC | TEXT | | BIC/SWIFT-Code |
 | BankName | TEXT | | Name der Bank |
 | IsCash | INTEGER | DEFAULT 0 | 1=Kasse, 0=Bankkonto |
+| SKRAccount | INTEGER | | Zugeordnete SKR-Kontonummer (z.B. 1810) |
 
-**Indizes:** UNIQUE(Name)  
-**Foreign Keys:** Keine  
-**Business Logic:** Konto "Kasse" wird automatisch beim ersten Start erstellt
+**Business Logic:**
+- Konto "Kasse" wird automatisch beim Start erstellt
+- `SKRAccount` verknüpft mit ChartOfAccounts.AccountNumber für Doppik-Erkennung
+- Wird von `_get_bank_coa_ids()` genutzt um echte Bankkonten zu identifizieren
 
 ---
 
 ### 3. Contacts – normalisiertes Schema (4 Tabellen)
 
-**Zweck:** Zentrale Kontaktverwaltung in 3NF. Unternehmen und Personen werden über `EntityType` unterschieden und haben je eine eigene Erweiterungstabelle.
-
 #### 3a. Contacts (Basis)
 
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment ID |
+| ID | INTEGER | PRIMARY KEY | Auto-Increment |
 | ContactType | TEXT | DEFAULT 'customer' | 'customer', 'supplier', 'own', 'insurance', 'other' |
 | EntityType | TEXT | DEFAULT 'company' | 'company' oder 'person' |
-| DisplayName | TEXT | | Anzeigename (manuell oder berechnet) |
+| DisplayName | TEXT | | Anzeigename |
 | CustomerNumber | TEXT | UNIQUE | Kundennummer |
-| Email | TEXT | | E-Mail-Adresse |
-| Phone | TEXT | | Telefonnummer |
+| Email | TEXT | | E-Mail |
+| Phone | TEXT | | Telefon |
 | Notes | TEXT | | Notizen |
 | Logo | TEXT | | Pfad zum Firmenlogo |
 
-**Business Logic:**
-- ContactType='own' für eigene Firmendaten in Rechnungen
-- EntityType steuert, welche Erweiterungstabelle befüllt wird
-
----
-
-#### 3b. ContactAddresses (Adressen, 1:n)
+#### 3b. ContactAddresses (1:n)
 
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment ID |
-| ContactID | INTEGER | NOT NULL, FK | → Contacts(ID) ON DELETE CASCADE |
+| ID | INTEGER | PRIMARY KEY | Auto-Increment |
+| ContactID | INTEGER | NOT NULL, FK → Contacts ON DELETE CASCADE | |
 | AddressType | TEXT | DEFAULT 'main' | 'main', 'billing', 'delivery' |
 | AddressLine1 | TEXT | | Adresszusatz / c/o |
 | Street | TEXT | | Straße + Hausnummer |
@@ -133,580 +138,365 @@ Das PyBuch-System verwaltet eine doppelte Buchführung für kleine bis mittlere 
 | City | TEXT | | Ort |
 | Country | TEXT | DEFAULT 'DE' | ISO-Ländercode |
 
----
+**Indizes:** UNIQUE(ContactID, AddressType)
 
-#### 3c. CompanyDetails (Unternehmensdetails, 1:1)
+#### 3c. CompanyDetails (1:1)
 
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment ID |
-| ContactID | INTEGER | UNIQUE, FK | → Contacts(ID) ON DELETE CASCADE |
+| ContactID | INTEGER | UNIQUE, FK → Contacts ON DELETE CASCADE | |
 | CompanyName | TEXT | | Firmenname |
 | LegalForm | TEXT | | Rechtsform (GmbH, AG, UG, ...) |
-| TaxID | TEXT | | Umsatzsteuer-ID / Steuernummer |
+| TaxID | TEXT | | Umsatzsteuer-ID |
 | BuyerRouteID | TEXT | | XRechnung: Leitweg-ID |
 
-**Business Logic:** BuyerRouteID Pflichtfeld für XRechnung an öffentliche Auftraggeber
-
----
-
-#### 3d. PersonDetails (Personendetails, 1:1)
+#### 3d. PersonDetails (1:1)
 
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment ID |
-| ContactID | INTEGER | UNIQUE, FK | → Contacts(ID) ON DELETE CASCADE |
-| Salutation | TEXT | | Anrede (Herr/Frau/Divers) |
+| ContactID | INTEGER | UNIQUE, FK → Contacts ON DELETE CASCADE | |
+| Salutation | TEXT | | Anrede |
 | Title | TEXT | | Titel (Dr., Prof.) |
 | FirstName | TEXT | | Vorname |
 | LastName | TEXT | | Nachname |
-| DateOfBirth | TEXT | | Geburtsdatum (ISO 8601) |
-| CompanyContactID | INTEGER | FK | → Contacts(ID) – zugehöriges Unternehmen |
-| CompanyName_Free | TEXT | | Freier Firmenname (ohne verknüpften Kontakt) |
-
-**Foreign Keys:** ContactID → Contacts(ID) ON DELETE CASCADE, CompanyContactID → Contacts(ID)
+| DateOfBirth | TEXT | | ISO 8601 |
+| CompanyContactID | INTEGER | FK → Contacts | Zugehöriges Unternehmen |
+| CompanyName_Free | TEXT | | Freier Firmenname |
 
 ---
 
 ### 4. Articles (Artikelstamm)
 
-**Zweck:** Produkt-/Dienstleistungskatalog für Rechnungen
-
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment ID |
+| ID | INTEGER | PRIMARY KEY | Auto-Increment |
 | Name | TEXT | NOT NULL | Artikelbezeichnung |
-| Unit | TEXT | DEFAULT 'Stk.' | Einheit (UN/ECE Rec. 20: C62=Stück, HUR=Stunde) |
+| Unit | TEXT | DEFAULT 'Stk.' | Einheit |
 | UnitPrice | REAL | DEFAULT 0 | Netto-Einzelpreis |
 | TaxRate | REAL | DEFAULT 19 | Steuersatz in % |
-| Description | TEXT | | Ausführliche Beschreibung |
+| Description | TEXT | | Beschreibung |
 | Active | INTEGER | DEFAULT 1 | 1=aktiv, 0=inaktiv |
 
-**Indizes:** Keine  
-**Foreign Keys:** Keine
-
 ---
 
-### 5. Categories (Kategorien)
-
-**Zweck:** Hierarchische Kategorien für private Belege (Immobilien, Versicherungen, etc.)
+### 5. Categories
 
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment ID |
+| ID | INTEGER | PRIMARY KEY | Auto-Increment |
 | Name | TEXT | | Kategoriename |
-| Text | TEXT | | Zusatzinfos (z.B. Steuererklärungsreferenz) |
-| Parent_ID | INTEGER | | FK zu übergeordneter Kategorie (Hierarchie) |
-
-**Indizes:** Keine  
-**Foreign Keys:** Parent_ID → Categories(ID) (implizit)
+| Text | TEXT | | Zusatzinfos |
+| Parent_ID | INTEGER | | Selbstreferenz (Hierarchie) |
 
 ---
 
-### 6. Documents (Belege)
+### 6. TaxKeys (DATEV-Steuerschlüssel)
 
-**Zweck:** Verwaltung von gescannten/importierten Dokumenten
+**Zweck:** BU-Schlüssel nach DATEV-Standard. Wird aus `seed_data/tax_keys.json` geseeded (50 Einträge).
 
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment ID |
+| Code | TEXT | PRIMARY KEY | BU-Schlüssel (z.B. '9', '401') |
+| Description | TEXT | NOT NULL | Beschreibung |
+| TaxRate | REAL | | Steuersatz als Dezimal (0.19 = 19%), NULL = kein Satz |
+| TaxType | TEXT | | 'USt', 'VSt', 'steuerfrei', '§13b', 'keine', 'UStfrei' |
+
+**Verwendung:**
+- WISO-Original-Import: SCHLUESSEL → `get_tax_rate_for_bu()` → TaxRate
+- TaxAmount-Berechnung: `|Brutto| - |Brutto| / (1 + Rate)`
+
+---
+
+### 7. Documents (Belege)
+
+| Spalte | Typ | Constraints | Beschreibung |
+|--------|-----|-------------|--------------|
+| ID | INTEGER | PRIMARY KEY | Auto-Increment |
 | Number | TEXT | | Belegnummer |
 | Date | DATE | | Belegdatum |
 | Filename | TEXT | | Dateiname |
 | Path | TEXT | | Dateipfad |
 | Info | TEXT | | Zusatzinformationen |
 
-**Indizes:** Keine  
-**Foreign Keys:** Keine  
-**Business Logic:** Kann über BookingDocuments mit mehreren Buchungen verknüpft werden
-
 ---
 
-### 7. BookingGroups (Buchungsgruppen)
-
-**Zweck:** Gruppierung von Splitbuchungen (z.B. eine Rechnung mit mehreren SKR-Konten)
+### 8. BookingGroups (Splitbuchungen)
 
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment ID |
-| Description | TEXT | | Beschreibung der Gruppe |
+| ID | INTEGER | PRIMARY KEY | Auto-Increment |
+| Description | TEXT | | Beschreibung |
 | CreatedDate | DATE | | Erstellungsdatum |
-| TotalAmount | REAL | | Gesamtbetrag zur Validierung |
-
-**Indizes:** Keine  
-**Foreign Keys:** Keine
+| TotalAmount | REAL | | Gesamtbetrag (Validierung) |
 
 ---
 
-### 8. Bookings (Buchungssätze)
+### 9. Bookings (Buchungssätze)
 
-**Zweck:** Zentrale Tabelle für alle Buchungssätze (erweiterte Zahlung)
+**Zweck:** Zentrale Tabelle für Bank-Bewegungen und Buchungssätze. Über `BookingType` und `ParentBooking_ID` werden Bankbewegungen mit ihren Buchungssätzen verknüpft.
 
-| Spalte | Typ | Constraints | Beschreibung |
-|--------|-----|-------------|--------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment ID |
-| DateBooking | DATE | NOT NULL | Buchungsdatum |
-| DateTax | DATE | | Steuerdatum (optional) |
-| BookingGroup_ID | INTEGER | FK | Zuordnung zu Splitbuchung |
-| Account_ID | INTEGER | FK | Eigenes Bank-/Kassenkonto |
-| ForeignBankAccount | TEXT | | Fremde IBAN/Kontonummer |
-| RecipientClient | TEXT | | Name Empfänger/Zahler |
-| Contact_ID | INTEGER | FK | Zuordnung zu Kontakt |
-| COA_ID | INTEGER | FK | SKR-Kontonummer |
-| Category_ID | INTEGER | FK | Kategorie (für Privatbelege) |
-| Amount | REAL | NOT NULL | Betrag (positiv=Haben, negativ=Soll) |
-| Currency | TEXT | DEFAULT 'EUR' | Währung |
-| TaxRate | REAL | | Steuersatz (0.19 = 19%) |
-| TaxAmount | REAL | | Berechneter Steuerbetrag |
-| Text | TEXT | | Verwendungszweck/Notiz |
-| DocumentNumber | TEXT | | Externe Belegnummer |
+| Spalte | Idx | Typ | Constraints | Beschreibung |
+|--------|-----|-----|-------------|--------------|
+| ID | 0 | INTEGER | PRIMARY KEY | Auto-Increment |
+| DateBooking | 1 | DATE | NOT NULL | Buchungsdatum |
+| DateTax | 2 | DATE | | Steuerdatum |
+| BookingGroup_ID | 3 | INTEGER | FK → BookingGroups | Splitbuchung |
+| Account_ID | 4 | INTEGER | FK → Accounts | Eigenes Bank-/Kassenkonto |
+| ForeignBankAccount | 5 | TEXT | | Fremde IBAN/Kontonummer |
+| RecipientClient | 6 | TEXT | | Empfänger/Auftraggeber |
+| Contact_ID | 7 | INTEGER | FK → Contacts | Kontakt-Zuordnung |
+| COA_ID | 8 | INTEGER | FK → ChartOfAccounts | SKR-Sollkonto |
+| CounterCOA_ID | 9 | INTEGER | FK → ChartOfAccounts | SKR-Gegenkonto (Doppik) |
+| Category_ID | 10 | INTEGER | FK → Categories | Kategorie |
+| Amount | 11 | REAL | NOT NULL | Betrag (+Haben, −Soll) |
+| Currency | 12 | TEXT | DEFAULT 'EUR' | Währung |
+| TaxRate | 13 | REAL | | Steuersatz (0.19 = 19%) |
+| TaxAmount | 14 | REAL | | Berechneter Steuerbetrag |
+| Text | 15 | TEXT | | Verwendungszweck |
+| DocumentNumber | 16 | TEXT | | Belegnummer |
+| BookingType | 17 | TEXT | DEFAULT 'entry' | **'bank'** = Bankbewegung, **'entry'** = Buchungssatz |
+| ParentBooking_ID | 18 | INTEGER | FK → Bookings(ID) | Verknüpfung: Entry → Bank-Buchung |
+| Status | 19 | TEXT | | Frei definierbar |
 
-**Foreign Keys:**
-- BookingGroup_ID → BookingGroups(ID)
-- Account_ID → Accounts(ID)
-- Contact_ID → Contacts(ID)
-- COA_ID → ChartOfAccounts(ID)
-- Category_ID → Categories(ID)
-
-**Indizes:** Keine expliziten  
 **Business Logic:**
-- Amount-Vorzeichen: positiv = Einnahme (Haben), negativ = Ausgabe (Soll)
-- Kann über BookingDocuments mit Documents verknüpft werden
+- `BookingType='bank'`: Echte Geldbewegung auf dem Bankkonto (aus WISO-Tabellen-Export oder PDF-Import)
+- `BookingType='entry'`: Buchhalterischer Eintrag (aus WISO-Original-Export oder manuell)
+- `ParentBooking_ID`: Verknüpft einen Entry mit seiner zugehörigen Bankbuchung
+- Doppik-Entries (COA_ID zeigt auf ein SKR-Bankkonto wie 1810) werden in der Anzeige ausgeblendet
+- `link_bank_to_entries()` verknüpft automatisch anhand Datum + Empfänger + Betrag
 
 ---
 
-### 9. BookingDocuments (Junction Table)
-
-**Zweck:** Many-to-Many Beziehung zwischen Bookings und Documents
+### 10. BookingDocuments (n:m)
 
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment ID |
-| Booking_ID | INTEGER | NOT NULL, FK | Buchung |
-| Document_ID | INTEGER | NOT NULL, FK | Beleg |
-| RelationType | TEXT | | Art der Beziehung (optional) |
+| ID | INTEGER | PRIMARY KEY | Auto-Increment |
+| Booking_ID | INTEGER | NOT NULL, FK → Bookings | |
+| Document_ID | INTEGER | NOT NULL, FK → Documents | |
+| RelationType | TEXT | | Art der Beziehung |
 
-**Indizes:** UNIQUE(Booking_ID, Document_ID)  
-**Foreign Keys:**
-- Booking_ID → Bookings(ID)
-- Document_ID → Documents(ID)
+**Indizes:** UNIQUE(Booking_ID, Document_ID)
 
 ---
 
-### 10. NumberRanges (Nummernkreise)
-
-**Zweck:** Verwaltung fortlaufender Nummern für Rechnungen und Belege
+### 11. NumberRanges
 
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment ID |
+| ID | INTEGER | PRIMARY KEY | Auto-Increment |
 | Type | TEXT | NOT NULL | 'invoice', 'receipt_company', 'receipt_category' |
 | Year | INTEGER | NOT NULL | Jahr (4-stellig) |
-| Letter | TEXT | NOT NULL | Buchstabe (z.B. 'R' für Rechnung) |
+| Letter | TEXT | NOT NULL | Buchstabe (z.B. 'R') |
 | Prefix | TEXT | DEFAULT '' | Zusätzlicher Präfix |
 | CurrentNumber | INTEGER | DEFAULT 0 | Letzte vergebene Nummer |
 | Description | TEXT | | Beschreibung |
 
-**Indizes:** UNIQUE(Type, Year, Letter, Prefix)  
-**Foreign Keys:** Keine  
-**Business Logic:** Format: `YYYY` + `Letter` + `CurrentNumber` → z.B. "26R001"
+**Indizes:** UNIQUE(Type, Year, Letter, Prefix)
 
 ---
 
-### 11. Invoices (Ausgangsrechnungen)
+### 12. Invoices (Ausgangsrechnungen)
 
-**Zweck:** XRechnung-konforme Rechnungsverwaltung
+**Zweck:** XRechnung-konforme Rechnungsverwaltung mit Snapshot-Prinzip
 
-| Spalte | Typ | Constraints | Beschreibung | Index-Position* |
-|--------|-----|-------------|--------------|-----------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment ID | 0 |
-| InvoiceNumber | TEXT | UNIQUE, NOT NULL | Rechnungsnummer | 1 |
-| InvoiceDate | DATE | NOT NULL | Rechnungsdatum | 2 |
+| Spalte | Idx | Typ | Constraints | Beschreibung |
+|--------|-----|-----|-------------|--------------|
+| ID | 0 | INTEGER | PRIMARY KEY | |
+| InvoiceNumber | 1 | TEXT | UNIQUE, NOT NULL | Rechnungsnummer |
+| InvoiceDate | 2 | DATE | NOT NULL | |
 | **Verkäufer (Snapshot)** | | | | |
-| OwnCompanyId | INTEGER | FK | Referenz auf Contact | 3 |
-| SellerName | TEXT | NOT NULL | Name | 4 |
-| SellerCompany | TEXT | NOT NULL | Firma | 5 |
-| SellerStreet | TEXT | | Straße | 6 |
-| SellerPostalCode | TEXT | | PLZ | 7 |
-| SellerCity | TEXT | | Ort | 8 |
-| SellerCountry | TEXT | DEFAULT 'DE' | Land | 9 |
-| SellerVATID | TEXT | | USt-ID | 10 |
-| SellerEmail | TEXT | | E-Mail | 11 |
-| SellerPhone | TEXT | | Telefon | 12 |
+| OwnCompanyId | 3 | INTEGER | FK → Contacts | |
+| SellerName | 4 | TEXT | NOT NULL | |
+| SellerCompany | 5 | TEXT | NOT NULL | Firmenname |
+| SellerStreet | 6 | TEXT | | |
+| SellerPostalCode | 7 | TEXT | | |
+| SellerCity | 8 | TEXT | | |
+| SellerCountry | 9 | TEXT | DEFAULT 'DE' | |
+| SellerVATID | 10 | TEXT | | USt-ID |
+| SellerEmail | 11 | TEXT | | |
+| SellerPhone | 12 | TEXT | | |
 | **Käufer (Snapshot)** | | | | |
-| CustomerId | INTEGER | FK | Referenz auf Contact | 13 |
-| BuyerName | TEXT | NOT NULL | Name | 14 |
-| BuyerCompany | TEXT | NOT NULL | Firma | 15 |
-| BuyerStreet | TEXT | | Straße | 16 |
-| BuyerPostalCode | TEXT | | PLZ | 17 |
-| BuyerCity | TEXT | | Ort | 18 |
-| BuyerCountry | TEXT | DEFAULT 'DE' | Land | 19 |
-| BuyerVATID | TEXT | | USt-ID | 20 |
-| BuyerReference | TEXT | | Kundenreferenz | 21 |
-| BuyerRouteID | TEXT | | Leitweg-ID (XRechnung) | 22 |
-| **Auftrag** | | | | |
-| OrderNumber | TEXT | | Bestellnummer | 23 |
-| **XRechnung** | | | | |
-| Currency | TEXT | DEFAULT 'EUR' | Währung | 24 |
-| DeliveryDate | DATE | | Lieferdatum | 25 |
+| CustomerId | 13 | INTEGER | FK → Contacts | |
+| BuyerName | 14 | TEXT | NOT NULL | |
+| BuyerCompany | 15 | TEXT | NOT NULL | Firmenname |
+| BuyerStreet | 16 | TEXT | | |
+| BuyerPostalCode | 17 | TEXT | | |
+| BuyerCity | 18 | TEXT | | |
+| BuyerCountry | 19 | TEXT | DEFAULT 'DE' | |
+| BuyerVATID | 20 | TEXT | | |
+| BuyerReference | 21 | TEXT | | Kundenreferenz |
+| BuyerRouteID | 22 | TEXT | | Leitweg-ID (XRechnung) |
+| **Auftrag / XRechnung** | | | | |
+| OrderNumber | 23 | TEXT | | |
+| Currency | 24 | TEXT | DEFAULT 'EUR' | |
+| DeliveryDate | 25 | DATE | | |
 | **Zahlungsbedingungen** | | | | |
-| PaymentTerms | TEXT | | Zahlungskonditionen | 26 |
-| PaymentDueDate | DATE | | Fälligkeitsdatum | 27 |
-| SkontoDays | INTEGER | | Skontotage | 28 |
-| SkontoPercent | REAL | | Skonto-Prozentsatz | 29 |
+| PaymentTerms | 26 | TEXT | | |
+| PaymentDueDate | 27 | DATE | | |
+| SkontoDays | 28 | INTEGER | | |
+| SkontoPercent | 29 | REAL | | |
 | **Bankverbindung (Snapshot)** | | | | |
-| BankAccountId | INTEGER | FK | Referenz auf Account | 30 |
-| BankName | TEXT | | Bankname | 31 |
-| BankIBAN | TEXT | | IBAN | 32 |
-| BankBIC | TEXT | | BIC | 33 |
+| BankAccountId | 30 | INTEGER | FK → Accounts | |
+| BankName | 31 | TEXT | | |
+| BankIBAN | 32 | TEXT | | |
+| BankBIC | 33 | TEXT | | |
 | **Summen** | | | | |
-| TaxCategory | TEXT | DEFAULT 'S' | Steuerkategorie (S=Standard) | 34 |
-| TaxRate | REAL | NOT NULL | Steuersatz (0.19 = 19%) | 35 |
-| SumNet | REAL | NOT NULL | Nettosumme | 36 |
-| TaxAmount | REAL | NOT NULL | Steuerbetrag | 37 |
-| SumGross | REAL | NOT NULL | Bruttosumme | 38 |
-| AmountDue | REAL | NOT NULL | Fälliger Betrag | 39 |
+| TaxCategory | 34 | TEXT | DEFAULT 'S' | |
+| TaxRate | 35 | REAL | NOT NULL | 0.19 = 19% |
+| SumNet | 36 | REAL | NOT NULL | |
+| TaxAmount | 37 | REAL | NOT NULL | |
+| SumGross | 38 | REAL | NOT NULL | |
+| AmountDue | 39 | REAL | NOT NULL | |
 | **Verwaltung** | | | | |
-| Status | TEXT | DEFAULT 'draft' | 'draft', 'finalized', 'sent', 'paid' | 40 |
-| PDFPath | TEXT | | Pfad zur generierten PDF | 41 |
-| XMLPath | TEXT | | Pfad zur XRechnung-XML | 42 |
-| CreatedAt | DATETIME | DEFAULT NOW | Erstellungszeitpunkt | 43 |
-| UpdatedAt | DATETIME | | Letzte Änderung | 44 |
-
-**Foreign Keys:**
-- OwnCompanyId → Contacts(ID)
-- CustomerId → Contacts(ID)
-- BankAccountId → Accounts(ID)
-
-**Indizes:** UNIQUE(InvoiceNumber)  
-**Business Logic:**
-- Snapshot-Prinzip: Alle Adressen/Bankdaten werden zum Rechnungszeitpunkt kopiert
-- Status-Workflow: draft → finalized → sent → paid
-- PDFPath: `data/invoices/YYYY/Rechnung_XXXXX.pdf`
-
-\* *Index-Position in SELECT * Abfragen (0-basiert)*
+| Status | 40 | TEXT | DEFAULT 'draft' | draft/finalized/sent/paid/cancelled |
+| PDFPath | 41 | TEXT | | |
+| XMLPath | 42 | TEXT | | |
+| CreatedAt | 43 | DATETIME | DEFAULT NOW | |
+| UpdatedAt | 44 | DATETIME | | |
 
 ---
 
-### 12. InvoiceItems (Rechnungspositionen)
-
-**Zweck:** Einzelne Positionen einer Rechnung
+### 13. InvoiceItems
 
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment ID |
-| InvoiceId | INTEGER | NOT NULL, FK | Zugehörige Rechnung |
-| Position | INTEGER | NOT NULL | Positionsnummer |
-| ArticleId | INTEGER | FK | Referenz auf Artikel (optional) |
-| Description | TEXT | NOT NULL | Leistungsbeschreibung |
-| Quantity | REAL | NOT NULL | Menge |
-| Unit | TEXT | DEFAULT 'C62' | UN/ECE Einheitencode (C62=Stück) |
-| PricePerUnit | REAL | NOT NULL | Netto-Einzelpreis |
-| TotalNet | REAL | NOT NULL | Netto-Zeilensumme |
-| TaxCategory | TEXT | DEFAULT 'S' | Steuerkategorie |
-| TaxRate | REAL | NOT NULL | Steuersatz |
-
-**Foreign Keys:**
-- InvoiceId → Invoices(ID) ON DELETE CASCADE
-- ArticleId → Articles(ID)
-
-**Indizes:** Keine  
-**Business Logic:** TotalNet = Quantity × PricePerUnit
+| ID | INTEGER | PRIMARY KEY | |
+| InvoiceId | INTEGER | NOT NULL, FK → Invoices ON DELETE CASCADE | |
+| Position | INTEGER | NOT NULL | |
+| ArticleId | INTEGER | FK → Articles | |
+| Description | TEXT | NOT NULL | |
+| Quantity | REAL | NOT NULL | |
+| Unit | TEXT | DEFAULT 'C62' | UN/ECE Code |
+| PricePerUnit | REAL | NOT NULL | Netto |
+| TotalNet | REAL | NOT NULL | Quantity × PricePerUnit |
+| TaxCategory | TEXT | DEFAULT 'S' | |
+| TaxRate | REAL | NOT NULL | |
 
 ---
 
-### 13. AssetCategories (AfA-Kategorien)
-
-**Zweck:** AfA-Tabellen nach BMF für Anlagegüter
+### 14. InvoicePayments
 
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment ID |
+| ID | INTEGER | PRIMARY KEY | |
+| InvoiceID | INTEGER | FK → Invoices | |
+| BookingID | INTEGER | FK → Bookings | |
+| Amount | REAL | | Zahlungsbetrag |
+| PaymentDate | DATE | | |
+| Notes | TEXT | | |
+
+---
+
+### 15. AssetCategories (AfA-Kategorien)
+
+**Zweck:** BMF-Tabellen für Anlagegüter. Geseeded aus `seed_data/asset_categories.json` (30 Einträge).
+
+| Spalte | Typ | Constraints | Beschreibung |
+|--------|-----|-------------|--------------|
+| ID | INTEGER | PRIMARY KEY | |
 | Name | TEXT | NOT NULL | Kategoriename |
-| UsefulLifeYears | INTEGER | NOT NULL | Nutzungsdauer in Jahren |
-| DepreciationMethod | TEXT | DEFAULT 'linear' | 'linear', 'declining' |
-| COA_ID | INTEGER | FK | Zugeordnetes SKR-Konto |
-| Notes | TEXT | | Notizen |
-
-**Foreign Keys:** COA_ID → ChartOfAccounts(ID)  
-**Indizes:** Keine
-
----
-
-### 14. Assets (Anlagenverzeichnis)
-
-**Zweck:** Verwaltung von Anlagegütern (Anlagenbuchhaltung)
-
-| Spalte | Typ | Constraints | Beschreibung |
-|--------|-----|-------------|--------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment ID |
-| InventoryNumber | TEXT | UNIQUE | Inventarnummer |
-| Name | TEXT | NOT NULL | Anlagenbezeichnung |
-| Description | TEXT | | Beschreibung |
-| AssetCategory_ID | INTEGER | FK | AfA-Kategorie |
-| COA_ID | INTEGER | FK | SKR-Konto |
-| PurchaseDate | DATE | NOT NULL | Anschaffungsdatum |
-| PurchasePrice | REAL | NOT NULL | Anschaffungskosten |
 | UsefulLifeYears | INTEGER | NOT NULL | Nutzungsdauer |
-| DepreciationMethod | TEXT | DEFAULT 'linear' | AfA-Methode |
-| SerialNumber | TEXT | | Seriennummer |
-| Location | TEXT | | Standort |
-| Supplier_ID | INTEGER | FK | Lieferant |
-| Document_ID | INTEGER | FK | Kaufbeleg |
-| Booking_ID | INTEGER | FK | Anschaffungsbuchung |
-| SaleDate | DATE | | Verkaufsdatum |
-| SalePrice | REAL | | Verkaufspreis |
-| Status | TEXT | DEFAULT 'active' | 'active', 'disposed', 'sold' |
-| Notes | TEXT | | Notizen |
-| Parent_ID | INTEGER | FK | Übergeordnetes Anlagegut |
-| CreatedAt | DATETIME | DEFAULT NOW | Erstellungszeitpunkt |
-
-**Foreign Keys:**
-- AssetCategory_ID → AssetCategories(ID)
-- COA_ID → ChartOfAccounts(ID)
-- Supplier_ID → Contacts(ID)
-- Document_ID → Documents(ID)
-- Booking_ID → Bookings(ID)
-- Parent_ID → Assets(ID)
-
-**Indizes:** UNIQUE(InventoryNumber)
+| DepreciationMethod | TEXT | DEFAULT 'linear' | 'linear', 'declining', 'both' |
+| COA_ID | INTEGER | FK → ChartOfAccounts | Standard-SKR-Konto |
+| Notes | TEXT | | |
 
 ---
 
-### 15. AssetDepreciations (AfA-Pläne)
-
-**Zweck:** Geplante und gebuchte Abschreibungen
+### 16. Assets (Anlagenverzeichnis)
 
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment ID |
-| Asset_ID | INTEGER | NOT NULL, FK | Anlagegut |
-| Year | INTEGER | NOT NULL | Jahr |
+| ID | INTEGER | PRIMARY KEY | |
+| InventoryNumber | TEXT | UNIQUE | Auto: `INV-YY-###` |
+| Name | TEXT | NOT NULL | |
+| Description | TEXT | | |
+| AssetCategory_ID | INTEGER | FK → AssetCategories | |
+| COA_ID | INTEGER | FK → ChartOfAccounts | |
+| PurchaseDate | DATE | NOT NULL | |
+| PurchasePrice | REAL | NOT NULL | Netto |
+| UsefulLifeYears | INTEGER | NOT NULL | |
+| DepreciationMethod | TEXT | DEFAULT 'linear' | |
+| SerialNumber | TEXT | | |
+| Location | TEXT | | |
+| Supplier_ID | INTEGER | FK → Contacts | |
+| Document_ID | INTEGER | FK → Documents | |
+| Booking_ID | INTEGER | FK → Bookings | |
+| SaleDate | DATE | | |
+| SalePrice | REAL | | |
+| Status | TEXT | DEFAULT 'active' | 'active', 'disposed', 'sold' |
+| Notes | TEXT | | |
+| Parent_ID | INTEGER | FK → Assets | Erweiterungen |
+| CreatedAt | DATETIME | DEFAULT NOW | |
+
+---
+
+### 17. AssetDepreciations (AfA-Pläne)
+
+| Spalte | Typ | Constraints | Beschreibung |
+|--------|-----|-------------|--------------|
+| ID | INTEGER | PRIMARY KEY | |
+| Asset_ID | INTEGER | NOT NULL, FK → Assets ON DELETE CASCADE | |
+| Year | INTEGER | NOT NULL | |
 | DepreciationAmount | REAL | NOT NULL | AfA-Betrag |
 | BookValue | REAL | NOT NULL | Restbuchwert |
-| Booking_ID | INTEGER | FK | Zugehörige Buchung |
+| Booking_ID | INTEGER | FK → Bookings | |
 | Status | TEXT | DEFAULT 'planned' | 'planned', 'booked' |
-| BookedAt | DATETIME | | Buchungszeitpunkt |
+| BookedAt | DATETIME | | |
 
-**Foreign Keys:**
-- Asset_ID → Assets(ID) ON DELETE CASCADE
-- Booking_ID → Bookings(ID)
-
-**Indizes:** UNIQUE(Asset_ID, Year)  
-**Business Logic:** Ein Datensatz pro Asset und Jahr
+**Indizes:** UNIQUE(Asset_ID, Year)
 
 ---
 
-## Datenfluss & Beziehungen
+## Datenfluss
 
-### Rechnungserstellung (XRechnung)
-
-```
-1. NumberRanges → generiert InvoiceNumber
-2. Contacts (Type='own') → SellerName, SellerCompany, ...
-3. Contacts (Type='customer') → BuyerName, BuyerCompany, ...
-4. Accounts → BankName, BankIBAN, BankBIC
-5. Articles → werden kopiert in InvoiceItems
-6. Invoice gespeichert mit Status='draft'
-7. PDF-Generierung: pdf_generator.py → PDFPath
-8. Status-Änderung: draft → finalized → sent → paid
-```
-
-### Buchung mit Beleg
+### Bank↔Entry-Verknüpfung
 
 ```
-1. Documents → Beleg hochladen/scannen
-2. Bookings → Buchungssatz erstellen
-3. BookingDocuments → Verknüpfung
-4. Optional: BookingGroups bei Splitbuchung
+1. WISO-Tabellen-Export  → Bookings mit BookingType='bank' (Bankbewegungen)
+2. WISO-Original-Export  → Bookings mit BookingType='entry' (Buchungssätze)
+   (inkl. TaxRate aus TaxKeys-DB, TaxAmount berechnet)
+3. link_bank_to_entries() verknüpft automatisch:
+   - Tier 1: Datum + normalisierter Empfänger + Betrag
+   - Tier 2: Datum + Betrag (eindeutig nach Doppik-Filter)
+   - Tier 3: Split-Gruppen mit Summenabgleich
+   - Tiebreaker: DocumentNumber bei Mehrdeutigkeit
+4. Entry.ParentBooking_ID → Bank.ID
+5. Doppik-Entries (COA_ID = Bankkonto-SKR) werden ausgeblendet
+```
+
+### Rechnungserstellung
+
+```
+1. NumberRanges → InvoiceNumber
+2. Contacts (Type='own') → Seller-Snapshot
+3. Contacts (Type='customer') → Buyer-Snapshot
+4. Accounts → Bank-Snapshot
+5. Articles → InvoiceItems
+6. Status: draft → finalized → sent → paid
 ```
 
 ### AfA-Berechnung
 
 ```
-1. AssetCategories → Nutzungsdauer definiert
-2. Assets → Anlagegut erfassen
-3. AssetDepreciations → automatisch generierte AfA-Pläne
-4. Bookings → gebuchte Abschreibungen
+1. AssetCategories → Nutzungsdauer + Methode
+2. Assets → Erfassung
+3. AssetDepreciations → automatische AfA-Pläne
+4. Buchungsintegration über Booking_ID
 ```
 
 ---
 
-## Wichtige Index-Mappings (für SELECT *)
+## Besonderheiten
 
-### Invoices Tabelle (45 Spalten, 0-basiert)
-
-```python
-INDEX_MAP = {
-    'ID': 0,
-    'InvoiceNumber': 1,
-    'InvoiceDate': 2,
-    'OwnCompanyId': 3,
-    # ... Seller Fields 4-12 ...
-    'CustomerId': 13,
-    'BuyerName': 14,  # WICHTIG: Offset +1 bei LIST queries!
-    # ... Buyer Fields 15-22 ...
-    'OrderNumber': 23,
-    'Currency': 24,
-    'DeliveryDate': 25,
-    'PaymentTerms': 26,
-    'PaymentDueDate': 27,
-    'SkontoDays': 28,
-    'SkontoPercent': 29,
-    'BankAccountId': 30,  # KRITISCH: War fälschlich 29!
-    # ... Bank Fields 31-33 ...
-    'TaxCategory': 34,
-    'TaxRate': 35,
-    'SumNet': 36,
-    'TaxAmount': 37,
-    'SumGross': 38,
-    'AmountDue': 39,
-    'Status': 40,
-    'PDFPath': 41,
-    'XMLPath': 42,
-    'CreatedAt': 43,
-    'UpdatedAt': 44
-}
-```
-
-**ACHTUNG:** Bei Joins oder subqueries kann sich der Index verschieben!
-
----
-
-## Dateistruktur & Conventions
-
-```
-data/
-├── buch.db                          # SQLite Datenbank
-├── invoices/                        # Generierte PDFs
-│   └── YYYY/                        # Jahr-basierte Ordner
-│       └── Rechnung_YYYYLNNN.pdf    # Format: Jahr+Letter+Nummer
-└── documents/                       # Hochgeladene Belege (optional)
-```
-
----
-
-## SQL-Export & Import
-
-### SQL-Export (`export_to_sql()`)
-
-Exportiert alle Tabellendaten als INSERT-Statements:
-- **Kompaktes Format**: Multi-Value INSERT-Syntax für kürzere Dateien
-  ```sql
-  INSERT INTO TableName (col1, col2, col3) VALUES
-  (val1, val2, val3),
-  (val1, val2, val3),
-  (val1, val2, val3);
-  ```
-- **Direkt verwendbar**: Statements können direkt in SQL-Konsole eingefügt werden
-- **Ausgabe**: `data/db-export.sql`
-- **Überspringt**: Leere Tabellen und SQLite-interne Tabellen
-
-### WISO Mein Büro CSV-Import (`import_wiso_csv()`)
-
-Importiert Buchungen aus WISO Mein Büro mit automatischer Format-Erkennung:
-
-#### Unterstützte Formate:
-
-**1. Original-Export (9 Spalten):**
-- **CSV-Format**: ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER
-- **Mapping**:
-  - KONTO → ChartOfAccounts.AccountNumber → COA_ID (Sollkonto)
-  - GEGENKONTO → ChartOfAccounts.AccountNumber → CounterCOA_ID (Habenkonto)
-  - SCHLUESSEL → BU-Schlüssel → TaxRate (401=19%, 402=7%, 121=0%)
-- **Duplikat-Erkennung**: REFERENZNUMMER + Datum + COA_ID + Betrag
-- **Aktion**: Neue Buchungen anlegen
-
-**2. Tabellen-Export (6 Spalten):**
-- **CSV-Format**: Buchungsdatum;Empf./Auft.;Verwendungszweck;Kategorie;Beleg Nr./opt. Beleg Nr.;Betrag
-  - Spalte 1 (Status) und 8 (Saldo) sollten vor dem Export entfernt werden
-  - Spaltenname "Beleg Nr." oder "opt. Beleg Nr." wird automatisch erkannt
-- **Mapping**:
-  - Empf./Auft. → RecipientClient
-  - Verwendungszweck → Text (Zeilenumbrüche werden in Leerzeichen konvertiert)
-  - Kategorie (SKR-Beschreibung) → COA_ID (automatisches Matching)
-  - Beleg Nr. → DocumentNumber
-- **Suche**: Datum + DocumentNumber + Betrag
-- **Aktion**: 
-  - Bestehende Buchungen aktualisieren (UPDATE)
-  - Neue Buchungen anlegen wenn nicht gefunden (INSERT)
-  - Nur leere Felder werden ergänzt (keine Überschreibung)
-- **Zeilenumbrüche**: Textfelder mit Zeilenumbrüchen (z.B. Überweisungstexte) werden automatisch normalisiert
-
-#### Format-Erkennung:
-- Automatisch anhand der Spaltenüberschriften
-- Original: erkennt "KONTO" und "GEGENKONTO"
-- Tabelle: erkennt "Empf./Auft." und "Verwendungszweck"
-
-#### Gemeinsame Features:
-- **Encoding**: Automatische Erkennung (CP1252, UTF-8-SIG, UTF-8, Latin-1)
-- **Fehlerbehandlung**: 
-  - Fehlende SKR-Konten werden gemeldet
-  - Duplikate werden übersprungen mit Details
-  - Fehlerhafte Zeilen werden protokolliert
-- **Rückgabe**: 
-  ```python
-  {
-    'imported': int,        # Neu angelegte Buchungen
-    'updated': int,         # Aktualisierte Buchungen (nur Tabellen-Format)
-    'skipped': int,         # Übersprungene Duplikate
-    'errors': list[str],    # Fehlermeldungen
-    'format': str          # 'original' oder 'table'
-  }
-  ```
-
-## SQL-Logging
-
-Die Klasse `Database` unterstützt optionales SQL-Logging:
-- Automatische Ersetzung von Parametern in Templates
-- Formatierung für lesbare Logs
-- Aktiviert durch `log_description` Parameter in insert/update Methoden
-
----
-
-## Besonderheiten & Constraints
-
-1. **Foreign Keys:** Aktiviert via `PRAGMA foreign_keys = ON`
-2. **ON DELETE CASCADE:** Nur bei InvoiceItems und AssetDepreciations
-3. **Snapshot-Prinzip:** Invoices kopieren Stammdaten zum Zeitpunkt der Erstellung
+1. **Foreign Keys:** `PRAGMA foreign_keys = ON`
+2. **ON DELETE CASCADE:** InvoiceItems, AssetDepreciations, ContactAddresses, CompanyDetails, PersonDetails
+3. **Snapshot-Prinzip:** Invoices kopieren Stammdaten bei Erstellung
 4. **Datum-Format:** ISO 8601 (YYYY-MM-DD)
-5. **Währung:** Standardmäßig EUR, erweiterbar
-6. **Steuersätze:** Als Dezimalzahl (0.19 = 19%)
+5. **Steuersätze:** Dezimal (0.19 = 19%)
+6. **Seeding:** `_seed_chart_of_accounts()`, `_seed_asset_categories()`, `_seed_tax_keys()` laden aus `seed_data/`-JSON
 
 ---
 
-## Migrations & Setup
-
-- **initialize_database():** Erstellt alle Tabellen beim ersten Start
-- **_run_migrations():** Fügt neue Tabellen hinzu (Assets, AssetCategories, etc.)
-- **ensure_kasse_exists():** Erstellt Default-Konto "Kasse"
-- **_seed_asset_categories():** Befüllt AfA-Kategorien nach BMF
-
----
-
-## Performance-Hinweise
-
-- Keine expliziten Indizes außer PRIMARY KEYs und UNIQUE Constraints
-- Bei großen Datenmengen empfohlen:
-  - Index auf `Bookings.DateBooking`
-  - Index auf `Invoices.Status`
-  - Index auf `Documents.Date`
-
----
-
-**Dokumentversion:** 1.1  
-**Erstellt:** 26. Februar 2026  
-**Letzte Aktualisierung:** 17. März 2026  
-**Wartung:** Bei Schemaänderungen aktualisieren!
-
----
-
-## Änderungshistorie
-
-**v1.1 (17. März 2026)**
-- Neues Feld `CounterCOA_ID` in Bookings-Tabelle für doppelte Buchführung
-- Kompaktes SQL-Export-Format (Multi-Value INSERT)
-- WISO Mein Büro CSV-Import mit Duplikat-Erkennung nach Datum
-
-**v1.0 (26. Februar 2026)**
-- Initiale Dokumentation
+**Dokumentversion:** 2.0
+**Letzte Aktualisierung:** 1. April 2026\n

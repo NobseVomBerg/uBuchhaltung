@@ -113,34 +113,7 @@ def handle_confirm_import(db: Database, post_data):
                 skipped_transactions.append(trans)
                 continue
 
-            # Versuche, eine passende WISO-Buchung/-Gruppe zu finden und zu verknüpfen
-            # Stufe 1: Einzelbuchung (Datum + Betrag exact)
-            # Stufe 2: Split-Gruppe (Datum + SUM der Teilbeträge)
-            match = db.find_unlinked_booking_by_date_amount(trans_date, trans_amount)
-            if match:
-                match_type, match_id = match
-                conn = db._get_connection()
-                cur = conn.cursor()
-                update_sql = '''
-                    UPDATE Bookings
-                    SET Account_ID=?,
-                        ForeignBankAccount=?,
-                        RecipientClient=CASE WHEN (RecipientClient IS NULL OR RecipientClient='')
-                                             THEN ? ELSE RecipientClient END
-                    WHERE {where}
-                '''
-                if match_type == 'single':
-                    cur.execute(update_sql.format(where='ID=?'),
-                                (account_id_int, foreign_iban, recipient, match_id))
-                else:  # 'group' → alle Teilbuchungen der Gruppe verknüpfen
-                    cur.execute(update_sql.format(where='BookingGroup_ID=?'),
-                                (account_id_int, foreign_iban, recipient, match_id))
-                conn.commit()
-                conn.close()
-                linked_count += 1
-                continue
-
-            # Kein Match → neue Buchung anlegen
+            # Neue Bank-Buchung anlegen (BookingType='bank')
             db.insert_booking(
                 date_booking=trans_date,
                 amount=trans_amount,
@@ -149,9 +122,15 @@ def handle_confirm_import(db: Database, post_data):
                 recipient_client=recipient,
                 text=text,
                 document_number=None,
+                booking_type='bank',
                 log_description="VBR bank statement import"
             )
             inserted_count += 1
+
+        # Auto-Linking: Bank-Buchungen mit WISO-Entry-Buchungen verknüpfen
+        link_result = db.link_bank_to_entries()
+        linked_count = link_result.get('linked', 0)
+        repaired_count = link_result.get('repaired', 0)
         
         # Delete pending import file
         os.remove(import_file)
@@ -161,6 +140,8 @@ def handle_confirm_import(db: Database, post_data):
         s += Header2()
         s += f"<h1>Import erfolgreich</h1>"
         s += f"<p>{inserted_count} Transaktionen neu angelegt.</p>"
+        if repaired_count > 0:
+            s += f"<p style='color: blue;'>{repaired_count} Altdaten-Buchungen als Bank-Typ repariert.</p>"
         if linked_count > 0:
             s += f"<p style='color: green;'>{linked_count} WISO-Buchungen mit Bankdaten verknüpft.</p>"
         
@@ -482,6 +463,10 @@ def handle_wiso_import(request_handler, db: Database):
         skipped   = result['skipped']
         errs      = result['errors']
 
+        # Nach WISO-Import: Bank↔Entry-Verknüpfung durchführen
+        link_result = db.link_bank_to_entries()
+        linked_count = link_result.get('linked', 0)
+
         # Detailergebnis für Anzeige auf der Seite persistieren
         result_path = os.path.join('data', 'wiso_import_result.json')
         try:
@@ -497,6 +482,7 @@ def handle_wiso_import(request_handler, db: Database):
             f'&not_found={len(result.get("not_found", []))}'
             f'&missing_coa={len(result.get("missing_coa", []))}'
             f'&missing_skr={len(result.get("missing_skr", []))}'
+            f'&linked={linked_count}'
         )
     except Exception as e:
         import traceback
