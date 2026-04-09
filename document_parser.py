@@ -196,6 +196,20 @@ class DocumentParser:
         """Parse VBR transactions from plain text"""
         transactions = []
         
+        # Strip page footer that VBR bank statements add at the bottom
+        # of every page. The footer pattern looks like:
+        #   0128
+        #   000
+        #   K00009283          (or similar K-number)
+        #   5M                 (optional)
+        #   Bitte beachten Sie die Hinweise ...
+        text = re.sub(
+            r'\n\d{4}\n\d{3}\n'
+            r'K\d{5,}\n'
+            r'(?:[A-Z0-9]{1,4}\n)?'
+            r'Bitte beachten Sie die Hinweise[^\n]*',
+            '', text)
+
         # Split text into lines
         lines = text.split('\n')
         
@@ -242,7 +256,12 @@ class DocumentParser:
                             break
                         
                         # Stop if empty or looks like footer/header
-                        if not next_line or 'Kontoauszug' in next_line or 'Blatt' in next_line:
+                        if (not next_line
+                                or 'Kontoauszug' in next_line
+                                or 'Blatt' in next_line
+                                or re.match(r'^\d{3,4}$', next_line)
+                                or re.match(r'^K\d{5,}$', next_line)
+                                or next_line.startswith('Bitte beachten Sie')):
                             j += 1
                             continue
                         
@@ -424,6 +443,382 @@ class DocumentParser:
             print(f"Error parsing transaction at row {start_idx}: {e}")
             return None
     
+    # ── DKB (Deutsche Kreditbank) parser ────────────────────────────
+
+    def parse_bank_statement_dkb(self, filepath: str) -> Dict:
+        """Parse DKB bank statement PDF.
+
+        DKB statements have a two-column amount layout (Belastung /
+        Gutschrift) without S/H suffixes, so we must use the x-position
+        of each amount word to determine debit vs credit.
+
+        Returns the same dict shape as ``parse_bank_statement_vbr``.
+        """
+        result: Dict = {
+            'iban': None,
+            'document_date': None,
+            'transactions': [],
+            'bank_code': 'DKB',
+        }
+
+        try:
+            with pdfplumber.open(filepath) as pdf:
+                full_text = ''
+                for page in pdf.pages:
+                    full_text += (page.extract_text() or '') + '\n'
+
+                # ── IBAN from header ──────────────────────────────
+                # "Kontonummer 1007556036 / IBAN DE04 1203 0000 1007 5560 36"
+                m = re.search(
+                    r'IBAN\s+([A-Z]{2}[\s\d]{15,})',
+                    full_text[:600])
+                if m:
+                    result['iban'] = re.sub(r'\s', '', m.group(1))
+
+                # ── Date range from header ────────────────────────
+                # "Kontoauszug Nummer 002 / 2016 vom 05.01.2016 bis 04.02.2016"
+                m = re.search(
+                    r'vom\s+\d{2}\.\d{2}\.\d{4}\s+bis\s+(\d{2}\.\d{2}\.\d{4})',
+                    full_text[:600])
+                if m:
+                    try:
+                        result['document_date'] = datetime.strptime(
+                            m.group(1), '%d.%m.%Y')
+                    except ValueError:
+                        pass
+
+                # Derive year range for DD.MM. -> full date conversion
+                year_from, year_to = self._dkb_year_range(full_text[:600])
+
+                # ── Parse each page ───────────────────────────────
+                for page in pdf.pages:
+                    txns, continuation = self._parse_dkb_page(
+                        page, year_from, year_to)
+                    # Merge continuation from page-spanning transaction
+                    if continuation and result['transactions']:
+                        last_tx = result['transactions'][-1]
+                        cont_text = '\n'.join(continuation)
+                        # Clean continuation (same SEPA markers)
+                        for pat in (
+                            r'I\s*B\s*A\s*N\s*:?.*',
+                            r'B\s*I\s*C\s*:?.*',
+                            r'M\s*R\s*E\s*F\s*[+:].*',
+                            r'E\s*R\s*E\s*F\s*[+:].*',
+                            r'C\s*R\s*E\s*D\s*[+:].*',
+                            r'K\s*R\s*E\s*F\s*[+:].*',
+                            r'S\s*V\s*W\s*Z\s*\+.*',
+                            r'A\s*B\s*W[AE]\s*\+.*',
+                        ):
+                            cont_text = re.sub(
+                                pat, '', cont_text,
+                                flags=re.I | re.DOTALL)
+                        cont_clean = '\n'.join(
+                            ln.strip() for ln in cont_text.split('\n')
+                            if ln.strip())
+                        if cont_clean:
+                            if last_tx['reference']:
+                                last_tx['reference'] += '\n' + cont_clean
+                            else:
+                                last_tx['reference'] = cont_clean
+                        # Try to extract foreign IBAN from continuation
+                        if not last_tx.get('foreign_iban'):
+                            full_cont = ' '.join(continuation)
+                            iban_pat = (r'I\s*B\s*A\s*N\s*:?\s*'
+                                        r'([A-Z]{2}\s*\d{2}[A-Z0-9\s]{15,}?)'
+                                        r'(?:\s*B\s*I\s*C\s*:|\s|$)')
+                            iban_m = re.search(
+                                iban_pat, full_cont, re.IGNORECASE)
+                            if iban_m:
+                                last_tx['foreign_iban'] = re.sub(
+                                    r'\s+', '', iban_m.group(1).upper())
+                    result['transactions'].extend(txns)
+
+        except Exception as e:
+            print(f"Error parsing DKB statement {filepath}: {e}")
+            import traceback
+            traceback.print_exc()
+
+        return result
+
+    # ----------------------------------------------------------------
+    @staticmethod
+    def _dkb_year_range(header_text: str):
+        """Return (year_from, year_to) from the DKB header range line.
+
+        Example header:
+          ``Kontoauszug Nummer 004 / 2016 vom 07.03.2016 bis 01.04.2016``
+        """
+        m = re.search(
+            r'vom\s+\d{2}\.\d{2}\.(\d{4})\s+bis\s+\d{2}\.\d{2}\.(\d{4})',
+            header_text)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+        return datetime.now().year, datetime.now().year
+
+    # ----------------------------------------------------------------
+    def _parse_dkb_page(self, page, year_from: int, year_to: int) -> tuple:
+        """Parse a single DKB PDF page into transaction dicts.
+
+        Returns (transactions, continuation_lines).
+        continuation_lines: raw text lines overflowing from the
+            previous page's last transaction (appears at the top of
+            the page before the first real transaction).
+
+        Strategy:
+        1. Build a *credit set* from word-level x-positions: for every
+           amount word whose x0 >= 500 we record its approximate y
+           position as "credit".
+        2. Walk ``extract_text()`` lines with the same DD.MM. DD.MM.
+           regex used for VBR.  When we find a transaction header we
+           look up whether the amount's y-row is in the credit set.
+        """
+        text = page.extract_text() or ''
+        words = page.extract_words()
+
+        # ── 1. Build credit-y set ─────────────────────────────────
+        #   Amount words: right-aligned numbers with comma (e.g. 14.305,28)
+        #   Threshold x0 >= 500 → Gutschrift column
+        credit_tops: set = set()
+        for w in words:
+            if w['top'] < 160:
+                continue  # skip header area
+            if re.match(r'^[\d.]+,\d{2}$', w['text']) and w['x0'] >= 500:
+                credit_tops.add(round(w['top']))
+
+        # Also build a top→word map for ALL amount-like words so we can
+        # fall back to matching by y-position when needed.
+        amount_by_top: dict = {}
+        for w in words:
+            if w['top'] < 160:
+                continue
+            if re.match(r'^[\d.]+,\d{2}$', w['text']) and w['x0'] > 350:
+                amount_by_top[round(w['top'])] = w
+
+        # ── 2. Map bu-tag date words to y-positions ───────────────
+        bu_tag_tops: list = []
+        for w in words:
+            if re.match(r'^\d{2}\.\d{2}\.$', w['text']) and w['x0'] < 60:
+                bu_tag_tops.append(round(w['top']))
+
+        # ── 3. Strip footer / boilerplate ─────────────────────────
+        text = re.sub(
+            r'DEUTSCHE KREDITBANK AG\s+IBAN:.*',
+            '', text, flags=re.DOTALL)
+        # Remove ALTER/NEUER KONTOSTAND and everything after
+        text = re.sub(
+            r'ALTER KONTOSTAND.*',
+            '', text, flags=re.DOTALL)
+
+        lines = text.split('\n')
+
+        # ── 4. Iterate lines ──────────────────────────────────────
+        transactions: List[Dict] = []
+        continuation_lines: list = []  # overflow from prev page
+        first_real_tx_found = False
+        i = 0
+        bu_tag_idx = 0  # index into bu_tag_tops
+
+        while i < len(lines):
+            line = lines[i].strip()
+
+            # Skip page header lines
+            if (not line
+                    or 'Kontoauszug Nummer' in line
+                    or 'Kontonummer' in line
+                    or line.startswith('Bu.Tag')
+                    or 'Wir haben' in line):
+                i += 1
+                continue
+
+            # ── Transaction header: DD.MM. DD.MM. type amount ─────
+            match = re.match(
+                r'^(\d{2}\.\d{2}\.) \d{2}\.\d{2}\. (.+)', line)
+
+            if not match:
+                i += 1
+                continue
+
+            bu_tag = match.group(1)            # e.g. "04.01."
+            rest_of_line = match.group(2)
+
+            # Extract trailing amount – strict format: 1.234,56
+            amount_match = re.search(
+                r'(\d{1,3}(?:\.\d{3})*,\d{2})\s*$', rest_of_line)
+
+            if not amount_match:
+                # No valid amount → continuation from previous page
+                if not first_real_tx_found:
+                    continuation_lines.append(rest_of_line)
+                    # Advance bu_tag_idx for this date entry
+                    if bu_tag_idx < len(bu_tag_tops):
+                        bu_tag_idx += 1
+                    # Collect subsequent non-date detail lines
+                    j = i + 1
+                    while j < len(lines):
+                        nxt = lines[j].strip()
+                        if (not nxt
+                                or re.match(
+                                    r'^\d{2}\.\d{2}\. \d{2}\.\d{2}\.',
+                                    nxt)
+                                or 'Kontoauszug Nummer' in nxt
+                                or 'Kontonummer' in nxt
+                                or nxt.startswith('Bu.Tag')
+                                or 'ALTER KONTOSTAND' in nxt
+                                or 'DEUTSCHE KREDITBANK' in nxt):
+                            break
+                        continuation_lines.append(nxt)
+                        j += 1
+                    i = j
+                    continue
+                i += 1
+                continue
+
+            amount_str = amount_match.group(1)
+
+            first_real_tx_found = True
+
+            amount_val = float(
+                amount_str.replace('.', '').replace(',', '.'))
+
+            # Transaction type (between second date and amount)
+            trans_type = rest_of_line[:amount_match.start()].strip()
+
+            # ── Determine debit/credit via y-position ─────────────
+            # Find the bu-tag y that corresponds to this line
+            y_top = None
+            if bu_tag_idx < len(bu_tag_tops):
+                y_top = bu_tag_tops[bu_tag_idx]
+                bu_tag_idx += 1
+
+            if y_top is not None and y_top in credit_tops:
+                amount = amount_val       # credit → positive
+            elif y_top is not None:
+                # Check +-1 tolerance
+                if (y_top - 1) in credit_tops or (y_top + 1) in credit_tops:
+                    amount = amount_val
+                else:
+                    amount = -amount_val  # debit → negative
+            else:
+                # Fallback: guess from transaction type
+                if trans_type.lower() in ('zahlungseingang',):
+                    amount = amount_val
+                else:
+                    amount = -amount_val
+
+            # ── Collect detail lines ──────────────────────────────
+            recipient = ''
+            reference_lines: list = []
+            foreign_iban = ''
+            all_detail_lines: list = []
+
+            j = i + 1
+            while j < len(lines):
+                next_line = lines[j].strip()
+
+                # Stop at next transaction
+                if re.match(r'^\d{2}\.\d{2}\. \d{2}\.\d{2}\.', next_line):
+                    break
+
+                # Skip empty, header, footer, KONTOSTAND
+                if (not next_line
+                        or 'Kontoauszug Nummer' in next_line
+                        or 'Kontonummer' in next_line
+                        or next_line.startswith('Bu.Tag')
+                        or 'ALTER KONTOSTAND' in next_line
+                        or 'NEUER KONTOSTAND' in next_line
+                        or 'DEUTSCHE KREDITBANK' in next_line
+                        or next_line.startswith('Guthaben sind als')
+                        or next_line.startswith('Seite ')):
+                    j += 1
+                    continue
+
+                all_detail_lines.append(next_line)
+                j += 1
+
+            # ── Extract IBAN ──────────────────────────────────────
+            full_text_sl = ' '.join(all_detail_lines)
+            iban_pat = (r'I\s*B\s*A\s*N\s*:?\s*'
+                        r'([A-Z]{2}\s*\d{2}[A-Z0-9\s]{15,}?)'
+                        r'(?:\s*B\s*I\s*C\s*:|\s|$)')
+            iban_m = re.search(iban_pat, full_text_sl, re.IGNORECASE)
+            if iban_m:
+                foreign_iban = re.sub(r'\s+', '', iban_m.group(1).upper())
+
+            # ── Clean detail text (remove IBAN/BIC/REF fields) ────
+            cleaned = '\n'.join(all_detail_lines)
+            cleaned = re.sub(
+                r'I\s*B\s*A\s*N\s*:?.*', '', cleaned,
+                flags=re.I | re.DOTALL)
+            cleaned = re.sub(
+                r'B\s*I\s*C\s*:?.*', '', cleaned,
+                flags=re.I | re.DOTALL)
+            cleaned = re.sub(
+                r'M\s*R\s*E\s*F\s*[+:].*', '', cleaned,
+                flags=re.I | re.DOTALL)
+            cleaned = re.sub(
+                r'E\s*R\s*E\s*F\s*[+:].*', '', cleaned,
+                flags=re.I | re.DOTALL)
+            cleaned = re.sub(
+                r'C\s*R\s*E\s*D\s*[+:].*', '', cleaned,
+                flags=re.I | re.DOTALL)
+            cleaned = re.sub(
+                r'K\s*R\s*E\s*F\s*[+:].*', '', cleaned,
+                flags=re.I | re.DOTALL)
+            cleaned = re.sub(
+                r'R\s*E\s*F\s*[+:].*', '', cleaned,
+                flags=re.I | re.DOTALL)
+            cleaned = re.sub(
+                r'A\s*B\s*W[AE]\s*\+.*', '', cleaned,
+                flags=re.I | re.DOTALL)
+            cleaned = re.sub(
+                r'S\s*V\s*W\s*Z\s*\+.*', '', cleaned,
+                flags=re.I | re.DOTALL)
+
+            cleaned_lines = [
+                ln.strip() for ln in cleaned.split('\n')
+                if ln.strip()]
+
+            # ── Derive recipient / reference ──────────────────────
+            if trans_type.lower().startswith('abrechnung'):
+                recipient = 'DKB'
+                reference_lines = [trans_type]
+            elif cleaned_lines:
+                recipient = cleaned_lines[0]
+                reference_lines = cleaned_lines[1:]
+            else:
+                recipient = trans_type
+
+            # ── Build date ────────────────────────────────────────
+            day_month = bu_tag  # "04.01."
+            month_int = int(day_month[3:5])
+            # Use year_to for months that belong to the "bis" year,
+            # year_from otherwise (handles Dec→Jan spanning)
+            if year_from != year_to and month_int >= 10:
+                year = year_from
+            else:
+                year = year_to
+            try:
+                tx_date = datetime.strptime(
+                    f'{day_month}{year}', '%d.%m.%Y')
+            except ValueError:
+                tx_date = datetime.now()
+
+            reference = ('\n'.join(reference_lines)
+                         if reference_lines else trans_type)
+
+            transactions.append({
+                'date': tx_date.strftime('%Y-%m-%d'),
+                'recipient': recipient if recipient else trans_type,
+                'reference': reference,
+                'amount': amount,
+                'foreign_iban': foreign_iban,
+            })
+
+            i = j  # skip processed lines
+            continue
+
+        return transactions, continuation_lines
+
     def parse_document(self, filepath: str) -> Optional[Dict]:
         """
         Main entry point: Detect document type and parse accordingly
@@ -432,12 +827,16 @@ class DocumentParser:
         
         # Try to detect bank statement
         text = self.extract_text_from_pdf(filepath)
+        text_lower = text.lower()
         
-        if 'volksbank' in text.lower() or 'vbr' in filename:
+        if 'volksbank' in text_lower or 'vbr' in filename:
             return self.parse_bank_statement_vbr(filepath)
         
+        if 'deutsche kreditbank' in text_lower or 'dkb' in text_lower or 'kontoauszug_' in filename:
+            return self.parse_bank_statement_dkb(filepath)
+        
         # Add more parsers for other document types here
-        # elif 'sparkasse' in text.lower():
+        # elif 'sparkasse' in text_lower:
         #     return self.parse_bank_statement_sparkasse(filepath)
         
         # Generic document

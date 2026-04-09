@@ -223,18 +223,21 @@ def PageSkr(db: Database):
                 <tr><td>Konto:</td><td><input type="text" name="account"></td></tr>
                 <tr><td>Name:</td><td><input type="text" name="name"></td></tr>
                 <tr><td>Gruppe:</td><td><input type="text" name="group"></td></tr>
+                <tr><td>Privatanteil %:</td><td><input type="number" name="private_share_percent" value="0" min="0" max="100" style="width:80px;"></td></tr>
                 <tr><td></td><td><input type="submit" value="SKR-Konto hinzufügen"></td></tr>
             </table>
         </form>
     '''
     s += "<h2>Standardkontorahmen, definierte Konten</h2>"
     s += "<table>"
-    s += "<tr><th>ID</th><th>SKR-Nr.</th><th>Konto</th><th>Name</th><th>Gruppe</th><th>Standard</th><th>Aktionen</th></tr>"
+    s += "<tr><th>ID</th><th>SKR-Nr.</th><th>Konto</th><th>Name</th><th>Gruppe</th><th>Privatanteil %</th><th>Standard</th><th>Aktionen</th></tr>"
     for row in rows:
         is_standard = row[5] if len(row) > 5 else 0
-        standard_text = "✓" if is_standard else ""
-        edit_link = "<span style='color: #888;'>Standard (nicht bearbeitbar)</span>" if is_standard else f"<a href='/masterdata/skr/edit?id={row[0]}'>Bearbeiten</a>"
-        s += f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td><td>{standard_text}</td>"
+        standard_text = "\u2713" if is_standard else ""
+        psp = row[6] if len(row) > 6 and row[6] else 0
+        psp_display = f"{psp}\u2009%" if psp else ""
+        edit_link = f"<a href='/masterdata/skr/edit?id={row[0]}'>Bearbeiten</a>"
+        s += f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td><td>{psp_display}</td><td>{standard_text}</td>"
         s += f"<td>{edit_link}</td></tr>"
     s += "</table>"
     s += Footer()
@@ -256,15 +259,23 @@ def PageSkrEdit(db: Database, id):
     submenu = '<a href="/masterdata">Stammdaten</a> -> <a href="/masterdata/skr">📊 SKR</a> -> <span id="ActivePage">Bearbeiten</span>'
     s += Header2(submenu)
     s += Header3()
+
+    is_standard = skr[5] if len(skr) > 5 else 0
+    psp = skr[6] if len(skr) > 6 and skr[6] else 0
+    readonly_attr = ' readonly' if is_standard else ''
+    readonly_note = "<p style='color:#666;'>Standard-Konto: Nur der Privatanteil kann geändert werden.</p>" if is_standard else ""
+
     s += "<h1>SKR-Konto bearbeiten</h1>"
+    s += readonly_note
     s += f'''
         <form method="POST" action="/masterdata/skr/update">
             <table>
                 <tr><td>ID:</td><td><input type="text" name="id" value="{skr[0]}" readonly></td></tr>
-                <tr><td>Rahmen-Nr.:</td><td><input type="text" name="framework_nr" value="{skr[1]}"></td></tr>
-                <tr><td>Konto:</td><td><input type="text" name="account" value="{skr[2]}"></td></tr>
-                <tr><td>Name:</td><td><input type="text" name="name" value="{skr[3]}"></td></tr>
-                <tr><td>Gruppe:</td><td><input type="text" name="group" value="{skr[4]}"></td></tr>
+                <tr><td>Rahmen-Nr.:</td><td><input type="text" name="framework_nr" value="{skr[1]}"{readonly_attr}></td></tr>
+                <tr><td>Konto:</td><td><input type="text" name="account" value="{skr[2]}"{readonly_attr}></td></tr>
+                <tr><td>Name:</td><td><input type="text" name="name" value="{skr[3]}"{readonly_attr}></td></tr>
+                <tr><td>Gruppe:</td><td><input type="text" name="group" value="{skr[4]}"{readonly_attr}></td></tr>
+                <tr><td>Privatanteil %:</td><td><input type="number" name="private_share_percent" value="{psp}" min="0" max="100" style="width:80px;"></td></tr>
                 <tr><td></td><td><input type="submit" value="SKR-Konto aktualisieren"></td></tr>
             </table>
         </form>

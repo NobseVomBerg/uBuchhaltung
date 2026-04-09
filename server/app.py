@@ -29,10 +29,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
     def do_GET(self):
         db = Database()
         try:
-            if self.path == "/":
-                self.respond(200, PageDashboard(db))
-            elif self.path == "/dashboard":
-                self.respond(200, PageDashboard(db))
+            if self.path == "/" or self.path == "/dashboard" or self.path.startswith("/dashboard?"):
+                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                date_from = qs.get('from', [''])[0]
+                date_to   = qs.get('to', [''])[0]
+                acct_raw  = qs.get('acct', [])
+                account_ids = [int(a) for a in acct_raw] if acct_raw else None
+                self.respond(200, PageDashboard(db, date_from, date_to, account_ids))
             elif self.path == "/about":
                 self.respond(200, pages.PageAbout())
             elif self.path == "/invoice" or self.path.startswith("/invoice?"):
@@ -182,7 +185,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(200, PageSkr(db))
             elif self.path.startswith("/masterdata/skr/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
-                id = query_components["id"][0]
+                id = int(query_components["id"][0])
                 self.respond(200, PageSkrEdit(db, id))
             # Bank Accounts
             elif self.path == "/masterdata/bankaccounts":
@@ -539,7 +542,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             # ──────────────────────────────────────────────────────────────
             elif self.path == "/execute_sql":
                 content = handlers.handle_execute_sql(db, post_data)
-                self.respond(200, content)
+                self.respond(200, content, content_type="application/json")
             elif self.path == "/db_export":
                 status_code, location = handlers.handle_db_export(db)
                 self.respond(status_code, "", headers={"Location": location})
@@ -565,13 +568,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             traceback.print_exc()
             self.respond(500, f"Fehler: {str(e)}")
 
-    def respond(self, status_code, content, headers=None):
+    def respond(self, status_code, content, headers=None, content_type="text/html"):
         # Send HTTP status and headers
         self.send_response(status_code)
         if headers:
             for key, value in headers.items():
                 self.send_header(key, value)
-        self.send_header("Content-type", "text/html")
+        self.send_header("Content-type", content_type)
         self.end_headers()
 
         # Write content to response

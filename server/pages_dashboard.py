@@ -1,182 +1,290 @@
 """
-Dashboard page
+Dashboard page – booking-based financial overview.
+
+All figures come from Bookings (bank type), not from Invoices,
+so that imported WISO/DATEV data is always reflected.
 """
 from datetime import datetime
 from db import Database
-from .pages import Header1, Header2, Header3, Footer, INVOICE_STATUS_COLORS, INVOICE_STATUS_LABELS
+from .pages import Header1, Header2, Header3, Footer
 
 
-def PageDashboard(db: Database):
-    """Generate dashboard with statistics and charts"""
+def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
+                  account_ids: list | None = None):
+    """Generate dashboard with statistics and charts.
 
-    # Get all invoices
-    all_invoices = db.fetch_invoices()
+    Args:
+        db:          Database instance
+        date_from:   Start date (YYYY-MM-DD). Default: Jan 1 of current year
+        date_to:     End date   (YYYY-MM-DD). Default: Dec 31 of current year
+        account_ids: Optional list of Account-IDs to include (None = all)
+    """
 
-    # Current year statistics
     current_year = datetime.now().year
-    current_year_invoices = [inv for inv in all_invoices if inv[2] and inv[2].startswith(str(current_year))]
 
-    # Status counts – keyed to match INVOICE_STATUS_COLORS order
-    counts = {
-        'draft':     len([inv for inv in all_invoices if inv[37] == 'draft']),
-        'finalized': len([inv for inv in all_invoices if inv[37] == 'finalized']),
-        'sent':      len([inv for inv in all_invoices if inv[37] == 'sent']),
-        'paid':      len([inv for inv in all_invoices if inv[37] == 'paid']),
-        'cancelled': len([inv for inv in all_invoices if inv[37] == 'cancelled']),
-    }
-    draft_count     = counts['draft']
-    finalized_count = counts['finalized']
-    sent_count      = counts['sent']
-    paid_count      = counts['paid']
-    cancelled_count = counts['cancelled']
+    # ── Defaults ──────────────────────────────────────────────────────
+    if not date_from:
+        date_from = f'{current_year}-01-01'
+    if not date_to:
+        date_to = f'{current_year}-12-31'
 
-    # Financial statistics
-    total_revenue = sum(inv[35] for inv in all_invoices if inv[35] and inv[37] in ['finalized', 'sent', 'paid'])
-    paid_revenue  = sum(inv[35] for inv in all_invoices if inv[35] and inv[37] == 'paid')
-    open_amount   = sum(inv[36] or inv[35] for inv in all_invoices if inv[35] and inv[37] in ['finalized', 'sent'])
+    # Display label
+    if (date_from[5:] == '01-01' and date_to[5:] == '12-31'
+            and date_from[:4] == date_to[:4]):
+        range_label = date_from[:4]
+    else:
+        range_label = f'{date_from} &ndash; {date_to}'
 
-    # Current year revenue
-    year_revenue = sum(inv[35] for inv in current_year_invoices if inv[35] and inv[37] in ['finalized', 'sent', 'paid'])
-    year_paid    = sum(inv[35] for inv in current_year_invoices if inv[35] and inv[37] == 'paid')
+    # ── Data ──────────────────────────────────────────────────────────
+    totals  = db.get_dashboard_totals(date_from, date_to, account_ids)
+    monthly = db.get_dashboard_monthly(date_from, date_to, account_ids)
 
-    # Overdue
-    overdue        = db.get_overdue_invoices()
-    overdue_amount = sum(inv[36] or inv[35] for inv in overdue if inv[35])
+    income   = totals['income']
+    private  = totals['private']
+    expense  = totals['expense']
+    balance  = totals['balance']
+    bank_cnt = totals['bank_count']
+    unlinked = totals['unlinked_count']
 
-    # Monthly revenue for current year
-    monthly_revenue = {}
-    for month in range(1, 13):
-        month_str = f"{current_year}-{month:02d}"
-        month_invoices = [inv for inv in current_year_invoices
-                         if inv[2] and inv[2].startswith(month_str)
-                         and inv[37] in ['finalized', 'sent', 'paid']]
-        monthly_revenue[month] = sum(inv[35] for inv in month_invoices if inv[35])
+    # ── Accounts (for Header2 checkboxes) ─────────────────────────────
+    accounts = db.fetch_accounts()
 
+    # Build a set of selected account IDs for checkbox state
+    all_selected = account_ids is None
+    sel_ids = set(account_ids) if account_ids else set()
+
+    header2_content = (
+        '<input type="checkbox" id="account_all"'
+        + (' checked' if all_selected else '')
+        + ' onchange="toggleAllDashAccounts()"> '
+        '<label for="account_all"><strong>Alle</strong></label> &nbsp;|&nbsp; '
+    )
+    for acct in accounts:
+        aid  = acct[0]
+        name = acct[1]
+        chk  = ' checked' if all_selected or aid in sel_ids else ''
+        header2_content += (
+            f'<input type="checkbox" id="dacct_{aid}" value="{aid}"{chk}'
+            f' onchange="syncDashAccounts()"> '
+            f'<label for="dacct_{aid}">{name}</label> &nbsp; '
+        )
+
+    # ── Year buttons ──────────────────────────────────────────────────
+    year_buttons = ''
+    for y in range(current_year, current_year - 5, -1):
+        active_cls = " class='active'" if range_label == str(y) else ''
+        year_buttons += (
+            f'<button{active_cls} onclick="setDashYear({y})">{y}</button> ')
+
+    header3_content = f'''
+        <div style="display:flex;gap:15px;align-items:center;flex-wrap:wrap;">
+            <div>
+                <label>Von:</label>
+                <input type="date" id="dateFrom" value="{date_from}"
+                       onchange="applyDashFilter()">
+                <label>Bis:</label>
+                <input type="date" id="dateTo" value="{date_to}"
+                       onchange="applyDashFilter()">
+                {year_buttons}
+            </div>
+        </div>
+    '''
+
+    # ── Build page ────────────────────────────────────────────────────
     s = Header1('dashboard')
-    s += Header2()
-    s += Header3()
+    s += Header2(header2_content)
+    s += Header3(header3_content)
 
-    # Key metrics cards
+    # ── Key metric cards ──────────────────────────────────────────────
     s += f'''
     <div class="grid-1RowPrefered">
-        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-            <div style="font-size: 14px; opacity: 0.9;">Gesamtumsatz ({current_year})</div>
-            <div style="font-size: 32px; font-weight: bold; margin: 10px 0;">{year_revenue:.2f} €</div>
-            <div style="font-size: 12px; opacity: 0.8;">Davon bezahlt: {year_paid:.2f} €</div>
+        <div style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+                    color:white;padding:20px;border-radius:10px;
+                    box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+            <div style="font-size:14px;opacity:0.9;">
+                Zahlungseing&auml;nge ({range_label})</div>
+            <div style="font-size:32px;font-weight:bold;margin:10px 0;">
+                {income:,.2f} &euro;</div>
+            <div style="font-size:12px;opacity:0.8;">
+                Rechnungen &amp; Erstattungen</div>
         </div>
 
-        <div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-            <div style="font-size: 14px; opacity: 0.9;">Offene Forderungen</div>
-            <div style="font-size: 32px; font-weight: bold; margin: 10px 0;">{open_amount:.2f} €</div>
-            <div style="font-size: 12px; opacity: 0.8;">{sent_count + finalized_count} unbezahlte Rechnung(en)</div>
+        <div style="background:linear-gradient(135deg,#f093fb 0%,#f5576c 100%);
+                    color:white;padding:20px;border-radius:10px;
+                    box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+            <div style="font-size:14px;opacity:0.9;">
+                Betriebsausgaben ({range_label})</div>
+            <div style="font-size:32px;font-weight:bold;margin:10px 0;">
+                {expense:,.2f} &euro;</div>
+            <div style="font-size:12px;opacity:0.8;">
+                ohne Privatentnahmen</div>
         </div>
 
-        <div style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); color: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-            <div style="font-size: 14px; opacity: 0.9;">Überfällige Rechnungen</div>
-            <div style="font-size: 32px; font-weight: bold; margin: 10px 0;">{overdue_amount:.2f} €</div>
-            <div style="font-size: 12px; opacity: 0.8;">{len(overdue)} Rechnung(en) überfällig</div>
+        <div style="background:linear-gradient(135deg,#fa709a 0%,#fee140 100%);
+                    color:white;padding:20px;border-radius:10px;
+                    box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+            <div style="font-size:14px;opacity:0.9;">
+                Privatentnahmen ({range_label})</div>
+            <div style="font-size:32px;font-weight:bold;margin:10px 0;">
+                {private:,.2f} &euro;</div>
+            <div style="font-size:12px;opacity:0.8;">
+                SKR 2100&ndash;2199</div>
         </div>
 
-        <div style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-            <div style="font-size: 14px; opacity: 0.9;">Gesamt Rechnungen</div>
-            <div style="font-size: 32px; font-weight: bold; margin: 10px 0;">{len(all_invoices)}</div>
-            <div style="font-size: 12px; opacity: 0.8;">{len(current_year_invoices)} in {current_year}</div>
+        <div style="background:linear-gradient(135deg,
+                    {'#4facfe' if balance >= 0 else '#e53935'} 0%,
+                    {'#00f2fe' if balance >= 0 else '#ff6f00'} 100%);
+                    color:white;padding:20px;border-radius:10px;
+                    box-shadow:0 4px 6px rgba(0,0,0,0.1);">
+            <div style="font-size:14px;opacity:0.9;">
+                Saldo ({range_label})</div>
+            <div style="font-size:32px;font-weight:bold;margin:10px 0;">
+                {balance:,.2f} &euro;</div>
+            <div style="font-size:12px;opacity:0.8;">
+                {bank_cnt} Bankbuchungen, {unlinked} offen</div>
         </div>
     </div>
     '''
 
-    # Status distribution & Recent invoices
-    s += '<div class="grid-1RowPrefered">'
+    # ── Monthly 3-part bar chart ──────────────────────────────────────
+    month_names = ['Jan', 'Feb', 'M&auml;r', 'Apr', 'Mai', 'Jun',
+                   'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez']
 
-    # Left: Status bar chart – built from shared constants, no duplicate color definitions
-    s += '''
-    <div class="rectRounded">
-        <h3 style="margin-top: 0;">Status-Verteilung</h3>
-        <div style="margin: 20px 0;">
-    '''
+    # Determine scale: max absolute value across all three categories
+    max_val = 1
+    for m in range(1, 13):
+        d = monthly[m]
+        max_val = max(max_val, d['income'], abs(d['private']), abs(d['expense']))
 
-    status_data = [
-        (INVOICE_STATUS_LABELS[k], counts[k], INVOICE_STATUS_COLORS[k])
-        for k in INVOICE_STATUS_COLORS
-    ]
-    total_status = sum(c for _, c, _ in status_data)
-    for label, count, color in status_data:
-        percentage = (count / total_status * 100) if total_status > 0 else 0
-        s += f'''
-        <div style="margin-bottom: 15px;">
-            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-                <span>{label}</span>
-                <span><strong>{count}</strong> ({percentage:.1f}%)</span>
-            </div>
-            <div style="background: #f0f0f0; height: 20px; border-radius: 10px; overflow: hidden;">
-                <div style="background: {color}; height: 100%; width: {percentage}%;"></div>
-            </div>
-        </div>
-        '''
+    bar_height = 180  # max bar pixel height
 
-    s += '</div></div>'
-
-    # Right: Recent invoices  (color dot from shared constant too)
-    recent_invoices = sorted(all_invoices, key=lambda x: x[39] or '', reverse=True)[:5]  # CreatedAt
-    s += '''
-    <div class="rectRounded">
-        <h3 style="margin-top: 0;">Letzte Rechnungen</h3>
-        <table style="width: 100%; border-collapse: collapse;">
-    '''
-
-    for inv in recent_invoices:
-        status_color = INVOICE_STATUS_COLORS.get(inv[40], '#888')  # Status at index 40
-        s += f'''
-        <tr style="border-bottom: 1px solid #eee;">
-            <td style="padding: 10px 0;">{inv[1]}</td>
-            <td>{inv[14][:20] if inv[14] else ''}</td>
-            <td style="text-align: right;">{inv[38]:.2f} €</td>
-            <td><span style="color: {status_color};">●</span></td>
-            <td><a href="/invoice/view?id={inv[0]}">Ansicht</a></td>
-        </tr>
-        '''
-
-    s += '</table></div></div>'
-
-    # Monthly revenue chart
     s += f'''
     <div class="grid-1RowPrefered">
     <div class="rectRounded">
-        <h3 style="margin-top: 0;">Monatlicher Umsatz {current_year}</h3>
-        <div style="height: 250px; position: relative; margin-top: 20px;">
+        <h3 style="margin-top:0;">Monatlicher Umsatz {range_label}</h3>
+        <div style="display:flex;gap:8px;margin-bottom:10px;font-size:12px;">
+            <span style="color:#4facfe;">&#9632; Einnahmen</span>
+            <span style="color:#ff6f00;">&#9632; Privatentnahmen</span>
+            <span style="color:#e53935;">&#9632; Betriebsausgaben</span>
+        </div>
+        <div style="height:{bar_height + 80}px;position:relative;margin-top:10px;">
+        <div style="display:flex;align-items:flex-end;justify-content:space-around;
+                    height:{bar_height + 30}px;
+                    border-left:2px solid #ddd;border-bottom:2px solid #ddd;
+                    padding:10px 0 0 0;">
     '''
 
-    max_revenue  = max(monthly_revenue.values()) if any(monthly_revenue.values()) else 1
-    month_names  = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez']
-
-    s += '<div style="display: flex; align-items: flex-end; justify-content: space-around; height: 200px; border-left: 2px solid #ddd; border-bottom: 2px solid #ddd; padding: 10px;">'
-
-    for month in range(1, 13):
-        revenue = monthly_revenue[month]
-        height  = (revenue / max_revenue * 180) if max_revenue > 0 else 0
+    for m in range(1, 13):
+        d = monthly[m]
+        h_inc  = (d['income']       / max_val * bar_height) if max_val else 0
+        h_priv = (abs(d['private']) / max_val * bar_height) if max_val else 0
+        h_exp  = (abs(d['expense']) / max_val * bar_height) if max_val else 0
+        tip = (f"Einnahmen: {d['income']:,.2f}\\n"
+               f"Privat: {d['private']:,.2f}\\n"
+               f"Ausgaben: {d['expense']:,.2f}")
         s += f'''
-        <div style="display: flex; flex-direction: column; align-items: center; flex: 1;">
-            <div style="font-size: 11px; margin-bottom: 5px;">{revenue:.0f}€</div>
-            <div style="background: linear-gradient(180deg, #4facfe 0%, #00f2fe 100%); width: 80%; height: {height}px; border-radius: 5px 5px 0 0;"></div>
-            <div style="font-size: 12px; margin-top: 5px;">{month_names[month-1]}</div>
+        <div style="display:flex;flex-direction:column;align-items:center;flex:1;"
+             title="{tip}">
+            <div style="display:flex;gap:1px;align-items:flex-end;height:{bar_height}px;">
+                <div style="background:#4facfe;width:8px;height:{h_inc:.0f}px;
+                            border-radius:2px 2px 0 0;"></div>
+                <div style="background:#ff6f00;width:8px;height:{h_priv:.0f}px;
+                            border-radius:2px 2px 0 0;"></div>
+                <div style="background:#e53935;width:8px;height:{h_exp:.0f}px;
+                            border-radius:2px 2px 0 0;"></div>
+            </div>
+            <div style="font-size:11px;margin-top:4px;">{month_names[m-1]}</div>
         </div>
         '''
 
     s += '</div></div></div></div>'
 
-    # Quick actions
-    s += '''
+    # ── Details table (annual summary by category) ────────────────────
+    total_inc  = sum(monthly[m]['income']  for m in range(1, 13))
+    total_priv = sum(monthly[m]['private'] for m in range(1, 13))
+    total_exp  = sum(monthly[m]['expense'] for m in range(1, 13))
+    total_bal  = total_inc + total_priv + total_exp
+
+    s += f'''
     <div class="grid-1RowPrefered">
     <div class="rectRounded">
-        <h3 style="margin-top: 0;">Schnellzugriff</h3>
-        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-            <a href="/invoice/new" class="coloredButton btn-green">+ Neue Rechnung</a>
-            <a href="/invoice?status=sent" class="coloredButton btn-orange">Versendete Rechnungen</a>
-            <a href="/invoice/reminders" class="coloredButton btn-red">⚠️ Mahnwesen</a>
-            <a href="/invoice" class="coloredButton btn-blue">Alle Rechnungen</a>
+        <h3 style="margin-top:0;">Jahres&uuml;bersicht {range_label}</h3>
+        <table style="width:100%;border-collapse:collapse;">
+            <tr><th style="text-align:left;">Kategorie</th>
+                <th style="text-align:right;">Betrag</th></tr>
+            <tr><td>Zahlungseing&auml;nge</td>
+                <td style="text-align:right;color:green;">
+                    {total_inc:,.2f} &euro;</td></tr>
+            <tr><td>Betriebsausgaben</td>
+                <td style="text-align:right;color:red;">
+                    {total_exp:,.2f} &euro;</td></tr>
+            <tr><td>Privatentnahmen</td>
+                <td style="text-align:right;color:#ff6f00;">
+                    {total_priv:,.2f} &euro;</td></tr>
+            <tr style="border-top:2px solid #666;">
+                <td><strong>Saldo</strong></td>
+                <td style="text-align:right;font-weight:bold;
+                    color:{'green' if total_bal >= 0 else 'red'};">
+                    {total_bal:,.2f} &euro;</td></tr>
+        </table>
+    </div>
+    '''
+
+    # ── Quick actions ─────────────────────────────────────────────────
+    s += '''
+    <div class="rectRounded">
+        <h3 style="margin-top:0;">Schnellzugriff</h3>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+            <a href="/invoice/new" class="coloredButton btn-green">
+                + Neue Rechnung</a>
+            <a href="/invoice?status=sent" class="coloredButton btn-orange">
+                Versendete Rechnungen</a>
+            <a href="/transactions" class="coloredButton btn-blue">
+                Transaktionen</a>
         </div>
     </div>
     </div>
+    '''
+
+    # ── JavaScript ────────────────────────────────────────────────────
+    s += '''
+    <script>
+        function _buildDashURL() {
+            const f = document.getElementById('dateFrom').value;
+            const t = document.getElementById('dateTo').value;
+            let url = '/dashboard?from=' + f + '&to=' + t;
+            const allCb = document.getElementById('account_all');
+            if (!allCb.checked) {
+                document.querySelectorAll(
+                    'input[type="checkbox"][id^="dacct_"]:checked'
+                ).forEach(cb => { url += '&acct=' + cb.value; });
+            }
+            return url;
+        }
+        function setDashYear(year) {
+            document.getElementById('dateFrom').value = year + '-01-01';
+            document.getElementById('dateTo').value   = year + '-12-31';
+            window.location.href = _buildDashURL();
+        }
+        function applyDashFilter() {
+            const f = document.getElementById('dateFrom').value;
+            const t = document.getElementById('dateTo').value;
+            if (f && t) window.location.href = _buildDashURL();
+        }
+        function toggleAllDashAccounts() {
+            const allCb = document.getElementById('account_all');
+            document.querySelectorAll('input[type="checkbox"][id^="dacct_"]')
+                .forEach(cb => { cb.checked = allCb.checked; });
+            window.location.href = _buildDashURL();
+        }
+        function syncDashAccounts() {
+            const cbs = document.querySelectorAll(
+                'input[type="checkbox"][id^="dacct_"]');
+            const allCb = document.getElementById('account_all');
+            allCb.checked = Array.from(cbs).every(cb => cb.checked);
+            window.location.href = _buildDashURL();
+        }
+    </script>
     '''
 
     s += Footer()

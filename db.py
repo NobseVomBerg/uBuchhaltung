@@ -58,6 +58,7 @@ class Database:
                 Name TEXT,
                 Description TEXT,
                 IsStandard INTEGER DEFAULT 0,
+                PrivateSharePercent INTEGER DEFAULT 0,
                 UNIQUE(Framework, AccountNumber)
             )
         ''')
@@ -594,8 +595,9 @@ class Database:
                                             'entry_contact_id': int|None}
 
         Bank rows with linked entries carry merged data from the first child so
-        the template can render a single merged row.  Doppik entries (COA
-        1460-1940) are hidden from the normal list.
+        the template can render a single merged row. Rein liquide Spiegel-
+        Buchungen (COA und Gegenkonto beide Bank-/Liquidkonten) werden aus der
+        Normalliste ausgeblendet.
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -623,22 +625,25 @@ class Database:
             children_by_parent.setdefault(pid, []).append(r)
 
         # 3. Normal (ungrouped) bookings — not bank, not child, not in legacy group
-        #    Doppik entries (bank-side journal, COA 1460-1940) are hidden.
+        #    Rein liquide Spiegelbuchungen und resolved Debitoren ausblenden.
         cursor.execute('''
             SELECT * FROM Bookings
             WHERE (BookingType IS NULL OR BookingType = 'entry')
               AND ParentBooking_ID IS NULL
               AND BookingGroup_ID IS NULL
+              AND (Status IS NULL OR Status != 'resolved')
             ORDER BY DateBooking DESC
         ''')
         normal = []
         for r in cursor.fetchall():
-            coa_id = r[8]  # COA_ID index
-            if coa_id in doppik_coa_ids:
+            coa_id = r[8]          # COA_ID
+            counter_coa_id = r[9]  # CounterCOA_ID
+            if coa_id in doppik_coa_ids and counter_coa_id in doppik_coa_ids:
                 continue  # Doppik-Eintrag verbergen
             normal.append({'type': 'normal', 'date': r[1] or '', 'booking': r})
 
         # 4. Legacy group summaries (BookingGroup_ID, for old imports)
+        #    Resolved Debitoren-Entries ausblenden.
         cursor.execute('''
             SELECT
                 bg.ID,
@@ -652,16 +657,18 @@ class Database:
             FROM BookingGroups bg
             JOIN Bookings b ON b.BookingGroup_ID = bg.ID
             WHERE b.ParentBooking_ID IS NULL
+              AND (b.Status IS NULL OR b.Status != 'resolved')
             GROUP BY bg.ID
             ORDER BY MIN(b.DateBooking) DESC
         ''')
         groups_raw = cursor.fetchall()
 
-        # 5. Legacy children (BookingGroup_ID) — only unlinked
+        # 5. Legacy children (BookingGroup_ID) — only unlinked, not resolved
         cursor.execute('''
             SELECT * FROM Bookings
             WHERE BookingGroup_ID IS NOT NULL
               AND ParentBooking_ID IS NULL
+              AND (Status IS NULL OR Status != 'resolved')
             ORDER BY BookingGroup_ID, DateBooking
         ''')
         children_by_group = {}
@@ -683,7 +690,7 @@ class Database:
             # Merge: ersten (nicht-Doppik) Child als Entry-Quelle nutzen
             entry_src = None
             for c in raw_children:
-                if c[8] not in doppik_coa_ids:  # COA_ID
+                if not (c[8] in doppik_coa_ids and c[9] in doppik_coa_ids):
                     entry_src = c
                     break
             banks.append({
@@ -711,6 +718,8 @@ class Database:
                 {'type': 'child', 'group_id': gid, 'date': c[1] or '', 'booking': c}
                 for c in group_children
             ]
+            # Ersten sichtbaren Child als Info-Quelle nutzen
+            first_child = group_children[0] if group_children else None
             groups.append({
                 'type':        'group',
                 'date':        date or '',
@@ -722,6 +731,11 @@ class Database:
                 'currency':    currency or 'EUR',
                 'contact_id':  contact_id,
                 'children':    children,
+                # Merged-Felder vom ersten Kind (für Kasse-Splits etc.)
+                'first_recipient':  first_child[6] if first_child else None,
+                'first_text':       first_child[15] if first_child else None,
+                'first_coa_id':     first_child[8] if first_child else None,
+                'first_ccoa_id':    first_child[9] if first_child else None,
             })
 
         # Merge top-level items sorted by date descending
@@ -826,7 +840,9 @@ class Database:
             ORDER BY ID
         ''', (bank_booking_id,))
         for row in cursor.fetchall():
-            if row[0] not in bank_coa_ids:  # Nicht-Doppik-Eintrag
+            coa_id = row[0]
+            counter_coa_id = row[1]
+            if not (coa_id in bank_coa_ids and counter_coa_id in bank_coa_ids):
                 conn.close()
                 return row
         conn.close()
@@ -1072,14 +1088,14 @@ class Database:
         conn.close()
         return rows
 
-    def insert_chart_of_accounts(self, framework, account_number, name, description, is_standard=0):
+    def insert_chart_of_accounts(self, framework, account_number, name, description, is_standard=0, private_share_percent=0):
         conn = self._get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute('''
-                INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStandard)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (framework, account_number, name, description, is_standard))
+                INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStandard, PrivateSharePercent)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (framework, account_number, name, description, is_standard, private_share_percent or 0))
             conn.commit()
         except sqlite3.IntegrityError as e:
             print("Error inserting into ChartOfAccounts:", e)
@@ -1087,18 +1103,22 @@ class Database:
         finally:
             conn.close()
 
-    def update_chart_of_accounts(self, id, framework, account_number, name, description):
+    def update_chart_of_accounts(self, id, framework, account_number, name, description, private_share_percent=None):
         conn = self._get_connection()
         cursor = conn.cursor()
         try:
+            # PrivateSharePercent ist für ALLE Konten editierbar (auch Standard)
+            if private_share_percent is not None:
+                cursor.execute(
+                    'UPDATE ChartOfAccounts SET PrivateSharePercent = ? WHERE ID = ?',
+                    (private_share_percent, id))
+            # Andere Felder nur für Nicht-Standard-Konten
             cursor.execute('''
                 UPDATE ChartOfAccounts
                 SET Framework = ?, AccountNumber = ?, Name = ?, Description = ?
                 WHERE ID = ? AND IsStandard = 0
             ''', (framework, account_number, name, description, id))
             conn.commit()
-            if cursor.rowcount == 0:
-                print("Warning: Cannot update standard account or account not found")
         except sqlite3.IntegrityError as e:
             print("Error updating ChartOfAccounts:", e)
             conn.rollback()
@@ -1144,6 +1164,9 @@ class Database:
 
         Falls seed_data/private/chart_of_accounts_custom.json existiert,
         werden zusätzlich benutzerspezifische Konten geladen.
+        Ein optionaler ``overrides``-Block in der Custom-Datei erlaubt es,
+        Felder vorhandener Standard-Konten nachträglich zu ändern
+        (z. B. ``PrivateSharePercent``).
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -1156,22 +1179,42 @@ class Database:
         data = self._load_seed_json('chart_of_accounts_skr04.json')
         framework = data['framework']
         rows = [(framework, e['account_number'], e['name'], e['description'],
-                 1 if e['is_standard'] else 0) for e in data['accounts']]
+                 1 if e['is_standard'] else 0,
+                 e.get('private_share_percent', 0))
+                for e in data['accounts']]
 
         # Private Ergänzungen (optional)
         seed_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'seed_data', 'private')
         private_file = os.path.join(seed_dir, 'chart_of_accounts_custom.json')
+        overrides = []
         if os.path.exists(private_file):
             with open(private_file, 'r', encoding='utf-8') as f:
                 pdata = json.load(f)
             pfw = pdata.get('framework', framework)
             rows += [(pfw, e['account_number'], e['name'], e['description'],
-                      1 if e.get('is_standard') else 0) for e in pdata['accounts']]
+                      1 if e.get('is_standard') else 0,
+                      e.get('private_share_percent', 0))
+                     for e in pdata.get('accounts', [])]
+            overrides = pdata.get('overrides', [])
 
         cursor.executemany('''
-            INSERT OR IGNORE INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStandard)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO ChartOfAccounts
+                (Framework, AccountNumber, Name, Description, IsStandard, PrivateSharePercent)
+            VALUES (?, ?, ?, ?, ?, ?)
         ''', rows)
+
+        # Overrides anwenden (z. B. Privatanteil für Standard-Konten setzen)
+        for ov in overrides:
+            acct_nr = ov.get('account_number')
+            if acct_nr is None:
+                continue
+            psp = ov.get('private_share_percent')
+            if psp is not None:
+                cursor.execute('''
+                    UPDATE ChartOfAccounts SET PrivateSharePercent = ?
+                    WHERE AccountNumber = ? AND Framework = ?
+                ''', (psp, acct_nr, ov.get('framework', framework)))
+
         conn.commit()
         conn.close()
 
@@ -1548,6 +1591,9 @@ class Database:
         return row
 
     def insert_account(self, name, holder, number, bic, bank_name, is_cash=0, skr_account=None):
+        # Kassenkonten bekommen standardmäßig SKR 1460 (Verrechnungskonto)
+        if is_cash and not skr_account:
+            skr_account = 1460
         conn = self._get_connection()
         cursor = conn.cursor()
         sql_template = '''
@@ -2228,16 +2274,47 @@ class Database:
         Stufe 3 – Split-Gruppe: Datum + ABS(SUM der Gruppenmitglieder):
             Für Bank-Buchungen die einer BookingGroup (Split) entsprechen.
 
+        Stufe 3b – Rechnungs-Split: Datum + ABS(SUM/Anzahl):
+            Für Ausgangsrechnungs-Zahlungen die als Doppelbuchung
+            erfasst werden (z.B. Bank 1810 + Erlöse 4405).  Die Gruppe
+            wird nur verknüpft, wenn mindestens ein Mitglied ein
+            Bank-COA hat.
+
+        Stufe 3c – Privatanteil-Split: Datum + SUM ohne Privatentnahme-Offset:
+            Für Split-Gruppen deren Summe durch eine positive
+            Privatentnahme-Gegenbuchung (COA 2100–2199) verfälscht wird.
+            Die Gruppensumme abzüglich des positiven Privatanteils
+            muss dem Bankbetrag entsprechen.
+
+        Stufe 3d – Sammelzahlung: Datum + mehrere Rechnungsnummern im Text:
+            Für Bank-Buchungen mit komma-getrennten Rechnungsnummern im
+            Text (z.B. "2025011,2025010").  Die Entries mehrerer
+            BookingGroups werden zusammengefasst.  Summe der Bank-COA-
+            Entries über alle Gruppen muss dem Bankbetrag entsprechen.
+
         Stufe 4 – DocumentNumber als Tiebreaker:
             Falls Stufe 2 mehrere Treffer liefert, wird versucht
             ob genau einer die passende Belegnummer enthält.
+
+        Stufe 5 – Text-Token-Matching:
+            Letzte Chance: Extrahiert lange Ziffernfolgen (>= 8 Stellen)
+            aus dem Banktext und sucht denselben Token im Entry-Text.
+            Deckt Fälle wie fraenk-Rechnungsnummern oder andere
+            Transaktions-IDs im Verwendungszweck ab.
+
+        Stufe 7 – Debitoren-Auflösung (nach der Hauptschleife):
+            Debitoren-Entries (COA 10000) bei Rechnungserstellung haben
+            ein früheres Datum als die spätere Zahlung und können daher
+            nie per Datum matchen.  Wenn eine Zahlung-Entry (gleiche
+            DocumentNumber, CounterCOA=Debitoren) bereits verknüpft ist,
+            wird der Debitoren-Entry als Status='resolved' markiert.
 
         Nach dem Linken wird der Text der Bank-Buchung durch den Text der
         Entry-Buchung ersetzt (WISO-kuratierter Text hat Vorrang).
 
         Returns:
             dict mit { 'linked': int, 'skipped': int, 'repaired': int,
-                        'errors': list[str] }
+                        'resolved': int, 'errors': list[str] }
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -2256,6 +2333,13 @@ class Database:
 
         # Doppik-COA-IDs — nur echte Bankkonten (aus Accounts-Tabelle)
         bank_coa_ids = self._get_bank_coa_ids(cursor)
+
+        # Privatentnahmen-COA-IDs (SKR04 Konten 2100-2199)
+        cursor.execute('''
+            SELECT ID FROM ChartOfAccounts
+            WHERE AccountNumber >= 2100 AND AccountNumber < 2200
+        ''')
+        private_coa_ids = {r[0] for r in cursor.fetchall()}
 
         # ── Schritt 1: Alle unverknüpften Bank-Buchungen laden ───────────
         cursor.execute('''
@@ -2282,12 +2366,62 @@ class Database:
             return ' '.join((s or '').split()).lower()
 
         def _filter_doppik(entries):
-            """Doppik-Entries (COA im Bankbereich) rausfiltern."""
-            return [e for e in entries if e[3] not in bank_coa_ids]
+            """Rein liquide Spiegelbuchungen rausfiltern (COA und Gegenkonto)."""
+            filtered = []
+            for e in entries:
+                coa_id = e[3]
+                counter_coa_id = e[4]
+                if coa_id in bank_coa_ids and counter_coa_id in bank_coa_ids:
+                    continue
+                filtered.append(e)
+            return filtered
 
         def _filter_already(entries):
             """Bereits in diesem Durchlauf verknüpfte Entries rausfiltern."""
             return [e for e in entries if e[0] not in already_linked_entry_ids]
+
+        import re
+        _TOKEN_RE = re.compile(r'\d{6,}')
+
+        def _extract_tokens(text):
+            """Ziffernfolgen (>=6 Stellen) aus Text extrahieren.
+
+            Dient als eindeutige Kennung (Rechnungs-/Transaktionsnummern),
+            z.B. '1040749116593' (fraenk EREF) oder '870136' (SHBB RNR)."""
+            return set(_TOKEN_RE.findall(text or ''))
+
+        def _token_tiebreak(bank_text, entries, text_idx=2):
+            """Unter mehreren Entries denjenigen finden, der einen
+            gemeinsamen numerischen Token mit dem Banktext teilt.
+
+            Wenn mehrere Entries überlappende Tokens haben (z.B. weil
+            gemeinsame CRED-/IBAN-Nummern in allen PayPal-Texten stehen),
+            wird der Entry mit den *meisten* gemeinsamen Tokens genommen,
+            sofern er eindeutig mehr hat als alle anderen.
+
+            Args:
+                bank_text: Text der Bank-Buchung
+                entries:   Kandidaten-Liste (Tuples)
+                text_idx:  Index des Text-Feldes im Tuple (default 2)
+
+            Returns:
+                Einzel-Entry-Tuple oder None.
+            """
+            bank_tokens = _extract_tokens(bank_text)
+            if not bank_tokens:
+                return None
+            matches = [e for e in entries
+                       if _extract_tokens(e[text_idx]) & bank_tokens]
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) >= 2:
+                # Score = Anzahl gemeinsamer Tokens; höchster gewinnt
+                scored = [(len(_extract_tokens(e[text_idx]) & bank_tokens), e)
+                          for e in matches]
+                scored.sort(key=lambda x: x[0], reverse=True)
+                if scored[0][0] > scored[1][0]:
+                    return scored[0][1]
+            return None
 
         def _do_link(bank_id, entry_id, entry_group_id, entry_text):
             """Verknüpfe entry (oder ganze Gruppe) mit bank."""
@@ -2325,7 +2459,7 @@ class Database:
             # ── Stufe 1: Datum + Empfänger (normalisiert) + ABS(Betrag) ──
             if recip_norm:
                 cursor.execute('''
-                    SELECT ID, BookingGroup_ID, Text, COA_ID FROM Bookings
+                                        SELECT ID, BookingGroup_ID, Text, COA_ID, CounterCOA_ID FROM Bookings
                     WHERE BookingType = 'entry'
                       AND ParentBooking_ID IS NULL
                       AND DateBooking = ?
@@ -2339,7 +2473,7 @@ class Database:
                 if not entries:
                     # Fallback: direkter DB-Vergleich (REPLACE normalisiert)
                     cursor.execute('''
-                        SELECT ID, BookingGroup_ID, Text, COA_ID FROM Bookings
+                        SELECT ID, BookingGroup_ID, Text, COA_ID, CounterCOA_ID FROM Bookings
                         WHERE BookingType = 'entry'
                           AND ParentBooking_ID IS NULL
                           AND DateBooking = ?
@@ -2349,15 +2483,25 @@ class Database:
                             = ?
                     ''', (bank_date, abs_amount, recip_norm))
                     entries = _filter_already(_filter_doppik(cursor.fetchall()))
-                if len(entries) >= 1:
-                    # 1:1 Zuordnung: ersten verfügbaren nehmen (Fraenk-Fall)
-                    _do_link(bank_id, entries[0][0], entries[0][1], entries[0][2])
+                if len(entries) == 1:
+                    _do_link(bank_id, entries[0][0], None, entries[0][2])
+                    linked += 1
+                    continue
+                if len(entries) >= 2:
+                    # Mehrere Treffer: Token-Tiebreak (z.B. Fraenk-Nummern)
+                    token_hit = _token_tiebreak(bank_text, entries)
+                    if token_hit:
+                        _do_link(bank_id, token_hit[0], None, token_hit[2])
+                        linked += 1
+                        continue
+                    # Fallback: ersten verfügbaren nehmen
+                    _do_link(bank_id, entries[0][0], None, entries[0][2])
                     linked += 1
                     continue
 
             # ── Stufe 2: Datum + ABS(Betrag) ─────────────────────────────
             cursor.execute('''
-                SELECT ID, BookingGroup_ID, Text, COA_ID, DocumentNumber
+                                SELECT ID, BookingGroup_ID, Text, COA_ID, CounterCOA_ID, DocumentNumber
                 FROM Bookings
                 WHERE BookingType = 'entry'
                   AND ParentBooking_ID IS NULL
@@ -2366,16 +2510,18 @@ class Database:
             ''', (bank_date, abs_amount))
             entries = _filter_already(_filter_doppik(cursor.fetchall()))
             if len(entries) == 1:
-                _do_link(bank_id, entries[0][0], entries[0][1], entries[0][2])
+                # Nur diesen Entry linken, NICHT die ganze Gruppe
+                _do_link(bank_id, entries[0][0], None, entries[0][2])
                 linked += 1
                 continue
 
             # ── Stufe 4: DocumentNumber als Tiebreaker ───────────────────
             if len(entries) > 1 and bank_docnr:
                 doc_match = [e for e in entries
-                             if e[4] and (bank_docnr in e[4] or e[4] in bank_docnr)]
+                             if e[5] and (bank_docnr in e[5] or e[5] in bank_docnr)]
                 if len(doc_match) == 1:
-                    _do_link(bank_id, doc_match[0][0], doc_match[0][1], doc_match[0][2])
+                    # Nur diesen Entry linken, NICHT die ganze Gruppe
+                    _do_link(bank_id, doc_match[0][0], None, doc_match[0][2])
                     linked += 1
                     continue
 
@@ -2399,21 +2545,208 @@ class Database:
                 cursor.execute('''
                     UPDATE Bookings SET ParentBooking_ID = ?
                     WHERE BookingGroup_ID = ? AND BookingType = 'entry'
-                ''', (bank_id, group_id))
+                      AND DateBooking = ?
+                ''', (bank_id, group_id, bank_date))
                 cursor.execute(
-                    'SELECT ID FROM Bookings WHERE BookingGroup_ID = ?',
-                    (group_id,))
+                    'SELECT ID FROM Bookings WHERE BookingGroup_ID = ?'
+                    ' AND DateBooking = ?',
+                    (group_id, bank_date))
                 for r in cursor.fetchall():
                     already_linked_entry_ids.add(r[0])
                 linked += 1
                 continue
 
+            # ── Stufe 3b: Rechnungs-Split — Betrag = SUM/Anzahl ─────────
+            # Muster: Ausgangsrechnung wird bezahlt → 2 Entries mit
+            # gleichem Betrag (COA Bank + COA Erlöse), SUM = 2× Bankbetrag.
+            # Erkennung: Ein Gruppenmitglied hat COA = Bankkonto.
+            cursor.execute('''
+                SELECT b.BookingGroup_ID, COUNT(*) AS cnt,
+                       SUM(b.Amount) AS total
+                FROM Bookings b
+                WHERE b.BookingType = 'entry'
+                  AND b.ParentBooking_ID IS NULL
+                  AND b.BookingGroup_ID IS NOT NULL
+                  AND b.DateBooking = ?
+                GROUP BY b.BookingGroup_ID
+                HAVING cnt > 1
+                   AND ABS(ABS(total / cnt) - ?) < 0.005
+            ''', (bank_date, abs_amount))
+            inv_groups = cursor.fetchall()
+            # Filtern: Gruppe muss ein Mitglied mit Bank-COA haben
+            inv_matches = []
+            for g in inv_groups:
+                gid = g[0]
+                if gid in already_linked_entry_ids:
+                    continue
+                cursor.execute(
+                    'SELECT COA_ID FROM Bookings WHERE BookingGroup_ID = ? AND BookingType = ?',
+                    (gid, 'entry'))
+                coa_ids = {r[0] for r in cursor.fetchall()}
+                if coa_ids & bank_coa_ids:  # mindestens ein Bank-COA
+                    inv_matches.append(gid)
+            if len(inv_matches) == 1:
+                group_id = inv_matches[0]
+                cursor.execute('''
+                    UPDATE Bookings SET ParentBooking_ID = ?
+                    WHERE BookingGroup_ID = ? AND BookingType = 'entry'
+                      AND DateBooking = ?
+                ''', (bank_id, group_id, bank_date))
+                cursor.execute(
+                    'SELECT ID FROM Bookings WHERE BookingGroup_ID = ?'
+                    ' AND DateBooking = ?',
+                    (group_id, bank_date))
+                for r in cursor.fetchall():
+                    already_linked_entry_ids.add(r[0])
+                linked += 1
+                continue
+
+            # ── Stufe 3c: Privatanteil-Split ─────────────────────────────
+            # Muster: Split-Gruppe enthält eine positive Gegenbuchung auf
+            # ein Privatentnahme-Konto (2100–2199), die den Bankbetrag
+            # verfälscht.  Erkennung: Gruppensumme ohne positive
+            # Privatentnahme-Einträge ≈ Bankbetrag.
+            cursor.execute('''
+                SELECT b.BookingGroup_ID,
+                       SUM(b.Amount) AS total,
+                       SUM(CASE WHEN b.Amount > 0 AND b.COA_ID IN
+                           (SELECT ID FROM ChartOfAccounts
+                            WHERE AccountNumber >= 2100 AND AccountNumber < 2200)
+                           THEN b.Amount ELSE 0 END) AS private_offset
+                FROM Bookings b
+                WHERE b.BookingType = 'entry'
+                  AND b.ParentBooking_ID IS NULL
+                  AND b.BookingGroup_ID IS NOT NULL
+                  AND b.DateBooking = ?
+                GROUP BY b.BookingGroup_ID
+                HAVING private_offset > 0
+                   AND ABS(ABS(total - private_offset) - ?) < 0.005
+            ''', (bank_date, abs_amount))
+            priv_groups = cursor.fetchall()
+            priv_matches = [g[0] for g in priv_groups
+                            if g[0] not in already_linked_entry_ids]
+            if len(priv_matches) == 1:
+                group_id = priv_matches[0]
+                cursor.execute('''
+                    UPDATE Bookings SET ParentBooking_ID = ?
+                    WHERE BookingGroup_ID = ? AND BookingType = 'entry'
+                      AND DateBooking = ?
+                ''', (bank_id, group_id, bank_date))
+                cursor.execute(
+                    'SELECT ID FROM Bookings WHERE BookingGroup_ID = ?'
+                    ' AND DateBooking = ?',
+                    (group_id, bank_date))
+                for r in cursor.fetchall():
+                    already_linked_entry_ids.add(r[0])
+                linked += 1
+                continue
+
+            # ── Stufe 3d: Sammelzahlung ────────────────────────────────
+            # Muster: Bank-Text enthält mehrere komma- oder leerzeichen-
+            # getrennte Rechnungsnummern (z.B. "2025011,2025010").
+            # Die zugehörigen Entries liegen in verschiedenen
+            # BookingGroups.  Summe der Bank-COA-Entries über alle
+            # Gruppen muss dem Bankbetrag entsprechen.
+            doc_nr_candidates = set(re.findall(r'\b\d{4,}\b',
+                                               bank_text or ''))
+            if len(doc_nr_candidates) >= 2:
+                ph = ','.join('?' * len(doc_nr_candidates))
+                cursor.execute(f'''
+                    SELECT ID, BookingGroup_ID, Text, COA_ID,
+                           CounterCOA_ID, DocumentNumber, Amount
+                    FROM Bookings
+                    WHERE BookingType = 'entry'
+                      AND ParentBooking_ID IS NULL
+                      AND DateBooking = ?
+                      AND DocumentNumber IN ({ph})
+                ''', (bank_date, *doc_nr_candidates))
+                sammel_entries = _filter_already(cursor.fetchall())
+                doc_nrs_found = {e[5] for e in sammel_entries}
+                if len(doc_nrs_found) >= 2 and len(sammel_entries) >= 2:
+                    bank_coa_sum = sum(
+                        e[6] for e in sammel_entries
+                        if e[3] in bank_coa_ids)
+                    if abs(abs(bank_coa_sum) - abs_amount) < 0.005:
+                        for e in sammel_entries:
+                            cursor.execute(
+                                'UPDATE Bookings SET ParentBooking_ID = ?'
+                                ' WHERE ID = ?',
+                                (bank_id, e[0]))
+                            already_linked_entry_ids.add(e[0])
+                        linked += 1
+                        continue
+
+            # ── Stufe 5: Text-Token-Matching (letzte Chance) ───────────
+            # Suche unter allen ungelinkten Entries desselben Datums+Betrags
+            # nach einem gemeinsamen numerischen Token (>= 6 Stellen) im
+            # Buchungstext.  Deckt z.B. fraenk-EREF-Nummern, SHBB-RNR-
+            # Nummern und andere Fälle mit Transaktions-IDs im Text ab.
+            cursor.execute('''
+                SELECT ID, BookingGroup_ID, Text, COA_ID, CounterCOA_ID
+                FROM Bookings
+                WHERE BookingType = 'entry'
+                  AND ParentBooking_ID IS NULL
+                  AND DateBooking = ?
+                  AND ABS(ABS(Amount) - ?) < 0.005
+            ''', (bank_date, abs_amount))
+            all_candidates = _filter_already(_filter_doppik(cursor.fetchall()))
+            token_hit = _token_tiebreak(bank_text, all_candidates)
+            if token_hit:
+                _do_link(bank_id, token_hit[0], None, token_hit[2])
+                linked += 1
+                continue
+
             skipped += 1
+
+        # ── Stufe 7: Debitoren-Auflösung ─────────────────────────────────
+        # Debitoren-Entries (COA 10000) entstehen bei Rechnungserstellung
+        # und haben ein früheres Datum als Bank- und Zahlungsbuchungen.
+        # Sie können nie per Datum-Match verknüpft werden.
+        # Lösung: Wenn eine Zahlung-Entry (COA = Bank, CounterCOA =
+        # Debitoren) mit gleicher DocumentNumber bereits verknüpft ist,
+        # setze Status = 'resolved' auf dem Debitoren-Entry.
+        cursor.execute('''
+            SELECT ID FROM ChartOfAccounts
+            WHERE AccountNumber = 10000
+        ''')
+        debitoren_row = cursor.fetchone()
+        resolved_count = 0
+        if debitoren_row:
+            debitoren_coa_id = debitoren_row[0]
+            cursor.execute('''
+                SELECT ID, DocumentNumber
+                FROM Bookings
+                WHERE BookingType = 'entry'
+                  AND ParentBooking_ID IS NULL
+                  AND COA_ID = ?
+                  AND (Status IS NULL OR Status != 'resolved')
+            ''', (debitoren_coa_id,))
+            debitoren_entries = cursor.fetchall()
+
+            for deb_id, doc_nr in debitoren_entries:
+                if not doc_nr:
+                    continue
+                # Suche eine verknüpfte Zahlung-Entry mit gleicher DocNr
+                # und CounterCOA = Debitoren (d.h. Zahlung auf Debitor)
+                cursor.execute('''
+                    SELECT ID FROM Bookings
+                    WHERE BookingType = 'entry'
+                      AND ParentBooking_ID IS NOT NULL
+                      AND DocumentNumber = ?
+                      AND CounterCOA_ID = ?
+                    LIMIT 1
+                ''', (doc_nr, debitoren_coa_id))
+                if cursor.fetchone():
+                    cursor.execute(
+                        "UPDATE Bookings SET Status = 'resolved'"
+                        " WHERE ID = ?",
+                        (deb_id,))
+                    resolved_count += 1
 
         conn.commit()
         conn.close()
         return {'linked': linked, 'skipped': skipped, 'repaired': repaired,
-                'errors': errors}
+                'resolved': resolved_count, 'errors': errors}
 
     @staticmethod
     def _get_recipient(cursor, booking_id):
@@ -3220,3 +3553,291 @@ class Database:
         invoices = cursor.fetchall()
         conn.close()
         return invoices
+
+    # ── Dashboard helpers ─────────────────────────────────────────────
+
+    def get_dashboard_monthly(self, date_from: str, date_to: str,
+                              account_ids: list | None = None):
+        """Monthly 3-way split of bookings for the dashboard.
+
+        Includes both bank-type bookings (for bank accounts) and standalone
+        entry-type bookings (for cash accounts like Kasse).
+
+        Categories:
+          - Einnahmen: bookings with Amount > 0
+          - Privatentnahmen: negative bookings associated with
+            COA AccountNumber 2100-2199 (Eigenkapitalkonten)
+          - Betriebsausgaben: all other negative bookings
+
+        Args:
+            date_from:   Start date  (YYYY-MM-DD)
+            date_to:     End date    (YYYY-MM-DD)
+            account_ids: Optional list of Account IDs to include.
+                         None = all accounts.
+
+        Returns:
+            dict  keys = month int 1-12, values = dict with
+            'income', 'private', 'expense' (all float, expense <= 0).
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # ── Determine bank account IDs and cash COA IDs ───────────────
+        if account_ids:
+            ph = ','.join('?' * len(account_ids))
+            cursor.execute(
+                f"SELECT ID, SKRAccount, IsCash FROM Accounts WHERE ID IN ({ph})",
+                account_ids)
+        else:
+            cursor.execute("SELECT ID, SKRAccount, IsCash FROM Accounts")
+        accounts = cursor.fetchall()
+
+        bank_acct_ids = [a[0] for a in accounts if not a[2]]
+        cash_skr = [a[1] for a in accounts if a[2]]
+        cash_coa_ids = []
+        if cash_skr:
+            cursor.execute(
+                f"SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN "
+                f"({','.join('?' * len(cash_skr))})", cash_skr)
+            cash_coa_ids = [r[0] for r in cursor.fetchall()]
+
+        # ── Build booking-type filter ─────────────────────────────────
+        type_parts = []
+        type_params: list = []
+        if bank_acct_ids:
+            ph = ','.join('?' * len(bank_acct_ids))
+            type_parts.append(
+                f"(b.BookingType='bank' AND b.Account_ID IN ({ph}))")
+            type_params += bank_acct_ids
+        if cash_coa_ids:
+            ph = ','.join('?' * len(cash_coa_ids))
+            type_parts.append(
+                f"(b.BookingType='entry' AND b.ParentBooking_ID IS NULL "
+                f"AND (b.COA_ID IN ({ph}) OR b.CounterCOA_ID IN ({ph})))")
+            type_params += cash_coa_ids * 2
+
+        if not type_parts:
+            conn.close()
+            return {m: {'income': 0, 'private': 0, 'expense': 0}
+                    for m in range(1, 13)}
+
+        acct_filter = ' AND (' + ' OR '.join(type_parts) + ')'
+
+        # ── Privatentnahmen condition ─────────────────────────────────
+        # Bank bookings: child entry has COA 2100-2199
+        # Entry bookings: own COA or CounterCOA is 2100-2199
+        private_cond = '''
+            AND (
+                (b.BookingType='bank' AND EXISTS (
+                    SELECT 1 FROM Bookings e
+                    JOIN ChartOfAccounts c ON e.COA_ID = c.ID
+                    WHERE e.ParentBooking_ID = b.ID
+                      AND c.AccountNumber >= 2100
+                      AND c.AccountNumber < 2200))
+                OR
+                (b.BookingType='entry' AND EXISTS (
+                    SELECT 1 FROM ChartOfAccounts c
+                    WHERE (c.ID = b.COA_ID OR c.ID = b.CounterCOA_ID)
+                      AND c.AccountNumber >= 2100
+                      AND c.AccountNumber < 2200))
+            )'''
+        not_private_cond = '''
+            AND NOT (
+                (b.BookingType='bank' AND EXISTS (
+                    SELECT 1 FROM Bookings e
+                    JOIN ChartOfAccounts c ON e.COA_ID = c.ID
+                    WHERE e.ParentBooking_ID = b.ID
+                      AND c.AccountNumber >= 2100
+                      AND c.AccountNumber < 2200))
+                OR
+                (b.BookingType='entry' AND EXISTS (
+                    SELECT 1 FROM ChartOfAccounts c
+                    WHERE (c.ID = b.COA_ID OR c.ID = b.CounterCOA_ID)
+                      AND c.AccountNumber >= 2100
+                      AND c.AccountNumber < 2200))
+            )'''
+
+        result = {}
+        for month in range(1, 13):
+            month_prefix = f'{date_from[:4]}-{month:02d}%'
+            p = [month_prefix, date_from, date_to] + type_params
+
+            income = cursor.execute(f'''
+                SELECT COALESCE(SUM(b.Amount), 0)
+                FROM Bookings b
+                WHERE b.DateBooking LIKE ?
+                  AND b.DateBooking BETWEEN ? AND ?
+                  AND b.Amount > 0
+                  {acct_filter}
+            ''', p).fetchone()[0]
+
+            private = cursor.execute(f'''
+                SELECT COALESCE(SUM(b.Amount), 0)
+                FROM Bookings b
+                WHERE b.DateBooking LIKE ?
+                  AND b.DateBooking BETWEEN ? AND ?
+                  AND b.Amount < 0
+                  {acct_filter}
+                  {private_cond}
+            ''', p).fetchone()[0]
+
+            expense = cursor.execute(f'''
+                SELECT COALESCE(SUM(b.Amount), 0)
+                FROM Bookings b
+                WHERE b.DateBooking LIKE ?
+                  AND b.DateBooking BETWEEN ? AND ?
+                  AND b.Amount < 0
+                  {acct_filter}
+                  {not_private_cond}
+            ''', p).fetchone()[0]
+
+            result[month] = {
+                'income':  round(income, 2),
+                'private': round(private, 2),
+                'expense': round(expense, 2),
+            }
+
+        conn.close()
+        return result
+
+    def get_dashboard_totals(self, date_from: str, date_to: str,
+                             account_ids: list | None = None):
+        """Aggregate totals for the dashboard metric cards.
+
+        Includes both bank-type bookings (for bank accounts) and standalone
+        entry-type bookings (for cash accounts like Kasse).
+
+        Returns dict with:
+          income, private, expense, balance,
+          bank_count, unlinked_count
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # ── Determine bank account IDs and cash COA IDs ───────────────
+        if account_ids:
+            ph = ','.join('?' * len(account_ids))
+            cursor.execute(
+                f"SELECT ID, SKRAccount, IsCash FROM Accounts WHERE ID IN ({ph})",
+                account_ids)
+        else:
+            cursor.execute("SELECT ID, SKRAccount, IsCash FROM Accounts")
+        accounts = cursor.fetchall()
+
+        bank_acct_ids = [a[0] for a in accounts if not a[2]]
+        cash_skr = [a[1] for a in accounts if a[2]]
+        cash_coa_ids = []
+        if cash_skr:
+            cursor.execute(
+                f"SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN "
+                f"({','.join('?' * len(cash_skr))})", cash_skr)
+            cash_coa_ids = [r[0] for r in cursor.fetchall()]
+
+        # ── Build booking-type filter ─────────────────────────────────
+        type_parts = []
+        type_params: list = []
+        if bank_acct_ids:
+            ph = ','.join('?' * len(bank_acct_ids))
+            type_parts.append(
+                f"(b.BookingType='bank' AND b.Account_ID IN ({ph}))")
+            type_params += bank_acct_ids
+        if cash_coa_ids:
+            ph = ','.join('?' * len(cash_coa_ids))
+            type_parts.append(
+                f"(b.BookingType='entry' AND b.ParentBooking_ID IS NULL "
+                f"AND (b.COA_ID IN ({ph}) OR b.CounterCOA_ID IN ({ph})))")
+            type_params += cash_coa_ids * 2
+
+        if not type_parts:
+            conn.close()
+            return {'income': 0, 'private': 0, 'expense': 0,
+                    'balance': 0, 'bank_count': 0, 'unlinked_count': 0}
+
+        acct_filter = ' AND (' + ' OR '.join(type_parts) + ')'
+        params = [date_from, date_to] + type_params
+
+        # ── Privatentnahmen condition ─────────────────────────────────
+        private_cond = '''
+            AND (
+                (b.BookingType='bank' AND EXISTS (
+                    SELECT 1 FROM Bookings e
+                    JOIN ChartOfAccounts c ON e.COA_ID = c.ID
+                    WHERE e.ParentBooking_ID = b.ID
+                      AND c.AccountNumber >= 2100
+                      AND c.AccountNumber < 2200))
+                OR
+                (b.BookingType='entry' AND EXISTS (
+                    SELECT 1 FROM ChartOfAccounts c
+                    WHERE (c.ID = b.COA_ID OR c.ID = b.CounterCOA_ID)
+                      AND c.AccountNumber >= 2100
+                      AND c.AccountNumber < 2200))
+            )'''
+        not_private_cond = '''
+            AND NOT (
+                (b.BookingType='bank' AND EXISTS (
+                    SELECT 1 FROM Bookings e
+                    JOIN ChartOfAccounts c ON e.COA_ID = c.ID
+                    WHERE e.ParentBooking_ID = b.ID
+                      AND c.AccountNumber >= 2100
+                      AND c.AccountNumber < 2200))
+                OR
+                (b.BookingType='entry' AND EXISTS (
+                    SELECT 1 FROM ChartOfAccounts c
+                    WHERE (c.ID = b.COA_ID OR c.ID = b.CounterCOA_ID)
+                      AND c.AccountNumber >= 2100
+                      AND c.AccountNumber < 2200))
+            )'''
+
+        income = cursor.execute(f'''
+            SELECT COALESCE(SUM(b.Amount), 0)
+            FROM Bookings b
+            WHERE b.DateBooking BETWEEN ? AND ?
+              AND b.Amount > 0 {acct_filter}
+        ''', params).fetchone()[0]
+
+        private = cursor.execute(f'''
+            SELECT COALESCE(SUM(b.Amount), 0)
+            FROM Bookings b
+            WHERE b.DateBooking BETWEEN ? AND ?
+              AND b.Amount < 0 {acct_filter}
+              {private_cond}
+        ''', params).fetchone()[0]
+
+        expense = cursor.execute(f'''
+            SELECT COALESCE(SUM(b.Amount), 0)
+            FROM Bookings b
+            WHERE b.DateBooking BETWEEN ? AND ?
+              AND b.Amount < 0 {acct_filter}
+              {not_private_cond}
+        ''', params).fetchone()[0]
+
+        bank_count = cursor.execute(f'''
+            SELECT COUNT(*) FROM Bookings b
+            WHERE b.DateBooking BETWEEN ? AND ? {acct_filter}
+        ''', params).fetchone()[0]
+
+        # Unlinked = bank bookings without child entries
+        unlinked_params = [date_from, date_to]
+        unlinked_filter = ''
+        if bank_acct_ids:
+            ph = ','.join('?' * len(bank_acct_ids))
+            unlinked_filter = f' AND b.Account_ID IN ({ph})'
+            unlinked_params += bank_acct_ids
+        unlinked = cursor.execute(f'''
+            SELECT COUNT(*) FROM Bookings b
+            WHERE b.BookingType = 'bank'
+              AND b.DateBooking BETWEEN ? AND ? {unlinked_filter}
+              AND NOT EXISTS (
+                  SELECT 1 FROM Bookings e
+                  WHERE e.ParentBooking_ID = b.ID)
+        ''', unlinked_params).fetchone()[0]
+
+        conn.close()
+        return {
+            'income':         round(income, 2),
+            'private':        round(private, 2),
+            'expense':        round(expense, 2),
+            'balance':        round(income + private + expense, 2),
+            'bank_count':     bank_count,
+            'unlinked_count': unlinked,
+        }

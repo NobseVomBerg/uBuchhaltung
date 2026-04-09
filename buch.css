@@ -17,6 +17,7 @@ a:focus					{ color: #84F; text-decoration: none; }
 #note					{ background-color: #F44; font-weight: bold; }
 #Comment				{ color: #4C4; }
 #ActivePage				{ color: #F48; }
+.textareaSql			{ font-family: monospace; width: 100%; max-width: 1000px; margin-top: 10px; }
 
 /* Accounts page styles */
 .accounts-container 	{ display: flex; gap: 20px; margin: 20px 0; max-width: 1000px; }
@@ -37,12 +38,10 @@ a:focus					{ color: #84F; text-decoration: none; }
 /* Bank-Zeilen: verknüpft vs. offen */
 .bank-linked-row            { background: #f0faf0; }
 .bank-open-row              { background: #fff8e1; }
-.status-badge-ok            { display: inline-block; background: #4caf50; color: white;
-                              font-size: 0.72em; font-weight: 700; padding: 2px 6px;
-                              border-radius: 10px; vertical-align: middle; margin-right: 3px; }
-.status-badge-open          { display: inline-block; background: #ff9800; color: white;
-                              font-size: 0.72em; font-weight: 700; padding: 2px 6px;
-                              border-radius: 10px; vertical-align: middle; margin-right: 3px; }
+.status-badge-ok            { display: inline-block; background: #4caf50; color: white; font-size: 0.72em; font-weight: 700;
+                              padding: 2px 6px; border-radius: 10px; vertical-align: middle; margin-right: 3px; }
+.status-badge-open          { display: inline-block; background: #ff9800; color: white; font-size: 0.72em; font-weight: 700;
+                              padding: 2px 6px; border-radius: 10px; vertical-align: middle; margin-right: 3px; }
 
 
 /* dark mode */
@@ -56,6 +55,7 @@ a:focus					{ color: #84F; text-decoration: none; }
 	th					{ background-color: #222; text-align: left;}
 	input, select		{ background-color: #000; color: #FFF; }
 	button				{ background-color: #222; color: #FFF; }
+	button.active		{ background-color: #4facfe; color: #FFF; font-weight: bold; }
 	.rectRounded		{ background-color: #222;}
 	.sql-success-box	{ background-color: #1B5E20; color: #A5D6A7; padding: 10px; }
 	.sql-error-box		{ background-color: #5D1F1A; color: #FFCDD2; padding: 10px; }

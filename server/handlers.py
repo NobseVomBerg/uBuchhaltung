@@ -77,6 +77,7 @@ def handle_confirm_import(db: Database, post_data):
         
         # Get account ID from IBAN
         account_iban = import_data.get('iban', '')
+        bank_code = import_data.get('bank_code', 'unknown')
         accounts = db.fetch_accounts()
         account_id = None
         for acc in accounts:
@@ -123,7 +124,7 @@ def handle_confirm_import(db: Database, post_data):
                 text=text,
                 document_number=None,
                 booking_type='bank',
-                log_description="VBR bank statement import"
+                log_description=f"{bank_code} bank statement import"
             )
             inserted_count += 1
 
@@ -131,6 +132,7 @@ def handle_confirm_import(db: Database, post_data):
         link_result = db.link_bank_to_entries()
         linked_count = link_result.get('linked', 0)
         repaired_count = link_result.get('repaired', 0)
+        resolved_count = link_result.get('resolved', 0)
         
         # Delete pending import file
         os.remove(import_file)
@@ -144,6 +146,8 @@ def handle_confirm_import(db: Database, post_data):
             s += f"<p style='color: blue;'>{repaired_count} Altdaten-Buchungen als Bank-Typ repariert.</p>"
         if linked_count > 0:
             s += f"<p style='color: green;'>{linked_count} WISO-Buchungen mit Bankdaten verknüpft.</p>"
+        if resolved_count > 0:
+            s += f"<p style='color: green;'>{resolved_count} Debitoren-Buchungen als erledigt markiert.</p>"
         
         if skipped_count > 0:
             s += f"<p style='color: orange;'>{skipped_count} Duplikate wurden übersprungen:</p>"
@@ -340,18 +344,20 @@ def handle_add_skr(db: Database, post_data):
     account = post_data["account"][0]
     name = post_data["name"][0]
     group = post_data["group"][0]
-    db.insert_skr(framework_nr, account, name, group)
-    return 303, "/skr"
+    psp = int(post_data.get("private_share_percent", [0])[0] or 0)
+    db.insert_chart_of_accounts(framework_nr, account, name, group, is_standard=0, private_share_percent=psp)
+    return 303, "/masterdata/skr"
 
 def handle_update_skr(db: Database, post_data):
     """Handle updating SKR entry"""
-    id = post_data["id"][0]
+    id = int(post_data["id"][0])
     framework_nr = post_data["framework_nr"][0]
     account = post_data["account"][0]
     name = post_data["name"][0]
     group = post_data["group"][0]
-    db.update_skr(id, framework_nr, account, name, group)
-    return 303, "/skr"
+    psp = int(post_data.get("private_share_percent", [0])[0] or 0)
+    db.update_chart_of_accounts(id, framework_nr, account, name, group, private_share_percent=psp)
+    return 303, "/masterdata/skr"
 
 def handle_db_export(db: Database):
     """Export all DB data as INSERT statements to ./data/db-export.sql"""
@@ -466,6 +472,7 @@ def handle_wiso_import(request_handler, db: Database):
         # Nach WISO-Import: Bank↔Entry-Verknüpfung durchführen
         link_result = db.link_bank_to_entries()
         linked_count = link_result.get('linked', 0)
+        resolved_count = link_result.get('resolved', 0)
 
         # Detailergebnis für Anzeige auf der Seite persistieren
         result_path = os.path.join('data', 'wiso_import_result.json')
@@ -483,6 +490,7 @@ def handle_wiso_import(request_handler, db: Database):
             f'&missing_coa={len(result.get("missing_coa", []))}'
             f'&missing_skr={len(result.get("missing_skr", []))}'
             f'&linked={linked_count}'
+            f'&resolved={resolved_count}'
         )
     except Exception as e:
         import traceback
@@ -491,18 +499,18 @@ def handle_wiso_import(request_handler, db: Database):
 
 
 def handle_execute_sql(db: Database, post_data):
-    """Handle SQL command execution"""
-    import sqlite3
+    """Handle SQL command execution – returns JSON with results."""
+    import sqlite3, json
     
     sql_commands = post_data.get("sql_commands", [""])[0]
     
     if not sql_commands.strip():
-        return generate_sql_result_page("Fehler: Keine SQL-Befehle eingegeben.", False)
+        return json.dumps({"success_count": 0, "total": 0, "errors": ["Keine SQL-Befehle eingegeben."], "output": ""})
     
     # Split commands by semicolon and filter out empty ones
     commands = [cmd.strip() for cmd in sql_commands.split(';') if cmd.strip()]
     
-    results = []
+    output_lines = []
     errors = []
     success_count = 0
     
@@ -514,49 +522,30 @@ def handle_execute_sql(db: Database, post_data):
             try:
                 cursor.execute(command)
                 success_count += 1
-                results.append(f"✓ Befehl {i}: Erfolgreich ausgeführt")
-                results.append(f"  {command[:100]}{'...' if len(command) > 100 else ''}")
+                # SELECT-Ergebnis ausgeben
+                if command.lstrip().upper().startswith('SELECT'):
+                    col_names = [d[0] for d in cursor.description] if cursor.description else []
+                    if col_names:
+                        output_lines.append(';'.join(col_names))
+                    for row in cursor.fetchall():
+                        output_lines.append(';'.join(str(v) if v is not None else '' for v in row))
             except sqlite3.Error as e:
-                errors.append(f"✗ Befehl {i}: Fehler - {str(e)}")
-                errors.append(f"  {command[:100]}{'...' if len(command) > 100 else ''}")
+                errors.append(f"Befehl {i}: {str(e)}")
         
         conn.commit()
         
-        # Build result message
-        message = f"<p><strong>{success_count} von {len(commands)} Befehlen erfolgreich ausgeführt</strong></p>"
-        
-        if results:
-            message += "<h2 class='successColor'>Erfolgreiche Befehle:</h2>"
-            message += "<pre class='sql-success-box'>"
-            message += "\n".join(results)
-            message += "</pre>"
-        
-        if errors:
-            message += "<h2 class='errorColor'>Fehler:</h2>"
-            message += "<pre class='sql-error-box'>"
-            message += "\n".join(errors)
-            message += "</pre>"
-        
-        message += "<p><a href='/miscellaneous'>Zurück zu Sonstiges</a></p>"
-        
-        return generate_sql_result_page(message, len(errors) == 0)
+        return json.dumps({
+            "success_count": success_count,
+            "total": len(commands),
+            "errors": errors,
+            "output": '\n'.join(output_lines)
+        }, ensure_ascii=False)
         
     except Exception as e:
         conn.rollback()
-        return generate_sql_result_page(f"<h2 class='errorColor'>Fehler</h2><p class='errorColor'>{str(e)}</p><p><a href='/miscellaneous'>Zurück zu Sonstiges</a></p>", False)
+        return json.dumps({"success_count": 0, "total": len(commands), "errors": [str(e)], "output": ""}, ensure_ascii=False)
     finally:
         conn.close()
-
-def generate_sql_result_page(message, success):
-    """Generate result page for SQL execution"""
-    s = Header1('miscellaneous')
-    submenu = '<span id="ActivePage">SQL</span>'
-    s += Header2(submenu)
-    s += Header3()
-    s += "<h1>Ergebnis SQL-Ausführung</h1>"
-    s += message
-    s += Footer()
-    return s
 
 def handle_add_contact(db: Database, post_data):
     """Handle adding a new contact (Option C schema)"""

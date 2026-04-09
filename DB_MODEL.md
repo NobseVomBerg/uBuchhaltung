@@ -84,6 +84,7 @@ Beim Erstellen der Datenbank werden folgende Tabellen automatisch befüllt (nur 
 | Name | TEXT | | Kontobezeichnung |
 | Description | TEXT | | Zusätzliche Beschreibung |
 | IsStandard | INTEGER | DEFAULT 0 | 1=Standard-Konto, 0=eigene Ergänzung |
+| PrivateSharePercent | INTEGER | DEFAULT 0 | Privatanteil in % (0–100); wird bei Matching/Export berücksichtigt |
 
 ---
 
@@ -263,7 +264,8 @@ Beim Erstellen der Datenbank werden folgende Tabellen automatisch befüllt (nur 
 - `BookingType='entry'`: Buchhalterischer Eintrag (aus WISO-Original-Export oder manuell)
 - `ParentBooking_ID`: Verknüpft einen Entry mit seiner zugehörigen Bankbuchung
 - Doppik-Entries (COA_ID zeigt auf ein SKR-Bankkonto wie 1810) werden in der Anzeige ausgeblendet
-- `link_bank_to_entries()` verknüpft automatisch anhand Datum + Empfänger + Betrag
+- `link_bank_to_entries()` verknüpft automatisch anhand mehrstufigem Matching (siehe Datenfluss)
+- `Status='resolved'`: Debitoren-Entry wurde über Stufe 7 als erledigt markiert (Zahlung existiert)
 
 ---
 
@@ -457,10 +459,16 @@ Beim Erstellen der Datenbank werden folgende Tabellen automatisch befüllt (nur 
 2. WISO-Original-Export  → Bookings mit BookingType='entry' (Buchungssätze)
    (inkl. TaxRate aus TaxKeys-DB, TaxAmount berechnet)
 3. link_bank_to_entries() verknüpft automatisch:
-   - Tier 1: Datum + normalisierter Empfänger + Betrag
-   - Tier 2: Datum + Betrag (eindeutig nach Doppik-Filter)
-   - Tier 3: Split-Gruppen mit Summenabgleich
-   - Tiebreaker: DocumentNumber bei Mehrdeutigkeit
+   - Stufe 1: Datum + normalisierter Empfänger + Betrag
+   - Stufe 2: Datum + Betrag (eindeutig nach Doppik-Filter)
+   - Stufe 4: DocumentNumber als Tiebreaker bei Mehrdeutigkeit
+   - Stufe 3: Split-Gruppen mit Summenabgleich (nur gleicher Tag)
+   - Stufe 3b: Rechnungs-Split (SUM/Anzahl, Bank-COA als Marker)
+   - Stufe 3c: Privatanteil-Split (Summe minus Privatentnahme-Offset)
+   - Stufe 3d: Sammelzahlung (mehrere Rechnungsnummern im Bank-Text)
+   - Stufe 5: Text-Token-Matching (lange Ziffernfolgen >= 8 Stellen)
+   - Stufe 7: Debitoren-Auflösung (Status='resolved' für Debitoren-Entries
+     deren Zahlung bereits verknüpft ist, datumsunabhängig)
 4. Entry.ParentBooking_ID → Bank.ID
 5. Doppik-Entries (COA_ID = Bankkonto-SKR) werden ausgeblendet
 ```

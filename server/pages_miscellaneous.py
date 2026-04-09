@@ -44,16 +44,43 @@ def PageMiscellaneous(db: Database):
     s += '\t<div class="rectRounded" style="grid-column: span 2">'
     s += '''
         <h2>SQL-Befehle ausführen</h2>
-        <form method="POST" action="/execute_sql">
-            <p>Gib hier SQL-Befehle ein (mehrere Befehle durch Semikolon getrennt):</p>
-            <textarea name="sql_commands" rows="15" cols="100" style="font-family: monospace; width: 100%; max-width: 1000px;" placeholder="INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStandard) VALUES (4, 1000, 'Kasse', 'Barkasse', 1);
-INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStandard) VALUES (4, 1200, 'Bank', 'Bankguthaben', 1);"></textarea>
-            <br>
-            <input type="submit" value="SQL ausführen" class="coloredButton btn-orange">
-            <span style="color: red; margin-left: 20px;">⚠️ Vorsicht: SQL-Befehle werden direkt ausgeführt!</span>
-        </form>
-
-        <div id="sql_result" style="margin-top: 20px;"></div>
+        <p>Gib hier SQL-Befehle ein (mehrere Befehle durch Semikolon getrennt):</p>
+        <textarea id="sql_input" rows="15" cols="100" class="textareaSql" placeholder="SELECT * FROM ChartOfAccounts WHERE AccountNumber = 6805;"></textarea>
+        <br>
+        <button type="button" onclick="executeSql()" class="coloredButton btn-orange">SQL ausführen</button>
+        <span style="color: red; margin-left: 20px;">⚠️ Vorsicht: SQL-Befehle werden direkt ausgeführt!</span>
+        <div id="sql_status" style="margin-top: 10px;"></div>
+        <textarea id="sql_output" rows="20" cols="100" readonly class="textareaSql" style="display: none;"></textarea>
+        <script>
+        async function executeSql() {
+            const input = document.getElementById('sql_input').value;
+            const output = document.getElementById('sql_output');
+            const status = document.getElementById('sql_status');
+            if (!input.trim()) { status.innerHTML = '<span class="errorColor">Keine SQL-Befehle eingegeben.</span>'; return; }
+            status.innerHTML = '⏳ Wird ausgeführt...';
+            try {
+                const resp = await fetch('/execute_sql', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: 'sql_commands=' + encodeURIComponent(input)
+                });
+                const data = await resp.json();
+                let statusHtml = '';
+                if (data.success_count > 0) statusHtml += '<span class="successColor">' + data.success_count + ' von ' + data.total + ' Befehlen erfolgreich.</span> ';
+                if (data.errors && data.errors.length) statusHtml += '<span class="errorColor">' + data.errors.join('; ') + '</span>';
+                status.innerHTML = statusHtml;
+                if (data.output) {
+                    output.style.display = 'block';
+                    output.value = data.output;
+                } else {
+                    output.style.display = 'none';
+                    output.value = '';
+                }
+            } catch(e) {
+                status.innerHTML = '<span class="errorColor">Fehler: ' + e.message + '</span>';
+            }
+        }
+        </script>
         '''
     s += '\t</div>'
     s += '</div>'
@@ -163,6 +190,10 @@ INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStan
                         + p.get('imported') + ' importiert, '
                         + p.get('updated')  + ' aktualisiert, '
                         + p.get('skipped')  + ' \u00fcbersprungen';
+                const lk = parseInt(p.get('linked') || '0');
+                const rv = parseInt(p.get('resolved') || '0');
+                if (lk > 0) msg += ', ' + lk + ' verkn\u00fcpft';
+                if (rv > 0) msg += ', ' + rv + ' Debitoren aufgel\u00f6st';
                 if (nf > 0) msg += ', ' + nf + ' nicht gefunden';
                 if (mc > 0) msg += ', ' + mc + ' fehlende SKR-Konten';
                 if (ms > 0) msg += ', ' + ms + ' fehlende Gegenkonten';

@@ -73,12 +73,15 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     """Generate transactions page with edit functionality"""
     # Generate Header2 with account checkboxes
     accounts = db.fetch_accounts()
-    header2_content = ""
+    header2_content = (
+        '<input type="checkbox" id="account_all" checked onchange="toggleAllAccounts()"> '
+        '<label for="account_all"><strong>Alle</strong></label> &nbsp;|&nbsp; '
+    )
     for account in accounts:
         account_id = account[0]
         account_name = account[1]
         account_iban = account[3]  # Store IBAN for filtering
-        header2_content += f'<input type="checkbox" id="account_{account_id}" name="account_{account_id}" data-iban="{account_iban}" checked onchange="filterTransactions()"> '
+        header2_content += f'<input type="checkbox" id="account_{account_id}" name="account_{account_id}" data-iban="{account_iban}" checked onchange="syncAllAccountsAndFilter()"> '
         header2_content += f'<label for="account_{account_id}">{account_name}</label> &nbsp; '
 
     s = Header1('transactions')
@@ -183,6 +186,21 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                         <option value="">-- Kein Konto --</option>
     '''
     selected_account_id = edit_trans[4] if edit_trans else None
+    # Konto über COA/CounterCOA ableiten wenn nicht direkt gesetzt
+    if edit_trans and not selected_account_id:
+        _edit_coa = edit_trans[8]
+        _edit_ccoa = edit_trans[9]
+        _skr_to_acct_edit = {}
+        for _a in accounts:
+            if _a[7]:  # SKRAccount
+                _skr_to_acct_edit[_a[7]] = _a[0]
+        for _c in coa_accounts:
+            if _c[0] == _edit_coa and _c[2] in _skr_to_acct_edit:
+                selected_account_id = _skr_to_acct_edit[_c[2]]
+                break
+            if _c[0] == _edit_ccoa and _c[2] in _skr_to_acct_edit:
+                selected_account_id = _skr_to_acct_edit[_c[2]]
+                break
     for account in accounts:
         selected = 'selected' if selected_account_id and account[0] == selected_account_id else ''
         s+= f'<option value="{account[0]}" {selected}>{account[1]}</option>'
@@ -365,6 +383,26 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     coa_accounts = db.fetch_chart_of_accounts()
     coa_map      = {c[0]: str(c[2]) for c in coa_accounts}
 
+    # Reverse-Map: COA_ID → (Account_ID, Account_Name)
+    # Damit Einträge ohne Account_ID über COA/CounterCOA dem Konto zugeordnet werden.
+    _skr_to_acct = {}
+    for a in accounts:
+        if a[7]:  # SKRAccount
+            _skr_to_acct[a[7]] = (a[0], a[1])
+    coa_id_to_account = {}
+    for c in coa_accounts:
+        if c[2] in _skr_to_acct:
+            coa_id_to_account[c[0]] = _skr_to_acct[c[2]]
+
+    def _derive_account(account_id, coa_id, counter_coa_id):
+        """Account-ID und -Name ableiten: direkt oder über COA/CounterCOA."""
+        if account_id:
+            return account_id, account_map.get(account_id, '')
+        derived = coa_id_to_account.get(coa_id) or coa_id_to_account.get(counter_coa_id)
+        if derived:
+            return derived  # (account_id, account_name)
+        return None, ''
+
     for item in bookings:
         row_type = item['type']
 
@@ -378,8 +416,13 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             count        = item['count']
             account_id   = item['account_id']
             contact_id   = item['contact_id']
-            account_name = account_map.get(account_id, '') if account_id else ''
+            # Konto ableiten: direkt oder über COA/CounterCOA des ersten Kindes
+            first_coa    = item.get('first_coa_id')
+            first_ccoa   = item.get('first_ccoa_id')
+            account_id, account_name = _derive_account(account_id, first_coa, first_ccoa)
             contact_name = customer_map.get(contact_id, '') if contact_id else ''
+            first_recip  = item.get('first_recipient') or ''
+            first_text   = item.get('first_text') or ''
             amount_color = 'green' if amount > 0 else 'red'
             s+= (f"<tr class='transaction-row group-row' "
                  f"data-group-id='{gid}' "
@@ -391,8 +434,8 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                  f"onclick='toggleGroup({gid})' "
                  f"title='Split-Buchung aufklappen/zuklappen'>")
             s+= f"<td>{date_booking}</td>"
-            s+= f"<td></td>"
-            s+= f"<td></td>"
+            s+= f"<td>{first_recip[:25]}</td>"
+            s+= f"<td>{first_text[:35]}</td>"
             s+= f"<td style='color:{amount_color}'>{amount:.2f}</td>"
             s+= f"<td>{currency}</td>"
             s+= f"<td>{account_name[:20]}</td>"
@@ -505,7 +548,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             currency     = booking[12] or 'EUR'
             text         = booking[15] or ''
             doc_number   = booking[16] or '' if len(booking) > 16 else ''
-            account_name = account_map.get(account_id, '') if account_id else ''
+            account_id, account_name = _derive_account(account_id, coa_id, booking[9])
             contact_name = customer_map.get(contact_id, '') if contact_id else ''
             coa_number   = coa_map.get(coa_id, '') if coa_id else ''
             amount_color = 'green' if (amount or 0) > 0 else 'red'
@@ -535,7 +578,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             currency     = booking[12] or 'EUR'
             text         = booking[15] or ''
             doc_number   = booking[16] or '' if len(booking) > 16 else ''
-            account_name = account_map.get(account_id, '') if account_id else ''
+            account_id, account_name = _derive_account(account_id, coa_id, booking[9])
             contact_name = customer_map.get(contact_id, '') if contact_id else ''
             coa_number   = coa_map.get(coa_id, '') if coa_id else ''
             amount_color = 'green' if (amount or 0) > 0 else 'red'
@@ -583,10 +626,15 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             const minAmount      = parseFloat(document.getElementById('minAmount').value) || null;
             const maxAmount      = parseFloat(document.getElementById('maxAmount').value) || null;
 
+            const allCb = document.getElementById('account_all');
+            const showAllAccounts = allCb && allCb.checked;
+
             const checkedAccounts = new Set();
-            document.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
-                checkedAccounts.add(cb.id.replace('account_', ''));
-            });
+            if (!showAllAccounts) {
+                document.querySelectorAll('input[type="checkbox"][id^="account_"]:not(#account_all):checked').forEach(cb => {
+                    checkedAccounts.add(cb.id.replace('account_', ''));
+                });
+            }
 
             document.querySelectorAll('.transaction-row').forEach(row => {
                 const rowDate     = row.getAttribute('data-date');
@@ -602,7 +650,8 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                 if (currencyFilter && rowCurrency !== currencyFilter) show = false;
                 if (minAmount !== null && rowAmount < minAmount) show = false;
                 if (maxAmount !== null && rowAmount > maxAmount) show = false;
-                if (checkedAccounts.size > 0 && !checkedAccounts.has(rowAccount)) show = false;
+                // Kontofilter: "Alle" = kein Filter; sonst nur gewählte Konten
+                if (!showAllAccounts && !checkedAccounts.has(rowAccount)) show = false;
 
                 row.style.display = show ? '' : 'none';
 
@@ -614,6 +663,23 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                     if (icon) icon.textContent = '▶';
                 }
             });
+        }
+
+        function toggleAllAccounts() {
+            const allCb = document.getElementById('account_all');
+            const checked = allCb ? allCb.checked : true;
+            document.querySelectorAll('input[type="checkbox"][id^="account_"]:not(#account_all)')
+                .forEach(cb => { cb.checked = checked; });
+            filterTransactions();
+        }
+
+        function syncAllAccountsAndFilter() {
+            const accountCbs = document.querySelectorAll('input[type="checkbox"][id^="account_"]:not(#account_all)');
+            const allCb = document.getElementById('account_all');
+            if (allCb) {
+                allCb.checked = Array.from(accountCbs).every(cb => cb.checked);
+            }
+            filterTransactions();
         }
 
         function filterTransactionsByAccount() { filterTransactions(); }
