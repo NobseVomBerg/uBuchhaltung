@@ -1,3 +1,27 @@
+-- Summierung von Amount für Privateentnahmen + Privateinlagen für einen Zeitraum
+SELECT COALESCE(SUM(Amount), 0) AS total FROM Bookings WHERE (COA_ID=10 OR CounterCOA_ID=11) AND DateBooking BETWEEN '2024-01-01' AND '2024-01-31';
+
+-- Summierung von Amount für einen Zeitraum für das angegebene SKR-Konto
+SELECT COALESCE(SUM(b.Amount), 0) AS total FROM Bookings b
+WHERE EXISTS (
+  SELECT 1 FROM ChartOfAccounts c WHERE c.AccountNumber = 3806
+    AND (c.ID = b.COA_ID OR c.ID = b.CounterCOA_ID)
+)
+AND b.DateBooking BETWEEN '2024-01-01' AND '2024-01-31';
+
+-- Gesamte Datensätze für einen Zeitraum für das angegebene SKR-Gegenkonto
+SELECT * FROM Bookings b
+WHERE EXISTS (
+  SELECT 1 FROM ChartOfAccounts c WHERE c.AccountNumber = 4400
+    AND (c.ID = b.CounterCOA_ID)
+)
+AND b.DateBooking BETWEEN '2024-01-01' AND '2024-01-31';
+
+
+
+
+
+
 -- Test Data for PyBuch Database
 -- Execute these statements to populate the database with sample data
 

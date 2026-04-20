@@ -382,6 +382,8 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     customer_map = {c[0]: c[2] or c[3] for c in customers}
     coa_accounts = db.fetch_chart_of_accounts()
     coa_map      = {c[0]: str(c[2]) for c in coa_accounts}
+    # Private-Konten: COA-IDs deren AccountNumber im Bereich 2100-2199 liegt
+    private_coa_ids = {c[0] for c in coa_accounts if 2100 <= c[2] < 2200}
 
     # Reverse-Map: COA_ID → (Account_ID, Account_Name)
     # Damit Einträge ohne Account_ID über COA/CounterCOA dem Konto zugeordnet werden.
@@ -470,6 +472,14 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             entry_coa_nr  = coa_map.get(entry_coa_id, '') if entry_coa_id else ''
             entry_contact_name = customer_map.get(entry_contact, '') if entry_contact else ''
 
+            # Privatbuchungen markieren (COA 2100-2199)
+            entry_counter_coa_id = item.get('entry_counter_coa_id')
+            is_private = bool(
+                (entry_coa_id and entry_coa_id in private_coa_ids)
+                or (entry_counter_coa_id and entry_counter_coa_id in private_coa_ids))
+            if is_private:
+                entry_docnr = 'privat'
+
             if is_linked:
                 # Verknüpft: einzeilige Merged-Darstellung
                 status_badge = "<span class='status-badge-ok' title='Bank + Buchung verknüpft'>✓</span>"
@@ -548,9 +558,13 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             currency     = booking[12] or 'EUR'
             text         = booking[15] or ''
             doc_number   = booking[16] or '' if len(booking) > 16 else ''
-            account_id, account_name = _derive_account(account_id, coa_id, booking[9])
+            counter_coa_id = booking[9]
+            account_id, account_name = _derive_account(account_id, coa_id, counter_coa_id)
             contact_name = customer_map.get(contact_id, '') if contact_id else ''
             coa_number   = coa_map.get(coa_id, '') if coa_id else ''
+            # Privatbuchungen markieren
+            if (coa_id and coa_id in private_coa_ids) or (counter_coa_id and counter_coa_id in private_coa_ids):
+                doc_number = 'privat'
             amount_color = 'green' if (amount or 0) > 0 else 'red'
             s+= (f"<tr class='child-row' data-parent-group='{gid}' style='display:none'>")
             s+= f"<td class='child-indent'>{date_booking}</td>"
@@ -578,9 +592,13 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             currency     = booking[12] or 'EUR'
             text         = booking[15] or ''
             doc_number   = booking[16] or '' if len(booking) > 16 else ''
-            account_id, account_name = _derive_account(account_id, coa_id, booking[9])
+            counter_coa_id = booking[9]
+            account_id, account_name = _derive_account(account_id, coa_id, counter_coa_id)
             contact_name = customer_map.get(contact_id, '') if contact_id else ''
             coa_number   = coa_map.get(coa_id, '') if coa_id else ''
+            # Privatbuchungen markieren
+            if (coa_id and coa_id in private_coa_ids) or (counter_coa_id and counter_coa_id in private_coa_ids):
+                doc_number = 'privat'
             amount_color = 'green' if (amount or 0) > 0 else 'red'
             s+= (f"<tr class='transaction-row' "
                  f"data-account-id='{account_id or ''}' "

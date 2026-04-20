@@ -1964,6 +1964,9 @@ class Database:
 
                 schluessel = row.get('SCHLUESSEL', '').strip()
                 tax_rate = BU_TO_TAXRATE.get(schluessel)
+                # 4405→4400 Umbuchung: implizit 19% USt, auch ohne BU-Schlüssel
+                if tax_rate is None and konto_nr == 4405 and gegenkonto_nr == 4400:
+                    tax_rate = 0.19
                 # Steuerbetrag berechnen (Brutto → MwSt-Anteil)
                 tax_amount = None
                 if tax_rate is not None and tax_rate > 0 and amount != 0:
@@ -2302,6 +2305,14 @@ class Database:
             Deckt Fälle wie fraenk-Rechnungsnummern oder andere
             Transaktions-IDs im Verwendungszweck ab.
 
+        Stufe 6 – Text-Similarity-Matching (fehlende BelegNr):
+            Wenn mehrere Entries auf Datum+Betrag matchen, aber weder
+            DocumentNumber- noch Token-Tiebreak greifen (z.B.
+            Privatentnahmen ohne BelegNr), wird der Entry mit dem
+            ähnlichsten Text gewählt (SequenceMatcher, normalisiert).
+            Nur wenn der Beste eindeutig besser ist als der Zweitbeste
+            und die Ähnlichkeit > 50 % beträgt.
+
         Stufe 7 – Debitoren-Auflösung (nach der Hauptschleife):
             Debitoren-Entries (COA 10000) bei Rechnungserstellung haben
             ein früheres Datum als die spätere Zahlung und können daher
@@ -2381,6 +2392,7 @@ class Database:
             return [e for e in entries if e[0] not in already_linked_entry_ids]
 
         import re
+        from difflib import SequenceMatcher
         _TOKEN_RE = re.compile(r'\d{6,}')
 
         def _extract_tokens(text):
@@ -2695,6 +2707,31 @@ class Database:
                 _do_link(bank_id, token_hit[0], None, token_hit[2])
                 linked += 1
                 continue
+
+            # ── Stufe 6: Text-Similarity (fehlende BelegNr) ────────────
+            # Wenn mehrere Entries zum selben Datum+Betrag passen, aber
+            # weder DocNr- noch Token-Tiebreak greift (z.B. Privatent-
+            # nahmen ohne BelegNr), wird der Entry mit dem ähnlichsten
+            # Text gewählt.  Normalisierung: Leerzeichen entfernen,
+            # lowercase.  Eindeutig bester Score (> zweitbester und > 0.5)
+            # wird verknüpft.
+            if len(all_candidates) >= 2:
+                def _text_norm(s):
+                    return ''.join((s or '').lower().split())
+                bank_norm = _text_norm(bank_text)
+                if bank_norm:
+                    scored = [
+                        (SequenceMatcher(None, bank_norm,
+                                         _text_norm(e[2])).ratio(), e)
+                        for e in all_candidates
+                    ]
+                    scored.sort(key=lambda x: x[0], reverse=True)
+                    if (scored[0][0] > scored[1][0]
+                            and scored[0][0] > 0.5):
+                        best = scored[0][1]
+                        _do_link(bank_id, best[0], None, best[2])
+                        linked += 1
+                        continue
 
             skipped += 1
 
@@ -3564,10 +3601,10 @@ class Database:
         entry-type bookings (for cash accounts like Kasse).
 
         Categories:
-          - Einnahmen: bookings with Amount > 0
-          - Privatentnahmen: negative bookings associated with
-            COA AccountNumber 2100-2199 (Eigenkapitalkonten)
-          - Betriebsausgaben: all other negative bookings
+          - Einnahmen: bookings with Amount > 0, excluding private
+          - Privatentnahmen: all bookings (positive + negative) associated
+            with COA AccountNumber 2100-2199 (netted: Einlagen vs Entnahmen)
+          - Betriebsausgaben: negative bookings not associated with private COA
 
         Args:
             date_from:   Start date  (YYYY-MM-DD)
@@ -3624,13 +3661,14 @@ class Database:
         acct_filter = ' AND (' + ' OR '.join(type_parts) + ')'
 
         # ── Privatentnahmen condition ─────────────────────────────────
-        # Bank bookings: child entry has COA 2100-2199
+        # Bank bookings: child entry has COA or CounterCOA 2100-2199
         # Entry bookings: own COA or CounterCOA is 2100-2199
         private_cond = '''
             AND (
                 (b.BookingType='bank' AND EXISTS (
                     SELECT 1 FROM Bookings e
-                    JOIN ChartOfAccounts c ON e.COA_ID = c.ID
+                    JOIN ChartOfAccounts c
+                      ON (c.ID = e.COA_ID OR c.ID = e.CounterCOA_ID)
                     WHERE e.ParentBooking_ID = b.ID
                       AND c.AccountNumber >= 2100
                       AND c.AccountNumber < 2200))
@@ -3645,7 +3683,8 @@ class Database:
             AND NOT (
                 (b.BookingType='bank' AND EXISTS (
                     SELECT 1 FROM Bookings e
-                    JOIN ChartOfAccounts c ON e.COA_ID = c.ID
+                    JOIN ChartOfAccounts c
+                      ON (c.ID = e.COA_ID OR c.ID = e.CounterCOA_ID)
                     WHERE e.ParentBooking_ID = b.ID
                       AND c.AccountNumber >= 2100
                       AND c.AccountNumber < 2200))
@@ -3669,6 +3708,7 @@ class Database:
                   AND b.DateBooking BETWEEN ? AND ?
                   AND b.Amount > 0
                   {acct_filter}
+                  {not_private_cond}
             ''', p).fetchone()[0]
 
             private = cursor.execute(f'''
@@ -3676,7 +3716,6 @@ class Database:
                 FROM Bookings b
                 WHERE b.DateBooking LIKE ?
                   AND b.DateBooking BETWEEN ? AND ?
-                  AND b.Amount < 0
                   {acct_filter}
                   {private_cond}
             ''', p).fetchone()[0]
@@ -3761,7 +3800,8 @@ class Database:
             AND (
                 (b.BookingType='bank' AND EXISTS (
                     SELECT 1 FROM Bookings e
-                    JOIN ChartOfAccounts c ON e.COA_ID = c.ID
+                    JOIN ChartOfAccounts c
+                      ON (c.ID = e.COA_ID OR c.ID = e.CounterCOA_ID)
                     WHERE e.ParentBooking_ID = b.ID
                       AND c.AccountNumber >= 2100
                       AND c.AccountNumber < 2200))
@@ -3776,7 +3816,8 @@ class Database:
             AND NOT (
                 (b.BookingType='bank' AND EXISTS (
                     SELECT 1 FROM Bookings e
-                    JOIN ChartOfAccounts c ON e.COA_ID = c.ID
+                    JOIN ChartOfAccounts c
+                      ON (c.ID = e.COA_ID OR c.ID = e.CounterCOA_ID)
                     WHERE e.ParentBooking_ID = b.ID
                       AND c.AccountNumber >= 2100
                       AND c.AccountNumber < 2200))
@@ -3793,13 +3834,14 @@ class Database:
             FROM Bookings b
             WHERE b.DateBooking BETWEEN ? AND ?
               AND b.Amount > 0 {acct_filter}
+              {not_private_cond}
         ''', params).fetchone()[0]
 
         private = cursor.execute(f'''
             SELECT COALESCE(SUM(b.Amount), 0)
             FROM Bookings b
             WHERE b.DateBooking BETWEEN ? AND ?
-              AND b.Amount < 0 {acct_filter}
+              {acct_filter}
               {private_cond}
         ''', params).fetchone()[0]
 
@@ -3841,3 +3883,150 @@ class Database:
             'bank_count':     bank_count,
             'unlinked_count': unlinked,
         }
+
+    # ── EÜR ───────────────────────────────────────────────────────────
+
+    def get_euer_data(self, date_from: str, date_to: str,
+                      account_ids: list | None = None) -> list:
+        """EÜR-Auswertung: Saldo pro SKR-Konto im Zeitraum.
+
+        Für jede Entry-Buchung wird das „Zweck-Konto" ermittelt:
+        - Wenn COA_ID ein liquides Konto (Bank/Kasse) ist → CounterCOA_ID
+        - Sonst → COA_ID
+
+        Rein liquide Spiegelbuchungen (Doppik) werden ignoriert.
+
+        Returns:
+            list of (AccountNumber, Name, total_amount)
+            sortiert nach AccountNumber, nur Konten mit Saldo ≠ 0.
+        """
+        from collections import defaultdict
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # Liquide Konten: Bankkonten (aus Accounts-Tabelle) + Kassenkonten
+        bank_coa_ids = self._get_bank_coa_ids(cursor)
+
+        if account_ids:
+            ph = ','.join('?' * len(account_ids))
+            cursor.execute(
+                f"SELECT ID, SKRAccount, IsCash FROM Accounts "
+                f"WHERE ID IN ({ph})", account_ids)
+        else:
+            cursor.execute("SELECT ID, SKRAccount, IsCash FROM Accounts")
+        accts = cursor.fetchall()
+
+        bank_acct_ids = [a[0] for a in accts if not a[2]]
+        cash_skr = [a[1] for a in accts if a[2]]
+        cash_coa_ids: set[int] = set()
+        if cash_skr:
+            ph = ','.join('?' * len(cash_skr))
+            cursor.execute(
+                f"SELECT ID FROM ChartOfAccounts "
+                f"WHERE AccountNumber IN ({ph})", cash_skr)
+            cash_coa_ids = {r[0] for r in cursor.fetchall()}
+
+        liquid_coa_ids = bank_coa_ids | cash_coa_ids
+
+        # ── 1. Entry-Kinder von Bank-Buchungen ───────────────────────
+        entries: list[tuple] = []
+        if bank_acct_ids:
+            ph = ','.join('?' * len(bank_acct_ids))
+            cursor.execute(f"""
+                SELECT e.Amount, e.COA_ID, e.CounterCOA_ID,
+                       COALESCE(e.TaxAmount, 0)
+                FROM Bookings e
+                JOIN Bookings p ON p.ID = e.ParentBooking_ID
+                WHERE e.BookingType = 'entry'
+                  AND p.Account_ID IN ({ph})
+                  AND e.DateBooking BETWEEN ? AND ?
+                  AND (e.Status IS NULL OR e.Status != 'resolved')
+            """, bank_acct_ids + [date_from, date_to])
+            entries.extend(cursor.fetchall())
+
+        # ── 2. Standalone Kassen-Buchungen ────────────────────────────
+        if cash_coa_ids:
+            coa_list = list(cash_coa_ids)
+            ph = ','.join('?' * len(coa_list))
+            cursor.execute(f"""
+                SELECT e.Amount, e.COA_ID, e.CounterCOA_ID,
+                       COALESCE(e.TaxAmount, 0)
+                FROM Bookings e
+                WHERE e.BookingType = 'entry'
+                  AND e.ParentBooking_ID IS NULL
+                  AND (e.COA_ID IN ({ph}) OR e.CounterCOA_ID IN ({ph}))
+                  AND e.DateBooking BETWEEN ? AND ?
+                  AND (e.Status IS NULL OR e.Status != 'resolved')
+            """, coa_list + coa_list + [date_from, date_to])
+            entries.extend(cursor.fetchall())
+
+        # ── Einnahmen-COA-IDs ermitteln (für USt-Zuordnung auf 3806) ──
+        cursor.execute("""
+            SELECT ID FROM ChartOfAccounts
+            WHERE AccountNumber IN (4400, 4640, 4845)
+        """)
+        income_coa_ids = {r[0] for r in cursor.fetchall()}
+
+        # ── Zweck-Konto bestimmen und aggregieren ─────────────────────
+        # Netto-Beträge pro Konto + virtuelle USt-Zeile (3806)
+        totals: dict[int, float] = defaultdict(float)
+        ust_total: float = 0.0   # nur USt aus Einnahmen → 3806
+        for amount, coa_id, counter_coa_id, tax_amount in entries:
+            netto = amount - tax_amount  # Brutto → Netto
+
+            # Doppik-Spiegel überspringen (beide liquid)
+            if coa_id in liquid_coa_ids and (
+                    counter_coa_id is None
+                    or counter_coa_id in liquid_coa_ids):
+                continue
+
+            if coa_id in liquid_coa_ids:
+                # Cash-flow: liquides Konto → Zweck = CounterCOA
+                if counter_coa_id:
+                    totals[counter_coa_id] += netto
+                    if counter_coa_id in income_coa_ids:
+                        ust_total += tax_amount
+            elif counter_coa_id and counter_coa_id in liquid_coa_ids:
+                # Cash-flow: Zweck = COA, Gegenstück ist liquid
+                totals[coa_id] += netto
+                if coa_id in income_coa_ids:
+                    ust_total += tax_amount
+            else:
+                # Umbuchung (keine Seite liquid, z.B. 4405→4400):
+                # Betrag auf beide Konten verteilen, damit z.B.
+                # Erlöse unter 4400 erscheinen und 4405 reduziert wird.
+                if counter_coa_id:
+                    totals[counter_coa_id] += netto
+                    if counter_coa_id in income_coa_ids:
+                        ust_total += tax_amount
+                if coa_id:
+                    totals[coa_id] -= netto
+
+        # ── COA-Details laden ─────────────────────────────────────────
+        result: list[tuple] = []
+        if totals:
+            ph = ','.join('?' * len(totals))
+            cursor.execute(f"""
+                SELECT ID, AccountNumber, Name FROM ChartOfAccounts
+                WHERE ID IN ({ph})
+            """, list(totals.keys()))
+            for coa_id, acct_nr, name in cursor.fetchall():
+                total = round(totals[coa_id], 2)
+                if abs(total) >= 0.01:
+                    result.append((acct_nr, name, total))
+
+        # ── Virtuelles Konto 3806 (Umsatzsteuer) ─────────────────────
+        ust_total = round(ust_total, 2)
+        if abs(ust_total) >= 0.01:
+            # Name aus DB holen, falls vorhanden
+            cursor.execute(
+                "SELECT Name FROM ChartOfAccounts WHERE AccountNumber = 3806"
+            )
+            row_3806 = cursor.fetchone()
+            name_3806 = row_3806[0] if row_3806 else 'Umsatzsteuer 19%'
+            result.append((3806, name_3806, ust_total))
+
+        conn.close()
+        result.sort(key=lambda x: x[0])
+        return result

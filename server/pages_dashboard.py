@@ -208,7 +208,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
     s += f'''
     <div class="grid-1RowPrefered">
     <div class="rectRounded">
-        <h3 style="margin-top:0;">Jahres&uuml;bersicht {range_label}</h3>
+        <h3 style="margin-top:0;">&Uuml;bersicht {range_label}</h3>
         <table style="width:100%;border-collapse:collapse;">
             <tr><th style="text-align:left;">Kategorie</th>
                 <th style="text-align:right;">Betrag</th></tr>
@@ -230,17 +230,75 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
     </div>
     '''
 
-    # ── Quick actions ─────────────────────────────────────────────────
-    s += '''
+    # ── EÜR-Auswertung (ersetzt Schnellzugriff) ─────────────────────
+    euer_data = db.get_euer_data(date_from, date_to, account_ids)
+
+    # Einnahmen-Konten (definiert)
+    INCOME_ACCOUNTS = {3806, 4400, 4640, 4845}
+    # Ausschluss-Konten (nicht anzeigen)
+    bank_skr_numbers = {a[7] for a in accounts if a[7]}
+    EXCLUDE_NUMBERS = {4405, 10000} | bank_skr_numbers
+
+    income_rows = [(nr, name, total) for nr, name, total in euer_data
+                   if nr in INCOME_ACCOUNTS]
+    expense_rows = [(nr, name, total) for nr, name, total in euer_data
+                    if nr not in INCOME_ACCOUNTS
+                    and nr not in EXCLUDE_NUMBERS
+                    and not (2100 <= nr < 2200)
+                    and nr >= 1000]
+
+    income_sum = sum(t for _, _, t in income_rows)
+    expense_sum = sum(t for _, _, t in expense_rows)
+    euer_result = income_sum + expense_sum
+
+    s += f'''
     <div class="rectRounded">
-        <h3 style="margin-top:0;">Schnellzugriff</h3>
-        <div style="display:flex;gap:10px;flex-wrap:wrap;">
-            <a href="/invoice/new" class="coloredButton btn-green">
-                + Neue Rechnung</a>
-            <a href="/invoice?status=sent" class="coloredButton btn-orange">
-                Versendete Rechnungen</a>
-            <a href="/transactions" class="coloredButton btn-blue">
-                Transaktionen</a>
+        <h3 style="margin-top:0;">Einnahmen&uuml;berschussrechnung {range_label}</h3>
+        <h4 style="margin-bottom:6px;">Einnahmen</h4>
+        <table style="width:100%;border-collapse:collapse;">
+            <tr><th style="text-align:left;">SKR-Konto</th>
+                <th style="text-align:left;">Bezeichnung</th>
+                <th style="text-align:right;">Saldo</th></tr>
+    '''
+    for nr, name, total in income_rows:
+        color = 'green' if total >= 0 else 'red'
+        s += (f"<tr><td>{nr}</td><td>{name}</td>"
+              f"<td style='text-align:right;color:{color};'>"
+              f"{total:,.2f} &euro;</td></tr>")
+    s += f'''
+            <tr style="border-top:2px solid #666;">
+                <td colspan="2"><strong>Summe Einnahmen</strong></td>
+                <td style="text-align:right;font-weight:bold;color:green;">
+                    {income_sum:,.2f} &euro;</td></tr>
+        </table>
+
+        <h4 style="margin-bottom:6px;margin-top:18px;">Ausgaben</h4>
+        <table style="width:100%;border-collapse:collapse;">
+            <tr><th style="text-align:left;">SKR-Konto</th>
+                <th style="text-align:left;">Bezeichnung</th>
+                <th style="text-align:right;">Saldo</th></tr>
+    '''
+    for nr, name, total in expense_rows:
+        color = 'green' if total >= 0 else 'red'
+        s += (f"<tr><td>{nr}</td><td>{name}</td>"
+              f"<td style='text-align:right;color:{color};'>"
+              f"{total:,.2f} &euro;</td></tr>")
+    euer_color = 'green' if euer_result >= 0 else 'red'
+    s += f'''
+            <tr style="border-top:2px solid #666;">
+                <td colspan="2"><strong>Summe Ausgaben</strong></td>
+                <td style="text-align:right;font-weight:bold;color:red;">
+                    {expense_sum:,.2f} &euro;</td></tr>
+        </table>
+
+        <div style="margin-top:14px;padding:10px;
+                    background:#f5f5f5;border-radius:6px;">
+            <table style="width:100%;border-collapse:collapse;">
+              <tr><td><strong>Ergebnis (Einnahmen + Ausgaben)</strong></td>
+                  <td style="text-align:right;font-weight:bold;font-size:18px;
+                      color:{euer_color};">
+                      {euer_result:,.2f} &euro;</td></tr>
+            </table>
         </div>
     </div>
     </div>

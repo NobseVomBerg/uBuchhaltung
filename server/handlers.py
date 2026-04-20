@@ -205,7 +205,15 @@ def handle_add_transaction(db: Database, post_data):
         
         # Update or insert booking
         if transaction_id > 0:
-            # Update existing booking
+            # Check if this is an unlinked bank booking being completed
+            existing = db.get_booking_by_id(transaction_id)
+            is_bank = existing and existing[17] == 'bank'
+            has_linked_entry = False
+            if is_bank:
+                has_linked_entry = db.get_linked_entry_for_bank(transaction_id) is not None
+
+            # Update the bank booking itself (COA stays on bank row for
+            # display; the real accounting entry is the child)
             db.update_booking(
                 booking_id=transaction_id,
                 date_booking=date,
@@ -224,6 +232,25 @@ def handle_add_transaction(db: Database, post_data):
                 document_number=document_nr or None,
                 log_description="Manual booking update"
             )
+
+            # Auto-create entry child when completing a bank booking
+            if is_bank and coa_id and not has_linked_entry:
+                db.insert_booking(
+                    date_booking=date,
+                    date_tax=date_tax,
+                    amount=float(amount),
+                    recipient_client=recipient,
+                    contact_id=contact_id,
+                    coa_id=coa_id,
+                    currency=currency,
+                    tax_rate=tax_rate,
+                    tax_amount=tax_amount,
+                    text=text,
+                    document_number=document_nr or None,
+                    booking_type='entry',
+                    parent_booking_id=transaction_id,
+                    log_description="Manual bank booking completion (entry child)"
+                )
         else:
             # Insert new booking
             transaction_id = db.insert_booking(

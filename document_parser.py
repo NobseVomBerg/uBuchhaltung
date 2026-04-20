@@ -178,12 +178,25 @@ class DocumentParser:
         # Extract document date
         result['document_date'] = self.extract_date_from_text(text)
         
+        # ── Extract statement year from header ─────────────────
+        # Pattern: "Kontoauszug Nr. 1/2024" or "erstellt am 31.01.2024"
+        stmt_year = None
+        m = re.search(r'Kontoauszug\s+Nr\.\s*\d+/(\d{4})', text)
+        if m:
+            stmt_year = int(m.group(1))
+        else:
+            m = re.search(r'erstellt\s+am\s+\d{2}\.\d{2}\.(\d{4})', text)
+            if m:
+                stmt_year = int(m.group(1))
+        if stmt_year is None:
+            stmt_year = datetime.now().year
+
         # Extract transactions from text (not tables, as VBR uses text-based format)
         try:
             with pdfplumber.open(filepath) as pdf:
                 for page in pdf.pages:
                     page_text = page.extract_text() or ""
-                    transactions = self._parse_vbr_text(page_text)
+                    transactions = self._parse_vbr_text(page_text, stmt_year)
                     result['transactions'].extend(transactions)
         except Exception as e:
             print(f"Error parsing transactions from {filepath}: {e}")
@@ -192,8 +205,14 @@ class DocumentParser:
         
         return result
     
-    def _parse_vbr_text(self, text: str) -> List[Dict]:
-        """Parse VBR transactions from plain text"""
+    def _parse_vbr_text(self, text: str, year: int = None) -> List[Dict]:
+        """Parse VBR transactions from plain text.
+
+        *year* is the statement year extracted from the header
+        (e.g. 2024 from ``Kontoauszug Nr. 1/2024``).
+        """
+        if year is None:
+            year = datetime.now().year
         transactions = []
         
         # Strip page footer that VBR bank statements add at the bottom
@@ -314,13 +333,11 @@ class DocumentParser:
                             recipient = cleaned_lines[0]
                             reference_lines = cleaned_lines[1:]
                     
-                    # Parse date (add current year if only day.month given)
+                    # Parse date – use statement year from header
                     try:
-                        # Extract year from document if possible (default to 2025 for now)
-                        current_year = 2025
-                        date_str = bu_tag + str(current_year)
+                        date_str = bu_tag + str(year)
                         transaction_date = datetime.strptime(date_str, '%d.%m.%Y')
-                    except:
+                    except Exception:
                         transaction_date = datetime.now()
                     
                     reference = '\n'.join(reference_lines) if reference_lines else trans_type
