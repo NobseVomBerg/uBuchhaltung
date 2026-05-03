@@ -3934,8 +3934,8 @@ class Database:
         if bank_acct_ids:
             ph = ','.join('?' * len(bank_acct_ids))
             cursor.execute(f"""
-                SELECT e.Amount, e.COA_ID, e.CounterCOA_ID,
-                       COALESCE(e.TaxAmount, 0)
+              SELECT e.Amount, e.COA_ID, e.CounterCOA_ID,
+                  COALESCE(e.TaxAmount, 0), COALESCE(e.TaxRate, 0)
                 FROM Bookings e
                 JOIN Bookings p ON p.ID = e.ParentBooking_ID
                 WHERE e.BookingType = 'entry'
@@ -3950,8 +3950,8 @@ class Database:
             coa_list = list(cash_coa_ids)
             ph = ','.join('?' * len(coa_list))
             cursor.execute(f"""
-                SELECT e.Amount, e.COA_ID, e.CounterCOA_ID,
-                       COALESCE(e.TaxAmount, 0)
+              SELECT e.Amount, e.COA_ID, e.CounterCOA_ID,
+                  COALESCE(e.TaxAmount, 0), COALESCE(e.TaxRate, 0)
                 FROM Bookings e
                 WHERE e.BookingType = 'entry'
                   AND e.ParentBooking_ID IS NULL
@@ -3968,12 +3968,20 @@ class Database:
         """)
         income_coa_ids = {r[0] for r in cursor.fetchall()}
 
+        cursor.execute("""
+            SELECT ID, AccountNumber FROM ChartOfAccounts
+            WHERE AccountNumber IN (1401, 1406)
+        """)
+        input_tax_coa_ids = {acct_nr: coa_id for coa_id, acct_nr in cursor.fetchall()}
+
         # ── Zweck-Konto bestimmen und aggregieren ─────────────────────
         # Netto-Beträge pro Konto + virtuelle USt-Zeile (3806)
         totals: dict[int, float] = defaultdict(float)
         ust_total: float = 0.0   # nur USt aus Einnahmen → 3806
-        for amount, coa_id, counter_coa_id, tax_amount in entries:
+        for amount, coa_id, counter_coa_id, tax_amount, tax_rate in entries:
             netto = amount - tax_amount  # Brutto → Netto
+
+            purpose_coa_id = None
 
             # Doppik-Spiegel überspringen (beide liquid)
             if coa_id in liquid_coa_ids and (
@@ -3984,11 +3992,13 @@ class Database:
             if coa_id in liquid_coa_ids:
                 # Cash-flow: liquides Konto → Zweck = CounterCOA
                 if counter_coa_id:
+                    purpose_coa_id = counter_coa_id
                     totals[counter_coa_id] += netto
                     if counter_coa_id in income_coa_ids:
                         ust_total += tax_amount
             elif counter_coa_id and counter_coa_id in liquid_coa_ids:
                 # Cash-flow: Zweck = COA, Gegenstück ist liquid
+                purpose_coa_id = coa_id
                 totals[coa_id] += netto
                 if coa_id in income_coa_ids:
                     ust_total += tax_amount
@@ -3997,11 +4007,24 @@ class Database:
                 # Betrag auf beide Konten verteilen, damit z.B.
                 # Erlöse unter 4400 erscheinen und 4405 reduziert wird.
                 if counter_coa_id:
+                    purpose_coa_id = counter_coa_id
                     totals[counter_coa_id] += netto
                     if counter_coa_id in income_coa_ids:
                         ust_total += tax_amount
                 if coa_id:
                     totals[coa_id] -= netto
+
+            # Vorsteuer aus Ausgaben separat auf 1401/1406 ausweisen.
+            if (purpose_coa_id is not None
+                    and purpose_coa_id not in income_coa_ids
+                    and tax_amount != 0):
+                input_tax_account = None
+                if abs(tax_rate - 0.07) < 0.0001:
+                    input_tax_account = 1401
+                elif abs(tax_rate - 0.19) < 0.0001:
+                    input_tax_account = 1406
+                if input_tax_account in input_tax_coa_ids:
+                    totals[input_tax_coa_ids[input_tax_account]] += tax_amount
 
         # ── COA-Details laden ─────────────────────────────────────────
         result: list[tuple] = []

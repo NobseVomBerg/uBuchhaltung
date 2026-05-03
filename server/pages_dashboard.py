@@ -235,6 +235,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
 
     # Einnahmen-Konten (definiert)
     INCOME_ACCOUNTS = {3806, 4400, 4640, 4845}
+    OTHER_EXPENSE_ACCOUNTS = {3160, 3720, 3740}
     # Ausschluss-Konten (nicht anzeigen)
     bank_skr_numbers = {a[7] for a in accounts if a[7]}
     EXCLUDE_NUMBERS = {4405, 10000} | bank_skr_numbers
@@ -243,12 +244,16 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
                    if nr in INCOME_ACCOUNTS]
     expense_rows = [(nr, name, total) for nr, name, total in euer_data
                     if nr not in INCOME_ACCOUNTS
+                    and nr not in OTHER_EXPENSE_ACCOUNTS
                     and nr not in EXCLUDE_NUMBERS
                     and not (2100 <= nr < 2200)
                     and nr >= 1000]
+    other_expense_rows = [(nr, name, total) for nr, name, total in euer_data
+                          if nr in OTHER_EXPENSE_ACCOUNTS]
 
     income_sum = sum(t for _, _, t in income_rows)
     expense_sum = sum(t for _, _, t in expense_rows)
+    other_expense_sum = sum(t for _, _, t in other_expense_rows)
     euer_result = income_sum + expense_sum
 
     s += f'''
@@ -267,7 +272,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
               f"{total:,.2f} &euro;</td></tr>")
     s += f'''
             <tr style="border-top:2px solid #666;">
-                <td colspan="2"><strong>Summe Einnahmen</strong></td>
+                <td colspan="2"><strong>Summe Betriebseinnahmen</strong></td>
                 <td style="text-align:right;font-weight:bold;color:green;">
                     {income_sum:,.2f} &euro;</td></tr>
         </table>
@@ -286,20 +291,35 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
     euer_color = 'green' if euer_result >= 0 else 'red'
     s += f'''
             <tr style="border-top:2px solid #666;">
-                <td colspan="2"><strong>Summe Ausgaben</strong></td>
+                <td colspan="2"><strong>Summe Betriebsausgaben</strong></td>
                 <td style="text-align:right;font-weight:bold;color:red;">
                     {expense_sum:,.2f} &euro;</td></tr>
         </table>
 
-        <div style="margin-top:14px;padding:10px;
-                    background:#f5f5f5;border-radius:6px;">
-            <table style="width:100%;border-collapse:collapse;">
-              <tr><td><strong>Ergebnis (Einnahmen + Ausgaben)</strong></td>
-                  <td style="text-align:right;font-weight:bold;font-size:18px;
-                      color:{euer_color};">
-                      {euer_result:,.2f} &euro;</td></tr>
-            </table>
-        </div>
+        <table style="width:100%;border-collapse:collapse;">
+            <tr><td><strong>Ergebnis EÜR</strong></td>
+                <td style="text-align:right;font-weight:bold;font-size:18px;
+                    color:{euer_color};">
+                    {euer_result:,.2f} &euro;</td></tr>
+        </table>
+
+        <h4 style="margin-bottom:6px;margin-top:18px;">Sonstige Ausgaben</h4>
+        <table style="width:100%;border-collapse:collapse;">
+            <tr><th style="text-align:left;">SKR-Konto</th>
+                <th style="text-align:left;">Bezeichnung</th>
+                <th style="text-align:right;">Saldo</th></tr>
+    '''
+    for nr, name, total in other_expense_rows:
+        color = 'green' if total >= 0 else 'red'
+        s += (f"<tr><td>{nr}</td><td>{name}</td>"
+              f"<td style='text-align:right;color:{color};'>"
+              f"{total:,.2f} &euro;</td></tr>")
+    s += f'''
+            <tr style="border-top:2px solid #666;">
+                <td colspan="2"><strong>Summe Sonstige Ausgaben</strong></td>
+                <td style="text-align:right;font-weight:bold;color:red;">
+                    {other_expense_sum:,.2f} &euro;</td></tr>
+        </table>
     </div>
     </div>
     '''
