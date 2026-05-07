@@ -1,6 +1,6 @@
 # Datenbankmodell PyBuch
 
-**Status:** Aktuell (Stand: 1. April 2026)
+**Status:** Aktuell (Stand: 7. Mai 2026)
 **DBMS:** SQLite 3
 **Datei:** `data/buch.db`
 
@@ -64,7 +64,7 @@ Beim Erstellen der Datenbank werden folgende Tabellen automatisch befüllt (nur 
 
 | Tabelle | Quelle | Einträge |
 |---------|--------|----------|
-| ChartOfAccounts | `seed_data/chart_of_accounts_skr04.json` + optional `seed_data/private/chart_of_accounts_custom.json` | 47 Standard + eigene |
+| ChartOfAccounts | `seed_data/chart_of_accounts_skr04.json` + optional `seed_data/private/chart_of_accounts_custom.json` | 56 Standard + eigene |
 | AssetCategories | `seed_data/asset_categories.json` | 30 BMF-Kategorien |
 | TaxKeys | `seed_data/tax_keys.json` | 50 DATEV-BU-Schlüssel |
 
@@ -461,17 +461,27 @@ Beim Erstellen der Datenbank werden folgende Tabellen automatisch befüllt (nur 
 3. link_bank_to_entries() verknüpft automatisch:
    - Stufe 1: Datum + normalisierter Empfänger + Betrag
    - Stufe 2: Datum + Betrag (eindeutig nach Doppik-Filter)
-   - Stufe 4: DocumentNumber als Tiebreaker bei Mehrdeutigkeit
    - Stufe 3: Split-Gruppen mit Summenabgleich (nur gleicher Tag)
    - Stufe 3b: Rechnungs-Split (SUM/Anzahl, Bank-COA als Marker)
    - Stufe 3c: Privatanteil-Split (Summe minus Privatentnahme-Offset)
    - Stufe 3d: Sammelzahlung (mehrere Rechnungsnummern im Bank-Text)
+   - Stufe 4: DocumentNumber als Tiebreaker bei Mehrdeutigkeit
    - Stufe 5: Text-Token-Matching (lange Ziffernfolgen >= 8 Stellen)
+   - Stufe 6: Text-Similarity ohne Belegnummer (SequenceMatcher)
    - Stufe 7: Debitoren-Auflösung (Status='resolved' für Debitoren-Entries
      deren Zahlung bereits verknüpft ist, datumsunabhängig)
 4. Entry.ParentBooking_ID → Bank.ID
 5. Doppik-Entries (COA_ID = Bankkonto-SKR) werden ausgeblendet
 ```
+
+### EÜR-Ableitung (Dashboard)
+
+Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
+
+- Betriebliche Kontensalden werden netto aggregiert (`Amount - TaxAmount`)
+- Virtuelles USt-Konto 3806 enthält nur Steueranteile aus Einnahmekonten
+- Virtuelle Vorsteuerkonten 1401/1406 enthalten Steueranteile aus Ausgabenkonten
+- Konten 3160, 3720, 3740 werden im Dashboard separat als "Sonstige Ausgaben" gezeigt
 
 ### Rechnungserstellung
 
@@ -506,5 +516,5 @@ Beim Erstellen der Datenbank werden folgende Tabellen automatisch befüllt (nur 
 
 ---
 
-**Dokumentversion:** 2.0
-**Letzte Aktualisierung:** 1. April 2026\n
+**Dokumentversion:** 2.1
+**Letzte Aktualisierung:** 7. Mai 2026

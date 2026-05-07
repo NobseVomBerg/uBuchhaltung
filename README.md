@@ -65,10 +65,16 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 - **Zahlungsverknüpfung**: Rechnungen mit Bankbuchungen verbinden, Teilzahlungen
 
 ### 7. Dashboard (`/`)
-- Finanz-Statistiken: Umsatz, offene Beträge, Jahresübersicht
-- Rechnungsstatus-Verteilung (Balkendiagramm)
-- Monatlicher Umsatzverlauf
-- Neueste Rechnungen, Quick Actions
+- Finanz-Statistiken auf Basis von Bank- und Entry-Buchungen
+- Monatlicher Verlauf für Einnahmen, Betriebsausgaben und Privatentnahmen
+- Jahresübersicht mit Saldo, kontobasiert filterbar
+- EÜR-Ansicht mit drei Blöcken:
+  - Betriebseinnahmen
+  - Betriebsausgaben (offizielle EÜR)
+  - Sonstige Ausgaben (separat ausgewiesen)
+- Steueranteile in der EÜR:
+  - Virtuelles 3806 nur aus USt-Anteilen der Einnahmen
+  - Virtuelle Vorsteuerkonten 1401/1406 für Ausgaben
 
 ### 8. Mahnwesen (`/invoice/reminders`)
 - 3-Stufen-Mahnsystem (Erinnerung → 1. Mahnung → Inkasso)
@@ -107,6 +113,7 @@ Vollständiges Anlagenmanagement mit gesetzeskonformer AfA:
 - **WISO Import**: Automatische Format-Erkennung (Original + Tabellen-Export)
   - BU-Schlüssel → Steuersatz-Lookup aus TaxKeys-Tabelle
   - Automatische TaxAmount-Berechnung (Brutto → MwSt-Anteil)
+  - 4405→4400 wird auch ohne BU-Schlüssel mit 19% USt angereichert
   - Nach Import: automatische Bank↔Entry-Verknüpfung (`link_bank_to_entries()`)
 - **DATEV-Export** (`datev.py`): Buchungsstapel als DATEV-CSV (nur Entry-Buchungen)
 - **SQL-Konsole**: Direkte SQL-Ausführung (Entwickler-Tool)
@@ -123,7 +130,7 @@ PyBuch/
 ├── main.py                    # Entry Point – Webserver starten
 ├── db.py                      # Datenbank-Layer (CRUD, Import, Linking, Seeding)
 ├── datev.py                   # DATEV-Buchungsstapel-Export
-├── document_parser.py         # PDF-Parser für Kontoauszüge (VBR)
+├── document_parser.py         # PDF-Parser für Kontoauszüge (u.a. VBR, DKB)
 ├── pdf_generator.py           # PDF-Rechnungsgenerierung
 ├── email_sender.py            # E-Mail-Versand (SMTP)
 ├── xrechnung_generator.py     # XRechnung XML (EN 16931)
@@ -131,6 +138,7 @@ PyBuch/
 ├── README.md                  # Diese Datei
 ├── DB_MODEL.md                # Detailliertes Datenbankmodell
 ├── PARSER_README.md           # Dokumentation Parser & CSV-Import
+├── AGENTS.md                  # Leitfaden für KI-/Coding-Agenten im Repo
 ├── requirements_parser.txt    # Python-Dependencies (Parser)
 ├── seed_data/                 # Initialisierungsdaten (JSON)
 │   ├── tax_keys.json          # 50 DATEV-Steuerschlüssel (BU-Codes)
@@ -259,4 +267,4 @@ Dieses Projekt ist für Lern- und Demonstrationszwecke erstellt.
 
 ## Autor
 
-NobseVomBerg\n
+NobseVomBerg

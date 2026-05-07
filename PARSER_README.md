@@ -21,10 +21,10 @@ pip install Pillow
 ### Funktionsweise
 
 1. **Upload**: PDF über Web-Oberfläche hochladen (Drag & Drop oder Dateiauswahl)
-2. **Automatische Analyse**: Parser erkennt Kontoauszüge (z.B. Volksbank Rottweil)
+2. **Automatische Analyse**: Parser erkennt Kontoauszüge (z.B. Volksbank Rottweil, DKB)
    - IBAN zur Kontoidentifikation
    - Einzelne Transaktionen (Datum, Empfänger, Betrag, fremde IBAN)
-3. **Organisation**: Dateien werden nach `./data/Belege/YYYY/Konten/VBR/` einsortiert
+3. **Organisation**: Dateien werden nach `./data/Belege/YYYY/Konten/<BANK>/` einsortiert
 4. **Bestätigung**: Erkannte Transaktionen auf `/confirm_transactions` prüfen
 5. **Import**: Nach Bestätigung als `BookingType='bank'` in Bookings-Tabelle
 
@@ -74,6 +74,8 @@ ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNU
 - **SCHLUESSEL** → Steuersatz-Lookup über `TaxKeys`-Tabelle (50 BU-Schlüssel)
   - z.B. 9/401 → 19%, 8/402 → 7%, 121 → 0%, 490 → 0%
 - **TaxAmount**: Automatisch berechnet als `|Brutto| - |Brutto| / (1 + TaxRate)`
+- **Spezialfall 4405→4400**: Wenn kein BU-Schlüssel vorhanden ist,
+    wird automatisch 19% gesetzt und TaxAmount berechnet
 
 **Liquiditäts-Erkennung (`_is_liquid()`):**
 - Bankkonten: Über `Accounts.SKRAccount` JOIN mit ChartOfAccounts
@@ -127,7 +129,14 @@ Automatisch anhand der Spaltenüberschriften:
 ### Bank↔Entry-Verknüpfung
 
 Nach jedem WISO-Import wird `link_bank_to_entries()` aufgerufen:
-- Mehrstufiges Matching (Empfänger+Datum+Betrag → Datum+Betrag → Split-Summe)
+- Mehrstufiges Matching:
+    - Stufe 1: Datum + Empfänger + Betrag
+    - Stufe 2: Datum + Betrag
+    - Stufe 3/3b/3c/3d: Split-, Rechnungs- und Sammelzahlungs-Logik
+    - Stufe 4: DocumentNumber-Tiebreaker
+    - Stufe 5: Text-Token-Matching
+    - Stufe 6: Text-Similarity ohne Belegnummer (`SequenceMatcher`)
+    - Stufe 7: Debitoren-Auflösung (`Status='resolved'`)
 - Doppik-Filter: Entry-Buchungen auf SKR-Bankkonten (z.B. 1810) werden ignoriert
 - Ergebnis: `Entry.ParentBooking_ID → Bank.ID`
 
@@ -170,4 +179,4 @@ print(f"Verknüpft: {linked}")
 2. **WISO Original-Export** importieren → Entry-Buchungen mit TaxRate + TaxAmount
 3. **WISO Tabellen-Export** importieren → Bank-Buchungen mit Empfänger + Verwendungszweck
 4. Automatische Verknüpfung wird nach jedem Import durchgeführt
-5. Ergebnis unter `/transactions` prüfen (verknüpfte vs. offene Bankbuchungen)\n
+5. Ergebnis unter `/transactions` prüfen (verknüpfte vs. offene Bankbuchungen)
