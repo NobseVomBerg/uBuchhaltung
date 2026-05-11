@@ -951,6 +951,35 @@ class Database:
         if log_description:
             self._log_sql(sql_template, params, log_description)
     
+    def delete_transaction(self, booking_id: int):
+        """Buchung (und verknüpfte Kinder via ParentBooking_ID) löschen.
+
+        Bereinigt vor dem Löschen alle referenzierenden Zeilen:
+        BookingDocuments und InvoicePayments werden gelöscht,
+        Assets.Booking_ID und AssetDepreciations.Booking_ID werden auf NULL gesetzt.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # Alle betroffenen IDs: Parent + direkte Kinder
+        cursor.execute('SELECT ID FROM Bookings WHERE ParentBooking_ID = ?', (booking_id,))
+        child_ids = [row[0] for row in cursor.fetchall()]
+        all_ids = [booking_id] + child_ids
+        placeholders = ','.join('?' * len(all_ids))
+
+        cursor.execute(f'DELETE FROM BookingDocuments WHERE Booking_ID IN ({placeholders})', all_ids)
+        cursor.execute(f'DELETE FROM InvoicePayments WHERE BookingID IN ({placeholders})', all_ids)
+        cursor.execute(f'UPDATE Assets SET Booking_ID = NULL WHERE Booking_ID IN ({placeholders})', all_ids)
+        cursor.execute(f'UPDATE AssetDepreciations SET Booking_ID = NULL WHERE Booking_ID IN ({placeholders})', all_ids)
+
+        if child_ids:
+            child_placeholders = ','.join('?' * len(child_ids))
+            cursor.execute(f'DELETE FROM Bookings WHERE ID IN ({child_placeholders})', child_ids)
+        cursor.execute('DELETE FROM Bookings WHERE ID = ?', (booking_id,))
+
+        conn.commit()
+        conn.close()
+
     def get_booking_by_id(self, booking_id):
         """Get a single booking by ID"""
         conn = self._get_connection()

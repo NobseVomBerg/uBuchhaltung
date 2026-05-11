@@ -522,7 +522,10 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                     s+= f"<td>{entry_contact_name[:20]}</td>"
                     s+= f"<td>{entry_coa_nr}</td>"
                     s+= f"<td>{entry_docnr}</td>"
-                    s+= f"<td>{status_badge} <a href='/transactions/edit?id={bank_id}'>Bearbeiten</a></td>"
+                    s+= (f"<td>{status_badge}"
+                         f" <a href='/transactions/edit?id={bank_id}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
+                         f" <a href='/transactions/delete?id={bank_id}' class='action-icon delete-icon' title='L\u00f6schen'"
+                         f" onclick='return confirm(\"Buchung #{bank_id} wirklich l\u00f6schen?\")'>&#128465;</a></td>")
                     s+= f"</tr>"
             else:
                 # Nicht verknüpft: als offene Bank-Buchung anzeigen
@@ -541,7 +544,10 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                 s+= f"<td></td>"
                 s+= f"<td></td>"
                 s+= f"<td></td>"
-                s+= f"<td>{status_badge} <a href='/transactions/edit?id={bank_id}'>Bearbeiten</a></td>"
+                s+= (f"<td>{status_badge}"
+                     f" <a href='/transactions/edit?id={bank_id}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
+                     f" <a href='/transactions/delete?id={bank_id}' class='action-icon delete-icon' title='L\u00f6schen'"
+                     f" onclick='return confirm(\"Buchung #{bank_id} wirklich l\u00f6schen?\")'>&#128465;</a></td>")
                 s+= f"</tr>"
 
         elif row_type == 'child':
@@ -576,7 +582,9 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             s+= f"<td>{contact_name[:20]}</td>"
             s+= f"<td>{coa_number}</td>"
             s+= f"<td>{doc_number}</td>"
-            s+= f"<td><a href='/transactions/edit?id={booking_id}'>Bearbeiten</a></td>"
+            s+= (f"<td><a href='/transactions/edit?id={booking_id}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
+                 f" <a href='/transactions/delete?id={booking_id}' class='action-icon delete-icon' title='L\u00f6schen'"
+                 f" onclick='return confirm(\"Buchung #{booking_id} wirklich l\u00f6schen?\")'>&#128465;</a></td>")
             s+= f"</tr>"
 
         else:
@@ -615,7 +623,9 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             s+= f"<td>{contact_name[:20]}</td>"
             s+= f"<td>{coa_number}</td>"
             s+= f"<td>{doc_number}</td>"
-            s+= f"<td><a href='/transactions/edit?id={booking_id}'>Bearbeiten</a></td>"
+            s+= (f"<td><a href='/transactions/edit?id={booking_id}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
+                 f" <a href='/transactions/delete?id={booking_id}' class='action-icon delete-icon' title='L\u00f6schen'"
+                 f" onclick='return confirm(\"Buchung #{booking_id} wirklich l\u00f6schen?\")'>&#128465;</a></td>")
             s+= f"</tr>"
 
     s+= "</table>"
