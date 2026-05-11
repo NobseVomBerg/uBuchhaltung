@@ -177,7 +177,7 @@ PyBuch/
 ### Voraussetzungen
 - Python 3.x
 - Pillow (für PDF-Logo-Einbettung): `pip install Pillow`
-- Keine weiteren externen Abhängigkeiten (Python Standard Library)
+- `pdfplumber` (für PDF-Parsing im `document_parser.py`): `pip install pdfplumber` (siehe `requirements_parser.txt`)
 
 ### Server starten
 

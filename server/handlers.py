@@ -165,7 +165,7 @@ def handle_confirm_import(db: Database, post_data):
                 s += f"</tr>"
             s += "</table>"
         
-        s += "<p><a href='/transactions'>Zu Zahlungen</a></p>"
+        s += "<p><a href='/transactions'>Zu Buchungen</a></p>"
         s += Footer()
         return 200, s
         

@@ -61,11 +61,11 @@ def Header1(active_page=None):
     else:
         nav_items.append('<a href="/receipts">Belege</a>')
     
-    # Zahlungen
+    # Buchungen
     if active_page == 'transactions':
-        nav_items.append('<span id="ActivePage">Zahlungen</span>')
+        nav_items.append('<span id="ActivePage">Buchungen</span>')
     else:
-        nav_items.append('<a href="/transactions">Zahlungen</a>')
+        nav_items.append('<a href="/transactions">Buchungen</a>')
     
     # Split-Buchungen
     if active_page == 'bookinggroups':

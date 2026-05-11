@@ -8,7 +8,12 @@ import json
 import hashlib
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
-import pdfplumber
+try:
+    import pdfplumber
+    PDFPLUMBER_AVAILABLE = True
+except ImportError:
+    pdfplumber = None
+    PDFPLUMBER_AVAILABLE = False
 from pathlib import Path
 
 class DocumentParser:
@@ -111,6 +116,9 @@ class DocumentParser:
     
     def extract_text_from_pdf(self, filepath: str) -> str:
         """Extract text from PDF using pdfplumber"""
+        if not PDFPLUMBER_AVAILABLE:
+            print("pdfplumber not installed. Run: pip install pdfplumber")
+            return ""
         text = ""
         try:
             with pdfplumber.open(filepath) as pdf:

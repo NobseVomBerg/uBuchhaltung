@@ -1,5 +1,5 @@
 """
-Transactions page (Kontobewegungen / Zahlungen)
+Transactions page (Buchungen: Bankbewegungen + Buchungssätze)
 """
 import datetime
 from db import Database
