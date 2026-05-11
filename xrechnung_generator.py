@@ -54,24 +54,24 @@ class XRechnungGenerator:
         ET.SubElement(root, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}IssueDate').text = issue_date
         
         # DueDate (if available)
-        if invoice[20]:  # PaymentDueDate
-            ET.SubElement(root, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}DueDate').text = invoice[20]
+        if invoice[27]:  # PaymentDueDate
+            ET.SubElement(root, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}DueDate').text = invoice[27]
         
         # InvoiceTypeCode (380 = Commercial invoice)
         ET.SubElement(root, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}InvoiceTypeCode').text = '380'
         
         # DocumentCurrencyCode
-        currency = invoice[3] or 'EUR'
+        currency = invoice[24] or 'EUR'
         ET.SubElement(root, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}DocumentCurrencyCode').text = currency
         
         # BuyerReference (Leitweg-ID for B2G)
-        if invoice[18]:  # BuyerRouteID
-            ET.SubElement(root, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}BuyerReference').text = invoice[18]
+        if invoice[22]:  # BuyerRouteID
+            ET.SubElement(root, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}BuyerReference').text = invoice[22]
         
         # OrderReference (if available)
-        if invoice[4]:  # OrderNumber
+        if invoice[23]:  # OrderNumber
             order_ref = ET.SubElement(root, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}OrderReference')
-            ET.SubElement(order_ref, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}ID').text = invoice[4]
+            ET.SubElement(order_ref, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}ID').text = invoice[23]
         
         # AccountingSupplierParty (Seller)
         self._add_supplier_party(root, invoice)
@@ -80,13 +80,13 @@ class XRechnungGenerator:
         self._add_customer_party(root, invoice)
         
         # PaymentMeans (if bank details available)
-        if invoice[24]:  # BankIBAN
+        if invoice[32]:  # BankIBAN
             self._add_payment_means(root, invoice)
         
         # PaymentTerms
-        if invoice[27]:  # PaymentTerms
+        if invoice[26]:  # PaymentTerms
             payment_terms = ET.SubElement(root, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}PaymentTerms')
-            ET.SubElement(payment_terms, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}Note').text = invoice[27]
+            ET.SubElement(payment_terms, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}Note').text = invoice[26]
         
         # TaxTotal
         self._add_tax_total(root, invoice)
@@ -96,7 +96,7 @@ class XRechnungGenerator:
         
         # InvoiceLines
         for item in invoice_items:
-            self._add_invoice_line(root, item, invoice[32])  # TaxRate
+            self._add_invoice_line(root, item, invoice[35])  # TaxRate
         
         # Convert to pretty XML string
         xml_string = ET.tostring(root, encoding='unicode')
@@ -110,28 +110,28 @@ class XRechnungGenerator:
         
         # PartyName
         party_name = ET.SubElement(party, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}PartyName')
-        ET.SubElement(party_name, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}Name').text = invoice[6] or 'Seller'
+        ET.SubElement(party_name, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}Name').text = invoice[5] or 'Seller'  # SellerCompany
         
         # PostalAddress
         postal = ET.SubElement(party, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}PostalAddress')
-        ET.SubElement(postal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}StreetName').text = invoice[7] or ''
-        ET.SubElement(postal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}CityName').text = invoice[9] or ''
-        ET.SubElement(postal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}PostalZone').text = invoice[8] or ''
+        ET.SubElement(postal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}StreetName').text = invoice[6] or ''   # SellerStreet
+        ET.SubElement(postal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}CityName').text = invoice[8] or ''      # SellerCity
+        ET.SubElement(postal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}PostalZone').text = invoice[7] or ''    # SellerPostalCode
         
         country = ET.SubElement(postal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}Country')
-        ET.SubElement(country, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}IdentificationCode').text = invoice[10] or 'DE'
+        ET.SubElement(country, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}IdentificationCode').text = invoice[9] or 'DE'  # SellerCountry
         
         # PartyTaxScheme (VAT)
-        if invoice[11]:  # SellerVATID
+        if invoice[10]:  # SellerVATID
             tax_scheme = ET.SubElement(party, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}PartyTaxScheme')
-            ET.SubElement(tax_scheme, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}CompanyID').text = invoice[11]
+            ET.SubElement(tax_scheme, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}CompanyID').text = invoice[10]  # SellerVATID
             
             scheme = ET.SubElement(tax_scheme, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}TaxScheme')
             ET.SubElement(scheme, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}ID').text = 'VAT'
         
         # PartyLegalEntity
         legal = ET.SubElement(party, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}PartyLegalEntity')
-        ET.SubElement(legal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}RegistrationName').text = invoice[6] or 'Seller'
+        ET.SubElement(legal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}RegistrationName').text = invoice[5] or 'Seller'  # SellerCompany
     
     def _add_customer_party(self, root, invoice):
         """Add AccountingCustomerParty (Buyer) to XML"""
@@ -140,20 +140,20 @@ class XRechnungGenerator:
         
         # PartyName
         party_name = ET.SubElement(party, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}PartyName')
-        ET.SubElement(party_name, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}Name').text = invoice[12] or 'Buyer'
+        ET.SubElement(party_name, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}Name').text = invoice[15] or 'Buyer'  # BuyerCompany
         
         # PostalAddress
         postal = ET.SubElement(party, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}PostalAddress')
-        ET.SubElement(postal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}StreetName').text = invoice[13] or ''
-        ET.SubElement(postal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}CityName').text = invoice[15] or ''
-        ET.SubElement(postal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}PostalZone').text = invoice[14] or ''
+        ET.SubElement(postal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}StreetName').text = invoice[16] or ''   # BuyerStreet
+        ET.SubElement(postal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}CityName').text = invoice[18] or ''     # BuyerCity
+        ET.SubElement(postal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}PostalZone').text = invoice[17] or ''   # BuyerPostalCode
         
         country = ET.SubElement(postal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}Country')
-        ET.SubElement(country, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}IdentificationCode').text = invoice[16] or 'DE'
+        ET.SubElement(country, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}IdentificationCode').text = invoice[19] or 'DE'  # BuyerCountry
         
         # PartyLegalEntity
         legal = ET.SubElement(party, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}PartyLegalEntity')
-        ET.SubElement(legal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}RegistrationName').text = invoice[12] or 'Buyer'
+        ET.SubElement(legal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}RegistrationName').text = invoice[15] or 'Buyer'  # BuyerCompany
     
     def _add_payment_means(self, root, invoice):
         """Add PaymentMeans to XML"""
@@ -162,31 +162,31 @@ class XRechnungGenerator:
         
         # PayeeFinancialAccount
         account = ET.SubElement(payment, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}PayeeFinancialAccount')
-        ET.SubElement(account, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}ID').text = invoice[24]  # IBAN
-        ET.SubElement(account, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}Name').text = invoice[23] or ''  # Account holder
+        ET.SubElement(account, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}ID').text = invoice[32]        # BankIBAN
+        ET.SubElement(account, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}Name').text = invoice[31] or ''  # BankName
         
         # FinancialInstitutionBranch (BIC)
-        if invoice[25]:  # BankBIC
+        if invoice[33]:  # BankBIC
             branch = ET.SubElement(account, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}FinancialInstitutionBranch')
-            ET.SubElement(branch, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}ID').text = invoice[25]
+            ET.SubElement(branch, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}ID').text = invoice[33]
     
     def _add_tax_total(self, root, invoice):
         """Add TaxTotal to XML"""
         tax_total = ET.SubElement(root, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}TaxTotal')
         ET.SubElement(tax_total, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}TaxAmount', 
-                     attrib={'currencyID': invoice[3] or 'EUR'}).text = f"{invoice[34]:.2f}"
+                     attrib={'currencyID': invoice[24] or 'EUR'}).text = f"{invoice[37]:.2f}"  # TaxAmount
         
         # TaxSubtotal
         subtotal = ET.SubElement(tax_total, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}TaxSubtotal')
         ET.SubElement(subtotal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}TaxableAmount',
-                     attrib={'currencyID': invoice[3] or 'EUR'}).text = f"{invoice[33]:.2f}"
+                     attrib={'currencyID': invoice[24] or 'EUR'}).text = f"{invoice[36]:.2f}"  # SumNet
         ET.SubElement(subtotal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}TaxAmount',
-                     attrib={'currencyID': invoice[3] or 'EUR'}).text = f"{invoice[34]:.2f}"
+                     attrib={'currencyID': invoice[24] or 'EUR'}).text = f"{invoice[37]:.2f}"  # TaxAmount
         
         # TaxCategory
         category = ET.SubElement(subtotal, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}TaxCategory')
-        ET.SubElement(category, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}ID').text = invoice[31] or 'S'
-        ET.SubElement(category, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}Percent').text = f"{invoice[32]:.1f}"
+        ET.SubElement(category, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}ID').text = invoice[34] or 'S'   # TaxCategory
+        ET.SubElement(category, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}Percent').text = f"{invoice[35]:.1f}"  # TaxRate
         
         scheme = ET.SubElement(category, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}TaxScheme')
         ET.SubElement(scheme, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}ID').text = 'VAT'
@@ -194,40 +194,40 @@ class XRechnungGenerator:
     def _add_monetary_total(self, root, invoice):
         """Add LegalMonetaryTotal to XML"""
         monetary = ET.SubElement(root, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}LegalMonetaryTotal')
-        currency = invoice[3] or 'EUR'
+        currency = invoice[24] or 'EUR'
         
         ET.SubElement(monetary, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}LineExtensionAmount',
-                     attrib={'currencyID': currency}).text = f"{invoice[33]:.2f}"
+                     attrib={'currencyID': currency}).text = f"{invoice[36]:.2f}"  # SumNet
         ET.SubElement(monetary, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}TaxExclusiveAmount',
-                     attrib={'currencyID': currency}).text = f"{invoice[33]:.2f}"
+                     attrib={'currencyID': currency}).text = f"{invoice[36]:.2f}"  # SumNet
         ET.SubElement(monetary, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}TaxInclusiveAmount',
-                     attrib={'currencyID': currency}).text = f"{invoice[35]:.2f}"
+                     attrib={'currencyID': currency}).text = f"{invoice[38]:.2f}"  # SumGross
         ET.SubElement(monetary, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}PayableAmount',
-                     attrib={'currencyID': currency}).text = f"{invoice[36] or invoice[35]:.2f}"
+                     attrib={'currencyID': currency}).text = f"{invoice[39] or invoice[38]:.2f}"  # AmountDue
     
     def _add_invoice_line(self, root, item, default_tax_rate):
         """Add InvoiceLine to XML"""
         line = ET.SubElement(root, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}InvoiceLine')
         
         # ID (Position)
-        ET.SubElement(line, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}ID').text = str(item[1])
+        ET.SubElement(line, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}ID').text = str(item[2])  # Position
         
         # InvoicedQuantity
         ET.SubElement(line, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}InvoicedQuantity',
-                     attrib={'unitCode': item[5] or 'C62'}).text = f"{item[4]:.2f}"
+                     attrib={'unitCode': item[6] or 'C62'}).text = f"{item[5]:.2f}"  # Unit, Quantity
         
         # LineExtensionAmount
         ET.SubElement(line, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}LineExtensionAmount',
-                     attrib={'currencyID': 'EUR'}).text = f"{item[7]:.2f}"
+                     attrib={'currencyID': 'EUR'}).text = f"{item[8]:.2f}"  # TotalNet
         
         # Item
         item_elem = ET.SubElement(line, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}Item')
-        ET.SubElement(item_elem, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}Name').text = item[3] or 'Item'
+        ET.SubElement(item_elem, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}Name').text = item[4] or 'Item'  # Description
         
         # ClassifiedTaxCategory
         tax_cat = ET.SubElement(item_elem, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}ClassifiedTaxCategory')
-        ET.SubElement(tax_cat, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}ID').text = item[8] or 'S'
-        ET.SubElement(tax_cat, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}Percent').text = f"{item[9] or default_tax_rate:.1f}"
+        ET.SubElement(tax_cat, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}ID').text = item[9] or 'S'   # TaxCategory
+        ET.SubElement(tax_cat, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}Percent').text = f"{item[10] or default_tax_rate:.1f}"  # TaxRate
         
         scheme = ET.SubElement(tax_cat, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}TaxScheme')
         ET.SubElement(scheme, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}ID').text = 'VAT'
@@ -235,4 +235,4 @@ class XRechnungGenerator:
         # Price
         price_elem = ET.SubElement(line, '{urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2}Price')
         ET.SubElement(price_elem, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}PriceAmount',
-                     attrib={'currencyID': 'EUR'}).text = f"{item[6]:.2f}"
+                     attrib={'currencyID': 'EUR'}).text = f"{item[7]:.2f}"  # PricePerUnit
