@@ -12,7 +12,7 @@ PyBuch ist eine schlanke, webbasierte Buchhaltungssoftware in Python. Sie verwal
 - Übersicht aller Belege mit Nummer, Datum, Dateiname, Pfad und Zusatzinfos
 - Hinzufügen, Bearbeiten, Löschen
 - Many-to-Many-Verknüpfung mit Buchungen (BookingDocuments)
-- UNIQUE-Constraints für Belegnummer und Dateiname/Pfad
+- UNIQUE-Constraint in `BookingDocuments` auf `(Booking_ID, Document_ID)` verhindert doppelte Verknüpfungen
 
 ### 2. Buchungen (`/transactions`)
 Zentrale Verwaltung aller Buchungstransaktionen:
