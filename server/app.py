@@ -408,6 +408,20 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             if status_code == 200:
                 self.wfile.write(b'{"success": true}')
             return
+
+        # Handle invoice payment deletion
+        if self.path == "/invoice/delete-payment":
+            content_length = int(self.headers['Content-Length'])
+            post_body = self.rfile.read(content_length)
+            status_code, msg = handlers.handle_delete_invoice_payment(post_body)
+            self.send_response(status_code)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            if status_code == 200:
+                self.wfile.write(b'{"success": true}')
+            else:
+                self.wfile.write(f'{{"error": "{msg}"}}'.encode())
+            return
         
         # Handle invoice status updates
         if self.path == "/invoice/status":

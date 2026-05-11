@@ -417,6 +417,21 @@ class Database:
             )
         ''')
 
+        # InvoicePayments: Zahlungsverknüpfungen Rechnung ↔ Buchung
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS InvoicePayments (
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                InvoiceID INTEGER NOT NULL,
+                BookingID INTEGER NOT NULL,
+                Amount REAL NOT NULL,
+                PaymentDate DATE NOT NULL,
+                Notes TEXT,
+                CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (InvoiceID) REFERENCES Invoices(ID) ON DELETE CASCADE,
+                FOREIGN KEY (BookingID) REFERENCES Bookings(ID)
+            )
+        ''')
+
         # DATEV Steuerschlüssel (BU-Schlüssel) → Steuersatz-Zuordnung
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS TaxKeys (
@@ -3464,54 +3479,125 @@ class Database:
             conn.close()
 
     def link_invoice_to_transaction(self, invoice_id, transaction_id, amount_paid):
-        """Link an invoice to a payment transaction and update AmountDue
-        
-        Args:
-            invoice_id: ID of the invoice
-            transaction_id: ID of the transaction (payment)
-            amount_paid: Amount paid in this transaction
-        """
+        """Link an invoice to a payment booking via InvoicePayments and recalculate AmountDue."""
         conn = self._get_connection()
         cursor = conn.cursor()
         try:
-            # Get current invoice data
-            cursor.execute('SELECT AmountDue, SumGross FROM Invoices WHERE ID = ?', (invoice_id,))
+            cursor.execute('SELECT SumGross FROM Invoices WHERE ID = ?', (invoice_id,))
             invoice_data = cursor.fetchone()
             if not invoice_data:
                 raise ValueError(f"Invoice {invoice_id} not found")
-            
-            current_due = invoice_data[0] or invoice_data[1]  # Use SumGross if AmountDue is None
-            new_due = current_due - amount_paid
-            
-            # Update AmountDue
+
+            # Get payment date from booking
+            cursor.execute('SELECT BookingDate FROM Bookings WHERE ID = ?', (transaction_id,))
+            booking = cursor.fetchone()
+            payment_date = booking[0] if booking else None
+
+            # Prevent duplicate links for the same booking
+            cursor.execute(
+                'SELECT ID FROM InvoicePayments WHERE InvoiceID = ? AND BookingID = ?',
+                (invoice_id, transaction_id))
+            if cursor.fetchone():
+                raise ValueError(f"Booking {transaction_id} is already linked to invoice {invoice_id}")
+
             cursor.execute('''
-                UPDATE Invoices 
-                SET AmountDue = ?,
-                    UpdatedAt = CURRENT_TIMESTAMP
+                INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate)
+                VALUES (?, ?, ?, ?)
+            ''', (invoice_id, transaction_id, amount_paid, payment_date))
+
+            # Recalculate AmountDue from all payments
+            cursor.execute(
+                'SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
+                (invoice_id,))
+            total_paid = cursor.fetchone()[0]
+            new_due = invoice_data[0] - total_paid
+
+            cursor.execute('''
+                UPDATE Invoices
+                SET AmountDue = ?, UpdatedAt = CURRENT_TIMESTAMP
                 WHERE ID = ?
             ''', (new_due, invoice_id))
-            
-            # Update transaction to reference invoice (if Notes field exists)
-            cursor.execute('''
-                UPDATE Transactions 
-                SET Info = 'Rechnung: ' || (SELECT InvoiceNumber FROM Invoices WHERE ID = ?)
-                WHERE ID = ?
-            ''', (invoice_id, transaction_id))
-            
-            # If fully paid, update status
-            if abs(new_due) < 0.01:  # Allow for rounding errors
+
+            # Auto-update status
+            if abs(new_due) < 0.01:
+                new_status = 'paid'
+            elif total_paid > 0:
+                new_status = 'partial'
+            else:
+                new_status = None
+
+            if new_status:
                 cursor.execute('''
-                    UPDATE Invoices 
-                    SET Status = 'paid',
-                        UpdatedAt = CURRENT_TIMESTAMP
-                    WHERE ID = ?
-                ''', (invoice_id,))
-            
+                    UPDATE Invoices SET Status = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE ID = ?
+                ''', (new_status, invoice_id))
+
             conn.commit()
-            print(f"Invoice {invoice_id} linked to transaction {transaction_id}, new due: {new_due:.2f}")
-            
+            print(f"Invoice {invoice_id} linked to booking {transaction_id}, new due: {new_due:.2f}")
+
         except Exception as e:
             print(f"Error linking invoice to transaction: {e}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def get_invoice_payments(self, invoice_id):
+        """Return all payment entries for a given invoice.
+
+        Returns list of tuples:
+          (ID, InvoiceID, BookingID, Amount, PaymentDate, Notes, BookingReference)
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT ip.ID, ip.InvoiceID, ip.BookingID, ip.Amount, ip.PaymentDate, ip.Notes,
+                   COALESCE(b.Reference, b.BookingText, '') AS BookingRef
+            FROM InvoicePayments ip
+            LEFT JOIN Bookings b ON b.ID = ip.BookingID
+            WHERE ip.InvoiceID = ?
+            ORDER BY ip.PaymentDate, ip.ID
+        ''', (invoice_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
+    def delete_invoice_payment(self, payment_id):
+        """Remove an InvoicePayments entry and recalculate AmountDue on the invoice."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('SELECT InvoiceID, Amount FROM InvoicePayments WHERE ID = ?', (payment_id,))
+            row = cursor.fetchone()
+            if not row:
+                raise ValueError(f"InvoicePayment {payment_id} not found")
+            invoice_id = row[0]
+
+            cursor.execute('DELETE FROM InvoicePayments WHERE ID = ?', (payment_id,))
+
+            # Recalculate AmountDue
+            cursor.execute('SELECT SumGross FROM Invoices WHERE ID = ?', (invoice_id,))
+            sum_gross = cursor.fetchone()[0]
+            cursor.execute(
+                'SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
+                (invoice_id,))
+            total_paid = cursor.fetchone()[0]
+            new_due = sum_gross - total_paid
+
+            # Recalculate status
+            if abs(new_due) < 0.01:
+                new_status = 'paid'
+            elif total_paid > 0:
+                new_status = 'partial'
+            else:
+                new_status = 'finalized'
+
+            cursor.execute('''
+                UPDATE Invoices SET AmountDue = ?, Status = ?, UpdatedAt = CURRENT_TIMESTAMP
+                WHERE ID = ?
+            ''', (new_due, new_status, invoice_id))
+
+            conn.commit()
+        except Exception as e:
             conn.rollback()
             raise
         finally:

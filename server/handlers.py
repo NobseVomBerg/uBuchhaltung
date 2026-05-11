@@ -1499,26 +1499,47 @@ def handle_update_invoice_status(post_body: bytes):
 
 
 def handle_link_invoice_payment(post_body: bytes):
-    """Link invoice to a payment transaction
-    
+    """Link invoice to a payment booking via InvoicePayments table.
+
     Returns tuple: (status_code, redirect_path)
     """
     data = json.loads(post_body.decode('utf-8'))
     invoice_id = int(data.get('invoice_id'))
     transaction_id = int(data.get('transaction_id'))
     amount_paid = float(data.get('amount_paid'))
-    
+
     if not invoice_id or not transaction_id or not amount_paid:
         return 400, "/invoice"
-    
+
     db = Database()
-    
+
     try:
         db.link_invoice_to_transaction(invoice_id, transaction_id, amount_paid)
         return 200, f"/invoice/view?id={invoice_id}"
     except Exception as e:
         print(f"Error linking payment: {e}")
         return 500, "/invoice"
+
+
+def handle_delete_invoice_payment(post_body: bytes):
+    """Remove an InvoicePayments entry.
+
+    Returns tuple: (status_code, message)
+    """
+    data = json.loads(post_body.decode('utf-8'))
+    payment_id = int(data.get('payment_id'))
+
+    if not payment_id:
+        return 400, "Missing payment_id"
+
+    db = Database()
+
+    try:
+        db.delete_invoice_payment(payment_id)
+        return 200, "ok"
+    except Exception as e:
+        print(f"Error deleting invoice payment: {e}")
+        return 500, str(e)
 
 
 def handle_invoice_save(post_body: bytes):

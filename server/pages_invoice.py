@@ -205,15 +205,17 @@ def PageInvoiceNew(db: Database, invoice_id=None):
     import datetime
     import json
     current_year = datetime.datetime.now().year
-    
+
     # Load existing invoice if invoice_id is provided
     existing_invoice = None
     existing_items = []
+    existing_payments = []
     if invoice_id:
         existing_invoice = db.get_invoice_by_id(invoice_id)
         if existing_invoice:
             existing_items = db.get_invoice_items(invoice_id)
-    
+            existing_payments = db.get_invoice_payments(invoice_id)
+
     # Get company data (own contact)
     own_contacts = db.fetch_contacts(contact_type='own')
     own_contact = own_contacts[0] if own_contacts else None
@@ -1173,7 +1175,68 @@ def PageInvoiceNew(db: Database, invoice_id=None):
         }
     </script>
     '''
-    
+
+    # Payment history section (edit mode only)
+    if is_edit_mode and invoice_id:
+        amount_due = existing_invoice[39] if existing_invoice else 0
+        s += f'''
+    <div style="margin: 30px 0; padding: 20px; border: 1px solid #ddd; border-radius: 4px;">
+        <h3>Zahlungsverknüpfungen</h3>
+'''
+        if existing_payments:
+            total_paid = sum(p[3] for p in existing_payments)
+            s += '''        <table style="width:100%; border-collapse:collapse;">
+            <tr style="background:#f5f5f5;">
+                <th style="padding:6px 8px; text-align:left;">Datum</th>
+                <th style="padding:6px 8px; text-align:left;">Buchung</th>
+                <th style="padding:6px 8px; text-align:right;">Betrag</th>
+                <th style="padding:6px 8px;"></th>
+            </tr>
+'''
+            for p in existing_payments:
+                pid, _, booking_id, amount, pay_date, notes, booking_ref = p
+                s += f'''            <tr>
+                <td style="padding:6px 8px;">{pay_date or "–"}</td>
+                <td style="padding:6px 8px;">#{booking_id} {booking_ref}</td>
+                <td style="padding:6px 8px; text-align:right;">{amount:.2f} €</td>
+                <td style="padding:6px 8px; text-align:center;">
+                    <a href="javascript:void(0);" onclick="deletePayment({pid})" style="color:#c00;">✕ Entfernen</a>
+                </td>
+            </tr>
+'''
+            s += f'''            <tr style="font-weight:bold; border-top:2px solid #ccc;">
+                <td colspan="2" style="padding:6px 8px;">Gezahlt gesamt</td>
+                <td style="padding:6px 8px; text-align:right;">{total_paid:.2f} €</td>
+                <td></td>
+            </tr>
+            <tr style="font-weight:bold;">
+                <td colspan="2" style="padding:6px 8px;">Noch offen</td>
+                <td style="padding:6px 8px; text-align:right; color:{"#c00" if (amount_due or 0) > 0.01 else "#2a2"};">{(amount_due or 0):.2f} €</td>
+                <td></td>
+            </tr>
+        </table>
+'''
+        else:
+            s += '        <p><em>Keine Zahlungen verknüpft.</em></p>\n'
+
+        s += f'''    </div>
+    <script>
+        function deletePayment(paymentId) {{
+            if (!confirm('Zahlungsverknüpfung wirklich entfernen?')) return;
+            fetch('/invoice/delete-payment', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{payment_id: paymentId}})
+            }})
+            .then(r => r.json())
+            .then(data => {{
+                if (data.success) {{ location.reload(); }}
+                else {{ alert('Fehler: ' + (data.error || 'Unbekannt')); }}
+            }});
+        }}
+    </script>
+'''
+
     s += Footer()
     return s
 
