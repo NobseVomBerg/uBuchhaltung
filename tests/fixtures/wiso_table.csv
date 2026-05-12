@@ -1,0 +1,5 @@
+Buchungsdatum;Empf./Auft.;Verwendungszweck;Kategorie;Beleg Nr.;Betrag
+01.03.2024;Mustermann GmbH;Rechnung 2024-001;;R2024-001;-1190,00
+05.03.2024;Office Supplies AG;Büromaterial März;;R2024-002;-238,00
+10.03.2024;Kunde Beispiel;Warenlieferung März;;R2024-003;107,00
+15.03.2024;Reisebüro XY;Dienstreise Berlin;;R2024-004;-500,00
