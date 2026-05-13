@@ -378,13 +378,17 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             self.respond(status_code, "", headers={"Location": location})
             return
 
+        # Handle invoice save / update
+        if self.path == "/invoice/save":
+            content_length = int(self.headers['Content-Length'])
+            post_body = self.rfile.read(content_length)
             response_data = handlers.handle_invoice_save(post_body)
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()
             self.wfile.write(response_data)
             return
-        
+
         # Handle invoice email sending
         if self.path == "/invoice/send-email":
             content_length = int(self.headers['Content-Length'])
