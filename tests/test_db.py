@@ -267,3 +267,119 @@ class TestChartOfAccounts:
         account_numbers = [r[2] for r in rows]  # AccountNumber is column 2
         assert 4400 in account_numbers
         assert 6815 in account_numbers
+
+
+# ─────────────────────────────────────────────
+# Depreciation booking
+# ─────────────────────────────────────────────
+
+class TestBookDepreciation:
+    """Tests for book_depreciation(): AfA-Buchung anlegen."""
+
+    def _setup_coa(self, db):
+        """Insert minimal COA rows needed for depreciation booking."""
+        conn = db._get_connection()
+        cur = conn.cursor()
+        cur.executemany(
+            'INSERT OR IGNORE INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStandard) VALUES (?,?,?,?,?)',
+            [
+                (4, 4830, 'AfA', 'Abschreibungen', 1),
+                (4, 420,  'Betriebs- und Geschäftsausstattung', 'BGA', 1),
+            ],
+        )
+        conn.commit()
+        cur.execute('SELECT ID FROM ChartOfAccounts WHERE AccountNumber=4830')
+        coa_expense = cur.fetchone()[0]
+        cur.execute('SELECT ID FROM ChartOfAccounts WHERE AccountNumber=420')
+        coa_asset = cur.fetchone()[0]
+        conn.close()
+        return coa_expense, coa_asset
+
+    def test_booking_type_is_entry(self, tmp_db):
+        """book_depreciation must create a Booking with BookingType='entry', not 'expense'."""
+        coa_expense, coa_asset = self._setup_coa(tmp_db)
+        asset_id = tmp_db.insert_asset(
+            name='Laptop', purchase_date='2024-01-01',
+            purchase_price=1200.0, useful_life_years=3,
+            coa_id=coa_asset,
+        )
+        booking_id = tmp_db.book_depreciation(
+            asset_id=asset_id, year=2024,
+            account_id=None,
+            coa_id_expense=coa_expense,
+            coa_id_asset=coa_asset,
+        )
+        row = tmp_db.get_booking_by_id(booking_id)
+        assert row is not None
+        assert row[17] == 'entry', f"Expected BookingType='entry', got '{row[17]}'"
+
+    def test_booking_amount_matches_plan(self, tmp_db):
+        """The booked amount must equal the planned depreciation for the year."""
+        coa_expense, coa_asset = self._setup_coa(tmp_db)
+        asset_id = tmp_db.insert_asset(
+            name='Drucker', purchase_date='2023-01-01',
+            purchase_price=900.0, useful_life_years=3,
+            coa_id=coa_asset,
+        )
+        plan = tmp_db.calculate_depreciation_plan(900.0, '2023-01-01', 3, 'linear')
+        expected = next(e['depreciation'] for e in plan if e['year'] == 2023)
+
+        booking_id = tmp_db.book_depreciation(
+            asset_id=asset_id, year=2023,
+            account_id=None,
+            coa_id_expense=coa_expense,
+            coa_id_asset=coa_asset,
+        )
+        row = tmp_db.get_booking_by_id(booking_id)
+        assert abs(row[11]) == pytest.approx(expected, abs=0.01)
+
+    def test_asset_depreciation_record_posted(self, tmp_db):
+        """After booking, AssetDepreciations must have Status='posted' for that year."""
+        coa_expense, coa_asset = self._setup_coa(tmp_db)
+        asset_id = tmp_db.insert_asset(
+            name='Monitor', purchase_date='2022-06-01',
+            purchase_price=600.0, useful_life_years=3,
+            coa_id=coa_asset,
+        )
+        tmp_db.book_depreciation(
+            asset_id=asset_id, year=2022,
+            account_id=None,
+            coa_id_expense=coa_expense,
+            coa_id_asset=coa_asset,
+        )
+        conn = tmp_db._get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT Status FROM AssetDepreciations WHERE Asset_ID=? AND Year=?",
+            (asset_id, 2022),
+        )
+        row = cur.fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] == 'posted'
+
+    def test_invalid_asset_raises(self, tmp_db):
+        """Passing a non-existent asset_id must raise ValueError."""
+        with pytest.raises(ValueError, match="not found"):
+            tmp_db.book_depreciation(
+                asset_id=9999, year=2024,
+                account_id=None,
+                coa_id_expense=1,
+                coa_id_asset=2,
+            )
+
+    def test_invalid_year_raises(self, tmp_db):
+        """Passing a year outside the depreciation plan must raise ValueError."""
+        coa_expense, coa_asset = self._setup_coa(tmp_db)
+        asset_id = tmp_db.insert_asset(
+            name='Kamera', purchase_date='2024-01-01',
+            purchase_price=1500.0, useful_life_years=2,
+            coa_id=coa_asset,
+        )
+        with pytest.raises(ValueError, match="No depreciation planned"):
+            tmp_db.book_depreciation(
+                asset_id=asset_id, year=2099,
+                account_id=None,
+                coa_id_expense=coa_expense,
+                coa_id_asset=coa_asset,
+            )

@@ -1602,7 +1602,7 @@ class Database:
         cursor.execute('''
             INSERT INTO Bookings (DateBooking, DateTax, Account_ID, COA_ID,
                 Amount, Currency, Text, BookingType, Status)
-            VALUES (?, ?, ?, ?, ?, 'EUR', ?, 'expense', 'posted')
+            VALUES (?, ?, ?, ?, ?, 'EUR', ?, 'entry', 'posted')
         ''', (booking_date, booking_date, account_id, coa_id_expense,
               -abs(amount), description))
         booking_id = cursor.lastrowid
