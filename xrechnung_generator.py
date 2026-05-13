@@ -27,15 +27,18 @@ class XRechnungGenerator:
         Returns:
             str: XML string
         """
-        # Register namespaces
+        # Register namespaces so ET uses the canonical prefixes (cac, cbc) when
+        # serialising.  Do NOT also pass them as attrib= on the root element –
+        # that would produce duplicate xmlns:… declarations that expat rejects.
         for prefix, uri in self.namespaces.items():
             if prefix == 'xmlns':
                 ET.register_namespace('', uri)
             else:
                 ET.register_namespace(prefix.replace('xmlns:', ''), uri)
-        
-        # Create root element
-        root = ET.Element('Invoice', attrib=self.namespaces)
+
+        # Create root element in the Invoice-2 namespace.  ET will add the
+        # xmlns declarations automatically when serialising.
+        root = ET.Element(f'{{{self.namespaces["xmlns"]}}}Invoice')
         
         # CustomizationID (XRechnung version)
         ET.SubElement(root, '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}CustomizationID').text = \

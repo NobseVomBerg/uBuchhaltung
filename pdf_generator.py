@@ -7,6 +7,18 @@ import os
 from db import Database
 
 
+def _escape_pdf_string(s: str) -> str:
+    """Escape special characters for use inside PDF string literals (parentheses syntax).
+
+    In PDF, within a ``(…)`` string literal the following characters must be
+    preceded by a backslash:  backslash itself, ``(``, and ``)``.
+    """
+    s = s.replace('\\', '\\\\')
+    s = s.replace('(', '\\(')
+    s = s.replace(')', '\\)')
+    return s
+
+
 def generate_invoice_pdf(db: Database, invoice_id: int):
     """Generate PDF for an existing invoice from database
     
@@ -176,30 +188,30 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     # Invoice number and date
     content_stream.append("/F1 10 Tf")
     content_stream.append("0 -20 Td")
-    content_stream.append(f"(Rechnungs-Nr.: {invoice_number}) Tj")
+    content_stream.append(f"(Rechnungs-Nr.: {_escape_pdf_string(invoice_number)}) Tj")
     content_stream.append("0 -15 Td")
-    content_stream.append(f"(Datum: {invoice_date}) Tj")
+    content_stream.append(f"(Datum: {_escape_pdf_string(invoice_date)}) Tj")
     
     # Seller address (top-left)
     content_stream.append("0 -40 Td")
     content_stream.append("/F3 8 Tf")
     seller_line = f"{seller_company or seller_name} · {seller_street} · {seller_postal} {seller_city}"
-    content_stream.append(f"({seller_line}) Tj")
+    content_stream.append(f"({_escape_pdf_string(seller_line)}) Tj")
     
     # Buyer address
     content_stream.append("0 -25 Td")
     content_stream.append("/F1 10 Tf")
     if buyer_company:
-        content_stream.append(f"({buyer_company}) Tj")
+        content_stream.append(f"({_escape_pdf_string(buyer_company)}) Tj")
         content_stream.append("0 -15 Td")
     if buyer_name:
-        content_stream.append(f"({buyer_name}) Tj")
+        content_stream.append(f"({_escape_pdf_string(buyer_name)}) Tj")
         content_stream.append("0 -15 Td")
     if buyer_street:
-        content_stream.append(f"({buyer_street}) Tj")
+        content_stream.append(f"({_escape_pdf_string(buyer_street)}) Tj")
         content_stream.append("0 -15 Td")
     if buyer_postal or buyer_city:
-        content_stream.append(f"({buyer_postal} {buyer_city}) Tj")
+        content_stream.append(f"({_escape_pdf_string(f'{buyer_postal} {buyer_city}')}) Tj")
         content_stream.append("0 -15 Td")
     
     # Invoice items table
@@ -225,7 +237,7 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
             description = description[:32] + '...'
         
         item_line = f"{pos}      {quantity:.2f}   {unit:8s}  {description:35s}  {price:8.2f} EUR  {total:8.2f} EUR"
-        content_stream.append(f"({item_line}) Tj")
+        content_stream.append(f"({_escape_pdf_string(item_line)}) Tj")
         content_stream.append("0 -15 Td")
     
     # Totals
@@ -246,13 +258,13 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     line = ""
     for word in words:
         if len(line + word) > 80:
-            content_stream.append(f"({line}) Tj")
+            content_stream.append(f"({_escape_pdf_string(line)}) Tj")
             content_stream.append("0 -15 Td")
             line = word + " "
         else:
             line += word + " "
     if line:
-        content_stream.append(f"({line.strip()}) Tj")
+        content_stream.append(f"({_escape_pdf_string(line.strip())}) Tj")
     
     # Bank details
     content_stream.append("0 -30 Td")
@@ -261,24 +273,24 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     content_stream.append("0 -15 Td")
     content_stream.append("/F1 10 Tf")
     if bank_name:
-        content_stream.append(f"(Bank: {bank_name}) Tj")
+        content_stream.append(f"(Bank: {_escape_pdf_string(bank_name)}) Tj")
         content_stream.append("0 -15 Td")
     if bank_iban:
-        content_stream.append(f"(IBAN: {bank_iban}) Tj")
+        content_stream.append(f"(IBAN: {_escape_pdf_string(bank_iban)}) Tj")
         content_stream.append("0 -15 Td")
     if bank_bic:
-        content_stream.append(f"(BIC: {bank_bic}) Tj")
+        content_stream.append(f"(BIC: {_escape_pdf_string(bank_bic)}) Tj")
     
     # Footer with company details
     content_stream.append("0 -50 Td")
     content_stream.append("/F3 8 Tf")
     footer_line1 = f"{seller_company or seller_name}    {seller_street}    {seller_postal} {seller_city}"
-    content_stream.append(f"({footer_line1}) Tj")
+    content_stream.append(f"({_escape_pdf_string(footer_line1)}) Tj")
     content_stream.append("0 -12 Td")
     footer_line2 = f"Tel: {seller_phone}    E-Mail: {seller_email}"
     if seller_tax_id:
         footer_line2 += f"    UStIdNr: {seller_tax_id}"
-    content_stream.append(f"({footer_line2}) Tj")
+    content_stream.append(f"({_escape_pdf_string(footer_line2)}) Tj")
     
     content_stream.append("ET")
     
