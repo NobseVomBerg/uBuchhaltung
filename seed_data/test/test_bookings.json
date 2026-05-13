@@ -1,0 +1,59 @@
+[
+  {
+    "date": "2023-03-01",
+    "amount": 1190.00,
+    "account_name": "Testbank",
+    "booking_type": "bank",
+    "document_number": "A2023-001",
+    "text": "Warenverkauf Beispiel Kunde AG",
+    "children": [
+      {
+        "date": "2023-03-01",
+        "amount": 1190.00,
+        "coa_number": 1800,
+        "counter_coa_number": 4400,
+        "tax_rate": 0.19,
+        "text": "Warenverkauf Beispiel Kunde AG",
+        "document_number": "A2023-001"
+      }
+    ]
+  },
+  {
+    "date": "2023-03-05",
+    "amount": -238.00,
+    "account_name": "Testbank",
+    "booking_type": "bank",
+    "document_number": "E2023-001",
+    "text": "Bürobedarf Lieferant GmbH",
+    "children": [
+      {
+        "date": "2023-03-05",
+        "amount": -238.00,
+        "coa_number": 6815,
+        "counter_coa_number": 1800,
+        "tax_rate": 0.19,
+        "text": "Bürobedarf Lieferant GmbH",
+        "document_number": "E2023-001"
+      }
+    ]
+  },
+  {
+    "date": "2023-04-10",
+    "amount": -500.00,
+    "account_name": "Testbank",
+    "booking_type": "bank",
+    "document_number": "E2023-002",
+    "text": "Reisekosten April 2023",
+    "children": [
+      {
+        "date": "2023-04-10",
+        "amount": -500.00,
+        "coa_number": 6815,
+        "counter_coa_number": 1800,
+        "tax_rate": null,
+        "text": "Reisekosten April 2023",
+        "document_number": "E2023-002"
+      }
+    ]
+  }
+]

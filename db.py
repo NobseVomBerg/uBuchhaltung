@@ -1262,6 +1262,175 @@ class Database:
         conn.commit()
         conn.close()
 
+    # ─── First-run / Test data ────────────────────────────────────────────────
+
+    def is_first_run(self) -> bool:
+        """Prüft ob die App noch nicht eingerichtet wurde.
+
+        Gilt als erster Start wenn:
+        - kein Kontakt mit ContactType='own' existiert, UND
+        - kein echtes Bankkonto (IsCash=0) angelegt ist.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM Contacts WHERE ContactType='own'")
+        has_own = cursor.fetchone()[0] > 0
+        cursor.execute("SELECT COUNT(*) FROM Accounts WHERE IsCash=0")
+        has_bank = cursor.fetchone()[0] > 0
+        conn.close()
+        return not has_own and not has_bank
+
+    def load_test_seed_data(self):
+        """Lädt Testdaten aus seed_data/test/ (Kontakte, Bankkonten, Belege, Buchungen).
+
+        Idempotent: bereits vorhandene Einträge werden übersprungen.
+        Dient sowohl dem Setup-Wizard ('Mit Testdaten starten') als auch
+        dem pytest-Fixture db_with_coa.
+        """
+        seed_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'seed_data', 'test')
+
+        # ── Kontakte ──────────────────────────────────────────────────────────
+        contacts_file = os.path.join(seed_dir, 'test_contacts.json')
+        if os.path.exists(contacts_file):
+            with open(contacts_file, 'r', encoding='utf-8') as f:
+                contacts = json.load(f)
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            for c in contacts:
+                # Eigene-Daten-Kontakt nur einmalig anlegen
+                if c.get('contact_type') == 'own':
+                    cursor.execute("SELECT COUNT(*) FROM Contacts WHERE ContactType='own'")
+                    if cursor.fetchone()[0] > 0:
+                        continue
+                conn.close()
+                try:
+                    self.insert_contact(
+                        contact_type=c.get('contact_type', 'customer'),
+                        entity_type=c.get('entity_type', 'company'),
+                        display_name=c.get('display_name'),
+                        customer_number=c.get('customer_number'),
+                        email=c.get('email', ''),
+                        phone=c.get('phone', ''),
+                        notes=c.get('notes', ''),
+                        street=c.get('street', ''),
+                        postal_code=c.get('postal_code', ''),
+                        city=c.get('city', ''),
+                        country=c.get('country', 'DE'),
+                        company_name=c.get('company_name', ''),
+                        legal_form=c.get('legal_form', ''),
+                        tax_id=c.get('tax_id', ''),
+                        salutation=c.get('salutation', ''),
+                        first_name=c.get('first_name', ''),
+                        last_name=c.get('last_name', ''),
+                    )
+                except Exception:
+                    pass  # Duplikat oder Constraint-Fehler – überspringen
+                conn = self._get_connection()
+                cursor = conn.cursor()
+            conn.close()
+
+        # ── Bankkonten ────────────────────────────────────────────────────────
+        accounts_file = os.path.join(seed_dir, 'test_accounts.json')
+        if os.path.exists(accounts_file):
+            with open(accounts_file, 'r', encoding='utf-8') as f:
+                accounts = json.load(f)
+            for a in accounts:
+                self.insert_account(
+                    name=a['name'],
+                    holder=a.get('holder', ''),
+                    number=a.get('number', ''),
+                    bic=a.get('bic', ''),
+                    bank_name=a.get('bank_name', ''),
+                    is_cash=a.get('is_cash', 0),
+                    skr_account=a.get('skr_account'),
+                )
+
+        # ── Dokumente (Belege) ────────────────────────────────────────────────
+        documents_file = os.path.join(seed_dir, 'test_documents.json')
+        if os.path.exists(documents_file):
+            with open(documents_file, 'r', encoding='utf-8') as f:
+                documents = json.load(f)
+            for d in documents:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                cursor.execute('SELECT COUNT(*) FROM Documents WHERE Number=?', (d['number'],))
+                exists = cursor.fetchone()[0] > 0
+                conn.close()
+                if not exists:
+                    self.insert_receipt(
+                        number=d['number'],
+                        date=d['date'],
+                        filename=d.get('filename', ''),
+                        path=d.get('path', ''),
+                        info=d.get('info', ''),
+                    )
+
+        # ── Buchungen ─────────────────────────────────────────────────────────
+        bookings_file = os.path.join(seed_dir, 'test_bookings.json')
+        if os.path.exists(bookings_file):
+            with open(bookings_file, 'r', encoding='utf-8') as f:
+                bookings_data = json.load(f)
+
+            # Lookup-Maps einmalig aufbauen
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('SELECT Name, ID FROM Accounts')
+            acct_map = {row[0]: row[1] for row in cursor.fetchall()}
+            cursor.execute('SELECT AccountNumber, ID FROM ChartOfAccounts')
+            coa_map = {row[0]: row[1] for row in cursor.fetchall()}
+            conn.close()
+
+            for b in bookings_data:
+                doc_nr = b.get('document_number')
+                # Duplikat-Prüfung über DocumentNumber + BookingType='bank'
+                if doc_nr:
+                    conn = self._get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND BookingType='bank'",
+                        (doc_nr,),
+                    )
+                    if cursor.fetchone()[0] > 0:
+                        conn.close()
+                        continue
+                    conn.close()
+
+                account_id = acct_map.get(b.get('account_name'))
+                parent_id = self.insert_booking(
+                    date_booking=b['date'],
+                    amount=b['amount'],
+                    account_id=account_id,
+                    booking_type=b.get('booking_type', 'bank'),
+                    text=b.get('text', ''),
+                    document_number=doc_nr,
+                )
+
+                for child in b.get('children', []):
+                    coa_id = coa_map.get(child.get('coa_number'))
+                    counter_coa_id = coa_map.get(child.get('counter_coa_number'))
+                    tax_rate = child.get('tax_rate')
+                    child_amount = child['amount']
+                    tax_amount = None
+                    if tax_rate and child_amount:
+                        tax_amount = round(
+                            abs(child_amount) - abs(child_amount) / (1 + tax_rate), 2
+                        )
+                        if child_amount < 0:
+                            tax_amount = -tax_amount
+                    self.insert_booking(
+                        date_booking=child['date'],
+                        amount=child_amount,
+                        coa_id=coa_id,
+                        counter_coa_id=counter_coa_id,
+                        tax_rate=tax_rate,
+                        tax_amount=tax_amount,
+                        booking_type='entry',
+                        text=child.get('text', ''),
+                        document_number=child.get('document_number'),
+                        parent_booking_id=parent_id,
+                    )
+
+
     # ─── Asset Categories ────────────────────────────────────────────────────
 
     def fetch_asset_categories(self):

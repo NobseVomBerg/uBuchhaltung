@@ -81,7 +81,7 @@ class TestOriginalFormatImport:
         """BU 401 → TaxRate = 0.19"""
         csv = (
             "ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER\n"
-            "1;01.06.2024;4400;1200;Testverkauf;TAX-19;119,00;401;\n"
+            "1;01.06.2024;4400;1800;Testverkauf;TAX-19;119,00;401;\n"
         ).encode('utf-8')
         db_with_coa.import_wiso_csv(csv)
         conn = db_with_coa._get_connection()
@@ -97,7 +97,7 @@ class TestOriginalFormatImport:
         """BU 402 → TaxRate = 0.07"""
         csv = (
             "ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER\n"
-            "1;02.06.2024;4400;1200;Testverkauf 7;TAX-7;107,00;402;\n"
+            "1;02.06.2024;4400;1800;Testverkauf 7;TAX-7;107,00;402;\n"
         ).encode('utf-8')
         db_with_coa.import_wiso_csv(csv)
         conn = db_with_coa._get_connection()
@@ -128,7 +128,7 @@ class TestOriginalFormatImport:
         """Row without BU-Schlüssel (not 4405→4400) has no tax rate."""
         csv = (
             "ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER\n"
-            "1;04.06.2024;6815;1200;Reise;NO-TAX;500,00;;\n"
+            "1;04.06.2024;6815;1800;Reise;NO-TAX;500,00;;\n"
         ).encode('utf-8')
         db_with_coa.import_wiso_csv(csv)
         conn = db_with_coa._get_connection()
@@ -141,10 +141,10 @@ class TestOriginalFormatImport:
         assert row[1] is None
 
     def test_amount_sign_liquid_gegenkonto_negative(self, db_with_coa):
-        """GEGENKONTO=1200 (Bank, liquide) → Amount should be negative (Ausgabe)."""
+        """GEGENKONTO=1800 (Bank, liquide) → Amount should be negative (Ausgabe)."""
         csv = (
             "ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER\n"
-            "1;05.06.2024;6815;1200;Ausgabe;SIGN-OUT;238,00;401;\n"
+            "1;05.06.2024;6815;1800;Ausgabe;SIGN-OUT;238,00;401;\n"
         ).encode('utf-8')
         db_with_coa.import_wiso_csv(csv)
         conn = db_with_coa._get_connection()
@@ -156,10 +156,10 @@ class TestOriginalFormatImport:
         assert row[0] < 0, "Ausgabe (liquid Gegenkonto) muss negativ sein"
 
     def test_amount_sign_liquid_konto_positive(self, db_with_coa):
-        """KONTO=1200 (Bank, liquide) → Amount should be positive (Einnahme)."""
+        """KONTO=1800 (Bank, liquide) → Amount should be positive (Einnahme)."""
         csv = (
             "ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER\n"
-            "1;06.06.2024;1200;4400;Einnahme;SIGN-IN;1190,00;401;\n"
+            "1;06.06.2024;1800;4400;Einnahme;SIGN-IN;1190,00;401;\n"
         ).encode('utf-8')
         db_with_coa.import_wiso_csv(csv)
         conn = db_with_coa._get_connection()
@@ -174,8 +174,8 @@ class TestOriginalFormatImport:
         """Two rows with same REFERENZNUMMER+Datum → BookingGroup created."""
         csv = (
             "ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER\n"
-            "1;07.06.2024;4400;1200;Teil 1;GRP-001;500,00;401;\n"
-            "2;07.06.2024;6815;1200;Teil 2;GRP-001;100,00;401;\n"
+            "1;07.06.2024;4400;1800;Teil 1;GRP-001;500,00;401;\n"
+            "2;07.06.2024;6815;1800;Teil 2;GRP-001;100,00;401;\n"
         ).encode('utf-8')
         db_with_coa.import_wiso_csv(csv)
         conn = db_with_coa._get_connection()
@@ -191,7 +191,7 @@ class TestOriginalFormatImport:
         """Import of CP1252-encoded file should succeed."""
         csv_text = (
             "ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER\n"
-            "1;08.06.2024;6815;1200;Büromöbel;ENC-001;119,00;401;\n"
+            "1;08.06.2024;6815;1800;Büromöbel;ENC-001;119,00;401;\n"
         )
         csv_bytes = csv_text.encode('cp1252')
         result = db_with_coa.import_wiso_csv(csv_bytes)

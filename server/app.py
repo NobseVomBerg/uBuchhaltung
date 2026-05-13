@@ -24,18 +24,24 @@ from .pages_miscellaneous import PageMiscellaneous
 from .pages_booking_groups import PageBookingGroups, PageBookingGroupDetails
 from .pages_transactions import PageTransactions, PageConfirmTransactions
 from .pages_dashboard import PageDashboard
+from .pages_setup import PageSetup
 
 class SimpleWebServer(BaseHTTPRequestHandler):
     def do_GET(self):
         db = Database()
         try:
             if self.path == "/" or self.path == "/dashboard" or self.path.startswith("/dashboard?"):
+                if db.is_first_run():
+                    self.respond(303, "", headers={"Location": "/setup"})
+                    return
                 qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
                 date_from = qs.get('from', [''])[0]
                 date_to   = qs.get('to', [''])[0]
                 acct_raw  = qs.get('acct', [])
                 account_ids = [int(a) for a in acct_raw] if acct_raw else None
                 self.respond(200, PageDashboard(db, date_from, date_to, account_ids))
+            elif self.path == "/setup":
+                self.respond(200, PageSetup(db))
             elif self.path == "/about":
                 self.respond(200, pages.PageAbout())
             elif self.path == "/invoice" or self.path.startswith("/invoice?"):
@@ -579,6 +585,17 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     status_code, location = result
                     self.respond(status_code, "", headers={"Location": location})
                 return
+            # ── Setup ─────────────────────────────────────────────────────
+            elif self.path == "/setup/save":
+                status_code, response = handlers.handle_setup_save(db, post_data)
+                if status_code == 303:
+                    self.respond(status_code, "", headers={"Location": response})
+                else:
+                    self.respond(status_code, response)
+            elif self.path == "/setup/load_testdata":
+                status_code, location = handlers.handle_load_testdata(db)
+                self.respond(status_code, "", headers={"Location": location})
+            # ─────────────────────────────────────────────────────────────
             else:
                 self.respond(404, "Seite nicht gefunden.")
         except Exception as e:

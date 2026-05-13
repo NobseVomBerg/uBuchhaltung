@@ -1,0 +1,23 @@
+[
+  {
+    "number": "A2023-001",
+    "date": "2023-03-01",
+    "filename": "ausgangsrechnung_2023_001.pdf",
+    "path": "",
+    "info": "Ausgangsrechnung – Warenverkauf an Beispiel Kunde AG"
+  },
+  {
+    "number": "E2023-001",
+    "date": "2023-03-05",
+    "filename": "eingang_buero_2023_001.pdf",
+    "path": "",
+    "info": "Eingangsrechnung Bürobedarf – Lieferant GmbH"
+  },
+  {
+    "number": "E2023-002",
+    "date": "2023-04-10",
+    "filename": "eingang_reise_2023_001.pdf",
+    "path": "",
+    "info": "Reisekostenbeleg April 2023"
+  }
+]

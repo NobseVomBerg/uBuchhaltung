@@ -1,0 +1,46 @@
+[
+  {
+    "contact_type": "own",
+    "entity_type": "company",
+    "display_name": "Muster GmbH",
+    "email": "info@muster-gmbh.de",
+    "phone": "+49 30 12345678",
+    "street": "Musterstraße 1",
+    "postal_code": "12345",
+    "city": "Musterstadt",
+    "country": "DE",
+    "company_name": "Muster GmbH",
+    "legal_form": "GmbH",
+    "tax_id": "DE123456789"
+  },
+  {
+    "contact_type": "customer",
+    "entity_type": "company",
+    "display_name": "Beispiel Kunde AG",
+    "customer_number": "K001",
+    "email": "kontakt@beispiel-kunde.de",
+    "phone": "+49 40 9876543",
+    "street": "Kundenstraße 5",
+    "postal_code": "20095",
+    "city": "Hamburg",
+    "country": "DE",
+    "company_name": "Beispiel Kunde AG",
+    "legal_form": "AG",
+    "tax_id": "DE987654321"
+  },
+  {
+    "contact_type": "supplier",
+    "entity_type": "company",
+    "display_name": "Lieferant GmbH",
+    "customer_number": "L001",
+    "email": "bestellung@lieferant.de",
+    "phone": "+49 89 1122334",
+    "street": "Lieferantenweg 10",
+    "postal_code": "80333",
+    "city": "München",
+    "country": "DE",
+    "company_name": "Lieferant GmbH",
+    "legal_form": "GmbH",
+    "tax_id": "DE112233445"
+  }
+]

@@ -2018,3 +2018,61 @@ def handle_invoice_pdf_by_id(invoice_id: int):
         print(f"Error generating PDF for invoice {invoice_id}: {e}")
         traceback.print_exc()
         return None, None
+
+
+def handle_setup_save(db: Database, post_data: dict):
+    """Speichert die Daten aus der Ersteinrichtungs-Seite.
+
+    Erstellt einen 'own'-Kontakt sowie (optional) ein Bankkonto.
+    Gibt (303, '/') bei Erfolg oder (200, html) bei Validierungsfehler zurück.
+    """
+    from .pages_setup import PageSetup
+
+    company_name = post_data.get('company_name', '').strip()
+    if not company_name:
+        return 200, PageSetup(db, message='Bitte gib mindestens den Firmennamen ein.')
+
+    try:
+        db.insert_contact(
+            contact_type='own',
+            entity_type='company',
+            display_name=company_name,
+            email=post_data.get('email', '').strip(),
+            phone=post_data.get('phone', '').strip(),
+            street=post_data.get('street', '').strip(),
+            postal_code=post_data.get('postal_code', '').strip(),
+            city=post_data.get('city', '').strip(),
+            country=post_data.get('country', 'DE').strip() or 'DE',
+            company_name=company_name,
+            legal_form=post_data.get('legal_form', '').strip(),
+            tax_id=post_data.get('tax_id', '').strip(),
+        )
+    except Exception as e:
+        return 200, PageSetup(db, message=f'Fehler beim Speichern der Kontaktdaten: {e}')
+
+    # Optionales Bankkonto anlegen (nur wenn IBAN angegeben)
+    iban = post_data.get('iban', '').replace(' ', '').strip()
+    if iban:
+        bank_name_label = post_data.get('bank_name_label', '').strip() or 'Bankkonto'
+        bic = post_data.get('bic', '').strip()
+        bank_name = post_data.get('bank_name', '').strip()
+        try:
+            db.insert_account(
+                name=bank_name_label,
+                holder=company_name,
+                number=iban,
+                bic=bic,
+                bank_name=bank_name,
+                is_cash=0,
+                skr_account=1200,
+            )
+        except Exception as e:
+            return 200, PageSetup(db, message=f'Kontaktdaten gespeichert, aber Fehler beim Bankkonto: {e}')
+
+    return 303, '/'
+
+
+def handle_load_testdata(db: Database):
+    """Lädt Testdaten (Kontakte + Bankkonto) und leitet zum Dashboard weiter."""
+    db.load_test_seed_data()
+    return 303, '/'

@@ -1,0 +1,20 @@
+[
+  {
+    "name": "Testbank",
+    "holder": "",
+    "number": "DE89370400440532013000",
+    "bic": "TESTDE1X",
+    "bank_name": "Testbank AG",
+    "is_cash": 0,
+    "skr_account": 1800
+  },
+  {
+    "name": "Testkonto 2",
+    "holder": "",
+    "number": "DE12500105170648489890",
+    "bic": "TEST2DE1X",
+    "bank_name": "Zweite Testbank AG",
+    "is_cash": 0,
+    "skr_account": 1810
+  }
+]

@@ -46,7 +46,7 @@ class TestEuerData:
     def test_income_entry_appears_as_positive(self, db_with_coa):
         """Bank booking + entry child for income: 4400 should show net amount."""
         bank_acct = _get_acct_id(db_with_coa, 'Testbank')
-        coa_bank = _get_coa_id(db_with_coa, 1200)
+        coa_bank = _get_coa_id(db_with_coa, 1800)
         coa_income = _get_coa_id(db_with_coa, 4400)
 
         # Bank (parent)
@@ -68,7 +68,7 @@ class TestEuerData:
     def test_expense_entry_appears_as_negative(self, db_with_coa):
         """Expense booking: 6815 should have negative netto amount."""
         bank_acct = _get_acct_id(db_with_coa, 'Testbank')
-        coa_bank = _get_coa_id(db_with_coa, 1200)
+        coa_bank = _get_coa_id(db_with_coa, 1800)
         coa_expense = _get_coa_id(db_with_coa, 6815)
 
         parent_id = db_with_coa.insert_booking(
@@ -87,7 +87,7 @@ class TestEuerData:
     def test_ust_from_income_appears_on_3806(self, db_with_coa):
         """USt-Anteil einer Einnahme soll virtuell auf Konto 3806 erscheinen."""
         bank_acct = _get_acct_id(db_with_coa, 'Testbank')
-        coa_bank = _get_coa_id(db_with_coa, 1200)
+        coa_bank = _get_coa_id(db_with_coa, 1800)
         coa_income = _get_coa_id(db_with_coa, 4400)
 
         parent_id = db_with_coa.insert_booking(
@@ -106,7 +106,7 @@ class TestEuerData:
     def test_vorsteuer_19_on_1406(self, db_with_coa):
         """Vorsteuer 19% auf Ausgaben soll auf Konto 1406 erscheinen."""
         bank_acct = _get_acct_id(db_with_coa, 'Testbank')
-        coa_bank = _get_coa_id(db_with_coa, 1200)
+        coa_bank = _get_coa_id(db_with_coa, 1800)
         coa_expense = _get_coa_id(db_with_coa, 6815)
 
         parent_id = db_with_coa.insert_booking(
@@ -125,7 +125,7 @@ class TestEuerData:
     def test_vorsteuer_7_on_1401(self, db_with_coa):
         """Vorsteuer 7% auf Ausgaben soll auf Konto 1401 erscheinen."""
         bank_acct = _get_acct_id(db_with_coa, 'Testbank')
-        coa_bank = _get_coa_id(db_with_coa, 1200)
+        coa_bank = _get_coa_id(db_with_coa, 1800)
         coa_expense = _get_coa_id(db_with_coa, 6815)
 
         parent_id = db_with_coa.insert_booking(
@@ -144,7 +144,7 @@ class TestEuerData:
     def test_doppik_mirror_excluded(self, db_with_coa):
         """Entry where both COA_ID and CounterCOA_ID are bank accounts → excluded from EÜR."""
         bank_acct = _get_acct_id(db_with_coa, 'Testbank')
-        coa_bank = _get_coa_id(db_with_coa, 1200)
+        coa_bank = _get_coa_id(db_with_coa, 1800)
 
         parent_id = db_with_coa.insert_booking(
             '2024-05-01', 500.0, account_id=bank_acct, booking_type='bank')
@@ -156,13 +156,13 @@ class TestEuerData:
         )
 
         euer = _euer_map(db_with_coa, '2024-01-01', '2024-12-31')
-        # 1200 should not appear (or have 0 total)
-        assert euer.get(1200, 0.0) == pytest.approx(0.0, abs=0.01)
+        # 1800 should not appear (or have 0 total)
+        assert euer.get(1800, 0.0) == pytest.approx(0.0, abs=0.01)
 
     def test_date_range_filter(self, db_with_coa):
         """Bookings outside the date range must not appear."""
         bank_acct = _get_acct_id(db_with_coa, 'Testbank')
-        coa_bank = _get_coa_id(db_with_coa, 1200)
+        coa_bank = _get_coa_id(db_with_coa, 1800)
         coa_income = _get_coa_id(db_with_coa, 4400)
 
         parent_id = db_with_coa.insert_booking(
