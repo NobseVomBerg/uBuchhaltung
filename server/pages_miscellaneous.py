@@ -91,7 +91,7 @@ def PageMiscellaneous(db: Database):
     s += '''
         <h2>DB-Export</h2>
         <p>Exportiert alle Tabelleninhalte als INSERT-Statements nach <code>./data/db-export.sql</code>.
-        Die Datei kann direkt im SQL-Konsolenbereich unten eingefügt werden.</p>
+        Die Datei kann direkt im SQL-Konsolenbereich eingefügt werden.</p>
         <form method="POST" action="/db_export">
             <button type="submit" class="coloredButton btn-blue">&#x1F4BE; DB-Export</button>
         </form>
@@ -163,8 +163,10 @@ def PageMiscellaneous(db: Database):
 
     s += '''
         <h2>WISO Mein Büro Import</h2>
-        <p>Importiert Buchungen aus dem <strong>WISO Mein Büro Bewegungsdaten-Export</strong>
+        <p>Importiert Buchungen aus <strong>WISO Mein Büro</strong>.<br>
+        1. Bewegungsdaten-Export
         (Datei &rarr; Export &rarr; &bdquo;Buchungsdaten als CSV&ldquo;).<br>
+        2. Tabellen-Export (nur ergänzend, direkt aus der Tabellenansicht exportieren)<br>
         Voraussetzung: Jedes Konto in der <strong>Kontenverwaltung</strong>
         muss ein <em>SKR-Gegenkonto</em> hinterlegt haben (z.B. 1810 für 2. Bankkonto, 1460 für Kasse).<br>
         Duplikate (gleiche Referenznummer + Konto + Betrag) werden automatisch übersprungen.</p>
