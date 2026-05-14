@@ -1479,16 +1479,19 @@ class Database:
 
     # ─── Assets ─────────────────────────────────────────────────────────────
 
-    def _generate_inventory_number(self, purchase_date):
-        """Generate inventory number: INV-YY-###"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
+    def _generate_inventory_number(self, purchase_date, cursor):
+        """Generate next inventory number INV-YY-### using the provided cursor.
+
+        Must be called within the same transaction as the INSERT to be atomic.
+        Uses MAX to avoid reusing numbers even if items were deleted.
+        """
         year_short = str(purchase_date)[:4][-2:]  # e.g. '25' from '2025-01-01'
         pattern = f"INV-{year_short}-%"
-        cursor.execute("SELECT COUNT(*) FROM Assets WHERE InventoryNumber LIKE ?", (pattern,))
-        count = cursor.fetchone()[0]
-        conn.close()
-        return f"INV-{year_short}-{count + 1:03d}"
+        cursor.execute(
+            "SELECT COALESCE(MAX(CAST(SUBSTR(InventoryNumber, 8) AS INTEGER)), 0) "
+            "FROM Assets WHERE InventoryNumber LIKE ?", (pattern,))
+        max_num = cursor.fetchone()[0]
+        return f"INV-{year_short}-{max_num + 1:03d}"
 
     def fetch_assets(self, status=None, parent_only=True):
         """Fetch assets with optional status filter. By default only top-level assets."""
@@ -1549,9 +1552,9 @@ class Database:
                      depreciation_method='linear', serial_number='', location='',
                      supplier_id=None, document_id=None, booking_id=None,
                      notes='', parent_id=None):
-        inv_number = self._generate_inventory_number(purchase_date)
         conn = self._get_connection()
         cursor = conn.cursor()
+        inv_number = self._generate_inventory_number(purchase_date, cursor)
         cursor.execute('''
             INSERT INTO Assets (InventoryNumber, Name, Description, AssetCategory_ID, COA_ID,
                 PurchaseDate, PurchasePrice, UsefulLifeYears, DepreciationMethod,
@@ -3390,17 +3393,16 @@ class Database:
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # Try to get existing range
+        # Atomic increment: UPDATE...RETURNING avoids SELECT + UPDATE race
         cursor.execute('''
-            SELECT ID, CurrentNumber, NumberFormat FROM NumberRanges
+            UPDATE NumberRanges SET CurrentNumber = CurrentNumber + 1
             WHERE Type = ? AND Year = ? AND Letter = ? AND Prefix = ?
+            RETURNING CurrentNumber, NumberFormat
         ''', (range_type, year, letter, prefix))
         row = cursor.fetchone()
 
         if row:
-            range_id, current, number_format = row
-            next_num = current + 1
-            cursor.execute('UPDATE NumberRanges SET CurrentNumber = ? WHERE ID = ?', (next_num, range_id))
+            next_num, number_format = row
         else:
             # Create new range for this combination
             next_num = 1
@@ -3897,8 +3899,9 @@ class Database:
                          None = all accounts.
 
         Returns:
-            dict  keys = month int 1-12, values = dict with
-            'income', 'private', 'expense' (all float, expense <= 0).
+            list  ordered chronologically, one entry per calendar month in the
+            range.  Each entry: {'year_month': 'YYYY-MM', 'label': str,
+            'income': float, 'private': float, 'expense': float}.
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -3939,8 +3942,7 @@ class Database:
 
         if not type_parts:
             conn.close()
-            return {m: {'income': 0, 'private': 0, 'expense': 0}
-                    for m in range(1, 13)}
+            return []
 
         acct_filter = ' AND (' + ' OR '.join(type_parts) + ')'
 
@@ -3983,49 +3985,68 @@ class Database:
         p_base = [date_from, date_to] + type_params
 
         income_rows = cursor.execute(f'''
-            SELECT CAST(strftime('%m', b.DateBooking) AS INTEGER),
+            SELECT strftime('%Y-%m', b.DateBooking),
                    COALESCE(SUM(b.Amount), 0)
             FROM Bookings b
             WHERE b.DateBooking BETWEEN ? AND ?
               AND b.Amount > 0
               {acct_filter}
               {not_private_cond}
-            GROUP BY strftime('%m', b.DateBooking)
+            GROUP BY strftime('%Y-%m', b.DateBooking)
         ''', p_base).fetchall()
 
         private_rows = cursor.execute(f'''
-            SELECT CAST(strftime('%m', b.DateBooking) AS INTEGER),
+            SELECT strftime('%Y-%m', b.DateBooking),
                    COALESCE(SUM(b.Amount), 0)
             FROM Bookings b
             WHERE b.DateBooking BETWEEN ? AND ?
               {acct_filter}
               {private_cond}
-            GROUP BY strftime('%m', b.DateBooking)
+            GROUP BY strftime('%Y-%m', b.DateBooking)
         ''', p_base).fetchall()
 
         expense_rows = cursor.execute(f'''
-            SELECT CAST(strftime('%m', b.DateBooking) AS INTEGER),
+            SELECT strftime('%Y-%m', b.DateBooking),
                    COALESCE(SUM(b.Amount), 0)
             FROM Bookings b
             WHERE b.DateBooking BETWEEN ? AND ?
               AND b.Amount < 0
               {acct_filter}
               {not_private_cond}
-            GROUP BY strftime('%m', b.DateBooking)
+            GROUP BY strftime('%Y-%m', b.DateBooking)
         ''', p_base).fetchall()
 
         income_map  = {row[0]: row[1] for row in income_rows}
         private_map = {row[0]: row[1] for row in private_rows}
         expense_map = {row[0]: row[1] for row in expense_rows}
 
-        result = {
-            month: {
-                'income':  round(income_map.get(month, 0), 2),
-                'private': round(private_map.get(month, 0), 2),
-                'expense': round(expense_map.get(month, 0), 2),
-            }
-            for month in range(1, 13)
-        }
+        # Build ordered month list for the full date range
+        _MONTH_ABBR = ['Jan', 'Feb', 'M\u00e4r', 'Apr', 'Mai', 'Jun',
+                       'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez']
+        cross_year = date_from[:4] != date_to[:4]
+        all_months: list[str] = []
+        cy, cm = int(date_from[:4]), int(date_from[5:7])
+        end_y, end_m = int(date_to[:4]), int(date_to[5:7])
+        while (cy, cm) <= (end_y, end_m):
+            all_months.append(f'{cy:04d}-{cm:02d}')
+            if cm == 12:
+                cy, cm = cy + 1, 1
+            else:
+                cm += 1
+
+        result = []
+        for ym in all_months:
+            month_num = int(ym[5:7])
+            label = _MONTH_ABBR[month_num - 1]
+            if cross_year:
+                label += f" '{int(ym[:4]) % 100:02d}"
+            result.append({
+                'year_month': ym,
+                'label': label,
+                'income':  round(income_map.get(ym, 0), 2),
+                'private': round(private_map.get(ym, 0), 2),
+                'expense': round(expense_map.get(ym, 0), 2),
+            })
 
         conn.close()
         return result
@@ -4310,9 +4331,9 @@ class Database:
                     and purpose_coa_id not in income_coa_ids
                     and tax_amount != 0):
                 input_tax_account = None
-                if abs(tax_rate - 0.07) < 0.0001:
+                if abs(tax_rate - 0.05) < 0.0001 or abs(tax_rate - 0.07) < 0.0001:
                     input_tax_account = 1401
-                elif abs(tax_rate - 0.19) < 0.0001:
+                elif abs(tax_rate - 0.16) < 0.0001 or abs(tax_rate - 0.19) < 0.0001:
                     input_tax_account = 1406
                 if input_tax_account in input_tax_coa_ids:
                     totals[input_tax_coa_ids[input_tax_account]] += tax_amount

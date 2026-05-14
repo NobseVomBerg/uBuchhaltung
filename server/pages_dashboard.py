@@ -147,13 +147,10 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
     '''
 
     # ── Monthly 3-part bar chart ──────────────────────────────────────
-    month_names = ['Jan', 'Feb', 'M&auml;r', 'Apr', 'Mai', 'Jun',
-                   'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez']
 
     # Determine scale: max absolute value across all three categories
     max_val = 1
-    for m in range(1, 13):
-        d = monthly[m]
+    for d in monthly:
         max_val = max(max_val, d['income'], abs(d['private']), abs(d['expense']))
 
     bar_height = 180  # max bar pixel height
@@ -174,8 +171,8 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
                     padding:10px 0 0 0;">
     '''
 
-    for m in range(1, 13):
-        d = monthly[m]
+    for entry in monthly:
+        d = entry
         h_inc  = (d['income']       / max_val * bar_height) if max_val else 0
         h_priv = (abs(d['private']) / max_val * bar_height) if max_val else 0
         h_exp  = (abs(d['expense']) / max_val * bar_height) if max_val else 0
@@ -193,16 +190,16 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
                 <div style="background:#e53935;width:8px;height:{h_exp:.0f}px;
                             border-radius:2px 2px 0 0;"></div>
             </div>
-            <div style="font-size:11px;margin-top:4px;">{month_names[m-1]}</div>
+            <div style="font-size:11px;margin-top:4px;">{entry['label']}</div>
         </div>
         '''
 
     s += '</div></div></div></div>'
 
     # ── Details table (annual summary by category) ────────────────────
-    total_inc  = sum(monthly[m]['income']  for m in range(1, 13))
-    total_priv = sum(monthly[m]['private'] for m in range(1, 13))
-    total_exp  = sum(monthly[m]['expense'] for m in range(1, 13))
+    total_inc  = sum(entry['income']  for entry in monthly)
+    total_priv = sum(entry['private'] for entry in monthly)
+    total_exp  = sum(entry['expense'] for entry in monthly)
     total_bal  = total_inc + total_priv + total_exp
 
     s += f'''
