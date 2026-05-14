@@ -180,37 +180,58 @@ def PageReceipts(db: Database):
     '''
     s+= Header3(header3_content)
     
-    # Container for side-by-side areas
-    s+= '''
-    <div class="accounts-container">
-        <div>
-            <h2>Neuen Beleg anlegen</h2>
-            <form method="POST" action="/add_receipt">
-                <table>
+    # ── Zwei-Spalten-Layout: links scrollbare Belege, rechts Upload + Formular ──
+    s += '''
+    <div style="display:flex; gap:20px; align-items:flex-start; padding:0 8px;">
+
+        <!-- LINKS: scrollbare Belegliste -->
+        <div style="flex:1; overflow-y:auto; max-height:calc(100vh - 170px);">
+            <h2 style="margin-top:0;">Vorhandene Belege</h2>
+            <table>
+                <tr><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Pfad</th><th>Info</th><th>Aktionen</th></tr>
     '''
-    s+= f'<tr><td>Nummer:</td><td><input type="text" name="number" value="{next_receipt_number}"></td></tr>'
-    s+= '''
-                    <tr><td>Datum:</td><td><input type="date" name="date"></td></tr>
-                    <tr><td>Dateiname:</td><td><input type="text" name="filename"></td></tr>
-                    <tr><td>Pfad:</td><td><input type="text" name="path"></td></tr>
-                    <tr><td>Info:</td><td><input type="text" name="info"></td></tr>
-                    <tr><td></td><td><input type="submit" value="Beleg hinzufügen"></td></tr>
-                </table>
-            </form>
+    for row in rows:
+        s += f"<tr class='receipt-row' data-date='{row[2]}'><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td><td>{row[5]}</td>"
+        s += f"<td><a href='/receipts/edit?number={row[1]}'>Bearbeiten</a></td></tr>"
+    s += '''
+            </table>
         </div>
-        
-        <div>
-            <h2>Belege hochladen</h2>
-            <div id="dropZone">
-                <p>Dateien hier ablegen (Drag & Drop)</p>
-                <input type="file" id="fileInput" multiple accept=".pdf,application/pdf">
-                <button onclick="document.getElementById('fileInput').click()">Oder Dateien auswählen</button>
+
+        <!-- RECHTS: Drag&Drop oben, Formular unten -->
+        <div style="flex:0 0 380px; display:flex; flex-direction:column; gap:16px; position:sticky; top:80px;">
+
+            <!-- Drag & Drop -->
+            <div class="rectRounded" style="padding:12px;">
+                <h2 style="margin-top:0;">Belege hochladen</h2>
+                <div id="dropZone">
+                    <p>Dateien hier ablegen (Drag &amp; Drop)</p>
+                    <input type="file" id="fileInput" multiple accept=".pdf,application/pdf">
+                    <button onclick="document.getElementById('fileInput').click()">Oder Dateien ausw&auml;hlen</button>
+                </div>
+                <div id="uploadStatus"></div>
             </div>
-            <div id="uploadStatus"></div>
-        </div>
-    </div>
-    
-    <script>
+
+            <!-- Neuen Beleg anlegen -->
+            <div class="rectRounded" style="padding:12px;">
+                <h2 style="margin-top:0;">Neuen Beleg anlegen</h2>
+                <form method="POST" action="/add_receipt">
+                    <table>
+    '''
+    s += f'<tr><td>Nummer:</td><td><input type="text" name="number" value="{next_receipt_number}"></td></tr>'
+    s += '''
+                        <tr><td>Datum:</td><td><input type="date" name="date"></td></tr>
+                        <tr><td>Dateiname:</td><td><input type="text" name="filename"></td></tr>
+                        <tr><td>Pfad:</td><td><input type="text" name="path"></td></tr>
+                        <tr><td>Info:</td><td><input type="text" name="info"></td></tr>
+                        <tr><td></td><td><input type="submit" value="Beleg hinzuf&uuml;gen"></td></tr>
+                    </table>
+                </form>
+            </div>
+
+        </div><!-- Ende rechte Spalte -->
+    </div><!-- Ende Zwei-Spalten-Layout -->
+    '''
+    s += '''<script>
         // Prevent default browser behavior for drag and drop on entire page
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
             document.body.addEventListener(eventName, (e) => {
@@ -298,17 +319,7 @@ def PageReceipts(db: Database):
     </script>
     '''
     
-    s+= "<h2>Vorhandene Belege</h2>"
-    s+= "<table>"
-    s+= "<tr><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Pfad</th><th>Info</th><th>Aktionen</th></tr>"
-    for row in rows:
-        # Documents: ID(0), Number(1), Date(2), Filename(3), Path(4), Info(5)
-        s+= f"<tr class='receipt-row' data-date='{row[2]}'><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td><td>{row[5]}</td>"
-        s+= f"<td><a href='/receipts/edit?number={row[1]}'>Bearbeiten</a></td></tr>"
-    s+= "</table>"
-    
-    # Add date filter JavaScript
-    s+= '''
+    s += '''
     <script>
         function setReceiptYear(year) {
             document.getElementById('dateFrom').value = year + '-01-01';
