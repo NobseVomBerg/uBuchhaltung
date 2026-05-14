@@ -1,4 +1,4 @@
-"""
+﻿"""
 POST request handlers for form submissions
 """
 import os
@@ -43,7 +43,7 @@ def handle_confirm_import(db: Database, post_data):
         return 400, "Fehlende import_id"
     
     if not PARSER_AVAILABLE:
-        return 500, "Parser nicht verfügbar"
+        return 500, "Parser nicht verfÃ¼gbar"
     
     parser = DocumentParser()
     
@@ -64,11 +64,11 @@ def handle_confirm_import(db: Database, post_data):
             s += Header2()
             s += f"<h1>Import abgebrochen</h1>"
             s += f"<p>Die Transaktionen wurden nicht importiert.</p>"
-            s += "<p><a href='/receipts'>Zurück zu Belegen</a></p>"
+            s += "<p><a href='/receipts'>ZurÃ¼ck zu Belegen</a></p>"
             s += Footer()
             return 200, s
         except Exception as e:
-            return 500, f"Fehler beim Löschen: {str(e)}"
+            return 500, f"Fehler beim LÃ¶schen: {str(e)}"
     
     # Handle import action
     try:
@@ -86,7 +86,7 @@ def handle_confirm_import(db: Database, post_data):
                 break
         
         if not account_id:
-            return 400, f"Kein Konto gefunden für IBAN: {account_iban}"
+            return 400, f"Kein Konto gefunden fÃ¼r IBAN: {account_iban}"
         
         linked_count = 0
         inserted_count = 0
@@ -128,7 +128,7 @@ def handle_confirm_import(db: Database, post_data):
             )
             inserted_count += 1
 
-        # Auto-Linking: Bank-Buchungen mit WISO-Entry-Buchungen verknüpfen
+        # Auto-Linking: Bank-Buchungen mit WISO-Entry-Buchungen verknÃ¼pfen
         link_result = db.link_bank_to_entries()
         linked_count = link_result.get('linked', 0)
         repaired_count = link_result.get('repaired', 0)
@@ -145,14 +145,14 @@ def handle_confirm_import(db: Database, post_data):
         if repaired_count > 0:
             s += f"<p style='color: blue;'>{repaired_count} Altdaten-Buchungen als Bank-Typ repariert.</p>"
         if linked_count > 0:
-            s += f"<p style='color: green;'>{linked_count} WISO-Buchungen mit Bankdaten verknüpft.</p>"
+            s += f"<p style='color: green;'>{linked_count} WISO-Buchungen mit Bankdaten verknÃ¼pft.</p>"
         if resolved_count > 0:
             s += f"<p style='color: green;'>{resolved_count} Debitoren-Buchungen als erledigt markiert.</p>"
         
         if skipped_count > 0:
-            s += f"<p style='color: orange;'>{skipped_count} Duplikate wurden übersprungen:</p>"
+            s += f"<p style='color: orange;'>{skipped_count} Duplikate wurden Ã¼bersprungen:</p>"
             s += "<table>"
-            s += "<tr><th>Datum</th><th>Empfänger</th><th>Verwendungszweck</th><th>Betrag</th><th>Fremd-IBAN</th></tr>"
+            s += "<tr><th>Datum</th><th>EmpfÃ¤nger</th><th>Verwendungszweck</th><th>Betrag</th><th>Fremd-IBAN</th></tr>"
             for trans in skipped_transactions:
                 date_str = trans['date'][:10] if isinstance(trans['date'], str) else trans['date']
                 amount_color = "green" if trans['amount'] > 0 else "red"
@@ -160,7 +160,7 @@ def handle_confirm_import(db: Database, post_data):
                 s += f"<td>{date_str}</td>"
                 s += f"<td>{trans['recipient'][:30]}</td>"
                 s += f"<td>{trans['reference'][:40]}...</td>"
-                s += f"<td style='color:{amount_color}'>{trans['amount']:.2f} €</td>"
+                s += f"<td style='color:{amount_color}'>{trans['amount']:.2f} â‚¬</td>"
                 s += f"<td>{trans.get('foreign_iban', '')[:10]}...</td>"
                 s += f"</tr>"
             s += "</table>"
@@ -318,24 +318,24 @@ def handle_update_booking_group(db: Database, post_data):
         return 500, f"Fehler beim Aktualisieren der Gruppe: {str(e)}"
 
 def handle_delete_booking_group(db: Database, group_id: int):
-    """Gruppe löschen (Buchungen bleiben, werden nur aus Gruppe gelöst)."""
+    """Gruppe lÃ¶schen (Buchungen bleiben, werden nur aus Gruppe gelÃ¶st)."""
     try:
         db.delete_booking_group(group_id)
         return 303, "/bookinggroups"
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return 500, f"Fehler beim Löschen der Gruppe: {str(e)}"
+        return 500, f"Fehler beim LÃ¶schen der Gruppe: {str(e)}"
 
 def handle_unlink_booking_from_group(db: Database, booking_id: int, group_id: int):
-    """Buchung aus Gruppe herauslösen."""
+    """Buchung aus Gruppe herauslÃ¶sen."""
     try:
         db.unlink_booking_from_group(booking_id)
         return 303, f"/bookinggroups/view?id={group_id}"
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return 500, f"Fehler beim Herauslösen der Buchung: {str(e)}"
+        return 500, f"Fehler beim HerauslÃ¶sen der Buchung: {str(e)}"
 
 def handle_link_document(db: Database, post_data):
     """Handle linking a document to a booking"""
@@ -350,7 +350,7 @@ def handle_link_document(db: Database, post_data):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return 500, f"Fehler beim Verknüpfen: {str(e)}"
+        return 500, f"Fehler beim VerknÃ¼pfen: {str(e)}"
 
 def handle_update_bankaccount(db: Database, post_data):
     """Handle updating bank account"""
@@ -400,14 +400,14 @@ def handle_db_export(db: Database):
 
 
 def handle_datev_export(db: Database, post_data: dict):
-    """DATEV Buchungsstapel-CSV für einen Datumsbereich erzeugen.
+    """DATEV Buchungsstapel-CSV fÃ¼r einen Datumsbereich erzeugen.
 
-    Setzt dabei für alle exportierten Buchungen das Steuerdatum (DateTax)
+    Setzt dabei fÃ¼r alle exportierten Buchungen das Steuerdatum (DateTax)
     auf das heutige Datum.
 
     Returns:
-        (csv_bytes, filename)  – für einen Datei-Download, oder
-        (303, location_str)    – bei Fehler (Redirect)
+        (csv_bytes, filename)  â€“ fÃ¼r einen Datei-Download, oder
+        (303, location_str)    â€“ bei Fehler (Redirect)
     """
     import datetime
     import sys
@@ -451,12 +451,12 @@ def handle_datev_export(db: Database, post_data: dict):
 
 
 def handle_wiso_import(request_handler, db: Database):
-    """WISO Mein Büro CSV-Datei importieren (Multipart-Upload).
+    """WISO Mein BÃ¼ro CSV-Datei importieren (Multipart-Upload).
 
-    Erwartet eine Datei im Formularfeld „csvfile" (enctype=multipart/form-data).
+    Erwartet eine Datei im Formularfeld â€žcsvfile" (enctype=multipart/form-data).
 
     Returns:
-        (303, location_str) – immer ein Redirect zu /miscellaneous
+        (303, location_str) â€“ immer ein Redirect zu /miscellaneous
     """
     from urllib.parse import quote
 
@@ -496,12 +496,12 @@ def handle_wiso_import(request_handler, db: Database):
         skipped   = result['skipped']
         errs      = result['errors']
 
-        # Nach WISO-Import: Bank↔Entry-Verknüpfung durchführen
+        # Nach WISO-Import: Bankâ†”Entry-VerknÃ¼pfung durchfÃ¼hren
         link_result = db.link_bank_to_entries()
         linked_count = link_result.get('linked', 0)
         resolved_count = link_result.get('resolved', 0)
 
-        # Detailergebnis für Anzeige auf der Seite persistieren
+        # Detailergebnis fÃ¼r Anzeige auf der Seite persistieren
         result_path = os.path.join('data', 'wiso_import_result.json')
         try:
             with open(result_path, 'w', encoding='utf-8') as f:
@@ -526,7 +526,7 @@ def handle_wiso_import(request_handler, db: Database):
 
 
 def handle_execute_sql(db: Database, post_data):
-    """Handle SQL command execution – returns JSON with results."""
+    """Handle SQL command execution â€“ returns JSON with results."""
     import sqlite3, json
     
     sql_commands = post_data.get("sql_commands", [""])[0]
@@ -613,7 +613,7 @@ def handle_add_contact(db: Database, post_data):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return 500, f'Fehler beim Hinzufügen des Kontakts: {str(e)}'
+        return 500, f'Fehler beim HinzufÃ¼gen des Kontakts: {str(e)}'
 
 
 def handle_update_contact(db: Database, post_data):
@@ -707,16 +707,18 @@ def handle_add_number_range(db: Database, post_data):
     prefix = post_data.get('prefix', [''])[0].upper()
     current_number = int(post_data.get('current_number', ['0'])[0] or 0)
     description = post_data.get('description', [''])[0]
-    
+    number_format = post_data.get('number_format', ['{yy}{l}{nnn}{s}'])[0].strip() or '{yy}{l}{nnn}{s}'
+
     db.insert_number_range(
         range_type=range_type,
         year=year,
         letter=letter,
         prefix=prefix,
         current_number=current_number,
-        description=description
+        description=description,
+        number_format=number_format
     )
-    
+
     return 303, "/masterdata/numberranges"
 
 
@@ -728,706 +730,19 @@ def handle_update_number_range(db: Database, post_data):
     prefix = post_data.get('prefix', [''])[0].upper()
     current_number = int(post_data.get('current_number', ['0'])[0] or 0)
     description = post_data.get('description', [''])[0]
-    
+    number_format = post_data.get('number_format', ['{yy}{l}{nnn}{s}'])[0].strip() or '{yy}{l}{nnn}{s}'
+
     db.update_number_range(
         range_id=range_id,
         year=year,
         letter=letter,
         prefix=prefix,
         current_number=current_number,
-        description=description
+        description=description,
+        number_format=number_format
     )
-    
+
     return 303, "/masterdata/numberranges"
-
-
-def handle_save_invoice(data: dict, pdf_path: str = None) -> int:
-    """Save invoice to database with all metadata
-    
-    Args:
-        data: Invoice data dictionary from frontend
-        pdf_path: Path to generated PDF file
-        
-    Returns:
-        invoice_id: ID of inserted invoice
-    """
-    import datetime
-    db = Database()
-    
-    # Get own company data (seller)
-    own_company_id = data.get('ownCompanyId')
-    if own_company_id:
-        own_contact = db.get_contact_by_id(int(own_company_id))
-    else:
-        own_contacts = db.fetch_contacts(contact_type='own')
-        own_contact = own_contacts[0] if own_contacts else None
-    
-    if not own_contact:
-        raise ValueError("No seller contact found")
-    
-    # Extract seller data (snapshot)
-    seller_name = own_contact[4] or own_contact[3] or ''
-    seller_company = own_contact[4] or ''  # Company name
-    seller_street = own_contact[5] or ''
-    seller_postal = own_contact[6] or ''
-    seller_city = own_contact[7] or ''
-    seller_country = own_contact[8] if len(own_contact) > 8 else 'DE'
-    seller_vat_id = own_contact[11] or ''
-    
-    # Get buyer data - try to find by customer number or parse from address
-    buyer_name = ''
-    buyer_company = ''
-    buyer_street = ''
-    buyer_postal = ''
-    buyer_city = ''
-    buyer_country = 'DE'  # Default
-    buyer_vat_id = ''
-    buyer_route_id = data.get('buyerRouteId') or ''
-    
-    customer_number = data.get('customerNumber', '')
-    if customer_number:
-        # Try to find customer by number
-        contacts = db.fetch_contacts(contact_type='customer')
-        for contact in contacts:
-            if contact[2] == customer_number:  # CustomerNumber
-                buyer_name = contact[3] or ''
-                buyer_company = contact[4] or ''  # Company name
-                buyer_street = contact[5] or ''
-                buyer_postal = contact[6] or ''
-                buyer_city = contact[7] or ''
-                buyer_country = contact[8] if len(contact) > 8 else 'DE'
-                buyer_vat_id = contact[11] or ''
-                if not buyer_route_id and len(contact) > 14:
-                    buyer_route_id = contact[14] or ''
-                break
-    
-    # If no customer found, parse from address text
-    if not buyer_name:
-        customer_address = data.get('customerAddress', '')
-        customer_name = data.get('customerName', '')
-        address_lines = customer_address.split('\n')
-        if len(address_lines) >= 1:
-            buyer_name = address_lines[0].strip()
-        if len(address_lines) >= 2:
-            buyer_street = address_lines[1].strip()
-        if len(address_lines) >= 3:
-            # Parse postal code and city
-            last_line = address_lines[2].strip()
-            parts = last_line.split(' ', 1)
-            if len(parts) >= 2:
-                buyer_postal = parts[0]
-                buyer_city = parts[1]
-            else:
-                buyer_city = last_line
-    
-    # Get bank account data (snapshot) - parse from HTML
-    import re
-    bank_html = data.get('bankDetails', '')
-    bank_text = re.sub(r'<[^>]+>', ' ', bank_html)
-    bank_parts = bank_text.replace('\n', ' ').split()
-    
-    bank_account_holder = seller_name  # Default to seller name
-    bank_iban = ''
-    bank_bic = ''
-    bank_name = ''
-    
-    i = 0
-    while i < len(bank_parts):
-        part = bank_parts[i]
-        if part.upper() == 'BANK':
-            i += 1
-            name_parts = []
-            while i < len(bank_parts) and bank_parts[i].upper() not in ['IBAN', 'BIC']:
-                name_parts.append(bank_parts[i])
-                i += 1
-            bank_name = ' '.join(name_parts)
-        elif part.upper() == 'IBAN':
-            i += 1
-            if i < len(bank_parts):
-                bank_iban = bank_parts[i]
-                i += 1
-        elif part.upper() == 'BIC':
-            i += 1
-            if i < len(bank_parts):
-                bank_bic = bank_parts[i]
-                i += 1
-        else:
-            i += 1
-    
-    # Extract numeric values from formatted strings
-    def parse_amount(amount_str):
-        """Parse amount like '1.234,56 €' to float 1234.56"""
-        if not amount_str:
-            return 0.0
-        # Remove currency symbol and whitespace
-        amount_str = str(amount_str).replace('€', '').replace(' ', '').strip()
-        # Replace comma with dot
-        amount_str = amount_str.replace(',', '.')
-        try:
-            return float(amount_str)
-        except ValueError:
-            return 0.0
-    
-    sum_net = parse_amount(data.get('sumNet', '0'))
-    sum_gross = parse_amount(data.get('sumGross', '0'))
-    tax_amount = parse_amount(data.get('taxAmount', '0'))
-    tax_rate = float(data.get('taxRate', 19))
-    
-    # Determine tax category based on rate
-    if tax_rate == 0:
-        tax_category = 'Z'  # Zero rate
-    elif tax_rate == 19 or tax_rate == 7:
-        tax_category = 'S'  # Standard rate
-    else:
-        tax_category = 'S'  # Default to standard
-    
-    # Payment terms
-    payment_term_days = data.get('paymentTermDays') or 14
-    payment_due_date = data.get('paymentDueDate') or None
-    discount_percentage = data.get('discountPercentage') or None
-    discount_days = data.get('discountDays') or None
-    
-    # Build invoice data dictionary
-    invoice_data = {
-        'InvoiceNumber': data.get('number', ''),
-        'InvoiceDate': data.get('date', ''),
-        'Currency': 'EUR',
-        'OrderNumber': data.get('orderNumber') or None,
-        'DeliveryDate': data.get('deliveryDate') or None,
-        'SellerName': seller_name,
-        'SellerCompany': seller_company,
-        'SellerStreet': seller_street,
-        'SellerPostalCode': seller_postal,
-        'SellerCity': seller_city,
-        'SellerCountry': seller_country,
-        'SellerVATID': seller_vat_id,
-        'BuyerName': buyer_name,
-        'BuyerCompany': buyer_company,
-        'BuyerStreet': buyer_street,
-        'BuyerPostalCode': buyer_postal,
-        'BuyerCity': buyer_city,
-        'BuyerCountry': buyer_country,
-        'BuyerVATID': buyer_vat_id,
-        'BuyerRouteID': buyer_route_id,
-        'PaymentTermDays': payment_term_days,
-        'PaymentDueDate': payment_due_date,
-        'DiscountPercentage': discount_percentage,
-        'DiscountDays': discount_days,
-        'BankAccountHolder': bank_account_holder,
-        'BankIBAN': bank_iban,
-        'BankBIC': bank_bic,
-        'BankName': bank_name,
-        'PaymentTerms': data.get('paymentTerms', ''),
-        'Notes': None,
-        'TaxCategory': tax_category,
-        'TaxRate': tax_rate,
-        'SumNet': sum_net,
-        'TaxAmount': tax_amount,
-        'SumGross': sum_gross,
-        'AmountDue': sum_gross,  # Initially same as gross
-        'Status': 'draft',  # Always start as draft
-        'PDFPath': pdf_path,
-        'XMLPath': None
-    }
-    
-    # Insert invoice
-    invoice_id = db.insert_invoice(invoice_data)
-    
-    # Insert invoice items
-    for item in data.get('items', []):
-        # Parse quantity and price
-        quantity = float(item.get('quantity', 1))
-        price_str = item.get('price', '0')
-        try:
-            price = float(price_str)
-        except ValueError:
-            price = 0.0
-        
-        total_net = quantity * price
-        
-        item_data = {
-            'InvoiceID': invoice_id,
-            'Position': int(item.get('pos', 1)),
-            'ArticleID': None,  # We don't track article IDs in current implementation
-            'Description': item.get('description', ''),
-            'Quantity': quantity,
-            'Unit': item.get('unit', 'Stk'),
-            'PricePerUnit': price,
-            'TotalNet': total_net,
-            'TaxCategory': tax_category,
-            'TaxRate': tax_rate
-        }
-        
-        db.insert_invoice_item(item_data)
-    
-    return invoice_id
-
-
-def handle_generate_invoice_pdf(post_body: bytes) -> bytes:
-    """Generate a simple PDF invoice from JSON data"""
-    import base64
-    data = json.loads(post_body.decode('utf-8'))
-    
-    # Get own contact data - use selected company if provided
-    db = Database()
-    own_company_id = data.get('ownCompanyId')
-    if own_company_id:
-        own_contact = db.get_contact_by_id(int(own_company_id))
-    else:
-        own_contacts = db.fetch_contacts(contact_type='own')
-        own_contact = own_contacts[0] if own_contacts else None
-    
-    # Try to load logo using PIL - convert to JPEG for PDF compatibility
-    logo_data = None
-    logo_width = 0
-    logo_height = 0
-    logo_filter = "/DCTDecode"  # JPEG filter
-    try:
-        from PIL import Image
-        import io
-        import os
-        
-        # Use logo from selected company if available
-        logo_path = 'static/logo.png'
-        if own_contact and len(own_contact) > 13 and own_contact[13]:
-            logo_path = own_contact[13]
-            # Ensure the path is relative to the project directory
-            if not os.path.isabs(logo_path) and not os.path.exists(logo_path):
-                # Try prepending common paths
-                for prefix in ['', './', '../']:
-                    test_path = prefix + logo_path
-                    if os.path.exists(test_path):
-                        logo_path = test_path
-                        break
-        
-        print(f"Trying to load logo from: {os.path.abspath(logo_path)}")
-        
-        if os.path.exists(logo_path):
-            with Image.open(logo_path) as img:
-                # Convert to RGB if necessary (remove alpha channel)
-                if img.mode in ('RGBA', 'LA', 'P'):
-                    background = Image.new('RGB', img.size, (255, 255, 255))
-                    if img.mode == 'P':
-                        img = img.convert('RGBA')
-                    if img.mode in ('RGBA', 'LA'):
-                        background.paste(img, mask=img.split()[-1])  # Use alpha channel as mask
-                        img = background
-                    else:
-                        img = img.convert('RGB')
-                elif img.mode != 'RGB':
-                    img = img.convert('RGB')
-                
-                logo_width, logo_height = img.size
-                # Convert to JPEG in memory
-                jpeg_buffer = io.BytesIO()
-                img.save(jpeg_buffer, format='JPEG', quality=90)
-                logo_data = jpeg_buffer.getvalue()
-                print(f"Logo loaded: {logo_width}x{logo_height}, JPEG size: {len(logo_data)}")
-        else:
-            print(f"Logo file not found: {os.path.abspath(logo_path)}")
-    except Exception as e:
-        import traceback
-        print(f"Logo load error: {e}")
-        traceback.print_exc()
-    
-    # PDF helper functions
-    def pdf_obj(num: int, content: str) -> str:
-        return f"{num} 0 obj\n{content}\nendobj\n"
-    
-    def pdf_obj_binary(num: int, header: str, binary_data: bytes) -> bytes:
-        header_bytes = f"{num} 0 obj\n{header}\nstream\n".encode('latin-1')
-        footer_bytes = b"\nendstream\nendobj\n"
-        return header_bytes + binary_data + footer_bytes
-    
-    def pdf_stream(content: str) -> bytes:
-        # Encode first, then calculate length from encoded bytes
-        encoded = content.encode('latin-1', errors='replace')
-        header = f"<< /Length {len(encoded)} >>\nstream\n".encode('latin-1')
-        footer = b"\nendstream"
-        return header + encoded + footer
-    
-    # Build PDF content
-    objects = []
-    obj_offsets = []
-    binary_objects = {}  # Track which objects are binary
-    
-    # Catalog (object 1)
-    objects.append(pdf_obj(1, "<< /Type /Catalog /Pages 2 0 R >>"))
-    
-    # Pages (object 2) - will be updated later
-    objects.append(pdf_obj(2, "<< /Type /Pages /Kids [8 0 R] /Count 1 >>"))
-    
-    # Font objects (3-5)
-    objects.append(pdf_obj(3, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"))
-    objects.append(pdf_obj(4, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"))
-    objects.append(pdf_obj(5, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding >>"))
-    
-    # Image XObject (object 6) - if logo exists
-    xobject_ref = ""
-    if logo_data and logo_width > 0 and logo_height > 0:
-        img_header = f"<< /Type /XObject /Subtype /Image /Width {logo_width} /Height {logo_height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter {logo_filter} /Length {len(logo_data)} >>"
-        objects.append(None)  # Placeholder
-        binary_objects[5] = (img_header, logo_data)
-        xobject_ref = "/XObject << /Logo 6 0 R >> "
-    else:
-        objects.append(pdf_obj(6, "<< >>"))  # Empty placeholder
-    
-    # Build page content stream
-    content_lines = []
-    
-    def encode_text(text):
-        """Encode text for PDF with WinAnsiEncoding (supports German umlauts)"""
-        text = str(text)
-        # Escape special PDF characters
-        text = text.replace('\\', '\\\\')
-        text = text.replace('(', '\\(')
-        text = text.replace(')', '\\)')
-        # WinAnsiEncoding octal codes for German characters
-        text = text.replace('ä', '\\344')  # octal 344 = 228
-        text = text.replace('ö', '\\366')  # octal 366 = 246
-        text = text.replace('ü', '\\374')  # octal 374 = 252
-        text = text.replace('Ä', '\\304')  # octal 304 = 196
-        text = text.replace('Ö', '\\326')  # octal 326 = 214
-        text = text.replace('Ü', '\\334')  # octal 334 = 220
-        text = text.replace('ß', '\\337')  # octal 337 = 223
-        text = text.replace('€', '\\200')  # octal 200 = 128 (Euro in WinAnsi)
-        return text
-    
-    def add_text(x, y, text, font="F1", size=10):
-        text = encode_text(text)
-        return f"BT /{font} {size} Tf {x} {y} Td ({text}) Tj ET\n"
-    
-    def add_text_gray(x, y, text, font="F1", size=10, gray=0.4):
-        text = encode_text(text)
-        return f"{gray} g BT /{font} {size} Tf {x} {y} Td ({text}) Tj ET 0 g\n"
-    
-    def add_line(x1, y1, x2, y2, width=0.5, gray=0):
-        return f"{gray} G {width} w {x1} {y1} m {x2} {y2} l S 0 G\n"
-    
-    def add_rect_fill(x, y, w, h, r, g, b):
-        return f"{r} {g} {b} rg {x} {y} {w} {h} re f 0 g\n"
-    
-    # --- PAGE MARGINS ---
-    margin_left = 64  # 50 + 14pt (5mm)
-    margin_right = 549  # 560 - 11pt (4mm)
-    
-    # --- LOGO (top left) ---
-    if logo_data and logo_width > 0:
-        # Scale logo to max 100pt width, 50pt height
-        scale_w = 100 / logo_width if logo_width > 100 else 1
-        scale_h = 50 / logo_height if logo_height > 50 else 1
-        scale = min(scale_w, scale_h)
-        disp_w = logo_width * scale
-        disp_h = logo_height * scale
-        content_lines.append(f"q {disp_w} 0 0 {disp_h} {margin_left} {790 - disp_h} cm /Logo Do Q\n")
-    
-    # --- META INFO (top right) ---
-    meta_y = 780
-    meta_label_x = 406  # angepasst für rechten Rand
-    meta_value_x = 486  # angepasst für rechten Rand
-    # Format date as DD.MM.YYYY
-    date_raw = data.get('date', '')
-    if date_raw and '-' in date_raw:
-        parts = date_raw.split('-')
-        if len(parts) == 3:
-            date_formatted = f"{parts[2]}.{parts[1]}.{parts[0]}"
-        else:
-            date_formatted = date_raw
-    else:
-        date_formatted = date_raw
-    content_lines.append(add_text(meta_label_x, meta_y, "Datum", "F1", 10))
-    content_lines.append(add_text(meta_value_x, meta_y, date_formatted, "F1", 10))
-    meta_y -= 14
-    content_lines.append(add_text(meta_label_x, meta_y, "Rechnungs-Nr.", "F1", 10))
-    content_lines.append(add_text(meta_value_x, meta_y, data.get('number', ''), "F1", 10))
-    meta_y -= 14
-    content_lines.append(add_text(meta_label_x, meta_y, "Kunden-Nr.", "F1", 10))
-    content_lines.append(add_text(meta_value_x, meta_y, data.get('customerNumber', ''), "F1", 10))
-    
-    # --- SENDER LINE (small, dark gray, position for envelope window) ---
-    # Envelope window typically at ~45mm from top, ~20mm from left
-    # In PDF points: top = 842 - 127 = 715, left = 57
-    sender_y = 700
-    if own_contact:
-        sender_name = own_contact[4] or own_contact[3] or ''
-        sender_street = own_contact[5] or ''
-        sender_postal = own_contact[6] or ''
-        sender_city = own_contact[7] or ''
-        sender_line = f"{sender_name} - {sender_street} - {sender_postal} {sender_city}"
-        content_lines.append(add_text_gray(margin_left, sender_y, sender_line, "F1", 7, 0.4))
-    
-    # --- CUSTOMER ADDRESS (below sender, no separator line) ---
-    addr_y = sender_y - 18  # 6 pixels more spacing than original
-    # Get customer name from data if available
-    customer_name = data.get('customerName', '')
-    customer_lines = data.get('customerAddress', '').split('\n')
-    first_line = True
-    for line in customer_lines:
-        if line.strip():
-            content_lines.append(add_text(margin_left, addr_y, line.strip(), "F1", 11))
-            addr_y -= 14
-            # Insert customer name after company name (first line)
-            if first_line and customer_name:
-                content_lines.append(add_text(margin_left, addr_y, customer_name, "F1", 11))
-                addr_y -= 14
-                first_line = False
-            elif first_line:
-                first_line = False
-    
-    # --- TITLE "Rechnung" (left-aligned, normal case) ---
-    title_y = addr_y - 30
-    content_lines.append(add_text(margin_left, title_y, "Rechnung", "F2", 18))
-    
-    # --- ITEMS TABLE ---
-    table_y = title_y - 35
-    table_left = margin_left
-    table_right = margin_right
-    
-    # Light blue background for header (RGB: 0.9, 0.95, 1.0)
-    content_lines.append(add_rect_fill(table_left, table_y - 5, table_right - table_left, 18, 0.9, 0.95, 1.0))
-    
-    # Table column positions (adjusted for margins)
-    col_pos = table_left + 2
-    col_qty = table_left + 35
-    col_unit = table_left + 80
-    col_desc = table_left + 125
-    col_price = table_left + 350
-    col_total = table_left + 430
-    
-    # Table header text (no line above)
-    content_lines.append(add_text(col_pos, table_y, "Pos.", "F2", 9))
-    content_lines.append(add_text(col_qty, table_y, "Menge", "F2", 9))
-    content_lines.append(add_text(col_unit, table_y, "Einheit", "F2", 9))
-    content_lines.append(add_text(col_desc, table_y, "Bezeichnung", "F2", 9))
-    content_lines.append(add_text(col_price, table_y, "Einzelpreis", "F2", 9))
-    content_lines.append(add_text(col_total, table_y, "Gesamt", "F2", 9))
-    
-    # Line below header
-    table_y -= 7
-    content_lines.append(add_line(table_left, table_y, table_right, table_y, 0.5))
-    table_y -= 14
-    
-    # Table items
-    for item in data.get('items', []):
-        # Format price: convert to float, format with 2 decimals, replace . with ,
-        price_value = item.get('price', '0')
-        try:
-            price_formatted = f"{float(price_value):.2f}".replace('.', ',') + ' €'
-        except (ValueError, TypeError):
-            price_formatted = str(price_value) + ' €'
-        
-        content_lines.append(add_text(col_pos, table_y, item.get('pos', ''), "F1", 9))
-        content_lines.append(add_text(col_qty, table_y, item.get('quantity', ''), "F1", 9))
-        content_lines.append(add_text(col_unit, table_y, item.get('unit', ''), "F1", 9))
-        content_lines.append(add_text(col_desc, table_y, item.get('description', '')[:45], "F1", 9))
-        content_lines.append(add_text(col_price, table_y, price_formatted, "F1", 9))
-        content_lines.append(add_text(col_total, table_y, item.get('total', ''), "F1", 9))
-        table_y -= 14
-    
-    # --- TOTALS ---
-    table_y -= 5
-    content_lines.append(add_line(col_pos, table_y, table_right, table_y, 0.5))
-    table_y -= 14
-    content_lines.append(add_text(col_pos, table_y, "Summe netto", "F1", 10))
-    content_lines.append(add_text(col_total, table_y, data.get('sumNet', '0,00 EUR'), "F2", 10))
-    table_y -= 14
-    tax_rate = data.get('taxRate', 19)
-    content_lines.append(add_text(col_pos, table_y, f"MwSt. {tax_rate}%", "F1", 10))
-    content_lines.append(add_text(col_total, table_y, data.get('taxAmount', '0,00 EUR'), "F1", 10))
-    table_y -= 5
-    content_lines.append(add_line(col_pos, table_y, table_right, table_y, 0.3))
-    table_y -= 14
-    content_lines.append(add_text(col_pos, table_y, "Gesamtbetrag", "F2", 10))
-    content_lines.append(add_text(col_total, table_y, data.get('sumGross', '0,00 EUR'), "F2", 10))
-    content_lines.append(add_line(col_pos, table_y - 3, table_right, table_y - 3, 1.0))
-    
-    # --- PAYMENT TERMS (full page width like table: 50 to 560 = 510pt) ---
-    table_y -= 35
-    payment_terms = data.get('paymentTerms', '')
-    if payment_terms:
-        words = payment_terms.split()
-        line = ""
-        max_chars = 110  # Full width (510pt / ~5.4pt per char gives 95 chars, but than the line is not full, so we can allow more chars and it will just wrap to next line)
-        for word in words:
-            if len(line + " " + word) > max_chars:
-                content_lines.append(add_text(table_left, table_y, line, "F1", 9))
-                table_y -= 12
-                line = word
-            else:
-                line = (line + " " + word).strip()
-        if line:
-            content_lines.append(add_text(table_left, table_y, line, "F1", 9))
-    
-    # --- FOOTER (dark gray, structured columns) ---
-    footer_y = 53  # 95 - 42pt (1,5cm tiefer)
-    # Gray line above footer
-    content_lines.append(add_line(table_left, footer_y + 15, table_right, footer_y + 15, 0.3, 0.4))
-    
-    if own_contact:
-        # Left column - Company info
-        y_left = footer_y
-        content_lines.append(add_text_gray(margin_left, y_left, own_contact[4] or own_contact[3] or '', "F2", 8, 0.3))
-        y_left -= 10
-        # Contact name (Ansprechpartner) between company and street
-        if own_contact[3]:
-            content_lines.append(add_text_gray(margin_left, y_left, own_contact[3], "F1", 8, 0.3))
-            y_left -= 10
-        content_lines.append(add_text_gray(margin_left, y_left, own_contact[5] or '', "F1", 8, 0.3))
-        y_left -= 10
-        content_lines.append(add_text_gray(margin_left, y_left, f"{own_contact[6] or ''} {own_contact[7] or ''}", "F1", 8, 0.3))
-        
-        # Center column - Contact details (label + value columns, no colons)
-        center_label_x = 220
-        center_value_x = 260
-        y_center = footer_y
-        content_lines.append(add_text_gray(center_label_x, y_center, "Tel", "F1", 8, 0.3))
-        content_lines.append(add_text_gray(center_value_x, y_center, own_contact[10] or '-', "F1", 8, 0.3))
-        y_center -= 10
-        content_lines.append(add_text_gray(center_label_x, y_center, "E-Mail", "F1", 8, 0.3))
-        content_lines.append(add_text_gray(center_value_x, y_center, own_contact[9] or '-', "F1", 8, 0.3))
-        y_center -= 10
-        content_lines.append(add_text_gray(center_label_x, y_center, "UStIdNr", "F1", 8, 0.3))
-        content_lines.append(add_text_gray(center_value_x, y_center, own_contact[11] or '-', "F1", 8, 0.3))
-        
-        # Right column - Bank details (structured with labels)
-        bank_label_x = 400
-        bank_value_x = 435
-        y_bank = footer_y
-        content_lines.append(add_text_gray(bank_label_x, y_bank, "Bankverbindung", "F2", 8, 0.3))
-        y_bank -= 10
-        
-        # Parse bank details from HTML (strip all HTML tags)
-        import re
-        bank_html = data.get('bankDetails', '')
-        # Remove all HTML tags
-        bank_text = re.sub(r'<[^>]+>', ' ', bank_html)
-        # Split by common separators and clean up
-        bank_parts = bank_text.replace('\n', ' ').split()
-        bank_name = ''
-        bank_iban = ''
-        bank_bic = ''
-        i = 0
-        while i < len(bank_parts):
-            part = bank_parts[i]
-            if part.upper() == 'BANK':
-                # Next parts until IBAN are bank name
-                i += 1
-                name_parts = []
-                while i < len(bank_parts) and bank_parts[i].upper() not in ['IBAN', 'BIC']:
-                    name_parts.append(bank_parts[i])
-                    i += 1
-                bank_name = ' '.join(name_parts)
-            elif part.upper() == 'IBAN':
-                i += 1
-                if i < len(bank_parts):
-                    bank_iban = bank_parts[i]
-                    i += 1
-            elif part.upper() == 'BIC':
-                i += 1
-                if i < len(bank_parts):
-                    bank_bic = bank_parts[i]
-                    i += 1
-            else:
-                # First unknown text is bank name if not set
-                if not bank_name and part.upper() not in ['BANK', 'IBAN', 'BIC']:
-                    bank_name = part
-                i += 1
-        
-        content_lines.append(add_text_gray(bank_label_x, y_bank, "Bank", "F1", 8, 0.3))
-        content_lines.append(add_text_gray(bank_value_x, y_bank, bank_name[:25], "F1", 8, 0.3))
-        y_bank -= 10
-        content_lines.append(add_text_gray(bank_label_x, y_bank, "IBAN", "F1", 8, 0.3))
-        content_lines.append(add_text_gray(bank_value_x, y_bank, bank_iban, "F1", 8, 0.3))
-        y_bank -= 10
-        content_lines.append(add_text_gray(bank_label_x, y_bank, "BIC", "F1", 8, 0.3))
-        content_lines.append(add_text_gray(bank_value_x, y_bank, bank_bic, "F1", 8, 0.3))
-    
-    # Combine content
-    page_content = "".join(content_lines)
-    
-    # Page content stream (object 7) - needs special handling for binary
-    content_stream_data = pdf_stream(page_content)
-    objects.append(None)  # Placeholder for binary content stream
-    binary_objects[6] = content_stream_data  # Index 6 = Object 7
-    
-    # Page (object 8)
-    resources = f"<< /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >> {xobject_ref}>>"
-    objects.append(pdf_obj(8, f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 7 0 R /Resources {resources} >>"))
-    
-    # Build PDF
-    pdf_header = "%PDF-1.4\n%\xe2\xe3\xcf\xd3\n"
-    
-    # Build body, handling binary objects
-    pdf_body_parts = []
-    for i, obj in enumerate(objects):
-        obj_num = i + 1
-        if i in binary_objects:
-            bin_entry = binary_objects[i]
-            if isinstance(bin_entry, tuple):
-                # Image XObject: (header, data)
-                header, bin_data = bin_entry
-                pdf_body_parts.append(pdf_obj_binary(obj_num, f"<< /Type /XObject /Subtype /Image /Width {logo_width} /Height {logo_height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter {logo_filter} /Length {len(bin_data)} >>", bin_data))
-            else:
-                # Content stream: already formatted bytes
-                obj_header = f"{obj_num} 0 obj\n".encode('latin-1')
-                obj_footer = b"\nendobj\n"
-                pdf_body_parts.append(obj_header + bin_entry + obj_footer)
-        elif obj is not None:
-            pdf_body_parts.append(obj.encode('latin-1', errors='replace'))
-    
-    pdf_body = b"".join(pdf_body_parts)
-    
-    # Calculate xref offsets
-    offset = len(pdf_header.encode('latin-1'))
-    for i, part in enumerate(pdf_body_parts):
-        obj_offsets.append(offset)
-        offset += len(part)
-    
-    # Build xref table
-    xref_offset = len(pdf_header.encode('latin-1')) + len(pdf_body)
-    xref = f"xref\n0 {len(objects) + 1}\n"
-    xref += "0000000000 65535 f \n"
-    for off in obj_offsets:
-        xref += f"{off:010d} 00000 n \n"
-    
-    # Trailer
-    trailer = f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF"
-    
-    # Combine PDF
-    full_pdf = pdf_header.encode('latin-1') + pdf_body + xref.encode('latin-1') + trailer.encode('latin-1')
-    
-    # Save invoice to database
-    import os
-    try:
-        # Create PDF storage directory
-        current_year = datetime.datetime.now().year
-        pdf_dir = f"data/invoices/{current_year}"
-        os.makedirs(pdf_dir, exist_ok=True)
-        
-        # Generate PDF filename
-        invoice_number = data.get('number', 'Entwurf')
-        # Sanitize filename (remove special characters)
-        safe_number = "".join(c for c in invoice_number if c.isalnum() or c in ['-', '_'])
-        pdf_filename = f"Rechnung_{safe_number}.pdf"
-        pdf_path = os.path.join(pdf_dir, pdf_filename)
-        
-        # Save PDF file
-        with open(pdf_path, 'wb') as f:
-            f.write(full_pdf)
-        
-        print(f"PDF saved to: {pdf_path}")
-        
-        # Save invoice to database
-        invoice_id = handle_save_invoice(data, pdf_path)
-        print(f"Invoice saved to database with ID: {invoice_id}")
-        
-    except Exception as e:
-        import traceback
-        print(f"Error saving invoice: {e}")
-        traceback.print_exc()
-        # Continue and return PDF even if saving fails
-    
-    return full_pdf
 
 
 def handle_update_invoice_status(post_body: bytes):
@@ -1572,7 +887,7 @@ def handle_invoice_save(post_body: bytes):
         currency = data.get('currency', 'EUR')
         status = data.get('status', 'draft')
         payment_means_code = data.get('paymentMeansCode', '58')
-        payment_means_text = data.get('paymentMeansText', 'SEPA Überweisung')
+        payment_means_text = data.get('paymentMeansText', 'SEPA Ãœberweisung')
         items = data.get('items', [])
         
         # XRechnung optional fields
@@ -1840,7 +1155,7 @@ def handle_send_invoice_email(post_body: bytes):
         return json.dumps({'success': False, 'error': str(e)}).encode()
 
 
-# ─── Asset-Handler ───────────────────────────────────────────────────────────
+# â”€â”€â”€ Asset-Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def handle_add_asset(db: Database, post_data: dict):
     """Neue Anlage anlegen"""
@@ -1917,7 +1232,7 @@ def handle_update_asset(db: Database, post_data: dict):
 
 
 def handle_book_depreciation(db: Database, post_data: dict):
-    """AfA für ein Jahr buchen"""
+    """AfA fÃ¼r ein Jahr buchen"""
     asset_id    = int(post_data.get('asset_id', ['0'])[0])
     year        = int(post_data.get('year', ['0'])[0])
     account_id  = int(post_data.get('account_id', ['0'])[0])
@@ -1983,7 +1298,7 @@ def handle_update_asset_category(db: Database, post_data: dict):
     return 303, '/asset_categories'
 
 
-# ─── (end of Asset-Handler) ───────────────────────────────────────────────────
+# â”€â”€â”€ (end of Asset-Handler) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def handle_invoice_pdf_by_id(invoice_id: int):
     """Generate PDF for an existing invoice by ID
@@ -2024,7 +1339,7 @@ def handle_setup_save(db: Database, post_data: dict):
     """Speichert die Daten aus der Ersteinrichtungs-Seite.
 
     Erstellt einen 'own'-Kontakt sowie (optional) ein Bankkonto.
-    Gibt (303, '/') bei Erfolg oder (200, html) bei Validierungsfehler zurück.
+    Gibt (303, '/') bei Erfolg oder (200, html) bei Validierungsfehler zurÃ¼ck.
     """
     from .pages_setup import PageSetup
 
@@ -2073,6 +1388,6 @@ def handle_setup_save(db: Database, post_data: dict):
 
 
 def handle_load_testdata(db: Database):
-    """Lädt Testdaten (Kontakte + Bankkonto) und leitet zum Dashboard weiter."""
+    """LÃ¤dt Testdaten (Kontakte + Bankkonto) und leitet zum Dashboard weiter."""
     db.load_test_seed_data()
     return 303, '/'

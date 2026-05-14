@@ -79,15 +79,19 @@ _ROW_DEFAULTS = {
 
 
 
-def _taxrate_to_bu(tax_rate) -> str:
-    """TaxRate (float/None) → DATEV BU-Schlüssel."""
+def _taxrate_to_bu(tax_rate, sh: str = 'S') -> str:
+    """TaxRate (float/None) + Soll/Haben-Kennzeichen → DATEV BU-Schlüssel.
+
+    S (Ausgabe/Vorsteuer): 19% → '9', 7% → '8'
+    H (Einnahme/Umsatzsteuer): 19% → '3', 7% → '2'
+    """
     if tax_rate is None:
         return '0'
     r = round(float(tax_rate), 4)
     if r >= 0.19:
-        return '9'
+        return '3' if sh == 'H' else '9'
     if r >= 0.07:
-        return '10'
+        return '2' if sh == 'H' else '8'
     return '0'
 
 
@@ -199,8 +203,9 @@ def export_to_datev(bookings, coa_id_to_number: dict,
     :param bookings:          Iterable von Bookings-Tupeln (SELECT * FROM Bookings):
                               0=ID, 1=DateBooking, 2=DateTax, 3=BookingGroup_ID,
                               4=Account_ID, 5=ForeignBankAccount, 6=RecipientClient,
-                              7=Contact_ID, 8=COA_ID, 9=Category_ID, 10=Amount,
-                              11=Currency, 12=TaxRate, 13=TaxAmount, 14=Text, 15=DocumentNumber
+                              7=Contact_ID, 8=COA_ID, 9=CounterCOA_ID, 10=Category_ID,
+                              11=Amount, 12=Currency, 13=TaxRate, 14=TaxAmount,
+                              15=Text, 16=DocumentNumber
     :param coa_id_to_number:  Dict {coa_id (int): account_number (int/str)}
     :param date_from:         'YYYY-MM-DD' – Anfang des Buchungszeitraums
     :param date_to:           'YYYY-MM-DD' – Ende des Buchungszeitraums
@@ -211,14 +216,15 @@ def export_to_datev(bookings, coa_id_to_number: dict,
     exported_ids = []
 
     for row in bookings:
-        booking_id   = row[0]
-        date_booking = row[1]
-        coa_id       = row[8]
-        amount       = row[10]
-        currency     = row[11] or 'EUR'
-        tax_rate     = row[12]
-        text         = row[14] or ''
-        doc_number   = row[15] or ''
+        booking_id      = row[0]
+        date_booking    = row[1]
+        coa_id          = row[8]
+        counter_coa_id  = row[9]   # CounterCOA_ID → Gegenkonto
+        amount          = row[11]
+        currency        = row[12] or 'EUR'
+        tax_rate        = row[13]
+        text            = row[15] or ''
+        doc_number      = row[16] or ''
 
         if amount is None:
             continue
@@ -226,7 +232,8 @@ def export_to_datev(bookings, coa_id_to_number: dict,
         amount_f = float(amount)
         # Vorzeichen → S/H-Kennzeichen: S=Soll/Ausgabe, H=Haben/Einnahme
         sh = 'H' if amount_f >= 0 else 'S'
-        konto = str(coa_id_to_number.get(coa_id, '')) if coa_id else ''
+        konto      = str(coa_id_to_number.get(coa_id, '')) if coa_id else ''
+        gegenkonto = str(coa_id_to_number.get(counter_coa_id, '')) if counter_coa_id else ''
 
         cols = [None] * TOTAL_COLS
         # Standardwerte setzen
@@ -237,7 +244,8 @@ def export_to_datev(bookings, coa_id_to_number: dict,
         cols[_C_SH]          = sh
         cols[_C_WKZ]         = currency
         cols[_C_KONTO]       = konto
-        cols[_C_BU]          = _taxrate_to_bu(tax_rate)
+        cols[_C_GEGENKONTO]  = gegenkonto
+        cols[_C_BU]          = _taxrate_to_bu(tax_rate, sh)
         cols[_C_BELEGDATUM]  = _fmt_ddmm(date_booking)
         cols[_C_BELEGFELD1]  = doc_number[:12]
         cols[_C_TEXT]        = text[:60]

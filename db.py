@@ -235,7 +235,8 @@ class Database:
         # NumberRanges table for invoice/receipt numbering
         # Type: 'invoice' (Ausgangsrechnungen), 'receipt_company' (Belege Firma), 'receipt_category' (Belege Kategorien)
         # Format: e.g., 'R' for Rechnungen, 'B' for Belege, etc.
-        # Prefix: optional prefix for subdivision (e.g., '_A', '_B')
+        # Suffix: optional suffix for subdivision (e.g., '_A', '_B') – appended after the number
+        # NumberFormat: format template, e.g. '{yy}{l}{nnn}{s}' → '26F001' or '26F001_A'
         # CurrentNumber: the last used number in this range
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS NumberRanges (
@@ -246,6 +247,7 @@ class Database:
                 Prefix TEXT DEFAULT '',
                 CurrentNumber INTEGER DEFAULT 0,
                 Description TEXT,
+                NumberFormat TEXT DEFAULT '{yy}{l}{nnn}{s}',
                 UNIQUE(Type, Year, Letter, Prefix)
             )
         ''')
@@ -442,20 +444,19 @@ class Database:
             )
         ''')
 
-        # Migration: Add SKRAccount column to Accounts if not exists
-        # try:
-        #     cursor.execute('ALTER TABLE Accounts ADD COLUMN SKRAccount INTEGER')
-        # except Exception:
-        #     pass  # Column already exists
-
-        # Migration: Add CounterCOA_ID column to Bookings for double-entry bookkeeping
-        # try:
-        #     cursor.execute('ALTER TABLE Bookings ADD COLUMN CounterCOA_ID INTEGER REFERENCES ChartOfAccounts(ID)')
-        # except Exception:
-        #     pass  # Column already exists
-
         conn.commit()
         conn.close()
+
+        # Migration: Add NumberFormat column to NumberRanges if not exists
+        conn2 = self._get_connection()
+        cursor2 = conn2.cursor()
+        try:
+            cursor2.execute("ALTER TABLE NumberRanges ADD COLUMN NumberFormat TEXT DEFAULT '{yy}{l}{nnn}{s}'")
+            conn2.commit()
+        except Exception:
+            pass  # Column already exists
+        finally:
+            conn2.close()
 
         # Seed-Daten aus seed_data/ laden
         self._seed_chart_of_accounts()
@@ -1493,43 +1494,22 @@ class Database:
         """Fetch assets with optional status filter. By default only top-level assets."""
         conn = self._get_connection()
         cursor = conn.cursor()
+        conditions = []
+        params = []
         if status:
-            if parent_only:
-                cursor.execute('''
-                    SELECT a.*, ac.Name as CategoryName, c.DisplayName as SupplierName
-                    FROM Assets a
-                    LEFT JOIN AssetCategories ac ON a.AssetCategory_ID = ac.ID
-                    LEFT JOIN Contacts c ON a.Supplier_ID = c.ID
-                    WHERE a.Status = ? AND a.Parent_ID IS NULL
-                    ORDER BY a.PurchaseDate DESC
-                ''', (status,))
-            else:
-                cursor.execute('''
-                    SELECT a.*, ac.Name as CategoryName, c.DisplayName as SupplierName
-                    FROM Assets a
-                    LEFT JOIN AssetCategories ac ON a.AssetCategory_ID = ac.ID
-                    LEFT JOIN Contacts c ON a.Supplier_ID = c.ID
-                    WHERE a.Status = ?
-                    ORDER BY a.PurchaseDate DESC
-                ''', (status,))
-        else:
-            if parent_only:
-                cursor.execute('''
-                    SELECT a.*, ac.Name as CategoryName, c.DisplayName as SupplierName
-                    FROM Assets a
-                    LEFT JOIN AssetCategories ac ON a.AssetCategory_ID = ac.ID
-                    LEFT JOIN Contacts c ON a.Supplier_ID = c.ID
-                    WHERE a.Parent_ID IS NULL
-                    ORDER BY a.PurchaseDate DESC
-                ''')
-            else:
-                cursor.execute('''
-                    SELECT a.*, ac.Name as CategoryName, c.DisplayName as SupplierName
-                    FROM Assets a
-                    LEFT JOIN AssetCategories ac ON a.AssetCategory_ID = ac.ID
-                    LEFT JOIN Contacts c ON a.Supplier_ID = c.ID
-                    ORDER BY a.PurchaseDate DESC
-                ''')
+            conditions.append('a.Status = ?')
+            params.append(status)
+        if parent_only:
+            conditions.append('a.Parent_ID IS NULL')
+        where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
+        cursor.execute(f'''
+            SELECT a.*, ac.Name as CategoryName, c.DisplayName as SupplierName
+            FROM Assets a
+            LEFT JOIN AssetCategories ac ON a.AssetCategory_ID = ac.ID
+            LEFT JOIN Contacts c ON a.Supplier_ID = c.ID
+            {where}
+            ORDER BY a.PurchaseDate DESC
+        ''', params)
         rows = cursor.fetchall()
         conn.close()
         return rows
@@ -2315,7 +2295,7 @@ class Database:
         cursor.execute('SELECT Name, ID FROM ChartOfAccounts')
         coa_name_map = {row[0].lower(): row[1] for row in cursor.fetchall()}
         conn.close()
-        
+
         reader = csv.DictReader(io.StringIO(text), delimiter=';', quotechar='"')
         # Spaltennamen normalisieren (führende/nachgestellte Leerzeichen entfernen)
         if reader.fieldnames:
@@ -2325,7 +2305,9 @@ class Database:
         skipped = 0
         not_found = []
         errors = []
-        
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
         for i, row in enumerate(reader, 1):
             # Zeilenwerte normalisieren
             row = {k.strip(): (v.strip() if isinstance(v, str) else v) for k, v in row.items() if k}
@@ -2370,9 +2352,7 @@ class Database:
                 # Suche nach bestehender Buchung: Datum + Belegnummer + Betrag
                 # Betrag-Suche mit ABS(), da Original-Export positive und
                 # Tabellen-Export negative Vorzeichen verwenden kann.
-                conn = self._get_connection()
-                cursor = conn.cursor()
-                
+
                 if doc_number:
                     # Beleg-Nr. kann im Original als Mehrfach-Ref gespeichert sein,
                     # z.B. "25F009, 25F073" – LIKE-Suche fängt alle Varianten ab.
@@ -2398,8 +2378,7 @@ class Database:
                     ''', (booking_date, amount))
                 
                 rows = cursor.fetchall()
-                conn.close()
-                
+
                 if len(rows) == 0:
                     not_found.append({
                         'zeile':  i,
@@ -2446,21 +2425,20 @@ class Database:
                 
                 if update_fields:
                     update_values.append(booking_id)
-                    conn = self._get_connection()
-                    cursor = conn.cursor()
                     cursor.execute(
                         f'UPDATE Bookings SET {", ".join(update_fields)} WHERE ID=?',
                         update_values
                     )
-                    conn.commit()
-                    conn.close()
                     updated += 1
                 else:
                     skipped += 1
-                
+
             except Exception as e:
                 errors.append(f"Zeile {i}: {str(e)}")
-        
+
+        conn.commit()
+        conn.close()
+
         return {
             'imported':  imported,
             'updated':   updated,
@@ -2684,7 +2662,7 @@ class Database:
             # ── Stufe 1: Datum + Empfänger (normalisiert) + ABS(Betrag) ──
             if recip_norm:
                 cursor.execute('''
-                                        SELECT ID, BookingGroup_ID, Text, COA_ID, CounterCOA_ID FROM Bookings
+                    SELECT ID, BookingGroup_ID, Text, COA_ID, CounterCOA_ID, RecipientClient FROM Bookings
                     WHERE BookingType = 'entry'
                       AND ParentBooking_ID IS NULL
                       AND DateBooking = ?
@@ -2692,7 +2670,7 @@ class Database:
                 ''', (bank_date, abs_amount))
                 raw = cursor.fetchall()
                 entries = _filter_already(_filter_doppik(
-                    [e for e in raw if _norm(self._get_recipient(cursor, e[0])) == recip_norm
+                    [e for e in raw if _norm(e[5]) == recip_norm
                      or _norm(e[2]) != '' and recip_norm in _norm(e[2])]
                 ))
                 if not entries:
@@ -2998,14 +2976,6 @@ class Database:
         return {'linked': linked, 'skipped': skipped, 'repaired': repaired,
                 'resolved': resolved_count, 'errors': errors}
 
-    @staticmethod
-    def _get_recipient(cursor, booking_id):
-        """Hilfsfunktion: RecipientClient einer Buchung holen."""
-        cursor.execute('SELECT RecipientClient FROM Bookings WHERE ID=?',
-                       (booking_id,))
-        row = cursor.fetchone()
-        return row[0] if row else ''
-
     # ── Table Contacts (normalized Option C) ───────────────────────────────────
 
     _CONTACTS_QUERY = '''
@@ -3028,8 +2998,7 @@ class Database:
             CASE c.EntityType
                 WHEN 'company' THEN cd.CompanyName
                 WHEN 'person'  THEN COALESCE(
-                    (SELECT cd2.CompanyName FROM CompanyDetails cd2
-                     WHERE cd2.ContactID = pd.CompanyContactID),
+                    cd2.CompanyName,
                     pd.CompanyName_Free
                 )
                 ELSE NULL
@@ -3059,6 +3028,7 @@ class Database:
         LEFT JOIN CompanyDetails    cd ON c.ID = cd.ContactID
         LEFT JOIN PersonDetails     pd ON c.ID = pd.ContactID
         LEFT JOIN ContactAddresses  ca ON c.ID = ca.ContactID AND ca.AddressType = 'main'
+        LEFT JOIN CompanyDetails    cd2 ON cd2.ContactID = pd.CompanyContactID
     '''
 
     def fetch_contacts(self, contact_type=None, entity_type=None):
@@ -3294,6 +3264,34 @@ class Database:
         conn.close()
 
     # Table NumberRanges
+
+    @staticmethod
+    def _apply_number_format(fmt: str, year: int, letter: str, number: int, suffix: str = '') -> str:
+        """Apply a format template to produce a number string.
+
+        Placeholders:
+          {yyyy}  - 4-digit year (e.g. 2026)
+          {yy}    -  2-digit year (e.g. 26)
+          {l}     - letter (uppercase)
+          {nnn}   - 3-digit zero-padded number (e.g. 001)
+          {nn}    - 2-digit zero-padded number
+          {n}     - unpadded number
+          {s}     - suffix (appended as-is, empty when not set)
+
+        Default template '{yy}{l}{nnn}{s}' produces '26F001' or '26F002_A'.
+        """
+        DEFAULT_FORMAT = '{yy}{l}{nnn}{s}'
+        template = fmt if fmt else DEFAULT_FORMAT
+        result = template
+        result = result.replace('{yyyy}', str(year))
+        result = result.replace('{yy}', str(year)[-2:])
+        result = result.replace('{l}', letter.upper())
+        result = result.replace('{nnn}', f'{number:03d}')
+        result = result.replace('{nn}', f'{number:02d}')
+        result = result.replace('{n}', str(number))
+        result = result.replace('{s}', suffix or '')
+        return result
+
     def fetch_number_ranges(self, range_type=None):
         """Fetch all number ranges, optionally filtered by type
         
@@ -3331,24 +3329,26 @@ class Database:
         conn.close()
         return row
 
-    def insert_number_range(self, range_type, year, letter, prefix='', current_number=0, description=''):
+    def insert_number_range(self, range_type, year, letter, prefix='', current_number=0, description='', number_format=None):
         """Insert a new number range
-        
+
         Args:
             range_type: 'invoice', 'receipt_company', or 'receipt_category'
             year: 4-digit year (will be stored as-is, displayed as 2-digit)
             letter: Single letter identifier (e.g., 'R' for Rechnung)
-            prefix: Optional prefix for subdivision (e.g., '_A')
+            prefix: Optional suffix for subdivision (e.g., '_A') – appended after the number
             current_number: Starting number (default: 0)
             description: Optional description
+            number_format: Format template (default: '{yy}{l}{nnn}{s}')
         """
+        fmt = number_format if number_format else '{yy}{l}{nnn}{s}'
         conn = self._get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute('''
-                INSERT INTO NumberRanges (Type, Year, Letter, Prefix, CurrentNumber, Description)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (range_type, year, letter, prefix, current_number, description))
+                INSERT INTO NumberRanges (Type, Year, Letter, Prefix, CurrentNumber, Description, NumberFormat)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (range_type, year, letter, prefix, current_number, description, fmt))
             conn.commit()
         except sqlite3.IntegrityError as e:
             print("Error inserting number range:", e)
@@ -3356,16 +3356,17 @@ class Database:
         finally:
             conn.close()
 
-    def update_number_range(self, range_id, year, letter, prefix='', current_number=0, description=''):
+    def update_number_range(self, range_id, year, letter, prefix='', current_number=0, description='', number_format=None):
         """Update existing number range"""
+        fmt = number_format if number_format else '{yy}{l}{nnn}{s}'
         conn = self._get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute('''
                 UPDATE NumberRanges
-                SET Year = ?, Letter = ?, Prefix = ?, CurrentNumber = ?, Description = ?
+                SET Year = ?, Letter = ?, Prefix = ?, CurrentNumber = ?, Description = ?, NumberFormat = ?
                 WHERE ID = ?
-            ''', (year, letter, prefix, current_number, description, range_id))
+            ''', (year, letter, prefix, current_number, description, fmt, range_id))
             conn.commit()
         except sqlite3.IntegrityError as e:
             print("Error updating number range:", e)
@@ -3383,42 +3384,41 @@ class Database:
 
     def get_next_number(self, range_type, year, letter, prefix=''):
         """Get the next available number in a range and increment the counter
-        
-        Returns the full formatted number string (e.g., '26R001' or '26R_A001')
+
+        Returns the full formatted number string (e.g., '26R001' or '26R001_A')
         """
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         # Try to get existing range
         cursor.execute('''
-            SELECT ID, CurrentNumber FROM NumberRanges 
+            SELECT ID, CurrentNumber, NumberFormat FROM NumberRanges
             WHERE Type = ? AND Year = ? AND Letter = ? AND Prefix = ?
         ''', (range_type, year, letter, prefix))
         row = cursor.fetchone()
-        
+
         if row:
-            range_id, current = row
+            range_id, current, number_format = row
             next_num = current + 1
             cursor.execute('UPDATE NumberRanges SET CurrentNumber = ? WHERE ID = ?', (next_num, range_id))
         else:
             # Create new range for this combination
             next_num = 1
+            number_format = '{yy}{l}{nnn}{s}'
             cursor.execute('''
-                INSERT INTO NumberRanges (Type, Year, Letter, Prefix, CurrentNumber, Description)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (range_type, year, letter, prefix, next_num, ''))
-        
+                INSERT INTO NumberRanges (Type, Year, Letter, Prefix, CurrentNumber, Description, NumberFormat)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (range_type, year, letter, prefix, next_num, '', number_format))
+
         conn.commit()
         conn.close()
-        
-        # Format: YY[Letter]###[Prefix] (e.g., 26R001 or 26R001_A)
-        year_short = str(year)[-2:]
-        return f"{year_short}{letter}{next_num:03d}{prefix}"
 
-    def format_number(self, year, letter, prefix, number):
-        """Format a number according to the pattern YY[Letter]###[Prefix]"""
-        year_short = str(year)[-2:]
-        return f"{year_short}{letter}{number:03d}{prefix}"
+        return self._apply_number_format(number_format, year, letter, next_num, prefix)
+
+    def format_number(self, year, letter, suffix, number, number_format=None):
+        """Format a number using the given template (default: '{yy}{l}{nnn}{s}')"""
+        fmt = number_format if number_format else '{yy}{l}{nnn}{s}'
+        return self._apply_number_format(fmt, year, letter, number, suffix)
 
     def parse_number(self, number_str):
         """Parse a formatted number string back to components
@@ -3468,27 +3468,27 @@ class Database:
 
     def get_current_number_info(self, range_type, year, letter, prefix=''):
         """Get info about the current state of a number range
-        
+
         Returns: dict with 'current_number', 'next_number', 'formatted_next'
         """
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         cursor.execute('''
-            SELECT CurrentNumber FROM NumberRanges 
+            SELECT CurrentNumber, NumberFormat FROM NumberRanges
             WHERE Type = ? AND Year = ? AND Letter = ? AND Prefix = ?
         ''', (range_type, year, letter, prefix))
         row = cursor.fetchone()
         conn.close()
-        
+
         current = row[0] if row else 0
+        number_format = row[1] if row else '{yy}{l}{nnn}{s}'
         next_num = current + 1
-        year_short = str(year)[-2:]
-        
+
         return {
             'current_number': current,
             'next_number': next_num,
-            'formatted_next': f"{year_short}{letter}{prefix}{next_num:03d}"
+            'formatted_next': self._apply_number_format(number_format, year, letter, next_num, prefix)
         }
 
     # ==================== INVOICES ====================
@@ -3687,7 +3687,7 @@ class Database:
                 raise ValueError(f"Invoice {invoice_id} not found")
 
             # Get payment date from booking
-            cursor.execute('SELECT BookingDate FROM Bookings WHERE ID = ?', (transaction_id,))
+            cursor.execute('SELECT DateBooking FROM Bookings WHERE ID = ?', (transaction_id,))
             booking = cursor.fetchone()
             payment_date = booking[0] if booking else None
 
@@ -3980,45 +3980,52 @@ class Database:
                       AND c.AccountNumber < 2200))
             )'''
 
-        result = {}
-        for month in range(1, 13):
-            month_prefix = f'{date_from[:4]}-{month:02d}%'
-            p = [month_prefix, date_from, date_to] + type_params
+        p_base = [date_from, date_to] + type_params
 
-            income = cursor.execute(f'''
-                SELECT COALESCE(SUM(b.Amount), 0)
-                FROM Bookings b
-                WHERE b.DateBooking LIKE ?
-                  AND b.DateBooking BETWEEN ? AND ?
-                  AND b.Amount > 0
-                  {acct_filter}
-                  {not_private_cond}
-            ''', p).fetchone()[0]
+        income_rows = cursor.execute(f'''
+            SELECT CAST(strftime('%m', b.DateBooking) AS INTEGER),
+                   COALESCE(SUM(b.Amount), 0)
+            FROM Bookings b
+            WHERE b.DateBooking BETWEEN ? AND ?
+              AND b.Amount > 0
+              {acct_filter}
+              {not_private_cond}
+            GROUP BY strftime('%m', b.DateBooking)
+        ''', p_base).fetchall()
 
-            private = cursor.execute(f'''
-                SELECT COALESCE(SUM(b.Amount), 0)
-                FROM Bookings b
-                WHERE b.DateBooking LIKE ?
-                  AND b.DateBooking BETWEEN ? AND ?
-                  {acct_filter}
-                  {private_cond}
-            ''', p).fetchone()[0]
+        private_rows = cursor.execute(f'''
+            SELECT CAST(strftime('%m', b.DateBooking) AS INTEGER),
+                   COALESCE(SUM(b.Amount), 0)
+            FROM Bookings b
+            WHERE b.DateBooking BETWEEN ? AND ?
+              {acct_filter}
+              {private_cond}
+            GROUP BY strftime('%m', b.DateBooking)
+        ''', p_base).fetchall()
 
-            expense = cursor.execute(f'''
-                SELECT COALESCE(SUM(b.Amount), 0)
-                FROM Bookings b
-                WHERE b.DateBooking LIKE ?
-                  AND b.DateBooking BETWEEN ? AND ?
-                  AND b.Amount < 0
-                  {acct_filter}
-                  {not_private_cond}
-            ''', p).fetchone()[0]
+        expense_rows = cursor.execute(f'''
+            SELECT CAST(strftime('%m', b.DateBooking) AS INTEGER),
+                   COALESCE(SUM(b.Amount), 0)
+            FROM Bookings b
+            WHERE b.DateBooking BETWEEN ? AND ?
+              AND b.Amount < 0
+              {acct_filter}
+              {not_private_cond}
+            GROUP BY strftime('%m', b.DateBooking)
+        ''', p_base).fetchall()
 
-            result[month] = {
-                'income':  round(income, 2),
-                'private': round(private, 2),
-                'expense': round(expense, 2),
+        income_map  = {row[0]: row[1] for row in income_rows}
+        private_map = {row[0]: row[1] for row in private_rows}
+        expense_map = {row[0]: row[1] for row in expense_rows}
+
+        result = {
+            month: {
+                'income':  round(income_map.get(month, 0), 2),
+                'private': round(private_map.get(month, 0), 2),
+                'expense': round(expense_map.get(month, 0), 2),
             }
+            for month in range(1, 13)
+        }
 
         conn.close()
         return result

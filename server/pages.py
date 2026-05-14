@@ -555,7 +555,7 @@ def PageContacts(db: Database):
                     </td>
                 </tr>
                 <tr><td>Logo:</td><td>
-                    <input type="text" id="logo_path" name="logo" placeholder="/static/logo.png oder URL" style="width: 300px;">
+                    <input type="text" id="logo_path" name="logo" placeholder="seed_data/private/logo.png oder URL" style="width: 300px;">
                     <button type="button" onclick="document.getElementById('logo_file_picker').click()">Datei wählen</button>
                     <input type="file" id="logo_file_picker" accept="image/*" style="display: none;" onchange="updateLogoPath(this)">
                     <div id="logo_preview" style="margin-top: 5px;"></div>
@@ -628,13 +628,13 @@ def PageContacts(db: Database):
                     const filename = parts[parts.length - 1];
                     
                     // Check if it contains common project folders
-                    if (filePath.toLowerCase().includes('\\\\static\\\\')) {
-                        displayPath = 'static/' + filename;
+                    if (filePath.toLowerCase().includes('\\\\private\\\\')) {
+                        displayPath = 'seed_data/private/' + filename;
                     } else if (filePath.toLowerCase().includes('\\\\pybuch\\\\')) {
                         const idx = filePath.toLowerCase().indexOf('\\\\pybuch\\\\');
                         displayPath = filePath.substring(idx + 8).replace(/\\\\/g, '/');
                     } else {
-                        displayPath = 'static/' + filename;
+                        displayPath = 'seed_data/private/' + filename;
                     }
                 }
                 
@@ -727,7 +727,7 @@ def PageContactEdit(db: Database, contact_id):
                     </td>
                 </tr>
                 <tr><td>Logo:</td><td>
-                    <input type="text" id="logo_path_edit" name="logo" value="{logo}" placeholder="/static/logo.png oder URL" style="width: 300px;">
+                    <input type="text" id="logo_path_edit" name="logo" value="{logo}" placeholder="seed_data/private/logo.png oder URL" style="width: 300px;">
                     <button type="button" onclick="document.getElementById('logo_file_picker_edit').click()">Datei wählen</button>
                     <input type="file" id="logo_file_picker_edit" accept="image/*" style="display: none;" onchange="updateLogoPathEdit(this)">
                     <div id="logo_preview_edit" style="margin-top: 5px;">
@@ -758,13 +758,13 @@ def PageContactEdit(db: Database, contact_id):
                         const filename = parts[parts.length - 1];
                         
                         // Check if it contains common project folders
-                        if (filePath.toLowerCase().includes('\\\\static\\\\')) {
-                            displayPath = 'static/' + filename;
+                        if (filePath.toLowerCase().includes('\\\\private\\\\')) {
+                            displayPath = 'seed_data/private/' + filename;
                         } else if (filePath.toLowerCase().includes('\\\\pybuch\\\\')) {
                             const idx = filePath.toLowerCase().indexOf('\\\\pybuch\\\\');
                             displayPath = filePath.substring(idx + 8).replace(/\\\\/g, '/');
                         } else {
-                            displayPath = 'static/' + filename;
+                            displayPath = 'seed_data/private/' + filename;
                         }
                     }
                     

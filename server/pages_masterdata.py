@@ -396,12 +396,13 @@ def PageNumberRanges(db: Database):
     s += '''
         <h2>Nummernkreise</h2>
         <p>Nummernkreise definieren die Nummerierung für Rechnungen und Belege.</p>
-        <p><strong>Format:</strong> JJ[Buchstabe][Präfix]### (z.B. 26R001 oder 26B_A001)</p>
+        <p><strong>Standard-Format:</strong> <code>{yy}{l}{nnn}{s}</code> &rarr; z.B. <strong>26F001</strong> oder <strong>26F002_A</strong></p>
         <ul>
-            <li><strong>JJ</strong> = Jahr (2-stellig)</li>
-            <li><strong>Buchstabe</strong> = Kennzeichen für den Typ (z.B. R=Rechnung, B=Beleg)</li>
-            <li><strong>Präfix</strong> = Optional, für Unterteilungen (z.B. _A, _B)</li>
-            <li><strong>###</strong> = Fortlaufende Nummer (mind. 3 Stellen)</li>
+            <li><strong>{yy}</strong> = Jahr (2-stellig, z.B. 26)</li>
+            <li><strong>{yyyy}</strong> = Jahr (4-stellig, z.B. 2026)</li>
+            <li><strong>{l}</strong> = Buchstabe (z.B. F=Faktura, V=Verbindlichkeit)</li>
+            <li><strong>{nnn}</strong> = Laufende Nummer (3-stellig, z.B. 001)</li>
+            <li><strong>{s}</strong> = Suffix (optional, z.B. _A, _B &ndash; wird ans Ende angefügt)</li>
         </ul>
 
         <h3>Neuen Nummernkreis anlegen</h3>
@@ -417,8 +418,9 @@ def PageNumberRanges(db: Database):
     '''
     s += f'<tr><td>Jahr:</td><td><input type="number" name="year" value="{current_year}" min="2000" max="2099" required></td></tr>'
     s += '''
-                <tr><td>Buchstabe:</td><td><input type="text" name="letter" maxlength="1" pattern="[A-Z]" required placeholder="z.B. R" style="width: 50px; text-transform: uppercase;"> (A-Z)</td></tr>
-                <tr><td>Präfix (optional):</td><td><input type="text" name="prefix" maxlength="2" pattern="_[A-Z]" placeholder="z.B. _A" style="width: 50px; text-transform: uppercase;"> (Format: _X)</td></tr>
+                <tr><td>Buchstabe:</td><td><input type="text" name="letter" maxlength="1" pattern="[A-Z]" required placeholder="z.B. F" style="width: 50px; text-transform: uppercase;"> (A-Z)</td></tr>
+                <tr><td>Suffix (optional):</td><td><input type="text" name="prefix" maxlength="10" placeholder="z.B. _A" style="width: 80px;"> (wird ans Ende der Nummer angehängt)</td></tr>
+                <tr><td>Format:</td><td><input type="text" name="number_format" value="{yy}{l}{nnn}{s}" size="20"> Platzhalter: {yy} {yyyy} {l} {nnn} {s}</td></tr>
                 <tr><td>Aktuelle Nummer:</td><td><input type="number" name="current_number" value="0" min="0"> (letzte vergebene Nummer)</td></tr>
                 <tr><td>Beschreibung:</td><td><input type="text" name="description" size="40"></td></tr>
                 <tr><td></td><td><input type="submit" value="Nummernkreis hinzufügen"></td></tr>
@@ -440,26 +442,27 @@ def PageNumberRanges(db: Database):
 
         if type_ranges:
             s += "<table>"
-            s += "<tr><th>ID</th><th>Jahr</th><th>Buchstabe</th><th>Präfix</th><th>Aktuelle Nr.</th><th>Nächste Nr.</th><th>Beschreibung</th><th>Aktionen</th></tr>"
+            s += "<tr><th>ID</th><th>Jahr</th><th>Buchstabe</th><th>Suffix</th><th>Format</th><th>Aktuelle Nr.</th><th>Nächste Nr.</th><th>Beschreibung</th><th>Aktionen</th></tr>"
 
             for r in type_ranges:
-                # r: ID=0, Type=1, Year=2, Letter=3, Prefix=4, CurrentNumber=5, Description=6
+                # r: ID=0, Type=1, Year=2, Letter=3, Prefix=4, CurrentNumber=5, Description=6, NumberFormat=7
                 range_id = r[0]
                 year = r[2]
                 letter = r[3]
-                prefix = r[4] or ''
+                suffix = r[4] or ''
                 current_num = r[5] or 0
                 description = r[6] or ''
+                number_format = r[7] if len(r) > 7 and r[7] else '{yy}{l}{nnn}{s}'
 
-                year_short = str(year)[-2:]
                 next_num = current_num + 1
-                next_formatted = f"{year_short}{letter}{prefix}{next_num:03d}"
+                next_formatted = db._apply_number_format(number_format, year, letter, next_num, suffix)
 
                 s += f"<tr>"
                 s += f"<td>{range_id}</td>"
                 s += f"<td>{year}</td>"
                 s += f"<td>{letter}</td>"
-                s += f"<td>{prefix}</td>"
+                s += f"<td>{suffix}</td>"
+                s += f"<td><code>{number_format}</code></td>"
                 s += f"<td style='text-align: right;'>{current_num}</td>"
                 s += f"<td><strong>{next_formatted}</strong></td>"
                 s += f"<td>{description}</td>"
@@ -481,13 +484,14 @@ def PageNumberRangesEdit(db: Database, range_id):
     if not nr:
         return "Nummernkreis nicht gefunden."
 
-    # nr: ID=0, Type=1, Year=2, Letter=3, Prefix=4, CurrentNumber=5, Description=6
+    # nr: ID=0, Type=1, Year=2, Letter=3, Prefix=4, CurrentNumber=5, Description=6, NumberFormat=7
     range_type = nr[1]
     year = nr[2]
     letter = nr[3]
-    prefix = nr[4] or ''
+    suffix = nr[4] or ''
     current_num = nr[5] or 0
     description = nr[6] or ''
+    number_format = nr[7] if len(nr) > 7 and nr[7] else '{yy}{l}{nnn}{s}'
 
     type_names = {
         'invoice': 'Ausgangsrechnungen',
@@ -496,9 +500,8 @@ def PageNumberRangesEdit(db: Database, range_id):
     }
     type_name = type_names.get(range_type, range_type)
 
-    year_short = str(year)[-2:]
     next_num = current_num + 1
-    next_formatted = f"{year_short}{letter}{prefix}{next_num:03d}"
+    next_formatted = db._apply_number_format(number_format, year, letter, next_num, suffix)
 
     s = Header1('masterdata')
     submenu = '<a href="/masterdata">Stammdaten</a> -> <a href="/masterdata/numberranges">Nummernkreise</a> -> <span id="ActivePage">Bearbeiten</span>'
@@ -516,7 +519,8 @@ def PageNumberRangesEdit(db: Database, range_id):
             <table>
                 <tr><td>Jahr:</td><td><input type="number" name="year" value="{year}" min="2000" max="2099" required></td></tr>
                 <tr><td>Buchstabe:</td><td><input type="text" name="letter" value="{letter}" maxlength="1" pattern="[A-Z]" required style="width: 50px; text-transform: uppercase;"></td></tr>
-                <tr><td>Präfix (optional):</td><td><input type="text" name="prefix" value="{prefix}" maxlength="2" pattern="_[A-Z]" style="width: 50px; text-transform: uppercase;"></td></tr>
+                <tr><td>Suffix (optional):</td><td><input type="text" name="prefix" value="{suffix}" maxlength="10" style="width: 80px;"> (wird ans Ende der Nummer angehängt, z.B. _A)</td></tr>
+                <tr><td>Format:</td><td><input type="text" name="number_format" value="{number_format}" size="20"> Platzhalter: {{yy}} {{yyyy}} {{l}} {{nnn}} {{s}}</td></tr>
                 <tr><td>Aktuelle Nummer:</td><td><input type="number" name="current_number" value="{current_num}" min="0"> (letzte vergebene Nummer)</td></tr>
                 <tr><td>Beschreibung:</td><td><input type="text" name="description" value="{description}" size="40"></td></tr>
                 <tr><td></td><td><input type="submit" value="Nummernkreis aktualisieren"></td></tr>

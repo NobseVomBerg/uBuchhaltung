@@ -2,6 +2,7 @@
 Main HTTP server class with routing
 """
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from pydoc import html
 from urllib.parse import parse_qs
 from db import Database
 import os
@@ -330,8 +331,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.serve_static_file("buch.css", "text/css")
             elif self.path == "/favicon.ico":
                 self.serve_static_file("favicon.ico", "image/x-icon")
-            elif self.path.startswith("/static/"):
-                # Serve static files (e.g., logo)
+            elif self.path.startswith("/seed_data/private/"):
+                # Serve private static files (e.g., logo)
                 filename = self.path[1:]  # Remove leading /
                 self.serve_static_file(filename, self.guess_content_type(filename))
             else:
@@ -339,7 +340,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         except Exception as e:
             import traceback
             traceback.print_exc()
-            error_msg = f"<h1>Server Fehler</h1><pre>{str(e)}\n\n{traceback.format_exc()}</pre>"
+            error_msg = f"<h1>Server Fehler</h1><pre>{html.escape(str(e))}\n\n{html.escape(traceback.format_exc())}</pre>"
             self.respond(500, error_msg)
 
     def serve_static_file(self, filename, content_type):
@@ -412,11 +413,12 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             post_body = self.rfile.read(content_length)
             status_code, redirect_path = handlers.handle_link_invoice_payment(post_body)
             self.send_response(status_code)
-            if status_code in [200, 303]:
-                self.send_header("Content-type", "application/json")
+            self.send_header("Content-type", "application/json")
             self.end_headers()
             if status_code == 200:
                 self.wfile.write(b'{"success": true}')
+            else:
+                self.wfile.write(f'{{"error": "status {status_code}"}}'.encode())
             return
 
         # Handle invoice payment deletion
@@ -442,19 +444,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             if status_code == 303:
                 self.send_header("Location", redirect_path)
             self.end_headers()
-            return
-        
-        # Handle PDF generation (JSON body)
-        if self.path == "/invoice/pdf":
-            content_length = int(self.headers['Content-Length'])
-            post_body = self.rfile.read(content_length)
-            pdf_data = handlers.handle_generate_invoice_pdf(post_body)
-            self.send_response(200)
-            self.send_header("Content-type", "application/pdf")
-            self.send_header("Content-Disposition", "attachment; filename=invoice.pdf")
-            self.send_header("Content-Length", str(len(pdf_data)))
-            self.end_headers()
-            self.wfile.write(pdf_data)
             return
         
         # Parse regular form data

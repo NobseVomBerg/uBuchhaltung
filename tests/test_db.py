@@ -9,8 +9,10 @@ Coverage:
 - TaxKeys: get_tax_rate_for_bu
 - fetch_bookings_grouped: bank/entry/normal rows
 - fetch_chart_of_accounts
+- NumberRanges: _apply_number_format, get_next_number, insert/update, format templates
 """
 import pytest
+from db import Database
 
 
 # ─────────────────────────────────────────────
@@ -383,3 +385,167 @@ class TestBookDepreciation:
                 coa_id_expense=coa_expense,
                 coa_id_asset=coa_asset,
             )
+
+
+# ─────────────────────────────────────────────
+# NumberRanges / Nummernkreise
+# ─────────────────────────────────────────────
+
+class TestApplyNumberFormat:
+    """Unit tests for Database._apply_number_format() – pure function."""
+
+    def test_default_format_no_suffix(self):
+        """Standard-Format ohne Suffix → 26F001"""
+        result = Database._apply_number_format('{yy}{l}{nnn}{s}', 2026, 'F', 1, '')
+        assert result == '26F001'
+
+    def test_default_format_with_suffix(self):
+        """Standard-Format mit Suffix → 26F002_A"""
+        result = Database._apply_number_format('{yy}{l}{nnn}{s}', 2026, 'F', 2, '_A')
+        assert result == '26F002_A'
+
+    def test_suffix_b(self):
+        """Suffix _B → 26F002_B"""
+        result = Database._apply_number_format('{yy}{l}{nnn}{s}', 2026, 'F', 2, '_B')
+        assert result == '26F002_B'
+
+    def test_different_letter(self):
+        """Buchstabe V → 26V001"""
+        result = Database._apply_number_format('{yy}{l}{nnn}{s}', 2026, 'V', 1, '')
+        assert result == '26V001'
+
+    def test_four_digit_year(self):
+        """{yyyy} → vollständiges Jahr"""
+        result = Database._apply_number_format('{yyyy}{l}{nnn}{s}', 2026, 'R', 5, '')
+        assert result == '2026R005'
+
+    def test_unpadded_number(self):
+        """{n} → ohne führende Nullen"""
+        result = Database._apply_number_format('{yy}{l}{n}', 2026, 'R', 7, '')
+        assert result == '26R7'
+
+    def test_two_digit_padded_number(self):
+        """{nn} → 2-stellig aufgefüllt"""
+        result = Database._apply_number_format('{yy}{l}{nn}{s}', 2026, 'B', 3, '')
+        assert result == '26B03'
+
+    def test_custom_separator_in_template(self):
+        """Freitext-Template mit Trennzeichen"""
+        result = Database._apply_number_format('{yyyy}-{l}-{nnn}', 2026, 'X', 42, '')
+        assert result == '2026-X-042'
+
+    def test_none_format_uses_default(self):
+        """Leeres Format-Template fällt auf Standard zurück"""
+        result = Database._apply_number_format('', 2026, 'F', 1, '')
+        assert result == '26F001'
+
+    def test_none_suffix_treated_as_empty(self):
+        """{s} mit None-Suffix → kein Anhang"""
+        result = Database._apply_number_format('{yy}{l}{nnn}{s}', 2026, 'F', 1, None)
+        assert result == '26F001'
+
+    def test_three_digit_padding(self):
+        """Nummer ≥ 100 wird nicht abgeschnitten"""
+        result = Database._apply_number_format('{yy}{l}{nnn}{s}', 2026, 'R', 123, '')
+        assert result == '26R123'
+
+    def test_lowercase_letter_uppercased(self):
+        """{l} gibt Buchstaben immer in Großschreibung aus"""
+        result = Database._apply_number_format('{yy}{l}{nnn}', 2026, 'r', 1, '')
+        assert result == '26R001'
+
+
+class TestNumberRangeOperations:
+    """Integration tests für get_next_number, insert/update und get_current_number_info."""
+
+    def test_get_next_number_default_format(self, tmp_db):
+        """Erster Aufruf ohne vorhandenen Nummernkreis liefert 001"""
+        result = tmp_db.get_next_number('invoice', 2026, 'F')
+        assert result == '26F001'
+
+    def test_get_next_number_increments(self, tmp_db):
+        """Zweiter Aufruf liefert 002"""
+        tmp_db.get_next_number('invoice', 2026, 'F')
+        result = tmp_db.get_next_number('invoice', 2026, 'F')
+        assert result == '26F002'
+
+    def test_get_next_number_with_suffix(self, tmp_db):
+        """Suffix _A wird ans Ende angehängt, nicht vor die Nummer"""
+        tmp_db.insert_number_range('invoice', 2026, 'F', prefix='_A', current_number=0)
+        result = tmp_db.get_next_number('invoice', 2026, 'F', prefix='_A')
+        assert result == '26F001_A'
+
+    def test_get_next_number_custom_format(self, tmp_db):
+        """Benutzerdefiniertes Format wird aus der DB gelesen und angewendet"""
+        tmp_db.insert_number_range('invoice', 2026, 'R', number_format='{yyyy}/{l}/{nnn}')
+        result = tmp_db.get_next_number('invoice', 2026, 'R')
+        assert result == '2026/R/001'
+
+    def test_get_next_number_different_ranges_independent(self, tmp_db):
+        """Verschiedene Typen haben unabhängige Zähler"""
+        tmp_db.get_next_number('invoice', 2026, 'F')
+        tmp_db.get_next_number('invoice', 2026, 'F')
+        result_v = tmp_db.get_next_number('receipt_company', 2026, 'V')
+        assert result_v == '26V001'
+
+    def test_insert_and_read_back_number_format(self, tmp_db):
+        """NumberFormat wird gespeichert und mit fetch_number_ranges zurückgegeben"""
+        tmp_db.insert_number_range(
+            'invoice', 2026, 'X',
+            number_format='{yyyy}{l}{nnn}',
+            description='Testkreis',
+        )
+        ranges = tmp_db.fetch_number_ranges('invoice')
+        nr = next((r for r in ranges if r[3] == 'X'), None)
+        assert nr is not None
+        assert nr[7] == '{yyyy}{l}{nnn}'  # NumberFormat ist Index 7
+
+    def test_update_number_format(self, tmp_db):
+        """update_number_range speichert geändertes Format"""
+        tmp_db.insert_number_range('invoice', 2026, 'U', number_format='{yy}{l}{nnn}{s}')
+        ranges = tmp_db.fetch_number_ranges('invoice')
+        nr = next(r for r in ranges if r[3] == 'U')
+        tmp_db.update_number_range(nr[0], 2026, 'U', number_format='{yyyy}-{l}-{nnn}')
+        updated = tmp_db.get_number_range_by_id(nr[0])
+        assert updated[7] == '{yyyy}-{l}-{nnn}'
+
+    def test_get_current_number_info_uses_stored_format(self, tmp_db):
+        """get_current_number_info wendet das gespeicherte Format an"""
+        tmp_db.insert_number_range(
+            'invoice', 2026, 'Z',
+            current_number=4,
+            number_format='{yyyy}{l}{nnn}',
+        )
+        info = tmp_db.get_current_number_info('invoice', 2026, 'Z')
+        assert info['current_number'] == 4
+        assert info['next_number'] == 5
+        assert info['formatted_next'] == '2026Z005'
+
+    def test_get_current_number_info_empty_range(self, tmp_db):
+        """Nicht vorhandener Nummernkreis liefert next=1 mit Standard-Format"""
+        info = tmp_db.get_current_number_info('invoice', 2099, 'Q')
+        assert info['next_number'] == 1
+        assert info['formatted_next'] == '99Q001'
+
+    def test_user_preferred_examples(self, tmp_db):
+        """Nutzerpräferenz: 26F001, 26F002_A, 26F002_B, 26V001"""
+        # 26F001 – erster Aufruf ohne Suffix
+        assert tmp_db.get_next_number('invoice', 2026, 'F') == '26F001'
+
+        # 26V001 – anderer Buchstabe
+        assert tmp_db.get_next_number('receipt_company', 2026, 'V') == '26V001'
+
+        # 26F002_A / 26F002_B – gleiche Sequenznummer, verschiedene Suffixe
+        tmp_db.insert_number_range('invoice', 2026, 'F', prefix='_A', current_number=1)
+        tmp_db.insert_number_range('invoice', 2026, 'F', prefix='_B', current_number=1)
+        assert tmp_db.get_next_number('invoice', 2026, 'F', prefix='_A') == '26F002_A'
+        assert tmp_db.get_next_number('invoice', 2026, 'F', prefix='_B') == '26F002_B'
+
+    def test_numberformat_column_exists_in_schema(self, tmp_db):
+        """NumberFormat-Spalte ist nach init in NumberRanges vorhanden"""
+        conn = tmp_db._get_connection()
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(NumberRanges)")
+        columns = {row[1] for row in cur.fetchall()}
+        conn.close()
+        assert 'NumberFormat' in columns

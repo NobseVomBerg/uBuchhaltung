@@ -79,13 +79,13 @@ _LOGO_JS = r'''
             if (filePath.includes('\\')) {
                 const parts = filePath.split('\\');
                 const filename = parts[parts.length - 1];
-                if (filePath.toLowerCase().includes('\\static\\')) {
-                    displayPath = 'static/' + filename;
+                if (filePath.toLowerCase().includes('\\private\\')) {
+                    displayPath = 'seed_data/private/' + filename;
                 } else if (filePath.toLowerCase().includes('\\pybuch\\')) {
                     const idx = filePath.toLowerCase().indexOf('\\pybuch\\');
                     displayPath = filePath.substring(idx + 8).replace(/\\/g, '/');
                 } else {
-                    displayPath = 'static/' + filename;
+                    displayPath = 'seed_data/private/' + filename;
                 }
             }
             document.getElementById(inputId).value = displayPath;
@@ -343,7 +343,7 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
             <td style="padding:6px 12px;">Logo / Bild:</td>
             <td style="padding:6px;">
                 <input type="text" name="logo" id="field_logo" value="{logo}"
-                       placeholder="/static/logo.png oder URL" style="width:360px;">
+                       placeholder="seed_data/private/logo.png oder URL" style="width:360px;">
                 <button type="button"
                         onclick="document.getElementById('logo_file_input').click()">Datei wählen</button>
                 <input type="file" id="logo_file_input" accept="image/*" style="display:none;"
