@@ -6,18 +6,22 @@ from db import Database
 
 # Shared invoice status constants – single source of truth used across pages
 INVOICE_STATUS_COLORS: dict = {
-    'draft':     '#888',
-    'finalized': '#0066cc',
-    'sent':      '#ff9900',
-    'paid':      '#00aa00',
-    'cancelled': '#cc0000',
+    'draft':           '#888',
+    'finalized':       '#0066cc',
+    'sent':            '#ff9900',
+    'partial_payment': '#e69500',
+    'overdue':         '#b71c1c',
+    'paid':            '#00aa00',
+    'cancelled':       '#cc0000',
 }
 INVOICE_STATUS_LABELS: dict = {
-    'draft':     'Entwurf',
-    'finalized': 'Abgeschlossen',
-    'sent':      'Versendet',
-    'paid':      'Bezahlt',
-    'cancelled': 'Storniert',
+    'draft':           'Entwurf',
+    'finalized':       'Abgeschlossen',
+    'sent':            'Versendet',
+    'partial_payment': 'Teilzahlung',
+    'overdue':         'Übfällig',
+    'paid':            'Bezahlt',
+    'cancelled':       'Storniert',
 }
 
 def Header1(active_page=None):

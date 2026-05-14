@@ -936,7 +936,7 @@ class Database:
         
         sql_template = '''UPDATE Bookings
             SET DateBooking=?, DateTax=?, BookingGroup_ID=?, Account_ID=?, ForeignBankAccount=?,
-                RecipientClient=?, contact_id=?, COA_ID=?, CounterCOA_ID=?, Category_ID=?, Amount=?, Currency=?,
+                RecipientClient=?, Contact_ID=?, COA_ID=?, CounterCOA_ID=?, Category_ID=?, Amount=?, Currency=?,
                 TaxRate=?, TaxAmount=?, Text=?, DocumentNumber=?, BookingType=COALESCE(?, BookingType), ParentBooking_ID=COALESCE(?, ParentBooking_ID)
             WHERE ID=?'''
         
@@ -4295,10 +4295,8 @@ class Database:
 
             purpose_coa_id = None
 
-            # Doppik-Spiegel überspringen (beide liquid)
-            if coa_id in liquid_coa_ids and (
-                    counter_coa_id is None
-                    or counter_coa_id in liquid_coa_ids):
+            # Doppik-Spiegel überspringen (beide Seiten liquid)
+            if coa_id in liquid_coa_ids and counter_coa_id in liquid_coa_ids:
                 continue
 
             if coa_id in liquid_coa_ids:

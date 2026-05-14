@@ -674,7 +674,7 @@ def handle_add_article(db: Database, post_data):
         active=active
     )
     
-    return 303, "/articles"
+    return 303, "/masterdata/articles"
 
 def handle_update_article(db: Database, post_data):
     """Handle updating an existing article"""
@@ -696,7 +696,7 @@ def handle_update_article(db: Database, post_data):
         active=active
     )
     
-    return 303, "/articles"
+    return 303, "/masterdata/articles"
 
 
 def handle_add_number_range(db: Database, post_data):
