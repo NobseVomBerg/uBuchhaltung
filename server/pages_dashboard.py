@@ -97,7 +97,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
 
     # ── Key metric cards ──────────────────────────────────────────────
     s += f'''
-    <div class="grid-1RowPrefered">
+    <div class="grid1RowPrefered">
         <div style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
                     color:white;padding:20px;border-radius:10px;
                     box-shadow:0 4px 6px rgba(0,0,0,0.1);">
@@ -156,9 +156,9 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
     bar_height = 180  # max bar pixel height
 
     s += f'''
-    <div class="grid-1RowPrefered">
+    <div class="grid1RowPrefered">
     <div class="rectRounded">
-        <h3 style="margin-top:0;">Monatlicher Umsatz {range_label}</h3>
+        <h3>Monatlicher Umsatz {range_label}</h3>
         <div style="display:flex;gap:8px;margin-bottom:10px;font-size:12px;">
             <span style="color:#4facfe;">&#9632; Einnahmen</span>
             <span style="color:#ff6f00;">&#9632; Privatentnahmen</span>
@@ -203,9 +203,9 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
     total_bal  = total_inc + total_priv + total_exp
 
     s += f'''
-    <div class="grid-1RowPrefered">
+    <div class="grid1RowPrefered">
     <div class="rectRounded">
-        <h3 style="margin-top:0;">&Uuml;bersicht {range_label}</h3>
+        <h3>&Uuml;bersicht {range_label}</h3>
         <table style="width:100%;border-collapse:collapse;">
             <tr><th style="text-align:left;">Kategorie</th>
                 <th style="text-align:right;">Betrag</th></tr>
@@ -255,7 +255,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
 
     s += f'''
     <div class="rectRounded">
-        <h3 style="margin-top:0;">Einnahmen&uuml;berschussrechnung {range_label}</h3>
+        <h3>Einnahmen&uuml;berschussrechnung {range_label}</h3>
         <h4 style="margin-bottom:6px;">Einnahmen</h4>
         <table style="width:100%;border-collapse:collapse;">
             <tr><th style="text-align:left;">SKR-Konto</th>

@@ -29,7 +29,7 @@ def PageMiscellaneous(db: Database):
     s += Header2()
     s += Header3()
 
-    s += '<div class="grid-1RowPrefered">'
+    s += '<div class="grid1RowPrefered">'
     # ── Database statistics ───────────────────────────────────────────────────
     s += '\t<div class="rectRounded">'
     stats = db.get_table_statistics()
@@ -85,7 +85,7 @@ def PageMiscellaneous(db: Database):
     s += '\t</div>'
     s += '</div>'
 
-    s += '<div class="grid-1RowPrefered">'
+    s += '<div class="grid1RowPrefered">'
     # ── DB Export as SQL ──────────────────────────────────────────────────────
     s += '\t<div class="rectRounded">'
     s += '''
