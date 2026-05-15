@@ -173,9 +173,10 @@ def PageTransactions(db: Database, edit_transaction_id=None):
 
     s+= f'''
     <div class="grid2Rows">
-        <div class="gridLeftCol rectRounded">
-            <h2>{form_title}</h2>
-            <form method="POST" action="/transactions/add">
+    <div class="gridRightCol" style="order:2">
+        <div class="rectRounded" style="order:2">
+        <h2>{form_title}</h2>
+        <form method="POST" action="/transactions/add">
                 <table>
                     {id_display}
                     <tr><td>Buchungsdatum:</td><td><input type="date" name="date" value="{edit_trans[1] if edit_trans else ""}" required></td></tr>
@@ -310,10 +311,8 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             s+= "<p>Keine verknüpften Dokumente.</p>"
 
     s+= '''
-        </div>
-
-        <div class="gridRightCol">
-            <div class="rectRounded">
+        </div><!-- Ende rectRounded Formular -->
+        <div class="rectRounded" style="order:1">
             <h2>Kontoauszüge hochladen</h2>
             <div id="dropZone">
                 <p>Dateien hier ablegen (Drag & Drop)</p>
@@ -321,9 +320,8 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                 <button onclick="document.getElementById('fileInput').click()">Oder Dateien auswählen</button>
             </div>
             <div id="uploadStatus"></div>
-            </div><!-- Ende rectRounded -->
-        </div><!-- Ende gridRightCol -->
-    </div><!-- Ende grid2Rows -->
+        </div><!-- Ende rectRounded Upload -->
+    </div><!-- Ende gridRightCol -->
 
     <script>
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
@@ -369,8 +367,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
         }
     </script>
     '''
-
-    # ── Buchungstabelle ───────────────────────────────────────────────────
+    s+= '<div class="gridLeftCol" style="order:1">'    # ── Buchungstabelle ───────────────────────────────────────────────────
     s+= "<h2>Kontobewegungen</h2>"
     s+= "<table id='transactionsTable'>"
     s+= ("<tr><th>Datum</th><th>Empfänger/Auftragg.</th><th>Text</th>"
@@ -631,6 +628,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             s+= f"</tr>"
 
     s+= "</table>"
+    s+= '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Rows -->'
 
     s+= '''
     <script>

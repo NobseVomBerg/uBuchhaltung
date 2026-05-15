@@ -23,7 +23,8 @@ def PageBookingGroups(db: Database):
     s += Header3()
 
     s += '<h1>Split-Buchungen</h1>'
-
+    s += '<div class="grid2Rows">'
+    s += '<div class="gridRightCol" style="order:2"><div class="rectRounded">'
     # ── Neue Gruppe anlegen ───────────────────────────────────────────────
     s += '''
     <h2>Neue Gruppe erstellen</h2>
@@ -48,6 +49,8 @@ def PageBookingGroups(db: Database):
     '''
 
     # ── Vorhandene Gruppen ────────────────────────────────────────────────
+    s += '</div></div><!-- Ende gridRightCol -->'
+    s += '<div class="gridLeftCol" style="order:1">'
     groups = db.fetch_booking_groups()
 
     s += '<h2>Vorhandene Gruppen</h2>'
@@ -99,6 +102,7 @@ def PageBookingGroups(db: Database):
 
         s += '</table>'
 
+    s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Rows -->'
     s += Footer()
     return s
 
