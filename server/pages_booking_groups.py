@@ -22,7 +22,6 @@ def PageBookingGroups(db: Database):
     s += Header2()
     s += Header3()
 
-    s += '<h1>Split-Buchungen</h1>'
     s += '<div class="grid2Rows">'
     s += '<div class="gridRightCol" style="order:2"><div class="rectRounded">'
     # ── Neue Gruppe anlegen ───────────────────────────────────────────────
