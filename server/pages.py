@@ -2,6 +2,7 @@
 HTML page generation functions
 All functions return complete HTML strings
 """
+import html as _html
 from db import Database
 
 # Shared invoice status constants – single source of truth used across pages
@@ -182,27 +183,32 @@ def PageReceipts(db: Database):
     
     # ── Zwei-Spalten-Layout: links scrollbare Belege, rechts Upload + Formular ──
     s += '''
-    <div style="display:flex; gap:20px; align-items:flex-start; padding:0 8px;">
+    <div class="grid2Rows">
 
         <!-- LINKS: scrollbare Belegliste -->
-        <div style="flex:1; overflow-y:auto; max-height:calc(100vh - 170px);">
-            <h2 style="margin-top:0;">Vorhandene Belege</h2>
-            <table>
-                <tr><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Pfad</th><th>Info</th><th>Aktionen</th></tr>
-    '''
+        <div class="gridLeftCol">
+                <h2>Vorhandene Belege</h2>
+                <table>
+                    <tr><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Pfad</th><th>Info</th><th>Aktionen</th></tr>
+        '''
     for row in rows:
-        s += f"<tr class='receipt-row' data-date='{row[2]}'><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td><td>{row[5]}</td>"
-        s += f"<td><a href='/receipts/edit?number={row[1]}'>Bearbeiten</a></td></tr>"
+        n   = _html.escape(str(row[1] or ''))
+        fn  = _html.escape(str(row[3] or ''))
+        pt  = _html.escape(str(row[4] or ''))
+        inf = _html.escape(str(row[5] or ''))
+        s += f'<tr class="receipt-row" data-date="{row[2]}" data-id="{row[0]}" data-number="{n}" data-filename="{fn}" data-path="{pt}" data-info="{inf}">'
+        s += f'<td>{n}</td><td>{row[2]}</td><td>{fn}</td><td>{pt}</td><td>{inf}</td>'
+        s += f'<td><a href="#" class="action-icon" onclick="editReceiptFromRow(this); return false;">Bearbeiten</a></td></tr>'
     s += '''
-            </table>
-        </div>
+                </table>
+        </div><!-- Ende linke Spalte -->
 
         <!-- RECHTS: Drag&Drop oben, Formular unten -->
-        <div style="flex:0 0 380px; display:flex; flex-direction:column; gap:16px; position:sticky; top:80px;">
+        <div class="gridRightCol">
 
             <!-- Drag & Drop -->
-            <div class="rectRounded" style="padding:12px;">
-                <h2 style="margin-top:0;">Belege hochladen</h2>
+            <div class="rectRounded">
+                <h2>Belege hochladen</h2>
                 <div id="dropZone">
                     <p>Dateien hier ablegen (Drag &amp; Drop)</p>
                     <input type="file" id="fileInput" multiple accept=".pdf,application/pdf">
@@ -212,8 +218,8 @@ def PageReceipts(db: Database):
             </div>
 
             <!-- Neuen Beleg anlegen -->
-            <div class="rectRounded" style="padding:12px;">
-                <h2 style="margin-top:0;">Neuen Beleg anlegen</h2>
+            <div class="rectRounded">
+                <h2>Neuen Beleg anlegen</h2>
                 <form method="POST" action="/add_receipt">
                     <table>
     '''
@@ -224,6 +230,25 @@ def PageReceipts(db: Database):
                         <tr><td>Pfad:</td><td><input type="text" name="path"></td></tr>
                         <tr><td>Info:</td><td><input type="text" name="info"></td></tr>
                         <tr><td></td><td><input type="submit" value="Beleg hinzuf&uuml;gen"></td></tr>
+                    </table>
+                </form>
+            </div>
+
+            <!-- Beleg bearbeiten (inline) -->
+            <div class="rectRounded" id="editReceiptForm" style="display:none">
+                <h2>Beleg bearbeiten</h2>
+                <form method="POST" action="/update_receipt">
+                    <input type="hidden" name="id" id="editId">
+                    <table>
+                        <tr><td>Nummer:</td><td><input type="text" name="number" id="editNumber"></td></tr>
+                        <tr><td>Datum:</td><td><input type="date" name="date" id="editDate"></td></tr>
+                        <tr><td>Dateiname:</td><td><input type="text" name="filename" id="editFilename" style="width:220px"></td></tr>
+                        <tr><td>Pfad:</td><td><input type="text" name="path" id="editPath" style="width:220px"></td></tr>
+                        <tr><td>Info:</td><td><input type="text" name="info" id="editInfo" style="width:220px"></td></tr>
+                        <tr><td></td><td>
+                            <input type="submit" value="Aktualisieren">
+                            <button type="button" onclick="document.getElementById('editReceiptForm').style.display='none'">Abbrechen</button>
+                        </td></tr>
                     </table>
                 </form>
             </div>
@@ -321,6 +346,19 @@ def PageReceipts(db: Database):
     
     s += '''
     <script>
+        function editReceiptFromRow(el) {
+            const row = el.closest('tr');
+            document.getElementById('editId').value       = row.dataset.id;
+            document.getElementById('editNumber').value   = row.dataset.number;
+            document.getElementById('editDate').value     = row.dataset.date;
+            document.getElementById('editFilename').value = row.dataset.filename;
+            document.getElementById('editPath').value     = row.dataset.path;
+            document.getElementById('editInfo').value     = row.dataset.info;
+            const form = document.getElementById('editReceiptForm');
+            form.style.display = 'block';
+            form.scrollIntoView({ behavior: 'smooth' });
+        }
+
         function setReceiptYear(year) {
             document.getElementById('dateFrom').value = year + '-01-01';
             document.getElementById('dateTo').value = year + '-12-31';

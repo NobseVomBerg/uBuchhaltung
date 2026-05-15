@@ -172,8 +172,8 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                   if edit_trans else '')
 
     s+= f'''
-    <div class="accounts-container">
-        <div>
+    <div class="grid2Rows">
+        <div class="gridLeftCol rectRounded">
             <h2>{form_title}</h2>
             <form method="POST" action="/transactions/add">
                 <table>
@@ -312,7 +312,8 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     s+= '''
         </div>
 
-        <div>
+        <div class="gridRightCol">
+            <div class="rectRounded">
             <h2>Kontoauszüge hochladen</h2>
             <div id="dropZone">
                 <p>Dateien hier ablegen (Drag & Drop)</p>
@@ -320,8 +321,9 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                 <button onclick="document.getElementById('fileInput').click()">Oder Dateien auswählen</button>
             </div>
             <div id="uploadStatus"></div>
-        </div>
-    </div>
+            </div><!-- Ende rectRounded -->
+        </div><!-- Ende gridRightCol -->
+    </div><!-- Ende grid2Rows -->
 
     <script>
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
