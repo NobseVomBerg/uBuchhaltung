@@ -747,29 +747,29 @@ def handle_update_number_range(db: Database, post_data):
 
 def handle_update_invoice_status(post_body: bytes):
     """Update invoice status and increment number range if finalizing
-    
-    Returns tuple: (status_code, redirect_path)
+
+    Returns tuple: (status_code, json_body)
     """
     data = json.loads(post_body.decode('utf-8'))
     invoice_id = int(data.get('invoice_id'))
     new_status = data.get('status')
     
     if not invoice_id or not new_status:
-        return 400, "/invoice"
+        return 400, '{"success": false, "error": "Fehlende Parameter"}'
     
     db = Database()
     
     # Validate status
-    valid_statuses = ['draft', 'finalized', 'sent', 'paid', 'cancelled']
+    valid_statuses = ['draft', 'finalized', 'sent', 'partial_payment', 'overdue', 'paid', 'cancelled']
     if new_status not in valid_statuses:
-        return 400, "/invoice"
+        return 400, '{"success": false, "error": "Ung\u00fcltiger Status"}'
     
     # Get current invoice
     invoice = db.get_invoice_by_id(invoice_id)
     if not invoice:
-        return 404, "/invoice"
+        return 404, '{"success": false, "error": "Rechnung nicht gefunden"}'
     
-    current_status = invoice[37] or 'draft'
+    current_status = invoice[40] or 'draft'
     
     # If transitioning from draft to finalized, increment number range
     if current_status == 'draft' and new_status == 'finalized':
@@ -806,11 +806,17 @@ def handle_update_invoice_status(post_body: bytes):
                 print(f"Warning: Could not increment number range: {e}")
                 # Continue with status update even if increment fails
     
+    # Validate: 'paid' requires at least one linked payment
+    if new_status == 'paid':
+        payments = db.get_invoice_payments(invoice_id)
+        if not payments:
+            return 400, '{"success": false, "error": "Bezahlt nur m\u00f6glich, wenn mindestens eine Zahlung verkn\u00fcpft ist."}'
+    
     # Update status
     db.update_invoice_status(invoice_id, new_status)
     print(f"Invoice {invoice_id} status updated to: {new_status}")
     
-    return 303, f"/invoice/view?id={invoice_id}"
+    return 200, f'{{"success": true, "invoice_id": {invoice_id}}}'
 
 
 def handle_link_invoice_payment(post_body: bytes):

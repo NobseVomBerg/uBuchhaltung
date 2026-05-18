@@ -50,6 +50,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path == "/invoice" or self.path.startswith("/invoice?"):
                 # Parse query parameters for filters
                 filters = {}
+                invoice_id = None
                 if '?' in self.path:
                     query_string = self.path.split('?', 1)[1]
                     query_components = parse_qs(query_string)
@@ -61,7 +62,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                         filters['date_from'] = query_components['date_from'][0]
                     if 'date_to' in query_components:
                         filters['date_to'] = query_components['date_to'][0]
-                self.respond(200, PageInvoice(db, filters))
+                    if 'id' in query_components:
+                        invoice_id = int(query_components['id'][0])
+                self.respond(200, PageInvoice(db, filters, invoice_id))
             elif self.path == "/invoice/new":
                 self.respond(200, PageInvoiceNew(db))
             elif self.path.startswith("/invoice/edit"):
@@ -441,11 +444,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if self.path == "/invoice/status":
             content_length = int(self.headers['Content-Length'])
             post_body = self.rfile.read(content_length)
-            status_code, redirect_path = handlers.handle_update_invoice_status(post_body)
-            self.send_response(status_code)
-            if status_code == 303:
-                self.send_header("Location", redirect_path)
-            self.end_headers()
+            status_code, response_body = handlers.handle_update_invoice_status(post_body)
+            self.respond(status_code, response_body, content_type="application/json")
             return
         
         # Parse regular form data

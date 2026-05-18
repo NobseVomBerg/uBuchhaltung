@@ -549,3 +549,65 @@ class TestNumberRangeOperations:
         columns = {row[1] for row in cur.fetchall()}
         conn.close()
         assert 'NumberFormat' in columns
+
+
+# ─────────────────────────────────────────────
+# Invoice CRUD – column-index regression
+# ─────────────────────────────────────────────
+
+class TestInvoiceCRUD:
+    """Regression tests for get_invoice_by_id column positions.
+
+    These guard against silent column-order shifts whenever the Invoices
+    schema changes.  The indices are used directly in pages_invoice.py and
+    handlers.py – a mismatch would produce wrong data without raising an
+    error at runtime.
+
+    Column order (0-based, SELECT *):
+      0  ID            1  InvoiceNumber   2  InvoiceDate
+      3  OwnCompanyId  4  SellerName      5  SellerCompany
+      …
+      34 TaxCategory   35 TaxRate         36 SumNet
+      37 TaxAmount     38 SumGross        39 AmountDue
+      40 Status        41 PDFPath         42 XMLPath
+    """
+
+    _MINIMAL = {
+        'invoice_number':  'REGR-001',
+        'invoice_date':    '2026-01-15',
+        'seller_name':     'Test Verkäufer',
+        'seller_company':  'Test GmbH',
+        'buyer_name':      'Test Käufer',
+        'buyer_company':   'Käufer AG',
+        'tax_rate':        0.19,
+        'sum_net':         100.0,
+        'tax_amount':      19.0,
+        'sum_gross':       119.0,
+        'amount_due':      119.0,
+        'status':          'draft',
+    }
+
+    def test_key_column_indices(self, tmp_db):
+        """Critical column indices used by the UI must match SELECT * order."""
+        inv_id = tmp_db.insert_invoice(self._MINIMAL)
+        row = tmp_db.get_invoice_by_id(inv_id)
+        assert row is not None
+        assert row[1]  == 'REGR-001',          f"InvoiceNumber expected at [1], got {row[1]!r}"
+        assert row[2]  == '2026-01-15',         f"InvoiceDate expected at [2], got {row[2]!r}"
+        assert row[35] == pytest.approx(0.19),    f"TaxRate expected at [35], got {row[35]!r}"
+        assert row[36] == pytest.approx(100.0), f"SumNet expected at [36], got {row[36]!r}"
+        assert row[38] == pytest.approx(119.0), f"SumGross expected at [38], got {row[38]!r}"
+        assert row[40] == 'draft',              f"Status expected at [40], got {row[40]!r}"
+        assert row[41] is None,                 f"PDFPath expected at [41], got {row[41]!r}"
+
+    def test_non_default_status_preserved(self, tmp_db):
+        """insert_invoice must persist any provided status, not just the default."""
+        data = dict(self._MINIMAL, invoice_number='REGR-002', status='finalized')
+        inv_id = tmp_db.insert_invoice(data)
+        row = tmp_db.get_invoice_by_id(inv_id)
+        assert row[40] == 'finalized'
+
+    def test_overdue_status_label_spelling(self):
+        """INVOICE_STATUS_LABELS['overdue'] must be spelled correctly."""
+        from server.pages_invoice import INVOICE_STATUS_LABELS
+        assert INVOICE_STATUS_LABELS['overdue'] == 'Überfällig'

@@ -23,12 +23,12 @@ INVOICE_STATUS_LABELS: dict = {
     'finalized':       'Abgeschlossen',
     'sent':            'Versendet',
     'partial_payment': 'Teilzahlung',
-    'overdue':         'Übfällig',
+    'overdue':         'Überfällig',
     'paid':            'Bezahlt',
     'cancelled':       'Storniert',
 }
 
-def PageInvoice(db: Database, filters: dict = None):
+def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
     """Generate invoice list page with search and filter"""
     filters = filters or {}
     
@@ -116,7 +116,7 @@ def PageInvoice(db: Database, filters: dict = None):
         Offen: {open_sum:.2f} €
     </div>
     '''
-    
+    s+= '<div class="grid2Rows"><div class="gridLeftCol" style="order:1">'
     if not invoices:
         s+= "<p><em>Keine Rechnungen gefunden.</em></p>"
     else:
@@ -145,12 +145,13 @@ def PageInvoice(db: Database, filters: dict = None):
             s+= f"<td style='text-align: right;'>{sum_net:.2f} €</td>"
             s+= f"<td style='text-align: right;'><strong>{sum_gross:.2f} €</strong></td>"
             s+= f"<td style='color: {status_color};'><strong>{status_label}</strong></td>"
+            action_icon  = '&#9998;'    if status == 'draft' else '&#128065;'
+            action_title = 'Bearbeiten' if status == 'draft' else 'Ansehen'
             s+= f"<td>"
             # PDF button - check if PDF actually exists in filesystem
-            import os
             pdf_exists = "true" if (pdf_path and os.path.exists(pdf_path)) else "false"
-            s+= f'<a href="javascript:void(0);" onclick="handlePDF({inv_id}, {pdf_exists})">📄 PDF</a> | '
-            s+= f"<a href='/invoice/view?id={inv_id}'>Ansicht</a>"
+            s+= f'<a href="javascript:void(0);" onclick="handlePDF({inv_id}, {pdf_exists})" class="action-icon" title="PDF">&#128196;</a> '
+            s+= f"<a href='/invoice?id={inv_id}' class='action-icon' title='{action_title}'>{action_icon}</a>"
             s+= f"</td>"
             s+= f"</tr>"
         
@@ -205,6 +206,9 @@ def PageInvoice(db: Database, filters: dict = None):
             if (status && status !== 'all') params.append('status', status);
             if (search) params.append('search', search);
             
+            // Preserve currently selected invoice in grid view
+            const currentId = new URLSearchParams(window.location.search).get('id');
+            if (currentId) params.append('id', currentId);
             // Reload page with filters
             window.location.href = '/invoice' + (params.toString() ? '?' + params.toString() : '');
         }
@@ -214,12 +218,15 @@ def PageInvoice(db: Database, filters: dict = None):
         }
     </script>
     '''
-    
+    s+= '</div><!-- Ende gridLeftCol -->'
+    s+= '<div class="gridRightCol" style="order:2; min-width:820px;">'
+    s+= _invoice_form_html(db, invoice_id)
+    s+= '</div><!-- Ende gridRightCol --></div><!-- Ende grid2Rows -->'
     s+= Footer()
     return s
 
-def PageInvoiceNew(db: Database, invoice_id=None):
-    """Generate invoice creation/edit page"""
+def _invoice_form_html(db: Database, invoice_id=None):
+    """Generate invoice form HTML block (no page wrapper)."""
     import datetime
     import json
     current_year = datetime.datetime.now().year
@@ -291,17 +298,48 @@ def PageInvoiceNew(db: Database, invoice_id=None):
         page_title = "Neue Rechnung erstellen"
         is_edit_mode = False
     
-    s = Header1('invoice')
-    submenu = '<a href="/invoice">Liste</a> | <span id="ActivePage">Neu</span>'
-    s+= Header2(submenu)
-    s+= Header3()
-    s += f'<input type="hidden" id="invoice_id" value="{invoice_id or ""}">'
+    s = f'<input type="hidden" id="invoice_id" value="{invoice_id or ""}">'
     s += f'<input type="hidden" id="is_edit_mode" value="{str(is_edit_mode).lower()}">'
+    s += f'<input type="hidden" id="invoice_status_value" value="{invoice_status}">'
     # Check if PDF actually exists in filesystem
     import os
     pdf_file_exists = bool(pdf_path and os.path.exists(pdf_path))
     s += f'<input type="hidden" id="pdf_exists" value="{str(pdf_file_exists).lower()}">'
+    s += '<div id="invoice_msg" class="no-pdf" style="display:none; margin-bottom:10px;"></div>'
     s += f'<h2>{page_title}</h2>'
+    if is_edit_mode:
+        payment_count = len(existing_payments)
+        status_color  = INVOICE_STATUS_COLORS.get(invoice_status, '#888')
+        status_label  = INVOICE_STATUS_LABELS.get(invoice_status, invoice_status)
+        status_options_html = ''.join(
+            '<option value="{k}"{sel}{dis}>{v}</option>'.format(
+                k=k, v=v,
+                sel=' selected' if k == invoice_status else '',
+                dis=' disabled' if k == 'paid' and payment_count == 0 else '')
+            for k, v in INVOICE_STATUS_LABELS.items()
+        )
+        s += f'''<div class="rectRounded no-pdf" style="margin-bottom:8px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+  <span>Status: <strong style="color:{status_color}">{status_label}</strong></span>
+  <span style="display:flex;align-items:center;gap:6px;">
+    <select id="statusChangeSelect" style="min-width:140px;">{status_options_html}</select>
+    <button onclick="setInvoiceStatus({invoice_id})" class="coloredButton btn-sm btn-blue">Status setzen</button>
+  </span>
+</div>
+<script>
+const _payCount = {payment_count};
+function setInvoiceStatus(invId) {{
+  var ns = document.getElementById('statusChangeSelect').value;
+  if (ns === 'paid' && _payCount === 0) {{
+    showMessage('Bezahlt nur m\u00f6glich, wenn mindestens eine Zahlung verkn\u00fcpft ist.', 'error');
+    return;
+  }}
+  fetch('/invoice/status', {{method: 'POST', headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{invoice_id: invId, status: ns}})}}).then(r => r.json())
+  .then(data => {{ if (data.success) location.reload(); else showMessage('Fehler: ' + (data.error || '?'), 'error'); }});
+}}
+</script>'''
+        if invoice_status not in ('draft', 'finalized'):
+            s += f'<div style="background:#fff3cd;border:1px solid #ffc107;padding:8px 12px;border-radius:4px;margin-bottom:8px;" class="no-pdf">&#9888; Nicht im Entwurfsstatus (<strong>{status_label}</strong>). &Auml;nderungen werden dennoch gespeichert.</div>'
     s += '''<div class="invoice-container" id="invoice_container">
         <div class="invoice-header">
             <div class="invoice-logo">
@@ -463,6 +501,15 @@ def PageInvoiceNew(db: Database, invoice_id=None):
     s += '''                </table>
                 <br>
                 <button type="button" class="modal-button-close" onclick="hideArticleModal()">Schließen</button>
+            </div>
+        </div>
+        
+        <!-- Confirm dialog -->
+        <div id="invoice_confirm" class="modal-overlay no-pdf" style="display:none;">
+            <div class="modal-content" style="max-width:400px; text-align:center; padding:30px;">
+                <p id="invoice_confirm_text" style="margin:0 0 20px; font-size:15px;"></p>
+                <button type="button" id="invoice_confirm_ok" class="coloredButton btn-green">OK</button>
+                <button type="button" class="coloredButton btn-gray" style="margin-left:10px;" onclick="document.getElementById('invoice_confirm').style.display='none'">Abbrechen</button>
             </div>
         </div>
         
@@ -632,10 +679,10 @@ def PageInvoiceNew(db: Database, invoice_id=None):
         </div>
     </div>
     
-    <div style="text-align: center; margin: 20px 0;">
-        <button type="button" onclick="saveInvoice('draft')" class="save-button" style="background-color: #4CAF50; color: white; padding: 12px 24px; margin: 0 10px; border: none; cursor: pointer; border-radius: 4px;">💾 Als Entwurf speichern</button>
-        <button type="button" onclick="saveInvoice('finalized')" class="save-button" style="background-color: #2196F3; color: white; padding: 12px 24px; margin: 0 10px; border: none; cursor: pointer; border-radius: 4px;">✓ Finalisieren und speichern</button>
-        <button type="button" onclick="generatePDF()" class="pdf-button no-pdf" style="background-color: #FF9800; color: white; padding: 12px 24px; margin: 0 10px; border: none; cursor: pointer; border-radius: 4px;">📄 Als PDF exportieren</button>
+    <div style="text-align: center; margin: 20px 0;" class="no-pdf">
+        <button type="button" onclick="saveInvoice()" class="coloredButton btn-green" style="padding: 12px 24px; margin: 0 10px;">💾 Speichern</button>
+        <button type="button" onclick="window.location.href='/invoice'" class="coloredButton btn-gray" style="padding: 12px 24px; margin: 0 10px;">← Abbrechen</button>
+        <button type="button" onclick="generatePDF()" class="coloredButton btn-blue no-pdf" style="padding: 12px 24px; margin: 0 10px;">📄 PDF + E-Rechnung</button>
     </div>
     
     <script>
@@ -1021,37 +1068,63 @@ def PageInvoiceNew(db: Database, invoice_id=None):
         // Initialize own company (load logo and data for preselected company)
         updateOwnCompany();
         
+        // Notification helpers
+        function showMessage(text, type) {
+            type = type || 'success';
+            var bar = document.getElementById('invoice_msg');
+            if (!bar) return;
+            var styles = {
+                success: 'background:#d4edda;color:#155724;border:1px solid #c3e6cb',
+                error:   'background:#f8d7da;color:#721c24;border:1px solid #f5c6cb',
+                warn:    'background:#fff3cd;color:#856404;border:1px solid #ffc107',
+                info:    'background:#d1ecf1;color:#0c5460;border:1px solid #bee5eb'
+            };
+            bar.setAttribute('style', (styles[type] || styles.info)
+                + ';display:block;padding:10px 16px;border-radius:4px;margin-bottom:10px;font-size:14px;');
+            bar.textContent = text;
+            if (type !== 'error') setTimeout(function() { bar.style.display = 'none'; }, 6000);
+        }
+        function showConfirm(text, onOk) {
+            document.getElementById('invoice_confirm_text').textContent = text;
+            document.getElementById('invoice_confirm_ok').onclick = function() {
+                document.getElementById('invoice_confirm').style.display = 'none';
+                onOk();
+            };
+            document.getElementById('invoice_confirm').style.display = 'block';
+        }
+        
         // Save invoice to database
-        function saveInvoice(status) {
+        function saveInvoice() {
             // Check if we're editing an existing invoice
             const invoiceId = document.getElementById('invoice_id').value;
             const isEdit = invoiceId !== '';
+            const currentStatus = document.getElementById('invoice_status_value')?.value || 'draft';
             
             // Get selected own company ID
             const ownCompanyId = document.getElementById('own_company_select').value;
             if (!ownCompanyId) {
-                alert('Bitte wählen Sie eine eigene Firma aus.');
+                showMessage('Bitte wählen Sie eine eigene Firma aus.', 'error');
                 return;
             }
             
             // Get selected customer
             const customerId = document.getElementById('customer_select').value;
             if (!customerId) {
-                alert('Bitte wählen Sie einen Kunden aus.');
+                showMessage('Bitte wählen Sie einen Kunden aus.', 'error');
                 return;
             }
             
             // Get invoice number
             const invoiceNumber = document.getElementById('invoice_number').value;
             if (!invoiceNumber) {
-                alert('Bitte geben Sie eine Rechnungsnummer ein.');
+                showMessage('Bitte geben Sie eine Rechnungsnummer ein.', 'error');
                 return;
             }
             
             // Get invoice date
             const invoiceDate = document.getElementById('invoice_date').value;
             if (!invoiceDate) {
-                alert('Bitte wählen Sie ein Rechnungsdatum.');
+                showMessage('Bitte wählen Sie ein Rechnungsdatum.', 'error');
                 return;
             }
             
@@ -1073,7 +1146,7 @@ def PageInvoiceNew(db: Database, invoice_id=None):
             });
             
             if (items.length === 0) {
-                alert('Bitte fügen Sie mindestens eine Position hinzu.');
+                showMessage('Bitte fügen Sie mindestens eine Position hinzu.', 'error');
                 return;
             }
             
@@ -1116,7 +1189,7 @@ def PageInvoiceNew(db: Database, invoice_id=None):
                 taxAmount: taxAmount,
                 grossAmount: grossAmount,
                 currency: 'EUR',
-                status: status,
+                status: currentStatus,
                 paymentMeansCode: document.getElementById('payment_means_code').value || '58',
                 paymentMeansText: document.getElementById('payment_means_text').value || 'SEPA Überweisung',
                 items: items,
@@ -1141,54 +1214,54 @@ def PageInvoiceNew(db: Database, invoice_id=None):
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    const message = isEdit ? 'Rechnung erfolgreich aktualisiert!' : 'Rechnung erfolgreich gespeichert!\\nRechnungs-ID: ' + data.invoice_id;
-                    alert(message);
-                    // Redirect to invoice list
-                    window.location.href = '/invoice';
+                    // Stay in grid view with this invoice selected
+                    const redirectId = isEdit ? invoiceId : String(data.invoice_id);
+                    window.location.href = '/invoice?id=' + redirectId;
                 } else {
-                    alert('Fehler beim Speichern: ' + (data.error || 'Unbekannter Fehler'));
+                    showMessage('Fehler beim Speichern: ' + (data.error || 'Unbekannter Fehler'), 'error');
                 }
             })
             .catch(err => {
-                alert('Fehler beim Speichern: ' + err);
+                showMessage('Fehler beim Speichern: ' + err, 'error');
                 console.error('Save error:', err);
             });
         }
         
-        // Generate PDF
+        // Generate PDF (and optionally XML)
         function generatePDF() {
-            // Check if we're editing an existing invoice
             const invoiceId = document.getElementById('invoice_id').value;
-            
             if (!invoiceId) {
-                alert('Bitte speichern Sie die Rechnung zuerst, bevor Sie ein PDF erstellen.');
+                showMessage('Bitte speichern Sie die Rechnung zuerst, bevor Sie ein PDF erstellen.', 'warn');
                 return;
             }
-            
-            // Check if PDF already exists
             const pdfExists = document.getElementById('pdf_exists').value === 'true';
-            
             if (pdfExists) {
-                // PDF exists - ask if user wants to regenerate
-                if (!confirm('PDF-Datei existiert bereits. Möchten Sie die Datei überschreiben und neu generieren?')) {
-                    return;
-                }
+                showConfirm('PDF-Datei existiert bereits. Überschreiben und neu generieren?', function() {
+                    _runPDFGeneration(invoiceId);
+                });
+            } else {
+                _runPDFGeneration(invoiceId);
             }
-            
-            // Generate PDF in filesystem (no download)
+        }
+        function _runPDFGeneration(invoiceId) {
             fetch('/invoice/pdf_generate?id=' + invoiceId)
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
-                        // Update pdf_exists flag
                         document.getElementById('pdf_exists').value = 'true';
-                        alert('PDF erfolgreich erstellt:\\n' + data.pdf_path);
+                        showMessage('PDF erstellt: ' + data.pdf_path, 'success');
+                        // Auch XML (E-Rechnung) downloaden wenn XRechnung-Felder gefüllt
+                        const buyerRouteId = document.getElementById('buyer_route_id')?.value || '';
+                        const orderNumber = document.getElementById('order_number')?.value || '';
+                        if (buyerRouteId || orderNumber) {
+                            window.open('/invoice/xml?id=' + invoiceId, '_blank');
+                        }
                     } else {
-                        alert('Fehler beim Erstellen der PDF: ' + (data.error || 'Unbekannter Fehler'));
+                        showMessage('Fehler beim Erstellen der PDF: ' + (data.error || 'Unbekannter Fehler'), 'error');
                     }
                 })
-                .catch(err => {
-                    alert('Fehler: ' + err.message);
+                .catch(function(err) {
+                    showMessage('Fehler: ' + err.message, 'error');
                 });
         }
     </script>
@@ -1255,6 +1328,16 @@ def PageInvoiceNew(db: Database, invoice_id=None):
     </script>
 '''
 
+    return s
+
+
+def PageInvoiceNew(db: Database, invoice_id=None):
+    """Compatibility wrapper – keeps /invoice/new and /invoice/edit?id=X working."""
+    s  = Header1('invoice')
+    s += Header2('<a href="/invoice">Liste</a> | <span id="ActivePage">{}</span>'.format(
+        'Bearbeiten' if invoice_id else 'Neu'))
+    s += Header3()
+    s += _invoice_form_html(db, invoice_id)
     s += Footer()
     return s
 
