@@ -90,10 +90,6 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     # Header3 with filters
     current_year = datetime.datetime.now().year
 
-    # Get filter data
-    customers = db.fetch_contacts(contact_type='customer')
-    coa_accounts = db.fetch_chart_of_accounts()
-
     header3_content = f'''
         <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
             <div>
@@ -103,16 +99,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                 <button onclick="setTransactionYear({current_year-1})">{current_year-1}</button>
             </div>
             <div>
-                <label>Kunde:</label>
-                <select id="customerFilter" onchange="filterTransactions()">
-                    <option value="">Alle Kunden</option>
-    '''
-    for customer in customers:
-        customer_display = f"{customer[2]} ({customer[3] or 'Privat'})" if customer[2] else customer[3] or f"ID {customer[0]}"
-        header3_content += f'<option value="{customer[0]}">{customer_display}</option>'
-
-    header3_content += '''
-                </select>
+                <input type="text" id="txSearch" placeholder="Empf\u00e4nger / Verwendungszweck" oninput="filterTransactions()" style="width: 240px;">
             </div>
             <div>
                 <label>Währung:</label>
@@ -255,14 +242,15 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                     <tr><td>Beleg-Nr.:</td><td><input type="text" name="document_nr" value="{edit_trans[16] if edit_trans and edit_trans[16] else ""}"></td></tr>
     '''
 
-    neu_button = ('<a href="/transactions" style="margin-left: 10px; padding: 5px 10px; '
-                  'background-color: #888; color: white; text-decoration: none; display: inline-block;">'
-                  'Neu</a>') if edit_trans else ''
+    if edit_trans:
+        form_buttons = ('<input type="submit" value="Aktualisieren" class="coloredButton btn-sm btn-green">'
+                        '<a href="/transactions" class="coloredButton btn-sm btn-gray">Abbrechen</a>')
+    else:
+        form_buttons = '<input type="submit" value="Transaktion hinzuf\u00fcgen" class="coloredButton btn-sm btn-green">'
 
     s+= f'''
                     <tr><td></td><td>
-                        <input type="submit" value="{submit_text}">
-                        {neu_button}
+                        {form_buttons}
                     </td></tr>
                 </table>
             </form>
@@ -287,7 +275,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
         booking_id = edit_trans[0]
         linked_documents = db.get_documents_for_booking(booking_id)
 
-        s+= "<h3>Verknüpfte Dokumente</h3>"
+        s+= "<br><h3>Verknüpfte Dokumente</h3>"
         if linked_documents:
             s+= "<table>"
             s+= "<tr><th>ID</th><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Typ</th><th>Aktionen</th></tr>"
@@ -432,6 +420,8 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                  f"data-contact-id='{contact_id or ''}' "
                  f"data-currency='{currency}' "
                  f"data-amount='{amount}' "
+                 f"data-recipient='{first_recip}' "
+                 f"data-text='{first_text}' "
                  f"onclick='toggleGroup({gid})' "
                  f"title='Split-Buchung aufklappen/zuklappen'>")
             s+= f"<td>{date_booking}</td>"
@@ -507,8 +497,8 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                          f"data-date='{date_booking}' "
                          f"data-contact-id='{entry_contact or ''}' "
                          f"data-currency='{currency}' "
-                         f"data-amount='{amount}' "
-                         f"onclick='toggleGroup(\"{bid}\")' "
+                         f"data-amount='{amount}' "                         f"data-recipient='{recipient}' "
+                         f"data-text='{entry_text}' "                         f"onclick='toggleGroup(\"{bid}\")' "
                          f"title='Verknüpfte Split-Buchung aufklappen'>")
                     s+= f"<td>{date_booking}</td>"
                     s+= f"<td>{recipient[:25]}</td>"
@@ -528,7 +518,9 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                          f"data-date='{date_booking}' "
                          f"data-contact-id='{entry_contact or ''}' "
                          f"data-currency='{currency}' "
-                         f"data-amount='{amount}'>")
+                         f"data-amount='{amount}' "
+                         f"data-recipient='{recipient}' "
+                         f"data-text='{entry_text}'>")
                     s+= f"<td>{date_booking}</td>"
                     s+= f"<td>{recipient[:25]}</td>"
                     s+= f"<td>{entry_text[:35]}</td>"
@@ -550,7 +542,9 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                      f"data-account-id='{account_id or ''}' "
                      f"data-date='{date_booking}' "
                      f"data-currency='{currency}' "
-                     f"data-amount='{amount}'>")
+                     f"data-amount='{amount}' "
+                     f"data-recipient='{recipient}' "
+                     f"data-text='{bank_text}'>")
                 s+= f"<td>{date_booking}</td>"
                 s+= f"<td>{recipient[:25]}</td>"
                 s+= f"<td>{bank_text[:35]}</td>"
@@ -629,7 +623,9 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                  f"data-date='{date_booking}' "
                  f"data-contact-id='{contact_id or ''}' "
                  f"data-currency='{currency}' "
-                 f"data-amount='{amount}'>")
+                 f"data-amount='{amount}' "
+                 f"data-recipient='{recipient}' "
+                 f"data-text='{text}'>")
             s+= f"<td>{date_booking}</td>"
             s+= f"<td>{recipient[:25]}</td>"
             s+= f"<td>{text[:35]}</td>"
@@ -666,7 +662,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
         function filterTransactions() {
             const dateFrom       = document.getElementById('dateFrom').value;
             const dateTo         = document.getElementById('dateTo').value;
-            const customerFilter = document.getElementById('customerFilter').value;
+            const txSearch       = (document.getElementById('txSearch').value || '').toLowerCase();
             const currencyFilter = document.getElementById('currencyFilter').value;
             const minAmount      = parseFloat(document.getElementById('minAmount').value) || null;
             const maxAmount      = parseFloat(document.getElementById('maxAmount').value) || null;
@@ -683,7 +679,6 @@ def PageTransactions(db: Database, edit_transaction_id=None):
 
             document.querySelectorAll('.transaction-row').forEach(row => {
                 const rowDate     = row.getAttribute('data-date');
-                const rowContact  = row.getAttribute('data-contact-id');
                 const rowCurrency = row.getAttribute('data-currency');
                 const rowAmount   = parseFloat(row.getAttribute('data-amount'));
                 const rowAccount  = row.getAttribute('data-account-id');
@@ -691,7 +686,11 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                 let show = true;
                 if (dateFrom && rowDate < dateFrom) show = false;
                 if (dateTo   && rowDate > dateTo)   show = false;
-                if (customerFilter && rowContact !== customerFilter) show = false;
+                if (txSearch) {
+                    const rowRecipient = (row.getAttribute('data-recipient') || '').toLowerCase();
+                    const rowText = (row.getAttribute('data-text') || '').toLowerCase();
+                    if (!rowRecipient.includes(txSearch) && !rowText.includes(txSearch)) show = false;
+                }
                 if (currencyFilter && rowCurrency !== currencyFilter) show = false;
                 if (minAmount !== null && rowAmount < minAmount) show = false;
                 if (maxAmount !== null && rowAmount > maxAmount) show = false;
