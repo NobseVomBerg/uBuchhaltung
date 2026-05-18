@@ -3963,7 +3963,7 @@ class Database:
         cursor = conn.cursor()
         cursor.execute('''
             SELECT ip.ID, ip.InvoiceID, ip.BookingID, ip.Amount, ip.PaymentDate, ip.Notes,
-                   COALESCE(b.Reference, b.BookingText, '') AS BookingRef
+                   COALESCE(b.DocumentNumber, b.Text, '') AS BookingRef
             FROM InvoicePayments ip
             LEFT JOIN Bookings b ON b.ID = ip.BookingID
             WHERE ip.InvoiceID = ?

@@ -534,7 +534,7 @@ def PageInvoiceNew(db: Database, invoice_id=None):
     <!-- XRechnung / E-Rechnung Zusatzdaten (optional) -->
     <div class="xrechnung-section no-pdf" style="margin: 20px 0; padding: 20px; background-color: #f9f9f9; border: 1px solid #ddd; border-radius: 5px;">
         <h3 style="margin-top: 0; cursor: pointer;" onclick="toggleXRechnungFields()">
-            ⚙️ XRechnung / E-Rechnung Zusatzdaten (optional) <span id="xrechnung_toggle">–¼</span>
+            ⚙️ XRechnung / E-Rechnung Zusatzdaten (optional) <span id="xrechnung_toggle">&#9654;</span>
         </h3>
         <div id="xrechnung_fields" style="display: none;">
             <table style="width: 100%; border-collapse: collapse;">
@@ -854,10 +854,10 @@ def PageInvoiceNew(db: Database, invoice_id=None):
             const toggle = document.getElementById('xrechnung_toggle');
             if (fields.style.display === 'none') {
                 fields.style.display = 'block';
-                toggle.textContent = '–²';
+                toggle.textContent = '\u25BC';
             } else {
                 fields.style.display = 'none';
-                toggle.textContent = '–¼';
+                toggle.textContent = '\u25B6';
             }
         }
         
