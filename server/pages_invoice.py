@@ -6,9 +6,27 @@ import os
 from db import Database
 from .pages import (
     Header1, Header2, Header3, Footer,
-    INVOICE_STATUS_COLORS, INVOICE_STATUS_LABELS,
 )
 
+# Invoice status constants
+INVOICE_STATUS_COLORS: dict = {
+    'draft':           '#888',
+    'finalized':       '#0066cc',
+    'sent':            '#ff9900',
+    'partial_payment': '#e69500',
+    'overdue':         '#b71c1c',
+    'paid':            '#00aa00',
+    'cancelled':       '#cc0000',
+}
+INVOICE_STATUS_LABELS: dict = {
+    'draft':           'Entwurf',
+    'finalized':       'Abgeschlossen',
+    'sent':            'Versendet',
+    'partial_payment': 'Teilzahlung',
+    'overdue':         'Übfällig',
+    'paid':            'Bezahlt',
+    'cancelled':       'Storniert',
+}
 
 def PageInvoice(db: Database, filters: dict = None):
     """Generate invoice list page with search and filter"""
