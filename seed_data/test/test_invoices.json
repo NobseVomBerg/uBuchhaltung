@@ -1,0 +1,675 @@
+[
+  {
+    "invoice_number": "RE-2024-001",
+    "invoice_date": "2024-01-10",
+    "delivery_date": "2024-01-10",
+    "payment_due_date": "2024-02-09",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K002",
+    "status": "paid",
+    "items": [
+      {"article_name": "Kaffee gemahlen 500g",  "quantity": 24, "price_per_unit": 6.99, "tax_rate": 7},
+      {"article_name": "Teebeutel 25er Pack",    "quantity": 12, "price_per_unit": 2.49, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2024-002",
+    "invoice_date": "2024-01-25",
+    "delivery_date": "2024-01-25",
+    "payment_due_date": "2024-02-24",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K003",
+    "status": "paid",
+    "items": [
+      {"article_name": "Kugelschreiber blau",         "quantity": 50, "price_per_unit": 0.69, "tax_rate": 19},
+      {"article_name": "Notizblock A5",               "quantity": 20, "price_per_unit": 1.99, "tax_rate": 19},
+      {"article_name": "Briefumschlag DIN C5 5er Pack","quantity": 10, "price_per_unit": 1.49, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2024-003",
+    "invoice_date": "2024-02-08",
+    "delivery_date": "2024-02-08",
+    "payment_due_date": "2024-03-09",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K004",
+    "status": "paid",
+    "items": [
+      {"article_name": "Bier 0,5L",          "quantity": 48, "price_per_unit": 0.99, "tax_rate": 19},
+      {"article_name": "Wein Rotwein 0,75L", "quantity": 12, "price_per_unit": 6.99, "tax_rate": 19},
+      {"article_name": "Sekt 0,75L",         "quantity":  6, "price_per_unit": 7.99, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2024-004",
+    "invoice_date": "2024-02-20",
+    "delivery_date": "2024-02-20",
+    "payment_due_date": "2024-03-21",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K001",
+    "status": "paid",
+    "items": [
+      {"article_name": "Toilettenpapier 8 Rollen",   "quantity": 30, "price_per_unit": 4.99, "tax_rate": 19},
+      {"article_name": "Küchenrolle 3er Pack",       "quantity": 20, "price_per_unit": 2.99, "tax_rate": 19},
+      {"article_name": "Müllbeutel 20er Pack 35L",   "quantity": 15, "price_per_unit": 2.99, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2024-005",
+    "invoice_date": "2024-03-05",
+    "delivery_date": "2024-03-05",
+    "payment_due_date": "2024-04-04",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K005",
+    "status": "paid",
+    "items": [
+      {"article_name": "Shampoo 300ml",   "quantity": 24, "price_per_unit": 2.99, "tax_rate": 19},
+      {"article_name": "Zahnpasta 75ml",  "quantity": 24, "price_per_unit": 1.89, "tax_rate": 19},
+      {"article_name": "Seife 150g",      "quantity": 24, "price_per_unit": 1.29, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2024-006",
+    "invoice_date": "2024-03-20",
+    "delivery_date": "2024-03-20",
+    "payment_due_date": "2024-04-19",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K006",
+    "status": "paid",
+    "items": [
+      {"article_name": "Milch 3,5% 1L",     "quantity": 48, "price_per_unit": 1.09, "tax_rate": 7},
+      {"article_name": "Butter 250g",        "quantity": 24, "price_per_unit": 1.89, "tax_rate": 7},
+      {"article_name": "Gouda-Scheiben 200g","quantity": 12, "price_per_unit": 2.49, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2024-007",
+    "invoice_date": "2024-04-10",
+    "delivery_date": "2024-04-10",
+    "payment_due_date": "2024-05-10",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K007",
+    "status": "paid",
+    "items": [
+      {"article_name": "Mineralwasser Still 1,5L",   "quantity": 48, "price_per_unit": 0.79, "tax_rate": 7},
+      {"article_name": "Mineralwasser Sprudel 1,5L", "quantity": 48, "price_per_unit": 0.79, "tax_rate": 7},
+      {"article_name": "Orangensaft 1L",             "quantity": 24, "price_per_unit": 1.49, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2024-008",
+    "invoice_date": "2024-04-25",
+    "delivery_date": "2024-04-25",
+    "payment_due_date": "2024-05-25",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K008",
+    "status": "paid",
+    "items": [
+      {"article_name": "Spülmittel 500ml",     "quantity": 24, "price_per_unit": 1.49, "tax_rate": 19},
+      {"article_name": "Allzweckreiniger 1L",  "quantity": 12, "price_per_unit": 2.29, "tax_rate": 19},
+      {"article_name": "WC-Reiniger 750ml",    "quantity": 12, "price_per_unit": 1.99, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2024-009",
+    "invoice_date": "2024-05-10",
+    "delivery_date": "2024-05-10",
+    "payment_due_date": "2024-06-09",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K009",
+    "status": "paid",
+    "items": [
+      {"article_name": "Zigaretten 20er Schachtel", "quantity": 50, "price_per_unit": 9.50, "tax_rate": 19},
+      {"article_name": "Zündholzer",                "quantity": 50, "price_per_unit": 0.79, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2024-010",
+    "invoice_date": "2024-05-28",
+    "delivery_date": "2024-05-28",
+    "payment_due_date": "2024-06-27",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K010",
+    "status": "paid",
+    "items": [
+      {"article_name": "Tageszeitung", "quantity": 30, "price_per_unit": 1.40, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2024-011",
+    "invoice_date": "2024-06-15",
+    "delivery_date": "2024-06-15",
+    "payment_due_date": "2024-07-15",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K011",
+    "status": "paid",
+    "items": [
+      {"article_name": "Pflaster 10er Sortiment", "quantity": 24, "price_per_unit": 2.49, "tax_rate": 19},
+      {"article_name": "Zahnpasta 75ml",          "quantity": 12, "price_per_unit": 1.89, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2024-012",
+    "invoice_date": "2024-07-03",
+    "delivery_date": "2024-07-03",
+    "payment_due_date": "2024-08-02",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K012",
+    "status": "paid",
+    "items": [
+      {"article_name": "Küchenrolle 3er Pack",  "quantity": 50, "price_per_unit": 2.99, "tax_rate": 19},
+      {"article_name": "Servietten 50er Pack",  "quantity": 20, "price_per_unit": 1.29, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2024-013",
+    "invoice_date": "2024-08-15",
+    "delivery_date": "2024-08-15",
+    "payment_due_date": "2024-09-14",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K013",
+    "status": "paid",
+    "items": [
+      {"article_name": "Zigaretten 20er Schachtel", "quantity": 100, "price_per_unit": 9.50, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2024-014",
+    "invoice_date": "2024-09-20",
+    "delivery_date": "2024-09-20",
+    "payment_due_date": "2024-10-20",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K014",
+    "status": "paid",
+    "items": [
+      {"article_name": "Bier 0,5L",          "quantity": 120, "price_per_unit": 0.99, "tax_rate": 19},
+      {"article_name": "Wein Rotwein 0,75L", "quantity":  24, "price_per_unit": 6.99, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2024-015",
+    "invoice_date": "2024-10-10",
+    "delivery_date": "2024-10-10",
+    "payment_due_date": "2024-11-09",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K015",
+    "status": "paid",
+    "items": [
+      {"article_name": "Mineralwasser Still 1,5L", "quantity": 96, "price_per_unit": 0.79, "tax_rate": 7},
+      {"article_name": "Orangensaft 1L",           "quantity": 48, "price_per_unit": 1.49, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-001",
+    "invoice_date": "2025-01-08",
+    "delivery_date": "2025-01-08",
+    "payment_due_date": "2025-02-07",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K017",
+    "status": "paid",
+    "items": [
+      {"article_name": "Milch 1,5% 1L",       "quantity": 10, "price_per_unit": 0.99, "tax_rate": 7},
+      {"article_name": "Eier 10er Pack",       "quantity":  5, "price_per_unit": 2.99, "tax_rate": 7},
+      {"article_name": "Toast Weißbrot 500g",  "quantity":  5, "price_per_unit": 1.69, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-002",
+    "invoice_date": "2025-01-22",
+    "delivery_date": "2025-01-22",
+    "payment_due_date": "2025-02-21",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K018",
+    "status": "paid",
+    "items": [
+      {"article_name": "Shampoo 300ml", "quantity": 6, "price_per_unit": 2.99, "tax_rate": 19},
+      {"article_name": "Seife 150g",    "quantity": 6, "price_per_unit": 1.29, "tax_rate": 19},
+      {"article_name": "Zahnpasta 75ml","quantity": 6, "price_per_unit": 1.89, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-003",
+    "invoice_date": "2025-02-05",
+    "delivery_date": "2025-02-05",
+    "payment_due_date": "2025-03-07",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K002",
+    "status": "paid",
+    "items": [
+      {"article_name": "Kaffee gemahlen 500g", "quantity": 30, "price_per_unit": 6.99, "tax_rate": 7},
+      {"article_name": "Zucker 1kg",           "quantity": 20, "price_per_unit": 1.49, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-004",
+    "invoice_date": "2025-02-18",
+    "delivery_date": "2025-02-18",
+    "payment_due_date": "2025-03-20",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K003",
+    "status": "finalized",
+    "items": [
+      {"article_name": "Kugelschreiber blau", "quantity": 100, "price_per_unit": 0.69, "tax_rate": 19},
+      {"article_name": "Notizblock A5",       "quantity":  50, "price_per_unit": 1.99, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-005",
+    "invoice_date": "2025-03-01",
+    "delivery_date": "2025-03-01",
+    "payment_due_date": "2025-03-31",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K019",
+    "status": "paid",
+    "items": [
+      {"article_name": "Äpfel 1kg",           "quantity": 10, "price_per_unit": 2.49, "tax_rate": 7},
+      {"article_name": "Bananen 1kg",         "quantity": 10, "price_per_unit": 1.99, "tax_rate": 7},
+      {"article_name": "Joghurt Natur 150g",  "quantity": 20, "price_per_unit": 0.69, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-006",
+    "invoice_date": "2025-03-15",
+    "delivery_date": "2025-03-15",
+    "payment_due_date": "2025-04-14",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K020",
+    "status": "paid",
+    "items": [
+      {"article_name": "Tomaten 500g",         "quantity": 15, "price_per_unit": 1.99, "tax_rate": 7},
+      {"article_name": "Nudeln Spaghetti 500g","quantity": 10, "price_per_unit": 1.39, "tax_rate": 7},
+      {"article_name": "Tomatensoße Dose 400g","quantity": 10, "price_per_unit": 1.19, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-007",
+    "invoice_date": "2025-04-02",
+    "delivery_date": "2025-04-02",
+    "payment_due_date": "2025-05-02",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K004",
+    "status": "finalized",
+    "items": [
+      {"article_name": "Bier 0,5L",            "quantity": 60, "price_per_unit": 0.99, "tax_rate": 19},
+      {"article_name": "Wein Weißwein 0,75L",  "quantity": 12, "price_per_unit": 5.99, "tax_rate": 19},
+      {"article_name": "Sekt 0,75L",           "quantity": 12, "price_per_unit": 7.99, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-008",
+    "invoice_date": "2025-04-18",
+    "delivery_date": "2025-04-18",
+    "payment_due_date": "2025-05-18",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K021",
+    "status": "paid",
+    "items": [
+      {"article_name": "Toilettenpapier 8 Rollen", "quantity": 20, "price_per_unit": 4.99, "tax_rate": 19},
+      {"article_name": "Küchenrolle 3er Pack",     "quantity": 10, "price_per_unit": 2.99, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-009",
+    "invoice_date": "2025-05-05",
+    "delivery_date": "2025-05-05",
+    "payment_due_date": "2025-06-04",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K005",
+    "status": "sent",
+    "items": [
+      {"article_name": "Pflaster 10er Sortiment", "quantity": 36, "price_per_unit": 2.49, "tax_rate": 19},
+      {"article_name": "Zahnpasta 75ml",          "quantity": 30, "price_per_unit": 1.89, "tax_rate": 19},
+      {"article_name": "Shampoo 300ml",           "quantity": 24, "price_per_unit": 2.99, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-010",
+    "invoice_date": "2025-05-22",
+    "delivery_date": "2025-05-22",
+    "payment_due_date": "2025-06-21",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K022",
+    "status": "paid",
+    "items": [
+      {"article_name": "Schokolade Vollmilch 100g", "quantity": 20, "price_per_unit": 1.49, "tax_rate": 7},
+      {"article_name": "Kaffee gemahlen 500g",      "quantity":  5, "price_per_unit": 6.99, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-011",
+    "invoice_date": "2025-06-07",
+    "delivery_date": "2025-06-07",
+    "payment_due_date": "2025-07-07",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K006",
+    "status": "finalized",
+    "items": [
+      {"article_name": "Butter 250g",        "quantity": 30, "price_per_unit": 1.89, "tax_rate": 7},
+      {"article_name": "Milch 3,5% 1L",     "quantity": 30, "price_per_unit": 1.09, "tax_rate": 7},
+      {"article_name": "Gouda-Scheiben 200g","quantity": 20, "price_per_unit": 2.49, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-012",
+    "invoice_date": "2025-06-25",
+    "delivery_date": "2025-06-25",
+    "payment_due_date": "2025-07-25",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K023",
+    "status": "paid",
+    "items": [
+      {"article_name": "Müllbeutel 20er Pack 35L", "quantity": 20, "price_per_unit": 2.99, "tax_rate": 19},
+      {"article_name": "Spülmittel 500ml",         "quantity": 12, "price_per_unit": 1.49, "tax_rate": 19},
+      {"article_name": "Allzweckreiniger 1L",      "quantity":  6, "price_per_unit": 2.29, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-013",
+    "invoice_date": "2025-07-10",
+    "delivery_date": "2025-07-10",
+    "payment_due_date": "2025-08-09",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K007",
+    "status": "sent",
+    "items": [
+      {"article_name": "Mineralwasser Still 1,5L",   "quantity": 60, "price_per_unit": 0.79, "tax_rate": 7},
+      {"article_name": "Mineralwasser Sprudel 1,5L", "quantity": 60, "price_per_unit": 0.79, "tax_rate": 7},
+      {"article_name": "Apfelsaft 1L",               "quantity": 24, "price_per_unit": 1.29, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-014",
+    "invoice_date": "2025-07-28",
+    "delivery_date": "2025-07-28",
+    "payment_due_date": "2025-08-27",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K024",
+    "status": "paid",
+    "items": [
+      {"article_name": "Brötchen",             "quantity": 50, "price_per_unit": 0.45, "tax_rate": 7},
+      {"article_name": "Toast Weißbrot 500g",  "quantity": 10, "price_per_unit": 1.69, "tax_rate": 7},
+      {"article_name": "Eier 10er Pack",       "quantity": 10, "price_per_unit": 2.99, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-015",
+    "invoice_date": "2025-08-14",
+    "delivery_date": "2025-08-14",
+    "payment_due_date": "2025-09-13",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K008",
+    "status": "finalized",
+    "items": [
+      {"article_name": "Kühlakku 500ml",       "quantity": 24, "price_per_unit": 2.49, "tax_rate": 19},
+      {"article_name": "Trinkhalme 50er Pack", "quantity": 12, "price_per_unit": 1.29, "tax_rate": 19},
+      {"article_name": "Servietten 50er Pack", "quantity": 24, "price_per_unit": 1.29, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-016",
+    "invoice_date": "2025-08-30",
+    "delivery_date": "2025-08-30",
+    "payment_due_date": "2025-09-29",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K025",
+    "status": "paid",
+    "items": [
+      {"article_name": "Ketchup 500ml",          "quantity": 12, "price_per_unit": 1.99, "tax_rate": 7},
+      {"article_name": "Senf mittelscharf 200ml","quantity": 12, "price_per_unit": 1.29, "tax_rate": 7},
+      {"article_name": "Tomatensoße Dose 400g",  "quantity": 12, "price_per_unit": 1.19, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-017",
+    "invoice_date": "2025-09-15",
+    "delivery_date": "2025-09-15",
+    "payment_due_date": "2025-10-15",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K009",
+    "status": "sent",
+    "items": [
+      {"article_name": "Zigaretten 20er Schachtel", "quantity": 80, "price_per_unit": 9.50, "tax_rate": 19},
+      {"article_name": "Zündholzer",               "quantity": 100, "price_per_unit": 0.79, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-018",
+    "invoice_date": "2025-10-01",
+    "delivery_date": "2025-10-01",
+    "payment_due_date": "2025-10-31",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K026",
+    "status": "paid",
+    "items": [
+      {"article_name": "Teelichter 10er Pack", "quantity": 20, "price_per_unit": 1.99, "tax_rate": 19},
+      {"article_name": "Frischhaltefolie 30m", "quantity": 10, "price_per_unit": 1.99, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-019",
+    "invoice_date": "2025-11-10",
+    "delivery_date": "2025-11-10",
+    "payment_due_date": "2025-12-10",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K010",
+    "status": "finalized",
+    "items": [
+      {"article_name": "Tageszeitung", "quantity": 50, "price_per_unit": 1.40, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2025-020",
+    "invoice_date": "2025-12-05",
+    "delivery_date": "2025-12-05",
+    "payment_due_date": "2026-01-04",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K027",
+    "status": "sent",
+    "items": [
+      {"article_name": "Schokolade Vollmilch 100g", "quantity": 50, "price_per_unit": 1.49, "tax_rate": 7},
+      {"article_name": "Teebeutel 25er Pack",       "quantity": 20, "price_per_unit": 2.49, "tax_rate": 7},
+      {"article_name": "Kaffee gemahlen 500g",      "quantity": 10, "price_per_unit": 6.99, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2026-001",
+    "invoice_date": "2026-01-07",
+    "delivery_date": "2026-01-07",
+    "payment_due_date": "2026-02-06",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K001",
+    "status": "finalized",
+    "items": [
+      {"article_name": "Mineralwasser Still 1,5L",   "quantity": 120, "price_per_unit": 0.79, "tax_rate": 7},
+      {"article_name": "Orangensaft 1L",             "quantity":  48, "price_per_unit": 1.49, "tax_rate": 7},
+      {"article_name": "Apfelsaft 1L",               "quantity":  48, "price_per_unit": 1.29, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2026-002",
+    "invoice_date": "2026-01-20",
+    "delivery_date": "2026-01-20",
+    "payment_due_date": "2026-02-19",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K028",
+    "status": "draft",
+    "items": [
+      {"article_name": "Milch 3,5% 1L", "quantity": 20, "price_per_unit": 1.09, "tax_rate": 7},
+      {"article_name": "Butter 250g",   "quantity": 10, "price_per_unit": 1.89, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2026-003",
+    "invoice_date": "2026-02-04",
+    "delivery_date": "2026-02-04",
+    "payment_due_date": "2026-03-06",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K011",
+    "status": "finalized",
+    "items": [
+      {"article_name": "Pflaster 10er Sortiment",  "quantity": 48, "price_per_unit": 2.49, "tax_rate": 19},
+      {"article_name": "Rasierer Einweg 3er Pack", "quantity": 24, "price_per_unit": 2.99, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2026-004",
+    "invoice_date": "2026-02-18",
+    "delivery_date": "2026-02-18",
+    "payment_due_date": "2026-03-20",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K029",
+    "status": "draft",
+    "items": [
+      {"article_name": "Bier 0,5L",          "quantity": 48, "price_per_unit": 0.99, "tax_rate": 19},
+      {"article_name": "Wein Rotwein 0,75L", "quantity": 12, "price_per_unit": 6.99, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2026-005",
+    "invoice_date": "2026-03-05",
+    "delivery_date": "2026-03-05",
+    "payment_due_date": "2026-04-04",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K012",
+    "status": "sent",
+    "items": [
+      {"article_name": "Küchenrolle 3er Pack",     "quantity": 40, "price_per_unit": 2.99, "tax_rate": 19},
+      {"article_name": "Toilettenpapier 8 Rollen", "quantity": 20, "price_per_unit": 4.99, "tax_rate": 19},
+      {"article_name": "Müllbeutel 20er Pack 35L", "quantity": 20, "price_per_unit": 2.99, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2026-006",
+    "invoice_date": "2026-03-20",
+    "delivery_date": "2026-03-20",
+    "payment_due_date": "2026-04-19",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K030",
+    "status": "draft",
+    "items": [
+      {"article_name": "Kaffee gemahlen 500g", "quantity": 12, "price_per_unit": 6.99, "tax_rate": 7},
+      {"article_name": "Teebeutel 25er Pack",  "quantity": 12, "price_per_unit": 2.49, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2026-007",
+    "invoice_date": "2026-04-03",
+    "delivery_date": "2026-04-03",
+    "payment_due_date": "2026-05-03",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K013",
+    "status": "sent",
+    "items": [
+      {"article_name": "Zigaretten 20er Schachtel", "quantity": 120, "price_per_unit": 9.50, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2026-008",
+    "invoice_date": "2026-04-18",
+    "delivery_date": "2026-04-18",
+    "payment_due_date": "2026-05-18",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K031",
+    "status": "draft",
+    "items": [
+      {"article_name": "Äpfel 1kg",                  "quantity": 20, "price_per_unit": 2.49, "tax_rate": 7},
+      {"article_name": "Bananen 1kg",                "quantity": 20, "price_per_unit": 1.99, "tax_rate": 7},
+      {"article_name": "Schokolade Vollmilch 100g",  "quantity": 30, "price_per_unit": 1.49, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2026-009",
+    "invoice_date": "2026-05-02",
+    "delivery_date": "2026-05-02",
+    "payment_due_date": "2026-06-01",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K014",
+    "status": "finalized",
+    "items": [
+      {"article_name": "Bier 0,5L",  "quantity": 96, "price_per_unit": 0.99, "tax_rate": 19},
+      {"article_name": "Sekt 0,75L", "quantity": 24, "price_per_unit": 7.99, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2026-010",
+    "invoice_date": "2026-05-18",
+    "delivery_date": "2026-05-18",
+    "payment_due_date": "2026-06-17",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K016",
+    "status": "draft",
+    "items": [
+      {"article_name": "Zahnpasta 75ml", "quantity": 12, "price_per_unit": 1.89, "tax_rate": 19},
+      {"article_name": "Shampoo 300ml",  "quantity": 12, "price_per_unit": 2.99, "tax_rate": 19},
+      {"article_name": "Seife 150g",     "quantity": 12, "price_per_unit": 1.29, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2026-011",
+    "invoice_date": "2026-06-05",
+    "delivery_date": "2026-06-05",
+    "payment_due_date": "2026-07-05",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K015",
+    "status": "sent",
+    "items": [
+      {"article_name": "Mineralwasser Still 1,5L",   "quantity": 144, "price_per_unit": 0.79, "tax_rate": 7},
+      {"article_name": "Mineralwasser Sprudel 1,5L", "quantity": 144, "price_per_unit": 0.79, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2026-012",
+    "invoice_date": "2026-06-20",
+    "delivery_date": "2026-06-20",
+    "payment_due_date": "2026-07-20",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K002",
+    "status": "finalized",
+    "items": [
+      {"article_name": "Kaffee gemahlen 500g", "quantity": 48, "price_per_unit": 6.99, "tax_rate": 7},
+      {"article_name": "Zucker 1kg",           "quantity": 24, "price_per_unit": 1.49, "tax_rate": 7},
+      {"article_name": "Mehl Type 405 1kg",    "quantity": 24, "price_per_unit": 1.29, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2026-013",
+    "invoice_date": "2026-07-08",
+    "delivery_date": "2026-07-08",
+    "payment_due_date": "2026-08-07",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K003",
+    "status": "draft",
+    "items": [
+      {"article_name": "Kugelschreiber blau", "quantity": 200, "price_per_unit": 0.69, "tax_rate": 19},
+      {"article_name": "Notizblock A5",       "quantity": 100, "price_per_unit": 1.99, "tax_rate": 19}
+    ]
+  },
+  {
+    "invoice_number": "RE-2026-014",
+    "invoice_date": "2026-07-22",
+    "delivery_date": "2026-07-22",
+    "payment_due_date": "2026-08-21",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K017",
+    "status": "finalized",
+    "items": [
+      {"article_name": "Milch 1,5% 1L",      "quantity": 15, "price_per_unit": 0.99, "tax_rate": 7},
+      {"article_name": "Eier 10er Pack",      "quantity":  8, "price_per_unit": 2.99, "tax_rate": 7},
+      {"article_name": "Joghurt Natur 150g",  "quantity": 30, "price_per_unit": 0.69, "tax_rate": 7}
+    ]
+  },
+  {
+    "invoice_number": "RE-2026-015",
+    "invoice_date": "2026-08-05",
+    "delivery_date": "2026-08-05",
+    "payment_due_date": "2026-09-04",
+    "payment_terms": "Zahlungsziel 30 Tage netto",
+    "customer_number": "K018",
+    "status": "sent",
+    "items": [
+      {"article_name": "Shampoo 300ml",           "quantity": 12, "price_per_unit": 2.99, "tax_rate": 19},
+      {"article_name": "Zahnpasta 75ml",          "quantity": 12, "price_per_unit": 1.89, "tax_rate": 19},
+      {"article_name": "Pflaster 10er Sortiment", "quantity": 12, "price_per_unit": 2.49, "tax_rate": 19}
+    ]
+  }
+]

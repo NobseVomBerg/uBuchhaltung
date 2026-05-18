@@ -1,0 +1,226 @@
+[
+  {
+    "name": "VW Passat 2.0 TDI",
+    "category_name": "PKW (Personenkraftwagen)",
+    "purchase_date": "2023-03-15",
+    "purchase_price": 28500.00,
+    "useful_life_years": 6,
+    "depreciation_method": "linear",
+    "description": "Firmenwagen VW Passat 2.0 TDI Business, dunkelblau",
+    "serial_number": "WVWZZZ3CZ9E000001",
+    "location": "Parkplatz Betrieb",
+    "notes": "Kfz-Kennzeichen: MUS-AB 123"
+  },
+  {
+    "name": "Werkbank 1",
+    "category_name": "Maschinen (allgemein)",
+    "purchase_date": "2022-01-10",
+    "purchase_price": 450.00,
+    "useful_life_years": 13,
+    "depreciation_method": "linear",
+    "description": "Metallwerkbank 1,5m mit Schraubstock",
+    "location": "Werkstatt"
+  },
+  {
+    "name": "Werkbank 2",
+    "category_name": "Maschinen (allgemein)",
+    "purchase_date": "2022-01-10",
+    "purchase_price": 450.00,
+    "useful_life_years": 13,
+    "depreciation_method": "linear",
+    "description": "Metallwerkbank 1,5m mit Schraubstock",
+    "location": "Werkstatt"
+  },
+  {
+    "name": "Werkbank 3",
+    "category_name": "Maschinen (allgemein)",
+    "purchase_date": "2022-01-10",
+    "purchase_price": 450.00,
+    "useful_life_years": 13,
+    "depreciation_method": "linear",
+    "description": "Metallwerkbank 1,5m mit Schraubstock",
+    "location": "Werkstatt"
+  },
+  {
+    "name": "Werkbank 4",
+    "category_name": "Maschinen (allgemein)",
+    "purchase_date": "2022-01-10",
+    "purchase_price": 450.00,
+    "useful_life_years": 13,
+    "depreciation_method": "linear",
+    "description": "Metallwerkbank 1,5m mit Schraubstock",
+    "location": "Werkstatt"
+  },
+  {
+    "name": "Werkbank 5",
+    "category_name": "Maschinen (allgemein)",
+    "purchase_date": "2022-01-10",
+    "purchase_price": 450.00,
+    "useful_life_years": 13,
+    "depreciation_method": "linear",
+    "description": "Metallwerkbank 1,5m mit Schraubstock",
+    "location": "Werkstatt"
+  },
+  {
+    "name": "Schrank 1",
+    "category_name": "Aktenschränke, Tresore",
+    "purchase_date": "2022-01-10",
+    "purchase_price": 380.00,
+    "useful_life_years": 10,
+    "depreciation_method": "linear",
+    "description": "Stahlschrank 5 Böden, grau",
+    "location": "Lager"
+  },
+  {
+    "name": "Schrank 2",
+    "category_name": "Aktenschränke, Tresore",
+    "purchase_date": "2022-01-10",
+    "purchase_price": 380.00,
+    "useful_life_years": 10,
+    "depreciation_method": "linear",
+    "description": "Stahlschrank 5 Böden, grau",
+    "location": "Lager"
+  },
+  {
+    "name": "Schrank 3",
+    "category_name": "Aktenschränke, Tresore",
+    "purchase_date": "2022-01-10",
+    "purchase_price": 380.00,
+    "useful_life_years": 10,
+    "depreciation_method": "linear",
+    "description": "Stahlschrank 5 Böden, grau",
+    "location": "Lager"
+  },
+  {
+    "name": "Schrank 4",
+    "category_name": "Aktenschränke, Tresore",
+    "purchase_date": "2022-01-10",
+    "purchase_price": 380.00,
+    "useful_life_years": 10,
+    "depreciation_method": "linear",
+    "description": "Stahlschrank 5 Böden, grau",
+    "location": "Büro"
+  },
+  {
+    "name": "Schrank 5",
+    "category_name": "Aktenschränke, Tresore",
+    "purchase_date": "2022-01-10",
+    "purchase_price": 380.00,
+    "useful_life_years": 10,
+    "depreciation_method": "linear",
+    "description": "Stahlschrank 5 Böden, grau",
+    "location": "Büro"
+  },
+  {
+    "name": "Schrank 6",
+    "category_name": "Aktenschränke, Tresore",
+    "purchase_date": "2022-01-10",
+    "purchase_price": 380.00,
+    "useful_life_years": 10,
+    "depreciation_method": "linear",
+    "description": "Stahlschrank 5 Böden, grau",
+    "location": "Büro"
+  },
+  {
+    "name": "Schrank 7",
+    "category_name": "Aktenschränke, Tresore",
+    "purchase_date": "2022-01-10",
+    "purchase_price": 380.00,
+    "useful_life_years": 10,
+    "depreciation_method": "linear",
+    "description": "Stahlschrank 5 Böden, grau",
+    "location": "Lager"
+  },
+  {
+    "name": "Schrank 8",
+    "category_name": "Aktenschränke, Tresore",
+    "purchase_date": "2022-01-10",
+    "purchase_price": 380.00,
+    "useful_life_years": 10,
+    "depreciation_method": "linear",
+    "description": "Stahlschrank 5 Böden, grau",
+    "location": "Lager"
+  },
+  {
+    "name": "Schrank 9",
+    "category_name": "Aktenschränke, Tresore",
+    "purchase_date": "2022-01-10",
+    "purchase_price": 380.00,
+    "useful_life_years": 10,
+    "depreciation_method": "linear",
+    "description": "Stahlschrank 5 Böden, grau",
+    "location": "Lager"
+  },
+  {
+    "name": "Schrank 10",
+    "category_name": "Aktenschränke, Tresore",
+    "purchase_date": "2022-01-10",
+    "purchase_price": 380.00,
+    "useful_life_years": 10,
+    "depreciation_method": "linear",
+    "description": "Stahlschrank 5 Böden, grau",
+    "location": "Lager"
+  },
+  {
+    "name": "3D-Drucker Bambu Lab X1C",
+    "category_name": "Drucker, Scanner, Kopierer",
+    "purchase_date": "2024-06-01",
+    "purchase_price": 1199.00,
+    "useful_life_years": 3,
+    "depreciation_method": "linear",
+    "description": "3D-Drucker Bambu Lab X1 Carbon, inkl. AMS",
+    "serial_number": "BL-X1C-2024-0042",
+    "location": "Werkstatt",
+    "notes": "Inkl. 4-Farb-AMS-System"
+  },
+  {
+    "name": "PC 1",
+    "category_name": "EDV-Hardware (PC, Notebook, Server)",
+    "purchase_date": "2023-09-01",
+    "purchase_price": 899.00,
+    "useful_life_years": 3,
+    "depreciation_method": "linear",
+    "description": "Dell OptiPlex 3090, i5, 16GB RAM, 512GB SSD",
+    "location": "Büro"
+  },
+  {
+    "name": "PC 2",
+    "category_name": "EDV-Hardware (PC, Notebook, Server)",
+    "purchase_date": "2023-09-01",
+    "purchase_price": 899.00,
+    "useful_life_years": 3,
+    "depreciation_method": "linear",
+    "description": "Dell OptiPlex 3090, i5, 16GB RAM, 512GB SSD",
+    "location": "Büro"
+  },
+  {
+    "name": "PC 3",
+    "category_name": "EDV-Hardware (PC, Notebook, Server)",
+    "purchase_date": "2023-09-01",
+    "purchase_price": 899.00,
+    "useful_life_years": 3,
+    "depreciation_method": "linear",
+    "description": "Dell OptiPlex 3090, i5, 16GB RAM, 512GB SSD",
+    "location": "Büro"
+  },
+  {
+    "name": "PC 4",
+    "category_name": "EDV-Hardware (PC, Notebook, Server)",
+    "purchase_date": "2023-09-01",
+    "purchase_price": 899.00,
+    "useful_life_years": 3,
+    "depreciation_method": "linear",
+    "description": "Dell OptiPlex 3090, i5, 16GB RAM, 512GB SSD",
+    "location": "Büro"
+  },
+  {
+    "name": "PC 5",
+    "category_name": "EDV-Hardware (PC, Notebook, Server)",
+    "purchase_date": "2023-09-01",
+    "purchase_price": 899.00,
+    "useful_life_years": 3,
+    "depreciation_method": "linear",
+    "description": "Dell OptiPlex 3090, i5, 16GB RAM, 512GB SSD",
+    "location": "Büro"
+  }
+]

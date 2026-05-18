@@ -1431,6 +1431,195 @@ class Database:
                         parent_booking_id=parent_id,
                     )
 
+        # ── Artikel ───────────────────────────────────────────────────────────
+        articles_file = os.path.join(seed_dir, 'test_articles.json')
+        if os.path.exists(articles_file):
+            with open(articles_file, 'r', encoding='utf-8') as f:
+                articles_data = json.load(f)
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('SELECT Name FROM Articles')
+            existing_article_names = {row[0] for row in cursor.fetchall()}
+            conn.close()
+            for a in articles_data:
+                if a['name'] not in existing_article_names:
+                    try:
+                        self.insert_article(
+                            name=a['name'],
+                            unit=a.get('unit', 'Stk.'),
+                            unit_price=a.get('unit_price', 0),
+                            tax_rate=a.get('tax_rate', 19),
+                            description=a.get('description', ''),
+                            active=a.get('active', 1),
+                        )
+                    except Exception:
+                        pass
+
+        # ── Anlagegüter ───────────────────────────────────────────────────────
+        assets_file = os.path.join(seed_dir, 'test_assets.json')
+        if os.path.exists(assets_file):
+            with open(assets_file, 'r', encoding='utf-8') as f:
+                assets_data = json.load(f)
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('SELECT Name, PurchaseDate FROM Assets')
+            existing_assets = {(row[0], row[1]) for row in cursor.fetchall()}
+            cursor.execute('SELECT Name, ID FROM AssetCategories')
+            cat_map = {row[0]: row[1] for row in cursor.fetchall()}
+            conn.close()
+            for a in assets_data:
+                key = (a['name'], a['purchase_date'])
+                if key not in existing_assets:
+                    try:
+                        self.insert_asset(
+                            name=a['name'],
+                            purchase_date=a['purchase_date'],
+                            purchase_price=a['purchase_price'],
+                            useful_life_years=a['useful_life_years'],
+                            description=a.get('description', ''),
+                            asset_category_id=cat_map.get(a.get('category_name')),
+                            depreciation_method=a.get('depreciation_method', 'linear'),
+                            serial_number=a.get('serial_number', ''),
+                            location=a.get('location', ''),
+                            notes=a.get('notes', ''),
+                        )
+                    except Exception:
+                        pass
+
+        # ── Rechnungen ────────────────────────────────────────────────────────
+        invoices_file = os.path.join(seed_dir, 'test_invoices.json')
+        if os.path.exists(invoices_file):
+            with open(invoices_file, 'r', encoding='utf-8') as f:
+                invoices_data = json.load(f)
+
+            # Lookup-Maps aufbauen
+            own_rows = self.fetch_contacts(contact_type='own')
+            own = own_rows[0] if own_rows else None
+            all_customers = self.fetch_contacts(contact_type='customer')
+            customers_by_nr = {c[2]: c for c in all_customers}  # c[2] = CustomerNumber
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('SELECT Name, ID FROM Articles')
+            articles_map = {row[0]: row[1] for row in cursor.fetchall()}
+            cursor.execute(
+                'SELECT ID, Number, BIC, BankName FROM Accounts WHERE IsCash=0 ORDER BY Name ASC LIMIT 1'
+            )
+            bank_row = cursor.fetchone()
+            cursor.execute('SELECT InvoiceNumber FROM Invoices')
+            existing_inv = {row[0] for row in cursor.fetchall()}
+            conn.close()
+
+            for inv in invoices_data:
+                inv_number = inv['invoice_number']
+                if inv_number in existing_inv:
+                    continue
+
+                # Verkäufer-Snapshot aus eigenem Kontakt
+                own_id        = own[0]  if own else None
+                seller_name   = own[3]  if own else ''  # display_name
+                seller_company= (own[4] or '') if own else ''  # company_name
+                seller_street = own[5]  if own else ''  # Street
+                seller_plz    = own[6]  if own else ''  # PostalCode
+                seller_city   = own[7]  if own else ''  # City
+                seller_country= own[8]  if own else 'DE'  # country
+                seller_vat_id = own[11] if own else ''  # tax_id
+                seller_email  = own[9]  if own else ''  # Email
+                seller_phone  = own[10] if own else ''  # Phone
+
+                # Käufer-Snapshot aus Kundenkontakt
+                buyer = customers_by_nr.get(inv.get('customer_number'))
+                customer_id    = buyer[0]  if buyer else None
+                buyer_name     = buyer[3]  if buyer else ''
+                buyer_company  = (buyer[4] or '') if buyer else ''
+                buyer_street   = buyer[5]  if buyer else ''
+                buyer_plz      = buyer[6]  if buyer else ''
+                buyer_city     = buyer[7]  if buyer else ''
+                buyer_country  = buyer[8]  if buyer else 'DE'
+                buyer_vat_id   = buyer[11] if buyer else ''
+
+                # Bankkonto-Snapshot
+                bank_account_id = bank_row[0] if bank_row else None
+                bank_iban       = bank_row[1] if bank_row else ''
+                bank_bic        = bank_row[2] if bank_row else ''
+                bank_name       = bank_row[3] if bank_row else ''
+
+                # Positionen aufsummieren
+                items = inv.get('items', [])
+                sum_net = 0.0
+                tax_amount = 0.0
+                dominant_tax_rate = 19.0
+                for item in items:
+                    qty   = item.get('quantity', 1)
+                    price = item.get('price_per_unit', 0)
+                    rate  = item.get('tax_rate', 19)
+                    item_net = round(qty * price, 2)
+                    sum_net    += item_net
+                    tax_amount += round(item_net * rate / 100, 2)
+                    dominant_tax_rate = rate
+                sum_net    = round(sum_net, 2)
+                tax_amount = round(tax_amount, 2)
+                sum_gross  = round(sum_net + tax_amount, 2)
+
+                invoice_data = {
+                    'invoice_number':    inv_number,
+                    'invoice_date':      inv['invoice_date'],
+                    'own_company_id':    own_id,
+                    'seller_name':       seller_name,
+                    'seller_company':    seller_company,
+                    'seller_street':     seller_street,
+                    'seller_postal_code':seller_plz,
+                    'seller_city':       seller_city,
+                    'seller_country':    seller_country,
+                    'seller_vat_id':     seller_vat_id,
+                    'seller_email':      seller_email,
+                    'seller_phone':      seller_phone,
+                    'customer_id':       customer_id,
+                    'buyer_name':        buyer_name,
+                    'buyer_company':     buyer_company,
+                    'buyer_street':      buyer_street,
+                    'buyer_postal_code': buyer_plz,
+                    'buyer_city':        buyer_city,
+                    'buyer_country':     buyer_country,
+                    'buyer_vat_id':      buyer_vat_id,
+                    'currency':          'EUR',
+                    'delivery_date':     inv.get('delivery_date', inv['invoice_date']),
+                    'payment_terms':     inv.get('payment_terms', 'Zahlungsziel 30 Tage netto'),
+                    'payment_due_date':  inv.get('payment_due_date'),
+                    'bank_account_id':   bank_account_id,
+                    'bank_name':         bank_name,
+                    'bank_iban':         bank_iban,
+                    'bank_bic':          bank_bic,
+                    'tax_category':      'S',
+                    'tax_rate':          dominant_tax_rate,
+                    'sum_net':           sum_net,
+                    'tax_amount':        tax_amount,
+                    'sum_gross':         sum_gross,
+                    'amount_due':        sum_gross,
+                    'status':            inv.get('status', 'finalized'),
+                }
+                try:
+                    invoice_id = self.insert_invoice(invoice_data)
+                    for pos, item in enumerate(items, 1):
+                        art_name = item.get('article_name', '')
+                        art_id   = articles_map.get(art_name)
+                        qty      = item.get('quantity', 1)
+                        price    = item.get('price_per_unit', 0)
+                        rate     = item.get('tax_rate', 19)
+                        self.insert_invoice_item({
+                            'invoice_id':    invoice_id,
+                            'position':      pos,
+                            'article_id':    art_id,
+                            'description':   art_name or item.get('description', ''),
+                            'quantity':      qty,
+                            'unit':          'C62',
+                            'price_per_unit':price,
+                            'total_net':     round(qty * price, 2),
+                            'tax_category':  'S',
+                            'tax_rate':      rate,
+                        })
+                except Exception:
+                    pass  # Duplikat oder Fehler – überspringen
+
 
     # ─── Asset Categories ────────────────────────────────────────────────────
 
