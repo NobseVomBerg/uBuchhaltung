@@ -1,4 +1,4 @@
-﻿"""
+"""
 POST request handlers for form submissions
 """
 import os
@@ -43,7 +43,7 @@ def handle_confirm_import(db: Database, post_data):
         return 400, "Fehlende import_id"
     
     if not PARSER_AVAILABLE:
-        return 500, "Parser nicht verfÃ¼gbar"
+        return 500, "Parser nicht verfügbar"
     
     parser = DocumentParser()
     
@@ -64,11 +64,11 @@ def handle_confirm_import(db: Database, post_data):
             s += Header2()
             s += f"<h1>Import abgebrochen</h1>"
             s += f"<p>Die Transaktionen wurden nicht importiert.</p>"
-            s += "<p><a href='/receipts'>ZurÃ¼ck zu Belegen</a></p>"
+            s += "<p><a href='/transactions'>Zurück zu Buchungen</a></p>"
             s += Footer()
             return 200, s
         except Exception as e:
-            return 500, f"Fehler beim LÃ¶schen: {str(e)}"
+            return 500, f"Fehler beim Löschen: {str(e)}"
     
     # Handle import action
     try:
@@ -86,7 +86,7 @@ def handle_confirm_import(db: Database, post_data):
                 break
         
         if not account_id:
-            return 400, f"Kein Konto gefunden fÃ¼r IBAN: {account_iban}"
+            return 400, f"Kein Konto gefunden für IBAN: {account_iban}"
         
         linked_count = 0
         inserted_count = 0
@@ -128,7 +128,7 @@ def handle_confirm_import(db: Database, post_data):
             )
             inserted_count += 1
 
-        # Auto-Linking: Bank-Buchungen mit WISO-Entry-Buchungen verknÃ¼pfen
+        # Auto-Linking: Bank-Buchungen mit WISO-Entry-Buchungen verknüpfen
         link_result = db.link_bank_to_entries()
         linked_count = link_result.get('linked', 0)
         repaired_count = link_result.get('repaired', 0)
@@ -145,14 +145,14 @@ def handle_confirm_import(db: Database, post_data):
         if repaired_count > 0:
             s += f"<p style='color: blue;'>{repaired_count} Altdaten-Buchungen als Bank-Typ repariert.</p>"
         if linked_count > 0:
-            s += f"<p style='color: green;'>{linked_count} WISO-Buchungen mit Bankdaten verknÃ¼pft.</p>"
+            s += f"<p style='color: green;'>{linked_count} WISO-Buchungen mit Bankdaten verknüpft.</p>"
         if resolved_count > 0:
             s += f"<p style='color: green;'>{resolved_count} Debitoren-Buchungen als erledigt markiert.</p>"
         
         if skipped_count > 0:
-            s += f"<p style='color: orange;'>{skipped_count} Duplikate wurden Ã¼bersprungen:</p>"
+            s += f"<p style='color: orange;'>{skipped_count} Duplikate wurden übersprungen:</p>"
             s += "<table>"
-            s += "<tr><th>Datum</th><th>EmpfÃ¤nger</th><th>Verwendungszweck</th><th>Betrag</th><th>Fremd-IBAN</th></tr>"
+            s += "<tr><th>Datum</th><th>Empfänger</th><th>Verwendungszweck</th><th>Betrag</th><th>Fremd-IBAN</th></tr>"
             for trans in skipped_transactions:
                 date_str = trans['date'][:10] if isinstance(trans['date'], str) else trans['date']
                 amount_color = "green" if trans['amount'] > 0 else "red"
@@ -160,7 +160,7 @@ def handle_confirm_import(db: Database, post_data):
                 s += f"<td>{date_str}</td>"
                 s += f"<td>{trans['recipient'][:30]}</td>"
                 s += f"<td>{trans['reference'][:40]}...</td>"
-                s += f"<td style='color:{amount_color}'>{trans['amount']:.2f} â‚¬</td>"
+                s += f"<td style='color:{amount_color}'>{trans['amount']:.2f} €</td>"
                 s += f"<td>{trans.get('foreign_iban', '')[:10]}...</td>"
                 s += f"</tr>"
             s += "</table>"
@@ -318,24 +318,24 @@ def handle_update_booking_group(db: Database, post_data):
         return 500, f"Fehler beim Aktualisieren der Gruppe: {str(e)}"
 
 def handle_delete_booking_group(db: Database, group_id: int):
-    """Gruppe lÃ¶schen (Buchungen bleiben, werden nur aus Gruppe gelÃ¶st)."""
+    """Gruppe löschen (Buchungen bleiben, werden nur aus Gruppe gelöst)."""
     try:
         db.delete_booking_group(group_id)
         return 303, "/bookinggroups"
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return 500, f"Fehler beim LÃ¶schen der Gruppe: {str(e)}"
+        return 500, f"Fehler beim Löschen der Gruppe: {str(e)}"
 
 def handle_unlink_booking_from_group(db: Database, booking_id: int, group_id: int):
-    """Buchung aus Gruppe herauslÃ¶sen."""
+    """Buchung aus Gruppe herauslösen."""
     try:
         db.unlink_booking_from_group(booking_id)
         return 303, f"/bookinggroups/view?id={group_id}"
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return 500, f"Fehler beim HerauslÃ¶sen der Buchung: {str(e)}"
+        return 500, f"Fehler beim Herauslösen der Buchung: {str(e)}"
 
 def handle_link_document(db: Database, post_data):
     """Handle linking a document to a booking"""
@@ -350,7 +350,7 @@ def handle_link_document(db: Database, post_data):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return 500, f"Fehler beim VerknÃ¼pfen: {str(e)}"
+        return 500, f"Fehler beim Verknüpfen: {str(e)}"
 
 def handle_update_bankaccount(db: Database, post_data):
     """Handle updating bank account"""
@@ -400,14 +400,14 @@ def handle_db_export(db: Database):
 
 
 def handle_datev_export(db: Database, post_data: dict):
-    """DATEV Buchungsstapel-CSV fÃ¼r einen Datumsbereich erzeugen.
+    """DATEV Buchungsstapel-CSV für einen Datumsbereich erzeugen.
 
-    Setzt dabei fÃ¼r alle exportierten Buchungen das Steuerdatum (DateTax)
+    Setzt dabei für alle exportierten Buchungen das Steuerdatum (DateTax)
     auf das heutige Datum.
 
     Returns:
-        (csv_bytes, filename)  â€“ fÃ¼r einen Datei-Download, oder
-        (303, location_str)    â€“ bei Fehler (Redirect)
+        (csv_bytes, filename)  – für einen Datei-Download, oder
+        (303, location_str)    – bei Fehler (Redirect)
     """
     import datetime
     import sys
@@ -451,12 +451,12 @@ def handle_datev_export(db: Database, post_data: dict):
 
 
 def handle_wiso_import(request_handler, db: Database):
-    """WISO Mein BÃ¼ro CSV-Datei importieren (Multipart-Upload).
+    """WISO Mein Büro CSV-Datei importieren (Multipart-Upload).
 
-    Erwartet eine Datei im Formularfeld â€žcsvfile" (enctype=multipart/form-data).
+    Erwartet eine Datei im Formularfeld „csvfile" (enctype=multipart/form-data).
 
     Returns:
-        (303, location_str) â€“ immer ein Redirect zu /miscellaneous
+        (303, location_str) – immer ein Redirect zu /miscellaneous
     """
     from urllib.parse import quote
 
@@ -496,12 +496,12 @@ def handle_wiso_import(request_handler, db: Database):
         skipped   = result['skipped']
         errs      = result['errors']
 
-        # Nach WISO-Import: Bankâ†”Entry-VerknÃ¼pfung durchfÃ¼hren
+        # Nach WISO-Import: Bank↔Entry-Verknüpfung durchführen
         link_result = db.link_bank_to_entries()
         linked_count = link_result.get('linked', 0)
         resolved_count = link_result.get('resolved', 0)
 
-        # Detailergebnis fÃ¼r Anzeige auf der Seite persistieren
+        # Detailergebnis für Anzeige auf der Seite persistieren
         result_path = os.path.join('data', 'wiso_import_result.json')
         try:
             with open(result_path, 'w', encoding='utf-8') as f:
@@ -526,7 +526,7 @@ def handle_wiso_import(request_handler, db: Database):
 
 
 def handle_execute_sql(db: Database, post_data):
-    """Handle SQL command execution â€“ returns JSON with results."""
+    """Handle SQL command execution – returns JSON with results."""
     import sqlite3, json
     
     sql_commands = post_data.get("sql_commands", [""])[0]
@@ -613,7 +613,7 @@ def handle_add_contact(db: Database, post_data):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return 500, f'Fehler beim HinzufÃ¼gen des Kontakts: {str(e)}'
+        return 500, f'Fehler beim Hinzufügen des Kontakts: {str(e)}'
 
 
 def handle_update_contact(db: Database, post_data):
@@ -887,7 +887,7 @@ def handle_invoice_save(post_body: bytes):
         currency = data.get('currency', 'EUR')
         status = data.get('status', 'draft')
         payment_means_code = data.get('paymentMeansCode', '58')
-        payment_means_text = data.get('paymentMeansText', 'SEPA Ãœberweisung')
+        payment_means_text = data.get('paymentMeansText', 'SEPA Überweisung')
         items = data.get('items', [])
         
         # XRechnung optional fields
@@ -1155,7 +1155,7 @@ def handle_send_invoice_email(post_body: bytes):
         return json.dumps({'success': False, 'error': str(e)}).encode()
 
 
-# â”€â”€â”€ Asset-Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Asset-Handler ───────────────────────────────────────────────────────────
 
 def handle_add_asset(db: Database, post_data: dict):
     """Neue Anlage anlegen"""
@@ -1232,7 +1232,7 @@ def handle_update_asset(db: Database, post_data: dict):
 
 
 def handle_book_depreciation(db: Database, post_data: dict):
-    """AfA fÃ¼r ein Jahr buchen"""
+    """AfA für ein Jahr buchen"""
     asset_id    = int(post_data.get('asset_id', ['0'])[0])
     year        = int(post_data.get('year', ['0'])[0])
     account_id  = int(post_data.get('account_id', ['0'])[0])
@@ -1298,7 +1298,7 @@ def handle_update_asset_category(db: Database, post_data: dict):
     return 303, '/asset_categories'
 
 
-# â”€â”€â”€ (end of Asset-Handler) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── (end of Asset-Handler) ───────────────────────────────────────────────────
 
 def handle_invoice_pdf_by_id(invoice_id: int):
     """Generate PDF for an existing invoice by ID
@@ -1339,7 +1339,7 @@ def handle_setup_save(db: Database, post_data: dict):
     """Speichert die Daten aus der Ersteinrichtungs-Seite.
 
     Erstellt einen 'own'-Kontakt sowie (optional) ein Bankkonto.
-    Gibt (303, '/') bei Erfolg oder (200, html) bei Validierungsfehler zurÃ¼ck.
+    Gibt (303, '/') bei Erfolg oder (200, html) bei Validierungsfehler zurück.
     """
     from .pages_setup import PageSetup
 
@@ -1388,6 +1388,6 @@ def handle_setup_save(db: Database, post_data: dict):
 
 
 def handle_load_testdata(db: Database):
-    """LÃ¤dt Testdaten (Kontakte + Bankkonto) und leitet zum Dashboard weiter."""
+    """Lädt Testdaten (Kontakte + Bankkonto) und leitet zum Dashboard weiter."""
     db.load_test_seed_data()
     return 303, '/'
