@@ -144,8 +144,15 @@ PyBuch/
 │   ├── tax_keys.json          # 50 DATEV-Steuerschlüssel (BU-Codes)
 │   ├── asset_categories.json  # 30 BMF-AfA-Kategorien
 │   ├── chart_of_accounts_skr04.json  # Standard-SKR04-Kontenrahmen
-│   └── private/               # Benutzerspezifisch (in .gitignore)
-│       └── chart_of_accounts_custom.json  # Eigene SKR-Ergänzungen
+│   ├── private/               # Benutzerspezifisch (in .gitignore)
+│   └── test/                  # Testdaten für Entwicklungs-DB
+│       ├── test_accounts.json     # Bankkonten
+│       ├── test_articles.json     # 50 Artikel (Tante-Emma-Laden)
+│       ├── test_assets.json       # 22 Anlagegüter
+│       ├── test_bookings.json     # Buchungen
+│       ├── test_contacts.json     # 33 Kontakte (Kunden, Lieferant, Eigene)
+│       ├── test_documents.json    # Belege
+│       └── test_invoices.json     # 50 Rechnungen
 ├── server/                    # Modularer Webserver
 │   ├── __init__.py            # Package init
 │   ├── app.py                 # HTTP-Server mit Routing
@@ -157,6 +164,7 @@ PyBuch/
 │   ├── pages_contacts.py      # Kontaktverwaltung (4-Tabellen-Schema)
 │   ├── pages_masterdata.py    # Stammdaten (Artikel, SKR, Bankkonten, Nummernkreise)
 │   ├── pages_assets.py        # Anlagenverzeichnis
+│   ├── pages_receipts.py      # Belege (Upload, Bearbeiten)
 │   ├── pages_miscellaneous.py # DB-Export, SQL-Konsole, WISO Import
 │   ├── handlers.py            # POST-Handler (Formulare, PDF, Import)
 │   └── upload_handler.py      # File-Upload mit PDF-Parsing
@@ -220,8 +228,8 @@ pip install -r requirements_parser.txt
 
 ### Seed-Daten anpassen
 - Standard-Daten in `seed_data/*.json` (wirken nur bei leerer Tabelle)
-- Eigene SKR-Ergänzungen in `seed_data/private/chart_of_accounts_custom.json`
-- `seed_data/private/` ist in `.gitignore`
+- Eigene SKR-Ergänzungen in `seed_data/private/` (in `.gitignore`, nicht im Repo)
+- Testdaten in `seed_data/test/` (werden nur bei `load_test_seed_data()` geladen)
 
 ---
 
@@ -247,6 +255,7 @@ pip install -r requirements_parser.txt
 | `server/pages_contacts.py` | Kontakte |
 | `server/pages_masterdata.py` | Stammdaten |
 | `server/pages_assets.py` | Anlagen |
+| `server/pages_receipts.py` | Belege (Upload, Bearbeiten) |
 | `server/pages_miscellaneous.py` | DB-Export, SQL-Konsole |
 | `server/handlers.py` | POST-Handler |
 | `server/upload_handler.py` | File-Upload |

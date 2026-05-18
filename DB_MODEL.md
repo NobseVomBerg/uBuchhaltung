@@ -1,6 +1,6 @@
 # Datenbankmodell PyBuch
 
-**Status:** Aktuell (Stand: 7. Mai 2026)
+**Status:** Aktuell (Stand: 18. Mai 2026)
 **DBMS:** SQLite 3
 **Datei:** `data/buch.db`
 
@@ -64,9 +64,25 @@ Beim Erstellen der Datenbank werden folgende Tabellen automatisch befüllt (nur 
 
 | Tabelle | Quelle | Einträge |
 |---------|--------|----------|
-| ChartOfAccounts | `seed_data/chart_of_accounts_skr04.json` + optional `seed_data/private/chart_of_accounts_custom.json` | 56 Standard + eigene |
+| ChartOfAccounts | `seed_data/chart_of_accounts_skr04.json` + optional `seed_data/private/` | 56 Standard + eigene |
 | AssetCategories | `seed_data/asset_categories.json` | 30 BMF-Kategorien |
 | TaxKeys | `seed_data/tax_keys.json` | 50 DATEV-BU-Schlüssel |
+
+### Testdaten (`seed_data/test/`)
+
+Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempotent (kein Doppel-Einfügen):
+
+| Datei | Inhalt |
+|-------|--------|
+| `test_accounts.json` | Bankkonten |
+| `test_articles.json` | 50 Artikel (Tante-Emma-Laden, 7 %/19 % MwSt) |
+| `test_assets.json` | 22 Anlagegüter (PKW, Werkbänke, Schränke, PC, 3D-Drucker) |
+| `test_bookings.json` | Buchungen |
+| `test_contacts.json` | 33 Kontakte (1 eigene Firma, 31 Kunden, 1 Lieferant) |
+| `test_documents.json` | Belege |
+| `test_invoices.json` | 50 Rechnungen (2024–2026, diverse Status) |
+
+`seed_data/private/` bleibt leer im Repository (in `.gitignore`).
 
 ---
 
