@@ -40,12 +40,20 @@ def PageReceipts(db: Database):
     
     # Header3 with date filter
     header3_content = f'''
-        Von: <input type="date" id="dateFrom" onchange="filterReceiptsByDate()"> 
-        Bis: <input type="date" id="dateTo" onchange="filterReceiptsByDate()"> &nbsp;
-        <button onclick="setReceiptYear({current_year})">{current_year}</button>
-        <button onclick="setReceiptYear({current_year-1})">{current_year-1}</button>
-        <button onclick="setReceiptYear({current_year-2})">{current_year-2}</button>
-        <button onclick="setReceiptYear({current_year-3})">{current_year-3}</button>
+        <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+            <div>
+                Von: <input type="date" id="dateFrom" onchange="filterReceipts()">
+                Bis: <input type="date" id="dateTo" onchange="filterReceipts()"> &nbsp;
+                <button onclick="setReceiptYear({current_year})">{current_year}</button>
+                <button onclick="setReceiptYear({current_year-1})">{current_year-1}</button>
+                <button onclick="setReceiptYear({current_year-2})">{current_year-2}</button>
+                <button onclick="setReceiptYear({current_year-3})">{current_year-3}</button>
+            </div>
+            <div>
+                <label>Suche:</label>
+                <input type="text" id="receiptSearch" oninput="filterReceipts()" placeholder="Dateiname / Pfad / Info" style="width: 200px;">
+            </div>
+        </div>
     '''
     s+= Header3(header3_content)
     
@@ -65,7 +73,11 @@ def PageReceipts(db: Database):
         inf = _html.escape(str(row[5] or ''))
         s += f'<tr class="receipt-row" data-date="{row[2]}" data-id="{row[0]}" data-number="{n}" data-filename="{fn}" data-path="{pt}" data-info="{inf}">'
         s += f'<td>{n}</td><td>{row[2]}</td><td>{fn}</td><td>{pt}</td><td>{inf}</td>'
-        s += f'<td><a href="#" class="action-icon" onclick="editReceiptFromRow(this); return false;">Bearbeiten</a></td></tr>'
+        s += (f'<td>'
+              f'<a href="#" class="action-icon" onclick="editReceiptFromRow(this); return false;" title="Bearbeiten">&#9998;</a>'
+              f' <a href="/receipts/delete?number={n}" class="action-icon delete-icon" title="L\u00f6schen"'
+              f' onclick="return confirm(\'Beleg wirklich l\u00f6schen?\')">&#128465;</a>'
+              f'</td></tr>')
     s += '''
             </table>
         </div><!-- Ende linke Spalte -->
@@ -84,37 +96,27 @@ def PageReceipts(db: Database):
                 <div id="uploadStatus"></div>
             </div>
 
-            <!-- Neuen Beleg anlegen -->
+            <!-- Neuer Beleg / Beleg bearbeiten -->
             <div class="rectRounded">
-                <h2>Neuen Beleg anlegen</h2>
-                <form method="POST" action="/add_receipt">
+                <h2 id="receiptFormTitle">Neuer Beleg</h2>
+                <form method="POST" action="/add_receipt" id="receiptForm">
+                    <input type="hidden" name="id" id="editId" value="">
                     <table>
     '''
-    s += f'<tr><td>Nummer:</td><td><input type="text" name="number" value="{next_receipt_number}"></td></tr>'
+    s += f'<tr><td>Nummer:</td><td><input type="text" name="number" id="editNumber" value="{next_receipt_number}"></td></tr>'
     s += '''
-                        <tr><td>Datum:</td><td><input type="date" name="date"></td></tr>
-                        <tr><td>Dateiname:</td><td><input type="text" name="filename"></td></tr>
-                        <tr><td>Pfad:</td><td><input type="text" name="path"></td></tr>
-                        <tr><td>Info:</td><td><input type="text" name="info"></td></tr>
-                        <tr><td></td><td><input type="submit" value="Beleg hinzuf&uuml;gen"></td></tr>
-                    </table>
-                </form>
-            </div>
-
-            <!-- Beleg bearbeiten (inline) -->
-            <div class="rectRounded" id="editReceiptForm" style="display:none">
-                <h2>Beleg bearbeiten</h2>
-                <form method="POST" action="/update_receipt">
-                    <input type="hidden" name="id" id="editId">
-                    <table>
-                        <tr><td>Nummer:</td><td><input type="text" name="number" id="editNumber"></td></tr>
                         <tr><td>Datum:</td><td><input type="date" name="date" id="editDate"></td></tr>
                         <tr><td>Dateiname:</td><td><input type="text" name="filename" id="editFilename" style="width:220px"></td></tr>
                         <tr><td>Pfad:</td><td><input type="text" name="path" id="editPath" style="width:220px"></td></tr>
                         <tr><td>Info:</td><td><input type="text" name="info" id="editInfo" style="width:220px"></td></tr>
                         <tr><td></td><td>
-                            <input type="submit" value="Aktualisieren">
-                            <button type="button" onclick="document.getElementById('editReceiptForm').style.display='none'">Abbrechen</button>
+                            <div id="btnNew">
+                                <input type="submit" value="Beleg hinzuf&uuml;gen" class="coloredButton btn-sm btn-green">
+                            </div>
+                            <div id="btnEdit" style="display:none">
+                                <input type="submit" value="Aktualisieren" class="coloredButton btn-sm btn-green">
+                                <a href="#" class="coloredButton btn-sm btn-gray" onclick="resetReceiptForm(); return false;">Abbrechen</a>
+                            </div>
                         </td></tr>
                     </table>
                 </form>
@@ -221,33 +223,41 @@ def PageReceipts(db: Database):
             document.getElementById('editFilename').value = row.dataset.filename;
             document.getElementById('editPath').value     = row.dataset.path;
             document.getElementById('editInfo').value     = row.dataset.info;
-            const form = document.getElementById('editReceiptForm');
-            form.style.display = 'block';
-            form.scrollIntoView({ behavior: 'smooth' });
+            document.getElementById('receiptForm').action           = '/update_receipt';
+            document.getElementById('receiptFormTitle').textContent = 'Beleg bearbeiten';
+            document.getElementById('btnNew').style.display  = 'none';
+            document.getElementById('btnEdit').style.display = '';
+            document.getElementById('receiptFormTitle').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function resetReceiptForm() {
+            location.reload();
         }
 
         function setReceiptYear(year) {
             document.getElementById('dateFrom').value = year + '-01-01';
             document.getElementById('dateTo').value = year + '-12-31';
-            filterReceiptsByDate();
+            filterReceipts();
         }
-        
-        function filterReceiptsByDate() {
+
+        function filterReceipts() {
             const dateFrom = document.getElementById('dateFrom').value;
-            const dateTo = document.getElementById('dateTo').value;
-            const rows = document.querySelectorAll('.receipt-row');
-            
-            rows.forEach(row => {
-                const rowDate = row.getAttribute('data-date');
+            const dateTo   = document.getElementById('dateTo').value;
+            const search   = document.getElementById('receiptSearch').value.toLowerCase();
+
+            document.querySelectorAll('.receipt-row').forEach(row => {
+                const rowDate = row.getAttribute('data-date') || '';
+                const rowText = (
+                    (row.getAttribute('data-filename') || '') + ' ' +
+                    (row.getAttribute('data-path') || '') + ' ' +
+                    (row.getAttribute('data-info') || '')
+                ).toLowerCase();
+
                 let show = true;
-                
-                if (dateFrom && rowDate < dateFrom) {
-                    show = false;
-                }
-                if (dateTo && rowDate > dateTo) {
-                    show = false;
-                }
-                
+                if (dateFrom && rowDate < dateFrom) show = false;
+                if (dateTo   && rowDate > dateTo)   show = false;
+                if (search   && !rowText.includes(search)) show = false;
+
                 row.style.display = show ? '' : 'none';
             });
         }
