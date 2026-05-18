@@ -244,3 +244,36 @@ class TestTableFormatImport:
         after = cur.fetchone()[0]
         conn.close()
         assert after == before, "Table-format import must not add new rows"
+
+    def test_table_format_updates_split_bank_booking(self, db_with_coa):
+        """Tabellenexport findet Bank-Buchung über verknüpfte Entry-Kinder (Split-Fallback)."""
+        # Bank-Buchung mit Gesamtbetrag (keine Belegnummer)
+        bank_id = db_with_coa.insert_booking(
+            '2024-04-10', -150.0, booking_type='bank'
+        )
+        # Entry-Kinder verknüpft via ParentBooking_ID
+        db_with_coa.insert_booking(
+            '2024-04-10', -100.0, booking_type='entry',
+            document_number='R2024-010', parent_booking_id=bank_id
+        )
+        db_with_coa.insert_booking(
+            '2024-04-10', -50.0, booking_type='entry',
+            document_number='privat', parent_booking_id=bank_id
+        )
+
+        csv_bytes = (
+            "Buchungsdatum;Empf./Auft.;Verwendungszweck;Kategorie;Beleg Nr.;Betrag\n"
+            "10.04.2024;Split GmbH;Teilrechnung April;;R2024-010;-150,00\n"
+        ).encode('utf-8')
+        result = db_with_coa.import_wiso_csv(csv_bytes)
+        assert result['errors'] == []
+        assert result['not_found'] == [], f"Split-Buchung nicht gefunden: {result['not_found']}"
+        assert result['updated'] == 1
+
+        conn = db_with_coa._get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT RecipientClient FROM Bookings WHERE ID=?", (bank_id,))
+        row = cur.fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] == 'Split GmbH'

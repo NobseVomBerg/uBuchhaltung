@@ -2383,14 +2383,37 @@ class Database:
                 rows = cursor.fetchall()
 
                 if len(rows) == 0:
-                    not_found.append({
-                        'zeile':  i,
-                        'datum':  booking_date,
-                        'beleg':  doc_number,
-                        'betrag': amount,
-                        'text':   purpose[:60],
-                    })
-                    continue
+                    # Fallback für Split-Buchungen: Bank-Buchung suchen, deren
+                    # verknüpfte Entry-Kinder die Belegnummer tragen.
+                    if doc_number:
+                        cursor.execute('''
+                            SELECT b.ID, b.RecipientClient, b.Text, b.COA_ID, b.ForeignBankAccount
+                            FROM Bookings b
+                            WHERE b.BookingType = 'bank'
+                              AND b.DateBooking = ?
+                              AND ABS(b.Amount) = ABS(?)
+                              AND EXISTS (
+                                SELECT 1 FROM Bookings c
+                                WHERE c.ParentBooking_ID = b.ID
+                                  AND (
+                                    c.DocumentNumber = ?
+                                    OR c.DocumentNumber LIKE (? || ',%')
+                                    OR c.DocumentNumber LIKE ('%,' || ?)
+                                    OR c.DocumentNumber LIKE ('%,' || ? || ',%')
+                                  )
+                              )
+                            LIMIT 1
+                        ''', (booking_date, amount, doc_number, doc_number, doc_number, doc_number))
+                        rows = cursor.fetchall()
+                    if len(rows) == 0:
+                        not_found.append({
+                            'zeile':  i,
+                            'datum':  booking_date,
+                            'beleg':  doc_number,
+                            'betrag': amount,
+                            'text':   purpose[:60],
+                        })
+                        continue
                 
                 if len(rows) > 1:
                     # Ohne Belegnummer und mehrdeutig → überspringen

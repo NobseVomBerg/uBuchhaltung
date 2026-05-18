@@ -479,6 +479,23 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             if is_private:
                 entry_docnr = 'privat'
 
+            # Für Split-Zeilen: alle Beleg-Nrn der Kinder zusammenführen
+            if count > 1:
+                seen_dns = set()
+                parts = []
+                for child_item in children:
+                    cb = child_item['booking']
+                    dn = cb[16] or ''
+                    cb_coa = cb[8]
+                    cb_ccoa = cb[9]
+                    if (cb_coa and cb_coa in private_coa_ids) or (cb_ccoa and cb_ccoa in private_coa_ids):
+                        dn = 'privat'
+                    if dn and dn not in seen_dns:
+                        seen_dns.add(dn)
+                        parts.append(dn)
+                if parts:
+                    entry_docnr = ', '.join(parts)
+
             if is_linked:
                 # Verknüpft: einzeilige Merged-Darstellung
                 status_badge = "<span class='status-badge-ok' title='Bank + Buchung verknüpft'>✓</span>"
