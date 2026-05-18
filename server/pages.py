@@ -133,26 +133,6 @@ def PageAbout():
     s+= Footer()
     return s
 
-def PageSettings(db: Database):
-    """Alias kept for backward compatibility â€“ delegates to PageMiscellaneous."""
-    from .pages_miscellaneous import PageMiscellaneous
-    return PageMiscellaneous(db)
-
-def PageReceipts(db: Database):
-    """Delegiert an pages_receipts.PageReceipts – ausgelagert."""
-    from .pages_receipts import PageReceipts as _PR
-    return _PR(db)
-
-def PageReceiptEdit(db: Database, number):
-    """Delegiert an pages_receipts.PageReceiptEdit – ausgelagert."""
-    from .pages_receipts import PageReceiptEdit as _PRE
-    return _PRE(db, number)
-
-def PageTransactions(db: Database, edit_transaction_id=None):
-    """Delegiert an pages_transactions.PageTransactions â€“ ausgelagert."""
-    from .pages_transactions import PageTransactions as _PT
-    return _PT(db, edit_transaction_id)
-
 def PageReminders(db: Database):
     """Generate reminders/dunning page for overdue invoices"""
     from datetime import date, timedelta
@@ -266,7 +246,3 @@ def PageReminders(db: Database):
     s += Footer()
     return s
 
-
-def PageDashboard(db: Database):
-    from .pages_dashboard import PageDashboard as _PD
-    return _PD(db)

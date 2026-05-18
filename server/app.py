@@ -25,6 +25,7 @@ from .pages_miscellaneous import PageMiscellaneous
 from .pages_booking_groups import PageBookingGroups, PageBookingGroupDetails
 from .pages_transactions import PageTransactions, PageConfirmTransactions
 from .pages_dashboard import PageDashboard
+from .pages_receipts import PageReceipts, PageReceiptEdit
 from .pages_setup import PageSetup
 
 class SimpleWebServer(BaseHTTPRequestHandler):
@@ -152,7 +153,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path == "/invoice/reminders":
                 self.respond(200, pages.PageReminders(db))
             elif self.path == "/dashboard":
-                self.respond(200, pages.PageDashboard(db))
+                self.respond(200, PageDashboard(db))
             # ── Master Data (Stammdaten) ──────────────────────────────────
             elif self.path == "/masterdata":
                 self.respond(200, PageMasterData(db))
@@ -210,11 +211,11 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path == "/miscellaneous" or self.path.startswith("/miscellaneous?"):
                 self.respond(200, PageMiscellaneous(db))
             elif self.path == "/receipts":
-                self.respond(200, pages.PageReceipts(db))
+                self.respond(200, PageReceipts(db))
             elif self.path.startswith("/receipts/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 number = query_components["number"][0]
-                self.respond(200, pages.PageReceiptEdit(db, number))
+                self.respond(200, PageReceiptEdit(db, number))
             elif self.path.startswith("/receipts/delete"):
                 query_components = parse_qs(self.path.split('?')[1])
                 number = query_components["number"][0]
