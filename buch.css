@@ -2,7 +2,7 @@
 h1 						{ font-size: 14; font-size: 1em; margin-left: 8px; margin-top: 8; }
 h2 						{ font-size: 12; font-size: 1em; margin-left: 8px; margin-top: 4; }
 h3 						{ font-size: 11; font-size: 1em; margin-left: 8px; margin-top: 0; }
-table					{ margin-bottom: 15px; padding: 10px; border: 1px; border-radius: 5px; border-style: ridge; }
+table					{ padding: 1px; border: 1px; border-radius: 5px; border-style: ridge; }
 td, th					{ padding-top: 0px; padding-bottom: 0px; padding-left: 8px; padding-right: 8px; border: 0px solid; }
 a:link					{ color: #44F; text-decoration: none; }
 a:visited				{ color: #44F; text-decoration: none; }
@@ -19,7 +19,7 @@ a:focus					{ color: #84F; text-decoration: none; }
 #Comment				{ color: #4C4; }
 #ActivePage				{ color: #F48; }
 .textareaSql			{ font-family: monospace; width: 100%; max-width: 1000px; margin-top: 10px; }
-.gridLeftCol			{ flex: 0 0 auto; overflow-y: auto; max-height: calc(100vh - 170px); }
+.gridLeftCol			{ flex: 0 0 auto; overflow-y: auto; max-height: calc(100vh - 100px); }
 .gridRightCol			{ flex: 0 0 auto; display: flex; flex-direction: column; gap: 16px; position: sticky; top: 10px; }
 
 /* Accounts page styles */

@@ -187,9 +187,8 @@ def PageReceipts(db: Database):
 
         <!-- LINKS: scrollbare Belegliste -->
         <div class="gridLeftCol">
-                <h2>Vorhandene Belege</h2>
-                <table>
-                    <tr><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Pfad</th><th>Info</th><th>Aktionen</th></tr>
+            <table>
+                <tr><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Pfad</th><th>Info</th><th>Aktionen</th></tr>
         '''
     for row in rows:
         n   = _html.escape(str(row[1] or ''))
@@ -200,7 +199,7 @@ def PageReceipts(db: Database):
         s += f'<td>{n}</td><td>{row[2]}</td><td>{fn}</td><td>{pt}</td><td>{inf}</td>'
         s += f'<td><a href="#" class="action-icon" onclick="editReceiptFromRow(this); return false;">Bearbeiten</a></td></tr>'
     s += '''
-                </table>
+            </table>
         </div><!-- Ende linke Spalte -->
 
         <!-- RECHTS: Drag&Drop oben, Formular unten -->

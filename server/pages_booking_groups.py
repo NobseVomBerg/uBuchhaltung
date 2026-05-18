@@ -52,7 +52,6 @@ def PageBookingGroups(db: Database):
     s += '<div class="gridLeftCol" style="order:1">'
     groups = db.fetch_booking_groups()
 
-    s += '<h2>Vorhandene Gruppen</h2>'
     if not groups:
         s += '<p>Noch keine Split-Buchungsgruppen vorhanden.</p>'
     else:

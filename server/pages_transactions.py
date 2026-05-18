@@ -368,7 +368,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     </script>
     '''
     s+= '<div class="gridLeftCol" style="order:1">'    # ── Buchungstabelle ───────────────────────────────────────────────────
-    s+= "<h2>Kontobewegungen</h2>"
+#    s+= "<h2>Kontobewegungen</h2>"
     s+= "<table id='transactionsTable'>"
     s+= ("<tr><th>Datum</th><th>Empfänger/Auftragg.</th><th>Text</th>"
          "<th>Betrag</th><th>Währung</th><th>Konto</th><th>Kunde</th>"
