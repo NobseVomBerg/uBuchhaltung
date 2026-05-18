@@ -27,6 +27,7 @@ from .pages_transactions import PageTransactions, PageConfirmTransactions
 from .pages_dashboard import PageDashboard
 from .pages_receipts import PageReceipts, PageReceiptEdit
 from .pages_setup import PageSetup
+from .pages_invoice import PageInvoice, PageInvoiceNew
 
 class SimpleWebServer(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -60,18 +61,18 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                         filters['date_from'] = query_components['date_from'][0]
                     if 'date_to' in query_components:
                         filters['date_to'] = query_components['date_to'][0]
-                self.respond(200, pages.PageInvoice(db, filters))
+                self.respond(200, PageInvoice(db, filters))
             elif self.path == "/invoice/new":
-                self.respond(200, pages.PageInvoiceNew(db))
+                self.respond(200, PageInvoiceNew(db))
             elif self.path.startswith("/invoice/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 invoice_id = int(query_components["id"][0])
-                self.respond(200, pages.PageInvoiceNew(db, invoice_id))
+                self.respond(200, PageInvoiceNew(db, invoice_id))
             elif self.path.startswith("/invoice/view"):
                 # Redirect to edit page (view and edit are the same now)
                 query_components = parse_qs(self.path.split('?')[1])
                 invoice_id = int(query_components["id"][0])
-                self.respond(200, pages.PageInvoiceNew(db, invoice_id))
+                self.respond(200, PageInvoiceNew(db, invoice_id))
             elif self.path.startswith("/invoice/xml"):
                 # Generate and download XRechnung XML
                 query_components = parse_qs(self.path.split('?')[1])
@@ -608,7 +609,15 @@ class SimpleWebServer(BaseHTTPRequestHandler):
 
 # Start web server
 def run_server(host="localhost", port=8080):
-    #db = Database()
+    import socket, sys
+    # Prüfen ob der Port schon belegt ist
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _s:
+        if _s.connect_ex((host, port)) == 0:
+            print(f"\nFEHLER: Port {port} ist bereits belegt – läuft noch eine andere Server-Instanz?")
+            print(f"  Windows:  Stop-Process -Id (netstat -ano | findstr :{port})")
+            print(f"  Unix:     kill $(lsof -ti:{port})")
+            sys.exit(1)
+
     server_address = (host, port)
     httpd = HTTPServer(server_address, SimpleWebServer)
     print(f"Starting server on {host}:{port}...")

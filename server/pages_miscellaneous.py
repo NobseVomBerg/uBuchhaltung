@@ -86,6 +86,7 @@ def PageMiscellaneous(db: Database):
     s += '</div>'
 
     s += '<div class="grid1RowPrefered">'
+    s += '\t<div>' # first Column should get two Entries :)
     # ── DB Export as SQL ──────────────────────────────────────────────────────
     s += '\t<div class="rectRounded">'
     s += '''
@@ -146,6 +147,7 @@ def PageMiscellaneous(db: Database):
         </script>
         '''
     s += '\t</div>'
+    s += '\t</div>' # Common div for both Exports end
     s += '\t<div class="rectRounded">'
     # ── WISO Mein Büro Import ─────────────────────────────────────────────────
     import json as _json, os as _os
@@ -259,6 +261,17 @@ def PageMiscellaneous(db: Database):
             for _e in _errors:
                 s += f'<li>{_e}</li>'
             s += '</ul>'
+    s += '\t</div>'
+    # ── Testdaten ─────────────────────────────────────────────────────────────
+    s += '\t<div class="rectRounded">'
+    s += '''
+        <h2>🧪 Testdaten</h2>
+        <p>Lädt alle Testdaten aus <code>seed_data/test/</code> nach (Artikel, Kontakte, Anlagen, Rechnungen, ...).<br>
+        Der Vorgang ist <strong>idempotent</strong> – bereits vorhandene Einträge werden übersprungen.</p>
+        <form method="POST" action="/setup/load_testdata">
+            <button type="submit" class="coloredButton btn-orange">🧪 Testdaten nachladen</button>
+        </form>
+        '''
     s += '\t</div>'
     s += '</div>'
 

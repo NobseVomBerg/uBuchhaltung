@@ -1725,7 +1725,7 @@ class Database:
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT a.*, ac.Name as CategoryName, c.Name as SupplierName
+            SELECT a.*, ac.Name as CategoryName, c.DisplayName as SupplierName
             FROM Assets a
             LEFT JOIN AssetCategories ac ON a.AssetCategory_ID = ac.ID
             LEFT JOIN Contacts c ON a.Supplier_ID = c.ID
