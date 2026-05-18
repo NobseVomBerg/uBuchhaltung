@@ -69,131 +69,181 @@ def PageMasterData(db: Database):
 # ARTICLES (Artikel)
 # ══════════════════════════════════════════════════════════════════════
 
-def PageArticles(db: Database):
-    """Generate articles management page"""
+def PageArticles(db: Database, edit_article_id=None):
+    """Generate articles management page with inline edit form (grid2Rows layout)"""
     articles = db.fetch_articles()
+
+    # Artikel zum Bearbeiten laden
+    edit_article = None
+    if edit_article_id:
+        edit_article = db.get_article_by_id(edit_article_id)
+
     s = Header1('masterdata')
     submenu = '<a href="/masterdata">Stammdaten</a> -> <span id="ActivePage">📦 Artikel</span>'
     s += Header2(submenu)
-    s += Header3()
-    
-    s += '''
-        <h2>Neuen Artikel anlegen</h2>
-        <form method="POST" action="/masterdata/articles/add">
+
+    header3_content = '''
+        <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+            <div>
+                <label>Suche:</label>
+                <input type="text" id="articleSearch" oninput="filterArticles()" placeholder="Bezeichnung / Beschreibung" style="width: 200px;">
+            </div>
+            <div>
+                <label>Status:</label>
+                <select id="activeFilter" onchange="filterArticles()">
+                    <option value="">Alle</option>
+                    <option value="1">Nur aktive</option>
+                    <option value="0">Nur inaktive</option>
+                </select>
+            </div>
+            <div>
+                <label>MwSt:</label>
+                <select id="taxFilter" onchange="filterArticles()">
+                    <option value="">Alle</option>
+                    <option value="0">0%</option>
+                    <option value="7">7%</option>
+                    <option value="19">19%</option>
+                </select>
+            </div>
+            <div>
+                <label>Min. Preis:</label>
+                <input type="number" step="0.01" class="noButtons" id="minPrice" oninput="filterArticles()" style="width: 80px;">
+                <label>Max. Preis:</label>
+                <input type="number" step="0.01" class="noButtons" id="maxPrice" oninput="filterArticles()" style="width: 80px;">
+            </div>
+        </div>
+    '''
+    s += Header3(header3_content)
+
+    # Formular-Modus
+    form_title = "Artikel bearbeiten" if edit_article else "Neuer Artikel"
+
+    ea_name       = edit_article[1] if edit_article else ''
+    ea_unit       = edit_article[2] if edit_article else 'Stk.'
+    ea_unit_price = edit_article[3] if edit_article else 0.0
+    ea_tax_rate   = int(edit_article[4]) if edit_article else 19
+    ea_desc       = edit_article[5] if edit_article else ''
+    ea_active     = edit_article[6] if edit_article and len(edit_article) > 6 else 1
+
+    unit_options = [
+        ('Stk.', 'Stk. (Stück)'), ('Std.', 'Std. (Stunde)'),
+        ('kg', 'kg (Kilogramm)'), ('g', 'g (Gramm)'),
+        ('m', 'm (Meter)'), ('m²', 'm² (Quadratmeter)'),
+        ('l', 'l (Liter)'), ('Psch.', 'Psch. (Pauschale)'),
+    ]
+    unit_select = ''.join(
+        f'<option value="{u}" {"selected" if u == ea_unit else ""}>{label}</option>'
+        for u, label in unit_options
+    )
+    tax_select = ''.join(
+        f'<option value="{r}" {"selected" if r == ea_tax_rate else ""}>{label}</option>'
+        for r, label in [(19, '19%'), (7, '7%'), (0, '0%')]
+    )
+    active_checked = 'checked' if ea_active else ''
+    id_row = (f'<tr><td>ID:</td><td style="color:#666;">{edit_article[0]}'
+              f'<input type="hidden" name="id" value="{edit_article[0]}"></td></tr>'
+              if edit_article else '')
+    if edit_article:
+        action_buttons = (
+            '<input type="submit" value="Aktualisieren" class="coloredButton btn-sm btn-green">'
+            '<input type="submit" value="Als neu anlegen" formaction="/masterdata/articles/add" class="coloredButton btn-sm btn-blue">'
+            '<a href="/masterdata/articles" class="coloredButton btn-sm btn-gray">Abbrechen</a>'
+        )
+    else:
+        action_buttons = '<input type="submit" value="Artikel hinzufügen" class="coloredButton btn-sm btn-green">'
+
+    s += f'''
+    <div class="grid2Rows">
+    <div class="gridRightCol" style="order:2">
+        <div class="rectRounded">
+        <h2>{form_title}</h2>
+        <form method="POST" action="/masterdata/articles/update">
             <table>
-                <tr><td>Bezeichnung:</td><td><input type="text" name="name" required size="50"></td></tr>
-                <tr><td>Einheit:</td><td>
-                    <select name="unit">
-                        <option value="Stk.">Stk. (Stück)</option>
-                        <option value="Std.">Std. (Stunde)</option>
-                        <option value="kg">kg (Kilogramm)</option>
-                        <option value="g">g (Gramm)</option>
-                        <option value="m">m (Meter)</option>
-                        <option value="m²">m² (Quadratmeter)</option>
-                        <option value="l">l (Liter)</option>
-                        <option value="Psch.">Psch. (Pauschale)</option>
-                    </select>
+                {id_row}
+                <tr><td>Bezeichnung:</td><td><input type="text" name="name" value="{ea_name}" required size="40"></td></tr>
+                <tr><td>Einheit:</td><td><select name="unit">{unit_select}</select></td></tr>
+                <tr><td>Einzelpreis (netto):</td><td><input type="number" step="0.01" name="unit_price" value="{ea_unit_price:.2f}"> €</td></tr>
+                <tr><td>MwSt (%):</td><td><select name="tax_rate">{tax_select}</select></td></tr>
+                <tr><td>Beschreibung:</td><td><textarea name="description" rows="3" cols="38">{ea_desc}</textarea></td></tr>
+                <tr><td>Aktiv:</td><td><input type="checkbox" name="active" value="1" {active_checked}></td></tr>
+                <tr><td></td><td>
+                    {action_buttons}
                 </td></tr>
-                <tr><td>Einzelpreis (netto):</td><td><input type="number" step="0.01" name="unit_price" value="0.00"> €</td></tr>
-                <tr><td>MwSt (%):</td><td>
-                    <select name="tax_rate">
-                        <option value="19" selected>19%</option>
-                        <option value="7">7%</option>
-                        <option value="0">0%</option>
-                    </select>
-                </td></tr>
-                <tr><td>Beschreibung:</td><td><textarea name="description" rows="2" cols="50"></textarea></td></tr>
-                <tr><td>Aktiv:</td><td><input type="checkbox" name="active" value="1" checked> (nur aktive Artikel werden in Rechnungen angezeigt)</td></tr>
-                <tr><td></td><td><input type="submit" value="Artikel hinzufügen"></td></tr>
             </table>
         </form>
+        </div>
+    </div>
+    <div class="gridLeftCol" style="order:1">
+        <table>
+            <tr><th>Bezeichnung</th><th>Einheit</th><th>Preis (netto)</th><th>MwSt</th><th>Beschreibung</th><th>Aktionen</th></tr>
     '''
-    
-    s += "<h2>Artikelverzeichnis</h2>"
-    s += "<table>"
-    s += "<tr><th>ID</th><th>Bezeichnung</th><th>Einheit</th><th>Einzelpreis (netto)</th><th>MwSt</th><th>Beschreibung</th><th>Aktiv</th><th>Aktionen</th></tr>"
-    
+
     for article in articles:
-        article_id = article[0]
-        name = article[1] or ''
-        unit = article[2] or 'Stk.'
-        unit_price = article[3] or 0
-        tax_rate = article[4] or 19
+        article_id  = article[0]
+        name        = article[1] or ''
+        unit        = article[2] or 'Stk.'
+        unit_price  = article[3] or 0
+        tax_rate    = article[4] or 19
         description = article[5] or ''
-        active = article[6] if len(article) > 6 else 1
-        active_display = "✓" if active else "✗"
-        active_style = "successColor" if active else "errorColor"
-        
-        s += f"<tr>"
-        s += f"<td>{article_id}</td>"
+        active      = article[6] if len(article) > 6 else 1
+
+        active_badge = ("<span class='status-badge-ok' title='Aktiv'>✓</span>"
+                        if active else
+                        "<span class='status-badge-open' title='Inaktiv'>✗</span>")
+        s += (f"<tr class='article-row' "
+              f"data-active='{active}' "
+              f"data-tax='{int(tax_rate)}' "
+              f"data-price='{unit_price}'>")
         s += f"<td>{name}</td>"
         s += f"<td>{unit}</td>"
-        s += f"<td style='text-align: right;'>{unit_price:.2f} €</td>"
-        s += f"<td>{tax_rate:.0f}%</td>"
+        s += f"<td style='text-align:right;'>{unit_price:.2f}&nbsp;€</td>"
+        s += f"<td>{int(tax_rate)}%</td>"
         s += f"<td>{description[:50]}</td>"
-        s += f"<td style='text-align: center;' class='{active_style}'>{active_display}</td>"
-        s += f"<td><a href='/masterdata/articles/edit?id={article_id}'>Bearbeiten</a> | <a href='/masterdata/articles/delete?id={article_id}' onclick='return confirm(\"Artikel wirklich löschen?\")'>Löschen</a></td>"
+        s += (f"<td>{active_badge}"
+              f" <a href='/masterdata/articles/edit?id={article_id}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
+              f" <a href='/masterdata/articles/delete?id={article_id}' class='action-icon delete-icon' title='Löschen'"
+              f" onclick='return confirm(\"Artikel wirklich löschen?\")'>&#128465;</a></td>")
         s += f"</tr>"
-    
+
     s += "</table>"
+    s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Rows -->'
+
+    s += '''
+    <script>
+        function filterArticles() {
+            const search    = document.getElementById('articleSearch').value.toLowerCase();
+            const activeVal = document.getElementById('activeFilter').value;
+            const taxVal    = document.getElementById('taxFilter').value;
+            const minPrice  = parseFloat(document.getElementById('minPrice').value);
+            const maxPrice  = parseFloat(document.getElementById('maxPrice').value);
+
+            document.querySelectorAll('.article-row').forEach(row => {
+                const rowActive = row.getAttribute('data-active');
+                const rowTax    = row.getAttribute('data-tax');
+                const rowPrice  = parseFloat(row.getAttribute('data-price'));
+                const rowText   = row.textContent.toLowerCase();
+
+                let show = true;
+                if (search    && !rowText.includes(search))  show = false;
+                if (activeVal && rowActive !== activeVal)     show = false;
+                if (taxVal    && rowTax    !== taxVal)        show = false;
+                if (!isNaN(minPrice) && rowPrice < minPrice) show = false;
+                if (!isNaN(maxPrice) && rowPrice > maxPrice) show = false;
+
+                row.style.display = show ? '' : 'none';
+            });
+        }
+    </script>
+    '''
+
     s += Footer()
     return s
 
 
 def PageArticleEdit(db: Database, article_id):
-    """Generate article edit page"""
-    article = db.get_article_by_id(article_id)
-    if not article:
-        return "Artikel nicht gefunden."
-    
-    s = Header1('masterdata')
-    submenu = '<a href="/masterdata">Stammdaten</a> -> <a href="/masterdata/articles">📦 Artikel</a> -> <span id="ActivePage">Bearbeiten</span>'
-    s += Header2(submenu)
-    s += Header3()
-    
-    # Extract article data (ID=0, Name=1, Unit=2, UnitPrice=3, TaxRate=4, Description=5, Active=6)
-    name = article[1] or ''
-    unit = article[2] or 'Stk.'
-    unit_price = article[3] or 0
-    tax_rate = article[4] or 19
-    description = article[5] or ''
-    active = article[6] if len(article) > 6 else 1
-    
-    # Unit options with selection
-    unit_options = ['Stk.', 'Std.', 'kg', 'g', 'm', 'm²', 'l', 'Psch.']
-    unit_select = ""
-    for u in unit_options:
-        selected = 'selected' if u == unit else ''
-        unit_select += f'<option value="{u}" {selected}>{u}</option>'
-    
-    # Tax rate options with selection
-    tax_options = [(19, '19%'), (7, '7%'), (0, '0%')]
-    tax_select = ""
-    for rate, label in tax_options:
-        selected = 'selected' if rate == tax_rate else ''
-        tax_select += f'<option value="{rate}" {selected}>{label}</option>'
-    
-    active_checked = 'checked' if active else ''
-    
-    s += f'''
-        <h2>Artikel bearbeiten</h2>
-        <form method="POST" action="/masterdata/articles/update">
-            <input type="hidden" name="id" value="{article_id}">
-            <table>
-                <tr><td>ID:</td><td>{article_id}</td></tr>
-                <tr><td>Bezeichnung:</td><td><input type="text" name="name" value="{name}" required size="50"></td></tr>
-                <tr><td>Einheit:</td><td><select name="unit">{unit_select}</select></td></tr>
-                <tr><td>Einzelpreis (netto):</td><td><input type="number" step="0.01" name="unit_price" value="{unit_price:.2f}"> €</td></tr>
-                <tr><td>MwSt (%):</td><td><select name="tax_rate">{tax_select}</select></td></tr>
-                <tr><td>Beschreibung:</td><td><textarea name="description" rows="2" cols="50">{description}</textarea></td></tr>
-                <tr><td>Aktiv:</td><td><input type="checkbox" name="active" value="1" {active_checked}> (nur aktive Artikel werden in Rechnungen angezeigt)</td></tr>
-                <tr><td></td><td><input type="submit" value="Artikel aktualisieren"></td></tr>
-            </table>
-        </form>
-        <p><a href="/masterdata/articles">Zurück zum Artikelverzeichnis</a></p>
-    '''
-    s += Footer()
-    return s
+    """Delegiert an PageArticles mit gesetzter Edit-ID."""
+    return PageArticles(db, edit_article_id=article_id)
+
 
 
 # ══════════════════════════════════════════════════════════════════════

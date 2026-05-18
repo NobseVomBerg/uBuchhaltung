@@ -46,9 +46,9 @@ a:focus					{ color: #84F; text-decoration: none; }
                               padding: 2px 6px; border-radius: 10px; vertical-align: middle; margin-right: 3px; }
 
 /* Aktions-Icons in Tabellenspalten */
-.action-icon                { font-size: 1em; text-decoration: none; margin: 0 3px; opacity: 0.65; vertical-align: middle; }
+.action-icon                { font-size: 1em; text-decoration: none; margin: 0 3px; opacity: 0.80; vertical-align: middle; }
 .action-icon:hover          { opacity: 1; text-decoration: none; }
-.action-icon.delete-icon    { color: #e53935; }
+.action-icon.delete-icon    { color: #F44; }
 
 
 /* dark mode */
@@ -164,13 +164,15 @@ a:focus					{ color: #84F; text-decoration: none; }
 .muted						{ color: #666; }
 
 /* Colored link-buttons (shared base + color modifier) */
-.coloredButton				{ display: inline-block; padding: 9px 16px; color: white; text-decoration: none; border-radius: 5px; margin-right: 6px; margin-bottom: 4px; }
+.coloredButton				{ display: inline-block; padding: 9px 16px; color: white; text-decoration: none; border-radius: 5px; border: none; cursor: pointer; margin-right: 6px; margin-bottom: 4px; }
 .coloredButton:hover		{ filter: brightness(0.88); color: white; text-decoration: none; }
+.btn-sm						{ padding: 5px 11px; font-size: 0.9em; }
 .btn-green					{ background: #4CAF50; }
 .btn-orange					{ background: #ff9900; }
 .btn-red					{ background: #dc3545; }
 .btn-blue					{ background: #0066cc; }
 .btn-indigo					{ background: #2196F3; }
+.btn-gray					{ background: #888; }
 
 @media print {
 	h1 					{ font-size: 12; font-size: 1em; }
