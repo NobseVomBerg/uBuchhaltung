@@ -100,8 +100,47 @@ def Header3(content=""):
     return s
 
 def Footer():
-    """Generate page footer"""
-    s = "</body></html>"
+    """Generate page footer with shared confirm-modal and notification bar."""
+    s = '''
+<div id="app_confirm" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.45);z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:6px;padding:30px 36px;max-width:440px;width:90%;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.25);">
+    <p id="app_confirm_text" style="margin:0 0 22px;font-size:15px;line-height:1.4;"></p>
+    <button id="app_confirm_ok" class="coloredButton btn-green">OK</button>
+    <button class="coloredButton btn-gray" style="margin-left:10px;"
+            onclick="document.getElementById('app_confirm').style.display='none'">Abbrechen</button>
+  </div>
+</div>
+<div id="app_msg" style="display:none;position:fixed;bottom:20px;right:20px;max-width:420px;padding:12px 18px;border-radius:5px;font-size:14px;box-shadow:0 2px 10px rgba(0,0,0,.2);z-index:10000;"></div>
+<script>
+function appConfirm(text, onOk) {
+  document.getElementById('app_confirm_text').textContent = text;
+  document.getElementById('app_confirm_ok').onclick = function() {
+    document.getElementById('app_confirm').style.display = 'none';
+    onOk();
+  };
+  document.getElementById('app_confirm').style.display = 'flex';
+}
+function appConfirmHref(url, text) {
+  appConfirm(text, function() { window.location.href = url; });
+}
+function appMsg(text, type) {
+  type = type || 'info';
+  var styles = {
+    success: 'background:#d4edda;color:#155724;border:1px solid #c3e6cb',
+    error:   'background:#f8d7da;color:#721c24;border:1px solid #f5c6cb',
+    warn:    'background:#fff3cd;color:#856404;border:1px solid #ffc107',
+    info:    'background:#d1ecf1;color:#0c5460;border:1px solid #bee5eb'
+  };
+  var bar = document.getElementById('app_msg');
+  bar.setAttribute('style', (styles[type] || styles.info)
+    + ';display:block;position:fixed;bottom:20px;right:20px;max-width:420px;'
+    + 'padding:12px 18px;border-radius:5px;font-size:14px;'
+    + 'box-shadow:0 2px 10px rgba(0,0,0,.2);z-index:10000;');
+  bar.textContent = text;
+  if (type !== 'error') setTimeout(function() { bar.style.display = 'none'; }, 5000);
+}
+</script>
+</body></html>'''
     return s
 
 def PageAbout():

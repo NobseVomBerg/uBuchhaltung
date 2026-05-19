@@ -92,8 +92,8 @@ def PageBookingGroups(db: Database):
                 <td>
                     <a href="/bookinggroups/view?id={group_id}">Details</a>
                     &nbsp;|&nbsp;
-                    <a href="/bookinggroups/delete?id={group_id}"
-                       onclick="return confirm('Gruppe {group_id} löschen? Die Buchungen bleiben erhalten, werden aber aus der Gruppe gelöst.')">
+                    <a href="javascript:void(0);"
+                       onclick="appConfirmHref('/bookinggroups/delete?id={group_id}', 'Gruppe {group_id} löschen? Die Buchungen bleiben erhalten, werden aber aus der Gruppe gelöst.')">
                        Löschen</a>
                 </td>
             </tr>'''
@@ -155,8 +155,8 @@ def PageBookingGroupDetails(db: Database, group_id: int):
                 <td>
                     <input type="submit" value="Speichern">
                     &nbsp;
-                    <a href="/bookinggroups/delete?id={group_id}"
-                       onclick="return confirm('Gruppe {group_id} wirklich löschen? Buchungen bleiben erhalten.')"
+                    <a href="javascript:void(0);"
+                       onclick="appConfirmHref('/bookinggroups/delete?id={group_id}', 'Gruppe {group_id} wirklich l\u00f6schen? Buchungen bleiben erhalten.')"
                        class="btn-delete">Gruppe löschen</a>
                 </td>
             </tr>
@@ -230,8 +230,8 @@ def PageBookingGroupDetails(db: Database, group_id: int):
                 <td>
                     <a href="/transactions/edit?id={bid}">Bearbeiten</a>
                     &nbsp;|&nbsp;
-                    <a href="/bookinggroups/unlink_booking?booking_id={bid}&amp;group_id={group_id}"
-                       onclick="return confirm('Buchung {bid} aus Gruppe herauslösen?')">Herauslösen</a>
+                    <a href="javascript:void(0);"
+                       onclick="appConfirmHref('/bookinggroups/unlink_booking?booking_id={bid}&group_id={group_id}', 'Buchung {bid} aus Gruppe herauslösen?')">Herauslösen</a>
                 </td>
             </tr>'''
 

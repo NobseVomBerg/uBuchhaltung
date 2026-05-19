@@ -75,8 +75,8 @@ def PageReceipts(db: Database):
         s += f'<td>{n}</td><td>{row[2]}</td><td>{fn}</td><td>{pt}</td><td>{inf}</td>'
         s += (f'<td>'
               f'<a href="#" class="action-icon" onclick="editReceiptFromRow(this); return false;" title="Bearbeiten">&#9998;</a>'
-              f' <a href="/receipts/delete?number={n}" class="action-icon delete-icon" title="L\u00f6schen"'
-              f' onclick="return confirm(\'Beleg wirklich l\u00f6schen?\')">&#128465;</a>'
+              f' <a href="javascript:void(0);" class="action-icon delete-icon" title="L\u00f6schen"'
+              f' onclick="appConfirmHref(\'/receipts/delete?number={n}\', \'Beleg wirklich löschen?\')">&#128465;</a>'
               f'</td></tr>')
     s += '''
             </table>

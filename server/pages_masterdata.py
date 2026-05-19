@@ -201,8 +201,8 @@ def PageArticles(db: Database, edit_article_id=None):
         s += f"<td>{description[:50]}</td>"
         s += (f"<td>{active_badge}"
               f" <a href='/masterdata/articles/edit?id={article_id}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
-              f" <a href='/masterdata/articles/delete?id={article_id}' class='action-icon delete-icon' title='Löschen'"
-              f" onclick='return confirm(\"Artikel wirklich löschen?\")'>&#128465;</a></td>")
+              f" <a href='javascript:void(0);' class='action-icon delete-icon' title='Löschen'"
+              f" onclick='appConfirmHref(\"/masterdata/articles/delete?id={article_id}\", \"Artikel wirklich löschen?\")'>&#128465;</a></td>")
         s += f"</tr>"
 
     s += "</table>"
@@ -517,7 +517,7 @@ def PageNumberRanges(db: Database):
                 s += f"<td><strong>{next_formatted}</strong></td>"
                 s += f"<td>{description}</td>"
                 s += f"<td><a href='/masterdata/numberranges/edit?id={range_id}'>Bearbeiten</a> | "
-                s += f"<a href='/masterdata/numberranges/delete?id={range_id}' onclick='return confirm(\"Nummernkreis wirklich löschen?\")'>Löschen</a></td>"
+                s += f"<a href='javascript:void(0);' onclick='appConfirmHref(\"/masterdata/numberranges/delete?id={range_id}\", \"Nummernkreis wirklich löschen?\")'>Löschen</a></td>"
                 s += f"</tr>"
 
             s += "</table>"

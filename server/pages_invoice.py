@@ -1313,16 +1313,17 @@ function setInvoiceStatus(invId) {{
         s += f'''    </div>
     <script>
         function deletePayment(paymentId) {{
-            if (!confirm('Zahlungsverknüpfung wirklich entfernen?')) return;
-            fetch('/invoice/delete-payment', {{
-                method: 'POST',
-                headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{payment_id: paymentId}})
-            }})
-            .then(r => r.json())
-            .then(data => {{
-                if (data.success) {{ location.reload(); }}
-                else {{ alert('Fehler: ' + (data.error || 'Unbekannt')); }}
+            showConfirm('Zahlungsverkn\u00fcpfung wirklich entfernen?', function() {{
+                fetch('/invoice/delete-payment', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{payment_id: paymentId}})
+                }})
+                .then(r => r.json())
+                .then(data => {{
+                    if (data.success) {{ location.reload(); }}
+                    else {{ showMessage('Fehler: ' + (data.error || 'Unbekannt'), 'error'); }}
+                }});
             }});
         }}
     </script>

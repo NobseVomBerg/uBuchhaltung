@@ -475,8 +475,8 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
         s += f"<td>{phone}</td>"
         s += f"<td>"
         s += f"<a href='/masterdata/contacts/edit?id={cid}'>Bearbeiten</a> | "
-        s += f"<a href='/masterdata/contacts/delete?id={cid}' "
-        s += f"onclick='return confirm(\"Kontakt wirklich löschen?\")'>Löschen</a>"
+        s += f"<a href='javascript:void(0);' "
+        s += f"onclick='appConfirmHref(\"/masterdata/contacts/delete?id={cid}\", \"Kontakt wirklich löschen?\")'>Löschen</a>"
         s += f"</td></tr>"
 
     if not contacts:
