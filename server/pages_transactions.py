@@ -57,8 +57,8 @@ def PageConfirmTransactions(import_id: str):
             <form method="POST" action="/confirm_transactions">
                 <input type="hidden" name="import_id" value="{import_id}">
                 <p>
-                    <input type="submit" name="action" value="Importieren" style="background-color: green; color: white; padding: 10px 20px; font-size: 16px;">
-                    <input type="submit" name="action" value="Abbrechen" style="background-color: red; color: white; padding: 10px 20px; font-size: 16px;">
+                    <input type="submit" name="action" value="Importieren" class="coloredButton btn-green">
+                    <input type="submit" name="action" value="Abbrechen" class="coloredButton btn-gray">
                 </p>
             </form>
         '''
@@ -91,7 +91,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     current_year = datetime.datetime.now().year
 
     header3_content = f'''
-        <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+        <div class="rowWithObjects">
             <div>
                 <label>Von:</label> <input type="date" id="dateFrom" onchange="filterTransactions()"> 
                 <label>Bis:</label> <input type="date" id="dateTo" onchange="filterTransactions()">
@@ -99,7 +99,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                 <button onclick="setTransactionYear({current_year-1})">{current_year-1}</button>
             </div>
             <div>
-                <input type="text" id="txSearch" placeholder="Empf\u00e4nger / Verwendungszweck" oninput="filterTransactions()" style="width: 240px;">
+                🔍 <input type="text" id="txSearch" placeholder="Empf\u00e4nger / Verwendungszweck" oninput="filterTransactions()" style="width: 240px;">
             </div>
             <div>
                 <label>Währung:</label>
@@ -244,7 +244,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
 
     if edit_trans:
         form_buttons = ('<input type="submit" value="Aktualisieren" class="coloredButton btn-sm btn-green">'
-                        '<a href="/transactions" class="coloredButton btn-sm btn-gray">Abbrechen</a>')
+                        '<button type="button" onclick="window.location.href=\'/transactions\'" class="coloredButton btn-sm btn-gray">Abbrechen</button>')
     else:
         form_buttons = '<input type="submit" value="Transaktion hinzuf\u00fcgen" class="coloredButton btn-sm btn-green">'
 

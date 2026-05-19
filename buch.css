@@ -4,14 +4,17 @@ h2 						{ font-size: 12; font-size: 1em; margin-left: 8px; margin-top: 0; }
 h3 						{ font-size: 11; font-size: 1em; margin-left: 8px; margin-top: 0; }
 table					{ padding: 1px; border: 1px; border-radius: 5px; border-style: ridge; }
 td, th					{ padding-top: 0px; padding-bottom: 0px; padding-left: 8px; padding-right: 8px; border: 0px solid; }
-a:link					{ color: #44F; text-decoration: none; }
-a:visited				{ color: #44F; text-decoration: none; }
-a:hover					{ color: #84F; text-decoration: none; }
-a:focus					{ color: #84F; text-decoration: none; }
+a:link, a:visited		{ color: #44F; text-decoration: none; }
+a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .header2				{ min-height: 1.5em; padding: 5px 0 0 0; margin: 0; }
 .header3				{ min-height: 1.5em; padding: 0 0px 0 0; border-bottom: 1px solid #ccc; }
-.grid1RowPrefered		{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px; margin-top: 10px; }
-.grid2Rows				{ display: flex; flex-wrap: nowrap; gap: 20px; align-items: flex-start; margin-top: 10px; }
+.grid1RowPrefered, .grid2Rows, .grid1Col, .gridRightCol { gap: 10px; padding-bottom: 10px; margin-top: 10px; }
+.grid1RowPrefered		{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
+.grid2Rows				{ display: flex; flex-wrap: nowrap; align-items: flex-start; }
+.grid1Col				{ display: grid; grid-template-columns: 1fr; max-width: 700px;}
+.gridLeftCol			{ flex: 0 0 auto; overflow-y: auto; max-height: calc(100vh - 100px); }
+.gridRightCol			{ flex: 0 0 auto; display: flex; flex-direction: column; position: sticky; top: 10px; }
+.rowWithObjects			{ display:flex; align-items:center; flex-wrap:wrap; gap: 14px; }
 .rectRounded			{ padding: 10px; border-radius: 5px;}
 .errorColor				{ color: red; }
 .successColor			{ color: green; }
@@ -19,13 +22,27 @@ a:focus					{ color: #84F; text-decoration: none; }
 #Comment				{ color: #4C4; }
 #ActivePage				{ color: #F48; }
 .textareaSql			{ font-family: monospace; width: 100%; max-width: 1000px; margin-top: 10px; }
-.gridLeftCol			{ flex: 0 0 auto; overflow-y: auto; max-height: calc(100vh - 100px); }
-.gridRightCol			{ flex: 0 0 auto; display: flex; flex-direction: column; gap: 16px; position: sticky; top: 10px; }
+.muted					{ color: #666; }
 
-/* Accounts page styles */
 #dropZone 				{ border: 2px dashed #CCC; padding: 40px; text-align: center; background-color: #f9f9f9; min-width: 200px; }
 #dropZone:hover 		{ background-color: #EEE; }
 #fileInput 				{ display: none; }
+
+/* Colored link-buttons (shared base + color modifier) */
+.coloredButton				{ display: inline-block; color: white; text-decoration: none; border-radius: 5px; border: none; cursor: pointer; padding: 9px 16px; margin: 2px 2px 2px 0; }
+.coloredButton:hover		{ filter: brightness(0.88); color: white; text-decoration: none; padding: 7px 14px; margin: 4px 4px 4px 2px; }
+.btn-sm						{ padding: 4px 8px; font-size: 0.9em; }
+.btn-sm:hover				{ padding: 2px 6px; }
+.btn-green					{ background: #4CAF50; }
+.btn-orange					{ background: #ff9900 !important; }
+.btn-red					{ background: #dc3545 !important; }
+.btn-blue					{ background: #0066cc; }
+.btn-indigo					{ background: #2196F3; }
+.btn-gray					{ background: #888; }
+.btn-back					{ background: #000; }
+.coloredButtonNoClick		{ display: inline-block; color: white; text-decoration: none; border-radius: 5px; border: none; padding: 9px 16px; margin: 2px 2px 2px 0; }
+.btn-smNoClick				{ padding: 4px 8px; font-size: 0.9em; }
+
 
 /* Splitbuchungen (Gruppenansicht in PageTransactions) */
 .group-row                  { cursor: pointer; }
@@ -64,7 +81,6 @@ a:focus					{ color: #84F; text-decoration: none; }
 	button				{ background-color: #222; color: #FFF; }
 	button.active		{ background-color: #4facfe; color: #FFF; font-weight: bold; }
 	.rectRounded		{ background-color: #222;}
-	.setup-testdata-box	{ background: #1a1a0a; }
 	.muted				{ color: #999; }
 	.sql-success-box	{ background-color: #1B5E20; color: #A5D6A7; padding: 10px; }
 	.sql-error-box		{ background-color: #5D1F1A; color: #FFCDD2; padding: 10px; }
@@ -102,7 +118,6 @@ a:focus					{ color: #84F; text-decoration: none; }
 	td, th				{ border-color: #EEE; }
 	th					{ background-color: #DDD; text-align: left;}
 	.rectRounded		{ background-color: #DDD;}
-	.setup-testdata-box	{ background: #fafaf0; }
 	.muted				{ color: #777; }
 	.sql-success-box	{ background-color: #E8F5E9; color: #1B5E20; padding: 10px; }
 	.sql-error-box		{ background-color: #FFEBEE; color: #B71C1C; padding: 10px; }
@@ -110,6 +125,8 @@ a:focus					{ color: #84F; text-decoration: none; }
 	/* Splitbuchungen (Gruppenansicht in PageTransactions) */
 	.group-row          { background: #EEE; }
 	.group-row:hover    { background: #DDD; }
+
+	.btn-back					{ background: #FFF; }
 }
 
 /* Invoice page styles - use white backgrounds even in dark mode */
@@ -157,26 +174,3 @@ a:focus					{ color: #84F; text-decoration: none; }
 .totals-row-final td	{ border-top: 1px solid #000 !important; border-bottom: 3px double #000 !important; padding: 10px 5px !important; font-size: 1.1em; }
 .pdf-button				{ margin: 20px 0; padding: 10px 20px; background-color: #4CAF50; color: white; border: none; cursor: pointer; font-size: 1em; }
 .pdf-button:hover		{ background-color: #45a049; }
-
-/* Setup page */
-.setup-container			{ max-width: 700px; margin: 30px auto; }
-.setup-testdata-box			{ margin-top: 16px; border: 1px dashed #aaa; }
-.muted						{ color: #666; }
-
-/* Colored link-buttons (shared base + color modifier) */
-.coloredButton				{ display: inline-block; padding: 9px 16px; color: white; text-decoration: none; border-radius: 5px; border: none; cursor: pointer; margin-right: 6px; margin-bottom: 4px; }
-.coloredButton:hover		{ filter: brightness(0.88); color: white; text-decoration: none; }
-.btn-sm						{ padding: 5px 11px; font-size: 0.9em; }
-.btn-green					{ background: #4CAF50; }
-.btn-orange					{ background: #ff9900; }
-.btn-red					{ background: #dc3545; }
-.btn-blue					{ background: #0066cc; }
-.btn-indigo					{ background: #2196F3; }
-.btn-gray					{ background: #888; }
-
-@media print {
-	h1 					{ font-size: 12; font-size: 1em; }
-	h2 					{ font-size: 11; font-size: 1em; }
-	table				{ border: none;}
-	td, th				{ border: none; border-top: 1px solid #C0C0C0;}
-}

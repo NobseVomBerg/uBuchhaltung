@@ -75,14 +75,14 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
         'cancelled': 'Storniert'
     }
     
-    status_dropdown = '<select id="statusFilter" onchange="applyInvoiceFilters()" style="width: 120px;">'
+    status_dropdown = '<select id="statusFilter" onchange="applyInvoiceFilters()">'
     for value, label in status_options.items():
         selected = 'selected' if status_filter == value or (not status_filter and value == 'all') else ''
         status_dropdown += f'<option value="{value}" {selected}>{label}</option>'
     status_dropdown += '</select>'
     
     header3_content = f'''
-        <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+        <div class="rowWithObjects">
             <div>
                 <label>Von:</label> <input type="date" id="dateFrom" value="{date_from}" onchange="applyInvoiceFilters()"> 
                 <label> Bis:</label> <input type="date" id="dateTo" value="{date_to}" onchange="applyInvoiceFilters()">
@@ -95,7 +95,7 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
                 <label>Status:</label> {status_dropdown}
             </div>
             <div>
-                <label>🔍 Suche:</label> <input type="text" id="searchQuery" value="{search_query}" placeholder="RE-Nr. oder Kunde" onchange="applyInvoiceFilters()" style="width: 200px;">
+                <label>🔍 Suche:</label> <input type="text" id="searchQuery" value="{search_query}" placeholder="RNr. oder Kunde" onchange="applyInvoiceFilters()" style="width: 200px;">
             </div>
         </div>
     '''
@@ -306,7 +306,6 @@ def _invoice_form_html(db: Database, invoice_id=None):
     pdf_file_exists = bool(pdf_path and os.path.exists(pdf_path))
     s += f'<input type="hidden" id="pdf_exists" value="{str(pdf_file_exists).lower()}">'
     s += '<div id="invoice_msg" class="no-pdf" style="display:none; margin-bottom:10px;"></div>'
-    s += f'<h2>{page_title}</h2>'
     if is_edit_mode:
         payment_count = len(existing_payments)
         status_color  = INVOICE_STATUS_COLORS.get(invoice_status, '#888')
@@ -318,13 +317,39 @@ def _invoice_form_html(db: Database, invoice_id=None):
                 dis=' disabled' if k == 'paid' and payment_count == 0 else '')
             for k, v in INVOICE_STATUS_LABELS.items()
         )
-        s += f'''<div class="rectRounded no-pdf" style="margin-bottom:8px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
-  <span>Status: <strong style="color:{status_color}">{status_label}</strong></span>
-  <span style="display:flex;align-items:center;gap:6px;">
-    <select id="statusChangeSelect" style="min-width:140px;">{status_options_html}</select>
-    <button onclick="setInvoiceStatus({invoice_id})" class="coloredButton btn-sm btn-blue">Status setzen</button>
-  </span>
-</div>
+        s += '<div class="rectRounded no-pdf">' #right Column Headline, Status and Buttons
+        s += f'<h2>{page_title}</h2>'
+        s += f'''
+        <table width="100%">
+            <tr>
+                <td>Status:</td>
+                <td><div class="rowWithObjects">
+                    '''
+        if invoice_status not in ('draft', 'finalized'):
+            s += '<div class="rectRounded btn-red">'
+        s += f'<strong class="coloredButtonNoClick btn-smNoClick btn-back" style="color:{status_color}; hover:none;">{status_label}</strong>'
+        if invoice_status not in ('draft', 'finalized'):
+            s += ' &nbsp; &nbsp; &#9888; Nicht im Entwurfsstatus! &Auml;nderungen k&ouml;nnen trotzdem gespeichert werden.</div>'
+        s += f'''
+                </div></td>
+            </tr>
+            <tr>
+                <td>Neuer Status:</td>
+                <td><div class="rowWithObjects">
+                    <select id="statusChangeSelect">{status_options_html}</select>
+                    <button onclick="setInvoiceStatus({invoice_id})" class="coloredButton btn-sm btn-blue">&#9888; Status setzen</button>
+                </div></td>
+            </tr>
+            <tr>
+                <td>Rechnung:</td>
+                <td><div class="rowWithObjects">
+                    <button onclick="saveInvoice()" class="coloredButton btn-sm btn-green">💾 Speichern</button>
+                    <button onclick="window.location.href='/invoice'" class="coloredButton btn-sm btn-gray">← Abbrechen</button>
+                    <button onclick="generatePDF()" class="coloredButton btn-sm btn-blue">📄 PDF + E-Rechnung</button>
+                </div></td>
+            </tr>
+        </table>
+    </div>
 <script>
 const _payCount = {payment_count};
 function setInvoiceStatus(invId) {{
@@ -338,8 +363,6 @@ function setInvoiceStatus(invId) {{
   .then(data => {{ if (data.success) location.reload(); else showMessage('Fehler: ' + (data.error || '?'), 'error'); }});
 }}
 </script>'''
-        if invoice_status not in ('draft', 'finalized'):
-            s += f'<div style="background:#fff3cd;border:1px solid #ffc107;padding:8px 12px;border-radius:4px;margin-bottom:8px;" class="no-pdf">&#9888; Nicht im Entwurfsstatus (<strong>{status_label}</strong>). &Auml;nderungen werden dennoch gespeichert.</div>'
     s += '''<div class="invoice-container" id="invoice_container">
         <div class="invoice-header">
             <div class="invoice-logo">
@@ -579,10 +602,8 @@ function setInvoiceStatus(invId) {{
     </div>
     
     <!-- XRechnung / E-Rechnung Zusatzdaten (optional) -->
-    <div class="xrechnung-section no-pdf" style="margin: 20px 0; padding: 20px; background-color: #f9f9f9; border: 1px solid #ddd; border-radius: 5px;">
-        <h3 style="margin-top: 0; cursor: pointer;" onclick="toggleXRechnungFields()">
-            ⚙️ XRechnung / E-Rechnung Zusatzdaten (optional) <span id="xrechnung_toggle">&#9654;</span>
-        </h3>
+    <div class="rectRounded no-pdf">
+        <button type="button" onclick="toggleXRechnungFields()" class="coloredButton">⚙️ XRechnung / E-Rechnung Zusatzdaten (optional) <span id="xrechnung_toggle">&#9654;</span></button>
         <div id="xrechnung_fields" style="display: none;">
             <table style="width: 100%; border-collapse: collapse;">
                 <tr>
@@ -677,12 +698,6 @@ function setInvoiceStatus(invId) {{
                 </tr>
             </table>
         </div>
-    </div>
-    
-    <div style="text-align: center; margin: 20px 0;" class="no-pdf">
-        <button type="button" onclick="saveInvoice()" class="coloredButton btn-green" style="padding: 12px 24px; margin: 0 10px;">💾 Speichern</button>
-        <button type="button" onclick="window.location.href='/invoice'" class="coloredButton btn-gray" style="padding: 12px 24px; margin: 0 10px;">← Abbrechen</button>
-        <button type="button" onclick="generatePDF()" class="coloredButton btn-blue no-pdf" style="padding: 12px 24px; margin: 0 10px;">📄 PDF + E-Rechnung</button>
     </div>
     
     <script>

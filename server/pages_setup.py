@@ -4,15 +4,7 @@ Ersteinrichtungs-Seite (First-Run Setup).
 Wird angezeigt wenn noch kein eigener Kontakt und kein Bankkonto angelegt sind.
 """
 from db import Database
-
-
-def Header1(active_page=None):
-    from server.pages import Header1 as _H
-    return _H(active_page)
-
-def Footer():
-    from server.pages import Footer as _F
-    return _F()
+from .pages import Header1, Header2, Header3, Footer
 
 
 def PageSetup(db: Database, message: str = '') -> str:
@@ -23,13 +15,15 @@ def PageSetup(db: Database, message: str = '') -> str:
     2. Testdaten laden → POST /setup/load_testdata
     """
     s = Header1()
+    s+= Header2()
+    s+= Header3()
 
     error_html = ''
     if message:
         error_html = f'<p class="sql-error-box">{message}</p>'
 
     s += f'''
-<div class="setup-container">
+<div class="grid1Col">
   <div class="rectRounded">
     <h2>🚀 Willkommen bei PyBuch – Ersteinrichtung</h2>
     <p>Bitte gib kurz deine eigenen Kontaktdaten und dein Bankkonto ein.
@@ -125,7 +119,7 @@ def PageSetup(db: Database, message: str = '') -> str:
     </form>
   </div>
 
-  <div class="rectRounded setup-testdata-box">
+  <div class="rectRounded">
     <h3>🧪 Mit Testdaten starten</h3>
     <p>Lädt eine Musterfirma und ein Testkonto vor – sinnvoll für Entwicklung und Tests.
        Kann danach jederzeit in den Stammdaten angepasst werden.</p>

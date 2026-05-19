@@ -40,7 +40,7 @@ def PageReceipts(db: Database):
     
     # Header3 with date filter
     header3_content = f'''
-        <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+        <div class="rowWithObjects">
             <div>
                 Von: <input type="date" id="dateFrom" onchange="filterReceipts()">
                 Bis: <input type="date" id="dateTo" onchange="filterReceipts()"> &nbsp;
@@ -50,7 +50,7 @@ def PageReceipts(db: Database):
                 <button onclick="setReceiptYear({current_year-3})">{current_year-3}</button>
             </div>
             <div>
-                <label>Suche:</label>
+                <label>🔍 Suche:</label>
                 <input type="text" id="receiptSearch" oninput="filterReceipts()" placeholder="Dateiname / Pfad / Info" style="width: 200px;">
             </div>
         </div>

@@ -83,9 +83,9 @@ def PageArticles(db: Database, edit_article_id=None):
     s += Header2(submenu)
 
     header3_content = '''
-        <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+        <div class="rowWithObjects">
             <div>
-                <label>Suche:</label>
+                <label>🔍 Suche:</label>
                 <input type="text" id="articleSearch" oninput="filterArticles()" placeholder="Bezeichnung / Beschreibung" style="width: 200px;">
             </div>
             <div>
