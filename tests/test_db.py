@@ -611,3 +611,151 @@ class TestInvoiceCRUD:
         """INVOICE_STATUS_LABELS['overdue'] must be spelled correctly."""
         from server.pages_invoice import INVOICE_STATUS_LABELS
         assert INVOICE_STATUS_LABELS['overdue'] == 'Überfällig'
+
+
+# ─────────────────────────────────────────────
+# handle_add_transaction – manual booking logic
+# ─────────────────────────────────────────────
+
+class TestHandleAddTransaction:
+    """Integration tests for handle_add_transaction() in server/handlers.py.
+
+    Verifies the three creation scenarios:
+    a) bank account + COA set  → bank row + entry child (green checkmark)
+    b) bank account only       → bank row, no child (unlinked)
+    c) COA only (no bank acct) → plain entry row
+    And the pre-existing update path (unlinked bank → COA set → entry child).
+    """
+
+    # Minimal post_data helper (URL-encoded form values are lists of strings)
+    @staticmethod
+    def _post(**kwargs):
+        defaults = {
+            'transaction_id': ['0'],
+            'date': ['2026-05-01'],
+            'date_tax': [''],
+            'recipient': ['Test GmbH'],
+            'text': ['Testbuchung'],
+            'amount': ['119.0'],
+            'currency': ['EUR'],
+            'account': [''],
+            'foreign_account': [''],
+            'contact_id': [''],
+            'coa_id': [''],
+            'booking_group_id': [''],
+            'tax_rate': ['19'],
+            'tax_amount': ['19.0'],
+            'document_nr': ['RE-001'],
+        }
+        defaults.update({k: [str(v)] for k, v in kwargs.items()})
+        return defaults
+
+    def _make_account(self, db):
+        """Insert a bank account and return its ID."""
+        db.insert_account('Testbank', 'Inhaber', 'DE89370400440532013000', 'TESTDE1X',
+                          'Testbank AG', skr_account=1810)
+        conn = db._get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT ID FROM Accounts WHERE Name='Testbank'")
+        acct_id = cur.fetchone()[0]
+        conn.close()
+        return acct_id
+
+    def _make_coa(self, db):
+        """Insert a minimal COA entry and return its ID."""
+        conn = db._get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            'INSERT OR IGNORE INTO ChartOfAccounts '
+            '(Framework, AccountNumber, Name, Description, IsStandard) VALUES (?,?,?,?,?)',
+            (4, 4400, 'Erlöse', 'Umsatzerlöse 19%', 1),
+        )
+        conn.commit()
+        cur.execute('SELECT ID FROM ChartOfAccounts WHERE AccountNumber=4400')
+        coa_id = cur.fetchone()[0]
+        conn.close()
+        return coa_id
+
+    def test_new_bank_with_coa_creates_two_rows(self, tmp_db):
+        """Bank account + COA on new booking → bank row + entry child immediately."""
+        from server.handlers import handle_add_transaction
+        acct_id = self._make_account(tmp_db)
+        coa_id  = self._make_coa(tmp_db)
+
+        handle_add_transaction(tmp_db, self._post(account=acct_id, coa_id=coa_id))
+
+        conn = tmp_db._get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT ID, BookingType, Account_ID, COA_ID, ParentBooking_ID FROM Bookings")
+        rows = cur.fetchall()
+        conn.close()
+
+        assert len(rows) == 2, f"Expected 2 rows (bank + entry), got {len(rows)}"
+        bank_rows  = [r for r in rows if r[1] == 'bank']
+        entry_rows = [r for r in rows if r[1] == 'entry']
+        assert len(bank_rows)  == 1, "Expected exactly 1 bank row"
+        assert len(entry_rows) == 1, "Expected exactly 1 entry row"
+        assert bank_rows[0][2]  == acct_id, "Bank row must have Account_ID set"
+        assert entry_rows[0][3] == coa_id,  "Entry row must have COA_ID set"
+        assert entry_rows[0][4] == bank_rows[0][0], \
+            "Entry row ParentBooking_ID must point to bank row"
+
+    def test_new_bank_without_coa_creates_one_unlinked_row(self, tmp_db):
+        """Bank account without COA → single bank row, no entry child."""
+        from server.handlers import handle_add_transaction
+        acct_id = self._make_account(tmp_db)
+
+        handle_add_transaction(tmp_db, self._post(account=acct_id))
+
+        conn = tmp_db._get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT BookingType, ParentBooking_ID FROM Bookings")
+        rows = cur.fetchall()
+        conn.close()
+
+        assert len(rows) == 1
+        assert rows[0][0] == 'bank'
+        assert rows[0][1] is None
+
+    def test_new_entry_only_creates_one_entry_row(self, tmp_db):
+        """COA without bank account → plain entry row (e.g. cash / correction)."""
+        from server.handlers import handle_add_transaction
+        coa_id = self._make_coa(tmp_db)
+
+        handle_add_transaction(tmp_db, self._post(coa_id=coa_id))
+
+        conn = tmp_db._get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT BookingType, Account_ID FROM Bookings")
+        rows = cur.fetchall()
+        conn.close()
+
+        assert len(rows) == 1
+        assert rows[0][0] == 'entry'
+        assert rows[0][1] is None
+
+    def test_update_unlinked_bank_with_coa_creates_entry_child(self, tmp_db):
+        """Editing an unlinked bank booking with COA set must create an entry child."""
+        from server.handlers import handle_add_transaction
+        acct_id = self._make_account(tmp_db)
+        coa_id  = self._make_coa(tmp_db)
+
+        # Create unlinked bank booking first
+        bank_id = tmp_db.insert_booking(
+            date_booking='2026-05-01', amount=-100.0,
+            account_id=acct_id, booking_type='bank',
+        )
+        post = self._post(transaction_id=bank_id, account=acct_id, coa_id=coa_id)
+        handle_add_transaction(tmp_db, post)
+
+        conn = tmp_db._get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT BookingType, ParentBooking_ID FROM Bookings WHERE ID != ?", (bank_id,)
+        )
+        children = cur.fetchall()
+        conn.close()
+
+        assert len(children) == 1
+        assert children[0][0] == 'entry'
+        assert children[0][1] == bank_id

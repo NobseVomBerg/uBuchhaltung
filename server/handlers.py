@@ -252,7 +252,10 @@ def handle_add_transaction(db: Database, post_data):
                     log_description="Manual bank booking completion (entry child)"
                 )
         else:
-            # Insert new booking
+            # Insert new booking.
+            # If a bank account is provided the row is a bank movement;
+            # otherwise it is a plain accounting entry.
+            new_booking_type = 'bank' if account_id else 'entry'
             transaction_id = db.insert_booking(
                 date_booking=date,
                 date_tax=date_tax,
@@ -268,8 +271,30 @@ def handle_add_transaction(db: Database, post_data):
                 tax_amount=tax_amount,
                 text=text,
                 document_number=document_nr or None,
+                booking_type=new_booking_type,
                 log_description="Manual booking entry"
             )
+
+            # When a bank booking is created with a COA already set,
+            # immediately create the linked accounting entry child so the
+            # green checkmark appears without requiring a second edit.
+            if new_booking_type == 'bank' and coa_id:
+                db.insert_booking(
+                    date_booking=date,
+                    date_tax=date_tax,
+                    amount=float(amount),
+                    recipient_client=recipient,
+                    contact_id=contact_id,
+                    coa_id=coa_id,
+                    currency=currency,
+                    tax_rate=tax_rate,
+                    tax_amount=tax_amount,
+                    text=text,
+                    document_number=document_nr or None,
+                    booking_type='entry',
+                    parent_booking_id=transaction_id,
+                    log_description="Manual bank booking – auto entry child"
+                )
         
         return 303, "/transactions"
     except Exception as e:
