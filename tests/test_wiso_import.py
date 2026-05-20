@@ -62,7 +62,7 @@ class TestOriginalFormatImport:
         data = _load_fixture('wiso_original.csv')
         result = db_with_coa.import_wiso_csv(data)
         assert result['errors'] == []
-        assert result['imported'] == 7
+        assert result['imported'] == 8
 
     def test_no_skipped_on_first_import(self, db_with_coa):
         data = _load_fixture('wiso_original.csv')
@@ -75,7 +75,7 @@ class TestOriginalFormatImport:
         db_with_coa.import_wiso_csv(data)
         result2 = db_with_coa.import_wiso_csv(data)
         assert result2['imported'] == 0
-        assert result2['skipped'] == 7
+        assert result2['skipped'] == 8
 
     def test_tax_rate_19_from_bu_401(self, db_with_coa):
         """BU 401 → TaxRate = 0.19"""
@@ -277,3 +277,100 @@ class TestTableFormatImport:
         conn.close()
         assert row is not None
         assert row[0] == 'Split GmbH'
+
+
+# ─────────────────────────────────────────────
+# Kasse-Buchung (GEGENKONTO=1460)
+# ─────────────────────────────────────────────
+
+class TestKasseWisoImport:
+    """Tests für den Import der Kasse-Buchung aus dem WISO-Export.
+
+    Testdaten:
+        Original: 90001;02.01.2025;6815;1460;"Kopierpapier, Reinigungsmittel";"TEST-0815";18,35;401;
+        Tabelle : 02.01.2025;TESTMARKT GmbH;Kopierpapier, Reinigungsmittel;Bürobedarf;TEST-0815;-18,35
+    """
+
+    # Inline-CSV mit nur der Kasse-Zeile – unabhängig von der Fixture-Gesamt-Zahl
+    KASSE_ORIGINAL = (
+        "ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER\n"
+        "90001;02.01.2025;6815;1460;Kopierpapier, Reinigungsmittel;TEST-0815;18,35;401;\n"
+    ).encode('utf-8')
+
+    KASSE_TABLE = (
+        "Buchungsdatum;Empf./Auft.;Verwendungszweck;Kategorie;Beleg Nr.;Betrag\n"
+        "02.01.2025;TESTMARKT GmbH;Kopierpapier, Reinigungsmittel;Bürobedarf;TEST-0815;-18,35\n"
+    ).encode('utf-8')
+
+    def test_kasse_booking_imported(self, db_with_coa):
+        """Kasse-Zeile wird importiert und als BookingType='entry' gespeichert."""
+        result = db_with_coa.import_wiso_csv(self.KASSE_ORIGINAL)
+        assert result['errors'] == []
+        assert result['imported'] == 1
+
+        conn = db_with_coa._get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT Amount, BookingType FROM Bookings WHERE DocumentNumber='TEST-0815'")
+        row = cur.fetchone()
+        conn.close()
+        assert row is not None
+        assert row[1] == 'entry'
+
+    def test_kasse_amount_is_negative(self, db_with_coa):
+        """GEGENKONTO=1460 (liquide Kasse) → Amount negativ (Ausgabe)."""
+        db_with_coa.import_wiso_csv(self.KASSE_ORIGINAL)
+        conn = db_with_coa._get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT Amount FROM Bookings WHERE DocumentNumber='TEST-0815'")
+        row = cur.fetchone()
+        conn.close()
+        assert row[0] < 0
+        assert abs(abs(row[0]) - 18.35) < 0.005
+
+    def test_kasse_tax_rate_19_from_bu_401(self, db_with_coa):
+        """BU-Schlüssel 401 → TaxRate=0.19, TaxAmount≈-2.93 (Vorsteuer)."""
+        db_with_coa.import_wiso_csv(self.KASSE_ORIGINAL)
+        conn = db_with_coa._get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT TaxRate, TaxAmount FROM Bookings WHERE DocumentNumber='TEST-0815'")
+        row = cur.fetchone()
+        conn.close()
+        assert abs(row[0] - 0.19) < 1e-4
+        # Brutto 18.35 → USt = 18.35 - 18.35/1.19 ≈ 2.93
+        assert abs(abs(row[1]) - 2.93) < 0.01
+
+    def test_kasse_coa_mapped_correctly(self, db_with_coa):
+        """KONTO=6815 → COA_ID für 6815; GEGENKONTO=1460 → CounterCOA_ID für 1460."""
+        db_with_coa.import_wiso_csv(self.KASSE_ORIGINAL)
+        conn = db_with_coa._get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT c1.AccountNumber, c2.AccountNumber
+            FROM Bookings b
+            LEFT JOIN ChartOfAccounts c1 ON c1.ID = b.COA_ID
+            LEFT JOIN ChartOfAccounts c2 ON c2.ID = b.CounterCOA_ID
+            WHERE b.DocumentNumber = 'TEST-0815'
+        """)
+        row = cur.fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] == 6815
+        assert row[1] == 1460
+
+    def test_table_import_updates_recipient_lidl(self, db_with_coa):
+        """Tabellenexport setzt RecipientClient auf 'TESTMARKT GmbH' für Kasse-Zeile."""
+        # Erst original importieren, dann Tabelle
+        db_with_coa.import_wiso_csv(self.KASSE_ORIGINAL)
+        result = db_with_coa.import_wiso_csv(self.KASSE_TABLE)
+        assert result['errors'] == []
+        assert result['updated'] >= 1
+
+        conn = db_with_coa._get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT RecipientClient FROM Bookings WHERE DocumentNumber='TEST-0815'")
+        row = cur.fetchone()
+        conn.close()
+        assert row[0] == 'TESTMARKT GmbH'

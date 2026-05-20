@@ -55,5 +55,17 @@
         "document_number": "E2023-002"
       }
     ]
+  },
+  {
+    "date": "2022-11-15",
+    "amount": -18.35,
+    "account_name": "Testkasse",
+    "booking_type": "entry",
+    "document_number": "KASSE-001",
+    "text": "Kopierpapier, Reinigungsmittel",
+    "recipient": "TESTMARKT GmbH",
+    "coa_number": 6815,
+    "counter_coa_number": 1460,
+    "tax_rate": 0.19
   }
 ]

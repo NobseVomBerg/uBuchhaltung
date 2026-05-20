@@ -235,6 +235,13 @@ def handle_add_transaction(db: Database, post_data):
 
             # Auto-create entry child when completing a bank booking
             if is_bank and coa_id and not has_linked_entry:
+                # Look up the account's SKR-COA to set as the liquid counter side
+                eff_acct_id = account_id or (existing[4] if existing else None)
+                account_coa_id = None
+                if eff_acct_id:
+                    acct_row = db.get_account_by_id(eff_acct_id)
+                    if acct_row and acct_row[7]:  # SKRAccount at index 7
+                        account_coa_id = db.get_coa_id_by_account_number(acct_row[7])
                 db.insert_booking(
                     date_booking=date,
                     date_tax=date_tax,
@@ -242,6 +249,7 @@ def handle_add_transaction(db: Database, post_data):
                     recipient_client=recipient,
                     contact_id=contact_id,
                     coa_id=coa_id,
+                    counter_coa_id=account_coa_id,
                     currency=currency,
                     tax_rate=tax_rate,
                     tax_amount=tax_amount,
@@ -279,6 +287,12 @@ def handle_add_transaction(db: Database, post_data):
             # immediately create the linked accounting entry child so the
             # green checkmark appears without requiring a second edit.
             if new_booking_type == 'bank' and coa_id:
+                # Look up the account's SKR-COA to set as the liquid counter side
+                account_coa_id = None
+                if account_id:
+                    acct_row = db.get_account_by_id(account_id)
+                    if acct_row and acct_row[7]:  # SKRAccount at index 7
+                        account_coa_id = db.get_coa_id_by_account_number(acct_row[7])
                 db.insert_booking(
                     date_booking=date,
                     date_tax=date_tax,
@@ -286,6 +300,7 @@ def handle_add_transaction(db: Database, post_data):
                     recipient_client=recipient,
                     contact_id=contact_id,
                     coa_id=coa_id,
+                    counter_coa_id=account_coa_id,
                     currency=currency,
                     tax_rate=tax_rate,
                     tax_amount=tax_amount,

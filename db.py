@@ -1383,13 +1383,13 @@ class Database:
 
             for b in bookings_data:
                 doc_nr = b.get('document_number')
-                # Duplikat-Prüfung über DocumentNumber + BookingType='bank'
+                # Duplikat-Prüfung über DocumentNumber + BookingType
                 if doc_nr:
                     conn = self._get_connection()
                     cursor = conn.cursor()
                     cursor.execute(
-                        "SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND BookingType='bank'",
-                        (doc_nr,),
+                        "SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND BookingType=?",
+                        (doc_nr, b.get('booking_type', 'bank')),
                     )
                     if cursor.fetchone()[0] > 0:
                         conn.close()
@@ -1397,10 +1397,28 @@ class Database:
                     conn.close()
 
                 account_id = acct_map.get(b.get('account_name'))
+
+                # Optionale COA-/Steuerfelder für standalone Einzel-Buchungen
+                parent_coa_id = coa_map.get(b.get('coa_number'))
+                parent_counter_coa_id = coa_map.get(b.get('counter_coa_number'))
+                parent_tax_rate = b.get('tax_rate')
+                parent_tax_amount = None
+                if parent_tax_rate and b['amount']:
+                    parent_tax_amount = round(
+                        abs(b['amount']) - abs(b['amount']) / (1 + parent_tax_rate), 2
+                    )
+                    if b['amount'] < 0:
+                        parent_tax_amount = -parent_tax_amount
+
                 parent_id = self.insert_booking(
                     date_booking=b['date'],
                     amount=b['amount'],
                     account_id=account_id,
+                    coa_id=parent_coa_id,
+                    counter_coa_id=parent_counter_coa_id,
+                    tax_rate=parent_tax_rate,
+                    tax_amount=parent_tax_amount,
+                    recipient_client=b.get('recipient', ''),
                     booking_type=b.get('booking_type', 'bank'),
                     text=b.get('text', ''),
                     document_number=doc_nr,
@@ -4151,6 +4169,26 @@ class Database:
                 f"(b.BookingType='entry' AND b.ParentBooking_ID IS NULL "
                 f"AND (b.COA_ID IN ({ph}) OR b.CounterCOA_ID IN ({ph})))")
             type_params += cash_coa_ids * 2
+        # Kassen-Buchungen direkt via Account_ID (kein COA-Spiegel, z.B.
+        # manuelle Einzel-Buchungen oder Kasse ohne SKRAccount)
+        cash_acct_ids = [a[0] for a in accounts if a[2]]
+        if cash_acct_ids:
+            ph = ','.join('?' * len(cash_acct_ids))
+            if cash_coa_ids:
+                excl_ph = ','.join('?' * len(cash_coa_ids))
+                not_s2 = (
+                    f" AND NOT (COALESCE(b.COA_ID,-1) IN ({excl_ph})"
+                    f" OR COALESCE(b.CounterCOA_ID,-1) IN ({excl_ph}))")
+            else:
+                not_s2 = ""
+            type_parts.append(
+                f"(b.BookingType='entry' AND b.ParentBooking_ID IS NULL "
+                f"AND b.Account_ID IN ({ph}){not_s2})")
+            # Reihenfolge der Params muss der SQL-Reihenfolge entsprechen:
+            # erst IN ({ph}) = cash_acct_ids, dann NOT IN ({excl_ph}) = cash_coa_ids*2
+            type_params += cash_acct_ids
+            if cash_coa_ids:
+                type_params += cash_coa_ids * 2
 
         if not type_parts:
             conn.close()
@@ -4310,6 +4348,26 @@ class Database:
                 f"(b.BookingType='entry' AND b.ParentBooking_ID IS NULL "
                 f"AND (b.COA_ID IN ({ph}) OR b.CounterCOA_ID IN ({ph})))")
             type_params += cash_coa_ids * 2
+        # Kassen-Buchungen direkt via Account_ID (kein COA-Spiegel, z.B.
+        # manuelle Einzel-Buchungen oder Kasse ohne SKRAccount)
+        cash_acct_ids = [a[0] for a in accounts if a[2]]
+        if cash_acct_ids:
+            ph = ','.join('?' * len(cash_acct_ids))
+            if cash_coa_ids:
+                excl_ph = ','.join('?' * len(cash_coa_ids))
+                not_s2 = (
+                    f" AND NOT (COALESCE(b.COA_ID,-1) IN ({excl_ph})"
+                    f" OR COALESCE(b.CounterCOA_ID,-1) IN ({excl_ph}))")
+            else:
+                not_s2 = ""
+            type_parts.append(
+                f"(b.BookingType='entry' AND b.ParentBooking_ID IS NULL "
+                f"AND b.Account_ID IN ({ph}){not_s2})")
+            # Reihenfolge der Params muss der SQL-Reihenfolge entsprechen:
+            # erst IN ({ph}) = cash_acct_ids, dann NOT IN ({excl_ph}) = cash_coa_ids*2
+            type_params += cash_acct_ids
+            if cash_coa_ids:
+                type_params += cash_coa_ids * 2
 
         if not type_parts:
             conn.close()
@@ -4469,7 +4527,7 @@ class Database:
             """, bank_acct_ids + [date_from, date_to])
             entries.extend(cursor.fetchall())
 
-        # ── 2. Standalone Kassen-Buchungen ────────────────────────────
+        # ── 2. Standalone Kassen-Buchungen (COA-Spiegel) ─────────────
         if cash_coa_ids:
             coa_list = list(cash_coa_ids)
             ph = ','.join('?' * len(coa_list))
@@ -4484,6 +4542,38 @@ class Database:
                   AND (e.Status IS NULL OR e.Status != 'resolved')
             """, coa_list + coa_list + [date_from, date_to])
             entries.extend(cursor.fetchall())
+
+        # ── 2b. Kassen-Buchungen direkt via Account_ID ────────────────
+        # Erfasst manuelle Einzel-Buchungen, bei denen Account_ID auf ein
+        # Kassenkonto zeigt, aber kein COA-Spiegel gesetzt ist (z.B. ältere
+        # Einträge ohne CounterCOA_ID oder Kasse ohne SKRAccount).
+        cash_acct_ids = [a[0] for a in accts if a[2]]  # IsCash=1
+        direct_entries: list[tuple] = []
+        if cash_acct_ids:
+            ph2 = ','.join('?' * len(cash_acct_ids))
+            if cash_coa_ids:
+                # Ausschließen was schon in Sektion 2 erfasst wird
+                coa_list = list(cash_coa_ids)
+                excl_ph = ','.join('?' * len(coa_list))
+                not_in_s2 = (
+                    f" AND NOT (COALESCE(e.COA_ID,-1) IN ({excl_ph})"
+                    f" OR COALESCE(e.CounterCOA_ID,-1) IN ({excl_ph}))")
+                excl_params: list = coa_list + coa_list
+            else:
+                not_in_s2 = ""
+                excl_params = []
+            cursor.execute(f"""
+              SELECT e.Amount, e.COA_ID, e.CounterCOA_ID,
+                  COALESCE(e.TaxAmount, 0), COALESCE(e.TaxRate, 0)
+                FROM Bookings e
+                WHERE e.BookingType = 'entry'
+                  AND e.ParentBooking_ID IS NULL
+                  AND e.Account_ID IN ({ph2})
+                  {not_in_s2}
+                  AND e.DateBooking BETWEEN ? AND ?
+                  AND (e.Status IS NULL OR e.Status != 'resolved')
+            """, cash_acct_ids + excl_params + [date_from, date_to])
+            direct_entries = cursor.fetchall()
 
         # ── Einnahmen-COA-IDs ermitteln (für USt-Zuordnung auf 3806) ──
         cursor.execute("""
@@ -4537,6 +4627,38 @@ class Database:
                     totals[coa_id] -= netto
 
             # Vorsteuer aus Ausgaben separat auf 1401/1406 ausweisen.
+            if (purpose_coa_id is not None
+                    and purpose_coa_id not in income_coa_ids
+                    and tax_amount != 0):
+                input_tax_account = None
+                if abs(tax_rate - 0.05) < 0.0001 or abs(tax_rate - 0.07) < 0.0001:
+                    input_tax_account = 1401
+                elif abs(tax_rate - 0.16) < 0.0001 or abs(tax_rate - 0.19) < 0.0001:
+                    input_tax_account = 1406
+                if input_tax_account in input_tax_coa_ids:
+                    totals[input_tax_coa_ids[input_tax_account]] += tax_amount
+
+        # ── 2b. Direkte Kassen-Buchungen (Account_ID, kein COA-Spiegel) ──
+        # Account_ID zeigt auf die liquide Kassenseite; COA_ID ist das
+        # Zweckkonto (Aufwand/Ertrag). Kein liquid-Routing nötig.
+        for amount, coa_id, counter_coa_id, tax_amount, tax_rate in direct_entries:
+            netto = amount - tax_amount
+            # Doppik-Spiegel überspringen
+            if coa_id in liquid_coa_ids and counter_coa_id in liquid_coa_ids:
+                continue
+            # Zweckkonto bestimmen: nicht-liquide Seite bevorzugen
+            purpose_coa_id = None
+            if coa_id and coa_id not in liquid_coa_ids:
+                purpose_coa_id = coa_id
+                totals[coa_id] += netto
+                if coa_id in income_coa_ids:
+                    ust_total += tax_amount
+            elif counter_coa_id and counter_coa_id not in liquid_coa_ids:
+                purpose_coa_id = counter_coa_id
+                totals[counter_coa_id] += netto
+                if counter_coa_id in income_coa_ids:
+                    ust_total += tax_amount
+            # Vorsteuer
             if (purpose_coa_id is not None
                     and purpose_coa_id not in income_coa_ids
                     and tax_amount != 0):

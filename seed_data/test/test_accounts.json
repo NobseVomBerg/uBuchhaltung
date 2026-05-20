@@ -16,5 +16,14 @@
     "bank_name": "Zweite Testbank AG",
     "is_cash": 0,
     "skr_account": 1810
+  },
+  {
+    "name": "Testkasse",
+    "holder": "",
+    "number": "",
+    "bic": "",
+    "bank_name": "",
+    "is_cash": 1,
+    "skr_account": 1460
   }
 ]

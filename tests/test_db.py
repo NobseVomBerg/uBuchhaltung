@@ -759,3 +759,55 @@ class TestHandleAddTransaction:
         assert len(children) == 1
         assert children[0][0] == 'entry'
         assert children[0][1] == bank_id
+
+
+# ─────────────────────────────────────────────
+# Kasse in Dashboard-Aggregaten
+# ─────────────────────────────────────────────
+
+class TestKasseDashboard:
+    """Tests für get_dashboard_totals / get_dashboard_monthly mit Kasse-Buchungen.
+
+    Testdaten: -18.35 EUR, 2025-01-02, BookingType='entry', Account_ID=Testkasse.
+    """
+
+    def _insert_kasse_entry(self, db):
+        """Hilfsmethode: direkte entry-Buchung auf Testkasse einfügen."""
+        conn = db._get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT ID FROM Accounts WHERE Name='Testkasse'")
+        kasse_id = cur.fetchone()[0]
+        cur.execute(
+            "SELECT ID FROM ChartOfAccounts WHERE AccountNumber=6815")
+        coa_6815 = cur.fetchone()[0]
+        conn.close()
+        return db.insert_booking(
+            '2025-01-02', -18.35,
+            account_id=kasse_id,
+            coa_id=coa_6815,
+            counter_coa_id=None,
+            tax_rate=0.19,
+            tax_amount=-2.93,
+            booking_type='entry',
+        )
+
+    def test_kasse_entry_in_dashboard_totals(self, db_with_coa):
+        """Kasse-entry erscheint in get_dashboard_totals als Ausgabe."""
+        self._insert_kasse_entry(db_with_coa)
+        totals = db_with_coa.get_dashboard_totals('2025-01-01', '2025-12-31')
+        # expense ist negativ (Ausgabe)
+        assert totals['expense'] == pytest.approx(-18.35, abs=0.01)
+
+    def test_kasse_entry_in_dashboard_monthly(self, db_with_coa):
+        """Kasse-entry erscheint in get_dashboard_monthly (2025-01)."""
+        self._insert_kasse_entry(db_with_coa)
+        monthly = db_with_coa.get_dashboard_monthly('2025-01-01', '2025-12-31')
+        jan = [m for m in monthly if m['year_month'] == '2025-01']
+        assert len(jan) == 1
+        assert jan[0]['expense'] == pytest.approx(-18.35, abs=0.01)
+
+    def test_kasse_from_seed_data_in_dashboard(self, db_with_coa):
+        """Die Kasse-Buchung aus test_bookings.json (KASSE-001) erscheint im Dashboard."""
+        totals = db_with_coa.get_dashboard_totals('2022-01-01', '2022-12-31')
+        # expense ist negativ (Ausgabe); KASSE-001 wurde via load_test_seed_data gesetzt
+        assert totals['expense'] == pytest.approx(-18.35, abs=0.01)

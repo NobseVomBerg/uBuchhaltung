@@ -176,3 +176,59 @@ class TestEuerData:
 
         euer = _euer_map(db_with_coa, '2024-01-01', '2024-12-31')
         assert 4400 not in euer or euer.get(4400, 0.0) == pytest.approx(0.0, abs=0.01)
+
+
+# ─────────────────────────────────────────────
+# Kasse-Buchungen in der EÜR
+# ─────────────────────────────────────────────
+
+class TestKasseEuer:
+    """EÜR-Tests für Kasse-Buchungen.
+
+    Testdaten (TESTMARKT GmbH, Bürobedarf):
+        Brutto  -18,35  (Ausgabe)
+        USt 19%  → TaxAmount=-2,93  |  Netto=-15,42
+        COA 6815 (Bürobedarf)  |  CounterCOA 1460 (Kasse)
+        Vorsteuer-Konto: 1406
+    """
+
+    KASSE_CSV = (
+        "ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER\n"
+        "90001;02.01.2025;6815;1460;Kopierpapier, Reinigungsmittel;TEST-0815;18,35;401;\n"
+    ).encode('utf-8')
+
+    def test_wiso_kasse_in_euer_account_6815(self, db_with_coa):
+        """WISO-importierte Kasse-Buchung (CounterCOA=1460) erscheint als Netto auf 6815."""
+        db_with_coa.import_wiso_csv(self.KASSE_CSV)
+        euer = _euer_map(db_with_coa, '2025-01-01', '2025-12-31')
+        # Netto = 18.35 / 1.19 ≈ 15.42, negativ = Ausgabe
+        assert 6815 in euer
+        assert euer[6815] == pytest.approx(-15.42, abs=0.01)
+
+    def test_wiso_kasse_vorsteuer_1406(self, db_with_coa):
+        """Vorsteuer 19% aus Kasse-Buchung erscheint auf Konto 1406."""
+        db_with_coa.import_wiso_csv(self.KASSE_CSV)
+        euer = _euer_map(db_with_coa, '2025-01-01', '2025-12-31')
+        assert 1406 in euer
+        assert euer[1406] == pytest.approx(-2.93, abs=0.01)
+
+    def test_direct_kasse_entry_section2b(self, db_with_coa):
+        """Direkte entry-Buchung mit Account_ID=Testkasse und kein CounterCOA (Section 2b).
+
+        Stellt sicher, dass auch alte/manuell erstellte Einträge ohne COA-Spiegel
+        korrekt in der EÜR auftauchen.
+        """
+        kasse_id = _get_acct_id(db_with_coa, 'Testkasse')
+        coa_6815 = _get_coa_id(db_with_coa, 6815)
+        db_with_coa.insert_booking(
+            '2025-01-02', -18.35,
+            account_id=kasse_id,
+            coa_id=coa_6815,
+            counter_coa_id=None,   # Section-2b-Pfad: kein COA-Spiegel
+            tax_rate=0.19,
+            tax_amount=-2.93,
+            booking_type='entry',
+        )
+        euer = _euer_map(db_with_coa, '2025-01-01', '2025-12-31')
+        assert 6815 in euer
+        assert euer[6815] == pytest.approx(-15.42, abs=0.01)
