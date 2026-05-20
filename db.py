@@ -444,6 +444,12 @@ class Database:
             )
         ''')
 
+        # Performance-Indizes für häufige Queries auf Bookings
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_bookings_type   ON Bookings(BookingType)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_bookings_parent ON Bookings(ParentBooking_ID)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_bookings_group  ON Bookings(BookingGroup_ID)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_bookings_date   ON Bookings(DateBooking)")
+
         conn.commit()
         conn.close()
 

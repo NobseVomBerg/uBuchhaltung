@@ -144,9 +144,12 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                     if not edit_trans[10]:  edit_trans[10] = entry_data[6]  # Category_ID
                     edit_trans = tuple(edit_trans)
 
-    # Get dropdown data
-    customers = db.fetch_contacts(contact_type='customer')
+    # Get dropdown data (einmalig laden – Maps für Tabelle gleich mitbauen)
+    customers    = db.fetch_contacts(contact_type='customer')
+    customer_map = {c[0]: c[2] or c[3] for c in customers}
     coa_accounts = db.fetch_chart_of_accounts()
+    coa_map      = {c[0]: str(c[2]) for c in coa_accounts}
+    private_coa_ids = {c[0] for c in coa_accounts if 2100 <= c[2] < 2200}
     booking_groups = db.fetch_booking_groups()
 
     # Determine form title and button text
@@ -364,13 +367,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
 
     bookings = db.fetch_bookings_grouped()
 
-    account_map  = {a[0]: a[1] for a in accounts}
-    customers    = db.fetch_contacts(contact_type='customer')
-    customer_map = {c[0]: c[2] or c[3] for c in customers}
-    coa_accounts = db.fetch_chart_of_accounts()
-    coa_map      = {c[0]: str(c[2]) for c in coa_accounts}
-    # Private-Konten: COA-IDs deren AccountNumber im Bereich 2100-2199 liegt
-    private_coa_ids = {c[0] for c in coa_accounts if 2100 <= c[2] < 2200}
+    account_map = {a[0]: a[1] for a in accounts}
 
     # Reverse-Map: COA_ID → (Account_ID, Account_Name)
     # Damit Einträge ohne Account_ID über COA/CounterCOA dem Konto zugeordnet werden.
