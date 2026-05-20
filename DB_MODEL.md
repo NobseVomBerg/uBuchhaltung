@@ -1,6 +1,6 @@
 # Datenbankmodell PyBuch
 
-**Status:** Aktuell (Stand: 18. Mai 2026)
+**Status:** Aktuell (Stand: 20. Mai 2026)
 **DBMS:** SQLite 3
 **Datei:** `data/buch.db`
 
@@ -498,6 +498,7 @@ Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
 - Virtuelles USt-Konto 3806 enthält nur Steueranteile aus Einnahmekonten
 - Virtuelle Vorsteuerkonten 1401/1406 enthalten Steueranteile aus Ausgabenkonten
 - Konten 3160, 3720, 3740 werden im Dashboard separat als "Sonstige Ausgaben" gezeigt
+- **Section 2b (Kasse):** Entry-Buchungen mit `Account_ID` auf einem Kassenkonto (`IsCash=1`) und `CounterCOA_ID IS NULL` werden direkt erfasst (kein Bank-Spiegel nötig). Wird in `get_euer_data()` und `get_dashboard_monthly/totals()` berücksichtigt.
 
 ### Rechnungserstellung
 
@@ -532,5 +533,5 @@ Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
 
 ---
 
-**Dokumentversion:** 2.1
-**Letzte Aktualisierung:** 7. Mai 2026
+**Dokumentversion:** 2.2
+**Letzte Aktualisierung:** 20. Mai 2026

@@ -21,7 +21,7 @@ Zentrale Verwaltung aller Buchungstransaktionen:
   - `entry` – Buchungssatz (aus WISO-Original-Export oder manuell)
 - **Automatische Verknüpfung**: Bank↔Entry über `ParentBooking_ID` (via `link_bank_to_entries()`)
 - **Merged Display**: Bankbuchungen zeigen verknüpfte Entry-Daten (SKR-Konto, Steuersatz, Belegnr.)
-- **Status-Badges**: ✓ verknüpft / offen für Bankbuchungen
+- **Status-Badges**: ✓ verknüpft / offen für Bankbuchungen; ✓ für Kasse-/Einzelbuchungen mit gesetztem SKR-Konto
 - **Doppik-Filter**: Reine Gegenbuchungen auf Bankkonten (z.B. SKR 1810) werden automatisch ausgeblendet
 - **Erweiterte Buchungsfelder**:
   - Buchungsdatum und Steuerdatum (getrennt)
@@ -65,7 +65,7 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 - **Zahlungsverknüpfung**: Rechnungen mit Bankbuchungen verbinden, Teilzahlungen
 
 ### 7. Dashboard (`/`)
-- Finanz-Statistiken auf Basis von Bank- und Entry-Buchungen
+- Finanz-Statistiken auf Basis von Bank- und Entry-Buchungen (inkl. Kasse)
 - Monatlicher Verlauf für Einnahmen, Betriebsausgaben und Privatentnahmen
 - Jahresübersicht mit Saldo, kontobasiert filterbar
 - EÜR-Ansicht mit drei Blöcken:
@@ -75,6 +75,7 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 - Steueranteile in der EÜR:
   - Virtuelles 3806 nur aus USt-Anteilen der Einnahmen
   - Virtuelle Vorsteuerkonten 1401/1406 für Ausgaben
+- **Kasse-Buchungen** (Section 2b): Direkte Entry-Buchungen auf Kassenkonto ohne COA-Spiegel (`CounterCOA=NULL`) werden separat erfasst und fließen korrekt in EÜR und Dashboard ein
 
 ### 8. Mahnwesen (`/invoice/reminders`)
 - 3-Stufen-Mahnsystem (Erinnerung → 1. Mahnung → Inkasso)
