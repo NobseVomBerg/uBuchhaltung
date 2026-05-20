@@ -28,7 +28,7 @@ def PageMasterData(db: Database):
     s += Header3()
     
     s += '''
-        <div class="grid1RowPrefered">
+        <div class="grid1RowPrefered gridMain">
             <div class="rectRounded">
                 <h3>📦 Artikel</h3>
                 <p>Verwaltung des Produkt- und Dienstleistungskatalogs</p>
@@ -70,7 +70,7 @@ def PageMasterData(db: Database):
 # ══════════════════════════════════════════════════════════════════════
 
 def PageArticles(db: Database, edit_article_id=None):
-    """Generate articles management page with inline edit form (grid2Rows layout)"""
+    """Generate articles management page with inline edit form (grid2Cols layout)"""
     articles = db.fetch_articles()
 
     # Artikel zum Bearbeiten laden
@@ -153,7 +153,7 @@ def PageArticles(db: Database, edit_article_id=None):
         action_buttons = '<input type="submit" value="Artikel hinzufügen" class="coloredButton btn-sm btn-green">'
 
     s += f'''
-    <div class="grid2Rows">
+    <div class="grid2Cols gridMain">
     <div class="gridRightCol" style="order:2">
         <div class="rectRounded">
         <h2>{form_title}</h2>
@@ -206,7 +206,7 @@ def PageArticles(db: Database, edit_article_id=None):
         s += f"</tr>"
 
     s += "</table>"
-    s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Rows -->'
+    s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Cols -->'
 
     s += '''
     <script>

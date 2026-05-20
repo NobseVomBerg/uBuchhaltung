@@ -59,7 +59,7 @@ def PageReceipts(db: Database):
     
     # ── Zwei-Spalten-Layout: links scrollbare Belege, rechts Upload + Formular ──
     s += '''
-    <div class="grid2Rows">
+    <div class="grid2Cols gridMain">
 
         <!-- LINKS: scrollbare Belegliste -->
         <div class="gridLeftCol">

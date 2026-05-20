@@ -27,9 +27,19 @@ from .pages_transactions import PageTransactions, PageConfirmTransactions
 from .pages_dashboard import PageDashboard
 from .pages_receipts import PageReceipts, PageReceiptEdit
 from .pages_setup import PageSetup
-from .pages_invoice import PageInvoice, PageInvoiceNew
+from .pages_invoice import PageInvoice
 
 class SimpleWebServer(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
+    def end_headers(self):
+        if self.path.endswith('.css') or self.path.endswith('.js') or self.path.endswith('.png'):
+            self.send_header('Cache-Control', 'public, max-age=86400')  # Cache this File for 1d
+        else:
+            self.send_header('Cache-Control', 'no-cache')               # HTML etc no caching
+            
+        super().end_headers()                                           # Call the Base
+
     def do_GET(self):
         db = Database()
         try:
@@ -65,17 +75,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     if 'id' in query_components:
                         invoice_id = int(query_components['id'][0])
                 self.respond(200, PageInvoice(db, filters, invoice_id))
-            elif self.path == "/invoice/new":
-                self.respond(200, PageInvoiceNew(db))
-            elif self.path.startswith("/invoice/edit"):
+            elif self.path.startswith("/invoice/view") or self.path.startswith("/invoice/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 invoice_id = int(query_components["id"][0])
-                self.respond(200, PageInvoiceNew(db, invoice_id))
-            elif self.path.startswith("/invoice/view"):
-                # Redirect to edit page (view and edit are the same now)
-                query_components = parse_qs(self.path.split('?')[1])
-                invoice_id = int(query_components["id"][0])
-                self.respond(200, PageInvoiceNew(db, invoice_id))
+                self.respond(200, PageInvoice(db, {}, invoice_id))
             elif self.path.startswith("/invoice/xml"):
                 # Generate and download XRechnung XML
                 query_components = parse_qs(self.path.split('?')[1])
@@ -350,11 +353,24 @@ class SimpleWebServer(BaseHTTPRequestHandler):
 
     def serve_static_file(self, filename, content_type):
         try:
+            file_mtime = os.path.getmtime(filename)
+            file_mtime_string  = self.date_time_string(file_mtime)
+
+            if_modified_since = self.headers.get('If-Modified-Since')
+            #print(f"[CACHE] {filename}: IMS={if_modified_since!r}  LM={file_mtime_string!r}  match={if_modified_since is not None and if_modified_since.strip() == file_mtime_string}")
+            if if_modified_since and if_modified_since.strip() == file_mtime_string:
+                self.send_response(304)
+                self.end_headers()
+                return
+
             with open(filename, 'rb') as file:
+                data = file.read()
                 self.send_response(200)
                 self.send_header("Content-type", content_type)
+                self.send_header("Last-Modified", file_mtime_string)
+                self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
-                self.wfile.write(file.read())
+                self.wfile.write(data)
         except FileNotFoundError:
             self.respond(404, "Datei nicht gefunden.")
     
@@ -397,6 +413,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             response_data = handlers.handle_invoice_save(post_body)
             self.send_response(200)
             self.send_header("Content-type", "application/json")
+            self.send_header("Content-Length", str(len(response_data)))
             self.end_headers()
             self.wfile.write(response_data)
             return
@@ -408,6 +425,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             response_data = handlers.handle_send_invoice_email(post_body)
             self.send_response(200)
             self.send_header("Content-type", "application/json")
+            self.send_header("Content-Length", str(len(response_data)))
             self.end_headers()
             self.wfile.write(response_data)
             return
@@ -417,13 +435,12 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             content_length = int(self.headers['Content-Length'])
             post_body = self.rfile.read(content_length)
             status_code, redirect_path = handlers.handle_link_invoice_payment(post_body)
+            body = b'{"success": true}' if status_code == 200 else f'{{"error": "status {status_code}"}}'.encode()
             self.send_response(status_code)
             self.send_header("Content-type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            if status_code == 200:
-                self.wfile.write(b'{"success": true}')
-            else:
-                self.wfile.write(f'{{"error": "status {status_code}"}}'.encode())
+            self.wfile.write(body)
             return
 
         # Handle invoice payment deletion
@@ -431,13 +448,12 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             content_length = int(self.headers['Content-Length'])
             post_body = self.rfile.read(content_length)
             status_code, msg = handlers.handle_delete_invoice_payment(post_body)
+            body = b'{"success": true}' if status_code == 200 else f'{{"error": "{msg}"}}'.encode()
             self.send_response(status_code)
             self.send_header("Content-type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            if status_code == 200:
-                self.wfile.write(b'{"success": true}')
-            else:
-                self.wfile.write(f'{{"error": "{msg}"}}'.encode())
+            self.wfile.write(body)
             return
         
         # Handle invoice status updates
@@ -601,11 +617,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             for key, value in headers.items():
                 self.send_header(key, value)
         self.send_header("Content-type", content_type)
+        encoded = content.encode("utf-8") if content else b""
+        self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
 
         # Write content to response
-        if content:
-            self.wfile.write(content.encode("utf-8"))
+        if encoded:
+            self.wfile.write(encoded)
 
 # Start web server
 def run_server(host="localhost", port=8080):

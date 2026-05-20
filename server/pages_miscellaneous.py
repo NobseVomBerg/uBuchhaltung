@@ -29,7 +29,7 @@ def PageMiscellaneous(db: Database):
     s += Header2()
     s += Header3()
 
-    s += '<div class="grid1RowPrefered">'
+    s += '<div class="grid3Cols gridMain">'
     # ── Database statistics ───────────────────────────────────────────────────
     s += '\t<div class="rectRounded">'
     stats = db.get_table_statistics()
@@ -83,12 +83,11 @@ def PageMiscellaneous(db: Database):
         </script>
         '''
     s += '\t</div>'
-    s += '</div>'
 
-    s += '<div class="grid1RowPrefered">'
-    s += '\t<div>' # first Column should get two Entries :)
+    # Both Exports together in one DIV
+    s += '\t<div class="grid1Col gridMiddle">'
     # ── DB Export as SQL ──────────────────────────────────────────────────────
-    s += '\t<div class="rectRounded">'
+    s += '\t\t<div class="rectRounded">'
     s += '''
         <h2>DB-Export</h2>
         <p>Exportiert alle Tabelleninhalte als INSERT-Statements nach <code>./data/db-export.sql</code>.
@@ -117,9 +116,9 @@ def PageMiscellaneous(db: Database):
         })();
         </script>
         '''
-    s += '\t</div>'
-    s += '\t<div class="rectRounded">'
+    s += '\t\t</div>'
     # ── DATEV Export ──────────────────────────────────────────────────────────
+    s += '\t\t<div class="rectRounded">'
     import datetime
     cur_year = datetime.date.today().year
     s += f'''
@@ -127,10 +126,11 @@ def PageMiscellaneous(db: Database):
         <p>Exportiert Buchungen als <strong>DATEV Buchungsstapel-CSV</strong> (EXTF 700, Encoding CP1252).<br>
         Das Feld <em>Datum Zuord. Steuerperiode</em> wird für alle exportierten Buchungen auf das <strong>heutige Datum</strong> gesetzt.</p>
         <form method="POST" action="/datev/export">
-            <label>Von:&nbsp;<input type="date" name="date_from" value="{cur_year}-01-01" required></label>
-            &nbsp;&nbsp;
-            <label>Bis:&nbsp;<input type="date" name="date_to" value="{cur_year}-12-31" required></label>
-            &nbsp;&nbsp;
+            <div class="rowWithObjects">
+                <label>Von:&nbsp;<input type="date" name="date_from" value="{cur_year}-01-01" required></label>
+                <label>Bis:&nbsp;<input type="date" name="date_to" value="{cur_year}-12-31" required></label>
+            </div>
+            <br>
             <button type="submit" class="coloredButton btn-blue">&#x1F4E5; DATEV-CSV exportieren</button>
         </form>
         <script>
@@ -146,8 +146,9 @@ def PageMiscellaneous(db: Database):
         }})();
         </script>
         '''
+    s += '\t\t</div>'
     s += '\t</div>'
-    s += '\t</div>' # Common div for both Exports end
+
     s += '\t<div class="rectRounded">'
     # ── WISO Mein Büro Import ─────────────────────────────────────────────────
     import json as _json, os as _os
@@ -173,8 +174,8 @@ def PageMiscellaneous(db: Database):
         muss ein <em>SKR-Gegenkonto</em> hinterlegt haben (z.B. 1810 für 2. Bankkonto, 1460 für Kasse).<br>
         Duplikate (gleiche Referenznummer + Konto + Betrag) werden automatisch übersprungen.</p>
         <form method="POST" action="/wiso/import" enctype="multipart/form-data">
-            <label>CSV-Datei:&nbsp;<input type="file" name="csvfile" accept=".txt,.csv" required></label>
-            &nbsp;&nbsp;
+            <div class="rowWithObjects">CSV-Datei:&nbsp;<input type="file" name="csvfile" accept=".txt,.csv" required></div>
+            <br>
             <button type="submit" class="coloredButton btn-green">&#x1F4C2; WISO Import starten</button>
         </form>
         <script>

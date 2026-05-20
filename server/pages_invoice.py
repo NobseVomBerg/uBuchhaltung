@@ -58,8 +58,7 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
         invoices = [inv for inv in invoices if inv[2] <= date_to]
     
     s = Header1('invoice')
-    submenu = '<span id="ActivePage">Liste</span> | <a href="/invoice/new">Neu</a>'
-    s+= Header2(submenu)
+    s+= Header2()
 
     # Header3 with filters (date, status, search)
     import datetime
@@ -116,7 +115,7 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
         Offen: {open_sum:.2f} €
     </div>
     '''
-    s+= '<div class="grid2Rows"><div class="gridLeftCol" style="order:1">'
+    s+= '<div class="grid2Cols gridMain"><div class="gridLeftCol" style="order:1">'
     if not invoices:
         s+= "<p><em>Keine Rechnungen gefunden.</em></p>"
     else:
@@ -221,7 +220,7 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
     s+= '</div><!-- Ende gridLeftCol -->'
     s+= '<div class="gridRightCol" style="order:2; min-width:820px;">'
     s+= _invoice_form_html(db, invoice_id)
-    s+= '</div><!-- Ende gridRightCol --></div><!-- Ende grid2Rows -->'
+    s+= '</div><!-- Ende gridRightCol --></div><!-- Ende grid2Cols -->'
     s+= Footer()
     return s
 
@@ -363,6 +362,20 @@ function setInvoiceStatus(invId) {{
   .then(data => {{ if (data.success) location.reload(); else showMessage('Fehler: ' + (data.error || '?'), 'error'); }});
 }}
 </script>'''
+    else:
+        s += '<div class="rectRounded no-pdf">'
+        s += f'<h2>{page_title}</h2>'
+        s += '''
+        <table width="100%">
+            <tr>
+                <td>Rechnung:</td>
+                <td><div class="rowWithObjects">
+                    <button onclick="saveInvoice()" class="coloredButton btn-sm btn-green">💾 Speichern</button>
+                    <button onclick="window.location.href=\'/invoice\'" class="coloredButton btn-sm btn-gray">← Abbrechen</button>
+                </div></td>
+            </tr>
+        </table>
+    </div>'''
     s += '''<div class="invoice-container" id="invoice_container">
         <div class="invoice-header">
             <div class="invoice-logo">
@@ -1344,16 +1357,5 @@ function setInvoiceStatus(invId) {{
     </script>
 '''
 
-    return s
-
-
-def PageInvoiceNew(db: Database, invoice_id=None):
-    """Compatibility wrapper – keeps /invoice/new and /invoice/edit?id=X working."""
-    s  = Header1('invoice')
-    s += Header2('<a href="/invoice">Liste</a> | <span id="ActivePage">{}</span>'.format(
-        'Bearbeiten' if invoice_id else 'Neu'))
-    s += Header3()
-    s += _invoice_form_html(db, invoice_id)
-    s += Footer()
     return s
 

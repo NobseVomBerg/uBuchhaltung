@@ -97,7 +97,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
 
     # ── Key metric cards ──────────────────────────────────────────────
     s += f'''
-    <div class="grid1RowPrefered">
+    <div class="grid4Cols gridMain">
         <div style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
                     color:white;padding:20px;border-radius:10px;
                     box-shadow:0 4px 6px rgba(0,0,0,0.1);">
@@ -143,7 +143,6 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
             <div style="font-size:12px;opacity:0.8;">
                 {bank_cnt} Bankbuchungen, {unlinked} offen</div>
         </div>
-    </div>
     '''
 
     # ── Monthly 3-part bar chart ──────────────────────────────────────
@@ -156,8 +155,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
     bar_height = 180  # max bar pixel height
 
     s += f'''
-    <div class="grid1RowPrefered">
-    <div class="rectRounded">
+    <div class="rectRounded box4">
         <h3>Monatlicher Umsatz {range_label}</h3>
         <div style="display:flex;gap:8px;margin-bottom:10px;font-size:12px;">
             <span style="color:#4facfe;">&#9632; Einnahmen</span>
@@ -194,7 +192,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
         </div>
         '''
 
-    s += '</div></div></div></div>'
+    s += '</div></div></div>'
 
     # ── Details table (annual summary by category) ────────────────────
     total_inc  = sum(entry['income']  for entry in monthly)
@@ -203,8 +201,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
     total_bal  = total_inc + total_priv + total_exp
 
     s += f'''
-    <div class="grid1RowPrefered">
-    <div class="rectRounded">
+    <div class="rectRounded box2">
         <h3>&Uuml;bersicht {range_label}</h3>
         <table style="width:100%;border-collapse:collapse;">
             <tr><th style="text-align:left;">Kategorie</th>
@@ -254,7 +251,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
     euer_result = income_sum + expense_sum
 
     s += f'''
-    <div class="rectRounded">
+    <div class="rectRounded box2">
         <h3>Einnahmen&uuml;berschussrechnung {range_label}</h3>
         <h4 style="margin-bottom:6px;">Einnahmen</h4>
         <table style="width:100%;border-collapse:collapse;">
@@ -317,7 +314,6 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
                 <td style="text-align:right;font-weight:bold;color:red;">
                     {other_expense_sum:,.2f} &euro;</td></tr>
         </table>
-    </div>
     </div>
     '''
 

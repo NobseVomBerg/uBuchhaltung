@@ -159,7 +159,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
                   if edit_trans else '')
 
     s+= f'''
-    <div class="grid2Rows">
+    <div class="grid2Cols gridMain">
     <div class="gridRightCol" style="order:2">
         <div class="rectRounded" style="order:2">
         <h2>{form_title}</h2>
@@ -641,7 +641,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             s+= f"</tr>"
 
     s+= "</table>"
-    s+= '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Rows -->'
+    s+= '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Cols -->'
 
     s+= '''
     <script>

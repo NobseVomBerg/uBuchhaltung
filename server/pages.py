@@ -149,6 +149,17 @@ def PageAbout():
     s+= Header2()
     s+= Header3()
     s+= "<p>Einfache Buchführungssoftware.</p>"
+    s+= f'''
+<div class="grid3Cols gridMain">
+  <div class="rectRounded">1 Das</div>
+  <div class="rectRounded" style="grid-column:span 2;">2 ist</div>
+  <div class="rectRounded">3 nur</div>
+  <div class="rectRounded">4 ein</div>
+  <div class="rectRounded">5 Versuch</div>
+  <div class="rectRounded">6 mit</div>
+  <div class="rectRounded">7 Grids</div>
+</div>
+'''
     s+= Footer()
     return s
 

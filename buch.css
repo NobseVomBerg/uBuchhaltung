@@ -2,28 +2,31 @@
 h1 						{ font-size: 14; font-size: 1em; margin-left: 8px; margin-top: 8; }
 h2 						{ font-size: 12; font-size: 1em; margin-left: 8px; margin-top: 0; }
 h3 						{ font-size: 11; font-size: 1em; margin-left: 8px; margin-top: 0; }
-table					{ padding: 1px; border: 1px; border-radius: 5px; border-style: ridge; }
+table					{ padding: 1px; border: 1px; border-radius: 5px; border-style: ridge; width: 100%; }
 td, th					{ padding-top: 0px; padding-bottom: 0px; padding-left: 8px; padding-right: 8px; border: 0px solid; }
 a:link, a:visited		{ color: #44F; text-decoration: none; }
 a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .header2				{ min-height: 1.5em; padding: 5px 0 0 0; margin: 0; }
 .header3				{ min-height: 1.5em; padding: 0 0px 0 0; border-bottom: 1px solid #ccc; }
-.grid1RowPrefered, .grid2Rows, .grid1Col, .gridRightCol { gap: 10px; padding-bottom: 10px; margin-top: 10px; }
+.gridMain				{ gap: 10px; padding-bottom: 10px; margin-top: 10px; }
+.gridMiddle				{ gap: 10px; }
 .grid1RowPrefered		{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
-.grid2Rows				{ display: flex; flex-wrap: nowrap; align-items: flex-start; }
 .grid1Col				{ display: grid; grid-template-columns: 1fr; max-width: 700px;}
-.gridLeftCol			{ flex: 0 0 auto; overflow-y: auto; max-height: calc(100vh - 100px); }
-.gridRightCol			{ flex: 0 0 auto; display: flex; flex-direction: column; position: sticky; top: 10px; }
+.gridLeftCol			{ flex: 0 0 auto; overflow-y: auto; max-height: calc(100vh - 100px); min-width: 1100px; }
+.gridRightCol			{ flex: 0 0 auto; display: flex; flex-direction: column; position: sticky; max-width: 700px; }
+.grid2Cols				{ display: grid; grid-template-columns: 1fr 1fr; }
+.grid3Cols				{ display: grid; grid-template-columns: 1fr 1fr 1fr; }
+.grid4Cols				{ display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; }
+.box2					{ grid-column: span 2; }
+.box4					{ grid-column: span 4; }
 .rowWithObjects			{ display:flex; align-items:center; flex-wrap:wrap; gap: 14px; }
 .rectRounded			{ padding: 10px; border-radius: 5px;}
 .errorColor				{ color: red; }
 .successColor			{ color: green; }
-#note					{ background-color: #F44; font-weight: bold; }
-#Comment				{ color: #4C4; }
-#ActivePage				{ color: #F48; }
 .textareaSql			{ font-family: monospace; width: 100%; max-width: 1000px; margin-top: 10px; }
 .muted					{ color: #666; }
 
+#ActivePage				{ color: #F48; }	/* Menu (Header) */
 #dropZone 				{ border: 2px dashed #CCC; padding: 40px; text-align: center; background-color: #f9f9f9; min-width: 200px; }
 #dropZone:hover 		{ background-color: #EEE; }
 #fileInput 				{ display: none; }
@@ -82,8 +85,7 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 	button.active		{ background-color: #4facfe; color: #FFF; font-weight: bold; }
 	.rectRounded		{ background-color: #222;}
 	.muted				{ color: #999; }
-	.sql-success-box	{ background-color: #1B5E20; color: #A5D6A7; padding: 10px; }
-	.sql-error-box		{ background-color: #5D1F1A; color: #FFCDD2; padding: 10px; }
+	.sql-error-box		{ background-color: #622; color: #FCC; padding: 10px; }
 	#dropZone 			{ background-color: #222; }
 	#dropZone:hover 	{ background-color: #444; }
 
@@ -114,19 +116,19 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 	body				{ background-color: #FFF; color: #000}
 	h1, h2				{ color: #755; }
 	table				{ border-color: #EEE;}
-	tr 					{ background-color: #FFFFFF; }
+	tr 					{ background-color: #FFF; }
+	tr:hover			{ background-color: #DDD; }
 	td, th				{ border-color: #EEE; }
 	th					{ background-color: #DDD; text-align: left;}
 	.rectRounded		{ background-color: #DDD;}
 	.muted				{ color: #777; }
-	.sql-success-box	{ background-color: #E8F5E9; color: #1B5E20; padding: 10px; }
-	.sql-error-box		{ background-color: #FFEBEE; color: #B71C1C; padding: 10px; }
+	.sql-error-box		{ background-color: #FDD; color: #B71C1C; padding: 10px; }
 
 	/* Splitbuchungen (Gruppenansicht in PageTransactions) */
 	.group-row          { background: #EEE; }
 	.group-row:hover    { background: #DDD; }
 
-	.btn-back					{ background: #FFF; }
+	.btn-back			{ background: #FFF; }
 }
 
 /* Invoice page styles - use white backgrounds even in dark mode */
