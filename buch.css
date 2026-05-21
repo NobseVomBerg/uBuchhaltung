@@ -86,7 +86,6 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 	th					{ background-color: #222; text-align: left;}
 	input, select		{ background-color: #000; color: #FFF; }
 	button				{ background-color: #222; color: #FFF; }
-	button.active		{ background-color: #4facfe; color: #FFF; font-weight: bold; }
 	.rectRounded		{ background-color: #222;}
 	.muted				{ color: #999; }
 	.sql-error-box		{ background-color: #622; color: #FCC; padding: 10px; }
