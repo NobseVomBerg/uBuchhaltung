@@ -24,7 +24,7 @@ def Footer():
 def PageMasterData(db: Database):
     """Master Data overview page with navigation to subpages"""
     s = Header1('masterdata')
-    s += Header2("<a href='/masterdata/articles'>📦 Artikel</a> | <a href='/masterdata/contacts'>👥 Kontakte</a> | <a href='/masterdata/skr'>📊 SKR</a> | <a href='/masterdata/bankaccounts'>🏦 Bankkonten</a> | <a href='/masterdata/numberranges'>🔢 Nummernkreise</a>")
+    s += Header2("<a href='/masterdata/articles'>📦 Artikel</a> | <a href='/masterdata/contacts'>👥 Kontakte</a> | <a href='/masterdata/skr'>📊 SKR</a> | <a href='/masterdata/bankaccounts'>🏦 Bankkonten</a> | <a href='/masterdata/numberranges'>🔢 Nummernkreise</a> | <a href='/asset_categories'>📂 AfA-Kategorien</a>")
     s += Header3()
     
     s += '''
@@ -57,6 +57,12 @@ def PageMasterData(db: Database):
                 <h3>🔢 Nummernkreise</h3>
                 <p>Nummerierung für Rechnungen und Belege verwalten</p>
                 <p><a href="/masterdata/numberranges" style="font-weight: bold;">→ Zu den Nummernkreisen</a></p>
+            </div>
+
+            <div class="rectRounded">
+                <h3>📂 AfA-Kategorien</h3>
+                <p>Abschreibungskategorien für das Anlagenverzeichnis</p>
+                <p><a href="/asset_categories" style="font-weight: bold;">→ Zu den AfA-Kategorien</a></p>
             </div>
         </div>
     '''

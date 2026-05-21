@@ -79,7 +79,7 @@ def PageAssets(db: Database, status_filter=''):
         })
 
     s = Header1('assets')
-    submenu = '<span id="ActivePage">Anlagen</span> | <a href="/assets/new">Neue Anlage</a> | <a href="/asset_categories">AfA-Kategorien</a>'
+    submenu = '<span id="ActivePage">Anlagen</span> | <a href="/assets/new">Neue Anlage</a>'
     s += Header2(submenu)
 
     # Filter bar
@@ -580,104 +580,99 @@ def PageAssetEdit(db: Database, asset_id=None, parent_id=None):
 
 # ─── PageAssetCategories ──────────────────────────────────────────────────────
 
-def PageAssetCategories(db: Database):
-    """Manage AfA categories"""
+def PageAssetCategories(db: Database, edit_category_id=None):
+    """AfA-Kategorien (Stammdaten): Übersicht links, Inline-Formular rechts.
+
+    Bearbeiten lädt die Kategorie ins rechte Formular (wie PageArticles);
+    ohne edit_category_id ist es ein leeres 'Neue Kategorie'-Formular.
+    """
     categories = db.fetch_asset_categories()
     coa_rows = db.fetch_chart_of_accounts()
-
     coa_map = {str(c[0]): f"{c[2]} {c[3]}" for c in coa_rows}
 
-    s = Header1('assets')
-    submenu = '<a href="/assets">Anlagen</a> → <span id="ActivePage">AfA-Kategorien</span>'
+    # AssetCategories (SELECT *): [0]ID [1]Name [2]UsefulLifeYears
+    #                             [3]DepreciationMethod [4]COA_ID [5]Notes
+    edit_cat = db.get_asset_category_by_id(edit_category_id) if edit_category_id else None
+
+    s = Header1('masterdata')
+    submenu = '<a href="/masterdata">Stammdaten</a> → <span id="ActivePage">📂 AfA-Kategorien</span>'
     s += Header2(submenu)
     s += Header3()
 
-    s += '<h2>AfA-Kategorien verwalten</h2>'
+    # Formular-Werte (Bearbeiten oder Neu)
+    form_title = "Kategorie bearbeiten" if edit_cat else "Neue Kategorie"
+    ec_name   = edit_cat[1] if edit_cat else ''
+    ec_years  = edit_cat[2] if edit_cat else ''
+    ec_method = edit_cat[3] if edit_cat else 'linear'
+    ec_coa    = edit_cat[4] if edit_cat else ''
+    ec_notes  = (edit_cat[5] or '') if edit_cat else ''
+
+    method_opts = ''
+    for val, label in [('linear', 'Linear'), ('degressive', 'Degressiv'), ('both', 'Linear oder Degressiv')]:
+        sel = 'selected' if ec_method == val else ''
+        method_opts += f'<option value="{val}" {sel}>{label}</option>'
 
     coa_options = '<option value="">-- keines --</option>'
     for c in coa_rows:
-        coa_options += f'<option value="{c[0]}">{c[2]} {c[3]}</option>'
+        sel = 'selected' if ec_coa and str(ec_coa) == str(c[0]) else ''
+        coa_options += f'<option value="{c[0]}" {sel}>{c[2]} {c[3]}</option>'
+
+    id_row = (f'<input type="hidden" name="category_id" value="{edit_cat[0]}">'
+              if edit_cat else '')
+
+    if edit_cat:
+        action_buttons = (
+            '<input type="submit" value="Aktualisieren" class="coloredButton btn-sm bg-green">'
+            '<a href="/asset_categories" class="coloredButton btn-sm bg-gray">Abbrechen</a>'
+        )
+    else:
+        action_buttons = ('<input type="submit" value="Kategorie hinzufügen" '
+                          'formaction="/asset_categories/add" class="coloredButton btn-sm bg-green">')
 
     s += f'''
-    <h3>Neue Kategorie</h3>
-    <form method="POST" action="/asset_categories/add">
-        <table class="form-table">
-            <tr><td>Bezeichnung:*</td><td><input type="text" name="name" required style="width:300px;"></td></tr>
-            <tr><td>Nutzungsdauer (Jahre):*</td><td><input type="number" name="useful_life_years" min="1" max="50" required style="width:80px;"></td></tr>
-            <tr><td>AfA-Methode:*</td><td>
-                <select name="depreciation_method">
-                    <option value="linear">Linear</option>
-                    <option value="degressive">Degressiv</option>
-                    <option value="both">Linear oder Degressiv</option>
-                </select>
-            </td></tr>
-            <tr><td>SKR-Standardkonto:</td><td><select name="coa_id" style="width:304px;">{coa_options}</select></td></tr>
-            <tr><td>Notizen:</td><td><input type="text" name="notes" style="width:300px;"></td></tr>
-            <tr><td></td><td><input type="submit" value="Kategorie hinzufügen"></td></tr>
-        </table>
-    </form>
+    <div class="grid2Cols gridMain">
+    <div class="gridRightCol" style="order:2">
+        <div class="rectRounded">
+        <h2>{form_title}</h2>
+        <form method="POST" action="/asset_categories/update">
+            {id_row}
+            <table class="form-table">
+                <tr><td>Bezeichnung:*</td><td><input type="text" name="name" value="{ec_name}" required></td></tr>
+                <tr><td>Nutzungsdauer (Jahre):*</td><td><input type="number" name="useful_life_years" value="{ec_years}" min="1" max="50" required></td></tr>
+                <tr><td>AfA-Methode:*</td><td><select name="depreciation_method">{method_opts}</select></td></tr>
+                <tr><td>SKR-Standardkonto:</td><td><select name="coa_id">{coa_options}</select></td></tr>
+                <tr><td>Notizen:</td><td><input type="text" name="notes" value="{ec_notes}"></td></tr>
+                <tr><td></td><td>{action_buttons}</td></tr>
+            </table>
+        </form>
+        </div>
+    </div>
+    <div class="gridLeftCol" style="order:1">
+        <table>
+            <tr><th>ID</th><th>Bezeichnung</th><th>Jahre</th><th>Methode</th><th>SKR-Konto</th><th>Notizen</th><th>Aktionen</th></tr>
     '''
-
-    s += '<h3>Bestehende Kategorien</h3>'
-    s += '<table border="1" style="width:100%; border-collapse:collapse;">'
-    s += '<tr><th>ID</th><th>Bezeichnung</th><th>Jahre</th><th>Methode</th><th>SKR-Konto</th><th>Notizen</th><th>Aktionen</th></tr>'
-
     for c in categories:
-        coa_label = coa_map.get(str(c[3]), '–') if c[3] else '–'
+        coa_label = coa_map.get(str(c[4]), '–') if c[4] else '–'
         s += f'''<tr>
             <td>{c[0]}</td>
             <td>{c[1]}</td>
             <td style="text-align:center;">{c[2]}</td>
             <td>{_method_label(c[3])}</td>
             <td>{coa_label}</td>
-            <td style="font-size:0.85em; color:#666;">{c[5] or ''}</td>
+            <td class="muted">{c[5] or ''}</td>
             <td>
-                <a href="/asset_categories/edit?id={c[0]}">Bearbeiten</a> |
-                <a href="javascript:void(0);"
-                   onclick="appConfirmHref('/asset_categories/delete?id={c[0]}', 'Kategorie wirklich löschen?')">Löschen</a>
+                <a href="/asset_categories/edit?id={c[0]}" class="action-icon" title="Bearbeiten">&#9998;</a>
+                <a href="javascript:void(0);" class="action-icon delete-icon" title="Löschen"
+                   onclick="appConfirmHref('/asset_categories/delete?id={c[0]}', 'Kategorie wirklich löschen?')">&#128465;</a>
             </td>
         </tr>'''
 
     s += '</table>'
+    s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Cols -->'
     s += Footer()
     return s
 
 
 def PageAssetCategoryEdit(db: Database, category_id: int):
-    """Edit an existing AfA category"""
-    cat = db.get_asset_category_by_id(category_id)
-    if not cat:
-        return Header1('assets') + Header2() + Header3() + '<p>Kategorie nicht gefunden.</p>' + Footer()
-
-    coa_rows = db.fetch_chart_of_accounts()
-    coa_options = '<option value="">-- keines --</option>'
-    for c in coa_rows:
-        sel = 'selected' if cat[3] and str(cat[3]) == str(c[0]) else ''
-        coa_options += f'<option value="{c[0]}" {sel}>{c[2]} {c[3]}</option>'
-
-    method_opts = ''
-    for val, label in [('linear', 'Linear'), ('degressive', 'Degressiv'), ('both', 'Linear oder Degressiv')]:
-        sel = 'selected' if cat[3] == val else ''
-        method_opts += f'<option value="{val}" {sel}>{label}</option>'
-
-    s = Header1('assets')
-    submenu = '<a href="/assets">Anlagen</a> → <a href="/asset_categories">AfA-Kategorien</a> → <span id="ActivePage">Bearbeiten</span>'
-    s += Header2(submenu)
-    s += Header3()
-    s += f'''
-    <h2>AfA-Kategorie bearbeiten</h2>
-    <form method="POST" action="/asset_categories/update">
-        <input type="hidden" name="category_id" value="{cat[0]}">
-        <table class="form-table">
-            <tr><td>Bezeichnung:*</td><td><input type="text" name="name" value="{cat[1]}" required style="width:300px;"></td></tr>
-            <tr><td>Nutzungsdauer (Jahre):*</td><td><input type="number" name="useful_life_years" value="{cat[2]}" min="1" max="50" required style="width:80px;"></td></tr>
-            <tr><td>AfA-Methode:*</td><td><select name="depreciation_method">{method_opts}</select></td></tr>
-            <tr><td>SKR-Standardkonto:</td><td><select name="coa_id" style="width:304px;">{coa_options}</select></td></tr>
-            <tr><td>Notizen:</td><td><input type="text" name="notes" value="{cat[4] or ''}" style="width:300px;"></td></tr>
-            <tr><td></td><td><input type="submit" value="Aktualisieren"></td></tr>
-        </table>
-    </form>
-    <p><a href="/asset_categories">Zurück zur Übersicht</a></p>
-    '''
-    s += Footer()
-    return s
+    """Thin-Wrapper – Inline-Bearbeiten in der kombinierten Kategorie-Seite."""
+    return PageAssetCategories(db, edit_category_id=category_id)
