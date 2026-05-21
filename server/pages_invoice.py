@@ -110,6 +110,7 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
     paid_sum = sum(inv[36] for inv in invoices if len(inv) > 36 and inv[36] and len(inv) > 38 and inv[38] == 'paid')  # Status at 38
     open_sum = sum(inv[36] for inv in invoices if len(inv) > 36 and inv[36] and len(inv) > 38 and inv[38] not in ['paid', 'cancelled'])
     
+    s+= '<div class="grid2Cols gridMain"><div class="gridLeftCol" style="order:1">'
     s+= f'''
     <div class="rectRounded">
         <strong>Statistik:</strong> 
@@ -119,7 +120,6 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
         Offen: {open_sum:.2f} €
     </div>
     '''
-    s+= '<div class="grid2Cols gridMain"><div class="gridLeftCol" style="order:1">'
     if not invoices:
         s+= "<p><em>Keine Rechnungen gefunden.</em></p>"
     else:

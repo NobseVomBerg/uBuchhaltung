@@ -156,7 +156,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
 
     s+= f'''
     <div class="grid2Cols gridMain">
-    <div class="gridRightCol" style="order:2">
+    <div class="gridRightCol gridMiddle" style="order:2">
         <div class="rectRounded" style="order:2">
         <h2>{form_title}</h2>
         <form method="POST" action="/transactions/add">
