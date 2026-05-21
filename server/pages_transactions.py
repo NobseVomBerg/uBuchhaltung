@@ -421,7 +421,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             s+= f"<td>{currency}</td>"
             s+= f"<td>{account_name[:20]}</td>"
             s+= f"<td>{contact_name[:20]}</td>"
-            s+= f"<td><span class='split-badge'>Split {count}×</span></td>"
+            s+= f"<td><span class='badge bg-indigo'>Split {count}×</span></td>"
             s+= f"<td>{description[:35]}</td>"
             s+= f"<td><span class='split-toggle-icon' id='toggle-icon-{gid}'>▶</span></td>"
             s+= f"</tr>"
@@ -478,7 +478,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
 
             if is_linked:
                 # Verknüpft: einzeilige Merged-Darstellung
-                status_badge = "<span class='status-badge-ok' title='Bank + Buchung verknüpft'>✓</span>"
+                status_badge = "<span class='badge bg-green' title='Bank + Buchung verknüpft'>✓</span>"
                 if count > 1:
                     # Split: aufklappbar
                     s+= (f"<tr class='transaction-row row-ok' "
@@ -497,7 +497,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     s+= f"<td>{currency}</td>"
                     s+= f"<td>{account_name[:20]}</td>"
                     s+= f"<td>{entry_contact_name[:20]}</td>"
-                    s+= f"<td><span class='split-badge'>Split {count}×</span></td>"
+                    s+= f"<td><span class='badge bg-indigo'>Split {count}×</span></td>"
                     s+= f"<td>{entry_docnr}</td>"
                     s+= f"<td>{status_badge} <span class='split-toggle-icon' id='toggle-icon-{bid}'>▶</span></td>"
                     s+= f"</tr>"
@@ -527,7 +527,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     s+= f"</tr>"
             else:
                 # Nicht verknüpft: als offene Bank-Buchung anzeigen
-                status_badge = "<span class='status-badge-open' title='Noch nicht verbucht'>offen</span>"
+                status_badge = "<span class='badge bg-orange' title='Noch nicht verbucht'>offen</span>"
                 s+= (f"<tr class='transaction-row row-open' "
                      f"data-account-id='{account_id or ''}' "
                      f"data-date='{date_booking}' "
@@ -609,7 +609,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 doc_number = 'privat'
             amount_color = 'green' if (amount or 0) > 0 else 'red'
             if coa_id:
-                status_badge = "<span class='status-badge-ok' title='Buchung vollst\u00e4ndig gebucht'>\u2713</span>"
+                status_badge = "<span class='badge bg-green' title='Buchung vollst\u00e4ndig gebucht'>\u2713</span>"
             else:
                 status_badge = ""
             s+= (f"<tr class='transaction-row' "

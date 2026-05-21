@@ -187,9 +187,9 @@ def PageArticles(db: Database, edit_article_id=None):
         description = article[5] or ''
         active      = article[6] if len(article) > 6 else 1
 
-        active_badge = ("<span class='status-badge-ok' title='Aktiv'>✓</span>"
+        active_badge = ("<span class='badge bg-green' title='Aktiv'>✓</span>"
                         if active else
-                        "<span class='status-badge-open' title='Inaktiv'>✗</span>")
+                        "<span class='badge bg-orange' title='Inaktiv'>✗</span>")
         s += (f"<tr class='article-row' "
               f"data-active='{active}' "
               f"data-tax='{int(tax_rate)}' "
