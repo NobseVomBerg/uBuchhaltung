@@ -596,8 +596,14 @@ class Database:
         conn.close()
         return rows
 
-    def fetch_bookings_grouped(self):
+    def fetch_bookings_grouped(self, date_from=None, date_to=None):
         """Fetch bookings for display, with split groups aggregated.
+
+        Args:
+            date_from / date_to: optionaler Zeitraum 'YYYY-MM-DD' (einschließlich).
+                Beide gesetzt → nur Buchungen dieses Zeitraums. Splits/Bank-Kinder
+                werden über Parent bzw. Gruppe einbezogen, damit kein Split zerreißt.
+
 
         Returns a flat list of dicts, each with a 'type' key:
 
@@ -627,20 +633,35 @@ class Database:
         # Doppik-COA-IDs laden — nur echte Bankkonten (aus Accounts-Tabelle)
         doppik_coa_ids = self._get_bank_coa_ids(cursor)
 
+        # Optionaler Zeitraum-Filter. Bank-Kinder und Split-Gruppen werden über
+        # ihren Parent bzw. ihre Gruppe einbezogen (Subquery) – so zerreißt kein
+        # Split und die SQLite-Parametergrenze wird nicht überschritten.
+        use_range = bool(date_from and date_to)
+        rng       = (date_from, date_to)
+
         # 1. Bank transactions (top-level parents via ParentBooking_ID)
-        cursor.execute('''
-            SELECT * FROM Bookings
-            WHERE BookingType = 'bank'
-            ORDER BY DateBooking DESC
-        ''')
+        if use_range:
+            cursor.execute(
+                "SELECT * FROM Bookings WHERE BookingType = 'bank' "
+                "AND DateBooking BETWEEN ? AND ? ORDER BY DateBooking DESC", rng)
+        else:
+            cursor.execute(
+                "SELECT * FROM Bookings WHERE BookingType = 'bank' "
+                "ORDER BY DateBooking DESC")
         bank_rows = cursor.fetchall()
 
         # 2. Child bookings linked to bank transactions via ParentBooking_ID
-        cursor.execute('''
-            SELECT * FROM Bookings
-            WHERE ParentBooking_ID IS NOT NULL
-            ORDER BY ParentBooking_ID, DateBooking
-        ''')
+        #    (alle Kinder der im Zeitraum liegenden Bank-Buchungen)
+        if use_range:
+            cursor.execute(
+                "SELECT * FROM Bookings WHERE ParentBooking_ID IS NOT NULL "
+                "AND ParentBooking_ID IN (SELECT ID FROM Bookings "
+                "WHERE BookingType = 'bank' AND DateBooking BETWEEN ? AND ?) "
+                "ORDER BY ParentBooking_ID, DateBooking", rng)
+        else:
+            cursor.execute(
+                "SELECT * FROM Bookings WHERE ParentBooking_ID IS NOT NULL "
+                "ORDER BY ParentBooking_ID, DateBooking")
         children_by_parent = {}
         for r in cursor.fetchall():
             pid = r[18]  # ParentBooking_ID
@@ -648,14 +669,16 @@ class Database:
 
         # 3. Normal (ungrouped) bookings — not bank, not child, not in legacy group
         #    Rein liquide Spiegelbuchungen und resolved Debitoren ausblenden.
-        cursor.execute('''
-            SELECT * FROM Bookings
-            WHERE (BookingType IS NULL OR BookingType = 'entry')
-              AND ParentBooking_ID IS NULL
-              AND BookingGroup_ID IS NULL
-              AND (Status IS NULL OR Status != 'resolved')
-            ORDER BY DateBooking DESC
-        ''')
+        normal_sql = (
+            "SELECT * FROM Bookings "
+            "WHERE (BookingType IS NULL OR BookingType = 'entry') "
+            "AND ParentBooking_ID IS NULL AND BookingGroup_ID IS NULL "
+            "AND (Status IS NULL OR Status != 'resolved')")
+        if use_range:
+            cursor.execute(normal_sql + " AND DateBooking BETWEEN ? AND ? "
+                           "ORDER BY DateBooking DESC", rng)
+        else:
+            cursor.execute(normal_sql + " ORDER BY DateBooking DESC")
         normal = []
         for r in cursor.fetchall():
             coa_id = r[8]          # COA_ID
@@ -665,8 +688,12 @@ class Database:
             normal.append({'type': 'normal', 'date': r[1] or '', 'booking': r})
 
         # 4. Legacy group summaries (BookingGroup_ID, for old imports)
-        #    Resolved Debitoren-Entries ausblenden.
-        cursor.execute('''
+        #    Resolved Debitoren-Entries ausblenden. Im Zeitraum-Modus nur Gruppen
+        #    mit mind. einer Buchung im Zeitraum (Gruppe bleibt aber vollständig).
+        group_filter = ("AND bg.ID IN (SELECT BookingGroup_ID FROM Bookings "
+                        "WHERE BookingGroup_ID IS NOT NULL "
+                        "AND DateBooking BETWEEN ? AND ?) ") if use_range else ""
+        cursor.execute(f'''
             SELECT
                 bg.ID,
                 COALESCE(bg.Description, ''),
@@ -680,19 +707,24 @@ class Database:
             JOIN Bookings b ON b.BookingGroup_ID = bg.ID
             WHERE b.ParentBooking_ID IS NULL
               AND (b.Status IS NULL OR b.Status != 'resolved')
+              {group_filter}
             GROUP BY bg.ID
             ORDER BY MIN(b.DateBooking) DESC
-        ''')
+        ''', rng if use_range else ())
         groups_raw = cursor.fetchall()
 
         # 5. Legacy children (BookingGroup_ID) — only unlinked, not resolved
-        cursor.execute('''
+        lc_filter = ("AND BookingGroup_ID IN (SELECT BookingGroup_ID FROM Bookings "
+                     "WHERE BookingGroup_ID IS NOT NULL "
+                     "AND DateBooking BETWEEN ? AND ?) ") if use_range else ""
+        cursor.execute(f'''
             SELECT * FROM Bookings
             WHERE BookingGroup_ID IS NOT NULL
               AND ParentBooking_ID IS NULL
               AND (Status IS NULL OR Status != 'resolved')
+              {lc_filter}
             ORDER BY BookingGroup_ID, DateBooking
-        ''')
+        ''', rng if use_range else ())
         children_by_group = {}
         for r in cursor.fetchall():
             gid = r[3]  # BookingGroup_ID

@@ -1,9 +1,9 @@
 """
 Transactions page (Buchungen: Bankbewegungen + Buchungssätze)
 """
-import datetime
 from db import Database
 from .pages import Header1, Header2, Header3, Footer
+from .period import period_filter_widget
 
 # Spaltenindizes in Bookings (SELECT *):
 # [0]  ID            [1]  DateBooking   [2]  DateTax       [3]  BookingGroup_ID
@@ -69,7 +69,7 @@ def PageConfirmTransactions(import_id: str):
     return s
 
 
-def PageTransactions(db: Database, edit_transaction_id=None):
+def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, date_to=None):
     """Generate transactions page with edit functionality"""
     # Generate Header2 with account checkboxes
     accounts = db.fetch_accounts()
@@ -87,17 +87,10 @@ def PageTransactions(db: Database, edit_transaction_id=None):
     s = Header1('transactions')
     s+= Header2(header2_content)
 
-    # Header3 with filters
-    current_year = datetime.datetime.now().year
-
+    # Header3: gemeinsamer Zeitraum-Filter (Server-Reload) + Transaktions-Filter (clientseitig)
     header3_content = f'''
         <div class="rowWithObjects">
-            <div>
-                <label>Von:</label> <input type="date" id="dateFrom" onchange="filterTransactions()"> 
-                <label>Bis:</label> <input type="date" id="dateTo" onchange="filterTransactions()">
-                <button onclick="setTransactionYear({current_year})">{current_year}</button>
-                <button onclick="setTransactionYear({current_year-1})">{current_year-1}</button>
-            </div>
+            {period_filter_widget(date_from, date_to, '/transactions')}
             <div>
                 🔍 <input type="text" id="txSearch" placeholder="Empf\u00e4nger / Verwendungszweck" oninput="filterTransactions()" style="width: 240px;">
             </div>
@@ -365,7 +358,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
          "<th>Betrag</th><th>Währung</th><th>Konto</th><th>Kunde</th>"
          "<th>SKR</th><th>Beleg-Nr.</th><th>Aktionen</th></tr>")
 
-    bookings = db.fetch_bookings_grouped()
+    bookings = db.fetch_bookings_grouped(date_from, date_to)
 
     account_map = {a[0]: a[1] for a in accounts}
 
@@ -655,15 +648,7 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             if (icon) icon.textContent = isOpen ? '▶' : '▼';
         }
 
-        function setTransactionYear(year) {
-            document.getElementById('dateFrom').value = year + '-01-01';
-            document.getElementById('dateTo').value = year + '-12-31';
-            filterTransactions();
-        }
-
         function filterTransactions() {
-            const dateFrom       = document.getElementById('dateFrom').value;
-            const dateTo         = document.getElementById('dateTo').value;
             const txSearch       = (document.getElementById('txSearch').value || '').toLowerCase();
             const currencyFilter = document.getElementById('currencyFilter').value;
             const minAmount      = parseFloat(document.getElementById('minAmount').value) || null;
@@ -680,14 +665,11 @@ def PageTransactions(db: Database, edit_transaction_id=None):
             }
 
             document.querySelectorAll('.transaction-row').forEach(row => {
-                const rowDate     = row.getAttribute('data-date');
                 const rowCurrency = row.getAttribute('data-currency');
                 const rowAmount   = parseFloat(row.getAttribute('data-amount'));
                 const rowAccount  = row.getAttribute('data-account-id');
 
                 let show = true;
-                if (dateFrom && rowDate < dateFrom) show = false;
-                if (dateTo   && rowDate > dateTo)   show = false;
                 if (txSearch) {
                     const rowRecipient = (row.getAttribute('data-recipient') || '').toLowerCase();
                     const rowText = (row.getAttribute('data-text') || '').toLowerCase();

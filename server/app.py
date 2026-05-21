@@ -10,6 +10,7 @@ import os
 from . import pages
 from . import handlers
 from . import upload_handler
+from .period import resolve_period, period_cookie_header
 from .pages_assets import (
     PageAssets, PageAssetView, PageAssetEdit,
     PageAssetCategories, PageAssetCategoryEdit,
@@ -48,33 +49,30 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     self.respond(303, "", headers={"Location": "/setup"})
                     return
                 qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
-                date_from = qs.get('from', [''])[0]
-                date_to   = qs.get('to', [''])[0]
+                date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
                 acct_raw  = qs.get('acct', [])
                 account_ids = [int(a) for a in acct_raw] if acct_raw else None
-                self.respond(200, PageDashboard(db, date_from, date_to, account_ids))
+                hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
+                self.respond(200, PageDashboard(db, date_from, date_to, account_ids), headers=hdrs)
             elif self.path == "/setup":
                 self.respond(200, PageSetup(db))
             elif self.path == "/about":
                 self.respond(200, pages.PageAbout())
             elif self.path == "/invoice" or self.path.startswith("/invoice?"):
                 # Parse query parameters for filters
-                filters = {}
+                query_components = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
+                # Zeitraum aus Query/Cookie/Default – gilt seitenübergreifend
+                date_from, date_to, set_cookie = resolve_period(query_components, self.headers.get('Cookie'))
+                filters = {'date_from': date_from, 'date_to': date_to}
                 invoice_id = None
-                if '?' in self.path:
-                    query_string = self.path.split('?', 1)[1]
-                    query_components = parse_qs(query_string)
-                    if 'search' in query_components:
-                        filters['search'] = query_components['search'][0]
-                    if 'status' in query_components:
-                        filters['status'] = query_components['status'][0]
-                    if 'date_from' in query_components:
-                        filters['date_from'] = query_components['date_from'][0]
-                    if 'date_to' in query_components:
-                        filters['date_to'] = query_components['date_to'][0]
-                    if 'id' in query_components:
-                        invoice_id = int(query_components['id'][0])
-                self.respond(200, PageInvoice(db, filters, invoice_id))
+                if 'search' in query_components:
+                    filters['search'] = query_components['search'][0]
+                if 'status' in query_components:
+                    filters['status'] = query_components['status'][0]
+                if 'id' in query_components:
+                    invoice_id = int(query_components['id'][0])
+                hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
+                self.respond(200, PageInvoice(db, filters, invoice_id), headers=hdrs)
             elif self.path.startswith("/invoice/view") or self.path.startswith("/invoice/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 invoice_id = int(query_components["id"][0])
@@ -217,8 +215,11 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             # ──────────────────────────────────────────────────────────────
             elif self.path == "/miscellaneous" or self.path.startswith("/miscellaneous?"):
                 self.respond(200, PageMiscellaneous(db))
-            elif self.path == "/receipts":
-                self.respond(200, PageReceipts(db))
+            elif self.path == "/receipts" or self.path.startswith("/receipts?"):
+                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
+                hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
+                self.respond(200, PageReceipts(db, date_from, date_to), headers=hdrs)
             elif self.path.startswith("/receipts/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 number = query_components["number"][0]
@@ -228,19 +229,27 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 number = query_components["number"][0]
                 db.delete_receipt(number)
                 self.respond(303, "", headers={"Location": "/receipts"})
-            elif self.path == "/transactions":
-                self.respond(200, PageTransactions(db))
+            elif self.path == "/transactions" or self.path.startswith("/transactions?"):
+                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
+                hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
+                self.respond(200, PageTransactions(db, date_from=date_from, date_to=date_to), headers=hdrs)
             elif self.path.startswith("/transactions/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 transaction_id = int(query_components["id"][0])
-                self.respond(200, PageTransactions(db, edit_transaction_id=transaction_id))
+                date_from, date_to, _ = resolve_period(query_components, self.headers.get('Cookie'))
+                self.respond(200, PageTransactions(db, edit_transaction_id=transaction_id,
+                                                   date_from=date_from, date_to=date_to))
             elif self.path.startswith("/transactions/delete"):
                 query_components = parse_qs(self.path.split('?')[1])
                 transaction_id = int(query_components["id"][0])
                 db.delete_transaction(transaction_id)
                 self.respond(303, "", headers={"Location": "/transactions"})
-            elif self.path == "/bookinggroups":
-                self.respond(200, PageBookingGroups(db))
+            elif self.path == "/bookinggroups" or self.path.startswith("/bookinggroups?"):
+                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
+                hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
+                self.respond(200, PageBookingGroups(db, date_from, date_to), headers=hdrs)
             elif self.path.startswith("/bookinggroups/view"):
                 query_components = parse_qs(self.path.split('?')[1])
                 group_id = int(query_components["id"][0])

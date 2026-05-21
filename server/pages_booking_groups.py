@@ -7,6 +7,7 @@ Enthält alle Seiten für die Verwaltung von Split-Buchungsgruppen:
 """
 from db import Database
 from .pages import Header1, Header2, Header3, Footer
+from .period import period_filter_widget
 
 # Spaltenindizes in Bookings (SELECT *):
 # [0]  ID            [1]  DateBooking   [2]  DateTax       [3]  BookingGroup_ID
@@ -16,11 +17,11 @@ from .pages import Header1, Header2, Header3, Footer
 # [15] Text          [16] DocumentNumber
 
 
-def PageBookingGroups(db: Database):
+def PageBookingGroups(db: Database, date_from=None, date_to=None):
     """Übersichtsliste aller Split-Buchungsgruppen mit Anlegen-Formular."""
     s = Header1('bookinggroups')
     s += Header2()
-    s += Header3()
+    s += Header3(period_filter_widget(date_from, date_to, '/bookinggroups'))
 
     s += '<div class="grid2Cols gridMain">'
     s += '<div class="gridRightCol" style="order:2"><div class="rectRounded">'
@@ -51,6 +52,11 @@ def PageBookingGroups(db: Database):
     s += '</div></div><!-- Ende gridRightCol -->'
     s += '<div class="gridLeftCol" style="order:1">'
     groups = db.fetch_booking_groups()
+    # Nur Gruppen mit mindestens einer Buchung im Zeitraum (Gruppenanzahl klein)
+    if date_from and date_to:
+        groups = [g for g in groups
+                  if any(b[1] and date_from <= b[1] <= date_to
+                         for b in db.get_bookings_in_group(g[0]))]
 
     if not groups:
         s += '<p>Noch keine Split-Buchungsgruppen vorhanden.</p>'

@@ -79,22 +79,26 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
         selected = 'selected' if status_filter == value or (not status_filter and value == 'all') else ''
         status_dropdown += f'<option value="{value}" {selected}>{label}</option>'
     status_dropdown += '</select>'
-    
+
+    # Jahres-Buttons mit Hervorhebung des aktiven Jahres (wie auf den anderen Seiten)
+    year_buttons = ''
+    for y in range(current_year, current_year - 4, -1):
+        active = (date_from == f'{y}-01-01' and date_to == f'{y}-12-31')
+        cls = " class='active'" if active else ''
+        year_buttons += f'<button{cls} type="button" onclick="setInvoiceYear({y})">{y}</button> '
+
     header3_content = f'''
         <div class="rowWithObjects">
             <div>
-                <label>Von:</label> <input type="date" id="dateFrom" value="{date_from}" onchange="applyInvoiceFilters()"> 
+                <label>Von:</label> <input type="date" id="dateFrom" value="{date_from}" onchange="applyInvoiceFilters()">
                 <label> Bis:</label> <input type="date" id="dateTo" value="{date_to}" onchange="applyInvoiceFilters()">
-                <button onclick="setInvoiceYear({current_year})">{current_year}</button>
-                <button onclick="setInvoiceYear({current_year-1})">{current_year-1}</button>
-                <button onclick="setInvoiceYear({current_year-2})">{current_year-2}</button>
-                <button onclick="setInvoiceYear({current_year-3})">{current_year-3}</button>
-            </div>
-            <div>
-                <label>Status:</label> {status_dropdown}
+                {year_buttons}
             </div>
             <div>
                 <label>🔍 Suche:</label> <input type="text" id="searchQuery" value="{search_query}" placeholder="RNr. oder Kunde" onchange="applyInvoiceFilters()" style="width: 200px;">
+            </div>
+            <div>
+                <label>Status:</label> {status_dropdown}
             </div>
         </div>
     '''

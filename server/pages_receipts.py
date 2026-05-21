@@ -5,13 +5,17 @@ import datetime
 import html as _html
 from db import Database
 from .pages import Header1, Header2, Header3, Footer
+from .period import period_filter_widget
 
 
-def PageReceipts(db: Database):
+def PageReceipts(db: Database, date_from=None, date_to=None):
     """Generate receipts page with upload functionality"""
     current_year = datetime.datetime.now().year
-    
+
     rows = db.fetch_receipts()
+    # Serverseitiger Zeitraum-Filter (Belegmenge klein → Python-Filter genügt)
+    if date_from and date_to:
+        rows = [r for r in rows if r[2] and date_from <= r[2] <= date_to]
     
     # Get next receipt number from number ranges (company receipts)
     receipt_ranges = db.fetch_number_ranges('receipt_company')
@@ -38,17 +42,10 @@ def PageReceipts(db: Database):
     s = Header1('receipts')
     s+= Header2()
     
-    # Header3 with date filter
+    # Header3: gemeinsamer Zeitraum-Filter (Server-Reload) + Suche (clientseitig)
     header3_content = f'''
         <div class="rowWithObjects">
-            <div>
-                Von: <input type="date" id="dateFrom" onchange="filterReceipts()">
-                Bis: <input type="date" id="dateTo" onchange="filterReceipts()"> &nbsp;
-                <button onclick="setReceiptYear({current_year})">{current_year}</button>
-                <button onclick="setReceiptYear({current_year-1})">{current_year-1}</button>
-                <button onclick="setReceiptYear({current_year-2})">{current_year-2}</button>
-                <button onclick="setReceiptYear({current_year-3})">{current_year-3}</button>
-            </div>
+            {period_filter_widget(date_from, date_to, '/receipts')}
             <div>
                 <label>🔍 Suche:</label>
                 <input type="text" id="receiptSearch" oninput="filterReceipts()" placeholder="Dateiname / Pfad / Info" style="width: 200px;">
@@ -234,19 +231,10 @@ def PageReceipts(db: Database):
             location.reload();
         }
 
-        function setReceiptYear(year) {
-            document.getElementById('dateFrom').value = year + '-01-01';
-            document.getElementById('dateTo').value = year + '-12-31';
-            filterReceipts();
-        }
-
         function filterReceipts() {
-            const dateFrom = document.getElementById('dateFrom').value;
-            const dateTo   = document.getElementById('dateTo').value;
-            const search   = document.getElementById('receiptSearch').value.toLowerCase();
+            const search = document.getElementById('receiptSearch').value.toLowerCase();
 
             document.querySelectorAll('.receipt-row').forEach(row => {
-                const rowDate = row.getAttribute('data-date') || '';
                 const rowText = (
                     (row.getAttribute('data-filename') || '') + ' ' +
                     (row.getAttribute('data-path') || '') + ' ' +
@@ -254,9 +242,7 @@ def PageReceipts(db: Database):
                 ).toLowerCase();
 
                 let show = true;
-                if (dateFrom && rowDate < dateFrom) show = false;
-                if (dateTo   && rowDate > dateTo)   show = false;
-                if (search   && !rowText.includes(search)) show = false;
+                if (search && !rowText.includes(search)) show = false;
 
                 row.style.display = show ? '' : 'none';
             });
