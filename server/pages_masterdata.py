@@ -158,7 +158,7 @@ def PageArticles(db: Database, edit_article_id=None):
         <div class="rectRounded">
         <h2>{form_title}</h2>
         <form method="POST" action="/masterdata/articles/update">
-            <table>
+            <table class="form-table">
                 {id_row}
                 <tr><td>Bezeichnung:</td><td><input type="text" name="name" value="{ea_name}" required size="40"></td></tr>
                 <tr><td>Einheit:</td><td><select name="unit">{unit_select}</select></td></tr>
@@ -268,7 +268,7 @@ def PageSkr(db: Database):
     s += '''
         <h2>Neues SKR-Konto anlegen</h2>
         <form method="POST" action="/masterdata/skr/add">
-            <table>
+            <table class="form-table">
                 <tr><td>Rahmen-Nr.:</td><td><input type="text" name="framework_nr"></td></tr>
                 <tr><td>Konto:</td><td><input type="text" name="account"></td></tr>
                 <tr><td>Name:</td><td><input type="text" name="name"></td></tr>
@@ -319,7 +319,7 @@ def PageSkrEdit(db: Database, id):
     s += readonly_note
     s += f'''
         <form method="POST" action="/masterdata/skr/update">
-            <table>
+            <table class="form-table">
                 <tr><td>ID:</td><td><input type="text" name="id" value="{skr[0]}" readonly></td></tr>
                 <tr><td>Rahmen-Nr.:</td><td><input type="text" name="framework_nr" value="{skr[1]}"{readonly_attr}></td></tr>
                 <tr><td>Konto:</td><td><input type="text" name="account" value="{skr[2]}"{readonly_attr}></td></tr>
@@ -349,7 +349,7 @@ def PageBankAccounts(db: Database):
     s += '''
         <h2>Neues Bankkonto anlegen</h2>
         <form method="POST" action="/masterdata/bankaccounts/add">
-            <table>
+            <table class="form-table">
                 <tr><td>Bezeichnung:</td><td><input type="text" name="name" required></td></tr>
                 <tr><td>Inhaber:</td><td><input type="text" name="holder"></td></tr>
                 <tr><td>IBAN:</td><td><input type="text" name="iban"></td></tr>
@@ -393,7 +393,7 @@ def PageBankAccountEdit(db: Database, account_id):
         s += "<p style='color:#666;'>Kasse-Konto: Name und Typ können nicht geändert werden.</p>"
         s += f'''
             <form method="POST" action="/masterdata/bankaccounts/update">
-                <table>
+                <table class="form-table">
                     <input type="hidden" name="id" value="{account[0]}">
                     <input type="hidden" name="name" value="{account[1]}">
                     <input type="hidden" name="holder" value="{account[2] or ''}"> 
@@ -411,7 +411,7 @@ def PageBankAccountEdit(db: Database, account_id):
     else:
         s += f'''
             <form method="POST" action="/masterdata/bankaccounts/update">
-                <table>
+                <table class="form-table">
                     <tr><td>ID:</td><td><input type="text" name="id" value="{account[0]}" readonly></td></tr>
                     <tr><td>Bezeichnung:</td><td><input type="text" name="name" value="{account[1]}" required></td></tr>
                     <tr><td>Inhaber:</td><td><input type="text" name="holder" value="{account[2]}"></td></tr>
@@ -457,7 +457,7 @@ def PageNumberRanges(db: Database):
 
         <h3>Neuen Nummernkreis anlegen</h3>
         <form method="POST" action="/masterdata/numberranges/add">
-            <table>
+            <table class="form-table">
                 <tr><td>Typ:</td><td>
                     <select name="type" required>
                         <option value="invoice">Ausgangsrechnungen</option>
@@ -566,7 +566,7 @@ def PageNumberRangesEdit(db: Database, range_id):
         <form method="POST" action="/masterdata/numberranges/update">
             <input type="hidden" name="id" value="{range_id}">
             <input type="hidden" name="type" value="{range_type}">
-            <table>
+            <table class="form-table">
                 <tr><td>Jahr:</td><td><input type="number" name="year" value="{year}" min="2000" max="2099" required></td></tr>
                 <tr><td>Buchstabe:</td><td><input type="text" name="letter" value="{letter}" maxlength="1" pattern="[A-Z]" required style="width: 50px; text-transform: uppercase;"></td></tr>
                 <tr><td>Suffix (optional):</td><td><input type="text" name="prefix" value="{suffix}" maxlength="10" style="width: 80px;"> (wird ans Ende der Nummer angehängt, z.B. _A)</td></tr>

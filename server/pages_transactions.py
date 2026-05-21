@@ -160,7 +160,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         <div class="rectRounded" style="order:2">
         <h2>{form_title}</h2>
         <form method="POST" action="/transactions/add">
-                <table>
+                <table class="form-table">
                     {id_display}
                     <tr><td>Buchungsdatum:</td><td><input type="date" name="date" value="{edit_trans[1] if edit_trans else ""}" required></td></tr>
                     <tr><td>Steuerdatum:</td><td><input type="date" name="date_tax" value="{edit_trans[2] if edit_trans and edit_trans[2] else ""}"></td></tr>
@@ -481,7 +481,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 status_badge = "<span class='status-badge-ok' title='Bank + Buchung verknüpft'>✓</span>"
                 if count > 1:
                     # Split: aufklappbar
-                    s+= (f"<tr class='transaction-row bank-linked-row' "
+                    s+= (f"<tr class='transaction-row row-ok' "
                          f"data-group-id='{bid}' "
                          f"data-account-id='{account_id or ''}' "
                          f"data-date='{date_booking}' "
@@ -503,7 +503,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     s+= f"</tr>"
                 else:
                     # Einzelne verknüpfte Buchung: eine Zeile, kein Toggle
-                    s+= (f"<tr class='transaction-row bank-linked-row' "
+                    s+= (f"<tr class='transaction-row row-ok' "
                          f"data-account-id='{account_id or ''}' "
                          f"data-date='{date_booking}' "
                          f"data-contact-id='{entry_contact or ''}' "
@@ -528,7 +528,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             else:
                 # Nicht verknüpft: als offene Bank-Buchung anzeigen
                 status_badge = "<span class='status-badge-open' title='Noch nicht verbucht'>offen</span>"
-                s+= (f"<tr class='transaction-row bank-open-row' "
+                s+= (f"<tr class='transaction-row row-open' "
                      f"data-account-id='{account_id or ''}' "
                      f"data-date='{date_booking}' "
                      f"data-currency='{currency}' "

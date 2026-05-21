@@ -98,14 +98,14 @@ def PageReceipts(db: Database, date_from=None, date_to=None):
                 <h2 id="receiptFormTitle">Neuer Beleg</h2>
                 <form method="POST" action="/add_receipt" id="receiptForm">
                     <input type="hidden" name="id" id="editId" value="">
-                    <table>
+                    <table class="form-table">
     '''
     s += f'<tr><td>Nummer:</td><td><input type="text" name="number" id="editNumber" value="{next_receipt_number}"></td></tr>'
     s += '''
                         <tr><td>Datum:</td><td><input type="date" name="date" id="editDate"></td></tr>
-                        <tr><td>Dateiname:</td><td><input type="text" name="filename" id="editFilename" style="width:220px"></td></tr>
-                        <tr><td>Pfad:</td><td><input type="text" name="path" id="editPath" style="width:220px"></td></tr>
-                        <tr><td>Info:</td><td><input type="text" name="info" id="editInfo" style="width:220px"></td></tr>
+                        <tr><td>Dateiname:</td><td><input type="text" name="filename" id="editFilename"></td></tr>
+                        <tr><td>Pfad:</td><td><input type="text" name="path" id="editPath"></td></tr>
+                        <tr><td>Info:</td><td><input type="text" name="info" id="editInfo"></td></tr>
                         <tr><td></td><td>
                             <div id="btnNew">
                                 <input type="submit" value="Beleg hinzuf&uuml;gen" class="coloredButton btn-sm btn-green">
@@ -267,7 +267,7 @@ def PageReceiptEdit(db: Database, number):
     s+= f'''
         <form method="POST" action="/update_receipt">
             <input type="hidden" name="id" value="{receipt[0]}">
-            <table>
+            <table class="form-table">
                 <tr><td>Nummer:</td><td><input type="text" name="number" value="{receipt[1]}"></td></tr>
                 <tr><td>Datum:</td><td><input type="date" name="date" value="{receipt[2]}"></td></tr>
                 <tr><td>Dateiname:</td><td><input type="text" name="filename" value="{receipt[3]}"></td></tr>
@@ -312,7 +312,7 @@ def PageReceiptEdit(db: Database, number):
     s+= f'''
         <form method="POST" action="/documents/link">
             <input type="hidden" name="document_id" value="{document_id}">
-            <table>
+            <table class="form-table">
                 <tr><td>Buchungs-ID:</td><td><input type="number" name="booking_id" required></td></tr>
                 <tr><td>Typ:</td><td>
                     <select name="relation_type">

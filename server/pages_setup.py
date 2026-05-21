@@ -32,7 +32,7 @@ def PageSetup(db: Database, message: str = '') -> str:
 
     <form method="POST" action="/setup/save">
       <h3>Eigene Kontaktdaten</h3>
-      <table>
+      <table class="form-table">
         <tr>
           <td><label for="company_name">Firmenname / Name *</label></td>
           <td><input type="text" id="company_name" name="company_name" required size="40"
@@ -89,7 +89,7 @@ def PageSetup(db: Database, message: str = '') -> str:
       </table>
 
       <h3>Bankkonto <small class="muted">(optional, kann später ergänzt werden)</small></h3>
-      <table>
+      <table class="form-table">
         <tr>
           <td><label for="bank_name_label">Kontobezeichnung</label></td>
           <td><input type="text" id="bank_name_label" name="bank_name_label" size="30"

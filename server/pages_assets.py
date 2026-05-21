@@ -251,7 +251,7 @@ def PageAssetView(db: Database, asset_id: int):
         else:
             depr_status_label = '<span style="color:#aaa;">○ Geplant</span>'
             action = ''
-        row_style = ' style="background:#f0f7f0;"' if booked_entry else ''
+        row_style = ' class="row-ok"' if booked_entry else ''
         s += f'<tr{row_style}><td>{yr}</td><td style="text-align:right;">{_fmt(bv_start)}</td><td style="text-align:right;">{_fmt(depr)}</td><td style="text-align:right;">{_fmt(bv_end)}</td><td>{meth}</td><td>{depr_status_label}</td><td>{action}</td></tr>'
 
     s += '</table></div>'
@@ -280,7 +280,7 @@ def PageAssetView(db: Database, asset_id: int):
         s += f'''<div class="rectRounded" id="sell_form"><h3>Anlage verkaufen / Abgang buchen</h3>
         <form method="POST" action="/assets/sell">
             <input type="hidden" name="asset_id" value="{asset_id}">
-            <table>
+            <table class="form-table">
                 <tr><td>Datum:</td><td><input type="date" name="sale_date" required></td></tr>
                 <tr><td>Erlös (0 = Verschrottung):</td><td><input type="number" name="sale_price" value="0" min="0" step="0.01"> €</td></tr>
                 <tr><td></td><td><input type="submit" value="Abgang buchen"></td></tr>
@@ -304,11 +304,11 @@ def _book_depr_button(asset_id, year, accounts, coa_rows):
     return f'''
         <button type="button" onclick="document.getElementById('{form_id}').style.display='block'; this.style.display='none';"
             style="font-size:0.85em; padding:2px 8px;">AfA buchen</button>
-        <div id="{form_id}" style="display:none; background:#f9f9f9; padding:8px; margin-top:4px; border:1px solid #ccc; border-radius:4px;">
+        <div id="{form_id}" class="rectRounded" style="display:none; margin-top:4px;">
             <form method="POST" action="/assets/depreciate">
                 <input type="hidden" name="asset_id" value="{asset_id}">
                 <input type="hidden" name="year" value="{year}">
-                <table style="font-size:0.85em;">
+                <table class="form-table" style="font-size:0.85em;">
                     <tr><td>Buchungskonto:</td><td>
                         <select name="account_id" style="width:180px;">{account_options}</select>
                     </td></tr>
@@ -409,39 +409,39 @@ def PageAssetEdit(db: Database, asset_id=None, parent_id=None):
     method_deg = 'selected' if v['method'] == 'degressive' else ''
 
     s += f'''
-    <table style="border-collapse:collapse;">
-        <tr><td style="padding:5px 10px 5px 0; width:200px;">Bezeichnung:*</td>
-            <td><input type="text" name="name" value="{v['name']}" required style="width:350px;"></td></tr>
+    <table class="form-table">
+        <tr><td>Bezeichnung:*</td>
+            <td><input type="text" name="name" value="{v['name']}" required></td></tr>
         <tr><td>Beschreibung:</td>
-            <td><input type="text" name="description" value="{v['description']}" style="width:350px;"></td></tr>
+            <td><input type="text" name="description" value="{v['description']}"></td></tr>
         <tr><td>AfA-Kategorie:</td>
-            <td><select name="asset_category_id" id="cat_select" onchange="prefillFromCategory()" style="width:354px;">{cat_options}</select></td></tr>
+            <td><select name="asset_category_id" id="cat_select" onchange="prefillFromCategory()">{cat_options}</select></td></tr>
         <tr><td>SKR-Konto (Anlage):</td>
-            <td><select name="coa_id" style="width:354px;">{coa_options}</select></td></tr>
+            <td><select name="coa_id">{coa_options}</select></td></tr>
         <tr><td>Anschaffungsdatum:*</td>
             <td><input type="date" name="purchase_date" value="{v['purchase_date']}" required onchange="updatePreview()"></td></tr>
         <tr><td>Anschaffungskosten (netto €):*</td>
             <td><input type="number" name="purchase_price" id="purchase_price" value="{v['purchase_price']}"
-                min="0" step="0.01" required style="width:150px;" onchange="updatePreview()">
-                <span style="color:#888; font-size:0.85em;"> ≤ 800 € → GWG-Sofortabschreibung</span></td></tr>
+                min="0" step="0.01" required onchange="updatePreview()">
+                <span class="muted"> ≤ 800 € → GWG-Sofortabschreibung</span></td></tr>
         <tr><td>Nutzungsdauer (Jahre):*</td>
             <td><input type="number" name="useful_life_years" id="useful_life" value="{v['useful_life']}"
-                min="1" max="50" required style="width:80px;" onchange="updatePreview()"></td></tr>
+                min="1" max="50" required onchange="updatePreview()"></td></tr>
         <tr><td>AfA-Methode:*</td>
             <td><select name="depreciation_method" id="depr_method" onchange="updatePreview()">
                 <option value="linear" {method_lin}>Linear</option>
                 <option value="degressive" {method_deg}>Degressiv (25%)</option>
             </select></td></tr>
         <tr><td>Seriennummer:</td>
-            <td><input type="text" name="serial_number" value="{v['serial']}" style="width:250px;"></td></tr>
+            <td><input type="text" name="serial_number" value="{v['serial']}"></td></tr>
         <tr><td>Standort:</td>
-            <td><input type="text" name="location" value="{v['location']}" style="width:250px;"></td></tr>
+            <td><input type="text" name="location" value="{v['location']}"></td></tr>
         <tr><td>Lieferant:</td>
-            <td><select name="supplier_id" style="width:354px;">{supplier_options}</select></td></tr>
+            <td><select name="supplier_id">{supplier_options}</select></td></tr>
         <tr><td>Beleg (Eingangsrechnung):</td>
-            <td><select name="document_id" style="width:354px;">{doc_options}</select></td></tr>
+            <td><select name="document_id">{doc_options}</select></td></tr>
         <tr><td>Notizen:</td>
-            <td><textarea name="notes" rows="3" style="width:350px;">{v['notes']}</textarea></td></tr>
+            <td><textarea name="notes" rows="3">{v['notes']}</textarea></td></tr>
     '''
 
     if is_edit:
@@ -452,10 +452,10 @@ def PageAssetEdit(db: Database, asset_id=None, parent_id=None):
         s += f'<tr><td>Status:</td><td><select name="status">{status_opts}</select></td></tr>'
 
     s += f'''
-        <tr><td></td><td style="padding-top:10px;">
+        <tr><td></td><td>
             <input type="submit" value="{'Anlage aktualisieren' if is_edit else 'Anlage anlegen'}"
-                style="padding:8px 20px; background:#2196F3; color:white; border:none; cursor:pointer; border-radius:4px;">
-            <a href="/assets" style="margin-left:10px;">Abbrechen</a>
+                class="coloredButton btn-sm btn-indigo">
+            <a href="/assets" class="coloredButton btn-sm btn-gray">Abbrechen</a>
         </td></tr>
     </table>
     </form>
@@ -601,7 +601,7 @@ def PageAssetCategories(db: Database):
     s += f'''
     <h3>Neue Kategorie</h3>
     <form method="POST" action="/asset_categories/add">
-        <table>
+        <table class="form-table">
             <tr><td>Bezeichnung:*</td><td><input type="text" name="name" required style="width:300px;"></td></tr>
             <tr><td>Nutzungsdauer (Jahre):*</td><td><input type="number" name="useful_life_years" min="1" max="50" required style="width:80px;"></td></tr>
             <tr><td>AfA-Methode:*</td><td>
@@ -668,7 +668,7 @@ def PageAssetCategoryEdit(db: Database, category_id: int):
     <h2>AfA-Kategorie bearbeiten</h2>
     <form method="POST" action="/asset_categories/update">
         <input type="hidden" name="category_id" value="{cat[0]}">
-        <table>
+        <table class="form-table">
             <tr><td>Bezeichnung:*</td><td><input type="text" name="name" value="{cat[1]}" required style="width:300px;"></td></tr>
             <tr><td>Nutzungsdauer (Jahre):*</td><td><input type="number" name="useful_life_years" value="{cat[2]}" min="1" max="50" required style="width:80px;"></td></tr>
             <tr><td>AfA-Methode:*</td><td><select name="depreciation_method">{method_opts}</select></td></tr>
