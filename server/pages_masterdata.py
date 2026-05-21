@@ -150,7 +150,7 @@ def PageArticles(db: Database, edit_article_id=None):
             '<a href="/masterdata/articles" class="coloredButton btn-sm btn-gray">Abbrechen</a>'
         )
     else:
-        action_buttons = '<input type="submit" value="Artikel hinzufügen" class="coloredButton btn-sm btn-green">'
+        action_buttons = '<input type="submit" value="Artikel hinzufügen" formaction="/masterdata/articles/add" class="coloredButton btn-sm btn-green">'
 
     s += f'''
     <div class="grid2Cols gridMain">
