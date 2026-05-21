@@ -329,8 +329,8 @@ def _invoice_form_html(db: Database, invoice_id=None):
                 <td><div class="rowWithObjects">
                     '''
         if invoice_status not in ('draft', 'finalized'):
-            s += '<div class="rectRounded btn-red">'
-        s += f'<strong class="coloredButtonNoClick btn-smNoClick btn-back" style="color:{status_color}; hover:none;">{status_label}</strong>'
+            s += '<div class="rectRounded bg-red">'
+        s += f'<strong class="coloredButtonNoClick btn-smNoClick bg-back" style="color:{status_color}; hover:none;">{status_label}</strong>'
         if invoice_status not in ('draft', 'finalized'):
             s += ' &nbsp; &nbsp; &#9888; Nicht im Entwurfsstatus! &Auml;nderungen k&ouml;nnen trotzdem gespeichert werden.</div>'
         s += f'''
@@ -340,15 +340,15 @@ def _invoice_form_html(db: Database, invoice_id=None):
                 <td>Neuer Status:</td>
                 <td><div class="rowWithObjects">
                     <select id="statusChangeSelect">{status_options_html}</select>
-                    <button onclick="setInvoiceStatus({invoice_id})" class="coloredButton btn-sm btn-blue">&#9888; Status setzen</button>
+                    <button onclick="setInvoiceStatus({invoice_id})" class="coloredButton btn-sm bg-blue">&#9888; Status setzen</button>
                 </div></td>
             </tr>
             <tr>
                 <td>Rechnung:</td>
                 <td><div class="rowWithObjects">
-                    <button onclick="saveInvoice()" class="coloredButton btn-sm btn-green">💾 Speichern</button>
-                    <button onclick="window.location.href='/invoice'" class="coloredButton btn-sm btn-gray">← Abbrechen</button>
-                    <button onclick="generatePDF()" class="coloredButton btn-sm btn-blue">📄 PDF + E-Rechnung</button>
+                    <button onclick="saveInvoice()" class="coloredButton btn-sm bg-green">💾 Speichern</button>
+                    <button onclick="window.location.href='/invoice'" class="coloredButton btn-sm bg-gray">← Abbrechen</button>
+                    <button onclick="generatePDF()" class="coloredButton btn-sm bg-blue">📄 PDF + E-Rechnung</button>
                 </div></td>
             </tr>
         </table>
@@ -374,8 +374,8 @@ function setInvoiceStatus(invId) {{
             <tr>
                 <td>Rechnung:</td>
                 <td><div class="rowWithObjects">
-                    <button onclick="saveInvoice()" class="coloredButton btn-sm btn-green">💾 Speichern</button>
-                    <button onclick="window.location.href=\'/invoice\'" class="coloredButton btn-sm btn-gray">← Abbrechen</button>
+                    <button onclick="saveInvoice()" class="coloredButton btn-sm bg-green">💾 Speichern</button>
+                    <button onclick="window.location.href=\'/invoice\'" class="coloredButton btn-sm bg-gray">← Abbrechen</button>
                 </div></td>
             </tr>
         </table>
@@ -548,8 +548,8 @@ function setInvoiceStatus(invId) {{
         <div id="invoice_confirm" class="modal-overlay no-pdf" style="display:none;">
             <div class="modal-content" style="max-width:400px; text-align:center; padding:30px;">
                 <p id="invoice_confirm_text" style="margin:0 0 20px; font-size:15px;"></p>
-                <button type="button" id="invoice_confirm_ok" class="coloredButton btn-green">OK</button>
-                <button type="button" class="coloredButton btn-gray" style="margin-left:10px;" onclick="document.getElementById('invoice_confirm').style.display='none'">Abbrechen</button>
+                <button type="button" id="invoice_confirm_ok" class="coloredButton bg-green">OK</button>
+                <button type="button" class="coloredButton bg-gray" style="margin-left:10px;" onclick="document.getElementById('invoice_confirm').style.display='none'">Abbrechen</button>
             </div>
         </div>
         

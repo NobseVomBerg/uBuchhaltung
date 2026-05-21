@@ -113,7 +113,7 @@ def PageSetup(db: Database, message: str = '') -> str:
       </table>
 
       <br>
-      <input type="submit" value="✅ Einrichtung abschließen" class="coloredButton btn-blue">
+      <input type="submit" value="✅ Einrichtung abschließen" class="coloredButton bg-blue">
       &nbsp;&nbsp;
       <a href="/">Später einrichten →</a>
     </form>
@@ -124,7 +124,7 @@ def PageSetup(db: Database, message: str = '') -> str:
     <p>Lädt eine Musterfirma und ein Testkonto vor – sinnvoll für Entwicklung und Tests.
        Kann danach jederzeit in den Stammdaten angepasst werden.</p>
     <form method="POST" action="/setup/load_testdata">
-      <input type="submit" value="🧪 Testdaten laden" class="coloredButton btn-orange">
+      <input type="submit" value="🧪 Testdaten laden" class="coloredButton bg-orange">
     </form>
   </div>
 </div>

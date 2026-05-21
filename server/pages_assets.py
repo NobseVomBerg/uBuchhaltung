@@ -454,8 +454,8 @@ def PageAssetEdit(db: Database, asset_id=None, parent_id=None):
     s += f'''
         <tr><td></td><td>
             <input type="submit" value="{'Anlage aktualisieren' if is_edit else 'Anlage anlegen'}"
-                class="coloredButton btn-sm btn-indigo">
-            <a href="/assets" class="coloredButton btn-sm btn-gray">Abbrechen</a>
+                class="coloredButton btn-sm bg-indigo">
+            <a href="/assets" class="coloredButton btn-sm bg-gray">Abbrechen</a>
         </td></tr>
     </table>
     </form>

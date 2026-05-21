@@ -26,7 +26,7 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .successColor			{ color: green; }
 .textareaSql			{ font-family: monospace; width: 100%; max-width: 1000px; margin-top: 10px; }
 .muted					{ color: #666; }
-/* Formular-Tabellen (Label/Eingabe): füllen die Spalte, Felder fluide, randlos */
+/* Form tables (prefered for gridRightCol) */
 .form-table				{ width: 100%; max-width: 700px; border-collapse: collapse; border: none; }
 .form-table td			{ padding: 6px 12px; vertical-align: top; }
 .form-table td:first-child { white-space: nowrap; }
@@ -40,27 +40,26 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 #dropZone:hover 		{ background-color: #EEE; }
 #fileInput 				{ display: none; }
 
-/* Colored link-buttons (shared base + color modifier) */
-.coloredButton				{ display: inline-block; color: white; text-decoration: none; border-radius: 5px; border: none; cursor: pointer; padding: 9px 16px; margin: 2px 2px 2px 0; }
+/* Colored buttons (shared base + color modifier) */
+.coloredButton, .coloredButtonNoClick { display: inline-block; color: white; text-decoration: none; border-radius: 5px; border: none; cursor: pointer; padding: 9px 16px; margin: 2px 2px 2px 0; }
+.coloredButton				{ cursor: pointer; }
 .coloredButton:hover		{ filter: brightness(0.88); color: white; text-decoration: none; padding: 7px 14px; margin: 4px 4px 4px 2px; }
-.btn-sm						{ padding: 4px 8px; font-size: 0.9em; }
+.btn-sm, .btn-smNoClick		{ padding: 4px 8px; font-size: 0.9em; }
 .btn-sm:hover				{ padding: 2px 6px; }
-.btn-green					{ background: #4CAF50; }
-.btn-orange					{ background: #ff9900 !important; }
-.btn-red					{ background: #dc3545 !important; }
-.btn-blue					{ background: #0066cc; }
-.btn-indigo					{ background: #2196F3; }
-.btn-gray					{ background: #888; }
-.btn-back					{ background: #000; }
-.coloredButtonNoClick		{ display: inline-block; color: white; text-decoration: none; border-radius: 5px; border: none; padding: 9px 16px; margin: 2px 2px 2px 0; }
-.btn-smNoClick				{ padding: 4px 8px; font-size: 0.9em; }
 
+/* Backgroundcolors */
+.bg-green					{ background: #4CAF50; }
+.bg-orange					{ background: #ff9900 !important; }
+.bg-red						{ background: #dc3545 !important; }
+.bg-blue					{ background: #0066cc; }
+.bg-indigo					{ background: #2196F3; }
+.bg-gray					{ background: #888; }
+.bg-back					{ background: #000; }
+
+.badge						{ display: inline-block; color: white; font-size: 0.72em; font-weight: 700; padding: 2px 6px; border-radius: 10px; vertical-align: middle; margin-right: 3px; }
 
 /* Splitbuchungen (Gruppenansicht in PageTransactions) */
 .group-row                  { cursor: pointer; }
-.split-badge                { display: inline-block; background: #2196F3; color: white;
-                              font-size: 0.72em; font-weight: 700; padding: 2px 6px;
-                              border-radius: 10px; vertical-align: middle; margin-right: 5px; }
 .split-toggle-icon          { font-size: 0.8em; color: #2196F3; user-select: none; }
 .child-row td.child-indent  { padding-left: 6px; }
 .child-row td               { border-left: 3px solid #2196F3; font-size: 0.95em; }
@@ -69,10 +68,6 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 /* Status-Zeilen: erledigt/verknüpft (grün) vs. offen (amber) – generisch wiederverwendbar */
 .row-ok                     { background: #f0faf0; }
 .row-open                   { background: #fff8e1; }
-.status-badge-ok            { display: inline-block; background: #4caf50; color: white; font-size: 0.72em; font-weight: 700;
-                              padding: 2px 6px; border-radius: 10px; vertical-align: middle; margin-right: 3px; }
-.status-badge-open          { display: inline-block; background: #ff9800; color: white; font-size: 0.72em; font-weight: 700;
-                              padding: 2px 6px; border-radius: 10px; vertical-align: middle; margin-right: 3px; }
 
 /* Aktions-Icons in Tabellenspalten */
 .action-icon                { font-size: 1em; text-decoration: none; margin: 0 3px; opacity: 0.80; vertical-align: middle; }
@@ -109,11 +104,6 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 	input[type=number].noButtons::-webkit-outer-spin-button {
 		-webkit-appearance: none;
 		margin: 0;
-		/*
-		background-color: #222;
-    	opacity: 1;
-	    color: #FFF;
-		*/
 	}
 	input[type=number].noButtons {
 		-moz-appearance: textfield; /* Firefox */
@@ -137,7 +127,7 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 	.group-row          { background: #EEE; }
 	.group-row:hover    { background: #DDD; }
 
-	.btn-back			{ background: #FFF; }
+	.bg-back			{ background: #FFF; }
 }
 
 /* Invoice page styles - use white backgrounds even in dark mode */

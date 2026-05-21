@@ -47,7 +47,7 @@ def PageMiscellaneous(db: Database):
         <p>Gib hier SQL-Befehle ein (mehrere Befehle durch Semikolon getrennt):</p>
         <textarea id="sql_input" rows="15" cols="100" class="textareaSql" placeholder="SELECT * FROM ChartOfAccounts WHERE AccountNumber = 6805;"></textarea>
         <br>
-        <button type="button" onclick="executeSql()" class="coloredButton btn-orange">SQL ausführen</button>
+        <button type="button" onclick="executeSql()" class="coloredButton bg-orange">SQL ausführen</button>
         <span style="color: red; margin-left: 20px;">⚠️ Vorsicht: SQL-Befehle werden direkt ausgeführt!</span>
         <div id="sql_status" style="margin-top: 10px;"></div>
         <textarea id="sql_output" rows="20" cols="100" readonly class="textareaSql" style="display: none;"></textarea>
@@ -93,7 +93,7 @@ def PageMiscellaneous(db: Database):
         <p>Exportiert alle Tabelleninhalte als INSERT-Statements nach <code>./data/db-export.sql</code>.
         Die Datei kann direkt im SQL-Konsolenbereich eingefügt werden.</p>
         <form method="POST" action="/db_export">
-            <button type="submit" class="coloredButton btn-blue">&#x1F4BE; DB-Export</button>
+            <button type="submit" class="coloredButton bg-blue">&#x1F4BE; DB-Export</button>
         </form>
         '''
     # Show export result message if redirected back with status
@@ -131,7 +131,7 @@ def PageMiscellaneous(db: Database):
                 <label>Bis:&nbsp;<input type="date" name="date_to" value="{cur_year}-12-31" required></label>
             </div>
             <br>
-            <button type="submit" class="coloredButton btn-blue">&#x1F4E5; DATEV-CSV exportieren</button>
+            <button type="submit" class="coloredButton bg-blue">&#x1F4E5; DATEV-CSV exportieren</button>
         </form>
         <script>
         (function() {{
@@ -176,7 +176,7 @@ def PageMiscellaneous(db: Database):
         <form method="POST" action="/wiso/import" enctype="multipart/form-data">
             <div class="rowWithObjects">CSV-Datei:&nbsp;<input type="file" name="csvfile" accept=".txt,.csv" required></div>
             <br>
-            <button type="submit" class="coloredButton btn-green">&#x1F4C2; WISO Import starten</button>
+            <button type="submit" class="coloredButton bg-green">&#x1F4C2; WISO Import starten</button>
         </form>
         <script>
         (function() {
@@ -270,7 +270,7 @@ def PageMiscellaneous(db: Database):
         <p>Lädt alle Testdaten aus <code>seed_data/test/</code> nach (Artikel, Kontakte, Anlagen, Rechnungen, ...).<br>
         Der Vorgang ist <strong>idempotent</strong> – bereits vorhandene Einträge werden übersprungen.</p>
         <form method="POST" action="/setup/load_testdata">
-            <button type="submit" class="coloredButton btn-orange">🧪 Testdaten nachladen</button>
+            <button type="submit" class="coloredButton bg-orange">🧪 Testdaten nachladen</button>
         </form>
         '''
     s += '\t</div>'

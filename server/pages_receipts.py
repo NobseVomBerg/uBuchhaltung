@@ -108,11 +108,11 @@ def PageReceipts(db: Database, date_from=None, date_to=None):
                         <tr><td>Info:</td><td><input type="text" name="info" id="editInfo"></td></tr>
                         <tr><td></td><td>
                             <div id="btnNew">
-                                <input type="submit" value="Beleg hinzuf&uuml;gen" class="coloredButton btn-sm btn-green">
+                                <input type="submit" value="Beleg hinzuf&uuml;gen" class="coloredButton btn-sm bg-green">
                             </div>
                             <div id="btnEdit" style="display:none">
-                                <input type="submit" value="Aktualisieren" class="coloredButton btn-sm btn-green">
-                                <a href="#" class="coloredButton btn-sm btn-gray" onclick="resetReceiptForm(); return false;">Abbrechen</a>
+                                <input type="submit" value="Aktualisieren" class="coloredButton btn-sm bg-green">
+                                <a href="#" class="coloredButton btn-sm bg-gray" onclick="resetReceiptForm(); return false;">Abbrechen</a>
                             </div>
                         </td></tr>
                     </table>

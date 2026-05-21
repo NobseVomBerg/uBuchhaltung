@@ -105,8 +105,8 @@ def Footer():
 <div id="app_confirm" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.45);z-index:9999;align-items:center;justify-content:center;">
   <div style="background:#fff;border-radius:6px;padding:30px 36px;max-width:440px;width:90%;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.25);">
     <p id="app_confirm_text" style="margin:0 0 22px;font-size:15px;line-height:1.4;"></p>
-    <button id="app_confirm_ok" class="coloredButton btn-green">OK</button>
-    <button class="coloredButton btn-gray" style="margin-left:10px;"
+    <button id="app_confirm_ok" class="coloredButton bg-green">OK</button>
+    <button class="coloredButton bg-gray" style="margin-left:10px;"
             onclick="document.getElementById('app_confirm').style.display='none'">Abbrechen</button>
   </div>
 </div>

@@ -145,12 +145,12 @@ def PageArticles(db: Database, edit_article_id=None):
               if edit_article else '')
     if edit_article:
         action_buttons = (
-            '<input type="submit" value="Aktualisieren" class="coloredButton btn-sm btn-green">'
-            '<input type="submit" value="Als neu anlegen" formaction="/masterdata/articles/add" class="coloredButton btn-sm btn-blue">'
-            '<a href="/masterdata/articles" class="coloredButton btn-sm btn-gray">Abbrechen</a>'
+            '<input type="submit" value="Aktualisieren" class="coloredButton btn-sm bg-green">'
+            '<input type="submit" value="Als neu anlegen" formaction="/masterdata/articles/add" class="coloredButton btn-sm bg-blue">'
+            '<a href="/masterdata/articles" class="coloredButton btn-sm bg-gray">Abbrechen</a>'
         )
     else:
-        action_buttons = '<input type="submit" value="Artikel hinzufügen" formaction="/masterdata/articles/add" class="coloredButton btn-sm btn-green">'
+        action_buttons = '<input type="submit" value="Artikel hinzufügen" formaction="/masterdata/articles/add" class="coloredButton btn-sm bg-green">'
 
     s += f'''
     <div class="grid2Cols gridMain">

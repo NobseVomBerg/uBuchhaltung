@@ -57,8 +57,8 @@ def PageConfirmTransactions(import_id: str):
             <form method="POST" action="/confirm_transactions">
                 <input type="hidden" name="import_id" value="{import_id}">
                 <p>
-                    <input type="submit" name="action" value="Importieren" class="coloredButton btn-green">
-                    <input type="submit" name="action" value="Abbrechen" class="coloredButton btn-gray">
+                    <input type="submit" name="action" value="Importieren" class="coloredButton bg-green">
+                    <input type="submit" name="action" value="Abbrechen" class="coloredButton bg-gray">
                 </p>
             </form>
         '''
@@ -239,10 +239,10 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     '''
 
     if edit_trans:
-        form_buttons = ('<input type="submit" value="Aktualisieren" class="coloredButton btn-sm btn-green">'
-                        '<button type="button" onclick="window.location.href=\'/transactions\'" class="coloredButton btn-sm btn-gray">Abbrechen</button>')
+        form_buttons = ('<input type="submit" value="Aktualisieren" class="coloredButton btn-sm bg-green">'
+                        '<button type="button" onclick="window.location.href=\'/transactions\'" class="coloredButton btn-sm bg-gray">Abbrechen</button>')
     else:
-        form_buttons = '<input type="submit" value="Transaktion hinzuf\u00fcgen" class="coloredButton btn-sm btn-green">'
+        form_buttons = '<input type="submit" value="Transaktion hinzuf\u00fcgen" class="coloredButton btn-sm bg-green">'
 
     s+= f'''
                     <tr><td></td><td>
