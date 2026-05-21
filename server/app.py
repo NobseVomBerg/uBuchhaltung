@@ -1,7 +1,7 @@
 """
 Main HTTP server class with routing
 """
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pydoc import html
 from urllib.parse import parse_qs
 from db import Database
@@ -646,7 +646,7 @@ def run_server(host="localhost", port=8080):
             sys.exit(1)
 
     server_address = (host, port)
-    httpd = HTTPServer(server_address, SimpleWebServer)
+    httpd = ThreadingHTTPServer(server_address, SimpleWebServer)
     print(f"Starting server on {host}:{port}...")
     try:
         httpd.serve_forever()
