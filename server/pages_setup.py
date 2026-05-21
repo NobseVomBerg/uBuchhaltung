@@ -23,7 +23,7 @@ def PageSetup(db: Database, message: str = '') -> str:
         error_html = f'<p class="sql-error-box">{message}</p>'
 
     s += f'''
-<div class="grid1Col">
+<div class="grid1Col700 gridMain">
   <div class="rectRounded">
     <h2>🚀 Willkommen bei PyBuch – Ersteinrichtung</h2>
     <p>Bitte gib kurz deine eigenen Kontaktdaten und dein Bankkonto ein.
