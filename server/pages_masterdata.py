@@ -352,244 +352,229 @@ def PageSkrEdit(db: Database, id):
 # BANK ACCOUNTS (Bankkonten)
 # ══════════════════════════════════════════════════════════════════════
 
-def PageBankAccounts(db: Database):
-    """Generate bank accounts management page"""
+def PageBankAccounts(db: Database, edit_id=None):
+    """Bankkonten (Stammdaten): Übersicht links, Inline-Formular rechts.
+
+    Kasse-Konten sind bis auf das SKR-Gegenkonto schreibgeschützt (Name/Typ
+    fix); reine Bankkonten sind voll editierbar und löschbar.
+    """
     rows = db.fetch_accounts()
+    # Accounts (SELECT *): [0]ID [1]Name [2]Inhaber [3]IBAN [4]BIC [5]Bank
+    #                      [6]IsCash [7]SKR-Gegenkonto
+    edit_acc = db.get_account_by_id(edit_id) if edit_id is not None else None
+    is_cash  = bool(edit_acc and edit_acc[6] == 1)
+
     s = Header1('masterdata')
-    submenu = '<a href="/masterdata">Stammdaten</a> -> <span id="ActivePage">🏦 Bankkonten</span>'
+    submenu = '<a href="/masterdata">Stammdaten</a> → <span id="ActivePage">🏦 Bankkonten</span>'
     s += Header2(submenu)
     s += Header3()
-    s += '''
-        <h2>Neues Bankkonto anlegen</h2>
-        <form method="POST" action="/masterdata/bankaccounts/add">
+
+    # Formular-Werte (Bearbeiten oder Neu)
+    ea_name   = edit_acc[1] if edit_acc else ''
+    ea_holder = (edit_acc[2] or '') if edit_acc else ''
+    ea_iban   = (edit_acc[3] or '') if edit_acc else ''
+    ea_bic    = (edit_acc[4] or '') if edit_acc else ''
+    ea_bank   = (edit_acc[5] or '') if edit_acc else ''
+    ea_skr    = (edit_acc[7] if edit_acc and len(edit_acc) > 7 and edit_acc[7] is not None else '') if edit_acc else ''
+
+    if edit_acc:
+        form_title = "Kasse-Konto bearbeiten" if is_cash else "Bankkonto bearbeiten"
+    else:
+        form_title = "Neues Bankkonto"
+    id_row = (f'<input type="hidden" name="id" value="{edit_acc[0]}">' if edit_acc else '')
+
+    if edit_acc:
+        action_buttons = ('<input type="submit" value="Aktualisieren" class="coloredButton btn-sm bg-green">'
+                          '<a href="/masterdata/bankaccounts" class="coloredButton btn-sm bg-gray">Abbrechen</a>')
+    else:
+        action_buttons = ('<input type="submit" value="Konto hinzufügen" '
+                          'formaction="/masterdata/bankaccounts/add" class="coloredButton btn-sm bg-green">')
+
+    if is_cash:
+        note = '<p class="muted">Kasse-Konto: Name und Typ können nicht geändert werden.</p>'
+        fields = (
+            f'<input type="hidden" name="name" value="{ea_name}">'
+            f'<input type="hidden" name="holder" value="{ea_holder}">'
+            f'<input type="hidden" name="iban" value="{ea_iban}">'
+            f'<input type="hidden" name="bic" value="{ea_bic}">'
+            f'<input type="hidden" name="bank_name" value="{ea_bank}">'
+            f'<tr><td>Bezeichnung:</td><td>{ea_name}</td></tr>'
+            f'<tr><td>Typ:</td><td>Kasse</td></tr>'
+            f'<tr><td>SKR-Gegenkonto:</td><td><input type="number" name="skr_account" value="{ea_skr}" placeholder="z.B. 1460"></td></tr>'
+        )
+    else:
+        note = ''
+        fields = (
+            f'<tr><td>Bezeichnung:</td><td><input type="text" name="name" value="{ea_name}" required></td></tr>'
+            f'<tr><td>Inhaber:</td><td><input type="text" name="holder" value="{ea_holder}"></td></tr>'
+            f'<tr><td>IBAN:</td><td><input type="text" name="iban" value="{ea_iban}"></td></tr>'
+            f'<tr><td>BIC:</td><td><input type="text" name="bic" value="{ea_bic}"></td></tr>'
+            f'<tr><td>Bank:</td><td><input type="text" name="bank_name" value="{ea_bank}"></td></tr>'
+            f'<tr><td>SKR-Gegenkonto:</td><td><input type="number" name="skr_account" value="{ea_skr}" placeholder="z.B. 1810"></td></tr>'
+        )
+
+    s += f'''
+    <div class="grid2Cols gridMain">
+    <div class="gridRightCol" style="order:2">
+        <div class="rectRounded">
+        <h2>{form_title}</h2>
+        {note}
+        <form method="POST" action="/masterdata/bankaccounts/update">
+            {id_row}
             <table class="form-table">
-                <tr><td>Bezeichnung:</td><td><input type="text" name="name" required></td></tr>
-                <tr><td>Inhaber:</td><td><input type="text" name="holder"></td></tr>
-                <tr><td>IBAN:</td><td><input type="text" name="iban"></td></tr>
-                <tr><td>BIC:</td><td><input type="text" name="bic"></td></tr>
-                <tr><td>Bank:</td><td><input type="text" name="bank_name"></td></tr>
-                <tr><td>SKR-Gegenkonto:</td><td><input type="number" name="skr_account" placeholder="z.B. 1810" style="width:120px;"></td></tr>
-                <tr><td></td><td><input type="submit" value="Konto hinzufügen"></td></tr>
+                {fields}
+                <tr><td></td><td>{action_buttons}</td></tr>
             </table>
         </form>
+        </div>
+    </div>
+    <div class="gridLeftCol" style="order:1">
+        <table>
+            <tr><th>ID</th><th>Bezeichnung</th><th>Inhaber</th><th>IBAN</th><th>BIC</th><th>Bank</th><th>Typ</th><th>SKR-Konto</th><th>Aktionen</th></tr>
     '''
-    s += "<h2>Vorhandene Konten</h2>"
-    s += "<table>"
-    s += "<tr><th>ID</th><th>Bezeichnung</th><th>Inhaber</th><th>IBAN</th><th>BIC</th><th>Bank</th><th>Typ</th><th>SKR-Konto</th><th>Aktionen</th></tr>"
     for row in rows:
         account_type = "Kasse" if row[6] == 1 else "Bank"
         skr_display = row[7] if len(row) > 7 and row[7] else "–"
-        s += f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td><td>{row[5]}</td><td>{account_type}</td><td>{skr_display}</td>"
-        if row[6] == 1:  # is_cash
-            s += f"<td><a href='/masterdata/bankaccounts/edit?id={row[0]}'>SKR zuweisen</a></td></tr>"
-        else:
-            s += f"<td><a href='/masterdata/bankaccounts/edit?id={row[0]}'>Bearbeiten</a> | <a href='/masterdata/bankaccounts/delete?id={row[0]}'>Löschen</a></td></tr>"
+        s += (f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2] or ''}</td><td>{row[3] or ''}</td>"
+              f"<td>{row[4] or ''}</td><td>{row[5] or ''}</td><td>{account_type}</td><td>{skr_display}</td>")
+        edit_title = "SKR zuweisen" if row[6] == 1 else "Bearbeiten"
+        actions = f"<a href='/masterdata/bankaccounts/edit?id={row[0]}' class='action-icon' title='{edit_title}'>&#9998;</a>"
+        if row[6] != 1:  # nur reine Bankkonten löschbar (Kasse nicht)
+            actions += (" <a href='javascript:void(0);' class='action-icon delete-icon' title='Löschen' "
+                        f"onclick=\"appConfirmHref('/masterdata/bankaccounts/delete?id={row[0]}', 'Konto wirklich löschen?')\">&#128465;</a>")
+        s += f"<td>{actions}</td></tr>"
     s += "</table>"
+    s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Cols -->'
     s += Footer()
     return s
 
 
 def PageBankAccountEdit(db: Database, account_id):
-    """Generate bank account edit page"""
-    account = db.get_account_by_id(account_id)
-    if not account:
-        return "Konto nicht gefunden."
-
-    s = Header1('masterdata')
-    submenu = '<a href="/masterdata">Stammdaten</a> -> <a href="/masterdata/bankaccounts">🏦 Bankkonten</a> -> <span id="ActivePage">Bearbeiten</span>'
-    s += Header2(submenu)
-    s += Header3()
-    s += "<h1>Bankkonto bearbeiten</h1>"
-
-    skr_val = account[7] if len(account) > 7 and account[7] is not None else ''
-    if account[6] == 1:  # is_cash – nur SKR-Konto kann geändert werden
-        s += "<p style='color:#666;'>Kasse-Konto: Name und Typ können nicht geändert werden.</p>"
-        s += f'''
-            <form method="POST" action="/masterdata/bankaccounts/update">
-                <table class="form-table">
-                    <input type="hidden" name="id" value="{account[0]}">
-                    <input type="hidden" name="name" value="{account[1]}">
-                    <input type="hidden" name="holder" value="{account[2] or ''}"> 
-                    <input type="hidden" name="iban" value="{account[3] or ''}">
-                    <input type="hidden" name="bic" value="{account[4] or ''}">
-                    <input type="hidden" name="bank_name" value="{account[5] or ''}">
-                    <tr><td>Bezeichnung:</td><td>{account[1]}</td></tr>
-                    <tr><td>Typ:</td><td>Kasse</td></tr>
-                    <tr><td>SKR-Gegenkonto:</td><td><input type="number" name="skr_account" value="{skr_val}" placeholder="z.B. 1460" style="width:120px;"></td></tr>
-                    <tr><td></td><td><input type="submit" value="SKR-Konto speichern"></td></tr>
-                </table>
-            </form>
-            <p><a href="/masterdata/bankaccounts">Zurück zur Kontenübersicht</a></p>
-        '''
-    else:
-        s += f'''
-            <form method="POST" action="/masterdata/bankaccounts/update">
-                <table class="form-table">
-                    <tr><td>ID:</td><td><input type="text" name="id" value="{account[0]}" readonly></td></tr>
-                    <tr><td>Bezeichnung:</td><td><input type="text" name="name" value="{account[1]}" required></td></tr>
-                    <tr><td>Inhaber:</td><td><input type="text" name="holder" value="{account[2]}"></td></tr>
-                    <tr><td>IBAN:</td><td><input type="text" name="iban" value="{account[3]}"></td></tr>
-                    <tr><td>BIC:</td><td><input type="text" name="bic" value="{account[4]}"></td></tr>
-                    <tr><td>Bank:</td><td><input type="text" name="bank_name" value="{account[5]}"></td></tr>
-                    <tr><td>SKR-Gegenkonto:</td><td><input type="number" name="skr_account" value="{skr_val}" placeholder="z.B. 1810" style="width:120px;"></td></tr>
-                    <tr><td></td><td><input type="submit" value="Konto aktualisieren"></td></tr>
-                </table>
-            </form>
-            <p><a href="/masterdata/bankaccounts">Zurück zur Kontenübersicht</a></p>
-        '''
-    s += Footer()
-    return s
+    """Thin-Wrapper – Inline-Bearbeiten in der kombinierten Bankkonten-Seite."""
+    return PageBankAccounts(db, edit_id=account_id)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # NUMBER RANGES (Nummernkreise)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def PageNumberRanges(db: Database):
-    """Generate number ranges management page"""
+def PageNumberRanges(db: Database, edit_id=None):
+    """Nummernkreise (Stammdaten): gruppierte Übersicht links, Inline-Formular rechts.
+
+    Bearbeiten lädt den Nummernkreis ins rechte Formular; der Typ ist dabei fix.
+    """
     import datetime
     current_year = datetime.datetime.now().year
-
     ranges = db.fetch_number_ranges()
-    s = Header1('masterdata')
-    submenu = '<a href="/masterdata">Stammdaten</a> -> <span id="ActivePage">🔢 Nummernkreise</span>'
-    s += Header2(submenu)
-    s += Header3()
 
-    s += '''
-        <h2>Nummernkreise</h2>
-        <p>Nummernkreise definieren die Nummerierung für Rechnungen und Belege.</p>
-        <p><strong>Standard-Format:</strong> <code>{yy}{l}{nnn}{s}</code> &rarr; z.B. <strong>26F001</strong> oder <strong>26F002_A</strong></p>
-        <ul>
-            <li><strong>{yy}</strong> = Jahr (2-stellig, z.B. 26)</li>
-            <li><strong>{yyyy}</strong> = Jahr (4-stellig, z.B. 2026)</li>
-            <li><strong>{l}</strong> = Buchstabe (z.B. F=Faktura, V=Verbindlichkeit)</li>
-            <li><strong>{nnn}</strong> = Laufende Nummer (3-stellig, z.B. 001)</li>
-            <li><strong>{s}</strong> = Suffix (optional, z.B. _A, _B &ndash; wird ans Ende angefügt)</li>
-        </ul>
-
-        <h3>Neuen Nummernkreis anlegen</h3>
-        <form method="POST" action="/masterdata/numberranges/add">
-            <table class="form-table">
-                <tr><td>Typ:</td><td>
-                    <select name="type" required>
-                        <option value="invoice">Ausgangsrechnungen</option>
-                        <option value="receipt_company">Belegnummern Firma</option>
-                        <option value="receipt_category">Belegnummern Kategorien</option>
-                    </select>
-                </td></tr>
-    '''
-    s += f'<tr><td>Jahr:</td><td><input type="number" name="year" value="{current_year}" min="2000" max="2099" required></td></tr>'
-    s += '''
-                <tr><td>Buchstabe:</td><td><input type="text" name="letter" maxlength="1" pattern="[A-Z]" required placeholder="z.B. F" style="width: 50px; text-transform: uppercase;"> (A-Z)</td></tr>
-                <tr><td>Suffix (optional):</td><td><input type="text" name="prefix" maxlength="10" placeholder="z.B. _A" style="width: 80px;"> (wird ans Ende der Nummer angehängt)</td></tr>
-                <tr><td>Format:</td><td><input type="text" name="number_format" value="{yy}{l}{nnn}{s}" size="20"> Platzhalter: {yy} {yyyy} {l} {nnn} {s}</td></tr>
-                <tr><td>Aktuelle Nummer:</td><td><input type="number" name="current_number" value="0" min="0"> (letzte vergebene Nummer)</td></tr>
-                <tr><td>Beschreibung:</td><td><input type="text" name="description" size="40"></td></tr>
-                <tr><td></td><td><input type="submit" value="Nummernkreis hinzufügen"></td></tr>
-            </table>
-        </form>
-
-        <h3>Bestehende Nummernkreise</h3>
-    '''
+    # NumberRange: [0]ID [1]Type [2]Year [3]Letter [4]Prefix [5]CurrentNumber
+    #              [6]Description [7]NumberFormat
+    edit_nr = db.get_number_range_by_id(edit_id) if edit_id is not None else None
 
     type_names = {
         'invoice': 'Ausgangsrechnungen',
         'receipt_company': 'Belegnummern Firma',
-        'receipt_category': 'Belegnummern Kategorien'
+        'receipt_category': 'Belegnummern Kategorien',
     }
+
+    s = Header1('masterdata')
+    submenu = '<a href="/masterdata">Stammdaten</a> → <span id="ActivePage">🔢 Nummernkreise</span>'
+    s += Header2(submenu)
+    s += Header3()
+
+    legend = ('<p class="muted">Format-Platzhalter: <code>{yy}</code> Jahr 2-stellig, '
+              '<code>{yyyy}</code> Jahr 4-stellig, <code>{l}</code> Buchstabe, '
+              '<code>{nnn}</code> lfd. Nr. 3-stellig, <code>{s}</code> Suffix. '
+              'Beispiel <code>{yy}{l}{nnn}{s}</code> → <strong>26F001</strong>.</p>')
+
+    # Formular-Werte (Bearbeiten oder Neu)
+    if edit_nr:
+        form_title = "Nummernkreis bearbeiten"
+        nr_type    = edit_nr[1]
+        nr_year    = edit_nr[2]
+        nr_letter  = edit_nr[3]
+        nr_prefix  = edit_nr[4] or ''
+        nr_curnum  = edit_nr[5] or 0
+        nr_desc    = edit_nr[6] or ''
+        nr_format  = edit_nr[7] if len(edit_nr) > 7 and edit_nr[7] else '{yy}{l}{nnn}{s}'
+        next_formatted = db._apply_number_format(nr_format, nr_year, nr_letter, nr_curnum + 1, nr_prefix)
+        type_field = (f'<input type="hidden" name="type" value="{nr_type}">'
+                      f'<tr><td>Typ:</td><td><strong>{type_names.get(nr_type, nr_type)}</strong></td></tr>')
+        preview = f'<p class="muted">Nächste Nummer wird sein: <strong>{next_formatted}</strong></p>'
+        id_row = f'<input type="hidden" name="id" value="{edit_nr[0]}">'
+        action_buttons = ('<input type="submit" value="Aktualisieren" class="coloredButton btn-sm bg-green">'
+                          '<a href="/masterdata/numberranges" class="coloredButton btn-sm bg-gray">Abbrechen</a>')
+    else:
+        form_title = "Neuer Nummernkreis"
+        nr_year    = current_year
+        nr_letter  = ''
+        nr_prefix  = ''
+        nr_curnum  = 0
+        nr_desc    = ''
+        nr_format  = '{yy}{l}{nnn}{s}'
+        type_opts  = ''.join(f'<option value="{v}">{l}</option>' for v, l in type_names.items())
+        type_field = f'<tr><td>Typ:</td><td><select name="type" required>{type_opts}</select></td></tr>'
+        preview = ''
+        id_row = ''
+        action_buttons = ('<input type="submit" value="Nummernkreis hinzufügen" '
+                          'formaction="/masterdata/numberranges/add" class="coloredButton btn-sm bg-green">')
+
+    s += f'''
+    <div class="grid2Cols gridMain">
+    <div class="gridRightCol" style="order:2">
+        <div class="rectRounded">
+        <h2>{form_title}</h2>
+        {legend}
+        {preview}
+        <form method="POST" action="/masterdata/numberranges/update">
+            {id_row}
+            <table class="form-table">
+                {type_field}
+                <tr><td>Jahr:</td><td><input type="number" name="year" value="{nr_year}" min="2000" max="2099" required></td></tr>
+                <tr><td>Buchstabe:</td><td><input type="text" name="letter" value="{nr_letter}" maxlength="1" pattern="[A-Z]" required placeholder="z.B. F" style="text-transform:uppercase;"></td></tr>
+                <tr><td>Suffix (optional):</td><td><input type="text" name="prefix" value="{nr_prefix}" maxlength="10" placeholder="z.B. _A"></td></tr>
+                <tr><td>Format:</td><td><input type="text" name="number_format" value="{nr_format}"></td></tr>
+                <tr><td>Aktuelle Nummer:</td><td><input type="number" name="current_number" value="{nr_curnum}" min="0"></td></tr>
+                <tr><td>Beschreibung:</td><td><input type="text" name="description" value="{nr_desc}"></td></tr>
+                <tr><td></td><td>{action_buttons}</td></tr>
+            </table>
+        </form>
+        </div>
+    </div>
+    <div class="gridLeftCol" style="order:1">
+    '''
 
     for range_type, type_name in type_names.items():
         type_ranges = [r for r in ranges if r[1] == range_type]
         s += f"<h4>{type_name}</h4>"
-
-        if type_ranges:
-            s += "<table>"
-            s += "<tr><th>ID</th><th>Jahr</th><th>Buchstabe</th><th>Suffix</th><th>Format</th><th>Aktuelle Nr.</th><th>Nächste Nr.</th><th>Beschreibung</th><th>Aktionen</th></tr>"
-
-            for r in type_ranges:
-                # r: ID=0, Type=1, Year=2, Letter=3, Prefix=4, CurrentNumber=5, Description=6, NumberFormat=7
-                range_id = r[0]
-                year = r[2]
-                letter = r[3]
-                suffix = r[4] or ''
-                current_num = r[5] or 0
-                description = r[6] or ''
-                number_format = r[7] if len(r) > 7 and r[7] else '{yy}{l}{nnn}{s}'
-
-                next_num = current_num + 1
-                next_formatted = db._apply_number_format(number_format, year, letter, next_num, suffix)
-
-                s += f"<tr>"
-                s += f"<td>{range_id}</td>"
-                s += f"<td>{year}</td>"
-                s += f"<td>{letter}</td>"
-                s += f"<td>{suffix}</td>"
-                s += f"<td><code>{number_format}</code></td>"
-                s += f"<td style='text-align: right;'>{current_num}</td>"
-                s += f"<td><strong>{next_formatted}</strong></td>"
-                s += f"<td>{description}</td>"
-                s += f"<td><a href='/masterdata/numberranges/edit?id={range_id}'>Bearbeiten</a> | "
-                s += f"<a href='javascript:void(0);' onclick='appConfirmHref(\"/masterdata/numberranges/delete?id={range_id}\", \"Nummernkreis wirklich löschen?\")'>Löschen</a></td>"
-                s += f"</tr>"
-
-            s += "</table>"
-        else:
+        if not type_ranges:
             s += "<p><em>Keine Nummernkreise definiert.</em></p>"
+            continue
+        s += "<table>"
+        s += ("<tr><th>ID</th><th>Jahr</th><th>Buchstabe</th><th>Suffix</th><th>Format</th>"
+              "<th>Aktuelle Nr.</th><th>Nächste Nr.</th><th>Beschreibung</th><th>Aktionen</th></tr>")
+        for r in type_ranges:
+            range_id = r[0]
+            year = r[2]
+            letter = r[3]
+            suffix = r[4] or ''
+            current_num = r[5] or 0
+            description = r[6] or ''
+            number_format = r[7] if len(r) > 7 and r[7] else '{yy}{l}{nnn}{s}'
+            next_formatted = db._apply_number_format(number_format, year, letter, current_num + 1, suffix)
+            s += (f"<tr><td>{range_id}</td><td>{year}</td><td>{letter}</td><td>{suffix}</td>"
+                  f"<td><code>{number_format}</code></td><td style='text-align:right;'>{current_num}</td>"
+                  f"<td><strong>{next_formatted}</strong></td><td>{description}</td>"
+                  f"<td><a href='/masterdata/numberranges/edit?id={range_id}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
+                  f" <a href='javascript:void(0);' class='action-icon delete-icon' title='Löschen'"
+                  f" onclick=\"appConfirmHref('/masterdata/numberranges/delete?id={range_id}', 'Nummernkreis wirklich löschen?')\">&#128465;</a></td></tr>")
+        s += "</table>"
 
+    s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Cols -->'
     s += Footer()
     return s
 
 
 def PageNumberRangesEdit(db: Database, range_id):
-    """Generate number range edit page"""
-    nr = db.get_number_range_by_id(range_id)
-    if not nr:
-        return "Nummernkreis nicht gefunden."
-
-    # nr: ID=0, Type=1, Year=2, Letter=3, Prefix=4, CurrentNumber=5, Description=6, NumberFormat=7
-    range_type = nr[1]
-    year = nr[2]
-    letter = nr[3]
-    suffix = nr[4] or ''
-    current_num = nr[5] or 0
-    description = nr[6] or ''
-    number_format = nr[7] if len(nr) > 7 and nr[7] else '{yy}{l}{nnn}{s}'
-
-    type_names = {
-        'invoice': 'Ausgangsrechnungen',
-        'receipt_company': 'Belegnummern Firma',
-        'receipt_category': 'Belegnummern Kategorien'
-    }
-    type_name = type_names.get(range_type, range_type)
-
-    next_num = current_num + 1
-    next_formatted = db._apply_number_format(number_format, year, letter, next_num, suffix)
-
-    s = Header1('masterdata')
-    submenu = '<a href="/masterdata">Stammdaten</a> -> <a href="/masterdata/numberranges">Nummernkreise</a> -> <span id="ActivePage">Bearbeiten</span>'
-    s += Header2(submenu)
-    s += Header3()
-
-    s += f'''
-        <h2>Nummernkreis bearbeiten</h2>
-        <p>Typ: <strong>{type_name}</strong></p>
-        <p>Nächste Nummer wird sein: <strong>{next_formatted}</strong></p>
-
-        <form method="POST" action="/masterdata/numberranges/update">
-            <input type="hidden" name="id" value="{range_id}">
-            <input type="hidden" name="type" value="{range_type}">
-            <table class="form-table">
-                <tr><td>Jahr:</td><td><input type="number" name="year" value="{year}" min="2000" max="2099" required></td></tr>
-                <tr><td>Buchstabe:</td><td><input type="text" name="letter" value="{letter}" maxlength="1" pattern="[A-Z]" required style="width: 50px; text-transform: uppercase;"></td></tr>
-                <tr><td>Suffix (optional):</td><td><input type="text" name="prefix" value="{suffix}" maxlength="10" style="width: 80px;"> (wird ans Ende der Nummer angehängt, z.B. _A)</td></tr>
-                <tr><td>Format:</td><td><input type="text" name="number_format" value="{number_format}" size="20"> Platzhalter: {{yy}} {{yyyy}} {{l}} {{nnn}} {{s}}</td></tr>
-                <tr><td>Aktuelle Nummer:</td><td><input type="number" name="current_number" value="{current_num}" min="0"> (letzte vergebene Nummer)</td></tr>
-                <tr><td>Beschreibung:</td><td><input type="text" name="description" value="{description}" size="40"></td></tr>
-                <tr><td></td><td><input type="submit" value="Nummernkreis aktualisieren"></td></tr>
-            </table>
-        </form>
-        <p><a href="/masterdata/numberranges">Zurück zur Übersicht</a></p>
-    '''
-    s += Footer()
-    return s
+    """Thin-Wrapper – Inline-Bearbeiten in der kombinierten Nummernkreis-Seite."""
+    return PageNumberRanges(db, edit_id=range_id)
