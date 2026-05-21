@@ -26,6 +26,14 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .successColor			{ color: green; }
 .textareaSql			{ font-family: monospace; width: 100%; max-width: 1000px; margin-top: 10px; }
 .muted					{ color: #666; }
+/* Formular-Tabellen (Label/Eingabe): füllen die Spalte, Felder fluide, randlos */
+.form-table				{ width: 100%; border-collapse: collapse; border: none; }
+.form-table td			{ padding: 6px 12px; vertical-align: top; }
+.form-table td:first-child { white-space: nowrap; }
+.form-table input:not([type="submit"]):not([type="button"]),
+.form-table select, .form-table textarea { width: 100%; max-width: 100%; box-sizing: border-box; }
+.form-table small		{ display: block; }
+.logo-preview			{ max-width: 150px; max-height: 80px; border: 1px solid #ccc; }
 
 #ActivePage				{ color: #F48; }	/* Menu (Header) */
 #dropZone 				{ border: 2px dashed #CCC; padding: 40px; text-align: center; background-color: #f9f9f9; min-width: 200px; }

@@ -92,7 +92,7 @@ _LOGO_JS = r'''
             const reader = new FileReader();
             reader.onload = function(e) {
                 document.getElementById(previewId).innerHTML =
-                    '<img src="' + e.target.result + '" style="max-width:150px;max-height:80px;border:1px solid #ccc;">';
+                    '<img src="' + e.target.result + '" class="logo-preview">';
             };
             reader.readAsDataURL(input.files[0]);
         }
@@ -150,8 +150,6 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
     company_contact_id = g(23, '')
     company_name_free  = g(24, '')
 
-    show_c = '' if entity_type == 'company' else 'none'
-    show_p = '' if entity_type == 'person'  else 'none'
     entity_label = "🏢 Unternehmen" if entity_type == 'company' else "👤 Person"
 
     # Alt-entity switch (only for new contact forms)
@@ -172,199 +170,88 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
         sel = 'selected' if str(comp_id) == str(company_contact_id) else ''
         company_opts += f'<option value="{comp_id}" {sel}>{comp_name}</option>'
 
-    logo_preview = f'<img src="{logo}" style="max-width:150px;max-height:80px;border:1px solid #ccc;">' if logo else ''
+    logo_preview = f'<img src="{logo}" class="logo-preview">' if logo else ''
 
-    s  = f'<form method="POST" action="{form_action}">'
+    # Nur die zur Entität passende Sektion rendern (Handler verträgt fehlende Felder)
+    if entity_type == 'company':
+        entity_section = f'''
+        <tr><th colspan="2">🏢 Unternehmen</th></tr>
+        <tr><td>Firmenname: *</td>
+            <td><input type="text" name="company_name" id="field_company_name" value="{company_name}"></td></tr>
+        <tr><td>Rechtsform:</td>
+            <td><select name="legal_form">{_legal_form_opts(legal_form)}</select></td></tr>
+        <tr><td>USt-IdNr / Steuer-Nr:</td>
+            <td><input type="text" name="tax_id" value="{tax_id}" placeholder="z.B. DE123456789"></td></tr>
+        <tr><td>Leitweg-ID (B2G):</td>
+            <td><input type="text" name="buyer_route_id" value="{buyer_route_id}" placeholder="z.B. 991-ABCDE-12">
+                <small class="muted">Nur für öffentliche Auftraggeber (XRechnung B2G)</small></td></tr>
+        '''
+    else:
+        entity_section = f'''
+        <tr><th colspan="2">👤 Person</th></tr>
+        <tr><td>Anrede:</td>
+            <td><select name="salutation">{_sal_opts(salutation)}</select></td></tr>
+        <tr><td>Titel:</td>
+            <td><input type="text" name="title" value="{title_val}" placeholder="z.B. Dr., Prof."></td></tr>
+        <tr><td>Vorname: *</td>
+            <td><input type="text" name="first_name" id="field_first_name" value="{first_name}"></td></tr>
+        <tr><td>Nachname: *</td>
+            <td><input type="text" name="last_name" id="field_last_name" value="{last_name}"></td></tr>
+        <tr><td>Geburtsdatum:</td>
+            <td><input type="date" name="date_of_birth" value="{date_of_birth}"></td></tr>
+        <tr><td>Zugehörige Firma:</td>
+            <td><select name="company_contact_id">{company_opts}</select>
+                <small class="muted">Oder Freitext, falls Firma nicht in der DB:</small>
+                <input type="text" name="company_name_free" value="{company_name_free}" placeholder="Firmenname (Freitext)"></td></tr>
+        '''
+
+    s  = f'<form method="POST" action="{form_action}" id="contact_form">'
     s += extra_hidden
     s += f'<input type="hidden" name="entity_type" value="{entity_type}">'
     s += f'''
-    <table style="width:100%; border-collapse:collapse; margin-bottom:20px;">
+    <table class="form-table">
 
-        <!-- ─── Allgemein ─── -->
-        <tr style="background:#f0f0f0;">
-            <td colspan="2" style="padding:8px;font-weight:bold;font-size:1.05em;">
-                {entity_label} {alt_switch}
-            </td>
-        </tr>
-        <tr>
-            <td style="width:230px;padding:6px 12px;">Kontakttyp:</td>
-            <td style="padding:6px;"><select name="contact_type">{_type_opts(contact_type)}</select></td>
-        </tr>
-        <tr>
-            <td style="padding:6px 12px;">Anzeigename:</td>
-            <td style="padding:6px;">
-                <input type="text" name="display_name" id="field_display_name"
-                       value="{display_name_val}" style="width:360px;"
+        <tr><th colspan="2">{entity_label} {alt_switch}</th></tr>
+        <tr><td>Kontakttyp:</td>
+            <td><select name="contact_type">{_type_opts(contact_type)}</select></td></tr>
+        <tr><td>Anzeigename:</td>
+            <td><input type="text" name="display_name" id="field_display_name" value="{display_name_val}"
                        placeholder="Wird automatisch aus den Feldern generiert">
-                <small style="color:#888;display:block;">Leer lassen für automatische Generierung</small>
-            </td>
-        </tr>
-        <tr>
-            <td style="padding:6px 12px;">Kunden-/Kontaktnummer:</td>
-            <td style="padding:6px;">
-                <input type="text" name="customer_number" value="{customer_number}"
-                       style="width:200px;" placeholder="z.B. K-12345">
-            </td>
-        </tr>
+                <small class="muted">Leer lassen für automatische Generierung</small></td></tr>
+        <tr><td>Kunden-/Kontaktnummer:</td>
+            <td><input type="text" name="customer_number" value="{customer_number}" placeholder="z.B. K-12345"></td></tr>
 
-        <!-- ─── Unternehmens-Felder ─── -->
-        <tr id="sec_company" style="background:#e8f4e8;display:{show_c};">
-            <td colspan="2" style="padding:8px;font-weight:bold;">🏢 Unternehmen</td>
-        </tr>
-        <tr id="row_company_name" style="display:{show_c};">
-            <td style="padding:6px 12px;">Firmenname: *</td>
-            <td style="padding:6px;">
-                <input type="text" name="company_name" id="field_company_name"
-                       value="{company_name}" style="width:360px;">
-            </td>
-        </tr>
-        <tr id="row_legal_form" style="display:{show_c};">
-            <td style="padding:6px 12px;">Rechtsform:</td>
-            <td style="padding:6px;">
-                <select name="legal_form" style="width:220px;">{_legal_form_opts(legal_form)}</select>
-            </td>
-        </tr>
-        <tr id="row_tax_id" style="display:{show_c};">
-            <td style="padding:6px 12px;">USt-IdNr / Steuer-Nr:</td>
-            <td style="padding:6px;">
-                <input type="text" name="tax_id" value="{tax_id}"
-                       placeholder="z.B. DE123456789" style="width:280px;">
-            </td>
-        </tr>
-        <tr id="row_buyer_route_id" style="display:{show_c};">
-            <td style="padding:6px 12px;">Leitweg-ID (B2G):</td>
-            <td style="padding:6px;">
-                <input type="text" name="buyer_route_id" value="{buyer_route_id}"
-                       placeholder="z.B. 991-ABCDE-12" style="width:280px;">
-                <small style="color:#666;display:block;">Nur für öffentliche Auftraggeber (XRechnung B2G)</small>
-            </td>
-        </tr>
+        {entity_section}
 
-        <!-- ─── Personen-Felder ─── -->
-        <tr id="sec_person" style="background:#e8ecf4;display:{show_p};">
-            <td colspan="2" style="padding:8px;font-weight:bold;">👤 Person</td>
-        </tr>
-        <tr id="row_salutation" style="display:{show_p};">
-            <td style="padding:6px 12px;">Anrede:</td>
-            <td style="padding:6px;"><select name="salutation">{_sal_opts(salutation)}</select></td>
-        </tr>
-        <tr id="row_title" style="display:{show_p};">
-            <td style="padding:6px 12px;">Titel:</td>
-            <td style="padding:6px;">
-                <input type="text" name="title" value="{title_val}"
-                       placeholder="z.B. Dr., Prof." style="width:150px;">
-            </td>
-        </tr>
-        <tr id="row_first_name" style="display:{show_p};">
-            <td style="padding:6px 12px;">Vorname: *</td>
-            <td style="padding:6px;">
-                <input type="text" name="first_name" id="field_first_name"
-                       value="{first_name}" style="width:280px;">
-            </td>
-        </tr>
-        <tr id="row_last_name" style="display:{show_p};">
-            <td style="padding:6px 12px;">Nachname: *</td>
-            <td style="padding:6px;">
-                <input type="text" name="last_name" id="field_last_name"
-                       value="{last_name}" style="width:280px;">
-            </td>
-        </tr>
-        <tr id="row_dob" style="display:{show_p};">
-            <td style="padding:6px 12px;">Geburtsdatum:</td>
-            <td style="padding:6px;">
-                <input type="date" name="date_of_birth" value="{date_of_birth}" style="width:180px;">
-            </td>
-        </tr>
-        <tr id="row_company_link" style="display:{show_p};">
-            <td style="padding:6px 12px;">Zugehörige Firma:</td>
-            <td style="padding:6px;">
-                <select name="company_contact_id" style="width:330px;">{company_opts}</select>
-                <br>
-                <small style="color:#666;">Oder Freitext, falls Firma nicht in der DB:</small><br>
-                <input type="text" name="company_name_free" value="{company_name_free}"
-                       placeholder="Firmenname (Freitext)" style="width:330px;margin-top:4px;">
-            </td>
-        </tr>
-
-        <!-- ─── Adresse ─── -->
-        <tr style="background:#f5f0e8;">
-            <td colspan="2" style="padding:8px;font-weight:bold;">📍 Adresse</td>
-        </tr>
-        <tr>
-            <td style="padding:6px 12px;">Zusatzzeile:</td>
-            <td style="padding:6px;">
-                <input type="text" name="address_line1" value="{address_line1}" style="width:420px;"
+        <tr><th colspan="2">📍 Adresse</th></tr>
+        <tr><td>Zusatzzeile:</td>
+            <td><input type="text" name="address_line1" value="{address_line1}"
                        placeholder="z.Hd. Max Mustermann · Abt. Einkauf · c/o ...">
-                <small style="color:#888;display:block;">Erscheint zwischen Firmenname und Straße</small>
-            </td>
-        </tr>
-        <tr>
-            <td style="padding:6px 12px;">Straße / Nr.:</td>
-            <td style="padding:6px;">
-                <input type="text" name="street" value="{street}" style="width:360px;">
-            </td>
-        </tr>
-        <tr>
-            <td style="padding:6px 12px;">PLZ:</td>
-            <td style="padding:6px;">
-                <input type="text" name="postal_code" value="{postal_code}" style="width:100px;">
-            </td>
-        </tr>
-        <tr>
-            <td style="padding:6px 12px;">Stadt:</td>
-            <td style="padding:6px;">
-                <input type="text" name="city" value="{city}" style="width:260px;">
-            </td>
-        </tr>
-        <tr>
-            <td style="padding:6px 12px;">Land:</td>
-            <td style="padding:6px;">
-                <select name="country" style="width:230px;">{_country_opts(country)}</select>
-            </td>
-        </tr>
+                <small class="muted">Erscheint zwischen Firmenname und Straße</small></td></tr>
+        <tr><td>Straße / Nr.:</td>
+            <td><input type="text" name="street" value="{street}"></td></tr>
+        <tr><td>PLZ:</td>
+            <td><input type="text" name="postal_code" value="{postal_code}"></td></tr>
+        <tr><td>Stadt:</td>
+            <td><input type="text" name="city" value="{city}"></td></tr>
+        <tr><td>Land:</td>
+            <td><select name="country">{_country_opts(country)}</select></td></tr>
 
-        <!-- ─── Kontakt & Sonstiges ─── -->
-        <tr style="background:#f0f0f0;">
-            <td colspan="2" style="padding:8px;font-weight:bold;">📞 Kontakt & Sonstiges</td>
-        </tr>
-        <tr>
-            <td style="padding:6px 12px;">E-Mail:</td>
-            <td style="padding:6px;">
-                <input type="email" name="email" value="{email}" style="width:300px;">
-            </td>
-        </tr>
-        <tr>
-            <td style="padding:6px 12px;">Telefon:</td>
-            <td style="padding:6px;">
-                <input type="tel" name="phone" value="{phone}" style="width:200px;">
-            </td>
-        </tr>
-        <tr>
-            <td style="padding:6px 12px;">Logo / Bild:</td>
-            <td style="padding:6px;">
-                <input type="text" name="logo" id="field_logo" value="{logo}"
-                       placeholder="seed_data/private/logo.png oder URL" style="width:360px;">
+        <tr><th colspan="2">📞 Kontakt &amp; Sonstiges</th></tr>
+        <tr><td>E-Mail:</td>
+            <td><input type="email" name="email" value="{email}"></td></tr>
+        <tr><td>Telefon:</td>
+            <td><input type="tel" name="phone" value="{phone}"></td></tr>
+        <tr><td>Logo / Bild:</td>
+            <td><input type="text" name="logo" id="field_logo" value="{logo}"
+                       placeholder="seed_data/private/logo.png oder URL">
                 <button type="button"
                         onclick="document.getElementById('logo_file_input').click()">Datei wählen</button>
-                <input type="file" id="logo_file_input" accept="image/*" style="display:none;"
+                <input type="file" id="logo_file_input" accept="image/*" style="display:none"
                        onchange="updateLogoPath(this,'field_logo','logo_preview_div')">
-                <div id="logo_preview_div" style="margin-top:5px;">{logo_preview}</div>
-            </td>
-        </tr>
-        <tr>
-            <td style="padding:6px 12px;">Notizen:</td>
-            <td style="padding:6px;">
-                <textarea name="notes" rows="3" style="width:420px;">{notes}</textarea>
-            </td>
-        </tr>
-        <tr>
-            <td></td>
-            <td style="padding:12px;">
-                <input type="submit" value="Speichern"
-                       style="padding:8px 24px;background:#4CAF50;color:white;border:none;border-radius:4px;cursor:pointer;font-size:1em;">
-                &nbsp; <a href="/masterdata/contacts">Abbrechen</a>
-            </td>
-        </tr>
+                <div id="logo_preview_div">{logo_preview}</div></td></tr>
+        <tr><td>Notizen:</td>
+            <td><textarea name="notes" rows="3">{notes}</textarea></td></tr>
     </table>
     </form>
     '''
@@ -409,10 +296,15 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
     return s
 
 
-# ── Page: Contacts List ───────────────────────────────────────────────────────
+# ── Page: Contacts (kombiniert grid2Cols: Tabelle + Formular) ─────────────────
 
-def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None):
-    """Contacts overview list with filter tabs."""
+def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None,
+                 edit_contact_id=None, new_entity_type=None):
+    """Kombinierte Kontakt-Seite (grid2Cols): links Übersichtstabelle, rechts Formular.
+
+    Beim Bearbeiten wird der gewählte Kontakt ins rechte Formular geladen (wie
+    auf der Artikel-Seite); ohne edit_contact_id ist es ein leeres Neu-Formular.
+    """
     contacts = db.fetch_contacts(contact_type=contact_type_filter, entity_type=entity_type_filter)
 
     s = Header1('masterdata')
@@ -435,20 +327,48 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
     '''
     s += Header3(header3)
 
-    s += '''
-        <div class="rectRounded">
-            <a href="/masterdata/contacts/new?entity=company" class="coloredButton btn-green">
-                + 🏢 Unternehmen anlegen
-            </a>
-            <a href="/masterdata/contacts/new?entity=person" class="coloredButton btn-indigo">
-                + 👤 Person anlegen
-            </a>
-        </div>
-    '''
+    # ── Formular bestimmen (rechte Spalte): Bearbeiten oder Neu ──────────────
+    edit_contact = db.get_contact_by_id(edit_contact_id) if edit_contact_id else None
+    if edit_contact:
+        entity_type = 'company'
+        try:
+            entity_type = edit_contact[15] or 'company'
+        except (IndexError, TypeError):
+            pass
+        display_name_shown = edit_contact[3] or '–'
+        form_title = f'Kontakt bearbeiten: <em>{display_name_shown}</em>'
+        form_html = _contact_form(
+            db, form_action='/masterdata/contacts/update', entity_type=entity_type,
+            c=edit_contact,
+            extra_hidden=f'<input type="hidden" name="contact_id" value="{edit_contact_id}">',
+        )
+    else:
+        entity_type  = new_entity_type or 'company'
+        entity_label = "🏢 Unternehmen" if entity_type == 'company' else "👤 Person"
+        form_title   = f'Neuer Kontakt: {entity_label}'
+        form_html    = _contact_form(db, form_action='/masterdata/contacts/add',
+                                     entity_type=entity_type)
 
+    # ── grid2Cols: rechts Formular, links Übersichtstabelle ──────────────────
+    s += '<div class="grid2Cols gridMain">'
+    # Rechte Spalte: oben Box mit Überschrift + Buttons (Aufbau wie Invoice-Seite),
+    # darunter das Eingabeformular. Die Buttons liegen außerhalb der <form> und
+    # senden sie über das form-Attribut (form="contact_form").
+    s += '<div class="gridRightCol gridMiddle" style="order:2">'
+    s += '<div class="rectRounded">'
+    s += f'<h2>{form_title}</h2>'
+    s += '<div class="rowWithObjects">'
+    s += '<button type="submit" form="contact_form" class="coloredButton btn-sm btn-green">💾 Speichern</button>'
+    s += '<button type="button" onclick="window.location.href=\'/masterdata/contacts\'" class="coloredButton btn-sm btn-gray">← Abbrechen</button>'
+    s += '</div>'
+    s += '</div>'
+    s += f'<div class="rectRounded">{form_html}</div>'
+    s += '</div><!-- Ende gridRightCol -->'
+
+    s += '<div class="gridLeftCol" style="order:1">'
     type_labels = dict(CONTACT_TYPES)
 
-    s += "<table style='width:100%;border-collapse:collapse;'>"
+    s += "<table>"
     s += ("<tr><th>ID</th><th>Entität</th><th>Typ</th><th>Anzeigename</th>"
           "<th>Kd-Nr.</th><th>Firma / Zuordnung</th><th>E-Mail</th><th>Telefon</th><th>Aktionen</th></tr>")
 
@@ -460,8 +380,8 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
         company_name = c[4] or ''
         email        = c[9] or ''
         phone        = c[10] or ''
-        entity_type  = c[15] if len(c) > 15 else 'company'
-        entity_icon  = "🏢" if entity_type == 'company' else "👤"
+        entity_type_row = c[15] if len(c) > 15 else 'company'
+        entity_icon  = "🏢" if entity_type_row == 'company' else "👤"
         type_label   = type_labels.get(c_type, c_type)
 
         s += f"<tr>"
@@ -474,67 +394,29 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
         s += f"<td>{email}</td>"
         s += f"<td>{phone}</td>"
         s += f"<td>"
-        s += f"<a href='/masterdata/contacts/edit?id={cid}'>Bearbeiten</a> | "
-        s += f"<a href='javascript:void(0);' "
-        s += f"onclick='appConfirmHref(\"/masterdata/contacts/delete?id={cid}\", \"Kontakt wirklich löschen?\")'>Löschen</a>"
+        s += f"<a href='/masterdata/contacts/edit?id={cid}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
+        s += f" <a href='javascript:void(0);' class='action-icon delete-icon' title='Löschen' "
+        s += f"onclick='appConfirmHref(\"/masterdata/contacts/delete?id={cid}\", \"Kontakt wirklich löschen?\")'>&#128465;</a>"
         s += f"</td></tr>"
 
     if not contacts:
         s += "<tr><td colspan='9' style='text-align:center;padding:20px;'><em>Keine Kontakte vorhanden.</em></td></tr>"
 
     s += "</table>"
+    s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Cols -->'
     s += Footer()
     return s
 
 
-# ── Page: New Contact ─────────────────────────────────────────────────────────
+# ── New / Edit: Delegation an die kombinierte grid2Cols-Seite ─────────────────
 
 def PageContactNew(db: Database, entity_type: str = 'company'):
-    """New contact creation page."""
-    entity_label = "🏢 Unternehmen" if entity_type == 'company' else "👤 Person"
-    s = Header1('masterdata')
-    submenu = (f'<a href="/masterdata">Stammdaten</a> -> '
-               f'<a href="/masterdata/contacts">Kontakte</a> -> '
-               f'<span id="ActivePage">Neu: {entity_label}</span>')
-    s += Header2(submenu)
-    s += Header3()
-    s += f'<h2>Neuen Kontakt anlegen: {entity_label}</h2>'
-    s += _contact_form(db, form_action='/masterdata/contacts/add', entity_type=entity_type)
-    s += Footer()
-    return s
+    """Neuer Kontakt: kombinierte Seite mit leerem Formular (Firma/Person) rechts."""
+    return PageContacts(db, new_entity_type=entity_type)
 
-
-# ── Page: Edit Contact ────────────────────────────────────────────────────────
 
 def PageContactEdit(db: Database, contact_id):
-    """Contact edit page."""
-    contact = db.get_contact_by_id(contact_id)
-    if not contact:
+    """Kontakt bearbeiten: kombinierte Seite mit geladenem Kontakt im rechten Formular."""
+    if not db.get_contact_by_id(contact_id):
         return "Kontakt nicht gefunden."
-
-    # EntityType at index 15 in the new query
-    entity_type = 'company'
-    try:
-        entity_type = contact[15] or 'company'
-    except (IndexError, TypeError):
-        pass
-
-    display_name_shown = contact[3] or '–'
-    entity_label = "🏢 Unternehmen" if entity_type == 'company' else "👤 Person"
-
-    s = Header1('masterdata')
-    submenu = (f'<a href="/masterdata">Stammdaten</a> -> '
-               f'<a href="/masterdata/contacts">Kontakte</a> -> '
-               f'<span id="ActivePage">{entity_label} bearbeiten</span>')
-    s += Header2(submenu)
-    s += Header3()
-    s += f'<h2>Kontakt bearbeiten: <em>{display_name_shown}</em></h2>'
-    s += _contact_form(
-        db,
-        form_action='/masterdata/contacts/update',
-        entity_type=entity_type,
-        c=contact,
-        extra_hidden=f'<input type="hidden" name="contact_id" value="{contact_id}">',
-    )
-    s += Footer()
-    return s
+    return PageContacts(db, edit_contact_id=contact_id)
