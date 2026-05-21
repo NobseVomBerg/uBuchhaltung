@@ -264,81 +264,88 @@ from .pages_contacts import PageContacts, PageContactNew, PageContactEdit  # noq
 # SKR (Chart of Accounts)
 # ══════════════════════════════════════════════════════════════════════
 
-def PageSkr(db: Database):
-    """Generate SKR (chart of accounts) page"""
+def PageSkr(db: Database, edit_id=None):
+    """SKR-Kontenrahmen (Stammdaten): Übersicht links, Inline-Formular rechts.
+
+    Bearbeiten lädt das Konto ins rechte Formular (wie PageArticles); ohne
+    edit_id ist es ein leeres 'Neues SKR-Konto'-Formular. Standard-Konten sind
+    bis auf den Privatanteil schreibgeschützt.
+    """
     rows = db.fetch_chart_of_accounts()
+
+    # ChartOfAccounts (SELECT *): [0]ID [1]Framework-Nr [2]Konto [3]Name
+    #                             [4]Gruppe [5]IsStandard [6]PrivateSharePercent
+    edit_skr = None
+    if edit_id is not None:
+        edit_skr = next((row for row in rows if row[0] == edit_id), None)
     s = Header1('masterdata')
-    submenu = '<a href="/masterdata">Stammdaten</a> -> <span id="ActivePage">📊 SKR (Kontenrahmen)</span>'
+    submenu = '<a href="/masterdata">Stammdaten</a> → <span id="ActivePage">📊 SKR (Kontenrahmen)</span>'
     s += Header2(submenu)
     s += Header3()
-    s += '''
-        <h2>Neues SKR-Konto anlegen</h2>
-        <form method="POST" action="/masterdata/skr/add">
+
+    # Formular-Werte (Bearbeiten oder Neu)
+    form_title    = "SKR-Konto bearbeiten" if edit_skr else "Neues SKR-Konto"
+    es_framework  = edit_skr[1] if edit_skr else ''
+    es_account    = edit_skr[2] if edit_skr else ''
+    es_name       = edit_skr[3] if edit_skr else ''
+    es_group      = edit_skr[4] if edit_skr else ''
+    es_psp        = (edit_skr[6] if edit_skr and len(edit_skr) > 6 and edit_skr[6] else 0) if edit_skr else 0
+    is_std        = (edit_skr[5] if edit_skr and len(edit_skr) > 5 else 0) if edit_skr else 0
+    readonly_attr = ' readonly' if is_std else ''
+    readonly_note = ('<p class="muted">Standard-Konto: Nur der Privatanteil kann geändert werden.</p>'
+                     if is_std else '')
+
+    id_row = (f'<input type="hidden" name="id" value="{edit_skr[0]}">' if edit_skr else '')
+
+    if edit_skr:
+        action_buttons = (
+            '<input type="submit" value="Aktualisieren" class="coloredButton btn-sm bg-green">'
+            '<a href="/masterdata/skr" class="coloredButton btn-sm bg-gray">Abbrechen</a>'
+        )
+    else:
+        action_buttons = ('<input type="submit" value="SKR-Konto hinzufügen" '
+                          'formaction="/masterdata/skr/add" class="coloredButton btn-sm bg-green">')
+
+    s += f'''
+    <div class="grid2Cols gridMain">
+    <div class="gridRightCol" style="order:2">
+        <div class="rectRounded">
+        <h2>{form_title}</h2>
+        {readonly_note}
+        <form method="POST" action="/masterdata/skr/update">
+            {id_row}
             <table class="form-table">
-                <tr><td>Rahmen-Nr.:</td><td><input type="text" name="framework_nr"></td></tr>
-                <tr><td>Konto:</td><td><input type="text" name="account"></td></tr>
-                <tr><td>Name:</td><td><input type="text" name="name"></td></tr>
-                <tr><td>Gruppe:</td><td><input type="text" name="group"></td></tr>
-                <tr><td>Privatanteil %:</td><td><input type="number" name="private_share_percent" value="0" min="0" max="100" style="width:80px;"></td></tr>
-                <tr><td></td><td><input type="submit" value="SKR-Konto hinzufügen"></td></tr>
+                <tr><td>Rahmen-Nr.:</td><td><input type="text" name="framework_nr" value="{es_framework}"{readonly_attr}></td></tr>
+                <tr><td>Konto:</td><td><input type="text" name="account" value="{es_account}"{readonly_attr}></td></tr>
+                <tr><td>Name:</td><td><input type="text" name="name" value="{es_name}"{readonly_attr}></td></tr>
+                <tr><td>Gruppe:</td><td><input type="text" name="group" value="{es_group}"{readonly_attr}></td></tr>
+                <tr><td>Privatanteil %:</td><td><input type="number" name="private_share_percent" value="{es_psp}" min="0" max="100"></td></tr>
+                <tr><td></td><td>{action_buttons}</td></tr>
             </table>
         </form>
+        </div>
+    </div>
+    <div class="gridLeftCol" style="order:1">
+        <table>
+            <tr><th>ID</th><th>SKR-Nr.</th><th>Konto</th><th>Name</th><th>Gruppe</th><th>Privatanteil %</th><th>Standard</th><th>Aktionen</th></tr>
     '''
-    s += "<h2>Standardkontorahmen, definierte Konten</h2>"
-    s += "<table>"
-    s += "<tr><th>ID</th><th>SKR-Nr.</th><th>Konto</th><th>Name</th><th>Gruppe</th><th>Privatanteil %</th><th>Standard</th><th>Aktionen</th></tr>"
     for row in rows:
         is_standard = row[5] if len(row) > 5 else 0
         standard_text = "\u2713" if is_standard else ""
         psp = row[6] if len(row) > 6 and row[6] else 0
         psp_display = f"{psp}\u2009%" if psp else ""
-        edit_link = f"<a href='/masterdata/skr/edit?id={row[0]}'>Bearbeiten</a>"
-        s += f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td><td>{psp_display}</td><td>{standard_text}</td>"
-        s += f"<td>{edit_link}</td></tr>"
+        s += (f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td>"
+              f"<td>{psp_display}</td><td>{standard_text}</td>"
+              f"<td><a href='/masterdata/skr/edit?id={row[0]}' class='action-icon' title='Bearbeiten'>&#9998;</a></td></tr>")
     s += "</table>"
+    s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Cols -->'
     s += Footer()
     return s
 
 
 def PageSkrEdit(db: Database, id):
-    """Generate SKR edit page"""
-    rows = db.fetch_chart_of_accounts()
-    skr = None
-    for row in rows:
-        if row[0] == id:
-            skr = row
-            break
-    if not skr:
-        return "SKR-Konto nicht gefunden."
-
-    s = Header1('masterdata')
-    submenu = '<a href="/masterdata">Stammdaten</a> -> <a href="/masterdata/skr">📊 SKR</a> -> <span id="ActivePage">Bearbeiten</span>'
-    s += Header2(submenu)
-    s += Header3()
-
-    is_standard = skr[5] if len(skr) > 5 else 0
-    psp = skr[6] if len(skr) > 6 and skr[6] else 0
-    readonly_attr = ' readonly' if is_standard else ''
-    readonly_note = "<p style='color:#666;'>Standard-Konto: Nur der Privatanteil kann geändert werden.</p>" if is_standard else ""
-
-    s += "<h1>SKR-Konto bearbeiten</h1>"
-    s += readonly_note
-    s += f'''
-        <form method="POST" action="/masterdata/skr/update">
-            <table class="form-table">
-                <tr><td>ID:</td><td><input type="text" name="id" value="{skr[0]}" readonly></td></tr>
-                <tr><td>Rahmen-Nr.:</td><td><input type="text" name="framework_nr" value="{skr[1]}"{readonly_attr}></td></tr>
-                <tr><td>Konto:</td><td><input type="text" name="account" value="{skr[2]}"{readonly_attr}></td></tr>
-                <tr><td>Name:</td><td><input type="text" name="name" value="{skr[3]}"{readonly_attr}></td></tr>
-                <tr><td>Gruppe:</td><td><input type="text" name="group" value="{skr[4]}"{readonly_attr}></td></tr>
-                <tr><td>Privatanteil %:</td><td><input type="number" name="private_share_percent" value="{psp}" min="0" max="100" style="width:80px;"></td></tr>
-                <tr><td></td><td><input type="submit" value="SKR-Konto aktualisieren"></td></tr>
-            </table>
-        </form>
-        <p><a href="/masterdata/skr">Zurück zur SKR-Übersicht</a></p>
-    '''
-    s += Footer()
-    return s
+    """Thin-Wrapper – Inline-Bearbeiten in der kombinierten SKR-Seite."""
+    return PageSkr(db, edit_id=id)
 
 
 # ══════════════════════════════════════════════════════════════════════
