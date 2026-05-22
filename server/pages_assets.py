@@ -23,11 +23,14 @@ def _fmt(value):
 
 # ─── PageAssets ──────────────────────────────────────────────────────────────
 
-def PageAssets(db: Database, status_filter=''):
-    """Asset list with statistics header"""
+def PageAssets(db: Database, status_filter='', edit_id=None, new_parent_id=None):
+    """Anlagenverzeichnis (grid2Cols): Liste links, Formular + Details rechts.
+
+    Rechts: ohne Auswahl ein 'Neue Anlage'-Formular; mit Auswahl das
+    Bearbeiten-Formular plus Detail-Blöcke (AfA-Plan, Erweiterungen, Verkauf).
+    """
     assets = db.fetch_assets(status=status_filter if status_filter else None, parent_only=True)
-    today = datetime.date.today()
-    current_year = today.year
+    current_year = datetime.date.today().year
 
     # Pre-compute book values and depreciation info
     asset_rows = []
@@ -47,11 +50,9 @@ def PageAssets(db: Database, status_filter=''):
         plan = db.calculate_depreciation_plan(purchase_price, purchase_date, useful_life, method)
         book_value = db.get_book_value_at_date(asset_id)
 
-        # Current year depreciation
         year_entry = next((e for e in plan if e['year'] == current_year), None)
         depr_this_year = year_entry['depreciation'] if year_entry else 0.0
 
-        # Check if already booked
         existing = db.get_depreciations_for_asset(asset_id)
         booked_years = {e[2]: e[5] for e in existing}  # year → status
         depr_status = booked_years.get(current_year, 'planned')
@@ -65,170 +66,105 @@ def PageAssets(db: Database, status_filter=''):
                 total_depr_planned += depr_this_year
 
         asset_rows.append({
-            'id': asset_id,
-            'inv': a[1],
-            'name': a[2],
+            'id': asset_id, 'inv': a[1], 'name': a[2],
             'cat': a[22] if len(a) > 22 else '',   # CategoryName from JOIN
-            'purchase_date': purchase_date,
-            'purchase_price': purchase_price,
-            'book_value': book_value,
-            'depr_this_year': depr_this_year,
-            'depr_status': depr_status,
-            'status': status,
-            'method': method,
+            'purchase_date': purchase_date, 'purchase_price': purchase_price,
+            'book_value': book_value, 'depr_this_year': depr_this_year,
+            'depr_status': depr_status, 'status': status, 'method': method,
         })
 
     s = Header1('assets')
-    submenu = '<span id="ActivePage">Anlagen</span> | <a href="/assets/new">Neue Anlage</a>'
-    s += Header2(submenu)
+    s += Header2()
 
     # Filter bar
     filter_options = [('', 'Alle'), ('active', 'Aktiv'), ('sold', 'Verkauft'), ('scrapped', 'Abgang')]
-    filter_html = '<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">'
-    filter_html += '<label>Status:</label>'
+    filter_html = '<div class="rowWithObjects"><label>Status:</label>'
     for val, label in filter_options:
         active = 'font-weight:bold; text-decoration:underline;' if status_filter == val else ''
         filter_html += f'<a href="/assets?status={val}" style="{active}">{label}</a>'
     filter_html += '</div>'
     s += Header3(filter_html)
 
-    # Statistics
-    s += f'''
-    <div class="rectRounded" style="display:flex; gap:30px; flex-wrap:wrap; margin-bottom:10px;">
-        <div><strong>Anschaffungskosten (aktiv):</strong> {_fmt(total_purchase)}</div>
-        <div><strong>Gesamtrestbuchwert:</strong> {_fmt(total_book_value)}</div>
-        <div><strong>AfA {current_year} gebucht:</strong> {_fmt(total_depr_posted)}</div>
-        <div><strong>AfA {current_year} geplant:</strong> {_fmt(total_depr_planned)}</div>
-    </div>
-    '''
+    # ── Rechte Spalte: Formular (+ Detail-Blöcke bei Auswahl) ──
+    edit_asset = db.get_asset_by_id(edit_id) if edit_id is not None else None
+    parent_asset = db.get_asset_by_id(new_parent_id) if new_parent_id is not None else None
 
+    s += '<div class="grid2Cols gridMain">'
+    s += '<div class="gridRightCol gridMiddle" style="order:2">'
+    s += _asset_form(db, edit_asset, parent_asset)
+    if edit_asset:
+        s += _asset_details(db, edit_asset)
+    s += '</div><!-- Ende gridRightCol -->'
+
+    # ── Linke Spalte: Liste ──
+    s += '<div class="gridLeftCol" style="order:1">'
+    s += (f'<div class="rectRounded">'
+          f'Anschaffungskosten (aktiv): {_fmt(total_purchase)} | '
+          f'Gesamtrestbuchwert: {_fmt(total_book_value)} | '
+          f'AfA {current_year} gebucht: {_fmt(total_depr_posted)} | '
+          f'AfA {current_year} geplant: {_fmt(total_depr_planned)}</div>')
     if not asset_rows:
         s += '<p><em>Keine Anlagen gefunden.</em></p>'
     else:
-        s += '''<table border="1" style="width:100%; border-collapse:collapse;">
-        <tr>
-            <th>Inv.-Nr.</th>
-            <th>Bezeichnung</th>
-            <th>Kategorie</th>
-            <th>Anschaff.-datum</th>
-            <th style="text-align:right;">AK</th>
-            <th style="text-align:right;">Restbuchwert</th>
-            <th style="text-align:right;">AfA {}</th>
-            <th>Status</th>
-            <th>Aktionen</th>
-        </tr>'''.format(current_year)
-
+        s += "<table>"
+        s += ("<tr><th>Inv.-Nr.</th><th>Bezeichnung</th><th>Kategorie</th><th>Anschaff.-datum</th>"
+              "<th style='text-align:right;'>AK</th><th style='text-align:right;'>Restbuchwert</th>"
+              f"<th style='text-align:right;'>AfA {current_year}</th><th>Status</th><th>Aktionen</th></tr>")
         for row in asset_rows:
             depr_badge = ''
             if row['depr_this_year'] > 0:
                 if row['depr_status'] == 'posted':
-                    depr_badge = f" <span style='color:green;font-size:0.8em;'>✓ gebucht</span>"
+                    depr_badge = " <span style='color:green;font-size:0.8em;'>✓ gebucht</span>"
                 else:
-                    depr_badge = f" <span style='color:orange;font-size:0.8em;'>● offen</span>"
+                    depr_badge = " <span style='color:orange;font-size:0.8em;'>● offen</span>"
             status_color = {'active': 'green', 'sold': '#888', 'scrapped': '#cc0000'}.get(row['status'], '#000')
-            s += f'''<tr>
-                <td><a href="/assets/view?id={row['id']}">{row['inv'] or ''}</a></td>
-                <td><a href="/assets/view?id={row['id']}">{row['name']}</a></td>
-                <td>{row['cat'] or ''}</td>
-                <td>{row['purchase_date'] or ''}</td>
-                <td style="text-align:right;">{_fmt(row['purchase_price'])}</td>
-                <td style="text-align:right;">{_fmt(row['book_value'])}</td>
-                <td style="text-align:right;">{_fmt(row['depr_this_year'])}{depr_badge}</td>
-                <td style="color:{status_color};">{_status_label(row['status'])}</td>
-                <td>
-                    <a href="/assets/view?id={row['id']}">Details</a> |
-                    <a href="/assets/edit?id={row['id']}">Bearbeiten</a>
-                </td>
-            </tr>'''
-        s += '</table>'
+            s += (f"<tr><td><a href='/assets/edit?id={row['id']}'>{row['inv'] or ''}</a></td>"
+                  f"<td><a href='/assets/edit?id={row['id']}'>{row['name']}</a></td>"
+                  f"<td>{row['cat'] or ''}</td><td>{row['purchase_date'] or ''}</td>"
+                  f"<td style='text-align:right;'>{_fmt(row['purchase_price'])}</td>"
+                  f"<td style='text-align:right;'>{_fmt(row['book_value'])}</td>"
+                  f"<td style='text-align:right;'>{_fmt(row['depr_this_year'])}{depr_badge}</td>"
+                  f"<td style='color:{status_color};'>{_status_label(row['status'])}</td>"
+                  f"<td><a href='/assets/edit?id={row['id']}' class='action-icon' title='Öffnen / Bearbeiten'>&#9998;</a></td></tr>")
+        s += "</table>"
+    s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Cols -->'
 
     s += Footer()
     return s
 
 
+def PageAssetEdit(db: Database, asset_id=None, parent_id=None):
+    """Thin-Wrapper – Anlage anlegen/bearbeiten in der kombinierten Seite."""
+    return PageAssets(db, edit_id=asset_id, new_parent_id=parent_id)
+
+
+def PageAssetView(db: Database, asset_id):
+    """Thin-Wrapper – Detail/Bearbeiten in der kombinierten Seite (rechte Spalte)."""
+    return PageAssets(db, edit_id=asset_id)
+
+
 # ─── PageAssetView ────────────────────────────────────────────────────────────
 
-def PageAssetView(db: Database, asset_id: int):
-    """Detailed asset view with AfA plan table and extensions"""
-    asset = db.get_asset_by_id(asset_id)
-    if not asset:
-        return Header1('assets') + Header2() + Header3() + '<p>Anlage nicht gefunden.</p>' + Footer()
-
-    # asset fields: ID=0, InventoryNumber=1, Name=2, Description=3, AssetCategory_ID=4,
-    #   COA_ID=5, PurchaseDate=6, PurchasePrice=7, UsefulLifeYears=8, DepreciationMethod=9,
-    #   SerialNumber=10, Location=11, Supplier_ID=12, Document_ID=13, Booking_ID=14,
-    #   SaleDate=15, SalePrice=16, Status=17, Notes=18, Parent_ID=19, CreatedAt=20,
-    #   CategoryName=21, SupplierName=22
-    inv_number = asset[1] or ''
-    name = asset[2]
-    description = asset[3] or ''
+def _asset_details(db: Database, asset):
+    """Render-Block: Detail-Inhalte einer Anlage (AfA-Plan inkl. Buchen,
+    Erweiterungen/Nachkäufe, Verkauf/Abgang) für die rechte Spalte.
+    Die Stammdaten kommen aus dem Bearbeiten-Formular darüber."""
+    asset_id = asset[0]
     purchase_date = asset[6]
     purchase_price = asset[7]
     useful_life = asset[8]
     method = asset[9]
-    serial = asset[10] or ''
-    location = asset[11] or ''
-    sale_date = asset[15] or ''
-    sale_price = asset[16]
     status = asset[17]
-    notes = asset[18] or ''
-    cat_name = asset[21] if len(asset) > 21 else ''
-    supplier_name = asset[22] if len(asset) > 22 else ''
 
-    # AfA plan
     plan = db.calculate_depreciation_plan(purchase_price, purchase_date, useful_life, method)
     booked = {e[2]: e for e in db.get_depreciations_for_asset(asset_id)}  # year → row
-    today = datetime.date.today()
-    current_year = today.year
-
-    # Children / extensions
+    current_year = datetime.date.today().year
     children = db.get_asset_children(asset_id)
-
-    # Accounts for AfA booking dialog
     accounts = db.fetch_accounts()
     coa_rows = db.fetch_chart_of_accounts()
 
-    s = Header1('assets')
-    submenu = f'<a href="/assets">Anlagen</a> → <span id="ActivePage">{name}</span>'
-    s += Header2(submenu)
-    s += Header3()
-
-    s += f'<h2>{inv_number} – {name}</h2>'
-
-    # Status badge
-    status_color = {'active': 'green', 'sold': '#888', 'scrapped': '#cc0000'}.get(status, '#000')
-    s += f'<p>Status: <strong style="color:{status_color};">{_status_label(status)}</strong></p>'
-
-    # ── Stammdaten ──
-    s += '<div class="rectRounded"><h3>Stammdaten</h3>'
-    s += '<table style="border-collapse:collapse; width:100%;">'
-    rows_data = [
-        ('Bezeichnung', name),
-        ('Beschreibung', description),
-        ('Inventarnummer', inv_number),
-        ('Kategorie', cat_name or '–'),
-        ('Anschaffungsdatum', purchase_date),
-        ('Anschaffungskosten (netto)', _fmt(purchase_price)),
-        ('Nutzungsdauer', f'{useful_life} Jahre'),
-        ('AfA-Methode', _method_label(method)),
-        ('Seriennummer', serial or '–'),
-        ('Standort', location or '–'),
-        ('Lieferant', supplier_name or '–'),
-        ('Notizen', notes or '–'),
-    ]
-    if status == 'sold':
-        rows_data.append(('Verkaufsdatum', sale_date))
-        rows_data.append(('Verkaufserlös', _fmt(sale_price)))
-    for label, value in rows_data:
-        s += f'<tr><td style="padding:4px 10px 4px 0; width:200px; color:#666;">{label}</td><td style="padding:4px 0;">{value}</td></tr>'
-    s += '</table>'
-    s += f'<p style="margin-top:8px;"><a href="/assets/edit?id={asset_id}">✏️ Bearbeiten</a>'
-    if status == 'active':
-        s += f' | <a href="#sell_form">💶 Anlage verkaufen/abgehen</a>'
-    s += '</p></div>'
-
     # ── AfA-Plan ──
-    s += f'<div class="rectRounded"><h3>AfA-Plan</h3>'
+    s = '<div class="rectRounded"><h3>AfA-Plan</h3>'
     s += f'<table border="1" style="width:100%; border-collapse:collapse;">'
     s += '<tr><th>Jahr</th><th style="text-align:right;">Buchwert Anfang</th><th style="text-align:right;">AfA</th><th style="text-align:right;">Buchwert Ende</th><th>Methode</th><th>Status</th><th>Aktion</th></tr>'
 
@@ -268,7 +204,7 @@ def PageAssetView(db: Database, asset_id: int):
             ch_date = ch[6]
             ch_price = ch[7]
             ch_bv = db.get_book_value_at_date(ch_id)
-            s += f'<tr><td>{ch_inv}</td><td>{ch_name}</td><td>{ch_date}</td><td style="text-align:right;">{_fmt(ch_price)}</td><td style="text-align:right;">{_fmt(ch_bv)}</td><td><a href="/assets/view?id={ch_id}">Details</a> | <a href="/assets/edit?id={ch_id}">Bearbeiten</a></td></tr>'
+            s += f'<tr><td>{ch_inv}</td><td>{ch_name}</td><td>{ch_date}</td><td style="text-align:right;">{_fmt(ch_price)}</td><td style="text-align:right;">{_fmt(ch_bv)}</td><td><a href="/assets/edit?id={ch_id}">Öffnen</a></td></tr>'
         s += '</table>'
     else:
         s += '<p><em>Keine Erweiterungen vorhanden.</em></p>'
@@ -283,11 +219,10 @@ def PageAssetView(db: Database, asset_id: int):
             <table class="form-table">
                 <tr><td>Datum:</td><td><input type="date" name="sale_date" required></td></tr>
                 <tr><td>Erlös (0 = Verschrottung):</td><td><input type="number" name="sale_price" value="0" min="0" step="0.01"> €</td></tr>
-                <tr><td></td><td><input type="submit" value="Abgang buchen"></td></tr>
+                <tr><td></td><td><input type="submit" value="Abgang buchen" class="coloredButton btn-sm bg-indigo"></td></tr>
             </table>
         </form></div>'''
 
-    s += Footer()
     return s
 
 
@@ -329,18 +264,16 @@ def _book_depr_button(asset_id, year, accounts, coa_rows):
 
 # ─── PageAssetEdit ────────────────────────────────────────────────────────────
 
-def PageAssetEdit(db: Database, asset_id=None, parent_id=None):
-    """Create or edit an asset"""
-    asset = db.get_asset_by_id(asset_id) if asset_id else None
+def _asset_form(db: Database, asset=None, parent_asset=None):
+    """Render-Block: Anlage-Formular (Neu/Bearbeiten) für die rechte Spalte."""
     categories = db.fetch_asset_categories()
     suppliers = db.fetch_contacts(contact_type='supplier') + db.fetch_contacts(contact_type='other')
     coa_rows = db.fetch_chart_of_accounts()
     documents = db.fetch_receipts()
-    accounts = db.fetch_accounts()
-    parent_asset = db.get_asset_by_id(parent_id) if parent_id else None
 
     is_edit = asset is not None
-    page_title = f"Anlage bearbeiten" if is_edit else "Neue Anlage anlegen"
+    asset_id = asset[0] if asset else None
+    page_title = "Anlage bearbeiten" if is_edit else "Neue Anlage"
     action = "/assets/update" if is_edit else "/assets/add"
 
     # Pre-fill values
@@ -360,18 +293,14 @@ def PageAssetEdit(db: Database, asset_id=None, parent_id=None):
         'booking': asset[14] if asset else '',
         'notes': asset[18] if asset else '',
         'status': asset[17] if asset else 'active',
-        'parent_id': asset[19] if asset else (parent_id or ''),
+        'parent_id': asset[19] if asset else (parent_asset[0] if parent_asset else ''),
     }
 
-    s = Header1('assets')
-    submenu = f'<a href="/assets">Anlagen</a> → <span id="ActivePage">{page_title}</span>'
-    s += Header2(submenu)
-    s += Header3()
-
+    s = '<div class="rectRounded">'
     s += f'<h2>{page_title}</h2>'
 
     if parent_asset:
-        s += f'<p>🔗 Erweiterung von: <strong><a href="/assets/view?id={parent_asset[0]}">{parent_asset[2]}</a></strong></p>'
+        s += f'<p>🔗 Erweiterung von: <strong>{parent_asset[2]}</strong></p>'
 
     s += f'<form method="POST" action="{action}">'
     if is_edit:
@@ -459,6 +388,7 @@ def PageAssetEdit(db: Database, asset_id=None, parent_id=None):
         </td></tr>
     </table>
     </form>
+    </div>
     '''
 
     # AfA preview table (JavaScript-rendered via server-side for simplicity)
@@ -574,7 +504,6 @@ def PageAssetEdit(db: Database, asset_id=None, parent_id=None):
     </script>
     '''
 
-    s += Footer()
     return s
 
 

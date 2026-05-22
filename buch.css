@@ -80,7 +80,7 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 	body, textarea 		{ background-color: #000; color: #FFF; }
 	h1, h2				{ color: #B99; }
 	table				{ border-color: #666;}
-	tr 					{ background-color: #000; }
+	tr 					{ background-color: #111; }
 	tr:hover			{ background-color: #222; }
 	td, th				{ border-color: #444; }
 	th					{ background-color: #222; text-align: left;}
@@ -114,7 +114,7 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 @media (prefers-color-scheme: light) {
 	body				{ background-color: #FFF; color: #000}
 	h1, h2				{ color: #755; }
-	table				{ border-color: #EEE;}
+	table				{ border-color: #AAA;}
 	tr 					{ background-color: #FFF; }
 	tr:hover			{ background-color: #DDD; }
 	td, th				{ border-color: #EEE; }

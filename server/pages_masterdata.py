@@ -168,7 +168,7 @@ def PageArticles(db: Database, edit_article_id=None):
                 {id_row}
                 <tr><td>Bezeichnung:</td><td><input type="text" name="name" value="{ea_name}" required size="40"></td></tr>
                 <tr><td>Einheit:</td><td><select name="unit">{unit_select}</select></td></tr>
-                <tr><td>Einzelpreis (netto):</td><td><input type="number" step="0.01" name="unit_price" value="{ea_unit_price:.2f}"> €</td></tr>
+                <tr><td>Einzelpreis (netto in €):</td><td><input type="number" step="0.01" name="unit_price" value="{ea_unit_price:.2f}"></td></tr>
                 <tr><td>MwSt (%):</td><td><select name="tax_rate">{tax_select}</select></td></tr>
                 <tr><td>Beschreibung:</td><td><textarea name="description" rows="3" cols="38">{ea_desc}</textarea></td></tr>
                 <tr><td>Aktiv:</td><td><input type="checkbox" name="active" value="1" {active_checked}></td></tr>
