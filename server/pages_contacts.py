@@ -344,7 +344,7 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
         )
     else:
         entity_type  = new_entity_type or 'company'
-        entity_label = "🏢 Unternehmen" if entity_type == 'company' else "👤 Person"
+        entity_label = "<span style=\"font-size: 0.8em;\">🏢</span> Unternehmen</span>" if entity_type == 'company' else "<span style=\"font-size: 0.8em;\">👤 Person</span>"
         form_title   = f'Neuer Kontakt: {entity_label}'
         form_html    = _contact_form(db, form_action='/masterdata/contacts/add',
                                      entity_type=entity_type)

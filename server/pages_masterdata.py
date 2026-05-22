@@ -151,19 +151,22 @@ def PageArticles(db: Database, edit_article_id=None):
               if edit_article else '')
     if edit_article:
         action_buttons = (
-            '<input type="submit" value="Aktualisieren" class="coloredButton btn-sm bg-green">'
-            '<input type="submit" value="Als neu anlegen" formaction="/masterdata/articles/add" class="coloredButton btn-sm bg-blue">'
+            '<input type="submit" value="💾 Aktualisieren" class="coloredButton btn-sm bg-green">'
+            '<input type="submit" value="💾 Als neu anlegen" formaction="/masterdata/articles/add" class="coloredButton btn-sm bg-blue">'
             '<button type="button" onclick="window.location.href=\'/masterdata/articles\'" class="coloredButton btn-sm bg-gray">← Abbrechen</button>'
         )
     else:
-        action_buttons = '<input type="submit" value="Artikel hinzufügen" formaction="/masterdata/articles/add" class="coloredButton btn-sm bg-green">'
+        action_buttons = '<input type="submit" value="💾 Artikel hinzufügen" formaction="/masterdata/articles/add" class="coloredButton btn-sm bg-green">'
 
     s += f'''
     <div class="grid2Cols gridMain">
-    <div class="gridRightCol" style="order:2">
+    <div class="gridRightCol gridMiddle" style="order:2">
         <div class="rectRounded">
         <h2>{form_title}</h2>
         <form method="POST" action="/masterdata/articles/update">
+            <div class="rowWithObjects">{action_buttons}</div>
+        </div>
+        <div class="rectRounded">
             <table class="form-table">
                 {id_row}
                 <tr><td>Bezeichnung:</td><td><input type="text" name="name" value="{ea_name}" required size="40"></td></tr>
@@ -172,9 +175,6 @@ def PageArticles(db: Database, edit_article_id=None):
                 <tr><td>MwSt (%):</td><td><select name="tax_rate">{tax_select}</select></td></tr>
                 <tr><td>Beschreibung:</td><td><textarea name="description" rows="3" cols="38">{ea_desc}</textarea></td></tr>
                 <tr><td>Aktiv:</td><td><input type="checkbox" name="active" value="1" {active_checked}></td></tr>
-                <tr><td></td><td>
-                    {action_buttons}
-                </td></tr>
             </table>
         </form>
         </div>

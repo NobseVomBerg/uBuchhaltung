@@ -112,7 +112,7 @@ def PageReceipts(db: Database, date_from=None, date_to=None):
                             </div>
                             <div id="btnEdit" style="display:none">
                                 <input type="submit" value="Aktualisieren" class="coloredButton btn-sm bg-green">
-                                <a href="#" class="coloredButton btn-sm bg-gray" onclick="resetReceiptForm(); return false;">Abbrechen</a>
+                                <button type="button" class="coloredButton btn-sm bg-gray" onclick="resetReceiptForm()">Abbrechen</button>
                             </div>
                         </td></tr>
                     </table>
