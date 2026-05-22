@@ -153,7 +153,7 @@ def PageArticles(db: Database, edit_article_id=None):
         action_buttons = (
             '<input type="submit" value="Aktualisieren" class="coloredButton btn-sm bg-green">'
             '<input type="submit" value="Als neu anlegen" formaction="/masterdata/articles/add" class="coloredButton btn-sm bg-blue">'
-            '<a href="/masterdata/articles" class="coloredButton btn-sm bg-gray">Abbrechen</a>'
+            '<button type="button" onclick="window.location.href=\'/masterdata/articles\'" class="coloredButton btn-sm bg-gray">← Abbrechen</button>'
         )
     else:
         action_buttons = '<input type="submit" value="Artikel hinzufügen" formaction="/masterdata/articles/add" class="coloredButton btn-sm bg-green">'
@@ -300,7 +300,7 @@ def PageSkr(db: Database, edit_id=None):
     if edit_skr:
         action_buttons = (
             '<input type="submit" value="Aktualisieren" class="coloredButton btn-sm bg-green">'
-            '<a href="/masterdata/skr" class="coloredButton btn-sm bg-gray">Abbrechen</a>'
+            '<button type="button" onclick="window.location.href=\'/masterdata/skr\'" class="coloredButton btn-sm bg-gray">← Abbrechen</button>'
         )
     else:
         action_buttons = ('<input type="submit" value="SKR-Konto hinzufügen" '
@@ -385,7 +385,7 @@ def PageBankAccounts(db: Database, edit_id=None):
 
     if edit_acc:
         action_buttons = ('<input type="submit" value="Aktualisieren" class="coloredButton btn-sm bg-green">'
-                          '<a href="/masterdata/bankaccounts" class="coloredButton btn-sm bg-gray">Abbrechen</a>')
+                          '<button type="button" onclick="window.location.href=\'/masterdata/bankaccounts\'" class="coloredButton btn-sm bg-gray">← Abbrechen</button>')
     else:
         action_buttons = ('<input type="submit" value="Konto hinzufügen" '
                           'formaction="/masterdata/bankaccounts/add" class="coloredButton btn-sm bg-green">')
@@ -503,7 +503,7 @@ def PageNumberRanges(db: Database, edit_id=None):
         preview = f'<p class="muted">Nächste Nummer wird sein: <strong>{next_formatted}</strong></p>'
         id_row = f'<input type="hidden" name="id" value="{edit_nr[0]}">'
         action_buttons = ('<input type="submit" value="Aktualisieren" class="coloredButton btn-sm bg-green">'
-                          '<a href="/masterdata/numberranges" class="coloredButton btn-sm bg-gray">Abbrechen</a>')
+                          '<button type="button" onclick="window.location.href=\'/masterdata/numberranges\'" class="coloredButton btn-sm bg-gray">← Abbrechen</button>')
     else:
         form_title = "Neuer Nummernkreis"
         nr_year    = current_year

@@ -218,7 +218,7 @@ def _asset_details(db: Database, asset):
             <input type="hidden" name="asset_id" value="{asset_id}">
             <table class="form-table">
                 <tr><td>Datum:</td><td><input type="date" name="sale_date" required></td></tr>
-                <tr><td>Erlös (0 = Verschrottung):</td><td><input type="number" name="sale_price" value="0" min="0" step="0.01"> €</td></tr>
+                <tr><td>Erlös in € (0 = Verschrottung):</td><td><input type="number" name="sale_price" value="0" min="0" step="0.01"></td></tr>
                 <tr><td></td><td><input type="submit" value="Abgang buchen" class="coloredButton btn-sm bg-indigo"></td></tr>
             </table>
         </form></div>'''
@@ -384,7 +384,7 @@ def _asset_form(db: Database, asset=None, parent_asset=None):
         <tr><td></td><td>
             <input type="submit" value="{'Anlage aktualisieren' if is_edit else 'Anlage anlegen'}"
                 class="coloredButton btn-sm bg-indigo">
-            <a href="/assets" class="coloredButton btn-sm bg-gray">Abbrechen</a>
+            <button type="button" onclick="window.location.href='/assets'" class="coloredButton btn-sm bg-gray">← Abbrechen</button>
         </td></tr>
     </table>
     </form>
@@ -552,7 +552,7 @@ def PageAssetCategories(db: Database, edit_category_id=None):
     if edit_cat:
         action_buttons = (
             '<input type="submit" value="Aktualisieren" class="coloredButton btn-sm bg-green">'
-            '<a href="/asset_categories" class="coloredButton btn-sm bg-gray">Abbrechen</a>'
+            '<button type="button" onclick="window.location.href=\'/asset_categories\'" class="coloredButton btn-sm bg-gray">← Abbrechen</button>'
         )
     else:
         action_buttons = ('<input type="submit" value="Kategorie hinzufügen" '
