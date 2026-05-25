@@ -4,6 +4,7 @@ POST request handlers for form submissions
 import os
 import json
 import datetime
+from urllib.parse import quote
 from .pages import Header1, Header2, Header3, Footer
 from .import_preview import match_account
 from db import Database
@@ -393,25 +394,51 @@ def handle_update_bankaccount(db: Database, post_data):
     db.update_account(account_id, name, holder, iban, bic, bank_name, skr_account=skr_account)
     return 303, "/masterdata/bankaccounts"
 
+def _skr_redirect(msg, type_='success'):
+    return 303, f"/masterdata/skr?msg={quote(msg)}&type={type_}"
+
+
 def handle_add_skr(db: Database, post_data):
-    """Handle adding new SKR entry"""
-    framework_nr = post_data["framework_nr"][0]
-    account = post_data["account"][0]
+    """Handle adding new SKR entry (ID wird aus Rahmen+Nummer berechnet)."""
     name = post_data["name"][0]
     group = post_data["group"][0]
     psp = int(post_data.get("private_share_percent", [0])[0] or 0)
-    db.insert_chart_of_accounts(framework_nr, account, name, group, is_standard=0, private_share_percent=psp)
-    return 303, "/masterdata/skr"
+    show = 1 if "show_in_menu" in post_data else 0
+    try:
+        framework_nr = int(post_data["framework_nr"][0])
+        account = int(post_data["account"][0])
+    except (ValueError, KeyError, TypeError):
+        return _skr_redirect("Rahmen-Nr. und Konto müssen Zahlen sein.", "error")
+    ok = db.insert_chart_of_accounts(framework_nr, account, name, group,
+                                     is_standard=0, private_share_percent=psp, show_in_menu=show)
+    if not ok:
+        return _skr_redirect(f"Konto {account} existiert im Rahmen {framework_nr} bereits.", "error")
+    return _skr_redirect("Konto angelegt.")
 
 def handle_update_skr(db: Database, post_data):
-    """Handle updating SKR entry"""
+    """Handle updating SKR entry. Rahmen/Nummer (und ID) sind fix."""
     id = int(post_data["id"][0])
-    framework_nr = post_data["framework_nr"][0]
-    account = post_data["account"][0]
+    framework_nr = post_data.get("framework_nr", [""])[0]
+    account = post_data.get("account", [""])[0]
     name = post_data["name"][0]
     group = post_data["group"][0]
     psp = int(post_data.get("private_share_percent", [0])[0] or 0)
-    db.update_chart_of_accounts(id, framework_nr, account, name, group, private_share_percent=psp)
+    show = 1 if "show_in_menu" in post_data else 0
+    db.update_chart_of_accounts(id, framework_nr, account, name, group,
+                                private_share_percent=psp, show_in_menu=show)
+    return 303, "/masterdata/skr"
+
+def handle_delete_skr(db: Database, coa_id_val):
+    """SKR-Konto löschen (nur Nicht-Standard, nur wenn nicht referenziert)."""
+    if db.coa_is_referenced(coa_id_val):
+        return _skr_redirect("Konto wird in Buchungen/Anlagen verwendet und kann nicht gelöscht werden.", "error")
+    if db.delete_chart_of_accounts(coa_id_val):
+        return _skr_redirect("Konto gelöscht.")
+    return _skr_redirect("Konto konnte nicht gelöscht werden (Standard-Konto?).", "error")
+
+def handle_toggle_skr_menu(db: Database, coa_id_val):
+    """Menü-Sichtbarkeit eines SKR-Kontos umschalten."""
+    db.toggle_coa_show_in_menu(coa_id_val)
     return 303, "/masterdata/skr"
 
 def handle_db_export(db: Database):

@@ -234,7 +234,8 @@ def _book_depr_button(asset_id, year, accounts, coa_rows):
     )
     # Filter likely expense accounts (SKR 03/04 Abschreibungen ~ 4830)
     coa_options = ''.join(
-        f'<option value="{c[0]}">{c[2]} {c[3]}</option>' for c in coa_rows
+        f'<option value="{c[0]}">{c[2]} {c[3]}</option>'
+        for c in coa_rows if (c[7] if len(c) > 7 else 1)
     )
     return f'''
         <button type="button" onclick="document.getElementById('{form_id}').style.display='block'; this.style.display='none';"
@@ -322,6 +323,8 @@ def _asset_form(db: Database, asset=None, parent_asset=None):
     coa_options = '<option value="">-- keines --</option>'
     for c in coa_rows:
         sel = 'selected' if str(v['coa']) == str(c[0]) else ''
+        if not (c[7] if len(c) > 7 else 1) and not sel:
+            continue
         coa_options += f'<option value="{c[0]}" {sel}>{c[2]} {c[3]}</option>'
 
     supplier_options = '<option value="">-- keiner --</option>'
@@ -544,6 +547,8 @@ def PageAssetCategories(db: Database, edit_category_id=None):
     coa_options = '<option value="">-- keines --</option>'
     for c in coa_rows:
         sel = 'selected' if ec_coa and str(ec_coa) == str(c[0]) else ''
+        if not (c[7] if len(c) > 7 else 1) and not sel:
+            continue
         coa_options += f'<option value="{c[0]}" {sel}>{c[2]} {c[3]}</option>'
 
     id_row = (f'<input type="hidden" name="category_id" value="{edit_cat[0]}">'

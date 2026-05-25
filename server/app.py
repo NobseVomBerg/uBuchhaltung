@@ -194,12 +194,29 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 db.delete_contact(contact_id)
                 self.respond(303, "", headers={"Location": "/masterdata/contacts"})
             # SKR (Chart of Accounts)
-            elif self.path == "/masterdata/skr":
-                self.respond(200, PageSkr(db))
+            elif self.path == "/masterdata/skr" or self.path.startswith("/masterdata/skr?"):
+                qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
+                msg = qs.get('msg', [None])[0]
+                msg_type = qs.get('type', ['info'])[0]
+                self.respond(200, PageSkr(db, msg=msg, msg_type=msg_type))
             elif self.path.startswith("/masterdata/skr/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 id = int(query_components["id"][0])
                 self.respond(200, PageSkrEdit(db, id))
+            elif self.path.startswith("/masterdata/skr/copy"):
+                query_components = parse_qs(self.path.split('?')[1])
+                id = int(query_components["id"][0])
+                self.respond(200, PageSkr(db, copy_from_id=id))
+            elif self.path.startswith("/masterdata/skr/delete"):
+                query_components = parse_qs(self.path.split('?')[1])
+                id = int(query_components["id"][0])
+                status_code, location = handlers.handle_delete_skr(db, id)
+                self.respond(status_code, "", headers={"Location": location})
+            elif self.path.startswith("/masterdata/skr/togglemenu"):
+                query_components = parse_qs(self.path.split('?')[1])
+                id = int(query_components["id"][0])
+                status_code, location = handlers.handle_toggle_skr_menu(db, id)
+                self.respond(status_code, "", headers={"Location": location})
             # Bank Accounts
             elif self.path == "/masterdata/bankaccounts":
                 self.respond(200, PageBankAccounts(db))
@@ -513,10 +530,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             # SKR
             elif self.path == "/masterdata/skr/add":
                 status_code, location = handlers.handle_add_skr(db, post_data)
-                self.respond(status_code, "", headers={"Location": "/masterdata/skr"})
+                self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/masterdata/skr/update":
                 status_code, location = handlers.handle_update_skr(db, post_data)
-                self.respond(status_code, "", headers={"Location": "/masterdata/skr"})
+                self.respond(status_code, "", headers={"Location": location})
             # Contacts
             elif self.path == "/masterdata/contacts/add":
                 status_code, location = handlers.handle_add_contact(db, post_data)

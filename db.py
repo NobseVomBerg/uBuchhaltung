@@ -2,6 +2,15 @@ import sqlite3
 import os
 import json
 
+
+def coa_id(framework, account_number):
+    """Berechnete ChartOfAccounts-ID: 1. Ziffer = Rahmen, dahinter 5 Ziffern Kontonummer.
+
+    Bsp.: SKR4 (Framework 4), Konto 6850 -> 406850.
+    """
+    return int(framework) * 100000 + int(account_number)
+
+
 class Database:
     def __init__(self, db_name="./data/buch.db"):
         self.db_name = db_name
@@ -52,13 +61,14 @@ class Database:
         # Chart of Accounts = Standard Konto Rahmen, 03/04 in Germany or 07 for Austria
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS ChartOfAccounts (
-                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                ID INTEGER PRIMARY KEY,
                 Framework INTEGER,
                 AccountNumber INTEGER,
                 Name TEXT,
                 Description TEXT,
                 IsStandard INTEGER DEFAULT 0,
                 PrivateSharePercent INTEGER DEFAULT 0,
+                ShowInMenu INTEGER DEFAULT 1,
                 UNIQUE(Framework, AccountNumber)
             )
         ''')
@@ -1171,40 +1181,121 @@ class Database:
         conn.close()
         return rows
 
-    def insert_chart_of_accounts(self, framework, account_number, name, description, is_standard=0, private_share_percent=0):
+    def insert_chart_of_accounts(self, framework, account_number, name, description,
+                                 is_standard=0, private_share_percent=0, show_in_menu=1):
+        """Neues SKR-Konto anlegen. ID wird aus Rahmen+Nummer berechnet.
+
+        Returns True bei Erfolg, False wenn die Nummer im Rahmen schon existiert.
+        """
         conn = self._get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute('''
-                INSERT INTO ChartOfAccounts (Framework, AccountNumber, Name, Description, IsStandard, PrivateSharePercent)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (framework, account_number, name, description, is_standard, private_share_percent or 0))
+                INSERT INTO ChartOfAccounts
+                    (ID, Framework, AccountNumber, Name, Description, IsStandard, PrivateSharePercent, ShowInMenu)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (coa_id(framework, account_number), framework, account_number, name, description,
+                  is_standard, private_share_percent or 0, 1 if show_in_menu else 0))
             conn.commit()
+            return True
         except sqlite3.IntegrityError as e:
             print("Error inserting into ChartOfAccounts:", e)
             conn.rollback()
+            return False
         finally:
             conn.close()
 
-    def update_chart_of_accounts(self, id, framework, account_number, name, description, private_share_percent=None):
+    def update_chart_of_accounts(self, id, framework, account_number, name, description,
+                                 private_share_percent=None, show_in_menu=None):
+        """SKR-Konto aktualisieren. Rahmen/Nummer (und damit die ID) sind fix.
+
+        PrivateSharePercent und ShowInMenu sind für ALLE Konten editierbar,
+        Name/Description nur für Nicht-Standard-Konten.
+        """
         conn = self._get_connection()
         cursor = conn.cursor()
         try:
-            # PrivateSharePercent ist für ALLE Konten editierbar (auch Standard)
+            # Für ALLE Konten editierbar (auch Standard)
             if private_share_percent is not None:
                 cursor.execute(
                     'UPDATE ChartOfAccounts SET PrivateSharePercent = ? WHERE ID = ?',
                     (private_share_percent, id))
-            # Andere Felder nur für Nicht-Standard-Konten
+            if show_in_menu is not None:
+                cursor.execute(
+                    'UPDATE ChartOfAccounts SET ShowInMenu = ? WHERE ID = ?',
+                    (1 if show_in_menu else 0, id))
+            # Name/Description nur für Nicht-Standard-Konten (Rahmen/Nummer bleiben fix)
             cursor.execute('''
                 UPDATE ChartOfAccounts
-                SET Framework = ?, AccountNumber = ?, Name = ?, Description = ?
+                SET Name = ?, Description = ?
                 WHERE ID = ? AND IsStandard = 0
-            ''', (framework, account_number, name, description, id))
+            ''', (name, description, id))
             conn.commit()
         except sqlite3.IntegrityError as e:
             print("Error updating ChartOfAccounts:", e)
             conn.rollback()
+        finally:
+            conn.close()
+
+    def delete_chart_of_accounts(self, id):
+        """Nicht-Standard-Konto löschen. Standard-Konten bleiben unberührt.
+
+        Returns True, wenn eine Zeile gelöscht wurde.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('DELETE FROM ChartOfAccounts WHERE ID = ? AND IsStandard = 0', (id,))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def coa_is_referenced(self, id):
+        """True, wenn das Konto in Buchungen oder Anlagen referenziert wird."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                'SELECT 1 FROM Bookings WHERE COA_ID = ? OR CounterCOA_ID = ? LIMIT 1', (id, id))
+            if cursor.fetchone():
+                return True
+            cursor.execute('SELECT 1 FROM AssetCategories WHERE COA_ID = ? LIMIT 1', (id,))
+            if cursor.fetchone():
+                return True
+            cursor.execute('SELECT 1 FROM Assets WHERE COA_ID = ? LIMIT 1', (id,))
+            return cursor.fetchone() is not None
+        finally:
+            conn.close()
+
+    def next_free_account_number(self, framework, start):
+        """Kleinste freie Kontonummer >= start im angegebenen Rahmen."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                'SELECT AccountNumber FROM ChartOfAccounts WHERE Framework = ?', (framework,))
+            taken = {row[0] for row in cursor.fetchall()}
+        finally:
+            conn.close()
+        n = int(start)
+        while n in taken:
+            n += 1
+        return n
+
+    def toggle_coa_show_in_menu(self, id):
+        """ShowInMenu eines Kontos umschalten. Returns neuer Wert (0/1) oder None."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('SELECT ShowInMenu FROM ChartOfAccounts WHERE ID = ?', (id,))
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            new_val = 0 if row[0] else 1
+            cursor.execute('UPDATE ChartOfAccounts SET ShowInMenu = ? WHERE ID = ?', (new_val, id))
+            conn.commit()
+            return new_val
         finally:
             conn.close()
 
@@ -1261,7 +1352,8 @@ class Database:
         # Standard-Kontenrahmen
         data = self._load_seed_json('chart_of_accounts_skr04.json')
         framework = data['framework']
-        rows = [(framework, e['account_number'], e['name'], e['description'],
+        rows = [(coa_id(framework, e['account_number']), framework, e['account_number'],
+                 e['name'], e['description'],
                  1 if e['is_standard'] else 0,
                  e.get('private_share_percent', 0))
                 for e in data['accounts']]
@@ -1274,7 +1366,8 @@ class Database:
             with open(private_file, 'r', encoding='utf-8') as f:
                 pdata = json.load(f)
             pfw = pdata.get('framework', framework)
-            rows += [(pfw, e['account_number'], e['name'], e['description'],
+            rows += [(coa_id(pfw, e['account_number']), pfw, e['account_number'],
+                      e['name'], e['description'],
                       1 if e.get('is_standard') else 0,
                       e.get('private_share_percent', 0))
                      for e in pdata.get('accounts', [])]
@@ -1282,8 +1375,8 @@ class Database:
 
         cursor.executemany('''
             INSERT OR IGNORE INTO ChartOfAccounts
-                (Framework, AccountNumber, Name, Description, IsStandard, PrivateSharePercent)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (ID, Framework, AccountNumber, Name, Description, IsStandard, PrivateSharePercent)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', rows)
 
         # Overrides anwenden (z. B. Privatanteil für Standard-Konten setzen)

@@ -166,7 +166,11 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     '''
     selected_coa_id = edit_trans[8] if edit_trans else None
     for coa in coa_accounts:
-        selected = 'selected' if selected_coa_id and coa[0] == selected_coa_id else ''
+        is_selected = bool(selected_coa_id and coa[0] == selected_coa_id)
+        # Ausgeblendete Konten (ShowInMenu=0) nicht anzeigen – außer es ist das aktuell gesetzte
+        if not (coa[7] if len(coa) > 7 else 1) and not is_selected:
+            continue
+        selected = 'selected' if is_selected else ''
         coa_display = f"{coa[2]} - {coa[3]}" if coa[3] else f"{coa[2]}"
         s+= f'<option value="{coa[0]}" {selected}>{coa_display}</option>'
 

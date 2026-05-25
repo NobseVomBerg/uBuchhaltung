@@ -264,63 +264,96 @@ from .pages_contacts import PageContacts, PageContactNew, PageContactEdit  # noq
 # SKR (Chart of Accounts)
 # ══════════════════════════════════════════════════════════════════════
 
-def PageSkr(db: Database, edit_id=None):
+def PageSkr(db: Database, edit_id=None, copy_from_id=None, msg=None, msg_type='info'):
     """SKR-Kontenrahmen (Stammdaten): Übersicht links, Inline-Formular rechts.
 
-    Bearbeiten lädt das Konto ins rechte Formular (wie PageArticles); ohne
-    edit_id ist es ein leeres 'Neues SKR-Konto'-Formular. Standard-Konten sind
-    bis auf den Privatanteil schreibgeschützt.
+    Modi: Bearbeiten (edit_id) lädt ein vorhandenes Konto – Rahmen/Nummer sind
+    dann schreibgeschützt (die ID = Rahmen·100000+Nummer bleibt fix). Kopieren
+    (copy_from_id) öffnet ein leeres Anlegen-Formular, vorbefüllt mit den Werten
+    der Quelle und der nächsten freien Nummer. Ohne beides: leeres Neu-Formular.
+    Standard-Konten sind bis auf Privatanteil und Menü-Sichtbarkeit schreibgeschützt.
     """
     rows = db.fetch_chart_of_accounts()
 
     # ChartOfAccounts (SELECT *): [0]ID [1]Framework-Nr [2]Konto [3]Name
-    #                             [4]Gruppe [5]IsStandard [6]PrivateSharePercent
-    edit_skr = None
-    if edit_id is not None:
-        edit_skr = next((row for row in rows if row[0] == edit_id), None)
+    #               [4]Gruppe [5]IsStandard [6]PrivateSharePercent [7]ShowInMenu
+    edit_skr = next((row for row in rows if row[0] == edit_id), None) if edit_id is not None else None
+    src      = next((row for row in rows if row[0] == copy_from_id), None) if copy_from_id is not None else None
+
+    is_existing = edit_skr is not None
+    is_std = (edit_skr[5] if is_existing and len(edit_skr) > 5 else 0) or 0
+
+    # Formular-Werte je nach Modus
+    if is_existing:
+        form_title  = "SKR-Konto bearbeiten"
+        es_framework, es_account = edit_skr[1], edit_skr[2]
+        es_name, es_group        = edit_skr[3], edit_skr[4]
+        es_psp  = edit_skr[6] if len(edit_skr) > 6 and edit_skr[6] else 0
+        es_show = edit_skr[7] if len(edit_skr) > 7 else 1
+    elif src is not None:
+        suggested = db.next_free_account_number(src[1], int(src[2]) + 1)
+        form_title  = f"Neues SKR-Konto (Kopie von {src[2]})"
+        es_framework, es_account = src[1], suggested
+        es_name, es_group        = src[3], src[4]
+        es_psp  = src[6] if len(src) > 6 and src[6] else 0
+        es_show = src[7] if len(src) > 7 else 1
+    else:
+        form_title  = "Neues SKR-Konto"
+        es_framework = es_account = es_name = es_group = ''
+        es_psp, es_show = 0, 1
+
+    # Readonly: Rahmen/Nummer fix bei vorhandenem Konto; Name/Gruppe nur bei Standard
+    fixed_attr = ' readonly' if is_existing else ''
+    name_attr  = ' readonly' if is_std else ''
+    readonly_note = ('<p class="muted">Standard-Konto: Rahmen, Nummer und Name sind fix; '
+                     'nur Privatanteil und Menü-Sichtbarkeit sind änderbar.</p>' if is_std else '')
+    show_checked = 'checked' if es_show else ''
+
     s = Header1('masterdata')
     submenu = '<a href="/masterdata">Stammdaten</a> → <span id="ActivePage">📊 SKR (Kontenrahmen)</span>'
     s += Header2(submenu)
     s += Header3()
 
-    # Formular-Werte (Bearbeiten oder Neu)
-    form_title    = "SKR-Konto bearbeiten" if edit_skr else "Neues SKR-Konto"
-    es_framework  = edit_skr[1] if edit_skr else ''
-    es_account    = edit_skr[2] if edit_skr else ''
-    es_name       = edit_skr[3] if edit_skr else ''
-    es_group      = edit_skr[4] if edit_skr else ''
-    es_psp        = (edit_skr[6] if edit_skr and len(edit_skr) > 6 and edit_skr[6] else 0) if edit_skr else 0
-    is_std        = (edit_skr[5] if edit_skr and len(edit_skr) > 5 else 0) if edit_skr else 0
-    readonly_attr = ' readonly' if is_std else ''
-    readonly_note = ('<p class="muted">Standard-Konto: Nur der Privatanteil kann geändert werden.</p>'
-                     if is_std else '')
+    # Flash (z. B. Lösch-Hinweis) – erst nach DOMContentLoaded (appMsg kommt aus Footer)
+    if msg:
+        safe = msg.replace('\\', '\\\\').replace("'", "\\'").replace('\n', ' ')
+        safe_type = (msg_type or 'info').replace("'", '')
+        s += (f"<script>document.addEventListener('DOMContentLoaded',function(){{"
+              f"appMsg('{safe}','{safe_type}');}});</script>")
 
-    id_row = (f'<input type="hidden" name="id" value="{edit_skr[0]}">' if edit_skr else '')
+    id_row = (f'<input type="hidden" name="id" value="{edit_skr[0]}">' if is_existing else '')
 
-    if edit_skr:
+    if is_existing:
         action_buttons = (
             '<input type="submit" value="Aktualisieren" class="coloredButton btn-sm bg-green">'
+            f'<button type="button" onclick="window.location.href=\'/masterdata/skr/copy?id={edit_skr[0]}\'" class="coloredButton btn-sm bg-blue">Kopieren</button>'
             '<button type="button" onclick="window.location.href=\'/masterdata/skr\'" class="coloredButton btn-sm bg-gray">← Abbrechen</button>'
         )
     else:
-        action_buttons = ('<input type="submit" value="SKR-Konto hinzufügen" '
-                          'formaction="/masterdata/skr/add" class="coloredButton btn-sm bg-green">')
+        action_buttons = (
+            '<input type="submit" value="SKR-Konto hinzufügen" formaction="/masterdata/skr/add" class="coloredButton btn-sm bg-green">'
+            + ('<button type="button" onclick="window.location.href=\'/masterdata/skr\'" class="coloredButton btn-sm bg-gray">← Abbrechen</button>'
+               if src is not None else '')
+        )
 
     s += f'''
     <div class="grid2Cols gridMain">
-    <div class="gridRightCol" style="order:2">
+    <div class="gridRightCol gridMiddle" style="order:2">
         <div class="rectRounded">
         <h2>{form_title}</h2>
         {readonly_note}
         <form method="POST" action="/masterdata/skr/update">
             {id_row}
+            <div class="rowWithObjects">{action_buttons}</div>
+        </div>
+        <div class="rectRounded">
             <table class="form-table">
-                <tr><td>Rahmen-Nr.:</td><td><input type="text" name="framework_nr" value="{es_framework}"{readonly_attr}></td></tr>
-                <tr><td>Konto:</td><td><input type="text" name="account" value="{es_account}"{readonly_attr}></td></tr>
-                <tr><td>Name:</td><td><input type="text" name="name" value="{es_name}"{readonly_attr}></td></tr>
-                <tr><td>Gruppe:</td><td><input type="text" name="group" value="{es_group}"{readonly_attr}></td></tr>
+                <tr><td>Rahmen-Nr.:</td><td><input type="number" name="framework_nr" value="{es_framework}"{fixed_attr}></td></tr>
+                <tr><td>Konto:</td><td><input type="number" name="account" value="{es_account}"{fixed_attr}></td></tr>
+                <tr><td>Name:</td><td><input type="text" name="name" value="{es_name}"{name_attr}></td></tr>
+                <tr><td>Gruppe:</td><td><input type="text" name="group" value="{es_group}"{name_attr}></td></tr>
                 <tr><td>Privatanteil %:</td><td><input type="number" name="private_share_percent" value="{es_psp}" min="0" max="100"></td></tr>
-                <tr><td></td><td>{action_buttons}</td></tr>
+                <tr><td>Im Auswahlmenü:</td><td><input type="checkbox" name="show_in_menu" value="1" {show_checked}></td></tr>
             </table>
         </form>
         </div>
@@ -334,9 +367,19 @@ def PageSkr(db: Database, edit_id=None):
         standard_text = "\u2713" if is_standard else ""
         psp = row[6] if len(row) > 6 and row[6] else 0
         psp_display = f"{psp}\u2009%" if psp else ""
+        show_in_menu = row[7] if len(row) > 7 else 1
+        eye_glyph = '&#128065;' if show_in_menu else '&#128683;'  # \ud83d\udc41 sichtbar / \ud83d\udeab ausgeblendet
+        eye_title = 'Im Men\u00fc sichtbar \u2013 ausblenden' if show_in_menu else 'Ausgeblendet \u2013 einblenden'
+        eye_icon = (f"<a href='/masterdata/skr/togglemenu?id={row[0]}' class='action-icon' "
+                    f"title='{eye_title}'>{eye_glyph}</a>")
+        del_icon = ''
+        if not is_standard:
+            del_icon = (f" <a href='javascript:void(0);' class='action-icon delete-icon' title='L\u00f6schen'"
+                        f" onclick='appConfirmHref(\"/masterdata/skr/delete?id={row[0]}\", \"Konto wirklich l\u00f6schen?\")'>&#128465;</a>")
         s += (f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td>"
               f"<td>{psp_display}</td><td>{standard_text}</td>"
-              f"<td><a href='/masterdata/skr/edit?id={row[0]}' class='action-icon' title='Bearbeiten'>&#9998;</a></td></tr>")
+              f"<td><a href='/masterdata/skr/edit?id={row[0]}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
+              f" {eye_icon}{del_icon}</td></tr>")
     s += "</table>"
     s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Cols -->'
     s += Footer()

@@ -21,7 +21,8 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .box2					{ grid-column: span 2; }
 .box4					{ grid-column: span 4; }
 .rowWithObjects			{ display:flex; align-items:center; flex-wrap:wrap; gap: 14px; }
-.rectRounded			{ padding: 10px; border-radius: 5px;}
+.rectRounded, .modalBox	{ padding: 10px; border-radius: 5px;}
+.modalBox				{ background: #DDD; color: #222; }
 .errorColor				{ color: red; }
 .successColor			{ color: green; }
 .textareaSql			{ font-family: monospace; width: 100%; max-width: 1000px; margin-top: 10px; }
@@ -54,6 +55,7 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .bg-blue					{ background: #0066cc; }
 .bg-indigo					{ background: #2196F3; }
 .bg-gray					{ background: #888; }
+.bg-darkgray				{ background: #444; }
 .bg-back					{ background: #000; }
 
 .badge						{ display: inline-block; color: white; font-size: 0.72em; font-weight: 700; padding: 2px 6px; border-radius: 10px; vertical-align: middle; margin-right: 3px; }
@@ -92,6 +94,7 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 	.sql-error-box		{ background-color: #622; color: #FCC; padding: 10px; }
 	#dropZone 			{ background-color: #222; }
 	#dropZone:hover 	{ background-color: #444; }
+	.modalBox			{ background: #222; color: #DDD; }
 
 	/* Splitbuchungen (Gruppenansicht in PageTransactions) */
 	.group-row          { background: #111; }
