@@ -5,6 +5,7 @@ import os
 import json
 import datetime
 from .pages import Header1, Header2, Header3, Footer
+from .import_preview import match_account
 from db import Database
 
 try:
@@ -35,144 +36,131 @@ def handle_update_receipt(db, post_data):
     return 303, "/receipts"
 
 def handle_confirm_import(db: Database, post_data):
-    """Handle transaction import confirmation"""
+    """Kontoauszug-Import bestätigen – einzelner Beleg oder alle.
+
+    Erwartet ``import_id`` und optional ``file_index`` (genau ein Beleg);
+    ohne ``file_index`` werden alle noch nicht importierten Belege übernommen.
+    Das Konto wird pro Beleg über dessen IBAN aufgelöst, damit Auszüge
+    verschiedener Konten korrekt zugeordnet werden.
+
+    Returns (status_code, json_string).
+    """
     import_id = post_data.get("import_id", [""])[0]
-    action = post_data.get("action", [""])[0]
-    
+    file_index_raw = post_data.get("file_index", [""])[0]
+
     if not import_id:
-        return 400, "Fehlende import_id"
-    
-    if not PARSER_AVAILABLE:
-        return 500, "Parser nicht verfügbar"
-    
-    parser = DocumentParser()
-    
-    # Load pending import data
+        return 400, json.dumps({'ok': False, 'error': 'Fehlende import_id'})
+
     import_dir = os.path.join('data', 'pending_imports')
-    import_files = [f for f in os.listdir(import_dir) if f.startswith(import_id)]
-    
+    try:
+        import_files = [f for f in os.listdir(import_dir) if f.startswith(import_id)]
+    except FileNotFoundError:
+        import_files = []
     if not import_files:
-        return 404, "Import nicht gefunden"
-    
+        return 404, json.dumps({'ok': False, 'error': 'Import nicht gefunden'})
     import_file = os.path.join(import_dir, import_files[0])
-    
-    # Handle cancel action
-    if action == "Abbrechen":
-        try:
-            os.remove(import_file)
-            s = Header1()
-            s += Header2()
-            s += f"<h1>Import abgebrochen</h1>"
-            s += f"<p>Die Transaktionen wurden nicht importiert.</p>"
-            s += "<p><a href='/transactions'>Zurück zu Buchungen</a></p>"
-            s += Footer()
-            return 200, s
-        except Exception as e:
-            return 500, f"Fehler beim Löschen: {str(e)}"
-    
-    # Handle import action
+
     try:
         with open(import_file, 'r', encoding='utf-8') as f:
             import_data = json.load(f)
-        
-        # Get account ID from IBAN
-        account_iban = import_data.get('iban', '')
-        bank_code = import_data.get('bank_code', 'unknown')
-        accounts = db.fetch_accounts()
-        account_id = None
-        for acc in accounts:
-            if acc[3] == account_iban:  # IBAN is at index 3
-                account_id = acc[0]
-                break
-        
-        if not account_id:
-            return 400, f"Kein Konto gefunden für IBAN: {account_iban}"
-        
-        linked_count = 0
-        inserted_count = 0
-        skipped_count = 0
-        skipped_transactions = []
-        
-        # Get account info for duplicate check
-        account_id_int = None
-        for acc in accounts:
-            if acc[0] == account_id:
-                account_id_int = acc[0]
-                break
-        
-        for trans in import_data.get('transactions', []):
-            # Build text from recipient and reference
-            recipient = trans['recipient']
-            text = trans['reference']
-            foreign_iban = trans.get('foreign_iban', '')
-            trans_date = trans['date']
-            trans_amount = trans['amount']
 
-            # Check if banking already exists (exact duplicate)
-            if db.check_booking_exists(trans_date, trans_amount, account_id_int, foreign_iban, text):
-                skipped_count += 1
-                skipped_transactions.append(trans)
+        files = import_data.get('files', [])
+        if not files:
+            os.remove(import_file)
+            return 200, json.dumps({'ok': True, 'results': [], 'all_done': True})
+
+        # Zu importierende Belege bestimmen
+        if file_index_raw != "":
+            try:
+                target_indices = [int(file_index_raw)]
+            except ValueError:
+                return 400, json.dumps({'ok': False, 'error': 'Ungültiger file_index'})
+        else:
+            target_indices = [i for i, fl in enumerate(files) if not fl.get('imported')]
+
+        accounts = db.fetch_accounts()
+        results = []
+        any_inserted = False
+
+        for i in target_indices:
+            if i < 0 or i >= len(files):
+                continue
+            fl = files[i]
+            if fl.get('imported'):
+                results.append({'file_index': i, 'filename': fl.get('filename'),
+                                'inserted': 0, 'skipped': 0,
+                                'account_found': True, 'error': 'bereits importiert'})
                 continue
 
-            # Neue Bank-Buchung anlegen (BookingType='bank')
-            db.insert_booking(
-                date_booking=trans_date,
-                amount=trans_amount,
-                account_id=account_id_int,
-                foreign_bank_account=foreign_iban,
-                recipient_client=recipient,
-                text=text,
-                document_number=None,
-                booking_type='bank',
-                log_description=f"{bank_code} bank statement import"
-            )
-            inserted_count += 1
+            account_id, _name = match_account(accounts, fl.get('iban'))
+            if account_id is None:
+                results.append({'file_index': i, 'filename': fl.get('filename'),
+                                'inserted': 0, 'skipped': 0, 'account_found': False,
+                                'error': f"Kein Konto für IBAN {fl.get('iban')}"})
+                continue
 
-        # Auto-Linking: Bank-Buchungen mit WISO-Entry-Buchungen verknüpfen
-        link_result = db.link_bank_to_entries()
-        linked_count = link_result.get('linked', 0)
-        repaired_count = link_result.get('repaired', 0)
-        resolved_count = link_result.get('resolved', 0)
-        
-        # Delete pending import file
-        os.remove(import_file)
-        
-        # Redirect with success message
-        s = Header1()
-        s += Header2()
-        s += f"<h1>Import erfolgreich</h1>"
-        s += f"<p>{inserted_count} Transaktionen neu angelegt.</p>"
-        if repaired_count > 0:
-            s += f"<p style='color: blue;'>{repaired_count} Altdaten-Buchungen als Bank-Typ repariert.</p>"
-        if linked_count > 0:
-            s += f"<p style='color: green;'>{linked_count} WISO-Buchungen mit Bankdaten verknüpft.</p>"
-        if resolved_count > 0:
-            s += f"<p style='color: green;'>{resolved_count} Debitoren-Buchungen als erledigt markiert.</p>"
-        
-        if skipped_count > 0:
-            s += f"<p style='color: orange;'>{skipped_count} Duplikate wurden übersprungen:</p>"
-            s += "<table>"
-            s += "<tr><th>Datum</th><th>Empfänger</th><th>Verwendungszweck</th><th>Betrag</th><th>Fremd-IBAN</th></tr>"
-            for trans in skipped_transactions:
-                date_str = trans['date'][:10] if isinstance(trans['date'], str) else trans['date']
-                amount_color = "green" if trans['amount'] > 0 else "red"
-                s += f"<tr>"
-                s += f"<td>{date_str}</td>"
-                s += f"<td>{trans['recipient'][:30]}</td>"
-                s += f"<td>{trans['reference'][:40]}...</td>"
-                s += f"<td style='color:{amount_color}'>{trans['amount']:.2f} €</td>"
-                s += f"<td>{trans.get('foreign_iban', '')[:10]}...</td>"
-                s += f"</tr>"
-            s += "</table>"
-        
-        s += "<p><a href='/transactions'>Zu Buchungen</a></p>"
-        s += Footer()
-        return 200, s
-        
+            bank_code = fl.get('bank_code') or 'unknown'
+            inserted = 0
+            skipped = 0
+            for trans in fl.get('transactions', []):
+                recipient = trans.get('recipient', '') or ''
+                text = trans.get('reference', '') or ''
+                foreign_iban = trans.get('foreign_iban', '') or ''
+                trans_date = trans.get('date')
+                trans_amount = trans.get('amount')
+
+                if trans_date is None or trans_amount is None:
+                    skipped += 1
+                    continue
+                if db.check_booking_exists(trans_date, trans_amount, account_id, foreign_iban, text):
+                    skipped += 1
+                    continue
+
+                db.insert_booking(
+                    date_booking=trans_date,
+                    amount=trans_amount,
+                    account_id=account_id,
+                    foreign_bank_account=foreign_iban,
+                    recipient_client=recipient,
+                    text=text,
+                    document_number=None,
+                    booking_type='bank',
+                    log_description=f"{bank_code} bank statement import"
+                )
+                inserted += 1
+                any_inserted = True
+
+            fl['imported'] = True
+            results.append({'file_index': i, 'filename': fl.get('filename'),
+                            'inserted': inserted, 'skipped': skipped,
+                            'account_found': True, 'error': None})
+
+        # Auto-Linking nur wenn etwas neu angelegt wurde
+        linked = repaired = resolved = 0
+        if any_inserted:
+            link_result = db.link_bank_to_entries()
+            linked = link_result.get('linked', 0)
+            repaired = link_result.get('repaired', 0)
+            resolved = link_result.get('resolved', 0)
+
+        all_done = all(fl.get('imported') for fl in files)
+        if all_done:
+            os.remove(import_file)
+        else:
+            with open(import_file, 'w', encoding='utf-8') as f:
+                json.dump(import_data, f, indent=2, default=str)
+
+        return 200, json.dumps({
+            'ok': True,
+            'results': results,
+            'linked': linked, 'repaired': repaired, 'resolved': resolved,
+            'all_done': all_done,
+        })
+
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return 500, f"Fehler beim Import: {str(e)}"
+        return 500, json.dumps({'ok': False, 'error': f'Fehler beim Import: {str(e)}'})
 
 def handle_add_transaction(db: Database, post_data):
     """Handle manual booking entry (insert or update)"""

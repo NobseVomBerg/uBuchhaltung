@@ -24,7 +24,7 @@ from .pages_masterdata import (
 from .pages_contacts import PageContacts, PageContactNew, PageContactEdit
 from .pages_miscellaneous import PageMiscellaneous
 from .pages_booking_groups import PageBookingGroups, PageBookingGroupDetails
-from .pages_transactions import PageTransactions, PageConfirmTransactions
+from .pages_transactions import PageTransactions
 from .pages_dashboard import PageDashboard
 from .pages_receipts import PageReceipts, PageReceiptEdit
 from .pages_setup import PageSetup
@@ -283,10 +283,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 range_id = int(query_components["id"][0])
                 db.delete_number_range(range_id)
                 self.respond(303, "", headers={"Location": "/masterdata/numberranges"})
-            elif self.path.startswith("/confirm_transactions"):
-                query_components = parse_qs(self.path.split('?')[1])
-                import_id = query_components["import_id"][0]
-                self.respond(200, PageConfirmTransactions(import_id))
             # ── Assets / Anlagenverzeichnis ───────────────────────────────
             elif self.path == "/assets" or self.path.startswith("/assets?"):
                 status_filter = ''
@@ -405,8 +401,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         
         # Handle file upload separately
         if self.path == "/upload_receipts":
-            status_code, response = upload_handler.handle_file_upload(self)
-            self.respond(status_code, response)
+            status_code, response = upload_handler.handle_file_upload(self, db)
+            self.respond(status_code, response, content_type="application/json")
             return
 
         # Handle WISO CSV import (multipart file upload)
@@ -488,10 +484,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/confirm_transactions":
                 status_code, response = handlers.handle_confirm_import(db, post_data)
-                if status_code == 303:
-                    self.respond(status_code, "", headers={"Location": response})
-                else:
-                    self.respond(status_code, response)
+                self.respond(status_code, response, content_type="application/json")
             elif self.path == "/transactions/add":
                 status_code, location = handlers.handle_add_transaction(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})

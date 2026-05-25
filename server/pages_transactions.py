@@ -13,62 +13,6 @@ from .period import period_filter_widget
 # [15] Text          [16] DocumentNumber
 
 
-def PageConfirmTransactions(import_id: str):
-    """Display parsed transactions for confirmation before import"""
-    import json
-    import glob
-
-    temp_file = f"./data/pending_imports/{import_id}_*.json"
-    json_files = glob.glob(temp_file)
-
-    if not json_files:
-        return "Import-Daten nicht gefunden."
-
-    with open(json_files[0], 'r', encoding='utf-8') as f:
-        data = json.load(f)
-
-    s = Header1()
-    s+= Header2()
-    s+= Header3()
-    s+= "<h1>Transaktionen bestätigen</h1>"
-    s+= f"<p><strong>Datei:</strong> {data.get('original_filename', 'Unbekannt')}</p>"
-    s+= f"<p><strong>IBAN:</strong> {data.get('iban', 'Nicht erkannt')}</p>"
-    s+= f"<p><strong>Belegdatum:</strong> {data.get('document_date', 'Nicht erkannt')}</p>"
-    s+= f"<p><strong>Bank:</strong> {data.get('bank_code', 'Unbekannt')}</p>"
-
-    if data.get('transactions'):
-        s+= f"<h2>Gefundene Transaktionen: {len(data['transactions'])}</h2>"
-        s+= "<table>"
-        s+= "<tr><th>Datum</th><th>Empfänger/Auftragg.</th><th>Verwendungszweck</th><th>Betrag</th><th>Fremd-IBAN</th></tr>"
-
-        for trans in data['transactions']:
-            date_str = trans['date'][:10] if isinstance(trans['date'], str) else trans['date']
-            amount_color = "green" if trans['amount'] > 0 else "red"
-            s+= f"<tr>"
-            s+= f"<td>{date_str}</td>"
-            s+= f"<td>{trans['recipient']}</td>"
-            s+= f"<td>{trans['reference'][:50]}...</td>"
-            s+= f"<td style='color:{amount_color}'>{trans['amount']:.2f} €</td>"
-            s+= f"<td>{trans.get('foreign_iban', '')[:10]}...</td>"
-            s+= f"</tr>"
-
-        s+= "</table>"
-        s+= f'''
-            <form method="POST" action="/confirm_transactions">
-                <input type="hidden" name="import_id" value="{import_id}">
-                <p>
-                    <input type="submit" name="action" value="Importieren" class="coloredButton bg-green">
-                    <input type="submit" name="action" value="Abbrechen" class="coloredButton bg-gray">
-                </p>
-            </form>
-        '''
-    else:
-        s+= "<p>Keine Transaktionen gefunden.</p>"
-
-    s+= Footer()
-    return s
-
-
 def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, date_to=None):
     """Generate transactions page with edit functionality"""
     # Generate Header2 with account checkboxes
@@ -330,28 +274,179 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         });
         fileInput.addEventListener('change', (e) => { uploadFiles(e.target.files); });
 
+        let currentImportId = null;
+
+        function esc(v) {
+            if (v === null || v === undefined) return '';
+            return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+        function clip(v, n) { v = (v === null || v === undefined) ? '' : String(v); return v.length > n ? v.substring(0, n) : v; }
+        function fmtAmount(a) {
+            if (a === null || a === undefined || a === '') return '';
+            var n = Number(a);
+            if (isNaN(n)) return esc(a);
+            return n.toFixed(2).replace('.', ',') + ' €';
+        }
+
         function uploadFiles(files) {
             if (files.length === 0) return;
-            uploadStatus.innerHTML = '<p>Uploading...</p>';
+            uploadStatus.innerHTML = '<p>Lade hoch & analysiere ...</p>';
             const formData = new FormData();
             for (let i = 0; i < files.length; i++) { formData.append('files', files[i]); }
             fetch('/upload_receipts', { method: 'POST', body: formData })
-                .then(response => response.text())
+                .then(r => r.json())
                 .then(data => {
-                    if (data.includes('confirm_transactions')) {
-                        document.open(); document.write(data); document.close();
-                    } else {
-                        uploadStatus.innerHTML = '<p class="successColor">' + data + '</p>';
-                        setTimeout(() => { uploadStatus.innerHTML = ''; location.reload(); }, 3000);
-                    }
+                    uploadStatus.innerHTML = '';
+                    if (data.error) { appMsg('Fehler: ' + data.error, 'error'); return; }
+                    currentImportId = data.import_id;
+                    renderPreview(data);
                 })
-                .catch(error => {
-                    uploadStatus.innerHTML = '<p class="errorColor">Fehler beim Hochladen: ' + error + '</p>';
+                .catch(err => { uploadStatus.innerHTML = ''; appMsg('Fehler beim Hochladen: ' + err, 'error'); });
+        }
+
+        function statusBadge(status) {
+            if (status === 'error') return '<span class="badge bg-red">Konto nicht gefunden</span>';
+            if (status === 'warn')  return '<span class="badge bg-orange">Hinweise</span>';
+            return '<span class="badge bg-green">OK</span>';
+        }
+
+        function renderPreview(data) {
+            const host = document.getElementById('importPreview');
+            const files = data.files || [];
+            const others = data.other_files || [];
+            let html = '';
+
+            if (others.length) {
+                html += '<div class="rectRounded">';
+                others.forEach(o => {
+                    if (o.status === 'error' || o.status === 'warning')
+                        html += '<div class="errorColor">⚠ ' + esc(o.filename) + ': ' + esc(o.error) + '</div>';
+                    else if (o.status === 'organized')
+                        html += '<div>✓ ' + esc(o.filename) + ' abgelegt (' + esc(o.path) + ')</div>';
+                    else
+                        html += '<div>✓ ' + esc(o.filename) + ' hochgeladen</div>';
                 });
+                html += '</div>';
+            }
+
+            if (!files.length) {
+                host.innerHTML = html;
+                if (others.length) appMsg(others.length + ' Datei(en) verarbeitet.', 'info');
+                return;
+            }
+
+            const importable = files.filter(f => f.status !== 'error').length;
+            html += '<div class="rectRounded rowWithObjects">';
+            html += '<strong>' + files.length + ' Kontoauszug/-auszüge erkannt</strong> ';
+            if (importable > 1) html += '<button type="button" class="coloredButton btn-sm bg-green btnImportAll">Alle importieren</button> ';
+            html += '<button type="button" class="coloredButton btn-sm bg-gray btnDismiss">Verwerfen</button>';
+            html += '</div>';
+
+            files.forEach(f => { html += renderCard(f); });
+            host.innerHTML = html;
+        }
+
+        function renderCard(f) {
+            const detId = 'det-' + f.file_index;
+            let h = '<div class="rectRounded" id="beleg-' + f.file_index + '">';
+
+            h += '<div><strong>' + esc(f.filename) + '</strong> ' + statusBadge(f.status) + '</div>';
+            h += '<div class="muted">' + esc(f.bank_code || '') + ' · ' + esc(f.iban || 'IBAN?') +
+                 ' · ' + esc(f.document_date || '') + ' · Konto: ' +
+                 (f.account_name ? esc(f.account_name) : '<span class="errorColor">nicht gefunden</span>') + '</div>';
+            h += '<div class="muted">' + f.total + ' erkannt · ' + f.new_count + ' neu · ' +
+                 f.dup_count + ' mögliche Duplikate</div>';
+
+            if (f.problems && f.problems.length) {
+                h += '<div class="muted"><em>Auffällige Buchungen:</em></div>';
+                h += '<table>';
+                f.problems.forEach(p => {
+                    let tags = [];
+                    if (p.dup) tags.push('Duplikat');
+                    (p.warn || []).forEach(w => tags.push(w === 'amount' ? 'Betrag?' : (w === 'date' ? 'Datum?' : 'leer')));
+                    h += '<tr class="row-open"><td>' + esc(clip(p.date,10)) + '</td><td>' + esc(clip(p.recipient,30)) +
+                         '</td><td>' + esc(clip(p.reference,40)) + '</td><td>' + fmtAmount(p.amount) +
+                         '</td><td>' + tags.join(', ') + '</td></tr>';
+                });
+                h += '</table></div>';
+            }
+
+            h += '<button type="button" class="coloredButton btn-sm bg-gray btnToggleDet" data-target="' + detId + '">Alle Einzelbuchungen</button>';
+            h += '<div id="' + detId + '" style="display:none">';
+            h += '<table><tr><th>Datum</th><th>Empfänger</th><th>Zweck</th><th>Betrag</th></tr>';
+            (f.transactions || []).forEach(t => {
+                const cls = t.dup ? ' class="row-open"' : '';
+                h += '<tr' + cls + '><td>' + esc(clip(t.date,10)) + '</td><td>' + esc(clip(t.recipient,30)) +
+                     '</td><td>' + esc(clip(t.reference,40)) + '</td><td>' + fmtAmount(t.amount) + '</td></tr>';
+            });
+            h += '</table></div>';
+
+            if (f.status === 'error') {
+                h += '<div class="errorColor">Import nicht möglich – Bankkonto zu dieser IBAN anlegen.</div>';
+            } else {
+                h += '<div><button type="button" class="coloredButton btn-sm bg-green btnImportBeleg" data-idx="' +
+                     f.file_index + '">Importieren (' + f.new_count + ' neu)</button></div>';
+            }
+            h += '</div>';
+            return h;
+        }
+
+        document.addEventListener('click', function(e) {
+            const tgl = e.target.closest('.btnToggleDet');
+            if (tgl) { const d = document.getElementById(tgl.dataset.target); if (d) d.style.display = (d.style.display === 'none' ? 'block' : 'none'); return; }
+            const imp = e.target.closest('.btnImportBeleg');
+            if (imp) { importBeleg(imp.dataset.idx); return; }
+            if (e.target.closest('.btnImportAll')) { importAll(); return; }
+            if (e.target.closest('.btnDismiss')) { dismissPreview(); return; }
+        });
+
+        function postImport(params) {
+            const body = new URLSearchParams();
+            body.append('import_id', currentImportId);
+            if (params.file_index !== undefined) body.append('file_index', params.file_index);
+            return fetch('/confirm_transactions', { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body }).then(r => r.json());
+        }
+
+        function importBeleg(idx) {
+            postImport({ file_index: idx }).then(data => {
+                if (!data.ok) { appMsg('Fehler: ' + (data.error || 'Import fehlgeschlagen'), 'error'); return; }
+                const res = (data.results || [])[0] || {};
+                if (res.account_found === false) { appMsg(res.error || 'Konto nicht gefunden', 'error'); return; }
+                appMsg(res.inserted + ' neu importiert' + (res.skipped ? ', ' + res.skipped + ' Duplikate übersprungen' : ''), 'success');
+                const card = document.getElementById('beleg-' + idx);
+                if (card) card.remove();
+                refreshTable();
+            }).catch(err => appMsg('Fehler beim Import: ' + err, 'error'));
+        }
+
+        function importAll() {
+            postImport({}).then(data => {
+                if (!data.ok) { appMsg('Fehler: ' + (data.error || 'Import fehlgeschlagen'), 'error'); return; }
+                let ins = 0, skip = 0, failed = 0;
+                (data.results || []).forEach(r => { ins += r.inserted || 0; skip += r.skipped || 0; if (r.account_found === false) failed++; });
+                appMsg(ins + ' neu importiert' + (skip ? ', ' + skip + ' Duplikate' : '') + (failed ? ', ' + failed + ' ohne Konto' : ''), failed ? 'warn' : 'success');
+                dismissPreview();
+                refreshTable();
+            }).catch(err => appMsg('Fehler beim Import: ' + err, 'error'));
+        }
+
+        function dismissPreview() {
+            document.getElementById('importPreview').innerHTML = '';
+            currentImportId = null;
+        }
+
+        function refreshTable() {
+            fetch(window.location.href).then(r => r.text()).then(html => {
+                const doc = new DOMParser().parseFromString(html, 'text/html');
+                const fresh = doc.getElementById('transactionsTable');
+                const cur = document.getElementById('transactionsTable');
+                if (fresh && cur) cur.innerHTML = fresh.innerHTML;
+            });
         }
     </script>
     '''
     s+= '<div class="gridLeftCol" style="order:1">'    # ── Buchungstabelle ───────────────────────────────────────────────────
+    s+= '<div id="importPreview"></div>'              # Inline-Import-Vorschau (per Beleg)
 #    s+= "<h2>Kontobewegungen</h2>"
     s+= "<table id='transactionsTable'>"
     s+= ("<tr><th>Datum</th><th>Empfänger/Auftragg.</th><th>Text</th>"
