@@ -2733,6 +2733,18 @@ class Database:
                     # Ohne Belegnummer und mehrdeutig → überspringen
                     skipped += 1
                     continue
+                elif not doc_number:
+                    # Stage 3 ohne Belegnummer: Split-Gruppen, deren Summe dem Betrag entspricht.
+                    # Suche nach Buchungen ohne Belegnummer, deren Summe passt.
+                    cursor.execute('''
+                        SELECT ID, RecipientClient, Text, COA_ID, ForeignBankAccount, Amount
+                        FROM Bookings
+                        WHERE DateBooking=? AND (DocumentNumber IS NULL OR DocumentNumber='')
+                    ''', (booking_date,))
+                    grp = cursor.fetchall()
+                    if grp and abs(abs(sum(r[5] for r in grp)) - abs(amount)) < 0.005:
+                        target_rows = [r[:5] for r in grp]
+                        is_split = True
                 elif doc_number:
                     # Stage 2: Bank-Buchung, deren verknüpfte Entry-Kinder die
                     # Belegnummer tragen → Ziele = Parent + alle Kinder.

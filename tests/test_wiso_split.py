@@ -114,3 +114,40 @@ def test_recipient_propagated_to_bank_parent_split(db_with_coa):
     conn.close()
     assert len(rows) == 3
     assert all(r[1] == recipient for r in rows), rows
+
+
+def test_split_without_document_number(db_with_coa):
+    """Split-Buchungen ohne Belegnummer aus Tabellen-Export werden zugeordnet.
+
+    Problem: WISO-Tabellen-Export hat oft keine Belegnummer, aber die
+    Bewegungsdaten-Zeilen (Split-Teile) haben unterschiedliche Beträge.
+    Der Tabellen-Export kombiniert sie zur Summe. Der Import muss
+    BookingGroup-Splits erkennen, auch ohne Belegnummer.
+    """
+    db = db_with_coa
+    recipient = _rand_name()
+    coa = {r[2]: r[0] for r in db.fetch_chart_of_accounts()}
+
+    # Zwei Split-Buchungen ohne Belegnummer (wie im AFA-Abschreibungs-Fall)
+    c1 = db.insert_booking(date_booking='2025-12-31', amount=-150.00, coa_id=coa.get(4645),
+                           text='E-Firmenwagen Privatnutzung')
+    c2 = db.insert_booking(date_booking='2025-12-31', amount=-50.00, coa_id=coa.get(4639),
+                           text='E-Firmenwagen Privatnutzung')
+
+    # Tabellen-Export ohne Belegnummer, mit Summe 200.00
+    header = "Buchungsdatum;Empf./Auft.;Konto-Nr. / IBAN;Verwendungszweck;Kategorie;Beleg Nr.;Betrag"
+    row = f"31.12.2025;{recipient};;E-Firmenwagen Privatnutzung;Splittbuchung;;-200,00"
+    text = (header + "\n" + row + "\n").encode('utf-8')
+
+    res = db.import_wiso_csv(text)
+    assert res['format'] == 'table'
+    assert res['updated'] >= 1, res
+
+    conn = db._get_connection()
+    cur = conn.cursor()
+    cur.execute('SELECT ID, RecipientClient FROM Bookings WHERE ID IN (?,?)', (c1, c2))
+    rows = cur.fetchall()
+    conn.close()
+    assert len(rows) == 2
+    # Empfänger auf BEIDEN Teilbuchungen
+    assert all(r[1] == recipient for r in rows), rows
