@@ -119,16 +119,16 @@ def test_recipient_propagated_to_bank_parent_split(db_with_coa):
 def test_split_without_document_number(db_with_coa):
     """Split-Buchungen ohne Belegnummer aus Tabellen-Export werden zugeordnet.
 
-    Problem: WISO-Tabellen-Export hat oft keine Belegnummer, aber die
-    Bewegungsdaten-Zeilen (Split-Teile) haben unterschiedliche Beträge.
-    Der Tabellen-Export kombiniert sie zur Summe. Der Import muss
+    Problem: WISO-Tabellen-Export hat oft keine Belegnummer (z.B. bei 1%-Methode/
+    Privatnutzung), aber die Bewegungsdaten-Zeilen (Split-Teile) haben unterschiedliche
+    Beträge. Der Tabellen-Export kombiniert sie zur Summe. Der Import muss
     BookingGroup-Splits erkennen, auch ohne Belegnummer.
     """
     db = db_with_coa
     recipient = _rand_name()
     coa = {r[2]: r[0] for r in db.fetch_chart_of_accounts()}
 
-    # Zwei Split-Buchungen ohne Belegnummer (wie im AFA-Abschreibungs-Fall)
+    # Zwei Split-Buchungen ohne Belegnummer (wie bei 1%-Methode/Privatnutzung)
     c1 = db.insert_booking(date_booking='2025-12-31', amount=-150.00, coa_id=coa.get(4645),
                            text='E-Firmenwagen Privatnutzung')
     c2 = db.insert_booking(date_booking='2025-12-31', amount=-50.00, coa_id=coa.get(4639),
@@ -156,13 +156,14 @@ def test_split_without_document_number(db_with_coa):
 def test_multiple_splits_same_day_separated_by_text(db_with_coa):
     """Mehrere unabhängige Split-Gruppen am selben Datum ohne Belegnummer.
 
-    Kritischer Fall: Wenn zwei verschiedene AFA-Abschreibungen am gleichen
-    Tag ohne Belegnummern vorkommen, muss die Zuordnung über den Text
-    erfolgen. Zeilenumbrüche müssen normalisiert werden.
+    Kritischer Fall: Bei der 1%-Methode (Privatnutzung) entstehen mehrere
+    Split-Gruppen pro Tag ohne Belegnummern (z.B. Elektroauto vs. Gebäude).
+    Die Zuordnung muss über den Verwendungszweck-Text erfolgen.
+    Zeilenumbrüche müssen normalisiert werden.
 
     Beispiel:
-    - Elektroauto: 150.00 + 50.00 = 200.00
-    - Immobilie: 2000 + 500 = 2500
+    - Elektroauto (0,25%-Methode): 150.00 + 50.00 = 200.00
+    - Gebäude (1%-Methode): 2000 + 500 = 2500
 
     Der Tabellen-Export hat zwei Zeilen, eine für jede Split-Gruppe.
     Jede Zeile muss der richtigen Gruppe zugeordnet werden, nicht beide
