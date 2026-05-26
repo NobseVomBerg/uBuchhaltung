@@ -2734,14 +2734,29 @@ class Database:
                     skipped += 1
                     continue
                 elif not doc_number:
-                    # Stage 3 ohne Belegnummer: Split-Gruppen, deren Summe dem Betrag entspricht.
-                    # Suche nach Buchungen ohne Belegnummer, deren Summe passt.
+                    # Stage 3 ohne Belegnummer: Split-Gruppen mit ähnlichem Verwendungszweck.
+                    # Normalisiere Zeilenumbrüche/Leerzeichen und suche Buchungen mit
+                    # passendem Text, deren Summe dem Betrag entspricht.
+                    def _normalize_text(text):
+                        """Normalisiere Text: Zeilenumbrüche → Leerzeichen, komprimiere Leerzeichen,
+                        Unicode-Normalisierung (NFC), Lowercase."""
+                        import unicodedata
+                        # NFC-Normalisierung: ä + combining diacritic → precomposed ä
+                        text = unicodedata.normalize('NFC', text or '')
+                        # Zeilenumbrüche → Leerzeichen, komprimiere
+                        return ' '.join(text.split()).lower()
+
+                    norm_purpose = _normalize_text(purpose)
                     cursor.execute('''
                         SELECT ID, RecipientClient, Text, COA_ID, ForeignBankAccount, Amount
                         FROM Bookings
                         WHERE DateBooking=? AND (DocumentNumber IS NULL OR DocumentNumber='')
                     ''', (booking_date,))
-                    grp = cursor.fetchall()
+                    all_bookings = cursor.fetchall()
+
+                    # Filtere in Python: nur Buchungen mit ähnlichem (normalisiertem) Text
+                    grp = [b for b in all_bookings if _normalize_text(b[2]) == norm_purpose]
+
                     if grp and abs(abs(sum(r[5] for r in grp)) - abs(amount)) < 0.005:
                         target_rows = [r[:5] for r in grp]
                         is_split = True

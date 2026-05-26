@@ -151,3 +151,66 @@ def test_split_without_document_number(db_with_coa):
     assert len(rows) == 2
     # Empfänger auf BEIDEN Teilbuchungen
     assert all(r[1] == recipient for r in rows), rows
+
+
+def test_multiple_splits_same_day_separated_by_text(db_with_coa):
+    """Mehrere unabhängige Split-Gruppen am selben Datum ohne Belegnummer.
+
+    Kritischer Fall: Wenn zwei verschiedene AFA-Abschreibungen am gleichen
+    Tag ohne Belegnummern vorkommen, muss die Zuordnung über den Text
+    erfolgen. Zeilenumbrüche müssen normalisiert werden.
+
+    Beispiel:
+    - Elektroauto: 150.00 + 50.00 = 200.00
+    - Immobilie: 2000 + 500 = 2500
+
+    Der Tabellen-Export hat zwei Zeilen, eine für jede Split-Gruppe.
+    Jede Zeile muss der richtigen Gruppe zugeordnet werden, nicht beide
+    zu einer kombiniert.
+    """
+    db = db_with_coa
+    recipient = _rand_name()
+    coa = {r[2]: r[0] for r in db.fetch_chart_of_accounts()}
+
+    # Split-Gruppe 1: Elektroauto (zwei Zeilen)
+    e1 = db.insert_booking(date_booking='2025-12-31', amount=-150.00, coa_id=coa.get(4645),
+                           text='E-Firmenwagen Privatnutzung')
+    e2 = db.insert_booking(date_booking='2025-12-31', amount=-50.00, coa_id=coa.get(4639),
+                           text='E-Firmenwagen Privatnutzung')
+
+    # Split-Gruppe 2: Immobilie (zwei Zeilen) – anderer Text!
+    im1 = db.insert_booking(date_booking='2025-12-31', amount=-2000.0, coa_id=coa.get(4650),
+                            text='Gebäude Hauptsitz')
+    im2 = db.insert_booking(date_booking='2025-12-31', amount=-500.0, coa_id=coa.get(4659),
+                            text='Gebäude Hauptsitz')
+
+    # Tabellen-Export: zwei Zeilen, eine für jede Gruppe
+    # Elektroauto mit Zeilenumbruch im Text (wird normalisiert)
+    # CSV-Format: Zeilenumbrüche müssen in Anführungszeichen stehen
+    # WICHTIG: WISO-Export nutzt CP1252-Encoding, nicht UTF-8!
+    header = "Buchungsdatum;Empf./Auft.;Konto-Nr. / IBAN;Verwendungszweck;Kategorie;Beleg Nr.;Betrag"
+    row1 = f'31.12.2025;{recipient};;"E-Firmenwagen Privatnutzung\nPrivatnutzung";Splittbuchung;;-200,00'
+    row2 = f"31.12.2025;{recipient};;Gebäude Hauptsitz;Splittbuchung;;-2500,00"
+    text = (header + "\n" + row1 + "\n" + row2 + "\n").encode('cp1252')
+
+    res = db.import_wiso_csv(text)
+    assert res['format'] == 'table'
+    # Zwei Zeilen sollten zu zwei Updates führen
+    assert res['updated'] == 2, f"Expected 2 updates, got {res['updated']}"
+
+    conn = db._get_connection()
+    cur = conn.cursor()
+
+    # Prüfe Elektroauto-Gruppe
+    cur.execute('SELECT RecipientClient FROM Bookings WHERE ID IN (?,?)', (e1, e2))
+    e_rows = cur.fetchall()
+    assert len(e_rows) == 2
+    assert all(r[0] == recipient for r in e_rows), f"Elektroauto rows: {e_rows}"
+
+    # Prüfe Immobilien-Gruppe
+    cur.execute('SELECT RecipientClient FROM Bookings WHERE ID IN (?,?)', (im1, im2))
+    im_rows = cur.fetchall()
+    assert len(im_rows) == 2
+    assert all(r[0] == recipient for r in im_rows), f"Immobilie rows: {im_rows}"
+
+    conn.close()
