@@ -451,10 +451,9 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     '''
     s+= '<div class="gridLeftCol" style="order:1">'    # ── Buchungstabelle ───────────────────────────────────────────────────
     s+= '<div id="importPreview"></div>'              # Inline-Import-Vorschau (per Beleg)
-#    s+= "<h2>Kontobewegungen</h2>"
     s+= "<table id='transactionsTable'>"
     s+= ("<tr><th>Datum</th><th>Empfänger/Auftragg.</th><th>Text</th>"
-         "<th>Betrag</th><th>Währung</th><th>Konto</th><th>Kunde</th>"
+         "<th>Betrag</th><th>Währung</th><th>St.satz</th><th>Konto</th>"
          "<th>SKR</th><th>Beleg-Nr.</th><th>Aktionen</th></tr>")
 
     bookings = db.fetch_bookings_grouped(date_from, date_to)
@@ -480,6 +479,15 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         if derived:
             return derived  # (account_id, account_name)
         return None, ''
+
+    def _fmt_rate(r):
+        """TaxRate (0.19) → '19%'; None/'' → ''."""
+        if r is None or r == '':
+            return ''
+        try:
+            return f"{round(float(r) * 100)}%"
+        except (ValueError, TypeError):
+            return ''
 
     for item in bookings:
         row_type = item['type']
@@ -518,8 +526,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             s+= f"<td>{first_text[:35]}</td>"
             s+= f"<td style='color:{amount_color}'>{amount:.2f}</td>"
             s+= f"<td>{currency}</td>"
+            s+= f"<td></td>"
             s+= f"<td>{account_name[:20]}</td>"
-            s+= f"<td>{contact_name[:20]}</td>"
             s+= f"<td><span class='badge bg-indigo'>Split {count}×</span></td>"
             s+= f"<td>{description[:35]}</td>"
             s+= f"<td><span class='split-toggle-icon' id='toggle-icon-{gid}'>▶</span></td>"
@@ -594,8 +602,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     s+= f"<td>{entry_text[:35]}</td>"
                     s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
                     s+= f"<td>{currency}</td>"
+                    s+= f"<td></td>"
                     s+= f"<td>{account_name[:20]}</td>"
-                    s+= f"<td>{entry_contact_name[:20]}</td>"
                     s+= f"<td><span class='badge bg-indigo'>Split {count}×</span></td>"
                     s+= f"<td>{entry_docnr}</td>"
                     s+= f"<td>{status_badge} <span class='split-toggle-icon' id='toggle-icon-{bid}'>▶</span></td>"
@@ -615,8 +623,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     s+= f"<td>{entry_text[:35]}</td>"
                     s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
                     s+= f"<td>{currency}</td>"
+                    s+= f"<td>{_fmt_rate(item.get('entry_tax_rate'))}</td>"
                     s+= f"<td>{account_name[:20]}</td>"
-                    s+= f"<td>{entry_contact_name[:20]}</td>"
                     s+= f"<td>{entry_coa_nr}</td>"
                     s+= f"<td>{entry_docnr}</td>"
                     s+= (f"<td>{status_badge}"
@@ -639,8 +647,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 s+= f"<td>{bank_text[:35]}</td>"
                 s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
                 s+= f"<td>{currency}</td>"
-                s+= f"<td>{account_name[:20]}</td>"
                 s+= f"<td></td>"
+                s+= f"<td>{account_name[:20]}</td>"
                 s+= f"<td></td>"
                 s+= f"<td></td>"
                 s+= (f"<td>{status_badge}"
@@ -677,8 +685,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             s+= f"<td>{text[:35]}</td>"
             s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
             s+= f"<td>{currency}</td>"
+            s+= f"<td>{_fmt_rate(booking[13])}</td>"
             s+= f"<td>{account_name[:20]}</td>"
-            s+= f"<td>{contact_name[:20]}</td>"
             s+= f"<td>{coa_number}</td>"
             s+= f"<td>{doc_number}</td>"
             s+= (f"<td><a href='/transactions/edit?id={booking_id}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
@@ -724,8 +732,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             s+= f"<td>{text[:35]}</td>"
             s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
             s+= f"<td>{currency}</td>"
+            s+= f"<td>{_fmt_rate(booking[13])}</td>"
             s+= f"<td>{account_name[:20]}</td>"
-            s+= f"<td>{contact_name[:20]}</td>"
             s+= f"<td>{coa_number}</td>"
             s+= f"<td>{doc_number}</td>"
             s+= (f"<td>{status_badge}"

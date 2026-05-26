@@ -769,6 +769,7 @@ class Database:
                 'entry_docnr':            entry_src[16] if entry_src else None,
                 'entry_category_id':      entry_src[10] if entry_src else None,
                 'entry_contact_id':       entry_src[7]  if entry_src else None,
+                'entry_tax_rate':         entry_src[13] if entry_src else None,
             })
 
         # Build legacy group dicts — skip empty groups (all members linked)
@@ -2694,12 +2695,17 @@ class Database:
                 # Betrag-Suche mit ABS(), da Original-Export positive und
                 # Tabellen-Export negative Vorzeichen verwenden kann.
 
+                # Ziel-Buchung(en) bestimmen. target_rows: Liste von
+                # (ID, RecipientClient, Text, COA_ID, ForeignBankAccount).
+                target_rows = []
+                is_split = False
+
                 if doc_number:
                     # Beleg-Nr. kann im Original als Mehrfach-Ref gespeichert sein,
                     # z.B. "25F009, 25F073" – LIKE-Suche fängt alle Varianten ab.
                     cursor.execute('''
                         SELECT ID, RecipientClient, Text, COA_ID, ForeignBankAccount
-                        FROM Bookings 
+                        FROM Bookings
                         WHERE DateBooking=? AND ABS(Amount)=ABS(?)
                           AND (
                             DocumentNumber = ?
@@ -2713,86 +2719,98 @@ class Database:
                     # Ohne Belegnummer: Datum + |Betrag| (LIMIT 2 für Mehrdeutigkeitsprüfung)
                     cursor.execute('''
                         SELECT ID, RecipientClient, Text, COA_ID, ForeignBankAccount
-                        FROM Bookings 
+                        FROM Bookings
                         WHERE DateBooking=? AND ABS(Amount)=ABS(?) AND (DocumentNumber IS NULL OR DocumentNumber='')
                         LIMIT 2
                     ''', (booking_date, amount))
-                
+
                 rows = cursor.fetchall()
 
-                if len(rows) == 0:
-                    # Fallback für Split-Buchungen: Bank-Buchung suchen, deren
-                    # verknüpfte Entry-Kinder die Belegnummer tragen.
-                    if doc_number:
-                        cursor.execute('''
-                            SELECT b.ID, b.RecipientClient, b.Text, b.COA_ID, b.ForeignBankAccount
-                            FROM Bookings b
-                            WHERE b.BookingType = 'bank'
-                              AND b.DateBooking = ?
-                              AND ABS(b.Amount) = ABS(?)
-                              AND EXISTS (
-                                SELECT 1 FROM Bookings c
-                                WHERE c.ParentBooking_ID = b.ID
-                                  AND (
-                                    c.DocumentNumber = ?
-                                    OR c.DocumentNumber LIKE (? || ',%')
-                                    OR c.DocumentNumber LIKE ('%,' || ?)
-                                    OR c.DocumentNumber LIKE ('%,' || ? || ',%')
-                                  )
-                              )
-                            LIMIT 1
-                        ''', (booking_date, amount, doc_number, doc_number, doc_number, doc_number))
-                        rows = cursor.fetchall()
-                    if len(rows) == 0:
-                        not_found.append({
-                            'zeile':  i,
-                            'datum':  booking_date,
-                            'beleg':  doc_number,
-                            'betrag': amount,
-                            'text':   purpose[:60],
-                        })
-                        continue
-                
-                if len(rows) > 1:
+                if len(rows) == 1:
+                    # Eindeutige Einzelbuchung
+                    target_rows = rows
+                elif len(rows) > 1:
                     # Ohne Belegnummer und mehrdeutig → überspringen
                     skipped += 1
                     continue
-                
-                existing = rows[0]
-                booking_id           = existing[0]
-                current_recipient    = existing[1] or ''
-                current_coa_id       = existing[3]
-                current_foreign_bank = existing[4] or ''
-                
-                update_fields = []
-                update_values = []
-                
-                # Empfänger immer überschreiben, wenn im Tabellen-Export vorhanden
-                if recipient:
-                    update_fields.append('RecipientClient=?')
-                    update_values.append(recipient)
-                
-                # IBAN/Konto-Nr. immer überschreiben, wenn im Tabellen-Export vorhanden
-                if iban:
-                    update_fields.append('ForeignBankAccount=?')
-                    update_values.append(iban)
-                
-                # Verwendungszweck nur setzen, wenn noch leer (Original-Text bleibt erhalten)
-                if purpose and not (existing[2] or ''):
-                    update_fields.append('Text=?')
-                    update_values.append(purpose)
-                
-                # COA nur setzen, wenn noch nicht vorhanden
-                if coa_id_from_category and not current_coa_id:
-                    update_fields.append('COA_ID=?')
-                    update_values.append(coa_id_from_category)
-                
-                if update_fields:
-                    update_values.append(booking_id)
-                    cursor.execute(
-                        f'UPDATE Bookings SET {", ".join(update_fields)} WHERE ID=?',
-                        update_values
-                    )
+                elif doc_number:
+                    # Stage 2: Bank-Buchung, deren verknüpfte Entry-Kinder die
+                    # Belegnummer tragen → Ziele = Parent + alle Kinder.
+                    cursor.execute('''
+                        SELECT b.ID FROM Bookings b
+                        WHERE b.BookingType = 'bank' AND b.DateBooking = ? AND ABS(b.Amount) = ABS(?)
+                          AND EXISTS (
+                            SELECT 1 FROM Bookings c
+                            WHERE c.ParentBooking_ID = b.ID
+                              AND (
+                                c.DocumentNumber = ?
+                                OR c.DocumentNumber LIKE (? || ',%')
+                                OR c.DocumentNumber LIKE ('%,' || ?)
+                                OR c.DocumentNumber LIKE ('%,' || ? || ',%')
+                              )
+                          )
+                        LIMIT 1
+                    ''', (booking_date, amount, doc_number, doc_number, doc_number, doc_number))
+                    prow = cursor.fetchone()
+                    if prow:
+                        parent_id = prow[0]
+                        cursor.execute('''
+                            SELECT ID, RecipientClient, Text, COA_ID, ForeignBankAccount
+                            FROM Bookings WHERE ID=? OR ParentBooking_ID=?
+                        ''', (parent_id, parent_id))
+                        target_rows = cursor.fetchall()
+                        is_split = True
+                    else:
+                        # Stage 3: BookingGroup-Split – alle Buchungen gleicher
+                        # Belegnummer (+Datum), deren Summe dem Zeilenbetrag entspricht.
+                        cursor.execute('''
+                            SELECT ID, RecipientClient, Text, COA_ID, ForeignBankAccount, Amount
+                            FROM Bookings
+                            WHERE DateBooking=?
+                              AND (
+                                DocumentNumber = ?
+                                OR DocumentNumber LIKE (? || ',%')
+                                OR DocumentNumber LIKE ('%,' || ?)
+                                OR DocumentNumber LIKE ('%,' || ? || ',%')
+                              )
+                        ''', (booking_date, doc_number, doc_number, doc_number, doc_number))
+                        grp = cursor.fetchall()
+                        if grp and abs(abs(sum(r[5] for r in grp)) - abs(amount)) < 0.005:
+                            target_rows = [r[:5] for r in grp]
+                            is_split = True
+
+                if not target_rows:
+                    not_found.append({
+                        'zeile':  i,
+                        'datum':  booking_date,
+                        'beleg':  doc_number,
+                        'betrag': amount,
+                        'text':   purpose[:60],
+                    })
+                    continue
+
+                # Updates auf alle Ziele anwenden. Bei Splits geht der Empfänger
+                # auf ALLE Teilbuchungen; Zeilen-COA/Text bleiben dort erhalten.
+                any_updated = False
+                for tr in target_rows:
+                    t_id, t_text, t_coa = tr[0], tr[2], tr[3]
+                    fields = []
+                    values = []
+                    if recipient:
+                        fields.append('RecipientClient=?'); values.append(recipient)
+                    if iban:
+                        fields.append('ForeignBankAccount=?'); values.append(iban)
+                    if purpose and not (t_text or ''):
+                        fields.append('Text=?'); values.append(purpose)
+                    if (not is_split) and coa_id_from_category and not t_coa:
+                        fields.append('COA_ID=?'); values.append(coa_id_from_category)
+                    if fields:
+                        values.append(t_id)
+                        cursor.execute(
+                            f'UPDATE Bookings SET {", ".join(fields)} WHERE ID=?', values)
+                        any_updated = True
+
+                if any_updated:
                     updated += 1
                 else:
                     skipped += 1
