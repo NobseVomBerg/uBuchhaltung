@@ -129,12 +129,13 @@ def test_split_without_document_number(db_with_coa):
     coa = {r[2]: r[0] for r in db.fetch_chart_of_accounts()}
 
     # Zwei Split-Buchungen ohne Belegnummer (wie bei 1%-Methode/Privatnutzung)
+    # Alle Werte frei erfunden: Teilbeträge 150,00 + 50,00 = 200,00
     c1 = db.insert_booking(date_booking='2025-12-31', amount=-150.00, coa_id=coa.get(4645),
                            text='E-Firmenwagen Privatnutzung')
     c2 = db.insert_booking(date_booking='2025-12-31', amount=-50.00, coa_id=coa.get(4639),
                            text='E-Firmenwagen Privatnutzung')
 
-    # Tabellen-Export ohne Belegnummer, mit Summe 200.00
+    # Tabellen-Export ohne Belegnummer, mit Summe 200,00
     header = "Buchungsdatum;Empf./Auft.;Konto-Nr. / IBAN;Verwendungszweck;Kategorie;Beleg Nr.;Betrag"
     row = f"31.12.2025;{recipient};;E-Firmenwagen Privatnutzung;Splittbuchung;;-200,00"
     text = (header + "\n" + row + "\n").encode('utf-8')
@@ -157,13 +158,13 @@ def test_multiple_splits_same_day_separated_by_text(db_with_coa):
     """Mehrere unabhängige Split-Gruppen am selben Datum ohne Belegnummer.
 
     Kritischer Fall: Bei der 1%-Methode (Privatnutzung) entstehen mehrere
-    Split-Gruppen pro Tag ohne Belegnummern (z.B. Elektroauto vs. Gebäude).
+    Split-Gruppen pro Tag ohne Belegnummern (z.B. E-Fahrzeug vs. PKW).
     Die Zuordnung muss über den Verwendungszweck-Text erfolgen.
     Zeilenumbrüche müssen normalisiert werden.
 
-    Beispiel:
-    - Elektroauto (0,25%-Methode): 150.00 + 50.00 = 200.00
-    - Gebäude (1%-Methode): 2000 + 500 = 2500
+    Beispiel (alle Werte frei erfunden):
+    - E-Firmenwagen (0,25%-Methode): 150,00 + 50,00 = 200,00
+    - Firmen-PKW (1%-Methode): 300,00 + 100,00 = 400,00
 
     Der Tabellen-Export hat zwei Zeilen, eine für jede Split-Gruppe.
     Jede Zeile muss der richtigen Gruppe zugeordnet werden, nicht beide
@@ -173,25 +174,25 @@ def test_multiple_splits_same_day_separated_by_text(db_with_coa):
     recipient = _rand_name()
     coa = {r[2]: r[0] for r in db.fetch_chart_of_accounts()}
 
-    # Split-Gruppe 1: Elektroauto (zwei Zeilen)
+    # Split-Gruppe 1: E-Firmenwagen (zwei Zeilen)
     e1 = db.insert_booking(date_booking='2025-12-31', amount=-150.00, coa_id=coa.get(4645),
                            text='E-Firmenwagen Privatnutzung')
     e2 = db.insert_booking(date_booking='2025-12-31', amount=-50.00, coa_id=coa.get(4639),
                            text='E-Firmenwagen Privatnutzung')
 
-    # Split-Gruppe 2: Immobilie (zwei Zeilen) – anderer Text!
-    im1 = db.insert_booking(date_booking='2025-12-31', amount=-2000.0, coa_id=coa.get(4650),
-                            text='Gebäude Hauptsitz')
-    im2 = db.insert_booking(date_booking='2025-12-31', amount=-500.0, coa_id=coa.get(4659),
-                            text='Gebäude Hauptsitz')
+    # Split-Gruppe 2: Firmen-PKW (zwei Zeilen) – anderer Text!
+    im1 = db.insert_booking(date_booking='2025-12-31', amount=-300.00, coa_id=coa.get(4650),
+                            text='Firmen-PKW Privatnutzung')
+    im2 = db.insert_booking(date_booking='2025-12-31', amount=-100.00, coa_id=coa.get(4659),
+                            text='Firmen-PKW Privatnutzung')
 
     # Tabellen-Export: zwei Zeilen, eine für jede Gruppe
-    # Elektroauto mit Zeilenumbruch im Text (wird normalisiert)
+    # E-Firmenwagen mit Zeilenumbruch im Text (wird normalisiert)
     # CSV-Format: Zeilenumbrüche müssen in Anführungszeichen stehen
     # WICHTIG: WISO-Export nutzt CP1252-Encoding, nicht UTF-8!
     header = "Buchungsdatum;Empf./Auft.;Konto-Nr. / IBAN;Verwendungszweck;Kategorie;Beleg Nr.;Betrag"
-    row1 = f'31.12.2025;{recipient};;"E-Firmenwagen Privatnutzung\nPrivatnutzung";Splittbuchung;;-200,00'
-    row2 = f"31.12.2025;{recipient};;Gebäude Hauptsitz;Splittbuchung;;-2500,00"
+    row1 = f'31.12.2025;{recipient};;"E-Firmenwagen\nPrivatnutzung";Splittbuchung;;-200,00'
+    row2 = f"31.12.2025;{recipient};;Firmen-PKW Privatnutzung;Splittbuchung;;-400,00"
     text = (header + "\n" + row1 + "\n" + row2 + "\n").encode('cp1252')
 
     res = db.import_wiso_csv(text)
@@ -221,44 +222,47 @@ def test_similar_individual_bookings_disambiguated_by_text(db_with_coa):
     """Zwei gleichartige Einzelbuchungen (KEIN Split) mit identischem Datum
     und Betrag, die sich nur im Verwendungszweck unterscheiden.
 
-    Realfall Amazon Business: zwei Privatentnahmen am selben Tag, gleicher
-    Betrag (123,45), keine Belegnummer. Der Verwendungszweck unterscheidet
-    sich nur in den EREF/MREF-Referenznummern. Über Datum+Betrag allein sind
-    sie mehrdeutig – die Zuordnung muss über den Text erfolgen.
+    Beispiel: zwei Privatentnahmen am selben Tag, gleicher Betrag, keine
+    Belegnummer. Der Verwendungszweck unterscheidet sich nur in der
+    EREF/MREF-Referenz. Über Datum+Betrag allein sind sie mehrdeutig –
+    die Zuordnung muss über den Text erfolgen.
 
     Jede Tabellen-Zeile darf nur GENAU EINE Buchung treffen (Gruppensumme =
     Betrag), nicht beide kombiniert (sonst Summe = 2×Betrag → kein Match).
+
+    Hinweis: alle Werte frei erfunden (Muster-/Testdaten, z.B. 123-456789-0123).
     """
     db = db_with_coa
-    recipient = "TESTSHOP GmbH"
+    recipient = _rand_name()
     iban = "DE00 1234 5678 9012 3456 78"
     coa = {r[2]: r[0] for r in db.fetch_chart_of_accounts()}
 
-    # Bewegungsdaten-Texte (einzeilig, wie aus Original-Import gespeichert).
-    # Unterschied nur in der EREF/MREF-Referenz.
-    text_a = ("123-456789-0123 TESTSHOP iness REF-AAAA-1111 EREF "
-              ": REF-AAAA-1111 MREF: xr 0a1b2c3d4e5f6g7h)28R "
-              "4 CRED: DE00ZZZ00000000000 IBAN: DE00123456789012345678 4 BIC: MUSTDEFF")
-    text_b = ("123-456789-0123 TESTSHOP iness REF-BBBB-2222 EREF "
-              ": REF-BBBB-2222 MREF: xr 0a1b2c3d4e5f6g7h)28R "
-              "4 CRED: DE00ZZZ00000000000 IBAN: DE00123456789012345678 4 BIC: MUSTDEFF")
+    # Verwendungszweck mit gemeinsamem Rahmen; nur die Referenz unterscheidet sich.
+    def _oneline(ref):
+        # Einzeilig, wie aus dem Original-Import gespeichert.
+        return (f"123-456789-0123 TESTSHOP op pp {ref} EREF "
+                f": {ref} MREF: zz 0a1b2c3d4e5f6g7h)00 "
+                f"0 CRED: DE00ZZZ00000000000 IBAN: DE00123456789012345678 0 BIC: MUSTDEFF")
+
+    def _multiline(ref):
+        # Wie im Tabellen-Export: gleiche Daten, aber mit Zeilenumbrüchen.
+        return (f"123-456789-0123 TESTSHOP\nop pp {ref} EREF\n"
+                f": {ref} MREF: zz\n0a1b2c3d4e5f6g7h)00\n"
+                f"0 CRED: DE00ZZZ00000000000\nIBAN: DE00123456789012345678\n0 BIC: MUSTDEFF\n")
+
+    ref_a = "REF-AAAA-1111"
+    ref_b = "REF-BBBB-2222"
 
     # Zwei Einzelbuchungen, gleiches Datum + Betrag, keine Belegnummer
-    b_a = db.insert_booking(date_booking='2024-09-25', amount=123.45,
-                            coa_id=coa.get(2100), text=text_a)
-    b_b = db.insert_booking(date_booking='2024-09-25', amount=123.45,
-                            coa_id=coa.get(2100), text=text_b)
+    b_a = db.insert_booking(date_booking='2024-03-15', amount=123.45,
+                            coa_id=coa.get(2100), text=_oneline(ref_a))
+    b_b = db.insert_booking(date_booking='2024-03-15', amount=123.45,
+                            coa_id=coa.get(2100), text=_oneline(ref_b))
 
     # Tabellen-Export: zwei Zeilen mit Zeilenumbrüchen im Verwendungszweck
-    purpose_a = ("123-456789-0123 TESTSHOP\niness REF-AAAA-1111 EREF\n"
-                 ": REF-AAAA-1111 MREF: xr\n0a1b2c3d4e5f6g7h)28R\n"
-                 "4 CRED: DE00ZZZ00000000000\nIBAN: DE00123456789012345678\n4 BIC: MUSTDEFF\n")
-    purpose_b = ("123-456789-0123 TESTSHOP\niness REF-BBBB-2222 EREF\n"
-                 ": REF-BBBB-2222 MREF: xr\n0a1b2c3d4e5f6g7h)28R\n"
-                 "4 CRED: DE00ZZZ00000000000\nIBAN: DE00123456789012345678\n4 BIC: MUSTDEFF\n")
     header = "Buchungsdatum;Empf./Auft.;Konto-Nr. / IBAN;Verwendungszweck;Kategorie;Beleg Nr.;Betrag"
-    row1 = f'25.09.2024;{recipient};{iban};"{purpose_a}";Privatentnahmen;;-123,45'
-    row2 = f'25.09.2024;{recipient};{iban};"{purpose_b}";Privatentnahmen;;-123,45'
+    row1 = f'15.03.2024;{recipient};{iban};"{_multiline(ref_a)}";Privatentnahmen;;-123,45'
+    row2 = f'15.03.2024;{recipient};{iban};"{_multiline(ref_b)}";Privatentnahmen;;-123,45'
     text = (header + "\n" + row1 + "\n" + row2 + "\n").encode('cp1252')
 
     res = db.import_wiso_csv(text)

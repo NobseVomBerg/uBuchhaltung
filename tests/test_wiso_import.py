@@ -286,7 +286,7 @@ class TestTableFormatImport:
 class TestKasseWisoImport:
     """Tests für den Import der Kasse-Buchung aus dem WISO-Export.
 
-    Testdaten:
+    Testdaten (frei erfunden):
         Original: 90001;02.01.2025;6815;1460;"Kopierpapier, Reinigungsmittel";"TEST-0815";18,35;401;
         Tabelle : 02.01.2025;TESTMARKT GmbH;Kopierpapier, Reinigungsmittel;Bürobedarf;TEST-0815;-18,35
     """
@@ -359,7 +359,7 @@ class TestKasseWisoImport:
         assert row[0] == 6815
         assert row[1] == 1460
 
-    def test_table_import_updates_recipient_lidl(self, db_with_coa):
+    def test_kasse_table_import_updates_recipient(self, db_with_coa):
         """Tabellenexport setzt RecipientClient auf 'TESTMARKT GmbH' für Kasse-Zeile."""
         # Erst original importieren, dann Tabelle
         db_with_coa.import_wiso_csv(self.KASSE_ORIGINAL)

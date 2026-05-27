@@ -185,7 +185,7 @@ class TestEuerData:
 class TestKasseEuer:
     """EÜR-Tests für Kasse-Buchungen.
 
-    Testdaten (TESTMARKT GmbH, Bürobedarf):
+    Testdaten (frei erfunden – Testmarkt, Bürobedarf):
         Brutto  -18,35  (Ausgabe)
         USt 19%  → TaxAmount=-2,93  |  Netto=-15,42
         COA 6815 (Bürobedarf)  |  CounterCOA 1460 (Kasse)
