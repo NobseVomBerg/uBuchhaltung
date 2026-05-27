@@ -1,0 +1,27 @@
+{
+  "model": "claude-sonnet-4-6",
+  "permissions": {
+    "allow": [
+      "Bash(git commit -m ' *)",
+      "Bash(Select-String -Pattern '\\\\.py$')",
+      "Bash(Select-Object -First 100)",
+      "Bash(python -m py_compile server/period.py server/app.py db.py server/pages_transactions.py server/pages_receipts.py server/pages_booking_groups.py server/pages_invoice.py server/pages_dashboard.py)",
+      "Bash(python -c \"from db import Database; d=Database\\(\\); c=d._get_connection\\(\\).cursor\\(\\); c.execute\\(\\\\\"SELECT substr\\(DateBooking,1,4\\) y, COUNT\\(*\\) FROM Bookings GROUP BY y ORDER BY y\\\\\"\\); print\\('Buchungen pro Jahr:', c.fetchall\\(\\)\\)\")",
+      "Bash(python main.py)",
+      "Bash(python -m py_compile server/pages_invoice.py)",
+      "Bash(python -)",
+      "Bash(git commit *)",
+      "Bash(python -m py_compile server/app.py)",
+      "Bash(python -m py_compile server/pages_contacts.py)",
+      "Bash(python tests/check_anonymized.py*)",
+      "Bash(python -m pytest*)"
+    ]
+  },
+  "instructions": {
+    "agent-routing": "Start mit Sonnet 4.6 für Features/Bugfixes. Nur bei Architektur-Fragen zu Opus 4.7 eskalieren. Sub-Tasks (Code-Review, Commits, Analyse, Pytest-Output) zu Haiku 4.5 delegieren.",
+    "token-limit": "Pro Feature-Turn max. 25-30k Tokens halten. Token-Budget überschritten? → neuer Punkt/Session. Monatliches Limit beachten.",
+    "subagent-strategy": "Große Init-Analysen mit Agent(subagent_type='Explore'). Code-Reviews mit code-review Skill (Haiku). Commits von Haiku schreiben lassen.",
+    "context-efficiency": "Nur relevante Dateien lesen. Große Files summarizen. Grep/Glob zur Kontext-Navigation nutzen (sehr token-effizient).",
+    "test-data-privacy": "Tests dürfen NIE echte personenbezogene Daten enthalten. Immer Werte aus seed_data/test/ oder der ALLOWED_*-Whitelist in tests/check_anonymized.py verwenden. Der Guard läuft automatisch."
+  }
+}

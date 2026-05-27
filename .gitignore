@@ -3,6 +3,7 @@ data/
 
 # Private configuration files
 seed_data/private/
+.claude/settings.local.json
 
 # Python cache
 __pycache__/
@@ -18,7 +19,6 @@ ENV/
 # IDE
 .vscode/
 .idea/
-.claude/
 *.swp
 *.swo
 

@@ -1,0 +1,113 @@
+{
+  "version": "1.0",
+  "hooks": {
+    "before_push": {
+      "enabled": true,
+      "description": "Vor jedem git push: Code-Quality Checks",
+      "commands": [
+        {
+          "name": "lint-check",
+          "command": "python -m py_compile server/app.py db.py && echo '✓ Python syntax OK'",
+          "required": true,
+          "description": "Python-Syntax validieren (blockiert bei Fehler)"
+        },
+        {
+          "name": "code-review-prompt",
+          "command": "echo 'Möchtest du einen code-review vor dem Push? Nutze: /code-review'",
+          "required": false,
+          "description": "Reminder für optionalen Review"
+        }
+      ]
+    },
+    "after_commit": {
+      "enabled": true,
+      "description": "Nach git commit: Commit-Message validieren",
+      "commands": [
+        {
+          "name": "commit-format-check",
+          "command": "git log -1 --format=%B | grep -E '^(feat|fix|refactor|docs|test|chore):' || echo 'ⓘ Tipp: Nutze feat:/fix:/refactor: Präfix'",
+          "required": false,
+          "description": "Hinweis auf Commit-Format"
+        }
+      ]
+    },
+    "dev_server_check": {
+      "enabled": true,
+      "description": "Dev-Server Status vor Feature-Test",
+      "commands": [
+        {
+          "name": "check-port-8080",
+          "command": "netstat -ano | find '8080' && echo '✓ Server läuft auf Port 8080' || echo '⚠ Port 8080 nicht belegt – Server nicht aktiv'",
+          "required": false,
+          "description": "Prüfe ob Dev-Server läuft"
+        }
+      ]
+    },
+    "token_tracking": {
+      "enabled": false,
+      "description": "Optionale Token-Tracking (manuell aktivieren)",
+      "note": "Claude Code hat kein automatisches Token-Counting – nutze Claude-Dashboard zur Überwachung",
+      "recommendation": "Täglich checken: https://claude.ai/ → Usage → Token-Verbrauch"
+    },
+    "anonymization_guard": {
+      "enabled": true,
+      "description": "Anonymisierungs-Guard: Echtdaten in Testdateien verhindern",
+      "triggers": {
+        "PostToolUse": {
+          "matcher": "Write|Edit",
+          "command": "python tests/check_anonymized.py --quiet",
+          "description": "Sofort-Check nach jeder Dateiänderung — warnt wenn Echtdaten in Testdateien gelandet sind"
+        },
+        "PreToolUse": {
+          "matcher": "Bash",
+          "command": "python tests/check_anonymized.py --quiet",
+          "description": "Check vor Bash-Befehlen — blockiert Commits bei Echtdaten"
+        }
+      },
+      "manual": "python tests/check_anonymized.py          # mit Ausgabe",
+      "manual_quiet": "python tests/check_anonymized.py --quiet   # nur bei Fehlern",
+      "manual_single": "python tests/check_anonymized.py tests/foo.py  # einzelne Datei",
+      "whitelist_location": "tests/check_anonymized.py → ALLOWED_EMAIL_DOMAINS / ALLOWED_IBANS / ALLOWED_TAX_IDS"
+    },
+    "memory_cleanup": {
+      "enabled": true,
+      "description": "Wöchentliches Memory-Consolidation Reminder",
+      "commands": [
+        {
+          "name": "memory-consolidate-prompt",
+          "command": "echo 'ⓘ Tipp: Wenn >10 Memory-Dateien, nutze /consolidate-memory'",
+          "required": false,
+          "description": "Reminder für Memory-Aufräumen"
+        }
+      ]
+    }
+  },
+  "automation_rules": {
+    "on_git_push": {
+      "enabled": true,
+      "rules": [
+        {
+          "condition": "branch = main",
+          "action": "run_tests_before_push",
+          "description": "Vor Push zu main: Syntax-Check"
+        },
+        {
+          "condition": "branch != main",
+          "action": "optional_review",
+          "description": "Feature-Branch: Code-Review optional, aber empfohlen"
+        }
+      ]
+    },
+    "on_large_diff": {
+      "enabled": true,
+      "threshold_lines": 200,
+      "action": "suggest_review",
+      "description": "Diffs >200 Zeilen: Haiku-Review empfehlen"
+    }
+  },
+  "notes": {
+    "hook_execution": "Hooks laufen vor/nach Git-Operationen. Nutze enabled: false um einzelne zu deaktivieren.",
+    "token_aware": "Token-Tracking ist manuell – schau regelmäßig in dein Claude-Dashboard.",
+    "server_safety": "Dev-Server darf jederzeit beendet werden (siehe CLAUDE.md). Hooks stoppen den Server nicht automatisch."
+  }
+}
