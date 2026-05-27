@@ -2648,6 +2648,18 @@ class Database:
         not_found = []
         errors = []
 
+        import unicodedata
+
+        def _normalize_text(text):
+            """Verwendungszweck für den Vergleich normalisieren.
+
+            Zeilenumbrüche/Mehrfach-Leerzeichen → einfaches Leerzeichen,
+            Unicode-NFC, Lowercase. So matchen Bewegungsdaten- und
+            Tabellen-Export trotz unterschiedlicher Formatierung.
+            """
+            text = unicodedata.normalize('NFC', text or '')
+            return ' '.join(text.split()).lower()
+
         conn = self._get_connection()
         cursor = conn.cursor()
         for i, row in enumerate(reader, 1):
@@ -2716,7 +2728,9 @@ class Database:
                         LIMIT 1
                     ''', (booking_date, amount, doc_number, doc_number, doc_number, doc_number))
                 else:
-                    # Ohne Belegnummer: Datum + |Betrag| (LIMIT 2 für Mehrdeutigkeitsprüfung)
+                    # Ohne Belegnummer: Datum + |Betrag| (LIMIT 2 für Eindeutigkeitsprüfung).
+                    # Genau 1 Treffer → direkte Einzelbuchung. Mehrere → unten
+                    # Disambiguierung über den Verwendungszweck (Text).
                     cursor.execute('''
                         SELECT ID, RecipientClient, Text, COA_ID, ForeignBankAccount
                         FROM Bookings
@@ -2727,39 +2741,34 @@ class Database:
                 rows = cursor.fetchall()
 
                 if len(rows) == 1:
-                    # Eindeutige Einzelbuchung
+                    # Eindeutige Einzelbuchung über Datum + |Betrag|
                     target_rows = rows
-                elif len(rows) > 1:
-                    # Ohne Belegnummer und mehrdeutig → überspringen
-                    skipped += 1
-                    continue
                 elif not doc_number:
-                    # Stage 3 ohne Belegnummer: Split-Gruppen mit ähnlichem Verwendungszweck.
-                    # Normalisiere Zeilenumbrüche/Leerzeichen und suche Buchungen mit
-                    # passendem Text, deren Summe dem Betrag entspricht.
-                    def _normalize_text(text):
-                        """Normalisiere Text: Zeilenumbrüche → Leerzeichen, komprimiere Leerzeichen,
-                        Unicode-Normalisierung (NFC), Lowercase."""
-                        import unicodedata
-                        # NFC-Normalisierung: ä + combining diacritic → precomposed ä
-                        text = unicodedata.normalize('NFC', text or '')
-                        # Zeilenumbrüche → Leerzeichen, komprimiere
-                        return ' '.join(text.split()).lower()
-
+                    # Ohne Belegnummer: Disambiguierung/Gruppierung über den
+                    # normalisierten Verwendungszweck. Deckt zwei Fälle ab:
+                    #  a) Split-Gruppe – mehrere Teilbuchungen mit gleichem Text,
+                    #     deren Summe dem Zeilenbetrag entspricht (1%-Methode).
+                    #  b) Mehrere gleichartige Einzelbuchungen mit identischem
+                    #     Datum+Betrag, die sich nur im Verwendungszweck
+                    #     unterscheiden (z.B. Amazon mit verschiedenen EREF/MREF).
+                    # Ohne Verwendungszweck ist keine Zuordnung möglich → not_found.
                     norm_purpose = _normalize_text(purpose)
-                    cursor.execute('''
-                        SELECT ID, RecipientClient, Text, COA_ID, ForeignBankAccount, Amount
-                        FROM Bookings
-                        WHERE DateBooking=? AND (DocumentNumber IS NULL OR DocumentNumber='')
-                    ''', (booking_date,))
-                    all_bookings = cursor.fetchall()
+                    if norm_purpose:
+                        cursor.execute('''
+                            SELECT ID, RecipientClient, Text, COA_ID, ForeignBankAccount, Amount
+                            FROM Bookings
+                            WHERE DateBooking=? AND (DocumentNumber IS NULL OR DocumentNumber='')
+                        ''', (booking_date,))
+                        all_bookings = cursor.fetchall()
 
-                    # Filtere in Python: nur Buchungen mit ähnlichem (normalisiertem) Text
-                    grp = [b for b in all_bookings if _normalize_text(b[2]) == norm_purpose]
+                        # Nur Buchungen mit exakt passendem (normalisiertem) Text
+                        grp = [b for b in all_bookings if _normalize_text(b[2]) == norm_purpose]
 
-                    if grp and abs(abs(sum(r[5] for r in grp)) - abs(amount)) < 0.005:
-                        target_rows = [r[:5] for r in grp]
-                        is_split = True
+                        # Gruppensumme muss dem Zeilenbetrag entsprechen. Bei genau
+                        # einem Treffer ist es eine Einzelbuchung, bei mehreren ein Split.
+                        if grp and abs(abs(sum(r[5] for r in grp)) - abs(amount)) < 0.005:
+                            target_rows = [r[:5] for r in grp]
+                            is_split = len(grp) > 1
                 elif doc_number:
                     # Stage 2: Bank-Buchung, deren verknüpfte Entry-Kinder die
                     # Belegnummer tragen → Ziele = Parent + alle Kinder.

@@ -215,3 +215,62 @@ def test_multiple_splits_same_day_separated_by_text(db_with_coa):
     assert all(r[0] == recipient for r in im_rows), f"Immobilie rows: {im_rows}"
 
     conn.close()
+
+
+def test_similar_individual_bookings_disambiguated_by_text(db_with_coa):
+    """Zwei gleichartige Einzelbuchungen (KEIN Split) mit identischem Datum
+    und Betrag, die sich nur im Verwendungszweck unterscheiden.
+
+    Realfall Amazon Business: zwei Privatentnahmen am selben Tag, gleicher
+    Betrag (123,45), keine Belegnummer. Der Verwendungszweck unterscheidet
+    sich nur in den EREF/MREF-Referenznummern. Über Datum+Betrag allein sind
+    sie mehrdeutig – die Zuordnung muss über den Text erfolgen.
+
+    Jede Tabellen-Zeile darf nur GENAU EINE Buchung treffen (Gruppensumme =
+    Betrag), nicht beide kombiniert (sonst Summe = 2×Betrag → kein Match).
+    """
+    db = db_with_coa
+    recipient = "TESTSHOP GmbH"
+    iban = "DE00 1234 5678 9012 3456 78"
+    coa = {r[2]: r[0] for r in db.fetch_chart_of_accounts()}
+
+    # Bewegungsdaten-Texte (einzeilig, wie aus Original-Import gespeichert).
+    # Unterschied nur in der EREF/MREF-Referenz.
+    text_a = ("123-456789-0123 TESTSHOP iness REF-AAAA-1111 EREF "
+              ": REF-AAAA-1111 MREF: xr 0a1b2c3d4e5f6g7h)28R "
+              "4 CRED: DE00ZZZ00000000000 IBAN: DE00123456789012345678 4 BIC: MUSTDEFF")
+    text_b = ("123-456789-0123 TESTSHOP iness REF-BBBB-2222 EREF "
+              ": REF-BBBB-2222 MREF: xr 0a1b2c3d4e5f6g7h)28R "
+              "4 CRED: DE00ZZZ00000000000 IBAN: DE00123456789012345678 4 BIC: MUSTDEFF")
+
+    # Zwei Einzelbuchungen, gleiches Datum + Betrag, keine Belegnummer
+    b_a = db.insert_booking(date_booking='2024-09-25', amount=123.45,
+                            coa_id=coa.get(2100), text=text_a)
+    b_b = db.insert_booking(date_booking='2024-09-25', amount=123.45,
+                            coa_id=coa.get(2100), text=text_b)
+
+    # Tabellen-Export: zwei Zeilen mit Zeilenumbrüchen im Verwendungszweck
+    purpose_a = ("123-456789-0123 TESTSHOP\niness REF-AAAA-1111 EREF\n"
+                 ": REF-AAAA-1111 MREF: xr\n0a1b2c3d4e5f6g7h)28R\n"
+                 "4 CRED: DE00ZZZ00000000000\nIBAN: DE00123456789012345678\n4 BIC: MUSTDEFF\n")
+    purpose_b = ("123-456789-0123 TESTSHOP\niness REF-BBBB-2222 EREF\n"
+                 ": REF-BBBB-2222 MREF: xr\n0a1b2c3d4e5f6g7h)28R\n"
+                 "4 CRED: DE00ZZZ00000000000\nIBAN: DE00123456789012345678\n4 BIC: MUSTDEFF\n")
+    header = "Buchungsdatum;Empf./Auft.;Konto-Nr. / IBAN;Verwendungszweck;Kategorie;Beleg Nr.;Betrag"
+    row1 = f'25.09.2024;{recipient};{iban};"{purpose_a}";Privatentnahmen;;-123,45'
+    row2 = f'25.09.2024;{recipient};{iban};"{purpose_b}";Privatentnahmen;;-123,45'
+    text = (header + "\n" + row1 + "\n" + row2 + "\n").encode('cp1252')
+
+    res = db.import_wiso_csv(text)
+    assert res['format'] == 'table'
+    # Beide Zeilen müssen je genau eine Buchung treffen → 2 Updates, nichts offen
+    assert res['updated'] == 2, f"Expected 2 updates, got {res['updated']}; not_found={res.get('not_found')}"
+    assert res['not_found'] == [], res['not_found']
+
+    conn = db._get_connection()
+    cur = conn.cursor()
+    cur.execute('SELECT ID, RecipientClient FROM Bookings WHERE ID IN (?,?)', (b_a, b_b))
+    rows = dict(cur.fetchall())
+    conn.close()
+    assert rows[b_a] == recipient, rows
+    assert rows[b_b] == recipient, rows
