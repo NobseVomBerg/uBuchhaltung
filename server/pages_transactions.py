@@ -510,7 +510,14 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             first_recip  = item.get('first_recipient') or ''
             first_text   = item.get('first_text') or ''
             amount_color = 'green' if amount > 0 else 'red'
-            s+= (f"<tr class='transaction-row group-row' "
+            # ✓-Badge: alle Kinder vollständig gebucht (COA_ID gesetzt)?
+            # Entspricht dem gleichen Check wie bei Einzelbuchungen (booking[8] = COA_ID).
+            children     = item.get('children', [])
+            all_booked   = bool(children) and all(ch['booking'][8] is not None for ch in children)
+            status_badge = ("<span class='badge bg-green' title='Buchung vollständig gebucht'>✓</span>"
+                            if all_booked else "")
+            row_class    = 'transaction-row group-row row-ok' if all_booked else 'transaction-row group-row'
+            s+= (f"<tr class='{row_class}' "
                  f"data-group-id='{gid}' "
                  f"data-account-id='{account_id or ''}' "
                  f"data-date='{date_booking}' "
@@ -530,7 +537,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             s+= f"<td>{account_name[:20]}</td>"
             s+= f"<td><span class='badge bg-indigo'>Split {count}×</span></td>"
             s+= f"<td>{description[:35]}</td>"
-            s+= f"<td><span class='split-toggle-icon' id='toggle-icon-{gid}'>▶</span></td>"
+            s+= f"<td>{status_badge}<span class='split-toggle-icon' id='toggle-icon-{gid}'>▶</span></td>"
             s+= f"</tr>"
 
         elif row_type == 'bank':
