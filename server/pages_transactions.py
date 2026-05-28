@@ -447,6 +447,21 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 if (fresh && cur) cur.innerHTML = fresh.innerHTML;
             });
         }
+
+        function openEditForm(id) {
+            fetch('/transactions/edit?id=' + id)
+                .then(r => r.text())
+                .then(html => {
+                    const doc = new DOMParser().parseFromString(html, 'text/html');
+                    const newForm = doc.querySelector('.gridRightCol');
+                    const curForm = document.querySelector('.gridRightCol');
+                    if (newForm && curForm) {
+                        curForm.innerHTML = newForm.innerHTML;
+                        history.pushState({}, '', '/transactions/edit?id=' + id);
+                    }
+                })
+                .catch(() => { window.location.href = '/transactions/edit?id=' + id; });
+        }
     </script>
     '''
     s+= '<div class="gridLeftCol" style="order:1">'    # ── Buchungstabelle ───────────────────────────────────────────────────
@@ -635,7 +650,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     s+= f"<td>{entry_coa_nr}</td>"
                     s+= f"<td>{entry_docnr}</td>"
                     s+= (f"<td>{status_badge}"
-                         f" <a href='/transactions/edit?id={bank_id}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
+                         f" <a href='javascript:void(0)' onclick='openEditForm({bank_id})' class='action-icon' title='Bearbeiten'>&#9998;</a>"
                          f" <a href='javascript:void(0);' class='action-icon delete-icon' title='L\u00f6schen'"
                          f" onclick='appConfirmHref(\"/transactions/delete?id={bank_id}\", \"Buchung #{bank_id} wirklich l\u00f6schen?\")'>&#128465;</a></td>")
                     s+= f"</tr>"
@@ -659,7 +674,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 s+= f"<td></td>"
                 s+= f"<td></td>"
                 s+= (f"<td>{status_badge}"
-                     f" <a href='/transactions/edit?id={bank_id}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
+                     f" <a href='javascript:void(0)' onclick='openEditForm({bank_id})' class='action-icon' title='Bearbeiten'>&#9998;</a>"
                      f" <a href='javascript:void(0);' class='action-icon delete-icon' title='L\u00f6schen'"
                      f" onclick='appConfirmHref(\"/transactions/delete?id={bank_id}\", \"Buchung #{bank_id} wirklich l\u00f6schen?\")'>&#128465;</a></td>")
                 s+= f"</tr>"
@@ -699,7 +714,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             s+= f"<td>{coa_number}</td>"
             s+= f"<td>{doc_number}</td>"
             s+= (f"<td>{status_badge}"
-                 f" <a href='/transactions/edit?id={booking_id}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
+                 f" <a href='javascript:void(0)' onclick='openEditForm({booking_id})' class='action-icon' title='Bearbeiten'>&#9998;</a>"
                  f" <a href='javascript:void(0);' class='action-icon delete-icon' title='L\u00f6schen'"
                  f" onclick='appConfirmHref(\"/transactions/delete?id={booking_id}\", \"Buchung #{booking_id} wirklich l\u00f6schen?\")'>&#128465;</a></td>")
             s+= f"</tr>"
@@ -747,7 +762,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             s+= f"<td>{coa_number}</td>"
             s+= f"<td>{doc_number}</td>"
             s+= (f"<td>{status_badge}"
-                 f" <a href='/transactions/edit?id={booking_id}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
+                 f" <a href='javascript:void(0)' onclick='openEditForm({booking_id})' class='action-icon' title='Bearbeiten'>&#9998;</a>"
                  f" <a href='javascript:void(0);' class='action-icon delete-icon' title='L\u00f6schen'"
                  f" onclick='appConfirmHref(\"/transactions/delete?id={booking_id}\", \"Buchung #{booking_id} wirklich l\u00f6schen?\")'>&#128465;</a></td>")
             s+= f"</tr>"
