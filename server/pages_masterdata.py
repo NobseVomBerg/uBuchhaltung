@@ -390,7 +390,7 @@ def PageSkr(db: Database, edit_id=None, copy_from_id=None, msg=None, msg_type='i
         show_in_menu = row[7] if len(row) > 7 else 1
         eye_glyph = '&#128065;' if show_in_menu else '&#128683;'  # \ud83d\udc41 sichtbar / \ud83d\udeab ausgeblendet
         eye_title = 'Im Men\u00fc sichtbar \u2013 ausblenden' if show_in_menu else 'Ausgeblendet \u2013 einblenden'
-        eye_icon = (f"<a href='/masterdata/skr/togglemenu?id={row[0]}' class='action-icon' "
+        eye_icon = (f"<a href='javascript:void(0)' onclick='toggleSkrMenu({row[0]})' class='action-icon' "
                     f"title='{eye_title}'>{eye_glyph}</a>")
         del_icon = ''
         if not is_standard:
@@ -422,6 +422,18 @@ def PageSkr(db: Database, edit_id=None, copy_from_id=None, msg=None, msg_type='i
                     }
                 })
                 .catch(() => { window.location.href = url; });
+        }
+
+        function toggleSkrMenu(id) {
+            fetch('/masterdata/skr/togglemenu?id=' + id)
+                .then(r => r.text())
+                .then(html => {
+                    const doc = new DOMParser().parseFromString(html, 'text/html');
+                    const newLeft = doc.querySelector('.gridLeftCol');
+                    const curLeft = document.querySelector('.gridLeftCol');
+                    if (newLeft && curLeft) curLeft.innerHTML = newLeft.innerHTML;
+                })
+                .catch(() => { window.location.href = '/masterdata/skr'; });
         }
     </script>
     '''
