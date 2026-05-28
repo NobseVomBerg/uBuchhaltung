@@ -457,6 +457,11 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     const curForm = document.querySelector('.gridRightCol');
                     if (newForm && curForm) {
                         curForm.innerHTML = newForm.innerHTML;
+                        curForm.querySelectorAll('script').forEach(s => {
+                            const ns = document.createElement('script');
+                            ns.textContent = s.textContent;
+                            s.replaceWith(ns);
+                        });
                         history.pushState({}, '', '/transactions/edit?id=' + id);
                     }
                 })
