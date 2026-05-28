@@ -73,13 +73,36 @@ def PageBookingGroups(db: Database, date_from=None, date_to=None, view_id=None):
                   f'<td style="text-align:right">{expected_str}</td>'
                   f'<td style="text-align:right; color:{match_color}">{actual:.2f}</td>'
                   f'<td style="text-align:center">{count}</td>'
-                  f'<td><a href="/bookinggroups/view?id={group_id}" class="action-icon" title="Details / Bearbeiten">&#9998;</a>'
+                  f'<td><a href="javascript:void(0)" onclick="openEditForm(\'/bookinggroups/view?id={group_id}\')" class="action-icon" title="Details / Bearbeiten">&#9998;</a>'
                   f' <a href="javascript:void(0);" class="action-icon delete-icon" title="Löschen"'
                   f' onclick="appConfirmHref(\'/bookinggroups/delete?id={group_id}\', \'Gruppe {group_id} löschen? Die Buchungen bleiben erhalten, werden aber aus der Gruppe gelöst.\')">&#128465;</a></td></tr>')
 
         s += '</table>'
 
     s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Cols -->'
+    s += '''
+    <script>
+        function openEditForm(url) {
+            fetch(url)
+                .then(r => r.text())
+                .then(html => {
+                    const doc = new DOMParser().parseFromString(html, 'text/html');
+                    const newForm = doc.querySelector('.gridRightCol');
+                    const curForm = document.querySelector('.gridRightCol');
+                    if (newForm && curForm) {
+                        curForm.innerHTML = newForm.innerHTML;
+                        curForm.querySelectorAll('script').forEach(s => {
+                            const ns = document.createElement('script');
+                            ns.textContent = s.textContent;
+                            s.replaceWith(ns);
+                        });
+                        history.pushState({}, '', url);
+                    }
+                })
+                .catch(() => { window.location.href = url; });
+        }
+    </script>
+    '''
     s += Footer()
     return s
 
