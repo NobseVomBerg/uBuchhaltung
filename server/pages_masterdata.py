@@ -206,7 +206,7 @@ def PageArticles(db: Database, edit_article_id=None):
         s += f"<td>{int(tax_rate)}%</td>"
         s += f"<td>{description[:50]}</td>"
         s += (f"<td>{active_badge}"
-              f" <a href='/masterdata/articles/edit?id={article_id}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
+              f" <a href='javascript:void(0)' onclick='openEditForm(\"/masterdata/articles/edit?id={article_id}\")' class='action-icon' title='Bearbeiten'>&#9998;</a>"
               f" <a href='javascript:void(0);' class='action-icon delete-icon' title='Löschen'"
               f" onclick='appConfirmHref(\"/masterdata/articles/delete?id={article_id}\", \"Artikel wirklich löschen?\")'>&#128465;</a></td>")
         s += f"</tr>"
@@ -238,6 +238,26 @@ def PageArticles(db: Database, edit_article_id=None):
 
                 row.style.display = show ? '' : 'none';
             });
+        }
+
+        function openEditForm(url) {
+            fetch(url)
+                .then(r => r.text())
+                .then(html => {
+                    const doc = new DOMParser().parseFromString(html, 'text/html');
+                    const newForm = doc.querySelector('.gridRightCol');
+                    const curForm = document.querySelector('.gridRightCol');
+                    if (newForm && curForm) {
+                        curForm.innerHTML = newForm.innerHTML;
+                        curForm.querySelectorAll('script').forEach(s => {
+                            const ns = document.createElement('script');
+                            ns.textContent = s.textContent;
+                            s.replaceWith(ns);
+                        });
+                        history.pushState({}, '', url);
+                    }
+                })
+                .catch(() => { window.location.href = url; });
         }
     </script>
     '''
@@ -378,10 +398,33 @@ def PageSkr(db: Database, edit_id=None, copy_from_id=None, msg=None, msg_type='i
                         f" onclick='appConfirmHref(\"/masterdata/skr/delete?id={row[0]}\", \"Konto wirklich l\u00f6schen?\")'>&#128465;</a>")
         s += (f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td>"
               f"<td>{psp_display}</td><td>{standard_text}</td>"
-              f"<td><a href='/masterdata/skr/edit?id={row[0]}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
+              f"<td><a href='javascript:void(0)' onclick='openEditForm(\"/masterdata/skr/edit?id={row[0]}\")' class='action-icon' title='Bearbeiten'>&#9998;</a>"
               f" {eye_icon}{del_icon}</td></tr>")
     s += "</table>"
     s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Cols -->'
+    s += '''
+    <script>
+        function openEditForm(url) {
+            fetch(url)
+                .then(r => r.text())
+                .then(html => {
+                    const doc = new DOMParser().parseFromString(html, 'text/html');
+                    const newForm = doc.querySelector('.gridRightCol');
+                    const curForm = document.querySelector('.gridRightCol');
+                    if (newForm && curForm) {
+                        curForm.innerHTML = newForm.innerHTML;
+                        curForm.querySelectorAll('script').forEach(s => {
+                            const ns = document.createElement('script');
+                            ns.textContent = s.textContent;
+                            s.replaceWith(ns);
+                        });
+                        history.pushState({}, '', url);
+                    }
+                })
+                .catch(() => { window.location.href = url; });
+        }
+    </script>
+    '''
     s += Footer()
     return s
 
@@ -481,13 +524,36 @@ def PageBankAccounts(db: Database, edit_id=None):
         s += (f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2] or ''}</td><td>{row[3] or ''}</td>"
               f"<td>{row[4] or ''}</td><td>{row[5] or ''}</td><td>{account_type}</td><td>{skr_display}</td>")
         edit_title = "SKR zuweisen" if row[6] == 1 else "Bearbeiten"
-        actions = f"<a href='/masterdata/bankaccounts/edit?id={row[0]}' class='action-icon' title='{edit_title}'>&#9998;</a>"
+        actions = f"<a href='javascript:void(0)' onclick='openEditForm(\"/masterdata/bankaccounts/edit?id={row[0]}\")' class='action-icon' title='{edit_title}'>&#9998;</a>"
         if row[6] != 1:  # nur reine Bankkonten löschbar (Kasse nicht)
             actions += (" <a href='javascript:void(0);' class='action-icon delete-icon' title='Löschen' "
                         f"onclick=\"appConfirmHref('/masterdata/bankaccounts/delete?id={row[0]}', 'Konto wirklich löschen?')\">&#128465;</a>")
         s += f"<td>{actions}</td></tr>"
     s += "</table>"
     s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Cols -->'
+    s += '''
+    <script>
+        function openEditForm(url) {
+            fetch(url)
+                .then(r => r.text())
+                .then(html => {
+                    const doc = new DOMParser().parseFromString(html, 'text/html');
+                    const newForm = doc.querySelector('.gridRightCol');
+                    const curForm = document.querySelector('.gridRightCol');
+                    if (newForm && curForm) {
+                        curForm.innerHTML = newForm.innerHTML;
+                        curForm.querySelectorAll('script').forEach(s => {
+                            const ns = document.createElement('script');
+                            ns.textContent = s.textContent;
+                            s.replaceWith(ns);
+                        });
+                        history.pushState({}, '', url);
+                    }
+                })
+                .catch(() => { window.location.href = url; });
+        }
+    </script>
+    '''
     s += Footer()
     return s
 
@@ -608,12 +674,35 @@ def PageNumberRanges(db: Database, edit_id=None):
             s += (f"<tr><td>{range_id}</td><td>{year}</td><td>{letter}</td><td>{suffix}</td>"
                   f"<td><code>{number_format}</code></td><td style='text-align:right;'>{current_num}</td>"
                   f"<td><strong>{next_formatted}</strong></td><td>{description}</td>"
-                  f"<td><a href='/masterdata/numberranges/edit?id={range_id}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
+                  f"<td><a href='javascript:void(0)' onclick='openEditForm(\"/masterdata/numberranges/edit?id={range_id}\")' class='action-icon' title='Bearbeiten'>&#9998;</a>"
                   f" <a href='javascript:void(0);' class='action-icon delete-icon' title='Löschen'"
                   f" onclick=\"appConfirmHref('/masterdata/numberranges/delete?id={range_id}', 'Nummernkreis wirklich löschen?')\">&#128465;</a></td></tr>")
         s += "</table>"
 
     s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Cols -->'
+    s += '''
+    <script>
+        function openEditForm(url) {
+            fetch(url)
+                .then(r => r.text())
+                .then(html => {
+                    const doc = new DOMParser().parseFromString(html, 'text/html');
+                    const newForm = doc.querySelector('.gridRightCol');
+                    const curForm = document.querySelector('.gridRightCol');
+                    if (newForm && curForm) {
+                        curForm.innerHTML = newForm.innerHTML;
+                        curForm.querySelectorAll('script').forEach(s => {
+                            const ns = document.createElement('script');
+                            ns.textContent = s.textContent;
+                            s.replaceWith(ns);
+                        });
+                        history.pushState({}, '', url);
+                    }
+                })
+                .catch(() => { window.location.href = url; });
+        }
+    </script>
+    '''
     s += Footer()
     return s
 
