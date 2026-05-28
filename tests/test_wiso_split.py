@@ -218,6 +218,48 @@ def test_multiple_splits_same_day_separated_by_text(db_with_coa):
     conn.close()
 
 
+def test_bank_entry_pair_without_doc_number_matched(db_with_coa):
+    """bank+entry-Paar ohne Belegnummer wird korrekt als Treffer erkannt.
+
+    Realfall: Privatentnahme, Bankgebühr oder Zinszahlung ohne Belegnummer.
+    Die bank-Buchung (DocNr=NULL) und ihr entry-Child (DocNr='',
+    ParentBooking_ID=bank.ID) haben identisches Datum, Betrag und Text.
+    Stage 1 findet beide → len==2; Stage A muss sie als Paar erkennen und
+    RecipientClient + IBAN auf BEIDEN aktualisieren, ohne dass sie in
+    not_found landen.
+    """
+    db = db_with_coa
+    recipient = _rand_name()
+    iban = "DE00 0000 0000 0000 0000 00"
+
+    bank_id = db.insert_booking(
+        date_booking='2025-09-01', amount=-1000.00,
+        booking_type='bank', text='Privatentnahme September'
+    )
+    entry_id = db.insert_booking(
+        date_booking='2025-09-01', amount=-1000.00,
+        booking_type='entry', text='Privatentnahme September',
+        parent_booking_id=bank_id
+    )
+
+    header = "Buchungsdatum;Empf./Auft.;Konto-Nr. / IBAN;Verwendungszweck;Kategorie;Beleg Nr.;Betrag"
+    row = f"01.09.2025;{recipient};{iban};Privatentnahme September;;;-1000,00"
+    text = (header + "\n" + row + "\n").encode('utf-8')
+
+    res = db.import_wiso_csv(text)
+    assert res['format'] == 'table'
+    assert res['not_found'] == [], f"bank+entry-Paar nicht gefunden: {res['not_found']}"
+    assert res['updated'] >= 1, res
+
+    conn = db._get_connection()
+    cur = conn.cursor()
+    cur.execute('SELECT ID, RecipientClient FROM Bookings WHERE ID IN (?,?)', (bank_id, entry_id))
+    rows = dict(cur.fetchall())
+    conn.close()
+    assert rows[bank_id] == recipient, f"Bank-Buchung nicht aktualisiert: {rows}"
+    assert rows[entry_id] == recipient, f"Entry-Buchung nicht aktualisiert: {rows}"
+
+
 def test_similar_individual_bookings_disambiguated_by_text(db_with_coa):
     """Zwei gleichartige Einzelbuchungen (KEIN Split) mit identischem Datum
     und Betrag, die sich nur im Verwendungszweck unterscheiden.

@@ -2728,47 +2728,64 @@ class Database:
                         LIMIT 1
                     ''', (booking_date, amount, doc_number, doc_number, doc_number, doc_number))
                 else:
-                    # Ohne Belegnummer: Datum + |Betrag| (LIMIT 2 für Eindeutigkeitsprüfung).
-                    # Genau 1 Treffer → direkte Einzelbuchung. Mehrere → unten
-                    # Disambiguierung über den Verwendungszweck (Text).
+                    # Ohne Belegnummer: Datum + |Betrag|.
+                    # BookingType + ParentBooking_ID werden für die bank+entry-
+                    # Paar-Erkennung (Stage A) mitgeladen.
+                    # LIMIT 3: 1 → direkt; 2 → Paar-Check; ≥3 → Textdisambiguierung.
                     cursor.execute('''
-                        SELECT ID, RecipientClient, Text, COA_ID, ForeignBankAccount
+                        SELECT ID, RecipientClient, Text, COA_ID, ForeignBankAccount,
+                               BookingType, ParentBooking_ID
                         FROM Bookings
                         WHERE DateBooking=? AND ABS(Amount)=ABS(?) AND (DocumentNumber IS NULL OR DocumentNumber='')
-                        LIMIT 2
+                        LIMIT 3
                     ''', (booking_date, amount))
 
-                rows = cursor.fetchall()
+                rows_full = cursor.fetchall()
+                rows = [r[:5] for r in rows_full]   # Standard-5-Tupel für target_rows
 
                 if len(rows) == 1:
                     # Eindeutige Einzelbuchung über Datum + |Betrag|
                     target_rows = rows
                 elif not doc_number:
-                    # Ohne Belegnummer: Disambiguierung/Gruppierung über den
-                    # normalisierten Verwendungszweck. Deckt zwei Fälle ab:
-                    #  a) Split-Gruppe – mehrere Teilbuchungen mit gleichem Text,
-                    #     deren Summe dem Zeilenbetrag entspricht (1%-Methode).
-                    #  b) Mehrere gleichartige Einzelbuchungen mit identischem
-                    #     Datum+Betrag, die sich nur im Verwendungszweck
-                    #     unterscheiden (z.B. Amazon mit verschiedenen EREF/MREF).
-                    # Ohne Verwendungszweck ist keine Zuordnung möglich → not_found.
-                    norm_purpose = _normalize_text(purpose)
-                    if norm_purpose:
-                        cursor.execute('''
-                            SELECT ID, RecipientClient, Text, COA_ID, ForeignBankAccount, Amount
-                            FROM Bookings
-                            WHERE DateBooking=? AND (DocumentNumber IS NULL OR DocumentNumber='')
-                        ''', (booking_date,))
-                        all_bookings = cursor.fetchall()
+                    # Stage A: bank+entry-Paar – eine bank-Buchung (DocNr=NULL) mit
+                    # genau einem entry-Child (DocNr='', ParentBooking_ID=bank.ID)
+                    # und identischem Betrag. Beide werden gemeinsam aktualisiert,
+                    # analog zu Stage 2 (Belegnummer-Pfad). Typische Fälle:
+                    # Privatentnahmen, Bankgebühren, Zinsen ohne Belegnummer.
+                    if len(rows_full) == 2:
+                        bank_cands  = [r for r in rows_full if r[5] == 'bank']
+                        entry_cands = [r for r in rows_full if r[5] != 'bank']
+                        if (len(bank_cands) == 1 and len(entry_cands) == 1
+                                and entry_cands[0][6] == bank_cands[0][0]):
+                            target_rows = rows  # bank + entry gemeinsam
+                            is_split = True
 
-                        # Nur Buchungen mit exakt passendem (normalisiertem) Text
-                        grp = [b for b in all_bookings if _normalize_text(b[2]) == norm_purpose]
+                    if not target_rows:
+                        # Stage B: Disambiguierung/Gruppierung über den
+                        # normalisierten Verwendungszweck. Deckt zwei Fälle ab:
+                        #  a) Split-Gruppe – mehrere Teilbuchungen mit gleichem Text,
+                        #     deren Summe dem Zeilenbetrag entspricht (1%-Methode).
+                        #  b) Mehrere gleichartige Einzelbuchungen mit identischem
+                        #     Datum+Betrag, die sich nur im Verwendungszweck
+                        #     unterscheiden (z.B. Amazon mit verschiedenen EREF/MREF).
+                        # Ohne Verwendungszweck ist keine Zuordnung möglich → not_found.
+                        norm_purpose = _normalize_text(purpose)
+                        if norm_purpose:
+                            cursor.execute('''
+                                SELECT ID, RecipientClient, Text, COA_ID, ForeignBankAccount, Amount
+                                FROM Bookings
+                                WHERE DateBooking=? AND (DocumentNumber IS NULL OR DocumentNumber='')
+                            ''', (booking_date,))
+                            all_bookings = cursor.fetchall()
 
-                        # Gruppensumme muss dem Zeilenbetrag entsprechen. Bei genau
-                        # einem Treffer ist es eine Einzelbuchung, bei mehreren ein Split.
-                        if grp and abs(abs(sum(r[5] for r in grp)) - abs(amount)) < 0.005:
-                            target_rows = [r[:5] for r in grp]
-                            is_split = len(grp) > 1
+                            # Nur Buchungen mit exakt passendem (normalisiertem) Text
+                            grp = [b for b in all_bookings if _normalize_text(b[2]) == norm_purpose]
+
+                            # Gruppensumme muss dem Zeilenbetrag entsprechen. Bei genau
+                            # einem Treffer ist es eine Einzelbuchung, bei mehreren ein Split.
+                            if grp and abs(abs(sum(r[5] for r in grp)) - abs(amount)) < 0.005:
+                                target_rows = [r[:5] for r in grp]
+                                is_split = len(grp) > 1
                 elif doc_number:
                     # Stage 2: Bank-Buchung, deren verknüpfte Entry-Kinder die
                     # Belegnummer tragen → Ziele = Parent + alle Kinder.
