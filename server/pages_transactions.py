@@ -686,6 +686,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             if (coa_id and coa_id in private_coa_ids) or (counter_coa_id and counter_coa_id in private_coa_ids):
                 doc_number = 'privat'
             amount_color = 'green' if (amount or 0) > 0 else 'red'
+            status_badge = ("<span class='badge bg-green' title='Buchung vollst\u00e4ndig gebucht'>\u2713</span>"
+                            if coa_id else "")
             s+= (f"<tr class='child-row' data-parent-group='{gid}' style='display:none'>")
             s+= f"<td class='child-indent'>{date_booking}</td>"
             s+= f"<td>{recipient[:25]}</td>"
@@ -696,7 +698,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             s+= f"<td>{account_name[:20]}</td>"
             s+= f"<td>{coa_number}</td>"
             s+= f"<td>{doc_number}</td>"
-            s+= (f"<td><a href='/transactions/edit?id={booking_id}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
+            s+= (f"<td>{status_badge}"
+                 f" <a href='/transactions/edit?id={booking_id}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
                  f" <a href='javascript:void(0);' class='action-icon delete-icon' title='L\u00f6schen'"
                  f" onclick='appConfirmHref(\"/transactions/delete?id={booking_id}\", \"Buchung #{booking_id} wirklich l\u00f6schen?\")'>&#128465;</a></td>")
             s+= f"</tr>"
