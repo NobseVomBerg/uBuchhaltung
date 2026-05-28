@@ -394,7 +394,7 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
         s += f"<td>{email}</td>"
         s += f"<td>{phone}</td>"
         s += f"<td>"
-        s += f"<a href='/masterdata/contacts/edit?id={cid}' class='action-icon' title='Bearbeiten'>&#9998;</a>"
+        s += f"<a href='javascript:void(0)' onclick='openEditForm(\"/masterdata/contacts/edit?id={cid}\")' class='action-icon' title='Bearbeiten'>&#9998;</a>"
         s += f" <a href='javascript:void(0);' class='action-icon delete-icon' title='Löschen' "
         s += f"onclick='appConfirmHref(\"/masterdata/contacts/delete?id={cid}\", \"Kontakt wirklich löschen?\")'>&#128465;</a>"
         s += f"</td></tr>"
@@ -404,6 +404,29 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
 
     s += "</table>"
     s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Cols -->'
+    s += '''
+    <script>
+        function openEditForm(url) {
+            fetch(url)
+                .then(r => r.text())
+                .then(html => {
+                    const doc = new DOMParser().parseFromString(html, 'text/html');
+                    const newForm = doc.querySelector('.gridRightCol');
+                    const curForm = document.querySelector('.gridRightCol');
+                    if (newForm && curForm) {
+                        curForm.innerHTML = newForm.innerHTML;
+                        curForm.querySelectorAll('script').forEach(s => {
+                            const ns = document.createElement('script');
+                            ns.textContent = s.textContent;
+                            s.replaceWith(ns);
+                        });
+                        history.pushState({}, '', url);
+                    }
+                })
+                .catch(() => { window.location.href = url; });
+        }
+    </script>
+    '''
     s += Footer()
     return s
 
