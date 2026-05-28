@@ -111,6 +111,7 @@ def PageAssets(db: Database, status_filter='', edit_id=None, new_parent_id=None)
               "<th style='text-align:right;'>AK</th><th style='text-align:right;'>Restbuchwert</th>"
               f"<th style='text-align:right;'>AfA {current_year}</th><th>Status</th><th>Aktionen</th></tr>")
         for row in asset_rows:
+            aid = row['id']
             depr_badge = ''
             if row['depr_this_year'] > 0:
                 if row['depr_status'] == 'posted':
@@ -118,17 +119,39 @@ def PageAssets(db: Database, status_filter='', edit_id=None, new_parent_id=None)
                 else:
                     depr_badge = " <span style='color:orange;font-size:0.8em;'>● offen</span>"
             status_color = {'active': 'green', 'sold': '#888', 'scrapped': '#cc0000'}.get(row['status'], '#000')
-            s += (f"<tr><td><a href='/assets/edit?id={row['id']}'>{row['inv'] or ''}</a></td>"
-                  f"<td><a href='/assets/edit?id={row['id']}'>{row['name']}</a></td>"
+            s += (f"<tr><td><a href='javascript:void(0)' onclick='openEditForm(\"/assets/edit?id={aid}\")'>{row['inv'] or ''}</a></td>"
+                  f"<td><a href='javascript:void(0)' onclick='openEditForm(\"/assets/edit?id={aid}\")'>{row['name']}</a></td>"
                   f"<td>{row['cat'] or ''}</td><td>{row['purchase_date'] or ''}</td>"
                   f"<td style='text-align:right;'>{_fmt(row['purchase_price'])}</td>"
                   f"<td style='text-align:right;'>{_fmt(row['book_value'])}</td>"
                   f"<td style='text-align:right;'>{_fmt(row['depr_this_year'])}{depr_badge}</td>"
                   f"<td style='color:{status_color};'>{_status_label(row['status'])}</td>"
-                  f"<td><a href='/assets/edit?id={row['id']}' class='action-icon' title='Öffnen / Bearbeiten'>&#9998;</a></td></tr>")
+                  f"<td><a href='javascript:void(0)' onclick='openEditForm(\"/assets/edit?id={aid}\")' class='action-icon' title='Öffnen / Bearbeiten'>&#9998;</a></td></tr>")
         s += "</table>"
     s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Cols -->'
-
+    s += '''
+    <script>
+        function openEditForm(url) {
+            fetch(url)
+                .then(r => r.text())
+                .then(html => {
+                    const doc = new DOMParser().parseFromString(html, 'text/html');
+                    const newForm = doc.querySelector('.gridRightCol');
+                    const curForm = document.querySelector('.gridRightCol');
+                    if (newForm && curForm) {
+                        curForm.innerHTML = newForm.innerHTML;
+                        curForm.querySelectorAll('script').forEach(s => {
+                            const ns = document.createElement('script');
+                            ns.textContent = s.textContent;
+                            s.replaceWith(ns);
+                        });
+                        history.pushState({}, '', url);
+                    }
+                })
+                .catch(() => { window.location.href = url; });
+        }
+    </script>
+    '''
     s += Footer()
     return s
 
@@ -595,7 +618,7 @@ def PageAssetCategories(db: Database, edit_category_id=None):
             <td>{coa_label}</td>
             <td class="muted">{c[5] or ''}</td>
             <td>
-                <a href="/asset_categories/edit?id={c[0]}" class="action-icon" title="Bearbeiten">&#9998;</a>
+                <a href="javascript:void(0)" onclick="openEditForm('/asset_categories/edit?id={c[0]}')" class="action-icon" title="Bearbeiten">&#9998;</a>
                 <a href="javascript:void(0);" class="action-icon delete-icon" title="Löschen"
                    onclick="appConfirmHref('/asset_categories/delete?id={c[0]}', 'Kategorie wirklich löschen?')">&#128465;</a>
             </td>
@@ -603,6 +626,29 @@ def PageAssetCategories(db: Database, edit_category_id=None):
 
     s += '</table>'
     s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Cols -->'
+    s += '''
+    <script>
+        function openEditForm(url) {
+            fetch(url)
+                .then(r => r.text())
+                .then(html => {
+                    const doc = new DOMParser().parseFromString(html, 'text/html');
+                    const newForm = doc.querySelector('.gridRightCol');
+                    const curForm = document.querySelector('.gridRightCol');
+                    if (newForm && curForm) {
+                        curForm.innerHTML = newForm.innerHTML;
+                        curForm.querySelectorAll('script').forEach(s => {
+                            const ns = document.createElement('script');
+                            ns.textContent = s.textContent;
+                            s.replaceWith(ns);
+                        });
+                        history.pushState({}, '', url);
+                    }
+                })
+                .catch(() => { window.location.href = url; });
+        }
+    </script>
+    '''
     s += Footer()
     return s
 
