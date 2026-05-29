@@ -178,7 +178,7 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
 ## Governance
 
 - **Owner:** NobseVomBerg
-- **Letzte Aktualisierung:** 2026-05-27
+- **Letzte Aktualisierung:** 2026-05-29
 - **Modell-Versionen:** Opus 4.7, Sonnet 4.6, Haiku 4.5 (Stand Feb 2025)
 - **Bei Modell-Updates:** Diese Datei + Settings entsprechend updaten
 

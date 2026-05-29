@@ -93,28 +93,44 @@ ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNU
 
 **Zweck:** Bankbewegungen mit Empfänger und Verwendungszweck importieren
 
-**CSV-Format:**
+**CSV-Format (6 Spalten, Standard):**
 ```
 Buchungsdatum;Empf./Auft.;Verwendungszweck;Kategorie;Beleg Nr./opt. Beleg Nr.;Betrag
 ```
 
+**CSV-Format (7 Spalten, erweiterter Export mit IBAN):**
+```
+Buchungsdatum;Empf./Auft.;Konto-Nr. / IBAN;Verwendungszweck;Kategorie;Beleg Nr.;Betrag
+```
+
+Beide Varianten werden automatisch erkannt (Format-Erkennung über `Empf./Auft.` + `Verwendungszweck`).
+
 **Vorbereitung:**
 1. Tabellen-Ansicht in WISO für ein Bank-/Verrechnungskonto öffnen
 2. Als XLS exportieren → in Calc öffnen
-3. Spalte 1 (Status) und Spalte 8 (Saldo) löschen
+3. Spalte 1 (Status) und letzte Spalte (Saldo) löschen
 4. Als CSV mit Semikolon speichern
 
 **Automatisches Mapping:**
 - **Empf./Auft.** → `RecipientClient`
 - **Verwendungszweck** → `Text` (Zeilenumbrüche → Leerzeichen)
 - **Kategorie** → `COA_ID` (automatisches Matching über SKR-Beschreibung)
-- **Beleg Nr.** → `DocumentNumber`
-- **Konto-Nr. / IBAN** → `ForeignBankAccount` (falls vorhanden)
+- **Beleg Nr. / opt. Beleg Nr.** → `DocumentNumber`
+- **Konto-Nr. / IBAN** → `ForeignBankAccount` (optionale Spalte, falls vorhanden)
 
-**Matching-Logik:**
-- Sucht nach: Datum + Belegnummer + Betrag
-- Gefunden → UPDATE (nur leere Felder ergänzen, keine Überschreibung)
-- Nicht gefunden → INSERT
+**Matching-Logik (mehrstufig):**
+
+Bei **Buchungen mit Belegnummer** (`Beleg Nr.` gesetzt):
+- Stufe 1 (direkt): Datum + Belegnummer + Betrag → genau ein Treffer
+- Stufe 2 (Bank-Parent): Bankbuchung mit gleichem Datum/Betrag suchen, Entry-Kinder per Belegnummer ergänzen
+- Stufe 3 (BookingGroup): Summenabgleich über Gruppe bei gleicher Belegnummer
+
+Bei **Buchungen ohne Belegnummer** (`Beleg Nr.` leer):
+- Stufe A (bank+entry-Paar): Wenn Datum+Betrag genau eine bank- und eine entry-Buchung treffen und die entry-Buchung Child der bank-Buchung ist → beide gemeinsam aktualisieren (Realfall: Privatentnahmen, Bankgebühren, Zinsen)
+- Stufe B (Text-Disambiguierung): Verwendungszweck-Normalisierung als Tiebreaker
+
+Gefunden → UPDATE (RecipientClient, ForeignBankAccount, COA_ID ergänzen — nur leere Felder)  
+Nicht gefunden → in `not_found`-Liste
 
 **BookingType:** `'bank'` (Bankbewegung)
 
@@ -126,17 +142,20 @@ Automatisch anhand der Spaltenüberschriften:
 - **Original**: erkennt "KONTO" und "GEGENKONTO"
 - **Tabelle**: erkennt "Empf./Auft." und "Verwendungszweck"
 
-### Bank↔Entry-Verknüpfung
+### Bank↔Entry-Verknüpfung (link_bank_to_entries)
 
 Nach jedem WISO-Import wird `link_bank_to_entries()` aufgerufen:
 - Mehrstufiges Matching:
-    - Stufe 1: Datum + Empfänger + Betrag
-    - Stufe 2: Datum + Betrag
-    - Stufe 3/3b/3c/3d: Split-, Rechnungs- und Sammelzahlungs-Logik
-    - Stufe 4: DocumentNumber-Tiebreaker
-    - Stufe 5: Text-Token-Matching
+    - Stufe 1: Datum + normalisierter Empfänger + Betrag
+    - Stufe 2: Datum + Betrag (eindeutig nach Doppik-Filter)
+    - Stufe 3: Split-Gruppen mit Summenabgleich (nur gleicher Tag)
+    - Stufe 3b: Rechnungs-Split (SUM/Anzahl, Bank-COA als Marker)
+    - Stufe 3c: Privatanteil-Split (Summe minus Privatentnahme-Offset)
+    - Stufe 3d: Sammelzahlung (mehrere Rechnungsnummern im Bank-Text)
+    - Stufe 4: DocumentNumber-Tiebreaker bei Mehrdeutigkeit
+    - Stufe 5: Text-Token-Matching (lange Ziffernfolgen ≥ 8 Stellen)
     - Stufe 6: Text-Similarity ohne Belegnummer (`SequenceMatcher`)
-    - Stufe 7: Debitoren-Auflösung (`Status='resolved'`)
+    - Stufe 7: Debitoren-Auflösung (`Status='resolved'` für Debitoren-Entries, deren Zahlung bereits verknüpft ist)
 - Doppik-Filter: Entry-Buchungen auf SKR-Bankkonten (z.B. 1810) werden ignoriert
 - Ergebnis: `Entry.ParentBooking_ID → Bank.ID`
 

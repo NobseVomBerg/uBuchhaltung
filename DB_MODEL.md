@@ -1,6 +1,6 @@
 # Datenbankmodell PyBuch
 
-**Status:** Aktuell (Stand: 20. Mai 2026)
+**Status:** Aktuell (Stand: 29. Mai 2026)
 **DBMS:** SQLite 3
 **Datei:** `data/buch.db`
 
@@ -101,6 +101,7 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 | Description | TEXT | | Zusätzliche Beschreibung |
 | IsStandard | INTEGER | DEFAULT 0 | 1=Standard-Konto, 0=eigene Ergänzung |
 | PrivateSharePercent | INTEGER | DEFAULT 0 | Privatanteil in % (0–100); wird bei Matching/Export berücksichtigt |
+| ShowInMenu | INTEGER | DEFAULT 1 | 1=im Auswahlmenü sichtbar, 0=ausgeblendet |
 
 ---
 
@@ -309,6 +310,7 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 | Prefix | TEXT | DEFAULT '' | Zusätzlicher Präfix |
 | CurrentNumber | INTEGER | DEFAULT 0 | Letzte vergebene Nummer |
 | Description | TEXT | | Beschreibung |
+| NumberFormat | TEXT | DEFAULT '{yy}{l}{nnn}{s}' | Format-Template, z.B. `{yy}{l}{nnn}{s}` → `26F001` |
 
 **Indizes:** UNIQUE(Type, Year, Letter, Prefix)
 
@@ -442,7 +444,7 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 | Booking_ID | INTEGER | FK → Bookings | |
 | SaleDate | DATE | | |
 | SalePrice | REAL | | |
-| Status | TEXT | DEFAULT 'active' | 'active', 'disposed', 'sold' |
+| Status | TEXT | DEFAULT 'active' | 'active', 'sold', 'scrapped' |
 | Notes | TEXT | | |
 | Parent_ID | INTEGER | FK → Assets | Erweiterungen |
 | CreatedAt | DATETIME | DEFAULT NOW | |
@@ -478,6 +480,8 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
    - Stufe 1: Datum + normalisierter Empfänger + Betrag
    - Stufe 2: Datum + Betrag (eindeutig nach Doppik-Filter)
    - Stufe 3: Split-Gruppen mit Summenabgleich (nur gleicher Tag)
+   - (WISO Tabellen-Import Matching: Stufe A: bank+entry-Paar ohne Belegnummer —
+     identisches Datum/Betrag/Text, entry ist Child der bank-Buchung)
    - Stufe 3b: Rechnungs-Split (SUM/Anzahl, Bank-COA als Marker)
    - Stufe 3c: Privatanteil-Split (Summe minus Privatentnahme-Offset)
    - Stufe 3d: Sammelzahlung (mehrere Rechnungsnummern im Bank-Text)
@@ -533,5 +537,5 @@ Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
 
 ---
 
-**Dokumentversion:** 2.2
-**Letzte Aktualisierung:** 20. Mai 2026
+**Dokumentversion:** 2.3
+**Letzte Aktualisierung:** 29. Mai 2026

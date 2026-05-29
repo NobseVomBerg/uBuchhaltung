@@ -21,7 +21,7 @@ Zentrale Verwaltung aller Buchungstransaktionen:
   - `entry` – Buchungssatz (aus WISO-Original-Export oder manuell)
 - **Automatische Verknüpfung**: Bank↔Entry über `ParentBooking_ID` (via `link_bank_to_entries()`)
 - **Merged Display**: Bankbuchungen zeigen verknüpfte Entry-Daten (SKR-Konto, Steuersatz, Belegnr.)
-- **Status-Badges**: ✓ verknüpft / offen für Bankbuchungen; ✓ für Kasse-/Einzelbuchungen mit gesetztem SKR-Konto
+- **Status-Badges**: ✓ verknüpft / offen für Bankbuchungen; ✓ für Einzelbuchungen und Split-Gruppenköpfe mit vollständig gebuchten Kinder-Einträgen
 - **Doppik-Filter**: Reine Gegenbuchungen auf Bankkonten (z.B. SKR 1810) werden automatisch ausgeblendet
 - **Erweiterte Buchungsfelder**:
   - Buchungsdatum und Steuerdatum (getrennt)
@@ -115,6 +115,8 @@ Vollständiges Anlagenmanagement mit gesetzeskonformer AfA:
   - BU-Schlüssel → Steuersatz-Lookup aus TaxKeys-Tabelle
   - Automatische TaxAmount-Berechnung (Brutto → MwSt-Anteil)
   - 4405→4400 wird auch ohne BU-Schlüssel mit 19% USt angereichert
+  - Tabellen-Export: optionale `Konto-Nr. / IBAN`-Spalte (6- und 7-spaltig)
+  - Tabellen-Export Matching: bank+entry-Paare ohne Belegnummer (Privatentnahmen, Gebühren) werden als Einheit erkannt und aktualisiert
   - Nach Import: automatische Bank↔Entry-Verknüpfung (`link_bank_to_entries()`)
 - **DATEV-Export** (`datev.py`): Buchungsstapel als DATEV-CSV (nur Entry-Buchungen)
 - **SQL-Konsole**: Direkte SQL-Ausführung (Entwickler-Tool)
@@ -165,6 +167,7 @@ PyBuch/
 │   ├── pages_contacts.py      # Kontaktverwaltung (4-Tabellen-Schema)
 │   ├── pages_masterdata.py    # Stammdaten (Artikel, SKR, Bankkonten, Nummernkreise)
 │   ├── pages_assets.py        # Anlagenverzeichnis
+│   ├── pages_setup.py         # Ersteinrichtungs-Seite (First-Run)
 │   ├── pages_receipts.py      # Belege (Upload, Bearbeiten)
 │   ├── pages_miscellaneous.py # DB-Export, SQL-Konsole, WISO Import
 │   ├── handlers.py            # POST-Handler (Formulare, PDF, Import)
@@ -256,6 +259,7 @@ pip install -r requirements_parser.txt
 | `server/pages_contacts.py` | Kontakte |
 | `server/pages_masterdata.py` | Stammdaten |
 | `server/pages_assets.py` | Anlagen |
+| `server/pages_setup.py` | Ersteinrichtungs-Seite (First-Run) |
 | `server/pages_receipts.py` | Belege (Upload, Bearbeiten) |
 | `server/pages_miscellaneous.py` | DB-Export, SQL-Konsole |
 | `server/handlers.py` | POST-Handler |
