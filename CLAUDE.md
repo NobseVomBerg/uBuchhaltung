@@ -19,7 +19,7 @@ Ziel: Hohe KI-Performance bei minimalem Token-Verbrauch – verhindert 5h-Limit-
 
 | **Agent-Typ** | **Modell** | **Use-Case** | **Token-Budget/Session** |
 |---|---|---|---|
-| **Orchestrator/Planung** | Opus 4.7 | Architektur, Code-Design, komplexe Entscheidungen | ~20% (selektiv) |
+| **Orchestrator/Planung** | Opus 4.8 | Architektur, Code-Design, komplexe Entscheidungen | ~20% (selektiv) |
 | **Haupt-Development** | Sonnet 4.6 | Implementierung, Debugging, Test-Schreiben, Refactoring | ~60% |
 | **Schnell-Analyse** | Haiku 4.5 | Code-Reviews, Fehleranalyse, Commits, Lint-Check | ~20% |
 
@@ -38,7 +38,7 @@ Ziel: Hohe KI-Performance bei minimalem Token-Verbrauch – verhindert 5h-Limit-
 - Meiste PyBuch-Arbeit landet hier
 - **Start here**, es sei denn klar kein Sonnet-Fall
 
-**Opus 4.7 (nur für komplexe Architektur)**
+**Opus 4.8 (nur für komplexe Architektur)**
 - Neu-Design von Modulen oder DB-Schema
 - Trade-off-Analysen bei konfliktären Anforderungen
 - Wenn Sonnet nach >30k Tokens "ich verstehe nicht" sagt
@@ -106,7 +106,7 @@ Nutzer: "Auf Seite X zeigt sich Y falsch"
 ### Szenario 2: Neue Feature mit unklarem Design
 ```
 Nutzer: "Ich will eine Funktion für X, aber wie das am besten passt, weiß ich nicht"
-→ Opus 4.7: 10 Min Design-Review (5k Token)
+→ Opus 4.8: 10 Min Design-Review (5k Token)
   - Schaut aktuellen Code, schlägt Architektur vor
 → Sonnet 4.6: Implementierung nach Opusplan (20-25k Token)
   - Focused, kein Rumraten mehr
@@ -117,7 +117,7 @@ Nutzer: "Ich will eine Funktion für X, aber wie das am besten passt, weiß ich 
 ### Szenario 3: Komplexer Refactor (Multi-Agent)
 ```
 Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
-→ Opus 4.7: Architektur-Plan (10k Token)
+→ Opus 4.8: Architektur-Plan (10k Token)
   - definiert neue Struktur, Modul-Grenzen
 → Agent Haiku: `Explore` = Analyse bestehender Pages (5k Token, parallel)
   - findet alle pages_*.py Files, ihre Imports, ihre Route-Definitionen
@@ -179,7 +179,7 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
 
 - **Owner:** NobseVomBerg
 - **Letzte Aktualisierung:** 2026-05-29
-- **Modell-Versionen:** Opus 4.7, Sonnet 4.6, Haiku 4.5 (Stand Feb 2025)
+- **Modell-Versionen:** Opus 4.8, Sonnet 4.6, Haiku 4.5 (Stand Mai 2026)
 - **Bei Modell-Updates:** Diese Datei + Settings entsprechend updaten
 
 Fragen? → Memory updaten oder neuen Punkt hier dokumentieren.

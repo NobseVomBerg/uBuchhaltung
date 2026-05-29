@@ -52,7 +52,7 @@ Wenn Sonnet stuck ist:
 
 ---
 
-## Opus 4.7 – Der Architekt
+## Opus 4.8 – Der Architekt
 
 **Verantwortung:** Design-Entscheidungen, Architektur-Reviews, große Refactors planen.
 
