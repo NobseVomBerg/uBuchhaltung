@@ -66,6 +66,19 @@ COUNTRIES = [
 
 # ── Helper: option builders ───────────────────────────────────────────────────
 
+def _checkbox_grid(items, name, active_keys, wide=False):
+    """Render a list of (key, label) tuples as a 3-column CSS-grid div.
+    wide=True uses .check-grid-wide (200px columns) for longer labels.
+    """
+    css_class = 'check-grid-wide' if wide else 'check-grid'
+    labels = []
+    for key, label in items:
+        chk = 'checked' if key in active_keys else ''
+        labels.append(
+            f'<label><input type="checkbox" name="{name}" value="{key}" {chk}> {label}</label>'
+        )
+    return f'<div class="{css_class}">{"".join(labels)}</div>'
+
 def _sel(val, current):
     return 'selected' if val == current else ''
 
@@ -202,6 +215,15 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
 
     logo_preview = f'<img src="{logo}" class="logo-preview">' if logo else ''
 
+    # Fachliche Rollen (nur für Personen) – muss vor entity_section stehen (wird darin referenziert)
+    if entity_type == 'person':
+        roles_grid = _checkbox_grid(PERSON_ROLES, 'role_keys', active_role_keys, wide=True)
+        roles_section = f'''
+        <tr><th colspan="2">🎯 Fachliche Rollen</th></tr>
+        <tr><td colspan="2" style="padding:6px 8px;">{roles_grid}</td></tr>'''
+    else:
+        roles_section = ''
+
     # Nur die zur Entität passende Sektion rendern (Handler verträgt fehlende Felder)
     if entity_type == 'company':
         entity_section = f'''
@@ -248,33 +270,7 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
     if contact_type == 'own':
         type_section = '<span class="badge" style="background:#e8f0fe;color:#1a73e8;padding:3px 8px;border-radius:4px;">⭐ Eigene Daten</span>'
     else:
-        type_boxes = ''
-        for tk, tl in CONTACT_TYPES:
-            chk = 'checked' if tk in active_type_keys else ''
-            type_boxes += (
-                f'<label style="display:inline-flex;align-items:center;gap:5px;'
-                f'min-width:130px;margin-bottom:5px;">'
-                f'<input type="checkbox" name="type_keys" value="{tk}" {chk}>{tl}</label>'
-            )
-        type_section = f'<div style="display:flex;flex-wrap:wrap;">{type_boxes}</div>'
-
-    # Fachliche Rollen (nur für Personen)
-    if entity_type == 'person':
-        role_boxes = ''
-        for rk, rl in PERSON_ROLES:
-            chk = 'checked' if rk in active_role_keys else ''
-            role_boxes += (
-                f'<label style="display:inline-flex;align-items:center;gap:5px;'
-                f'min-width:190px;margin-bottom:5px;">'
-                f'<input type="checkbox" name="role_keys" value="{rk}" {chk}>{rl}</label>'
-            )
-        roles_section = f'''
-        <tr><th colspan="2">🎯 Fachliche Rollen</th></tr>
-        <tr><td colspan="2" style="padding:6px 8px;">
-            <div style="display:flex;flex-wrap:wrap;">{role_boxes}</div>
-        </td></tr>'''
-    else:
-        roles_section = ''
+        type_section = _checkbox_grid(CONTACT_TYPES, 'type_keys', active_type_keys)
 
     s  = f'<form method="POST" action="{form_action}" id="contact_form">'
     s += extra_hidden
@@ -546,7 +542,7 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
     type_labels = dict(CONTACT_TYPES)
 
     s += "<table>"
-    s += ("<tr><th>ID</th><th>Entität</th><th>Typen</th><th>Anzeigename</th>"
+    s += ("<tr><th>ID</th><th>Entität</th><th>Typ</th><th>Anzeigename</th>"
           "<th>Kd-Nr.</th><th>Kürzel</th><th>Position / Firma</th><th>E-Mail</th><th>Telefon</th><th>Aktionen</th></tr>")
 
     for c in contacts:
@@ -565,14 +561,17 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
 
         # Typ-Tags (aus ContactTypeLinks; für 'own' Fallback)
         if c_type == 'own':
-            type_tags = '<span style="background:#e8f0fe;color:#1a73e8;padding:1px 6px;border-radius:3px;font-size:.85em;">Eigene Daten</span>'
+            #type_tags = '<span style="background:#e8f0fe;color:#1a73e8;padding:1px 6px;border-radius:3px;font-size:.85em;">Eigene Daten</span>'
+            type_tags = '<small>Eigene Daten</small>'
         elif type_keys_raw:
             type_tags = ' '.join(
-                f'<span style="background:#f1f3f4;padding:1px 6px;border-radius:3px;font-size:.85em;">{type_labels.get(tk.strip(), tk.strip())}</span>'
+                #f'<span style="background:#f1f3f4;padding:1px 6px;border-radius:3px;font-size:.85em;">{type_labels.get(tk.strip(), tk.strip())}</span>'
+                f'<small>{type_labels.get(tk.strip(), tk.strip())}</small>'
                 for tk in type_keys_raw.split(',') if tk.strip()
             )
         else:
-            type_tags = f'<span style="color:#999;font-size:.85em;">{type_labels.get(c_type, c_type)}</span>'
+            #type_tags = f'<span style="color:#999;font-size:.85em;">{type_labels.get(c_type, c_type)}</span>'
+            type_tags = f'<small>{type_labels.get(c_type, c_type)}</small>'
 
         # Positions/Firma-Spalte
         if entity_type_row == 'person':
@@ -583,7 +582,8 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
 
         s += f"<tr>"
         s += f"<td>{cid}</td>"
-        s += f"<td style='text-align:center;font-size:1.2em;'>{entity_icon}</td>"
+        #s += f"<td style='text-align:center;font-size:1.2em;'>{entity_icon}</td>"
+        s += f"<td>{entity_icon}</td>"
         s += f"<td>{type_tags}</td>"
         s += f"<td><strong>{display_name}</strong></td>"
         s += f"<td>{cust_nr}</td>"
