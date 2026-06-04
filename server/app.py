@@ -177,17 +177,21 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             # Contacts
             elif self.path == "/masterdata/contacts" or self.path.startswith("/masterdata/contacts?"):
                 qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
-                c_type  = qs.get('type',   [None])[0]
-                c_entity= qs.get('entity', [None])[0]
-                self.respond(200, PageContacts(db, contact_type_filter=c_type, entity_type_filter=c_entity))
+                c_type   = qs.get('type',   [None])[0]
+                c_entity = qs.get('entity', [None])[0]
+                c_error  = qs.get('error',  [None])[0]
+                self.respond(200, PageContacts(db, contact_type_filter=c_type,
+                                               entity_type_filter=c_entity, error_msg=c_error))
             elif self.path.startswith("/masterdata/contacts/new"):
                 qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
-                entity = qs.get('entity', ['company'])[0]
-                self.respond(200, PageContactNew(db, entity_type=entity))
+                entity  = qs.get('entity', ['company'])[0]
+                c_error = qs.get('error',  [None])[0]
+                self.respond(200, PageContactNew(db, entity_type=entity, error_msg=c_error))
             elif self.path.startswith("/masterdata/contacts/edit"):
-                query_components = parse_qs(self.path.split('?')[1])
-                contact_id = int(query_components["id"][0])
-                self.respond(200, PageContactEdit(db, contact_id))
+                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                contact_id = int(qs["id"][0])
+                c_error    = qs.get('error', [None])[0]
+                self.respond(200, PageContactEdit(db, contact_id, error_msg=c_error))
             elif self.path.startswith("/masterdata/contacts/delete"):
                 query_components = parse_qs(self.path.split('?')[1])
                 contact_id = int(query_components["id"][0])
@@ -548,10 +552,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             # Contacts
             elif self.path == "/masterdata/contacts/add":
                 status_code, location = handlers.handle_add_contact(db, post_data)
-                self.respond(status_code, "", headers={"Location": "/masterdata/contacts"})
+                self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/masterdata/contacts/update":
                 status_code, location = handlers.handle_update_contact(db, post_data)
-                self.respond(status_code, "", headers={"Location": "/masterdata/contacts"})
+                self.respond(status_code, "", headers={"Location": location})
             # Articles
             elif self.path == "/masterdata/articles/add":
                 status_code, location = handlers.handle_add_article(db, post_data)

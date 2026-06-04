@@ -631,8 +631,17 @@ def handle_execute_sql(db: Database, post_data):
 
 def handle_add_contact(db: Database, post_data):
     """Handle adding a new contact (Option C schema)"""
+    from urllib.parse import quote
+
     def _get(key, default=''):
         return post_data.get(key, [default])[0]
+
+    # Validate abbreviation uniqueness before touching the DB
+    abbr = _get('abbreviation').strip().upper() or None
+    if abbr:
+        is_unique, _ = db.check_abbreviation_unique(abbr)
+        if not is_unique:
+            return 303, f'/masterdata/contacts?error={quote(f"Kürzel bereits vergeben: {abbr}")}'
 
     try:
         db.insert_contact(
@@ -674,10 +683,20 @@ def handle_add_contact(db: Database, post_data):
 
 def handle_update_contact(db: Database, post_data):
     """Handle updating an existing contact (Option C schema)"""
+    from urllib.parse import quote
+
     def _get(key, default=''):
         return post_data.get(key, [default])[0]
 
     contact_id = int(_get('contact_id', 0))
+
+    # Validate abbreviation uniqueness before touching the DB
+    abbr = _get('abbreviation').strip().upper() or None
+    if abbr:
+        is_unique, _ = db.check_abbreviation_unique(abbr, exclude_id=contact_id)
+        if not is_unique:
+            return 303, f'/masterdata/contacts/edit?id={contact_id}&error={quote(f"Kürzel bereits vergeben: {abbr}")}'
+
     try:
         db.update_contact(
             contact_id        = contact_id,

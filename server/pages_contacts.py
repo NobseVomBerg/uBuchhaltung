@@ -405,7 +405,7 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
 # ── Page: Contacts (kombiniert grid2Cols: Tabelle + Formular) ─────────────────
 
 def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None,
-                 edit_contact_id=None, new_entity_type=None):
+                 edit_contact_id=None, new_entity_type=None, error_msg=None):
     """Kombinierte Kontakt-Seite (grid2Cols): links Übersichtstabelle, rechts Formular.
 
     Beim Bearbeiten wird der gewählte Kontakt ins rechte Formular geladen (wie
@@ -432,6 +432,9 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
         <a href="/masterdata/contacts?type=other">Sonstige</a>
     '''
     s += Header3(header3)
+
+    if error_msg:
+        s += f'<div class="msg-error" style="margin:8px 16px;">{error_msg}</div>'
 
     # ── Formular bestimmen (rechte Spalte): Bearbeiten oder Neu ──────────────
     edit_contact = db.get_contact_by_id(edit_contact_id) if edit_contact_id else None
@@ -541,13 +544,13 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
 
 # ── New / Edit: Delegation an die kombinierte grid2Cols-Seite ─────────────────
 
-def PageContactNew(db: Database, entity_type: str = 'company'):
+def PageContactNew(db: Database, entity_type: str = 'company', error_msg=None):
     """Neuer Kontakt: kombinierte Seite mit leerem Formular (Firma/Person) rechts."""
-    return PageContacts(db, new_entity_type=entity_type)
+    return PageContacts(db, new_entity_type=entity_type, error_msg=error_msg)
 
 
-def PageContactEdit(db: Database, contact_id):
+def PageContactEdit(db: Database, contact_id, error_msg=None):
     """Kontakt bearbeiten: kombinierte Seite mit geladenem Kontakt im rechten Formular."""
     if not db.get_contact_by_id(contact_id):
         return "Kontakt nicht gefunden."
-    return PageContacts(db, edit_contact_id=contact_id)
+    return PageContacts(db, edit_contact_id=contact_id, error_msg=error_msg)
