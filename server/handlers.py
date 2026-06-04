@@ -643,13 +643,19 @@ def handle_add_contact(db: Database, post_data):
         if not is_unique:
             return 303, f'/masterdata/contacts?error={quote(f"Kürzel bereits vergeben: {abbr}")}'
 
+    # Multi-value fields (checkboxes)
+    type_keys  = post_data.get('type_keys', [])
+    role_keys  = post_data.get('role_keys', [])
+    # Primärtyp: erstes Checkbox-Element oder Fallback
+    primary_type = type_keys[0] if type_keys else _get('contact_type', 'customer')
+
     try:
         db.insert_contact(
-            contact_type      = _get('contact_type', 'customer'),
+            contact_type      = primary_type,
             entity_type       = _get('entity_type',  'company'),
             display_name      = _get('display_name') or None,
             customer_number   = _get('customer_number') or None,
-            abbreviation      = _get('abbreviation').strip().upper() or None,
+            abbreviation      = abbr,
             email             = _get('email'),
             phone             = _get('phone'),
             notes             = _get('notes'),
@@ -673,6 +679,11 @@ def handle_add_contact(db: Database, post_data):
             date_of_birth     = _get('date_of_birth'),
             company_contact_id= _get('company_contact_id') or None,
             company_name_free = _get('company_name_free'),
+            job_title         = _get('job_title'),
+            department        = _get('department'),
+            is_primary_contact= 1 if _get('is_primary_contact') == '1' else 0,
+            type_keys         = type_keys,
+            role_keys         = role_keys,
         )
         return 303, '/masterdata/contacts'
     except Exception as e:
@@ -697,14 +708,19 @@ def handle_update_contact(db: Database, post_data):
         if not is_unique:
             return 303, f'/masterdata/contacts/edit?id={contact_id}&error={quote(f"Kürzel bereits vergeben: {abbr}")}'
 
+    # Multi-value fields (checkboxes)
+    type_keys    = post_data.get('type_keys', [])
+    role_keys    = post_data.get('role_keys', [])
+    primary_type = type_keys[0] if type_keys else _get('contact_type', 'customer')
+
     try:
         db.update_contact(
             contact_id        = contact_id,
-            contact_type      = _get('contact_type', 'customer'),
+            contact_type      = primary_type,
             entity_type       = _get('entity_type',  'company'),
             display_name      = _get('display_name') or None,
             customer_number   = _get('customer_number') or None,
-            abbreviation      = _get('abbreviation').strip().upper() or None,
+            abbreviation      = abbr,
             email             = _get('email'),
             phone             = _get('phone'),
             notes             = _get('notes'),
@@ -725,6 +741,11 @@ def handle_update_contact(db: Database, post_data):
             date_of_birth     = _get('date_of_birth'),
             company_contact_id= _get('company_contact_id') or None,
             company_name_free = _get('company_name_free'),
+            job_title         = _get('job_title'),
+            department        = _get('department'),
+            is_primary_contact= 1 if _get('is_primary_contact') == '1' else 0,
+            type_keys         = type_keys,
+            role_keys         = role_keys,
         )
         return 303, '/masterdata/contacts'
     except Exception as e:

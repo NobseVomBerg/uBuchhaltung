@@ -104,16 +104,18 @@ class Database:
         # Base table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS Contacts (
-                ID           INTEGER PRIMARY KEY AUTOINCREMENT,
-                ContactType  TEXT NOT NULL DEFAULT 'customer',
-                EntityType   TEXT NOT NULL DEFAULT 'company',
-                DisplayName  TEXT,
+                ID             INTEGER PRIMARY KEY AUTOINCREMENT,
+                ContactType    TEXT NOT NULL DEFAULT 'customer',
+                EntityType     TEXT NOT NULL DEFAULT 'company',
+                DisplayName    TEXT,
                 CustomerNumber TEXT,
-                Email        TEXT,
-                Phone        TEXT,
-                Notes        TEXT,
-                Logo         TEXT,
-                UNIQUE(CustomerNumber)
+                Abbreviation   TEXT,
+                Email          TEXT,
+                Phone          TEXT,
+                Notes          TEXT,
+                Logo           TEXT,
+                UNIQUE(CustomerNumber),
+                UNIQUE(Abbreviation)
             )
         ''')
 
@@ -136,14 +138,17 @@ class Database:
         # Person-specific fields (1:1)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS PersonDetails (
-                ContactID        INTEGER PRIMARY KEY,
-                Salutation       TEXT,
-                Title            TEXT,
-                FirstName        TEXT,
-                LastName         TEXT,
-                DateOfBirth      TEXT,
-                CompanyContactID INTEGER,
-                CompanyName_Free TEXT,
+                ContactID          INTEGER PRIMARY KEY,
+                Salutation         TEXT,
+                Title              TEXT,
+                FirstName          TEXT,
+                LastName           TEXT,
+                DateOfBirth        TEXT,
+                CompanyContactID   INTEGER,
+                CompanyName_Free   TEXT,
+                JobTitle           TEXT,
+                Department         TEXT,
+                IsPrimaryContact   INTEGER DEFAULT 0,
                 FOREIGN KEY (ContactID) REFERENCES Contacts(ID) ON DELETE CASCADE,
                 FOREIGN KEY (CompanyContactID) REFERENCES Contacts(ID)
             )
@@ -157,6 +162,26 @@ class Database:
                 LegalForm    TEXT,
                 TaxID        TEXT,
                 BuyerRouteID TEXT,
+                FOREIGN KEY (ContactID) REFERENCES Contacts(ID) ON DELETE CASCADE
+            )
+        ''')
+
+        # Contact ↔ Type (n:m) – Mehrfach-Kontakttypen (außer 'own')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ContactTypeLinks (
+                ContactID INTEGER NOT NULL,
+                TypeKey   TEXT    NOT NULL,
+                PRIMARY KEY (ContactID, TypeKey),
+                FOREIGN KEY (ContactID) REFERENCES Contacts(ID) ON DELETE CASCADE
+            )
+        ''')
+
+        # Person ↔ Fachliche Rollen (n:m)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS PersonRoles (
+                ContactID INTEGER NOT NULL,
+                RoleKey   TEXT    NOT NULL,
+                PRIMARY KEY (ContactID, RoleKey),
                 FOREIGN KEY (ContactID) REFERENCES Contacts(ID) ON DELETE CASCADE
             )
         ''')
@@ -1468,6 +1493,11 @@ class Database:
                         salutation=c.get('salutation', ''),
                         first_name=c.get('first_name', ''),
                         last_name=c.get('last_name', ''),
+                        job_title=c.get('job_title', ''),
+                        department=c.get('department', ''),
+                        is_primary_contact=c.get('is_primary_contact', 0),
+                        type_keys=c.get('type_keys', []),
+                        role_keys=c.get('role_keys', []),
                     )
                 except Exception:
                     pass  # Duplikat oder Constraint-Fehler – überspringen
@@ -3471,8 +3501,19 @@ class Database:
             pd.DateOfBirth,                -- 22 date_of_birth(NEW)
             pd.CompanyContactID,           -- 23              (NEW)
             pd.CompanyName_Free,           -- 24              (NEW)
-            ca.AddressLine1,               -- 25 address_line1(NEW)
-            c.Abbreviation                 -- 26 abbreviation (NEW)
+            ca.AddressLine1,               -- 25 address_line1
+            c.Abbreviation,                -- 26 abbreviation
+            (SELECT GROUP_CONCAT(ctl.TypeKey, ',')
+             FROM ContactTypeLinks ctl
+             WHERE ctl.ContactID = c.ID
+             ORDER BY ctl.TypeKey)         AS type_keys,        -- 27
+            pd.JobTitle,                   -- 28 job_title
+            pd.Department,                 -- 29 department
+            COALESCE(pd.IsPrimaryContact, 0) AS is_primary_contact, -- 30
+            (SELECT GROUP_CONCAT(pr.RoleKey, ',')
+             FROM PersonRoles pr
+             WHERE pr.ContactID = c.ID
+             ORDER BY pr.RoleKey)          AS role_keys         -- 31
         FROM Contacts c
         LEFT JOIN CompanyDetails    cd ON c.ID = cd.ContactID
         LEFT JOIN PersonDetails     pd ON c.ID = pd.ContactID
@@ -3490,8 +3531,16 @@ class Database:
         conditions = []
         params = []
         if contact_type:
-            conditions.append('c.ContactType = ?')
-            params.append(contact_type)
+            if contact_type == 'own':
+                # 'own' ist ein Systemtyp, der direkt in Contacts.ContactType steht
+                conditions.append("c.ContactType = 'own'")
+            else:
+                # Alle anderen Typen werden über ContactTypeLinks geprüft
+                conditions.append(
+                    'EXISTS (SELECT 1 FROM ContactTypeLinks ctl'
+                    ' WHERE ctl.ContactID = c.ID AND ctl.TypeKey = ?)'
+                )
+                params.append(contact_type)
         if entity_type:
             conditions.append('c.EntityType = ?')
             params.append(entity_type)
@@ -3552,7 +3601,10 @@ class Database:
                        company_name='', legal_form='', tax_id='', buyer_route_id='',
                        # person
                        salutation='', title='', first_name='', last_name='',
-                       date_of_birth='', company_contact_id=None, company_name_free=''):
+                       date_of_birth='', company_contact_id=None, company_name_free='',
+                       job_title='', department='', is_primary_contact=0,
+                       # multi-value
+                       type_keys=None, role_keys=None):
         """Insert a new contact with sub-table records."""
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -3583,13 +3635,35 @@ class Database:
             elif entity_type == 'person':
                 cursor.execute(
                     'INSERT INTO PersonDetails '
-                    '(ContactID, Salutation, Title, FirstName, LastName, DateOfBirth, CompanyContactID, CompanyName_Free) '
-                    'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                    '(ContactID, Salutation, Title, FirstName, LastName, DateOfBirth, '
+                    'CompanyContactID, CompanyName_Free, JobTitle, Department, IsPrimaryContact) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                     (contact_id, salutation or None, title or None,
                      first_name, last_name, date_of_birth or None,
                      int(company_contact_id) if company_contact_id else None,
-                     company_name_free or None)
+                     company_name_free or None,
+                     job_title or None, department or None, 1 if is_primary_contact else 0)
                 )
+
+            # ContactTypeLinks: alle Typen außer 'own' (Systemtyp)
+            if contact_type != 'own':
+                all_types = list(dict.fromkeys([contact_type] + list(type_keys or [])))
+                for tk in all_types:
+                    if tk and tk != 'own':
+                        cursor.execute(
+                            'INSERT OR IGNORE INTO ContactTypeLinks (ContactID, TypeKey) VALUES (?, ?)',
+                            (contact_id, tk)
+                        )
+
+            # PersonRoles
+            if entity_type == 'person' and role_keys:
+                for rk in role_keys:
+                    if rk:
+                        cursor.execute(
+                            'INSERT OR IGNORE INTO PersonRoles (ContactID, RoleKey) VALUES (?, ?)',
+                            (contact_id, rk)
+                        )
+
             conn.commit()
         except Exception as e:
             conn.rollback()
@@ -3604,7 +3678,9 @@ class Database:
                        address_line1='', street='', postal_code='', city='', country='DE',
                        company_name='', legal_form='', tax_id='', buyer_route_id='',
                        salutation='', title='', first_name='', last_name='',
-                       date_of_birth='', company_contact_id=None, company_name_free=''):
+                       date_of_birth='', company_contact_id=None, company_name_free='',
+                       job_title='', department='', is_primary_contact=0,
+                       type_keys=None, role_keys=None):
         """Update an existing contact and all sub-table records."""
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -3638,13 +3714,34 @@ class Database:
             elif entity_type == 'person':
                 cursor.execute(
                     'INSERT INTO PersonDetails '
-                    '(ContactID, Salutation, Title, FirstName, LastName, DateOfBirth, CompanyContactID, CompanyName_Free) '
-                    'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                    '(ContactID, Salutation, Title, FirstName, LastName, DateOfBirth, '
+                    'CompanyContactID, CompanyName_Free, JobTitle, Department, IsPrimaryContact) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                     (contact_id, salutation or None, title or None,
                      first_name, last_name, date_of_birth or None,
                      int(company_contact_id) if company_contact_id else None,
-                     company_name_free or None)
+                     company_name_free or None,
+                     job_title or None, department or None, 1 if is_primary_contact else 0)
                 )
+            # ContactTypeLinks: delete + re-insert (nur für Nicht-'own'-Kontakte)
+            if contact_type != 'own':
+                cursor.execute('DELETE FROM ContactTypeLinks WHERE ContactID=?', (contact_id,))
+                all_types = list(dict.fromkeys([contact_type] + list(type_keys or [])))
+                for tk in all_types:
+                    if tk and tk != 'own':
+                        cursor.execute(
+                            'INSERT OR IGNORE INTO ContactTypeLinks (ContactID, TypeKey) VALUES (?, ?)',
+                            (contact_id, tk)
+                        )
+            # PersonRoles: delete + re-insert
+            cursor.execute('DELETE FROM PersonRoles WHERE ContactID=?', (contact_id,))
+            if entity_type == 'person' and role_keys:
+                for rk in role_keys:
+                    if rk:
+                        cursor.execute(
+                            'INSERT OR IGNORE INTO PersonRoles (ContactID, RoleKey) VALUES (?, ?)',
+                            (contact_id, rk)
+                        )
             conn.commit()
         except Exception as e:
             conn.rollback()

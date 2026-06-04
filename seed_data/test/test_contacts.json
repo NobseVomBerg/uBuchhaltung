@@ -28,7 +28,8 @@
     "country": "DE",
     "company_name": "Beispiel Kunde AG",
     "legal_form": "AG",
-    "tax_id": "DE987654321"
+    "tax_id": "DE987654321",
+    "type_keys": ["customer"]
   },
   {
     "contact_type": "supplier",
@@ -44,7 +45,8 @@
     "country": "DE",
     "company_name": "Lieferant GmbH",
     "legal_form": "GmbH",
-    "tax_id": "DE112233445"
+    "tax_id": "DE112233445",
+    "type_keys": ["supplier"]
   },
   {
     "contact_type": "customer",
@@ -60,7 +62,8 @@
     "country": "DE",
     "company_name": "Bäckerei Müller GmbH",
     "legal_form": "GmbH",
-    "tax_id": "DE292827190"
+    "tax_id": "DE292827190",
+    "type_keys": ["customer", "supplier"]
   },
   {
     "contact_type": "customer",
@@ -76,7 +79,8 @@
     "country": "DE",
     "company_name": "Schreibwaren Hoffmann e.K.",
     "legal_form": "e.K.",
-    "tax_id": "DE838383838"
+    "tax_id": "DE838383838",
+    "type_keys": ["customer"]
   },
   {
     "contact_type": "customer",
@@ -92,7 +96,8 @@
     "country": "DE",
     "company_name": "Gasthaus Zum Löwen KG",
     "legal_form": "KG",
-    "tax_id": "DE484848484"
+    "tax_id": "DE484848484",
+    "type_keys": ["customer"]
   },
   {
     "contact_type": "customer",
@@ -108,7 +113,8 @@
     "country": "DE",
     "company_name": "Apotheke Schmidt GbR",
     "legal_form": "GbR",
-    "tax_id": "DE757575757"
+    "tax_id": "DE757575757",
+    "type_keys": ["customer"]
   },
   {
     "contact_type": "customer",
@@ -124,7 +130,8 @@
     "country": "DE",
     "company_name": "Blumenhaus Rosengarten GmbH",
     "legal_form": "GmbH",
-    "tax_id": "DE626262626"
+    "tax_id": "DE626262626",
+    "type_keys": ["customer"]
   },
   {
     "contact_type": "customer",
@@ -140,7 +147,8 @@
     "country": "DE",
     "company_name": "Kfz-Werkstatt Fischer GmbH",
     "legal_form": "GmbH",
-    "tax_id": "DE515151515"
+    "tax_id": "DE515151515",
+    "type_keys": ["customer", "service_provider"]
   },
   {
     "contact_type": "customer",
@@ -156,7 +164,8 @@
     "country": "DE",
     "company_name": "Optik Braun OHG",
     "legal_form": "OHG",
-    "tax_id": "DE404040404"
+    "tax_id": "DE404040404",
+    "type_keys": ["customer"]
   },
   {
     "contact_type": "customer",
@@ -172,7 +181,8 @@
     "country": "DE",
     "company_name": "Friseur Haarmonie GbR",
     "legal_form": "GbR",
-    "tax_id": "DE939393939"
+    "tax_id": "DE939393939",
+    "type_keys": ["customer"]
   },
   {
     "contact_type": "customer",
@@ -188,7 +198,8 @@
     "country": "DE",
     "company_name": "Buchhandlung Lesezeit e.K.",
     "legal_form": "e.K.",
-    "tax_id": "DE101010101"
+    "tax_id": "DE101010101",
+    "type_keys": ["customer"]
   },
   {
     "contact_type": "customer",
@@ -204,7 +215,8 @@
     "country": "DE",
     "company_name": "Arztpraxis Dr. Weber",
     "legal_form": "",
-    "tax_id": "DE222222222"
+    "tax_id": "DE222222222",
+    "type_keys": ["customer"]
   },
   {
     "contact_type": "customer",
@@ -220,7 +232,8 @@
     "country": "DE",
     "company_name": "Reparaturservice Technik Meier GmbH",
     "legal_form": "GmbH",
-    "tax_id": "DE333333333"
+    "tax_id": "DE333333333",
+    "type_keys": ["customer", "service_provider"]
   },
   {
     "contact_type": "customer",
@@ -236,7 +249,8 @@
     "country": "DE",
     "company_name": "Tabakwaren Schulz e.K.",
     "legal_form": "e.K.",
-    "tax_id": "DE444444444"
+    "tax_id": "DE444444444",
+    "type_keys": ["customer"]
   },
   {
     "contact_type": "customer",
@@ -252,10 +266,11 @@
     "country": "DE",
     "company_name": "Kiosk Frisch GbR",
     "legal_form": "GbR",
-    "tax_id": "DE555555555"
+    "tax_id": "DE555555555",
+    "type_keys": ["customer"]
   },
   {
-    "contact_type": "customer",
+    "contact_type": "supplier",
     "entity_type": "company",
     "display_name": "Elektriker Strom AG",
     "abbreviation": "ESA",
@@ -268,10 +283,11 @@
     "country": "DE",
     "company_name": "Elektriker Strom AG",
     "legal_form": "AG",
-    "tax_id": "DE666666666"
+    "tax_id": "DE666666666",
+    "type_keys": ["supplier", "service_provider"]
   },
   {
-    "contact_type": "customer",
+    "contact_type": "partner",
     "entity_type": "company",
     "display_name": "Lebensmittel Özdemir e.K.",
     "abbreviation": "LOE",
@@ -284,7 +300,8 @@
     "country": "DE",
     "company_name": "Lebensmittel Özdemir e.K.",
     "legal_form": "e.K.",
-    "tax_id": "DE777777777"
+    "tax_id": "DE777777777",
+    "type_keys": ["partner"]
   },
   {
     "contact_type": "customer",
@@ -300,7 +317,10 @@
     "country": "DE",
     "salutation": "Herr",
     "first_name": "Hans",
-    "last_name": "Zimmermann"
+    "last_name": "Zimmermann",
+    "type_keys": ["customer"],
+    "job_title": "Geschäftsführer",
+    "role_keys": ["invoice_recipient", "contract"]
   },
   {
     "contact_type": "customer",
@@ -316,7 +336,12 @@
     "country": "DE",
     "salutation": "Frau",
     "first_name": "Andrea",
-    "last_name": "Schwarz"
+    "last_name": "Schwarz",
+    "type_keys": ["customer"],
+    "job_title": "Leiterin Einkauf",
+    "department": "Einkauf",
+    "is_primary_contact": 1,
+    "role_keys": ["invoice_recipient", "purchasing"]
   },
   {
     "contact_type": "customer",
@@ -332,7 +357,11 @@
     "country": "DE",
     "salutation": "Herr",
     "first_name": "Michael",
-    "last_name": "Wagner"
+    "last_name": "Wagner",
+    "type_keys": ["customer"],
+    "job_title": "Technischer Leiter",
+    "department": "IT",
+    "role_keys": ["technical"]
   },
   {
     "contact_type": "customer",
@@ -348,7 +377,10 @@
     "country": "DE",
     "salutation": "Frau",
     "first_name": "Sabine",
-    "last_name": "Becker"
+    "last_name": "Becker",
+    "type_keys": ["customer"],
+    "department": "Buchhaltung",
+    "role_keys": ["accounting"]
   },
   {
     "contact_type": "customer",
@@ -364,7 +396,8 @@
     "country": "DE",
     "salutation": "Herr",
     "first_name": "Thomas",
-    "last_name": "Richter"
+    "last_name": "Richter",
+    "type_keys": ["customer"]
   },
   {
     "contact_type": "customer",
@@ -380,7 +413,8 @@
     "country": "DE",
     "salutation": "Frau",
     "first_name": "Monika",
-    "last_name": "König"
+    "last_name": "König",
+    "type_keys": ["customer", "employee"]
   },
   {
     "contact_type": "customer",
@@ -396,7 +430,8 @@
     "country": "DE",
     "salutation": "Herr",
     "first_name": "Peter",
-    "last_name": "Lehmann"
+    "last_name": "Lehmann",
+    "type_keys": ["customer"]
   },
   {
     "contact_type": "customer",
@@ -412,7 +447,10 @@
     "country": "DE",
     "salutation": "Frau",
     "first_name": "Christina",
-    "last_name": "Schreiber"
+    "last_name": "Schreiber",
+    "type_keys": ["customer"],
+    "job_title": "Datenschutzbeauftragte",
+    "role_keys": ["data_protection"]
   },
   {
     "contact_type": "customer",
@@ -428,7 +466,8 @@
     "country": "DE",
     "salutation": "Herr",
     "first_name": "Stefan",
-    "last_name": "Neumann"
+    "last_name": "Neumann",
+    "type_keys": ["customer"]
   },
   {
     "contact_type": "customer",
@@ -444,7 +483,8 @@
     "country": "DE",
     "salutation": "Frau",
     "first_name": "Renate",
-    "last_name": "Hartmann"
+    "last_name": "Hartmann",
+    "type_keys": ["customer"]
   },
   {
     "contact_type": "customer",
@@ -460,7 +500,8 @@
     "country": "DE",
     "salutation": "Herr",
     "first_name": "Klaus",
-    "last_name": "Vogel"
+    "last_name": "Vogel",
+    "type_keys": ["customer"]
   },
   {
     "contact_type": "customer",
@@ -476,7 +517,8 @@
     "country": "DE",
     "salutation": "Frau",
     "first_name": "Ursula",
-    "last_name": "Brandt"
+    "last_name": "Brandt",
+    "type_keys": ["customer"]
   },
   {
     "contact_type": "customer",
@@ -492,7 +534,8 @@
     "country": "DE",
     "salutation": "Herr",
     "first_name": "Günter",
-    "last_name": "Fuchs"
+    "last_name": "Fuchs",
+    "type_keys": ["customer"]
   },
   {
     "contact_type": "customer",
@@ -508,7 +551,8 @@
     "country": "DE",
     "salutation": "Frau",
     "first_name": "Elisabeth",
-    "last_name": "Koch"
+    "last_name": "Koch",
+    "type_keys": ["customer"]
   },
   {
     "contact_type": "customer",
@@ -524,6 +568,7 @@
     "country": "DE",
     "salutation": "Herr",
     "first_name": "Friedrich",
-    "last_name": "Bergmann"
+    "last_name": "Bergmann",
+    "type_keys": ["customer"]
   }
 ]

@@ -31,8 +31,8 @@ class TestSchema:
             'Accounts', 'Articles', 'AssetCategories', 'AssetDepreciations',
             'Assets', 'BookingDocuments', 'BookingGroups', 'Bookings',
             'Categories', 'ChartOfAccounts', 'CompanyDetails', 'ContactAddresses',
-            'Contacts', 'Documents', 'InvoiceItems', 'InvoicePayments',
-            'Invoices', 'NumberRanges', 'PersonDetails', 'TaxKeys',
+            'ContactTypeLinks', 'Contacts', 'Documents', 'InvoiceItems', 'InvoicePayments',
+            'Invoices', 'NumberRanges', 'PersonDetails', 'PersonRoles', 'TaxKeys',
         }
         assert expected.issubset(tables)
 

@@ -29,11 +29,26 @@ def Footer():
 # ── Constants ────────────────────────────────────────────────────────────────
 
 CONTACT_TYPES = [
-    ('customer',  'Kunde'),
-    ('supplier',  'Lieferant'),
-    ('own',       'Eigene Daten'),
-    ('insurance', 'Versicherung'),
-    ('other',     'Sonstiges'),
+    ('customer',         'Kunde'),
+    ('supplier',         'Lieferant'),
+    ('prospect',         'Interessent'),
+    ('employee',         'Mitarbeiter'),
+    ('freelancer',       'Freelancer'),
+    ('partner',          'Partner'),
+    ('service_provider', 'Dienstleister'),
+    ('authority',        'Behörde'),
+    ('bank',             'Bank'),
+    ('other',            'Sonstiges'),
+]
+
+PERSON_ROLES = [
+    ('invoice_recipient', 'Rechnungsempfänger'),
+    ('orderer',           'Besteller'),
+    ('technical',         'Techn. Ansprechpartner'),
+    ('purchasing',        'Einkauf'),
+    ('accounting',        'Buchhaltung'),
+    ('data_protection',   'Datenschutzbeauftragter'),
+    ('contract',          'Vertragsverantwortlicher'),
 ]
 
 LEGAL_FORMS = [
@@ -106,13 +121,14 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
     """Build the HTML form for creating or editing a contact.
 
     c  – sqlite3.Row from fetch_contacts (column order defined in db.py), or None.
-    Columns used by index (backward-compat with invoice page):
+    Columns used by index:
       0=id, 1=contact_type, 2=customer_number, 3=display_name, 4=company_name,
       5=street, 6=postal_code, 7=city, 8=country, 9=email, 10=phone, 11=tax_id,
       12=notes, 13=logo, 14=buyer_route_id, 15=entity_type, 16=display_name_manual,
       17=legal_form, 18=salutation, 19=title, 20=first_name, 21=last_name,
       22=date_of_birth, 23=company_contact_id, 24=company_name_free, 25=address_line1,
-      26=abbreviation
+      26=abbreviation, 27=type_keys, 28=job_title, 29=department,
+      30=is_primary_contact, 31=role_keys
     """
 
     def g(idx, default=''):
@@ -124,11 +140,22 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
         except (IndexError, TypeError):
             return default
 
-    contact_id_val   = g(0,  '')
-    contact_type     = g(1,  'customer')
-    customer_number  = g(2,  '')
-    display_name_val = g(16, '')   # manually set override (index 16)
-    abbreviation     = g(26, '')
+    contact_id_val      = g(0,  '')
+    contact_type        = g(1,  'customer')
+    customer_number     = g(2,  '')
+    display_name_val    = g(16, '')   # manually set override (index 16)
+    abbreviation        = g(26, '')
+    type_keys_str       = g(27, '')
+    job_title           = g(28, '')
+    department          = g(29, '')
+    is_primary_contact  = g(30, 0)
+    role_keys_str       = g(31, '')
+
+    # Parse comma-separated keys from DB
+    active_type_keys = [t.strip() for t in type_keys_str.split(',') if t.strip()]
+    if not active_type_keys and contact_type not in ('own',):
+        active_type_keys = [contact_type]
+    active_role_keys = [r.strip() for r in role_keys_str.split(',') if r.strip()]
     email            = g(9,  '')
     phone            = g(10, '')
     notes            = g(12, '')
@@ -202,11 +229,50 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
             <td><input type="text" name="last_name" id="field_last_name" value="{last_name}"></td></tr>
         <tr><td>Geburtsdatum:</td>
             <td><input type="date" name="date_of_birth" value="{date_of_birth}"></td></tr>
+        <tr><td>Position / Jobtitel:</td>
+            <td><input type="text" name="job_title" value="{job_title}" placeholder="z.B. CEO, Leiter Einkauf"></td></tr>
+        <tr><td>Abteilung:</td>
+            <td><input type="text" name="department" value="{department}" placeholder="z.B. Buchhaltung, Vertrieb"></td></tr>
+        <tr><td>Primärkontakt:</td>
+            <td><label><input type="checkbox" name="is_primary_contact" value="1"
+                {'checked' if is_primary_contact else ''}>
+                Hauptansprechpartner dieser Firma</label></td></tr>
         <tr><td>Zugehörige Firma:</td>
             <td><select name="company_contact_id">{company_opts}</select>
                 <small class="muted">Oder Freitext, falls Firma nicht in der DB:</small>
                 <input type="text" name="company_name_free" value="{company_name_free}" placeholder="Firmenname (Freitext)"></td></tr>
+        {roles_section}
         '''
+
+    # Kontakttyp-Bereich: Checkboxen (außer bei 'own')
+    if contact_type == 'own':
+        type_section = '<span class="badge" style="background:#e8f0fe;color:#1a73e8;padding:3px 8px;border-radius:4px;">⭐ Eigene Daten</span>'
+    else:
+        type_boxes = ''
+        for tk, tl in CONTACT_TYPES:
+            chk = 'checked' if tk in active_type_keys else ''
+            type_boxes += (
+                f'<label style="margin-right:12px;white-space:nowrap;">'
+                f'<input type="checkbox" name="type_keys" value="{tk}" {chk}> {tl}</label>'
+            )
+        type_section = f'<div style="display:flex;flex-wrap:wrap;gap:4px 0;">{type_boxes}</div>'
+
+    # Fachliche Rollen (nur für Personen)
+    if entity_type == 'person':
+        role_boxes = ''
+        for rk, rl in PERSON_ROLES:
+            chk = 'checked' if rk in active_role_keys else ''
+            role_boxes += (
+                f'<label style="margin-right:12px;white-space:nowrap;">'
+                f'<input type="checkbox" name="role_keys" value="{rk}" {chk}> {rl}</label>'
+            )
+        roles_section = f'''
+        <tr><th colspan="2">🎯 Fachliche Rollen</th></tr>
+        <tr><td colspan="2" style="padding:6px 8px;">
+            <div style="display:flex;flex-wrap:wrap;gap:4px 0;">{role_boxes}</div>
+        </td></tr>'''
+    else:
+        roles_section = ''
 
     s  = f'<form method="POST" action="{form_action}" id="contact_form">'
     s += extra_hidden
@@ -216,7 +282,7 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
 
         <tr><th colspan="2">{entity_label} {alt_switch}</th></tr>
         <tr><td>Kontakttyp:</td>
-            <td><select name="contact_type">{_type_opts(contact_type)}</select></td></tr>
+            <td>{type_section}</td></tr>
         <tr><td>Anzeigename:</td>
             <td><input type="text" name="display_name" id="field_display_name" value="{display_name_val}"
                        placeholder="Wird automatisch aus den Feldern generiert">
@@ -478,30 +544,49 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
     type_labels = dict(CONTACT_TYPES)
 
     s += "<table>"
-    s += ("<tr><th>ID</th><th>Entität</th><th>Typ</th><th>Anzeigename</th>"
-          "<th>Kd-Nr.</th><th>Kürzel</th><th>Firma / Zuordnung</th><th>E-Mail</th><th>Telefon</th><th>Aktionen</th></tr>")
+    s += ("<tr><th>ID</th><th>Entität</th><th>Typen</th><th>Anzeigename</th>"
+          "<th>Kd-Nr.</th><th>Kürzel</th><th>Position / Firma</th><th>E-Mail</th><th>Telefon</th><th>Aktionen</th></tr>")
 
     for c in contacts:
-        cid          = c[0]
-        c_type       = c[1] or 'customer'
-        cust_nr      = c[2] or ''
-        display_name = c[3] or '–'
-        company_name = c[4] or ''
-        email        = c[9] or ''
-        phone        = c[10] or ''
-        entity_type_row = c[15] if len(c) > 15 else 'company'
+        cid              = c[0]
+        c_type           = c[1] or 'customer'
+        cust_nr          = c[2] or ''
+        display_name     = c[3] or '–'
+        company_name     = c[4] or ''
+        email            = c[9] or ''
+        phone            = c[10] or ''
+        entity_type_row  = c[15] if len(c) > 15 else 'company'
         abbreviation_val = c[26] if len(c) > 26 else ''
-        entity_icon  = "🏢" if entity_type_row == 'company' else "👤"
-        type_label   = type_labels.get(c_type, c_type)
+        type_keys_raw    = c[27] if len(c) > 27 else ''
+        job_title_val    = c[28] if len(c) > 28 else ''
+        entity_icon      = "🏢" if entity_type_row == 'company' else "👤"
+
+        # Typ-Tags (aus ContactTypeLinks; für 'own' Fallback)
+        if c_type == 'own':
+            type_tags = '<span style="background:#e8f0fe;color:#1a73e8;padding:1px 6px;border-radius:3px;font-size:.85em;">Eigene Daten</span>'
+        elif type_keys_raw:
+            type_tags = ' '.join(
+                f'<span style="background:#f1f3f4;padding:1px 6px;border-radius:3px;font-size:.85em;">{type_labels.get(tk.strip(), tk.strip())}</span>'
+                for tk in type_keys_raw.split(',') if tk.strip()
+            )
+        else:
+            type_tags = f'<span style="color:#999;font-size:.85em;">{type_labels.get(c_type, c_type)}</span>'
+
+        # Positions/Firma-Spalte
+        if entity_type_row == 'person':
+            pos_parts = [p for p in [job_title_val, company_name] if p]
+            position_cell = '<small>' + (' · '.join(pos_parts) if pos_parts else '–') + '</small>'
+        else:
+            position_cell = f'<small>{company_name}</small>'
 
         s += f"<tr>"
         s += f"<td>{cid}</td>"
         s += f"<td style='text-align:center;font-size:1.2em;'>{entity_icon}</td>"
-        s += f"<td>{type_label}</td>"
+        s += f"<td>{type_tags}</td>"
         s += f"<td><strong>{display_name}</strong></td>"
         s += f"<td>{cust_nr}</td>"
         s += f"<td><code>{abbreviation_val or ''}</code></td>"
-        s += f"<td><small>{company_name}</small></td>"
+        s += f"<td>{position_cell}</td>"
         s += f"<td>{email}</td>"
         s += f"<td>{phone}</td>"
         s += f"<td>"
