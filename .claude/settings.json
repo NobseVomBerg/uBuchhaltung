@@ -15,7 +15,25 @@
       "Bash(python -m py_compile server/app.py)",
       "Bash(python -m py_compile server/pages_contacts.py)",
       "Bash(python tests/check_anonymized.py*)",
-      "Bash(python -m pytest*)"
+      "Bash(python -m pytest*)",
+      "Bash(python .claude/hooks/py_compile_check.py*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python tests/check_anonymized.py --quiet"
+          },
+          {
+            "type": "command",
+            "command": "python .claude/hooks/py_compile_check.py"
+          }
+        ]
+      }
     ]
   },
   "instructions": {
