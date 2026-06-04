@@ -252,10 +252,11 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
         for tk, tl in CONTACT_TYPES:
             chk = 'checked' if tk in active_type_keys else ''
             type_boxes += (
-                f'<label style="margin-right:12px;white-space:nowrap;">'
-                f'<input type="checkbox" name="type_keys" value="{tk}" {chk}> {tl}</label>'
+                f'<label style="display:inline-flex;align-items:center;gap:5px;'
+                f'min-width:130px;margin-bottom:5px;">'
+                f'<input type="checkbox" name="type_keys" value="{tk}" {chk}>{tl}</label>'
             )
-        type_section = f'<div style="display:flex;flex-wrap:wrap;gap:4px 0;">{type_boxes}</div>'
+        type_section = f'<div style="display:flex;flex-wrap:wrap;">{type_boxes}</div>'
 
     # Fachliche Rollen (nur für Personen)
     if entity_type == 'person':
@@ -263,13 +264,14 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
         for rk, rl in PERSON_ROLES:
             chk = 'checked' if rk in active_role_keys else ''
             role_boxes += (
-                f'<label style="margin-right:12px;white-space:nowrap;">'
-                f'<input type="checkbox" name="role_keys" value="{rk}" {chk}> {rl}</label>'
+                f'<label style="display:inline-flex;align-items:center;gap:5px;'
+                f'min-width:190px;margin-bottom:5px;">'
+                f'<input type="checkbox" name="role_keys" value="{rk}" {chk}>{rl}</label>'
             )
         roles_section = f'''
         <tr><th colspan="2">🎯 Fachliche Rollen</th></tr>
         <tr><td colspan="2" style="padding:6px 8px;">
-            <div style="display:flex;flex-wrap:wrap;gap:4px 0;">{role_boxes}</div>
+            <div style="display:flex;flex-wrap:wrap;">{role_boxes}</div>
         </td></tr>'''
     else:
         roles_section = ''
