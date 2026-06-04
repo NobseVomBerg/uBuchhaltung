@@ -474,6 +474,18 @@ class Database:
         finally:
             conn2.close()
 
+        # Migration: Add Abbreviation column to Contacts if not exists
+        conn3 = self._get_connection()
+        cursor3 = conn3.cursor()
+        try:
+            cursor3.execute("ALTER TABLE Contacts ADD COLUMN Abbreviation TEXT")
+            cursor3.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_abbreviation ON Contacts(Abbreviation)")
+            conn3.commit()
+        except Exception:
+            pass  # Column or index already exists
+        finally:
+            conn3.close()
+
         # Seed-Daten aus seed_data/ laden
         self._seed_chart_of_accounts()
         self._seed_asset_categories()
@@ -1442,6 +1454,7 @@ class Database:
                         entity_type=c.get('entity_type', 'company'),
                         display_name=c.get('display_name'),
                         customer_number=c.get('customer_number'),
+                        abbreviation=c.get('abbreviation', ''),
                         email=c.get('email', ''),
                         phone=c.get('phone', ''),
                         notes=c.get('notes', ''),
@@ -3458,7 +3471,8 @@ class Database:
             pd.DateOfBirth,                -- 22 date_of_birth(NEW)
             pd.CompanyContactID,           -- 23              (NEW)
             pd.CompanyName_Free,           -- 24              (NEW)
-            ca.AddressLine1                -- 25 address_line1(NEW)
+            ca.AddressLine1,               -- 25 address_line1(NEW)
+            c.Abbreviation                 -- 26 abbreviation (NEW)
         FROM Contacts c
         LEFT JOIN CompanyDetails    cd ON c.ID = cd.ContactID
         LEFT JOIN PersonDetails     pd ON c.ID = pd.ContactID
@@ -3498,8 +3512,39 @@ class Database:
         conn.close()
         return row
 
+    def check_abbreviation_unique(self, abbreviation, exclude_id=None):
+        """Check if abbreviation is unique. Returns (is_unique, suggestion)."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        if exclude_id:
+            cursor.execute('SELECT COUNT(*) FROM Contacts WHERE Abbreviation=? AND ID!=?',
+                           (abbreviation, int(exclude_id)))
+        else:
+            cursor.execute('SELECT COUNT(*) FROM Contacts WHERE Abbreviation=?', (abbreviation,))
+        exists = cursor.fetchone()[0] > 0
+        conn.close()
+        if not exists:
+            return True, abbreviation
+        base = abbreviation.rstrip('0123456789') or abbreviation
+        n = 2
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        while n <= 999:
+            candidate = f'{base}{n}'
+            if exclude_id:
+                cursor.execute('SELECT COUNT(*) FROM Contacts WHERE Abbreviation=? AND ID!=?',
+                               (candidate, int(exclude_id)))
+            else:
+                cursor.execute('SELECT COUNT(*) FROM Contacts WHERE Abbreviation=?', (candidate,))
+            if cursor.fetchone()[0] == 0:
+                conn.close()
+                return False, candidate
+            n += 1
+        conn.close()
+        return False, f'{base}999'
+
     def insert_contact(self, contact_type='customer', entity_type='company',
-                       display_name=None, customer_number=None,
+                       display_name=None, customer_number=None, abbreviation='',
                        email='', phone='', notes='', logo='',
                        # address
                        address_line1='', street='', postal_code='', city='', country='DE',
@@ -3515,10 +3560,10 @@ class Database:
             customer_number = None
         try:
             cursor.execute(
-                'INSERT INTO Contacts (ContactType, EntityType, DisplayName, CustomerNumber, Email, Phone, Notes, Logo) '
-                'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                'INSERT INTO Contacts (ContactType, EntityType, DisplayName, CustomerNumber, Abbreviation, Email, Phone, Notes, Logo) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 (contact_type, entity_type, display_name or None, customer_number,
-                 email, phone, notes, logo)
+                 abbreviation or None, email, phone, notes, logo)
             )
             contact_id = cursor.lastrowid
 
@@ -3554,7 +3599,7 @@ class Database:
             conn.close()
 
     def update_contact(self, contact_id, contact_type='customer', entity_type='company',
-                       display_name=None, customer_number=None,
+                       display_name=None, customer_number=None, abbreviation='',
                        email='', phone='', notes='', logo='',
                        address_line1='', street='', postal_code='', city='', country='DE',
                        company_name='', legal_form='', tax_id='', buyer_route_id='',
@@ -3567,10 +3612,10 @@ class Database:
             customer_number = None
         try:
             cursor.execute(
-                'UPDATE Contacts SET ContactType=?, EntityType=?, DisplayName=?, CustomerNumber=?, '
+                'UPDATE Contacts SET ContactType=?, EntityType=?, DisplayName=?, CustomerNumber=?, Abbreviation=?, '
                 'Email=?, Phone=?, Notes=?, Logo=? WHERE ID=?',
                 (contact_type, entity_type, display_name or None, customer_number,
-                 email, phone, notes, logo, contact_id)
+                 abbreviation or None, email, phone, notes, logo, contact_id)
             )
             # Address: delete + re-insert
             cursor.execute('DELETE FROM ContactAddresses WHERE ContactID=? AND AddressType=\'main\'',

@@ -193,6 +193,17 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 contact_id = int(query_components["id"][0])
                 db.delete_contact(contact_id)
                 self.respond(303, "", headers={"Location": "/masterdata/contacts"})
+            elif self.path.startswith("/masterdata/contacts/check-abbreviation"):
+                import json as _json
+                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                value = qs.get('value', [''])[0].strip().upper()
+                exclude_id = qs.get('exclude_id', [None])[0]
+                if not value:
+                    self.respond(200, _json.dumps({"exists": False}), content_type="application/json")
+                else:
+                    is_unique, suggestion = db.check_abbreviation_unique(value, exclude_id)
+                    self.respond(200, _json.dumps({"exists": not is_unique, "suggestion": suggestion}),
+                                 content_type="application/json")
             # SKR (Chart of Accounts)
             elif self.path == "/masterdata/skr" or self.path.startswith("/masterdata/skr?"):
                 qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}

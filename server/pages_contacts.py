@@ -111,7 +111,8 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
       5=street, 6=postal_code, 7=city, 8=country, 9=email, 10=phone, 11=tax_id,
       12=notes, 13=logo, 14=buyer_route_id, 15=entity_type, 16=display_name_manual,
       17=legal_form, 18=salutation, 19=title, 20=first_name, 21=last_name,
-      22=date_of_birth, 23=company_contact_id, 24=company_name_free, 25=address_line1
+      22=date_of_birth, 23=company_contact_id, 24=company_name_free, 25=address_line1,
+      26=abbreviation
     """
 
     def g(idx, default=''):
@@ -123,9 +124,11 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
         except (IndexError, TypeError):
             return default
 
+    contact_id_val   = g(0,  '')
     contact_type     = g(1,  'customer')
     customer_number  = g(2,  '')
     display_name_val = g(16, '')   # manually set override (index 16)
+    abbreviation     = g(26, '')
     email            = g(9,  '')
     phone            = g(10, '')
     notes            = g(12, '')
@@ -220,6 +223,11 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
                 <small class="muted">Leer lassen für automatische Generierung</small></td></tr>
         <tr><td>Kunden-/Kontaktnummer:</td>
             <td><input type="text" name="customer_number" value="{customer_number}" placeholder="z.B. K-12345"></td></tr>
+        <tr><td>Kürzel:</td>
+            <td><input type="text" name="abbreviation" id="field_abbreviation" value="{abbreviation}"
+                       maxlength="10" style="width:90px;text-transform:uppercase;" placeholder="z.B. MS">
+                <span id="abbreviation_feedback" style="margin-left:6px;"></span>
+                <small class="muted">2–3 Buchstaben, wird aus dem Namen vorgeschlagen</small></td></tr>
 
         {entity_section}
 
@@ -256,7 +264,7 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
     </form>
     '''
 
-    # Append JS (entity_type is a Python variable – no JS interpolation needed)
+    # Append JS (entity_type and contact_id_val are Python variables)
     s += f'''
     <script>
         {_LOGO_JS}
@@ -291,6 +299,104 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
         if (titleEl) titleEl.addEventListener('input', refreshDisplayNameHint);
 
         refreshDisplayNameHint();
+
+        // ── Kürzel-Logik ─────────────────────────────────────────────────────
+
+        function _buildAbbreviation() {{
+            const et = '{entity_type}';
+            if (et === 'person') {{
+                const fn = (document.getElementById('field_first_name')?.value || '').trim();
+                const ln = (document.getElementById('field_last_name')?.value  || '').trim();
+                if (!fn && !ln) return '';
+                const lnParts = ln.split(/[-\\s]+/).filter(p => p.length > 0);
+                const fnParts = fn.split(/[-\\s]+/).filter(p => p.length > 0);
+                let raw = '';
+                if (lnParts.length > 1) {{
+                    raw = (fnParts[0]?.[0] || '') + lnParts[0][0] + lnParts[1][0];
+                }} else if (fnParts.length > 1) {{
+                    raw = fnParts[0][0] + fnParts[1][0];
+                }} else {{
+                    raw = (fnParts[0]?.[0] || '') + (lnParts[0]?.[0] || '');
+                }}
+                return raw.toUpperCase();
+            }} else {{
+                const cn = (document.getElementById('field_company_name')?.value || '').trim();
+                if (!cn) return '';
+                const words = cn.split(/\\s+/).filter(w => w.length > 0);
+                let raw = '';
+                if (words.length >= 3) {{
+                    raw = words[0][0] + words[1][0] + words[2][0];
+                }} else if (words.length === 2) {{
+                    raw = words[0].slice(0, 2) + words[1][0];
+                }} else {{
+                    raw = cn.slice(0, 3);
+                }}
+                return raw.toUpperCase();
+            }}
+        }}
+
+        function checkAbbreviationUnique() {{
+            const abbr     = document.getElementById('field_abbreviation');
+            const feedback = document.getElementById('abbreviation_feedback');
+            if (!abbr || !feedback) return;
+            const value = abbr.value.trim();
+            if (!value) {{ feedback.innerHTML = ''; abbr.style.borderColor = ''; return; }}
+            const excludeId = '{contact_id_val}';
+            const url = '/masterdata/contacts/check-abbreviation?value=' + encodeURIComponent(value)
+                        + (excludeId ? '&exclude_id=' + excludeId : '');
+            fetch(url)
+                .then(r => r.json())
+                .then(data => {{
+                    if (data.exists) {{
+                        feedback.innerHTML = '&#x26A0; Bereits vergeben &rarr; <a href="#" onclick="useAbbrevSuggestion(\'' + data.suggestion + '\');return false;">' + data.suggestion + '</a>';
+                        feedback.style.color = '#c00';
+                        abbr.style.borderColor = '#c00';
+                    }} else {{
+                        feedback.innerHTML = '&#x2713;';
+                        feedback.style.color = 'green';
+                        abbr.style.borderColor = '';
+                    }}
+                }})
+                .catch(() => {{ feedback.innerHTML = ''; }});
+        }}
+
+        function useAbbrevSuggestion(s) {{
+            const abbr = document.getElementById('field_abbreviation');
+            if (abbr) {{
+                abbr.value = s;
+                abbr.dataset.userModified = 'true';
+                checkAbbreviationUnique();
+            }}
+        }}
+
+        function autoFillAbbreviation() {{
+            const abbr = document.getElementById('field_abbreviation');
+            if (!abbr || abbr.dataset.userModified === 'true') return;
+            const generated = _buildAbbreviation();
+            if (generated) {{
+                abbr.value = generated;
+                checkAbbreviationUnique();
+            }}
+        }}
+
+        (function initAbbrevField() {{
+            const abbr = document.getElementById('field_abbreviation');
+            if (!abbr) return;
+            if (abbr.value.trim()) {{
+                abbr.dataset.userModified = 'true';
+                checkAbbreviationUnique();
+            }}
+            abbr.addEventListener('input', function() {{
+                this.value = this.value.toUpperCase();
+                this.dataset.userModified = 'true';
+                checkAbbreviationUnique();
+            }});
+        }})();
+
+        ['field_company_name','field_first_name','field_last_name'].forEach(id => {{
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('blur', autoFillAbbreviation);
+        }});
     </script>
     '''
     return s
@@ -370,7 +476,7 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
 
     s += "<table>"
     s += ("<tr><th>ID</th><th>Entität</th><th>Typ</th><th>Anzeigename</th>"
-          "<th>Kd-Nr.</th><th>Firma / Zuordnung</th><th>E-Mail</th><th>Telefon</th><th>Aktionen</th></tr>")
+          "<th>Kd-Nr.</th><th>Kürzel</th><th>Firma / Zuordnung</th><th>E-Mail</th><th>Telefon</th><th>Aktionen</th></tr>")
 
     for c in contacts:
         cid          = c[0]
@@ -381,6 +487,7 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
         email        = c[9] or ''
         phone        = c[10] or ''
         entity_type_row = c[15] if len(c) > 15 else 'company'
+        abbreviation_val = c[26] if len(c) > 26 else ''
         entity_icon  = "🏢" if entity_type_row == 'company' else "👤"
         type_label   = type_labels.get(c_type, c_type)
 
@@ -390,6 +497,7 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
         s += f"<td>{type_label}</td>"
         s += f"<td><strong>{display_name}</strong></td>"
         s += f"<td>{cust_nr}</td>"
+        s += f"<td><code>{abbreviation_val or ''}</code></td>"
         s += f"<td><small>{company_name}</small></td>"
         s += f"<td>{email}</td>"
         s += f"<td>{phone}</td>"
@@ -400,7 +508,7 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
         s += f"</td></tr>"
 
     if not contacts:
-        s += "<tr><td colspan='9' style='text-align:center;padding:20px;'><em>Keine Kontakte vorhanden.</em></td></tr>"
+        s += "<tr><td colspan='10' style='text-align:center;padding:20px;'><em>Keine Kontakte vorhanden.</em></td></tr>"
 
     s += "</table>"
     s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Cols -->'
