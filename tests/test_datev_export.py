@@ -11,8 +11,8 @@ import io
 import random
 import uuid
 
-import datev
-from datev import _taxrate_to_bu
+from export import datev
+from export.datev import _taxrate_to_bu
 
 _C_BU = 8  # Spaltenindex BU-Schlüssel im DATEV-Buchungsstapel
 

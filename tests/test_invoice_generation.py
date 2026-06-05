@@ -13,8 +13,9 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from pdf_generator import _escape_pdf_string, generate_invoice_pdf
-from xrechnung_generator import XRechnungGenerator
+from export.pdf_invoice import generate_invoice_pdf
+from export.pdf_core import escape_pdf_string as _escape_pdf_string
+from export.xrechnung_invoice import XRechnungGenerator
 
 # ─────────────────────────────────────────────────────────────────────────────
 # XML namespaces used by XRechnung / UBL

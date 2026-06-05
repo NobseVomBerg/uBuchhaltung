@@ -57,9 +57,9 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 - **Multi-Company-Support**: Eigene Firma wählbar, dynamisches Logo
 - **Snapshot-Prinzip**: Verkäufer- und Käuferdaten werden bei Erstellung als Kopie gespeichert
 - **Positionstabelle**: Beliebig viele Positionen, Artikelverzeichnis-Integration
-- **PDF-Generierung** (`pdf_generator.py`): A4-Layout, Logo, Umlaute, dreispaltiger Footer
+- **PDF-Generierung** (`export/pdf_invoice.py` auf Basis von `export/pdf_core.py`): A4-Layout, Logo, Umlaute, dreispaltiger Footer
 - **E-Mail-Versand**: SMTP, PDF-Anhang, Empfänger aus Kontakten
-- **XRechnung XML-Export** (`xrechnung_generator.py`): EN 16931 konform
+- **XRechnung XML-Export** (`export/xrechnung_invoice.py`): EN 16931 konform
 - **Rechnungsstatus**: Entwurf → Finalisiert → Versendet → Bezahlt (+ Teilzahlung, Überfällig, Storniert)
 - **Nummernkreise**: Format YY[Buchstabe][Präfix]### mit Auto-Inkrementierung
 - **Zahlungsverknüpfung**: Rechnungen mit Bankbuchungen verbinden, Teilzahlungen
@@ -118,7 +118,7 @@ Vollständiges Anlagenmanagement mit gesetzeskonformer AfA:
   - Tabellen-Export: optionale `Konto-Nr. / IBAN`-Spalte (6- und 7-spaltig)
   - Tabellen-Export Matching: bank+entry-Paare ohne Belegnummer (Privatentnahmen, Gebühren) werden als Einheit erkannt und aktualisiert
   - Nach Import: automatische Bank↔Entry-Verknüpfung (`link_bank_to_entries()`)
-- **DATEV-Export** (`datev.py`): Buchungsstapel als DATEV-CSV (nur Entry-Buchungen)
+- **DATEV-Export** (`export/datev.py`): Buchungsstapel als DATEV-CSV (nur Entry-Buchungen)
 - **SQL-Konsole**: Direkte SQL-Ausführung (Entwickler-Tool)
 
 ### 15. About (`/about`)
@@ -132,11 +132,14 @@ Informationen über die Anwendung.
 PyBuch/
 ├── main.py                    # Entry Point – Webserver starten
 ├── db.py                      # Datenbank-Layer (CRUD, Import, Linking, Seeding)
-├── datev.py                   # DATEV-Buchungsstapel-Export
 ├── document_parser.py         # PDF-Parser für Kontoauszüge (u.a. VBR, DKB)
-├── pdf_generator.py           # PDF-Rechnungsgenerierung
+├── export/                    # Ausgabe-/Export-Generatoren (Package)
+│   ├── pdf_core.py            #   Gemeinsame PDF-Primitive (Builder, Logo, Escaping)
+│   ├── pdf_invoice.py         #   PDF-Rechnungsgenerierung
+│   ├── pdf_worktime.py        #   PDF-Stundenzettel (Arbeitszeiten)
+│   ├── xrechnung_invoice.py   #   XRechnung XML (EN 16931)
+│   └── datev.py               #   DATEV-Buchungsstapel-Export (CSV)
 ├── email_sender.py            # E-Mail-Versand (SMTP)
-├── xrechnung_generator.py     # XRechnung XML (EN 16931)
 ├── buch.css                   # Stylesheet (inkl. Dark Mode)
 ├── README.md                  # Diese Datei
 ├── DB_MODEL.md                # Detailliertes Datenbankmodell
@@ -242,7 +245,7 @@ pip install -r requirements_parser.txt
 - **Webserver**: Python `http.server.BaseHTTPRequestHandler`
 - **Datenbank**: SQLite mit `PRAGMA foreign_keys = ON`
 - **Seeding**: JSON-Dateien aus `seed_data/` bei DB-Erstellung
-- **PDF**: `pdf_generator.py` (A4, Logo, WinAnsiEncoding)
+- **PDF**: `export/pdf_core.py` (Builder) + `export/pdf_invoice.py` / `export/pdf_worktime.py` (A4, Logo)
 - **Frontend**: Server-seitig generiertes HTML + JavaScript
 - **Styling**: `buch.css` mit Dark Mode
 

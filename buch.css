@@ -76,6 +76,10 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .action-icon:hover          { opacity: 1; text-decoration: none; }
 .action-icon.delete-icon    { color: #F44; }
 
+/* Arbeitszeiten (WorkTimes) */
+.wt-weekend td              { color: #c0392b; }                     /* Sa/So abgesetzt */
+.wt-sum td                  { font-weight: 700; border-top: 2px solid #888; }
+
 
 /* dark mode */
 @media (prefers-color-scheme: dark) {

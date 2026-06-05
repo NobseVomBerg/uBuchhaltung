@@ -29,6 +29,7 @@ from .pages_dashboard import PageDashboard
 from .pages_receipts import PageReceipts, PageReceiptEdit
 from .pages_setup import PageSetup
 from .pages_invoice import PageInvoice
+from .pages_worktime import PageWorkTimes
 
 class SimpleWebServer(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
@@ -84,7 +85,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 
                 invoice = db.get_invoice_by_id(invoice_id)
                 if invoice:
-                    from xrechnung_generator import XRechnungGenerator
+                    from export.xrechnung_invoice import XRechnungGenerator
                     items = db.get_invoice_items(invoice_id)
                     generator = XRechnungGenerator()
                     xml_content = generator.generate_xml(invoice, items)
@@ -127,7 +128,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 query_components = parse_qs(self.path.split('?')[1])
                 invoice_id = int(query_components["id"][0])
                 
-                from pdf_generator import generate_invoice_pdf
+                from export.pdf_invoice import generate_invoice_pdf
                 
                 pdf_bytes, pdf_path = generate_invoice_pdf(db, invoice_id)
                 
@@ -353,6 +354,51 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 cat_id = int(qc["id"][0])
                 db.delete_asset_category(cat_id)
                 self.respond(303, "", headers={"Location": "/asset_categories"})
+            # ── Zeiten / Arbeitszeiten ────────────────────────────────────
+            elif self.path == "/worktime" or self.path.startswith("/worktime?"):
+                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
+                person_id = int(qs['person'][0]) if qs.get('person') else None
+                error_msg = qs['error'][0] if qs.get('error') else None
+                hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
+                self.respond(200, PageWorkTimes(db, person_id=person_id,
+                                                date_from=date_from, date_to=date_to,
+                                                error_msg=error_msg), headers=hdrs)
+            elif self.path.startswith("/worktime/edit"):
+                qs = parse_qs(self.path.split('?')[1])
+                edit_id = int(qs["id"][0])
+                person_id = int(qs['person'][0]) if qs.get('person') else None
+                date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
+                self.respond(200, PageWorkTimes(db, person_id=person_id, date_from=date_from,
+                                                date_to=date_to, edit_id=edit_id))
+            elif self.path.startswith("/worktime/delete"):
+                qs = parse_qs(self.path.split('?')[1])
+                worktime_id = int(qs["id"][0])
+                db.delete_worktime(worktime_id)
+                person_id = qs['person'][0] if qs.get('person') else ''
+                date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
+                self.respond(303, "", headers={"Location":
+                    f"/worktime?person={person_id}&from={date_from}&to={date_to}"})
+            elif self.path.startswith("/worktime/pdf"):
+                qs = parse_qs(self.path.split('?')[1])
+                person_id = qs["person"][0]
+                date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
+                with_notes = qs.get('notes', ['0'])[0] in ('1', 'true', 'on')
+                pdf_bytes, filename = handlers.handle_worktime_pdf(db, person_id, date_from, date_to,
+                                                                   with_notes=with_notes)
+                if pdf_bytes:
+                    self.send_response(200)
+                    self.send_header("Content-type", "application/pdf")
+                    self.send_header("Content-Disposition", f"attachment; filename={filename}")
+                    self.send_header("Content-Length", str(len(pdf_bytes)))
+                    self.end_headers()
+                    self.wfile.write(pdf_bytes)
+                else:
+                    self.send_response(500)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write("Fehler beim Erstellen des PDF".encode("utf-8"))
+                return
             # ─────────────────────────────────────────────────────────────
             # ── Legacy Redirects (Compatibility) ──────────────────────────
             # Old URLs redirect to new Master Data structure
@@ -555,6 +601,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/masterdata/contacts/update":
                 status_code, location = handlers.handle_update_contact(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            # Zeiten / Arbeitszeiten
+            elif self.path == "/worktime/add":
+                status_code, location = handlers.handle_add_worktime(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/worktime/update":
+                status_code, location = handlers.handle_update_worktime(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
             # Articles
             elif self.path == "/masterdata/articles/add":

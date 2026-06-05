@@ -63,7 +63,13 @@ def Header1(active_page=None):
         nav_items.append('<span id="ActivePage">Anlagen</span>')
     else:
         nav_items.append('<a href="/assets">Anlagen</a>')
-    
+
+    # Zeiten (Arbeitszeiten, später auch Fahrten)
+    if active_page == 'worktime':
+        nav_items.append('<span id="ActivePage">Zeiten</span>')
+    else:
+        nav_items.append('<a href="/worktime">Zeiten</a>')
+
     # Sonstiges
     if active_page == 'miscellaneous':
         nav_items.append('<span id="ActivePage">Sonstiges</span>')

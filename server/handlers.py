@@ -465,16 +465,8 @@ def handle_datev_export(db: Database, post_data: dict):
         (303, location_str)    – bei Fehler (Redirect)
     """
     import datetime
-    import sys
     import traceback
-    sys.path.insert(0, '.')
-    try:
-        import datev as datev_module
-    except ImportError:
-        import importlib.util, os
-        spec = importlib.util.spec_from_file_location("datev", os.path.join(os.getcwd(), "datev.py"))
-        datev_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(datev_module)
+    from export import datev as datev_module
 
     try:
         date_from = post_data.get('date_from', [''])[0].strip()
@@ -1412,7 +1404,7 @@ def handle_invoice_pdf_by_id(invoice_id: int):
     Returns:
         tuple: (pdf_bytes, filename) or (None, None) if error
     """
-    from pdf_generator import generate_invoice_pdf
+    from export.pdf_invoice import generate_invoice_pdf
     
     db = Database()
     
@@ -1434,6 +1426,159 @@ def handle_invoice_pdf_by_id(invoice_id: int):
     except Exception as e:
         import traceback
         print(f"Error generating PDF for invoice {invoice_id}: {e}")
+        traceback.print_exc()
+        return None, None
+
+
+# ── Arbeitszeiten (WorkTimes) ─────────────────────────────────────────────────
+
+def _wt_redirect(person_id, date_from, date_to):
+    """Redirect-Ziel zurück zur Arbeitszeiten-Seite (Person + Zeitraum erhalten)."""
+    return f"/worktime?person={person_id}&from={date_from}&to={date_to}"
+
+
+def _wt_resolve_city(db: Database, mode, customer_id, free_text):
+    """Arbeitsort-Stadt serverseitig aus dem Modus ableiten (robust, nicht nur JS)."""
+    if mode == 'own':
+        own = list(db.fetch_contacts(contact_type='own'))
+        return (own[0][7] if own else '') or ''
+    if mode == 'customer':
+        if customer_id:
+            c = db.get_contact_by_id(customer_id)
+            return (c[7] if c else '') or ''
+        return ''
+    # 'other'
+    return (free_text or '').strip()
+
+
+import re as _re
+_WT_PAUSE_RE = _re.compile(r'(\d{1,2})(?::(\d{2}))?\s*(?:-|–|bis)\s*(\d{1,2})(?::(\d{2}))?')
+
+
+def _wt_pause_minutes_from_text(text):
+    """Summe aller Zeitbereiche im Pausentext (z.B. '12:00-12:30, 15-15:10') in Minuten."""
+    total = 0
+    for m in _WT_PAUSE_RE.finditer(text or ''):
+        s = int(m.group(1)) * 60 + (int(m.group(2)) if m.group(2) else 0)
+        e = int(m.group(3)) * 60 + (int(m.group(4)) if m.group(4) else 0)
+        if e > s:
+            total += e - s
+    return total
+
+
+def _wt_parse(db: Database, post_data):
+    """Gemeinsames Parsen der Arbeitszeit-Felder. Liefert ein dict für insert/update."""
+    g = lambda k, d='': post_data.get(k, [d])[0]
+    customer_raw = g('customer_id', '')
+    customer_id = int(customer_raw) if customer_raw.strip().isdigit() else None
+    mode = g('location_mode', 'customer')
+    pause_raw = g('pause_minutes', '0')
+    try:
+        pause = int(pause_raw)
+    except ValueError:
+        pause = 0
+    # Pausentext hat Vorrang: Minuten daraus ableiten, falls auswertbar
+    pause_text = g('pause_text', '').strip()
+    derived = _wt_pause_minutes_from_text(pause_text)
+    if derived > 0:
+        pause = derived
+    return {
+        'date': g('date', ''),
+        'kind': g('kind', 'work'),
+        'customer_id': customer_id,
+        'start_time': g('start_time', ''),
+        'end_time': g('end_time', ''),
+        'pause_minutes': pause,
+        'location_mode': mode,
+        'location_city': _wt_resolve_city(db, mode, customer_id, g('location_city', '')),
+        'note': g('note', ''),
+        'pause_text': pause_text,
+    }
+
+
+# Arten ohne Überschneidungssperre (ganztägig, keine Zeiten)
+_WT_NO_LOCK_KINDS = {'vacation', 'holiday'}
+
+
+def _wt_minutes(t):
+    """'HH:MM' → Minuten seit Mitternacht, oder None."""
+    try:
+        h, m = t.split(':')
+        return int(h) * 60 + int(m)
+    except (ValueError, AttributeError):
+        return None
+
+
+def _wt_has_overlap(db: Database, person_id, fields, exclude_id=None):
+    """True, wenn der Eintrag zeitlich mit einem bestehenden Arbeitseintrag desselben
+    Tags/derselben Person kollidiert. Urlaub/Feiertag lösen keine Sperre aus und
+    kollidieren auch nicht mit anderen Einträgen.
+    """
+    if fields['kind'] in _WT_NO_LOCK_KINDS:
+        return False
+    ns, ne = _wt_minutes(fields['start_time']), _wt_minutes(fields['end_time'])
+    if ns is None or ne is None:
+        return False  # ohne Zeiten keine Überschneidung prüfbar
+    for e in db.fetch_worktimes(person_id, fields['date'], fields['date']):
+        if exclude_id and e[0] == exclude_id:
+            continue
+        if (e[3] or 'work') in _WT_NO_LOCK_KINDS:
+            continue
+        es, ee = _wt_minutes(e[5]), _wt_minutes(e[6])
+        if es is None or ee is None:
+            continue
+        if ns < ee and es < ne:        # echte Zeitüberschneidung
+            return True
+    return False
+
+
+def _wt_overlap_redirect(person_id, date_from, date_to, date):
+    msg = quote(f"Überschneidung am {date}: in diesem Zeitraum existiert bereits ein Eintrag.")
+    return 303, f"/worktime?person={person_id}&from={date_from}&to={date_to}&error={msg}"
+
+
+def handle_add_worktime(db: Database, post_data):
+    """Neuen Arbeitszeit-Eintrag anlegen (mit Überschneidungssperre)."""
+    g = lambda k, d='': post_data.get(k, [d])[0]
+    person_id = int(g('person_id', '0') or 0)
+    date_from = g('from', '')
+    date_to = g('to', '')
+    fields = _wt_parse(db, post_data)
+    if person_id and fields['date']:
+        if _wt_has_overlap(db, person_id, fields):
+            return _wt_overlap_redirect(person_id, date_from, date_to, fields['date'])
+        db.insert_worktime(person_id=person_id, **fields)
+    return 303, _wt_redirect(person_id, date_from, date_to)
+
+
+def handle_update_worktime(db: Database, post_data):
+    """Bestehenden Arbeitszeit-Eintrag aktualisieren (mit Überschneidungssperre)."""
+    g = lambda k, d='': post_data.get(k, [d])[0]
+    person_id = int(g('person_id', '0') or 0)
+    date_from = g('from', '')
+    date_to = g('to', '')
+    worktime_id = int(g('id', '0') or 0)
+    fields = _wt_parse(db, post_data)
+    if worktime_id and fields['date']:
+        if _wt_has_overlap(db, person_id, fields, exclude_id=worktime_id):
+            return _wt_overlap_redirect(person_id, date_from, date_to, fields['date'])
+        db.update_worktime(worktime_id, **fields)
+    return 303, _wt_redirect(person_id, date_from, date_to)
+
+
+def handle_worktime_pdf(db: Database, person_id, date_from, date_to, with_notes=False):
+    """PDF-Stundenzettel erzeugen. Returns (pdf_bytes, filename) oder (None, None)."""
+    from export.pdf_worktime import generate_worktime_pdf
+    try:
+        pdf_bytes, pdf_path = generate_worktime_pdf(db, int(person_id), date_from, date_to,
+                                                    with_notes=with_notes)
+        if pdf_bytes is None:
+            return None, None
+        filename = os.path.basename(pdf_path) if pdf_path else f"Stundenzettel_{person_id}.pdf"
+        return pdf_bytes, filename
+    except Exception as e:
+        import traceback
+        print(f"Error generating worktime PDF: {e}")
         traceback.print_exc()
         return None, None
 
