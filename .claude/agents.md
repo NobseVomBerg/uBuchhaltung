@@ -17,7 +17,7 @@ Detaillierte Vorgaben für jeden Agent-Typ. Nutze diese als Referenz, wenn du ei
 
 - [ ] **Verständnis vor Implementation**
   - Lese User-Request genau → summarize vor der Arbeit
-  - DB-Schema-Änderung? → erst `db.py` verstehen
+  - DB-Schema-Änderung? → erst `db/schema.py` verstehen (db-navigate-Skill für Domänen-Mixins)
   - Route-Änderung? → erst `server/app.py` + relevante `pages_*.py` lesen
   - **Keine Umwege:** Plan zuerst, dann implementieren
 

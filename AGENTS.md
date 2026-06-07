@@ -5,12 +5,12 @@ Pragmatische Hinweise für KI-/Coding-Agenten in diesem Repository.
 ## Ziel
 
 - Änderungen möglichst klein, präzise und nachvollziehbar halten
-- Business-Logik in `db.py` zentral pflegen
+- Business-Logik im `db/`-Package zentral pflegen (Domänen-Mixins)
 - UI-Rendering in `server/pages_*.py` lassen
 
 ## Code-Schwerpunkte
 
-- `db.py`: Datenmodell, Import, Matching, EÜR-Ableitung
+- `db/`: Datenmodell, Import, Matching, EÜR-Ableitung (Domänen-Mixins; Einstieg via db-navigate-Skill, Schema in `db/schema.py`)
 - `server/pages_dashboard.py`: Dashboard inkl. EÜR-Tabellen
 - `server/pages_transactions.py`: Transaktionssicht (bank + entry)
 - `server/pages_miscellaneous.py`: WISO-Import, SQL-Konsole

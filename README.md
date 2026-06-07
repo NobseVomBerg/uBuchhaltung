@@ -131,7 +131,12 @@ Informationen über die Anwendung.
 ```
 PyBuch/
 ├── main.py                    # Entry Point – Webserver starten
-├── db.py                      # Datenbank-Layer (CRUD, Import, Linking, Seeding)
+├── db/                        # Datenbank-Package (CRUD, Import, Linking, Seeding)
+│   ├── __init__.py            #   Database-Klasse (Komposition aller Mixins)
+│   ├── core.py                #   Verbindung, Init-Guard, Geld-Grenze, coa_id
+│   ├── schema.py              #   alle CREATE TABLE / Schema-Setup
+│   ├── bookings.py · matching.py · invoices.py · contacts.py · …
+│   └── (weitere Domänen-Mixins: assets, accounts, wiso_import, reporting …)
 ├── document_parser.py         # PDF-Parser für Kontoauszüge (u.a. VBR, DKB)
 ├── export/                    # Ausgabe-/Export-Generatoren (Package)
 │   ├── pdf_core.py            #   Gemeinsame PDF-Primitive (Builder, Logo, Escaping)

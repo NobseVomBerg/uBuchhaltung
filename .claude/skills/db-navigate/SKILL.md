@@ -1,47 +1,65 @@
 ---
 name: db-navigate
-description: Navigate db.py efficiently without reading the entire ~4600-line file — find tables, methods, and schema with targeted grep
+description: Navigate the db/ package efficiently — pick the right domain module, then read or grep it instead of scanning one giant file
 user-invocable: false
 ---
 
-db.py ist ~4600 Zeilen (~15k Tokens wenn komplett geladen). NIE komplett lesen.
+Die Datenbankschicht ist seit dem Split ein **Package `db/`** mit Domänen-Mixins
+(früher ein einzelnes ~5200-Zeilen-`db.py`). Die `Database`-Klasse wird in
+`db/__init__.py` aus allen Mixins komponiert; `from db import Database` /
+`from db import coa_id` funktioniert unverändert.
 
-> Hinweis (Windows): Statt der bash-`grep`-Beispiele unten das **Grep-Tool** nutzen
-> (gleiches Ergebnis, plattformunabhängig). Die Befehle zeigen nur das Muster.
+**Strategie: erst das richtige Modul wählen, dann gezielt lesen.** Die meisten
+Module sind 100–600 Zeilen — ein ganzes Domänenmodul zu lesen gibt vollen
+Kontext bei moderatem Token-Einsatz. NIE alle Module gleichzeitig laden.
+
+> Hinweis (Windows): das **Grep-Tool** statt bash-`grep` nutzen (plattformunabhängig).
+
+## Modul-Landkarte (`db/`)
+
+| Modul | Inhalt |
+|-------|--------|
+| `core.py` | `_CoreMixin`: Verbindung, Init-Guard, `_minor_opt`/`_euro_row` (Geld-Grenze), `_log_sql`, `get_table_statistics`, `export_to_sql`; freie Fn `coa_id`; Klassen-Attribute (`_initialized_dbs`, `_init_lock`, `_CONTACTS_QUERY`) |
+| `schema.py` | **alle CREATE TABLE** (`initialize_database`), `_create_extended_schema`, `ensure_kasse_exists` |
+| `seed.py` | Seed-/Testdaten, SKR-Konten, Steuerschlüssel, `load_test_seed_data`, `is_first_run` |
+| `bookings.py` | Buchungen, Buchungsgruppen, Booking↔Document, `fetch_bookings_grouped` |
+| `matching.py` | Bank↔Entry-Auto-Linking (`link_bank_to_entries`), `find_unlinked_*` |
+| `wiso_import.py` | WISO-CSV-Import (`import_wiso_csv`, `_import_wiso_*`) |
+| `accounts.py` | Bankkonten + Kontenrahmen/SKR (`*_chart_of_accounts`, `coa_id_*`) + DATEV-Helfer |
+| `assets.py` | Anlagen, Kategorien, AfA-Plan/-Buchung |
+| `contacts.py` | Kontakte (normalisiert), Adressen, Personen/Firmen |
+| `invoices.py` | Rechnungen, Positionen, Zahlungen, überfällig/fällig |
+| `numbering.py` | Nummernkreise (Rechnungsnummern etc.) |
+| `articles.py` | Artikel-Stammdaten |
+| `receipts.py` / `worktimes.py` | Belege bzw. Arbeitszeiten |
+| `reporting.py` | Dashboard-Kennzahlen + EÜR |
 
 ## Gezielt navigieren
 
-**Tabellen-Übersicht:**
+**Methode finden (Modul unbekannt):**
 ```bash
-grep -n "CREATE TABLE\|class.*:" db.py | head -50
+grep -rn "def <methodname>" db/
 ```
 
-**Methode finden:**
+**Tabellen-Schema (alle CREATE TABLE):** → immer `db/schema.py`
 ```bash
-grep -n "def <methodname>" db.py
+grep -n "CREATE TABLE" db/schema.py
 ```
 
-**Danach nur 30-60 Zeilen um den Treffer lesen:**
-```python
-Read("db.py", offset=<zeile-10>, limit=60)
-```
+**Eine Domäne ganz verstehen:** das passende Modul lesen, z. B.
+`Read("db/invoices.py")` (oft komplett sinnvoll, da klein).
 
-**Alle Methoden einer Kategorie (z.B. Buchungen):**
+**Fremdschlüssel / Joins:**
 ```bash
-grep -n "def.*[Bb]ook\|def.*[Bb]uchung" db.py
-```
-
-**Fremdschlüssel / Joins verstehen:**
-```bash
-grep -n "FOREIGN KEY\|REFERENCES\|JOIN" db.py | head -30
+grep -rn "FOREIGN KEY\|REFERENCES\|JOIN" db/
 ```
 
 ## Token-Kalkulation
 
 | Aktion | Tokens |
 |--------|--------|
-| db.py komplett lesen | ~15k |
-| Gezielter grep + 60 Zeilen lesen | ~800 |
-| Ersparnis pro Task | ~14k |
+| Altes db.py komplett (5200 Z.) | ~15k |
+| Domänenmodul komplett (~300 Z.) | ~1–2k |
+| `grep -rn def … db/` + 60 Zeilen | ~800 |
 
-Erst grep, dann Read mit offset. Nie blind das ganze File laden.
+Modul wählen → lesen/greppen. Nie das ganze Package blind laden.

@@ -5,9 +5,9 @@
 **PyBuch** ist ein Python-basiertes Buchhaltungs-/Rechnungsverwaltungssystem mit Flask-Backend und Web-UI. Fokus: Finanz-Datenmanagement, SKR-Konten, Geschäftsvorfälle, PDF-Rechnungen.
 
 - **Tech Stack:** Python (Flask), SQLite, Jinja2 Templates, CSS, HTML
-- **Struktur:** `server/` (App-Logik), `db.py` (Datenbank), `buch.css` (Styling), Templates im `server/templates/`
+- **Struktur:** `server/` (App-Logik), `db/` (Datenbank-Package, Domänen-Mixins), `buch.css` (Styling), Templates im `server/templates/`
 - **Entwicklungs-Server:** `python main.py` (Port 8080)
-- **Entscheidende Files:** `db.py` (Schema), `server/app.py` (Routes), `server/pages_*.py` (Features)
+- **Entscheidende Files:** `db/schema.py` (Tabellen/Schema), `db/__init__.py` (Database-Komposition), `server/app.py` (Routes), `server/pages_*.py` (Features). Navigation: db-navigate-Skill.
 
 ---
 
