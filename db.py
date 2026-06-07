@@ -525,7 +525,7 @@ class Database:
                 ID INTEGER PRIMARY KEY AUTOINCREMENT,
                 InvoiceID INTEGER NOT NULL,
                 BookingID INTEGER NOT NULL,
-                Amount REAL NOT NULL,
+                Amount INTEGER NOT NULL,
                 PaymentDate DATE NOT NULL,
                 Notes TEXT,
                 CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -4458,25 +4458,28 @@ class Database:
             cursor.execute('''
                 INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate)
                 VALUES (?, ?, ?, ?)
-            ''', (invoice_id, transaction_id, amount_paid, payment_date))
+            ''', (invoice_id, transaction_id, to_minor(amount_paid), payment_date))
 
-            # Recalculate AmountDue from all payments
+            # Recalculate AmountDue from all payments – Rechnung in Minor Units
+            # (exakt). SumGross stammt noch aus REAL (Euro), bis Phase 1e.
             cursor.execute(
                 'SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
                 (invoice_id,))
-            total_paid = cursor.fetchone()[0]
-            new_due = invoice_data[0] - total_paid
+            total_paid_minor = cursor.fetchone()[0]
+            gross_minor = to_minor(invoice_data[0] or 0)
+            new_due_minor = gross_minor - total_paid_minor
+            new_due = from_minor(new_due_minor)
 
             cursor.execute('''
                 UPDATE Invoices
                 SET AmountDue = ?, UpdatedAt = CURRENT_TIMESTAMP
                 WHERE ID = ?
-            ''', (new_due, invoice_id))
+            ''', (float(new_due), invoice_id))
 
-            # Auto-update status
-            if abs(new_due) < 0.01:
+            # Auto-update status (100 Minor Units = 0,01 EUR bei SCALE=4)
+            if abs(new_due_minor) < 100:
                 new_status = 'paid'
-            elif total_paid > 0:
+            elif total_paid_minor > 0:
                 new_status = 'partial'
             else:
                 new_status = None
@@ -4514,7 +4517,7 @@ class Database:
         ''', (invoice_id,))
         rows = cursor.fetchall()
         conn.close()
-        return rows
+        return [self._euro_row(r, 3) for r in rows]  # Amount (Index 3) -> Euro-Decimal
 
     def delete_invoice_payment(self, payment_id):
         """Remove an InvoicePayments entry and recalculate AmountDue on the invoice."""
@@ -4529,19 +4532,21 @@ class Database:
 
             cursor.execute('DELETE FROM InvoicePayments WHERE ID = ?', (payment_id,))
 
-            # Recalculate AmountDue
+            # Recalculate AmountDue – Rechnung in Minor Units (exakt).
+            # SumGross stammt noch aus REAL (Euro), bis Phase 1e.
             cursor.execute('SELECT SumGross FROM Invoices WHERE ID = ?', (invoice_id,))
             sum_gross = cursor.fetchone()[0]
             cursor.execute(
                 'SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
                 (invoice_id,))
-            total_paid = cursor.fetchone()[0]
-            new_due = sum_gross - total_paid
+            total_paid_minor = cursor.fetchone()[0]
+            new_due_minor = to_minor(sum_gross or 0) - total_paid_minor
+            new_due = from_minor(new_due_minor)
 
-            # Recalculate status
-            if abs(new_due) < 0.01:
+            # Recalculate status (100 Minor Units = 0,01 EUR bei SCALE=4)
+            if abs(new_due_minor) < 100:
                 new_status = 'paid'
-            elif total_paid > 0:
+            elif total_paid_minor > 0:
                 new_status = 'partial'
             else:
                 new_status = 'finalized'
@@ -4549,7 +4554,7 @@ class Database:
             cursor.execute('''
                 UPDATE Invoices SET AmountDue = ?, Status = ?, UpdatedAt = CURRENT_TIMESTAMP
                 WHERE ID = ?
-            ''', (new_due, new_status, invoice_id))
+            ''', (float(new_due), new_status, invoice_id))
 
             conn.commit()
         except Exception as e:
