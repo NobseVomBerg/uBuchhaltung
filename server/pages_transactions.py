@@ -1,6 +1,7 @@
 """
 Transactions page (Buchungen: Bankbewegungen + Buchungssätze)
 """
+import html as _html
 from db import Database
 from .pages import Header1, Header2, Header3, Footer
 from .period import period_filter_widget
@@ -63,8 +64,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     if edit_transaction_id:
         edit_trans = db.get_booking_by_id(edit_transaction_id)
         if edit_trans:
-            edit_recipient = edit_trans[6] or ""  # RecipientClient
-            edit_text = edit_trans[15] or ""      # Text
+            edit_recipient = _html.escape(edit_trans[6] or "")  # RecipientClient
+            edit_text = _html.escape(edit_trans[15] or "")      # Text
 
             # Für Bank-Buchungen: verknüpfte Entry-Daten laden
             if edit_trans[17] == 'bank':  # BookingType
@@ -83,9 +84,9 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
 
     # Get dropdown data (einmalig laden – Maps für Tabelle gleich mitbauen)
     customers    = db.fetch_contacts(contact_type='customer')
-    customer_map = {c[0]: c[2] or c[3] for c in customers}
+    customer_map = {c[0]: _html.escape(str(c[2] or c[3] or '')) for c in customers}
     coa_accounts = db.fetch_chart_of_accounts()
-    coa_map      = {c[0]: str(c[2]) for c in coa_accounts}
+    coa_map      = {c[0]: _html.escape(str(c[2])) for c in coa_accounts}
     private_coa_ids = {c[0] for c in coa_accounts if 2100 <= c[2] < 2200}
     booking_groups = db.fetch_booking_groups()
 
@@ -131,11 +132,11 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 break
     for account in accounts:
         selected = 'selected' if selected_account_id and account[0] == selected_account_id else ''
-        s+= f'<option value="{account[0]}" {selected}>{account[1]}</option>'
+        s+= f'<option value="{account[0]}" {selected}>{_html.escape(str(account[1] or ""))}</option>'
 
     s+= f'''
                     </select></td></tr>
-                    <tr><td>Fremdes Konto/IBAN:</td><td><input type="text" name="foreign_account" value="{edit_trans[5] if edit_trans and edit_trans[5] else ""}" size="40"></td></tr>
+                    <tr><td>Fremdes Konto/IBAN:</td><td><input type="text" name="foreign_account" value="{_html.escape(str(edit_trans[5])) if edit_trans and edit_trans[5] else ""}" size="40"></td></tr>
 
                     <tr><td>Kunde:</td><td><select name="contact_id">
                         <option value="">-- Kein Kunde --</option>
@@ -144,7 +145,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     for contact in customers:
         selected = 'selected' if selected_contact_id and contact[0] == selected_contact_id else ''
         contact_display = f"{contact[2]} ({contact[3] or 'Privat'})" if contact[2] else contact[3] or f"ID {contact[0]}"
-        s+= f'<option value="{contact[0]}" {selected}>{contact_display}</option>'
+        s+= f'<option value="{contact[0]}" {selected}>{_html.escape(str(contact_display))}</option>'
 
     s+= f'''
                     </select></td></tr>
@@ -156,7 +157,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     for bg in booking_groups:
         selected = 'selected' if selected_booking_group_id and bg[0] == selected_booking_group_id else ''
         bg_display = f"#{bg[0]} - {bg[1] or 'Ohne Beschreibung'}"
-        s+= f'<option value="{bg[0]}" {selected}>{bg_display}</option>'
+        s+= f'<option value="{bg[0]}" {selected}>{_html.escape(str(bg_display))}</option>'
 
     s+= f'''
                     </select></td></tr>
@@ -172,18 +173,18 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             continue
         selected = 'selected' if is_selected else ''
         coa_display = f"{coa[2]} - {coa[3]}" if coa[3] else f"{coa[2]}"
-        s+= f'<option value="{coa[0]}" {selected}>{coa_display}</option>'
+        s+= f'<option value="{coa[0]}" {selected}>{_html.escape(str(coa_display))}</option>'
 
     s+= f'''
                     </select></td></tr>
 
                     <tr><td>Betrag:</td><td><input type="number" step="0.01" class="noButtons" name="amount" id="amount" value="{edit_trans[11] if edit_trans else ""}" required></td></tr>
-                    <tr><td>Währung:</td><td><input type="text" name="currency" value="{edit_trans[12] if edit_trans else "EUR"}" size="5"></td></tr>
+                    <tr><td>Währung:</td><td><input type="text" name="currency" value="{_html.escape(str(edit_trans[12])) if edit_trans and edit_trans[12] else "EUR"}" size="5"></td></tr>
 
                     <tr><td>Steuersatz (%):</td><td><input type="number" step="0.01" class="noButtons" name="tax_rate" id="tax_rate" value="{edit_trans[13]*100 if edit_trans and edit_trans[13] else ""}" placeholder="z.B. 19 für 19%"></td></tr>
                     <tr><td>Steuerbetrag:</td><td><input type="number" step="0.01" class="noButtons" name="tax_amount" id="tax_amount" value="{edit_trans[14] if edit_trans and edit_trans[14] else ""}"></td></tr>
 
-                    <tr><td>Beleg-Nr.:</td><td><input type="text" name="document_nr" value="{edit_trans[16] if edit_trans and edit_trans[16] else ""}"></td></tr>
+                    <tr><td>Beleg-Nr.:</td><td><input type="text" name="document_nr" value="{_html.escape(str(edit_trans[16])) if edit_trans and edit_trans[16] else ""}"></td></tr>
     '''
 
     if edit_trans:
@@ -228,10 +229,10 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             s+= "<tr><th>ID</th><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Typ</th><th>Aktionen</th></tr>"
             for doc in linked_documents:
                 doc_id        = doc[0]
-                doc_number    = doc[1]
-                doc_date      = doc[2]
-                doc_filename  = doc[3]
-                relation_type = doc[-1]  # RelationType from JOIN
+                doc_number    = _html.escape(str(doc[1] or ''))
+                doc_date      = _html.escape(str(doc[2] or ''))
+                doc_filename  = _html.escape(str(doc[3] or ''))
+                relation_type = _html.escape(str(doc[-1] or ''))  # RelationType from JOIN
                 s+= f"<tr>"
                 s+= f"<td>{doc_id}</td>"
                 s+= f"<td>{doc_number}</td>"
@@ -481,7 +482,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
 
     bookings = db.fetch_bookings_grouped(date_from, date_to)
 
-    account_map = {a[0]: a[1] for a in accounts}
+    account_map = {a[0]: _html.escape(str(a[1] or '')) for a in accounts}
 
     # Reverse-Map: COA_ID → (Account_ID, Account_Name)
     # Damit Einträge ohne Account_ID über COA/CounterCOA dem Konto zugeordnet werden.
@@ -520,8 +521,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             gid          = item['group_id']
             date_booking = item['date']
             amount       = item['amount'] or 0
-            currency     = item['currency']
-            description  = item['description'] or ''
+            currency     = _html.escape(str(item['currency'] or ''))
+            description  = _html.escape(item['description'] or '')
             count        = item['count']
             account_id   = item['account_id']
             contact_id   = item['contact_id']
@@ -530,8 +531,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             first_ccoa   = item.get('first_ccoa_id')
             account_id, account_name = _derive_account(account_id, first_coa, first_ccoa)
             contact_name = customer_map.get(contact_id, '') if contact_id else ''
-            first_recip  = item.get('first_recipient') or ''
-            first_text   = item.get('first_text') or ''
+            first_recip  = _html.escape(item.get('first_recipient') or '')
+            first_text   = _html.escape(item.get('first_text') or '')
             amount_color = 'green' if amount > 0 else 'red'
             # ✓-Badge: alle Kinder vollständig gebucht (COA_ID gesetzt)?
             # Entspricht dem gleichen Check wie bei Einzelbuchungen (booking[8] = COA_ID).
@@ -569,10 +570,10 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             bank_id      = booking[0]
             date_booking = booking[1]
             account_id   = booking[4]
-            recipient    = booking[6] or ''
+            recipient    = _html.escape(booking[6] or '')
             amount       = booking[11]
-            currency     = booking[12] or 'EUR'
-            bank_text    = booking[15] or ''
+            currency     = _html.escape(booking[12] or 'EUR')
+            bank_text    = _html.escape(booking[15] or '')
             is_linked    = item.get('linked', False)
             children     = item.get('children', [])
             count        = len(children)
@@ -581,9 +582,9 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             amount_color = 'green' if (amount or 0) > 0 else 'red'
 
             # Merged: Entry-Daten übernehmen (aus fetch_bookings_grouped)
-            entry_text    = item.get('entry_text') or bank_text
+            entry_text    = _html.escape(item.get('entry_text')) if item.get('entry_text') else bank_text
             entry_coa_id  = item.get('entry_coa_id')
-            entry_docnr   = item.get('entry_docnr') or ''
+            entry_docnr   = _html.escape(item.get('entry_docnr') or '')
             entry_contact = item.get('entry_contact_id')
             entry_coa_nr  = coa_map.get(entry_coa_id, '') if entry_coa_id else ''
             entry_contact_name = customer_map.get(entry_contact, '') if entry_contact else ''
@@ -602,7 +603,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 parts = []
                 for child_item in children:
                     cb = child_item['booking']
-                    dn = cb[16] or ''
+                    dn = _html.escape(cb[16] or '')
                     cb_coa = cb[8]
                     cb_ccoa = cb[9]
                     if (cb_coa and cb_coa in private_coa_ids) or (cb_ccoa and cb_ccoa in private_coa_ids):
@@ -694,13 +695,13 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             booking_id   = booking[0]
             date_booking = booking[1]
             account_id   = booking[4]
-            recipient    = booking[6] or ''
+            recipient    = _html.escape(booking[6] or '')
             contact_id   = booking[7]
             coa_id       = booking[8]
             amount       = booking[11]
-            currency     = booking[12] or 'EUR'
-            text         = booking[15] or ''
-            doc_number   = booking[16] or '' if len(booking) > 16 else ''
+            currency     = _html.escape(booking[12] or 'EUR')
+            text         = _html.escape(booking[15] or '')
+            doc_number   = _html.escape(booking[16] or '') if len(booking) > 16 else ''
             counter_coa_id = booking[9]
             account_id, account_name = _derive_account(account_id, coa_id, counter_coa_id)
             contact_name = customer_map.get(contact_id, '') if contact_id else ''
@@ -733,13 +734,13 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             booking_id   = booking[0]
             date_booking = booking[1]
             account_id   = booking[4]
-            recipient    = booking[6] or ''
+            recipient    = _html.escape(booking[6] or '')
             contact_id   = booking[7]
             coa_id       = booking[8]
             amount       = booking[11]
-            currency     = booking[12] or 'EUR'
-            text         = booking[15] or ''
-            doc_number   = booking[16] or '' if len(booking) > 16 else ''
+            currency     = _html.escape(booking[12] or 'EUR')
+            text         = _html.escape(booking[15] or '')
+            doc_number   = _html.escape(booking[16] or '') if len(booking) > 16 else ''
             counter_coa_id = booking[9]
             account_id, account_name = _derive_account(account_id, coa_id, counter_coa_id)
             contact_name = customer_map.get(contact_id, '') if contact_id else ''

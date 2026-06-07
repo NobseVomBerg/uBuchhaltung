@@ -3,10 +3,20 @@
 import datetime
 import json
 import os
+import html as _html
 from db import Database
 from .pages import (
     Header1, Header2, Header3, Footer,
 )
+
+
+def _json_for_script(obj) -> str:
+    """json.dumps, aber sicher zum Einbetten in <script>: neutralisiert
+    </script> sowie HTML-Sonderzeichen (json.dumps escaped '<' '>' '&' nicht)."""
+    return (json.dumps(obj)
+            .replace('<', '\\u003c')
+            .replace('>', '\\u003e')
+            .replace('&', '\\u0026'))
 
 # Invoice status constants
 INVOICE_STATUS_COLORS: dict = {
@@ -129,9 +139,9 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
         for invoice in invoices:
             # invoice: ID=0, InvoiceNumber=1, InvoiceDate=2, OwnCompanyId=3, SellerName=4, SellerCompany=5, ..., CustomerId=13, BuyerName=14, BuyerCompany=15, ..., TaxRate=35, SumNet=36, TaxAmount=37, SumGross=38, AmountDue=39, Status=40, PDFPath=41
             inv_id = invoice[0]
-            inv_number = invoice[1]
+            inv_number = _html.escape(str(invoice[1] or ''))
             inv_date = invoice[2]
-            buyer_name = invoice[14]  # BuyerName is now at index 14 (was 13)
+            buyer_name = _html.escape(str(invoice[14] or ''))  # BuyerName is now at index 14 (was 13)
             sum_net = invoice[36]  # SumNet is at index 36 (was 34)
             sum_gross = invoice[38]  # SumGross is at index 38 (was 36)
             status = invoice[40]  # Status is at index 40 (was 38)
@@ -261,7 +271,7 @@ def _invoice_form_html(db: Database, invoice_id=None):
     if existing_invoice:
         # Editing existing invoice - use existing data
         # existing_invoice structure: ID=0, InvoiceNumber=1, InvoiceDate=2, OwnCompanyId=3, SellerName=4, SellerCompany=5, ..., CustomerId=13, BuyerName=14, BuyerCompany=15, ..., Status=40, PDFPath=41
-        invoice_number = existing_invoice[1]
+        invoice_number = _html.escape(str(existing_invoice[1] or ''))
         invoice_date = existing_invoice[2]
         selected_own_company_id = existing_invoice[3]
         selected_customer_id = existing_invoice[13]  # CustomerId is now at index 13 (was 12)
@@ -405,7 +415,7 @@ function setInvoiceStatus(invId) {{
     '''
     
     for own in own_contacts:
-        own_name = own[3] or f"ID {own[0]}"  # display_name at index 3
+        own_name = _html.escape(str(own[3])) if own[3] else f"ID {own[0]}"  # display_name at index 3
         selected = 'selected' if (existing_invoice and own[0] == selected_own_company_id) or (not existing_invoice and own_contact and own[0] == own_contact[0]) else ''
         s += f'<option value="{own[0]}" {selected}>{own_name}</option>'
     
@@ -415,10 +425,10 @@ function setInvoiceStatus(invId) {{
     '''
     
     if own_contact:
-        sender_street = own_contact[5] or ''
-        sender_postal = own_contact[6] or ''
-        sender_city   = own_contact[7] or ''
-        sender_name   = own_contact[3] or ''  # display_name
+        sender_street = _html.escape(str(own_contact[5] or ''))
+        sender_postal = _html.escape(str(own_contact[6] or ''))
+        sender_city   = _html.escape(str(own_contact[7] or ''))
+        sender_name   = _html.escape(str(own_contact[3] or ''))  # display_name
         s += f'{sender_name} · {sender_street} · {sender_postal} {sender_city}'
     else:
         s += 'Eigene Adresse in Kontakte anlegen (Typ: own)'
@@ -429,7 +439,7 @@ function setInvoiceStatus(invId) {{
     '''
     
     for customer in customers:
-        cust_name = customer[3] or f"ID {customer[0]}"  # display_name at index 3
+        cust_name = _html.escape(str(customer[3])) if customer[3] else f"ID {customer[0]}"  # display_name at index 3
         selected = 'selected' if existing_invoice and customer[0] == selected_customer_id else ''
         s += f'<option value="{customer[0]}" {selected}>{cust_name}</option>'
     
@@ -525,8 +535,8 @@ function setInvoiceStatus(invId) {{
     
     for article in articles:
         art_id = article[0]
-        art_name = article[1] or ''
-        art_unit = article[2] or 'Stk.'
+        art_name = _html.escape(str(article[1] or ''))
+        art_unit = _html.escape(str(article[2] or 'Stk.'))
         art_price = article[3] or 0
         art_tax = article[4] or 19
         s += f'''                    <tr>
@@ -556,7 +566,7 @@ function setInvoiceStatus(invId) {{
         <div class="invoice-payment-terms">'''
     
     # Payment terms text
-    payment_terms_text = existing_invoice[26] if existing_invoice and existing_invoice[26] else 'Bitte überweisen Sie den Gesamtbetrag ohne jeden Abzug unter Angabe der Rechnungsnummer innerhalb von 14 Tagen ab Rechnungsdatum auf das unten angegebene Konto. Vielen Dank.'
+    payment_terms_text = _html.escape(str(existing_invoice[26])) if existing_invoice and existing_invoice[26] else 'Bitte überweisen Sie den Gesamtbetrag ohne jeden Abzug unter Angabe der Rechnungsnummer innerhalb von 14 Tagen ab Rechnungsdatum auf das unten angegebene Konto. Vielen Dank.'
     s += f'<textarea id="payment_terms" rows="3" style="width: 100%;">{payment_terms_text}</textarea>'
     
     s += '''
@@ -572,10 +582,10 @@ function setInvoiceStatus(invId) {{
     '''
     
     if own_contact:
-        addr_line1_html = f'{own_contact[25]}<br>' if (len(own_contact) > 25 and own_contact[25]) else ''
-        s += f'''                        {own_contact[3] or 'Firma'}<br>
-                        {addr_line1_html}                        {own_contact[5] or 'Straße'}<br>
-                        {own_contact[6] or 'PLZ'} {own_contact[7] or 'Ort'}'''
+        addr_line1_html = f'{_html.escape(str(own_contact[25]))}<br>' if (len(own_contact) > 25 and own_contact[25]) else ''
+        s += f'''                        {_html.escape(str(own_contact[3])) if own_contact[3] else 'Firma'}<br>
+                        {addr_line1_html}                        {_html.escape(str(own_contact[5])) if own_contact[5] else 'Straße'}<br>
+                        {_html.escape(str(own_contact[6])) if own_contact[6] else 'PLZ'} {_html.escape(str(own_contact[7])) if own_contact[7] else 'Ort'}'''
     else:
         s += '                        <em>Eigene Firmendaten in Kontakte anlegen</em>'
     
@@ -587,9 +597,9 @@ function setInvoiceStatus(invId) {{
     '''
     
     if own_contact:
-        s += f'''                        <span class="footer-label">Tel</span> {own_contact[10] or '-'}<br>
-                        <span class="footer-label">E-Mail</span> {own_contact[9] or '-'}<br>
-                        <span class="footer-label">UStIdNr</span> {own_contact[11] or '-'}'''
+        s += f'''                        <span class="footer-label">Tel</span> {_html.escape(str(own_contact[10])) if own_contact[10] else '-'}<br>
+                        <span class="footer-label">E-Mail</span> {_html.escape(str(own_contact[9])) if own_contact[9] else '-'}<br>
+                        <span class="footer-label">UStIdNr</span> {_html.escape(str(own_contact[11])) if own_contact[11] else '-'}'''
     else:
         s += '                        <em>Kontaktdaten fehlen</em>'
     
@@ -606,7 +616,7 @@ function setInvoiceStatus(invId) {{
     for account in accounts:
         if not account[6]:  # Skip cash accounts (IsCash=1)
             selected = 'selected' if selected_bank_id and account[0] == selected_bank_id else ''
-            s += f'<option value="{account[0]}" {selected}>{account[1]}</option>'
+            s += f'<option value="{account[0]}" {selected}>{_html.escape(str(account[1] or ""))}</option>'
     
     s += '''                        </select>
                         <div id="bank_details" style="margin-top: 5px;">
@@ -738,7 +748,7 @@ function setInvoiceStatus(invId) {{
             'logo':    own[13] if len(own) > 13 and own[13] else ''
         }
     
-    s += json.dumps(own_companies_dict)
+    s += _json_for_script(own_companies_dict)
     
     s += ''';
         
@@ -760,7 +770,7 @@ function setInvoiceStatus(invId) {{
             'buyer_route_id': customer[14] or ''
         }
     
-    s += json.dumps(customers_dict)
+    s += _json_for_script(customers_dict)
     
     s += ''';
         
@@ -778,7 +788,7 @@ function setInvoiceStatus(invId) {{
                 'bic': account[4] or ''
             }
     
-    s += json.dumps(banks_dict)
+    s += _json_for_script(banks_dict)
     
     s += ''';
         
@@ -797,7 +807,7 @@ function setInvoiceStatus(invId) {{
             'description': article[5] or ''
         }
     
-    s += json.dumps(articles_dict)
+    s += _json_for_script(articles_dict)
     
     s += ''';
         

@@ -2,6 +2,7 @@
 Master Data (Stammdaten) page generation functions
 Contains: Articles, Contacts, Chart of Accounts (SKR)
 """
+import html as _html
 from db import Database
 
 def Header1(active_page=None):
@@ -124,11 +125,11 @@ def PageArticles(db: Database, edit_article_id=None):
     # Formular-Modus
     form_title = "Artikel bearbeiten" if edit_article else "Neuer Artikel"
 
-    ea_name       = edit_article[1] if edit_article else ''
+    ea_name       = _html.escape(str(edit_article[1] or '')) if edit_article else ''
     ea_unit       = edit_article[2] if edit_article else 'Stk.'
     ea_unit_price = edit_article[3] if edit_article else 0.0
     ea_tax_rate   = int(edit_article[4]) if edit_article else 19
-    ea_desc       = edit_article[5] if edit_article else ''
+    ea_desc       = _html.escape(str(edit_article[5] or '')) if edit_article else ''
     ea_active     = edit_article[6] if edit_article and len(edit_article) > 6 else 1
 
     unit_options = [
@@ -186,11 +187,11 @@ def PageArticles(db: Database, edit_article_id=None):
 
     for article in articles:
         article_id  = article[0]
-        name        = article[1] or ''
-        unit        = article[2] or 'Stk.'
+        name        = _html.escape(str(article[1] or ''))
+        unit        = _html.escape(str(article[2] or 'Stk.'))
         unit_price  = article[3] or 0
         tax_rate    = article[4] or 19
-        description = article[5] or ''
+        description = _html.escape(str(article[5] or ''))
         active      = article[6] if len(article) > 6 else 1
 
         active_badge = ("<span class='badge bg-green' title='Aktiv'>✓</span>"
@@ -307,14 +308,14 @@ def PageSkr(db: Database, edit_id=None, copy_from_id=None, msg=None, msg_type='i
     if is_existing:
         form_title  = "SKR-Konto bearbeiten"
         es_framework, es_account = edit_skr[1], edit_skr[2]
-        es_name, es_group        = edit_skr[3], edit_skr[4]
+        es_name, es_group        = _html.escape(str(edit_skr[3] or '')), _html.escape(str(edit_skr[4] or ''))
         es_psp  = edit_skr[6] if len(edit_skr) > 6 and edit_skr[6] else 0
         es_show = edit_skr[7] if len(edit_skr) > 7 else 1
     elif src is not None:
         suggested = db.next_free_account_number(src[1], int(src[2]) + 1)
         form_title  = f"Neues SKR-Konto (Kopie von {src[2]})"
         es_framework, es_account = src[1], suggested
-        es_name, es_group        = src[3], src[4]
+        es_name, es_group        = _html.escape(str(src[3] or '')), _html.escape(str(src[4] or ''))
         es_psp  = src[6] if len(src) > 6 and src[6] else 0
         es_show = src[7] if len(src) > 7 else 1
     else:
@@ -396,7 +397,7 @@ def PageSkr(db: Database, edit_id=None, copy_from_id=None, msg=None, msg_type='i
         if not is_standard:
             del_icon = (f" <a href='javascript:void(0);' class='action-icon delete-icon' title='L\u00f6schen'"
                         f" onclick='appConfirmHref(\"/masterdata/skr/delete?id={row[0]}\", \"Konto wirklich l\u00f6schen?\")'>&#128465;</a>")
-        s += (f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{row[3]}</td><td>{row[4]}</td>"
+        s += (f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td><td>{_html.escape(str(row[3] or ''))}</td><td>{_html.escape(str(row[4] or ''))}</td>"
               f"<td>{psp_display}</td><td>{standard_text}</td>"
               f"<td><a href='javascript:void(0)' onclick='openEditForm(\"/masterdata/skr/edit?id={row[0]}\")' class='action-icon' title='Bearbeiten'>&#9998;</a>"
               f" {eye_icon}{del_icon}</td></tr>")
@@ -468,11 +469,11 @@ def PageBankAccounts(db: Database, edit_id=None):
     s += Header3()
 
     # Formular-Werte (Bearbeiten oder Neu)
-    ea_name   = edit_acc[1] if edit_acc else ''
-    ea_holder = (edit_acc[2] or '') if edit_acc else ''
-    ea_iban   = (edit_acc[3] or '') if edit_acc else ''
-    ea_bic    = (edit_acc[4] or '') if edit_acc else ''
-    ea_bank   = (edit_acc[5] or '') if edit_acc else ''
+    ea_name   = _html.escape(str(edit_acc[1] or '')) if edit_acc else ''
+    ea_holder = _html.escape(str(edit_acc[2] or '')) if edit_acc else ''
+    ea_iban   = _html.escape(str(edit_acc[3] or '')) if edit_acc else ''
+    ea_bic    = _html.escape(str(edit_acc[4] or '')) if edit_acc else ''
+    ea_bank   = _html.escape(str(edit_acc[5] or '')) if edit_acc else ''
     ea_skr    = (edit_acc[7] if edit_acc and len(edit_acc) > 7 and edit_acc[7] is not None else '') if edit_acc else ''
 
     if edit_acc:
@@ -533,8 +534,8 @@ def PageBankAccounts(db: Database, edit_id=None):
     for row in rows:
         account_type = "Kasse" if row[6] == 1 else "Bank"
         skr_display = row[7] if len(row) > 7 and row[7] else "–"
-        s += (f"<tr><td>{row[0]}</td><td>{row[1]}</td><td>{row[2] or ''}</td><td>{row[3] or ''}</td>"
-              f"<td>{row[4] or ''}</td><td>{row[5] or ''}</td><td>{account_type}</td><td>{skr_display}</td>")
+        s += (f"<tr><td>{row[0]}</td><td>{_html.escape(str(row[1] or ''))}</td><td>{_html.escape(str(row[2] or ''))}</td><td>{_html.escape(str(row[3] or ''))}</td>"
+              f"<td>{_html.escape(str(row[4] or ''))}</td><td>{_html.escape(str(row[5] or ''))}</td><td>{account_type}</td><td>{skr_display}</td>")
         edit_title = "SKR zuweisen" if row[6] == 1 else "Bearbeiten"
         actions = f"<a href='javascript:void(0)' onclick='openEditForm(\"/masterdata/bankaccounts/edit?id={row[0]}\")' class='action-icon' title='{edit_title}'>&#9998;</a>"
         if row[6] != 1:  # nur reine Bankkonten löschbar (Kasse nicht)

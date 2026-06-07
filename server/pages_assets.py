@@ -2,6 +2,7 @@
 Asset management pages (Anlagenverzeichnis)
 """
 import datetime
+import html as _html
 from db import Database
 from .pages import Header1, Header2, Header3, Footer
 
@@ -66,8 +67,8 @@ def PageAssets(db: Database, status_filter='', edit_id=None, new_parent_id=None)
                 total_depr_planned += depr_this_year
 
         asset_rows.append({
-            'id': asset_id, 'inv': a[1], 'name': a[2],
-            'cat': a[22] if len(a) > 22 else '',   # CategoryName from JOIN
+            'id': asset_id, 'inv': _html.escape(str(a[1] or '')), 'name': _html.escape(str(a[2] or '')),
+            'cat': _html.escape(str(a[22] or '')) if len(a) > 22 else '',   # CategoryName from JOIN
             'purchase_date': purchase_date, 'purchase_price': purchase_price,
             'book_value': book_value, 'depr_this_year': depr_this_year,
             'depr_status': depr_status, 'status': status, 'method': method,
@@ -222,8 +223,8 @@ def _asset_details(db: Database, asset):
         s += '<tr><th>Inv.-Nr.</th><th>Bezeichnung</th><th>Datum</th><th style="text-align:right;">AK</th><th style="text-align:right;">Restbuchwert</th><th>Aktionen</th></tr>'
         for ch in children:
             ch_id = ch[0]
-            ch_inv = ch[1] or ''
-            ch_name = ch[2]
+            ch_inv = _html.escape(str(ch[1] or ''))
+            ch_name = _html.escape(str(ch[2] or ''))
             ch_date = ch[6]
             ch_price = ch[7]
             ch_bv = db.get_book_value_at_date(ch_id)
@@ -253,11 +254,11 @@ def _book_depr_button(asset_id, year, accounts, coa_rows):
     """Render inline form to book depreciation for a specific year."""
     form_id = f"depr_form_{asset_id}_{year}"
     account_options = ''.join(
-        f'<option value="{a[0]}">{a[1]}</option>' for a in accounts
+        f'<option value="{a[0]}">{_html.escape(str(a[1] or ""))}</option>' for a in accounts
     )
     # Filter likely expense accounts (SKR 03/04 Abschreibungen ~ 4830)
     coa_options = ''.join(
-        f'<option value="{c[0]}">{c[2]} {c[3]}</option>'
+        f'<option value="{c[0]}">{_html.escape(str(c[2] or ""))} {_html.escape(str(c[3] or ""))}</option>'
         for c in coa_rows if (c[7] if len(c) > 7 else 1)
     )
     return f'''
@@ -302,20 +303,20 @@ def _asset_form(db: Database, asset=None, parent_asset=None):
 
     # Pre-fill values
     v = {
-        'name': asset[2] if asset else '',
-        'description': asset[3] if asset else '',
+        'name': _html.escape(str(asset[2] or '')) if asset else '',
+        'description': _html.escape(str(asset[3] or '')) if asset else '',
         'cat': asset[4] if asset else '',
         'coa': asset[5] if asset else '',
         'purchase_date': asset[6] if asset else '',
         'purchase_price': asset[7] if asset else '',
         'useful_life': asset[8] if asset else '',
         'method': asset[9] if asset else 'linear',
-        'serial': asset[10] if asset else '',
-        'location': asset[11] if asset else '',
+        'serial': _html.escape(str(asset[10] or '')) if asset else '',
+        'location': _html.escape(str(asset[11] or '')) if asset else '',
         'supplier': asset[12] if asset else '',
         'document': asset[13] if asset else '',
         'booking': asset[14] if asset else '',
-        'notes': asset[18] if asset else '',
+        'notes': _html.escape(str(asset[18] or '')) if asset else '',
         'status': asset[17] if asset else 'active',
         'parent_id': asset[19] if asset else (parent_asset[0] if parent_asset else ''),
     }
@@ -324,7 +325,7 @@ def _asset_form(db: Database, asset=None, parent_asset=None):
     s += f'<h2>{page_title}</h2>'
 
     if parent_asset:
-        s += f'<p>🔗 Erweiterung von: <strong>{parent_asset[2]}</strong></p>'
+        s += f'<p>🔗 Erweiterung von: <strong>{_html.escape(str(parent_asset[2] or ""))}</strong></p>'
 
     s += f'<form method="POST" action="{action}">'
     if is_edit:
@@ -341,24 +342,24 @@ def _asset_form(db: Database, asset=None, parent_asset=None):
     cat_options = '<option value="">-- keine Kategorie --</option>'
     for c in categories:
         sel = 'selected' if str(v['cat']) == str(c[0]) else ''
-        cat_options += f'<option value="{c[0]}" {sel}>{c[1]} ({c[2]} J., {_method_label(c[3])})</option>'
+        cat_options += f'<option value="{c[0]}" {sel}>{_html.escape(str(c[1] or ""))} ({c[2]} J., {_method_label(c[3])})</option>'
 
     coa_options = '<option value="">-- keines --</option>'
     for c in coa_rows:
         sel = 'selected' if str(v['coa']) == str(c[0]) else ''
         if not (c[7] if len(c) > 7 else 1) and not sel:
             continue
-        coa_options += f'<option value="{c[0]}" {sel}>{c[2]} {c[3]}</option>'
+        coa_options += f'<option value="{c[0]}" {sel}>{_html.escape(str(c[2] or ""))} {_html.escape(str(c[3] or ""))}</option>'
 
     supplier_options = '<option value="">-- keiner --</option>'
     for c in suppliers:
         sel = 'selected' if str(v['supplier']) == str(c[0]) else ''
-        supplier_options += f'<option value="{c[0]}" {sel}>{c[3] or c[4] or ""} ({c[1]})</option>'
+        supplier_options += f'<option value="{c[0]}" {sel}>{_html.escape(str(c[3] or c[4] or ""))} ({_html.escape(str(c[1] or ""))})</option>'
 
     doc_options = '<option value="">-- kein Beleg --</option>'
     for d in documents:
         sel = 'selected' if str(v['document']) == str(d[0]) else ''
-        doc_options += f'<option value="{d[0]}" {sel}>{d[1]} – {d[2]}</option>'
+        doc_options += f'<option value="{d[0]}" {sel}>{_html.escape(str(d[1] or ""))} – {_html.escape(str(d[2] or ""))}</option>'
 
     method_lin = 'selected' if v['method'] == 'linear' else ''
     method_deg = 'selected' if v['method'] == 'degressive' else ''
@@ -572,7 +573,7 @@ def PageAssetCategories(db: Database, edit_category_id=None):
         sel = 'selected' if ec_coa and str(ec_coa) == str(c[0]) else ''
         if not (c[7] if len(c) > 7 else 1) and not sel:
             continue
-        coa_options += f'<option value="{c[0]}" {sel}>{c[2]} {c[3]}</option>'
+        coa_options += f'<option value="{c[0]}" {sel}>{_html.escape(str(c[2] or ""))} {_html.escape(str(c[3] or ""))}</option>'
 
     id_row = (f'<input type="hidden" name="category_id" value="{edit_cat[0]}">'
               if edit_cat else '')

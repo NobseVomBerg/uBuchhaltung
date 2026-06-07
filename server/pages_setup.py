@@ -3,6 +3,7 @@ Ersteinrichtungs-Seite (First-Run Setup).
 
 Wird angezeigt wenn noch kein eigener Kontakt und kein Bankkonto angelegt sind.
 """
+import html as _html
 from db import Database
 from .pages import Header1, Header2, Header3, Footer
 
@@ -20,7 +21,7 @@ def PageSetup(db: Database, message: str = '') -> str:
 
     error_html = ''
     if message:
-        error_html = f'<p class="sql-error-box">{message}</p>'
+        error_html = f'<p class="sql-error-box">{_html.escape(str(message))}</p>'
 
     s += f'''
 <div class="grid1Col700 gridMain">

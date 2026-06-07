@@ -1,6 +1,7 @@
 """
 Sonstiges page – database overview, SQL console, misc tools.
 """
+import html as _html
 from db import Database
 
 
@@ -239,28 +240,28 @@ def PageMiscellaneous(db: Database):
             s += '<p>Diese Kontonummern wurden in den Buchungen verwendet, sind aber noch nicht im Kontenrahmen hinterlegt.<br>'
             s += 'Die Buchungen wurden trotzdem importiert (ohne COA-Zuweisung). Bitte <a href="/masterdata/skr">in der SKR-Verwaltung</a> ergänzen:</p>'
             s += '<p style="font-family:monospace;">'
-            s += ', '.join(str(_n) for _n in _missing_coa)
+            s += ', '.join(_html.escape(str(_n)) for _n in _missing_coa)
             s += '</p>'
 
         if _missing_skr:
             s += f'<h3>\u26a0\ufe0f Fehlende Gegenkonten (GEGENKONTO nicht in Kontenverwaltung) &ndash; {len(_missing_skr)} Einträge</h3>'
             s += '<p>Diese SKR-Nummern stehen in der GEGENKONTO-Spalte, sind aber keinem Konto in der <a href="/masterdata/bankaccounts">Kontenverwaltung</a> zugewiesen:</p>'
             s += '<p style="font-family:monospace;">'
-            s += ', '.join(str(_n) for _n in _missing_skr)
+            s += ', '.join(_html.escape(str(_n)) for _n in _missing_skr)
             s += '</p>'
         if _not_found:
             s += f'<h3>\u26a0\ufe0f Nicht gefunden (kein Treffer in DB) &ndash; {len(_not_found)} Eintr\u00e4ge</h3>'
             s += '<p>Diese Zeilen konnten keiner bestehenden Buchung zugeordnet werden (Datum + Belegr./Betrag stimmt nicht \u00fcberein).</p>'
             s += '<table><tr><th>CSV-Zeile</th><th>Datum</th><th>Beleg-Nr.</th><th>Betrag</th><th>Text</th></tr>'
             for _r in _not_found:
-                s += (f"<tr><td>{_r.get('zeile','')}</td><td>{_r.get('datum','')}</td>"
-                      f"<td>{_r.get('beleg','')}</td><td>{_r.get('betrag','')}</td>"
-                      f"<td>{_r.get('text','')}</td></tr>")
+                s += (f"<tr><td>{_html.escape(str(_r.get('zeile','')))}</td><td>{_html.escape(str(_r.get('datum','')))}</td>"
+                      f"<td>{_html.escape(str(_r.get('beleg','')))}</td><td>{_html.escape(str(_r.get('betrag','')))}</td>"
+                      f"<td>{_html.escape(str(_r.get('text','')))}</td></tr>")
             s += '</table>'
         if _errors:
             s += f'<h3>\u274c Parse-Fehler &ndash; {len(_errors)} Einträge</h3><ul>'
             for _e in _errors:
-                s += f'<li>{_e}</li>'
+                s += f'<li>{_html.escape(str(_e))}</li>'
             s += '</ul>'
     s += '\t</div>'
     # ── Testdaten ─────────────────────────────────────────────────────────────
