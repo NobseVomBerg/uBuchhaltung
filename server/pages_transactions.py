@@ -200,12 +200,15 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             </form>
 
             <script>
-                // Automatische Berechnung des Steuerbetrags
+                // Automatische Berechnung des Steuerbetrags.
+                // amount ist der BRUTTO-Betrag; berechnet wird die darin
+                // enthaltene USt: tax = brutto * satz / (100 + satz).
+                // Das Feld bleibt manuell überschreibbar (Skonto, Mischsätze).
                 function calculateTax() {{
                     const amount = parseFloat(document.getElementById('amount').value) || 0;
                     const taxRate = parseFloat(document.getElementById('tax_rate').value) || 0;
                     if (amount !== 0 && taxRate !== 0) {{
-                        const taxAmount = amount * (taxRate / 100);
+                        const taxAmount = amount * taxRate / (100 + taxRate);
                         document.getElementById('tax_amount').value = taxAmount.toFixed(2);
                     }}
                 }}
