@@ -8,6 +8,7 @@ from urllib.parse import quote
 from .pages import Header1, Header2, Header3, Footer
 from .import_preview import match_account
 from db import Database
+from money import to_minor
 
 try:
     from document_parser import DocumentParser
@@ -1132,8 +1133,11 @@ def handle_invoice_save(post_body: bytes):
                 invoice_data['payment_terms'], invoice_data['payment_due_date'],
                 invoice_data['skonto_days'], invoice_data['skonto_percent'],
                 invoice_data['bank_account_id'], invoice_data['bank_name'], invoice_data['bank_iban'], invoice_data['bank_bic'],
-                invoice_data['tax_category'], invoice_data['tax_rate'], invoice_data['sum_net'],
-                invoice_data['tax_amount'], invoice_data['sum_gross'], invoice_data['amount_due'],
+                invoice_data['tax_category'], invoice_data['tax_rate'],
+                to_minor(invoice_data['sum_net'] or 0),
+                to_minor(invoice_data['tax_amount'] or 0),
+                to_minor(invoice_data['sum_gross'] or 0),
+                to_minor(invoice_data['amount_due'] or 0),
                 invoice_data['status'],
                 invoice_id
             ))

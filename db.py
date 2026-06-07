@@ -400,10 +400,10 @@ class Database:
                 -- Totals
                 TaxCategory TEXT DEFAULT 'S',
                 TaxRate REAL NOT NULL,
-                SumNet REAL NOT NULL,
-                TaxAmount REAL NOT NULL,
-                SumGross REAL NOT NULL,
-                AmountDue REAL NOT NULL,
+                SumNet INTEGER NOT NULL,
+                TaxAmount INTEGER NOT NULL,
+                SumGross INTEGER NOT NULL,
+                AmountDue INTEGER NOT NULL,
                 
                 -- Management
                 Status TEXT DEFAULT 'draft',
@@ -428,8 +428,8 @@ class Database:
                 Description TEXT NOT NULL,
                 Quantity REAL NOT NULL,
                 Unit TEXT DEFAULT 'C62',
-                PricePerUnit REAL NOT NULL,
-                TotalNet REAL NOT NULL,
+                PricePerUnit INTEGER NOT NULL,
+                TotalNet INTEGER NOT NULL,
                 TaxCategory TEXT DEFAULT 'S',
                 TaxRate REAL NOT NULL,
                 FOREIGN KEY (InvoiceId) REFERENCES Invoices(ID) ON DELETE CASCADE,
@@ -4267,7 +4267,8 @@ class Database:
             cursor.execute('SELECT * FROM Invoices ORDER BY InvoiceDate DESC, InvoiceNumber DESC')
         rows = cursor.fetchall()
         conn.close()
-        return rows
+        # SumNet(36), TaxAmount(37), SumGross(38), AmountDue(39) -> Euro-Decimal
+        return [self._euro_row(r, 36, 37, 38, 39) for r in rows]
 
     def get_invoice_by_id(self, invoice_id):
         """Get a single invoice by ID"""
@@ -4276,7 +4277,7 @@ class Database:
         cursor.execute('SELECT * FROM Invoices WHERE ID = ?', (invoice_id,))
         row = cursor.fetchone()
         conn.close()
-        return row
+        return self._euro_row(row, 36, 37, 38, 39)  # SumNet/TaxAmount/SumGross/AmountDue
 
     def get_invoice_items(self, invoice_id):
         """Get all items for an invoice"""
@@ -4285,7 +4286,8 @@ class Database:
         cursor.execute('SELECT * FROM InvoiceItems WHERE InvoiceId = ? ORDER BY Position', (invoice_id,))
         rows = cursor.fetchall()
         conn.close()
-        return rows
+        # PricePerUnit(7), TotalNet(8) -> Euro-Decimal
+        return [self._euro_row(r, 7, 8) for r in rows]
 
     def insert_invoice(self, invoice_data):
         """Insert a new invoice with all fields
@@ -4350,10 +4352,10 @@ class Database:
             invoice_data.get('bank_bic'),
             invoice_data.get('tax_category', 'S'),
             invoice_data.get('tax_rate'),
-            invoice_data.get('sum_net'),
-            invoice_data.get('tax_amount'),
-            invoice_data.get('sum_gross'),
-            invoice_data.get('amount_due'),
+            to_minor(invoice_data.get('sum_net') or 0),
+            to_minor(invoice_data.get('tax_amount') or 0),
+            to_minor(invoice_data.get('sum_gross') or 0),
+            to_minor(invoice_data.get('amount_due') or 0),
             invoice_data.get('status', 'finalized'),
             invoice_data.get('pdf_path'),
             invoice_data.get('xml_path')
@@ -4395,8 +4397,8 @@ class Database:
             item_data.get('description'),
             item_data.get('quantity'),
             item_data.get('unit', 'C62'),
-            item_data.get('price_per_unit'),
-            item_data.get('total_net'),
+            to_minor(item_data.get('price_per_unit') or 0),
+            to_minor(item_data.get('total_net') or 0),
             item_data.get('tax_category', 'S'),
             item_data.get('tax_rate')
         )
@@ -4467,13 +4469,12 @@ class Database:
                 VALUES (?, ?, ?, ?)
             ''', (invoice_id, transaction_id, to_minor(amount_paid), payment_date))
 
-            # Recalculate AmountDue from all payments – Rechnung in Minor Units
-            # (exakt). SumGross stammt noch aus REAL (Euro), bis Phase 1e.
+            # Recalculate AmountDue from all payments – alles in Minor Units (exakt).
             cursor.execute(
                 'SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
                 (invoice_id,))
             total_paid_minor = cursor.fetchone()[0]
-            gross_minor = to_minor(invoice_data[0] or 0)
+            gross_minor = invoice_data[0] or 0          # SumGross ist bereits Minor Units
             new_due_minor = gross_minor - total_paid_minor
             new_due = from_minor(new_due_minor)
 
@@ -4481,7 +4482,7 @@ class Database:
                 UPDATE Invoices
                 SET AmountDue = ?, UpdatedAt = CURRENT_TIMESTAMP
                 WHERE ID = ?
-            ''', (float(new_due), invoice_id))
+            ''', (new_due_minor, invoice_id))
 
             # Auto-update status (100 Minor Units = 0,01 EUR bei SCALE=4)
             if abs(new_due_minor) < 100:
@@ -4539,15 +4540,14 @@ class Database:
 
             cursor.execute('DELETE FROM InvoicePayments WHERE ID = ?', (payment_id,))
 
-            # Recalculate AmountDue – Rechnung in Minor Units (exakt).
-            # SumGross stammt noch aus REAL (Euro), bis Phase 1e.
+            # Recalculate AmountDue – alles in Minor Units (exakt).
             cursor.execute('SELECT SumGross FROM Invoices WHERE ID = ?', (invoice_id,))
-            sum_gross = cursor.fetchone()[0]
+            sum_gross = cursor.fetchone()[0]            # bereits Minor Units
             cursor.execute(
                 'SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
                 (invoice_id,))
             total_paid_minor = cursor.fetchone()[0]
-            new_due_minor = to_minor(sum_gross or 0) - total_paid_minor
+            new_due_minor = (sum_gross or 0) - total_paid_minor
             new_due = from_minor(new_due_minor)
 
             # Recalculate status (100 Minor Units = 0,01 EUR bei SCALE=4)
@@ -4561,7 +4561,7 @@ class Database:
             cursor.execute('''
                 UPDATE Invoices SET AmountDue = ?, Status = ?, UpdatedAt = CURRENT_TIMESTAMP
                 WHERE ID = ?
-            ''', (float(new_due), new_status, invoice_id))
+            ''', (new_due_minor, new_status, invoice_id))
 
             conn.commit()
         except Exception as e:
@@ -4608,14 +4608,14 @@ class Database:
         cursor = conn.cursor()
         cursor.execute('''
             SELECT * FROM Invoices 
-            WHERE Status IN ('finalized', 'sent') 
+            WHERE Status IN ('finalized', 'sent')
             AND PaymentDueDate < ?
-            AND (AmountDue IS NULL OR AmountDue > 0.01)
+            AND (AmountDue IS NULL OR AmountDue > 0)
             ORDER BY PaymentDueDate ASC
         ''', (today,))
         invoices = cursor.fetchall()
         conn.close()
-        return invoices
+        return [self._euro_row(r, 36, 37, 38, 39) for r in invoices]
     
     def get_invoices_due_soon(self, days=7):
         """Get invoices due within the next N days
@@ -4635,14 +4635,14 @@ class Database:
         cursor = conn.cursor()
         cursor.execute('''
             SELECT * FROM Invoices 
-            WHERE Status IN ('finalized', 'sent') 
+            WHERE Status IN ('finalized', 'sent')
             AND PaymentDueDate BETWEEN ? AND ?
-            AND (AmountDue IS NULL OR AmountDue > 0.01)
+            AND (AmountDue IS NULL OR AmountDue > 0)
             ORDER BY PaymentDueDate ASC
         ''', (today_str, future_date))
         invoices = cursor.fetchall()
         conn.close()
-        return invoices
+        return [self._euro_row(r, 36, 37, 38, 39) for r in invoices]
 
     # ── Dashboard helpers ─────────────────────────────────────────────
 

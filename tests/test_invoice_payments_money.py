@@ -40,7 +40,7 @@ def test_partial_payment_recalculates_amount_due(tmp_db):
     con = sqlite3.connect(tmp_db.db_name)
     due, status = con.execute("SELECT AmountDue, Status FROM Invoices WHERE ID=?", (inv_id,)).fetchone()
     con.close()
-    assert round(due, 2) == 69.00     # 119.00 - 50.00 (AmountDue noch REAL bis 1e)
+    assert due == 690000     # 119.00 - 50.00 = 69.00 als Minor Units (seit Phase 1e)
     assert status == 'partial'
 
 
@@ -62,5 +62,5 @@ def test_delete_payment_restores_amount_due(tmp_db):
     con = sqlite3.connect(tmp_db.db_name)
     due, status = con.execute("SELECT AmountDue, Status FROM Invoices WHERE ID=?", (inv_id,)).fetchone()
     con.close()
-    assert round(due, 2) == 119.00
+    assert due == 1190000     # 119.00 als Minor Units (seit Phase 1e)
     assert status == 'finalized'
