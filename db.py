@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import json
+import threading
 
 
 def coa_id(framework, account_number):
@@ -12,13 +13,25 @@ def coa_id(framework, account_number):
 
 
 class Database:
+    # Schema wird pro DB-Pfad nur einmal je Prozess aufgesetzt. Der Webserver
+    # erzeugt pro Request eine Database-Instanz – ohne diesen Guard liefe das
+    # komplette CREATE-TABLE-/Seed-Setup bei jedem Klick erneut.
+    _initialized_dbs = set()
+    _init_lock = threading.Lock()
+
     def __init__(self, db_name="./data/buch.db"):
         self.db_name = db_name
         # Ensure the directory exists
         db_dir = os.path.dirname(self.db_name)
         if db_dir and not os.path.exists(db_dir):
             os.makedirs(db_dir, exist_ok=True)
-        self.initialize_database()
+
+        key = os.path.abspath(self.db_name)
+        if key not in Database._initialized_dbs:
+            with Database._init_lock:
+                if key not in Database._initialized_dbs:   # double-checked locking
+                    self.initialize_database()
+                    Database._initialized_dbs.add(key)      # erst nach Erfolg markieren
     
     def _get_connection(self):
         """Get a database connection with foreign keys enabled"""
@@ -404,14 +417,19 @@ class Database:
         conn.commit()
         conn.close()
         
-        # Run migrations
-        self._run_migrations()
-        
+        # Restliches Schema (Anlagen, Zahlungen, Steuerschlüssel, Indizes, Seeds)
+        self._create_extended_schema()
+
         # Ensure the default "Kasse" account exists
         self.ensure_kasse_exists()
 
-    def _run_migrations(self):
-        """Run database migrations for new tables and columns"""
+    def _create_extended_schema(self):
+        """Legt die übrigen Tabellen, Indizes und Seed-Daten an.
+
+        Keine Migrationen: Bei Schema-Änderungen wird die DB gelöscht und neu
+        aufgesetzt (kein produktiver Bestand). Alle Spalten gehören direkt in
+        die jeweilige CREATE-TABLE-Definition.
+        """
         conn = self._get_connection()
         cursor = conn.cursor()
 
@@ -511,29 +529,6 @@ class Database:
 
         conn.commit()
         conn.close()
-
-        # Migration: Add NumberFormat column to NumberRanges if not exists
-        conn2 = self._get_connection()
-        cursor2 = conn2.cursor()
-        try:
-            cursor2.execute("ALTER TABLE NumberRanges ADD COLUMN NumberFormat TEXT DEFAULT '{yy}{l}{nnn}{s}'")
-            conn2.commit()
-        except Exception:
-            pass  # Column already exists
-        finally:
-            conn2.close()
-
-        # Migration: Add Abbreviation column to Contacts if not exists
-        conn3 = self._get_connection()
-        cursor3 = conn3.cursor()
-        try:
-            cursor3.execute("ALTER TABLE Contacts ADD COLUMN Abbreviation TEXT")
-            cursor3.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_abbreviation ON Contacts(Abbreviation)")
-            conn3.commit()
-        except Exception:
-            pass  # Column or index already exists
-        finally:
-            conn3.close()
 
         # Seed-Daten aus seed_data/ laden
         self._seed_chart_of_accounts()
