@@ -41,7 +41,7 @@ def PageAssets(db: Database, status_filter='', edit_id=None, new_parent_id=None)
 
     for a in assets:
         asset_id = a[0]
-        purchase_price = a[7]
+        purchase_price = float(a[7]) if a[7] is not None else 0.0  # Decimal -> float für Summen/Anzeige
         purchase_date = a[6]
         useful_life = a[8]
         method = a[9]

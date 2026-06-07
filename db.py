@@ -479,7 +479,7 @@ class Database:
                 AssetCategory_ID INTEGER,
                 COA_ID INTEGER,
                 PurchaseDate DATE NOT NULL,
-                PurchasePrice REAL NOT NULL,
+                PurchasePrice INTEGER NOT NULL,
                 UsefulLifeYears INTEGER NOT NULL,
                 DepreciationMethod TEXT DEFAULT 'linear',
                 SerialNumber TEXT,
@@ -488,7 +488,7 @@ class Database:
                 Document_ID INTEGER,
                 Booking_ID INTEGER,
                 SaleDate DATE,
-                SalePrice REAL,
+                SalePrice INTEGER,
                 Status TEXT DEFAULT 'active',
                 Notes TEXT,
                 Parent_ID INTEGER,
@@ -508,8 +508,8 @@ class Database:
                 ID INTEGER PRIMARY KEY AUTOINCREMENT,
                 Asset_ID INTEGER NOT NULL,
                 Year INTEGER NOT NULL,
-                DepreciationAmount REAL NOT NULL,
-                BookValue REAL NOT NULL,
+                DepreciationAmount INTEGER NOT NULL,
+                BookValue INTEGER NOT NULL,
                 Booking_ID INTEGER,
                 Status TEXT DEFAULT 'planned',
                 BookedAt DATETIME,
@@ -2077,7 +2077,8 @@ class Database:
         ''', params)
         rows = cursor.fetchall()
         conn.close()
-        return rows
+        # PurchasePrice (7), SalePrice (16) -> Euro-Decimal
+        return [self._euro_row(r, 7, 16) for r in rows]
 
     def get_asset_by_id(self, asset_id):
         conn = self._get_connection()
@@ -2091,7 +2092,7 @@ class Database:
         ''', (asset_id,))
         row = cursor.fetchone()
         conn.close()
-        return row
+        return self._euro_row(row, 7, 16)  # PurchasePrice (7), SalePrice (16)
 
     def get_asset_children(self, parent_id):
         """Fetch sub-assets (extensions) of a parent asset"""
@@ -2107,7 +2108,7 @@ class Database:
         ''', (parent_id,))
         rows = cursor.fetchall()
         conn.close()
-        return rows
+        return [self._euro_row(r, 7, 16) for r in rows]  # PurchasePrice (7), SalePrice (16)
 
     def insert_asset(self, name, purchase_date, purchase_price, useful_life_years,
                      description='', asset_category_id=None, coa_id=None,
@@ -2124,7 +2125,7 @@ class Database:
                 Notes, Parent_ID, Status)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
         ''', (inv_number, name, description, asset_category_id, coa_id,
-              purchase_date, purchase_price, useful_life_years, depreciation_method,
+              purchase_date, to_minor(purchase_price or 0), useful_life_years, depreciation_method,
               serial_number, location, supplier_id, document_id, booking_id,
               notes, parent_id))
         asset_id = cursor.lastrowid
@@ -2147,7 +2148,7 @@ class Database:
                 Notes=?, Status=?
             WHERE ID=?
         ''', (name, description, asset_category_id, coa_id,
-              purchase_date, purchase_price, useful_life_years, depreciation_method,
+              purchase_date, to_minor(purchase_price or 0), useful_life_years, depreciation_method,
               serial_number, location, supplier_id, document_id, booking_id,
               notes, status, asset_id))
         conn.commit()
@@ -2158,7 +2159,7 @@ class Database:
         cursor = conn.cursor()
         cursor.execute('''
             UPDATE Assets SET SaleDate=?, SalePrice=?, Status='sold' WHERE ID=?
-        ''', (sale_date, sale_price, asset_id))
+        ''', (sale_date, to_minor(sale_price or 0), asset_id))
         conn.commit()
         conn.close()
 
@@ -2179,7 +2180,8 @@ class Database:
         ''', (asset_id,))
         rows = cursor.fetchall()
         conn.close()
-        return rows
+        # DepreciationAmount (3), BookValue (4) -> Euro-Decimal
+        return [self._euro_row(r, 3, 4) for r in rows]
 
     def calculate_depreciation_plan(self, purchase_price, purchase_date, useful_life_years,
                                      depreciation_method='linear'):
@@ -2194,6 +2196,11 @@ class Database:
 
         if not purchase_price or not purchase_date or not useful_life_years:
             return plan
+
+        # AfA-Plan rechnet intern in float (gerundete Naeherung). Eingabe kann
+        # Euro-Decimal aus der DB-Grenze sein -> normalisieren. Gespeicherte
+        # Werte werden ueber to_minor exakt abgelegt (siehe book_depreciation).
+        purchase_price = float(purchase_price)
 
         try:
             pd = dt.date.fromisoformat(str(purchase_date)[:10])
@@ -2279,7 +2286,7 @@ class Database:
         asset = self.get_asset_by_id(asset_id)
         if not asset:
             return 0.0
-        purchase_price = asset[7]   # PurchasePrice
+        purchase_price = float(asset[7]) if asset[7] is not None else 0.0   # PurchasePrice
         purchase_date = asset[6]    # PurchaseDate
         useful_life = asset[8]      # UsefulLifeYears
         method = asset[9]           # DepreciationMethod
@@ -2327,7 +2334,7 @@ class Database:
             ON CONFLICT(Asset_ID, Year) DO UPDATE SET
                 Booking_ID=excluded.Booking_ID, Status='posted', BookedAt=CURRENT_TIMESTAMP,
                 DepreciationAmount=excluded.DepreciationAmount, BookValue=excluded.BookValue
-        ''', (asset_id, year, amount, year_entry['book_value_end'], booking_id))
+        ''', (asset_id, year, to_minor(amount), to_minor(year_entry['book_value_end']), booking_id))
         conn.commit()
         conn.close()
         return booking_id
