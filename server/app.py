@@ -2,7 +2,6 @@
 Main HTTP server class with routing
 """
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from pydoc import html
 from urllib.parse import parse_qs
 from db import Database
 import os
@@ -436,11 +435,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     self.respond(404, "Datei nicht gefunden.")
             else:
                 self.respond(404, "Seite nicht gefunden.")
-        except Exception as e:
+        except Exception:
+            # Vollen Traceback nur ins Server-Log, nie an den Client
+            # (Information Disclosure). Client erhaelt eine generische Seite.
             import traceback
             traceback.print_exc()
-            error_msg = f"<h1>Server Fehler</h1><pre>{html.escape(str(e))}\n\n{html.escape(traceback.format_exc())}</pre>"
-            self.respond(500, error_msg)
+            self.respond(500, "<h1>Server Fehler</h1><p>Es ist ein interner Fehler "
+                              "aufgetreten. Details stehen im Server-Log.</p>")
 
     def serve_static_file(self, filename, content_type):
         try:
@@ -700,10 +701,12 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             # ─────────────────────────────────────────────────────────────
             else:
                 self.respond(404, "Seite nicht gefunden.")
-        except Exception as e:
+        except Exception:
+            # Vollen Traceback nur ins Server-Log, nie an den Client.
             import traceback
             traceback.print_exc()
-            self.respond(500, f"Fehler: {str(e)}")
+            self.respond(500, "<h1>Server Fehler</h1><p>Es ist ein interner Fehler "
+                              "aufgetreten. Details stehen im Server-Log.</p>")
 
     def respond(self, status_code, content, headers=None, content_type="text/html"):
         # Send HTTP status and headers
