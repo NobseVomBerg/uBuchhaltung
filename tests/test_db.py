@@ -334,7 +334,7 @@ class TestBookDepreciation:
             coa_id_asset=coa_asset,
         )
         row = tmp_db.get_booking_by_id(booking_id)
-        assert abs(row[11]) == pytest.approx(expected, abs=0.01)
+        assert abs(float(row[11])) == pytest.approx(expected, abs=0.01)  # row[11] ist Decimal (Phase 1f)
 
     def test_asset_depreciation_record_posted(self, tmp_db):
         """After booking, AssetDepreciations must have Status='posted' for that year."""

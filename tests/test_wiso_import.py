@@ -91,7 +91,7 @@ class TestOriginalFormatImport:
         conn.close()
         assert row is not None
         assert abs(row[0] - 0.19) < 1e-4
-        assert abs(abs(row[1]) - 19.0) < 0.01   # 119 → |USt| = 19
+        assert abs(abs(row[1]) - 190000) < 100   # 119 → |USt| = 19,00 € (Minor Units, Phase 1f)
 
     def test_tax_rate_7_from_bu_402(self, db_with_coa):
         """BU 402 → TaxRate = 0.07"""
@@ -107,7 +107,7 @@ class TestOriginalFormatImport:
         conn.close()
         assert row is not None
         assert abs(row[0] - 0.07) < 1e-4
-        assert abs(abs(row[1]) - 7.0) < 0.01   # 107 → |USt| ≈ 7
+        assert abs(abs(row[1]) - 70000) < 100   # 107 → |USt| ≈ 7,00 € (Minor Units, Phase 1f)
 
     def test_special_4405_4400_gets_19_percent(self, db_with_coa):
         """4405→4400 Umbuchung ohne BU-Schlüssel bekommt implizit 19%."""
@@ -326,7 +326,7 @@ class TestKasseWisoImport:
         row = cur.fetchone()
         conn.close()
         assert row[0] < 0
-        assert abs(abs(row[0]) - 18.35) < 0.005
+        assert abs(abs(row[0]) - 183500) < 50   # 18,35 € (Minor Units, Phase 1f)
 
     def test_kasse_tax_rate_19_from_bu_401(self, db_with_coa):
         """BU-Schlüssel 401 → TaxRate=0.19, TaxAmount≈-2.93 (Vorsteuer)."""
@@ -338,8 +338,8 @@ class TestKasseWisoImport:
         row = cur.fetchone()
         conn.close()
         assert abs(row[0] - 0.19) < 1e-4
-        # Brutto 18.35 → USt = 18.35 - 18.35/1.19 ≈ 2.93
-        assert abs(abs(row[1]) - 2.93) < 0.01
+        # Brutto 18.35 → USt = 18.35 - 18.35/1.19 ≈ 2.93 € (Minor Units, Phase 1f)
+        assert abs(abs(row[1]) - 29300) < 100
 
     def test_kasse_coa_mapped_correctly(self, db_with_coa):
         """KONTO=6815 → COA_ID für 6815; GEGENKONTO=1460 → CounterCOA_ID für 1460."""

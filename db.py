@@ -2,6 +2,7 @@ import sqlite3
 import os
 import json
 import threading
+from decimal import Decimal
 
 from money import to_minor, from_minor
 
@@ -282,10 +283,10 @@ class Database:
                 COA_ID INTEGER,
                 CounterCOA_ID INTEGER,
                 Category_ID INTEGER,
-                Amount REAL NOT NULL,
+                Amount INTEGER NOT NULL,
                 Currency TEXT DEFAULT 'EUR',
                 TaxRate REAL,
-                TaxAmount REAL,
+                TaxAmount INTEGER,
                 Text TEXT,
                 DocumentNumber TEXT,
                 BookingType TEXT DEFAULT 'entry',
@@ -778,7 +779,7 @@ class Database:
         cursor.execute('SELECT * FROM Bookings ORDER BY DateBooking DESC')
         rows = cursor.fetchall()
         conn.close()
-        return rows
+        return [self._euro_row(r, 11, 14) for r in rows]  # Amount(11), TaxAmount(14)
 
     def fetch_bookings_grouped(self, date_from=None, date_to=None):
         """Fetch bookings for display, with split groups aggregated.
@@ -832,7 +833,7 @@ class Database:
             cursor.execute(
                 "SELECT * FROM Bookings WHERE BookingType = 'bank' "
                 "ORDER BY DateBooking DESC")
-        bank_rows = cursor.fetchall()
+        bank_rows = [self._euro_row(r, 11, 14) for r in cursor.fetchall()]  # Amount(11), TaxAmount(14)
 
         # 2. Child bookings linked to bank transactions via ParentBooking_ID
         #    (alle Kinder der im Zeitraum liegenden Bank-Buchungen)
@@ -849,7 +850,7 @@ class Database:
         children_by_parent = {}
         for r in cursor.fetchall():
             pid = r[18]  # ParentBooking_ID
-            children_by_parent.setdefault(pid, []).append(r)
+            children_by_parent.setdefault(pid, []).append(self._euro_row(r, 11, 14))
 
         # 3. Normal (ungrouped) bookings — not bank, not child, not in legacy group
         #    Rein liquide Spiegelbuchungen und resolved Debitoren ausblenden.
@@ -869,7 +870,7 @@ class Database:
             counter_coa_id = r[9]  # CounterCOA_ID
             if coa_id in doppik_coa_ids and counter_coa_id in doppik_coa_ids:
                 continue  # Doppik-Eintrag verbergen
-            normal.append({'type': 'normal', 'date': r[1] or '', 'booking': r})
+            normal.append({'type': 'normal', 'date': r[1] or '', 'booking': self._euro_row(r, 11, 14)})
 
         # 4. Legacy group summaries (BookingGroup_ID, for old imports)
         #    Resolved Debitoren-Entries ausblenden. Im Zeitraum-Modus nur Gruppen
@@ -912,7 +913,7 @@ class Database:
         children_by_group = {}
         for r in cursor.fetchall():
             gid = r[3]  # BookingGroup_ID
-            children_by_group.setdefault(gid, []).append(r)
+            children_by_group.setdefault(gid, []).append(self._euro_row(r, 11, 14))
 
         conn.close()
 
@@ -950,6 +951,7 @@ class Database:
         groups = []
         for g in groups_raw:
             gid, desc, date, total, count, account_id, currency, contact_id = g
+            total = from_minor(total or 0)  # SUM(b.Amount) Minor Units -> Euro-Decimal
             group_children = children_by_group.get(gid, [])
             if not group_children:
                 continue  # alle Mitglieder sind bereits verknüpft
@@ -1032,9 +1034,10 @@ class Database:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
         
         params = (date_booking, date_tax, booking_group_id, account_id, foreign_bank_account,
-                  recipient_client, contact_id, coa_id, counter_coa_id, category_id, amount, currency,
-                  tax_rate, tax_amount, text, document_number, booking_type, parent_booking_id)
-        
+                  recipient_client, contact_id, coa_id, counter_coa_id, category_id,
+                  to_minor(amount or 0), currency,
+                  tax_rate, self._minor_opt(tax_amount), text, document_number, booking_type, parent_booking_id)
+
         cursor.execute(sql_template, params)
         conn.commit()
         last_id = cursor.lastrowid
@@ -1053,7 +1056,7 @@ class Database:
         cursor.execute('''
             SELECT COUNT(*) FROM Bookings
             WHERE DateBooking=? AND Amount=? AND Account_ID=? AND ForeignBankAccount=? AND Text=?
-        ''', (date, amount, account_id, foreign_bank_account, text))
+        ''', (date, to_minor(amount or 0), account_id, foreign_bank_account, text))
         count = cursor.fetchone()[0]
         conn.close()
         return count > 0
@@ -1083,7 +1086,7 @@ class Database:
             counter_coa_id = row[1]
             if not (coa_id in bank_coa_ids and counter_coa_id in bank_coa_ids):
                 conn.close()
-                return row
+                return self._euro_row(row, 3)  # TaxAmount an Index 3 -> Euro-Decimal
         conn.close()
         return None
 
@@ -1106,12 +1109,14 @@ class Database:
         conn = self._get_connection()
         cursor = conn.cursor()
 
+        amount_minor = to_minor(amount or 0)
+
         # Stufe 1: einzelne, noch nicht verknüpfte Buchung (kein Split)
         cursor.execute('''
             SELECT ID FROM Bookings
             WHERE DateBooking = ? AND Amount = ?
               AND Account_ID IS NULL AND BookingGroup_ID IS NULL
-        ''', (date, amount))
+        ''', (date, amount_minor))
         rows = cursor.fetchall()
         if len(rows) == 1:
             conn.close()
@@ -1123,7 +1128,7 @@ class Database:
         #            (erlaubt leichte Datumsabweichungen innerhalb der Gruppe)
         cursor.execute('''
             SELECT b.BookingGroup_ID,
-                   ROUND(SUM(b.Amount), 2)                              AS total,
+                   SUM(b.Amount)                                        AS total,
                    COUNT(*)                                             AS cnt,
                    SUM(CASE WHEN b.Account_ID IS NULL THEN 1 ELSE 0 END) AS unlinked
             FROM Bookings b
@@ -1131,8 +1136,8 @@ class Database:
               AND b.DateBooking = ?
             GROUP BY b.BookingGroup_ID
             HAVING cnt = unlinked
-               AND total = ROUND(?, 2)
-        ''', (date, amount))
+               AND total = ?
+        ''', (date, amount_minor))
         rows = cursor.fetchall()
         conn.close()
         if len(rows) == 1:
@@ -1164,17 +1169,18 @@ class Database:
             WHERE ID=?'''
         
         params = (date_booking, date_tax, booking_group_id, account_id, foreign_bank_account,
-                  recipient_client, contact_id, coa_id, counter_coa_id, category_id, amount, currency,
-                  tax_rate, tax_amount, text, document_number, booking_type, parent_booking_id, booking_id)
-        
+                  recipient_client, contact_id, coa_id, counter_coa_id, category_id,
+                  to_minor(amount or 0), currency,
+                  tax_rate, self._minor_opt(tax_amount), text, document_number, booking_type, parent_booking_id, booking_id)
+
         cursor.execute(sql_template, params)
         conn.commit()
         conn.close()
-        
+
         # Optional SQL logging
         if log_description:
             self._log_sql(sql_template, params, log_description)
-    
+
     def delete_transaction(self, booking_id: int):
         """Buchung (und verknüpfte Kinder via ParentBooking_ID) löschen.
 
@@ -1211,7 +1217,7 @@ class Database:
         cursor.execute('SELECT * FROM Bookings WHERE ID=?', (booking_id,))
         booking = cursor.fetchone()
         conn.close()
-        return booking
+        return self._euro_row(booking, 11, 14)  # Amount(11), TaxAmount(14)
 
     # Table BookingGroups
     def create_booking_group(self, description="", total_amount=None):
@@ -1255,7 +1261,7 @@ class Database:
         cursor.execute('SELECT * FROM Bookings WHERE BookingGroup_ID=? ORDER BY DateBooking, ID', (group_id,))
         rows = cursor.fetchall()
         conn.close()
-        return rows
+        return [self._euro_row(r, 11, 14) for r in rows]  # Amount(11), TaxAmount(14)
 
     def update_booking_group(self, group_id, description, total_amount=None):
         """Beschreibung und Erwartungsbetrag einer Gruppe aktualisieren."""
@@ -1334,7 +1340,7 @@ class Database:
         ''', (document_id,))
         rows = cursor.fetchall()
         conn.close()
-        return rows
+        return [self._euro_row(r, 11, 14) for r in rows]  # b.* -> Amount(11), TaxAmount(14)
     
     def unlink_booking_from_document(self, booking_id, document_id):
         """Remove link between booking and document"""
@@ -2325,7 +2331,7 @@ class Database:
                 Amount, Currency, Text, BookingType, Status)
             VALUES (?, ?, ?, ?, ?, 'EUR', ?, 'entry', 'posted')
         ''', (booking_date, booking_date, account_id, coa_id_expense,
-              -abs(amount), description))
+              to_minor(-abs(amount)), description))
         booking_id = cursor.lastrowid
         # Upsert into AssetDepreciations
         cursor.execute('''
@@ -2510,7 +2516,7 @@ class Database:
         )
         rows = cursor.fetchall()
         conn.close()
-        return rows
+        return [self._euro_row(r, 11, 14) for r in rows]  # Amount(11), TaxAmount(14)
 
     def get_coa_id_to_number_map(self) -> dict:
         """Liefert {coa_id: account_number} für alle ChartOfAccounts-Einträge."""
@@ -2790,12 +2796,12 @@ class Database:
                     if coa_id is not None:
                         dup_cur.execute(
                             'SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND DateBooking=? AND COA_ID=? AND Amount=?',
-                            (doc_number, booking_date, coa_id, amount)
+                            (doc_number, booking_date, coa_id, to_minor(amount or 0))
                         )
                     else:
                         dup_cur.execute(
                             'SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND DateBooking=? AND COA_ID IS NULL AND Amount=?',
-                            (doc_number, booking_date, amount)
+                            (doc_number, booking_date, to_minor(amount or 0))
                         )
                     if dup_cur.fetchone()[0] > 0:
                         skipped += 1
@@ -2820,7 +2826,7 @@ class Database:
                          Amount, TaxRate, TaxAmount, Text, DocumentNumber, BookingType)
                     VALUES (?,?,?,?,?,?,?,?,?,?)
                 ''', (booking_date, booking_group_id, coa_id, pr['counter_coa_id'],
-                      amount, pr['tax_rate'], pr['tax_amount'], pr['text'],
+                      to_minor(amount or 0), pr['tax_rate'], self._minor_opt(pr['tax_amount']), pr['text'],
                       doc_number, 'entry'))
                 imported += 1
 
@@ -2928,7 +2934,8 @@ class Database:
                 except ValueError:
                     errors.append(f"Zeile {i}: Ungültiger Betrag '{amount_str}'")
                     continue
-                
+                amount_minor = to_minor(amount)  # DB-Amount ist Minor Units (Phase 1f)
+
                 # Kategorie → COA_ID
                 category_desc = ' '.join(row.get('Kategorie', '').split())
                 coa_id_from_category = coa_name_map.get(category_desc.lower()) if category_desc else None
@@ -2956,7 +2963,7 @@ class Database:
                             OR DocumentNumber LIKE ('%,' || ? || ',%')
                           )
                         LIMIT 1
-                    ''', (booking_date, amount, doc_number, doc_number, doc_number, doc_number))
+                    ''', (booking_date, amount_minor, doc_number, doc_number, doc_number, doc_number))
                 else:
                     # Ohne Belegnummer: Datum + |Betrag|.
                     # BookingType + ParentBooking_ID werden für die bank+entry-
@@ -2968,7 +2975,7 @@ class Database:
                         FROM Bookings
                         WHERE DateBooking=? AND ABS(Amount)=ABS(?) AND (DocumentNumber IS NULL OR DocumentNumber='')
                         LIMIT 3
-                    ''', (booking_date, amount))
+                    ''', (booking_date, amount_minor))
 
                 rows_full = cursor.fetchall()
                 rows = [r[:5] for r in rows_full]   # Standard-5-Tupel für target_rows
@@ -3013,7 +3020,7 @@ class Database:
 
                             # Gruppensumme muss dem Zeilenbetrag entsprechen. Bei genau
                             # einem Treffer ist es eine Einzelbuchung, bei mehreren ein Split.
-                            if grp and abs(abs(sum(r[5] for r in grp)) - abs(amount)) < 0.005:
+                            if grp and abs(abs(sum(r[5] for r in grp)) - abs(amount_minor)) < 50:
                                 target_rows = [r[:5] for r in grp]
                                 is_split = len(grp) > 1
                 elif doc_number:
@@ -3033,7 +3040,7 @@ class Database:
                               )
                           )
                         LIMIT 1
-                    ''', (booking_date, amount, doc_number, doc_number, doc_number, doc_number))
+                    ''', (booking_date, amount_minor, doc_number, doc_number, doc_number, doc_number))
                     prow = cursor.fetchone()
                     if prow:
                         parent_id = prow[0]
@@ -3058,7 +3065,7 @@ class Database:
                               )
                         ''', (booking_date, doc_number, doc_number, doc_number, doc_number))
                         grp = cursor.fetchall()
-                        if grp and abs(abs(sum(r[5] for r in grp)) - abs(amount)) < 0.005:
+                        if grp and abs(abs(sum(r[5] for r in grp)) - abs(amount_minor)) < 50:
                             target_rows = [r[:5] for r in grp]
                             is_split = True
 
@@ -3331,7 +3338,7 @@ class Database:
                     WHERE BookingType = 'entry'
                       AND ParentBooking_ID IS NULL
                       AND DateBooking = ?
-                      AND ABS(ABS(Amount) - ?) < 0.005
+                      AND ABS(ABS(Amount) - ?) < 50
                 ''', (bank_date, abs_amount))
                 raw = cursor.fetchall()
                 entries = _filter_already(_filter_doppik(
@@ -3345,7 +3352,7 @@ class Database:
                         WHERE BookingType = 'entry'
                           AND ParentBooking_ID IS NULL
                           AND DateBooking = ?
-                          AND ABS(ABS(Amount) - ?) < 0.005
+                          AND ABS(ABS(Amount) - ?) < 50
                           AND LOWER(REPLACE(REPLACE(REPLACE(TRIM(
                               COALESCE(RecipientClient,'')), '  ', ' '), '  ', ' '), '  ', ' '))
                             = ?
@@ -3374,7 +3381,7 @@ class Database:
                 WHERE BookingType = 'entry'
                   AND ParentBooking_ID IS NULL
                   AND DateBooking = ?
-                  AND ABS(ABS(Amount) - ?) < 0.005
+                  AND ABS(ABS(Amount) - ?) < 50
             ''', (bank_date, abs_amount))
             entries = _filter_already(_filter_doppik(cursor.fetchall()))
             if len(entries) == 1:
@@ -3402,7 +3409,7 @@ class Database:
                   AND b.BookingGroup_ID IS NOT NULL
                   AND b.DateBooking = ?
                 GROUP BY b.BookingGroup_ID
-                HAVING ABS(ABS(SUM(b.Amount)) - ?) < 0.005
+                HAVING ABS(ABS(SUM(b.Amount)) - ?) < 50
             ''', (bank_date, abs_amount))
             groups = cursor.fetchall()
             # Bereits verknüpfte Gruppen rausfiltern
@@ -3438,7 +3445,7 @@ class Database:
                   AND b.DateBooking = ?
                 GROUP BY b.BookingGroup_ID
                 HAVING cnt > 1
-                   AND ABS(ABS(total / cnt) - ?) < 0.005
+                   AND ABS(ABS(total * 1.0 / cnt) - ?) < 50
             ''', (bank_date, abs_amount))
             inv_groups = cursor.fetchall()
             # Filtern: Gruppe muss ein Mitglied mit Bank-COA haben
@@ -3488,7 +3495,7 @@ class Database:
                   AND b.DateBooking = ?
                 GROUP BY b.BookingGroup_ID
                 HAVING private_offset > 0
-                   AND ABS(ABS(total - private_offset) - ?) < 0.005
+                   AND ABS(ABS(total - private_offset) - ?) < 50
             ''', (bank_date, abs_amount))
             priv_groups = cursor.fetchall()
             priv_matches = [g[0] for g in priv_groups
@@ -3534,7 +3541,7 @@ class Database:
                     bank_coa_sum = sum(
                         e[6] for e in sammel_entries
                         if e[3] in bank_coa_ids)
-                    if abs(abs(bank_coa_sum) - abs_amount) < 0.005:
+                    if abs(abs(bank_coa_sum) - abs_amount) < 50:
                         for e in sammel_entries:
                             cursor.execute(
                                 'UPDATE Bookings SET ParentBooking_ID = ?'
@@ -3555,7 +3562,7 @@ class Database:
                 WHERE BookingType = 'entry'
                   AND ParentBooking_ID IS NULL
                   AND DateBooking = ?
-                  AND ABS(ABS(Amount) - ?) < 0.005
+                  AND ABS(ABS(Amount) - ?) < 50
             ''', (bank_date, abs_amount))
             all_candidates = _filter_already(_filter_doppik(cursor.fetchall()))
             token_hit = _token_tiebreak(bank_text, all_candidates)
@@ -4830,9 +4837,9 @@ class Database:
             result.append({
                 'year_month': ym,
                 'label': label,
-                'income':  round(income_map.get(ym, 0), 2),
-                'private': round(private_map.get(ym, 0), 2),
-                'expense': round(expense_map.get(ym, 0), 2),
+                'income':  float(from_minor(income_map.get(ym, 0))),
+                'private': float(from_minor(private_map.get(ym, 0))),
+                'expense': float(from_minor(expense_map.get(ym, 0))),
             })
 
         conn.close()
@@ -4995,10 +5002,10 @@ class Database:
 
         conn.close()
         return {
-            'income':         round(income, 2),
-            'private':        round(private, 2),
-            'expense':        round(expense, 2),
-            'balance':        round(income + private + expense, 2),
+            'income':         float(from_minor(income)),
+            'private':        float(from_minor(private)),
+            'expense':        float(from_minor(expense)),
+            'balance':        float(from_minor(income + private + expense)),
             'bank_count':     bank_count,
             'unlinked_count': unlinked,
         }
@@ -5216,20 +5223,20 @@ class Database:
                 WHERE ID IN ({ph})
             """, list(totals.keys()))
             for coa_id, acct_nr, name in cursor.fetchall():
-                total = round(totals[coa_id], 2)
-                if abs(total) >= 0.01:
-                    result.append((acct_nr, name, total))
+                total = from_minor(totals[coa_id])  # Minor Units -> Euro-Decimal
+                if abs(total) >= Decimal('0.01'):
+                    result.append((acct_nr, name, float(total)))
 
         # ── Virtuelles Konto 3806 (Umsatzsteuer) ─────────────────────
-        ust_total = round(ust_total, 2)
-        if abs(ust_total) >= 0.01:
+        ust_total = from_minor(ust_total)  # Minor Units -> Euro-Decimal
+        if abs(ust_total) >= Decimal('0.01'):
             # Name aus DB holen, falls vorhanden
             cursor.execute(
                 "SELECT Name FROM ChartOfAccounts WHERE AccountNumber = 3806"
             )
             row_3806 = cursor.fetchone()
             name_3806 = row_3806[0] if row_3806 else 'Umsatzsteuer 19%'
-            result.append((3806, name_3806, ust_total))
+            result.append((3806, name_3806, float(ust_total)))
 
         conn.close()
         result.sort(key=lambda x: x[0])
