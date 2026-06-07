@@ -80,6 +80,20 @@ def multiply(minor: int, factor) -> int:
     return int((Decimal(int(minor)) * _to_decimal(factor)).quantize(_ONE, rounding=ROUND_HALF_UP))
 
 
+def round_minor(minor: int, dp: int = 2) -> int:
+    """Rundet einen Minor-Wert kaufmaennisch auf dp Nachkommastellen.
+
+    Ergebnis bleibt in Minor Units. Beispiel (SCALE=4): round_minor(37035, 2)
+    -> 37000 (3,7035 EUR auf Cent gerundet = 3,70 EUR). Wird fuer Rechnungs-
+    summen genutzt, die auf Cent gefuehrt werden, obwohl Stueckpreise vier
+    Nachkommastellen haben duerfen.
+    """
+    if dp >= SCALE:
+        return int(minor)
+    step = 10 ** (SCALE - dp)        # dp=2 -> 100 Minor Units = 1 Cent
+    return int((Decimal(int(minor)) / step).quantize(_ONE, rounding=ROUND_HALF_UP)) * step
+
+
 def tax_from_net(net_minor: int, rate) -> int:
     """Steuerbetrag aus Netto. rate als Prozentzahl (z.B. 19 oder 7)."""
     r = _to_decimal(rate)

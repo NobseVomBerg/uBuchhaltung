@@ -119,6 +119,26 @@ def test_tax_rate_as_float_and_decimal():
     assert money.tax_from_net(n, 19.0) == money.tax_from_net(n, Decimal("19"))
 
 
+# ── round_minor (Rundung auf Cent o.ae.) ──────────────────────────────────────
+
+@pytest.mark.parametrize("minor, dp, expected", [
+    (37035, 2, 37000),                 # 3,7035 -> 3,70
+    (37050, 2, 37100),                 # 3,7050 -> 3,71 (HALF_UP)
+    (37049, 2, 37000),                 # 3,7049 -> 3,70
+    (-37050, 2, -37100),               # negativ ebenfalls vom Betrag weg
+    (123400, 2, 123400),               # bereits glatt
+    (12345, 4, 12345),                 # dp == SCALE -> unveraendert
+    (12345, 0, 10000),                 # auf ganze Euro: 1,2345 -> 1
+    (15000, 0, 20000),                 # 1,5 -> 2 (HALF_UP)
+])
+def test_round_minor(minor, dp, expected):
+    assert money.round_minor(minor, dp) == expected
+
+
+def test_round_minor_default_is_cents():
+    assert money.round_minor(money.to_minor("3.7035")) == money.to_minor("3.70")
+
+
 # ── Formatierung ──────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("minor, dp, expected", [

@@ -8,7 +8,8 @@ from urllib.parse import quote
 from .pages import Header1, Header2, Header3, Footer
 from .import_preview import match_account
 from db import Database
-from money import to_minor
+from money import to_minor, from_minor, multiply, tax_from_net, round_minor
+from decimal import Decimal
 
 try:
     from document_parser import DocumentParser
@@ -953,9 +954,62 @@ def handle_delete_invoice_payment(post_body: bytes):
         return 500, str(e)
 
 
+def _rate_to_pct(value, default=Decimal('19')):
+    """Steuersatz robust als Prozentzahl liefern (z.B. 19, 7, 0).
+
+    Akzeptiert sowohl Bruch-Darstellung (0.19) als auch Prozent (19). Werte
+    zwischen 0 und 1 werden als Bruch interpretiert und mit 100 multipliziert.
+    Leere/None-Werte ergeben den Default.
+    """
+    if value is None or value == '':
+        return default
+    r = Decimal(str(value))
+    if 0 < r < 1:
+        r *= 100
+    return r
+
+
+def recompute_invoice_totals(items, default_rate_pct):
+    """Berechnet Rechnungs- und Positionssummen serverseitig exakt.
+
+    Den vom Client gelieferten Summen wird NICHT vertraut – sie werden hier aus
+    Menge x Einzelpreis je Position neu berechnet (kaufmaennische Rundung auf
+    Cent, exakte Integer-Addition in Minor Units). Die Steuer wird je
+    Steuersatz-Gruppe gerundet.
+
+    Args:
+        items: Liste der Positions-Dicts (quantity, unitPrice, taxRate).
+        default_rate_pct: Steuersatz (Prozent) als Fallback fuer Positionen
+            ohne eigenen taxRate.
+
+    Returns:
+        (sum_net, tax_amount, sum_gross, line_nets) – alle Geldwerte als
+        Euro-Decimal; line_nets ist die Liste der Positions-Nettosummen
+        (gleiche Reihenfolge wie items).
+    """
+    line_net_minors = []
+    net_by_rate = {}                      # Decimal(rate_pct) -> Netto-Summe (Minor)
+    for item in items:
+        qty = item.get('quantity')
+        qty = 1 if qty in (None, '') else qty
+        price_minor = to_minor(item.get('unitPrice') or 0)
+        line_net = round_minor(multiply(price_minor, qty), 2)
+        line_net_minors.append(line_net)
+        rate = _rate_to_pct(item.get('taxRate'), default_rate_pct)
+        net_by_rate[rate] = net_by_rate.get(rate, 0) + line_net
+
+    sum_net_minor = sum(line_net_minors)
+    tax_minor = sum(round_minor(tax_from_net(net, rate), 2)
+                    for rate, net in net_by_rate.items())
+    gross_minor = sum_net_minor + tax_minor
+
+    return (from_minor(sum_net_minor), from_minor(tax_minor),
+            from_minor(gross_minor), [from_minor(n) for n in line_net_minors])
+
+
 def handle_invoice_save(post_body: bytes):
     """Save or update invoice to database
-    
+
     Returns JSON response with invoice_id
     """
     try:
@@ -998,7 +1052,12 @@ def handle_invoice_save(post_body: bytes):
         
         if not items or len(items) == 0:
             return json.dumps({'success': False, 'error': 'Mindestens eine Position erforderlich'}).encode()
-        
+
+        # Phase 2: Summen serverseitig exakt neu berechnen – den vom Client
+        # gelieferten net/tax/gross-Werten wird bewusst nicht vertraut.
+        net_amount, tax_amount, gross_amount, line_nets = recompute_invoice_totals(
+            items, _rate_to_pct(tax_rate))
+
         db = Database()
         
         # Get customer data for invoice
@@ -1147,8 +1206,8 @@ def handle_invoice_save(post_body: bytes):
             # Insert new invoice
             invoice_id = db.insert_invoice(invoice_data)
         
-        # Insert invoice items
-        for item in items:
+        # Insert invoice items (Positionssumme serverseitig berechnet)
+        for idx, item in enumerate(items):
             item_data = {
                 'invoice_id': invoice_id,
                 'position': item.get('position'),
@@ -1157,7 +1216,7 @@ def handle_invoice_save(post_body: bytes):
                 'quantity': item.get('quantity'),
                 'unit': item.get('unit', 'C62'),  # C62 = piece
                 'price_per_unit': item.get('unitPrice'),
-                'total_net': item.get('totalPrice'),
+                'total_net': line_nets[idx],
                 'tax_category': 'S',
                 'tax_rate': item.get('taxRate', tax_rate)
             }
