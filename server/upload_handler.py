@@ -58,8 +58,15 @@ def handle_file_upload(request_handler, db):
         if not filename:
             continue
 
+        # Schutz gegen Path-Traversal: nur den reinen Dateinamen verwenden,
+        # nie vom Client gelieferte Verzeichnisanteile (.., absolute oder
+        # Windows-Backslash-Pfade). basename nach Normalisierung der Trenner.
+        safe_name = os.path.basename(filename.replace('\\', '/'))
+        if not safe_name or safe_name in ('.', '..'):
+            continue
+
         # Datei temporär speichern
-        filepath = os.path.join(upload_dir, filename)
+        filepath = os.path.join(upload_dir, safe_name)
         with open(filepath, 'wb') as f:
             f.write(content)
 

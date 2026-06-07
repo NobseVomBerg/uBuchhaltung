@@ -423,9 +423,17 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path == "/favicon.ico":
                 self.serve_static_file("favicon.ico", "image/x-icon")
             elif self.path.startswith("/seed_data/private/"):
-                # Serve private static files (e.g., logo)
-                filename = self.path[1:]  # Remove leading /
-                self.serve_static_file(filename, self.guess_content_type(filename))
+                # Serve private static files (e.g., logo) – mit Schutz gegen
+                # Path-Traversal: aufgeloester Pfad muss im erlaubten Verzeichnis
+                # liegen (kein ../, kein absoluter Pfad, Query-String entfernt).
+                from urllib.parse import unquote
+                rel_path = unquote(self.path.split('?', 1)[0])[1:]  # Query weg, fuehrendes / weg
+                base = os.path.realpath("seed_data/private")
+                target = os.path.realpath(rel_path)
+                if (target == base or target.startswith(base + os.sep)) and os.path.isfile(target):
+                    self.serve_static_file(target, self.guess_content_type(target))
+                else:
+                    self.respond(404, "Datei nicht gefunden.")
             else:
                 self.respond(404, "Seite nicht gefunden.")
         except Exception as e:
