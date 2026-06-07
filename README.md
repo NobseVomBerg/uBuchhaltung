@@ -150,7 +150,8 @@ PyBuch/
 ├── DB_MODEL.md                # Detailliertes Datenbankmodell
 ├── PARSER_README.md           # Dokumentation Parser & CSV-Import
 ├── AGENTS.md                  # Leitfaden für KI-/Coding-Agenten im Repo
-├── requirements_parser.txt    # Python-Dependencies (Parser)
+├── requirements.txt           # Laufzeit-Dependencies (pdfplumber)
+├── requirements-dev.txt       # zusätzlich Test-Dependencies (pytest)
 ├── seed_data/                 # Initialisierungsdaten (JSON)
 │   ├── tax_keys.json          # 50 DATEV-Steuerschlüssel (BU-Codes)
 │   ├── asset_categories.json  # 30 BMF-AfA-Kategorien
@@ -195,9 +196,15 @@ PyBuch/
 ## Installation und Start
 
 ### Voraussetzungen
-- Python 3.x
-- Pillow (für PDF-Logo-Einbettung): `pip install Pillow`
-- `pdfplumber` (für PDF-Parsing im `document_parser.py`): `pip install pdfplumber` (siehe `requirements_parser.txt`)
+- Python 3.10+
+- Der Kern läuft mit der Standardbibliothek. Externe Abhängigkeiten (nur für
+  PDF-Parsing) installieren:
+
+```bash
+pip install -r requirements.txt
+```
+
+Für Tests zusätzlich `pip install -r requirements-dev.txt` (pytest).
 
 ### Server starten
 
@@ -216,11 +223,11 @@ $env:SMTP_USER = "ihre-email@gmail.com"
 $env:SMTP_PASSWORD = "ihr-app-passwort"
 ```
 
-### PDF-Parser aktivieren (optional)
+### PDF-Parser
 
-```bash
-pip install -r requirements_parser.txt
-```
+Wird durch `pip install -r requirements.txt` (pdfplumber) automatisch
+aktiviert. Optionales OCR für gescannte PDFs: in `requirements.txt` die
+auskommentierten Zeilen (`pytesseract`, `pdf2image`) einkommentieren.
 
 ---
 

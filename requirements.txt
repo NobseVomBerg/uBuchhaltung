@@ -1,0 +1,15 @@
+# Laufzeit-Abhängigkeiten für PyBuch.
+#
+# Der Kern (Webserver, DB, Rendering, Export) läuft ausschließlich mit der
+# Python-Standardbibliothek (http.server, sqlite3, email, xml, ...).
+# Die einzige externe Laufzeit-Abhängigkeit ist das PDF-Parsing von
+# Kontoauszügen/Belegen im document_parser.py. Fehlt pdfplumber, läuft die
+# App weiter – nur die PDF-Erkennung ist dann deaktiviert.
+#
+# Installation:  pip install -r requirements.txt
+
+pdfplumber>=0.11.0    # zieht pdfminer.six, Pillow, charset-normalizer u.a. transitiv
+
+# Optional – OCR für gescannte PDFs (bei Bedarf einkommentieren):
+# pytesseract>=0.3.10
+# pdf2image>=1.16.0

@@ -1,6 +1,0 @@
-# Requirements for document parsing
-pdfplumber>=0.10.0
-# For OCR support (optional):
-# pytesseract>=0.3.10
-# pdf2image>=1.16.0
-# Pillow>=10.0.0

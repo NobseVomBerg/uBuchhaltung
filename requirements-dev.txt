@@ -1,0 +1,6 @@
+# Entwicklungs-/Test-Abhängigkeiten (zusätzlich zur Laufzeit).
+# Installation:  pip install -r requirements-dev.txt
+
+-r requirements.txt
+
+pytest>=8.0
