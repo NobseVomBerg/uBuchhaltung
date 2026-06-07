@@ -508,33 +508,18 @@ def handle_wiso_import(request_handler, db: Database):
         (303, location_str) – immer ein Redirect zu /miscellaneous
     """
     from urllib.parse import quote
+    from .multipart import first_file
 
     content_type = request_handler.headers.get('Content-Type', '')
     if 'multipart/form-data' not in content_type:
         return 303, '/miscellaneous?wiso_import=error&msg=Kein+Multipart+Form+Data'
 
-    try:
-        boundary = content_type.split('boundary=')[1].strip().encode()
-    except IndexError:
-        return 303, '/miscellaneous?wiso_import=error&msg=Boundary+fehlt'
-
     content_length = int(request_handler.headers['Content-Length'])
     raw = request_handler.rfile.read(content_length)
 
-    # Datei-Inhalt aus Multipart-Body extrahieren
-    csv_bytes = None
-    for part in raw.split(b'--' + boundary):
-        if b'Content-Disposition' in part and b'filename=' in part:
-            header_end = part.find(b'\r\n\r\n')
-            if header_end == -1:
-                continue
-            content = part[header_end + 4:]
-            if content.endswith(b'\r\n'):
-                content = content[:-2]
-            if content:
-                csv_bytes = content
-            break
-
+    # Datei-Inhalt aus Multipart-Body extrahieren (robuster email-Parser)
+    part = first_file(content_type, raw)
+    csv_bytes = part.content if part else None
     if not csv_bytes:
         return 303, '/miscellaneous?wiso_import=error&msg=Keine+Datei+im+Upload'
 

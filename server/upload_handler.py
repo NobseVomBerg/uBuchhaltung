@@ -8,6 +8,7 @@ import os
 import json
 
 from .import_preview import build_import_preview
+from .multipart import parse_multipart
 
 try:
     from document_parser import DocumentParser
@@ -31,32 +32,17 @@ def handle_file_upload(request_handler, db):
     if 'multipart/form-data' not in content_type:
         return 400, json.dumps({'error': 'Ungültiger Content-Type'})
 
-    boundary = content_type.split("boundary=")[1].encode()
     content_length = int(request_handler.headers['Content-Length'])
     post_data = request_handler.rfile.read(content_length)
 
-    parts = post_data.split(b'--' + boundary)
     statement_files = []   # als Kontoauszug erkannt (mit Transaktionen)
     other_files = []       # alles andere (abgelegte Belege, Fehler, ...)
 
-    for part in parts:
-        if b'Content-Disposition' not in part or b'filename=' not in part:
-            continue
-
-        header_end = part.find(b'\r\n\r\n')
-        if header_end == -1:
-            continue
-
-        header = part[:header_end].decode('utf-8', errors='ignore')
-        content = part[header_end + 4:]
-        if content.endswith(b'\r\n'):
-            content = content[:-2]
-
-        filename_start = header.find('filename="') + 10
-        filename_end = header.find('"', filename_start)
-        filename = header[filename_start:filename_end]
+    for part in parse_multipart(content_type, post_data):
+        filename = part.filename
         if not filename:
             continue
+        content = part.content
 
         # Schutz gegen Path-Traversal: nur den reinen Dateinamen verwenden,
         # nie vom Client gelieferte Verzeichnisanteile (.., absolute oder
