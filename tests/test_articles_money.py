@@ -1,0 +1,38 @@
+"""Phase 1 (Decimal-Migration): Artikel-Preise als Festkomma-Integer gespeichert,
+als Euro-Decimal gelesen."""
+import sqlite3
+from decimal import Decimal
+
+
+def test_article_price_roundtrip(tmp_db):
+    tmp_db.insert_article(name="Testartikel", unit="Stk.", unit_price=12.34, tax_rate=19)
+    arts = tmp_db.fetch_articles()
+    assert len(arts) == 1
+    # Konsument erhaelt Euro-Decimal (Index 3 = UnitPrice)
+    assert arts[0][3] == Decimal("12.3400")
+
+
+def test_article_price_stored_as_integer_minor_units(tmp_db):
+    tmp_db.insert_article(name="Testartikel", unit_price=12.34)
+    con = sqlite3.connect(tmp_db.db_name)
+    raw = con.execute("SELECT UnitPrice FROM Articles").fetchone()[0]
+    con.close()
+    assert isinstance(raw, int)
+    assert raw == 123400  # 12.34 * 10^4
+
+
+def test_article_price_fourdigit_precision(tmp_db):
+    # Vierstelliger Stueckpreis bleibt verlustfrei (Motivation fuer SCALE=4)
+    tmp_db.insert_article(name="Cent-Bruchteil", unit_price="0.0079")
+    assert tmp_db.fetch_articles()[0][3] == Decimal("0.0079")
+
+
+def test_update_article_price(tmp_db):
+    tmp_db.insert_article(name="A", unit_price=1.00)
+    art_id = tmp_db.fetch_articles()[0][0]
+    tmp_db.update_article(art_id, name="A", unit_price=9.99)
+    assert tmp_db.get_article_by_id(art_id)[3] == Decimal("9.9900")
+
+
+def test_get_article_by_id_missing_returns_none(tmp_db):
+    assert tmp_db.get_article_by_id(99999) is None

@@ -792,7 +792,7 @@ function setInvoiceStatus(invId) {{
             'id': article[0],
             'name': article[1] or '',
             'unit': article[2] or 'Stk.',
-            'price': article[3] or 0,
+            'price': float(article[3]) if article[3] is not None else 0,  # Decimal -> JSON-fähig
             'taxRate': article[4] or 19,
             'description': article[5] or ''
         }

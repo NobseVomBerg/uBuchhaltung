@@ -3,6 +3,8 @@ import os
 import json
 import threading
 
+from money import to_minor, from_minor
+
 
 def coa_id(framework, account_number):
     """Berechnete ChartOfAccounts-ID: 1. Ziffer = Rahmen, dahinter 5 Ziffern Kontonummer.
@@ -38,7 +40,23 @@ class Database:
         conn = sqlite3.connect(self.db_name)
         conn.execute('PRAGMA foreign_keys = ON')
         return conn
-    
+
+    @staticmethod
+    def _euro_row(row, *money_indices):
+        """Wandelt die angegebenen Spalten einer DB-Zeile von Minor Units (int)
+        in Euro-Decimal um. Geld wird intern als Festkomma-Integer gespeichert
+        (siehe money.py); Konsumenten erhalten Euro-Decimal. None bleibt None.
+
+        Gibt None zurueck, wenn row None ist (z.B. fetchone ohne Treffer).
+        """
+        if row is None:
+            return None
+        row = list(row)
+        for i in money_indices:
+            if row[i] is not None:
+                row[i] = from_minor(row[i])
+        return tuple(row)
+
     def _log_sql(self, sql_template, params, description):
         """Helper function to log SQL statements
         
@@ -297,7 +315,7 @@ class Database:
                 ID INTEGER PRIMARY KEY AUTOINCREMENT,
                 Name TEXT NOT NULL,
                 Unit TEXT DEFAULT 'Stk.',
-                UnitPrice REAL DEFAULT 0,
+                UnitPrice INTEGER DEFAULT 0,
                 TaxRate REAL DEFAULT 19,
                 Description TEXT,
                 Active INTEGER DEFAULT 1
@@ -3930,7 +3948,8 @@ class Database:
             cursor.execute('SELECT * FROM Articles ORDER BY Name')
         rows = cursor.fetchall()
         conn.close()
-        return rows
+        # UnitPrice (Index 3) von Minor Units in Euro-Decimal wandeln
+        return [self._euro_row(r, 3) for r in rows]
 
     def get_article_by_id(self, article_id):
         """Get article by ID"""
@@ -3939,7 +3958,7 @@ class Database:
         cursor.execute('SELECT * FROM Articles WHERE ID = ?', (article_id,))
         row = cursor.fetchone()
         conn.close()
-        return row
+        return self._euro_row(row, 3)  # UnitPrice (Index 3) -> Euro-Decimal
 
     def insert_article(self, name, unit="Stk.", unit_price=0, tax_rate=19, description="", active=1):
         """Insert new article
@@ -3958,7 +3977,7 @@ class Database:
         sql_template = '''
             INSERT INTO Articles (Name, Unit, UnitPrice, TaxRate, Description, Active)
             VALUES (?, ?, ?, ?, ?, ?)'''
-        params = (name, unit, unit_price, tax_rate, description, active)
+        params = (name, unit, to_minor(unit_price or 0), tax_rate, description, active)
 
         try:
             cursor.execute(sql_template, params)
@@ -3979,7 +3998,7 @@ class Database:
                 UPDATE Articles
                 SET Name = ?, Unit = ?, UnitPrice = ?, TaxRate = ?, Description = ?, Active = ?
                 WHERE ID = ?'''
-            params = (name, unit, unit_price, tax_rate, description, active, article_id)
+            params = (name, unit, to_minor(unit_price or 0), tax_rate, description, active, article_id)
             cursor.execute(sql_template, params)
             conn.commit()
             self._log_sql(sql_template, params, "Update article")
