@@ -42,6 +42,11 @@ class Database:
         return conn
 
     @staticmethod
+    def _minor_opt(value):
+        """to_minor, aber None bleibt None (fuer optionale Geldspalten)."""
+        return None if value is None or value == '' else to_minor(value)
+
+    @staticmethod
     def _euro_row(row, *money_indices):
         """Wandelt die angegebenen Spalten einer DB-Zeile von Minor Units (int)
         in Euro-Decimal um. Geld wird intern als Festkomma-Integer gespeichert
@@ -259,7 +264,7 @@ class Database:
                 ID INTEGER PRIMARY KEY AUTOINCREMENT,
                 Description TEXT,
                 CreatedDate DATE,
-                TotalAmount REAL
+                TotalAmount INTEGER
             )
         ''')
 
@@ -1228,7 +1233,7 @@ class Database:
         cursor.execute('''
             INSERT INTO BookingGroups (Description, CreatedDate, TotalAmount)
             VALUES (?, ?, ?)
-        ''', (description, created_date, total_amount))
+        ''', (description, created_date, self._minor_opt(total_amount)))
         conn.commit()
         group_id = cursor.lastrowid
         conn.close()
@@ -1241,7 +1246,7 @@ class Database:
         cursor.execute('SELECT * FROM BookingGroups ORDER BY CreatedDate DESC')
         rows = cursor.fetchall()
         conn.close()
-        return rows
+        return [self._euro_row(r, 3) for r in rows]  # TotalAmount (Index 3) -> Euro-Decimal
     
     def get_bookings_in_group(self, group_id):
         """Get all bookings belonging to a specific group"""
@@ -1258,7 +1263,7 @@ class Database:
         cursor = conn.cursor()
         cursor.execute(
             'UPDATE BookingGroups SET Description=?, TotalAmount=? WHERE ID=?',
-            (description, total_amount, group_id)
+            (description, self._minor_opt(total_amount), group_id)
         )
         conn.commit()
         conn.close()
@@ -2760,7 +2765,7 @@ class Database:
                 return group_id_cache[key]
             dup_cur.execute(
                 'INSERT INTO BookingGroups (Description, CreatedDate, TotalAmount) VALUES (?,?,?)',
-                (key[0], date, total_amount)  # key = (doc_number, date)
+                (key[0], date, self._minor_opt(total_amount))  # key = (doc_number, date)
             )
             gid = dup_cur.lastrowid
             group_id_cache[key] = gid
