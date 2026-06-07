@@ -5,6 +5,7 @@ Enthält alle Seiten für die Verwaltung von Split-Buchungsgruppen:
   - PageBookingGroups       → Übersicht (Liste links) + Neu/Detail (rechts)
   - PageBookingGroupDetails → Thin-Wrapper auf PageBookingGroups(view_id=...)
 """
+import html as _html
 from db import Database
 from .pages import Header1, Header2, Header3, Footer
 from .period import period_filter_widget
@@ -56,7 +57,7 @@ def PageBookingGroups(db: Database, date_from=None, date_to=None, view_id=None):
 
         for group in groups:
             group_id      = group[0]
-            description   = group[1] or ''
+            description   = _html.escape(group[1] or '')
             created_date  = group[2] or ''
             expected      = group[3]
 
@@ -134,7 +135,7 @@ def _booking_group_new_form():
 def _booking_group_detail(db: Database, group):
     """Render-Block: Gruppe bearbeiten + zugeordnete Buchungen (rechte Spalte)."""
     group_id     = group[0]
-    description  = group[1] or ''
+    description  = _html.escape(group[1] or '')
     created_date = group[2] or ''
     expected     = group[3]
     expected_val = f'{expected:.2f}' if expected is not None else ''
@@ -187,13 +188,13 @@ def _booking_group_detail(db: Database, group):
         for b in bookings:
             bid        = b[0]
             date_str   = b[1] or ''
-            recipient  = (b[6] or '')[:35]
+            recipient  = _html.escape((b[6] or '')[:35])
             coa_id     = b[8]
             amount     = b[11] or 0
-            text       = (b[15] or '')[:40]
-            doc_nr     = b[16] or ''
+            text       = _html.escape((b[15] or '')[:40])
+            doc_nr     = _html.escape(b[16] or '')
             display_text = recipient if recipient else text
-            coa_label   = coa_map.get(coa_id, '') if coa_id else ''
+            coa_label   = _html.escape(coa_map.get(coa_id, '')) if coa_id else ''
             amount_col  = 'color:green' if amount > 0 else 'color:red'
             s += (f'<tr><td>{bid}</td><td>{date_str}</td><td title="{text}">{display_text}</td>'
                   f'<td>{coa_label}</td><td style="text-align:right; {amount_col}">{amount:.2f}</td><td>{doc_nr}</td>'

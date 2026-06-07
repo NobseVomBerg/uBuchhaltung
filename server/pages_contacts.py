@@ -6,6 +6,7 @@ Option C – normalized structure:
   CompanyDetails   – 1:1  for EntityType='company'
   PersonDetails    – 1:1  for EntityType='person'
 """
+import html as _html
 from db import Database
 
 
@@ -193,6 +194,30 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
     company_contact_id = g(23, '')
     company_name_free  = g(24, '')
 
+    # XSS-Schutz: freie Texteingaben vor dem Einsetzen in HTML escapen.
+    # Felder, die Auswahl-Helfer speisen (legal_form, country, salutation) oder
+    # IDs/Flags sind, bleiben bewusst roh, damit Options-Matching/Logik stimmt.
+    _esc = _html.escape
+    customer_number   = _esc(str(customer_number))
+    display_name_val  = _esc(str(display_name_val))
+    abbreviation      = _esc(str(abbreviation))
+    email             = _esc(str(email))
+    phone             = _esc(str(phone))
+    notes             = _esc(str(notes))
+    address_line1     = _esc(str(address_line1))
+    street            = _esc(str(street))
+    postal_code       = _esc(str(postal_code))
+    city              = _esc(str(city))
+    company_name      = _esc(str(company_name))
+    tax_id            = _esc(str(tax_id))
+    buyer_route_id    = _esc(str(buyer_route_id))
+    title_val         = _esc(str(title_val))
+    first_name        = _esc(str(first_name))
+    last_name         = _esc(str(last_name))
+    job_title         = _esc(str(job_title))
+    department        = _esc(str(department))
+    company_name_free = _esc(str(company_name_free))
+
     entity_label = "🏢 Unternehmen" if entity_type == 'company' else "👤 Person"
 
     # Alt-entity switch (only for new contact forms)
@@ -209,7 +234,7 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
     company_opts = '<option value="">– keine Firma verknüpft –</option>'
     for comp in companies:
         comp_id   = comp[0]
-        comp_name = comp[3] or f'ID {comp[0]}'
+        comp_name = _html.escape(comp[3]) if comp[3] else f'ID {comp[0]}'
         sel = 'selected' if str(comp_id) == str(company_contact_id) else ''
         company_opts += f'<option value="{comp_id}" {sel}>{comp_name}</option>'
 
