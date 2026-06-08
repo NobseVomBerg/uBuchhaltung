@@ -16,46 +16,54 @@ from .period import period_filter_widget
 
 def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, date_to=None):
     """Generate transactions page with edit functionality"""
-    # Generate Header2 with account checkboxes
+    # Header2: Konten als kompaktes Dropdown (treibt weiter die clientseitige
+    # filterTransactions-Logik) + Such-/Waehrungs-/Betrags-Filter daneben.
     accounts = db.fetch_accounts()
-    header2_content = (
-        '<input type="checkbox" id="account_all" checked onchange="toggleAllAccounts()"> '
-        '<label for="account_all"><strong>Alle</strong></label> &nbsp;|&nbsp; '
+    account_checkboxes = (
+        '<div><label><input type="checkbox" id="account_all" checked '
+        'onchange="toggleAllAccounts()"> <strong>Alle</strong></label></div>'
+        '<hr style="margin:5px 0;border:none;border-top:1px solid #888;">'
     )
     for account in accounts:
         account_id = account[0]
-        account_name = account[1]
-        account_iban = account[3]  # Store IBAN for filtering
-        header2_content += f'<input type="checkbox" id="account_{account_id}" name="account_{account_id}" data-iban="{account_iban}" checked onchange="syncAllAccountsAndFilter()"> '
-        header2_content += f'<label for="account_{account_id}">{account_name}</label> &nbsp; '
+        account_name = _html.escape(str(account[1] or ''))
+        account_iban = _html.escape(str(account[3] or ''))  # fuer Filterung
+        account_checkboxes += (
+            f'<div><label><input type="checkbox" id="account_{account_id}" '
+            f'name="account_{account_id}" data-iban="{account_iban}" checked '
+            f'onchange="syncAllAccountsAndFilter()"> {account_name}</label></div>'
+        )
+
+    # Panel als Overlay per Inline-Style (cache-unabhängig: erscheint über dem
+    # Seiteninhalt, statt eine 2. Header-Zeile zu erzeugen). Hintergrund/Padding
+    # kommen aus der bereits vorhandenen Klasse rectRounded.
+    header2_content = f'''<div class="rowWithObjects">
+        <div style="position:relative; display:inline-block;">
+            <button type="button" id="acctMenuBtn" onclick="toggleAcctMenu(event)">🏦 Konten <span id="acctMenuLabel">(alle)</span> ▾</button>
+            <div class="rectRounded" id="acctMenuPanel" style="display:none; position:absolute; top:100%; left:0; z-index:50; min-width:220px; max-height:340px; overflow-y:auto; white-space:nowrap; box-shadow:0 2px 8px rgba(0,0,0,.25);">{account_checkboxes}</div>
+        </div>
+        <div>🔍 <input type="text" id="txSearch" placeholder="Empfänger / Verwendungszweck" oninput="filterTransactions()" style="width: 240px;"></div>
+        <div>
+            <label>Währung:</label>
+            <select id="currencyFilter" onchange="filterTransactions()">
+                <option value="">Alle</option>
+                <option value="EUR" selected>EUR</option>
+                <option value="USD">USD</option>
+                <option value="GBP">GBP</option>
+                <option value="CHF">CHF</option>
+            </select>
+        </div>
+        <div>
+            <label>Min. Betrag:</label> <input type="number" step="0.01" class="noButtons" id="minAmount" onchange="filterTransactions()" style="width: 80px;">
+            <label>Max. Betrag:</label> <input type="number" step="0.01" class="noButtons" id="maxAmount" onchange="filterTransactions()" style="width: 80px;">
+        </div>
+    </div>'''
 
     s = Header1('transactions')
     s+= Header2(header2_content)
 
-    # Header3: gemeinsamer Zeitraum-Filter (Server-Reload) + Transaktions-Filter (clientseitig)
-    header3_content = f'''
-        <div class="rowWithObjects">
-            {period_filter_widget(date_from, date_to, '/transactions')}
-            <div>
-                🔍 <input type="text" id="txSearch" placeholder="Empf\u00e4nger / Verwendungszweck" oninput="filterTransactions()" style="width: 240px;">
-            </div>
-            <div>
-                <label>Währung:</label>
-                <select id="currencyFilter" onchange="filterTransactions()">
-                    <option value="">Alle</option>
-                    <option value="EUR" selected>EUR</option>
-                    <option value="USD">USD</option>
-                    <option value="GBP">GBP</option>
-                    <option value="CHF">CHF</option>
-                </select>
-            </div>
-            <div>
-                <label>Min. Betrag:</label> <input type="number" step="0.01" class="noButtons" id="minAmount" onchange="filterTransactions()" style="width: 80px;">
-                <label>Max. Betrag:</label> <input type="number" step="0.01" class="noButtons" id="maxAmount" onchange="filterTransactions()" style="width: 80px;">
-            </div>
-        </div>
-    '''
-    s+= Header3(header3_content)
+    # Header3: zentraler Zeitraum-Filter (Von/Bis + Jahr + Monat)
+    s+= Header3(period_filter_widget(date_from, date_to, '/transactions'))
 
     # Load transaction for editing if ID provided
     edit_trans = None
@@ -839,6 +847,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             const checked = allCb ? allCb.checked : true;
             document.querySelectorAll('input[type="checkbox"][id^="account_"]:not(#account_all)')
                 .forEach(cb => { cb.checked = checked; });
+            updateAcctMenuLabel();
             filterTransactions();
         }
 
@@ -848,11 +857,38 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             if (allCb) {
                 allCb.checked = Array.from(accountCbs).every(cb => cb.checked);
             }
+            updateAcctMenuLabel();
             filterTransactions();
         }
 
         function filterTransactionsByAccount() { filterTransactions(); }
         function filterTransactionsByDate()    { filterTransactions(); }
+
+        // ── Konten-Dropdown (kompaktes Overlay statt langer Checkbox-Leiste) ──
+        function toggleAcctMenu(ev) {
+            ev.stopPropagation();
+            const p = document.getElementById('acctMenuPanel');
+            p.style.display = (p.style.display === 'block') ? 'none' : 'block';
+        }
+        function updateAcctMenuLabel() {
+            const all = document.getElementById('account_all');
+            const cbs = document.querySelectorAll('input[type="checkbox"][id^="account_"]:not(#account_all)');
+            const checked = Array.from(cbs).filter(cb => cb.checked).length;
+            const label = document.getElementById('acctMenuLabel');
+            if (!label) return;
+            if (all && all.checked || checked === cbs.length) label.textContent = '(alle)';
+            else if (checked === 0) label.textContent = '(keine)';
+            else label.textContent = '(' + checked + '/' + cbs.length + ')';
+        }
+        // Panel schließen, wenn außerhalb des Buttons/Panels geklickt wird
+        document.addEventListener('click', function(ev) {
+            const btn = document.getElementById('acctMenuBtn');
+            const panel = document.getElementById('acctMenuPanel');
+            if (!panel) return;
+            if (panel.contains(ev.target) || (btn && btn.contains(ev.target))) return;
+            panel.style.display = 'none';
+        });
+        document.addEventListener('DOMContentLoaded', updateAcctMenuLabel);
     </script>
     '''
 

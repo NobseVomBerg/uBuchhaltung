@@ -40,19 +40,15 @@ def PageReceipts(db: Database, date_from=None, date_to=None):
             next_receipt_number = f"{year_short}{letter}{prefix}{next_num:03d}"
     
     s = Header1('receipts')
-    s+= Header2()
-    
-    # Header3: gemeinsamer Zeitraum-Filter (Server-Reload) + Suche (clientseitig)
-    header3_content = f'''
-        <div class="rowWithObjects">
-            {period_filter_widget(date_from, date_to, '/receipts')}
-            <div>
-                <label>🔍 Suche:</label>
-                <input type="text" id="receiptSearch" oninput="filterReceipts()" placeholder="Dateiname / Pfad / Info" style="width: 200px;">
-            </div>
-        </div>
-    '''
-    s+= Header3(header3_content)
+    # Suche nach Header2; Zeitraum (Von/Bis + Jahr + Monat) zentral in Header3.
+    s += Header2(
+        '<div class="rowWithObjects"><div>'
+        '<label>🔍 Suche:</label> '
+        '<input type="text" id="receiptSearch" oninput="filterReceipts()" '
+        'placeholder="Dateiname / Pfad / Info" style="width: 200px;">'
+        '</div></div>'
+    )
+    s += Header3(period_filter_widget(date_from, date_to, '/receipts'))
     
     # ── Zwei-Spalten-Layout: links scrollbare Belege, rechts Upload + Formular ──
     s += '''

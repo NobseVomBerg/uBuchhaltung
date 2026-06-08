@@ -10,6 +10,7 @@ import html as _html
 import json
 from db import Database
 from .pages import Header1, Header2, Header3, Footer
+from .period import period_filter_widget
 
 # Arbeitszeit-Arten (Kind) und fachliche Labels
 KINDS = [
@@ -123,51 +124,10 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
     )
     s += Header2(person_select)
 
-    # Header3: Zeitraum (Von/Bis) + Jahre + Monate
-    year = d_from.year
-    cur_month = d_from.month
-    current_year = datetime.date.today().year
-
-    # Jahres-Buttons: aktiv, wenn das gewählte Jahr passt (auch bei Monatswahl).
-    # Klick behält den Monat (Monatsmodus) bzw. wählt das ganze Jahr.
-    year_buttons = ''
-    for y in range(current_year, current_year - 4, -1):
-        if single_month:
-            last = calendar.monthrange(y, cur_month)[1]
-            yf, yt = f'{y}-{cur_month:02d}-01', f'{y}-{cur_month:02d}-{last:02d}'
-        else:
-            yf, yt = f'{y}-01-01', f'{y}-12-31'
-        active = " class='active'" if year == y else ''
-        year_buttons += (f"<button{active} type='button' "
-                         f"onclick=\"window.location.href='/worktime{qs(df=yf, dt=yt)}'\">{y}</button> ")
-
-    # Monats-Buttons (für das gewählte Jahr): aktiv beim gewählten Monat
-    month_buttons = ''
-    for m in range(1, 13):
-        last = calendar.monthrange(year, m)[1]
-        mf, mt = f'{year}-{m:02d}-01', f'{year}-{m:02d}-{last:02d}'
-        active = " class='active'" if (single_month and cur_month == m) else ''
-        month_buttons += (f"<button{active} type='button' "
-                          f"onclick=\"window.location.href='/worktime{qs(df=mf, dt=mt)}'\">{MONTHS[m-1]}</button> ")
-
-    header3 = f'''<div class="rowWithObjects">
-        <div>
-            <label>Von:</label>
-            <input type="date" id="wtFrom" value="{date_from}" onchange="wtGotoDates()">
-            <label>Bis:</label>
-            <input type="date" id="wtTo" value="{date_to}" onchange="wtGotoDates()">
-        </div>
-        <div>{year_buttons}</div>
-        <div>{month_buttons}</div>
-    </div>
-    <script>
-        function wtGotoDates() {{
-            const f = document.getElementById('wtFrom').value;
-            const t = document.getElementById('wtTo').value;
-            if (f && t) window.location.href = '/worktime?person={person_id}&from=' + f + '&to=' + t;
-        }}
-    </script>'''
-    s += Header3(header3)
+    # Header3: zentraler Zeitraum-Filter (Von/Bis + Jahr + Monat inkl. Monats-
+    # Toggle). Person wird als Zusatzparameter mitgeführt.
+    s += Header3(period_filter_widget(date_from, date_to, '/worktime',
+                                      extra_params={'person': person_id}))
 
     # ── Daten für die Tabelle aufbereiten ────────────────────────────────────
     entries = list(db.fetch_worktimes(person_id, date_from, date_to)) if person_id else []

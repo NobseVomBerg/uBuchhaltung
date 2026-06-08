@@ -8,6 +8,7 @@ from db import Database
 from .pages import (
     Header1, Header2, Header3, Footer,
 )
+from .period import period_filter_widget
 
 
 def _json_for_script(obj) -> str:
@@ -68,13 +69,9 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
         invoices = [inv for inv in invoices if inv[2] <= date_to]
     
     s = Header1('invoice')
-    s+= Header2()
 
-    # Header3 with filters (date, status, search)
-    import datetime
-    current_year = datetime.datetime.now().year
-    
-    # Prepare status selection
+    # Status- und Such-Filter wandern nach Header2; der Zeitraum (Von/Bis + Jahr +
+    # Monat) wird zentral in Header3 über period_filter_widget angeboten.
     status_options = {
         'all': 'Alle',
         'draft': 'Entwurf',
@@ -83,36 +80,28 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
         'paid': 'Bezahlt',
         'cancelled': 'Storniert'
     }
-    
+
     status_dropdown = '<select id="statusFilter" onchange="applyInvoiceFilters()">'
     for value, label in status_options.items():
         selected = 'selected' if status_filter == value or (not status_filter and value == 'all') else ''
         status_dropdown += f'<option value="{value}" {selected}>{label}</option>'
     status_dropdown += '</select>'
 
-    # Jahres-Buttons mit Hervorhebung des aktiven Jahres (wie auf den anderen Seiten)
-    year_buttons = ''
-    for y in range(current_year, current_year - 4, -1):
-        active = (date_from == f'{y}-01-01' and date_to == f'{y}-12-31')
-        cls = " class='active'" if active else ''
-        year_buttons += f'<button{cls} type="button" onclick="setInvoiceYear({y})">{y}</button> '
+    header2_content = (
+        '<div class="rowWithObjects">'
+        f'<div><label>🔍 Suche:</label> <input type="text" id="searchQuery" '
+        f'value="{_html.escape(search_query)}" placeholder="RNr. oder Kunde" '
+        'onchange="applyInvoiceFilters()" style="width: 200px;"></div>'
+        f'<div><label>Status:</label> {status_dropdown}</div>'
+        '</div>'
+    )
+    s += Header2(header2_content)
 
-    header3_content = f'''
-        <div class="rowWithObjects">
-            <div>
-                <label>Von:</label> <input type="date" id="dateFrom" value="{date_from}" onchange="applyInvoiceFilters()">
-                <label> Bis:</label> <input type="date" id="dateTo" value="{date_to}" onchange="applyInvoiceFilters()">
-                {year_buttons}
-            </div>
-            <div>
-                <label>🔍 Suche:</label> <input type="text" id="searchQuery" value="{search_query}" placeholder="RNr. oder Kunde" onchange="applyInvoiceFilters()" style="width: 200px;">
-            </div>
-            <div>
-                <label>Status:</label> {status_dropdown}
-            </div>
-        </div>
-    '''
-    s+= Header3(header3_content)
+    # Header3: zentraler Zeitraum-Filter (erhält Status/Suche/ausgewählte Rechnung)
+    s += Header3(period_filter_widget(
+        date_from, date_to, '/invoice',
+        extra_params={'status': status_filter, 'search': search_query,
+                      'id': invoice_id if invoice_id else ''}))
 
     # Statistics summary
     total_count = len(invoices)
@@ -198,12 +187,6 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
                 .catch(err => {
                     alert('Fehler: ' + err.message);
                 });
-        }
-        
-        function setInvoiceYear(year) {
-            document.getElementById('dateFrom').value = year + '-01-01';
-            document.getElementById('dateTo').value = year + '-12-31';
-            applyInvoiceFilters();
         }
         
         function applyInvoiceFilters() {
