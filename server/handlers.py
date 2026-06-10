@@ -499,6 +499,42 @@ def handle_datev_export(db: Database, post_data: dict):
         return 303, f'/miscellaneous?datev_export=error&msg={msg}'
 
 
+def handle_logo_upload(request_handler):
+    """Logo-/Bild-Datei eines Kontakts hochladen (Multipart, Feld 'logofile').
+
+    Browser geben aus Sicherheitsgründen nie den echten Dateipfad preis. Daher wird
+    die Datei tatsächlich nach data/logos/ gespeichert und der serverseitige Pfad
+    zurückgegeben, den das Logo-Feld dann übernimmt.
+
+    Returns: JSON-bytes {'success': bool, 'path'|'error': str}
+    """
+    import os
+    import re as _re_logo
+    from .multipart import first_file
+
+    content_type = request_handler.headers.get('Content-Type', '')
+    if 'multipart/form-data' not in content_type:
+        return json.dumps({'success': False, 'error': 'Kein Multipart-Upload'}).encode()
+    length = int(request_handler.headers.get('Content-Length', 0))
+    raw = request_handler.rfile.read(length)
+    part = first_file(content_type, raw)
+    if not part or not part.content:
+        return json.dumps({'success': False, 'error': 'Keine Datei empfangen'}).encode()
+
+    base = os.path.basename(part.filename or 'logo')
+    safe = _re_logo.sub(r'[^A-Za-z0-9._-]', '_', base) or 'logo'
+    if '.' not in safe:
+        safe += '.png'
+    os.makedirs(os.path.join('data', 'logos'), exist_ok=True)
+    path = os.path.join('data', 'logos', safe)
+    try:
+        with open(path, 'wb') as f:
+            f.write(part.content)
+    except Exception as e:
+        return json.dumps({'success': False, 'error': f'Speichern fehlgeschlagen: {e}'}).encode()
+    return json.dumps({'success': True, 'path': path.replace('\\', '/')}).encode()
+
+
 def handle_wiso_import(request_handler, db: Database):
     """WISO Mein Büro CSV-Datei importieren (Multipart-Upload).
 
@@ -622,11 +658,14 @@ def handle_add_contact(db: Database, post_data):
         if not is_unique:
             return 303, f'/masterdata/contacts?error={quote(f"Kürzel bereits vergeben: {abbr}")}'
 
-    # Multi-value fields (checkboxes)
+    # Multi-value fields (checkboxes). 'own' ist Systemtyp und mit anderen Typen
+    # kombinierbar; ist es gewählt, wird es Primärtyp, die übrigen bleiben Links.
     type_keys  = post_data.get('type_keys', [])
     role_keys  = post_data.get('role_keys', [])
-    # Primärtyp: erstes Checkbox-Element oder Fallback
-    primary_type = type_keys[0] if type_keys else _get('contact_type', 'customer')
+    if 'own' in type_keys:
+        primary_type = 'own'
+    else:
+        primary_type = type_keys[0] if type_keys else _get('contact_type', 'customer')
 
     try:
         db.insert_contact(
@@ -687,10 +726,15 @@ def handle_update_contact(db: Database, post_data):
         if not is_unique:
             return 303, f'/masterdata/contacts/edit?id={contact_id}&error={quote(f"Kürzel bereits vergeben: {abbr}")}'
 
-    # Multi-value fields (checkboxes)
+    # Multi-value fields (checkboxes). 'own' ist Systemtyp (Spalte ContactType) und
+    # darf mit anderen Typen kombiniert werden (z.B. eigene Firma als Kunde einer
+    # anderen). Ist 'own' gewählt, wird es der Primärtyp; die übrigen bleiben Links.
     type_keys    = post_data.get('type_keys', [])
     role_keys    = post_data.get('role_keys', [])
-    primary_type = type_keys[0] if type_keys else _get('contact_type', 'customer')
+    if 'own' in type_keys:
+        primary_type = 'own'
+    else:
+        primary_type = type_keys[0] if type_keys else _get('contact_type', 'customer')
 
     try:
         db.update_contact(

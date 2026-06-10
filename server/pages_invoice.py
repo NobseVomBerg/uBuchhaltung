@@ -6,7 +6,7 @@ import os
 import html as _html
 from db import Database
 from .pages import (
-    Header1, Header2, Header3, Footer,
+    Header1, Header2, Header3, Footer, logo_url,
 )
 from .period import period_filter_widget
 
@@ -745,7 +745,7 @@ function setInvoiceStatus(invId) {{
             'email':   own[9] or '',
             'phone':   own[10] or '',
             'tax_id':  own[11] or '',
-            'logo':    own[13] if len(own) > 13 and own[13] else ''
+            'logo':    logo_url(own[13]) if len(own) > 13 and own[13] else ''
         }
     
     s += _json_for_script(own_companies_dict)

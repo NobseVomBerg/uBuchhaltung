@@ -30,6 +30,7 @@ def Footer():
 # ── Constants ────────────────────────────────────────────────────────────────
 
 CONTACT_TYPES = [
+    ('own',              '⭐ Eigen (eigene Firma/Person)'),
     ('customer',         'Kunde'),
     ('supplier',         'Lieferant'),
     ('prospect',         'Interessent'),
@@ -101,30 +102,54 @@ def _sal_opts(current):
 # ── Helper: shared logo-picker JS ─────────────────────────────────────────────
 
 _LOGO_JS = r'''
+        // Promise des laufenden Logo-Uploads (null wenn keiner läuft)
+        let _logoUploadPromise = null;
+
         function updateLogoPath(input, inputId, previewId) {
             if (!input.files || !input.files[0]) return;
-            const filePath = input.value;
-            let displayPath = filePath;
-            if (filePath.includes('\\')) {
-                const parts = filePath.split('\\');
-                const filename = parts[parts.length - 1];
-                if (filePath.toLowerCase().includes('\\private\\')) {
-                    displayPath = 'seed_data/private/' + filename;
-                } else if (filePath.toLowerCase().includes('\\pybuch\\')) {
-                    const idx = filePath.toLowerCase().indexOf('\\pybuch\\');
-                    displayPath = filePath.substring(idx + 8).replace(/\\/g, '/');
-                } else {
-                    displayPath = 'seed_data/private/' + filename;
-                }
-            }
-            document.getElementById(inputId).value = displayPath;
+            const file = input.files[0];
+            const field = document.getElementById(inputId);
+            // Vorschau aus dem lokalen File (zeigt sofort, dass es geklappt hat)
             const reader = new FileReader();
             reader.onload = function(e) {
                 document.getElementById(previewId).innerHTML =
                     '<img src="' + e.target.result + '" class="logo-preview">';
             };
-            reader.readAsDataURL(input.files[0]);
+            reader.readAsDataURL(file);
+            // Browser geben den echten Pfad nicht preis → Datei hochladen und den
+            // serverseitig gespeicherten Pfad ins Feld übernehmen. Während des Uploads
+            // den Speichern-Button sperren (verhindert leeres Speichern).
+            const saveBtn = document.querySelector('button[type="submit"][form="contact_form"]');
+            if (saveBtn) saveBtn.disabled = true;
+            const fd = new FormData();
+            fd.append('logofile', file);
+            _logoUploadPromise = fetch('/masterdata/contacts/upload-logo', {method: 'POST', body: fd})
+                .then(r => r.json())
+                .then(d => {
+                    if (d.success) {
+                        if (field) field.value = d.path;
+                    } else {
+                        alert('Logo-Upload fehlgeschlagen: ' + (d.error || 'Unbekannter Fehler'));
+                    }
+                })
+                .catch(err => alert('Logo-Upload fehlgeschlagen: ' + err))
+                .finally(() => { if (saveBtn) saveBtn.disabled = false; _logoUploadPromise = null; });
         }
+
+        // Datei-Input verdrahten (robuster als Inline-onchange) + Submit-Guard.
+        (function() {
+            const fi = document.getElementById('logo_file_input');
+            if (fi) fi.addEventListener('change', function() {
+                updateLogoPath(this, 'field_logo', 'logo_preview_div');
+            });
+            const form = document.getElementById('contact_form');
+            if (form) form.addEventListener('submit', function(ev) {
+                if (_logoUploadPromise) {
+                    ev.preventDefault();
+                    _logoUploadPromise.then(function() { form.submit(); });
+                }
+            });
+        })();
 '''
 
 
@@ -167,7 +192,10 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
 
     # Parse comma-separated keys from DB
     active_type_keys = [t.strip() for t in type_keys_str.split(',') if t.strip()]
-    if not active_type_keys and contact_type not in ('own',):
+    # 'own' steht in der Spalte ContactType (kein Link) → zusätzlich vorhaken.
+    if contact_type == 'own' and 'own' not in active_type_keys:
+        active_type_keys.append('own')
+    if not active_type_keys:
         active_type_keys = [contact_type]
     active_role_keys = [r.strip() for r in role_keys_str.split(',') if r.strip()]
     email            = g(9,  '')
@@ -238,7 +266,8 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
         sel = 'selected' if str(comp_id) == str(company_contact_id) else ''
         company_opts += f'<option value="{comp_id}" {sel}>{comp_name}</option>'
 
-    logo_preview = f'<img src="{logo}" class="logo-preview">' if logo else ''
+    from server.pages import logo_url
+    logo_preview = f'<img src="{logo_url(logo)}" class="logo-preview">' if logo else ''
 
     # Fachliche Rollen (nur für Personen) – muss vor entity_section stehen (wird darin referenziert)
     if entity_type == 'person':
@@ -291,11 +320,10 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
         {roles_section}
         '''
 
-    # Kontakttyp-Bereich: Checkboxen (außer bei 'own')
-    if contact_type == 'own':
-        type_section = '<span class="badge" style="background:#e8f0fe;color:#1a73e8;padding:3px 8px;border-radius:4px;">⭐ Eigene Daten</span>'
-    else:
-        type_section = _checkbox_grid(CONTACT_TYPES, 'type_keys', active_type_keys)
+    # Kontakttyp-Bereich: Checkboxen inkl. 'Eigen'. 'Eigen' ist exklusiv (Systemtyp
+    # in Contacts.ContactType, keine Mehrfach-Links) – die Exklusivität erzwingt
+    # _TYPE_EXCL_JS clientseitig und der Handler serverseitig.
+    type_section = _checkbox_grid(CONTACT_TYPES, 'type_keys', active_type_keys)
 
     s  = f'<form method="POST" action="{form_action}" id="contact_form">'
     s += extra_hidden
@@ -341,11 +369,10 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
             <td><input type="tel" name="phone" value="{phone}"></td></tr>
         <tr><td>Logo / Bild:</td>
             <td><input type="text" name="logo" id="field_logo" value="{logo}"
-                       placeholder="seed_data/private/logo.png oder URL">
+                       placeholder="Pfad/URL oder Datei wählen">
                 <button type="button"
                         onclick="document.getElementById('logo_file_input').click()">Datei wählen</button>
-                <input type="file" id="logo_file_input" accept="image/*" style="display:none"
-                       onchange="updateLogoPath(this,'field_logo','logo_preview_div')">
+                <input type="file" id="logo_file_input" accept="image/*" style="display:none">
                 <div id="logo_preview_div">{logo_preview}</div></td></tr>
         <tr><td>Notizen:</td>
             <td><textarea name="notes" rows="3">{notes}</textarea></td></tr>
@@ -437,7 +464,7 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
                 .then(r => r.json())
                 .then(data => {{
                     if (data.exists) {{
-                        feedback.innerHTML = '&#x26A0; Bereits vergeben &rarr; <a href="#" onclick="useAbbrevSuggestion(\'' + data.suggestion + '\');return false;">' + data.suggestion + '</a>';
+                        feedback.innerHTML = '&#x26A0; Bereits vergeben &rarr; <a href="#" onclick="useAbbrevSuggestion(\\'' + data.suggestion + '\\');return false;">' + data.suggestion + '</a>';
                         feedback.style.color = '#c00';
                         abbr.style.borderColor = '#c00';
                     }} else {{

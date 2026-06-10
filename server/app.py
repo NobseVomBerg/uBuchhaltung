@@ -471,13 +471,14 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.serve_static_file("buch.css", "text/css")
             elif self.path == "/favicon.ico":
                 self.serve_static_file("favicon.ico", "image/x-icon")
-            elif self.path.startswith("/seed_data/private/"):
-                # Serve private static files (e.g., logo) – mit Schutz gegen
+            elif self.path.startswith("/seed_data/private/") or self.path.startswith("/data/logos/"):
+                # Statische Dateien (Logos) ausliefern – mit Schutz gegen
                 # Path-Traversal: aufgeloester Pfad muss im erlaubten Verzeichnis
                 # liegen (kein ../, kein absoluter Pfad, Query-String entfernt).
                 from urllib.parse import unquote
                 rel_path = unquote(self.path.split('?', 1)[0])[1:]  # Query weg, fuehrendes / weg
-                base = os.path.realpath("seed_data/private")
+                allowed_base = "seed_data/private" if self.path.startswith("/seed_data/private/") else "data/logos"
+                base = os.path.realpath(allowed_base)
                 target = os.path.realpath(rel_path)
                 if (target == base or target.startswith(base + os.sep)) and os.path.isfile(target):
                     self.serve_static_file(target, self.guess_content_type(target))
@@ -546,6 +547,16 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if self.path == "/wiso/import":
             status_code, location = handlers.handle_wiso_import(self, db)
             self.respond(status_code, "", headers={"Location": location})
+            return
+
+        # Handle contact logo upload (multipart file upload)
+        if self.path == "/masterdata/contacts/upload-logo":
+            response_data = handlers.handle_logo_upload(self)
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.send_header("Content-Length", str(len(response_data)))
+            self.end_headers()
+            self.wfile.write(response_data)
             return
 
         # Handle invoice save / update

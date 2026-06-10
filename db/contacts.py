@@ -128,15 +128,16 @@ class ContactsMixin:
                      job_title or None, department or None, 1 if is_primary_contact else 0)
                 )
 
-            # ContactTypeLinks: alle Typen außer 'own' (Systemtyp)
-            if contact_type != 'own':
-                all_types = list(dict.fromkeys([contact_type] + list(type_keys or [])))
-                for tk in all_types:
-                    if tk and tk != 'own':
-                        cursor.execute(
-                            'INSERT OR IGNORE INTO ContactTypeLinks (ContactID, TypeKey) VALUES (?, ?)',
-                            (contact_id, tk)
-                        )
+            # ContactTypeLinks: alle gewählten Nicht-'own'-Typen. 'own' ist Systemtyp
+            # (Spalte ContactType) und kein Link – ein Kontakt darf aber gleichzeitig
+            # 'own' UND z.B. 'customer' sein (z.B. eigene Firma als Kunde einer anderen).
+            all_types = list(dict.fromkeys([contact_type] + list(type_keys or [])))
+            for tk in all_types:
+                if tk and tk != 'own':
+                    cursor.execute(
+                        'INSERT OR IGNORE INTO ContactTypeLinks (ContactID, TypeKey) VALUES (?, ?)',
+                        (contact_id, tk)
+                    )
 
             # PersonRoles
             if entity_type == 'person' and role_keys:
@@ -205,16 +206,17 @@ class ContactsMixin:
                      company_name_free or None,
                      job_title or None, department or None, 1 if is_primary_contact else 0)
                 )
-            # ContactTypeLinks: delete + re-insert (nur für Nicht-'own'-Kontakte)
-            if contact_type != 'own':
-                cursor.execute('DELETE FROM ContactTypeLinks WHERE ContactID=?', (contact_id,))
-                all_types = list(dict.fromkeys([contact_type] + list(type_keys or [])))
-                for tk in all_types:
-                    if tk and tk != 'own':
-                        cursor.execute(
-                            'INSERT OR IGNORE INTO ContactTypeLinks (ContactID, TypeKey) VALUES (?, ?)',
-                            (contact_id, tk)
-                        )
+            # ContactTypeLinks: immer neu setzen. 'own' selbst ist kein Link (Systemtyp
+            # in Spalte ContactType), ein Kontakt darf aber gleichzeitig 'own' UND
+            # weitere Typen (Kunde, Lieferant …) haben.
+            cursor.execute('DELETE FROM ContactTypeLinks WHERE ContactID=?', (contact_id,))
+            all_types = list(dict.fromkeys([contact_type] + list(type_keys or [])))
+            for tk in all_types:
+                if tk and tk != 'own':
+                    cursor.execute(
+                        'INSERT OR IGNORE INTO ContactTypeLinks (ContactID, TypeKey) VALUES (?, ?)',
+                        (contact_id, tk)
+                    )
             # PersonRoles: delete + re-insert
             cursor.execute('DELETE FROM PersonRoles WHERE ContactID=?', (contact_id,))
             if entity_type == 'person' and role_keys:
