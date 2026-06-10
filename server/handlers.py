@@ -1878,7 +1878,12 @@ def handle_setup_save(db: Database, post_data: dict):
     """
     from .pages_setup import PageSetup
 
-    company_name = post_data.get('company_name', '').strip()
+    # post_data stammt aus parse_qs → Werte sind Listen; ersten Wert ziehen.
+    def g(key, default=''):
+        v = post_data.get(key, [default])
+        return (v[0] if isinstance(v, list) else v) or default
+
+    company_name = g('company_name').strip()
     if not company_name:
         return 200, PageSetup(db, message='Bitte gib mindestens den Firmennamen ein.')
 
@@ -1887,25 +1892,25 @@ def handle_setup_save(db: Database, post_data: dict):
             contact_type='own',
             entity_type='company',
             display_name=company_name,
-            email=post_data.get('email', '').strip(),
-            phone=post_data.get('phone', '').strip(),
-            street=post_data.get('street', '').strip(),
-            postal_code=post_data.get('postal_code', '').strip(),
-            city=post_data.get('city', '').strip(),
-            country=post_data.get('country', 'DE').strip() or 'DE',
+            email=g('email').strip(),
+            phone=g('phone').strip(),
+            street=g('street').strip(),
+            postal_code=g('postal_code').strip(),
+            city=g('city').strip(),
+            country=g('country', 'DE').strip() or 'DE',
             company_name=company_name,
-            legal_form=post_data.get('legal_form', '').strip(),
-            tax_id=post_data.get('tax_id', '').strip(),
+            legal_form=g('legal_form').strip(),
+            tax_id=g('tax_id').strip(),
         )
     except Exception as e:
         return 200, PageSetup(db, message=f'Fehler beim Speichern der Kontaktdaten: {e}')
 
     # Optionales Bankkonto anlegen (nur wenn IBAN angegeben)
-    iban = post_data.get('iban', '').replace(' ', '').strip()
+    iban = g('iban').replace(' ', '').strip()
     if iban:
-        bank_name_label = post_data.get('bank_name_label', '').strip() or 'Bankkonto'
-        bic = post_data.get('bic', '').strip()
-        bank_name = post_data.get('bank_name', '').strip()
+        bank_name_label = g('bank_name_label').strip() or 'Bankkonto'
+        bic = g('bic').strip()
+        bank_name = g('bank_name').strip()
         try:
             db.insert_account(
                 name=bank_name_label,
