@@ -328,10 +328,20 @@ class SchemaMixin:
                 XMLPath TEXT,
                 CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UpdatedAt DATETIME,
-                
+
+                -- Angebots-/Dokument-Erweiterung (ANS ENDE anhängen: der Rechnungscode
+                -- liest Spalten positionsbasiert – neue Felder ab Index 45, niemals
+                -- in die Mitte einfügen!)
+                DocumentType TEXT NOT NULL DEFAULT 'invoice',  -- 'invoice' | 'quote'
+                ValidUntil DATE,                               -- Angebot gültig bis
+                IntroText TEXT,                                -- Fließtext vor Positionen
+                ClosingText TEXT,                              -- Fließtext nach Positionen
+                SourceQuoteId INTEGER,                         -- Rechnung: Quell-Angebot
+
                 FOREIGN KEY (OwnCompanyId) REFERENCES Contacts(ID),
                 FOREIGN KEY (CustomerId) REFERENCES Contacts(ID),
-                FOREIGN KEY (BankAccountId) REFERENCES Accounts(ID)
+                FOREIGN KEY (BankAccountId) REFERENCES Accounts(ID),
+                FOREIGN KEY (SourceQuoteId) REFERENCES Invoices(ID) ON DELETE SET NULL
             )
         ''')
 

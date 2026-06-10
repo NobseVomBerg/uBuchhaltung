@@ -600,6 +600,9 @@ class TestInvoiceCRUD:
         assert row[38] == pytest.approx(119.0), f"SumGross expected at [38], got {row[38]!r}"
         assert row[40] == 'draft',              f"Status expected at [40], got {row[40]!r}"
         assert row[41] is None,                 f"PDFPath expected at [41], got {row[41]!r}"
+        # Angebots-/Dokument-Erweiterung ans Ende (ab Index 45) – darf bestehende
+        # Indizes nicht verschieben; Default 'invoice' für Rechnungen.
+        assert row[45] == 'invoice',            f"DocumentType expected at [45], got {row[45]!r}"
 
     def test_non_default_status_preserved(self, tmp_db):
         """insert_invoice must persist any provided status, not just the default."""

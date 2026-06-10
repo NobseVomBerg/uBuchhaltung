@@ -520,6 +520,94 @@ class SeedMixin:
                 except Exception:
                     pass  # Duplikat oder Fehler – überspringen
 
+        # ── Angebote (Quotes) ─────────────────────────────────────────────────
+        quotes_file = os.path.join(seed_dir, 'test_quotes.json')
+        if os.path.exists(quotes_file):
+            with open(quotes_file, 'r', encoding='utf-8') as f:
+                quotes_data = json.load(f)
+
+            own_rows = self.fetch_contacts(contact_type='own')
+            own = own_rows[0] if own_rows else None
+            customers_by_nr = {c[2]: c for c in self.fetch_contacts(contact_type='customer')}
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('SELECT Name, ID FROM Articles')
+            articles_map = {row[0]: row[1] for row in cursor.fetchall()}
+            cursor.execute('SELECT InvoiceNumber FROM Invoices')
+            existing_docs = {row[0] for row in cursor.fetchall()}
+            conn.close()
+
+            for q in quotes_data:
+                q_number = q['quote_number']
+                if q_number in existing_docs:
+                    continue
+                buyer = customers_by_nr.get(q.get('customer_number'))
+                items = q.get('items', [])
+                sum_net = 0.0
+                tax_amount = 0.0
+                dominant_tax_rate = 19.0
+                for item in items:
+                    item_net = round(item.get('quantity', 1) * item.get('price_per_unit', 0), 2)
+                    sum_net += item_net
+                    tax_amount += round(item_net * item.get('tax_rate', 19) / 100, 2)
+                    dominant_tax_rate = item.get('tax_rate', 19)
+                sum_net = round(sum_net, 2)
+                tax_amount = round(tax_amount, 2)
+                sum_gross = round(sum_net + tax_amount, 2)
+
+                quote_data = {
+                    'invoice_number':    q_number,
+                    'invoice_date':      q['quote_date'],
+                    'own_company_id':    own[0] if own else None,
+                    'seller_name':       own[3] if own else '',
+                    'seller_company':    (own[4] or '') if own else '',
+                    'seller_street':     own[5] if own else '',
+                    'seller_postal_code':own[6] if own else '',
+                    'seller_city':       own[7] if own else '',
+                    'seller_country':    own[8] if own else 'DE',
+                    'seller_vat_id':     own[11] if own else '',
+                    'seller_email':      own[9] if own else '',
+                    'seller_phone':      own[10] if own else '',
+                    'customer_id':       buyer[0] if buyer else None,
+                    'buyer_name':        buyer[3] if buyer else '',
+                    'buyer_company':     (buyer[4] or '') if buyer else '',
+                    'buyer_street':      buyer[5] if buyer else '',
+                    'buyer_postal_code': buyer[6] if buyer else '',
+                    'buyer_city':        buyer[7] if buyer else '',
+                    'buyer_country':     buyer[8] if buyer else 'DE',
+                    'buyer_vat_id':      buyer[11] if buyer else '',
+                    'currency':          'EUR',
+                    'tax_category':      'S',
+                    'tax_rate':          dominant_tax_rate,
+                    'sum_net':           sum_net,
+                    'tax_amount':        tax_amount,
+                    'sum_gross':         sum_gross,
+                    'amount_due':        sum_gross,
+                    'status':            q.get('status', 'draft'),
+                    'document_type':     'quote',
+                    'valid_until':       q.get('valid_until'),
+                    'intro_text':        q.get('intro_text') or None,
+                    'closing_text':      q.get('closing_text') or None,
+                }
+                try:
+                    quote_id = self.insert_invoice(quote_data)
+                    for pos, item in enumerate(items, 1):
+                        art_name = item.get('article_name', '')
+                        self.insert_invoice_item({
+                            'invoice_id':    quote_id,
+                            'position':      pos,
+                            'article_id':    articles_map.get(art_name),
+                            'description':   art_name or item.get('description', ''),
+                            'quantity':      item.get('quantity', 1),
+                            'unit':          'C62',
+                            'price_per_unit':item.get('price_per_unit', 0),
+                            'total_net':     round(item.get('quantity', 1) * item.get('price_per_unit', 0), 2),
+                            'tax_category':  'S',
+                            'tax_rate':      item.get('tax_rate', 19),
+                        })
+                except Exception:
+                    pass
+
         # ── Arbeitszeiten ─────────────────────────────────────────────────────
         worktimes_file = os.path.join(seed_dir, 'test_worktimes.json')
         if os.path.exists(worktimes_file):

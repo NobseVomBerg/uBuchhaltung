@@ -160,6 +160,12 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .invoice-items input 	{ border: 1px solid #ccc; padding: 2px; }
 .item-total 			{ text-align: right; font-weight: bold; }
 .invoice-payment-terms 	{ margin: 20px 0; font-size: 0.9em; }
+/* Angebots-Fließtext (contenteditable) – passt sich in die .invoice-* Familie ein */
+.invoice-richtext-toolbar 	{ margin: 10px 0 2px 0; }
+.invoice-richtext-toolbar button 	{ background: #eee !important; color: #000 !important; border: 1px solid #bbb !important; width: 28px; padding: 2px 0 !important; margin-right: 3px; cursor: pointer; }
+.invoice-richtext-toolbar .rt-label	{ font-size: 0.8em; color: #666; margin-left: 6px; }
+.invoice-richtext 		{ min-height: 48px; border: 1px solid #ccc !important; background: #FFF !important; color: #000 !important; padding: 6px 8px; margin-bottom: 10px; font-size: 0.95em; }
+.invoice-richtext:focus	{ outline: 2px solid #9cf; }
 .invoice-footer 		{ margin-top: 40px; font-size: 0.85em; color: #444; }
 
 /* Modal styles - override dark mode */

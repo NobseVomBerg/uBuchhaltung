@@ -39,6 +39,22 @@ INVOICE_STATUS_LABELS: dict = {
     'cancelled':       'Storniert',
 }
 
+def document_submenu(active):
+    """Gemeinsames Header2-Submenü für Rechnung / Angebot / Mahnwesen.
+
+    active: 'invoice' | 'quote' | 'reminders'
+    """
+    def part(href, label, key):
+        if key == active:
+            return f'<span id="ActivePage">{label}</span>'
+        return f'<a href="{href}">{label}</a>'
+    return ' | '.join([
+        part('/invoice', 'Rechnungen', 'invoice'),
+        part('/quote', 'Angebote', 'quote'),
+        part('/invoice/reminders', 'Mahnwesen', 'reminders'),
+    ])
+
+
 def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
     """Generate invoice list page with search and filter"""
     filters = filters or {}
@@ -89,6 +105,7 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
 
     header2_content = (
         '<div class="rowWithObjects">'
+        f'<div>{document_submenu("invoice")}</div>'
         f'<div><label>🔍 Suche:</label> <input type="text" id="searchQuery" '
         f'value="{_html.escape(search_query)}" placeholder="RNr. oder Kunde" '
         'onchange="applyInvoiceFilters()" style="width: 200px;"></div>'

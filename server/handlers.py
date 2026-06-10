@@ -1478,6 +1478,201 @@ def handle_invoice_pdf_by_id(invoice_id: int):
         return None, None
 
 
+# ── Angebote (Quotes) ─────────────────────────────────────────────────────────
+
+import re as _re_quote
+_QUOTE_STATUSES = {'draft', 'sent', 'accepted', 'rejected', 'converted'}
+_RICHTEXT_BLOCK_RE = _re_quote.compile(
+    r'<\s*(script|style)[^>]*>.*?<\s*/\s*\1\s*>', _re_quote.IGNORECASE | _re_quote.DOTALL)
+_RICHTEXT_ON_ATTR_RE = _re_quote.compile(r'\son\w+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)',
+                                         _re_quote.IGNORECASE)
+
+
+def _sanitize_richtext(html_text):
+    """Leichte Bereinigung des contenteditable-HTML (Phase 1, Single-User).
+
+    Entfernt <script>/<style>-Blöcke und on*=-Eventhandler. Erlaubtes Markup
+    (b/i/strong/em/p/br/ul/ol/li/div) bleibt erhalten – mehr braucht der
+    Phase-1-PDF-Setzer nicht.
+    """
+    if not html_text:
+        return None
+    cleaned = _RICHTEXT_BLOCK_RE.sub('', html_text)
+    cleaned = _RICHTEXT_ON_ATTR_RE.sub('', cleaned)
+    return cleaned.strip() or None
+
+
+def handle_quote_save(post_body: bytes):
+    """Angebot speichern/aktualisieren. Returns JSON (success, quote_id)."""
+    try:
+        data = json.loads(post_body.decode('utf-8'))
+        quote_id = data.get('quoteId')
+        is_update = quote_id is not None
+
+        quote_number = data.get('quoteNumber')
+        quote_date = data.get('quoteDate')
+        customer_id = data.get('customerId')
+        own_company_id = data.get('ownCompanyId')
+        valid_until = data.get('validUntil')
+        intro_text = _sanitize_richtext(data.get('introText'))
+        closing_text = _sanitize_richtext(data.get('closingText'))
+        tax_rate = data.get('taxRate')
+        status = data.get('status', 'draft')
+        if status not in _QUOTE_STATUSES:
+            status = 'draft'
+        items = data.get('items', [])
+
+        if not quote_number or not quote_date or not customer_id or not own_company_id:
+            return json.dumps({'success': False, 'error': 'Pflichtfelder fehlen'}).encode()
+        if not items:
+            return json.dumps({'success': False, 'error': 'Mindestens eine Position erforderlich'}).encode()
+
+        # Summen serverseitig exakt
+        net_amount, tax_amount, gross_amount, line_nets = recompute_invoice_totals(
+            items, _rate_to_pct(tax_rate))
+
+        db = Database()
+        customer = db.get_contact_by_id(customer_id)
+        if not customer:
+            return json.dumps({'success': False, 'error': 'Kunde nicht gefunden'}).encode()
+        own_company = db.get_contact_by_id(own_company_id)
+        if not own_company:
+            return json.dumps({'success': False, 'error': 'Eigene Firma nicht gefunden'}).encode()
+
+        doc = {
+            'invoice_number': quote_number,
+            'invoice_date': quote_date,
+            'own_company_id': own_company_id,
+            'seller_name': own_company[4] or own_company[3] or '',
+            'seller_company': own_company[4] or '',
+            'seller_street': own_company[5] or '',
+            'seller_postal_code': own_company[6] or '',
+            'seller_city': own_company[7] or '',
+            'seller_country': own_company[8] or 'DE',
+            'seller_vat_id': own_company[11] or '',
+            'seller_email': own_company[9] or '',
+            'seller_phone': own_company[10] or '',
+            'customer_id': customer_id,
+            'buyer_name': customer[4] or customer[3] or '',
+            'buyer_company': customer[4] or '',
+            'buyer_street': customer[5] or '',
+            'buyer_postal_code': customer[6] or '',
+            'buyer_city': customer[7] or '',
+            'buyer_country': customer[8] or 'DE',
+            'buyer_vat_id': customer[11] or '',
+            'currency': 'EUR',
+            'tax_category': 'S',
+            'tax_rate': tax_rate,
+            'sum_net': net_amount,
+            'tax_amount': tax_amount,
+            'sum_gross': gross_amount,
+            'amount_due': gross_amount,
+            'status': status,
+            'document_type': 'quote',
+            'valid_until': valid_until,
+            'intro_text': intro_text,
+            'closing_text': closing_text,
+        }
+
+        if is_update:
+            conn = db._get_connection()
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM InvoiceItems WHERE InvoiceId = ?', (quote_id,))
+            cursor.execute('''
+                UPDATE Invoices SET
+                    InvoiceNumber=?, InvoiceDate=?, OwnCompanyId=?,
+                    SellerName=?, SellerCompany=?, SellerStreet=?, SellerPostalCode=?, SellerCity=?, SellerCountry=?,
+                    SellerVATID=?, SellerEmail=?, SellerPhone=?,
+                    CustomerId=?, BuyerName=?, BuyerCompany=?, BuyerStreet=?, BuyerPostalCode=?, BuyerCity=?, BuyerCountry=?, BuyerVATID=?,
+                    Currency=?, TaxCategory=?, TaxRate=?, SumNet=?, TaxAmount=?, SumGross=?, AmountDue=?,
+                    Status=?, DocumentType='quote', ValidUntil=?, IntroText=?, ClosingText=?
+                WHERE ID=?
+            ''', (
+                doc['invoice_number'], doc['invoice_date'], doc['own_company_id'],
+                doc['seller_name'], doc['seller_company'], doc['seller_street'], doc['seller_postal_code'], doc['seller_city'], doc['seller_country'],
+                doc['seller_vat_id'], doc['seller_email'], doc['seller_phone'],
+                doc['customer_id'], doc['buyer_name'], doc['buyer_company'], doc['buyer_street'], doc['buyer_postal_code'], doc['buyer_city'], doc['buyer_country'], doc['buyer_vat_id'],
+                doc['currency'], doc['tax_category'], doc['tax_rate'],
+                to_minor(doc['sum_net'] or 0), to_minor(doc['tax_amount'] or 0),
+                to_minor(doc['sum_gross'] or 0), to_minor(doc['amount_due'] or 0),
+                doc['status'], doc['valid_until'], doc['intro_text'], doc['closing_text'],
+                quote_id,
+            ))
+            conn.commit()
+            conn.close()
+        else:
+            quote_id = db.insert_invoice(doc)
+
+        for idx, item in enumerate(items):
+            db.insert_invoice_item({
+                'invoice_id': quote_id,
+                'position': item.get('position'),
+                'article_id': None,
+                'description': item.get('description'),
+                'quantity': item.get('quantity'),
+                'unit': item.get('unit', 'C62'),
+                'price_per_unit': item.get('unitPrice'),
+                'total_net': line_nets[idx],
+                'tax_category': 'S',
+                'tax_rate': item.get('taxRate', tax_rate),
+            })
+
+        return json.dumps({'success': True, 'quote_id': quote_id}).encode()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return json.dumps({'success': False, 'error': str(e)}).encode()
+
+
+def handle_update_quote_status(post_body: bytes):
+    """Angebots-Status setzen. Returns (status_code, json_body)."""
+    data = json.loads(post_body.decode('utf-8'))
+    quote_id = int(data.get('quote_id'))
+    new_status = data.get('status')
+    if not quote_id or new_status not in _QUOTE_STATUSES:
+        return 400, '{"success": false, "error": "Ungültiger Status"}'
+    db = Database()
+    quote = db.get_invoice_by_id(quote_id)
+    if not quote:
+        return 404, '{"success": false, "error": "Angebot nicht gefunden"}'
+    db.update_invoice_status(quote_id, new_status)
+    return 200, f'{{"success": true, "quote_id": {quote_id}}}'
+
+
+def handle_convert_quote_to_invoice(post_data):
+    """Angebot in Rechnung umwandeln. Returns (303, redirect_path)."""
+    raw = post_data.get('quote_id', [None])
+    quote_id = raw[0] if isinstance(raw, list) else raw
+    if not quote_id:
+        return 303, "/quote"
+    db = Database()
+    try:
+        new_invoice_id = db.convert_quote_to_invoice(int(quote_id))
+        if new_invoice_id:
+            return 303, f"/invoice?id={new_invoice_id}"
+        return 303, f"/quote?id={quote_id}"
+    except Exception as e:
+        print(f"Error converting quote {quote_id}: {e}")
+        return 303, f"/quote?id={quote_id}"
+
+
+def handle_quote_pdf_by_id(quote_id: int):
+    """PDF für ein bestehendes Angebot erzeugen. Returns (pdf_bytes, filename)."""
+    from export.pdf_quote import generate_quote_pdf
+    db = Database()
+    try:
+        pdf_bytes, pdf_path = generate_quote_pdf(db, quote_id)
+        if pdf_bytes is None:
+            return None, None
+        filename = os.path.basename(pdf_path) if pdf_path else f"Angebot_{quote_id}.pdf"
+        return pdf_bytes, filename
+    except Exception as e:
+        import traceback
+        print(f"Error generating quote PDF {quote_id}: {e}")
+        traceback.print_exc()
+        return None, None
+
+
 # ── Arbeitszeiten (WorkTimes) ─────────────────────────────────────────────────
 
 def _wt_redirect(person_id, date_from, date_to):

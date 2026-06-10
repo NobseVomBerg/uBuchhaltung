@@ -1,0 +1,41 @@
+[
+  {
+    "quote_number": "AN-2026-001",
+    "quote_date": "2026-05-12",
+    "valid_until": "2026-06-12",
+    "customer_number": "K002",
+    "status": "sent",
+    "intro_text": "<div>Sehr geehrte Damen und Herren,</div><div>vielen Dank f&uuml;r Ihre Anfrage. Gerne unterbreiten wir Ihnen folgendes <b>unverbindliches Angebot</b>.</div>",
+    "closing_text": "<div>Wir freuen uns auf Ihre R&uuml;ckmeldung.</div><div><i>Mit freundlichen Gr&uuml;&szlig;en</i></div>",
+    "items": [
+      {"article_name": "Kaffee gemahlen 500g", "quantity": 24, "price_per_unit": 6.99, "tax_rate": 7},
+      {"article_name": "Teebeutel 25er Pack",  "quantity": 12, "price_per_unit": 2.49, "tax_rate": 7}
+    ]
+  },
+  {
+    "quote_number": "AN-2026-002",
+    "quote_date": "2026-05-20",
+    "valid_until": "2026-06-20",
+    "customer_number": "K003",
+    "status": "draft",
+    "intro_text": "<div>Auf Basis Ihrer Anfrage erstellen wir Ihnen gerne folgendes Angebot.</div>",
+    "closing_text": "",
+    "items": [
+      {"article_name": "Kugelschreiber blau", "quantity": 100, "price_per_unit": 0.69, "tax_rate": 19},
+      {"article_name": "Notizblock A5",       "quantity":  50, "price_per_unit": 1.99, "tax_rate": 19}
+    ]
+  },
+  {
+    "quote_number": "AN-2026-003",
+    "quote_date": "2026-06-01",
+    "valid_until": "2026-07-01",
+    "customer_number": "K005",
+    "status": "accepted",
+    "intro_text": "",
+    "closing_text": "<div>Bei Annahme dieses Angebots beginnen wir umgehend mit der Umsetzung.</div>",
+    "items": [
+      {"article_name": "Shampoo 300ml",  "quantity": 24, "price_per_unit": 2.99, "tax_rate": 19},
+      {"article_name": "Seife 150g",     "quantity": 24, "price_per_unit": 1.29, "tax_rate": 19}
+    ]
+  }
+]

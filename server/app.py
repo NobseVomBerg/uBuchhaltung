@@ -28,6 +28,7 @@ from .pages_dashboard import PageDashboard
 from .pages_receipts import PageReceipts, PageReceiptEdit
 from .pages_setup import PageSetup
 from .pages_invoice import PageInvoice
+from .pages_quote import PageQuote
 from .pages_worktime import PageWorkTimes
 
 class SimpleWebServer(BaseHTTPRequestHandler):
@@ -157,6 +158,55 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 return
             elif self.path == "/invoice/reminders":
                 self.respond(200, pages.PageReminders(db))
+            # ── Angebote (Quotes) ─────────────────────────────────────────
+            elif self.path == "/quote" or self.path.startswith("/quote?"):
+                qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
+                filters = {}
+                if 'search' in qs:
+                    filters['search'] = qs['search'][0]
+                if 'status' in qs:
+                    filters['status'] = qs['status'][0]
+                quote_id = int(qs['id'][0]) if 'id' in qs else None
+                self.respond(200, PageQuote(db, filters, quote_id))
+            elif self.path.startswith("/quote/edit"):
+                qs = parse_qs(self.path.split('?')[1])
+                self.respond(200, PageQuote(db, {}, int(qs["id"][0])))
+            elif self.path.startswith("/quote/delete"):
+                qs = parse_qs(self.path.split('?')[1])
+                db.delete_quote(int(qs["id"][0]))
+                self.respond(303, "", headers={"Location": "/quote"})
+            elif self.path.startswith("/quote/pdf_download"):
+                qs = parse_qs(self.path.split('?')[1])
+                pdf_bytes, filename = handlers.handle_quote_pdf_by_id(int(qs["id"][0]))
+                if pdf_bytes:
+                    self.send_response(200)
+                    self.send_header("Content-type", "application/pdf")
+                    self.send_header("Content-Disposition", f"attachment; filename={filename}")
+                    self.send_header("Content-Length", str(len(pdf_bytes)))
+                    self.end_headers()
+                    self.wfile.write(pdf_bytes)
+                else:
+                    self.send_response(500)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"Error generating PDF")
+                return
+            elif self.path.startswith("/quote/pdf_generate"):
+                import json as _json
+                qs = parse_qs(self.path.split('?')[1])
+                from export.pdf_quote import generate_quote_pdf
+                pdf_bytes, pdf_path = generate_quote_pdf(db, int(qs["id"][0]))
+                if pdf_bytes and pdf_path:
+                    response = _json.dumps({'success': True, 'pdf_path': pdf_path})
+                    self.send_response(200)
+                else:
+                    response = _json.dumps({'success': False, 'error': 'Fehler beim Erstellen der PDF'})
+                    self.send_response(500)
+                self.send_header("Content-type", "application/json")
+                self.send_header("Content-Length", str(len(response.encode())))
+                self.end_headers()
+                self.wfile.write(response.encode())
+                return
             elif self.path == "/dashboard":
                 self.respond(200, PageDashboard(db))
             # ── Master Data (Stammdaten) ──────────────────────────────────
@@ -555,7 +605,27 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             status_code, response_body = handlers.handle_update_invoice_status(post_body)
             self.respond(status_code, response_body, content_type="application/json")
             return
-        
+
+        # Handle quote save / update
+        if self.path == "/quote/save":
+            content_length = int(self.headers['Content-Length'])
+            post_body = self.rfile.read(content_length)
+            response_data = handlers.handle_quote_save(post_body)
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.send_header("Content-Length", str(len(response_data)))
+            self.end_headers()
+            self.wfile.write(response_data)
+            return
+
+        # Handle quote status updates
+        if self.path == "/quote/status":
+            content_length = int(self.headers['Content-Length'])
+            post_body = self.rfile.read(content_length)
+            status_code, response_body = handlers.handle_update_quote_status(post_body)
+            self.respond(status_code, response_body, content_type="application/json")
+            return
+
         # Parse regular form data
         content_length = int(self.headers['Content-Length'])
         post_body = self.rfile.read(content_length).decode('utf-8')
@@ -563,7 +633,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         
         # Route to appropriate handler
         try:
-            if self.path == "/add_receipt":
+            if self.path == "/quote/convert":
+                status_code, location = handlers.handle_convert_quote_to_invoice(post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/add_receipt":
                 status_code, location = handlers.handle_add_receipt(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/update_receipt":

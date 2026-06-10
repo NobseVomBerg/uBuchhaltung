@@ -5,6 +5,23 @@ All functions return complete HTML strings
 import html as _html
 from db import Database
 
+
+def logo_url(logo):
+    """Gespeicherten Logo-Pfad in eine im Browser ladbare URL umwandeln.
+
+    - http(s)-URLs bleiben unverändert.
+    - relative Pfade (z.B. 'data/logos/x.png', 'seed_data/private/logo.png')
+      werden absolut ('/data/logos/x.png') – der Server liefert diese Verzeichnisse aus.
+    Backslashes (Windows) werden zu Slashes normalisiert.
+    """
+    if not logo:
+        return ''
+    l = str(logo).strip().replace('\\', '/')
+    if l.startswith(('http://', 'https://', '/')):
+        return l
+    return '/' + l
+
+
 def Header1(active_page=None):
     """Generate main header with navigation
     
@@ -177,8 +194,8 @@ def PageReminders(db: Database):
     due_soon = db.get_invoices_due_soon(days=7)
     
     s = Header1('invoice')
-    submenu = '<a href="/invoice">Rechnungen</a> | <span id="ActivePage">Mahnwesen</span>'
-    s += Header2(submenu)
+    from .pages_invoice import document_submenu
+    s += Header2(document_submenu('reminders'))
     s += Header3()
     
     s += "<h2>Mahnwesen & Fälligkeiten</h2>"
