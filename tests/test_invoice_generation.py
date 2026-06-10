@@ -342,8 +342,9 @@ class TestInvoicePDF:
         iid = _make_invoice(tmp_db, suffix='AMT-2')
         pdf_bytes, _ = self._generate(tmp_db, iid, monkeypatch, tmp_path)
         content = _extract_content_stream(pdf_bytes)
-        assert '100.00' in content   # net
-        assert '119.00' in content   # gross
+        # Beträge im PDF im deutschen Format (Komma als Dezimaltrenner)
+        assert '100,00' in content   # net
+        assert '119,00' in content   # gross
 
     # ── parenthesis escaping ──────────────────────────────────────────────
 

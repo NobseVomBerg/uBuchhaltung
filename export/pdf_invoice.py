@@ -1,21 +1,27 @@
 """
 Rechnungs-PDF-Generator.
 
-Erzeugt ein einseitiges Rechnungs-PDF direkt aus den Datenbankdaten und nutzt dafür
-die gemeinsamen Primitive aus :mod:`export.pdf_core`.
+Erzeugt ein einseitiges Rechnungs-PDF direkt aus den Datenbankdaten. Die gemeinsamen
+Dokument-Bausteine (Kopf, Adressen, Positionstabelle, Beträge) liegen in
+:mod:`export.pdf_document` und werden mit dem Angebots-Generator geteilt; hier bleiben
+nur die rechnungsspezifischen Teile (Zahlungsbedingungen, Bankverbindung, Fußzeile).
 """
 import datetime
 import os
 from db import Database
-from .pdf_core import escape_pdf_string, load_image_xobject, build_single_page_pdf
+from .pdf_core import load_image_xobject, build_single_page_pdf
+from . import pdf_document as D
+
+
+def _pct(tax_rate):
+    """Steuersatz als Prozent (DB speichert teils 0.19, teils 19)."""
+    if tax_rate is None:
+        return 0
+    return tax_rate * 100 if tax_rate <= 1 else tax_rate
 
 
 def generate_invoice_pdf(db: Database, invoice_id: int):
     """PDF für eine bestehende Rechnung erzeugen.
-
-    Args:
-        db: Datenbank-Instanz.
-        invoice_id: ID der Rechnung.
 
     Returns:
         tuple: (pdf_bytes, pdf_path) oder (None, None), falls Rechnung/Positionen fehlen.
@@ -30,7 +36,6 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
         print(f"No items found for invoice {invoice_id}")
         return None, None
 
-    # Rechnungsdaten (Spaltenindizes siehe db.get_invoice_by_id)
     invoice_number = invoice[1] or 'DRAFT'
     invoice_date = invoice[2] or datetime.datetime.now().strftime('%Y-%m-%d')
 
@@ -74,117 +79,45 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
 
     # ── Content-Stream aufbauen ──────────────────────────────────────────────
     ops = ["BT"]
+    line_ops = []
 
-    # Logo oben rechts (nur wenn vorhanden)
-    if image:
-        ops.append(f"q {image['width']} 0 0 {image['height']} 430 750 cm /Logo Do Q")
+    meta_rows = [("Datum:", invoice_date), ("Rechnungs-Nr.:", invoice_number)]
+    sender_line = f"{seller_company or seller_name} · {seller_street} · {seller_postal} {seller_city}"
+    address_lines = [buyer_company, buyer_name, buyer_street, f"{buyer_postal} {buyer_city}".strip()]
+    y = D.draw_letterhead(ops, image, "Rechnung", meta_rows, sender_line, address_lines)
 
-    # Titel
-    ops.append("/F2 24 Tf")
-    ops.append("50 750 Td")
-    ops.append("(Rechnung) Tj")
+    items = [{'pos': it[2], 'quantity': it[5], 'unit': it[6] or 'Stk.',
+              'description': it[4], 'price': it[7], 'total': it[8]} for it in invoice_items]
+    y, rule_ops = D.draw_item_table(ops, items, y, tax_rate_pct=_pct(tax_rate),
+                                    sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross)
+    line_ops += rule_ops
 
-    # Nummer + Datum
-    ops.append("/F1 10 Tf")
-    ops.append("0 -20 Td")
-    ops.append(f"(Rechnungs-Nr.: {escape_pdf_string(invoice_number)}) Tj")
-    ops.append("0 -15 Td")
-    ops.append(f"(Datum: {escape_pdf_string(invoice_date)}) Tj")
+    # Zahlungsbedingungen (Fließtext)
+    y -= 6
+    y = D.draw_richtext(ops, payment_terms, y, size=9, leading=12)
 
-    # Absenderzeile (klein)
-    ops.append("0 -40 Td")
-    ops.append("/F3 8 Tf")
-    seller_line = f"{seller_company or seller_name} · {seller_street} · {seller_postal} {seller_city}"
-    ops.append(f"({escape_pdf_string(seller_line)}) Tj")
-
-    # Empfängeradresse
-    ops.append("0 -25 Td")
-    ops.append("/F1 10 Tf")
-    if buyer_company:
-        ops.append(f"({escape_pdf_string(buyer_company)}) Tj")
-        ops.append("0 -15 Td")
-    if buyer_name:
-        ops.append(f"({escape_pdf_string(buyer_name)}) Tj")
-        ops.append("0 -15 Td")
-    if buyer_street:
-        ops.append(f"({escape_pdf_string(buyer_street)}) Tj")
-        ops.append("0 -15 Td")
-    if buyer_postal or buyer_city:
-        ops.append(f"({escape_pdf_string(f'{buyer_postal} {buyer_city}')}) Tj")
-        ops.append("0 -15 Td")
-
-    # Positionstabelle
-    ops.append("0 -30 Td")
-    ops.append("/F2 10 Tf")
-    ops.append("(Pos.   Menge   Einheit   Bezeichnung                                 Einzelpreis   Gesamt) Tj")
-    ops.append("0 -15 Td")
-    ops.append("/F1 10 Tf")
-
-    for item in invoice_items:
-        pos = item[2] or 1
-        quantity = item[5] or 0
-        unit = item[6] or 'Stk.'
-        description = item[4] or ''
-        price = item[7] or 0
-        total = item[8] or 0
-        if len(description) > 35:
-            description = description[:32] + '...'
-        item_line = f"{pos}      {quantity:.2f}   {unit:8s}  {description:35s}  {price:8.2f} EUR  {total:8.2f} EUR"
-        ops.append(f"({escape_pdf_string(item_line)}) Tj")
-        ops.append("0 -15 Td")
-
-    # Summen
-    ops.append("0 -10 Td")
-    ops.append(f"(Summe netto:                                                           {sum_net:8.2f} EUR) Tj")
-    ops.append("0 -15 Td")
-    tax_percent = int(tax_rate * 100)
-    ops.append(f"(Mehrwertsteuer {tax_percent}%:                                                       {tax_amount:8.2f} EUR) Tj")
-    ops.append("0 -15 Td")
-    ops.append("/F2 10 Tf")
-    ops.append(f"(Gesamtbetrag:                                                          {sum_gross:8.2f} EUR) Tj")
-
-    # Zahlungsbedingungen (einfacher Wortumbruch)
-    ops.append("0 -30 Td")
-    ops.append("/F1 10 Tf")
-    words = payment_terms.split()
-    line = ""
-    for word in words:
-        if len(line + word) > 80:
-            ops.append(f"({escape_pdf_string(line)}) Tj")
-            ops.append("0 -15 Td")
-            line = word + " "
-        else:
-            line += word + " "
-    if line:
-        ops.append(f"({escape_pdf_string(line.strip())}) Tj")
-
-    # Bankverbindung
-    ops.append("0 -30 Td")
-    ops.append("/F2 10 Tf")
-    ops.append("(Bankverbindung:) Tj")
-    ops.append("0 -15 Td")
-    ops.append("/F1 10 Tf")
-    if bank_name:
-        ops.append(f"(Bank: {escape_pdf_string(bank_name)}) Tj")
-        ops.append("0 -15 Td")
-    if bank_iban:
-        ops.append(f"(IBAN: {escape_pdf_string(bank_iban)}) Tj")
-        ops.append("0 -15 Td")
-    if bank_bic:
-        ops.append(f"(BIC: {escape_pdf_string(bank_bic)}) Tj")
-
-    # Fußzeile
-    ops.append("0 -50 Td")
-    ops.append("/F3 8 Tf")
-    footer_line1 = f"{seller_company or seller_name}    {seller_street}    {seller_postal} {seller_city}"
-    ops.append(f"({escape_pdf_string(footer_line1)}) Tj")
-    ops.append("0 -12 Td")
-    footer_line2 = f"Tel: {seller_phone}    E-Mail: {seller_email}"
+    # Dreispaltige Fußzeile (Anschrift | Kontakt | Bankverbindung)
+    col_address = [seller_company or seller_name, seller_street, f"{seller_postal} {seller_city}".strip()]
+    col_contact = []
+    if seller_phone:
+        col_contact.append(f"Tel: {seller_phone}")
+    if seller_email:
+        col_contact.append(f"E-Mail: {seller_email}")
     if seller_tax_id:
-        footer_line2 += f"    UStIdNr: {seller_tax_id}"
-    ops.append(f"({escape_pdf_string(footer_line2)}) Tj")
+        col_contact.append(f"USt-IdNr: {seller_tax_id}")
+    col_bank = []
+    if bank_name or bank_iban or bank_bic:
+        col_bank.append("Bankverbindung")
+        if bank_name:
+            col_bank.append(f"Bank: {bank_name}")
+        if bank_iban:
+            col_bank.append(f"IBAN: {bank_iban}")
+        if bank_bic:
+            col_bank.append(f"BIC: {bank_bic}")
+    D.draw_footer_columns(ops, line_ops, [col_address, col_contact, col_bank])
 
     ops.append("ET")
+    ops += line_ops               # Linien außerhalb des Textobjekts zeichnen
 
     full_pdf = build_single_page_pdf(ops, image=image)
 
