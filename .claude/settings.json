@@ -35,12 +35,5 @@
         ]
       }
     ]
-  },
-  "instructions": {
-    "agent-routing": "Start mit Sonnet 4.6 für Features/Bugfixes. Nur bei Architektur-Fragen zu Opus 4.8 eskalieren. Sub-Tasks (Code-Review, Commits, Analyse, Pytest-Output) zu Haiku 4.5 delegieren.",
-    "token-limit": "Pro Feature-Turn max. 25-30k Tokens halten. Token-Budget überschritten? → neuer Punkt/Session. Monatliches Limit beachten.",
-    "subagent-strategy": "Große Init-Analysen mit Agent(subagent_type='Explore'). Code-Reviews mit code-review Skill (Haiku). Commits von Haiku schreiben lassen.",
-    "context-efficiency": "Nur relevante Dateien lesen. Große Files summarizen. Grep/Glob zur Kontext-Navigation nutzen (sehr token-effizient).",
-    "test-data-privacy": "Tests dürfen NIE echte personenbezogene Daten enthalten. Immer Werte aus seed_data/test/ oder der ALLOWED_*-Whitelist in tests/check_anonymized.py verwenden. Der Guard läuft automatisch."
   }
 }

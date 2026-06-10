@@ -108,6 +108,35 @@ Nicht: 5 Seiten Wall-of-Text. Kurz & actionable.
 
 ---
 
+## Fable 5 – Der Spezialist (Erweiterung zu Opus)
+
+**Verantwortung:** Genau die Aufgaben, an denen Opus scheitert – besonders schwierige Architektur-Knoten, kreative/neuartige Lösungsfindung ohne klaren Pfad.
+
+> ⚠️ **Token-Kosten:** Fable verbraucht ca. **doppelt so viele Tokens wie Opus**. Daher ist Fable keine Routine-Stufe, sondern der letzte Eskalationsschritt der Orchestrator-Ebene.
+
+### Fable Checkliste (wann einsetzen)
+
+**Nur einsetzen, wenn ALLE zutreffen:**
+- [ ] Opus wurde bereits versucht und liefert keinen tragfähigen Plan / dreht sich im Kreis
+- [ ] Die Aufgabe ist genuin schwierig, kreativ oder neuartig (kein klarer Lösungspfad)
+- [ ] Der erwartete Mehrwert rechtfertigt die ~doppelten Token-Kosten klar
+
+**NICHT einsetzen:**
+- ❌ Als Default-Orchestrator (dafür ist Opus da)
+- ❌ Für Aufgaben, die Opus oder Sonnet lösen können
+- ❌ "Sicherheitshalber" – immer erst Opus, dann eskalieren
+
+### Fable – Input & Output
+
+- **Input:** Wie bei Opus fokussiert + kurze Zusammenfassung, *was Opus bereits versucht hat* und *woran es gescheitert ist*.
+- **Output:** Klare Empfehlung + nächste Schritte für Sonnet (gleiches Format wie Opus). Nicht: Wall-of-Text.
+
+### Fable – Token-Budget
+- **Pro Spezial-Frage:** 10-16k (≈ 2× Opus) – streng begrenzen
+- **Regel:** Wenn >20k nötig wären → Aufgabe in Sub-Fragen splitten, ggf. zurück zu Opus
+
+---
+
 ## Haiku 4.5 – Der Schnell-Checker
 
 **Verantwortung:** Code-Reviews, Fehler-Localisation, Commit-Vorschläge, Lint-Checks.
@@ -275,6 +304,7 @@ User gibt Task:
 |---|---|---|---|
 | **Sonnet** | Features, Bugs, Testing, Refactor | 8-35k | "Nur Sonnet, wenn User selbst nicht weiß wie" |
 | **Opus** | Design, Trade-offs, Planung | 5-15k | "Spare für schwierige Architektur-Fragen" |
+| **Fable** | Spezial: was Opus nicht löst | 10-16k (≈2× Opus) | "Letzte Stufe – nur wenn Opus scheitert, teuer" |
 | **Haiku** | Reviews, Lint, Commits, Sub-Analyse | 1-4k | "Use liberally – sehr billig" |
 
-**Goldene Regel:** Start mit Sonnet. Erst eskalieren wenn nötig.
+**Goldene Regel:** Start mit Sonnet. Erst eskalieren wenn nötig (Sonnet → Opus → Fable).

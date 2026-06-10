@@ -20,10 +20,11 @@ Ziel: Hohe KI-Performance bei minimalem Token-Verbrauch – verhindert 5h-Limit-
 | **Agent-Typ** | **Modell** | **Use-Case** | **Token-Budget/Session** |
 |---|---|---|---|
 | **Orchestrator/Planung** | Opus 4.8 | Architektur, Code-Design, komplexe Entscheidungen | ~20% (selektiv) |
+| **Orchestrator (Spezial)** | Fable 5 | Erweiterung zu Opus: nur für besonders schwierige/kreative Spezial-Aufgaben | ~5% (sehr selektiv) |
 | **Haupt-Development** | Sonnet 4.6 | Implementierung, Debugging, Test-Schreiben, Refactoring | ~60% |
 | **Schnell-Analyse** | Haiku 4.5 | Code-Reviews, Fehleranalyse, Commits, Lint-Check | ~20% |
 
-**Faustregel:** Erst Sonnet für die Arbeit einsetzen. Nur bei komplexen Architektur-Fragen oder verfahrenem Debugging zu Opus eskalieren.
+**Faustregel:** Erst Sonnet für die Arbeit einsetzen. Nur bei komplexen Architektur-Fragen oder verfahrenem Debugging zu Opus eskalieren. Fable 5 ist die nächste Stufe über Opus – aber Achtung: **Fable verbraucht ca. doppelt so viele Tokens wie Opus**, daher nur einsetzen, wenn Opus nicht ausreicht.
 
 ---
 
@@ -44,6 +45,12 @@ Ziel: Hohe KI-Performance bei minimalem Token-Verbrauch – verhindert 5h-Limit-
 - Wenn Sonnet nach >30k Tokens "ich verstehe nicht" sagt
 - Code-Review über größere Refactorings hinweg
 - **Sparsam nutzen** – kostspieliger in Token/Zeit
+
+**Fable 5 (Erweiterung zu Opus – nur Spezial-Aufgaben)**
+- Eskalationsstufe **über** Opus: nur, wenn auch Opus an einer besonders schwierigen, kreativen oder neuartigen Aufgabe scheitert
+- Beispiele: verfahrene Architektur-Entscheidung trotz Opus-Plan, schwer durchschaubares Design-Problem, kreative Lösungsfindung ohne klaren Pfad
+- **Token-Warnung:** Fable verbraucht ca. **doppelt so viele Tokens wie Opus** → entsprechend ins Session-Budget einrechnen
+- **Regel:** Niemals als Default. Erst Opus versuchen; nur eskalieren, wenn der Mehrwert die doppelten Token-Kosten klar rechtfertigt (analog zur "Kein Opus ohne Frage, die >10k Token spart"-Regel, aber strenger)
 
 **Haiku 4.5 (Sub-Tasks)**
 - `code-review` Skill für kleine Diffs
@@ -86,6 +93,7 @@ Jeder Agent kriegt nur **was er braucht**:
 ### 4. **Self-Limiting Rules**
 - **Kein Sonnet >40k Token** in einer Turn ohne Pausen
 - **Kein Opus ohne Frage**, die >10k Token sparen würde
+- **Kein Fable, solange Opus die Aufgabe lösen kann** (Fable ≈ 2× Opus-Token) – nur für Spezial-Aufgaben, bei denen Opus nachweislich nicht reicht
 - **Keine File-Reads >2000 Zeilen** (kürzen oder summarize)
 - **Commits nur vom initialen Agent** – nicht hin-und-her zwischen Agenten
 
