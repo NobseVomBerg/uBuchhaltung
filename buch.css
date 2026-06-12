@@ -85,6 +85,8 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 @media (prefers-color-scheme: dark) {
 	body, textarea 		{ background-color: #000; color: #FFF; }
 	h1, h2				{ color: #B99; }
+	a:link, a:visited	{ color: #88F; }
+	a:hover, a:focus	{ color: #F8F; }
 	table				{ border-color: #666;}
 	tr 					{ background-color: #111; }
 	tr:hover			{ background-color: #222; }
@@ -99,6 +101,9 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 	#dropZone 			{ background-color: #222; }
 	#dropZone:hover 	{ background-color: #444; }
 	.modalBox			{ background: #222; color: #DDD; }
+	.article-option		{ background: #222; }
+	.article-option:hover { background: #333; }
+	.article-option-meta { color: #aaa; }
 
 	/* Splitbuchungen (Gruppenansicht in PageTransactions) */
 	.group-row          { background: #111; }
@@ -138,9 +143,9 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 }
 
 /* Invoice page styles - use white backgrounds even in dark mode */
-.invoice-container 		{ max-width: 800px; margin: 20px auto; padding: 20px; background-color: #FFF !important; color: #000 !important; }
-.invoice-container *, .invoice-container input, .invoice-container textarea, .invoice-container select, .invoice-container button 				{ background-color: #FFF !important; color: #000 !important; }
-.invoice-container input, .invoice-container textarea, .invoice-container select 				{ border: 1px solid #ccc !important; }
+.invoice-container 		{ margin: 10px 0; padding: 20px; background-color: #FFF !important; color: #000 !important; }
+.invoice-container *	{ background-color: #FFF !important; color: #000 !important; }
+.invoice-container input, .invoice-container textarea, .invoice-container select 	{ border: 1px solid #ccc !important; }
 .invoice-container input[readonly] 	{ background-color: #f0f0f0 !important; }
 .invoice-header 		{ display: flex; justify-content: space-between; margin-bottom: 30px; }
 .invoice-logo 			{ flex: 1; }
@@ -151,12 +156,10 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .invoice-sender-line 	{ font-size: 0.75em; color: #555; margin-bottom: 3px; }
 .invoice-customer-address { min-height: 100px; margin-bottom: 30px; }
 .invoice-title 			{ text-align: left; font-size: 1.5em; margin: 30px 0 20px 0; color: #000; }
-.invoice-items 			{ width: 100%; border-collapse: collapse; margin-bottom: 0; background-color: #FFF !important; }
+.invoice-items 			{ width: 100%; border-collapse: collapse; margin-bottom: 0; }
 .invoice-items thead th { background-color: #e6f0ff !important; color: #000 !important; padding: 8px; text-align: left; border: 1px solid #ccc; border-top: none; }
-.invoice-items tbody tr { background-color: #FFF !important; }
-.invoice-items tbody td { padding: 5px; border: 1px solid #ddd; background-color: #FFF !important; }
-.invoice-items tfoot tr { background-color: #FFF !important; }
-.invoice-items tfoot td { padding: 5px; border: none; background-color: #FFF !important; }
+.invoice-items tbody td { padding: 5px; border: 1px solid #ddd; }
+.invoice-items tfoot td { padding: 5px; border: none; }
 .invoice-items input 	{ border: 1px solid #ccc; padding: 2px; }
 .item-total 			{ text-align: right; font-weight: bold; }
 .invoice-payment-terms 	{ margin: 20px 0; font-size: 0.9em; }
@@ -164,26 +167,22 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .invoice-richtext-toolbar 	{ margin: 10px 0 2px 0; }
 .invoice-richtext-toolbar button 	{ background: #eee !important; color: #000 !important; border: 1px solid #bbb !important; width: 28px; padding: 2px 0 !important; margin-right: 3px; cursor: pointer; }
 .invoice-richtext-toolbar .rt-label	{ font-size: 0.8em; color: #666; margin-left: 6px; }
-.invoice-richtext 		{ min-height: 48px; border: 1px solid #ccc !important; background: #FFF !important; color: #000 !important; padding: 6px 8px; margin-bottom: 10px; font-size: 0.95em; }
+.invoice-richtext 		{ min-height: 48px; border: 1px solid #ccc !important; padding: 6px 8px; margin-bottom: 10px; font-size: 0.95em; }
 .invoice-richtext:focus	{ outline: 2px solid #9cf; }
 .invoice-footer 		{ margin-top: 40px; font-size: 0.85em; color: #444; }
 
-/* Modal styles - override dark mode */
-.modal-overlay 			{ display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; }
-.modal-content 			{ background: #FFF !important; color: #000 !important; margin: 100px auto; padding: 20px; width: 600px; max-height: 70%; overflow-y: auto; border-radius: 5px; }
-.modal-content h3 		{ color: #000 !important; }
-.modal-content table, .modal-content th, .modal-content td 	{ background: #FFF !important; color: #000 !important; border: 1px solid #ccc !important; }
-.modal-button-add 		{ background: #4CAF50 !important; color: #FFF !important; border: none !important; padding: 5px 10px !important; cursor: pointer; }
-.modal-button-close 	{ background: #888 !important; color: #FFF !important; border: none !important; padding: 8px 15px !important; cursor: pointer; }
+/* Modal styles */
+.article-option			{ padding: 8px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: baseline; }
+.article-option:hover	{ background: #f0f4ff; }
+.article-option-meta	{ color: #888; font-size: 12px; margin-left: 8px; white-space: nowrap; }
 .invoice-footer hr		{ border: none; border-top: 1px solid #666; margin-bottom: 15px; }
-.footer-table 			{ width: 100%; border: none !important; background-color: #FFF !important; }
-.footer-table tr		{ background-color: #FFF !important; }
-.footer-table td 		{ vertical-align: top; border: none !important; padding: 5px 10px !important; background-color: #FFF !important; color: #444; }
+.footer-table 			{ width: 100%; border: none !important; }
+.footer-table td 		{ vertical-align: top; border: none !important; padding: 5px 10px !important; color: #444; }
 .footer-col-left 		{ width: 33%; }
 .footer-col-center 		{ width: 33%; }
 .footer-col-right 		{ width: 33%; }
 .footer-label			{ display: inline-block; width: 55px; }
-.totals-row td			{ background-color: #FFF !important; text-align: right; }
+.totals-row td			{ text-align: right; }
 .totals-row-border td	{ border-top: 2px solid #000 !important; padding-top: 10px !important; }
 .totals-row-final td	{ border-top: 1px solid #000 !important; border-bottom: 3px double #000 !important; padding: 10px 5px !important; font-size: 1.1em; }
 .pdf-button				{ margin: 20px 0; padding: 10px 20px; background-color: #4CAF50; color: white; border: none; cursor: pointer; font-size: 1em; }

@@ -30,7 +30,7 @@ def Footer():
 # ── Constants ────────────────────────────────────────────────────────────────
 
 CONTACT_TYPES = [
-    ('own',              '⭐ Eigen (eigene Firma/Person)'),
+    ('own',              '⭐ Eigen'),
     ('customer',         'Kunde'),
     ('supplier',         'Lieferant'),
     ('prospect',         'Interessent'),

@@ -123,24 +123,30 @@ def PageQuote(db: Database, filters: dict = None, quote_id=None):
     s += '''
     <script>
         function handleQuotePDF(quoteId, pdfExists) {
-            if (!pdfExists || confirm('PDF existiert bereits. Überschreiben und neu generieren?')) {
+            function _do() {
                 fetch('/quote/pdf_generate?id=' + quoteId)
                     .then(r => r.json())
-                    .then(d => { alert(d.success ? ('PDF erstellt:\\n' + d.pdf_path)
-                                                  : ('Fehler: ' + (d.error || '?'))); });
+                    .then(d => { appMsg(d.success ? ('PDF erstellt: ' + d.pdf_path) : ('Fehler: ' + (d.error || '?')), d.success ? 'success' : 'error'); });
+            }
+            if (pdfExists) {
+                appConfirm('PDF existiert bereits. Überschreiben und neu generieren?', _do);
+            } else {
+                _do();
             }
         }
         function convertQuote(quoteId) {
-            if (!confirm('Aus diesem Angebot eine Rechnung erstellen? Das Angebot wird als "Umgewandelt" markiert.')) return;
-            const f = document.createElement('form');
-            f.method = 'POST'; f.action = '/quote/convert';
-            const i = document.createElement('input');
-            i.type = 'hidden'; i.name = 'quote_id'; i.value = quoteId;
-            f.appendChild(i); document.body.appendChild(f); f.submit();
+            appConfirm('Aus diesem Angebot eine Rechnung erstellen? Das Angebot wird als "Umgewandelt" markiert.', function() {
+                const f = document.createElement('form');
+                f.method = 'POST'; f.action = '/quote/convert';
+                const i = document.createElement('input');
+                i.type = 'hidden'; i.name = 'quote_id'; i.value = quoteId;
+                f.appendChild(i); document.body.appendChild(f); f.submit();
+            });
         }
         function deleteQuote(quoteId) {
-            if (!confirm('Angebot wirklich löschen?')) return;
-            window.location.href = '/quote/delete?id=' + quoteId;
+            appConfirm('Angebot wirklich löschen?', function() {
+                window.location.href = '/quote/delete?id=' + quoteId;
+            });
         }
         function applyQuoteFilters() {
             const status = document.getElementById('statusFilter').value;
@@ -247,7 +253,7 @@ def _quote_form_html(db: Database, quote_id=None):
                 <button onclick="window.location.href='/quote'" class="coloredButton btn-sm bg-gray">← Abbrechen</button>
                 <button onclick="generateQuotePDF()" class="coloredButton btn-sm bg-blue">📄 PDF</button>
                 <button onclick="convertQuote({quote_id})" class="coloredButton btn-sm bg-orange">➔ In Rechnung umwandeln</button>
-                <button onclick="if(confirm('Angebot wirklich löschen?')) window.location.href='/quote/delete?id={quote_id}'" class="coloredButton btn-sm bg-red">🗑 Löschen</button>
+                <button onclick="appConfirmHref('/quote/delete?id={quote_id}', 'Angebot wirklich löschen?')" class="coloredButton btn-sm bg-red">🗑 Löschen</button>
             </div></td></tr>
         </table>'''
     else:
@@ -374,7 +380,16 @@ def _quote_form_html(db: Database, quote_id=None):
 
         <div style="margin:10px 0;" class="no-pdf">
             <button type="button" onclick="addFreeRow()" style="margin-right:10px;">+ Position frei editierbar hinzufügen</button>
-            <button type="button" onclick="showArticleModal()">+ Position aus Artikelverzeichnis</button>
+            <span style="position:relative; display:inline-block;">
+                <input type="text" id="articleComboInput" placeholder="Artikel suchen …"
+                       style="width:280px; padding:4px 8px;" autocomplete="off"
+                       oninput="filterArticles(this.value)" onfocus="filterArticles(this.value)"
+                       onblur="setTimeout(()=>document.getElementById('articleDropdown').style.display='none',150)">
+                <div id="articleDropdown" style="display:none; position:absolute; top:100%; left:0;
+                     width:440px; background:#fff; border:1px solid #ccc; border-radius:4px;
+                     max-height:280px; overflow-y:auto; z-index:999;
+                     box-shadow:0 2px 8px rgba(0,0,0,0.18);"></div>
+            </span>
         </div>
 
         <!-- Schlusstext -->
@@ -385,22 +400,7 @@ def _quote_form_html(db: Database, quote_id=None):
         </div>'''
     s += f'<div class="invoice-richtext" id="closing_text_editor" contenteditable="true">{closing_text or ""}</div>'
 
-    # Artikel-Modal
-    s += '''
-        <div id="articleModal" class="modal-overlay no-pdf">
-            <div class="modal-content">
-                <h3>Artikel aus Verzeichnis auswählen</h3>
-                <table border="1" style="width:100%;">
-                    <tr><th>Bezeichnung</th><th>Einheit</th><th>Preis (netto)</th><th>MwSt</th><th></th></tr>'''
-    for a in articles:
-        s += (f'<tr><td>{_html.escape(str(a[1] or ""))}</td><td>{_html.escape(str(a[2] or "Stk."))}</td>'
-              f'<td style="text-align:right;">{(a[3] or 0):.2f} €</td><td>{(a[4] or 19):.0f}%</td>'
-              f'<td><button type="button" class="modal-button-add" onclick="addArticleRow({a[0]})">Hinzufügen</button></td></tr>')
-    s += '''                </table><br>
-                <button type="button" class="modal-button-close" onclick="hideArticleModal()">Schließen</button>
-            </div>
-        </div>
-    </div><!-- Ende invoice-container -->'''
+    s += '''    </div><!-- Ende invoice-container -->'''
 
     # ── Daten + JS ────────────────────────────────────────────────────────────
     own_dict = {str(o[0]): {
@@ -451,9 +451,26 @@ def _quote_form_html(db: Database, quote_id=None):
             disp.textContent = a; num.value = c.customer_number;
         }
 
-        function showArticleModal(){ document.getElementById('articleModal').style.display='block'; }
-        function hideArticleModal(){ document.getElementById('articleModal').style.display='none'; }
-        window.onclick = function(e){ const m=document.getElementById('articleModal'); if(e.target==m) hideArticleModal(); };
+        function filterArticles(query) {
+            const dropdown = document.getElementById('articleDropdown');
+            const q = query.toLowerCase();
+            const entries = Object.entries(articlesData).filter(([id, a]) =>
+                !q || a.name.toLowerCase().includes(q)
+            );
+            if (!entries.length) { dropdown.style.display = 'none'; return; }
+            dropdown.innerHTML = entries.map(([id, a]) =>
+                '<div class="article-option" onmousedown="selectArticle(' + id + ')">' +
+                '<strong>' + a.name + '</strong>' +
+                '<span class="article-option-meta">' + a.unit + ' · ' + a.price.toFixed(2) + ' € · ' + a.taxRate + '%</span>' +
+                '</div>'
+            ).join('');
+            dropdown.style.display = 'block';
+        }
+        function selectArticle(articleId) {
+            addArticleRow(articleId);
+            document.getElementById('articleComboInput').value = '';
+            document.getElementById('articleDropdown').style.display = 'none';
+        }
 
         let rowCounter = 1;
         function addFreeRow() {
@@ -486,7 +503,7 @@ def _quote_form_html(db: Database, quote_id=None):
                 <td><span class="item-price-display">${a.price.toFixed(2).replace('.', ',')} €</span><input type="hidden" class="item-price" value="${a.price}"></td>
                 <td class="item-total" style="text-align:right;">0,00 €</td>
                 <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color:red;">✕</button></td>`;
-            tb.appendChild(r); attachCalculationListeners(r); calculateTotals(); hideArticleModal();
+            tb.appendChild(r); attachCalculationListeners(r); calculateTotals();
         }
         function removeRow(b){ b.closest('tr').remove(); renumberRows(); calculateTotals(); }
         function renumberRows(){
@@ -579,10 +596,12 @@ def _quote_form_html(db: Database, quote_id=None):
             const id = document.getElementById('quote_id').value;
             if (!id) { showMessage('Bitte Angebot zuerst speichern.', 'warn'); return; }
             const exists = document.getElementById('pdf_exists').value === 'true';
-            if (exists && !confirm('PDF existiert bereits. Überschreiben?')) return;
-            fetch('/quote/pdf_generate?id='+id).then(r=>r.json())
-                .then(d=>{ if(d.success){ document.getElementById('pdf_exists').value='true'; showMessage('PDF erstellt: '+d.pdf_path, 'success'); }
-                          else showMessage('Fehler: '+(d.error||'?'), 'error'); });
+            function _run() {
+                fetch('/quote/pdf_generate?id='+id).then(r=>r.json())
+                    .then(d=>{ if(d.success){ document.getElementById('pdf_exists').value='true'; showMessage('PDF erstellt: '+d.pdf_path, 'success'); }
+                              else showMessage('Fehler: '+(d.error||'?'), 'error'); });
+            }
+            if (exists) { appConfirm('PDF existiert bereits. Überschreiben?', _run); } else { _run(); }
         }
         function setQuoteStatus(id){
             const ns = document.getElementById('statusChangeSelect').value;
@@ -590,10 +609,11 @@ def _quote_form_html(db: Database, quote_id=None):
                 .then(r=>r.json()).then(d=>{ if(d.success) location.reload(); else showMessage('Fehler: '+(d.error||'?'), 'error'); });
         }
         function convertQuote(id){
-            if (!confirm('Aus diesem Angebot eine Rechnung erstellen? Das Angebot wird als "Umgewandelt" markiert.')) return;
-            const f=document.createElement('form'); f.method='POST'; f.action='/quote/convert';
-            const i=document.createElement('input'); i.type='hidden'; i.name='quote_id'; i.value=id;
-            f.appendChild(i); document.body.appendChild(f); f.submit();
+            appConfirm('Aus diesem Angebot eine Rechnung erstellen? Das Angebot wird als "Umgewandelt" markiert.', function() {
+                const f=document.createElement('form'); f.method='POST'; f.action='/quote/convert';
+                const i=document.createElement('input'); i.type='hidden'; i.name='quote_id'; i.value=id;
+                f.appendChild(i); document.body.appendChild(f); f.submit();
+            });
         }
     </script>
     '''

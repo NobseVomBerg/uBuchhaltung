@@ -180,29 +180,26 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
     <script>
         function handlePDF(invoiceId, pdfExists) {
             if (pdfExists) {
-                // PDF exists - ask if user wants to regenerate
-                if (confirm('PDF-Datei existiert bereits. Möchten Sie die Datei überschreiben und neu generieren?')) {
+                appConfirm('PDF-Datei existiert bereits. Überschreiben und neu generieren?', function() {
                     generatePDFInFilesystem(invoiceId);
-                }
+                });
             } else {
-                // PDF doesn't exist - generate it
                 generatePDFInFilesystem(invoiceId);
             }
         }
-        
+
         function generatePDFInFilesystem(invoiceId) {
-            // Generate PDF in filesystem (no download)
             fetch('/invoice/pdf_generate?id=' + invoiceId)
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
-                        alert('PDF erfolgreich erstellt:\\n' + data.pdf_path);
+                        appMsg('PDF erstellt: ' + data.pdf_path, 'success');
                     } else {
-                        alert('Fehler beim Erstellen der PDF: ' + (data.error || 'Unbekannter Fehler'));
+                        appMsg('Fehler: ' + (data.error || 'Unbekannter Fehler'), 'error');
                     }
                 })
                 .catch(err => {
-                    alert('Fehler: ' + err.message);
+                    appMsg('Fehler: ' + err.message, 'error');
                 });
         }
         
@@ -522,46 +519,20 @@ function setInvoiceStatus(invId) {{
         
         <div style="margin: 10px 0;" class="no-pdf">
             <button type="button" onclick="addFreeRow()" style="margin-right: 10px;">+ Position frei editierbar hinzufügen</button>
-            <button type="button" onclick="showArticleModal()">+ Position aus Artikelverzeichnis</button>
+            <span style="position:relative; display:inline-block;">
+                <input type="text" id="articleComboInput" placeholder="Artikel suchen …"
+                       style="width:280px; padding:4px 8px;" autocomplete="off"
+                       oninput="filterArticles(this.value)" onfocus="filterArticles(this.value)"
+                       onblur="setTimeout(()=>document.getElementById('articleDropdown').style.display='none',150)">
+                <div id="articleDropdown" style="display:none; position:absolute; top:100%; left:0;
+                     width:440px; background:#fff; border:1px solid #ccc; border-radius:4px;
+                     max-height:280px; overflow-y:auto; z-index:999;
+                     box-shadow:0 2px 8px rgba(0,0,0,0.18);"></div>
+            </span>
         </div>
-        
-        <!-- Article selection modal -->
-        <div id="articleModal" class="modal-overlay no-pdf">
-            <div class="modal-content">
-                <h3>Artikel aus Verzeichnis auswählen</h3>
-                <table border="1" style="width: 100%;">
-                    <tr><th>Bezeichnung</th><th>Einheit</th><th>Preis (netto)</th><th>MwSt</th><th></th></tr>
     '''
-    
-    for article in articles:
-        art_id = article[0]
-        art_name = _html.escape(str(article[1] or ''))
-        art_unit = _html.escape(str(article[2] or 'Stk.'))
-        art_price = article[3] or 0
-        art_tax = article[4] or 19
-        s += f'''                    <tr>
-                        <td>{art_name}</td>
-                        <td>{art_unit}</td>
-                        <td style="text-align: right;">{art_price:.2f} €</td>
-                        <td>{art_tax:.0f}%</td>
-                        <td><button type="button" class="modal-button-add" onclick="addArticleRow({art_id})">Hinzufügen</button></td>
-                    </tr>
-    '''
-    
-    s += '''                </table>
-                <br>
-                <button type="button" class="modal-button-close" onclick="hideArticleModal()">Schließen</button>
-            </div>
-        </div>
-        
-        <!-- Confirm dialog -->
-        <div id="invoice_confirm" class="modal-overlay no-pdf" style="display:none;">
-            <div class="modal-content" style="max-width:400px; text-align:center; padding:30px;">
-                <p id="invoice_confirm_text" style="margin:0 0 20px; font-size:15px;"></p>
-                <button type="button" id="invoice_confirm_ok" class="coloredButton bg-green">OK</button>
-                <button type="button" class="coloredButton bg-gray" style="margin-left:10px;" onclick="document.getElementById('invoice_confirm').style.display='none'">Abbrechen</button>
-            </div>
-        </div>
+
+    s += '''
         
         <div class="invoice-payment-terms">'''
     
@@ -972,21 +943,26 @@ function setInvoiceStatus(invId) {{
         // Initial due date calculation
         updatePaymentDueDate();
         
-        // Modal functions
-        function showArticleModal() {
-            document.getElementById('articleModal').style.display = 'block';
+        // Artikel-Combobox
+        function filterArticles(query) {
+            const dropdown = document.getElementById('articleDropdown');
+            const q = query.toLowerCase();
+            const entries = Object.entries(articlesData).filter(([id, a]) =>
+                !q || a.name.toLowerCase().includes(q)
+            );
+            if (!entries.length) { dropdown.style.display = 'none'; return; }
+            dropdown.innerHTML = entries.map(([id, a]) =>
+                '<div class="article-option" onmousedown="selectArticle(' + id + ')">' +
+                '<strong>' + a.name + '</strong>' +
+                '<span class="article-option-meta">' + a.unit + ' · ' + a.price.toFixed(2) + ' € · ' + a.taxRate + '%</span>' +
+                '</div>'
+            ).join('');
+            dropdown.style.display = 'block';
         }
-        
-        function hideArticleModal() {
-            document.getElementById('articleModal').style.display = 'none';
-        }
-        
-        // Close modal when clicking outside
-        window.onclick = function(event) {
-            const modal = document.getElementById('articleModal');
-            if (event.target == modal) {
-                hideArticleModal();
-            }
+        function selectArticle(articleId) {
+            addArticleRow(articleId);
+            document.getElementById('articleComboInput').value = '';
+            document.getElementById('articleDropdown').style.display = 'none';
         }
         
         let rowCounter = 1;
@@ -1038,7 +1014,6 @@ function setInvoiceStatus(invId) {{
             tbody.appendChild(newRow);
             attachCalculationListeners(newRow);
             calculateTotals();
-            hideArticleModal();
         }
         
         // Remove row
@@ -1126,14 +1101,7 @@ function setInvoiceStatus(invId) {{
             bar.textContent = text;
             if (type !== 'error') setTimeout(function() { bar.style.display = 'none'; }, 6000);
         }
-        function showConfirm(text, onOk) {
-            document.getElementById('invoice_confirm_text').textContent = text;
-            document.getElementById('invoice_confirm_ok').onclick = function() {
-                document.getElementById('invoice_confirm').style.display = 'none';
-                onOk();
-            };
-            document.getElementById('invoice_confirm').style.display = 'block';
-        }
+        function showConfirm(text, onOk) { appConfirm(text, onOk); }
         
         // Save invoice to database
         function saveInvoice() {
