@@ -220,17 +220,13 @@ def _wrap_description(desc, max_w, size):
     return lines or ['']
 
 
-def draw_item_table(ops, items, y, *, tax_rate_pct, sum_net, tax_amount, sum_gross,
-                    currency='EUR'):
-    """Positionstabelle mit rechtsbündigen Geldspalten + Summenblock.
+_TOTALS_HEIGHT = 70               # geschätzte Höhe des Summenblocks (Seitenumbruch)
 
-    items: Liste von Dicts mit pos, quantity, unit, description, price, total.
-    Bezeichnungen dürfen mehrzeilig sein (``;`` trennt Zeilen); die übrigen
-    Spalten werden dann oben (top) ausgerichtet.
-    Returns: (y unterhalb des Summenblocks, rule_ops).
-    """
-    y -= 14
-    # Kopfzeile: erste vier Spalten links, Geldspalten rechtsbündig
+
+def _table_header(flow):
+    """Tabellen-Kopfzeile an flow.y setzen (Unterstrich-Linie in flow.line_ops)."""
+    ops = flow.ops
+    y = flow.y - 14
     text(ops, COL_POS, y, "Pos.", font='/F2', size=10)
     text(ops, COL_QTY, y, "Menge", font='/F2', size=10)
     text(ops, COL_UNIT, y, "Einheit", font='/F2', size=10)
@@ -238,31 +234,53 @@ def draw_item_table(ops, items, y, *, tax_rate_pct, sum_net, tax_amount, sum_gro
     text_right(ops, COL_PRICE_R, y, "Einzelpreis", font='/F2', size=10)
     text_right(ops, COL_TOTAL_R, y, "Gesamt", font='/F2', size=10)
     y -= 4
-    rule_ops = [f"{LEFT} {y:.1f} m {RIGHT} {y:.1f} l S"]
-    y -= 13
+    flow.line_ops.append(f"{LEFT} {y:.1f} m {RIGHT} {y:.1f} l S")
+    flow.y = y - 13
+
+
+def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross,
+                    currency='EUR'):
+    """Positionstabelle mit rechtsbündigen Geldspalten + Summenblock.
+
+    Seitenfähig: passt eine Position nicht mehr auf die Seite, wird umgebrochen
+    und die Kopfzeile auf der Folgeseite wiederholt. Der Summenblock wird nicht
+    von den Positionen getrennt (eigener Umbruch, falls er nicht mehr passt).
+
+    items: Liste von Dicts mit pos, quantity, unit, description, price, total.
+    Bezeichnungen dürfen mehrzeilig sein (``;`` trennt Zeilen); die übrigen
+    Spalten werden dann oben (top) ausgerichtet.
+    """
+    _table_header(flow)
 
     # Bezeichnung darf nicht in die Einzelpreis-Spalte laufen.
     desc_max_w = (COL_PRICE_R - 65) - COL_DESC
     for it in items:
         desc_lines = _wrap_description(it.get('description'), desc_max_w, 9)
-        top_y = y
+        row_h = _ROW_LEADING * len(desc_lines)
+        if flow.y - row_h < flow.bottom:
+            flow.new_page()
+            _table_header(flow)
+        ops = flow.ops
+        top_y = flow.y
         # Pos/Menge/Einheit linksbündig, Geldspalten rechtsbündig – oben (top) ausgerichtet
         text(ops, COL_POS, top_y, str(it.get('pos') or ''), size=9)
         text(ops, COL_QTY, top_y, f"{(it.get('quantity') or 0):.2f}".replace('.', ','), size=9)
         text(ops, COL_UNIT, top_y, str(it.get('unit') or ''), size=9)
         text_right(ops, COL_PRICE_R, top_y, f"{_fmt_money(it.get('price') or 0)} {currency}", size=9)
         text_right(ops, COL_TOTAL_R, top_y, f"{_fmt_money(it.get('total') or 0)} {currency}", size=9)
-        # Mehrzeilige Bezeichnung
         ly = top_y
         for ln in desc_lines:
             text(ops, COL_DESC, ly, ln, size=9)
             ly -= _ROW_LEADING
-        y -= _ROW_LEADING * len(desc_lines)
+        flow.y -= row_h
 
-    # Summenblock: Beschriftung linksbündig in der Bezeichnungs-Spalte,
-    # Werte rechtsbündig in der Gesamt-Spalte.
-    y -= 6
-    rule_ops.append(f"{COL_DESC} {y + 4:.1f} m {RIGHT} {y + 4:.1f} l S")
+    # Summenblock zusammenhalten: passt er nicht mehr, neue Seite (ohne Header).
+    if flow.y - _TOTALS_HEIGHT < flow.bottom:
+        flow.new_page()
+
+    ops = flow.ops
+    y = flow.y - 6
+    flow.line_ops.append(f"{COL_DESC} {y + 4:.1f} m {RIGHT} {y + 4:.1f} l S")
     y -= 9
     text(ops, COL_DESC, y, "Summe netto:", size=10)
     text_right(ops, COL_TOTAL_R, y, f"{_fmt_money(sum_net)} {currency}", font='/F2', size=10)
@@ -275,9 +293,8 @@ def draw_item_table(ops, items, y, *, tax_rate_pct, sum_net, tax_amount, sum_gro
     # Wert in size 10 wie netto/MwSt darüber, damit die Kommas exakt untereinander stehen
     text_right(ops, COL_TOTAL_R, y, f"{_fmt_money(sum_gross)} {currency}", font='/F2', size=10)
     y -= 6
-    rule_ops.append(f"{COL_DESC} {y:.1f} m {RIGHT} {y:.1f} l S")
-    y -= 16
-    return y, rule_ops
+    flow.line_ops.append(f"{COL_DESC} {y:.1f} m {RIGHT} {y:.1f} l S")
+    flow.y = y - 16
 
 
 # ── Fließtext (Einleitungs-/Schlusstext, Phase 1: fett/kursiv + Umbruch) ───────
@@ -372,3 +389,59 @@ def _flush_line(ops, line, x, y, size):
             ops.append(f"{font} {size} Tf")
             cur_font = font
         ops.append(f"({_esc(w)} ) Tj")   # Wort + Leerzeichen, Cursor läuft automatisch
+
+
+# ── Seitenfluss (mehrseitiger Satz) ───────────────────────────────────────────
+
+class PageFlow:
+    """Verwaltet seitenübergreifenden Satz.
+
+    Hält die aktuelle Seite (``ops`` im BT/ET-Textobjekt + ``line_ops`` für Linien
+    danach) und die laufende Y-Position (``y``). Bei :meth:`new_page` wird die
+    aktuelle Seite mit der dreispaltigen Fußzeile abgeschlossen und eine neue
+    begonnen. ``finish`` liefert alle Seiten für :func:`build_multi_page_pdf`.
+
+    Briefkopf/Positionen stehen typischerweise nur auf Seite 1; die Fußzeile
+    erscheint auf jeder Seite.
+    """
+
+    def __init__(self, footer_cols, *, cont_top=790, bottom=120):
+        self.footer_cols = footer_cols
+        self.cont_top = cont_top      # Textbeginn auf Folgeseiten
+        self.bottom = bottom          # Inhalt endet oberhalb der Fußzeile
+        self.pages = []
+        self.ops = ["BT"]
+        self.line_ops = []
+        self.y = None
+
+    def _close(self):
+        draw_footer_columns(self.ops, self.line_ops, self.footer_cols)
+        self.ops.append("ET")
+        self.ops.extend(self.line_ops)
+        self.pages.append(self.ops)
+
+    def new_page(self):
+        """Aktuelle Seite abschließen (inkl. Fußzeile) und neue beginnen."""
+        self._close()
+        self.ops, self.line_ops = ["BT"], []
+        self.y = self.cont_top
+        return self.y
+
+    def finish(self):
+        """Letzte Seite abschließen und alle Seiten zurückgeben."""
+        self._close()
+        return self.pages
+
+
+def flow_richtext(flow, html_text, *, size=10, leading=14, gap_before=0):
+    """Fließtext seitenübergreifend in einen :class:`PageFlow` setzen."""
+    if not html_text:
+        return
+    flow.y -= gap_before
+    lines = richtext_to_lines(html_text, size=size)
+    flow.y, remaining = draw_text_lines(flow.ops, lines, flow.y,
+                                        size=size, leading=leading, min_y=flow.bottom)
+    while remaining:
+        flow.new_page()
+        flow.y, remaining = draw_text_lines(flow.ops, remaining, flow.y,
+                                            size=size, leading=leading, min_y=flow.bottom)

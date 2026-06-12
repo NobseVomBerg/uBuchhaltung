@@ -9,7 +9,7 @@ nur die rechnungsspezifischen Teile (Zahlungsbedingungen, Bankverbindung, Fußze
 import datetime
 import os
 from db import Database
-from .pdf_core import load_image_xobject, build_single_page_pdf
+from .pdf_core import load_image_xobject, build_multi_page_pdf
 from . import pdf_document as D
 
 
@@ -92,34 +92,7 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
             if len(buyer_contact) > 25:
                 buyer_addr_extra = buyer_contact[25] or ''
 
-    # ── Content-Stream aufbauen ──────────────────────────────────────────────
-    ops = ["BT"]
-    line_ops = []
-
-    meta_rows = [("Datum:", invoice_date), ("Rechnungs-Nr.:", invoice_number)]
-    if buyer_customer_number:
-        meta_rows.append(("Kunden-Nr.:", buyer_customer_number))
-    # Absenderzeile im Adressfeld OHNE Zusatzzeile (sonst zu lang); die
-    # Zusatzzeile erscheint nur in der Fußzeile.
-    sender_line = " · ".join(p for p in [
-        seller_company or seller_name, seller_street,
-        f"{seller_postal} {seller_city}".strip()] if p)
-    buyer_country = invoice[19] if len(invoice) > 19 else None
-    address_lines = D.address_block(buyer_company, buyer_name, buyer_addr_extra,
-                                    buyer_street, buyer_postal, buyer_city, buyer_country)
-    y = D.draw_letterhead(ops, image, "Rechnung", meta_rows, sender_line, address_lines)
-
-    items = [{'pos': it[2], 'quantity': it[5], 'unit': it[6] or 'Stk.',
-              'description': it[4], 'price': it[7], 'total': it[8]} for it in invoice_items]
-    y, rule_ops = D.draw_item_table(ops, items, y, tax_rate_pct=_pct(tax_rate),
-                                    sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross)
-    line_ops += rule_ops
-
-    # Zahlungsbedingungen (Fließtext)
-    y -= 6
-    y = D.draw_richtext(ops, payment_terms, y, size=9, leading=12)
-
-    # Dreispaltige Fußzeile (Anschrift | Kontakt | Bankverbindung)
+    # Dreispaltige Fußzeile (Anschrift | Kontakt | Bankverbindung) – pro Seite
     col_address = [seller_company or seller_name]
     if seller_addr_extra:
         col_address.append(seller_addr_extra)
@@ -140,12 +113,32 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
             col_bank.append(f"IBAN: {bank_iban}")
         if bank_bic:
             col_bank.append(f"BIC: {bank_bic}")
-    D.draw_footer_columns(ops, line_ops, [col_address, col_contact, col_bank])
 
-    ops.append("ET")
-    ops += line_ops               # Linien außerhalb des Textobjekts zeichnen
+    # ── Content-Stream aufbauen (seitenfähig) ────────────────────────────────
+    flow = D.PageFlow([col_address, col_contact, col_bank])
 
-    full_pdf = build_single_page_pdf(ops, image=image)
+    meta_rows = [("Datum:", invoice_date), ("Rechnungs-Nr.:", invoice_number)]
+    if buyer_customer_number:
+        meta_rows.append(("Kunden-Nr.:", buyer_customer_number))
+    # Absenderzeile im Adressfeld OHNE Zusatzzeile (sonst zu lang); die
+    # Zusatzzeile erscheint nur in der Fußzeile.
+    sender_line = " · ".join(p for p in [
+        seller_company or seller_name, seller_street,
+        f"{seller_postal} {seller_city}".strip()] if p)
+    buyer_country = invoice[19] if len(invoice) > 19 else None
+    address_lines = D.address_block(buyer_company, buyer_name, buyer_addr_extra,
+                                    buyer_street, buyer_postal, buyer_city, buyer_country)
+    flow.y = D.draw_letterhead(flow.ops, image, "Rechnung", meta_rows, sender_line, address_lines)
+
+    items = [{'pos': it[2], 'quantity': it[5], 'unit': it[6] or 'Stk.',
+              'description': it[4], 'price': it[7], 'total': it[8]} for it in invoice_items]
+    D.draw_item_table(flow, items, tax_rate_pct=_pct(tax_rate),
+                      sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross)
+
+    # Zahlungsbedingungen (Fließtext)
+    D.flow_richtext(flow, payment_terms, size=9, leading=12, gap_before=6)
+
+    full_pdf = build_multi_page_pdf(flow.finish(), image=image)
 
     # PDF-Datei speichern
     current_year = datetime.datetime.now().year

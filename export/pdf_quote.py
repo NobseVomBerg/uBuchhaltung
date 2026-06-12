@@ -84,9 +84,21 @@ def generate_quote_pdf(db: Database, quote_id: int):
             if len(buyer_contact) > 25:
                 buyer_addr_extra = buyer_contact[25] or ''
 
-    # ── Content-Stream ────────────────────────────────────────────────────────
-    ops = ["BT"]
-    line_ops = []
+    # Dreispaltige Fußzeile (Anschrift | Kontakt) – pro Seite identisch
+    col_address = [seller_company or seller_name]
+    if seller_addr_extra:
+        col_address.append(seller_addr_extra)
+    col_address += [seller_street, f"{seller_postal} {seller_city}".strip()]
+    col_contact = []
+    if seller_phone:
+        col_contact.append(f"Tel: {seller_phone}")
+    if seller_email:
+        col_contact.append(f"E-Mail: {seller_email}")
+    if seller_tax_id:
+        col_contact.append(f"USt-IdNr: {seller_tax_id}")
+
+    # ── Content-Stream (seitenfähig) ──────────────────────────────────────────
+    flow = D.PageFlow([col_address, col_contact, []])
 
     meta = [("Datum:", quote_date), ("Angebots-Nr.:", quote_number)]
     if buyer_customer_number:
@@ -100,58 +112,22 @@ def generate_quote_pdf(db: Database, quote_id: int):
     buyer_country = quote[19] if len(quote) > 19 else None
     address_lines = D.address_block(buyer_company, buyer_name, buyer_addr_extra,
                                     buyer_street, buyer_postal, buyer_city, buyer_country)
-    y = D.draw_letterhead(ops, image, "Angebot", meta, sender_line, address_lines)
+    flow.y = D.draw_letterhead(flow.ops, image, "Angebot", meta, sender_line, address_lines)
 
     # Einleitungstext
+    D.flow_richtext(flow, intro_text, size=10, leading=14)
     if intro_text:
-        y = D.draw_richtext(ops, intro_text, y, size=10, leading=14)
-        y -= 6
+        flow.y -= 6
 
     items = [{'pos': it[2], 'quantity': it[5], 'unit': it[6] or 'Stk.',
               'description': it[4], 'price': it[7], 'total': it[8]} for it in items_rows]
-    y, rule_ops = D.draw_item_table(ops, items, y, tax_rate_pct=_pct(tax_rate),
-                                    sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross)
-    line_ops += rule_ops
-
-    # Dreispaltige Fußzeile (Anschrift | Kontakt) – pro Seite identisch
-    col_address = [seller_company or seller_name]
-    if seller_addr_extra:
-        col_address.append(seller_addr_extra)
-    col_address += [seller_street, f"{seller_postal} {seller_city}".strip()]
-    col_contact = []
-    if seller_phone:
-        col_contact.append(f"Tel: {seller_phone}")
-    if seller_email:
-        col_contact.append(f"E-Mail: {seller_email}")
-    if seller_tax_id:
-        col_contact.append(f"USt-IdNr: {seller_tax_id}")
-    footer_cols = [col_address, col_contact, []]
-
-    # Seitenverwaltung: Schlusstext kann mehrseitig werden. Footer auf jeder Seite,
-    # Briefkopf/Positionen nur auf Seite 1.
-    DOC_BOTTOM = 120          # Text endet oberhalb der Fußzeile
-    CONT_TOP   = 790          # Textbeginn auf Folgeseiten
-    pages = []
-
-    def _finalize(page_ops, page_lines):
-        D.draw_footer_columns(page_ops, page_lines, footer_cols)
-        page_ops.append("ET")
-        page_ops.extend(page_lines)
-        pages.append(page_ops)
+    D.draw_item_table(flow, items, tax_rate_pct=_pct(tax_rate),
+                      sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross)
 
     # Schlusstext: eine Zeile tiefer beginnen, dann seitenweise fließen lassen
-    if closing_text:
-        y -= 20
-        lines = D.richtext_to_lines(closing_text, size=10)
-        y, remaining = D.draw_text_lines(ops, lines, y, size=10, leading=14, min_y=DOC_BOTTOM)
-        while remaining:
-            _finalize(ops, line_ops)
-            ops, line_ops = ["BT"], []
-            y, remaining = D.draw_text_lines(ops, remaining, CONT_TOP,
-                                             size=10, leading=14, min_y=DOC_BOTTOM)
-    _finalize(ops, line_ops)
+    D.flow_richtext(flow, closing_text, size=10, leading=14, gap_before=20)
 
-    full_pdf = build_multi_page_pdf(pages, image=image)
+    full_pdf = build_multi_page_pdf(flow.finish(), image=image)
 
     year = datetime.datetime.now().year
     pdf_dir = f"data/quotes/{year}"
