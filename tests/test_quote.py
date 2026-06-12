@@ -8,9 +8,30 @@ Abdeckung:
 - Handler: handle_quote_save (neu), handle_convert_quote_to_invoice (303 → /invoice).
 """
 import json
+import zlib
+
 import pytest
 
 from server import handlers
+from export.pdf_quote import generate_quote_pdf
+
+
+def _all_content_bytes(pdf_bytes: bytes) -> bytes:
+    """Alle FlateDecode-Streams dekomprimiert aneinanderhängen (alle Seiten)."""
+    out = bytearray()
+    pos = 0
+    while True:
+        flat = pdf_bytes.find(b'/FlateDecode', pos)
+        if flat == -1:
+            break
+        start = pdf_bytes.find(b'stream\n', flat) + len(b'stream\n')
+        end = pdf_bytes.find(b'\nendstream', start)
+        try:
+            out += zlib.decompress(pdf_bytes[start:end])
+        except zlib.error:
+            pass
+        pos = end + 1
+    return bytes(out)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -200,3 +221,30 @@ class TestQuoteHandlers:
         assert location.startswith('/invoice?id=')
         new_id = int(location.split('=')[1])
         assert tmp_db.get_invoice_by_id(new_id)[49] == qid
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PDF-Erzeugung (WinAnsi-Encoding)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestQuotePdf:
+    def test_special_chars_use_winansi_not_questionmark(
+            self, tmp_db, monkeypatch, tmp_path):
+        """Aus Office kopierte Bulletpoints/Sonderzeichen landen als WinAnsi
+        (cp1252) im Content-Stream – nicht als '?'."""
+        monkeypatch.chdir(tmp_path)
+        closing = (
+            '<ul><li>Punkt eins</li><li>Punkt zwei</li></ul>'
+            '<p>Preis: 10 € – „Angebot“, freibleibend.</p>'
+        )
+        qid = _quote(tmp_db, '26A300', closing=closing)
+        pdf_bytes, _ = generate_quote_pdf(tmp_db, qid)
+        assert pdf_bytes is not None
+        content = _all_content_bytes(pdf_bytes)
+
+        # cp1252/WinAnsi-Bytes müssen vorkommen (also nicht zu '?' geworden):
+        assert b'\x95' in content   # • Bullet (aus <li> erzeugt)
+        assert b'\x80' in content   # € Euro
+        assert b'\x96' in content   # – Gedankenstrich
+        assert b'\x84' in content   # „ (U+201E)
+        assert b'\x93' in content   # " (U+201C)

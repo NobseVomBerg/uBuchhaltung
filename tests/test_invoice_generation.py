@@ -103,6 +103,34 @@ def _extract_content_stream(pdf_bytes: bytes) -> str:
     return zlib.decompress(compressed).decode('latin-1', errors='replace')
 
 
+def _all_content_bytes(pdf_bytes: bytes) -> bytes:
+    """Alle FlateDecode-Streams dekomprimieren und (als Bytes) aneinanderhängen.
+
+    Anders als :func:`_extract_content_stream` erfasst das *alle* Seiten – nötig
+    für mehrseitige PDFs. Bytes (nicht decodiert), damit WinAnsi/cp1252-Zeichen
+    wie • (0x95) oder € (0x80) byte-genau prüfbar sind.
+    """
+    out = bytearray()
+    pos = 0
+    while True:
+        flat = pdf_bytes.find(b'/FlateDecode', pos)
+        if flat == -1:
+            break
+        start = pdf_bytes.find(b'stream\n', flat) + len(b'stream\n')
+        end = pdf_bytes.find(b'\nendstream', start)
+        try:
+            out += zlib.decompress(pdf_bytes[start:end])
+        except zlib.error:
+            pass
+        pos = end + 1
+    return bytes(out)
+
+
+def _page_count(pdf_bytes: bytes) -> int:
+    """Anzahl Seiten anhand der Page-Objekte (nicht des /Pages-Knotens)."""
+    return pdf_bytes.count(b'/Type /Page /Parent')
+
+
 def _pdf_parens_balanced(stream: str) -> bool:
     """Return True when all parentheses in *stream* are balanced.
 
@@ -345,6 +373,32 @@ class TestInvoicePDF:
         # Beträge im PDF im deutschen Format (Komma als Dezimaltrenner)
         assert '100,00' in content   # net
         assert '119,00' in content   # gross
+
+    # ── Seitenumbruch der Positionstabelle ────────────────────────────────
+
+    def test_pdf_paginates_many_items_and_repeats_header(
+            self, tmp_db, monkeypatch, tmp_path):
+        """Viele Positionen ⇒ mehrere Seiten, Tabellen-Header je Seite wiederholt."""
+        items = [{'description': f'Position {i}', 'quantity': 1.0,
+                  'price_per_unit': 10.0, 'total_net': 10.0} for i in range(60)]
+        iid = _make_invoice(tmp_db, suffix='PAGE-1', items=items)
+        pdf_bytes, _ = self._generate(tmp_db, iid, monkeypatch, tmp_path)
+
+        pages = _page_count(pdf_bytes)
+        assert pages >= 2, f"erwartet Mehrseitigkeit, war {pages} Seite(n)"
+        # Kopfzeile (Wort 'Bezeichnung') muss auf jeder Seite erscheinen
+        content = _all_content_bytes(pdf_bytes).decode('cp1252', errors='replace')
+        assert content.count('Bezeichnung') >= pages
+
+    def test_pdf_totals_block_appears_once(self, tmp_db, monkeypatch, tmp_path):
+        """Der Summenblock ('Gesamtbetrag') wird trotz Mehrseitigkeit nicht je
+        Seite dupliziert."""
+        items = [{'description': f'Position {i}', 'quantity': 1.0,
+                  'price_per_unit': 10.0, 'total_net': 10.0} for i in range(60)]
+        iid = _make_invoice(tmp_db, suffix='TOT-1', items=items)
+        pdf_bytes, _ = self._generate(tmp_db, iid, monkeypatch, tmp_path)
+        content = _all_content_bytes(pdf_bytes).decode('cp1252', errors='replace')
+        assert content.count('Gesamtbetrag') == 1
 
     # ── parenthesis escaping ──────────────────────────────────────────────
 
