@@ -162,9 +162,9 @@ def PageArticles(db: Database, edit_article_id=None):
     s += f'''
     <div class="grid2Cols gridMain">
     <div class="gridRightCol gridMiddle" style="order:2">
-        <div class="rectRounded">
-        <h2>{form_title}</h2>
         <form method="POST" action="/masterdata/articles/update">
+        <div class="rectRounded">
+            <h2>{form_title}</h2>
             <div class="rowWithObjects">{action_buttons}</div>
         </div>
         <div class="rectRounded">
@@ -177,8 +177,8 @@ def PageArticles(db: Database, edit_article_id=None):
                 <tr><td>Beschreibung:</td><td><textarea name="description" rows="3" cols="38">{ea_desc}</textarea></td></tr>
                 <tr><td>Aktiv:</td><td><input type="checkbox" name="active" value="1" {active_checked}></td></tr>
             </table>
-        </form>
         </div>
+        </form>
     </div>
     <div class="gridLeftCol" style="order:1">
         <table>
