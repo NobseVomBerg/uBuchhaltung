@@ -103,7 +103,10 @@ def _sal_opts(current):
 
 _LOGO_JS = r'''
         // Promise des laufenden Logo-Uploads (null wenn keiner läuft)
-        let _logoUploadPromise = null;
+        // var statt let: das Formular wird beim Edit per AJAX neu eingefügt und
+        // dieses Script im selben globalen Kontext erneut ausgefuehrt – let/const
+        // wuerfen dann "already declared" und legten Datei-Picker + Kuerzel lahm.
+        var _logoUploadPromise = null;
 
         function updateLogoPath(input, inputId, previewId) {
             if (!input.files || !input.files[0]) return;
@@ -352,7 +355,7 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
         <tr><td>Zusatzzeile:</td>
             <td><input type="text" name="address_line1" value="{address_line1}"
                        placeholder="z.Hd. Max Mustermann · Abt. Einkauf · c/o ...">
-                <small class="muted">Erscheint zwischen Firmenname und Straße</small></td></tr>
+                <small class="muted">Erscheint zwischen {'Name' if entity_type == 'person' else 'Firmenname'} und Straße</small></td></tr>
         <tr><td>Straße / Nr.:</td>
             <td><input type="text" name="street" value="{street}"></td></tr>
         <tr><td>PLZ:</td>
@@ -411,7 +414,7 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
             const el = document.getElementById(id);
             if (el) el.addEventListener('input', refreshDisplayNameHint);
         }});
-        const titleEl = document.querySelector('input[name="title"]');
+        var titleEl = document.querySelector('input[name="title"]');
         if (titleEl) titleEl.addEventListener('input', refreshDisplayNameHint);
 
         refreshDisplayNameHint();
