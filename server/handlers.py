@@ -1870,6 +1870,75 @@ def handle_worktime_pdf(db: Database, person_id, date_from, date_to, with_notes=
         return None, None
 
 
+# ── Fahrten (Fahrtenbuch) ─────────────────────────────────────────────────────
+def _trip_redirect(person_id, date_from, date_to):
+    return f"/trips?person={person_id}&from={date_from}&to={date_to}"
+
+
+def _trip_int(value):
+    """Leeren/ungültigen Text → None, sonst Integer."""
+    value = (value or '').strip()
+    if value == '':
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _trip_parse(post_data):
+    """Fahrt-Felder aus dem POST-Body ziehen (ohne DriverID/Zeitraum).
+
+    Sind beide Tachostände (Start/Ende) gesetzt und plausibel, ist die Differenz
+    maßgeblich für die gefahrenen km – auch ohne mitgesendeten Client-Wert.
+    """
+    g = lambda k, d='': post_data.get(k, [d])[0]
+    start_km = _trip_int(g('start_km', ''))
+    end_km = _trip_int(g('end_km', ''))
+    distance_km = _trip_int(g('distance_km', ''))
+    if start_km is not None and end_km is not None and end_km >= start_km:
+        distance_km = end_km - start_km
+    return {
+        'start_date': g('start_date', ''),
+        'start_time': g('start_time', ''),
+        'end_date': g('end_date', ''),
+        'end_time': g('end_time', ''),
+        'start_point': g('start_point', '').strip(),
+        'destination': g('destination', '').strip(),
+        'vehicle': g('vehicle', '').strip(),
+        'reason': g('reason', '').strip(),
+        'distance_km': distance_km,
+        'start_km': start_km,
+        'end_km': end_km,
+        'document_id': _trip_int(g('document_id', '')),
+    }
+
+
+def handle_add_trip(db: Database, post_data):
+    """Neue Fahrt anlegen (benötigt Fahrer, Start-Datum und Ziel)."""
+    g = lambda k, d='': post_data.get(k, [d])[0]
+    person_id = int(g('person_id', '0') or 0)
+    date_from = g('from', '')
+    date_to = g('to', '')
+    fields = _trip_parse(post_data)
+    if person_id and fields['start_date'] and fields['destination']:
+        db.insert_trip(driver_id=person_id, **fields)
+    return 303, _trip_redirect(person_id, date_from, date_to)
+
+
+def handle_update_trip(db: Database, post_data):
+    """Bestehende Fahrt aktualisieren."""
+    g = lambda k, d='': post_data.get(k, [d])[0]
+    person_id = int(g('person_id', '0') or 0)
+    date_from = g('from', '')
+    date_to = g('to', '')
+    trip_id = int(g('id', '0') or 0)
+    fields = _trip_parse(post_data)
+    if trip_id and fields['start_date'] and fields['destination']:
+        db.update_trip(trip_id, **fields)
+    return 303, _trip_redirect(person_id, date_from, date_to)
+
+
 def handle_setup_save(db: Database, post_data: dict):
     """Speichert die Daten aus der Ersteinrichtungs-Seite.
 

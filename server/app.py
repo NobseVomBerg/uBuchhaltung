@@ -30,6 +30,7 @@ from .pages_setup import PageSetup
 from .pages_invoice import PageInvoice
 from .pages_quote import PageQuote
 from .pages_worktime import PageWorkTimes
+from .pages_trips import PageTrips
 
 class SimpleWebServer(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
@@ -448,6 +449,31 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write("Fehler beim Erstellen des PDF".encode("utf-8"))
                 return
+            # ── Zeiten / Fahrten ──────────────────────────────────────────
+            elif self.path == "/trips" or self.path.startswith("/trips?"):
+                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
+                person_id = int(qs['person'][0]) if qs.get('person') else None
+                error_msg = qs['error'][0] if qs.get('error') else None
+                hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
+                self.respond(200, PageTrips(db, person_id=person_id,
+                                            date_from=date_from, date_to=date_to,
+                                            error_msg=error_msg), headers=hdrs)
+            elif self.path.startswith("/trips/edit"):
+                qs = parse_qs(self.path.split('?')[1])
+                edit_id = int(qs["id"][0])
+                person_id = int(qs['person'][0]) if qs.get('person') else None
+                date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
+                self.respond(200, PageTrips(db, person_id=person_id, date_from=date_from,
+                                            date_to=date_to, edit_id=edit_id))
+            elif self.path.startswith("/trips/delete"):
+                qs = parse_qs(self.path.split('?')[1])
+                trip_id = int(qs["id"][0])
+                db.delete_trip(trip_id)
+                person_id = qs['person'][0] if qs.get('person') else ''
+                date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
+                self.respond(303, "", headers={"Location":
+                    f"/trips?person={person_id}&from={date_from}&to={date_to}"})
             # ─────────────────────────────────────────────────────────────
             # ── Legacy Redirects (Compatibility) ──────────────────────────
             # Old URLs redirect to new Master Data structure
@@ -701,6 +727,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/worktime/update":
                 status_code, location = handlers.handle_update_worktime(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            # Zeiten / Fahrten
+            elif self.path == "/trips/add":
+                status_code, location = handlers.handle_add_trip(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/trips/update":
+                status_code, location = handlers.handle_update_trip(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
             # Articles
             elif self.path == "/masterdata/articles/add":

@@ -30,6 +30,21 @@ MONTHS = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun',
 #   7 PauseMinutes, 8 LocationMode, 9 LocationCity, 10 Note
 
 
+def zeiten_submenu(active):
+    """Gemeinsames Header2-Submenü für den Zeiten-Bereich (Arbeitszeiten / Fahrten).
+
+    active: 'worktime' | 'trips'
+    """
+    def part(href, label, key):
+        if key == active:
+            return f'<span id="ActivePage">{label}</span>'
+        return f'<a href="{href}">{label}</a>'
+    return ' | '.join([
+        part('/worktime', 'Arbeitszeiten', 'worktime'),
+        part('/trips', 'Fahrten', 'trips'),
+    ])
+
+
 def compute_hours(start, end, pause_min):
     """Stunden = (Ende − Start) − Pause. Leere/ungültige Zeiten → 0.0."""
     if not start or not end:
@@ -122,7 +137,7 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
         f"<select onchange=\"window.location.href='/worktime?person=' + this.value "
         f"+ '&from={date_from}&to={date_to}'\">{person_opts}</select>"
     )
-    s += Header2(person_select)
+    s += Header2(zeiten_submenu('worktime') + ' &nbsp; ' + person_select)
 
     # Header3: zentraler Zeitraum-Filter (Von/Bis + Jahr + Monat inkl. Monats-
     # Toggle). Person wird als Zusatzparameter mitgeführt.

@@ -8,6 +8,7 @@ from .schema import SchemaMixin
 from .seed import SeedMixin
 from .receipts import ReceiptsMixin
 from .worktimes import WorkTimesMixin
+from .trips import TripsMixin
 from .bookings import BookingsMixin
 from .matching import MatchingMixin
 from .accounts import AccountsMixin
@@ -20,7 +21,7 @@ from .invoices import InvoicesMixin
 from .reporting import ReportingMixin
 
 
-class Database(SchemaMixin, SeedMixin, ReceiptsMixin, WorkTimesMixin, BookingsMixin, MatchingMixin, AccountsMixin, AssetsMixin, WisoImportMixin, ContactsMixin, ArticlesMixin, NumberRangeMixin, InvoicesMixin, ReportingMixin, _CoreMixin):
+class Database(SchemaMixin, SeedMixin, ReceiptsMixin, WorkTimesMixin, TripsMixin, BookingsMixin, MatchingMixin, AccountsMixin, AssetsMixin, WisoImportMixin, ContactsMixin, ArticlesMixin, NumberRangeMixin, InvoicesMixin, ReportingMixin, _CoreMixin):
     """Komposition aller Domaenen-Mixins. Siehe db/<domaene>.py."""
     pass
 

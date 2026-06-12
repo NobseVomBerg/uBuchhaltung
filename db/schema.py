@@ -175,6 +175,33 @@ class SchemaMixin:
             ON WorkTimes(PersonID, Date)
         ''')
 
+        # Trips: Fahrtenbuch (Zeiten-Bereich). Startpunkt leer ⇒ eigene Adresse.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS Trips (
+                ID          INTEGER PRIMARY KEY AUTOINCREMENT,
+                DriverID    INTEGER NOT NULL,            -- FK Contacts(ID) – Fahrer
+                StartDate   DATE    NOT NULL,
+                StartTime   TEXT,                        -- optional 'HH:MM'
+                EndDate     DATE,                        -- optional
+                EndTime     TEXT,                        -- optional 'HH:MM'
+                StartPoint  TEXT,                        -- leer ⇒ eigene Adresse/Firmensitz
+                Destination TEXT    NOT NULL,            -- Ziel
+                Vehicle     TEXT,                        -- Freitext
+                Reason      TEXT,                        -- Grund
+                DistanceKm  INTEGER,                     -- gefahrene km (manuell/berechnet)
+                StartKm     INTEGER,                     -- Tachostand Start (optional)
+                EndKm       INTEGER,                     -- Tachostand Ende (optional)
+                DocumentID  INTEGER,                     -- optional verknüpfter Beleg
+                CreatedAt   DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (DriverID)   REFERENCES Contacts(ID)  ON DELETE CASCADE,
+                FOREIGN KEY (DocumentID) REFERENCES Documents(ID) ON DELETE SET NULL
+            )
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_trips_driver_date
+            ON Trips(DriverID, StartDate)
+        ''')
+
         # BookingGroups (Helper for linking Documents and Bookings with m:n together)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS BookingGroups (
