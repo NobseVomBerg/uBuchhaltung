@@ -61,6 +61,7 @@ def generate_quote_pdf(db: Database, quote_id: int):
     closing_text = quote[48] if len(quote) > 48 else ''
 
     image = None
+    seller_addr_extra = ''
     own_company_id = quote[3]
     if own_company_id:
         own_contact = db.get_contact_by_id(own_company_id)
@@ -68,16 +69,37 @@ def generate_quote_pdf(db: Database, quote_id: int):
             image = load_image_xobject(own_contact[13])
         if own_contact and len(own_contact) > 11:
             seller_tax_id = own_contact[11] or ''
+        if own_contact and len(own_contact) > 25:
+            seller_addr_extra = own_contact[25] or ''
+
+    # Käufer-Kontakt für Kunden-Nr. und Adress-Zusatzzeile
+    buyer_customer_number = ''
+    buyer_addr_extra = ''
+    customer_id = quote[13]
+    if customer_id:
+        buyer_contact = db.get_contact_by_id(customer_id)
+        if buyer_contact:
+            if len(buyer_contact) > 2:
+                buyer_customer_number = buyer_contact[2] or ''
+            if len(buyer_contact) > 25:
+                buyer_addr_extra = buyer_contact[25] or ''
 
     # ── Content-Stream ────────────────────────────────────────────────────────
     ops = ["BT"]
     line_ops = []
 
     meta = [("Datum:", quote_date), ("Angebots-Nr.:", quote_number)]
+    if buyer_customer_number:
+        meta.append(("Kunden-Nr.:", buyer_customer_number))
     if valid_until:
         meta.append(("gültig bis:", valid_until))
-    sender_line = f"{seller_company or seller_name} · {seller_street} · {seller_postal} {seller_city}"
-    address_lines = [buyer_company, buyer_name, buyer_street, f"{buyer_postal} {buyer_city}".strip()]
+    # Absenderzeile im Adressfeld OHNE Zusatzzeile (nur in der Fußzeile)
+    sender_line = " · ".join(p for p in [
+        seller_company or seller_name, seller_street,
+        f"{seller_postal} {seller_city}".strip()] if p)
+    buyer_country = quote[19] if len(quote) > 19 else None
+    address_lines = D.address_block(buyer_company, buyer_name, buyer_addr_extra,
+                                    buyer_street, buyer_postal, buyer_city, buyer_country)
     y = D.draw_letterhead(ops, image, "Angebot", meta, sender_line, address_lines)
 
     # Einleitungstext
@@ -97,7 +119,10 @@ def generate_quote_pdf(db: Database, quote_id: int):
         y = D.draw_richtext(ops, closing_text, y, size=10, leading=14)
 
     # Dreispaltige Fußzeile (Anschrift | Kontakt)
-    col_address = [seller_company or seller_name, seller_street, f"{seller_postal} {seller_city}".strip()]
+    col_address = [seller_company or seller_name]
+    if seller_addr_extra:
+        col_address.append(seller_addr_extra)
+    col_address += [seller_street, f"{seller_postal} {seller_city}".strip()]
     col_contact = []
     if seller_phone:
         col_contact.append(f"Tel: {seller_phone}")

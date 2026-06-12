@@ -67,8 +67,9 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
         'Abzug unter Angabe der Rechnungsnummer innerhalb von 14 Tagen ab Rechnungsdatum '
         'auf das unten angegebene Konto. Vielen Dank.')
 
-    # Logo + Steuernummer der eigenen Firma laden
+    # Logo, Steuernummer und Adress-Zusatzzeile der eigenen Firma laden
     image = None
+    seller_addr_extra = ''
     own_company_id = invoice[3]
     if own_company_id:
         own_contact = db.get_contact_by_id(own_company_id)
@@ -76,14 +77,36 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
             image = load_image_xobject(own_contact[13])
         if own_contact and len(own_contact) > 11:
             seller_tax_id = own_contact[11] or ''
+        if own_contact and len(own_contact) > 25:
+            seller_addr_extra = own_contact[25] or ''
+
+    # Käufer-Kontakt für Kunden-Nr. und Adress-Zusatzzeile
+    buyer_customer_number = ''
+    buyer_addr_extra = ''
+    customer_id = invoice[13]
+    if customer_id:
+        buyer_contact = db.get_contact_by_id(customer_id)
+        if buyer_contact:
+            if len(buyer_contact) > 2:
+                buyer_customer_number = buyer_contact[2] or ''
+            if len(buyer_contact) > 25:
+                buyer_addr_extra = buyer_contact[25] or ''
 
     # ── Content-Stream aufbauen ──────────────────────────────────────────────
     ops = ["BT"]
     line_ops = []
 
     meta_rows = [("Datum:", invoice_date), ("Rechnungs-Nr.:", invoice_number)]
-    sender_line = f"{seller_company or seller_name} · {seller_street} · {seller_postal} {seller_city}"
-    address_lines = [buyer_company, buyer_name, buyer_street, f"{buyer_postal} {buyer_city}".strip()]
+    if buyer_customer_number:
+        meta_rows.append(("Kunden-Nr.:", buyer_customer_number))
+    # Absenderzeile im Adressfeld OHNE Zusatzzeile (sonst zu lang); die
+    # Zusatzzeile erscheint nur in der Fußzeile.
+    sender_line = " · ".join(p for p in [
+        seller_company or seller_name, seller_street,
+        f"{seller_postal} {seller_city}".strip()] if p)
+    buyer_country = invoice[19] if len(invoice) > 19 else None
+    address_lines = D.address_block(buyer_company, buyer_name, buyer_addr_extra,
+                                    buyer_street, buyer_postal, buyer_city, buyer_country)
     y = D.draw_letterhead(ops, image, "Rechnung", meta_rows, sender_line, address_lines)
 
     items = [{'pos': it[2], 'quantity': it[5], 'unit': it[6] or 'Stk.',
@@ -97,7 +120,10 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     y = D.draw_richtext(ops, payment_terms, y, size=9, leading=12)
 
     # Dreispaltige Fußzeile (Anschrift | Kontakt | Bankverbindung)
-    col_address = [seller_company or seller_name, seller_street, f"{seller_postal} {seller_city}".strip()]
+    col_address = [seller_company or seller_name]
+    if seller_addr_extra:
+        col_address.append(seller_addr_extra)
+    col_address += [seller_street, f"{seller_postal} {seller_city}".strip()]
     col_contact = []
     if seller_phone:
         col_contact.append(f"Tel: {seller_phone}")

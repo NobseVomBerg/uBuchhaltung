@@ -9,7 +9,7 @@ import calendar
 import datetime
 import os
 from db import Database
-from .pdf_core import escape_pdf_string, load_image_xobject, build_single_page_pdf
+from .pdf_core import escape_pdf_string, load_image_xobject, build_single_page_pdf, logo_display_size
 from server.pages_worktime import compute_hours, KIND_LABELS, WEEKDAYS
 
 # Spaltenindizes WorkTimes-Row (siehe pages_worktime)
@@ -107,7 +107,8 @@ def generate_worktime_pdf(db: Database, person_id, date_from, date_to, with_note
     line_ops = []
 
     if image:
-        ops.append(f"q {image['width']} 0 0 {image['height']} 430 770 cm /Logo Do Q")
+        dw, dh = logo_display_size(image, 150, 80)
+        ops.append(f"q {dw:.1f} 0 0 {dh:.1f} 430 770 cm /Logo Do Q")
 
     ops += _cell(40, 805, "Stundenzettel", font='/F2', size=14)
     person_line = f"Person: {person_name}" + (f", {own_name}" if own_name else "")

@@ -28,12 +28,29 @@ def escape_pdf_string(s: str) -> str:
     return s
 
 
-def load_image_xobject(path: str, max_width: int = 150, max_height: int = 80):
+def logo_display_size(image, max_width_pt, max_height_pt):
+    """Anzeigegröße (in pt) für ein Logo-XObject berechnen.
+
+    Entkoppelt die *Pixel*-Auflösung des Bildes von seiner *Darstellungsgröße* auf
+    der Seite: das Bild wird (seitenverhältnis-erhaltend) in eine Box aus
+    ``max_width_pt`` × ``max_height_pt`` Punkten eingepasst. Weil das Bild deutlich
+    mehr Pixel als Punkte hat, wird es dadurch gestochen scharf statt verpixelt.
+    """
+    pw, ph = image.get('width', 0), image.get('height', 0)
+    if pw <= 0 or ph <= 0:
+        return float(max_width_pt), float(max_height_pt)
+    scale = min(max_width_pt / pw, max_height_pt / ph)
+    return pw * scale, ph * scale
+
+
+def load_image_xobject(path: str, max_width: int = 600, max_height: int = 320):
     """Ein Bild als komprimiertes DeviceRGB-XObject vorbereiten.
 
     Args:
         path: Pfad zur Bilddatei.
-        max_width / max_height: Bild wird (proportional) auf diese Maße verkleinert.
+        max_width / max_height: Bild wird (proportional) auf diese *Pixel*-Maße
+            verkleinert. Bewusst großzügig, damit das Logo bei kleiner
+            Punkt-Darstellung scharf bleibt (siehe :func:`logo_display_size`).
 
     Returns:
         dict mit Schlüsseln ``data`` (zlib-komprimierte RGB-Bytes), ``width``,
