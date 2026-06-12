@@ -495,12 +495,13 @@ def _quote_form_html(db: Database, quote_id=None):
             const r = document.createElement('tr');
             r.className='invoice-item-row'; r.setAttribute('data-row', rowCounter); r.setAttribute('data-article-id', articleId);
             const dn = a.description ? a.name + ' - ' + a.description : a.name;
+            const safeName = dn.replace(/"/g, '&quot;');
             r.innerHTML = `
                 <td>${rowCounter}</td>
                 <td><input type="number" class="item-quantity" value="1" min="0" step="0.01" style="width:60px;"></td>
-                <td><span class="item-unit-display">${a.unit}</span><input type="hidden" class="item-unit" value="${a.unit}"></td>
-                <td><span class="item-description-display">${dn}</span><input type="hidden" class="item-description" value="${dn}"></td>
-                <td><span class="item-price-display">${a.price.toFixed(2).replace('.', ',')} €</span><input type="hidden" class="item-price" value="${a.price}"></td>
+                <td><input type="text" class="item-unit" value="${a.unit}" style="width:60px;"></td>
+                <td><input type="text" class="item-description" value="${safeName}" style="width:100%;"></td>
+                <td><input type="number" class="item-price" value="${a.price}" min="0" step="0.01" style="width:80px;"> €</td>
                 <td class="item-total" style="text-align:right;">0,00 €</td>
                 <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color:red;">✕</button></td>`;
             tb.appendChild(r); attachCalculationListeners(r); calculateTotals();

@@ -1001,13 +1001,14 @@ function setInvoiceStatus(invId) {{
             newRow.setAttribute('data-article-id', articleId);
             
             const displayName = article.description ? article.name + ' - ' + article.description : article.name;
-            
+            const safeName = displayName.replace(/"/g, '&quot;');
+
             newRow.innerHTML = `
                 <td>${rowCounter}</td>
                 <td><input type="number" class="item-quantity" value="1" min="0" step="0.01" style="width: 60px;"></td>
-                <td><span class="item-unit-display">${article.unit}</span><input type="hidden" class="item-unit" value="${article.unit}"></td>
-                <td><span class="item-description-display">${displayName}</span><input type="hidden" class="item-description" value="${displayName}"></td>
-                <td><span class="item-price-display">${article.price.toFixed(2).replace('.', ',')} €</span><input type="hidden" class="item-price" value="${article.price}"></td>
+                <td><input type="text" class="item-unit" value="${article.unit}" style="width: 60px;"></td>
+                <td><input type="text" class="item-description" value="${safeName}" style="width: 100%;"></td>
+                <td><input type="number" class="item-price" value="${article.price}" min="0" step="0.01" style="width: 80px;"> €</td>
                 <td class="item-total" style="text-align: right;">0,00 €</td>
                 <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color: red;">✕</button></td>
             `;
