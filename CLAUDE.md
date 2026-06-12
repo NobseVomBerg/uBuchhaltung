@@ -181,6 +181,13 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
 - Wenn Bug reproduzierbar, direkt über DB debuggen
 - SQL-Queries gezielt checken (z.B. `SELECT COUNT(*) ... GROUP BY ...`)
 
+### Versionierung
+- Single Source of Truth: `version.py` (Schema `MAJOR.MINOR.PATCH`)
+- **Bei jeder DB-Schema-Änderung** (`db/schema.py`) `SCHEMA_VERSION` +1 → die mittlere
+  Versionsstelle und `PRAGMA user_version` ziehen automatisch mit; PATCH dabei auf 0
+- Sonstige Änderungen ohne DB-Bezug: nur `PATCH` +1; große Umbrüche: `MAJOR`
+- Anzeige auf der About-Seite
+
 ---
 
 ## Governance

@@ -476,6 +476,11 @@ class SchemaMixin:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_bookings_group  ON Bookings(BookingGroup_ID)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_bookings_date   ON Bookings(DateBooking)")
 
+        # Schema-Version in der DB hinterlegen (entspricht der MINOR-Versionsstelle,
+        # siehe version.py). Bei jeder Schema-Änderung SCHEMA_VERSION dort erhöhen.
+        from version import SCHEMA_VERSION
+        cursor.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
+
         conn.commit()
         conn.close()
 
