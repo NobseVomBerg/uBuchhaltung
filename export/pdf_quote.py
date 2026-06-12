@@ -11,7 +11,7 @@ Phase 1 ist einseitig; der mehrseitige Fließtext-Satz folgt in Phase 2.
 import datetime
 import os
 from db import Database
-from .pdf_core import load_image_xobject, build_single_page_pdf
+from .pdf_core import load_image_xobject, build_multi_page_pdf
 from . import pdf_document as D
 
 
@@ -113,12 +113,7 @@ def generate_quote_pdf(db: Database, quote_id: int):
                                     sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross)
     line_ops += rule_ops
 
-    # Schlusstext
-    if closing_text:
-        y -= 6
-        y = D.draw_richtext(ops, closing_text, y, size=10, leading=14)
-
-    # Dreispaltige Fußzeile (Anschrift | Kontakt)
+    # Dreispaltige Fußzeile (Anschrift | Kontakt) – pro Seite identisch
     col_address = [seller_company or seller_name]
     if seller_addr_extra:
         col_address.append(seller_addr_extra)
@@ -130,12 +125,33 @@ def generate_quote_pdf(db: Database, quote_id: int):
         col_contact.append(f"E-Mail: {seller_email}")
     if seller_tax_id:
         col_contact.append(f"USt-IdNr: {seller_tax_id}")
-    D.draw_footer_columns(ops, line_ops, [col_address, col_contact, []])
+    footer_cols = [col_address, col_contact, []]
 
-    ops.append("ET")
-    ops += line_ops
+    # Seitenverwaltung: Schlusstext kann mehrseitig werden. Footer auf jeder Seite,
+    # Briefkopf/Positionen nur auf Seite 1.
+    DOC_BOTTOM = 120          # Text endet oberhalb der Fußzeile
+    CONT_TOP   = 790          # Textbeginn auf Folgeseiten
+    pages = []
 
-    full_pdf = build_single_page_pdf(ops, image=image)
+    def _finalize(page_ops, page_lines):
+        D.draw_footer_columns(page_ops, page_lines, footer_cols)
+        page_ops.append("ET")
+        page_ops.extend(page_lines)
+        pages.append(page_ops)
+
+    # Schlusstext: eine Zeile tiefer beginnen, dann seitenweise fließen lassen
+    if closing_text:
+        y -= 20
+        lines = D.richtext_to_lines(closing_text, size=10)
+        y, remaining = D.draw_text_lines(ops, lines, y, size=10, leading=14, min_y=DOC_BOTTOM)
+        while remaining:
+            _finalize(ops, line_ops)
+            ops, line_ops = ["BT"], []
+            y, remaining = D.draw_text_lines(ops, remaining, CONT_TOP,
+                                             size=10, leading=14, min_y=DOC_BOTTOM)
+    _finalize(ops, line_ops)
+
+    full_pdf = build_multi_page_pdf(pages, image=image)
 
     year = datetime.datetime.now().year
     pdf_dir = f"data/quotes/{year}"

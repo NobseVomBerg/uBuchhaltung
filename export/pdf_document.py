@@ -140,7 +140,8 @@ def draw_letterhead(ops, image, title, meta_rows, sender_line, address_lines):
     # eingepasst ⇒ scharf statt verpixelt.
     if image:
         dw, dh = logo_display_size(image, LOGO_BOX_W, LOGO_BOX_H)
-        ops.append(f"q {dw:.1f} 0 0 {dh:.1f} {LEFT} {LOGO_TOP - dh:.1f} cm /Logo Do Q")
+        # +10: Logo etwas höher als der Meta-Block (LOGO_TOP bleibt für Meta unverändert)
+        ops.append(f"q {dw:.1f} 0 0 {dh:.1f} {LEFT} {LOGO_TOP - dh + 10:.1f} cm /Logo Do Q")
 
     # Meta-Block oben rechts
     my = LOGO_TOP - 8
@@ -149,11 +150,12 @@ def draw_letterhead(ops, image, title, meta_rows, sender_line, address_lines):
         text(ops, META_VALUE_X, my, str(value), size=10)
         my -= 14
 
-    # Absenderzeile (klein, dunkelgrau) + Empfängeradresse links – Adresse etwas
-    # tiefer und um ~2 Zeichen eingerückt.
+    # Absenderzeile (klein, dunkelgrau) + Empfängeradresse links – beide um
+    # ~2 Zeichen eingerückt (eigene Anschrift gleich ausgerichtet wie die
+    # Empfängeradresse).
     if sender_line:
         ops.append(f"{SENDER_GRAY} rg")
-        text(ops, LEFT, 700, sender_line, font='/F3', size=8)
+        text(ops, LEFT + ADDR_INDENT, 700, sender_line, font='/F3', size=8)
         ops.append("0 0 0 rg")
     y = ADDR_TOP
     for line in address_lines:
@@ -166,8 +168,10 @@ def draw_letterhead(ops, image, title, meta_rows, sender_line, address_lines):
     # Tabellen-Header.
     text(ops, META_LABEL_X, ADDR_TOP, title, font='/F2', size=13)
 
-    # Tabelle beginnt unterhalb von Empfängeradresse UND Meta-Block.
-    return min(y, my) - 16
+    # Tabelle beginnt unterhalb von Empfängeradresse UND Meta-Block. Zusätzlicher
+    # Abstand (~2 Header-Zeilen), damit die Header-Zeile nicht ins Anschriftfenster
+    # von Briefumschlägen rutscht.
+    return min(y, my) - 16 - 26
 
 
 def draw_footer_columns(ops, line_ops, columns, y_top=66):
@@ -309,8 +313,42 @@ def _richtext_paragraphs(html_text):
     return paragraphs
 
 
+def richtext_to_lines(html_text, *, x=LEFT, max_x=RIGHT, size=10):
+    """Fließtext in fertige Zeilen zerlegen (Grundlage für seitenübergreifenden
+    Satz). Liefert Liste von ``(line_tokens, is_paragraph_end)``.
+    """
+    space_w = text_width(' ', size)
+    out = []
+    for runs in _richtext_paragraphs(html_text):
+        words = [(w, b, i) for (txt, b, i) in runs for w in txt.split(' ')]
+        line, line_w = [], 0.0
+        for w, b, i in words:
+            ww = text_width(w, size)
+            if line and (x + line_w + ww > max_x):
+                out.append((line, False))
+                line, line_w = [], 0.0
+            line.append((w, b, i))
+            line_w += ww + space_w
+        out.append((line, True))
+    return out
+
+
+def draw_text_lines(ops, lines, y, *, x=LEFT, size=10, leading=14, para_gap=4, min_y=None):
+    """Vorbereitete Zeilen setzen. Bricht ab, sobald die nächste Zeile ``min_y``
+    unterschreiten würde (Seitenumbruch). Returns ``(neues_y, restzeilen)``.
+    """
+    for idx, (line, is_end) in enumerate(lines):
+        if min_y is not None and y < min_y:
+            return y, lines[idx:]
+        _flush_line(ops, line, x, y, size)
+        y -= leading
+        if is_end:
+            y -= para_gap
+    return y, []
+
+
 def draw_richtext(ops, html_text, y, *, x=LEFT, max_x=RIGHT, size=10, leading=14):
-    """Fließtext mit fett/kursiv und Wortumbruch setzen. Returns neues y.
+    """Fließtext mit fett/kursiv und Wortumbruch setzen (einseitig). Returns y.
 
     Die Zeilenbreite dient nur der Umbruch-Entscheidung (Schätzung genügt). Die
     *Laufweite* übernimmt der PDF-Renderer selbst: pro Zeile wird die Text-Matrix
@@ -319,25 +357,8 @@ def draw_richtext(ops, html_text, y, *, x=LEFT, max_x=RIGHT, size=10, leading=14
     """
     if not html_text:
         return y
-    space_w = text_width(' ', size)
-    for runs in _richtext_paragraphs(html_text):
-        words = []
-        for txt, b, i in runs:
-            for w in txt.split(' '):
-                words.append((w, b, i))
-        line, line_w = [], 0.0
-        for w, b, i in words:
-            ww = text_width(w, size)
-            if line and (x + line_w + ww > max_x):
-                _flush_line(ops, line, x, y, size)
-                y -= leading
-                line, line_w = [], 0.0
-            line.append((w, b, i))
-            line_w += ww + space_w
-        if line:
-            _flush_line(ops, line, x, y, size)
-            y -= leading
-        y -= 4   # Absatzabstand
+    lines = richtext_to_lines(html_text, x=x, max_x=max_x, size=size)
+    y, _ = draw_text_lines(ops, lines, y, x=x, size=size, leading=leading)
     return y
 
 

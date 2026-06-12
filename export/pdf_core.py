@@ -16,6 +16,30 @@ Ein optionales Bild ist als  /Logo  in den Page-Resources referenzierbar.
 import zlib
 
 
+# Häufige Unicode-Zeichen, die *nicht* in WinAnsi/cp1252 liegen (typische
+# Copy-&-Paste-Artefakte aus Office), auf ein darstellbares Pendant abbilden.
+# cp1252 selbst kann bereits •, „ " ' ' – — … € usw. – das deckt das Gros ab.
+_WINANSI_TRANSLATE = {
+    0x25CF: '•', 0x25AA: '•', 0x25A0: '•', 0x2023: '•',
+    0x2043: '•', 0x2219: '•', 0x2756: '•',   # diverse Bullet-Glyphen -> •
+    0x2192: '->', 0x2190: '<-', 0x2194: '<->', 0x21D2: '=>',
+    0x2713: '+', 0x2714: '+', 0x2717: 'x', 0x2718: 'x',     # Haken/Kreuze
+    0x00A0: ' ', 0x202F: ' ', 0x2007: ' ', 0x2008: ' ',     # geschützte/schmale Leerzeichen
+    0x2009: ' ', 0x200A: ' ', 0x2002: ' ', 0x2003: ' ', 0x200B: '',
+    0x2011: '-', 0x2012: '-', 0x2015: '-', 0x2212: '-',     # diverse Striche/Minus -> -
+}
+
+
+def to_winansi_bytes(text: str) -> bytes:
+    """Content-Stream-Text als WinAnsi (cp1252) kodieren.
+
+    Die PDF-Fonts nutzen /WinAnsiEncoding; daher muss der Text als cp1252 (nicht
+    latin-1!) kodiert werden, sonst werden •, „ " – … € usw. zu '?'. Seltene,
+    nicht in cp1252 enthaltene Zeichen werden vorher transliteriert.
+    """
+    return text.translate(_WINANSI_TRANSLATE).encode('cp1252', errors='replace')
+
+
 def escape_pdf_string(s: str) -> str:
     """Sonderzeichen für ein PDF-String-Literal (``(…)``-Syntax) maskieren.
 
@@ -97,8 +121,8 @@ def build_single_page_pdf(content_ops, image=None, page_size=(595, 842)) -> byte
     """
     width, height = page_size
 
-    # Content-Stream komprimieren (FlateDecode)
-    content_bytes = "\n".join(content_ops).encode('latin-1', errors='replace')
+    # Content-Stream komprimieren (FlateDecode); Text als WinAnsi/cp1252 kodieren
+    content_bytes = to_winansi_bytes("\n".join(content_ops))
     compressed = zlib.compress(content_bytes)
 
     has_image = image is not None
@@ -154,6 +178,79 @@ def build_single_page_pdf(content_ops, image=None, page_size=(595, 842)) -> byte
         xref += f"{off:010d} 00000 n \n"
 
     trailer = (f"trailer\n<< /Size {num_objects + 1} /Root 1 0 R >>\n"
+               f"startxref\n{xref_offset}\n%%EOF")
+
+    return pdf_header + body + xref.encode('latin-1') + trailer.encode('latin-1')
+
+
+def build_multi_page_pdf(pages, image=None, page_size=(595, 842)) -> bytes:
+    """Mehrseitiges PDF aus einer Liste von Content-Operator-Listen bauen.
+
+    Args:
+        pages: Liste von Content-Streams (je eine Operator-Liste pro Seite, inkl.
+               ``BT``/``ET``). Schriften ``/F1``–``/F3`` und – falls vorhanden –
+               das Bild ``/Logo`` stehen auf jeder Seite zur Verfügung (das Logo
+               erscheint nur dort, wo die Seite den ``Do``-Operator enthält).
+        image: optionales dict aus :func:`load_image_xobject` (oder None).
+        page_size: (Breite, Höhe) – Default A4 hochkant.
+
+    Objekt-Layout (lückenlos nummeriert): 1 Catalog · 2 Pages · 3–5 Fonts ·
+    je Seite (6+2i) Page + (7+2i) Content · zuletzt das Bild (falls vorhanden).
+    """
+    width, height = page_size
+    n = max(1, len(pages))
+    has_image = image is not None
+
+    page_obj_nums    = [6 + 2 * i for i in range(n)]
+    content_obj_nums = [7 + 2 * i for i in range(n)]
+    image_obj_num    = (6 + 2 * n) if has_image else None
+
+    xobject_ref = f" /XObject << /Logo {image_obj_num} 0 R >>" if has_image else ""
+    resources   = f"<< /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >>{xobject_ref} >>"
+    kids        = " ".join(f"{p} 0 R" for p in page_obj_nums)
+
+    obj_bytes = {}
+
+    def _put(num, content):
+        obj_bytes[num] = f"{num} 0 obj\n{content}\nendobj\n".encode('latin-1', errors='replace')
+
+    _put(1, "<< /Type /Catalog /Pages 2 0 R >>")
+    _put(2, f"<< /Type /Pages /Kids [{kids}] /Count {n} >>")
+    _put(3, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
+    _put(4, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>")
+    _put(5, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding >>")
+
+    for i in range(n):
+        pnum, cnum = page_obj_nums[i], content_obj_nums[i]
+        _put(pnum, f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}] "
+                   f"/Contents {cnum} 0 R /Resources {resources} >>")
+        compressed = zlib.compress(to_winansi_bytes("\n".join(pages[i])))
+        header = f"{cnum} 0 obj\n<< /Length {len(compressed)} /Filter /FlateDecode >>\nstream\n"
+        obj_bytes[cnum] = header.encode('latin-1') + compressed + b"\nendstream\nendobj\n"
+
+    if has_image:
+        img_header = (f"{image_obj_num} 0 obj\n<< /Type /XObject /Subtype /Image "
+                      f"/Width {image['width']} /Height {image['height']} "
+                      f"/ColorSpace /DeviceRGB /BitsPerComponent 8 "
+                      f"/Filter {image['filter']} /Length {len(image['data'])} >>\nstream\n")
+        obj_bytes[image_obj_num] = img_header.encode('latin-1') + image['data'] + b"\nendstream\nendobj\n"
+
+    max_num = max(obj_bytes)
+    pdf_header = "%PDF-1.4\n%\xe2\xe3\xcf\xd3\n".encode('latin-1')
+    parts = [obj_bytes[k] for k in range(1, max_num + 1)]
+
+    offsets = []
+    offset = len(pdf_header)
+    for part in parts:
+        offsets.append(offset)
+        offset += len(part)
+    body = b"".join(parts)
+    xref_offset = len(pdf_header) + len(body)
+
+    xref = f"xref\n0 {max_num + 1}\n" + "0000000000 65535 f \n"
+    for off in offsets:
+        xref += f"{off:010d} 00000 n \n"
+    trailer = (f"trailer\n<< /Size {max_num + 1} /Root 1 0 R >>\n"
                f"startxref\n{xref_offset}\n%%EOF")
 
     return pdf_header + body + xref.encode('latin-1') + trailer.encode('latin-1')
