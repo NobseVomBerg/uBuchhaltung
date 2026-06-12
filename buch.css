@@ -43,42 +43,42 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 
 /* Colored buttons (shared base + color modifier) */
 .coloredButton, .coloredButtonNoClick { display: inline-block; color: white; text-decoration: none; border-radius: 5px; border: none; cursor: pointer; padding: 9px 16px; margin: 2px 2px 2px 0; }
-.coloredButton				{ cursor: pointer; }
-.coloredButton:hover		{ filter: brightness(0.88); color: white; text-decoration: none; padding: 7px 14px; margin: 4px 4px 4px 2px; }
-.btn-sm, .btn-smNoClick		{ padding: 4px 8px; font-size: 0.9em; }
-.btn-sm:hover				{ padding: 2px 6px; }
+.coloredButton			{ cursor: pointer; }
+.coloredButton:hover	{ filter: brightness(0.88); color: white; text-decoration: none; padding: 7px 14px; margin: 4px 4px 4px 2px; }
+.btn-sm, .btn-smNoClick	{ padding: 4px 8px; font-size: 0.9em; }
+.btn-sm:hover			{ padding: 2px 6px; }
 
 /* Backgroundcolors */
-.bg-green					{ background: #4CAF50; }
-.bg-orange					{ background: #ff9900 !important; }
-.bg-red						{ background: #dc3545 !important; }
-.bg-blue					{ background: #0066cc; }
-.bg-indigo					{ background: #2196F3; }
-.bg-gray					{ background: #888; }
-.bg-darkgray				{ background: #444; }
-.bg-back					{ background: #000; }
+.bg-green				{ background: #4CAF50; }
+.bg-orange				{ background: #ff9900 !important; }
+.bg-red					{ background: #dc3545 !important; }
+.bg-blue				{ background: #0066cc; }
+.bg-indigo				{ background: #2196F3; }
+.bg-gray				{ background: #888; }
+.bg-darkgray			{ background: #444; }
+.bg-back				{ background: #000; }
 
-.badge						{ display: inline-block; color: white; font-size: 0.72em; font-weight: 700; padding: 2px 6px; border-radius: 10px; vertical-align: middle; margin-right: 3px; }
+.badge					{ display: inline-block; color: white; font-size: 0.72em; font-weight: 700; padding: 2px 6px; border-radius: 10px; vertical-align: middle; margin-right: 3px; }
 
 /* Splitbuchungen (Gruppenansicht in PageTransactions) */
-.group-row                  { cursor: pointer; }
-.split-toggle-icon          { font-size: 0.8em; color: #2196F3; user-select: none; }
-.child-row td.child-indent  { padding-left: 6px; }
-.child-row td               { border-left: 3px solid #2196F3; font-size: 0.95em; }
+.group-row				{ cursor: pointer; }
+.split-toggle-icon		{ font-size: 0.8em; color: #2196F3; user-select: none; }
+.child-row td.child-indent { padding-left: 6px; }
+.child-row td			{ border-left: 3px solid #2196F3; font-size: 0.95em; }
 .child-row td:not(:first-child) { border-left: none; }
 
 /* Status-Zeilen: erledigt/verknüpft (grün) vs. offen (amber) – generisch wiederverwendbar */
-.row-ok                     { background: #f0faf0; }
-.row-open                   { background: #fff8e1; }
+.row-ok					{ background: #f0faf0; }
+.row-open				{ background: #fff8e1; }
 
 /* Aktions-Icons in Tabellenspalten */
-.action-icon                { font-size: 1em; text-decoration: none; margin: 0 3px; opacity: 0.80; vertical-align: middle; }
-.action-icon:hover          { opacity: 1; text-decoration: none; }
-.action-icon.delete-icon    { color: #F44; }
+.action-icon			{ font-size: 1em; text-decoration: none; margin: 0 3px; opacity: 0.80; vertical-align: middle; }
+.action-icon:hover		{ opacity: 1; text-decoration: none; }
+.action-icon.delete-icon { color: #F44; }
 
 /* Arbeitszeiten (WorkTimes) */
-.wt-weekend td              { color: #c0392b; }                     /* Sa/So abgesetzt */
-.wt-sum td                  { font-weight: 700; border-top: 2px solid #888; }
+.wt-weekend td			{ color: #c0392b; }					 /* Sa/So abgesetzt */
+.wt-sum td				{ font-weight: 700; border-top: 2px solid #888; }
 
 
 /* dark mode */
@@ -106,20 +106,15 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 	.article-option-meta { color: #aaa; }
 
 	/* Splitbuchungen (Gruppenansicht in PageTransactions) */
-	.group-row          { background: #111; }
-	.group-row:hover    { background: #222; }
-	.row-ok             { background: #0a2a0a; }
-	.row-open           { background: #2a2200; }
+	.group-row			{ background: #111; }
+	.group-row:hover	{ background: #222; }
+	.row-ok				{ background: #0a2a0a; }
+	.row-open			{ background: #2a2200; }
 
 	/* Input Spin-Buttons*/
 	input[type=number].noButtons::-webkit-inner-spin-button,
-	input[type=number].noButtons::-webkit-outer-spin-button {
-		-webkit-appearance: none;
-		margin: 0;
-	}
-	input[type=number].noButtons {
-		-moz-appearance: textfield; /* Firefox */
-	}
+	input[type=number].noButtons::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+	input[type=number].noButtons { -moz-appearance: textfield; }	/* Firefox */
 }
 
 /* light mode */
@@ -136,8 +131,8 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 	.sql-error-box		{ background-color: #FDD; color: #B71C1C; padding: 10px; }
 
 	/* Splitbuchungen (Gruppenansicht in PageTransactions) */
-	.group-row          { background: #EEE; }
-	.group-row:hover    { background: #DDD; }
+	.group-row			{ background: #EEE; }
+	.group-row:hover	{ background: #DDD; }
 
 	.bg-back			{ background: #FFF; }
 }
@@ -185,8 +180,6 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .totals-row td			{ text-align: right; }
 .totals-row-border td	{ border-top: 2px solid #000 !important; padding-top: 10px !important; }
 .totals-row-final td	{ border-top: 1px solid #000 !important; border-bottom: 3px double #000 !important; padding: 10px 5px !important; font-size: 1.1em; }
-.pdf-button				{ margin: 20px 0; padding: 10px 20px; background-color: #4CAF50; color: white; border: none; cursor: pointer; font-size: 1em; }
-.pdf-button:hover		{ background-color: #45a049; }
 .check-grid				{ display: grid; grid-template-columns: repeat(3, 150px); gap: 4px 0; }
 .check-grid-wide		{ display: grid; grid-template-columns: repeat(3, 220px); gap: 4px 0; }
 .check-grid label,
