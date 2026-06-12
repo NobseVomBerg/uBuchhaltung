@@ -807,9 +807,29 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if encoded:
             self.wfile.write(encoded)
 
+# Beim Serverstart benötigte Ausgabe-Verzeichnisse (Jahres-Unterordner werden
+# bei Bedarf von den jeweiligen Generatoren erzeugt). Wer bei laufendem Server
+# Ordner löscht, muss nicht abgefangen werden.
+_REQUIRED_DIRS = (
+    "data",
+    "data/logos",
+    "data/invoices",
+    "data/quotes",
+    "data/worktime",
+)
+
+
+def _ensure_directories():
+    """Fehlende Ausgabe-Verzeichnisse anlegen (idempotent)."""
+    import os
+    for d in _REQUIRED_DIRS:
+        os.makedirs(d, exist_ok=True)
+
+
 # Start web server
 def run_server(host="localhost", port=8080):
     import socket, sys
+    _ensure_directories()
     # Prüfen ob der Port schon belegt ist
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _s:
         if _s.connect_ex((host, port)) == 0:
