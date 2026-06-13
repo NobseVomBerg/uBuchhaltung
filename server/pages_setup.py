@@ -21,7 +21,7 @@ def PageSetup(db: Database, message: str = '') -> str:
 
     error_html = ''
     if message:
-        error_html = f'<p class="sql-error-box">{_html.escape(str(message))}</p>'
+        error_html = f'<p class="error-box">{_html.escape(str(message))}</p>'
 
     s += f'''
 <div class="grid1Col700 gridMain">

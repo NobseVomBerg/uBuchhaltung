@@ -83,7 +83,14 @@ class _CoreMixin:
         LEFT JOIN ContactAddresses  ca ON c.ID = ca.ContactID AND ca.AddressType = 'main'
         LEFT JOIN CompanyDetails    cd2 ON cd2.ContactID = pd.CompanyContactID
     '''
-    def __init__(self, db_name="./data/buch.db"):
+    def __init__(self, db_name=None):
+        # Ohne expliziten Pfad richtet sich die DB nach dem angemeldeten Benutzer
+        # (Mehrbenutzer-Betrieb, TODO #4). Im Single-User-Default ist das
+        # weiterhin ./data/buch.db. Ein explizit übergebenes db_name (z. B. Tests)
+        # gewinnt immer.
+        if db_name is None:
+            import userctx
+            db_name = userctx.user_db_path()
         self.db_name = db_name
         # Ensure the directory exists
         db_dir = os.path.dirname(self.db_name)

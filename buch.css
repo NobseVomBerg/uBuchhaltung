@@ -97,7 +97,7 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 	button.active		{ background-color: #4facfe; }	/* used for highlighting active buttons like 2024/2025/... */
 	.rectRounded		{ background-color: #222;}
 	.muted				{ color: #999; }
-	.sql-error-box		{ background-color: #622; color: #FCC; padding: 10px; }
+	.error-box			{ background-color: #622; color: #FCC; padding: 10px; }
 	#dropZone 			{ background-color: #222; }
 	#dropZone:hover 	{ background-color: #444; }
 	.modalBox			{ background: #222; color: #DDD; }
@@ -128,7 +128,7 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 	th					{ background-color: #DDD; text-align: left;}
 	.rectRounded		{ background-color: #DDD;}
 	.muted				{ color: #777; }
-	.sql-error-box		{ background-color: #FDD; color: #B71C1C; padding: 10px; }
+	.error-box			{ background-color: #FDD; color: #B71C1C; padding: 10px; }
 
 	/* Splitbuchungen (Gruppenansicht in PageTransactions) */
 	.group-row			{ background: #EEE; }

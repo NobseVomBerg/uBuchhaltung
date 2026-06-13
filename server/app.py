@@ -3,12 +3,16 @@ Main HTTP server class with routing
 """
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs
+from http.cookies import SimpleCookie
 from db import Database
 import os
+import auth
+import userctx
 
 from . import pages
 from . import handlers
 from . import upload_handler
+from .pages_login import PageLogin, PageSetupAdmin
 from .period import resolve_period, period_cookie_header
 from .pages_assets import (
     PageAssets, PageAssetView, PageAssetEdit,
@@ -43,7 +47,127 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             
         super().end_headers()                                           # Call the Base
 
+    # ── Authentifizierung (TODO #4) ──────────────────────────────────────────
+    # Pfade, die ohne Anmeldung erreichbar sein müssen.
+    _PUBLIC_PATHS = ('/login', '/logout', '/setup-admin', '/buch.css', '/favicon.ico')
+
+    def _drain_body(self):
+        """Ungelesenen Request-Body verwerfen (verhindert Keep-Alive-Desync bei
+        POST-Redirects ohne vorherige Body-Verarbeitung)."""
+        try:
+            length = int(self.headers.get('Content-Length', 0) or 0)
+            if length > 0:
+                self.rfile.read(length)
+        except Exception:
+            pass
+
+    def _session_token(self):
+        raw = self.headers.get('Cookie')
+        if not raw:
+            return None
+        try:
+            jar = SimpleCookie()
+            jar.load(raw)
+        except Exception:
+            return None
+        morsel = jar.get('session')
+        return morsel.value if morsel else None
+
+    @staticmethod
+    def _session_cookie_header(token):
+        parts = [f"session={token}", "HttpOnly", "SameSite=Strict", "Path=/"]
+        if userctx.tls_enabled():
+            parts.append("Secure")
+        return "; ".join(parts)
+
+    @staticmethod
+    def _logout_cookie_header():
+        return "session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
+
+    def _gate(self):
+        """Auth-Türsteher. Setzt den angemeldeten Benutzer in den Request-Kontext.
+
+        Returns True, wenn die Anfrage weiterverarbeitet werden darf; False, wenn
+        bereits eine (Redirect-)Antwort gesendet wurde.
+        """
+        # Keep-Alive: derselbe Thread bedient mehrere Requests einer Verbindung –
+        # daher den Kontext zu Beginn JEDES Requests leeren (kein User-Leak).
+        userctx.clear()
+        userctx.set_tls(getattr(self.server, 'tls', False))
+        if not userctx.auth_enabled():
+            return True                                  # Single-User-Default
+        path = self.path.split('?', 1)[0]
+        if path in ('/buch.css', '/favicon.ico'):
+            return True
+        # Bootstrap: ohne jeden Benutzer nur die Admin-Ersteinrichtung zulassen
+        if not auth.has_any_user():
+            if path == '/setup-admin':
+                return True
+            self._drain_body()
+            self.respond(303, "", headers={"Location": "/setup-admin"})
+            return False
+        user = auth.get_session_user(self._session_token())
+        if user:
+            userctx.set_user(user)
+            return True
+        if path in ('/login', '/logout'):
+            return True                                  # Anmeldeseite / Logout
+        self._drain_body()
+        self.respond(303, "", headers={"Location": "/login"})
+        return False
+
+    def _auth_routes_get(self):
+        """Behandelt GET /login, /logout, /setup-admin. True, wenn erledigt."""
+        if not userctx.auth_enabled():
+            return False                                 # Login-UI nur im Mehrbenutzer-Modus
+        path = self.path.split('?', 1)[0]
+        if path == '/login':
+            self.respond(200, PageLogin())
+            return True
+        if path == '/setup-admin':
+            self.respond(200, PageSetupAdmin())
+            return True
+        if path == '/logout':
+            auth.delete_session(self._session_token())
+            self.respond(303, "", headers={"Location": "/login",
+                                            "Set-Cookie": self._logout_cookie_header()})
+            return True
+        return False
+
+    def _auth_routes_post(self):
+        """Behandelt POST /login, /setup-admin. True, wenn erledigt."""
+        if not userctx.auth_enabled():
+            return False                                 # Login-UI nur im Mehrbenutzer-Modus
+        path = self.path.split('?', 1)[0]
+        if path not in ('/login', '/setup-admin'):
+            return False
+        length = int(self.headers.get('Content-Length', 0) or 0)
+        post_data = parse_qs(self.rfile.read(length).decode('utf-8')) if length else {}
+        if path == '/login':
+            ok, username, err = handlers.handle_login(post_data)
+            if ok:
+                token = auth.create_session(username)
+                self.respond(303, "", headers={"Location": "/",
+                             "Set-Cookie": self._session_cookie_header(token)})
+            else:
+                self.respond(200, PageLogin(error_msg=err, username=username))
+            return True
+        # /setup-admin
+        ok, username, err = handlers.handle_setup_admin(post_data)
+        if ok:
+            token = auth.create_session(username)
+            self.respond(303, "", headers={"Location": "/",
+                         "Set-Cookie": self._session_cookie_header(token)})
+        else:
+            self.respond(200, PageSetupAdmin(error_msg=err, username=username))
+        return True
+
     def do_GET(self):
+        if not self._gate():
+            return
+        if self._auth_routes_get():
+            userctx.clear()
+            return
         db = Database()
         try:
             if self.path == "/" or self.path == "/dashboard" or self.path.startswith("/dashboard?"):
@@ -519,6 +643,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             traceback.print_exc()
             self.respond(500, "<h1>Server Fehler</h1><p>Es ist ein interner Fehler "
                               "aufgetreten. Details stehen im Server-Log.</p>")
+        finally:
+            userctx.clear()
 
     def serve_static_file(self, filename, content_type):
         try:
@@ -561,8 +687,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             return 'application/octet-stream'
 
     def do_POST(self):
+        if not self._gate():
+            return
+        if self._auth_routes_post():
+            userctx.clear()
+            return
         db = Database()
-        
+
         # Handle file upload separately
         if self.path == "/upload_receipts":
             status_code, response = upload_handler.handle_file_upload(self, db)
@@ -863,6 +994,8 @@ def _ensure_directories():
 def run_server(host="localhost", port=8080):
     import socket, sys
     _ensure_directories()
+    if userctx.auth_enabled():
+        auth.init_auth_db()                      # Auth-Tabellen vor dem ersten Request anlegen
     # Prüfen ob der Port schon belegt ist
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _s:
         if _s.connect_ex((host, port)) == 0:

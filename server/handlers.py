@@ -5,6 +5,7 @@ import os
 import json
 import datetime
 from urllib.parse import quote
+import auth
 from .pages import Header1, Header2, Header3, Footer
 from .import_preview import match_account
 from db import Database
@@ -1937,6 +1938,34 @@ def handle_update_trip(db: Database, post_data):
     if trip_id and fields['start_date'] and fields['destination']:
         db.update_trip(trip_id, **fields)
     return 303, _trip_redirect(person_id, date_from, date_to)
+
+
+# ── Authentifizierung (TODO #4) ──────────────────────────────────────────────
+def handle_login(post_data):
+    """Anmeldedaten prüfen. Returns (ok, username, error_msg)."""
+    g = lambda k: post_data.get(k, [''])[0]
+    username = g('username').strip()
+    password = g('password')
+    if username and auth.authenticate(username, password):
+        return True, username, None
+    return False, username, "Benutzername oder Passwort falsch."
+
+
+def handle_setup_admin(post_data):
+    """Erstes Administrator-Konto anlegen. Returns (ok, username, error_msg)."""
+    g = lambda k: post_data.get(k, [''])[0]
+    username = g('username').strip()
+    password = g('password')
+    password2 = g('password2')
+    if auth.has_any_user():
+        return False, username, "Es existiert bereits ein Benutzer."
+    if password != password2:
+        return False, username, "Die Passwörter stimmen nicht überein."
+    try:
+        auth.create_user(username, password, is_admin=True)
+    except ValueError as e:
+        return False, username, str(e)
+    return True, username, None
 
 
 def handle_setup_save(db: Database, post_data: dict):
