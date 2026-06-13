@@ -1048,8 +1048,21 @@ def _ensure_directories():
 
 
 # Start web server
-def run_server(host="localhost", port=8080):
+def run_server(host=None, port=None, certfile=None, keyfile=None):
+    """Web-Server starten.
+
+    Defaults kommen aus Umgebungsvariablen (für Deployment im LAN/VM):
+      PYBUCH_HOST (Default 'localhost'; '0.0.0.0' für Netzzugriff),
+      PYBUCH_PORT (Default 8080),
+      PYBUCH_CERT / PYBUCH_KEY (PEM-Dateien ⇒ HTTPS, self-signed möglich),
+      PYBUCH_AUTH (Login/Mehrbenutzer aktivieren).
+    """
     import socket, sys
+    host = host or os.environ.get("PYBUCH_HOST", "localhost")
+    port = int(port or os.environ.get("PYBUCH_PORT", "8080"))
+    certfile = certfile or os.environ.get("PYBUCH_CERT")
+    keyfile = keyfile or os.environ.get("PYBUCH_KEY")
+
     _ensure_directories()
     if userctx.auth_enabled():
         auth.init_auth_db()                      # Auth-Tabellen vor dem ersten Request anlegen
@@ -1063,7 +1076,18 @@ def run_server(host="localhost", port=8080):
 
     server_address = (host, port)
     httpd = ThreadingHTTPServer(server_address, SimpleWebServer)
-    print(f"Starting server on {host}:{port}...")
+
+    scheme = "http"
+    httpd.tls = False
+    if certfile and keyfile:
+        import ssl
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile, keyfile)
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+        httpd.tls = True                         # aktiviert das Secure-Flag der Cookies
+        scheme = "https"
+
+    print(f"Starting server on {scheme}://{host}:{port} ...")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

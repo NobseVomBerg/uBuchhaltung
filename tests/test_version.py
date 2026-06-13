@@ -21,3 +21,26 @@ def test_db_user_version_matches_schema_version(tmp_db):
     user_version = con.execute("PRAGMA user_version").fetchone()[0]
     con.close()
     assert user_version == version.SCHEMA_VERSION
+
+
+def test_migration_upgrades_old_db(tmp_path):
+    """Eine bestehende v1-DB (Trips ohne Tacho/Beleg-Spalten) wird beim Öffnen
+    automatisch migriert und auf die aktuelle Schema-Version gestempelt."""
+    from db import Database
+    p = str(tmp_path / "old.db")
+    con = sqlite3.connect(p)
+    con.execute("CREATE TABLE Invoices (ID INTEGER PRIMARY KEY)")   # markiert 'bestehende DB'
+    con.execute("CREATE TABLE Trips (ID INTEGER PRIMARY KEY, DriverID INTEGER, "
+                "StartDate DATE, Destination TEXT, DistanceKm INTEGER)")
+    con.execute("PRAGMA user_version = 1")
+    con.commit()
+    con.close()
+
+    Database(db_name=p)   # löst initialize_database + Migration aus
+
+    con = sqlite3.connect(p)
+    cols = [r[1] for r in con.execute("PRAGMA table_info(Trips)").fetchall()]
+    uv = con.execute("PRAGMA user_version").fetchone()[0]
+    con.close()
+    assert {"StartKm", "EndKm", "DocumentID"} <= set(cols)
+    assert uv == version.SCHEMA_VERSION

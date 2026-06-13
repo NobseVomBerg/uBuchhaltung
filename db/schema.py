@@ -7,9 +7,41 @@ from money import to_minor, from_minor
 
 
 class SchemaMixin:
+    def _column_exists(self, cursor, table, column):
+        cols = [r[1] for r in cursor.execute(f"PRAGMA table_info({table})").fetchall()]
+        return column in cols
+
+    def _add_column_if_missing(self, cursor, table, column, coldef):
+        """ALTER TABLE … ADD COLUMN nur, wenn die Spalte fehlt (idempotent)."""
+        if not self._column_exists(cursor, table, column):
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coldef}")
+
+    def _run_migrations(self, cursor, from_version):
+        """Bestehende DBs schrittweise an SCHEMA_VERSION angleichen.
+
+        Neue Tabellen deckt ``CREATE TABLE IF NOT EXISTS`` bereits ab; hier nur
+        Spalten-Erweiterungen für DBs, die vor der jeweiligen Version angelegt
+        wurden. Die Schritte sind defensiv (add-if-missing), damit sie auch bei
+        gemischten Ständen sicher sind. FK-Constraints lassen sich per ALTER in
+        SQLite nicht nachrüsten – migrierte Spalten bleiben einfache Spalten.
+        """
+        if from_version < 2:
+            # v2: Fahrtenbuch um Tachostände und Beleg-Bezug erweitert
+            self._add_column_if_missing(cursor, 'Trips', 'StartKm', 'INTEGER')
+            self._add_column_if_missing(cursor, 'Trips', 'EndKm', 'INTEGER')
+            self._add_column_if_missing(cursor, 'Trips', 'DocumentID', 'INTEGER')
+
     def initialize_database(self):
         conn = self._get_connection()
         cursor = conn.cursor()
+
+        # Vor dem (idempotenten) Anlegen festhalten, ob es sich um eine bereits
+        # bestehende DB handelt und welche Schema-Version sie trägt. Wird unten in
+        # _create_extended_schema für die Migration ausgewertet (eigene Connection).
+        self._migrate_from_version = cursor.execute("PRAGMA user_version").fetchone()[0]
+        self._migrate_had_tables = cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='Invoices'"
+        ).fetchone() is not None
 
         # Chart of Accounts = Standard Konto Rahmen, 03/04 in Germany or 07 for Austria
         cursor.execute('''
@@ -503,9 +535,15 @@ class SchemaMixin:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_bookings_group  ON Bookings(BookingGroup_ID)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_bookings_date   ON Bookings(DateBooking)")
 
+        # Bestehende, ältere DBs migrieren (neue Spalten nachziehen). Frische DBs
+        # sind durch die CREATE-Statements oben bereits aktuell.
+        from version import SCHEMA_VERSION
+        if getattr(self, '_migrate_had_tables', False) and \
+                self._migrate_from_version < SCHEMA_VERSION:
+            self._run_migrations(cursor, self._migrate_from_version)
+
         # Schema-Version in der DB hinterlegen (entspricht der MINOR-Versionsstelle,
         # siehe version.py). Bei jeder Schema-Änderung SCHEMA_VERSION dort erhöhen.
-        from version import SCHEMA_VERSION
         cursor.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
 
         conn.commit()
