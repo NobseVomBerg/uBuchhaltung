@@ -206,8 +206,9 @@ def generate_worktime_pdf(db: Database, person_id, date_from, date_to, with_note
 
     full_pdf = build_single_page_pdf(ops, image=image)
 
-    # ── Datei speichern ──────────────────────────────────────────────────────
-    pdf_dir = f"data/worktime/{d_from.year}"
+    # ── Datei speichern (im Datenbereich des aktuellen Nutzers) ──────────────
+    import userctx
+    pdf_dir = os.path.join(userctx.user_data_dir(), "worktime", str(d_from.year))
     os.makedirs(pdf_dir, exist_ok=True)
     safe_name = "".join(ch for ch in person_name if ch.isalnum() or ch in (' ', '-', '_')).strip().replace(' ', '_')
     period_tag = f'{d_from.year}-{d_from.month:02d}' if single_month else f'{date_from}_{date_to}'

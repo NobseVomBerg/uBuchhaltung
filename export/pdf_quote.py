@@ -129,8 +129,9 @@ def generate_quote_pdf(db: Database, quote_id: int):
 
     full_pdf = build_multi_page_pdf(flow.finish(), image=image)
 
+    import userctx
     year = datetime.datetime.now().year
-    pdf_dir = f"data/quotes/{year}"
+    pdf_dir = os.path.join(userctx.user_data_dir(), "quotes", str(year))
     os.makedirs(pdf_dir, exist_ok=True)
     safe_number = "".join(c for c in quote_number if c.isalnum() or c in ['-', '_'])
     pdf_path = os.path.join(pdf_dir, f"Angebot_{safe_number}.pdf")

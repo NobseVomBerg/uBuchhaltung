@@ -67,3 +67,16 @@ def user_db_path():
     if auth_enabled() and user:
         return os.path.join(DATA_ROOT, USERS_DIR, user, "buch.db")
     return DEFAULT_DB
+
+
+def user_subdir(name, create=True):
+    """Unterverzeichnis (z. B. ``logos``, ``invoices``) im Datenbereich des
+    aktuellen Nutzers. Legt es bei Bedarf an.
+
+    Single-User-Default ⇒ ``./data/<name>``; mit aktivem Login ⇒
+    ``data/users/<user>/<name>``.
+    """
+    path = os.path.join(user_data_dir(), name)
+    if create:
+        os.makedirs(path, exist_ok=True)
+    return path

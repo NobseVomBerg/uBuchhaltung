@@ -526,14 +526,18 @@ def handle_logo_upload(request_handler):
     safe = _re_logo.sub(r'[^A-Za-z0-9._-]', '_', base) or 'logo'
     if '.' not in safe:
         safe += '.png'
-    os.makedirs(os.path.join('data', 'logos'), exist_ok=True)
-    path = os.path.join('data', 'logos', safe)
+    # Physisch im logos-Verzeichnis des aktuellen Nutzers ablegen; in der DB und
+    # nach außen bleibt der logische Pfad 'data/logos/<datei>' (kein Username in
+    # der URL – der Static-Handler löst ihn pro Nutzer auf).
+    import userctx
+    physical = os.path.join(userctx.user_subdir('logos'), safe)
     try:
-        with open(path, 'wb') as f:
+        with open(physical, 'wb') as f:
             f.write(part.content)
     except Exception as e:
         return json.dumps({'success': False, 'error': f'Speichern fehlgeschlagen: {e}'}).encode()
-    return json.dumps({'success': True, 'path': path.replace('\\', '/')}).encode()
+    logical = '/'.join(('data', 'logos', safe))
+    return json.dumps({'success': True, 'path': logical}).encode()
 
 
 def handle_wiso_import(request_handler, db: Database):

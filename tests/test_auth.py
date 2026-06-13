@@ -124,3 +124,28 @@ def test_two_users_have_isolated_databases(tmp_path):
     db_a.insert_article(name="Nur-A", unit_price=1.0)
     assert [r[1] for r in db_a.fetch_articles()] == ["Nur-A"]
     assert db_b.fetch_articles() == []          # B sieht A nicht
+
+
+# ── Phase 2: Datei-Isolation ─────────────────────────────────────────────────
+def test_user_subdir_default_single_user(monkeypatch, tmp_path):
+    monkeypatch.delenv("PYBUCH_AUTH", raising=False)
+    monkeypatch.setattr(userctx, "DATA_ROOT", str(tmp_path))
+    userctx.clear()
+    d = userctx.user_subdir("logos")
+    assert d == os.path.join(str(tmp_path), "logos")
+    assert os.path.isdir(d)
+
+
+def test_user_subdir_per_user_isolated(monkeypatch, tmp_path):
+    monkeypatch.setenv("PYBUCH_AUTH", "1")
+    monkeypatch.setattr(userctx, "DATA_ROOT", str(tmp_path))
+    try:
+        userctx.set_user("alice")
+        da = userctx.user_subdir("logos")
+        userctx.set_user("bob")
+        db = userctx.user_subdir("logos")
+    finally:
+        userctx.clear()
+    assert da != db
+    assert da == os.path.join(str(tmp_path), "users", "alice", "logos")
+    assert db == os.path.join(str(tmp_path), "users", "bob", "logos")

@@ -621,14 +621,25 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.serve_static_file("buch.css", "text/css")
             elif self.path == "/favicon.ico":
                 self.serve_static_file("favicon.ico", "image/x-icon")
-            elif self.path.startswith("/seed_data/private/") or self.path.startswith("/data/logos/"):
-                # Statische Dateien (Logos) ausliefern – mit Schutz gegen
-                # Path-Traversal: aufgeloester Pfad muss im erlaubten Verzeichnis
-                # liegen (kein ../, kein absoluter Pfad, Query-String entfernt).
+            elif self.path.startswith("/data/logos/"):
+                # Logos liegen im logos-Verzeichnis des angemeldeten Nutzers
+                # (Single-User: ./data/logos). Es wird nur der Dateiname genutzt,
+                # gegen das Nutzerverzeichnis aufgeloest → kein Cross-User-Zugriff,
+                # kein Path-Traversal.
                 from urllib.parse import unquote
-                rel_path = unquote(self.path.split('?', 1)[0])[1:]  # Query weg, fuehrendes / weg
-                allowed_base = "seed_data/private" if self.path.startswith("/seed_data/private/") else "data/logos"
-                base = os.path.realpath(allowed_base)
+                fname = os.path.basename(unquote(self.path.split('?', 1)[0]))
+                base = os.path.realpath(userctx.user_subdir('logos', create=False))
+                target = os.path.realpath(os.path.join(base, fname))
+                if (target == base or target.startswith(base + os.sep)) and os.path.isfile(target):
+                    self.serve_static_file(target, self.guess_content_type(target))
+                else:
+                    self.respond(404, "Datei nicht gefunden.")
+            elif self.path.startswith("/seed_data/private/"):
+                # Geteilte Privat-Seed-Logos (nur Eigentümer-Setup) – global,
+                # mit Path-Traversal-Schutz.
+                from urllib.parse import unquote
+                rel_path = unquote(self.path.split('?', 1)[0])[1:]
+                base = os.path.realpath("seed_data/private")
                 target = os.path.realpath(rel_path)
                 if (target == base or target.startswith(base + os.sep)) and os.path.isfile(target):
                     self.serve_static_file(target, self.guess_content_type(target))

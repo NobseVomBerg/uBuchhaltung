@@ -140,9 +140,10 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
 
     full_pdf = build_multi_page_pdf(flow.finish(), image=image)
 
-    # PDF-Datei speichern
+    # PDF-Datei speichern (im Datenbereich des aktuellen Nutzers)
+    import userctx
     current_year = datetime.datetime.now().year
-    pdf_dir = f"data/invoices/{current_year}"
+    pdf_dir = os.path.join(userctx.user_data_dir(), "invoices", str(current_year))
     os.makedirs(pdf_dir, exist_ok=True)
     safe_number = "".join(c for c in invoice_number if c.isalnum() or c in ['-', '_'])
     pdf_filename = f"Rechnung_{safe_number}.pdf"
