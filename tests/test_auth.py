@@ -9,6 +9,8 @@ import pytest
 import auth
 import userctx
 from db import Database
+from server import handlers
+from server.pages_users import PageUsers
 
 
 @pytest.fixture
@@ -149,3 +151,67 @@ def test_user_subdir_per_user_isolated(monkeypatch, tmp_path):
     assert da != db
     assert da == os.path.join(str(tmp_path), "users", "alice", "logos")
     assert db == os.path.join(str(tmp_path), "users", "bob", "logos")
+
+
+# ── Phase 3: Benutzerverwaltung ──────────────────────────────────────────────
+def test_set_admin_and_count(auth_db):
+    auth.create_user("admin", "geheim123", is_admin=True, db_path=auth_db)
+    auth.create_user("bob", "geheim123", db_path=auth_db)
+    assert auth.count_admins(auth_db) == 1
+    auth.set_admin("bob", True, db_path=auth_db)
+    assert auth.is_admin("bob", auth_db) is True
+    assert auth.count_admins(auth_db) == 2
+    auth.set_admin("bob", False, db_path=auth_db)
+    assert auth.count_admins(auth_db) == 1
+
+
+def test_user_exists(auth_db):
+    auth.init_auth_db(auth_db)
+    assert auth.user_exists("ghost", auth_db) is False
+    auth.create_user("ghost", "geheim123", db_path=auth_db)
+    assert auth.user_exists("ghost", auth_db) is True
+
+
+def test_csrf_token_roundtrip():
+    tok = auth.csrf_for("session-xyz")
+    assert tok and auth.check_csrf("session-xyz", tok) is True
+    assert auth.check_csrf("session-xyz", "falsch") is False
+    assert auth.check_csrf("andere-session", tok) is False
+    assert auth.check_csrf("", tok) is False
+
+
+def test_handler_create_and_delete_user(monkeypatch, tmp_path):
+    monkeypatch.setattr(auth, "AUTH_DB", str(tmp_path / "auth.db"))
+    handlers.handle_user_create({"username": ["neuer"], "password": ["geheim123"]})
+    assert auth.user_exists("neuer") is True
+    loc = handlers.handle_user_delete({"username": ["neuer"]})
+    assert auth.user_exists("neuer") is False
+    assert loc.startswith("/users")
+
+
+def test_handler_last_admin_protected(monkeypatch, tmp_path):
+    monkeypatch.setattr(auth, "AUTH_DB", str(tmp_path / "auth.db"))
+    auth.create_user("admin", "geheim123", is_admin=True)
+    # letzter Admin: weder löschen noch herabstufen
+    loc = handlers.handle_user_delete({"username": ["admin"]})
+    assert "err=" in loc and auth.user_exists("admin")
+    loc = handlers.handle_user_toggle_admin({"username": ["admin"]})
+    assert "err=" in loc and auth.is_admin("admin") is True
+
+
+def test_handler_create_invalid_username(monkeypatch, tmp_path):
+    monkeypatch.setattr(auth, "AUTH_DB", str(tmp_path / "auth.db"))
+    loc = handlers.handle_user_create({"username": ["x"], "password": ["geheim123"]})
+    assert "err=" in loc
+
+
+def test_page_users_renders(monkeypatch, tmp_path):
+    monkeypatch.setattr(auth, "AUTH_DB", str(tmp_path / "auth.db"))
+    auth.create_user("admin", "geheim123", is_admin=True)
+    auth.create_user("bob", "geheim123")
+    html = PageUsers("admin", auth.list_users(), csrf="tok123")
+    assert "Benutzerverwaltung" in html and "bob" in html
+    assert 'name="csrf" value="tok123"' in html
+    assert "/users/create" in html and "/users/delete" in html
+    # eigenes Konto (admin) zeigt keine Lösch-/Toggle-Buttons
+    assert "(eigenes Konto)" in html

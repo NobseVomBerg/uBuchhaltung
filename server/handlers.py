@@ -1955,6 +1955,65 @@ def handle_login(post_data):
     return False, username, "Benutzername oder Passwort falsch."
 
 
+def _users_redirect(info=None, err=None):
+    parts = []
+    if info:
+        parts.append('info=' + quote(info))
+    if err:
+        parts.append('err=' + quote(err))
+    return '/users' + ('?' + '&'.join(parts) if parts else '')
+
+
+def handle_user_create(post_data):
+    """Neuen Benutzer anlegen (Admin-Aktion). Returns Redirect-Location."""
+    g = lambda k: post_data.get(k, [''])[0]
+    username = g('username').strip()
+    password = g('password')
+    is_admin = g('is_admin') in ('1', 'true', 'on')
+    try:
+        auth.create_user(username, password, is_admin=is_admin)
+    except ValueError as e:
+        return _users_redirect(err=str(e))
+    return _users_redirect(info=f'Benutzer „{username}" angelegt.')
+
+
+def handle_user_delete(post_data):
+    """Benutzer (Login + Sessions) löschen. Die Buchungsdaten bleiben auf der
+    Festplatte erhalten. Schützt den letzten Administrator."""
+    username = post_data.get('username', [''])[0].strip()
+    if not auth.user_exists(username):
+        return _users_redirect(err='Benutzer existiert nicht.')
+    if auth.is_admin(username) and auth.count_admins() <= 1:
+        return _users_redirect(err='Der letzte Administrator kann nicht gelöscht werden.')
+    auth.delete_user(username)
+    return _users_redirect(info=f'Benutzer „{username}" gelöscht (Daten bleiben erhalten).')
+
+
+def handle_user_reset_password(post_data):
+    g = lambda k: post_data.get(k, [''])[0]
+    username = g('username').strip()
+    password = g('password')
+    if not auth.user_exists(username):
+        return _users_redirect(err='Benutzer existiert nicht.')
+    try:
+        auth.set_password(username, password)
+    except ValueError as e:
+        return _users_redirect(err=str(e))
+    return _users_redirect(info=f'Passwort für „{username}" gesetzt.')
+
+
+def handle_user_toggle_admin(post_data):
+    username = post_data.get('username', [''])[0].strip()
+    if not auth.user_exists(username):
+        return _users_redirect(err='Benutzer existiert nicht.')
+    currently_admin = auth.is_admin(username)
+    if currently_admin and auth.count_admins() <= 1:
+        return _users_redirect(err='Der letzte Administrator kann nicht herabgestuft werden.')
+    auth.set_admin(username, not currently_admin)
+    state = 'Administrator' if not currently_admin else 'normaler Benutzer'
+    return _users_redirect(info=f'„{username}" ist jetzt {state}.')
+
+
 def handle_setup_admin(post_data):
     """Erstes Administrator-Konto anlegen. Returns (ok, username, error_msg)."""
     g = lambda k: post_data.get(k, [''])[0]

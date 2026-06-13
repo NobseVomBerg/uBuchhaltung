@@ -13,6 +13,7 @@ from . import pages
 from . import handlers
 from . import upload_handler
 from .pages_login import PageLogin, PageSetupAdmin
+from .pages_users import PageUsers
 from .period import resolve_period, period_cookie_header
 from .pages_assets import (
     PageAssets, PageAssetView, PageAssetEdit,
@@ -83,6 +84,26 @@ class SimpleWebServer(BaseHTTPRequestHandler):
     @staticmethod
     def _logout_cookie_header():
         return "session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
+
+    def _require_admin(self):
+        """True, wenn der angemeldete Nutzer Administrator im Mehrbenutzer-Modus
+        ist; sonst wird bereits eine Antwort (404/403) gesendet."""
+        if not userctx.auth_enabled():
+            self.respond(404, "Seite nicht gefunden.")
+            return False
+        user = userctx.get_user()
+        if not (user and auth.is_admin(user)):
+            self.respond(403, "<h1>403</h1><p>Kein Zugriff – Administratorrechte erforderlich.</p>")
+            return False
+        return True
+
+    def _check_csrf(self, post_data):
+        """CSRF-Token gegen die Session prüfen (zusätzlich zu SameSite=Strict)."""
+        token = post_data.get('csrf', [''])[0]
+        if not auth.check_csrf(self._session_token(), token):
+            self.respond(403, "<h1>403</h1><p>Ungültiges oder fehlendes Sicherheits-Token.</p>")
+            return False
+        return True
 
     def _gate(self):
         """Auth-Türsteher. Setzt den angemeldeten Benutzer in den Request-Kontext.
@@ -573,6 +594,16 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write("Fehler beim Erstellen des PDF".encode("utf-8"))
                 return
+            # ── Benutzerverwaltung (nur Admin, Mehrbenutzer-Modus) ────────
+            elif self.path == "/users" or self.path.startswith("/users?"):
+                if not self._require_admin():
+                    return
+                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                info = qs['info'][0] if qs.get('info') else None
+                err = qs['err'][0] if qs.get('err') else None
+                csrf = auth.csrf_for(self._session_token())
+                self.respond(200, PageUsers(userctx.get_user(), auth.list_users(),
+                                            csrf, error_msg=err, info_msg=info))
             # ── Zeiten / Fahrten ──────────────────────────────────────────
             elif self.path == "/trips" or self.path.startswith("/trips?"):
                 qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
@@ -812,7 +843,22 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         
         # Route to appropriate handler
         try:
-            if self.path == "/quote/convert":
+            # ── Benutzerverwaltung (nur Admin + CSRF) ─────────────────────
+            if self.path in ("/users/create", "/users/delete",
+                             "/users/reset-password", "/users/toggle-admin"):
+                if not self._require_admin():
+                    return
+                if not self._check_csrf(post_data):
+                    return
+                handler = {
+                    "/users/create": handlers.handle_user_create,
+                    "/users/delete": handlers.handle_user_delete,
+                    "/users/reset-password": handlers.handle_user_reset_password,
+                    "/users/toggle-admin": handlers.handle_user_toggle_admin,
+                }[self.path]
+                location = handler(post_data)
+                self.respond(303, "", headers={"Location": location})
+            elif self.path == "/quote/convert":
                 status_code, location = handlers.handle_convert_quote_to_invoice(post_data)
                 self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/add_receipt":

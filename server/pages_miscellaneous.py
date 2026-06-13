@@ -31,6 +31,17 @@ def PageMiscellaneous(db: Database):
     s += Header3()
 
     s += '<div class="grid3Cols gridMain">'
+    # ── Benutzerverwaltung (nur Admin im Mehrbenutzer-Modus) ──────────────────
+    import userctx as _userctx
+    import auth as _auth
+    _cur = _userctx.get_user()
+    if _userctx.auth_enabled() and _cur and _auth.is_admin(_cur):
+        s += ('\t<div class="rectRounded">'
+              '<h2>👥 Benutzer</h2>'
+              '<p>Benutzerkonten anlegen, löschen, Passwörter zurücksetzen und '
+              'Administratorrechte vergeben.</p>'
+              '<a href="/users" class="coloredButton bg-blue">Benutzerverwaltung öffnen</a>'
+              '</div>')
     # ── Database statistics ───────────────────────────────────────────────────
     s += '\t<div class="rectRounded">'
     stats = db.get_table_statistics()

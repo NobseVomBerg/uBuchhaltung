@@ -23,6 +23,24 @@ _MIN_PW_LEN = 6
 # scrypt-Parameter (RFC 7914): n=2^14 ⇒ ~16 MB, für interaktiven Login angemessen.
 _SCRYPT = dict(n=2 ** 14, r=8, p=1, dklen=32, maxmem=64 * 1024 * 1024)
 
+# Prozess-Geheimnis für CSRF-Token (im Speicher; Neustart invalidiert offene
+# Formulare, Sessions bleiben gültig). Zusätzlich zu SameSite=Strict.
+_APP_SECRET = secrets.token_bytes(32)
+
+
+def csrf_for(session_token):
+    """CSRF-Token für eine Session (HMAC des Session-Tokens)."""
+    if not session_token:
+        return ""
+    return hmac.new(_APP_SECRET, session_token.encode("utf-8"), "sha256").hexdigest()
+
+
+def check_csrf(session_token, token):
+    """Zeitkonstanter Vergleich des übermittelten CSRF-Tokens."""
+    if not session_token or not token:
+        return False
+    return hmac.compare_digest(csrf_for(session_token), token)
+
 
 # ── DB-Helfer ────────────────────────────────────────────────────────────────
 def _path(db_path):
@@ -142,6 +160,28 @@ def is_admin(username, db_path=None):
     row = con.execute("SELECT IsAdmin FROM Users WHERE Username = ?", (username,)).fetchone()
     con.close()
     return bool(row and row[0])
+
+
+def set_admin(username, is_admin_flag, db_path=None):
+    con = _conn(db_path)
+    con.execute("UPDATE Users SET IsAdmin = ? WHERE Username = ?",
+                (1 if is_admin_flag else 0, username))
+    con.commit()
+    con.close()
+
+
+def count_admins(db_path=None):
+    con = _conn(db_path)
+    n = con.execute("SELECT COUNT(*) FROM Users WHERE IsAdmin = 1").fetchone()[0]
+    con.close()
+    return n
+
+
+def user_exists(username, db_path=None):
+    con = _conn(db_path)
+    row = con.execute("SELECT 1 FROM Users WHERE Username = ?", (username,)).fetchone()
+    con.close()
+    return row is not None
 
 
 def list_users(db_path=None):
