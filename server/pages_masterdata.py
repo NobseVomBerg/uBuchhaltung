@@ -24,36 +24,55 @@ def Footer():
 
 def PageMasterData(db: Database):
     """Master Data overview page with navigation to subpages"""
+    # Benutzerverwaltung nur im Mehrbenutzer-Modus und nur für Administratoren
+    import userctx as _userctx
+    import auth as _auth
+    _cur = _userctx.get_user()
+    _show_users = _userctx.auth_enabled() and _cur and _auth.is_admin(_cur)
+
     s = Header1('masterdata')
-    s += Header2("<a href='/masterdata/articles'>📦 Artikel</a> | <a href='/masterdata/contacts'>👥 Kontakte</a> | <a href='/masterdata/skr'>📊 SKR</a> | <a href='/masterdata/bankaccounts'>🏦 Bankkonten</a> | <a href='/masterdata/numberranges'>🔢 Nummernkreise</a> | <a href='/asset_categories'>📂 AfA-Kategorien</a>")
+    submenu = ("<a href='/masterdata/articles'>📦 Artikel</a> | <a href='/masterdata/contacts'>👥 Kontakte</a> | "
+               "<a href='/masterdata/skr'>📊 SKR</a> | <a href='/masterdata/bankaccounts'>🏦 Bankkonten</a> | "
+               "<a href='/masterdata/numberranges'>🔢 Nummernkreise</a> | <a href='/asset_categories'>📂 AfA-Kategorien</a>")
+    if _show_users:
+        submenu += " | <a href='/users'>🔑 Benutzer</a>"
+    s += Header2(submenu)
     s += Header3()
-    
-    s += '''
+
+    users_card = ('''
+            <div class="rectRounded">
+                <h3>🔑 Benutzer</h3>
+                <p>Benutzerkonten, Passwörter und Administratorrechte verwalten</p>
+                <p><a href="/users" style="font-weight: bold;">→ Zur Benutzerverwaltung</a></p>
+            </div>
+    ''' if _show_users else '')
+
+    s += f'''
         <div class="grid1RowPrefered gridMain">
             <div class="rectRounded">
                 <h3>📦 Artikel</h3>
                 <p>Verwaltung des Produkt- und Dienstleistungskatalogs</p>
                 <p><a href="/masterdata/articles" style="font-weight: bold;">→ Zur Artikelverwaltung</a></p>
             </div>
-            
+
             <div class="rectRounded">
                 <h3>👥 Kontakte</h3>
                 <p>Kunden, Lieferanten, eigene Firmendaten und sonstige Kontakte</p>
                 <p><a href="/masterdata/contacts" style="font-weight: bold;">→ Zur Kontaktverwaltung</a></p>
             </div>
-            
+
             <div class="rectRounded">
                 <h3>📊 SKR (Kontenrahmen)</h3>
                 <p>Standardkontenrahmen (SKR03/04/07) für die Buchhaltung</p>
                 <p><a href="/masterdata/skr" style="font-weight: bold;">→ Zur SKR-Verwaltung</a></p>
             </div>
-            
+
             <div class="rectRounded">
                 <h3>🏦 Bankkonten</h3>
                 <p>Verwaltung eigener Bank- und Kassenkonten</p>
                 <p><a href="/masterdata/bankaccounts" style="font-weight: bold;">→ Zur Kontenverwaltung</a></p>
             </div>
-            
+
             <div class="rectRounded">
                 <h3>🔢 Nummernkreise</h3>
                 <p>Nummerierung für Rechnungen und Belege verwalten</p>
@@ -65,6 +84,7 @@ def PageMasterData(db: Database):
                 <p>Abschreibungskategorien für das Anlagenverzeichnis</p>
                 <p><a href="/asset_categories" style="font-weight: bold;">→ Zu den AfA-Kategorien</a></p>
             </div>
+            {users_card}
         </div>
     '''
     

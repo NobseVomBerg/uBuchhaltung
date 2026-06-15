@@ -13,6 +13,19 @@ if PROJECT_ROOT not in sys.path:
 from db import Database
 
 
+@pytest.fixture(autouse=True)
+def _neutral_app_mode():
+    """Tests modus-neutral halten: unabhängig von einer real vorhandenen
+    data/config.json (Entwickler-Installation) verhält sich der App-Modus wie
+    'noch nicht gewählt' (kein Login), sofern ein Test den Modus nicht selbst
+    über userctx.set_mode/DATA_ROOT setzt."""
+    import userctx
+    userctx._mode_cache[userctx.config_path()] = None
+    userctx.clear()
+    yield
+    userctx.clear()
+
+
 @pytest.fixture
 def tmp_db(tmp_path):
     """Fresh Database instance backed by a temporary file (not in-memory so

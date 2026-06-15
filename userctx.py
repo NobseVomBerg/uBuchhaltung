@@ -1,26 +1,65 @@
-"""Thread-lokaler Request-Kontext für den Mehrbenutzer-/LAN-Betrieb (TODO #4).
+"""Thread-lokaler Request-Kontext + App-Modus für den Mehrbenutzer-/LAN-Betrieb.
 
-Im Single-User-Default (Auth aus) verhält sich alles wie bisher: eine gemeinsame
-Datenbank unter ``./data/buch.db`` und ein gemeinsames Datenverzeichnis ``./data``.
-Ist Auth aktiv (Umgebungsvariable ``PYBUCH_AUTH``), liegen DB und Dateien jedes
-Nutzers isoliert unter ``data/users/<user>/``.
+Der Betriebsmodus (``single`` oder ``multi``) wird bei der Ersteinrichtung gewählt
+und in ``data/config.json`` persistiert – keine Umgebungsvariable. Im
+Einzelbenutzer-Modus verhält sich alles wie bisher (eine gemeinsame
+``./data/buch.db``); im Mehrbenutzer-Modus liegen DB und Dateien jedes Nutzers
+isoliert unter ``data/users/<user>/``.
 
 Da der HTTP-Server pro Request einen eigenen Thread nutzt, wird der angemeldete
 Benutzer thread-lokal gehalten und am Ende jedes Requests wieder geleert.
 """
+import json
 import os
 import threading
 
 DATA_ROOT = "./data"
 DEFAULT_DB = "./data/buch.db"
 USERS_DIR = "users"
+CONFIG_FILE = "config.json"
 
 _local = threading.local()
 
+# Modus-Cache je Konfig-Pfad (vermeidet Datei-IO im Hot-Path; Tests nutzen
+# unterschiedliche DATA_ROOT-Pfade und bleiben dadurch isoliert).
+_mode_cache = {}
+
+
+def config_path():
+    return os.path.join(DATA_ROOT, CONFIG_FILE)
+
+
+def get_mode():
+    """Betriebsmodus: ``'single'`` | ``'multi'`` | ``None`` (noch nicht gewählt)."""
+    path = config_path()
+    if path in _mode_cache:
+        return _mode_cache[path]
+    mode = None
+    try:
+        with open(path, encoding="utf-8") as f:
+            mode = json.load(f).get("mode")
+    except (FileNotFoundError, ValueError, OSError):
+        mode = None
+    if mode not in ("single", "multi"):
+        mode = None
+    _mode_cache[path] = mode
+    return mode
+
+
+def set_mode(mode):
+    """Betriebsmodus persistieren (``'single'`` oder ``'multi'``)."""
+    if mode not in ("single", "multi"):
+        raise ValueError("mode muss 'single' oder 'multi' sein")
+    os.makedirs(DATA_ROOT, exist_ok=True)
+    path = config_path()
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"mode": mode}, f)
+    _mode_cache[path] = mode
+
 
 def auth_enabled():
-    """True, wenn der Mehrbenutzer-/Login-Modus per Env-Flag aktiviert ist."""
-    return os.environ.get("PYBUCH_AUTH", "").strip().lower() in ("1", "true", "yes", "on")
+    """True, wenn der Mehrbenutzer-Modus (mit Login) konfiguriert ist."""
+    return get_mode() == "multi"
 
 
 def tls_enabled():
@@ -66,7 +105,7 @@ def user_db_path():
     user = get_user()
     if auth_enabled() and user:
         return os.path.join(DATA_ROOT, USERS_DIR, user, "buch.db")
-    return DEFAULT_DB
+    return os.path.join(DATA_ROOT, "buch.db")
 
 
 def user_subdir(name, create=True):

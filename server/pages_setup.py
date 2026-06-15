@@ -8,6 +8,46 @@ from db import Database
 from .pages import Header1, Header2, Header3, Footer
 
 
+def PageSetupModeChoice() -> str:
+    """Erster Schritt der Ersteinrichtung: Betriebsmodus wählen.
+
+    Wird nur angezeigt, solange der Modus noch nicht gewählt wurde
+    (keine data/config.json). Die Wahl wird anschließend persistiert.
+    """
+    s = Header1()
+    s += Header2()
+    s += Header3()
+    s += '''
+<div class="grid1Col700 gridMain">
+  <div class="rectRounded">
+    <h2>🚀 Willkommen bei PyBuch – Ersteinrichtung</h2>
+    <p>Wie möchtest du PyBuch betreiben? Diese Wahl lässt sich später nur durch
+       Zurücksetzen der Einrichtung ändern.</p>
+    <form method="POST" action="/setup/mode">
+      <table class="form-table">
+        <tr>
+          <td><strong>Einzelbenutzer</strong></td>
+          <td>Lokale Nutzung ohne Anmeldung – wie gehabt. Alle Daten in einer
+              gemeinsamen Datenbank.</td>
+        </tr>
+        <tr>
+          <td><strong>Mehrbenutzer</strong></td>
+          <td>Betrieb im Netzwerk mit <em>Login</em>. Jeder Benutzer erhält eigene,
+              getrennte Bücher; ein Administrator verwaltet die Zugänge.</td>
+        </tr>
+      </table>
+      <div class="rowWithObjects">
+        <button type="submit" name="mode" value="single" class="coloredButton bg-green">Einzelbenutzer einrichten</button>
+        <button type="submit" name="mode" value="multi" class="coloredButton bg-blue">Mehrbenutzer einrichten</button>
+      </div>
+    </form>
+  </div>
+</div>
+'''
+    s += Footer()
+    return s
+
+
 def PageSetup(db: Database, message: str = '') -> str:
     """Einseitige Ersteinrichtungs-Seite.
 

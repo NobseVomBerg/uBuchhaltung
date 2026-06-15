@@ -1,15 +1,25 @@
 # PyBuch im lokalen Netzwerk betreiben (Mehrbenutzer + HTTPS)
 
-PyBuch läuft standardmäßig als Einzelplatz ohne Login (eine gemeinsame
-`./data/buch.db`). Für den Betrieb im LAN mit mehreren Nutzern wird der
-Mehrbenutzer-Modus per Umgebungsvariable aktiviert; jeder Nutzer erhält dann ein
-eigenes, isoliertes Datenverzeichnis unter `data/users/<user>/`.
+PyBuch läuft als **Einzelbenutzer** (ohne Login, eine gemeinsame
+`./data/buch.db`) oder als **Mehrbenutzer** im LAN (mit Login, je Nutzer ein
+isoliertes Datenverzeichnis `data/users/<user>/`). Der Modus wird **bei der
+Ersteinrichtung im Browser gewählt** und in `data/config.json` gespeichert –
+keine Umgebungsvariable nötig.
 
-## Konfiguration über Umgebungsvariablen
+## Betriebsmodus (`data/config.json`)
+
+```json
+{ "mode": "single" }   // oder "multi"
+```
+
+- Beim ersten Aufruf ohne vorhandene `config.json` erscheint die **Modus-Auswahl**.
+- Für ein **Headless-Setup** (ohne Browser-Interaktion) kann diese Datei vorab
+  mit `{"mode":"multi"}` angelegt werden.
+
+## Netzwerk & HTTPS über Umgebungsvariablen
 
 | Variable      | Default     | Bedeutung |
 |---------------|-------------|-----------|
-| `PYBUCH_AUTH` | *(aus)*     | `1`/`true` aktiviert Login und Datentrennung pro Nutzer. |
 | `PYBUCH_HOST` | `localhost` | Bind-Adresse. Für Netzzugriff `0.0.0.0`. |
 | `PYBUCH_PORT` | `8080`      | TCP-Port. |
 | `PYBUCH_CERT` | *(keine)*   | Pfad zur TLS-Zertifikatsdatei (PEM) ⇒ HTTPS. |
@@ -20,9 +30,8 @@ setzt das `Secure`-Flag der Session-Cookies.
 
 ## Erststart
 
-1. Mehrbenutzer + Netz + TLS aktivieren und starten (Beispiel Windows/PowerShell):
+1. Netz + TLS setzen und starten (Beispiel Windows/PowerShell):
    ```powershell
-   $env:PYBUCH_AUTH = "1"
    $env:PYBUCH_HOST = "0.0.0.0"
    $env:PYBUCH_CERT = "cert.pem"
    $env:PYBUCH_KEY  = "key.pem"
@@ -30,11 +39,12 @@ setzt das `Secure`-Flag der Session-Cookies.
    ```
    Linux/macOS:
    ```bash
-   PYBUCH_AUTH=1 PYBUCH_HOST=0.0.0.0 PYBUCH_CERT=cert.pem PYBUCH_KEY=key.pem python main.py
+   PYBUCH_HOST=0.0.0.0 PYBUCH_CERT=cert.pem PYBUCH_KEY=key.pem python main.py
    ```
-2. Beim ersten Aufruf im Browser wird das **Administrator-Konto** angelegt
-   (`/setup-admin`). Danach legt der Admin unter **Sonstiges → Benutzerverwaltung**
-   weitere Nutzer an.
+2. Im Browser öffnen und in der **Ersteinrichtung „Mehrbenutzer"** wählen. Danach
+   wird das **Administrator-Konto** angelegt (`/setup-admin`); der Admin legt unter
+   **Sonstiges → Benutzerverwaltung** weitere Nutzer an. Jeder Nutzer richtet beim
+   ersten Login seine eigenen Firmen-/Kontaktdaten ein.
 
 ## Selbst-signiertes Zertifikat erzeugen
 

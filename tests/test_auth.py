@@ -100,23 +100,51 @@ def test_has_any_user(auth_db):
     assert auth.has_any_user(auth_db) is True
 
 
-# ── userctx-Pfadauflösung & Isolation ────────────────────────────────────────
-def test_userctx_default_single_user(monkeypatch):
-    monkeypatch.delenv("PYBUCH_AUTH", raising=False)
+@pytest.fixture
+def data_root(monkeypatch, tmp_path):
+    """Isolierter Datenbereich + leerer Modus-Cache je Test."""
+    monkeypatch.setattr(userctx, "DATA_ROOT", str(tmp_path))
+    userctx._mode_cache.clear()
     userctx.clear()
+    yield str(tmp_path)
+    userctx._mode_cache.clear()
+    userctx.clear()
+
+
+# ── App-Modus (Datei-Konfig) ─────────────────────────────────────────────────
+def test_mode_unconfigured_is_single(data_root):
+    assert userctx.get_mode() is None
     assert userctx.auth_enabled() is False
-    assert userctx.user_db_path() == userctx.DEFAULT_DB
-    assert userctx.user_data_dir() == userctx.DATA_ROOT
 
 
-def test_userctx_per_user_paths(monkeypatch):
-    monkeypatch.setenv("PYBUCH_AUTH", "1")
-    try:
-        userctx.set_user("alice")
-        assert userctx.user_db_path() == os.path.join("./data", "users", "alice", "buch.db")
-        assert userctx.user_data_dir() == os.path.join("./data", "users", "alice")
-    finally:
-        userctx.clear()
+def test_set_mode_persists_and_drives_auth(data_root):
+    userctx.set_mode("multi")
+    assert userctx.get_mode() == "multi"
+    assert userctx.auth_enabled() is True
+    # frisch aus der Datei gelesen (Cache geleert) bleibt es 'multi'
+    userctx._mode_cache.clear()
+    assert userctx.get_mode() == "multi"
+    userctx.set_mode("single")
+    assert userctx.auth_enabled() is False
+
+
+def test_set_mode_rejects_invalid(data_root):
+    with pytest.raises(ValueError):
+        userctx.set_mode("foo")
+
+
+# ── userctx-Pfadauflösung & Isolation ────────────────────────────────────────
+def test_userctx_default_single_user(data_root):
+    assert userctx.auth_enabled() is False
+    assert userctx.user_db_path() == os.path.join(data_root, "buch.db")
+    assert userctx.user_data_dir() == data_root
+
+
+def test_userctx_per_user_paths(data_root):
+    userctx.set_mode("multi")
+    userctx.set_user("alice")
+    assert userctx.user_db_path() == os.path.join(data_root, "users", "alice", "buch.db")
+    assert userctx.user_data_dir() == os.path.join(data_root, "users", "alice")
 
 
 def test_two_users_have_isolated_databases(tmp_path):
@@ -129,28 +157,67 @@ def test_two_users_have_isolated_databases(tmp_path):
 
 
 # ── Phase 2: Datei-Isolation ─────────────────────────────────────────────────
-def test_user_subdir_default_single_user(monkeypatch, tmp_path):
-    monkeypatch.delenv("PYBUCH_AUTH", raising=False)
-    monkeypatch.setattr(userctx, "DATA_ROOT", str(tmp_path))
-    userctx.clear()
+def test_user_subdir_default_single_user(data_root):
     d = userctx.user_subdir("logos")
-    assert d == os.path.join(str(tmp_path), "logos")
+    assert d == os.path.join(data_root, "logos")
     assert os.path.isdir(d)
 
 
-def test_user_subdir_per_user_isolated(monkeypatch, tmp_path):
-    monkeypatch.setenv("PYBUCH_AUTH", "1")
-    monkeypatch.setattr(userctx, "DATA_ROOT", str(tmp_path))
-    try:
-        userctx.set_user("alice")
-        da = userctx.user_subdir("logos")
-        userctx.set_user("bob")
-        db = userctx.user_subdir("logos")
-    finally:
-        userctx.clear()
+def test_user_subdir_per_user_isolated(data_root):
+    userctx.set_mode("multi")
+    userctx.set_user("alice")
+    da = userctx.user_subdir("logos")
+    userctx.set_user("bob")
+    db = userctx.user_subdir("logos")
     assert da != db
-    assert da == os.path.join(str(tmp_path), "users", "alice", "logos")
-    assert db == os.path.join(str(tmp_path), "users", "bob", "logos")
+    assert da == os.path.join(data_root, "users", "alice", "logos")
+    assert db == os.path.join(data_root, "users", "bob", "logos")
+
+
+def test_document_parser_follows_userctx(data_root):
+    import document_parser
+    # Einzelmodus (kein User) ⇒ Basis = Datenwurzel
+    p = document_parser.DocumentParser()
+    assert p.log_dir == data_root
+    assert p.data_dir == os.path.join(data_root, "Belege")
+    # Mehrbenutzer ⇒ unter users/<user>/
+    userctx.set_mode("multi")
+    userctx.set_user("alice")
+    p2 = document_parser.DocumentParser()
+    assert p2.log_dir == os.path.join(data_root, "users", "alice")
+    assert p2.data_dir == os.path.join(data_root, "users", "alice", "Belege")
+    # Explizite Pfade gewinnen weiterhin
+    p3 = document_parser.DocumentParser(data_dir=os.path.join(data_root, "x"), log_dir=data_root)
+    assert p3.data_dir == os.path.join(data_root, "x")
+
+
+def test_ensure_directories_by_mode(data_root):
+    import server.app as app
+    typ = {"logos", "invoices", "quotes", "worktime"}
+    # Unkonfiguriert: nur die Datenwurzel, keine Typ-Ordner, kein users/
+    app._ensure_directories()
+    assert set(os.listdir(data_root)) & (typ | {"users"}) == set()
+    # Einzelmodus: Typ-Ordner
+    userctx.set_mode("single")
+    app._ensure_directories()
+    assert typ <= set(os.listdir(data_root))
+    # Mehrbenutzer: users/, aber keine globalen Typ-Ordner neu
+    import shutil
+    for d in typ:
+        shutil.rmtree(os.path.join(data_root, d), ignore_errors=True)
+    userctx.set_mode("multi")
+    app._ensure_directories()
+    assert "users" in os.listdir(data_root)
+    assert typ & set(os.listdir(data_root)) == set()
+
+
+def test_handle_setup_mode_redirects(data_root):
+    assert handlers.handle_setup_mode({"mode": ["multi"]}) == "/setup-admin"
+    assert userctx.get_mode() == "multi"
+    assert handlers.handle_setup_mode({"mode": ["single"]}) == "/setup"
+    assert userctx.get_mode() == "single"
+    # ungültig: keine Änderung, zurück zur Auswahl
+    assert handlers.handle_setup_mode({"mode": ["x"]}) == "/setup"
 
 
 # ── Phase 3: Benutzerverwaltung ──────────────────────────────────────────────

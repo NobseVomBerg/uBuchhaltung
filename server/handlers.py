@@ -6,6 +6,7 @@ import json
 import datetime
 from urllib.parse import quote
 import auth
+import userctx
 from .pages import Header1, Header2, Header3, Footer
 from .import_preview import match_account
 from db import Database
@@ -55,7 +56,7 @@ def handle_confirm_import(db: Database, post_data):
     if not import_id:
         return 400, json.dumps({'ok': False, 'error': 'Fehlende import_id'})
 
-    import_dir = os.path.join('data', 'pending_imports')
+    import_dir = os.path.join(userctx.user_data_dir(), 'pending_imports')
     try:
         import_files = [f for f in os.listdir(import_dir) if f.startswith(import_id)]
     except FileNotFoundError:
@@ -445,9 +446,9 @@ def handle_toggle_skr_menu(db: Database, coa_id_val):
     return 303, "/masterdata/skr"
 
 def handle_db_export(db: Database):
-    """Export all DB data as INSERT statements to ./data/db-export.sql"""
+    """Export all DB data as INSERT statements to <user-data>/db-export.sql"""
     import os
-    filepath = os.path.join('data', 'db-export.sql')
+    filepath = os.path.join(userctx.user_data_dir(), 'db-export.sql')
     try:
         tables, rows = db.export_to_sql(filepath)
         return 303, f"/miscellaneous?export=ok&tables={tables}&rows={rows}"
@@ -577,7 +578,7 @@ def handle_wiso_import(request_handler, db: Database):
         resolved_count = link_result.get('resolved', 0)
 
         # Detailergebnis für Anzeige auf der Seite persistieren
-        result_path = os.path.join('data', 'wiso_import_result.json')
+        result_path = os.path.join(userctx.user_data_dir(), 'wiso_import_result.json')
         try:
             with open(result_path, 'w', encoding='utf-8') as f:
                 json.dump(result, f, ensure_ascii=False, indent=2)
@@ -1945,6 +1946,20 @@ def handle_update_trip(db: Database, post_data):
 
 
 # ── Authentifizierung (TODO #4) ──────────────────────────────────────────────
+def handle_setup_mode(post_data):
+    """Betriebsmodus bei der Ersteinrichtung wählen. Returns Redirect-Location.
+
+    'multi' → Administrator anlegen (/setup-admin); 'single' → eigene
+    Kontaktdaten (/setup, wie gehabt).
+    """
+    import userctx
+    mode = post_data.get('mode', [''])[0]
+    if mode not in ('single', 'multi'):
+        return '/setup'
+    userctx.set_mode(mode)
+    return '/setup-admin' if mode == 'multi' else '/setup'
+
+
 def handle_login(post_data):
     """Anmeldedaten prüfen. Returns (ok, username, error_msg)."""
     g = lambda k: post_data.get(k, [''])[0]

@@ -31,7 +31,7 @@ from .pages_booking_groups import PageBookingGroups, PageBookingGroupDetails
 from .pages_transactions import PageTransactions
 from .pages_dashboard import PageDashboard
 from .pages_receipts import PageReceipts, PageReceiptEdit
-from .pages_setup import PageSetup
+from .pages_setup import PageSetup, PageSetupModeChoice
 from .pages_invoice import PageInvoice
 from .pages_quote import PageQuote
 from .pages_worktime import PageWorkTimes
@@ -61,6 +61,19 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.rfile.read(length)
         except Exception:
             pass
+
+    def _maybe_db(self):
+        """Database() nur erzeugen, wenn sie auch genutzt werden darf:
+        - unkonfiguriert (Modus noch nicht gewählt): nie (kein verwaistes data/buch.db),
+        - Mehrbenutzer-Modus: erst nach Anmeldung,
+        - Einzelbenutzer-Modus: immer.
+        """
+        mode = userctx.get_mode()
+        if mode is None:
+            return None
+        if mode == 'multi' and userctx.get_user() is None:
+            return None
+        return Database()
 
     def _session_token(self):
         raw = self.headers.get('Cookie')
@@ -115,11 +128,21 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         # daher den Kontext zu Beginn JEDES Requests leeren (kein User-Leak).
         userctx.clear()
         userctx.set_tls(getattr(self.server, 'tls', False))
-        if not userctx.auth_enabled():
-            return True                                  # Single-User-Default
         path = self.path.split('?', 1)[0]
         if path in ('/buch.css', '/favicon.ico'):
             return True
+        mode = userctx.get_mode()
+        if mode is None:
+            # Noch nicht eingerichtet: ausschließlich die Modus-Auswahl zulassen –
+            # sonst entstünde (im Einzelmodus-Fallback) ein verwaistes data/buch.db,
+            # falls anschließend „Mehrbenutzer" gewählt wird.
+            if path in ('/setup', '/setup/mode'):
+                return True
+            self._drain_body()
+            self.respond(303, "", headers={"Location": "/setup"})
+            return False
+        if mode != 'multi':
+            return True                                  # Einzelbenutzer-Modus
         # Bootstrap: ohne jeden Benutzer nur die Admin-Ersteinrichtung zulassen
         if not auth.has_any_user():
             if path == '/setup-admin':
@@ -189,7 +212,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if self._auth_routes_get():
             userctx.clear()
             return
-        db = Database()
+        # Im Mehrbenutzer-Modus ohne angemeldeten Nutzer keine (globale) DB anlegen –
+        # hier sind nur public/statische Routen erreichbar (z. B. /buch.css). Sonst
+        # entstünde fälschlich ein data/buch.db.
+        db = self._maybe_db()
         try:
             if self.path == "/" or self.path == "/dashboard" or self.path.startswith("/dashboard?"):
                 if db.is_first_run():
@@ -202,7 +228,12 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
                 self.respond(200, PageDashboard(db, date_from, date_to, account_ids), headers=hdrs)
             elif self.path == "/setup":
-                self.respond(200, PageSetup(db))
+                # Erststart: solange der Betriebsmodus noch nicht gewählt wurde,
+                # die Modus-Auswahl zeigen; danach das gewohnte Kontaktformular.
+                if userctx.get_mode() is None:
+                    self.respond(200, PageSetupModeChoice())
+                else:
+                    self.respond(200, PageSetup(db))
             elif self.path == "/about":
                 self.respond(200, pages.PageAbout())
             elif self.path == "/invoice" or self.path.startswith("/invoice?"):
@@ -734,7 +765,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if self._auth_routes_post():
             userctx.clear()
             return
-        db = Database()
+        db = self._maybe_db()
 
         # Handle file upload separately
         if self.path == "/upload_receipts":
@@ -994,6 +1025,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     self.respond(status_code, "", headers={"Location": location})
                 return
             # ── Setup ─────────────────────────────────────────────────────
+            elif self.path == "/setup/mode":
+                location = handlers.handle_setup_mode(post_data)
+                self.respond(303, "", headers={"Location": location})
             elif self.path == "/setup/save":
                 status_code, response = handlers.handle_setup_save(db, post_data)
                 if status_code == 303:
@@ -1028,23 +1062,29 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if encoded:
             self.wfile.write(encoded)
 
-# Beim Serverstart benötigte Ausgabe-Verzeichnisse (Jahres-Unterordner werden
-# bei Bedarf von den jeweiligen Generatoren erzeugt). Wer bei laufendem Server
-# Ordner löscht, muss nicht abgefangen werden.
-_REQUIRED_DIRS = (
-    "data",
-    "data/logos",
-    "data/invoices",
-    "data/quotes",
-    "data/worktime",
-)
+# Im Einzelmodus benötigte Ausgabe-Unterordner (Jahres-Unterordner werden bei
+# Bedarf von den jeweiligen Generatoren erzeugt). Wer bei laufendem Server Ordner
+# löscht, muss nicht abgefangen werden.
+_SINGLE_SUBDIRS = ("logos", "invoices", "quotes", "worktime")
 
 
 def _ensure_directories():
-    """Fehlende Ausgabe-Verzeichnisse anlegen (idempotent)."""
+    """Fehlende Ausgabe-Verzeichnisse anlegen (idempotent).
+
+    Im Mehrbenutzer-Modus werden keine globalen Typ-Verzeichnisse angelegt – die
+    Dateien jedes Nutzers entstehen bei Bedarf unter data/users/<user>/.
+    """
     import os
-    for d in _REQUIRED_DIRS:
-        os.makedirs(d, exist_ok=True)
+    root = userctx.DATA_ROOT
+    os.makedirs(root, exist_ok=True)
+    mode = userctx.get_mode()
+    if mode == "multi":
+        os.makedirs(os.path.join(root, "users"), exist_ok=True)
+    elif mode == "single":
+        for sub in _SINGLE_SUBDIRS:
+            os.makedirs(os.path.join(root, sub), exist_ok=True)
+    # mode is None (noch nicht eingerichtet): nur die Datenwurzel anlegen –
+    # die Typ-Verzeichnisse entstehen nach der Modus-Wahl bei Bedarf.
 
 
 # Start web server
@@ -1054,8 +1094,10 @@ def run_server(host=None, port=None, certfile=None, keyfile=None):
     Defaults kommen aus Umgebungsvariablen (für Deployment im LAN/VM):
       PYBUCH_HOST (Default 'localhost'; '0.0.0.0' für Netzzugriff),
       PYBUCH_PORT (Default 8080),
-      PYBUCH_CERT / PYBUCH_KEY (PEM-Dateien ⇒ HTTPS, self-signed möglich),
-      PYBUCH_AUTH (Login/Mehrbenutzer aktivieren).
+      PYBUCH_CERT / PYBUCH_KEY (PEM-Dateien ⇒ HTTPS, self-signed möglich).
+
+    Der Betriebsmodus (Einzel-/Mehrbenutzer) wird bei der Ersteinrichtung gewählt
+    und in data/config.json gespeichert (für Headless-Setup ggf. vorab anlegen).
     """
     import socket, sys
     host = host or os.environ.get("PYBUCH_HOST", "localhost")

@@ -11,8 +11,8 @@ from .pages import Header1, Header2, Header3, Footer
 
 def PageUsers(current_user, users, csrf, error_msg=None, info_msg=None):
     """users: Liste (Username, IsAdmin, CreatedAt). current_user: angemeldeter Admin."""
-    s = Header1('miscellaneous')
-    s += Header2()
+    s = Header1('masterdata')
+    s += Header2('<a href="/masterdata">Stammdaten</a> -> <span id="ActivePage">🔑 Benutzer</span>')
     s += Header3()
 
     s += '<div class="grid1Col700 gridMain">'

@@ -31,17 +31,6 @@ def PageMiscellaneous(db: Database):
     s += Header3()
 
     s += '<div class="grid3Cols gridMain">'
-    # ── Benutzerverwaltung (nur Admin im Mehrbenutzer-Modus) ──────────────────
-    import userctx as _userctx
-    import auth as _auth
-    _cur = _userctx.get_user()
-    if _userctx.auth_enabled() and _cur and _auth.is_admin(_cur):
-        s += ('\t<div class="rectRounded">'
-              '<h2>👥 Benutzer</h2>'
-              '<p>Benutzerkonten anlegen, löschen, Passwörter zurücksetzen und '
-              'Administratorrechte vergeben.</p>'
-              '<a href="/users" class="coloredButton bg-blue">Benutzerverwaltung öffnen</a>'
-              '</div>')
     # ── Database statistics ───────────────────────────────────────────────────
     s += '\t<div class="rectRounded">'
     stats = db.get_table_statistics()
@@ -102,7 +91,8 @@ def PageMiscellaneous(db: Database):
     s += '\t\t<div class="rectRounded">'
     s += '''
         <h2>DB-Export</h2>
-        <p>Exportiert alle Tabelleninhalte als INSERT-Statements nach <code>./data/db-export.sql</code>.
+        <p>Exportiert alle Tabelleninhalte als INSERT-Statements in die Datei
+        <code>db-export.sql</code> im Datenverzeichnis.
         Die Datei kann direkt im SQL-Konsolenbereich eingefügt werden.</p>
         <form method="POST" action="/db_export">
             <button type="submit" class="coloredButton bg-blue">&#x1F4BE; DB-Export</button>
@@ -167,7 +157,8 @@ def PageMiscellaneous(db: Database):
     from urllib.parse import parse_qs as _parse_qs, urlparse as _urlparse
 
     # Letztes Import-Ergebnis einlesen (falls vorhanden)
-    _result_path = _os.path.join('data', 'wiso_import_result.json')
+    import userctx as _userctx
+    _result_path = _os.path.join(_userctx.user_data_dir(), 'wiso_import_result.json')
     _last_result = None
     if _os.path.exists(_result_path):
         try:

@@ -25,7 +25,8 @@ def handle_file_upload(request_handler, db):
           "files": [ <Beleg-Vorschau>, ... ],
           "other_files": [ {filename, status, ...}, ... ] }
     """
-    upload_dir = "./data/Documents"
+    import userctx
+    upload_dir = os.path.join(userctx.user_data_dir(), "Documents")
     os.makedirs(upload_dir, exist_ok=True)
 
     content_type = request_handler.headers['Content-Type']
