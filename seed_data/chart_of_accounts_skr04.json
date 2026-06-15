@@ -6,6 +6,7 @@
         {"account_number": 670,   "name": "Geringwertige Wirtschaftskosten",                      "description": "Anlagevermögenskonten",                             "is_standard": true},
         {"account_number": 1401,  "name": "Abziehbare Vorsteuer 7%",                              "description": "Umlaufvermögen",                                    "is_standard": true},
         {"account_number": 1406,  "name": "Abziehbare Vorsteuer 19%",                             "description": "Umlaufvermögen",                                    "is_standard": true},
+        {"account_number": 1433,  "name": "Entstandene Einfuhrumsatzsteuer",                      "description": "Umlaufvermögen",                                    "is_standard": true},
         {"account_number": 1460,  "name": "Verrechnungskonto",                                    "description": "Umlaufvermögenskonten",                             "is_standard": true},
         {"account_number": 1800,  "name": "Bank 0",                                               "description": "Umlaufvermögenskonten",                             "is_standard": true},
         {"account_number": 1810,  "name": "Bank 1",                                               "description": "Umlaufvermögenskonten",                             "is_standard": true},
@@ -25,6 +26,7 @@
         {"account_number": 4645,  "name": "Verwendung von Gegenständen für Zwecke außerhalb des Unternehmens 19 % USt (KFZ-Nutzung)", "description": "Betriebliche Erträge", "is_standard": true},
         {"account_number": 4845,  "name": "Erlöse aus Verkäufen Sachanlagevermögen 19 % USt",     "description": "Betriebliche Erträge",                              "is_standard": true},
         {"account_number": 4855,  "name": "Anlagenabgänge Sachanlagen (Restbuchwert bei Buchgewinn)", "description": "Betriebliche Erträge",                          "is_standard": true},
+        {"account_number": 5200,  "name": "Wareneineingang",                                      "description": "Betriebliche Aufwendungen",                         "is_standard": true},
         {"account_number": 6130,  "name": "Freiwillige soziale Aufwendungen, lohnsteuerfrei",     "description": "Betriebliche Aufwendungen",                         "is_standard": true},
         {"account_number": 6222,  "name": "Abschreibungen auf Fahrzeuge",                         "description": "Betriebliche Aufwendungen",                         "is_standard": true},
         {"account_number": 6300,  "name": "Sonstige betriebliche Aufwendungen",                   "description": "Betriebliche Aufwendungen",                         "is_standard": true},
@@ -39,6 +41,7 @@
         {"account_number": 6520,  "name": "Kfz-Versicherungen",                                   "description": "Betriebliche Aufwendungen",                         "is_standard": true},
         {"account_number": 6530,  "name": "Laufende Kfz-Betriebskosten",                          "description": "Betriebliche Aufwendungen",                         "is_standard": true},
         {"account_number": 6540,  "name": "Kfz-Reparaturen",                                      "description": "Betriebliche Aufwendungen",                         "is_standard": true},
+        {"account_number": 6570,  "name": "Sonstige Fahrzeugkosten",                              "description": "Betriebliche Aufwendungen",                         "is_standard": true},
         {"account_number": 6600,  "name": "Werbekosten",                                          "description": "Betriebliche Aufwendungen",                         "is_standard": true},
         {"account_number": 6630,  "name": "Repräsentationskosten",                                "description": "Betriebliche Aufwendungen",                         "is_standard": true},
         {"account_number": 6640,  "name": "Bewirtungskosten",                                     "description": "Betriebliche Aufwendungen",                         "is_standard": true},
@@ -56,6 +59,8 @@
         {"account_number": 6850,  "name": "Sonstiger Betriebsbedarf",                             "description": "Betriebliche Aufwendungen",                         "is_standard": true},
         {"account_number": 6855,  "name": "Nebenkosten des Geldverkehrs",                         "description": "Betriebliche Aufwendungen",                         "is_standard": true},
         {"account_number": 6859,  "name": "Aufwendungen für Abraum- und Abfallbeseitigung",       "description": "Betriebliche Aufwendungen",                         "is_standard": true},
+        {"account_number": 6880,  "name": "Aufwendungen aus der Währungsumrechnung",              "description": "Betriebliche Aufwendungen",                         "is_standard": true},
+        {"account_number": 6895,  "name": "Anlagenabgänge Sachanlagen (Restbuchwert bei Buchverlust)", "description": "Betriebliche Aufwendungen",                    "is_standard": true},
         {"account_number": 7685,  "name": "Kfz-Steuer",                                           "description": "Weitere Erträge und Aufwendungen",                  "is_standard": true},
         {"account_number": 10000, "name": "Debitoren",                                            "description": "Vortrags-, Kapital-, Korrektur- u. statistische Konten", "is_standard": true}
     ]
