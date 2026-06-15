@@ -5,6 +5,10 @@ data/
 seed_data/private/
 .claude/settings.local.json
 
+# TLS-Zertifikate (self-signed, lokal erzeugt) – nie einchecken
+cert.pem
+key.pem
+
 # Python cache
 __pycache__/
 *.pyc

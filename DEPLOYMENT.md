@@ -46,7 +46,21 @@ setzt das `Secure`-Flag der Session-Cookies.
    **Sonstiges → Benutzerverwaltung** weitere Nutzer an. Jeder Nutzer richtet beim
    ersten Login seine eigenen Firmen-/Kontaktdaten ein.
 
-## Selbst-signiertes Zertifikat erzeugen
+## Schnellstart mit HTTPS (Windows)
+
+Das Skript `run_https.ps1` erzeugt beim ersten Aufruf automatisch ein
+selbst-signiertes Zertifikat (`cert.pem`/`key.pem`) und startet den Server per
+HTTPS:
+
+```powershell
+.\run_https.ps1            # nur lokal (localhost)
+.\run_https.ps1 -BindAll   # im LAN erreichbar (0.0.0.0)
+```
+
+`cert.pem`/`key.pem` sind per `.gitignore` ausgeschlossen und werden nie
+eingecheckt.
+
+## Selbst-signiertes Zertifikat erzeugen (manuell)
 
 Ein selbst-signiertes Zertifikat genügt im privaten LAN (der Browser zeigt beim
 ersten Besuch eine Warnung, die einmalig bestätigt wird):

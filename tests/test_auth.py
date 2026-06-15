@@ -191,6 +191,17 @@ def test_document_parser_follows_userctx(data_root):
     assert p3.data_dir == os.path.join(data_root, "x")
 
 
+def test_header_shows_logout_only_in_multi(data_root):
+    from server.pages import Header1
+    # Einzel-/neutral: kein Abmelden-Link
+    assert "Abmelden" not in Header1("dashboard")
+    # Mehrbenutzer + angemeldeter Nutzer: Username + Logout
+    userctx.set_mode("multi")
+    userctx.set_user("admin")
+    h = Header1("dashboard")
+    assert "/logout" in h and "Abmelden" in h and "admin" in h
+
+
 def test_ensure_directories_by_mode(data_root):
     import server.app as app
     typ = {"logos", "invoices", "quotes", "worktime"}

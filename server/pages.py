@@ -100,6 +100,13 @@ def Header1(active_page=None):
         nav_items.append('<a href="/about">About</a>')
     
     s += ' | '.join(nav_items)
+
+    # Angemeldeter Benutzer + Abmelden (nur im Mehrbenutzer-Modus sichtbar)
+    import userctx
+    _user = userctx.get_user()
+    if userctx.auth_enabled() and _user:
+        s += (f'&nbsp;&nbsp;&nbsp; 👤 {_html.escape(_user)} · '
+              f'<a href="/logout">Abmelden</a>')
     return s
 
 def Header2(content=""):
