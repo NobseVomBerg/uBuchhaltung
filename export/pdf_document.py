@@ -239,7 +239,7 @@ def _table_header(flow):
 
 
 def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross,
-                    currency='EUR'):
+                    currency='EUR', show_tax=True):
     """Positionstabelle mit rechtsbündigen Geldspalten + Summenblock.
 
     Seitenfähig: passt eine Position nicht mehr auf die Seite, wird umgebrochen
@@ -282,13 +282,16 @@ def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross
     y = flow.y - 6
     flow.line_ops.append(f"{COL_DESC} {y + 4:.1f} m {RIGHT} {y + 4:.1f} l S")
     y -= 9
-    text(ops, COL_DESC, y, "Summe netto:", size=10)
-    text_right(ops, COL_TOTAL_R, y, f"{_fmt_money(sum_net)} {currency}", font='/F2', size=10)
-    y -= 14
-    tax_pct = (f"{tax_rate_pct:g}" if isinstance(tax_rate_pct, float) else str(tax_rate_pct))
-    text(ops, COL_DESC, y, f"zzgl. {tax_pct}% MwSt.:", size=10)
-    text_right(ops, COL_TOTAL_R, y, f"{_fmt_money(tax_amount)} {currency}", font='/F2', size=10)
-    y -= 16
+    if show_tax:
+        # Netto- und MwSt-Zeile nur bei Steuerausweis. Bei Kleinunternehmern
+        # (§19 UStG) entfällt jeder Steuerausweis – dann nur der Gesamtbetrag.
+        text(ops, COL_DESC, y, "Summe netto:", size=10)
+        text_right(ops, COL_TOTAL_R, y, f"{_fmt_money(sum_net)} {currency}", font='/F2', size=10)
+        y -= 14
+        tax_pct = (f"{tax_rate_pct:g}" if isinstance(tax_rate_pct, float) else str(tax_rate_pct))
+        text(ops, COL_DESC, y, f"zzgl. {tax_pct}% MwSt.:", size=10)
+        text_right(ops, COL_TOTAL_R, y, f"{_fmt_money(tax_amount)} {currency}", font='/F2', size=10)
+        y -= 16
     text(ops, COL_DESC, y, "Gesamtbetrag:", font='/F2', size=11)
     # Wert in size 10 wie netto/MwSt darüber, damit die Kommas exakt untereinander stehen
     text_right(ops, COL_TOTAL_R, y, f"{_fmt_money(sum_gross)} {currency}", font='/F2', size=10)

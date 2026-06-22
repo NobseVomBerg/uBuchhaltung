@@ -9,7 +9,7 @@ nur die rechnungsspezifischen Teile (Zahlungsbedingungen, Bankverbindung, Fußze
 import datetime
 import os
 from db import Database
-from .pdf_core import load_image_xobject, build_multi_page_pdf
+from .pdf_core import load_image_xobject, build_multi_page_pdf, resolve_logo_path
 from . import pdf_document as D
 
 
@@ -58,7 +58,9 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     bank_iban = invoice[32] or ''
     bank_bic = invoice[33] or ''
 
-    tax_rate = invoice[35] or 0.19
+    # 0 nicht zu 19% verfälschen; Sentinel -1 = Kleinunternehmer (§19), keine USt
+    tax_rate = invoice[35] if invoice[35] is not None else 0.19
+    show_tax = tax_rate >= 0
     sum_net = invoice[36] or 0
     tax_amount = invoice[37] or 0
     sum_gross = invoice[38] or 0
@@ -74,7 +76,7 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     if own_company_id:
         own_contact = db.get_contact_by_id(own_company_id)
         if own_contact and len(own_contact) > 13 and own_contact[13]:
-            image = load_image_xobject(own_contact[13])
+            image = load_image_xobject(resolve_logo_path(own_contact[13]))
         if own_contact and len(own_contact) > 11:
             seller_tax_id = own_contact[11] or ''
         if own_contact and len(own_contact) > 25:
@@ -133,7 +135,8 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     items = [{'pos': it[2], 'quantity': it[5], 'unit': it[6] or 'Stk.',
               'description': it[4], 'price': it[7], 'total': it[8]} for it in invoice_items]
     D.draw_item_table(flow, items, tax_rate_pct=_pct(tax_rate),
-                      sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross)
+                      sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross,
+                      show_tax=show_tax)
 
     # Zahlungsbedingungen (Fließtext)
     D.flow_richtext(flow, payment_terms, size=9, leading=12, gap_before=6)

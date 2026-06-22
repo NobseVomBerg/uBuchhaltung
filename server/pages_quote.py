@@ -124,9 +124,15 @@ def PageQuote(db: Database, filters: dict = None, quote_id=None):
     <script>
         function handleQuotePDF(quoteId, pdfExists) {
             function _do() {
+                const viewer = window.open('about:blank', '_blank');  // im Klick-Kontext -> kein Popup-Blocker
                 fetch('/quote/pdf_generate?id=' + quoteId)
                     .then(r => r.json())
-                    .then(d => { appMsg(d.success ? ('PDF erstellt: ' + d.pdf_path) : ('Fehler: ' + (d.error || '?')), d.success ? 'success' : 'error'); });
+                    .then(d => {
+                        appMsg(d.success ? ('PDF erstellt: ' + d.pdf_path) : ('Fehler: ' + (d.error || '?')), d.success ? 'success' : 'error');
+                        if (d.success && viewer) viewer.location = '/quote/pdf_download?id=' + quoteId + '&inline=1';
+                        else if (viewer) viewer.close();
+                    })
+                    .catch(e => { if (viewer) viewer.close(); appMsg('Fehler: ' + e, 'error'); });
             }
             if (pdfExists) {
                 appConfirm('PDF existiert bereits. Überschreiben und neu generieren?', _do);
@@ -192,6 +198,14 @@ def _quote_form_html(db: Database, quote_id=None):
         intro_text = existing[47] if len(existing) > 47 else ''
         closing_text = existing[48] if len(existing) > 48 else ''
         pdf_path = existing[41] if len(existing) > 41 else None
+        # Steuersatz aus dem gespeicherten Angebot vorbelegen. Gespeichert als
+        # Dezimal (0.19) bzw. 0; Sentinel -1 = kein USt-Ausweis (Kleinunternehmer).
+        _r = existing[35] if len(existing) > 35 and existing[35] is not None else None
+        show_tax = not (_r is not None and float(_r) < 0)
+        if _r is None or float(_r) < 0:
+            tax_pct = 19
+        else:
+            tax_pct = float(_r) * 100 if 0 <= float(_r) <= 1 else float(_r)
         page_title = f"Angebot {quote_number} bearbeiten"
         is_edit = True
     else:
@@ -219,6 +233,8 @@ def _quote_form_html(db: Database, quote_id=None):
         intro_text = ''
         closing_text = ''
         pdf_path = None
+        tax_pct = 19
+        show_tax = True
         page_title = "Neues Angebot erstellen"
         is_edit = False
 
@@ -364,9 +380,15 @@ def _quote_form_html(db: Database, quote_id=None):
                     <td id="sum_net" style="text-align:right; font-weight:bold;">0,00 €</td>
                     <td class="no-pdf" style="border:none;"></td>
                 </tr>
-                <tr class="totals-row">
+                <tr class="no-pdf">
+                    <td colspan="7" style="text-align:right; border:none;">
+                        <label><input type="checkbox" id="show_tax" __SHOW_TAX_CHECKED__ onchange="calculateTotals()"> Umsatzsteuer ausweisen</label>
+                        <small style="color:#888;">(aus = Kleinunternehmer §&nbsp;19 UStG; Hinweis ggf. unten im Text)</small>
+                    </td>
+                </tr>
+                <tr class="totals-row" id="tax_row">
                     <td colspan="4" style="text-align:right; border:none;">Mehrwertsteuer</td>
-                    <td style="text-align:right; border:none;"><input type="number" id="tax_rate" value="19" min="0" max="100" step="0.1" style="width:50px;">% auf <span id="tax_base">0,00</span> € netto:</td>
+                    <td style="text-align:right; border:none;"><input type="number" id="tax_rate" value="__TAX_PCT__" min="0" max="100" step="0.1" style="width:50px;">% auf <span id="tax_base">0,00</span> € netto:</td>
                     <td id="tax_amount" style="text-align:right; font-weight:bold;">0,00 €</td>
                     <td class="no-pdf" style="border:none;"></td>
                 </tr>
@@ -528,7 +550,10 @@ def _quote_form_html(db: Database, quote_id=None):
             });
             document.getElementById('sum_net').textContent = net.toFixed(2).replace('.', ',') + ' €';
             document.getElementById('tax_base').textContent = net.toFixed(2).replace('.', ',');
-            const tr = parseFloat(document.getElementById('tax_rate').value)||0;
+            const showTax = document.getElementById('show_tax').checked;
+            const taxRow = document.getElementById('tax_row');
+            if (taxRow) taxRow.style.display = showTax ? '' : 'none';
+            const tr = showTax ? (parseFloat(document.getElementById('tax_rate').value)||0) : 0;
             const tax = net*(tr/100);
             document.getElementById('tax_amount').textContent = tax.toFixed(2).replace('.', ',') + ' €';
             document.getElementById('sum_gross').innerHTML = '<strong>' + (net+tax).toFixed(2).replace('.', ',') + ' €</strong>';
@@ -566,6 +591,11 @@ def _quote_form_html(db: Database, quote_id=None):
             if (!number) { showMessage('Bitte Angebotsnummer eingeben.', 'error'); return; }
             const date = document.getElementById('quote_date').value;
             if (!date) { showMessage('Bitte Angebotsdatum wählen.', 'error'); return; }
+            // Steuersatz NaN-sicher lesen (0% darf nicht zu 19% werden).
+            // Kleinunternehmer (§19): keine USt -> effektiver Satz 0, Flag showTax=false.
+            const showTax = document.getElementById('show_tax').checked;
+            const _tr = parseFloat(document.getElementById('tax_rate').value);
+            const taxRate = showTax ? (isNaN(_tr) ? 19 : _tr) : 0;
             const items = [];
             document.querySelectorAll('.invoice-item-row').forEach((row,i)=>{
                 const desc = row.querySelector('.item-description').value;
@@ -575,18 +605,17 @@ def _quote_form_html(db: Database, quote_id=None):
                     unit: row.querySelector('.item-unit').value,
                     description: desc,
                     unitPrice: parseFloat(row.querySelector('.item-price').value)||0,
-                    taxRate: parseFloat(document.getElementById('tax_rate').value)||19
+                    taxRate: taxRate
                 });
             });
             if (!items.length) { showMessage('Bitte mindestens eine Position hinzufügen.', 'error'); return; }
-            const taxRate = parseFloat(document.getElementById('tax_rate').value)||19;
             const data = {
                 quoteNumber: number, quoteDate: date,
                 customerId: parseInt(custId), ownCompanyId: parseInt(ownId),
                 validUntil: document.getElementById('valid_until').value || null,
                 introText: document.getElementById('intro_text_editor').innerHTML || null,
                 closingText: document.getElementById('closing_text_editor').innerHTML || null,
-                taxRate: taxRate/100, status: status, items: items
+                taxRate: taxRate/100, showTax: showTax, status: status, items: items
             };
             if (isEdit) data.quoteId = parseInt(quoteId);
             fetch('/quote/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)})
@@ -601,9 +630,12 @@ def _quote_form_html(db: Database, quote_id=None):
             if (!id) { showMessage('Bitte Angebot zuerst speichern.', 'warn'); return; }
             const exists = document.getElementById('pdf_exists').value === 'true';
             function _run() {
+                const viewer = window.open('about:blank', '_blank');  // im Klick-Kontext -> kein Popup-Blocker
                 fetch('/quote/pdf_generate?id='+id).then(r=>r.json())
-                    .then(d=>{ if(d.success){ document.getElementById('pdf_exists').value='true'; showMessage('PDF erstellt: '+d.pdf_path, 'success'); }
-                              else showMessage('Fehler: '+(d.error||'?'), 'error'); });
+                    .then(d=>{ if(d.success){ document.getElementById('pdf_exists').value='true'; showMessage('PDF erstellt: '+d.pdf_path, 'success');
+                                              if (viewer) viewer.location = '/quote/pdf_download?id='+id+'&inline=1'; }
+                              else { if (viewer) viewer.close(); showMessage('Fehler: '+(d.error||'?'), 'error'); } })
+                    .catch(e=>{ if (viewer) viewer.close(); showMessage('Fehler: '+e, 'error'); });
             }
             if (exists) { appConfirm('PDF existiert bereits. Überschreiben?', _run); } else { _run(); }
         }
@@ -621,4 +653,7 @@ def _quote_form_html(db: Database, quote_id=None):
         }
     </script>
     '''
+    # Steuersatz-Feld + USt-Checkbox serverseitig vorbelegen (Platzhalter im Template)
+    s = s.replace('__TAX_PCT__', f'{tax_pct:g}')
+    s = s.replace('__SHOW_TAX_CHECKED__', 'checked' if show_tax else '')
     return s

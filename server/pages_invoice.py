@@ -189,16 +189,21 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
         }
 
         function generatePDFInFilesystem(invoiceId) {
+            // Tab im Klick-Kontext oeffnen (kein Popup-Blocker), spaeter befuellen
+            const viewer = window.open('about:blank', '_blank');
             fetch('/invoice/pdf_generate?id=' + invoiceId)
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
                         appMsg('PDF erstellt: ' + data.pdf_path, 'success');
+                        if (viewer) viewer.location = '/invoice/pdf_download?id=' + invoiceId + '&inline=1';
                     } else {
+                        if (viewer) viewer.close();
                         appMsg('Fehler: ' + (data.error || 'Unbekannter Fehler'), 'error');
                     }
                 })
                 .catch(err => {
+                    if (viewer) viewer.close();
                     appMsg('Fehler: ' + err.message, 'error');
                 });
         }
@@ -274,6 +279,14 @@ def _invoice_form_html(db: Database, invoice_id=None):
         selected_customer_id = existing_invoice[13]  # CustomerId is now at index 13 (was 12)
         invoice_status = existing_invoice[40]  # Status is now at index 40 (was 37)
         pdf_path = existing_invoice[41] if len(existing_invoice) > 41 else None  # PDFPath is now at index 41 (was 39)
+        # Steuersatz aus der gespeicherten Rechnung vorbelegen. Gespeichert als
+        # Dezimal (0.19) bzw. 0; Sentinel -1 = kein USt-Ausweis (Kleinunternehmer).
+        _r = existing_invoice[35] if len(existing_invoice) > 35 and existing_invoice[35] is not None else None
+        show_tax = not (_r is not None and float(_r) < 0)
+        if _r is None or float(_r) < 0:
+            tax_pct = 19
+        else:
+            tax_pct = float(_r) * 100 if 0 <= float(_r) <= 1 else float(_r)
         page_title = f"Rechnung {invoice_number} bearbeiten"
         is_edit_mode = True
     else:
@@ -305,6 +318,8 @@ def _invoice_form_html(db: Database, invoice_id=None):
         selected_customer_id = None
         invoice_status = 'draft'
         pdf_path = None
+        tax_pct = 19
+        show_tax = True
         page_title = "Neue Rechnung erstellen"
         is_edit_mode = False
     
@@ -503,9 +518,15 @@ function setInvoiceStatus(invId) {{
                     <td id="sum_net" style="text-align: right; font-weight: bold;">0,00 €</td>
                     <td class="no-pdf" style="border: none;"></td>
                 </tr>
-                <tr class="totals-row">
+                <tr class="no-pdf">
+                    <td colspan="7" style="text-align: right; border: none;">
+                        <label><input type="checkbox" id="show_tax" __SHOW_TAX_CHECKED__ onchange="calculateTotals()"> Umsatzsteuer ausweisen</label>
+                        <small style="color:#888;">(aus = Kleinunternehmer §&nbsp;19 UStG; Hinweis ggf. unten im Text)</small>
+                    </td>
+                </tr>
+                <tr class="totals-row" id="tax_row">
                     <td colspan="4" style="text-align: right; border: none;">Mehrwertsteuer</td>
-                    <td style="text-align: right; border: none;"><input type="number" id="tax_rate" value="19" min="0" max="100" step="0.1" style="width: 50px;">% auf <span id="tax_base">0,00</span> € netto:</td>
+                    <td style="text-align: right; border: none;"><input type="number" id="tax_rate" value="__TAX_PCT__" min="0" max="100" step="0.1" style="width: 50px;">% auf <span id="tax_base">0,00</span> € netto:</td>
                     <td id="tax_amount" style="text-align: right; font-weight: bold;">0,00 €</td>
                     <td class="no-pdf" style="border: none;"></td>
                 </tr>
@@ -1059,12 +1080,17 @@ function setInvoiceStatus(invId) {{
             // Update net sum
             document.getElementById('sum_net').textContent = sumNet.toFixed(2).replace('.', ',') + ' €';
             document.getElementById('tax_base').textContent = sumNet.toFixed(2).replace('.', ',');
-            
+
+            // USt nur ausweisen, wenn Checkbox aktiv (Kleinunternehmer §19: keine Zeile)
+            const showTax = document.getElementById('show_tax').checked;
+            const taxRow = document.getElementById('tax_row');
+            if (taxRow) taxRow.style.display = showTax ? '' : 'none';
+
             // Calculate tax
-            const taxRate = parseFloat(document.getElementById('tax_rate').value) || 0;
+            const taxRate = showTax ? (parseFloat(document.getElementById('tax_rate').value) || 0) : 0;
             const taxAmount = sumNet * (taxRate / 100);
             document.getElementById('tax_amount').textContent = taxAmount.toFixed(2).replace('.', ',') + ' €';
-            
+
             // Calculate gross sum
             const sumGross = sumNet + taxAmount;
             document.getElementById('sum_gross').innerHTML = '<strong>' + sumGross.toFixed(2).replace('.', ',') + ' €</strong>';
@@ -1141,6 +1167,12 @@ function setInvoiceStatus(invId) {{
                 return;
             }
             
+            // Steuersatz NaN-sicher lesen (0% darf nicht zu 19% werden).
+            // Kleinunternehmer (§19): keine USt -> effektiver Satz 0, Flag showTax=false.
+            const showTax = document.getElementById('show_tax').checked;
+            const _tr = parseFloat(document.getElementById('tax_rate').value);
+            const taxRate = showTax ? (isNaN(_tr) ? 19 : _tr) : 0;
+
             // Collect items
             const items = [];
             document.querySelectorAll('.invoice-item-row').forEach((row, index) => {
@@ -1153,7 +1185,7 @@ function setInvoiceStatus(invId) {{
                         description: description,
                         unitPrice: parseFloat(row.querySelector('.item-price').value) || 0,
                         totalPrice: parseFloat(row.querySelector('.item-total').textContent.replace('€', '').replace(',', '.').trim()) || 0,
-                        taxRate: parseFloat(document.getElementById('tax_rate').value) || 19
+                        taxRate: taxRate
                     });
                 }
             });
@@ -1167,7 +1199,6 @@ function setInvoiceStatus(invId) {{
             const bankAccountId = document.getElementById('bank_account_select').value || null;
             
             // Calculate amounts (replace comma with dot for German number format)
-            const taxRate = parseFloat(document.getElementById('tax_rate').value) || 19;
             const netAmount = parseFloat(document.getElementById('sum_net').textContent.replace('€', '').replace(',', '.').trim());
             const taxAmount = parseFloat(document.getElementById('tax_amount').textContent.replace('€', '').replace(',', '.').trim());
             const grossAmount = parseFloat(document.getElementById('sum_gross').textContent.replace(/<[^>]*>/g, '').replace('€', '').replace(',', '.').trim());
@@ -1199,6 +1230,7 @@ function setInvoiceStatus(invId) {{
                 bankAccountId: bankAccountId ? parseInt(bankAccountId) : null,
                 netAmount: netAmount,
                 taxRate: taxRate / 100,  // Convert percentage to decimal
+                showTax: showTax,        // false = Kleinunternehmer (§19), keine USt-Zeile
                 taxAmount: taxAmount,
                 grossAmount: grossAmount,
                 currency: 'EUR',
@@ -1257,12 +1289,16 @@ function setInvoiceStatus(invId) {{
             }
         }
         function _runPDFGeneration(invoiceId) {
+            // Tab im Klick-Kontext oeffnen (kein Popup-Blocker), spaeter befuellen
+            const viewer = window.open('about:blank', '_blank');
             fetch('/invoice/pdf_generate?id=' + invoiceId)
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
                         document.getElementById('pdf_exists').value = 'true';
                         showMessage('PDF erstellt: ' + data.pdf_path, 'success');
+                        // PDF inline im neuen Tab anzeigen
+                        if (viewer) viewer.location = '/invoice/pdf_download?id=' + invoiceId + '&inline=1';
                         // Auch XML (E-Rechnung) downloaden wenn XRechnung-Felder gefüllt
                         const buyerRouteId = document.getElementById('buyer_route_id')?.value || '';
                         const orderNumber = document.getElementById('order_number')?.value || '';
@@ -1270,10 +1306,12 @@ function setInvoiceStatus(invId) {{
                             window.open('/invoice/xml?id=' + invoiceId, '_blank');
                         }
                     } else {
+                        if (viewer) viewer.close();
                         showMessage('Fehler beim Erstellen der PDF: ' + (data.error || 'Unbekannter Fehler'), 'error');
                     }
                 })
                 .catch(function(err) {
+                    if (viewer) viewer.close();
                     showMessage('Fehler: ' + err.message, 'error');
                 });
         }
@@ -1342,5 +1380,8 @@ function setInvoiceStatus(invId) {{
     </script>
 '''
 
+    # Steuersatz-Feld + USt-Checkbox serverseitig vorbelegen (Platzhalter im Template)
+    s = s.replace('__TAX_PCT__', f'{tax_pct:g}')
+    s = s.replace('__SHOW_TAX_CHECKED__', 'checked' if show_tax else '')
     return s
 

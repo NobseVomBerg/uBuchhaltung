@@ -67,6 +67,40 @@ def logo_display_size(image, max_width_pt, max_height_pt):
     return pw * scale, ph * scale
 
 
+def resolve_logo_path(logo):
+    """Gespeicherten Logo-Wert in einen physischen Dateipfad für die PDF-
+    Einbettung auflösen. Liefert ``None``, wenn die Datei nicht lokal ladbar ist.
+
+    Hintergrund: In der DB steht nur der *logische* Pfad ``data/logos/<datei>``
+    (bzw. ein ``/seed_data/private/…``-Pfad). Im Mehrbenutzer-Modus liegt die
+    Datei physisch unter ``data/users/<user>/logos/<datei>`` – ``os.path.exists``
+    auf dem logischen Pfad schlägt dort fehl (Logo fehlte im PDF). Wir lösen den
+    Pfad analog zum HTTP-Handler (Basename → Nutzer-logos-Verzeichnis) auf.
+    """
+    import os
+    if not logo:
+        return None
+    s = str(logo).strip().replace('\\', '/')
+    if s.startswith(('http://', 'https://')):
+        return None                      # Remote-URLs koennen wir nicht einbetten
+    if os.path.isfile(s):
+        return s                         # bereits ein gueltiger (z.B. Single-User-)Pfad
+    name = os.path.basename(s)
+    try:
+        import userctx
+        cand = os.path.join(userctx.user_subdir('logos', create=False), name)
+        if os.path.isfile(cand):
+            return cand
+    except Exception:
+        pass
+    # Geteiltes Privat-Seed-Logo (Eigentuemer-Setup)
+    if 'seed_data/private' in s:
+        cand = os.path.join('seed_data', 'private', name)
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
 def load_image_xobject(path: str, max_width: int = 600, max_height: int = 320):
     """Ein Bild als komprimiertes DeviceRGB-XObject vorbereiten.
 

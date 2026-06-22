@@ -411,7 +411,8 @@ function wtOnPauseText() {
 function wtOpenPdf() {
     let url = WT_DATA.pdfBase;
     if (document.getElementById('wtPdfNotes').checked) url += '&notes=1';
-    window.location.href = url;
+    // PDF inline in neuem Tab anzeigen (statt die Seite zu ersetzen)
+    window.open(url + '&inline=1', '_blank');
 }
 function wtSetMode(mode) {
     const r = document.querySelector('input[name="location_mode"][value="'+mode+'"]');

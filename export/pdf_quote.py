@@ -11,7 +11,7 @@ Phase 1 ist einseitig; der mehrseitige Fließtext-Satz folgt in Phase 2.
 import datetime
 import os
 from db import Database
-from .pdf_core import load_image_xobject, build_multi_page_pdf
+from .pdf_core import load_image_xobject, build_multi_page_pdf, resolve_logo_path
 from . import pdf_document as D
 
 
@@ -51,7 +51,9 @@ def generate_quote_pdf(db: Database, quote_id: int):
     buyer_postal = quote[17] or ''
     buyer_city = quote[18] or ''
 
-    tax_rate = quote[35] or 0.19
+    # 0 nicht zu 19% verfälschen; Sentinel -1 = Kleinunternehmer (§19), keine USt
+    tax_rate = quote[35] if quote[35] is not None else 0.19
+    show_tax = tax_rate >= 0
     sum_net = quote[36] or 0
     tax_amount = quote[37] or 0
     sum_gross = quote[38] or 0
@@ -66,7 +68,7 @@ def generate_quote_pdf(db: Database, quote_id: int):
     if own_company_id:
         own_contact = db.get_contact_by_id(own_company_id)
         if own_contact and len(own_contact) > 13 and own_contact[13]:
-            image = load_image_xobject(own_contact[13])
+            image = load_image_xobject(resolve_logo_path(own_contact[13]))
         if own_contact and len(own_contact) > 11:
             seller_tax_id = own_contact[11] or ''
         if own_contact and len(own_contact) > 25:
@@ -122,7 +124,8 @@ def generate_quote_pdf(db: Database, quote_id: int):
     items = [{'pos': it[2], 'quantity': it[5], 'unit': it[6] or 'Stk.',
               'description': it[4], 'price': it[7], 'total': it[8]} for it in items_rows]
     D.draw_item_table(flow, items, tax_rate_pct=_pct(tax_rate),
-                      sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross)
+                      sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross,
+                      show_tax=show_tax)
 
     # Schlusstext: eine Zeile tiefer beginnen, dann seitenweise fließen lassen
     D.flow_richtext(flow, closing_text, size=10, leading=14, gap_before=20)

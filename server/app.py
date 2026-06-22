@@ -281,16 +281,18 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     self.end_headers()
                 return
             elif self.path.startswith("/invoice/pdf_download"):
-                # Generate and download PDF for existing invoice
+                # PDF einer Rechnung ausliefern. inline=1 -> im Browser anzeigen
+                # (neuer Tab), sonst Download.
                 query_components = parse_qs(self.path.split('?')[1])
                 invoice_id = int(query_components["id"][0])
-                
+                disposition = 'inline' if query_components.get('inline') else 'attachment'
+
                 pdf_bytes, filename = handlers.handle_invoice_pdf_by_id(invoice_id)
-                
+
                 if pdf_bytes:
                     self.send_response(200)
                     self.send_header("Content-type", "application/pdf")
-                    self.send_header("Content-Disposition", f"attachment; filename={filename}")
+                    self.send_header("Content-Disposition", f"{disposition}; filename={filename}")
                     self.send_header("Content-Length", str(len(pdf_bytes)))
                     self.end_headers()
                     self.wfile.write(pdf_bytes)
@@ -354,11 +356,12 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(303, "", headers={"Location": "/quote"})
             elif self.path.startswith("/quote/pdf_download"):
                 qs = parse_qs(self.path.split('?')[1])
+                disposition = 'inline' if qs.get('inline') else 'attachment'
                 pdf_bytes, filename = handlers.handle_quote_pdf_by_id(int(qs["id"][0]))
                 if pdf_bytes:
                     self.send_response(200)
                     self.send_header("Content-type", "application/pdf")
-                    self.send_header("Content-Disposition", f"attachment; filename={filename}")
+                    self.send_header("Content-Disposition", f"{disposition}; filename={filename}")
                     self.send_header("Content-Length", str(len(pdf_bytes)))
                     self.end_headers()
                     self.wfile.write(pdf_bytes)
@@ -610,12 +613,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 person_id = qs["person"][0]
                 date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
                 with_notes = qs.get('notes', ['0'])[0] in ('1', 'true', 'on')
+                disposition = 'inline' if qs.get('inline') else 'attachment'
                 pdf_bytes, filename = handlers.handle_worktime_pdf(db, person_id, date_from, date_to,
                                                                    with_notes=with_notes)
                 if pdf_bytes:
                     self.send_response(200)
                     self.send_header("Content-type", "application/pdf")
-                    self.send_header("Content-Disposition", f"attachment; filename={filename}")
+                    self.send_header("Content-Disposition", f"{disposition}; filename={filename}")
                     self.send_header("Content-Length", str(len(pdf_bytes)))
                     self.end_headers()
                     self.wfile.write(pdf_bytes)

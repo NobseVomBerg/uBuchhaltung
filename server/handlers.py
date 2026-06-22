@@ -1067,6 +1067,7 @@ def handle_invoice_save(post_body: bytes):
         bank_account_id = data.get('bankAccountId')
         net_amount = data.get('netAmount')
         tax_rate = data.get('taxRate')
+        show_tax = data.get('showTax', True)   # False = Kleinunternehmer (§19), keine USt
         tax_amount = data.get('taxAmount')
         gross_amount = data.get('grossAmount')
         currency = data.get('currency', 'EUR')
@@ -1089,9 +1090,12 @@ def handle_invoice_save(post_body: bytes):
             return json.dumps({'success': False, 'error': 'Mindestens eine Position erforderlich'}).encode()
 
         # Phase 2: Summen serverseitig exakt neu berechnen – den vom Client
-        # gelieferten net/tax/gross-Werten wird bewusst nicht vertraut.
+        # gelieferten net/tax/gross-Werten wird bewusst nicht vertraut. Bei
+        # Kleinunternehmer (§19) wird ohne Steuer gerechnet (Brutto = Netto).
         net_amount, tax_amount, gross_amount, line_nets = recompute_invoice_totals(
-            items, _rate_to_pct(tax_rate))
+            items, _rate_to_pct(tax_rate if show_tax else 0))
+        # Sentinel -1 in TaxRate kennzeichnet "kein USt-Ausweis" (vs. echte 0%).
+        stored_tax_rate = tax_rate if show_tax else -1
 
         db = Database()
         
@@ -1178,7 +1182,7 @@ def handle_invoice_save(post_body: bytes):
             'bank_iban': iban or '',
             'bank_bic': bic or '',
             'tax_category': 'S',  # Standard tax
-            'tax_rate': tax_rate,
+            'tax_rate': stored_tax_rate,
             'sum_net': net_amount,
             'tax_amount': tax_amount,
             'sum_gross': gross_amount,
@@ -1567,6 +1571,7 @@ def handle_quote_save(post_body: bytes):
         intro_text = _sanitize_richtext(data.get('introText'))
         closing_text = _sanitize_richtext(data.get('closingText'))
         tax_rate = data.get('taxRate')
+        show_tax = data.get('showTax', True)   # False = Kleinunternehmer (§19), keine USt
         status = data.get('status', 'draft')
         if status not in _QUOTE_STATUSES:
             status = 'draft'
@@ -1577,9 +1582,11 @@ def handle_quote_save(post_body: bytes):
         if not items:
             return json.dumps({'success': False, 'error': 'Mindestens eine Position erforderlich'}).encode()
 
-        # Summen serverseitig exakt
+        # Summen serverseitig exakt (bei §19 ohne Steuer: Brutto = Netto)
         net_amount, tax_amount, gross_amount, line_nets = recompute_invoice_totals(
-            items, _rate_to_pct(tax_rate))
+            items, _rate_to_pct(tax_rate if show_tax else 0))
+        # Sentinel -1 in TaxRate kennzeichnet "kein USt-Ausweis" (vs. echte 0%).
+        stored_tax_rate = tax_rate if show_tax else -1
 
         db = Database()
         customer = db.get_contact_by_id(customer_id)
@@ -1612,7 +1619,7 @@ def handle_quote_save(post_body: bytes):
             'buyer_vat_id': customer[11] or '',
             'currency': 'EUR',
             'tax_category': 'S',
-            'tax_rate': tax_rate,
+            'tax_rate': stored_tax_rate,
             'sum_net': net_amount,
             'tax_amount': tax_amount,
             'sum_gross': gross_amount,
