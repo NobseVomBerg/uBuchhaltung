@@ -410,6 +410,7 @@ def _quote_form_html(db: Database, quote_id=None):
         'logo': logo_url(o[13]) if len(o) > 13 and o[13] else ''} for o in own_contacts}
     cust_dict = {str(c[0]): {
         'customer_number': c[2] or '', 'name': c[3] or '', 'company': c[4] or '',
+        'address_line1': c[25] if len(c) > 25 and c[25] else '',
         'street': c[5] or '', 'postal': c[6] or '', 'city': c[7] or ''} for c in customers}
     art_dict = {str(a[0]): {
         'name': a[1] or '', 'unit': a[2] or 'Stk.',
@@ -447,6 +448,7 @@ def _quote_form_html(db: Database, quote_id=None):
             if (!c) return;
             const dn = c.company || c.name;
             let a = dn + '\\n';
+            if (c.address_line1) a += c.address_line1 + '\\n';
             if (c.street) a += c.street + '\\n';
             if (c.postal || c.city) a += (c.postal + ' ' + c.city).trim();
             disp.textContent = a; num.value = c.customer_number;

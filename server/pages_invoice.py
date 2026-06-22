@@ -836,12 +836,13 @@ function setInvoiceStatus(invId) {{
                     logoImg.style.display = 'none';
                 }
                 
-                // Update sender line
+                // Update sender line (OHNE Zusatzzeile – aus Platzgründen)
                 const displayName = company.company || company.name;
                 senderLine.textContent = displayName + ' · ' + company.street + ' · ' + company.postal + ' ' + company.city;
-                
-                // Update footer address
+
+                // Update footer address (MIT Zusatzzeile, falls vorhanden)
                 let addressHtml = displayName + '<br>';
+                if (company.address_line1) addressHtml += company.address_line1 + '<br>';
                 addressHtml += company.street + '<br>';
                 addressHtml += company.postal + ' ' + company.city;
                 footerAddress.innerHTML = addressHtml;
@@ -876,6 +877,7 @@ function setInvoiceStatus(invId) {{
             if (customer) {
                 const displayName = customer.company || customer.name;
                 let address = displayName + '\\n';
+                if (customer.address_line1) address += customer.address_line1 + '\\n';
                 if (customer.street) address += customer.street + '\\n';
                 if (customer.postal || customer.city) address += (customer.postal + ' ' + customer.city).trim();
                 
