@@ -210,7 +210,7 @@ def PageArticles(db: Database, edit_article_id=None):
         name        = _html.escape(str(article[1] or ''))
         unit        = _html.escape(str(article[2] or 'Stk.'))
         unit_price  = article[3] or 0
-        tax_rate    = article[4] or 19
+        tax_rate    = article[4] if article[4] is not None else 19  # 0% nicht zu 19% verfälschen
         description = _html.escape(str(article[5] or ''))
         active      = article[6] if len(article) > 6 else 1
 

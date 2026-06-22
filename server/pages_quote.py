@@ -414,7 +414,8 @@ def _quote_form_html(db: Database, quote_id=None):
     art_dict = {str(a[0]): {
         'name': a[1] or '', 'unit': a[2] or 'Stk.',
         'price': float(a[3]) if a[3] is not None else 0,
-        'taxRate': a[4] or 19, 'description': a[5] or ''} for a in articles}
+        'taxRate': a[4] if a[4] is not None else 19,  # 0% nicht zu 19% verfälschen
+        'description': a[5] or ''} for a in articles}
 
     s += '<script>\n'
     s += 'const ownCompaniesData = ' + _json_for_script(own_dict) + ';\n'
