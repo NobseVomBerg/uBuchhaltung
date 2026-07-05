@@ -89,6 +89,75 @@ def test_recipient_propagated_to_bookinggroup_split(db_with_coa):
     assert all(r[4] == 'Erfahrungsaustausch' for r in rows2)
 
 
+def test_split_with_identical_amount_positions_not_skipped(db_with_coa):
+    """Zwei Split-Positionen mit gleichem Konto UND gleichem Betrag (z.B. zwei
+    gleichteure Mobilfunkverträge auf 6805) dürfen nicht als Duplikat
+    übersprungen werden.
+
+    Regression: Die Duplikat-Prüfung verglich nur Beleg+Datum+Konto+Betrag und
+    sah nach dem Insert der ersten Position die zweite Zeile desselben Splits
+    als Duplikat an.
+    """
+    db = db_with_coa
+    doc = _rand_doc()
+    amt = random.randint(500, 3000) / 100
+    lines = [(6815, amt, '401'), (6815, amt, '401'), (4400, round(amt + 1.11, 2), '401')]
+
+    res = db.import_wiso_csv(_orig_split_csv(doc, lines))
+    assert res['imported'] == 3, res
+    assert res['skipped'] == 0, res
+
+    rows = _bookings_by_doc(db, doc)
+    assert len(rows) == 3
+    # Alle drei Zeilen in derselben BookingGroup
+    group_ids = {r[3] for r in rows}
+    assert len(group_ids) == 1 and None not in group_ids, rows
+
+    # Re-Import derselben Datei: jetzt sind alle drei echte Duplikate
+    res2 = db.import_wiso_csv(_orig_split_csv(doc, lines))
+    assert res2['imported'] == 0, res2
+    assert res2['skipped'] == 3, res2
+    assert len(_bookings_by_doc(db, doc)) == 3
+
+
+def test_reimport_adds_missing_split_row_to_existing_group(db_with_coa):
+    """Nachimport ergänzt eine früher fälschlich übersprungene Split-Zeile.
+
+    Szenario: Ein früherer (fehlerhafter) Import hat von zwei betragsgleichen
+    Positionen nur eine übernommen. Der erneute Import der vollständigen Datei
+    darf nur die fehlende Zeile einfügen und muss sie an die BESTEHENDE
+    BookingGroup hängen (inkl. korrigierter Gruppensumme).
+    """
+    db = db_with_coa
+    doc = _rand_doc()
+    amt = random.randint(500, 3000) / 100
+    other = round(amt + 2.22, 2)
+    full = [(6815, amt, '401'), (6815, amt, '401'), (4400, other, '401')]
+    partial = [full[0], full[2]]  # eine der beiden identischen Zeilen fehlt
+
+    res1 = db.import_wiso_csv(_orig_split_csv(doc, partial))
+    assert res1['imported'] == 2, res1
+
+    res2 = db.import_wiso_csv(_orig_split_csv(doc, full))
+    assert res2['imported'] == 1, res2
+    assert res2['skipped'] == 2, res2
+
+    rows = _bookings_by_doc(db, doc)
+    assert len(rows) == 3
+    group_ids = {r[3] for r in rows}
+    assert len(group_ids) == 1 and None not in group_ids, rows
+
+    # Gruppensumme wurde auf alle drei Zeilen aktualisiert
+    conn = db._get_connection()
+    cur = conn.cursor()
+    cur.execute('SELECT TotalAmount FROM BookingGroups WHERE ID=?', (group_ids.pop(),))
+    total_minor = cur.fetchone()[0]
+    conn.close()
+    from money import to_minor
+    expected = to_minor(round(2 * amt + other, 2))
+    assert total_minor == expected, (total_minor, expected)
+
+
 def test_recipient_propagated_to_bank_parent_split(db_with_coa):
     db = db_with_coa
     doc = _rand_doc()

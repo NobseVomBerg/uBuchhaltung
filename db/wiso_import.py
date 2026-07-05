@@ -187,6 +187,7 @@ class WisoImportMixin:
 
         # booking_group_id_for_key: key → int (wird bei Bedarf angelegt)
         group_id_cache = {}
+        reused_group_ids = set()  # bestehende Gruppen, deren TotalAmount am Ende neu berechnet wird
 
         dup_conn = self._get_connection()
         dup_cur  = dup_conn.cursor()
@@ -194,6 +195,18 @@ class WisoImportMixin:
         def _get_or_create_group(key, total_amount, date):
             if key in group_id_cache:
                 return group_id_cache[key]
+            # Bestehende Gruppe wiederverwenden, falls Teile des Splits schon
+            # in einem früheren Import gelandet sind (key = (doc_number, date))
+            dup_cur.execute(
+                'SELECT BookingGroup_ID FROM Bookings '
+                'WHERE DocumentNumber=? AND DateBooking=? AND BookingGroup_ID IS NOT NULL '
+                'LIMIT 1', key
+            )
+            existing = dup_cur.fetchone()
+            if existing:
+                group_id_cache[key] = existing[0]
+                reused_group_ids.add(existing[0])
+                return existing[0]
             dup_cur.execute(
                 'INSERT INTO BookingGroups (Description, CreatedDate, TotalAmount) VALUES (?,?,?)',
                 (key[0], date, self._minor_opt(total_amount))  # key = (doc_number, date)
@@ -201,6 +214,14 @@ class WisoImportMixin:
             gid = dup_cur.lastrowid
             group_id_cache[key] = gid
             return gid
+
+        # Zählbasierte Duplikat-Erkennung: innerhalb eines Splits können mehrere
+        # Zeilen denselben Schlüssel (Beleg, Datum, Konto, Betrag) haben (z.B.
+        # zwei gleichteure Positionen). Der DB-Bestand wird pro Schlüssel einmalig
+        # VOR den Inserts dieses Laufs ermittelt; übersprungen werden nur so viele
+        # CSV-Zeilen, wie die DB bereits enthält.
+        db_dup_counts = {}   # dup_key → Anzahl Zeilen in DB vor diesem Import
+        csv_dup_seen  = {}   # dup_key → Anzahl in dieser CSV bereits verarbeiteter Zeilen
 
         for pr in parsed_rows:
             try:
@@ -210,25 +231,49 @@ class WisoImportMixin:
                 coa_id       = pr['coa_id']
 
                 # Duplikat-Prüfung
+                minor_amount = to_minor(amount or 0)
                 if doc_number:
-                    if coa_id is not None:
-                        dup_cur.execute(
-                            'SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND DateBooking=? AND COA_ID=? AND Amount=?',
-                            (doc_number, booking_date, coa_id, to_minor(amount or 0))
-                        )
-                    else:
-                        dup_cur.execute(
-                            'SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND DateBooking=? AND COA_ID IS NULL AND Amount=?',
-                            (doc_number, booking_date, to_minor(amount or 0))
-                        )
-                    if dup_cur.fetchone()[0] > 0:
-                        skipped += 1
-                        skipped_rows.append({
-                            'zeile': pr['zeile'], 'datum': booking_date,
-                            'ref': doc_number, 'konto': pr['konto_str'],
-                            'betrag': amount, 'text': pr['text'][:60],
-                        })
-                        continue
+                    dup_key = (doc_number, booking_date, coa_id, minor_amount)
+                    if dup_key not in db_dup_counts:
+                        if coa_id is not None:
+                            dup_cur.execute(
+                                'SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND DateBooking=? AND COA_ID=? AND Amount=?',
+                                (doc_number, booking_date, coa_id, minor_amount)
+                            )
+                        else:
+                            dup_cur.execute(
+                                'SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND DateBooking=? AND COA_ID IS NULL AND Amount=?',
+                                (doc_number, booking_date, minor_amount)
+                            )
+                        db_dup_counts[dup_key] = dup_cur.fetchone()[0]
+                else:
+                    # Ohne Belegnummer (z.B. 1%-Methode/Privatnutzung) unterscheidet
+                    # zusätzlich der Text; nur Entry-Zeilen zählen als Treffer.
+                    dup_key = ('', booking_date, coa_id, minor_amount, pr['text'])
+                    if dup_key not in db_dup_counts:
+                        if coa_id is not None:
+                            dup_cur.execute(
+                                "SELECT COUNT(*) FROM Bookings WHERE COALESCE(DocumentNumber,'')='' "
+                                "AND DateBooking=? AND COA_ID=? AND Amount=? AND Text=? AND BookingType='entry'",
+                                (booking_date, coa_id, minor_amount, pr['text'])
+                            )
+                        else:
+                            dup_cur.execute(
+                                "SELECT COUNT(*) FROM Bookings WHERE COALESCE(DocumentNumber,'')='' "
+                                "AND DateBooking=? AND COA_ID IS NULL AND Amount=? AND Text=? AND BookingType='entry'",
+                                (booking_date, minor_amount, pr['text'])
+                            )
+                        db_dup_counts[dup_key] = dup_cur.fetchone()[0]
+                seen = csv_dup_seen.get(dup_key, 0)
+                csv_dup_seen[dup_key] = seen + 1
+                if seen < db_dup_counts[dup_key]:
+                    skipped += 1
+                    skipped_rows.append({
+                        'zeile': pr['zeile'], 'datum': booking_date,
+                        'ref': doc_number, 'konto': pr['konto_str'],
+                        'betrag': amount, 'text': pr['text'][:60],
+                    })
+                    continue
 
                 # BookingGroup_ID ermitteln wenn zugehörige Gruppe >1 Zeile hat
                 booking_group_id = None
@@ -250,6 +295,12 @@ class WisoImportMixin:
 
             except Exception as e:
                 errors.append(f"Zeile {pr['zeile']}: {str(e)}")
+
+        # Gruppensummen wiederverwendeter Gruppen aus dem DB-Bestand neu berechnen
+        for gid in reused_group_ids:
+            dup_cur.execute('SELECT COALESCE(SUM(ABS(Amount)),0) FROM Bookings WHERE BookingGroup_ID=?', (gid,))
+            total_minor = dup_cur.fetchone()[0]
+            dup_cur.execute('UPDATE BookingGroups SET TotalAmount=? WHERE ID=?', (total_minor, gid))
 
         dup_conn.commit()
         dup_conn.close()

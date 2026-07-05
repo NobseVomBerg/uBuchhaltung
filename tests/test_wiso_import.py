@@ -77,6 +77,36 @@ class TestOriginalFormatImport:
         assert result2['imported'] == 0
         assert result2['skipped'] == 8
 
+    def test_reimport_skips_rows_without_doc_number(self, db_with_coa):
+        """Zeilen ohne REFERENZNUMMER dürfen beim Re-Import keine Dubletten erzeugen.
+
+        Regression: Die Duplikat-Prüfung griff nur bei Zeilen MIT Belegnummer;
+        doc-lose Zeilen (z.B. 1%-Methode/Privatnutzung) wurden bei jedem
+        erneuten Import derselben Datei nochmal eingefügt. Ohne Belegnummer
+        unterscheidet zusätzlich der Text — zwei textgleiche, betragsgleiche
+        Zeilen in EINER Datei sind aber legitim und werden beide importiert.
+        """
+        import random, uuid
+        amt = random.randint(500, 3000) / 100
+        text_a = f"Privatnutzung {uuid.uuid4().hex[:6]}"
+        text_b = f"Privatnutzung {uuid.uuid4().hex[:6]}"
+        # Zwei identische Zeilen (gleicher Text/Betrag/Konto) + eine weitere
+        lines = [(6815, text_a, amt), (6815, text_a, amt), (4400, text_b, amt)]
+        header = "ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER"
+        rows = [header] + [
+            f'{i};31.12.2025 00:00;{konto};1460;"{text}";;{amount:.2f};401;'
+            for i, (konto, text, amount) in enumerate(lines, start=1)
+        ]
+        data = ("\n".join(rows) + "\n").encode('utf-8')
+
+        res1 = db_with_coa.import_wiso_csv(data)
+        assert res1['imported'] == 3, res1
+        assert res1['skipped'] == 0, res1
+
+        res2 = db_with_coa.import_wiso_csv(data)
+        assert res2['imported'] == 0, res2
+        assert res2['skipped'] == 3, res2
+
     def test_tax_rate_19_from_bu_401(self, db_with_coa):
         """BU 401 → TaxRate = 0.19"""
         csv = (
