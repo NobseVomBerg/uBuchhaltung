@@ -115,6 +115,45 @@ def test_duplicate_is_skipped(db_two_accounts, pending_factory):
     assert res["skipped"] == 1
 
 
+def test_reimport_after_table_update_is_skipped(db_two_accounts, pending_factory):
+    """Kontoauszug-Re-Import nach WISO-Tabellen-Import erzeugt keine Dubletten.
+
+    Regression: Der Tabellen-Export-Import überschreibt Text und
+    ForeignBankAccount der bank-Buchungen. Die Duplikat-Erkennung darf deshalb
+    nur über Datum+Betrag+Konto gehen (zählbasiert) — zwei Transaktionen mit
+    gleichem Tag/Betrag im selben Auszug bleiben trotzdem beide erhalten.
+    """
+    txns = [_txn("2025-01-10", -50.0, "A-1"),
+            _txn("2025-01-10", -50.0, "A-1b"),   # gleicher Tag/Betrag, andere Referenz
+            _txn("2025-01-12", -7.5, "A-2")]
+
+    def make_file():
+        return [{"filename": "a.pdf", "bank_code": "VBR", "iban": IBAN_A,
+                 "document_date": "2025-01-31", "transactions": list(txns)}]
+
+    import_id = pending_factory(make_file())
+    status, body = handlers.handle_confirm_import(db_two_accounts, {"import_id": [import_id]})
+    res = json.loads(body)["results"][0]
+    assert res["inserted"] == 3, res
+    assert res["skipped"] == 0, res
+
+    # Simuliert den WISO-Tabellen-Import: Text + IBAN werden überschrieben
+    conn = db_two_accounts._get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE Bookings SET Text = 'Verwendungszweck ' || ID, "
+                "ForeignBankAccount = 'DE99 9999 9999 9999 9999 99' "
+                "WHERE BookingType = 'bank'")
+    conn.commit()
+    conn.close()
+
+    import_id2 = pending_factory(make_file())
+    status, body = handlers.handle_confirm_import(db_two_accounts, {"import_id": [import_id2]})
+    res2 = json.loads(body)["results"][0]
+    assert res2["inserted"] == 0, res2
+    assert res2["skipped"] == 3, res2
+    assert len(_bank_bookings(db_two_accounts)) == 3
+
+
 def test_unknown_account_reported(db_two_accounts, pending_factory):
     import_id = pending_factory([
         {"filename": "x.pdf", "bank_code": "VBR", "iban": "DE00000000000000000000",

@@ -282,16 +282,24 @@ class BookingsMixin:
         
         return last_id
     def check_booking_exists(self, date, amount, account_id=None, foreign_bank_account="", text=""):
-        """Check if a booking with same parameters already exists"""
+        """Anzahl vorhandener Buchungen mit gleichem Datum/Betrag/Konto.
+
+        Absichtlich OHNE Text-/IBAN-Vergleich: beide Felder überschreibt der
+        WISO-Tabellen-Export-Import nachträglich (Verwendungszweck, Konto-Nr.),
+        wodurch ein Kontoauszug-Re-Import die Buchungen sonst nicht wiederfindet.
+        Rückgabe ist die Anzahl (truthy = vorhanden), damit Aufrufer bei
+        mehrfach identischen Transaktionen zählbasiert deduplizieren können.
+        foreign_bank_account/text bleiben aus API-Kompatibilität erhalten.
+        """
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
             SELECT COUNT(*) FROM Bookings
-            WHERE DateBooking=? AND Amount=? AND Account_ID=? AND ForeignBankAccount=? AND Text=?
-        ''', (date, to_minor(amount or 0), account_id, foreign_bank_account, text))
+            WHERE DateBooking=? AND Amount=? AND Account_ID=?
+        ''', (date, to_minor(amount or 0), account_id))
         count = cursor.fetchone()[0]
         conn.close()
-        return count > 0
+        return count
     def update_booking(self, booking_id, date_booking, amount, account_id=None, 
                        foreign_bank_account="", recipient_client="", contact_id=None, 
                        coa_id=None, category_id=None, currency="EUR", tax_rate=None, 

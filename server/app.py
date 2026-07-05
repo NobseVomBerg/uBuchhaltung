@@ -732,6 +732,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             #print(f"[CACHE] {filename}: IMS={if_modified_since!r}  LM={file_mtime_string!r}  match={if_modified_since is not None and if_modified_since.strip() == file_mtime_string}")
             if if_modified_since and if_modified_since.strip() == file_mtime_string:
                 self.send_response(304)
+                self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
                 return
 
@@ -740,6 +741,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-type", content_type)
                 self.send_header("Last-Modified", file_mtime_string)
+                # no-cache = cachen erlaubt, aber vor jeder Nutzung revalidieren
+                # (If-Modified-Since -> 304). Verhindert veraltetes CSS nach Updates.
+                self.send_header("Cache-Control", "no-cache")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)

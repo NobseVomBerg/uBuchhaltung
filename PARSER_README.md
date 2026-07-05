@@ -83,7 +83,11 @@ ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNU
 - Verrechnungskonto: 1460
 - Bestimmt Vorzeichen der Buchung
 
-**Duplikat-Erkennung:** REFERENZNUMMER + Datum + COA_ID + Betrag
+**Duplikat-Erkennung (zählbasiert):** REFERENZNUMMER + Datum + COA_ID + Betrag;
+ohne Referenznummer: Datum + COA_ID + Betrag (nur Entry-Buchungen, ohne Text —
+der Tabellen-Export überschreibt ihn nachträglich). Übersprungen werden je
+Schlüssel nur so viele Zeilen, wie die DB bereits enthält — gleichartige
+Split-Positionen (gleicher Betrag/Konto/Tag) werden dadurch korrekt importiert.
 
 **BookingType:** `'entry'` (Buchungssatz)
 

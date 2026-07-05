@@ -80,11 +80,16 @@ class TestOriginalFormatImport:
     def test_reimport_skips_rows_without_doc_number(self, db_with_coa):
         """Zeilen ohne REFERENZNUMMER dürfen beim Re-Import keine Dubletten erzeugen.
 
-        Regression: Die Duplikat-Prüfung griff nur bei Zeilen MIT Belegnummer;
-        doc-lose Zeilen (z.B. 1%-Methode/Privatnutzung) wurden bei jedem
-        erneuten Import derselben Datei nochmal eingefügt. Ohne Belegnummer
-        unterscheidet zusätzlich der Text — zwei textgleiche, betragsgleiche
-        Zeilen in EINER Datei sind aber legitim und werden beide importiert.
+        Regression 1: Die Duplikat-Prüfung griff nur bei Zeilen MIT Belegnummer;
+        doc-lose Zeilen (z.B. privat/1%-Methode) wurden bei jedem erneuten
+        Import derselben Datei nochmal eingefügt.
+
+        Regression 2: Der Text darf NICHT ins Duplikat-Kriterium einfließen —
+        der Tabellen-Export-Import überschreibt ihn nachträglich mit dem
+        Verwendungszweck (und setzt RecipientClient). Ein Re-Import der
+        Bewegungsdaten muss die Zeilen trotzdem als vorhanden erkennen.
+        Gleichartige Zeilen (gleicher Betrag/Konto/Tag) unterscheidet die
+        zählbasierte Prüfung über die Anzahl.
         """
         import random, uuid
         amt = random.randint(500, 3000) / 100
@@ -102,6 +107,16 @@ class TestOriginalFormatImport:
         res1 = db_with_coa.import_wiso_csv(data)
         assert res1['imported'] == 3, res1
         assert res1['skipped'] == 0, res1
+
+        # Simuliert den Tabellen-Export-Import: Text und Empfänger werden
+        # auf den bestehenden Buchungen überschrieben
+        conn = db_with_coa._get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE Bookings SET Text = 'Verwendungszweck ' || ID, RecipientClient = 'Empfänger X' "
+            "WHERE COALESCE(DocumentNumber,'') = '' AND DateBooking = '2025-12-31'")
+        conn.commit()
+        conn.close()
 
         res2 = db_with_coa.import_wiso_csv(data)
         assert res2['imported'] == 0, res2

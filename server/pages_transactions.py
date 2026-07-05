@@ -304,8 +304,14 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             return n.toFixed(2).replace('.', ',') + ' €';
         }
 
+        // Doppel-Uploads verhindern: während Upload/Analyse läuft, weitere
+        // Datei-Auswahl bzw. Drops ignorieren und den Auswahl-Button sperren.
+        let uploadBusy = false;
         function uploadFiles(files) {
             if (files.length === 0) return;
+            if (uploadBusy) { appMsg('Upload läuft bereits – bitte warten.', 'warn'); return; }
+            uploadBusy = true;
+            dropZone.querySelector('button').disabled = true;
             uploadStatus.innerHTML = '<p>Lade hoch & analysiere ...</p>';
             const formData = new FormData();
             for (let i = 0; i < files.length; i++) { formData.append('files', files[i]); }
@@ -317,7 +323,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     currentImportId = data.import_id;
                     renderPreview(data);
                 })
-                .catch(err => { uploadStatus.innerHTML = ''; appMsg('Fehler beim Hochladen: ' + err, 'error'); });
+                .catch(err => { uploadStatus.innerHTML = ''; appMsg('Fehler beim Hochladen: ' + err, 'error'); })
+                .finally(() => {
+                    uploadBusy = false;
+                    dropZone.querySelector('button').disabled = false;
+                    fileInput.value = '';   // gleiche Datei erneut wählbar
+                });
         }
 
         function statusBadge(status) {
@@ -416,6 +427,15 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             if (e.target.closest('.btnDismiss')) { dismissPreview(); return; }
         });
 
+        // Während ein Import läuft, alle Import-/Verwerfen-Buttons sperren –
+        // Doppelklicks lösen sonst parallele Requests und Fehlermeldungen aus.
+        let importBusy = false;
+        function setImportBusy(busy) {
+            importBusy = busy;
+            document.querySelectorAll('.btnImportBeleg, .btnImportAll, .btnDismiss')
+                .forEach(b => { b.disabled = busy; });
+        }
+
         function postImport(params) {
             const body = new URLSearchParams();
             body.append('import_id', currentImportId);
@@ -424,6 +444,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         }
 
         function importBeleg(idx) {
+            if (importBusy) return;
+            setImportBusy(true);
             postImport({ file_index: idx }).then(data => {
                 if (!data.ok) { appMsg('Fehler: ' + (data.error || 'Import fehlgeschlagen'), 'error'); return; }
                 const res = (data.results || [])[0] || {};
@@ -432,10 +454,13 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 const card = document.getElementById('beleg-' + idx);
                 if (card) card.remove();
                 refreshTable();
-            }).catch(err => appMsg('Fehler beim Import: ' + err, 'error'));
+            }).catch(err => appMsg('Fehler beim Import: ' + err, 'error'))
+              .finally(() => setImportBusy(false));
         }
 
         function importAll() {
+            if (importBusy) return;
+            setImportBusy(true);
             postImport({}).then(data => {
                 if (!data.ok) { appMsg('Fehler: ' + (data.error || 'Import fehlgeschlagen'), 'error'); return; }
                 let ins = 0, skip = 0, failed = 0;
@@ -443,7 +468,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 appMsg(ins + ' neu importiert' + (skip ? ', ' + skip + ' Duplikate' : '') + (failed ? ', ' + failed + ' ohne Konto' : ''), failed ? 'warn' : 'success');
                 dismissPreview();
                 refreshTable();
-            }).catch(err => appMsg('Fehler beim Import: ' + err, 'error'));
+            }).catch(err => appMsg('Fehler beim Import: ' + err, 'error'))
+              .finally(() => setImportBusy(false));
         }
 
         function dismissPreview() {

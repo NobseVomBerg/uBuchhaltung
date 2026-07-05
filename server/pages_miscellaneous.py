@@ -50,6 +50,44 @@ def PageMiscellaneous(db: Database):
         <br>
         <button type="button" onclick="executeSql()" class="coloredButton bg-orange">SQL ausführen</button>
         <span style="color: red; margin-left: 20px;">⚠️ Vorsicht: SQL-Befehle werden direkt ausgeführt!</span>
+        <div class="rowWithObjects sqlToolbarRow">
+            <strong>Zeitbereich löschen:</strong>
+            <label>Von:&nbsp;<input type="date" id="range_del_from"></label>
+            <label>Bis:&nbsp;<input type="date" id="range_del_to"></label>
+            <button type="button" onclick="buildRangeDeleteSql()" class="coloredButton bg-blue">SQL erzeugen</button>
+        </div>
+        <p class="hintText">Erzeugt ein Lösch-Skript für Belege, Buchungen, Rechnungen und Angebote
+        im Zeitraum und fügt es oben ins SQL-Feld ein — <strong>ausgeführt wird erst nach Klick auf
+        „SQL ausführen"</strong>. Dateien im Dateisystem bleiben erhalten.</p>
+        <script>
+        function buildRangeDeleteSql() {
+            const from = document.getElementById('range_del_from').value;
+            const to   = document.getElementById('range_del_to').value;
+            const status = document.getElementById('sql_status');
+            if (!from || !to) { status.innerHTML = '<span class="errorColor">Bitte Von- und Bis-Datum angeben.</span>'; return; }
+            if (from > to)    { status.innerHTML = '<span class="errorColor">Von-Datum liegt nach dem Bis-Datum.</span>'; return; }
+            const b = "SELECT ID FROM Bookings  WHERE DateBooking BETWEEN '" + from + "' AND '" + to + "'";
+            const d = "SELECT ID FROM Documents WHERE Date        BETWEEN '" + from + "' AND '" + to + "'";
+            const i = "SELECT ID FROM Invoices  WHERE InvoiceDate BETWEEN '" + from + "' AND '" + to + "'";
+            const sql =
+                "-- Zeitbereich löschen: " + from + " bis " + to + "\\n" +
+                "-- Reihenfolge beachtet Fremdschlüssel. Dateien im Dateisystem bleiben erhalten.\\n" +
+                "DELETE FROM InvoicePayments WHERE InvoiceID IN (" + i + ") OR BookingID IN (" + b + ");\\n" +
+                "DELETE FROM InvoiceItems WHERE InvoiceId IN (" + i + ");\\n" +
+                "UPDATE Invoices SET SourceQuoteId = NULL WHERE SourceQuoteId IN (" + i + ");\\n" +
+                "DELETE FROM Invoices WHERE InvoiceDate BETWEEN '" + from + "' AND '" + to + "';  -- Rechnungen UND Angebote\\n" +
+                "DELETE FROM BookingDocuments WHERE Booking_ID IN (" + b + ") OR Document_ID IN (" + d + ");\\n" +
+                "UPDATE Assets SET Booking_ID = NULL WHERE Booking_ID IN (" + b + ");\\n" +
+                "UPDATE Assets SET Document_ID = NULL WHERE Document_ID IN (" + d + ");\\n" +
+                "UPDATE AssetDepreciations SET Booking_ID = NULL WHERE Booking_ID IN (" + b + ");\\n" +
+                "UPDATE Trips SET DocumentID = NULL WHERE DocumentID IN (" + d + ");\\n" +
+                "DELETE FROM Bookings WHERE DateBooking BETWEEN '" + from + "' AND '" + to + "';\\n" +
+                "DELETE FROM BookingGroups WHERE ID NOT IN (SELECT DISTINCT BookingGroup_ID FROM Bookings WHERE BookingGroup_ID IS NOT NULL);\\n" +
+                "DELETE FROM Documents WHERE Date BETWEEN '" + from + "' AND '" + to + "';";
+            document.getElementById('sql_input').value = sql;
+            status.innerHTML = 'Lösch-Skript eingefügt — bitte prüfen und dann „SQL ausführen" klicken.';
+        }
+        </script>
         <div id="sql_status" style="margin-top: 10px;"></div>
         <textarea id="sql_output" rows="20" cols="100" readonly class="textareaSql" style="display: none;"></textarea>
         <script>
@@ -186,6 +224,14 @@ def PageMiscellaneous(db: Database):
             const p = new URLSearchParams(window.location.search);
             const status = p.get('wiso_import');
             if (!status) return;
+            const file = p.get('file');
+            if (file) {
+                const fdiv = document.createElement('div');
+                fdiv.style = 'margin-top:10px;';
+                fdiv.innerHTML = '📄 Verarbeitete Datei: <strong></strong>';
+                fdiv.querySelector('strong').textContent = file;
+                document.currentScript.parentNode.insertBefore(fdiv, document.currentScript);
+            }
             const div = document.createElement('div');
             div.style = 'margin-top:10px; padding:8px 14px; border-radius:4px; display:inline-block;';
             if (status === 'ok') {
@@ -222,6 +268,9 @@ def PageMiscellaneous(db: Database):
 
     # Detail-Tabellen aus letztem Ergebnis rendern
     if _last_result:
+        _fname = _last_result.get('filename')
+        if _fname:
+            s += f'<h3>Letztes Import-Ergebnis &ndash; Datei: {_html.escape(_fname)}</h3>'
         _skipped_rows = _last_result.get('skipped_rows', [])
         _not_found    = _last_result.get('not_found', [])
         _missing_coa  = _last_result.get('missing_coa', [])

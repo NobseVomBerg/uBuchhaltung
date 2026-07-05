@@ -57,6 +57,13 @@ def build_import_preview(db, import_data):
     accounts = db.fetch_accounts()
     files_out = []
 
+    # Zählbasierter Duplikat-Zähler über alle Belege hinweg (gleiche Logik wie
+    # der Bestätigungs-Import): als Duplikat gilt eine Transaktion nur, solange
+    # die DB mehr Buchungen mit gleichem Datum/Betrag/Konto enthält, als in
+    # dieser Vorschau bereits gezählt wurden.
+    dup_db_counts = {}
+    dup_seen = {}
+
     for idx, f in enumerate(import_data.get("files", [])):
         iban = f.get("iban")
         account_id, account_name = match_account(accounts, iban)
@@ -81,9 +88,14 @@ def build_import_preview(db, import_data):
 
             is_dup = False
             if account_id is not None and date and amount is not None:
-                is_dup = db.check_booking_exists(
-                    date, amount, account_id, foreign_iban, reference
-                )
+                dup_key = (date, round(float(amount), 2), account_id)
+                if dup_key not in dup_db_counts:
+                    dup_db_counts[dup_key] = db.check_booking_exists(
+                        date, amount, account_id, foreign_iban, reference
+                    )
+                seen = dup_seen.get(dup_key, 0)
+                dup_seen[dup_key] = seen + 1
+                is_dup = seen < dup_db_counts[dup_key]
             if is_dup:
                 dup_count += 1
             else:

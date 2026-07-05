@@ -247,21 +247,24 @@ class WisoImportMixin:
                             )
                         db_dup_counts[dup_key] = dup_cur.fetchone()[0]
                 else:
-                    # Ohne Belegnummer (z.B. 1%-Methode/Privatnutzung) unterscheidet
-                    # zusätzlich der Text; nur Entry-Zeilen zählen als Treffer.
-                    dup_key = ('', booking_date, coa_id, minor_amount, pr['text'])
+                    # Ohne Belegnummer (z.B. privat/1%-Methode): nur Entry-Zeilen
+                    # zählen als Treffer. Der Text gehört NICHT in den Schlüssel,
+                    # weil der Tabellen-Export-Import ihn nachträglich überschreibt
+                    # (Verwendungszweck) – gleichartige Zeilen unterscheidet die
+                    # Zählung über die Anzahl, nicht über den Text.
+                    dup_key = ('', booking_date, coa_id, minor_amount)
                     if dup_key not in db_dup_counts:
                         if coa_id is not None:
                             dup_cur.execute(
                                 "SELECT COUNT(*) FROM Bookings WHERE COALESCE(DocumentNumber,'')='' "
-                                "AND DateBooking=? AND COA_ID=? AND Amount=? AND Text=? AND BookingType='entry'",
-                                (booking_date, coa_id, minor_amount, pr['text'])
+                                "AND DateBooking=? AND COA_ID=? AND Amount=? AND BookingType='entry'",
+                                (booking_date, coa_id, minor_amount)
                             )
                         else:
                             dup_cur.execute(
                                 "SELECT COUNT(*) FROM Bookings WHERE COALESCE(DocumentNumber,'')='' "
-                                "AND DateBooking=? AND COA_ID IS NULL AND Amount=? AND Text=? AND BookingType='entry'",
-                                (booking_date, minor_amount, pr['text'])
+                                "AND DateBooking=? AND COA_ID IS NULL AND Amount=? AND BookingType='entry'",
+                                (booking_date, minor_amount)
                             )
                         db_dup_counts[dup_key] = dup_cur.fetchone()[0]
                 seen = csv_dup_seen.get(dup_key, 0)

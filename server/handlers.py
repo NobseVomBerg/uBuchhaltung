@@ -87,6 +87,13 @@ def handle_confirm_import(db: Database, post_data):
         results = []
         any_inserted = False
 
+        # Zählbasierte Duplikat-Erkennung: DB-Bestand pro Schlüssel wird beim
+        # ersten Auftreten ermittelt (vor den Inserts dieses Laufs); übersprungen
+        # werden nur so viele Transaktionen, wie die DB bereits enthält. So
+        # bleiben mehrfach identische Transaktionen (gleicher Tag/Betrag) erhalten.
+        dup_db_counts = {}
+        dup_seen = {}
+
         for i in target_indices:
             if i < 0 or i >= len(files):
                 continue
@@ -117,7 +124,13 @@ def handle_confirm_import(db: Database, post_data):
                 if trans_date is None or trans_amount is None:
                     skipped += 1
                     continue
-                if db.check_booking_exists(trans_date, trans_amount, account_id, foreign_iban, text):
+                dup_key = (trans_date, round(float(trans_amount), 2), account_id)
+                if dup_key not in dup_db_counts:
+                    dup_db_counts[dup_key] = db.check_booking_exists(
+                        trans_date, trans_amount, account_id, foreign_iban, text)
+                seen = dup_seen.get(dup_key, 0)
+                dup_seen[dup_key] = seen + 1
+                if seen < dup_db_counts[dup_key]:
                     skipped += 1
                     continue
 
@@ -564,10 +577,11 @@ def handle_wiso_import(request_handler, db: Database):
     csv_bytes = part.content if part else None
     if not csv_bytes:
         return 303, '/miscellaneous?wiso_import=error&msg=Keine+Datei+im+Upload'
+    filename = os.path.basename(part.filename or '')
 
     try:
-        import json, os
         result = db.import_wiso_csv(csv_bytes)
+        result['filename'] = filename
         imported  = result['imported']
         skipped   = result['skipped']
         errs      = result['errors']
@@ -587,6 +601,7 @@ def handle_wiso_import(request_handler, db: Database):
 
         return 303, (
             f'/miscellaneous?wiso_import=ok'
+            f'&file={quote(filename)}'
             f'&imported={imported}&updated={result.get("updated",0)}&skipped={skipped}'
             f'&err_count={len(errs)}'
             f'&not_found={len(result.get("not_found", []))}'

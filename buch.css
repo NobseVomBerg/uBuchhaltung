@@ -26,6 +26,8 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .errorColor				{ color: red; }
 .successColor			{ color: green; }
 .textareaSql			{ font-family: monospace; width: 100%; max-width: 1000px; margin-top: 10px; }
+.sqlToolbarRow			{ margin-top: 14px; }
+.hintText				{ margin-top: 4px; font-size: 0.9em; color: #666; }
 .muted					{ color: #666; }
 /* Form tables (prefered for gridRightCol) */
 .form-table				{ width: 100%; max-width: 700px; border-collapse: collapse; border: none; }
@@ -44,7 +46,8 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 /* Colored buttons (shared base + color modifier) */
 .coloredButton, .coloredButtonNoClick { display: inline-block; color: white; text-decoration: none; border-radius: 5px; border: none; cursor: pointer; padding: 9px 16px; margin: 2px 2px 2px 0; }
 .coloredButton			{ cursor: pointer; }
-.coloredButton:hover	{ filter: brightness(0.88); color: white; text-decoration: none; padding: 7px 14px; margin: 4px 4px 4px 2px; }
+.coloredButton:hover:not(:disabled) { filter: brightness(0.88); color: white; text-decoration: none; padding: 7px 14px; margin: 4px 4px 4px 2px; }
+.coloredButton:disabled { opacity: 0.5; cursor: wait; }
 .btn-sm, .btn-smNoClick	{ padding: 4px 8px; font-size: 0.9em; }
 .btn-sm:hover			{ padding: 2px 6px; }
 
