@@ -683,10 +683,15 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 new_path = self.path.replace("/edit_skr", "/masterdata/skr/edit")
                 self.respond(301, "", headers={"Location": new_path})
             # ──────────────────────────────────────────────────────────────
-            elif self.path == "/buch.css":
-                self.serve_static_file("buch.css", "text/css")
-            elif self.path == "/favicon.ico":
-                self.serve_static_file("favicon.ico", "image/x-icon")
+            elif self.path.split('?', 1)[0] == "/buch.css":
+                # Wird mit ?v=<APP_VERSION> referenziert (Cache-Buster) und darf
+                # daher lange gecacht werden – ohne Revalidierung pro Seitenwechsel
+                # (no-cache verursachte sichtbares Flackern/FOUC bei Navigation).
+                self.serve_static_file("buch.css", "text/css",
+                                       cache_control="public, max-age=31536000, immutable")
+            elif self.path.split('?', 1)[0] == "/favicon.ico":
+                self.serve_static_file("favicon.ico", "image/x-icon",
+                                       cache_control="public, max-age=86400")
             elif self.path.startswith("/data/logos/"):
                 # Logos liegen im logos-Verzeichnis des angemeldeten Nutzers
                 # (Single-User: ./data/logos). Es wird nur der Dateiname genutzt,
@@ -723,16 +728,21 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         finally:
             userctx.clear()
 
-    def serve_static_file(self, filename, content_type):
+    def serve_static_file(self, filename, content_type, cache_control="no-cache"):
+        """Statische Datei mit Last-Modified/304-Unterstützung ausliefern.
+
+        cache_control: Default "no-cache" (cachen erlaubt, aber vor jeder
+        Nutzung revalidieren). Versionierte Ressourcen (?v=…-Links) können
+        stattdessen lange gecacht werden ("max-age=…, immutable").
+        """
         try:
             file_mtime = os.path.getmtime(filename)
             file_mtime_string  = self.date_time_string(file_mtime)
 
             if_modified_since = self.headers.get('If-Modified-Since')
-            #print(f"[CACHE] {filename}: IMS={if_modified_since!r}  LM={file_mtime_string!r}  match={if_modified_since is not None and if_modified_since.strip() == file_mtime_string}")
             if if_modified_since and if_modified_since.strip() == file_mtime_string:
                 self.send_response(304)
-                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Cache-Control", cache_control)
                 self.end_headers()
                 return
 
@@ -741,9 +751,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-type", content_type)
                 self.send_header("Last-Modified", file_mtime_string)
-                # no-cache = cachen erlaubt, aber vor jeder Nutzung revalidieren
-                # (If-Modified-Since -> 304). Verhindert veraltetes CSS nach Updates.
-                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Cache-Control", cache_control)
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)

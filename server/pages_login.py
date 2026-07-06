@@ -14,7 +14,7 @@ def _shell(title, body):
     return (
         "<!DOCTYPE html>\n<html>\n <head>\n  <meta charset='UTF-8'>\n"
         f"  <title>{_html.escape(title)}</title>\n"
-        "  <link rel='stylesheet' href='/buch.css'>\n"
+        f"  <link rel='stylesheet' href='/buch.css?v={APP_VERSION}'>\n"
         "  <link rel='icon' sizes='32x32' href='favicon.ico'>\n"
         " </head>\n <body>\n"
         "  <div class='grid1Col700 gridMain'>\n" + body + "\n  </div>\n </body>\n</html>"

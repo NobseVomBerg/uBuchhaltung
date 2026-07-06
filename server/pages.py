@@ -29,10 +29,13 @@ def Header1(active_page=None):
         active_page: Name of active page ('dashboard', 'receipts', 'transactions', 'skr', 'miscellaneous', 'about')
                      Active page will be highlighted without link
     """
+    from version import APP_VERSION
     s = "<!DOCTYPE html>\n"
     s+= "<html>\n <head>\n  <meta charset='UTF-8'>\n"
     s+= "  <title>Contabilidad simple</title>\n"
-    s+= "  <link rel='stylesheet' href='/buch.css'>\n"
+    # ?v=… als Cache-Buster: erlaubt langes Browser-Caching (kein Flackern durch
+    # Revalidierung beim Seitenwechsel), Updates kommen per Versions-Bump an
+    s+= f"  <link rel='stylesheet' href='/buch.css?v={APP_VERSION}'>\n"
     s+= "  <link rel='icon' sizes='32x32' href='favicon.ico'>\n"
     s+= " </head>\n <body>"
     

@@ -170,6 +170,9 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
 ### Styling
 - Alle Styles gehören in `buch.css` (nicht inline in HTML)
 - Wiederverwenden statt neue Klassen-Inflationen
+- `buch.css` wird mit `?v={APP_VERSION}` referenziert und lange gecacht
+  (immutable): **CSS-Änderungen erfordern einen Versions-Bump**, sonst
+  bekommen Browser das alte Stylesheet
 - (Siehe Memory: `styling-css-guidelines.md`)
 
 ### Development-Server

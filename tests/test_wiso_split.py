@@ -329,6 +329,50 @@ def test_bank_entry_pair_without_doc_number_matched(db_with_coa):
     assert rows[entry_id] == recipient, f"Entry-Buchung nicht aktualisiert: {rows}"
 
 
+def test_two_bank_entry_pairs_same_amount_disambiguated_by_text(db_with_coa):
+    """Zwei bank+entry-Paare am selben Tag mit identischem Betrag, nur über den
+    Verwendungszweck unterscheidbar (Realfall: zwei 1-Cent-Ident-Buchungen).
+
+    Regression: Stage A (Paar-Erkennung) greift nur bei genau 2 Kandidaten über
+    Datum+Betrag; bei 4 (zwei Paare) musste Stage B das per Text gefundene
+    bank+entry-Paar erkennen. Vorher wurde es als Split-Gruppe behandelt
+    (Summe = 2×Betrag ≠ Zeilenbetrag) und landete fälschlich in not_found.
+    """
+    db = db_with_coa
+    recipient = _rand_name()
+    coa = {r[2]: r[0] for r in db.fetch_chart_of_accounts()}
+    amt = -(random.randint(1, 99) / 100)
+    betrag = f"{amt:.2f}".replace('.', ',')
+    text_a = f"Ident-Check {uuid.uuid4().hex[:6]}"
+    text_b = f"Ident-Check {uuid.uuid4().hex[:6]}"
+
+    ids = []
+    for text in (text_a, text_b):
+        bank_id = db.insert_booking(date_booking='2025-04-11', amount=amt,
+                                    booking_type='bank', text=text)
+        entry_id = db.insert_booking(date_booking='2025-04-11', amount=amt,
+                                     coa_id=coa.get(2100), booking_type='entry',
+                                     text=text, parent_booking_id=bank_id)
+        ids += [bank_id, entry_id]
+
+    header = "Buchungsdatum;Empf./Auft.;Konto-Nr. / IBAN;Verwendungszweck;Kategorie;Beleg Nr.;Betrag"
+    rows = [header] + [f'11.04.2025;{recipient};;"{text}";;;{betrag}'
+                       for text in (text_a, text_b)]
+    res = db.import_wiso_csv(("\n".join(rows) + "\n").encode('cp1252'))
+
+    assert res['format'] == 'table'
+    assert res['not_found'] == [], res['not_found']
+    assert res['updated'] >= 2, res
+
+    conn = db._get_connection()
+    cur = conn.cursor()
+    cur.execute(f"SELECT ID, RecipientClient FROM Bookings WHERE ID IN ({','.join('?'*len(ids))})", ids)
+    rows_db = cur.fetchall()
+    conn.close()
+    assert len(rows_db) == 4
+    assert all(r[1] == recipient for r in rows_db), rows_db
+
+
 def test_similar_individual_bookings_disambiguated_by_text(db_with_coa):
     """Zwei gleichartige Einzelbuchungen (KEIN Split) mit identischem Datum
     und Betrag, die sich nur im Verwendungszweck unterscheiden.

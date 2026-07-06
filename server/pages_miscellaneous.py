@@ -225,22 +225,16 @@ def PageMiscellaneous(db: Database):
             const status = p.get('wiso_import');
             if (!status) return;
             const file = p.get('file');
-            if (file) {
-                const fdiv = document.createElement('div');
-                fdiv.style = 'margin-top:10px;';
-                fdiv.innerHTML = '📄 Verarbeitete Datei: <strong></strong>';
-                fdiv.querySelector('strong').textContent = file;
-                document.currentScript.parentNode.insertBefore(fdiv, document.currentScript);
-            }
             const div = document.createElement('div');
             div.style = 'margin-top:10px; padding:8px 14px; border-radius:4px; display:inline-block;';
+            let msg;
             if (status === 'ok') {
                 const ec  = parseInt(p.get('err_count')    || '0');
                 const mc  = parseInt(p.get('missing_coa')  || '0');
                 const ms  = parseInt(p.get('missing_skr')  || '0');
                 const nf  = parseInt(p.get('not_found')    || '0');
                 const warn = ec > 0 || mc > 0 || ms > 0 || nf > 0;
-                let msg = '\u2705 Import abgeschlossen: '
+                msg = '\u2705 Import abgeschlossen: '
                         + p.get('imported') + ' importiert, '
                         + p.get('updated')  + ' aktualisiert, '
                         + p.get('skipped')  + ' \u00fcbersprungen';
@@ -255,22 +249,25 @@ def PageMiscellaneous(db: Database):
                 msg += '. Siehe Details unten.';
                 div.style.background = warn ? '#fff3cd' : '#d4edda';
                 div.style.color      = warn ? '#856404' : '#155724';
-                div.textContent = msg;
             } else {
                 div.style.background = '#f8d7da';
                 div.style.color = '#721c24';
-                div.textContent = '\u274c Fehler: ' + decodeURIComponent(p.get('msg') || '');
+                msg = '\u274c Fehler: ' + decodeURIComponent(p.get('msg') || '');
             }
+            // Dateiname als erste Zeile in derselben Box (append = Textknoten, kein HTML)
+            if (file) {
+                div.append('\U0001F4C4 Verarbeitete Datei: ' + file);
+                div.appendChild(document.createElement('br'));
+            }
+            div.append(msg);
             document.currentScript.parentNode.insertBefore(div, document.currentScript);
         })();
         </script>
         '''
 
-    # Detail-Tabellen aus letztem Ergebnis rendern
+    # Detail-Tabellen aus letztem Ergebnis rendern (Dateiname steht in der
+    # Import-abgeschlossen-Box; hier nicht erneut anzeigen)
     if _last_result:
-        _fname = _last_result.get('filename')
-        if _fname:
-            s += f'<h3>Letztes Import-Ergebnis &ndash; Datei: {_html.escape(_fname)}</h3>'
         _skipped_rows = _last_result.get('skipped_rows', [])
         _not_found    = _last_result.get('not_found', [])
         _missing_coa  = _last_result.get('missing_coa', [])
@@ -301,8 +298,11 @@ def PageMiscellaneous(db: Database):
             s += ', '.join(_html.escape(str(_n)) for _n in _missing_skr)
             s += '</p>'
         if _not_found:
-            s += f'<h3>\u26a0\ufe0f Nicht gefunden (kein Treffer in DB) &ndash; {len(_not_found)} Eintr\u00e4ge</h3>'
-            s += '<p>Diese Zeilen konnten keiner bestehenden Buchung zugeordnet werden (Datum + Belegr./Betrag stimmt nicht \u00fcberein).</p>'
+            s += f'<h3>\u26a0\ufe0f Nicht eindeutig zuordenbar &ndash; {len(_not_found)} Eintr\u00e4ge</h3>'
+            s += ('<p>F\u00fcr diese Zeilen wurde keine <em>eindeutige</em> bestehende Buchung gefunden '
+                  '(kein Treffer oder mehrere Kandidaten \u00fcber Datum/Beleg-Nr./Betrag/Text). '
+                  'Es wurde nichts ge\u00e4ndert &ndash; die Buchungen k\u00f6nnen bereits vollst\u00e4ndig '
+                  'vorhanden sein; bei Bedarf manuell pr\u00fcfen.</p>')
             s += '<table><tr><th>CSV-Zeile</th><th>Datum</th><th>Beleg-Nr.</th><th>Betrag</th><th>Text</th></tr>'
             for _r in _not_found:
                 s += (f"<tr><td>{_html.escape(str(_r.get('zeile','')))}</td><td>{_html.escape(str(_r.get('datum','')))}</td>"

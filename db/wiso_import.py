@@ -480,7 +480,8 @@ class WisoImportMixin:
                         norm_purpose = _normalize_text(purpose)
                         if norm_purpose:
                             cursor.execute('''
-                                SELECT ID, RecipientClient, Text, COA_ID, ForeignBankAccount, Amount
+                                SELECT ID, RecipientClient, Text, COA_ID, ForeignBankAccount, Amount,
+                                       BookingType, ParentBooking_ID
                                 FROM Bookings
                                 WHERE DateBooking=? AND (DocumentNumber IS NULL OR DocumentNumber='')
                             ''', (booking_date,))
@@ -489,9 +490,23 @@ class WisoImportMixin:
                             # Nur Buchungen mit exakt passendem (normalisiertem) Text
                             grp = [b for b in all_bookings if _normalize_text(b[2]) == norm_purpose]
 
+                            # bank+entry-Paar mit identischem Text (wie Stage A, aber
+                            # per Text disambiguiert – z.B. zwei betragsgleiche Paare
+                            # am selben Tag): beide gemeinsam aktualisieren, KEINE
+                            # Split-Summenprüfung (das Paar ist dieselbe Buchung).
+                            if len(grp) == 2:
+                                bank_c  = [r for r in grp if r[6] == 'bank']
+                                entry_c = [r for r in grp if r[6] != 'bank']
+                                if (len(bank_c) == 1 and len(entry_c) == 1
+                                        and entry_c[0][7] == bank_c[0][0]
+                                        and abs(abs(bank_c[0][5]) - abs(amount_minor)) < 50):
+                                    target_rows = [r[:5] for r in grp]
+                                    is_split = True
+
                             # Gruppensumme muss dem Zeilenbetrag entsprechen. Bei genau
                             # einem Treffer ist es eine Einzelbuchung, bei mehreren ein Split.
-                            if grp and abs(abs(sum(r[5] for r in grp)) - abs(amount_minor)) < 50:
+                            if (not target_rows and grp
+                                    and abs(abs(sum(r[5] for r in grp)) - abs(amount_minor)) < 50):
                                 target_rows = [r[:5] for r in grp]
                                 is_split = len(grp) > 1
                 elif doc_number:
