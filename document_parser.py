@@ -6,6 +6,8 @@ import os
 import re
 import json
 import hashlib
+import shutil
+import threading
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 try:
@@ -15,6 +17,86 @@ except ImportError:
     pdfplumber = None
     PDFPLUMBER_AVAILABLE = False
 from pathlib import Path
+
+# ── SQL-Log-Rotation ─────────────────────────────────────────────────────────
+# Audit-Logs (sql_operations.log/.sql) werden ab dieser Größe rotiert und
+# komprimiert archiviert (7-Zip falls installiert, sonst gzip). Archive werden
+# nie automatisch gelöscht (Audit-Trail).
+SQL_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+_rotate_lock = threading.Lock()
+_sevenzip_path = ''   # '' = noch nicht gesucht, None = nicht vorhanden
+
+
+def _find_sevenzip():
+    """7-Zip-Binary suchen (PATH, dann Windows-Standardpfade). Ergebnis gecacht."""
+    global _sevenzip_path
+    if _sevenzip_path == '':
+        found = None
+        for name in ('7z', '7za', '7zr'):
+            p = shutil.which(name)
+            if p:
+                found = p
+                break
+        if found is None and os.name == 'nt':
+            for p in (r'C:\Program Files\7-Zip\7z.exe',
+                      r'C:\Program Files (x86)\7-Zip\7z.exe'):
+                if os.path.isfile(p):
+                    found = p
+                    break
+        _sevenzip_path = found
+    return _sevenzip_path
+
+
+def compress_rotated_log(path):
+    """Rotierte Log-Datei komprimieren: 7-Zip falls verfügbar, sonst gzip.
+
+    Löscht das Original nur nach erfolgreicher Kompression; schlägt sie fehl,
+    bleibt die unkomprimierte Datei liegen (kein Datenverlust im Audit-Trail).
+    """
+    try:
+        exe = _find_sevenzip()
+        if exe:
+            import subprocess
+            result = subprocess.run(
+                [exe, 'a', '-bd', '-y', path + '.7z', path],
+                capture_output=True, timeout=300)
+            if result.returncode == 0 and os.path.isfile(path + '.7z'):
+                os.remove(path)
+                return path + '.7z'
+        import gzip
+        with open(path, 'rb') as src, gzip.open(path + '.gz', 'wb') as dst:
+            shutil.copyfileobj(src, dst)
+        os.remove(path)
+        return path + '.gz'
+    except Exception:
+        return None  # Original bleibt unkomprimiert erhalten
+
+
+def _rotate_if_needed(path):
+    """Log-Datei ab SQL_LOG_MAX_BYTES wegrotieren (Zeitstempel-Name) und im
+    Hintergrund komprimieren. Thread-sicher; no-op wenn Datei fehlt/klein ist."""
+    try:
+        if os.path.getsize(path) < SQL_LOG_MAX_BYTES:
+            return
+    except OSError:
+        return
+    with _rotate_lock:
+        try:
+            if os.path.getsize(path) < SQL_LOG_MAX_BYTES:
+                return  # anderer Thread hat bereits rotiert
+        except OSError:
+            return
+        base, ext = os.path.splitext(path)
+        stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+        rotated = f"{base}-{stamp}{ext}"
+        n = 1
+        while os.path.exists(rotated) or os.path.exists(rotated + '.7z') or os.path.exists(rotated + '.gz'):
+            rotated = f"{base}-{stamp}-{n}{ext}"
+            n += 1
+        os.replace(path, rotated)
+    threading.Thread(target=compress_rotated_log, args=(rotated,), daemon=True).start()
+
 
 class DocumentParser:
     def __init__(self, data_dir=None, log_dir=None):
@@ -37,7 +119,8 @@ class DocumentParser:
         # Detailed log with timestamps and descriptions
         log_file = os.path.join(self.log_dir, "sql_operations.log")
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        
+        _rotate_if_needed(log_file)
+
         with open(log_file, 'a', encoding='utf-8') as f:
             f.write(f"\n{'='*80}\n")
             f.write(f"Timestamp: {timestamp}\n")
@@ -49,6 +132,7 @@ class DocumentParser:
         
         # Compact SQL-only log (one statement per line)
         sql_only_file = os.path.join(self.log_dir, "sql_operations.sql")
+        _rotate_if_needed(sql_only_file)
         # Clean up SQL statement: remove leading/trailing whitespace and normalize to single line
         clean_sql = ' '.join(sql_statement.split())
         with open(sql_only_file, 'a', encoding='utf-8') as f:
