@@ -27,7 +27,6 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .successColor			{ color: green; }
 .textareaSql			{ font-family: monospace; width: 100%; max-width: 1000px; margin-top: 10px; }
 .sqlToolbarRow			{ margin-top: 14px; }
-.hintText				{ margin-top: 4px; font-size: 0.9em; color: #666; }
 .muted					{ color: #666; }
 /* Form tables (prefered for gridRightCol) */
 .form-table				{ width: 100%; max-width: 700px; border-collapse: collapse; border: none; }
@@ -89,7 +88,7 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 /* dark mode */
 @media (prefers-color-scheme: dark) {
 	body, textarea 		{ background-color: #000; color: #FFF; }
-	h1, h2				{ color: #B99; }
+	h1, h2, h3			{ color: #B99; }
 	a:link, a:visited	{ color: #88F; }
 	a:hover, a:focus	{ color: #F8F; }
 	table				{ border-color: #666;}

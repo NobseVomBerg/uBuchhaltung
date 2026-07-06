@@ -45,20 +45,21 @@ def PageMiscellaneous(db: Database):
     s += '\t<div class="rectRounded" style="grid-column: span 2">'
     s += '''
         <h2>SQL-Befehle ausführen</h2>
-        <p>Gib hier SQL-Befehle ein (mehrere Befehle durch Semikolon getrennt):</p>
+        Gib hier SQL-Befehle ein (mehrere Befehle durch Semikolon getrennt):<br>
         <textarea id="sql_input" rows="15" cols="100" class="textareaSql" placeholder="SELECT * FROM ChartOfAccounts WHERE AccountNumber = 6805;"></textarea>
-        <br>
-        <button type="button" onclick="executeSql()" class="coloredButton bg-orange">SQL ausführen</button>
-        <span style="color: red; margin-left: 20px;">⚠️ Vorsicht: SQL-Befehle werden direkt ausgeführt!</span>
-        <div class="rowWithObjects sqlToolbarRow">
-            <strong>Zeitbereich löschen:</strong>
+        <div>
+            <button type="button" onclick="executeSql()" class="coloredButton bg-orange">SQL ausführen</button>
+            <span style="color: red; margin-left: 20px;">⚠️ Achtung: SQL-Befehle werden direkt ausgeführt!</span>
+        </div>
+        <br><br>
+        <h3>Zeitbereich löschen</h3>
+            <div>Erzeugt ein Lösch-Skript für Belege, Buchungen, Rechnungen und Angebote im Zeitraum und fügt es oben ins SQL-Feld ein.
+                Ausführung erfolgt mit Klick auf obigen Button. Dateien im Dateisystem bleiben erhalten.</div>
+        <div>
             <label>Von:&nbsp;<input type="date" id="range_del_from"></label>
             <label>Bis:&nbsp;<input type="date" id="range_del_to"></label>
             <button type="button" onclick="buildRangeDeleteSql()" class="coloredButton bg-blue">SQL erzeugen</button>
         </div>
-        <p class="hintText">Erzeugt ein Lösch-Skript für Belege, Buchungen, Rechnungen und Angebote
-        im Zeitraum und fügt es oben ins SQL-Feld ein — <strong>ausgeführt wird erst nach Klick auf
-        „SQL ausführen"</strong>. Dateien im Dateisystem bleiben erhalten.</p>
         <script>
         function buildRangeDeleteSql() {
             const from = document.getElementById('range_del_from').value;
