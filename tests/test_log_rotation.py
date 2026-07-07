@@ -20,9 +20,9 @@ from document_parser import DocumentParser, compress_rotated_log
 
 
 def _archives(log_dir, stem):
+    # Rotierte Dateien heißen JJJJMMTT-HHMMSS_<stem>.<ext>[.7z|.gz]
     return [f for f in os.listdir(log_dir)
-            if f.startswith(stem + '-') and (f.endswith('.7z') or f.endswith('.gz')
-                                             or f.endswith('.log') or f.endswith('.sql'))]
+            if ('_' + stem + '.') in f and f[0].isdigit()]
 
 
 def _wait_for(predicate, timeout=10.0):
@@ -68,7 +68,7 @@ def test_rotation_creates_archive_and_fresh_log(parser, tmp_path, monkeypatch):
 
 def test_gzip_fallback_without_sevenzip(tmp_path, monkeypatch):
     monkeypatch.setattr(document_parser, '_sevenzip_path', None)  # 7-Zip "nicht installiert"
-    src = tmp_path / 'sql_operations-20990101-000000.log'
+    src = tmp_path / '20990101-000000_sql_operations.log'
     content = ("INSERT INTO Bookings (Text) VALUES ('Fallback-Test');\n" * 100).encode('utf-8')
     src.write_bytes(content)
 
@@ -84,7 +84,7 @@ def test_sevenzip_compression_if_installed(tmp_path, monkeypatch):
     monkeypatch.setattr(document_parser, '_sevenzip_path', '')  # Cache leeren → neu suchen
     if document_parser._find_sevenzip() is None:
         pytest.skip("7-Zip nicht installiert")
-    src = tmp_path / 'sql_operations-20990101-000000.log'
+    src = tmp_path / '20990101-000000_sql_operations.log'
     src.write_bytes(b"INSERT INTO Bookings (Text) VALUES ('7z-Test');\n" * 100)
 
     result = compress_rotated_log(str(src))

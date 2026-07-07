@@ -87,12 +87,12 @@ def _rotate_if_needed(path):
                 return  # anderer Thread hat bereits rotiert
         except OSError:
             return
-        base, ext = os.path.splitext(path)
+        dirname, fname = os.path.split(path)
         stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-        rotated = f"{base}-{stamp}{ext}"
+        rotated = os.path.join(dirname, f"{stamp}_{fname}")
         n = 1
         while os.path.exists(rotated) or os.path.exists(rotated + '.7z') or os.path.exists(rotated + '.gz'):
-            rotated = f"{base}-{stamp}-{n}{ext}"
+            rotated = os.path.join(dirname, f"{stamp}-{n}_{fname}")
             n += 1
         os.replace(path, rotated)
     threading.Thread(target=compress_rotated_log, args=(rotated,), daemon=True).start()
