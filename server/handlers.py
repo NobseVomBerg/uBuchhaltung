@@ -417,17 +417,24 @@ def _skr_redirect(msg, type_='success'):
 
 def handle_add_skr(db: Database, post_data):
     """Handle adding new SKR entry (ID wird aus Rahmen+Nummer berechnet)."""
+    from db.accounts import SKR_FRAMEWORKS
     name = post_data["name"][0]
     group = post_data["group"][0]
     psp = int(post_data.get("private_share_percent", [0])[0] or 0)
     show = 1 if "show_in_menu" in post_data else 0
+    is_standard = 1 if "is_standard" in post_data else 0
     try:
         framework_nr = int(post_data["framework_nr"][0])
         account = int(post_data["account"][0])
     except (ValueError, KeyError, TypeError):
         return _skr_redirect("Rahmen-Nr. und Konto müssen Zahlen sein.", "error")
+    if framework_nr not in SKR_FRAMEWORKS:
+        gueltig = ', '.join(str(n) for n in SKR_FRAMEWORKS)
+        return _skr_redirect(f"Ungültiger Kontenrahmen {framework_nr} (gültig: {gueltig}).", "error")
+    if account <= 0:
+        return _skr_redirect("Kontonummer muss größer 0 sein.", "error")
     ok = db.insert_chart_of_accounts(framework_nr, account, name, group,
-                                     is_standard=0, private_share_percent=psp, show_in_menu=show)
+                                     is_standard=is_standard, private_share_percent=psp, show_in_menu=show)
     if not ok:
         return _skr_redirect(f"Konto {account} existiert im Rahmen {framework_nr} bereits.", "error")
     return _skr_redirect("Konto angelegt.")
@@ -441,8 +448,10 @@ def handle_update_skr(db: Database, post_data):
     group = post_data["group"][0]
     psp = int(post_data.get("private_share_percent", [0])[0] or 0)
     show = 1 if "show_in_menu" in post_data else 0
+    is_standard = 1 if "is_standard" in post_data else 0
     db.update_chart_of_accounts(id, framework_nr, account, name, group,
-                                private_share_percent=psp, show_in_menu=show)
+                                private_share_percent=psp, show_in_menu=show,
+                                is_standard=is_standard)
     return 303, "/masterdata/skr"
 
 def handle_delete_skr(db: Database, coa_id_val):

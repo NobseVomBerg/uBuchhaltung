@@ -50,6 +50,60 @@ class TestDelete:
         assert _by_number(tmp_db, std[2]) is not None
 
 
+class TestStandardToggle:
+    def test_update_can_toggle_standard(self, tmp_db):
+        """Eigenes Konto → Standard: geschützt; zurück → wieder löschbar."""
+        tmp_db.insert_chart_of_accounts(4, 9801, 'Eigenes', 'G', is_standard=0)
+        cid = coa_id(4, 9801)
+
+        tmp_db.update_chart_of_accounts(cid, 4, 9801, 'Eigenes', 'G', is_standard=1)
+        assert _by_number(tmp_db, 9801)[5] == 1
+        assert tmp_db.delete_chart_of_accounts(cid) is False
+
+        tmp_db.update_chart_of_accounts(cid, 4, 9801, 'Eigenes', 'G', is_standard=0)
+        assert _by_number(tmp_db, 9801)[5] == 0
+        assert tmp_db.delete_chart_of_accounts(cid) is True
+
+    def test_name_editable_after_destandardize(self, tmp_db):
+        """Standard-Konto: Name fix; nach Entfernen des Hakens im selben
+        Schritt änderbar (IsStandard wird vor Name/Description gesetzt)."""
+        std = next(r for r in tmp_db.fetch_chart_of_accounts() if r[5] == 1)
+
+        tmp_db.update_chart_of_accounts(std[0], std[1], std[2], 'Neuer Name', 'G')
+        assert _by_number(tmp_db, std[2], std[1])[3] == std[3]
+
+        tmp_db.update_chart_of_accounts(std[0], std[1], std[2], 'Neuer Name', 'G',
+                                        is_standard=0)
+        assert _by_number(tmp_db, std[2], std[1])[3] == 'Neuer Name'
+
+
+class TestFrameworkValidation:
+    def test_add_rejects_invalid_framework(self, tmp_db):
+        from server import handlers
+        for bad in ('0', '-1', '99'):
+            _, loc = handlers.handle_add_skr(tmp_db, {
+                'name': ['X'], 'group': ['G'],
+                'framework_nr': [bad], 'account': ['9901']})
+            assert 'error' in loc, f"Rahmen {bad} wurde akzeptiert: {loc}"
+        assert _by_number(tmp_db, 9901) is None
+
+    def test_add_rejects_nonpositive_account(self, tmp_db):
+        from server import handlers
+        _, loc = handlers.handle_add_skr(tmp_db, {
+            'name': ['X'], 'group': ['G'],
+            'framework_nr': ['4'], 'account': ['0']})
+        assert 'error' in loc
+
+    def test_add_standard_account_via_handler(self, tmp_db):
+        from server import handlers
+        _, loc = handlers.handle_add_skr(tmp_db, {
+            'name': ['Österreich-Konto'], 'group': ['G'],
+            'framework_nr': ['7'], 'account': ['9903'], 'is_standard': ['1']})
+        assert 'error' not in loc, loc
+        row = _by_number(tmp_db, 9903, framework=7)
+        assert row is not None and row[5] == 1
+
+
 class TestReferenced:
     def test_referenced_by_booking(self, tmp_db):
         tmp_db.insert_chart_of_accounts(4, 9701, 'Custom', 'G')

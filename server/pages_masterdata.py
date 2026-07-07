@@ -346,9 +346,30 @@ def PageSkr(db: Database, edit_id=None, copy_from_id=None, msg=None, msg_type='i
     # Readonly: Rahmen/Nummer fix bei vorhandenem Konto; Name/Gruppe nur bei Standard
     fixed_attr = ' readonly' if is_existing else ''
     name_attr  = ' readonly' if is_std else ''
-    readonly_note = ('<p class="muted">Standard-Konto: Rahmen, Nummer und Name sind fix; '
-                     'nur Privatanteil und Menü-Sichtbarkeit sind änderbar.</p>' if is_std else '')
+    readonly_note = ('<p class="muted">Standard-Konto: Rahmen, Nummer und Name sind fix. '
+                     'Zum Bearbeiten oder Löschen zuerst den Standard-Haken entfernen '
+                     'und aktualisieren.</p>' if is_std else '')
     show_checked = 'checked' if es_show else ''
+    std_checked  = 'checked' if is_std else ''
+
+    # Rahmen-Feld: beim Anlegen Auswahlliste sinnvoller Kontenrahmen (SKR03/04/07 …),
+    # beim Bearbeiten fix (readonly) – die ID = Rahmen·100000+Nummer hängt daran.
+    from db.accounts import SKR_FRAMEWORKS
+    if is_existing:
+        fw_label = SKR_FRAMEWORKS.get(es_framework, f'SKR{es_framework:02d}')
+        framework_field = (f'<input type="hidden" name="framework_nr" value="{es_framework}">'
+                           f'<input type="text" value="{_html.escape(fw_label)}" readonly>')
+    else:
+        try:
+            fw_selected = int(es_framework)
+        except (TypeError, ValueError):
+            fw_selected = 4
+        options = dict(SKR_FRAMEWORKS)
+        if fw_selected not in options:   # Kopie eines Kontos mit exotischem Rahmen
+            options[fw_selected] = f'SKR{fw_selected:02d}'
+        framework_field = '<select name="framework_nr">' + ''.join(
+            f'<option value="{nr}"{" selected" if nr == fw_selected else ""}>{_html.escape(label)}</option>'
+            for nr, label in sorted(options.items())) + '</select>'
 
     s = Header1('masterdata')
     submenu = '<a href="/masterdata">Stammdaten</a> → <span id="ActivePage">📊 SKR (Kontenrahmen)</span>'
@@ -389,12 +410,13 @@ def PageSkr(db: Database, edit_id=None, copy_from_id=None, msg=None, msg_type='i
         </div>
         <div class="rectRounded">
             <table class="form-table">
-                <tr><td>Rahmen-Nr.:</td><td><input type="number" name="framework_nr" value="{es_framework}"{fixed_attr}></td></tr>
-                <tr><td>Konto:</td><td><input type="number" name="account" value="{es_account}"{fixed_attr}></td></tr>
+                <tr><td>Kontenrahmen:</td><td>{framework_field}</td></tr>
+                <tr><td>Konto:</td><td><input type="number" name="account" value="{es_account}" min="1"{fixed_attr}></td></tr>
                 <tr><td>Name:</td><td><input type="text" name="name" value="{es_name}"{name_attr}></td></tr>
                 <tr><td>Gruppe:</td><td><input type="text" name="group" value="{es_group}"{name_attr}></td></tr>
                 <tr><td>Privatanteil %:</td><td><input type="number" name="private_share_percent" value="{es_psp}" min="0" max="100"></td></tr>
                 <tr><td>Im Auswahlmenü:</td><td><input type="checkbox" name="show_in_menu" value="1" {show_checked}></td></tr>
+                <tr><td>Standard-Konto:</td><td><input type="checkbox" name="is_standard" value="1" {std_checked}></td></tr>
             </table>
         </form>
         </div>

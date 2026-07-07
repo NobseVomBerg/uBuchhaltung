@@ -6,6 +6,18 @@ from decimal import Decimal
 from money import to_minor, from_minor
 from .core import coa_id
 
+# Sinnvolle DATEV-Standardkontenrahmen für die Auswahl in der SKR-Verwaltung
+# (Rahmen-Nr. → Anzeigename). Andere Werte werden beim Anlegen abgelehnt.
+SKR_FRAMEWORKS = {
+    3:  'SKR03 – Deutschland (Prozessgliederung)',
+    4:  'SKR04 – Deutschland (Abschlussgliederung)',
+    7:  'SKR07 – Österreich',
+    14: 'SKR14 – Land- und Forstwirtschaft',
+    49: 'SKR49 – Vereine, Stiftungen, gGmbH',
+    51: 'SKR51 – Kfz-Gewerbe',
+    70: 'SKR70 – Hotels und Gaststätten',
+}
+
 
 class AccountsMixin:
     def fetch_chart_of_accounts(self):
@@ -39,11 +51,15 @@ class AccountsMixin:
         finally:
             conn.close()
     def update_chart_of_accounts(self, id, framework, account_number, name, description,
-                                 private_share_percent=None, show_in_menu=None):
+                                 private_share_percent=None, show_in_menu=None,
+                                 is_standard=None):
         """SKR-Konto aktualisieren. Rahmen/Nummer (und damit die ID) sind fix.
 
-        PrivateSharePercent und ShowInMenu sind für ALLE Konten editierbar,
-        Name/Description nur für Nicht-Standard-Konten.
+        PrivateSharePercent, ShowInMenu und IsStandard sind für ALLE Konten
+        editierbar, Name/Description nur für Nicht-Standard-Konten. IsStandard
+        wird VOR Name/Description gesetzt: wer den Standard-Haken entfernt,
+        kann im selben Schritt Name/Gruppe ändern (und das Konto anschließend
+        löschen).
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -57,6 +73,10 @@ class AccountsMixin:
                 cursor.execute(
                     'UPDATE ChartOfAccounts SET ShowInMenu = ? WHERE ID = ?',
                     (1 if show_in_menu else 0, id))
+            if is_standard is not None:
+                cursor.execute(
+                    'UPDATE ChartOfAccounts SET IsStandard = ? WHERE ID = ?',
+                    (1 if is_standard else 0, id))
             # Name/Description nur für Nicht-Standard-Konten (Rahmen/Nummer bleiben fix)
             cursor.execute('''
                 UPDATE ChartOfAccounts
