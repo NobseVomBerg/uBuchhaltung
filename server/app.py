@@ -110,10 +110,24 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _check_csrf(self, post_data):
-        """CSRF-Token gegen die Session prüfen (zusätzlich zu SameSite=Strict)."""
-        token = post_data.get('csrf', [''])[0]
+    def _check_csrf(self, post_data=None):
+        """CSRF-Token prüfen (zusätzlich zu SameSite=Strict).
+
+        Token kommt aus dem Formularfeld ``csrf`` (post_data) oder dem Header
+        ``X-CSRF-Token`` (fetch-Aufrufe, siehe Footer-JS). Nur im Mehrbenutzer-
+        Modus wirksam – der Token ist an die Session gebunden; im Einzelmodus
+        ohne Sessions gibt es nichts zu binden.
+        """
+        if not userctx.auth_enabled():
+            return True
+        token = post_data.get('csrf', [''])[0] if post_data else ''
+        if not token:
+            token = self.headers.get('X-CSRF-Token', '')
         if not auth.check_csrf(self._session_token(), token):
+            if post_data is None:
+                # Header-Check-Pfad: Body wurde noch nicht gelesen → verwerfen
+                # (mit post_data ist er bereits konsumiert; erneutes read blockiert)
+                self._drain_body()
             self.respond(403, "<h1>403</h1><p>Ungültiges oder fehlendes Sicherheits-Token.</p>")
             return False
         return True
@@ -153,6 +167,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         user = auth.get_session_user(self._session_token())
         if user:
             userctx.set_user(user)
+            userctx.set_csrf_token(auth.csrf_for(self._session_token()))
             return True
         if path in ('/login', '/logout'):
             return True                                  # Anmeldeseite / Logout
@@ -783,6 +798,18 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             return
         db = self._maybe_db()
 
+        # ── CSRF für fetch-Routen (Body wird erst im Handler gelesen): Token
+        # kommt als X-CSRF-Token-Header (Footer-JS umhüllt window.fetch).
+        # /wiso/import ist ein klassisches Multipart-Formular und prüft das
+        # csrf-Feld selbst im Handler; alle übrigen Formular-Routen werden
+        # unten nach parse_qs über das Feld 'csrf' geprüft.
+        if self.path in ("/upload_receipts", "/masterdata/contacts/upload-logo",
+                         "/invoice/save", "/invoice/send-email", "/invoice/link-payment",
+                         "/invoice/delete-payment", "/invoice/status",
+                         "/quote/save", "/quote/status"):
+            if not self._check_csrf():
+                return
+
         # Handle file upload separately
         if self.path == "/upload_receipts":
             status_code, response = upload_handler.handle_file_upload(self, db)
@@ -887,15 +914,17 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         content_length = int(self.headers['Content-Length'])
         post_body = self.rfile.read(content_length).decode('utf-8')
         post_data = parse_qs(post_body)
-        
+
+        # ── CSRF für alle Formular-Routen (Feld 'csrf' oder Header) ───────────
+        if not self._check_csrf(post_data):
+            return
+
         # Route to appropriate handler
         try:
-            # ── Benutzerverwaltung (nur Admin + CSRF) ─────────────────────
+            # ── Benutzerverwaltung (nur Admin) ────────────────────────────
             if self.path in ("/users/create", "/users/delete",
                              "/users/reset-password", "/users/toggle-admin"):
                 if not self._require_admin():
-                    return
-                if not self._check_csrf(post_data):
                     return
                 handler = {
                     "/users/create": handlers.handle_user_create,
@@ -996,6 +1025,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/asset_categories/update":
                 status_code, location = handlers.handle_update_asset_category(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            # ── Datensicherung / Wiederherstellung ────────────────────────
+            elif self.path == "/backup/create":
+                status_code, location = handlers.handle_backup_create(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
+            elif self.path == "/backup/restore":
+                status_code, location = handlers.handle_backup_restore(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
             # ─────────────────────────────────────────────────────────────
             # ──────────────────────────────────────────────────────────────

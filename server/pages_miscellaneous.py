@@ -327,6 +327,79 @@ def PageMiscellaneous(db: Database):
         </form>
         '''
     s += '\t</div>'
+
+    # ── Datensicherung ────────────────────────────────────────────────────────
+    from server.backup import list_backups as _list_backups
+    _backups = _list_backups(_userctx.user_data_dir())
+
+    s += '\t<div class="rectRounded">'
+    s += '''
+        <h2>&#x1F4BE; Datensicherung</h2>
+        <p>Sichert die Daten des angemeldeten Benutzers als Archiv nach
+        <code>backup/JJJJMMTT_Backup.7zip</code> (ohne installiertes 7-Zip als <code>.zip</code>).
+        Die Datenbank wird dabei als konsistenter Snapshot gesichert.</p>
+        <form method="POST" action="/backup/create">
+            <div class="rowWithObjects">
+                <label><input type="radio" name="scope" value="db"> nur DB</label>
+                <label><input type="radio" name="scope" value="all" checked> alle Daten</label>
+                <button type="submit" class="coloredButton bg-blue">&#x1F4BE; Backup erstellen</button>
+            </div>
+        </form>
+        <script>
+        (function() {
+            const p = new URLSearchParams(window.location.search);
+            const status = p.get('backup');
+            if (!status) return;
+            let text, type;
+            if (status === 'ok') {
+                const kb = Math.round(parseInt(p.get('size') || '0') / 1024);
+                text = 'Backup erstellt: ' + p.get('file') + ' (' + kb + ' KB)'; type = 'success';
+            } else {
+                text = 'Backup fehlgeschlagen: ' + decodeURIComponent(p.get('msg') || ''); type = 'error';
+            }
+            document.addEventListener('DOMContentLoaded', () => appMsg(text, type));
+        })();
+        </script>
+        '''
+    s += '\t</div>'
+
+    # ── Wiederherstellung ─────────────────────────────────────────────────────
+    s += '\t<div class="rectRounded">'
+    s += '<h2>&#x267B;&#xFE0F; Wiederherstellung</h2>'
+    if _backups:
+        _opts = ''.join(f'<option value="{_html.escape(b)}">{_html.escape(b)}</option>' for b in _backups)
+        s += f'''
+        <p>Stellt ein Archiv aus <code>backup/</code> im Benutzerverzeichnis wieder her.</p>
+        <form method="POST" action="/backup/restore"
+              onsubmit="return confirm('Backup wirklich wiederherstellen? Aktuelle Daten werden ersetzt!')">
+            <div class="rowWithObjects">Archiv:&nbsp;<select name="archive">{_opts}</select></div>
+            <div class="rowWithObjects">
+                <label><input type="radio" name="mode" value="wipe"> vorhandene Daten vorher löschen</label>
+                <label><input type="radio" name="mode" value="overwrite" checked> vorhandene Daten überschreiben</label>
+            </div>
+            <br>
+            <button type="submit" class="coloredButton bg-red">&#x267B;&#xFE0F; Wiederherstellen</button>
+        </form>
+        '''
+    else:
+        s += '<p class="muted">Noch keine Backups vorhanden.</p>'
+    s += '''
+        <script>
+        (function() {
+            const p = new URLSearchParams(window.location.search);
+            const status = p.get('restore');
+            if (!status) return;
+            let text, type;
+            if (status === 'ok') {
+                text = 'Backup wiederhergestellt: ' + p.get('file'); type = 'success';
+            } else {
+                text = 'Wiederherstellung fehlgeschlagen: ' + decodeURIComponent(p.get('msg') || ''); type = 'error';
+            }
+            document.addEventListener('DOMContentLoaded', () => appMsg(text, type));
+        })();
+        </script>
+        '''
+    s += '\t</div>'
     s += '</div>'
 
     s += Footer()

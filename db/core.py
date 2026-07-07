@@ -138,19 +138,29 @@ class _CoreMixin:
         try:
             from document_parser import DocumentParser
             parser = DocumentParser()
-            # Build readable SQL string by replacing ? with actual values
-            sql_statement = sql_template
-            for param in params:
+
+            def _sql_literal(param):
                 if param is None:
-                    replacement = 'NULL'
-                elif isinstance(param, str):
-                    escaped_param = param.replace('"', '""')
-                    replacement = f"'{escaped_param}'"
-                elif isinstance(param, (int, float)):
-                    replacement = str(param)
-                else:
-                    replacement = str(param)
-                sql_statement = sql_statement.replace('?', replacement, 1)
+                    return 'NULL'
+                if isinstance(param, str):
+                    # SQL-konform: einfache Anführungszeichen verdoppeln
+                    return "'" + param.replace("'", "''") + "'"
+                return str(param)
+
+            # Platzhalter ersetzen: Template an '?' splitten und Literale
+            # einflechten – ein '?' INNERHALB eines Parameterwerts kann so
+            # keine nachfolgenden Ersetzungen verschieben.
+            pieces = sql_template.split('?')
+            if len(pieces) == len(params) + 1:
+                out = [pieces[0]]
+                for param, tail in zip(params, pieces[1:]):
+                    out.append(_sql_literal(param))
+                    out.append(tail)
+                sql_statement = ''.join(out)
+            else:
+                # Platzhalter-Anzahl passt nicht (sollte nicht vorkommen):
+                # Template unersetzt loggen statt falsch zu ersetzen
+                sql_statement = sql_template
             parser.log_sql(sql_statement, params, description)
         except ImportError:
             pass  # Parser not available, skip logging

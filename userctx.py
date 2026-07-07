@@ -80,9 +80,19 @@ def get_user():
     return getattr(_local, "user", None)
 
 
+def set_csrf_token(token):
+    """CSRF-Token des aktuellen Requests (für das Einbetten in Seiten)."""
+    _local.csrf = token or ''
+
+
+def get_csrf_token():
+    return getattr(_local, 'csrf', '')
+
+
 def clear():
     """Request-Kontext zurücksetzen (im finally jedes Requests aufrufen)."""
     _local.user = None
+    _local.csrf = ''
 
 
 def user_data_dir():

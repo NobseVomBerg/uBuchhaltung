@@ -16,6 +16,50 @@ from db import Database
 
 
 # ─────────────────────────────────────────────
+# SQL-Log-Quoting (_log_sql)
+# ─────────────────────────────────────────────
+
+class TestSqlLogQuoting:
+    """Das Replay-Log (sql_operations.sql) muss gültiges SQL enthalten.
+
+    Regression: einfache Anführungszeichen in Parametern wurden nicht
+    escapt (nur \"), und ein '?' im Parameterwert verschob die
+    nachfolgenden Platzhalter-Ersetzungen.
+    """
+
+    @pytest.fixture
+    def captured(self, monkeypatch):
+        import document_parser
+
+        class _Capture:
+            last = None
+            def __init__(self, *a, **k):
+                pass
+            def log_sql(self, sql_statement, parameters, description=""):
+                _Capture.last = sql_statement
+
+        monkeypatch.setattr(document_parser, 'DocumentParser', _Capture)
+        _Capture.last = None
+        return _Capture
+
+    def test_quote_and_questionmark_in_params(self, tmp_db, captured):
+        tmp_db._log_sql("INSERT INTO T (A, B, C) VALUES (?, ?, ?)",
+                        ("O'Reilly? Ja!", 5, None), "quoting test")
+        assert captured.last == "INSERT INTO T (A, B, C) VALUES ('O''Reilly? Ja!', 5, NULL)"
+
+    def test_logged_statement_is_executable(self, tmp_db, captured):
+        import sqlite3
+        tmp_db._log_sql("INSERT INTO T (A, B) VALUES (?, ?)",
+                        ("Wer war's? D'Artagnan!", 1.5), "replay test")
+        conn = sqlite3.connect(':memory:')
+        conn.execute('CREATE TABLE T (A TEXT, B REAL)')
+        conn.execute(captured.last)   # muss ohne Syntaxfehler durchlaufen
+        row = conn.execute('SELECT A, B FROM T').fetchone()
+        conn.close()
+        assert row == ("Wer war's? D'Artagnan!", 1.5)
+
+
+# ─────────────────────────────────────────────
 # Schema tests
 # ─────────────────────────────────────────────
 

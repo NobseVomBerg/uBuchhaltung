@@ -1,8 +1,8 @@
 # Datenbankmodell PyBuch
 
-**Status:** Aktuell (Stand: 29. Mai 2026)
+**Status:** Aktuell (Stand: 7. Juli 2026)
 **DBMS:** SQLite 3
-**Datei:** `data/buch.db`
+**Datei:** `data/buch.db` (Einzelbenutzer) bzw. `data/users/<user>/buch.db` (Mehrbenutzer)
 
 ---
 
@@ -24,6 +24,8 @@ PyBuch verwaltet Buchführung für kleine/mittlere Unternehmen mit Fokus auf deu
 │ • ContactAddresses  │ Adressen zu Kontakten (1:n)
 │ • CompanyDetails    │ Unternehmensdetails (1:1)
 │ • PersonDetails     │ Personendetails (1:1)
+│ • ContactTypeLinks  │ Kontakttypen-Mehrfachzuordnung (n:m)
+│ • PersonRoles       │ Personen-Rollen (n:m)
 │ • Articles          │ Artikel-/Dienstleistungskatalog
 │ • Categories        │ Kategorien für Privatbelege
 │ • AssetCategories   │ AfA-Kategorien nach BMF
@@ -43,9 +45,18 @@ PyBuch verwaltet Buchführung für kleine/mittlere Unternehmen mit Fokus auf deu
 │ RECHNUNGSWESEN      │
 ├─────────────────────┤
 │ • NumberRanges      │ Nummernkreise
-│ • Invoices          │ Ausgangsrechnungen (XRechnung)
-│ • InvoiceItems      │ Rechnungspositionen
+│ • Invoices          │ Ausgangsrechnungen (XRechnung) UND Angebote
+│                     │ (DocumentType='invoice'|'quote'; SourceQuoteId
+│                     │ verweist bei umgewandelten Rechnungen aufs Angebot)
+│ • InvoiceItems      │ Rechnungs-/Angebotspositionen
 │ • InvoicePayments   │ Zahlungsverknüpfungen
+└─────────────────────┘
+
+┌─────────────────────┐
+│ ZEITERFASSUNG       │
+├─────────────────────┤
+│ • WorkTimes         │ Arbeitszeiten je Person (Arbeit/Urlaub/Krank/Feiertag)
+│ • Trips             │ Fahrtenbuch (Fahrer, Start/Ziel, km, Belegverknüpfung)
 └─────────────────────┘
 
 ┌─────────────────────┐

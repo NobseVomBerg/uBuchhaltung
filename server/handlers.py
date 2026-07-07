@@ -467,6 +467,38 @@ def handle_toggle_skr_menu(db: Database, coa_id_val):
     db.toggle_coa_show_in_menu(coa_id_val)
     return 303, "/masterdata/skr"
 
+def handle_backup_create(db: Database, post_data):
+    """Backup des Benutzer-Datenverzeichnisses erstellen ('db' oder 'all')."""
+    from . import backup as backup_mod
+    scope = post_data.get('scope', ['all'])[0]
+    if scope not in ('db', 'all'):
+        scope = 'all'
+    try:
+        archive, size = backup_mod.create_backup(userctx.user_data_dir(), db.db_name, scope)
+        return 303, (f'/miscellaneous?backup=ok'
+                     f'&file={quote(os.path.basename(archive))}&size={size}')
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return 303, f'/miscellaneous?backup=error&msg={quote(str(e))}'
+
+
+def handle_backup_restore(db: Database, post_data):
+    """Backup wiederherstellen (mode: 'overwrite' Default oder 'wipe')."""
+    from . import backup as backup_mod
+    archive = post_data.get('archive', [''])[0]
+    mode = post_data.get('mode', ['overwrite'])[0]
+    if not archive:
+        return 303, '/miscellaneous?restore=error&msg=Kein+Archiv+ausgew%C3%A4hlt'
+    try:
+        backup_mod.restore_backup(userctx.user_data_dir(), archive, wipe=(mode == 'wipe'))
+        return 303, f'/miscellaneous?restore=ok&file={quote(os.path.basename(archive))}'
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return 303, f'/miscellaneous?restore=error&msg={quote(str(e))}'
+
+
 def handle_db_export(db: Database):
     """Export all DB data as INSERT statements to <user-data>/db-export.sql"""
     import os
@@ -572,7 +604,7 @@ def handle_wiso_import(request_handler, db: Database):
         (303, location_str) – immer ein Redirect zu /miscellaneous
     """
     from urllib.parse import quote
-    from .multipart import first_file
+    from .multipart import parse_multipart
 
     content_type = request_handler.headers.get('Content-Type', '')
     if 'multipart/form-data' not in content_type:
@@ -581,8 +613,18 @@ def handle_wiso_import(request_handler, db: Database):
     content_length = int(request_handler.headers['Content-Length'])
     raw = request_handler.rfile.read(content_length)
 
+    parts = parse_multipart(content_type, raw)
+
+    # CSRF: klassisches Multipart-Formular – Token steckt als Feld im Body
+    # (das Footer-JS ergänzt es beim Submit). Nur im Mehrbenutzer-Modus aktiv.
+    if userctx.auth_enabled():
+        csrf_part = next((p for p in parts if p.name == 'csrf' and not p.is_file), None)
+        csrf_token = csrf_part.content.decode('utf-8', 'replace').strip() if csrf_part else ''
+        if not auth.check_csrf(request_handler._session_token(), csrf_token):
+            return 303, '/miscellaneous?wiso_import=error&msg=Ung%C3%BCltiges+Sicherheits-Token'
+
     # Datei-Inhalt aus Multipart-Body extrahieren (robuster email-Parser)
-    part = first_file(content_type, raw)
+    part = next((p for p in parts if p.is_file), None)
     csv_bytes = part.content if part else None
     if not csv_bytes:
         return 303, '/miscellaneous?wiso_import=error&msg=Keine+Datei+im+Upload'

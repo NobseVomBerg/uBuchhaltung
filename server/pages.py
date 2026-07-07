@@ -30,9 +30,12 @@ def Header1(active_page=None):
                      Active page will be highlighted without link
     """
     from version import APP_VERSION
+    import userctx as _userctx
     s = "<!DOCTYPE html>\n"
     s+= "<html>\n <head>\n  <meta charset='UTF-8'>\n"
     s+= "  <title>Contabilidad simple</title>\n"
+    # CSRF-Token für Formulare/fetch (leer im Einzelbenutzer-Modus)
+    s+= f"  <meta name='csrf-token' content='{_userctx.get_csrf_token()}'>\n"
     # ?v=… als Cache-Buster: erlaubt langes Browser-Caching (kein Flackern durch
     # Revalidierung beim Seitenwechsel), Updates kommen per Versions-Bump an
     s+= f"  <link rel='stylesheet' href='/buch.css?v={APP_VERSION}'>\n"
@@ -172,6 +175,39 @@ function appMsg(text, type) {
   bar.textContent = text;
   if (type !== 'error') setTimeout(function() { bar.style.display = 'none'; }, 5000);
 }
+
+/* CSRF: Token aus dem Meta-Tag automatisch an alle POSTs anhängen.
+   - Formulare: hidden-Feld 'csrf' beim Submit ergänzen (Capture-Phase,
+     erfasst auch dynamisch nachgeladene Formulare)
+   - fetch: X-CSRF-Token-Header für alle nicht-GET-Requests
+   Im Einzelbenutzer-Modus ist der Token leer und nichts passiert. */
+(function() {
+  var meta = document.querySelector('meta[name="csrf-token"]');
+  var token = meta ? meta.content : '';
+  if (!token) return;
+  document.addEventListener('submit', function(e) {
+    var f = e.target;
+    if (!f || (f.method || '').toLowerCase() !== 'post') return;
+    var i = f.querySelector('input[name="csrf"]');
+    if (!i) {
+      i = document.createElement('input');
+      i.type = 'hidden'; i.name = 'csrf';
+      f.appendChild(i);
+    }
+    i.value = token;
+  }, true);
+  var _fetch = window.fetch;
+  window.fetch = function(input, init) {
+    init = init || {};
+    var method = (init.method || 'GET').toUpperCase();
+    if (method !== 'GET' && method !== 'HEAD') {
+      var h = new Headers(init.headers || {});
+      if (!h.has('X-CSRF-Token')) h.set('X-CSRF-Token', token);
+      init.headers = h;
+    }
+    return _fetch(input, init);
+  };
+})();
 </script>
 </body></html>'''
     return s
