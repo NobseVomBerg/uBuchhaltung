@@ -5,6 +5,9 @@ data/
 seed_data/private/
 .claude/settings.local.json
 
+# Persönliche Notizen (bewusst nicht im Repo)
+todo.txt
+
 # TLS-Zertifikate (self-signed, lokal erzeugt) – nie einchecken
 cert.pem
 key.pem
@@ -16,6 +19,7 @@ __pycache__/
 *.pyd
 
 # Virtual environment
+.venv/
 venv/
 env/
 ENV/
