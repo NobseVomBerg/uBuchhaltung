@@ -1,0 +1,25 @@
+# Nie ins Image: private und Nutzdaten
+seed_data/private/
+data/
+cert.pem
+key.pem
+
+# Entwicklung / VCS
+.git/
+.gitignore
+.venv/
+.claude/
+.vscode/
+.pytest_cache/
+__pycache__/
+**/__pycache__/
+*.pyc
+tests/
+todo.txt
+license-agpl/
+run_https.ps1
+
+# Docker-Dateien selbst
+Dockerfile
+compose.yaml
+.dockerignore

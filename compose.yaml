@@ -1,0 +1,27 @@
+# uBuchhaltung per Docker Compose (lokaler Build):
+#   docker compose up -d --build
+#
+# Für Unraid/Proxmox siehe DEPLOYMENT.md – dort wird das fertige Image
+# ghcr.io/nobsevomberg/ubuchhaltung:latest verwendet.
+#
+# ACHTUNG: ./data ist dasselbe Verzeichnis, das auch ein nativ gestarteter
+# Server (python main.py) benutzt. Container und nativen Server NIE
+# gleichzeitig auf denselben Daten laufen lassen (SQLite-Locking).
+services:
+  ubuchhaltung:
+    build: .
+    image: ubuchhaltung
+    container_name: ubuchhaltung
+    restart: unless-stopped
+    ports:
+      - "2824:2824"            # Host-Port : Container-Port (2824 = "BUCH")
+    volumes:
+      - ./data:/app/data       # alle Nutzdaten (DBs, Belege, Backups)
+      # Eigenes Logo/Briefpapier aus seed_data/private/ bereitstellen:
+      # - ./seed_data/private:/app/seed_data/private:ro
+      # HTTPS direkt im Container (alternativ: Reverse-Proxy davorschalten):
+      # - ./cert.pem:/certs/cert.pem:ro
+      # - ./key.pem:/certs/key.pem:ro
+    # environment:
+    #   UBUCHHALTUNG_CERT: /certs/cert.pem
+    #   UBUCHHALTUNG_KEY: /certs/key.pem

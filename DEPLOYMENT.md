@@ -83,13 +83,80 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
   das zugehörige Datenverzeichnis bleibt erhalten und kann bei Bedarf manuell
   entfernt werden.
 
+## Docker (Unraid, Proxmox, NAS)
+
+Zielplattformen sind Server, die ohnehin Docker anbieten. Das fertige Image
+kommt aus der GitHub Container Registry – gebaut und veröffentlicht durch
+`.github/workflows/docker-publish.yml` bei jedem Push auf `main` sowie bei
+Versions-Tags (`v1.2.12`):
+
+```
+ghcr.io/nobsevomberg/ubuchhaltung:latest
+```
+
+Standardport ist **2824** („BUCH" auf der Telefontastatur – von verbreiteten
+Docker-Projekten nicht belegt). Alle Nutzdaten (auth.db, Nutzer-Verzeichnisse,
+Datensicherungen) liegen unter `/app/data` – für ein Backup genügt weiterhin
+dieses eine Verzeichnis.
+
+- Beim ersten Aufruf erscheint die Ersteinrichtung (Modus-Auswahl, im
+  Mehrbenutzer-Modus danach `/setup-admin`). Headless-Setup: im
+  Daten-Verzeichnis vorab `config.json` mit `{"mode":"multi"}` anlegen.
+- Der Container startet als root, übereignet das Daten-Volume einmalig dem
+  unprivilegierten App-Benutzer (UID 1000) und gibt die Rechte dann ab –
+  root-eigene appdata-Verzeichnisse (Unraid) funktionieren so ohne Handarbeit.
+- `seed_data/private/` (eigenes Logo/Briefpapier) ist bewusst **nicht** im
+  Image; bei Bedarf als Read-only-Volume nach `/app/seed_data/private` mounten.
+- HTTPS: Zertifikate mounten und `UBUCHHALTUNG_CERT`/`UBUCHHALTUNG_KEY` setzen –
+  oder (üblicher) einen Reverse-Proxy (nginx Proxy Manager, Caddy, Traefik)
+  davorschalten.
+- 7-Zip ist im Image enthalten – Datensicherungen entstehen als `.7zip`,
+  die Log-Rotation komprimiert nach `.7z`.
+- GHCR-Hinweis (einmalig): Nach dem ersten Workflow-Lauf das Paket unter
+  GitHub → Profil → Packages → `ubuchhaltung` → Package settings auf
+  **Public** stellen, sonst verlangt der Pull eine Anmeldung.
+
+### Unraid
+
+Variante 1 – Template: `unraid-template.xml` aus dem Projektstamm nach
+`/boot/config/plugins/dockerMan/templates-user/` kopieren, dann unter
+**Docker → Add Container** das Template „uBuchhaltung" auswählen. Port und
+appdata-Pfad (`/mnt/user/appdata/ubuchhaltung`) sind vorbelegt.
+
+Variante 2 – manuell: **Docker → Add Container**, Repository
+`ghcr.io/nobsevomberg/ubuchhaltung:latest`, Port `2824 → 2824`, Pfad
+`/mnt/user/appdata/ubuchhaltung → /app/data`.
+
+### Proxmox
+
+Docker läuft unter Proxmox üblicherweise in einer VM oder einem LXC mit
+Docker; dort `compose.yaml` verwenden oder direkt:
+
+```bash
+docker run -d --name ubuchhaltung --restart unless-stopped \
+  -p 2824:2824 -v /opt/ubuchhaltung/data:/app/data \
+  ghcr.io/nobsevomberg/ubuchhaltung:latest
+```
+
+### Selbst bauen (ohne Registry)
+
+Im Projektverzeichnis (`Dockerfile` und `compose.yaml` liegen im Stamm):
+
+```bash
+docker compose up -d --build
+```
+
+`compose.yaml` mountet `./data` – **Container und nativen Server nie
+gleichzeitig auf demselben `data/` betreiben** (SQLite-Locking).
+
 ## Dauerbetrieb (Prozess-Manager)
 
 - **Linux:** als `systemd`-Service mit gesetzten `Environment=`-Zeilen.
 - **Windows:** z. B. via [NSSM](https://nssm.cc/) als Dienst registrieren; die
   Umgebungsvariablen im Dienst hinterlegen.
-- In einer VM/Container (Unraid/Proxmox/Docker): `data/` als persistentes Volume
-  einbinden, `UBUCHHALTUNG_HOST=0.0.0.0` setzen, Port veröffentlichen.
+- In einer VM/Container-Umgebung (Unraid/Proxmox): `data/` als persistentes
+  Volume einbinden, `UBUCHHALTUNG_HOST=0.0.0.0` setzen, Port veröffentlichen –
+  für Docker siehe den Abschnitt **Docker** oben.
 
 ## Schema-Migrationen
 

@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>uBuchhaltung</Name>
+  <Repository>ghcr.io/nobsevomberg/ubuchhaltung:latest</Repository>
+  <Registry>https://ghcr.io</Registry>
+  <Network>bridge</Network>
+  <Shell>sh</Shell>
+  <Support>https://github.com/NobseVomBerg/uBuchhaltung/issues</Support>
+  <Project>https://github.com/NobseVomBerg/uBuchhaltung</Project>
+  <Overview>Schlanke, webbasierte Buchhaltungssoftware für Selbstständige und kleine Unternehmen: SKR03/SKR04, Belege, Buchungen, Rechnungen (XRechnung), Angebote, Anlagen/AfA, DATEV-Export. Einzel- oder Mehrbenutzer-Modus (Auswahl bei der Ersteinrichtung im Browser). Alle Daten liegen unter /app/data.</Overview>
+  <Category>Productivity: Tools:</Category>
+  <WebUI>http://[IP]:[PORT:2824]</WebUI>
+  <Icon>https://raw.githubusercontent.com/NobseVomBerg/uBuchhaltung/main/favicon.ico</Icon>
+  <Config Name="WebUI-Port" Target="2824" Default="2824" Mode="tcp" Description="Port der Weboberfläche (2824 = BUCH auf der Telefontastatur)" Type="Port" Display="always" Required="true" Mask="false">2824</Config>
+  <Config Name="Daten" Target="/app/data" Default="/mnt/user/appdata/ubuchhaltung" Mode="rw" Description="Alle Nutzdaten: Datenbanken, Belege, Rechnungen, Datensicherungen" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/ubuchhaltung</Config>
+</Container>

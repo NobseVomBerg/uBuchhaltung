@@ -33,7 +33,7 @@ def _find_sevenzip():
     global _sevenzip_path
     if _sevenzip_path == '':
         found = None
-        for name in ('7z', '7za', '7zr'):
+        for name in ('7z', '7zz', '7za', '7zr'):   # 7zz = offizielles Linux-Binary (Debian-Paket "7zip")
             p = shutil.which(name)
             if p:
                 found = p
