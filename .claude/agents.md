@@ -4,7 +4,7 @@ Detaillierte Vorgaben für jeden Agent-Typ. Nutze diese als Referenz, wenn du ei
 
 ---
 
-## Sonnet 4.6 – Der Haupt-Developer
+## Sonnet 5 – Der Haupt-Developer
 
 **Verantwortung:** Features bauen, Bugs fixen, Code refactorn, Tests schreiben.
 
@@ -209,7 +209,7 @@ Statt Sonnet: alles selbst review + debug + check
 
 Tests haben eine klare Arbeitsteilung — kein eigener "Test-Agent" nötig, aber definierte Rollen:
 
-### Sonnet 4.6 – Test-Erstellung
+### Sonnet 5 – Test-Erstellung
 
 Sonnet schreibt Tests, weil es Business-Logik-Verständnis braucht.
 

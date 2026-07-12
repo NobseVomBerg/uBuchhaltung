@@ -21,7 +21,7 @@ Ziel: Hohe KI-Performance bei minimalem Token-Verbrauch – verhindert 5h-Limit-
 |---|---|---|---|
 | **Orchestrator/Planung** | Opus 4.8 | Architektur, Code-Design, komplexe Entscheidungen | ~20% (selektiv) |
 | **Orchestrator (Spezial)** | Fable 5 | Erweiterung zu Opus: nur für besonders schwierige/kreative Spezial-Aufgaben | ~5% (sehr selektiv) |
-| **Haupt-Development** | Sonnet 4.6 | Implementierung, Debugging, Test-Schreiben, Refactoring | ~60% |
+| **Haupt-Development** | Sonnet 5 | Implementierung, Debugging, Test-Schreiben, Refactoring | ~60% |
 | **Schnell-Analyse** | Haiku 4.5 | Code-Reviews, Fehleranalyse, Commits, Lint-Check | ~20% |
 
 **Faustregel:** Erst Sonnet für die Arbeit einsetzen. Nur bei komplexen Architektur-Fragen oder verfahrenem Debugging zu Opus eskalieren. Fable 5 ist die nächste Stufe über Opus – aber Achtung: **Fable verbraucht ca. doppelt so viele Tokens wie Opus**, daher nur einsetzen, wenn Opus nicht ausreicht.
@@ -32,7 +32,7 @@ Ziel: Hohe KI-Performance bei minimalem Token-Verbrauch – verhindert 5h-Limit-
 
 ### Wann nutze ich welchen Agent?
 
-**Sonnet 4.6 (Standard-Entwickler)**
+**Sonnet 5 (Standard-Entwickler)**
 - Feature-Implementierung, Bugfixe, Refactoring
 - Code lesen und ändern
 - Tests schreiben & debuggen
@@ -104,7 +104,7 @@ Jeder Agent kriegt nur **was er braucht**:
 ### Szenario 1: Kleine Bugfix (Standard)
 ```
 Nutzer: "Auf Seite X zeigt sich Y falsch"
-→ Sonnet 4.6 mit Kontext auf X & Related Routes
+→ Sonnet 5 mit Kontext auf X & Related Routes
 → Sonnet liest Bug, schreibt Fix, testet lokal
 → Bei Verunsicherung: Sonnet delegiert `code-review` zu Haiku
 → Sonnet schreibt Commit
@@ -116,7 +116,7 @@ Nutzer: "Auf Seite X zeigt sich Y falsch"
 Nutzer: "Ich will eine Funktion für X, aber wie das am besten passt, weiß ich nicht"
 → Opus 4.8: 10 Min Design-Review (5k Token)
   - Schaut aktuellen Code, schlägt Architektur vor
-→ Sonnet 4.6: Implementierung nach Opusplan (20-25k Token)
+→ Sonnet 5: Implementierung nach Opusplan (20-25k Token)
   - Focused, kein Rumraten mehr
 → Opus Review des Resultat (optional, 2-3k Token)
 ✓ ~27-33k Tokens, 30 Min — statt 50k+ wenn Sonnet rumprobiert hätte
@@ -129,7 +129,7 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
   - definiert neue Struktur, Modul-Grenzen
 → Agent Haiku: `Explore` = Analyse bestehender Pages (5k Token, parallel)
   - findet alle pages_*.py Files, ihre Imports, ihre Route-Definitionen
-→ Sonnet 4.6: Implementierung nach Plan (25-30k Token)
+→ Sonnet 5: Implementierung nach Plan (25-30k Token)
   - Haiku-Analyse als Input, implementiert strukturiert
 → Sonnet/Haiku: Code-Review des neuen Moduls (5-8k Token)
 ✓ ~45-53k Tokens (vs. ~70-80k wenn alles Sonnet)
@@ -203,7 +203,7 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
 
 - **Owner:** NobseVomBerg
 - **Letzte Aktualisierung:** 2026-07-12
-- **Modell-Versionen:** Opus 4.8, Sonnet 4.6, Haiku 4.5 (Stand Mai 2026)
+- **Modell-Versionen:** Opus 4.8, Sonnet 5, Haiku 4.5 (Stand Juli 2026)
 - **Bei Modell-Updates:** Diese Datei + Settings entsprechend updaten
 
 Fragen? → Memory updaten oder neuen Punkt hier dokumentieren.
