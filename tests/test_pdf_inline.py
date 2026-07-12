@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 unsix IT Engineering
+# Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Regression: erzeugte PDFs werden inline in einem neuen Tab geöffnet.
 
 Prüft die Frontend-Verdrahtung (window.open + inline=1) auf allen Seiten, an

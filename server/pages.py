@@ -1,4 +1,7 @@
-﻿"""
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 unsix IT Engineering
+# Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
+"""
 HTML page generation functions
 All functions return complete HTML strings
 """
@@ -33,7 +36,7 @@ def Header1(active_page=None):
     import userctx as _userctx
     s = "<!DOCTYPE html>\n"
     s+= "<html>\n <head>\n  <meta charset='UTF-8'>\n"
-    s+= "  <title>Contabilidad simple</title>\n"
+    s+= "  <title>uBuchhaltung</title>\n"
     # CSRF-Token für Formulare/fetch (leer im Einzelbenutzer-Modus)
     s+= f"  <meta name='csrf-token' content='{_userctx.get_csrf_token()}'>\n"
     # ?v=… als Cache-Buster: erlaubt langes Browser-Caching (kein Flackern durch
@@ -224,7 +227,9 @@ def PageAbout():
 uBuchhaltung ist ein Open-Source-Projekt unter der AGPL-Lizenz, das mit Leidenschaft entwickelt wird, um Selbstständigen und kleinen
 Unternehmen eine benutzerfreundliche Buchführungssoftware zu bieten, die die gängigsten Anforderungen direkt abdeckt und darüber
 hinaus einfach erweiterbar ist. So kannst Du SKR-Konten nach Bedarf hinzufügen oder AFA-Abschreibungen anpassen.<br><br>
-Wenn du Fragen hast, lies die MD-Files oder lass Dir das Projekt von einer KI Deiner Wahl kurz erklären.'''
+Wenn du Fragen hast, lies die MD-Files oder lass Dir das Projekt von einer KI Deiner Wahl kurz erklären.<br><br>
+Lizenz: <a href="https://www.gnu.org/licenses/agpl-3.0">AGPL-3.0-or-later</a> &middot;
+Kommerzielle Lizenz ohne AGPL-Pflichten: <a href="mailto:office@unsix.com">office@unsix.com</a>'''
     s+= Footer()
     return s
 

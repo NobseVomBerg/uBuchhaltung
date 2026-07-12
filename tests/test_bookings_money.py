@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 unsix IT Engineering
+# Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Phase 1f (Decimal-Migration): Bookings.Amount/TaxAmount als Festkomma-Integer.
 Amount=Index 11, TaxAmount=Index 14."""
 import sqlite3

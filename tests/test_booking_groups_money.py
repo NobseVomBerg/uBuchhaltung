@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 unsix IT Engineering
+# Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Phase 1b (Decimal-Migration): BookingGroups.TotalAmount als Festkomma-Integer
 gespeichert, als Euro-Decimal gelesen, None bleibt None."""
 import sqlite3

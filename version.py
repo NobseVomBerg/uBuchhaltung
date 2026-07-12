@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 unsix IT Engineering
+# Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Zentrale Versionsinformation für uBuchhaltung (Single Source of Truth).
 
 Versionsschema MAJOR.MINOR.PATCH (z. B. 1.0.0):
@@ -16,6 +19,6 @@ Schema-Version kennt.
 
 MAJOR = 1
 SCHEMA_VERSION = 2   # +1 bei jeder DB-Schema-Änderung (= mittlere Versionsstelle)
-PATCH = 12           # +1 bei sonstigen Änderungen ohne DB-Bezug
+PATCH = 13           # +1 bei sonstigen Änderungen ohne DB-Bezug
 
 APP_VERSION = f"{MAJOR}.{SCHEMA_VERSION}.{PATCH}"

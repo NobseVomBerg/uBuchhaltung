@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 unsix IT Engineering
+# Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Integrationstest: Multipart-Upload-Pfad der Handler (nach Umstellung auf
 den robusten email-Parser). Prüft, dass der Datei-Inhalt korrekt aus dem
 Multipart-Body extrahiert und an den Importer übergeben wird.

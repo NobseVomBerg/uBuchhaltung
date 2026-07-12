@@ -341,8 +341,33 @@ auskommentierten Zeilen (`pytesseract`, `pdf2image`) einkommentieren.
 
 ## Lizenz
 
-Dieses Projekt ist für Lern- und Demonstrationszwecke erstellt.
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+
+Dieses Projekt steht unter der **GNU Affero General Public License v3.0 oder
+später (AGPL-3.0-or-later)**. Den vollständigen Lizenztext findest du in der
+Datei [`LICENSE`](LICENSE).
+
+Kurz gesagt: Du darfst die Software frei nutzen, weitergeben und verändern.
+Wenn du sie veränderst und anderen über ein Netzwerk als Dienst bereitstellst
+(z. B. als gehostete Anwendung), musst du den vollständigen Quellcode deiner
+Version ebenfalls unter der AGPL verfügbar machen.
+
+Beiträge (Pull Requests) unterliegen dem Contributor License Agreement –
+siehe [`CONTRIBUTING.md`](CONTRIBUTING.md) und [`CLA.md`](CLA.md).
+
+### Kommerzielle Lizenz
+
+Wer die Software in ein proprietäres Produkt integrieren oder als gehosteten
+Dienst anbieten möchte, ohne den eigenen Quellcode unter der AGPL offenlegen
+zu müssen, kann eine separate **kommerzielle Lizenz** erwerben.
+
+Anfragen bitte an: **office@unsix.com**
+
+### Unterstützung
+
+Wenn dir das Projekt nützt, freue ich mich über einen Kaffee:
+[GitHub Sponsors](https://github.com/sponsors/NobseVomBerg) ☕
 
 ## Autor
 
-NobseVomBerg
+© 2026 unsix IT Engineering – entwickelt von NobseVomBerg

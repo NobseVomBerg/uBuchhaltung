@@ -1,0 +1,10 @@
+# Der "Sponsor"-Button erscheint erst, wenn der Account zusätzlich im
+# GitHub-Sponsors-Programm freigeschaltet ist.
+
+github: NobseVomBerg
+
+# Optionale weitere Kanäle – Kommentarzeichen entfernen und ausfüllen:
+# ko_fi: dein_kofi_name
+# buy_me_a_coffee: dein_bmac_name
+# open_collective: dein_collective_slug
+# custom: ["https://deine-spendenseite.de"]

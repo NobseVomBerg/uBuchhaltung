@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 unsix IT Engineering
+# Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Phase 1d (Decimal-Migration): Anlagen-Geldspalten als Festkomma-Integer.
 PurchasePrice/SalePrice (Assets), DepreciationAmount/BookValue (AssetDepreciations).
 Der AfA-Plan rechnet intern float; gespeicherte Werte sind exakt (to_minor)."""

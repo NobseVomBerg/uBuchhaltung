@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 unsix IT Engineering
+# Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Kern-Infrastruktur der Datenbankschicht: Verbindungsaufbau, Init-Guard,
 Geld-Grenzkonvertierung und SQL-Logging. Basis-Mixin fuer Database."""
 import sqlite3

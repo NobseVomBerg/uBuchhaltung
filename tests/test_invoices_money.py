@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 unsix IT Engineering
+# Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Phase 1e (Decimal-Migration): Invoices- und InvoiceItems-Geldspalten als
 Festkomma-Integer gespeichert, als Euro-Decimal gelesen.
 

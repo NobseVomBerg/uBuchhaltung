@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 unsix IT Engineering
+# Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """
 Tests für den DATEV-Export, speziell die Ableitung des BU-/Steuerschlüssels
 aus Steuersatz + Soll/Haben (datev._taxrate_to_bu) sowie ein End-to-End-Export

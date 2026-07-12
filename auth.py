@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 unsix IT Engineering
+# Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Benutzer-Authentifizierung für den Mehrbenutzer-/LAN-Betrieb (TODO #4).
 
 Eigene SQLite-Datenbank (``data/auth.db``), getrennt von den Nutzer-Büchern.

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 unsix IT Engineering
+# Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """TODO #4 – Phase 1: Authentifizierung, Sessions und Benutzer-Isolation.
 
 Alle Tests verwenden anonyme Test-Zugangsdaten und eine temporäre auth.db.
