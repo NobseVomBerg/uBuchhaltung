@@ -549,4 +549,4 @@ Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
 ---
 
 **Dokumentversion:** 2.3
-**Letzte Aktualisierung:** 29. Mai 2026
+**Letzte Aktualisierung:** 12. Juli 2026 (Umbenennung in uBuchhaltung; Schema unverändert)

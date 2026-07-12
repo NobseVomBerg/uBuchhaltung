@@ -179,6 +179,12 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
 - Port 8080 kann jederzeit gekillt & neu gestartet werden
 - (Siehe Memory: `server-may-be-killed.md`)
 
+### Docker & CI
+- **Jeder Push auf `main` baut und veröffentlicht automatisch das Docker-Image**
+  (`.github/workflows/docker-publish.yml` → `ghcr.io/nobsevomberg/ubuchhaltung:latest`)
+  – main also nur in release-fähigem Zustand pushen
+- Container-Standardport 2824; Betriebsdoku (Unraid/Proxmox) in `DEPLOYMENT.md`
+
 ### Testing
 - Vor PR: lokal starten (`python main.py`), Feature testen
 - Wenn Bug reproduzierbar, direkt über DB debuggen
@@ -196,7 +202,7 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
 ## Governance
 
 - **Owner:** NobseVomBerg
-- **Letzte Aktualisierung:** 2026-05-29
+- **Letzte Aktualisierung:** 2026-07-12
 - **Modell-Versionen:** Opus 4.8, Sonnet 4.6, Haiku 4.5 (Stand Mai 2026)
 - **Bei Modell-Updates:** Diese Datei + Settings entsprechend updaten
 

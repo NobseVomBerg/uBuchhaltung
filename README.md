@@ -193,6 +193,12 @@ uBuchhaltung/
 ├── requirements.txt           # Laufzeit-Dependencies (pdfplumber)
 ├── requirements-dev.txt       # zusätzlich Test-Dependencies (pytest)
 ├── run_https.ps1              # HTTPS-Schnellstart (selbstsigniertes Zertifikat)
+├── Dockerfile · compose.yaml  # Container-Betrieb (Standardport 2824)
+├── docker-entrypoint.sh       # Container-Start: Volume-Rechte übernehmen, dann unprivilegiert
+├── unraid-template.xml        # Fertiges Docker-Template für Unraid
+├── .github/workflows/         # CI: Image-Build & Push nach ghcr.io bei Push auf main
+├── LICENSE                    # AGPL-3.0 (kommerzielle Lizenz auf Anfrage, siehe unten)
+├── CLA.md · CONTRIBUTING.md   # Beitragsregeln + Contributor License Agreement
 ├── seed_data/                 # Initialisierungsdaten (JSON)
 │   ├── tax_keys.json          # 50 DATEV-Steuerschlüssel (BU-Codes)
 │   ├── asset_categories.json  # 30 BMF-AfA-Kategorien
@@ -235,7 +241,24 @@ uBuchhaltung/
 
 ## Installation und Start
 
-### Voraussetzungen
+### Schnellstart mit Docker (Server/NAS)
+
+Für Server, die Docker anbieten (Unraid, Proxmox & Co.), gibt es ein fertiges
+Image aus der GitHub Container Registry – Details, Unraid-Template und
+Compose-Beispiel in [DEPLOYMENT.md](DEPLOYMENT.md):
+
+```bash
+docker run -d --name ubuchhaltung --restart unless-stopped \
+  -p 2824:2824 -v /pfad/zu/daten:/app/data \
+  ghcr.io/nobsevomberg/ubuchhaltung:latest
+```
+
+Danach unter `http://<host>:2824` erreichbar (Standardport 2824 = „BUCH" auf
+der Telefontastatur). Alle Nutzdaten – Datenbanken, Belege, Datensicherungen –
+liegen im gemounteten Datenverzeichnis. Zum Selbstbauen liegt eine
+`compose.yaml` im Repo (`docker compose up -d --build`).
+
+### Voraussetzungen (ohne Docker)
 - Python 3.10+
 - Der Kern läuft mit der Standardbibliothek. Externe Abhängigkeiten (nur für
   PDF-Parsing) installieren:
