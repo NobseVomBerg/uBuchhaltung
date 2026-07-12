@@ -1,4 +1,4 @@
-# Agent-Rollen & Checklisten für PyBuch
+# Agent-Rollen & Checklisten für uBuchhaltung
 
 Detaillierte Vorgaben für jeden Agent-Typ. Nutze diese als Referenz, wenn du einen bestimmten Agent delegierst.
 

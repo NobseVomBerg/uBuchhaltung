@@ -20,8 +20,8 @@ def PageSetupModeChoice() -> str:
     s += '''
 <div class="grid1Col700 gridMain">
   <div class="rectRounded">
-    <h2>🚀 Willkommen bei PyBuch – Ersteinrichtung</h2>
-    <p>Wie möchtest du PyBuch betreiben? Diese Wahl lässt sich später nur durch
+    <h2>🚀 Willkommen bei uBuchhaltung – Ersteinrichtung</h2>
+    <p>Wie möchtest du uBuchhaltung betreiben? Diese Wahl lässt sich später nur durch
        Zurücksetzen der Einrichtung ändern.</p>
     <form method="POST" action="/setup/mode">
       <table class="form-table">
@@ -66,7 +66,7 @@ def PageSetup(db: Database, message: str = '') -> str:
     s += f'''
 <div class="grid1Col700 gridMain">
   <div class="rectRounded">
-    <h2>🚀 Willkommen bei PyBuch – Ersteinrichtung</h2>
+    <h2>🚀 Willkommen bei uBuchhaltung – Ersteinrichtung</h2>
     <p>Bitte gib kurz deine eigenen Kontaktdaten und dein Bankkonto ein.
        Diese Angaben werden für Rechnungen und den DATEV-Export benötigt.</p>
     {error_html}

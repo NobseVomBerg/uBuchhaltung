@@ -2,7 +2,7 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "pybuch",
+      "name": "ubuchhaltung",
       "runtimeExecutable": "python",
       "runtimeArgs": ["main.py"],
       "port": 8080

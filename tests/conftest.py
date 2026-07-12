@@ -1,5 +1,5 @@
 """
-Shared pytest fixtures for PyBuch tests.
+Shared pytest fixtures for uBuchhaltung tests.
 """
 import os
 import sys

@@ -1,6 +1,6 @@
-# PyBuch im lokalen Netzwerk betreiben (Mehrbenutzer + HTTPS)
+# uBuchhaltung im lokalen Netzwerk betreiben (Mehrbenutzer + HTTPS)
 
-PyBuch läuft als **Einzelbenutzer** (ohne Login, eine gemeinsame
+uBuchhaltung läuft als **Einzelbenutzer** (ohne Login, eine gemeinsame
 `./data/buch.db`) oder als **Mehrbenutzer** im LAN (mit Login, je Nutzer ein
 isoliertes Datenverzeichnis `data/users/<user>/`). Der Modus wird **bei der
 Ersteinrichtung im Browser gewählt** und in `data/config.json` gespeichert –
@@ -20,26 +20,26 @@ keine Umgebungsvariable nötig.
 
 | Variable      | Default     | Bedeutung |
 |---------------|-------------|-----------|
-| `PYBUCH_HOST` | `localhost` | Bind-Adresse. Für Netzzugriff `0.0.0.0`. |
-| `PYBUCH_PORT` | `8080`      | TCP-Port. |
-| `PYBUCH_CERT` | *(keine)*   | Pfad zur TLS-Zertifikatsdatei (PEM) ⇒ HTTPS. |
-| `PYBUCH_KEY`  | *(keine)*   | Pfad zum privaten TLS-Schlüssel (PEM). |
+| `UBUCHHALTUNG_HOST` | `localhost` | Bind-Adresse. Für Netzzugriff `0.0.0.0`. |
+| `UBUCHHALTUNG_PORT` | `8080`      | TCP-Port. |
+| `UBUCHHALTUNG_CERT` | *(keine)*   | Pfad zur TLS-Zertifikatsdatei (PEM) ⇒ HTTPS. |
+| `UBUCHHALTUNG_KEY`  | *(keine)*   | Pfad zum privaten TLS-Schlüssel (PEM). |
 
-Sind `PYBUCH_CERT` **und** `PYBUCH_KEY` gesetzt, läuft der Server über HTTPS und
+Sind `UBUCHHALTUNG_CERT` **und** `UBUCHHALTUNG_KEY` gesetzt, läuft der Server über HTTPS und
 setzt das `Secure`-Flag der Session-Cookies.
 
 ## Erststart
 
 1. Netz + TLS setzen und starten (Beispiel Windows/PowerShell):
    ```powershell
-   $env:PYBUCH_HOST = "0.0.0.0"
-   $env:PYBUCH_CERT = "cert.pem"
-   $env:PYBUCH_KEY  = "key.pem"
+   $env:UBUCHHALTUNG_HOST = "0.0.0.0"
+   $env:UBUCHHALTUNG_CERT = "cert.pem"
+   $env:UBUCHHALTUNG_KEY  = "key.pem"
    python main.py
    ```
    Linux/macOS:
    ```bash
-   PYBUCH_HOST=0.0.0.0 PYBUCH_CERT=cert.pem PYBUCH_KEY=key.pem python main.py
+   UBUCHHALTUNG_HOST=0.0.0.0 UBUCHHALTUNG_CERT=cert.pem UBUCHHALTUNG_KEY=key.pem python main.py
    ```
 2. Im Browser öffnen und in der **Ersteinrichtung „Mehrbenutzer"** wählen. Danach
    wird das **Administrator-Konto** angelegt (`/setup-admin`); der Admin legt unter
@@ -67,8 +67,8 @@ ersten Besuch eine Warnung, die einmalig bestätigt wird):
 
 ```bash
 openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
-  -days 825 -subj "/CN=pybuch.local" \
-  -addext "subjectAltName=IP:192.168.1.10,DNS:pybuch.local"
+  -days 825 -subj "/CN=ubuchhaltung.local" \
+  -addext "subjectAltName=IP:192.168.1.10,DNS:ubuchhaltung.local"
 ```
 
 `subjectAltName` auf die tatsächliche LAN-IP / den Hostnamen des Servers setzen.
@@ -89,7 +89,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
 - **Windows:** z. B. via [NSSM](https://nssm.cc/) als Dienst registrieren; die
   Umgebungsvariablen im Dienst hinterlegen.
 - In einer VM/Container (Unraid/Proxmox/Docker): `data/` als persistentes Volume
-  einbinden, `PYBUCH_HOST=0.0.0.0` setzen, Port veröffentlichen.
+  einbinden, `UBUCHHALTUNG_HOST=0.0.0.0` setzen, Port veröffentlichen.
 
 ## Schema-Migrationen
 

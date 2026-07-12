@@ -1144,18 +1144,18 @@ def run_server(host=None, port=None, certfile=None, keyfile=None):
     """Web-Server starten.
 
     Defaults kommen aus Umgebungsvariablen (für Deployment im LAN/VM):
-      PYBUCH_HOST (Default 'localhost'; '0.0.0.0' für Netzzugriff),
-      PYBUCH_PORT (Default 8080),
-      PYBUCH_CERT / PYBUCH_KEY (PEM-Dateien ⇒ HTTPS, self-signed möglich).
+      UBUCHHALTUNG_HOST (Default 'localhost'; '0.0.0.0' für Netzzugriff),
+      UBUCHHALTUNG_PORT (Default 8080),
+      UBUCHHALTUNG_CERT / UBUCHHALTUNG_KEY (PEM-Dateien ⇒ HTTPS, self-signed möglich).
 
     Der Betriebsmodus (Einzel-/Mehrbenutzer) wird bei der Ersteinrichtung gewählt
     und in data/config.json gespeichert (für Headless-Setup ggf. vorab anlegen).
     """
     import socket, sys
-    host = host or os.environ.get("PYBUCH_HOST", "localhost")
-    port = int(port or os.environ.get("PYBUCH_PORT", "8080"))
-    certfile = certfile or os.environ.get("PYBUCH_CERT")
-    keyfile = keyfile or os.environ.get("PYBUCH_KEY")
+    host = host or os.environ.get("UBUCHHALTUNG_HOST", "localhost")
+    port = int(port or os.environ.get("UBUCHHALTUNG_PORT", "8080"))
+    certfile = certfile or os.environ.get("UBUCHHALTUNG_CERT")
+    keyfile = keyfile or os.environ.get("UBUCHHALTUNG_KEY")
 
     _ensure_directories()
     if userctx.auth_enabled():

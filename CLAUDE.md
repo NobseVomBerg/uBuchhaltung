@@ -1,8 +1,8 @@
-# PyBuch – Agent & Token-Optimierungs-Strategie
+# uBuchhaltung – Agent & Token-Optimierungs-Strategie
 
 ## Projekt-Überblick
 
-**PyBuch** ist ein Python-basiertes Buchhaltungs-/Rechnungsverwaltungssystem mit Flask-Backend und Web-UI. Fokus: Finanz-Datenmanagement, SKR-Konten, Geschäftsvorfälle, PDF-Rechnungen.
+**uBuchhaltung** ist ein Python-basiertes Buchhaltungs-/Rechnungsverwaltungssystem mit Flask-Backend und Web-UI. Fokus: Finanz-Datenmanagement, SKR-Konten, Geschäftsvorfälle, PDF-Rechnungen.
 
 - **Tech Stack:** Python (Flask), SQLite, Jinja2 Templates, CSS, HTML
 - **Struktur:** `server/` (App-Logik), `db/` (Datenbank-Package, Domänen-Mixins), `buch.css` (Styling), Templates im `server/templates/`
@@ -36,7 +36,7 @@ Ziel: Hohe KI-Performance bei minimalem Token-Verbrauch – verhindert 5h-Limit-
 - Feature-Implementierung, Bugfixe, Refactoring
 - Code lesen und ändern
 - Tests schreiben & debuggen
-- Meiste PyBuch-Arbeit landet hier
+- Meiste uBuchhaltung-Arbeit landet hier
 - **Start here**, es sei denn klar kein Sonnet-Fall
 
 **Opus 4.8 (nur für komplexe Architektur)**
@@ -165,7 +165,7 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
 
 ---
 
-## Spezifika für PyBuch
+## Spezifika für uBuchhaltung
 
 ### Styling
 - Alle Styles gehören in `buch.css` (nicht inline in HTML)

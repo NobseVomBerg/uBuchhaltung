@@ -1,5 +1,5 @@
 """
-Server package for PyBuch accounting application
+Server package for uBuchhaltung accounting application
 """
 from .app import run_server
 

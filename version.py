@@ -1,4 +1,4 @@
-"""Zentrale Versionsinformation für PyBuch (Single Source of Truth).
+"""Zentrale Versionsinformation für uBuchhaltung (Single Source of Truth).
 
 Versionsschema MAJOR.MINOR.PATCH (z. B. 1.0.0):
 
@@ -16,6 +16,6 @@ Schema-Version kennt.
 
 MAJOR = 1
 SCHEMA_VERSION = 2   # +1 bei jeder DB-Schema-Änderung (= mittlere Versionsstelle)
-PATCH = 10           # +1 bei sonstigen Änderungen ohne DB-Bezug
+PATCH = 11           # +1 bei sonstigen Änderungen ohne DB-Bezug
 
 APP_VERSION = f"{MAJOR}.{SCHEMA_VERSION}.{PATCH}"

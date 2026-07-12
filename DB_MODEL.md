@@ -1,4 +1,4 @@
-# Datenbankmodell PyBuch
+# Datenbankmodell uBuchhaltung
 
 **Status:** Aktuell (Stand: 7. Juli 2026)
 **DBMS:** SQLite 3
@@ -8,7 +8,7 @@
 
 ## Übersicht
 
-PyBuch verwaltet Buchführung für kleine/mittlere Unternehmen mit Fokus auf deutsche Buchhaltungsstandards (SKR03/SKR04). Es unterstützt XRechnung-konforme Rechnungserstellung, Anlagenverwaltung (AfA), automatische Bank↔Entry-Verknüpfung und Belegmanagement.
+uBuchhaltung verwaltet Buchführung für kleine/mittlere Unternehmen mit Fokus auf deutsche Buchhaltungsstandards (SKR03/SKR04). Es unterstützt XRechnung-konforme Rechnungserstellung, Anlagenverwaltung (AfA), automatische Bank↔Entry-Verknüpfung und Belegmanagement.
 
 ---
 

@@ -1,4 +1,4 @@
-# run_https.ps1 – PyBuch über HTTPS starten (self-signed Zertifikat)
+# run_https.ps1 – uBuchhaltung über HTTPS starten (self-signed Zertifikat)
 #
 # Erzeugt beim ersten Aufruf ein selbst-signiertes Zertifikat (cert.pem/key.pem)
 # im Projektordner und startet den Server dann per HTTPS. OpenSSL muss installiert
@@ -32,10 +32,10 @@ if (-not (Test-Path $cert) -or -not (Test-Path $key)) {
     }
 }
 
-$env:PYBUCH_CERT = $cert
-$env:PYBUCH_KEY  = $key
-$env:PYBUCH_PORT = "$Port"
-if ($BindAll) { $env:PYBUCH_HOST = "0.0.0.0" }
+$env:UBUCHHALTUNG_CERT = $cert
+$env:UBUCHHALTUNG_KEY  = $key
+$env:UBUCHHALTUNG_PORT = "$Port"
+if ($BindAll) { $env:UBUCHHALTUNG_HOST = "0.0.0.0" }
 
-Write-Host "Starte PyBuch über HTTPS auf Port $Port ..."
+Write-Host "Starte uBuchhaltung über HTTPS auf Port $Port ..."
 python (Join-Path $PSScriptRoot "main.py")

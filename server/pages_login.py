@@ -26,7 +26,7 @@ def PageLogin(error_msg=None, username=""):
     err = (f'<p class="error-box rectRounded">{_html.escape(error_msg)}</p>' if error_msg else '')
     body = f'''
     <div class="rectRounded">
-      <h2>PyBuch – Anmeldung</h2>
+      <h2>uBuchhaltung – Anmeldung</h2>
       {err}
       <form method="POST" action="/login">
         <table class="form-table">
@@ -37,9 +37,9 @@ def PageLogin(error_msg=None, username=""):
           <input type="submit" value="Anmelden" class="coloredButton bg-green">
         </div>
       </form>
-      <p class="muted">PyBuch {APP_VERSION}</p>
+      <p class="muted">uBuchhaltung {APP_VERSION}</p>
     </div>'''
-    return _shell("PyBuch – Anmeldung", body)
+    return _shell("uBuchhaltung – Anmeldung", body)
 
 
 def PageSetupAdmin(error_msg=None, username=""):
@@ -47,7 +47,7 @@ def PageSetupAdmin(error_msg=None, username=""):
     err = (f'<p class="error-box rectRounded">{_html.escape(error_msg)}</p>' if error_msg else '')
     body = f'''
     <div class="rectRounded">
-      <h2>PyBuch – Erster Start</h2>
+      <h2>uBuchhaltung – Erster Start</h2>
       <p>Es existiert noch kein Benutzer. Lege ein Administrator-Konto an.</p>
       {err}
       <form method="POST" action="/setup-admin">
@@ -60,6 +60,6 @@ def PageSetupAdmin(error_msg=None, username=""):
           <input type="submit" value="Administrator anlegen" class="coloredButton bg-green">
         </div>
       </form>
-      <p class="muted">PyBuch {APP_VERSION}</p>
+      <p class="muted">uBuchhaltung {APP_VERSION}</p>
     </div>'''
-    return _shell("PyBuch – Erster Start", body)
+    return _shell("uBuchhaltung – Erster Start", body)

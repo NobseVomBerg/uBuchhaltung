@@ -1,10 +1,10 @@
-# PyBuch
+# uBuchhaltung
 
 Eine webbasierte Buchhaltungsanwendung für kleine Unternehmen und Selbstständige.
 
 ## Überblick
 
-PyBuch ist eine schlanke, webbasierte Buchhaltungssoftware in Python. Sie verwaltet Belege, Konten, Buchungen und nutzt den deutschen Standardkontenrahmen (SKR). Bankbewegungen (`BookingType='bank'`) und Buchungssätze (`BookingType='entry'`) werden in einer gemeinsamen Tabelle geführt und automatisch verknüpft.
+uBuchhaltung ist eine schlanke, webbasierte Buchhaltungssoftware in Python. Sie verwaltet Belege, Konten, Buchungen und nutzt den deutschen Standardkontenrahmen (SKR). Bankbewegungen (`BookingType='bank'`) und Buchungssätze (`BookingType='entry'`) werden in einer gemeinsamen Tabelle geführt und automatisch verknüpft.
 
 ## Features
 
@@ -163,7 +163,7 @@ Informationen über die Anwendung (Version aus `version.py`).
 ## Projektstruktur
 
 ```
-PyBuch/
+uBuchhaltung/
 ├── main.py                    # Entry Point – Webserver starten
 ├── version.py                 # Single Source of Truth für die Versionsnummer
 ├── money.py                   # Geld als Festkomma-Integer (Minor Units, SCALE=4)

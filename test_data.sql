@@ -22,7 +22,7 @@ AND b.DateBooking BETWEEN '2024-01-01' AND '2024-01-31';
 
 
 
--- Test Data for PyBuch Database
+-- Test Data for uBuchhaltung Database
 -- Execute these statements to populate the database with sample data
 
 INSERT INTO Articles (Name, Unit, UnitPrice, TaxRate, Description, Active) VALUES

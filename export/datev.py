@@ -146,7 +146,7 @@ def _make_meta_row(date_from: str, date_to: str) -> str:
     d_to   = date_to.replace('-', '')
     parts = [
         '"EXTF"', '700', '21', '"Buchungsstapel"', '12',
-        ts, '', '""', '"PyBuch"', '""',
+        ts, '', '""', '"uBuchhaltung"', '""',
         '70000', '99999', wj_start, '4',
         d_from, d_to, '""', '""', '1', '0', '0', '"EUR"',
         '', '""', '', '', '""', '0', '', '', '""',

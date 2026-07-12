@@ -1,5 +1,5 @@
 """
-PyBuch - Simple Accounting Software
+uBuchhaltung - Simple Accounting Software
 Entry point for the web server
 """
 from document_parser import DocumentParser

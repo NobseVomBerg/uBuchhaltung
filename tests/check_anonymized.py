@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Anonymisierungs-Guard für PyBuch Testdaten.
+Anonymisierungs-Guard für uBuchhaltung Testdaten.
 
 Prüft alle Dateien unter tests/ und seed_data/test/ auf personenbezogene
 Echtdaten. Nur E-Mail-Domains, IBANs und Steuernummern aus der jeweiligen
@@ -43,7 +43,7 @@ ALLOWED_EMAIL_DOMAINS = {
     # RFC-Standard Testdomains – immer erlaubt
     "example.com", "example.de", "example.org", "example.net",
     "test.de", "test.com", "testbank.de",
-    # PyBuch seed_data/test – alle bekannten Muster-Domains
+    # uBuchhaltung seed_data/test – alle bekannten Muster-Domains
     "muster.de", "muster-gmbh.de",
     "beispiel-kunde.de",
     "lieferant.de",

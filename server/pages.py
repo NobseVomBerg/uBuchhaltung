@@ -218,10 +218,10 @@ def PageAbout():
     s = Header1('about')
     s+= Header2()
     s+= Header3()
-    s+= "<h1>PyBuch</h1>"
+    s+= "<h1>uBuchhaltung</h1>"
     s+= f'Version {APP_VERSION} <br>Deine einfache Buchführungssoftware, entwickelt von <a href="https://unsix.de">unsix</a>.<br><br>'
-    s+= f'''Dowload auf GitHub: <a href="https://github.com/NobseVomBerg/PyBuch">PyBuch auf GitHub</a><br><br>
-PyBuch ist ein Open-Source-Projekt unter der APGL-Lizenz, das mit Leidenschaft entwickelt wird, um Selbstständigen und kleinen
+    s+= f'''Download auf GitHub: <a href="https://github.com/NobseVomBerg/uBuchhaltung">uBuchhaltung auf GitHub</a><br><br>
+uBuchhaltung ist ein Open-Source-Projekt unter der AGPL-Lizenz, das mit Leidenschaft entwickelt wird, um Selbstständigen und kleinen
 Unternehmen eine benutzerfreundliche Buchführungssoftware zu bieten, die die gängigsten Anforderungen direkt abdeckt und darüber
 hinaus einfach erweiterbar ist. So kannst Du SKR-Konten nach Bedarf hinzufügen oder AFA-Abschreibungen anpassen.<br><br>
 Wenn du Fragen hast, lies die MD-Files oder lass Dir das Projekt von einer KI Deiner Wahl kurz erklären.'''

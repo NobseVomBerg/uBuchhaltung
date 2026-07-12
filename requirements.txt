@@ -1,4 +1,4 @@
-# Laufzeit-Abhängigkeiten für PyBuch.
+# Laufzeit-Abhängigkeiten für uBuchhaltung.
 #
 # Der Kern (Webserver, DB, Rendering, Export) läuft ausschließlich mit der
 # Python-Standardbibliothek (http.server, sqlite3, email, xml, ...).

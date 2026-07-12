@@ -1,4 +1,4 @@
-"""Zentrale Geld-Arithmetik fuer PyBuch (Festkomma, exakt).
+"""Zentrale Geld-Arithmetik fuer uBuchhaltung (Festkomma, exakt).
 
 Geldbetraege werden als ganzzahlige *Minor Units* gefuehrt: der Eurobetrag
 multipliziert mit 10^SCALE. Bei SCALE=4 entspricht 1 Minor Unit = 0,0001 EUR
