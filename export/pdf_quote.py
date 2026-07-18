@@ -14,7 +14,8 @@ Phase 1 ist einseitig; der mehrseitige Fließtext-Satz folgt in Phase 2.
 import datetime
 import os
 from db import Database
-from .pdf_core import load_image_xobject, build_multi_page_pdf, resolve_logo_path
+from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path,
+                       safe_filename_component)
 from . import pdf_document as D
 
 
@@ -139,8 +140,10 @@ def generate_quote_pdf(db: Database, quote_id: int):
     year = datetime.datetime.now().year
     pdf_dir = os.path.join(userctx.user_data_dir(), "quotes", str(year))
     os.makedirs(pdf_dir, exist_ok=True)
-    safe_number = "".join(c for c in quote_number if c.isalnum() or c in ['-', '_'])
-    pdf_path = os.path.join(pdf_dir, f"Angebot_{safe_number}.pdf")
+    # Namenskonvention "[Angebotsnummer] [Kundenname]" (todo #1)
+    customer = safe_filename_component(buyer_company or buyer_name)
+    parts = [safe_filename_component(quote_number), customer]
+    pdf_path = os.path.join(pdf_dir, " ".join(p for p in parts if p) + ".pdf")
 
     try:
         with open(pdf_path, 'wb') as f:

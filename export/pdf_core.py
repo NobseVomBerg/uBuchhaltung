@@ -43,6 +43,18 @@ def to_winansi_bytes(text: str) -> bytes:
     return text.translate(_WINANSI_TRANSLATE).encode('cp1252', errors='replace')
 
 
+def safe_filename_component(text) -> str:
+    """Text als Bestandteil eines Dateinamens bereinigen.
+
+    Entfernt unter Windows/Linux unzulässige Zeichen (``<>:"/\\|?*``) und
+    Steuerzeichen, normalisiert Whitespace. Umlaute bleiben erhalten.
+    Dient der Namenskonvention "[Nummer] [Kundenname]" (todo #1).
+    """
+    cleaned = ''.join(c for c in str(text or '')
+                      if c not in '<>:"/\\|?*' and ord(c) >= 32)
+    return ' '.join(cleaned.split())
+
+
 def escape_pdf_string(s: str) -> str:
     """Sonderzeichen für ein PDF-String-Literal (``(…)``-Syntax) maskieren.
 

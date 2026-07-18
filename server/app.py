@@ -5,8 +5,9 @@
 Main HTTP server class with routing
 """
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 from http.cookies import SimpleCookie
+import unicodedata
 from db import Database
 import os
 import auth
@@ -39,6 +40,20 @@ from .pages_invoice import PageInvoice
 from .pages_quote import PageQuote
 from .pages_worktime import PageWorkTimes
 from .pages_trips import PageTrips
+
+def content_disposition(disposition, filename):
+    """Content-Disposition-Headerwert für Downloads bauen.
+
+    Dateinamen nach der Namenskonvention "[Nummer] [Kundenname]" enthalten
+    Leerzeichen und ggf. Umlaute – dafür braucht der Header Quoting plus
+    RFC-5987-Kodierung (``filename*``); ``filename`` bleibt ASCII-Fallback.
+    """
+    fallback = (unicodedata.normalize('NFKD', filename)
+                .encode('ascii', 'ignore').decode('ascii'))
+    fallback = fallback.replace('"', '').replace('\\', '') or 'download'
+    return (f'{disposition}; filename="{fallback}"; '
+            f"filename*=UTF-8''{quote(filename, safe='')}")
+
 
 class SimpleWebServer(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
@@ -285,12 +300,16 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     generator = XRechnungGenerator()
                     xml_content = generator.generate_xml(invoice, items)
                     
+                    # Namenskonvention "[Rechnungsnummer] [Kundenname]" (todo #1)
+                    from export.pdf_core import safe_filename_component
                     invoice_number = invoice[1] or 'DRAFT'
-                    filename = f"XRechnung_{invoice_number}.xml"
-                    
+                    customer = safe_filename_component(invoice[15] or invoice[14])
+                    parts = [safe_filename_component(invoice_number), customer]
+                    filename = " ".join(p for p in parts if p) + ".xml"
+
                     self.send_response(200)
                     self.send_header("Content-type", "application/xml")
-                    self.send_header("Content-Disposition", f"attachment; filename={filename}")
+                    self.send_header("Content-Disposition", content_disposition('attachment', filename))
                     self.send_header("Content-Length", str(len(xml_content.encode('utf-8'))))
                     self.end_headers()
                     self.wfile.write(xml_content.encode('utf-8'))
@@ -310,7 +329,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 if pdf_bytes:
                     self.send_response(200)
                     self.send_header("Content-type", "application/pdf")
-                    self.send_header("Content-Disposition", f"{disposition}; filename={filename}")
+                    self.send_header("Content-Disposition", content_disposition(disposition, filename))
                     self.send_header("Content-Length", str(len(pdf_bytes)))
                     self.end_headers()
                     self.wfile.write(pdf_bytes)
@@ -379,7 +398,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 if pdf_bytes:
                     self.send_response(200)
                     self.send_header("Content-type", "application/pdf")
-                    self.send_header("Content-Disposition", f"{disposition}; filename={filename}")
+                    self.send_header("Content-Disposition", content_disposition(disposition, filename))
                     self.send_header("Content-Length", str(len(pdf_bytes)))
                     self.end_headers()
                     self.wfile.write(pdf_bytes)
@@ -637,7 +656,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 if pdf_bytes:
                     self.send_response(200)
                     self.send_header("Content-type", "application/pdf")
-                    self.send_header("Content-Disposition", f"{disposition}; filename={filename}")
+                    self.send_header("Content-Disposition", content_disposition(disposition, filename))
                     self.send_header("Content-Length", str(len(pdf_bytes)))
                     self.end_headers()
                     self.wfile.write(pdf_bytes)

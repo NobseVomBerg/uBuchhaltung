@@ -12,7 +12,8 @@ nur die rechnungsspezifischen Teile (Zahlungsbedingungen, Bankverbindung, Fußze
 import datetime
 import os
 from db import Database
-from .pdf_core import load_image_xobject, build_multi_page_pdf, resolve_logo_path
+from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path,
+                       safe_filename_component)
 from . import pdf_document as D
 
 
@@ -151,8 +152,10 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     current_year = datetime.datetime.now().year
     pdf_dir = os.path.join(userctx.user_data_dir(), "invoices", str(current_year))
     os.makedirs(pdf_dir, exist_ok=True)
-    safe_number = "".join(c for c in invoice_number if c.isalnum() or c in ['-', '_'])
-    pdf_filename = f"Rechnung_{safe_number}.pdf"
+    # Namenskonvention "[Rechnungsnummer] [Kundenname]" (todo #1)
+    customer = safe_filename_component(buyer_company or buyer_name)
+    parts = [safe_filename_component(invoice_number), customer]
+    pdf_filename = " ".join(p for p in parts if p) + ".pdf"
     pdf_path = os.path.join(pdf_dir, pdf_filename)
 
     try:

@@ -74,8 +74,10 @@ Mit freundlichen Grüßen
             with open(pdf_path, 'rb') as f:
                 pdf_data = f.read()
                 pdf_attachment = MIMEApplication(pdf_data, _subtype='pdf')
-                pdf_attachment.add_header('Content-Disposition', 'attachment', 
-                                        filename=f"Rechnung_{invoice_number}.pdf")
+                # Anhang trägt denselben Namen wie die abgelegte PDF-Datei
+                # (Namenskonvention "[Rechnungsnummer] [Kundenname]")
+                pdf_attachment.add_header('Content-Disposition', 'attachment',
+                                        filename=os.path.basename(pdf_path))
                 msg.attach(pdf_attachment)
             
             # Send email

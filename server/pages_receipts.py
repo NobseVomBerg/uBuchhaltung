@@ -102,7 +102,9 @@ def PageReceipts(db: Database, date_from=None, date_to=None):
     s += f'<tr><td>Nummer:</td><td><input type="text" name="number" id="editNumber" value="{next_receipt_number}"></td></tr>'
     s += '''
                         <tr><td>Datum:</td><td><input type="date" name="date" id="editDate"></td></tr>
-                        <tr><td>Dateiname:</td><td><input type="text" name="filename" id="editFilename"></td></tr>
+                        <tr><td>Dateiname:</td><td><input type="text" name="filename" id="editFilename"
+                            placeholder="JJJJMMTT Name (was gekauft wurde)"
+                            title="Namenskonvention f&uuml;r eingehende Belege: JJJJMMTT Kunden-/Lieferantenname (kurze Liste der K&auml;ufe)"></td></tr>
                         <tr><td>Pfad:</td><td><input type="text" name="path" id="editPath"></td></tr>
                         <tr><td>Info:</td><td><input type="text" name="info" id="editInfo"></td></tr>
                         <tr><td></td><td>
