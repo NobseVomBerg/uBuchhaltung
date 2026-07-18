@@ -512,6 +512,55 @@ class InvoicesMixin:
 
     # ── Zahlungs-Zuordnung (Rechnung ↔ Buchung, todo #2) ─────────────────────
 
+    def recalc_invoice_payment_state(self, invoice_id, adjust_status=True):
+        """AmountDue (und optional Status) aus den tatsächlichen Zahlungen
+        neu berechnen.
+
+        Selbstheilung für verwaiste Zustände: Wird z. B. eine verknüpfte
+        Buchung gelöscht, verschwinden die InvoicePayments-Zeilen – ohne
+        Neuberechnung bliebe die Rechnung fälschlich auf "bezahlt"/Rest 0.
+        adjust_status=False aktualisiert nur AmountDue (für manuelle
+        Statuswechsel, deren Wahl nicht sofort überschrieben werden soll).
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('SELECT SumGross, Status FROM Invoices WHERE ID = ?',
+                           (invoice_id,))
+            row = cursor.fetchone()
+            if not row:
+                return
+            gross_minor = row[0] or 0
+            status = row[1]
+            cursor.execute(
+                'SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
+                (invoice_id,))
+            total_paid_minor = cursor.fetchone()[0]
+            new_due_minor = gross_minor - total_paid_minor
+
+            new_status = None
+            if adjust_status:
+                if total_paid_minor > 0 and new_due_minor < 100:
+                    new_status = 'paid'
+                elif total_paid_minor > 0:
+                    new_status = 'partial_payment'
+                elif status in ('paid', 'partial_payment', 'partial'):
+                    # Zahlungs-Status ohne Zahlungen → zurück auf Abgeschlossen
+                    new_status = 'finalized'
+
+            if new_status:
+                cursor.execute('''
+                    UPDATE Invoices SET AmountDue = ?, Status = ?,
+                                        UpdatedAt = CURRENT_TIMESTAMP
+                    WHERE ID = ?''', (new_due_minor, new_status, invoice_id))
+            else:
+                cursor.execute('''
+                    UPDATE Invoices SET AmountDue = ?, UpdatedAt = CURRENT_TIMESTAMP
+                    WHERE ID = ?''', (new_due_minor, invoice_id))
+            conn.commit()
+        finally:
+            conn.close()
+
     def get_open_invoices(self):
         """Offene Rechnungen für die Zahlungs-Zuordnung.
 

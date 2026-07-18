@@ -1020,8 +1020,12 @@ def handle_update_invoice_status(post_body: bytes):
     
     # Update status
     db.update_invoice_status(invoice_id, new_status)
+    # AmountDue an die tatsächlichen Zahlungen angleichen – heilt verwaiste
+    # Zustände (z. B. "bezahlt" mit Rest 0, aber ohne Zahlungen; todo #2).
+    # Status bleibt die manuelle Wahl (adjust_status=False).
+    db.recalc_invoice_payment_state(invoice_id, adjust_status=False)
     print(f"Invoice {invoice_id} status updated to: {new_status}")
-    
+
     return 200, f'{{"success": true, "invoice_id": {invoice_id}}}'
 
 

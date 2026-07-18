@@ -368,6 +368,8 @@ class BookingsMixin:
         Bereinigt vor dem Löschen alle referenzierenden Zeilen:
         BookingDocuments und InvoicePayments werden gelöscht,
         Assets.Booking_ID und AssetDepreciations.Booking_ID werden auf NULL gesetzt.
+        Rechnungen gelöschter Zahlungen werden neu berechnet (AmountDue/Status),
+        damit keine verwaisten "bezahlt"-Zustände zurückbleiben (todo #2).
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -377,6 +379,10 @@ class BookingsMixin:
         child_ids = [row[0] for row in cursor.fetchall()]
         all_ids = [booking_id] + child_ids
         placeholders = ','.join('?' * len(all_ids))
+
+        cursor.execute(f'SELECT DISTINCT InvoiceID FROM InvoicePayments '
+                       f'WHERE BookingID IN ({placeholders})', all_ids)
+        affected_invoice_ids = [row[0] for row in cursor.fetchall()]
 
         cursor.execute(f'DELETE FROM BookingDocuments WHERE Booking_ID IN ({placeholders})', all_ids)
         cursor.execute(f'DELETE FROM InvoicePayments WHERE BookingID IN ({placeholders})', all_ids)
@@ -390,6 +396,9 @@ class BookingsMixin:
 
         conn.commit()
         conn.close()
+
+        for inv_id in affected_invoice_ids:
+            self.recalc_invoice_payment_state(inv_id)
     def get_booking_by_id(self, booking_id):
         """Get a single booking by ID"""
         conn = self._get_connection()

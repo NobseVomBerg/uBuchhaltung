@@ -203,6 +203,43 @@ def test_open_items_and_candidates_for_contact(tmp_db):
     assert {c[0] for c in candidates} == {bk, bk_other}
 
 
+# ── Buchung löschen / verwaiste Zustände heilen ─────────────────────────────
+
+def test_delete_booking_resets_invoice_state(tmp_db):
+    inv = _invoice(tmp_db, gross=119.00)
+    handle_add_transaction(tmp_db, _post(invoice_id=inv))
+    booking_id = tmp_db.get_invoice_payments(inv)[0][2]
+    (st,), = _raw(tmp_db, 'SELECT Status FROM Invoices WHERE ID=?', inv)
+    assert st == 'paid'
+
+    tmp_db.delete_transaction(booking_id)
+
+    (due, st), = _raw(tmp_db, 'SELECT AmountDue, Status FROM Invoices WHERE ID=?', inv)
+    assert due == 1190000 and st == 'finalized'   # Rest wiederhergestellt
+    assert tmp_db.get_invoice_payments(inv) == []
+    assert inv in {r[0] for r in tmp_db.get_open_invoices()}
+
+
+def test_status_change_heals_orphaned_paid_state(tmp_db, monkeypatch):
+    # Verwaister Zustand (wie vor dem Fix entstanden): "bezahlt", Rest 0,
+    # aber keine Zahlungen mehr – Rechnung war nirgends mehr verknüpfbar.
+    monkeypatch.setattr(handlers, 'Database', lambda: tmp_db)
+    inv = _invoice(tmp_db, gross=119.00)
+    con = sqlite3.connect(tmp_db.db_name)
+    con.execute("UPDATE Invoices SET Status='paid', AmountDue=0 WHERE ID=?", (inv,))
+    con.commit()
+    con.close()
+    assert inv not in {r[0] for r in tmp_db.get_open_invoices()}
+
+    body = json.dumps({'invoice_id': inv, 'status': 'finalized'}).encode()
+    status, _ = handlers.handle_update_invoice_status(body)
+    assert status == 200
+
+    (due, st), = _raw(tmp_db, 'SELECT AmountDue, Status FROM Invoices WHERE ID=?', inv)
+    assert due == 1190000 and st == 'finalized'
+    assert inv in {r[0] for r in tmp_db.get_open_invoices()}
+
+
 # ── SKR-Backfill beim nachträglichen Verknüpfen ─────────────────────────────
 
 def test_link_backfills_skr_and_creates_entry_child(tmp_db):
