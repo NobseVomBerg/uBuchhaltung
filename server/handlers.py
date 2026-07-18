@@ -1025,6 +1025,56 @@ def handle_update_invoice_status(post_body: bytes):
     return 200, f'{{"success": true, "invoice_id": {invoice_id}}}'
 
 
+def _backfill_booking_skr(db, booking_id, invoice):
+    """SKR-Teil einer verknüpften Zahlung automatisch nachtragen (todo #2).
+
+    Beim nachträglichen Verknüpfen bestehender Buchungen (z. B. importierter
+    Kontoauszug) werden NUR leere Felder gefüllt: Erlöskonto passend zum
+    Steuersatz der Rechnung, Steuersatz/-betrag (enthaltene USt des
+    Buchungsbetrags), Kunde und Beleg-Nr. Bei Bankbuchungen ohne Buchungssatz
+    entsteht zusätzlich die 'entry'-Kindbuchung mit dem SKR-Konto des
+    Bankkontos als Gegenkonto – wie beim manuellen Vervollständigen.
+    """
+    booking = db.get_booking_by_id(booking_id)
+    if not booking:
+        return
+    rate = invoice[35]
+    rate_pct = 0 if not rate or rate < 0 else (rate * 100 if rate <= 1 else rate)
+    coa_id = (db.get_coa_id_by_account_number(4400)
+              if round(rate_pct, 2) == 19 else None)
+    tax_rate = rate_pct / 100 if rate_pct else None
+    tax_amount = None
+    if rate_pct:
+        # Enthaltene USt des gesamten Buchungsbetrags (nicht nur der
+        # Zuordnung): das Steuerfeld beschreibt die Buchung als Ganzes.
+        gross = abs(float(booking[11] or 0))
+        tax_amount = round(gross * rate_pct / (100 + rate_pct), 2)
+    db.backfill_booking_fields(booking_id, coa_id=coa_id, tax_rate=tax_rate,
+                               tax_amount=tax_amount, contact_id=invoice[13],
+                               document_number=invoice[1])
+
+    booking = db.get_booking_by_id(booking_id)
+    if (booking[17] == 'bank' and booking[8]
+            and not db.get_linked_entry_for_bank(booking_id)):
+        account_coa_id = None
+        if booking[4]:
+            acct = db.get_account_by_id(booking[4])
+            if acct and acct[7]:  # SKRAccount at index 7
+                account_coa_id = db.get_coa_id_by_account_number(acct[7])
+        db.insert_booking(
+            date_booking=booking[1], date_tax=booking[2],
+            amount=float(booking[11] or 0),
+            recipient_client=booking[6] or '',
+            contact_id=booking[7], coa_id=booking[8],
+            counter_coa_id=account_coa_id,
+            currency=booking[12] or 'EUR',
+            tax_rate=booking[13],
+            tax_amount=float(booking[14]) if booking[14] is not None else None,
+            text=booking[15] or '', document_number=booking[16],
+            booking_type='entry', parent_booking_id=booking_id,
+            log_description="Auto entry child on invoice link (todo #2)")
+
+
 def link_booking_to_invoice_capped(db, invoice_id, booking_id, amount=None):
     """Buchung einer Rechnung als Zahlung zuordnen (idempotent, gekappt).
 
@@ -1047,6 +1097,11 @@ def link_booking_to_invoice_capped(db, invoice_id, booking_id, amount=None):
     if alloc <= 0:
         return False, "Kein offener Betrag zuordenbar (Rechnung oder Buchung ausgeschöpft)"
     db.link_invoice_to_transaction(invoice_id, booking_id, alloc)
+    try:
+        _backfill_booking_skr(db, booking_id, invoice)
+    except Exception as e:
+        # Zuordnung ist gespeichert; ein Backfill-Fehler darf sie nicht kippen
+        print(f"Error backfilling SKR for booking {booking_id}: {e}")
     return True, None
 
 

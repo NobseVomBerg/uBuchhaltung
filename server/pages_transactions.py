@@ -128,7 +128,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     'tax_amount': tax_val,
                     # Erlöskonto passend zum Steuersatz (nur 19% im SKR04-Seed)
                     'coa_id': (db.get_coa_id_by_account_number(4400)
-                               if rate_pct == 19 else None),
+                               if round(rate_pct, 2) == 19 else None),
                     'document_nr': inv[1] or '',
                     'text': f"Zahlung Rechnung {inv[1] or ''}".strip(),
                 }

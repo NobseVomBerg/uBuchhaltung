@@ -284,6 +284,30 @@ class BookingsMixin:
             self._log_sql(sql_template, params, log_description)
         
         return last_id
+    def backfill_booking_fields(self, booking_id, coa_id=None, tax_rate=None,
+                                tax_amount=None, contact_id=None,
+                                document_number=None):
+        """Leere Felder einer Buchung nachtragen – vorhandene Werte werden
+        NIE überschrieben (COALESCE). Für die automatische SKR-Zuordnung beim
+        nachträglichen Verknüpfen einer Zahlung mit einer Rechnung (todo #2).
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE Bookings SET
+                COA_ID     = COALESCE(COA_ID, ?),
+                TaxRate    = COALESCE(TaxRate, ?),
+                TaxAmount  = COALESCE(TaxAmount, ?),
+                Contact_ID = COALESCE(Contact_ID, ?),
+                DocumentNumber = CASE WHEN DocumentNumber IS NULL
+                                        OR DocumentNumber = ''
+                                      THEN ? ELSE DocumentNumber END
+            WHERE ID = ?
+        ''', (coa_id, tax_rate, self._minor_opt(tax_amount), contact_id,
+              document_number, booking_id))
+        conn.commit()
+        conn.close()
+
     def check_booking_exists(self, date, amount, account_id=None, foreign_bank_account="", text=""):
         """Anzahl vorhandener Buchungen mit gleichem Datum/Betrag/Konto.
 

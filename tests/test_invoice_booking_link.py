@@ -203,6 +203,51 @@ def test_open_items_and_candidates_for_contact(tmp_db):
     assert {c[0] for c in candidates} == {bk, bk_other}
 
 
+# ── SKR-Backfill beim nachträglichen Verknüpfen ─────────────────────────────
+
+def test_link_backfills_skr_and_creates_entry_child(tmp_db):
+    tmp_db.insert_account('E2E-Bank', 'Ich', 'DE00', 'BIC', 'Bank', is_cash=0,
+                          skr_account=1800)
+    acct_id = [a for a in tmp_db.fetch_accounts() if a[1] == 'E2E-Bank'][0][0]
+    tmp_db.insert_contact(display_name='Käufer AG', company_name='Käufer AG')
+    contact_id = _raw(tmp_db,
+                      "SELECT ID FROM Contacts WHERE DisplayName='Käufer AG'")[0][0]
+    inv = _invoice(tmp_db, 'R-BF', gross=119.00, customer_id=contact_id)
+    # Importierte Bankbuchung: kein COA, keine Steuer, kein Kontakt, keine Beleg-Nr.
+    bk = tmp_db.insert_booking('2026-02-01', 119.00, account_id=acct_id,
+                               booking_type='bank', recipient_client='Käufer AG')
+
+    ok, err = link_booking_to_invoice_capped(tmp_db, inv, bk)
+    assert ok, err
+
+    coa_4400 = tmp_db.get_coa_id_by_account_number(4400)
+    coa_1800 = tmp_db.get_coa_id_by_account_number(1800)
+    b = tmp_db.get_booking_by_id(bk)
+    assert b[8] == coa_4400                       # Erlöskonto nachgetragen
+    assert b[13] == 0.19                          # Steuersatz
+    assert b[14] == Decimal('19.0000')            # enthaltene USt
+    assert b[7] == contact_id                     # Kunde nachgetragen
+    assert b[16] == 'R-BF'                        # Beleg-Nr. = Rechnungsnummer
+    # Buchungssatz (entry-Kind) mit Gegenkonto = SKR des Bankkontos
+    entry = tmp_db.get_linked_entry_for_bank(bk)
+    assert entry is not None
+    assert entry[0] == coa_4400 and entry[1] == coa_1800
+
+
+def test_link_backfill_never_overwrites(tmp_db):
+    coa_4405 = tmp_db.get_coa_id_by_account_number(4405)
+    inv = _invoice(tmp_db, 'R-KEEP', gross=119.00)
+    bk = tmp_db.insert_booking('2026-02-01', 119.00, booking_type='entry',
+                               coa_id=coa_4405, tax_rate=0.07, tax_amount=7.79,
+                               document_number='EIGENE-NR')
+    ok, err = link_booking_to_invoice_capped(tmp_db, inv, bk)
+    assert ok, err
+    b = tmp_db.get_booking_by_id(bk)
+    assert b[8] == coa_4405 and b[13] == 0.07     # nichts überschrieben
+    assert b[14] == Decimal('7.7900')
+    assert b[16] == 'EIGENE-NR'
+
+
 # ── Formular-Prefill (from_invoice) ──────────────────────────────────────────
 
 def test_page_transactions_prefill_from_invoice(tmp_db):
