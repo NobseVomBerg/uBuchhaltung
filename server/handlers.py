@@ -1044,8 +1044,7 @@ def _backfill_booking_skr(db, booking_id, invoice):
         return
     rate = invoice[35]
     rate_pct = 0 if not rate or rate < 0 else (rate * 100 if rate <= 1 else rate)
-    coa_id = (db.get_coa_id_by_account_number(4400)
-              if round(rate_pct, 2) == 19 else None)
+    coa_id = db.resolve_revenue_coa(rate)
     tax_rate = rate_pct / 100 if rate_pct else None
     tax_amount = None
     if rate_pct:

@@ -285,6 +285,32 @@ def test_link_backfill_never_overwrites(tmp_db):
     assert b[16] == 'EIGENE-NR'
 
 
+def test_revenue_coa_learned_from_history(tmp_db):
+    coa_4405 = tmp_db.get_coa_id_by_account_number(4405)
+    coa_4400 = tmp_db.get_coa_id_by_account_number(4400)
+
+    # §19-Rechnung: Nutzer verbucht die Zahlung EINMAL manuell mit eigenem
+    # Erlöskonto (4405 als Stellvertreter für ein individuelles Konto)
+    inv1 = _invoice(tmp_db, 'R-KU1', gross=100.00, tax_rate=-1, tax_amount=0)
+    bk1 = tmp_db.insert_booking('2026-03-01', 100.00, booking_type='entry',
+                                coa_id=coa_4405)
+    assert link_booking_to_invoice_capped(tmp_db, inv1, bk1)[0]
+
+    # Nächste §19-Rechnung: Backfill lernt das Konto aus der Historie
+    inv2 = _invoice(tmp_db, 'R-KU2', gross=50.00, tax_rate=-1, tax_amount=0)
+    bk2 = _bank_booking(tmp_db, amount=50.00)
+    assert link_booking_to_invoice_capped(tmp_db, inv2, bk2)[0]
+    assert tmp_db.get_booking_by_id(bk2)[8] == coa_4405
+
+    # Prefill nutzt dieselbe Historie
+    inv3 = _invoice(tmp_db, 'R-KU3', gross=70.00, tax_rate=-1, tax_amount=0)
+    html = PageTransactions(tmp_db, from_invoice=inv3)
+    assert f'value="{coa_4405}" selected' in html
+
+    # Andere Steuersätze lernen nicht mit: 19% fällt weiter auf 4400 zurück
+    assert tmp_db.resolve_revenue_coa(0.19) == coa_4400
+
+
 # ── Formular-Prefill (from_invoice) ──────────────────────────────────────────
 
 def test_page_transactions_prefill_from_invoice(tmp_db):

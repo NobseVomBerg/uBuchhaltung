@@ -580,6 +580,45 @@ class InvoicesMixin:
         conn.close()
         return [self._euro_row(r, 36, 37, 38, 39) for r in rows]
 
+    def resolve_revenue_coa(self, tax_rate):
+        """Passendes Erlöskonto für einen Rechnungs-Steuersatz ermitteln.
+
+        Lernt zuerst aus der eigenen Historie: das zuletzt bei einer
+        Zahlungs-Zuordnung verwendete Erlöskonto einer Rechnung mit gleichem
+        Steuersatz. Damit funktionieren auch eigene Kontenrahmen und
+        §19-Rechnungen (Sentinel -1), sobald der Nutzer das Konto EINMAL
+        manuell gesetzt hat. Fallback: Standardkonto 4400 (Erlöse 19% USt)
+        bei 19 %. tax_rate wie in Invoices.TaxRate (0.19, 19 oder -1).
+        """
+        if tax_rate is None:
+            key = -999.0
+        elif tax_rate < 0:
+            key = -1.0
+        else:
+            pct = tax_rate * 100 if tax_rate <= 1 else tax_rate
+            key = round(pct, 2)
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT b.COA_ID
+            FROM InvoicePayments ip
+            JOIN Bookings b ON b.ID = ip.BookingID
+            JOIN Invoices i ON i.ID = ip.InvoiceID
+            WHERE b.COA_ID IS NOT NULL
+              AND (CASE WHEN i.TaxRate IS NULL THEN -999.0
+                        WHEN i.TaxRate < 0 THEN -1.0
+                        WHEN i.TaxRate <= 1 THEN ROUND(i.TaxRate * 100, 2)
+                        ELSE ROUND(i.TaxRate, 2) END) = ?
+            ORDER BY ip.ID DESC LIMIT 1
+        ''', (key,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return row[0]
+        if key == 19:
+            return self.get_coa_id_by_account_number(4400)
+        return None
+
     def get_booking_allocations(self, booking_id):
         """Zahlungs-Zuordnungen einer Buchung.
 
