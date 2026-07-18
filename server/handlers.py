@@ -200,13 +200,15 @@ def handle_add_transaction(db: Database, post_data):
     tax_rate = post_data.get("tax_rate", [""])[0]
     tax_amount = post_data.get("tax_amount", [""])[0]
     document_nr = post_data.get("document_nr", [""])[0]
-    
+    invoice_id = post_data.get("invoice_id", [""])[0]
+
     try:
         # Convert IDs to int or None
         account_id = int(account_id) if account_id else None
         contact_id = int(contact_id) if contact_id else None
         coa_id = int(coa_id) if coa_id else None
         booking_group_id = int(booking_group_id) if booking_group_id else None
+        invoice_id = int(invoice_id) if invoice_id else None
         
         # Convert tax_rate from percentage to decimal
         tax_rate = float(tax_rate) / 100 if tax_rate else None
@@ -319,7 +321,16 @@ def handle_add_transaction(db: Database, post_data):
                     parent_booking_id=transaction_id,
                     log_description="Manual bank booking – auto entry child"
                 )
-        
+
+        # Zahlungs-Zuordnung zur Rechnung (todo #2): idempotent und gekappt;
+        # ein Fehler hier darf die bereits gespeicherte Buchung nicht zum 500 machen.
+        if invoice_id:
+            try:
+                link_booking_to_invoice_capped(db, invoice_id, transaction_id)
+            except Exception as e:
+                print(f"Error linking booking {transaction_id} to invoice {invoice_id}: {e}")
+            return 303, f"/invoice/edit?id={invoice_id}"
+
         return 303, "/transactions"
     except Exception as e:
         import traceback
@@ -1014,27 +1025,57 @@ def handle_update_invoice_status(post_body: bytes):
     return 200, f'{{"success": true, "invoice_id": {invoice_id}}}'
 
 
+def link_booking_to_invoice_capped(db, invoice_id, booking_id, amount=None):
+    """Buchung einer Rechnung als Zahlung zuordnen (idempotent, gekappt).
+
+    Zuordnungsbetrag = min(gewünschter Betrag, offener Rechnungsrest, freier
+    Rest der Buchung) – Rechnungen werden nie überbucht, Überschüsse bleiben
+    als freier Buchungsrest dem Kunden zuordenbar (todo #2). amount=None
+    bedeutet "so viel wie möglich".
+
+    Returns (True, None) bei Erfolg, sonst (False, Fehlermeldung).
+    """
+    invoice = db.get_invoice_by_id(invoice_id)
+    if not invoice or (len(invoice) > 45 and invoice[45] == 'quote'):
+        return False, "Rechnung nicht gefunden"
+    if any(a[1] == invoice_id for a in db.get_booking_allocations(booking_id)):
+        return False, "Buchung ist bereits mit dieser Rechnung verknüpft"
+    due = invoice[39] if invoice[39] is not None else (invoice[38] or Decimal(0))
+    alloc = min(due, db.get_booking_unallocated_amount(booking_id))
+    if amount is not None:
+        alloc = min(alloc, Decimal(str(amount)))
+    if alloc <= 0:
+        return False, "Kein offener Betrag zuordenbar (Rechnung oder Buchung ausgeschöpft)"
+    db.link_invoice_to_transaction(invoice_id, booking_id, alloc)
+    return True, None
+
+
 def handle_link_invoice_payment(post_body: bytes):
     """Link invoice to a payment booking via InvoicePayments table.
 
-    Returns tuple: (status_code, redirect_path)
+    Returns tuple: (status_code, message_or_path)
     """
     data = json.loads(post_body.decode('utf-8'))
-    invoice_id = int(data.get('invoice_id'))
-    transaction_id = int(data.get('transaction_id'))
-    amount_paid = float(data.get('amount_paid'))
+    invoice_id = int(data.get('invoice_id') or 0)
+    transaction_id = int(data.get('transaction_id') or 0)
+    amount_paid = data.get('amount_paid')
+    if amount_paid in (None, ''):
+        amount_paid = None
 
-    if not invoice_id or not transaction_id or not amount_paid:
-        return 400, "/invoice"
+    if not invoice_id or not transaction_id:
+        return 400, "Ungültige Parameter"
 
     db = Database()
 
     try:
-        db.link_invoice_to_transaction(invoice_id, transaction_id, amount_paid)
+        ok, err = link_booking_to_invoice_capped(db, invoice_id, transaction_id,
+                                                 amount_paid)
+        if not ok:
+            return 400, err
         return 200, f"/invoice/view?id={invoice_id}"
     except Exception as e:
         print(f"Error linking payment: {e}")
-        return 500, "/invoice"
+        return 500, "Fehler beim Verknüpfen"
 
 
 def handle_delete_invoice_payment(post_body: bytes):

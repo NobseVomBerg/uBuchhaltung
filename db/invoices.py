@@ -352,11 +352,12 @@ class InvoicesMixin:
                 WHERE ID = ?
             ''', (new_due_minor, invoice_id))
 
-            # Auto-update status (100 Minor Units = 0,01 EUR bei SCALE=4)
-            if abs(new_due_minor) < 100:
+            # Auto-update status (100 Minor Units = 0,01 EUR bei SCALE=4).
+            # new_due < 100 statt abs(): auch überzahlte Rechnungen gelten als bezahlt.
+            if new_due_minor < 100:
                 new_status = 'paid'
             elif total_paid_minor > 0:
-                new_status = 'partial'
+                new_status = 'partial_payment'
             else:
                 new_status = None
 
@@ -417,10 +418,10 @@ class InvoicesMixin:
             new_due = from_minor(new_due_minor)
 
             # Recalculate status (100 Minor Units = 0,01 EUR bei SCALE=4)
-            if abs(new_due_minor) < 100:
+            if new_due_minor < 100:
                 new_status = 'paid'
             elif total_paid_minor > 0:
-                new_status = 'partial'
+                new_status = 'partial_payment'
             else:
                 new_status = 'finalized'
 
@@ -508,3 +509,122 @@ class InvoicesMixin:
         invoices = cursor.fetchall()
         conn.close()
         return [self._euro_row(r, 36, 37, 38, 39) for r in invoices]
+
+    # ── Zahlungs-Zuordnung (Rechnung ↔ Buchung, todo #2) ─────────────────────
+
+    def get_open_invoices(self):
+        """Offene Rechnungen für die Zahlungs-Zuordnung.
+
+        Nicht draft/cancelled/paid, Restbetrag > 0; Altbestand ohne AmountDue
+        (NULL) gilt als offen. Volle Invoice-Rows (Euro-Decimals wie üblich).
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT * FROM Invoices
+            WHERE (DocumentType = 'invoice' OR DocumentType IS NULL)
+            AND Status NOT IN ('draft', 'cancelled', 'paid')
+            AND (AmountDue IS NULL OR AmountDue > 0)
+            ORDER BY InvoiceDate DESC, InvoiceNumber DESC
+        ''')
+        rows = cursor.fetchall()
+        conn.close()
+        return [self._euro_row(r, 36, 37, 38, 39) for r in rows]
+
+    def get_booking_allocations(self, booking_id):
+        """Zahlungs-Zuordnungen einer Buchung.
+
+        Returns: [(PaymentID, InvoiceID, InvoiceNumber, Amount€)]
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT ip.ID, ip.InvoiceID, i.InvoiceNumber, ip.Amount
+            FROM InvoicePayments ip
+            JOIN Invoices i ON i.ID = ip.InvoiceID
+            WHERE ip.BookingID = ?
+            ORDER BY ip.ID
+        ''', (booking_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [self._euro_row(r, 3) for r in rows]
+
+    def get_booking_unallocated_amount(self, booking_id):
+        """Nicht zugeordneter Rest einer Buchung in Euro (Decimal, min. 0)."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT ABS(COALESCE(Amount, 0)) - COALESCE(
+                       (SELECT SUM(ip.Amount) FROM InvoicePayments ip
+                        WHERE ip.BookingID = Bookings.ID), 0)
+            FROM Bookings WHERE ID = ?
+        ''', (booking_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if not row or row[0] is None or row[0] <= 0:
+            return Decimal(0)
+        return from_minor(row[0])
+
+    def get_unallocated_bank_bookings(self, contact_id=None, contact_only=False,
+                                      limit=20):
+        """Bank-Zahlungseingänge mit noch nicht zugeordnetem Rest.
+
+        Kandidaten für die Verknüpfung mit offenen Rechnungen (Import-Fall,
+        Über-/Sammelzahlungen). Buchungen des Kontakts stehen vorn, danach
+        Datum absteigend. contact_only=True filtert hart auf den Kontakt.
+
+        Returns: [(BookingID, DateBooking, RecipientClient, Contact_ID,
+                   Amount€, Frei€)]
+        """
+        contact_filter = 'AND b.Contact_ID = ?' if contact_only and contact_id else ''
+        params = [contact_id] if contact_filter else []
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(f'''
+            SELECT * FROM (
+                SELECT b.ID, b.DateBooking, b.RecipientClient, b.Contact_ID,
+                       b.Amount,
+                       ABS(b.Amount) - COALESCE((SELECT SUM(ip.Amount)
+                                                 FROM InvoicePayments ip
+                                                 WHERE ip.BookingID = b.ID), 0)
+                           AS FreeMinor
+                FROM Bookings b
+                WHERE b.BookingType = 'bank' AND b.Amount > 0 {contact_filter}
+            )
+            WHERE FreeMinor > 0
+            ORDER BY CASE WHEN ? IS NOT NULL AND Contact_ID = ? THEN 0 ELSE 1 END,
+                     DateBooking DESC, ID DESC
+            LIMIT ?
+        ''', params + [contact_id, contact_id, limit])
+        rows = cursor.fetchall()
+        conn.close()
+        return [self._euro_row(r, 4, 5) for r in rows]
+
+    def get_open_items_for_contact(self, contact_id):
+        """Offene Posten eines Kontakts für die Kontaktseite.
+
+        Returns dict:
+          open_invoices: [(ID, InvoiceNumber, InvoiceDate, Status, Offen€)]
+          credits:       [(BookingID, DateBooking, RecipientClient, Contact_ID,
+                           Amount€, Frei€)]  – nicht zugeordnete Zahlungs-Reste
+          saldo:         Forderungen − Guthaben (Euro-Decimal)
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT ID, InvoiceNumber, InvoiceDate, Status,
+                   COALESCE(AmountDue, SumGross, 0)
+            FROM Invoices
+            WHERE CustomerId = ?
+              AND (DocumentType = 'invoice' OR DocumentType IS NULL)
+              AND Status NOT IN ('draft', 'cancelled', 'paid')
+              AND (AmountDue IS NULL OR AmountDue > 0)
+            ORDER BY InvoiceDate DESC, ID DESC
+        ''', (contact_id,))
+        open_invoices = [self._euro_row(r, 4) for r in cursor.fetchall()]
+        conn.close()
+        credits = self.get_unallocated_bank_bookings(contact_id, contact_only=True,
+                                                     limit=100)
+        saldo = (sum((r[4] for r in open_invoices), Decimal(0))
+                 - sum((r[5] for r in credits), Decimal(0)))
+        return {'open_invoices': open_invoices, 'credits': credits, 'saldo': saldo}

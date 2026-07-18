@@ -532,7 +532,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
                 date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
-                self.respond(200, PageTransactions(db, date_from=date_from, date_to=date_to), headers=hdrs)
+                from_invoice = int(qs["from_invoice"][0]) if qs.get("from_invoice") else None
+                self.respond(200, PageTransactions(db, date_from=date_from, date_to=date_to,
+                                                   from_invoice=from_invoice), headers=hdrs)
             elif self.path.startswith("/transactions/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 transaction_id = int(query_components["id"][0])
@@ -882,8 +884,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if self.path == "/invoice/link-payment":
             content_length = int(self.headers['Content-Length'])
             post_body = self.rfile.read(content_length)
-            status_code, redirect_path = handlers.handle_link_invoice_payment(post_body)
-            body = b'{"success": true}' if status_code == 200 else f'{{"error": "status {status_code}"}}'.encode()
+            status_code, msg = handlers.handle_link_invoice_payment(post_body)
+            import json as _ljson
+            body = (b'{"success": true}' if status_code == 200
+                    else _ljson.dumps({'error': msg}).encode())
             self.send_response(status_code)
             self.send_header("Content-type", "application/json")
             self.send_header("Content-Length", str(len(body)))

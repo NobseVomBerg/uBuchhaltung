@@ -17,8 +17,13 @@ from .period import period_filter_widget
 # [15] Text          [16] DocumentNumber
 
 
-def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, date_to=None):
-    """Generate transactions page with edit functionality"""
+def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, date_to=None,
+                     from_invoice=None):
+    """Generate transactions page with edit functionality.
+
+    from_invoice: Rechnungs-ID – belegt die Eingabemaske als Zahlungs-Buchung
+    zu dieser Rechnung vor (todo #2); Nutzer ergänzt nur Datum + Bankkonto.
+    """
     # Header2: Konten als kompaktes Dropdown (treibt weiter die clientseitige
     # filterTransactions-Logik) + Such-/Waehrungs-/Betrags-Filter daneben.
     accounts = db.fetch_accounts()
@@ -93,6 +98,49 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     if not edit_trans[10]:  edit_trans[10] = entry_data[6]  # Category_ID
                     edit_trans = tuple(edit_trans)
 
+    # Vorbelegung aus einer Rechnung (todo #2): "Zahlung verbuchen" öffnet
+    # /transactions?from_invoice=<id>. Nur für offene Rechnungen (kein Angebot,
+    # nicht draft/cancelled/paid) mit Restbetrag > 0.
+    prefill = {}
+    if from_invoice and not edit_trans:
+        inv = db.get_invoice_by_id(from_invoice)
+        is_invoice = inv and not (len(inv) > 45 and inv[45] == 'quote')
+        if is_invoice and inv[40] not in ('draft', 'cancelled', 'paid'):
+            due = inv[39] if inv[39] is not None else (inv[38] or 0)
+            if due > 0:
+                rate = inv[35]
+                # DB speichert teils 0.19, teils 19; Sentinel -1 = §19 ohne USt
+                rate_pct = 0 if not rate or rate < 0 else (rate * 100 if rate <= 1 else rate)
+                if inv[37] and due == (inv[38] or 0):
+                    tax_val = f"{inv[37]:.2f}"   # voller Rest: exakter Rechnungswert
+                elif rate_pct:
+                    # Teilrest: enthaltene USt proportional (Formel wie calculateTax)
+                    tax_val = f"{float(due) * rate_pct / (100 + rate_pct):.2f}"
+                else:
+                    tax_val = ''
+                prefill = {
+                    'invoice_id': inv[0],
+                    'invoice_number': inv[1] or '',
+                    'recipient': inv[15] or inv[14] or '',
+                    'contact_id': inv[13],
+                    'amount': f"{due:.2f}",
+                    'tax_rate': f"{rate_pct:g}" if rate_pct else '',
+                    'tax_amount': tax_val,
+                    # Erlöskonto passend zum Steuersatz (nur 19% im SKR04-Seed)
+                    'coa_id': (db.get_coa_id_by_account_number(4400)
+                               if rate_pct == 19 else None),
+                    'document_nr': inv[1] or '',
+                    'text': f"Zahlung Rechnung {inv[1] or ''}".strip(),
+                }
+                edit_recipient = _html.escape(prefill['recipient'])
+                edit_text = _html.escape(prefill['text'])
+
+    # Rechnungs-Zuordnung: offene Rechnungen fürs Dropdown, bestehende
+    # Zuordnungen der bearbeiteten Buchung für die Anzeige
+    open_invoices = db.get_open_invoices()
+    allocations = db.get_booking_allocations(edit_trans[0]) if edit_trans else []
+    booking_free = db.get_booking_unallocated_amount(edit_trans[0]) if edit_trans else None
+
     # Get dropdown data (einmalig laden – Maps für Tabelle gleich mitbauen)
     customers    = db.fetch_contacts(contact_type='customer')
     customer_map = {c[0]: _html.escape(str(c[2] or c[3] or '')) for c in customers}
@@ -106,6 +154,43 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     submit_text = "Transaktion aktualisieren" if edit_trans else "Transaktion hinzufügen"
     transaction_id = edit_trans[0] if edit_trans else 0
 
+    prefill_note = ''
+    if prefill:
+        prefill_note = (
+            '<p class="successColor"><strong>Zahlung zu Rechnung '
+            f'{_html.escape(str(prefill["invoice_number"]))}</strong> – wird beim '
+            'Speichern automatisch verknüpft; bitte Buchungsdatum und '
+            'Bankkonto/Kasse ergänzen.</p>')
+
+    # Formularzeile "Rechnung": Dropdown offener Rechnungen (todo #2). Bei einer
+    # Buchung ohne freien Rest entfällt das Dropdown; bestehende Zuordnungen
+    # werden angezeigt und nur über die Rechnungsseite gelöst.
+    allocated_ids = {a[1] for a in allocations}
+    invoice_options = ''
+    for oinv in open_invoices:
+        if oinv[0] in allocated_ids:
+            continue
+        oinv_due = oinv[39] if oinv[39] is not None else (oinv[38] or 0)
+        sel = ' selected' if prefill.get('invoice_id') == oinv[0] else ''
+        olabel = f"{oinv[1] or oinv[0]} — {oinv[15] or oinv[14] or ''} — offen {oinv_due:.2f} €"
+        invoice_options += f'<option value="{oinv[0]}"{sel}>{_html.escape(olabel)}</option>'
+    show_invoice_select = (not edit_trans) or (booking_free is not None and booking_free > 0)
+    invoice_field = ''
+    if show_invoice_select:
+        invoice_field = ('<select name="invoice_id">'
+                         '<option value="">-- Keine Rechnung --</option>'
+                         f'{invoice_options}</select>')
+    alloc_note = ''
+    if allocations:
+        parts = ', '.join(
+            f'<a href="/invoice/edit?id={a[1]}">{_html.escape(str(a[2] or a[1]))}</a>'
+            f' ({a[3]:.2f} €)' for a in allocations)
+        alloc_note = (f'<div><small>Bereits zugeordnet: {parts} – '
+                      'Lösen über die Rechnungsseite.</small></div>')
+    invoice_row = ''
+    if invoice_field or alloc_note:
+        invoice_row = f'<tr><td>Rechnung:</td><td>{invoice_field}{alloc_note}</td></tr>'
+
     id_display = (f'<tr><td>ID:</td><td style="color: #666;">{transaction_id}'
                   f'<input type="hidden" name="transaction_id" value="{transaction_id}"></td></tr>'
                   if edit_trans else '')
@@ -115,6 +200,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     <div class="gridRightCol gridMiddle" style="order:2">
         <div class="rectRounded" style="order:2">
         <h2>{form_title}</h2>
+        {prefill_note}
         <form method="POST" action="/transactions/add">
                 <table class="form-table">
                     {id_display}
@@ -152,7 +238,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     <tr><td>Kunde:</td><td><select name="contact_id">
                         <option value="">-- Kein Kunde --</option>
     '''
-    selected_contact_id = edit_trans[7] if edit_trans else None
+    selected_contact_id = edit_trans[7] if edit_trans else prefill.get('contact_id')
     for contact in customers:
         selected = 'selected' if selected_contact_id and contact[0] == selected_contact_id else ''
         contact_display = f"{contact[2]} ({contact[3] or 'Privat'})" if contact[2] else contact[3] or f"ID {contact[0]}"
@@ -176,7 +262,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     <tr><td>SKR-Konto:</td><td><select name="coa_id">
                         <option value="">-- Kein SKR-Konto --</option>
     '''
-    selected_coa_id = edit_trans[8] if edit_trans else None
+    selected_coa_id = edit_trans[8] if edit_trans else prefill.get('coa_id')
     for coa in coa_accounts:
         is_selected = bool(selected_coa_id and coa[0] == selected_coa_id)
         # Ausgeblendete Konten (ShowInMenu=0) nicht anzeigen – außer es ist das aktuell gesetzte
@@ -189,13 +275,14 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     s+= f'''
                     </select></td></tr>
 
-                    <tr><td>Betrag:</td><td><input type="number" step="0.01" class="noButtons" name="amount" id="amount" value="{edit_trans[11] if edit_trans else ""}" required></td></tr>
+                    <tr><td>Betrag:</td><td><input type="number" step="0.01" class="noButtons" name="amount" id="amount" value="{edit_trans[11] if edit_trans else prefill.get("amount", "")}" required></td></tr>
                     <tr><td>Währung:</td><td><input type="text" name="currency" value="{_html.escape(str(edit_trans[12])) if edit_trans and edit_trans[12] else "EUR"}" size="5"></td></tr>
 
-                    <tr><td>Steuersatz (%):</td><td><input type="number" step="0.01" class="noButtons" name="tax_rate" id="tax_rate" value="{edit_trans[13]*100 if edit_trans and edit_trans[13] else ""}" placeholder="z.B. 19 für 19%"></td></tr>
-                    <tr><td>Steuerbetrag:</td><td><input type="number" step="0.01" class="noButtons" name="tax_amount" id="tax_amount" value="{edit_trans[14] if edit_trans and edit_trans[14] else ""}"></td></tr>
+                    <tr><td>Steuersatz (%):</td><td><input type="number" step="0.01" class="noButtons" name="tax_rate" id="tax_rate" value="{edit_trans[13]*100 if edit_trans and edit_trans[13] else prefill.get("tax_rate", "")}" placeholder="z.B. 19 für 19%"></td></tr>
+                    <tr><td>Steuerbetrag:</td><td><input type="number" step="0.01" class="noButtons" name="tax_amount" id="tax_amount" value="{edit_trans[14] if edit_trans and edit_trans[14] else prefill.get("tax_amount", "")}"></td></tr>
 
-                    <tr><td>Beleg-Nr.:</td><td><input type="text" name="document_nr" value="{_html.escape(str(edit_trans[16])) if edit_trans and edit_trans[16] else ""}"></td></tr>
+                    <tr><td>Beleg-Nr.:</td><td><input type="text" name="document_nr" value="{_html.escape(str(edit_trans[16])) if edit_trans and edit_trans[16] else _html.escape(str(prefill.get("document_nr", "")))}"></td></tr>
+                    {invoice_row}
     '''
 
     if edit_trans:

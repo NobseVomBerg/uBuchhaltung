@@ -44,7 +44,7 @@ def test_partial_payment_recalculates_amount_due(tmp_db):
     due, status = con.execute("SELECT AmountDue, Status FROM Invoices WHERE ID=?", (inv_id,)).fetchone()
     con.close()
     assert due == 690000     # 119.00 - 50.00 = 69.00 als Minor Units (seit Phase 1e)
-    assert status == 'partial'
+    assert status == 'partial_payment'
 
 
 def test_full_payment_sets_status_paid(tmp_db):

@@ -594,6 +594,40 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
     s += '</div>'
     s += '</div>'
     s += f'<div class="rectRounded">{form_html}</div>'
+
+    # Offene Posten (todo #2): offene Rechnungen + nicht zugeordnete
+    # Zahlungs-Reste (Guthaben) des Kontakts mit Saldo für den Ausgleich.
+    if edit_contact:
+        from .pages_invoice import INVOICE_STATUS_LABELS, normalize_status
+        items = db.get_open_items_for_contact(edit_contact_id)
+        if items['open_invoices'] or items['credits']:
+            s += '<div class="rectRounded"><h3>Offene Posten</h3>'
+            if items['open_invoices']:
+                s += ('<table><tr><th>Rechnung</th><th>Datum</th>'
+                      '<th>Status</th><th>Offen</th></tr>')
+                for inv in items['open_invoices']:
+                    st = normalize_status(inv[3])
+                    s += (f'<tr><td><a href="/invoice/edit?id={inv[0]}">'
+                          f'{_html.escape(str(inv[1] or inv[0]))}</a></td>'
+                          f'<td>{inv[2] or "–"}</td>'
+                          f'<td>{_html.escape(INVOICE_STATUS_LABELS.get(st, st))}</td>'
+                          f'<td style="text-align:right;">{inv[4]:.2f} €</td></tr>')
+                s += '</table>'
+            if items['credits']:
+                s += ('<h4>Nicht zugeordnete Zahlungen (Guthaben)</h4>'
+                      '<table><tr><th>Buchung</th><th>Datum</th><th>Frei</th></tr>')
+                for c in items['credits']:
+                    s += (f'<tr><td><a href="/transactions/edit?id={c[0]}">#{c[0]}</a> '
+                          f'{_html.escape(str(c[2] or ""))}</td>'
+                          f'<td>{c[1] or "–"}</td>'
+                          f'<td style="text-align:right;">{c[5]:.2f} €</td></tr>')
+                s += '</table>'
+            saldo = items['saldo']
+            saldo_color = '#c00' if saldo > 0 else '#2a2'
+            s += (f'<p><strong>Saldo: <span style="color:{saldo_color};">'
+                  f'{saldo:.2f} €</span></strong> (Forderungen − Guthaben)</p>')
+            s += '</div>'
+
     s += '</div><!-- Ende gridRightCol -->'
 
     s += '<div class="gridLeftCol" style="order:1">'

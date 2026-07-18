@@ -42,6 +42,11 @@ INVOICE_STATUS_LABELS: dict = {
     'cancelled':       'Storniert',
 }
 
+
+def normalize_status(status):
+    """Alt-Wert 'partial' (vor todo #2 geschrieben) auf den Kanon abbilden."""
+    return 'partial_payment' if status == 'partial' else status
+
 def document_submenu(active):
     """Gemeinsames Header2-Submenü für Rechnung / Angebot / Mahnwesen.
 
@@ -153,7 +158,7 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
             buyer_name = _html.escape(str(invoice[14] or ''))  # BuyerName is now at index 14 (was 13)
             sum_net = invoice[36]  # SumNet is at index 36 (was 34)
             sum_gross = invoice[38]  # SumGross is at index 38 (was 36)
-            status = invoice[40]  # Status is at index 40 (was 38)
+            status = normalize_status(invoice[40])  # Status is at index 40 (was 38)
             pdf_path = invoice[41] if len(invoice) > 41 else None  # PDFPath is at index 41 (was 39)
             
             # Status color and label from shared module constants
@@ -280,7 +285,7 @@ def _invoice_form_html(db: Database, invoice_id=None):
         invoice_date = existing_invoice[2]
         selected_own_company_id = existing_invoice[3]
         selected_customer_id = existing_invoice[13]  # CustomerId is now at index 13 (was 12)
-        invoice_status = existing_invoice[40]  # Status is now at index 40 (was 37)
+        invoice_status = normalize_status(existing_invoice[40])  # Status at index 40
         pdf_path = existing_invoice[41] if len(existing_invoice) > 41 else None  # PDFPath is now at index 41 (was 39)
         # Steuersatz aus der gespeicherten Rechnung vorbelegen. Gespeichert als
         # Dezimal (0.19) bzw. 0; Sentinel -1 = kein USt-Ausweis (Kleinunternehmer).
@@ -383,7 +388,9 @@ const _payCount = {payment_count};
 function setInvoiceStatus(invId) {{
   var ns = document.getElementById('statusChangeSelect').value;
   if (ns === 'paid' && _payCount === 0) {{
-    showMessage('Bezahlt nur m\u00f6glich, wenn mindestens eine Zahlung verkn\u00fcpft ist.', 'error');
+    showMessage('Bezahlt wird automatisch gesetzt, sobald eine Zahlung verbucht ist \u2013 ' +
+                'siehe "Zahlungsverkn\u00fcpfungen" unten (Zahlung verbuchen bzw. ' +
+                'vorhandene Buchung verkn\u00fcpfen).', 'error');
     return;
   }}
   fetch('/invoice/status', {{method: 'POST', headers: {{'Content-Type': 'application/json'}},
@@ -1364,8 +1371,71 @@ function setInvoiceStatus(invId) {{
         else:
             s += '        <p><em>Keine Zahlungen verknüpft.</em></p>\n'
 
+        # Zahlungs-Aktionen (todo #2): neue Zahlung verbuchen (vorbefüllte
+        # Buchungsmaske) oder eine vorhandene Buchung mit freiem Rest zuordnen
+        # (Import-Fall). "Bezahlt" ergibt sich automatisch aus der Zuordnung.
+        is_invoice_doc = (len(existing_invoice) <= 45
+                          or existing_invoice[45] != 'quote')
+        payable = (is_invoice_doc
+                   and invoice_status in ('finalized', 'sent', 'overdue',
+                                          'partial_payment')
+                   and (amount_due is None or amount_due > 0))
+        if payable:
+            open_due = (amount_due if amount_due is not None
+                        else (existing_invoice[38] or 0))
+            s += (f'        <p><a href="/transactions?from_invoice={invoice_id}" '
+                  'class="coloredButton btn-sm bg-green">💶 Zahlung verbuchen</a></p>\n')
+            linked_booking_ids = {p[2] for p in existing_payments}
+            candidates = [c for c in
+                          db.get_unallocated_bank_bookings(existing_invoice[13])
+                          if c[0] not in linked_booking_ids]
+            if candidates:
+                s += '''        <h4>Vorhandene Buchung verknüpfen</h4>
+        <table style="width:100%; border-collapse:collapse;">
+            <tr style="background:#f5f5f5;">
+                <th style="padding:6px 8px; text-align:left;">Datum</th>
+                <th style="padding:6px 8px; text-align:left;">Empfänger/Auftragg.</th>
+                <th style="padding:6px 8px; text-align:right;">Betrag</th>
+                <th style="padding:6px 8px; text-align:right;">Frei</th>
+                <th style="padding:6px 8px; text-align:right;">Zuordnen</th>
+                <th style="padding:6px 8px;"></th>
+            </tr>
+'''
+                for c in candidates:
+                    b_id, b_date, b_recipient, _, b_amount, b_free = c
+                    default_alloc = min(open_due, b_free)
+                    match_mark = ' ✓' if b_free == open_due else ''
+                    s += f'''            <tr>
+                <td style="padding:6px 8px;">{b_date or "–"}</td>
+                <td style="padding:6px 8px;">{_html.escape(str(b_recipient or ""))}</td>
+                <td style="padding:6px 8px; text-align:right;">{b_amount:.2f} €</td>
+                <td style="padding:6px 8px; text-align:right;">{b_free:.2f} €{match_mark}</td>
+                <td style="padding:6px 8px; text-align:right;"><input type="number" step="0.01" class="noButtons" id="payAmount_{b_id}" value="{default_alloc:.2f}" style="width:90px; text-align:right;"></td>
+                <td style="padding:6px 8px;"><button onclick="linkPayment({b_id})" class="coloredButton btn-sm bg-blue">Verknüpfen</button></td>
+            </tr>
+'''
+                s += '        </table>\n'
+
         s += f'''    </div>
     <script>
+        function linkPayment(bookingId) {{
+            const amount = parseFloat(document.getElementById('payAmount_' + bookingId).value);
+            if (!amount || amount <= 0) {{
+                showMessage('Betrag muss größer 0 sein.', 'error');
+                return;
+            }}
+            fetch('/invoice/link-payment', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{invoice_id: {invoice_id}, transaction_id: bookingId,
+                                      amount_paid: amount}})
+            }})
+            .then(r => r.json())
+            .then(data => {{
+                if (data.success) {{ location.reload(); }}
+                else {{ showMessage('Fehler: ' + (data.error || 'Unbekannt'), 'error'); }}
+            }});
+        }}
         function deletePayment(paymentId) {{
             showConfirm('Zahlungsverkn\u00fcpfung wirklich entfernen?', function() {{
                 fetch('/invoice/delete-payment', {{
