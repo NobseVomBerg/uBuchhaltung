@@ -311,6 +311,43 @@ def test_revenue_coa_learned_from_history(tmp_db):
     assert tmp_db.resolve_revenue_coa(0.19) == coa_4400
 
 
+def test_tax_free_invoice_gets_coa_4185_and_entry_child(tmp_db):
+    # §19-/0%-Rechnung ohne Historie: Kleinunternehmer-Konto 4185 (DATEV)
+    # wird gesetzt und der Buchungssatz (entry-Kind = grünes Häkchen) erzeugt
+    tmp_db.insert_account('BF-Bank', 'Ich', 'DE01', 'BIC', 'Bank', is_cash=0,
+                          skr_account=1800)
+    acct_id = [a for a in tmp_db.fetch_accounts() if a[1] == 'BF-Bank'][0][0]
+    inv = _invoice(tmp_db, 'R-0PCT', gross=100.00, tax_rate=-1, tax_amount=0)
+    bk = tmp_db.insert_booking('2026-02-01', 100.00, account_id=acct_id,
+                               booking_type='bank', recipient_client='Käufer AG')
+
+    ok, err = link_booking_to_invoice_capped(tmp_db, inv, bk)
+    assert ok, err
+
+    coa_4185 = tmp_db.get_coa_id_by_account_number(4185)
+    b = tmp_db.get_booking_by_id(bk)
+    assert b[8] == coa_4185
+    assert b[13] is None and b[14] is None      # keine Steuer bei §19
+    entry = tmp_db.get_linked_entry_for_bank(bk)
+    assert entry is not None and entry[0] == coa_4185
+
+
+def test_resolve_creates_4185_in_legacy_db(tmp_db):
+    # Ältere DBs haben 4185 nicht im Seed → wird beim ersten Bedarf angelegt
+    coa_4185 = tmp_db.get_coa_id_by_account_number(4185)
+    con = sqlite3.connect(tmp_db.db_name)
+    con.execute('DELETE FROM ChartOfAccounts WHERE ID = ?', (coa_4185,))
+    con.commit()
+    con.close()
+    assert tmp_db.get_coa_id_by_account_number(4185) is None
+
+    resolved = tmp_db.resolve_revenue_coa(-1)
+    assert resolved is not None
+    assert resolved == tmp_db.get_coa_id_by_account_number(4185)
+    # Explizite 0% landen im selben Topf
+    assert tmp_db.resolve_revenue_coa(0) == resolved
+
+
 # ── Formular-Prefill (from_invoice) ──────────────────────────────────────────
 
 def test_page_transactions_prefill_from_invoice(tmp_db):
@@ -332,12 +369,15 @@ def test_page_transactions_prefill_from_invoice(tmp_db):
 
 
 def test_page_transactions_prefill_kleinunternehmer(tmp_db):
-    # Sentinel -1 (§19): kein Steuersatz/-betrag vorbelegen
+    # Sentinel -1 (§19): kein Steuersatz/-betrag, aber steuerfreies
+    # Kleinunternehmer-Erlöskonto 4185 vorbelegen
     inv = _invoice(tmp_db, 'R-K', gross=100.00, tax_rate=-1, tax_amount=0)
     html = PageTransactions(tmp_db, from_invoice=inv)
     assert 'Zahlung zu Rechnung R-K' in html
     assert 'value="100.00"' in html
     assert 'id="tax_rate" value=""' in html
+    coa_4185 = tmp_db.get_coa_id_by_account_number(4185)
+    assert coa_4185 and f'value="{coa_4185}" selected' in html
 
 
 def test_page_transactions_prefill_rejects_quote_and_paid(tmp_db):

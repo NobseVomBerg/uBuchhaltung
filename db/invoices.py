@@ -585,15 +585,17 @@ class InvoicesMixin:
 
         Lernt zuerst aus der eigenen Historie: das zuletzt bei einer
         Zahlungs-Zuordnung verwendete Erlöskonto einer Rechnung mit gleichem
-        Steuersatz. Damit funktionieren auch eigene Kontenrahmen und
-        §19-Rechnungen (Sentinel -1), sobald der Nutzer das Konto EINMAL
-        manuell gesetzt hat. Fallback: Standardkonto 4400 (Erlöse 19% USt)
-        bei 19 %. tax_rate wie in Invoices.TaxRate (0.19, 19 oder -1).
+        Steuersatz (0% und §19-Sentinel -1 bilden einen gemeinsamen
+        "steuerfrei"-Topf). Fallback auf die Standardkonten: 19% → 4400,
+        7% → 4300, steuerfrei/§19 → 4185 (DATEV: "Erlöse als Kleinunternehmer
+        nach § 19 Abs. 1 UStG"; wird in älteren DBs ohne dieses Seed-Konto
+        automatisch nachgelegt, Vorbild ensure_kasse_exists).
+        tax_rate wie in Invoices.TaxRate (0.19, 19, 0 oder -1).
         """
         if tax_rate is None:
             key = -999.0
-        elif tax_rate < 0:
-            key = -1.0
+        elif tax_rate <= 0:
+            key = 0.0
         else:
             pct = tax_rate * 100 if tax_rate <= 1 else tax_rate
             key = round(pct, 2)
@@ -606,7 +608,7 @@ class InvoicesMixin:
             JOIN Invoices i ON i.ID = ip.InvoiceID
             WHERE b.COA_ID IS NOT NULL
               AND (CASE WHEN i.TaxRate IS NULL THEN -999.0
-                        WHEN i.TaxRate < 0 THEN -1.0
+                        WHEN i.TaxRate <= 0 THEN 0.0
                         WHEN i.TaxRate <= 1 THEN ROUND(i.TaxRate * 100, 2)
                         ELSE ROUND(i.TaxRate, 2) END) = ?
             ORDER BY ip.ID DESC LIMIT 1
@@ -617,7 +619,31 @@ class InvoicesMixin:
             return row[0]
         if key == 19:
             return self.get_coa_id_by_account_number(4400)
+        if key == 7:
+            return self.get_coa_id_by_account_number(4300)
+        if key == 0:
+            return self._ensure_tax_free_revenue_coa()
         return None
+
+    def _ensure_tax_free_revenue_coa(self):
+        """Kleinunternehmer-Erlöskonto 4185 liefern (DATEV-SKR04); fehlt es
+        (DB älter als der Seed-Eintrag), wird es als Standardkonto im
+        dominanten Kontenrahmen nachgelegt – sonst hätten §19-/0%-Rechnungen
+        kein Zielkonto."""
+        coa = self.get_coa_id_by_account_number(4185)
+        if coa:
+            return coa
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT Framework FROM ChartOfAccounts '
+                       'GROUP BY Framework ORDER BY COUNT(*) DESC LIMIT 1')
+        row = cursor.fetchone()
+        conn.close()
+        framework = row[0] if row else 4
+        self.insert_chart_of_accounts(framework, 4185,
+                                      'Erlöse als Kleinunternehmer nach § 19 Abs. 1 UStG',
+                                      'Betriebliche Erträge', is_standard=1)
+        return self.get_coa_id_by_account_number(4185)
 
     def get_booking_allocations(self, booking_id):
         """Zahlungs-Zuordnungen einer Buchung.

@@ -20,6 +20,8 @@
         {"account_number": 3740,  "name": "Verbindlichkeiten im Rahmen der sozialen Sicherheit",  "description": "Fremdkapitalkonten",                                "is_standard": true},
         {"account_number": 3806,  "name": "Umsatzsteuer 19%",                                     "description": "Fremdkapitalkonten",                                "is_standard": true},
         {"account_number": 3820,  "name": "Umsatzsteuer-Vorauszahlungen",                         "description": "Fremdkapitalkonten",                                "is_standard": true},
+        {"account_number": 4185,  "name": "Erlöse als Kleinunternehmer nach § 19 Abs. 1 UStG",    "description": "Betriebliche Erträge",                              "is_standard": true},
+        {"account_number": 4300,  "name": "Erlöse 7% USt",                                        "description": "Betriebliche Erträge",                              "is_standard": true},
         {"account_number": 4400,  "name": "Erlöse 19% USt",                                       "description": "Betriebliche Erträge",                              "is_standard": true},
         {"account_number": 4405,  "name": "Erlöse 19% USt noch offen",                            "description": "Betriebliche Erträge",                              "is_standard": true},
         {"account_number": 4640,  "name": "Verwendung von Gegenständen für Zwecke außerhalb des Unternehmens 19 % USt", "description": "Betriebliche Erträge",        "is_standard": true},
