@@ -230,17 +230,22 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
     # ── EÜR-Auswertung (ersetzt Schnellzugriff) ─────────────────────
     euer_data = db.get_euer_data(date_from, date_to, account_ids)
 
-    # Einnahmen-Konten (definiert)
-    INCOME_ACCOUNTS = {3806, 4400, 4640, 4845}
+    # Einnahmen = SKR04-Ertragsklasse (4000-4999, zentral in db.reporting)
+    # plus virtuelles USt-Konto 3806; Aufzählungen einzelner Erlöskonten
+    # hatten z. B. 4185 (§19) und 4300 (7%) übersehen.
+    from db.reporting import is_income_account
     OTHER_EXPENSE_ACCOUNTS = {3160, 3720, 3740}
     # Ausschluss-Konten (nicht anzeigen)
     bank_skr_numbers = {a[7] for a in accounts if a[7]}
     EXCLUDE_NUMBERS = {4405, 10000} | bank_skr_numbers
 
+    def _is_income_row(nr):
+        return is_income_account(nr) or nr == 3806
+
     income_rows = [(nr, name, total) for nr, name, total in euer_data
-                   if nr in INCOME_ACCOUNTS]
+                   if _is_income_row(nr) and nr not in EXCLUDE_NUMBERS]
     expense_rows = [(nr, name, total) for nr, name, total in euer_data
-                    if nr not in INCOME_ACCOUNTS
+                    if not _is_income_row(nr)
                     and nr not in OTHER_EXPENSE_ACCOUNTS
                     and nr not in EXCLUDE_NUMBERS
                     and not (2100 <= nr < 2200)

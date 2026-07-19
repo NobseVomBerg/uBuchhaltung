@@ -8,6 +8,20 @@ import json
 from decimal import Decimal
 from money import to_minor, from_minor
 
+# SKR04-Kontenklasse 4 = Betriebliche Erträge (Erlöse). Einzige Quelle für die
+# Einnahmen-Klassifizierung in EÜR/Dashboard – die frühere Aufzählung
+# (4400/4640/4845) übersah z. B. 4185 (§19), 4300 (7%) und 4736 (Skonti).
+INCOME_ACCOUNT_RANGE = (4000, 4999)
+
+
+def is_income_account(account_number) -> bool:
+    """True für Erlös-/Ertragskonten (SKR04-Klasse 4)."""
+    try:
+        nr = int(account_number)
+    except (TypeError, ValueError):
+        return False
+    return INCOME_ACCOUNT_RANGE[0] <= nr <= INCOME_ACCOUNT_RANGE[1]
+
 
 class ReportingMixin:
     def get_dashboard_monthly(self, date_from: str, date_to: str,
@@ -475,8 +489,8 @@ class ReportingMixin:
         # ── Einnahmen-COA-IDs ermitteln (für USt-Zuordnung auf 3806) ──
         cursor.execute("""
             SELECT ID FROM ChartOfAccounts
-            WHERE AccountNumber IN (4400, 4640, 4845)
-        """)
+            WHERE AccountNumber BETWEEN ? AND ?
+        """, INCOME_ACCOUNT_RANGE)
         income_coa_ids = {r[0] for r in cursor.fetchall()}
 
         cursor.execute("""
