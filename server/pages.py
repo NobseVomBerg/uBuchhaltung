@@ -229,7 +229,22 @@ Unternehmen eine benutzerfreundliche Buchführungssoftware zu bieten, die die g�
 hinaus einfach erweiterbar ist. So kannst Du SKR-Konten nach Bedarf hinzufügen oder AFA-Abschreibungen anpassen.<br><br>
 Wenn du Fragen hast, lies die MD-Files oder lass Dir das Projekt von einer KI Deiner Wahl kurz erklären.<br><br>
 Lizenz: <a href="https://www.gnu.org/licenses/agpl-3.0">AGPL-3.0-or-later</a> &middot;
-Kommerzielle Lizenz ohne AGPL-Pflichten: <a href="mailto:office@unsix.com">office@unsix.com</a>'''
+Kommerzielle Lizenz ohne AGPL-Pflichten: <span id="licenseContact"><noscript>E-Mail-Anzeige ben&ouml;tigt JavaScript</noscript></span>'''
+    # Spam-Schutz wie auf unsix.de: Adresse Base64-kodiert im Quelltext,
+    # erst JavaScript schreibt den mailto-Link in den DOM (Kodierung:
+    # btoa(unescape(encodeURIComponent(adresse)))).
+    s+= '''
+<script>
+(function () {
+  var m = decodeURIComponent(escape(atob("b2ZmaWNlQHVuc2l4LmNvbQ==")));
+  var a = document.createElement("a");
+  a.href = "mailto:" + m;
+  a.textContent = m;
+  var el = document.getElementById("licenseContact");
+  el.textContent = "";
+  el.appendChild(a);
+}());
+</script>'''
     s+= Footer()
     return s
 
