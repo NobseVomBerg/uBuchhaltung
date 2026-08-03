@@ -43,6 +43,45 @@ def handle_update_receipt(db, post_data):
     db.update_receipt(receipt_id, number, date, filename, path, info)
     return 303, "/receipts"
 
+def _normalize_ws(s):
+    return ' '.join((s or '').split())
+
+
+def backfill_import_text(db, trans_date, trans_amount, account_id, new_text):
+    """Text-Backfill für als Duplikat übersprungene Import-Transaktionen.
+
+    Der frühere VBR-Parser schnitt Verwendungszwecke ab; ein Re-Import legt
+    wegen der Duplikat-Erkennung nichts neu an. Hier wird der gespeicherte
+    Text aktualisiert, wenn er leer oder ein Präfix des neu geparsten,
+    längeren Texts ist. Nur bei genau EINEM passenden Kandidaten (mehrere
+    gleiche Beträge am selben Tag wären mehrdeutig).
+
+    Bekannte Heuristik-Grenzen: Manuell ABWEICHEND gepflegte Texte bleiben
+    unberührt, aber (a) ein manuell auf einen Präfix GEKÜRZTER Text ist von
+    Parser-Abschnitt nicht unterscheidbar und wird wieder verlängert;
+    (b) ein bewusst GELEERTER Text wird neu befüllt. Beides ist gewollt
+    konservativ zugunsten der Reparatur abgeschnittener Import-Texte.
+
+    Returns True, wenn ein Text aktualisiert wurde.
+    """
+    new_norm = _normalize_ws(new_text)
+    if not new_norm:
+        return False
+    candidates = []
+    for booking_id, old_text in db.get_bookings_by_import_key(
+            trans_date, trans_amount, account_id):
+        old_norm = _normalize_ws(old_text)
+        if old_norm == new_norm:
+            continue                      # bereits vollständig
+        if not old_norm or (new_norm.startswith(old_norm)
+                            and len(new_norm) > len(old_norm)):
+            candidates.append(booking_id)
+    if len(candidates) != 1:
+        return False
+    db.update_booking_text(candidates[0], new_text)
+    return True
+
+
 def handle_confirm_import(db: Database, post_data):
     """Kontoauszug-Import bestätigen – einzelner Beleg oder alle.
 
@@ -117,6 +156,14 @@ def handle_confirm_import(db: Database, post_data):
             bank_code = fl.get('bank_code') or 'unknown'
             inserted = 0
             skipped = 0
+            text_updated = 0
+            # Backfill-Kandidaten je Duplikatschlüssel sammeln und erst NACH
+            # der Transaktionsschleife anwenden: enthält die Datei mehrere
+            # Duplikate desselben Schlüssels mit VERSCHIEDENEN Texten, ist die
+            # Zuordnung mehrdeutig → kein Backfill (sonst könnte dieselbe
+            # Buchung mehrfach bzw. mit dem falschen Text aktualisiert werden).
+            backfill_texts = {}   # dup_key -> {normalisierte Texte}
+            backfill_raw = {}     # dup_key -> (date, amount, account_id, text)
             for trans in fl.get('transactions', []):
                 recipient = trans.get('recipient', '') or ''
                 text = trans.get('reference', '') or ''
@@ -134,6 +181,11 @@ def handle_confirm_import(db: Database, post_data):
                 seen = dup_seen.get(dup_key, 0)
                 dup_seen[dup_key] = seen + 1
                 if seen < dup_db_counts[dup_key]:
+                    # Duplikat: nicht neu anlegen; Text für den späteren
+                    # Backfill vormerken (todo Buchungstext)
+                    backfill_texts.setdefault(dup_key, set()).add(_normalize_ws(text))
+                    backfill_raw[dup_key] = (trans_date, trans_amount,
+                                             account_id, text)
                     skipped += 1
                     continue
 
@@ -151,9 +203,19 @@ def handle_confirm_import(db: Database, post_data):
                 inserted += 1
                 any_inserted = True
 
+            # Text-Backfill: nur für Schlüssel mit genau EINEM eindeutigen
+            # Text; pro Schlüssel höchstens ein Update pro Lauf.
+            for dup_key, texts in backfill_texts.items():
+                if len(texts) != 1:
+                    continue
+                b_date, b_amount, b_account, b_text = backfill_raw[dup_key]
+                if backfill_import_text(db, b_date, b_amount, b_account, b_text):
+                    text_updated += 1
+
             fl['imported'] = True
             results.append({'file_index': i, 'filename': fl.get('filename'),
                             'inserted': inserted, 'skipped': skipped,
+                            'text_updated': text_updated,
                             'account_found': True, 'error': None})
 
         # Auto-Linking nur wenn etwas neu angelegt wurde

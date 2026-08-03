@@ -327,7 +327,44 @@ class BookingsMixin:
         count = cursor.fetchone()[0]
         conn.close()
         return count
-    def update_booking(self, booking_id, date_booking, amount, account_id=None, 
+    def get_bookings_by_import_key(self, date, amount, account_id):
+        """Buchungen zum Import-Duplikatschlüssel (Datum, Betrag, Konto).
+
+        Grundlage für den Text-Backfill beim Re-Import von Kontoauszügen.
+        Returns: [(ID, Text)]
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT ID, Text FROM Bookings
+            WHERE DateBooking=? AND Amount=? AND Account_ID=?
+        ''', (date, to_minor(amount or 0), account_id))
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
+    def update_booking_text(self, booking_id, text):
+        """Nur das Text-Feld einer Buchung setzen (Text-Backfill).
+
+        Entry-Kindbuchungen, deren Text noch leer ist oder dem alten
+        Bank-Text entspricht, ziehen mit – Bank-Zeile und Buchungssatz
+        bleiben so konsistent. Abweichende Kind-Texte bleiben unberührt.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT Text FROM Bookings WHERE ID=?', (booking_id,))
+        row = cursor.fetchone()
+        old_text = row[0] if row else None
+        cursor.execute('UPDATE Bookings SET Text=? WHERE ID=?',
+                       (text, booking_id))
+        cursor.execute('''
+            UPDATE Bookings SET Text=?
+            WHERE ParentBooking_ID=? AND (Text IS NULL OR Text='' OR Text=?)
+        ''', (text, booking_id, old_text or ''))
+        conn.commit()
+        conn.close()
+
+    def update_booking(self, booking_id, date_booking, amount, account_id=None,
                        foreign_bank_account="", recipient_client="", contact_id=None, 
                        coa_id=None, category_id=None, currency="EUR", tax_rate=None, 
                        tax_amount=None, text="", document_number=None, 

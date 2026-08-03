@@ -157,6 +157,121 @@ def test_reimport_after_table_update_is_skipped(db_two_accounts, pending_factory
     assert len(_bank_bookings(db_two_accounts)) == 3
 
 
+def test_reimport_backfills_truncated_text(db_two_accounts, pending_factory):
+    """Text-Backfill: Re-Import vervollständigt früher abgeschnittene
+    Verwendungszwecke (Präfix-Regel), ohne neue Buchungen anzulegen."""
+    acc_a, _ = match_account(db_two_accounts.fetch_accounts(), IBAN_A)
+    bk = db_two_accounts.insert_booking(
+        date_booking="2025-01-10", amount=-8.22, account_id=acc_a,
+        foreign_bank_account="DE00FOREIGN", recipient_client="Onlineshop",
+        text="302-1234567-8901234 Bestellung ABC", booking_type="bank")
+
+    full_text = "302-1234567-8901234 Bestellung ABC123XYZ Teil 2"
+    import_id = pending_factory([
+        {"filename": "a.pdf", "bank_code": "VBR", "iban": IBAN_A,
+         "document_date": "2025-01-31",
+         "transactions": [_txn("2025-01-10", -8.22, full_text)]},
+    ])
+    status, body = handlers.handle_confirm_import(
+        db_two_accounts, {"import_id": [import_id]})
+    res = json.loads(body)["results"][0]
+    assert res["inserted"] == 0 and res["skipped"] == 1
+    assert res["text_updated"] == 1
+    assert db_two_accounts.get_booking_by_id(bk)[15] == full_text
+
+
+def test_backfill_updates_matching_entry_child(db_two_accounts, pending_factory):
+    """Der Buchungssatz (entry-Kind) mit identischem alten Text zieht mit."""
+    acc_a, _ = match_account(db_two_accounts.fetch_accounts(), IBAN_A)
+    short = "Miete April"
+    bk = db_two_accounts.insert_booking(
+        date_booking="2025-02-01", amount=-500.0, account_id=acc_a,
+        text=short, booking_type="bank")
+    child = db_two_accounts.insert_booking(
+        date_booking="2025-02-01", amount=-500.0, text=short,
+        booking_type="entry", parent_booking_id=bk)
+
+    full_text = "Miete April Objekt Musterweg 1 inkl. Nebenkosten"
+    import_id = pending_factory([
+        {"filename": "a.pdf", "bank_code": "VBR", "iban": IBAN_A,
+         "document_date": "2025-02-28",
+         "transactions": [_txn("2025-02-01", -500.0, full_text)]},
+    ])
+    handlers.handle_confirm_import(db_two_accounts, {"import_id": [import_id]})
+    assert db_two_accounts.get_booking_by_id(bk)[15] == full_text
+    assert db_two_accounts.get_booking_by_id(child)[15] == full_text
+
+
+def test_backfill_leaves_manual_texts_alone(db_two_accounts, pending_factory):
+    """Manuell abweichende Texte werden beim Re-Import nicht überschrieben."""
+    acc_a, _ = match_account(db_two_accounts.fetch_accounts(), IBAN_A)
+    manual = "Mein manuell gepflegter Text"
+    bk = db_two_accounts.insert_booking(
+        date_booking="2025-01-10", amount=-8.22, account_id=acc_a,
+        text=manual, booking_type="bank")
+
+    import_id = pending_factory([
+        {"filename": "a.pdf", "bank_code": "VBR", "iban": IBAN_A,
+         "document_date": "2025-01-31",
+         "transactions": [_txn("2025-01-10", -8.22,
+                               "Ganz anderer, deutlich längerer Import-Text")]},
+    ])
+    status, body = handlers.handle_confirm_import(
+        db_two_accounts, {"import_id": [import_id]})
+    res = json.loads(body)["results"][0]
+    assert res["text_updated"] == 0
+    assert db_two_accounts.get_booking_by_id(bk)[15] == manual
+
+
+def test_backfill_skips_ambiguous_candidates(db_two_accounts, pending_factory):
+    """Zwei gleiche kurze Buchungen am selben Tag: Zuordnung mehrdeutig,
+    kein Backfill (lieber gar nicht als falsch)."""
+    acc_a, _ = match_account(db_two_accounts.fetch_accounts(), IBAN_A)
+    for _ in range(2):
+        db_two_accounts.insert_booking(
+            date_booking="2025-01-10", amount=-8.22, account_id=acc_a,
+            text="Kurz", booking_type="bank")
+
+    import_id = pending_factory([
+        {"filename": "a.pdf", "bank_code": "VBR", "iban": IBAN_A,
+         "document_date": "2025-01-31",
+         "transactions": [_txn("2025-01-10", -8.22, "Kurz und länger 1"),
+                          _txn("2025-01-10", -8.22, "Kurz und länger 2")]},
+    ])
+    status, body = handlers.handle_confirm_import(
+        db_two_accounts, {"import_id": [import_id]})
+    res = json.loads(body)["results"][0]
+    assert res["text_updated"] == 0
+    texts = {r[2] for r in _bank_bookings(db_two_accounts)}
+    assert texts == {"Kurz"}
+
+
+def test_backfill_skips_file_side_ambiguity(db_two_accounts, pending_factory):
+    """Zwei Datei-Duplikate desselben Schlüssels mit VERSCHIEDENEN Texten:
+    Zuordnung mehrdeutig → kein Backfill, keine Buchung wird doppelt
+    aktualisiert (Review-Befund)."""
+    acc_a, _ = match_account(db_two_accounts.fetch_accounts(), IBAN_A)
+    db_two_accounts.insert_booking(
+        date_booking="2025-01-10", amount=-8.22, account_id=acc_a,
+        text="Kurz", booking_type="bank")
+    db_two_accounts.insert_booking(
+        date_booking="2025-01-10", amount=-8.22, account_id=acc_a,
+        text="manuell ganz anders", booking_type="bank")
+
+    import_id = pending_factory([
+        {"filename": "a.pdf", "bank_code": "VBR", "iban": IBAN_A,
+         "document_date": "2025-01-31",
+         "transactions": [_txn("2025-01-10", -8.22, "Kurz und mehr"),
+                          _txn("2025-01-10", -8.22, "Kurz und mehr Details")]},
+    ])
+    status, body = handlers.handle_confirm_import(
+        db_two_accounts, {"import_id": [import_id]})
+    res = json.loads(body)["results"][0]
+    assert res["text_updated"] == 0
+    texts = {r[2] for r in _bank_bookings(db_two_accounts)}
+    assert texts == {"Kurz", "manuell ganz anders"}
+
+
 def test_unknown_account_reported(db_two_accounts, pending_factory):
     import_id = pending_factory([
         {"filename": "x.pdf", "bank_code": "VBR", "iban": "DE00000000000000000000",
