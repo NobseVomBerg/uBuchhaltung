@@ -51,6 +51,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             <div class="rectRounded" id="acctMenuPanel" style="display:none; position:absolute; top:100%; left:0; z-index:50; min-width:220px; max-height:340px; overflow-y:auto; white-space:nowrap; box-shadow:0 2px 8px rgba(0,0,0,.25);">{account_checkboxes}</div>
         </div>
         <div>🔍 <input type="text" id="txSearch" placeholder="Empfänger / Verwendungszweck" oninput="filterTransactions()" style="width: 240px;"></div>
+        <div><button type="button" id="rowModeBtn" onclick="toggleRowMode()" title="Textanzeige umschalten: Kompakt (eine Zeile mit …) oder Voll (Text bricht um)">▤ Kompakt</button></div>
         <div>
             <label>Währung:</label>
             <select id="currencyFilter" onchange="filterTransactions()">
@@ -539,7 +540,9 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 if (!data.ok) { appMsg('Fehler: ' + (data.error || 'Import fehlgeschlagen'), 'error'); return; }
                 const res = (data.results || [])[0] || {};
                 if (res.account_found === false) { appMsg(res.error || 'Konto nicht gefunden', 'error'); return; }
-                appMsg(res.inserted + ' neu importiert' + (res.skipped ? ', ' + res.skipped + ' Duplikate übersprungen' : ''), 'success');
+                appMsg(res.inserted + ' neu importiert'
+                       + (res.skipped ? ', ' + res.skipped + ' Duplikate übersprungen' : '')
+                       + (res.text_updated ? ', ' + res.text_updated + ' Texte vervollständigt' : ''), 'success');
                 const card = document.getElementById('beleg-' + idx);
                 if (card) card.remove();
                 refreshTable();
@@ -552,9 +555,11 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             setImportBusy(true);
             postImport({}).then(data => {
                 if (!data.ok) { appMsg('Fehler: ' + (data.error || 'Import fehlgeschlagen'), 'error'); return; }
-                let ins = 0, skip = 0, failed = 0;
-                (data.results || []).forEach(r => { ins += r.inserted || 0; skip += r.skipped || 0; if (r.account_found === false) failed++; });
-                appMsg(ins + ' neu importiert' + (skip ? ', ' + skip + ' Duplikate' : '') + (failed ? ', ' + failed + ' ohne Konto' : ''), failed ? 'warn' : 'success');
+                let ins = 0, skip = 0, failed = 0, txtUpd = 0;
+                (data.results || []).forEach(r => { ins += r.inserted || 0; skip += r.skipped || 0; txtUpd += r.text_updated || 0; if (r.account_found === false) failed++; });
+                appMsg(ins + ' neu importiert' + (skip ? ', ' + skip + ' Duplikate' : '')
+                       + (txtUpd ? ', ' + txtUpd + ' Texte vervollständigt' : '')
+                       + (failed ? ', ' + failed + ' ohne Konto' : ''), failed ? 'warn' : 'success');
                 dismissPreview();
                 refreshTable();
             }).catch(err => appMsg('Fehler beim Import: ' + err, 'error'))
@@ -598,14 +603,25 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     '''
     s+= '<div class="gridLeftCol" style="order:1">'    # ── Buchungstabelle ───────────────────────────────────────────────────
     s+= '<div id="importPreview"></div>'              # Inline-Import-Vorschau (per Beleg)
+    # Feste Spaltenbreiten via colgroup (table-layout: fixed in buch.css):
+    # Empfänger bekommt ~26%, Text den gesamten Rest – auf großen Bildschirmen
+    # wächst so automatisch die Textspalte. Kürzung übernimmt CSS (Ellipsis),
+    # nicht mehr Python-Slicing (todo Buchungstabelle).
     s+= "<table id='transactionsTable'>"
+    s+= ("<colgroup><col class='colDate'><col class='colRecipient'><col>"
+         "<col class='colAmount'><col class='colCur'><col class='colTax'>"
+         "<col class='colAcct'><col class='colSkr'><col class='colDocnr'>"
+         "<col class='colActions'></colgroup>")
     s+= ("<tr><th>Datum</th><th>Empfänger/Auftragg.</th><th>Text</th>"
-         "<th>Betrag</th><th>Währung</th><th>St.satz</th><th>Konto</th>"
+         "<th>Betrag</th><th title='Währung'>Whg.</th>"
+         "<th title='Steuersatz'>St.%</th><th>Konto</th>"
          "<th>SKR</th><th>Beleg-Nr.</th><th>Aktionen</th></tr>")
 
     bookings = db.fetch_bookings_grouped(date_from, date_to)
 
-    account_map = {a[0]: _html.escape(str(a[1] or '')) for a in accounts}
+    # ROHE Namen: escaped wird erst bei der Ausgabe (die Zellen escapen selbst;
+    # doppeltes Escaping machte aus '&' sichtbares '&amp;')
+    account_map = {a[0]: str(a[1] or '') for a in accounts}
 
     # Reverse-Map: COA_ID → (Account_ID, Account_Name)
     # Damit Einträge ohne Account_ID über COA/CounterCOA dem Konto zugeordnet werden.
@@ -636,6 +652,11 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         except (ValueError, TypeError):
             return ''
 
+    def _attr(s):
+        """Für HTML-Attribute escapen – auch einfach-quotierte (data-*, title):
+        html.escape lässt Apostrophe durch, die hier Attribute sprengen würden."""
+        return _html.escape(str(s or ''), quote=True).replace("'", '&#39;')
+
     for item in bookings:
         row_type = item['type']
 
@@ -645,7 +666,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             date_booking = item['date']
             amount       = item['amount'] or 0
             currency     = _html.escape(str(item['currency'] or ''))
-            description  = _html.escape(item['description'] or '')
+            description  = _attr(item['description'])
             count        = item['count']
             account_id   = item['account_id']
             contact_id   = item['contact_id']
@@ -654,13 +675,19 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             first_ccoa   = item.get('first_ccoa_id')
             account_id, account_name = _derive_account(account_id, first_coa, first_ccoa)
             contact_name = customer_map.get(contact_id, '') if contact_id else ''
-            first_recip  = _html.escape(item.get('first_recipient') or '')
-            first_text   = _html.escape(item.get('first_text') or '')
+            first_recip  = _attr(item.get('first_recipient'))
+            first_text   = _attr(item.get('first_text'))
             amount_color = 'green' if amount > 0 else 'red'
             # ✓-Badge: alle Kinder vollständig gebucht (COA_ID gesetzt)?
             # Entspricht dem gleichen Check wie bei Einzelbuchungen (booking[8] = COA_ID).
             children     = item.get('children', [])
             all_booked   = bool(children) and all(ch['booking'][8] is not None for ch in children)
+            # Suche über ALLE Kinder (nicht nur das erste): aggregierte
+            # data-Attribute, damit Begriffe aus Kind 2+ die Gruppe finden
+            search_recip = _attr(' '.join(ch['booking'][6] or ''
+                                          for ch in children)) or first_recip
+            search_text  = _attr(' '.join(ch['booking'][15] or ''
+                                          for ch in children)) or first_text
             status_badge = ("<span class='badge bg-green' title='Buchung vollständig gebucht'>✓</span>"
                             if all_booked else "")
             row_class    = 'transaction-row group-row row-ok' if all_booked else 'transaction-row group-row'
@@ -671,19 +698,19 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                  f"data-contact-id='{contact_id or ''}' "
                  f"data-currency='{currency}' "
                  f"data-amount='{amount}' "
-                 f"data-recipient='{first_recip}' "
-                 f"data-text='{first_text}' "
+                 f"data-recipient='{search_recip}' "
+                 f"data-text='{search_text}' "
                  f"onclick='toggleGroup({gid})' "
                  f"title='Split-Buchung aufklappen/zuklappen'>")
             s+= f"<td>{date_booking}</td>"
-            s+= f"<td>{first_recip[:25]}</td>"
-            s+= f"<td>{first_text[:35]}</td>"
+            s+= f"<td title='{first_recip}'>{first_recip}</td>"
+            s+= f"<td title='{first_text}'>{first_text}</td>"
             s+= f"<td style='color:{amount_color}'>{amount:.2f}</td>"
             s+= f"<td>{currency}</td>"
             s+= f"<td></td>"
-            s+= f"<td>{account_name[:20]}</td>"
+            s+= f"<td title='{_attr(account_name)}'>{_html.escape(str(account_name))}</td>"
             s+= f"<td><span class='badge bg-indigo'>Split {count}×</span></td>"
-            s+= f"<td>{description[:35]}</td>"
+            s+= f"<td title='{description}'>{description}</td>"
             s+= f"<td>{status_badge}<span class='split-toggle-icon' id='toggle-icon-{gid}'>▶</span></td>"
             s+= f"</tr>"
 
@@ -693,10 +720,10 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             bank_id      = booking[0]
             date_booking = booking[1]
             account_id   = booking[4]
-            recipient    = _html.escape(booking[6] or '')
+            recipient    = _attr(booking[6])
             amount       = booking[11]
             currency     = _html.escape(booking[12] or 'EUR')
-            bank_text    = _html.escape(booking[15] or '')
+            bank_text    = _attr(booking[15])
             is_linked    = item.get('linked', False)
             children     = item.get('children', [])
             count        = len(children)
@@ -705,7 +732,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             amount_color = 'green' if (amount or 0) > 0 else 'red'
 
             # Merged: Entry-Daten übernehmen (aus fetch_bookings_grouped)
-            entry_text    = _html.escape(item.get('entry_text')) if item.get('entry_text') else bank_text
+            entry_text    = _attr(item.get('entry_text')) if item.get('entry_text') else bank_text
             entry_coa_id  = item.get('entry_coa_id')
             entry_docnr   = _html.escape(item.get('entry_docnr') or '')
             entry_contact = item.get('entry_contact_id')
@@ -741,25 +768,31 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 # Verknüpft: einzeilige Merged-Darstellung
                 status_badge = "<span class='badge bg-green' title='Bank + Buchung verknüpft'>✓</span>"
                 if count > 1:
-                    # Split: aufklappbar
+                    # Split: aufklappbar. Suche über Bank-Text + alle Kinder.
+                    search_recip = _attr(' '.join(filter(None,
+                        [booking[6]] + [ch['booking'][6] or '' for ch in children])))
+                    search_text = _attr(' '.join(filter(None,
+                        [booking[15]] + [ch['booking'][15] or '' for ch in children])))
                     s+= (f"<tr class='transaction-row row-ok' "
                          f"data-group-id='{bid}' "
                          f"data-account-id='{account_id or ''}' "
                          f"data-date='{date_booking}' "
                          f"data-contact-id='{entry_contact or ''}' "
                          f"data-currency='{currency}' "
-                         f"data-amount='{amount}' "                         f"data-recipient='{recipient}' "
-                         f"data-text='{entry_text}' "                         f"onclick='toggleGroup(\"{bid}\")' "
+                         f"data-amount='{amount}' "
+                         f"data-recipient='{search_recip}' "
+                         f"data-text='{search_text}' "
+                         f"onclick='toggleGroup(\"{bid}\")' "
                          f"title='Verknüpfte Split-Buchung aufklappen'>")
                     s+= f"<td>{date_booking}</td>"
-                    s+= f"<td>{recipient[:25]}</td>"
-                    s+= f"<td>{entry_text[:35]}</td>"
+                    s+= f"<td title='{recipient}'>{recipient}</td>"
+                    s+= f"<td title='{entry_text}'>{entry_text}</td>"
                     s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
                     s+= f"<td>{currency}</td>"
                     s+= f"<td></td>"
-                    s+= f"<td>{account_name[:20]}</td>"
+                    s+= f"<td title='{_attr(account_name)}'>{_html.escape(str(account_name))}</td>"
                     s+= f"<td><span class='badge bg-indigo'>Split {count}×</span></td>"
-                    s+= f"<td>{entry_docnr}</td>"
+                    s+= f"<td title='{entry_docnr}'>{entry_docnr}</td>"
                     s+= f"<td>{status_badge} <span class='split-toggle-icon' id='toggle-icon-{bid}'>▶</span></td>"
                     s+= f"</tr>"
                 else:
@@ -773,12 +806,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                          f"data-recipient='{recipient}' "
                          f"data-text='{entry_text}'>")
                     s+= f"<td>{date_booking}</td>"
-                    s+= f"<td>{recipient[:25]}</td>"
-                    s+= f"<td>{entry_text[:35]}</td>"
+                    s+= f"<td title='{recipient}'>{recipient}</td>"
+                    s+= f"<td title='{entry_text}'>{entry_text}</td>"
                     s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
                     s+= f"<td>{currency}</td>"
                     s+= f"<td>{_fmt_rate(item.get('entry_tax_rate'))}</td>"
-                    s+= f"<td>{account_name[:20]}</td>"
+                    s+= f"<td title='{_attr(account_name)}'>{_html.escape(str(account_name))}</td>"
                     s+= f"<td>{entry_coa_nr}</td>"
                     s+= f"<td>{entry_docnr}</td>"
                     s+= (f"<td>{status_badge}"
@@ -797,12 +830,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                      f"data-recipient='{recipient}' "
                      f"data-text='{bank_text}'>")
                 s+= f"<td>{date_booking}</td>"
-                s+= f"<td>{recipient[:25]}</td>"
-                s+= f"<td>{bank_text[:35]}</td>"
+                s+= f"<td title='{recipient}'>{recipient}</td>"
+                s+= f"<td title='{bank_text}'>{bank_text}</td>"
                 s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
                 s+= f"<td>{currency}</td>"
                 s+= f"<td></td>"
-                s+= f"<td>{account_name[:20]}</td>"
+                s+= f"<td title='{_attr(account_name)}'>{_html.escape(str(account_name))}</td>"
                 s+= f"<td></td>"
                 s+= f"<td></td>"
                 s+= (f"<td>{status_badge}"
@@ -818,12 +851,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             booking_id   = booking[0]
             date_booking = booking[1]
             account_id   = booking[4]
-            recipient    = _html.escape(booking[6] or '')
+            recipient    = _attr(booking[6])
             contact_id   = booking[7]
             coa_id       = booking[8]
             amount       = booking[11]
             currency     = _html.escape(booking[12] or 'EUR')
-            text         = _html.escape(booking[15] or '')
+            text         = _attr(booking[15])
             doc_number   = _html.escape(booking[16] or '') if len(booking) > 16 else ''
             counter_coa_id = booking[9]
             account_id, account_name = _derive_account(account_id, coa_id, counter_coa_id)
@@ -837,12 +870,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                             if coa_id else "")
             s+= (f"<tr class='child-row' data-parent-group='{gid}' style='display:none'>")
             s+= f"<td class='child-indent'>{date_booking}</td>"
-            s+= f"<td>{recipient[:25]}</td>"
-            s+= f"<td>{text[:35]}</td>"
+            s+= f"<td title='{recipient}'>{recipient}</td>"
+            s+= f"<td title='{text}'>{text}</td>"
             s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
             s+= f"<td>{currency}</td>"
             s+= f"<td>{_fmt_rate(booking[13])}</td>"
-            s+= f"<td>{account_name[:20]}</td>"
+            s+= f"<td title='{_attr(account_name)}'>{_html.escape(str(account_name))}</td>"
             s+= f"<td>{coa_number}</td>"
             s+= f"<td>{doc_number}</td>"
             s+= (f"<td>{status_badge}"
@@ -857,12 +890,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             booking_id   = booking[0]
             date_booking = booking[1]
             account_id   = booking[4]
-            recipient    = _html.escape(booking[6] or '')
+            recipient    = _attr(booking[6])
             contact_id   = booking[7]
             coa_id       = booking[8]
             amount       = booking[11]
             currency     = _html.escape(booking[12] or 'EUR')
-            text         = _html.escape(booking[15] or '')
+            text         = _attr(booking[15])
             doc_number   = _html.escape(booking[16] or '') if len(booking) > 16 else ''
             counter_coa_id = booking[9]
             account_id, account_name = _derive_account(account_id, coa_id, counter_coa_id)
@@ -885,12 +918,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                  f"data-recipient='{recipient}' "
                  f"data-text='{text}'>")
             s+= f"<td>{date_booking}</td>"
-            s+= f"<td>{recipient[:25]}</td>"
-            s+= f"<td>{text[:35]}</td>"
+            s+= f"<td title='{recipient}'>{recipient}</td>"
+            s+= f"<td title='{text}'>{text}</td>"
             s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
             s+= f"<td>{currency}</td>"
             s+= f"<td>{_fmt_rate(booking[13])}</td>"
-            s+= f"<td>{account_name[:20]}</td>"
+            s+= f"<td title='{_attr(account_name)}'>{_html.escape(str(account_name))}</td>"
             s+= f"<td>{coa_number}</td>"
             s+= f"<td>{doc_number}</td>"
             s+= (f"<td>{status_badge}"
@@ -911,6 +944,24 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             children.forEach(row => { row.style.display = isOpen ? 'none' : ''; });
             if (icon) icon.textContent = isOpen ? '▶' : '▼';
         }
+
+        // Kompakt/Voll-Umschalter: Kompakt = einzeilig mit Ellipsis (CSS),
+        // Voll = Verwendungszweck bricht mehrzeilig um. Wahl bleibt im
+        // localStorage erhalten.
+        function applyRowMode(full) {
+            const tbl = document.getElementById('transactionsTable');
+            if (!tbl) return;
+            tbl.classList.toggle('rows-full', full);
+            const btn = document.getElementById('rowModeBtn');
+            if (btn) btn.textContent = full ? '▤ Voll' : '▤ Kompakt';
+        }
+        function toggleRowMode() {
+            const tbl = document.getElementById('transactionsTable');
+            const full = tbl && !tbl.classList.contains('rows-full');
+            try { localStorage.setItem('txRowMode', full ? 'full' : 'compact'); } catch (e) {}
+            applyRowMode(full);
+        }
+        try { applyRowMode(localStorage.getItem('txRowMode') === 'full'); } catch (e) {}
 
         function filterTransactions() {
             const txSearch       = (document.getElementById('txSearch').value || '').toLowerCase();
