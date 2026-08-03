@@ -403,22 +403,35 @@ class DocumentParser:
                     if iban_match:
                         foreign_iban = re.sub(r'\s+', '', iban_match.group(1).upper())
                     
-                    # Remove IBAN, BIC and reference fields from the full text
-                    # Important: Remove from the keyword onwards (including all following content)
-                    cleaned_text = full_text
-                    
-                    # Remove IBAN and everything after it (with flexible spacing, case-insensitive)
-                    cleaned_text = re.sub(r'I\s*B\s*A\s*N\s*:?.*', '', cleaned_text, flags=re.IGNORECASE | re.DOTALL)
-                    # Remove BIC and everything after it (with flexible spacing)
-                    cleaned_text = re.sub(r'B\s*I\s*C\s*:?.*', '', cleaned_text, flags=re.IGNORECASE | re.DOTALL)
-                    # Remove REF fields and everything after them (specific ones first!)
-                    cleaned_text = re.sub(r'M\s*R\s*E\s*F\s*:.*', '', cleaned_text, flags=re.IGNORECASE | re.DOTALL)
-                    cleaned_text = re.sub(r'E\s*R\s*E\s*F\s*:.*', '', cleaned_text, flags=re.IGNORECASE | re.DOTALL)
-                    cleaned_text = re.sub(r'C\s*R\s*E\s*D\s*:.*', '', cleaned_text, flags=re.IGNORECASE | re.DOTALL)
-                    cleaned_text = re.sub(r'R\s*E\s*F\s*:.*', '', cleaned_text, flags=re.IGNORECASE | re.DOTALL)  # REF last!
-                    
-                    # Split back into lines and keep only non-empty ones
-                    cleaned_lines = [line.strip() for line in cleaned_text.split('\n') if line.strip()]
+                    # SEPA-Technikfelder (EREF/MREF/CRED/DEBT/REF/IBAN/BIC)
+                    # FELDWEISE entfernen: Schlüsselwort + Doppelpunkt + genau
+                    # EIN Wert-Token. Zeilenumbruch-Artefakte ("…28R\n4 CRED")
+                    # und gruppierte IBANs ("DE87 3003 …") hängen als kurze
+                    # Fragmente (≤4 Zeichen) an, die nur mitgelöscht werden,
+                    # wenn direkt das nächste Feld oder das Textende folgt.
+                    # Inhalt VOR, ZWISCHEN und NACH den Feldern bleibt erhalten
+                    # (die frühere Variante löschte ab dem ersten Schlüsselwort
+                    # alles). Wortgrenzen beidseitig + Pflicht-Doppelpunkt
+                    # verhindern False-Positives wie "Arabic", "DB IC 2024"
+                    # oder den Vornamen "Iban".
+                    _kw = (r'(?<![A-Za-z])(?:'
+                           r'[EM]\s*R\s*E\s*F'
+                           r'|C\s*R\s*E\s*D'
+                           r'|D\s*E\s*B\s*T'
+                           r'|R\s*E\s*F'
+                           r'|I\s*B\s*A\s*N'
+                           r'|B\s*I\s*C'
+                           r')(?![A-Za-z])\s*:')
+                    _val = (r'\s*\S+'
+                            r'(?:(?:\s+\S{1,4})+(?=\s*(?:' + _kw + r'|$)))?')
+                    cleaned_text = re.sub(_kw + _val, '', full_text,
+                                          flags=re.IGNORECASE)
+
+                    # Split back into lines; Mehrfach-Leerzeichen (Reste der
+                    # entfernten Felder) glätten, Leerzeilen verwerfen
+                    cleaned_lines = [re.sub(r'\s{2,}', ' ', ln).strip()
+                                     for ln in cleaned_text.split('\n')]
+                    cleaned_lines = [ln for ln in cleaned_lines if ln]
                     
                     # Check if this is an "Abschluss" transaction (bank statement closing)
                     # Look for a line starting with "Abschluss" in cleaned_lines

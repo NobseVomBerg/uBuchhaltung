@@ -87,6 +87,72 @@ class TestParseVbrText:
         assert len(txns) == 1
         assert txns[0]['foreign_iban'] == 'DE89370400440532013000'
 
+    def test_sepa_fields_removed_fieldwise(self, parser):
+        """EREF/MREF/CRED/IBAN/BIC werden feldweise entfernt (auch bei
+        Zeilenumbruch mitten im Feld) — der Inhalt davor bleibt vollständig.
+        Früher wurde ab dem ersten Schlüsselwort der gesamte Rest verworfen."""
+        text = (
+            "13.07. 13.07. Lastschrift PN:931 8,22 S\n"
+            "Onlineshop Beispiel S.C.A.\n"
+            "302-1234567-8901234 Bestellung ABC123XYZ EREF\n"
+            ": ABC123XYZ MREF: xTestMandat)28R\n"
+            "4 CRED: DE98ZZZ09999999999 IBAN: DE89370400440532013000\n"
+            "0 BIC: GENODEF1XXX\n"
+        )
+        txns = parser._parse_vbr_text(text, YEAR)
+        assert len(txns) == 1
+        t = txns[0]
+        assert t['recipient'] == 'Onlineshop Beispiel S.C.A.'
+        assert t['reference'] == '302-1234567-8901234 Bestellung ABC123XYZ'
+        assert t['foreign_iban'] == 'DE89370400440532013000'
+
+    def test_multiline_purpose_fully_preserved(self, parser):
+        """Mehrzeiliger Verwendungszweck vor dem SEPA-Block bleibt komplett
+        erhalten (Kern des Verlustfrei-Fixes)."""
+        text = (
+            "02.04. 02.04. Überweisung 250,00 S\n"
+            "Vermietung Beispiel GmbH\n"
+            "Miete April Objekt Musterweg 1\n"
+            "inkl. Nebenkosten lt. Vertrag\n"
+            "EREF: NOTPROVIDED IBAN: DE89370400440532013000 BIC: GENODEF1XXX\n"
+        )
+        txns = parser._parse_vbr_text(text, YEAR)
+        assert len(txns) == 1
+        t = txns[0]
+        assert t['recipient'] == 'Vermietung Beispiel GmbH'
+        assert t['reference'] == ('Miete April Objekt Musterweg 1\n'
+                                  'inkl. Nebenkosten lt. Vertrag')
+
+    def test_content_between_and_after_sepa_fields_preserved(self, parser):
+        """Feldwerte sind einzelne Token – Inhalt ZWISCHEN und NACH den
+        Technikfeldern bleibt erhalten (Review-Befund: die erste Fassung war
+        funktional noch ein Komplett-Abschnitt ab dem ersten Schlüsselwort)."""
+        text = (
+            "05.05. 05.05. Überweisung 99,00 S\n"
+            "Empfänger GmbH\n"
+            "Rechnung 4711 EREF: NOTPROVIDED Zusatz Vereinbarung\n"
+            "IBAN: DE89370400440532013000 BIC: GENODEF1XXX Danke sehr\n"
+        )
+        txns = parser._parse_vbr_text(text, YEAR)
+        ref = txns[0]['reference']
+        assert 'Rechnung 4711' in ref
+        assert 'Zusatz Vereinbarung' in ref
+        assert 'Danke sehr' in ref
+        assert 'NOTPROVIDED' not in ref
+        assert 'DE8937' not in ref and 'GENODEF' not in ref
+
+    def test_keyword_lookalikes_not_swallowed(self, parser):
+        """Beidseitige Wortgrenzen + Pflicht-Doppelpunkt: 'Arabic', 'DB IC'
+        und der Vorname 'Iban' sind keine SEPA-Schlüsselwörter."""
+        text = (
+            "11.03. 11.03. Überweisung 50,00 H\n"
+            "Iban Garcia\n"
+            "Arabic-Coffee Bestellung DB IC 2024 Hamburg\n"
+        )
+        txns = parser._parse_vbr_text(text, YEAR)
+        assert txns[0]['recipient'] == 'Iban Garcia'
+        assert txns[0]['reference'] == 'Arabic-Coffee Bestellung DB IC 2024 Hamburg'
+
     def test_footer_stripped(self, parser):
         """Page footer block (K-number + 'Bitte beachten') is ignored."""
         text = (
