@@ -67,6 +67,18 @@ class SeedMixin:
             WHERE a.SKRAccount IS NOT NULL
         ''')
         return {row[0] for row in cursor.fetchall()}
+    def get_bank_coa_ids(self):
+        """Öffentliche Variante von _get_bank_coa_ids (ohne Cursor-Parameter).
+
+        Konsumenten außerhalb der DB-Schicht (Buchungsmaske, Handler) müssen
+        erkennen können, welche Seite eines Buchungssatzes die liquide ist.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        ids = self._get_bank_coa_ids(cursor)
+        conn.close()
+        return ids
+
     def _seed_asset_categories(self):
         """Seed der BMF-AfA-Kategorien aus seed_data/asset_categories.json."""
         conn = self._get_connection()

@@ -90,8 +90,16 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 if entry_data:
                     # Fehlende Felder aus dem Entry übernehmen
                     edit_trans = list(edit_trans)
-                    if not edit_trans[8]:   edit_trans[8]  = entry_data[0]  # COA_ID
-                    if not edit_trans[9]:   edit_trans[9]  = entry_data[1]  # CounterCOA_ID
+                    # Das SKR-Feld der Maske ist das ZWECKkonto. Buchungssätze
+                    # können liquide-zuerst orientiert sein (COA = Bankkonto,
+                    # Gegenkonto = Erlöskonto – so legt sie der WISO-Import für
+                    # Einnahmen an); dann steht der Zweck auf der Gegenseite.
+                    entry_coa, entry_counter = entry_data[0], entry_data[1]
+                    bank_coa_ids = db.get_bank_coa_ids()
+                    if entry_coa in bank_coa_ids and entry_counter not in bank_coa_ids:
+                        entry_coa, entry_counter = entry_counter, entry_coa
+                    if not edit_trans[8]:   edit_trans[8]  = entry_coa      # COA_ID
+                    if not edit_trans[9]:   edit_trans[9]  = entry_counter  # CounterCOA_ID
                     if not edit_trans[13]:  edit_trans[13] = entry_data[2]  # TaxRate
                     if not edit_trans[14]:  edit_trans[14] = entry_data[3]  # TaxAmount
                     if not edit_trans[16]:  edit_trans[16] = entry_data[4]  # DocumentNumber
@@ -305,10 +313,16 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 // Das Feld bleibt manuell überschreibbar (Skonto, Mischsätze).
                 function calculateTax() {{
                     const amount = parseFloat(document.getElementById('amount').value) || 0;
-                    const taxRate = parseFloat(document.getElementById('tax_rate').value) || 0;
+                    const rateField = document.getElementById('tax_rate').value;
+                    const taxRate = parseFloat(rateField) || 0;
                     if (amount !== 0 && taxRate !== 0) {{
                         const taxAmount = amount * taxRate / (100 + taxRate);
                         document.getElementById('tax_amount').value = taxAmount.toFixed(2);
+                    }} else if (rateField.trim() === '' || taxRate === 0) {{
+                        // Steuersatz geleert/0: alten Steuerbetrag mit entfernen –
+                        // sonst rechnet die EÜR (Netto = Betrag − Steuer) mit
+                        // einem Betrag, zu dem es keinen Satz mehr gibt.
+                        document.getElementById('tax_amount').value = '';
                     }}
                 }}
                 document.getElementById('amount').addEventListener('input', calculateTax);

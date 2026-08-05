@@ -281,9 +281,6 @@ def handle_add_transaction(db: Database, post_data):
             # Check if this is an unlinked bank booking being completed
             existing = db.get_booking_by_id(transaction_id)
             is_bank = existing and existing[17] == 'bank'
-            has_linked_entry = False
-            if is_bank:
-                has_linked_entry = db.get_linked_entry_for_bank(transaction_id) is not None
 
             # Update the bank booking itself (COA stays on bank row for
             # display; the real accounting entry is the child)
@@ -306,32 +303,70 @@ def handle_add_transaction(db: Database, post_data):
                 log_description="Manual booking update"
             )
 
-            # Auto-create entry child when completing a bank booking
-            if is_bank and coa_id and not has_linked_entry:
-                # Look up the account's SKR-COA to set as the liquid counter side
+            if is_bank:
+                # Gegenkonto (liquide Seite) aus dem SKR-Konto der Bank ableiten
                 eff_acct_id = account_id or (existing[4] if existing else None)
                 account_coa_id = None
                 if eff_acct_id:
                     acct_row = db.get_account_by_id(eff_acct_id)
                     if acct_row and acct_row[7]:  # SKRAccount at index 7
                         account_coa_id = db.get_coa_id_by_account_number(acct_row[7])
-                db.insert_booking(
-                    date_booking=date,
-                    date_tax=date_tax,
-                    amount=float(amount),
-                    recipient_client=recipient,
-                    contact_id=contact_id,
-                    coa_id=coa_id,
-                    counter_coa_id=account_coa_id,
-                    currency=currency,
-                    tax_rate=tax_rate,
-                    tax_amount=tax_amount,
-                    text=text,
-                    document_number=document_nr or None,
-                    booking_type='entry',
-                    parent_booking_id=transaction_id,
-                    log_description="Manual bank booking completion (entry child)"
-                )
+
+                children = db.get_child_bookings_for_bank(transaction_id)
+                # Nur den von uBuchhaltung selbst angelegten Spiegel (AutoMirror)
+                # mitziehen. Eigenständig erfasste, bloß verknüpfte Buchungen
+                # (WISO-Einnahmen mit COA=Bank, Umbuchungen 4405→4400,
+                # Debitoren-Zahlungen) folgen einer eigenen Kontierungslogik und
+                # bleiben unangetastet – ihre Herkunft ließe sich aus den Werten
+                # allein nicht zuverlässig erkennen.
+                mirror_children = [c for c in children if c[3]]
+                mirror_child_id = None
+                if len(children) == 1 and len(mirror_children) == 1 and coa_id \
+                        and coa_id != account_coa_id:
+                    mirror_child_id = mirror_children[0][0]
+
+                if mirror_child_id:
+                    # Übersicht und EÜR lesen Konto, Steuersatz und Betrag aus
+                    # dem Kind – ohne diesen Abgleich käme dort keine weitere
+                    # Änderung an. Betrag und Steuer wandern gemeinsam mit,
+                    # damit sie zueinander stimmig bleiben.
+                    db.sync_entry_child(
+                        child_id=mirror_child_id,
+                        date_booking=date,
+                        date_tax=date_tax,
+                        amount=float(amount),
+                        recipient_client=recipient,
+                        coa_id=coa_id,
+                        counter_coa_id=account_coa_id,
+                        currency=currency,
+                        tax_rate=tax_rate,
+                        tax_amount=tax_amount,
+                        text=text,
+                        document_number=document_nr or None,
+                        log_description="Bank booking update (sync entry child)"
+                    )
+                elif coa_id and not children:
+                    # Auto-create entry child when completing a bank booking
+                    db.insert_booking(
+                        date_booking=date,
+                        date_tax=date_tax,
+                        amount=float(amount),
+                        recipient_client=recipient,
+                        contact_id=contact_id,
+                        coa_id=coa_id,
+                        counter_coa_id=account_coa_id,
+                        currency=currency,
+                        tax_rate=tax_rate,
+                        tax_amount=tax_amount,
+                        text=text,
+                        document_number=document_nr or None,
+                        booking_type='entry',
+                        parent_booking_id=transaction_id,
+                        auto_mirror=True,
+                        log_description="Manual bank booking completion (entry child)"
+                    )
+                # Mehrere Kinder = Split: Aufteilung gehört dem Nutzer, die
+                # Kinder werden einzeln über ihre eigenen Zeilen bearbeitet.
         else:
             # Insert new booking.
             # If a bank account is provided the row is a bank movement;
@@ -381,6 +416,7 @@ def handle_add_transaction(db: Database, post_data):
                     document_number=document_nr or None,
                     booking_type='entry',
                     parent_booking_id=transaction_id,
+                    auto_mirror=True,
                     log_description="Manual bank booking – auto entry child"
                 )
 
@@ -1119,8 +1155,10 @@ def _backfill_booking_skr(db, booking_id, invoice):
                                document_number=invoice[1])
 
     booking = db.get_booking_by_id(booking_id)
+    # Existenzprüfung ungefiltert: get_linked_entry_for_bank blendet
+    # Doppik-Spiegel aus – danach entstünde bei jedem Aufruf ein weiteres Kind.
     if (booking[17] == 'bank' and booking[8]
-            and not db.get_linked_entry_for_bank(booking_id)):
+            and not db.get_child_bookings_for_bank(booking_id)):
         account_coa_id = None
         if booking[4]:
             acct = db.get_account_by_id(booking[4])
@@ -1137,6 +1175,7 @@ def _backfill_booking_skr(db, booking_id, invoice):
             tax_amount=float(booking[14]) if booking[14] is not None else None,
             text=booking[15] or '', document_number=booking[16],
             booking_type='entry', parent_booking_id=booking_id,
+            auto_mirror=True,
             log_description="Auto entry child on invoice link (todo #2)")
 
 

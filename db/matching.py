@@ -38,6 +38,30 @@ class MatchingMixin:
                 return self._euro_row(row, 3)  # TaxAmount an Index 3 -> Euro-Decimal
         conn.close()
         return None
+    def get_child_bookings_for_bank(self, bank_booking_id: int):
+        """ALLE Kindbuchungen einer Bank-Buchung (auch Doppik-Spiegel).
+
+        Grundlage dafür, den Buchungssatz beim Bearbeiten der Bank-Zeile
+        mitzuziehen. Bewusst ungefiltert: Die Existenzprüfung "hat diese
+        Bank-Buchung schon einen Buchungssatz?" muss alle Zeilen sehen,
+        sonst entstünde bei jedem Speichern ein weiteres Kind.
+
+        AutoMirror=1 kennzeichnet die von uBuchhaltung selbst als Spiegel der
+        Bank-Bewegung angelegten Buchungssätze – nur sie dürfen mitgezogen
+        werden (Herkunft ist aus den Werten allein nicht rekonstruierbar).
+
+        Returns: [(ID, COA_ID, CounterCOA_ID, AutoMirror)]
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT ID, COA_ID, CounterCOA_ID, COALESCE(AutoMirror, 0)
+            FROM Bookings WHERE ParentBooking_ID = ? ORDER BY ID
+        ''', (bank_booking_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
     def find_unlinked_booking_by_date_amount(self, date: str, amount: float):
         """Suche nach einer WISO-Buchung/-Gruppe (Account_ID IS NULL) anhand Datum + Betrag.
 

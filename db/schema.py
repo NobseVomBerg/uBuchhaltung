@@ -33,6 +33,15 @@ class SchemaMixin:
             self._add_column_if_missing(cursor, 'Trips', 'StartKm', 'INTEGER')
             self._add_column_if_missing(cursor, 'Trips', 'EndKm', 'INTEGER')
             self._add_column_if_missing(cursor, 'Trips', 'DocumentID', 'INTEGER')
+        if from_version < 3:
+            # v3: Buchungssätze, die uBuchhaltung selbst als Spiegel einer
+            # Bank-Bewegung angelegt hat, werden markiert. Nur sie werden beim
+            # Bearbeiten der Bank-Zeile mitgezogen – eigenständig erfasste,
+            # bloß verknüpfte Buchungen behalten ihre eigene Kontierung.
+            # Bewusst ohne Rück-Markierung von Altbestand: die Herkunft lässt
+            # sich aus den Werten nicht zuverlässig rekonstruieren.
+            self._add_column_if_missing(cursor, 'Bookings', 'AutoMirror',
+                                        'INTEGER DEFAULT 0')
 
     def initialize_database(self):
         conn = self._get_connection()
@@ -270,6 +279,7 @@ class SchemaMixin:
                 BookingType TEXT DEFAULT 'entry',
                 ParentBooking_ID INTEGER,
                 Status TEXT,
+                AutoMirror INTEGER DEFAULT 0,
                 FOREIGN KEY (BookingGroup_ID) REFERENCES BookingGroups(ID),
                 FOREIGN KEY (Account_ID) REFERENCES Accounts(ID),
                 FOREIGN KEY (Contact_ID) REFERENCES Contacts(ID),

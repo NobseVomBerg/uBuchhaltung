@@ -233,7 +233,8 @@ class BookingsMixin:
                        currency="EUR", tax_rate=None, tax_amount=None, text="", 
                        document_number=None, date_tax=None, booking_group_id=None, 
                        counter_coa_id=None, log_description=None,
-                       booking_type='entry', parent_booking_id=None):
+                       booking_type='entry', parent_booking_id=None,
+                       auto_mirror=False):
         """Insert a new booking into Bookings table
         
         Args:
@@ -263,16 +264,17 @@ class BookingsMixin:
         conn = self._get_connection()
         cursor = conn.cursor()
         
-        sql_template = '''INSERT INTO Bookings 
-            (DateBooking, DateTax, BookingGroup_ID, Account_ID, ForeignBankAccount, 
-             RecipientClient, Contact_ID, COA_ID, CounterCOA_ID, Category_ID, Amount, Currency, 
-             TaxRate, TaxAmount, Text, DocumentNumber, BookingType, ParentBooking_ID)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
-        
+        sql_template = '''INSERT INTO Bookings
+            (DateBooking, DateTax, BookingGroup_ID, Account_ID, ForeignBankAccount,
+             RecipientClient, Contact_ID, COA_ID, CounterCOA_ID, Category_ID, Amount, Currency,
+             TaxRate, TaxAmount, Text, DocumentNumber, BookingType, ParentBooking_ID, AutoMirror)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
+
         params = (date_booking, date_tax, booking_group_id, account_id, foreign_bank_account,
                   recipient_client, contact_id, coa_id, counter_coa_id, category_id,
                   to_minor(amount or 0), currency,
-                  tax_rate, self._minor_opt(tax_amount), text, document_number, booking_type, parent_booking_id)
+                  tax_rate, self._minor_opt(tax_amount), text, document_number, booking_type,
+                  parent_booking_id, 1 if auto_mirror else 0)
 
         cursor.execute(sql_template, params)
         conn.commit()
@@ -363,6 +365,41 @@ class BookingsMixin:
         ''', (text, booking_id, old_text or ''))
         conn.commit()
         conn.close()
+
+    def sync_entry_child(self, child_id, date_booking, date_tax, amount,
+                         recipient_client, coa_id, counter_coa_id, currency,
+                         tax_rate, tax_amount, text, document_number,
+                         log_description=None):
+        """Auto-erzeugten Buchungssatz an die geänderte Bank-Buchung angleichen.
+
+        NUR für Kinder aufrufen, die nachweislich der 1:1-Spiegel der
+        Bank-Zeile sind (siehe handle_add_transaction) – eigenständig
+        erfasste, bloß verknüpfte Buchungen haben eigene Angaben und eine
+        eigene Kontierungsrichtung, die hier zerstört würden.
+
+        Betrag und Steuer werden immer gemeinsam gesetzt: TaxAmount ist ein
+        aus dem Betrag abgeleiteter Wert; einzeln geschrieben ergäbe die
+        EÜR-Rechnung ``Netto = Amount − TaxAmount`` einen erfundenen Wert.
+        Contact_ID bleibt bewusst erhalten (die Maske kennt nur Kunden-
+        Kontakte und würde andere stillschweigend leeren), ebenso
+        Account_ID, BookingGroup_ID, BookingType, ParentBooking_ID, Status.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        sql_template = '''UPDATE Bookings
+            SET DateBooking=?, DateTax=?, RecipientClient=?, COA_ID=?,
+                CounterCOA_ID=?, Amount=?, Currency=?, TaxRate=?, TaxAmount=?,
+                Text=?, DocumentNumber=?
+            WHERE ID=?'''
+        params = (date_booking, date_tax, recipient_client, coa_id,
+                  counter_coa_id, to_minor(amount or 0), currency,
+                  tax_rate, self._minor_opt(tax_amount), text, document_number,
+                  child_id)
+        cursor.execute(sql_template, params)
+        conn.commit()
+        conn.close()
+        if log_description:
+            self._log_sql(sql_template, params, log_description)
 
     def update_booking(self, booking_id, date_booking, amount, account_id=None,
                        foreign_bank_account="", recipient_client="", contact_id=None, 
