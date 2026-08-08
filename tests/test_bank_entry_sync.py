@@ -329,6 +329,65 @@ def test_split_children_are_left_alone(tmp_db):
 
 # ── Bearbeiten-Maske ────────────────────────────────────────────────────────
 
+def test_migration_marks_existing_mirrors(tmp_db):
+    """Altbestand: Vor der AutoMirror-Einführung kontierte Bank-Buchungen
+    werden nachträglich markiert – exakte Kopien ja, Fremdbuchungen nie."""
+    import sqlite3
+    acct = _bank_account(tmp_db)
+    coa_bank = tmp_db.get_coa_id_by_account_number(1800)
+    coa = tmp_db.get_coa_id_by_account_number(6815)
+
+    def _pair(date, text, recipient, child_text, child_recipient,
+              counter=coa_bank, child_coa=coa):
+        bk = tmp_db.insert_booking(date, -119.00, account_id=acct, text=text,
+                                   recipient_client=recipient,
+                                   booking_type='bank')
+        ch = tmp_db.insert_booking(date, -119.00, coa_id=child_coa,
+                                   counter_coa_id=counter, text=child_text,
+                                   recipient_client=child_recipient,
+                                   booking_type='entry', parent_booking_id=bk)
+        return bk, ch
+
+    # exakte Kopie (auto-erzeugt) → wird markiert
+    _, mirror = _pair('2026-03-01', 'Kauf', 'Lieferant', 'Kauf', 'Lieferant')
+    # eigener Empfänger (WISO/Handerfassung) → bleibt unmarkiert
+    _, foreign = _pair('2026-03-02', 'ROHTEXT AG', 'ROHTEXT AG',
+                       'ROHTEXT AG', 'Sauber erfasst GmbH')
+    # Gegenkonto ist nicht das Bankkonto → bleibt unmarkiert
+    _, other = _pair('2026-03-03', 'Kauf', 'Lieferant', 'Kauf', 'Lieferant',
+                     counter=tmp_db.get_coa_id_by_account_number(4400))
+
+    con = sqlite3.connect(tmp_db.db_name)
+    con.execute('UPDATE Bookings SET AutoMirror = 0')   # Zustand vor v4
+    con.commit()
+    tmp_db._mark_existing_auto_mirrors(con.cursor())
+    con.commit()
+    flags = dict(con.execute(
+        'SELECT ID, AutoMirror FROM Bookings WHERE ParentBooking_ID IS NOT NULL'))
+    con.close()
+
+    assert flags[mirror] == 1     # exakte Kopie
+    assert flags[foreign] == 0    # eigener Empfänger
+    assert flags[other] == 0      # fremdes Gegenkonto
+
+
+def test_single_entry_row_is_expandable(tmp_db):
+    """Bank-Buchung mit genau EINEM Buchungssatz ist aufklappbar – sonst
+    käme man an den Buchungssatz überhaupt nicht heran."""
+    from server.pages_transactions import PageTransactions
+    acct = _bank_account(tmp_db)
+    coa = tmp_db.get_coa_id_by_account_number(6815)
+    bk = tmp_db.insert_booking('2026-03-01', -119.00, account_id=acct,
+                               booking_type='bank')
+    handle_add_transaction(tmp_db, _post(bk, acct, coa))
+    child_id = tmp_db.get_child_bookings_for_bank(bk)[0][0]
+
+    html = PageTransactions(tmp_db, date_from='2026-01-01', date_to='2026-12-31')
+    assert f"toggleGroup(\"b{bk}\")" in html
+    assert f"data-parent-group='b{bk}'" in html
+    assert f'openEditForm({child_id})' in html   # Buchungssatz bearbeitbar
+
+
 def test_edit_form_shows_purpose_account_for_income(tmp_db):
     """Bei liquide-zuerst gebuchten Einnahmen zeigt die Maske das Erlöskonto,
     nicht das Bankkonto (sonst schriebe der Nutzer es blind zurück)."""

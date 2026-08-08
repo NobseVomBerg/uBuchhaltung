@@ -38,10 +38,42 @@ class SchemaMixin:
             # Bank-Bewegung angelegt hat, werden markiert. Nur sie werden beim
             # Bearbeiten der Bank-Zeile mitgezogen – eigenständig erfasste,
             # bloß verknüpfte Buchungen behalten ihre eigene Kontierung.
-            # Bewusst ohne Rück-Markierung von Altbestand: die Herkunft lässt
-            # sich aus den Werten nicht zuverlässig rekonstruieren.
             self._add_column_if_missing(cursor, 'Bookings', 'AutoMirror',
                                         'INTEGER DEFAULT 0')
+        if from_version < 4:
+            # v4: Bestehende Spiegel nachträglich markieren, damit auch vor
+            # der Einführung von AutoMirror kontierte Bank-Buchungen weiter
+            # bearbeitbar bleiben. Bewusst sehr streng – markiert wird nur ein
+            # EINZIGES Kind, das in allen kopierten Feldern exakt der
+            # Bank-Zeile entspricht und dessen Gegenkonto das SKR-Konto der
+            # Bank ist. Eigenständig erfasste Buchungen (WISO/Handerfassung)
+            # weichen mindestens in Empfänger, Text oder Steuerdatum ab.
+            self._mark_existing_auto_mirrors(cursor)
+
+    def _mark_existing_auto_mirrors(self, cursor):
+        """Altbestand: von uBuchhaltung erzeugte Buchungssätze markieren."""
+        cursor.execute('''
+            UPDATE Bookings SET AutoMirror = 1
+            WHERE ID IN (
+                SELECT c.ID
+                FROM Bookings c
+                JOIN Bookings p  ON p.ID = c.ParentBooking_ID
+                JOIN Accounts a  ON a.ID = p.Account_ID
+                JOIN ChartOfAccounts coa ON coa.AccountNumber = a.SKRAccount
+                WHERE p.BookingType = 'bank'
+                  AND c.COA_ID IS NOT NULL
+                  AND c.CounterCOA_ID = coa.ID
+                  AND c.COA_ID <> c.CounterCOA_ID
+                  AND c.BookingGroup_ID IS NULL
+                  AND c.Amount = p.Amount
+                  AND c.DateBooking = p.DateBooking
+                  AND COALESCE(c.DateTax, '')          = COALESCE(p.DateTax, '')
+                  AND COALESCE(c.RecipientClient, '')  = COALESCE(p.RecipientClient, '')
+                  AND COALESCE(c.Text, '')             = COALESCE(p.Text, '')
+                  AND (SELECT COUNT(*) FROM Bookings x
+                       WHERE x.ParentBooking_ID = p.ID) = 1
+            )
+        ''')
 
     def initialize_database(self):
         conn = self._get_connection()

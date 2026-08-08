@@ -810,8 +810,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     s+= f"<td>{status_badge} <span class='split-toggle-icon' id='toggle-icon-{bid}'>▶</span></td>"
                     s+= f"</tr>"
                 else:
-                    # Einzelne verknüpfte Buchung: eine Zeile, kein Toggle
+                    # Einzelne verknüpfte Buchung: Merged-Darstellung, aber
+                    # ebenfalls aufklappbar – sonst käme man an den
+                    # Buchungssatz gar nicht heran (er ist die Quelle für
+                    # Übersicht und EÜR und muss einzeln bearbeitbar sein).
                     s+= (f"<tr class='transaction-row row-ok' "
+                         f"data-group-id='{bid}' "
                          f"data-account-id='{account_id or ''}' "
                          f"data-date='{date_booking}' "
                          f"data-contact-id='{entry_contact or ''}' "
@@ -831,7 +835,10 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     s+= (f"<td>{status_badge}"
                          f" <a href='javascript:void(0)' onclick='openEditForm({bank_id})' class='action-icon' title='Bearbeiten'>&#9998;</a>"
                          f" <a href='javascript:void(0);' class='action-icon delete-icon' title='L\u00f6schen'"
-                         f" onclick='appConfirmHref(\"/transactions/delete?id={bank_id}\", \"Buchung #{bank_id} wirklich l\u00f6schen?\")'>&#128465;</a></td>")
+                         f" onclick='appConfirmHref(\"/transactions/delete?id={bank_id}\", \"Buchung #{bank_id} wirklich l\u00f6schen?\")'>&#128465;</a>"
+                         f" <span class='split-toggle-icon' id='toggle-icon-{bid}'"
+                         f" onclick='toggleGroup(\"{bid}\")'"
+                         f" title='Buchungssatz ein-/ausblenden'>&#9654;</span></td>")
                     s+= f"</tr>"
             else:
                 # Nicht verknüpft: als offene Bank-Buchung anzeigen
