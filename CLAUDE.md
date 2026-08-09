@@ -204,6 +204,10 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
 - Bedienung über *Verschiedenes* → „Import aus der Datenbank"; die Prüfung
   (`WisoDatabase.check`) bricht vor dem Schreiben ab, wenn die WISO-Version
   andere Tabellen/Spalten hat
+- **Anlagen:** Anschaffungswert und Verkaufserlös stehen beide **netto** in den
+  Büchern. Der Erlös trägt in WISO keine `INVENTORYID` – gemeinsam ist ihm mit
+  dem Anlagegut nur der Abgangstext; ist er nicht eindeutig, bleibt das Feld
+  leer statt falsch
 
 ### Testing
 - Vor PR: lokal starten (`python main.py`), Feature testen

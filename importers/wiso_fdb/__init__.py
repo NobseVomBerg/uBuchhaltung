@@ -160,8 +160,13 @@ class WisoAsset:
     number: Optional[int] = None
     label: str = ''
     purchase_date: Optional[str] = None
+    #: Anschaffungswert **netto** – Summe der Teilzahlungen.
     purchase_price: float = 0.0
     sale_date: Optional[str] = None
+    #: Verkaufserlös **netto**; None, wenn er sich nicht zuordnen ließ.
+    sale_price: Optional[float] = None
+    #: Restbuchwert im Zeitpunkt des Abgangs (das, was ausgebucht wurde).
+    residual_value: Optional[float] = None
     useful_life_years: Optional[int] = None
     account: Optional[int] = None
     depreciation_account: Optional[int] = None
@@ -451,23 +456,35 @@ class WisoDatabase:
         for row in self._safe_rows(T_DEPRECIATIONS):
             by_asset_depreciation.setdefault(row.get('INVENTORYID'), []).append(row)
         by_asset_payment: Dict[int, List[WisoPayment]] = {}
+        by_asset_disposal: Dict[int, dict] = {}
         for row in self._safe_rows(T_ASSET_PAYMENTS):
-            by_asset_payment.setdefault(row.get('INVENTORYID'), []).append(
-                WisoPayment(date=_date(row.get('BOOKINGDATE')),
-                            amount=row.get('AMOUNTNET') or 0.0,
-                            text=_clean(row.get('DESCRIPTION'))))
+            payment = WisoPayment(date=_date(row.get('BOOKINGDATE')),
+                                  amount=row.get('AMOUNTNET') or 0.0,
+                                  text=_clean(row.get('DESCRIPTION')))
+            by_asset_payment.setdefault(row.get('INVENTORYID'), []).append(payment)
+            # REMOVEACCOUNT ist WISOs eigenes Kennzeichen für die Abgangszeile.
+            if row.get('REMOVEACCOUNT'):
+                by_asset_disposal[row.get('INVENTORYID')] = {
+                    'date': payment.date, 'amount': payment.amount,
+                    'text': payment.text}
 
+        proceeds = self._disposal_proceeds(by_asset_disposal.values())
         out = []
         for row in self.catalog.rows(T_ASSETS):
             asset_id = row.get('ID')
             payments = sorted(by_asset_payment.get(asset_id, []),
                               key=lambda p: p.date or '')
             price = self._purchase_price(row.get('PURCHASEAMOUNTNET'), payments)
+            disposal = by_asset_disposal.get(asset_id)
+            sale_date = _date(row.get('SALEDATE'))
             out.append(WisoAsset(
                 number=row.get('INVNO'), label=_clean(row.get('LABEL')),
                 purchase_date=_date(row.get('PURCHASEDATE')),
                 purchase_price=price,
-                sale_date=_date(row.get('SALEDATE')),
+                sale_date=sale_date,
+                sale_price=proceeds.get((disposal or {}).get('text'))
+                if disposal else None,
+                residual_value=abs(disposal['amount']) if disposal else None,
                 useful_life_years=row.get('SERVICELIFE'),
                 account=self._to_skr04(row.get('FINACIALACCOUNT'), missing),
                 depreciation_account=self._to_skr04(
@@ -477,6 +494,41 @@ class WisoDatabase:
                     by_asset_depreciation.get(asset_id, []), payments,
                     _date(row.get('SALEDATE')))))
         return sorted(out, key=lambda a: (a.purchase_date or '', a.number or 0))
+
+    #: Ein Abgangstext muss aussagekräftig sein, um als Schlüssel zu taugen.
+    #: „Abschaffung“ allein (so bei Altbeständen) ist es nicht.
+    MIN_DISPOSAL_TEXT = 12
+
+    def _disposal_proceeds(self, disposals):
+        """Verkaufserlöse (netto) zu den Abgängen suchen.
+
+        WISO verknüpft den Erlös **nicht** mit dem Anlagegut: die Buchungen
+        „Umbuchung / Abschaffung Anlagegut …“ tragen keine ``INVENTORYID``.
+        Gemeinsam ist ihnen nur der Text, den WISO für den Abgang erzeugt –
+        er steht wortgleich in ``MOV_INVENTORY_BOOKINGS.DESCRIPTION``.
+
+        Der Erlös wird deshalb nur übernommen, wenn er eindeutig ist: der Text
+        muss aussagekräftig sein, die Buchung auf den Abgangstag fallen und
+        alle Treffer denselben Betrag nennen. Sonst bleibt das Feld leer –
+        ein falscher Verkaufserlös wäre schlimmer als gar keiner.
+        """
+        gesucht = {d['text']: d for d in disposals
+                   if d.get('text') and len(d['text']) >= self.MIN_DISPOSAL_TEXT}
+        if not gesucht:
+            return {}
+        treffer: Dict[str, List[float]] = {}
+        for row in self.catalog.rows(T_BOOKINGS):
+            text = _clean(row.get('ACCOUNTING_TEXT'))
+            disposal = gesucht.get(text)
+            if disposal is None or row.get('AMOUNTGROSS') is None:
+                continue
+            if _date(row.get('ACCOUNTING_DATE')) != disposal['date']:
+                continue
+            netto = row.get('AMOUNTNET')
+            treffer.setdefault(text, []).append(
+                float(netto if netto is not None else row['AMOUNTGROSS']))
+        return {text: round(werte[0], 2) for text, werte in treffer.items()
+                if max(werte) - min(werte) < 0.01}
 
     #: WISO trägt ``PURCHASEAMOUNTNET`` nur ein, wenn der Wert von Hand kam;
     #: wird das Anlagegut aus Zahlungen aufgebaut, steht dort dieser Platzhalter.

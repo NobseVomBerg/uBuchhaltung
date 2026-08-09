@@ -295,7 +295,8 @@ def _asset_builder():
         Column('INVENTORYID', LONG, 4),
         Column('BOOKINGDATE', TIMESTAMP, 8),
         Column('AMOUNTNET', INT64, 8, scale=-2),
-        Column('DESCRIPTION', TEXT, 40),
+        Column('REMOVEACCOUNT', SHORT, 2),
+        Column('DESCRIPTION', TEXT, 60),
     ])
     depreciations = builder.table('MOV_INVENTORY_AMORTIZATIONS', [
         Column('ID', LONG, 4),
@@ -352,6 +353,85 @@ def test_restbuchwert_beruecksichtigt_nachtraegliche_anschaffungskosten(tmp_path
     assert asset.depreciations[0].book_value == pytest.approx(486.55 - 11.06)
     # 2023: beide Zahlungen zählen
     assert asset.depreciations[1].book_value == pytest.approx(1999.16 - 187.98)
+
+
+def test_verkaufserloes_kommt_ueber_den_abgangstext(tmp_path):
+    """WISO verknüpft den Erlös **nicht** mit dem Anlagegut – gemeinsam ist
+    beiden nur der Abgangstext. Der Restwert steht in der REMOVEACCOUNT-Zeile."""
+    builder, assets, payments, _afa = _asset_builder()
+    text = 'Umbuchung / Abschaffung Anlagegut Dienstwagen'
+    assets.add(ID=7, INVNO=3, LABEL='Dienstwagen',
+               PURCHASEDATE='2020-02-27 00:00:00', PURCHASEAMOUNTNET=0.01,
+               SALEDATE='2024-04-30 00:00:00', SERVICELIFE=6,
+               FINACIALACCOUNT=320, FINACIALACCOUNT_AFA=4832)
+    payments.add(ID=1, INVENTORYID=7, BOOKINGDATE='2020-02-27 00:00:00',
+                 AMOUNTNET=21787.39, DESCRIPTION='Kauf')
+    payments.add(ID=2, INVENTORYID=7, BOOKINGDATE='2024-04-30 00:00:00',
+                 AMOUNTNET=-6707.64, REMOVEACCOUNT=1, DESCRIPTION=text)
+    bookings = next(t for t in builder.tables
+                    if t.name == 'MOV_FINACC_ACCRECORDS')
+    for index, (konto, gegen) in enumerate(((8400, 1360), (1360, 8400)), start=80):
+        bookings.add(ID=index, ACCOUNTINGID=index,
+                     ACCOUNTING_DATE='2024-04-30 00:00:00',
+                     AMOUNTNET=13453.78, AMOUNTGROSS=16010.0, TAXRATE=19.0,
+                     ACCOUNTNO=konto, CONTRA_ACCOUNTNO=gegen,
+                     ACCOUNTING_TEXT=text)
+    path = builder.write(str(tmp_path / 'a.fdb'))
+
+    asset = read_wiso_database(path).assets[0]
+    assert asset.purchase_price == pytest.approx(21787.39)
+    assert asset.residual_value == pytest.approx(6707.64)
+    assert asset.sale_price == pytest.approx(13453.78)    # netto, wie der AK
+    # Die Abgangszeile zählt nicht zur Anschaffung.
+    assert len(asset.payments) == 2
+
+
+def test_erloes_bleibt_leer_wenn_der_abgangstext_nichtssagend_ist(tmp_path):
+    """Altbestände tragen nur „Abschaffung“. Daraus lässt sich nichts
+    eindeutig zuordnen – dann bleibt das Feld leer statt falsch."""
+    builder, assets, payments, _afa = _asset_builder()
+    assets.add(ID=8, INVNO=4, LABEL='Altwagen',
+               PURCHASEDATE='2018-06-12 00:00:00', PURCHASEAMOUNTNET=0.01,
+               SALEDATE='2019-07-05 00:00:00', SERVICELIFE=5,
+               FINACIALACCOUNT=320, FINACIALACCOUNT_AFA=4832)
+    payments.add(ID=1, INVENTORYID=8, BOOKINGDATE='2018-06-12 00:00:00',
+                 AMOUNTNET=30756.30, DESCRIPTION='Kauf')
+    payments.add(ID=2, INVENTORYID=8, BOOKINGDATE='2019-07-05 00:00:00',
+                 AMOUNTNET=-17428.57, REMOVEACCOUNT=1, DESCRIPTION='Abschaffung')
+    bookings = next(t for t in builder.tables
+                    if t.name == 'MOV_FINACC_ACCRECORDS')
+    bookings.add(ID=80, ACCOUNTINGID=80, ACCOUNTING_DATE='2019-07-05 00:00:00',
+                 AMOUNTNET=9000.0, AMOUNTGROSS=10710.0, ACCOUNTNO=8400,
+                 CONTRA_ACCOUNTNO=1360, ACCOUNTING_TEXT='Abschaffung')
+    path = builder.write(str(tmp_path / 'a.fdb'))
+
+    asset = read_wiso_database(path).assets[0]
+    assert asset.residual_value == pytest.approx(17428.57)
+    assert asset.sale_price is None
+
+
+def test_widerspruechliche_erloesbuchungen_werden_verworfen(tmp_path):
+    """Nennen die Treffer verschiedene Beträge, ist die Zuordnung unsicher."""
+    builder, assets, payments, _afa = _asset_builder()
+    text = 'Umbuchung / Abschaffung Anlagegut Zweifel'
+    assets.add(ID=9, INVNO=5, LABEL='Zweifel',
+               PURCHASEDATE='2020-01-01 00:00:00', PURCHASEAMOUNTNET=0.01,
+               SALEDATE='2024-04-30 00:00:00', SERVICELIFE=6,
+               FINACIALACCOUNT=320, FINACIALACCOUNT_AFA=4832)
+    payments.add(ID=1, INVENTORYID=9, BOOKINGDATE='2020-01-01 00:00:00',
+                 AMOUNTNET=1000.0, DESCRIPTION='Kauf')
+    payments.add(ID=2, INVENTORYID=9, BOOKINGDATE='2024-04-30 00:00:00',
+                 AMOUNTNET=-500.0, REMOVEACCOUNT=1, DESCRIPTION=text)
+    bookings = next(t for t in builder.tables
+                    if t.name == 'MOV_FINACC_ACCRECORDS')
+    for index, betrag in ((80, 700.0), (81, 900.0)):
+        bookings.add(ID=index, ACCOUNTINGID=index,
+                     ACCOUNTING_DATE='2024-04-30 00:00:00',
+                     AMOUNTNET=betrag, AMOUNTGROSS=betrag, ACCOUNTNO=8400,
+                     CONTRA_ACCOUNTNO=1360, ACCOUNTING_TEXT=text)
+    path = builder.write(str(tmp_path / 'a.fdb'))
+
+    assert read_wiso_database(path).assets[0].sale_price is None
 
 
 def _verkauftes_anlagegut(builder, assets, payments, depreciations):

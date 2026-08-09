@@ -178,24 +178,28 @@ class WisoFdbImportMixin:
             cursor.execute('SELECT ID FROM Assets WHERE InventoryNumber = ?',
                            (number,))
             row = cursor.fetchone()
+            # Anschaffung und Verkauf stehen beide **netto** in den Büchern –
+            # nur so ist der Vergleich mit dem Restbuchwert aussagekräftig.
             values = (asset.label or 'Anlagegut', coa_map.get(asset.account),
                       asset.purchase_date, to_minor(asset.purchase_price or 0),
                       asset.useful_life_years or 1, asset.sale_date,
+                      self._minor_opt(asset.sale_price),
                       'sold' if asset.sale_date else 'active')
             if row:
                 asset_id = row[0]
                 cursor.execute('''
                     UPDATE Assets SET Name=?, COA_ID=?, PurchaseDate=?,
-                        PurchasePrice=?, UsefulLifeYears=?, SaleDate=?, Status=?
+                        PurchasePrice=?, UsefulLifeYears=?, SaleDate=?,
+                        SalePrice=?, Status=?
                     WHERE ID=?
                 ''', values + (asset_id,))
             else:
                 cursor.execute('''
                     INSERT INTO Assets
                         (Name, COA_ID, PurchaseDate, PurchasePrice,
-                         UsefulLifeYears, SaleDate, Status, InventoryNumber,
-                         DepreciationMethod)
-                    VALUES (?,?,?,?,?,?,?,?,'linear')
+                         UsefulLifeYears, SaleDate, SalePrice, Status,
+                         InventoryNumber, DepreciationMethod)
+                    VALUES (?,?,?,?,?,?,?,?,?,'linear')
                 ''', values + (number,))
                 asset_id = cursor.lastrowid
             result['assets'] += 1
