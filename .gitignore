@@ -6,7 +6,7 @@ seed_data/private/
 .claude/settings.local.json
 
 # Persönliche Notizen (bewusst nicht im Repo)
-todo.txt
+todo.md
 
 # TLS-Zertifikate (self-signed, lokal erzeugt) – nie einchecken
 cert.pem
