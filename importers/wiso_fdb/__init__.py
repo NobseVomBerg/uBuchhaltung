@@ -59,6 +59,20 @@ FIRST_PERSONAL_ACCOUNT = 10000
 #: Die eigenen Bankkonten kommen aus der Anwendung dazu.
 DEFAULT_LIQUID_ACCOUNTS = frozenset(range(1000, 1100)) | {1460}
 
+#: SKR03 → (SKR04, Bezeichnung) für Konten, die ``BAS_FINACC_PLAN`` nicht führt.
+#:
+#: WISOs Umschlüsselungstabelle deckt nicht jedes Konto ab – vor allem
+#: Bilanzkonten fehlen dort. Diese Entsprechungen sind **fachlich geprüft**
+#: nachgetragen, nicht abgeleitet. Wer hier ergänzt, prüft die Entsprechung
+#: vorher: eine falsche SKR-Nummer verschiebt Beträge lautlos in die falsche
+#: Zeile der Auswertung.
+KNOWN_EQUIVALENTS = {
+    640: (3160, 'Verbindlichkeiten gegenüber Kreditinstituten '
+                '(Restlaufzeit 1 bis 5 Jahre)'),
+    986: (1940, 'Damnum/Disagio (aktiver Rechnungsabgrenzungsposten)'),
+    2150: (6880, 'Aufwendungen aus der Währungsumrechnung'),
+}
+
 #: WISO bricht Verwendungszwecke hart um; für die Anzeige wird daraus eine Zeile.
 _WHITESPACE = re.compile(r'\s+')
 
@@ -282,8 +296,24 @@ class WisoDatabase:
                     skr03=number, skr04=row.get('SKR04'),
                     text=_clean(row.get('ACCOUNTTEXT')), year=year or None)
         self._resolve_subaccounts(chart)
+        self._apply_known_equivalents(chart)
         self._chart = chart
         return chart
+
+    @staticmethod
+    def _apply_known_equivalents(chart):
+        """Nachgetragene Entsprechungen einsetzen – siehe KNOWN_EQUIVALENTS.
+
+        Nur dort, wo WISO selbst keine SKR04-Nummer nennt; ein gepflegter
+        Eintrag im Mandantenrahmen behält immer Vorrang.
+        """
+        for skr03, (skr04, text) in KNOWN_EQUIVALENTS.items():
+            known = chart.get(skr03)
+            if known is not None and known.skr04:
+                continue
+            chart[skr03] = WisoAccount(
+                skr03=skr03, skr04=skr04,
+                text=(known.text if known and known.text else text))
 
     def _resolve_subaccounts(self, chart):
         """Selbst angelegte Unterkonten über ihr Basiskonto anschließen.

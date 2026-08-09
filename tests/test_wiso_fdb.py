@@ -476,22 +476,50 @@ def test_unterkonto_kette_wird_verfolgt(tmp_path):
 
 
 def test_unbekanntes_konto_wird_mit_bezeichnung_gemeldet(tmp_path):
-    """Ohne Basiskonto bleibt es unaufgelöst – aber mit Klartext, damit der
-    Nutzer entscheiden kann. Geraten wird nichts."""
+    """Ohne Basiskonto und ohne geprüfte Entsprechung bleibt es unaufgelöst –
+    aber mit Klartext, damit der Nutzer entscheiden kann. Geraten wird nichts."""
     builder, bookings = _wiso_builder()
     builder.table('FINT_ACCOUNTS', [
         Column('ID', LONG, 4), Column('ACCOUNTNO', LONG, 4),
         Column('BASEACCOUNTNO', LONG, 4), Column('ACCOUNTLABEL', TEXT, 40),
-    ]).add(ID=1, ACCOUNTNO=640, BASEACCOUNTNO=None,
-           ACCOUNTLABEL='Verbindlichkeiten Kreditinstitut(1-5J)')
+    ]).add(ID=1, ACCOUNTNO=9111, BASEACCOUNTNO=None,
+           ACCOUNTLABEL='Irgendein Sonderkonto')
     bookings.add(ID=1, ACCOUNTINGID=1, ACCOUNTING_DATE='2024-05-02 00:00:00',
-                 AMOUNTGROSS=10.0, ACCOUNTNO=640, CONTRA_ACCOUNTNO=1210)
+                 AMOUNTGROSS=10.0, ACCOUNTNO=9111, CONTRA_ACCOUNTNO=1210)
     path = builder.write(str(tmp_path / 'w.fdb'))
 
     data = read_wiso_database(path, liquid_accounts={1810})
     assert data.bookings[0].account is None
-    assert data.unmapped_accounts == {640: 1}
-    assert data.unmapped_labels[640] == 'Verbindlichkeiten Kreditinstitut(1-5J)'
+    assert data.unmapped_accounts == {9111: 1}
+    assert data.unmapped_labels[9111] == 'Irgendein Sonderkonto'
+
+
+def test_geprueft_nachgetragene_entsprechungen_greifen(tmp_path):
+    """Bilanzkonten fehlen in WISOs Umschlüsselung; für sie steht die
+    Entsprechung in KNOWN_EQUIVALENTS."""
+    builder, bookings = _wiso_builder()
+    for index, konto in enumerate((640, 986, 2150), start=1):
+        bookings.add(ID=index, ACCOUNTINGID=index,
+                     ACCOUNTING_DATE='2024-05-02 00:00:00',
+                     AMOUNTGROSS=10.0, ACCOUNTNO=konto, CONTRA_ACCOUNTNO=1210)
+    path = builder.write(str(tmp_path / 'w.fdb'))
+
+    data = read_wiso_database(path, liquid_accounts={1810})
+    assert [b.account for b in data.bookings] == [3160, 1940, 6880]
+    assert data.unmapped_accounts == {}
+
+
+def test_mandantenrahmen_schlaegt_die_nachgetragene_entsprechung(tmp_path):
+    """Pflegt WISO das Konto selbst, gilt WISO – nicht die Nachtragsliste."""
+    builder, bookings = _wiso_builder()
+    chart = next(t for t in builder.tables if t.name == 'BAS_FINACC_PLAN')
+    chart.add(ID=640, SKR04=3170, BOOKINGYEAR=2024,
+              ACCOUNTTEXT='Vom Mandanten gepflegt')
+    bookings.add(ID=1, ACCOUNTINGID=1, ACCOUNTING_DATE='2024-05-02 00:00:00',
+                 AMOUNTGROSS=10.0, ACCOUNTNO=640, CONTRA_ACCOUNTNO=1210)
+    path = builder.write(str(tmp_path / 'w.fdb'))
+
+    assert read_wiso_database(path).bookings[0].account == 3170
 
 
 def test_tabellenliste_ohne_systemtabellen(tmp_path):

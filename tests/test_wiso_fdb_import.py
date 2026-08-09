@@ -218,10 +218,12 @@ def test_ohne_belegnummer_klammert_die_quellgruppe(db_with_coa, tmp_path):
 def test_fehlende_skr04_konten_werden_angelegt(db_with_coa, tmp_path):
     """Nutzt WISO ein Konto, das der eigene Rahmen nicht kennt, wird es
     angelegt – Nummer und Bezeichnung kommen aus WISO, nichts wird geraten."""
+    # Eigenkonto des Anwenders – so eines fuehrt der Standardrahmen nie, der
+    # Test bleibt dadurch von Ergaenzungen an den Seed-Daten unberuehrt.
     builder = FdbBuilder(page_size=16384)
     chart = _chart(builder)
-    chart.add(ID=4855, SKR04=6260, BOOKINGYEAR=2024,
-              ACCOUNTTEXT='Sofortabschreibung geringwertiger Wirtschaftsgüter')
+    chart.add(ID=4855, SKR04=6899, BOOKINGYEAR=2024,
+              ACCOUNTTEXT='Werkzeugkosten Werkstatt Nord')
     bookings = _bookings_table(builder)
     bookings.add(ID=1, ACCOUNTINGID=1, ACCOUNTING_DATE='2024-05-02 00:00:00',
                  AMOUNTGROSS=-410.0, ACCOUNTNO=4855, CONTRA_ACCOUNTNO=1210,
@@ -232,20 +234,20 @@ def test_fehlende_skr04_konten_werden_angelegt(db_with_coa, tmp_path):
     vorher = {r[0] for r in conn.execute(
         'SELECT AccountNumber FROM ChartOfAccounts')}
     conn.close()
-    assert 6260 not in vorher
+    assert 6899 not in vorher
 
     result = db_with_coa.import_wiso_fdb(path)
-    assert result['created_coa'][6260].startswith('Sofortabschreibung')
+    assert result['created_coa'][6899] == 'Werkzeugkosten Werkstatt Nord'
 
     conn = db_with_coa._get_connection()
     row = conn.execute('SELECT Name, Framework FROM ChartOfAccounts'
-                       ' WHERE AccountNumber = 6260').fetchone()
+                       ' WHERE AccountNumber = 6899').fetchone()
     booking = conn.execute('''SELECT c.AccountNumber FROM Bookings b
         JOIN ChartOfAccounts c ON c.ID = b.COA_ID
         WHERE b.Text = 'Werkzeug' ''').fetchone()
     conn.close()
-    assert row[0].startswith('Sofortabschreibung') and row[1] == 4
-    assert booking[0] == 6260          # die Buchung ist kontiert, nicht offen
+    assert row[0] == 'Werkzeugkosten Werkstatt Nord' and row[1] == 4
+    assert booking[0] == 6899          # die Buchung ist kontiert, nicht offen
 
 
 def test_anlagen_landen_im_verzeichnis(db_with_coa, tmp_path):
