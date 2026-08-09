@@ -246,6 +246,61 @@ def handle_confirm_import(db: Database, post_data):
         traceback.print_exc()
         return 500, json.dumps({'ok': False, 'error': f'Fehler beim Import: {str(e)}'})
 
+def handle_transaction_suggest(db: Database, qs: dict):
+    """Kontierungs-Vorschlag für eine offene Buchung (todo #1).
+
+    Liefert SKR-Konto und Steuersatz der zuletzt gleich kontierten Buchung
+    desselben Empfängers sowie die nächste freie Beleg-Nr. – als JSON, damit
+    die Maske die Felder füllt, ohne zu speichern. Verbraucht wird die Nummer
+    erst beim Speichern (siehe consume_number).
+
+    War die Vorlage ein Split, kommen alle Teilbuchungen mit; die Maske fragt
+    dann nach, ob sie übernommen werden sollen.
+    """
+    try:
+        booking_id = int(qs.get('id', ['0'])[0] or 0)
+    except (TypeError, ValueError):
+        booking_id = 0
+    recipient = (qs.get('recipient', [''])[0] or '').strip()
+    booking = db.get_booking_by_id(booking_id) if booking_id else None
+    if not recipient and booking:
+        recipient = booking[6] or ''
+
+    year = int((booking[1] or '')[:4]) if booking and booking[1] else \
+        datetime.datetime.now().year
+    docnr, range_id = db.peek_next_number('receipt_company', year)
+
+    hit = db.find_history_suggestion(recipient, exclude_booking_id=booking_id)
+    if not hit and not docnr:
+        return 200, json.dumps({
+            'ok': False,
+            'message': 'Keine passende Buchung in der Historie und kein '
+                       'Nummernkreis "Belegnummern Firma" hinterlegt.'})
+
+    payload = {'ok': True, 'document_nr': docnr, 'range_id': range_id,
+               'recipient': recipient}
+    if hit:
+        payload.update({
+            'source_id': hit['source_id'], 'source_date': hit['date'],
+            'source_recipient': hit['recipient'], 'is_split': hit['is_split'],
+            'rows': [{
+                'coa_id': r['coa_id'],
+                'counter_coa_id': r['counter_coa_id'] or '',
+                'nobank': r['nobank'],
+                'amount': f"{r['amount']:.2f}",
+                'tax_rate': (f"{round(float(r['tax_rate']) * 100, 2):g}"
+                             if r['tax_rate'] else ''),
+                'tax_amount': (f"{r['tax_amount']:.2f}"
+                               if r['tax_amount'] is not None else ''),
+                'text': r['text'],
+            } for r in hit['rows']],
+        })
+    else:
+        payload['message'] = 'Keine ähnliche Buchung gefunden – nur Beleg-Nr.'
+        payload['rows'] = []
+    return 200, json.dumps(payload)
+
+
 def _bank_counter_coa(db, account_id):
     """SKR-Konto (COA-ID) eines Bankkontos = liquide Gegenseite der Buchungssätze."""
     if not account_id:
@@ -275,6 +330,7 @@ def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
     tax_amounts = post_data.get('split_tax_amount', [])
     docnrs = post_data.get('split_docnr', [])
     texts = post_data.get('split_text', [])
+    counters = post_data.get('split_counter_coa', [])
 
     def _at(seq, i, default=''):
         return seq[i] if i < len(seq) else default
@@ -296,6 +352,12 @@ def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
         row_tax = _at(tax_amounts, i).strip()
         purpose_coa = int(raw_coa) if raw_coa else None
         new_coa, new_counter = purpose_coa, account_coa_id
+        # Mitgeliefertes Gegenkonto (Umbuchung): eine per Vorschlag kopierte
+        # Zeile bringt es mit, sonst würde aus dem Privatanteil beim Speichern
+        # eine Bankbewegung und die Split-Summe stimmte nicht mehr.
+        raw_counter = _at(counters, i).strip()
+        if raw_counter and int(raw_counter) not in bank_coa_ids:
+            new_counter = int(raw_counter)
         old_row = db.get_booking_by_id(int(row_id)) if row_id else None
         if old_row:
             old_coa, old_counter = old_row[8], old_row[9]
@@ -543,6 +605,17 @@ def handle_add_transaction(db: Database, post_data):
                     auto_mirror=True,
                     log_description="Manual bank booking – auto entry child"
                 )
+
+        # Vorgeschlagene Beleg-Nr. jetzt verbrauchen (todo #1): der Vorschlag
+        # selbst zählt den Kreis nicht weiter, sonst verbrennte jeder Klick
+        # eine Nummer. consume_number prüft, ob die Nummer noch die nächste
+        # ist – hat der Nutzer sie überschrieben, passiert nichts.
+        suggest_range_id = post_data.get('suggest_range_id', [''])[0].strip()
+        if suggest_range_id and document_nr:
+            try:
+                db.consume_number(int(suggest_range_id), document_nr)
+            except Exception as e:
+                print(f"Error consuming number range {suggest_range_id}: {e}")
 
         # Zahlungs-Zuordnung zur Rechnung (todo #2): idempotent und gekappt;
         # ein Fehler hier darf die bereits gespeicherte Buchung nicht zum 500 machen.

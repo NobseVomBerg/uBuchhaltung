@@ -552,6 +552,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 date_from, date_to, _ = resolve_period(query_components, self.headers.get('Cookie'))
                 self.respond(200, PageTransactions(db, edit_transaction_id=transaction_id,
                                                    date_from=date_from, date_to=date_to))
+            elif self.path.startswith("/transactions/suggest"):
+                qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
+                status_code, body = handlers.handle_transaction_suggest(db, qs)
+                self.respond(status_code, body, content_type="application/json")
             elif self.path.startswith("/transactions/delete"):
                 query_components = parse_qs(self.path.split('?')[1])
                 transaction_id = int(query_components["id"][0])

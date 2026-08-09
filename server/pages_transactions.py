@@ -326,11 +326,22 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     {invoice_row}
     '''
 
+    # Vorschlag (todo #1): kontiert aus der Historie desselben Empf\u00e4ngers und
+    # schl\u00e4gt die n\u00e4chste Beleg-Nr. vor \u2013 gespeichert wird dabei nichts.
+    suggest_button = (
+        '<button type="button" onclick="applySuggestion()"'
+        ' class="coloredButton btn-sm bg-blue"'
+        ' title="SKR-Konto und Steuersatz der letzten Buchung dieses Empf\u00e4ngers'
+        ' \u00fcbernehmen, n\u00e4chste Beleg-Nr. eintragen (speichert nicht)">'
+        '\U0001FA84 Vorschlag</button>'
+        '<input type="hidden" name="suggest_range_id" id="suggestRangeId" value="">')
     if edit_trans:
         form_buttons = ('<input type="submit" value="Aktualisieren" class="coloredButton btn-sm bg-green">'
+                        f'{suggest_button}'
                         '<button type="button" onclick="window.location.href=\'/transactions\'" class="coloredButton btn-sm bg-gray">Abbrechen</button>')
     else:
-        form_buttons = '<input type="submit" value="Transaktion hinzuf\u00fcgen" class="coloredButton btn-sm bg-green">'
+        form_buttons = ('<input type="submit" value="Transaktion hinzuf\u00fcgen" class="coloredButton btn-sm bg-green">'
+                        f'{suggest_button}')
 
     # Buttons bei Bankbewegungen erst UNTER den Buchungssatz-Editor
     button_row = '' if is_bank_form else f'<tr><td></td><td>{form_buttons}</td></tr>'
@@ -370,12 +381,18 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             nobank = bool(row and not template and row.get('nobank'))
             nobank_attr = ' data-nobank="1"' if nobank else ''
             hint = ''
+            counter = row.get('counter_coa_id') if nobank else None
             if nobank:
-                target = coa_map.get(row.get('counter_coa_id'), '')
+                target = coa_map.get(counter, '')
                 hint = ('<div class="splitHint" title="Umbuchung ohne Geldfluss'
                         ' – zählt nicht in die Summe der Bankbewegung">'
                         'Umbuchung' + (f' &rarr; {target}' if target else '')
                         + '</div>')
+            # Gegenkonto als Feld: nur Umbuchungen haben eines, das nicht das
+            # Bankkonto ist. Ohne dieses Feld könnte eine per Vorschlag
+            # kopierte Umbuchung ihr Ziel nicht mitbringen.
+            hint = (f'<input type="hidden" name="split_counter_coa"'
+                    f' value="{counter or ""}">') + hint
             # Spaltenfolge: Verwendungszweck zuerst – er benennt die Zeile.
             # Die Feldnamen bleiben; gelesen wird zeilenweise über den Index,
             # die Reihenfolge INNERHALB einer Zeile spielt dafür keine Rolle.
@@ -451,10 +468,13 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 <span id="splitSummary"></span>
             </div>
             <script>
-                const SPLIT_BANK_AMOUNT = {bank_amount};
-                const SPLIT_BANK_DOCNR = "{bank_docnr}";
-                const SPLIT_BANK_TEXT = "{bank_text}";
-                const SPLIT_SUFFIX = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+                // var statt const: openEditForm spielt dieses Skript bei jeder
+                // geöffneten Maske erneut ein. Ein zweites const im selben
+                // globalen Scope wirft und riss den ganzen Block mit sich.
+                var SPLIT_BANK_AMOUNT = {bank_amount};
+                var SPLIT_BANK_DOCNR = "{bank_docnr}";
+                var SPLIT_BANK_TEXT = "{bank_text}";
+                var SPLIT_SUFFIX = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
                 function splitRows() {{
                     return [...document.querySelectorAll('#splitTable tr.splitRow')];
@@ -540,7 +560,87 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             <div class="rowWithObjects" style="margin-top:12px;">{form_buttons}</div>
     '''
     s+= '''
+            <div id="suggestNote" class="muted" style="margin-top:6px;"></div>
             </form>
+    '''
+    # ── Vorschlagsfunktion (todo #1) ─────────────────────────────────────────
+    # Füllt die Maske aus der Historie, speichert aber nichts – der Nutzer
+    # bleibt im Formular und kann alles überschreiben.
+    s+= f'''
+            <script>
+                var SUGGEST_IS_BANK = {str(bool(is_bank_form)).lower()};
+                var SUGGEST_TX_ID = {transaction_id or 0};
+
+                function suggestNote(msg, cls) {{
+                    const el = document.getElementById('suggestNote');
+                    el.textContent = msg || '';
+                    el.className = cls || 'muted';
+                }}
+
+                function applySuggestion() {{
+                    const form = document.querySelector('form[action="/transactions/add"]');
+                    const recipient = (form.elements['recipient'] || {{}}).value || '';
+                    suggestNote('Suche in der Historie …');
+                    fetch('/transactions/suggest?id=' + SUGGEST_TX_ID
+                          + '&recipient=' + encodeURIComponent(recipient))
+                        .then(r => r.json())
+                        .then(d => {{
+                            if (!d.ok) {{ suggestNote(d.message || 'Kein Vorschlag möglich.', 'warnColor'); return; }}
+                            if (d.document_nr) {{
+                                form.elements['document_nr'].value = d.document_nr;
+                                document.getElementById('suggestRangeId').value = d.range_id || '';
+                            }}
+                            const rows = d.rows || [];
+                            if (!rows.length) {{ suggestNote(d.message || 'Nur Beleg-Nr. vorgeschlagen.', 'warnColor'); return; }}
+                            if (rows.length > 1 && !confirm(
+                                    'Die letzte Buchung von "' + d.source_recipient + '" war ein Split mit '
+                                    + rows.length + ' Teilbuchungen.\\n\\nAufteilung übernehmen? '
+                                    + 'Beträge müssen anschließend angepasst werden.')) {{
+                                suggestNote('Split nicht übernommen – nur Beleg-Nr. eingetragen.');
+                                return;
+                            }}
+                            if (SUGGEST_IS_BANK) suggestFillSplit(rows);
+                            else suggestFillForm(rows[0]);
+                            suggestNote('Übernommen aus der Buchung vom ' + d.source_date
+                                        + ' (' + d.source_recipient + ') – nichts gespeichert.',
+                                        'successColor');
+                        }})
+                        .catch(() => suggestNote('Vorschlag konnte nicht geladen werden.', 'errorColor'));
+                }}
+
+                function suggestFillForm(row) {{
+                    const form = document.querySelector('form[action="/transactions/add"]');
+                    if (row.coa_id && form.elements['coa_id']) form.elements['coa_id'].value = row.coa_id;
+                    const rateEl = document.getElementById('tax_rate');
+                    if (rateEl) {{ rateEl.value = row.tax_rate || ''; calculateTax(); }}
+                }}
+
+                function suggestFillSplit(rows) {{
+                    // Bestehende Zeilen weichen der Vorlage – ein Vorschlag
+                    // ersetzt die Kontierung, er ergänzt sie nicht.
+                    document.querySelectorAll('#splitTable tr.splitRow').forEach(r => r.remove());
+                    const tpl = document.querySelector('#splitTable tr.splitTemplate');
+                    rows.forEach((row, i) => {{
+                        const tr = tpl.cloneNode(true);
+                        tr.className = 'splitRow';
+                        tr.style.display = '';
+                        tr.querySelector('.splitAmount').value = row.amount || '';
+                        if (row.coa_id) tr.querySelector('[name=split_coa]').value = row.coa_id;
+                        // Umbuchung: Gegenkonto und Markierung mitnehmen, sonst
+                        // würde aus dem Privatanteil eine Bankbewegung.
+                        tr.querySelector('[name=split_counter_coa]').value = row.counter_coa_id || '';
+                        if (row.nobank) tr.dataset.nobank = '1';
+                        tr.querySelector('[name=split_tax_rate]').value = row.tax_rate || '';
+                        tr.querySelector('[name=split_tax_amount]').value = row.tax_amount || '';
+                        tr.querySelector('[name=split_text]').value = row.text || '';
+                        const base = document.querySelector('form [name=document_nr]').value || '';
+                        tr.querySelector('[name=split_docnr]').value =
+                            base ? (rows.length > 1 ? base + '_' + SPLIT_SUFFIX[i % 26] : base) : '';
+                        tpl.parentNode.insertBefore(tr, tpl);
+                    }});
+                    splitRecalc();
+                }}
+            </script>
     '''
     if not is_bank_form:
         s+= '''
@@ -673,6 +773,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 });
         }
 
+        // Befund-Schlüssel der Plausibilitätsprüfung (importers/plausibility.py)
+        var WARN_LABELS = {
+            amount: 'Betrag?', date: 'Datum?', daterange: 'Datum weit weg?',
+            empty: 'leer', boiler: 'Kopf-/Fußzeile?', huge: 'Betrag zu groß?'
+        };
+
         function statusBadge(status) {
             if (status === 'error') return '<span class="badge bg-red">Konto nicht gefunden</span>';
             if (status === 'warn')  return '<span class="badge bg-orange">Hinweise</span>';
@@ -726,13 +832,14 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             h += '<div class="muted">' + f.total + ' erkannt · ' + f.new_count + ' neu · ' +
                  f.dup_count + ' mögliche Duplikate</div>';
 
+            // Befunde der Plausibilitätsprüfung (importers/plausibility.py)
             if (f.problems && f.problems.length) {
                 h += '<div class="muted"><em>Auffällige Buchungen:</em></div>';
                 h += '<table>';
                 f.problems.forEach(p => {
                     let tags = [];
                     if (p.dup) tags.push('Duplikat');
-                    (p.warn || []).forEach(w => tags.push(w === 'amount' ? 'Betrag?' : (w === 'date' ? 'Datum?' : 'leer')));
+                    (p.warn || []).forEach(w => tags.push(WARN_LABELS[w] || w));
                     h += '<tr class="row-open"><td>' + esc(clip(p.date,10)) + '</td><td>' + esc(clip(p.recipient,30)) +
                          '</td><td>' + esc(clip(p.reference,40)) + '</td><td>' + fmtAmount(p.amount) +
                          '</td><td>' + tags.join(', ') + '</td></tr>';
@@ -948,7 +1055,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                  f"data-amount='{amount}' "
                  f"data-recipient='{search_recip}' "
                  f"data-text='{search_text}' "
-                 f"onclick='toggleGroup({gid})' "
+                 f"onclick='toggleGroup(\"{gid}\")' "
                  f"title='Split-Buchung aufklappen/zuklappen'>")
             s+= f"<td>{date_booking}</td>"
             s+= f"<td title='{first_recip}'>{first_recip}</td>"

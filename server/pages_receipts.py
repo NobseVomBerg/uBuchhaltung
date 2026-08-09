@@ -20,28 +20,11 @@ def PageReceipts(db: Database, date_from=None, date_to=None):
     if date_from and date_to:
         rows = [r for r in rows if r[2] and date_from <= r[2] <= date_to]
     
-    # Get next receipt number from number ranges (company receipts)
-    receipt_ranges = db.fetch_number_ranges('receipt_company')
-    next_receipt_number = ''
-    if receipt_ranges:
-        # Find the range for current year, or use the first available
-        current_range = None
-        for r in receipt_ranges:
-            if r[2] == current_year:
-                current_range = r
-                break
-        if not current_range and receipt_ranges:
-            current_range = receipt_ranges[0]
-        
-        if current_range:
-            year = current_range[2]
-            letter = current_range[3]
-            prefix = current_range[4] or ''
-            current_num = current_range[5] or 0
-            next_num = current_num + 1
-            year_short = str(year)[-2:]
-            next_receipt_number = f"{year_short}{letter}{prefix}{next_num:03d}"
-    
+    # Nächste Belegnummer vorschlagen, ohne den Zähler zu verbrauchen.
+    # peek_next_number berücksichtigt das eingestellte NumberFormat – die
+    # frühere Handrechnung hier hängte den Prefix immer vor die Nummer.
+    next_receipt_number = db.peek_next_number('receipt_company', current_year)[0] or ''
+
     s = Header1('receipts')
     # Suche nach Header2; Zeitraum (Von/Bis + Jahr + Monat) zentral in Header3.
     s += Header2(

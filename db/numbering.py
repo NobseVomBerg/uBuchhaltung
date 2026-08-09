@@ -151,6 +151,58 @@ class NumberRangeMixin:
         conn.close()
 
         return self._apply_number_format(number_format, year, letter, next_num, prefix)
+    def peek_next_number(self, range_type, year=None):
+        """Nächste Nummer eines Kreises ANSEHEN, ohne den Zähler zu erhöhen.
+
+        Für Vorschläge in Formularen: der Nutzer soll die Nummer sehen, ohne
+        dass jeder Klick eine verbrennt. Verbraucht wird sie erst beim
+        Speichern (consume_number).
+
+        Genommen wird der Kreis des angefragten Jahres, sonst der jüngste.
+        Returns: (formatierte Nummer, range_id) oder (None, None).
+        """
+        ranges = self.fetch_number_ranges(range_type)
+        if not ranges:
+            return None, None
+        chosen = None
+        if year is not None:
+            chosen = next((r for r in ranges if r[2] == year), None)
+        chosen = chosen or ranges[0]
+        # Spalten: 0=ID, 2=Year, 3=Letter, 4=Prefix, 5=CurrentNumber, 7=NumberFormat
+        fmt = chosen[7] if len(chosen) > 7 and chosen[7] else None
+        number = self._apply_number_format(
+            fmt or '{yy}{l}{nnn}{s}', chosen[2], chosen[3] or '',
+            (chosen[5] or 0) + 1, chosen[4] or '')
+        return number, chosen[0]
+
+    def consume_number(self, range_id, number):
+        """Zähler nachziehen, wenn die gespeicherte Nummer der Vorschau entspricht.
+
+        Gegenstück zu peek_next_number: erst das Speichern verbraucht die
+        Nummer. Ein bereits weitergezählter Kreis (anderer Weg hat die Nummer
+        vergeben) bleibt unangetastet.
+
+        Returns: True, wenn der Zähler erhöht wurde.
+        """
+        row = self.get_number_range_by_id(range_id)
+        if not row:
+            return False
+        fmt = row[7] if len(row) > 7 and row[7] else None
+        expected = self._apply_number_format(
+            fmt or '{yy}{l}{nnn}{s}', row[2], row[3] or '',
+            (row[5] or 0) + 1, row[4] or '')
+        if expected != number:
+            return False
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'UPDATE NumberRanges SET CurrentNumber = CurrentNumber + 1 '
+            'WHERE ID = ? AND CurrentNumber = ?', (range_id, row[5] or 0))
+        changed = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return changed
+
     def format_number(self, year, letter, suffix, number, number_format=None):
         """Format a number using the given template (default: '{yy}{l}{nnn}{s}')"""
         fmt = number_format if number_format else '{yy}{l}{nnn}{s}'

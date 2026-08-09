@@ -7,6 +7,7 @@ import os
 import json
 from decimal import Decimal
 from money import to_minor, from_minor
+from db.matching import is_bank_effective
 
 
 class BookingsMixin:
@@ -18,6 +19,66 @@ class BookingsMixin:
         rows = cursor.fetchall()
         conn.close()
         return [self._euro_row(r, 11, 14) for r in rows]  # Amount(11), TaxAmount(14)
+    @staticmethod
+    def _group_entries_by_document(normal):
+        """Buchungssätze desselben Belegs zu einer Split-Zeile zusammenfassen.
+
+        Betrifft Belege ohne Bankbewegung – Kasse, Verrechnungskonto, von Hand
+        erfasste Splits. Die Klammer ist die Beleg-Nr. am selben Tag; dieselbe
+        Regel benutzt auch der Auto-Abgleich (_link_docnr_group).
+
+        Einzelne Buchungen bleiben unverändert 'normal'.
+        """
+        buckets = {}
+        order = []
+        for item in normal:
+            docnr = (item['booking'][16] or '').strip()
+            key = (docnr, item['date']) if docnr else None
+            if key is None:
+                order.append(('single', item))
+                continue
+            if key not in buckets:
+                buckets[key] = []
+                order.append(('group', key))
+            buckets[key].append(item)
+
+        result = []
+        seq = 0
+        for kind, payload in order:
+            if kind == 'single':
+                result.append(payload)
+                continue
+            members = buckets[payload]
+            if len(members) == 1:
+                result.append(members[0])
+                continue
+            docnr, date = payload
+            # Laufende Kennung statt Beleg-Nr.: sie dient nur als DOM-Griff zum
+            # Auf- und Zuklappen und darf keine Sonderzeichen mitschleppen.
+            seq += 1
+            gid = f'g{seq}'
+            first = members[0]['booking']
+            children = [{'type': 'child', 'group_id': gid,
+                         'date': m['date'], 'booking': m['booking']}
+                        for m in members]
+            result.append({
+                'type': 'group',
+                'group_id': gid,
+                'date': date,
+                'amount': sum((m['booking'][11] or 0) for m in members),
+                'currency': first[12] or 'EUR',
+                'description': docnr,
+                'count': len(members),
+                'account_id': next((m['booking'][4] for m in members if m['booking'][4]), None),
+                'contact_id': next((m['booking'][7] for m in members if m['booking'][7]), None),
+                'first_coa_id': first[8],
+                'first_ccoa_id': first[9],
+                'first_recipient': first[6],
+                'first_text': first[15],
+                'children': children,
+            })
+        return result
+
     def fetch_bookings_grouped(self, date_from=None, date_to=None):
         """Fetch bookings for display, with split groups aggregated.
 
@@ -110,6 +171,13 @@ class BookingsMixin:
 
         conn.close()
 
+        # 3b. Belege ohne Bankbewegung zusammenfassen (Kasse, Verrechnungskonto,
+        #     manuelle Splits): mehrere Buchungssätze desselben Belegs am selben
+        #     Tag gehören zusammen. Bei Bankbewegungen leistet das
+        #     ParentBooking_ID – hier gibt es keine, und ohne diese Klammer
+        #     stünden die Teile lose nebeneinander.
+        normal = self._group_entries_by_document(normal)
+
         # Build bank dicts with merged entry data
         banks = []
         for b in bank_rows:
@@ -148,7 +216,7 @@ class BookingsMixin:
         result = []
         for item in top_level:
             result.append(item)
-            if item['type'] == 'bank':
+            if item['type'] in ('bank', 'group'):
                 result.extend(item.get('children', []))
 
         return result
@@ -252,6 +320,115 @@ class BookingsMixin:
         count = cursor.fetchone()[0]
         conn.close()
         return count
+    def find_history_suggestion(self, recipient, exclude_booking_id=None):
+        """Zuletzt kontierte Buchung mit ähnlichem Empfänger (todo #1).
+
+        Grundlage der Vorschlagsfunktion: Wer denselben Zahlungspartner schon
+        einmal kontiert hat, will fast immer dasselbe SKR-Konto und denselben
+        Steuersatz wieder. Gesucht wird zuerst exakt (Leerzeichen ignoriert,
+        Groß-/Kleinschreibung egal), danach über das längste Wort des
+        Empfängers – Kontoauszüge schreiben denselben Partner selten zweimal
+        identisch ("O2 Germany GmbH" vs. "O2 Germany").
+
+        Gefunden wird die Buchung; geliefert werden ihre Buchungssätze: bei
+        einem Split alle Teilbuchungen, sonst die eine. Damit kann der
+        Aufrufer eine wiederkehrende Aufteilung als Ganzes übernehmen.
+
+        Returns dict oder None:
+          {'source_id', 'date', 'recipient', 'is_split',
+           'rows': [{'coa_id', 'counter_coa_id', 'amount'€, 'tax_rate',
+                     'tax_amount'€, 'text', 'document_number'}]}
+        """
+        norm = ' '.join((recipient or '').split()).replace(' ', '').lower()
+        if not norm:
+            return None
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        exclude = exclude_booking_id or -1
+        # Teilbuchungen tragen den Empfänger nicht immer selbst – bei
+        # importierten Splits steht er nur an der Bankbewegung. Deshalb zählt
+        # ersatzweise der Empfänger des Elternteils.
+        base = '''
+            SELECT b.ID, b.DateBooking,
+                   COALESCE(NULLIF(b.RecipientClient, ''), p.RecipientClient),
+                   b.ParentBooking_ID, b.BookingType
+            FROM Bookings b
+            LEFT JOIN Bookings p ON p.ID = b.ParentBooking_ID
+            WHERE b.COA_ID IS NOT NULL
+              AND COALESCE(NULLIF(b.RecipientClient, ''), p.RecipientClient, '') != ''
+              AND b.ID != ? AND COALESCE(b.ParentBooking_ID, -1) != ?
+        '''
+        eff_recipient = ("COALESCE(NULLIF(b.RecipientClient, ''),"
+                         " p.RecipientClient, '')")
+        cursor.execute(base + f'''
+              AND LOWER(REPLACE({eff_recipient}, ' ', '')) = ?
+            ORDER BY b.DateBooking DESC, b.ID DESC LIMIT 1
+        ''', (exclude, exclude, norm))
+        hit = cursor.fetchone()
+
+        if not hit:
+            # Fallback: längstes Wort des Empfängers als Kern (>= 4 Zeichen)
+            words = sorted((recipient or '').split(), key=len, reverse=True)
+            token = next((w for w in words if len(w) >= 4), None)
+            if token:
+                cursor.execute(base + f'''
+                      AND LOWER({eff_recipient}) LIKE ?
+                    ORDER BY b.DateBooking DESC, b.ID DESC LIMIT 1
+                ''', (exclude, exclude, f'%{token.lower()}%'))
+                hit = cursor.fetchone()
+
+        if not hit:
+            conn.close()
+            return None
+
+        hit_id, date, found_recipient, parent_id, booking_type = hit
+        # Buchungssätze der Fundstelle: Split → alle Geschwister, sonst sie selbst
+        group_parent = parent_id or (hit_id if booking_type == 'bank' else None)
+        if group_parent:
+            cursor.execute('''
+                SELECT COA_ID, CounterCOA_ID, Amount, TaxRate, TaxAmount,
+                       Text, DocumentNumber
+                FROM Bookings WHERE ParentBooking_ID = ? ORDER BY ID
+            ''', (group_parent,))
+        else:
+            cursor.execute('''
+                SELECT COA_ID, CounterCOA_ID, Amount, TaxRate, TaxAmount,
+                       Text, DocumentNumber
+                FROM Bookings WHERE ID = ?
+            ''', (hit_id,))
+        raw = cursor.fetchall()
+        bank_coa_ids = self._get_bank_coa_ids(cursor)
+        conn.close()
+
+        rows = []
+        for coa, counter, amount, rate, tax, text, docnr in raw:
+            if coa in bank_coa_ids and counter in bank_coa_ids:
+                continue                      # reiner Doppik-Spiegel
+            # Liquide-zuerst gebuchte Sätze: das Zweckkonto steht hinten
+            purpose = coa
+            if coa in bank_coa_ids and counter not in bank_coa_ids:
+                purpose = counter
+            # Umbuchungen (Privatanteil, Wartekonto) brauchen ihr Gegenkonto
+            # mit: ohne das würde eine Kopie zur Bankbewegung und die Summe
+            # der Teilbuchungen stimmte nicht mehr.
+            nobank = not is_bank_effective(coa, counter, bank_coa_ids)
+            rows.append({
+                'coa_id': purpose,
+                'counter_coa_id': counter if nobank else None,
+                'nobank': nobank,
+                'amount': from_minor(amount or 0),
+                'tax_rate': rate,
+                'tax_amount': from_minor(tax) if tax is not None else None,
+                'text': text or '',
+                'document_number': docnr or '',
+            })
+        if not rows:
+            return None
+        return {'source_id': group_parent or hit_id, 'date': date,
+                'recipient': found_recipient, 'is_split': len(rows) > 1,
+                'rows': rows}
+
     def get_bookings_by_import_key(self, date, amount, account_id):
         """Buchungen zum Import-Duplikatschlüssel (Datum, Betrag, Konto).
 

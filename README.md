@@ -31,6 +31,13 @@ Zentrale Verwaltung aller Buchungstransaktionen:
   - Kontakt-, Kategorie- und Dokumentnummer-Zuordnung
   - Fremde IBAN (`ForeignBankAccount`)
 - **Split-Buchungen**: mehrere Buchungssätze je Bankbewegung (`ParentBooking_ID`), im Buchungssatz-Editor der Bankbewegung gepflegt
+- **Vorschlag** (🪄): kontiert eine offene Buchung aus der Historie desselben
+  Empfängers – SKR-Konto und Steuersatz der letzten passenden Buchung, dazu die
+  nächste Beleg-Nr. aus dem Nummernkreis *Belegnummern Firma*. War die Vorlage
+  ein Split, wird nach Rückfrage die ganze Aufteilung übernommen (inklusive
+  Umbuchungen wie Privatanteilen); die Beträge passt man danach an. Gespeichert
+  wird nichts – der Nutzer bleibt im Formular, und die Beleg-Nr. wird erst beim
+  Speichern verbraucht
 - **Erweiterte Filter**: Datum, Konto, Kunde, Währung, Betragsbereich – alle kombinierbar
 
 ### 3. Konten-Verwaltung (`/masterdata/bankaccounts`)
@@ -184,7 +191,13 @@ uBuchhaltung/
 │   ├── bookings.py · matching.py · invoices.py · contacts.py · …
 │   └── (weitere Domänen-Mixins: assets, accounts, wiso_import, reporting,
 │        worktimes, seed, numbering, articles, receipts …)
-├── document_parser.py         # PDF-Parser für Kontoauszüge + SQL-Audit-Log/-Rotation
+├── document_parser.py         # Belegablage, SQL-Audit-Log/-Rotation, DKB-PDF-Parser
+├── importers/                 # Datenimport: Abstraktionsschicht + Bankmodule
+│   ├── base.py                #   Gemeinsames Datenmodell (BankStatement, Transaktion)
+│   ├── pdftext.py             #   Extraktions-Helfer (Text, IBAN, Belegdatum)
+│   ├── plausibility.py        #   Inhaltsprüfung (Kopf-/Fußzeilen, Beträge, Daten)
+│   ├── vbr.py                 #   Volksbank Rottweil (PDF)
+│   └── dkb.py                 #   DKB (PDF)
 ├── export/                    # Ausgabe-/Export-Generatoren (Package)
 │   ├── pdf_core.py            #   Gemeinsame PDF-Primitive (Builder, Logo, Escaping)
 │   ├── pdf_invoice.py         #   PDF-Rechnungs-/Angebotsgenerierung
