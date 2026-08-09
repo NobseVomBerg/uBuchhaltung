@@ -4,7 +4,7 @@
     "accounts": [
         {"account_number": 520,   "name": "PKW",                                                  "description": "Anlagevermögen",                                    "is_standard": true},
         {"account_number": 560,   "name": "Sonstige Transportmittel",                             "description": "Anlagevermögenskonten",                             "is_standard": true},
-        {"account_number": 670,   "name": "Geringwertige Wirtschaftskosten",                      "description": "Anlagevermögenskonten",                             "is_standard": true},
+        {"account_number": 670,   "name": "Geringwertige Wirtschaftsgüter",                       "description": "Anlagevermögenskonten",                             "is_standard": true},
         {"account_number": 675,   "name": "Wirtschaftsgüter (Sammelposten)",                      "description": "Anlagevermögenskonten",                             "is_standard": true},
         {"account_number": 1401,  "name": "Abziehbare Vorsteuer 7%",                              "description": "Umlaufvermögen",                                    "is_standard": true},
         {"account_number": 1406,  "name": "Abziehbare Vorsteuer 19%",                             "description": "Umlaufvermögen",                                    "is_standard": true},
@@ -36,7 +36,7 @@
         {"account_number": 4855,  "name": "Anlagenabgänge Sachanlagen (Restbuchwert bei Buchgewinn)", "description": "Betriebliche Erträge",                          "is_standard": true},
         {"account_number": 4970,  "name": "Versicherungsentschädigungen und Schadenersatzleistungen","description": "Betriebliche Erträge",                           "is_standard": true},
         {"account_number": 4975,  "name": "Investitionszuschüsse",                                "description": "Betriebliche Erträge",                              "is_standard": true},
-        {"account_number": 5200,  "name": "Wareneineingang",                                      "description": "Betriebliche Aufwendungen",                         "is_standard": true},
+        {"account_number": 5200,  "name": "Wareneingang",                                         "description": "Betriebliche Aufwendungen",                         "is_standard": true},
         {"account_number": 6130,  "name": "Freiwillige soziale Aufwendungen, lohnsteuerfrei",     "description": "Betriebliche Aufwendungen",                         "is_standard": true},
         {"account_number": 6222,  "name": "Abschreibungen auf Fahrzeuge",                         "description": "Betriebliche Aufwendungen",                         "is_standard": true},
         {"account_number": 6260,  "name": "Sofortabschreibung geringwertiger Wirtschaftsgüter",   "description": "Betriebliche Aufwendungen",                         "is_standard": true},
