@@ -352,6 +352,10 @@ def PageMiscellaneous(db: Database):
                 <label><input type="checkbox" name="with_assets" value="1" checked>
                 &nbsp;Anlagenverzeichnis und AfA-Plan mitnehmen</label>
             </div>
+            <div class="rowWithObjects">
+                <label><input type="checkbox" name="with_invoices" value="1" checked>
+                &nbsp;Kunden und Rechnungen mitnehmen (Kundennummern bleiben erhalten)</label>
+            </div>
             <br>
             <button type="submit" class="coloredButton bg-green">&#x1F5C4;&#xFE0F; Aus WISO-Datenbank importieren</button>
         </form>
@@ -377,6 +381,11 @@ def PageMiscellaneous(db: Database):
                     + p.get('assets') + ' Anlagen mit ' + p.get('afa') + ' AfA-Zeilen';
                 const lk = parseInt(p.get('linked') || '0');
                 const cc = parseInt(p.get('created_coa') || '0');
+                const rn = parseInt(p.get('invoices') || '0');
+                const kd = parseInt(p.get('customers') || '0');
+                if (rn > 0) msg += ', ' + rn + ' Rechnungen mit '
+                    + p.get('items') + ' Positionen';
+                if (kd > 0) msg += ', ' + kd + ' Kunden';
                 if (lk > 0) msg += ', ' + lk + ' Bankbewegungen verkn\\u00fcpft';
                 if (cc > 0) msg += ', ' + cc + ' SKR-Konten angelegt';
                 if (missing > 0) msg += ', ' + missing + ' Konten ohne Zuordnung';
@@ -422,6 +431,17 @@ def PageMiscellaneous(db: Database):
                   'importiert.</p><ul>')
             for _h in _hints:
                 s += f'<li>{_html.escape(str(_h))}</li>'
+            s += '</ul>'
+        _invoice_warnings = _fdb.get('invoice_warnings') or []
+        if _invoice_warnings:
+            s += (f'<h3>⚠️ Auffälligkeiten bei Rechnungen '
+                  f'&ndash; {len(_invoice_warnings)}</h3>'
+                  '<p>Die Rechnungen sind übernommen; diese Punkte lohnen '
+                  'einen Blick:</p><ul>')
+            for _w in _invoice_warnings[:40]:
+                s += f'<li>{_html.escape(str(_w))}</li>'
+            if len(_invoice_warnings) > 40:
+                s += f'<li>… und {len(_invoice_warnings) - 40} weitere</li>'
             s += '</ul>'
         _asset_warnings = _fdb.get('asset_warnings') or []
         if _asset_warnings:

@@ -208,6 +208,12 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
   Büchern. Der Erlös trägt in WISO keine `INVENTORYID` – gemeinsam ist ihm mit
   dem Anlagegut nur der Abgangstext; ist er nicht eindeutig, bleibt das Feld
   leer statt falsch
+- **Rechnungen:** der Positionstext steht **nicht** bei der Rechnungsposition,
+  sondern als RTF-Blob (`ARTDESCR`) an der Auftragsposition, auf die
+  `ORDPOSID` zeigt – dort hat der Nutzer ihn für den Beleg angepasst.
+  Einheiten kommen als UN/ECE-Code aus `SUP_ARTICLES_UNITS.OPENTRANSCODE`.
+  Kunden behalten ihre WISO-Nummer; Sammelposten („(alle)“) tragen eine
+  nicht-positive Id und sind keine Kunden
 
 ### Testing
 - Vor PR: lokal starten (`python main.py`), Feature testen

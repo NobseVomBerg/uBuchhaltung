@@ -12,6 +12,8 @@ Raten über Beleg-Nr. und Datum.
 Das Lesen der Datei erledigt :mod:`importers.wiso_fdb`; hier steht nur die
 Abbildung auf ``Bookings``, ``Assets`` und ``AssetDepreciations``.
 """
+import datetime
+
 from db.core import coa_id
 from money import to_minor
 
@@ -23,7 +25,7 @@ class WisoFdbImportMixin:
     """Buchungssätze und Anlagen aus einer ``.FDB``-Datei übernehmen."""
 
     def import_wiso_fdb(self, path, standard_chart_path=None,
-                        with_assets=True) -> dict:
+                        with_assets=True, with_invoices=True) -> dict:
         """WISO-Mandantendatenbank importieren.
 
         Args:
@@ -31,6 +33,8 @@ class WisoFdbImportMixin:
             standard_chart_path: ``DB0.FDB`` – liefert Konten, die im
                 Mandantenrahmen fehlen. Optional.
             with_assets: Anlagenverzeichnis samt AfA-Plan mitnehmen.
+            with_invoices: Kunden und Ausgangsrechnungen samt Positionen
+                mitnehmen. Die Kundennummern bleiben die aus WISO.
 
         Returns:
             dict mit ``imported``, ``skipped``, ``assets``, ``depreciations``,
@@ -43,7 +47,9 @@ class WisoFdbImportMixin:
                   'depreciations': 0, 'tax_rows_skipped': 0,
                   'memo_rows_skipped': 0, 'missing_coa': {}, 'created_coa': {},
                   'unresolved_accounts': 0, 'blocker': [], 'hints': [],
-                  'asset_warnings': [], 'errors': []}
+                  'asset_warnings': [], 'customers': 0, 'invoices': 0,
+                  'invoice_items': 0, 'invoices_skipped': 0,
+                  'invoice_warnings': [], 'errors': []}
         try:
             wiso = WisoDatabase(path, standard_chart_path)
         except Exception as exc:                       # defekte/fremde Datei
@@ -69,6 +75,9 @@ class WisoFdbImportMixin:
             self._insert_wiso_bookings(data.bookings, result)
             if with_assets:
                 self._insert_wiso_assets(data.assets, result)
+            if with_invoices:
+                contacts = self._insert_wiso_customers(data.customers, result)
+                self._insert_wiso_invoices(data, contacts, result)
         return result
 
     # ------------------------------------------------------------------
@@ -162,6 +171,118 @@ class WisoFdbImportMixin:
 
         conn.commit()
         conn.close()
+
+    def _insert_wiso_customers(self, customers, result):
+        """Kunden übernehmen; die Kundennummer bleibt die aus WISO.
+
+        Returns die Zuordnung Kundennummer → Contacts.ID, die die Rechnungen
+        brauchen. Vorhandene Kundennummern werden nicht angetastet – wer den
+        Kontakt in uBuchhaltung schon gepflegt hat, soll ihn behalten.
+        """
+        conn = self._get_connection()
+        try:
+            known = {row[0]: row[1] for row in conn.execute(
+                'SELECT CustomerNumber, ID FROM Contacts '
+                'WHERE CustomerNumber IS NOT NULL')}
+        finally:
+            conn.close()
+
+        for customer in customers:
+            number = str(customer.number) if customer.number is not None else None
+            if number is None or number in known:
+                continue
+            try:
+                contact_id = self.insert_contact(
+                    contact_type='customer', entity_type=customer.entity_type,
+                    display_name=customer.display_name or None,
+                    customer_number=number, email=customer.email,
+                    phone=customer.phone, notes=customer.notes,
+                    address_line1=customer.address_line1, street=customer.street,
+                    postal_code=customer.postal_code, city=customer.city,
+                    country=customer.country,
+                    company_name=customer.company_name, tax_id=customer.vat_id,
+                    first_name=customer.first_name, last_name=customer.last_name)
+            except Exception as exc:                # z. B. doppeltes Kürzel
+                result['errors'].append(
+                    f'Kunde {number} ({customer.display_name}): {exc}')
+                continue
+            if contact_id:
+                known[number] = contact_id
+                result['customers'] += 1
+        return known
+
+    def _insert_wiso_invoices(self, data, contacts, result):
+        """Rechnungen samt Positionen übernehmen.
+
+        Der Absender steht in WISO nur einmal (Firmenstammdaten) und wird als
+        Momentaufnahme in jede Rechnung geschrieben – so hält es auch die
+        Rechnungsmaske von uBuchhaltung.
+
+        Die Rechnungsnummer ist der Wiedererkennungsschlüssel: was es schon
+        gibt, bleibt unverändert.
+        """
+        conn = self._get_connection()
+        try:
+            known = {row[0] for row in conn.execute(
+                'SELECT InvoiceNumber FROM Invoices')}
+        finally:
+            conn.close()
+
+        company = data.company
+        for invoice in data.invoices:
+            if invoice.number in known:
+                result['invoices_skipped'] += 1
+                continue
+            due = None
+            if invoice.date and invoice.payment_days:
+                due = (datetime.date.fromisoformat(invoice.date)
+                       + datetime.timedelta(days=invoice.payment_days)).isoformat()
+            invoice_id = self.insert_invoice({
+                'invoice_number': invoice.number,
+                'invoice_date': invoice.date,
+                'seller_name': (company.name if company else '') or 'unbekannt',
+                'seller_company': (company.company if company else '') or 'unbekannt',
+                'seller_street': company.street if company else '',
+                'seller_postal_code': company.postal_code if company else '',
+                'seller_city': company.city if company else '',
+                'seller_country': company.country if company else 'DE',
+                'seller_vat_id': company.vat_id if company else '',
+                'seller_email': company.email if company else '',
+                'seller_phone': company.phone if company else '',
+                'customer_id': contacts.get(str(invoice.customer_number)),
+                'buyer_name': invoice.buyer_name or 'unbekannt',
+                'buyer_company': invoice.buyer_company or '',
+                'buyer_street': invoice.buyer_street,
+                'buyer_postal_code': invoice.buyer_postal_code,
+                'buyer_city': invoice.buyer_city,
+                'buyer_country': invoice.buyer_country,
+                'delivery_date': invoice.delivery_date,
+                'payment_due_date': due,
+                'tax_rate': invoice.tax_rate,
+                'sum_net': invoice.sum_net, 'tax_amount': invoice.tax_amount,
+                'sum_gross': invoice.sum_gross,
+                # Bezahlt heißt: nichts mehr offen.
+                'amount_due': 0 if invoice.status == 'paid' else invoice.sum_gross,
+                'status': invoice.status,
+                'intro_text': invoice.intro_text or None,
+                'closing_text': invoice.closing_text or None,
+            })
+            known.add(invoice.number)
+            result['invoices'] += 1
+            for item in invoice.items:
+                self.insert_invoice_item({
+                    'invoice_id': invoice_id, 'position': item.position,
+                    'description': item.description or '(ohne Bezeichnung)',
+                    'quantity': item.quantity, 'unit': item.unit,
+                    'price_per_unit': item.price_per_unit,
+                    'total_net': item.total_net,
+                    'tax_rate': item.tax_rate if item.tax_rate is not None
+                    else invoice.tax_rate,
+                })
+                result['invoice_items'] += 1
+            for warning in invoice.warnings:
+                result['invoice_warnings'].append(
+                    f'Rechnung {invoice.number}: {warning}')
 
     def _insert_wiso_assets(self, assets, result):
         """Anlagegüter samt AfA-Plan übernehmen.

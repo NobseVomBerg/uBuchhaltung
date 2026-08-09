@@ -34,6 +34,7 @@ from typing import Dict, List, Optional
 
 from .catalog import Catalog
 from .ods import OdsError, OdsFile
+from .rtf import rtf_to_text
 
 __all__ = [
     'Catalog', 'OdsError', 'OdsFile', 'WisoAccount', 'WisoAsset',
@@ -50,6 +51,14 @@ T_ASSET_PAYMENTS = 'MOV_INVENTORY_BOOKINGS'
 #: Selbst angelegte Unterkonten (z. B. „Kfz-Versicherung <Fahrzeug>“). Sie
 #: stehen nicht im Kontenrahmen, nennen aber ihr Basiskonto.
 T_SUBACCOUNTS = 'FINT_ACCOUNTS'
+#: Rechnungen, Kunden, eigene Firma. Der Positionstext steht nicht bei der
+#: Rechnungsposition, sondern bei der zugehörigen Auftragsposition.
+T_INVOICES = 'MOV_INVOICES'
+T_INVOICE_POSITIONS = 'MOV_INVOICES_POSITIONS'
+T_ORDER_POSITIONS = 'MOV_ORDERS_POSITIONS'
+T_CUSTOMERS = 'BAS_CUSTOMERS'
+T_COMPANY = 'BAS_COMPANY'
+T_UNITS = 'SUP_ARTICLES_UNITS'
 
 #: Personenkonten (Debitoren/Kreditoren) stehen nicht im Sachkontenrahmen und
 #: tragen in SKR03 wie SKR04 dieselbe Nummer.
@@ -76,14 +85,42 @@ KNOWN_EQUIVALENTS = {
 #: WISO bricht Verwendungszwecke hart um; für die Anzeige wird daraus eine Zeile.
 _WHITESPACE = re.compile(r'\s+')
 
+#: Kennt WISO einen Kunden nur als Sammelposten („(alle)“, „(diverse Kunden)“),
+#: trägt er eine nicht-positive Id. Solche Einträge sind keine Kunden.
+FIRST_REAL_CUSTOMER_ID = 1
 
-def _clean(text: Optional[str]) -> str:
-    return _WHITESPACE.sub(' ', (text or '').replace('\x00', '')).strip()
+#: Steht eines dieser Kürzel im Namen, ist der Kunde eine Firma – auch wenn
+#: daneben ein Vorname erfasst ist (Ansprechpartner).
+LEGAL_FORMS = (' GmbH', ' AG', ' KG', ' UG', ' mbH', ' OHG', ' GbR', ' SE',
+               ' e.K', ' e.V', ' Ltd', ' Inc', ' & Co', ' PartG', ' gGmbH')
+
+#: ``PAYSTATE`` aus ``SYS_PAYSTATES`` auf den Status von uBuchhaltung.
+PAY_STATES = {10: 'sent', 20: 'partial_payment', 30: 'paid', 40: 'sent'}
+
+#: Zwei Buchstaben statt WISOs Kfz-Kennzeichen-Kürzeln.
+COUNTRIES = {'D': 'DE', 'A': 'AT', 'CH': 'CH', 'F': 'FR', 'I': 'IT',
+             'NL': 'NL', 'B': 'BE', 'L': 'LU', 'E': 'ES', 'PL': 'PL'}
+
+#: Fällt die Einheit nicht zuzuordnen, gilt „Stück“ (UN/ECE C62).
+DEFAULT_UNIT = 'C62'
+
+
+def _clean(text) -> str:
+    """Auf eine Zeile bringen. Nicht aufgelöste Blobs gelten als leer."""
+    if not isinstance(text, str):
+        return ''
+    return _WHITESPACE.sub(' ', text.replace('\x00', '')).strip()
 
 
 def _date(value: Optional[str]) -> Optional[str]:
     """``YYYY-MM-DD hh:mm:ss`` bzw. ``YYYY-MM-DD`` auf das Datum kürzen."""
     return value[:10] if value else None
+
+
+def _country(value: Optional[str]) -> str:
+    """WISOs Länderkürzel (Kfz-Kennzeichen) auf ISO 3166-1 alpha-2."""
+    code = _clean(value).upper()
+    return COUNTRIES.get(code, code if len(code) == 2 else 'DE')
 
 
 def _after_disposal_year(date: Optional[str], sale_date: Optional[str]) -> bool:
@@ -178,11 +215,99 @@ class WisoAsset:
 
 
 @dataclass
+class WisoCompany:
+    """Die eigene Firma – der Absender auf jeder Rechnung."""
+
+    name: str = ''
+    company: str = ''
+    street: str = ''
+    postal_code: str = ''
+    city: str = ''
+    country: str = 'DE'
+    vat_id: str = ''
+    email: str = ''
+    phone: str = ''
+
+
+@dataclass
+class WisoCustomer:
+    """Ein Kunde mit seiner WISO-Kundennummer."""
+
+    number: Optional[int] = None
+    entity_type: str = 'company'
+    display_name: str = ''
+    company_name: str = ''
+    first_name: str = ''
+    last_name: str = ''
+    address_line1: str = ''
+    street: str = ''
+    postal_code: str = ''
+    city: str = ''
+    country: str = 'DE'
+    email: str = ''
+    phone: str = ''
+    vat_id: str = ''
+    notes: str = ''
+    source_id: Optional[int] = None
+
+
+@dataclass
+class WisoInvoiceItem:
+    """Eine Rechnungsposition.
+
+    Menge und Summe stammen von der Rechnungsposition, Text und Einzelpreis
+    von der zugehörigen Auftragsposition – dort steht der Text, den der
+    Nutzer für diesen Beleg angepasst hat.
+    """
+
+    position: int = 1
+    description: str = ''
+    quantity: float = 0.0
+    unit: str = DEFAULT_UNIT
+    price_per_unit: float = 0.0
+    total_net: float = 0.0
+    tax_rate: Optional[float] = None
+    article_number: str = ''
+
+
+@dataclass
+class WisoInvoice:
+    """Eine Ausgangsrechnung samt Positionen."""
+
+    number: str = ''
+    date: Optional[str] = None
+    #: Kundennummer – aufgelöst über die interne Id, die die Rechnung nennt.
+    customer_number: Optional[int] = None
+    customer_source_id: Optional[int] = None
+    buyer_name: str = ''
+    buyer_company: str = ''
+    buyer_street: str = ''
+    buyer_postal_code: str = ''
+    buyer_city: str = ''
+    buyer_country: str = 'DE'
+    delivery_date: Optional[str] = None
+    payment_days: Optional[int] = None
+    tax_rate: float = 0.0
+    sum_net: float = 0.0
+    tax_amount: float = 0.0
+    sum_gross: float = 0.0
+    status: str = 'paid'
+    intro_text: str = ''
+    closing_text: str = ''
+    items: List[WisoInvoiceItem] = field(default_factory=list)
+    source_id: Optional[int] = None
+    warnings: List[str] = field(default_factory=list)
+
+
+@dataclass
 class WisoData:
     """Das Ergebnis eines Lesevorgangs."""
 
     bookings: List[WisoBooking] = field(default_factory=list)
     assets: List[WisoAsset] = field(default_factory=list)
+    customers: List[WisoCustomer] = field(default_factory=list)
+    invoices: List[WisoInvoice] = field(default_factory=list)
+    company: Optional[WisoCompany] = None
     chart: Dict[int, WisoAccount] = field(default_factory=dict)
     #: SKR03-Nummer → Anzahl Verwendungen, für die es keine SKR04-Zuordnung gibt.
     unmapped_accounts: Dict[int, int] = field(default_factory=dict)
@@ -238,6 +363,12 @@ class WisoDatabase:
         T_DEPRECIATIONS: ('INVENTORYID', 'BOOKINGDATE', 'AMORT_AMOUNT'),
         T_ASSET_PAYMENTS: ('INVENTORYID', 'BOOKINGDATE', 'AMOUNTNET'),
         T_SUBACCOUNTS: ('ACCOUNTNO', 'BASEACCOUNTNO'),
+        T_INVOICES: ('ID', 'INVNO', 'INVDATE', 'CUSTID', 'TOTALNET',
+                     'TOTALGROSS', 'VAT1PERC', 'PAYSTATE'),
+        T_INVOICE_POSITIONS: ('INVID', 'ORDPOSID', 'AMOUNT', 'TOTAL', 'POSID'),
+        T_ORDER_POSITIONS: ('ID', 'ARTDESCR', 'PRICENET', 'UNITCODE'),
+        T_CUSTOMERS: ('ID', 'CUSTNO', 'NAME1'),
+        T_COMPANY: ('NAME1',),
     }
 
     def columns_of(self, table):
@@ -607,10 +738,161 @@ class WisoDatabase:
                 book_value=max(0.0, round(base - cumulated, 2))))
         return out
 
-    def _safe_rows(self, table):
+    def _safe_rows(self, table, blobs=False):
         if table not in self.catalog.relation_id:
             return []
-        return self.catalog.rows(table)
+        return self.catalog.rows(table, blobs=blobs)
+
+    # ------------------------------------------------------------------
+    # Firma, Kunden, Rechnungen
+    # ------------------------------------------------------------------
+    def company(self) -> Optional[WisoCompany]:
+        """Die eigene Firma. Der Absender steht in WISO nur an einer Stelle."""
+        for row in self._safe_rows(T_COMPANY):
+            person = ' '.join(x for x in (_clean(row.get('EMPLNAME2')),
+                                          _clean(row.get('EMPLNAME1'))) if x)
+            return WisoCompany(
+                name=person or _clean(row.get('NAME1')),
+                company=_clean(row.get('NAME1')),
+                street=_clean(row.get('STREET')),
+                postal_code=_clean(row.get('ZIPCODE')),
+                city=_clean(row.get('CITY')),
+                country=_country(row.get('COUNTRY')),
+                vat_id=_clean(row.get('VATID')),
+                email=_clean(row.get('EMAIL')),
+                phone=_clean(row.get('PHONE1')))
+        return None
+
+    def customers(self) -> List[WisoCustomer]:
+        """Kunden mit ihrer WISO-Kundennummer.
+
+        Sammelposten („(alle)“, „(diverse Kunden)“) tragen eine nicht-positive
+        Id und sind keine Kunden – sie entfallen.
+
+        Firma oder Person: WISO unterscheidet das nicht sauber (``GENDER``
+        ist ungenutzt, ``CUSTKIND`` meint die Kundenart). Als Person gilt
+        deshalb, wer einen Vornamen in ``NAME2`` hat und dessen Name keine
+        Rechtsform nennt – sonst ist ``NAME2`` der Ansprechpartner einer Firma.
+        """
+        out = []
+        for row in self._safe_rows(T_CUSTOMERS, blobs=True):
+            if (row.get('ID') or 0) < FIRST_REAL_CUSTOMER_ID:
+                continue
+            name1 = _clean(row.get('NAME1'))
+            name2 = _clean(row.get('NAME2'))
+            name3 = _clean(row.get('NAME3'))
+            is_company = not name2 or any(f.lower() in f' {name1}'.lower()
+                                          for f in LEGAL_FORMS)
+            out.append(WisoCustomer(
+                number=row.get('CUSTNO'), source_id=row.get('ID'),
+                entity_type='company' if is_company else 'person',
+                display_name=name1 if is_company else f'{name2} {name1}'.strip(),
+                company_name=name1 if is_company else '',
+                first_name='' if is_company else name2,
+                last_name='' if is_company else name1,
+                address_line1=(name2 if is_company else '') or name3,
+                street=_clean(row.get('STREET')),
+                postal_code=_clean(row.get('ZIPCODE')),
+                city=_clean(row.get('CITY')),
+                country=_country(row.get('COUNTRY')),
+                email=_clean(row.get('EMAIL')),
+                phone=_clean(row.get('PHONE1')) or _clean(row.get('MOBILE')),
+                vat_id=_clean(row.get('VATID')),
+                notes=_clean(row.get('NOTES'))))
+        return sorted(out, key=lambda c: c.number or 0)
+
+    def _units(self):
+        """Einheiten-Id auf den UN/ECE-Code, den XRechnung erwartet."""
+        codes = {}
+        for row in self._safe_rows(T_UNITS):
+            code = _clean(row.get('OPENTRANSCODE'))
+            if code:
+                codes[row.get('ID') or 0] = code
+        return codes
+
+    def _invoice_items(self):
+        """Positionen je Rechnung, Text aus der Auftragsposition."""
+        units = self._units()
+        # blobs=True ist Pflicht: ARTDESCR – der angepasste Positionstext –
+        # ist ein Blob und käme sonst als unaufgelöste Kennung zurück.
+        orders = {row.get('ID'): row
+                  for row in self._safe_rows(T_ORDER_POSITIONS, blobs=True)}
+        items: Dict[int, List[WisoInvoiceItem]] = {}
+        for row in self._safe_rows(T_INVOICE_POSITIONS):
+            order = orders.get(row.get('ORDPOSID')) or {}
+            quantity = float(row.get('AMOUNT') or 0)
+            total = float(row.get('TOTAL') or 0)
+            price = order.get('PRICENET')
+            if price is None:
+                price = total / quantity if quantity else 0.0
+            items.setdefault(row.get('INVID'), []).append(WisoInvoiceItem(
+                position=row.get('POSID') or 1,
+                description=_clean(order.get('ARTDESCR')) or _clean(
+                    order.get('SHORTDESCRIPTION')),
+                quantity=quantity, total_net=round(total, 2),
+                price_per_unit=round(float(price), 4),
+                unit=units.get(order.get('UNITCODE') or 0, DEFAULT_UNIT),
+                article_number=_clean(order.get('ARTNO'))))
+        for positions in items.values():
+            positions.sort(key=lambda p: p.position)
+        return items
+
+    def invoices(self, customers=None) -> List[WisoInvoice]:
+        """Ausgangsrechnungen samt Positionen.
+
+        Die Rechnung nennt den Kunden über seine interne Id; ``customers``
+        liefert die Kundennummer dazu. Ohne sie bleibt das Feld leer – die
+        Anschrift steht ohnehin als Momentaufnahme in der Rechnung selbst.
+        """
+        if T_INVOICES not in self.catalog.relation_id:
+            return []
+        numbers = {c.source_id: c.number
+                   for c in (customers if customers is not None
+                             else self.customers())}
+        items = self._invoice_items()
+        out = []
+        for row in self.catalog.rows(T_INVOICES, blobs=True):
+            number = _clean(str(row.get('INVNO') or ''))
+            if not number:
+                continue
+            rate = row.get('VAT1PERC')
+            positions = items.get(row.get('ID'), [])
+            for position in positions:
+                position.tax_rate = rate / 100.0 if rate else 0.0
+            invoice = WisoInvoice(
+                number=number, date=_date(row.get('INVDATE')),
+                customer_number=numbers.get(row.get('CUSTID')),
+                source_id=row.get('ID'),
+                buyer_name=_clean(row.get('NAME1')),
+                buyer_company=_clean(row.get('NAME1')),
+                buyer_street=_clean(row.get('STREET')),
+                buyer_postal_code=_clean(row.get('ZIPCODE')),
+                buyer_city=_clean(row.get('CITY')),
+                buyer_country=_country(row.get('COUNTRY')),
+                delivery_date=_date(row.get('SERVICEDATE'))
+                or _date(row.get('DELDATE')),
+                payment_days=row.get('PAYDAYS') or None,
+                tax_rate=(rate / 100.0) if rate else 0.0,
+                sum_net=round(float(row.get('TOTALNET') or 0), 2),
+                tax_amount=round(float(row.get('VAT1') or 0), 2),
+                sum_gross=round(float(row.get('TOTALGROSS') or 0), 2),
+                status=PAY_STATES.get(row.get('PAYSTATE'), 'sent'),
+                intro_text=rtf_to_text(row.get('TEXT1')),
+                closing_text=rtf_to_text(row.get('TEXT2')),
+                items=positions, customer_source_id=row.get('CUSTID'))
+            if not positions:
+                invoice.warnings.append('ohne Positionen')
+            if row.get('CUSTID') and invoice.customer_number is None:
+                invoice.warnings.append(
+                    'Kunde nicht mehr im Kundenstamm – die Anschrift steht '
+                    'aber in der Rechnung selbst')
+            summe = round(sum(p.total_net for p in positions), 2)
+            if positions and abs(summe - invoice.sum_net) > 0.02:
+                invoice.warnings.append(
+                    f'Summe der Positionen {summe:.2f} € weicht vom '
+                    f'Rechnungsnetto {invoice.sum_net:.2f} € ab')
+            out.append(invoice)
+        return sorted(out, key=lambda i: (i.date or '', i.number))
 
     # ------------------------------------------------------------------
     def read(self, liquid_accounts=None) -> WisoData:
@@ -623,11 +905,14 @@ class WisoDatabase:
         assets = self.assets(missing)
         disposed = {a.source_id: a.sale_date for a in assets if a.sale_date}
         bookings = self.bookings(liquid_accounts, missing, disposed)
+        customers = self.customers()
         memo = getattr(self, '_memo_skipped', 0)
         total = self.catalog.count(T_BOOKINGS)
         labels = getattr(self, 'account_labels', {})
         return WisoData(
             bookings=bookings, assets=assets, chart=self.chart(),
+            customers=customers, invoices=self.invoices(customers),
+            company=self.company(),
             unmapped_accounts=missing, memo_rows_skipped=memo,
             unmapped_labels={n: labels[n] for n in missing if n in labels},
             tax_rows_skipped=total - len(bookings) - memo)

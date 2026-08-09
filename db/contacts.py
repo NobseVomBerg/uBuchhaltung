@@ -152,6 +152,7 @@ class ContactsMixin:
                         )
 
             conn.commit()
+            return contact_id          # Aufrufer braucht ihn für Verknüpfungen
         except Exception as e:
             conn.rollback()
             print(f'Error inserting contact: {e}')

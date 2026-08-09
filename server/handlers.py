@@ -978,14 +978,19 @@ def handle_wiso_fdb_import(db: Database, post_data):
     """
     from urllib.parse import quote
 
+    def flag(name):
+        return post_data.get(name, ['0'])[0] in ('1', 'on', 'true')
+
     entered = post_data.get('fdb_path', [''])[0]
-    with_assets = post_data.get('with_assets', ['0'])[0] in ('1', 'on', 'true')
+    with_assets = flag('with_assets')
+    with_invoices = flag('with_invoices')
     client, standard, problem = _wiso_fdb_paths(entered)
     if problem:
         return 303, f'/miscellaneous?wiso_fdb=error&msg={quote(problem)}'
 
     try:
-        result = db.import_wiso_fdb(client, standard, with_assets=with_assets)
+        result = db.import_wiso_fdb(client, standard, with_assets=with_assets,
+                                    with_invoices=with_invoices)
         result['file'] = client
         result['standard_chart'] = standard or ''
         if result['blocker']:
@@ -1003,6 +1008,8 @@ def handle_wiso_fdb_import(db: Database, post_data):
             f'&file={quote(os.path.basename(client))}'
             f'&imported={result["imported"]}&skipped={result["skipped"]}'
             f'&assets={result["assets"]}&afa={result["depreciations"]}'
+            f'&customers={result["customers"]}&invoices={result["invoices"]}'
+            f'&items={result["invoice_items"]}'
             f'&created_coa={len(result["created_coa"])}'
             f'&missing_coa={len(result["missing_coa"])}'
             f'&hints={len(result["hints"])}'
