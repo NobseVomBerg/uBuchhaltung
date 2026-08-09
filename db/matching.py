@@ -9,6 +9,23 @@ from decimal import Decimal
 from money import to_minor, from_minor
 
 
+def is_bank_effective(coa_id, counter_coa_id, bank_coa_ids) -> bool:
+    """Bewegt dieser Buchungssatz Geld auf dem Bankkonto?
+
+    Unter einer Bankbewegung hängen nicht nur Zahlungen, sondern auch reine
+    Umbuchungen: die Zahlungs-Umbuchung 4405→4400 einer Rechnung oder der
+    Privatanteil 6805→2100. Sie gehören zum Beleg, bewegen aber kein Geld und
+    dürfen deshalb nicht in die Split-Summe eingehen.
+
+    Nicht bankwirksam ist ein Satz nur dann, wenn BEIDE Seiten kontiert sind
+    und KEINE davon ein Bankkonto ist. Unvollständig kontierte Sätze zählen
+    bewusst mit – sonst sähe ein halbfertiger Split vollständig aus.
+    """
+    if coa_id in bank_coa_ids or counter_coa_id in bank_coa_ids:
+        return True
+    return coa_id is None or counter_coa_id is None
+
+
 class MatchingMixin:
     def get_linked_entry_for_bank(self, bank_booking_id: int):
         """Hole die wichtigsten Felder des ersten verknüpften Entry-Bookings.
@@ -97,6 +114,64 @@ class MatchingMixin:
         rows = cursor.fetchall()
         conn.close()
         return [self._euro_row(r, 2) for r in rows]
+
+    def find_unbalanced_splits(self, date_from: str, date_to: str):
+        """Bankbewegungen im Zeitraum, deren Buchungssätze nicht aufgehen.
+
+        Geprüft werden nur Bewegungen mit mindestens einem Buchungssatz – eine
+        ganz unkontierte Bankbewegung ist kein Split, sondern schlicht offen.
+        Umbuchungen (4405→4400, Privatanteil 6805→2100) zählen nicht mit: sie
+        gehören zum Beleg, bewegen aber kein Geld.
+
+        Grundlage der DATEV-Prüfung: ein solcher Stapel wäre in sich unstimmig.
+
+        Betroffen ist eine Bankbewegung, wenn sie selbst ODER einer ihrer
+        Buchungssätze im Zeitraum liegt – zugeordnete Bestandsbuchungen behalten
+        ihr eigenes Datum, und exportiert werden die Buchungssätze. Gerechnet
+        wird dann über ALLE ihre Sätze, sonst ergäbe die Summe nie den
+        Bankbetrag.
+
+        Returns: [(BankID, DateBooking, Amount€, Rest€, Text)] nach Datum.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        bank_coa_ids = self._get_bank_coa_ids(cursor)
+        cursor.execute('''
+            SELECT p.ID, p.DateBooking, p.Amount, p.Text,
+                   e.Amount, e.COA_ID, e.CounterCOA_ID
+            FROM Bookings p
+            JOIN Bookings e ON e.ParentBooking_ID = p.ID
+            WHERE p.BookingType = 'bank'
+              AND p.ID IN (
+                  SELECT b.ID FROM Bookings b
+                   WHERE b.BookingType = 'bank'
+                     AND b.DateBooking BETWEEN ? AND ?
+                  UNION
+                  SELECT c.ParentBooking_ID FROM Bookings c
+                   WHERE c.ParentBooking_ID IS NOT NULL
+                     AND c.DateBooking BETWEEN ? AND ?
+              )
+            ORDER BY p.DateBooking, p.ID
+        ''', (date_from, date_to, date_from, date_to))
+        rows = cursor.fetchall()
+        conn.close()
+
+        parents = {}
+        sums = {}
+        for bank_id, date, amount, text, child_amount, coa, counter in rows:
+            parents[bank_id] = (date, amount, text)
+            sums.setdefault(bank_id, 0)
+            if is_bank_effective(coa, counter, bank_coa_ids):
+                sums[bank_id] += (child_amount or 0)
+
+        result = []
+        for bank_id, (date, amount, text) in parents.items():
+            rest = (amount or 0) - sums[bank_id]
+            if rest:
+                result.append((bank_id, date, from_minor(amount or 0),
+                               from_minor(rest), text or ''))
+        result.sort(key=lambda r: (r[1], r[0]))
+        return result
 
     def find_unlinked_booking_by_date_amount(self, date: str, amount: float):
         """Suche nach einer unverknüpften Buchung/Beleg-Gruppe anhand Datum + Betrag.

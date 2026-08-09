@@ -233,11 +233,14 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
     # Einnahmen = SKR04-Ertragsklasse (4000-4999, zentral in db.reporting)
     # plus virtuelles USt-Konto 3806; Aufzählungen einzelner Erlöskonten
     # hatten z. B. 4185 (§19) und 4300 (7%) übersehen.
-    from db.reporting import is_income_account
+    from db.reporting import is_income_account, NEUTRAL_ACCOUNT_NUMBERS
     OTHER_EXPENSE_ACCOUNTS = {3160, 3720, 3740}
-    # Ausschluss-Konten (nicht anzeigen)
+    # Ausschluss-Konten (nicht anzeigen). Die Bestandskonten des
+    # Offene-Posten-Verfahrens (Forderungen, Wartekonten) liefert get_euer_data
+    # ohnehin nicht mehr aus – die Liste bleibt als zweite Sicherung und zieht
+    # dieselbe Quelle, damit ein neues Wartekonto nicht durchrutscht.
     bank_skr_numbers = {a[7] for a in accounts if a[7]}
-    EXCLUDE_NUMBERS = {4405, 10000} | bank_skr_numbers
+    EXCLUDE_NUMBERS = set(NEUTRAL_ACCOUNT_NUMBERS) | bank_skr_numbers
 
     def _is_income_row(nr):
         return is_income_account(nr) or nr == 3806

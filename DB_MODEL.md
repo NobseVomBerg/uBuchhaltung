@@ -282,6 +282,45 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 - Doppik-Entries (COA_ID zeigt auf ein SKR-Bankkonto wie 1810) werden in der Anzeige ausgeblendet
 - `link_bank_to_entries()` verknüpft automatisch anhand mehrstufigem Matching (siehe Datenfluss)
 - `Status='resolved'`: Debitoren-Entry wurde über Stufe 7 als erledigt markiert (Zahlung existiert)
+- **Bankwirksamkeit** (`db.matching.is_bank_effective`): Unter einer Bankbewegung
+  hängen auch reine Umbuchungen – die Zahlungs-Umbuchung `4405 → 4400` einer
+  Rechnung oder ein Privatanteil `6805 → 2100`. Nicht bankwirksam ist ein Satz,
+  wenn BEIDE Seiten kontiert sind und KEINE davon ein Bankkonto ist. Nur
+  bankwirksame Sätze zählen in die Split-Summe (Statusbadge, DATEV-Prüfung);
+  unvollständig kontierte zählen bewusst mit.
+
+---
+
+### 9a. Offene Posten (Rechnung → Zahlung)
+
+Eine Rechnung wird mit dem Status `sent` als offener Posten gebucht und erst
+bei Zahlung ertragswirksam – so sieht das Steuerbüro im DATEV-Export die noch
+offenen Posten (Sollversteuerung). Das entspricht dem Verfahren von WISO Mein
+Büro und damit auch der Struktur importierter Altdaten.
+
+| Zeitpunkt | Buchung | Soll → Haben |
+|---|---|---|
+| Rechnung versendet | Forderung | `10000 Debitoren` → Wartekonto |
+| Zahlung (Kind der Bankbewegung) | `Zahlung zu Re. X` | Bankkonto → `10000 Debitoren` |
+| Zahlung (Kind der Bankbewegung) | `Umb. zu Re. X` | Wartekonto → Erlöskonto |
+
+Wartekonten nach Steuersatz: **19 % → 4405**, **7 % → 4345**, **0 %/§19 → 4340**
+(`Database.resolve_open_revenue_coa`). Erlöskonten wie bisher 4400/4300/4185
+(`resolve_revenue_coa`). Sätze ohne Wartekonto (z. B. 5 %) werden weiterhin erst
+bei Zahlung gebucht.
+
+Die Forderungsbuchung ist ein eigenständiger Entry ohne `Account_ID` und ohne
+`ParentBooking_ID`; erkannt wird sie über `DocumentNumber` + Debitorenkonto
+(`get_receivable_booking`). `ensure_receivable_booking` ist idempotent,
+`remove_receivable_booking` nimmt sie beim Rückstufen auf Entwurf zurück –
+aber nur, solange keine Zahlung daran hängt.
+
+**Auswertungsneutral:** Forderungen (10000) und Wartekonten (4340/4345/4405)
+sind Bestandskonten und bleiben aus der EÜR heraus
+(`db.reporting.NEUTRAL_ACCOUNT_NUMBERS`). Einnahmezeitpunkt ist die Umbuchung
+auf das Erlöskonto. Ohne diese Regel höbe `4405 −netto` den Erlös `4400 +netto`
+wieder auf (beide liegen in der Erlösklasse 4000–4999) und die Forderung
+erschiene als Ausgabe.
 
 ---
 
@@ -502,6 +541,7 @@ Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
 - Virtuelle Vorsteuerkonten 1401/1406 enthalten Steueranteile aus Ausgabenkonten
 - Konten 3160, 3720, 3740 werden im Dashboard separat als "Sonstige Ausgaben" gezeigt
 - **Section 2b (Kasse):** Entry-Buchungen mit `Account_ID` auf einem Kassenkonto (`IsCash=1`) und `CounterCOA_ID IS NULL` werden direkt erfasst (kein Bank-Spiegel nötig). Wird in `get_euer_data()` und `get_dashboard_monthly/totals()` berücksichtigt.
+- **Bestandskonten** (`NEUTRAL_ACCOUNT_NUMBERS`: 10000 Debitoren, Wartekonten 4340/4345/4405) bleiben komplett draußen – weder Saldo noch USt. Die Einnahme entsteht mit der Umbuchung vom Warte- auf das Erlöskonto bei Zahlung (siehe Abschnitt 9a).
 
 ### Rechnungserstellung
 

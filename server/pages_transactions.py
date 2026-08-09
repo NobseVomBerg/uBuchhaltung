@@ -7,6 +7,7 @@ Transactions page (Buchungen: Bankbewegungen + Buchungssätze)
 import html as _html
 from decimal import Decimal
 from db import Database
+from db.matching import is_bank_effective
 from .pages import Header1, Header2, Header3, Footer
 from .period import period_filter_widget
 
@@ -143,6 +144,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     # Buchungssatz-Editor: Bankbewegungen kontieren ihre Sätze in einer eigenen
     # Tabelle (Split anlegen/auflösen), nicht mehr über die Felder oben.
     is_bank_form = bool(edit_trans and edit_trans[17] == 'bank')
+    bank_coa_ids = db.get_bank_coa_ids()
     split_rows = []
     adopt_candidates = []
     if is_bank_form:
@@ -151,20 +153,23 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         # je eigener Beleg-Nr. – dafür taugt keine Beleg-Klammer).
         adopt_candidates = db.get_unlinked_entry_bookings(
             around_date=edit_trans[1], limit=50)
-        _bank_coa_ids = db.get_bank_coa_ids()
         for c in db.get_child_bookings_for_bank(edit_trans[0]):
             # Reine Doppik-Spiegel gehören nicht in den Editor
-            if c[1] in _bank_coa_ids and c[2] in _bank_coa_ids:
+            if c[1] in bank_coa_ids and c[2] in bank_coa_ids:
                 continue
             # Liquide-zuerst gebuchte Sätze (COA = Bankkonto): das Zweckkonto
             # steht auf der Gegenseite und gehört ins Kontofeld des Editors.
             purpose_coa = c[1]
-            if c[1] in _bank_coa_ids and c[2] not in _bank_coa_ids:
+            if c[1] in bank_coa_ids and c[2] not in bank_coa_ids:
                 purpose_coa = c[2]
+            # Umbuchungen (4405→4400, Privatanteil 6805→2100) gehören zum
+            # Beleg, bewegen aber kein Geld – sie zählen nicht in die Summe.
+            nobank = not is_bank_effective(c[1], c[2], bank_coa_ids)
             split_rows.append({
                 'id': c[0], 'coa_id': purpose_coa, 'amount': c[4],
                 'tax_rate': c[5], 'tax_amount': c[6],
                 'docnr': c[7] or '', 'text': c[8] or '',
+                'nobank': nobank, 'counter_coa_id': c[2] if nobank else None,
             })
 
     # Rechnungs-Zuordnung: offene Rechnungen fürs Dropdown, bestehende
@@ -357,11 +362,20 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                          f'{_html.escape(str(lbl))}</option>')
             style = ' style="display:none"' if template else ''
             cls = 'splitTemplate' if template else 'splitRow'
+            # Umbuchungen zählen nicht in die Summe; der Hinweis nennt das
+            # Gegenkonto, das sonst nirgends im Editor sichtbar wäre.
+            nobank = bool(row and not template and row.get('nobank'))
+            nobank_attr = ' data-nobank="1"' if nobank else ''
+            hint = ''
+            if nobank:
+                target = coa_map.get(row.get('counter_coa_id'), '')
+                hint = ('<div class="splitHint">Umbuchung – nicht bankwirksam'
+                        + (f' &rarr; {target}' if target else '') + '</div>')
             return (
-                f'<tr class="{cls}"{style}>'
+                f'<tr class="{cls}"{style}{nobank_attr}>'
                 f'<td><input type="hidden" name="split_id" value="{rid}">'
                 f'<input type="number" step="0.01" class="noButtons splitAmount"'
-                f' name="split_amount" value="{amount}" oninput="splitRecalc()"></td>'
+                f' name="split_amount" value="{amount}" oninput="splitRecalc()">{hint}</td>'
                 f'<td><select name="split_coa">{opts}</select></td>'
                 f'<td><input type="number" step="0.01" class="noButtons splitRate"'
                 f' name="split_tax_rate" value="{rate}" oninput="splitTax(this)"></td>'
@@ -425,9 +439,14 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 function splitRows() {{
                     return [...document.querySelectorAll('#splitTable tr.splitRow')];
                 }}
+                function splitBankRows() {{
+                    // Umbuchungen (data-nobank) bewegen kein Geld auf dem
+                    // Bankkonto und bleiben deshalb aus der Summe heraus.
+                    return splitRows().filter(r => !r.dataset.nobank);
+                }}
                 function splitRecalc() {{
                     let sum = 0;
-                    splitRows().forEach(r => {{
+                    splitBankRows().forEach(r => {{
                         sum += parseFloat(r.querySelector('.splitAmount').value) || 0;
                     }});
                     const rest = Math.round((SPLIT_BANK_AMOUNT - sum) * 100) / 100;
@@ -458,7 +477,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     // Vorbefüllen mit Restbetrag und Werten der Bankbewegung –
                     // danach ist die Teilbuchung eigenständig.
                     let sum = 0;
-                    splitRows().forEach(r => {{ sum += parseFloat(r.querySelector('.splitAmount').value) || 0; }});
+                    splitBankRows().forEach(r => {{ sum += parseFloat(r.querySelector('.splitAmount').value) || 0; }});
                     const rest = Math.round((SPLIT_BANK_AMOUNT - sum) * 100) / 100;
                     row.querySelector('.splitAmount').value = rest !== 0 ? rest.toFixed(2) : '';
                     const idx = splitRows().length;
@@ -983,8 +1002,14 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             if is_linked:
                 # Status dreistufig: ✓ nur, wenn die Buchungssätze den Betrag
                 # der Bankbewegung vollständig abbilden. Teilerfassung ist
-                # erlaubt (Speichern wird nie blockiert) und zeigt den Rest.
-                child_sum = sum((ch['booking'][11] or 0) for ch in children)
+                # erlaubt (Speichern wird nie blockiert) und zeigt "offen".
+                # Umbuchungen (4405→4400, Privatanteil) gehören zum Beleg,
+                # bewegen aber kein Geld und zählen deshalb nicht mit.
+                bank_children = [ch for ch in children
+                                 if is_bank_effective(ch['booking'][8],
+                                                      ch['booking'][9],
+                                                      bank_coa_ids)]
+                child_sum = sum((ch['booking'][11] or 0) for ch in bank_children)
                 rest = (amount or 0) - child_sum
                 all_coded = all(ch['booking'][8] is not None for ch in children)
                 if abs(rest) < Decimal('0.005') and all_coded:
@@ -995,7 +1020,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                              else f'offener Rest {rest:.2f}')
                     status_badge = (f"<span class='badge bg-orange' "
                                     f"title='Buchungssätze unvollständig: {_hint}'>"
-                                    f"Rest {rest:.2f}</span>")
+                                    "offen</span>")
                 if count > 1:
                     # Split: aufklappbar. Suche über Bank-Text + alle Kinder.
                     search_recip = _attr(' '.join(filter(None,

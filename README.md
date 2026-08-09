@@ -67,6 +67,13 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 - **Rechnungsstatus**: Entwurf → Finalisiert → Versendet → Bezahlt (+ Teilzahlung, Überfällig, Storniert)
 - **Nummernkreise**: Format YY[Buchstabe][Präfix]### mit Auto-Inkrementierung
 - **Zahlungsverknüpfung**: Rechnungen mit Bankbuchungen verbinden, Teilzahlungen
+- **Offene Posten**: Mit dem Status *Versendet* wird die Rechnung als Forderung
+  gebucht (10000 Debitoren an Wartekonto 4405 / 4345 / 4340 je nach Steuersatz);
+  die Zahlung erzeugt zwei Buchungssätze – *Zahlung* (Bank an Debitoren) und
+  *Umbuchung* (Wartekonto an Erlöskonto). So sieht das Steuerbüro im
+  DATEV-Export die noch offenen Posten. Die EÜR bleibt Ist-Rechnung:
+  Forderungen und Wartekonten sind auswertungsneutral, die Einnahme entsteht
+  mit der Umbuchung. Details in [DB_MODEL.md](DB_MODEL.md)
 
 ### 7. Dashboard (`/`)
 - Finanz-Statistiken auf Basis von Bank- und Entry-Buchungen (inkl. Kasse)
@@ -119,6 +126,11 @@ Vollständiges Anlagenmanagement mit gesetzeskonformer AfA:
   - Tabellen-Export Matching: bank+entry-Paare ohne Belegnummer (Privatentnahmen, Gebühren) werden als Einheit erkannt und aktualisiert
   - Nach Import: automatische Bank↔Entry-Verknüpfung (`link_bank_to_entries()`)
 - **DATEV-Export** (`export/datev.py`): Buchungsstapel als DATEV-CSV (nur Entry-Buchungen)
+  - Prüft vorab die Splits des Zeitraums: Ergeben die *bankwirksamen*
+    Buchungssätze nicht den Betrag der Bankbewegung, wird der Export mit Datum,
+    Betrag und Rest abgelehnt. Umbuchungen (Wartekonto→Erlöskonto,
+    Privatanteil) zählen dabei nicht mit, Bankbewegungen ohne Buchungssatz
+    blockieren nicht
 - **SQL-Konsole**: Direkte SQL-Ausführung (Entwickler-Tool) inkl. **Zeitbereich löschen**
   (generiert ein FK-sicheres Lösch-Skript für Belege/Buchungen/Rechnungen/Angebote
   eines Zeitraums ins SQL-Feld; Ausführung erst nach manueller Bestätigung)

@@ -625,12 +625,46 @@ class InvoicesMixin:
             return self._ensure_tax_free_revenue_coa()
         return None
 
-    def _ensure_tax_free_revenue_coa(self):
-        """Kleinunternehmer-Erlöskonto 4185 liefern (DATEV-SKR04); fehlt es
-        (DB älter als der Seed-Eintrag), wird es als Standardkonto im
-        dominanten Kontenrahmen nachgelegt – sonst hätten §19-/0%-Rechnungen
-        kein Zielkonto."""
-        coa = self.get_coa_id_by_account_number(4185)
+    # Wartekonten für offene Posten: die Rechnung wird beim Versenden hierhin
+    # gebucht, erst die Zahlung bucht auf das echte Erlöskonto um. Damit sieht
+    # das Steuerbüro im DATEV-Export die noch offenen Posten (Sollversteuerung).
+    OPEN_REVENUE_ACCOUNTS = {
+        19: (4405, 'Erlöse 19% USt noch offen'),
+        7:  (4345, 'Umsatzerlöse 7% noch offen'),
+        0:  (4340, 'Umsatzerlöse 0% noch offen'),
+    }
+    DEBTOR_ACCOUNT_NUMBER = 10000
+
+    def resolve_open_revenue_coa(self, tax_rate):
+        """Wartekonto ("noch offen") zum Steuersatz einer Rechnung.
+
+        19% → 4405, 7% → 4345, steuerfrei/§19 → 4340. Fehlt das Konto in einer
+        älteren DB, wird es nachgelegt (Vorbild _ensure_tax_free_revenue_coa).
+        Andere Sätze haben kein Wartekonto und liefern None – der Aufrufer
+        bucht dann wie bisher erst bei Zahlung.
+        """
+        key = self._tax_rate_key(tax_rate)
+        entry = self.OPEN_REVENUE_ACCOUNTS.get(key)
+        if not entry:
+            return None
+        number, name = entry
+        return self._ensure_standard_coa(number, name)
+
+    @staticmethod
+    def _tax_rate_key(tax_rate):
+        """Invoices.TaxRate (0.19, 19, 0, -1, None) → 19 / 7 / 0 / None."""
+        if tax_rate is None:
+            return None
+        if tax_rate <= 0:          # 0% und §19-Sentinel -1 sind ein Topf
+            return 0
+        pct = tax_rate * 100 if tax_rate <= 1 else tax_rate
+        return int(round(pct))
+
+    def _ensure_standard_coa(self, number, name,
+                             description='Betriebliche Erträge'):
+        """COA-ID zu einer Kontonummer liefern, notfalls als Standardkonto
+        im dominanten Kontenrahmen anlegen."""
+        coa = self.get_coa_id_by_account_number(number)
         if coa:
             return coa
         conn = self._get_connection()
@@ -639,11 +673,102 @@ class InvoicesMixin:
                        'GROUP BY Framework ORDER BY COUNT(*) DESC LIMIT 1')
         row = cursor.fetchone()
         conn.close()
-        framework = row[0] if row else 4
-        self.insert_chart_of_accounts(framework, 4185,
-                                      'Erlöse als Kleinunternehmer nach § 19 Abs. 1 UStG',
-                                      'Betriebliche Erträge', is_standard=1)
-        return self.get_coa_id_by_account_number(4185)
+        self.insert_chart_of_accounts(row[0] if row else 4, number, name,
+                                      description, is_standard=1)
+        return self.get_coa_id_by_account_number(number)
+
+    def get_receivable_booking(self, invoice_id):
+        """Forderungsbuchung einer Rechnung oder None.
+
+        Erkannt über Beleg-Nr. + Debitorenkonto – dieselbe Klammer, die auch
+        Stufe 7 des Auto-Abgleichs benutzt. Ein eigenes Schema-Feld wäre dafür
+        zu viel: Rechnungsnummern sind eindeutig.
+        """
+        invoice = self.get_invoice_by_id(invoice_id)
+        if not invoice:
+            return None
+        debtor_coa = self.get_coa_id_by_account_number(self.DEBTOR_ACCOUNT_NUMBER)
+        if not debtor_coa:
+            return None
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT ID FROM Bookings WHERE DocumentNumber = ? AND COA_ID = ?"
+            " AND BookingType = 'entry' ORDER BY ID LIMIT 1",
+            (invoice[1], debtor_coa))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
+
+    def ensure_receivable_booking(self, invoice_id):
+        """Offenen Posten einer Rechnung buchen: Debitoren an Wartekonto.
+
+        Idempotent – existiert die Buchung schon, passiert nichts. Angebote,
+        Entwürfe und Steuersätze ohne Wartekonto (z.B. 5%) werden übersprungen.
+
+        Returns: Booking-ID oder None.
+        """
+        invoice = self.get_invoice_by_id(invoice_id)
+        if not invoice or (len(invoice) > 45 and invoice[45] == 'quote'):
+            return None
+        existing = self.get_receivable_booking(invoice_id)
+        if existing:
+            return existing
+        open_coa = self.resolve_open_revenue_coa(invoice[35])
+        if not open_coa:
+            return None
+        debtor_coa = self._ensure_standard_coa(
+            self.DEBTOR_ACCOUNT_NUMBER, 'Debitoren',
+            'Vortrags-, Kapital-, Korrektur- u. statistische Konten')
+        gross = float(invoice[38] or 0)
+        tax_amount = float(invoice[37] or 0)
+        rate = invoice[35]
+        tax_rate = None
+        if rate and rate > 0:
+            tax_rate = rate if rate <= 1 else rate / 100
+        customer = invoice[15] or invoice[14] or ''
+        return self.insert_booking(
+            date_booking=invoice[2],
+            amount=gross,
+            recipient_client=customer,
+            contact_id=invoice[13],
+            coa_id=debtor_coa,
+            counter_coa_id=open_coa,
+            currency=invoice[24] or 'EUR',
+            tax_rate=tax_rate,
+            tax_amount=tax_amount if tax_amount else None,
+            text=f"Rechnung {invoice[1]} {customer}".strip(),
+            document_number=invoice[1],
+            booking_type='entry',
+            log_description="Offener Posten zur Rechnung")
+
+    def remove_receivable_booking(self, invoice_id):
+        """Forderungsbuchung wieder entfernen (Rechnung zurück auf Entwurf).
+
+        Nur solange nichts daran hängt: keine Zahlung auf der Rechnung und die
+        Buchung keiner Bankbewegung zugeordnet. Sonst bliebe sie stehen und
+        wird vom Nutzer bewusst aufgelöst.
+
+        Returns: True, wenn gelöscht wurde.
+        """
+        if self.get_invoice_payments(invoice_id):
+            return False
+        booking_id = self.get_receivable_booking(invoice_id)
+        if not booking_id:
+            return False
+        booking = self.get_booking_by_id(booking_id)
+        if booking and booking[18] is not None:   # ParentBooking_ID
+            return False
+        self.delete_transaction(booking_id)
+        return True
+
+    def _ensure_tax_free_revenue_coa(self):
+        """Kleinunternehmer-Erlöskonto 4185 liefern (DATEV-SKR04); fehlt es
+        (DB älter als der Seed-Eintrag), wird es als Standardkonto im
+        dominanten Kontenrahmen nachgelegt – sonst hätten §19-/0%-Rechnungen
+        kein Zielkonto."""
+        return self._ensure_standard_coa(
+            4185, 'Erlöse als Kleinunternehmer nach § 19 Abs. 1 UStG')
 
     def get_booking_allocations(self, booking_id):
         """Zahlungs-Zuordnungen einer Buchung.

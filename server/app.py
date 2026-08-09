@@ -40,6 +40,18 @@ from .pages_quote import PageQuote
 from .pages_worktime import PageWorkTimes
 from .pages_trips import PageTrips
 
+def parse_form(post_body: str) -> dict:
+    """Formular-POST in {Feldname: [Werte]} zerlegen.
+
+    ``keep_blank_values`` ist hier zwingend: Formulare mit gleichnamigen
+    Feldern lesen zeilenweise über den Index (Buchungssatz-Editor: split_id,
+    split_amount, …). Verschwiege parse_qs ein leer gelassenes Feld, rutschten
+    alle folgenden Zeilen um eins – der Steuerbetrag der einen Buchung landete
+    stillschweigend auf der anderen.
+    """
+    return parse_qs(post_body, keep_blank_values=True)
+
+
 def content_disposition(disposition, filename):
     """Content-Disposition-Headerwert für Downloads bauen.
 
@@ -918,7 +930,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         # Parse regular form data
         content_length = int(self.headers['Content-Length'])
         post_body = self.rfile.read(content_length).decode('utf-8')
-        post_data = parse_qs(post_body)
+        post_data = parse_form(post_body)
 
         # ── CSRF für alle Formular-Routen (Feld 'csrf' oder Header) ───────────
         if not self._check_csrf(post_data):

@@ -13,6 +13,7 @@ import userctx
 from .pages import Header1, Header2, Header3, Footer
 from .import_preview import match_account
 from db import Database
+from db.matching import is_bank_effective
 from money import to_minor, from_minor, multiply, tax_from_net, round_minor
 from decimal import Decimal
 
@@ -301,6 +302,12 @@ def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
             if old_coa in bank_coa_ids and old_counter not in bank_coa_ids:
                 # liquide-zuerst (z. B. Einnahmen aus dem WISO-Import)
                 new_coa, new_counter = old_coa, purpose_coa
+            elif not is_bank_effective(old_coa, old_counter, bank_coa_ids):
+                # Umbuchung (4405→4400, Privatanteil 6805→2100): sie hat kein
+                # Bankkonto als Gegenseite. Würde hier account_coa_id gesetzt,
+                # machte das Speichern der Bankmaske aus dem Beleg eine
+                # Zahlung – das Gegenkonto bleibt deshalb unangetastet.
+                new_counter = old_counter
         fields = dict(
             date_booking=date,
             date_tax=date_tax,
@@ -712,6 +719,20 @@ def handle_datev_export(db: Database, post_data: dict):
         date_to   = post_data.get('date_to',   [''])[0].strip()
         if not date_from or not date_to:
             return 303, '/miscellaneous?datev_export=error&msg=Datumsbereich+fehlt'
+
+        # Unstimmige Splits blockieren den Export: ein Stapel, in dem die
+        # Buchungssätze nicht die Bankbewegung ergeben, ist in sich falsch und
+        # beim Steuerbüro nur mit Rückfragen zu klären. Umbuchungen auf die
+        # Wartekonten zählen nicht mit – der Rechnungsfall gilt als korrekt.
+        unbalanced = db.find_unbalanced_splits(date_from, date_to)
+        if unbalanced:
+            parts = [f"{d} {a:.2f} EUR (Rest {r:.2f})"
+                     for _bid, d, a, r, _t in unbalanced[:5]]
+            if len(unbalanced) > 5:
+                parts.append(f"und {len(unbalanced) - 5} weitere")
+            msg = ('Export abgelehnt: Buchungssaetze passen nicht zur '
+                   'Bankbewegung – ' + '; '.join(parts))
+            return 303, f'/miscellaneous?datev_export=error&msg={quote(msg)}'
 
         bookings = db.fetch_bookings_range(date_from, date_to)
         if not bookings:
@@ -1191,20 +1212,43 @@ def handle_update_invoice_status(post_body: bytes):
     # Zustände (z. B. "bezahlt" mit Rest 0, aber ohne Zahlungen; todo #2).
     # Status bleibt die manuelle Wahl (adjust_status=False).
     db.recalc_invoice_payment_state(invoice_id, adjust_status=False)
+    _sync_receivable_booking(db, invoice_id, new_status)
     print(f"Invoice {invoice_id} status updated to: {new_status}")
 
     return 200, f'{{"success": true, "invoice_id": {invoice_id}}}'
 
 
-def _backfill_booking_skr(db, booking_id, invoice):
+# Ab "versendet" ist die Rechnung ein offener Posten; davor (Entwurf,
+# finalisiert) und nach dem Storno nicht. Zustands- statt übergangsgesteuert,
+# damit auch Sprünge wie finalized → paid richtig landen.
+_RECEIVABLE_STATUSES = frozenset(
+    {'sent', 'partial_payment', 'overdue', 'paid'})
+
+
+def _sync_receivable_booking(db, invoice_id, status):
+    """Forderungsbuchung (Debitoren an Wartekonto) am Status ausrichten.
+
+    Ein Fehler hier darf den Statuswechsel nicht kippen – die Buchung lässt
+    sich jederzeit nachziehen, ein halb gesetzter Status nicht.
+    """
+    try:
+        if status in _RECEIVABLE_STATUSES:
+            db.ensure_receivable_booking(invoice_id)
+        else:
+            db.remove_receivable_booking(invoice_id)
+    except Exception as e:
+        print(f"Error syncing receivable booking for invoice {invoice_id}: {e}")
+
+
+def _backfill_booking_skr(db, booking_id, invoice, alloc=None):
     """SKR-Teil einer verknüpften Zahlung automatisch nachtragen (todo #2).
 
     Beim nachträglichen Verknüpfen bestehender Buchungen (z. B. importierter
     Kontoauszug) werden NUR leere Felder gefüllt: Erlöskonto passend zum
     Steuersatz der Rechnung, Steuersatz/-betrag (enthaltene USt des
     Buchungsbetrags), Kunde und Beleg-Nr. Bei Bankbuchungen ohne Buchungssatz
-    entsteht zusätzlich die 'entry'-Kindbuchung mit dem SKR-Konto des
-    Bankkontos als Gegenkonto – wie beim manuellen Vervollständigen.
+    entstehen zusätzlich die 'entry'-Kindbuchungen – siehe
+    _insert_payment_children.
     """
     booking = db.get_booking_by_id(booking_id)
     if not booking:
@@ -1228,11 +1272,27 @@ def _backfill_booking_skr(db, booking_id, invoice):
     # Doppik-Spiegel aus – danach entstünde bei jedem Aufruf ein weiteres Kind.
     if (booking[17] == 'bank' and booking[8]
             and not db.get_child_bookings_for_bank(booking_id)):
-        account_coa_id = None
-        if booking[4]:
-            acct = db.get_account_by_id(booking[4])
-            if acct and acct[7]:  # SKRAccount at index 7
-                account_coa_id = db.get_coa_id_by_account_number(acct[7])
+        _insert_payment_children(db, booking, invoice, coa_id, alloc)
+
+
+def _insert_payment_children(db, booking, invoice, revenue_coa_id, alloc=None):
+    """Buchungssätze einer Rechnungszahlung unter der Bankbewegung anlegen.
+
+    Steht die Rechnung als offener Posten in den Büchern (Forderungsbuchung
+    Debitoren an Wartekonto), entstehen wie bei WISO ZWEI Sätze:
+
+        Zahlung zu Re. X   Bank        an Debitoren      (bankwirksam)
+        Umb. zu Re. X      Wartekonto  an Erlöskonto     (nur Umbuchung)
+
+    Erst die Umbuchung macht den Erlös in der EÜR sichtbar – der offene Posten
+    verschwindet damit in gleicher Höhe. Ohne Forderungsbuchung (Fremdbelege,
+    Altbestand) bleibt es beim bisherigen einzelnen Spiegel-Satz.
+    """
+    account_coa_id = _bank_counter_coa(db, booking[4])
+    receivable_id = db.get_receivable_booking(invoice[0])
+    receivable = db.get_booking_by_id(receivable_id) if receivable_id else None
+
+    if not (receivable and account_coa_id and receivable[8] and receivable[9]):
         db.insert_booking(
             date_booking=booking[1], date_tax=booking[2],
             amount=float(booking[11] or 0),
@@ -1243,9 +1303,37 @@ def _backfill_booking_skr(db, booking_id, invoice):
             tax_rate=booking[13],
             tax_amount=float(booking[14]) if booking[14] is not None else None,
             text=booking[15] or '', document_number=booking[16],
-            booking_type='entry', parent_booking_id=booking_id,
+            booking_type='entry', parent_booking_id=booking[0],
             auto_mirror=True,
             log_description="Auto entry child on invoice link (todo #2)")
+        return
+
+    debtor_coa, open_coa = receivable[8], receivable[9]
+    bank_amount = float(booking[11] or 0)
+    # Teilzahlung: nur der zugeordnete Betrag wird umgebucht. Das Vorzeichen
+    # kommt von der Bankbewegung (Gutschrift positiv, Erstattung negativ).
+    amount = bank_amount if alloc is None else \
+        abs(float(alloc)) * (1 if bank_amount >= 0 else -1)
+    rate = invoice[35]
+    rate_pct = 0 if not rate or rate < 0 else (rate * 100 if rate <= 1 else rate)
+    tax_rate = rate_pct / 100 if rate_pct else None
+    tax_amount = round(abs(amount) * rate_pct / (100 + rate_pct), 2) \
+        if rate_pct else None
+    if tax_amount and amount < 0:
+        tax_amount = -tax_amount
+    common = dict(
+        date_booking=booking[1], date_tax=booking[2],
+        recipient_client=booking[6] or '', contact_id=booking[7],
+        currency=booking[12] or 'EUR', amount=amount,
+        document_number=invoice[1], booking_type='entry',
+        parent_booking_id=booking[0])
+    db.insert_booking(coa_id=account_coa_id, counter_coa_id=debtor_coa,
+                      text=f"Zahlung zu Re. {invoice[1]}", **common,
+                      log_description="Payment child (bank to debtor)")
+    db.insert_booking(coa_id=open_coa, counter_coa_id=revenue_coa_id,
+                      tax_rate=tax_rate, tax_amount=tax_amount,
+                      text=f"Umb. zu Re. {invoice[1]}", **common,
+                      log_description="Payment child (open item to revenue)")
 
 
 def link_booking_to_invoice_capped(db, invoice_id, booking_id, amount=None):
@@ -1271,7 +1359,7 @@ def link_booking_to_invoice_capped(db, invoice_id, booking_id, amount=None):
         return False, "Kein offener Betrag zuordenbar (Rechnung oder Buchung ausgeschöpft)"
     db.link_invoice_to_transaction(invoice_id, booking_id, alloc)
     try:
-        _backfill_booking_skr(db, booking_id, invoice)
+        _backfill_booking_skr(db, booking_id, invoice, alloc)
     except Exception as e:
         # Zuordnung ist gespeichert; ein Backfill-Fehler darf sie nicht kippen
         print(f"Error backfilling SKR for booking {booking_id}: {e}")

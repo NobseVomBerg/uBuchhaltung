@@ -10,9 +10,21 @@ Teilbuchung eigenständig. Eine unvollständige Summe ist erlaubt
 (Teilerfassung) und wird in der Übersicht als offener Rest ausgewiesen.
 """
 from decimal import Decimal
+from urllib.parse import urlencode
 
+from server.app import parse_form
 from server.handlers import handle_add_transaction
 from server.pages_transactions import PageTransactions
+
+
+def _through_server_parser(post_data):
+    """POST wie im Server verschicken: urlencode → server.app.parse_form.
+
+    Ohne diesen Umweg prüfte der Test nur die von Hand gebauten Listen und
+    nicht, was aus dem echten Formular ankommt.
+    """
+    pairs = [(k, v) for k, vs in post_data.items() for v in vs]
+    return parse_form(urlencode(pairs))
 
 
 def _bank_account(db, name='Split-Bank', skr=1800):
@@ -103,7 +115,7 @@ def test_extend_and_reduce_split(tmp_db):
 
 def test_partial_capture_is_saved(tmp_db):
     """Unvollständige Summe wird gespeichert (kein Block) und in der Übersicht
-    als offener Rest ausgewiesen; nach Ergänzen erscheint der Haken."""
+    als "offen" ausgewiesen; nach Ergänzen erscheint der Haken."""
     acct = _bank_account(tmp_db)
     coa_a = tmp_db.get_coa_id_by_account_number(6815)
     coa_b = tmp_db.get_coa_id_by_account_number(6300)
@@ -116,7 +128,10 @@ def test_partial_capture_is_saved(tmp_db):
     assert len(_children(tmp_db, bk)) == 1
 
     html = PageTransactions(tmp_db, date_from='2026-01-01', date_to='2026-12-31')
-    assert 'Rest -38.00' in html
+    # Badge bleibt schmal ("offen"); der genaue Rest steht nur im Tooltip,
+    # sonst verdeckt er den Bearbeiten-Stift.
+    assert 'offener Rest -38.00' in html
+    assert '>offen</span>' in html
     assert 'Bank + Buchungssätze vollständig' not in html
 
     first_id = list(_children(tmp_db, bk))[0]
@@ -126,7 +141,7 @@ def test_partial_capture_is_saved(tmp_db):
     ]))
     html = PageTransactions(tmp_db, date_from='2026-01-01', date_to='2026-12-31')
     assert 'Bank + Buchungssätze vollständig' in html
-    assert 'Rest -38.00' not in html
+    assert 'offener Rest -38.00' not in html
 
 
 def test_bank_document_number_survives_editor_save(tmp_db):
@@ -242,6 +257,32 @@ def test_adopt_existing_booking_by_id(tmp_db):
     assert b1[1] == '2026-02-20'                    # eigenes Datum bleibt
     assert b1[6] == 'Lieferant A'                   # eigener Empfänger bleibt
     assert b1[16] == 'RG-1'                         # eigene Beleg-Nr. bleibt
+
+
+def test_blank_fields_keep_rows_aligned(tmp_db):
+    """Leere Felder dürfen die Zeilen nicht verschieben.
+
+    Zeile 1 ohne Steuer, Zeile 2 mit: fiele das leere Feld beim Parsen weg,
+    landete der Steuerbetrag der zweiten Zeile auf der ersten – ein stiller
+    Fehler in der Buchhaltung. Der Test geht denselben Weg wie der Server
+    (urlencode → parse_qs).
+    """
+    acct = _bank_account(tmp_db)
+    coa_a = tmp_db.get_coa_id_by_account_number(6815)
+    coa_b = tmp_db.get_coa_id_by_account_number(6300)
+    bk = _bank_booking(tmp_db, acct)
+
+    post = _post(bk, acct, [
+        ('', '-200.00', coa_a, '', '', '', 'ohne Steuer'),
+        ('', '-38.00', coa_b, 19, '-6.07', 'B', 'mit Steuer'),
+    ])
+    handle_add_transaction(tmp_db, _through_server_parser(post))
+
+    kids = {c[1]: c for c in tmp_db.get_child_bookings_for_bank(bk)}
+    assert kids[coa_a][5] is None and kids[coa_a][6] is None   # Satz/Betrag leer
+    assert kids[coa_b][5] == 0.19
+    assert kids[coa_b][6] == Decimal('-6.0700')
+    assert kids[coa_b][7] == 'B' and kids[coa_a][7] is None    # Beleg-Nr.
 
 
 def test_adopt_candidates_exclude_linked_bookings(tmp_db):

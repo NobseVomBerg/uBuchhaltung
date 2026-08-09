@@ -24,6 +24,11 @@ def test_is_income_account_boundaries():
     assert not is_income_account(5200)   # Wareneingang
     assert not is_income_account(None)
     assert not is_income_account('abc')
+    # Wartekonten liegen zwar in der Erlösklasse, sind aber Bestandskonten:
+    # Einnahme wird erst die Umbuchung bei Zahlung.
+    assert not is_income_account(4340)
+    assert not is_income_account(4345)
+    assert not is_income_account(4405)
 
 
 def _book_payment(db, coa_number, amount='100.00'):

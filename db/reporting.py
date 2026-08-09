@@ -13,6 +13,15 @@ from money import to_minor, from_minor
 # (4400/4640/4845) übersah z. B. 4185 (§19), 4300 (7%) und 4736 (Skonti).
 INCOME_ACCOUNT_RANGE = (4000, 4999)
 
+# Bestandskonten des Offene-Posten-Verfahrens: die Forderung aus einer
+# versendeten Rechnung (10000) und die Wartekonten, auf denen der Erlös bis zur
+# Zahlung parkt. Die EÜR ist eine Ist-Rechnung – erst die Umbuchung vom
+# Wartekonto auf das Erlöskonto (bei Zahlung) ist der Einnahmezeitpunkt.
+# Stünden diese Konten mit in der Auswertung, höbe 4405 -netto den Erlös auf
+# 4400 +netto wieder auf (beide liegen in der Erlösklasse 4000-4999) und die
+# Forderung erschiene als Ausgabe.
+NEUTRAL_ACCOUNT_NUMBERS = (10000, 4340, 4345, 4405)
+
 
 def is_income_account(account_number) -> bool:
     """True für Erlös-/Ertragskonten (SKR04-Klasse 4)."""
@@ -20,10 +29,24 @@ def is_income_account(account_number) -> bool:
         nr = int(account_number)
     except (TypeError, ValueError):
         return False
+    if nr in NEUTRAL_ACCOUNT_NUMBERS:
+        return False
     return INCOME_ACCOUNT_RANGE[0] <= nr <= INCOME_ACCOUNT_RANGE[1]
 
 
 class ReportingMixin:
+    def _get_neutral_coa_ids(self, cursor):
+        """COA-IDs der auswertungsneutralen Bestandskonten.
+
+        Forderungen und Wartekonten des Offene-Posten-Verfahrens – siehe
+        NEUTRAL_ACCOUNT_NUMBERS.
+        """
+        ph = ','.join('?' * len(NEUTRAL_ACCOUNT_NUMBERS))
+        cursor.execute(
+            f'SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN ({ph})',
+            NEUTRAL_ACCOUNT_NUMBERS)
+        return {r[0] for r in cursor.fetchall()}
+
     def get_dashboard_monthly(self, date_from: str, date_to: str,
                               account_ids: list | None = None):
         """Monthly 3-way split of bookings for the dashboard.
@@ -487,10 +510,14 @@ class ReportingMixin:
             direct_entries = cursor.fetchall()
 
         # ── Einnahmen-COA-IDs ermitteln (für USt-Zuordnung auf 3806) ──
-        cursor.execute("""
+        # Die Wartekonten liegen zwar in der Erlösklasse, sind aber noch keine
+        # Einnahme – ihre USt entsteht erst mit der Umbuchung bei Zahlung.
+        _neutral_ph = ','.join('?' * len(NEUTRAL_ACCOUNT_NUMBERS))
+        cursor.execute(f"""
             SELECT ID FROM ChartOfAccounts
             WHERE AccountNumber BETWEEN ? AND ?
-        """, INCOME_ACCOUNT_RANGE)
+              AND AccountNumber NOT IN ({_neutral_ph})
+        """, list(INCOME_ACCOUNT_RANGE) + list(NEUTRAL_ACCOUNT_NUMBERS))
         income_coa_ids = {r[0] for r in cursor.fetchall()}
 
         cursor.execute("""
@@ -499,10 +526,22 @@ class ReportingMixin:
         """)
         input_tax_coa_ids = {acct_nr: coa_id for coa_id, acct_nr in cursor.fetchall()}
 
+        neutral_coa_ids = self._get_neutral_coa_ids(cursor)
+
         # ── Zweck-Konto bestimmen und aggregieren ─────────────────────
         # Netto-Beträge pro Konto + virtuelle USt-Zeile (3806)
         totals: dict[int, float] = defaultdict(float)
         ust_total: float = 0.0   # nur USt aus Einnahmen → 3806
+
+        def _book(coa, value):
+            """Betrag verbuchen – Bestandskonten bleiben aus der EÜR heraus."""
+            if coa and coa not in neutral_coa_ids:
+                totals[coa] += value
+
+        def _purpose(coa):
+            """Zweckkonto; ein Bestandskonto ist keines (kein Vorsteuerabzug)."""
+            return coa if coa and coa not in neutral_coa_ids else None
+
         for amount, coa_id, counter_coa_id, tax_amount, tax_rate in entries:
             netto = amount - tax_amount  # Brutto → Netto
 
@@ -515,14 +554,14 @@ class ReportingMixin:
             if coa_id in liquid_coa_ids:
                 # Cash-flow: liquides Konto → Zweck = CounterCOA
                 if counter_coa_id:
-                    purpose_coa_id = counter_coa_id
-                    totals[counter_coa_id] += netto
+                    purpose_coa_id = _purpose(counter_coa_id)
+                    _book(counter_coa_id, netto)
                     if counter_coa_id in income_coa_ids:
                         ust_total += tax_amount
             elif counter_coa_id and counter_coa_id in liquid_coa_ids:
                 # Cash-flow: Zweck = COA, Gegenstück ist liquid
-                purpose_coa_id = coa_id
-                totals[coa_id] += netto
+                purpose_coa_id = _purpose(coa_id)
+                _book(coa_id, netto)
                 if coa_id in income_coa_ids:
                     ust_total += tax_amount
             else:
@@ -530,12 +569,12 @@ class ReportingMixin:
                 # Betrag auf beide Konten verteilen, damit z.B.
                 # Erlöse unter 4400 erscheinen und 4405 reduziert wird.
                 if counter_coa_id:
-                    purpose_coa_id = counter_coa_id
-                    totals[counter_coa_id] += netto
+                    purpose_coa_id = _purpose(counter_coa_id)
+                    _book(counter_coa_id, netto)
                     if counter_coa_id in income_coa_ids:
                         ust_total += tax_amount
                 if coa_id:
-                    totals[coa_id] -= netto
+                    _book(coa_id, -netto)
 
             # Vorsteuer aus Ausgaben separat auf 1401/1406 ausweisen.
             if (purpose_coa_id is not None
@@ -560,13 +599,13 @@ class ReportingMixin:
             # Zweckkonto bestimmen: nicht-liquide Seite bevorzugen
             purpose_coa_id = None
             if coa_id and coa_id not in liquid_coa_ids:
-                purpose_coa_id = coa_id
-                totals[coa_id] += netto
+                purpose_coa_id = _purpose(coa_id)
+                _book(coa_id, netto)
                 if coa_id in income_coa_ids:
                     ust_total += tax_amount
             elif counter_coa_id and counter_coa_id not in liquid_coa_ids:
-                purpose_coa_id = counter_coa_id
-                totals[counter_coa_id] += netto
+                purpose_coa_id = _purpose(counter_coa_id)
+                _book(counter_coa_id, netto)
                 if counter_coa_id in income_coa_ids:
                     ust_total += tax_amount
             # Vorsteuer
