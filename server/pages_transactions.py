@@ -5,9 +5,16 @@
 Transactions page (Buchungen: Bankbewegungen + Buchungssätze)
 """
 import html as _html
+from decimal import Decimal
 from db import Database
 from .pages import Header1, Header2, Header3, Footer
 from .period import period_filter_widget
+
+def _attr(s):
+    """Für HTML-Attribute escapen – auch einfach-quotierte (data-*, title):
+    html.escape lässt Apostrophe durch, die hier Attribute sprengen würden."""
+    return _html.escape(str(s or ''), quote=True).replace("'", '&#39;')
+
 
 # Spaltenindizes in Bookings (SELECT *):
 # [0]  ID            [1]  DateBooking   [2]  DateTax       [3]  BookingGroup_ID
@@ -84,25 +91,15 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             edit_recipient = _html.escape(edit_trans[6] or "")  # RecipientClient
             edit_text = _html.escape(edit_trans[15] or "")      # Text
 
-            # Für Bank-Buchungen: verknüpfte Entry-Daten laden
+            # Für Bank-Buchungen: verknüpfte Entry-Daten laden.
+            # Kontierung, Steuer und Beleg-Nr. werden NICHT mehr aus dem Kind
+            # übernommen – sie stehen im Buchungssatz-Editor bzw. gehören der
+            # Bankbewegung selbst (sonst erbte die Bank-Beleg-Nr. das Suffix
+            # einer Teilbuchung und der nächste Vorschlag hieße _A_B).
             if edit_trans[17] == 'bank':  # BookingType
                 entry_data = db.get_linked_entry_for_bank(edit_transaction_id)
                 if entry_data:
-                    # Fehlende Felder aus dem Entry übernehmen
                     edit_trans = list(edit_trans)
-                    # Das SKR-Feld der Maske ist das ZWECKkonto. Buchungssätze
-                    # können liquide-zuerst orientiert sein (COA = Bankkonto,
-                    # Gegenkonto = Erlöskonto – so legt sie der WISO-Import für
-                    # Einnahmen an); dann steht der Zweck auf der Gegenseite.
-                    entry_coa, entry_counter = entry_data[0], entry_data[1]
-                    bank_coa_ids = db.get_bank_coa_ids()
-                    if entry_coa in bank_coa_ids and entry_counter not in bank_coa_ids:
-                        entry_coa, entry_counter = entry_counter, entry_coa
-                    if not edit_trans[8]:   edit_trans[8]  = entry_coa      # COA_ID
-                    if not edit_trans[9]:   edit_trans[9]  = entry_counter  # CounterCOA_ID
-                    if not edit_trans[13]:  edit_trans[13] = entry_data[2]  # TaxRate
-                    if not edit_trans[14]:  edit_trans[14] = entry_data[3]  # TaxAmount
-                    if not edit_trans[16]:  edit_trans[16] = entry_data[4]  # DocumentNumber
                     if not edit_trans[7]:   edit_trans[7]  = entry_data[5]  # Contact_ID
                     if not edit_trans[10]:  edit_trans[10] = entry_data[6]  # Category_ID
                     edit_trans = tuple(edit_trans)
@@ -142,6 +139,27 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 }
                 edit_recipient = _html.escape(prefill['recipient'])
                 edit_text = _html.escape(prefill['text'])
+
+    # Buchungssatz-Editor: Bankbewegungen kontieren ihre Sätze in einer eigenen
+    # Tabelle (Split anlegen/auflösen), nicht mehr über die Felder oben.
+    is_bank_form = bool(edit_trans and edit_trans[17] == 'bank')
+    split_rows = []
+    if is_bank_form:
+        _bank_coa_ids = db.get_bank_coa_ids()
+        for c in db.get_child_bookings_for_bank(edit_trans[0]):
+            # Reine Doppik-Spiegel gehören nicht in den Editor
+            if c[1] in _bank_coa_ids and c[2] in _bank_coa_ids:
+                continue
+            # Liquide-zuerst gebuchte Sätze (COA = Bankkonto): das Zweckkonto
+            # steht auf der Gegenseite und gehört ins Kontofeld des Editors.
+            purpose_coa = c[1]
+            if c[1] in _bank_coa_ids and c[2] not in _bank_coa_ids:
+                purpose_coa = c[2]
+            split_rows.append({
+                'id': c[0], 'coa_id': purpose_coa, 'amount': c[4],
+                'tax_rate': c[5], 'tax_amount': c[6],
+                'docnr': c[7] or '', 'text': c[8] or '',
+            })
 
     # Rechnungs-Zuordnung: offene Rechnungen fürs Dropdown, bestehende
     # Zuordnungen der bearbeiteten Buchung für die Anzeige
@@ -252,25 +270,13 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         contact_display = f"{contact[2]} ({contact[3] or 'Privat'})" if contact[2] else contact[3] or f"ID {contact[0]}"
         s+= f'<option value="{contact[0]}" {selected}>{_html.escape(str(contact_display))}</option>'
 
-    s+= f'''
-                    </select></td></tr>
+    s+= '</select></td></tr>'
 
-                    <tr><td>Split-Buchung:</td><td><select name="booking_group_id">
-                        <option value="">-- Keine Gruppierung --</option>
-    '''
-    selected_booking_group_id = edit_trans[3] if edit_trans else None
-    for bg in booking_groups:
-        selected = 'selected' if selected_booking_group_id and bg[0] == selected_booking_group_id else ''
-        bg_display = f"#{bg[0]} - {bg[1] or 'Ohne Beschreibung'}"
-        s+= f'<option value="{bg[0]}" {selected}>{_html.escape(str(bg_display))}</option>'
-
-    s+= f'''
-                    </select></td></tr>
-
-                    <tr><td>SKR-Konto:</td><td><select name="coa_id">
-                        <option value="">-- Kein SKR-Konto --</option>
-    '''
+    # ── Kontierungsfelder ────────────────────────────────────────────────────
+    # Bei Bankbewegungen werden Konto, Steuer und Beleg-Nr. je Buchungssatz im
+    # Editor unterhalb gepflegt – hier oben würden sie doppelt geführt.
     selected_coa_id = edit_trans[8] if edit_trans else prefill.get('coa_id')
+    coa_options = '<option value="">-- Kein SKR-Konto --</option>'
     for coa in coa_accounts:
         is_selected = bool(selected_coa_id and coa[0] == selected_coa_id)
         # Ausgeblendete Konten (ShowInMenu=0) nicht anzeigen – außer es ist das aktuell gesetzte
@@ -278,18 +284,44 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             continue
         selected = 'selected' if is_selected else ''
         coa_display = f"{coa[2]} - {coa[3]}" if coa[3] else f"{coa[2]}"
-        s+= f'<option value="{coa[0]}" {selected}>{_html.escape(str(coa_display))}</option>'
+        coa_options += f'<option value="{coa[0]}" {selected}>{_html.escape(str(coa_display))}</option>'
+
+    accounting_rows = ''
+    if not is_bank_form:
+        selected_booking_group_id = edit_trans[3] if edit_trans else None
+        group_options = '<option value="">-- Keine Gruppierung --</option>'
+        for bg in booking_groups:
+            selected = 'selected' if selected_booking_group_id and bg[0] == selected_booking_group_id else ''
+            bg_display = f"#{bg[0]} - {bg[1] or 'Ohne Beschreibung'}"
+            group_options += f'<option value="{bg[0]}" {selected}>{_html.escape(str(bg_display))}</option>'
+        accounting_rows = (
+            f'<tr><td>Split-Buchung:</td><td>'
+            f'<select name="booking_group_id">{group_options}</select></td></tr>'
+            f'<tr><td>SKR-Konto:</td><td>'
+            f'<select name="coa_id">{coa_options}</select></td></tr>')
+
+    # Steuer gehört bei Bankbewegungen zur einzelnen Teilbuchung; die Beleg-Nr.
+    # bleibt oben – sie beschreibt die Bankbewegung und liefert die Basis für
+    # die Suffixe der Teilbuchungen (26F123 → _A, _B).
+    tax_rows = ''
+    if not is_bank_form:
+        tax_rows = (
+            f'<tr><td>Steuersatz (%):</td><td><input type="number" step="0.01"'
+            f' class="noButtons" name="tax_rate" id="tax_rate"'
+            f' value="{edit_trans[13]*100 if edit_trans and edit_trans[13] else prefill.get("tax_rate", "")}"'
+            f' placeholder="z.B. 19 für 19%"></td></tr>'
+            f'<tr><td>Steuerbetrag:</td><td><input type="number" step="0.01"'
+            f' class="noButtons" name="tax_amount" id="tax_amount"'
+            f' value="{edit_trans[14] if edit_trans and edit_trans[14] else prefill.get("tax_amount", "")}"></td></tr>')
+    tax_rows += (
+        f'<tr><td>Beleg-Nr.:</td><td><input type="text" name="document_nr"'
+        f' value="{_html.escape(str(edit_trans[16])) if edit_trans and edit_trans[16] else _html.escape(str(prefill.get("document_nr", "")))}"></td></tr>')
 
     s+= f'''
-                    </select></td></tr>
-
+                    {accounting_rows}
                     <tr><td>Betrag:</td><td><input type="number" step="0.01" class="noButtons" name="amount" id="amount" value="{edit_trans[11] if edit_trans else prefill.get("amount", "")}" required></td></tr>
                     <tr><td>Währung:</td><td><input type="text" name="currency" value="{_html.escape(str(edit_trans[12])) if edit_trans and edit_trans[12] else "EUR"}" size="5"></td></tr>
-
-                    <tr><td>Steuersatz (%):</td><td><input type="number" step="0.01" class="noButtons" name="tax_rate" id="tax_rate" value="{edit_trans[13]*100 if edit_trans and edit_trans[13] else prefill.get("tax_rate", "")}" placeholder="z.B. 19 für 19%"></td></tr>
-                    <tr><td>Steuerbetrag:</td><td><input type="number" step="0.01" class="noButtons" name="tax_amount" id="tax_amount" value="{edit_trans[14] if edit_trans and edit_trans[14] else prefill.get("tax_amount", "")}"></td></tr>
-
-                    <tr><td>Beleg-Nr.:</td><td><input type="text" name="document_nr" value="{_html.escape(str(edit_trans[16])) if edit_trans and edit_trans[16] else _html.escape(str(prefill.get("document_nr", "")))}"></td></tr>
+                    {tax_rows}
                     {invoice_row}
     '''
 
@@ -299,32 +331,156 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     else:
         form_buttons = '<input type="submit" value="Transaktion hinzuf\u00fcgen" class="coloredButton btn-sm bg-green">'
 
+    # Buttons bei Bankbewegungen erst UNTER den Buchungssatz-Editor
+    button_row = '' if is_bank_form else f'<tr><td></td><td>{form_buttons}</td></tr>'
     s+= f'''
-                    <tr><td></td><td>
-                        {form_buttons}
-                    </td></tr>
+                    {button_row}
                 </table>
-            </form>
+    '''
 
+    # ── Buchungssatz-Editor (nur Bankbewegungen) ─────────────────────────────
+    if is_bank_form:
+        def _split_row(row=None, template=False):
+            rid = '' if template or not row else row['id']
+            amount = '' if template or not row else f"{row['amount']:.2f}"
+            rate = ''
+            if row and not template and row['tax_rate']:
+                rate = f"{round(float(row['tax_rate']) * 100, 2):g}"
+            tax = '' if template or not row or row['tax_amount'] is None \
+                else f"{row['tax_amount']:.2f}"
+            docnr = '' if template or not row else _attr(row['docnr'])
+            text = '' if template or not row else _attr(row['text'])
+            sel_coa = row['coa_id'] if row and not template else None
+            opts = '<option value="">-- Kein Konto --</option>'
+            for coa in coa_accounts:
+                is_sel = bool(sel_coa and coa[0] == sel_coa)
+                if not (coa[7] if len(coa) > 7 else 1) and not is_sel:
+                    continue
+                lbl = f"{coa[2]} - {coa[3]}" if coa[3] else f"{coa[2]}"
+                opts += (f'<option value="{coa[0]}"{" selected" if is_sel else ""}>'
+                         f'{_html.escape(str(lbl))}</option>')
+            style = ' style="display:none"' if template else ''
+            cls = 'splitTemplate' if template else 'splitRow'
+            return (
+                f'<tr class="{cls}"{style}>'
+                f'<td><input type="hidden" name="split_id" value="{rid}">'
+                f'<input type="number" step="0.01" class="noButtons splitAmount"'
+                f' name="split_amount" value="{amount}" oninput="splitRecalc()"></td>'
+                f'<td><select name="split_coa">{opts}</select></td>'
+                f'<td><input type="number" step="0.01" class="noButtons splitRate"'
+                f' name="split_tax_rate" value="{rate}" oninput="splitTax(this)"></td>'
+                f'<td><input type="number" step="0.01" class="noButtons splitTax"'
+                f' name="split_tax_amount" value="{tax}"></td>'
+                f'<td><input type="text" name="split_docnr" value="{docnr}" size="12"></td>'
+                f'<td><input type="text" name="split_text" value="{text}" size="24"></td>'
+                f'<td><a href="javascript:void(0)" class="action-icon delete-icon"'
+                f' title="Teilbuchung entfernen" onclick="splitRemove(this)">&#10005;</a></td>'
+                f'</tr>')
+
+        rows_html = ''.join(_split_row(r) for r in split_rows)
+        bank_amount = float(edit_trans[11] or 0)
+        bank_docnr = _attr(edit_trans[16])
+        bank_text = _attr(edit_trans[15])
+        s+= f'''
+            <h3 style="margin-top:18px;">Buchungssätze zu dieser Bankbewegung</h3>
+            <table id="splitTable" class="form-table">
+                <tr><th>Betrag</th><th>SKR-Konto</th><th>St.%</th><th>Steuerbetrag</th>
+                    <th>Beleg-Nr.</th><th>Verwendungszweck</th><th></th></tr>
+                {rows_html}
+                {_split_row(template=True)}
+            </table>
+            <div class="rowWithObjects" style="margin-top:6px;">
+                <button type="button" onclick="splitAdd()" class="coloredButton btn-sm bg-blue">+ Teilbuchung</button>
+                <span id="splitSummary"></span>
+            </div>
+            <script>
+                const SPLIT_BANK_AMOUNT = {bank_amount};
+                const SPLIT_BANK_DOCNR = "{bank_docnr}";
+                const SPLIT_BANK_TEXT = "{bank_text}";
+                const SPLIT_SUFFIX = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+                function splitRows() {{
+                    return [...document.querySelectorAll('#splitTable tr.splitRow')];
+                }}
+                function splitRecalc() {{
+                    let sum = 0;
+                    splitRows().forEach(r => {{
+                        sum += parseFloat(r.querySelector('.splitAmount').value) || 0;
+                    }});
+                    const rest = Math.round((SPLIT_BANK_AMOUNT - sum) * 100) / 100;
+                    const el = document.getElementById('splitSummary');
+                    if (!splitRows().length) {{ el.textContent = ''; return; }}
+                    // Kein Speicher-Block: ein offener Rest ist erlaubt und
+                    // wird in der Übersicht als "Rest" statt Haken angezeigt.
+                    el.textContent = 'Summe ' + sum.toFixed(2) + ' von '
+                        + SPLIT_BANK_AMOUNT.toFixed(2) + (rest === 0 ? ' ✓' : ' — Rest ' + rest.toFixed(2));
+                    el.className = rest === 0 ? 'successColor' : 'warnColor';
+                }}
+                function splitTax(input) {{
+                    const row = input.closest('tr');
+                    const amount = parseFloat(row.querySelector('.splitAmount').value) || 0;
+                    const rate = parseFloat(input.value) || 0;
+                    const taxField = row.querySelector('.splitTax');
+                    if (amount !== 0 && rate !== 0) {{
+                        taxField.value = (amount * rate / (100 + rate)).toFixed(2);
+                    }} else if (input.value.trim() === '' || rate === 0) {{
+                        taxField.value = '';
+                    }}
+                }}
+                function splitAdd() {{
+                    const tpl = document.querySelector('#splitTable tr.splitTemplate');
+                    const row = tpl.cloneNode(true);
+                    row.className = 'splitRow';
+                    row.style.display = '';
+                    // Vorbefüllen mit Restbetrag und Werten der Bankbewegung –
+                    // danach ist die Teilbuchung eigenständig.
+                    let sum = 0;
+                    splitRows().forEach(r => {{ sum += parseFloat(r.querySelector('.splitAmount').value) || 0; }});
+                    const rest = Math.round((SPLIT_BANK_AMOUNT - sum) * 100) / 100;
+                    row.querySelector('.splitAmount').value = rest !== 0 ? rest.toFixed(2) : '';
+                    const idx = splitRows().length;
+                    row.querySelector('[name=split_docnr]').value =
+                        SPLIT_BANK_DOCNR ? SPLIT_BANK_DOCNR + '_' + SPLIT_SUFFIX[idx % 26] : '';
+                    row.querySelector('[name=split_text]').value = SPLIT_BANK_TEXT;
+                    tpl.parentNode.insertBefore(row, tpl);
+                    splitRecalc();
+                }}
+                function splitRemove(link) {{
+                    link.closest('tr').remove();
+                    splitRecalc();
+                }}
+                splitRecalc();
+            </script>
+    '''
+
+    if is_bank_form:
+        s+= f'''
+            <div class="rowWithObjects" style="margin-top:12px;">{form_buttons}</div>
+    '''
+    s+= '''
+            </form>
+    '''
+    if not is_bank_form:
+        s+= '''
             <script>
                 // Automatische Berechnung des Steuerbetrags.
                 // amount ist der BRUTTO-Betrag; berechnet wird die darin
                 // enthaltene USt: tax = brutto * satz / (100 + satz).
                 // Das Feld bleibt manuell überschreibbar (Skonto, Mischsätze).
-                function calculateTax() {{
+                function calculateTax() {
                     const amount = parseFloat(document.getElementById('amount').value) || 0;
                     const rateField = document.getElementById('tax_rate').value;
                     const taxRate = parseFloat(rateField) || 0;
-                    if (amount !== 0 && taxRate !== 0) {{
+                    if (amount !== 0 && taxRate !== 0) {
                         const taxAmount = amount * taxRate / (100 + taxRate);
                         document.getElementById('tax_amount').value = taxAmount.toFixed(2);
-                    }} else if (rateField.trim() === '' || taxRate === 0) {{
+                    } else if (rateField.trim() === '' || taxRate === 0) {
                         // Steuersatz geleert/0: alten Steuerbetrag mit entfernen –
                         // sonst rechnet die EÜR (Netto = Betrag − Steuer) mit
                         // einem Betrag, zu dem es keinen Satz mehr gibt.
                         document.getElementById('tax_amount').value = '';
-                    }}
-                }}
+                    }
+                }
                 document.getElementById('amount').addEventListener('input', calculateTax);
                 document.getElementById('tax_rate').addEventListener('input', calculateTax);
             </script>
@@ -666,10 +822,6 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         except (ValueError, TypeError):
             return ''
 
-    def _attr(s):
-        """Für HTML-Attribute escapen – auch einfach-quotierte (data-*, title):
-        html.escape lässt Apostrophe durch, die hier Attribute sprengen würden."""
-        return _html.escape(str(s or ''), quote=True).replace("'", '&#39;')
 
     for item in bookings:
         row_type = item['type']
@@ -778,9 +930,29 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 if parts:
                     entry_docnr = ', '.join(parts)
 
+            # Text/Beleg-Nr. der Bankbewegung haben Vorrang – sie werden dort
+            # gepflegt; die Kind-Werte dienen nur als Rückfallebene.
+            if booking[15]:
+                entry_text = bank_text
+            if booking[16] and not is_private:
+                entry_docnr = _html.escape(str(booking[16]))
+
             if is_linked:
-                # Verknüpft: einzeilige Merged-Darstellung
-                status_badge = "<span class='badge bg-green' title='Bank + Buchung verknüpft'>✓</span>"
+                # Status dreistufig: ✓ nur, wenn die Buchungssätze den Betrag
+                # der Bankbewegung vollständig abbilden. Teilerfassung ist
+                # erlaubt (Speichern wird nie blockiert) und zeigt den Rest.
+                child_sum = sum((ch['booking'][11] or 0) for ch in children)
+                rest = (amount or 0) - child_sum
+                all_coded = all(ch['booking'][8] is not None for ch in children)
+                if abs(rest) < Decimal('0.005') and all_coded:
+                    status_badge = ("<span class='badge bg-green' "
+                                    "title='Bank + Buchungssätze vollständig'>✓</span>")
+                else:
+                    _hint = ('noch nicht kontiert' if not all_coded
+                             else f'offener Rest {rest:.2f}')
+                    status_badge = (f"<span class='badge bg-orange' "
+                                    f"title='Buchungssätze unvollständig: {_hint}'>"
+                                    f"Rest {rest:.2f}</span>")
                 if count > 1:
                     # Split: aufklappbar. Suche über Bank-Text + alle Kinder.
                     search_recip = _attr(' '.join(filter(None,
@@ -807,7 +979,10 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     s+= f"<td title='{_attr(account_name)}'>{_html.escape(str(account_name))}</td>"
                     s+= f"<td><span class='badge bg-indigo'>Split {count}×</span></td>"
                     s+= f"<td title='{entry_docnr}'>{entry_docnr}</td>"
-                    s+= f"<td>{status_badge} <span class='split-toggle-icon' id='toggle-icon-{bid}'>▶</span></td>"
+                    s+= (f"<td>{status_badge}"
+                         f" <a href='javascript:void(0)' class='action-icon' title='Bankbewegung und Buchungssätze bearbeiten'"
+                         f" onclick='event.stopPropagation(); openEditForm({bank_id})'>&#9998;</a>"
+                         f" <span class='split-toggle-icon' id='toggle-icon-{bid}'>▶</span></td>")
                     s+= f"</tr>"
                 else:
                     # Einzelne verknüpfte Buchung: Merged-Darstellung, aber

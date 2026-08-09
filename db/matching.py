@@ -50,17 +50,21 @@ class MatchingMixin:
         Bank-Bewegung angelegten Buchungssätze – nur sie dürfen mitgezogen
         werden (Herkunft ist aus den Werten allein nicht rekonstruierbar).
 
-        Returns: [(ID, COA_ID, CounterCOA_ID, AutoMirror)]
+        Returns: [(ID, COA_ID, CounterCOA_ID, AutoMirror,
+                   Amount€, TaxRate, TaxAmount€, DocumentNumber, Text)]
+        Die Indizes 0–3 sind stabil; die weiteren Felder speisen den
+        Buchungssatz-Editor der Bank-Maske.
         """
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT ID, COA_ID, CounterCOA_ID, COALESCE(AutoMirror, 0)
+            SELECT ID, COA_ID, CounterCOA_ID, COALESCE(AutoMirror, 0),
+                   Amount, TaxRate, TaxAmount, DocumentNumber, Text
             FROM Bookings WHERE ParentBooking_ID = ? ORDER BY ID
         ''', (bank_booking_id,))
         rows = cursor.fetchall()
         conn.close()
-        return rows
+        return [self._euro_row(r, 4, 6) for r in rows]  # Amount, TaxAmount
 
     def find_unlinked_booking_by_date_amount(self, date: str, amount: float):
         """Suche nach einer WISO-Buchung/-Gruppe (Account_ID IS NULL) anhand Datum + Betrag.

@@ -25,6 +25,7 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .modalBox				{ background: #DDD; color: #222; }
 .errorColor				{ color: red; }
 .successColor			{ color: green; }
+.warnColor				{ color: #e69500; }			 /* unfertig, nicht fehlerhaft */
 .textareaSql			{ font-family: monospace; width: 100%; max-width: 1000px; margin-top: 10px; }
 .muted					{ color: #666; }
 /* Form tables (prefered for gridRightCol) */

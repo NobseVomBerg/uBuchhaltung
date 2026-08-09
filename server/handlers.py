@@ -245,6 +245,97 @@ def handle_confirm_import(db: Database, post_data):
         traceback.print_exc()
         return 500, json.dumps({'ok': False, 'error': f'Fehler beim Import: {str(e)}'})
 
+def _bank_counter_coa(db, account_id):
+    """SKR-Konto (COA-ID) eines Bankkontos = liquide Gegenseite der Buchungssätze."""
+    if not account_id:
+        return None
+    acct_row = db.get_account_by_id(account_id)
+    if acct_row and acct_row[7]:  # SKRAccount at index 7
+        return db.get_coa_id_by_account_number(acct_row[7])
+    return None
+
+
+def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
+                     recipient, currency):
+    """Buchungssätze einer Bankbewegung aus dem Editor speichern.
+
+    Die Zeilen kommen als gleichnamige Felder (split_id, split_amount, …); ein
+    leeres split_id legt eine neue Teilbuchung an, weggelassene IDs werden
+    gelöscht. Die Summe wird NICHT erzwungen – Teilerfassung ist erlaubt und
+    an der dreistufigen Statusanzeige der Übersicht erkennbar.
+
+    Gemeinsame Felder (Datum, Steuerdatum, Empfänger, Währung) kommen von der
+    Bankbewegung; Konto, Steuer, Beleg-Nr. und Text gehören der Teilbuchung.
+    """
+    ids = post_data.get('split_id', [])
+    amounts = post_data.get('split_amount', [])
+    coas = post_data.get('split_coa', [])
+    rates = post_data.get('split_tax_rate', [])
+    tax_amounts = post_data.get('split_tax_amount', [])
+    docnrs = post_data.get('split_docnr', [])
+    texts = post_data.get('split_text', [])
+
+    def _at(seq, i, default=''):
+        return seq[i] if i < len(seq) else default
+
+    bank_coa_ids = db.get_bank_coa_ids()
+    # Orientierung bestehender Sätze merken: liquide-zuerst gebuchte Sätze
+    # (COA = Bankkonto, Gegenkonto = Zweckkonto) behalten ihre Richtung.
+    existing_by_id = {c[0]: (c[1], c[2])
+                      for c in db.get_child_bookings_for_bank(bank_id)}
+
+    keep_ids = set()
+    for i in range(len(amounts)):
+        raw_amount = _at(amounts, i).strip()
+        raw_coa = _at(coas, i).strip()
+        if not raw_amount and not raw_coa:
+            continue                      # komplett leere Zeile ignorieren
+        row_id = _at(ids, i).strip()
+        row_rate = _at(rates, i).strip()
+        row_tax = _at(tax_amounts, i).strip()
+        purpose_coa = int(raw_coa) if raw_coa else None
+        new_coa, new_counter = purpose_coa, account_coa_id
+        if row_id:
+            old_coa, old_counter = existing_by_id.get(int(row_id), (None, None))
+            if old_coa in bank_coa_ids and old_counter not in bank_coa_ids:
+                # liquide-zuerst (z. B. Einnahmen aus dem WISO-Import)
+                new_coa, new_counter = old_coa, purpose_coa
+        fields = dict(
+            date_booking=date,
+            date_tax=date_tax,
+            amount=float(raw_amount) if raw_amount else 0.0,
+            recipient_client=recipient,
+            coa_id=new_coa,
+            counter_coa_id=new_counter,
+            currency=currency,
+            tax_rate=float(row_rate) / 100 if row_rate else None,
+            tax_amount=float(row_tax) if row_tax else None,
+            text=_at(texts, i),
+            document_number=_at(docnrs, i).strip() or None,
+        )
+        if row_id:
+            db.update_booking(booking_id=int(row_id),
+                              log_description="Split row update", **fields)
+            keep_ids.add(int(row_id))
+        else:
+            new_id = db.insert_booking(booking_type='entry',
+                                       parent_booking_id=bank_id,
+                                       log_description="Split row insert",
+                                       **fields)
+            keep_ids.add(new_id)
+
+    # Entfernte Zeilen löschen – Doppik-Spiegel (COA und Gegenkonto beide
+    # liquide) tauchen im Editor nicht auf und bleiben deshalb unberührt.
+    bank_coa_ids = db.get_bank_coa_ids()
+    for child in db.get_child_bookings_for_bank(bank_id):
+        child_id, c_coa, c_counter = child[0], child[1], child[2]
+        if child_id in keep_ids:
+            continue
+        if c_coa in bank_coa_ids and c_counter in bank_coa_ids:
+            continue                      # Doppik-Spiegel: nicht anfassen
+        db.delete_transaction(child_id)
+
+
 def handle_add_transaction(db: Database, post_data):
     """Handle manual booking entry (insert or update)"""
     transaction_id = int(post_data.get("transaction_id", ["0"])[0])
@@ -263,6 +354,8 @@ def handle_add_transaction(db: Database, post_data):
     tax_amount = post_data.get("tax_amount", [""])[0]
     document_nr = post_data.get("document_nr", [""])[0]
     invoice_id = post_data.get("invoice_id", [""])[0]
+    # Buchungssatz-Editor der Bank-Maske aktiv? Dann kommen die Sätze von dort.
+    has_split_rows = 'split_amount' in post_data
 
     try:
         # Convert IDs to int or None
@@ -281,6 +374,14 @@ def handle_add_transaction(db: Database, post_data):
             # Check if this is an unlinked bank booking being completed
             existing = db.get_booking_by_id(transaction_id)
             is_bank = existing and existing[17] == 'bank'
+
+            if has_split_rows and existing:
+                # Kontierung und Steuer der Bankzeile stammen bei aktivem
+                # Editor nicht mehr aus dem Formular – bestehende Werte
+                # erhalten, statt sie mit leeren Feldern zu überschreiben.
+                coa_id = existing[8]
+                tax_rate = existing[13]
+                tax_amount = float(existing[14]) if existing[14] is not None else None
 
             # Update the bank booking itself (COA stays on bank row for
             # display; the real accounting entry is the child)
@@ -303,14 +404,17 @@ def handle_add_transaction(db: Database, post_data):
                 log_description="Manual booking update"
             )
 
-            if is_bank:
+            if is_bank and has_split_rows:
+                # Buchungssätze kommen aus dem Editor der Bank-Maske und werden
+                # dort direkt gepflegt – der AutoMirror-Abgleich unten entfällt.
+                eff_acct_id = account_id or (existing[4] if existing else None)
+                _save_split_rows(db, transaction_id, post_data,
+                                 _bank_counter_coa(db, eff_acct_id),
+                                 date, date_tax, recipient, currency)
+            elif is_bank:
                 # Gegenkonto (liquide Seite) aus dem SKR-Konto der Bank ableiten
                 eff_acct_id = account_id or (existing[4] if existing else None)
-                account_coa_id = None
-                if eff_acct_id:
-                    acct_row = db.get_account_by_id(eff_acct_id)
-                    if acct_row and acct_row[7]:  # SKRAccount at index 7
-                        account_coa_id = db.get_coa_id_by_account_number(acct_row[7])
+                account_coa_id = _bank_counter_coa(db, eff_acct_id)
 
                 children = db.get_child_bookings_for_bank(transaction_id)
                 # Nur den von uBuchhaltung selbst angelegten Spiegel (AutoMirror)
@@ -391,16 +495,17 @@ def handle_add_transaction(db: Database, post_data):
                 log_description="Manual booking entry"
             )
 
+            if new_booking_type == 'bank' and has_split_rows:
+                # Buchungssätze direkt aus dem Editor der Bank-Maske
+                _save_split_rows(db, transaction_id, post_data,
+                                 _bank_counter_coa(db, account_id),
+                                 date, date_tax, recipient, currency)
             # When a bank booking is created with a COA already set,
             # immediately create the linked accounting entry child so the
             # green checkmark appears without requiring a second edit.
-            if new_booking_type == 'bank' and coa_id:
+            elif new_booking_type == 'bank' and coa_id:
                 # Look up the account's SKR-COA to set as the liquid counter side
-                account_coa_id = None
-                if account_id:
-                    acct_row = db.get_account_by_id(account_id)
-                    if acct_row and acct_row[7]:  # SKRAccount at index 7
-                        account_coa_id = db.get_coa_id_by_account_number(acct_row[7])
+                account_coa_id = _bank_counter_coa(db, account_id)
                 db.insert_booking(
                     date_booking=date,
                     date_tax=date_tax,
