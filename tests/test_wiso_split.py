@@ -6,8 +6,8 @@ Tests für WISO-Split-Buchungen: Empfänger aus dem Tabellen-Export wird auf
 ALLE Teilbuchungen einer Split-Gruppe übertragen.
 
 Zwei Split-Varianten:
-- BookingGroup-Split (Original-Import erzeugt mehrere Entry-Zeilen mit gleicher
-  Belegnummer und BookingGroup_ID; kein Bank-Parent).
+- Beleg-Split (Original-Import erzeugt mehrere Entry-Zeilen mit gleicher
+  Belegnummer; kein Bank-Parent).
 - Bank-Parent-Split (Bank-Buchung + verknüpfte Entry-Kinder via ParentBooking_ID).
 
 Inhalte sind zufällig/anonymisiert; Assertions vergleichen gegen die erzeugten Werte.
@@ -46,18 +46,63 @@ def _table_split_csv(doc, recipient, total, date='03.07.2025'):
     return (header + "\n" + row + "\n").encode('utf-8')
 
 
+def test_sammelzahlung_ausgaben_mit_eigenen_belegnummern(db_with_coa):
+    """Sammelüberweisung mehrerer Lieferantenrechnungen (Aufwand an Bank) mit
+    je eigener Beleg-Nr. wird über die Nummern im Verwendungszweck erkannt.
+
+    Regression: Die Sammelzahlungs-Stufe summierte nur Buchungen mit Bank-COA
+    (Zahlungseingangs-Muster) – bei Ausgaben liegt das Bankkonto aber auf der
+    Gegenseite, sodass nie ein Treffer entstand.
+    """
+    db = db_with_coa
+    acct = next(a for a in db.fetch_accounts() if not a[6])
+    bank_coa = db.get_coa_id_by_account_number(acct[7])
+    aufwand = db.get_coa_id_by_account_number(6815)
+    for nr, amt in (('20260001', -100.00), ('20260002', -200.00),
+                    ('20260003', -300.00)):
+        db.insert_booking('2026-06-01', amt, coa_id=aufwand,
+                          counter_coa_id=bank_coa, document_number=nr,
+                          booking_type='entry')
+    bk = db.insert_booking('2026-06-01', -600.00, account_id=acct[0],
+                           text='Sammelueberweisung RG 20260001 20260002 20260003',
+                           booking_type='bank')
+
+    db.link_bank_to_entries()
+
+    assert len(db.get_child_bookings_for_bank(bk)) == 3
+    euer = {nr: t for nr, _, t in db.get_euer_data('2026-01-01', '2026-12-31')}
+    assert euer.get(6815) == -600.0
+
+
+def test_sammelzahlung_ohne_passende_summe_bleibt_offen(db_with_coa):
+    """Stimmt die Summe nicht, wird nichts verknüpft."""
+    db = db_with_coa
+    acct = next(a for a in db.fetch_accounts() if not a[6])
+    bank_coa = db.get_coa_id_by_account_number(acct[7])
+    aufwand = db.get_coa_id_by_account_number(6815)
+    for nr, amt in (('30260001', -100.00), ('30260002', -200.00)):
+        db.insert_booking('2026-07-01', amt, coa_id=aufwand,
+                          counter_coa_id=bank_coa, document_number=nr,
+                          booking_type='entry')
+    bk = db.insert_booking('2026-07-01', -999.00, account_id=acct[0],
+                           text='Zahlung 30260001 30260002', booking_type='bank')
+
+    db.link_bank_to_entries()
+    assert db.get_child_bookings_for_bank(bk) == []
+
+
 def _bookings_by_doc(db, doc):
     conn = db._get_connection()
     cur = conn.cursor()
     cur.execute(
-        'SELECT ID, RecipientClient, TaxRate, BookingGroup_ID, Text '
+        'SELECT ID, RecipientClient, TaxRate, NULL, Text '
         'FROM Bookings WHERE DocumentNumber=? ORDER BY ID', (doc,))
     rows = cur.fetchall()
     conn.close()
     return rows
 
 
-def test_recipient_propagated_to_bookinggroup_split(db_with_coa):
+def test_recipient_propagated_to_docnr_split(db_with_coa):
     db = db_with_coa
     doc = _rand_doc()
     recipient = _rand_name()
@@ -72,8 +117,7 @@ def test_recipient_propagated_to_bookinggroup_split(db_with_coa):
 
     rows = _bookings_by_doc(db, doc)
     assert len(rows) == 4
-    # BookingGroup-Split: alle Zeilen in einer Gruppe
-    assert all(r[3] is not None for r in rows)
+    # Beleg-Split: alle Zeilen tragen dieselbe Beleg-Nr. (die Klammer)
     # Steuersatz: 490 -> 0.0, ohne Schlüssel -> None
     tax_rates = sorted([(r[2] if r[2] is not None else -1) for r in rows])
     assert tax_rates == [-1, 0.0, 0.0, 0.0]
@@ -112,9 +156,7 @@ def test_split_with_identical_amount_positions_not_skipped(db_with_coa):
 
     rows = _bookings_by_doc(db, doc)
     assert len(rows) == 3
-    # Alle drei Zeilen in derselben BookingGroup
-    group_ids = {r[3] for r in rows}
-    assert len(group_ids) == 1 and None not in group_ids, rows
+    # Alle drei Zeilen unter derselben Beleg-Nr.
 
     # Re-Import derselben Datei: jetzt sind alle drei echte Duplikate
     res2 = db.import_wiso_csv(_orig_split_csv(doc, lines))
@@ -128,8 +170,8 @@ def test_reimport_adds_missing_split_row_to_existing_group(db_with_coa):
 
     Szenario: Ein früherer (fehlerhafter) Import hat von zwei betragsgleichen
     Positionen nur eine übernommen. Der erneute Import der vollständigen Datei
-    darf nur die fehlende Zeile einfügen und muss sie an die BESTEHENDE
-    BookingGroup hängen (inkl. korrigierter Gruppensumme).
+    darf nur die fehlende Zeile einfügen; sie gehört über dieselbe Beleg-Nr.
+    automatisch zum bestehenden Split.
     """
     db = db_with_coa
     doc = _rand_doc()
@@ -147,13 +189,12 @@ def test_reimport_adds_missing_split_row_to_existing_group(db_with_coa):
 
     rows = _bookings_by_doc(db, doc)
     assert len(rows) == 3
-    group_ids = {r[3] for r in rows}
-    assert len(group_ids) == 1 and None not in group_ids, rows
 
-    # Gruppensumme wurde auf alle drei Zeilen aktualisiert
+    # Summe des Belegs entspricht allen drei Zeilen
     conn = db._get_connection()
     cur = conn.cursor()
-    cur.execute('SELECT TotalAmount FROM BookingGroups WHERE ID=?', (group_ids.pop(),))
+    cur.execute('SELECT COALESCE(SUM(ABS(Amount)), 0) FROM Bookings '
+                'WHERE DocumentNumber=?', (doc,))
     total_minor = cur.fetchone()[0]
     conn.close()
     from money import to_minor
@@ -194,7 +235,7 @@ def test_split_without_document_number(db_with_coa):
     Problem: WISO-Tabellen-Export hat oft keine Belegnummer (z.B. bei 1%-Methode/
     Privatnutzung), aber die Bewegungsdaten-Zeilen (Split-Teile) haben unterschiedliche
     Beträge. Der Tabellen-Export kombiniert sie zur Summe. Der Import muss
-    BookingGroup-Splits erkennen, auch ohne Belegnummer.
+    Beleg-Splits erkennen, auch ohne Belegnummer.
     """
     db = db_with_coa
     recipient = _rand_name()

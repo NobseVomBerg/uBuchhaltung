@@ -36,7 +36,6 @@ uBuchhaltung verwaltet Buchführung für kleine/mittlere Unternehmen mit Fokus a
 │ GESCHÄFTSVORFÄLLE   │
 ├─────────────────────┤
 │ • Bookings          │ Buchungssätze (bank + entry)
-│ • BookingGroups     │ Splitbuchungen-Gruppen
 │ • Documents         │ Belege/Dokumente
 │ • BookingDocuments  │ n:m Verknüpfung Buchungen↔Belege
 └─────────────────────┘
@@ -249,17 +248,6 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 
 ---
 
-### 8. BookingGroups (Splitbuchungen)
-
-| Spalte | Typ | Constraints | Beschreibung |
-|--------|-----|-------------|--------------|
-| ID | INTEGER | PRIMARY KEY | Auto-Increment |
-| Description | TEXT | | Beschreibung |
-| CreatedDate | DATE | | Erstellungsdatum |
-| TotalAmount | REAL | | Gesamtbetrag (Validierung) |
-
----
-
 ### 9. Bookings (Buchungssätze)
 
 **Zweck:** Zentrale Tabelle für Bank-Bewegungen und Buchungssätze. Über `BookingType` und `ParentBooking_ID` werden Bankbewegungen mit ihren Buchungssätzen verknüpft.
@@ -269,7 +257,7 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 | ID | 0 | INTEGER | PRIMARY KEY | Auto-Increment |
 | DateBooking | 1 | DATE | NOT NULL | Buchungsdatum |
 | DateTax | 2 | DATE | | Steuerdatum |
-| BookingGroup_ID | 3 | INTEGER | FK → BookingGroups | Splitbuchung |
+| BookingGroup_ID | 3 | INTEGER | – | stillgelegt (Schema v5); Splits laufen über ParentBooking_ID |
 | Account_ID | 4 | INTEGER | FK → Accounts | Eigenes Bank-/Kassenkonto |
 | ForeignBankAccount | 5 | TEXT | | Fremde IBAN/Kontonummer |
 | RecipientClient | 6 | TEXT | | Empfänger/Auftraggeber |

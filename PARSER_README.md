@@ -127,7 +127,7 @@ Beide Varianten werden automatisch erkannt (Format-Erkennung über `Empf./Auft.`
 Bei **Buchungen mit Belegnummer** (`Beleg Nr.` gesetzt):
 - Stufe 1 (direkt): Datum + Belegnummer + Betrag → genau ein Treffer
 - Stufe 2 (Bank-Parent): Bankbuchung mit gleichem Datum/Betrag suchen, Entry-Kinder per Belegnummer ergänzen
-- Stufe 3 (BookingGroup): Summenabgleich über Gruppe bei gleicher Belegnummer
+- Stufe 3 (Beleg-Split): Summenabgleich über alle Buchungen gleicher Belegnummer
 
 Bei **Buchungen ohne Belegnummer** (`Beleg Nr.` leer):
 - Stufe A (bank+entry-Paar): Wenn Datum+Betrag genau eine bank- und eine entry-Buchung treffen und die entry-Buchung Child der bank-Buchung ist → beide gemeinsam aktualisieren (Realfall: Privatentnahmen, Bankgebühren, Zinsen)

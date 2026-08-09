@@ -66,58 +66,96 @@ class MatchingMixin:
         conn.close()
         return [self._euro_row(r, 4, 6) for r in rows]  # Amount, TaxAmount
 
+    def get_unlinked_entry_bookings(self, around_date=None, limit=50):
+        """Noch keiner Bankbewegung zugeordnete Buchungssätze.
+
+        Kandidaten für die manuelle Zuordnung im Buchungssatz-Editor: Die
+        Verbindung entsteht dort über die ID (ParentBooking_ID), unabhängig
+        von Belegnummern – das deckt auch Sammelüberweisungen mehrerer
+        Rechnungen mit je eigener Beleg-Nr. ab.
+
+        around_date sortiert die zeitlich nächstliegenden nach vorn.
+
+        Returns: [(ID, DateBooking, Amount€, DocumentNumber, Text,
+                   RecipientClient, COA_ID)]
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        order = ("ABS(JULIANDAY(DateBooking) - JULIANDAY(?)), DateBooking DESC"
+                 if around_date else "DateBooking DESC")
+        params = ([around_date] if around_date else []) + [limit]
+        cursor.execute(f'''
+            SELECT ID, DateBooking, Amount, DocumentNumber, Text,
+                   RecipientClient, COA_ID
+            FROM Bookings
+            WHERE BookingType = 'entry' AND ParentBooking_ID IS NULL
+              AND Account_ID IS NULL
+              AND (Status IS NULL OR Status != 'resolved')
+            ORDER BY {order}
+            LIMIT ?
+        ''', params)
+        rows = cursor.fetchall()
+        conn.close()
+        return [self._euro_row(r, 2) for r in rows]
+
     def find_unlinked_booking_by_date_amount(self, date: str, amount: float):
-        """Suche nach einer WISO-Buchung/-Gruppe (Account_ID IS NULL) anhand Datum + Betrag.
+        """Suche nach einer unverknüpften Buchung/Beleg-Gruppe anhand Datum + Betrag.
 
         Stufe 1 – Einzelbuchung: exakter Treffer auf DateBooking + Amount.
-        Stufe 2 – Split-Gruppe:  SUM(Amount) der Gruppe entspricht dem Bankbetrag,
-                                  alle Mitglieder sind noch unverknüpft (Account_ID IS NULL).
+        Stufe 2 – Beleg-Gruppe:  mehrere Buchungen desselben Belegs am selben
+                                  Tag, deren Summe dem Bankbetrag entspricht und
+                                  die alle noch unverknüpft sind (Account_ID NULL).
 
-        Sonderfall Mehrreferenz (z.B. DocumentNumber = '25F009, 25F073'):
-        Die Buchungen teilen sich eine kombinierte Referenz und landen dadurch
-        bereits in einer BookingGroup → wird automatisch über Stufe 2 abgedeckt.
+        Die Gruppierung ergibt sich aus der Beleg-Nr. selbst – genau daraus
+        bildete früher auch der WISO-Import seine BookingGroups. Sonderfall
+        Mehrfachreferenz ('25F009, 25F073'): die Buchungen teilen sich diese
+        kombinierte Beleg-Nr. und werden dadurch weiterhin zusammen gefunden.
 
         Returns:
-            ('single', booking_id)  – eindeutige Einzelbuchung
-            ('group',  group_id)    – eindeutige Split-Gruppe
-            None                    – kein eindeutiger Treffer
+            ('single', booking_id)   – eindeutige Einzelbuchung
+            ('docnr',  (nr, datum))  – eindeutige Beleg-Gruppe
+            None                     – kein eindeutiger Treffer
         """
         conn = self._get_connection()
         cursor = conn.cursor()
 
         amount_minor = to_minor(amount or 0)
 
-        # Stufe 1: einzelne, noch nicht verknüpfte Buchung (kein Split)
+        # Stufe 1: einzelne, noch nicht verknüpfte Buchung (kein Split).
+        # Buchungen, die zu einem mehrzeiligen Beleg gehören, bleiben Stufe 2
+        # vorbehalten – sonst würde eine Teilzeile fälschlich allein verknüpft.
         cursor.execute('''
-            SELECT ID FROM Bookings
-            WHERE DateBooking = ? AND Amount = ?
-              AND Account_ID IS NULL AND BookingGroup_ID IS NULL
+            SELECT ID FROM Bookings b
+            WHERE DateBooking = ? AND Amount = ? AND Account_ID IS NULL
+              AND (DocumentNumber IS NULL OR DocumentNumber = '' OR
+                   (SELECT COUNT(*) FROM Bookings x
+                    WHERE x.DocumentNumber = b.DocumentNumber
+                      AND x.DateBooking = b.DateBooking) = 1)
         ''', (date, amount_minor))
         rows = cursor.fetchall()
         if len(rows) == 1:
             conn.close()
             return ('single', rows[0][0])
 
-        # Stufe 2: Split-Gruppe, bei der der Gesamtbetrag passt
-        # Bedingung: ALLE Mitglieder der Gruppe sind noch unverknüpft
-        #            UND mindestens eine Buchung liegt auf dem gesuchten Datum
-        #            (erlaubt leichte Datumsabweichungen innerhalb der Gruppe)
+        # Stufe 2: Beleg-Gruppe, deren Gesamtbetrag passt und deren Mitglieder
+        # alle noch unverknüpft sind.
         cursor.execute('''
-            SELECT b.BookingGroup_ID,
+            SELECT b.DocumentNumber,
                    SUM(b.Amount)                                        AS total,
                    COUNT(*)                                             AS cnt,
                    SUM(CASE WHEN b.Account_ID IS NULL THEN 1 ELSE 0 END) AS unlinked
             FROM Bookings b
-            WHERE b.BookingGroup_ID IS NOT NULL
+            WHERE b.DocumentNumber IS NOT NULL AND b.DocumentNumber != ''
               AND b.DateBooking = ?
-            GROUP BY b.BookingGroup_ID
-            HAVING cnt = unlinked
+            GROUP BY b.DocumentNumber
+            HAVING cnt > 1
+               AND cnt = unlinked
                AND total = ?
         ''', (date, amount_minor))
         rows = cursor.fetchall()
         conn.close()
         if len(rows) == 1:
-            return ('group', rows[0][0])
+            return ('docnr', (rows[0][0], date))
 
         return None   # 0 oder mehrere Treffer → nicht verlässlich verknüpfbar
     def link_bank_to_entries(self) -> dict:
@@ -241,8 +279,8 @@ class MatchingMixin:
             """Rein liquide Spiegelbuchungen rausfiltern (COA und Gegenkonto)."""
             filtered = []
             for e in entries:
-                coa_id = e[3]
-                counter_coa_id = e[4]
+                coa_id = e[2]
+                counter_coa_id = e[3]
                 if coa_id in bank_coa_ids and counter_coa_id in bank_coa_ids:
                     continue
                 filtered.append(e)
@@ -296,26 +334,35 @@ class MatchingMixin:
                     return scored[0][1]
             return None
 
-        def _do_link(bank_id, entry_id, entry_group_id, entry_text):
-            """Verknüpfe entry (oder ganze Gruppe) mit bank."""
-            if entry_group_id:
-                # Alle Gruppenmitglieder verknüpfen
-                cursor.execute('''
-                    UPDATE Bookings SET ParentBooking_ID = ?
-                    WHERE BookingGroup_ID = ? AND BookingType = 'entry'
-                ''', (bank_id, entry_group_id))
-                # Alle Gruppen-IDs als bereits verknüpft markieren
-                cursor.execute(
-                    'SELECT ID FROM Bookings WHERE BookingGroup_ID = ?',
-                    (entry_group_id,))
-                for r in cursor.fetchall():
-                    already_linked_entry_ids.add(r[0])
-            else:
-                cursor.execute('''
-                    UPDATE Bookings SET ParentBooking_ID = ?
-                    WHERE ID = ?
-                ''', (bank_id, entry_id))
-                already_linked_entry_ids.add(entry_id)
+        def _link_docnr_group(bank_id, docnr, bank_date):
+            """Alle Buchungen eines Belegs desselben Tages mit der Bank
+            verknüpfen (ersetzt die frühere BookingGroup-Klammer)."""
+            cursor.execute('''
+                UPDATE Bookings SET ParentBooking_ID = ?
+                WHERE DocumentNumber = ? AND DateBooking = ?
+                  AND BookingType = 'entry' AND ParentBooking_ID IS NULL
+            ''', (bank_id, docnr, bank_date))
+            cursor.execute(
+                'SELECT ID FROM Bookings WHERE DocumentNumber = ?'
+                ' AND DateBooking = ?', (docnr, bank_date))
+            for r in cursor.fetchall():
+                already_linked_entry_ids.add(r[0])
+
+        def _docnr_ids(docnr, bank_date):
+            """IDs aller Buchungen eines Belegs an diesem Tag."""
+            cursor.execute(
+                "SELECT ID FROM Bookings WHERE DocumentNumber = ?"
+                " AND DateBooking = ? AND BookingType = 'entry'",
+                (docnr, bank_date))
+            return {r[0] for r in cursor.fetchall()}
+
+        def _do_link(bank_id, entry_id, entry_text):
+            """Einzelne Entry-Buchung mit der Bank-Buchung verknüpfen."""
+            cursor.execute('''
+                UPDATE Bookings SET ParentBooking_ID = ?
+                WHERE ID = ?
+            ''', (bank_id, entry_id))
+            already_linked_entry_ids.add(entry_id)
             # WISO-Text auf die Bank-Buchung übernehmen (manuell kuratiert)
             if entry_text:
                 cursor.execute(
@@ -332,7 +379,7 @@ class MatchingMixin:
             # ── Stufe 1: Datum + Empfänger (normalisiert) + ABS(Betrag) ──
             if recip_norm:
                 cursor.execute('''
-                    SELECT ID, BookingGroup_ID, Text, COA_ID, CounterCOA_ID, RecipientClient FROM Bookings
+                    SELECT ID, Text, COA_ID, CounterCOA_ID, RecipientClient FROM Bookings
                     WHERE BookingType = 'entry'
                       AND ParentBooking_ID IS NULL
                       AND DateBooking = ?
@@ -340,13 +387,13 @@ class MatchingMixin:
                 ''', (bank_date, abs_amount))
                 raw = cursor.fetchall()
                 entries = _filter_already(_filter_doppik(
-                    [e for e in raw if _norm(e[5]) == recip_norm
-                     or _norm(e[2]) != '' and recip_norm in _norm(e[2])]
+                    [e for e in raw if _norm(e[4]) == recip_norm
+                     or _norm(e[1]) != '' and recip_norm in _norm(e[1])]
                 ))
                 if not entries:
                     # Fallback: direkter DB-Vergleich (REPLACE normalisiert)
                     cursor.execute('''
-                        SELECT ID, BookingGroup_ID, Text, COA_ID, CounterCOA_ID FROM Bookings
+                        SELECT ID, Text, COA_ID, CounterCOA_ID FROM Bookings
                         WHERE BookingType = 'entry'
                           AND ParentBooking_ID IS NULL
                           AND DateBooking = ?
@@ -357,24 +404,24 @@ class MatchingMixin:
                     ''', (bank_date, abs_amount, recip_norm))
                     entries = _filter_already(_filter_doppik(cursor.fetchall()))
                 if len(entries) == 1:
-                    _do_link(bank_id, entries[0][0], None, entries[0][2])
+                    _do_link(bank_id, entries[0][0], entries[0][1])
                     linked += 1
                     continue
                 if len(entries) >= 2:
                     # Mehrere Treffer: Token-Tiebreak (z.B. Fraenk-Nummern)
                     token_hit = _token_tiebreak(bank_text, entries)
                     if token_hit:
-                        _do_link(bank_id, token_hit[0], None, token_hit[2])
+                        _do_link(bank_id, token_hit[0], token_hit[1])
                         linked += 1
                         continue
                     # Fallback: ersten verfügbaren nehmen
-                    _do_link(bank_id, entries[0][0], None, entries[0][2])
+                    _do_link(bank_id, entries[0][0], entries[0][1])
                     linked += 1
                     continue
 
             # ── Stufe 2: Datum + ABS(Betrag) ─────────────────────────────
             cursor.execute('''
-                                SELECT ID, BookingGroup_ID, Text, COA_ID, CounterCOA_ID, DocumentNumber
+                                SELECT ID, Text, COA_ID, CounterCOA_ID, DocumentNumber
                 FROM Bookings
                 WHERE BookingType = 'entry'
                   AND ParentBooking_ID IS NULL
@@ -384,48 +431,36 @@ class MatchingMixin:
             entries = _filter_already(_filter_doppik(cursor.fetchall()))
             if len(entries) == 1:
                 # Nur diesen Entry linken, NICHT die ganze Gruppe
-                _do_link(bank_id, entries[0][0], None, entries[0][2])
+                _do_link(bank_id, entries[0][0], entries[0][1])
                 linked += 1
                 continue
 
             # ── Stufe 4: DocumentNumber als Tiebreaker ───────────────────
             if len(entries) > 1 and bank_docnr:
                 doc_match = [e for e in entries
-                             if e[5] and (bank_docnr in e[5] or e[5] in bank_docnr)]
+                             if e[4] and (bank_docnr in e[4] or e[4] in bank_docnr)]
                 if len(doc_match) == 1:
                     # Nur diesen Entry linken, NICHT die ganze Gruppe
-                    _do_link(bank_id, doc_match[0][0], None, doc_match[0][2])
+                    _do_link(bank_id, doc_match[0][0], doc_match[0][1])
                     linked += 1
                     continue
 
             # ── Stufe 3: Split-Gruppe — SUM(Betrag) passt ────────────────
             cursor.execute('''
-                SELECT b.BookingGroup_ID, COUNT(*) AS cnt
+                SELECT b.DocumentNumber, COUNT(*) AS cnt
                 FROM Bookings b
                 WHERE b.BookingType = 'entry'
                   AND b.ParentBooking_ID IS NULL
-                  AND b.BookingGroup_ID IS NOT NULL
+                  AND b.DocumentNumber IS NOT NULL AND b.DocumentNumber != ''
                   AND b.DateBooking = ?
-                GROUP BY b.BookingGroup_ID
-                HAVING ABS(ABS(SUM(b.Amount)) - ?) < 50
+                GROUP BY b.DocumentNumber
+                HAVING cnt > 1
+                   AND ABS(ABS(SUM(b.Amount)) - ?) < 50
             ''', (bank_date, abs_amount))
-            groups = cursor.fetchall()
-            # Bereits verknüpfte Gruppen rausfiltern
-            groups = [g for g in groups if g[0] not in
-                      {eid for eid in already_linked_entry_ids}]
+            groups = [g for g in cursor.fetchall()
+                      if not (_docnr_ids(g[0], bank_date) & already_linked_entry_ids)]
             if len(groups) == 1:
-                group_id = groups[0][0]
-                cursor.execute('''
-                    UPDATE Bookings SET ParentBooking_ID = ?
-                    WHERE BookingGroup_ID = ? AND BookingType = 'entry'
-                      AND DateBooking = ?
-                ''', (bank_id, group_id, bank_date))
-                cursor.execute(
-                    'SELECT ID FROM Bookings WHERE BookingGroup_ID = ?'
-                    ' AND DateBooking = ?',
-                    (group_id, bank_date))
-                for r in cursor.fetchall():
-                    already_linked_entry_ids.add(r[0])
+                _link_docnr_group(bank_id, groups[0][0], bank_date)
                 linked += 1
                 continue
 
@@ -434,43 +469,32 @@ class MatchingMixin:
             # gleichem Betrag (COA Bank + COA Erlöse), SUM = 2× Bankbetrag.
             # Erkennung: Ein Gruppenmitglied hat COA = Bankkonto.
             cursor.execute('''
-                SELECT b.BookingGroup_ID, COUNT(*) AS cnt,
+                SELECT b.DocumentNumber, COUNT(*) AS cnt,
                        SUM(b.Amount) AS total
                 FROM Bookings b
                 WHERE b.BookingType = 'entry'
                   AND b.ParentBooking_ID IS NULL
-                  AND b.BookingGroup_ID IS NOT NULL
+                  AND b.DocumentNumber IS NOT NULL AND b.DocumentNumber != ''
                   AND b.DateBooking = ?
-                GROUP BY b.BookingGroup_ID
+                GROUP BY b.DocumentNumber
                 HAVING cnt > 1
                    AND ABS(ABS(total * 1.0 / cnt) - ?) < 50
             ''', (bank_date, abs_amount))
-            inv_groups = cursor.fetchall()
-            # Filtern: Gruppe muss ein Mitglied mit Bank-COA haben
+            # Filtern: Beleg muss ein Mitglied mit Bank-COA haben
             inv_matches = []
-            for g in inv_groups:
-                gid = g[0]
-                if gid in already_linked_entry_ids:
+            for g in cursor.fetchall():
+                docnr = g[0]
+                if _docnr_ids(docnr, bank_date) & already_linked_entry_ids:
                     continue
                 cursor.execute(
-                    'SELECT COA_ID FROM Bookings WHERE BookingGroup_ID = ? AND BookingType = ?',
-                    (gid, 'entry'))
+                    "SELECT COA_ID FROM Bookings WHERE DocumentNumber = ?"
+                    " AND DateBooking = ? AND BookingType = 'entry'",
+                    (docnr, bank_date))
                 coa_ids = {r[0] for r in cursor.fetchall()}
                 if coa_ids & bank_coa_ids:  # mindestens ein Bank-COA
-                    inv_matches.append(gid)
+                    inv_matches.append(docnr)
             if len(inv_matches) == 1:
-                group_id = inv_matches[0]
-                cursor.execute('''
-                    UPDATE Bookings SET ParentBooking_ID = ?
-                    WHERE BookingGroup_ID = ? AND BookingType = 'entry'
-                      AND DateBooking = ?
-                ''', (bank_id, group_id, bank_date))
-                cursor.execute(
-                    'SELECT ID FROM Bookings WHERE BookingGroup_ID = ?'
-                    ' AND DateBooking = ?',
-                    (group_id, bank_date))
-                for r in cursor.fetchall():
-                    already_linked_entry_ids.add(r[0])
+                _link_docnr_group(bank_id, inv_matches[0], bank_date)
                 linked += 1
                 continue
 
@@ -480,7 +504,7 @@ class MatchingMixin:
             # verfälscht.  Erkennung: Gruppensumme ohne positive
             # Privatentnahme-Einträge ≈ Bankbetrag.
             cursor.execute('''
-                SELECT b.BookingGroup_ID,
+                SELECT b.DocumentNumber,
                        SUM(b.Amount) AS total,
                        SUM(CASE WHEN b.Amount > 0 AND b.COA_ID IN
                            (SELECT ID FROM ChartOfAccounts
@@ -489,28 +513,17 @@ class MatchingMixin:
                 FROM Bookings b
                 WHERE b.BookingType = 'entry'
                   AND b.ParentBooking_ID IS NULL
-                  AND b.BookingGroup_ID IS NOT NULL
+                  AND b.DocumentNumber IS NOT NULL AND b.DocumentNumber != ''
                   AND b.DateBooking = ?
-                GROUP BY b.BookingGroup_ID
-                HAVING private_offset > 0
+                GROUP BY b.DocumentNumber
+                HAVING COUNT(*) > 1
+                   AND private_offset > 0
                    AND ABS(ABS(total - private_offset) - ?) < 50
             ''', (bank_date, abs_amount))
-            priv_groups = cursor.fetchall()
-            priv_matches = [g[0] for g in priv_groups
-                            if g[0] not in already_linked_entry_ids]
+            priv_matches = [g[0] for g in cursor.fetchall()
+                            if not (_docnr_ids(g[0], bank_date) & already_linked_entry_ids)]
             if len(priv_matches) == 1:
-                group_id = priv_matches[0]
-                cursor.execute('''
-                    UPDATE Bookings SET ParentBooking_ID = ?
-                    WHERE BookingGroup_ID = ? AND BookingType = 'entry'
-                      AND DateBooking = ?
-                ''', (bank_id, group_id, bank_date))
-                cursor.execute(
-                    'SELECT ID FROM Bookings WHERE BookingGroup_ID = ?'
-                    ' AND DateBooking = ?',
-                    (group_id, bank_date))
-                for r in cursor.fetchall():
-                    already_linked_entry_ids.add(r[0])
+                _link_docnr_group(bank_id, priv_matches[0], bank_date)
                 linked += 1
                 continue
 
@@ -525,7 +538,7 @@ class MatchingMixin:
             if len(doc_nr_candidates) >= 2:
                 ph = ','.join('?' * len(doc_nr_candidates))
                 cursor.execute(f'''
-                    SELECT ID, BookingGroup_ID, Text, COA_ID,
+                    SELECT ID, Text, COA_ID,
                            CounterCOA_ID, DocumentNumber, Amount
                     FROM Bookings
                     WHERE BookingType = 'entry'
@@ -534,11 +547,18 @@ class MatchingMixin:
                       AND DocumentNumber IN ({ph})
                 ''', (bank_date, *doc_nr_candidates))
                 sammel_entries = _filter_already(cursor.fetchall())
-                doc_nrs_found = {e[5] for e in sammel_entries}
+                doc_nrs_found = {e[4] for e in sammel_entries}
                 if len(doc_nrs_found) >= 2 and len(sammel_entries) >= 2:
+                    # Zahlungseingänge sind als Doppelbuchung erfasst (COA =
+                    # Bankkonto): dann zählt nur deren Bank-Seite. Ausgaben
+                    # (COA = Aufwand, Gegenkonto = Bank) haben keine solche
+                    # Zeile – dort ist die Summe aller Belege maßgeblich, sonst
+                    # bliebe eine Sammelüberweisung an Lieferanten unverknüpft.
                     bank_coa_sum = sum(
-                        e[6] for e in sammel_entries
-                        if e[3] in bank_coa_ids)
+                        e[5] for e in sammel_entries
+                        if e[2] in bank_coa_ids)
+                    if bank_coa_sum == 0:
+                        bank_coa_sum = sum(e[5] for e in sammel_entries)
                     if abs(abs(bank_coa_sum) - abs_amount) < 50:
                         for e in sammel_entries:
                             cursor.execute(
@@ -555,7 +575,7 @@ class MatchingMixin:
             # Buchungstext.  Deckt z.B. fraenk-EREF-Nummern, SHBB-RNR-
             # Nummern und andere Fälle mit Transaktions-IDs im Text ab.
             cursor.execute('''
-                SELECT ID, BookingGroup_ID, Text, COA_ID, CounterCOA_ID
+                SELECT ID, Text, COA_ID, CounterCOA_ID
                 FROM Bookings
                 WHERE BookingType = 'entry'
                   AND ParentBooking_ID IS NULL
@@ -565,7 +585,7 @@ class MatchingMixin:
             all_candidates = _filter_already(_filter_doppik(cursor.fetchall()))
             token_hit = _token_tiebreak(bank_text, all_candidates)
             if token_hit:
-                _do_link(bank_id, token_hit[0], None, token_hit[2])
+                _do_link(bank_id, token_hit[0], token_hit[1])
                 linked += 1
                 continue
 
@@ -583,14 +603,14 @@ class MatchingMixin:
                 if bank_norm:
                     scored = [
                         (SequenceMatcher(None, bank_norm,
-                                         _text_norm(e[2])).ratio(), e)
+                                         _text_norm(e[1])).ratio(), e)
                         for e in all_candidates
                     ]
                     scored.sort(key=lambda x: x[0], reverse=True)
                     if (scored[0][0] > scored[1][0]
                             and scored[0][0] > 0.5):
                         best = scored[0][1]
-                        _do_link(bank_id, best[0], None, best[2])
+                        _do_link(bank_id, best[0], best[2])
                         linked += 1
                         continue
 

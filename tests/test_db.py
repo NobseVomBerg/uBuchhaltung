@@ -76,7 +76,7 @@ class TestSchema:
 
         expected = {
             'Accounts', 'Articles', 'AssetCategories', 'AssetDepreciations',
-            'Assets', 'BookingDocuments', 'BookingGroups', 'Bookings',
+            'Assets', 'BookingDocuments', 'Bookings',
             'Categories', 'ChartOfAccounts', 'CompanyDetails', 'ContactAddresses',
             'ContactTypeLinks', 'Contacts', 'Documents', 'InvoiceItems', 'InvoicePayments',
             'Invoices', 'NumberRanges', 'PersonDetails', 'PersonRoles', 'TaxKeys',
@@ -240,14 +240,15 @@ class TestFindUnlinkedBooking:
 
     def test_group_match(self, tmp_db):
         """Two entries with the same doc+date form a split group whose sum matches."""
-        grp_id = tmp_db.create_booking_group('Split test', total_amount=300.0)
+        # Splits klammern sich über die gemeinsame Beleg-Nr. (+ Datum)
         tmp_db.insert_booking('2024-05-20', 200.0, booking_type='entry',
-                               document_number='SPLIT-1', booking_group_id=grp_id)
+                               document_number='SPLIT-1')
         tmp_db.insert_booking('2024-05-20', 100.0, booking_type='entry',
-                               document_number='SPLIT-1', booking_group_id=grp_id)
+                               document_number='SPLIT-1')
         result = tmp_db.find_unlinked_booking_by_date_amount('2024-05-20', 300.0)
         assert result is not None
-        assert result[0] == 'group'
+        assert result[0] == 'docnr'
+        assert result[1] == ('SPLIT-1', '2024-05-20')
 
 
 # ─────────────────────────────────────────────
@@ -693,8 +694,7 @@ class TestHandleAddTransaction:
             'foreign_account': [''],
             'contact_id': [''],
             'coa_id': [''],
-            'booking_group_id': [''],
-            'tax_rate': ['19'],
+                'tax_rate': ['19'],
             'tax_amount': ['19.0'],
             'document_nr': ['RE-001'],
         }

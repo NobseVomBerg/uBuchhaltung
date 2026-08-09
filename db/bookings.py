@@ -30,7 +30,6 @@ class BookingsMixin:
         Returns a flat list of dicts, each with a 'type' key:
 
         - 'normal': ungrouped booking  →  {'type': 'normal',  'date': str, 'booking': tuple}
-        - 'group':  split group header →  {'type': 'group',   'date': str, 'group_id': int,
                                             'description': str, 'amount': float, 'count': int,
                                             'account_id': int|None, 'currency': str,
                                             'contact_id': int|None}
@@ -94,7 +93,7 @@ class BookingsMixin:
         normal_sql = (
             "SELECT * FROM Bookings "
             "WHERE (BookingType IS NULL OR BookingType = 'entry') "
-            "AND ParentBooking_ID IS NULL AND BookingGroup_ID IS NULL "
+            "AND ParentBooking_ID IS NULL "
             "AND (Status IS NULL OR Status != 'resolved')")
         if use_range:
             cursor.execute(normal_sql + " AND DateBooking BETWEEN ? AND ? "
@@ -108,49 +107,6 @@ class BookingsMixin:
             if coa_id in doppik_coa_ids and counter_coa_id in doppik_coa_ids:
                 continue  # Doppik-Eintrag verbergen
             normal.append({'type': 'normal', 'date': r[1] or '', 'booking': self._euro_row(r, 11, 14)})
-
-        # 4. Legacy group summaries (BookingGroup_ID, for old imports)
-        #    Resolved Debitoren-Entries ausblenden. Im Zeitraum-Modus nur Gruppen
-        #    mit mind. einer Buchung im Zeitraum (Gruppe bleibt aber vollständig).
-        group_filter = ("AND bg.ID IN (SELECT BookingGroup_ID FROM Bookings "
-                        "WHERE BookingGroup_ID IS NOT NULL "
-                        "AND DateBooking BETWEEN ? AND ?) ") if use_range else ""
-        cursor.execute(f'''
-            SELECT
-                bg.ID,
-                COALESCE(bg.Description, ''),
-                MIN(b.DateBooking),
-                SUM(b.Amount),
-                COUNT(*),
-                MAX(b.Account_ID),
-                MAX(b.Currency),
-                MAX(b.Contact_ID)
-            FROM BookingGroups bg
-            JOIN Bookings b ON b.BookingGroup_ID = bg.ID
-            WHERE b.ParentBooking_ID IS NULL
-              AND (b.Status IS NULL OR b.Status != 'resolved')
-              {group_filter}
-            GROUP BY bg.ID
-            ORDER BY MIN(b.DateBooking) DESC
-        ''', rng if use_range else ())
-        groups_raw = cursor.fetchall()
-
-        # 5. Legacy children (BookingGroup_ID) — only unlinked, not resolved
-        lc_filter = ("AND BookingGroup_ID IN (SELECT BookingGroup_ID FROM Bookings "
-                     "WHERE BookingGroup_ID IS NOT NULL "
-                     "AND DateBooking BETWEEN ? AND ?) ") if use_range else ""
-        cursor.execute(f'''
-            SELECT * FROM Bookings
-            WHERE BookingGroup_ID IS NOT NULL
-              AND ParentBooking_ID IS NULL
-              AND (Status IS NULL OR Status != 'resolved')
-              {lc_filter}
-            ORDER BY BookingGroup_ID, DateBooking
-        ''', rng if use_range else ())
-        children_by_group = {}
-        for r in cursor.fetchall():
-            gid = r[3]  # BookingGroup_ID
-            children_by_group.setdefault(gid, []).append(self._euro_row(r, 11, 14))
 
         conn.close()
 
@@ -184,54 +140,22 @@ class BookingsMixin:
                 'entry_tax_rate':         entry_src[13] if entry_src else None,
             })
 
-        # Build legacy group dicts — skip empty groups (all members linked)
-        groups = []
-        for g in groups_raw:
-            gid, desc, date, total, count, account_id, currency, contact_id = g
-            total = from_minor(total or 0)  # SUM(b.Amount) Minor Units -> Euro-Decimal
-            group_children = children_by_group.get(gid, [])
-            if not group_children:
-                continue  # alle Mitglieder sind bereits verknüpft
-            children = [
-                {'type': 'child', 'group_id': gid, 'date': c[1] or '', 'booking': c}
-                for c in group_children
-            ]
-            # Ersten sichtbaren Child als Info-Quelle nutzen
-            first_child = group_children[0] if group_children else None
-            groups.append({
-                'type':        'group',
-                'date':        date or '',
-                'group_id':    gid,
-                'description': desc,
-                'amount':      total,
-                'count':       count,
-                'account_id':  account_id,
-                'currency':    currency or 'EUR',
-                'contact_id':  contact_id,
-                'children':    children,
-                # Merged-Felder vom ersten Kind (für Kasse-Splits etc.)
-                'first_recipient':  first_child[6] if first_child else None,
-                'first_text':       first_child[15] if first_child else None,
-                'first_coa_id':     first_child[8] if first_child else None,
-                'first_ccoa_id':    first_child[9] if first_child else None,
-            })
-
         # Merge top-level items sorted by date descending
-        top_level = banks + groups + normal
+        top_level = banks + normal
         top_level.sort(key=lambda x: x['date'], reverse=True)
 
         # Build flat result: parent row immediately followed by its children
         result = []
         for item in top_level:
             result.append(item)
-            if item['type'] in ('group', 'bank'):
+            if item['type'] == 'bank':
                 result.extend(item.get('children', []))
 
         return result
     def insert_booking(self, date_booking, amount, account_id=None, foreign_bank_account="", 
                        recipient_client="", contact_id=None, coa_id=None, category_id=None,
                        currency="EUR", tax_rate=None, tax_amount=None, text="", 
-                       document_number=None, date_tax=None, booking_group_id=None, 
+                       document_number=None, date_tax=None,
                        counter_coa_id=None, log_description=None,
                        booking_type='entry', parent_booking_id=None,
                        auto_mirror=False):
@@ -253,7 +177,6 @@ class BookingsMixin:
             text: Notes/purpose
             document_number: External document reference
             date_tax: Tax date (optional)
-            booking_group_id: FK to BookingGroups (for split bookings)
             log_description: Description for SQL logging (optional)
             booking_type: 'bank', 'entry', or 'split_child' (default: 'entry')
             parent_booking_id: FK to parent Bookings row (bank transaction)
@@ -265,12 +188,12 @@ class BookingsMixin:
         cursor = conn.cursor()
         
         sql_template = '''INSERT INTO Bookings
-            (DateBooking, DateTax, BookingGroup_ID, Account_ID, ForeignBankAccount,
+            (DateBooking, DateTax, Account_ID, ForeignBankAccount,
              RecipientClient, Contact_ID, COA_ID, CounterCOA_ID, Category_ID, Amount, Currency,
              TaxRate, TaxAmount, Text, DocumentNumber, BookingType, ParentBooking_ID, AutoMirror)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
 
-        params = (date_booking, date_tax, booking_group_id, account_id, foreign_bank_account,
+        params = (date_booking, date_tax, account_id, foreign_bank_account,
                   recipient_client, contact_id, coa_id, counter_coa_id, category_id,
                   to_minor(amount or 0), currency,
                   tax_rate, self._minor_opt(tax_amount), text, document_number, booking_type,
@@ -382,7 +305,7 @@ class BookingsMixin:
         EÜR-Rechnung ``Netto = Amount − TaxAmount`` einen erfundenen Wert.
         Contact_ID bleibt bewusst erhalten (die Maske kennt nur Kunden-
         Kontakte und würde andere stillschweigend leeren), ebenso
-        Account_ID, BookingGroup_ID, BookingType, ParentBooking_ID, Status.
+        Account_ID, BookingType, ParentBooking_ID, Status.
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -405,7 +328,7 @@ class BookingsMixin:
                        foreign_bank_account="", recipient_client="", contact_id=None, 
                        coa_id=None, category_id=None, currency="EUR", tax_rate=None, 
                        tax_amount=None, text="", document_number=None, 
-                       date_tax=None, booking_group_id=None, counter_coa_id=None, log_description=None,
+                       date_tax=None, counter_coa_id=None, log_description=None,
                        booking_type=None, parent_booking_id=None):
         """Update an existing booking
         
@@ -419,12 +342,12 @@ class BookingsMixin:
         cursor = conn.cursor()
         
         sql_template = '''UPDATE Bookings
-            SET DateBooking=?, DateTax=?, BookingGroup_ID=?, Account_ID=?, ForeignBankAccount=?,
+            SET DateBooking=?, DateTax=?, Account_ID=?, ForeignBankAccount=?,
                 RecipientClient=?, Contact_ID=?, COA_ID=?, CounterCOA_ID=?, Category_ID=?, Amount=?, Currency=?,
                 TaxRate=?, TaxAmount=?, Text=?, DocumentNumber=?, BookingType=COALESCE(?, BookingType), ParentBooking_ID=COALESCE(?, ParentBooking_ID)
             WHERE ID=?'''
         
-        params = (date_booking, date_tax, booking_group_id, account_id, foreign_bank_account,
+        params = (date_booking, date_tax, account_id, foreign_bank_account,
                   recipient_client, contact_id, coa_id, counter_coa_id, category_id,
                   to_minor(amount or 0), currency,
                   tax_rate, self._minor_opt(tax_amount), text, document_number, booking_type, parent_booking_id, booking_id)
@@ -481,71 +404,6 @@ class BookingsMixin:
         booking = cursor.fetchone()
         conn.close()
         return self._euro_row(booking, 11, 14)  # Amount(11), TaxAmount(14)
-    def create_booking_group(self, description="", total_amount=None):
-        """Create a new booking group for split bookings
-        
-        Args:
-            description: Description of the booking group
-            total_amount: Expected total amount for validation
-            
-        Returns:
-            int: ID of created booking group
-        """
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
-        from datetime import date
-        created_date = date.today().isoformat()
-        
-        cursor.execute('''
-            INSERT INTO BookingGroups (Description, CreatedDate, TotalAmount)
-            VALUES (?, ?, ?)
-        ''', (description, created_date, self._minor_opt(total_amount)))
-        conn.commit()
-        group_id = cursor.lastrowid
-        conn.close()
-        return group_id
-    def fetch_booking_groups(self):
-        """Fetch all booking groups"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM BookingGroups ORDER BY CreatedDate DESC')
-        rows = cursor.fetchall()
-        conn.close()
-        return [self._euro_row(r, 3) for r in rows]  # TotalAmount (Index 3) -> Euro-Decimal
-    def get_bookings_in_group(self, group_id):
-        """Get all bookings belonging to a specific group"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM Bookings WHERE BookingGroup_ID=? ORDER BY DateBooking, ID', (group_id,))
-        rows = cursor.fetchall()
-        conn.close()
-        return [self._euro_row(r, 11, 14) for r in rows]  # Amount(11), TaxAmount(14)
-    def update_booking_group(self, group_id, description, total_amount=None):
-        """Beschreibung und Erwartungsbetrag einer Gruppe aktualisieren."""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            'UPDATE BookingGroups SET Description=?, TotalAmount=? WHERE ID=?',
-            (description, self._minor_opt(total_amount), group_id)
-        )
-        conn.commit()
-        conn.close()
-    def delete_booking_group(self, group_id):
-        """Gruppe löschen. Zugehörige Buchungen werden aus der Gruppe gelöst (nicht gelöscht)."""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('UPDATE Bookings SET BookingGroup_ID=NULL WHERE BookingGroup_ID=?', (group_id,))
-        cursor.execute('DELETE FROM BookingGroups WHERE ID=?', (group_id,))
-        conn.commit()
-        conn.close()
-    def unlink_booking_from_group(self, booking_id):
-        """Buchung aus ihrer Gruppe lösen (BookingGroup_ID auf NULL setzen)."""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('UPDATE Bookings SET BookingGroup_ID=NULL WHERE ID=?', (booking_id,))
-        conn.commit()
-        conn.close()
     def link_booking_to_document(self, booking_id, document_id, relation_type="receipt"):
         """Create a link between a booking and a document
         

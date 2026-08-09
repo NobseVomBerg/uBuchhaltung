@@ -31,7 +31,6 @@ from .pages_masterdata import (
 )
 from .pages_contacts import PageContacts, PageContactNew, PageContactEdit
 from .pages_miscellaneous import PageMiscellaneous
-from .pages_booking_groups import PageBookingGroups, PageBookingGroupDetails
 from .pages_transactions import PageTransactions
 from .pages_dashboard import PageDashboard
 from .pages_receipts import PageReceipts, PageReceiptEdit
@@ -546,26 +545,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 transaction_id = int(query_components["id"][0])
                 db.delete_transaction(transaction_id)
                 self.respond(303, "", headers={"Location": "/transactions"})
-            elif self.path == "/bookinggroups" or self.path.startswith("/bookinggroups?"):
-                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
-                date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
-                hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
-                self.respond(200, PageBookingGroups(db, date_from, date_to), headers=hdrs)
-            elif self.path.startswith("/bookinggroups/view"):
-                query_components = parse_qs(self.path.split('?')[1])
-                group_id = int(query_components["id"][0])
-                self.respond(200, PageBookingGroupDetails(db, group_id))
-            elif self.path.startswith("/bookinggroups/delete"):
-                query_components = parse_qs(self.path.split('?')[1])
-                group_id = int(query_components["id"][0])
-                status, location = handlers.handle_delete_booking_group(db, group_id)
-                self.respond(status, "", headers={"Location": location})
-            elif self.path.startswith("/bookinggroups/unlink_booking"):
-                query_components = parse_qs(self.path.split('?')[1])
-                booking_id = int(query_components["booking_id"][0])
-                grp_id     = int(query_components["group_id"][0])
-                status, location = handlers.handle_unlink_booking_from_group(db, booking_id, grp_id)
-                self.respond(status, "", headers={"Location": location})
             elif self.path.startswith("/documents/unlink"):
                 query_components = parse_qs(self.path.split('?')[1])
                 doc_id = int(query_components["doc_id"][0])
@@ -974,12 +953,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(status_code, response, content_type="application/json")
             elif self.path == "/transactions/add":
                 status_code, location = handlers.handle_add_transaction(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
-            elif self.path == "/bookinggroups/create":
-                status_code, location = handlers.handle_create_booking_group(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
-            elif self.path == "/bookinggroups/update":
-                status_code, location = handlers.handle_update_booking_group(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/documents/link":
                 status_code, location = handlers.handle_link_document(db, post_data)

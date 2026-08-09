@@ -14,6 +14,11 @@ class SchemaMixin:
         cols = [r[1] for r in cursor.execute(f"PRAGMA table_info({table})").fetchall()]
         return column in cols
 
+    def _table_exists(self, cursor, table):
+        return cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,)).fetchone() is not None
+
     def _add_column_if_missing(self, cursor, table, column, coldef):
         """ALTER TABLE … ADD COLUMN nur, wenn die Spalte fehlt (idempotent)."""
         if not self._column_exists(cursor, table, column):
@@ -40,6 +45,24 @@ class SchemaMixin:
             # bloß verknüpfte Buchungen behalten ihre eigene Kontierung.
             self._add_column_if_missing(cursor, 'Bookings', 'AutoMirror',
                                         'INTEGER DEFAULT 0')
+        if from_version < 5:
+            # v5: Buchungsgruppen abgelöst. Die Klammer eines mehrzeiligen
+            # Belegs ist jetzt die Beleg-Nr. (+ Datum), die Verbindung zur
+            # Bankbewegung läuft über ParentBooking_ID.
+            #
+            # Die Spalte BookingGroup_ID bleibt bestehen (die Anwendung liest
+            # Bookings positionsbasiert per SELECT *) und wird geleert. Die
+            # Tabelle wird NICHT gelöscht, sondern nur geleert: In vor v5
+            # angelegten Datenbanken verweist der Fremdschlüssel der
+            # Bookings-Tabelle weiterhin auf sie, und SQLite lehnt jedes
+            # INSERT mit "no such table" ab, sobald das Ziel fehlt – ein
+            # Entfernen erforderte einen kompletten Tabellen-Neuaufbau.
+            # Neu angelegte Datenbanken bekommen weder Tabelle noch
+            # Fremdschlüssel.
+            cursor.execute('UPDATE Bookings SET BookingGroup_ID = NULL '
+                           'WHERE BookingGroup_ID IS NOT NULL')
+            if self._table_exists(cursor, 'BookingGroups'):
+                cursor.execute('DELETE FROM BookingGroups')
         if from_version < 4:
             # v4: Bestehende Spiegel nachträglich markieren, damit auch vor
             # der Einführung von AutoMirror kontierte Bank-Buchungen weiter
@@ -278,23 +301,13 @@ class SchemaMixin:
             ON Trips(DriverID, StartDate)
         ''')
 
-        # BookingGroups (Helper for linking Documents and Bookings with m:n together)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS BookingGroups (
-                ID INTEGER PRIMARY KEY AUTOINCREMENT,
-                Description TEXT,
-                CreatedDate DATE,
-                TotalAmount INTEGER
-            )
-        ''')
-
         # Bookings (replaces Zahlung with enhanced structure)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS Bookings (
                 ID INTEGER PRIMARY KEY AUTOINCREMENT,
                 DateBooking DATE NOT NULL,
                 DateTax DATE,
-                BookingGroup_ID INTEGER,
+                BookingGroup_ID INTEGER,   -- stillgelegt (v5): Splits laufen über ParentBooking_ID
                 Account_ID INTEGER,
                 ForeignBankAccount TEXT,
                 RecipientClient TEXT,
@@ -312,7 +325,6 @@ class SchemaMixin:
                 ParentBooking_ID INTEGER,
                 Status TEXT,
                 AutoMirror INTEGER DEFAULT 0,
-                FOREIGN KEY (BookingGroup_ID) REFERENCES BookingGroups(ID),
                 FOREIGN KEY (Account_ID) REFERENCES Accounts(ID),
                 FOREIGN KEY (Contact_ID) REFERENCES Contacts(ID),
                 FOREIGN KEY (COA_ID) REFERENCES ChartOfAccounts(ID),

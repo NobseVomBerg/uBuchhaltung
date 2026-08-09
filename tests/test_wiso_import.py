@@ -218,8 +218,9 @@ class TestOriginalFormatImport:
         assert row is not None
         assert row[0] > 0, "Einnahme (liquid Konto) muss positiv sein"
 
-    def test_split_group_created_for_same_reference(self, db_with_coa):
-        """Two rows with same REFERENZNUMMER+Datum → BookingGroup created."""
+    def test_split_rows_share_document_number(self, db_with_coa):
+        """Zwei Zeilen mit gleicher REFERENZNUMMER+Datum bleiben über die
+        Beleg-Nr. verbunden (frühere BookingGroup)."""
         csv = (
             "ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER\n"
             "1;07.06.2024;4400;1800;Teil 1;GRP-001;500,00;401;\n"
@@ -228,12 +229,12 @@ class TestOriginalFormatImport:
         db_with_coa.import_wiso_csv(csv)
         conn = db_with_coa._get_connection()
         cur = conn.cursor()
-        cur.execute("SELECT BookingGroup_ID FROM Bookings WHERE DocumentNumber='GRP-001'")
+        cur.execute("SELECT DateBooking, Amount FROM Bookings "
+                    "WHERE DocumentNumber='GRP-001' ORDER BY ID")
         rows = cur.fetchall()
         conn.close()
-        group_ids = [r[0] for r in rows]
-        assert all(g is not None for g in group_ids), "Both rows must be in a group"
-        assert len(set(group_ids)) == 1, "Both rows must be in the same group"
+        assert len(rows) == 2, "Beide Zeilen müssen importiert sein"
+        assert len({r[0] for r in rows}) == 1, "gleiches Datum = eine Beleg-Klammer"
 
     def test_cp1252_encoding(self, db_with_coa):
         """Import of CP1252-encoded file should succeed."""

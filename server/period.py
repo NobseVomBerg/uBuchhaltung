@@ -5,7 +5,7 @@
 Seitenübergreifender Zeitraum-Filter (Jahr / von-bis).
 
 Der gewählte Zeitraum wird als Cookie gespeichert und gilt damit über alle
-Seiten hinweg (Dashboard, Transactions, Invoice, Receipts, BookingGroups).
+Seiten hinweg (Dashboard, Transactions, Invoice, Receipts).
 
 Auflösungs-Priorität:  explizite Query-Parameter  >  Cookie  >  Default (akt. Jahr)
 """
@@ -91,7 +91,7 @@ def period_filter_widget(date_from: str, date_to: str, base_path: str,
     """Gemeinsames Header3-Fragment: Von/Bis-Felder + Jahres- + Monats-Buttons.
 
     Zentrale Stelle für ALLE Seiten mit Zeitraum-Filter (Transactions, Receipts,
-    BookingGroups, Invoice, WorkTimes). Datums-/Jahres-/Monatswechsel lösen einen
+    Invoice, WorkTimes). Datums-/Jahres-/Monatswechsel lösen einen
     Server-Reload aus (``base_path?from=..&to=..``), sodass nur der gewählte
     Zeitraum geladen/gerendert wird.
 

@@ -86,7 +86,6 @@ def PageMiscellaneous(db: Database):
                 "UPDATE AssetDepreciations SET Booking_ID = NULL WHERE Booking_ID IN (" + b + ");\\n" +
                 "UPDATE Trips SET DocumentID = NULL WHERE DocumentID IN (" + d + ");\\n" +
                 "DELETE FROM Bookings WHERE DateBooking BETWEEN '" + from + "' AND '" + to + "';\\n" +
-                "DELETE FROM BookingGroups WHERE ID NOT IN (SELECT DISTINCT BookingGroup_ID FROM Bookings WHERE BookingGroup_ID IS NOT NULL);\\n" +
                 "DELETE FROM Documents WHERE Date BETWEEN '" + from + "' AND '" + to + "';";
             document.getElementById('sql_input').value = sql;
             status.innerHTML = 'Lösch-Skript eingefügt — bitte prüfen und dann „SQL ausführen" klicken.';

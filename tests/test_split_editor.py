@@ -209,6 +209,112 @@ def test_income_orientation_preserved_in_editor(tmp_db):
     assert c[9] == coa_neu         # Zweckkonto auf der Gegenseite
 
 
+def test_adopt_existing_booking_by_id(tmp_db):
+    """Sammelüberweisung: bestehende Buchungen mit EIGENEN Belegnummern
+    werden über ihre ID zugeordnet – ohne gemeinsame Beleg-Klammer."""
+    acct = _bank_account(tmp_db)
+    bank_coa = tmp_db.get_coa_id_by_account_number(1800)
+    coa = tmp_db.get_coa_id_by_account_number(6815)
+    bk = _bank_booking(tmp_db, acct, amount=-300.00)
+    # zwei eigenständig erfasste Rechnungen, eigenes Datum und eigener Empfänger
+    r1 = tmp_db.insert_booking('2026-02-20', -100.00, coa_id=coa,
+                               counter_coa_id=bank_coa, document_number='RG-1',
+                               recipient_client='Lieferant A',
+                               text='Rechnung 1', booking_type='entry')
+    r2 = tmp_db.insert_booking('2026-02-25', -200.00, coa_id=coa,
+                               counter_coa_id=bank_coa, document_number='RG-2',
+                               recipient_client='Lieferant B',
+                               text='Rechnung 2', booking_type='entry')
+
+    # beide erscheinen als Kandidaten in der Maske
+    html = PageTransactions(tmp_db, edit_transaction_id=bk)
+    assert 'vorhandene Buchung zuordnen' in html
+    assert f'value="{r1}"' in html and f'value="{r2}"' in html
+
+    handle_add_transaction(tmp_db, _post(bk, acct, [
+        (r1, '-100.00', coa, '', '', 'RG-1', 'Rechnung 1'),
+        (r2, '-200.00', coa, '', '', 'RG-2', 'Rechnung 2'),
+    ], amount='-300.00'))
+
+    kids = _children(tmp_db, bk)
+    assert set(kids) == {r1, r2}                    # per ID zugeordnet
+    b1 = tmp_db.get_booking_by_id(r1)
+    assert b1[1] == '2026-02-20'                    # eigenes Datum bleibt
+    assert b1[6] == 'Lieferant A'                   # eigener Empfänger bleibt
+    assert b1[16] == 'RG-1'                         # eigene Beleg-Nr. bleibt
+
+
+def test_adopt_candidates_exclude_linked_bookings(tmp_db):
+    """Bereits zugeordnete Buchungen tauchen nicht als Kandidat auf."""
+    acct = _bank_account(tmp_db)
+    coa = tmp_db.get_coa_id_by_account_number(6815)
+    bk = _bank_booking(tmp_db, acct)
+    child = tmp_db.insert_booking('2026-03-01', -238.00, coa_id=coa,
+                                  booking_type='entry', parent_booking_id=bk)
+    free = tmp_db.insert_booking('2026-03-02', -50.00, coa_id=coa,
+                                 booking_type='entry')
+
+    ids = {c[0] for c in tmp_db.get_unlinked_entry_bookings()}
+    assert free in ids and child not in ids
+
+
+def test_migration_releases_booking_groups(tmp_db, tmp_path):
+    """Migration v5: Altbestand wird aus den Gruppen gelöst, die Buchungen
+    bleiben unangetastet – und die Datenbank bleibt beschreibbar.
+
+    Die Gruppen-Tabelle wird bewusst nur geleert, nicht gelöscht: In alten
+    Datenbanken zeigt der Fremdschlüssel der Bookings-Tabelle weiterhin auf
+    sie, und SQLite lehnt sonst jedes INSERT mit "no such table" ab.
+    """
+    import sqlite3
+    from db import Database
+
+    db_file = str(tmp_path / 'legacy.db')
+    con = sqlite3.connect(db_file)
+    con.executescript('''
+        CREATE TABLE Invoices (ID INTEGER PRIMARY KEY);
+        CREATE TABLE BookingGroups (ID INTEGER PRIMARY KEY AUTOINCREMENT,
+            Description TEXT, CreatedDate DATE, TotalAmount INTEGER);
+        CREATE TABLE Bookings (ID INTEGER PRIMARY KEY AUTOINCREMENT,
+            DateBooking DATE, DateTax DATE, BookingGroup_ID INTEGER,
+            Account_ID INTEGER, ForeignBankAccount TEXT, RecipientClient TEXT,
+            Contact_ID INTEGER, COA_ID INTEGER, CounterCOA_ID INTEGER,
+            Category_ID INTEGER, Amount INTEGER, Currency TEXT, TaxRate REAL,
+            TaxAmount INTEGER, Text TEXT, DocumentNumber TEXT,
+            BookingType TEXT, ParentBooking_ID INTEGER, Status TEXT,
+            AutoMirror INTEGER DEFAULT 0,
+            FOREIGN KEY (BookingGroup_ID) REFERENCES BookingGroups(ID));
+        INSERT INTO BookingGroups (Description) VALUES ('Alt-Split');
+        INSERT INTO Bookings (DateBooking, BookingGroup_ID, Amount, Text,
+                              DocumentNumber, BookingType)
+            VALUES ('2025-01-05', 1, 1000000, 'Teil A', 'ALT-1', 'entry');
+        INSERT INTO Bookings (DateBooking, BookingGroup_ID, Amount, Text,
+                              DocumentNumber, BookingType)
+            VALUES ('2025-01-05', 1, 500000, 'Teil B', 'ALT-1', 'entry');
+        PRAGMA user_version = 4;
+    ''')
+    con.commit()
+    con.close()
+
+    db = Database(db_name=db_file)     # löst die Migration aus
+
+    con = sqlite3.connect(db_file)
+    assert con.execute('PRAGMA user_version').fetchone()[0] == 5
+    assert con.execute('SELECT COUNT(*) FROM BookingGroups').fetchone()[0] == 0
+    rows = con.execute('SELECT Text, DocumentNumber, BookingGroup_ID, Amount'
+                       ' FROM Bookings ORDER BY ID').fetchall()
+    con.close()
+    assert [r[0] for r in rows] == ['Teil A', 'Teil B']   # Buchungen erhalten
+    assert all(r[1] == 'ALT-1' for r in rows)             # Beleg-Klammer bleibt
+    assert all(r[2] is None for r in rows)                # Gruppe gelöst
+    assert [r[3] for r in rows] == [1000000, 500000]      # Beträge unverändert
+
+    # Entscheidend: Die migrierte Datenbank muss weiter beschreibbar sein
+    new_id = db.insert_booking('2026-02-02', -12.34, text='Nach Migration',
+                               booking_type='entry')
+    assert db.get_booking_by_id(new_id)[15] == 'Nach Migration'
+
+
 def test_editor_rendered_only_for_bank_bookings(tmp_db):
     """Buchungen ohne Bankbezug behalten die klassischen Kontierungsfelder."""
     acct = _bank_account(tmp_db)
@@ -220,11 +326,11 @@ def test_editor_rendered_only_for_bank_bookings(tmp_db):
     bank_html = PageTransactions(tmp_db, edit_transaction_id=bk)
     assert 'Buchungssätze zu dieser Bankbewegung' in bank_html
     assert 'name="split_amount"' in bank_html
-    assert 'name="booking_group_id"' not in bank_html   # Gruppen-Dropdown weg
     assert 'name="tax_rate"' not in bank_html           # Steuer je Teilbuchung
     assert 'name="document_nr"' in bank_html            # Beleg-Nr. bleibt oben
+    assert 'name="booking_group_id"' not in bank_html   # Gruppen abgelöst
 
     entry_html = PageTransactions(tmp_db, edit_transaction_id=entry)
     assert 'Buchungssätze zu dieser Bankbewegung' not in entry_html
     assert 'name="coa_id"' in entry_html
-    assert 'name="booking_group_id"' in entry_html
+    assert 'name="booking_group_id"' not in entry_html

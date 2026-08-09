@@ -18,7 +18,7 @@ Schema-Version kennt.
 """
 
 MAJOR = 1
-SCHEMA_VERSION = 4   # +1 bei jeder DB-Schema-Änderung (= mittlere Versionsstelle)
+SCHEMA_VERSION = 5   # +1 bei jeder DB-Schema-Änderung (= mittlere Versionsstelle)
 PATCH = 1            # +1 bei sonstigen Änderungen ohne DB-Bezug
 
 APP_VERSION = f"{MAJOR}.{SCHEMA_VERSION}.{PATCH}"

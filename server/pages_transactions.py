@@ -17,7 +17,7 @@ def _attr(s):
 
 
 # Spaltenindizes in Bookings (SELECT *):
-# [0]  ID            [1]  DateBooking   [2]  DateTax       [3]  BookingGroup_ID
+# [0]  ID            [1]  DateBooking   [2]  DateTax       [3]  (unbenutzt)
 # [4]  Account_ID    [5]  ForeignBankAccount               [6]  RecipientClient
 # [7]  Contact_ID    [8]  COA_ID        [9]  CounterCOA_ID [10] Category_ID
 # [11] Amount        [12] Currency      [13] TaxRate        [14] TaxAmount
@@ -144,7 +144,13 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     # Tabelle (Split anlegen/auflösen), nicht mehr über die Felder oben.
     is_bank_form = bool(edit_trans and edit_trans[17] == 'bank')
     split_rows = []
+    adopt_candidates = []
     if is_bank_form:
+        # Bestehende, noch keiner Bankbewegung zugeordnete Buchungen: können
+        # per ID zugeordnet werden (Sammelüberweisung mehrerer Rechnungen mit
+        # je eigener Beleg-Nr. – dafür taugt keine Beleg-Klammer).
+        adopt_candidates = db.get_unlinked_entry_bookings(
+            around_date=edit_trans[1], limit=50)
         _bank_coa_ids = db.get_bank_coa_ids()
         for c in db.get_child_bookings_for_bank(edit_trans[0]):
             # Reine Doppik-Spiegel gehören nicht in den Editor
@@ -173,7 +179,6 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     coa_accounts = db.fetch_chart_of_accounts()
     coa_map      = {c[0]: _html.escape(str(c[2])) for c in coa_accounts}
     private_coa_ids = {c[0] for c in coa_accounts if 2100 <= c[2] < 2200}
-    booking_groups = db.fetch_booking_groups()
 
     # Determine form title and button text
     form_title  = "Transaktion bearbeiten" if edit_trans else "Neue Transaktion"
@@ -288,17 +293,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
 
     accounting_rows = ''
     if not is_bank_form:
-        selected_booking_group_id = edit_trans[3] if edit_trans else None
-        group_options = '<option value="">-- Keine Gruppierung --</option>'
-        for bg in booking_groups:
-            selected = 'selected' if selected_booking_group_id and bg[0] == selected_booking_group_id else ''
-            bg_display = f"#{bg[0]} - {bg[1] or 'Ohne Beschreibung'}"
-            group_options += f'<option value="{bg[0]}" {selected}>{_html.escape(str(bg_display))}</option>'
-        accounting_rows = (
-            f'<tr><td>Split-Buchung:</td><td>'
-            f'<select name="booking_group_id">{group_options}</select></td></tr>'
-            f'<tr><td>SKR-Konto:</td><td>'
-            f'<select name="coa_id">{coa_options}</select></td></tr>')
+        accounting_rows = (f'<tr><td>SKR-Konto:</td><td>'
+                           f'<select name="coa_id">{coa_options}</select></td></tr>')
 
     # Steuer gehört bei Bankbewegungen zur einzelnen Teilbuchung; die Beleg-Nr.
     # bleibt oben – sie beschreibt die Bankbewegung und liefert die Basis für
@@ -381,6 +377,32 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         bank_amount = float(edit_trans[11] or 0)
         bank_docnr = _attr(edit_trans[16])
         bank_text = _attr(edit_trans[15])
+
+        # Auswahl bestehender Buchungen (Zuordnung läuft über die ID)
+        adopt_widget = ''
+        shown_ids = {r['id'] for r in split_rows}
+        adopt_opts = ''
+        for c in adopt_candidates:
+            if c[0] in shown_ids:
+                continue
+            label = f"{c[1]} · {c[2]:.2f} €"
+            if c[3]:
+                label += f" · {c[3]}"
+            info = c[5] or c[4] or ''
+            if info:
+                label += f" · {str(info)[:40]}"
+            adopt_opts += (f'<option value="{c[0]}" data-amount="{c[2]:.2f}"'
+                           f' data-docnr="{_attr(c[3])}" data-text="{_attr(c[4])}"'
+                           f' data-coa="{c[6] or ""}">{_html.escape(label)}</option>')
+        if adopt_opts:
+            adopt_widget = (
+                '<select id="adoptSelect" style="max-width:340px;">'
+                '<option value="">-- vorhandene Buchung zuordnen --</option>'
+                f'{adopt_opts}</select>'
+                '<button type="button" onclick="splitAdopt()"'
+                ' class="coloredButton btn-sm bg-gray"'
+                ' title="Bereits erfasste Buchung dieser Bankbewegung zuordnen">'
+                '&#8631; Zuordnen</button>')
         s+= f'''
             <h3 style="margin-top:18px;">Buchungssätze zu dieser Bankbewegung</h3>
             <table id="splitTable" class="form-table">
@@ -391,6 +413,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             </table>
             <div class="rowWithObjects" style="margin-top:6px;">
                 <button type="button" onclick="splitAdd()" class="coloredButton btn-sm bg-blue">+ Teilbuchung</button>
+                {adopt_widget}
                 <span id="splitSummary"></span>
             </div>
             <script>
@@ -447,6 +470,26 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 }}
                 function splitRemove(link) {{
                     link.closest('tr').remove();
+                    splitRecalc();
+                }}
+                function splitAdopt() {{
+                    // Bestehende Buchung per ID zuordnen: Zeile mit ihrer ID
+                    // anlegen; das Speichern setzt ParentBooking_ID.
+                    const sel = document.getElementById('adoptSelect');
+                    const opt = sel.options[sel.selectedIndex];
+                    if (!opt || !opt.value) return;
+                    const tpl = document.querySelector('#splitTable tr.splitTemplate');
+                    const row = tpl.cloneNode(true);
+                    row.className = 'splitRow';
+                    row.style.display = '';
+                    row.querySelector('[name=split_id]').value = opt.value;
+                    row.querySelector('.splitAmount').value = opt.dataset.amount;
+                    row.querySelector('[name=split_docnr]').value = opt.dataset.docnr || '';
+                    row.querySelector('[name=split_text]').value = opt.dataset.text || '';
+                    const coaSel = row.querySelector('[name=split_coa]');
+                    if (opt.dataset.coa) coaSel.value = opt.dataset.coa;
+                    tpl.parentNode.insertBefore(row, tpl);
+                    opt.remove();
                     splitRecalc();
                 }}
                 splitRecalc();

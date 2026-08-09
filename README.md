@@ -30,7 +30,7 @@ Zentrale Verwaltung aller Buchungstransaktionen:
   - Multi-Währung (EUR, USD, GBP, CHF)
   - Kontakt-, Kategorie- und Dokumentnummer-Zuordnung
   - Fremde IBAN (`ForeignBankAccount`)
-- **Split-Buchungen**: Gruppierung via `BookingGroup_ID`
+- **Split-Buchungen**: mehrere Buchungssätze je Bankbewegung (`ParentBooking_ID`), im Buchungssatz-Editor der Bankbewegung gepflegt
 - **Erweiterte Filter**: Datum, Konto, Kunde, Währung, Betragsbereich – alle kombinierbar
 
 ### 3. Konten-Verwaltung (`/masterdata/bankaccounts`)
@@ -98,10 +98,6 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 - Format: YY[Buchstabe][Präfix]### (z.B. 26R001)
 - Typen: Ausgangsrechnungen, Belegnummern
 - Jahreswechsel-Support
-
-### 12. Split-Buchungen (`/bookinggroups`)
-- Gruppierung mit Soll/Haben-Validierung
-- Beschreibung und erwarteter Gesamtbetrag
 
 ### 13. Anlagenverzeichnis (`/assets`)
 Vollständiges Anlagenmanagement mit gesetzeskonformer AfA:
@@ -211,7 +207,6 @@ uBuchhaltung/
 │   ├── pages_dashboard.py     # Dashboard + EÜR
 │   ├── pages_invoice.py       # Rechnungen · pages_quote.py – Angebote
 │   ├── pages_transactions.py  # Buchungen (Bank+Entry merged Display)
-│   ├── pages_booking_groups.py # Split-Buchungen
 │   ├── pages_contacts.py      # Kontaktverwaltung (6-Tabellen-Schema)
 │   ├── pages_masterdata.py    # Stammdaten (Artikel, SKR, Bankkonten, Nummernkreise)
 │   ├── pages_assets.py        # Anlagenverzeichnis
@@ -334,7 +329,6 @@ auskommentierten Zeilen (`pytesseract`, `pdf2image`) einkommentieren.
 | `server/pages_dashboard.py` | Dashboard + EÜR |
 | `server/pages_invoice.py` / `pages_quote.py` | Rechnungen / Angebote |
 | `server/pages_transactions.py` | Buchungen (Bank+Entry merged) |
-| `server/pages_booking_groups.py` | Split-Buchungen |
 | `server/pages_contacts.py` | Kontakte |
 | `server/pages_masterdata.py` | Stammdaten (Artikel, SKR, Bankkonten, Nummernkreise) |
 | `server/pages_assets.py` | Anlagen |

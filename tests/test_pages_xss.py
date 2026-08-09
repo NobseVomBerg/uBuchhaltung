@@ -8,7 +8,6 @@ import json
 import os
 
 from server.pages_contacts import _contact_form
-from server.pages_booking_groups import PageBookingGroups
 from server.pages_transactions import PageTransactions
 from server.pages_masterdata import PageArticles, PageBankAccounts, PageSkr
 from server.pages_assets import PageAssets
@@ -52,15 +51,6 @@ def test_contact_form_escapes_person_fields(tmp_db):
     html = _contact_form(tmp_db, '/x', entity_type='person', c=c)
     assert SCRIPT not in html
     assert '&lt;script&gt;' in html
-
-
-def test_booking_group_description_escaped_in_list_and_form(tmp_db):
-    gid = tmp_db.create_booking_group(SCRIPT, None)
-    list_html = PageBookingGroups(tmp_db)
-    form_html = PageBookingGroups(tmp_db, view_id=gid)
-    assert SCRIPT not in list_html
-    assert SCRIPT not in form_html
-    assert '&lt;script&gt;' in list_html
 
 
 def test_contact_form_company_dropdown_escaped(tmp_db):

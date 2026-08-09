@@ -295,8 +295,9 @@ def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
         row_tax = _at(tax_amounts, i).strip()
         purpose_coa = int(raw_coa) if raw_coa else None
         new_coa, new_counter = purpose_coa, account_coa_id
-        if row_id:
-            old_coa, old_counter = existing_by_id.get(int(row_id), (None, None))
+        old_row = db.get_booking_by_id(int(row_id)) if row_id else None
+        if old_row:
+            old_coa, old_counter = old_row[8], old_row[9]
             if old_coa in bank_coa_ids and old_counter not in bank_coa_ids:
                 # liquide-zuerst (z. B. Einnahmen aus dem WISO-Import)
                 new_coa, new_counter = old_coa, purpose_coa
@@ -313,10 +314,25 @@ def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
             text=_at(texts, i),
             document_number=_at(docnrs, i).strip() or None,
         )
+        if old_row and int(row_id) not in existing_by_id:
+            # Adoption einer bestehenden Buchung: ihre eigenen Stammdaten
+            # (Datum, Steuerdatum, Empfänger, Währung) bleiben erhalten –
+            # überschrieben würden sonst korrekt erfasste Angaben.
+            fields.update(date_booking=old_row[1], date_tax=old_row[2],
+                          recipient_client=old_row[6],
+                          currency=old_row[12] or 'EUR')
         if row_id:
-            db.update_booking(booking_id=int(row_id),
-                              log_description="Split row update", **fields)
-            keep_ids.add(int(row_id))
+            rid = int(row_id)
+            # Zeilen können auch bestehende, bisher unverknüpfte Buchungen
+            # sein ("vorhandene Buchung zuordnen"): dann wird die Verbindung
+            # per ID hergestellt – Belegnummern spielen dabei keine Rolle.
+            adopt = rid not in existing_by_id
+            db.update_booking(booking_id=rid,
+                              parent_booking_id=bank_id if adopt else None,
+                              log_description=("Split row adopt" if adopt
+                                               else "Split row update"),
+                              **fields)
+            keep_ids.add(rid)
         else:
             new_id = db.insert_booking(booking_type='entry',
                                        parent_booking_id=bank_id,
@@ -349,7 +365,6 @@ def handle_add_transaction(db: Database, post_data):
     foreign_account = post_data.get("foreign_account", [""])[0]
     contact_id = post_data.get("contact_id", [""])[0]
     coa_id = post_data.get("coa_id", [""])[0]
-    booking_group_id = post_data.get("booking_group_id", [""])[0]
     tax_rate = post_data.get("tax_rate", [""])[0]
     tax_amount = post_data.get("tax_amount", [""])[0]
     document_nr = post_data.get("document_nr", [""])[0]
@@ -362,7 +377,6 @@ def handle_add_transaction(db: Database, post_data):
         account_id = int(account_id) if account_id else None
         contact_id = int(contact_id) if contact_id else None
         coa_id = int(coa_id) if coa_id else None
-        booking_group_id = int(booking_group_id) if booking_group_id else None
         invoice_id = int(invoice_id) if invoice_id else None
         
         # Convert tax_rate from percentage to decimal
@@ -389,7 +403,6 @@ def handle_add_transaction(db: Database, post_data):
                 booking_id=transaction_id,
                 date_booking=date,
                 date_tax=date_tax,
-                booking_group_id=booking_group_id,
                 amount=float(amount),
                 account_id=account_id,
                 foreign_bank_account=foreign_account,
@@ -479,7 +492,6 @@ def handle_add_transaction(db: Database, post_data):
             transaction_id = db.insert_booking(
                 date_booking=date,
                 date_tax=date_tax,
-                booking_group_id=booking_group_id,
                 amount=float(amount),
                 account_id=account_id,
                 foreign_bank_account=foreign_account,
@@ -551,54 +563,6 @@ def handle_add_bankaccount(db: Database, post_data):
     skr_account = int(skr_raw) if skr_raw.strip() else None
     db.insert_account(name, holder, iban, bic, bank_name, skr_account=skr_account)
     return 303, "/masterdata/bankaccounts"
-
-def handle_create_booking_group(db: Database, post_data):
-    """Handle creating a new booking group"""
-    description = post_data.get("description", [""])[0]
-    total_amount = post_data.get("total_amount", [""])[0]
-    
-    try:
-        total_amount = float(total_amount) if total_amount else None
-        group_id = db.create_booking_group(description, total_amount)
-        return 303, f"/bookinggroups/view?id={group_id}"
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return 500, f"Fehler beim Erstellen der Gruppe: {str(e)}"
-
-def handle_update_booking_group(db: Database, post_data):
-    """Beschreibung/Betrag einer bestehenden Gruppe speichern."""
-    try:
-        group_id    = int(post_data.get("group_id", ["0"])[0])
-        description = post_data.get("description", [""])[0]
-        total_amount_str = post_data.get("total_amount", [""])[0]
-        total_amount = float(total_amount_str) if total_amount_str else None
-        db.update_booking_group(group_id, description, total_amount)
-        return 303, f"/bookinggroups/view?id={group_id}"
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return 500, f"Fehler beim Aktualisieren der Gruppe: {str(e)}"
-
-def handle_delete_booking_group(db: Database, group_id: int):
-    """Gruppe löschen (Buchungen bleiben, werden nur aus Gruppe gelöst)."""
-    try:
-        db.delete_booking_group(group_id)
-        return 303, "/bookinggroups"
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return 500, f"Fehler beim Löschen der Gruppe: {str(e)}"
-
-def handle_unlink_booking_from_group(db: Database, booking_id: int, group_id: int):
-    """Buchung aus Gruppe herauslösen."""
-    try:
-        db.unlink_booking_from_group(booking_id)
-        return 303, f"/bookinggroups/view?id={group_id}"
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return 500, f"Fehler beim Herauslösen der Buchung: {str(e)}"
 
 def handle_link_document(db: Database, post_data):
     """Handle linking a document to a booking"""

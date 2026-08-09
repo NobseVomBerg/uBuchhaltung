@@ -188,35 +188,12 @@ class WisoImportMixin:
             if key:
                 ref_groups[key].append(pr)
 
-        # booking_group_id_for_key: key → int (wird bei Bedarf angelegt)
-        group_id_cache = {}
-        reused_group_ids = set()  # bestehende Gruppen, deren TotalAmount am Ende neu berechnet wird
+        # Mehrzeilige Belege brauchen keine eigene Gruppen-Tabelle mehr: Die
+        # Klammer ist die Beleg-Nr. selbst (DocumentNumber + Datum), nach der
+        # auch der Auto-Abgleich gruppiert.
 
         dup_conn = self._get_connection()
         dup_cur  = dup_conn.cursor()
-
-        def _get_or_create_group(key, total_amount, date):
-            if key in group_id_cache:
-                return group_id_cache[key]
-            # Bestehende Gruppe wiederverwenden, falls Teile des Splits schon
-            # in einem früheren Import gelandet sind (key = (doc_number, date))
-            dup_cur.execute(
-                'SELECT BookingGroup_ID FROM Bookings '
-                'WHERE DocumentNumber=? AND DateBooking=? AND BookingGroup_ID IS NOT NULL '
-                'LIMIT 1', key
-            )
-            existing = dup_cur.fetchone()
-            if existing:
-                group_id_cache[key] = existing[0]
-                reused_group_ids.add(existing[0])
-                return existing[0]
-            dup_cur.execute(
-                'INSERT INTO BookingGroups (Description, CreatedDate, TotalAmount) VALUES (?,?,?)',
-                (key[0], date, self._minor_opt(total_amount))  # key = (doc_number, date)
-            )
-            gid = dup_cur.lastrowid
-            group_id_cache[key] = gid
-            return gid
 
         # Zählbasierte Duplikat-Erkennung: innerhalb eines Splits können mehrere
         # Zeilen denselben Schlüssel (Beleg, Datum, Konto, Betrag) haben (z.B.
@@ -281,32 +258,20 @@ class WisoImportMixin:
                     })
                     continue
 
-                # BookingGroup_ID ermitteln wenn zugehörige Gruppe >1 Zeile hat
-                booking_group_id = None
-                if doc_number:
-                    key = (doc_number, booking_date)
-                    if len(ref_groups.get(key, [])) > 1:
-                        total = sum(abs(r['amount']) for r in ref_groups[key])
-                        booking_group_id = _get_or_create_group(key, total, booking_date)
-
+                # Mehrzeilige Belege bleiben über DocumentNumber + Datum
+                # zusammen – eine eigene Gruppen-Zeile braucht es nicht.
                 dup_cur.execute('''
                     INSERT INTO Bookings
-                        (DateBooking, BookingGroup_ID, COA_ID, CounterCOA_ID,
+                        (DateBooking, COA_ID, CounterCOA_ID,
                          Amount, TaxRate, TaxAmount, Text, DocumentNumber, BookingType)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)
-                ''', (booking_date, booking_group_id, coa_id, pr['counter_coa_id'],
+                    VALUES (?,?,?,?,?,?,?,?,?)
+                ''', (booking_date, coa_id, pr['counter_coa_id'],
                       to_minor(amount or 0), pr['tax_rate'], self._minor_opt(pr['tax_amount']), pr['text'],
                       doc_number, 'entry'))
                 imported += 1
 
             except Exception as e:
                 errors.append(f"Zeile {pr['zeile']}: {str(e)}")
-
-        # Gruppensummen wiederverwendeter Gruppen aus dem DB-Bestand neu berechnen
-        for gid in reused_group_ids:
-            dup_cur.execute('SELECT COALESCE(SUM(ABS(Amount)),0) FROM Bookings WHERE BookingGroup_ID=?', (gid,))
-            total_minor = dup_cur.fetchone()[0]
-            dup_cur.execute('UPDATE BookingGroups SET TotalAmount=? WHERE ID=?', (total_minor, gid))
 
         dup_conn.commit()
         dup_conn.close()
@@ -540,7 +505,7 @@ class WisoImportMixin:
                         target_rows = cursor.fetchall()
                         is_split = True
                     else:
-                        # Stage 3: BookingGroup-Split – alle Buchungen gleicher
+                        # Stage 3: Beleg-Split – alle Buchungen gleicher
                         # Belegnummer (+Datum), deren Summe dem Zeilenbetrag entspricht.
                         cursor.execute('''
                             SELECT ID, RecipientClient, Text, COA_ID, ForeignBankAccount, Amount

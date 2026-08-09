@@ -78,11 +78,6 @@ def Header1(active_page=None):
     else:
         nav_items.append('<a href="/transactions">Buchungen</a>')
     
-    # Split-Buchungen
-    if active_page == 'bookinggroups':
-        nav_items.append('<span id="ActivePage">Split-Buchungen</span>')
-    else:
-        nav_items.append('<a href="/bookinggroups">Split-Buchungen</a>')
     
     # Anlagen
     if active_page == 'assets':
