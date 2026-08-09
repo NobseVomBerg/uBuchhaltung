@@ -83,6 +83,28 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 #transactionsTable .colDocnr     { width: 78px; }
 #transactionsTable .colActions   { width: 110px; }
 
+/* Buchungssatz-Editor der Bankmaske: eigene Datentabelle, nicht form-table –
+   deren 700px-Deckel und breite Zellen ließen für sieben Spalten zu wenig
+   Platz. Verwendungszweck steht vorn und bekommt den verbleibenden Rest,
+   das SKR-Konto wächst prozentual mit. min-width + überliegender Scroll-
+   Container: die Maske sitzt in der schmalen Spalte, lieber scrollen als
+   Felder auf Briefmarkengröße quetschen. */
+.splitScroll			{ overflow-x: auto; }
+/* box-sizing: die Basisregel für table gibt Rahmen und Padding dazu – ohne
+   das zählten sie zu den 100 % hinzu und die Tabelle stand 4px über. */
+#splitTable				{ table-layout: fixed; border-collapse: collapse;
+						  box-sizing: border-box; min-width: 640px; }
+#splitTable th			{ text-align: left; white-space: nowrap;
+						  overflow: hidden; text-overflow: ellipsis; }
+#splitTable td, #splitTable th { padding: 3px 4px; vertical-align: top; }
+#splitTable input, #splitTable select { width: 100%; max-width: 100%; box-sizing: border-box; }
+#splitTable .colSplitAmount { width: 76px; }
+#splitTable .colSplitCoa    { width: 25%; }
+#splitTable .colSplitRate   { width: 46px; }
+#splitTable .colSplitTax    { width: 88px; }
+#splitTable .colSplitDocnr  { width: 88px; }
+#splitTable .colSplitAction { width: 28px; }
+
 /* Splitbuchungen (Gruppenansicht in PageTransactions) */
 .group-row				{ cursor: pointer; }
 .split-toggle-icon		{ font-size: 0.8em; color: #2196F3; user-select: none; }

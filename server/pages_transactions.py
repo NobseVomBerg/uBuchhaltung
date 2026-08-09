@@ -353,11 +353,14 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             text = '' if template or not row else _attr(row['text'])
             sel_coa = row['coa_id'] if row and not template else None
             opts = '<option value="">-- Kein Konto --</option>'
+            sel_label = ''
             for coa in coa_accounts:
                 is_sel = bool(sel_coa and coa[0] == sel_coa)
                 if not (coa[7] if len(coa) > 7 else 1) and not is_sel:
                     continue
                 lbl = f"{coa[2]} - {coa[3]}" if coa[3] else f"{coa[2]}"
+                if is_sel:
+                    sel_label = str(lbl)
                 opts += (f'<option value="{coa[0]}"{" selected" if is_sel else ""}>'
                          f'{_html.escape(str(lbl))}</option>')
             style = ' style="display:none"' if template else ''
@@ -369,20 +372,30 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             hint = ''
             if nobank:
                 target = coa_map.get(row.get('counter_coa_id'), '')
-                hint = ('<div class="splitHint">Umbuchung – nicht bankwirksam'
-                        + (f' &rarr; {target}' if target else '') + '</div>')
+                hint = ('<div class="splitHint" title="Umbuchung ohne Geldfluss'
+                        ' – zählt nicht in die Summe der Bankbewegung">'
+                        'Umbuchung' + (f' &rarr; {target}' if target else '')
+                        + '</div>')
+            # Spaltenfolge: Verwendungszweck zuerst – er benennt die Zeile.
+            # Die Feldnamen bleiben; gelesen wird zeilenweise über den Index,
+            # die Reihenfolge INNERHALB einer Zeile spielt dafür keine Rolle.
             return (
                 f'<tr class="{cls}"{style}{nobank_attr}>'
                 f'<td><input type="hidden" name="split_id" value="{rid}">'
-                f'<input type="number" step="0.01" class="noButtons splitAmount"'
-                f' name="split_amount" value="{amount}" oninput="splitRecalc()">{hint}</td>'
-                f'<td><select name="split_coa">{opts}</select></td>'
+                f'<input type="text" name="split_text" value="{text}"'
+                f' title="{text}">{hint}</td>'
+                f'<td><input type="number" step="0.01" class="noButtons splitAmount"'
+                f' name="split_amount" value="{amount}" oninput="splitRecalc()"></td>'
+                # title zeigt den vollen Kontonamen – in der schmalen Spalte
+                # schneidet das Auswahlfeld lange SKR-Bezeichnungen ab.
+                f'<td><select name="split_coa" title="{_attr(sel_label)}"'
+                f' onchange="this.title = this.selectedOptions[0].text">'
+                f'{opts}</select></td>'
                 f'<td><input type="number" step="0.01" class="noButtons splitRate"'
                 f' name="split_tax_rate" value="{rate}" oninput="splitTax(this)"></td>'
                 f'<td><input type="number" step="0.01" class="noButtons splitTax"'
                 f' name="split_tax_amount" value="{tax}"></td>'
-                f'<td><input type="text" name="split_docnr" value="{docnr}" size="12"></td>'
-                f'<td><input type="text" name="split_text" value="{text}" size="24"></td>'
+                f'<td><input type="text" name="split_docnr" value="{docnr}"></td>'
                 f'<td><a href="javascript:void(0)" class="action-icon delete-icon"'
                 f' title="Teilbuchung entfernen" onclick="splitRemove(this)">&#10005;</a></td>'
                 f'</tr>')
@@ -419,12 +432,19 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 '&#8631; Zuordnen</button>')
         s+= f'''
             <h3 style="margin-top:18px;">Buchungssätze zu dieser Bankbewegung</h3>
-            <table id="splitTable" class="form-table">
-                <tr><th>Betrag</th><th>SKR-Konto</th><th>St.%</th><th>Steuerbetrag</th>
-                    <th>Beleg-Nr.</th><th>Verwendungszweck</th><th></th></tr>
+            <div class="splitScroll">
+            <table id="splitTable">
+                <colgroup><col><col class="colSplitAmount"><col class="colSplitCoa">
+                    <col class="colSplitRate"><col class="colSplitTax">
+                    <col class="colSplitDocnr"><col class="colSplitAction"></colgroup>
+                <tr><th>Verwendungszweck</th><th>Betrag</th><th>SKR-Konto</th>
+                    <th title="Steuersatz in Prozent">St.%</th>
+                    <th title="Enthaltener Steuerbetrag">St.-Betrag</th>
+                    <th>Beleg-Nr.</th><th></th></tr>
                 {rows_html}
                 {_split_row(template=True)}
             </table>
+            </div>
             <div class="rowWithObjects" style="margin-top:6px;">
                 <button type="button" onclick="splitAdd()" class="coloredButton btn-sm bg-blue">+ Teilbuchung</button>
                 {adopt_widget}
