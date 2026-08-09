@@ -30,16 +30,20 @@ def match_account(accounts, iban):
     return None, None
 
 
-def _transaction_warnings(date, amount, recipient, reference):
-    """Parse-Auffälligkeiten einer Buchung sammeln."""
-    warns = []
-    if amount is None or amount == 0:
-        warns.append("amount")
-    if not date:
-        warns.append("date")
-    if not recipient and not reference:
-        warns.append("empty")
-    return warns
+def _transaction_warnings(transaction, document_date=None):
+    """Parse-Auffälligkeiten einer Buchung.
+
+    Die Befunde stammen aus der Plausibilitätsprüfung der Importschicht und
+    hängen bereits an der Transaktion. Nur für Import-Dateien, die vor der
+    Abstraktionsschicht abgelegt wurden, wird nachträglich geprüft.
+    """
+    stored = transaction.get("warnings")
+    if stored is not None:
+        return list(stored)
+    from importers.base import StatementTransaction
+    from importers.plausibility import check_transaction
+    return check_transaction(
+        StatementTransaction.from_dict(transaction), document_date)
 
 
 def build_import_preview(db, import_data):
@@ -85,7 +89,7 @@ def build_import_preview(db, import_data):
             reference = t.get("reference") or ""
             foreign_iban = t.get("foreign_iban") or ""
 
-            warns = _transaction_warnings(date, amount, recipient, reference)
+            warns = _transaction_warnings(t, f.get("document_date"))
             if warns:
                 has_warn = True
 

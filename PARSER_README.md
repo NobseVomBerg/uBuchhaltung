@@ -18,12 +18,60 @@ Optional für PDF-Rechnungen mit Logo:
 pip install Pillow
 ```
 
+### Aufbau: Abstraktionsschicht + Bankmodule
+
+Der Import ist zweigeteilt. Die Anwendung kennt nur die Abstraktionsschicht,
+die Bankeigenheiten stecken je in einem eigenen Modul unter `importers/`:
+
+| Datei | Aufgabe |
+|---|---|
+| `importers/base.py` | Gemeinsames Datenmodell: `BankStatement` mit `StatementTransaction`-Zeilen |
+| `importers/pdftext.py` | Extraktions-Helfer für alle Module: Text, IBAN, Belegdatum |
+| `importers/plausibility.py` | Zentrale Inhaltsprüfung (siehe unten) |
+| `importers/vbr.py` | Volksbank Rottweil (PDF) |
+| `importers/dkb.py` | DKB (PDF) |
+| `importers/__init__.py` | Registry `IMPORTERS`, `find_importer()`, `parse_statement()` |
+
+Die Spalten einer importierten Bewegung (`CANONICAL_FIELDS`) sind bewusst
+knapp: `date`, `amount`, `recipient`, `reference`, `foreign_iban`. Mehr braucht
+eine Bankbewegung nicht, und mehr muss ein Bankmodul nicht liefern.
+
+**Neue Bank anbinden:** ein Modul mit einer `StatementImporter`-Klasse
+schreiben (`detect()` erkennt den Beleg, `parse()` liefert den
+`BankStatement`) und die Klasse in `IMPORTERS` eintragen. Am übrigen Code
+ändert sich nichts.
+
+### Plausibilitätsprüfung
+
+PDF-Textextraktion ist ungenau: Kopf- und Fußzeilen rutschen in Empfänger oder
+Verwendungszweck, Beträge verschwinden, Jahreszahlen verrutschen. Nach dem
+Parsen läuft deshalb `plausibility.check_statement()` über jeden Beleg und
+vermerkt Befunde an den Bewegungen – ohne den Import zu blockieren; die
+Vorschau zeigt sie, entschieden wird vom Nutzer.
+
+| Befund | Bedeutung |
+|---|---|
+| `amount` | Betrag fehlt oder ist 0 |
+| `date` | Datum fehlt oder ist unlesbar |
+| `daterange` | Datum liegt weit neben dem Belegdatum (Jahresdreher) |
+| `empty` | weder Empfänger noch Verwendungszweck |
+| `boiler` | Inhalt ist vollständig Kopf-/Fußzeilentext ("Seite 2 von 5", "Übertrag auf Blatt 2", "Neuer Kontostand", Formularnummern) |
+| `huge` | Betrag über 1.000.000 – fast immer ein verrutschtes Trennzeichen |
+
+Am Beleg selbst: `no_transactions`, `no_iban`, `parse_error`.
+
+Die `boiler`-Muster greifen nur auf das **ganze** Feld: "Kontoauszug-Gebühr
+Januar" oder "Blattwerk Gartenbau" bleiben unauffällig, "Blatt 3" nicht. Und
+eine Zeile mit brauchbarem Verwendungszweck wird nicht wegen eines kruden
+Empfängers markiert.
+
 ### Funktionsweise
 
 1. **Upload**: PDF über Web-Oberfläche hochladen (Drag & Drop oder Dateiauswahl)
-2. **Automatische Analyse**: Parser erkennt Kontoauszüge (z.B. Volksbank Rottweil, DKB)
+2. **Automatische Analyse**: das zuständige Importmodul erkennt den Beleg selbst
    - IBAN zur Kontoidentifikation
    - Einzelne Transaktionen (Datum, Empfänger, Betrag, fremde IBAN)
+   - Plausibilitätsprüfung markiert Auffälligkeiten
 3. **Organisation**: Dateien werden nach `./data/Belege/YYYY/Konten/<BANK>/` einsortiert
 4. **Bestätigung**: Erkannte Transaktionen auf `/confirm_transactions` prüfen
 5. **Import**: Nach Bestätigung als `BookingType='bank'` in Bookings-Tabelle

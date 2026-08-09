@@ -21,6 +21,8 @@ except ImportError:
     PDFPLUMBER_AVAILABLE = False
 from pathlib import Path
 
+from importers import pdftext
+
 # ── SQL-Log-Rotation ─────────────────────────────────────────────────────────
 # Audit-Logs (sql_operations.log/.sql) werden ab dieser Größe rotiert und
 # komprimiert archiviert (7-Zip falls installiert, sonst gzip). Archive werden
@@ -211,373 +213,40 @@ class DocumentParser:
                 sha256_hash.update(byte_block)
         return sha256_hash.hexdigest()
     
+    # Extraktions-Helfer liegen in importers/pdftext.py – sie werden von allen
+    # Importmodulen gebraucht und haben mit der Ablage-Logik hier nichts zu tun.
     def extract_text_from_pdf(self, filepath: str) -> str:
-        """Extract text from PDF using pdfplumber"""
-        if not PDFPLUMBER_AVAILABLE:
-            print("pdfplumber not installed. Run: pip install pdfplumber")
-            return ""
-        text = ""
-        try:
-            with pdfplumber.open(filepath) as pdf:
-                for page in pdf.pages:
-                    text += page.extract_text() or ""
-        except Exception as e:
-            print(f"Error extracting text from {filepath}: {e}")
-        return text
-    
+        """Gesamten Text eines PDFs lesen (siehe importers.pdftext)."""
+        return pdftext.extract_text(filepath)
+
     def extract_iban(self, text: str) -> Optional[str]:
-        """Extract IBAN from text - specifically the account holder's IBAN"""
-        # First try: Look for IBAN near the beginning of document (account holder's IBAN)
-        # VBR format: "IBAN: DE65 6429 0120 0027 3540 24 BIC: GENODES1VRW"
-        lines = text.split('\n')
-        for i, line in enumerate(lines[:20]):  # Check first 20 lines
-            if 'IBAN:' in line and 'BIC:' in line:
-                # Extract IBAN between "IBAN:" and "BIC:"
-                iban_match = re.search(r'IBAN:\s*([A-Z]{2}[\s\d]+)(?:\s*BIC:)', line)
-                if iban_match:
-                    iban = iban_match.group(1).replace(' ', '')
-                    if len(iban) >= 15:
-                        return iban
-        
-        # Fallback: Look for any IBAN-like pattern in first part of document
-        first_part = '\n'.join(lines[:30])
-        iban_pattern = r'\b([A-Z]{2}\d{20,22})\b'
-        matches = re.findall(iban_pattern, first_part.replace(" ", ""))
-        if matches:
-            return matches[0]
-        
-        return None
-    
-    def extract_date_from_text(self, text: str, pattern: str = r'erstellt am (\d{2}\.\d{2}\.\d{4})') -> Optional[datetime]:
-        """Extract date from text using regex pattern"""
-        match = re.search(pattern, text)
-        if match:
-            date_str = match.group(1)
-            try:
-                return datetime.strptime(date_str, '%d.%m.%Y')
-            except ValueError:
-                pass
-        return None
-    
+        """IBAN des Kontoinhabers aus dem Belegkopf (siehe importers.pdftext)."""
+        return pdftext.extract_iban(text)
+
+    def extract_date_from_text(self, text: str,
+                               pattern: str = pdftext.DOCUMENT_DATE_PATTERN) -> Optional[datetime]:
+        """Datum per Muster aus dem Text (siehe importers.pdftext)."""
+        return pdftext.extract_date(text, pattern)
+
     def parse_bank_statement_vbr(self, filepath: str) -> Dict:
-        """
-        Parse Volksbank Rottweil (VBR) bank statement
-        Returns: {
-            'iban': str,
-            'document_date': datetime,
-            'transactions': List[Dict]
-        }
-        """
-        result = {
-            'iban': None,
-            'document_date': None,
-            'transactions': [],
-            'bank_code': 'VBR'
-        }
-        
-        text = self.extract_text_from_pdf(filepath)
-        
-        # Extract IBAN
-        result['iban'] = self.extract_iban(text)
-        
-        # Extract document date
-        result['document_date'] = self.extract_date_from_text(text)
-        
-        # ── Extract statement year from header ─────────────────
-        # Pattern: "Kontoauszug Nr. 1/2024" or "erstellt am 31.01.2024"
-        stmt_year = None
-        m = re.search(r'Kontoauszug\s+Nr\.\s*\d+/(\d{4})', text)
-        if m:
-            stmt_year = int(m.group(1))
-        else:
-            m = re.search(r'erstellt\s+am\s+\d{2}\.\d{2}\.(\d{4})', text)
-            if m:
-                stmt_year = int(m.group(1))
-        if stmt_year is None:
-            stmt_year = datetime.now().year
+        """Volksbank-Rottweil-Auszug lesen (Abstraktionsschicht, todo #2).
 
-        # Extract transactions from text (not tables, as VBR uses text-based format)
-        try:
-            with pdfplumber.open(filepath) as pdf:
-                for page in pdf.pages:
-                    page_text = page.extract_text() or ""
-                    transactions = self._parse_vbr_text(page_text, stmt_year)
-                    result['transactions'].extend(transactions)
-        except Exception as e:
-            print(f"Error parsing transactions from {filepath}: {e}")
-            import traceback
-            traceback.print_exc()
-        
+        Die Bankeigenheiten stecken in importers/vbr.py; hier bleibt nur der
+        alte Aufrufweg erhalten, damit bestehende Aufrufer nichts merken.
+        """
+        from importers.vbr import VbrImporter
+        statement = VbrImporter().parse(filepath)
+        result = statement.as_dict()
+        result.pop('warnings', None)
+        for row in result['transactions']:
+            row.pop('warnings', None)
         return result
-    
+
     def _parse_vbr_text(self, text: str, year: int = None) -> List[Dict]:
-        """Parse VBR transactions from plain text.
+        """Delegiert an importers.vbr.parse_text (siehe dort)."""
+        from importers.vbr import parse_text
+        return parse_text(text, year)
 
-        *year* is the statement year extracted from the header
-        (e.g. 2024 from ``Kontoauszug Nr. 1/2024``).
-        """
-        if year is None:
-            year = datetime.now().year
-        transactions = []
-        
-        # Strip page footer that VBR bank statements add at the bottom
-        # of every page. The footer pattern looks like:
-        #   0128
-        #   000
-        #   K00009283          (or similar K-number)
-        #   5M                 (optional)
-        #   Bitte beachten Sie die Hinweise ...
-        text = re.sub(
-            r'\n\d{4}\n\d{3}\n'
-            r'K\d{5,}\n'
-            r'(?:[A-Z0-9]{1,4}\n)?'
-            r'Bitte beachten Sie die Hinweise[^\n]*',
-            '', text)
-
-        # Split text into lines
-        lines = text.split('\n')
-        
-        i = 0
-        while i < len(lines):
-            line = lines[i].strip()
-            
-            # Look for transaction pattern: DD.MM. DD.MM. ... amount S/H
-            # Example: "01.12. 01.12. Lastschrift PN:931 1.142,18 S"
-            match = re.match(r'^(\d{2}\.\d{2}\.) \d{2}\.\d{2}\. (.+)', line)
-            
-            if match:
-                # Found a transaction
-                bu_tag = match.group(1)  # e.g., "01.12."
-                rest_of_line = match.group(2)  # Everything after the second date
-                
-                # Extract amount (last number with comma and S or H)
-                amount_match = re.search(r'([\d.,]+)\s+([SH])\s*$', rest_of_line)
-                
-                if amount_match:
-                    amount_str = amount_match.group(1).replace('.', '').replace(',', '.')
-                    debit_credit = amount_match.group(2)
-                    
-                    # Convert amount (S = negative, H = positive)
-                    amount = float(amount_str)
-                    if debit_credit == 'S':
-                        amount = -amount
-                    
-                    # Extract transaction type (between second date and amount)
-                    trans_type = rest_of_line[:amount_match.start()].strip()
-                    
-                    # Collect subsequent lines (recipient, reference, IBAN)
-                    recipient = ""
-                    reference_lines = []
-                    foreign_iban = ""
-                    all_detail_lines = []  # Collect all lines first for better IBAN detection
-                    
-                    j = i + 1
-                    while j < len(lines):
-                        next_line = lines[j].strip()
-                        
-                        # Stop if we hit the next transaction
-                        if re.match(r'^\d{2}\.\d{2}\. \d{2}\.\d{2}\.', next_line):
-                            break
-                        
-                        # Stop if empty or looks like footer/header
-                        if (not next_line
-                                or 'Kontoauszug' in next_line
-                                or 'Blatt' in next_line
-                                or re.match(r'^\d{3,4}$', next_line)
-                                or re.match(r'^K\d{5,}$', next_line)
-                                or next_line.startswith('Bitte beachten Sie')):
-                            j += 1
-                            continue
-                        
-                        all_detail_lines.append(next_line)
-                        j += 1
-                    
-                    # Join all lines to handle IBAN/BIC split across lines
-                    full_text = '\n'.join(all_detail_lines)
-                    
-                    # Extract IBAN first - handle line breaks within "IBAN" (e.g., "IB AN:")
-                    # Look for patterns like: IBAN, IB AN, I BAN, etc.
-                    full_text_single_line = ' '.join(all_detail_lines)
-                    iban_pattern = r'I\s*B\s*A\s*N\s*:?\s*([A-Z]{2}\s*\d{2}[A-Z0-9\s]{15,}?)(?:\s*B\s*I\s*C\s*:|\s|$)'
-                    iban_match = re.search(iban_pattern, full_text_single_line, re.IGNORECASE)
-                    if iban_match:
-                        foreign_iban = re.sub(r'\s+', '', iban_match.group(1).upper())
-                    
-                    # SEPA-Technikfelder (EREF/MREF/CRED/DEBT/REF/IBAN/BIC)
-                    # FELDWEISE entfernen: Schlüsselwort + Doppelpunkt + genau
-                    # EIN Wert-Token. Zeilenumbruch-Artefakte ("…28R\n4 CRED")
-                    # und gruppierte IBANs ("DE87 3003 …") hängen als kurze
-                    # Fragmente (≤4 Zeichen) an, die nur mitgelöscht werden,
-                    # wenn direkt das nächste Feld oder das Textende folgt.
-                    # Inhalt VOR, ZWISCHEN und NACH den Feldern bleibt erhalten
-                    # (die frühere Variante löschte ab dem ersten Schlüsselwort
-                    # alles). Wortgrenzen beidseitig + Pflicht-Doppelpunkt
-                    # verhindern False-Positives wie "Arabic", "DB IC 2024"
-                    # oder den Vornamen "Iban".
-                    _kw = (r'(?<![A-Za-z])(?:'
-                           r'[EM]\s*R\s*E\s*F'
-                           r'|C\s*R\s*E\s*D'
-                           r'|D\s*E\s*B\s*T'
-                           r'|R\s*E\s*F'
-                           r'|I\s*B\s*A\s*N'
-                           r'|B\s*I\s*C'
-                           r')(?![A-Za-z])\s*:')
-                    _val = (r'\s*\S+'
-                            r'(?:(?:\s+\S{1,4})+(?=\s*(?:' + _kw + r'|$)))?')
-                    cleaned_text = re.sub(_kw + _val, '', full_text,
-                                          flags=re.IGNORECASE)
-
-                    # Split back into lines; Mehrfach-Leerzeichen (Reste der
-                    # entfernten Felder) glätten, Leerzeilen verwerfen
-                    cleaned_lines = [re.sub(r'\s{2,}', ' ', ln).strip()
-                                     for ln in cleaned_text.split('\n')]
-                    cleaned_lines = [ln for ln in cleaned_lines if ln]
-                    
-                    # Check if this is an "Abschluss" transaction (bank statement closing)
-                    # Look for a line starting with "Abschluss" in cleaned_lines
-                    abschluss_line = None
-                    for line in cleaned_lines:
-                        if re.match(r'^Abschluss\s', line, re.IGNORECASE):
-                            abschluss_line = line
-                            break
-                    
-                    if abschluss_line:
-                        # For "Abschluss" transactions, recipient is VBR and reference is the Abschluss line
-                        recipient = "VBR"
-                        reference_lines = [abschluss_line]
-                    else:
-                        # Normal transaction: first line is recipient, rest is reference
-                        if cleaned_lines:
-                            recipient = cleaned_lines[0]
-                            reference_lines = cleaned_lines[1:]
-                    
-                    # Parse date – use statement year from header
-                    try:
-                        date_str = bu_tag + str(year)
-                        transaction_date = datetime.strptime(date_str, '%d.%m.%Y')
-                    except Exception:
-                        transaction_date = datetime.now()
-                    
-                    reference = '\n'.join(reference_lines) if reference_lines else trans_type
-                    
-                    transactions.append({
-                        'date': transaction_date.strftime('%Y-%m-%d'),
-                        'recipient': recipient if recipient else trans_type,
-                        'reference': reference,
-                        'amount': amount,
-                        'foreign_iban': foreign_iban
-                    })
-                    
-                    i = j - 1  # Skip processed lines
-            
-            i += 1
-        
-        return transactions
-    
-    def _parse_vbr_table(self, table: List[List[str]]) -> List[Dict]:
-        """Parse VBR bank statement table (legacy, kept for compatibility)"""
-        transactions = []
-        
-        # Find header row
-        header_idx = None
-        for idx, row in enumerate(table):
-            if row and any('Bu-Tag' in str(cell) for cell in row if cell):
-                header_idx = idx
-                break
-        
-        if header_idx is None:
-            return transactions
-        
-        # Parse data rows
-        i = header_idx + 1
-        while i < len(table):
-            row = table[i]
-            if not row or not any(row):
-                i += 1
-                continue
-            
-            # Check if this is a transaction row (has date in first column)
-            if row[0] and re.match(r'\d{2}\.\d{2}\.\d{4}', str(row[0])):
-                transaction = self._parse_vbr_transaction(table, i)
-                if transaction:
-                    transactions.append(transaction)
-            
-            i += 1
-        
-        return transactions
-    
-    def _parse_vbr_transaction(self, table: List[List[str]], start_idx: int) -> Optional[Dict]:
-        """Parse a single VBR transaction (may span multiple rows)"""
-        try:
-            row = table[start_idx]
-            
-            # Bu-Tag (Buchungstag)
-            date_str = row[0].strip() if row[0] else None
-            if not date_str:
-                return None
-            
-            transaction_date = datetime.strptime(date_str, '%d.%m.%Y')
-            
-            # Vorgang column - parse multi-line
-            vorgang_lines = []
-            vorgang_idx = 1  # Assuming Vorgang is second column
-            
-            # Collect all lines of Vorgang
-            current_idx = start_idx
-            while current_idx < len(table):
-                current_row = table[current_idx]
-                if current_idx > start_idx and current_row[0]:  # New transaction starts
-                    break
-                if len(current_row) > vorgang_idx and current_row[vorgang_idx]:
-                    vorgang_lines.append(current_row[vorgang_idx].strip())
-                current_idx += 1
-            
-            # Parse Vorgang content
-            # Line 0: Transaction type (skip)
-            # Line 1: Recipient/Payer
-            # Line 2+: Reference/Purpose
-            # Last line(s): Bank details (IBAN)
-            
-            recipient = vorgang_lines[1] if len(vorgang_lines) > 1 else ""
-            
-            # Extract reference (middle lines)
-            reference_lines = []
-            foreign_iban = None
-            
-            for line in vorgang_lines[2:]:
-                # Check if line contains IBAN
-                if re.match(r'[A-Z]{2}\d{2}', line.replace(" ", "")):
-                    foreign_iban = self.extract_iban(line)
-                else:
-                    reference_lines.append(line)
-            
-            reference = " ".join(reference_lines)
-            
-            # Amount (last column, format: "123,45 S" or "123,45 H")
-            amount_str = row[-1].strip() if row[-1] else "0,00 S"
-            amount_match = re.match(r'([\d.,]+)\s*([SH])', amount_str)
-            
-            if amount_match:
-                amount_value = float(amount_match.group(1).replace('.', '').replace(',', '.'))
-                amount_type = amount_match.group(2)
-                
-                # S = Soll (debit), H = Haben (credit)
-                amount = -amount_value if amount_type == 'S' else amount_value
-            else:
-                amount = 0.0
-            
-            return {
-                'date': transaction_date,
-                'recipient': recipient,
-                'reference': reference,
-                'amount': amount,
-                'foreign_iban': foreign_iban
-            }
-            
-        except Exception as e:
-            print(f"Error parsing transaction at row {start_idx}: {e}")
-            return None
-    
     # ── DKB (Deutsche Kreditbank) parser ────────────────────────────
 
     def parse_bank_statement_dkb(self, filepath: str) -> Dict:
@@ -955,31 +624,29 @@ class DocumentParser:
         return transactions, continuation_lines
 
     def parse_document(self, filepath: str) -> Optional[Dict]:
+        """Beleg einlesen: zuständiges Importmodul wählen und auswerten.
+
+        Die Bankerkennung liegt in der Abstraktionsschicht (importers): jedes
+        Modul erkennt seine eigenen Belege. Eine neue Bank anzubinden heißt
+        deshalb, ein Modul zu schreiben – hier ändert sich nichts.
+
+        Kontoauszüge liefern ``iban``/``document_date``/``transactions``
+        (plus ``warnings`` je Bewegung aus der Plausibilitätsprüfung), alles
+        andere das bisherige generische Dict.
         """
-        Main entry point: Detect document type and parse accordingly
-        """
-        filename = os.path.basename(filepath).lower()
-        
-        # Try to detect bank statement
-        text = self.extract_text_from_pdf(filepath)
-        text_lower = text.lower()
-        
-        if 'volksbank' in text_lower or 'vbr' in filename:
-            return self.parse_bank_statement_vbr(filepath)
-        
-        if 'deutsche kreditbank' in text_lower or 'dkb' in text_lower or 'kontoauszug_' in filename:
-            return self.parse_bank_statement_dkb(filepath)
-        
-        # Add more parsers for other document types here
-        # elif 'sparkasse' in text_lower:
-        #     return self.parse_bank_statement_sparkasse(filepath)
-        
-        # Generic document
+        import importers
+
+        text = pdftext.extract_text(filepath)
+        statement = importers.parse_statement(
+            filepath, os.path.basename(filepath), text)
+        if statement is not None:
+            return statement.as_dict()
+
         return {
             'type': 'generic',
             'text': text,
-            'iban': self.extract_iban(text),
-            'date': self.extract_date_from_text(text)
+            'iban': pdftext.extract_iban(text),
+            'date': pdftext.extract_date(text)
         }
     
     def process_and_organize(self, filepath: str) -> Tuple[str, Dict]:
