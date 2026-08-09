@@ -24,16 +24,25 @@ class BookingsMixin:
         """Buchungssätze desselben Belegs zu einer Split-Zeile zusammenfassen.
 
         Betrifft Belege ohne Bankbewegung – Kasse, Verrechnungskonto, von Hand
-        erfasste Splits. Die Klammer ist die Beleg-Nr. am selben Tag; dieselbe
-        Regel benutzt auch der Auto-Abgleich (_link_docnr_group).
+        erfasste Splits.
+
+        Die Klammer ist, wenn vorhanden, die aus dem Quellsystem übernommene
+        ``SourceGroup`` (WISO: ``ACCOUNTINGID``) – sie ist ausdrücklich und
+        muss nicht geraten werden. Sonst gilt weiter die Beleg-Nr. am selben
+        Tag, dieselbe Regel wie im Auto-Abgleich (_link_docnr_group).
 
         Einzelne Buchungen bleiben unverändert 'normal'.
         """
         buckets = {}
         order = []
         for item in normal:
-            docnr = (item['booking'][16] or '').strip()
-            key = (docnr, item['date']) if docnr else None
+            booking = item['booking']
+            source_group = (booking[21] or '').strip() if len(booking) > 21 else ''
+            if source_group:
+                key = ('src', source_group)
+            else:
+                docnr = (booking[16] or '').strip()
+                key = (docnr, item['date']) if docnr else None
             if key is None:
                 order.append(('single', item))
                 continue
@@ -52,12 +61,15 @@ class BookingsMixin:
             if len(members) == 1:
                 result.append(members[0])
                 continue
-            docnr, date = payload
+            # Datum und Beleg-Nr. stammen aus der Gruppe selbst – bei einer
+            # Klammer aus dem Quellsystem steckt beides nicht im Schlüssel.
+            first = members[0]['booking']
+            date = members[0]['date']
+            docnr = (first[16] or '').strip()
             # Laufende Kennung statt Beleg-Nr.: sie dient nur als DOM-Griff zum
             # Auf- und Zuklappen und darf keine Sonderzeichen mitschleppen.
             seq += 1
             gid = f'g{seq}'
-            first = members[0]['booking']
             children = [{'type': 'child', 'group_id': gid,
                          'date': m['date'], 'booking': m['booking']}
                         for m in members]

@@ -63,6 +63,13 @@ class SchemaMixin:
                            'WHERE BookingGroup_ID IS NOT NULL')
             if self._table_exists(cursor, 'BookingGroups'):
                 cursor.execute('DELETE FROM BookingGroups')
+        if from_version < 6:
+            # v6: Klammer aus dem Quellsystem. Der Import aus der
+            # WISO-Datenbank kennt die Zusammengehörigkeit von Teilbuchungen
+            # (ACCOUNTINGID) und muss sie nicht mehr aus Beleg-Nr. und Datum
+            # ableiten. Altbestand bleibt NULL und wird weiter über die
+            # Beleg-Nr. gruppiert.
+            self._add_column_if_missing(cursor, 'Bookings', 'SourceGroup', 'TEXT')
         if from_version < 4:
             # v4: Bestehende Spiegel nachträglich markieren, damit auch vor
             # der Einführung von AutoMirror kontierte Bank-Buchungen weiter
@@ -325,6 +332,11 @@ class SchemaMixin:
                 ParentBooking_ID INTEGER,
                 Status TEXT,
                 AutoMirror INTEGER DEFAULT 0,
+                -- Klammer aus dem Quellsystem (v6): WISO liefert mit
+                -- ACCOUNTINGID die Zusammengehörigkeit von Teilbuchungen
+                -- ausdrücklich mit. Wo sie gesetzt ist, muss sie nicht über
+                -- Beleg-Nr. + Datum geraten werden.
+                SourceGroup TEXT,
                 FOREIGN KEY (Account_ID) REFERENCES Accounts(ID),
                 FOREIGN KEY (Contact_ID) REFERENCES Contacts(ID),
                 FOREIGN KEY (COA_ID) REFERENCES ChartOfAccounts(ID),

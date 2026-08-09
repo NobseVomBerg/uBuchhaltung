@@ -185,6 +185,18 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
   – main also nur in release-fähigem Zustand pushen
 - Container-Standardport 2824; Betriebsdoku (Unraid/Proxmox) in `DEPLOYMENT.md`
 
+### WISO-Datenübernahme
+- Zwei Wege: die **Textexporte** (`db/wiso_import.py`, CSV) und die
+  **WISO-Datenbank selbst** (`db/wiso_fdb_import.py` + `importers/wiso_fdb/`)
+- Die Firebird-Dateien (`DB1.FDB` = Mandant, `DB0.FDB` = Standard-Kontenrahmen)
+  sind unverschlüsselt und werden **ohne Firebird-Installation** gelesen –
+  reines Python, kein Treiber, keine DLL
+- Der Datenbankweg ist genauer: `MOV_FINACC_ACCRECORDS.ACCOUNTINGID` nennt die
+  Zusammengehörigkeit von Teilbuchungen ausdrücklich (→ `Bookings.SourceGroup`),
+  liefert die Anlagenverwaltung mit und umfasst alle Jahre
+- WISO rechnet intern in **SKR03**; `BAS_FINACC_PLAN.SKR04` liefert die
+  Umschlüsselung. Konten ohne Zuordnung werden **gemeldet, nicht geraten**
+
 ### Testing
 - Vor PR: lokal starten (`python main.py`), Feature testen
 - Wenn Bug reproduzierbar, direkt über DB debuggen

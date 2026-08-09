@@ -340,8 +340,13 @@ def test_migration_releases_booking_groups(tmp_db, tmp_path):
     db = Database(db_name=db_file)     # löst die Migration aus
 
     con = sqlite3.connect(db_file)
-    assert con.execute('PRAGMA user_version').fetchone()[0] == 5
+    # Die Migration hebt auf den aktuellen Stand – nicht auf eine feste Zahl,
+    # sonst bricht der Test bei jeder weiteren Schema-Änderung.
+    from version import SCHEMA_VERSION
+    assert con.execute('PRAGMA user_version').fetchone()[0] == SCHEMA_VERSION
     assert con.execute('SELECT COUNT(*) FROM BookingGroups').fetchone()[0] == 0
+    assert [r[1] for r in con.execute('PRAGMA table_info(Bookings)').fetchall()
+            ].count('SourceGroup') == 1        # v6: Klammer aus dem Quellsystem
     rows = con.execute('SELECT Text, DocumentNumber, BookingGroup_ID, Amount'
                        ' FROM Bookings ORDER BY ID').fetchall()
     con.close()

@@ -435,6 +435,80 @@ class MatchingMixin:
                 (docnr, bank_date))
             return {r[0] for r in cursor.fetchall()}
 
+        # COA des jeweils eigenen Zahlungskontos – nur damit lässt sich unter
+        # mehreren gleichbetragigen Gruppen desselben Tages die richtige
+        # auswählen (Anlagenverkauf: Zahlung über 1810 vs. Umbuchung über 1460).
+        cursor.execute('''
+            SELECT a.ID, c.ID FROM Accounts a
+            JOIN ChartOfAccounts c ON c.AccountNumber = a.SKRAccount
+            WHERE a.SKRAccount IS NOT NULL
+        ''')
+        own_coa_of_account = dict(cursor.fetchall())
+
+        def _source_group_match(bank_id, bank_date, bank_amount, account_id):
+            """Eindeutige SourceGroup zu dieser Bankbewegung finden.
+
+            Bedingungen, alle drei zusammen:
+
+            * kein Mitglied ist schon verknüpft,
+            * mindestens ein Mitglied läuft über das SKR-Konto **dieser** Bank,
+            * die Summe der bankwirksamen Mitglieder trifft den Bankbetrag.
+
+            Die Vorauswahl über das eigene Konto grenzt **Alternativen** ein –
+            sie greift bewusst nicht in die Summenbildung ein, die weiterhin
+            über alle Mitglieder der Gruppe läuft.
+            """
+            own_coa = own_coa_of_account.get(account_id)
+            if own_coa is None:
+                return None
+            cursor.execute('''
+                SELECT SourceGroup FROM Bookings
+                WHERE BookingType = 'entry' AND ParentBooking_ID IS NULL
+                  AND DateBooking = ?
+                  AND SourceGroup IS NOT NULL AND SourceGroup != ''
+                GROUP BY SourceGroup
+            ''', (bank_date,))
+            hits = []
+            for (group,) in cursor.fetchall():
+                members = _source_group_members(group)
+                if not members:
+                    continue
+                if {m[0] for m in members} & already_linked_entry_ids:
+                    continue
+                if not any(own_coa in (m[2], m[3]) for m in members):
+                    continue
+                total = sum(m[1] or 0 for m in members
+                            if is_bank_effective(m[2], m[3], bank_coa_ids))
+                if abs(total - bank_amount) < 50:
+                    hits.append(group)
+            return hits[0] if len(hits) == 1 else None
+
+        def _source_group_members(group):
+            cursor.execute('''
+                SELECT ID, Amount, COA_ID, CounterCOA_ID, Text FROM Bookings
+                WHERE BookingType = 'entry' AND SourceGroup = ?
+            ''', (group,))
+            return cursor.fetchall()
+
+        def _link_source_group(bank_id, group):
+            """Alle Mitglieder einer Quellgruppe an die Bankbewegung hängen."""
+            members = _source_group_members(group)
+            cursor.execute('''
+                UPDATE Bookings SET ParentBooking_ID = ?
+                WHERE SourceGroup = ? AND BookingType = 'entry'
+                  AND ParentBooking_ID IS NULL
+            ''', (bank_id, group))
+            for member in members:
+                already_linked_entry_ids.add(member[0])
+            # Text der Bankbewegung durch den kuratierten WISO-Text ersetzen –
+            # genommen wird der des bankwirksamen Mitglieds.
+            for member in members:
+                if member[4] and is_bank_effective(member[2], member[3],
+                                                   bank_coa_ids):
+                    cursor.execute('UPDATE Bookings SET Text = ? WHERE ID = ?',
+                                   (member[4], bank_id))
+                    break
+
         def _do_link(bank_id, entry_id, entry_text):
             """Einzelne Entry-Buchung mit der Bank-Buchung verknüpfen."""
             cursor.execute('''
@@ -454,6 +528,17 @@ class MatchingMixin:
 
             abs_amount = round(abs(bank_amount), 2)
             recip_norm = _norm(bank_recipient)
+
+            # ── Stufe 0: Klammer aus dem Quellsystem ─────────────────────
+            # Wo der Import die Zusammengehörigkeit mitgeliefert hat
+            # (WISO: ACCOUNTINGID → SourceGroup), muss nichts geraten werden.
+            # Deshalb steht diese Stufe vor allen Heuristiken.
+            group = _source_group_match(bank_id, bank_date, bank_amount,
+                                        bank_account_id)
+            if group is not None:
+                _link_source_group(bank_id, group)
+                linked += 1
+                continue
 
             # ── Stufe 1: Datum + Empfänger (normalisiert) + ABS(Betrag) ──
             if recip_norm:

@@ -17,6 +17,7 @@ from .matching import MatchingMixin
 from .accounts import AccountsMixin
 from .assets import AssetsMixin
 from .wiso_import import WisoImportMixin
+from .wiso_fdb_import import WisoFdbImportMixin
 from .contacts import ContactsMixin
 from .articles import ArticlesMixin
 from .numbering import NumberRangeMixin
@@ -24,7 +25,7 @@ from .invoices import InvoicesMixin
 from .reporting import ReportingMixin
 
 
-class Database(SchemaMixin, SeedMixin, ReceiptsMixin, WorkTimesMixin, TripsMixin, BookingsMixin, MatchingMixin, AccountsMixin, AssetsMixin, WisoImportMixin, ContactsMixin, ArticlesMixin, NumberRangeMixin, InvoicesMixin, ReportingMixin, _CoreMixin):
+class Database(SchemaMixin, SeedMixin, ReceiptsMixin, WorkTimesMixin, TripsMixin, BookingsMixin, MatchingMixin, AccountsMixin, AssetsMixin, WisoImportMixin, WisoFdbImportMixin, ContactsMixin, ArticlesMixin, NumberRangeMixin, InvoicesMixin, ReportingMixin, _CoreMixin):
     """Komposition aller Domaenen-Mixins. Siehe db/<domaene>.py."""
     pass
 
