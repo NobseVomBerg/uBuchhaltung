@@ -173,6 +173,8 @@ class WisoAsset:
     source_id: Optional[int] = None
     depreciations: List[WisoDepreciation] = field(default_factory=list)
     payments: List[WisoPayment] = field(default_factory=list)
+    #: Auffälligkeiten im Quellbestand – Klartext, zum Nachsehen in WISO.
+    warnings: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -477,6 +479,9 @@ class WisoDatabase:
             price = self._purchase_price(row.get('PURCHASEAMOUNTNET'), payments)
             disposal = by_asset_disposal.get(asset_id)
             sale_date = _date(row.get('SALEDATE'))
+            schedule = self._depreciations(
+                by_asset_depreciation.get(asset_id, []), payments, sale_date)
+            residual, warnings = self._residual_value(schedule, disposal, price)
             out.append(WisoAsset(
                 number=row.get('INVNO'), label=_clean(row.get('LABEL')),
                 purchase_date=_date(row.get('PURCHASEDATE')),
@@ -484,16 +489,37 @@ class WisoDatabase:
                 sale_date=sale_date,
                 sale_price=proceeds.get((disposal or {}).get('text'))
                 if disposal else None,
-                residual_value=abs(disposal['amount']) if disposal else None,
+                residual_value=residual, warnings=warnings,
                 useful_life_years=row.get('SERVICELIFE'),
                 account=self._to_skr04(row.get('FINACIALACCOUNT'), missing),
                 depreciation_account=self._to_skr04(
                     row.get('FINACIALACCOUNT_AFA'), missing),
                 source_id=asset_id, payments=payments,
-                depreciations=self._depreciations(
-                    by_asset_depreciation.get(asset_id, []), payments,
-                    _date(row.get('SALEDATE')))))
+                depreciations=schedule))
         return sorted(out, key=lambda a: (a.purchase_date or '', a.number or 0))
+
+    @staticmethod
+    def _residual_value(schedule, disposal, price):
+        """Restbuchwert beim Abgang – gerechnet, nicht abgeschrieben.
+
+        Maßgeblich ist der AfA-Plan (Anschaffung minus kumulierte AfA). WISOs
+        Abgangszeile wird nur als Gegenprobe genommen: sie kann daneben liegen,
+        wenn das Anlagegut in WISO doppelt erfasst wurde – von Hand **und**
+        über die Zahlungen. Dann bucht WISO den doppelten Wert aus, während der
+        AfA-Plan mit dem einfachen rechnet. Eine Abweichung wird gemeldet, denn
+        sie zeigt einen Fehler im Quellbestand an, den nur der Nutzer klären kann.
+        """
+        warnings = []
+        gerechnet = schedule[-1].book_value if schedule else None
+        gebucht = abs(disposal['amount']) if disposal else None
+        if gerechnet is None:
+            return gebucht, warnings
+        if gebucht is not None and abs(gebucht - gerechnet) > 0.01:
+            warnings.append(
+                f'WISO bucht beim Abgang {gebucht:.2f} € aus, der AfA-Plan '
+                f'ergibt {gerechnet:.2f} € (Anschaffung {price:.2f} € minus '
+                f'kumulierte AfA). Übernommen wurde der gerechnete Wert.')
+        return gerechnet, warnings
 
     #: Ein Abgangstext muss aussagekräftig sein, um als Schlüssel zu taugen.
     #: „Abschaffung“ allein (so bei Altbeständen) ist es nicht.

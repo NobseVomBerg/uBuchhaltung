@@ -43,7 +43,7 @@ class WisoFdbImportMixin:
                   'depreciations': 0, 'tax_rows_skipped': 0,
                   'memo_rows_skipped': 0, 'missing_coa': {}, 'created_coa': {},
                   'unresolved_accounts': 0, 'blocker': [], 'hints': [],
-                  'errors': []}
+                  'asset_warnings': [], 'errors': []}
         try:
             wiso = WisoDatabase(path, standard_chart_path)
         except Exception as exc:                       # defekte/fremde Datei
@@ -187,10 +187,13 @@ class WisoFdbImportMixin:
                       'sold' if asset.sale_date else 'active')
             if row:
                 asset_id = row[0]
+                # COALESCE beim Erlös: laesst sich der Verkaufspreis nicht aus
+                # WISO ableiten, darf ein zweiter Lauf einen von Hand
+                # gepflegten Wert nicht wieder ausloeschen.
                 cursor.execute('''
                     UPDATE Assets SET Name=?, COA_ID=?, PurchaseDate=?,
                         PurchasePrice=?, UsefulLifeYears=?, SaleDate=?,
-                        SalePrice=?, Status=?
+                        SalePrice=COALESCE(?, SalePrice), Status=?
                     WHERE ID=?
                 ''', values + (asset_id,))
             else:
@@ -203,6 +206,9 @@ class WisoFdbImportMixin:
                 ''', values + (number,))
                 asset_id = cursor.lastrowid
             result['assets'] += 1
+            for warning in asset.warnings:
+                result['asset_warnings'].append(
+                    f'{asset.label or number}: {warning}')
 
             for entry in asset.depreciations:
                 if entry.year is None:

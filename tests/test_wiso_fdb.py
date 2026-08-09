@@ -410,6 +410,52 @@ def test_erloes_bleibt_leer_wenn_der_abgangstext_nichtssagend_ist(tmp_path):
     assert asset.sale_price is None
 
 
+def test_restwert_kommt_aus_dem_afa_plan_und_meldet_abweichungen(tmp_path):
+    """Ist ein Anlagegut in WISO doppelt erfasst – von Hand und über die
+    Zahlungen – bucht der Abgang den doppelten Wert aus. Maßgeblich ist dann
+    der AfA-Plan; die Abweichung muss aber auffallen."""
+    builder, assets, payments, depreciations = _asset_builder()
+    assets.add(ID=10, INVNO=6, LABEL='Doppelt erfasst',
+               PURCHASEDATE='2018-06-12 00:00:00', PURCHASEAMOUNTNET=30756.30,
+               SALEDATE='2019-07-05 00:00:00', SERVICELIFE=5,
+               FINACIALACCOUNT=320, FINACIALACCOUNT_AFA=4832)
+    payments.add(ID=1, INVENTORYID=10, BOOKINGDATE='2018-06-12 00:00:00',
+                 AMOUNTNET=30756.30, DESCRIPTION='Kauf')
+    payments.add(ID=2, INVENTORYID=10, BOOKINGDATE='2019-07-05 00:00:00',
+                 AMOUNTNET=-48184.87, REMOVEACCOUNT=1,
+                 DESCRIPTION='Abschaffung')          # WISO: doppelter Wert
+    depreciations.add(ID=1, INVENTORYID=10, BOOKINGDATE='2018-12-31 00:00:00',
+                      AMORT_AMOUNT=7176.47, AMORT_CUMULATED_AMOUNT=7176.47)
+    depreciations.add(ID=2, INVENTORYID=10, BOOKINGDATE='2019-12-31 00:00:00',
+                      AMORT_AMOUNT=6151.26, AMORT_CUMULATED_AMOUNT=13327.73)
+    path = builder.write(str(tmp_path / 'a.fdb'))
+
+    asset = read_wiso_database(path).assets[0]
+    assert asset.residual_value == pytest.approx(17428.57)   # 30756,30 − 13327,73
+    assert len(asset.warnings) == 1
+    assert '48184.87' in asset.warnings[0] and '17428.57' in asset.warnings[0]
+
+
+def test_stimmiger_abgang_meldet_nichts(tmp_path):
+    builder, assets, payments, depreciations = _asset_builder()
+    assets.add(ID=11, INVNO=7, LABEL='Sauber', PURCHASEDATE='2020-01-01 00:00:00',
+               PURCHASEAMOUNTNET=0.01, SALEDATE='2021-12-31 00:00:00',
+               SERVICELIFE=5, FINACIALACCOUNT=320, FINACIALACCOUNT_AFA=4832)
+    payments.add(ID=1, INVENTORYID=11, BOOKINGDATE='2020-01-01 00:00:00',
+                 AMOUNTNET=1000.0, DESCRIPTION='Kauf')
+    payments.add(ID=2, INVENTORYID=11, BOOKINGDATE='2021-12-31 00:00:00',
+                 AMOUNTNET=-600.0, REMOVEACCOUNT=1, DESCRIPTION='Abschaffung')
+    depreciations.add(ID=1, INVENTORYID=11, BOOKINGDATE='2020-12-31 00:00:00',
+                      AMORT_AMOUNT=200.0, AMORT_CUMULATED_AMOUNT=200.0)
+    depreciations.add(ID=2, INVENTORYID=11, BOOKINGDATE='2021-12-31 00:00:00',
+                      AMORT_AMOUNT=200.0, AMORT_CUMULATED_AMOUNT=400.0)
+    path = builder.write(str(tmp_path / 'a.fdb'))
+
+    asset = read_wiso_database(path).assets[0]
+    assert asset.residual_value == pytest.approx(600.0)
+    assert asset.warnings == []
+
+
 def test_widerspruechliche_erloesbuchungen_werden_verworfen(tmp_path):
     """Nennen die Treffer verschiedene Beträge, ist die Zuordnung unsicher."""
     builder, assets, payments, _afa = _asset_builder()

@@ -423,6 +423,16 @@ def PageMiscellaneous(db: Database):
             for _h in _hints:
                 s += f'<li>{_html.escape(str(_h))}</li>'
             s += '</ul>'
+        _asset_warnings = _fdb.get('asset_warnings') or []
+        if _asset_warnings:
+            s += (f'<h3>\u26a0\ufe0f Auff\u00e4lligkeiten im Anlagenverzeichnis '
+                  f'&ndash; {len(_asset_warnings)}</h3>'
+                  '<p>Diese Anlageg\u00fcter sind in WISO in sich nicht stimmig. '
+                  '\u00dcbernommen wurde jeweils der gerechnete Wert; nachsehen '
+                  'lohnt sich trotzdem:</p><ul>')
+            for _w in _asset_warnings:
+                s += f'<li>{_html.escape(str(_w))}</li>'
+            s += '</ul>'
         if _missing:
             s += (f'<h3>\u26a0\ufe0f Konten ohne SKR04-Zuordnung &ndash; {len(_missing)}</h3>'
                   '<p>WISO führt diese Konten intern in SKR03, nennt dafür aber keine '

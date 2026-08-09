@@ -299,6 +299,52 @@ def test_anlagen_landen_im_verzeichnis(db_with_coa, tmp_path):
     assert afa[0] == 2022 and afa[2] == 28137300      # 5232,00 − 2418,27
 
 
+def test_zweiter_lauf_behaelt_den_von_hand_gepflegten_erloes(db_with_coa,
+                                                             tmp_path):
+    """Laesst sich der Verkaufserlös nicht aus WISO ableiten, darf ein
+    erneuter Import einen selbst eingetragenen Wert nicht ausloeschen."""
+    builder = FdbBuilder(page_size=16384)
+    _chart(builder)
+    _bookings_table(builder)
+    builder.table('BAS_INVENTORY', [
+        Column('ID', LONG, 4), Column('INVNO', LONG, 4),
+        Column('LABEL', TEXT, 40), Column('PURCHASEDATE', TIMESTAMP, 8),
+        Column('PURCHASEAMOUNTNET', INT64, 8, scale=-2),
+        Column('SALEDATE', TIMESTAMP, 8), Column('SERVICELIFE', SHORT, 2),
+        Column('FINACIALACCOUNT', LONG, 4),
+        Column('FINACIALACCOUNT_AFA', LONG, 4),
+    ]).add(ID=5, INVNO=1, LABEL='Altwagen', PURCHASEDATE='2018-06-12 00:00:00',
+           PURCHASEAMOUNTNET=30756.30, SALEDATE='2019-07-05 00:00:00',
+           SERVICELIFE=5, FINACIALACCOUNT=320, FINACIALACCOUNT_AFA=4832)
+    builder.table('MOV_INVENTORY_BOOKINGS', [
+        Column('ID', LONG, 4), Column('INVENTORYID', LONG, 4),
+        Column('BOOKINGDATE', TIMESTAMP, 8),
+        Column('AMOUNTNET', INT64, 8, scale=-2),
+        Column('REMOVEACCOUNT', SHORT, 2), Column('DESCRIPTION', TEXT, 40),
+    ]).add(ID=1, INVENTORYID=5, BOOKINGDATE='2018-06-12 00:00:00',
+           AMOUNTNET=30756.30, DESCRIPTION='Kauf')
+    path = builder.write(str(tmp_path / 'db1.fdb'))
+
+    db_with_coa.import_wiso_fdb(path)
+    conn = db_with_coa._get_connection()
+    asset_id = conn.execute('SELECT ID FROM Assets WHERE Name = ?',
+                            ('Altwagen',)).fetchone()[0]
+    assert conn.execute('SELECT SalePrice FROM Assets WHERE ID = ?',
+                        (asset_id,)).fetchone()[0] is None
+    conn.execute('UPDATE Assets SET SalePrice = ? WHERE ID = ?',
+                 (262605000, asset_id))            # 26.260,50 € von Hand
+    conn.commit()
+    conn.close()
+
+    db_with_coa.import_wiso_fdb(path)              # zweiter Lauf
+
+    conn = db_with_coa._get_connection()
+    erloes = conn.execute('SELECT SalePrice FROM Assets WHERE ID = ?',
+                          (asset_id,)).fetchone()[0]
+    conn.close()
+    assert erloes == 262605000
+
+
 def test_defekte_datei_meldet_fehler_statt_abzustuerzen(db_with_coa, tmp_path):
     path = tmp_path / 'kaputt.fdb'
     path.write_bytes(b'\x00' * 2048)
