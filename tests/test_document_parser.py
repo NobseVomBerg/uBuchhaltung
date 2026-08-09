@@ -182,3 +182,72 @@ class TestParseVbrText:
         txns_2024 = parser._parse_vbr_text(text, 2024)
         assert txns_2023[0]['date'].startswith('2023')
         assert txns_2024[0]['date'].startswith('2024')
+
+
+class TestPageBody:
+    """Seitenumbruch: Kopf und Fuß raus, Buchung wieder zusammensetzen.
+
+    Jede VBR-Seite trägt oben den Briefkopf bis "Bu-Tag Wert Vorgang" und
+    unten Formularnummern plus die Fußnote. Läuft eine Buchung über den
+    Umbruch, standen beide Blöcke mitten in ihren Detailzeilen: Die Fußnote
+    wurde zum Empfänger, die echten Detailzeilen der Folgeseite fielen weg.
+    """
+
+    HEADER = (
+        "Internet: www.volksbank-musterstadt.de\n"
+        "Telefon: 0000 000-0 / Fax: 0000 000-000\n"
+        "Bankleitzahl: 123 456 78\n"
+        "Firmenkonto M\n"
+        "EUR-Konto Kontonummer 12345678\n"
+        "Nina Nutzer\n"
+        "Kontoauszug Nr. 1/2024\n"
+        "erstellt am 31.01.2024 22:05 Blatt 2 von 3\n"
+        "Bu-Tag Wert Vorgang\n"
+    )
+    FOOTER = "0128\n000\nK00001234\n5M Bitte beachten Sie die Hinweise auf der Rueckseite\n"
+    # Neuere Auszuege liefern die Fussnote ohne Leerzeichen
+    FOOTER_TIGHT = "0128\n000\nK00001234 BittebeachtenSiedieHinweiseaufderRueckseite\n"
+
+    def test_header_and_footer_are_cut(self):
+        from importers.vbr import page_body
+        body = page_body(self.HEADER + "01.12. 01.12. Lastschrift 10,00 S\n"
+                         "Musterhaendler GmbH\n" + self.FOOTER)
+        assert body == "01.12. 01.12. Lastschrift 10,00 S\nMusterhaendler GmbH"
+
+    def test_footer_without_spaces_is_cut(self):
+        from importers.vbr import page_body
+        body = page_body(self.HEADER + "01.12. 01.12. Lastschrift 10,00 S\n"
+                         "Musterhaendler GmbH\n" + self.FOOTER_TIGHT)
+        assert 'beachten' not in body.lower().replace(' ', '')
+        assert '0128' not in body
+
+    def test_page_without_table_carries_no_bookings(self):
+        """Die Hinweisseite am Ende hat keine Tabellenueberschrift."""
+        from importers.vbr import page_body
+        assert page_body("Sehr geehrte Kundin,\nSie haben eine Bankmitteilung\n") == ''
+
+    def test_transaction_across_the_page_break_is_reassembled(self, parser):
+        """Der gemeldete Fehler: Kopfzeile am Seitenende, Details auf der
+        Folgeseite. Frueher wurde die Fussnote zum Empfaenger."""
+        from importers.vbr import page_body
+        seite1 = (self.HEADER + "17.01. 17.01. Lastschrift PN:931 42,08 S\n"
+                  + self.FOOTER)
+        seite2 = (self.HEADER + "Telefonanbieter Musterstadt GmbH\n"
+                  "Kd-Nr.: 111, Rg-Nr.: 222, Ihre Rechnung\n"
+                  "19.01. 19.01. Entgelt 5,00 S\nJahrespreis Karte\n" + self.FOOTER)
+
+        rumpf = '\n'.join(page_body(s) for s in (seite1, seite2))
+        txns = parser._parse_vbr_text(rumpf, YEAR)
+
+        assert len(txns) == 2
+        assert txns[0]['recipient'] == 'Telefonanbieter Musterstadt GmbH'
+        assert 'Rg-Nr.: 222' in txns[0]['reference']
+        assert txns[0]['amount'] == pytest.approx(-42.08)
+        assert txns[1]['recipient'] == 'Jahrespreis Karte'
+
+    def test_seitenweise_lesen_verlor_den_empfaenger(self, parser):
+        """Gegenprobe: ohne den Zusammenbau bleibt nur Muell uebrig."""
+        seite1 = (self.HEADER + "17.01. 17.01. Lastschrift PN:931 42,08 S\n"
+                  + self.FOOTER)
+        txns = parser._parse_vbr_text(seite1, YEAR)
+        assert txns and 'Bitte beachten' in txns[0]['recipient']

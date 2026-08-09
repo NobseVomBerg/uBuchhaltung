@@ -376,7 +376,7 @@ class MatchingMixin:
             z.B. '1040749116593' (fraenk EREF) oder '870136' (SHBB RNR)."""
             return set(_TOKEN_RE.findall(text or ''))
 
-        def _token_tiebreak(bank_text, entries, text_idx=2):
+        def _token_tiebreak(bank_text, entries, text_idx=1):
             """Unter mehreren Entries denjenigen finden, der einen
             gemeinsamen numerischen Token mit dem Banktext teilt.
 
@@ -388,7 +388,11 @@ class MatchingMixin:
             Args:
                 bank_text: Text der Bank-Buchung
                 entries:   Kandidaten-Liste (Tuples)
-                text_idx:  Index des Text-Feldes im Tuple (default 2)
+                text_idx:  Index des Text-Feldes im Tuple. Alle Abfragen hier
+                           liefern (ID, Text, COA_ID, …) – der Text steht auf
+                           1. Der frühere Default 2 traf COA_ID und ließ die
+                           Stufe mit TypeError abstürzen, sobald sie überhaupt
+                           mehrere Kandidaten bekam.
 
             Returns:
                 Einzel-Entry-Tuple oder None.
