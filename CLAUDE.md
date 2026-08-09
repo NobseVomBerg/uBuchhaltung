@@ -195,7 +195,15 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
   Zusammengehörigkeit von Teilbuchungen ausdrücklich (→ `Bookings.SourceGroup`),
   liefert die Anlagenverwaltung mit und umfasst alle Jahre
 - WISO rechnet intern in **SKR03**; `BAS_FINACC_PLAN.SKR04` liefert die
-  Umschlüsselung. Konten ohne Zuordnung werden **gemeldet, nicht geraten**
+  Umschlüsselung, selbst angelegte Unterkonten erben sie über
+  `FINT_ACCOUNTS.BASEACCOUNTNO`. Konten ohne Zuordnung werden **gemeldet, nicht
+  geraten**; fehlende SKR04-Konten legt der Import mit WISOs Bezeichnung an
+- **Klammer eines Belegs ist die Beleg-Nr. + Datum**, nicht die `SourceGroup`:
+  WISO vergibt je Verrechnungskonto-Buchung eine eigene `ACCOUNTINGID`. Die
+  Quellgruppe ist damit feiner und greift nur, wo eine Beleg-Nr. fehlt
+- Bedienung über *Verschiedenes* → „Import aus der Datenbank"; die Prüfung
+  (`WisoDatabase.check`) bricht vor dem Schreiben ab, wenn die WISO-Version
+  andere Tabellen/Spalten hat
 
 ### Testing
 - Vor PR: lokal starten (`python main.py`), Feature testen

@@ -1073,6 +1073,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path == "/execute_sql":
                 content = handlers.handle_execute_sql(db, post_data)
                 self.respond(200, content, content_type="application/json")
+            elif self.path == "/wiso/fdb-import":
+                status_code, location = handlers.handle_wiso_fdb_import(db, post_data)
+                self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/db_export":
                 status_code, location = handlers.handle_db_export(db)
                 self.respond(status_code, "", headers={"Location": location})

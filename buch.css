@@ -23,6 +23,7 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .rowWithObjects			{ display:flex; align-items:center; flex-wrap:wrap; gap: 14px; }
 .rectRounded, .modalBox	{ padding: 10px; border-radius: 5px;}
 .modalBox				{ background: #DDD; color: #222; }
+.hint					{ opacity: .8; font-size: .92em; }   /* Randbemerkung, kein Fehler */
 .errorColor				{ color: red; }
 .successColor			{ color: green; }
 .warnColor				{ color: #e69500; }			 /* unfertig, nicht fehlerhaft */

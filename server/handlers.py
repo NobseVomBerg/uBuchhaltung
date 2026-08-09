@@ -942,6 +942,88 @@ def handle_wiso_import(request_handler, db: Database):
         return 303, f'/miscellaneous?wiso_import=error&msg={quote(str(e))}'
 
 
+#: Dateinamen, die WISO Mein Büro im DB-Verzeichnis anlegt.
+WISO_CLIENT_DB = 'DB1.FDB'
+WISO_STANDARD_DB = 'DB0.FDB'
+
+
+def _wiso_fdb_paths(entered):
+    """Eingabe auf (Mandantendatei, Standardkontenrahmen) auflösen.
+
+    Bequem gehalten: angegeben werden darf das DB-Verzeichnis von WISO oder
+    die Mandantendatei selbst. ``DB0.FDB`` wird daneben gesucht, ist aber
+    optional – ohne sie fehlen nur Konten, die der Mandant nie benutzt hat.
+    """
+    entered = (entered or '').strip().strip('"')
+    if not entered:
+        return None, None, 'Kein Pfad angegeben'
+    if os.path.isdir(entered):
+        client = os.path.join(entered, WISO_CLIENT_DB)
+    else:
+        client = entered
+    if not os.path.isfile(client):
+        return None, None, f'Nicht gefunden: {client}'
+    standard = os.path.join(os.path.dirname(client), WISO_STANDARD_DB)
+    return client, (standard if os.path.isfile(standard) else None), None
+
+
+def handle_wiso_fdb_import(db: Database, post_data):
+    """Import direkt aus der WISO-Datenbank (Firebird-Datei).
+
+    Kein Upload: die Mandantendatei ist dreistellig megabytegroß und liegt
+    ohnehin auf demselben Rechner. Angegeben wird deshalb ihr Pfad.
+
+    Returns:
+        (303, location_str) – immer ein Redirect zu /miscellaneous
+    """
+    from urllib.parse import quote
+
+    entered = post_data.get('fdb_path', [''])[0]
+    with_assets = post_data.get('with_assets', ['0'])[0] in ('1', 'on', 'true')
+    client, standard, problem = _wiso_fdb_paths(entered)
+    if problem:
+        return 303, f'/miscellaneous?wiso_fdb=error&msg={quote(problem)}'
+
+    try:
+        result = db.import_wiso_fdb(client, standard, with_assets=with_assets)
+        result['file'] = client
+        result['standard_chart'] = standard or ''
+        if result['blocker']:
+            _store_fdb_result(result)
+            return 303, ('/miscellaneous?wiso_fdb=incompatible'
+                         f'&msg={quote("; ".join(result["blocker"])[:300])}')
+
+        link_result = db.link_bank_to_entries()
+        result['linked'] = link_result.get('linked', 0)
+        result['resolved'] = link_result.get('resolved', 0)
+        _store_fdb_result(result)
+
+        return 303, (
+            f'/miscellaneous?wiso_fdb=ok'
+            f'&file={quote(os.path.basename(client))}'
+            f'&imported={result["imported"]}&skipped={result["skipped"]}'
+            f'&assets={result["assets"]}&afa={result["depreciations"]}'
+            f'&created_coa={len(result["created_coa"])}'
+            f'&missing_coa={len(result["missing_coa"])}'
+            f'&hints={len(result["hints"])}'
+            f'&linked={result["linked"]}&resolved={result["resolved"]}'
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return 303, f'/miscellaneous?wiso_fdb=error&msg={quote(str(e))}'
+
+
+def _store_fdb_result(result):
+    """Detailergebnis für die Anzeige auf /miscellaneous ablegen."""
+    path = os.path.join(userctx.user_data_dir(), 'wiso_fdb_result.json')
+    try:
+        with open(path, 'w', encoding='utf-8') as handle:
+            json.dump(result, handle, ensure_ascii=False, indent=2)
+    except Exception:
+        pass                                    # Anzeige ist nicht kritisch
+
+
 def handle_execute_sql(db: Database, post_data):
     """Handle SQL command execution – returns JSON with results."""
     import sqlite3, json

@@ -318,6 +318,137 @@ def PageMiscellaneous(db: Database):
                 s += f'<li>{_html.escape(str(_e))}</li>'
             s += '</ul>'
     s += '\t</div>'
+
+    # ── WISO-Datenbank (Firebird) ─────────────────────────────────────────────
+    _fdb_path = _os.path.join(_userctx.user_data_dir(), 'wiso_fdb_result.json')
+    _fdb = None
+    if _os.path.exists(_fdb_path):
+        try:
+            with open(_fdb_path, encoding='utf-8') as _f:
+                _fdb = _json.load(_f)
+        except Exception:
+            _fdb = None
+
+    s += '\t<div class="rectRounded">'
+    s += '''
+        <h2>WISO Mein Büro &ndash; Import aus der Datenbank</h2>
+        <p>Genauer als die Textexporte: die Datenbank nennt mit einer eigenen
+        Kennung, <strong>welche Teilbuchungen zusammengehören</strong>, bringt das
+        <strong>Anlagenverzeichnis samt AfA-Plan</strong> mit und umfasst alle Jahre.
+        Gelesen wird nur &ndash; an der WISO-Datenbank ändert sich nichts.</p>
+        <p>Angeben lässt sich das <strong>DB-Verzeichnis</strong> von WISO Mein Büro
+        oder direkt die Mandantendatei <code>DB1.FDB</code>.
+        <code>DB0.FDB</code> (Standard-Kontenrahmen) wird daneben automatisch
+        gesucht. WISO sollte dabei geschlossen sein.<br>
+        Voraussetzung wie beim CSV-Import: jedes Konto in der
+        <strong>Kontenverwaltung</strong> braucht ein hinterlegtes
+        <em>SKR-Gegenkonto</em>. Ein zweiter Lauf verdoppelt nichts.</p>
+        <form method="POST" action="/wiso/fdb-import">
+            <div class="rowWithObjects">Pfad:&nbsp;
+                <input type="text" name="fdb_path" style="min-width:34em"
+                       placeholder="C:\\\\ProgramData\\\\...\\\\DB  oder  ...\\\\DB\\\\DB1.FDB" required>
+            </div>
+            <div class="rowWithObjects">
+                <label><input type="checkbox" name="with_assets" value="1" checked>
+                &nbsp;Anlagenverzeichnis und AfA-Plan mitnehmen</label>
+            </div>
+            <br>
+            <button type="submit" class="coloredButton bg-green">&#x1F5C4;&#xFE0F; Aus WISO-Datenbank importieren</button>
+        </form>
+        <p class="hint">Der Import ist auf den Stand abgestimmt, den WISO Mein Büro
+        derzeit schreibt (Firebird ODS&nbsp;12). Weicht Ihre Version davon ab, meldet
+        die Prüfung vor dem Schreiben, welche Tabellen oder Spalten fehlen &ndash; es
+        wird dann <strong>nichts</strong> importiert. In dem Fall lässt sich das
+        Importmodul unter <code>importers/wiso_fdb/</code> mit KI-Unterstützung an
+        Ihre Version anpassen; die Meldung nennt genau die betroffenen Stellen.</p>
+        <script>
+        (function() {
+            const p = new URLSearchParams(window.location.search);
+            const status = p.get('wiso_fdb');
+            if (!status) return;
+            const div = document.createElement('div');
+            div.style = 'margin-top:10px; padding:8px 14px; border-radius:4px; display:inline-block;';
+            let msg;
+            if (status === 'ok') {
+                const missing = parseInt(p.get('missing_coa') || '0');
+                const hints   = parseInt(p.get('hints') || '0');
+                msg = '\\u2705 Import abgeschlossen: ' + p.get('imported')
+                    + ' Buchungss\\u00e4tze, ' + p.get('skipped') + ' \\u00fcbersprungen, '
+                    + p.get('assets') + ' Anlagen mit ' + p.get('afa') + ' AfA-Zeilen';
+                const lk = parseInt(p.get('linked') || '0');
+                const cc = parseInt(p.get('created_coa') || '0');
+                if (lk > 0) msg += ', ' + lk + ' Bankbewegungen verkn\\u00fcpft';
+                if (cc > 0) msg += ', ' + cc + ' SKR-Konten angelegt';
+                if (missing > 0) msg += ', ' + missing + ' Konten ohne Zuordnung';
+                div.style.background = (missing || hints) ? '#fff3cd' : '#d4edda';
+                div.style.color      = (missing || hints) ? '#856404' : '#155724';
+            } else if (status === 'incompatible') {
+                div.style.background = '#fff3cd';
+                div.style.color = '#856404';
+                msg = '\\u26a0\\ufe0f Diese WISO-Datenbank passt nicht zum Importmodul: '
+                    + decodeURIComponent(p.get('msg') || '')
+                    + '. Es wurde nichts importiert.';
+            } else {
+                div.style.background = '#f8d7da';
+                div.style.color = '#721c24';
+                msg = '\\u274c Fehler: ' + decodeURIComponent(p.get('msg') || '');
+            }
+            div.append(msg);
+            document.currentScript.parentNode.insertBefore(div, document.currentScript);
+        })();
+        </script>
+        '''
+
+    if _fdb:
+        _blocker = _fdb.get('blocker') or []
+        _hints = _fdb.get('hints') or []
+        _missing = _fdb.get('missing_coa') or {}
+        _created = _fdb.get('created_coa') or {}
+        if _fdb.get('file'):
+            s += (f'<p>\U0001F4C4 Zuletzt gelesen: '
+                  f'<code>{_html.escape(str(_fdb["file"]))}</code></p>')
+        if _blocker:
+            s += ('<h3>\u26a0\ufe0f Diese Datenbank passt nicht zum Importmodul</h3>'
+                  '<p>Es wurde <strong>nichts</strong> importiert. Die folgenden '
+                  'Tabellen oder Spalten erwartet <code>importers/wiso_fdb/</code>, '
+                  'Ihre WISO-Version liefert sie aber nicht. Mit dieser Liste lässt '
+                  'sich das Modul per KI anpassen:</p><ul>')
+            for _b in _blocker:
+                s += f'<li>{_html.escape(str(_b))}</li>'
+            s += '</ul>'
+        if _hints:
+            s += (f'<h3>\u2139\ufe0f Teilweise übersprungen &ndash; {len(_hints)} Hinweise</h3>'
+                  '<p>Diese Teile fehlen in Ihrer WISO-Datenbank; der Rest wurde '
+                  'importiert.</p><ul>')
+            for _h in _hints:
+                s += f'<li>{_html.escape(str(_h))}</li>'
+            s += '</ul>'
+        if _missing:
+            s += (f'<h3>\u26a0\ufe0f Konten ohne SKR04-Zuordnung &ndash; {len(_missing)}</h3>'
+                  '<p>WISO führt diese Konten intern in SKR03, nennt dafür aber keine '
+                  'SKR04-Entsprechung. Die Buchungen sind importiert, aber auf dieser '
+                  'Seite unkontiert. Bitte <a href="/masterdata/skr">im Kontenrahmen</a> '
+                  'anlegen und den Buchungen zuweisen:</p>')
+            s += '<table><tr><th>SKR03</th><th>Bezeichnung in WISO</th><th>Buchungen</th></tr>'
+            for _nr, _info in _missing.items():
+                if isinstance(_info, dict):
+                    _anz, _bez = _info.get('anzahl', ''), _info.get('bezeichnung', '')
+                else:
+                    _anz, _bez = _info, ''
+                s += (f'<tr><td>{_html.escape(str(_nr))}</td>'
+                      f'<td>{_html.escape(str(_bez))}</td>'
+                      f'<td>{_html.escape(str(_anz))}</td></tr>')
+            s += '</table>'
+        if _created:
+            s += (f'<h3>\u2705 Neu angelegte SKR-Konten &ndash; {len(_created)}</h3>'
+                  '<p>Nummer und Bezeichnung stammen aus WISOs eigener '
+                  'Umschlüsselung.</p><table><tr><th>SKR04</th><th>Bezeichnung</th></tr>')
+            for _nr, _name in _created.items():
+                s += (f'<tr><td>{_html.escape(str(_nr))}</td>'
+                      f'<td>{_html.escape(str(_name))}</td></tr>')
+            s += '</table>'
+    s += '\t</div>'
+
     # ── Testdaten ─────────────────────────────────────────────────────────────
     s += '\t<div class="rectRounded">'
     s += '''

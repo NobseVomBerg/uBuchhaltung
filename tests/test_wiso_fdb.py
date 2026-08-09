@@ -441,6 +441,59 @@ def test_mandantenrahmen_schlaegt_standardrahmen(tmp_path):
     assert data.bookings[0].account == 6850
 
 
+def test_unterkonten_erben_die_umschluesselung_des_basiskontos(tmp_path):
+    """Selbst angelegte Konten (je Fahrzeug, je Projekt) stehen nur in
+    FINT_ACCOUNTS und nennen dort ihr Basiskonto."""
+    builder, bookings = _wiso_builder()
+    builder.table('FINT_ACCOUNTS', [
+        Column('ID', LONG, 4), Column('ACCOUNTNO', LONG, 4),
+        Column('BASEACCOUNTNO', LONG, 4), Column('ACCOUNTLABEL', TEXT, 40),
+    ]).add(ID=1, ACCOUNTNO=4982, BASEACCOUNTNO=4980,
+           ACCOUNTLABEL='Betriebsbedarf Projekt X')
+    bookings.add(ID=1, ACCOUNTINGID=1, ACCOUNTING_DATE='2024-05-02 00:00:00',
+                 AMOUNTGROSS=10.0, ACCOUNTNO=4982, CONTRA_ACCOUNTNO=1210,
+                 ACCOUNTING_TEXT='Unterkonto')
+    path = builder.write(str(tmp_path / 'w.fdb'))
+
+    data = read_wiso_database(path, liquid_accounts={1810})
+    assert data.bookings[0].account == 6850          # geerbt von 4980
+    assert data.unmapped_accounts == {}
+
+
+def test_unterkonto_kette_wird_verfolgt(tmp_path):
+    """Ein Basiskonto darf selbst ein Unterkonto sein."""
+    builder, bookings = _wiso_builder()
+    sub = builder.table('FINT_ACCOUNTS', [
+        Column('ID', LONG, 4), Column('ACCOUNTNO', LONG, 4),
+        Column('BASEACCOUNTNO', LONG, 4), Column('ACCOUNTLABEL', TEXT, 40),
+    ])
+    sub.add(ID=1, ACCOUNTNO=4982, BASEACCOUNTNO=4980, ACCOUNTLABEL='Stufe 1')
+    sub.add(ID=2, ACCOUNTNO=4983, BASEACCOUNTNO=4982, ACCOUNTLABEL='Stufe 2')
+    bookings.add(ID=1, ACCOUNTINGID=1, ACCOUNTING_DATE='2024-05-02 00:00:00',
+                 AMOUNTGROSS=10.0, ACCOUNTNO=4983, CONTRA_ACCOUNTNO=1210)
+    path = builder.write(str(tmp_path / 'w.fdb'))
+    assert read_wiso_database(path).bookings[0].account == 6850
+
+
+def test_unbekanntes_konto_wird_mit_bezeichnung_gemeldet(tmp_path):
+    """Ohne Basiskonto bleibt es unaufgelöst – aber mit Klartext, damit der
+    Nutzer entscheiden kann. Geraten wird nichts."""
+    builder, bookings = _wiso_builder()
+    builder.table('FINT_ACCOUNTS', [
+        Column('ID', LONG, 4), Column('ACCOUNTNO', LONG, 4),
+        Column('BASEACCOUNTNO', LONG, 4), Column('ACCOUNTLABEL', TEXT, 40),
+    ]).add(ID=1, ACCOUNTNO=640, BASEACCOUNTNO=None,
+           ACCOUNTLABEL='Verbindlichkeiten Kreditinstitut(1-5J)')
+    bookings.add(ID=1, ACCOUNTINGID=1, ACCOUNTING_DATE='2024-05-02 00:00:00',
+                 AMOUNTGROSS=10.0, ACCOUNTNO=640, CONTRA_ACCOUNTNO=1210)
+    path = builder.write(str(tmp_path / 'w.fdb'))
+
+    data = read_wiso_database(path, liquid_accounts={1810})
+    assert data.bookings[0].account is None
+    assert data.unmapped_accounts == {640: 1}
+    assert data.unmapped_labels[640] == 'Verbindlichkeiten Kreditinstitut(1-5J)'
+
+
 def test_tabellenliste_ohne_systemtabellen(tmp_path):
     builder, _bookings = _wiso_builder()
     path = builder.write(str(tmp_path / 'w.fdb'))

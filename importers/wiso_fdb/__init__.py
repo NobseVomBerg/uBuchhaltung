@@ -47,6 +47,9 @@ T_CHART = 'BAS_FINACC_PLAN'
 T_ASSETS = 'BAS_INVENTORY'
 T_DEPRECIATIONS = 'MOV_INVENTORY_AMORTIZATIONS'
 T_ASSET_PAYMENTS = 'MOV_INVENTORY_BOOKINGS'
+#: Selbst angelegte Unterkonten (z. B. „Kfz-Versicherung <Fahrzeug>“). Sie
+#: stehen nicht im Kontenrahmen, nennen aber ihr Basiskonto.
+T_SUBACCOUNTS = 'FINT_ACCOUNTS'
 
 #: Personenkonten (Debitoren/Kreditoren) stehen nicht im Sachkontenrahmen und
 #: tragen in SKR03 wie SKR04 dieselbe Nummer.
@@ -162,6 +165,8 @@ class WisoData:
     chart: Dict[int, WisoAccount] = field(default_factory=dict)
     #: SKR03-Nummer → Anzahl Verwendungen, für die es keine SKR04-Zuordnung gibt.
     unmapped_accounts: Dict[int, int] = field(default_factory=dict)
+    #: Dazu die WISO-Bezeichnung, damit das Konto von Hand anlegbar ist.
+    unmapped_labels: Dict[int, str] = field(default_factory=dict)
     #: Übersprungene Steuerzeilen (WISOs DATEV-Darstellung).
     tax_rows_skipped: int = 0
     #: Übersprungene Erinnerungswert-Buchungen abgegangener Anlagen.
@@ -200,6 +205,56 @@ class WisoDatabase:
     def tables(self):
         return self.catalog.table_names()
 
+    #: Ohne diese Tabellen und Spalten ist kein Import möglich.
+    REQUIRED = {
+        T_BOOKINGS: ('ACCOUNTINGID', 'ACCOUNTING_DATE', 'AMOUNTGROSS',
+                     'ACCOUNTNO', 'CONTRA_ACCOUNTNO', 'ACCOUNTING_TEXT'),
+        T_CHART: ('ID', 'SKR04'),
+    }
+    #: Schön, wenn vorhanden – ihr Fehlen kostet nur einzelne Angaben.
+    OPTIONAL = {
+        T_ASSETS: ('ID', 'INVNO', 'LABEL', 'PURCHASEDATE', 'SERVICELIFE'),
+        T_DEPRECIATIONS: ('INVENTORYID', 'BOOKINGDATE', 'AMORT_AMOUNT'),
+        T_ASSET_PAYMENTS: ('INVENTORYID', 'BOOKINGDATE', 'AMOUNTNET'),
+        T_SUBACCOUNTS: ('ACCOUNTNO', 'BASEACCOUNTNO'),
+    }
+
+    def columns_of(self, table):
+        """Spaltennamen einer Tabelle; leer, wenn es sie nicht gibt."""
+        relation = self.catalog.relation_id.get(table)
+        if relation is None:
+            return set()
+        return {column.name for column in
+                self.catalog.columns(relation, self.catalog.relation_format[relation])}
+
+    def check(self):
+        """Passt diese WISO-Datenbank zum Import?
+
+        Liefert ``(blocker, hinweise)`` – beides Klartext. Der Import ist auf
+        den Stand abgestimmt, den WISO Mein Büro heute schreibt; eine ältere
+        oder neuere Version kann Tabellen anders benennen. Genau das findet
+        diese Prüfung, bevor irgendetwas geschrieben wird.
+        """
+        blocker, hints = [], []
+        for table, columns in self.REQUIRED.items():
+            found = self.columns_of(table)
+            if not found:
+                blocker.append(f'Tabelle {table} fehlt')
+                continue
+            missing = [c for c in columns if c not in found]
+            if missing:
+                blocker.append(f'{table}: Spalte(n) {", ".join(missing)} fehlen')
+        for table, columns in self.OPTIONAL.items():
+            found = self.columns_of(table)
+            if not found:
+                hints.append(f'Tabelle {table} fehlt – der zugehörige Teil '
+                             f'wird übersprungen')
+                continue
+            missing = [c for c in columns if c not in found]
+            if missing:
+                hints.append(f'{table}: Spalte(n) {", ".join(missing)} fehlen')
+        return blocker, hints
+
     # ------------------------------------------------------------------
     # Kontenrahmen
     # ------------------------------------------------------------------
@@ -226,8 +281,47 @@ class WisoDatabase:
                 chart[number] = WisoAccount(
                     skr03=number, skr04=row.get('SKR04'),
                     text=_clean(row.get('ACCOUNTTEXT')), year=year or None)
+        self._resolve_subaccounts(chart)
         self._chart = chart
         return chart
+
+    def _resolve_subaccounts(self, chart):
+        """Selbst angelegte Unterkonten über ihr Basiskonto anschließen.
+
+        WISO erlaubt Unterkonten je Fahrzeug oder Projekt („4532 laufende
+        Kfz-Betriebskosten Tesla“ unter „4530“). Sie stehen nur in
+        ``FINT_ACCOUNTS`` und nennen dort mit ``BASEACCOUNTNO`` ihr Basiskonto –
+        über das sie dieselbe SKR04-Nummer erben. Die Kette wird verfolgt, denn
+        ein Basiskonto kann selbst ein Unterkonto sein.
+        """
+        bases, labels = {}, {}
+        for row in self._safe_rows(T_SUBACCOUNTS):
+            number = row.get('ACCOUNTNO')
+            if number is None:
+                continue
+            label = _clean(row.get('ACCOUNTLABEL') or row.get('ACCOUNTTEXT'))
+            if label:
+                labels.setdefault(number, label)
+            base = row.get('BASEACCOUNTNO')
+            if base:
+                bases.setdefault(number, base)
+        self.account_labels = labels
+
+        def known(number):
+            account = chart.get(number)
+            return account is not None and account.skr04
+
+        for number, base in bases.items():
+            if known(number):
+                continue
+            seen = {number}
+            while base is not None and base not in seen and not known(base):
+                seen.add(base)
+                base = bases.get(base)
+            if base is not None and known(base):
+                chart[number] = WisoAccount(
+                    skr03=number, skr04=chart[base].skr04,
+                    text=labels.get(number) or chart[base].text)
 
     def _to_skr04(self, number, missing):
         """SKR03 auf SKR04 abbilden; Personenkonten bleiben, wie sie sind."""
@@ -423,9 +517,11 @@ class WisoDatabase:
         bookings = self.bookings(liquid_accounts, missing, disposed)
         memo = getattr(self, '_memo_skipped', 0)
         total = self.catalog.count(T_BOOKINGS)
+        labels = getattr(self, 'account_labels', {})
         return WisoData(
             bookings=bookings, assets=assets, chart=self.chart(),
             unmapped_accounts=missing, memo_rows_skipped=memo,
+            unmapped_labels={n: labels[n] for n in missing if n in labels},
             tax_rows_skipped=total - len(bookings) - memo)
 
 

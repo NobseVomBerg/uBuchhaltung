@@ -26,10 +26,17 @@ class BookingsMixin:
         Betrifft Belege ohne Bankbewegung – Kasse, Verrechnungskonto, von Hand
         erfasste Splits.
 
-        Die Klammer ist, wenn vorhanden, die aus dem Quellsystem übernommene
-        ``SourceGroup`` (WISO: ``ACCOUNTINGID``) – sie ist ausdrücklich und
-        muss nicht geraten werden. Sonst gilt weiter die Beleg-Nr. am selben
-        Tag, dieselbe Regel wie im Auto-Abgleich (_link_docnr_group).
+        Die Klammer ist die Beleg-Nr. am selben Tag – dieselbe Regel wie im
+        Auto-Abgleich (_link_docnr_group). Erst wo keine Beleg-Nr. vorliegt,
+        greift die aus dem Quellsystem übernommene ``SourceGroup``
+        (WISO: ``ACCOUNTINGID``).
+
+        Die Reihenfolge ist wichtig und nicht umkehrbar: WISO vergibt für jede
+        Buchung gegen das Verrechnungskonto eine **eigene** ACCOUNTINGID, auch
+        wenn mehrere zu einem Beleg gehören. Die Quellgruppe ist damit feiner
+        als der Beleg und würde ihn auseinanderreißen. Umgekehrt ist sie nie
+        gröber – im Echtbestand liegt keine einzige Quellgruppe über zwei
+        Belegen.
 
         Einzelne Buchungen bleiben unverändert 'normal'.
         """
@@ -37,12 +44,14 @@ class BookingsMixin:
         order = []
         for item in normal:
             booking = item['booking']
+            docnr = (booking[16] or '').strip()
             source_group = (booking[21] or '').strip() if len(booking) > 21 else ''
-            if source_group:
+            if docnr:
+                key = (docnr, item['date'])
+            elif source_group:
                 key = ('src', source_group)
             else:
-                docnr = (booking[16] or '').strip()
-                key = (docnr, item['date']) if docnr else None
+                key = None
             if key is None:
                 order.append(('single', item))
                 continue
