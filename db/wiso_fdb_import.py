@@ -73,7 +73,8 @@ class WisoFdbImportMixin:
                 for number, count in sorted(data.unmapped_accounts.items(),
                                             key=lambda kv: -kv[1])}
             result['created_coa'] = self._create_missing_coa(data)
-            self._insert_wiso_bookings(data.bookings, result)
+            self._insert_wiso_bookings(data.bookings, result,
+                                       self._recipients_by_invoice(data))
             if with_assets:
                 self._insert_wiso_assets(data.assets, result)
             if with_invoices:
@@ -156,7 +157,18 @@ class WisoFdbImportMixin:
         conn.close()
         return created
 
-    def _insert_wiso_bookings(self, bookings, result):
+    @staticmethod
+    def _recipients_by_invoice(data):
+        """Rechnungs-Id → Kundenname.
+
+        ``MOV_FINACC_ACCRECORDS`` führt keinen Empfänger – den kennt sonst nur
+        der Kontoauszug. Für rechnungsbezogene Buchungen lässt er sich aber
+        ableiten: die Buchung nennt ihre Rechnung, die Rechnung den Kunden.
+        """
+        return {invoice.source_id: invoice.buyer_name
+                for invoice in data.invoices if invoice.buyer_name}
+
+    def _insert_wiso_bookings(self, bookings, result, recipients=None):
         """Buchungssätze schreiben; ``SourceGroup`` trägt die Split-Klammer.
 
         Duplikate erkennt die Quell-Id (``SourceGroup`` + Betrag + Konto reicht
@@ -164,6 +176,7 @@ class WisoFdbImportMixin:
         vorhandene ``SourceGroup``-Werte werden übersprungen, damit ein zweiter
         Lauf nichts verdoppelt.
         """
+        recipients = recipients or {}
         conn = self._get_connection()
         cursor = conn.cursor()
         coa_map = self._coa_map(cursor)
@@ -184,12 +197,14 @@ class WisoFdbImportMixin:
             cursor.execute('''
                 INSERT INTO Bookings
                     (DateBooking, COA_ID, CounterCOA_ID, Amount, TaxRate,
-                     TaxAmount, Text, DocumentNumber, BookingType, SourceGroup)
-                VALUES (?,?,?,?,?,?,?,?,'entry',?)
+                     TaxAmount, Text, DocumentNumber, BookingType, SourceGroup,
+                     RecipientClient)
+                VALUES (?,?,?,?,?,?,?,?,'entry',?,?)
             ''', (booking.date, coa, counter_coa,
                   to_minor(booking.amount or 0), booking.tax_rate,
                   self._minor_opt(booking.tax_amount), booking.text,
-                  booking.document_number or None, booking.group or None))
+                  booking.document_number or None, booking.group or None,
+                  recipients.get(booking.invoice_id) or None))
             result['imported'] += 1
 
         conn.commit()

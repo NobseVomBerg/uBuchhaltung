@@ -416,6 +416,46 @@ def test_ohne_eigene_firma_bleibt_der_verweis_leer(db_with_coa, rechnungs_fdb):
     assert row[0] is None and row[1] == 'Mustermann IT'
 
 
+def test_rechnungsbezogene_buchung_bekommt_den_kunden_als_empfaenger(
+        db_with_coa, tmp_path):
+    """WISO führt zum Buchungssatz keinen Empfänger – bei rechnungsbezogenen
+    Buchungen lässt er sich aber über die Rechnung ableiten."""
+    path = _zahlungs_fdb(tmp_path, [
+        (500, 1210, 10000, 1190.0, 'Zahlung zu Re. W-2024001'),
+    ])
+    db_with_coa.import_wiso_fdb(path)
+
+    conn = db_with_coa._get_connection()
+    row = conn.execute(
+        'SELECT RecipientClient FROM Bookings WHERE SourceGroup = ?',
+        ('500',)).fetchone()
+    conn.close()
+    assert row[0] == 'Beispiel GmbH'
+
+
+def test_buchung_ohne_rechnungsbezug_bleibt_ohne_empfaenger(db_with_coa,
+                                                            tmp_path):
+    """Nicht raten: ohne Rechnung gibt es keinen belastbaren Empfänger."""
+    builder, kunden, _r, _p, _a = _builder()
+    kunden.add(ID=3, CUSTNO=9007, NAME1='Beispiel GmbH', COUNTRY='D')
+    buchungen = next(t for t in builder.tables
+                     if t.name == 'MOV_FINACC_ACCRECORDS')
+    buchungen.add(ID=1, ACCOUNTINGID=600,
+                  ACCOUNTING_DATE='2024-03-10 00:00:00', AMOUNTGROSS=-50.0,
+                  ACCOUNTNO=8400, CONTRA_ACCOUNTNO=1210,
+                  ACCOUNTING_TEXT='Ohne Rechnungsbezug')
+    path = builder.write(str(tmp_path / 'db1.fdb'))
+
+    db_with_coa.import_wiso_fdb(path)
+
+    conn = db_with_coa._get_connection()
+    row = conn.execute(
+        'SELECT RecipientClient FROM Bookings WHERE SourceGroup = ?',
+        ('600',)).fetchone()
+    conn.close()
+    assert row[0] is None
+
+
 def test_rechnung_traegt_die_bankverbindung(db_with_coa, rechnungs_fdb):
     """WISO führt die Bank nicht an der Rechnung, sondern im Briefbogen.
 
