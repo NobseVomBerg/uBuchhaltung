@@ -54,10 +54,14 @@ def test_rtf_laesst_reinen_text_unangetastet():
 def _builder():
     """WISO-Datenbank mit Firma, Kunden, Rechnungen und Positionen."""
     builder = FdbBuilder(page_size=16384)
-    builder.table('BAS_FINACC_PLAN', [
+    chart = builder.table('BAS_FINACC_PLAN', [
         Column('ID', LONG, 4), Column('SKR04', LONG, 4),
         Column('BOOKINGYEAR', SHORT, 2), Column('ACCOUNTTEXT', TEXT, 40),
-    ]).add(ID=8400, SKR04=4400, BOOKINGYEAR=2024, ACCOUNTTEXT='Erlöse 19 %')
+    ])
+    for skr03, skr04, text in ((8400, 4400, 'Erlöse 19 %'),
+                               (1210, 1810, 'Bankkonto'),
+                               (1360, 1460, 'Verrechnungskonto')):
+        chart.add(ID=skr03, SKR04=skr04, BOOKINGYEAR=2024, ACCOUNTTEXT=text)
     builder.table('MOV_FINACC_ACCRECORDS', [
         Column('ID', LONG, 4), Column('ACCOUNTINGID', LONG, 4),
         Column('ACCOUNTING_DATE', TIMESTAMP, 8),
@@ -368,6 +372,90 @@ def test_rechnung_landet_mit_position_und_kundenbezug(db_with_coa,
     assert item[6] == pytest.approx(0.19)
 
 
+def test_rechnung_zeigt_auf_die_eigene_firma(db_with_coa, rechnungs_fdb):
+    """Gibt es einen Kontakt vom Typ 'own', verweist die Rechnung darauf.
+
+    Der Absender bleibt zusätzlich als Momentaufnahme in der Rechnung – eine
+    spätere Umfirmierung darf alte Belege nicht rückwirkend ändern.
+    """
+    conn = db_with_coa._get_connection()
+    eigene = conn.execute(
+        "SELECT ID FROM Contacts WHERE ContactType = 'own' "
+        'ORDER BY ID LIMIT 1').fetchone()[0]
+    conn.close()
+
+    db_with_coa.import_wiso_fdb(rechnungs_fdb)
+
+    conn = db_with_coa._get_connection()
+    row = conn.execute(
+        'SELECT OwnCompanyId, SellerCompany FROM Invoices WHERE InvoiceNumber = ?',
+        ('W-2024001',)).fetchone()
+    conn.close()
+    assert row[0] == eigene
+    assert row[1] == 'Mustermann IT'         # aus den WISO-Firmenstammdaten
+
+
+def test_ohne_eigene_firma_bleibt_der_verweis_leer(db_with_coa, rechnungs_fdb):
+    """Kein 'own'-Kontakt: die Rechnung ist trotzdem vollständig.
+
+    Umtypisiert statt gelöscht – am Kontakt hängen Fremdschlüssel.
+    """
+    conn = db_with_coa._get_connection()
+    conn.execute("UPDATE Contacts SET ContactType = 'customer' "
+                 "WHERE ContactType = 'own'")
+    conn.commit()
+    conn.close()
+
+    db_with_coa.import_wiso_fdb(rechnungs_fdb)
+
+    conn = db_with_coa._get_connection()
+    row = conn.execute(
+        'SELECT OwnCompanyId, SellerCompany FROM Invoices WHERE InvoiceNumber = ?',
+        ('W-2024001',)).fetchone()
+    conn.close()
+    assert row[0] is None and row[1] == 'Mustermann IT'
+
+
+def test_rechnung_traegt_die_bankverbindung(db_with_coa, rechnungs_fdb):
+    """WISO führt die Bank nicht an der Rechnung, sondern im Briefbogen.
+
+    Genommen wird deshalb das eigene Geschäftskonto: ein Zahlungskonto mit
+    IBAN, das keine Kasse ist.
+    """
+    db_with_coa.import_wiso_fdb(rechnungs_fdb)
+
+    conn = db_with_coa._get_connection()
+    row = conn.execute(
+        'SELECT BankAccountId, BankName, BankIBAN, BankBIC FROM Invoices '
+        'WHERE InvoiceNumber = ?', ('W-2024001',)).fetchone()
+    konto = conn.execute(
+        'SELECT IsCash, Number, BankName, BIC FROM Accounts WHERE ID = ?',
+        (row[0],)).fetchone()
+    conn.close()
+
+    assert row[0] is not None
+    assert not konto[0] and konto[1]              # kein Bargeld, mit IBAN
+    # Die Rechnung führt die Bankverbindung als Momentaufnahme mit.
+    assert (row[2], row[1], row[3]) == (konto[1], konto[2], konto[3])
+
+
+def test_kasse_taugt_nicht_als_bankverbindung(db_with_coa, rechnungs_fdb):
+    """Kassen und Verrechnungskonten gehören nicht auf die Rechnung."""
+    conn = db_with_coa._get_connection()
+    conn.execute("UPDATE Accounts SET IsCash = 1, Number = 'DE00'")
+    conn.commit()
+    conn.close()
+
+    result = db_with_coa.import_wiso_fdb(rechnungs_fdb)
+
+    conn = db_with_coa._get_connection()
+    row = conn.execute('SELECT BankAccountId FROM Invoices '
+                       'WHERE InvoiceNumber = ?', ('W-2024001',)).fetchone()
+    conn.close()
+    assert row[0] is None
+    assert any('Geschäftskonto' in w for w in result['invoice_warnings'])
+
+
 def test_bezahlte_rechnung_hat_nichts_mehr_offen(db_with_coa, rechnungs_fdb):
     db_with_coa.import_wiso_fdb(rechnungs_fdb)
     conn = db_with_coa._get_connection()
@@ -410,3 +498,125 @@ def test_ohne_rechnungsimport_bleiben_die_tabellen_leer(db_with_coa,
         ('W-2024001',)).fetchone()[0]
     conn.close()
     assert unsere == 0
+
+
+# ----------------------------------------------------------------------
+# Zahlungen: Verknüpfung über INVID
+# ----------------------------------------------------------------------
+def _zahlungs_fdb(tmp_path, buchungen, brutto=1190.0, paystate=30):
+    """Rechnung samt Buchungen; ``buchungen`` = (gruppe, konto, gegen, betrag)."""
+    builder, kunden, rechnungen, positionen, auftrag = _builder()
+    kunden.add(ID=3, CUSTNO=9007, NAME1='Beispiel GmbH', COUNTRY='D')
+    rechnungen.add(ID=1, INVNO='W-2024001', INVDATE='2024-03-01 00:00:00',
+                   CUSTID=3, NAME1='Beispiel GmbH', TOTALNET=brutto / 1.19,
+                   VAT1=brutto - brutto / 1.19, TOTALGROSS=brutto,
+                   VAT1PERC=19, PAYSTATE=paystate)
+    auftrag.add(ID=10, PRICENET=brutto / 1.19, UNITCODE=0, ARTDESCR='Leistung')
+    positionen.add(ID=1, INVID=1, ORDPOSID=10, AMOUNT=1.0,
+                   TOTAL=brutto / 1.19, POSID=1)
+    tabelle = next(t for t in builder.tables
+                   if t.name == 'MOV_FINACC_ACCRECORDS')
+    tabelle.columns.append(Column('INVID', LONG, 4))
+    neu = type(tabelle)(tabelle.relation_id, tabelle.name, tabelle.columns)
+    builder.tables[builder.tables.index(tabelle)] = neu
+    for index, (gruppe, konto, gegen, betrag, text) in enumerate(buchungen,
+                                                                 start=1):
+        neu.add(ID=index, ACCOUNTINGID=gruppe,
+                ACCOUNTING_DATE='2024-03-10 00:00:00', AMOUNTGROSS=betrag,
+                ACCOUNTNO=konto, CONTRA_ACCOUNTNO=gegen,
+                ACCOUNTING_TEXT=text, INVID=1)
+    return builder.write(str(tmp_path / 'db1.fdb'))
+
+
+def _payments(db):
+    conn = db._get_connection()
+    rows = conn.execute('''
+        SELECT p.Amount, b.BookingType FROM InvoicePayments p
+        JOIN Bookings b ON b.ID = p.BookingID
+        WHERE p.InvoiceID = (SELECT ID FROM Invoices WHERE InvoiceNumber = ?)
+        ORDER BY p.ID''', ('W-2024001',)).fetchall()
+    offen = conn.execute('SELECT AmountDue FROM Invoices WHERE InvoiceNumber = ?',
+                         ('W-2024001',)).fetchone()[0]
+    conn.close()
+    return rows, offen
+
+
+def test_zahlung_wird_der_rechnung_zugeordnet(db_with_coa, tmp_path):
+    """Nur die Zeile über das Zahlungskonto zählt – die Forderungsbuchung
+    trägt dieselbe INVID und darf nicht mitgerechnet werden."""
+    path = _zahlungs_fdb(tmp_path, [
+        (500, 8400, 10000, 1190.0, 'Forderung aus Re. W-2024001'),
+        (501, 1210, 10000, 1190.0, 'Zahlung zu Re. W-2024001'),
+    ])
+    db_with_coa.import_wiso_fdb(path)
+    result = db_with_coa.link_wiso_invoice_payments(path)
+    assert result['payments_linked'] == 1
+
+    zahlungen, offen = _payments(db_with_coa)
+    assert [z[0] for z in zahlungen] == [11900000]      # 1190,00 EUR
+    assert offen == 0
+
+
+def test_stornierte_und_neu_gebuchte_zahlung_hebt_sich_auf(db_with_coa,
+                                                           tmp_path):
+    """Gebucht, storniert, neu gebucht: drei Zeilen, eine bezahlte Rechnung.
+
+    Ohne Vorzeichen käme hier das Dreifache heraus.
+    """
+    path = _zahlungs_fdb(tmp_path, [
+        (500, 1210, 10000, 1190.0, 'Zahlung zu Re. W-2024001'),
+        (501, 10000, 1210, 1190.0, 'Zahlung zu Re. W-2024001'),   # Storno
+        (502, 1210, 10000, 1190.0, 'Zahlung zu Re. W-2024001'),
+    ])
+    db_with_coa.import_wiso_fdb(path)
+    result = db_with_coa.link_wiso_invoice_payments(path)
+    assert result['payments_linked'] == 3
+
+    zahlungen, offen = _payments(db_with_coa)
+    assert sorted(z[0] for z in zahlungen) == [-11900000, 11900000, 11900000]
+    assert offen == 0                                   # netto einmal bezahlt
+
+
+def test_gutschrift_bekommt_eine_negative_zahlung(db_with_coa, tmp_path):
+    """Gutschriften stehen in WISO als Rechnung mit negativem Betrag."""
+    path = _zahlungs_fdb(tmp_path, [
+        (500, 10000, 1210, -119.0, 'Zahlung zu Re. W-2024001'),
+    ], brutto=-119.0)
+    db_with_coa.import_wiso_fdb(path)
+    db_with_coa.link_wiso_invoice_payments(path)
+
+    zahlungen, offen = _payments(db_with_coa)
+    assert [z[0] for z in zahlungen] == [-1190000]
+    assert offen == 0
+
+
+def test_zahlung_haengt_an_der_bankbewegung_wenn_es_eine_gibt(db_with_coa,
+                                                              tmp_path):
+    """Verknüpft wird, was im Kontoauszug steht – nicht der Buchungssatz."""
+    path = _zahlungs_fdb(tmp_path, [
+        (500, 1210, 10000, 1190.0, 'Zahlung zu Re. W-2024001'),
+    ])
+    db_with_coa.import_wiso_fdb(path)
+    account_id = next(a[0] for a in db_with_coa.fetch_accounts()
+                      if a[1] == 'Testkonto 2')          # SKR 1810
+    db_with_coa.insert_booking('2024-03-10', 1190.0, account_id=account_id,
+                               text='Ueberweisung', booking_type='bank')
+    db_with_coa.link_bank_to_entries()
+
+    db_with_coa.link_wiso_invoice_payments(path)         # jetzt erst zuordnen
+
+    zahlungen, _offen = _payments(db_with_coa)
+    assert [z[1] for z in zahlungen] == ['bank']
+
+
+def test_zweiter_lauf_verknuepft_nicht_doppelt(db_with_coa, tmp_path):
+    path = _zahlungs_fdb(tmp_path, [
+        (500, 1210, 10000, 1190.0, 'Zahlung zu Re. W-2024001'),
+    ])
+    db_with_coa.import_wiso_fdb(path)
+    db_with_coa.link_wiso_invoice_payments(path)
+    second = db_with_coa.link_wiso_invoice_payments(path)
+    assert second['payments_linked'] == 0
+
+    zahlungen, offen = _payments(db_with_coa)
+    assert len(zahlungen) == 1 and offen == 0

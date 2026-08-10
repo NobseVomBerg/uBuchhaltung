@@ -1001,6 +1001,13 @@ def handle_wiso_fdb_import(db: Database, post_data):
         link_result = db.link_bank_to_entries()
         result['linked'] = link_result.get('linked', 0)
         result['resolved'] = link_result.get('resolved', 0)
+        if with_invoices:
+            # Erst jetzt: die Zahlung soll an der Bankbewegung hängen, und die
+            # steht erst nach dem Abgleich an den Buchungssätzen.
+            payments = db.link_wiso_invoice_payments(client, standard)
+            result['payments_linked'] = payments['payments_linked']
+            result['payment_warnings'] = payments['payment_warnings']
+            result['errors'] += payments['errors']
         _store_fdb_result(result)
 
         return 303, (
@@ -1010,6 +1017,7 @@ def handle_wiso_fdb_import(db: Database, post_data):
             f'&assets={result["assets"]}&afa={result["depreciations"]}'
             f'&customers={result["customers"]}&invoices={result["invoices"]}'
             f'&items={result["invoice_items"]}'
+            f'&payments={result["payments_linked"]}'
             f'&created_coa={len(result["created_coa"])}'
             f'&missing_coa={len(result["missing_coa"])}'
             f'&hints={len(result["hints"])}'

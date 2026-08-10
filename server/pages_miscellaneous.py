@@ -383,9 +383,11 @@ def PageMiscellaneous(db: Database):
                 const cc = parseInt(p.get('created_coa') || '0');
                 const rn = parseInt(p.get('invoices') || '0');
                 const kd = parseInt(p.get('customers') || '0');
+                const zl = parseInt(p.get('payments') || '0');
                 if (rn > 0) msg += ', ' + rn + ' Rechnungen mit '
                     + p.get('items') + ' Positionen';
                 if (kd > 0) msg += ', ' + kd + ' Kunden';
+                if (zl > 0) msg += ', ' + zl + ' Zahlungen zugeordnet';
                 if (lk > 0) msg += ', ' + lk + ' Bankbewegungen verkn\\u00fcpft';
                 if (cc > 0) msg += ', ' + cc + ' SKR-Konten angelegt';
                 if (missing > 0) msg += ', ' + missing + ' Konten ohne Zuordnung';

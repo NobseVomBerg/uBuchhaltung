@@ -49,7 +49,8 @@ class WisoFdbImportMixin:
                   'unresolved_accounts': 0, 'blocker': [], 'hints': [],
                   'asset_warnings': [], 'customers': 0, 'invoices': 0,
                   'invoice_items': 0, 'invoices_skipped': 0,
-                  'invoice_warnings': [], 'errors': []}
+                  'invoice_warnings': [], 'payments_linked': 0,
+                  'payment_warnings': [], 'errors': []}
         try:
             wiso = WisoDatabase(path, standard_chart_path)
         except Exception as exc:                       # defekte/fremde Datei
@@ -78,6 +79,28 @@ class WisoFdbImportMixin:
             if with_invoices:
                 contacts = self._insert_wiso_customers(data.customers, result)
                 self._insert_wiso_invoices(data, contacts, result)
+        return result
+
+    def link_wiso_invoice_payments(self, path, standard_chart_path=None) -> dict:
+        """Zahlungen den Rechnungen zuordnen – **nach** dem Auto-Abgleich.
+
+        Eigener Schritt und nicht Teil von :meth:`import_wiso_fdb`, weil die
+        Reihenfolge zählt: verknüpft werden soll die Bankbewegung, und die
+        hängt erst nach ``link_bank_to_entries`` an den Buchungssätzen. Vorher
+        aufgerufen, landet die Zahlung am Buchungssatz – nicht falsch, aber
+        weniger nützlich, und ein zweiter Lauf korrigiert es nicht mehr.
+        """
+        from importers.wiso_fdb import WisoDatabase
+
+        result = {'payments_linked': 0, 'payment_warnings': [], 'errors': []}
+        try:
+            wiso = WisoDatabase(path, standard_chart_path)
+        except Exception as exc:
+            result['errors'].append(f'{path}: {exc}')
+            return result
+        with wiso:
+            self._link_wiso_invoice_payments(wiso.read(self._liquid_skr_accounts()),
+                                             result)
         return result
 
     # ------------------------------------------------------------------
@@ -225,8 +248,26 @@ class WisoFdbImportMixin:
         try:
             known = {row[0] for row in conn.execute(
                 'SELECT InvoiceNumber FROM Invoices')}
+            # Die eigene Firma steht als Kontakt vom Typ 'own' im Stamm; die
+            # Rechnung verweist darauf und führt den Absender zusätzlich als
+            # Momentaufnahme, damit spätere Änderungen alte Belege nicht ändern.
+            own = conn.execute(
+                "SELECT ID FROM Contacts WHERE ContactType = 'own' "
+                'ORDER BY ID LIMIT 1').fetchone()
+            # Bankverbindung für den Zahlungshinweis: WISO führt sie nicht an
+            # der Rechnung, sondern im Briefbogen. Genommen wird das eigene
+            # Geschäftskonto – ein Zahlungskonto mit IBAN, das keine Kasse ist.
+            bank = conn.execute(
+                'SELECT ID, BankName, Number, BIC FROM Accounts '
+                "WHERE COALESCE(IsCash, 0) = 0 AND COALESCE(Number, '') != '' "
+                'ORDER BY ID LIMIT 1').fetchone()
         finally:
             conn.close()
+        own_company_id = own[0] if own else None
+        if bank is None:
+            result['invoice_warnings'].append(
+                'Kein Geschäftskonto mit IBAN in der Kontenverwaltung – die '
+                'Rechnungen bleiben ohne Bankverbindung')
 
         company = data.company
         for invoice in data.invoices:
@@ -240,6 +281,7 @@ class WisoFdbImportMixin:
             invoice_id = self.insert_invoice({
                 'invoice_number': invoice.number,
                 'invoice_date': invoice.date,
+                'own_company_id': own_company_id,
                 'seller_name': (company.name if company else '') or 'unbekannt',
                 'seller_company': (company.company if company else '') or 'unbekannt',
                 'seller_street': company.street if company else '',
@@ -258,6 +300,10 @@ class WisoFdbImportMixin:
                 'buyer_country': invoice.buyer_country,
                 'delivery_date': invoice.delivery_date,
                 'payment_due_date': due,
+                'bank_account_id': bank[0] if bank else None,
+                'bank_name': bank[1] if bank else None,
+                'bank_iban': bank[2] if bank else None,
+                'bank_bic': bank[3] if bank else None,
                 'tax_rate': invoice.tax_rate,
                 'sum_net': invoice.sum_net, 'tax_amount': invoice.tax_amount,
                 'sum_gross': invoice.sum_gross,
@@ -283,6 +329,82 @@ class WisoFdbImportMixin:
             for warning in invoice.warnings:
                 result['invoice_warnings'].append(
                     f'Rechnung {invoice.number}: {warning}')
+
+    def _link_wiso_invoice_payments(self, data, result):
+        """Zahlungen ihren Rechnungen zuordnen – über WISOs ``INVID``.
+
+        WISO hängt an jede Buchung eines Rechnungsvorgangs die Rechnungs-Id.
+        Zahlung ist davon aber nur die Zeile, die ein **Zahlungskonto**
+        berührt; die Forderungsbuchung (Debitor an Erlöse) trägt dieselbe Id
+        und darf nicht mitgezählt werden.
+
+        Verknüpft wird bevorzugt die **Bankbewegung** des Vorgangs – sie ist
+        das, was der Kontoauszug zeigt. Fehlt sie (für alte Jahre gibt es
+        keine Auszüge), tritt der Buchungssatz selbst an ihre Stelle.
+
+        Der Betrag behält sein **Vorzeichen**. Das ist keine Kosmetik: eine
+        stornierte und neu gebuchte Zahlung erscheint dreimal (hin, zurück,
+        hin) und hebt sich nur vorzeichenrichtig auf; Gutschriften sind
+        durchweg negativ. Mit Betragsbeträgen käme das Dreifache heraus.
+        """
+        from importers.wiso_fdb import DEFAULT_LIQUID_ACCOUNTS
+
+        liquid = set(DEFAULT_LIQUID_ACCOUNTS) | self._liquid_skr_accounts()
+        numbers = {invoice.source_id: invoice.number for invoice in data.invoices}
+        if not numbers:
+            return
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT InvoiceNumber, ID FROM Invoices')
+        invoice_ids = {row[0]: row[1] for row in cursor.fetchall()}
+        cursor.execute("SELECT SourceGroup, ID, ParentBooking_ID, Amount "
+                       "FROM Bookings WHERE SourceGroup IS NOT NULL "
+                       "AND SourceGroup != '' AND BookingType = 'entry'")
+        by_group = {}
+        for group, booking_id, parent_id, amount in cursor.fetchall():
+            by_group.setdefault(group, []).append((booking_id, parent_id, amount))
+        cursor.execute('SELECT InvoiceID, BookingID FROM InvoicePayments')
+        already = {tuple(row) for row in cursor.fetchall()}
+        conn.close()
+
+        for booking in data.bookings:
+            number = numbers.get(booking.invoice_id)
+            invoice_id = invoice_ids.get(number) if number else None
+            if invoice_id is None:
+                continue
+            if not ({booking.account, booking.counter_account} & liquid):
+                continue                       # Forderungs-/Umbuchungszeile
+            target = self._payment_booking(by_group.get(booking.group, []),
+                                           booking.amount)
+            if target is None or (invoice_id, target) in already:
+                continue
+            try:
+                self.link_invoice_to_transaction(invoice_id, target,
+                                                 booking.amount)
+            except Exception as exc:           # bereits verknüpft o. Ä.
+                result['payment_warnings'].append(f'Rechnung {number}: {exc}')
+                continue
+            already.add((invoice_id, target))
+            result['payments_linked'] += 1
+
+    @staticmethod
+    def _payment_booking(candidates, amount):
+        """Aus den Buchungen einer Quellgruppe die Zahlung heraussuchen.
+
+        Die Bankbewegung ist die richtige Verknüpfung – sie steht im
+        Kontoauszug. Nur wenn keine da ist, tritt der betragsgleiche
+        Buchungssatz an ihre Stelle. Verglichen wird **mit Vorzeichen**, sonst
+        ließe sich eine Zahlung nicht von ihrer Stornierung unterscheiden.
+        """
+        minor = to_minor(amount or 0)
+        passend = [c for c in candidates if abs((c[2] or 0) - minor) < 50]
+        if not passend:
+            return None
+        for booking_id, parent_id, _amount in passend:
+            if parent_id:
+                return parent_id
+        return passend[0][0]
 
     def _insert_wiso_assets(self, assets, result):
         """Anlagegüter samt AfA-Plan übernehmen.
