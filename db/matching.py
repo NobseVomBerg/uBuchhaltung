@@ -367,14 +367,30 @@ class MatchingMixin:
 
         import re
         from difflib import SequenceMatcher
-        _TOKEN_RE = re.compile(r'\d{6,}')
+        _TOKEN_DIGITS = re.compile(r'\d{6,}')
+        _TOKEN_ALNUM = re.compile(r'[A-Za-z0-9]{6,}')
 
         def _extract_tokens(text):
-            """Ziffernfolgen (>=6 Stellen) aus Text extrahieren.
+            """Kennungen aus einem Text: Ziffern- **und** Buchstabenfolgen.
 
             Dient als eindeutige Kennung (Rechnungs-/Transaktionsnummern),
-            z.B. '1040749116593' (fraenk EREF) oder '870136' (SHBB RNR)."""
-            return set(_TOKEN_RE.findall(text or ''))
+            z.B. '1040749116593' (fraenk EREF) oder '870136' (SHBB RNR).
+
+            Rein numerisch reicht nicht: zwei Amazon-Lastschriften desselben
+            Tages über denselben Betrag tragen dieselbe Bestellnummer und
+            unterscheiden sich nur in der Transaktionskennung
+            ('2BSTZZGVGU16KNKI'). Deshalb zusätzlich alphanumerische Folgen –
+            aber nur solche mit mindestens einer Ziffer, sonst würde jedes
+            längere Wort ('AMZNBusiness', 'Lohnzahlung') zum Token.
+
+            Beide Mengen werden vereinigt: '123456' aus 'Rechnung123456' muss
+            weiter auf ein blankes '123456' im Banktext passen.
+            """
+            text = text or ''
+            tokens = set(_TOKEN_DIGITS.findall(text))
+            tokens |= {t for t in _TOKEN_ALNUM.findall(text)
+                       if any(c.isdigit() for c in t)}
+            return tokens
 
         def _token_tiebreak(bank_text, entries, text_idx=1):
             """Unter mehreren Entries denjenigen finden, der einen
