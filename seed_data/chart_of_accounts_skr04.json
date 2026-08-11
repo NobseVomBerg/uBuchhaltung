@@ -2,6 +2,8 @@
     "_comment": "Standard-Kontenrahmen SKR04 – Standardkonten (IsStandard=1) und häufig genutzte Erweiterungen (IsStandard=0)",
     "framework": 4,
     "accounts": [
+        {"account_number": 470,   "name": "Betriebsvorrichtungen",                                "description": "Anlagevermögenskonten",                             "is_standard": true},
+        {"account_number": 500,   "name": "Andere Anlagen, Betriebs- und Geschäftsausstattung",   "description": "Anlagevermögenskonten",                             "is_standard": true},
         {"account_number": 520,   "name": "PKW",                                                  "description": "Anlagevermögen",                                    "is_standard": true},
         {"account_number": 560,   "name": "Sonstige Transportmittel",                             "description": "Anlagevermögenskonten",                             "is_standard": true},
         {"account_number": 670,   "name": "Geringwertige Wirtschaftsgüter",                       "description": "Anlagevermögenskonten",                             "is_standard": true},
@@ -38,6 +40,7 @@
         {"account_number": 4975,  "name": "Investitionszuschüsse",                                "description": "Betriebliche Erträge",                              "is_standard": true},
         {"account_number": 5200,  "name": "Wareneingang",                                         "description": "Betriebliche Aufwendungen",                         "is_standard": true},
         {"account_number": 6130,  "name": "Freiwillige soziale Aufwendungen, lohnsteuerfrei",     "description": "Betriebliche Aufwendungen",                         "is_standard": true},
+        {"account_number": 6220,  "name": "Abschreibungen auf Sachanlagen (ohne AfA auf Fahrzeuge und Gebäude)","description": "Betriebliche Aufwendungen",           "is_standard": true},
         {"account_number": 6222,  "name": "Abschreibungen auf Fahrzeuge",                         "description": "Betriebliche Aufwendungen",                         "is_standard": true},
         {"account_number": 6260,  "name": "Sofortabschreibung geringwertiger Wirtschaftsgüter",   "description": "Betriebliche Aufwendungen",                         "is_standard": true},
         {"account_number": 6300,  "name": "Sonstige betriebliche Aufwendungen",                   "description": "Betriebliche Aufwendungen",                         "is_standard": true},
