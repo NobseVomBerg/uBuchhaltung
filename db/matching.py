@@ -345,6 +345,7 @@ class MatchingMixin:
         skipped = 0
         errors = []
         already_linked_entry_ids = set()  # Für 1:1 Multi-Match (Fraenk)
+        offen_geblieben = []              # für den Nachlauf der Gruppensumme
 
         def _norm(s):
             """Empfänger normalisieren: Leerzeichen komprimieren + lowercase."""
@@ -498,6 +499,58 @@ class MatchingMixin:
                 if abs(total - bank_amount) < 50:
                     hits.append(group)
             return hits[0] if len(hits) == 1 else None
+
+        def _source_group_sum_match(bank_date, bank_amount, account_id,
+                                    recipient):
+            """Mehrere Quellgruppen eines Tages, die zusammen aufgehen.
+
+            WISO zerlegt manche Belege in mehrere Vorgänge mit je eigener
+            ACCOUNTINGID: Stromabschlag betrieblich + Privatanteil, eine
+            Kartenabrechnung in ihre Einzelposten, eine Überweisung in
+            Teilzahlungen auf mehrere Rechnungen. Keine Gruppe trifft dann
+            den Bankbetrag, ihre Summe aber genau.
+
+            Zuerst wird die Summe **aller** offenen Gruppen des Tages
+            geprüft, die über das SKR-Konto dieser Bank laufen. Geht sie
+            nicht auf – typisch bei zwei Bankbewegungen am selben Tag –,
+            wird auf die Gruppen eingegrenzt, die den Empfänger im Text
+            nennen. Trifft auch das nicht, bleibt die Bewegung offen:
+            Teilmengen zu suchen hieße raten.
+            """
+            own_coa = own_coa_of_account.get(account_id)
+            if own_coa is None:
+                return None
+            cursor.execute('''
+                SELECT SourceGroup FROM Bookings
+                WHERE BookingType = 'entry' AND ParentBooking_ID IS NULL
+                  AND DateBooking = ?
+                  AND SourceGroup IS NOT NULL AND SourceGroup != ''
+                GROUP BY SourceGroup
+            ''', (bank_date,))
+            kandidaten = []
+            for (gruppe,) in cursor.fetchall():
+                members = _source_group_members(gruppe)
+                if not members or {m[0] for m in members} & already_linked_entry_ids:
+                    continue
+                if not any(own_coa in (m[2], m[3]) for m in members):
+                    continue
+                summe = sum(m[1] or 0 for m in members
+                            if is_bank_effective(m[2], m[3], bank_coa_ids))
+                kandidaten.append((gruppe, summe, members))
+            if len(kandidaten) < 2:
+                return None            # Einzelgruppen erledigt Stufe 0
+
+            if abs(sum(k[1] for k in kandidaten) - bank_amount) < 50:
+                return [k[0] for k in kandidaten]
+
+            marke = _norm(recipient)
+            if marke:
+                genannt = [k for k in kandidaten
+                           if marke in _norm(' '.join(m[4] or '' for m in k[2]))]
+                if len(genannt) >= 2 and \
+                        abs(sum(k[1] for k in genannt) - bank_amount) < 50:
+                    return [k[0] for k in genannt]
+            return None
 
         def _source_group_members(group):
             cursor.execute('''
@@ -794,7 +847,46 @@ class MatchingMixin:
                         linked += 1
                         continue
 
+            # ── Stufe 6b: mehrere Quellgruppen zusammen ─────────────────
+            # Letzte Stufe, damit alle genaueren zuerst greifen. Deckt den
+            # Fall ab, dass WISO einen Beleg in mehrere Vorgänge zerlegt
+            # hat (Strom betrieblich + Privatanteil, Kartenabrechnung mit
+            # vielen Einzelposten, Teilzahlungen auf mehrere Rechnungen) –
+            # jede Zeile mit eigener ACCOUNTINGID und ohne Beleg-Nr.
+            gruppen = _source_group_sum_match(bank_date, bank_amount,
+                                              bank_account_id, bank_recipient)
+            if gruppen:
+                for gruppe in gruppen:
+                    _link_source_group(bank_id, gruppe)
+                linked += 1
+                continue
+
+            offen_geblieben.append((bank_id, bank_date, bank_amount,
+                                    bank_account_id, bank_recipient))
             skipped += 1
+
+        # ── Stufe 6c: Nachlauf für die Gruppensumme ───────────────────────
+        # Fallen mehrere Bankbewegungen auf einen Tag, sieht die zuerst
+        # geprüfte auch die Gruppen der anderen – die Summe geht dann nicht
+        # auf. Sobald die übrigen verknüpft sind, bleibt der Rest übrig und
+        # passt. Deshalb so lange wiederholen, wie es noch Fortschritt gibt.
+        while offen_geblieben:
+            rest = []
+            for bank_id, bank_date, bank_amount, account_id, recipient in \
+                    offen_geblieben:
+                gruppen = _source_group_sum_match(bank_date, bank_amount,
+                                                  account_id, recipient)
+                if not gruppen:
+                    rest.append((bank_id, bank_date, bank_amount, account_id,
+                                 recipient))
+                    continue
+                for gruppe in gruppen:
+                    _link_source_group(bank_id, gruppe)
+                linked += 1
+                skipped -= 1
+            if len(rest) == len(offen_geblieben):
+                break                       # kein Fortschritt mehr
+            offen_geblieben = rest
 
         # ── Stufe 7: Debitoren-Auflösung ─────────────────────────────────
         # Debitoren-Entries (COA 10000) entstehen bei Rechnungserstellung
