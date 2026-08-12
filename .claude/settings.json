@@ -20,6 +20,18 @@
     ]
   },
   "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/precompact_snapshot.py",
+            "timeout": 30,
+            "statusMessage": "Stand vor der Verdichtung sichern..."
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Write|Edit",
