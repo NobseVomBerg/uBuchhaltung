@@ -63,8 +63,12 @@ def document_submenu(active):
     ])
 
 
-def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
-    """Generate invoice list page with search and filter"""
+def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=None):
+    """Generate invoice list page with search and filter
+
+    copy_from: ID einer Quellrechnung – das Formular öffnet sich dann als
+    neue Rechnung mit deren Inhalten (todo #4).
+    """
     filters = filters or {}
     
     # Get filter parameters
@@ -175,9 +179,13 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
             action_icon  = '&#9998;'    if status == 'draft' else '&#128065;'
             action_title = 'Bearbeiten' if status == 'draft' else 'Ansehen'
             s+= f"<td>"
-            # PDF button - check if PDF actually exists in filesystem
-            pdf_exists = "true" if (pdf_path and os.path.exists(pdf_path)) else "false"
-            s+= f'<a href="javascript:void(0);" onclick="handlePDF({inv_id}, {pdf_exists})" class="action-icon" title="PDF">&#128196;</a> '
+            # PDF-Symbol laedt nur herunter, was abgelegt ist (todo #3)
+            xml_path = invoice[42] if len(invoice) > 42 else None
+            has_pdf = "true" if (pdf_path and os.path.exists(pdf_path)) else "false"
+            has_xml = "true" if (xml_path and os.path.exists(xml_path)) else "false"
+            pdf_title = 'PDF herunterladen' if has_pdf == "true" else 'Kein PDF vorhanden'
+            s+= (f'<a href="javascript:void(0);" onclick="downloadInvoiceDocs({inv_id}, '
+                 f'{has_pdf}, {has_xml})" class="action-icon" title="{pdf_title}">&#128196;</a> ')
             s+= f"<a href='/invoice?id={inv_id}' class='action-icon' title='{action_title}'>{action_icon}</a>"
             s+= f"</td>"
             s+= f"</tr>"
@@ -186,34 +194,15 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
     
     s+= '''
     <script>
-        function handlePDF(invoiceId, pdfExists) {
-            if (pdfExists) {
-                appConfirm('PDF-Datei existiert bereits. Überschreiben und neu generieren?', function() {
-                    generatePDFInFilesystem(invoiceId);
-                });
-            } else {
-                generatePDFInFilesystem(invoiceId);
+        // Vorhandene Dokumente herunterladen - hier wird nichts neu erzeugt
+        // (todo #3). Erzeugt wird im Formular bzw. automatisch beim Versenden.
+        function downloadInvoiceDocs(invoiceId, hasPdf, hasXml) {
+            if (!hasPdf && !hasXml) {
+                appMsg('Kein PDF vorhanden - bitte in der Rechnung erzeugen.', 'error');
+                return;
             }
-        }
-
-        function generatePDFInFilesystem(invoiceId) {
-            // Tab im Klick-Kontext oeffnen (kein Popup-Blocker), spaeter befuellen
-            const viewer = window.open('about:blank', '_blank');
-            fetch('/invoice/pdf_generate?id=' + invoiceId)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        appMsg('PDF erstellt: ' + data.pdf_path, 'success');
-                        if (viewer) viewer.location = '/invoice/pdf_download?id=' + invoiceId + '&inline=1';
-                    } else {
-                        if (viewer) viewer.close();
-                        appMsg('Fehler: ' + (data.error || 'Unbekannter Fehler'), 'error');
-                    }
-                })
-                .catch(err => {
-                    if (viewer) viewer.close();
-                    appMsg('Fehler: ' + err.message, 'error');
-                });
+            if (hasPdf) appDownload('/invoice/pdf_download?id=' + invoiceId);
+            if (hasXml) appDownload('/invoice/xml_download?id=' + invoiceId);
         }
         
         function applyInvoiceFilters() {
@@ -243,26 +232,37 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None):
     '''
     s+= '</div><!-- Ende gridLeftCol -->'
     s+= '<div class="gridRightCol" style="order:2; min-width:820px;">'
-    s+= _invoice_form_html(db, invoice_id)
+    s+= _invoice_form_html(db, invoice_id, copy_from)
     s+= '</div><!-- Ende gridRightCol --></div><!-- Ende grid2Cols -->'
     s+= Footer()
     return s
 
-def _invoice_form_html(db: Database, invoice_id=None):
-    """Generate invoice form HTML block (no page wrapper)."""
+def _invoice_form_html(db: Database, invoice_id=None, copy_from=None):
+    """Generate invoice form HTML block (no page wrapper).
+
+    copy_from: ID einer Quellrechnung. Deren Inhalte füllen das Formular, es
+    bleibt aber eine *neue* Rechnung – frisches Datum, frische Nummer, Entwurf
+    (todo #4).
+    """
     import datetime
     import json
     current_year = datetime.datetime.now().year
+    today_iso = datetime.date.today().isoformat()
 
     # Load existing invoice if invoice_id is provided
     existing_invoice = None
     existing_items = []
     existing_payments = []
-    if invoice_id:
-        existing_invoice = db.get_invoice_by_id(invoice_id)
+    is_copy = bool(copy_from) and not invoice_id
+    source_id = invoice_id or (copy_from if is_copy else None)
+    if source_id:
+        existing_invoice = db.get_invoice_by_id(source_id)
         if existing_invoice:
-            existing_items = db.get_invoice_items(invoice_id)
-            existing_payments = db.get_invoice_payments(invoice_id)
+            existing_items = db.get_invoice_items(source_id)
+            # Zahlungen gehören zur Quellrechnung und werden nicht mitkopiert
+            existing_payments = [] if is_copy else db.get_invoice_payments(source_id)
+        else:
+            is_copy = False
 
     # Get company data (own contact)
     own_contacts = db.fetch_contacts(contact_type='own')
@@ -277,8 +277,18 @@ def _invoice_form_html(db: Database, invoice_id=None):
     # Get only active articles for selection in invoices
     articles = db.fetch_articles(active_only=True)
     
-    # Determine invoice number and initial values
+    # Steuersatz der Quelle (Bearbeiten wie Kopieren): gespeichert als Dezimal
+    # (0.19) bzw. 0; Sentinel -1 = kein USt-Ausweis (Kleinunternehmer).
+    tax_pct, show_tax = 19, True
     if existing_invoice:
+        _r = (existing_invoice[35] if len(existing_invoice) > 35
+              and existing_invoice[35] is not None else None)
+        show_tax = not (_r is not None and float(_r) < 0)
+        if _r is not None and float(_r) >= 0:
+            tax_pct = float(_r) * 100 if 0 <= float(_r) <= 1 else float(_r)
+
+    # Determine invoice number and initial values
+    if existing_invoice and not is_copy:
         # Editing existing invoice - use existing data
         # existing_invoice structure: ID=0, InvoiceNumber=1, InvoiceDate=2, OwnCompanyId=3, SellerName=4, SellerCompany=5, ..., CustomerId=13, BuyerName=14, BuyerCompany=15, ..., Status=40, PDFPath=41
         invoice_number = _html.escape(str(existing_invoice[1] or ''))
@@ -287,14 +297,8 @@ def _invoice_form_html(db: Database, invoice_id=None):
         selected_customer_id = existing_invoice[13]  # CustomerId is now at index 13 (was 12)
         invoice_status = normalize_status(existing_invoice[40])  # Status at index 40
         pdf_path = existing_invoice[41] if len(existing_invoice) > 41 else None  # PDFPath is now at index 41 (was 39)
-        # Steuersatz aus der gespeicherten Rechnung vorbelegen. Gespeichert als
-        # Dezimal (0.19) bzw. 0; Sentinel -1 = kein USt-Ausweis (Kleinunternehmer).
-        _r = existing_invoice[35] if len(existing_invoice) > 35 and existing_invoice[35] is not None else None
-        show_tax = not (_r is not None and float(_r) < 0)
-        if _r is None or float(_r) < 0:
-            tax_pct = 19
-        else:
-            tax_pct = float(_r) * 100 if 0 <= float(_r) <= 1 else float(_r)
+        xml_path = existing_invoice[42] if len(existing_invoice) > 42 else None  # XMLPath at index 42
+        due_date_value = existing_invoice[27] if len(existing_invoice) > 27 else None
         page_title = f"Rechnung {invoice_number} bearbeiten"
         is_edit_mode = True
     else:
@@ -321,23 +325,32 @@ def _invoice_form_html(db: Database, invoice_id=None):
                 year_short = str(year)[-2:]
                 invoice_number = f"{year_short}{letter}{prefix}{next_num:03d}"
         
-        invoice_date = ''
-        selected_own_company_id = own_contact[0] if own_contact else None
-        selected_customer_id = None
+        # Kopie: Datum von heute, alles andere aus der Quelle (todo #4)
+        invoice_date = today_iso if is_copy else ''
+        selected_own_company_id = (existing_invoice[3] if is_copy
+                                   else (own_contact[0] if own_contact else None))
+        selected_customer_id = existing_invoice[13] if is_copy else None
         invoice_status = 'draft'
         pdf_path = None
-        tax_pct = 19
-        show_tax = True
-        page_title = "Neue Rechnung erstellen"
+        xml_path = None
+        # Fälligkeitsdatum der Quelle ist verbraucht – wird aus dem neuen
+        # Rechnungsdatum und dem Zahlungsziel neu berechnet
+        due_date_value = None
+        if is_copy:
+            page_title = f"Neue Rechnung – Kopie von {_html.escape(str(existing_invoice[1] or ''))}"
+        else:
+            page_title = "Neue Rechnung erstellen"
         is_edit_mode = False
     
     s = f'<input type="hidden" id="invoice_id" value="{invoice_id or ""}">'
     s += f'<input type="hidden" id="is_edit_mode" value="{str(is_edit_mode).lower()}">'
     s += f'<input type="hidden" id="invoice_status_value" value="{invoice_status}">'
-    # Check if PDF actually exists in filesystem
+    # Check if PDF/XML actually exist in filesystem
     import os
     pdf_file_exists = bool(pdf_path and os.path.exists(pdf_path))
+    xml_file_exists = bool(xml_path and os.path.exists(xml_path))
     s += f'<input type="hidden" id="pdf_exists" value="{str(pdf_file_exists).lower()}">'
+    s += f'<input type="hidden" id="xml_exists" value="{str(xml_file_exists).lower()}">'
     s += '<div id="invoice_msg" class="no-pdf" style="display:none; margin-bottom:10px;"></div>'
     if is_edit_mode:
         payment_count = len(existing_payments)
@@ -379,6 +392,8 @@ def _invoice_form_html(db: Database, invoice_id=None):
                     <button onclick="saveInvoice()" class="coloredButton btn-sm bg-green">💾 Speichern</button>
                     <button onclick="window.location.href='/invoice'" class="coloredButton btn-sm bg-gray">← Abbrechen</button>
                     <button onclick="generatePDF()" class="coloredButton btn-sm bg-blue">📄 PDF + E-Rechnung</button>
+                    <button onclick="downloadPDF()" class="coloredButton btn-sm bg-blue">⬇ Herunterladen</button>
+                    <button onclick="copyInvoiceAsNew({invoice_id})" class="coloredButton btn-sm bg-gray">📋 Als neu kopieren</button>
                 </div></td>
             </tr>
         </table>
@@ -395,7 +410,18 @@ function setInvoiceStatus(invId) {{
   }}
   fetch('/invoice/status', {{method: 'POST', headers: {{'Content-Type': 'application/json'}},
     body: JSON.stringify({{invoice_id: invId, status: ns}})}}).then(r => r.json())
-  .then(data => {{ if (data.success) location.reload(); else showMessage('Fehler: ' + (data.error || '?'), 'error'); }});
+  .then(data => {{
+    if (!data.success) {{ showMessage('Fehler: ' + (data.error || '?'), 'error'); return; }}
+    // "Versendet" erzeugt das PDF automatisch (todo #2) - Hinweis, falls das
+    // nicht geklappt hat; sonst direkt neu laden.
+    if (data.warning) {{ showMessage(data.warning, 'warn'); setTimeout(function() {{ location.reload(); }}, 2500); }}
+    else {{ location.reload(); }}
+  }});
+}}
+// Identische Rechnung als neue Rechnung oeffnen - frisches Datum, neue
+// Rechnungsnummer (todo #4)
+function copyInvoiceAsNew(invId) {{
+  window.location.href = '/invoice?copy_from=' + invId;
 }}
 </script>'''
     else:
@@ -707,7 +733,7 @@ function setInvoiceStatus(invId) {{
                     <td style="padding: 8px; vertical-align: top;"><strong>Fälligkeitsdatum:</strong></td>
                     <td style="padding: 8px;">
                         <input type="date" id="payment_due_date" style="width: 200px;" value="'''
-    s += existing_invoice[27] if existing_invoice and len(existing_invoice) > 27 and existing_invoice[27] else ''  # PaymentDueDate is now at index 27 (was 25)
+    s += due_date_value or ''  # PaymentDueDate (bei einer Kopie leer)
     s += '''">
                         <br><small style="color: #666;">Wird automatisch berechnet oder kann manuell festgelegt werden</small>
                     </td>
@@ -1282,7 +1308,7 @@ function setInvoiceStatus(invId) {{
             });
         }
         
-        // Generate PDF (and optionally XML)
+        // PDF (und E-Rechnung) erzeugen und anschliessend echt herunterladen
         function generatePDF() {
             const invoiceId = document.getElementById('invoice_id').value;
             if (!invoiceId) {
@@ -1299,31 +1325,42 @@ function setInvoiceStatus(invId) {{
             }
         }
         function _runPDFGeneration(invoiceId) {
-            // Tab im Klick-Kontext oeffnen (kein Popup-Blocker), spaeter befuellen
-            const viewer = window.open('about:blank', '_blank');
             fetch('/invoice/pdf_generate?id=' + invoiceId)
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
                         document.getElementById('pdf_exists').value = 'true';
-                        showMessage('PDF erstellt: ' + data.pdf_path, 'success');
-                        // PDF inline im neuen Tab anzeigen
-                        if (viewer) viewer.location = '/invoice/pdf_download?id=' + invoiceId + '&inline=1';
-                        // Auch XML (E-Rechnung) downloaden wenn XRechnung-Felder gefüllt
-                        const buyerRouteId = document.getElementById('buyer_route_id')?.value || '';
-                        const orderNumber = document.getElementById('order_number')?.value || '';
-                        if (buyerRouteId || orderNumber) {
-                            window.open('/invoice/xml?id=' + invoiceId, '_blank');
-                        }
+                        showMessage('PDF erstellt: ' + data.filename
+                                    + (data.warning ? ' (' + data.warning + ')' : ''), 'success');
+                        downloadInvoiceFiles(invoiceId, !!data.xml_filename);
                     } else {
-                        if (viewer) viewer.close();
                         showMessage('Fehler beim Erstellen der PDF: ' + (data.error || 'Unbekannter Fehler'), 'error');
                     }
                 })
                 .catch(function(err) {
-                    if (viewer) viewer.close();
                     showMessage('Fehler: ' + err.message, 'error');
                 });
+        }
+        // Echter Download der abgelegten Dateien (todo #1) - kein Server-Link,
+        // sondern die Datei selbst.
+        function downloadInvoiceFiles(invoiceId, withXml) {
+            const notify = function(text, type) { showMessage(text, type); };
+            appDownload('/invoice/pdf_download?id=' + invoiceId, notify);
+            if (withXml) appDownload('/invoice/xml_download?id=' + invoiceId, notify);
+        }
+        // Herunterladen ohne Neuerzeugung (todo #3)
+        function downloadPDF() {
+            const invoiceId = document.getElementById('invoice_id').value;
+            if (!invoiceId) {
+                showMessage('Bitte speichern Sie die Rechnung zuerst.', 'warn');
+                return;
+            }
+            if (document.getElementById('pdf_exists').value !== 'true') {
+                showMessage('Kein PDF vorhanden - bitte zuerst erzeugen.', 'error');
+                return;
+            }
+            downloadInvoiceFiles(invoiceId,
+                document.getElementById('xml_exists')?.value === 'true');
         }
     </script>
     '''

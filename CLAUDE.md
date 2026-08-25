@@ -215,6 +215,21 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
   Kunden behalten ihre WISO-Nummer; Sammelposten („(alle)“) tragen eine
   nicht-positive Id und sind keine Kunden
 
+### Rechnungsdokumente (PDF + XRechnung)
+- Ablage: `<Datenordner>/invoices/<Jahr des Rechnungsdatums>/<Rechnungs-Nr.> <Kunde>.pdf`
+  (z. B. `R26003 Malermeister Pinsel.pdf`); die XRechnung trägt denselben Namen
+  mit `.xml`. Namensschema und Ablage liegen zentral in `export/invoice_files.py`
+- **Erzeugt** wird nur an zwei Stellen: über „PDF + E-Rechnung“ im Formular und
+  automatisch beim Wechsel auf Status **versendet** (ab da ist die Rechnung
+  eingefroren). Eine bereits versendete Rechnung wird nicht überschrieben
+- **Heruntergeladen** wird immer die abgelegte Datei (`/invoice/pdf_download`,
+  `/invoice/xml_download`) – nie eine frisch erzeugte. Fehlt sie, kommt 404 mit
+  kurzem Klartext, den das Frontend direkt anzeigt
+- Im Browser läuft der Download über `appDownload()` (`server/pages.py`): Datei
+  als Blob holen und per `<a download>` speichern. Kein Tab mit Server-URI –
+  der wäre ohne laufenden Server wertlos. Der Dateiname kommt prozentkodiert
+  im Header `X-Filename` (Umlaute!)
+
 ### Testing
 - Vor PR: lokal starten (`python main.py`), Feature testen
 - Wenn Bug reproduzierbar, direkt über DB debuggen
