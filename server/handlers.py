@@ -1357,12 +1357,12 @@ def handle_update_invoice_status(post_body: bytes):
                         new_number = (r[5] or 0) + 1
                         db.update_number_range(
                             range_id=r[0],
-                            range_type='invoice',
                             year=r[2],
                             letter=r[3],
                             prefix=r[4] or '',
                             current_number=new_number,
-                            description=r[6] or ''
+                            description=r[6] or '',
+                            number_format=r[7] if len(r) > 7 else None
                         )
                         print(f"Incremented number range {r[0]} to {new_number}")
                         break
@@ -1385,7 +1385,43 @@ def handle_update_invoice_status(post_body: bytes):
     _sync_receivable_booking(db, invoice_id, new_status)
     print(f"Invoice {invoice_id} status updated to: {new_status}")
 
-    return 200, f'{{"success": true, "invoice_id": {invoice_id}}}'
+    result = {'success': True, 'invoice_id': invoice_id}
+    warning = _ensure_sent_documents(db, invoice_id, current_status, new_status)
+    if warning:
+        result['warning'] = warning
+    return 200, json.dumps(result)
+
+
+def _ensure_sent_documents(db, invoice_id, current_status, new_status):
+    """Beim Wechsel auf „versendet“ das PDF (+ XML) erzeugen (todo #2).
+
+    Ab „versendet“ darf die Rechnung nicht mehr geändert werden – ab hier muss
+    also das Dokument vorliegen, das der Kunde bekommt. Beim Eintritt in den
+    Status wird es neu geschrieben; ist die Rechnung bereits versendet, bleibt
+    die vorhandene Datei unangetastet und wird nur nachgezogen, wenn sie fehlt.
+
+    Returns:
+        str | None: Warntext, falls das Dokument nicht erzeugt werden konnte.
+    """
+    if new_status != 'sent':
+        return None
+
+    from export.invoice_files import generate_invoice_documents, stored_invoice_document
+
+    if current_status == 'sent':
+        existing, _, _ = stored_invoice_document(db, invoice_id, 'pdf')
+        if existing:
+            return None
+    try:
+        result = generate_invoice_documents(db, invoice_id)
+    except Exception as e:
+        import traceback
+        print(f"Error generating documents for invoice {invoice_id}: {e}")
+        traceback.print_exc()
+        return 'PDF konnte nicht automatisch erstellt werden.'
+    if result.get('error'):
+        return f"Status gesetzt, aber: {result['error']}"
+    return None
 
 
 # Ab "versendet" ist die Rechnung ein offener Posten; davor (Entwurf,
@@ -1875,7 +1911,9 @@ def handle_invoice_save(post_body: bytes):
                             num_part = invoice_number[3:].lstrip('_ABCDEFGHIJKLMNOPQRSTUVWXYZ')
                             try:
                                 current_num = int(num_part)
-                                db.update_number_range(r[0], current_num)
+                                db.update_number_range(
+                                    r[0], r[2], r[3], r[4] or '', current_num,
+                                    r[6] or '', r[7] if len(r) > 7 else None)
                             except:
                                 pass
                             break
@@ -2093,39 +2131,50 @@ def handle_update_asset_category(db: Database, post_data: dict):
 
 # ─── (end of Asset-Handler) ───────────────────────────────────────────────────
 
-def handle_invoice_pdf_by_id(invoice_id: int):
-    """Generate PDF for an existing invoice by ID
-    
+def handle_invoice_document_download(invoice_id: int, kind: str = 'pdf'):
+    """Abgelegtes Rechnungsdokument (PDF oder XRechnung) zum Download laden.
+
+    Es wird ausschließlich die *gespeicherte* Datei ausgeliefert – nie neu
+    erzeugt (todo #3): ab „versendet“ muss der Kunde genau das Dokument
+    bekommen, das im Haus liegt.
+
     Args:
-        invoice_id: ID of the invoice to generate PDF for
-        
+        invoice_id: ID der Rechnung.
+        kind: ``'pdf'`` oder ``'xml'``.
+
     Returns:
-        tuple: (pdf_bytes, filename) or (None, None) if error
+        tuple: ``(bytes, dateiname, fehlertext)``; bei Erfolg ist der
+        Fehlertext ``None``.
     """
-    from export.pdf_invoice import generate_invoice_pdf
-    
+    from export.invoice_files import stored_invoice_document
+
     db = Database()
-    
     try:
-        # Generate PDF from database
-        pdf_bytes, pdf_path = generate_invoice_pdf(db, invoice_id)
-        
-        if pdf_bytes is None:
-            print(f"Failed to generate PDF for invoice {invoice_id}")
-            return None, None
-        
-        # Extract filename from path
-        import os
-        filename = os.path.basename(pdf_path) if pdf_path else f"Rechnung_{invoice_id}.pdf"
-        
-        print(f"Successfully generated PDF for invoice {invoice_id}: {filename}")
-        return pdf_bytes, filename
-        
+        return stored_invoice_document(db, invoice_id, kind)
     except Exception as e:
         import traceback
-        print(f"Error generating PDF for invoice {invoice_id}: {e}")
+        print(f"Error reading {kind} for invoice {invoice_id}: {e}")
         traceback.print_exc()
-        return None, None
+        return None, None, 'Dokument konnte nicht gelesen werden.'
+
+
+def handle_invoice_pdf_generate(invoice_id: int):
+    """PDF (und bei E-Rechnungsdaten das XML) einer Rechnung neu erzeugen.
+
+    Returns:
+        dict: Ergebnis von :func:`export.invoice_files.generate_invoice_documents`.
+    """
+    from export.invoice_files import generate_invoice_documents
+
+    db = Database()
+    try:
+        return generate_invoice_documents(db, invoice_id)
+    except Exception as e:
+        import traceback
+        print(f"Error generating documents for invoice {invoice_id}: {e}")
+        traceback.print_exc()
+        return {'pdf_path': None, 'pdf_filename': None, 'xml_path': None,
+                'xml_filename': None, 'error': 'Fehler beim Erstellen der PDF'}
 
 
 # ── Angebote (Quotes) ─────────────────────────────────────────────────────────

@@ -12,8 +12,8 @@ nur die rechnungsspezifischen Teile (Zahlungsbedingungen, Bankverbindung, Fußze
 import datetime
 import os
 from db import Database
-from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path,
-                       safe_filename_component)
+from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path)
+from .invoice_files import drop_stale_file, invoice_file_path
 from . import pdf_document as D
 
 
@@ -147,21 +147,17 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
 
     full_pdf = build_multi_page_pdf(flow.finish(), image=image)
 
-    # PDF-Datei speichern (im Datenbereich des aktuellen Nutzers)
-    import userctx
-    current_year = datetime.datetime.now().year
-    pdf_dir = os.path.join(userctx.user_data_dir(), "invoices", str(current_year))
-    os.makedirs(pdf_dir, exist_ok=True)
-    # Namenskonvention "[Rechnungsnummer] [Kundenname]" (todo #1)
-    customer = safe_filename_component(buyer_company or buyer_name)
-    parts = [safe_filename_component(invoice_number), customer]
-    pdf_filename = " ".join(p for p in parts if p) + ".pdf"
-    pdf_path = os.path.join(pdf_dir, pdf_filename)
+    # PDF-Datei speichern (im Datenbereich des aktuellen Nutzers) unter der
+    # Namenskonvention "[Rechnungs-Nr.] [Kundenname]" (todo #2)
+    pdf_path = invoice_file_path(invoice, 'pdf')
 
     try:
+        os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
         with open(pdf_path, 'wb') as f:
             f.write(full_pdf)
         print(f"PDF saved to: {pdf_path}")
+        # Umbenannte Rechnung (neue Nummer/anderer Kunde): Vorgänger entfernen
+        drop_stale_file(invoice[41] if len(invoice) > 41 else None, pdf_path)
         db.update_invoice_pdf_path(invoice_id, pdf_path)
     except Exception as e:
         print(f"Error saving PDF file: {e}")

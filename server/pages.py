@@ -174,6 +174,39 @@ function appMsg(text, type) {
   if (type !== 'error') setTimeout(function() { bar.style.display = 'none'; }, 5000);
 }
 
+/* Echter Datei-Download (todo #1): Datei holen und über einen temporaeren
+   <a download> speichern. Ein blosser Link auf den Server waere ohne laufenden
+   Server wertlos - so liegt die Datei anschliessend wirklich beim Nutzer.
+   Der Dateiname kommt prozentkodiert im Header X-Filename.
+   notify(text, typ) meldet Fehler (Standard: appMsg); erfuellt mit dem
+   Dateinamen bzw. null. */
+function appDownload(url, notify) {
+  notify = notify || appMsg;
+  return fetch(url).then(function(r) {
+    if (!r.ok) {
+      return r.text().then(function(t) {
+        throw new Error((t || '').trim() || 'Datei konnte nicht geladen werden.');
+      });
+    }
+    var header = r.headers.get('X-Filename');
+    var name = header ? decodeURIComponent(header) : 'download';
+    return r.blob().then(function(blob) {
+      var objUrl = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = objUrl;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function() { URL.revokeObjectURL(objUrl); }, 60000);
+      return name;
+    });
+  }).catch(function(err) {
+    notify(err.message, 'error');
+    return null;
+  });
+}
+
 /* CSRF: Token aus dem Meta-Tag automatisch an alle POSTs anhängen.
    - Formulare: hidden-Feld 'csrf' beim Submit ergänzen (Capture-Phase,
      erfasst auch dynamisch nachgeladene Formulare)

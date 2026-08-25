@@ -408,8 +408,8 @@ erschiene als Ausgabe.
 | AmountDue | 39 | REAL | NOT NULL | |
 | **Verwaltung** | | | | |
 | Status | 40 | TEXT | DEFAULT 'draft' | draft/finalized/sent/paid/cancelled |
-| PDFPath | 41 | TEXT | | |
-| XMLPath | 42 | TEXT | | |
+| PDFPath | 41 | TEXT | | Ablage `<Datenordner>/invoices/<Jahr>/<RNr.> <Kunde>.pdf` |
+| XMLPath | 42 | TEXT | | XRechnung, gleicher Name mit `.xml` |
 | CreatedAt | 43 | DATETIME | DEFAULT NOW | |
 | UpdatedAt | 44 | DATETIME | | |
 

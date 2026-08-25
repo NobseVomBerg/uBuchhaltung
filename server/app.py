@@ -250,6 +250,32 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             self.respond(200, PageSetupAdmin(error_msg=err, username=username))
         return True
 
+    def _send_invoice_document(self, invoice_id, kind, content_type,
+                               disposition='attachment'):
+        """Abgelegtes Rechnungsdokument ausliefern (PDF/XRechnung).
+
+        Fehlt die Datei, geht eine kurze Klartext-Meldung mit 404 zurück, die
+        das Frontend direkt anzeigen kann (todo #3). ``X-Filename`` trägt den
+        Dateinamen prozentkodiert, damit der Browser-seitige Blob-Download ihn
+        auch mit Umlauten übernehmen kann (todo #1).
+        """
+        data, filename, error = handlers.handle_invoice_document_download(invoice_id, kind)
+        if data is None:
+            body = (error or 'Dokument nicht gefunden.').encode('utf-8')
+            self.send_response(404)
+            self.send_header("Content-type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_response(200)
+        self.send_header("Content-type", content_type)
+        self.send_header("Content-Disposition", content_disposition(disposition, filename))
+        self.send_header("X-Filename", quote(filename, safe=''))
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_GET(self):
         if not self._gate():
             return
@@ -293,12 +319,24 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     filters['status'] = query_components['status'][0]
                 if 'id' in query_components:
                     invoice_id = int(query_components['id'][0])
+                # "Als neu kopieren": Formular mit den Daten der Quellrechnung,
+                # aber als neue Rechnung (todo #4)
+                copy_from = (int(query_components['copy_from'][0])
+                             if 'copy_from' in query_components else None)
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
-                self.respond(200, PageInvoice(db, filters, invoice_id), headers=hdrs)
+                self.respond(200, PageInvoice(db, filters, invoice_id, copy_from=copy_from),
+                             headers=hdrs)
             elif self.path.startswith("/invoice/view") or self.path.startswith("/invoice/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 invoice_id = int(query_components["id"][0])
                 self.respond(200, PageInvoice(db, {}, invoice_id))
+            elif self.path.startswith("/invoice/xml_download"):
+                # Abgelegte XRechnung ausliefern – nur herunterladen, nicht neu
+                # erzeugen (todo #3). Muss VOR "/invoice/xml" stehen (startswith).
+                query_components = parse_qs(self.path.split('?')[1])
+                self._send_invoice_document(int(query_components["id"][0]), 'xml',
+                                            "application/xml")
+                return
             elif self.path.startswith("/invoice/xml"):
                 # Generate and download XRechnung XML
                 query_components = parse_qs(self.path.split('?')[1])
@@ -311,12 +349,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     generator = XRechnungGenerator()
                     xml_content = generator.generate_xml(invoice, items)
                     
-                    # Namenskonvention "[Rechnungsnummer] [Kundenname]" (todo #1)
-                    from export.pdf_core import safe_filename_component
-                    invoice_number = invoice[1] or 'DRAFT'
-                    customer = safe_filename_component(invoice[15] or invoice[14])
-                    parts = [safe_filename_component(invoice_number), customer]
-                    filename = " ".join(p for p in parts if p) + ".xml"
+                    # Namenskonvention "[Rechnungs-Nr.] [Kundenname]" (todo #2)
+                    from export.invoice_files import invoice_file_stem
+                    filename = invoice_file_stem(invoice) + ".xml"
 
                     self.send_response(200)
                     self.send_header("Content-type", "application/xml")
@@ -329,59 +364,44 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     self.end_headers()
                 return
             elif self.path.startswith("/invoice/pdf_download"):
-                # PDF einer Rechnung ausliefern. inline=1 -> im Browser anzeigen
-                # (neuer Tab), sonst Download.
+                # Abgelegtes Rechnungs-PDF ausliefern – nur herunterladen, nicht
+                # neu erzeugen (todo #3). inline=1 zeigt es im Browser an.
                 query_components = parse_qs(self.path.split('?')[1])
                 invoice_id = int(query_components["id"][0])
                 disposition = 'inline' if query_components.get('inline') else 'attachment'
-
-                pdf_bytes, filename = handlers.handle_invoice_pdf_by_id(invoice_id)
-
-                if pdf_bytes:
-                    self.send_response(200)
-                    self.send_header("Content-type", "application/pdf")
-                    self.send_header("Content-Disposition", content_disposition(disposition, filename))
-                    self.send_header("Content-Length", str(len(pdf_bytes)))
-                    self.end_headers()
-                    self.wfile.write(pdf_bytes)
-                else:
-                    self.send_response(500)
-                    self.send_header("Content-type", "text/plain")
-                    self.end_headers()
-                    self.wfile.write(b"Error generating PDF")
+                self._send_invoice_document(invoice_id, 'pdf', "application/pdf",
+                                            disposition=disposition)
                 return
             elif self.path.startswith("/invoice/pdf_generate"):
-                # Generate PDF in filesystem only (no download)
+                # PDF (und bei E-Rechnungsdaten das XML) erzeugen und ablegen;
+                # heruntergeladen wird anschließend die abgelegte Datei.
                 query_components = parse_qs(self.path.split('?')[1])
                 invoice_id = int(query_components["id"][0])
-                
-                from export.pdf_invoice import generate_invoice_pdf
-                
-                pdf_bytes, pdf_path = generate_invoice_pdf(db, invoice_id)
-                
-                if pdf_bytes and pdf_path:
-                    import json
-                    response = json.dumps({
+
+                result = handlers.handle_invoice_pdf_generate(invoice_id)
+
+                import json
+                if result.get('pdf_path'):
+                    payload = {
                         'success': True,
-                        'pdf_path': pdf_path,
-                        'message': 'PDF erfolgreich erstellt'
-                    })
-                    self.send_response(200)
-                    self.send_header("Content-type", "application/json")
-                    self.send_header("Content-Length", str(len(response.encode())))
-                    self.end_headers()
-                    self.wfile.write(response.encode())
+                        'pdf_path': result['pdf_path'],
+                        'filename': result['pdf_filename'],
+                        'xml_filename': result.get('xml_filename'),
+                        'message': 'PDF erfolgreich erstellt',
+                    }
+                    if result.get('error'):
+                        payload['warning'] = result['error']
+                    status_code = 200
                 else:
-                    import json
-                    response = json.dumps({
-                        'success': False,
-                        'error': 'Fehler beim Erstellen der PDF'
-                    })
-                    self.send_response(500)
-                    self.send_header("Content-type", "application/json")
-                    self.send_header("Content-Length", str(len(response.encode())))
-                    self.end_headers()
-                    self.wfile.write(response.encode())
+                    payload = {'success': False,
+                               'error': result.get('error') or 'Fehler beim Erstellen der PDF'}
+                    status_code = 500
+                response = json.dumps(payload)
+                self.send_response(status_code)
+                self.send_header("Content-type", "application/json")
+                self.send_header("Content-Length", str(len(response.encode())))
+                self.end_headers()
+                self.wfile.write(response.encode())
                 return
             elif self.path == "/invoice/reminders":
                 self.respond(200, pages.PageReminders(db))

@@ -460,6 +460,30 @@ class InvoicesMixin:
             raise
         finally:
             conn.close()
+    def update_invoice_xml_path(self, invoice_id, xml_path):
+        """Update XMLPath field for an invoice (XRechnung-Datei)
+
+        Args:
+            invoice_id: ID of the invoice
+            xml_path: Path to the XRechnung XML file
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                UPDATE Invoices
+                SET XMLPath = ?,
+                    UpdatedAt = CURRENT_TIMESTAMP
+                WHERE ID = ?
+            ''', (xml_path, invoice_id))
+
+            conn.commit()
+        except Exception as e:
+            print(f"Error updating invoice XML path: {e}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
     def get_overdue_invoices(self):
         """Get all overdue invoices (sent status, past due date, amount due > 0)
         

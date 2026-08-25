@@ -1,23 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 unsix IT Engineering
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
-"""Regression: erzeugte PDFs werden inline in einem neuen Tab geöffnet.
+"""Regression: erzeugte PDFs landen dort, wo der Nutzer sie erwartet.
 
-Prüft die Frontend-Verdrahtung (window.open + inline=1) auf allen Seiten, an
-denen PDFs erstellt werden: Rechnung (Liste + Formular), Angebot (Liste +
-Formular) und Arbeitszeiten-Stundenzettel.
+Angebot und Stundenzettel öffnen das PDF inline in einem neuen Tab
+(window.open + inline=1). Rechnungen werden stattdessen echt heruntergeladen –
+ein Server-Link ist ohne laufenden Server wertlos (todo #1).
 """
 from server.pages_invoice import PageInvoice
 from server.pages_quote import PageQuote
 from server.pages_worktime import PageWorkTimes
 
 
-def test_invoice_opens_pdf_inline_new_tab(db_with_coa):
+def test_invoice_downloads_pdf_as_file(db_with_coa):
     html = PageInvoice(db_with_coa, filters={}, invoice_id=None)
-    # Tab popup-sicher im Klick-Kontext öffnen ...
-    assert "window.open('about:blank', '_blank')" in html
-    # ... und inline-Ansicht laden (Liste + Formular nutzen denselben Pfad)
-    assert "/invoice/pdf_download?id=' + invoiceId + '&inline=1'" in html
+    # Echter Download über appDownload (Blob + <a download>), kein Tab mit
+    # Server-URI (todo #1) – Liste und Formular nutzen denselben Weg.
+    assert "appDownload('/invoice/pdf_download?id='" in html
+    assert "&inline=1" not in html
 
 
 def test_quote_opens_pdf_inline_new_tab(db_with_coa):
