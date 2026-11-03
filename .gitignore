@@ -7,6 +7,8 @@ seed_data/private/
 
 # Persönliche Notizen (bewusst nicht im Repo)
 todo.md
+# Privates Notiz-Repo NobseVomBerg/uBuchhaltung-Private, lokal hier ausgecheckt
+intern/
 
 # TLS-Zertifikate (self-signed, lokal erzeugt) – nie einchecken
 cert.pem
