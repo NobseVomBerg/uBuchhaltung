@@ -1,5 +1,14 @@
 # Baut das Docker-Image und veröffentlicht es in der GitHub Container Registry
-# (ghcr.io). Läuft bei jedem Push auf main sowie bei Versions-Tags (v1.2.3).
+# (ghcr.io).
+#
+#   GitHub-Release veröffentlicht (v1.6.16) → :1.6.16, :1.6, :1, :latest
+#   Push auf main                            → :edge (Entwicklungsstand)
+#
+# :latest bedeutet damit „neuester Release“ – ein Merge allein ändert es nicht.
+# Vor dem Bauen laufen Anonymisierungs-Guard und pytest; beim Release muss der
+# Tag außerdem zu version.py passen (v + APP_VERSION). Ein Release neu bauen
+# (z. B. für Sicherheitsupdates des Basis-Images): den Lauf des Releases unter
+# Actions erneut ausführen.
 #
 # Einmalig nach dem ersten Lauf: GitHub -> Profil -> Packages -> ubuchhaltung
 # -> Package settings -> "Change visibility" auf Public stellen, damit
@@ -7,13 +16,57 @@
 name: Docker-Image veröffentlichen (GHCR)
 
 on:
+  release:
+    types: [published]
   push:
     branches: [main]
-    tags: ['v*']
-  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  # Gleiche Schritte wie tests.yml – bewusst kopiert statt per workflow_call
+  # eingebunden, damit sich die beiden Läufe nicht gegenseitig abbrechen.
+  tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten (wie im Dockerfile)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Release-Tag passt zu version.py?
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          APP="$(python -c 'import version; print(version.APP_VERSION)')"
+          if [ "$TAG" != "v$APP" ]; then
+            echo "::error::Release-Tag '$TAG' passt nicht zu version.py (erwartet v$APP)"
+            exit 1
+          fi
+
+      - name: Abhängigkeiten installieren
+        run: pip install -r requirements-dev.txt
+
+      - name: Anonymisierungs-Guard (Testdaten)
+        run: python tests/check_anonymized.py
+
+      - name: pytest
+        run: python -m pytest -q -rs
+
   build-and-push:
+    needs: tests
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -37,10 +90,14 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/nobsevomberg/ubuchhaltung
+          flavor: |
+            latest=false
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
+            type=raw,value=edge,enable=${{ github.event_name == 'push' }}
 
       - name: Bauen und pushen
         uses: docker/build-push-action@v6
