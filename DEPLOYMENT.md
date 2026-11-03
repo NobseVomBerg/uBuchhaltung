@@ -158,6 +158,23 @@ gleichzeitig auf demselben `data/` betreiben** (SQLite-Locking).
   Volume einbinden, `UBUCHHALTUNG_HOST=0.0.0.0` setzen, Port veröffentlichen –
   für Docker siehe den Abschnitt **Docker** oben.
 
+## Demo-Modus (ausprobieren)
+
+`UBUCHHALTUNG_DEMO=1` startet uBuchhaltung mit erfundenen Beispieldaten – ohne
+Ersteinrichtung:
+
+    docker run -p 2824:2824 -e UBUCHHALTUNG_DEMO=1 ghcr.io/nobsevomberg/ubuchhaltung:latest
+    UBUCHHALTUNG_DEMO=1 python main.py        # Linux/macOS (Windows: $env:UBUCHHALTUNG_DEMO = "1")
+
+- Geladen wird **nur in ein leeres Datenverzeichnis** (Einzelbenutzer-Modus). Enthält
+  `data/` bereits irgendetwas (Datenbank, Konfiguration, Logs), werden **keine**
+  Demodaten geladen: Warnung im Log, normaler Start mit den vorhandenen Daten.
+- Ein Neustart mit demselben Verzeichnis befüllt nicht erneut (Marker `data/.demo`).
+- Auf jeder Seite erscheint der Hinweis „Demo-Modus – Beispieldaten, nicht für die
+  echte Buchhaltung“.
+- **Nicht für öffentliches Hosting:** keine Anmeldung, die SQL-Konsole ist offen.
+  Nur lokal oder im vertrauenswürdigen LAN verwenden.
+
 ## Schema-Migrationen
 
 Bestehende Nutzer-DBs werden beim Start automatisch an die aktuelle
