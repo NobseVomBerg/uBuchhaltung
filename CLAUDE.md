@@ -195,6 +195,7 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
   `seed_data/test/demo_scenario.json`) entstehen über die App-eigenen Code-Pfade,
   relativ zum Startdatum; pytest-Testdaten bleiben davon getrennt
 - README-Bilder neu erzeugen: `node tools/screenshots.mjs` → `docs/screenshots/`
+  (hell + `*-dark.png`, README bindet beide per `<picture>` ein)
 
 ### README & öffentliche Texte
 - Oben im README steht, was Besucher brauchen (Zweck, Schnellstart, Überblick);
