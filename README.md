@@ -445,6 +445,7 @@ uBuchhaltung/
 ├── Dockerfile · compose.yaml  # Container-Betrieb (Standardport 2824)
 ├── docker-entrypoint.sh       # Container-Start: Volume-Rechte übernehmen, dann unprivilegiert
 ├── unraid-template.xml        # Fertiges Docker-Template für Unraid
+├── ca_profile.xml             # Profil für Unraid Community Applications
 ├── .github/workflows/         # CI: Tests bei jedem Push; Docker-Image: Release → :latest, main → :edge
 ├── LICENSE                    # AGPL-3.0 (kommerzielle Lizenz auf Anfrage, siehe unten)
 ├── CLA.md · CONTRIBUTING.md   # Beitragsregeln + Contributor License Agreement
@@ -477,7 +478,7 @@ uBuchhaltung/
 ├── tests/                     # pytest-Suite (nur anonymisierte Daten,
 │                              #   Guard: tests/check_anonymized.py)
 ├── tools/screenshots.mjs      # Erzeugt docs/screenshots/ im Demo-Modus (Playwright)
-├── docs/screenshots/          # Screenshots fürs README
+├── docs/                      # Screenshots fürs README, Icon, offene Aufgaben (aufgaben.md)
 ├── static/                    # Statische Dateien (Logos)
 └── data/                      # Laufzeitdaten (in .gitignore)
     ├── config.json            # Betriebsmodus (single/multi)
