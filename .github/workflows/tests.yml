@@ -36,5 +36,8 @@ jobs:
       - name: Abhängigkeiten installieren
         run: pip install -r requirements-dev.txt
 
+      - name: Anonymisierungs-Guard (Testdaten)
+        run: python tests/check_anonymized.py
+
       - name: pytest
         run: python -m pytest -q -rs

@@ -104,7 +104,19 @@ ALLOWED_TAX_IDS = {
     "DE555555555",
     "DE666666666",
     "DE777777777",
+    "DE111111111",  # offensichtlicher Platzhalter (tests/test_wiso_fdb_invoices.py)
 }
+
+# ─── Lizenz-Kopfzeile ────────────────────────────────────────────────────────
+# Die Kopfzeile jeder Quelldatei nennt die Kontaktadresse für die kommerzielle
+# Lizenz. Nur genau diese Zeile wird übersprungen – die Domain unsix.com ist
+# bewusst NICHT in der E-Mail-Whitelist, damit echte Adressen nicht durchrutschen.
+
+# (Adresse im Literal getrennt, damit diese Konstante selbst nicht anschlägt.)
+LICENSE_HEADER_LINE = (
+    "# Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office"
+    "@unsix.com"
+)
 
 # ─── Regex-Muster ────────────────────────────────────────────────────────────
 
@@ -165,6 +177,8 @@ def check_file(filepath: Path) -> list[dict]:
         display_path = str(filepath)
 
     for lineno, line in enumerate(content.splitlines(), start=1):
+        if line.strip() == LICENSE_HEADER_LINE:
+            continue
         # ── E-Mails ─────────────────────────────────────────────────────────
         for m in _EMAIL_RE.finditer(line):
             domain = m.group(1).lower()
