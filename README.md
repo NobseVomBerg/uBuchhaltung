@@ -16,25 +16,48 @@ and small businesses in Germany – SKR charts of accounts, EÜR (cash-basis
 profit statement), XRechnung e-invoices and DATEV export. The user interface and
 documentation are in German.
 
-![Dashboard mit Monatsverlauf und Einnahmen-Überschuss-Rechnung](docs/screenshots/dashboard.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dashboard-dark.png">
+  <img alt="Dashboard mit Monatsverlauf und Einnahmen-Überschuss-Rechnung" src="docs/screenshots/dashboard.png">
+</picture>
 
 <details>
 <summary><b>Weitere Screenshots</b> (Buchungen, Rechnungen, Anlagen, Fahrtenbuch, Arbeitszeiten)</summary>
 
 **Buchungen** – Bankbewegungen mit Kontierung, Split-Buchungen und Rechnungszahlungen
-![Buchungsliste](docs/screenshots/transactions.png)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/transactions-dark.png">
+  <img alt="Buchungsliste" src="docs/screenshots/transactions.png">
+</picture>
 
 **Rechnungen** – Status von Entwurf bis bezahlt, offene Posten und Teilzahlungen
-![Rechnungsliste](docs/screenshots/invoice-list.png)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/invoice-list-dark.png">
+  <img alt="Rechnungsliste" src="docs/screenshots/invoice-list.png">
+</picture>
 
 **Anlagenverzeichnis** – Restbuchwerte und geplante AfA
-![Anlagenverzeichnis](docs/screenshots/assets.png)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/assets-dark.png">
+  <img alt="Anlagenverzeichnis" src="docs/screenshots/assets.png">
+</picture>
 
 **Fahrtenbuch**
-![Fahrtenbuch](docs/screenshots/trips.png)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/trips-dark.png">
+  <img alt="Fahrtenbuch" src="docs/screenshots/trips.png">
+</picture>
 
 **Arbeitszeiten**
-![Arbeitszeiten](docs/screenshots/worktime.png)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/worktime-dark.png">
+  <img alt="Arbeitszeiten" src="docs/screenshots/worktime.png">
+</picture>
 
 Alle Screenshots zeigen erfundene Beispieldaten aus dem [Demo-Modus](#schnellstart).
 </details>
