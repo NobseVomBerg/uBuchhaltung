@@ -201,8 +201,10 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
   (keine Steuerberatung, keine GoBD-Zusicherung)
 - Markennamen Dritter (z. B. WISO) nur zur Bezeichnung von Importformaten, mit
   Markenhinweis; keine vergleichenden Aussagen oder „Alternative zu …“
-- Das Repo ist öffentlich: Strategisches, Rechtliches und Notizen zu anderen
-  Projekten gehören nicht ins Repo, sondern in die lokalen `data/handover-*.md`
+- Das Repo ist öffentlich: Strategisches, Rechtliches, Notizen zu anderen
+  Projekten und private Aufgaben gehören ins private Repo
+  `NobseVomBerg/uBuchhaltung-Private` – lokal als `intern/` im Projektordner
+  (gitignored), in Cloud-Sessions per add_repo. Fehlt es, nicht danach fragen
 
 ### WISO-Datenübernahme
 - Zwei Wege: die **Textexporte** (`db/wiso_import.py`, CSV) und die
