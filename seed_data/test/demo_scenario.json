@@ -1,0 +1,81 @@
+{
+  "_comment": "Demo-Szenario (nur UBUCHHALTUNG_DEMO=1). Alle Zeitangaben relativ zu heute (days_ago); Namen und Beträge sind erfunden. Geladen von demo_seed.py über die App-Codepfade.",
+  "bank_account": "Testbank",
+  "invoices": [
+    {"customer_number": "K001", "days_ago": 650, "due_days": 14, "pay_after_days": 21,
+     "items": [{"description": "Projektberatung Q1", "quantity": 56, "unit": "HUR", "price_per_unit": 100, "tax_rate": 19}]},
+    {"customer_number": "K007", "days_ago": 590, "due_days": 14, "pay_after_days": 17,
+     "items": [{"description": "Konzeption Warenwirtschaft", "quantity": 40, "unit": "HUR", "price_per_unit": 110, "tax_rate": 19},
+               {"description": "Umsetzung und Einrichtung", "quantity": 28, "unit": "HUR", "price_per_unit": 100, "tax_rate": 19}]},
+    {"customer_number": "K011", "days_ago": 520, "due_days": 30, "pay_after_days": 26,
+     "items": [{"description": "Website-Relaunch (Pauschale)", "quantity": 1, "unit": "C62", "price_per_unit": 9800, "tax_rate": 19}]},
+    {"customer_number": "K001", "days_ago": 450, "due_days": 14, "pay_after_days": 12,
+     "items": [{"description": "Projektberatung Q2/Q3", "quantity": 84, "unit": "HUR", "price_per_unit": 100, "tax_rate": 19}]},
+    {"customer_number": "K012", "days_ago": 380, "due_days": 14, "pay_after_days": 19,
+     "items": [{"description": "Datenmigration", "quantity": 40, "unit": "HUR", "price_per_unit": 105, "tax_rate": 19},
+               {"description": "Schulung der Mitarbeitenden", "quantity": 8, "unit": "HUR", "price_per_unit": 125, "tax_rate": 19}]},
+    {"customer_number": "K004", "days_ago": 300, "due_days": 14, "pay_after_days": 9,
+     "items": [{"description": "Kaffee gemahlen 500g", "quantity": 220, "unit": "C62", "price_per_unit": 7.20, "tax_rate": 7},
+               {"description": "Teebeutel 25er Pack", "quantity": 400, "unit": "C62", "price_per_unit": 3.30, "tax_rate": 7}]},
+    {"customer_number": "K006", "days_ago": 250, "due_days": 14, "pay_after_days": 15,
+     "items": [{"description": "Wartungsvertrag Online-Shop (12 Monate)", "quantity": 1, "unit": "C62", "price_per_unit": 5200, "tax_rate": 19}]},
+    {"customer_number": "K001", "days_ago": 190, "due_days": 14, "pay_after_days": 22,
+     "items": [{"description": "Projektberatung Q1–Q2", "quantity": 112, "unit": "HUR", "price_per_unit": 110, "tax_rate": 19}]},
+    {"customer_number": "K011", "days_ago": 120, "due_days": 30, "pay_after_days": 25,
+     "items": [{"description": "Hosting und Wartung (Jahrespaket)", "quantity": 1, "unit": "C62", "price_per_unit": 6800, "tax_rate": 19}]},
+    {"customer_number": "K007", "days_ago": 70, "due_days": 14, "pay_after_days": 16, "partial_share": 0.5,
+     "items": [{"description": "Projektberatung Sommer", "quantity": 60, "unit": "HUR", "price_per_unit": 115, "tax_rate": 19}]},
+    {"customer_number": "K012", "days_ago": 40, "due_days": 14, "pay_after_days": null,
+     "items": [{"description": "Schulung Einführung", "quantity": 24, "unit": "HUR", "price_per_unit": 125, "tax_rate": 19},
+               {"description": "Reisekosten (pauschal)", "quantity": 1, "unit": "C62", "price_per_unit": 400, "tax_rate": 19}]},
+    {"customer_number": "K010", "days_ago": 12, "due_days": 14, "pay_after_days": null,
+     "items": [{"description": "Projektberatung Oktober", "quantity": 36, "unit": "HUR", "price_per_unit": 115, "tax_rate": 19}]}
+  ],
+  "monthly": [
+    {"day": 3,  "amount": -595.00, "coa": 6310, "tax_rate": 0.19, "recipient": "Büro am Markt Vermietung GmbH", "text": "Büromiete {mm}/{yyyy}", "months_back": 22},
+    {"day": 8,  "amount": -59.90,  "coa": 6805, "tax_rate": 0.19, "recipient": "Netzwerk Telekom Beispiel AG", "text": "Telefon und Internet {mm}/{yyyy}", "months_back": 22},
+    {"day": 28, "amount": -1500.00, "coa": 2100, "tax_rate": null, "recipient": "", "text": "Privatentnahme {mm}/{yyyy}", "months_back": 22}
+  ],
+  "quarterly": [
+    {"day": 1,  "amount": -29.70,  "coa": 6855, "tax_rate": null, "recipient": "Testbank AG", "text": "Kontoführung Quartal", "months_back": 22},
+    {"day": 15, "amount": -178.50, "coa": 6850, "tax_rate": 0.19, "recipient": "Softwarehaus Beispiel GmbH", "text": "Software-Lizenzen Quartal", "months_back": 22},
+    {"day": 20, "amount": -357.00, "coa": 6827, "tax_rate": 0.19, "recipient": "Steuerberatung Muster & Partner", "text": "Laufende Buchführung Quartal", "months_back": 22},
+    {"day": 10, "amount": -312.40, "coa": 6400, "tax_rate": null, "recipient": "Versicherung Beispiel Union", "text": "Betriebshaftpflicht Quartal", "months_back": 22}
+  ],
+  "one_off": [
+    {"days_ago": 600, "amount": -238.00, "coa": 6815, "tax_rate": 0.19, "recipient": "Lieferant GmbH", "text": "Bürobedarf"},
+    {"days_ago": 545, "amount": -297.50, "coa": 6815, "tax_rate": 0.19, "recipient": "Technik Meier GmbH", "text": "Monitor und Zubehör"},
+    {"days_ago": 480, "amount": -180.00, "coa": 6420, "tax_rate": null, "recipient": "Handelskammer Musterstadt", "text": "Jahresbeitrag Kammer"},
+    {"days_ago": 405, "amount": -612.00, "coa": 6520, "tax_rate": null, "recipient": "Versicherung Beispiel Union", "text": "Kfz-Versicherung Jahresbeitrag"},
+    {"days_ago": 340, "amount": -535.50, "coa": 6600, "tax_rate": 0.19, "recipient": "Druckerei Schnellschuss", "text": "Flyer und Visitenkarten"},
+    {"days_ago": 230, "amount": -285.60, "coa": 6300, "tax_rate": 0.19, "recipient": "Fachkonferenz Beispielstadt", "text": "Konferenzticket"},
+    {"days_ago": 200, "amount": -84.30,  "coa": 6640, "tax_rate": 0.19, "recipient": "Gasthaus Zum Löwen KG", "text": "Bewirtung Kundentermin"},
+    {"days_ago": 160, "amount": -68.40,  "coa": 6530, "tax_rate": 0.19, "recipient": "Tankstelle Beispielweg", "text": "Tanken"},
+    {"days_ago": 115, "amount": -180.00, "coa": 6420, "tax_rate": null, "recipient": "Handelskammer Musterstadt", "text": "Jahresbeitrag Kammer"},
+    {"days_ago": 100, "amount": -71.15,  "coa": 6530, "tax_rate": 0.19, "recipient": "Tankstelle Beispielweg", "text": "Tanken"},
+    {"days_ago": 40,  "amount": -612.00, "coa": 6520, "tax_rate": null, "recipient": "Versicherung Beispiel Union", "text": "Kfz-Versicherung Jahresbeitrag"},
+    {"days_ago": 33,  "amount": -64.90,  "coa": 6530, "tax_rate": 0.19, "recipient": "Tankstelle Beispielweg", "text": "Tanken"}
+  ],
+  "splits": [
+    {"days_ago": 520, "amount": -66.60, "recipient": "Buchhandlung Lesezeit e.K.", "text": "Fachliteratur und Zubehör",
+     "rows": [{"amount": -42.80, "coa": 6815, "tax_rate": 0.07, "text": "Fachliteratur"},
+              {"amount": -23.80, "coa": 6815, "tax_rate": 0.19, "text": "Zubehör"}]},
+    {"days_ago": 210, "amount": -148.50, "recipient": "Schreibwaren Hoffmann e.K.", "text": "Papier und Büromaterial",
+     "rows": [{"amount": -107.10, "coa": 6815, "tax_rate": 0.19, "text": "Büromaterial"},
+              {"amount": -41.40, "coa": 6815, "tax_rate": 0.07, "text": "Papier und Etiketten"}]},
+    {"days_ago": 75, "amount": -79.90, "recipient": "Netzwerk Telekom Beispiel AG", "text": "Mobilfunk mit Privatanteil",
+     "rows": [{"amount": -55.93, "coa": 6805, "tax_rate": 0.19, "text": "Mobilfunk (betrieblich 70 %)"},
+              {"amount": -23.97, "coa": 2100, "tax_rate": null, "text": "Privatanteil 30 %"}]}
+  ],
+  "trips": [
+    {"days_ago": 150, "start_point": "Musterstadt", "destination": "Hamburg, Beispiel Kunde AG", "reason": "Kundentermin Projektstart", "distance_km": 288},
+    {"days_ago": 120, "start_point": "Musterstadt", "destination": "Hamburg, Beispiel Kunde AG", "reason": "Zwischenpräsentation", "distance_km": 288},
+    {"days_ago": 95,  "start_point": "Musterstadt", "destination": "Kreisstadt, Arztpraxis Dr. Weber", "reason": "Abnahme Website", "distance_km": 64},
+    {"days_ago": 60,  "start_point": "Musterstadt", "destination": "Hamburg, Beispiel Kunde AG", "reason": "Workshop", "distance_km": 288},
+    {"days_ago": 45,  "start_point": "Musterstadt", "destination": "Beispielstadt, Kfz-Werkstatt Fischer", "reason": "Beratungstermin", "distance_km": 112},
+    {"days_ago": 20,  "start_point": "Musterstadt", "destination": "Kreisstadt, Buchhandlung Lesezeit", "reason": "Angebotsgespräch", "distance_km": 64},
+    {"days_ago": 5,   "start_point": "Musterstadt", "destination": "Hamburg, Beispiel Kunde AG", "reason": "Projektbesprechung", "distance_km": 288}
+  ],
+  "vehicle": "Firmenwagen XX-MU 100",
+  "start_km": 48210
+}

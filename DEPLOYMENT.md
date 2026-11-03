@@ -169,6 +169,9 @@ Ersteinrichtung:
 - Geladen wird **nur in ein leeres Datenverzeichnis** (Einzelbenutzer-Modus). Enthält
   `data/` bereits irgendetwas (Datenbank, Konfiguration, Logs), werden **keine**
   Demodaten geladen: Warnung im Log, normaler Start mit den vorhandenen Daten.
+- Inhalt: Musterfirma mit gut zwei Jahren erfundener Buchhaltung (Rechnungen mit Zahlungen,
+  offene und überfällige Posten, Ausgaben, Splits, Anlagen, Fahrtenbuch, Arbeitszeiten);
+  alle Daten sind relativ zum Startdatum datiert (`demo_seed.py`).
 - Ein Neustart mit demselben Verzeichnis befüllt nicht erneut (Marker `data/.demo`).
 - Auf jeder Seite erscheint der Hinweis „Demo-Modus – Beispieldaten, nicht für die
   echte Buchhaltung“.
