@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Maintainer>
+  <Profile>uBuchhaltung – selbst gehostete Buchhaltung für Selbstständige und kleine Unternehmen in Deutschland: EÜR, SKR04, Belege, Rechnungen mit XRechnung, Anlagen/AfA, DATEV-Export. Oberfläche auf Deutsch. Entwickelt von unsix IT Engineering.
+
+Self-hosted bookkeeping for freelancers and small businesses in Germany (German-language UI).</Profile>
+  <Icon>https://raw.githubusercontent.com/NobseVomBerg/uBuchhaltung/main/docs/icon.png</Icon>
+  <WebPage>https://github.com/NobseVomBerg/uBuchhaltung</WebPage>
+  <Forum>https://github.com/NobseVomBerg/uBuchhaltung/discussions</Forum>
+</Maintainer>
