@@ -14,6 +14,10 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 - Kontoauszüge im CAMT.053-/MT940-Format (bisher nur PDF: DKB, Volksbank Rottweil)
 - ZUGFeRD zusätzlich zur XRechnung
 - Umsatzsteuer-Voranmeldung (ELSTER)
+- GoBD-Modus, je Datenverzeichnis einstellbar (Ersteinrichtung fragt: Steuerbüro oder selbst?); vor Umsetzung Design (architect):
+  - Festschreibung abgeschlossener Zeiträume, Korrektur nur per Storno/Gegenbuchung, kein Löschen
+  - Änderungsprotokoll (wer/wann/alt/neu), manipulationssicher; SQL-Konsole nur lesend oder aus
+  - Gilt auch für Kasse und Fahrtenbuch; Abschalten nur protokolliert
 
 ## Fehler & Technik
 - Rechnungsformular (`/invoice?id=…`) läuft bei 1440 px Breite rechts aus dem Viewport
