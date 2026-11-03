@@ -1,6 +1,7 @@
-# Führt die pytest-Suite aus – bei jedem Push (alle Branches) und bei Pull
-# Requests aus Forks. PRs aus Branches dieses Repos laufen bereits über den
-# Push und werden nicht doppelt getestet.
+# Führt Anonymisierungs-Guard und pytest aus – bei jedem Push (alle Branches)
+# und bei jedem Pull Request. PRs aus Branches dieses Repos laufen damit
+# doppelt. Das ist gewollt: Ein per `if` übersprungener Job meldet GitHub als
+# bestanden und würde den Pflicht-Check `pytest` im Ruleset von main aushebeln.
 name: Tests
 
 on:
@@ -14,9 +15,6 @@ concurrency:
 
 jobs:
   pytest:
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
