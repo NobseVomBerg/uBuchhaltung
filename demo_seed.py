@@ -50,6 +50,25 @@ def _clip_day(first, day):
     return first.replace(day=min(day, last))
 
 
+def rename_demo_accounts(db, renames):
+    """Konten der Testdaten für die Demo schöner benennen (App-Pfad
+    ``update_account``; IBAN/BIC/SKR bleiben). ``renames``: {alter Name:
+    {"name": …, "bank_name": …}}. Idempotent – fehlende alte Namen werden
+    übersprungen."""
+    for old, new in renames.items():
+        conn = db._get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT ID, Owner, Number, BIC, BankName, SKRAccount FROM Accounts "
+                    "WHERE Name = ?", (old,))
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            continue
+        acc_id, owner, number, bic, bank_name, skr = row
+        db.update_account(acc_id, new["name"], owner, number, bic,
+                          new.get("bank_name", bank_name), skr)
+
+
 class DemoScenario:
     def __init__(self, db, today=None, scenario=None):
         self.db = db
@@ -58,6 +77,8 @@ class DemoScenario:
             with open(SCENARIO_FILE, encoding="utf-8") as f:
                 scenario = json.load(f)
         self.sc = scenario
+        # Vor allem anderen: Rechnungs-Snapshots übernehmen den Banknamen
+        rename_demo_accounts(db, self.sc.get("account_renames", {}))
         conn = db._get_connection()
         cur = conn.cursor()
         cur.execute("SELECT ID, SKRAccount FROM Accounts WHERE Name = ?",

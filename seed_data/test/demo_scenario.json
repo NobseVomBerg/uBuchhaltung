@@ -1,6 +1,11 @@
 {
   "_comment": "Demo-Szenario (nur UBUCHHALTUNG_DEMO=1). Alle Zeitangaben relativ zu heute (days_ago); Namen und Beträge sind erfunden. Geladen von demo_seed.py über die App-Codepfade.",
-  "bank_account": "Testbank",
+  "account_renames": {
+    "Testbank": {"name": "Geschäftskonto", "bank_name": "Musterbank AG"},
+    "Testkonto 2": {"name": "Tagesgeld", "bank_name": "Zweite Musterbank AG"},
+    "Testkasse": {"name": "Portokasse"}
+  },
+  "bank_account": "Geschäftskonto",
   "invoices": [
     {"customer_number": "K001", "days_ago": 650, "due_days": 14, "pay_after_days": 21,
      "items": [{"description": "Projektberatung Q1", "quantity": 56, "unit": "HUR", "price_per_unit": 100, "tax_rate": 19}]},
@@ -37,7 +42,7 @@
     {"day": 28, "amount": -1500.00, "coa": 2100, "tax_rate": null, "recipient": "", "text": "Privatentnahme {mm}/{yyyy}", "months_back": 22}
   ],
   "quarterly": [
-    {"day": 1,  "amount": -29.70,  "coa": 6855, "tax_rate": null, "recipient": "Testbank AG", "text": "Kontoführung Quartal", "months_back": 22},
+    {"day": 1,  "amount": -29.70,  "coa": 6855, "tax_rate": null, "recipient": "Musterbank AG", "text": "Kontoführung Quartal", "months_back": 22},
     {"day": 15, "amount": -178.50, "coa": 6850, "tax_rate": 0.19, "recipient": "Softwarehaus Beispiel GmbH", "text": "Software-Lizenzen Quartal", "months_back": 22},
     {"day": 20, "amount": -357.00, "coa": 6827, "tax_rate": 0.19, "recipient": "Steuerberatung Muster & Partner", "text": "Laufende Buchführung Quartal", "months_back": 22},
     {"day": 10, "amount": -312.40, "coa": 6400, "tax_rate": null, "recipient": "Versicherung Beispiel Union", "text": "Betriebshaftpflicht Quartal", "months_back": 22}
