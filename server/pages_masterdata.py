@@ -7,6 +7,7 @@ Contains: Articles, Contacts, Chart of Accounts (SKR)
 """
 import html as _html
 from db import Database
+from money import fmt_eur
 
 def Header1(active_page=None):
     from server.pages import Header1 as BaseHeader1
@@ -226,7 +227,7 @@ def PageArticles(db: Database, edit_article_id=None):
               f"data-price='{unit_price}'>")
         s += f"<td>{name}</td>"
         s += f"<td>{unit}</td>"
-        s += f"<td style='text-align:right;'>{unit_price:.2f}&nbsp;€</td>"
+        s += f"<td style='text-align:right;'>{fmt_eur(unit_price, symbol=False)}&nbsp;€</td>"
         s += f"<td>{int(tax_rate)}%</td>"
         s += f"<td>{description[:50]}</td>"
         s += (f"<td>{active_badge}"

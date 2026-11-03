@@ -7,6 +7,7 @@ Receipts page (Belege: Upload, Anzeige und Bearbeitung)
 import datetime
 import html as _html
 from db import Database
+from money import fmt_eur
 from .pages import Header1, Header2, Header3, Footer
 from .period import period_filter_widget
 
@@ -282,7 +283,7 @@ def PageReceiptEdit(db: Database, number):
             s+= f"<td>{booking_id}</td>"
             s+= f"<td>{date_booking}</td>"
             s+= f"<td>{recipient}</td>"
-            s+= f"<td style='color:{amount_color}'>{amount:.2f}</td>"
+            s+= f"<td style='color:{amount_color}'>{fmt_eur(amount, symbol=False)}</td>"
             s+= f"<td>{relation_type or '-'}</td>"
             s+= f"<td><a href='/transactions/edit?id={booking_id}'>Bearbeiten</a> | "
             s+= f"<a href='/documents/unlink?doc_id={document_id}&booking_id={booking_id}'>Entfernen</a></td>"

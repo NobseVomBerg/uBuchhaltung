@@ -7,6 +7,7 @@ from decimal import Decimal
 import pytest
 
 import money
+from money import fmt_eur
 
 
 # ── to_minor: Parsing & Rundung ───────────────────────────────────────────────
@@ -171,3 +172,27 @@ def test_display_rounding_does_not_change_storage():
     m = money.to_minor("12.3456")
     assert money.format_de(m, 2) == "12,35"
     assert money.from_minor(m) == Decimal("12.3456")
+
+
+# ── fmt_eur: deutsche Anzeige ─────────────────────────────────────────────────
+
+@pytest.mark.parametrize("value, expected", [
+    (36153.58, "36.153,58 €"),
+    (Decimal("1234567.5"), "1.234.567,50 €"),
+    (-595, "-595,00 €"),
+    (-1500.0, "-1.500,00 €"),
+    (0, "0,00 €"),
+    ("1234.56", "1.234,56 €"),
+    (0.005, "0,01 €"),            # kaufmännisch gerundet
+    (-0.001, "0,00 €"),           # kein "-0,00"
+    (999.999, "1.000,00 €"),
+    (None, "-"),
+])
+def test_fmt_eur(value, expected):
+    assert fmt_eur(value) == expected
+
+
+def test_fmt_eur_without_symbol():
+    assert fmt_eur(36153.58, symbol=False) == "36.153,58"
+    assert fmt_eur(-12, symbol=False) == "-12,00"
+    assert fmt_eur(None, symbol=False) == "-"

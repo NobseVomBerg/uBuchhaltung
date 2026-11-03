@@ -7,6 +7,7 @@ All functions return complete HTML strings
 """
 import html as _html
 from db import Database
+from money import fmt_eur
 
 
 def logo_url(logo):
@@ -44,6 +45,9 @@ def Header1(active_page=None):
     s+= f"  <link rel='stylesheet' href='/buch.css?v={APP_VERSION}'>\n"
     s+= "  <link rel='icon' sizes='32x32' href='favicon.ico'>\n"
     s+= " </head>\n <body>"
+    import demo as _demo
+    if _demo.is_active():
+        s+= f"<div class='demoBanner'>{_html.escape(_demo.BANNER_TEXT)}</div>"
     
     # Build navigation menu with active page highlighting
     nav_items = []
@@ -298,7 +302,7 @@ def PageReminders(db: Database):
     <div style="margin-bottom: 20px; padding: 15px; background-color: #fff3cd; border-left: 4px solid #ffc107; border-radius: 5px;">
         <h3 style="margin-top: 0; color: #856404;">⚠️ Überfällige Rechnungen</h3>
         <p style="margin: 0;"><strong>{overdue_count} Rechnung(en)</strong> überfällig | 
-        Offener Betrag: <strong style="color: #dc3545;">{total_overdue_amount:.2f} €</strong></p>
+        Offener Betrag: <strong style="color: #dc3545;">{fmt_eur(total_overdue_amount)}</strong></p>
     </div>
     '''
     
@@ -339,7 +343,7 @@ def PageReminders(db: Database):
             s += f"<td>{inv_date}</td>"
             s += f"<td>{due_date}</td>"
             s += f"<td>{buyer_name[:30]}</td>"
-            s += f"<td style='text-align: right;'><strong>{amount:.2f} €</strong></td>"
+            s += f"<td style='text-align: right;'><strong>{fmt_eur(amount)}</strong></td>"
             s += f"<td>{days_overdue} Tage<br><small>{severity}</small></td>"
             s += f"<td>"
             s += f"<a href='/invoice/view?id={inv_id}'>Ansicht</a> | "
@@ -377,7 +381,7 @@ def PageReminders(db: Database):
             s += f"<td>{inv_date}</td>"
             s += f"<td>{due_date}</td>"
             s += f"<td>{buyer_name[:30]}</td>"
-            s += f"<td style='text-align: right;'>{amount:.2f} €</td>"
+            s += f"<td style='text-align: right;'>{fmt_eur(amount)}</td>"
             s += f"<td>{days_remaining} Tage</td>"
             s += f"<td><a href='/invoice/view?id={inv_id}'>Ansicht</a></td>"
             s += f"</tr>"

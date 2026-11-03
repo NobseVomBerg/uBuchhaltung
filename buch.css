@@ -6,6 +6,7 @@ table					{ padding: 1px; border: 1px; border-radius: 5px; border-style: ridge; 
 td, th					{ padding-top: 0px; padding-bottom: 0px; padding-left: 8px; padding-right: 8px; border: 0px solid; }
 a:link, a:visited		{ color: #44F; text-decoration: none; }
 a:hover, a:focus		{ color: #84F; text-decoration: none; }
+.demoBanner				{ text-align: center; font-size: 0.85em; padding: 3px 8px; margin: 0 0 6px 0; border-radius: 4px; background-color: #FFF3CD; color: #664D03; }
 .header2				{ min-height: 1.5em; padding: 5px 0 0 0; margin: 0; }
 .header3				{ min-height: 1.5em; padding: 0 0px 0 0; border-bottom: 1px solid #ccc; }
 .gridMain				{ gap: 10px; padding-bottom: 10px; margin-top: 10px; }
@@ -144,6 +145,7 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 	.rectRounded		{ background-color: #222;}
 	.muted				{ color: #999; }
 	.error-box			{ background-color: #622; color: #FCC; padding: 10px; }
+	.demoBanner			{ background-color: #4A3A10; color: #FFE69C; }
 	#dropZone 			{ background-color: #222; }
 	#dropZone:hover 	{ background-color: #444; }
 	.modalBox			{ background: #222; color: #DDD; }
