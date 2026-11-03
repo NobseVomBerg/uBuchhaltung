@@ -100,7 +100,10 @@ def _seed(root):
     userctx.set_mode("single")
     from server.app import _ensure_directories
     _ensure_directories()
-    Database().load_test_seed_data()
+    db = Database()
+    db.load_test_seed_data(include_invoices=False)
+    from demo_seed import load_demo_scenario
+    load_demo_scenario(db)
     # Marker zuletzt: bricht das Laden ab, bleibt das Verzeichnis „belegt“ und
     # wird beim nächsten Start nicht blind erneut befüllt.
     with open(_marker_path(), "w", encoding="utf-8") as f:
