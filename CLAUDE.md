@@ -181,9 +181,10 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
 - (Siehe Memory: `server-may-be-killed.md`)
 
 ### Docker & CI
-- **Jeder Push auf `main` baut und veröffentlicht automatisch das Docker-Image**
-  (`.github/workflows/docker-publish.yml` → `ghcr.io/nobsevomberg/ubuchhaltung:latest`)
-  – main also nur in release-fähigem Zustand pushen
+- Docker-Image (`.github/workflows/docker-publish.yml`, `ghcr.io/nobsevomberg/ubuchhaltung`):
+  **`:latest` entsteht nur durch einen veröffentlichten GitHub-Release** (Tag
+  `v` + `APP_VERSION`, sonst bricht der Lauf ab); ein Push auf `main` baut nur
+  `:edge`. Releases veröffentlicht der Owner – Claude bereitet vor (Version, PR)
 - Container-Standardport 2824; Betriebsdoku (Unraid/Proxmox) in `DEPLOYMENT.md`
 - Jeder Push (alle Branches) führt `.github/workflows/tests.yml` aus:
   Anonymisierungs-Guard + pytest

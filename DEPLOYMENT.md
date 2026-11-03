@@ -87,12 +87,21 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
 
 Zielplattformen sind Server, die ohnehin Docker anbieten. Das fertige Image
 kommt aus der GitHub Container Registry – gebaut und veröffentlicht durch
-`.github/workflows/docker-publish.yml` bei jedem Push auf `main` sowie bei
-Versions-Tags (`v1.2.12`):
+`.github/workflows/docker-publish.yml`:
 
 ```
 ghcr.io/nobsevomberg/ubuchhaltung:latest
 ```
+
+| Tag | Inhalt |
+|---|---|
+| `:latest` | neuester Release (empfohlen) |
+| `:1.6.16`, `:1.6`, `:1` | fester Release bzw. neuester innerhalb der Reihe – zum Festhalten oder Zurückgehen |
+| `:edge` | aktueller Entwicklungsstand von `main`, ungetestet im Betrieb |
+
+Releases entstehen auf GitHub unter *Releases → Draft a new release* (Tag
+`v` + Version aus `version.py`, z. B. `v1.6.16`); erst dann bekommt `:latest`
+die neue Version. Vorher laufen die Tests, und der Tag muss zur Version passen.
 
 Standardport ist **2824** („BUCH" auf der Telefontastatur – von verbreiteten
 Docker-Projekten nicht belegt). Alle Nutzdaten (auth.db, Nutzer-Verzeichnisse,
