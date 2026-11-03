@@ -7,6 +7,7 @@ Asset management pages (Anlagenverzeichnis)
 import datetime
 import html as _html
 from db import Database
+from money import fmt_eur
 from .pages import Header1, Header2, Header3, Footer
 
 
@@ -20,9 +21,7 @@ def _method_label(method):
 
 def _fmt(value):
     """Format number as German currency string."""
-    if value is None:
-        return '-'
-    return f"{value:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.') + ' €'
+    return fmt_eur(value)
 
 
 # ─── PageAssets ──────────────────────────────────────────────────────────────
@@ -525,7 +524,7 @@ def _asset_form(db: Database, asset=None, parent_asset=None):
         }}
 
         function fmtEur(v) {{
-            return v.toFixed(2).replace('.', ',') + ' €';
+            return v.toLocaleString('de-DE', {{minimumFractionDigits: 2, maximumFractionDigits: 2}}) + ' €';
         }}
         function round2(v) {{ return Math.round(v * 100) / 100; }}
 

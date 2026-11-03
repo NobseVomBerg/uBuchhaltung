@@ -144,3 +144,17 @@ def format_de(minor: int, dp: int = 2) -> str:
     if dp:
         return f"{sign}{int_grouped},{frac_part}"
     return f"{sign}{int_grouped}"
+
+
+def fmt_eur(value, symbol=True, dp: int = 2) -> str:
+    """Anzeige-Betrag im deutschen Format: ``36.153,58 €`` (symbol=False: ``36.153,58``).
+
+    Nimmt Decimal/int/float/str (auch Minor-Units-Ergebnisse als Decimal);
+    ``None``/leer -> ``'-'``. NUR für Anzeige-Text – Werte in ``<input value>``,
+    ``data-``-Attributen, JSON und allem, was zurückgeschickt oder per JS
+    weitergerechnet wird, bleiben im Punkt-Format (``format_plain``).
+    """
+    if value is None or value == '':
+        return '-'
+    text = format_de(to_minor(value), dp)
+    return text + ' \u20ac' if symbol else text
