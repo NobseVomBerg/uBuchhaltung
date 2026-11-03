@@ -133,11 +133,18 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
                       'id': invoice_id if invoice_id else ''}))
 
     # Statistics summary
+    # Spalten laut Invoices-Schema: 38 = SumGross, 39 = AmountDue, 40 = Status
+    def _gross(inv):
+        return inv[38] or 0
+
+    def _due(inv):
+        return inv[39] if inv[39] is not None else _gross(inv)
+
     total_count = len(invoices)
-    total_sum = sum(inv[36] for inv in invoices if len(inv) > 36 and inv[36])  # SumGross is at index 36
-    paid_sum = sum(inv[36] for inv in invoices if len(inv) > 36 and inv[36] and len(inv) > 38 and inv[38] == 'paid')  # Status at 38
-    open_sum = sum(inv[36] for inv in invoices if len(inv) > 36 and inv[36] and len(inv) > 38 and inv[38] not in ['paid', 'cancelled'])
-    
+    total_sum = sum(_gross(inv) for inv in invoices)
+    paid_sum = sum(_gross(inv) - _due(inv) for inv in invoices if inv[40] != 'cancelled')
+    open_sum = sum(_due(inv) for inv in invoices if inv[40] not in ('paid', 'cancelled'))
+
     s+= '<div class="grid2Cols gridMain"><div class="gridLeftCol" style="order:1">'
     s+= f'''
     <div class="rectRounded">

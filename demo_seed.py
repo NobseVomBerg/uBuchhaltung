@@ -179,15 +179,17 @@ class DemoScenario:
 
     # ── Fahrten ──────────────────────────────────────────────────────────
     def load_trips(self):
-        own = self.db.fetch_contacts(contact_type='own')
-        if not own:
+        # Fahrer = dieselbe Person wie bei den Arbeitszeiten (Seed: K022)
+        persons = {c[2]: c[0] for c in self.db.fetch_contacts(contact_type='customer')}
+        driver = persons.get(self.sc.get("driver_number"))
+        if not driver:
             return
         km = self.sc.get("start_km", 0)
         for t in sorted(self.sc.get("trips", []), key=lambda t: -t["days_ago"]):
             d = self._date(t["days_ago"]).isoformat()
             dist = t["distance_km"]
             self.db.insert_trip(
-                driver_id=own[0][0], start_date=d, start_time="08:00", end_date=d,
+                driver_id=driver, start_date=d, start_time="08:00", end_date=d,
                 end_time="17:30", start_point=t["start_point"],
                 destination=t["destination"], vehicle=self.sc.get("vehicle", ""),
                 reason=t["reason"], distance_km=dist, start_km=km, end_km=km + dist)

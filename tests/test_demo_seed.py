@@ -93,3 +93,21 @@ def test_demo_has_open_overdue_and_partial_invoices(tmp_path):
         "WHERE ParentBooking_ID IS NOT NULL GROUP BY ParentBooking_ID HAVING COUNT(*) > 1)"
     ).fetchone()[0]
     assert multi >= 3
+
+
+def test_invoice_list_statistics_use_gross_and_payments(tmp_path):
+    """Statistik der Rechnungsliste: Brutto-Summe, bezahlt (inkl. Teilzahlung), offen."""
+    import re
+    from server.pages_invoice import PageInvoice
+    db = _build(tmp_path, datetime.date(2026, 11, 3))
+    con = sqlite3.connect(db.db_name)
+    gross, due = con.execute(
+        "SELECT SUM(SumGross), SUM(AmountDue) FROM Invoices WHERE DocumentType = 'invoice'"
+    ).fetchone()
+    html = PageInvoice(db, {"date_from": "2000-01-01", "date_to": "2100-12-31"})
+    m = re.search(r"Gesamtsumme: ([\d.]+) € \| \s*Bezahlt: ([\d.]+) € \| \s*Offen: ([\d.]+) €", html)
+    assert m, "Statistikzeile nicht gefunden"
+    total, paid, open_ = (float(x) for x in m.groups())
+    assert total == pytest.approx(gross / 10000, abs=0.01)
+    assert open_ == pytest.approx(due / 10000, abs=0.01)
+    assert paid == pytest.approx((gross - due) / 10000, abs=0.01) and paid > 0

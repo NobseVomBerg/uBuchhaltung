@@ -76,6 +76,7 @@
     {"days_ago": 20,  "start_point": "Musterstadt", "destination": "Kreisstadt, Buchhandlung Lesezeit", "reason": "Angebotsgespräch", "distance_km": 64},
     {"days_ago": 5,   "start_point": "Musterstadt", "destination": "Hamburg, Beispiel Kunde AG", "reason": "Projektbesprechung", "distance_km": 288}
   ],
+  "driver_number": "K022",
   "vehicle": "Firmenwagen XX-MU 100",
   "start_km": 48210
 }
