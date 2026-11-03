@@ -9,6 +9,7 @@ so that imported WISO/DATEV data is always reflected.
 """
 from datetime import datetime
 from db import Database
+from money import fmt_eur
 from .pages import Header1, Header2, Header3, Footer
 
 
@@ -107,7 +108,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
             <div style="font-size:14px;opacity:0.9;">
                 Zahlungseing&auml;nge ({range_label})</div>
             <div style="font-size:32px;font-weight:bold;margin:10px 0;">
-                {income:,.2f} &euro;</div>
+                {fmt_eur(income)}</div>
             <div style="font-size:12px;opacity:0.8;">
                 Rechnungen &amp; Erstattungen</div>
         </div>
@@ -118,7 +119,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
             <div style="font-size:14px;opacity:0.9;">
                 Betriebsausgaben ({range_label})</div>
             <div style="font-size:32px;font-weight:bold;margin:10px 0;">
-                {expense:,.2f} &euro;</div>
+                {fmt_eur(expense)}</div>
             <div style="font-size:12px;opacity:0.8;">
                 ohne Privatentnahmen</div>
         </div>
@@ -129,7 +130,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
             <div style="font-size:14px;opacity:0.9;">
                 Privatentnahmen ({range_label})</div>
             <div style="font-size:32px;font-weight:bold;margin:10px 0;">
-                {private:,.2f} &euro;</div>
+                {fmt_eur(private)}</div>
             <div style="font-size:12px;opacity:0.8;">
                 SKR 2100&ndash;2199</div>
         </div>
@@ -142,7 +143,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
             <div style="font-size:14px;opacity:0.9;">
                 Saldo ({range_label})</div>
             <div style="font-size:32px;font-weight:bold;margin:10px 0;">
-                {balance:,.2f} &euro;</div>
+                {fmt_eur(balance)}</div>
             <div style="font-size:12px;opacity:0.8;">
                 {bank_cnt} Bankbuchungen, {unlinked} offen</div>
         </div>
@@ -177,9 +178,9 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
         h_inc  = (d['income']       / max_val * bar_height) if max_val else 0
         h_priv = (abs(d['private']) / max_val * bar_height) if max_val else 0
         h_exp  = (abs(d['expense']) / max_val * bar_height) if max_val else 0
-        tip = (f"Einnahmen: {d['income']:,.2f}\\n"
-               f"Privat: {d['private']:,.2f}\\n"
-               f"Ausgaben: {d['expense']:,.2f}")
+        tip = (f"Einnahmen: {fmt_eur(d['income'], symbol=False)}\\n"
+               f"Privat: {fmt_eur(d['private'], symbol=False)}\\n"
+               f"Ausgaben: {fmt_eur(d['expense'], symbol=False)}")
         s += f'''
         <div style="display:flex;flex-direction:column;align-items:center;flex:1;"
              title="{tip}">
@@ -211,18 +212,18 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
                 <th style="text-align:right;">Betrag</th></tr>
             <tr><td>Zahlungseing&auml;nge</td>
                 <td style="text-align:right;color:green;">
-                    {total_inc:,.2f} &euro;</td></tr>
+                    {fmt_eur(total_inc)}</td></tr>
             <tr><td>Betriebsausgaben</td>
                 <td style="text-align:right;color:red;">
-                    {total_exp:,.2f} &euro;</td></tr>
+                    {fmt_eur(total_exp)}</td></tr>
             <tr><td>Privatentnahmen</td>
                 <td style="text-align:right;color:#ff6f00;">
-                    {total_priv:,.2f} &euro;</td></tr>
+                    {fmt_eur(total_priv)}</td></tr>
             <tr style="border-top:2px solid #666;">
                 <td><strong>Saldo</strong></td>
                 <td style="text-align:right;font-weight:bold;
                     color:{'green' if total_bal >= 0 else 'red'};">
-                    {total_bal:,.2f} &euro;</td></tr>
+                    {fmt_eur(total_bal)}</td></tr>
         </table>
     </div>
     '''
@@ -274,12 +275,12 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
         color = 'green' if total >= 0 else 'red'
         s += (f"<tr><td>{nr}</td><td>{name}</td>"
               f"<td style='text-align:right;color:{color};'>"
-              f"{total:,.2f} &euro;</td></tr>")
+              f"{fmt_eur(total)}</td></tr>")
     s += f'''
             <tr style="border-top:2px solid #666;">
                 <td colspan="2"><strong>Summe Betriebseinnahmen</strong></td>
                 <td style="text-align:right;font-weight:bold;color:green;">
-                    {income_sum:,.2f} &euro;</td></tr>
+                    {fmt_eur(income_sum)}</td></tr>
         </table>
 
         <h4 style="margin-bottom:6px;margin-top:18px;">Ausgaben</h4>
@@ -292,20 +293,20 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
         color = 'green' if total >= 0 else 'red'
         s += (f"<tr><td>{nr}</td><td>{name}</td>"
               f"<td style='text-align:right;color:{color};'>"
-              f"{total:,.2f} &euro;</td></tr>")
+              f"{fmt_eur(total)}</td></tr>")
     euer_color = 'green' if euer_result >= 0 else 'red'
     s += f'''
             <tr style="border-top:2px solid #666;">
                 <td colspan="2"><strong>Summe Betriebsausgaben</strong></td>
                 <td style="text-align:right;font-weight:bold;color:red;">
-                    {expense_sum:,.2f} &euro;</td></tr>
+                    {fmt_eur(expense_sum)}</td></tr>
         </table>
 
         <table style="width:100%;border-collapse:collapse;">
             <tr><td><strong>Ergebnis EÜR</strong></td>
                 <td style="text-align:right;font-weight:bold;font-size:18px;
                     color:{euer_color};">
-                    {euer_result:,.2f} &euro;</td></tr>
+                    {fmt_eur(euer_result)}</td></tr>
         </table>
 
         <h4 style="margin-bottom:6px;margin-top:18px;">Sonstige Ausgaben</h4>
@@ -318,12 +319,12 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
         color = 'green' if total >= 0 else 'red'
         s += (f"<tr><td>{nr}</td><td>{name}</td>"
               f"<td style='text-align:right;color:{color};'>"
-              f"{total:,.2f} &euro;</td></tr>")
+              f"{fmt_eur(total)}</td></tr>")
     s += f'''
             <tr style="border-top:2px solid #666;">
                 <td colspan="2"><strong>Summe Sonstige Ausgaben</strong></td>
                 <td style="text-align:right;font-weight:bold;color:red;">
-                    {other_expense_sum:,.2f} &euro;</td></tr>
+                    {fmt_eur(other_expense_sum)}</td></tr>
         </table>
     </div>
     '''

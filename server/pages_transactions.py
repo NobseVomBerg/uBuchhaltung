@@ -7,6 +7,7 @@ Transactions page (Buchungen: Bankbewegungen + Buchungssätze)
 import html as _html
 from decimal import Decimal
 from db import Database
+from money import fmt_eur
 from db.matching import is_bank_effective
 from .pages import Header1, Header2, Header3, Footer
 from .period import period_filter_widget
@@ -208,7 +209,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             continue
         oinv_due = oinv[39] if oinv[39] is not None else (oinv[38] or 0)
         sel = ' selected' if prefill.get('invoice_id') == oinv[0] else ''
-        olabel = f"{oinv[1] or oinv[0]} — {oinv[15] or oinv[14] or ''} — offen {oinv_due:.2f} €"
+        olabel = f"{oinv[1] or oinv[0]} — {oinv[15] or oinv[14] or ''} — offen {fmt_eur(oinv_due)}"
         invoice_options += f'<option value="{oinv[0]}"{sel}>{_html.escape(olabel)}</option>'
     show_invoice_select = (not edit_trans) or (booking_free is not None and booking_free > 0)
     invoice_field = ''
@@ -220,7 +221,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     if allocations:
         parts = ', '.join(
             f'<a href="/invoice/edit?id={a[1]}">{_html.escape(str(a[2] or a[1]))}</a>'
-            f' ({a[3]:.2f} €)' for a in allocations)
+            f' ({fmt_eur(a[3])})' for a in allocations)
         alloc_note = (f'<div><small>Bereits zugeordnet: {parts} – '
                       'Lösen über die Rechnungsseite.</small></div>')
     invoice_row = ''
@@ -429,7 +430,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         for c in adopt_candidates:
             if c[0] in shown_ids:
                 continue
-            label = f"{c[1]} · {c[2]:.2f} €"
+            label = f"{c[1]} · {fmt_eur(c[2])}"
             if c[3]:
                 label += f" · {c[3]}"
             info = c[5] or c[4] or ''
@@ -494,8 +495,9 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     if (!splitRows().length) {{ el.textContent = ''; return; }}
                     // Kein Speicher-Block: ein offener Rest ist erlaubt und
                     // wird in der Übersicht als "Rest" statt Haken angezeigt.
-                    el.textContent = 'Summe ' + sum.toFixed(2) + ' von '
-                        + SPLIT_BANK_AMOUNT.toFixed(2) + (rest === 0 ? ' ✓' : ' — Rest ' + rest.toFixed(2));
+                    var de = {{minimumFractionDigits: 2, maximumFractionDigits: 2}};
+                    el.textContent = 'Summe ' + sum.toLocaleString('de-DE', de) + ' von '
+                        + SPLIT_BANK_AMOUNT.toLocaleString('de-DE', de) + (rest === 0 ? ' ✓' : ' — Rest ' + rest.toLocaleString('de-DE', de));
                     el.className = rest === 0 ? 'successColor' : 'warnColor';
                 }}
                 function splitTax(input) {{
@@ -743,7 +745,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             if (a === null || a === undefined || a === '') return '';
             var n = Number(a);
             if (isNaN(n)) return esc(a);
-            return n.toFixed(2).replace('.', ',') + ' €';
+            return n.toLocaleString('de-DE', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' €';
         }
 
         // Doppel-Uploads verhindern: während Upload/Analyse läuft, weitere
@@ -1060,7 +1062,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             s+= f"<td>{date_booking}</td>"
             s+= f"<td title='{first_recip}'>{first_recip}</td>"
             s+= f"<td title='{first_text}'>{first_text}</td>"
-            s+= f"<td style='color:{amount_color}'>{amount:.2f}</td>"
+            s+= f"<td style='color:{amount_color}'>{fmt_eur(amount, symbol=False)}</td>"
             s+= f"<td>{currency}</td>"
             s+= f"<td></td>"
             s+= f"<td title='{_attr(account_name)}'>{_html.escape(str(account_name))}</td>"
@@ -1144,7 +1146,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                                     "title='Bank + Buchungssätze vollständig'>✓</span>")
                 else:
                     _hint = ('noch nicht kontiert' if not all_coded
-                             else f'offener Rest {rest:.2f}')
+                             else f'offener Rest {fmt_eur(rest, symbol=False)}')
                     status_badge = (f"<span class='badge bg-orange' "
                                     f"title='Buchungssätze unvollständig: {_hint}'>"
                                     "offen</span>")
@@ -1168,7 +1170,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     s+= f"<td>{date_booking}</td>"
                     s+= f"<td title='{recipient}'>{recipient}</td>"
                     s+= f"<td title='{entry_text}'>{entry_text}</td>"
-                    s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
+                    s+= f"<td style='color:{amount_color}'>{fmt_eur(amount or 0, symbol=False)}</td>"
                     s+= f"<td>{currency}</td>"
                     s+= f"<td></td>"
                     s+= f"<td title='{_attr(account_name)}'>{_html.escape(str(account_name))}</td>"
@@ -1196,7 +1198,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     s+= f"<td>{date_booking}</td>"
                     s+= f"<td title='{recipient}'>{recipient}</td>"
                     s+= f"<td title='{entry_text}'>{entry_text}</td>"
-                    s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
+                    s+= f"<td style='color:{amount_color}'>{fmt_eur(amount or 0, symbol=False)}</td>"
                     s+= f"<td>{currency}</td>"
                     s+= f"<td>{_fmt_rate(item.get('entry_tax_rate'))}</td>"
                     s+= f"<td title='{_attr(account_name)}'>{_html.escape(str(account_name))}</td>"
@@ -1223,7 +1225,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 s+= f"<td>{date_booking}</td>"
                 s+= f"<td title='{recipient}'>{recipient}</td>"
                 s+= f"<td title='{bank_text}'>{bank_text}</td>"
-                s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
+                s+= f"<td style='color:{amount_color}'>{fmt_eur(amount or 0, symbol=False)}</td>"
                 s+= f"<td>{currency}</td>"
                 s+= f"<td></td>"
                 s+= f"<td title='{_attr(account_name)}'>{_html.escape(str(account_name))}</td>"
@@ -1263,7 +1265,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             s+= f"<td class='child-indent'>{date_booking}</td>"
             s+= f"<td title='{recipient}'>{recipient}</td>"
             s+= f"<td title='{text}'>{text}</td>"
-            s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
+            s+= f"<td style='color:{amount_color}'>{fmt_eur(amount or 0, symbol=False)}</td>"
             s+= f"<td>{currency}</td>"
             s+= f"<td>{_fmt_rate(booking[13])}</td>"
             s+= f"<td title='{_attr(account_name)}'>{_html.escape(str(account_name))}</td>"
@@ -1311,7 +1313,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             s+= f"<td>{date_booking}</td>"
             s+= f"<td title='{recipient}'>{recipient}</td>"
             s+= f"<td title='{text}'>{text}</td>"
-            s+= f"<td style='color:{amount_color}'>{(amount or 0):.2f}</td>"
+            s+= f"<td style='color:{amount_color}'>{fmt_eur(amount or 0, symbol=False)}</td>"
             s+= f"<td>{currency}</td>"
             s+= f"<td>{_fmt_rate(booking[13])}</td>"
             s+= f"<td title='{_attr(account_name)}'>{_html.escape(str(account_name))}</td>"

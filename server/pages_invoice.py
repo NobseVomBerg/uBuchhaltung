@@ -8,6 +8,7 @@ import json
 import os
 import html as _html
 from db import Database
+from money import fmt_eur
 from .pages import (
     Header1, Header2, Header3, Footer, logo_url,
 )
@@ -150,9 +151,9 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
     <div class="rectRounded">
         <strong>Statistik:</strong> 
         {total_count} Rechnung(en) | 
-        Gesamtsumme: {total_sum:.2f} € | 
-        Bezahlt: {paid_sum:.2f} € | 
-        Offen: {open_sum:.2f} €
+        Gesamtsumme: {fmt_eur(total_sum)} | 
+        Bezahlt: {fmt_eur(paid_sum)} | 
+        Offen: {fmt_eur(open_sum)}
     </div>
     '''
     if not invoices:
@@ -180,8 +181,8 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
             s+= f"<td>{inv_number}</td>"
             s+= f"<td>{inv_date}</td>"
             s+= f"<td>{buyer_name[:30]}</td>"
-            s+= f"<td style='text-align: right;'>{sum_net:.2f} €</td>"
-            s+= f"<td style='text-align: right;'><strong>{sum_gross:.2f} €</strong></td>"
+            s+= f"<td style='text-align: right;'>{fmt_eur(sum_net)}</td>"
+            s+= f"<td style='text-align: right;'><strong>{fmt_eur(sum_gross)}</strong></td>"
             s+= f"<td style='color: {status_color};'><strong>{status_label}</strong></td>"
             action_icon  = '&#9998;'    if status == 'draft' else '&#128065;'
             action_title = 'Bearbeiten' if status == 'draft' else 'Ansehen'
@@ -537,7 +538,7 @@ function copyInvoiceAsNew(invId) {{
                     <td><input type="text" class="item-unit" value="{unit}" style="width: 60px;"></td>
                     <td><input type="text" class="item-description" value="{description}" style="width: 100%;"></td>
                     <td><input type="number" class="item-price" value="{price}" min="0" step="0.01" style="width: 80px;"> €</td>
-                    <td class="item-total" style="text-align: right;">{total:.2f} €</td>
+                    <td class="item-total" style="text-align: right;">{fmt_eur(total)}</td>
                     <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color: red;">✕</button></td>
                 </tr>'''
     else:
@@ -1020,7 +1021,7 @@ function copyInvoiceAsNew(invId) {{
             dropdown.innerHTML = entries.map(([id, a]) =>
                 '<div class="article-option" onmousedown="selectArticle(' + id + ')">' +
                 '<strong>' + a.name + '</strong>' +
-                '<span class="article-option-meta">' + a.unit + ' · ' + a.price.toFixed(2) + ' € · ' + a.taxRate + '%</span>' +
+                '<span class="article-option-meta">' + a.unit + ' · ' + fmtDe(a.price) + ' € · ' + a.taxRate + '%</span>' +
                 '</div>'
             ).join('');
             dropdown.style.display = 'block';
@@ -1101,12 +1102,18 @@ function copyInvoiceAsNew(invId) {{
             rowCounter = rows.length;
         }
         
+        // Betrags-Anzeige/-Parsing im deutschen Format (Tausenderpunkt, Dezimalkomma).
+        // Die Anzeigefelder werden von den Berechnungen zurückgelesen – daher immer
+        // über fmtDe/parseDe, nie nur '.'/',' tauschen.
+        function fmtDe(n) { return n.toLocaleString('de-DE', {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
+        function parseDe(t) { return parseFloat(String(t).replace(/<[^>]*>/g, '').replace('€', '').replace(/\\./g, '').replace(',', '.').trim()); }
+
         // Calculate row total
         function calculateRowTotal(row) {
             const quantity = parseFloat(row.querySelector('.item-quantity').value) || 0;
             const price = parseFloat(row.querySelector('.item-price').value) || 0;
             const total = quantity * price;
-            row.querySelector('.item-total').textContent = total.toFixed(2).replace('.', ',') + ' €';
+            row.querySelector('.item-total').textContent = fmtDe(total) + ' €';
         }
         
         // Calculate all totals
@@ -1116,13 +1123,13 @@ function copyInvoiceAsNew(invId) {{
             document.querySelectorAll('.invoice-item-row').forEach(row => {
                 calculateRowTotal(row);
                 const totalText = row.querySelector('.item-total').textContent;
-                const total = parseFloat(totalText.replace(' €', '').replace(',', '.')) || 0;
+                const total = parseDe(totalText) || 0;
                 sumNet += total;
             });
             
             // Update net sum
-            document.getElementById('sum_net').textContent = sumNet.toFixed(2).replace('.', ',') + ' €';
-            document.getElementById('tax_base').textContent = sumNet.toFixed(2).replace('.', ',');
+            document.getElementById('sum_net').textContent = fmtDe(sumNet) + ' €';
+            document.getElementById('tax_base').textContent = fmtDe(sumNet);
 
             // USt nur ausweisen, wenn Checkbox aktiv (Kleinunternehmer §19: keine Zeile)
             const showTax = document.getElementById('show_tax').checked;
@@ -1132,11 +1139,11 @@ function copyInvoiceAsNew(invId) {{
             // Calculate tax
             const taxRate = showTax ? (parseFloat(document.getElementById('tax_rate').value) || 0) : 0;
             const taxAmount = sumNet * (taxRate / 100);
-            document.getElementById('tax_amount').textContent = taxAmount.toFixed(2).replace('.', ',') + ' €';
+            document.getElementById('tax_amount').textContent = fmtDe(taxAmount) + ' €';
 
             // Calculate gross sum
             const sumGross = sumNet + taxAmount;
-            document.getElementById('sum_gross').innerHTML = '<strong>' + sumGross.toFixed(2).replace('.', ',') + ' €</strong>';
+            document.getElementById('sum_gross').innerHTML = '<strong>' + fmtDe(sumGross) + ' €</strong>';
         }
         
         // Attach listeners to row inputs
@@ -1227,7 +1234,7 @@ function copyInvoiceAsNew(invId) {{
                         unit: row.querySelector('.item-unit').value,
                         description: description,
                         unitPrice: parseFloat(row.querySelector('.item-price').value) || 0,
-                        totalPrice: parseFloat(row.querySelector('.item-total').textContent.replace('€', '').replace(',', '.').trim()) || 0,
+                        totalPrice: parseDe(row.querySelector('.item-total').textContent) || 0,
                         taxRate: taxRate
                     });
                 }
@@ -1242,9 +1249,9 @@ function copyInvoiceAsNew(invId) {{
             const bankAccountId = document.getElementById('bank_account_select').value || null;
             
             // Calculate amounts (replace comma with dot for German number format)
-            const netAmount = parseFloat(document.getElementById('sum_net').textContent.replace('€', '').replace(',', '.').trim());
-            const taxAmount = parseFloat(document.getElementById('tax_amount').textContent.replace('€', '').replace(',', '.').trim());
-            const grossAmount = parseFloat(document.getElementById('sum_gross').textContent.replace(/<[^>]*>/g, '').replace('€', '').replace(',', '.').trim());
+            const netAmount = parseDe(document.getElementById('sum_net').textContent);
+            const taxAmount = parseDe(document.getElementById('tax_amount').textContent);
+            const grossAmount = parseDe(document.getElementById('sum_gross').textContent);
             
             // Get payment terms
             const paymentTermDays = parseInt(document.getElementById('payment_term_days').value) || 14;
@@ -1394,7 +1401,7 @@ function copyInvoiceAsNew(invId) {{
                 s += f'''            <tr>
                 <td style="padding:6px 8px;">{pay_date or "–"}</td>
                 <td style="padding:6px 8px;">#{booking_id} {booking_ref}</td>
-                <td style="padding:6px 8px; text-align:right;">{amount:.2f} €</td>
+                <td style="padding:6px 8px; text-align:right;">{fmt_eur(amount)}</td>
                 <td style="padding:6px 8px; text-align:center;">
                     <a href="javascript:void(0);" onclick="deletePayment({pid})" style="color:#c00;">✕ Entfernen</a>
                 </td>
@@ -1402,12 +1409,12 @@ function copyInvoiceAsNew(invId) {{
 '''
             s += f'''            <tr style="font-weight:bold; border-top:2px solid #ccc;">
                 <td colspan="2" style="padding:6px 8px;">Gezahlt gesamt</td>
-                <td style="padding:6px 8px; text-align:right;">{total_paid:.2f} €</td>
+                <td style="padding:6px 8px; text-align:right;">{fmt_eur(total_paid)}</td>
                 <td></td>
             </tr>
             <tr style="font-weight:bold;">
                 <td colspan="2" style="padding:6px 8px;">Noch offen</td>
-                <td style="padding:6px 8px; text-align:right; color:{"#c00" if (amount_due or 0) > 0.01 else "#2a2"};">{(amount_due or 0):.2f} €</td>
+                <td style="padding:6px 8px; text-align:right; color:{"#c00" if (amount_due or 0) > 0.01 else "#2a2"};">{fmt_eur(amount_due or 0)}</td>
                 <td></td>
             </tr>
         </table>
@@ -1452,8 +1459,8 @@ function copyInvoiceAsNew(invId) {{
                     s += f'''            <tr>
                 <td style="padding:6px 8px;">{b_date or "–"}</td>
                 <td style="padding:6px 8px;">{_html.escape(str(b_recipient or ""))}</td>
-                <td style="padding:6px 8px; text-align:right;">{b_amount:.2f} €</td>
-                <td style="padding:6px 8px; text-align:right;">{b_free:.2f} €{match_mark}</td>
+                <td style="padding:6px 8px; text-align:right;">{fmt_eur(b_amount)}</td>
+                <td style="padding:6px 8px; text-align:right;">{fmt_eur(b_free)}{match_mark}</td>
                 <td style="padding:6px 8px; text-align:right;"><input type="number" step="0.01" class="noButtons" id="payAmount_{b_id}" value="{default_alloc:.2f}" style="width:90px; text-align:right;"></td>
                 <td style="padding:6px 8px;"><button onclick="linkPayment({b_id})" class="coloredButton btn-sm bg-blue">Verknüpfen</button></td>
             </tr>

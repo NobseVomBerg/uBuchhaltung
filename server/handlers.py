@@ -14,7 +14,7 @@ from .pages import Header1, Header2, Header3, Footer
 from .import_preview import match_account
 from db import Database
 from db.matching import is_bank_effective
-from money import to_minor, from_minor, multiply, tax_from_net, round_minor
+from money import to_minor, from_minor, multiply, tax_from_net, round_minor, fmt_eur
 from decimal import Decimal
 
 try:
@@ -799,7 +799,7 @@ def handle_datev_export(db: Database, post_data: dict):
         # Wartekonten zählen nicht mit – der Rechnungsfall gilt als korrekt.
         unbalanced = db.find_unbalanced_splits(date_from, date_to)
         if unbalanced:
-            parts = [f"{d} {a:.2f} EUR (Rest {r:.2f})"
+            parts = [f"{d} {fmt_eur(a, symbol=False)} EUR (Rest {fmt_eur(r, symbol=False)})"
                      for _bid, d, a, r, _t in unbalanced[:5]]
             if len(unbalanced) > 5:
                 parts.append(f"und {len(unbalanced) - 5} weitere")
