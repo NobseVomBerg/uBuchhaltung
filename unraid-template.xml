@@ -7,7 +7,7 @@
   <Shell>sh</Shell>
   <Support>https://github.com/NobseVomBerg/uBuchhaltung/issues</Support>
   <Project>https://github.com/NobseVomBerg/uBuchhaltung</Project>
-  <Overview>Schlanke, webbasierte Buchhaltungssoftware für Selbstständige und kleine Unternehmen: SKR03/SKR04, Belege, Buchungen, Rechnungen (XRechnung), Angebote, Anlagen/AfA, DATEV-Export. Einzel- oder Mehrbenutzer-Modus (Auswahl bei der Ersteinrichtung im Browser). Alle Daten liegen unter /app/data.</Overview>
+  <Overview>Schlanke, webbasierte Buchhaltungssoftware für Selbstständige und kleine Unternehmen: EÜR, SKR04, Belege, Buchungen, Rechnungen (XRechnung), Angebote, Anlagen/AfA, DATEV-Export. Einzel- oder Mehrbenutzer-Modus (Auswahl bei der Ersteinrichtung im Browser). Alle Daten liegen unter /app/data.</Overview>
   <Category>Productivity: Tools:</Category>
   <WebUI>http://[IP]:[PORT:2824]</WebUI>
   <Icon>https://raw.githubusercontent.com/NobseVomBerg/uBuchhaltung/main/favicon.ico</Icon>

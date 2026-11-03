@@ -19,6 +19,23 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
   - Änderungsprotokoll (wer/wann/alt/neu), manipulationssicher; SQL-Konsole nur lesend oder aus
   - Gilt auch für Kasse und Fahrtenbuch; Abschalten nur protokolliert
 
+## Kontenrahmen (SKR03/04/07 …)
+Heute ist nur SKR04 ausgebaut, und zwar so weit, wie es der Owner braucht; die Auswahl
+anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der Schritte:
+1. **Funktionskonten statt fester Nummern** – Voraussetzung für alles Weitere; vor Umsetzung Design (architect).
+   Rund 70 fest verdrahtete SKR04-Nummern in 12 Dateien (z. B. 3806, 1401/1406, 4400, Wartekonten 4405/4345/4340,
+   Debitoren 10000). Stattdessen Rollen wie „Umsatzsteuer 19 %“, „Erlöse 7 %“, „Wartekonto“ je Kontenrahmen zuordnen
+2. **Vollständige Kontenrahmen als Seed-Daten** (`seed_data/chart_of_accounts_<rahmen>.json`), zuerst SKR03;
+   Quelle und Nutzungsrechte der Kontenlisten vorher klären
+3. **Übersicht trotz vieler Konten:** Auswahllisten zeigen nur sichtbare Konten (`ShowInMenu` gibt es schon);
+   sinnvolle Grundauswahl je Rahmen, alles andere bei Bedarf einschalten. Dazu Suche nach Nummer/Name in der Auswahl,
+   Gruppierung nach Kontenklasse, zuletzt genutzte Konten oben; optional Branchenprofile als Vorauswahl
+4. **Wahl des Kontenrahmens bei der Ersteinrichtung**
+5. **Umstellung bestehender Datenbanken** (z. B. SKR03 → SKR04): braucht ein vollständiges Mapping, das nicht überall
+   1:1 ist (Aufteilungen, Zusammenlegungen). Ablauf: Sicherung, Probelauf mit Bericht, nicht eindeutige Konten melden
+   statt raten, dann Buchungen, Anlagen, Rechnungen und Steuerschlüssel umschlüsseln
+- SKR07 (Österreich) erst, wenn die Steuerlogik dafür ansteht (andere Voranmeldung und Gewinnermittlung) – bewusst später
+
 ## Fehler & Technik
 - Rechnungsformular (`/invoice?id=…`) läuft bei 1440 px Breite rechts aus dem Viewport
 - Invoices-Zeilen werden per Spaltenindex gelesen (u. a. `server/pages_invoice.py`) – bricht bei Schemaänderungen, besser Spaltennamen

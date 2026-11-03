@@ -2,7 +2,8 @@
 // SPDX-FileCopyrightText: 2026 unsix IT Engineering
 // Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 //
-// Erzeugt die Screenshots für das README (docs/screenshots/*.png).
+// Erzeugt die Screenshots für das README (docs/screenshots/*.png), jeweils hell
+// und dunkel (*-dark.png, Dark Mode der App über prefers-color-scheme).
 //
 // Die App wird im Demo-Modus (UBUCHHALTUNG_DEMO=1) mit einem temporären, leeren
 // Datenverzeichnis gestartet, fotografiert und wieder beendet – die eigenen
@@ -69,17 +70,26 @@ try {
     { args: ['--lang=de-DE'],   // Datumsfelder: TT.MM.JJJJ (braucht auch die Umgebung)
       env: { ...process.env, LANG: 'de_DE.UTF-8', LANGUAGE: 'de_DE:de', LC_ALL: 'de_DE.UTF-8' },
       ...(process.env.PLAYWRIGHT_CHROMIUM_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } : {}) });
-  const ctx = await browser.newContext({
-    viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: 'light', locale: 'de-DE', timezoneId: 'Europe/Berlin',
-    extraHTTPHeaders: { 'Accept-Language': 'de-DE,de' },
-  });
-  const page = await ctx.newPage();
-  for (const s of SHOTS) {
-    await page.goto(BASE + s.path, { waitUntil: 'networkidle' });
-    const target = join(OUT, `${s.file}.png`);
-    await page.screenshot({ path: target });
-    console.log('✓', target);
+  for (const [scheme, suffix] of [['light', ''], ['dark', '-dark']]) {
+    const ctx = await browser.newContext({
+      viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: scheme, locale: 'de-DE', timezoneId: 'Europe/Berlin',
+      extraHTTPHeaders: { 'Accept-Language': 'de-DE,de' },
+    });
+    const page = await ctx.newPage();
+    for (const s of SHOTS) {
+      await page.goto(BASE + s.path, { waitUntil: 'networkidle' });
+      const target = join(OUT, `${s.file}${suffix}.png`);
+      await page.screenshot({ path: target });
+      console.log('✓', target);
+    }
+    await ctx.close();
   }
+  // Auf 256 Farben verkleinern (Pillow kommt mit pdfplumber aus requirements.txt)
+  const shrink = spawn(process.env.PYTHON || 'python3', ['-c',
+    'import glob,sys\nfrom PIL import Image\nfor f in glob.glob(sys.argv[1]+"/*.png"):\n' +
+    '    Image.open(f).convert("RGB").quantize(colors=256, method=Image.Quantize.MEDIANCUT,' +
+    ' dither=Image.Dither.NONE).save(f, optimize=True)', OUT], { stdio: 'inherit' });
+  await new Promise((ok, fail) => shrink.on('exit', c => c === 0 ? ok() : fail(new Error('Verkleinern fehlgeschlagen'))));
 } finally {
   if (browser) await browser.close();
   server.kill();
