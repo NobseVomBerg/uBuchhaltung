@@ -422,7 +422,7 @@ uBuchhaltung/
 ├── Dockerfile · compose.yaml  # Container-Betrieb (Standardport 2824)
 ├── docker-entrypoint.sh       # Container-Start: Volume-Rechte übernehmen, dann unprivilegiert
 ├── unraid-template.xml        # Fertiges Docker-Template für Unraid
-├── .github/workflows/         # CI: Tests bei jedem Push; Image-Build & Push nach ghcr.io bei Push auf main
+├── .github/workflows/         # CI: Tests bei jedem Push; Docker-Image: Release → :latest, main → :edge
 ├── LICENSE                    # AGPL-3.0 (kommerzielle Lizenz auf Anfrage, siehe unten)
 ├── CLA.md · CONTRIBUTING.md   # Beitragsregeln + Contributor License Agreement
 ├── seed_data/                 # Initialisierungsdaten (JSON)

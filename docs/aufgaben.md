@@ -4,11 +4,12 @@ Kurzliste, öffentlich. Erledigtes wird gelöscht, nicht abgehakt – die Histor
 steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 
 ## Repo & Veröffentlichung
-- Ersten Release taggen (`v1.6.x`); der Docker-Workflow baut dann auch versionierte Images
+- Ersten GitHub-Release `v1.6.16` veröffentlichen (Releases → Draft a new release → Generate release notes)
+- `main` per Ruleset schützen: Löschen/Force-Push sperren, PR + Status-Check `pytest` verlangen
 - GitHub-Einstellungen: Beschreibung, Topics, Social-Preview-Bild, Discussions
 - Unraid Community Applications: `ca_profile.xml` ergänzen, Template auf ca.unraid.net/submit validieren
 - awesome-selfhosted: frühestens 4 Monate nach dem ersten Release; Eintrag schreibt der Owner selbst (Listenregel: keine KI-generierten Beiträge)
-- Docker-Demo (`-e UBUCHHALTUNG_DEMO=1`) nach dem Merge einmal im echten Container prüfen
+- Docker-Demo (`-e UBUCHHALTUNG_DEMO=1`) nach dem ersten Release einmal im echten Container prüfen
 
 ## Funktionen
 - Kontoauszüge im CAMT.053-/MT940-Format (bisher nur PDF: DKB, Volksbank Rottweil)
