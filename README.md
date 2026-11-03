@@ -412,4 +412,4 @@ Wenn dir das Projekt nützt, freue ich mich über einen Kaffee:
 
 ## Autor
 
-© 2026 unsix IT Engineering – entwickelt von NobseVomBerg
+© 2026 [unsix IT Engineering](https://unsix.de) – entwickelt von NobseVomBerg
