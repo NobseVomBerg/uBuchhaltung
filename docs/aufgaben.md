@@ -5,7 +5,6 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 
 ## Repo & Veröffentlichung
 - Ersten GitHub-Release `v1.6.16` veröffentlichen (Releases → Draft a new release → Generate release notes)
-- `main` per Ruleset schützen: Löschen/Force-Push sperren, PR + Status-Check `pytest` verlangen
 - GitHub-Einstellungen: Beschreibung, Topics, Social-Preview-Bild, Discussions
 - Unraid Community Applications: `ca_profile.xml` ergänzen, Template auf ca.unraid.net/submit validieren
 - awesome-selfhosted: frühestens 4 Monate nach dem ersten Release; Eintrag schreibt der Owner selbst (Listenregel: keine KI-generierten Beiträge)
