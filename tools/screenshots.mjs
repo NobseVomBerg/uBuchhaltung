@@ -66,9 +66,12 @@ try {
   await waitForServer(BASE + '/');
   mkdirSync(OUT, { recursive: true });
   browser = await chromium.launch(
-    process.env.PLAYWRIGHT_CHROMIUM_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } : {});
+    { args: ['--lang=de-DE'],   // Datumsfelder: TT.MM.JJJJ (braucht auch die Umgebung)
+      env: { ...process.env, LANG: 'de_DE.UTF-8', LANGUAGE: 'de_DE:de', LC_ALL: 'de_DE.UTF-8' },
+      ...(process.env.PLAYWRIGHT_CHROMIUM_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } : {}) });
   const ctx = await browser.newContext({
-    viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: 'light', locale: 'de-DE',
+    viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: 'light', locale: 'de-DE', timezoneId: 'Europe/Berlin',
+    extraHTTPHeaders: { 'Accept-Language': 'de-DE,de' },
   });
   const page = await ctx.newPage();
   for (const s of SHOTS) {
