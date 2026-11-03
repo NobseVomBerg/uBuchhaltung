@@ -16,9 +16,44 @@ and small businesses in Germany – SKR charts of accounts, EÜR (cash-basis
 profit statement), XRechnung e-invoices and DATEV export. The user interface and
 documentation are in German.
 
+![Dashboard mit Monatsverlauf und Einnahmen-Überschuss-Rechnung](docs/screenshots/dashboard.png)
+
+<details>
+<summary><b>Weitere Screenshots</b> (Buchungen, Rechnungen, Anlagen, Fahrtenbuch, Arbeitszeiten)</summary>
+
+**Buchungen** – Bankbewegungen mit Kontierung, Split-Buchungen und Rechnungszahlungen
+![Buchungsliste](docs/screenshots/transactions.png)
+
+**Rechnungen** – Status von Entwurf bis bezahlt, offene Posten und Teilzahlungen
+![Rechnungsliste](docs/screenshots/invoice-list.png)
+
+**Anlagenverzeichnis** – Restbuchwerte und geplante AfA
+![Anlagenverzeichnis](docs/screenshots/assets.png)
+
+**Fahrtenbuch**
+![Fahrtenbuch](docs/screenshots/trips.png)
+
+**Arbeitszeiten**
+![Arbeitszeiten](docs/screenshots/worktime.png)
+
+Alle Screenshots zeigen erfundene Beispieldaten aus dem [Demo-Modus](#schnellstart).
+</details>
+
 ## Schnellstart
 
-Mit Docker (Server, NAS, Unraid, Proxmox & Co.):
+Erst einmal ausprobieren – mit erfundenen Beispieldaten, ohne Einrichtung
+(beim Beenden ist alles wieder weg):
+
+```bash
+docker run --rm -p 2824:2824 -e UBUCHHALTUNG_DEMO=1 ghcr.io/nobsevomberg/ubuchhaltung:latest
+```
+
+Dann `http://localhost:2824` öffnen. Der Demo-Modus ist nur zum lokalen
+Ausprobieren gedacht – Details in [DEPLOYMENT.md](DEPLOYMENT.md#demo-modus-ausprobieren).
+
+Für den echten Betrieb:
+
+Mit Docker (Server, NAS, Unraid, Proxmox & Co.) und eigenem Datenverzeichnis:
 
 ```bash
 docker run -d --name ubuchhaltung --restart unless-stopped \
@@ -348,6 +383,7 @@ importieren (`/miscellaneous`); Bank↔Entry wird dabei automatisch verknüpft.
 ```
 uBuchhaltung/
 ├── main.py                    # Entry Point – Webserver starten
+├── demo.py · demo_seed.py     # Demo-Modus (UBUCHHALTUNG_DEMO=1) und seine Beispieldaten
 ├── version.py                 # Single Source of Truth für die Versionsnummer
 ├── money.py                   # Geld als Festkomma-Integer (Minor Units, SCALE=4)
 ├── auth.py                    # Benutzer/Sessions/CSRF (Mehrbenutzer-Modus)
@@ -417,6 +453,8 @@ uBuchhaltung/
 │   └── backup.py              # Datensicherung/Wiederherstellung
 ├── tests/                     # pytest-Suite (nur anonymisierte Daten,
 │                              #   Guard: tests/check_anonymized.py)
+├── tools/screenshots.mjs      # Erzeugt docs/screenshots/ im Demo-Modus (Playwright)
+├── docs/screenshots/          # Screenshots fürs README
 ├── static/                    # Statische Dateien (Logos)
 └── data/                      # Laufzeitdaten (in .gitignore)
     ├── config.json            # Betriebsmodus (single/multi)
