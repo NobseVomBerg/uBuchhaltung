@@ -2,10 +2,11 @@
 
 ## Projekt-Überblick
 
-**uBuchhaltung** ist ein Python-basiertes Buchhaltungs-/Rechnungsverwaltungssystem mit Flask-Backend und Web-UI. Fokus: Finanz-Datenmanagement, SKR-Konten, Geschäftsvorfälle, PDF-Rechnungen.
+**uBuchhaltung** ist ein Python-basiertes Buchhaltungs-/Rechnungsverwaltungssystem mit Web-UI. Fokus: Finanz-Datenmanagement, SKR-Konten, Geschäftsvorfälle, PDF-Rechnungen.
 
-- **Tech Stack:** Python (Flask), SQLite, Jinja2 Templates, CSS, HTML
-- **Struktur:** `server/` (App-Logik), `db/` (Datenbank-Package, Domänen-Mixins), `buch.css` (Styling), Templates im `server/templates/`
+- **Tech Stack:** Python-Standardbibliothek (`http.server`, kein Framework), SQLite, server-seitig erzeugtes HTML + JS, CSS
+- **Struktur:** `server/` (Routing, Seiten als `pages_*.py`), `db/` (Datenbank-Package, Domänen-Mixins), `buch.css` (Styling)
+- **Offene Aufgaben:** `docs/aufgaben.md` (Erledigtes löschen; Historie = `git log`, kein Journal)
 - **Entwicklungs-Server:** `python main.py` (Port 8080)
 - **Entscheidende Files:** `db/schema.py` (Tabellen/Schema), `db/__init__.py` (Database-Komposition), `server/app.py` (Routes), `server/pages_*.py` (Features). Navigation: db-navigate-Skill.
 
@@ -184,6 +185,24 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
   (`.github/workflows/docker-publish.yml` → `ghcr.io/nobsevomberg/ubuchhaltung:latest`)
   – main also nur in release-fähigem Zustand pushen
 - Container-Standardport 2824; Betriebsdoku (Unraid/Proxmox) in `DEPLOYMENT.md`
+- Jeder Push (alle Branches) führt `.github/workflows/tests.yml` aus:
+  Anonymisierungs-Guard + pytest
+
+### Demo-Modus & Screenshots
+- `UBUCHHALTUNG_DEMO=1` (`demo.py`) befüllt **nur ein leeres Datenverzeichnis** –
+  diese Garantie nie aufweichen. Demodaten (`demo_seed.py`,
+  `seed_data/test/demo_scenario.json`) entstehen über die App-eigenen Code-Pfade,
+  relativ zum Startdatum; pytest-Testdaten bleiben davon getrennt
+- README-Bilder neu erzeugen: `node tools/screenshots.mjs` → `docs/screenshots/`
+
+### README & öffentliche Texte
+- Oben im README steht, was Besucher brauchen (Zweck, Schnellstart, Überblick);
+  Technik weiter unten. Grenzen ehrlich benennen, nichts versprechen
+  (keine Steuerberatung, keine GoBD-Zusicherung)
+- Markennamen Dritter (z. B. WISO) nur zur Bezeichnung von Importformaten, mit
+  Markenhinweis; keine vergleichenden Aussagen oder „Alternative zu …“
+- Das Repo ist öffentlich: Strategisches, Rechtliches und Notizen zu anderen
+  Projekten gehören nicht ins Repo, sondern in die lokalen `data/handover-*.md`
 
 ### WISO-Datenübernahme
 - Zwei Wege: die **Textexporte** (`db/wiso_import.py`, CSV) und die
