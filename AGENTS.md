@@ -38,6 +38,8 @@ Bei Änderungen an Import, Matching oder Dashboard-EÜR immer mitpflegen:
 2. `PARSER_README.md` (Import-/Parser-Details)
 3. `DB_MODEL.md` (Datenfluss und fachliche Logik)
 
+Offene Aufgaben stehen in `docs/aufgaben.md` – Erledigtes dort löschen.
+
 ## Nicht-Ziele
 
 - Keine großflächigen Refactorings ohne konkreten Anlass

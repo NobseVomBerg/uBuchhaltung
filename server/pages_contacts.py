@@ -11,6 +11,7 @@ Option C – normalized structure:
 """
 import html as _html
 from db import Database
+from money import fmt_eur
 
 
 def Header1(active_page=None):
@@ -611,7 +612,7 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
                           f'{_html.escape(str(inv[1] or inv[0]))}</a></td>'
                           f'<td>{inv[2] or "–"}</td>'
                           f'<td>{_html.escape(INVOICE_STATUS_LABELS.get(st, st))}</td>'
-                          f'<td style="text-align:right;">{inv[4]:.2f} €</td></tr>')
+                          f'<td style="text-align:right;">{fmt_eur(inv[4])}</td></tr>')
                 s += '</table>'
             if items['credits']:
                 s += ('<h4>Nicht zugeordnete Zahlungen (Guthaben)</h4>'
@@ -620,12 +621,12 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
                     s += (f'<tr><td><a href="/transactions/edit?id={c[0]}">#{c[0]}</a> '
                           f'{_html.escape(str(c[2] or ""))}</td>'
                           f'<td>{c[1] or "–"}</td>'
-                          f'<td style="text-align:right;">{c[5]:.2f} €</td></tr>')
+                          f'<td style="text-align:right;">{fmt_eur(c[5])}</td></tr>')
                 s += '</table>'
             saldo = items['saldo']
             saldo_color = '#c00' if saldo > 0 else '#2a2'
             s += (f'<p><strong>Saldo: <span style="color:{saldo_color};">'
-                  f'{saldo:.2f} €</span></strong> (Forderungen − Guthaben)</p>')
+                  f'{fmt_eur(saldo)}</span></strong> (Forderungen − Guthaben)</p>')
             s += '</div>'
 
     s += '</div><!-- Ende gridRightCol -->'

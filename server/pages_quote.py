@@ -13,6 +13,7 @@ import datetime
 import os
 import html as _html
 from db import Database
+from money import fmt_eur
 from .pages import Header1, Header2, Header3, Footer, logo_url
 from .pages_invoice import _json_for_script, document_submenu
 
@@ -81,8 +82,8 @@ def PageQuote(db: Database, filters: dict = None, quote_id=None):
     <div class="rectRounded">
         <strong>Statistik:</strong>
         {total_count} Angebot(e) |
-        Gesamtsumme: {total_sum:.2f} € |
-        Offen: {open_sum:.2f} €
+        Gesamtsumme: {fmt_eur(total_sum)} |
+        Offen: {fmt_eur(open_sum)}
     </div>
     '''
 
@@ -107,8 +108,8 @@ def PageQuote(db: Database, filters: dict = None, quote_id=None):
             pdf_exists = "true" if (pdf_path and os.path.exists(pdf_path)) else "false"
             s += "<tr>"
             s += f"<td>{q_number}</td><td>{q_date}</td><td>{buyer[:30]}</td>"
-            s += f"<td style='text-align:right;'>{sum_net:.2f} €</td>"
-            s += f"<td style='text-align:right;'><strong>{sum_gross:.2f} €</strong></td>"
+            s += f"<td style='text-align:right;'>{fmt_eur(sum_net)}</td>"
+            s += f"<td style='text-align:right;'><strong>{fmt_eur(sum_gross)}</strong></td>"
             s += f"<td style='color:{color};'><strong>{label}</strong></td>"
             s += f"<td>{valid_until or '–'}</td>"
             s += "<td>"
@@ -360,7 +361,7 @@ def _quote_form_html(db: Database, quote_id=None):
                     <td><input type="text" class="item-unit" value="{unit}" style="width:60px;"></td>
                     <td><input type="text" class="item-description" value="{description}" style="width:100%;"></td>
                     <td><input type="number" class="item-price" value="{price}" min="0" step="0.01" style="width:80px;"> €</td>
-                    <td class="item-total" style="text-align:right;">{total:.2f} €</td>
+                    <td class="item-total" style="text-align:right;">{fmt_eur(total)}</td>
                     <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color:red;">✕</button></td>
                 </tr>'''
     else:
@@ -489,7 +490,7 @@ def _quote_form_html(db: Database, quote_id=None):
             dropdown.innerHTML = entries.map(([id, a]) =>
                 '<div class="article-option" onmousedown="selectArticle(' + id + ')">' +
                 '<strong>' + a.name + '</strong>' +
-                '<span class="article-option-meta">' + a.unit + ' · ' + a.price.toFixed(2) + ' € · ' + a.taxRate + '%</span>' +
+                '<span class="article-option-meta">' + a.unit + ' · ' + fmtDe(a.price) + ' € · ' + a.taxRate + '%</span>' +
                 '</div>'
             ).join('');
             dropdown.style.display = 'block';
@@ -540,26 +541,31 @@ def _quote_form_html(db: Database, quote_id=None):
             rows.forEach((row,i)=>{ row.querySelector('td:first-child').textContent=i+1; row.setAttribute('data-row', i+1); });
             rowCounter = rows.length;
         }
+        // Betrags-Anzeige/-Parsing im deutschen Format (Tausenderpunkt, Dezimalkomma).
+        // Die Anzeigefelder werden von den Berechnungen zurückgelesen – daher immer
+        // über fmtDe/parseDe, nie nur '.'/',' tauschen.
+        function fmtDe(n) { return n.toLocaleString('de-DE', {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
+        function parseDe(t) { return parseFloat(String(t).replace(/<[^>]*>/g, '').replace('€', '').replace(/\\./g, '').replace(',', '.').trim()); }
         function calculateRowTotal(row){
             const q = parseFloat(row.querySelector('.item-quantity').value)||0;
             const p = parseFloat(row.querySelector('.item-price').value)||0;
-            row.querySelector('.item-total').textContent = (q*p).toFixed(2).replace('.', ',') + ' €';
+            row.querySelector('.item-total').textContent = fmtDe(q*p) + ' €';
         }
         function calculateTotals(){
             let net = 0;
             document.querySelectorAll('.invoice-item-row').forEach(row=>{
                 calculateRowTotal(row);
-                net += parseFloat(row.querySelector('.item-total').textContent.replace(' €','').replace(',','.'))||0;
+                net += parseDe(row.querySelector('.item-total').textContent)||0;
             });
-            document.getElementById('sum_net').textContent = net.toFixed(2).replace('.', ',') + ' €';
-            document.getElementById('tax_base').textContent = net.toFixed(2).replace('.', ',');
+            document.getElementById('sum_net').textContent = fmtDe(net) + ' €';
+            document.getElementById('tax_base').textContent = fmtDe(net);
             const showTax = document.getElementById('show_tax').checked;
             const taxRow = document.getElementById('tax_row');
             if (taxRow) taxRow.style.display = showTax ? '' : 'none';
             const tr = showTax ? (parseFloat(document.getElementById('tax_rate').value)||0) : 0;
             const tax = net*(tr/100);
-            document.getElementById('tax_amount').textContent = tax.toFixed(2).replace('.', ',') + ' €';
-            document.getElementById('sum_gross').innerHTML = '<strong>' + (net+tax).toFixed(2).replace('.', ',') + ' €</strong>';
+            document.getElementById('tax_amount').textContent = fmtDe(tax) + ' €';
+            document.getElementById('sum_gross').innerHTML = '<strong>' + fmtDe(net+tax) + ' €</strong>';
         }
         function attachCalculationListeners(row){
             row.querySelector('.item-quantity').addEventListener('input', calculateTotals);

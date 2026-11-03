@@ -130,7 +130,7 @@ def test_partial_capture_is_saved(tmp_db):
     html = PageTransactions(tmp_db, date_from='2026-01-01', date_to='2026-12-31')
     # Badge bleibt schmal ("offen"); der genaue Rest steht nur im Tooltip,
     # sonst verdeckt er den Bearbeiten-Stift.
-    assert 'offener Rest -38.00' in html
+    assert 'offener Rest -38,00' in html
     assert '>offen</span>' in html
     assert 'Bank + Buchungssätze vollständig' not in html
 

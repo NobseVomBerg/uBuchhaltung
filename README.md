@@ -1,12 +1,133 @@
 # uBuchhaltung
 
-Eine webbasierte Buchhaltungsanwendung für kleine Unternehmen und Selbstständige.
+[![Tests](https://github.com/NobseVomBerg/uBuchhaltung/actions/workflows/tests.yml/badge.svg)](https://github.com/NobseVomBerg/uBuchhaltung/actions/workflows/tests.yml)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
-## Überblick
+**Selbst gehostete Buchhaltung für Selbstständige und kleine Unternehmen in
+Deutschland** – Belege, Bankbuchungen, Einnahmen-Überschuss-Rechnung,
+Rechnungen mit XRechnung, Anlagen mit AfA und DATEV-Export. Läuft im eigenen
+Netz (Docker, Unraid, Proxmox oder direkt mit Python); die Daten bleiben bei dir.
 
-uBuchhaltung ist eine schlanke, webbasierte Buchhaltungssoftware in Python. Sie verwaltet Belege, Konten, Buchungen und nutzt den deutschen Standardkontenrahmen (SKR). Bankbewegungen (`BookingType='bank'`) und Buchungssätze (`BookingType='entry'`) werden in einer gemeinsamen Tabelle geführt und automatisch verknüpft.
+> **Status:** Im eigenen Betrieb des Entwicklers im Einsatz und in aktiver
+> Weiterentwicklung. Oberfläche und Dokumentation sind deutschsprachig.
 
-## Features
+*In English:* uBuchhaltung is a self-hosted bookkeeping web app for freelancers
+and small businesses in Germany – SKR charts of accounts, EÜR (cash-basis
+profit statement), XRechnung e-invoices and DATEV export. The user interface and
+documentation are in German.
+
+![Dashboard mit Monatsverlauf und Einnahmen-Überschuss-Rechnung](docs/screenshots/dashboard.png)
+
+<details>
+<summary><b>Weitere Screenshots</b> (Buchungen, Rechnungen, Anlagen, Fahrtenbuch, Arbeitszeiten)</summary>
+
+**Buchungen** – Bankbewegungen mit Kontierung, Split-Buchungen und Rechnungszahlungen
+![Buchungsliste](docs/screenshots/transactions.png)
+
+**Rechnungen** – Status von Entwurf bis bezahlt, offene Posten und Teilzahlungen
+![Rechnungsliste](docs/screenshots/invoice-list.png)
+
+**Anlagenverzeichnis** – Restbuchwerte und geplante AfA
+![Anlagenverzeichnis](docs/screenshots/assets.png)
+
+**Fahrtenbuch**
+![Fahrtenbuch](docs/screenshots/trips.png)
+
+**Arbeitszeiten**
+![Arbeitszeiten](docs/screenshots/worktime.png)
+
+Alle Screenshots zeigen erfundene Beispieldaten aus dem [Demo-Modus](#schnellstart).
+</details>
+
+## Schnellstart
+
+Erst einmal ausprobieren – mit erfundenen Beispieldaten, ohne Einrichtung
+(beim Beenden ist alles wieder weg):
+
+```bash
+docker run --rm -p 2824:2824 -e UBUCHHALTUNG_DEMO=1 ghcr.io/nobsevomberg/ubuchhaltung:latest
+```
+
+Dann `http://localhost:2824` öffnen. Der Demo-Modus ist nur zum lokalen
+Ausprobieren gedacht – Details in [DEPLOYMENT.md](DEPLOYMENT.md#demo-modus-ausprobieren).
+
+Für den echten Betrieb:
+
+Mit Docker (Server, NAS, Unraid, Proxmox & Co.) und eigenem Datenverzeichnis:
+
+```bash
+docker run -d --name ubuchhaltung --restart unless-stopped \
+  -p 2824:2824 -v /pfad/zu/daten:/app/data \
+  ghcr.io/nobsevomberg/ubuchhaltung:latest
+```
+
+Danach unter `http://<host>:2824` öffnen; die Ersteinrichtung läuft im Browser.
+Ohne Docker: `pip install -r requirements.txt` und `python main.py`
+(Python 3.10+, dann unter `http://localhost:8080`). Mehr dazu unter
+[Installation und Start](#installation-und-start) und in
+[DEPLOYMENT.md](DEPLOYMENT.md).
+
+## Funktionen im Überblick
+
+| Bereich | Was drin ist |
+|---|---|
+| **Buchen** | Bankbewegungen und Buchungssätze, Split-Buchungen, Kontierungs-Vorschlag aus der Historie, Belege verknüpfen |
+| **Kontenrahmen** | SKR04 vorbelegt, eigene Konten (auch weiterer Rahmen wie SKR03) anlegbar, DATEV-Steuerschlüssel |
+| **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR) |
+| **Rechnungen & Angebote** | PDF und XRechnung (EN 16931), E-Mail-Versand, Nummernkreise, offene Posten, Mahnwesen, Kleinunternehmerregelung |
+| **Anlagen** | Anlagenverzeichnis mit AfA (linear, degressiv, GWG) |
+| **Import & Export** | Kontoauszüge als PDF (DKB, Volksbank Rottweil), [Datenübernahme aus WISO Mein Büro](#datenübernahme-aus-wiso-mein-büro), DATEV-Buchungsstapel |
+| **Außerdem** | Arbeitszeiten mit Stundenzettel, Fahrtenbuch, Einzel- oder Mehrbenutzerbetrieb, Datensicherung, Dark Mode |
+
+Alle Funktionen ausführlich: [Funktionen im Detail](#funktionen-im-detail).
+
+## Datenübernahme aus WISO Mein Büro
+
+uBuchhaltung kann vorhandene Daten aus WISO Mein Büro (Desktop) übernehmen –
+direkt aus der Datenbankdatei oder aus den Textexporten:
+
+- **Import aus der Datenbank** (*Verschiedenes → Import aus der Datenbank*):
+  liest die Firebird-Dateien (`.FDB`) des Mandanten direkt in Python – ohne
+  Firebird-Installation, Treiber oder DLL. Übernommen werden Buchungen aller
+  Jahre einschließlich der Zusammengehörigkeit von Teilbuchungen, Anlagen,
+  Kunden sowie Rechnungen mit ihren Positionen.
+- Konten werden von SKR03 nach SKR04 umgeschlüsselt. Konten ohne eindeutige
+  Zuordnung werden gemeldet, nicht geraten.
+- Vor dem Schreiben prüft der Import die Tabellenstruktur und bricht ab, wenn
+  sie nicht der erwarteten entspricht.
+- **CSV-Import** der Textexporte (Original- und Tabellen-Export), auch
+  wiederholt im Parallelbetrieb – Details in [PARSER_README.md](PARSER_README.md).
+
+Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen.
+
+> WISO und MeinBüro sind Marken ihrer jeweiligen Inhaber. uBuchhaltung ist ein
+> unabhängiges Projekt und steht in keiner Verbindung zu den Markeninhabern oder
+> dem Hersteller. Die Namen dienen allein der Bezeichnung der unterstützten
+> Importformate.
+
+## Gut zu wissen
+
+- **Keine Steuerberatung.** uBuchhaltung hilft beim Buchen und Auswerten; die
+  Verantwortung für eine ordnungsgemäße Buchführung und für Steuererklärungen
+  bleibt beim Anwender. Eine Prüfung oder Zusicherung der GoBD-Konformität gibt
+  es nicht.
+- **Noch nicht enthalten:** Umsatzsteuer-Voranmeldung bzw. ELSTER-Übermittlung,
+  ZUGFeRD (Rechnungen gibt es als PDF und als XRechnung), Bankanbindung per
+  FinTS/PSD2 sowie Kontoauszüge im CAMT- oder MT940-Format.
+- **Für den Betrieb im eigenen Netz gebaut**, nicht fürs offene Internet –
+  siehe [Sicherheitshinweise](#sicherheitshinweise).
+
+Fehler gefunden oder eine Idee? → [Issues](https://github.com/NobseVomBerg/uBuchhaltung/issues).
+Beiträge sind willkommen, siehe [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## Funktionen im Detail
+
+uBuchhaltung verwaltet Belege, Konten und Buchungen auf Basis des deutschen
+Standardkontenrahmens (SKR). Bankbewegungen (`BookingType='bank'`) und
+Buchungssätze (`BookingType='entry'`) werden in einer gemeinsamen Tabelle
+geführt und automatisch verknüpft.
 
 ### 1. Belege-Verwaltung (`/receipts`)
 - Übersicht aller Belege mit Nummer, Datum, Dateiname, Pfad und Zusatzinfos
@@ -113,7 +234,7 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 - Typen: Ausgangsrechnungen, Belegnummern
 - Jahreswechsel-Support
 
-### 13. Anlagenverzeichnis (`/assets`)
+### 12. Anlagenverzeichnis (`/assets`)
 Vollständiges Anlagenmanagement mit gesetzeskonformer AfA:
 - **BMF-Kategorien**: 30 vordefinierte Kategorien aus `seed_data/`
 - **AfA-Methoden**: Linear (anteilig), Degressiv (25%), GWG (≤ 800 €)
@@ -122,7 +243,7 @@ Vollständiges Anlagenmanagement mit gesetzeskonformer AfA:
 - **Buchungsintegration**: AfA-Buchung als Bookings-Eintrag
 - **Erweiterungen**: Sub-Anlagen über Parent_ID
 
-### 14. Sonstiges (`/miscellaneous`)
+### 13. Sonstiges (`/miscellaneous`)
 - **Datenbank-Übersicht**: Tabellenstatistiken
 - **DB-Export**: INSERT-Statements nach `data/db-export.sql`
 - **WISO Import**: Automatische Format-Erkennung (Original + Tabellen-Export)
@@ -147,21 +268,21 @@ Vollständiges Anlagenmanagement mit gesetzeskonformer AfA:
 - **SQL-Audit-Logs**: `sql_operations.log/.sql` werden ab 5 MB automatisch
   rotiert und komprimiert archiviert (`JJJJMMTT-HHMMSS_sql_operations.*`)
 
-### 15. Angebote (`/quote`)
+### 14. Angebote (`/quote`)
 - Angebote als `Invoices`-Zeilen mit `DocumentType='quote'` (gleiche Positionen/PDF-Logik)
 - Umwandlung Angebot → Rechnung (`SourceQuoteId` verweist auf die Quelle)
 - Status-Workflow und Gültigkeitsdatum (`ValidUntil`)
 
-### 16. Arbeitszeiten (`/worktime`)
+### 15. Arbeitszeiten (`/worktime`)
 - Zeiterfassung je Person (Arbeit/Urlaub/Krank/Feiertag) mit Pausen und Einsatzort
 - Überlappungsprüfung, Kundenzuordnung
 - **PDF-Stundenzettel** (`export/pdf_worktime.py`)
 
-### 17. Fahrtenbuch (`/trips`)
+### 16. Fahrtenbuch (`/trips`)
 - Fahrten je Fahrer mit Start/Ziel, km-Ständen und Belegverknüpfung
 - km-Vorbelegung aus der letzten Fahrt
 
-### 18. Mehrbenutzer & Benutzerverwaltung (`/users`)
+### 17. Mehrbenutzer & Benutzerverwaltung (`/users`)
 - Betriebsmodus **Einzelbenutzer** (ohne Login) oder **Mehrbenutzer** (Login,
   je Nutzer isoliertes Datenverzeichnis `data/users/<user>/`) – Auswahl bei der
   Ersteinrichtung, gespeichert in `data/config.json`
@@ -170,98 +291,14 @@ Vollständiges Anlagenmanagement mit gesetzeskonformer AfA:
 - Admin-Funktionen: Nutzer anlegen/löschen, Passwort zurücksetzen, Admin-Flag
 - Details zu LAN/HTTPS-Betrieb: siehe [DEPLOYMENT.md](DEPLOYMENT.md)
 
-### 19. About (`/about`)
+### 18. About (`/about`)
 Informationen über die Anwendung (Version aus `version.py`).
-
----
-
-## Projektstruktur
-
-```
-uBuchhaltung/
-├── main.py                    # Entry Point – Webserver starten
-├── version.py                 # Single Source of Truth für die Versionsnummer
-├── money.py                   # Geld als Festkomma-Integer (Minor Units, SCALE=4)
-├── auth.py                    # Benutzer/Sessions/CSRF (Mehrbenutzer-Modus)
-├── userctx.py                 # Request-Kontext: Modus, Benutzer, Datenpfade
-├── db/                        # Datenbank-Package (CRUD, Import, Linking, Seeding)
-│   ├── __init__.py            #   Database-Klasse (Komposition aller Mixins)
-│   ├── core.py                #   Verbindung, Init-Guard, Geld-Grenze, coa_id, SQL-Log
-│   ├── schema.py              #   alle CREATE TABLE / Schema-Setup
-│   ├── bookings.py · matching.py · invoices.py · contacts.py · …
-│   └── (weitere Domänen-Mixins: assets, accounts, wiso_import, reporting,
-│        worktimes, seed, numbering, articles, receipts …)
-├── document_parser.py         # Belegablage, SQL-Audit-Log/-Rotation, DKB-PDF-Parser
-├── importers/                 # Datenimport: Abstraktionsschicht + Bankmodule
-│   ├── base.py                #   Gemeinsames Datenmodell (BankStatement, Transaktion)
-│   ├── pdftext.py             #   Extraktions-Helfer (Text, IBAN, Belegdatum)
-│   ├── plausibility.py        #   Inhaltsprüfung (Kopf-/Fußzeilen, Beträge, Daten)
-│   ├── vbr.py                 #   Volksbank Rottweil (PDF)
-│   └── dkb.py                 #   DKB (PDF)
-├── export/                    # Ausgabe-/Export-Generatoren (Package)
-│   ├── pdf_core.py            #   Gemeinsame PDF-Primitive (Builder, Logo, Escaping)
-│   ├── pdf_invoice.py         #   PDF-Rechnungs-/Angebotsgenerierung
-│   ├── pdf_worktime.py        #   PDF-Stundenzettel (Arbeitszeiten)
-│   ├── xrechnung_invoice.py   #   XRechnung XML (EN 16931)
-│   └── datev.py               #   DATEV-Buchungsstapel-Export (CSV)
-├── email_sender.py            # E-Mail-Versand (SMTP)
-├── buch.css                   # Stylesheet (inkl. Dark Mode; versioniert via ?v=)
-├── README.md                  # Diese Datei
-├── DB_MODEL.md                # Detailliertes Datenbankmodell
-├── PARSER_README.md           # Dokumentation Parser & CSV-Import
-├── DEPLOYMENT.md              # LAN-/HTTPS-/Mehrbenutzer-Betrieb
-├── AGENTS.md                  # Leitfaden für KI-/Coding-Agenten im Repo
-├── requirements.txt           # Laufzeit-Dependencies (pdfplumber)
-├── requirements-dev.txt       # zusätzlich Test-Dependencies (pytest)
-├── run_https.ps1              # HTTPS-Schnellstart (selbstsigniertes Zertifikat)
-├── Dockerfile · compose.yaml  # Container-Betrieb (Standardport 2824)
-├── docker-entrypoint.sh       # Container-Start: Volume-Rechte übernehmen, dann unprivilegiert
-├── unraid-template.xml        # Fertiges Docker-Template für Unraid
-├── .github/workflows/         # CI: Image-Build & Push nach ghcr.io bei Push auf main
-├── LICENSE                    # AGPL-3.0 (kommerzielle Lizenz auf Anfrage, siehe unten)
-├── CLA.md · CONTRIBUTING.md   # Beitragsregeln + Contributor License Agreement
-├── seed_data/                 # Initialisierungsdaten (JSON)
-│   ├── tax_keys.json          # 50 DATEV-Steuerschlüssel (BU-Codes)
-│   ├── asset_categories.json  # 30 BMF-AfA-Kategorien
-│   ├── chart_of_accounts_skr04.json  # Standard-SKR04-Kontenrahmen
-│   ├── private/               # Benutzerspezifisch (in .gitignore)
-│   └── test/                  # Testdaten (nur anonymisierte/erfundene Werte)
-├── server/                    # Modularer Webserver
-│   ├── app.py                 # HTTP-Server: Routing, Auth-Gate, CSRF, Statics
-│   ├── pages.py               # Gemeinsame HTML (Header, Footer, Nav, CSRF-JS)
-│   ├── pages_dashboard.py     # Dashboard + EÜR
-│   ├── pages_invoice.py       # Rechnungen · pages_quote.py – Angebote
-│   ├── pages_transactions.py  # Buchungen (Bank+Entry merged Display)
-│   ├── pages_contacts.py      # Kontaktverwaltung (6-Tabellen-Schema)
-│   ├── pages_masterdata.py    # Stammdaten (Artikel, SKR, Bankkonten, Nummernkreise)
-│   ├── pages_assets.py        # Anlagenverzeichnis
-│   ├── pages_worktime.py      # Arbeitszeiten · pages_trips.py – Fahrtenbuch
-│   ├── pages_setup.py         # Ersteinrichtung · pages_login.py – Login/Bootstrap
-│   ├── pages_users.py         # Benutzerverwaltung (Admin)
-│   ├── pages_receipts.py      # Belege (Upload, Bearbeiten)
-│   ├── pages_miscellaneous.py # DB-Export, SQL-Konsole, WISO-Import, Backup
-│   ├── handlers.py            # POST-Handler (Formulare, PDF, Import)
-│   ├── upload_handler.py      # File-Upload mit PDF-Parsing
-│   ├── import_preview.py      # Kontoauszug-Import-Vorschau (Duplikat-Zähler)
-│   ├── multipart.py           # Multipart-Parser (E-Mail-Parser-basiert)
-│   ├── period.py              # Zeitraum-Auswahl (Cookie-basiert)
-│   └── backup.py              # Datensicherung/Wiederherstellung
-├── tests/                     # pytest-Suite (nur anonymisierte Daten,
-│                              #   Guard: tests/check_anonymized.py)
-├── static/                    # Statische Dateien (Logos)
-└── data/                      # Laufzeitdaten (in .gitignore)
-    ├── config.json            # Betriebsmodus (single/multi)
-    ├── buch.db                # SQLite-DB (Einzelbenutzer-Modus)
-    └── users/<user>/          # je Nutzer: buch.db, Belege/, backup/, Logs …
-```
-
-> Datenbankschema: siehe [DB_MODEL.md](DB_MODEL.md)
 
 ---
 
 ## Installation und Start
 
-### Schnellstart mit Docker (Server/NAS)
+### Mit Docker (Server/NAS)
 
 Für Server, die Docker anbieten (Unraid, Proxmox & Co.), gibt es ein fertiges
 Image aus der GitHub Container Registry – Details, Unraid-Template und
@@ -317,17 +354,20 @@ auskommentierten Zeilen (`pytesseract`, `pdf2image`) einkommentieren.
 ## Workflow
 
 ### Ersteinrichtung
-1. `python main.py` starten → Modus wählen (Einzel-/Mehrbenutzer), DB mit Seed-Daten wird erstellt
+1. Starten (Docker oder `python main.py`) → Modus wählen (Einzel-/Mehrbenutzer), DB mit Seed-Daten wird erstellt
 2. Bankkonten unter `/masterdata/bankaccounts` anlegen (mit SKR-Zuordnung, z.B. SKR 1810)
 3. Kontakte unter `/masterdata/contacts` erfassen
 4. Ggf. eigene SKR-Konten unter `/masterdata/skr` ergänzen
+5. Optional: Daten aus WISO Mein Büro übernehmen (`/miscellaneous`)
 
 ### Tägliche Nutzung
-1. WISO-Export importieren unter `/miscellaneous` (Bank↔Entry automatisch verknüpft)
-2. Kontoauszüge als PDF hochladen unter `/transactions` (Vorschau, dann bestätigen)
-3. Buchungen prüfen und ergänzen unter `/transactions`
-4. Rechnungen erstellen, PDF generieren, versenden
-5. Regelmäßig sichern: `/miscellaneous` → Datensicherung
+1. Kontoauszüge als PDF hochladen unter `/transactions` (Vorschau, dann bestätigen)
+2. Buchungen prüfen und kontieren unter `/transactions` (🪄 Vorschlag aus der Historie)
+3. Rechnungen erstellen, PDF und E-Rechnung erzeugen, versenden
+4. Regelmäßig sichern: `/miscellaneous` → Datensicherung
+
+Im Parallelbetrieb mit WISO Mein Büro lassen sich dessen Exporte wiederholt
+importieren (`/miscellaneous`); Bank↔Entry wird dabei automatisch verknüpft.
 
 ### Seed-Daten anpassen
 - Standard-Daten in `seed_data/*.json` (wirken nur bei leerer Tabelle)
@@ -336,7 +376,95 @@ auskommentierten Zeilen (`pytesseract`, `pdf2image`) einkommentieren.
 
 ---
 
-## Architektur
+## Für Entwickler
+
+### Projektstruktur
+
+```
+uBuchhaltung/
+├── main.py                    # Entry Point – Webserver starten
+├── demo.py · demo_seed.py     # Demo-Modus (UBUCHHALTUNG_DEMO=1) und seine Beispieldaten
+├── version.py                 # Single Source of Truth für die Versionsnummer
+├── money.py                   # Geld als Festkomma-Integer (Minor Units, SCALE=4)
+├── auth.py                    # Benutzer/Sessions/CSRF (Mehrbenutzer-Modus)
+├── userctx.py                 # Request-Kontext: Modus, Benutzer, Datenpfade
+├── db/                        # Datenbank-Package (CRUD, Import, Linking, Seeding)
+│   ├── __init__.py            #   Database-Klasse (Komposition aller Mixins)
+│   ├── core.py                #   Verbindung, Init-Guard, Geld-Grenze, coa_id, SQL-Log
+│   ├── schema.py              #   alle CREATE TABLE / Schema-Setup
+│   ├── bookings.py · matching.py · invoices.py · contacts.py · …
+│   └── (weitere Domänen-Mixins: assets, accounts, wiso_import, reporting,
+│        worktimes, seed, numbering, articles, receipts …)
+├── document_parser.py         # Belegablage, SQL-Audit-Log/-Rotation, DKB-PDF-Parser
+├── importers/                 # Datenimport: Abstraktionsschicht + Bankmodule
+│   ├── base.py                #   Gemeinsames Datenmodell (BankStatement, Transaktion)
+│   ├── pdftext.py             #   Extraktions-Helfer (Text, IBAN, Belegdatum)
+│   ├── plausibility.py        #   Inhaltsprüfung (Kopf-/Fußzeilen, Beträge, Daten)
+│   ├── vbr.py                 #   Volksbank Rottweil (PDF)
+│   ├── dkb.py                 #   DKB (PDF)
+│   └── wiso_fdb/              #   Lesen der WISO-Datenbankdateien (Firebird, reines Python)
+├── export/                    # Ausgabe-/Export-Generatoren (Package)
+│   ├── pdf_core.py            #   Gemeinsame PDF-Primitive (Builder, Logo, Escaping)
+│   ├── pdf_invoice.py         #   PDF-Rechnungs-/Angebotsgenerierung
+│   ├── pdf_worktime.py        #   PDF-Stundenzettel (Arbeitszeiten)
+│   ├── xrechnung_invoice.py   #   XRechnung XML (EN 16931)
+│   └── datev.py               #   DATEV-Buchungsstapel-Export (CSV)
+├── email_sender.py            # E-Mail-Versand (SMTP)
+├── buch.css                   # Stylesheet (inkl. Dark Mode; versioniert via ?v=)
+├── README.md                  # Diese Datei
+├── DB_MODEL.md                # Detailliertes Datenbankmodell
+├── PARSER_README.md           # Dokumentation Parser & CSV-Import
+├── DEPLOYMENT.md              # LAN-/HTTPS-/Mehrbenutzer-Betrieb
+├── AGENTS.md                  # Leitfaden für KI-/Coding-Agenten im Repo
+├── requirements.txt           # Laufzeit-Dependencies (pdfplumber)
+├── requirements-dev.txt       # zusätzlich Test-Dependencies (pytest)
+├── run_https.ps1              # HTTPS-Schnellstart (selbstsigniertes Zertifikat)
+├── Dockerfile · compose.yaml  # Container-Betrieb (Standardport 2824)
+├── docker-entrypoint.sh       # Container-Start: Volume-Rechte übernehmen, dann unprivilegiert
+├── unraid-template.xml        # Fertiges Docker-Template für Unraid
+├── .github/workflows/         # CI: Tests bei jedem Push; Image-Build & Push nach ghcr.io bei Push auf main
+├── LICENSE                    # AGPL-3.0 (kommerzielle Lizenz auf Anfrage, siehe unten)
+├── CLA.md · CONTRIBUTING.md   # Beitragsregeln + Contributor License Agreement
+├── seed_data/                 # Initialisierungsdaten (JSON)
+│   ├── tax_keys.json          # 50 DATEV-Steuerschlüssel (BU-Codes)
+│   ├── asset_categories.json  # 30 BMF-AfA-Kategorien
+│   ├── chart_of_accounts_skr04.json  # Standard-SKR04-Kontenrahmen
+│   ├── private/               # Benutzerspezifisch (in .gitignore)
+│   └── test/                  # Testdaten (nur anonymisierte/erfundene Werte)
+├── server/                    # Modularer Webserver
+│   ├── app.py                 # HTTP-Server: Routing, Auth-Gate, CSRF, Statics
+│   ├── pages.py               # Gemeinsame HTML (Header, Footer, Nav, CSRF-JS)
+│   ├── pages_dashboard.py     # Dashboard + EÜR
+│   ├── pages_invoice.py       # Rechnungen · pages_quote.py – Angebote
+│   ├── pages_transactions.py  # Buchungen (Bank+Entry merged Display)
+│   ├── pages_contacts.py      # Kontaktverwaltung (6-Tabellen-Schema)
+│   ├── pages_masterdata.py    # Stammdaten (Artikel, SKR, Bankkonten, Nummernkreise)
+│   ├── pages_assets.py        # Anlagenverzeichnis
+│   ├── pages_worktime.py      # Arbeitszeiten · pages_trips.py – Fahrtenbuch
+│   ├── pages_setup.py         # Ersteinrichtung · pages_login.py – Login/Bootstrap
+│   ├── pages_users.py         # Benutzerverwaltung (Admin)
+│   ├── pages_receipts.py      # Belege (Upload, Bearbeiten)
+│   ├── pages_miscellaneous.py # DB-Export, SQL-Konsole, WISO-Import, Backup
+│   ├── handlers.py            # POST-Handler (Formulare, PDF, Import)
+│   ├── upload_handler.py      # File-Upload mit PDF-Parsing
+│   ├── import_preview.py      # Kontoauszug-Import-Vorschau (Duplikat-Zähler)
+│   ├── multipart.py           # Multipart-Parser (E-Mail-Parser-basiert)
+│   ├── period.py              # Zeitraum-Auswahl (Cookie-basiert)
+│   └── backup.py              # Datensicherung/Wiederherstellung
+├── tests/                     # pytest-Suite (nur anonymisierte Daten,
+│                              #   Guard: tests/check_anonymized.py)
+├── tools/screenshots.mjs      # Erzeugt docs/screenshots/ im Demo-Modus (Playwright)
+├── docs/screenshots/          # Screenshots fürs README
+├── static/                    # Statische Dateien (Logos)
+└── data/                      # Laufzeitdaten (in .gitignore)
+    ├── config.json            # Betriebsmodus (single/multi)
+    ├── buch.db                # SQLite-DB (Einzelbenutzer-Modus)
+    └── users/<user>/          # je Nutzer: buch.db, Belege/, backup/, Logs …
+```
+
+> Datenbankschema: siehe [DB_MODEL.md](DB_MODEL.md)
+
+### Architektur
 
 - **Webserver**: Python `http.server.BaseHTTPRequestHandler`
 - **Datenbank**: SQLite mit `PRAGMA foreign_keys = ON`
@@ -367,6 +495,16 @@ auskommentierten Zeilen (`pytesseract`, `pdf2image`) einkommentieren.
 | `server/import_preview.py` | Kontoauszug-Import-Vorschau |
 | `server/backup.py` | Datensicherung/Wiederherstellung |
 
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+Die Suite läuft bei jedem Push automatisch (GitHub Actions). Testdaten sind
+ausschließlich erfunden bzw. anonymisiert.
+
 ---
 
 ## Sicherheitshinweise
@@ -382,8 +520,6 @@ auskommentierten Zeilen (`pytesseract`, `pdf2image`) einkommentieren.
 ---
 
 ## Lizenz
-
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
 Dieses Projekt steht unter der **GNU Affero General Public License v3.0 oder
 später (AGPL-3.0-or-later)**. Den vollständigen Lizenztext findest du in der
@@ -412,4 +548,4 @@ Wenn dir das Projekt nützt, freue ich mich über einen Kaffee:
 
 ## Autor
 
-© 2026 unsix IT Engineering – entwickelt von NobseVomBerg
+© 2026 [unsix IT Engineering](https://unsix.de) – entwickelt von NobseVomBerg

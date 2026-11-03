@@ -19,6 +19,7 @@ Ein optionales Logo ist als /Logo zeichenbar.
 import re
 import html as _htmlmod
 from .pdf_core import escape_pdf_string, logo_display_size
+from money import fmt_eur
 
 # A4 hochkant, Seitenränder
 PAGE_W, PAGE_H = 595, 842
@@ -196,7 +197,7 @@ def draw_footer_columns(ops, line_ops, columns, y_top=66):
 # ── Positionstabelle ──────────────────────────────────────────────────────────
 
 def _fmt_money(value):
-    return f"{value:,.2f}".replace(',', '\x00').replace('.', ',').replace('\x00', '.')
+    return fmt_eur(value, symbol=False)
 
 
 _ROW_LEADING = 13                 # Zeilenabstand innerhalb einer Position
