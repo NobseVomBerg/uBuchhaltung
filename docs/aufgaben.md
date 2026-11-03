@@ -4,7 +4,6 @@ Kurzliste, öffentlich. Erledigtes wird gelöscht, nicht abgehakt – die Histor
 steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 
 ## Repo & Veröffentlichung
-- GitHub-Einstellungen: Beschreibung, Topics, Social-Preview-Bild, Discussions
 - Unraid Community Applications: `ca_profile.xml` ergänzen, Template auf ca.unraid.net/submit validieren
 - awesome-selfhosted: frühestens ab 4.3.2027 (erster Release `v1.6.16` am 3.11.2026); Eintrag schreibt der Owner selbst (Listenregel: keine KI-generierten Beiträge)
 - Docker-Demo (`-e UBUCHHALTUNG_DEMO=1`) einmal im echten Container prüfen
