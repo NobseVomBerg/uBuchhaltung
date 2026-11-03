@@ -13,6 +13,7 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 ## Funktionen
 - Kontoauszüge im CAMT.053-/MT940-Format (bisher nur PDF: DKB, Volksbank Rottweil)
 - ZUGFeRD zusätzlich zur XRechnung
+- Rechnungen/Angebote mit gemischten Steuersätzen (7 % und 19 % je Position) – bisher ein Satz je Beleg
 - Umsatzsteuer-Voranmeldung (ELSTER)
 - GoBD-Modus, je Datenverzeichnis einstellbar (Ersteinrichtung fragt: Steuerbüro oder selbst?); vor Umsetzung Design (architect):
   - Festschreibung abgeschlossener Zeiträume, Korrektur nur per Storno/Gegenbuchung, kein Löschen
