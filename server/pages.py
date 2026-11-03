@@ -44,6 +44,9 @@ def Header1(active_page=None):
     s+= f"  <link rel='stylesheet' href='/buch.css?v={APP_VERSION}'>\n"
     s+= "  <link rel='icon' sizes='32x32' href='favicon.ico'>\n"
     s+= " </head>\n <body>"
+    import demo as _demo
+    if _demo.is_active():
+        s+= f"<div class='demoBanner'>{_html.escape(_demo.BANNER_TEXT)}</div>"
     
     # Build navigation menu with active page highlighting
     nav_items = []
