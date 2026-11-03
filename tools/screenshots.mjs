@@ -32,13 +32,14 @@ const OUT = join(ROOT, 'docs', 'screenshots');
 const PORT = process.env.UBUCHHALTUNG_SCREENSHOT_PORT || '8097';
 const BASE = `http://127.0.0.1:${PORT}`;
 
-// Seiten: Dateiname, Pfad (Zeitraum per ?from=&to=, wird als Cookie gemerkt),
-// optional Warte-Selektor. Zeitraum an die Demodaten anpassen.
+// Seiten: Dateiname, Pfad. Ohne ?from=&to= zeigt die App das laufende Jahr
+// (Demodaten sind relativ zum Startdatum datiert).
 const SHOTS = [
-  { file: 'dashboard',    path: '/dashboard?from=2023-01-01&to=2023-12-31' },
-  { file: 'transactions', path: '/transactions?from=2023-01-01&to=2023-12-31' },
-  { file: 'invoice',      path: '/invoice?from=2025-01-01&to=2025-12-31' },
+  { file: 'dashboard',    path: '/dashboard' },
+  { file: 'transactions', path: '/transactions' },
+  { file: 'invoice-list', path: '/invoice' },
   { file: 'assets',       path: '/assets' },
+  { file: 'trips',        path: '/trips' },
   { file: 'worktime',     path: '/worktime' },
 ];
 
