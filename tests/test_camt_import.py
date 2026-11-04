@@ -213,3 +213,9 @@ def test_many_odd_amounts_balance_exactly_and_reach_db_in_cents():
     # und ein um einen Cent falscher Schlusssaldo fällt auf
     (bad,) = parse_xml(_simple_doc("1000.00", str(closing + Decimal("0.01")), entries))
     assert "balance" in bad.warnings
+
+
+def test_absurd_amounts_do_not_crash():
+    for amt in ("1E+100", "99999999999999999999.99", "NaN", "Infinity"):
+        (st,) = parse_xml(_simple_doc(amt, "0.00", [(amt, "CRDT", "")]))
+        assert "balance" in st.warnings and st.transactions == []

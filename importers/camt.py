@@ -42,6 +42,7 @@ BANK_CODE = 'CAMT'
 MAX_XML_BYTES = 20 * 1024 * 1024          # je XML (entpackt)
 MAX_ZIP_ENTRIES = 50                      # XML-Einträge je ZIP
 MAX_ZIP_TOTAL_BYTES = 100 * 1024 * 1024   # alle XML eines ZIP (entpackt)
+MAX_AMOUNT = Decimal('1e12')              # Beträge darüber sind Fehler/Angriff
 MAX_ZIP_RATIO = 200                       # entpackt : gepackt
 
 
@@ -108,8 +109,9 @@ def _parse_amount(node) -> Decimal:
         value = Decimal(raw)
     except InvalidOperation:
         raise CamtError(f'Betrag nicht lesbar: {raw!r}')
-    if not value.is_finite():
-        raise CamtError(f'Betrag nicht lesbar: {raw!r}')
+    # Exponenten wie 1E+100 sind endlich, sprengen aber quantize/to_minor
+    if not value.is_finite() or abs(value) >= MAX_AMOUNT:
+        raise CamtError(f'Betrag nicht lesbar oder unrealistisch groß: {raw!r}')
     return value
 
 
