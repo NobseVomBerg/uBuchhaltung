@@ -123,7 +123,7 @@ def build_import_preview(db, import_data):
 
         if account_id is None:
             status = "error"
-        elif dup_count > 0 or has_warn:
+        elif dup_count > 0 or has_warn or f.get("warnings"):
             status = "warn"
         else:
             status = "ok"
@@ -140,6 +140,7 @@ def build_import_preview(db, import_data):
             "new_count": new_count,
             "dup_count": dup_count,
             "status": status,
+            "warnings": list(f.get("warnings") or []),
             "problems": problems,
             "transactions": txns_out,
         })
