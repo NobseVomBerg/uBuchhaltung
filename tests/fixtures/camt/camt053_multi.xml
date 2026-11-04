@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.02">
+<BkToCstmrStmt>
+<GrpHdr><MsgId>MSG1</MsgId><CreDtTm>2026-03-31T08:00:00</CreDtTm></GrpHdr>
+<Stmt><Id>S1</Id><CreDtTm>2026-03-31T08:00:00</CreDtTm><Acct><Id><IBAN>DE89370400440532013000</IBAN></Id></Acct>
+<Bal><Tp><CdOrPrtry><Cd>OPBD</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">0.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-03-01</Dt></Dt></Bal>
+<Bal><Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">10.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-03-31</Dt></Dt></Bal>
+<Ntry><Amt Ccy="EUR">10.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Sts>BOOK</Sts><BookgDt><Dt>2026-03-02</Dt></BookgDt><ValDt><Dt>2026-03-02</Dt></ValDt><NtryDtls><TxDtls><RltdPties><Dbtr><Nm>Beispiel Kunde GmbH</Nm></Dbtr><DbtrAcct><Id><IBAN>DE02200505501015871393</IBAN></Id></DbtrAcct></RltdPties><RmtInf><Ustrd>Eingang</Ustrd></RmtInf></TxDtls></NtryDtls></Ntry>
+</Stmt>
+<Stmt><Id>S1</Id><CreDtTm>2026-03-31T08:00:00</CreDtTm><Acct><Id><IBAN>DE02200505501015871393</IBAN></Id></Acct>
+<Bal><Tp><CdOrPrtry><Cd>OPBD</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">100.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-03-01</Dt></Dt></Bal>
+<Bal><Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">90.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-03-31</Dt></Dt></Bal>
+<Ntry><Amt Ccy="EUR">10.00</Amt><CdtDbtInd>DBIT</CdtDbtInd><Sts>BOOK</Sts><BookgDt><Dt>2026-03-03</Dt></BookgDt><ValDt><Dt>2026-03-03</Dt></ValDt><NtryDtls><TxDtls><RltdPties><Cdtr><Nm>Lieferant Muster AG</Nm></Cdtr><CdtrAcct><Id><IBAN>DE12500105170648489890</IBAN></Id></CdtrAcct></RltdPties><RmtInf><Ustrd>Ausgang</Ustrd></RmtInf></TxDtls></NtryDtls></Ntry>
+</Stmt>
+</BkToCstmrStmt>
+</Document>
