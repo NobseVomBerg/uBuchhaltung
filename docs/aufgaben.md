@@ -8,7 +8,7 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 - Docker-Demo (`-e UBUCHHALTUNG_DEMO=1`) einmal im echten Container prüfen
 
 ## Funktionen
-- Kontoauszüge im CAMT.053-/MT940-Format (bisher nur PDF: DKB, Volksbank Rottweil)
+- Kontoauszüge im MT940-Format (CAMT.053 und PDF: DKB, Volksbank Rottweil sind da)
 - ZUGFeRD zusätzlich zur XRechnung
 - Rechnungen/Angebote mit gemischten Steuersätzen (7 % und 19 % je Position) – bisher ein Satz je Beleg
 - Umsatzsteuer-Voranmeldung (ELSTER)
