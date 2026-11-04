@@ -703,8 +703,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         <div class="rectRounded" style="order:1">
             <h2>Kontoauszüge hochladen</h2>
             <div id="dropZone">
-                <p>Dateien hier ablegen (Drag & Drop)</p>
-                <input type="file" id="fileInput" multiple accept=".pdf,application/pdf">
+                <p>Dateien hier ablegen (Drag & Drop) – PDF oder CAMT.053 (XML/ZIP)</p>
+                <input type="file" id="fileInput" multiple accept=".pdf,.xml,.zip,application/pdf,text/xml,application/zip">
                 <button onclick="document.getElementById('fileInput').click()">Oder Dateien auswählen</button>
             </div>
             <div id="uploadStatus"></div>
@@ -781,6 +781,16 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             empty: 'leer', boiler: 'Kopf-/Fußzeile?', huge: 'Betrag zu groß?'
         };
 
+        // Befunde, die den ganzen Beleg betreffen (BankStatement.warnings)
+        var FILE_WARN_LABELS = {
+            balance: 'Saldo stimmt nicht: Anfangssaldo + Umsätze ≠ Schlusssaldo – Datei prüfen!',
+            split_mismatch: 'Einzelbeträge einer Sammelbuchung ergeben nicht den Gesamtbetrag.',
+            skipped_status: 'Nicht gebuchte Umsätze wurden übergangen.',
+            bad_entry: 'Mindestens ein Umsatz war nicht lesbar und fehlt.',
+            no_iban: 'Keine IBAN im Beleg erkannt.',
+            no_transactions: 'Keine Umsätze erkannt.'
+        };
+
         function statusBadge(status) {
             if (status === 'error') return '<span class="badge bg-red">Konto nicht gefunden</span>';
             if (status === 'warn')  return '<span class="badge bg-orange">Hinweise</span>';
@@ -833,6 +843,10 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                  (f.account_name ? esc(f.account_name) : '<span class="errorColor">nicht gefunden</span>') + '</div>';
             h += '<div class="muted">' + f.total + ' erkannt · ' + f.new_count + ' neu · ' +
                  f.dup_count + ' mögliche Duplikate</div>';
+
+            (f.warnings || []).forEach(w => {
+                h += '<div class="errorColor">⚠ ' + esc(FILE_WARN_LABELS[w] || w) + '</div>';
+            });
 
             // Befunde der Plausibilitätsprüfung (importers/plausibility.py)
             if (f.problems && f.problems.length) {
