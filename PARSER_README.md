@@ -76,6 +76,27 @@ Empfängers markiert.
 4. **Bestätigung**: Erkannte Transaktionen auf `/confirm_transactions` prüfen
 5. **Import**: Nach Bestätigung als `BookingType='bank'` in Bookings-Tabelle
 
+### CAMT.053 (ISO 20022, XML)
+
+`importers/camt.py` liest Kontoauszüge im Bankformat CAMT.053 – für alle Banken,
+die es anbieten (camt.053.001.02/.04/.08, Namespace-unabhängig über lokale
+Elementnamen). Upload von `.xml` oder `.zip` (mehrere XML-Dateien) läuft über
+denselben Weg wie PDF: `BankStatement` → Vorschau → Bestätigung.
+
+* Je `<Stmt>` ein Beleg; Konto-Zuordnung über `Stmt/Acct/Id/IBAN`, ohne Treffer
+  „Konto nicht gefunden“ wie bei PDF.
+* Nur gebuchte Umsätze (`Sts` = `BOOK`); Vorzeichen aus `CdtDbtInd`. Storno
+  (`RvslInd`) wird mit Präfix „Storno: “ im Verwendungszweck übernommen.
+* Sammelbuchung: mehrere `TxDtls` mit eigenem Betrag werden Einzelumsätze, sofern
+  die Summe stimmt (sonst ein Umsatz + Hinweis `split_mismatch`).
+* Gegenpartei: Dbtr bei Gutschrift, Cdtr bei Lastschrift; Zweck = alle `Ustrd`
+  (Fallback `AddtlTxInf`, `AddtlNtryInf`). Valuta, EndToEndId, Mandats- und
+  Gläubiger-ID hat das gemeinsame Datenmodell nicht.
+* Plausibilität: Anfangssaldo (OPBD/PRCD) + Umsätze = Schlusssaldo (CLBD), sonst
+  Hinweis `balance` in der Vorschau.
+* Sicherheit: DTD/Entities werden abgelehnt, ZIP nur im Speicher mit Grenzen
+  für Anzahl/Größe/Kompressionsverhältnis. Beträge nur als `Decimal`.
+
 ### Erweiterung für weitere Banken
 
 In `document_parser.py` eine neue Methode hinzufügen:
