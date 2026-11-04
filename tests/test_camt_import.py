@@ -175,3 +175,41 @@ def test_unknown_account_blocks_import(tmp_db):
     d["filename"] = "v02.xml"
     pv = build_import_preview(tmp_db, {"files": [d]})["files"][0]
     assert pv["status"] == "error" and pv["account_id"] is None
+
+
+# ── Storno in beide Richtungen, viele krumme Beträge ─────────────────────────
+
+def _simple_doc(opening, closing, entries):
+    body = "".join(
+        f'<Ntry><Amt Ccy="EUR">{a}</Amt><CdtDbtInd>{i}</CdtDbtInd>{r}<Sts>BOOK</Sts>'
+        f'<BookgDt><Dt>2026-03-05</Dt></BookgDt></Ntry>' for a, i, r in entries)
+    bal = lambda c, a: (f'<Bal><Tp><CdOrPrtry><Cd>{c}</Cd></CdOrPrtry></Tp>'
+                        f'<Amt Ccy="EUR">{a}</Amt><CdtDbtInd>CRDT</CdtDbtInd></Bal>')
+    return (f'<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.02"><BkToCstmrStmt>'
+            f'<Stmt><Acct><Id><IBAN>{OWN_IBAN}</IBAN></Id></Acct>{bal("OPBD", opening)}'
+            f'{bal("CLBD", closing)}{body}</Stmt></BkToCstmrStmt></Document>').encode()
+
+
+def test_reversal_in_both_directions_follows_cdtdbtind():
+    rv = "<RvslInd>true</RvslInd>"
+    # Storno einer Lastschrift (CRDT) und Storno einer Gutschrift (DBIT)
+    (st,) = parse_xml(_simple_doc("100.00", "100.00",
+                                  [("12.00", "CRDT", rv), ("12.00", "DBIT", rv)]))
+    assert [t.amount for t in st.transactions] == [12.0, -12.0]
+    assert all(t.reference.startswith("Storno:") for t in st.transactions)
+    assert "balance" not in st.warnings
+
+
+def test_many_odd_amounts_balance_exactly_and_reach_db_in_cents():
+    from decimal import Decimal
+    from money import to_minor
+    entries = [(f"0.{n % 90 + 10:02d}", "CRDT" if n % 3 else "DBIT", "") for n in range(500)]
+    total = sum((Decimal(a) if i == "CRDT" else -Decimal(a)) for a, i, _ in entries)
+    closing = Decimal("1000.00") + total
+    (st,) = parse_xml(_simple_doc("1000.00", str(closing), entries))
+    assert "balance" not in st.warnings
+    # float -> Minor Units rundet auf den exakten Cent (nicht 0,1+0,2 = 0,30000000000000004)
+    assert sum(to_minor(t.amount) for t in st.transactions) == to_minor(total)
+    # und ein um einen Cent falscher Schlusssaldo fällt auf
+    (bad,) = parse_xml(_simple_doc("1000.00", str(closing + Decimal("0.01")), entries))
+    assert "balance" in bad.warnings

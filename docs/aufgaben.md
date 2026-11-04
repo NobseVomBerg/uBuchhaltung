@@ -9,6 +9,7 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 
 ## Funktionen
 - Kontoauszüge im MT940-Format (CAMT.053 und PDF: DKB, Volksbank Rottweil sind da)
+- CAMT-Zusatzfelder (Valuta, EndToEndId, Mandatsreferenz, Gläubiger-ID) übernehmen – braucht Schemaänderung
 - ZUGFeRD zusätzlich zur XRechnung
 - Rechnungen/Angebote mit gemischten Steuersätzen (7 % und 19 % je Position) – bisher ein Satz je Beleg
 - Umsatzsteuer-Voranmeldung (ELSTER)
