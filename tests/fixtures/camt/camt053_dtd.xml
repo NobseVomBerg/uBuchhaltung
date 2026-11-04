@@ -1,0 +1,3 @@
+<?xml version="1.0"?>
+<!DOCTYPE Document [<!ENTITY x "boom">]>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.02"><BkToCstmrStmt><Stmt><Id>&x;</Id></Stmt></BkToCstmrStmt></Document>
