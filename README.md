@@ -84,7 +84,9 @@ docker run -d --name ubuchhaltung --restart unless-stopped \
   ghcr.io/nobsevomberg/ubuchhaltung:latest
 ```
 
-Danach unter `http://<host>:2824` öffnen; die Ersteinrichtung läuft im Browser.
+Unter Unraid geht es ohne Kommandozeile: im Tab **Apps** (Community Applications)
+nach „uBuchhaltung“ suchen. Danach unter `http://<host>:2824` öffnen; die
+Ersteinrichtung läuft im Browser.
 Ohne Docker: `pip install -r requirements.txt` und `python main.py`
 (Python 3.10+, dann unter `http://localhost:8080`). Mehr dazu unter
 [Installation und Start](#installation-und-start) und in

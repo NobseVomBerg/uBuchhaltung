@@ -127,12 +127,16 @@ dieses eine Verzeichnis.
 
 ### Unraid
 
-Variante 1 – Template: `unraid-template.xml` aus dem Projektstamm nach
+Variante 1 – Community Applications (empfohlen): im Tab **Apps** nach
+„uBuchhaltung" suchen und installieren. Port und appdata-Pfad
+(`/mnt/user/appdata/ubuchhaltung`) sind vorbelegt.
+
+Variante 2 – Template von Hand: `unraid-template.xml` aus dem Projektstamm nach
 `/boot/config/plugins/dockerMan/templates-user/` kopieren, dann unter
 **Docker → Add Container** das Template „uBuchhaltung" auswählen. Port und
 appdata-Pfad (`/mnt/user/appdata/ubuchhaltung`) sind vorbelegt.
 
-Variante 2 – manuell: **Docker → Add Container**, Repository
+Variante 3 – manuell: **Docker → Add Container**, Repository
 `ghcr.io/nobsevomberg/ubuchhaltung:latest`, Port `2824 → 2824`, Pfad
 `/mnt/user/appdata/ubuchhaltung → /app/data`.
 
