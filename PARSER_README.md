@@ -1,6 +1,6 @@
-# Dokumentenparser & CSV-Import
+# Kontoauszug-Import & WISO-CSV-Import
 
-## 1. PDF-Parser für Kontoauszüge
+## 1. Kontoauszüge (PDF und CAMT.053)
 
 ### Installation
 

@@ -14,7 +14,8 @@ Pragmatische Hinweise für KI-/Coding-Agenten in diesem Repository.
 - `server/pages_dashboard.py`: Dashboard inkl. EÜR-Tabellen
 - `server/pages_transactions.py`: Transaktionssicht (bank + entry)
 - `server/pages_miscellaneous.py`: WISO-Import, SQL-Konsole
-- `document_parser.py`: Bank-PDF-Parser (u.a. VBR, DKB)
+- `importers/`: Kontoauszug-Import – CAMT.053 (`camt.py`) und Bank-PDFs (`vbr.py`, `dkb.py`), gemeinsames Modell in `base.py`
+- `document_parser.py`: Belegablage, SQL-Audit-Log
 
 ## Wichtige Domänenregeln
 
