@@ -99,9 +99,10 @@ ghcr.io/nobsevomberg/ubuchhaltung:latest
 | `:1.6.16`, `:1.6`, `:1` | fester Release bzw. neuester innerhalb der Reihe – zum Festhalten oder Zurückgehen |
 | `:edge` | aktueller Entwicklungsstand von `main`, ungetestet im Betrieb |
 
-Releases entstehen auf GitHub unter *Releases → Draft a new release* (Tag
-`v` + Version aus `version.py`, z. B. `v1.6.16`); erst dann bekommt `:latest`
-die neue Version. Vorher laufen die Tests, und der Tag muss zur Version passen.
+Releases entstehen automatisch: Kommt auf `main` eine neue Version aus
+`version.py` an (noch kein Tag dafür), laufen die Tests, das Image wird gebaut
+und danach Tag und GitHub-Release mit Release-Notizen angelegt. Änderungen ohne
+neue Version (z. B. Doku) bauen nur `:edge`.
 
 Standardport ist **2824** („BUCH" auf der Telefontastatur – von verbreiteten
 Docker-Projekten nicht belegt). Alle Nutzdaten (auth.db, Nutzer-Verzeichnisse,

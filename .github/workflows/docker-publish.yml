@@ -1,13 +1,17 @@
-# Baut das Docker-Image und veröffentlicht es in der GitHub Container Registry
-# (ghcr.io).
+# Baut das Docker-Image, veröffentlicht es in der GitHub Container Registry
+# (ghcr.io) und legt Releases automatisch an.
 #
-#   GitHub-Release veröffentlicht (v1.6.16) → :1.6.16, :1.6, :1, :latest
-#   Push auf main                            → :edge (Entwicklungsstand)
+#   Push auf main, version.py mit neuer Version   → :1.6.17, :1.6, :1, :latest, :edge
+#     (noch kein Tag v1.6.17)                        danach Tag + GitHub-Release
+#                                                    mit automatischen Release-Notizen
+#   Push auf main ohne neue Version (z. B. Doku)  → nur :edge
+#   Release von Hand veröffentlicht               → :X.Y.Z, :X.Y, :X, :latest
 #
-# :latest bedeutet damit „neuester Release“ – ein Merge allein ändert es nicht.
-# Vor dem Bauen laufen Anonymisierungs-Guard und pytest; beim Release muss der
-# Tag außerdem zu version.py passen (v + APP_VERSION). Ein Release neu bauen
-# (z. B. für Sicherheitsupdates des Basis-Images): den Lauf des Releases unter
+# Ein Versionssprung in version.py ist damit der Release – ohne Klick. Vor dem
+# Bauen laufen Anonymisierungs-Guard und pytest; der Release entsteht erst,
+# wenn das Image gebaut ist. Releases, die ein Workflow mit dem GITHUB_TOKEN
+# anlegt, lösen keine weiteren Workflows aus – deshalb baut dieser Lauf selbst.
+# Neu bauen (z. B. für Sicherheitsupdates des Basis-Images): den Lauf unter
 # Actions erneut ausführen.
 #
 # Einmalig nach dem ersten Lauf: GitHub -> Profil -> Packages -> ubuchhaltung
@@ -21,9 +25,11 @@ on:
   push:
     branches: [main]
 
+# Nicht abbrechen: ein laufender Release-Lauf soll sein Image und seinen Tag
+# vollständig anlegen. Weitere Läufe warten.
 concurrency:
   group: docker-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   # Gleiche Schritte wie tests.yml – bewusst kopiert statt per workflow_call
@@ -45,7 +51,7 @@ jobs:
             requirements.txt
             requirements-dev.txt
 
-      - name: Release-Tag passt zu version.py?
+      - name: Release-Tag passt zu version.py? (nur bei Release von Hand)
         if: github.event_name == 'release'
         env:
           TAG: ${{ github.event.release.tag_name }}
@@ -71,9 +77,31 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      new: ${{ steps.ver.outputs.new }}
     steps:
       - name: Code auschecken
         uses: actions/checkout@v4
+
+      - name: Version und Release-Bedarf ermitteln
+        id: ver
+        env:
+          EVENT: ${{ github.event_name }}
+          REL_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          APP="$(python3 -c 'import version; print(version.APP_VERSION)')"
+          if [ "$EVENT" = "release" ]; then
+            TAG="$REL_TAG"; NEW=false; RELEASE=true
+          elif git ls-remote --exit-code --tags origin "refs/tags/v$APP" >/dev/null; then
+            TAG="v$APP"; NEW=false; RELEASE=false
+          else
+            TAG="v$APP"; NEW=true; RELEASE=true
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+          echo "release=$RELEASE" >> "$GITHUB_OUTPUT"
+          echo "Version $APP – Tag $TAG – Release-Images: $RELEASE – neuer Release: $NEW"
 
       - name: Buildx einrichten
         uses: docker/setup-buildx-action@v3
@@ -93,10 +121,10 @@ jobs:
           flavor: |
             latest=false
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{version}},value=${{ steps.ver.outputs.tag }},enable=${{ steps.ver.outputs.release == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.ver.outputs.tag }},enable=${{ steps.ver.outputs.release == 'true' }}
+            type=semver,pattern={{major}},value=${{ steps.ver.outputs.tag }},enable=${{ steps.ver.outputs.release == 'true' }}
+            type=raw,value=latest,enable=${{ steps.ver.outputs.release == 'true' }}
             type=raw,value=edge,enable=${{ github.event_name == 'push' }}
 
       - name: Bauen und pushen
@@ -108,3 +136,18 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  release:
+    needs: build-and-push
+    if: needs.build-and-push.outputs.new == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Tag und GitHub-Release anlegen (Notizen automatisch aus den PRs)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.build-and-push.outputs.tag }}
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$TAG" --generate-notes
