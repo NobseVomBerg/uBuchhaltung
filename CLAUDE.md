@@ -182,9 +182,12 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
 
 ### Docker & CI
 - Docker-Image (`.github/workflows/docker-publish.yml`, `ghcr.io/nobsevomberg/ubuchhaltung`):
-  **`:latest` entsteht nur durch einen veröffentlichten GitHub-Release** (Tag
-  `v` + `APP_VERSION`, sonst bricht der Lauf ab); ein Push auf `main` baut nur
-  `:edge`. Releases veröffentlicht der Owner – Claude bereitet vor (Version, PR)
+  **Ein Versionssprung in `version.py` ist der Release:** Kommt auf `main` eine
+  Version an, für die es noch keinen Tag gibt, baut der Workflow nach den Tests
+  `:X.Y.Z`, `:X.Y`, `:X`, `:latest` und legt danach Tag + GitHub-Release an
+  (Notizen automatisch). Ohne neue Version entsteht nur `:edge`. Folge: Reine
+  Doku-/CI-Änderungen ohne Versionssprung mergen, jede App-Änderung bekommt
+  ihren PATCH-Sprung und wird mit dem Merge veröffentlicht
 - Container-Standardport 2824; Betriebsdoku (Unraid/Proxmox) in `DEPLOYMENT.md`
 - Jeder Push (alle Branches) führt `.github/workflows/tests.yml` aus:
   Anonymisierungs-Guard + pytest
