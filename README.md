@@ -84,7 +84,9 @@ docker run -d --name ubuchhaltung --restart unless-stopped \
   ghcr.io/nobsevomberg/ubuchhaltung:latest
 ```
 
-Danach unter `http://<host>:2824` öffnen; die Ersteinrichtung läuft im Browser.
+Unter Unraid geht es ohne Kommandozeile: im Tab **Apps** (Community Applications)
+nach „uBuchhaltung“ suchen. Danach unter `http://<host>:2824` öffnen; die
+Ersteinrichtung läuft im Browser.
 Ohne Docker: `pip install -r requirements.txt` und `python main.py`
 (Python 3.10+, dann unter `http://localhost:8080`). Mehr dazu unter
 [Installation und Start](#installation-und-start) und in
@@ -99,7 +101,7 @@ Ohne Docker: `pip install -r requirements.txt` und `python main.py`
 | **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR) |
 | **Rechnungen & Angebote** | PDF und XRechnung (EN 16931), E-Mail-Versand, Nummernkreise, offene Posten, Mahnwesen, Kleinunternehmerregelung |
 | **Anlagen** | Anlagenverzeichnis mit AfA (linear, degressiv, GWG) |
-| **Import & Export** | Kontoauszüge als PDF (DKB, Volksbank Rottweil), [Datenübernahme aus WISO Mein Büro](#datenübernahme-aus-wiso-mein-büro), DATEV-Buchungsstapel |
+| **Import & Export** | Kontoauszüge als PDF (DKB, Volksbank Rottweil) und im Bankformat CAMT.053 (XML oder ZIP, jede Bank), [Datenübernahme aus WISO Mein Büro](#datenübernahme-aus-wiso-mein-büro), DATEV-Buchungsstapel |
 | **Außerdem** | Arbeitszeiten mit Stundenzettel, Fahrtenbuch, Einzel- oder Mehrbenutzerbetrieb, Datensicherung, Dark Mode |
 
 Alle Funktionen ausführlich: [Funktionen im Detail](#funktionen-im-detail).
@@ -136,7 +138,7 @@ Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen
   es nicht.
 - **Noch nicht enthalten:** Umsatzsteuer-Voranmeldung bzw. ELSTER-Übermittlung,
   ZUGFeRD (Rechnungen gibt es als PDF und als XRechnung), Bankanbindung per
-  FinTS/PSD2 sowie Kontoauszüge im CAMT- oder MT940-Format.
+  FinTS/PSD2 sowie Kontoauszüge im MT940-Format.
 - **Für den Betrieb im eigenen Netz gebaut**, nicht fürs offene Internet –
   siehe [Sicherheitshinweise](#sicherheitshinweise).
 

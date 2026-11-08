@@ -4,12 +4,12 @@ Kurzliste, öffentlich. Erledigtes wird gelöscht, nicht abgehakt – die Histor
 steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 
 ## Repo & Veröffentlichung
-- Unraid Community Applications: auf ca.unraid.net/submit einreichen (Validate + Scan); `ca_profile.xml`, Template und Icon liegen bereit
 - awesome-selfhosted: frühestens ab 4.3.2027 (erster Release `v1.6.16` am 3.11.2026); Eintrag schreibt der Owner selbst (Listenregel: keine KI-generierten Beiträge)
 - Docker-Demo (`-e UBUCHHALTUNG_DEMO=1`) einmal im echten Container prüfen
 
 ## Funktionen
-- Kontoauszüge im CAMT.053-/MT940-Format (bisher nur PDF: DKB, Volksbank Rottweil)
+- Kontoauszüge im MT940-Format (CAMT.053 und PDF: DKB, Volksbank Rottweil sind da)
+- CAMT-Zusatzfelder (Valuta, EndToEndId, Mandatsreferenz, Gläubiger-ID) übernehmen – braucht Schemaänderung
 - ZUGFeRD zusätzlich zur XRechnung
 - Rechnungen/Angebote mit gemischten Steuersätzen (7 % und 19 % je Position) – bisher ein Satz je Beleg
 - Umsatzsteuer-Voranmeldung (ELSTER)

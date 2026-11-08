@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.04">
+<BkToCstmrStmt>
+<GrpHdr><MsgId>MSG1</MsgId><CreDtTm>2026-03-31T08:00:00</CreDtTm></GrpHdr>
+<Stmt><Id>S1</Id><CreDtTm>2026-03-31T08:00:00</CreDtTm><Acct><Id><IBAN>DE89370400440532013000</IBAN></Id></Acct>
+<Bal><Tp><CdOrPrtry><Cd>PRCD</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">500.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-02-28</Dt></Dt></Bal>
+<Bal><Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp><Amt Ccy="EUR">470.00</Amt><CdtDbtInd>CRDT</CdtDbtInd><Dt><Dt>2026-03-31</Dt></Dt></Bal>
+<Ntry><Amt Ccy="EUR">30.00</Amt><CdtDbtInd>DBIT</CdtDbtInd><Sts>BOOK</Sts><BookgDt><Dt>2026-03-12</Dt></BookgDt><AddtlNtryInf>Kontofuehrungsgebuehr</AddtlNtryInf></Ntry>
+</Stmt>
+</BkToCstmrStmt>
+</Document>
