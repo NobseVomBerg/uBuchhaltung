@@ -208,6 +208,14 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
   `NobseVomBerg/uBuchhaltung-Private` – lokal als `intern/` im Projektordner
   (gitignored), in Cloud-Sessions per add_repo. Fehlt es, nicht danach fragen
 
+### Kontoauszug-Import (CAMT.053 + PDF)
+- Ein Weg für alle Formate: Parser in `importers/` liefern `BankStatement` (`base.py`) →
+  `server/upload_handler.py` → Vorschau `server/import_preview.py` (Duplikate, Warnungen) → bestätigen
+- CAMT (`importers/camt.py`): Storno-Richtung = `CdtDbtInd` (ISO 20022); Saldoprüfung exakt in
+  Decimal/Minor Units, nie als float-Summe; DTD/Entities werden abgelehnt, ZIP nur im Speicher mit
+  Grenzen, Beträge ≥ 10¹² sind Fehler – diese Schutzmaßnahmen nicht aufweichen
+- Valuta, EndToEndId, Mandatsreferenz, Gläubiger-ID haben im Modell noch keinen Platz (Schemaänderung offen)
+
 ### WISO-Datenübernahme
 - Zwei Wege: die **Textexporte** (`db/wiso_import.py`, CSV) und die
   **WISO-Datenbank selbst** (`db/wiso_fdb_import.py` + `importers/wiso_fdb/`)
