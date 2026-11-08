@@ -20,6 +20,21 @@ except ImportError:
     PARSER_AVAILABLE = False
 
 
+def _collect_camt(name, content, statement_files, other_files):
+    """CAMT.053-Upload auswerten und wie einen PDF-Kontoauszug einreihen."""
+    from importers import check_statement
+    from importers.camt import CamtError, parse_upload
+    try:
+        parsed = parse_upload(name, content)
+    except CamtError as e:
+        other_files.append({'filename': name, 'status': 'error', 'error': str(e)})
+        return
+    for label, statement in parsed:
+        data = check_statement(statement).as_dict()
+        data['filename'] = label
+        statement_files.append(data)
+
+
 def handle_file_upload(request_handler, db):
     """Multipart-Upload von Belegen / Kontoauszügen verarbeiten.
 
@@ -53,6 +68,12 @@ def handle_file_upload(request_handler, db):
         # Windows-Backslash-Pfade). basename nach Normalisierung der Trenner.
         safe_name = os.path.basename(filename.replace('\\', '/'))
         if not safe_name or safe_name in ('.', '..'):
+            continue
+        lower_name = safe_name.lower()
+
+        # CAMT.053 (XML / ZIP): nur im Speicher lesen, nie auf Platte ablegen
+        if lower_name.endswith(('.xml', '.zip')):
+            _collect_camt(safe_name, content, statement_files, other_files)
             continue
 
         # Datei temporär speichern
