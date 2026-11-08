@@ -453,7 +453,7 @@ uBuchhaltung/
 ├── docker-entrypoint.sh       # Container-Start: Volume-Rechte übernehmen, dann unprivilegiert
 ├── unraid-template.xml        # Fertiges Docker-Template für Unraid
 ├── ca_profile.xml             # Profil für Unraid Community Applications
-├── .github/workflows/         # CI: Tests bei jedem Push; Docker-Image: Release → :latest, main → :edge
+├── .github/workflows/         # CI: Tests bei jedem Push; neue Version auf main → Release + :latest, sonst :edge
 ├── LICENSE                    # AGPL-3.0 (kommerzielle Lizenz auf Anfrage, siehe unten)
 ├── CLA.md · CONTRIBUTING.md   # Beitragsregeln + Contributor License Agreement
 ├── seed_data/                 # Initialisierungsdaten (JSON)
