@@ -101,7 +101,7 @@ Ohne Docker: `pip install -r requirements.txt` und `python main.py`
 | **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR) |
 | **Rechnungen & Angebote** | PDF und XRechnung (EN 16931), E-Mail-Versand, Nummernkreise, offene Posten, Mahnwesen, Kleinunternehmerregelung |
 | **Anlagen** | Anlagenverzeichnis mit AfA (linear, degressiv, GWG) |
-| **Import & Export** | Kontoauszüge als PDF (DKB, Volksbank Rottweil) und im Bankformat CAMT.053 (XML oder ZIP, jede Bank), [Datenübernahme aus WISO Mein Büro](#datenübernahme-aus-wiso-mein-büro), DATEV-Buchungsstapel |
+| **Import & Export** | Kontoauszüge im Bankformat CAMT.053 (XML oder ZIP, jede Bank) oder als PDF (DKB, Volksbank Rottweil), [Datenübernahme aus WISO Mein Büro](#datenübernahme-aus-wiso-mein-büro), DATEV-Buchungsstapel |
 | **Außerdem** | Arbeitszeiten mit Stundenzettel, Fahrtenbuch, Einzel- oder Mehrbenutzerbetrieb, Datensicherung, Dark Mode |
 
 Alle Funktionen ausführlich: [Funktionen im Detail](#funktionen-im-detail).
@@ -165,6 +165,9 @@ Zentrale Verwaltung aller Buchungstransaktionen:
 - **Zwei Buchungstypen**:
   - `bank` – echte Bankbewegung (Import aus Kontoauszug oder WISO-Tabellen-Export)
   - `entry` – Buchungssatz (aus WISO-Original-Export oder manuell)
+- **Kontoauszug-Import**: CAMT.053 (XML/ZIP, alle Banken) oder PDF (DKB, Volksbank Rottweil) –
+  Vorschau mit Duplikat-Erkennung und Saldo-Prüfung, erst dann übernehmen; Details in
+  [PARSER_README.md](PARSER_README.md)
 - **Automatische Verknüpfung**: Bank↔Entry über `ParentBooking_ID` (via `link_bank_to_entries()`)
 - **Merged Display**: Bankbuchungen zeigen verknüpfte Entry-Daten (SKR-Konto, Steuersatz, Belegnr.)
 - **Status-Badges**: ✓ verknüpft / offen für Bankbuchungen; ✓ für Einzelbuchungen und Split-Gruppenköpfe mit vollständig gebuchten Kinder-Einträgen
@@ -368,10 +371,10 @@ $env:SMTP_USER = "ihre-email@gmail.com"
 $env:SMTP_PASSWORD = "ihr-app-passwort"
 ```
 
-### PDF-Parser
+### Kontoauszug-Import
 
-Wird durch `pip install -r requirements.txt` (pdfplumber) automatisch
-aktiviert. Optionales OCR für gescannte PDFs: in `requirements.txt` die
+CAMT.053 kommt ohne zusätzliche Pakete aus. Die PDF-Parser werden durch
+`pip install -r requirements.txt` (pdfplumber) automatisch aktiviert. Optionales OCR für gescannte PDFs: in `requirements.txt` die
 auskommentierten Zeilen (`pytesseract`, `pdf2image`) einkommentieren.
 
 ---
@@ -386,7 +389,8 @@ auskommentierten Zeilen (`pytesseract`, `pdf2image`) einkommentieren.
 5. Optional: Daten aus WISO Mein Büro übernehmen (`/miscellaneous`)
 
 ### Tägliche Nutzung
-1. Kontoauszüge als PDF hochladen unter `/transactions` (Vorschau, dann bestätigen)
+1. Kontoauszüge hochladen unter `/transactions` – CAMT.053-Datei der Bank (XML/ZIP) oder
+   PDF (DKB, Volksbank Rottweil); Vorschau prüfen, dann bestätigen
 2. Buchungen prüfen und kontieren unter `/transactions` (🪄 Vorschlag aus der Historie)
 3. Rechnungen erstellen, PDF und E-Rechnung erzeugen, versenden
 4. Regelmäßig sichern: `/miscellaneous` → Datensicherung
@@ -425,6 +429,7 @@ uBuchhaltung/
 │   ├── base.py                #   Gemeinsames Datenmodell (BankStatement, Transaktion)
 │   ├── pdftext.py             #   Extraktions-Helfer (Text, IBAN, Belegdatum)
 │   ├── plausibility.py        #   Inhaltsprüfung (Kopf-/Fußzeilen, Beträge, Daten)
+│   ├── camt.py                #   CAMT.053 (XML/ZIP, alle Banken)
 │   ├── vbr.py                 #   Volksbank Rottweil (PDF)
 │   ├── dkb.py                 #   DKB (PDF)
 │   └── wiso_fdb/              #   Lesen der WISO-Datenbankdateien (Firebird, reines Python)
