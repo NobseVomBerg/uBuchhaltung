@@ -1,13 +1,16 @@
 # Laufzeit-Abhängigkeiten für uBuchhaltung.
 #
-# Der Kern (Webserver, DB, Rendering, Export) läuft ausschließlich mit der
-# Python-Standardbibliothek (http.server, sqlite3, email, xml, ...).
-# Die einzige externe Laufzeit-Abhängigkeit ist das PDF-Parsing von
-# Kontoauszügen/Belegen im document_parser.py. Fehlt pdfplumber, läuft die
-# App weiter – nur die PDF-Erkennung ist dann deaktiviert.
+# Der Kern (Webserver, DB, Rendering, Export) läuft mit der Python-
+# Standardbibliothek (http.server, sqlite3, email, xml, ...). Externe
+# Laufzeit-Abhängigkeiten:
+#  * fontTools – bettet Liberation Sans als Untermenge in die erzeugten
+#    PDF/A-3-Dokumente ein (export/pdfa.py). Pflicht, sonst keine PDF-Erzeugung.
+#  * pdfplumber – PDF-Parsing von Kontoauszügen/Belegen im document_parser.py.
+#    Fehlt es, läuft die App weiter – nur die PDF-Erkennung ist deaktiviert.
 #
 # Installation:  pip install -r requirements.txt
 
+fonttools>=4.50      # MIT, reines Python – PDF-Schrift-Untermengen
 pdfplumber>=0.11.0    # zieht pdfminer.six, Pillow, charset-normalizer u.a. transitiv
 
 # Optional – OCR für gescannte PDFs (bei Bedarf einkommentieren):

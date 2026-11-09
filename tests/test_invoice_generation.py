@@ -328,7 +328,7 @@ class TestInvoicePDF:
         iid = _make_invoice(tmp_db)
         pdf_bytes, _ = self._generate(tmp_db, iid, monkeypatch, tmp_path)
         assert pdf_bytes is not None
-        assert pdf_bytes.startswith(b'%PDF-1.4')
+        assert pdf_bytes.startswith(b'%PDF-1.7')
 
     def test_pdf_ends_with_eof(self, tmp_db, monkeypatch, tmp_path):
         iid = _make_invoice(tmp_db, suffix='EOF-1')

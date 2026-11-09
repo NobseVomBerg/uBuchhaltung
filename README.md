@@ -99,7 +99,7 @@ Ohne Docker: `pip install -r requirements.txt` und `python main.py`
 | **Buchen** | Bankbewegungen und Buchungssätze, Split-Buchungen, Kontierungs-Vorschlag aus der Historie, Belege verknüpfen |
 | **Kontenrahmen** | SKR04 vorbelegt, eigene Konten (auch weiterer Rahmen wie SKR03) anlegbar, DATEV-Steuerschlüssel |
 | **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR) |
-| **Rechnungen & Angebote** | PDF und XRechnung (EN 16931), E-Mail-Versand, Nummernkreise, offene Posten, Mahnwesen, Kleinunternehmerregelung |
+| **Rechnungen & Angebote** | PDF als hybride E-Rechnung (ZUGFeRD/Factur-X, EN 16931) und XRechnung, E-Mail-Versand, Nummernkreise, offene Posten, Mahnwesen, Kleinunternehmerregelung |
 | **Anlagen** | Anlagenverzeichnis mit AfA (linear, degressiv, GWG) |
 | **Import & Export** | Kontoauszüge im Bankformat CAMT.053 (XML oder ZIP, jede Bank) oder als PDF (DKB, Volksbank Rottweil), [Datenübernahme aus WISO Mein Büro](#datenübernahme-aus-wiso-mein-büro), DATEV-Buchungsstapel |
 | **Außerdem** | Arbeitszeiten mit Stundenzettel, Fahrtenbuch, Einzel- oder Mehrbenutzerbetrieb, Datensicherung, Dark Mode |
@@ -137,8 +137,7 @@ Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen
   bleibt beim Anwender. Eine Prüfung oder Zusicherung der GoBD-Konformität gibt
   es nicht.
 - **Noch nicht enthalten:** Umsatzsteuer-Voranmeldung bzw. ELSTER-Übermittlung,
-  ZUGFeRD (Rechnungen gibt es als PDF und als XRechnung), Bankanbindung per
-  FinTS/PSD2 sowie Kontoauszüge im MT940-Format.
+  Bankanbindung per FinTS/PSD2 sowie Kontoauszüge im MT940-Format.
 - **Für den Betrieb im eigenen Netz gebaut**, nicht fürs offene Internet –
   siehe [Sicherheitshinweise](#sicherheitshinweise).
 
@@ -219,7 +218,8 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 - **Positionstabelle**: Beliebig viele Positionen, Artikelverzeichnis-Integration
 - **PDF-Generierung** (`export/pdf_invoice.py` auf Basis von `export/pdf_core.py`): A4-Layout, Logo, Umlaute, dreispaltiger Footer
 - **E-Mail-Versand**: SMTP, PDF-Anhang, Empfänger aus Kontakten
-- **XRechnung XML-Export** (`export/xrechnung_invoice.py`): EN 16931 konform
+- **ZUGFeRD / Factur-X** (`export/cii_invoice.py`, `export/pdfa.py`): jede neu erzeugte Rechnungs-PDF ist PDF/A-3b mit eingebetteter `factur-x.xml` (Profil EN 16931)
+- **XRechnung XML-Export** (`export/xrechnung_invoice.py`, UBL): EN 16931 konform
 - **Rechnungsstatus**: Entwurf → Finalisiert → Versendet → Bezahlt (+ Teilzahlung, Überfällig, Storniert)
 - **Nummernkreise**: Format YY[Buchstabe][Präfix]### mit Auto-Inkrementierung
 - **Zahlungsverknüpfung**: Rechnungen mit Bankbuchungen verbinden, Teilzahlungen
@@ -437,7 +437,10 @@ uBuchhaltung/
 │   ├── pdf_core.py            #   Gemeinsame PDF-Primitive (Builder, Logo, Escaping)
 │   ├── pdf_invoice.py         #   PDF-Rechnungs-/Angebotsgenerierung
 │   ├── pdf_worktime.py        #   PDF-Stundenzettel (Arbeitszeiten)
-│   ├── xrechnung_invoice.py   #   XRechnung XML (EN 16931)
+│   ├── einvoice_model.py      #   neutrales E-Rechnungsmodell (EN 16931)
+│   ├── xrechnung_invoice.py   #   XRechnung XML (UBL)
+│   ├── cii_invoice.py         #   CII-XML für ZUGFeRD/Factur-X
+│   ├── pdfa.py                #   PDF/A-3b: Schriften, XMP, OutputIntent, Anhang
 │   └── datev.py               #   DATEV-Buchungsstapel-Export (CSV)
 ├── email_sender.py            # E-Mail-Versand (SMTP)
 ├── buch.css                   # Stylesheet (inkl. Dark Mode; versioniert via ?v=)

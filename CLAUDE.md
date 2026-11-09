@@ -253,6 +253,23 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
 - Ablage: `<Datenordner>/invoices/<Jahr des Rechnungsdatums>/<Rechnungs-Nr.> <Kunde>.pdf`
   (z. B. `R26003 Malermeister Pinsel.pdf`); die XRechnung trägt denselben Namen
   mit `.xml`. Namensschema und Ablage liegen zentral in `export/invoice_files.py`
+- **Hybride E-Rechnung (ZUGFeRD 2.x / Factur-X, Profil EN 16931):** jede neu
+  erzeugte Rechnungs-PDF ist PDF/A-3b mit eingebetteter `factur-x.xml` (CII,
+  `/AFRelationship /Alternative`). Datenfluss: DB → `export/einvoice_model.py`
+  (neutrales Modell, Beträge in Minor Units, Steueraufschlüsselung als Liste) →
+  `cii_invoice.py` (eingebettet) und `xrechnung_invoice.py` (UBL, Download).
+  Der PDF/A-Aufbau liegt in `export/pdfa.py` und gilt für **alle** PDFs
+  (Angebot, Stundenzettel …); nur Rechnungen bekommen das XML
+- **Schriften:** Liberation Sans (2.x, OFL 1.1) aus `export/fonts/` – metrisch
+  = Helvetica, daher Layout unverändert; als Untermenge per `fontTools`
+  eingebettet, Content-Streams bleiben WinAnsi. sRGB-ICC für den OutputIntent
+  erzeugt `tools/make_srgb_icc.py` (Normwerte, keine Fremdlizenz)
+- **Validierung:** CI-Job `einvoice` (`tests.yml`) erzeugt per
+  `tools/make_einvoice_samples.py` Beispiele aus den Demodaten und prüft sie mit
+  Mustang (feste Version, SHA-256 gepinnt; XSD/Schematron/veraPDF); die Dateien
+  hängen als Artefakt am Lauf. Mustang-Version nur mit neuer Prüfsumme ändern
+- Versendete Rechnungen (Status sent/partial_payment/overdue/paid) werden von
+  „PDF + E-Rechnung“ nicht neu erzeugt (`overwrite_sent` nur beim Eintritt in „versendet“)
 - **Erzeugt** wird nur an zwei Stellen: über „PDF + E-Rechnung“ im Formular und
   automatisch beim Wechsel auf Status **versendet** (ab da ist die Rechnung
   eingefroren). Eine bereits versendete Rechnung wird nicht überschrieben
