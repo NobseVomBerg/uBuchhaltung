@@ -11,9 +11,10 @@ Wird von den spezifischen Generatoren genutzt:
 Bereitgestellt werden:
   - escape_pdf_string(s)              – String-Literale für ``(…)``-Syntax escapen
   - load_image_xobject(path, ...)     – Bild (Logo) als komprimiertes RGB-XObject laden
-  - build_single_page_pdf(ops, ...)   – einseitiges A4-PDF aus Content-Operatoren bauen
+  - build_single_page_pdf(ops, ...)   – einseitiges A4-PDF/A aus Content-Operatoren bauen
 
-Schriften im erzeugten PDF:  /F1 Helvetica · /F2 Helvetica-Bold · /F3 Helvetica-Oblique
+Schriften im erzeugten PDF (eingebettet, PDF/A-3b):  /F1 Liberation Sans ·
+/F2 Liberation Sans Bold · /F3 Liberation Sans Italic (metrisch = Helvetica)
 Ein optionales Bild ist als  /Logo  in den Page-Resources referenzierbar.
 """
 import zlib
@@ -151,89 +152,27 @@ def load_image_xobject(path: str, max_width: int = 600, max_height: int = 320):
         return None
 
 
-def build_single_page_pdf(content_ops, image=None, page_size=(595, 842)) -> bytes:
-    """Einseitiges PDF aus einer Liste von Content-Stream-Operatoren bauen.
+def build_single_page_pdf(content_ops, image=None, page_size=(595, 842), **doc) -> bytes:
+    """Einseitiges PDF/A-3b aus einer Liste von Content-Stream-Operatoren bauen.
 
     Args:
         content_ops: Liste von Strings (PDF-Content-Operatoren, inkl. ``BT``/``ET``).
-                     Schriften ``/F1``, ``/F2``, ``/F3`` stehen zur Verfügung; ein
-                     optionales Bild ist als ``/Logo`` zeichenbar.
+                     Schriften ``/F1`` (Regular), ``/F2`` (Bold), ``/F3`` (Italic)
+                     stehen zur Verfügung; ein optionales Bild ist als ``/Logo``
+                     zeichenbar.
         image:       optionales dict aus :func:`load_image_xobject` (oder None).
         page_size:   (Breite, Höhe) in PDF-Punkten – Default A4 hochkant (595×842).
+        **doc:       Dokument-Eigenschaften, siehe :func:`build_multi_page_pdf`.
 
     Returns:
         Vollständige PDF-Datei als ``bytes``.
-
-    Deterministisches Objekt-Layout (Bild nur, falls vorhanden):
-        1 Catalog · 2 Pages · 3 Font F1 · 4 Font F2 · 5 Font F3
-        6 Page · 7 Content-Stream · [8 Image]
     """
-    width, height = page_size
-
-    # Content-Stream komprimieren (FlateDecode); Text als WinAnsi/cp1252 kodieren
-    content_bytes = to_winansi_bytes("\n".join(content_ops))
-    compressed = zlib.compress(content_bytes)
-
-    has_image = image is not None
-    image_obj_num = 8 if has_image else None
-
-    xobject_ref = f" /XObject << /Logo {image_obj_num} 0 R >>" if has_image else ""
-    resources = f"<< /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >>{xobject_ref} >>"
-
-    # Textuelle Objekte (1–6) als (num, content)-Liste
-    text_objects = [
-        (1, "<< /Type /Catalog /Pages 2 0 R >>"),
-        (2, "<< /Type /Pages /Kids [6 0 R] /Count 1 >>"),
-        (3, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"),
-        (4, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"),
-        (5, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding >>"),
-        (6, f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}] "
-            f"/Contents 7 0 R /Resources {resources} >>"),
-    ]
-
-    # Objekt-Bytes in Nummern-Reihenfolge aufbauen (1..N)
-    parts = []  # list[bytes], Index entspricht (obj_num - 1)
-
-    for num, content in text_objects:
-        parts.append(f"{num} 0 obj\n{content}\nendobj\n".encode('latin-1', errors='replace'))
-
-    # Objekt 7: Content-Stream (binär, komprimiert)
-    stream_header = f"7 0 obj\n<< /Length {len(compressed)} /Filter /FlateDecode >>\nstream\n"
-    parts.append(stream_header.encode('latin-1') + compressed + b"\nendstream\nendobj\n")
-
-    # Objekt 8: Bild-XObject (optional, binär)
-    if has_image:
-        img_header = (f"8 0 obj\n<< /Type /XObject /Subtype /Image "
-                      f"/Width {image['width']} /Height {image['height']} "
-                      f"/ColorSpace /DeviceRGB /BitsPerComponent 8 "
-                      f"/Filter {image['filter']} /Length {len(image['data'])} >>\nstream\n")
-        parts.append(img_header.encode('latin-1') + image['data'] + b"\nendstream\nendobj\n")
-
-    # Dokument zusammensetzen + xref-Offsets berechnen
-    pdf_header = "%PDF-1.4\n%\xe2\xe3\xcf\xd3\n".encode('latin-1')
-    offsets = []
-    offset = len(pdf_header)
-    for part in parts:
-        offsets.append(offset)
-        offset += len(part)
-
-    body = b"".join(parts)
-    xref_offset = len(pdf_header) + len(body)
-
-    num_objects = len(parts)
-    xref = f"xref\n0 {num_objects + 1}\n"
-    xref += "0000000000 65535 f \n"
-    for off in offsets:
-        xref += f"{off:010d} 00000 n \n"
-
-    trailer = (f"trailer\n<< /Size {num_objects + 1} /Root 1 0 R >>\n"
-               f"startxref\n{xref_offset}\n%%EOF")
-
-    return pdf_header + body + xref.encode('latin-1') + trailer.encode('latin-1')
+    return build_multi_page_pdf([content_ops], image=image, page_size=page_size, **doc)
 
 
-def build_multi_page_pdf(pages, image=None, page_size=(595, 842)) -> bytes:
-    """Mehrseitiges PDF aus einer Liste von Content-Operator-Listen bauen.
+def build_multi_page_pdf(pages, image=None, page_size=(595, 842), title='Dokument',
+                         author='', subject='', facturx_xml=None, created=None) -> bytes:
+    """Mehrseitiges PDF/A-3b aus einer Liste von Content-Operator-Listen bauen.
 
     Args:
         pages: Liste von Content-Streams (je eine Operator-Liste pro Seite, inkl.
@@ -242,64 +181,16 @@ def build_multi_page_pdf(pages, image=None, page_size=(595, 842)) -> bytes:
                erscheint nur dort, wo die Seite den ``Do``-Operator enthält).
         image: optionales dict aus :func:`load_image_xobject` (oder None).
         page_size: (Breite, Höhe) – Default A4 hochkant.
+        title / author / subject: Dokument-Metadaten (Info-Dictionary + XMP).
+        facturx_xml: CII-XML (``bytes``); wenn gesetzt, wird es als
+            ``factur-x.xml`` eingebettet (ZUGFeRD/Factur-X, Profil EN 16931).
+        created: Erstellzeitpunkt (UTC); Standard: jetzt.
 
-    Objekt-Layout (lückenlos nummeriert): 1 Catalog · 2 Pages · 3–5 Fonts ·
-    je Seite (6+2i) Page + (7+2i) Content · zuletzt das Bild (falls vorhanden).
+    Die Schriften (Liberation Sans) werden als Untermenge eingebettet, die
+    Content-Streams bleiben WinAnsi-kodiert. Aufbau siehe :mod:`export.pdfa`.
     """
-    width, height = page_size
-    n = max(1, len(pages))
-    has_image = image is not None
-
-    page_obj_nums    = [6 + 2 * i for i in range(n)]
-    content_obj_nums = [7 + 2 * i for i in range(n)]
-    image_obj_num    = (6 + 2 * n) if has_image else None
-
-    xobject_ref = f" /XObject << /Logo {image_obj_num} 0 R >>" if has_image else ""
-    resources   = f"<< /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >>{xobject_ref} >>"
-    kids        = " ".join(f"{p} 0 R" for p in page_obj_nums)
-
-    obj_bytes = {}
-
-    def _put(num, content):
-        obj_bytes[num] = f"{num} 0 obj\n{content}\nendobj\n".encode('latin-1', errors='replace')
-
-    _put(1, "<< /Type /Catalog /Pages 2 0 R >>")
-    _put(2, f"<< /Type /Pages /Kids [{kids}] /Count {n} >>")
-    _put(3, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
-    _put(4, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>")
-    _put(5, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding >>")
-
-    for i in range(n):
-        pnum, cnum = page_obj_nums[i], content_obj_nums[i]
-        _put(pnum, f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}] "
-                   f"/Contents {cnum} 0 R /Resources {resources} >>")
-        compressed = zlib.compress(to_winansi_bytes("\n".join(pages[i])))
-        header = f"{cnum} 0 obj\n<< /Length {len(compressed)} /Filter /FlateDecode >>\nstream\n"
-        obj_bytes[cnum] = header.encode('latin-1') + compressed + b"\nendstream\nendobj\n"
-
-    if has_image:
-        img_header = (f"{image_obj_num} 0 obj\n<< /Type /XObject /Subtype /Image "
-                      f"/Width {image['width']} /Height {image['height']} "
-                      f"/ColorSpace /DeviceRGB /BitsPerComponent 8 "
-                      f"/Filter {image['filter']} /Length {len(image['data'])} >>\nstream\n")
-        obj_bytes[image_obj_num] = img_header.encode('latin-1') + image['data'] + b"\nendstream\nendobj\n"
-
-    max_num = max(obj_bytes)
-    pdf_header = "%PDF-1.4\n%\xe2\xe3\xcf\xd3\n".encode('latin-1')
-    parts = [obj_bytes[k] for k in range(1, max_num + 1)]
-
-    offsets = []
-    offset = len(pdf_header)
-    for part in parts:
-        offsets.append(offset)
-        offset += len(part)
-    body = b"".join(parts)
-    xref_offset = len(pdf_header) + len(body)
-
-    xref = f"xref\n0 {max_num + 1}\n" + "0000000000 65535 f \n"
-    for off in offsets:
-        xref += f"{off:010d} 00000 n \n"
-    trailer = (f"trailer\n<< /Size {max_num + 1} /Root 1 0 R >>\n"
-               f"startxref\n{xref_offset}\n%%EOF")
-
-    return pdf_header + body + xref.encode('latin-1') + trailer.encode('latin-1')
+    from .pdfa import assemble_pdf
+    streams = [to_winansi_bytes("\n".join(ops)) for ops in (pages or [[]])]
+    return assemble_pdf(streams, image=image, page_size=page_size, title=title,
+                        author=author, subject=subject, facturx_xml=facturx_xml,
+                        created=created)
