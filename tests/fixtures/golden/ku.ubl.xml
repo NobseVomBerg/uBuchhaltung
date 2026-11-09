@@ -9,6 +9,7 @@
   <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>
   <cac:AccountingSupplierParty>
     <cac:Party>
+      <cbc:EndpointID schemeID="EM">info@muster.de</cbc:EndpointID>
       <cac:PartyName>
         <cbc:Name>Muster &amp; Söhne GmbH</cbc:Name>
       </cac:PartyName>
@@ -29,6 +30,11 @@
       <cac:PartyLegalEntity>
         <cbc:RegistrationName>Muster &amp; Söhne GmbH</cbc:RegistrationName>
       </cac:PartyLegalEntity>
+      <cac:Contact>
+        <cbc:Name>Anna Verkäufer</cbc:Name>
+        <cbc:Telephone>+49 30 123456</cbc:Telephone>
+        <cbc:ElectronicMail>info@muster.de</cbc:ElectronicMail>
+      </cac:Contact>
     </cac:Party>
   </cac:AccountingSupplierParty>
   <cac:AccountingCustomerParty>
@@ -68,8 +74,9 @@
       <cbc:TaxableAmount currencyID="EUR">100.00</cbc:TaxableAmount>
       <cbc:TaxAmount currencyID="EUR">0.00</cbc:TaxAmount>
       <cac:TaxCategory>
-        <cbc:ID>S</cbc:ID>
-        <cbc:Percent>-1.0</cbc:Percent>
+        <cbc:ID>E</cbc:ID>
+        <cbc:Percent>0</cbc:Percent>
+        <cbc:TaxExemptionReason>Gemäß § 19 UStG wird keine Umsatzsteuer berechnet.</cbc:TaxExemptionReason>
         <cac:TaxScheme>
           <cbc:ID>VAT</cbc:ID>
         </cac:TaxScheme>
@@ -84,13 +91,13 @@
   </cac:LegalMonetaryTotal>
   <cac:InvoiceLine>
     <cbc:ID>1</cbc:ID>
-    <cbc:InvoicedQuantity unitCode="Std.">1.00</cbc:InvoicedQuantity>
+    <cbc:InvoicedQuantity unitCode="HUR">1</cbc:InvoicedQuantity>
     <cbc:LineExtensionAmount currencyID="EUR">100.00</cbc:LineExtensionAmount>
     <cac:Item>
       <cbc:Name>Beratung</cbc:Name>
       <cac:ClassifiedTaxCategory>
-        <cbc:ID>S</cbc:ID>
-        <cbc:Percent>-1.0</cbc:Percent>
+        <cbc:ID>E</cbc:ID>
+        <cbc:Percent>0</cbc:Percent>
         <cac:TaxScheme>
           <cbc:ID>VAT</cbc:ID>
         </cac:TaxScheme>
