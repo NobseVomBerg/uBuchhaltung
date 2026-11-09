@@ -17,6 +17,7 @@ from db import Database
 from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path,
                        safe_filename_component)
 from . import pdf_document as D
+from .einvoice_model import unit_display
 
 
 def _pct(tax_rate):
@@ -125,7 +126,7 @@ def generate_quote_pdf(db: Database, quote_id: int):
     if intro_text:
         flow.y -= 6
 
-    items = [{'pos': it[2], 'quantity': it[5], 'unit': it[6] or 'Stk.',
+    items = [{'pos': it[2], 'quantity': it[5], 'unit': unit_display(it[6]),
               'description': it[4], 'price': it[7], 'total': it[8]} for it in items_rows]
     D.draw_item_table(flow, items, tax_rate_pct=_pct(tax_rate),
                       sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross,

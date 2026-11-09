@@ -16,6 +16,7 @@ import os
 from db import Database
 from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path)
 from .cii_invoice import generate_cii
+from .einvoice_model import unit_display
 from .invoice_files import drop_stale_file, invoice_file_path
 from . import pdf_document as D
 
@@ -139,7 +140,7 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
                                     buyer_street, buyer_postal, buyer_city, buyer_country)
     flow.y = D.draw_letterhead(flow.ops, image, "Rechnung", meta_rows, sender_line, address_lines)
 
-    items = [{'pos': it[2], 'quantity': it[5], 'unit': it[6] or 'Stk.',
+    items = [{'pos': it[2], 'quantity': it[5], 'unit': unit_display(it[6]),
               'description': it[4], 'price': it[7], 'total': it[8]} for it in invoice_items]
     D.draw_item_table(flow, items, tax_rate_pct=_pct(tax_rate),
                       sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross,

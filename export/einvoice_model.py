@@ -56,6 +56,14 @@ _UNIT_CODES = {
     'paar': 'PR', 'satz': 'SET', 'karton': 'XCT', 'flasche': 'XBO',
     'kwh': 'KWH', 'seite': 'C62', 'lizenz': 'C62',
 }
+# Anzeige (deutsche Kurzform) je UN/ECE-Code – Rückrichtung für Menschen
+_UNIT_LABELS = {
+    'C62': 'Stk.', 'HUR': 'Std.', 'DAY': 'Tag', 'WEE': 'Woche', 'MON': 'Monat',
+    'ANN': 'Jahr', 'MIN': 'Min.', 'KMT': 'km', 'MTR': 'm', 'CMT': 'cm',
+    'MMT': 'mm', 'MTK': 'm²', 'MTQ': 'm³', 'LTR': 'l', 'KGM': 'kg', 'GRM': 'g',
+    'TNE': 't', 'XPK': 'Pkt.', 'SET': 'Satz', 'PR': 'Paar', 'KWH': 'kWh',
+    'LS': 'pausch.',
+}
 _UNECE_RE = re.compile(r'^[A-Z0-9]{2,3}$')
 
 
@@ -77,6 +85,21 @@ def unit_code(text, unknown=None) -> str:
             unknown.append(s)
         return 'C62'
     return code
+
+
+def unit_display(text, default='Stk.') -> str:
+    """Lesbare Einheit für Mensch (PDF, Formulare).
+
+    Gespeicherter Freitext bleibt unverändert („Std.“ → „Std.“). Ein gespeicherter
+    UN/ECE-Code (Demodaten, WISO-Import) wird zur deutschen Kurzform; ein
+    unbekannter Code wird als Code angezeigt. Leer → ``default``.
+    """
+    s = str(text or '').strip()
+    if not s:
+        return default
+    if _UNECE_RE.match(s) and s == s.upper():
+        return _UNIT_LABELS.get(s, s)
+    return s
 
 
 def rate_to_pct(value, default=Decimal('19')) -> Decimal:
