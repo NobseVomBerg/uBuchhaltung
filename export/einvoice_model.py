@@ -89,8 +89,15 @@ def rate_to_pct(value, default=Decimal('19')) -> Decimal:
     return r.quantize(Decimal('0.01')).normalize() if r else Decimal('0')
 
 
+_ILLEGAL_XML = re.compile('[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]')
+
+
 def _text(value) -> str:
-    return ' '.join(str(value).split()) if value not in (None, '') else ''
+    """Freitext für beide Ausgabeformate: in XML 1.0 verbotene Zeichen entfernen,
+    Whitespace normalisieren."""
+    if value in (None, ''):
+        return ''
+    return ' '.join(_ILLEGAL_XML.sub('', str(value)).split())
 
 
 def _iso_date(value) -> Optional[date]:
