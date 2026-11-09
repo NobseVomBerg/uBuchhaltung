@@ -130,6 +130,8 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     meta_rows = [("Datum:", invoice_date), ("Rechnungs-Nr.:", invoice_number)]
     if buyer_customer_number:
         meta_rows.append(("Kunden-Nr.:", buyer_customer_number))
+    if invoice[25]:
+        meta_rows.append(("Leistungsdatum:", invoice[25]))
     # Absenderzeile im Adressfeld OHNE Zusatzzeile (sonst zu lang); die
     # Zusatzzeile erscheint nur in der Fußzeile.
     sender_line = " · ".join(p for p in [
