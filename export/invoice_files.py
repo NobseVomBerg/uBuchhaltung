@@ -127,7 +127,7 @@ def _write_xrechnung(db, invoice, invoice_id):
     from .xrechnung_invoice import XRechnungGenerator
     try:
         items = db.get_invoice_items(invoice_id)
-        xml_content = XRechnungGenerator().generate_xml(invoice, items)
+        xml_content = XRechnungGenerator().generate_xml(invoice, items, db=db)
         xml_path = invoice_file_path(invoice, 'xml')
         os.makedirs(os.path.dirname(xml_path), exist_ok=True)
         with open(xml_path, 'w', encoding='utf-8') as f:

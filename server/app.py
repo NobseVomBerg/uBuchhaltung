@@ -347,7 +347,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     from export.xrechnung_invoice import XRechnungGenerator
                     items = db.get_invoice_items(invoice_id)
                     generator = XRechnungGenerator()
-                    xml_content = generator.generate_xml(invoice, items)
+                    xml_content = generator.generate_xml(invoice, items, db=db)
                     
                     # Namenskonvention "[Rechnungs-Nr.] [Kundenname]" (todo #2)
                     from export.invoice_files import invoice_file_stem
