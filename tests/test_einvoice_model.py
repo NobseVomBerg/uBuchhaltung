@@ -61,3 +61,16 @@ def test_unknown_unit_is_visible(tmp_db, capsys):
     assert m.lines[0].unit_code == 'C62'
     assert any('Zauberstab' in w for w in m.warnings)
     assert 'Zauberstab' in capsys.readouterr().out
+
+
+def test_control_characters_do_not_break_ubl(tmp_db):
+    import xml.etree.ElementTree as ET
+    from export.xrechnung_invoice import XRechnungGenerator
+    iid = make_case(tmp_db, 'std7')
+    with tmp_db._get_connection() as c:
+        c.execute("UPDATE Invoices SET BuyerCompany=? WHERE ID=?", ('Muster\x07 AG\x00', iid))
+        c.execute("UPDATE InvoiceItems SET Description=? WHERE InvoiceId=?", ('Buch\x1b', iid))
+    xml = XRechnungGenerator().generate_xml(
+        tmp_db.get_invoice_by_id(iid), tmp_db.get_invoice_items(iid), db=tmp_db)
+    assert ET.fromstring(xml.encode('utf-8')) is not None
+    assert 'Muster AG' in xml and '>Buch<' in xml
