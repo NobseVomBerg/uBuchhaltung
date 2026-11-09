@@ -17,7 +17,7 @@ _BASE = {
     'seller_city': 'Musterstadt',
     'seller_country': 'DE',
     'seller_vat_id': 'DE123456789',
-    'seller_email': 'info@muster.example',
+    'seller_email': 'info@muster.de',
     'seller_phone': '+49 30 123456',
     'buyer_name': 'Max Mustermann',
     'buyer_company': 'Malermeister Pinsel',

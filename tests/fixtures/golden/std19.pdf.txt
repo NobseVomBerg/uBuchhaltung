@@ -79,7 +79,7 @@
 50	784	Musterstraße
 99	784	1
 235	784	E-Mail:
-262	784	info@muster.example
+262	784	info@muster.de
 410	784	Bank:
 433	784	Testbank
 468	784	AG
