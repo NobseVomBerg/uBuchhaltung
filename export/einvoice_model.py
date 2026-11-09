@@ -43,8 +43,8 @@ EXEMPT_REASON_KLEINUNTERNEHMER = (
 # Freitext-Einheiten der Rechnungsmaske -> UN/ECE Recommendation 20
 _UNIT_CODES = {
     'stk': 'C62', 'stk.': 'C62', 'stück': 'C62', 'stueck': 'C62', 'st': 'C62',
-    'st.': 'C62', 'x': 'C62', 'pausch.': 'C62', 'pauschal': 'C62',
-    'pauschale': 'C62', 'psch': 'C62', 'psch.': 'C62', 'einheit': 'C62',
+    'st.': 'C62', 'x': 'C62', 'pausch.': 'LS', 'pauschal': 'LS',
+    'pauschale': 'LS', 'psch': 'LS', 'psch.': 'LS', 'einheit': 'C62',
     'std': 'HUR', 'std.': 'HUR', 'stunde': 'HUR', 'stunden': 'HUR', 'h': 'HUR',
     'tag': 'DAY', 'tage': 'DAY', 'tg': 'DAY', 'tg.': 'DAY', 'd': 'DAY',
     'woche': 'WEE', 'wochen': 'WEE', 'monat': 'MON', 'monate': 'MON',
@@ -59,14 +59,24 @@ _UNIT_CODES = {
 _UNECE_RE = re.compile(r'^[A-Z0-9]{2,3}$')
 
 
-def unit_code(text) -> str:
-    """Einheit der Rechnungsposition als UN/ECE-Code (Fallback ``C62`` = Stück)."""
+def unit_code(text, unknown=None) -> str:
+    """Einheit der Rechnungsposition als UN/ECE-Code (Fallback ``C62`` = Stück).
+
+    Groß-/Kleinschreibung und Punkt sind egal; echte UN/ECE-Codes (z. B. aus dem
+    WISO-Import) werden durchgereicht. Eine unbekannte Einheit ergibt ``C62``;
+    ``unknown`` (Liste) sammelt sie, damit der Fallback sichtbar wird.
+    """
     s = str(text or '').strip()
     if not s:
         return 'C62'
-    if _UNECE_RE.match(s):
+    if _UNECE_RE.match(s) and s == s.upper():
         return s                      # bereits ein Code (HUR, C62, DAY, …)
-    return _UNIT_CODES.get(s.lower(), 'C62')
+    code = _UNIT_CODES.get(s.lower())
+    if code is None:
+        if unknown is not None:
+            unknown.append(s)
+        return 'C62'
+    return code
 
 
 def rate_to_pct(value, default=Decimal('19')) -> Decimal:
@@ -193,6 +203,7 @@ def build_einvoice(db, invoice, items) -> EInvoice:
     default_rate = Decimal('0') if exempt else rate_to_pct(raw_rate, Decimal('19'))
 
     lines: List[Line] = []
+    unknown_units: List[str] = []
     for it in items:
         qty = Decimal(str(it[_ITM['quantity']] if it[_ITM['quantity']] is not None else 1))
         price = to_minor(it[_ITM['price']] or 0)
@@ -208,8 +219,13 @@ def build_einvoice(db, invoice, items) -> EInvoice:
         lines.append(Line(
             position=int(it[_ITM['position']]), name=_text(it[_ITM['description']]) or 'Position',
             quantity=qty.normalize() if qty == qty.to_integral() else qty,
-            unit_code=unit_code(it[_ITM['unit']]), unit_price=price, net=net,
+            unit_code=unit_code(it[_ITM['unit']], unknown_units), unit_price=price, net=net,
             tax_category=category, tax_rate=rate))
+
+    for u in sorted(set(unknown_units)):
+        msg = f"Unbekannte Einheit '{u}' – als C62 (Stück) ausgegeben"
+        warnings.append(msg)
+        print(f"E-Rechnung {_text(col('number'))}: {msg}")
 
     # Steueraufschlüsselung je (Kategorie, Satz); Steuer je Gruppe auf Cent gerundet
     groups = {}

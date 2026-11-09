@@ -41,7 +41,7 @@ def test_kleinunternehmer_is_exempt_with_reason(tmp_db):
 
 @pytest.mark.parametrize('text, code', [
     ('Stk.', 'C62'), ('Std.', 'HUR'), ('HUR', 'HUR'), ('C62', 'C62'),
-    ('Tag', 'DAY'), ('', 'C62'), (None, 'C62'), ('unbekannt', 'C62')])
+    ('Tag', 'DAY'), ('pauschal', 'LS'), ('STD.', 'HUR'), ('m²', 'MTK'), ('kg', 'KGM'), ('', 'C62'), (None, 'C62'), ('unbekannt', 'C62')])
 def test_unit_code(text, code):
     assert unit_code(text) == code
 
@@ -51,3 +51,13 @@ def test_unit_code(text, code):
     (0, Decimal('0')), (None, Decimal('19'))])
 def test_rate_to_pct(value, expected):
     assert rate_to_pct(value) == expected
+
+
+def test_unknown_unit_is_visible(tmp_db, capsys):
+    iid = make_case(tmp_db, 'std7')
+    with tmp_db._get_connection() as c:
+        c.execute("UPDATE InvoiceItems SET Unit='Zauberstab' WHERE InvoiceId=?", (iid,))
+    m = build_einvoice(tmp_db, tmp_db.get_invoice_by_id(iid), tmp_db.get_invoice_items(iid))
+    assert m.lines[0].unit_code == 'C62'
+    assert any('Zauberstab' in w for w in m.warnings)
+    assert 'Zauberstab' in capsys.readouterr().out
