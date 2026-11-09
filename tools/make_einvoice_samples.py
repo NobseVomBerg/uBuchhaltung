@@ -50,7 +50,7 @@ def _clone_as_exempt(db, invoice_id):
         'seller_phone': inv[12], 'customer_id': inv[13], 'buyer_name': inv[14],
         'buyer_company': inv[15], 'buyer_street': inv[16], 'buyer_postal_code': inv[17],
         'buyer_city': inv[18], 'buyer_country': inv[19], 'buyer_route_id': LEITWEG_ID,
-        'currency': inv[24], 'payment_terms': inv[26], 'payment_due_date': inv[27],
+        'currency': inv[24], 'delivery_date': inv[25] or str(inv[2]), 'payment_terms': inv[26], 'payment_due_date': inv[27],
         'bank_name': inv[31], 'bank_iban': inv[32], 'bank_bic': inv[33],
         'tax_category': 'E', 'tax_rate': -1, 'sum_net': net, 'tax_amount': 0,
         'sum_gross': net, 'amount_due': net, 'status': 'finalized',
