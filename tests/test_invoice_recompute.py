@@ -111,7 +111,7 @@ def test_handle_invoice_save_recomputes_and_stores_integer(tmp_db, monkeypatch):
 
     payload = {
         'invoiceNumber': '26R001',
-        'invoiceDate': '2026-06-07',
+        'invoiceDate': '2026-06-07', 'deliveryDate': '2026-06-05',
         'customerId': cust_id,
         'ownCompanyId': own_id,
         'taxRate': 0.19,                      # Bruch wie vom Client geliefert
@@ -148,7 +148,7 @@ def test_handle_invoice_save_stores_minor_integers(tmp_db, monkeypatch):
     monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
 
     payload = {
-        'invoiceNumber': '26R002', 'invoiceDate': '2026-06-07',
+        'invoiceNumber': '26R002', 'invoiceDate': '2026-06-07', 'deliveryDate': '2026-06-05',
         'customerId': cust_id, 'ownCompanyId': own_id, 'taxRate': 0.19,
         'netAmount': 0, 'taxAmount': 0, 'grossAmount': 0, 'status': 'draft',
         'items': [{'position': 1, 'quantity': 1, 'unit': 'C62',

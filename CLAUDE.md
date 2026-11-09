@@ -268,6 +268,9 @@ Nutzer: "Räume Pages-Modul auf, splitte in Router + Handler"
   `tools/make_einvoice_samples.py` Beispiele aus den Demodaten und prüft sie mit
   Mustang (feste Version, SHA-256 gepinnt; XSD/Schematron/veraPDF); die Dateien
   hängen als Artefakt am Lauf. Mustang-Version nur mit neuer Prüfsumme ändern
+- **Leistungsdatum ist Pflicht** (§ 14 UStG): Formular `required`, vorbelegt mit dem Rechnungsdatum,
+  Server lehnt Speichern ohne ab (`handle_invoice_save`; nicht bei Angeboten, nicht bei bereits
+  versendeten Rechnungen/Importen); steht im PDF-Kopfblock und in CII/UBL. Angebot → Rechnung setzt es auf das Rechnungsdatum
 - Versendete Rechnungen (Status sent/partial_payment/overdue/paid) werden von
   „PDF + E-Rechnung“ nicht neu erzeugt (`overwrite_sent` nur beim Eintritt in „versendet“)
 - **Erzeugt** wird nur an zwei Stellen: über „PDF + E-Rechnung“ im Formular und

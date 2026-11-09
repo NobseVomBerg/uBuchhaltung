@@ -1674,6 +1674,14 @@ def recompute_invoice_totals(items, default_rate_pct):
             from_minor(gross_minor), [from_minor(n) for n in line_net_minors])
 
 
+def _invoice_is_frozen(invoice_id):
+    """True, wenn die gespeicherte Rechnung schon versendet (eingefroren) ist."""
+    if not invoice_id:
+        return False
+    row = Database().get_invoice_by_id(invoice_id)
+    return bool(row) and (row[40] == 'partial' or row[40] in _RECEIVABLE_STATUSES)
+
+
 def handle_invoice_save(post_body: bytes):
     """Save or update invoice to database
 
@@ -1720,6 +1728,13 @@ def handle_invoice_save(post_body: bytes):
         
         if not items or len(items) == 0:
             return json.dumps({'success': False, 'error': 'Mindestens eine Position erforderlich'}).encode()
+
+        # Leistungsdatum ist Pflicht (§ 14 UStG). Bereits versendete Rechnungen
+        # sind eingefroren und werden nicht nachträglich geprüft.
+        if not delivery_date and not _invoice_is_frozen(invoice_id if is_update else None):
+            return json.dumps({'success': False, 'error':
+                'Leistungsdatum fehlt – Pflichtangabe nach § 14 UStG '
+                '(Datum der Lieferung/Leistung).'}).encode()
 
         # Phase 2: Summen serverseitig exakt neu berechnen – den vom Client
         # gelieferten net/tax/gross-Werten wird bewusst nicht vertraut. Bei

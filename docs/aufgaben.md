@@ -11,6 +11,7 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 - Kontoauszüge im MT940-Format (CAMT.053 und PDF: DKB, Volksbank Rottweil sind da)
 - CAMT-Zusatzfelder (Valuta, EndToEndId, Mandatsreferenz, Gläubiger-ID) übernehmen – braucht Schemaänderung
 - Rechnungen/Angebote mit gemischten Steuersätzen (7 % und 19 % je Position) – bisher ein Satz je Beleg
+- Leistungszeitraum (von–bis) als Alternative zum Leistungsdatum, z. B. für monatliche Leistungen – PDF-Kopf und E-Rechnung (CII BillingSpecifiedPeriod / UBL InvoicePeriod); braucht Schemaänderung
 - Umsatzsteuer-Voranmeldung (ELSTER)
 - GoBD-Modus, je Datenverzeichnis einstellbar (Ersteinrichtung fragt: Steuerbüro oder selbst?); vor Umsetzung Design (architect):
   - Festschreibung abgeschlossener Zeiträume, Korrektur nur per Storno/Gegenbuchung, kein Löschen
@@ -39,3 +40,5 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
 - Invoices-Zeilen werden per Spaltenindex gelesen (u. a. `server/pages_invoice.py`) – bricht bei Schemaänderungen, besser Spaltennamen
 - CI testet nur Python 3.13, README nennt 3.10+ → Matrix ergänzen oder Angabe anpassen
 - KI-Doku entschlacken: `CLAUDE.md`, `AGENTS.md`, `.claude/agents.md` auf Doppelungen prüfen
+- Einheiten auf Artikel-Listen/-Stammdaten prüfen (lesbar statt UN/ECE-Code)
+- Pfadprüfung beim Ausliefern gespeicherter Rechnungen (`stored_invoice_document`) – Security-Review, niedrige Priorität
