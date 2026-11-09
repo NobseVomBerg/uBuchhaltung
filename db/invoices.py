@@ -281,7 +281,7 @@ class InvoicesMixin:
             'buyer_city': quote[18], 'buyer_country': quote[19] or 'DE',
             'buyer_vat_id': quote[20], 'buyer_reference': quote[21], 'buyer_route_id': quote[22],
             'order_number': quote[23], 'currency': quote[24] or 'EUR',
-            'delivery_date': None,
+            'delivery_date': datetime.date.today().isoformat(),  # Pflicht, = Rechnungsdatum
             'payment_terms': None, 'payment_due_date': None,
             'skonto_days': None, 'skonto_percent': None,
             'bank_account_id': None, 'bank_name': None, 'bank_iban': None, 'bank_bic': None,
