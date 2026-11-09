@@ -14,6 +14,7 @@ import os
 import html as _html
 from db import Database
 from money import fmt_eur
+from export.einvoice_model import unit_display
 from .pages import Header1, Header2, Header3, Footer, logo_url
 from .pages_invoice import _json_for_script, document_submenu
 
@@ -352,7 +353,7 @@ def _quote_form_html(db: Database, quote_id=None):
             <tbody id="quote_items_body">'''
     if existing_items:
         for idx, item in enumerate(existing_items, 1):
-            quantity = item[5]; unit = item[6] or 'Stk.'
+            quantity = item[5]; unit = unit_display(item[6])
             description = _html.escape(str(item[4] or '')); price = item[7]; total = item[8]
             s += f'''
                 <tr class="invoice-item-row" data-row="{idx}">
@@ -439,7 +440,7 @@ def _quote_form_html(db: Database, quote_id=None):
         'address_line1': c[25] if len(c) > 25 and c[25] else '',
         'street': c[5] or '', 'postal': c[6] or '', 'city': c[7] or ''} for c in customers}
     art_dict = {str(a[0]): {
-        'name': a[1] or '', 'unit': a[2] or 'Stk.',
+        'name': a[1] or '', 'unit': unit_display(a[2]),
         'price': float(a[3]) if a[3] is not None else 0,
         'taxRate': a[4] if a[4] is not None else 19,  # 0% nicht zu 19% verfälschen
         'description': a[5] or ''} for a in articles}

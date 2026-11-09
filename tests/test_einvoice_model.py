@@ -74,3 +74,31 @@ def test_control_characters_do_not_break_ubl(tmp_db):
         tmp_db.get_invoice_by_id(iid), tmp_db.get_invoice_items(iid), db=tmp_db)
     assert ET.fromstring(xml.encode('utf-8')) is not None
     assert 'Muster AG' in xml and '>Buch<' in xml
+
+
+@pytest.mark.parametrize('stored, shown', [
+    ('Std.', 'Std.'), ('Stk.', 'Stk.'), ('Tag', 'Tag'), ('h', 'h'),       # Freitext bleibt
+    ('HUR', 'Std.'), ('C62', 'Stk.'), ('DAY', 'Tag'), ('KMT', 'km'), ('KGM', 'kg'),
+    ('MTR', 'm'), ('MTK', 'm²'), ('LTR', 'l'), ('LS', 'pausch.'),
+    ('ZZZ', 'ZZZ'),                                                        # unbekannter Code
+    ('', 'Stk.'), (None, 'Stk.')])
+def test_unit_display(stored, shown):
+    from export.einvoice_model import unit_display
+    assert unit_display(stored) == shown
+
+
+def test_pdf_shows_readable_unit_but_xml_keeps_code(tmp_db, monkeypatch, tmp_path):
+    import io
+    import pdfplumber
+    from export.pdf_invoice import generate_invoice_pdf
+    from export.cii_invoice import generate_cii
+    monkeypatch.chdir(tmp_path)
+    iid = make_case(tmp_db, 'std7')
+    with tmp_db._get_connection() as c:
+        c.execute("UPDATE InvoiceItems SET Unit='HUR' WHERE InvoiceId=?", (iid,))
+    pdf, _ = generate_invoice_pdf(tmp_db, iid)
+    with pdfplumber.open(io.BytesIO(pdf)) as p:
+        words = p.pages[0].extract_text().split()
+    assert 'Std.' in words and 'HUR' not in words
+    xml = generate_cii(tmp_db.get_invoice_by_id(iid), tmp_db.get_invoice_items(iid), db=tmp_db)
+    assert b'unitCode="HUR"' in xml
