@@ -84,14 +84,26 @@ def wants_xrechnung(invoice) -> bool:
     return bool(_col(invoice, _IDX_ROUTE_ID) or _col(invoice, _IDX_ORDER_NUMBER))
 
 
-def generate_invoice_documents(db, invoice_id: int, with_xml=None) -> dict:
-    """PDF (und bei E-Rechnungsdaten das XML) erzeugen und ablegen.
+# Ab diesen Stati ist die Rechnung versendet und damit eingefroren
+FROZEN_STATUSES = frozenset({'sent', 'partial_payment', 'overdue', 'paid'})
+_IDX_STATUS = 40
+
+
+def generate_invoice_documents(db, invoice_id: int, with_xml=None,
+                               overwrite_sent=False) -> dict:
+    """PDF (hybride ZUGFeRD-E-Rechnung) und ggf. UBL-XML erzeugen und ablegen.
+
+    Das PDF ist PDF/A-3b mit eingebetteter ``factur-x.xml`` (Profil EN 16931).
+    Eine bereits versendete Rechnung (siehe :data:`FROZEN_STATUSES`) wird nicht
+    neu erzeugt, solange ihr PDF vorliegt – ``overwrite_sent=True`` erzwingt es
+    (nur beim Eintritt in den Status „versendet“).
 
     Args:
         db: Datenbank-Instanz.
         invoice_id: ID der Rechnung.
-        with_xml: ``None`` = automatisch (nur bei E-Rechnungsdaten),
+        with_xml: ``None`` = automatisch (UBL-XML nur bei E-Rechnungsdaten),
             ``True``/``False`` erzwingt bzw. unterdrückt das XML.
+        overwrite_sent: auch eine eingefrorene Rechnung neu erzeugen.
 
     Returns:
         dict mit ``pdf_path``/``pdf_filename`` (bzw. ``None``),
@@ -101,6 +113,15 @@ def generate_invoice_documents(db, invoice_id: int, with_xml=None) -> dict:
 
     result = {'pdf_path': None, 'pdf_filename': None,
               'xml_path': None, 'xml_filename': None, 'error': None}
+
+    current = db.get_invoice_by_id(invoice_id)
+    if (current and not overwrite_sent
+            and _col(current, _IDX_STATUS) in FROZEN_STATUSES):
+        existing, existing_name, _ = stored_invoice_document(db, invoice_id, 'pdf')
+        if existing:
+            result['pdf_path'] = _col(current, _IDX_PDF_PATH) or invoice_file_path(current, 'pdf')
+            result['pdf_filename'] = existing_name
+            return result
 
     pdf_bytes, pdf_path = generate_invoice_pdf(db, invoice_id)
     if not pdf_bytes or not pdf_path:
@@ -127,7 +148,7 @@ def _write_xrechnung(db, invoice, invoice_id):
     from .xrechnung_invoice import XRechnungGenerator
     try:
         items = db.get_invoice_items(invoice_id)
-        xml_content = XRechnungGenerator().generate_xml(invoice, items)
+        xml_content = XRechnungGenerator().generate_xml(invoice, items, db=db)
         xml_path = invoice_file_path(invoice, 'xml')
         os.makedirs(os.path.dirname(xml_path), exist_ok=True)
         with open(xml_path, 'w', encoding='utf-8') as f:

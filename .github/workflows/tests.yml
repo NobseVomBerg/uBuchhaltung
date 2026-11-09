@@ -39,3 +39,66 @@ jobs:
 
       - name: pytest
         run: python -m pytest -q -rs
+
+  # E-Rechnung: ZUGFeRD-PDFs (PDF/A-3 + CII) und UBL-XRechnung aus den Demodaten
+  # erzeugen und mit Mustang prüfen (XSD + Schematron; PDF per veraPDF). Die
+  # erzeugten Dateien hängen als Artefakt am Lauf (Sichtprüfung).
+  einvoice:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      MUSTANG_VERSION: '2.26.0'
+      # SHA-256 der Mustang-CLI-JAR von Maven Central (feste Version, geprüft)
+      MUSTANG_SHA256: '42d7868cb68264874a7b8cab4c3587b03b23ccc7cd72373da917f66758bb9736'
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten (wie im Dockerfile)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Java einrichten (für Mustang)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Abhängigkeiten installieren
+        run: pip install -r requirements.txt
+
+      - name: Beispiel-E-Rechnungen erzeugen
+        run: python tools/make_einvoice_samples.py einvoice-samples
+
+      - name: Mustang-CLI laden (feste Version, Prüfsumme)
+        run: |
+          curl -sSfL -o mustang.jar \
+            "https://repo1.maven.org/maven2/org/mustangproject/Mustang-CLI/${MUSTANG_VERSION}/Mustang-CLI-${MUSTANG_VERSION}.jar"
+          echo "${MUSTANG_SHA256}  mustang.jar" | sha256sum -c -
+
+      - name: Mit Mustang validieren
+        run: |
+          status=0
+          for f in einvoice-samples/*.pdf einvoice-samples/*.xml; do
+            echo "::group::Mustang validate $f"
+            java -jar mustang.jar --action validate --source "$f" > "$f.report.xml" 2> "$f.stderr.txt" || true
+            cat "$f.report.xml"; cat "$f.stderr.txt"
+            echo "::endgroup::"
+            if grep -q 'status="invalid"' "$f.report.xml" || ! grep -q 'status="valid"' "$f.report.xml"; then
+              echo "::error file=$f::Mustang meldet die Datei als ungültig (Bericht: $f.report.xml)"
+              status=1
+            fi
+          done
+          exit $status
+
+      - name: Beispiele und Prüfberichte als Artefakt hochladen
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: einvoice-samples
+          path: einvoice-samples/
+          if-no-files-found: warn

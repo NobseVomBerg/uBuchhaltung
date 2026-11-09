@@ -1413,7 +1413,7 @@ def _ensure_sent_documents(db, invoice_id, current_status, new_status):
         if existing:
             return None
     try:
-        result = generate_invoice_documents(db, invoice_id)
+        result = generate_invoice_documents(db, invoice_id, overwrite_sent=True)
     except Exception as e:
         import traceback
         print(f"Error generating documents for invoice {invoice_id}: {e}")

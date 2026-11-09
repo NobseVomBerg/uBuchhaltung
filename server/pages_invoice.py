@@ -9,6 +9,7 @@ import os
 import html as _html
 from db import Database
 from money import fmt_eur
+from export.einvoice_model import unit_display
 from .pages import (
     Header1, Header2, Header3, Footer, logo_url,
 )
@@ -527,7 +528,7 @@ function copyInvoiceAsNew(invId) {{
         for idx, item in enumerate(existing_items, 1):
             # item: ID=0, InvoiceId=1, Position=2, ArticleId=3, Description=4, Quantity=5, Unit=6, PricePerUnit=7, TotalNet=8, TaxCategory=9, TaxRate=10
             quantity = item[5]
-            unit = item[6] or 'Stk.'
+            unit = unit_display(item[6])
             description = item[4] or ''
             price = item[7]
             total = item[8]
@@ -837,7 +838,7 @@ function copyInvoiceAsNew(invId) {{
         articles_dict[str(article[0])] = {
             'id': article[0],
             'name': article[1] or '',
-            'unit': article[2] or 'Stk.',
+            'unit': unit_display(article[2]),
             'price': float(article[3]) if article[3] is not None else 0,  # Decimal -> JSON-fähig
             'taxRate': article[4] if article[4] is not None else 19,  # 0% nicht zu 19% verfälschen
             'description': article[5] or ''
