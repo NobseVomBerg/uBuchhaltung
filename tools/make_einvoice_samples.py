@@ -69,6 +69,7 @@ def main(outdir):
     from export.invoice_files import generate_invoice_documents, invoice_file_path
     from export.xrechnung_invoice import XRechnungGenerator
 
+    outdir = os.path.abspath(outdir)          # _setup_demo wechselt das Arbeitsverzeichnis
     os.makedirs(outdir, exist_ok=True)
     _setup_demo()
     db = Database()
