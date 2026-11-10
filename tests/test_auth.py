@@ -3,7 +3,8 @@
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """TODO #4 – Phase 1: Authentifizierung, Sessions und Benutzer-Isolation.
 
-Alle Tests verwenden anonyme Test-Zugangsdaten und eine temporäre auth.db.
+Alle Tests verwenden anonyme Test-Zugangsdaten und eine temporäre auth.db. Die automatische
+Anmeldung und die Ersteinrichtung prüfen test_auto_login*.py und test_setup_start.py.
 """
 import os
 from urllib.parse import parse_qs, urlsplit
@@ -15,6 +16,7 @@ import userctx
 from db import Database
 from server import handlers
 from server.pages_users import PageUsers
+from tests import installation
 
 
 @pytest.fixture
@@ -143,8 +145,8 @@ def data_root(monkeypatch, tmp_path):
     userctx.clear()
 
 
-# ── App-Modus (Datei-Konfig) ─────────────────────────────────────────────────
-def test_mode_unconfigured_is_single(data_root):
+# ── App-Modus (Datei-Konfig): eingerichtet ('multi') oder nicht ──────────────
+def test_mode_unconfigured(data_root):
     assert userctx.get_mode() is None
     assert userctx.auth_enabled() is False
 
@@ -154,22 +156,59 @@ def test_set_mode_persists_and_drives_auth(data_root):
     assert userctx.get_mode() == "multi"
     assert userctx.auth_enabled() is True
     # frisch aus der Datei gelesen (Cache geleert) bleibt es 'multi'
-    userctx._mode_cache.clear()
+    installation.forget_config_cache()
     assert userctx.get_mode() == "multi"
-    userctx.set_mode("single")
-    assert userctx.auth_enabled() is False
+    assert installation.read_config() == {"mode": "multi"}
 
 
-def test_set_mode_rejects_invalid(data_root):
+@pytest.mark.parametrize("mode", ["single", "foo", "", None])
+def test_set_mode_accepts_only_multi(data_root, mode):
     with pytest.raises(ValueError):
-        userctx.set_mode("foo")
+        userctx.set_mode(mode)
+    assert not os.path.exists(userctx.config_path())            # nichts geschrieben
+    assert userctx.get_mode() is None
+
+
+def test_set_mode_single_does_not_unset_a_set_up_installation(data_root):
+    userctx.set_mode("multi")
+    with pytest.raises(ValueError):
+        userctx.set_mode("single")
+    assert userctx.get_mode() == "multi"
+    assert userctx.auth_enabled() is True
+
+
+@pytest.mark.parametrize("config", [
+    pytest.param({"mode": "single"}, id="Einzelbenutzer-Modus-aus-Version-1"),
+    pytest.param({"mode": "foo"}, id="unbekannter-Modus"),
+    pytest.param({"mode": ""}, id="leerer-Modus"),
+    pytest.param({"auto_login": "admin"}, id="kein-Modus"),
+    pytest.param({}, id="leer"),
+])
+def test_any_mode_but_multi_in_config_means_not_set_up(data_root, config):
+    # Den früheren Einzelbenutzer-Modus kennt nur noch layout.migrate() (beim Start)
+    installation.write_config(config)
+    assert userctx.get_mode() is None
+    assert userctx.auth_enabled() is False
+    assert userctx.get_auto_login() is None
 
 
 # ── userctx-Pfadauflösung & Isolation ────────────────────────────────────────
-def test_userctx_default_single_user(data_root):
+def test_userctx_without_user_context_points_to_data_root(data_root):
+    # Werkzeuge und Tests ohne Benutzer-Kontext: DATA_ROOT, auch nach der Einrichtung
     assert userctx.auth_enabled() is False
     assert userctx.user_db_path() == os.path.join(data_root, "buch.db")
     assert userctx.user_data_dir() == data_root
+    userctx.set_mode("multi")
+    assert userctx.get_user() is None
+    assert userctx.user_db_path() == os.path.join(data_root, "buch.db")
+    assert userctx.user_data_dir() == data_root
+
+
+def test_user_without_set_up_installation_has_no_own_directory(data_root):
+    # Ohne eingerichtete Installation gibt es kein users/<Name>/, auch mit gesetztem Benutzer
+    userctx.set_user("alice")
+    assert userctx.user_data_dir() == data_root
+    assert userctx.user_db_path() == os.path.join(data_root, "buch.db")
 
 
 def test_userctx_per_user_paths(data_root):
@@ -189,7 +228,7 @@ def test_two_users_have_isolated_databases(tmp_path):
 
 
 # ── Phase 2: Datei-Isolation ─────────────────────────────────────────────────
-def test_user_subdir_default_single_user(data_root):
+def test_user_subdir_without_user_context(data_root):
     d = userctx.user_subdir("logos")
     assert d == os.path.join(data_root, "logos")
     assert os.path.isdir(d)
@@ -208,7 +247,7 @@ def test_user_subdir_per_user_isolated(data_root):
 
 def test_document_parser_follows_userctx(data_root):
     import document_parser
-    # Einzelmodus (kein User) ⇒ Basis = Datenwurzel
+    # ohne Benutzer-Kontext ⇒ Basis = Datenwurzel
     p = document_parser.DocumentParser()
     assert p.log_dir == data_root
     assert p.data_dir == os.path.join(data_root, "Belege")
@@ -223,69 +262,44 @@ def test_document_parser_follows_userctx(data_root):
     assert p3.data_dir == os.path.join(data_root, "x")
 
 
-def test_header_shows_logout_only_in_multi(data_root):
+def test_header_shows_name_and_logout_only_for_a_login_session(data_root):
     from server.pages import Header1
-    # Einzel-/neutral: kein Abmelden-Link
-    assert "Abmelden" not in Header1("dashboard")
-    # Mehrbenutzer + angemeldeter Nutzer: Username + Logout
+    # kein Benutzer: weder Name noch Abmelden-Link
+    assert "👤" not in Header1("dashboard") and "Abmelden" not in Header1("dashboard")
+    # Benutzer ohne eingerichtete Installation (Werkzeuge): ebenfalls nichts
+    userctx.set_user("admin")
+    assert "👤" not in Header1("dashboard") and "Abmelden" not in Header1("dashboard")
+    # Anmeldung mit Sitzung: Name + Abmelden
+    userctx.set_mode("multi")
+    h = Header1("dashboard")
+    assert "👤 admin" in h and "/logout" in h and "Abmelden" in h
+
+
+def test_header_shows_name_but_no_logout_for_the_automatic_login(data_root):
+    from server.pages import Header1
     userctx.set_mode("multi")
     userctx.set_user("admin")
+    userctx.set_auto_login_active(True)       # es gibt keine Sitzung, die man beenden könnte
     h = Header1("dashboard")
-    assert "/logout" in h and "Abmelden" in h and "admin" in h
+    assert "👤 admin" in h
+    assert "/logout" not in h and "Abmelden" not in h
 
 
-def test_ensure_directories_by_mode(data_root):
+def test_ensure_directories_creates_only_the_data_root_and_users(data_root):
     import server.app as app
     typ = {"logos", "invoices", "quotes", "worktime"}
-    # Unkonfiguriert: nur die Datenwurzel, keine Typ-Ordner, kein users/
+    # Nicht eingerichtet: nur die Datenwurzel, keine Typ-Ordner, kein users/
     app._ensure_directories()
-    assert set(os.listdir(data_root)) & (typ | {"users"}) == set()
-    # Einzelmodus: Typ-Ordner
-    userctx.set_mode("single")
+    assert os.listdir(data_root) == []
+    # Ein Altbestand (früherer Einzelbenutzer-Modus) bekommt keine Typ-Ordner mehr
+    installation.write_config({"mode": "single"})
     app._ensure_directories()
-    assert typ <= set(os.listdir(data_root))
-    # Mehrbenutzer: users/, aber keine globalen Typ-Ordner neu
-    import shutil
-    for d in typ:
-        shutil.rmtree(os.path.join(data_root, d), ignore_errors=True)
+    assert set(os.listdir(data_root)) == {"config.json"}
+    # Eingerichtet: users/, aber keine globalen Typ-Ordner
     userctx.set_mode("multi")
     app._ensure_directories()
-    assert "users" in os.listdir(data_root)
+    assert set(os.listdir(data_root)) == {"config.json", "users"}
     assert typ & set(os.listdir(data_root)) == set()
-
-
-def _config_bytes():
-    with open(userctx.config_path(), "rb") as f:
-        return f.read()
-
-
-@pytest.mark.parametrize("mode, target", [("multi", "/setup-admin"), ("single", "/setup")])
-def test_handle_setup_mode_first_choice_sets_mode(data_root, mode, target):
-    assert userctx.get_mode() is None
-    assert handlers.handle_setup_mode({"mode": [mode]}) == target
-    assert userctx.get_mode() == mode
-    # aus der Datei gelesen (Cache geleert) steht dieselbe Wahl
-    userctx._mode_cache.clear()
-    assert userctx.get_mode() == mode
-
-
-@pytest.mark.parametrize("first, second", [("multi", "single"), ("single", "multi")])
-def test_handle_setup_mode_is_ignored_once_mode_is_set(data_root, first, second):
-    userctx.set_mode(first)
-    config_before = _config_bytes()
-    assert handlers.handle_setup_mode({"mode": [second]}) is None
-    assert userctx.get_mode() == first
-    assert _config_bytes() == config_before
-    userctx._mode_cache.clear()
-    assert userctx.get_mode() == first
-
-
-@pytest.mark.parametrize("post_data", [{"mode": ["x"]}, {"mode": [""]}, {}])
-def test_handle_setup_mode_invalid_value_keeps_mode_unset(data_root, post_data):
-    # noch kein Modus gewählt: ungültige Eingabe führt zurück zur Auswahl
-    assert handlers.handle_setup_mode(post_data) == "/setup"
-    assert userctx.get_mode() is None
-    assert not os.path.exists(userctx.config_path())
 
 
 # ── Phase 3: Benutzerverwaltung ──────────────────────────────────────────────
@@ -344,14 +358,6 @@ def test_handler_create_reserved_username_reports_it_and_creates_nobody(monkeypa
     monkeypatch.setattr(auth, "AUTH_DB", str(tmp_path / "auth.db"))
     loc = handlers.handle_user_create({"username": ["Tests"], "password": ["geheim123"]})
     assert parse_qs(urlsplit(loc).query) == {"err": [RESERVED_MESSAGE]}     # kommt beim Nutzer an
-    assert auth.has_any_user() is False
-
-
-def test_handler_setup_admin_reserved_username_reports_it_and_creates_nobody(monkeypatch, tmp_path):
-    monkeypatch.setattr(auth, "AUTH_DB", str(tmp_path / "auth.db"))
-    ok, username, err = handlers.handle_setup_admin(
-        {"username": ["tests"], "password": ["geheim123"], "password2": ["geheim123"]})
-    assert (ok, username, err) == (False, "tests", RESERVED_MESSAGE)
     assert auth.has_any_user() is False
 
 
