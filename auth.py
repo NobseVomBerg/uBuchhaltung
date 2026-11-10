@@ -180,6 +180,19 @@ def count_admins(db_path=None):
     return n
 
 
+def sql_console_allowed(db_path=None):
+    """Darf der aktuelle Nutzer die SQL-Konsole verwenden?
+
+    Einzelbenutzer-Modus: ja (es gibt nur den Besitzer). Mehrbenutzer-Modus:
+    nur Administratoren.
+    """
+    import userctx
+    if not userctx.auth_enabled():
+        return True
+    user = userctx.get_user()
+    return bool(user and is_admin(user, db_path))
+
+
 def user_exists(username, db_path=None):
     con = _conn(db_path)
     row = con.execute("SELECT 1 FROM Users WHERE Username = ?", (username,)).fetchone()

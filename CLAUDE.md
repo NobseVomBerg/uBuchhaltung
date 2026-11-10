@@ -124,6 +124,10 @@ kein Subagent darauf:
   Logik in `_post_action_routes`, im Frontend `appConfirmPost()`/`appPost()`
   statt eines Links
 - Der Betriebsmodus wird nur bei der Ersteinrichtung gewählt (`handle_setup_mode`)
+- **SQL-Konsole** (`handle_execute_sql`): im Mehrbenutzer-Modus nur Administratoren
+  (`auth.sql_console_allowed`); per SQLite-Authorizer auf die eigene Datenbank
+  beschränkt – kein `ATTACH`/`DETACH`/`VACUUM`, PRAGMAs bis auf wenige nur lesend.
+  Diese Sperren nicht aufweichen
 
 ### Demo-Modus & Screenshots
 - `UBUCHHALTUNG_DEMO=1` (`demo.py`) befüllt **nur ein leeres Datenverzeichnis** –

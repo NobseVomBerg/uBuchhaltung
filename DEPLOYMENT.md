@@ -104,6 +104,9 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
 - Das Löschen eines Nutzers in der Benutzerverwaltung entfernt nur das Login;
   das zugehörige Datenverzeichnis bleibt erhalten und kann bei Bedarf manuell
   entfernt werden.
+- Die SQL-Konsole (*Sonstiges*) steht im Mehrbenutzer-Modus nur Administratoren
+  zur Verfügung und arbeitet immer nur auf der eigenen Datenbank des angemeldeten
+  Nutzers. Wer sie braucht, bekommt in der Benutzerverwaltung das Administratorrecht.
 
 ## Docker (Unraid, Proxmox, NAS)
 

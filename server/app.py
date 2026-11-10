@@ -1217,8 +1217,15 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(status_code, "", headers={"Location": "/masterdata/articles"})
             # ──────────────────────────────────────────────────────────────
             elif self.path == "/execute_sql":
-                content = handlers.handle_execute_sql(db, post_data)
-                self.respond(200, content, content_type="application/json")
+                if not auth.sql_console_allowed():
+                    import json as _json
+                    self.respond(403, _json.dumps({
+                        "success_count": 0, "total": 0, "output": "",
+                        "errors": ["Die SQL-Konsole steht nur Administratoren zur Verfügung."],
+                    }, ensure_ascii=False), content_type="application/json")
+                else:
+                    content = handlers.handle_execute_sql(db, post_data)
+                    self.respond(200, content, content_type="application/json")
             elif self.path == "/wiso/fdb-import":
                 status_code, location = handlers.handle_wiso_fdb_import(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
