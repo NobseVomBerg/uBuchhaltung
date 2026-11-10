@@ -45,8 +45,10 @@ def PageMiscellaneous(db: Database):
     s += "\t\t</table>"
     s += '\t</div>'
     # ── SQL Input Field ───────────────────────────────────────────────────────
-    s += '\t<div class="rectRounded" style="grid-column: span 2">'
-    s += '''
+    import auth as _auth
+    if _auth.sql_console_allowed():
+        s += '\t<div class="rectRounded" style="grid-column: span 2">'
+        s += '''
         <h2>SQL-Befehle ausführen</h2>
         Gib hier SQL-Befehle ein (mehrere Befehle durch Semikolon getrennt):<br>
         <textarea id="sql_input" rows="15" cols="100" class="textareaSql" placeholder="SELECT * FROM ChartOfAccounts WHERE AccountNumber = 6805;"></textarea>
@@ -124,7 +126,12 @@ def PageMiscellaneous(db: Database):
         }
         </script>
         '''
-    s += '\t</div>'
+        s += '\t</div>'
+    else:
+        s += '\t<div class="rectRounded" style="grid-column: span 2">'
+        s += ('<h2>SQL-Befehle ausführen</h2>'
+              '<p>Die SQL-Konsole steht im Mehrbenutzer-Modus nur Administratoren zur Verfügung.</p>')
+        s += '\t</div>'
 
     # Both Exports together in one DIV
     s += '\t<div class="grid1Col gridMiddle">'
