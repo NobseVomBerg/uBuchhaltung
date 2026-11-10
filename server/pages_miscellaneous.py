@@ -140,8 +140,11 @@ def PageMiscellaneous(db: Database):
     s += '''
         <h2>DB-Export</h2>
         <p>Exportiert alle Tabelleninhalte als INSERT-Statements in die Datei
-        <code>db-export.sql</code> im Datenverzeichnis.
-        Die Datei kann direkt im SQL-Konsolenbereich eingefügt werden.</p>
+        <code>db-export.sql</code> im Datenverzeichnis.'''
+    if _auth.sql_console_allowed():
+        s += '''
+        Die Datei kann direkt im SQL-Konsolenbereich eingefügt werden.'''
+    s += '''</p>
         <form method="POST" action="/db_export">
             <button type="submit" class="coloredButton bg-blue">&#x1F4BE; DB-Export</button>
         </form>
