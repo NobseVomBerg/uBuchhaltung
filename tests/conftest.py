@@ -125,6 +125,25 @@ def db_with_coa(tmp_db):
     yield db
 
 
+def _serve(monkeypatch, tls):
+    """Server auf 127.0.0.1 (freier Port) in einem Daemon-Thread starten; liefert (Server, Thread)."""
+    from http.server import ThreadingHTTPServer
+    from server.app import SimpleWebServer
+    monkeypatch.setattr(SimpleWebServer, "log_message", lambda self, *args, **kwargs: None)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), SimpleWebServer)
+    httpd.tls = tls                  # run_server() setzt das, wenn Zertifikat und Schlüssel vorliegen
+    thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.01},
+                              daemon=True)
+    thread.start()
+    return httpd, thread
+
+
+def _stop(httpd, thread):
+    httpd.shutdown()
+    httpd.server_close()
+    thread.join(timeout=TIMEOUT)
+
+
 @pytest.fixture
 def server_port(monkeypatch):
     """Echter Server auf 127.0.0.1 (freier Port) in einem Daemon-Thread; liefert den Port.
@@ -132,19 +151,23 @@ def server_port(monkeypatch):
     Er liest DATA_ROOT, config.json und auth.db wie im Betrieb – der Test richtet die
     Installation vorher ein (``auto_login`` unten, ``tests/installation.py``). Anfragen
     stellt ``tests/http_client.py``."""
-    from http.server import ThreadingHTTPServer
-    from server.app import SimpleWebServer
-    monkeypatch.setattr(SimpleWebServer, "log_message", lambda self, *args, **kwargs: None)
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), SimpleWebServer)
-    thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.01},
-                              daemon=True)
-    thread.start()
+    httpd, thread = _serve(monkeypatch, tls=False)
     try:
         yield httpd.server_address[1]
     finally:
-        httpd.shutdown()
-        httpd.server_close()
-        thread.join(timeout=TIMEOUT)
+        _stop(httpd, thread)
+
+
+@pytest.fixture
+def tls_server_port(monkeypatch):
+    """Wie ``server_port``, aber der Server gilt als HTTPS-Server (``httpd.tls = True``, wie nach
+    UBUCHHALTUNG_CERT/-KEY): Sitzungs-Cookies bekommen das Secure-Flag. Die Verbindung selbst bleibt
+    unverschlüsselt – geprüft wird nur, was der Server in die Antwort schreibt."""
+    httpd, thread = _serve(monkeypatch, tls=True)
+    try:
+        yield httpd.server_address[1]
+    finally:
+        _stop(httpd, thread)
 
 
 @pytest.fixture
