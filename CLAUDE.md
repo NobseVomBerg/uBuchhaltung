@@ -258,9 +258,14 @@ kein Subagent darauf:
 
 ### Versionierung
 - Single Source of Truth: `version.py` (Schema `MAJOR.MINOR.PATCH`)
-- **Bei jeder DB-Schema-Änderung** (`db/schema.py`) `SCHEMA_VERSION` +1 → die mittlere
-  Versionsstelle und `PRAGMA user_version` ziehen automatisch mit; PATCH dabei auf 0
-- Sonstige Änderungen ohne DB-Bezug: nur `PATCH` +1; große Umbrüche: `MAJOR`
+- **Bei jeder DB-Schema-Änderung** (`db/schema.py`) `SCHEMA_STEP` +1 → die mittlere
+  Versionsstelle und `PRAGMA user_version` ziehen automatisch mit; PATCH dabei auf 0.
+  Der neue Migrationsschritt prüft gegen die neue Zahl (`if from_version < 2001:`)
+- In der Datenbank steht `SCHEMA_VERSION = MAJOR × 1000 + SCHEMA_STEP` (2.0.x → 2000,
+  2.1.x → 2001); Datenbanken aus 1.x tragen 0 bis 6. Eine Datenbank mit höherer Zahl
+  als das Programm wird nicht geöffnet (`db.SchemaTooNewError`) – nie zurückstempeln
+- Sonstige Änderungen ohne DB-Bezug: nur `PATCH` +1; große Umbrüche: `MAJOR` +1,
+  `SCHEMA_STEP` und `PATCH` auf 0
 - Anzeige auf der About-Seite
 
 ---
