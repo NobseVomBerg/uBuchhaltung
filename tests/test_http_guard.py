@@ -1,61 +1,36 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 unsix IT Engineering
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
-"""Zugriffsschutz des HTTP-Servers: Herkunft, Hostname, Methode, Betriebsmodus.
+"""Zugriffsschutz des HTTP-Servers: Herkunft, Hostname, Methode, CSRF-Token.
 
 Drei Teile:
   1. reine Funktionstests für request_is_same_origin() und host_is_trusted(),
   2. Anfragen gegen einen echten ThreadingHTTPServer auf 127.0.0.1 (freier Port,
-     Datenbereich unter tmp_path – nichts davon landet im echten ./data),
+     Datenbereich unter tmp_path – nichts davon landet im echten ./data). Der Betrieb
+     für eine Person (Administrator mit automatischer Anmeldung, ohne Sitzung) ist die
+     Fixture ``auto_login`` aus conftest.py; die Ersteinrichtung prüft test_setup_start.py,
+     die automatische Anmeldung selbst test_auto_login_http.py,
   3. die Listenseiten lösen Aktionen per POST aus, nicht per Link.
 
 Hostnamen (*.example, *.example.org) und Zugangsdaten sind erfundene Testwerte.
 """
 import email.message
-import http.client
-import os
+import json
 import re
-import threading
-import urllib.parse
 from decimal import Decimal
-from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 
 import pytest
 
 import auth
-import userctx
-from db import Database
 from server import app as server_app
-from server.app import SimpleWebServer, _ACTION_PATHS, host_is_trusted, request_is_same_origin
+from server.app import _ACTION_PATHS, host_is_trusted, request_is_same_origin
 from server.pages_contacts import PageContacts
 from server.pages_masterdata import PageArticles
 from server.pages_receipts import PageReceiptEdit
 from server.pages_transactions import PageTransactions
-
-FOREIGN_ORIGIN = "http://evil.example"
-
-
-@pytest.fixture(autouse=True)
-def _no_allowed_hosts(monkeypatch):
-    """Die Freigabeliste kommt nur aus dem jeweiligen Test, nie aus der Umgebung."""
-    monkeypatch.delenv("UBUCHHALTUNG_ALLOWED_HOSTS", raising=False)
-
-
-@pytest.fixture(autouse=True)
-def data_root(monkeypatch, tmp_path):
-    """Isolierter Datenbereich + leerer Modus-Cache je Test (Muster: test_auth.py).
-    DB, config.json und SQL-Log der App landen unter tmp_path, nie im echten ./data.
-
-    autouse für die ganze Datei: auch tmp_db/db_with_coa (Teil 3) protokollieren
-    jedes INSERT über DocumentParser nach userctx.DATA_ROOT – das wäre sonst das
-    ./data des Repos."""
-    monkeypatch.setattr(userctx, "DATA_ROOT", str(tmp_path))
-    userctx._mode_cache.clear()
-    userctx.clear()
-    yield str(tmp_path)
-    userctx._mode_cache.clear()
-    userctx.clear()
+from tests import installation
+from tests.http_client import FOREIGN_ORIGIN, get, own_origin, post, send
 
 
 # ── Teil 1: reine Funktionen ─────────────────────────────────────────────────
@@ -189,138 +164,121 @@ def test_host_is_not_trusted_without_allowed_hosts():
 
 
 # ── Teil 2: echter Server ────────────────────────────────────────────────────
-_TIMEOUT = 10        # Sekunden; ein hängender Handler soll den Test scheitern lassen
-
-
-class _Response:
-    def __init__(self, status, headers, body):
-        self.status = status
-        self.headers = headers
-        self.body = body
-
-    @property
-    def text(self):
-        return self.body.decode("utf-8", "replace")
-
-
-def _send(port, method, path, headers=None, body=None):
-    """Eine Anfrage an 127.0.0.1:<port>; die Verbindung wird immer geschlossen.
-    Host, Origin & Co. lassen sich frei setzen."""
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=_TIMEOUT)
-    try:
-        conn.request(method, path, body=body,
-                     headers={"Connection": "close", **(headers or {})})
-        resp = conn.getresponse()
-        return _Response(resp.status, resp.headers, resp.read())
-    finally:
-        conn.close()
-
-
-def _get(port, path, headers=None):
-    return _send(port, "GET", path, headers)
-
-
-def _post(port, path, headers=None, form=None):
-    hdrs = {"Content-Type": "application/x-www-form-urlencoded", **(headers or {})}
-    return _send(port, "POST", path, hdrs, urllib.parse.urlencode(form or {}))
-
-
-def _own_origin(port):
-    return f"http://127.0.0.1:{port}"
-
-
 @pytest.fixture
-def server_port(data_root, monkeypatch):
-    """Echter Server auf 127.0.0.1 (freier Port) in einem Daemon-Thread; liefert den Port."""
-    monkeypatch.setattr(SimpleWebServer, "log_message", lambda self, *args, **kwargs: None)
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), SimpleWebServer)
-    thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.01},
-                              daemon=True)
-    thread.start()
-    try:
-        yield httpd.server_address[1]
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
-        thread.join(timeout=_TIMEOUT)
+def article_id(auto_login):
+    auto_login.db.insert_article(name="Probeartikel", unit_price=10, tax_rate=19)
+    return auto_login.db.fetch_articles()[0][0]
 
 
-@pytest.fixture
-def single_db(server_port, data_root):
-    """Einzelbenutzer-Modus; die Datenbank, die der Server pro Anfrage öffnet."""
-    userctx.set_mode("single")
-    db = Database()
-    assert os.path.abspath(db.db_name).startswith(os.path.abspath(data_root))
-    return db
-
-
-@pytest.fixture
-def article_id(single_db):
-    single_db.insert_article(name="Probeartikel", unit_price=10, tax_rate=19)
-    return single_db.fetch_articles()[0][0]
-
-
-def _read_bytes(path):
-    with open(path, "rb") as f:
-        return f.read()
-
-
-# -- Einzelbenutzer-Modus: Löschen nur per POST von der eigenen Seite ----------
-def test_get_on_delete_url_is_405_and_deletes_nothing(server_port, single_db, article_id):
-    resp = _get(server_port, f"/masterdata/articles/delete?id={article_id}")
+# -- automatische Anmeldung: Löschen nur per POST von der eigenen Seite, mit Token ----
+def test_get_on_delete_url_is_405_and_deletes_nothing(server_port, auto_login, article_id):
+    resp = get(server_port, f"/masterdata/articles/delete?id={article_id}")
     assert resp.status == 405
     assert resp.headers["Allow"] == "POST"
-    assert single_db.get_article_by_id(article_id) is not None
+    assert auto_login.db.get_article_by_id(article_id) is not None
 
 
-def test_post_with_foreign_origin_is_403_and_deletes_nothing(server_port, single_db, article_id):
-    resp = _post(server_port, f"/masterdata/articles/delete?id={article_id}",
-                 headers={"Origin": FOREIGN_ORIGIN})
+def test_post_with_foreign_origin_is_403_and_deletes_nothing(server_port, auto_login, article_id):
+    resp = post(server_port, f"/masterdata/articles/delete?id={article_id}",
+                headers={"Origin": FOREIGN_ORIGIN}, csrf=auto_login.csrf)
     assert resp.status == 403
-    assert single_db.get_article_by_id(article_id) is not None
+    assert auto_login.db.get_article_by_id(article_id) is not None
 
 
 @pytest.mark.parametrize("site", ["cross-site", "same-site"])
-def test_post_with_foreign_fetch_site_is_403_and_deletes_nothing(server_port, single_db,
+def test_post_with_foreign_fetch_site_is_403_and_deletes_nothing(server_port, auto_login,
                                                                  article_id, site):
-    resp = _post(server_port, f"/masterdata/articles/delete?id={article_id}",
-                 headers={"Sec-Fetch-Site": site})
+    resp = post(server_port, f"/masterdata/articles/delete?id={article_id}",
+                headers={"Sec-Fetch-Site": site}, csrf=auto_login.csrf)
     assert resp.status == 403
-    assert single_db.get_article_by_id(article_id) is not None
+    assert auto_login.db.get_article_by_id(article_id) is not None
 
 
-def test_post_with_own_origin_deletes_article(server_port, single_db, article_id):
-    resp = _post(server_port, f"/masterdata/articles/delete?id={article_id}",
-                 headers={"Origin": _own_origin(server_port)})
+def test_post_with_own_origin_deletes_article(server_port, auto_login, article_id):
+    resp = post(server_port, f"/masterdata/articles/delete?id={article_id}",
+                headers={"Origin": own_origin(server_port)}, csrf=auto_login.csrf)
     assert resp.status == 303
     assert resp.headers["Location"] == "/masterdata/articles"
-    assert single_db.get_article_by_id(article_id) is None
+    assert auto_login.db.get_article_by_id(article_id) is None
 
 
-def test_post_with_same_origin_fetch_metadata_deletes_article(server_port, single_db, article_id):
-    resp = _post(server_port, f"/masterdata/articles/delete?id={article_id}",
-                 headers={"Sec-Fetch-Site": "same-origin"})
+def test_post_with_same_origin_fetch_metadata_deletes_article(server_port, auto_login, article_id):
+    resp = post(server_port, f"/masterdata/articles/delete?id={article_id}",
+                headers={"Sec-Fetch-Site": "same-origin"}, csrf=auto_login.csrf)
     assert resp.status == 303
-    assert single_db.get_article_by_id(article_id) is None
+    assert auto_login.db.get_article_by_id(article_id) is None
 
 
-def test_post_without_origin_headers_is_accepted(server_port, single_db, article_id):
-    # Skript-Client (curl & Co.): weder Origin noch Sec-Fetch-Site
-    resp = _post(server_port, f"/masterdata/articles/delete?id={article_id}")
+def test_post_without_origin_headers_is_accepted(server_port, auto_login, article_id):
+    # Skript-Client (curl & Co.): weder Origin noch Sec-Fetch-Site – das Token ist trotzdem nötig
+    resp = post(server_port, f"/masterdata/articles/delete?id={article_id}", csrf=auto_login.csrf)
     assert resp.status == 303
     assert resp.headers["Location"] == "/masterdata/articles"
-    assert single_db.get_article_by_id(article_id) is None
+    assert auto_login.db.get_article_by_id(article_id) is None
 
 
 @pytest.mark.parametrize("path", [
     "/execute_sql", "/backup/create", "/backup/restore", "/setup/load_testdata",
     "/users/create", "/wiso/fdb-import", "/upload_receipts",
 ])
-def test_every_post_route_is_behind_the_origin_check(server_port, single_db, path):
+def test_every_post_route_is_behind_the_origin_check(server_port, auto_login, path):
     # Das Tor sitzt vor allen schreibenden Anfragen, auch vor denen, die ihren
-    # Body selbst lesen (Upload, JSON).
-    resp = _post(server_port, path, headers={"Origin": FOREIGN_ORIGIN}, form={"x": "1"})
+    # Body selbst lesen (Upload, JSON). Das Token stimmt – nur die Herkunft nicht.
+    resp = post(server_port, path, headers={"Origin": FOREIGN_ORIGIN}, form={"x": "1"},
+                csrf=auto_login.csrf)
     assert resp.status == 403
+    assert "fremder Herkunft" in resp.text
+
+
+# -- CSRF-Token: auch ohne Sitzung Pflicht (anders als im früheren Einzelbenutzer-Modus) --
+@pytest.mark.parametrize("token", [
+    pytest.param(None, id="fehlt"),
+    pytest.param("", id="leer"),
+    pytest.param("falsch", id="falsch"),
+    pytest.param(auth.csrf_for("irgendeine-sitzung"), id="Token-einer-Sitzung"),
+    pytest.param(auth.csrf_for("auto-login:bob"), id="Token-eines-anderen-Benutzers"),
+])
+def test_post_without_valid_csrf_token_is_403_and_deletes_nothing(server_port, auto_login,
+                                                                  article_id, token):
+    resp = post(server_port, f"/masterdata/articles/delete?id={article_id}", csrf=token)
+    assert resp.status == 403
+    assert "Sicherheits-Token" in resp.text
+    assert auto_login.db.get_article_by_id(article_id) is not None
+
+
+def test_csrf_token_in_header_is_accepted_for_form_routes(server_port, auto_login, article_id):
+    # Das Footer-JS hängt das Token an fetch-Aufrufe als Header X-CSRF-Token
+    resp = post(server_port, f"/masterdata/articles/delete?id={article_id}",
+                headers={"X-CSRF-Token": auto_login.csrf})
+    assert resp.status == 303
+    assert auto_login.db.get_article_by_id(article_id) is None
+
+
+def _post_json(port, path, payload, token=None):
+    headers = {"Content-Type": "application/json"}
+    if token is not None:
+        headers["X-CSRF-Token"] = token
+    return send(port, "POST", path, headers, json.dumps(payload))
+
+
+def test_fetch_route_without_token_is_403(server_port, auto_login):
+    # Routen, die ihren Body selbst lesen, prüfen das Token vorab aus dem Header
+    resp = _post_json(server_port, "/invoice/status", {"invoice_id": 99999, "status": "sent"})
+    assert resp.status == 403
+    assert "Sicherheits-Token" in resp.text
+
+
+def test_fetch_route_with_wrong_token_is_403(server_port, auto_login):
+    resp = _post_json(server_port, "/invoice/status", {"invoice_id": 99999, "status": "sent"},
+                      token="falsch")
+    assert resp.status == 403
+
+
+def test_fetch_route_with_valid_token_reaches_the_handler(server_port, auto_login):
+    resp = _post_json(server_port, "/invoice/status", {"invoice_id": 99999, "status": "sent"},
+                      token=auto_login.csrf)
+    assert resp.status == 404                       # die Rechnung gibt es nicht – der Handler lief
+    assert json.loads(resp.text)["error"] == "Rechnung nicht gefunden"
 
 
 # -- alle Aktionspfade ----------------------------------------------------------
@@ -351,29 +309,36 @@ def test_post_expectations_cover_all_action_paths():
 
 
 @pytest.mark.parametrize("path", sorted(_ACTION_PATHS))
-def test_get_on_action_path_is_405(server_port, single_db, path):
-    resp = _get(server_port, f"{path}?{_ACTION_QUERY}")
+def test_get_on_action_path_is_405(server_port, auto_login, path):
+    resp = get(server_port, f"{path}?{_ACTION_QUERY}")
     assert resp.status == 405
     assert resp.headers["Allow"] == "POST"
 
 
 @pytest.mark.parametrize("path", sorted(_ACTION_PATHS))
-def test_post_on_action_path_is_handled(server_port, single_db, path):
+def test_post_on_action_path_is_handled(server_port, auto_login, path):
     # Ein Pfad in _ACTION_PATHS ohne Zweig in _post_action_routes bliebe unbeantwortet
     # (Timeout); die Anfrage muss also mit dem erwarteten Redirect enden.
-    resp = _post(server_port, f"{path}?{_ACTION_QUERY}")
+    resp = post(server_port, f"{path}?{_ACTION_QUERY}", csrf=auto_login.csrf)
     assert resp.status == 303
     assert re.fullmatch(_POST_LOCATION[path], resp.headers["Location"])
+
+
+@pytest.mark.parametrize("path", sorted(_ACTION_PATHS))
+def test_post_on_action_path_without_token_is_403(server_port, auto_login, path):
+    resp = post(server_port, f"{path}?{_ACTION_QUERY}")
+    assert resp.status == 403
+    assert "Sicherheits-Token" in resp.text
 
 
 @pytest.mark.parametrize("path, target", [
     ("/worktime/delete", "/worktime"),
     ("/trips/delete", "/trips"),
 ])
-def test_delete_redirect_encodes_person_parameter(server_port, single_db, path, target):
+def test_delete_redirect_encodes_person_parameter(server_port, auto_login, path, target):
     # CR/LF im Parameter darf keinen eigenen Antwort-Header erzeugen
-    resp = _post(server_port, f"{path}?id=99999&person=1%0D%0ASet-Cookie:%20pwn=1"
-                              f"&from=2026-01-01&to=2026-12-31")
+    resp = post(server_port, f"{path}?id=99999&person=1%0D%0ASet-Cookie:%20pwn=1"
+                             f"&from=2026-01-01&to=2026-12-31", csrf=auto_login.csrf)
     assert resp.status == 303
     assert "Set-Cookie" not in resp.headers
     assert resp.headers["Location"] == (f"{target}?person=1%0D%0ASet-Cookie%3A%20pwn%3D1"
@@ -395,9 +360,10 @@ def test_delete_redirect_encodes_person_parameter(server_port, single_db, path, 
     pytest.param("javascript:alert(1)", "/transactions", id="javascript-Schema"),
     pytest.param("http://[::1", "/transactions", id="kaputte-Adresse"),
 ])
-def test_unlink_redirects_only_to_local_part_of_referer(server_port, single_db, referer, expected):
-    headers = {} if referer is None else {"Referer": referer.replace("{own}", _own_origin(server_port))}
-    resp = _post(server_port, "/documents/unlink?doc_id=99999&booking_id=99999", headers=headers)
+def test_unlink_redirects_only_to_local_part_of_referer(server_port, auto_login, referer, expected):
+    headers = {} if referer is None else {"Referer": referer.replace("{own}", own_origin(server_port))}
+    resp = post(server_port, "/documents/unlink?doc_id=99999&booking_id=99999", headers=headers,
+                csrf=auto_login.csrf)
     location = resp.headers["Location"]
     assert resp.status == 303
     assert location == expected
@@ -416,95 +382,72 @@ def _booking_with_receipt(db):
 
 
 @pytest.fixture
-def linked_booking(single_db):
-    return _booking_with_receipt(single_db)
+def linked_booking(auto_login):
+    return _booking_with_receipt(auto_login.db)
 
 
-def test_get_on_unlink_url_is_405_and_keeps_link(server_port, single_db, linked_booking):
+def test_get_on_unlink_url_is_405_and_keeps_link(server_port, auto_login, linked_booking):
     booking_id, doc_id = linked_booking
-    resp = _get(server_port, f"/documents/unlink?doc_id={doc_id}&booking_id={booking_id}")
+    resp = get(server_port, f"/documents/unlink?doc_id={doc_id}&booking_id={booking_id}")
     assert resp.status == 405
-    assert len(single_db.get_documents_for_booking(booking_id)) == 1
+    assert len(auto_login.db.get_documents_for_booking(booking_id)) == 1
 
 
-def test_post_on_unlink_url_removes_link(server_port, single_db, linked_booking):
+def test_post_on_unlink_url_removes_link(server_port, auto_login, linked_booking):
     booking_id, doc_id = linked_booking
-    resp = _post(server_port, f"/documents/unlink?doc_id={doc_id}&booking_id={booking_id}",
-                 headers={"Referer": f"{_own_origin(server_port)}/receipts/edit?number=R-1"})
+    resp = post(server_port, f"/documents/unlink?doc_id={doc_id}&booking_id={booking_id}",
+                headers={"Referer": f"{own_origin(server_port)}/receipts/edit?number=R-1"},
+                csrf=auto_login.csrf)
     assert resp.status == 303
     assert resp.headers["Location"] == "/receipts/edit?number=R-1"
-    assert single_db.get_documents_for_booking(booking_id) == []
+    assert auto_login.db.get_documents_for_booking(booking_id) == []
 
 
-# -- Hostname-Prüfung (DNS-Rebinding) -------------------------------------------
-@pytest.mark.parametrize("mode", [None, "single"])
-def test_foreign_host_is_403_and_not_echoed(server_port, data_root, mode):
-    if mode:
-        userctx.set_mode(mode)
-    resp = _get(server_port, "/", headers={"Host": "evil.example"})
+# -- Hostname-Prüfung (DNS-Rebinding): überall, wo niemand ein Passwort eingibt -----------
+@pytest.mark.parametrize("installed", [
+    pytest.param(False, id="Ersteinrichtung"),
+    pytest.param(True, id="automatische-Anmeldung"),
+])
+def test_foreign_host_is_403_and_not_echoed(server_port, installed):
+    if installed:
+        installation.set_up()
+    resp = get(server_port, "/", headers={"Host": "evil.example"})
     assert resp.status == 403
     assert "evil.example" not in resp.text
 
 
-def test_host_from_allowed_hosts_is_accepted(server_port, single_db, monkeypatch):
+def test_host_from_allowed_hosts_is_accepted(server_port, auto_login, monkeypatch):
     headers = {"Host": "buch.example.org"}
-    assert _get(server_port, "/", headers).status == 403          # ohne Freigabe
+    assert get(server_port, "/", headers).status == 403          # ohne Freigabe
     monkeypatch.setenv("UBUCHHALTUNG_ALLOWED_HOSTS", "buch.example.org")
-    assert _get(server_port, "/", headers).status in (200, 303)    # erreicht die App
+    assert get(server_port, "/", headers).status in (200, 303)    # erreicht die App
 
 
-# -- Betriebsmodus nur bei der Ersteinrichtung -----------------------------------
-def test_setup_mode_cannot_be_changed_once_set(server_port, single_db):
-    config_before = _read_bytes(userctx.config_path())
-    resp = _post(server_port, "/setup/mode", form={"mode": "multi"})
-    assert resp.status == 403
-    assert _read_bytes(userctx.config_path()) == config_before
-    userctx._mode_cache.clear()
-    assert userctx.get_mode() == "single"
-
-
-@pytest.mark.parametrize("mode, location", [("single", "/setup"), ("multi", "/setup-admin")])
-def test_first_setup_chooses_mode(server_port, data_root, mode, location):
-    assert userctx.get_mode() is None
-    resp = _post(server_port, "/setup/mode", form={"mode": mode})
-    assert resp.status == 303
-    assert resp.headers["Location"] == location
-    assert userctx.get_mode() == mode
-
-
-def test_first_setup_with_foreign_origin_is_403_and_keeps_mode_unset(server_port, data_root):
-    resp = _post(server_port, "/setup/mode", headers={"Origin": FOREIGN_ORIGIN},
-                 form={"mode": "single"})
-    assert resp.status == 403
-    assert userctx.get_mode() is None
-    assert not os.path.exists(userctx.config_path())
-
-
-# -- Mehrbenutzer-Modus -----------------------------------------------------------
+# -- Anmeldung mit Passwort: die Sitzung schützt, nicht der Hostname --------------------
 @pytest.fixture
-def multi_user_mode(server_port, data_root, monkeypatch):
-    """Mehrbenutzer-Modus mit einem Benutzer (Dummy-Zugangsdaten), auth.db unter tmp_path."""
-    monkeypatch.setattr(auth, "AUTH_DB", os.path.join(data_root, "auth.db"))
-    userctx.set_mode("multi")
-    auth.create_user("alice", "geheim123")
+def multi_user_mode():
+    """Installation mit Anmeldung: Administrator ``admin`` und Nutzerin ``alice``
+    (Dummy-Zugangsdaten), keine automatische Anmeldung. Ohne Administrator wäre dies
+    die Ersteinrichtung."""
+    installation.set_up(auto_login=False, users=[("alice", False)])
 
 
 def test_multi_mode_login_page_ignores_host_check(server_port, multi_user_mode):
     # Hier schützt die Sitzung, nicht der Hostname
-    resp = _get(server_port, "/login", headers={"Host": "evil.example"})
+    resp = get(server_port, "/login", headers={"Host": "evil.example"})
     assert resp.status == 200
 
 
 def test_multi_mode_login_with_foreign_origin_is_403(server_port, multi_user_mode):
-    resp = _post(server_port, "/login", headers={"Origin": FOREIGN_ORIGIN},
-                 form={"username": "alice", "password": "geheim123"})
+    resp = post(server_port, "/login", headers={"Origin": FOREIGN_ORIGIN},
+                form={"username": "alice", "password": installation.PASSWORD})
     assert resp.status == 403
     assert "Set-Cookie" not in resp.headers
 
 
 def test_multi_mode_login_with_own_origin_starts_session(server_port, multi_user_mode):
-    resp = _post(server_port, "/login", headers={"Origin": _own_origin(server_port)},
-                 form={"username": "alice", "password": "geheim123"})
+    resp = post(server_port, "/login", headers={"Origin": own_origin(server_port)},
+                form={"username": "alice", "password": installation.PASSWORD})
     assert resp.status == 303
     assert resp.headers["Set-Cookie"].startswith("session=")
 
@@ -513,11 +456,7 @@ def test_multi_mode_login_with_own_origin_starts_session(server_port, multi_user
 def alice_article(multi_user_mode):
     """Angemeldete Nutzerin: Session-Cookie, CSRF-Token und ein Artikel in ihrer Datenbank."""
     token = auth.create_session("alice")
-    userctx.set_user("alice")             # nur, damit Database() users/alice/buch.db öffnet
-    try:
-        db = Database()
-    finally:
-        userctx.clear()
+    db = installation.open_db("alice")
     db.insert_article(name="Probeartikel", unit_price=10, tax_rate=19)
     return SimpleNamespace(db=db, article_id=db.fetch_articles()[0][0],
                            cookie={"Cookie": f"session={token}"}, csrf=auth.csrf_for(token))
@@ -526,16 +465,16 @@ def alice_article(multi_user_mode):
 def test_multi_mode_session_write_with_foreign_origin_is_403(server_port, alice_article):
     # Gültige Sitzung und gültiges CSRF-Token: nur die Herkunft ist falsch
     a = alice_article
-    resp = _post(server_port, f"/masterdata/articles/delete?id={a.article_id}",
-                 headers={**a.cookie, "Origin": FOREIGN_ORIGIN}, form={"csrf": a.csrf})
+    resp = post(server_port, f"/masterdata/articles/delete?id={a.article_id}",
+                headers={**a.cookie, "Origin": FOREIGN_ORIGIN}, csrf=a.csrf)
     assert resp.status == 403
     assert a.db.get_article_by_id(a.article_id) is not None
 
 
 def test_multi_mode_session_write_with_own_origin_deletes_article(server_port, alice_article):
     a = alice_article
-    resp = _post(server_port, f"/masterdata/articles/delete?id={a.article_id}",
-                 headers={**a.cookie, "Origin": _own_origin(server_port)}, form={"csrf": a.csrf})
+    resp = post(server_port, f"/masterdata/articles/delete?id={a.article_id}",
+                headers={**a.cookie, "Origin": own_origin(server_port)}, csrf=a.csrf)
     assert resp.status == 303
     assert a.db.get_article_by_id(a.article_id) is None
 
