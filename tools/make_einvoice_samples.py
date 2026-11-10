@@ -34,6 +34,7 @@ def _setup_demo():
     os.environ[demo.ENV_VAR] = '1'
     os.chdir(tmp)
     demo.prepare(log=lambda m: None)
+    userctx.set_user(demo.USERNAME)          # Database() und Dateiablage zeigen auf data/users/demo/
     return tmp
 
 

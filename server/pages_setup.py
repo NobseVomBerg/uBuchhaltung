@@ -14,9 +14,10 @@ from .pages import Header1, Header2, Header3, Footer
 def PageSetupStart(error_msg=None, username='admin') -> str:
     """Erster Schritt der Ersteinrichtung: ersten Administrator anlegen.
 
-    Wird nur angezeigt, solange die Einrichtung noch nicht erfolgt ist
-    (keine data/config.json). Mit oder ohne Anmeldung – der Betriebsmodus
-    ist danach immer Mehrbenutzer (siehe handlers.handle_setup_start).
+    Wird nur angezeigt, solange es noch keinen Administrator gibt (frisches
+    Datenverzeichnis, vorab angelegte config.json mit ``{"mode":"multi"}`` oder
+    nur der Demo-Benutzer). Mit oder ohne Anmeldung – der Betriebsmodus ist danach
+    immer Mehrbenutzer (siehe handlers.handle_setup_start).
     """
     s = Header1()
     s += Header2()

@@ -130,16 +130,25 @@ kein Subagent darauf:
   greift wie ohne Login. Schalter in der Benutzerverwaltung; Ausschalten setzt ein Passwort
 - Die Ersteinrichtung (`handle_setup_start`) legt den ersten Administrator an und
   stellt immer den Mehrbenutzer-Modus ein; danach ändert nichts im Browser den Modus.
-  Der Einzelbenutzer-Modus (`mode: single`) existiert nur noch für Altbestände
+  Solange es keinen Administrator gibt, ist nur die Ersteinrichtung erreichbar
+  (`/setup`, `/setup/start`; alles andere leitet dorthin). Ohne Sitzung gibt es dort
+  kein CSRF-Token – es schützen die Herkunfts- und die Hostnamen-Prüfung
+- **Umzug von Altbeständen** (`layout.migrate()`, läuft beim Start vor allem anderen):
+  verschiebt eine Einzelbenutzer-Ablage nach `data/users/admin/`, passt gespeicherte
+  Dateipfade an und schaltet die automatische Anmeldung ein; nichts wird gelöscht oder
+  überschrieben. Den Einzelbenutzer-Modus (`mode: single`) gibt es im Code nur noch für
+  Altbestände, die dieser Umzug auflöst
 - **SQL-Konsole** (`handle_execute_sql`): im Mehrbenutzer-Modus nur Administratoren
   (`auth.sql_console_allowed`); per SQLite-Authorizer auf die eigene Datenbank
   beschränkt – kein `ATTACH`/`DETACH`/`VACUUM`, PRAGMAs bis auf wenige nur lesend.
   Diese Sperren nicht aufweichen
 
 ### Demo-Modus & Screenshots
-- `UBUCHHALTUNG_DEMO=1` (`demo.py`) befüllt **nur ein leeres Datenverzeichnis** –
-  diese Garantie nie aufweichen (übergangen werden allein `lost+found` und
-  `tests/`, der Ordner für Testartefakte). Demodaten (`demo_seed.py`,
+- `UBUCHHALTUNG_DEMO=1` (`demo.py`): Demodaten liegen **ausschließlich unter
+  `data/users/demo/`** und werden nur geladen, wenn dieses Verzeichnis fehlt oder leer
+  ist und es keinen Benutzer `demo` gibt – diese Garantie nie aufweichen. Solange die
+  Variable gesetzt ist, arbeitet jeder Besucher als `demo` (kein Administrator); `demo`
+  ist wie `tests` ein reservierter Benutzername. Demodaten (`demo_seed.py`,
   `seed_data/test/demo_scenario.json`) entstehen über die App-eigenen Code-Pfade,
   relativ zum Startdatum; pytest-Testdaten bleiben davon getrennt
 - README-Bilder neu erzeugen: `node tools/screenshots.mjs` → `docs/screenshots/`
@@ -239,8 +248,8 @@ kein Subagent darauf:
 - Alles rund um Testläufe liegt unter `data/tests/`: `tmp/` (Arbeitsdaten; nach dem
   Lauf bleiben nur die Verzeichnisse fehlgeschlagener Tests der letzten zwei Läufe)
   und `cache/` (pytest-Cache). Keine Punkt-Verzeichnisse im Projektordner anlegen.
-  `data/tests/` wird von Datensicherung und Demo-Modus übergangen, der Benutzername
-  `tests` ist reserviert
+  `data/tests/` wird von Datensicherung und Umzug (`layout.py`) übergangen, der
+  Benutzername `tests` ist reserviert
 
 ### Versionierung
 - Single Source of Truth: `version.py` (Schema `MAJOR.MINOR.PATCH`)

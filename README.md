@@ -71,7 +71,8 @@ Erst einmal ausprobieren – mit erfundenen Beispieldaten, ohne Einrichtung
 docker run --rm -p 2824:2824 -e UBUCHHALTUNG_DEMO=1 ghcr.io/nobsevomberg/ubuchhaltung:latest
 ```
 
-Dann `http://localhost:2824` öffnen. Der Demo-Modus ist nur zum lokalen
+Dann `http://localhost:2824` öffnen: Jeder Besucher arbeitet dort ohne Anmeldung
+als Benutzer „demo“ (kein Administrator). Der Demo-Modus ist nur zum lokalen
 Ausprobieren gedacht – Details in [DEPLOYMENT.md](DEPLOYMENT.md#demo-modus-ausprobieren).
 
 Für den echten Betrieb:
@@ -92,6 +93,11 @@ Ohne Docker: `pip install -r requirements.txt` und `python main.py`
 [Installation und Start](#installation-und-start) und in
 [DEPLOYMENT.md](DEPLOYMENT.md).
 
+Kommst du von Version 1.x? Der erste Start von Version 2 zieht eine bestehende
+Einzelbenutzer-Installation in die neue Ablage `data/users/admin/` um (weiterhin ohne
+Anmeldung). Vorher eine Datensicherung anlegen – Ablauf und Rückweg unter
+[Umzug auf Version 2](DEPLOYMENT.md#umzug-auf-version-2).
+
 ## Funktionen im Überblick
 
 | Bereich | Was drin ist |
@@ -102,7 +108,7 @@ Ohne Docker: `pip install -r requirements.txt` und `python main.py`
 | **Rechnungen & Angebote** | PDF als hybride E-Rechnung (ZUGFeRD/Factur-X, EN 16931) und XRechnung, E-Mail-Versand, Nummernkreise, offene Posten, Mahnwesen, Kleinunternehmerregelung |
 | **Anlagen** | Anlagenverzeichnis mit AfA (linear, degressiv, GWG) |
 | **Import & Export** | Kontoauszüge im Bankformat CAMT.053 (XML oder ZIP, jede Bank) oder als PDF (DKB, Volksbank Rottweil), [Datenübernahme aus WISO Mein Büro](#datenübernahme-aus-wiso-mein-büro), DATEV-Buchungsstapel |
-| **Außerdem** | Arbeitszeiten mit Stundenzettel, Fahrtenbuch, Einzel- oder Mehrbenutzerbetrieb, Datensicherung, Dark Mode |
+| **Außerdem** | Arbeitszeiten mit Stundenzettel, Fahrtenbuch, ein Benutzer ohne Anmeldung oder mehrere mit Login, Datensicherung, Dark Mode |
 
 Alle Funktionen ausführlich: [Funktionen im Detail](#funktionen-im-detail).
 
@@ -312,9 +318,10 @@ Vollständiges Anlagenmanagement mit gesetzeskonformer AfA:
 - km-Vorbelegung aus der letzten Fahrt
 
 ### 17. Mehrbenutzer & Benutzerverwaltung (`/users`)
-- Betriebsmodus **Einzelbenutzer** (ohne Login) oder **Mehrbenutzer** (Login,
-  je Nutzer isoliertes Datenverzeichnis `data/users/<user>/`) – Auswahl bei der
-  Ersteinrichtung, gespeichert in `data/config.json`
+- Jeder Benutzer hat ein isoliertes Datenverzeichnis `data/users/<user>/`. Die
+  Ersteinrichtung legt den ersten Administrator an – **ohne Anmeldung**
+  (automatische Anmeldung, für eine Person im eigenen Netz) oder **mit Passwort**
+  (Login, weitere Benutzer in der Benutzerverwaltung); gespeichert in `data/config.json`
 - Sessions (HttpOnly, SameSite=Strict, Secure bei HTTPS), scrypt-Passwort-Hashes
 - CSRF-Schutz für alle schreibenden Requests (Token an die Session gebunden)
 - Admin-Funktionen: Nutzer anlegen/löschen, Passwort zurücksetzen, Admin-Flag
@@ -383,7 +390,7 @@ auskommentierten Zeilen (`pytesseract`, `pdf2image`) einkommentieren.
 ## Workflow
 
 ### Ersteinrichtung
-1. Starten (Docker oder `python main.py`) → Modus wählen (Einzel-/Mehrbenutzer), DB mit Seed-Daten wird erstellt
+1. Starten (Docker oder `python main.py`) → Ersteinrichtung im Browser: Administrator anlegen (ohne Anmeldung oder mit Passwort), DB mit Seed-Daten wird erstellt
 2. Bankkonten unter `/masterdata/bankaccounts` anlegen (mit SKR-Zuordnung, z.B. SKR 1810)
 3. Kontakte unter `/masterdata/contacts` erfassen
 4. Ggf. eigene SKR-Konten unter `/masterdata/skr` ergänzen
@@ -416,8 +423,9 @@ uBuchhaltung/
 ├── demo.py · demo_seed.py     # Demo-Modus (UBUCHHALTUNG_DEMO=1) und seine Beispieldaten
 ├── version.py                 # Single Source of Truth für die Versionsnummer
 ├── money.py                   # Geld als Festkomma-Integer (Minor Units, SCALE=4)
-├── auth.py                    # Benutzer/Sessions/CSRF (Mehrbenutzer-Modus)
+├── auth.py                    # Benutzer/Sessions/CSRF
 ├── userctx.py                 # Request-Kontext: Modus, Benutzer, Datenpfade
+├── layout.py                  # Umzug einer Version-1-Ablage nach data/users/<Name>/ (beim Start)
 ├── db/                        # Datenbank-Package (CRUD, Import, Linking, Seeding)
 │   ├── __init__.py            #   Database-Klasse (Komposition aller Mixins)
 │   ├── core.py                #   Verbindung, Init-Guard, Geld-Grenze, coa_id, SQL-Log
@@ -476,7 +484,7 @@ uBuchhaltung/
 │   ├── pages_masterdata.py    # Stammdaten (Artikel, SKR, Bankkonten, Nummernkreise)
 │   ├── pages_assets.py        # Anlagenverzeichnis
 │   ├── pages_worktime.py      # Arbeitszeiten · pages_trips.py – Fahrtenbuch
-│   ├── pages_setup.py         # Ersteinrichtung · pages_login.py – Login/Bootstrap
+│   ├── pages_setup.py         # Ersteinrichtung · pages_login.py – Login
 │   ├── pages_users.py         # Benutzerverwaltung (Admin)
 │   ├── pages_receipts.py      # Belege (Upload, Bearbeiten)
 │   ├── pages_miscellaneous.py # DB-Export, SQL-Konsole, WISO-Import, Backup
@@ -492,9 +500,9 @@ uBuchhaltung/
 ├── docs/                      # Screenshots fürs README, Icon, offene Aufgaben (aufgaben.md)
 ├── static/                    # Statische Dateien (Logos)
 └── data/                      # Laufzeitdaten (in .gitignore)
-    ├── config.json            # Betriebsmodus (single/multi)
-    ├── buch.db                # SQLite-DB (Einzelbenutzer-Modus)
-    └── users/<user>/          # je Nutzer: buch.db, Belege/, backup/, Logs …
+    ├── config.json            # Betriebsmodus, automatische Anmeldung (auto_login)
+    ├── auth.db                # Benutzer und Sitzungen
+    └── users/<user>/          # je Nutzer: buch.db, invoices/, Belege/, backup/, Logs …
 ```
 
 > Datenbankschema: siehe [DB_MODEL.md](DB_MODEL.md)
@@ -544,11 +552,11 @@ ausschließlich erfunden bzw. anonymisiert.
 
 ## Sicherheitshinweise
 
-- Im **Mehrbenutzer-Modus**: Login mit scrypt-Passwort-Hashes, Sessions
+- **Mit Anmeldung**: Login mit scrypt-Passwort-Hashes, Sessions
   (HttpOnly, SameSite=Strict), CSRF-Token für alle schreibenden Requests,
   je Nutzer isolierte Daten; optional HTTPS (siehe [DEPLOYMENT.md](DEPLOYMENT.md))
-- Im **Einzelbenutzer-Modus** gibt es keine Authentifizierung –
-  nur auf `localhost` betreiben
+- **Ohne Anmeldung** (automatische Anmeldung für einen Benutzer) gibt es keine
+  Passwortabfrage – nur auf `localhost` bzw. im eigenen, vertrauenswürdigen Netz betreiben
 - ⚠️ Konzipiert für lokalen bzw. LAN-Einsatz – **nicht für das offene Internet**
   (kein Rate-Limiting, einfacher HTTP-Server, SQL-Konsole mit direktem Schreibzugriff
   auf die eigene Datenbank)

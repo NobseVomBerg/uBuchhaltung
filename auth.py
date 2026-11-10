@@ -23,8 +23,10 @@ SESSION_TTL = 7 * 24 * 3600          # 7 Tage
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
 # Reservierte Benutzernamen (Vergleich ohne Groß-/Kleinschreibung): "tests" ist
 # der Ordner für Testartefakte im Datenverzeichnis (data/tests/) und wird von
-# Datensicherung und Demo-Modus übergangen – kein Nutzer darf so heißen.
-_RESERVED_USERNAMES = frozenset({"tests"})
+# Datensicherung und Umzug übergangen, "demo" ist der Benutzer des Demo-Modus
+# (demo.py) – kein Nutzer darf so heißen. Nur der Code selbst legt sie an
+# (create_user(..., allow_reserved=True)).
+_RESERVED_USERNAMES = frozenset({"tests", "demo"})
 _MIN_PW_LEN = 6
 
 # scrypt-Parameter (RFC 7914): n=2^14 ⇒ ~16 MB, für interaktiven Login angemessen.
@@ -89,9 +91,10 @@ def init_auth_db(db_path=None):
 
 
 # ── Passwort-Hashing ─────────────────────────────────────────────────────────
-def valid_username(username):
+def valid_username(username, allow_reserved=False):
     name = username or ""
-    return bool(_USERNAME_RE.match(name)) and name.lower() not in _RESERVED_USERNAMES
+    return bool(_USERNAME_RE.match(name)) and (allow_reserved
+                                               or name.lower() not in _RESERVED_USERNAMES)
 
 
 def _hash(password, salt):
@@ -107,11 +110,14 @@ def has_any_user(db_path=None):
     return n > 0
 
 
-def create_user(username, password, is_admin=False, db_path=None):
-    """Neuen Benutzer anlegen. Wirft ValueError bei ungültigen Eingaben/Duplikat."""
-    if (username or "").lower() in _RESERVED_USERNAMES:
+def create_user(username, password, is_admin=False, db_path=None, allow_reserved=False):
+    """Neuen Benutzer anlegen. Wirft ValueError bei ungültigen Eingaben/Duplikat.
+
+    ``allow_reserved`` erlaubt reservierte Namen (``demo``) – nur für den Code selbst
+    (Demo-Modus, Umzug), nie für Eingaben aus dem Browser."""
+    if not allow_reserved and (username or "").lower() in _RESERVED_USERNAMES:
         raise ValueError("Dieser Benutzername ist reserviert.")
-    if not valid_username(username):
+    if not valid_username(username, allow_reserved=allow_reserved):
         raise ValueError("Ungültiger Benutzername (3–32 Zeichen: A–Z, a–z, 0–9, _ , -).")
     if not password or len(password) < _MIN_PW_LEN:
         raise ValueError(f"Passwort zu kurz (mindestens {_MIN_PW_LEN} Zeichen).")
