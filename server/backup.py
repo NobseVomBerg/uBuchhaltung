@@ -21,8 +21,9 @@ from datetime import datetime
 
 from document_parser import _find_sevenzip
 
-# Verzeichnisse, die nie mitgesichert oder beim Wiederherstellen gelöscht werden
-_EXCLUDED_DIRS = ('backup', 'users')
+# Verzeichnisse, die nie mitgesichert oder beim Wiederherstellen gelöscht werden.
+# 'tests' = Artefakte des letzten pytest-Laufs (data/tests/, siehe tests/conftest.py).
+_EXCLUDED_DIRS = ('backup', 'users', 'tests')
 
 
 def backup_dir(user_dir):
@@ -84,7 +85,7 @@ def create_backup(user_dir, db_path, scope='all'):
 
         if sevenzip:
             if scope == 'all':
-                # Alles außer backup/, users/ und der Live-DB (die kommt als Snapshot)
+                # Alles außer backup/, users/, tests/ und der Live-DB (die kommt als Snapshot)
                 excludes = [f'-xr!{d}' for d in _EXCLUDED_DIRS] + ['-x!buch.db']
                 r = subprocess.run([sevenzip, 'a', '-bd', '-y', archive, '*'] + excludes,
                                    cwd=user_dir, capture_output=True, timeout=600)
@@ -118,7 +119,7 @@ def restore_backup(user_dir, archive_name, wipe=False):
     """Backup wiederherstellen.
 
     archive_name: Dateiname (ohne Pfad) aus <UserDir>/backup/.
-    wipe=True: vorhandene Daten vorher löschen (außer backup/ und users/),
+    wipe=True: vorhandene Daten vorher löschen (außer backup/, users/ und tests/),
     sonst werden bestehende Dateien überschrieben und übrige bleiben liegen.
     """
     # Kein Pfad-Traversal: nur Basename, muss im backup-Verzeichnis liegen
