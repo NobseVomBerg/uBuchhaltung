@@ -515,14 +515,18 @@ def handle_add_transaction(db: Database, post_data):
             if not (existing and existing[18]):          # 18 = ParentBooking_ID
                 fields['account_id'] = account_id
             if existing and not is_bank:
-                # Geldkonto vorne (COA = Bank/Kasse, Gegenkonto = Zweckkonto, v. a. aus dem
-                # WISO-Import): Die Maske zeigt dann das Geldkonto als „SKR-Konto“. Wählt
-                # der Nutzer dort ein Zweckkonto, meint er das Gegenkonto – die Richtung
-                # des Satzes bleibt, wie im Editor der Bankmaske (_plan_split_rows).
-                liquid_ids = db.get_bank_coa_ids()
+                # Geldkonto vorne (COA = Bank/Kasse/Verrechnungskonto, Gegenkonto =
+                # Zweckkonto, v. a. aus dem WISO-Import): Die Maske zeigt dann das Geldkonto
+                # als „SKR-Konto“. Wählt der Nutzer dort ein Zweckkonto, meint er das
+                # Gegenkonto – die Richtung des Satzes bleibt, wie im Editor der Bankmaske
+                # (_plan_split_rows). „Kein SKR-Konto“ nimmt die Kontierung zurück: Das
+                # Geldkonto bleibt, das Zweckkonto geht – sonst zählte es unsichtbar weiter.
+                # Maßgeblich sind die Zahlungskonten, an denen die Importe das Vorzeichen
+                # ausgerichtet haben (auch 1460), nicht nur die eigenen Bankkonten.
+                liquid_ids = db.get_payment_coa_ids()
                 old_coa, old_counter = existing[8], existing[9]
                 if (old_coa in liquid_ids and old_counter not in liquid_ids
-                        and coa_id is not None and coa_id not in liquid_ids):
+                        and coa_id not in liquid_ids):
                     fields['coa_id'] = old_coa
                     fields['counter_coa_id'] = coa_id
 

@@ -80,8 +80,9 @@ class SeedMixin:
         return ids
 
     def get_payment_coa_ids(self):
-        """COA-IDs aller Zahlungskonten: eigene Bank-/Kassenkonten, dazu die Kasse
-        (SKR04 1000–1099) und das Verrechnungskonto 1460.
+        """COA-IDs aller Zahlungskonten: eigene Bank-/Kassenkonten, dazu die Nummern,
+        die die Importe fest als liquide behandeln (1000–1099 und das Verrechnungskonto
+        1460).
 
         Das ist die Menge, an der beide WISO-Importe das Vorzeichen eines Satzes
         ausrichten (``importers.wiso_fdb.DEFAULT_LIQUID_ACCOUNTS``): Steht eines dieser
