@@ -137,6 +137,16 @@ def test_auto_login_is_read_once_per_config_file():
     assert userctx.get_auto_login() is None            # nach dem Leeren gilt die Datei
 
 
+def test_rereading_the_mode_rereads_the_auto_login_with_it():
+    userctx.set_mode("multi")
+    userctx.set_auto_login("admin")
+    with open(userctx.config_path(), "w", encoding="utf-8") as f:
+        f.write('{"mode": "multi"}')                   # von Hand geändert
+    userctx._mode_cache.clear()                        # nur der Modus-Cache wird verworfen …
+    assert userctx.get_mode() == "multi"
+    assert userctx.get_auto_login() is None            # … und die Einstellung wird mit neu gelesen
+
+
 def test_the_cache_follows_set_auto_login_without_stale_values():
     userctx.set_mode("multi")
     assert userctx.get_auto_login() is None
