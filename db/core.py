@@ -6,6 +6,7 @@ Geld-Grenzkonvertierung und SQL-Logging. Basis-Mixin fuer Database."""
 import sqlite3
 import os
 import json
+from contextlib import contextmanager
 from decimal import Decimal
 from money import to_minor, from_minor
 import threading
@@ -17,6 +18,104 @@ def coa_id(framework, account_number):
     Bsp.: SKR4 (Framework 4), Konto 6850 -> 406850.
     """
     return int(framework) * 100000 + int(account_number)
+
+
+class ForeignKeyError(sqlite3.IntegrityError):
+    """Fremdschlüssel-Verletzung im Klartext: welcher Verweis ins Leere zeigt.
+
+    SQLite meldet nur „FOREIGN KEY constraint failed“ – nicht, welcher Verweis
+    betroffen ist. Die Meldung dieser Ausnahme nennt ihn und ist für die
+    Oberfläche gedacht.
+    """
+
+
+# Klartext-Namen der Verweise, die der Nutzer in Formularen auswählt (Schlüssel
+# klein geschrieben); alle übrigen erscheinen als Tabelle.Spalte.
+FK_LABELS = {
+    ('invoices', 'owncompanyid'): 'Eigene Firma',
+    ('invoices', 'customerid'): 'Kunde',
+    ('invoices', 'bankaccountid'): 'Bankkonto',
+    ('invoices', 'sourcequoteid'): 'Quell-Angebot',
+    ('invoiceitems', 'invoiceid'): 'Rechnung',
+    ('invoiceitems', 'articleid'): 'Artikel',
+}
+
+
+def explain_fk_violation(conn, table, row):
+    """Klartext, welche Verweise von ``row`` (Spalte → Wert) ins Leere zeigen.
+
+    Geprüft wird gegen die Fremdschlüssel, die *diese* Datenbank für ``table``
+    tatsächlich führt (``PRAGMA foreign_key_list``), nicht gegen das, was der
+    Code erwartet – so fällt auch ein abweichendes Schema auf. Muss auf
+    derselben Verbindung laufen wie die gescheiterte Anweisung, damit noch
+    nicht committete Zeilen derselben Transaktion mitzählen.
+    """
+    values = {str(k).lower(): v for k, v in row.items()}
+    missing, present = [], []
+    for fk in conn.execute(f'PRAGMA foreign_key_list("{table}")').fetchall():
+        parent, column, parent_column = fk[2], fk[3], fk[4]
+        value = values.get(column.lower())
+        if value is None:
+            continue                      # NULL verweist nie ins Leere
+        label = FK_LABELS.get((table.lower(), column.lower()), f'{table}.{column}')
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                            "AND name = ? COLLATE NOCASE", (parent,)).fetchone():
+            missing.append(f'{label} {value}: die Tabelle {parent} fehlt')
+            continue
+        hit = conn.execute(f'SELECT 1 FROM "{parent}" WHERE "{parent_column or "rowid"}" = ? '
+                           'LIMIT 1', (value,)).fetchone()
+        if hit:
+            present.append(f'{label} {value} → {parent}')
+        else:
+            missing.append(f'{label} mit ID {value} gibt es nicht (Tabelle {parent})')
+    if missing:
+        return 'Verweis ins Leere – ' + '; '.join(missing)
+    return ('Verweis ins Leere laut SQLite, obwohl alle Verweise vorhanden sind ('
+            + (', '.join(present) or 'keine gesetzt')
+            + ') – Datenbank prüfen (PRAGMA foreign_key_check, integrity_check)')
+
+
+@contextmanager
+def fk_explained(conn, table, row):
+    """Übersetzt ein „FOREIGN KEY constraint failed“ der umschlossenen Anweisung
+    in eine :class:`ForeignKeyError` mit Klartext (siehe explain_fk_violation)."""
+    try:
+        yield
+    except sqlite3.IntegrityError as exc:
+        if isinstance(exc, ForeignKeyError) or 'FOREIGN KEY' not in str(exc):
+            raise
+        raise ForeignKeyError(explain_fk_violation(conn, table, row)) from exc
+
+
+class Transaction:
+    """Mehrere Schreibschritte in EINER Transaktion: alles oder nichts.
+
+    Methoden mit ``tx=``-Parameter schreiben über ``tx.conn`` und legen ihre
+    Einträge für das Replay-Log in ``tx.log`` ab. Ins Log (sql_operations.sql)
+    gehen sie erst nach dem Commit – ein zurückgerolltes Statement darf dort
+    nie landen.
+    """
+
+    def __init__(self, db):
+        self._db = db
+        self.conn = db._get_connection()
+        self.log = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if exc_type is None:
+                self.conn.commit()
+            else:
+                self.conn.rollback()
+        finally:
+            self.conn.close()
+        if exc_type is None:
+            for entry in self.log:
+                self._db._log_sql(*entry)
+        return False
 
 
 class _CoreMixin:
@@ -111,6 +210,9 @@ class _CoreMixin:
         conn = sqlite3.connect(self.db_name)
         conn.execute('PRAGMA foreign_keys = ON')
         return conn
+    def transaction(self):
+        """Mehrere Schreibschritte atomar ausführen (siehe :class:`Transaction`)."""
+        return Transaction(self)
     @staticmethod
     def _minor_opt(value):
         """to_minor, aber None bleibt None (fuer optionale Geldspalten)."""

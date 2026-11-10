@@ -498,11 +498,10 @@ uBuchhaltung/
 │                              #   Guard: tests/check_anonymized.py)
 ├── tools/screenshots.mjs      # Erzeugt docs/screenshots/ im Demo-Modus (Playwright)
 ├── docs/                      # Screenshots fürs README, Icon, offene Aufgaben (aufgaben.md)
-├── static/                    # Statische Dateien (Logos)
 └── data/                      # Laufzeitdaten (in .gitignore)
     ├── config.json            # eingerichtet (mode), automatische Anmeldung (auto_login)
     ├── auth.db                # Benutzer und Sitzungen
-    └── users/<user>/          # je Nutzer: buch.db, invoices/, Belege/, backup/, Logs …
+    └── users/<user>/          # je Nutzer: buch.db, invoices/, Belege/, logos/, backup/, Logs …
 ```
 
 > Datenbankschema: siehe [DB_MODEL.md](DB_MODEL.md)

@@ -157,6 +157,10 @@ dieses eine Verzeichnis.
 - Der Container startet als root, übereignet das Daten-Volume einmalig dem
   unprivilegierten App-Benutzer (UID 1000) und gibt die Rechte dann ab –
   root-eigene appdata-Verzeichnisse (Unraid) funktionieren so ohne Handarbeit.
+- Das Firmenlogo lädt man in den Stammdaten beim eigenen Kontakt über „Datei
+  wählen“ hoch – der Dialog zeigt den eigenen Rechner, die Datei landet im
+  Daten-Volume (`users/<Name>/logos/`). Ein von Hand eingetippter Pfad vom eigenen PC
+  funktioniert im Container nicht; das Formular weist dann darauf hin.
 - `seed_data/private/` (eigenes Logo/Briefpapier) ist bewusst **nicht** im
   Image; bei Bedarf als Read-only-Volume nach `/app/seed_data/private` mounten.
 - HTTPS: Zertifikate mounten und `UBUCHHALTUNG_CERT`/`UBUCHHALTUNG_KEY` setzen –
