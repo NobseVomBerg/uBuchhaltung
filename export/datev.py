@@ -30,8 +30,14 @@ Spaltenbelegung (0-basiert, 124 Spalten gesamt):
 114  Leistungsdatum           – DDMMYYYY (Buchungsdatum)
 115  Datum Zuord. Steuerperiode – DDMMYYYY (= aktuelles Datum beim Export)
 119  Land                     – "DE"
+
+Soll/Haben (Spalte 1) bezieht sich auf das Feld „Konto“ und folgt der Form des
+Buchungssatzes (``db.matching.classify_entry``). Der BU-Schlüssel (Spalte 8) folgt
+dagegen der Richtung der Geldbewegung: Einnahme = Umsatzsteuer, Ausgabe = Vorsteuer.
 """
 import datetime
+
+from db.matching import classify_entry, ENTRY_LIQUID_FIRST, ENTRY_TRANSFER
 
 # ─── Spaltenindizes ───────────────────────────────────────────────────────────
 _C_AMOUNT      = 0
@@ -83,7 +89,10 @@ _ROW_DEFAULTS = {
 
 
 def _taxrate_to_bu(tax_rate, sh: str = 'S') -> str:
-    """TaxRate (float/None) + Soll/Haben-Kennzeichen → DATEV BU-Schlüssel.
+    """TaxRate (float/None) + Zahlungsrichtung → DATEV BU-Schlüssel.
+
+    ``sh`` meint die Richtung der Geldbewegung, nicht das S/H-Kennzeichen der
+    Zeile (das hängt am Feld „Konto“ und kann umgekehrt sein):
 
     S (Ausgabe/Vorsteuer): 19% → '9', 7% → '8'
     H (Einnahme/Umsatzsteuer): 19% → '3', 7% → '2'
@@ -199,7 +208,8 @@ DATEV_COL_HEADER = (
 
 # ─── Export ───────────────────────────────────────────────────────────────────
 def export_to_datev(bookings, coa_id_to_number: dict,
-                    date_from: str, date_to: str) -> tuple:
+                    date_from: str, date_to: str,
+                    liquid_coa_ids=None) -> tuple:
     """
     Buchungen nach DATEV Buchungsstapel-Format exportieren.
 
@@ -212,6 +222,9 @@ def export_to_datev(bookings, coa_id_to_number: dict,
     :param coa_id_to_number:  Dict {coa_id (int): account_number (int/str)}
     :param date_from:         'YYYY-MM-DD' – Anfang des Buchungszeitraums
     :param date_to:           'YYYY-MM-DD' – Ende des Buchungszeitraums
+    :param liquid_coa_ids:    COA-IDs der Bank-/Kassenkonten (``db.get_bank_coa_ids()``);
+                              daran erkennt der Export, auf welcher Seite des Satzes das
+                              Geldkonto steht. Ohne sie (None) gilt allein das Vorzeichen.
     :returns:                 (csv_bytes in CP1252, list_of_exported_booking_ids)
     """
     today_ddmmyyyy = _fmt_ddmmyyyy(datetime.date.today().isoformat())
@@ -233,8 +246,18 @@ def export_to_datev(bookings, coa_id_to_number: dict,
             continue
 
         amount_f = float(amount)
-        # Vorzeichen → S/H-Kennzeichen: S=Soll/Ausgabe, H=Haben/Einnahme
-        sh = 'H' if amount_f >= 0 else 'S'
+        is_inflow = amount_f >= 0
+        kind = (classify_entry(coa_id, counter_coa_id, liquid_coa_ids)
+                if liquid_coa_ids is not None else None)
+        # S/H-Kennzeichen gehört zum Feld „Konto“ und hängt daran, welches Konto dort steht.
+        if kind in (ENTRY_LIQUID_FIRST, ENTRY_TRANSFER):
+            # Geldkonto steht im Feld „Konto“ (bzw. Umbuchung): Bei positivem Betrag
+            # steht dieses Konto im Soll, das Gegenkonto im Haben.
+            sh = 'S' if is_inflow else 'H'
+        else:
+            # Zweckkonto steht im Feld „Konto“: Einnahme = Konto im Haben,
+            # Ausgabe = Konto im Soll.
+            sh = 'H' if is_inflow else 'S'
         konto      = str(coa_id_to_number.get(coa_id, '')) if coa_id else ''
         gegenkonto = str(coa_id_to_number.get(counter_coa_id, '')) if counter_coa_id else ''
 
@@ -248,7 +271,8 @@ def export_to_datev(bookings, coa_id_to_number: dict,
         cols[_C_WKZ]         = currency
         cols[_C_KONTO]       = konto
         cols[_C_GEGENKONTO]  = gegenkonto
-        cols[_C_BU]          = _taxrate_to_bu(tax_rate, sh)
+        # Der BU-Schlüssel folgt der Richtung der Geldbewegung, nicht dem S/H-Kennzeichen.
+        cols[_C_BU]          = _taxrate_to_bu(tax_rate, 'H' if is_inflow else 'S')
         cols[_C_BELEGDATUM]  = _fmt_ddmm(date_booking)
         cols[_C_BELEGFELD1]  = doc_number[:12]
         cols[_C_TEXT]        = text[:60]

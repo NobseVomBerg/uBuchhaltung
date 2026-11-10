@@ -79,6 +79,31 @@ class SeedMixin:
         conn.close()
         return ids
 
+    def get_payment_coa_ids(self):
+        """COA-IDs aller Zahlungskonten: eigene Bank-/Kassenkonten, dazu die Kasse
+        (SKR04 1000–1099) und das Verrechnungskonto 1460.
+
+        Das ist die Menge, an der beide WISO-Importe das Vorzeichen eines Satzes
+        ausrichten (``importers.wiso_fdb.DEFAULT_LIQUID_ACCOUNTS``): Steht eines dieser
+        Konten auf einer Seite, trägt der Betrag die Richtung der Geldbewegung. Der
+        DATEV-Export braucht dieselbe Menge, um Soll und Haben richtig abzulesen. Die
+        EÜR nimmt bewusst nur ``get_bank_coa_ids`` – Geld auf dem Verrechnungskonto ist
+        noch nicht geflossen.
+        """
+        from importers.wiso_fdb import DEFAULT_LIQUID_ACCOUNTS
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            ids = set(self._get_bank_coa_ids(cursor))
+            numbers = sorted(DEFAULT_LIQUID_ACCOUNTS)
+            placeholders = ','.join('?' * len(numbers))
+            cursor.execute(
+                f'SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN ({placeholders})', numbers)
+            ids.update(row[0] for row in cursor.fetchall())
+            return ids
+        finally:
+            conn.close()
+
     def _seed_asset_categories(self):
         """Seed der BMF-AfA-Kategorien aus seed_data/asset_categories.json."""
         conn = self._get_connection()

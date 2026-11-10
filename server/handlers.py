@@ -312,9 +312,12 @@ def _bank_counter_coa(db, account_id):
     return None
 
 
-def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
+def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
                      recipient, currency):
-    """Buchungssätze einer Bankbewegung aus dem Editor speichern.
+    """Buchungssätze einer Bankbewegung aus dem Editor lesen und prüfen (schreibt nichts).
+
+    Liefert die geplanten Zeilen für ``_write_split_rows``. ``bank_id`` ist ``None``,
+    wenn die Bankbewegung selbst erst noch angelegt wird.
 
     Die Zeilen kommen als gleichnamige Felder (split_id, split_amount, …); ein
     leeres split_id legt eine neue Teilbuchung an, weggelassene IDs werden
@@ -323,6 +326,12 @@ def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
 
     Gemeinsame Felder (Datum, Steuerdatum, Empfänger, Währung) kommen von der
     Bankbewegung; Konto, Steuer, Beleg-Nr. und Text gehören der Teilbuchung.
+
+    Erst werden ALLE Zeilen gelesen und geprüft, dann geschrieben: Eine ungültige
+    Zahl in einer späteren Zeile bricht ab, bevor eine frühere gespeichert ist.
+    Bestehende Zeilen bekommen nur die Felder des Editors geschrieben
+    (``update_booking_fields``) – Kontakt, Kategorie, Konto und fremdes Konto der
+    Teilbuchung führt der Editor nicht und bleiben deshalb erhalten.
     """
     ids = post_data.get('split_id', [])
     amounts = post_data.get('split_amount', [])
@@ -340,9 +349,11 @@ def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
     # Orientierung bestehender Sätze merken: liquide-zuerst gebuchte Sätze
     # (COA = Bankkonto, Gegenkonto = Zweckkonto) behalten ihre Richtung.
     existing_by_id = {c[0]: (c[1], c[2])
-                      for c in db.get_child_bookings_for_bank(bank_id)}
+                      for c in (db.get_child_bookings_for_bank(bank_id) if bank_id else [])}
 
-    keep_ids = set()
+    # Schritt 1: alle Zeilen lesen und prüfen (Zahlen, Bestandsbuchungen) – noch
+    # ohne zu schreiben.
+    planned = []
     for i in range(len(amounts)):
         raw_amount = _at(amounts, i).strip()
         raw_coa = _at(coas, i).strip()
@@ -391,17 +402,26 @@ def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
             fields.update(date_booking=old_row[1], date_tax=old_row[2],
                           recipient_client=old_row[6],
                           currency=old_row[12] or 'EUR')
-        if row_id:
-            rid = int(row_id)
-            # Zeilen können auch bestehende, bisher unverknüpfte Buchungen
-            # sein ("vorhandene Buchung zuordnen"): dann wird die Verbindung
-            # per ID hergestellt – Belegnummern spielen dabei keine Rolle.
-            adopt = rid not in existing_by_id
-            db.update_booking(booking_id=rid,
-                              parent_booking_id=bank_id if adopt else None,
-                              log_description=("Split row adopt" if adopt
-                                               else "Split row update"),
-                              **fields)
+        rid = int(row_id) if row_id else None
+        # Zeilen können auch bestehende, bisher unverknüpfte Buchungen
+        # sein ("vorhandene Buchung zuordnen"): dann wird die Verbindung
+        # per ID hergestellt – Belegnummern spielen dabei keine Rolle.
+        adopt = rid is not None and rid not in existing_by_id
+        planned.append((rid, fields, adopt))
+    return planned
+
+
+def _write_split_rows(db, bank_id, planned):
+    """Geplante Buchungssätze (aus ``_plan_split_rows``) schreiben und entfernte Zeilen löschen."""
+    keep_ids = set()
+    for rid, fields, adopt in planned:
+        if rid is not None:
+            if adopt:
+                fields['parent_booking_id'] = bank_id
+            db.update_booking_fields(rid,
+                                     log_description=("Split row adopt" if adopt
+                                                      else "Split row update"),
+                                     **fields)
             keep_ids.add(rid)
         else:
             new_id = db.insert_booking(booking_type='entry',
@@ -420,6 +440,15 @@ def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
         if c_coa in bank_coa_ids and c_counter in bank_coa_ids:
             continue                      # Doppik-Spiegel: nicht anfassen
         db.delete_transaction(child_id)
+
+
+def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
+                     recipient, currency):
+    """Buchungssätze einer Bankbewegung aus dem Editor speichern: erst alles lesen und
+    prüfen (``_plan_split_rows``), dann schreiben (``_write_split_rows``)."""
+    planned = _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
+                               recipient, currency)
+    _write_split_rows(db, bank_id, planned)
 
 
 def handle_add_transaction(db: Database, post_data):
@@ -469,31 +498,51 @@ def handle_add_transaction(db: Database, post_data):
 
             # Update the bank booking itself (COA stays on bank row for
             # display; the real accounting entry is the child)
-            db.update_booking(
-                booking_id=transaction_id,
-                date_booking=date,
-                date_tax=date_tax,
-                amount=float(amount),
-                account_id=account_id,
-                foreign_bank_account=foreign_account,
-                recipient_client=recipient,
-                contact_id=contact_id,
-                coa_id=coa_id,
-                currency=currency,
-                tax_rate=tax_rate,
-                tax_amount=tax_amount,
-                text=text,
+            # Nur schreiben, was die Maske führt. Gegenkonto und Kategorie haben dort
+            # kein Feld – mit update_booking (setzt alle Spalten) gingen sie bei jedem
+            # Speichern verloren, und die EÜR las den Satz danach falsch.
+            fields = dict(
+                date_booking=date, date_tax=date_tax, amount=float(amount),
+                foreign_bank_account=foreign_account, recipient_client=recipient,
+                contact_id=contact_id, coa_id=coa_id, currency=currency,
+                tax_rate=tax_rate, tax_amount=tax_amount, text=text,
                 document_number=document_nr or None,
-                log_description="Manual booking update"
             )
+            # Die Maske wählt das Bankkonto eines Buchungssatzes nur zur Anzeige vor
+            # (abgeleitet aus COA/Gegenkonto). Ein Kind einer Bankbewegung trägt selbst
+            # kein Account_ID – das bleibt so, sonst zählte es in Auswertungen und im
+            # Duplikatabgleich wie eine eigene Bankbewegung.
+            if not (existing and existing[18]):          # 18 = ParentBooking_ID
+                fields['account_id'] = account_id
+            if existing and not is_bank:
+                # Geldkonto vorne (COA = Bank/Kasse, Gegenkonto = Zweckkonto, v. a. aus dem
+                # WISO-Import): Die Maske zeigt dann das Geldkonto als „SKR-Konto“. Wählt
+                # der Nutzer dort ein Zweckkonto, meint er das Gegenkonto – die Richtung
+                # des Satzes bleibt, wie im Editor der Bankmaske (_plan_split_rows).
+                liquid_ids = db.get_bank_coa_ids()
+                old_coa, old_counter = existing[8], existing[9]
+                if (old_coa in liquid_ids and old_counter not in liquid_ids
+                        and coa_id is not None and coa_id not in liquid_ids):
+                    fields['coa_id'] = old_coa
+                    fields['counter_coa_id'] = coa_id
 
+            # Buchungssätze aus dem Editor der Bank-Maske erst lesen und prüfen, dann
+            # schreiben: Eine ungültige Zahl dort darf auch die Bankzeile nicht halb
+            # gespeichert zurücklassen.
+            planned_splits = None
             if is_bank and has_split_rows:
-                # Buchungssätze kommen aus dem Editor der Bank-Maske und werden
-                # dort direkt gepflegt – der AutoMirror-Abgleich unten entfällt.
                 eff_acct_id = account_id or (existing[4] if existing else None)
-                _save_split_rows(db, transaction_id, post_data,
-                                 _bank_counter_coa(db, eff_acct_id),
-                                 date, date_tax, recipient, currency)
+                planned_splits = _plan_split_rows(db, transaction_id, post_data,
+                                                  _bank_counter_coa(db, eff_acct_id),
+                                                  date, date_tax, recipient, currency)
+
+            db.update_booking_fields(transaction_id, log_description="Manual booking update",
+                                     **fields)
+
+            if planned_splits is not None:
+                # Die Sätze werden im Editor direkt gepflegt – der AutoMirror-Abgleich
+                # unten entfällt.
+                _write_split_rows(db, transaction_id, planned_splits)
             elif is_bank:
                 # Gegenkonto (liquide Seite) aus dem SKR-Konto der Bank ableiten
                 eff_acct_id = account_id or (existing[4] if existing else None)
@@ -559,6 +608,12 @@ def handle_add_transaction(db: Database, post_data):
             # If a bank account is provided the row is a bank movement;
             # otherwise it is a plain accounting entry.
             new_booking_type = 'bank' if account_id else 'entry'
+            planned_splits = None
+            if new_booking_type == 'bank' and has_split_rows:
+                # erst prüfen, dann anlegen (siehe oben)
+                planned_splits = _plan_split_rows(db, None, post_data,
+                                                  _bank_counter_coa(db, account_id),
+                                                  date, date_tax, recipient, currency)
             transaction_id = db.insert_booking(
                 date_booking=date,
                 date_tax=date_tax,
@@ -577,11 +632,9 @@ def handle_add_transaction(db: Database, post_data):
                 log_description="Manual booking entry"
             )
 
-            if new_booking_type == 'bank' and has_split_rows:
+            if planned_splits is not None:
                 # Buchungssätze direkt aus dem Editor der Bank-Maske
-                _save_split_rows(db, transaction_id, post_data,
-                                 _bank_counter_coa(db, account_id),
-                                 date, date_tax, recipient, currency)
+                _write_split_rows(db, transaction_id, planned_splits)
             # When a bank booking is created with a COA already set,
             # immediately create the linked accounting entry child so the
             # green checkmark appears without requiring a second edit.
@@ -814,7 +867,8 @@ def handle_datev_export(db: Database, post_data: dict):
 
         coa_map = db.get_coa_id_to_number_map()
         csv_bytes, exported_ids = datev_module.export_to_datev(
-            bookings, coa_map, date_from, date_to
+            bookings, coa_map, date_from, date_to,
+            liquid_coa_ids=db.get_payment_coa_ids()
         )
 
         # Steuerdatum der exportierten Buchungen auf heute setzen

@@ -65,8 +65,8 @@ def test_data_root_is_not_created_upfront():
 @pytest.mark.parametrize("run", [1, 2, 3])
 def test_every_test_gets_its_own_data_root(run):
     """Jeder Test beginnt mit einer leeren Datenwurzel. Der Pfad selbst darf sich
-    wiederholen: Ältere pytest-Versionen (8.x) vergeben den Namen eines schon
-    gelöschten Testverzeichnisses erneut."""
+    wiederholen: Ältere pytest-Versionen (bis mindestens 9.0.3) vergeben den Namen
+    eines schon gelöschten Testverzeichnisses erneut."""
     assert not os.path.exists(userctx.DATA_ROOT)
     os.makedirs(userctx.DATA_ROOT)
     with open(os.path.join(userctx.DATA_ROOT, "spur.txt"), "w", encoding="utf-8") as f:

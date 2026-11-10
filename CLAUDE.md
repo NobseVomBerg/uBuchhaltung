@@ -151,6 +151,28 @@ kein Subagent darauf:
   beschränkt – kein `ATTACH`/`DETACH`/`VACUUM`, PRAGMAs bis auf wenige nur lesend.
   Diese Sperren nicht aufweichen
 
+### Buchungssätze
+- Bankbewegung = Zeile `BookingType='bank'`; ihre Buchungssätze sind Kinder
+  (`entry`, `ParentBooking_ID`) und tragen selbst kein `Account_ID`
+- Drei Formen, eingeordnet an EINER Stelle (`db/matching.classify_entry`), die EÜR
+  (`get_euer_data`) und DATEV-Export gemeinsam nutzen: Zweckkonto vorne
+  (`COA` = Erlös/Aufwand, Gegenkonto = Geldkonto oder leer), Geldkonto vorne
+  (v. a. WISO-Import) und Umbuchung (beide Seiten kontiert, keine liquide). Die
+  Masken prüfen die Richtung noch selbst (`_plan_split_rows`, `is_bank_effective`)
+- Vorzeichen: Bei Zahlungen trägt der Betrag die Richtung der Geldbewegung
+  (Einnahme +), egal auf welcher Seite das Zweckkonto steht. Bei Umbuchungen heißt
+  positiv: `COA` im Soll, Gegenkonto im Haben. Fehlt die liquide Seite, bleibt es
+  eine Zahlung (wie `is_bank_effective`)
+- DATEV: Das Soll/Haben-Kennzeichen bezieht sich auf das Feld „Konto“ und folgt
+  dieser Einordnung; der BU-Schlüssel folgt der Richtung der Geldbewegung
+- Welche Konten „liquide“ sind, hängt vom Zweck ab: Die EÜR nimmt nur die eigenen
+  Bank-/Kassenkonten (`get_bank_coa_ids` – Geld auf dem Verrechnungskonto ist noch
+  nicht geflossen); der DATEV-Export nimmt die Zahlungskonten, an denen die Importe
+  das Vorzeichen ausrichten (`get_payment_coa_ids`: zusätzlich Kasse 1000–1099 und
+  Verrechnungskonto 1460)
+- Masken schreiben nur, was sie führen (`update_booking_fields`) – Gegenkonto,
+  Kategorie und fremde Kontakte dürfen beim Speichern nicht verloren gehen
+
 ### Demo-Modus & Screenshots
 - `UBUCHHALTUNG_DEMO=1` (`demo.py`): Demodaten liegen **ausschließlich unter
   `data/users/demo/`** und werden nur geladen, wenn dieses Verzeichnis fehlt oder leer

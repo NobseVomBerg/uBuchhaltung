@@ -7,6 +7,7 @@ import os
 import json
 from decimal import Decimal
 from money import to_minor, from_minor
+from .matching import classify_entry, ENTRY_MIRROR, ENTRY_EMPTY, ENTRY_PURPOSE_FIRST, ENTRY_TRANSFER
 
 # SKR04-Kontenklasse 4 = Betriebliche Erträge (Erlöse). Einzige Quelle für die
 # Einnahmen-Klassifizierung in EÜR/Dashboard – die frühere Aufzählung
@@ -410,7 +411,10 @@ class ReportingMixin:
         - Wenn COA_ID ein liquides Konto (Bank/Kasse) ist → CounterCOA_ID
         - Sonst → COA_ID
 
-        Rein liquide Spiegelbuchungen (Doppik) werden ignoriert.
+        Rein liquide Spiegelbuchungen (Doppik) werden ignoriert. Fehlt die liquide
+        Seite (Bankkonto ohne SKR-Nummer), bleibt der Satz eine Zahlung mit
+        Vorzeichen und Steuer – als Umbuchung zählt er nur, wenn beide Seiten
+        kontiert sind und keine liquide ist (``db.matching.classify_entry``).
 
         Returns:
             list of (AccountNumber, Name, total_amount)
@@ -547,34 +551,31 @@ class ReportingMixin:
 
             purpose_coa_id = None
 
-            # Doppik-Spiegel überspringen (beide Seiten liquid)
-            if coa_id in liquid_coa_ids and counter_coa_id in liquid_coa_ids:
-                continue
+            kind = classify_entry(coa_id, counter_coa_id, liquid_coa_ids)
+            if kind in (ENTRY_MIRROR, ENTRY_EMPTY):
+                continue                      # Übertrag zwischen Geldkonten bzw. nichts kontiert
 
-            if coa_id in liquid_coa_ids:
-                # Cash-flow: liquides Konto → Zweck = CounterCOA
-                if counter_coa_id:
-                    purpose_coa_id = _purpose(counter_coa_id)
-                    _book(counter_coa_id, netto)
-                    if counter_coa_id in income_coa_ids:
-                        ust_total += tax_amount
-            elif counter_coa_id and counter_coa_id in liquid_coa_ids:
-                # Cash-flow: Zweck = COA, Gegenstück ist liquid
-                purpose_coa_id = _purpose(coa_id)
-                _book(coa_id, netto)
-                if coa_id in income_coa_ids:
+            if kind == ENTRY_TRANSFER:
+                # Umbuchung (beide Seiten kontiert, keine liquide, z. B. 4405→4400):
+                # Betrag auf beide Konten verteilen, damit z. B. Erlöse unter 4400
+                # erscheinen und 4405 reduziert wird.
+                purpose_coa_id = _purpose(counter_coa_id)
+                _book(counter_coa_id, netto)
+                if counter_coa_id in income_coa_ids:
                     ust_total += tax_amount
+                _book(coa_id, -netto)
             else:
-                # Umbuchung (keine Seite liquid, z.B. 4405→4400):
-                # Betrag auf beide Konten verteilen, damit z.B.
-                # Erlöse unter 4400 erscheinen und 4405 reduziert wird.
-                if counter_coa_id:
-                    purpose_coa_id = _purpose(counter_coa_id)
-                    _book(counter_coa_id, netto)
-                    if counter_coa_id in income_coa_ids:
+                # Zahlung: Das Zweckkonto ist die nicht-liquide Seite. Fehlt die
+                # liquide Seite (Bankkonto ohne SKR-Nummer, nachträglich verknüpfter
+                # Beleg), bleibt es eine Zahlung – früher lief so ein Satz in den
+                # Umbuchungs-Zweig und kam mit umgedrehtem Vorzeichen und ohne
+                # Steuer in die EÜR.
+                purpose = coa_id if kind == ENTRY_PURPOSE_FIRST else counter_coa_id
+                if purpose:
+                    purpose_coa_id = _purpose(purpose)
+                    _book(purpose, netto)
+                    if purpose in income_coa_ids:
                         ust_total += tax_amount
-                if coa_id:
-                    _book(coa_id, -netto)
 
             # Vorsteuer aus Ausgaben separat auf 1401/1406 ausweisen.
             if (purpose_coa_id is not None
