@@ -6,9 +6,9 @@
 ``Database`` merkt sich je Pfad, dass ``initialize_database`` schon gelaufen ist. Der
 Pfad allein reicht nicht: Die Datei kann seither ersetzt worden sein – eine
 zurückgespielte Sicherung eines älteren Standes, eine neu angelegte Datei am selben
-Ort (pytest 8.x vergibt den Namen eines gelöschten Testverzeichnisses erneut; daran
-scheiterten Tests mit „no such table“). Maßgeblich ist deshalb zusätzlich die
-Schema-Zahl in der Datei.
+Ort (ältere pytest-Versionen, bis mindestens 9.0.3, vergeben den Namen eines
+gelöschten Testverzeichnisses erneut; daran scheiterten Tests mit „no such table“).
+Maßgeblich ist deshalb zusätzlich die Schema-Zahl in der Datei.
 """
 import os
 import sqlite3

@@ -287,7 +287,7 @@ Vollständiges Anlagenmanagement mit gesetzeskonformer AfA:
   - Tabellen-Export: optionale `Konto-Nr. / IBAN`-Spalte (6- und 7-spaltig)
   - Tabellen-Export Matching: bank+entry-Paare ohne Belegnummer (Privatentnahmen, Gebühren) werden als Einheit erkannt und aktualisiert
   - Nach Import: automatische Bank↔Entry-Verknüpfung (`link_bank_to_entries()`)
-- **DATEV-Export** (`export/datev.py`): Buchungsstapel als DATEV-CSV (nur Entry-Buchungen)
+- **DATEV-Export** (`export/datev.py`): Buchungsstapel als DATEV-CSV (nur Entry-Buchungen); das Soll/Haben-Kennzeichen richtet sich danach, ob das Zweck- oder das Geldkonto im Feld „Konto“ steht
   - Prüft vorab die Splits des Zeitraums: Ergeben die *bankwirksamen*
     Buchungssätze nicht den Betrag der Bankbewegung, wird der Export mit Datum,
     Betrag und Rest abgelehnt. Umbuchungen (Wartekonto→Erlöskonto,
