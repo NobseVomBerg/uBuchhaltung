@@ -131,7 +131,8 @@ kein Subagent darauf:
 
 ### Demo-Modus & Screenshots
 - `UBUCHHALTUNG_DEMO=1` (`demo.py`) befüllt **nur ein leeres Datenverzeichnis** –
-  diese Garantie nie aufweichen. Demodaten (`demo_seed.py`,
+  diese Garantie nie aufweichen (übergangen werden allein `lost+found` und
+  `tests/`, der Ordner für Testartefakte). Demodaten (`demo_seed.py`,
   `seed_data/test/demo_scenario.json`) entstehen über die App-eigenen Code-Pfade,
   relativ zum Startdatum; pytest-Testdaten bleiben davon getrennt
 - README-Bilder neu erzeugen: `node tools/screenshots.mjs` → `docs/screenshots/`
