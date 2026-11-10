@@ -193,6 +193,17 @@ def count_admins(db_path=None):
     return n
 
 
+def admin_exists(db_path=None):
+    """Gibt es mindestens einen Administrator? Legt dabei nichts an: Fehlt die
+    auth.db oder sind ihre Tabellen noch nicht angelegt, lautet die Antwort Nein."""
+    if not os.path.isfile(_path(db_path)):
+        return False
+    try:
+        return count_admins(db_path) > 0
+    except sqlite3.OperationalError:          # Tabellen fehlen noch
+        return False
+
+
 def sql_console_allowed(db_path=None):
     """Darf der aktuelle Nutzer die SQL-Konsole verwenden?
 

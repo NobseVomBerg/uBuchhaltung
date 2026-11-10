@@ -27,8 +27,9 @@ Solange ``UBUCHHALTUNG_DEMO`` gesetzt ist und das Demo-Verzeichnis den Marker tr
 (``active_user()``, Türsteher in ``server/app.py``): kein Administrator, also keine
 Benutzerverwaltung und keine SQL-Konsole; andere Benutzer können sich so lange nicht
 anmelden. Unter derselben Bedingung erscheint der Hinweis-Banner. Wer die Variable
-versehentlich auf echten Daten setzt, bekommt also weder Demodaten noch einen
-falschen Banner.
+auf einer Installation mit echten Daten setzt, bekommt die Demo daneben: Die echten
+Daten bleiben unberührt, aber jeder Besucher – auch ein sonst automatisch
+angemeldeter Administrator – arbeitet so lange als ``demo``.
 
 Ohne die Variable ist ``demo`` ein gewöhnlicher Benutzer ohne bekanntes Passwort –
 ein Administrator kann ihm in der Benutzerverwaltung eines setzen oder ihn löschen

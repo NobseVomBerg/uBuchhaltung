@@ -307,7 +307,19 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         demo_user = demo.active_user() if mode == 'multi' else None
         if demo_user and (not auth.user_exists(demo_user) or auth.is_admin(demo_user)):
             demo_user = None                 # Demo-Besucher sind nie Administrator
-        has_admin = mode == 'multi' and auth.count_admins() > 0
+        admin_exists = auth.admin_exists()
+        if mode is None and admin_exists:
+            # Es gibt Administratoren, aber config.json fehlt oder ist unlesbar (von Hand
+            # bearbeitet, beschädigt). Das ist keine Ersteinrichtung – sonst könnte sich
+            # hier jeder einen weiteren Administrator anlegen.
+            self._drain_body()
+            self.respond(503, "<h1>Konfiguration fehlt oder ist beschädigt</h1>"
+                              "<p>Die Datei <code>config.json</code> im Datenverzeichnis fehlt oder "
+                              "ist nicht lesbar, obwohl diese Installation bereits eingerichtet ist. "
+                              "Bitte die Datei wiederherstellen, z. B. mit dem Inhalt "
+                              "<code>{\"mode\": \"multi\"}</code> (siehe DEPLOYMENT.md).</p>")
+            return False
+        has_admin = mode == 'multi' and admin_exists
         auto = demo_user or (auth.auto_login_user() if has_admin else None)
         # Ersteinrichtung: solange es keinen Administrator gibt (und keine Demo läuft)
         needs_setup = mode is None or (mode == 'multi' and not has_admin and not demo_user)

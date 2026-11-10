@@ -133,7 +133,10 @@ kein Subagent darauf:
   Browser diese Einstellung. Solange es keinen Administrator gibt, ist nur die
   Ersteinrichtung erreichbar (`/setup`, `/setup/start`; alles andere leitet dorthin).
   Ohne Sitzung gibt es dort kein CSRF-Token – es schützen die Herkunfts- und die
-  Hostnamen-Prüfung
+  Hostnamen-Prüfung. Maßgeblich ist `auth.admin_exists()`, nicht `config.json`: fehlt
+  die Datei oder ist sie unlesbar, obwohl es einen Administrator gibt, antwortet der
+  Türsteher mit einem Hinweis (503) statt mit der Ersteinrichtung – nie aufweichen.
+  `config.json` wird atomar geschrieben (`userctx._write_config`)
 - Es gibt nur die Mehrbenutzer-Ablage `data/users/<Name>/`; der Betrieb für eine Person
   ist die automatische Anmeldung. `userctx.get_mode()` kennt nur `'multi'` (eingerichtet)
   und `None`; jeder andere Wert in `config.json` gilt als nicht eingerichtet

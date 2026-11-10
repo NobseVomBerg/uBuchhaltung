@@ -43,9 +43,16 @@ def _read_config():
 
 
 def _write_config(data):
+    """config.json ersetzen – über eine Nachbardatei, damit ein Abbruch mitten im
+    Schreiben keine halbe (unlesbare) Datei hinterlässt."""
     os.makedirs(DATA_ROOT, exist_ok=True)
-    with open(config_path(), "w", encoding="utf-8") as f:
+    path = config_path()
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def get_mode():
