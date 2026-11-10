@@ -550,7 +550,8 @@ ausschließlich erfunden bzw. anonymisiert.
 - Im **Einzelbenutzer-Modus** gibt es keine Authentifizierung –
   nur auf `localhost` betreiben
 - ⚠️ Konzipiert für lokalen bzw. LAN-Einsatz – **nicht für das offene Internet**
-  (kein Rate-Limiting, SQL-Konsole für angemeldete Nutzer, einfacher HTTP-Server)
+  (kein Rate-Limiting, einfacher HTTP-Server, SQL-Konsole mit direktem Schreibzugriff
+  auf die eigene Datenbank)
 
 ---
 
