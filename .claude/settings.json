@@ -1,5 +1,10 @@
 {
-  "model": "claude-sonnet-5",
+  "model": "fable",
+  "effortLevel": "high",
+  "modelSettings": {
+    "claude-opus-5-5": { "effortLevel": "xhigh" }
+  },
+  "advisorModel": "fable",
   "maxTokens": 32000,
   "permissions": {
     "allow": [
