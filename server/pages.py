@@ -26,6 +26,38 @@ def logo_url(logo):
     return '/' + l
 
 
+def logo_on_server(logo):
+    """Liegt das gespeicherte Logo als Datei dort, wo die URL aus logo_url()
+    hinzeigt – kann der Browser es also von diesem Server laden?
+
+    Gleiche Regeln wie der Static-Handler in ``server/app.py``: ``/data/logos/``
+    löst den Dateinamen im logos-Verzeichnis des Nutzers auf, ``/seed_data/private/``
+    liegt global; alles andere (``/static/…``, ein Pfad vom eigenen PC) liefert
+    der Server nicht aus. Returns True/False, ``None`` bei http(s)-URLs – die
+    kommen von woanders und lassen sich hier nicht prüfen.
+    """
+    import os
+    from urllib.parse import unquote
+    url = logo_url(logo)
+    if not url:
+        return False
+    if url.startswith(('http://', 'https://')):
+        return None
+    path = unquote(url.split('?', 1)[0])
+    if path.startswith('/data/logos/'):
+        import userctx
+        name = os.path.basename(path)
+        return bool(name) and os.path.isfile(
+            os.path.join(userctx.user_subdir('logos', create=False), name))
+    if path.startswith('/seed_data/private/'):
+        # Wie der Static-Handler: nur Dateien, die wirklich unter seed_data/private
+        # liegen – sonst verriete die Antwort, ob es beliebige Dateien gibt.
+        base = os.path.realpath('seed_data/private')
+        target = os.path.realpath(path[1:])
+        return target.startswith(base + os.sep) and os.path.isfile(target)
+    return False
+
+
 def Header1(active_page=None):
     """Generate main header with navigation
     

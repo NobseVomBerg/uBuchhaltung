@@ -13,6 +13,7 @@ import userctx
 from .pages import Header1, Header2, Header3, Footer
 from .import_preview import match_account
 from db import Database
+from db.core import fk_explained
 from db.matching import is_bank_effective
 from money import to_minor, from_minor, multiply, tax_from_net, round_minor, fmt_eur
 from decimal import Decimal
@@ -1872,21 +1873,80 @@ def handle_invoice_save(post_body: bytes):
             'xml_path': None
         }
         
-        # Insert or update invoice
-        if is_update:
-            # Update existing invoice
-            # First, delete old invoice items
-            conn = db._get_connection()
-            cursor = conn.cursor()
-            cursor.execute('DELETE FROM InvoiceItems WHERE InvoiceId = ?', (invoice_id,))
-            conn.commit()
-            conn.close()
-            
-            # Update invoice (we need to add an update_invoice method to db.py)
-            # For now, we'll do it manually
-            conn = db._get_connection()
-            cursor = conn.cursor()
-            cursor.execute('''
+        # Kopf und Positionen in EINER Transaktion: scheitert ein Schritt, bleibt
+        # nichts halb gespeichert zurück – kein Kopf ohne Positionen (der nächste
+        # Versuch scheiterte sonst an der schon vergebenen Rechnungs-Nr.) und
+        # keine gelöschten Positionen hinter einem gescheiterten Update.
+        try:
+            with db.transaction() as tx:
+                if is_update:
+                    _save_invoice_update(tx, invoice_id, invoice_data)
+                else:
+                    invoice_id = db.insert_invoice(invoice_data, tx=tx)
+
+                # Positionen (Positionssumme serverseitig berechnet)
+                for idx, item in enumerate(items):
+                    db.insert_invoice_item({
+                        'invoice_id': invoice_id,
+                        'position': item.get('position'),
+                        'article_id': None,  # No article linkage for now
+                        'description': item.get('description'),
+                        'quantity': item.get('quantity'),
+                        'unit': item.get('unit', 'C62'),  # C62 = piece
+                        'price_per_unit': item.get('unitPrice'),
+                        'total_net': line_nets[idx],
+                        'tax_category': 'S',
+                        'tax_rate': item.get('taxRate', tax_rate)
+                    }, tx=tx)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return json.dumps({'success': False,
+                               'error': f'{e} – es wurde nichts gespeichert.'}).encode()
+
+        # If status is 'finalized' and this is a NEW invoice, increment number range
+        if status == 'finalized' and not is_update:
+            # Extract year and letter from invoice number (e.g., "26R001" -> year=2026, letter="R")
+            if len(invoice_number) >= 2:
+                year_short = invoice_number[:2]
+                current_year = datetime.datetime.now().year
+                year = 2000 + int(year_short) if int(year_short) <= 99 else int(year_short)
+
+                if len(invoice_number) > 2:
+                    letter = invoice_number[2]
+                    # Find and increment the number range
+                    ranges = db.fetch_number_ranges('invoice')
+                    for r in ranges:
+                        if r[2] == year and r[3] == letter:
+                            # Extract number from invoice_number
+                            num_part = invoice_number[3:].lstrip('_ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+                            try:
+                                current_num = int(num_part)
+                                db.update_number_range(
+                                    r[0], r[2], r[3], r[4] or '', current_num,
+                                    r[6] or '', r[7] if len(r) > 7 else None)
+                            except:
+                                pass
+                            break
+
+        return json.dumps({'success': True, 'invoice_id': invoice_id}).encode()
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return json.dumps({'success': False, 'error': str(e)}).encode()
+
+
+def _save_invoice_update(tx, invoice_id, invoice_data):
+    """Kopf einer bestehenden Rechnung überschreiben und ihre Positionen
+    entfernen – die neuen schreibt der Aufrufer in derselben Transaktion."""
+    cursor = tx.conn.cursor()
+    cursor.execute('DELETE FROM InvoiceItems WHERE InvoiceId = ?', (invoice_id,))
+    refs = {'OwnCompanyId': invoice_data['own_company_id'],
+            'CustomerId': invoice_data['customer_id'],
+            'BankAccountId': invoice_data['bank_account_id']}
+    with fk_explained(tx.conn, 'Invoices', refs):
+        cursor.execute('''
                 UPDATE Invoices SET
                     InvoiceNumber=?, InvoiceDate=?, OwnCompanyId=?,
                     SellerName=?, SellerCompany=?, SellerStreet=?, SellerPostalCode=?, SellerCity=?, SellerCountry=?,
@@ -1919,59 +1979,6 @@ def handle_invoice_save(post_body: bytes):
                 invoice_data['status'],
                 invoice_id
             ))
-            conn.commit()
-            conn.close()
-        else:
-            # Insert new invoice
-            invoice_id = db.insert_invoice(invoice_data)
-        
-        # Insert invoice items (Positionssumme serverseitig berechnet)
-        for idx, item in enumerate(items):
-            item_data = {
-                'invoice_id': invoice_id,
-                'position': item.get('position'),
-                'article_id': None,  # No article linkage for now
-                'description': item.get('description'),
-                'quantity': item.get('quantity'),
-                'unit': item.get('unit', 'C62'),  # C62 = piece
-                'price_per_unit': item.get('unitPrice'),
-                'total_net': line_nets[idx],
-                'tax_category': 'S',
-                'tax_rate': item.get('taxRate', tax_rate)
-            }
-            db.insert_invoice_item(item_data)
-        
-        # If status is 'finalized' and this is a NEW invoice, increment number range
-        if status == 'finalized' and not is_update:
-            # Extract year and letter from invoice number (e.g., "26R001" -> year=2026, letter="R")
-            if len(invoice_number) >= 2:
-                year_short = invoice_number[:2]
-                current_year = datetime.datetime.now().year
-                year = 2000 + int(year_short) if int(year_short) <= 99 else int(year_short)
-                
-                if len(invoice_number) > 2:
-                    letter = invoice_number[2]
-                    # Find and increment the number range
-                    ranges = db.fetch_number_ranges('invoice')
-                    for r in ranges:
-                        if r[2] == year and r[3] == letter:
-                            # Extract number from invoice_number
-                            num_part = invoice_number[3:].lstrip('_ABCDEFGHIJKLMNOPQRSTUVWXYZ')
-                            try:
-                                current_num = int(num_part)
-                                db.update_number_range(
-                                    r[0], r[2], r[3], r[4] or '', current_num,
-                                    r[6] or '', r[7] if len(r) > 7 else None)
-                            except:
-                                pass
-                            break
-        
-        return json.dumps({'success': True, 'invoice_id': invoice_id}).encode()
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return json.dumps({'success': False, 'error': str(e)}).encode()
 
 
 def handle_send_invoice_email(post_body: bytes):

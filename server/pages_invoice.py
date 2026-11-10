@@ -454,14 +454,16 @@ function copyInvoiceAsNew(invId) {{
             </div>
             <div class="invoice-meta">
                 <table class="invoice-meta-table">
-                    <tr><td>Datum:</td><td><input type="date" id="invoice_date" value="'''
+                    <tr><td>Rechnungsdatum:</td><td><input type="date" id="invoice_date" value="'''
     s += invoice_date if invoice_date else ''
     s += '''" style="width: 150px;"></td></tr>
     '''
-    s += f'<tr><td>Rechnungs-Nr.:</td><td><input type="text" id="invoice_number" value="{invoice_number}" style="width: 150px;"></td></tr>'
+    # Leistungsdatum direkt unter dem Rechnungsdatum: die beiden Daten gehören
+    # zusammen und werden zusammen gepflegt
     _dd = existing_invoice[25] if existing_invoice and len(existing_invoice) > 25 and existing_invoice[25] else ''
     s += ('<tr><td title="Datum der Lieferung/Leistung bzw. Leistungszeitraum (Pflichtangabe nach § 14 UStG)">Leistungsdatum:</td>'
           f'<td><input type="date" id="delivery_date" required value="{_html.escape(str(_dd))}" style="width: 150px;"></td></tr>')
+    s += f'<tr><td>Rechnungs-Nr.:</td><td><input type="text" id="invoice_number" value="{invoice_number}" style="width: 150px;"></td></tr>'
     s += '''
                     <tr><td>Kunden-Nr.:</td><td><input type="text" id="customer_number" readonly style="width: 150px; background-color: #f0f0f0;"></td></tr>
                 </table>
@@ -859,16 +861,13 @@ function copyInvoiceAsNew(invId) {{
             inv.addEventListener('change', () => { if (!touched) del.value = inv.value; });
         })();
         
-        // Initialize own company and customer on page load for edit mode
-        const isEditMode = document.getElementById('is_edit_mode').value === 'true';
-        if (isEditMode) {
-            // Trigger updates to populate address fields
-            updateOwnCompany();
-            updateCustomerAddress();
-            updateBankDetails();
-            // Recalculate totals
-            calculateTotals();
-        }
+        // Vorausgewählte Werte beim Laden übernehmen – in JEDEM Modus: auch eine
+        // neue Rechnung hat eine vorausgewählte eigene Firma (bisher fehlte dort
+        // das Logo), eine Kopie zusätzlich Kunde und Bankverbindung.
+        updateOwnCompany();
+        updateCustomerAddress();
+        updateBankDetails();
+        calculateTotals();
         
         // Update own company data (logo, sender line, footer)
         function updateOwnCompany() {
