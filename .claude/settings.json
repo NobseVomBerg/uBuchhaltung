@@ -1,6 +1,10 @@
 {
-  "model": "claude-sonnet-5",
-  "maxTokens": 32000,
+  "model": "fable",
+  "effortLevel": "high",
+  "modelSettings": {
+    "claude-opus-5-5": { "effortLevel": "xhigh" }
+  },
+  "advisorModel": "fable",
   "permissions": {
     "allow": [
       "Bash(git commit -m ' *)",
