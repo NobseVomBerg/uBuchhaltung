@@ -14,7 +14,7 @@ vor und nach dem ganzen Lauf; die Hilfen sind in test_test_isolation.py geprüft
 """
 import os
 
-# Direkte Einträge von data/, die der Wächter übergeht (vgl. demo._IGNORED_ENTRIES
+# Direkte Einträge von data/, die der Wächter übergeht (vgl. layout._KEEP
 # und server/backup._EXCLUDED_DIRS).
 IGNORED = ('tests',)
 

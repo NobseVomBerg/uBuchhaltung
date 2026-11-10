@@ -11,6 +11,7 @@ import demo
 import demo_seed
 import userctx
 from db import Database
+from tests import installation
 
 
 @pytest.fixture(autouse=True)
@@ -67,7 +68,7 @@ def test_demo_prepare_fills_euer_current_year(tmp_path, monkeypatch):
     Einnahmen > Betriebsausgaben, DATEV-Export fehlerfrei."""
     monkeypatch.setenv(demo.ENV_VAR, "1")
     assert demo.prepare(log=lambda m: None) == demo.SEEDED
-    db = Database(userctx.user_db_path())
+    db = installation.open_db(demo.USERNAME)             # data/users/demo/buch.db
     year = datetime.date.today().year
     d_from, d_to = f"{year}-01-01", f"{year}-12-31"
     euer = db.get_euer_data(d_from, d_to)

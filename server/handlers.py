@@ -891,11 +891,12 @@ def handle_wiso_import(request_handler, db: Database):
     parts = parse_multipart(content_type, raw)
 
     # CSRF: klassisches Multipart-Formular – Token steckt als Feld im Body
-    # (das Footer-JS ergänzt es beim Submit). Nur im Mehrbenutzer-Modus aktiv.
+    # (das Footer-JS ergänzt es beim Submit). Aktiv, sobald die Installation
+    # eingerichtet ist.
     if userctx.auth_enabled():
         csrf_part = next((p for p in parts if p.name == 'csrf' and not p.is_file), None)
         csrf_token = csrf_part.content.decode('utf-8', 'replace').strip() if csrf_part else ''
-        if not auth.check_csrf(request_handler._session_token(), csrf_token):
+        if not auth.check_csrf(request_handler._csrf_key(), csrf_token):
             return 303, '/miscellaneous?wiso_import=error&msg=Ung%C3%BCltiges+Sicherheits-Token'
 
     # Datei-Inhalt aus Multipart-Body extrahieren (robuster email-Parser)
@@ -2645,24 +2646,54 @@ def handle_update_trip(db: Database, post_data):
 
 
 # ── Authentifizierung (TODO #4) ──────────────────────────────────────────────
-def handle_setup_mode(post_data):
-    """Betriebsmodus bei der Ersteinrichtung wählen. Returns Redirect-Location
-    oder None, wenn der Modus bereits feststeht.
+def handle_setup_start(post_data):
+    """Ersteinrichtung: ersten Administrator anlegen – mit Passwort oder mit
+    automatischer Anmeldung. Returns (ok, username, with_login, error_msg);
+    ``None`` als erstes Element heißt: Einrichtung ist bereits erfolgt (403).
 
-    'multi' → Administrator anlegen (/setup-admin); 'single' → eigene
-    Kontaktdaten (/setup, wie gehabt).
+    Gesperrt ist die Ersteinrichtung, sobald es einen Administrator gibt. Eine vorab
+    angelegte config.json mit ``{"mode":"multi"}`` (Headless) oder ein Datenverzeichnis
+    nur mit Benutzer ``demo`` lässt sie offen. Die Installation wird hier als
+    eingerichtet markiert (``mode: multi``); danach ändert das nichts mehr im Browser
+    (sonst könnte ein Nutzer den Login abschalten).
     """
-    import userctx
-    if userctx.get_mode() is not None:
-        # Der Betriebsmodus wird nur bei der Ersteinrichtung gewählt. Sonst könnte
-        # jeder angemeldete Nutzer auf "single" schalten und damit den Login
-        # abschalten. Späterer Wechsel: data/config.json bei gestopptem Server.
-        return None
-    mode = post_data.get('mode', [''])[0]
-    if mode not in ('single', 'multi'):
-        return '/setup'
-    userctx.set_mode(mode)
-    return '/setup-admin' if mode == 'multi' else '/setup'
+    import secrets
+    import demo
+    mode = userctx.get_mode()
+    if auth.admin_exists():
+        # Auch wenn config.json fehlt oder unlesbar ist: Gibt es schon einen
+        # Administrator, legt die Ersteinrichtung keinen weiteren an.
+        return None, '', False, None
+    if demo.active_user():
+        # Im laufenden Demo-Modus ist jeder Besucher angemeldet – er darf sich nicht
+        # zum ersten Administrator der Installation machen.
+        return None, '', False, None
+    g = lambda k: post_data.get(k, [''])[0]
+    username = g('username').strip()
+    with_login = g('login') == 'password'
+    if with_login:
+        password, password2 = g('password'), g('password2')
+        if password != password2:
+            return False, username, with_login, 'Die Passwörter stimmen nicht überein.'
+    else:
+        if g('password') or g('password2'):
+            # Die Eingabetaste löst im Browser den ersten Knopf aus („Ohne Anmeldung“) –
+            # ein eingetipptes Passwort darf dabei nicht stillschweigend verfallen.
+            return False, username, with_login, ('Es ist ein Passwort eingetragen – bitte '
+                                                 '„Mit Passwort starten“ wählen oder die Passwortfelder leeren.')
+        # Niemand kennt dieses Passwort; es wird beim Ausschalten der automatischen
+        # Anmeldung durch ein selbst gewähltes ersetzt.
+        password = secrets.token_urlsafe(24)
+    try:
+        auth.create_user(username, password, is_admin=True)
+    except ValueError as e:
+        return False, username, with_login, str(e)
+    if mode != 'multi':
+        userctx.set_mode('multi')
+    # Ausdrücklich in beide Richtungen: Eine vorab angelegte config.json kann schon
+    # ein auto_login tragen – wer ein Passwort wählt, meldet sich damit an.
+    userctx.set_auto_login(None if with_login else username)
+    return True, username, with_login, None
 
 
 def handle_login(post_data):
@@ -2703,6 +2734,8 @@ def handle_user_delete(post_data):
     username = post_data.get('username', [''])[0].strip()
     if not auth.user_exists(username):
         return _users_redirect(err='Benutzer existiert nicht.')
+    if username == userctx.get_auto_login():
+        return _users_redirect(err='Dieser Benutzer wird automatisch angemeldet – erst die automatische Anmeldung ausschalten.')
     if auth.is_admin(username) and auth.count_admins() <= 1:
         return _users_redirect(err='Der letzte Administrator kann nicht gelöscht werden.')
     auth.delete_user(username)
@@ -2726,6 +2759,12 @@ def handle_user_toggle_admin(post_data):
     username = post_data.get('username', [''])[0].strip()
     if not auth.user_exists(username):
         return _users_redirect(err='Benutzer existiert nicht.')
+    if username == userctx.get_auto_login():
+        return _users_redirect(err='Dieser Benutzer wird automatisch angemeldet – erst die automatische Anmeldung ausschalten.')
+    import demo
+    if username == demo.USERNAME:
+        # Im Demo-Modus arbeitet jeder Besucher als dieser Benutzer.
+        return _users_redirect(err='Der Demo-Benutzer kann kein Administrator werden.')
     currently_admin = auth.is_admin(username)
     if currently_admin and auth.count_admins() <= 1:
         return _users_redirect(err='Der letzte Administrator kann nicht herabgestuft werden.')
@@ -2734,21 +2773,36 @@ def handle_user_toggle_admin(post_data):
     return _users_redirect(info=f'„{username}" ist jetzt {state}.')
 
 
-def handle_setup_admin(post_data):
-    """Erstes Administrator-Konto anlegen. Returns (ok, username, error_msg)."""
+def handle_user_auto_login(post_data, current_user):
+    """Automatische Anmeldung ein-/ausschalten. Returns (Redirect-Location, login_as).
+
+    Einschalten kann ein Administrator nur für sich selbst. Beim Ausschalten wird
+    ein Passwort gesetzt (niemand sperrt sich aus); ``login_as`` nennt dann den
+    Benutzer, für den der Aufrufer eine Sitzung anlegt.
+    """
     g = lambda k: post_data.get(k, [''])[0]
-    username = g('username').strip()
-    password = g('password')
-    password2 = g('password2')
-    if auth.has_any_user():
-        return False, username, "Es existiert bereits ein Benutzer."
-    if password != password2:
-        return False, username, "Die Passwörter stimmen nicht überein."
-    try:
-        auth.create_user(username, password, is_admin=True)
-    except ValueError as e:
-        return False, username, str(e)
-    return True, username, None
+    action = g('action')
+    active = auth.auto_login_user()
+    if action == 'enable':
+        if active:
+            return _users_redirect(err='Die automatische Anmeldung ist bereits aktiv.'), None
+        if not (current_user and auth.is_admin(current_user)):
+            return _users_redirect(err='Nur ein Administrator kann sich automatisch anmelden lassen.'), None
+        userctx.set_auto_login(current_user)
+        return _users_redirect(info=f'Automatische Anmeldung für „{current_user}" eingeschaltet.'), None
+    if action == 'disable':
+        if not active:
+            return _users_redirect(err='Die automatische Anmeldung ist nicht aktiv.'), None
+        password, password2 = g('password'), g('password2')
+        if password != password2:
+            return _users_redirect(err='Die Passwörter stimmen nicht überein.'), None
+        try:
+            auth.set_password(active, password)
+        except ValueError as e:
+            return _users_redirect(err=str(e)), None
+        userctx.set_auto_login(None)
+        return _users_redirect(info=f'Automatische Anmeldung ausgeschaltet. „{active}" meldet sich ab jetzt mit Passwort an.'), active
+    return _users_redirect(err='Unbekannte Aktion.'), None
 
 
 def handle_setup_save(db: Database, post_data: dict):

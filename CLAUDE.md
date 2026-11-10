@@ -116,23 +116,47 @@ kein Subagent darauf:
 ### Zugriffsschutz (HTTP)
 - Türsteher ist `_gate()` in `server/app.py`: schreibende Anfragen nur von eigenen
   Seiten (`request_is_same_origin`: `Sec-Fetch-Site`, sonst `Origin` gegen `Host`/
-  `X-Forwarded-Host`) – in beiden Betriebsmodi, zusätzlich zum CSRF-Token
-- Ohne Login (Einzelbenutzer, Ersteinrichtung) nur unter vertrauenswürdigen
+  `X-Forwarded-Host`) – immer, zusätzlich zum CSRF-Token
+- Ohne Login (Ersteinrichtung, automatische Anmeldung) nur unter vertrauenswürdigen
   Hostnamen (`host_is_trusted`, gegen DNS-Rebinding); weitere Namen über
   `UBUCHHALTUNG_ALLOWED_HOSTS`
 - **Aktionen mit Seiteneffekt nie per GET:** Pfad in `_ACTION_PATHS` eintragen,
   Logik in `_post_action_routes`, im Frontend `appConfirmPost()`/`appPost()`
   statt eines Links
-- Der Betriebsmodus wird nur bei der Ersteinrichtung gewählt (`handle_setup_mode`)
-- **SQL-Konsole** (`handle_execute_sql`): im Mehrbenutzer-Modus nur Administratoren
+- **Automatische Anmeldung** (`auto_login` in `config.json`, `auth.auto_login_user()`):
+  ein Administrator wird ohne Passwort angemeldet, Anmeldeseite und andere Benutzer
+  sind so lange abgeschaltet – das ist der Betrieb für eine Person. Es gibt dann
+  keine Sitzung (CSRF-Token an `_csrf_key()` gebunden), und die Hostnamen-Prüfung
+  greift wie ohne Login. Schalter in der Benutzerverwaltung; Ausschalten setzt ein Passwort
+- Die Ersteinrichtung (`handle_setup_start`) legt den ersten Administrator an und
+  trägt `mode: multi` in `config.json` ein (= eingerichtet); danach ändert nichts im
+  Browser diese Einstellung. Solange es keinen Administrator gibt, ist nur die
+  Ersteinrichtung erreichbar (`/setup`, `/setup/start`; alles andere leitet dorthin).
+  Ohne Sitzung gibt es dort kein CSRF-Token – es schützen die Herkunfts- und die
+  Hostnamen-Prüfung. Maßgeblich ist `auth.admin_exists()`, nicht `config.json`: fehlt
+  die Datei oder ist sie unlesbar, obwohl es einen Administrator gibt, antwortet der
+  Türsteher mit einem Hinweis (503) statt mit der Ersteinrichtung – nie aufweichen.
+  `config.json` wird atomar geschrieben (`userctx._write_config`)
+- Es gibt nur die Mehrbenutzer-Ablage `data/users/<Name>/`; der Betrieb für eine Person
+  ist die automatische Anmeldung. `userctx.get_mode()` kennt nur `'multi'` (eingerichtet)
+  und `None`; jeder andere Wert in `config.json` gilt als nicht eingerichtet
+- **Umzug von Altbeständen** (`layout.migrate()`, läuft beim Start vor allem anderen,
+  `run_server()` prüft es zur Sicherheit noch einmal): verschiebt eine Ablage aus
+  Version 1.x (Daten direkt in `data/`) nach `data/users/admin/`, passt gespeicherte
+  Dateipfade an und schaltet die automatische Anmeldung ein; nichts wird gelöscht oder
+  überschrieben. Den Altbestand erkennt `layout.py` an den Rohwerten aus
+  `userctx._read_config()`, nicht über `get_mode()`
+- **SQL-Konsole** (`handle_execute_sql`): nur Administratoren
   (`auth.sql_console_allowed`); per SQLite-Authorizer auf die eigene Datenbank
   beschränkt – kein `ATTACH`/`DETACH`/`VACUUM`, PRAGMAs bis auf wenige nur lesend.
   Diese Sperren nicht aufweichen
 
 ### Demo-Modus & Screenshots
-- `UBUCHHALTUNG_DEMO=1` (`demo.py`) befüllt **nur ein leeres Datenverzeichnis** –
-  diese Garantie nie aufweichen (übergangen werden allein `lost+found` und
-  `tests/`, der Ordner für Testartefakte). Demodaten (`demo_seed.py`,
+- `UBUCHHALTUNG_DEMO=1` (`demo.py`): Demodaten liegen **ausschließlich unter
+  `data/users/demo/`** und werden nur geladen, wenn dieses Verzeichnis fehlt oder leer
+  ist und es keinen Benutzer `demo` gibt – diese Garantie nie aufweichen. Solange die
+  Variable gesetzt ist, arbeitet jeder Besucher als `demo` (kein Administrator); `demo`
+  ist wie `tests` ein reservierter Benutzername. Demodaten (`demo_seed.py`,
   `seed_data/test/demo_scenario.json`) entstehen über die App-eigenen Code-Pfade,
   relativ zum Startdatum; pytest-Testdaten bleiben davon getrennt
 - README-Bilder neu erzeugen: `node tools/screenshots.mjs` → `docs/screenshots/`
@@ -232,14 +256,19 @@ kein Subagent darauf:
 - Alles rund um Testläufe liegt unter `data/tests/`: `tmp/` (Arbeitsdaten; nach dem
   Lauf bleiben nur die Verzeichnisse fehlgeschlagener Tests der letzten zwei Läufe)
   und `cache/` (pytest-Cache). Keine Punkt-Verzeichnisse im Projektordner anlegen.
-  `data/tests/` wird von Datensicherung und Demo-Modus übergangen, der Benutzername
-  `tests` ist reserviert
+  `data/tests/` wird von Datensicherung und Umzug (`layout.py`) übergangen, der
+  Benutzername `tests` ist reserviert
 
 ### Versionierung
 - Single Source of Truth: `version.py` (Schema `MAJOR.MINOR.PATCH`)
-- **Bei jeder DB-Schema-Änderung** (`db/schema.py`) `SCHEMA_VERSION` +1 → die mittlere
-  Versionsstelle und `PRAGMA user_version` ziehen automatisch mit; PATCH dabei auf 0
-- Sonstige Änderungen ohne DB-Bezug: nur `PATCH` +1; große Umbrüche: `MAJOR`
+- **Bei jeder DB-Schema-Änderung** (`db/schema.py`) `SCHEMA_STEP` +1 → die mittlere
+  Versionsstelle und `PRAGMA user_version` ziehen automatisch mit; PATCH dabei auf 0.
+  Der neue Migrationsschritt prüft gegen die neue Zahl (`if from_version < 2001:`)
+- In der Datenbank steht `SCHEMA_VERSION = MAJOR × 1000 + SCHEMA_STEP` (2.0.x → 2000,
+  2.1.x → 2001); Datenbanken aus 1.x tragen 0 bis 6. Eine Datenbank mit höherer Zahl
+  als das Programm wird nicht geöffnet (`db.SchemaTooNewError`) – nie zurückstempeln
+- Sonstige Änderungen ohne DB-Bezug: nur `PATCH` +1; große Umbrüche: `MAJOR` +1,
+  `SCHEMA_STEP` und `PATCH` auf 0
 - Anzeige auf der About-Seite
 
 ---

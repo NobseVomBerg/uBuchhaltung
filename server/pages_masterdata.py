@@ -28,7 +28,7 @@ def Footer():
 
 def PageMasterData(db: Database):
     """Master Data overview page with navigation to subpages"""
-    # Benutzerverwaltung nur im Mehrbenutzer-Modus und nur für Administratoren
+    # Benutzerverwaltung nur für Administratoren
     import userctx as _userctx
     import auth as _auth
     _cur = _userctx.get_user()

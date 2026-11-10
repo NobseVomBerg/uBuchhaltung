@@ -6,10 +6,12 @@ uBuchhaltung - Simple Accounting Software
 Entry point for the web server
 """
 import demo
+import layout
 from document_parser import DocumentParser
 from server import run_server
 
 if __name__ == "__main__":
-    demo.prepare()              # UBUCHHALTUNG_DEMO=1: leeres Datenverzeichnis mit Demodaten füllen
+    layout.migrate()            # Altbestand aus Version 1.x (Daten direkt in data/) nach data/users/<Name>/ umziehen – vor allem anderen
+    demo.prepare()              # UBUCHHALTUNG_DEMO=1: Benutzer „demo“ mit Demodaten anlegen
     parser = DocumentParser()   # Init, if Log not exists, create it
     run_server()

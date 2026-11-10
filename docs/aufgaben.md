@@ -5,7 +5,7 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 
 ## Repo & Veröffentlichung
 - awesome-selfhosted: frühestens ab 4.3.2027 (erster Release `v1.6.16` am 3.11.2026); Eintrag schreibt der Owner selbst (Listenregel: keine KI-generierten Beiträge)
-- Docker-Demo (`-e UBUCHHALTUNG_DEMO=1`) einmal im echten Container prüfen
+- Docker-Demo (`-e UBUCHHALTUNG_DEMO=1`) einmal im echten Container prüfen und den Umzug einer 1.x-Installation auf 2.0.0
 
 ## Funktionen
 - Kontoauszüge im MT940-Format (CAMT.053 und PDF: DKB, Volksbank Rottweil sind da)

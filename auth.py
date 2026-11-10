@@ -23,8 +23,10 @@ SESSION_TTL = 7 * 24 * 3600          # 7 Tage
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
 # Reservierte Benutzernamen (Vergleich ohne Groß-/Kleinschreibung): "tests" ist
 # der Ordner für Testartefakte im Datenverzeichnis (data/tests/) und wird von
-# Datensicherung und Demo-Modus übergangen – kein Nutzer darf so heißen.
-_RESERVED_USERNAMES = frozenset({"tests"})
+# Datensicherung und Umzug übergangen, "demo" ist der Benutzer des Demo-Modus
+# (demo.py) – kein Nutzer darf so heißen. Nur der Code selbst legt sie an
+# (create_user(..., allow_reserved=True)).
+_RESERVED_USERNAMES = frozenset({"tests", "demo"})
 _MIN_PW_LEN = 6
 
 # scrypt-Parameter (RFC 7914): n=2^14 ⇒ ~16 MB, für interaktiven Login angemessen.
@@ -89,9 +91,10 @@ def init_auth_db(db_path=None):
 
 
 # ── Passwort-Hashing ─────────────────────────────────────────────────────────
-def valid_username(username):
+def valid_username(username, allow_reserved=False):
     name = username or ""
-    return bool(_USERNAME_RE.match(name)) and name.lower() not in _RESERVED_USERNAMES
+    return bool(_USERNAME_RE.match(name)) and (allow_reserved
+                                               or name.lower() not in _RESERVED_USERNAMES)
 
 
 def _hash(password, salt):
@@ -107,11 +110,14 @@ def has_any_user(db_path=None):
     return n > 0
 
 
-def create_user(username, password, is_admin=False, db_path=None):
-    """Neuen Benutzer anlegen. Wirft ValueError bei ungültigen Eingaben/Duplikat."""
-    if (username or "").lower() in _RESERVED_USERNAMES:
+def create_user(username, password, is_admin=False, db_path=None, allow_reserved=False):
+    """Neuen Benutzer anlegen. Wirft ValueError bei ungültigen Eingaben/Duplikat.
+
+    ``allow_reserved`` erlaubt reservierte Namen (``demo``) – nur für den Code selbst
+    (Demo-Modus, Umzug), nie für Eingaben aus dem Browser."""
+    if not allow_reserved and (username or "").lower() in _RESERVED_USERNAMES:
         raise ValueError("Dieser Benutzername ist reserviert.")
-    if not valid_username(username):
+    if not valid_username(username, allow_reserved=allow_reserved):
         raise ValueError("Ungültiger Benutzername (3–32 Zeichen: A–Z, a–z, 0–9, _ , -).")
     if not password or len(password) < _MIN_PW_LEN:
         raise ValueError(f"Passwort zu kurz (mindestens {_MIN_PW_LEN} Zeichen).")
@@ -187,17 +193,38 @@ def count_admins(db_path=None):
     return n
 
 
+def admin_exists(db_path=None):
+    """Gibt es mindestens einen Administrator? Legt dabei nichts an: Fehlt die
+    auth.db oder sind ihre Tabellen noch nicht angelegt, lautet die Antwort Nein."""
+    if not os.path.isfile(_path(db_path)):
+        return False
+    try:
+        return count_admins(db_path) > 0
+    except sqlite3.OperationalError:          # Tabellen fehlen noch
+        return False
+
+
 def sql_console_allowed(db_path=None):
     """Darf der aktuelle Nutzer die SQL-Konsole verwenden?
 
-    Einzelbenutzer-Modus: ja (es gibt nur den Besitzer). Mehrbenutzer-Modus:
-    nur Administratoren.
+    Nur Administratoren. Solange die Installation nicht eingerichtet ist (Werkzeuge,
+    Tests ohne Einrichtung), gibt es keine Einschränkung.
     """
     import userctx
     if not userctx.auth_enabled():
         return True
     user = userctx.get_user()
     return bool(user and is_admin(user, db_path))
+
+
+def auto_login_user(db_path=None):
+    """Benutzer der automatischen Anmeldung – nur, wenn er existiert und
+    Administrator ist; sonst None (dann gilt die normale Anmeldung)."""
+    import userctx
+    name = userctx.get_auto_login()
+    if name and is_admin(name, db_path):
+        return name
+    return None
 
 
 def user_exists(username, db_path=None):

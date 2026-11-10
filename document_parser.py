@@ -105,9 +105,9 @@ def _rotate_if_needed(path):
 
 class DocumentParser:
     def __init__(self, data_dir=None, log_dir=None):
-        # Ohne explizite Pfade richtet sich die Ablage nach dem aktuellen Nutzer
-        # (Mehrbenutzer-Betrieb): Einzelmodus ⇒ ./data, mit Login ⇒
-        # data/users/<user>/. Explizit übergebene Pfade gewinnen (z. B. Tests).
+        # Ohne explizite Pfade richtet sich die Ablage nach dem aktuellen Nutzer:
+        # angemeldet ⇒ data/users/<user>/, ohne Benutzer-Kontext (Werkzeuge, Tests)
+        # ⇒ ./data. Explizit übergebene Pfade gewinnen (z. B. Tests).
         if log_dir is None or data_dir is None:
             import userctx
             base = userctx.user_data_dir()

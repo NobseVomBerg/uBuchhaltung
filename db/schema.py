@@ -9,6 +9,15 @@ from decimal import Decimal
 from money import to_minor, from_minor
 
 
+class SchemaTooNewError(RuntimeError):
+    """Die Datenbank stammt von einer neueren Programmversion.
+
+    Sie wird nicht geöffnet und nicht verändert – ein älteres Programm würde sonst
+    seine eigene (niedrigere) Schema-Zahl hineinschreiben, und beim nächsten Start
+    der neueren Version liefen deren Migrationen erneut.
+    """
+
+
 class SchemaMixin:
     def _column_exists(self, cursor, table, column):
         cols = [r[1] for r in cursor.execute(f"PRAGMA table_info({table})").fetchall()]
@@ -26,6 +35,11 @@ class SchemaMixin:
 
     def _run_migrations(self, cursor, from_version):
         """Bestehende DBs schrittweise an SCHEMA_VERSION angleichen.
+
+        ``from_version`` ist die Zahl aus ``PRAGMA user_version``: 0 bis 6 für
+        Datenbanken aus Version 1.x, ab 2000 ``MAJOR × 1000 + SCHEMA_STEP``
+        (siehe version.py). Neue Schritte prüfen gegen die neue Zahl, z. B.
+        ``if from_version < 2001:``.
 
         Neue Tabellen deckt ``CREATE TABLE IF NOT EXISTS`` bereits ab; hier nur
         Spalten-Erweiterungen für DBs, die vor der jeweiligen Version angelegt
@@ -113,6 +127,14 @@ class SchemaMixin:
         # bestehende DB handelt und welche Schema-Version sie trägt. Wird unten in
         # _create_extended_schema für die Migration ausgewertet (eigene Connection).
         self._migrate_from_version = cursor.execute("PRAGMA user_version").fetchone()[0]
+        from version import SCHEMA_VERSION, describe_schema_version
+        if self._migrate_from_version > SCHEMA_VERSION:
+            conn.close()
+            raise SchemaTooNewError(
+                f"Die Datenbank '{self.db_name}' hat den Stand "
+                f"{describe_schema_version(self._migrate_from_version)}, dieses Programm kennt nur "
+                f"{describe_schema_version(SCHEMA_VERSION)}. Sie wurde nicht geöffnet und nicht "
+                "verändert – bitte eine neuere Programmversion verwenden.")
         self._migrate_had_tables = cursor.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='Invoices'"
         ).fetchone() is not None
@@ -611,8 +633,8 @@ class SchemaMixin:
                 self._migrate_from_version < SCHEMA_VERSION:
             self._run_migrations(cursor, self._migrate_from_version)
 
-        # Schema-Version in der DB hinterlegen (entspricht der MINOR-Versionsstelle,
-        # siehe version.py). Bei jeder Schema-Änderung SCHEMA_VERSION dort erhöhen.
+        # Schema-Version in der DB hinterlegen (MAJOR × 1000 + SCHEMA_STEP, siehe
+        # version.py). Bei jeder Schema-Änderung SCHEMA_STEP dort erhöhen.
         cursor.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
 
         conn.commit()
