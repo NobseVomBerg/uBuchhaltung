@@ -200,11 +200,37 @@ class _CoreMixin:
             os.makedirs(db_dir, exist_ok=True)
 
         key = os.path.abspath(self.db_name)
-        if key not in _CoreMixin._initialized_dbs:
+        if not self._is_initialized(key):
             with _CoreMixin._init_lock:
-                if key not in _CoreMixin._initialized_dbs:   # double-checked locking
+                if not self._is_initialized(key):             # double-checked locking
                     self.initialize_database()
                     _CoreMixin._initialized_dbs.add(key)      # erst nach Erfolg markieren
+
+    @staticmethod
+    def _is_initialized(key):
+        """Wurde die Datei unter ``key`` in diesem Prozess schon eingerichtet – und ist
+        sie es noch?
+
+        Der Pfad allein reicht nicht: Die Datei kann seither ersetzt worden sein
+        (zurückgespielte Sicherung eines älteren Standes, neu angelegte Datei am
+        selben Ort). Deshalb zählt zusätzlich die Schema-Zahl in der Datei – weicht
+        sie ab, läuft ``initialize_database`` erneut (Migration bzw. Sperre gegen
+        neuere Datenbanken).
+        """
+        if key not in _CoreMixin._initialized_dbs:
+            return False
+        from version import SCHEMA_VERSION
+        if not os.path.isfile(key):
+            return False
+        try:
+            conn = sqlite3.connect(key)
+            try:
+                return conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return False
+
     def _get_connection(self):
         """Get a database connection with foreign keys enabled"""
         conn = sqlite3.connect(self.db_name)
