@@ -26,6 +26,38 @@ def is_bank_effective(coa_id, counter_coa_id, bank_coa_ids) -> bool:
     return coa_id is None or counter_coa_id is None
 
 
+ENTRY_MIRROR = 'mirror'                # beide Seiten liquide (Übertrag/Doppik-Spiegel)
+ENTRY_LIQUID_FIRST = 'liquid_first'    # Geldkonto vorne (oder vorne leer), Zweckkonto hinten
+ENTRY_PURPOSE_FIRST = 'purpose_first'  # Zweckkonto vorne, Geldkonto hinten (oder hinten leer)
+ENTRY_TRANSFER = 'transfer'            # Umbuchung: beide Seiten kontiert, keine liquide
+ENTRY_EMPTY = 'empty'                  # kein Zweckkonto erkennbar
+
+
+def classify_entry(coa_id, counter_coa_id, liquid_coa_ids) -> str:
+    """Form eines Buchungssatzes – EINE Einordnung für EÜR, DATEV-Export und Masken.
+
+    Bei einer Zahlung trägt der Betrag das Vorzeichen der Geldbewegung (Einnahme
+    positiv), egal auf welcher Seite das Zweckkonto steht. Fehlt die liquide Seite
+    (Bankkonto ohne SKR-Nummer, unvollständig kontierter Satz), bleibt es eine
+    Zahlung – dieselbe Sicht wie ``is_bank_effective``. Eine Umbuchung liegt nur
+    vor, wenn BEIDE Seiten kontiert sind und keine liquide ist; dort bedeutet ein
+    positiver Betrag: COA im Soll, Gegenkonto im Haben.
+    """
+    coa_liquid = coa_id in liquid_coa_ids
+    counter_liquid = counter_coa_id in liquid_coa_ids
+    if coa_liquid and counter_liquid:
+        return ENTRY_MIRROR
+    if coa_liquid:
+        return ENTRY_LIQUID_FIRST
+    if coa_id is None:
+        if counter_coa_id is None or counter_liquid:
+            return ENTRY_EMPTY
+        return ENTRY_LIQUID_FIRST
+    if counter_coa_id is None or counter_liquid:
+        return ENTRY_PURPOSE_FIRST
+    return ENTRY_TRANSFER
+
+
 class MatchingMixin:
     def get_linked_entry_for_bank(self, bank_booking_id: int):
         """Hole die wichtigsten Felder des ersten verknüpften Entry-Bookings.

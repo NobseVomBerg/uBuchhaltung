@@ -288,6 +288,13 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
   wenn BEIDE Seiten kontiert sind und KEINE davon ein Bankkonto ist. Nur
   bankwirksame Sätze zählen in die Split-Summe (Statusbadge, DATEV-Prüfung);
   unvollständig kontierte zählen bewusst mit.
+- **Form eines Buchungssatzes** (`db.matching.classify_entry`, gemeinsam für EÜR
+  und DATEV-Export): Zweckkonto vorne (`COA_ID` = Erlös/Aufwand, `CounterCOA_ID`
+  = Geldkonto oder leer), Geldkonto vorne (v. a. WISO-Import) oder Umbuchung
+  (beide Seiten kontiert, keine liquide). Bei Zahlungen trägt `Amount` die
+  Richtung der Geldbewegung (Einnahme positiv), egal auf welcher Seite das
+  Zweckkonto steht; bei Umbuchungen heißt positiv: `COA_ID` im Soll,
+  `CounterCOA_ID` im Haben. Fehlt die liquide Seite, bleibt es eine Zahlung.
 
 ---
 
@@ -537,6 +544,8 @@ erschiene als Ausgabe.
 Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
 
 - Betriebliche Kontensalden werden netto aggregiert (`Amount - TaxAmount`)
+- Das Zweckkonto ist die nicht-liquide Seite des Satzes (`classify_entry`, siehe „Form
+  eines Buchungssatzes“); ein Satz ohne liquide Gegenseite zählt als Zahlung, nicht als Umbuchung
 - Virtuelles USt-Konto 3806 enthält nur Steueranteile aus Einnahmekonten
 - Virtuelle Vorsteuerkonten 1401/1406 enthalten Steueranteile aus Ausgabenkonten
 - Konten 3160, 3720, 3740 werden im Dashboard separat als "Sonstige Ausgaben" gezeigt

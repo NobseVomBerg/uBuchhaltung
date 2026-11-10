@@ -276,7 +276,14 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                         <option value="">-- Kein Kunde --</option>
     '''
     selected_contact_id = edit_trans[7] if edit_trans else prefill.get('contact_id')
-    for contact in customers:
+    contact_choices = list(customers)
+    if selected_contact_id and all(c[0] != selected_contact_id for c in customers):
+        # Kein Kunde (z. B. ein Lieferant aus dem WISO-Import): Er würde sonst nicht
+        # vorgewählt und beim Speichern aus der Buchung gelöscht.
+        other_contact = db.get_contact_by_id(selected_contact_id)
+        if other_contact:
+            contact_choices.append(other_contact)
+    for contact in contact_choices:
         selected = 'selected' if selected_contact_id and contact[0] == selected_contact_id else ''
         contact_display = f"{contact[2]} ({contact[3] or 'Privat'})" if contact[2] else contact[3] or f"ID {contact[0]}"
         s+= f'<option value="{contact[0]}" {selected}>{_html.escape(str(contact_display))}</option>'
