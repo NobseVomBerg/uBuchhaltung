@@ -50,7 +50,11 @@ def logo_on_server(logo):
         return bool(name) and os.path.isfile(
             os.path.join(userctx.user_subdir('logos', create=False), name))
     if path.startswith('/seed_data/private/'):
-        return os.path.isfile(path[1:])
+        # Wie der Static-Handler: nur Dateien, die wirklich unter seed_data/private
+        # liegen – sonst verriete die Antwort, ob es beliebige Dateien gibt.
+        base = os.path.realpath('seed_data/private')
+        target = os.path.realpath(path[1:])
+        return target.startswith(base + os.sep) and os.path.isfile(target)
     return False
 
 

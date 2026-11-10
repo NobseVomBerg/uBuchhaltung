@@ -114,7 +114,14 @@ class Transaction:
             self.conn.close()
         if exc_type is None:
             for entry in self.log:
-                self._db._log_sql(*entry)
+                try:
+                    self._db._log_sql(*entry)
+                except Exception as e:
+                    # Die Daten sind festgeschrieben. Ein Fehler beim Protokollieren
+                    # (Platte voll, Rechte) darf den Vorgang nicht als gescheitert
+                    # melden – sonst speichert der Nutzer dieselbe Rechnung noch einmal.
+                    print(f"WARNUNG: Replay-Log konnte nicht geschrieben werden: {e}")
+                    break
         return False
 
 
