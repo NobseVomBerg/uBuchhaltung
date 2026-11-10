@@ -14,7 +14,7 @@ import sqlite3
 
 import auth
 import userctx
-from db import Database
+from db import Database, _CoreMixin
 
 ADMIN = "admin"
 PASSWORD = "geheim123"        # erfundenes Test-Passwort (mindestens 6 Zeichen)
@@ -62,6 +62,34 @@ def open_db(username):
         return Database()
     finally:
         userctx.clear()
+
+
+def file_digest(path):
+    """sha256 einer Datei (zum Nachweis, dass sie byteweise unverändert blieb)."""
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def user_version(db_path):
+    """``PRAGMA user_version`` einer Datenbankdatei, ohne sie über ``Database`` zu öffnen."""
+    with contextlib.closing(sqlite3.connect(db_path)) as con:
+        return con.execute("PRAGMA user_version").fetchone()[0]
+
+
+def dump(db_path):
+    """Inhalt einer Datenbank (Schema und Zeilen) als SQL-Text-Liste, zum Vergleich über iterdump()."""
+    with contextlib.closing(sqlite3.connect(db_path)) as con:
+        return list(con.iterdump())
+
+
+def stamp_user_version(db_path, number):
+    """``PRAGMA user_version`` einer vorhandenen Datenbank setzen (als hätte ein anderes Programm sie
+    zuletzt geöffnet) und sie für diesen Prozess als „noch nicht geöffnet“ vermerken – sonst prüft
+    ``Database(...)`` den Stand nicht erneut."""
+    with contextlib.closing(sqlite3.connect(db_path)) as con:
+        con.execute(f"PRAGMA user_version = {int(number)}")
+        con.commit()
+    _CoreMixin._initialized_dbs.discard(os.path.abspath(db_path))
 
 
 def session_count():
