@@ -164,12 +164,14 @@ kein Subagent darauf:
   positiv: `COA` im Soll, Gegenkonto im Haben. Fehlt die liquide Seite, bleibt es
   eine Zahlung (wie `is_bank_effective`)
 - DATEV: Das Soll/Haben-Kennzeichen bezieht sich auf das Feld „Konto“ und folgt
-  dieser Einordnung; der BU-Schlüssel folgt der Richtung der Geldbewegung
+  dieser Einordnung; der BU-Schlüssel folgt der Richtung der Geldbewegung. Die
+  BU-Schlüssel sind fachlich noch nicht gegen einen echten Stapel geprüft
+  (`docs/aufgaben.md`) – nicht als richtig voraussetzen
 - Welche Konten „liquide“ sind, hängt vom Zweck ab: Die EÜR nimmt nur die eigenen
   Bank-/Kassenkonten (`get_bank_coa_ids` – Geld auf dem Verrechnungskonto ist noch
   nicht geflossen); der DATEV-Export nimmt die Zahlungskonten, an denen die Importe
-  das Vorzeichen ausrichten (`get_payment_coa_ids`: zusätzlich Kasse 1000–1099 und
-  Verrechnungskonto 1460)
+  das Vorzeichen ausrichten (`get_payment_coa_ids`: zusätzlich 1000–1099 und das
+  Verrechnungskonto 1460), ebenso die Buchungsmaske beim Bearbeiten
 - Masken schreiben nur, was sie führen (`update_booking_fields`) – Gegenkonto,
   Kategorie und fremde Kontakte dürfen beim Speichern nicht verloren gehen
 

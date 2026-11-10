@@ -36,6 +36,15 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
 - SKR07 (Österreich) erst, wenn die Steuerlogik dafür ansteht (andere Voranmeldung und Gewinnermittlung) – bewusst später
 
 ## Fehler & Technik
+- DATEV-Export vor der ersten Weitergabe ans Steuerbüro gegen einen echten Buchungsstapel prüfen. Bekannt:
+  - Forderung (10000/4405) und Umbuchung bei Zahlung (4405/4400) tragen beide einen Steuerschlüssel → je bezahlter Rechnung zweimal Umsatzsteuer
+  - der BU-Schlüssel folgt der Geldrichtung statt der Art des Kontos (Erstattung auf ein Aufwandskonto bekommt einen Umsatzsteuer-Schlüssel)
+  - Überträge zwischen zwei Geldkonten aus dem WISO-Import: Soll/Haben verkehrt
+  - Soll/Haben wird beim Export aus der aktuellen Kontenliste gelesen, das Vorzeichen stammt aus der beim Import – ändert sich die SKR-Nummer eines Bankkontos dazwischen, passt beides nicht mehr zusammen; besser beim Import festschreiben
+- Kassenbuchungen aus der Buchungsmaske (Konto = Kasse) fehlen in EÜR und Dashboard; Sätze über das Verrechnungskonto 1460 liest die EÜR als Umbuchung
+- Die Importe behandeln 1000–1099 als Kasse – das ist der SKR03-Bereich, in SKR04 liegt die Kasse auf 1600
+- Bankbewegung und ihre Buchungssätze in einer Transaktion speichern – heute nur „erst prüfen, dann schreiben“; ein Datenbankfehler beim Schreiben hinterlässt einen halben Stand
+- Ein eigenständiger Buchungssatz bekommt beim Speichern in der Maske das vorgewählte Bankkonto und gilt danach im Kontoauszug-Import als vorhandene Bankbewegung
 - Rechnungsformular (`/invoice?id=…`) läuft bei 1440 px Breite rechts aus dem Viewport
 - Invoices-Zeilen werden per Spaltenindex gelesen (u. a. `server/pages_invoice.py`) – bricht bei Schemaänderungen, besser Spaltennamen
 - CI testet nur Python 3.13, README nennt 3.10+ → Matrix ergänzen oder Angabe anpassen
