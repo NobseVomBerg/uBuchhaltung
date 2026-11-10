@@ -226,6 +226,14 @@ kein Subagent darauf:
 - Vor PR: lokal starten (`python main.py`), Feature testen
 - Wenn Bug reproduzierbar, direkt über DB debuggen
 - SQL-Queries gezielt checken (z.B. `SELECT COUNT(*) ... GROUP BY ...`)
+- **Tests schreiben nie ins echte `data/`:** `tests/conftest.py` gibt jedem Test eine
+  eigene Datenwurzel (`userctx.DATA_ROOT` unter `tmp_path`); ein Session-Wächter
+  (`tests/data_guard.py`) schlägt an, wenn doch etwas dort landet
+- Alles rund um Testläufe liegt unter `data/tests/`: `tmp/` (Arbeitsdaten; nach dem
+  Lauf bleiben nur die Verzeichnisse fehlgeschlagener Tests der letzten zwei Läufe)
+  und `cache/` (pytest-Cache). Keine Punkt-Verzeichnisse im Projektordner anlegen.
+  `data/tests/` wird von Datensicherung und Demo-Modus übergangen, der Benutzername
+  `tests` ist reserviert
 
 ### Versionierung
 - Single Source of Truth: `version.py` (Schema `MAJOR.MINOR.PATCH`)
