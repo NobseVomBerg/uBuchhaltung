@@ -13,12 +13,13 @@ import unicodedata
 from db import Database
 import os
 import auth
+import demo
 import userctx
 
 from . import pages
 from . import handlers
 from . import upload_handler
-from .pages_login import PageLogin, PageSetupAdmin
+from .pages_login import PageLogin
 from .pages_users import PageUsers
 from .period import resolve_period, period_cookie_header
 from .pages_assets import (
@@ -187,7 +188,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
 
     # ── Authentifizierung (TODO #4) ──────────────────────────────────────────
     # Pfade, die ohne Anmeldung erreichbar sein müssen.
-    _PUBLIC_PATHS = ('/login', '/logout', '/setup-admin', '/buch.css', '/favicon.ico')
+    _PUBLIC_PATHS = ('/login', '/logout', '/buch.css', '/favicon.ico')
 
     def _drain_body(self):
         """Ungelesenen Request-Body verwerfen (verhindert Keep-Alive-Desync bei
@@ -259,9 +260,11 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         Token kommt aus dem Formularfeld ``csrf`` (post_data) oder dem Header
         ``X-CSRF-Token`` (fetch-Aufrufe, siehe Footer-JS). Nur im Mehrbenutzer-
         Modus wirksam – der Token ist an die Session (bzw. ``_csrf_key``) gebunden;
-        im Einzelmodus ohne Sessions gibt es nichts zu binden.
+        im Einzelmodus ohne Sessions gibt es nichts zu binden. Dasselbe gilt in der
+        Ersteinrichtung (noch kein Administrator, also noch keine Sitzung): dort
+        schützen die Herkunfts- und die Hostnamen-Prüfung des Türstehers.
         """
-        if not userctx.auth_enabled():
+        if not userctx.auth_enabled() or getattr(self, '_needs_setup', False):
             return True
         token = post_data.get('csrf', [''])[0] if post_data else ''
         if not token:
@@ -293,12 +296,20 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             return False
         self._auto_user = None           # Handler-Objekt lebt über Keep-Alive-Requests hinweg
         mode = userctx.get_mode()
-        has_users = mode == 'multi' and auth.has_any_user()
-        auto = auth.auto_login_user() if has_users else None
+        # Demo-Anmeldung hat Vorrang vor der automatischen Anmeldung eines Administrators;
+        # `demo` ist kein Administrator (keine Benutzerverwaltung, keine SQL-Konsole).
+        demo_user = demo.active_user() if mode == 'multi' else None
+        if demo_user and (not auth.user_exists(demo_user) or auth.is_admin(demo_user)):
+            demo_user = None                 # Demo-Besucher sind nie Administrator
+        has_admin = mode == 'multi' and auth.count_admins() > 0
+        auto = demo_user or (auth.auto_login_user() if has_admin else None)
+        # Ersteinrichtung: solange es keinen Administrator gibt (und keine Demo läuft)
+        needs_setup = mode is None or (mode == 'multi' and not has_admin and not demo_user)
+        self._needs_setup = needs_setup  # für do_GET (/setup) und _check_csrf
         # Wo niemand ein Passwort eingeben muss (Einzelbenutzer-Modus, Ersteinrichtung,
         # automatische Anmeldung), schützt nur der Hostname vor DNS-Rebinding; mit
         # Anmeldung hängt der Zugriff an der Sitzung des echten Hostnamens.
-        if (mode != 'multi' or not has_users or auto) and not host_is_trusted(self.headers.get('Host')):
+        if (mode != 'multi' or needs_setup or auto) and not host_is_trusted(self.headers.get('Host')):
             self._drain_body()
             self.respond(403, "<h1>403</h1><p>Dieser Hostname ist nicht freigegeben. "
                               "Zusätzliche Namen lassen sich über die Umgebungsvariable "
@@ -308,27 +319,20 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         path = self.path.split('?', 1)[0]
         if path in ('/buch.css', '/favicon.ico'):
             return True
-        if mode is None:
-            # Noch nicht eingerichtet: ausschließlich die Ersteinrichtung zulassen –
-            # sonst entstünde (im Einzelmodus-Fallback) ein verwaistes data/buch.db,
-            # bevor der Administrator angelegt ist.
+        if needs_setup:
+            # Noch kein Administrator: ausschließlich die Ersteinrichtung zulassen –
+            # sonst entstünde ein verwaistes data/buch.db, bevor der Administrator
+            # angelegt ist.
             if path in ('/setup', '/setup/start'):
                 return True
             self._drain_body()
             self.respond(303, "", headers={"Location": "/setup"})
             return False
         if mode != 'multi':
-            return True                                  # Einzelbenutzer-Modus (Altbestand)
-        # Bootstrap: ohne jeden Benutzer nur die Admin-Ersteinrichtung zulassen
-        if not has_users:
-            if path == '/setup-admin':
-                return True
-            self._drain_body()
-            self.respond(303, "", headers={"Location": "/setup-admin"})
-            return False
+            return True                                  # Einzelbenutzer-Modus (Altbestand, wird beim Start umgezogen)
         if auto:
             # Automatische Anmeldung: jede Anfrage läuft ohne Sitzung als dieser
-            # Administrator. Anmeldeseite und andere Benutzer sind so lange abgeschaltet.
+            # Benutzer. Anmeldeseite und andere Benutzer sind so lange abgeschaltet.
             self._auto_user = auto
             userctx.set_user(auto)
             userctx.set_auto_login_active(True)
@@ -350,7 +354,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         return False
 
     def _auth_routes_get(self):
-        """Behandelt GET /login, /logout, /setup-admin. True, wenn erledigt."""
+        """Behandelt GET /login, /logout und /setup-admin (alte Lesezeichen: Weiterleitung
+        auf die Ersteinrichtung /setup). True, wenn erledigt."""
         if not userctx.auth_enabled():
             return False                                 # Login-UI nur im Mehrbenutzer-Modus
         path = self.path.split('?', 1)[0]
@@ -358,7 +363,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             self.respond(200, PageLogin())
             return True
         if path == '/setup-admin':
-            self.respond(200, PageSetupAdmin())
+            self.respond(303, "", headers={"Location": "/setup"})
             return True
         if path == '/logout':
             auth.delete_session(self._session_token())
@@ -368,31 +373,21 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         return False
 
     def _auth_routes_post(self):
-        """Behandelt POST /login, /setup-admin. True, wenn erledigt."""
+        """Behandelt POST /login. True, wenn erledigt."""
         if not userctx.auth_enabled():
             return False                                 # Login-UI nur im Mehrbenutzer-Modus
         path = self.path.split('?', 1)[0]
-        if path not in ('/login', '/setup-admin'):
+        if path != '/login':
             return False
         length = int(self.headers.get('Content-Length', 0) or 0)
         post_data = parse_qs(self.rfile.read(length).decode('utf-8')) if length else {}
-        if path == '/login':
-            ok, username, err = handlers.handle_login(post_data)
-            if ok:
-                token = auth.create_session(username)
-                self.respond(303, "", headers={"Location": "/",
-                             "Set-Cookie": self._session_cookie_header(token)})
-            else:
-                self.respond(200, PageLogin(error_msg=err, username=username))
-            return True
-        # /setup-admin
-        ok, username, err = handlers.handle_setup_admin(post_data)
+        ok, username, err = handlers.handle_login(post_data)
         if ok:
             token = auth.create_session(username)
             self.respond(303, "", headers={"Location": "/",
                          "Set-Cookie": self._session_cookie_header(token)})
         else:
-            self.respond(200, PageSetupAdmin(error_msg=err, username=username))
+            self.respond(200, PageLogin(error_msg=err, username=username))
         return True
 
     def _send_invoice_document(self, invoice_id, kind, content_type,
@@ -516,10 +511,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
                 self.respond(200, PageDashboard(db, date_from, date_to, account_ids), headers=hdrs)
             elif self.path == "/setup":
-                # Erststart: solange noch kein Administrator angelegt ist (Modus
-                # nicht gesetzt), die Ersteinrichtung zeigen; danach das gewohnte
-                # Kontaktformular.
-                if userctx.get_mode() is None:
+                # Erststart: solange noch kein Administrator angelegt ist, die
+                # Ersteinrichtung zeigen; danach das gewohnte Kontaktformular.
+                if self._needs_setup:
                     self.respond(200, PageSetupStart())
                 else:
                     self.respond(200, PageSetup(db))
@@ -1361,7 +1355,8 @@ def run_server(host=None, port=None, certfile=None, keyfile=None):
 
     Die Ersteinrichtung legt den ersten Administrator an und stellt den Mehrbenutzer-
     Modus in data/config.json ein (für Headless-Setup ggf. vorab mit {"mode":"multi"}
-    anlegen); ``mode: single`` gibt es nur noch für Altbestände.
+    anlegen); ``mode: single`` gibt es nur noch für Altbestände, die ``layout.migrate()``
+    beim Start (main.py) nach data/users/<Name>/ umzieht.
     """
     import socket, sys
     host = host or os.environ.get("UBUCHHALTUNG_HOST", "localhost")

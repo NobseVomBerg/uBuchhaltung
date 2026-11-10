@@ -2650,11 +2650,21 @@ def handle_setup_start(post_data):
     automatischer Anmeldung. Returns (ok, username, with_login, error_msg);
     ``None`` als erstes Element heißt: Einrichtung ist bereits erfolgt (403).
 
-    Der Betriebsmodus wird hier einmalig auf Mehrbenutzer gesetzt; danach ändert
-    ihn nichts mehr im Browser (sonst könnte ein Nutzer den Login abschalten).
+    Gesperrt ist die Ersteinrichtung, sobald es einen Administrator gibt (oder der
+    Einzelbenutzer-Modus eines Altbestands läuft). Eine vorab angelegte config.json
+    mit ``{"mode":"multi"}`` (Headless) oder ein Datenverzeichnis nur mit Benutzer
+    ``demo`` lässt sie offen. Der Betriebsmodus wird hier auf Mehrbenutzer gesetzt;
+    danach ändert ihn nichts mehr im Browser (sonst könnte ein Nutzer den Login
+    abschalten).
     """
     import secrets
-    if userctx.get_mode() is not None:
+    import demo
+    mode = userctx.get_mode()
+    if mode == 'single' or (mode == 'multi' and auth.count_admins() > 0):
+        return None, '', False, None
+    if demo.active_user():
+        # Im laufenden Demo-Modus ist jeder Besucher angemeldet – er darf sich nicht
+        # zum ersten Administrator der Installation machen.
         return None, '', False, None
     g = lambda k: post_data.get(k, [''])[0]
     username = g('username').strip()
@@ -2671,7 +2681,8 @@ def handle_setup_start(post_data):
         auth.create_user(username, password, is_admin=True)
     except ValueError as e:
         return False, username, with_login, str(e)
-    userctx.set_mode('multi')
+    if mode != 'multi':
+        userctx.set_mode('multi')
     if not with_login:
         userctx.set_auto_login(username)
     return True, username, with_login, None
@@ -2742,6 +2753,10 @@ def handle_user_toggle_admin(post_data):
         return _users_redirect(err='Benutzer existiert nicht.')
     if username == userctx.get_auto_login():
         return _users_redirect(err='Dieser Benutzer wird automatisch angemeldet – erst die automatische Anmeldung ausschalten.')
+    import demo
+    if username == demo.USERNAME:
+        # Im Demo-Modus arbeitet jeder Besucher als dieser Benutzer.
+        return _users_redirect(err='Der Demo-Benutzer kann kein Administrator werden.')
     currently_admin = auth.is_admin(username)
     if currently_admin and auth.count_admins() <= 1:
         return _users_redirect(err='Der letzte Administrator kann nicht herabgestuft werden.')
@@ -2780,23 +2795,6 @@ def handle_user_auto_login(post_data, current_user):
         userctx.set_auto_login(None)
         return _users_redirect(info=f'Automatische Anmeldung ausgeschaltet. „{active}" meldet sich ab jetzt mit Passwort an.'), active
     return _users_redirect(err='Unbekannte Aktion.'), None
-
-
-def handle_setup_admin(post_data):
-    """Erstes Administrator-Konto anlegen. Returns (ok, username, error_msg)."""
-    g = lambda k: post_data.get(k, [''])[0]
-    username = g('username').strip()
-    password = g('password')
-    password2 = g('password2')
-    if auth.has_any_user():
-        return False, username, "Es existiert bereits ein Benutzer."
-    if password != password2:
-        return False, username, "Die Passwörter stimmen nicht überein."
-    try:
-        auth.create_user(username, password, is_admin=True)
-    except ValueError as e:
-        return False, username, str(e)
-    return True, username, None
 
 
 def handle_setup_save(db: Database, post_data: dict):

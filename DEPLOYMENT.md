@@ -6,29 +6,31 @@ ab. Bei der **Ersteinrichtung im Browser** wird der erste Administrator angelegt
 angemeldet, das ist der Betrieb für eine Person im eigenen Netz). Das Ergebnis
 steht in `data/config.json` – keine Umgebungsvariable nötig.
 
+Bis Version 1.x gab es daneben einen Einzelbenutzer-Modus (Daten direkt in `data/`,
+ohne Anmeldung). Er heißt jetzt „automatische Anmeldung“; bestehende Installationen
+zieht der erste Start von Version 2 um – siehe [Umzug auf Version 2](#umzug-auf-version-2).
+
 ## Betriebsmodus (`data/config.json`)
 
 ```json
 { "mode": "multi", "auto_login": "admin" }
 ```
 
-- Beim ersten Aufruf ohne vorhandene `config.json` fragt die **Ersteinrichtung**
-  nach Benutzername und danach, ob mit oder ohne Anmeldung gestartet wird. Beides
+- Solange es noch keinen Administrator gibt, fragt die **Ersteinrichtung** nach
+  Benutzername und danach, ob mit oder ohne Anmeldung gestartet wird. Beides
   stellt `"mode": "multi"` ein; „ohne Anmeldung“ trägt zusätzlich `"auto_login"`
   mit dem Benutzernamen ein.
 - `auto_login` (nur bei `"multi"`): dieser Administrator wird ohne Passwort
   angemeldet, die Anmeldeseite entfällt und andere Benutzer können sich so lange
   nicht anmelden. In der Benutzerverwaltung lässt sich die automatische Anmeldung
   ein- und ausschalten; beim Ausschalten wird ein Passwort gesetzt.
-- Für ein **Headless-Setup** (ohne Browser-Interaktion) kann diese Datei vorab
-  mit `{"mode":"multi"}` angelegt werden; die Seite fragt dann nur noch nach dem
-  Administrator-Konto (`/setup-admin`).
+- Für ein **Headless-Setup** kann diese Datei vorab mit `{"mode":"multi"}`
+  angelegt werden; die Ersteinrichtung (`/setup`) legt dann den Administrator an –
+  mit oder ohne Anmeldung.
 - Der Modus wird nur bei der Ersteinrichtung festgelegt und lässt sich danach im
-  Browser nicht mehr ändern. Zum Wechsel den Server stoppen und `config.json`
-  anpassen; die Daten liegen je Modus an anderer Stelle (`data/buch.db` bzw.
-  `data/users/<Name>/`) und werden dabei nicht verschoben. `"mode": "single"`
-  (ohne Login, eine gemeinsame `data/buch.db`) gibt es nur noch für bestehende
-  Installationen.
+  Browser nicht mehr ändern. `"mode": "single"` (ohne Login, eine gemeinsame
+  `data/buch.db`) war der Einzelbenutzer-Betrieb bis Version 1.x; eine solche
+  Installation wird beim Start umgezogen (siehe unten) und ist danach `"multi"`.
 
 ## Netzwerk & HTTPS über Umgebungsvariablen
 
@@ -48,7 +50,7 @@ setzt das `Secure`-Flag der Session-Cookies.
 - Schreibende Anfragen (POST) nimmt die App nur von ihren eigenen Seiten an
   (Prüfung von `Sec-Fetch-Site` bzw. `Origin` gegen `Host`). Löschen und Ändern
   laufen ausschließlich per POST.
-- Ohne Login (Einzelbenutzer-Modus, Ersteinrichtung, automatische Anmeldung) antwortet die App nur unter
+- Ohne Login (Ersteinrichtung, automatische Anmeldung, Demo-Modus) antwortet die App nur unter
   IP-Adressen, `localhost`, Namen ohne Punkt, Namen mit den Endungen `.local`,
   `.lan`, `.home.arpa`, `.internal`, `.fritz.box`, `.localhost` und dem eigenen
   Rechnernamen. Das schützt vor DNS-Rebinding. Für andere Namen (z. B. eigene
@@ -73,10 +75,10 @@ setzt das `Secure`-Flag der Session-Cookies.
    ```bash
    UBUCHHALTUNG_HOST=0.0.0.0 UBUCHHALTUNG_CERT=cert.pem UBUCHHALTUNG_KEY=key.pem python main.py
    ```
-2. Im Browser öffnen und in der **Ersteinrichtung „Mehrbenutzer"** wählen. Danach
-   wird das **Administrator-Konto** angelegt (`/setup-admin`); der Admin legt unter
-   **Sonstiges → Benutzerverwaltung** weitere Nutzer an. Jeder Nutzer richtet beim
-   ersten Login seine eigenen Firmen-/Kontaktdaten ein.
+2. Im Browser öffnen: Die **Ersteinrichtung** legt das **Administrator-Konto** an –
+   **mit Passwort** oder **ohne Anmeldung** (automatische Anmeldung, Betrieb für eine
+   Person). Der Administrator legt unter **Stammdaten → Benutzer** weitere Nutzer an.
+   Jeder Nutzer richtet beim ersten Login seine eigenen Firmen-/Kontaktdaten ein.
 
 ## Schnellstart mit HTTPS (Windows)
 
@@ -144,9 +146,10 @@ Docker-Projekten nicht belegt). Alle Nutzdaten (auth.db, Nutzer-Verzeichnisse,
 Datensicherungen) liegen unter `/app/data` – für ein Backup genügt weiterhin
 dieses eine Verzeichnis.
 
-- Beim ersten Aufruf erscheint die Ersteinrichtung (Modus-Auswahl, im
-  Mehrbenutzer-Modus danach `/setup-admin`). Headless-Setup: im
-  Daten-Verzeichnis vorab `config.json` mit `{"mode":"multi"}` anlegen.
+- Beim ersten Aufruf erscheint die Ersteinrichtung (Administrator anlegen, mit
+  Passwort oder ohne Anmeldung). Headless-Setup: im Daten-Verzeichnis vorab
+  `config.json` mit `{"mode":"multi"}` anlegen. Wer von Version 1.x kommt: der erste
+  Start zieht die bestehenden Daten um – siehe [Umzug auf Version 2](#umzug-auf-version-2).
 - Der Container startet als root, übereignet das Daten-Volume einmalig dem
   unprivilegierten App-Benutzer (UID 1000) und gibt die Rechte dann ab –
   root-eigene appdata-Verzeichnisse (Unraid) funktionieren so ohne Handarbeit.
@@ -207,6 +210,63 @@ gleichzeitig auf demselben `data/` betreiben** (SQLite-Locking).
   Volume einbinden, `UBUCHHALTUNG_HOST=0.0.0.0` setzen, Port veröffentlichen –
   für Docker siehe den Abschnitt **Docker** oben.
 
+## Umzug auf Version 2
+
+**Was sich ändert:** Es gibt nur noch die Ablage `data/users/<Name>/`. Der frühere
+Einzelbenutzer-Betrieb (Daten direkt in `data/`, ohne Anmeldung) heißt jetzt
+„automatische Anmeldung“: Ein Administrator wird ohne Passwort angemeldet
+(`auto_login` in `data/config.json`, siehe oben).
+
+**Was beim ersten Start von Version 2 automatisch passiert** (nur bei einer
+Einzelbenutzer-Installation, also `"mode": "single"` oder einer `data/buch.db`
+ohne `config.json`):
+
+- Der Inhalt von `data/` wandert nach `data/users/admin/` – außer `config.json`,
+  `auth.db`, `users/` und `tests/`. Nichts wird gelöscht oder überschrieben.
+- Die gespeicherten Pfade von Rechnungsdokumenten (PDF, XML) und Belegen werden auf den
+  neuen Ort angepasst.
+- Der Benutzer `admin` wird angelegt und **automatisch angemeldet**. An der Bedienung
+  ändert sich nichts: Es gibt weiterhin keine Anmeldeseite. (Ist der Name `admin` schon
+  vergeben, heißt der Benutzer `admin2` usw.)
+- Ein früheres Demo-Verzeichnis (Marker `.demo`) wird zum Benutzer `demo`, ohne
+  automatische Anmeldung (siehe [Demo-Modus](#demo-modus-ausprobieren)).
+
+Bestehende **Mehrbenutzer-Installationen** sind nicht betroffen.
+
+**Vorher eine Datensicherung anlegen:** Server bzw. Container stoppen und das ganze
+Datenverzeichnis kopieren (Docker: den eingebundenen Ordner für `/app/data`, Unraid
+z. B. `/mnt/user/appdata/ubuchhaltung`).
+
+**Woran man den erfolgreichen Umzug erkennt:**
+
+- Das Log des ersten Starts nennt den Umzug (`'./data' → './data/users/admin'`), die
+  Zahl der angepassten Dateipfade und den automatisch angemeldeten Benutzer.
+- `data/config.json` lautet `{"mode": "multi", "auto_login": "admin"}`.
+- Direkt in `data/` liegen nur noch `config.json`, `auth.db` und `users/`.
+- Beim nächsten Start steht davon nichts mehr im Log: Der Umzug läuft nur einmal.
+
+**Bei Abbruch:** Der Umzug ist wiederaufnehmbar. `config.json` trägt bis zum Ende die
+Marke `migrating_to`; einfach neu starten. Meldet der Start „… existiert bereits“, wurde
+nichts überschrieben: Im Ziel unter `data/users/<Name>/` liegt schon etwas mit
+demselben Namen. Das muss von Hand geklärt werden (vorhandenen Eintrag umbenennen oder
+zusammenführen), danach neu starten.
+
+**Zurück auf 1.x:** Server stoppen, den Inhalt von `data/users/admin/` zurück nach
+`data/` verschieben, `config.json` auf `{"mode": "single"}` setzen und das alte Image
+bzw. die alte Version starten. Die in der Datenbank gespeicherten Pfade werden dabei
+nicht zurückgeschrieben: Rechnungs-PDFs findet die alte Version über das Namensschema
+wieder, die Pfadangaben in der Belegliste zeigen dann noch auf den neuen Ort. Soll
+später doch wieder Version 2 laufen, vorher das leere `data/users/admin/` und
+`data/auth.db` (sie enthält nur den beim Umzug angelegten `admin`) entfernen – sonst
+ist der Name vergeben und der Umzug legt den Benutzer `admin2` an.
+
+**Anmeldung nachträglich einschalten:** Unter **Stammdaten → Benutzer** die
+automatische Anmeldung ausschalten und dabei ein Passwort setzen. Das Passwort des
+Benutzers `admin` kennt sonst niemand – es wird beim Umzug zufällig erzeugt. Wurde
+`auto_login` von Hand aus `config.json` entfernt, ohne vorher ein Passwort zu setzen,
+den Eintrag `"auto_login": "admin"` wieder hinzufügen und es dann in der
+Benutzerverwaltung setzen.
+
 ## Demo-Modus (ausprobieren)
 
 `UBUCHHALTUNG_DEMO=1` startet uBuchhaltung mit erfundenen Beispieldaten – ohne
@@ -215,17 +275,29 @@ Ersteinrichtung:
     docker run -p 2824:2824 -e UBUCHHALTUNG_DEMO=1 ghcr.io/nobsevomberg/ubuchhaltung:latest
     UBUCHHALTUNG_DEMO=1 python main.py        # Linux/macOS (Windows: $env:UBUCHHALTUNG_DEMO = "1")
 
-- Geladen wird **nur in ein leeres Datenverzeichnis** (Einzelbenutzer-Modus). Enthält
-  `data/` bereits irgendetwas (Datenbank, Konfiguration, Logs), werden **keine**
-  Demodaten geladen: Warnung im Log, normaler Start mit den vorhandenen Daten.
+- Die Demodaten gehören dem Benutzer `demo` und liegen **ausschließlich unter
+  `data/users/demo/`**. Geladen werden sie nur, wenn dieses Verzeichnis fehlt oder leer
+  ist **und** es noch keinen Benutzer `demo` gibt; sonst gibt es eine Warnung im Log und
+  einen normalen Start. Andere Daten in `data/` werden nie angefasst – echte Bücher
+  und Demo können nebeneinander liegen.
+- Solange die Variable gesetzt ist, arbeitet jeder Besucher ohne Anmeldung als `demo`.
+  `demo` ist **kein Administrator**: keine Benutzerverwaltung, keine SQL-Konsole.
+  Andere Benutzer können sich so lange nicht anmelden (auch ein Administrator mit
+  automatischer Anmeldung nicht).
+- Ohne die Variable läuft die Instanz normal. `demo` ist dann ein gewöhnlicher
+  Benutzer ohne bekanntes Passwort: Ein Administrator kann ihm in der Benutzerverwaltung
+  eines setzen oder ihn löschen (sein Verzeichnis `data/users/demo/` bleibt dabei
+  liegen). Enthält `data/` nur die Demo und noch keinen Administrator, zeigt der Start
+  ohne Variable die Ersteinrichtung.
 - Inhalt: Musterfirma mit gut zwei Jahren erfundener Buchhaltung (Rechnungen mit Zahlungen,
   offene und überfällige Posten, Ausgaben, Splits, Anlagen, Fahrtenbuch, Arbeitszeiten);
   alle Daten sind relativ zum Startdatum datiert (`demo_seed.py`).
-- Ein Neustart mit demselben Verzeichnis befüllt nicht erneut (Marker `data/.demo`).
+- Ein Neustart mit demselben Verzeichnis befüllt nicht erneut (Marker
+  `data/users/demo/.demo`).
 - Auf jeder Seite erscheint der Hinweis „Demo-Modus – Beispieldaten, nicht für die
   echte Buchhaltung“.
-- **Nicht für öffentliches Hosting:** keine Anmeldung, die SQL-Konsole ist offen.
-  Nur lokal oder im vertrauenswürdigen LAN verwenden.
+- **Nicht für öffentliches Hosting:** keine Anmeldung, und jeder Besucher darf die
+  Demodaten ändern. Nur lokal oder im vertrauenswürdigen LAN verwenden.
 
 ## Schema-Migrationen
 
