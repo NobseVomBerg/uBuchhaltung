@@ -45,4 +45,3 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
 - Rechnung speichern scheiterte einmal im Docker-Mehrbenutzerbetrieb mit „FOREIGN KEY constraint failed“ (DB danach sauber, gleicher Request lokal ok, nicht mehr reproduzierbar) – ab 2.0.1 nennt die Meldung den Verweis; bei Wiederauftreten Meldung und `docker logs` auswerten
 - Angebot speichern wie Rechnungen in einer Transaktion (Kopf + Positionen) – heute einzeln committet, ein Fehler hinterlässt halbe Belege
 - PDF-Kopf ans Formular angleichen: „Rechnungsdatum“, Leistungsdatum direkt darunter – Wertspalte für das längere Label verschieben, Golden-Dateien neu erzeugen
-- Seit 1.6.20 scheitern lokal unter Windows 20 Tests (`test_http_guard`, `test_sql_console`, `test_test_isolation`, `test_cii_invoice`, `test_demo`, `test_db`, `test_invoice_booking_link`: 500 statt 303 bzw. „no such table“) – auch ohne lokale Änderungen; CI (Linux) prüfen
