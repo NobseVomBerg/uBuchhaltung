@@ -113,6 +113,18 @@ kein Subagent darauf:
 - Jeder Push (alle Branches) führt `.github/workflows/tests.yml` aus:
   Anonymisierungs-Guard + pytest
 
+### Zugriffsschutz (HTTP)
+- Türsteher ist `_gate()` in `server/app.py`: schreibende Anfragen nur von eigenen
+  Seiten (`request_is_same_origin`: `Sec-Fetch-Site`, sonst `Origin` gegen `Host`/
+  `X-Forwarded-Host`) – in beiden Betriebsmodi, zusätzlich zum CSRF-Token
+- Ohne Login (Einzelbenutzer, Ersteinrichtung) nur unter vertrauenswürdigen
+  Hostnamen (`host_is_trusted`, gegen DNS-Rebinding); weitere Namen über
+  `UBUCHHALTUNG_ALLOWED_HOSTS`
+- **Aktionen mit Seiteneffekt nie per GET:** Pfad in `_ACTION_PATHS` eintragen,
+  Logik in `_post_action_routes`, im Frontend `appConfirmPost()`/`appPost()`
+  statt eines Links
+- Der Betriebsmodus wird nur bei der Ersteinrichtung gewählt (`handle_setup_mode`)
+
 ### Demo-Modus & Screenshots
 - `UBUCHHALTUNG_DEMO=1` (`demo.py`) befüllt **nur ein leeres Datenverzeichnis** –
   diese Garantie nie aufweichen. Demodaten (`demo_seed.py`,
