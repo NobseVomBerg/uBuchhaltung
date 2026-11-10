@@ -88,8 +88,8 @@ class _CoreMixin:
     '''
     def __init__(self, db_name=None):
         # Ohne expliziten Pfad richtet sich die DB nach dem angemeldeten Benutzer
-        # (Mehrbenutzer-Betrieb, TODO #4). Im Single-User-Default ist das
-        # weiterhin ./data/buch.db. Ein explizit übergebenes db_name (z. B. Tests)
+        # (data/users/<user>/buch.db, TODO #4); ohne Benutzer-Kontext (Werkzeuge,
+        # Tests) ist das ./data/buch.db. Ein explizit übergebenes db_name (z. B. Tests)
         # gewinnt immer.
         if db_name is None:
             import userctx

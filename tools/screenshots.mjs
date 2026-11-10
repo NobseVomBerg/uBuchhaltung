@@ -5,9 +5,10 @@
 // Erzeugt die Screenshots für das README (docs/screenshots/*.png), jeweils hell
 // und dunkel (*-dark.png, Dark Mode der App über prefers-color-scheme).
 //
-// Die App wird im Demo-Modus (UBUCHHALTUNG_DEMO=1) mit einem temporären, leeren
-// Datenverzeichnis gestartet, fotografiert und wieder beendet – die eigenen
-// Daten werden nie berührt. Es erscheinen ausschließlich erfundene Beispieldaten.
+// Die App wird im Demo-Modus (UBUCHHALTUNG_DEMO=1) in einem temporären Ordner
+// gestartet (dort entsteht ./data mit den Demodaten des Benutzers „demo“, als der
+// jeder Besucher arbeitet), fotografiert und wieder beendet – die eigenen Daten
+// werden nie berührt. Es erscheinen ausschließlich erfundene Beispieldaten.
 //
 // Lokal ausführen (im Projektordner):
 //     npm i playwright            # einmalig (legt node_modules/ an)

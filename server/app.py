@@ -10,15 +10,16 @@ from http.cookies import SimpleCookie
 import ipaddress
 import socket
 import unicodedata
-from db import Database
+from db import Database, SchemaTooNewError
 import os
 import auth
+import demo
 import userctx
 
 from . import pages
 from . import handlers
 from . import upload_handler
-from .pages_login import PageLogin, PageSetupAdmin
+from .pages_login import PageLogin
 from .pages_users import PageUsers
 from .period import resolve_period, period_cookie_header
 from .pages_assets import (
@@ -36,7 +37,7 @@ from .pages_miscellaneous import PageMiscellaneous
 from .pages_transactions import PageTransactions
 from .pages_dashboard import PageDashboard
 from .pages_receipts import PageReceipts, PageReceiptEdit
-from .pages_setup import PageSetup, PageSetupModeChoice
+from .pages_setup import PageSetup, PageSetupStart
 from .pages_invoice import PageInvoice
 from .pages_quote import PageQuote
 from .pages_worktime import PageWorkTimes
@@ -186,9 +187,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         super().end_headers()                                           # Call the Base
 
     # ── Authentifizierung (TODO #4) ──────────────────────────────────────────
-    # Pfade, die ohne Anmeldung erreichbar sein müssen.
-    _PUBLIC_PATHS = ('/login', '/logout', '/setup-admin', '/buch.css', '/favicon.ico')
-
     def _drain_body(self):
         """Ungelesenen Request-Body verwerfen (verhindert Keep-Alive-Desync bei
         POST-Redirects ohne vorherige Body-Verarbeitung)."""
@@ -200,17 +198,27 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             pass
 
     def _maybe_db(self):
-        """Database() nur erzeugen, wenn sie auch genutzt werden darf:
-        - unkonfiguriert (Modus noch nicht gewählt): nie (kein verwaistes data/buch.db),
-        - Mehrbenutzer-Modus: erst nach Anmeldung,
-        - Einzelbenutzer-Modus: immer.
-        """
-        mode = userctx.get_mode()
-        if mode is None:
-            return None
-        if mode == 'multi' and userctx.get_user() is None:
+        """Database() nur erzeugen, wenn sie auch genutzt werden darf: ``None``, solange
+        die Installation nicht eingerichtet ist oder kein Benutzer gesetzt ist (kein
+        verwaistes data/buch.db); sonst die Datenbank des Benutzers."""
+        if userctx.get_mode() is None or userctx.get_user() is None:
             return None
         return Database()
+
+    def _open_db(self):
+        """Wie ``_maybe_db``; stammt die Datenbank von einer neueren Programmversion,
+        wird das dem Nutzer gesagt (Antwort gesendet, Rückgabe ``False``)."""
+        try:
+            return self._maybe_db()
+        except SchemaTooNewError as e:
+            print(f"FEHLER: {e}")
+            self._drain_body()
+            self.respond(500, "<h1>Datenbank ist neuer als das Programm</h1>"
+                              "<p>Diese Datenbank wurde von einer neueren Version von "
+                              "uBuchhaltung angelegt oder geändert. Sie wurde nicht geöffnet "
+                              "und nicht verändert. Bitte die neuere Programmversion verwenden; "
+                              "Einzelheiten stehen im Server-Log.</p>")
+            return False
 
     def _session_token(self):
         raw = self.headers.get('Cookie')
@@ -224,6 +232,12 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         morsel = jar.get('session')
         return morsel.value if morsel else None
 
+    def _csrf_key(self):
+        """Woran der CSRF-Token gebunden ist: an die Sitzung – bei automatischer
+        Anmeldung (keine Sitzung) an einen festen Schlüssel je Benutzer."""
+        auto = getattr(self, '_auto_user', None)
+        return f"auto-login:{auto}" if auto else self._session_token()
+
     @staticmethod
     def _session_cookie_header(token):
         parts = [f"session={token}", "HttpOnly", "SameSite=Strict", "Path=/"]
@@ -236,8 +250,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         return "session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
 
     def _require_admin(self):
-        """True, wenn der angemeldete Nutzer Administrator im Mehrbenutzer-Modus
-        ist; sonst wird bereits eine Antwort (404/403) gesendet."""
+        """True, wenn der angemeldete Nutzer Administrator ist; sonst wird bereits
+        eine Antwort (404/403) gesendet."""
         if not userctx.auth_enabled():
             self.respond(404, "Seite nicht gefunden.")
             return False
@@ -251,16 +265,17 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         """CSRF-Token prüfen (zusätzlich zu SameSite=Strict).
 
         Token kommt aus dem Formularfeld ``csrf`` (post_data) oder dem Header
-        ``X-CSRF-Token`` (fetch-Aufrufe, siehe Footer-JS). Nur im Mehrbenutzer-
-        Modus wirksam – der Token ist an die Session gebunden; im Einzelmodus
-        ohne Sessions gibt es nichts zu binden.
+        ``X-CSRF-Token`` (fetch-Aufrufe, siehe Footer-JS). Er ist an die Session
+        (bzw. ``_csrf_key``) gebunden. Ausgenommen ist die Ersteinrichtung (noch kein
+        Administrator, also noch keine Sitzung): dort schützen die Herkunfts- und die
+        Hostnamen-Prüfung des Türstehers.
         """
-        if not userctx.auth_enabled():
+        if not userctx.auth_enabled() or getattr(self, '_needs_setup', False):
             return True
         token = post_data.get('csrf', [''])[0] if post_data else ''
         if not token:
             token = self.headers.get('X-CSRF-Token', '')
-        if not auth.check_csrf(self._session_token(), token):
+        if not auth.check_csrf(self._csrf_key(), token):
             if post_data is None:
                 # Header-Check-Pfad: Body wurde noch nicht gelesen → verwerfen
                 # (mit post_data ist er bereits konsumiert; erneutes read blockiert)
@@ -279,17 +294,40 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         # daher den Kontext zu Beginn JEDES Requests leeren (kein User-Leak).
         userctx.clear()
         userctx.set_tls(getattr(self.server, 'tls', False))
-        # Schreibende Anfragen nur von Seiten der App selbst – gilt in beiden
-        # Betriebsmodi und zusätzlich zum CSRF-Token (der im Einzelmodus fehlt).
+        # Schreibende Anfragen nur von Seiten der App selbst – immer, zusätzlich zum
+        # CSRF-Token.
         if self.command not in ('GET', 'HEAD') and not request_is_same_origin(self.headers):
             self._drain_body()
             self.respond(403, "<h1>403</h1><p>Anfrage von fremder Herkunft abgelehnt.</p>")
             return False
+        self._auto_user = None           # Handler-Objekt lebt über Keep-Alive-Requests hinweg
         mode = userctx.get_mode()
-        # Ohne Login (Einzelbenutzer-Modus, Ersteinrichtung) schützt nur der
-        # Hostname vor DNS-Rebinding; im Mehrbenutzer-Modus hängt der Zugriff an
-        # der Session, die an den echten Hostnamen gebunden ist.
-        if mode != 'multi' and not host_is_trusted(self.headers.get('Host')):
+        # Demo-Anmeldung hat Vorrang vor der automatischen Anmeldung eines Administrators;
+        # `demo` ist kein Administrator (keine Benutzerverwaltung, keine SQL-Konsole).
+        demo_user = demo.active_user() if mode == 'multi' else None
+        if demo_user and (not auth.user_exists(demo_user) or auth.is_admin(demo_user)):
+            demo_user = None                 # Demo-Besucher sind nie Administrator
+        admin_exists = auth.admin_exists()
+        if mode is None and admin_exists:
+            # Es gibt Administratoren, aber config.json fehlt oder ist unlesbar (von Hand
+            # bearbeitet, beschädigt). Das ist keine Ersteinrichtung – sonst könnte sich
+            # hier jeder einen weiteren Administrator anlegen.
+            self._drain_body()
+            self.respond(503, "<h1>Konfiguration fehlt oder ist beschädigt</h1>"
+                              "<p>Die Datei <code>config.json</code> im Datenverzeichnis fehlt oder "
+                              "ist nicht lesbar, obwohl diese Installation bereits eingerichtet ist. "
+                              "Bitte die Datei wiederherstellen, z. B. mit dem Inhalt "
+                              "<code>{\"mode\": \"multi\"}</code> (siehe DEPLOYMENT.md).</p>")
+            return False
+        has_admin = mode == 'multi' and admin_exists
+        auto = demo_user or (auth.auto_login_user() if has_admin else None)
+        # Ersteinrichtung: solange es keinen Administrator gibt (und keine Demo läuft)
+        needs_setup = mode is None or (mode == 'multi' and not has_admin and not demo_user)
+        self._needs_setup = needs_setup  # für do_GET (/setup) und _check_csrf
+        # Wo niemand ein Passwort eingeben muss (Ersteinrichtung, automatische
+        # Anmeldung), schützt nur der Hostname vor DNS-Rebinding; mit Anmeldung hängt
+        # der Zugriff an der Sitzung des echten Hostnamens.
+        if (needs_setup or auto) and not host_is_trusted(self.headers.get('Host')):
             self._drain_body()
             self.respond(403, "<h1>403</h1><p>Dieser Hostname ist nicht freigegeben. "
                               "Zusätzliche Namen lassen sich über die Umgebungsvariable "
@@ -299,28 +337,32 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         path = self.path.split('?', 1)[0]
         if path in ('/buch.css', '/favicon.ico'):
             return True
-        if mode is None:
-            # Noch nicht eingerichtet: ausschließlich die Modus-Auswahl zulassen –
-            # sonst entstünde (im Einzelmodus-Fallback) ein verwaistes data/buch.db,
-            # falls anschließend „Mehrbenutzer" gewählt wird.
-            if path in ('/setup', '/setup/mode'):
+        if needs_setup:
+            # Noch kein Administrator: ausschließlich die Ersteinrichtung zulassen –
+            # sonst entstünde ein verwaistes data/buch.db, bevor der Administrator
+            # angelegt ist.
+            if path in ('/setup', '/setup/start'):
                 return True
             self._drain_body()
             self.respond(303, "", headers={"Location": "/setup"})
             return False
-        if mode != 'multi':
-            return True                                  # Einzelbenutzer-Modus
-        # Bootstrap: ohne jeden Benutzer nur die Admin-Ersteinrichtung zulassen
-        if not auth.has_any_user():
-            if path == '/setup-admin':
-                return True
-            self._drain_body()
-            self.respond(303, "", headers={"Location": "/setup-admin"})
-            return False
+        # Ab hier ist die Installation eingerichtet (mode == 'multi').
+        if auto:
+            # Automatische Anmeldung: jede Anfrage läuft ohne Sitzung als dieser
+            # Benutzer. Anmeldeseite und andere Benutzer sind so lange abgeschaltet.
+            self._auto_user = auto
+            userctx.set_user(auto)
+            userctx.set_auto_login_active(True)
+            userctx.set_csrf_token(auth.csrf_for(self._csrf_key()))
+            if path in ('/login', '/logout', '/setup-admin'):
+                self._drain_body()
+                self.respond(303, "", headers={"Location": "/"})
+                return False
+            return True
         user = auth.get_session_user(self._session_token())
         if user:
             userctx.set_user(user)
-            userctx.set_csrf_token(auth.csrf_for(self._session_token()))
+            userctx.set_csrf_token(auth.csrf_for(self._csrf_key()))
             return True
         if path in ('/login', '/logout'):
             return True                                  # Anmeldeseite / Logout
@@ -329,15 +371,16 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         return False
 
     def _auth_routes_get(self):
-        """Behandelt GET /login, /logout, /setup-admin. True, wenn erledigt."""
+        """Behandelt GET /login, /logout und /setup-admin (alte Lesezeichen: Weiterleitung
+        auf die Ersteinrichtung /setup). True, wenn erledigt."""
         if not userctx.auth_enabled():
-            return False                                 # Login-UI nur im Mehrbenutzer-Modus
+            return False                                 # Login-UI erst nach der Ersteinrichtung
         path = self.path.split('?', 1)[0]
         if path == '/login':
             self.respond(200, PageLogin())
             return True
         if path == '/setup-admin':
-            self.respond(200, PageSetupAdmin())
+            self.respond(303, "", headers={"Location": "/setup"})
             return True
         if path == '/logout':
             auth.delete_session(self._session_token())
@@ -347,31 +390,21 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         return False
 
     def _auth_routes_post(self):
-        """Behandelt POST /login, /setup-admin. True, wenn erledigt."""
+        """Behandelt POST /login. True, wenn erledigt."""
         if not userctx.auth_enabled():
-            return False                                 # Login-UI nur im Mehrbenutzer-Modus
+            return False                                 # Login-UI erst nach der Ersteinrichtung
         path = self.path.split('?', 1)[0]
-        if path not in ('/login', '/setup-admin'):
+        if path != '/login':
             return False
         length = int(self.headers.get('Content-Length', 0) or 0)
         post_data = parse_qs(self.rfile.read(length).decode('utf-8')) if length else {}
-        if path == '/login':
-            ok, username, err = handlers.handle_login(post_data)
-            if ok:
-                token = auth.create_session(username)
-                self.respond(303, "", headers={"Location": "/",
-                             "Set-Cookie": self._session_cookie_header(token)})
-            else:
-                self.respond(200, PageLogin(error_msg=err, username=username))
-            return True
-        # /setup-admin
-        ok, username, err = handlers.handle_setup_admin(post_data)
+        ok, username, err = handlers.handle_login(post_data)
         if ok:
             token = auth.create_session(username)
             self.respond(303, "", headers={"Location": "/",
                          "Set-Cookie": self._session_cookie_header(token)})
         else:
-            self.respond(200, PageSetupAdmin(error_msg=err, username=username))
+            self.respond(200, PageLogin(error_msg=err, username=username))
         return True
 
     def _send_invoice_document(self, invoice_id, kind, content_type,
@@ -475,10 +508,12 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if self._auth_routes_get():
             userctx.clear()
             return
-        # Im Mehrbenutzer-Modus ohne angemeldeten Nutzer keine (globale) DB anlegen –
-        # hier sind nur public/statische Routen erreichbar (z. B. /buch.css). Sonst
-        # entstünde fälschlich ein data/buch.db.
-        db = self._maybe_db()
+        # Ohne angemeldeten Nutzer keine (globale) DB anlegen – hier sind nur
+        # public/statische Routen erreichbar (z. B. /buch.css). Sonst entstünde
+        # fälschlich ein data/buch.db.
+        db = self._open_db()
+        if db is False:
+            return
         try:
             if self.path.split('?', 1)[0] in _ACTION_PATHS:
                 self.respond(405, "<h1>405</h1><p>Diese Aktion ist nur per POST möglich.</p>",
@@ -495,10 +530,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
                 self.respond(200, PageDashboard(db, date_from, date_to, account_ids), headers=hdrs)
             elif self.path == "/setup":
-                # Erststart: solange der Betriebsmodus noch nicht gewählt wurde,
-                # die Modus-Auswahl zeigen; danach das gewohnte Kontaktformular.
-                if userctx.get_mode() is None:
-                    self.respond(200, PageSetupModeChoice())
+                # Erststart: solange noch kein Administrator angelegt ist, die
+                # Ersteinrichtung zeigen; danach das gewohnte Kontaktformular.
+                if self._needs_setup:
+                    self.respond(200, PageSetupStart())
                 else:
                     self.respond(200, PageSetup(db))
             elif self.path == "/about":
@@ -815,16 +850,17 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write("Fehler beim Erstellen des PDF".encode("utf-8"))
                 return
-            # ── Benutzerverwaltung (nur Admin, Mehrbenutzer-Modus) ────────
+            # ── Benutzerverwaltung (nur Admin) ────────────────────────────
             elif self.path == "/users" or self.path.startswith("/users?"):
                 if not self._require_admin():
                     return
                 qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
                 info = qs['info'][0] if qs.get('info') else None
                 err = qs['err'][0] if qs.get('err') else None
-                csrf = auth.csrf_for(self._session_token())
+                csrf = auth.csrf_for(self._csrf_key())
                 self.respond(200, PageUsers(userctx.get_user(), auth.list_users(),
-                                            csrf, error_msg=err, info_msg=info))
+                                            csrf, error_msg=err, info_msg=info,
+                                            auto_login_user=auth.auto_login_user()))
             # ── Zeiten / Fahrten ──────────────────────────────────────────
             elif self.path == "/trips" or self.path.startswith("/trips?"):
                 qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
@@ -872,7 +908,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                                        cache_control="public, max-age=86400")
             elif self.path.startswith("/data/logos/"):
                 # Logos liegen im logos-Verzeichnis des angemeldeten Nutzers
-                # (Single-User: ./data/logos). Es wird nur der Dateiname genutzt,
+                # (data/users/<Name>/logos). Es wird nur der Dateiname genutzt,
                 # gegen das Nutzerverzeichnis aufgeloest → kein Cross-User-Zugriff,
                 # kein Path-Traversal.
                 from urllib.parse import unquote
@@ -959,7 +995,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if self._auth_routes_post():
             userctx.clear()
             return
-        db = self._maybe_db()
+        db = self._open_db()
+        if db is False:
+            return
 
         # ── CSRF für fetch-Routen (Body wird erst im Handler gelesen): Token
         # kommt als X-CSRF-Token-Header (Footer-JS umhüllt window.fetch).
@@ -1089,8 +1127,17 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             if self._post_action_routes(db):
                 return
             # ── Benutzerverwaltung (nur Admin) ────────────────────────────
-            if self.path in ("/users/create", "/users/delete",
-                             "/users/reset-password", "/users/toggle-admin"):
+            if self.path == "/users/auto-login":
+                if not self._require_admin():
+                    return
+                location, login_as = handlers.handle_user_auto_login(post_data, userctx.get_user())
+                headers = {"Location": location}
+                if login_as:
+                    # Nach dem Ausschalten bleibt der Administrator angemeldet (neue Sitzung)
+                    headers["Set-Cookie"] = self._session_cookie_header(auth.create_session(login_as))
+                self.respond(303, "", headers=headers)
+            elif self.path in ("/users/create", "/users/delete",
+                               "/users/reset-password", "/users/toggle-admin"):
                 if not self._require_admin():
                     return
                 handler = {
@@ -1248,13 +1295,17 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     self.respond(status_code, "", headers={"Location": location})
                 return
             # ── Setup ─────────────────────────────────────────────────────
-            elif self.path == "/setup/mode":
-                location = handlers.handle_setup_mode(post_data)
-                if location is None:
-                    self.respond(403, "<h1>403</h1><p>Der Betriebsmodus ist bereits festgelegt "
-                                      "und lässt sich im Browser nicht mehr ändern.</p>")
+            elif self.path == "/setup/start":
+                ok, username, with_login, err = handlers.handle_setup_start(post_data)
+                if ok is None:
+                    self.respond(403, "<h1>403</h1><p>Die Ersteinrichtung ist bereits abgeschlossen.</p>")
+                elif not ok:
+                    self.respond(200, PageSetupStart(error_msg=err, username=username))
                 else:
-                    self.respond(303, "", headers={"Location": location})
+                    headers = {"Location": "/"}
+                    if with_login:
+                        headers["Set-Cookie"] = self._session_cookie_header(auth.create_session(username))
+                    self.respond(303, "", headers=headers)
             elif self.path == "/setup/save":
                 status_code, response = handlers.handle_setup_save(db, post_data)
                 if status_code == 303:
@@ -1289,29 +1340,19 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if encoded:
             self.wfile.write(encoded)
 
-# Im Einzelmodus benötigte Ausgabe-Unterordner (Jahres-Unterordner werden bei
-# Bedarf von den jeweiligen Generatoren erzeugt). Wer bei laufendem Server Ordner
-# löscht, muss nicht abgefangen werden.
-_SINGLE_SUBDIRS = ("logos", "invoices", "quotes", "worktime")
-
 
 def _ensure_directories():
-    """Fehlende Ausgabe-Verzeichnisse anlegen (idempotent).
+    """Fehlende Verzeichnisse anlegen (idempotent): die Datenwurzel und, sobald die
+    Installation eingerichtet ist, ``users/``.
 
-    Im Mehrbenutzer-Modus werden keine globalen Typ-Verzeichnisse angelegt – die
-    Dateien jedes Nutzers entstehen bei Bedarf unter data/users/<user>/.
+    Es werden keine globalen Typ-Verzeichnisse angelegt – die Dateien jedes Nutzers
+    entstehen bei Bedarf unter data/users/<user>/.
     """
     import os
     root = userctx.DATA_ROOT
     os.makedirs(root, exist_ok=True)
-    mode = userctx.get_mode()
-    if mode == "multi":
+    if userctx.get_mode() == "multi":
         os.makedirs(os.path.join(root, "users"), exist_ok=True)
-    elif mode == "single":
-        for sub in _SINGLE_SUBDIRS:
-            os.makedirs(os.path.join(root, sub), exist_ok=True)
-    # mode is None (noch nicht eingerichtet): nur die Datenwurzel anlegen –
-    # die Typ-Verzeichnisse entstehen nach der Modus-Wahl bei Bedarf.
 
 
 # Start web server
@@ -1323,8 +1364,11 @@ def run_server(host=None, port=None, certfile=None, keyfile=None):
       UBUCHHALTUNG_PORT (Default 8080),
       UBUCHHALTUNG_CERT / UBUCHHALTUNG_KEY (PEM-Dateien ⇒ HTTPS, self-signed möglich).
 
-    Der Betriebsmodus (Einzel-/Mehrbenutzer) wird bei der Ersteinrichtung gewählt
-    und in data/config.json gespeichert (für Headless-Setup ggf. vorab anlegen).
+    Die Ersteinrichtung legt den ersten Administrator an und trägt ``"mode": "multi"``
+    in data/config.json ein (für Headless-Setup ggf. vorab mit {"mode":"multi"} anlegen).
+    Eine Ablage aus Version 1.x zieht ``layout.migrate()`` nach data/users/<Name>/ um;
+    main.py ruft es vor dem Start auf, hier läuft es zur Sicherheit noch einmal
+    (idempotent), falls der Server über einen anderen Einstieg gestartet wird.
     """
     import socket, sys
     host = host or os.environ.get("UBUCHHALTUNG_HOST", "localhost")
@@ -1332,6 +1376,9 @@ def run_server(host=None, port=None, certfile=None, keyfile=None):
     certfile = certfile or os.environ.get("UBUCHHALTUNG_CERT")
     keyfile = keyfile or os.environ.get("UBUCHHALTUNG_KEY")
 
+    import layout
+    if layout.needs_migration():
+        layout.migrate()
     _ensure_directories()
     if userctx.auth_enabled():
         auth.init_auth_db()                      # Auth-Tabellen vor dem ersten Request anlegen

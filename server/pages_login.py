@@ -2,11 +2,12 @@
 # SPDX-FileCopyrightText: 2026 unsix IT Engineering
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """
-Login- und Bootstrap-Seiten für den Mehrbenutzer-Betrieb (TODO #4).
+Anmeldeseite für den Mehrbenutzer-Betrieb (TODO #4).
 
-Eigenständige, schlanke Seiten ohne die normale Navigation – sie werden vor der
+Eigenständige, schlanke Seite ohne die normale Navigation – sie wird vor der
 Anmeldung ausgeliefert. Es werden ausschließlich vorhandene Style-Klassen genutzt
 (grid1Col700, rectRounded, form-table, error-box, coloredButton, muted).
+Die Ersteinrichtung (erster Administrator) liegt in ``pages_setup.PageSetupStart``.
 """
 import html as _html
 from version import APP_VERSION
@@ -43,26 +44,3 @@ def PageLogin(error_msg=None, username=""):
       <p class="muted">uBuchhaltung {APP_VERSION}</p>
     </div>'''
     return _shell("uBuchhaltung – Anmeldung", body)
-
-
-def PageSetupAdmin(error_msg=None, username=""):
-    """Erst-Einrichtung: erstes Administrator-Konto anlegen."""
-    err = (f'<p class="error-box rectRounded">{_html.escape(error_msg)}</p>' if error_msg else '')
-    body = f'''
-    <div class="rectRounded">
-      <h2>uBuchhaltung – Erster Start</h2>
-      <p>Es existiert noch kein Benutzer. Lege ein Administrator-Konto an.</p>
-      {err}
-      <form method="POST" action="/setup-admin">
-        <table class="form-table">
-          <tr><td>Benutzer:</td><td><input type="text" name="username" value="{_html.escape(username)}" autofocus required></td></tr>
-          <tr><td>Passwort:</td><td><input type="password" name="password" required></td></tr>
-          <tr><td>Passwort (Wdh.):</td><td><input type="password" name="password2" required></td></tr>
-        </table>
-        <div class="rowWithObjects">
-          <input type="submit" value="Administrator anlegen" class="coloredButton bg-green">
-        </div>
-      </form>
-      <p class="muted">uBuchhaltung {APP_VERSION}</p>
-    </div>'''
-    return _shell("uBuchhaltung – Erster Start", body)

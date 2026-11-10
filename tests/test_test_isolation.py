@@ -91,8 +91,14 @@ def test_app_mode_starts_neutral():
 
 
 def test_isolation_fixtures_are_active_for_every_test(request):
-    assert {"_isolated_data_root", "_neutral_app_mode",
+    assert {"_isolated_data_root", "_neutral_app_mode", "_neutral_environment",
             "_real_data_untouched"} <= set(request.fixturenames)
+
+
+def test_app_environment_variables_do_not_leak_into_tests():
+    # Auch wenn der Entwickler sie in der Shell gesetzt hat (UBUCHHALTUNG_DEMO=1 pytest …)
+    assert "UBUCHHALTUNG_ALLOWED_HOSTS" not in os.environ
+    assert "UBUCHHALTUNG_DEMO" not in os.environ
 
 
 # ── protokollierter Schreibvorgang ───────────────────────────────────────────

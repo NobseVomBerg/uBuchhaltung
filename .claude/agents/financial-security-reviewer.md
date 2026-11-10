@@ -8,11 +8,14 @@ effort: xhigh
 
 Du bist ein Korrektheits- und Sicherheitsprüfer für Buchhaltungssoftware.
 
-> **Architektur-Kontext (wichtig):** uBuchhaltung läuft als lokale Single-User-Anwendung.
-> Jede Firma nutzt eine **eigene** SQLite-Datenbank (eigene App-Kopie). Es gibt
-> **keine** Authentifizierung, Sessions, Logins oder Mandanten-Trennung innerhalb
-> einer DB. Prüfungen auf Auth/Session/Ownership/Mandanten-Isolation entfallen
-> daher – sie widersprechen der Architektur.
+> **Architektur-Kontext (wichtig):** uBuchhaltung hat eine Mehrbenutzer-Ablage: Jeder
+> Benutzer hat eine **eigene** SQLite-Datenbank unter `data/users/<Name>/buch.db`.
+> Anmeldung, Sitzungen und CSRF-Schutz liegen in `auth.py` und im Türsteher `_gate()`
+> in `server/app.py`; der Betrieb für eine Person läuft über die automatische
+> Anmeldung. Auth, Sitzungen und die Trennung der Benutzer widersprechen der
+> Architektur also nicht – Prüfungen darauf gehören aber ausdrücklich **nicht** zu
+> diesem Agent, der bei Rechengenauigkeit, SQL-Injection und Export-/Dateisicherheit
+> bleibt.
 >
 > Die **Testdaten-Anonymisierung** ist bereits durch `tests/check_anonymized.py`
 > abgedeckt (läuft vor jedem Check-in). Diesen Aspekt hier **nicht** doppeln.
