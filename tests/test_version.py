@@ -39,7 +39,7 @@ def test_schema_step_stays_within_its_three_digits():
 
 def test_schema_version_lies_above_every_1x_stamp():
     # Datenbanken aus 1.x tragen 0 bis 6; die Zahl der 2.x-Programme darf nie damit verwechselt werden
-    assert version.SCHEMA_VERSION >= 1000 > 6
+    assert version.SCHEMA_VERSION >= 1000
 
 
 @pytest.mark.parametrize("number, text", [
