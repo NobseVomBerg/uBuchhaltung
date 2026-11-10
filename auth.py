@@ -196,8 +196,8 @@ def count_admins(db_path=None):
 def sql_console_allowed(db_path=None):
     """Darf der aktuelle Nutzer die SQL-Konsole verwenden?
 
-    Einzelbenutzer-Modus: ja (es gibt nur den Besitzer). Mehrbenutzer-Modus:
-    nur Administratoren.
+    Nur Administratoren. Solange die Installation nicht eingerichtet ist (Werkzeuge,
+    Tests ohne Einrichtung), gibt es keine Einschränkung.
     """
     import userctx
     if not userctx.auth_enabled():

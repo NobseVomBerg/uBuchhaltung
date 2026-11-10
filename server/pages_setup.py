@@ -16,8 +16,8 @@ def PageSetupStart(error_msg=None, username='admin') -> str:
 
     Wird nur angezeigt, solange es noch keinen Administrator gibt (frisches
     Datenverzeichnis, vorab angelegte config.json mit ``{"mode":"multi"}`` oder
-    nur der Demo-Benutzer). Mit oder ohne Anmeldung – der Betriebsmodus ist danach
-    immer Mehrbenutzer (siehe handlers.handle_setup_start).
+    nur der Demo-Benutzer). Mit oder ohne Anmeldung – die Daten liegen danach immer
+    in der Mehrbenutzer-Ablage data/users/<Name>/ (siehe handlers.handle_setup_start).
     """
     s = Header1()
     s += Header2()
