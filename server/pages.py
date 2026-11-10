@@ -161,6 +161,22 @@ function appConfirm(text, onOk) {
 function appConfirmHref(url, text) {
   appConfirm(text, function() { window.location.href = url; });
 }
+/* Aktion mit Seiteneffekt (Löschen …) als POST abschicken – nie als Link/GET. */
+function appPost(url) {
+  var f = document.createElement('form');
+  f.method = 'post'; f.action = url; f.hidden = true;
+  var meta = document.querySelector('meta[name="csrf-token"]');
+  if (meta && meta.content) {
+    var i = document.createElement('input');
+    i.type = 'hidden'; i.name = 'csrf'; i.value = meta.content;
+    f.appendChild(i);
+  }
+  document.body.appendChild(f);
+  f.submit();
+}
+function appConfirmPost(url, text) {
+  appConfirm(text, function() { appPost(url); });
+}
 function appMsg(text, type) {
   type = type || 'info';
   var styles = {

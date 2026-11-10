@@ -194,7 +194,7 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
             f'<a href="#" class="action-icon" title="Bearbeiten" '
             f'onclick="wtEditFromRow(this); return false;">&#9998;</a> '
             f'<a href="javascript:void(0);" class="action-icon delete-icon" title="Löschen" '
-            f"onclick=\"appConfirmHref('/worktime/delete{qs()}&id={e[0]}', 'Eintrag wirklich löschen?')\">"
+            f"onclick=\"appConfirmPost('/worktime/delete{qs()}&id={e[0]}', 'Eintrag wirklich löschen?')\">"
             f'&#128465;</a>'
             f'</td></tr>'
         )

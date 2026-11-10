@@ -2614,12 +2614,18 @@ def handle_update_trip(db: Database, post_data):
 
 # ── Authentifizierung (TODO #4) ──────────────────────────────────────────────
 def handle_setup_mode(post_data):
-    """Betriebsmodus bei der Ersteinrichtung wählen. Returns Redirect-Location.
+    """Betriebsmodus bei der Ersteinrichtung wählen. Returns Redirect-Location
+    oder None, wenn der Modus bereits feststeht.
 
     'multi' → Administrator anlegen (/setup-admin); 'single' → eigene
     Kontaktdaten (/setup, wie gehabt).
     """
     import userctx
+    if userctx.get_mode() is not None:
+        # Der Betriebsmodus wird nur bei der Ersteinrichtung gewählt. Sonst könnte
+        # jeder angemeldete Nutzer auf "single" schalten und damit den Login
+        # abschalten. Späterer Wechsel: data/config.json bei gestopptem Server.
+        return None
     mode = post_data.get('mode', [''])[0]
     if mode not in ('single', 'multi'):
         return '/setup'
