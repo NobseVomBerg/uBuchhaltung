@@ -38,6 +38,11 @@ def user_dir(tmp_path):
     return str(d)
 
 
+def _read_text(path):
+    with open(path, encoding='utf-8') as f:
+        return f.read()
+
+
 def _db_value(user_dir):
     conn = sqlite3.connect(os.path.join(user_dir, 'buch.db'))
     val = conn.execute('SELECT X FROM T').fetchone()[0]
@@ -74,10 +79,10 @@ def test_restore_overwrite_keeps_new_files(user_dir):
     backup_mod.restore_backup(user_dir, os.path.basename(archive), wipe=False)
 
     assert _db_value(user_dir) == 'original'
-    assert open(os.path.join(user_dir, 'notiz.txt'), encoding='utf-8').read() == 'Notiz Version 1'
+    assert _read_text(os.path.join(user_dir, 'notiz.txt')) == 'Notiz Version 1'
     # Überschreiben-Modus: nachträglich entstandene Dateien bleiben liegen
     assert os.path.isfile(os.path.join(user_dir, 'neu.txt'))
-    assert open(os.path.join(user_dir, 'Belege', 'beleg1.txt'), encoding='utf-8').read() == 'Beleginhalt'
+    assert _read_text(os.path.join(user_dir, 'Belege', 'beleg1.txt')) == 'Beleginhalt'
 
 
 def test_restore_wipe_removes_new_files_keeps_backups(user_dir):
@@ -173,6 +178,5 @@ def test_tests_folder_survives_restore_with_wipe(user_dir, archive_format):
 
     assert not os.path.exists(os.path.join(user_dir, "neu.txt"))      # der Wipe hat gewirkt …
     for rel, text in artifacts.items():                                # … tests/ blieb unberührt
-        with open(os.path.join(user_dir, rel), encoding="utf-8") as f:
-            assert f.read() == text
+        assert _read_text(os.path.join(user_dir, rel)) == text
     assert backup_mod.list_backups(user_dir) == [os.path.basename(archive)]

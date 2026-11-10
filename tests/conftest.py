@@ -20,24 +20,27 @@ from tests import data_guard
 
 # Das echte Datenverzeichnis der App – Tests schreiben dort nie (data/tests/ ausgenommen).
 REAL_DATA = os.path.join(PROJECT_ROOT, 'data')
-# Alles rund um Testläufe liegt in diesem einen Unterordner: tmp/ (Arbeitsdaten des
-# letzten Laufs, siehe pytest_configure) und cache/ (pytest.ini).
+# Alles rund um Testläufe liegt in diesem einen Unterordner: tmp/ (Arbeitsdaten der letzten
+# Läufe, siehe pytest_configure) und cache/ (pytest.ini).
 TESTS_DIR = os.path.join(REAL_DATA, 'tests')
 
 
-@pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):
-    """Temporäre Testdaten (DBs, SQL-Protokolle, PDFs) des letzten Laufs liegen
-    unter <Projekt>/data/tests/tmp/ – pytest leert den Ordner zu Beginn jedes Laufs.
-    Daneben (data/tests/) darf Weiteres liegen, etwa der pytest-Cache (pytest.ini).
-    Ein ausdrücklich übergebenes --basetemp gewinnt."""
-    if config.option.basetemp:
+    """Temporäre Testdaten (DBs, SQL-Protokolle, PDFs) der letzten zwei Läufe liegen unter
+    <Projekt>/data/tests/tmp/pytest-of-<Benutzer>/pytest-N/. pytest nummeriert die Läufe
+    selbst und räumt ältere mit Sperrdateien auf (tmp_path_retention_count, pytest.ini) –
+    gleichzeitige Läufe (zwei Agents, IDE und Terminal) stören sich daher nicht. Daneben
+    (data/tests/) liegt der pytest-Cache. Eine ausdrücklich übergebene --basetemp oder eine
+    schon gesetzte PYTEST_DEBUG_TEMPROOT gewinnt."""
+    if config.option.basetemp or os.environ.get('PYTEST_DEBUG_TEMPROOT'):
         return
+    root = os.path.join(TESTS_DIR, 'tmp')
     try:
-        os.makedirs(TESTS_DIR, exist_ok=True)     # pytest legt nur basetemp selbst an
+        os.makedirs(root, exist_ok=True)
     except OSError:
         return                                    # Projektordner schreibgeschützt: pytests Standard
-    config.option.basetemp = os.path.join(TESTS_DIR, 'tmp')
+    os.environ['PYTEST_DEBUG_TEMPROOT'] = root    # pytest liest das erst beim ersten tmp_path
+    config.add_cleanup(lambda: os.environ.pop('PYTEST_DEBUG_TEMPROOT', None))
 
 
 @pytest.fixture(autouse=True)

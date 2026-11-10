@@ -116,8 +116,9 @@ def test_logged_write_creates_sql_log_below_tmp_path_not_in_project_data(db_with
 # ── Ablage der Testläufe unter data/tests/ ───────────────────────────────────
 def test_tmp_path_lies_below_data_tests_tmp(tmp_path, request):
     expected = os.path.join(REAL_DATA, "tests", "tmp")
-    if request.config.option.basetemp != expected:
-        pytest.skip("--basetemp wurde ausdrücklich übergeben (oder der Projektordner ist schreibgeschützt)")
+    if request.config.option.basetemp or os.environ.get("PYTEST_DEBUG_TEMPROOT") != expected:
+        pytest.skip("--basetemp oder PYTEST_DEBUG_TEMPROOT von außen vorgegeben "
+                    "(oder der Projektordner ist schreibgeschützt)")
     assert _is_below(tmp_path, expected)
 
 
