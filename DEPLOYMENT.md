@@ -212,8 +212,8 @@ gleichzeitig auf demselben `data/` betreiben** (SQLite-Locking).
 
 ## Umzug auf Version 2
 
-**Was sich ändert:** Ab Version 2.6.0 gibt es nur noch die Ablage `data/users/<Name>/`
-(die mittlere Stelle 6 ist unverändert die Schema-Version der Datenbank). Der frühere
+**Was sich ändert:** Ab Version 2.0.0 gibt es nur noch die Ablage `data/users/<Name>/`.
+Das Datenbankschema selbst ändert sich nicht. Der frühere
 Einzelbenutzer-Betrieb (Daten direkt in `data/`, ohne Anmeldung) heißt jetzt
 „automatische Anmeldung“: Ein Administrator wird ohne Passwort angemeldet
 (`auto_login` in `data/config.json`, siehe oben).

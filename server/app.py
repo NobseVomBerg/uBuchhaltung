@@ -10,7 +10,7 @@ from http.cookies import SimpleCookie
 import ipaddress
 import socket
 import unicodedata
-from db import Database
+from db import Database, SchemaTooNewError
 import os
 import auth
 import demo
@@ -204,6 +204,21 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if userctx.get_mode() is None or userctx.get_user() is None:
             return None
         return Database()
+
+    def _open_db(self):
+        """Wie ``_maybe_db``; stammt die Datenbank von einer neueren Programmversion,
+        wird das dem Nutzer gesagt (Antwort gesendet, Rückgabe ``False``)."""
+        try:
+            return self._maybe_db()
+        except SchemaTooNewError as e:
+            print(f"FEHLER: {e}")
+            self._drain_body()
+            self.respond(500, "<h1>Datenbank ist neuer als das Programm</h1>"
+                              "<p>Diese Datenbank wurde von einer neueren Version von "
+                              "uBuchhaltung angelegt oder geändert. Sie wurde nicht geöffnet "
+                              "und nicht verändert. Bitte die neuere Programmversion verwenden; "
+                              "Einzelheiten stehen im Server-Log.</p>")
+            return False
 
     def _session_token(self):
         raw = self.headers.get('Cookie')
@@ -484,7 +499,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         # Ohne angemeldeten Nutzer keine (globale) DB anlegen – hier sind nur
         # public/statische Routen erreichbar (z. B. /buch.css). Sonst entstünde
         # fälschlich ein data/buch.db.
-        db = self._maybe_db()
+        db = self._open_db()
+        if db is False:
+            return
         try:
             if self.path.split('?', 1)[0] in _ACTION_PATHS:
                 self.respond(405, "<h1>405</h1><p>Diese Aktion ist nur per POST möglich.</p>",
@@ -966,7 +983,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if self._auth_routes_post():
             userctx.clear()
             return
-        db = self._maybe_db()
+        db = self._open_db()
+        if db is False:
+            return
 
         # ── CSRF für fetch-Routen (Body wird erst im Handler gelesen): Token
         # kommt als X-CSRF-Token-Header (Footer-JS umhüllt window.fetch).
