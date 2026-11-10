@@ -70,3 +70,17 @@ def test_logo_on_server_follows_static_handler(data_root):
     assert logo_on_server('C:\\Users\\jemand\\Bilder\\logo.png') is False
     assert logo_on_server('') is False
     assert logo_on_server('https://example.org/logo.png') is None
+
+
+def test_logo_on_server_does_not_reveal_files_outside_the_private_seed_folder(data_root, tmp_path,
+                                                                               monkeypatch):
+    """„/seed_data/private/../…“ darf nicht verraten, ob es anderswo eine Datei gibt."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / 'seed_data' / 'private').mkdir(parents=True)
+    (tmp_path / 'seed_data' / 'private' / 'logo.png').write_bytes(b'x')
+    (tmp_path / 'geheim.db').write_bytes(b'x')
+    assert logo_on_server('/seed_data/private/logo.png') is True
+    assert logo_on_server('/seed_data/private/fehlt.png') is False
+    assert logo_on_server('/seed_data/private/../../geheim.db') is False
+    assert logo_on_server('/seed_data/private/%2e%2e/%2e%2e/geheim.db') is False
+    assert logo_on_server('/seed_data/private') is False               # der Ordner selbst ist keine Datei

@@ -146,3 +146,22 @@ def test_form_loads_logo_for_new_invoices_too(db_with_coa):
     html = PageInvoice(db_with_coa, filters={}, invoice_id=None)
     assert 'if (isEditMode)' not in html
     assert 'updateOwnCompany();' in html
+
+
+def test_a_failing_replay_log_does_not_report_a_saved_invoice_as_failed(tmp_db, monkeypatch, capsys):
+    """Das Replay-Log wird nach dem Commit geschrieben. Scheitert das (Platte voll,
+    Rechte), ist die Rechnung trotzdem gespeichert – die Antwort darf nicht
+    „nichts gespeichert“ lauten, sonst legt der Nutzer sie ein zweites Mal an."""
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
+
+    def full_disk(sql, params, desc):
+        raise OSError(28, 'Auf dem Gerät ist kein Speicherplatz mehr verfügbar')
+    monkeypatch.setattr(tmp_db, '_log_sql', full_disk)
+
+    resp = _save(_payload(own, cust))
+
+    assert resp['success'] is True
+    assert _count(tmp_db, 'SELECT COUNT(*) FROM Invoices') == 1
+    assert _count(tmp_db, 'SELECT COUNT(*) FROM InvoiceItems') == 1
+    assert 'Replay-Log' in capsys.readouterr().out          # der Fehler steht im Server-Log
