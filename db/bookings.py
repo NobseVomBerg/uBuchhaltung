@@ -522,6 +522,44 @@ class BookingsMixin:
         if log_description:
             self._log_sql(sql_template, params, log_description)
 
+    _BOOKING_FIELD_COLUMNS = {
+        'date_booking': 'DateBooking', 'date_tax': 'DateTax', 'account_id': 'Account_ID',
+        'foreign_bank_account': 'ForeignBankAccount', 'recipient_client': 'RecipientClient',
+        'contact_id': 'Contact_ID', 'coa_id': 'COA_ID', 'counter_coa_id': 'CounterCOA_ID',
+        'category_id': 'Category_ID', 'amount': 'Amount', 'currency': 'Currency',
+        'tax_rate': 'TaxRate', 'tax_amount': 'TaxAmount', 'text': 'Text',
+        'document_number': 'DocumentNumber', 'parent_booking_id': 'ParentBooking_ID',
+    }
+
+    def update_booking_fields(self, booking_id, log_description=None, **fields):
+        """Nur die genannten Felder einer Buchung ändern; alle anderen bleiben, wie sie sind.
+
+        Für Masken, die nicht jede Spalte führen: Was das Formular nicht kennt
+        (Gegenkonto, Kategorie …), darf beim Speichern nicht geleert werden.
+        Feldnamen wie bei ``insert_booking``; ``amount``/``tax_amount`` in Euro.
+        """
+        unknown = set(fields) - set(self._BOOKING_FIELD_COLUMNS)
+        if unknown:
+            raise TypeError(f"Unbekannte Buchungsfelder: {sorted(unknown)}")
+        if not fields:
+            return
+        values = dict(fields)
+        if 'amount' in values:
+            values['amount'] = to_minor(values['amount'] or 0)
+        if 'tax_amount' in values:
+            values['tax_amount'] = self._minor_opt(values['tax_amount'])
+        assignments = ', '.join(f"{self._BOOKING_FIELD_COLUMNS[name]}=?" for name in values)
+        sql_template = f"UPDATE Bookings SET {assignments} WHERE ID=?"
+        params = tuple(values.values()) + (booking_id,)
+        conn = self._get_connection()
+        try:
+            conn.execute(sql_template, params)
+            conn.commit()
+        finally:
+            conn.close()
+        if log_description:
+            self._log_sql(sql_template, params, log_description)
+
     def update_booking(self, booking_id, date_booking, amount, account_id=None,
                        foreign_bank_account="", recipient_client="", contact_id=None, 
                        coa_id=None, category_id=None, currency="EUR", tax_rate=None, 
@@ -529,6 +567,9 @@ class BookingsMixin:
                        date_tax=None, counter_coa_id=None, log_description=None,
                        booking_type=None, parent_booking_id=None):
         """Update an existing booking
+        
+        Setzt ALLE Spalten – Masken, die nicht alle Felder führen, nehmen
+        ``update_booking_fields``.
         
         Args:
             booking_id: ID of booking to update
