@@ -15,6 +15,10 @@ keine Umgebungsvariable nötig.
 - Beim ersten Aufruf ohne vorhandene `config.json` erscheint die **Modus-Auswahl**.
 - Für ein **Headless-Setup** (ohne Browser-Interaktion) kann diese Datei vorab
   mit `{"mode":"multi"}` angelegt werden.
+- Der Modus wird nur bei der Ersteinrichtung gewählt und lässt sich danach im
+  Browser nicht mehr ändern. Zum Wechsel den Server stoppen und `config.json`
+  anpassen; die Daten liegen je Modus an anderer Stelle (`data/buch.db` bzw.
+  `data/users/<Name>/`) und werden dabei nicht verschoben.
 
 ## Netzwerk & HTTPS über Umgebungsvariablen
 
@@ -24,9 +28,27 @@ keine Umgebungsvariable nötig.
 | `UBUCHHALTUNG_PORT` | `8080`      | TCP-Port. |
 | `UBUCHHALTUNG_CERT` | *(keine)*   | Pfad zur TLS-Zertifikatsdatei (PEM) ⇒ HTTPS. |
 | `UBUCHHALTUNG_KEY`  | *(keine)*   | Pfad zum privaten TLS-Schlüssel (PEM). |
+| `UBUCHHALTUNG_ALLOWED_HOSTS` | *(leer)* | Zusätzliche Hostnamen (Kommaliste), unter denen die App erreichbar sein darf – siehe „Schutz vor fremden Webseiten“. |
 
 Sind `UBUCHHALTUNG_CERT` **und** `UBUCHHALTUNG_KEY` gesetzt, läuft der Server über HTTPS und
 setzt das `Secure`-Flag der Session-Cookies.
+
+## Schutz vor fremden Webseiten
+
+- Schreibende Anfragen (POST) nimmt die App nur von ihren eigenen Seiten an
+  (Prüfung von `Sec-Fetch-Site` bzw. `Origin` gegen `Host`). Löschen und Ändern
+  laufen ausschließlich per POST.
+- Ohne Login (Einzelbenutzer-Modus, Ersteinrichtung) antwortet die App nur unter
+  IP-Adressen, `localhost`, Namen ohne Punkt, Namen mit den Endungen `.local`,
+  `.lan`, `.home.arpa`, `.internal`, `.fritz.box`, `.localhost` und dem eigenen
+  Rechnernamen. Das schützt vor DNS-Rebinding. Für andere Namen (z. B. eigene
+  Domain am Reverse-Proxy, Tailscale-Name):
+  ```bash
+  UBUCHHALTUNG_ALLOWED_HOSTS=buch.example.org,server.tailnet.ts.net
+  ```
+- Reverse-Proxy: `Host` durchreichen oder `X-Forwarded-Host` setzen (nginx Proxy
+  Manager, Caddy und Traefik tun das von sich aus); sonst den öffentlichen Namen
+  in `UBUCHHALTUNG_ALLOWED_HOSTS` eintragen.
 
 ## Erststart
 
@@ -82,6 +104,9 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
 - Das Löschen eines Nutzers in der Benutzerverwaltung entfernt nur das Login;
   das zugehörige Datenverzeichnis bleibt erhalten und kann bei Bedarf manuell
   entfernt werden.
+- Die SQL-Konsole (*Sonstiges*) steht im Mehrbenutzer-Modus nur Administratoren
+  zur Verfügung und arbeitet immer nur auf der eigenen Datenbank des angemeldeten
+  Nutzers. Wer sie braucht, bekommt in der Benutzerverwaltung das Administratorrecht.
 
 ## Docker (Unraid, Proxmox, NAS)
 

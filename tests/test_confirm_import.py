@@ -10,7 +10,8 @@ Deckt ab:
 - Meldung bei unbekanntem Konto (account_found False), Datei bleibt erhalten
 
 Läuft gegen eine temporäre DB; die pending-import-Datei wird in
-data/pending_imports/ angelegt und nach dem Test wieder entfernt.
+pending_imports/ des Test-Datenverzeichnisses (userctx.DATA_ROOT unter tmp_path,
+siehe conftest.py) angelegt und nach dem Test wieder entfernt.
 """
 import os
 import json
@@ -18,11 +19,11 @@ import uuid
 
 import pytest
 
+import userctx
 from server import handlers
 from server.import_preview import match_account
 
 
-PENDING_DIR = os.path.join("data", "pending_imports")
 IBAN_A = "DE89 3704 0044 0532 0130 00"
 IBAN_B = "DE12 5001 0517 0648 4898 90"
 
@@ -38,9 +39,11 @@ def pending_factory():
     created = []
 
     def make(files):
-        os.makedirs(PENDING_DIR, exist_ok=True)
+        # wie handle_confirm_import: pending_imports/ im Datenverzeichnis des Nutzers
+        pending_dir = os.path.join(userctx.user_data_dir(), "pending_imports")
+        os.makedirs(pending_dir, exist_ok=True)
         import_id = "pytest_" + uuid.uuid4().hex[:8]
-        path = os.path.join(PENDING_DIR, f"{import_id}_test.json")
+        path = os.path.join(pending_dir, f"{import_id}_test.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump({"files": files, "import_id": import_id}, f)
         created.append((import_id, path))

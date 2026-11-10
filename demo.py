@@ -41,9 +41,11 @@ SEEDED = "seeded"          # leeres Verzeichnis, Demodaten geladen
 RESUMED = "resumed"        # früheres Demo-Verzeichnis, unverändert weiterverwendet
 REFUSED = "refused"        # bestehende Daten, NICHTS geladen
 
-# Einträge, die ein sonst leeres Verzeichnis nicht „belegt“ machen
-# (z. B. von Dateisystem/Volume-Treibern angelegt).
-_IGNORED_ENTRIES = {"lost+found"}
+# Einträge, die ein sonst leeres Verzeichnis nicht „belegt“ machen:
+# "lost+found" legen Dateisystem/Volume-Treiber an, "tests" enthält nur die
+# Artefakte des letzten pytest-Laufs (data/tests/, siehe tests/conftest.py) –
+# beides sind keine Nutzdaten. Diese Liste nicht um Nutzdaten erweitern.
+_IGNORED_ENTRIES = {"lost+found", "tests"}
 
 
 def requested():

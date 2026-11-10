@@ -56,7 +56,7 @@ def PageReceipts(db: Database, date_from=None, date_to=None):
         s += (f'<td>'
               f'<a href="#" class="action-icon" onclick="editReceiptFromRow(this); return false;" title="Bearbeiten">&#9998;</a>'
               f' <a href="javascript:void(0);" class="action-icon delete-icon" title="L\u00f6schen"'
-              f' onclick="appConfirmHref(\'/receipts/delete?number={n}\', \'Beleg wirklich löschen?\')">&#128465;</a>'
+              f' onclick="appConfirmPost(\'/receipts/delete?number={n}\', \'Beleg wirklich löschen?\')">&#128465;</a>'
               f'</td></tr>')
     s += '''
             </table>
@@ -286,7 +286,7 @@ def PageReceiptEdit(db: Database, number):
             s+= f"<td style='color:{amount_color}'>{fmt_eur(amount, symbol=False)}</td>"
             s+= f"<td>{relation_type or '-'}</td>"
             s+= f"<td><a href='/transactions/edit?id={booking_id}'>Bearbeiten</a> | "
-            s+= f"<a href='/documents/unlink?doc_id={document_id}&booking_id={booking_id}'>Entfernen</a></td>"
+            s+= f"<a href='javascript:void(0);' onclick=\"appPost('/documents/unlink?doc_id={document_id}&amp;booking_id={booking_id}')\">Entfernen</a></td>"
             s+= f"</tr>"
         s+= "</table>"
     else:

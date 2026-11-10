@@ -30,6 +30,10 @@ Test nie für repariert oder ergänzt, ohne einen grünen Lauf vor dir zu haben.
   (zusätzlich `load_test_seed_data()`: SKR04-Kontenrahmen und Bankkonto).
   Die autouse-Fixture `_neutral_app_mode` hält den App-Modus neutral —
   Tests, die einen Modus brauchen, setzen ihn selbst über `userctx`.
+  Die autouse-Fixture `_isolated_data_root` gibt jedem Test eine eigene
+  Datenwurzel unter `tmp_path` — kein Test schreibt ins echte `data/`
+  (Wächter: `tests/data_guard.py`). Arbeitsdaten und Cache der Läufe liegen
+  unter `data/tests/`; parallele pytest-Läufe sind dort sicher.
 - Geldbeträge laufen als ganzzahlige Minor Units (`money.py`, SCALE 4).
   Vergleiche Beträge exakt in Minor Units oder `Decimal`, nie als float.
 - Golden-Tests (`tests/test_golden_invoice_outputs.py`, Fälle in
