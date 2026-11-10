@@ -7,6 +7,7 @@ import os
 import json
 from decimal import Decimal
 from money import to_minor, from_minor
+from .core import fk_explained
 
 
 class InvoicesMixin:
@@ -57,16 +58,18 @@ class InvoicesMixin:
         conn.close()
         # PricePerUnit(7), TotalNet(8) -> Euro-Decimal
         return [self._euro_row(r, 7, 8) for r in rows]
-    def insert_invoice(self, invoice_data):
+    def insert_invoice(self, invoice_data, tx=None):
         """Insert a new invoice with all fields
-        
+
         Args:
             invoice_data: Dictionary with all invoice fields
-        
+            tx: optionale :class:`db.core.Transaction` – dann wird darin
+                geschrieben und erst mit ihr committet
+
         Returns:
             invoice_id: The ID of the newly created invoice
         """
-        conn = self._get_connection()
+        conn = tx.conn if tx else self._get_connection()
         cursor = conn.cursor()
         
         sql_template = '''
@@ -136,26 +139,37 @@ class InvoicesMixin:
             invoice_data.get('source_quote_id'),
         )
         
+        refs = {'OwnCompanyId': invoice_data.get('own_company_id'),
+                'CustomerId': invoice_data.get('customer_id'),
+                'BankAccountId': invoice_data.get('bank_account_id'),
+                'SourceQuoteId': invoice_data.get('source_quote_id')}
         try:
-            cursor.execute(sql_template, params)
+            with fk_explained(conn, 'Invoices', refs):
+                cursor.execute(sql_template, params)
             invoice_id = cursor.lastrowid
-            conn.commit()
-            self._log_sql(sql_template, params, "Insert invoice")
+            if tx:
+                tx.log.append((sql_template, params, "Insert invoice"))
+            else:
+                conn.commit()
+                self._log_sql(sql_template, params, "Insert invoice")
             return invoice_id
         except Exception as e:
             print(f"Error inserting invoice: {e}")
             print(f"Params: {params}")
-            conn.rollback()
+            if not tx:
+                conn.rollback()
             raise
         finally:
-            conn.close()
-    def insert_invoice_item(self, item_data):
+            if not tx:
+                conn.close()
+    def insert_invoice_item(self, item_data, tx=None):
         """Insert an invoice item
-        
+
         Args:
             item_data: Dictionary with item fields
+            tx: optionale :class:`db.core.Transaction` (siehe insert_invoice)
         """
-        conn = self._get_connection()
+        conn = tx.conn if tx else self._get_connection()
         cursor = conn.cursor()
         
         sql_template = '''
@@ -177,16 +191,24 @@ class InvoicesMixin:
             item_data.get('tax_rate')
         )
         
+        refs = {'InvoiceId': item_data.get('invoice_id'),
+                'ArticleId': item_data.get('article_id')}
         try:
-            cursor.execute(sql_template, params)
-            conn.commit()
-            self._log_sql(sql_template, params, "Insert invoice item")
+            with fk_explained(conn, 'InvoiceItems', refs):
+                cursor.execute(sql_template, params)
+            if tx:
+                tx.log.append((sql_template, params, "Insert invoice item"))
+            else:
+                conn.commit()
+                self._log_sql(sql_template, params, "Insert invoice item")
         except Exception as e:
             print(f"Error inserting invoice item: {e}")
-            conn.rollback()
+            if not tx:
+                conn.rollback()
             raise
         finally:
-            conn.close()
+            if not tx:
+                conn.close()
     def update_invoice_status(self, invoice_id, status):
         """Update invoice status"""
         conn = self._get_connection()

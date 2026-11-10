@@ -273,8 +273,18 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
         sel = 'selected' if str(comp_id) == str(company_contact_id) else ''
         company_opts += f'<option value="{comp_id}" {sel}>{comp_name}</option>'
 
-    from server.pages import logo_url
-    logo_preview = f'<img src="{logo_url(logo)}" class="logo-preview">' if logo else ''
+    from server.pages import logo_url, logo_on_server
+    if logo and logo_on_server(logo) is False:
+        # Statt eines kaputten Bildes sagen, was los ist: der Pfad zeigt auf
+        # keine Datei dieses Servers (typisch: Pfad vom eigenen PC eingetippt)
+        logo_preview = ('<small class="warnColor">⚠ Diese Datei liegt nicht auf dem Server. '
+                        'Bitte über „Datei wählen“ hochladen – das Bild wird dann im '
+                        'Datenverzeichnis abgelegt.</small>')
+    elif logo:
+        logo_preview = f'<img src="{_esc(logo_url(logo))}" class="logo-preview">'
+    else:
+        logo_preview = ''
+    logo = _esc(str(logo))
 
     # Fachliche Rollen (nur für Personen) – muss vor entity_section stehen (wird darin referenziert)
     if entity_type == 'person':
