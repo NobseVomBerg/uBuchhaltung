@@ -19,6 +19,10 @@ Version 2 automatisch um – siehe [Umzug auf Version 2](#umzug-auf-version-2).
   Benutzername und danach, ob mit oder ohne Anmeldung gestartet wird. Beides
   stellt `"mode": "multi"` ein; „ohne Anmeldung“ trägt zusätzlich `"auto_login"`
   mit dem Benutzernamen ein.
+- Fehlt die Datei oder ist sie nicht lesbar, obwohl es schon einen Administrator
+  gibt (z. B. nach einem Tippfehler beim Bearbeiten von Hand), zeigt die App einen
+  Hinweis statt der Ersteinrichtung. Dann die Datei wiederherstellen – mit
+  `{"mode": "multi"}` gilt die Anmeldung mit Passwort.
 - `auto_login` (nur bei `"multi"`): dieser Administrator wird ohne Passwort
   angemeldet, die Anmeldeseite entfällt und andere Benutzer können sich so lange
   nicht anmelden. In der Benutzerverwaltung lässt sich die automatische Anmeldung

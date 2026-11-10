@@ -2660,7 +2660,9 @@ def handle_setup_start(post_data):
     import secrets
     import demo
     mode = userctx.get_mode()
-    if mode == 'multi' and auth.count_admins() > 0:
+    if auth.admin_exists():
+        # Auch wenn config.json fehlt oder unlesbar ist: Gibt es schon einen
+        # Administrator, legt die Ersteinrichtung keinen weiteren an.
         return None, '', False, None
     if demo.active_user():
         # Im laufenden Demo-Modus ist jeder Besucher angemeldet – er darf sich nicht
@@ -2674,6 +2676,11 @@ def handle_setup_start(post_data):
         if password != password2:
             return False, username, with_login, 'Die Passwörter stimmen nicht überein.'
     else:
+        if g('password') or g('password2'):
+            # Die Eingabetaste löst im Browser den ersten Knopf aus („Ohne Anmeldung“) –
+            # ein eingetipptes Passwort darf dabei nicht stillschweigend verfallen.
+            return False, username, with_login, ('Es ist ein Passwort eingetragen – bitte '
+                                                 '„Mit Passwort starten“ wählen oder die Passwortfelder leeren.')
         # Niemand kennt dieses Passwort; es wird beim Ausschalten der automatischen
         # Anmeldung durch ein selbst gewähltes ersetzt.
         password = secrets.token_urlsafe(24)
@@ -2683,8 +2690,9 @@ def handle_setup_start(post_data):
         return False, username, with_login, str(e)
     if mode != 'multi':
         userctx.set_mode('multi')
-    if not with_login:
-        userctx.set_auto_login(username)
+    # Ausdrücklich in beide Richtungen: Eine vorab angelegte config.json kann schon
+    # ein auto_login tragen – wer ein Passwort wählt, meldet sich damit an.
+    userctx.set_auto_login(None if with_login else username)
     return True, username, with_login, None
 
 
