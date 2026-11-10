@@ -86,7 +86,9 @@ def create_backup(user_dir, db_path, scope='all'):
         if sevenzip:
             if scope == 'all':
                 # Alles außer backup/, users/, tests/ und der Live-DB (die kommt als Snapshot)
-                excludes = [f'-xr!{d}' for d in _EXCLUDED_DIRS] + ['-x!buch.db']
+                # -x! (ohne r) trifft nur die oberste Ebene – gleichnamige Unterordner
+                # weiter unten (z. B. Belege/tests/) gehören zur Sicherung.
+                excludes = [f'-x!{d}' for d in _EXCLUDED_DIRS] + ['-x!buch.db']
                 r = subprocess.run([sevenzip, 'a', '-bd', '-y', archive, '*'] + excludes,
                                    cwd=user_dir, capture_output=True, timeout=600)
                 if r.returncode not in (0, 1):   # 1 = Warnung (z.B. Datei gerade gesperrt)

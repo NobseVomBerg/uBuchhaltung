@@ -166,6 +166,28 @@ def test_tests_folder_is_not_part_of_the_backup(user_dir, archive_format, tmp_pa
     assert sorted(os.listdir(restored)) == ["Belege", "backup", "buch.db", "notiz.txt"]
 
 
+def test_excluded_names_only_apply_at_top_level(user_dir, archive_format, tmp_path):
+    """Ausgenommen sind backup/, users/ und tests/ nur direkt im Datenverzeichnis –
+    gleichnamige Unterordner weiter unten gehören zur Sicherung (7-Zip schloss sie
+    früher auf jeder Ebene aus und ließ sie damit still weg)."""
+    nested = {os.path.join("Belege", name, "tief.txt"): f"Inhalt {name}"
+              for name in ("backup", "users", "tests")}
+    for rel, text in nested.items():
+        path = os.path.join(user_dir, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+    archive = _backup_all(user_dir, archive_format)
+
+    restored = str(tmp_path / "entpackt")
+    os.makedirs(os.path.join(restored, "backup"))
+    shutil.copy(archive, os.path.join(restored, "backup"))
+    backup_mod.restore_backup(restored, os.path.basename(archive))
+
+    for rel, text in nested.items():
+        assert _read_text(os.path.join(restored, rel)) == text
+
+
 def test_tests_folder_survives_restore_with_wipe(user_dir, archive_format):
     archive = _backup_all(user_dir, archive_format)
     # Der Testlauf kommt nach der Sicherung: Das Archiv kann tests/ nicht zurückbringen,
