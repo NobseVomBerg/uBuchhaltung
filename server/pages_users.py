@@ -5,15 +5,17 @@
 Benutzerverwaltung (TODO #4, Phase 3).
 
 Nur für Administratoren im Mehrbenutzer-Modus. Erlaubt das Anlegen, Löschen,
-Zurücksetzen des Passworts und Umschalten des Admin-Status von Benutzern.
+Zurücksetzen des Passworts und Umschalten des Admin-Status von Benutzern sowie
+das Ein-/Ausschalten der automatischen Anmeldung.
 Verwendet ausschließlich vorhandene Style-Klassen.
 """
 import html as _html
 from .pages import Header1, Header2, Header3, Footer
 
 
-def PageUsers(current_user, users, csrf, error_msg=None, info_msg=None):
-    """users: Liste (Username, IsAdmin, CreatedAt). current_user: angemeldeter Admin."""
+def PageUsers(current_user, users, csrf, error_msg=None, info_msg=None, auto_login_user=None):
+    """users: Liste (Username, IsAdmin, CreatedAt). current_user: angemeldeter Admin.
+    auto_login_user: Administrator, der automatisch angemeldet wird (oder None)."""
     s = Header1('masterdata')
     s += Header2('<a href="/masterdata">Stammdaten</a> -> <span id="ActivePage">🔑 Benutzer</span>')
     s += Header3()
@@ -63,6 +65,43 @@ def PageUsers(current_user, users, csrf, error_msg=None, info_msg=None):
         s += (f'<tr><td>{u}</td><td style="text-align:center">{admin_badge}</td>'
               f'<td>{_html.escape(str(created or ""))}</td><td>{actions}</td></tr>')
     s += '</table>'
+    s += '</div>'
+
+    # ── Automatische Anmeldung ───────────────────────────────────────────────
+    c = _html.escape(csrf)
+    s += '<div class="rectRounded">'
+    s += '<h2>🔓 Automatische Anmeldung</h2>'
+    if auto_login_user:
+        a = _html.escape(auto_login_user)
+        s += (f'<p>Aktiv für <strong>{a}</strong>: Wer diese Adresse erreicht, arbeitet ohne '
+              f'Anmeldung als dieser Administrator. Andere Benutzer können sich so lange nicht '
+              f'anmelden. Nur im eigenen Netz verwenden.</p>')
+        s += f'''<form method="POST" action="/users/auto-login">
+        <input type="hidden" name="csrf" value="{c}">
+        <input type="hidden" name="action" value="disable">
+        <table class="form-table">
+          <tr><td>Neues Passwort:</td><td><input type="password" name="password" required></td></tr>
+          <tr><td>Wiederholen:</td><td><input type="password" name="password2" required></td></tr>
+        </table>
+        <div class="rowWithObjects">
+          <button type="submit" class="coloredButton bg-blue">Ausschalten und Passwort setzen</button>
+        </div>
+      </form>'''
+    else:
+        u = _html.escape(current_user or '')
+        s += (f'<p>Für den Betrieb durch eine Person: <strong>{u}</strong> wird ohne Passwort '
+              f'angemeldet, die Anmeldeseite entfällt. Wer diese Adresse erreicht, arbeitet dann '
+              f'als Administrator; andere Benutzer können sich so lange nicht anmelden. '
+              f'Nur im eigenen Netz verwenden.</p>')
+        s += (f'<form method="POST" action="/users/auto-login" '
+              f'onsubmit="return confirm(\'Automatische Anmeldung für {u} einschalten? '
+              f'Wer diese Adresse erreicht, arbeitet dann ohne Passwort als Administrator.\')">'
+              f'<input type="hidden" name="csrf" value="{c}">'
+              f'<input type="hidden" name="action" value="enable">'
+              f'<div class="rowWithObjects">'
+              f'<button type="submit" class="coloredButton bg-orange">Für {u} einschalten</button>'
+              f'</div>'
+              f'</form>')
     s += '</div>'
 
     # ── Neuen Benutzer anlegen ───────────────────────────────────────────────

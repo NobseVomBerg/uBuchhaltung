@@ -117,13 +117,20 @@ kein Subagent darauf:
 - Türsteher ist `_gate()` in `server/app.py`: schreibende Anfragen nur von eigenen
   Seiten (`request_is_same_origin`: `Sec-Fetch-Site`, sonst `Origin` gegen `Host`/
   `X-Forwarded-Host`) – in beiden Betriebsmodi, zusätzlich zum CSRF-Token
-- Ohne Login (Einzelbenutzer, Ersteinrichtung) nur unter vertrauenswürdigen
+- Ohne Login (Einzelbenutzer, Ersteinrichtung, automatische Anmeldung) nur unter vertrauenswürdigen
   Hostnamen (`host_is_trusted`, gegen DNS-Rebinding); weitere Namen über
   `UBUCHHALTUNG_ALLOWED_HOSTS`
 - **Aktionen mit Seiteneffekt nie per GET:** Pfad in `_ACTION_PATHS` eintragen,
   Logik in `_post_action_routes`, im Frontend `appConfirmPost()`/`appPost()`
   statt eines Links
-- Der Betriebsmodus wird nur bei der Ersteinrichtung gewählt (`handle_setup_mode`)
+- **Automatische Anmeldung** (`auto_login` in `config.json`, `auth.auto_login_user()`):
+  ein Administrator wird ohne Passwort angemeldet, Anmeldeseite und andere Benutzer
+  sind so lange abgeschaltet – das ist der Betrieb für eine Person. Es gibt dann
+  keine Sitzung (CSRF-Token an `_csrf_key()` gebunden), und die Hostnamen-Prüfung
+  greift wie ohne Login. Schalter in der Benutzerverwaltung; Ausschalten setzt ein Passwort
+- Die Ersteinrichtung (`handle_setup_start`) legt den ersten Administrator an und
+  stellt immer den Mehrbenutzer-Modus ein; danach ändert nichts im Browser den Modus.
+  Der Einzelbenutzer-Modus (`mode: single`) existiert nur noch für Altbestände
 - **SQL-Konsole** (`handle_execute_sql`): im Mehrbenutzer-Modus nur Administratoren
   (`auth.sql_console_allowed`); per SQLite-Authorizer auf die eigene Datenbank
   beschränkt – kein `ATTACH`/`DETACH`/`VACUUM`, PRAGMAs bis auf wenige nur lesend.

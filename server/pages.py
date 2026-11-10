@@ -109,12 +109,16 @@ def Header1(active_page=None):
     
     s += ' | '.join(nav_items)
 
-    # Angemeldeter Benutzer + Abmelden (nur im Mehrbenutzer-Modus sichtbar)
+    # Angemeldeter Benutzer + Abmelden (nur im Mehrbenutzer-Modus sichtbar);
+    # bei automatischer Anmeldung gibt es keine Sitzung, die man beenden könnte
     import userctx
     _user = userctx.get_user()
     if userctx.auth_enabled() and _user:
-        s += (f'&nbsp;&nbsp;&nbsp; 👤 {_html.escape(_user)} · '
-              f'<a href="/logout">Abmelden</a>')
+        if userctx.auto_login_active():
+            s += f'&nbsp;&nbsp;&nbsp; 👤 {_html.escape(_user)}'
+        else:
+            s += (f'&nbsp;&nbsp;&nbsp; 👤 {_html.escape(_user)} · '
+                  f'<a href="/logout">Abmelden</a>')
     return s
 
 def Header2(content=""):
