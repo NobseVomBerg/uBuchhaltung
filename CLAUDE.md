@@ -194,8 +194,10 @@ kein Subagent darauf:
   Markenhinweis; keine vergleichenden Aussagen oder „Alternative zu …“
 - Das Repo ist öffentlich: Strategisches, Rechtliches, Notizen zu anderen
   Projekten und private Aufgaben gehören ins private Repo
-  `NobseVomBerg/uBuchhaltung-Private` – lokal als `intern/` im Projektordner
-  (gitignored), in Cloud-Sessions per add_repo. Fehlt es, nicht danach fragen
+  `NobseVomBerg/uBuchhaltung-Private` – lokal neben dem Projektordner
+  (`../uBuchhaltung-Private`), in Cloud-Sessions per add_repo. Übergaben zwischen
+  Sessions liegen dort in `uebergaben/`, nicht in `data/` (gitignored, für
+  Cloud-Sessions unsichtbar). Fehlt es, nicht danach fragen
 
 ### Kontoauszug-Import (CAMT.053 + PDF)
 - Ein Weg für alle Formate: Parser in `importers/` liefern `BankStatement` (`base.py`) →
