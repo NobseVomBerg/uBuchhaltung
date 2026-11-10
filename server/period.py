@@ -8,8 +8,14 @@ Der gewählte Zeitraum wird als Cookie gespeichert und gilt damit über alle
 Seiten hinweg (Dashboard, Transactions, Invoice, Receipts).
 
 Auflösungs-Priorität:  explizite Query-Parameter  >  Cookie  >  Default (akt. Jahr)
+
+Zeitraum-Werte (Query und Cookie) kommen vom Client und landen in HTML, JavaScript,
+Set-Cookie-Header und Dateinamen. Deshalb gelten nur ISO-Daten (``parse_iso_date``);
+alles andere wird verworfen, nicht repariert.
 """
 import calendar
+import html
+import re
 from datetime import datetime, date
 from urllib.parse import quote
 from http.cookies import SimpleCookie
@@ -20,9 +26,40 @@ _MONTHS = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun',
 
 COOKIE_NAME = 'period'
 
+# Nur ASCII-Ziffern: ``\d`` träfe in Python auch andere Ziffernschriften
+_ISO_DATE = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}')
+
+
+def parse_iso_date(value) -> str | None:
+    """``value`` unverändert zurückgeben, wenn es ein ISO-Datum ``JJJJ-MM-TT`` ist
+    (existierender Kalendertag, Jahr 1900–2200); sonst ``None``.
+
+    Kein Trimmen und keine anderen Schreibweisen – was durchkommt, darf ohne weitere
+    Prüfung in Adressen, Cookies und Dateinamen stehen.
+    """
+    if not isinstance(value, str) or not _ISO_DATE.fullmatch(value):
+        return None
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        return None
+    return value if 1900 <= parsed.year <= 2200 else None
+
+
+def valid_period(date_from, date_to) -> tuple[str, str] | None:
+    """Geprüftes Paar ``(von, bis)`` oder ``None``, wenn eines kein ISO-Datum ist.
+    Liegt „von“ nach „bis“, werden beide getauscht."""
+    d_from, d_to = parse_iso_date(date_from), parse_iso_date(date_to)
+    if d_from is None or d_to is None:
+        return None
+    if d_from > d_to:                            # ISO-Daten sortieren wie Kalendertage
+        d_from, d_to = d_to, d_from
+    return d_from, d_to
+
 
 def _read_cookie(cookie_header: str | None):
-    """Zeitraum aus dem Cookie-Header lesen. Liefert (from, to) oder ('', '')."""
+    """Zeitraum aus dem Cookie-Header lesen. Liefert (from, to) oder ('', '');
+    ein Cookie mit ungültigem Zeitraum zählt als nicht vorhanden."""
     if not cookie_header:
         return '', ''
     try:
@@ -34,7 +71,9 @@ def _read_cookie(cookie_header: str | None):
         value = jar[COOKIE_NAME].value          # Format: "<from>..<to>"
         if '..' in value:
             date_from, date_to = value.split('..', 1)
-            return date_from, date_to
+            period = valid_period(date_from, date_to)
+            if period:
+                return period
     return '', ''
 
 
@@ -50,11 +89,14 @@ def resolve_period(query_params: dict, cookie_header: str | None):
         (date_from, date_to, should_set_cookie):
             should_set_cookie ist True, wenn der Zeitraum explizit per Query kam
             und daher als neuer Cookie persistiert werden soll.
+            Die Daten sind immer gültige ISO-Daten (``valid_period``); ein
+            ungültiges Query-Paar wird ignoriert.
     """
     q_from = (query_params.get('from')      or query_params.get('date_from') or [''])[0]
     q_to   = (query_params.get('to')        or query_params.get('date_to')   or [''])[0]
-    if q_from and q_to:
-        return q_from, q_to, True
+    period = valid_period(q_from, q_to)
+    if period:
+        return period[0], period[1], True
 
     c_from, c_to = _read_cookie(cookie_header)
     if c_from and c_to:
@@ -65,8 +107,16 @@ def resolve_period(query_params: dict, cookie_header: str | None):
 
 
 def period_cookie_header(date_from: str, date_to: str) -> str:
-    """Set-Cookie-Wert für den Zeitraum (1 Jahr gültig)."""
-    return (f'{COOKIE_NAME}={date_from}..{date_to}; '
+    """Set-Cookie-Wert für den Zeitraum (1 Jahr gültig).
+
+    Wirft ``ValueError``, wenn das Paar kein gültiger Zeitraum ist. Mit Werten aus
+    ``resolve_period`` kommt das nicht vor – ein ungeprüfter Wert stünde sonst
+    unverändert im Header und ein Jahr lang im Browser.
+    """
+    period = valid_period(date_from, date_to)
+    if period is None:
+        raise ValueError('Kein gültiger Zeitraum – erwartet werden zwei Daten im Format JJJJ-MM-TT.')
+    return (f'{COOKIE_NAME}={period[0]}..{period[1]}; '
             f'Path=/; Max-Age=31536000; SameSite=Lax')
 
 
@@ -117,6 +167,15 @@ def period_filter_widget(date_from: str, date_to: str, base_path: str,
     current_year = datetime.now().year
     extra_qs = _extra_query(extra_params)
 
+    # Nichts davon steht roh in HTML oder JS (für gültige ISO-Daten und feste Pfade
+    # ändert sich die Ausgabe nicht): Daten maskiert, weil sie in Attributen stehen;
+    # der Pfad prozentkodiert, weil er in JavaScript-Zeichenketten steht – und eine
+    # dort mit html.escape maskierte Anführungszeichen-Entität löst der Browser in
+    # einem onclick-Attribut vor dem Ausführen wieder zu einem echten Zeichen auf.
+    h_from = html.escape(str(date_from), quote=True)
+    h_to = html.escape(str(date_to), quote=True)
+    url_base = quote(base_path, safe='/')
+
     # Aktiven Zeitraum interpretieren
     try:
         d_from = date.fromisoformat(date_from)
@@ -131,7 +190,7 @@ def period_filter_widget(date_from: str, date_to: str, base_path: str,
     cur_month = d_from.month
 
     def href(yf: str, yt: str) -> str:
-        return f"{base_path}?from={yf}&to={yt}{extra_qs}"
+        return f"{url_base}?from={yf}&to={yt}{extra_qs}"
 
     # Jahres-Buttons: monatserhaltend bei single_month, sonst ganzes Jahr.
     year_buttons = ''
@@ -161,9 +220,9 @@ def period_filter_widget(date_from: str, date_to: str, base_path: str,
     return f'''<div class="rowWithObjects">
         <div>
             <label>Von:</label>
-            <input type="date" id="dateFrom" value="{date_from}" onchange="gotoPeriod()">
+            <input type="date" id="dateFrom" value="{h_from}" onchange="gotoPeriod()">
             <label>Bis:</label>
-            <input type="date" id="dateTo" value="{date_to}" onchange="gotoPeriod()">
+            <input type="date" id="dateTo" value="{h_to}" onchange="gotoPeriod()">
         </div>
         <div>{year_buttons}</div>
         <div>{month_buttons}</div>
@@ -172,6 +231,6 @@ def period_filter_widget(date_from: str, date_to: str, base_path: str,
         function gotoPeriod() {{
             const f = document.getElementById('dateFrom').value;
             const t = document.getElementById('dateTo').value;
-            if (f && t) window.location.href = '{base_path}?from=' + f + '&to=' + t + '{extra_qs}';
+            if (f && t) window.location.href = '{url_base}?from=' + f + '&to=' + t + '{extra_qs}';
         }}
     </script>'''

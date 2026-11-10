@@ -69,6 +69,23 @@ def content_disposition(disposition, filename):
             f"filename*=UTF-8''{quote(filename, safe='')}")
 
 
+_HEADER_UNSAFE = str.maketrans('', '', '\r\n\0')
+
+
+def _header_safe(value):
+    """Name oder Wert eines HTTP-Headers ohne CR, LF und NUL."""
+    return str(value).translate(_HEADER_UNSAFE)
+
+
+def _int_param(qs, name):
+    """Ganzzahliger Query-Parameter (``qs`` aus parse_qs) oder ``None``, wenn er fehlt
+    oder keine Ganzzahl ist."""
+    try:
+        return int(qs[name][0])
+    except (KeyError, IndexError, ValueError):
+        return None
+
+
 # ── Schutz vor fremden Webseiten (CSRF, DNS-Rebinding) ───────────────────────
 # Hostnamen, die nur im eigenen Netz auflösbar sind – ein Angreifer kann sie
 # nicht per öffentlichem DNS auf diesen Rechner umbiegen.
@@ -185,6 +202,11 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             self.send_header('Cache-Control', 'no-cache')               # HTML etc no caching
             
         super().end_headers()                                           # Call the Base
+
+    def send_header(self, keyword, value):
+        # Letzte Sicherung gegen Header-Injection, egal woher ein Wert stammt (Query,
+        # Cookie, Formular, Dateiname): CR/LF/NUL kommen nie in einen Header.
+        super().send_header(_header_safe(keyword), _header_safe(value))
 
     # ── Authentifizierung (TODO #4) ──────────────────────────────────────────
     def _drain_body(self):
@@ -816,7 +838,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path == "/worktime" or self.path.startswith("/worktime?"):
                 qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
                 date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
-                person_id = int(qs['person'][0]) if qs.get('person') else None
+                person_id = _int_param(qs, 'person')
                 error_msg = qs['error'][0] if qs.get('error') else None
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
                 self.respond(200, PageWorkTimes(db, person_id=person_id,
@@ -825,13 +847,17 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path.startswith("/worktime/edit"):
                 qs = parse_qs(self.path.split('?')[1])
                 edit_id = int(qs["id"][0])
-                person_id = int(qs['person'][0]) if qs.get('person') else None
+                person_id = _int_param(qs, 'person')
                 date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
                 self.respond(200, PageWorkTimes(db, person_id=person_id, date_from=date_from,
                                                 date_to=date_to, edit_id=edit_id))
             elif self.path.startswith("/worktime/pdf"):
                 qs = parse_qs(self.path.split('?')[1])
-                person_id = qs["person"][0]
+                person_id = _int_param(qs, "person")
+                if person_id is None:
+                    self.respond(400, "Ungültige oder fehlende Person.",
+                                 content_type="text/plain; charset=utf-8")
+                    return
                 date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
                 with_notes = qs.get('notes', ['0'])[0] in ('1', 'true', 'on')
                 disposition = 'inline' if qs.get('inline') else 'attachment'
@@ -865,7 +891,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path == "/trips" or self.path.startswith("/trips?"):
                 qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
                 date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
-                person_id = int(qs['person'][0]) if qs.get('person') else None
+                person_id = _int_param(qs, 'person')
                 error_msg = qs['error'][0] if qs.get('error') else None
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
                 self.respond(200, PageTrips(db, person_id=person_id,
@@ -874,7 +900,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path.startswith("/trips/edit"):
                 qs = parse_qs(self.path.split('?')[1])
                 edit_id = int(qs["id"][0])
-                person_id = int(qs['person'][0]) if qs.get('person') else None
+                person_id = _int_param(qs, 'person')
                 date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
                 self.respond(200, PageTrips(db, person_id=person_id, date_from=date_from,
                                             date_to=date_to, edit_id=edit_id))

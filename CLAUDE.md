@@ -150,6 +150,16 @@ kein Subagent darauf:
   (`auth.sql_console_allowed`); per SQLite-Authorizer auf die eigene Datenbank
   beschränkt – kein `ATTACH`/`DETACH`/`VACUUM`, PRAGMAs bis auf wenige nur lesend.
   Diese Sperren nicht aufweichen
+- **Zeitraum-Parameter** (`from`/`to` in der Query, Cookie `period`) gelten nur als
+  ISO-Datum (`period.parse_iso_date`); `resolve_period` verwirft alles andere. In HTML
+  maskieren (`html.escape`), in Adressen innerhalb von JavaScript prozentkodieren
+  (`quote`) – ein maskiertes `'` löst der Browser im `onclick` wieder auf.
+  `send_header` in `server/app.py` entfernt CR/LF/NUL aus jedem Header: letzte
+  Sicherung gegen Header-Injection, egal woher ein Wert stammt
+- **Wiederherstellen** (`server/backup.py`) entpackt erst nach `backup/restore_*`,
+  prüft (keine Symlinks, Datenbank lesbar und nicht neuer als das Programm) und ersetzt
+  dann: Der vorherige Stand wird nach `backup/replaced_*` verschoben, nicht vorab
+  gelöscht, und erst nach Erfolg entfernt. Diese Reihenfolge nie umdrehen
 
 ### Buchungssätze
 - Bankbewegung = Zeile `BookingType='bank'`; ihre Buchungssätze sind Kinder
