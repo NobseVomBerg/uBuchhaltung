@@ -5,8 +5,10 @@
 Main HTTP server class with routing
 """
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, urlsplit
 from http.cookies import SimpleCookie
+import ipaddress
+import socket
 import unicodedata
 from db import Database
 import os
@@ -64,6 +66,112 @@ def content_disposition(disposition, filename):
     fallback = fallback.replace('"', '').replace('\\', '') or 'download'
     return (f'{disposition}; filename="{fallback}"; '
             f"filename*=UTF-8''{quote(filename, safe='')}")
+
+
+# ── Schutz vor fremden Webseiten (CSRF, DNS-Rebinding) ───────────────────────
+# Hostnamen, die nur im eigenen Netz auflösbar sind – ein Angreifer kann sie
+# nicht per öffentlichem DNS auf diesen Rechner umbiegen.
+_PRIVATE_HOST_SUFFIXES = ('.localhost', '.local', '.lan', '.home.arpa',
+                          '.internal', '.fritz.box')
+
+
+def _allowed_hosts_env():
+    """Zusätzlich freigegebene Hostnamen aus UBUCHHALTUNG_ALLOWED_HOSTS (Kommaliste)."""
+    raw = os.environ.get('UBUCHHALTUNG_ALLOWED_HOSTS', '')
+    return {_hostname_of(h) for h in raw.split(',') if h.strip()}
+
+
+def _hostname_of(hostport):
+    """Hostname ohne Port, klein geschrieben, IPv6 ohne eckige Klammern."""
+    h = (hostport or '').strip().lower()
+    if h.startswith('['):
+        return h[1:].split(']', 1)[0]
+    if h.count(':') == 1:
+        h = h.split(':', 1)[0]
+    return h.rstrip('.')
+
+
+def _strip_default_port(netloc):
+    for suffix in (':80', ':443'):
+        if netloc.endswith(suffix):
+            return netloc[:-len(suffix)]
+    return netloc
+
+
+def host_is_trusted(host_header):
+    """Darf unter diesem Host-Header ohne Login gearbeitet werden?
+
+    Schutz vor DNS-Rebinding: Eine fremde Webseite kann ihren eigenen Domainnamen
+    auf 127.0.0.1 bzw. eine LAN-Adresse zeigen lassen und wäre dann aus Sicht des
+    Browsers "dieselbe Herkunft" wie die App. IP-Adressen, localhost, Namen ohne
+    Punkt, rein lokale Endungen und der eigene Rechnername lassen sich so nicht
+    umbiegen; alles andere muss über UBUCHHALTUNG_ALLOWED_HOSTS freigegeben sein.
+    """
+    name = _hostname_of(host_header)
+    if not name:
+        return True                       # kein Host-Header: kein Browser
+    if name == 'localhost' or ('.' not in name and ':' not in name):
+        return True
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        pass
+    if name.endswith(_PRIVATE_HOST_SUFFIXES):
+        return True
+    if name == socket.gethostname().lower().rstrip('.'):
+        return True
+    return name in _allowed_hosts_env()
+
+
+def request_is_same_origin(headers):
+    """Stammt eine schreibende Anfrage von einer Seite der App selbst?
+
+    Reihenfolge: Sec-Fetch-Site (schicken Browser nur über HTTPS/localhost),
+    sonst Origin gegen Host bzw. X-Forwarded-Host (Reverse-Proxy). Fehlen beide
+    Header, ist es kein Browser (curl, Skripte) – dort gibt es kein CSRF.
+    """
+    site = headers.get('Sec-Fetch-Site')
+    if site:
+        return site.strip().lower() in ('same-origin', 'none')
+    origin = headers.get('Origin')
+    if origin is None:
+        return True
+    origin = origin.strip().lower()
+    if not origin or origin == 'null':
+        return False
+    try:
+        netloc = _strip_default_port(urlsplit(origin).netloc)
+    except ValueError:                    # kaputter Origin-Header (z. B. "http://[::1")
+        return False
+    if not netloc:
+        return False
+    own = {_strip_default_port((headers.get('Host') or '').strip().lower()),
+           _strip_default_port((headers.get('X-Forwarded-Host') or '')
+                               .split(',')[0].strip().lower())}
+    own.discard('')
+    if netloc in own:
+        return True
+    return _hostname_of(netloc) in _allowed_hosts_env()
+
+
+# Aktionen mit Seiteneffekt – nur per POST, siehe `_post_action_routes`; die
+# Parameter bleiben in der Query.
+_ACTION_PATHS = frozenset({
+    "/masterdata/articles/delete",
+    "/masterdata/contacts/delete",
+    "/masterdata/skr/delete",
+    "/masterdata/skr/togglemenu",
+    "/masterdata/bankaccounts/delete",
+    "/receipts/delete",
+    "/transactions/delete",
+    "/documents/unlink",
+    "/masterdata/numberranges/delete",
+    "/assets/delete",
+    "/asset_categories/delete",
+    "/worktime/delete",
+    "/trips/delete",
+})
 
 
 class SimpleWebServer(BaseHTTPRequestHandler):
@@ -171,10 +279,26 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         # daher den Kontext zu Beginn JEDES Requests leeren (kein User-Leak).
         userctx.clear()
         userctx.set_tls(getattr(self.server, 'tls', False))
+        # Schreibende Anfragen nur von Seiten der App selbst – gilt in beiden
+        # Betriebsmodi und zusätzlich zum CSRF-Token (der im Einzelmodus fehlt).
+        if self.command not in ('GET', 'HEAD') and not request_is_same_origin(self.headers):
+            self._drain_body()
+            self.respond(403, "<h1>403</h1><p>Anfrage von fremder Herkunft abgelehnt.</p>")
+            return False
+        mode = userctx.get_mode()
+        # Ohne Login (Einzelbenutzer-Modus, Ersteinrichtung) schützt nur der
+        # Hostname vor DNS-Rebinding; im Mehrbenutzer-Modus hängt der Zugriff an
+        # der Session, die an den echten Hostnamen gebunden ist.
+        if mode != 'multi' and not host_is_trusted(self.headers.get('Host')):
+            self._drain_body()
+            self.respond(403, "<h1>403</h1><p>Dieser Hostname ist nicht freigegeben. "
+                              "Zusätzliche Namen lassen sich über die Umgebungsvariable "
+                              "<code>UBUCHHALTUNG_ALLOWED_HOSTS</code> erlauben "
+                              "(siehe DEPLOYMENT.md).</p>")
+            return False
         path = self.path.split('?', 1)[0]
         if path in ('/buch.css', '/favicon.ico'):
             return True
-        mode = userctx.get_mode()
         if mode is None:
             # Noch nicht eingerichtet: ausschließlich die Modus-Auswahl zulassen –
             # sonst entstünde (im Einzelmodus-Fallback) ein verwaistes data/buch.db,
@@ -276,6 +400,75 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _local_referer(self, default):
+        """Pfad (+ Query) des Referer – nie eine fremde Adresse (kein offener Redirect)."""
+        try:
+            parts = urlsplit(self.headers.get('Referer') or '')
+        except ValueError:
+            return default
+        # Browser lesen "/\\host" wie "//host" – beides wäre eine fremde Adresse.
+        if (not parts.path.startswith('/') or parts.path.startswith('//')
+                or '\\' in parts.path):
+            return default
+        return parts.path + ('?' + parts.query if parts.query else '')
+
+    def _post_action_routes(self, db):
+        """Aktionen mit Seiteneffekt (Löschen, Umschalten, Lösen). Parameter stehen
+        in der Query, der Body trägt nur den CSRF-Token. Returns True, wenn die
+        Anfrage hier beantwortet wurde."""
+        path = self.path.split('?', 1)[0]
+        if path not in _ACTION_PATHS:
+            return False
+        qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
+        if path == "/masterdata/articles/delete":
+            db.delete_article(int(qs["id"][0]))
+            self.respond(303, "", headers={"Location": "/masterdata/articles"})
+        elif path == "/masterdata/contacts/delete":
+            db.delete_contact(int(qs["id"][0]))
+            self.respond(303, "", headers={"Location": "/masterdata/contacts"})
+        elif path == "/masterdata/skr/delete":
+            status_code, location = handlers.handle_delete_skr(db, int(qs["id"][0]))
+            self.respond(status_code, "", headers={"Location": location})
+        elif path == "/masterdata/skr/togglemenu":
+            status_code, location = handlers.handle_toggle_skr_menu(db, int(qs["id"][0]))
+            self.respond(status_code, "", headers={"Location": location})
+        elif path == "/masterdata/bankaccounts/delete":
+            db.delete_account(int(qs["id"][0]))
+            self.respond(303, "", headers={"Location": "/masterdata/bankaccounts"})
+        elif path == "/receipts/delete":
+            db.delete_receipt(qs["number"][0])
+            self.respond(303, "", headers={"Location": "/receipts"})
+        elif path == "/transactions/delete":
+            db.delete_transaction(int(qs["id"][0]))
+            self.respond(303, "", headers={"Location": "/transactions"})
+        elif path == "/documents/unlink":
+            doc_id = int(qs["doc_id"][0])
+            booking_id = int(qs["booking_id"][0])
+            db.unlink_booking_from_document(booking_id, doc_id)
+            self.respond(303, "", headers={"Location": self._local_referer('/transactions')})
+        elif path == "/masterdata/numberranges/delete":
+            db.delete_number_range(int(qs["id"][0]))
+            self.respond(303, "", headers={"Location": "/masterdata/numberranges"})
+        elif path == "/assets/delete":
+            db.delete_asset(int(qs["id"][0]))
+            self.respond(303, "", headers={"Location": "/assets"})
+        elif path == "/asset_categories/delete":
+            db.delete_asset_category(int(qs["id"][0]))
+            self.respond(303, "", headers={"Location": "/asset_categories"})
+        elif path == "/worktime/delete":
+            db.delete_worktime(int(qs["id"][0]))
+            person_id = qs['person'][0] if qs.get('person') else ''
+            date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
+            self.respond(303, "", headers={"Location":
+                f"/worktime?person={quote(str(person_id), safe='')}&from={quote(date_from, safe='')}&to={quote(date_to, safe='')}"})
+        elif path == "/trips/delete":
+            db.delete_trip(int(qs["id"][0]))
+            person_id = qs['person'][0] if qs.get('person') else ''
+            date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
+            self.respond(303, "", headers={"Location":
+                f"/trips?person={quote(str(person_id), safe='')}&from={quote(date_from, safe='')}&to={quote(date_to, safe='')}"})
+        return True
+
     def do_GET(self):
         if not self._gate():
             return
@@ -287,6 +480,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         # entstünde fälschlich ein data/buch.db.
         db = self._maybe_db()
         try:
+            if self.path.split('?', 1)[0] in _ACTION_PATHS:
+                self.respond(405, "<h1>405</h1><p>Diese Aktion ist nur per POST möglich.</p>",
+                             headers={"Allow": "POST"})
+                return
             if self.path == "/" or self.path == "/dashboard" or self.path.startswith("/dashboard?"):
                 if db.is_first_run():
                     self.respond(303, "", headers={"Location": "/setup"})
@@ -467,11 +664,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 query_components = parse_qs(self.path.split('?')[1])
                 article_id = int(query_components["id"][0])
                 self.respond(200, PageArticleEdit(db, article_id))
-            elif self.path.startswith("/masterdata/articles/delete"):
-                query_components = parse_qs(self.path.split('?')[1])
-                article_id = int(query_components["id"][0])
-                db.delete_article(article_id)
-                self.respond(303, "", headers={"Location": "/masterdata/articles"})
             # Contacts
             elif self.path == "/masterdata/contacts" or self.path.startswith("/masterdata/contacts?"):
                 qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
@@ -490,11 +682,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 contact_id = int(qs["id"][0])
                 c_error    = qs.get('error', [None])[0]
                 self.respond(200, PageContactEdit(db, contact_id, error_msg=c_error))
-            elif self.path.startswith("/masterdata/contacts/delete"):
-                query_components = parse_qs(self.path.split('?')[1])
-                contact_id = int(query_components["id"][0])
-                db.delete_contact(contact_id)
-                self.respond(303, "", headers={"Location": "/masterdata/contacts"})
             elif self.path.startswith("/masterdata/contacts/check-abbreviation"):
                 import json as _json
                 qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
@@ -520,16 +707,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 query_components = parse_qs(self.path.split('?')[1])
                 id = int(query_components["id"][0])
                 self.respond(200, PageSkr(db, copy_from_id=id))
-            elif self.path.startswith("/masterdata/skr/delete"):
-                query_components = parse_qs(self.path.split('?')[1])
-                id = int(query_components["id"][0])
-                status_code, location = handlers.handle_delete_skr(db, id)
-                self.respond(status_code, "", headers={"Location": location})
-            elif self.path.startswith("/masterdata/skr/togglemenu"):
-                query_components = parse_qs(self.path.split('?')[1])
-                id = int(query_components["id"][0])
-                status_code, location = handlers.handle_toggle_skr_menu(db, id)
-                self.respond(status_code, "", headers={"Location": location})
             # Bank Accounts
             elif self.path == "/masterdata/bankaccounts":
                 self.respond(200, PageBankAccounts(db))
@@ -537,11 +714,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 query_components = parse_qs(self.path.split('?')[1])
                 account_id = int(query_components["id"][0])
                 self.respond(200, PageBankAccountEdit(db, account_id))
-            elif self.path.startswith("/masterdata/bankaccounts/delete"):
-                query_components = parse_qs(self.path.split('?')[1])
-                account_id = int(query_components["id"][0])
-                db.delete_account(account_id)
-                self.respond(303, "", headers={"Location": "/masterdata/bankaccounts"})
             # ──────────────────────────────────────────────────────────────
             elif self.path == "/miscellaneous" or self.path.startswith("/miscellaneous?"):
                 self.respond(200, PageMiscellaneous(db))
@@ -554,11 +726,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 query_components = parse_qs(self.path.split('?')[1])
                 number = query_components["number"][0]
                 self.respond(200, PageReceiptEdit(db, number))
-            elif self.path.startswith("/receipts/delete"):
-                query_components = parse_qs(self.path.split('?')[1])
-                number = query_components["number"][0]
-                db.delete_receipt(number)
-                self.respond(303, "", headers={"Location": "/receipts"})
             elif self.path == "/transactions" or self.path.startswith("/transactions?"):
                 qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
                 date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
@@ -576,29 +743,12 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
                 status_code, body = handlers.handle_transaction_suggest(db, qs)
                 self.respond(status_code, body, content_type="application/json")
-            elif self.path.startswith("/transactions/delete"):
-                query_components = parse_qs(self.path.split('?')[1])
-                transaction_id = int(query_components["id"][0])
-                db.delete_transaction(transaction_id)
-                self.respond(303, "", headers={"Location": "/transactions"})
-            elif self.path.startswith("/documents/unlink"):
-                query_components = parse_qs(self.path.split('?')[1])
-                doc_id = int(query_components["doc_id"][0])
-                booking_id = int(query_components["booking_id"][0])
-                db.unlink_booking_from_document(booking_id, doc_id)
-                # Redirect back to referrer or transactions
-                self.respond(303, "", headers={"Location": self.headers.get('Referer', '/transactions')})
             elif self.path == "/masterdata/numberranges":
                 self.respond(200, PageNumberRanges(db))
             elif self.path.startswith("/masterdata/numberranges/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 range_id = int(query_components["id"][0])
                 self.respond(200, PageNumberRangesEdit(db, range_id))
-            elif self.path.startswith("/masterdata/numberranges/delete"):
-                query_components = parse_qs(self.path.split('?')[1])
-                range_id = int(query_components["id"][0])
-                db.delete_number_range(range_id)
-                self.respond(303, "", headers={"Location": "/masterdata/numberranges"})
             # ── Assets / Anlagenverzeichnis ───────────────────────────────
             elif self.path == "/assets" or self.path.startswith("/assets?"):
                 status_filter = ''
@@ -621,22 +771,12 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 qc = parse_qs(self.path.split('?', 1)[1])
                 asset_id = int(qc["id"][0])
                 self.respond(200, PageAssetView(db, asset_id))
-            elif self.path.startswith("/assets/delete"):
-                qc = parse_qs(self.path.split('?', 1)[1])
-                asset_id = int(qc["id"][0])
-                db.delete_asset(asset_id)
-                self.respond(303, "", headers={"Location": "/assets"})
             elif self.path == "/asset_categories" or self.path.startswith("/asset_categories?"):
                 self.respond(200, PageAssetCategories(db))
             elif self.path.startswith("/asset_categories/edit"):
                 qc = parse_qs(self.path.split('?', 1)[1])
                 cat_id = int(qc["id"][0])
                 self.respond(200, PageAssetCategoryEdit(db, cat_id))
-            elif self.path.startswith("/asset_categories/delete"):
-                qc = parse_qs(self.path.split('?', 1)[1])
-                cat_id = int(qc["id"][0])
-                db.delete_asset_category(cat_id)
-                self.respond(303, "", headers={"Location": "/asset_categories"})
             # ── Zeiten / Arbeitszeiten ────────────────────────────────────
             elif self.path == "/worktime" or self.path.startswith("/worktime?"):
                 qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
@@ -654,14 +794,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
                 self.respond(200, PageWorkTimes(db, person_id=person_id, date_from=date_from,
                                                 date_to=date_to, edit_id=edit_id))
-            elif self.path.startswith("/worktime/delete"):
-                qs = parse_qs(self.path.split('?')[1])
-                worktime_id = int(qs["id"][0])
-                db.delete_worktime(worktime_id)
-                person_id = qs['person'][0] if qs.get('person') else ''
-                date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
-                self.respond(303, "", headers={"Location":
-                    f"/worktime?person={person_id}&from={date_from}&to={date_to}"})
             elif self.path.startswith("/worktime/pdf"):
                 qs = parse_qs(self.path.split('?')[1])
                 person_id = qs["person"][0]
@@ -710,14 +842,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
                 self.respond(200, PageTrips(db, person_id=person_id, date_from=date_from,
                                             date_to=date_to, edit_id=edit_id))
-            elif self.path.startswith("/trips/delete"):
-                qs = parse_qs(self.path.split('?')[1])
-                trip_id = int(qs["id"][0])
-                db.delete_trip(trip_id)
-                person_id = qs['person'][0] if qs.get('person') else ''
-                date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
-                self.respond(303, "", headers={"Location":
-                    f"/trips?person={person_id}&from={date_from}&to={date_to}"})
             # ─────────────────────────────────────────────────────────────
             # ── Legacy Redirects (Compatibility) ──────────────────────────
             # Old URLs redirect to new Master Data structure
@@ -962,6 +1086,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
 
         # Route to appropriate handler
         try:
+            if self._post_action_routes(db):
+                return
             # ── Benutzerverwaltung (nur Admin) ────────────────────────────
             if self.path in ("/users/create", "/users/delete",
                              "/users/reset-password", "/users/toggle-admin"):
@@ -1091,8 +1217,15 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(status_code, "", headers={"Location": "/masterdata/articles"})
             # ──────────────────────────────────────────────────────────────
             elif self.path == "/execute_sql":
-                content = handlers.handle_execute_sql(db, post_data)
-                self.respond(200, content, content_type="application/json")
+                if not auth.sql_console_allowed():
+                    import json as _json
+                    self.respond(403, _json.dumps({
+                        "success_count": 0, "total": 0, "output": "",
+                        "errors": ["Die SQL-Konsole steht nur Administratoren zur Verfügung."],
+                    }, ensure_ascii=False), content_type="application/json")
+                else:
+                    content = handlers.handle_execute_sql(db, post_data)
+                    self.respond(200, content, content_type="application/json")
             elif self.path == "/wiso/fdb-import":
                 status_code, location = handlers.handle_wiso_fdb_import(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
@@ -1117,7 +1250,11 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             # ── Setup ─────────────────────────────────────────────────────
             elif self.path == "/setup/mode":
                 location = handlers.handle_setup_mode(post_data)
-                self.respond(303, "", headers={"Location": location})
+                if location is None:
+                    self.respond(403, "<h1>403</h1><p>Der Betriebsmodus ist bereits festgelegt "
+                                      "und lässt sich im Browser nicht mehr ändern.</p>")
+                else:
+                    self.respond(303, "", headers={"Location": location})
             elif self.path == "/setup/save":
                 status_code, response = handlers.handle_setup_save(db, post_data)
                 if status_code == 303:

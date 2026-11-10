@@ -6,6 +6,7 @@
 Alle Tests verwenden anonyme Test-Zugangsdaten und eine temporäre auth.db.
 """
 import os
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -51,6 +52,34 @@ def test_username_validation(auth_db):
         auth.create_user("x", "geheim123", db_path=auth_db)
     with pytest.raises(ValueError):
         auth.create_user("alice", "kurz", db_path=auth_db)  # Passwort zu kurz
+
+
+# ── reservierter Benutzername 'tests' (Ordner für Testartefakte im Datenverzeichnis) ──
+RESERVED_MESSAGE = "Dieser Benutzername ist reserviert."
+
+
+@pytest.mark.parametrize("name", ["tests", "Tests", "TESTS", "tEsTs"])
+def test_reserved_username_is_invalid(name):
+    assert auth.valid_username(name) is False
+
+
+@pytest.mark.parametrize("name", ["tester", "test", "tests2", "my-tests", "_tests"])
+def test_names_similar_to_the_reserved_one_stay_valid(name):
+    assert auth.valid_username(name) is True
+
+
+@pytest.mark.parametrize("name", ["tests", "Tests", "TESTS"])
+def test_create_user_rejects_reserved_name(auth_db, name):
+    with pytest.raises(ValueError) as exc:
+        auth.create_user(name, "geheim123", db_path=auth_db)
+    assert str(exc.value) == RESERVED_MESSAGE
+    assert auth.has_any_user(auth_db) is False                      # nichts angelegt
+
+
+@pytest.mark.parametrize("name", ["tester", "test", "tests2"])
+def test_create_user_accepts_names_similar_to_the_reserved_one(auth_db, name):
+    auth.create_user(name, "geheim123", db_path=auth_db)
+    assert auth.user_exists(name, auth_db) is True
 
 
 def test_duplicate_user_raises(auth_db):
@@ -225,13 +254,38 @@ def test_ensure_directories_by_mode(data_root):
     assert typ & set(os.listdir(data_root)) == set()
 
 
-def test_handle_setup_mode_redirects(data_root):
-    assert handlers.handle_setup_mode({"mode": ["multi"]}) == "/setup-admin"
-    assert userctx.get_mode() == "multi"
-    assert handlers.handle_setup_mode({"mode": ["single"]}) == "/setup"
-    assert userctx.get_mode() == "single"
-    # ungültig: keine Änderung, zurück zur Auswahl
-    assert handlers.handle_setup_mode({"mode": ["x"]}) == "/setup"
+def _config_bytes():
+    with open(userctx.config_path(), "rb") as f:
+        return f.read()
+
+
+@pytest.mark.parametrize("mode, target", [("multi", "/setup-admin"), ("single", "/setup")])
+def test_handle_setup_mode_first_choice_sets_mode(data_root, mode, target):
+    assert userctx.get_mode() is None
+    assert handlers.handle_setup_mode({"mode": [mode]}) == target
+    assert userctx.get_mode() == mode
+    # aus der Datei gelesen (Cache geleert) steht dieselbe Wahl
+    userctx._mode_cache.clear()
+    assert userctx.get_mode() == mode
+
+
+@pytest.mark.parametrize("first, second", [("multi", "single"), ("single", "multi")])
+def test_handle_setup_mode_is_ignored_once_mode_is_set(data_root, first, second):
+    userctx.set_mode(first)
+    config_before = _config_bytes()
+    assert handlers.handle_setup_mode({"mode": [second]}) is None
+    assert userctx.get_mode() == first
+    assert _config_bytes() == config_before
+    userctx._mode_cache.clear()
+    assert userctx.get_mode() == first
+
+
+@pytest.mark.parametrize("post_data", [{"mode": ["x"]}, {"mode": [""]}, {}])
+def test_handle_setup_mode_invalid_value_keeps_mode_unset(data_root, post_data):
+    # noch kein Modus gewählt: ungültige Eingabe führt zurück zur Auswahl
+    assert handlers.handle_setup_mode(post_data) == "/setup"
+    assert userctx.get_mode() is None
+    assert not os.path.exists(userctx.config_path())
 
 
 # ── Phase 3: Benutzerverwaltung ──────────────────────────────────────────────
@@ -284,6 +338,21 @@ def test_handler_create_invalid_username(monkeypatch, tmp_path):
     monkeypatch.setattr(auth, "AUTH_DB", str(tmp_path / "auth.db"))
     loc = handlers.handle_user_create({"username": ["x"], "password": ["geheim123"]})
     assert "err=" in loc
+
+
+def test_handler_create_reserved_username_reports_it_and_creates_nobody(monkeypatch, tmp_path):
+    monkeypatch.setattr(auth, "AUTH_DB", str(tmp_path / "auth.db"))
+    loc = handlers.handle_user_create({"username": ["Tests"], "password": ["geheim123"]})
+    assert parse_qs(urlsplit(loc).query) == {"err": [RESERVED_MESSAGE]}     # kommt beim Nutzer an
+    assert auth.has_any_user() is False
+
+
+def test_handler_setup_admin_reserved_username_reports_it_and_creates_nobody(monkeypatch, tmp_path):
+    monkeypatch.setattr(auth, "AUTH_DB", str(tmp_path / "auth.db"))
+    ok, username, err = handlers.handle_setup_admin(
+        {"username": ["tests"], "password": ["geheim123"], "password2": ["geheim123"]})
+    assert (ok, username, err) == (False, "tests", RESERVED_MESSAGE)
+    assert auth.has_any_user() is False
 
 
 def test_page_users_renders(monkeypatch, tmp_path):

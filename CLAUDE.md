@@ -113,9 +113,26 @@ kein Subagent darauf:
 - Jeder Push (alle Branches) führt `.github/workflows/tests.yml` aus:
   Anonymisierungs-Guard + pytest
 
+### Zugriffsschutz (HTTP)
+- Türsteher ist `_gate()` in `server/app.py`: schreibende Anfragen nur von eigenen
+  Seiten (`request_is_same_origin`: `Sec-Fetch-Site`, sonst `Origin` gegen `Host`/
+  `X-Forwarded-Host`) – in beiden Betriebsmodi, zusätzlich zum CSRF-Token
+- Ohne Login (Einzelbenutzer, Ersteinrichtung) nur unter vertrauenswürdigen
+  Hostnamen (`host_is_trusted`, gegen DNS-Rebinding); weitere Namen über
+  `UBUCHHALTUNG_ALLOWED_HOSTS`
+- **Aktionen mit Seiteneffekt nie per GET:** Pfad in `_ACTION_PATHS` eintragen,
+  Logik in `_post_action_routes`, im Frontend `appConfirmPost()`/`appPost()`
+  statt eines Links
+- Der Betriebsmodus wird nur bei der Ersteinrichtung gewählt (`handle_setup_mode`)
+- **SQL-Konsole** (`handle_execute_sql`): im Mehrbenutzer-Modus nur Administratoren
+  (`auth.sql_console_allowed`); per SQLite-Authorizer auf die eigene Datenbank
+  beschränkt – kein `ATTACH`/`DETACH`/`VACUUM`, PRAGMAs bis auf wenige nur lesend.
+  Diese Sperren nicht aufweichen
+
 ### Demo-Modus & Screenshots
 - `UBUCHHALTUNG_DEMO=1` (`demo.py`) befüllt **nur ein leeres Datenverzeichnis** –
-  diese Garantie nie aufweichen. Demodaten (`demo_seed.py`,
+  diese Garantie nie aufweichen (übergangen werden allein `lost+found` und
+  `tests/`, der Ordner für Testartefakte). Demodaten (`demo_seed.py`,
   `seed_data/test/demo_scenario.json`) entstehen über die App-eigenen Code-Pfade,
   relativ zum Startdatum; pytest-Testdaten bleiben davon getrennt
 - README-Bilder neu erzeugen: `node tools/screenshots.mjs` → `docs/screenshots/`
@@ -209,6 +226,14 @@ kein Subagent darauf:
 - Vor PR: lokal starten (`python main.py`), Feature testen
 - Wenn Bug reproduzierbar, direkt über DB debuggen
 - SQL-Queries gezielt checken (z.B. `SELECT COUNT(*) ... GROUP BY ...`)
+- **Tests schreiben nie ins echte `data/`:** `tests/conftest.py` gibt jedem Test eine
+  eigene Datenwurzel (`userctx.DATA_ROOT` unter `tmp_path`); ein Session-Wächter
+  (`tests/data_guard.py`) schlägt an, wenn doch etwas dort landet
+- Alles rund um Testläufe liegt unter `data/tests/`: `tmp/` (Arbeitsdaten; nach dem
+  Lauf bleiben nur die Verzeichnisse fehlgeschlagener Tests der letzten zwei Läufe)
+  und `cache/` (pytest-Cache). Keine Punkt-Verzeichnisse im Projektordner anlegen.
+  `data/tests/` wird von Datensicherung und Demo-Modus übergangen, der Benutzername
+  `tests` ist reserviert
 
 ### Versionierung
 - Single Source of Truth: `version.py` (Schema `MAJOR.MINOR.PATCH`)

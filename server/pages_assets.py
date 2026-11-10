@@ -623,7 +623,7 @@ def PageAssetCategories(db: Database, edit_category_id=None):
             <td>
                 <a href="javascript:void(0)" onclick="openEditForm('/asset_categories/edit?id={c[0]}')" class="action-icon" title="Bearbeiten">&#9998;</a>
                 <a href="javascript:void(0);" class="action-icon delete-icon" title="Löschen"
-                   onclick="appConfirmHref('/asset_categories/delete?id={c[0]}', 'Kategorie wirklich löschen?')">&#128465;</a>
+                   onclick="appConfirmPost('/asset_categories/delete?id={c[0]}', 'Kategorie wirklich löschen?')">&#128465;</a>
             </td>
         </tr>'''
 

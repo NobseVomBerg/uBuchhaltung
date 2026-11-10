@@ -1039,6 +1039,33 @@ def _store_fdb_result(result):
         pass                                    # Anzeige ist nicht kritisch
 
 
+# ── SQL-Konsole ──────────────────────────────────────────────────────────────
+# PRAGMAs, die in der Konsole auch mit Argument/Wert erlaubt sind. Alle übrigen
+# lassen sich nur lesen: user_version, journal_mode, writable_schema usw.
+# greifen in Migration und Datensicherung ein.
+_CONSOLE_PRAGMAS_WITH_ARG = frozenset({
+    'table_info', 'table_xinfo', 'table_list', 'index_list', 'index_info',
+    'index_xinfo', 'foreign_key_list', 'foreign_key_check', 'integrity_check',
+    'quick_check', 'foreign_keys', 'defer_foreign_keys', 'case_sensitive_like',
+})
+
+
+def _console_authorizer(action, arg1, arg2, dbname, source):
+    """Hält die SQL-Konsole in der eigenen Datenbank.
+
+    ATTACH/DETACH würden andere Dateien öffnen (auth.db, Datenbanken anderer
+    Nutzer); VACUUM (auch VACUUM INTO) läuft intern über ATTACH und ist damit
+    ebenfalls gesperrt. Diese Sperren nicht aufweichen.
+    """
+    import sqlite3
+    if action in (sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH):
+        return sqlite3.SQLITE_DENY
+    if (action == sqlite3.SQLITE_PRAGMA and arg2 is not None
+            and (arg1 or '').lower() not in _CONSOLE_PRAGMAS_WITH_ARG):
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+
+
 def handle_execute_sql(db: Database, post_data):
     """Handle SQL command execution – returns JSON with results."""
     import sqlite3, json
@@ -1056,8 +1083,9 @@ def handle_execute_sql(db: Database, post_data):
     success_count = 0
     
     conn = sqlite3.connect(db.db_name)
+    conn.set_authorizer(_console_authorizer)
     cursor = conn.cursor()
-    
+
     try:
         for i, command in enumerate(commands, 1):
             try:
@@ -1071,8 +1099,12 @@ def handle_execute_sql(db: Database, post_data):
                     for row in cursor.fetchall():
                         output_lines.append(';'.join(str(v) if v is not None else '' for v in row))
             except sqlite3.Error as e:
-                errors.append(f"Befehl {i}: {str(e)}")
-        
+                msg = str(e)
+                if 'not authorized' in msg or 'authorization denied' in msg:
+                    msg = ('nicht erlaubt – ATTACH, DETACH, VACUUM und das Setzen von '
+                           'PRAGMAs sind in der Konsole gesperrt')
+                errors.append(f"Befehl {i}: {msg}")
+
         conn.commit()
         
         return json.dumps({
@@ -2614,12 +2646,18 @@ def handle_update_trip(db: Database, post_data):
 
 # ── Authentifizierung (TODO #4) ──────────────────────────────────────────────
 def handle_setup_mode(post_data):
-    """Betriebsmodus bei der Ersteinrichtung wählen. Returns Redirect-Location.
+    """Betriebsmodus bei der Ersteinrichtung wählen. Returns Redirect-Location
+    oder None, wenn der Modus bereits feststeht.
 
     'multi' → Administrator anlegen (/setup-admin); 'single' → eigene
     Kontaktdaten (/setup, wie gehabt).
     """
     import userctx
+    if userctx.get_mode() is not None:
+        # Der Betriebsmodus wird nur bei der Ersteinrichtung gewählt. Sonst könnte
+        # jeder angemeldete Nutzer auf "single" schalten und damit den Login
+        # abschalten. Späterer Wechsel: data/config.json bei gestopptem Server.
+        return None
     mode = post_data.get('mode', [''])[0]
     if mode not in ('single', 'multi'):
         return '/setup'

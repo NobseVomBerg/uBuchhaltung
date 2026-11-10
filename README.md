@@ -289,7 +289,8 @@ Vollständiges Anlagenmanagement mit gesetzeskonformer AfA:
     blockieren nicht
 - **SQL-Konsole**: Direkte SQL-Ausführung (Entwickler-Tool) inkl. **Zeitbereich löschen**
   (generiert ein FK-sicheres Lösch-Skript für Belege/Buchungen/Rechnungen/Angebote
-  eines Zeitraums ins SQL-Feld; Ausführung erst nach manueller Bestätigung)
+  eines Zeitraums ins SQL-Feld; Ausführung erst nach manueller Bestätigung);
+  auf die eigene Datenbank beschränkt; im Mehrbenutzer-Modus nur für Administratoren
 - **Datensicherung**: Backup nach `<UserDir>/backup/JJJJMMTT_Backup.7zip`
   (7-Zip, ohne 7-Zip als `.zip`; wahlweise nur DB oder alle Daten; DB als
   konsistenter Snapshot) + **Wiederherstellung** (überschreiben oder vorher löschen)
@@ -549,7 +550,8 @@ ausschließlich erfunden bzw. anonymisiert.
 - Im **Einzelbenutzer-Modus** gibt es keine Authentifizierung –
   nur auf `localhost` betreiben
 - ⚠️ Konzipiert für lokalen bzw. LAN-Einsatz – **nicht für das offene Internet**
-  (kein Rate-Limiting, SQL-Konsole für angemeldete Nutzer, einfacher HTTP-Server)
+  (kein Rate-Limiting, einfacher HTTP-Server, SQL-Konsole mit direktem Schreibzugriff
+  auf die eigene Datenbank)
 
 ---
 

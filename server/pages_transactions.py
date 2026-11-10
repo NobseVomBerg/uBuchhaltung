@@ -692,7 +692,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 s+= f"<td>{doc_filename}</td>"
                 s+= f"<td>{relation_type or '-'}</td>"
                 s+= f"<td><a href='/receipts/edit?number={doc_number}'>Ansehen</a> | "
-                s+= f"<a href='/documents/unlink?doc_id={doc_id}&booking_id={booking_id}'>Entfernen</a></td>"
+                s+= f"<a href='javascript:void(0);' onclick=\"appPost('/documents/unlink?doc_id={doc_id}&amp;booking_id={booking_id}')\">Entfernen</a></td>"
                 s+= f"</tr>"
             s+= "</table>"
         else:
@@ -1221,7 +1221,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     s+= (f"<td>{status_badge}"
                          f" <a href='javascript:void(0)' onclick='openEditForm({bank_id})' class='action-icon' title='Bearbeiten'>&#9998;</a>"
                          f" <a href='javascript:void(0);' class='action-icon delete-icon' title='L\u00f6schen'"
-                         f" onclick='appConfirmHref(\"/transactions/delete?id={bank_id}\", \"Buchung #{bank_id} wirklich l\u00f6schen?\")'>&#128465;</a>"
+                         f" onclick='appConfirmPost(\"/transactions/delete?id={bank_id}\", \"Buchung #{bank_id} wirklich l\u00f6schen?\")'>&#128465;</a>"
                          f" <span class='split-toggle-icon' id='toggle-icon-{bid}'"
                          f" onclick='toggleGroup(\"{bid}\")'"
                          f" title='Buchungssatz ein-/ausblenden'>&#9654;</span></td>")
@@ -1248,7 +1248,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 s+= (f"<td>{status_badge}"
                      f" <a href='javascript:void(0)' onclick='openEditForm({bank_id})' class='action-icon' title='Bearbeiten'>&#9998;</a>"
                      f" <a href='javascript:void(0);' class='action-icon delete-icon' title='L\u00f6schen'"
-                     f" onclick='appConfirmHref(\"/transactions/delete?id={bank_id}\", \"Buchung #{bank_id} wirklich l\u00f6schen?\")'>&#128465;</a></td>")
+                     f" onclick='appConfirmPost(\"/transactions/delete?id={bank_id}\", \"Buchung #{bank_id} wirklich l\u00f6schen?\")'>&#128465;</a></td>")
                 s+= f"</tr>"
 
         elif row_type == 'child':
@@ -1288,7 +1288,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             s+= (f"<td>{status_badge}"
                  f" <a href='javascript:void(0)' onclick='openEditForm({booking_id})' class='action-icon' title='Bearbeiten'>&#9998;</a>"
                  f" <a href='javascript:void(0);' class='action-icon delete-icon' title='L\u00f6schen'"
-                 f" onclick='appConfirmHref(\"/transactions/delete?id={booking_id}\", \"Buchung #{booking_id} wirklich l\u00f6schen?\")'>&#128465;</a></td>")
+                 f" onclick='appConfirmPost(\"/transactions/delete?id={booking_id}\", \"Buchung #{booking_id} wirklich l\u00f6schen?\")'>&#128465;</a></td>")
             s+= f"</tr>"
 
         else:
@@ -1336,7 +1336,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             s+= (f"<td>{status_badge}"
                  f" <a href='javascript:void(0)' onclick='openEditForm({booking_id})' class='action-icon' title='Bearbeiten'>&#9998;</a>"
                  f" <a href='javascript:void(0);' class='action-icon delete-icon' title='L\u00f6schen'"
-                 f" onclick='appConfirmHref(\"/transactions/delete?id={booking_id}\", \"Buchung #{booking_id} wirklich l\u00f6schen?\")'>&#128465;</a></td>")
+                 f" onclick='appConfirmPost(\"/transactions/delete?id={booking_id}\", \"Buchung #{booking_id} wirklich l\u00f6schen?\")'>&#128465;</a></td>")
             s+= f"</tr>"
 
     s+= "</table>"

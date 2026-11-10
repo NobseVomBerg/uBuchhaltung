@@ -21,6 +21,10 @@ import time
 AUTH_DB = "./data/auth.db"
 SESSION_TTL = 7 * 24 * 3600          # 7 Tage
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
+# Reservierte Benutzernamen (Vergleich ohne Groß-/Kleinschreibung): "tests" ist
+# der Ordner für Testartefakte im Datenverzeichnis (data/tests/) und wird von
+# Datensicherung und Demo-Modus übergangen – kein Nutzer darf so heißen.
+_RESERVED_USERNAMES = frozenset({"tests"})
 _MIN_PW_LEN = 6
 
 # scrypt-Parameter (RFC 7914): n=2^14 ⇒ ~16 MB, für interaktiven Login angemessen.
@@ -86,7 +90,8 @@ def init_auth_db(db_path=None):
 
 # ── Passwort-Hashing ─────────────────────────────────────────────────────────
 def valid_username(username):
-    return bool(_USERNAME_RE.match(username or ""))
+    name = username or ""
+    return bool(_USERNAME_RE.match(name)) and name.lower() not in _RESERVED_USERNAMES
 
 
 def _hash(password, salt):
@@ -104,6 +109,8 @@ def has_any_user(db_path=None):
 
 def create_user(username, password, is_admin=False, db_path=None):
     """Neuen Benutzer anlegen. Wirft ValueError bei ungültigen Eingaben/Duplikat."""
+    if (username or "").lower() in _RESERVED_USERNAMES:
+        raise ValueError("Dieser Benutzername ist reserviert.")
     if not valid_username(username):
         raise ValueError("Ungültiger Benutzername (3–32 Zeichen: A–Z, a–z, 0–9, _ , -).")
     if not password or len(password) < _MIN_PW_LEN:
@@ -178,6 +185,19 @@ def count_admins(db_path=None):
     n = con.execute("SELECT COUNT(*) FROM Users WHERE IsAdmin = 1").fetchone()[0]
     con.close()
     return n
+
+
+def sql_console_allowed(db_path=None):
+    """Darf der aktuelle Nutzer die SQL-Konsole verwenden?
+
+    Einzelbenutzer-Modus: ja (es gibt nur den Besitzer). Mehrbenutzer-Modus:
+    nur Administratoren.
+    """
+    import userctx
+    if not userctx.auth_enabled():
+        return True
+    user = userctx.get_user()
+    return bool(user and is_admin(user, db_path))
 
 
 def user_exists(username, db_path=None):
