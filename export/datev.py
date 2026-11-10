@@ -222,7 +222,7 @@ def export_to_datev(bookings, coa_id_to_number: dict,
     :param coa_id_to_number:  Dict {coa_id (int): account_number (int/str)}
     :param date_from:         'YYYY-MM-DD' – Anfang des Buchungszeitraums
     :param date_to:           'YYYY-MM-DD' – Ende des Buchungszeitraums
-    :param liquid_coa_ids:    COA-IDs der Bank-/Kassenkonten (``db.get_bank_coa_ids()``);
+    :param liquid_coa_ids:    COA-IDs der Zahlungskonten (``db.get_payment_coa_ids()``);
                               daran erkennt der Export, auf welcher Seite des Satzes das
                               Geldkonto steht. Ohne sie (None) gilt allein das Vorzeichen.
     :returns:                 (csv_bytes in CP1252, list_of_exported_booking_ids)

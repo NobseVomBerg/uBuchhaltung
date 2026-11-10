@@ -30,7 +30,9 @@ from urllib.parse import urlencode
 import pytest
 
 from server.app import parse_form
-from server.handlers import handle_add_transaction
+from server.handlers import (
+    _plan_split_rows, _save_split_rows, _write_split_rows, handle_add_transaction,
+)
 from server.pages_transactions import PageTransactions
 
 IBAN_ONE = 'DE89370400440532013000'      # Test-IBANs aus tests/check_anonymized.py
@@ -369,8 +371,9 @@ def test_front_money_account_saved_unchanged_keeps_the_whole_row(fresh, kind, fr
 @pytest.mark.parametrize('kind', ARTEN)
 def test_front_money_account_purpose_choice_goes_to_the_counter_account(fresh, kind, front):
     """„1460 / 4400“ auf einer frischen Datenbank, SKR-Konto auf 4300: Das Verrechnungskonto
-    bleibt vorne, 4300 wird das Gegenkonto. Früher (Regel nur an den Bankkonten) wurde 4300
-    das vordere Konto und 4400 blieb stehen – eine stille Erlösumbuchung."""
+    bleibt vorne, 4300 wird das Gegenkonto. Früher (Regel nur an den eigenen Bankkonten) wurde
+    bei 1460 das SKR-Konto 4300 zum vorderen Konto und 4400 blieb stehen – eine stille
+    Erlösumbuchung."""
     row = _front_row(fresh, kind, front)
     before = _row(fresh.db, row)
     post = _form_post(fresh.db, row)
@@ -491,6 +494,41 @@ def test_mirror_row_takes_the_choice_as_coa(fresh):
     assert _changed(before, after) == {'COA_ID'}
     assert (after['COA_ID'][0], after['CounterCOA_ID'][0]) == (fresh.coa(4300), fresh.coa(1810))
     assert _euer(fresh.db) == {4300: Decimal('500.00')}
+
+
+@pytest.mark.parametrize('choice, counter', [
+    pytest.param('same', 4400, id='unveraendert'),
+    pytest.param('4300', 4300, id='zweckkonto-4300'),
+    pytest.param('none', None, id='kein-skr-konto'),
+])
+@pytest.mark.parametrize('account', [
+    pytest.param(None, id='ohne-konto'),
+    pytest.param('Kasse', id='mit-standard-kasse'),
+])
+def test_clearing_account_front_row_on_a_database_without_any_bank_account(tmp_db, account, choice,
+                                                                           counter):
+    """Ganz frische Datenbank: kein Bankkonto, die Standard-Kasse ohne SKR-Nummer. Ein
+    eigenständiger Satz „1460 / 4400“ (+119,00, 19 %) behält das Verrechnungskonto vorne."""
+    db = tmp_db
+    coa = db.get_coa_id_by_account_number
+    assert db.get_bank_coa_ids() == set()
+    account_id = next(a[0] for a in db.fetch_accounts() if a[1] == account) if account else None
+    row = db.insert_booking(
+        '2026-03-05', Decimal('119.00'), account_id=account_id, recipient_client='Testmarkt',
+        coa_id=coa(1460), counter_coa_id=coa(4400), tax_rate=0.19, tax_amount=Decimal('19.00'),
+        text='Kopierpapier', document_number='ER-2026-021', booking_type='entry')
+    before = _row(db, row)
+    post = _form_post(db, row)
+    assert post['coa_id'] == [str(coa(1460))]
+    if choice != 'same':
+        post['coa_id'] = [str(coa(int(choice))) if choice != 'none' else '']
+
+    assert handle_add_transaction(db, post)[0] == 303
+
+    after = _row(db, row)
+    assert after['COA_ID'][0] == coa(1460)
+    assert after['CounterCOA_ID'][0] == (coa(counter) if counter else None)
+    assert _changed(before, after) == (set() if choice == 'same' else {'CounterCOA_ID'})
 
 
 # ── eigenständige Buchung ohne Bankbewegung: Account_ID kommt aus dem Formular ──
@@ -750,6 +788,147 @@ def test_invalid_number_in_new_bank_movement_creates_nothing(world, field, value
 
     assert status == 500 and message.startswith('Fehler beim Speichern')
     assert _table(w.db) == table_before                      # keine Bankbewegung, keine Sätze
+
+
+# ── Editor der Bankmaske: planen, schreiben, speichern ───────────────────────
+
+SPLIT_FIELDS = ('split_id', 'split_text', 'split_counter_coa', 'split_amount', 'split_coa',
+                'split_tax_rate', 'split_tax_amount', 'split_docnr')
+
+
+def _plan_args(w, booking, post):
+    """Argumente von ``_plan_split_rows``, wie ``handle_add_transaction`` sie für die Bankzeile bildet."""
+    return (w.db, booking.bank, post, w.coa(1800), '2026-03-01', None, 'Lieferant GmbH', 'EUR')
+
+
+def _drop_editor_row(post, index):
+    """Entfernt eine Zeile des Editors (wie das ✕ im Browser)."""
+    for name in SPLIT_FIELDS:
+        del post[name][index]
+
+
+def _children_by_id(w, booking):
+    return {c[0]: c for c in w.db.get_child_bookings_for_bank(booking.bank)}
+
+
+def test_plan_split_rows_reads_all_rows_and_writes_nothing(world):
+    w = world
+    booking = _bank_with_two_children(w)
+    post = _form_post(w.db, booking.bank)
+    _edit_everything(post)
+    _add_editor_row(post, split_amount='-12.00', split_coa=str(w.coa(6850)))
+    table_before = _table(w.db)
+
+    planned = _plan_split_rows(*_plan_args(w, booking, post))
+
+    assert _table(w.db) == table_before                     # planen schreibt nichts
+    # zwei bestehende Zeilen und die neue; die leere Vorlagenzeile fällt weg
+    assert [rid for rid, _fields, _adopt in planned] == [booking.first, booking.second, None]
+    assert [adopt for _rid, _fields, adopt in planned] == [False, False, False]
+
+
+def test_plan_split_rows_marks_an_unlinked_booking_as_adopted(world):
+    w = world
+    booking = _bank_with_two_children(w)
+    free = w.db.insert_booking('2026-02-20', Decimal('-50.00'), coa_id=w.coa(6815),
+                               booking_type='entry', text='Frei')
+    post = _form_post(w.db, booking.bank)
+    _add_editor_row(post, split_id=str(free), split_amount='-50.00', split_coa=str(w.coa(6815)))
+
+    planned = _plan_split_rows(*_plan_args(w, booking, post))
+
+    assert [(rid, adopt) for rid, _fields, adopt in planned] == [
+        (booking.first, False), (booking.second, False), (free, True)]
+
+
+@pytest.mark.parametrize('field, value', [
+    pytest.param('split_amount', 'abc', id='betrag'),
+    pytest.param('split_tax_rate', 'neunzehn', id='steuersatz'),
+    pytest.param('split_coa', 'abc', id='konto'),
+])
+def test_plan_split_rows_with_an_invalid_number_raises_and_writes_nothing(world, field, value):
+    w = world
+    booking = _bank_with_two_children(w)
+    post = _form_post(w.db, booking.bank)
+    _edit_everything(post)
+    post[field][1] = value
+    table_before = _table(w.db)
+
+    with pytest.raises(ValueError):
+        _plan_split_rows(*_plan_args(w, booking, post))
+
+    assert _table(w.db) == table_before
+
+
+def _edited_post_with_a_new_row_and_the_second_row_removed(w, booking):
+    post = _form_post(w.db, booking.bank)
+    _edit_everything(post)                                   # erste Zeile geändert
+    _drop_editor_row(post, 1)                                # zweite Zeile entfernt
+    _add_editor_row(post, split_amount='-12.00', split_coa=str(w.coa(6850)), split_text='Neue Zeile')
+    return post
+
+
+def _assert_plan_was_written(w, booking):
+    children = _children_by_id(w, booking)
+    assert booking.second not in children                    # entfernte Zeile ist gelöscht
+    assert w.db.get_booking_by_id(booking.second) is None
+    assert children[booking.first][4] == Decimal('-190.0000')           # geänderte Zeile
+    (new_id,) = set(children) - {booking.first}
+    new = w.db.get_booking_by_id(new_id)
+    assert (new[8], new[9]) == (w.coa(6850), w.coa(1800))   # Zweckkonto vorne, Bank hinten
+    assert new[11] == Decimal('-12.0000') and new[18] == booking.bank
+    assert new[17] == 'entry' and new[15] == 'Neue Zeile'
+
+
+def test_write_split_rows_writes_the_plan_and_removes_dropped_rows(world):
+    w = world
+    booking = _bank_with_two_children(w)
+    post = _edited_post_with_a_new_row_and_the_second_row_removed(w, booking)
+    planned = _plan_split_rows(*_plan_args(w, booking, post))
+    table_before = _table(w.db)
+
+    _write_split_rows(w.db, booking.bank, planned)
+
+    assert _table(w.db) != table_before
+    _assert_plan_was_written(w, booking)
+
+
+def test_save_split_rows_plans_and_writes(world):
+    w = world
+    booking = _bank_with_two_children(w)
+    post = _edited_post_with_a_new_row_and_the_second_row_removed(w, booking)
+
+    _save_split_rows(*_plan_args(w, booking, post))
+
+    _assert_plan_was_written(w, booking)
+
+
+def test_save_split_rows_with_an_invalid_number_writes_nothing(world):
+    w = world
+    booking = _bank_with_two_children(w)
+    post = _edited_post_with_a_new_row_and_the_second_row_removed(w, booking)
+    post['split_amount'][1] = 'abc'                          # die neue, letzte Zeile
+    table_before = _table(w.db)
+
+    with pytest.raises(ValueError):
+        _save_split_rows(*_plan_args(w, booking, post))
+
+    assert _table(w.db) == table_before
+
+
+def test_plan_split_rows_for_a_new_bank_movement_has_no_existing_rows(world):
+    """``bank_id`` ist None, solange die Bankbewegung erst noch angelegt wird."""
+    w = world
+    post = _new_movement_post(w, [
+        {'amount': '-200.00', 'coa': str(w.coa(6815))},
+        {'amount': '-38.00', 'coa': str(w.coa(6300))},
+    ])
+    table_before = _table(w.db)
+
+    planned = _plan_split_rows(w.db, None, post, w.coa(1800), '2026-03-01', None, 'Lieferant GmbH', 'EUR')
+
+    assert _table(w.db) == table_before
+    assert [(rid, adopt) for rid, _fields, adopt in planned] == [(None, False), (None, False)]
 
 
 # ── Auswahl „Kunde“ ──────────────────────────────────────────────────────────
