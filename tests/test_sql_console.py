@@ -7,14 +7,16 @@ Drei Teile:
   1. handle_execute_sql(): Der SQLite-Authorizer sperrt ATTACH, DETACH, VACUUM (auch
      VACUUM INTO) und das Setzen von PRAGMAs bis auf wenige Namen; alles andere läuft
      in der eigenen Datenbank wie bisher,
-  2. auth.sql_console_allowed(): Einzelbenutzer-Modus immer, Mehrbenutzer-Modus nur
+  2. auth.sql_console_allowed(): ohne eingerichtete Installation immer, danach nur
      Administratoren,
-  3. HTTP gegen einen echten Server: POST /execute_sql und die Seite Sonstiges, dazu der
+  3. HTTP gegen einen echten Server: POST /execute_sql und die Seite Sonstiges (mit
+     automatischer Anmeldung, mit Sitzungen, vor der Ersteinrichtung), dazu der
      ursprüngliche Angriff – ein Administrator öffnet per ATTACH die Datenbank eines
      anderen Nutzers bzw. auth.db.
 
-Benutzernamen, Passwörter und Kontakte sind erfundene Testwerte. Server-Fixture und
-Hilfen kommen aus test_http_guard.py.
+Benutzernamen, Passwörter und Kontakte sind erfundene Testwerte. Server-Fixture
+(``server_port``) und der Betrieb mit automatischer Anmeldung (``auto_login``) kommen aus
+conftest.py, die HTTP-Hilfen aus tests/http_client.py.
 """
 import contextlib
 import json
@@ -26,9 +28,9 @@ import pytest
 
 import auth
 import userctx
-from db import Database
 from server import handlers
-from tests.test_http_guard import _get, _post, data_root, server_port, single_db  # noqa: F401 (Fixtures)
+from tests import installation
+from tests.http_client import get, post
 
 CONSOLE_DENIED = ("nicht erlaubt – ATTACH, DETACH, VACUUM und das Setzen von PRAGMAs "
                   "sind in der Konsole gesperrt")
@@ -200,11 +202,10 @@ def auth_db(tmp_path):
     return path
 
 
-@pytest.mark.parametrize("mode", [None, "single"])
 @pytest.mark.parametrize("user", [None, "admin", "bob"])
-def test_console_is_always_allowed_without_login(auth_db, mode, user):
-    if mode:
-        userctx.set_mode(mode)
+def test_console_is_unrestricted_before_setup(auth_db, user):
+    # Werkzeuge und Tests ohne eingerichtete Installation: keine Einschränkung
+    assert userctx.get_mode() is None
     userctx.set_user(user)
     assert auth.sql_console_allowed(auth_db) is True
 
@@ -215,7 +216,7 @@ def test_console_is_always_allowed_without_login(auth_db, mode, user):
     pytest.param("niemand_bekannt", False, id="unbekannter-Nutzer"),
     pytest.param(None, False, id="niemand-angemeldet"),
 ])
-def test_console_in_multi_user_mode_only_for_administrators(auth_db, user, expected):
+def test_console_after_setup_only_for_administrators(auth_db, user, expected):
     userctx.set_mode("multi")
     userctx.set_user(user)
     assert auth.sql_console_allowed(auth_db) is expected
@@ -233,29 +234,21 @@ def test_console_permission_follows_the_admin_flag(auth_db):
 
 # ── Teil 3: HTTP gegen einen echten Server ───────────────────────────────────
 def _post_sql(port, sql, session=None):
-    form = {"sql_commands": sql}
-    headers = {}
-    if session is not None:
-        form["csrf"] = session.csrf
-        headers = session.cookie
-    return _post(port, "/execute_sql", headers=headers, form=form)
+    """POST /execute_sql; ``session`` (Sitzung oder ``auto_login``) liefert Cookie und Token."""
+    headers = {} if session is None else session.cookie
+    return post(port, "/execute_sql", headers=headers, form={"sql_commands": sql},
+                csrf=None if session is None else session.csrf)
 
 
 @pytest.fixture
-def console_users(server_port, data_root, monkeypatch):
-    """Mehrbenutzer-Modus mit einem Administrator und einem normalen Nutzer. Jeder hat
+def console_users():
+    """Installation mit Anmeldung, ein Administrator und ein normaler Nutzer. Jeder hat
     eine Sitzung (Cookie, CSRF-Token) und eine eigene Datenbank mit einem Kontakt."""
-    monkeypatch.setattr(auth, "AUTH_DB", os.path.join(data_root, "auth.db"))
-    userctx.set_mode("multi")
+    installation.set_up(admin="admin", auto_login=False, users=[("bob", False)])
     users = {}
-    for name, is_admin, contact in (("admin", True, ADMIN_CONTACT), ("bob", False, BOB_CONTACT)):
-        auth.create_user(name, "geheim123", is_admin=is_admin)
+    for name, contact in (("admin", ADMIN_CONTACT), ("bob", BOB_CONTACT)):
         token = auth.create_session(name)
-        userctx.set_user(name)              # nur, damit Database() users/<name>/buch.db öffnet
-        try:
-            db = Database()
-        finally:
-            userctx.clear()
+        db = installation.open_db(name)
         db.insert_contact(contact_type="customer", entity_type="company", display_name=contact,
                           company_name=contact, street="Musterweg 1", city="Musterstadt")
         users[name] = SimpleNamespace(db=db, cookie={"Cookie": f"session={token}"},
@@ -276,7 +269,7 @@ def test_non_admin_post_is_403_json_and_writes_nothing(server_port, console_user
 
 
 def test_non_admin_page_shows_the_notice_instead_of_the_console(server_port, console_users):
-    resp = _get(server_port, "/miscellaneous", headers=console_users.bob.cookie)
+    resp = get(server_port, "/miscellaneous", headers=console_users.bob.cookie)
     assert resp.status == 200
     assert 'id="sql_input"' not in resp.text
     assert "executeSql" not in resp.text
@@ -304,7 +297,7 @@ def test_admin_post_runs_in_the_own_database(server_port, console_users):
 
 
 def test_admin_page_shows_the_console(server_port, console_users):
-    resp = _get(server_port, "/miscellaneous", headers=console_users.admin.cookie)
+    resp = get(server_port, "/miscellaneous", headers=console_users.admin.cookie)
     assert resp.status == 200
     assert 'id="sql_input"' in resp.text
     assert "executeSql" in resp.text
@@ -338,12 +331,12 @@ def test_admin_cannot_attach_foreign_databases(server_port, console_users, targe
     assert not any(secret in resp.text for secret in secrets)
 
 
-def test_single_user_console_works_but_attach_is_denied(server_port, single_db, foreign_db):
-    resp = _post_sql(server_port, "SELECT 1")
+def test_auto_login_console_works_but_attach_is_denied(server_port, auto_login, foreign_db):
+    resp = _post_sql(server_port, "SELECT 1", auto_login)
     assert resp.status == 200
     assert json.loads(resp.text) == {"success_count": 1, "total": 1, "errors": [], "output": "1\n1"}
 
-    resp = _post_sql(server_port, f"ATTACH '{foreign_db}' AS x; SELECT * FROM x.secret")
+    resp = _post_sql(server_port, f"ATTACH '{foreign_db}' AS x; SELECT * FROM x.secret", auto_login)
     assert resp.status == 200
     body = json.loads(resp.text)
     assert body["success_count"] == 0
@@ -352,10 +345,38 @@ def test_single_user_console_works_but_attach_is_denied(server_port, single_db, 
     assert FOREIGN_SECRET not in resp.text
 
 
-def test_single_user_page_shows_the_console(server_port, single_db):
-    resp = _get(server_port, "/miscellaneous")
+def test_auto_login_console_runs_in_the_admins_own_database(server_port, auto_login):
+    resp = _post_sql(server_port, "CREATE TABLE Probe (X TEXT)", auto_login)
+    assert resp.status == 200
+    assert json.loads(resp.text)["errors"] == []
+    assert _query(auto_login.db, "SELECT name FROM sqlite_master WHERE name = 'Probe'") == [("Probe",)]
+
+
+@pytest.mark.parametrize("token", [None, "falsch"], ids=["ohne-Token", "falsches-Token"])
+def test_auto_login_console_without_valid_token_is_403_and_runs_nothing(server_port, auto_login,
+                                                                         token):
+    # Ohne Sitzung hängt allein das Token an der Anfrage – ohne es läuft kein SQL
+    resp = post(server_port, "/execute_sql", form={"sql_commands": "CREATE TABLE Hack (X TEXT)"},
+                csrf=token)
+    assert resp.status == 403
+    assert "Sicherheits-Token" in resp.text
+    assert _query(auto_login.db, "SELECT name FROM sqlite_master WHERE name = 'Hack'") == []
+
+
+def test_auto_login_page_shows_the_console(server_port, auto_login):
+    resp = get(server_port, "/miscellaneous")
     assert resp.status == 200
     assert 'id="sql_input"' in resp.text
     assert "executeSql" in resp.text
     assert NOTICE not in resp.text
     assert EXPORT_HINT in resp.text
+
+
+def test_console_is_unreachable_before_setup(server_port):
+    # Vor der Ersteinrichtung führt jede Seite zur Einrichtung – SQL läuft nirgends,
+    # und es entsteht keine Datenbank
+    resp = post(server_port, "/execute_sql", form={"sql_commands": "SELECT 1"})
+    assert resp.status == 303
+    assert resp.headers["Location"] == "/setup"
+    assert get(server_port, "/miscellaneous").headers["Location"] == "/setup"
+    assert not os.path.exists(userctx.DATA_ROOT)
