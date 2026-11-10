@@ -12,6 +12,7 @@ import auth
 import userctx
 from .pages import Header1, Header2, Header3, Footer
 from .import_preview import match_account
+from .period import parse_iso_date
 from db import Database
 from db.core import fk_explained
 from db.matching import is_bank_effective
@@ -850,6 +851,13 @@ def handle_datev_export(db: Database, post_data: dict):
         date_to   = post_data.get('date_to',   [''])[0].strip()
         if not date_from or not date_to:
             return 303, '/miscellaneous?datev_export=error&msg=Datumsbereich+fehlt'
+
+        # Die Daten landen im Dateinamen, in der CSV und in der Antwort: nur ISO-Daten
+        date_from, date_to = parse_iso_date(date_from), parse_iso_date(date_to)
+        if date_from is None or date_to is None:
+            return 303, '/miscellaneous?datev_export=error&msg=' + quote('Ungültiger Datumsbereich')
+        if date_from > date_to:
+            return 303, '/miscellaneous?datev_export=error&msg=' + quote('Das Datum ‚von‘ liegt nach ‚bis‘')
 
         # Unstimmige Splits blockieren den Export: ein Stapel, in dem die
         # Buchungssätze nicht die Bankbewegung ergeben, ist in sich falsch und

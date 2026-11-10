@@ -13,6 +13,7 @@ import calendar
 import datetime
 import html as _html
 import json
+from urllib.parse import quote
 from db import Database
 from .pages import Header1, Header2, Header3, Footer
 from .period import period_filter_widget
@@ -51,11 +52,13 @@ def PageTrips(db: Database, person_id=None, date_from=None, date_to=None,
 
     own_address = _own_address(db)
 
+    # Der Zeitraum kommt aus Adresse oder Cookie: In Adressen (auch innerhalb von
+    # JavaScript-Zeichenketten) steht er prozentkodiert, in HTML-Attributen maskiert.
     def qs(pid=None, df=None, dt=None):
         pid = person_id if pid is None else pid
         df = date_from if df is None else df
         dt = date_to if dt is None else dt
-        return f'?person={pid}&from={df}&to={dt}'
+        return f'?person={pid}&from={quote(df, safe="")}&to={quote(dt, safe="")}'
 
     # ── Kopfbereiche ─────────────────────────────────────────────────────────
     s = Header1('worktime')
@@ -68,7 +71,7 @@ def PageTrips(db: Database, person_id=None, date_from=None, date_to=None,
     person_select = (
         '<label>🚗 Fahrer:</label> '
         f"<select onchange=\"window.location.href='/trips?person=' + this.value "
-        f"+ '&from={date_from}&to={date_to}'\">{person_opts}</select>"
+        f"+ '&from={quote(date_from, safe='')}&to={quote(date_to, safe='')}'\">{person_opts}</select>"
     )
     s += Header2(zeiten_submenu('trips') + ' &nbsp; ' + person_select)
 
@@ -202,8 +205,8 @@ def _trips_form(db, person_id, date_from, date_to, own_address):
     s += f'''<form method="POST" action="/trips/add" id="trForm">
         <input type="hidden" name="id" id="trId" value="">
         <input type="hidden" name="person_id" value="{person_id}">
-        <input type="hidden" name="from" value="{date_from}">
-        <input type="hidden" name="to" value="{date_to}">
+        <input type="hidden" name="from" value="{_html.escape(date_from, quote=True)}">
+        <input type="hidden" name="to" value="{_html.escape(date_to, quote=True)}">
         <div class="rowWithObjects" id="trEditButtons" style="display:none;">
             <input type="submit" id="trSubmit" value="💾 Speichern" class="coloredButton btn-sm bg-green">
             <input type="submit" id="trSaveAsNewBtn" value="💾 Als neu speichern" formaction="/trips/add" class="coloredButton btn-sm bg-blue" style="display:none;">
