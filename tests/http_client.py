@@ -69,11 +69,12 @@ class KeepAlive:
         self._conn = http.client.HTTPConnection("127.0.0.1", port, timeout=TIMEOUT)
         self._sock = None
 
-    def request(self, method, path, headers=None, form=None):
+    def request(self, method, path, headers=None, form=None, body=None):
         hdrs = dict(headers or {})
         if form is not None:
             hdrs.setdefault("Content-Type", "application/x-www-form-urlencoded")
-        self._conn.request(method, path, body=_encode(form), headers=hdrs)
+            body = _encode(form)
+        self._conn.request(method, path, body=body, headers=hdrs)
         resp = self._conn.getresponse()
         body = resp.read()
         assert not resp.will_close, "der Server hat die Verbindung nicht offen gehalten"

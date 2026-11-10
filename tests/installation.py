@@ -6,9 +6,11 @@
 DATA_ROOT und ``auth.AUTH_DB`` liegen je Test unter ``tmp_path`` (``_isolated_data_root``
 in conftest.py). Benutzernamen und Passwörter sind erfundene Testwerte.
 """
+import contextlib
 import hashlib
 import json
 import os
+import sqlite3
 
 import auth
 import userctx
@@ -60,6 +62,14 @@ def open_db(username):
         return Database()
     finally:
         userctx.clear()
+
+
+def session_count():
+    """Anzahl der Sitzungen in der auth.db (0, wenn es sie noch nicht gibt)."""
+    if not os.path.exists(auth.AUTH_DB):
+        return 0
+    with contextlib.closing(sqlite3.connect(auth.AUTH_DB)) as con:
+        return con.execute("SELECT COUNT(*) FROM Sessions").fetchone()[0]
 
 
 def tree(root):

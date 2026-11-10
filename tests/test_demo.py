@@ -68,6 +68,9 @@ def _real_installation(root):
     """Echte Bücher: Administrator ``admin`` mit automatischer Anmeldung, Datenbank und
     Dateien unter users/admin/. Liefert das Verzeichnis des Administrators."""
     installation.set_up()
+    # config.json, wie ein Betreiber sie von Hand pflegt (eigene Formatierung): ein Neuschreiben
+    # durch die Demo fiele als geänderte Bytes auf
+    installation.write_config('{\n  "mode": "multi",\n  "auto_login": "admin"\n}\n')
     installation.open_db("admin")
     admin_dir = root / "users" / "admin"
     (admin_dir / "invoices" / "2026").mkdir(parents=True)
