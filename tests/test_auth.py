@@ -6,6 +6,7 @@
 Alle Tests verwenden anonyme Test-Zugangsdaten und eine temporäre auth.db.
 """
 import os
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -51,6 +52,34 @@ def test_username_validation(auth_db):
         auth.create_user("x", "geheim123", db_path=auth_db)
     with pytest.raises(ValueError):
         auth.create_user("alice", "kurz", db_path=auth_db)  # Passwort zu kurz
+
+
+# ── reservierter Benutzername 'tests' (Ordner für Testartefakte im Datenverzeichnis) ──
+RESERVED_MESSAGE = "Dieser Benutzername ist reserviert."
+
+
+@pytest.mark.parametrize("name", ["tests", "Tests", "TESTS", "tEsTs"])
+def test_reserved_username_is_invalid(name):
+    assert auth.valid_username(name) is False
+
+
+@pytest.mark.parametrize("name", ["tester", "test", "tests2", "my-tests", "_tests"])
+def test_names_similar_to_the_reserved_one_stay_valid(name):
+    assert auth.valid_username(name) is True
+
+
+@pytest.mark.parametrize("name", ["tests", "Tests", "TESTS"])
+def test_create_user_rejects_reserved_name(auth_db, name):
+    with pytest.raises(ValueError) as exc:
+        auth.create_user(name, "geheim123", db_path=auth_db)
+    assert str(exc.value) == RESERVED_MESSAGE
+    assert auth.has_any_user(auth_db) is False                      # nichts angelegt
+
+
+@pytest.mark.parametrize("name", ["tester", "test", "tests2"])
+def test_create_user_accepts_names_similar_to_the_reserved_one(auth_db, name):
+    auth.create_user(name, "geheim123", db_path=auth_db)
+    assert auth.user_exists(name, auth_db) is True
 
 
 def test_duplicate_user_raises(auth_db):
@@ -309,6 +338,21 @@ def test_handler_create_invalid_username(monkeypatch, tmp_path):
     monkeypatch.setattr(auth, "AUTH_DB", str(tmp_path / "auth.db"))
     loc = handlers.handle_user_create({"username": ["x"], "password": ["geheim123"]})
     assert "err=" in loc
+
+
+def test_handler_create_reserved_username_reports_it_and_creates_nobody(monkeypatch, tmp_path):
+    monkeypatch.setattr(auth, "AUTH_DB", str(tmp_path / "auth.db"))
+    loc = handlers.handle_user_create({"username": ["Tests"], "password": ["geheim123"]})
+    assert parse_qs(urlsplit(loc).query) == {"err": [RESERVED_MESSAGE]}     # kommt beim Nutzer an
+    assert auth.has_any_user() is False
+
+
+def test_handler_setup_admin_reserved_username_reports_it_and_creates_nobody(monkeypatch, tmp_path):
+    monkeypatch.setattr(auth, "AUTH_DB", str(tmp_path / "auth.db"))
+    ok, username, err = handlers.handle_setup_admin(
+        {"username": ["tests"], "password": ["geheim123"], "password2": ["geheim123"]})
+    assert (ok, username, err) == (False, "tests", RESERVED_MESSAGE)
+    assert auth.has_any_user() is False
 
 
 def test_page_users_renders(monkeypatch, tmp_path):
