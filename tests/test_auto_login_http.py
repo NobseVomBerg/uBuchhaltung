@@ -438,6 +438,41 @@ def test_disabling_with_bad_passwords_reports_an_error_and_stays_active(server_p
     assert get(server_port, "/about").status == 200         # weiterhin ohne Anmeldung erreichbar
 
 
+# ── Secure-Flag am Sitzungs-Cookie (HTTPS) ───────────────────────────────────
+def _flags(response):
+    return set(response.headers["Set-Cookie"].split("; ")[1:])
+
+
+def test_disabling_over_https_marks_the_session_cookie_secure(tls_server_port, auto_login):
+    resp = _disable(tls_server_port, auto_login.csrf)
+    assert resp.status == 303
+    assert {"Secure", "HttpOnly", "SameSite=Strict", "Path=/"} <= _flags(resp)
+
+
+def test_login_over_https_marks_the_session_cookie_secure(tls_server_port):
+    installation.set_up(auto_login=False)
+    resp = post(tls_server_port, "/login", headers={"Origin": own_origin(tls_server_port)},
+                form={"username": "admin", "password": PASSWORD})
+    assert resp.status == 303
+    assert "Secure" in _flags(resp)
+
+
+def test_the_setup_over_https_marks_the_session_cookie_secure(tls_server_port):
+    resp = post(tls_server_port, "/setup/start",
+                form={"username": "admin", "login": "password", "password": PASSWORD,
+                      "password2": PASSWORD})
+    assert resp.status == 303
+    assert {"Secure", "HttpOnly", "SameSite=Strict"} <= _flags(resp)
+
+
+def test_the_logout_cookie_is_cleared_over_https_too(tls_server_port):
+    installation.set_up(auto_login=False)
+    token = auth.create_session("admin")
+    resp = get(tls_server_port, "/logout", headers=_cookie(token))
+    assert resp.status == 303
+    assert "Max-Age=0" in _flags(resp)
+
+
 # ── Benutzerverwaltung nur für Administratoren ──────────────────────────────
 @pytest.fixture
 def login_users():
