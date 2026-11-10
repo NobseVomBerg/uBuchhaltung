@@ -41,7 +41,7 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
   - der BU-Schlüssel folgt der Geldrichtung statt der Art des Kontos (Erstattung auf ein Aufwandskonto bekommt einen Umsatzsteuer-Schlüssel)
   - Überträge zwischen zwei Geldkonten aus dem WISO-Import: Soll/Haben verkehrt
   - Soll/Haben wird beim Export aus der aktuellen Kontenliste gelesen, das Vorzeichen stammt aus der beim Import – ändert sich die SKR-Nummer eines Bankkontos dazwischen, passt beides nicht mehr zusammen; besser beim Import festschreiben
-- Kassenbuchungen aus der Buchungsmaske (Konto = Kasse) fehlen in EÜR und Dashboard; Sätze über das Verrechnungskonto 1460 liest die EÜR als Umbuchung
+- Kassenbuchungen aus der Buchungsmaske (Konto = Kasse) fehlen in EÜR und Dashboard; Sätze über das Verrechnungskonto 1460 liest die EÜR als Umbuchung, einen Satz mit 1460 vorne und leerem Gegenkonto als Zahlung mit Vorsteuer
 - Die Importe behandeln 1000–1099 als Kasse – das ist der SKR03-Bereich, in SKR04 liegt die Kasse auf 1600
 - Bankbewegung und ihre Buchungssätze in einer Transaktion speichern – heute nur „erst prüfen, dann schreiben“; ein Datenbankfehler beim Schreiben hinterlässt einen halben Stand
 - Ein eigenständiger Buchungssatz bekommt beim Speichern in der Maske das vorgewählte Bankkonto und gilt danach im Kontoauszug-Import als vorhandene Bankbewegung
