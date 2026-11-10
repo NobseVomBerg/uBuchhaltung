@@ -530,6 +530,8 @@ def _failing_replace(monkeypatch_context, fail_at):
     seen = []
 
     def replace(src, dst, *args, **kwargs):
+        if os.path.basename(str(src)) == userctx.CONFIG_FILE + ".tmp":
+            return real_replace(src, dst, *args, **kwargs)      # config.json wird atomar ersetzt – kein Eintrag
         if os.path.abspath(str(src)).startswith(os.path.abspath(userctx.DATA_ROOT)):
             seen.append(src)
             if len(seen) == fail_at:

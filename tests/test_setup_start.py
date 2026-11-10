@@ -35,6 +35,11 @@ def _start(**fields):
     return handlers.handle_setup_start({key: [value] for key, value in fields.items()})
 
 
+def _passwords(login):
+    """Passwortfelder passend zum gewählten Knopf: „Ohne Anmeldung“ lässt sie leer."""
+    return {"password": PASSWORD, "password2": PASSWORD} if login == "password" else {}
+
+
 def _nothing_created():
     """Weder Datenverzeichnis noch config.json noch auth.db: es wurde nichts angelegt."""
     return not os.path.exists(userctx.DATA_ROOT)
@@ -105,8 +110,7 @@ def test_with_login_bad_passwords_are_reported_and_nothing_is_created(fields, me
                               "Slash", "Pfad", "Umlaut", "Sonderzeichen", "Zeilenumbruch"])
 @pytest.mark.parametrize("login", ["none", "password"])
 def test_invalid_usernames_are_reported_and_nothing_is_created(name, login):
-    ok, username, with_login, error = _start(username=name, login=login, password=PASSWORD,
-                                             password2=PASSWORD)
+    ok, username, with_login, error = _start(username=name, login=login, **_passwords(login))
     assert ok is False
     assert username == name.strip()                      # die Eingabe kommt ins Formular zurück
     assert with_login is (login == "password")
@@ -117,7 +121,7 @@ def test_invalid_usernames_are_reported_and_nothing_is_created(name, login):
 @pytest.mark.parametrize("name", ["tests", "Tests", "TESTS", "demo", "Demo", "DEMO"])
 @pytest.mark.parametrize("login", ["none", "password"])
 def test_reserved_usernames_are_reported_and_nothing_is_created(name, login):
-    result = _start(username=name, login=login, password=PASSWORD, password2=PASSWORD)
+    result = _start(username=name, login=login, **_passwords(login))
     assert result == (False, name, login == "password", "Dieser Benutzername ist reserviert.")
     assert _nothing_created()
     assert userctx.get_mode() is None
@@ -172,6 +176,66 @@ def test_a_legacy_single_config_counts_as_not_set_up():
     write_config({"mode": "single"})
     assert _start(username="admin", login="none")[:2] == (True, "admin")
     assert read_config()["mode"] == "multi"
+
+
+def test_a_pre_seeded_auto_login_does_not_survive_a_setup_with_a_password():
+    # config.json vorab angelegt, wie das Beispiel in DEPLOYMENT.md; der Vorschlagsname im Formular ist "admin"
+    write_config({"mode": "multi", "auto_login": "admin"})
+    auth.init_auth_db()
+    assert _start(username="admin", login="password", password=PASSWORD, password2=PASSWORD)[0] is True
+    assert auth.authenticate("admin", PASSWORD) is True
+    assert auth.auto_login_user() is None               # wer ein Passwort wählt, meldet sich damit an
+    assert "auto_login" not in read_config()
+
+
+@pytest.mark.parametrize("fields", [{"password": PASSWORD}, {"password2": PASSWORD},
+                                    {"password": PASSWORD, "password2": PASSWORD}],
+                         ids=["Passwort", "Wiederholung", "beide"])
+def test_without_login_refuses_a_typed_password_instead_of_dropping_it(fields):
+    """Die Eingabetaste löst im Browser den ersten Knopf aus („Ohne Anmeldung“): Ein
+    eingetipptes Passwort darf dabei nicht stillschweigend verfallen."""
+    ok, username, with_login, error = _start(username="admin", login="none", **fields)
+    assert (ok, username, with_login) == (False, "admin", False)
+    assert "Mit Passwort starten" in error
+    assert _nothing_created()
+
+
+def test_admin_exists_creates_nothing_and_tolerates_a_database_without_tables():
+    assert auth.admin_exists() is False
+    assert _nothing_created()                            # die Frage allein legt keine auth.db an
+    os.makedirs(userctx.DATA_ROOT)
+    import sqlite3
+    sqlite3.connect(auth.AUTH_DB).close()                # leere Datei ohne Tabellen
+    assert auth.admin_exists() is False
+    auth.create_user("alice", PASSWORD)
+    assert auth.admin_exists() is False                  # ein normaler Benutzer zählt nicht
+    auth.create_user("chef", PASSWORD, is_admin=True)
+    assert auth.admin_exists() is True
+
+
+def test_config_is_replaced_atomically_and_leaves_no_temporary_file():
+    userctx.set_mode("multi")
+    auth.create_user("chef", PASSWORD, is_admin=True)
+    userctx.set_auto_login("chef")
+    userctx.set_auto_login(None)
+    assert sorted(os.listdir(userctx.DATA_ROOT)) == ["auth.db", "config.json"]
+    assert read_config() == {"mode": "multi"}
+
+
+def test_an_interrupted_config_write_keeps_the_previous_file_readable(monkeypatch):
+    userctx.set_mode("multi")
+    auth.create_user("chef", PASSWORD, is_admin=True)
+    userctx.set_auto_login("chef")
+
+    def failing_replace(src, dst, *args, **kwargs):
+        raise OSError(28, "Auf dem Gerät ist kein Speicherplatz mehr verfügbar")
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "replace", failing_replace)
+        with pytest.raises(OSError):
+            userctx.set_auto_login(None)
+    installation.forget_config_cache()
+    assert read_config() == {"mode": "multi", "auto_login": "chef"}      # die alte Datei steht unversehrt da
+    assert userctx.get_auto_login() == "chef"
 
 
 # ── Teil 1b: während der Demo ────────────────────────────────────────────────
@@ -520,6 +584,31 @@ def test_a_headless_config_can_be_set_up(server_port, headless):
     assert resp.status == 303
     assert read_config() == {"mode": "multi", "auto_login": "admin"}
     assert "👤 admin" in get(server_port, "/about").text
+
+
+def test_an_unreadable_config_does_not_open_the_setup_for_a_second_administrator(server_port):
+    userctx.set_mode("multi")
+    auth.create_user("inhaber", PASSWORD, is_admin=True)           # eingerichtet, mit Anmeldung
+    write_config('{"mode": "multi",')                             # nach einem Neustart: Datei beschädigt
+    resp = post(server_port, "/setup/start", form={"username": "eindringling", "login": "none"})
+    assert auth.user_exists("eindringling") is False, f"Antwort {resp.status}: zweiter Administrator angelegt"
+    assert auth.count_admins() == 1
+    # Statt der Ersteinrichtung sagt die App, was zu tun ist – für jede Seite
+    assert resp.status == 503
+    for path in ("/", "/setup", "/login", "/users"):
+        page = get(server_port, path)
+        assert page.status == 503 and "config.json" in page.text
+    # Ist die Datei wieder lesbar, läuft die Installation wie zuvor (mit Anmeldung)
+    write_config({"mode": "multi"})
+    installation.forget_config_cache()
+    assert get(server_port, "/").headers["Location"] == "/login"
+
+
+def test_a_missing_config_with_an_existing_administrator_is_refused_by_the_handler_too():
+    auth.create_user("inhaber", PASSWORD, is_admin=True)           # auth.db da, config.json fehlt
+    assert userctx.get_mode() is None
+    assert _start(username="eindringling", login="none")[0] is None
+    assert auth.user_exists("eindringling") is False
 
 
 def test_a_headless_config_with_only_a_normal_user_still_shows_the_setup(server_port, headless):
