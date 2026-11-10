@@ -225,13 +225,38 @@ def test_ensure_directories_by_mode(data_root):
     assert typ & set(os.listdir(data_root)) == set()
 
 
-def test_handle_setup_mode_redirects(data_root):
-    assert handlers.handle_setup_mode({"mode": ["multi"]}) == "/setup-admin"
-    assert userctx.get_mode() == "multi"
-    assert handlers.handle_setup_mode({"mode": ["single"]}) == "/setup"
-    assert userctx.get_mode() == "single"
-    # ungültig: keine Änderung, zurück zur Auswahl
-    assert handlers.handle_setup_mode({"mode": ["x"]}) == "/setup"
+def _config_bytes():
+    with open(userctx.config_path(), "rb") as f:
+        return f.read()
+
+
+@pytest.mark.parametrize("mode, target", [("multi", "/setup-admin"), ("single", "/setup")])
+def test_handle_setup_mode_first_choice_sets_mode(data_root, mode, target):
+    assert userctx.get_mode() is None
+    assert handlers.handle_setup_mode({"mode": [mode]}) == target
+    assert userctx.get_mode() == mode
+    # aus der Datei gelesen (Cache geleert) steht dieselbe Wahl
+    userctx._mode_cache.clear()
+    assert userctx.get_mode() == mode
+
+
+@pytest.mark.parametrize("first, second", [("multi", "single"), ("single", "multi")])
+def test_handle_setup_mode_is_ignored_once_mode_is_set(data_root, first, second):
+    userctx.set_mode(first)
+    config_before = _config_bytes()
+    assert handlers.handle_setup_mode({"mode": [second]}) is None
+    assert userctx.get_mode() == first
+    assert _config_bytes() == config_before
+    userctx._mode_cache.clear()
+    assert userctx.get_mode() == first
+
+
+@pytest.mark.parametrize("post_data", [{"mode": ["x"]}, {"mode": [""]}, {}])
+def test_handle_setup_mode_invalid_value_keeps_mode_unset(data_root, post_data):
+    # noch kein Modus gewählt: ungültige Eingabe führt zurück zur Auswahl
+    assert handlers.handle_setup_mode(post_data) == "/setup"
+    assert userctx.get_mode() is None
+    assert not os.path.exists(userctx.config_path())
 
 
 # ── Phase 3: Benutzerverwaltung ──────────────────────────────────────────────
