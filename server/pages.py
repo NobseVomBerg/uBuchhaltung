@@ -38,7 +38,7 @@ def Header1(active_page=None):
     s = "<!DOCTYPE html>\n"
     s+= "<html>\n <head>\n  <meta charset='UTF-8'>\n"
     s+= "  <title>uBuchhaltung</title>\n"
-    # CSRF-Token für Formulare/fetch (leer im Einzelbenutzer-Modus)
+    # CSRF-Token für Formulare/fetch (leer in der Ersteinrichtung: noch keine Sitzung)
     s+= f"  <meta name='csrf-token' content='{_userctx.get_csrf_token()}'>\n"
     # ?v=… als Cache-Buster: erlaubt langes Browser-Caching (kein Flackern durch
     # Revalidierung beim Seitenwechsel), Updates kommen per Versions-Bump an
@@ -109,8 +109,8 @@ def Header1(active_page=None):
     
     s += ' | '.join(nav_items)
 
-    # Angemeldeter Benutzer + Abmelden (nur im Mehrbenutzer-Modus sichtbar);
-    # bei automatischer Anmeldung gibt es keine Sitzung, die man beenden könnte
+    # Angemeldeter Benutzer + Abmelden; bei automatischer Anmeldung gibt es keine
+    # Sitzung, die man beenden könnte
     import userctx
     _user = userctx.get_user()
     if userctx.auth_enabled() and _user:
@@ -235,7 +235,7 @@ function appDownload(url, notify) {
    - Formulare: hidden-Feld 'csrf' beim Submit ergänzen (Capture-Phase,
      erfasst auch dynamisch nachgeladene Formulare)
    - fetch: X-CSRF-Token-Header für alle nicht-GET-Requests
-   Im Einzelbenutzer-Modus ist der Token leer und nichts passiert. */
+   Ist der Token leer (Ersteinrichtung), passiert nichts. */
 (function() {
   var meta = document.querySelector('meta[name="csrf-token"]');
   var token = meta ? meta.content : '';

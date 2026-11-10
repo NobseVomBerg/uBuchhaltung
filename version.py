@@ -17,8 +17,8 @@ in die Datenbank geschrieben (siehe ``db/schema.py``), damit die DB selbst ihre
 Schema-Version kennt.
 """
 
-MAJOR = 1
+MAJOR = 2
 SCHEMA_VERSION = 6   # +1 bei jeder DB-Schema-Änderung (= mittlere Versionsstelle)
-PATCH = 20           # +1 bei sonstigen Änderungen ohne DB-Bezug
+PATCH = 0            # +1 bei sonstigen Änderungen ohne DB-Bezug
 
 APP_VERSION = f"{MAJOR}.{SCHEMA_VERSION}.{PATCH}"

@@ -116,8 +116,8 @@ kein Subagent darauf:
 ### Zugriffsschutz (HTTP)
 - Türsteher ist `_gate()` in `server/app.py`: schreibende Anfragen nur von eigenen
   Seiten (`request_is_same_origin`: `Sec-Fetch-Site`, sonst `Origin` gegen `Host`/
-  `X-Forwarded-Host`) – in beiden Betriebsmodi, zusätzlich zum CSRF-Token
-- Ohne Login (Einzelbenutzer, Ersteinrichtung, automatische Anmeldung) nur unter vertrauenswürdigen
+  `X-Forwarded-Host`) – immer, zusätzlich zum CSRF-Token
+- Ohne Login (Ersteinrichtung, automatische Anmeldung) nur unter vertrauenswürdigen
   Hostnamen (`host_is_trusted`, gegen DNS-Rebinding); weitere Namen über
   `UBUCHHALTUNG_ALLOWED_HOSTS`
 - **Aktionen mit Seiteneffekt nie per GET:** Pfad in `_ACTION_PATHS` eintragen,
@@ -129,16 +129,21 @@ kein Subagent darauf:
   keine Sitzung (CSRF-Token an `_csrf_key()` gebunden), und die Hostnamen-Prüfung
   greift wie ohne Login. Schalter in der Benutzerverwaltung; Ausschalten setzt ein Passwort
 - Die Ersteinrichtung (`handle_setup_start`) legt den ersten Administrator an und
-  stellt immer den Mehrbenutzer-Modus ein; danach ändert nichts im Browser den Modus.
-  Solange es keinen Administrator gibt, ist nur die Ersteinrichtung erreichbar
-  (`/setup`, `/setup/start`; alles andere leitet dorthin). Ohne Sitzung gibt es dort
-  kein CSRF-Token – es schützen die Herkunfts- und die Hostnamen-Prüfung
-- **Umzug von Altbeständen** (`layout.migrate()`, läuft beim Start vor allem anderen):
-  verschiebt eine Einzelbenutzer-Ablage nach `data/users/admin/`, passt gespeicherte
+  trägt `mode: multi` in `config.json` ein (= eingerichtet); danach ändert nichts im
+  Browser diese Einstellung. Solange es keinen Administrator gibt, ist nur die
+  Ersteinrichtung erreichbar (`/setup`, `/setup/start`; alles andere leitet dorthin).
+  Ohne Sitzung gibt es dort kein CSRF-Token – es schützen die Herkunfts- und die
+  Hostnamen-Prüfung
+- Es gibt nur die Mehrbenutzer-Ablage `data/users/<Name>/`; der Betrieb für eine Person
+  ist die automatische Anmeldung. `userctx.get_mode()` kennt nur `'multi'` (eingerichtet)
+  und `None`; jeder andere Wert in `config.json` gilt als nicht eingerichtet
+- **Umzug von Altbeständen** (`layout.migrate()`, läuft beim Start vor allem anderen,
+  `run_server()` prüft es zur Sicherheit noch einmal): verschiebt eine Ablage aus
+  Version 1.x (Daten direkt in `data/`) nach `data/users/admin/`, passt gespeicherte
   Dateipfade an und schaltet die automatische Anmeldung ein; nichts wird gelöscht oder
-  überschrieben. Den Einzelbenutzer-Modus (`mode: single`) gibt es im Code nur noch für
-  Altbestände, die dieser Umzug auflöst
-- **SQL-Konsole** (`handle_execute_sql`): im Mehrbenutzer-Modus nur Administratoren
+  überschrieben. Den Altbestand erkennt `layout.py` an den Rohwerten aus
+  `userctx._read_config()`, nicht über `get_mode()`
+- **SQL-Konsole** (`handle_execute_sql`): nur Administratoren
   (`auth.sql_console_allowed`); per SQLite-Authorizer auf die eigene Datenbank
   beschränkt – kein `ATTACH`/`DETACH`/`VACUUM`, PRAGMAs bis auf wenige nur lesend.
   Diese Sperren nicht aufweichen

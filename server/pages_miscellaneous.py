@@ -130,7 +130,7 @@ def PageMiscellaneous(db: Database):
     else:
         s += '\t<div class="rectRounded" style="grid-column: span 2">'
         s += ('<h2>SQL-Befehle ausführen</h2>'
-              '<p>Die SQL-Konsole steht im Mehrbenutzer-Modus nur Administratoren zur Verfügung.</p>')
+              '<p>Die SQL-Konsole steht nur Administratoren zur Verfügung.</p>')
         s += '\t</div>'
 
     # Both Exports together in one DIV

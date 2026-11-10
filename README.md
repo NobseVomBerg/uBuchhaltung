@@ -296,7 +296,7 @@ Vollständiges Anlagenmanagement mit gesetzeskonformer AfA:
 - **SQL-Konsole**: Direkte SQL-Ausführung (Entwickler-Tool) inkl. **Zeitbereich löschen**
   (generiert ein FK-sicheres Lösch-Skript für Belege/Buchungen/Rechnungen/Angebote
   eines Zeitraums ins SQL-Feld; Ausführung erst nach manueller Bestätigung);
-  auf die eigene Datenbank beschränkt; im Mehrbenutzer-Modus nur für Administratoren
+  auf die eigene Datenbank beschränkt; nur für Administratoren
 - **Datensicherung**: Backup nach `<UserDir>/backup/JJJJMMTT_Backup.7zip`
   (7-Zip, ohne 7-Zip als `.zip`; wahlweise nur DB oder alle Daten; DB als
   konsistenter Snapshot) + **Wiederherstellung** (überschreiben oder vorher löschen)
@@ -424,7 +424,7 @@ uBuchhaltung/
 ├── version.py                 # Single Source of Truth für die Versionsnummer
 ├── money.py                   # Geld als Festkomma-Integer (Minor Units, SCALE=4)
 ├── auth.py                    # Benutzer/Sessions/CSRF
-├── userctx.py                 # Request-Kontext: Modus, Benutzer, Datenpfade
+├── userctx.py                 # Request-Kontext: Benutzer, Datenpfade, config.json
 ├── layout.py                  # Umzug einer Version-1-Ablage nach data/users/<Name>/ (beim Start)
 ├── db/                        # Datenbank-Package (CRUD, Import, Linking, Seeding)
 │   ├── __init__.py            #   Database-Klasse (Komposition aller Mixins)
@@ -500,7 +500,7 @@ uBuchhaltung/
 ├── docs/                      # Screenshots fürs README, Icon, offene Aufgaben (aufgaben.md)
 ├── static/                    # Statische Dateien (Logos)
 └── data/                      # Laufzeitdaten (in .gitignore)
-    ├── config.json            # Betriebsmodus, automatische Anmeldung (auto_login)
+    ├── config.json            # eingerichtet (mode), automatische Anmeldung (auto_login)
     ├── auth.db                # Benutzer und Sitzungen
     └── users/<user>/          # je Nutzer: buch.db, invoices/, Belege/, backup/, Logs …
 ```

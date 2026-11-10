@@ -4,7 +4,7 @@
 """
 Benutzerverwaltung (TODO #4, Phase 3).
 
-Nur für Administratoren im Mehrbenutzer-Modus. Erlaubt das Anlegen, Löschen,
+Nur für Administratoren. Erlaubt das Anlegen, Löschen,
 Zurücksetzen des Passworts und Umschalten des Admin-Status von Benutzern sowie
 das Ein-/Ausschalten der automatischen Anmeldung.
 Verwendet ausschließlich vorhandene Style-Klassen.

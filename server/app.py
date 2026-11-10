@@ -187,9 +187,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         super().end_headers()                                           # Call the Base
 
     # ── Authentifizierung (TODO #4) ──────────────────────────────────────────
-    # Pfade, die ohne Anmeldung erreichbar sein müssen.
-    _PUBLIC_PATHS = ('/login', '/logout', '/buch.css', '/favicon.ico')
-
     def _drain_body(self):
         """Ungelesenen Request-Body verwerfen (verhindert Keep-Alive-Desync bei
         POST-Redirects ohne vorherige Body-Verarbeitung)."""
@@ -201,15 +198,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             pass
 
     def _maybe_db(self):
-        """Database() nur erzeugen, wenn sie auch genutzt werden darf:
-        - unkonfiguriert (Modus noch nicht gewählt): nie (kein verwaistes data/buch.db),
-        - Mehrbenutzer-Modus: erst nach Anmeldung,
-        - Einzelbenutzer-Modus: immer.
-        """
-        mode = userctx.get_mode()
-        if mode is None:
-            return None
-        if mode == 'multi' and userctx.get_user() is None:
+        """Database() nur erzeugen, wenn sie auch genutzt werden darf: ``None``, solange
+        die Installation nicht eingerichtet ist oder kein Benutzer gesetzt ist (kein
+        verwaistes data/buch.db); sonst die Datenbank des Benutzers."""
+        if userctx.get_mode() is None or userctx.get_user() is None:
             return None
         return Database()
 
@@ -243,8 +235,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         return "session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
 
     def _require_admin(self):
-        """True, wenn der angemeldete Nutzer Administrator im Mehrbenutzer-Modus
-        ist; sonst wird bereits eine Antwort (404/403) gesendet."""
+        """True, wenn der angemeldete Nutzer Administrator ist; sonst wird bereits
+        eine Antwort (404/403) gesendet."""
         if not userctx.auth_enabled():
             self.respond(404, "Seite nicht gefunden.")
             return False
@@ -258,11 +250,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         """CSRF-Token prüfen (zusätzlich zu SameSite=Strict).
 
         Token kommt aus dem Formularfeld ``csrf`` (post_data) oder dem Header
-        ``X-CSRF-Token`` (fetch-Aufrufe, siehe Footer-JS). Nur im Mehrbenutzer-
-        Modus wirksam – der Token ist an die Session (bzw. ``_csrf_key``) gebunden;
-        im Einzelmodus ohne Sessions gibt es nichts zu binden. Dasselbe gilt in der
-        Ersteinrichtung (noch kein Administrator, also noch keine Sitzung): dort
-        schützen die Herkunfts- und die Hostnamen-Prüfung des Türstehers.
+        ``X-CSRF-Token`` (fetch-Aufrufe, siehe Footer-JS). Er ist an die Session
+        (bzw. ``_csrf_key``) gebunden. Ausgenommen ist die Ersteinrichtung (noch kein
+        Administrator, also noch keine Sitzung): dort schützen die Herkunfts- und die
+        Hostnamen-Prüfung des Türstehers.
         """
         if not userctx.auth_enabled() or getattr(self, '_needs_setup', False):
             return True
@@ -288,8 +279,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         # daher den Kontext zu Beginn JEDES Requests leeren (kein User-Leak).
         userctx.clear()
         userctx.set_tls(getattr(self.server, 'tls', False))
-        # Schreibende Anfragen nur von Seiten der App selbst – gilt in beiden
-        # Betriebsmodi und zusätzlich zum CSRF-Token (der im Einzelmodus fehlt).
+        # Schreibende Anfragen nur von Seiten der App selbst – immer, zusätzlich zum
+        # CSRF-Token.
         if self.command not in ('GET', 'HEAD') and not request_is_same_origin(self.headers):
             self._drain_body()
             self.respond(403, "<h1>403</h1><p>Anfrage von fremder Herkunft abgelehnt.</p>")
@@ -306,10 +297,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         # Ersteinrichtung: solange es keinen Administrator gibt (und keine Demo läuft)
         needs_setup = mode is None or (mode == 'multi' and not has_admin and not demo_user)
         self._needs_setup = needs_setup  # für do_GET (/setup) und _check_csrf
-        # Wo niemand ein Passwort eingeben muss (Einzelbenutzer-Modus, Ersteinrichtung,
-        # automatische Anmeldung), schützt nur der Hostname vor DNS-Rebinding; mit
-        # Anmeldung hängt der Zugriff an der Sitzung des echten Hostnamens.
-        if (mode != 'multi' or needs_setup or auto) and not host_is_trusted(self.headers.get('Host')):
+        # Wo niemand ein Passwort eingeben muss (Ersteinrichtung, automatische
+        # Anmeldung), schützt nur der Hostname vor DNS-Rebinding; mit Anmeldung hängt
+        # der Zugriff an der Sitzung des echten Hostnamens.
+        if (needs_setup or auto) and not host_is_trusted(self.headers.get('Host')):
             self._drain_body()
             self.respond(403, "<h1>403</h1><p>Dieser Hostname ist nicht freigegeben. "
                               "Zusätzliche Namen lassen sich über die Umgebungsvariable "
@@ -328,8 +319,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             self._drain_body()
             self.respond(303, "", headers={"Location": "/setup"})
             return False
-        if mode != 'multi':
-            return True                                  # Einzelbenutzer-Modus (Altbestand, wird beim Start umgezogen)
+        # Ab hier ist die Installation eingerichtet (mode == 'multi').
         if auto:
             # Automatische Anmeldung: jede Anfrage läuft ohne Sitzung als dieser
             # Benutzer. Anmeldeseite und andere Benutzer sind so lange abgeschaltet.
@@ -357,7 +347,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         """Behandelt GET /login, /logout und /setup-admin (alte Lesezeichen: Weiterleitung
         auf die Ersteinrichtung /setup). True, wenn erledigt."""
         if not userctx.auth_enabled():
-            return False                                 # Login-UI nur im Mehrbenutzer-Modus
+            return False                                 # Login-UI erst nach der Ersteinrichtung
         path = self.path.split('?', 1)[0]
         if path == '/login':
             self.respond(200, PageLogin())
@@ -375,7 +365,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
     def _auth_routes_post(self):
         """Behandelt POST /login. True, wenn erledigt."""
         if not userctx.auth_enabled():
-            return False                                 # Login-UI nur im Mehrbenutzer-Modus
+            return False                                 # Login-UI erst nach der Ersteinrichtung
         path = self.path.split('?', 1)[0]
         if path != '/login':
             return False
@@ -491,9 +481,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if self._auth_routes_get():
             userctx.clear()
             return
-        # Im Mehrbenutzer-Modus ohne angemeldeten Nutzer keine (globale) DB anlegen –
-        # hier sind nur public/statische Routen erreichbar (z. B. /buch.css). Sonst
-        # entstünde fälschlich ein data/buch.db.
+        # Ohne angemeldeten Nutzer keine (globale) DB anlegen – hier sind nur
+        # public/statische Routen erreichbar (z. B. /buch.css). Sonst entstünde
+        # fälschlich ein data/buch.db.
         db = self._maybe_db()
         try:
             if self.path.split('?', 1)[0] in _ACTION_PATHS:
@@ -831,7 +821,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write("Fehler beim Erstellen des PDF".encode("utf-8"))
                 return
-            # ── Benutzerverwaltung (nur Admin, Mehrbenutzer-Modus) ────────
+            # ── Benutzerverwaltung (nur Admin) ────────────────────────────
             elif self.path == "/users" or self.path.startswith("/users?"):
                 if not self._require_admin():
                     return
@@ -889,7 +879,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                                        cache_control="public, max-age=86400")
             elif self.path.startswith("/data/logos/"):
                 # Logos liegen im logos-Verzeichnis des angemeldeten Nutzers
-                # (Single-User: ./data/logos). Es wird nur der Dateiname genutzt,
+                # (data/users/<Name>/logos). Es wird nur der Dateiname genutzt,
                 # gegen das Nutzerverzeichnis aufgeloest → kein Cross-User-Zugriff,
                 # kein Path-Traversal.
                 from urllib.parse import unquote
@@ -1319,29 +1309,19 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if encoded:
             self.wfile.write(encoded)
 
-# Im Einzelmodus benötigte Ausgabe-Unterordner (Jahres-Unterordner werden bei
-# Bedarf von den jeweiligen Generatoren erzeugt). Wer bei laufendem Server Ordner
-# löscht, muss nicht abgefangen werden.
-_SINGLE_SUBDIRS = ("logos", "invoices", "quotes", "worktime")
-
 
 def _ensure_directories():
-    """Fehlende Ausgabe-Verzeichnisse anlegen (idempotent).
+    """Fehlende Verzeichnisse anlegen (idempotent): die Datenwurzel und, sobald die
+    Installation eingerichtet ist, ``users/``.
 
-    Im Mehrbenutzer-Modus werden keine globalen Typ-Verzeichnisse angelegt – die
-    Dateien jedes Nutzers entstehen bei Bedarf unter data/users/<user>/.
+    Es werden keine globalen Typ-Verzeichnisse angelegt – die Dateien jedes Nutzers
+    entstehen bei Bedarf unter data/users/<user>/.
     """
     import os
     root = userctx.DATA_ROOT
     os.makedirs(root, exist_ok=True)
-    mode = userctx.get_mode()
-    if mode == "multi":
+    if userctx.get_mode() == "multi":
         os.makedirs(os.path.join(root, "users"), exist_ok=True)
-    elif mode == "single":
-        for sub in _SINGLE_SUBDIRS:
-            os.makedirs(os.path.join(root, sub), exist_ok=True)
-    # mode is None (noch nicht eingerichtet): nur die Datenwurzel anlegen –
-    # die Typ-Verzeichnisse entstehen nach der Modus-Wahl bei Bedarf.
 
 
 # Start web server
@@ -1353,10 +1333,11 @@ def run_server(host=None, port=None, certfile=None, keyfile=None):
       UBUCHHALTUNG_PORT (Default 8080),
       UBUCHHALTUNG_CERT / UBUCHHALTUNG_KEY (PEM-Dateien ⇒ HTTPS, self-signed möglich).
 
-    Die Ersteinrichtung legt den ersten Administrator an und stellt den Mehrbenutzer-
-    Modus in data/config.json ein (für Headless-Setup ggf. vorab mit {"mode":"multi"}
-    anlegen); ``mode: single`` gibt es nur noch für Altbestände, die ``layout.migrate()``
-    beim Start (main.py) nach data/users/<Name>/ umzieht.
+    Die Ersteinrichtung legt den ersten Administrator an und trägt ``"mode": "multi"``
+    in data/config.json ein (für Headless-Setup ggf. vorab mit {"mode":"multi"} anlegen).
+    Eine Ablage aus Version 1.x zieht ``layout.migrate()`` nach data/users/<Name>/ um;
+    main.py ruft es vor dem Start auf, hier läuft es zur Sicherheit noch einmal
+    (idempotent), falls der Server über einen anderen Einstieg gestartet wird.
     """
     import socket, sys
     host = host or os.environ.get("UBUCHHALTUNG_HOST", "localhost")
@@ -1364,6 +1345,9 @@ def run_server(host=None, port=None, certfile=None, keyfile=None):
     certfile = certfile or os.environ.get("UBUCHHALTUNG_CERT")
     keyfile = keyfile or os.environ.get("UBUCHHALTUNG_KEY")
 
+    import layout
+    if layout.needs_migration():
+        layout.migrate()
     _ensure_directories()
     if userctx.auth_enabled():
         auth.init_auth_db()                      # Auth-Tabellen vor dem ersten Request anlegen

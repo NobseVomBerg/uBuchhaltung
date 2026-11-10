@@ -891,7 +891,8 @@ def handle_wiso_import(request_handler, db: Database):
     parts = parse_multipart(content_type, raw)
 
     # CSRF: klassisches Multipart-Formular – Token steckt als Feld im Body
-    # (das Footer-JS ergänzt es beim Submit). Nur im Mehrbenutzer-Modus aktiv.
+    # (das Footer-JS ergänzt es beim Submit). Aktiv, sobald die Installation
+    # eingerichtet ist.
     if userctx.auth_enabled():
         csrf_part = next((p for p in parts if p.name == 'csrf' and not p.is_file), None)
         csrf_token = csrf_part.content.decode('utf-8', 'replace').strip() if csrf_part else ''
@@ -2650,17 +2651,16 @@ def handle_setup_start(post_data):
     automatischer Anmeldung. Returns (ok, username, with_login, error_msg);
     ``None`` als erstes Element heißt: Einrichtung ist bereits erfolgt (403).
 
-    Gesperrt ist die Ersteinrichtung, sobald es einen Administrator gibt (oder der
-    Einzelbenutzer-Modus eines Altbestands läuft). Eine vorab angelegte config.json
-    mit ``{"mode":"multi"}`` (Headless) oder ein Datenverzeichnis nur mit Benutzer
-    ``demo`` lässt sie offen. Der Betriebsmodus wird hier auf Mehrbenutzer gesetzt;
-    danach ändert ihn nichts mehr im Browser (sonst könnte ein Nutzer den Login
-    abschalten).
+    Gesperrt ist die Ersteinrichtung, sobald es einen Administrator gibt. Eine vorab
+    angelegte config.json mit ``{"mode":"multi"}`` (Headless) oder ein Datenverzeichnis
+    nur mit Benutzer ``demo`` lässt sie offen. Die Installation wird hier als
+    eingerichtet markiert (``mode: multi``); danach ändert das nichts mehr im Browser
+    (sonst könnte ein Nutzer den Login abschalten).
     """
     import secrets
     import demo
     mode = userctx.get_mode()
-    if mode == 'single' or (mode == 'multi' and auth.count_admins() > 0):
+    if mode == 'multi' and auth.count_admins() > 0:
         return None, '', False, None
     if demo.active_user():
         # Im laufenden Demo-Modus ist jeder Besucher angemeldet – er darf sich nicht

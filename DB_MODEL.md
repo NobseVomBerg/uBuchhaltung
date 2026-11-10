@@ -2,7 +2,7 @@
 
 **Status:** Aktuell (Stand: 7. Juli 2026)
 **DBMS:** SQLite 3
-**Datei:** `data/buch.db` (Einzelbenutzer) bzw. `data/users/<user>/buch.db` (Mehrbenutzer)
+**Datei:** `data/users/<Name>/buch.db`
 
 ---
 

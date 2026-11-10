@@ -6,11 +6,10 @@ ab. Bei der **Ersteinrichtung im Browser** wird der erste Administrator angelegt
 angemeldet, das ist der Betrieb für eine Person im eigenen Netz). Das Ergebnis
 steht in `data/config.json` – keine Umgebungsvariable nötig.
 
-Bis Version 1.x gab es daneben einen Einzelbenutzer-Modus (Daten direkt in `data/`,
-ohne Anmeldung). Er heißt jetzt „automatische Anmeldung“; bestehende Installationen
-zieht der erste Start von Version 2 um – siehe [Umzug auf Version 2](#umzug-auf-version-2).
+Installationen aus Version 1.x (Daten direkt in `data/`) zieht der erste Start von
+Version 2 automatisch um – siehe [Umzug auf Version 2](#umzug-auf-version-2).
 
-## Betriebsmodus (`data/config.json`)
+## Konfiguration (`data/config.json`)
 
 ```json
 { "mode": "multi", "auto_login": "admin" }
@@ -27,10 +26,11 @@ zieht der erste Start von Version 2 um – siehe [Umzug auf Version 2](#umzug-au
 - Für ein **Headless-Setup** kann diese Datei vorab mit `{"mode":"multi"}`
   angelegt werden; die Ersteinrichtung (`/setup`) legt dann den Administrator an –
   mit oder ohne Anmeldung.
-- Der Modus wird nur bei der Ersteinrichtung festgelegt und lässt sich danach im
-  Browser nicht mehr ändern. `"mode": "single"` (ohne Login, eine gemeinsame
-  `data/buch.db`) war der Einzelbenutzer-Betrieb bis Version 1.x; eine solche
-  Installation wird beim Start umgezogen (siehe unten) und ist danach `"multi"`.
+- `"mode": "multi"` markiert die Installation als eingerichtet. Die Ersteinrichtung
+  trägt es ein; im Browser lässt es sich danach nicht mehr ändern. Jeder andere Wert
+  gilt als „nicht eingerichtet“. Eine Ablage aus Version 1.x (Daten direkt in `data/`)
+  wird beim Start umgezogen (siehe [Umzug auf Version 2](#umzug-auf-version-2)) und
+  trägt danach `"multi"`.
 
 ## Netzwerk & HTTPS über Umgebungsvariablen
 
@@ -116,9 +116,9 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
 - Das Löschen eines Nutzers in der Benutzerverwaltung entfernt nur das Login;
   das zugehörige Datenverzeichnis bleibt erhalten und kann bei Bedarf manuell
   entfernt werden.
-- Die SQL-Konsole (*Sonstiges*) steht im Mehrbenutzer-Modus nur Administratoren
-  zur Verfügung und arbeitet immer nur auf der eigenen Datenbank des angemeldeten
-  Nutzers. Wer sie braucht, bekommt in der Benutzerverwaltung das Administratorrecht.
+- Die SQL-Konsole (*Sonstiges*) steht nur Administratoren zur Verfügung und
+  arbeitet immer nur auf der eigenen Datenbank des angemeldeten Nutzers. Wer sie
+  braucht, bekommt in der Benutzerverwaltung das Administratorrecht.
 
 ## Docker (Unraid, Proxmox, NAS)
 
@@ -212,7 +212,8 @@ gleichzeitig auf demselben `data/` betreiben** (SQLite-Locking).
 
 ## Umzug auf Version 2
 
-**Was sich ändert:** Es gibt nur noch die Ablage `data/users/<Name>/`. Der frühere
+**Was sich ändert:** Ab Version 2.6.0 gibt es nur noch die Ablage `data/users/<Name>/`
+(die mittlere Stelle 6 ist unverändert die Schema-Version der Datenbank). Der frühere
 Einzelbenutzer-Betrieb (Daten direkt in `data/`, ohne Anmeldung) heißt jetzt
 „automatische Anmeldung“: Ein Administrator wird ohne Passwort angemeldet
 (`auto_login` in `data/config.json`, siehe oben).

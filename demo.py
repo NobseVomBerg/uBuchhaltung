@@ -15,8 +15,8 @@ Ablauf beim Start (``prepare()``, in ``main.py`` nach ``layout.migrate()``):
 * ``data/users/demo/`` fehlt oder ist leer **und** es gibt noch keinen Benutzer
   ``demo`` → Benutzer ``demo`` (kein Administrator) anlegen, Testdaten aus
   ``seed_data/test/`` und das Demo-Szenario laden und zuletzt einen Marker
-  (``.demo``) schreiben. Gibt es noch keine ``config.json``, wird der
-  Mehrbenutzer-Modus eingestellt – die Ersteinrichtung entfällt.
+  (``.demo``) schreiben. Gibt es noch keine ``config.json``, wird die Installation
+  als eingerichtet markiert (``mode: multi``) – die Ersteinrichtung entfällt.
 * ``data/users/demo/`` trägt den Marker (Neustart eines Demo-Containers) → keine
   erneute Befüllung, Demo läuft weiter.
 * ``data/users/demo/`` enthält etwas anderes oder es gibt bereits einen Benutzer
@@ -109,11 +109,6 @@ def prepare(log=print):
     if os.path.isfile(_marker_path()):
         log(f"Demo-Modus: '{demo_dir()}' enthält bereits Demodaten – keine erneute Befüllung.")
         return RESUMED
-    if userctx.get_mode() == "single":
-        log("WARNUNG: Demo-Modus angefordert, aber das Datenverzeichnis ist noch im "
-            "Einzelbenutzer-Modus (der Umzug beim Start hätte das beheben müssen). "
-            "Es werden KEINE Demodaten geladen; normaler Start.")
-        return REFUSED
     if not _demo_dir_is_free() or _demo_user_exists():
         log(f"WARNUNG: Demo-Modus angefordert, aber es gibt bereits einen Benutzer ‚demo‘ "
             f"bzw. Daten unter '{demo_dir()}'. Es werden KEINE Demodaten geladen; normaler Start.")
