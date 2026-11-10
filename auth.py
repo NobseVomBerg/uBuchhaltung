@@ -200,6 +200,16 @@ def sql_console_allowed(db_path=None):
     return bool(user and is_admin(user, db_path))
 
 
+def auto_login_user(db_path=None):
+    """Benutzer der automatischen Anmeldung – nur, wenn er existiert und
+    Administrator ist; sonst None (dann gilt die normale Anmeldung)."""
+    import userctx
+    name = userctx.get_auto_login()
+    if name and is_admin(name, db_path):
+        return name
+    return None
+
+
 def user_exists(username, db_path=None):
     con = _conn(db_path)
     row = con.execute("SELECT 1 FROM Users WHERE Username = ?", (username,)).fetchone()

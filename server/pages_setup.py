@@ -11,37 +11,51 @@ from db import Database
 from .pages import Header1, Header2, Header3, Footer
 
 
-def PageSetupModeChoice() -> str:
-    """Erster Schritt der Ersteinrichtung: Betriebsmodus wählen.
+def PageSetupStart(error_msg=None, username='admin') -> str:
+    """Erster Schritt der Ersteinrichtung: ersten Administrator anlegen.
 
-    Wird nur angezeigt, solange der Modus noch nicht gewählt wurde
-    (keine data/config.json). Die Wahl wird anschließend persistiert.
+    Wird nur angezeigt, solange die Einrichtung noch nicht erfolgt ist
+    (keine data/config.json). Mit oder ohne Anmeldung – der Betriebsmodus
+    ist danach immer Mehrbenutzer (siehe handlers.handle_setup_start).
     """
     s = Header1()
     s += Header2()
     s += Header3()
-    s += '''
-<div class="grid1Col700 gridMain">
+    s += '<div class="grid1Col700 gridMain">'
+    if error_msg:
+        s += f'<div class="rectRounded error-box">{_html.escape(error_msg)}</div>'
+    s += f'''
   <div class="rectRounded">
     <h2>🚀 Willkommen bei uBuchhaltung – Ersteinrichtung</h2>
-    <p>Wie möchtest du uBuchhaltung betreiben? Diese Wahl lässt sich später nur durch
-       Zurücksetzen der Einrichtung ändern.</p>
-    <form method="POST" action="/setup/mode">
+    <form method="POST" action="/setup/start">
       <table class="form-table">
         <tr>
-          <td><strong>Einzelbenutzer</strong></td>
-          <td>Lokale Nutzung ohne Anmeldung – wie gehabt. Alle Daten in einer
-              gemeinsamen Datenbank.</td>
+          <td>Benutzername</td>
+          <td><input type="text" name="username" required value="{_html.escape(username)}"
+                     placeholder="3–32 Zeichen: A–Z a–z 0–9 _ -"></td>
         </tr>
         <tr>
-          <td><strong>Mehrbenutzer</strong></td>
-          <td>Betrieb im Netzwerk mit <em>Login</em>. Jeder Benutzer erhält eigene,
-              getrennte Bücher; ein Administrator verwaltet die Zugänge.</td>
+          <td>Passwort</td>
+          <td><input type="password" name="password"></td>
+        </tr>
+        <tr>
+          <td>Passwort wiederholen</td>
+          <td><input type="password" name="password2"></td>
+        </tr>
+        <tr>
+          <td><strong>Ohne Anmeldung</strong></td>
+          <td>Für eine Person im eigenen Netz. Du arbeitest sofort los, ohne Passwort.
+              Eine Anmeldung lässt sich später in der Benutzerverwaltung einschalten.</td>
+        </tr>
+        <tr>
+          <td><strong>Mit Anmeldung</strong></td>
+          <td>Mit Passwort. Weitere Benutzer mit eigenen, getrennten Büchern legst du
+              in der Benutzerverwaltung an.</td>
         </tr>
       </table>
       <div class="rowWithObjects">
-        <button type="submit" name="mode" value="single" class="coloredButton bg-green">Einzelbenutzer einrichten</button>
-        <button type="submit" name="mode" value="multi" class="coloredButton bg-blue">Mehrbenutzer einrichten</button>
+        <button type="submit" name="login" value="none" class="coloredButton bg-green">Ohne Anmeldung starten</button>
+        <button type="submit" name="login" value="password" class="coloredButton bg-blue">Mit Passwort starten</button>
       </div>
     </form>
   </div>

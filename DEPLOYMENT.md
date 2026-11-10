@@ -1,24 +1,34 @@
 # uBuchhaltung im lokalen Netzwerk betreiben (Mehrbenutzer + HTTPS)
 
-uBuchhaltung läuft als **Einzelbenutzer** (ohne Login, eine gemeinsame
-`./data/buch.db`) oder als **Mehrbenutzer** im LAN (mit Login, je Nutzer ein
-isoliertes Datenverzeichnis `data/users/<user>/`). Der Modus wird **bei der
-Ersteinrichtung im Browser gewählt** und in `data/config.json` gespeichert –
-keine Umgebungsvariable nötig.
+uBuchhaltung legt die Daten jedes Benutzers isoliert unter `data/users/<user>/`
+ab. Bei der **Ersteinrichtung im Browser** wird der erste Administrator angelegt –
+**mit Passwort** oder **ohne Anmeldung** (der Administrator wird dann automatisch
+angemeldet, das ist der Betrieb für eine Person im eigenen Netz). Das Ergebnis
+steht in `data/config.json` – keine Umgebungsvariable nötig.
 
 ## Betriebsmodus (`data/config.json`)
 
 ```json
-{ "mode": "single" }   // oder "multi"
+{ "mode": "multi", "auto_login": "admin" }
 ```
 
-- Beim ersten Aufruf ohne vorhandene `config.json` erscheint die **Modus-Auswahl**.
+- Beim ersten Aufruf ohne vorhandene `config.json` fragt die **Ersteinrichtung**
+  nach Benutzername und danach, ob mit oder ohne Anmeldung gestartet wird. Beides
+  stellt `"mode": "multi"` ein; „ohne Anmeldung“ trägt zusätzlich `"auto_login"`
+  mit dem Benutzernamen ein.
+- `auto_login` (nur bei `"multi"`): dieser Administrator wird ohne Passwort
+  angemeldet, die Anmeldeseite entfällt und andere Benutzer können sich so lange
+  nicht anmelden. In der Benutzerverwaltung lässt sich die automatische Anmeldung
+  ein- und ausschalten; beim Ausschalten wird ein Passwort gesetzt.
 - Für ein **Headless-Setup** (ohne Browser-Interaktion) kann diese Datei vorab
-  mit `{"mode":"multi"}` angelegt werden.
-- Der Modus wird nur bei der Ersteinrichtung gewählt und lässt sich danach im
+  mit `{"mode":"multi"}` angelegt werden; die Seite fragt dann nur noch nach dem
+  Administrator-Konto (`/setup-admin`).
+- Der Modus wird nur bei der Ersteinrichtung festgelegt und lässt sich danach im
   Browser nicht mehr ändern. Zum Wechsel den Server stoppen und `config.json`
   anpassen; die Daten liegen je Modus an anderer Stelle (`data/buch.db` bzw.
-  `data/users/<Name>/`) und werden dabei nicht verschoben.
+  `data/users/<Name>/`) und werden dabei nicht verschoben. `"mode": "single"`
+  (ohne Login, eine gemeinsame `data/buch.db`) gibt es nur noch für bestehende
+  Installationen.
 
 ## Netzwerk & HTTPS über Umgebungsvariablen
 
@@ -38,7 +48,7 @@ setzt das `Secure`-Flag der Session-Cookies.
 - Schreibende Anfragen (POST) nimmt die App nur von ihren eigenen Seiten an
   (Prüfung von `Sec-Fetch-Site` bzw. `Origin` gegen `Host`). Löschen und Ändern
   laufen ausschließlich per POST.
-- Ohne Login (Einzelbenutzer-Modus, Ersteinrichtung) antwortet die App nur unter
+- Ohne Login (Einzelbenutzer-Modus, Ersteinrichtung, automatische Anmeldung) antwortet die App nur unter
   IP-Adressen, `localhost`, Namen ohne Punkt, Namen mit den Endungen `.local`,
   `.lan`, `.home.arpa`, `.internal`, `.fritz.box`, `.localhost` und dem eigenen
   Rechnernamen. Das schützt vor DNS-Rebinding. Für andere Namen (z. B. eigene
