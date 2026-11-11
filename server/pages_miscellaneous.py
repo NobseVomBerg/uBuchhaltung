@@ -54,6 +54,49 @@ def _fdb_rows_table(rows):
     return s + '</table>'
 
 
+def _result_count(value):
+    """Zähler aus einer gespeicherten Ergebnisdatei: eine ganze Zahl ab 1, sonst 0 (die Datei
+    liegt im Datenordner und kann von Hand verändert sein)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def _import_notices(result):
+    """Hinweise zu Vorzeichen, Konten 1000–1099 und älteren Überträgen aus dem Ergebnis eines
+    WISO-Imports (Text- und Datenbank-Import melden beide ``negative_gross``,
+    ``stock_range_accounts``, ``legacy_stock_rows`` und ``legacy_mirrors``) als HTML."""
+    s = ''
+    negative = _result_count(result.get('negative_gross'))
+    if negative:
+        s += (f'<h3>\u26a0\ufe0f Negative Bruttobeträge &ndash; {negative} Sätze</h3>'
+              '<p>Bei diesen Sätzen steht genau ein Zahlungskonto (Bank, Kasse oder '
+              'Verrechnungskonto) auf einer Seite. Das Vorzeichen richtet sich dann nach der '
+              'Geldbewegung, nicht nach dem negativen Bruttobetrag. Stornos und Gutschriften '
+              'können dadurch als normale Buchung gelesen werden &ndash; eine Erstattung etwa als '
+              'Ausgabe &ndash; bitte nachsehen.</p>')
+    accounts = [row for row in (result.get('stock_range_accounts') or []) if isinstance(row, dict)]
+    if accounts:
+        s += (f'<h3>\u26a0\ufe0f Konten 1000&ndash;1099 &ndash; {len(accounts)}</h3>'
+              '<p>Konten 1000&ndash;1099 sind im SKR04 Vorräte; ältere Versionen haben sie als '
+              'Kasse gelesen &ndash; bitte prüfen, ob hier eine Kasse gemeint ist. Buchungen gegen '
+              'diese Konten werden als Umbuchung gelesen und erscheinen nicht in der EÜR.</p>'
+              '<table><tr><th>Konto</th><th>Bezeichnung</th><th>Buchungen</th></tr>')
+        for row in accounts:
+            s += (f'<tr><td>{_html.escape(str(row.get("nummer", "")))}</td>'
+                  f'<td>{_html.escape(str(row.get("bezeichnung", "")))}</td>'
+                  f'<td>{_html.escape(str(row.get("anzahl", "")))}</td></tr>')
+        s += '</table>'
+    stock_legacy = _result_count(result.get('legacy_stock_rows'))
+    if stock_legacy:
+        s += (f'<p>\u2139\ufe0f {stock_legacy} Buchungen auf Konten 1000&ndash;1099 stammen aus einer '
+              'älteren Version und sind nach deren Lesart gespeichert; ihre Form und ihr Betrag '
+              'wurden nicht verändert, und sie wurden nicht erneut angelegt.</p>')
+    legacy = _result_count(result.get('legacy_mirrors'))
+    if legacy:
+        s += (f'<p>\u2139\ufe0f {legacy} ältere Überträge sind noch nach der alten Lesart '
+              'gespeichert; ihre Form und ihr Betrag wurden nicht verändert.</p>')
+    return s
+
+
 def PageMiscellaneous(db: Database, check_payments: bool = False):
     """Generate Sonstiges page (database overview, SQL console, misc tools).
 
@@ -384,6 +427,7 @@ def PageMiscellaneous(db: Database, check_payments: bool = False):
                       f"<td>{_html.escape(str(_r.get('beleg','')))}</td><td>{_html.escape(str(_r.get('betrag','')))}</td>"
                       f"<td>{_html.escape(str(_r.get('text','')))}</td></tr>")
             s += '</table>'
+        s += _import_notices(_last_result)
         if _errors:
             s += f'<h3>\u274c Parse-Fehler &ndash; {len(_errors)} Einträge</h3><ul>'
             for _e in _errors:
@@ -517,6 +561,31 @@ def PageMiscellaneous(db: Database, check_payments: bool = False):
                   f'<details><summary>Möglicherweise doppelt ({_html.escape(str(_possible_count))})'
                   '</summary>' + _fdb_rows_table(_possible_rows))
             if len(_possible_rows) >= MAX_ADOPTED_ROWS:
+                s += f'<p>Genannt werden die ersten {MAX_ADOPTED_ROWS}.</p>'
+            s += '</details>'
+        s += _import_notices(_fdb)
+        _conflict_rows = _fdb_result_rows(_fdb.get('form_conflicts'))
+        if _conflict_rows:
+            _conflict_count = _result_count(_fdb.get('form_conflicts_count')) or len(_conflict_rows)
+            s += ('<p>Diese schon importierten Sätze sind anders gespeichert, als dieser Import sie '
+                  'schreiben würde (z.&nbsp;B. weil ein Konto inzwischen ein Geldkonto ist oder nicht '
+                  'mehr). Sie wurden <strong>nicht</strong> geändert &ndash; bitte prüfen.</p>'
+                  f'<details><summary>Abweichende Form ({_html.escape(str(_conflict_count))})'
+                  '</summary><table><tr><th>Datum</th><th>Betrag</th><th>Text</th>'
+                  '<th>Buchungs-ID</th><th>Gespeichert</th><th>Neu</th></tr>')
+            for _row in _conflict_rows:
+                try:
+                    _amount = fmt_eur(_row.get('amount'))
+                except Exception:                       # Ergebnisdatei von Hand verändert
+                    _amount = str(_row.get('amount'))
+                s += (f'<tr><td>{_html.escape(str(_row.get("date") or ""))}</td>'
+                      f'<td>{_html.escape(_amount)}</td>'
+                      f'<td>{_html.escape(str(_row.get("text") or ""))}</td>'
+                      f'<td>{_html.escape(str(_row.get("id") or ""))}</td>'
+                      f'<td>{_html.escape(str(_row.get("stored") or ""))}</td>'
+                      f'<td>{_html.escape(str(_row.get("fresh") or ""))}</td></tr>')
+            s += '</table>'
+            if len(_conflict_rows) >= MAX_ADOPTED_ROWS:
                 s += f'<p>Genannt werden die ersten {MAX_ADOPTED_ROWS}.</p>'
             s += '</details>'
         if _blocker:

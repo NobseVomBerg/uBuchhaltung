@@ -11,7 +11,7 @@ import ipaddress
 import json
 import socket
 import unicodedata
-from db import Database, SchemaTooNewError
+from db import Database, MigrationBackupError, SchemaTooNewError
 import os
 import auth
 import demo
@@ -274,6 +274,16 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                               "uBuchhaltung angelegt oder geändert. Sie wurde nicht geöffnet "
                               "und nicht verändert. Bitte die neuere Programmversion verwenden; "
                               "Einzelheiten stehen im Server-Log.</p>")
+            return False
+        except MigrationBackupError as e:
+            print(f"FEHLER: {e}")
+            self._drain_body()
+            self.respond(500, "<h1>Sicherung vor der Umstellung gescheitert</h1>"
+                              "<p>Die Datenbank muss auf eine neuere Programmversion umgestellt "
+                              "werden. Vorher legt das Programm eine Sicherung an – und die ist "
+                              "gescheitert. Die Datenbank wurde nicht geöffnet und nicht "
+                              "verändert. Bitte Schreibrechte und freien Speicherplatz im Ordner "
+                              "der Datenbank prüfen; Einzelheiten stehen im Server-Log.</p>")
             return False
 
     def _session_token(self):

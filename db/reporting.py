@@ -8,8 +8,9 @@ import json
 from decimal import Decimal
 from money import to_minor, from_minor
 from .matching import (
-    classify_entry, is_asset_transfer, ASSET_ACCOUNT_RANGE, PL_ACCOUNT_RANGE,
-    REVENUE_ACCOUNT_RANGE, ENTRY_MIRROR, ENTRY_EMPTY, ENTRY_PURPOSE_FIRST, ENTRY_TRANSFER,
+    FORM_MIRROR_COA, FORM_MIRROR_COUNTER, FORM_PURPOSE_FIRST, FORM_TRANSFER, MIRROR_FORMS,
+    is_asset_transfer, read_entry_form, ASSET_ACCOUNT_RANGE, PL_ACCOUNT_RANGE,
+    REVENUE_ACCOUNT_RANGE,
 )
 
 # SKR04-Kontenklasse 4 = Betriebliche Erträge (Erlöse). Einzige Quelle für die
@@ -42,6 +43,31 @@ def is_income_account(account_number) -> bool:
     if nr in NEUTRAL_ACCOUNT_NUMBERS:
         return False
     return INCOME_ACCOUNT_RANGE[0] <= nr <= INCOME_ACCOUNT_RANGE[1]
+
+
+def _cash_amount_sql(cash_coa_ids, alias='b'):
+    """SQL-Ausdruck (und Parameter) für den Betrag einer Zeile aus Sicht der Kasse.
+
+    Ein Spiegel, den ein Import schreibt (``mirror_coa``: positiv = Konto im Soll), trägt den
+    Betrag auf der Seite „Konto“. Steht die Kasse dort im Gegenkonto, hat sie das Gegenteil
+    bewegt: Abhebung „1600 an 1800“ bringt der Kasse +100, die Bareinzahlung „1800 an 1600“
+    −100. Für ``mirror_counter`` (Betrag auf dem Gegenkonto, wie die Buchungsmaske ihn
+    schreibt) gilt dasselbe spiegelbildlich. Jede andere Zeile – auch ``mirror_legacy`` und
+    Zeilen ohne Form – zählt mit ihrem Betrag, wie bisher; ebenso ein Spiegel, in dem die Kasse
+    auf keiner Seite steht."""
+    if not cash_coa_ids:
+        return f'{alias}.Amount', []
+    marks = ','.join('?' * len(cash_coa_ids))
+    sql = (f"(CASE "
+           f"WHEN {alias}.BookingType = 'entry' AND {alias}.EntryForm = ? "
+           f"AND COALESCE({alias}.COA_ID, -1) NOT IN ({marks}) "
+           f"AND COALESCE({alias}.CounterCOA_ID, -1) IN ({marks}) THEN -{alias}.Amount "
+           f"WHEN {alias}.BookingType = 'entry' AND {alias}.EntryForm = ? "
+           f"AND COALESCE({alias}.CounterCOA_ID, -1) NOT IN ({marks}) "
+           f"AND COALESCE({alias}.COA_ID, -1) IN ({marks}) THEN -{alias}.Amount "
+           f"ELSE {alias}.Amount END)")
+    cash = list(cash_coa_ids)
+    return sql, [FORM_MIRROR_COA, *cash, *cash, FORM_MIRROR_COUNTER, *cash, *cash]
 
 
 class ReportingMixin:
@@ -201,17 +227,18 @@ class ReportingMixin:
             )'''
 
         p_base = [date_from, date_to] + type_params
+        amount_sql, amount_params = _cash_amount_sql(cash_coa_ids)
 
         income_rows = cursor.execute(f'''
             SELECT strftime('%Y-%m', b.DateBooking),
-                   COALESCE(SUM(b.Amount), 0)
+                   COALESCE(SUM({amount_sql}), 0)
             FROM Bookings b
             WHERE b.DateBooking BETWEEN ? AND ?
-              AND b.Amount > 0
+              AND {amount_sql} > 0
               {acct_filter}
               {not_private_cond}
             GROUP BY strftime('%Y-%m', b.DateBooking)
-        ''', p_base).fetchall()
+        ''', amount_params + [date_from, date_to] + amount_params + type_params).fetchall()
 
         private_rows = cursor.execute(f'''
             SELECT strftime('%Y-%m', b.DateBooking),
@@ -225,14 +252,14 @@ class ReportingMixin:
 
         expense_rows = cursor.execute(f'''
             SELECT strftime('%Y-%m', b.DateBooking),
-                   COALESCE(SUM(b.Amount), 0)
+                   COALESCE(SUM({amount_sql}), 0)
             FROM Bookings b
             WHERE b.DateBooking BETWEEN ? AND ?
-              AND b.Amount < 0
+              AND {amount_sql} < 0
               {acct_filter}
               {not_private_cond}
             GROUP BY strftime('%Y-%m', b.DateBooking)
-        ''', p_base).fetchall()
+        ''', amount_params + [date_from, date_to] + amount_params + type_params).fetchall()
 
         income_map  = {row[0]: row[1] for row in income_rows}
         private_map = {row[0]: row[1] for row in private_rows}
@@ -384,13 +411,16 @@ class ReportingMixin:
                       AND c.AccountNumber < 2200))
             )'''
 
+        amount_sql, amount_params = _cash_amount_sql(cash_coa_ids)
+        amount_query_params = amount_params + params[:2] + amount_params + params[2:]
+
         income = cursor.execute(f'''
-            SELECT COALESCE(SUM(b.Amount), 0)
+            SELECT COALESCE(SUM({amount_sql}), 0)
             FROM Bookings b
             WHERE b.DateBooking BETWEEN ? AND ?
-              AND b.Amount > 0 {acct_filter}
+              AND {amount_sql} > 0 {acct_filter}
               {not_private_cond}
-        ''', params).fetchone()[0]
+        ''', amount_query_params).fetchone()[0]
 
         private = cursor.execute(f'''
             SELECT COALESCE(SUM(b.Amount), 0)
@@ -401,12 +431,12 @@ class ReportingMixin:
         ''', params).fetchone()[0]
 
         expense = cursor.execute(f'''
-            SELECT COALESCE(SUM(b.Amount), 0)
+            SELECT COALESCE(SUM({amount_sql}), 0)
             FROM Bookings b
             WHERE b.DateBooking BETWEEN ? AND ?
-              AND b.Amount < 0 {acct_filter}
+              AND {amount_sql} < 0 {acct_filter}
               {not_private_cond}
-        ''', params).fetchone()[0]
+        ''', amount_query_params).fetchone()[0]
 
         bank_count = cursor.execute(f'''
             SELECT COUNT(*) FROM Bookings b
@@ -442,17 +472,20 @@ class ReportingMixin:
                       account_ids: list | None = None) -> list:
         """EÜR-Auswertung: Saldo pro SKR-Konto im Zeitraum.
 
-        Für jede Entry-Buchung wird das „Zweck-Konto" ermittelt:
-        - Wenn COA_ID ein liquides Konto (Zahlungskonto) ist → CounterCOA_ID
-        - Sonst → COA_ID
+        Für jede Entry-Buchung wird das „Zweck-Konto" ermittelt – nach der Form, die der Satz
+        beim Schreiben bekommen hat (``Bookings.EntryForm``, ``db.matching``):
+        - Geldkonto vorne (``liquid_first``) → CounterCOA_ID
+        - Zweckkonto vorne (``purpose_first``) → COA_ID
+        - Umbuchung (``transfer``) → beide Seiten
+        - Spiegel (``mirror_*``, beide Seiten Geldkonten – Doppik) → ignoriert
 
-        Liquide sind alle Zahlungskonten (``get_payment_coa_ids``: eigene Bank- und
-        Kassenkonten – die Standard-Kasse trägt 1600 –, der historische Bereich
-        1000–1099 und das Verrechnungskonto 1460) – dieselbe Menge wie im DATEV-Export.
-        Rein liquide Spiegelbuchungen (Doppik) werden ignoriert. Fehlt die liquide Seite
+        Die Form ist festgeschrieben: Ob ein Konto später Geldkonto wird oder aufhört, eines zu
+        sein, ändert die EÜR eines gebuchten Satzes nicht. Nur eine Zeile ohne Form (per
+        Roh-SQL angelegt) wird mit den Zahlungskonten von jetzt eingeordnet
+        (``get_payment_coa_ids``, ``db.matching.classify_entry``). Fehlt die liquide Seite
         (Bankkonto ohne SKR-Nummer), bleibt der Satz eine Zahlung mit Vorzeichen und
         Steuer – als Umbuchung zählt er nur, wenn beide Seiten kontiert sind und keine
-        liquide ist (``db.matching.classify_entry``).
+        liquide ist.
 
         Ob ein Satz in die EÜR kommt, entscheidet die Sektion, nicht die Kontenmenge:
         1. Buchungssätze unter einer Bankbewegung der gewählten Konten – auch der Kasse
@@ -481,7 +514,7 @@ class ReportingMixin:
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # Liquide Konten: alle Zahlungskonten, dieselbe Menge wie im DATEV-Export
+        # Zahlungskonten von jetzt: nur für Zeilen ohne gespeicherte Form (Roh-SQL)
         liquid_coa_ids = self._get_payment_coa_ids(cursor)
 
         cursor.execute("SELECT ID FROM Accounts")
@@ -528,7 +561,7 @@ class ReportingMixin:
             ph = ','.join('?' * len(acct_ids))
             cursor.execute(f"""
               SELECT e.ID, e.Amount, e.COA_ID, e.CounterCOA_ID,
-                  COALESCE(e.TaxAmount, 0), COALESCE(e.TaxRate, 0)
+                  COALESCE(e.TaxAmount, 0), COALESCE(e.TaxRate, 0), e.EntryForm
                 FROM Bookings e
                 JOIN Bookings p ON p.ID = e.ParentBooking_ID
                 WHERE e.BookingType = 'entry'
@@ -552,7 +585,7 @@ class ReportingMixin:
             ph = ','.join('?' * len(coa_list))
             cursor.execute(f"""
               SELECT e.ID, e.Amount, e.COA_ID, e.CounterCOA_ID,
-                  COALESCE(e.TaxAmount, 0), COALESCE(e.TaxRate, 0)
+                  COALESCE(e.TaxAmount, 0), COALESCE(e.TaxRate, 0), e.EntryForm
                 FROM Bookings e
                 WHERE e.BookingType = 'entry'
                   AND e.ParentBooking_ID IS NULL
@@ -586,7 +619,7 @@ class ReportingMixin:
                 excl_params = []
             cursor.execute(f"""
               SELECT e.ID, e.Amount, e.COA_ID, e.CounterCOA_ID,
-                  COALESCE(e.TaxAmount, 0), COALESCE(e.TaxRate, 0)
+                  COALESCE(e.TaxAmount, 0), COALESCE(e.TaxRate, 0), e.EntryForm
                 FROM Bookings e
                 WHERE e.BookingType = 'entry'
                   AND e.ParentBooking_ID IS NULL
@@ -598,8 +631,9 @@ class ReportingMixin:
                   AND (e.Status IS NULL OR e.Status != 'resolved')
             """, cash_acct_ids + excl_params + [date_from, date_to])
             _collect(row for row in cursor.fetchall()
-                     if not is_asset_transfer(row[2], row[3], liquid_coa_ids,
-                                              asset_coa_ids, pl_coa_ids))
+                     if not is_asset_transfer(
+                         row[2], row[3], liquid_coa_ids, asset_coa_ids, pl_coa_ids,
+                         form=read_entry_form(row[6], row[2], row[3], liquid_coa_ids)))
 
         # ── 3. Umbuchungen zwischen Anlage- und Erfolgskonto (AfA) ────
         # Nicht zahlungswirksam, an kein Konto gebunden: nur ohne Kontofilter. Sätze, die
@@ -618,7 +652,8 @@ class ReportingMixin:
                 asset_params = asset_list + asset_list
             cursor.execute(f"""
               SELECT e.ID, e.Amount, e.COA_ID, e.CounterCOA_ID,
-                  EXISTS (SELECT 1 FROM AssetDepreciations d WHERE d.Booking_ID = e.ID)
+                  EXISTS (SELECT 1 FROM AssetDepreciations d WHERE d.Booking_ID = e.ID),
+                  e.EntryForm
                 FROM Bookings e
                 WHERE e.BookingType = 'entry'
                   AND e.ParentBooking_ID IS NULL
@@ -627,10 +662,14 @@ class ReportingMixin:
                   AND (EXISTS (SELECT 1 FROM AssetDepreciations d
                                WHERE d.Booking_ID = e.ID){asset_cond})
             """, [date_from, date_to] + asset_params)
-            for booking_id, amount, coa_id, counter_coa_id, depreciation_linked in cursor.fetchall():
+            for (booking_id, amount, coa_id, counter_coa_id, depreciation_linked,
+                 stored_form) in cursor.fetchall():
                 if depreciation_linked or is_asset_transfer(
-                        coa_id, counter_coa_id, liquid_coa_ids, asset_coa_ids, pl_coa_ids):
-                    entries.setdefault(booking_id, (amount, coa_id, counter_coa_id, 0, 0))
+                        coa_id, counter_coa_id, liquid_coa_ids, asset_coa_ids, pl_coa_ids,
+                        form=read_entry_form(stored_form, coa_id, counter_coa_id,
+                                             liquid_coa_ids)):
+                    entries.setdefault(booking_id,
+                                       (amount, coa_id, counter_coa_id, 0, 0, stored_form))
 
         # ── Einnahmen-COA-IDs ermitteln (für USt-Zuordnung auf 3806) ──
         # Die Wartekonten liegen zwar in der Erlösklasse, sind aber noch keine
@@ -671,16 +710,16 @@ class ReportingMixin:
             if coa not in asset_coa_ids:
                 _book(coa, value)
 
-        for amount, coa_id, counter_coa_id, tax_amount, tax_rate in entries.values():
+        for amount, coa_id, counter_coa_id, tax_amount, tax_rate, stored_form in entries.values():
             netto = amount - tax_amount  # Brutto → Netto
 
             purpose_coa_id = None
 
-            kind = classify_entry(coa_id, counter_coa_id, liquid_coa_ids)
-            if kind in (ENTRY_MIRROR, ENTRY_EMPTY):
-                continue                      # Übertrag zwischen Geldkonten bzw. nichts kontiert
+            form = read_entry_form(stored_form, coa_id, counter_coa_id, liquid_coa_ids)
+            if form in MIRROR_FORMS:
+                continue                      # Übertrag zwischen Geldkonten
 
-            if kind == ENTRY_TRANSFER:
+            if form == FORM_TRANSFER:
                 # Umbuchung (beide Seiten kontiert, keine liquide, z. B. 4405→4400):
                 # Betrag auf beide Konten verteilen, damit z. B. Erlöse unter 4400
                 # erscheinen und 4405 reduziert wird. Anlagekonten bleiben draußen.
@@ -695,7 +734,8 @@ class ReportingMixin:
                 # Beleg), bleibt es eine Zahlung – früher lief so ein Satz in den
                 # Umbuchungs-Zweig und kam mit umgedrehtem Vorzeichen und ohne
                 # Steuer in die EÜR.
-                purpose = coa_id if kind == ENTRY_PURPOSE_FIRST else counter_coa_id
+                # (Ohne Zweckkonto – nichts kontiert – ist ``purpose`` leer: nichts wird gebucht.)
+                purpose = coa_id if form == FORM_PURPOSE_FIRST else counter_coa_id
                 if purpose:
                     purpose_coa_id = _purpose(purpose)
                     _book(purpose, netto)

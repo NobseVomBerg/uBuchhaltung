@@ -8,7 +8,7 @@ import html as _html
 from decimal import Decimal
 from db import Database
 from money import fmt_eur
-from db.matching import is_bank_effective
+from db.matching import bank_effect, is_bank_effective, is_mirror_row, purpose_in_counter
 from db.invoices import InvoiceCol
 from db.invoice_payments import PAYABLE_STATUSES
 from .pages import Header1, Header2, Header3, Footer
@@ -139,6 +139,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     # Tabelle (Split anlegen/auflösen), nicht mehr über die Felder oben.
     is_bank_form = bool(edit_trans and edit_trans[17] == 'bank')
     bank_coa_ids = db.get_bank_coa_ids()
+    account_coas = db.get_account_coa_sets()
     split_rows = []
     adopt_candidates = []
     if is_bank_form:
@@ -147,15 +148,15 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         # je eigener Beleg-Nr. – dafür taugt keine Beleg-Klammer).
         adopt_candidates = db.get_unlinked_entry_bookings(
             around_date=edit_trans[1], limit=50)
+        parent_coas = account_coas.get(edit_trans[4])      # SKR-Konto der Bankbewegung
         for c in db.get_child_bookings_for_bank(edit_trans[0]):
-            # Reine Doppik-Spiegel gehören nicht in den Editor
-            if c[1] in bank_coa_ids and c[2] in bank_coa_ids:
+            # Reine Doppik-Spiegel (beide Seiten eigene Bank-/Kassenkonten) gehören nicht in den
+            # Editor – ein Spiegel mit 1460 schon
+            if is_mirror_row(c[9], c[1], c[2], bank_coa_ids):
                 continue
-            # Liquide-zuerst gebuchte Sätze (COA = Bankkonto): das Zweckkonto
-            # steht auf der Gegenseite und gehört ins Kontofeld des Editors.
-            purpose_coa = c[1]
-            if c[1] in bank_coa_ids and c[2] not in bank_coa_ids:
-                purpose_coa = c[2]
+            # Geldkonto vorne („Bank an 1460“, Form liquid_first): das Zweckkonto steht auf der
+            # Gegenseite und gehört ins Kontofeld des Editors.
+            purpose_coa = c[2] if purpose_in_counter(c[9], c[1], c[2], bank_coa_ids) else c[1]
             # Umbuchungen (4405→4400, Privatanteil 6805→2100) gehören zum
             # Beleg, bewegen aber kein Geld – sie zählen nicht in die Summe.
             nobank = not is_bank_effective(c[1], c[2], bank_coa_ids)
@@ -164,6 +165,9 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 'tax_rate': c[5], 'tax_amount': c[6],
                 'docnr': c[7] or '', 'text': c[8] or '',
                 'nobank': nobank, 'counter_coa_id': c[2] if nobank else None,
+                # Was der Satz auf dem Konto der Bankbewegung bewegt, im Vergleich zum Betrag
+                # (1, -1 oder 0): so rechnet der Editor wie die Prüfung auf dem Server
+                'sign': bank_effect(c[9], 1, c[1], c[2], parent_coas, bank_coa_ids),
             })
 
     # Rechnungs-Zuordnung: offene Rechnungen fürs Dropdown, bestehende
@@ -393,6 +397,9 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             # Gegenkonto, das sonst nirgends im Editor sichtbar wäre.
             nobank = bool(row and not template and row.get('nobank'))
             nobank_attr = ' data-nobank="1"' if nobank else ''
+            # Ein Übertrag mit einem Konto der Bank auf der anderen Seite zählt gegenläufig
+            if row and not template and not nobank and row.get('sign', 1) != 1:
+                nobank_attr += f' data-sign="{row["sign"]}"'
             hint = ''
             counter = row.get('counter_coa_id') if nobank else None
             if nobank:
@@ -448,9 +455,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             info = c[5] or c[4] or ''
             if info:
                 label += f" · {str(info)[:40]}"
+            # Geldkonto vorne: Das Kontofeld des Editors nimmt das Zweckkonto (sonst hieße „1460 an
+            # 4400“ nach dem Zuordnen „1460 an 1460“)
+            purpose = c[7] if purpose_in_counter(c[8], c[6], c[7], bank_coa_ids) else c[6]
             adopt_opts += (f'<option value="{c[0]}" data-amount="{c[2]:.2f}"'
                            f' data-docnr="{_attr(c[3])}" data-text="{_attr(c[4])}"'
-                           f' data-coa="{c[6] or ""}">{_html.escape(label)}</option>')
+                           f' data-coa="{purpose or ""}">{_html.escape(label)}</option>')
         if adopt_opts:
             adopt_widget = (
                 '<select id="adoptSelect" style="max-width:340px;">'
@@ -497,10 +507,15 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     // Bankkonto und bleiben deshalb aus der Summe heraus.
                     return splitRows().filter(r => !r.dataset.nobank);
                 }}
+                function splitEffect(r) {{
+                    // data-sign: Übertrag mit dem Konto der Bank auf der anderen Seite zählt gegenläufig
+                    const sign = r.dataset.sign === undefined ? 1 : parseFloat(r.dataset.sign);
+                    return sign * (parseFloat(r.querySelector('.splitAmount').value) || 0);
+                }}
                 function splitRecalc() {{
                     let sum = 0;
                     splitBankRows().forEach(r => {{
-                        sum += parseFloat(r.querySelector('.splitAmount').value) || 0;
+                        sum += splitEffect(r);
                     }});
                     const rest = Math.round((SPLIT_BANK_AMOUNT - sum) * 100) / 100;
                     const el = document.getElementById('splitSummary');
@@ -531,7 +546,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     // Vorbefüllen mit Restbetrag und Werten der Bankbewegung –
                     // danach ist die Teilbuchung eigenständig.
                     let sum = 0;
-                    splitBankRows().forEach(r => {{ sum += parseFloat(r.querySelector('.splitAmount').value) || 0; }});
+                    splitBankRows().forEach(r => {{ sum += splitEffect(r); }});
                     const rest = Math.round((SPLIT_BANK_AMOUNT - sum) * 100) / 100;
                     row.querySelector('.splitAmount').value = rest !== 0 ? rest.toFixed(2) : '';
                     const idx = splitRows().length;
@@ -1171,11 +1186,11 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 # erlaubt (Speichern wird nie blockiert) und zeigt "offen".
                 # Umbuchungen (4405→4400, Privatanteil) gehören zum Beleg,
                 # bewegen aber kein Geld und zählen deshalb nicht mit.
-                bank_children = [ch for ch in children
-                                 if is_bank_effective(ch['booking'][8],
-                                                      ch['booking'][9],
-                                                      bank_coa_ids)]
-                child_sum = sum((ch['booking'][11] or 0) for ch in bank_children)
+                parent_coas = account_coas.get(account_id)
+                child_sum = sum(bank_effect(ch['booking'][22], ch['booking'][11],
+                                            ch['booking'][8], ch['booking'][9],
+                                            parent_coas, bank_coa_ids)
+                                for ch in children)
                 rest = (amount or 0) - child_sum
                 all_coded = all(ch['booking'][8] is not None for ch in children)
                 if abs(rest) < Decimal('0.005') and all_coded:

@@ -665,10 +665,10 @@ PURPOSES = [
     (6815, '59.50', 0.19, '9.50'), (4400, '-119.00', 0.19, '-19.00'),
     (6805, '-10.00', None, None), (2100, '-50.00', None, None),
 ]
-# Geldseiten, die in jeder Datenbank liquide sind: das eigene Bankkonto, das Verrechnungskonto und der
-# feste Bereich 1000–1099 (hier 1050). Die Kasse der App zählt über ihr eigenes Konto: 1600 ist nur
-# dann liquide, wenn die Kasse es führt.
-FIXED_SIDES = [1800, 1460, 1050]
+# Geldseiten, die in jeder Datenbank liquide sind: das eigene Bankkonto und das Verrechnungskonto
+# (der frühere feste Bereich 1000–1099 gehört seit 2.1.0 nicht mehr dazu). Die Kasse der App zählt über
+# ihr eigenes Konto: 1600 ist nur dann liquide, wenn die Kasse es führt.
+FIXED_SIDES = [1800, 1460]
 OWN_CASH_SIDE = 1600
 
 
@@ -713,10 +713,10 @@ def _combination_db(tmp_path, kasse_skr):
 
 
 def test_euer_of_a_bank_child_does_not_depend_on_the_account_number_of_the_cash_account(tmp_path):
-    """Differenztest: Ein Kind einer Girobewegung mit Bank, Verrechnungskonto oder dem festen Bereich
-    1000–1099 als Geldseite (Zweckkonto vorne oder Geldkonto vorne) ergibt in der EÜR dieselben Zahlen
-    wie mit dem eigenen Bankkonto – egal, ob die Kasse keine SKR-Nummer, 1600 oder 1460 führt. Führt die
-    Kasse 1600, ist auch 1600 eine solche Geldseite."""
+    """Differenztest: Ein Kind einer Girobewegung mit Bank oder Verrechnungskonto als Geldseite
+    (Zweckkonto vorne oder Geldkonto vorne) ergibt in der EÜR dieselben Zahlen wie mit dem eigenen
+    Bankkonto – egal, ob die Kasse keine SKR-Nummer, 1600 oder 1460 führt. Führt die Kasse 1600, ist
+    auch 1600 eine solche Geldseite."""
     results = {}
     for kasse_skr in KASSEN:
         db, rows = _combination_db(tmp_path, kasse_skr)

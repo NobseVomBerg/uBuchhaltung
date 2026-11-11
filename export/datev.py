@@ -32,13 +32,17 @@ Spaltenbelegung (0-basiert, 124 Spalten gesamt):
 119  Land                     – "DE"
 
 Soll/Haben (Spalte 1) bezieht sich auf das Feld „Konto“ und folgt der Form des
-Buchungssatzes (``db.matching.classify_entry``). Der BU-Schlüssel (Spalte 8) folgt
-dagegen der Richtung der Geldbewegung: Einnahme = Umsatzsteuer, Ausgabe = Vorsteuer.
+Buchungssatzes, die er beim Schreiben bekommen hat (``Bookings.EntryForm``, Spalte 22 von
+``SELECT * FROM Bookings``; ``db.matching.soll_side``): Steht bei positivem Betrag das Feld
+„Konto“ im Soll, ist das Kennzeichen S bei positivem Betrag, sonst H. Nur eine Zeile ohne Form
+(per Roh-SQL angelegt) wird mit den Zahlungskonten ``liquid_coa_ids`` eingeordnet; ohne sie
+gilt allein das Vorzeichen. Der BU-Schlüssel (Spalte 8) folgt dagegen der Richtung der
+Geldbewegung: Einnahme = Umsatzsteuer, Ausgabe = Vorsteuer.
 """
 import datetime
 
 from db.invoices import InvoicesMixin
-from db.matching import classify_entry, ENTRY_LIQUID_FIRST, ENTRY_TRANSFER
+from db.matching import ENTRY_FORMS, SIDE_COA, SIDE_COUNTER, read_entry_form, soll_side
 
 # ─── Spaltenindizes ───────────────────────────────────────────────────────────
 _C_AMOUNT      = 0
@@ -230,13 +234,14 @@ def export_to_datev(bookings, coa_id_to_number: dict,
                               4=Account_ID, 5=ForeignBankAccount, 6=RecipientClient,
                               7=Contact_ID, 8=COA_ID, 9=CounterCOA_ID, 10=Category_ID,
                               11=Amount, 12=Currency, 13=TaxRate, 14=TaxAmount,
-                              15=Text, 16=DocumentNumber
+                              15=Text, 16=DocumentNumber, 22=EntryForm (optional)
     :param coa_id_to_number:  Dict {coa_id (int): account_number (int/str)}
     :param date_from:         'YYYY-MM-DD' – Anfang des Buchungszeitraums
     :param date_to:           'YYYY-MM-DD' – Ende des Buchungszeitraums
     :param liquid_coa_ids:    COA-IDs der Zahlungskonten (``db.get_payment_coa_ids()``);
-                              daran erkennt der Export, auf welcher Seite des Satzes das
-                              Geldkonto steht. Ohne sie (None) gilt allein das Vorzeichen.
+                              nur für Zeilen ohne gespeicherte Form: daran erkennt der Export,
+                              auf welcher Seite des Satzes das Geldkonto steht. Ohne sie (None)
+                              gilt für solche Zeilen allein das Vorzeichen.
     :returns:                 (csv_bytes in CP1252, list_of_exported_booking_ids)
     """
     today_ddmmyyyy = _fmt_ddmmyyyy(datetime.date.today().isoformat())
@@ -259,17 +264,15 @@ def export_to_datev(bookings, coa_id_to_number: dict,
 
         amount_f = float(amount)
         is_inflow = amount_f >= 0
-        kind = (classify_entry(coa_id, counter_coa_id, liquid_coa_ids)
-                if liquid_coa_ids is not None else None)
-        # S/H-Kennzeichen gehört zum Feld „Konto“ und hängt daran, welches Konto dort steht.
-        if kind in (ENTRY_LIQUID_FIRST, ENTRY_TRANSFER):
-            # Geldkonto steht im Feld „Konto“ (bzw. Umbuchung): Bei positivem Betrag
-            # steht dieses Konto im Soll, das Gegenkonto im Haben.
-            sh = 'S' if is_inflow else 'H'
+        stored_form = row[22] if len(row) > 22 else None
+        if stored_form in ENTRY_FORMS or liquid_coa_ids is not None:
+            side = soll_side(read_entry_form(stored_form, coa_id, counter_coa_id, liquid_coa_ids))
         else:
-            # Zweckkonto steht im Feld „Konto“: Einnahme = Konto im Haben,
-            # Ausgabe = Konto im Soll.
-            sh = 'H' if is_inflow else 'S'
+            side = SIDE_COUNTER                  # keine Form, keine Geldkonten: allein das Vorzeichen
+        # S/H-Kennzeichen gehört zum Feld „Konto“ und hängt daran, ob dieses Konto bei positivem
+        # Betrag im Soll steht (Geldkonto vorne, Umbuchung, Spiegel mit Betrag auf dem Konto) oder
+        # im Haben (Zweckkonto vorne: Einnahme = Konto im Haben, Ausgabe = Konto im Soll).
+        sh = 'S' if is_inflow == (side == SIDE_COA) else 'H'
         konto      = str(coa_id_to_number.get(coa_id, '')) if coa_id else ''
         gegenkonto = str(coa_id_to_number.get(counter_coa_id, '')) if counter_coa_id else ''
 

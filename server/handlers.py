@@ -21,7 +21,7 @@ from db import Database
 from db.core import fk_explained, ForeignKeyError
 from db.invoices import InvoiceCol
 from db.invoice_payments import RECEIVABLE_STATUSES
-from db.matching import is_bank_effective
+from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
 from db.accounts import DEFAULT_CASH_ACCOUNT
 from money import to_minor, from_minor, multiply, tax_from_net, tax_from_gross, round_minor, fmt_eur
 from decimal import Decimal
@@ -340,6 +340,19 @@ def _bank_counter_coa(db, account_id):
     return None
 
 
+class _Refused(ValueError):
+    """Eine Eingabe, die die Maske nicht schreibt; der Text geht als Klartext an den Nutzer (400)."""
+
+
+def _refuse_same_account(db, coa_id, counter_coa_id, where=''):
+    """Kein Schreibweg der Masken schreibt einen Satz mit demselben Konto auf beiden Seiten – er
+    buchte nichts und würde in jeder Auswertung als Spiegel oder Zahlung falsch gelesen."""
+    if coa_id is not None and coa_id == counter_coa_id:
+        number = db.get_coa_id_to_number_map().get(coa_id, coa_id)
+        raise _Refused(f'{where}Konto und Gegenkonto wären dasselbe Konto ({number}) – '
+                       'so ein Satz bucht nichts. Bitte ein anderes Konto wählen.')
+
+
 def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
                      recipient, currency):
     """Buchungssätze einer Bankbewegung aus dem Editor lesen und prüfen (schreibt nichts).
@@ -375,7 +388,9 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
 
     bank_coa_ids = db.get_bank_coa_ids()
     # Orientierung bestehender Sätze merken: liquide-zuerst gebuchte Sätze
-    # (COA = Bankkonto, Gegenkonto = Zweckkonto) behalten ihre Richtung.
+    # (COA = Geldkonto, Gegenkonto = Zweckkonto) behalten ihre Richtung – so, wie die
+    # gespeicherte Form (Bookings.EntryForm) sie nennt; ein Spiegel und eine Zeile ohne Form
+    # lesen sich wie in 2.0.x (purpose_in_counter).
     existing_by_id = {c[0]: (c[1], c[2])
                       for c in (db.get_child_bookings_for_bank(bank_id) if bank_id else [])}
 
@@ -399,17 +414,29 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
         if raw_counter and int(raw_counter) not in bank_coa_ids:
             new_counter = int(raw_counter)
         old_row = db.get_booking_by_id(int(row_id)) if row_id else None
+        old_coa = old_counter = None
         if old_row:
             old_coa, old_counter = old_row[8], old_row[9]
-            if old_coa in bank_coa_ids and old_counter not in bank_coa_ids:
-                # liquide-zuerst (z. B. Einnahmen aus dem WISO-Import)
-                new_coa, new_counter = old_coa, purpose_coa
-            elif not is_bank_effective(old_coa, old_counter, bank_coa_ids):
+            if is_mirror_row(old_row[22], old_coa, old_counter, bank_coa_ids):
+                # Doppik-Spiegel (beide Seiten eigene Bank-/Kassenkonten): kein Satz des Editors.
+                # Ordnet er eine bestehende Buchung zu, bleiben ihre Konten, wie sie sind.
+                new_coa, new_counter = old_coa, old_counter
+            elif purpose_in_counter(old_row[22], old_coa, old_counter, bank_coa_ids):
+                # Geldkonto vorne (z. B. Einnahmen aus dem WISO-Import, „Bank an 1460“): Das
+                # Geldkonto bleibt, das Feld „SKR-Konto“ meint das Gegenkonto. Steht dort das
+                # Geldkonto selbst (eine Buchung, die der Editor zuordnet, kam mit dem Konto
+                # der Zeile), hat der Nutzer nichts gewählt: der Satz bleibt, wie er ist.
+                new_coa = old_coa
+                new_counter = old_counter if purpose_coa == old_coa else purpose_coa
+            elif (old_row[22] == FORM_TRANSFER
+                    or not is_bank_effective(old_coa, old_counter, bank_coa_ids)):
                 # Umbuchung (4405→4400, Privatanteil 6805→2100): sie hat kein
                 # Bankkonto als Gegenseite. Würde hier account_coa_id gesetzt,
                 # machte das Speichern der Bankmaske aus dem Beleg eine
                 # Zahlung – das Gegenkonto bleibt deshalb unangetastet.
                 new_counter = old_counter
+        if not (old_row and (new_coa, new_counter) == (old_coa, old_counter)):
+            _refuse_same_account(db, new_coa, new_counter, f'Zeile {i + 1}: ')
         fields = dict(
             date_booking=date,
             date_tax=date_tax,
@@ -462,10 +489,10 @@ def _write_split_rows(db, bank_id, planned):
     # liquide) tauchen im Editor nicht auf und bleiben deshalb unberührt.
     bank_coa_ids = db.get_bank_coa_ids()
     for child in db.get_child_bookings_for_bank(bank_id):
-        child_id, c_coa, c_counter = child[0], child[1], child[2]
+        child_id, c_coa, c_counter, c_form = child[0], child[1], child[2], child[9]
         if child_id in keep_ids:
             continue
-        if c_coa in bank_coa_ids and c_counter in bank_coa_ids:
+        if is_mirror_row(c_form, c_coa, c_counter, bank_coa_ids):
             continue                      # Doppik-Spiegel: nicht anfassen
         db.delete_transaction(child_id)
 
@@ -585,14 +612,28 @@ def handle_add_transaction(db: Database, post_data):
                 # Gegenkonto – die Richtung des Satzes bleibt, wie im Editor der Bankmaske
                 # (_plan_split_rows). „Kein SKR-Konto“ nimmt die Kontierung zurück: Das
                 # Geldkonto bleibt, das Zweckkonto geht – sonst zählte es unsichtbar weiter.
-                # Maßgeblich sind die Zahlungskonten, an denen die Importe das Vorzeichen
-                # ausgerichtet haben (auch 1460), nicht nur die eigenen Bankkonten.
+                # Maßgeblich ist die gespeicherte Form des Satzes (Geldkonto vorne), nicht die
+                # Kontenliste von heute; ob die Wahl des Nutzers ein Geldkonto ist, entscheiden
+                # die Zahlungskonten (auch 1460), nicht nur die eigenen Bankkonten. Kommt das
+                # Konto des Satzes unverändert zurück (verglichen mit dem gespeicherten Stand,
+                # nicht mit der Kontenliste: es kann inzwischen kein Zahlungskonto mehr sein),
+                # hat der Nutzer nichts gewählt – dann bleibt alles, wie es ist.
                 liquid_ids = db.get_payment_coa_ids()
                 old_coa, old_counter = existing[8], existing[9]
-                if (old_coa in liquid_ids and old_counter not in liquid_ids
-                        and coa_id not in liquid_ids):
+                old_form = read_entry_form(existing[22], old_coa, old_counter, liquid_ids)
+                if (old_form == FORM_LIQUID_FIRST and old_coa is not None
+                        and coa_id != old_coa and coa_id not in liquid_ids):
                     fields['coa_id'] = old_coa
                     fields['counter_coa_id'] = coa_id
+                if (fields['coa_id'], fields.get('counter_coa_id', old_counter)) != (old_coa, old_counter):
+                    _refuse_same_account(db, fields['coa_id'],
+                                         fields.get('counter_coa_id', old_counter))
+
+            # Legt die Maske für eine Bankzeile ohne Editor einen Satz an, darf er nicht dasselbe
+            # Konto auf beiden Seiten haben – bevor irgendetwas geschrieben wird
+            if is_bank and not has_split_rows and coa_id and not db.get_child_bookings_for_bank(transaction_id):
+                _refuse_same_account(db, coa_id, _bank_counter_coa(
+                    db, account_id or (existing[4] if existing else None)))
 
             # Buchungssätze aus dem Editor der Bank-Maske erst lesen und prüfen, dann
             # schreiben: Eine ungültige Zahl dort darf auch die Bankzeile nicht halb
@@ -677,6 +718,8 @@ def handle_add_transaction(db: Database, post_data):
             # otherwise it is a plain accounting entry.
             new_booking_type = 'bank' if account_id else 'entry'
             planned_splits = None
+            if new_booking_type == 'bank' and not has_split_rows and coa_id:
+                _refuse_same_account(db, coa_id, _bank_counter_coa(db, account_id))
             if new_booking_type == 'bank' and has_split_rows:
                 # erst prüfen, dann anlegen (siehe oben)
                 planned_splits = _plan_split_rows(db, None, post_data,
@@ -755,6 +798,8 @@ def handle_add_transaction(db: Database, post_data):
             return 303, f"/invoice/edit?id={invoice_id}"
 
         return 303, "/transactions"
+    except _Refused as e:
+        return 400, str(e)             # abgelehnt, nichts gespeichert
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -800,10 +845,12 @@ def handle_update_bankaccount(db: Database, post_data):
     current = db.get_account_by_id(account_id)
     old_skr = current[7] if current else None
     if skr_account != old_skr:
-        # Ob ein Buchungssatz eine Zahlung ist und in welche Richtung, lesen EÜR und
-        # DATEV-Export daran ab, welche Konten gerade Geldkonten sind – das Vorzeichen
-        # stammt aber vom Zeitpunkt der Buchung bzw. des Imports. Hängen schon Sätze am
-        # alten oder am neuen Konto, würde die Umstellung sie umdeuten (Ausgabe ↔ Einnahme).
+        # Die Form eines Buchungssatzes (Bookings.EntryForm) steht seit 2.1.0 fest, und EÜR
+        # und DATEV-Export lesen sie. Zeilen ohne Form (Roh-SQL), die Zuordnung der Sätze zu
+        # Kasse und Dashboard, die Split-Summe und der Abgleich richten sich aber weiter nach
+        # den Konten, die gerade Geldkonten sind – das Vorzeichen stammt vom Zeitpunkt der
+        # Buchung bzw. des Imports. Hängen schon Sätze am alten oder am neuen Konto, würde die
+        # Umstellung sie umdeuten (Ausgabe ↔ Einnahme); die Sperre bleibt.
         affected = db.count_entries_on_account_numbers([old_skr, skr_account])
         if affected:
             msg = (f'SKR-Konto nicht geändert: {affected} Buchungssätze führen das bisherige '

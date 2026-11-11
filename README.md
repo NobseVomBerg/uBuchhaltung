@@ -136,6 +136,16 @@ direkt aus der Datenbankdatei oder aus den Textexporten:
   legt er neu an und meldet ähnliche vorhandene Buchungen als „möglicherweise
   doppelt“: lieber eine sichtbare zweite Buchung als eine still falsch übernommene.
 
+- Beide Importe melden, was sie nicht sicher lesen können: Sätze mit **negativem Bruttobetrag**
+  und genau einem Bank-, Kassen- oder Verrechnungskonto (dort bestimmt die Geldbewegung das
+  Vorzeichen; ein Storno oder eine Gutschrift wird so wie eine normale Buchung gelesen), Buchungen
+  auf **Konten 1000–1099** (in SKR04
+  Vorräte; ältere Versionen haben sie als Kasse gelesen – bitte prüfen, ob hier eine Kasse gemeint
+  ist; Buchungen gegen diese Konten werden als Umbuchung gelesen und erscheinen nicht in der EÜR) und
+  **ältere Überträge** zwischen Bank, Kasse und Verrechnungskonto, die noch nach der alten Lesart
+  gespeichert sind: Der Import erkennt sie wieder, legt sie nicht doppelt an und ändert ihre Form nicht.
+  Dasselbe gilt für Buchungen auf Konten 1000–1099, die eine ältere Version als Kasse gespeichert hat.
+
 Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen.
 
 > WISO und MeinBüro sind Marken ihrer jeweiligen Inhaber. uBuchhaltung ist ein
@@ -149,6 +159,18 @@ Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen
   Verantwortung für eine ordnungsgemäße Buchführung und für Steuererklärungen
   bleibt beim Anwender. Eine Prüfung oder Zusicherung der GoBD-Konformität gibt
   es nicht.
+- **Update auf 2.1.0 (Schemaänderung):** Vor jeder Umstellung einer bestehenden Datenbank legt
+  uBuchhaltung beim Start automatisch eine Sicherung an: `<Datenordner>/backup/JJJJMMTT_vor_<Version>_buch.db`
+  (z. B. `20261111_vor_2.1.0_buch.db`; eine vorhandene Datei wird nie überschrieben). Gelingt die Sicherung
+  nicht, öffnet die Datenbank nicht und bleibt unverändert; bricht die Umstellung selbst ab, ist die
+  Datenbank danach so wie vorher. Danach gibt es **kein Zurück auf 2.0.x** – ältere Versionen öffnen
+  eine 2.1-Datenbank nicht. Die Umstellung ändert keine Auswertung: EÜR, DATEV-Export und Dashboard
+  zeigen danach dieselben Werte wie vorher.
+  **Sicherung zurückspielen** (die Oberfläche bietet das nicht an): uBuchhaltung beenden, die Datei
+  `backup/<Datum>_vor_<Version>_buch.db` im Datenordner des Nutzers (`data/users/<Name>/`, im Container
+  das eingebundene Datenverzeichnis) über `buch.db` kopieren – liegen daneben Dateien `buch.db-journal`,
+  `buch.db-wal` oder `buch.db-shm`, diese vorher löschen – und eine ältere Programmversion starten.
+  Was nach der Umstellung eingegeben wurde, geht dabei verloren.
 - **Noch nicht enthalten:** Umsatzsteuer-Voranmeldung bzw. ELSTER-Übermittlung,
   Bankanbindung per FinTS/PSD2 sowie Kontoauszüge im MT940-Format.
 - **Für den Betrieb im eigenen Netz gebaut**, nicht fürs offene Internet –
