@@ -1123,6 +1123,7 @@ def handle_wiso_fdb_import(db: Database, post_data):
             f'&file={quote(os.path.basename(client))}'
             f'&imported={result["imported"]}&skipped={result["skipped"]}'
             f'&adopted={result.get("adopted", 0)}'
+            f'&possible={result.get("possible_duplicates_count", 0)}'
             f'&assets={result["assets"]}&afa={result["depreciations"]}'
             f'&customers={result["customers"]}&invoices={result["invoices"]}'
             f'&items={result["invoice_items"]}'

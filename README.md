@@ -129,11 +129,12 @@ direkt aus der Datenbankdatei oder aus den Textexporten:
 - **CSV-Import** der Textexporte (Original- und Tabellen-Export), auch
   wiederholt im Parallelbetrieb – Details in [PARSER_README.md](PARSER_README.md).
 - CSV- und Datenbank-Import lassen sich nacheinander nutzen: Der Datenbank-Import
-  erkennt Buchungen des CSV-Imports an Beleg-Nr., Datum, Konto, Betrag und
-  Gegenkonto (bzw. Text) wieder und ergänzt sie, statt sie zu verdoppeln. Was nicht
-  genau übereinstimmt – etwa eine CSV-Zeile mit nachträglich geändertem Gegenkonto
-  oder Betrag, oder eine von Hand erfasste Buchung –, legt er neu an: lieber eine
-  sichtbare zweite Buchung als eine still falsch übernommene.
+  erkennt Buchungen des CSV-Imports an Beleg-Nr., Datum, Konto, Betrag und Text
+  wieder (das Gegenkonto darf nicht widersprechen) und ergänzt sie, statt sie zu
+  verdoppeln. Was nicht genau übereinstimmt – etwa eine CSV-Zeile mit nachträglich
+  geändertem Text, Gegenkonto oder Betrag, oder eine von Hand erfasste Buchung –,
+  legt er neu an und meldet ähnliche vorhandene Buchungen als „möglicherweise
+  doppelt“: lieber eine sichtbare zweite Buchung als eine still falsch übernommene.
 
 Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen.
 
