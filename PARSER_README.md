@@ -87,7 +87,7 @@ Umsätze innerhalb *einer* Datei bleiben erhalten. Die Vorschau zeigt, was schon
 einer anderen Datei desselben Uploads steckt („in anderer Datei dieses Uploads“), die
 Meldung nach dem Import nennt die so übersprungenen Umsätze. Passt der Verwendungszweck
 eines solchen Umsatzes zu keinem Umsatz der früheren Dateien (gleich, Anfang des anderen
-oder leer – Leerraum und Groß-/Kleinschreibung zählen nicht), kommt in der Vorschau
+oder leer – Leerraum, Groß-/Kleinschreibung und ein führendes „Storno:“ zählen nicht), kommt in der Vorschau
 „Text weicht ab, bitte prüfen“ dazu, etwa bei zwei verschiedenen Abos mit demselben
 Betrag am selben Tag; das ist nur ein Hinweis, der Import bleibt beim Maximum.
 
@@ -203,26 +203,36 @@ Buchung als eine still falsch übernommene:
 - Kandidat ist eine `entry` ohne `SourceGroup`, ohne `AutoMirror` (Spiegelbuchung der
   Buchungsmaske) und ohne `Account_ID` mit gleichem Datum, Betrag, Konto und gleicher
   Beleg-Nr. (Leerraum zusammengefasst: „RE  12“ = „RE 12“; auch ohne Beleg-Nr.).
-- Passend ist sie nur mit gleichem **Gegenkonto** (beide gesetzt) oder – hat sie keines –
-  mit gleichem **Text** (Leerraum und Groß-/Kleinschreibung egal). Ein anderes Gegenkonto
-  passt nie. Unter mehreren gewinnt das gleiche Gegenkonto (darunter der gleiche Text), dann
-  der gleiche Text, dann die kleinste ID. Jede Zeile wird höchstens einmal übernommen: zwei
-  gleich hohe Teilbuchungen übernehmen zwei CSV-Zeilen, gleich hohe Zahlungen verschiedener
-  Kunden bekommen jeweils ihr Gegenkonto.
+- Der **Text** muss immer gleich sein (Leerraum und Groß-/Kleinschreibung egal; die Datenbank
+  liefert ihn als latin-1, die CSV als cp1252 – für den Vergleich wird er umgesetzt, gespeichert
+  bleibt der Text der CSV-Zeile). Zwei leere Texte gelten nur als gleich, wenn das Gegenkonto auf
+  beiden Seiten bekannt und gleich ist.
+- Das **Gegenkonto** muss gleich sein (beide bekannt) oder der CSV-Zeile fehlen; ein anderes
+  passt nie. Unter mehreren gewinnt das gleiche Gegenkonto, dann die kleinste ID. Jede Zeile wird
+  höchstens einmal übernommen: zwei gleich hohe Teilbuchungen übernehmen zwei CSV-Zeilen, gleich
+  hohe Zahlungen verschiedener Kunden mit verschiedenem Text bekommen jeweils ihr Gegenkonto.
+- **Mehrdeutig** ist ein Schlüssel, wenn Sätze des Imports mit gleichem Datum, Betrag, Konto,
+  Beleg-Nr. und Text verschiedene Gegenkonten tragen: Dann nehmen sie keine Zeile ohne
+  Gegenkonto (welcher Satz zu welcher Zeile gehört, ließe sich nur raten); Zeilen mit gleichem
+  Gegenkonto bleiben erlaubt.
 - Fehlte der CSV-Zeile das Konto (im Kontenrahmen unbekannt), sucht der Datenbank-Import
   ersatzweise ohne Konto – nur wenn es zum Schlüssel keine Zeile mit Konto gab, und nur mit
-  gleichem Gegenkonto.
+  gleichem Gegenkonto und gleichem, nicht leerem Text.
 - Übernommen wird mit einem UPDATE (im Replay-Log): `SourceGroup` (WISO-`ACCOUNTINGID`)
   setzen, leere Konten (`COA_ID`, `CounterCOA_ID`) und einen leeren Empfänger füllen,
   Steuersatz und -betrag ergänzen, wenn beide fehlen. Text, Verknüpfungen zur Bank und
   Änderungen des Nutzers bleiben unberührt. Die Seite meldet die Zahl („aus dem CSV-Import
   wiedererkannt“) und listet die ersten 500 übernommenen Buchungen auf.
+- **Möglicherweise doppelt:** Hat der Import zu Datum, Betrag und Konto einen Satz neu angelegt,
+  meldet er die dazu vorhandenen, nicht übernommenen Buchungen (Zähler und die ersten 500 auf der
+  Seite *Verschiedenes*, ohne Rücksicht auf Text und Beleg-Nr.). Stimmt es, ist von beiden eine
+  zu löschen.
 
-Grenze: Eine von Hand erfasste `entry` wird nur übernommen, wenn auch Gegenkonto bzw. Text
-übereinstimmen. Eine CSV-Zeile, deren Gegenkonto oder Betrag nachträglich geändert wurde,
-wird nicht wiedererkannt – es entsteht eine zweite Buchung, die sich in der Buchungsliste
-löschen lässt. Die WISO-Satz-Id als eigene Spalte würde das exakt machen (Schemaänderung,
-siehe `docs/aufgaben.md`).
+Grenze: Eine von Hand erfasste `entry` wird nur übernommen, wenn auch der Text stimmt. Eine
+CSV-Zeile, deren Text, Gegenkonto oder Betrag nachträglich geändert wurde, wird nicht
+wiedererkannt – es entsteht eine zweite Buchung, die unter „möglicherweise doppelt“ steht und
+sich in der Buchungsliste löschen lässt. Die WISO-Satz-Id als eigene Spalte würde das exakt
+machen (Schemaänderung, siehe `docs/aufgaben.md`).
 
 **BookingType:** `'entry'` (Buchungssatz)
 

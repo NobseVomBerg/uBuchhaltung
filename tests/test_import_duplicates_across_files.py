@@ -422,8 +422,9 @@ def test_preview_changes_nothing(db_two_accounts):
 # ── Vorschau: „Text weicht ab, bitte prüfen“ ─────────────────────────────────
 
 #: (Verwendungszweck in der früheren Datei, in der späteren Datei, weicht ab?). Verglichen wird ohne
-#: Rücksicht auf Leerraum und Schreibweise; passt einer als Anfang zum anderen (PDF und CAMT kürzen
-#: verschieden) oder ist einer leer, gilt der Umsatz als derselbe.
+#: jeden Leerraum (PDF-Zeilenumbrüche mitten im Wort!), ohne Rücksicht auf die Schreibweise und ohne
+#: führendes „Storno:“; passt einer als Anfang zum anderen (PDF und CAMT kürzen verschieden) oder ist
+#: einer leer, gilt der Umsatz als derselbe.
 TEXT_PAIRS = [
     ("Netflix", "Spotify", True),
     ("Rechnung 100", "Rechnung 200", True),
@@ -435,6 +436,14 @@ TEXT_PAIRS = [
     ("Netflix", "Net", False),
     ("", "Netflix", False),                          # leere Texte gelten als übereinstimmend
     ("Netflix", "", False),
+    ("Storno: Abo März", "Abo März", False),         # führendes „Storno:“ zählt nicht …
+    ("Abo März", "Storno: Abo März", False),
+    ("STORNO:Abo März", "abo märz", False),
+    ("Storno: Netflix", "Spotify", True),            # … macht aber nicht alles gleich
+    ("Abo Storno: März", "Abo März", True),          # nur das FÜHRENDE „Storno:“
+    ("Rechnungsnum\nmer 4711", "Rechnungsnummer 4711", False),   # PDF bricht mitten im Wort um
+    ("Rechnungsnummer 4711", "Rechnungsnum mer 4711", False),
+    ("Basislastschrift", "Netflix Abo März", True),  # Buchungsart statt Zweck: bleibt markiert
 ]
 
 
@@ -735,7 +744,8 @@ def test_same_camt_twice_in_upload_imports_once(db_two_accounts, pending_factory
 #: anderes Vorzeichen) und derselbe Betrag an einem anderen Tag
 POOL = [("2026-03-02", -12.5), ("2026-03-02", 12.5), ("2026-03-03", -12.5), ("2026-03-03", 100.0)]
 #: Verwendungszwecke: „Kaffee“ und „Kaffee EREF+123“ gehören zusammen (Anfang), die übrigen nicht
-TEXTS = ["Kaffee", "Kaffee EREF+123", "Miete Garage", "Gutschrift Kaffee", "", "KAFFEE  bar"]
+TEXTS = ["Kaffee", "Kaffee EREF+123", "Miete Garage", "Gutschrift Kaffee", "", "KAFFEE  bar",
+         "Storno: Kaffee", "Kaffee\nEREF+123"]
 #: gelegentlich ein Umsatz, den der Import nicht anlegen kann
 INCOMPLETE = [(None, 5.0), ("", 5.0), ("2026-03-04", None)]
 
@@ -758,8 +768,13 @@ def _random_upload(rng):
 
 def _same_umsatz(a, b):
     """Verwendungszwecke, die zu demselben Umsatz gehören können: gleich oder einer der Anfang des
-    anderen (Leerraum und Schreibweise egal; leer passt zu allem)."""
-    a, b = " ".join(a.split()).casefold(), " ".join(b.split()).casefold()
+    anderen – ohne jeden Leerraum, ohne Rücksicht auf die Schreibweise und ohne führendes „Storno:“
+    (leer passt zu allem)."""
+    def plain(text):
+        text = "".join(text.split()).casefold()
+        return text[len("storno:"):] if text.startswith("storno:") else text
+
+    a, b = plain(a), plain(b)
     return a.startswith(b) or b.startswith(a)
 
 

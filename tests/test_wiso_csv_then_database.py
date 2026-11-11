@@ -1,26 +1,33 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 unsix IT Engineering
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
-"""WISO: CSV-Import und Datenbank-Import nacheinander (2.0.6).
+"""WISO: CSV-Import und Datenbank-Import nacheinander (2.0.6) – die Regeln der Übernahme.
 
 Der CSV-Import schreibt keine ``SourceGroup`` und erkennt Duplikate am Schlüssel Beleg-Nr. +
 Datum + Konto + Betrag. Der Datenbank-Import kannte bisher nur die ``SourceGroup`` – nach einem
-CSV-Import legte er alles ein zweites Mal an. Jetzt übernimmt er eine vorhandene Buchung, statt
-sie neu anzulegen (Zähler ``adopted``, ``adopted_rows``, Meldung auf der Seite „Verschiedenes“) –
-aber nur, wenn alles gilt:
+CSV-Import legte er alles ein zweites Mal an. Jetzt übernimmt er eine vorhandene Buchung, statt sie
+neu anzulegen – aber eng gefasst: lieber eine sichtbare zweite Buchung als eine still falsche
+Zuordnung. Ein WISO-Satz übernimmt eine Buchung nur, wenn ALLES gilt:
 
-1. Kandidat ist ``entry`` ohne ``SourceGroup``, kein ``AutoMirror``, ohne ``Account_ID``; gleiches
-   Datum, gleicher Betrag, gleiches Konto (``COA_ID``), gleiche Beleg-Nr. (Leerraum zusammengefasst,
-   leer = NULL).
-2. Das Gegenkonto passt: beide kennen es und es ist gleich – oder der Kandidat hat keines und der
-   Text stimmt überein (Leerraum zusammengefasst, Groß-/Kleinschreibung egal). Ein ANDERES
-   Gegenkonto verhindert die Übernahme: lieber eine zweite, sichtbare Buchung als eine still
-   falsche Zuordnung.
-3. Mehrere Kandidaten: gleiches Gegenkonto gewinnt, sonst gleicher Text – nie „der erste nach ID“.
-4. Ersatzsuche ohne Konto (``COA_ID IS NULL``): nur wenn es für den Schlüssel von Anfang an keinen
-   Kandidaten mit Konto gab, und nur bei gleichem, bekanntem Gegenkonto.
-5. Übernommen wird: ``SourceGroup`` setzen, leere Konten füllen, ``TaxRate``/``TaxAmount`` (nur wenn
-   beide leer sind) und ``RecipientClient`` (wenn leer) ergänzen – sonst bleibt alles.
+1. Kandidat ist eine ``entry`` ohne ``SourceGroup``, ohne ``AutoMirror`` und ohne ``Account_ID``;
+   gleiches Datum, gleicher Betrag, gleiches Konto (``COA_ID``), gleiche Beleg-Nr. (Leerraum
+   zusammengefasst, leer = NULL).
+2. Der Text ist gleich – immer (Leerraum zusammengefasst, Groß-/Kleinschreibung egal; der Text aus der
+   WISO-Datenbank wird von latin-1 nach cp1252 umgesetzt, damit „€“, „–“, „…“ übereinstimmen). Zwei
+   LEERE Texte gelten nur als gleich, wenn das Gegenkonto auf beiden Seiten bekannt und gleich ist.
+3. Das Gegenkonto passt: gleich (beide bekannt) oder der Kandidat hat keines. Ein ANDERES Gegenkonto
+   passt nie.
+4. Tragen mehrere Sätze desselben Imports denselben Schlüssel und Text, aber verschiedene Gegenkonten,
+   übernimmt keiner von ihnen einen Kandidaten ohne Gegenkonto (alle werden neu angelegt); Kandidaten
+   mit gleichem bekanntem Gegenkonto bleiben übernehmbar.
+5. Gewählt wird zuerst der Kandidat mit gleichem Gegenkonto, dann der ohne; bei Gleichstand die kleinste ID.
+6. Ersatzsuche ohne Konto (``COA_ID IS NULL``): nur wenn es von Anfang an keinen Kandidaten mit Konto
+   gab, und nur bei gleichem bekanntem Gegenkonto UND gleichem, nicht leerem Text.
+
+Übernommen wird: ``SourceGroup`` setzen, leere Konten füllen, ``TaxRate``/``TaxAmount`` (nur wenn beide
+leer sind) und ``RecipientClient`` (wenn leer) ergänzen – sonst bleibt alles. Was nicht übernommen wird,
+obwohl für denselben Schlüssel ein Satz neu angelegt wurde, meldet das Ergebnis als
+``possible_duplicates`` (die Berichtstests stehen in ``test_wiso_adoption_report.py``).
 
 Die Sätze sind erfunden (``tests/fdb_builder.py``): ein Verkauf, ein Büro-Einkauf, zwei gleich hohe
 Teilbuchungen desselben Belegs, ein Satz ohne Beleg-Nr. und ein Satz aus dem Vorjahr, den die CSV
@@ -51,7 +58,9 @@ from tests.test_wiso_fdb_invoices import _payments, _zahlungs_fdb  # noqa: E402
 #: sie sind, und brauchen keine Zeile.
 CHART = ((1200, 1800, 'Bank'), (1210, 1810, 'Bankkonto 2'), (1000, 1600, 'Kasse'),
          (1360, 1460, 'Verrechnungskonto'), (8400, 4400, 'Erlöse 19 %'),
-         (4930, 6815, 'Bürobedarf'), (4900, 6300, 'Sonstige Aufwendungen'))
+         (8405, 4405, 'Erlöse 19 % noch offen'), (4930, 6815, 'Bürobedarf'),
+         (4900, 6300, 'Sonstige Aufwendungen'), (4830, 6220, 'Abschreibungen auf Sachanlagen'),
+         (320, 520, 'Pkw'))
 #: ein Konto, das der eigene Kontenrahmen nicht kennt
 NEW_ACCOUNT = (4999, 6999, 'Neu angelegt')
 
@@ -296,12 +305,10 @@ def test_csv_dann_datenbank_verdoppelt_nicht(db_with_coa, tmp_path):
     assert len(after) == 6
     for text, row in before.items():
         assert after[text]['ID'] == row['ID'], text
-    assert {text: after[text]['SourceGroup'] for text in
-            ('Probe Verkauf', 'Probe Buero', 'Probe ohne Beleg')} == {
-        'Probe Verkauf': '700', 'Probe Buero': '701', 'Probe ohne Beleg': '704'}
-    # die beiden gleich hohen Teilbuchungen: jede bekommt eine eigene Quellgruppe
-    assert {after['Probe Split A']['SourceGroup'], after['Probe Split B']['SourceGroup']} == {
-        '702', '703'}
+    # der Text ordnet zu – auch die beiden gleich hohen Teilbuchungen bekommen ihre eigene Quellgruppe
+    assert {text: after[text]['SourceGroup'] for text in before} == {
+        'Probe Verkauf': '700', 'Probe Buero': '701', 'Probe Split A': '702',
+        'Probe Split B': '703', 'Probe ohne Beleg': '704'}
 
 
 def test_gleichbetragige_teilbuchungen_je_einzeln_uebernommen(db_with_coa, tmp_path):
@@ -311,22 +318,28 @@ def test_gleichbetragige_teilbuchungen_je_einzeln_uebernommen(db_with_coa, tmp_p
     assert result['adopted'] == 5
     split = [row for row in _entries(db_with_coa) if row['DocumentNumber'] == 'PR-003']
     assert len(split) == 2
-    assert sorted(row['SourceGroup'] for row in split) == ['702', '703']
-    assert sorted(row['Text'] for row in split) == ['Probe Split A', 'Probe Split B']
+    assert {row['Text']: row['SourceGroup'] for row in split} == {
+        'Probe Split A': '702', 'Probe Split B': '703'}
 
 
-def test_eine_csv_zeile_fuer_zwei_gleich_hohe_saetze(db_with_coa, tmp_path):
-    """Eine CSV-Zeile ↔ zwei Sätze: einer wird übernommen, der andere neu angelegt – die
-    Zeile wird nicht doppelt beansprucht."""
+@pytest.mark.parametrize('reverse', [False, True], ids=['A vor B', 'B vor A'])
+def test_eine_csv_zeile_fuer_zwei_gleich_hohe_saetze(db_with_coa, tmp_path, reverse):
+    """Eine CSV-Zeile ↔ zwei Sätze: nur der Satz mit demselben Text übernimmt sie, der andere wird neu
+    angelegt – gleich, in welcher Reihenfolge WISO sie liefert (kein „der Erste nimmt sie“)."""
     rows = [row for row in CSV_ROWS if row[3] != 'Probe Split B']
     _csv_import(db_with_coa, rows)
-    assert len([r for r in _entries(db_with_coa) if r['DocumentNumber'] == 'PR-003']) == 1
+    csv_a = _by_text(db_with_coa)['Probe Split A']
+    records = _records()
+    if reverse:
+        records[SPLIT_A], records[SPLIT_B] = records[SPLIT_B], records[SPLIT_A]
 
-    result = _fdb_import(db_with_coa, _fdb(tmp_path))
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, records))
     assert (result['imported'], result['adopted']) == (2, 4)      # Split B und Vorjahr neu
+    assert result['possible_duplicates'] == []                    # keine Zeile blieb übrig
     split = [row for row in _entries(db_with_coa) if row['DocumentNumber'] == 'PR-003']
-    assert sorted(row['SourceGroup'] for row in split) == ['702', '703']
-    assert sorted(row['Text'] for row in split) == ['Probe Split A', 'Probe Split B']
+    assert {row['Text']: row['SourceGroup'] for row in split} == {
+        'Probe Split A': '702', 'Probe Split B': '703'}
+    assert _row(db_with_coa, csv_a['ID'])['SourceGroup'] == '702'   # die CSV-Zeile blieb die von A
 
 
 def test_ohne_belegnummer_wird_uebernommen(db_with_coa, tmp_path):
@@ -445,8 +458,25 @@ def test_geaendertes_gegenkonto_verhindert_die_uebernahme(db_with_coa, tmp_path)
         ('', other_bank), ('701', _coa(db_with_coa, 1800))])
 
 
+def test_geaenderter_text_verhindert_die_uebernahme(db_with_coa, tmp_path):
+    """Hat der Nutzer den Text einer CSV-Zeile geändert, passt sie nicht mehr zum Satz aus WISO: Sie
+    bleibt, wie sie ist, der Satz kommt als zweite Buchung dazu – und die Zeile steht im Ergebnis als
+    „möglicherweise doppelt“."""
+    _csv_import(db_with_coa)
+    _execute(db_with_coa, "UPDATE Bookings SET Text = 'Büro, vom Nutzer umbenannt'"
+                          " WHERE Text = 'Probe Buero'")
+    renamed = [r for r in _entries(db_with_coa) if r['Text'] == 'Büro, vom Nutzer umbenannt'][0]
+
+    result = _fdb_import(db_with_coa, _fdb(tmp_path))
+    assert (result['imported'], result['adopted']) == (2, 4)
+    assert _row(db_with_coa, renamed['ID']) == renamed
+    assert [d['id'] for d in result['possible_duplicates']] == [renamed['ID']]
+    assert result['possible_duplicates_count'] == 1
+    assert len([r for r in _entries(db_with_coa) if r['DocumentNumber'] == 'PR-002']) == 2
+
+
 def test_uebernahme_behaelt_text_und_verknuepfung(db_with_coa, tmp_path):
-    """Text, Beleg-Nr., Steuer, Bankverknüpfung, Konto, Kategorie, Kontakt und Empfänger der
+    """Beleg-Nr., Steuer, Bankverknüpfung, Konto, Kategorie, Kontakt, Empfänger und Status der
     CSV-Zeilen bleiben, wie der Nutzer sie hinterlassen hat – nur die Quellgruppe kommt dazu. Eine von
     der Abgleichlogik mit einer Bankbewegung verknüpfte Zeile wird weiter übernommen."""
     _csv_import(db_with_coa)
@@ -462,9 +492,9 @@ def test_uebernahme_behaelt_text_und_verknuepfung(db_with_coa, tmp_path):
     _execute(db, "INSERT INTO Categories (Name, Text) VALUES ('Privat', 'Test')")
     category = _query(db, "SELECT ID FROM Categories WHERE Name = 'Privat'")[0]['ID']
     contact = _query(db, 'SELECT ID FROM Contacts ORDER BY ID LIMIT 1')[0]['ID']
-    _execute(db, "UPDATE Bookings SET Text = 'Verkauf, vom Nutzer ergänzt', Contact_ID = ?,"
-                 " Category_ID = ?, RecipientClient = 'Kundin', Status = 'geprüft',"
-                 " DateTax = '2024-03-31' WHERE Text = 'Probe Verkauf'", (contact, category))
+    _execute(db, "UPDATE Bookings SET Contact_ID = ?, Category_ID = ?, RecipientClient = 'Kundin',"
+                 " Status = 'geprüft', DateTax = '2024-03-31' WHERE Text = 'Probe Verkauf'",
+             (contact, category))
     before = {row['ID']: row for row in _entries(db)}
 
     result = _fdb_import(db, _fdb(tmp_path))
@@ -474,20 +504,25 @@ def test_uebernahme_behaelt_text_und_verknuepfung(db_with_coa, tmp_path):
     for entry_id, row in before.items():
         assert after[entry_id] == {**row, 'SourceGroup': after[entry_id]['SourceGroup']}, row['Text']
         assert after[entry_id]['SourceGroup'], row['Text']              # überall gesetzt
-    changed = [r for r in after.values() if r['Text'] == 'Verkauf, vom Nutzer ergänzt'][0]
+    changed = [r for r in after.values() if r['Text'] == 'Probe Verkauf'][0]
     assert (changed['Contact_ID'], changed['Category_ID'], changed['RecipientClient']) == (
         contact, category, 'Kundin')
+    assert (changed['Status'], changed['DateTax']) == ('geprüft', '2024-03-31')
     assert after[linked['ID']]['ParentBooking_ID'] == bank_booking
     # die Bankbewegung selbst blieb unangetastet
     assert _row(db, bank_booking)['SourceGroup'] is None
 
 
-# ── Gegenkonto und Text ──────────────────────────────────────────────────────
+# ── Text und Gegenkonto ──────────────────────────────────────────────────────
 
 #: Kandidat (Abweichungen von ``_candidate``) und ob der Satz ``_record()`` ihn übernimmt. Satz:
-#: Bank an Erlöse, Text „Probe Verkauf“.
+#: Bank an Erlöse (Gegenkonto 4400), Text „Probe Verkauf“. Der Text muss IMMER gleich sein.
 COUNTER_CASES = [
-    ('Gegenkonto gleich, Text anders', dict(text='ganz anderer Text'), True),
+    ('Gegenkonto gleich, Text gleich', dict(), True),
+    ('Gegenkonto gleich, Text gleich bis auf Leerraum und Schreibweise',
+     dict(text=' probe\tVERKAUF '), True),
+    ('Gegenkonto gleich, Text anders', dict(text='ganz anderer Text'), False),
+    ('Gegenkonto gleich, Text leer', dict(text=''), False),
     ('Gegenkonto leer, Text gleich', dict(counter=None), True),
     ('Gegenkonto leer, Text gleich bis auf Leerraum und Schreibweise',
      dict(counter=None, text='  PROBE   verkauf '), True),
@@ -498,9 +533,10 @@ COUNTER_CASES = [
 
 
 @pytest.mark.parametrize('name,overrides,adopted', COUNTER_CASES, ids=[c[0] for c in COUNTER_CASES])
-def test_gegenkonto_oder_text_muss_passen(db_with_coa, tmp_path, name, overrides, adopted):
-    """Beide kennen das Gegenkonto → es muss gleich sein; kennt es der Kandidat nicht → der Text
-    muss übereinstimmen. Sonst bleibt der Kandidat unberührt und der Satz kommt neu dazu."""
+def test_text_und_gegenkonto_muessen_passen(db_with_coa, tmp_path, name, overrides, adopted):
+    """Der Text muss gleich sein, und das Gegenkonto muss gleich sein oder dem Kandidaten fehlen. Sonst
+    bleibt der Kandidat unberührt, der Satz kommt neu dazu, und die Zeile steht als „möglicherweise
+    doppelt“ im Ergebnis."""
     booking = _candidate(db_with_coa, **overrides)
     before = _row(db_with_coa, booking)
 
@@ -511,10 +547,42 @@ def test_gegenkonto_oder_text_muss_passen(db_with_coa, tmp_path, name, overrides
         assert after['SourceGroup'] == '900'
         assert after['CounterCOA_ID'] == _coa(db_with_coa, 4400)             # gefüllt oder gleich
         assert len(_entries(db_with_coa)) == 1
+        assert result['possible_duplicates'] == []
     else:
         assert (result['imported'], result['adopted']) == (1, 0)
         assert after == before
         assert len(_entries(db_with_coa)) == 2
+        assert [d['id'] for d in result['possible_duplicates']] == [booking]
+
+
+#: Leere Texte: der Satz hat den Text '' (Gegenkonto 4400, sofern nicht anders angegeben). Zwei leere
+#: Texte gelten nur als gleich, wenn das Gegenkonto auf beiden Seiten bekannt und gleich ist.
+EMPTY_TEXT_CASES = [
+    ('beide leer, Gegenkonto beidseitig gleich', dict(text=''), dict(), True),
+    ('beide leer (nur Leerraum), Gegenkonto beidseitig gleich', dict(text='  \t '), dict(), True),
+    ('beide leer, Kandidat ohne Gegenkonto', dict(text='', counter=None), dict(), False),
+    ('beide leer, anderes Gegenkonto', dict(text='', counter=1810), dict(), False),
+    ('beide leer, Gegenkonto beidseitig unbekannt', dict(text='', counter=None),
+     dict(CONTRA_ACCOUNTNO=None), False),
+    ('Satz leer, Kandidat mit Text', dict(), dict(), False),
+]
+
+
+@pytest.mark.parametrize('name,overrides,record_overrides,adopted', EMPTY_TEXT_CASES,
+                         ids=[c[0] for c in EMPTY_TEXT_CASES])
+def test_leere_texte_gelten_nur_mit_bekanntem_gleichem_gegenkonto_als_gleich(
+        db_with_coa, tmp_path, name, overrides, record_overrides, adopted):
+    booking = _candidate(db_with_coa, **overrides)
+    before = _row(db_with_coa, booking)
+    record = _record(ACCOUNTING_TEXT='', **record_overrides)
+
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, [record]))
+    if adopted:
+        assert (result['imported'], result['adopted']) == (0, 1)
+        assert _row(db_with_coa, booking)['SourceGroup'] == '900'
+    else:
+        assert (result['imported'], result['adopted']) == (1, 0)
+        assert _row(db_with_coa, booking) == before
 
 
 def test_kandidat_mit_gegenkonto_passt_nicht_zu_einem_satz_ohne(db_with_coa, tmp_path):
@@ -536,24 +604,96 @@ def test_ohne_gegenkonto_auf_beiden_seiten_entscheidet_der_text(db_with_coa, tmp
     assert _row(db_with_coa, other) == before_other
 
 
+# ── Mehrdeutigkeit: gleicher Schlüssel und Text, verschiedene Gegenkonten ───
+
+def _payment(number, group, counter, text, day='2024-03-12'):
+    """Zahlungseingang von 119,00 € auf Bankkonto 2 (SKR03 1210) ohne Beleg-Nr.; ``counter`` ist das
+    Gegenkonto in WISO (Personenkonto ab 10000 oder SKR03-Erlöskonto)."""
+    return dict(ID=number, ACCOUNTINGID=group, ACCOUNTING_DATE=f'{day} 00:00:00', AMOUNTGROSS=119.0,
+                ACCOUNTNO=1210, CONTRA_ACCOUNTNO=counter, ACCOUNTING_TEXT=text)
+
+
+def _payment_row(text, day='12.03.2024', counter=''):
+    """Dieselbe Zahlung als CSV-Zeile: Konto 1810, Gegenkonto leer (oder ``counter``)."""
+    return (day, '1810', counter, text, '', '119,00', '')
+
+
+@pytest.mark.parametrize('text', ['Zahlungseingang', ''], ids=['gleicher Text', 'leere Texte'])
+def test_gleicher_schluessel_und_text_bei_verschiedenen_gegenkonten_uebernimmt_keiner(
+        db_with_coa, tmp_path, text):
+    """Zwei CSV-Zeilen „Bank an (leer) 119,00“ am selben Tag ohne Beleg-Nr. mit demselben Text; WISO
+    liefert B (Personenkonto 10002) vor A (10001). Welche Zeile zu welchem Satz gehört, lässt sich nicht
+    entscheiden – keiner übernimmt eine, es entstehen 4 Buchungen, und beide CSV-Zeilen stehen als
+    „möglicherweise doppelt“ im Ergebnis. (Leere Texte gelten ohne Gegenkonto nie als gleich.)"""
+    _csv_import(db_with_coa, [_payment_row(text), _payment_row(text)])
+    csv_rows = _entries(db_with_coa)
+    assert len(csv_rows) == 2
+
+    records = [_payment(1, 802, 10002, text), _payment(2, 801, 10001, text)]
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, records))
+
+    assert (result['imported'], result['adopted']) == (2, 0)
+    assert len(_entries(db_with_coa)) == 4
+    assert [_row(db_with_coa, row['ID']) for row in csv_rows] == csv_rows        # beide unberührt
+    assert sorted(d['id'] for d in result['possible_duplicates']) == sorted(r['ID'] for r in csv_rows)
+    assert result['possible_duplicates_count'] == 2
+
+
+def test_bei_mehrdeutigkeit_bleiben_zeilen_mit_gleichem_bekanntem_gegenkonto_uebernehmbar(
+        db_with_coa, tmp_path):
+    """Haben die CSV-Zeilen ihr Gegenkonto (4400 / 4405), ist die Zuordnung eindeutig: jeder Satz nimmt
+    die Zeile mit seinem Gegenkonto, auch wenn alle denselben Text tragen und WISO B vor A liefert."""
+    _csv_import(db_with_coa, [_payment_row('Zahlungseingang', counter='4400'),
+                              _payment_row('Zahlungseingang', counter='4405')])
+    row_4400, row_4405 = _entries(db_with_coa)
+    assert (row_4400['CounterCOA_ID'], row_4405['CounterCOA_ID']) == (
+        _coa(db_with_coa, 4400), _coa(db_with_coa, 4405))
+
+    records = [_payment(1, 802, 8405, 'Zahlungseingang'), _payment(2, 801, 8400, 'Zahlungseingang')]
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, records))
+    assert (result['imported'], result['adopted']) == (0, 2)
+    assert _row(db_with_coa, row_4400['ID'])['SourceGroup'] == '801'
+    assert _row(db_with_coa, row_4405['ID'])['SourceGroup'] == '802'
+    assert len(_entries(db_with_coa)) == 2
+
+
+def test_gleiche_saetze_mit_gleichem_gegenkonto_sind_nicht_mehrdeutig(db_with_coa, tmp_path):
+    """Zwei Sätze mit gleichem Schlüssel, Text UND Gegenkonto sind austauschbar: beide übernehmen eine
+    Zeile ohne Gegenkonto."""
+    _csv_import(db_with_coa, [_payment_row('Zahlungseingang')] * 2)
+    csv_rows = _entries(db_with_coa)
+    records = [_payment(1, 801, 10001, 'Zahlungseingang'), _payment(2, 802, 10001, 'Zahlungseingang')]
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, records))
+    assert (result['imported'], result['adopted']) == (0, 2)
+    assert sorted(_row(db_with_coa, r['ID'])['SourceGroup'] for r in csv_rows) == ['801', '802']
+    assert all(_row(db_with_coa, r['ID'])['CounterCOA_ID'] == _coa(db_with_coa, 10001)
+               for r in csv_rows)
+
+
+def test_mehrdeutigkeit_gilt_je_schluessel(db_with_coa, tmp_path):
+    """Derselbe Text bei verschiedenen Gegenkonten an VERSCHIEDENEN Tagen ist nicht mehrdeutig."""
+    _csv_import(db_with_coa, [_payment_row('Zahlungseingang', day='12.03.2024'),
+                              _payment_row('Zahlungseingang', day='13.03.2024')])
+    records = [_payment(1, 801, 10001, 'Zahlungseingang', day='2024-03-12'),
+               _payment(2, 802, 10002, 'Zahlungseingang', day='2024-03-13')]
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, records))
+    assert (result['imported'], result['adopted']) == (0, 2)
+    by_day = {r['DateBooking']: r for r in _entries(db_with_coa)}
+    assert by_day['2024-03-12']['SourceGroup'] == '801'
+    assert by_day['2024-03-13']['SourceGroup'] == '802'
+
+
 # ── Mehrere Kandidaten mit gleichem Schlüssel ────────────────────────────────
 
 def test_zahlungen_zweier_kunden_werden_nach_text_zugeordnet(db_with_coa, tmp_path):
     """Zwei CSV-Zeilen „Bank an (leer) 119,00“ am selben Tag ohne Beleg-Nr., Zahlung Kunde A und B.
     Die Datenbank liefert B vor A, mit den Personenkonten 10002 und 10001: Zeile A bekommt 10001 und
     die Gruppe von A, Zeile B 10002 und die Gruppe von B – nicht „die erste Zeile dem ersten Satz“."""
-    rows = [('12.03.2024', '1810', '', 'Zahlung Kunde A', '', '119,00', ''),
-            ('12.03.2024', '1810', '', 'Zahlung Kunde B', '', '119,00', '')]
-    _csv_import(db_with_coa, rows)
+    _csv_import(db_with_coa, [_payment_row('Zahlung Kunde A'), _payment_row('Zahlung Kunde B')])
     csv_a, csv_b = [_by_text(db_with_coa)[f'Zahlung Kunde {k}'] for k in 'AB']
     assert csv_a['ID'] < csv_b['ID']
 
-    def payment(number, group, counter, name):
-        return dict(ID=number, ACCOUNTINGID=group, ACCOUNTING_DATE='2024-03-12 00:00:00',
-                    AMOUNTGROSS=119.0, ACCOUNTNO=1210, CONTRA_ACCOUNTNO=counter,
-                    ACCOUNTING_TEXT=f'Zahlung Kunde {name}')
-
-    records = [payment(1, 802, 10002, 'B'), payment(2, 801, 10001, 'A')]       # B vor A
+    records = [_payment(1, 802, 10002, 'Zahlung Kunde B'), _payment(2, 801, 10001, 'Zahlung Kunde A')]
     result = _fdb_import(db_with_coa, _fdb(tmp_path, records))
     assert (result['imported'], result['adopted']) == (0, 2)
 
@@ -584,23 +724,24 @@ def test_gleiches_gegenkonto_entscheidet_zwischen_zeilen_mit_gleichem_text(db_wi
     assert _row(db_with_coa, csv_1800['ID'])['SourceGroup'] == '812'     # Satz mit 1800
 
 
-#: Kandidaten in ID-Reihenfolge (Abweichungen von ``_candidate``) und der Index dessen, der gewinnt
+#: Kandidaten in ID-Reihenfolge (Abweichungen von ``_candidate``) und der Index dessen, der gewinnt.
+#: Der Satz hat den Text „Probe Verkauf“ und das Gegenkonto 4400.
 PICK_CASES = [
-    ('gleiches Gegenkonto schlägt gleichen Text',
-     [dict(counter=None), dict(text='anders')], 1),
-    ('erster Kandidat passt nicht, zweiter schon',
-     [dict(counter=None, text='anders'), dict(counter=None)], 1),
-    ('anderes Gegenkonto vorn, gleiches dahinter', [dict(counter=1810), dict()], 1),
-    ('beide passen: der mit gleichem Gegenkonto', [dict(counter=None), dict(counter=4400)], 1),
-    ('anderes Gegenkonto und leeres mit gleichem Text', [dict(counter=1810), dict(counter=None)], 1),
-    ('gleiches Gegenkonto, darunter der gleiche Text', [dict(text='anders'), dict()], 1),
-    ('gleiches Gegenkonto und gleicher Text vorn bleibt vorn', [dict(), dict(text='anders')], 0),
+    ('gleiches Gegenkonto schlägt kein Gegenkonto', [dict(counter=None), dict()], 1),
+    ('kein Gegenkonto vorn, gleiches Gegenkonto und kein Gegenkonto danach',
+     [dict(counter=None), dict(), dict(counter=None)], 1),
+    ('erster Kandidat passt nicht (Text), zweiter schon', [dict(counter=None, text='anders'), dict(counter=None)], 1),
+    ('erster Kandidat passt nicht (Gegenkonto), zweiter schon', [dict(counter=1810), dict()], 1),
+    ('gleiches Gegenkonto, aber anderer Text: passt nicht', [dict(text='anders'), dict(counter=None)], 1),
+    ('beide mit gleichem Gegenkonto: die kleinste ID', [dict(), dict()], 0),
+    ('beide ohne Gegenkonto: die kleinste ID', [dict(counter=None), dict(counter=None)], 0),
 ]
 
 
 @pytest.mark.parametrize('name,candidates,winner', PICK_CASES, ids=[c[0] for c in PICK_CASES])
 def test_unter_mehreren_kandidaten_gewinnt_der_passende(db_with_coa, tmp_path, name, candidates, winner):
-    """Gegenkonto vor Text, und nie einfach der erste nach ID."""
+    """Zuerst der Kandidat mit gleichem Gegenkonto, dann der ohne; bei Gleichstand die kleinste ID –
+    und nie einfach der erste nach ID."""
     ids = [_candidate(db_with_coa, **overrides) for overrides in candidates]
     before = {i: _row(db_with_coa, i) for i in ids}
 
@@ -611,17 +752,46 @@ def test_unter_mehreren_kandidaten_gewinnt_der_passende(db_with_coa, tmp_path, n
             assert _row(db_with_coa, booking)['SourceGroup'] == '900'
         else:
             assert _row(db_with_coa, booking) == before[booking]
+    assert result['possible_duplicates'] == []         # der Satz wurde nicht neu angelegt
+
+
+@pytest.mark.parametrize('reverse', [False, True], ids=['X vor Y', 'Y vor X'])
+def test_text_ordnet_zeilen_mit_und_ohne_gegenkonto_zu_unabhaengig_von_der_reihenfolge(
+        db_with_coa, tmp_path, reverse):
+    """K1 (Gegenkonto 1810, Text „Y“), K2 (kein Gegenkonto, Text „X“); die Sätze X und Y haben beide das
+    Gegenkonto 1810: X übernimmt K2, Y übernimmt K1 – in jeder Reihenfolge, es bleiben 2 Buchungen."""
+    fields = dict(coa=6815, document_number=None, amount=-50.0, date_booking='2024-03-12',
+                  tax_rate=None, tax_amount=None)
+    k1 = _candidate(db_with_coa, counter=1810, text='Y', **fields)
+    k2 = _candidate(db_with_coa, counter=None, text='X', **fields)
+
+    def line(number, group, text):
+        return dict(ID=number, ACCOUNTINGID=group, ACCOUNTING_DATE='2024-03-12 00:00:00',
+                    AMOUNTGROSS=50.0, ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1210, ACCOUNTING_TEXT=text)
+
+    records = [line(1, 881, 'X'), line(2, 882, 'Y')]
+    if reverse:
+        records.reverse()
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, records))
+
+    assert (result['imported'], result['adopted']) == (0, 2)
+    assert _row(db_with_coa, k2)['SourceGroup'] == '881'
+    assert _row(db_with_coa, k1)['SourceGroup'] == '882'
+    assert _row(db_with_coa, k2)['CounterCOA_ID'] == _coa(db_with_coa, 1810)       # gefüllt
+    assert len(_entries(db_with_coa)) == 2
 
 
 def test_bei_gleichstand_gewinnt_die_kleinste_id(db_with_coa, tmp_path):
     """Passen mehrere Kandidaten gleich gut (hier vollkommen gleich), nimmt der Satz die mit der
-    kleinsten ID – und nur eine: die andere bleibt für den nächsten Satz."""
+    kleinsten ID – und nur eine: die andere bleibt unberührt (und wird nicht als doppelt gemeldet,
+    weil der Satz nicht neu angelegt wurde)."""
     first, second = _candidate(db_with_coa), _candidate(db_with_coa)
     before_second = _row(db_with_coa, second)
     result = _fdb_import(db_with_coa, _fdb(tmp_path, [_record()]))
     assert (result['imported'], result['adopted']) == (0, 1)
     assert _row(db_with_coa, first)['SourceGroup'] == '900'
     assert _row(db_with_coa, second) == before_second
+    assert result['possible_duplicates'] == []
 
 
 # ── Ersatzsuche ohne Konto ───────────────────────────────────────────────────
@@ -645,39 +815,53 @@ def test_offene_buchung_ohne_konto_und_gegenkonto_wird_nicht_uebernommen(db_with
         'Briefmarken', 'noch offen: Parkhaus']
 
 
-def test_ersatzsuche_ohne_konto_braucht_das_gleiche_gegenkonto(db_with_coa, tmp_path):
-    """Ohne eigenes Konto findet die Zeile ihren Satz nur über ein gleiches, bekanntes Gegenkonto."""
-    same = _candidate(db_with_coa, coa=None, counter=1810, text='noch offen', document_number=None,
-                      amount=-25.0, date_booking='2024-03-12', tax_rate=None, tax_amount=None)
-    other = _candidate(db_with_coa, coa=None, counter=1800, text='noch offen', document_number=None,
-                       amount=-25.0, date_booking='2024-03-12', tax_rate=None, tax_amount=None)
-    unknown = _candidate(db_with_coa, coa=None, counter=None, text='Briefmarken',
-                         document_number=None, amount=-25.0, date_booking='2024-03-12',
-                         tax_rate=None, tax_amount=None)
-    before = {i: _row(db_with_coa, i) for i in (other, unknown)}
-    briefmarken = dict(ID=1, ACCOUNTINGID=821, ACCOUNTING_DATE='2024-03-12 00:00:00',
-                       AMOUNTGROSS=25.0, ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1210,
-                       ACCOUNTING_TEXT='Briefmarken')
-    result = _fdb_import(db_with_coa, _fdb(tmp_path, [briefmarken]))
+def _open_line(db, **overrides):
+    """Eine Buchung ohne Konto (25,00 € Ausgabe am 12.03.2024, ohne Beleg-Nr.)."""
+    fields = dict(coa=None, counter=1810, text='Briefmarken', document_number=None, amount=-25.0,
+                  date_booking='2024-03-12', tax_rate=None, tax_amount=None)
+    fields.update(overrides)
+    return _candidate(db, **fields)
 
+
+_STAMPS = dict(ID=1, ACCOUNTINGID=821, ACCOUNTING_DATE='2024-03-12 00:00:00', AMOUNTGROSS=25.0,
+               ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1210, ACCOUNTING_TEXT='Briefmarken')
+
+
+def test_ersatzsuche_ohne_konto_braucht_gleiches_gegenkonto_und_gleichen_text(db_with_coa, tmp_path):
+    """Ohne eigenes Konto findet die Zeile ihren Satz nur über ein gleiches, bekanntes Gegenkonto UND
+    einen gleichen, nicht leeren Text."""
+    same = _open_line(db_with_coa)
+    other_counter = _open_line(db_with_coa, counter=1800)
+    no_counter = _open_line(db_with_coa, counter=None)
+    other_text = _open_line(db_with_coa, text='noch offen')
+    before = {i: _row(db_with_coa, i) for i in (other_counter, no_counter, other_text)}
+
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, [dict(_STAMPS)]))
     assert (result['imported'], result['adopted']) == (0, 1)
     row = _row(db_with_coa, same)
     assert (row['SourceGroup'], row['COA_ID'], row['CounterCOA_ID']) == (
         '821', _coa(db_with_coa, 6815), _coa(db_with_coa, 1810))           # kontiert
-    assert all(_row(db_with_coa, i) == before[i] for i in (other, unknown))
+    assert all(_row(db_with_coa, i) == before[i] for i in before)
+
+
+def test_ersatzsuche_ohne_konto_nimmt_keine_leeren_texte(db_with_coa, tmp_path):
+    """Selbst bei bekanntem, gleichem Gegenkonto: ohne Konto und ohne Text ist die Zeile kein
+    Kandidat – leer ist nicht „derselbe Text“."""
+    booking = _open_line(db_with_coa, text='')
+    before = _row(db_with_coa, booking)
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, [dict(_STAMPS, ACCOUNTING_TEXT='')]))
+    assert (result['imported'], result['adopted']) == (1, 0)
+    assert _row(db_with_coa, booking) == before
 
 
 def test_ersatzsuche_gilt_nur_ohne_kandidaten_mit_konto_von_anfang_an(db_with_coa, tmp_path):
     """Gab es für den Schlüssel von Anfang an eine Buchung mit Konto, nimmt der zweite Satz nicht
-    ersatzweise eine ohne Konto – auch nicht bei gleichem Gegenkonto. Er kommt neu dazu."""
-    fields = dict(counter=1810, document_number=None, amount=-25.0, date_booking='2024-03-12',
-                  tax_rate=None, tax_amount=None)
-    with_account = _candidate(db_with_coa, coa=6815, text='mit Konto', **fields)
-    without_account = _candidate(db_with_coa, coa=None, text='ohne Konto', **fields)
+    ersatzweise eine ohne Konto – auch nicht bei gleichem Gegenkonto und Text. Er kommt neu dazu."""
+    with_account = _open_line(db_with_coa, coa=6815, text='mit Konto')
+    without_account = _open_line(db_with_coa, text='mit Konto')
     before = _row(db_with_coa, without_account)
-    records = [dict(ID=number, ACCOUNTINGID=830 + number, ACCOUNTING_DATE='2024-03-12 00:00:00',
-                    AMOUNTGROSS=25.0, ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1210,
-                    ACCOUNTING_TEXT='mit Konto') for number in (1, 2)]
+    records = [dict(_STAMPS, ID=number, ACCOUNTINGID=830 + number, ACCOUNTING_TEXT='mit Konto')
+               for number in (1, 2)]
     result = _fdb_import(db_with_coa, _fdb(tmp_path, records))
 
     assert (result['imported'], result['adopted']) == (1, 1)
@@ -690,72 +874,39 @@ def test_ersatzsuche_gilt_auch_nicht_wenn_der_kandidat_mit_konto_nicht_passt(db_
     """„Kandidat mit Konto“ heißt: eine Buchung mit gleichem Schlüssel (Datum, Betrag, Konto, Beleg-Nr.)
     gab es – auch wenn sie wegen ihres anderen Gegenkontos nicht übernommen wird. Dann sucht der
     Import nicht noch ersatzweise ohne Konto weiter, sondern legt den Satz neu an."""
-    fields = dict(document_number=None, amount=-25.0, date_booking='2024-03-12', tax_rate=None,
-                  tax_amount=None)
-    other_counter = _candidate(db_with_coa, coa=6815, counter=1800, text='mit Konto', **fields)
-    without_account = _candidate(db_with_coa, coa=None, counter=1810, text='ohne Konto', **fields)
+    other_counter = _open_line(db_with_coa, coa=6815, counter=1800, text='mit Konto')
+    without_account = _open_line(db_with_coa, text='mit Konto')
     before = {i: _row(db_with_coa, i) for i in (other_counter, without_account)}
-    record = dict(ID=1, ACCOUNTINGID=851, ACCOUNTING_DATE='2024-03-12 00:00:00', AMOUNTGROSS=25.0,
-                  ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1210, ACCOUNTING_TEXT='mit Konto')
 
-    result = _fdb_import(db_with_coa, _fdb(tmp_path, [record]))
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, [dict(_STAMPS, ACCOUNTING_TEXT='mit Konto')]))
     assert (result['imported'], result['adopted']) == (1, 0)
     assert {i: _row(db_with_coa, i) for i in before} == before
     assert len(_entries(db_with_coa)) == 3
 
 
-def test_zuordnung_ist_gierig_in_wiso_reihenfolge(db_with_coa, tmp_path):
-    """Festgeschrieben: Die Zuordnung läuft gierig in der Reihenfolge der WISO-Sätze. Passt für den
-    ersten Satz kein Text, nimmt er die Zeile mit der kleinsten ID – auch wenn deren Text zum
-    NÄCHSTEN Satz gepasst hätte. Die Textzuordnung kann dann vertauscht sein; Datum, Betrag, Konten und
-    Beleg-Nr. sind in beiden Zeilen gleich, also bleibt die Buchführung dieselbe."""
-    first = _candidate(db_with_coa, text='Zahlung Y')
-    second = _candidate(db_with_coa, text='Zahlung X')
-    records = [_record(ID=1, ACCOUNTINGID=861, ACCOUNTING_TEXT='Zahlung Q'),
-               _record(ID=2, ACCOUNTINGID=862, ACCOUNTING_TEXT='Zahlung Y')]
-
-    result = _fdb_import(db_with_coa, _fdb(tmp_path, records))
-    assert (result['imported'], result['adopted']) == (0, 2)
-    rows = [_row(db_with_coa, booking) for booking in (first, second)]
-    assert [row['SourceGroup'] for row in rows] == ['861', '862']        # nicht 862 für „Zahlung Y“
-    assert [row['Text'] for row in rows] == ['Zahlung Y', 'Zahlung X']   # Texte bleiben, wie sie sind
-    same = ('DateBooking', 'Amount', 'COA_ID', 'CounterCOA_ID', 'DocumentNumber', 'TaxRate', 'TaxAmount')
-    assert all(rows[0][field] == rows[1][field] for field in same)
-
-
 def test_ersatzsuche_gilt_je_belegnummer(db_with_coa, tmp_path):
     """Ob es zum Schlüssel einen Kandidaten mit Konto gab, entscheidet die Beleg-Nr.: eine Zeile mit
     Konto unter einer ANDEREN Nummer sperrt die Ersatzsuche nicht."""
-    fields = dict(counter=1810, amount=-25.0, date_booking='2024-03-12', tax_rate=None, tax_amount=None)
-    other_number = _candidate(db_with_coa, coa=6815, text='mit Konto', document_number='PR-A', **fields)
-    without_account = _candidate(db_with_coa, coa=None, text='ohne Konto', document_number='PR-B',
-                                 **fields)
+    other_number = _open_line(db_with_coa, coa=6815, text='mit Konto', document_number='PR-A')
+    without_account = _open_line(db_with_coa, document_number='PR-B')
     before = _row(db_with_coa, other_number)
-    record = dict(ID=1, ACCOUNTINGID=871, ACCOUNTING_DATE='2024-03-12 00:00:00', AMOUNTGROSS=25.0,
-                  ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1210, ACCOUNTING_TEXT='Briefmarken',
-                  REFERENCENO='PR-B')
 
-    result = _fdb_import(db_with_coa, _fdb(tmp_path, [record]))
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, [dict(_STAMPS, REFERENCENO='PR-B')]))
     assert (result['imported'], result['adopted']) == (0, 1)
     row = _row(db_with_coa, without_account)
-    assert (row['SourceGroup'], row['COA_ID']) == ('871', _coa(db_with_coa, 6815))
+    assert (row['SourceGroup'], row['COA_ID']) == ('821', _coa(db_with_coa, 6815))
     assert _row(db_with_coa, other_number) == before
 
 
 def test_ersatzsuche_gilt_je_belegnummer_nach_zusammenfassen_des_leerraums(db_with_coa, tmp_path):
     """…und „PR  7“ (zwei Leerzeichen) ist dieselbe Nummer wie „PR 7“: die Zeile mit Konto sperrt die
     Ersatzsuche, auch wenn sie ihres anderen Gegenkontos wegen selbst nicht übernommen wird."""
-    fields = dict(amount=-25.0, date_booking='2024-03-12', tax_rate=None, tax_amount=None)
-    with_account = _candidate(db_with_coa, coa=6815, counter=1800, text='mit Konto',
-                              document_number='PR  7', **fields)
-    without_account = _candidate(db_with_coa, coa=None, counter=1810, text='ohne Konto',
-                                 document_number='PR 7', **fields)
+    with_account = _open_line(db_with_coa, coa=6815, counter=1800, text='mit Konto',
+                              document_number='PR  7')
+    without_account = _open_line(db_with_coa, document_number='PR 7')
     before = {i: _row(db_with_coa, i) for i in (with_account, without_account)}
-    record = dict(ID=1, ACCOUNTINGID=872, ACCOUNTING_DATE='2024-03-12 00:00:00', AMOUNTGROSS=25.0,
-                  ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1210, ACCOUNTING_TEXT='Briefmarken',
-                  REFERENCENO='PR 7')
 
-    result = _fdb_import(db_with_coa, _fdb(tmp_path, [record]))
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, [dict(_STAMPS, REFERENCENO='PR 7')]))
     assert (result['imported'], result['adopted']) == (1, 0)
     assert {i: _row(db_with_coa, i) for i in before} == before
 
@@ -775,8 +926,8 @@ def test_buchung_mit_fremder_quellgruppe_wird_nicht_uebernommen(db_with_coa, tmp
 
 
 def test_bankbewegung_wird_nie_uebernommen(db_with_coa, tmp_path):
-    """Eine Bankbewegung mit gleichem Datum, Betrag, Beleg-Nr. und Gegenkonto ist kein Buchungssatz –
-    auch nicht ohne Konto und ohne ihr Bankkonto (das schon allein sie ausschlösse)."""
+    """Eine Bankbewegung mit gleichem Datum, Betrag, Beleg-Nr., Text und Gegenkonto ist kein
+    Buchungssatz – auch nicht ohne Konto und ohne ihr Bankkonto (das schon allein sie ausschlösse)."""
     bank_id = _account_id(db_with_coa, 'Testbank')
     on_account = _candidate(db_with_coa, account_id=bank_id, booking_type='bank')
     no_account = _candidate(db_with_coa, booking_type='bank')
@@ -792,7 +943,8 @@ def test_bankbewegung_wird_nie_uebernommen(db_with_coa, tmp_path):
 
 def test_buchung_der_maske_mit_bankkonto_wird_nicht_uebernommen(db_with_coa, tmp_path):
     """Ein eigenständiger Buchungssatz bekommt in der Maske das vorgewählte Bankkonto – er ist eine
-    eigene Erfassung des Nutzers und wird nicht mit einem WISO-Satz gleichgesetzt."""
+    eigene Erfassung des Nutzers und wird nicht mit einem WISO-Satz gleichgesetzt, auch nicht bei
+    gleichem Text."""
     bank_id = _account_id(db_with_coa, 'Testbank')
     mask = _candidate(db_with_coa, account_id=bank_id)
     before = _row(db_with_coa, mask)
@@ -805,7 +957,7 @@ def test_buchung_der_maske_mit_bankkonto_wird_nicht_uebernommen(db_with_coa, tmp
 
 def test_automirror_kind_der_maske_wird_nicht_uebernommen(db_with_coa, tmp_path):
     """Das Spiegelkind einer Bankbewegung aus der Maske („Druckerpapier −50“, 6815 an 1810) gehört zu
-    dieser Bankbewegung; der WISO-Satz „Toner −50“ mit denselben Konten ist ein anderer Vorgang. Beide
+    dieser Bankbewegung – auch dann nicht übernommen, wenn der WISO-Satz denselben Text trägt. Beide
     existieren danach."""
     bank_id = _account_id(db_with_coa, 'Testkonto 2')                  # SKR 1810
     bank = db_with_coa.insert_booking('2024-03-12', -50.0, account_id=bank_id,
@@ -815,13 +967,13 @@ def test_automirror_kind_der_maske_wird_nicht_uebernommen(db_with_coa, tmp_path)
         text='Druckerpapier', booking_type='entry', parent_booking_id=bank, auto_mirror=True)
     before = _row(db_with_coa, mirror)
     assert before['AutoMirror'] == 1 and before['Account_ID'] is None
-    toner = dict(ID=1, ACCOUNTINGID=841, ACCOUNTING_DATE='2024-03-12 00:00:00', AMOUNTGROSS=50.0,
-                 ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1210, ACCOUNTING_TEXT='Toner')
+    same_text = dict(ID=1, ACCOUNTINGID=841, ACCOUNTING_DATE='2024-03-12 00:00:00', AMOUNTGROSS=50.0,
+                     ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1210, ACCOUNTING_TEXT='Druckerpapier')
 
-    result = _fdb_import(db_with_coa, _fdb(tmp_path, [toner]))
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, [same_text]))
     assert (result['imported'], result['adopted']) == (1, 0)
     assert _row(db_with_coa, mirror) == before
-    assert sorted(r['Text'] for r in _entries(db_with_coa)) == ['Druckerpapier', 'Toner']
+    assert [r['Text'] for r in _entries(db_with_coa)] == ['Druckerpapier', 'Druckerpapier']
 
 
 def test_automirror_null_gilt_als_nicht_gespiegelt(db_with_coa, tmp_path):
@@ -868,19 +1020,173 @@ def test_leerraum_in_der_belegnummer_zaehlt_nicht(db_with_coa, tmp_path, number)
     assert row['SourceGroup'] == '900' and row['DocumentNumber'] == number      # Wert bleibt
 
 
-def test_manuelle_buchung_mit_gleichem_schluessel_wird_uebernommen(db_with_coa, tmp_path):
-    """Dokumentiertes Restrisiko: Eine von Hand erfasste Buchung mit gleicher Beleg-Nr., Datum,
-    Konto, Betrag UND Gegenkonto gilt als dieselbe Buchung (die Annahme trifft der CSV-Import schon).
-    Sie bekommt die Quellgruppe, behält ihren Text und wird nicht doppelt angelegt."""
+def test_manuelle_buchung_mit_gleichem_schluessel_text_und_gegenkonto_wird_uebernommen(
+        db_with_coa, tmp_path):
+    """Dokumentiertes Restrisiko: Eine von Hand erfasste Buchung mit gleicher Beleg-Nr., Datum, Konto,
+    Betrag, Gegenkonto UND Text gilt als dieselbe Buchung (die Annahme trifft der CSV-Import schon).
+    Sie bekommt die Quellgruppe und wird nicht doppelt angelegt."""
     manual = _candidate(db_with_coa, date_booking='2024-03-05', amount=-238.0, coa=6815,
-                        counter=1800, document_number='PR-002', text='von Hand erfasst',
+                        counter=1800, document_number='PR-002', text='Probe Buero',
                         tax_rate=None, tax_amount=None)
     result = _fdb_import(db_with_coa, _fdb(tmp_path))
     assert (result['imported'], result['adopted']) == (5, 1)
 
     row = _row(db_with_coa, manual)
-    assert (row['SourceGroup'], row['Text']) == ('701', 'von Hand erfasst')
+    assert (row['SourceGroup'], row['Text']) == ('701', 'Probe Buero')
     assert len([r for r in _entries(db_with_coa) if r['DocumentNumber'] == 'PR-002']) == 1
+
+
+def test_manuelle_buchung_mit_anderem_text_wird_nicht_uebernommen(db_with_coa, tmp_path):
+    """…aber schon ein anderer Text genügt, damit aus „dieselbe Buchung“ zwei werden."""
+    manual = _candidate(db_with_coa, date_booking='2024-03-05', amount=-238.0, coa=6815,
+                        counter=1800, document_number='PR-002', text='von Hand erfasst',
+                        tax_rate=None, tax_amount=None)
+    before = _row(db_with_coa, manual)
+    result = _fdb_import(db_with_coa, _fdb(tmp_path))
+    assert (result['imported'], result['adopted']) == (6, 0)
+    assert _row(db_with_coa, manual) == before
+    assert len([r for r in _entries(db_with_coa) if r['DocumentNumber'] == 'PR-002']) == 2
+
+
+# ── Die Szenarien der fachlichen Prüfung ─────────────────────────────────────
+
+def _editor_line(db, text, coa=6815, counter=1810, amount=-50.0):
+    """Eine Teilzeile aus dem Buchungssatz-Editor: Kind einer Bankbewegung, Konto und Gegenkonto gesetzt,
+    weder ``AutoMirror`` noch ``Account_ID`` (anders als die Spiegelbuchung der Maske)."""
+    bank = db.insert_booking('2024-03-12', amount, account_id=_account_id(db, 'Testkonto 2'),
+                             text='Überweisung Papierhandel', booking_type='bank')
+    line = db.insert_booking('2024-03-12', amount, coa_id=_coa(db, coa) if coa else None,
+                             counter_coa_id=_coa(db, counter), text=text, booking_type='entry',
+                             parent_booking_id=bank)
+    row = _row(db, line)
+    assert (row['AutoMirror'], row['Account_ID'], row['ParentBooking_ID']) == (0, None, bank)
+    return line
+
+
+@pytest.mark.parametrize('wiso_text,adopted', [('Toner', False), ('Druckerpapier', True)],
+                         ids=['Text anders', 'Text gleich'])
+def test_teilzeile_aus_dem_editor_wird_nur_bei_gleichem_text_uebernommen(db_with_coa, tmp_path,
+                                                                         wiso_text, adopted):
+    """„Druckerpapier −50, 6815/1810“ als Teilzeile des Editors und der WISO-Satz „Toner“ mit gleichem
+    Schlüssel und Gegenkonto sind zwei Buchungen – nur bei gleichem Text ist es eine."""
+    line = _editor_line(db_with_coa, 'Druckerpapier')
+    before = _row(db_with_coa, line)
+    record = dict(ID=1, ACCOUNTINGID=841, ACCOUNTING_DATE='2024-03-12 00:00:00', AMOUNTGROSS=50.0,
+                  ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1210, ACCOUNTING_TEXT=wiso_text)
+
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, [record]))
+    if adopted:
+        assert (result['imported'], result['adopted']) == (0, 1)
+        assert _row(db_with_coa, line) == {**before, 'SourceGroup': '841'}
+        assert len(_entries(db_with_coa)) == 1
+    else:
+        assert (result['imported'], result['adopted']) == (1, 0)
+        assert _row(db_with_coa, line) == before
+        assert sorted(r['Text'] for r in _entries(db_with_coa)) == ['Druckerpapier', 'Toner']
+        assert [d['id'] for d in result['possible_duplicates']] == [line]
+
+
+@pytest.mark.parametrize('wiso_text,adopted', [('Porto', False), ('noch offen', True)],
+                         ids=['Text anders', 'Text gleich'])
+def test_offene_teilzeile_ohne_konto_wird_nur_bei_gleichem_text_uebernommen(db_with_coa, tmp_path,
+                                                                            wiso_text, adopted):
+    """„noch offen −30“ ohne Konto, Gegenkonto 1810, und der WISO-Satz „Porto“ (4930/1810): nicht
+    dieselbe Buchung. Hieße der Satz „noch offen“, würde die Zeile übernommen und kontiert."""
+    line = _editor_line(db_with_coa, 'noch offen', coa=None, amount=-30.0)
+    before = _row(db_with_coa, line)
+    assert before['COA_ID'] is None
+    record = dict(ID=1, ACCOUNTINGID=851, ACCOUNTING_DATE='2024-03-12 00:00:00', AMOUNTGROSS=30.0,
+                  ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1210, ACCOUNTING_TEXT=wiso_text)
+
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, [record]))
+    if adopted:
+        assert (result['imported'], result['adopted']) == (0, 1)
+        assert _row(db_with_coa, line) == {**before, 'SourceGroup': '851',
+                                           'COA_ID': _coa(db_with_coa, 6815)}
+    else:
+        assert (result['imported'], result['adopted']) == (1, 0)
+        assert _row(db_with_coa, line) == before
+        assert len(_entries(db_with_coa)) == 2
+
+
+def _euer_total(db, number, year=2025):
+    return dict((nr, total) for nr, _name, total in
+                db.get_euer_data(f'{year}-01-01', f'{year}-12-31', None)).get(number)
+
+
+def test_afa_der_app_wird_nicht_mit_einer_wiso_afa_verwechselt(db_with_coa, tmp_path):
+    """Die AfA der App („AfA Laptop 2025“, 6220 an 0520, 400 €) und der WISO-Satz „AfA Drucker“ mit
+    gleichem Datum, Betrag, Konto und Gegenkonto sind zwei Abschreibungen: nichts wird übernommen, und
+    die EÜR enthält beide (800 € statt 400 €)."""
+    db = db_with_coa
+    asset = db.insert_asset('Laptop', '2025-01-10', 1200.0, 3, coa_id=_coa(db, 520))
+    booking = db.book_depreciation(asset, 2025, coa_id_expense=_coa(db, 6220))
+    before = _row(db, booking)
+    assert (before['Account_ID'], before['AutoMirror'], before['Amount']) == (None, 0, 4000000)
+    assert _euer_total(db, 6220) == -400.0
+
+    record = dict(ID=1, ACCOUNTINGID=861, ACCOUNTING_DATE='2025-12-31 00:00:00', AMOUNTGROSS=400.0,
+                  ACCOUNTNO=4830, CONTRA_ACCOUNTNO=320, ACCOUNTING_TEXT='AfA Drucker')
+    result = _fdb_import(db, _fdb(tmp_path, [record]))
+
+    assert (result['imported'], result['adopted']) == (1, 0)
+    assert _row(db, booking) == before
+    assert len(_entries(db)) == 2
+    assert _euer_total(db, 6220) == -800.0
+
+
+@pytest.mark.parametrize('text', ['Rechnung 100 € netto', 'Büro – Material', 'Abo Netflix…',
+                                  'Test … Ende'],
+                         ids=['Euro', 'Gedankenstrich', 'Auslassung am Ende', 'Auslassung in der Mitte'])
+def test_text_mit_cp1252_zeichen_stimmt_in_csv_und_datenbank_ueberein(db_with_coa, tmp_path, text):
+    """Die CSV ist cp1252, die WISO-Datenbank liefert dieselben Bytes als latin-1 gelesen (aus „€“ wird
+    \\x80, aus „–“ \\x96, aus „…“ \\x85): beide Wege nennen denselben Text, die Zeile wird übernommen."""
+    _csv_import(db_with_coa, [('12.03.2024', '6815', '1800', text, 'PR-C1', '30,00', '')])
+    wiso_text = text.encode('cp1252').decode('latin-1')
+    assert wiso_text != text
+    record = dict(ID=1, ACCOUNTINGID=891, ACCOUNTING_DATE='2024-03-12 00:00:00', AMOUNTGROSS=30.0,
+                  ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1200, ACCOUNTING_TEXT=wiso_text,
+                  REFERENCENO='PR-C1')
+
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, [record]))
+    assert (result['imported'], result['adopted']) == (0, 1)
+    (row,) = _entries(db_with_coa)
+    assert (row['SourceGroup'], row['Text']) == ('891', text)
+
+
+def test_text_mit_in_cp1252_unbelegten_bytes_bricht_den_import_nicht_ab(db_with_coa, tmp_path):
+    """Die Bytes 0x81, 0x8D, 0x8F, 0x90 und 0x9D gibt es in cp1252 nicht. Steht eines in einem
+    WISO-Text, darf die Umsetzung für den Vergleich daran nicht scheitern: Der Satz wird angelegt (und
+    ist beim zweiten Lauf an seiner Quellgruppe wiederzuerkennen)."""
+    record = dict(ID=1, ACCOUNTINGID=892, ACCOUNTING_DATE='2024-03-12 00:00:00', AMOUNTGROSS=30.0,
+                  ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1200, ACCOUNTING_TEXT='Abo \x81\x8d\x8f\x90\x9d Ende',
+                  REFERENCENO='PR-C2')
+    path = _fdb(tmp_path, [record])
+    first = _fdb_import(db_with_coa, path)
+    assert (first['imported'], first['adopted']) == (1, 0)
+    second = _fdb_import(db_with_coa, path)
+    assert (second['imported'], second['skipped']) == (0, 1)
+    assert len(_entries(db_with_coa)) == 1
+
+
+def test_umbuchung_mit_gleichem_text_und_gegenkonto_wird_uebernommen(db_with_coa, tmp_path):
+    """„Umb. zu Re.“: WISO bucht zur Zahlung der Rechnung eine Umbuchung der Erlöse (4405 an 4400) mit
+    demselben Betrag. Gleicher Text und Gegenkonto: übernommen – sonst stünde der Erlös doppelt da."""
+    _csv_import(db_with_coa, [
+        ('30.04.2024', '1810', '10000', 'Zahlung zu Re. 2024004', '2024004', '7500,00', ''),
+        ('30.04.2024', '4405', '4400', 'Umb. zu Re. 2024004', '2024004', '7500,00', '')])
+    records = [
+        dict(ID=1, ACCOUNTINGID=500, ACCOUNTING_DATE='2024-04-30 00:00:00', AMOUNTGROSS=7500.0,
+             ACCOUNTNO=1210, CONTRA_ACCOUNTNO=10000, ACCOUNTING_TEXT='Zahlung zu Re. 2024004',
+             REFERENCENO='2024004'),
+        dict(ID=2, ACCOUNTINGID=500, ACCOUNTING_DATE='2024-04-30 00:00:00', AMOUNTNET=6302.52,
+             AMOUNTGROSS=7500.0, TAXRATE=19.0, ACCOUNTNO=8405, CONTRA_ACCOUNTNO=8400,
+             ACCOUNTING_TEXT='Umb. zu Re. 2024004', REFERENCENO='2024004')]
+
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, records))
+    assert (result['imported'], result['adopted']) == (0, 2)
+    assert len(_entries(db_with_coa)) == 2
+    assert [r['SourceGroup'] for r in _entries(db_with_coa)] == ['500', '500']
 
 
 # ── Felder, die die Übernahme ergänzt – nur wo sie leer sind ────────────────
@@ -1067,7 +1373,7 @@ def _asset_fdb(tmp_path):
     chart = builder.table('BAS_FINACC_PLAN', [
         Column('ID', LONG, 4), Column('SKR04', LONG, 4),
         Column('BOOKINGYEAR', SHORT, 2), Column('ACCOUNTTEXT', TEXT, 40)])
-    for skr03, skr04, text in CHART + ((320, 520, 'Pkw'), (4832, 6222, 'Abschreibungen auf Kfz')):
+    for skr03, skr04, text in CHART + ((4832, 6222, 'Abschreibungen auf Kfz'),):
         chart.add(ID=skr03, SKR04=skr04, BOOKINGYEAR=2024, ACCOUNTTEXT=text)
     table = builder.table('MOV_FINACC_ACCRECORDS', [
         Column('ID', LONG, 4), Column('ACCOUNTINGID', LONG, 4),
@@ -1114,416 +1420,3 @@ def test_anlagen_kommen_nach_einer_uebernahme_weiter_an(db_with_coa, tmp_path):
     assets = _query(db_with_coa, "SELECT Name, PurchasePrice FROM Assets WHERE Name = 'Probe Dienstwagen'")
     assert [(a['Name'], a['PurchasePrice']) for a in assets] == [('Probe Dienstwagen', 52320000)]
     assert len(_entries(db_with_coa)) == 1
-
-
-# ── Ergebnis: adopted_rows und SQL-Protokoll ─────────────────────────────────
-
-def test_adopted_rows_nennen_die_uebernommenen_buchungen(db_with_coa, tmp_path):
-    """Das Ergebnis führt jede übernommene Buchung auf: ID der vorhandenen Zeile, Datum, Betrag und
-    den Text aus WISO (nicht den der CSV-Zeile)."""
-    rows = [list(row) for row in CSV_ROWS]
-    rows[VERKAUF][3] = 'Verkauf März (Text aus der CSV)'
-    _csv_import(db_with_coa, [tuple(row) for row in rows])
-    csv_ids = {r['Text']: r['ID'] for r in _entries(db_with_coa)}
-
-    result = _fdb_import(db_with_coa, _fdb(tmp_path))
-    listed = result['adopted_rows']
-    assert len(listed) == result['adopted'] == 5
-    assert {row['id'] for row in listed} == set(csv_ids.values())
-    verkauf = [row for row in listed if row['id'] == csv_ids['Verkauf März (Text aus der CSV)']][0]
-    assert verkauf['text'] == 'Probe Verkauf'                    # WISO-Text
-    assert verkauf['date'] == '2024-03-01'
-    assert sorted(row['date'] for row in listed) == [
-        '2024-03-01', '2024-03-05', '2024-03-05', '2024-03-05', '2024-03-15']
-    assert all(set(row) >= {'id', 'date', 'amount', 'text'} for row in listed)
-
-
-def test_adopted_rows_sind_leer_wenn_nichts_uebernommen_wurde(db_with_coa, tmp_path):
-    result = _fdb_import(db_with_coa, _fdb(tmp_path))
-    assert result['adopted'] == 0 and result['adopted_rows'] == []
-
-
-def test_adopted_rows_haben_hoechstens_500_eintraege(db_with_coa, tmp_path):
-    """Die Liste ist begrenzt (Seite und Ergebnisdatei bleiben klein), der Zähler zählt alles."""
-    count = 520
-    rows = [('02.04.2024', '6815', '1800', f'Probe Massen {n:03d}', f'PR-M{n:03d}',
-             f'{n + 1},00', '') for n in range(count)]
-    records = [dict(ID=n + 1, ACCOUNTINGID=2000 + n, ACCOUNTING_DATE='2024-04-02 00:00:00',
-                    AMOUNTGROSS=float(n + 1), ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1200,
-                    ACCOUNTING_TEXT=f'Probe Massen {n:03d}', REFERENCENO=f'PR-M{n:03d}')
-               for n in range(count)]
-    _csv_import(db_with_coa, rows)
-    result = _fdb_import(db_with_coa, _fdb(tmp_path, records))
-    assert (result['imported'], result['adopted']) == (0, count)
-    assert len(result['adopted_rows']) == 500
-
-
-def _sql_log(db):
-    path = os.path.join(userctx.user_data_dir(), 'sql_operations.sql')
-    if not os.path.exists(path):
-        return []
-    with open(path, encoding='utf-8') as handle:
-        return handle.read().splitlines()
-
-
-def test_uebernahme_steht_im_sql_protokoll(db_with_coa, tmp_path):
-    """Jede Änderung an einer vorhandenen Buchung gehört ins Protokoll (Nachvollziehbarkeit): das
-    UPDATE nennt die Zeile und die gesetzte Quellgruppe."""
-    _csv_import(db_with_coa)
-    ids = {r['Text']: r['ID'] for r in _entries(db_with_coa)}
-    _fdb_import(db_with_coa, _fdb(tmp_path))
-
-    updates = [line for line in _sql_log(db_with_coa) if line.startswith('UPDATE Bookings SET')
-               and 'SourceGroup' in line]
-    assert len(updates) == 5
-    for text in ('Probe Verkauf', 'Probe Buero', 'Probe ohne Beleg'):
-        group = {'Probe Verkauf': '700', 'Probe Buero': '701', 'Probe ohne Beleg': '704'}[text]
-        assert any(f"'{group}'" in line and re.search(rf'\bID\s*=\s*{ids[text]}\b', line)
-                   for line in updates), text
-
-
-def test_fehler_mitten_im_lauf_laesst_keine_halbe_uebernahme_zurueck(db_with_coa, tmp_path,
-                                                                     monkeypatch):
-    """Übernehmen und Anlegen laufen in EINER Transaktion: bricht der Lauf beim vierten Satz ab, ist
-    nichts übernommen und nichts im SQL-Protokoll – und derselbe Import danach geht sauber durch."""
-    path = _fdb(tmp_path)
-    _csv_import(db_with_coa)
-    before = _entries(db_with_coa)
-
-    database = type(db_with_coa)
-    original = database._minor_opt
-    calls = []
-
-    def fail_on_the_fourth(value):
-        calls.append(value)
-        if len(calls) == 4:
-            raise RuntimeError('Festplatte voll')
-        return original(value)
-
-    # eigener Kontext: ein monkeypatch.undo() risse auch die Datenwurzel der Fixture mit zurück
-    with monkeypatch.context() as patch:
-        patch.setattr(database, '_minor_opt', staticmethod(fail_on_the_fourth))
-        with pytest.raises(RuntimeError):
-            db_with_coa.import_wiso_fdb(path, with_assets=False, with_invoices=False)
-
-    assert len(calls) == 4
-    assert _entries(db_with_coa) == before                     # keine Quellgruppe, nichts neu
-    assert [line for line in _sql_log(db_with_coa) if line.startswith('UPDATE Bookings')] == []
-
-    result = _fdb_import(db_with_coa, path)
-    assert (result['imported'], result['adopted']) == (1, 5)
-
-
-def test_handler_meldet_einen_fehler_und_laesst_die_buchungen_unveraendert(db_with_coa, tmp_path,
-                                                                           monkeypatch):
-    """Scheitert der Import mitten im Lauf, antwortet der Handler mit der Fehlerseite – und die
-    Buchungen aus dem CSV-Import sind unberührt (nichts halb übernommen, nichts angelegt)."""
-    os.makedirs(userctx.user_data_dir(), exist_ok=True)
-    path = _fdb(tmp_path)
-    _csv_import(db_with_coa)
-    before = _entries(db_with_coa)
-    database = type(db_with_coa)
-    original = database._minor_opt
-    calls = []
-
-    def fail_on_the_third(value):
-        calls.append(value)
-        if len(calls) == 3:
-            raise RuntimeError('Festplatte voll')
-        return original(value)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(database, '_minor_opt', staticmethod(fail_on_the_third))
-        status, location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [path]})
-
-    assert status == 303
-    assert _query_of(location) == {'wiso_fdb': 'error', 'msg': 'Festplatte voll'}
-    assert _entries(db_with_coa) == before
-
-
-# ── Handler und Seite ────────────────────────────────────────────────────────
-
-def _query_of(location):
-    return {key: values[0] for key, values in parse_qs(urlsplit(location).query).items()}
-
-
-def test_handler_meldet_uebernommene(db_with_coa, tmp_path):
-    """Die Weiterleitung nennt ``adopted``; die Ergebnisdatei führt die Zeilen auf; ein zweiter Lauf
-    meldet 0."""
-    os.makedirs(userctx.user_data_dir(), exist_ok=True)           # dorthin schreibt der Handler
-    path = _fdb(tmp_path)
-    _csv_import(db_with_coa)
-
-    status, location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [path]})
-    assert status == 303 and location.startswith('/miscellaneous?')
-    params = _query_of(location)
-    assert (params['wiso_fdb'], params['imported'], params['skipped'], params['adopted']) == (
-        'ok', '1', '0', '5')
-    with open(os.path.join(userctx.user_data_dir(), 'wiso_fdb_result.json'),
-              encoding='utf-8') as handle:
-        stored = json.load(handle)
-    assert stored['adopted'] == 5 and stored['imported'] == 1
-    assert len(stored['adopted_rows']) == 5
-
-    status, location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [path]})
-    params = _query_of(location)
-    assert (params['imported'], params['skipped'], params['adopted']) == ('0', '6', '0')
-    assert len(_entries(db_with_coa)) == 6
-
-
-def test_seite_zeigt_detailzeile_nur_bei_uebernommenen(db_with_coa, tmp_path):
-    os.makedirs(userctx.user_data_dir(), exist_ok=True)
-    path = _fdb(tmp_path)
-    _csv_import(db_with_coa)
-    handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [path]})
-    page = PageMiscellaneous(db_with_coa)
-    assert '5 Buchungssätze waren schon aus dem CSV-Import da' in page
-    assert 'wurden aber nicht doppelt angelegt' in page
-
-    handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [path]})      # zweiter Lauf: 0
-    assert 'aus dem CSV-Import da' not in PageMiscellaneous(db_with_coa)
-
-
-def _details(page):
-    """Die aufklappbare Liste „Welche Buchungen das waren“ als Zeilen mit Zellentexten."""
-    (block,) = re.findall(r'<details><summary>Welche Buchungen das waren</summary>(.*?)</details>',
-                          page, re.S)
-    return [re.findall(r'<td>(.*?)</td>', row) for row in re.findall(r'<tr>(.*?)</tr>', block, re.S)
-            if '<td>' in row], block
-
-
-def test_seite_listet_die_uebernommenen_buchungen_maskiert_auf(db_with_coa, tmp_path):
-    """Datum, Betrag (deutsch), Text aus WISO und ID der übernommenen Zeilen stehen aufklappbar im
-    Detailblock; Werte aus WISO sind maskiert."""
-    os.makedirs(userctx.user_data_dir(), exist_ok=True)
-    records = _records()
-    records[VERKAUF]['ACCOUNTING_TEXT'] = '<b>Verkauf</b> & Co'
-    _csv_import(db_with_coa)
-    ids = {r['DocumentNumber'] + r['DateBooking']: r['ID'] for r in _entries(db_with_coa)
-           if r['DocumentNumber'] in ('PR-001', 'PR-002')}
-    handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [_fdb(tmp_path, records)]})
-
-    page = PageMiscellaneous(db_with_coa)
-    rows, block = _details(page)
-    assert len(rows) == 5 and 'Genannt werden die ersten' not in page
-    by_date = {}
-    for date, amount, text, booking_id in rows:
-        by_date.setdefault(date, []).append((amount, text, booking_id))
-    verkauf = by_date['2024-03-01'][0]
-    assert verkauf[:2] == ('1.190,00 \u20ac', '&lt;b&gt;Verkauf&lt;/b&gt; &amp; Co')
-    assert verkauf[2] == str(ids['PR-0012024-03-01'])
-    assert ('-238,00 \u20ac', 'Probe Buero', str(ids['PR-0022024-03-05'])) in by_date['2024-03-05']
-    assert '<b>Verkauf</b>' not in page and '<b>' not in block
-    assert sorted(date for date, *_ in rows) == [
-        '2024-03-01', '2024-03-05', '2024-03-05', '2024-03-05', '2024-03-15']
-
-
-def test_seite_nennt_hoechstens_500_buchungen(db_with_coa, tmp_path):
-    """Die Liste auf der Seite endet bei 500 und sagt es; der Zähler darüber nennt alle."""
-    os.makedirs(userctx.user_data_dir(), exist_ok=True)
-    count = 510
-    _csv_import(db_with_coa, [('02.04.2024', '6815', '1800', f'Probe Massen {n:03d}', f'PR-M{n:03d}',
-                               f'{n + 1},00', '') for n in range(count)])
-    records = [dict(ID=n + 1, ACCOUNTINGID=2000 + n, ACCOUNTING_DATE='2024-04-02 00:00:00',
-                    AMOUNTGROSS=float(n + 1), ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1200,
-                    ACCOUNTING_TEXT=f'Probe Massen {n:03d}', REFERENCENO=f'PR-M{n:03d}')
-               for n in range(count)]
-    status, location = handlers.handle_wiso_fdb_import(db_with_coa,
-                                                       {'fdb_path': [_fdb(tmp_path, records)]})
-    assert _query_of(location)['adopted'] == str(count)
-    page = PageMiscellaneous(db_with_coa)
-    rows, _block = _details(page)
-    assert len(rows) == 500 and 'Genannt werden die ersten 500.' in page
-    assert f'{count} Buchungssätze waren schon aus dem CSV-Import da' in page
-
-
-def test_hinweistexte_nennen_die_wiedererkennung(db_with_coa):
-    page = PageMiscellaneous(db_with_coa)
-    assert 'Duplikate (gleiche Referenznummer + Datum + Konto + Betrag) werden übersprungen' in page
-    assert 'auch, wenn die Buchungen schon aus dem Datenbank-Import stammen' in page
-
-
-def test_detailzeile_maskiert_den_gespeicherten_wert(db_with_coa):
-    """Auch ein manipulierter Wert in der Ergebnisdatei landet nicht roh im HTML."""
-    os.makedirs(userctx.user_data_dir(), exist_ok=True)
-    payload = '<script>alert(1)</script>'
-    with open(os.path.join(userctx.user_data_dir(), 'wiso_fdb_result.json'), 'w',
-              encoding='utf-8') as handle:
-        json.dump({'adopted': payload, 'file': 'DB1.FDB'}, handle)
-    page = PageMiscellaneous(db_with_coa)
-    assert payload not in page and '&lt;script&gt;alert(1)&lt;/script&gt;' in page
-
-
-def _write_result(result):
-    os.makedirs(userctx.user_data_dir(), exist_ok=True)
-    with open(os.path.join(userctx.user_data_dir(), 'wiso_fdb_result.json'), 'w',
-              encoding='utf-8') as handle:
-        json.dump(result, handle)
-
-
-def test_kaputte_werte_in_der_ergebnisdatei_erscheinen_maskiert(db_with_coa):
-    """Feindliche und kaputte Werte in ``adopted_rows`` (Markup, ``null``, Listen als Betrag, leere
-    Zeile) lassen die Seite nicht abstürzen; Markup erscheint maskiert, kaputte Beträge als Text."""
-    hostile = '<img src=x onerror=alert(1)>'
-    _write_result({'adopted': 4, 'adopted_rows': [
-        {'id': hostile, 'date': hostile, 'amount': hostile, 'text': hostile},
-        {'id': None, 'date': None, 'amount': None, 'text': None},
-        {'id': 3, 'date': '2024-01-01', 'amount': [1, 2], 'text': {'a': 1}},
-        {}]})
-    page = PageMiscellaneous(db_with_coa)
-
-    rows, block = _details(page)
-    escaped = '&lt;img src=x onerror=alert(1)&gt;'
-    assert len(rows) == 4
-    assert rows[0] == [escaped, escaped, escaped, escaped]
-    assert rows[1] == ['', '-', '', ''] and rows[3] == ['', '-', '', '']
-    assert rows[2][:2] == ['2024-01-01', '[1, 2]'] and rows[2][3] == '3'
-    assert '<img' not in page and hostile not in page
-
-
-@pytest.mark.parametrize('count,note', [(1, False), (499, False), (500, True), (501, True)])
-def test_hinweis_auf_die_ersten_500_steht_ab_500_zeilen(db_with_coa, count, note):
-    """Die Seite sagt „Genannt werden die ersten 500.“, sobald die Liste die Grenze erreicht."""
-    _write_result({'adopted': count, 'adopted_rows': [
-        {'id': n, 'date': '2024-04-02', 'amount': float(n), 'text': f'Zeile {n}'} for n in range(count)]})
-    page = PageMiscellaneous(db_with_coa)
-    rows, _block = _details(page)
-    assert len(rows) == count
-    assert ('Genannt werden die ersten 500.' in page) is note
-
-
-@pytest.mark.xfail(strict=True, reason='Produktlücke (kleinster Fall in der Meldung): Ist eine Zeile '
-                                       'von adopted_rows kein Objekt oder die Liste keine Liste, '
-                                       'bricht PageMiscellaneous mit AttributeError/TypeError ab')
-@pytest.mark.parametrize('rows', [['text'], [None], [5], 'abc', 5, {'a': 1}],
-                         ids=['Text', 'null', 'Zahl', 'String', 'Zahl statt Liste', 'Objekt statt Liste'])
-def test_kaputte_form_der_ergebnisdatei_laesst_die_seite_nicht_abstuerzen(db_with_coa, rows):
-    _write_result({'adopted': 1, 'adopted_rows': rows})
-    assert '1 Buchungssätze waren schon aus dem CSV-Import da' in PageMiscellaneous(db_with_coa)
-
-
-def _fdb_script(page):
-    """Der Skriptblock der Seite, der die Meldung nach dem Datenbank-Import baut."""
-    scripts = re.findall(r'<script>(.*?)</script>', page, re.S)
-    (script,) = [s for s in scripts if "p.get('wiso_fdb')" in s]
-    return script
-
-
-def test_meldungsskript_liest_adopted_als_zahl(db_with_coa):
-    """Statisch: ``adopted`` wird als Zahl gelesen und nur bei > 0 genannt."""
-    script = _fdb_script(PageMiscellaneous(db_with_coa))
-    assert "parseInt(p.get('adopted') || '0')" in script
-    assert "if (ad > 0) msg += ', ' + ad + ' aus dem CSV-Import wiedererkannt'" in script
-
-
-NODE = shutil.which('node')
-
-
-def _shown_messages(script, search, tmp_path):
-    """Führt das Meldungsskript mit einer Adresse in Node aus und liefert den angezeigten Text."""
-    runner = tmp_path / 'run_message.js'
-    runner.write_text(
-        "const vm = require('vm');\n"
-        "const shown = [];\n"
-        "const div = {_style: {}, set style(v) { this._css = v; }, get style() { return this._style; },\n"
-        "             append(text) { shown.push(String(text)); }};\n"
-        "const sandbox = {window: {location: {search: process.argv[3]}},\n"
-        "  document: {createElement: () => div, currentScript: {parentNode: {insertBefore() {}}}},\n"
-        "  URLSearchParams, decodeURIComponent, parseInt};\n"
-        "vm.runInNewContext(require('fs').readFileSync(process.argv[2], 'utf8'), sandbox);\n"
-        "console.log(JSON.stringify(shown));\n", encoding='utf-8')
-    source = tmp_path / 'message.js'
-    source.write_text(script, encoding='utf-8')
-    done = subprocess.run([NODE, str(runner), str(source), search], capture_output=True,
-                          text=True, timeout=60)
-    assert done.returncode == 0, done.stderr
-    return json.loads(done.stdout)
-
-
-@pytest.mark.skipif(NODE is None, reason='Node.js nicht installiert – der statische Test '
-                                         '(test_meldungsskript_liest_adopted_als_zahl) deckt es ab')
-def test_meldung_nennt_wiedererkannte_buchungen(db_with_coa, tmp_path):
-    script = _fdb_script(PageMiscellaneous(db_with_coa))
-    base = '?wiso_fdb=ok&imported=1&skipped=0&assets=0&afa=0'
-    (message,) = _shown_messages(script, base + '&adopted=5', tmp_path)
-    assert '1 Buchungssätze, 0 übersprungen' in message
-    assert ', 5 aus dem CSV-Import wiedererkannt' in message
-    (without,) = _shown_messages(script, base + '&adopted=0', tmp_path)
-    assert 'wiedererkannt' not in without
-    (missing,) = _shown_messages(script, base, tmp_path)
-    assert 'wiedererkannt' not in missing
-
-
-@pytest.mark.skipif(NODE is None, reason='Node.js nicht installiert – der statische Test '
-                                         '(test_adopted_aus_der_adresse_landet_nicht_roh_im_html) '
-                                         'deckt den Server-Teil ab')
-@pytest.mark.parametrize('value', ['<script>alert(1)</script>', '5<img src=x onerror=alert(1)>',
-                                   '"><b>x</b>', '-3', '1e9', ''])
-def test_meldung_uebernimmt_keinen_rohen_wert_aus_der_adresse(db_with_coa, tmp_path, value):
-    """Nur eine Zahl > 0 wird genannt; alles andere erscheint nicht in der Meldung."""
-    script = _fdb_script(PageMiscellaneous(db_with_coa))
-    (message,) = _shown_messages(
-        script, '?wiso_fdb=ok&imported=1&skipped=0&assets=0&afa=0&adopted=' + quote(value),
-        tmp_path)
-    for fragment in ('<script>', '<img', '<b>', 'onerror', 'alert'):
-        assert fragment not in message, message
-    if value.startswith('5'):
-        assert ', 5 aus dem CSV-Import wiedererkannt' in message
-    elif value == '1e9':
-        assert ', 1 aus dem CSV-Import wiedererkannt' in message       # parseInt liest „1“
-    else:
-        assert 'wiedererkannt' not in message
-
-
-def test_adopted_aus_der_adresse_landet_nicht_roh_im_html(server_port, auto_login):
-    """Die Seite wird vom Server ausgeliefert: der Wert aus ``?adopted=`` steht nirgends im HTML –
-    ihn liest erst das Skript im Browser, und dort wird er zur Zahl."""
-    payload = '<script>alert(7)</script>'
-    page = get(server_port, '/miscellaneous?wiso_fdb=ok&imported=1&skipped=0&adopted='
-                            + payload.replace('<', '%3C').replace('>', '%3E'))
-    assert page.status == 200
-    assert 'alert(7)' not in page.text and payload not in page.text
-
-
-def _multipart_csv(csv_bytes, csrf):
-    boundary = 'GRENZE0815'
-    body = (f'--{boundary}\r\nContent-Disposition: form-data; name="csrf"\r\n\r\n{csrf}\r\n'
-            f'--{boundary}\r\nContent-Disposition: form-data; name="csvfile"; filename="export.csv"\r\n'
-            'Content-Type: text/csv\r\n\r\n').encode() + csv_bytes + f'\r\n--{boundary}--\r\n'.encode()
-    return f'multipart/form-data; boundary={boundary}', body
-
-
-def test_csv_und_datenbank_ueber_den_server_nacheinander(server_port, auto_login, tmp_path):
-    """Der ganze Weg über HTTP: CSV-Import, dann Datenbank-Import – nichts doppelt, die
-    Weiterleitung nennt ``adopted``, die Seite zeigt die Detailzeile."""
-    db = auto_login.db
-    db.load_test_seed_data()
-    path = _fdb(tmp_path)
-    content_type, body = _multipart_csv(_csv(), auto_login.csrf)
-    imported = send(server_port, 'POST', '/wiso/import',
-                    {'Origin': own_origin(server_port), 'Content-Type': content_type}, body)
-    assert imported.status == 303 and 'wiso_import=ok' in imported.headers['Location']
-    assert len(_entries(db)) == 5
-
-    answer = post(server_port, '/wiso/fdb-import', headers={'Origin': own_origin(server_port)},
-                  csrf=auto_login.csrf,
-                  form={'fdb_path': path, 'with_assets': '1', 'with_invoices': '1'})
-    assert answer.status == 303
-    params = _query_of(answer.headers['Location'])
-    assert (params['wiso_fdb'], params['imported'], params['skipped'], params['adopted']) == (
-        'ok', '1', '0', '5')
-    assert len(_entries(db)) == 6
-
-    page = get(server_port, answer.headers['Location'])
-    assert page.status == 200
-    assert '5 Buchungssätze waren schon aus dem CSV-Import da' in page.text
-    listed, _block = _details(page.text)                       # und die Liste dazu
-    assert sorted(row[0] for row in listed) == ['2024-03-01', '2024-03-05', '2024-03-05',
-                                                '2024-03-05', '2024-03-15']
-
-    second = post(server_port, '/wiso/fdb-import', headers={'Origin': own_origin(server_port)},
-                  csrf=auto_login.csrf,
-                  form={'fdb_path': path, 'with_assets': '1', 'with_invoices': '1'})
-    params = _query_of(second.headers['Location'])
-    assert (params['imported'], params['skipped'], params['adopted']) == ('0', '6', '0')
-    assert len(_entries(db)) == 6

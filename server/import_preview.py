@@ -31,8 +31,15 @@ def match_account(accounts, iban):
 
 
 def _text_key(value):
-    """Verwendungszweck für den Vergleich: Leerraum zusammengefasst, Groß-/Kleinschreibung egal."""
-    return " ".join((value or "").split()).casefold()
+    """Verwendungszweck für den Vergleich: ohne jeden Leerraum, Groß-/Kleinschreibung egal,
+    ohne ein führendes „Storno:“.
+
+    Ohne Leerraum, weil ein Zeilenumbruch mitten im Wort stehen kann („Rechnungsnum“,
+    Umbruch, „mer 4711“); „Storno:“ setzt die Bank bei Rückbuchungen davor (geprüft wird
+    nach dem Entfernen des Leerraums, also auch „Storno : …“).
+    """
+    key = "".join((value or "").split()).casefold()
+    return key[len("storno:"):] if key.startswith("storno:") else key
 
 
 def _texts_agree(a, b):
