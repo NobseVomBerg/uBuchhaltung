@@ -19,7 +19,7 @@ Anfragen legen das Paar (Rechnung, Bankbewegung) nie zweimal an.
 import datetime
 from collections import namedtuple
 
-from money import to_minor, from_minor, prorate, round_minor, fmt_eur
+from money import to_minor, from_minor, prorate, round_minor, fmt_eur, is_covered
 from .matching import REVENUE_ACCOUNT_RANGE
 from .reporting import is_income_account
 
@@ -29,8 +29,10 @@ PAYMENT_MARK = 'invoice_payment'
 # offener Posten. 'partial' ist der Alt-Wert von 'partial_payment'.
 PAYABLE_STATUSES = ('sent', 'overdue', 'partial_payment', 'partial')
 
-# 0,01 EUR in Minor Units: Ein Rest darunter gilt als bezahlt.
-_PAID_RESIDUE = 100
+# Ab „versendet“ ist die Rechnung ein offener Posten und hat eine Forderungsbuchung; davor
+# (Entwurf, abgeschlossen) und nach dem Storno nicht. Zustands- statt übergangsgesteuert, damit
+# auch Sprünge wie abgeschlossen → bezahlt richtig landen.
+RECEIVABLE_STATUSES = frozenset({'sent', 'partial_payment', 'overdue', 'paid'})
 
 NO_REVENUE_COA = ('Für den Steuersatz dieser Rechnung ist kein Erlöskonto hinterlegt – bitte ein '
                   'Erlöskonto wählen.')
@@ -53,7 +55,7 @@ def next_payment_status(current, gross, paid, due_date, today):
         return current
     sign = (gross > 0) - (gross < 0)
     if paid * sign > 0:
-        return 'paid' if (gross - paid) * sign < _PAID_RESIDUE else 'partial_payment'
+        return 'paid' if is_covered(gross, paid) else 'partial_payment'
     if current in ('paid', 'partial_payment', 'partial'):
         return 'overdue' if due_date and str(due_date)[:10] < today else 'sent'
     return current
@@ -173,7 +175,6 @@ class InvoicePaymentsMixin:
         return None, {
             'tax_rate': invoice[35], 'account_id': account_id, 'bank_coa': bank_coa,
             'revenue_coa': revenue_coa,
-            'debtor_coa': self.get_coa_id_by_account_number(self.DEBTOR_ACCOUNT_NUMBER),
             'bank_coa_ids': self.get_bank_coa_ids(),
         }
 
@@ -185,6 +186,16 @@ class InvoicePaymentsMixin:
         return self._payment_prerequisites(invoice_id, account_id, revenue_coa_id)[0]
 
     # ── Erlöskonto: Wahl, wenn keines hinterlegt ist ────────────────────────
+    @staticmethod
+    def _income_coas(cursor):
+        """Die Erlöskonten 4000–4999 ohne die Wartekonten (``db.reporting.is_income_account``)
+        als ``[(COA_ID, Kontonummer, Name)]`` nach Kontonummer."""
+        rows = cursor.execute(
+            'SELECT ID, AccountNumber, Name FROM ChartOfAccounts '
+            'WHERE AccountNumber BETWEEN ? AND ? ORDER BY AccountNumber, ID',
+            REVENUE_ACCOUNT_RANGE).fetchall()
+        return [row for row in rows if is_income_account(row[1])]
+
     def get_revenue_coas(self):
         """Die Konten, aus denen der Nutzer das Erlöskonto einer Zahlung wählen kann: Erlöskonten
         4000–4999 (``REVENUE_ACCOUNT_RANGE``) ohne die Wartekonten, die keine Erlöse sind
@@ -192,13 +203,9 @@ class InvoicePaymentsMixin:
         Kontonummer."""
         conn = self._get_connection()
         try:
-            rows = conn.execute(
-                'SELECT ID, AccountNumber, Name FROM ChartOfAccounts '
-                'WHERE AccountNumber BETWEEN ? AND ? ORDER BY AccountNumber, ID',
-                REVENUE_ACCOUNT_RANGE).fetchall()
+            return self._income_coas(conn.cursor())
         finally:
             conn.close()
-        return [row for row in rows if is_income_account(row[1])]
 
     def _chosen_revenue_coa(self, revenue_coa_id):
         """Das vom Nutzer gewählte Erlöskonto, geprüft: ``(COA-ID, None)`` oder
@@ -272,7 +279,12 @@ class InvoicePaymentsMixin:
 
         Die Steuer eines Teils ist der anteilige Rechnungsbetrag (auf den Cent gerundet); der
         Teil, der die Rechnung schließt, bekommt den Rest – die Summe stimmt so exakt mit der
-        Rechnung überein.
+        Rechnung überein. Abgezogen wird die Steuer der anderen Zuordnungen der Rechnung: bei
+        markierten Sätzen die tatsächlich gebuchte, bei Zuordnungen ohne markierte Sätze
+        (Altbestand, WISO-Import) ihr anteiliger Betrag.
+
+        Der Betrag wird auf Cent gerundet (halb auf), bevor er gekappt wird – ein Bruchteil eines
+        Cents bliebe sonst als Rest auf dem Debitorenkonto stehen und ließe sich nicht exportieren.
 
         Das Erlöskonto ergibt sich aus der Rechnung (``resolve_revenue_coa``). Nur wenn dafür
         keines hinterlegt ist (z. B. 5 %, 16 % ohne Historie), wählt der Nutzer es:
@@ -297,7 +309,7 @@ class InvoicePaymentsMixin:
             return _refused(error)
         requested = None
         if amount is not None:
-            requested = to_minor(amount)
+            requested = round_minor(to_minor(amount), 2)
             if requested <= 0:
                 return _refused('Der Betrag muss größer 0 sein.')
 
@@ -343,29 +355,45 @@ class InvoicePaymentsMixin:
 
             tax_total = tax_total or 0
             if alloc == due:
-                # Der schließende Teil bekommt den Rest der Rechnungssteuer: alles, was unter den
-                # Bewegungen der Rechnung schon als Steuer zu ihr gebucht ist – auch Sätze aus
-                # Altbeständen ohne Marke (nur die Zahlungssätze tragen Steuer, nicht „Bank an
-                # Debitoren“)
-                booked_tax = conn.execute(
-                    'SELECT COALESCE(SUM(TaxAmount), 0) FROM Bookings WHERE DocumentNumber = ? '
-                    'AND ParentBooking_ID IN '
-                    '(SELECT BookingID FROM InvoicePayments WHERE InvoiceID = ?)',
-                    (number, invoice_id)).fetchone()[0]
-                tax_part = tax_total - booked_tax
+                # Der schließende Teil bekommt den Rest der Rechnungssteuer: Rechnungssteuer minus
+                # die Steuer der anderen Zuordnungen. Hat eine markierte Sätze, zählt deren
+                # gebuchte Steuer (nur die Zahlungssätze tragen Steuer, nicht „Bank an
+                # Debitoren“); sonst (Altbestand, WISO-Import) ihr anteiliger Betrag – eine Suche
+                # über die Beleg-Nr. fände Sätze mit anderer oder fehlender Nummer nicht.
+                taxed_before = 0
+                for other_booking, other_amount in conn.execute(
+                        'SELECT BookingID, SUM(Amount) FROM InvoicePayments WHERE InvoiceID = ? '
+                        'GROUP BY BookingID', (invoice_id,)).fetchall():
+                    marked = self._payment_children(conn, other_booking, number)
+                    if marked:
+                        taxed_before += conn.execute(
+                            f"SELECT COALESCE(SUM(TaxAmount), 0) FROM Bookings WHERE ID IN "
+                            f"({','.join('?' * len(marked))})", marked).fetchone()[0]
+                    else:
+                        taxed_before += round_minor(prorate(tax_total, other_amount, gross), 2)
+                tax_part = tax_total - taxed_before
             else:
                 tax_part = round_minor(prorate(tax_total, alloc, gross), 2)
             # TaxRate steht teils als 0.19, teils als 19; -1 ist der Sentinel für „§ 19, keine USt“
             tax_rate = None if not rate or rate < 0 else (rate if rate <= 1 else rate / 100)
             tax_value = tax_part if tax_rate else None
 
-            debtor_coa = ctx['debtor_coa']
-            receivable = None
-            if debtor_coa is not None:
-                receivable = conn.execute(
-                    "SELECT COA_ID, CounterCOA_ID FROM Bookings WHERE DocumentNumber = ? "
-                    "AND COA_ID = ? AND BookingType = 'entry' ORDER BY ID LIMIT 1",
-                    (number, debtor_coa)).fetchone()
+            # Die Forderung wird wie überall gesucht (``receivable_condition``): ein Satz mit 10000
+            # im Soll und der Rechnungsnummer, kein WISO-Storno „10000 an 1810“
+            receivable_sql, receivable_params = self._receivable_sql(conn.cursor())
+            receivable = conn.execute(
+                f"SELECT COA_ID, CounterCOA_ID FROM Bookings WHERE DocumentNumber = ? "
+                f"AND BookingType = 'entry' AND {receivable_sql} ORDER BY ID LIMIT 1",
+                [number] + receivable_params).fetchone()
+            if receivable:
+                debtor_ids = {r[0] for r in conn.execute(
+                    'SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?',
+                    (self.DEBTOR_ACCOUNT_NUMBER,))}
+                # Normalfall „10000 an Wartekonto“; negativ gebucht steht 10000 als Gegenkonto
+                debtor_side, waiting_side = (receivable if receivable[0] in debtor_ids
+                                             else (receivable[1], receivable[0]))
+            else:
+                debtor_side = waiting_side = None
 
             cursor = conn.execute(
                 'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) '
@@ -387,10 +415,10 @@ class InvoicePaymentsMixin:
                 conn.execute(sql, params)
                 tx.log.append((sql, params, description))
 
-            if receivable and receivable[0] and receivable[1]:
-                child(ctx['bank_coa'], receivable[0], f'Zahlung zu Re. {number}', False,
+            if debtor_side and waiting_side:
+                child(ctx['bank_coa'], debtor_side, f'Zahlung zu Re. {number}', False,
                       'Payment child (bank to debtor)')
-                child(receivable[1], ctx['revenue_coa'], f'Umb. zu Re. {number}', True,
+                child(waiting_side, ctx['revenue_coa'], f'Umb. zu Re. {number}', True,
                       'Payment child (open item to revenue)')
             else:
                 child(ctx['revenue_coa'], ctx['bank_coa'], f'Zahlung zu Re. {number}', True,
@@ -401,25 +429,43 @@ class InvoicePaymentsMixin:
 
     # ── Entfernen ────────────────────────────────────────────────────────────
     def _after_payment_removed(self, conn, invoice_id):
-        """Nach dem Entfernen von Zahlungen: Die Forderung gilt wieder als offen, wenn kein
-        Satz „… an Debitoren“ mehr zur Rechnung übrig ist (Stufe 7 des Auto-Abgleichs hatte
-        sie auf 'resolved' gesetzt); AmountDue und Status der Rechnung neu rechnen."""
+        """Nach dem Entfernen von Zahlungen, in der Transaktion von ``conn``:
+
+        * Die Forderung gilt wieder als offen, wenn die übrigen Sätze „… an Debitoren“ sie nicht
+          mehr ausgleichen (Stufe 7 des Auto-Abgleichs hatte sie auf 'resolved' gesetzt, siehe
+          ``money.is_covered``).
+        * AmountDue und Status der Rechnung werden neu gerechnet.
+        * Ist keine Zahlung mehr übrig und der Status der Rechnung kein Forderungsstatus
+          (storniert, Entwurf, abgeschlossen), geht auch die Forderungsbuchung – so wie beim
+          Statuswechsel (``RECEIVABLE_STATUSES``). Die Reihenfolge „erst stornieren, dann die
+          Zahlung entfernen“ endet damit im selben Zustand wie die umgekehrte."""
         row = conn.execute('SELECT InvoiceNumber FROM Invoices WHERE ID = ?',
                            (invoice_id,)).fetchone()
         if row is None:
             return
-        debtor = '(SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?)'
-        if not conn.execute(
-                f"SELECT 1 FROM Bookings WHERE BookingType = 'entry' "
-                f"AND ParentBooking_ID IS NOT NULL AND DocumentNumber = ? "
-                f"AND CounterCOA_ID IN {debtor} LIMIT 1",
-                (row[0], self.DEBTOR_ACCOUNT_NUMBER)).fetchone():
-            conn.execute(
-                f"UPDATE Bookings SET Status = NULL WHERE BookingType = 'entry' "
-                f"AND ParentBooking_ID IS NULL AND Status = 'resolved' "
-                f"AND DocumentNumber = ? AND COA_ID IN {debtor}",
-                (row[0], self.DEBTOR_ACCOUNT_NUMBER))
+        number = row[0]
+        debtor_ids = [r[0] for r in conn.execute(
+            'SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?', (self.DEBTOR_ACCOUNT_NUMBER,))]
+        if debtor_ids:
+            marks = ','.join('?' * len(debtor_ids))
+            standalone = conn.execute(
+                f"SELECT ID, Amount, Status FROM Bookings WHERE BookingType = 'entry' "
+                f"AND ParentBooking_ID IS NULL AND DocumentNumber = ? AND COA_ID IN ({marks})",
+                [number] + debtor_ids).fetchall()
+            for booking_id, amount, status in standalone:
+                if status == 'resolved' and not is_covered(
+                        amount or 0, self._debtor_settled_minor(conn.cursor(), number, debtor_ids)):
+                    conn.execute('UPDATE Bookings SET Status = NULL WHERE ID = ?', (booking_id,))
         self._recalc_invoice(conn, invoice_id)
+
+        status = conn.execute('SELECT Status FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()[0]
+        if status not in RECEIVABLE_STATUSES and not conn.execute(
+                'SELECT 1 FROM InvoicePayments WHERE InvoiceID = ?', (invoice_id,)).fetchone():
+            receivable_sql, receivable_params = self._receivable_sql(conn.cursor())
+            stale = [r[0] for r in conn.execute(
+                f"SELECT ID FROM Bookings WHERE BookingType = 'entry' AND ParentBooking_ID IS NULL "
+                f"AND DocumentNumber = ? AND {receivable_sql}", [number] + receivable_params)]
+            self._delete_booking_rows(conn, stale)
 
     def _unassign(self, conn, payment_id):
         """Eine Zuordnung samt ihren Buchungssätzen in der Transaktion von ``conn`` entfernen.
@@ -446,7 +492,9 @@ class InvoicePaymentsMixin:
         """Eine Zuordnung entfernen: ihre Buchungssätze, die Zuordnung selbst, danach die
         Rechnung neu rechnen (Rest, Status: zurück auf versendet bzw. überfällig, nie auf
         abgeschlossen; eine stornierte Rechnung bleibt storniert). Die Forderung bleibt
-        stehen und ist damit wieder offen. Alles in einer Transaktion.
+        stehen und ist damit wieder offen – außer die Rechnung ist kein offener Posten mehr
+        (storniert) und es war ihre letzte Zahlung (``_after_payment_removed``). Alles in
+        einer Transaktion.
 
         Returns die Rechnungs-ID; ``ValueError``, wenn es die Zuordnung nicht gibt."""
         with self.transaction() as tx:
@@ -483,8 +531,13 @@ class InvoicePaymentsMixin:
 
         * ``no_settlement``      Zuordnung ohne Satz „Bank an Debitoren“ (die Rechnung hat
                                  eine Forderung);
+        * ``settlement_without_receivable`` Sätze „Bank an Debitoren“ der App, aber keine
+                                 Forderung (mehr) zur Rechnung – 10000 steht im Haben-Überhang;
         * ``receivable_attached`` die Forderung hängt an einer Bankbewegung;
-        * ``orphan_payment_rows`` Zahlungssatz unter einer Bankbewegung ohne Zuordnung;
+        * ``orphan_payment_rows`` Zahlungssatz unter einer Bankbewegung ohne Zuordnung: die
+                                 Sätze der App (Marke, Text) und bankwirksame Erlössätze mit
+                                 einer Rechnungsnummer als Beleg-Nr., zu denen es für das Paar
+                                 (Rechnung, Bewegung) keine Zuordnung gibt;
         * ``transfer_mismatch``  zugeordneter Betrag ≠ auf das Erlöskonto umgebuchter;
         * ``payment_on_entry``   Zuordnung hängt an einem Buchungssatz, nicht an einer
                                  Bankbewegung;
@@ -492,6 +545,14 @@ class InvoicePaymentsMixin:
         * ``outgoing_payment``   Zuordnung auf einen Ausgang;
         * ``status_unsent``      Forderung gebucht, Status aber Entwurf/abgeschlossen;
         * ``amount_due_mismatch`` offener Rest passt nicht zu den Zuordnungen.
+
+        ``no_settlement`` und ``transfer_mismatch`` betrachten nur Zuordnungen, deren Buchung
+        eine Bankbewegung ohne Sätze mit Quellklammer (``SourceGroup``) ist: Der WISO-Import
+        liefert seine Sätze selbst (und kennt Barzahlungen ohne Bankbewegung).
+
+        Die Abfragen gehen von den Zuordnungen aus bzw. fassen je Rechnung vorab zusammen; die
+        Rechnungsnummern mit Forderung werden einmal gelesen. Der Aufwand wächst so linear mit
+        dem Bestand (4000 Bewegungen/Forderungen, 1000 Zuordnungen: unter einer Sekunde).
         """
         conn = self._get_connection()
         try:
@@ -502,14 +563,13 @@ class InvoicePaymentsMixin:
     def _payment_findings(self, conn, invoice_id):
         debtor = self.DEBTOR_ACCOUNT_NUMBER
         waiting = tuple(number for number, _name in self.OPEN_REVENUE_ACCOUNTS.values())
+        cursor = conn.cursor()
         is_invoice = "(i.DocumentType = 'invoice' OR i.DocumentType IS NULL)"
         only = ' AND i.ID = ?' if invoice_id is not None else ''
         only_params = [invoice_id] if invoice_id is not None else []
-        # Rechnungsnummern, zu denen eine Forderung (Debitoren-Satz) gebucht ist
-        has_receivable = (
-            "WITH recv AS (SELECT DISTINCT DocumentNumber AS Number FROM Bookings "
-            "WHERE BookingType = 'entry' AND COA_ID IN "
-            "(SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?)) ")
+        # Bankbewegung mit Sätzen aus dem Quellsystem (WISO): die Sätze gehören dem Import
+        has_source_group = ("EXISTS (SELECT 1 FROM Bookings w WHERE w.ParentBooking_ID = b.ID "
+                            "AND w.SourceGroup IS NOT NULL AND w.SourceGroup <> '')")
         findings = []
 
         def add(category, inv_id, number, text):
@@ -519,22 +579,48 @@ class InvoicePaymentsMixin:
         def euro(minor):
             return fmt_eur(from_minor(minor or 0))
 
+        # Rechnungsnummern, zu denen eine Forderung gebucht ist (``receivable_condition``),
+        # einmal gelesen – nicht je Zuordnung nachgeschlagen
+        receivable_sql, receivable_params = self._receivable_sql(cursor, alias='r')
+        number_filter, number_params = '', []
+        if invoice_id is not None:
+            row = conn.execute('SELECT InvoiceNumber FROM Invoices WHERE ID = ?',
+                               (invoice_id,)).fetchone()
+            if row is None:
+                return findings
+            number_filter, number_params = ' AND r.DocumentNumber = ?', [row[0]]
+        with_receivable = {row[0] for row in conn.execute(
+            f"SELECT DISTINCT r.DocumentNumber FROM Bookings r WHERE r.BookingType = 'entry' "
+            f"AND r.DocumentNumber IS NOT NULL AND {receivable_sql}{number_filter}",
+            receivable_params + number_params)}
+
         for inv, number, pay_id, bank_id, amount in conn.execute(
-                has_receivable +
                 "SELECT i.ID, i.InvoiceNumber, ip.ID, ip.BookingID, ip.Amount "
                 "FROM InvoicePayments ip JOIN Invoices i ON i.ID = ip.InvoiceID "
                 "JOIN Bookings b ON b.ID = ip.BookingID AND b.BookingType = 'bank' "
-                "JOIN recv ON recv.Number = i.InvoiceNumber "
-                f"WHERE NOT EXISTS (SELECT 1 FROM Bookings s WHERE s.ParentBooking_ID = b.ID "
-                f"AND s.DocumentNumber = i.InvoiceNumber AND s.CounterCOA_ID IN "
-                f"(SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?)){only} "
-                "ORDER BY i.InvoiceNumber, ip.ID",
-                [debtor, debtor] + only_params):
-            add('no_settlement', inv, number,
-                f'Zuordnung #{pay_id} ({euro(amount)}) auf Bewegung #{bank_id}: Der '
-                f'Buchungssatz „Bank an Debitoren“ fehlt.')
+                "WHERE NOT EXISTS (SELECT 1 FROM Bookings s WHERE s.ParentBooking_ID = b.ID "
+                "AND s.DocumentNumber = i.InvoiceNumber AND s.CounterCOA_ID IN "
+                f"(SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?)) "
+                f"AND NOT {has_source_group}{only} ORDER BY i.InvoiceNumber, ip.ID",
+                [debtor] + only_params):
+            if number in with_receivable:
+                add('no_settlement', inv, number,
+                    f'Zuordnung #{pay_id} ({euro(amount)}) auf Bewegung #{bank_id}: Der '
+                    f'Buchungssatz „Bank an Debitoren“ fehlt.')
 
-        receivable_sql, receivable_params = self._receivable_sql(conn.cursor(), alias='r')
+        for inv, number, count, total in conn.execute(
+                "SELECT i.ID, i.InvoiceNumber, COUNT(*), SUM(k.Amount) FROM Bookings k "
+                f"JOIN Invoices i ON i.InvoiceNumber = k.DocumentNumber AND {is_invoice} "
+                "WHERE k.Status = ? AND k.ParentBooking_ID IS NOT NULL AND k.CounterCOA_ID IN "
+                f"(SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?){only} "
+                "GROUP BY i.ID, i.InvoiceNumber ORDER BY i.InvoiceNumber",
+                [PAYMENT_MARK, debtor] + only_params):
+            if number not in with_receivable:
+                add('settlement_without_receivable', inv, number,
+                    f'Es gibt {count} Zahlungssatz(sätze) „Bank an Debitoren“ ({euro(total)}), '
+                    f'aber keine Forderung mehr zur Rechnung – auf dem Debitorenkonto steht ein '
+                    f'Haben-Überhang.')
+
         for rec_id, number, bank_id, amount, inv in conn.execute(
                 "SELECT r.ID, r.DocumentNumber, r.ParentBooking_ID, r.Amount, "
                 "(SELECT i.ID FROM Invoices i WHERE i.InvoiceNumber = r.DocumentNumber) "
@@ -545,35 +631,53 @@ class InvoicePaymentsMixin:
                     f'Die Forderung #{rec_id} ({euro(amount)}) hängt an der Bankbewegung '
                     f'#{bank_id}; sie gehört zur Rechnung, nicht zur Bewegung.')
 
+        # Zahlungssätze ohne Zuordnung: die Marke oder der Text der App – oder ein bankwirksamer
+        # Erlössatz (Erlöskonto gegen ein Zahlungskonto) mit einer Rechnungsnummer als Beleg-Nr.,
+        # unabhängig vom Text (Altbestand „Zahlung verbuchen mit Konto“ nach dem Entfernen)
+        revenue_ids = [row[0] for row in self._income_coas(cursor)]
+        payment_ids = sorted(self._get_payment_coa_ids(cursor))
+        rev = ','.join('?' * len(revenue_ids))
+        pay = ','.join('?' * len(payment_ids))
         for row_id, bank_id, number, amount, inv in conn.execute(
                 "SELECT k.ID, k.ParentBooking_ID, k.DocumentNumber, k.Amount, "
                 "(SELECT i.ID FROM Invoices i WHERE i.InvoiceNumber = k.DocumentNumber) "
                 "FROM Bookings k WHERE k.ParentBooking_ID IS NOT NULL "
                 "AND (k.SourceGroup IS NULL OR k.SourceGroup = '') "
-                "AND (k.Status = ? OR k.Text LIKE 'Zahlung zu Re. %' "
-                "OR k.Text LIKE 'Umb. zu Re. %') "
+                "AND (k.Status = ? OR k.Text LIKE 'Zahlung zu Re. %' OR k.Text LIKE 'Umb. zu Re. %' "
+                "OR (k.BookingType = 'entry' "
+                f"AND ((k.COA_ID IN ({rev}) AND k.CounterCOA_ID IN ({pay})) "
+                f"OR (k.CounterCOA_ID IN ({rev}) AND k.COA_ID IN ({pay}))) "
+                "AND EXISTS (SELECT 1 FROM Bookings p WHERE p.ID = k.ParentBooking_ID "
+                "AND p.BookingType = 'bank') "
+                "AND EXISTS (SELECT 1 FROM Invoices x WHERE x.InvoiceNumber = k.DocumentNumber "
+                "AND (x.DocumentType = 'invoice' OR x.DocumentType IS NULL)))) "
                 "AND NOT EXISTS (SELECT 1 FROM InvoicePayments ip "
                 "JOIN Invoices i2 ON i2.ID = ip.InvoiceID WHERE ip.BookingID = k.ParentBooking_ID "
-                "AND i2.InvoiceNumber = k.DocumentNumber) ORDER BY k.ID", (PAYMENT_MARK,)):
+                "AND i2.InvoiceNumber = k.DocumentNumber) ORDER BY k.ID",
+                [PAYMENT_MARK] + revenue_ids + payment_ids + revenue_ids + payment_ids):
             if invoice_id is None or inv == invoice_id:
                 add('orphan_payment_rows', inv, number,
                     f'Zahlungssatz #{row_id} ({euro(amount)}) unter Bewegung #{bank_id} hat '
                     f'keine Zuordnung zur Rechnung.')
 
+        # Zugeordnet (Bankbewegungen ohne Sätze des Imports) gegen umgebucht (Sätze „Wartekonto
+        # an Erlöskonto“ der App/des Altbestands), je Rechnung vorab zusammengefasst
         marks = ','.join('?' * len(waiting))
         for inv, number, paid, moved in conn.execute(
-                has_receivable.rstrip() + ", moved AS (SELECT k.DocumentNumber AS Number, "
-                "SUM(k.Amount) AS Total FROM Bookings k "
-                "JOIN ChartOfAccounts c ON c.ID = k.COA_ID WHERE k.ParentBooking_ID IS NOT NULL "
+                "WITH paid AS (SELECT ip.InvoiceID AS InvoiceID, SUM(ip.Amount) AS Total "
+                "FROM InvoicePayments ip JOIN Bookings b ON b.ID = ip.BookingID "
+                f"WHERE b.BookingType = 'bank' AND NOT {has_source_group} "
+                "GROUP BY ip.InvoiceID), "
+                "moved AS (SELECT k.DocumentNumber AS Number, SUM(k.Amount) AS Total "
+                "FROM Bookings k JOIN ChartOfAccounts c ON c.ID = k.COA_ID "
+                "WHERE k.ParentBooking_ID IS NOT NULL AND (k.SourceGroup IS NULL OR k.SourceGroup = '') "
                 f"AND c.AccountNumber IN ({marks}) GROUP BY k.DocumentNumber) "
-                "SELECT i.ID, i.InvoiceNumber, "
-                "COALESCE((SELECT SUM(ip.Amount) FROM InvoicePayments ip "
-                "WHERE ip.InvoiceID = i.ID), 0), COALESCE(moved.Total, 0) "
-                "FROM Invoices i JOIN recv ON recv.Number = i.InvoiceNumber "
+                "SELECT i.ID, i.InvoiceNumber, COALESCE(paid.Total, 0), COALESCE(moved.Total, 0) "
+                "FROM Invoices i LEFT JOIN paid ON paid.InvoiceID = i.ID "
                 "LEFT JOIN moved ON moved.Number = i.InvoiceNumber "
-                f"WHERE {is_invoice}{only} ORDER BY i.InvoiceNumber",
-                [debtor] + list(waiting) + only_params):
-            if paid != moved:
+                f"WHERE {is_invoice}{only} AND COALESCE(paid.Total, 0) <> COALESCE(moved.Total, 0) "
+                "ORDER BY i.InvoiceNumber", list(waiting) + only_params):
+            if number in with_receivable:
                 add('transfer_mismatch', inv, number,
                     f'Zugeordnet sind {euro(paid)}, auf das Erlöskonto umgebucht {euro(moved)}.')
 
@@ -606,14 +710,13 @@ class InvoicePaymentsMixin:
                 f'zugeordnet sind {euro(amount)}.')
 
         for inv, number, status in conn.execute(
-                has_receivable +
                 "SELECT i.ID, i.InvoiceNumber, i.Status FROM Invoices i "
-                "JOIN recv ON recv.Number = i.InvoiceNumber "
                 f"WHERE i.Status IN ('draft', 'finalized') AND {is_invoice}{only} "
-                "ORDER BY i.InvoiceNumber", [debtor] + only_params):
-            add('status_unsent', inv, number,
-                f'Die Rechnung steht als Forderung in den Büchern, hat aber noch den Status '
-                f'„{status}“ (nicht versendet).')
+                "ORDER BY i.InvoiceNumber", only_params):
+            if number in with_receivable:
+                add('status_unsent', inv, number,
+                    f'Die Rechnung steht als Forderung in den Büchern, hat aber noch den Status '
+                    f'„{status}“ (nicht versendet).')
 
         for inv, number, gross, due, paid in conn.execute(
                 "SELECT i.ID, i.InvoiceNumber, i.SumGross, i.AmountDue, "
@@ -625,4 +728,3 @@ class InvoicePaymentsMixin:
                     f'Offen sind {euro(due)}, nach den Zuordnungen müssten es '
                     f'{euro((gross or 0) - paid)} sein.')
         return findings
-

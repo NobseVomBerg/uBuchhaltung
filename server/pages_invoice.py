@@ -1483,8 +1483,8 @@ function copyInvoiceAsNew(invId) {{
         if findings:
             s += ('        <div class="warnColor"><strong>Zahlungszuordnung prüfen:</strong><ul>\n'
                   + ''.join(f'            <li>{_html.escape(f["text"])}</li>\n' for f in findings)
-                  + '        </ul>Alle Rechnungen mit Unstimmigkeiten stehen unter '
-                  '<a href="/miscellaneous">Sonstiges</a>.</div>\n')
+                  + '        </ul>Alle Rechnungen mit Unstimmigkeiten zeigt die Prüfung unter '
+                  '<a href="/miscellaneous?check_payments=1">Sonstiges</a>.</div>\n')
         if existing_payments:
             total_paid = sum(p[3] for p in existing_payments)
             s += '''        <table style="width:100%; border-collapse:collapse;">
@@ -1628,8 +1628,7 @@ function copyInvoiceAsNew(invId) {{
             }});
         }}
         function deletePayment(paymentId) {{
-            showConfirm('Zahlungsverkn\u00fcpfung wirklich entfernen? Die zugeh\u00f6rigen ' +
-                        'Buchungss\u00e4tze werden mit entfernt.', function() {{
+            showConfirm('Zahlungsverkn\u00fcpfung wirklich entfernen? Die von der App daf\u00fcr angelegten Buchungss\u00e4tze werden mit entfernt.', function() {{
                 fetch('/invoice/delete-payment', {{
                     method: 'POST',
                     headers: {{'Content-Type': 'application/json'}},

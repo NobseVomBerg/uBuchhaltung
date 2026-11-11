@@ -363,28 +363,53 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
   Bewegung braucht eine SKR-Nummer; das Paar (Rechnung, Bewegung) gibt es höchstens einmal. Negative
   Zuordnungen (Storno, Gutschrift) kennt nur der WISO-Import (`link_invoice_to_transaction`, mit
   Vorzeichen und ohne eigene Sätze).
-- **Betrag:** min(Rest der Rechnung, freier Rest der Bewegung, gewünschter Betrag). Frei ist
+- **Betrag:** min(Rest der Rechnung, freier Rest der Bewegung, gewünschter Betrag); der gewünschte Betrag
+  wird vorher auf Cent gerundet (halb auf, `118,995 → 119,00`; ≤ 0 nach dem Runden lehnt ab), sonst bliebe
+  ein Bruchteil eines Cents auf dem Debitorenkonto stehen. Frei ist
   `Betrag − MAX(Σ Zuordnungen, Σ bankwirksame Sätze darunter)` (`_free_minor_sql`, dieselbe Formel für
   Zuordnung, Kandidatenlisten und Kontakt-Guthaben): eine schon als Erlös kontierte Bewegung ist keine
   Rechnungszahlung mehr. *Sammelzahlung* = mehrere Zuordnungen derselben Bewegung, jede mit eigenen
   Sätzen; *Teilzahlung* = mehrere Bewegungen auf eine Rechnung; bei einer *Überzahlung* bleibt der Rest
   frei (Guthaben beim Kontakt; der DATEV-Export bleibt gesperrt, bis er kontiert ist).
+- **Erlöskonto:** Es ergibt sich aus der Rechnung (`resolve_revenue_coa`: gelernt, sonst 4400 bei
+  19 %, 4300 bei 7 %, 4185 steuerfrei/§ 19). **Gelernt wird nur aus den markierten Sätzen** der
+  Zuordnungen (`Status='invoice_payment'`) von Rechnungen mit demselben Steuersatz: beim Satz „Wartekonto
+  an Erlöskonto“ das Gegenkonto, beim Einzelsatz „Erlöskonto an Bank“ das Konto; der jüngste Satz
+  gewinnt. Das Ergebnis gilt nur, wenn es ein Erlöskonto 4000–4999 (`REVENUE_ACCOUNT_RANGE`) und kein
+  Wartekonto (4340/4345/4405) ist, sonst greift das Standardkonto. Das Konto der Bankzeile (der
+  Anzeige-Backfill) und die Sätze des WISO-Imports lehren nichts: Dort kann ein Bank-, Aufwands- oder
+  Wartekonto stehen. Nur wenn für den Satz kein Konto hinterlegt ist – z. B. bei 5 % oder 16 % ohne
+  Historie – wählt der Nutzer es (`revenue_coa_id`, im Formular „Erlöskonto“): ein vorhandenes
+  Erlöskonto (`get_revenue_coas`, kein Wartekonto), sonst lehnt `assign_invoice_payment` ab – die
+  Prüfung liegt in der DB-Schicht. Ist ein Konto hinterlegt, wird die Wahl ignoriert.
+  `suggest_revenue_coa(Steuersatz)` liefert nur die Vorauswahl (das häufigste Erlöskonto unter den
+  Buchungen mit diesem Satz, bei Gleichstand die kleinste Nummer); eine Entscheidung trifft der Nutzer.
+  Die Wahl des Nutzers merkt sich die Zuordnung in ihren Sätzen: Die nächste Rechnung mit diesem Satz
+  braucht keine Wahl mehr. Für Sätze ohne Wartekonto entsteht kein Wartekonto – es bleibt bei dem einen
+  Satz `Erlöskonto → Bank`.
 - **Sätze:** mit Forderung `Bank → 10000` (ohne Steuer) und `Wartekonto → Erlöskonto` (mit Steuer);
   ohne Forderung (Satz ohne Wartekonto, Bestand vor den Forderungsbuchungen) ein Satz
   `Erlöskonto → Bank` über den zugeordneten Betrag. Datum, Steuerdatum und Empfänger stammen von der
   Bewegung, der Kontakt von der Rechnung. Die Steuer eines Teils ist der anteilige Rechnungsbetrag
-  (auf den Cent gerundet); der Teil, der die Rechnung schließt, bekommt den Rest – die Summe der
-  Zahlungssätze stimmt immer mit der Steuer der Rechnung überein.
+  (auf den Cent gerundet); der Teil, der die Rechnung schließt, bekommt den Rest: Rechnungssteuer minus
+  die Steuer der anderen Zuordnungen. Hat eine markierte Sätze, zählt deren tatsächlich gebuchte Steuer;
+  eine Zuordnung ohne markierte Sätze (Altbestand, WISO-Import) zählt mit ihrem anteiligen Betrag – die
+  Summe der Zahlungssätze stimmt so mit der Steuer der Rechnung überein, auch wenn die Sätze einer
+  Altzahlung eine andere oder keine Beleg-Nr. tragen.
 - **Gleichzeitigkeit:** Prüfung, Schreiben und Neuberechnung laufen in einer `BEGIN IMMEDIATE`-Transaktion;
   zwei gleichzeitige Anfragen legen das Paar nicht doppelt an (es gibt keinen UNIQUE-Index). Konten,
   die dabei angelegt werden könnten (`resolve_revenue_coa`), löst die Funktion vorher in eigenen
   Verbindungen auf.
 - **Entfernen:** `unassign_invoice_payment` löscht die markierten Sätze des Paars (nie Sätze mit
   `SourceGroup`, nie Sätze ohne Marke – Altbestand und WISO-Sätze bleiben stehen) und die Zuordnung,
-  setzt eine durch Stufe 7 aufgelöste Forderung wieder auf offen, wenn kein Satz „… an Debitoren“ zur
-  Rechnung bleibt, und rechnet die Rechnung neu. `delete_transaction` einer Bankbewegung nimmt ihre
-  Sätze und Zuordnungen mit; das Löschen eines markierten Satzes (auch im Split-Editor) entfernt die
-  ganze Zuordnung.
+  setzt eine durch Stufe 7 aufgelöste Forderung wieder auf offen, wenn die übrigen Sätze „… an Debitoren“
+  sie nicht mehr ausgleichen (Summe < Forderungsbetrag, `money.is_covered`), und rechnet die Rechnung
+  neu. War es die letzte Zahlung und ist der Status der Rechnung kein Forderungsstatus
+  (`RECEIVABLE_STATUSES`: versendet, Teilzahlung, überfällig, bezahlt – also etwa storniert), geht auch
+  die Forderung, wie beim Statuswechsel: „erst stornieren, dann die Zahlung entfernen“ endet im selben
+  Zustand wie die umgekehrte Reihenfolge. `delete_transaction` einer Bankbewegung nimmt ihre Sätze und
+  Zuordnungen mit; das Löschen eines markierten Satzes (auch im Split-Editor) entfernt die ganze
+  Zuordnung.
 - **Status der Rechnung** (`next_payment_status`, vorzeichenbewusst für die WISO-Gutschrift): Zahlung in
   Höhe der Rechnung (Rest unter einem Cent) → `paid`, sonst `partial_payment`; ohne Zahlung wieder
   `overdue` (Fälligkeit überschritten) bzw. `sent` – nie zurück auf `finalized`, eine stornierte
@@ -392,14 +417,29 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
 - **Die Forderung ist nie Kind einer Bankbewegung.** Der Auto-Abgleich (`link_bank_to_entries`,
   alle Stufen außer der Quellklammer 0) und die Kandidaten des Buchungssatz-Editors schließen sie aus;
   `delete_transaction` hängt eine als Kind vorgefundene Forderung ab, statt sie zu löschen. Die Regel
-  steht an einer Stelle (`db.matching.receivable_condition`): Der Satz berührt Debitoren (10000) und
-  hat auf keiner Seite ein Zahlungskonto – die WISO-Zahlungssätze „Bank an 10000“ und ihr Storno
-  bleiben verknüpfbar.
+  steht an einer Stelle (`db.matching.receivable_condition`): Der Satz führt Debitoren (10000) im **Soll**
+  – nach der Vorzeichenregel der Umbuchungen `COA` = 10000 bei Betrag > 0 oder Gegenkonto = 10000 bei
+  Betrag < 0 – und hat auf keiner Seite ein Zahlungskonto. Was 10000 im Haben führt (die Zahlung „Bank an
+  10000“, Erlösminderung, Skonto, Forderungsverlust „… an 10000“), ist keine Forderung; solche Sätze
+  gehören zur Bewegung und werden mit ihr gelöscht. Auch `assign_invoice_payment` und
+  `get_receivable_booking` suchen die Forderung so (nicht „erster Satz mit Konto 10000“, der einen
+  WISO-Storno „10000 an 1810“ träfe). Stufe 7 des Auto-Abgleichs setzt die Forderung erst auf
+  `resolved`, wenn die Summe der Sätze „… an 10000“ mit gleicher Beleg-Nr. den Forderungsbetrag erreicht
+  (`money.is_covered`) – nicht schon nach der ersten Teilzahlung.
 - **Prüfung:** `find_payment_inconsistencies(invoice_id=None)` meldet, rein lesend, Zuordnungen ohne Satz
-  „Bank an Debitoren“, an einer Bankbewegung hängende Forderungen, Zahlungssätze ohne Zuordnung,
-  Zuordnung ≠ Umbuchung, Zuordnungen auf einen Satz oder einen Ausgang, doppelte Zuordnungen, versendete
-  Rechnungen mit Status „Entwurf/abgeschlossen“ und einen Rest, der nicht zu den Zuordnungen passt. Die
-  Liste steht auf der Seite *Verschiedenes*, der Hinweis auf der Rechnungsseite.
+  „Bank an Debitoren“, Sätze „Bank an Debitoren“ ohne Forderung (10000 im Haben-Überhang), an einer
+  Bankbewegung hängende Forderungen, Zahlungssätze ohne Zuordnung (die markierten Sätze der App und
+  bankwirksame Erlössätze unter einer Bewegung, deren Beleg-Nr. eine Rechnungsnummer ist, ohne Zuordnung
+  für das Paar – unabhängig vom Text), Zuordnung ≠ Umbuchung, Zuordnungen auf einen Satz oder einen
+  Ausgang, doppelte Zuordnungen, versendete Rechnungen mit Status „Entwurf/abgeschlossen“ und einen Rest,
+  der nicht zu den Zuordnungen passt. Zuordnungen, deren Buchung keine Bankbewegung ist oder deren Sätze
+  eine `SourceGroup` tragen (WISO liefert seine Sätze selbst, z. B. Barzahlungen ohne Bankbewegung),
+  lösen weder „Zuordnung ohne Ausgleichssatz“ noch „Zuordnung ≠ Umbuchung“ aus. Die Abfragen gehen von
+  den Zuordnungen aus bzw. fassen je Rechnung vorab zusammen: Der Aufwand wächst linear mit dem Bestand
+  (4000 Bewegungen, 4000 Forderungen, 1000 Zuordnungen: unter einer Sekunde). Die Liste steht auf der
+  Seite *Verschiedenes* und läuft **nur auf Klick** („Zahlungszuordnungen prüfen“, `GET
+  /miscellaneous?check_payments=1`), nicht bei jedem Laden der Seite; der Hinweis auf der Rechnungsseite
+  prüft nur diese eine Rechnung.
 
 ---
 

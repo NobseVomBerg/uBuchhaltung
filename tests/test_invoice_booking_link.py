@@ -306,21 +306,27 @@ def test_link_backfill_never_overwrites(tmp_db):
     assert b[16] == 'EIGENE-NR'
 
 
-def test_revenue_coa_learned_from_history(tmp_db):
+def test_revenue_coa_is_learned_from_the_payment_rows_only(tmp_db):
+    """Das Erlöskonto je Steuersatz lernt die App nur aus den Buchungssätzen, die sie selbst für
+    eine Zuordnung angelegt hat – nicht aus dem Konto der Bankzeile. Das kann alles sein: hier
+    4405 (Wartekonto, Stellvertreter für ein beliebiges falsches Konto); früher lernte der
+    §19-Satz daraus „4405“ und die nächste Zahlung buchte „4405 an Bank“."""
     coa_4405 = tmp_db.get_coa_id_by_account_number(4405)
+    coa_4185 = tmp_db.get_coa_id_by_account_number(4185)
     coa_4400 = tmp_db.get_coa_id_by_account_number(4400)
 
-    # §19-Rechnung: Die Bankbewegung trägt ein eigenes Erlöskonto (4405 als
-    # Stellvertreter für ein individuelles Konto)
+    # §19-Rechnung: Die Bankbewegung trägt ein fremdes Konto
     inv1 = _invoice(tmp_db, 'R-KU1', gross=100.00, tax_rate=-1, tax_amount=0)
     bk1 = _bank_booking(tmp_db, 100.00, date='2026-03-01', coa_id=coa_4405)
     assert link_booking_to_invoice_capped(tmp_db, inv1, bk1)[0]
+    assert tmp_db.get_booking_by_id(bk1)[8] == coa_4405          # die Anzeige der Bankzeile bleibt
+    assert tmp_db.resolve_revenue_coa(-1) == coa_4185            # … und lehrt nichts
 
-    # Nächste §19-Rechnung: Backfill lernt das Konto aus der Historie
+    # Nächste §19-Rechnung landet auf 4185 (nicht auf 4405)
     inv2 = _invoice(tmp_db, 'R-KU2', gross=50.00, tax_rate=-1, tax_amount=0)
     bk2 = _bank_booking(tmp_db, amount=50.00)
     assert link_booking_to_invoice_capped(tmp_db, inv2, bk2)[0]
-    assert tmp_db.get_booking_by_id(bk2)[8] == coa_4405
+    assert _raw(tmp_db, 'SELECT COA_ID FROM Bookings WHERE ParentBooking_ID = ?', bk2) == [(coa_4185,)]
 
     # Das Formular „Zahlung verbuchen“ bietet kein Erlöskonto an: Die Kontierung entsteht
     # aus der Rechnung
@@ -330,6 +336,38 @@ def test_revenue_coa_learned_from_history(tmp_db):
 
     # Andere Steuersätze lernen nicht mit: 19% fällt weiter auf 4400 zurück
     assert tmp_db.resolve_revenue_coa(0.19) == coa_4400
+
+
+def test_learning_takes_the_youngest_payment_row_of_the_rate_and_only_if_it_is_a_revenue_account(tmp_db):
+    """Der jüngste Satz zum Steuersatz gewinnt; ist sein Konto kein Erlöskonto (4000–4999 ohne
+    Wartekonten), gilt das Standardkonto. (Ohne Forderung steht das Erlöskonto im Satz
+    „Erlöskonto an Bank“ als Konto.)"""
+    coa_4400 = tmp_db.get_coa_id_by_account_number(4400)
+    tmp_db.insert_chart_of_accounts(4, 4401, 'Erlöse Sonderfall', 'Betriebliche Erträge')
+    other_coa = tmp_db.get_coa_id_by_account_number(4401)
+    for number, day in (('R-L1', '2026-03-01'), ('R-L2', '2026-03-02')):
+        invoice = _invoice(tmp_db, number, gross=119.00)
+        assert link_booking_to_invoice_capped(tmp_db, invoice, _bank_booking(tmp_db, 119.00,
+                                                                             date=day))[0]
+    older, younger = [r[0] for r in _raw(
+        tmp_db, "SELECT ID FROM Bookings WHERE Status = 'invoice_payment' AND COA_ID = ? "
+                "ORDER BY ID", coa_4400)]
+
+    def teach(row_id, coa):
+        con = sqlite3.connect(tmp_db.db_name)
+        con.execute('UPDATE Bookings SET COA_ID = ? WHERE ID = ?', (coa, row_id))
+        con.commit()
+        con.close()
+
+    teach(older, other_coa)
+    assert tmp_db.resolve_revenue_coa(0.19) == coa_4400      # der jüngste (4400) gewinnt
+    teach(younger, other_coa)
+    assert tmp_db.resolve_revenue_coa(0.19) == other_coa     # jetzt trägt der jüngste 4401
+
+    for not_revenue in (4405, 6300, 1800):                   # Wartekonto, Aufwand, Bank
+        teach(younger, tmp_db.get_coa_id_by_account_number(not_revenue))
+        assert tmp_db.resolve_revenue_coa(0.19) == coa_4400, not_revenue
+    assert tmp_db.resolve_revenue_coa(0.07) == tmp_db.get_coa_id_by_account_number(4300)
 
 
 def test_tax_free_invoice_gets_coa_4185_and_entry_child(tmp_db):

@@ -8,7 +8,8 @@ import json
 from decimal import Decimal
 from money import to_minor, from_minor
 from .core import fk_explained
-from .invoice_payments import PAYABLE_STATUSES
+from .invoice_payments import PAYABLE_STATUSES, PAYMENT_MARK
+from .reporting import is_income_account
 
 
 class InvoiceCol:
@@ -622,41 +623,62 @@ class InvoicesMixin:
                 f'WHEN {column} <= 1 THEN ROUND({column} * 100, 2) '
                 f'ELSE ROUND({column}, 2) END)')
 
+    def _learned_revenue_coa(self, key):
+        """Das Erlöskonto, auf das die App zuletzt eine Zahlung zu einer Rechnung mit diesem
+        Steuersatz-Schlüssel (``_revenue_rate_key``) gebucht hat – oder ``None``.
+
+        Gelesen wird NUR aus den Sätzen, die die App selbst für eine Zuordnung angelegt hat
+        (Marke ``PAYMENT_MARK``): beim Satz „Wartekonto an Erlöskonto“ das Gegenkonto, beim
+        Einzelsatz „Erlöskonto an Bank“ das Konto; der jüngste Satz gewinnt. Das Konto der
+        Bankzeile oder der Sätze eines Imports sagt nichts über das Erlöskonto (es kann ein
+        Bankkonto, ein Aufwandskonto oder das Wartekonto sein) und zählt nicht. Das Ergebnis gilt
+        nur, wenn es ein Erlöskonto ist (``is_income_account``: 4000–4999 ohne Wartekonten)."""
+        waiting = tuple(number for number, _name in self.OPEN_REVENUE_ACCOUNTS.values())
+        waiting_marks = ','.join('?' * len(waiting))
+        conn = self._get_connection()
+        try:
+            row = conn.execute(f'''
+                SELECT cand.ID, cand.AccountNumber
+                FROM Bookings k
+                JOIN Invoices i ON i.InvoiceNumber = k.DocumentNumber
+                LEFT JOIN ChartOfAccounts own ON own.ID = k.COA_ID
+                JOIN ChartOfAccounts cand ON cand.ID = CASE
+                    WHEN own.AccountNumber IN ({waiting_marks}) THEN k.CounterCOA_ID
+                    ELSE k.COA_ID END
+                WHERE k.Status = ? AND k.ParentBooking_ID IS NOT NULL
+                  AND (i.DocumentType = 'invoice' OR i.DocumentType IS NULL)
+                  AND COALESCE(k.CounterCOA_ID, -1) NOT IN
+                      (SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?)
+                  AND {self._revenue_rate_key_sql('i.TaxRate')} = ?
+                ORDER BY k.ID DESC LIMIT 1
+            ''', (*waiting, PAYMENT_MARK, self.DEBTOR_ACCOUNT_NUMBER, key)).fetchone()
+        finally:
+            conn.close()
+        return row[0] if row and is_income_account(row[1]) else None
+
     def resolve_revenue_coa(self, tax_rate, create=True):
         """Passendes Erlöskonto für einen Rechnungs-Steuersatz ermitteln.
 
-        Lernt zuerst aus der eigenen Historie: das zuletzt bei einer
-        Zahlungs-Zuordnung verwendete Erlöskonto einer Rechnung mit gleichem
-        Steuersatz (0% und §19-Sentinel -1 bilden einen gemeinsamen
-        "steuerfrei"-Topf). Fallback auf die Standardkonten: 19% → 4400,
-        7% → 4300, steuerfrei/§19 → 4185 (DATEV: "Erlöse als Kleinunternehmer
-        nach § 19 Abs. 1 UStG"; wird in älteren DBs ohne dieses Seed-Konto
-        automatisch nachgelegt, Vorbild ensure_kasse_exists).
+        Lernt zuerst aus der eigenen Historie (``_learned_revenue_coa``): das zuletzt von der
+        App bei einer Zahlungs-Zuordnung gebuchte Erlöskonto einer Rechnung mit gleichem
+        Steuersatz (0% und §19-Sentinel -1 bilden einen gemeinsamen "steuerfrei"-Topf).
+        Fallback auf die Standardkonten: 19% → 4400, 7% → 4300, steuerfrei/§19 → 4185
+        (DATEV: "Erlöse als Kleinunternehmer nach § 19 Abs. 1 UStG"; wird in älteren DBs ohne
+        dieses Seed-Konto automatisch nachgelegt, Vorbild ensure_kasse_exists).
         tax_rate wie in Invoices.TaxRate (0.19, 19, 0 oder -1).
 
         Für andere Sätze (z. B. 5 %, 16 %) gibt es ohne Historie kein Konto: ``None``. Dann
-        wählt der Nutzer eines (``assign_invoice_payment(revenue_coa_id=…)``), und die
-        Zuordnung merkt es sich über das Erlöskonto der Bankbewegung – geraten wird nicht.
+        wählt der Nutzer eines (``assign_invoice_payment(revenue_coa_id=…)``); die Sätze der
+        Zuordnung tragen es, und die nächste Rechnung mit diesem Satz übernimmt es – geraten
+        wird nie.
 
         ``create=False`` schlägt nur nach und legt nichts an (für reine Anzeigen):
         fehlt das Standardkonto, ist das Ergebnis ``None``.
         """
         key = self._revenue_rate_key(tax_rate)
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute(f'''
-            SELECT b.COA_ID
-            FROM InvoicePayments ip
-            JOIN Bookings b ON b.ID = ip.BookingID
-            JOIN Invoices i ON i.ID = ip.InvoiceID
-            WHERE b.COA_ID IS NOT NULL
-              AND {self._revenue_rate_key_sql('i.TaxRate')} = ?
-            ORDER BY ip.ID DESC LIMIT 1
-        ''', (key,))
-        row = cursor.fetchone()
-        conn.close()
-        if row:
-            return row[0]
+        learned = self._learned_revenue_coa(key)
+        if learned is not None:
+            return learned
         if key == 19:
             return self.get_coa_id_by_account_number(4400)
         if key == 7:
@@ -723,24 +745,25 @@ class InvoicesMixin:
     def get_receivable_booking(self, invoice_id):
         """Forderungsbuchung einer Rechnung oder None.
 
-        Erkannt über Beleg-Nr. + Debitorenkonto – dieselbe Klammer, die auch
-        Stufe 7 des Auto-Abgleichs benutzt. Ein eigenes Schema-Feld wäre dafür
-        zu viel: Rechnungsnummern sind eindeutig.
+        Erkannt über Beleg-Nr. + ``db.matching.receivable_condition`` (Debitoren 10000 im Soll,
+        kein Zahlungskonto) – dieselbe Bedingung wie überall, damit ein WISO-Storno
+        „10000 an 1810“ oder eine Erlösminderung „… an 10000“ mit der Rechnungsnummer nicht
+        als Forderung gilt. Ein eigenes Schema-Feld wäre dafür zu viel: Rechnungsnummern sind
+        eindeutig.
         """
         invoice = self.get_invoice_by_id(invoice_id)
         if not invoice:
             return None
-        debtor_coa = self.get_coa_id_by_account_number(self.DEBTOR_ACCOUNT_NUMBER)
-        if not debtor_coa:
-            return None
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT ID FROM Bookings WHERE DocumentNumber = ? AND COA_ID = ?"
-            " AND BookingType = 'entry' ORDER BY ID LIMIT 1",
-            (invoice[1], debtor_coa))
-        row = cursor.fetchone()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            receivable_sql, receivable_params = self._receivable_sql(cursor)
+            cursor.execute(
+                f"SELECT ID FROM Bookings WHERE DocumentNumber = ? AND BookingType = 'entry' "
+                f"AND {receivable_sql} ORDER BY ID LIMIT 1", [invoice[1], *receivable_params])
+            row = cursor.fetchone()
+        finally:
+            conn.close()
         return row[0] if row else None
 
     def ensure_receivable_booking(self, invoice_id):

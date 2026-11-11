@@ -245,14 +245,34 @@ kein Subagent darauf:
   in einer `BEGIN IMMEDIATE`-Transaktion (kein UNIQUE-Index); Konten, die `resolve_revenue_coa` anlegen
   könnte, werden vorher in eigenen Verbindungen aufgelöst – nie innerhalb. Nur Zahlungseingänge
   (Betrag > 0) auf versendete Rechnungen (`PAYABLE_STATUSES`), Bankkonto mit SKR-Nummer; frei ist
-  `Betrag − MAX(Zuordnungen, bankwirksame Sätze)` (`_free_minor_sql`, überall dieselbe Formel); die
-  Steuer eines Teils ist anteilig (Cent), der schließende Teil bekommt den Rest. Status und Rest
-  berechnet `next_payment_status` (nie zurück auf „abgeschlossen“, „storniert“ bleibt). **Die Forderung
-  (`10000 an Wartekonto`) ist nie Kind einer Bankbewegung:** `matching.receivable_condition` (Satz berührt
-  10000, keine Seite ein Zahlungskonto) schließt sie aus Auto-Abgleich und Editor-Kandidaten aus,
-  `delete_transaction` hängt sie ab statt sie zu löschen. Negative Zuordnungen kennt nur der
-  WISO-Import (`link_invoice_to_transaction`, mit Vorzeichen, ohne Sätze). `find_payment_inconsistencies`
-  prüft nur lesend (Seite *Verschiedenes*, Hinweis auf der Rechnungsseite); eine Reparatur gibt es nicht
+  `Betrag − MAX(Zuordnungen, bankwirksame Sätze)` (`_free_minor_sql`, überall dieselbe Formel). Der
+  Zuordnungsbetrag wird auf Cent gerundet (halb auf), bevor er gekappt wird; die Steuer eines Teils ist
+  anteilig (Cent), der schließende Teil bekommt den Rest der Rechnungssteuer abzüglich der Steuer der
+  anderen Zuordnungen (markierte Sätze: die gebuchte, sonst – Altbestand, WISO – die anteilige).
+  **Erlöskonto:** Es ergibt sich aus der Rechnung (`resolve_revenue_coa`) und wird NUR aus den markierten
+  Sätzen gelernt (Satz „Wartekonto an Erlöskonto“: Gegenkonto, Einzelsatz „Erlöskonto an Bank“: Konto;
+  der jüngste gewinnt) und gilt nur als Erlöskonto 4000–4999 ohne Wartekonten, sonst 4400/4300/4185. Das
+  Konto der Bankzeile (Anzeige-Backfill) und Sätze des WISO-Imports lehren nichts – es kann ein Bank-,
+  Aufwands- oder Wartekonto sein. Ist für den Satz (z. B. 5 %, 16 %) keines hinterlegt, wählt der Nutzer
+  es (`revenue_coa_id`): ein Erlöskonto, in der DB-Schicht geprüft, sonst Ablehnung;
+  `suggest_revenue_coa` ist nur die Vorauswahl, nie eine Entscheidung.
+  Status und Rest berechnet `next_payment_status` (nie zurück auf „abgeschlossen“, „storniert“
+  bleibt; „Rest unter einem Cent gilt als beglichen“ steht in `money.is_covered`).
+  **Die Forderung (`10000 an Wartekonto`) ist nie Kind einer Bankbewegung:** `matching.receivable_condition`
+  (10000 im SOLL – `COA` = 10000 bei Betrag > 0 oder Gegenkonto = 10000 bei Betrag < 0 – und keine Seite
+  ein Zahlungskonto) schließt sie aus Auto-Abgleich und Editor-Kandidaten aus, `delete_transaction` hängt
+  sie ab statt sie zu löschen. Was 10000 im Haben führt (Erlösminderung, Skonto, Forderungsverlust
+  „… an 10000“), ist keine Forderung und geht mit seiner Bewegung. Alle Stellen suchen die Forderung
+  über diese Bedingung (auch `assign_invoice_payment`, `get_receivable_booking`). Stufe 7 des
+  Auto-Abgleichs setzt sie erst auf `resolved`, wenn die Summe der Sätze „… an 10000“ mit gleicher
+  Beleg-Nr. den Forderungsbetrag erreicht; `unassign` setzt das zurück. Die Forderung geht mit der
+  letzten Zahlung, wenn der Status der Rechnung kein Forderungsstatus ist (`RECEIVABLE_STATUSES`, z. B.
+  storniert) – gleicher Endzustand, egal ob erst storniert oder erst entfernt wird.
+  Negative Zuordnungen kennt nur der WISO-Import (`link_invoice_to_transaction`, mit Vorzeichen, ohne
+  Sätze). `find_payment_inconsistencies` prüft nur lesend und linear im Bestand (Seite *Verschiedenes*:
+  nur auf Klick, `?check_payments=1`, nie beim Laden; Hinweis auf der Rechnungsseite); Zuordnungen auf
+  Nicht-Bankbewegungen oder mit `SourceGroup`-Sätzen (WISO) löst `no_settlement`/`transfer_mismatch`
+  nicht aus. Eine Reparatur gibt es nicht
 - Masken schreiben nur, was sie führen (`update_booking_fields`) – Gegenkonto,
   Kategorie und fremde Kontakte dürfen beim Speichern nicht verloren gehen
 

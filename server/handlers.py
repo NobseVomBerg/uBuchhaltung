@@ -20,6 +20,7 @@ from .richtext import sanitize_richtext as _sanitize_richtext
 from db import Database
 from db.core import fk_explained, ForeignKeyError
 from db.invoices import InvoiceCol
+from db.invoice_payments import RECEIVABLE_STATUSES
 from db.matching import is_bank_effective
 from db.accounts import DEFAULT_CASH_ACCOUNT
 from money import to_minor, from_minor, multiply, tax_from_net, tax_from_gross, round_minor, fmt_eur
@@ -520,6 +521,11 @@ def handle_add_transaction(db: Database, post_data):
     has_split_rows = 'split_amount' in post_data
 
     try:
+        # Der Betrag muss eine endliche Zahl unter einer Billion sein: nan, inf oder 1e30 ließen
+        # sich nicht speichern und kämen sonst als 500 mit dem Namen der Ausnahme zurück.
+        if _finite_number(amount, None) is None:
+            return 400, 'Der Betrag ist keine gültige Zahl.'
+
         # Convert IDs to int or None
         account_id = int(account_id) if account_id else None
         contact_id = int(contact_id) if contact_id else None
@@ -1777,21 +1783,17 @@ def _ensure_sent_documents(db, invoice_id, current_status, new_status):
     return None
 
 
-# Ab "versendet" ist die Rechnung ein offener Posten; davor (Entwurf,
-# finalisiert) und nach dem Storno nicht. Zustands- statt übergangsgesteuert,
-# damit auch Sprünge wie finalized → paid richtig landen.
-_RECEIVABLE_STATUSES = frozenset(
-    {'sent', 'partial_payment', 'overdue', 'paid'})
-
-
 def _sync_receivable_booking(db, invoice_id, status):
-    """Forderungsbuchung (Debitoren an Wartekonto) am Status ausrichten.
+    """Forderungsbuchung (Debitoren an Wartekonto) am Status ausrichten: ab „versendet“ gibt es
+    sie, davor und nach dem Storno nicht (``RECEIVABLE_STATUSES``). Nimmt eine Zuordnung die
+    letzte Zahlung einer Rechnung weg, richtet ``Database._after_payment_removed`` die
+    Forderung nach derselben Regel aus.
 
     Ein Fehler hier darf den Statuswechsel nicht kippen – die Buchung lässt
     sich jederzeit nachziehen, ein halb gesetzter Status nicht.
     """
     try:
-        if status in _RECEIVABLE_STATUSES:
+        if status in RECEIVABLE_STATUSES:
             db.ensure_receivable_booking(invoice_id)
         else:
             db.remove_receivable_booking(invoice_id)
@@ -1804,11 +1806,10 @@ def _backfill_booking_skr(db, booking_id, invoice, revenue_coa_id):
 
     Nur leere Felder werden gefüllt, nichts wird überschrieben: Erlöskonto (``revenue_coa_id``:
     das Konto, auf das die Zuordnung tatsächlich gebucht hat), Steuersatz/-betrag (enthaltene USt
-    des Buchungsbetrags), Kunde und Beleg-Nr. Das ist Anzeige – und die Quelle, aus der
-    ``resolve_revenue_coa`` das Erlöskonto je Steuersatz lernt: ein vom Nutzer gewähltes Konto
-    gilt so beim nächsten Mal als Vorgabe. Trägt die Bankzeile schon ein Konto, bleibt es – dann
-    lernt die App nichts. Die Buchungssätze der Zahlung legt ``Database.assign_invoice_payment``
-    an, nicht diese Funktion.
+    des Buchungsbetrags), Kunde und Beleg-Nr. Das ist reine Anzeige und speist nichts: Das
+    Erlöskonto je Steuersatz lernt ``resolve_revenue_coa`` allein aus den Buchungssätzen der
+    Zuordnung. Die Buchungssätze der Zahlung legt ``Database.assign_invoice_payment`` an, nicht
+    diese Funktion.
     """
     booking = db.get_booking_by_id(booking_id)
     if not booking:
@@ -1960,7 +1961,7 @@ def _invoice_is_frozen(invoice_id):
     if not invoice_id:
         return False
     row = Database().get_invoice_by_id(invoice_id)
-    return bool(row) and (row[40] == 'partial' or row[40] in _RECEIVABLE_STATUSES)
+    return bool(row) and (row[40] == 'partial' or row[40] in RECEIVABLE_STATUSES)
 
 
 def handle_invoice_save(post_body: bytes):
