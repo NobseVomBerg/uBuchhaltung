@@ -6,6 +6,8 @@ POST request handlers for form submissions
 """
 import os
 import json
+import math
+import sqlite3
 import datetime
 import time
 from urllib.parse import quote
@@ -14,8 +16,9 @@ import userctx
 from .pages import Header1, Header2, Header3, Footer
 from .import_preview import match_account
 from .period import parse_iso_date, valid_period
+from .richtext import sanitize_richtext as _sanitize_richtext
 from db import Database
-from db.core import fk_explained
+from db.core import fk_explained, ForeignKeyError
 from db.invoices import InvoiceCol
 from db.matching import is_bank_effective
 from db.accounts import DEFAULT_CASH_ACCOUNT
@@ -1472,12 +1475,34 @@ def handle_update_contact(db: Database, post_data):
         traceback.print_exc()
         return 500, f'Fehler beim Aktualisieren des Kontakts: {str(e)}'
 
+ARTICLE_NUMBER_ERROR = 'Preis und Steuersatz müssen endliche Zahlen sein.'
+
+
+def _finite_number(text, default):
+    """Zahl aus einem Formularfeld (leer: ``default``) – ``None``, wenn sie nicht lesbar oder nicht
+    endlich ist (``nan``, ``inf``) oder zu groß für einen Betrag: Das ließe sich nicht speichern."""
+    text = (text or '').strip()
+    if not text:
+        return default
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) and abs(value) < 1e12 else None
+
+
+def _article_error_location(message):
+    return f"/masterdata/articles?error={quote(message)}"
+
+
 def handle_add_article(db: Database, post_data):
     """Handle adding a new article"""
     name = post_data.get('name', [''])[0]
     unit = post_data.get('unit', ['Stk.'])[0]
-    unit_price = float(post_data.get('unit_price', ['0'])[0] or 0)
-    tax_rate = float(post_data.get('tax_rate', ['19'])[0] or 19)
+    unit_price = _finite_number(post_data.get('unit_price', ['0'])[0], 0.0)
+    tax_rate = _finite_number(post_data.get('tax_rate', ['19'])[0], 19.0)
+    if unit_price is None or tax_rate is None:
+        return 303, _article_error_location(ARTICLE_NUMBER_ERROR)
     description = post_data.get('description', [''])[0]
     active = 1 if 'active' in post_data else 0
     
@@ -1497,8 +1522,10 @@ def handle_update_article(db: Database, post_data):
     article_id = int(post_data.get('id', [0])[0])
     name = post_data.get('name', [''])[0]
     unit = post_data.get('unit', ['Stk.'])[0]
-    unit_price = float(post_data.get('unit_price', ['0'])[0] or 0)
-    tax_rate = float(post_data.get('tax_rate', ['19'])[0] or 19)
+    unit_price = _finite_number(post_data.get('unit_price', ['0'])[0], 0.0)
+    tax_rate = _finite_number(post_data.get('tax_rate', ['19'])[0], 19.0)
+    if unit_price is None or tax_rate is None:
+        return 303, _article_error_location(ARTICLE_NUMBER_ERROR)
     description = post_data.get('description', [''])[0]
     active = 1 if 'active' in post_data else 0
     
@@ -1561,15 +1588,52 @@ def handle_update_number_range(db: Database, post_data):
     return 303, "/masterdata/numberranges"
 
 
+class InvalidRequest(ValueError):
+    """Eine JSON-Anfrage lässt sich nicht lesen: kein gültiges JSON-Objekt, fehlende oder
+    unlesbare Pflichtfelder. ``server/app.py`` antwortet darauf mit 400 „Ungültige Anfrage.“."""
+
+
+def _json_request(post_body):
+    """Body einer JSON-Route als dict – sonst :class:`InvalidRequest`."""
+    try:
+        data = json.loads(post_body.decode('utf-8'))
+    except (ValueError, RecursionError):        # kaputtes JSON, kaputtes UTF-8, zu tief verschachtelt
+        raise InvalidRequest('kein gültiges JSON') from None
+    if not isinstance(data, dict):
+        raise InvalidRequest('kein JSON-Objekt')
+    return data
+
+
+_REQUIRED = object()
+
+
+def _json_id(data, key, missing=_REQUIRED):
+    """Ganzzahl (ID) aus einem JSON-Objekt. Fehlt das Feld, gilt ``missing`` – ohne Angabe ist es
+    eine :class:`InvalidRequest`, ebenso ein Wert, der keine Ganzzahl ist."""
+    value = data.get(key)
+    if value is None or value == '':
+        if missing is _REQUIRED:
+            raise InvalidRequest(f'{key} fehlt')
+        return missing
+    if isinstance(value, bool):
+        raise InvalidRequest(f'{key} ist keine Zahl')
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise InvalidRequest(f'{key} ist keine Zahl') from None
+
+
 def handle_update_invoice_status(post_body: bytes):
     """Update invoice status and increment number range if finalizing
 
     Returns tuple: (status_code, json_body)
     """
-    data = json.loads(post_body.decode('utf-8'))
-    invoice_id = int(data.get('invoice_id'))
+    data = _json_request(post_body)
+    invoice_id = _json_id(data, 'invoice_id')
     new_status = data.get('status')
-    
+    if not isinstance(new_status, str):
+        raise InvalidRequest('status fehlt')
+
     if not invoice_id or not new_status:
         return 400, '{"success": false, "error": "Fehlende Parameter"}'
     
@@ -1580,8 +1644,8 @@ def handle_update_invoice_status(post_body: bytes):
     if new_status not in valid_statuses:
         return 400, '{"success": false, "error": "Ung\u00fcltiger Status"}'
     
-    # Get current invoice
-    invoice = db.get_invoice_by_id(invoice_id)
+    # Nur Rechnungen: ein Angebot wird hier nie versendet (und bekommt keine Rechnungs-PDF)
+    invoice = db.get_document(invoice_id, 'invoice')
     if not invoice:
         return 404, '{"success": false, "error": "Rechnung nicht gefunden"}'
     
@@ -1829,9 +1893,9 @@ def handle_link_invoice_payment(post_body: bytes):
 
     Returns tuple: (status_code, message_or_path)
     """
-    data = json.loads(post_body.decode('utf-8'))
-    invoice_id = int(data.get('invoice_id') or 0)
-    transaction_id = int(data.get('transaction_id') or 0)
+    data = _json_request(post_body)
+    invoice_id = _json_id(data, 'invoice_id', missing=0)
+    transaction_id = _json_id(data, 'transaction_id', missing=0)
     amount_paid = data.get('amount_paid')
     if amount_paid in (None, ''):
         amount_paid = None
@@ -1857,8 +1921,8 @@ def handle_delete_invoice_payment(post_body: bytes):
 
     Returns tuple: (status_code, message)
     """
-    data = json.loads(post_body.decode('utf-8'))
-    payment_id = int(data.get('payment_id'))
+    data = _json_request(post_body)
+    payment_id = _json_id(data, 'payment_id')
 
     if not payment_id:
         return 400, "Missing payment_id"
@@ -1939,9 +2003,8 @@ def handle_invoice_save(post_body: bytes):
 
     Returns JSON response with invoice_id
     """
+    data = _json_request(post_body)         # kein gültiges Objekt: InvalidRequest → 400 (app.py)
     try:
-        data = json.loads(post_body.decode('utf-8'))
-        
         # Check if this is an update (invoiceId present) or new invoice
         invoice_id = data.get('invoiceId')
         is_update = invoice_id is not None
@@ -2116,11 +2179,12 @@ def handle_invoice_save(post_body: bytes):
                         'tax_category': 'S',
                         'tax_rate': item.get('taxRate', tax_rate)
                     }, tx=tx)
+        except DocumentNotFound as e:
+            return json.dumps({'success': False, 'error': str(e)}).encode()
         except Exception as e:
             import traceback
             traceback.print_exc()
-            return json.dumps({'success': False,
-                               'error': f'{e} – es wurde nichts gespeichert.'}).encode()
+            return json.dumps({'success': False, 'error': _save_error_text(e)}).encode()
 
         # Die Rechnung ist ab hier gespeichert (Commit oben). Scheitert das Fortschreiben des
         # Nummernkreises, bleibt die Antwort ein Erfolg und nennt nur den Hinweis – sonst legt
@@ -2140,7 +2204,45 @@ def handle_invoice_save(post_body: bytes):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return json.dumps({'success': False, 'error': str(e)}).encode()
+        return json.dumps({'success': False, 'error': _save_error_text(e)}).encode()
+
+
+class DocumentNotFound(LookupError):
+    """Das Aktualisieren trifft keinen Beleg des erwarteten Typs (Rechnung bzw. Angebot)."""
+
+
+_NOT_NULL_FIELDS = {
+    'InvoiceItems.Position': 'die Positionsnummer',
+    'InvoiceItems.Description': 'die Bezeichnung',
+    'InvoiceItems.Quantity': 'die Menge',
+    'InvoiceItems.PricePerUnit': 'der Einzelpreis',
+    'InvoiceItems.TotalNet': 'die Positionssumme',
+    'InvoiceItems.TaxRate': 'der Steuersatz',
+}
+
+
+def _save_error_text(exc):
+    """Fehlermeldung zum Speichern einer Rechnung oder eines Angebots im Klartext – ohne
+    SQL-Details und Python-Meldungen (die stehen im Server-Log, der Aufrufer druckt sie)."""
+    if isinstance(exc, DocumentNotFound):
+        return str(exc)
+    if isinstance(exc, ForeignKeyError):
+        return f'{exc} – es wurde nichts gespeichert.'
+    if isinstance(exc, sqlite3.IntegrityError):
+        detail = str(exc)
+        if detail.startswith('UNIQUE') and 'InvoiceNumber' in detail:
+            return 'Diese Nummer ist bereits vergeben.'
+        if detail.startswith('NOT NULL') and detail.rsplit(': ', 1)[-1] in _NOT_NULL_FIELDS:
+            reason = f'In einer Position fehlt {_NOT_NULL_FIELDS[detail.rsplit(": ", 1)[-1]]}.'
+        else:
+            reason = 'Eine Pflichtangabe fehlt oder ist ungültig.'
+    elif isinstance(exc, sqlite3.Error):
+        reason = 'Die Datenbank hat den Vorgang abgelehnt.'
+    elif isinstance(exc, (ArithmeticError, ValueError, TypeError, AttributeError, KeyError)):
+        reason = 'Beträge, Mengen oder Positionen sind ungültig.'
+    else:
+        reason = 'Unerwarteter Fehler (Einzelheiten im Server-Log).'
+    return f'Speichern fehlgeschlagen: {reason} – es wurde nichts gespeichert.'
 
 
 def _advance_invoice_number_range(db, invoice_number):
@@ -2166,7 +2268,10 @@ def _advance_invoice_number_range(db, invoice_number):
 
 def _save_invoice_update(tx, invoice_id, invoice_data):
     """Kopf einer bestehenden Rechnung überschreiben und ihre Positionen
-    entfernen – die neuen schreibt der Aufrufer in derselben Transaktion."""
+    entfernen – die neuen schreibt der Aufrufer in derselben Transaktion.
+
+    Trifft die ID keine Rechnung (es gibt sie nicht oder es ist ein Angebot), wird
+    :class:`DocumentNotFound` ausgelöst und die Transaktion zurückgerollt."""
     cursor = tx.conn.cursor()
     cursor.execute('DELETE FROM InvoiceItems WHERE InvoiceId = ?', (invoice_id,))
     refs = {'OwnCompanyId': invoice_data['own_company_id'],
@@ -2185,7 +2290,7 @@ def _save_invoice_update(tx, invoice_id, invoice_data):
                     BankAccountId=?, BankName=?, BankIBAN=?, BankBIC=?,
                     TaxCategory=?, TaxRate=?, SumNet=?, TaxAmount=?, SumGross=?, AmountDue=?,
                     Status=?
-                WHERE ID=?
+                WHERE ID=? AND COALESCE(DocumentType, 'invoice') = 'invoice'
             ''', (
                 invoice_data['invoice_number'], invoice_data['invoice_date'], invoice_data['own_company_id'],
                 invoice_data['seller_name'], invoice_data['seller_company'], invoice_data['seller_street'], invoice_data['seller_postal_code'],
@@ -2206,6 +2311,8 @@ def _save_invoice_update(tx, invoice_id, invoice_data):
                 invoice_data['status'],
                 invoice_id
             ))
+    if cursor.rowcount == 0:
+        raise DocumentNotFound('Rechnung nicht gefunden.')
 
 
 def handle_send_invoice_email(post_body: bytes):
@@ -2213,8 +2320,8 @@ def handle_send_invoice_email(post_body: bytes):
     
     Returns JSON response with success status
     """
-    data = json.loads(post_body.decode('utf-8'))
-    invoice_id = int(data.get('invoice_id'))
+    data = _json_request(post_body)
+    invoice_id = _json_id(data, 'invoice_id')
     recipient_email = data.get('recipient_email')
     recipient_name = data.get('recipient_name', '')
     message_text = data.get('message_text')
@@ -2223,7 +2330,7 @@ def handle_send_invoice_email(post_body: bytes):
         return json.dumps({'success': False, 'error': 'Fehlende Parameter'}).encode()
     
     db = Database()
-    invoice = db.get_invoice_by_id(invoice_id)
+    invoice = db.get_document(invoice_id, 'invoice')   # nur Rechnungen, kein Angebot
     
     if not invoice:
         return json.dumps({'success': False, 'error': 'Rechnung nicht gefunden'}).encode()
@@ -2427,7 +2534,7 @@ def handle_update_asset_category(db: Database, post_data: dict):
 
 # ─── (end of Asset-Handler) ───────────────────────────────────────────────────
 
-def handle_invoice_document_download(invoice_id: int, kind: str = 'pdf'):
+def handle_invoice_document_download(invoice_id: int, kind: str = 'pdf', doc_type: str = 'invoice'):
     """Abgelegtes Rechnungsdokument (PDF oder XRechnung) zum Download laden.
 
     Es wird ausschließlich die *gespeicherte* Datei ausgeliefert – nie neu
@@ -2437,6 +2544,8 @@ def handle_invoice_document_download(invoice_id: int, kind: str = 'pdf'):
     Args:
         invoice_id: ID der Rechnung bzw. des Angebots.
         kind: ``'pdf'`` oder ``'xml'``.
+        doc_type: Belegtyp der Route (``'invoice'`` oder ``'quote'``); die ID eines Belegs
+            der anderen Art liefert nichts aus.
 
     Returns:
         tuple: ``(bytes, dateiname, fehlertext)``; bei Erfolg ist der
@@ -2446,6 +2555,9 @@ def handle_invoice_document_download(invoice_id: int, kind: str = 'pdf'):
 
     db = Database()
     try:
+        if db.get_document(invoice_id, doc_type) is None:
+            return None, None, ('Angebot nicht gefunden.' if doc_type == 'quote'
+                                else 'Rechnung nicht gefunden.')
         return stored_invoice_document(db, invoice_id, kind)
     except Exception as e:
         import traceback
@@ -2475,32 +2587,17 @@ def handle_invoice_pdf_generate(invoice_id: int):
 
 # ── Angebote (Quotes) ─────────────────────────────────────────────────────────
 
-import re as _re_quote
 _QUOTE_STATUSES = {'draft', 'sent', 'accepted', 'rejected', 'converted'}
-_RICHTEXT_BLOCK_RE = _re_quote.compile(
-    r'<\s*(script|style)[^>]*>.*?<\s*/\s*\1\s*>', _re_quote.IGNORECASE | _re_quote.DOTALL)
-_RICHTEXT_ON_ATTR_RE = _re_quote.compile(r'\son\w+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)',
-                                         _re_quote.IGNORECASE)
-
-
-def _sanitize_richtext(html_text):
-    """Leichte Bereinigung des contenteditable-HTML (Phase 1, Single-User).
-
-    Entfernt <script>/<style>-Blöcke und on*=-Eventhandler. Erlaubtes Markup
-    (b/i/strong/em/p/br/ul/ol/li/div) bleibt erhalten – mehr braucht der
-    Phase-1-PDF-Setzer nicht.
-    """
-    if not html_text:
-        return None
-    cleaned = _RICHTEXT_BLOCK_RE.sub('', html_text)
-    cleaned = _RICHTEXT_ON_ATTR_RE.sub('', cleaned)
-    return cleaned.strip() or None
 
 
 def handle_quote_save(post_body: bytes):
-    """Angebot speichern/aktualisieren. Returns JSON (success, quote_id)."""
+    """Angebot speichern/aktualisieren. Returns JSON (success, quote_id).
+
+    Kopf und Positionen werden in EINER Transaktion geschrieben: scheitert ein Schritt (auch
+    eine unvollständige Position), bleibt nichts halb gespeichert zurück. Eine Aktualisierung
+    trifft nur ein Angebot – die ID einer Rechnung wird abgewiesen und nichts verändert."""
+    data = _json_request(post_body)         # kein gültiges Objekt: InvalidRequest → 400 (app.py)
     try:
-        data = json.loads(post_body.decode('utf-8'))
         quote_id = data.get('quoteId')
         is_update = quote_id is not None
 
@@ -2572,65 +2669,80 @@ def handle_quote_save(post_body: bytes):
             'closing_text': closing_text,
         }
 
-        if is_update:
-            conn = db._get_connection()
-            cursor = conn.cursor()
-            cursor.execute('DELETE FROM InvoiceItems WHERE InvoiceId = ?', (quote_id,))
-            cursor.execute('''
-                UPDATE Invoices SET
-                    InvoiceNumber=?, InvoiceDate=?, OwnCompanyId=?,
-                    SellerName=?, SellerCompany=?, SellerStreet=?, SellerPostalCode=?, SellerCity=?, SellerCountry=?,
-                    SellerVATID=?, SellerEmail=?, SellerPhone=?,
-                    CustomerId=?, BuyerName=?, BuyerCompany=?, BuyerStreet=?, BuyerPostalCode=?, BuyerCity=?, BuyerCountry=?, BuyerVATID=?,
-                    Currency=?, TaxCategory=?, TaxRate=?, SumNet=?, TaxAmount=?, SumGross=?, AmountDue=?,
-                    Status=?, DocumentType='quote', ValidUntil=?, IntroText=?, ClosingText=?
-                WHERE ID=?
-            ''', (
-                doc['invoice_number'], doc['invoice_date'], doc['own_company_id'],
-                doc['seller_name'], doc['seller_company'], doc['seller_street'], doc['seller_postal_code'], doc['seller_city'], doc['seller_country'],
-                doc['seller_vat_id'], doc['seller_email'], doc['seller_phone'],
-                doc['customer_id'], doc['buyer_name'], doc['buyer_company'], doc['buyer_street'], doc['buyer_postal_code'], doc['buyer_city'], doc['buyer_country'], doc['buyer_vat_id'],
-                doc['currency'], doc['tax_category'], doc['tax_rate'],
-                to_minor(doc['sum_net'] or 0), to_minor(doc['tax_amount'] or 0),
-                to_minor(doc['sum_gross'] or 0), to_minor(doc['amount_due'] or 0),
-                doc['status'], doc['valid_until'], doc['intro_text'], doc['closing_text'],
-                quote_id,
-            ))
-            conn.commit()
-            conn.close()
-        else:
-            quote_id = db.insert_invoice(doc)
+        try:
+            with db.transaction() as tx:
+                if is_update:
+                    _save_quote_update(tx, quote_id, doc)
+                else:
+                    quote_id = db.insert_invoice(doc, tx=tx)
 
-        for idx, item in enumerate(items):
-            db.insert_invoice_item({
-                'invoice_id': quote_id,
-                'position': item.get('position'),
-                'article_id': None,
-                'description': item.get('description'),
-                'quantity': item.get('quantity'),
-                'unit': item.get('unit', 'C62'),
-                'price_per_unit': item.get('unitPrice'),
-                'total_net': line_nets[idx],
-                'tax_category': 'S',
-                'tax_rate': item.get('taxRate', tax_rate),
-            })
+                for idx, item in enumerate(items):
+                    db.insert_invoice_item({
+                        'invoice_id': quote_id,
+                        'position': item.get('position'),
+                        'article_id': None,
+                        'description': item.get('description'),
+                        'quantity': item.get('quantity'),
+                        'unit': item.get('unit', 'C62'),
+                        'price_per_unit': item.get('unitPrice'),
+                        'total_net': line_nets[idx],
+                        'tax_category': 'S',
+                        'tax_rate': item.get('taxRate', tax_rate),
+                    }, tx=tx)
+        except DocumentNotFound as e:
+            return json.dumps({'success': False, 'error': str(e)}).encode()
 
         return json.dumps({'success': True, 'quote_id': quote_id}).encode()
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return json.dumps({'success': False, 'error': str(e)}).encode()
+        return json.dumps({'success': False, 'error': _save_error_text(e)}).encode()
+
+
+def _save_quote_update(tx, quote_id, doc):
+    """Kopf eines bestehenden Angebots überschreiben und seine Positionen entfernen – die neuen
+    schreibt der Aufrufer in derselben Transaktion. Trifft die ID kein Angebot (es gibt sie nicht
+    oder es ist eine Rechnung), wird :class:`DocumentNotFound` ausgelöst und zurückgerollt."""
+    cursor = tx.conn.cursor()
+    cursor.execute('DELETE FROM InvoiceItems WHERE InvoiceId = ?', (quote_id,))
+    refs = {'OwnCompanyId': doc['own_company_id'], 'CustomerId': doc['customer_id']}
+    with fk_explained(tx.conn, 'Invoices', refs):
+        cursor.execute('''
+            UPDATE Invoices SET
+                InvoiceNumber=?, InvoiceDate=?, OwnCompanyId=?,
+                SellerName=?, SellerCompany=?, SellerStreet=?, SellerPostalCode=?, SellerCity=?, SellerCountry=?,
+                SellerVATID=?, SellerEmail=?, SellerPhone=?,
+                CustomerId=?, BuyerName=?, BuyerCompany=?, BuyerStreet=?, BuyerPostalCode=?, BuyerCity=?, BuyerCountry=?, BuyerVATID=?,
+                Currency=?, TaxCategory=?, TaxRate=?, SumNet=?, TaxAmount=?, SumGross=?, AmountDue=?,
+                Status=?, ValidUntil=?, IntroText=?, ClosingText=?
+            WHERE ID=? AND DocumentType='quote'
+        ''', (
+            doc['invoice_number'], doc['invoice_date'], doc['own_company_id'],
+            doc['seller_name'], doc['seller_company'], doc['seller_street'], doc['seller_postal_code'], doc['seller_city'], doc['seller_country'],
+            doc['seller_vat_id'], doc['seller_email'], doc['seller_phone'],
+            doc['customer_id'], doc['buyer_name'], doc['buyer_company'], doc['buyer_street'], doc['buyer_postal_code'], doc['buyer_city'], doc['buyer_country'], doc['buyer_vat_id'],
+            doc['currency'], doc['tax_category'], doc['tax_rate'],
+            to_minor(doc['sum_net'] or 0), to_minor(doc['tax_amount'] or 0),
+            to_minor(doc['sum_gross'] or 0), to_minor(doc['amount_due'] or 0),
+            doc['status'], doc['valid_until'], doc['intro_text'], doc['closing_text'],
+            quote_id,
+        ))
+    if cursor.rowcount == 0:
+        raise DocumentNotFound('Angebot nicht gefunden.')
 
 
 def handle_update_quote_status(post_body: bytes):
-    """Angebots-Status setzen. Returns (status_code, json_body)."""
-    data = json.loads(post_body.decode('utf-8'))
-    quote_id = int(data.get('quote_id'))
+    """Angebots-Status setzen. Returns (status_code, json_body). Nur für Angebote: die ID
+    einer Rechnung ändert nichts (404)."""
+    data = _json_request(post_body)
+    quote_id = _json_id(data, 'quote_id')
     new_status = data.get('status')
+    if not isinstance(new_status, str):
+        raise InvalidRequest('status fehlt')
     if not quote_id or new_status not in _QUOTE_STATUSES:
         return 400, '{"success": false, "error": "Ungültiger Status"}'
     db = Database()
-    quote = db.get_invoice_by_id(quote_id)
+    quote = db.get_document(quote_id, 'quote')
     if not quote:
         return 404, '{"success": false, "error": "Angebot nicht gefunden"}'
     db.update_invoice_status(quote_id, new_status)

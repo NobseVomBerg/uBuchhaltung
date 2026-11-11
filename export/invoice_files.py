@@ -24,6 +24,7 @@ ausliefern oder löschen.
 """
 import os
 
+from db.invoices import document_type
 from .pdf_core import safe_filename_component
 
 # Spaltenindizes der Invoices-Zeile (``SELECT *``), siehe db/schema.py
@@ -35,7 +36,6 @@ _IDX_ROUTE_ID = 22
 _IDX_ORDER_NUMBER = 23
 _IDX_PDF_PATH = 41
 _IDX_XML_PATH = 42
-_IDX_DOCUMENT_TYPE = 45
 
 
 def _col(invoice, idx):
@@ -73,7 +73,7 @@ def invoice_file_path(invoice, extension: str) -> str:
 
 def is_quote(invoice) -> bool:
     """True, wenn die Zeile ein Angebot ist (``DocumentType = 'quote'``)."""
-    return _col(invoice, _IDX_DOCUMENT_TYPE) == 'quote'
+    return document_type(invoice) == 'quote'
 
 
 def documents_root(invoice=None) -> str:
@@ -159,8 +159,13 @@ def generate_invoice_documents(db, invoice_id: int, with_xml=None,
     result = {'pdf_path': None, 'pdf_filename': None,
               'xml_path': None, 'xml_filename': None, 'error': None}
 
-    current = db.get_invoice_by_id(invoice_id)
-    if (current and not overwrite_sent
+    # Nur Rechnungen: für ein Angebot (oder eine fehlende ID) wird nichts erzeugt und kein
+    # abgelegter Pfad überschrieben.
+    current = db.get_document(invoice_id, 'invoice')
+    if current is None:
+        result['error'] = 'Rechnung nicht gefunden.'
+        return result
+    if (not overwrite_sent
             and _col(current, _IDX_STATUS) in FROZEN_STATUSES):
         existing, existing_name, _ = stored_invoice_document(db, invoice_id, 'pdf')
         if existing:

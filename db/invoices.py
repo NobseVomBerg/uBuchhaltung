@@ -22,6 +22,20 @@ class InvoiceCol:
     DUE_DATE = 27        # PaymentDueDate
     SUM_GROSS = 38
     AMOUNT_DUE = 39
+    STATUS = 40
+    DOCUMENT_TYPE = 45   # 'invoice' | 'quote'
+
+
+def document_type(row):
+    """Belegtyp einer Invoices-Zeile: ``'invoice'`` oder ``'quote'``.
+
+    Fehlt die Spalte oder ist sie NULL (Altbestand), gilt die Zeile als Rechnung – wie in
+    ``fetch_invoices``. Rechnungen und Angebote teilen sich die Tabelle; jede Route, die einen
+    Beleg anhand einer ID liest oder verändert, prüft den Typ über diese Funktion bzw.
+    ``Database.get_document``."""
+    if row is not None and len(row) > InvoiceCol.DOCUMENT_TYPE:
+        return row[InvoiceCol.DOCUMENT_TYPE] or 'invoice'
+    return 'invoice'
 
 
 class InvoicesMixin:
@@ -63,6 +77,14 @@ class InvoicesMixin:
         row = cursor.fetchone()
         conn.close()
         return self._euro_row(row, 36, 37, 38, 39)  # SumNet/TaxAmount/SumGross/AmountDue
+    def get_document(self, doc_id, doc_type):
+        """Rechnung oder Angebot (``doc_type``: ``'invoice'`` | ``'quote'``) nach ID.
+
+        ``None``, wenn es die ID nicht gibt oder der Beleg von anderem Typ ist: Die
+        Rechnungs- und die Angebotsrouten holen ihren Beleg hierüber, damit keine Route
+        den Beleg der anderen Art liest oder verändert."""
+        row = self.get_invoice_by_id(doc_id)
+        return row if row is not None and document_type(row) == doc_type else None
     def get_invoice_items(self, invoice_id):
         """Get all items for an invoice"""
         conn = self._get_connection()

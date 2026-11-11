@@ -5,11 +5,12 @@
 """Invoice pages: list and create/edit – extracted from pages.py"""
 import datetime
 import json
-import os
 import html as _html
 from db import Database
+from db.invoices import InvoiceCol
 from money import fmt_eur
 from export.einvoice_model import unit_display
+from export.invoice_files import stored_invoice_path
 from .pages import (
     Header1, Header2, Header3, Footer, logo_url,
 )
@@ -88,9 +89,10 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
     # Apply additional filters in Python
     if search_query:
         search_lower = search_query.lower()
-        invoices = [inv for inv in invoices 
-                   if search_lower in str(inv[1]).lower()  # InvoiceNumber
-                   or search_lower in str(inv[12]).lower()]  # BuyerName
+        invoices = [inv for inv in invoices
+                   if search_lower in str(inv[InvoiceCol.NUMBER] or '').lower()
+                   or search_lower in str(inv[InvoiceCol.BUYER_COMPANY] or '').lower()
+                   or search_lower in str(inv[InvoiceCol.BUYER_NAME] or '').lower()]
     
     if date_from:
         invoices = [inv for inv in invoices if inv[2] >= date_from]  # InvoiceDate
@@ -167,31 +169,30 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
             # invoice: ID=0, InvoiceNumber=1, InvoiceDate=2, OwnCompanyId=3, SellerName=4, SellerCompany=5, ..., CustomerId=13, BuyerName=14, BuyerCompany=15, ..., TaxRate=35, SumNet=36, TaxAmount=37, SumGross=38, AmountDue=39, Status=40, PDFPath=41
             inv_id = invoice[0]
             inv_number = _html.escape(str(invoice[1] or ''))
-            inv_date = invoice[2]
-            buyer_name = _html.escape(str(invoice[14] or ''))  # BuyerName is now at index 14 (was 13)
+            inv_date = _html.escape(str(invoice[2] or ''))
+            buyer_name = _html.escape(str(invoice[14] or '')[:30])  # BuyerName is now at index 14 (was 13)
             sum_net = invoice[36]  # SumNet is at index 36 (was 34)
             sum_gross = invoice[38]  # SumGross is at index 38 (was 36)
             status = normalize_status(invoice[40])  # Status is at index 40 (was 38)
-            pdf_path = invoice[41] if len(invoice) > 41 else None  # PDFPath is at index 41 (was 39)
             
             # Status color and label from shared module constants
             status_color = INVOICE_STATUS_COLORS.get(status, '#888')
-            status_label = INVOICE_STATUS_LABELS.get(status, status)
+            status_label = _html.escape(str(INVOICE_STATUS_LABELS.get(status, status)))
             
             s+= f"<tr>"
             s+= f"<td>{inv_number}</td>"
             s+= f"<td>{inv_date}</td>"
-            s+= f"<td>{buyer_name[:30]}</td>"
+            s+= f"<td>{buyer_name}</td>"
             s+= f"<td style='text-align: right;'>{fmt_eur(sum_net)}</td>"
             s+= f"<td style='text-align: right;'><strong>{fmt_eur(sum_gross)}</strong></td>"
             s+= f"<td style='color: {status_color};'><strong>{status_label}</strong></td>"
             action_icon  = '&#9998;'    if status == 'draft' else '&#128065;'
             action_title = 'Bearbeiten' if status == 'draft' else 'Ansehen'
             s+= f"<td>"
-            # PDF-Symbol laedt nur herunter, was abgelegt ist (todo #3)
-            xml_path = invoice[42] if len(invoice) > 42 else None
-            has_pdf = "true" if (pdf_path and os.path.exists(pdf_path)) else "false"
-            has_xml = "true" if (xml_path and os.path.exists(xml_path)) else "false"
+            # PDF-Symbol laedt nur herunter, was abgelegt ist (todo #3) – gefragt wird dasselbe
+            # wie beim Download (geprüfter Pfad mit Fallback auf das Namensschema)
+            has_pdf = "true" if stored_invoice_path(db, inv_id, 'pdf')[0] else "false"
+            has_xml = "true" if stored_invoice_path(db, inv_id, 'xml')[0] else "false"
             pdf_title = 'PDF herunterladen' if has_pdf == "true" else 'Kein PDF vorhanden'
             s+= (f'<a href="javascript:void(0);" onclick="downloadInvoiceDocs({inv_id}, '
                  f'{has_pdf}, {has_xml})" class="action-icon" title="{pdf_title}">&#128196;</a> ')
@@ -265,7 +266,9 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None):
     is_copy = bool(copy_from) and not invoice_id
     source_id = invoice_id or (copy_from if is_copy else None)
     if source_id:
-        existing_invoice = db.get_invoice_by_id(source_id)
+        # Nur Rechnungen: die ID eines Angebots zeigt hier kein fremdes Dokument im falschen
+        # Formular, sondern das leere Formular für eine neue Rechnung
+        existing_invoice = db.get_document(source_id, 'invoice')
         if existing_invoice:
             existing_items = db.get_invoice_items(source_id)
             # Zahlungen gehören zur Quellrechnung und werden nicht mitkopiert
@@ -300,15 +303,13 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None):
     if existing_invoice and not is_copy:
         # Editing existing invoice - use existing data
         # existing_invoice structure: ID=0, InvoiceNumber=1, InvoiceDate=2, OwnCompanyId=3, SellerName=4, SellerCompany=5, ..., CustomerId=13, BuyerName=14, BuyerCompany=15, ..., Status=40, PDFPath=41
-        invoice_number = _html.escape(str(existing_invoice[1] or ''))
+        invoice_number = str(existing_invoice[1] or '')
         invoice_date = existing_invoice[2]
         selected_own_company_id = existing_invoice[3]
         selected_customer_id = existing_invoice[13]  # CustomerId is now at index 13 (was 12)
         invoice_status = normalize_status(existing_invoice[40])  # Status at index 40
-        pdf_path = existing_invoice[41] if len(existing_invoice) > 41 else None  # PDFPath is now at index 41 (was 39)
-        xml_path = existing_invoice[42] if len(existing_invoice) > 42 else None  # XMLPath at index 42
         due_date_value = existing_invoice[27] if len(existing_invoice) > 27 else None
-        page_title = f"Rechnung {invoice_number} bearbeiten"
+        page_title = f"Rechnung {_html.escape(invoice_number)} bearbeiten"
         is_edit_mode = True
     else:
         # Creating new invoice - generate next number
@@ -340,8 +341,6 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None):
                                    else (own_contact[0] if own_contact else None))
         selected_customer_id = existing_invoice[13] if is_copy else None
         invoice_status = 'draft'
-        pdf_path = None
-        xml_path = None
         # Fälligkeitsdatum der Quelle ist verbraucht – wird aus dem neuen
         # Rechnungsdatum und dem Zahlungsziel neu berechnet
         due_date_value = None
@@ -351,20 +350,21 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None):
             page_title = "Neue Rechnung erstellen"
         is_edit_mode = False
     
-    s = f'<input type="hidden" id="invoice_id" value="{invoice_id or ""}">'
+    # Die ID gehört nur in den Bearbeiten-Modus: ein unbekannter oder fremder Beleg (Angebot)
+    # ergibt ein leeres Formular, das beim Speichern eine neue Rechnung anlegt
+    s = f'<input type="hidden" id="invoice_id" value="{invoice_id if is_edit_mode else ""}">'
     s += f'<input type="hidden" id="is_edit_mode" value="{str(is_edit_mode).lower()}">'
-    s += f'<input type="hidden" id="invoice_status_value" value="{invoice_status}">'
-    # Check if PDF/XML actually exist in filesystem
-    import os
-    pdf_file_exists = bool(pdf_path and os.path.exists(pdf_path))
-    xml_file_exists = bool(xml_path and os.path.exists(xml_path))
+    s += f'<input type="hidden" id="invoice_status_value" value="{_html.escape(str(invoice_status))}">'
+    # Check if PDF/XML actually exist – dieselbe Frage wie beim Download (geprüfter Pfad mit Fallback)
+    pdf_file_exists = bool(is_edit_mode and stored_invoice_path(db, invoice_id, 'pdf')[0])
+    xml_file_exists = bool(is_edit_mode and stored_invoice_path(db, invoice_id, 'xml')[0])
     s += f'<input type="hidden" id="pdf_exists" value="{str(pdf_file_exists).lower()}">'
     s += f'<input type="hidden" id="xml_exists" value="{str(xml_file_exists).lower()}">'
     s += '<div id="invoice_msg" class="no-pdf" style="display:none; margin-bottom:10px;"></div>'
     if is_edit_mode:
         payment_count = len(existing_payments)
         status_color  = INVOICE_STATUS_COLORS.get(invoice_status, '#888')
-        status_label  = INVOICE_STATUS_LABELS.get(invoice_status, invoice_status)
+        status_label  = _html.escape(str(INVOICE_STATUS_LABELS.get(invoice_status, invoice_status)))
         status_options_html = ''.join(
             '<option value="{k}"{sel}{dis}>{v}</option>'.format(
                 k=k, v=v,
@@ -455,7 +455,7 @@ function copyInvoiceAsNew(invId) {{
             <div class="invoice-meta">
                 <table class="invoice-meta-table">
                     <tr><td>Rechnungsdatum:</td><td><input type="date" id="invoice_date" value="'''
-    s += invoice_date if invoice_date else ''
+    s += _html.escape(str(invoice_date)) if invoice_date else ''
     s += '''" style="width: 150px;"></td></tr>
     '''
     # Leistungsdatum direkt unter dem Rechnungsdatum: die beiden Daten gehören
@@ -463,7 +463,7 @@ function copyInvoiceAsNew(invId) {{
     _dd = existing_invoice[25] if existing_invoice and len(existing_invoice) > 25 and existing_invoice[25] else ''
     s += ('<tr><td title="Datum der Lieferung/Leistung bzw. Leistungszeitraum (Pflichtangabe nach § 14 UStG)">Leistungsdatum:</td>'
           f'<td><input type="date" id="delivery_date" required value="{_html.escape(str(_dd))}" style="width: 150px;"></td></tr>')
-    s += f'<tr><td>Rechnungs-Nr.:</td><td><input type="text" id="invoice_number" value="{invoice_number}" style="width: 150px;"></td></tr>'
+    s += f'<tr><td>Rechnungs-Nr.:</td><td><input type="text" id="invoice_number" value="{_html.escape(invoice_number)}" style="width: 150px;"></td></tr>'
     s += '''
                     <tr><td>Kunden-Nr.:</td><td><input type="text" id="customer_number" readonly style="width: 150px; background-color: #f0f0f0;"></td></tr>
                 </table>
@@ -532,10 +532,12 @@ function copyInvoiceAsNew(invId) {{
     if existing_items:
         for idx, item in enumerate(existing_items, 1):
             # item: ID=0, InvoiceId=1, Position=2, ArticleId=3, Description=4, Quantity=5, Unit=6, PricePerUnit=7, TotalNet=8, TaxCategory=9, TaxRate=10
-            quantity = item[5]
-            unit = unit_display(item[6])
-            description = item[4] or ''
-            price = item[7]
+            # Alles aus der Datenbank steht maskiert im Attribut: ein " im Text (Monitor 27")
+            # schnitte ihn sonst ab, und der Rest ginge beim Speichern verloren
+            quantity = _html.escape(str(item[5]))
+            unit = _html.escape(str(unit_display(item[6])))
+            description = _html.escape(str(item[4] or ''))
+            price = _html.escape(str(item[7]))
             total = item[8]
             s += f'''
                 <tr class="invoice-item-row" data-row="{idx}">
@@ -679,7 +681,7 @@ function copyInvoiceAsNew(invId) {{
                     <td style="padding: 8px; width: 200px; vertical-align: top;"><strong>Bestellnummer:</strong></td>
                     <td style="padding: 8px;">
                         <input type="text" id="order_number" style="width: 300px;" placeholder="z.B. PO-2026-12345" value="'''
-    s += existing_invoice[23] if existing_invoice and len(existing_invoice) > 23 and existing_invoice[23] else ''  # OrderNumber is now at index 23 (was 21)
+    s += _html.escape(str(existing_invoice[23])) if existing_invoice and len(existing_invoice) > 23 and existing_invoice[23] else ''  # OrderNumber is now at index 23 (was 21)
     s += '''">
                         <br><small style="color: #666;">Bestellnummer des Kunden (falls vorhanden)</small>
                     </td>
@@ -688,7 +690,7 @@ function copyInvoiceAsNew(invId) {{
                     <td style="padding: 8px; vertical-align: top;"><strong>Leitweg-ID:</strong></td>
                     <td style="padding: 8px;">
                         <input type="text" id="buyer_route_id" style="width: 300px;" placeholder="z.B. 991-ABCDE-12" readonly value="'''
-    s += existing_invoice[22] if existing_invoice and len(existing_invoice) > 22 and existing_invoice[22] else ''  # BuyerRouteID is now at index 22 (was 20)
+    s += _html.escape(str(existing_invoice[22])) if existing_invoice and len(existing_invoice) > 22 and existing_invoice[22] else ''  # BuyerRouteID is now at index 22 (was 20)
     s += '''">
                         <br><small style="color: #666;">Wird automatisch vom Kunden übernommen (nur bei B2G-Rechnungen erforderlich)</small>
                     </td>
@@ -738,7 +740,7 @@ function copyInvoiceAsNew(invId) {{
                     <td style="padding: 8px; vertical-align: top;"><strong>Fälligkeitsdatum:</strong></td>
                     <td style="padding: 8px;">
                         <input type="date" id="payment_due_date" style="width: 200px;" value="'''
-    s += due_date_value or ''  # PaymentDueDate (bei einer Kopie leer)
+    s += _html.escape(str(due_date_value or ''))  # PaymentDueDate (bei einer Kopie leer)
     s += '''">
                         <br><small style="color: #666;">Wird automatisch berechnet oder kann manuell festgelegt werden</small>
                     </td>
@@ -747,11 +749,11 @@ function copyInvoiceAsNew(invId) {{
                     <td style="padding: 8px; vertical-align: top;"><strong>Skonto:</strong></td>
                     <td style="padding: 8px;">
                         <input type="number" id="discount_percentage" min="0" max="100" step="0.1" style="width: 80px;" placeholder="z.B. 2" value="'''
-    s += str(existing_invoice[29]) if existing_invoice and len(existing_invoice) > 29 and existing_invoice[29] else ''  # SkontoPercent is now at index 29 (was 27)
+    s += _html.escape(str(existing_invoice[29])) if existing_invoice and len(existing_invoice) > 29 and existing_invoice[29] else ''  # SkontoPercent is now at index 29 (was 27)
     s += '''"> %
                         bei Zahlung innerhalb von
                         <input type="number" id="discount_days" min="0" style="width: 80px;" placeholder="z.B. 7" value="'''
-    s += str(existing_invoice[28]) if existing_invoice and len(existing_invoice) > 28 and existing_invoice[28] else ''  # SkontoDays is now at index 28 (was 26)
+    s += _html.escape(str(existing_invoice[28])) if existing_invoice and len(existing_invoice) > 28 and existing_invoice[28] else ''  # SkontoDays is now at index 28 (was 26)
     s += '''"> Tagen
                         <br><small style="color: #666;">Skonto-Abzug bei frühzeitiger Zahlung (optional)</small>
                     </td>
@@ -1043,7 +1045,8 @@ function copyInvoiceAsNew(invId) {{
         // Initial due date calculation
         updatePaymentDueDate();
         
-        // Artikel-Combobox
+        // Artikel-Combobox. Name und Einheit der Artikel stammen aus den Stammdaten: Sie kommen
+        // als DOM-Knoten (textContent) in die Seite, nie als Markup.
         function filterArticles(query) {
             const dropdown = document.getElementById('articleDropdown');
             const q = query.toLowerCase();
@@ -1051,12 +1054,20 @@ function copyInvoiceAsNew(invId) {{
                 !q || a.name.toLowerCase().includes(q)
             );
             if (!entries.length) { dropdown.style.display = 'none'; return; }
-            dropdown.innerHTML = entries.map(([id, a]) =>
-                '<div class="article-option" onmousedown="selectArticle(' + id + ')">' +
-                '<strong>' + a.name + '</strong>' +
-                '<span class="article-option-meta">' + a.unit + ' · ' + fmtDe(a.price) + ' € · ' + a.taxRate + '%</span>' +
-                '</div>'
-            ).join('');
+            dropdown.textContent = '';
+            entries.forEach(([id, a]) => {
+                const option = document.createElement('div');
+                option.className = 'article-option';
+                option.addEventListener('mousedown', () => selectArticle(id));
+                const name = document.createElement('strong');
+                name.textContent = a.name;
+                const meta = document.createElement('span');
+                meta.className = 'article-option-meta';
+                meta.textContent = a.unit + ' · ' + fmtDe(a.price) + ' € · ' + a.taxRate + '%';
+                option.appendChild(name);
+                option.appendChild(meta);
+                dropdown.appendChild(option);
+            });
             dropdown.style.display = 'block';
         }
         function selectArticle(articleId) {
@@ -1099,19 +1110,22 @@ function copyInvoiceAsNew(invId) {{
             newRow.className = 'invoice-item-row';
             newRow.setAttribute('data-row', rowCounter);
             newRow.setAttribute('data-article-id', articleId);
-            
-            const displayName = article.description ? article.name + ' - ' + article.description : article.name;
-            const safeName = displayName.replace(/"/g, '&quot;');
 
+            // Das Gerüst enthält keine Artikeldaten; Einheit, Text und Preis kommen als Wert in
+            // die Felder (in das Markup eingesetzt, bräche ein " im Namen aus dem Attribut)
             newRow.innerHTML = `
                 <td>${rowCounter}</td>
                 <td><input type="number" class="item-quantity" value="1" min="0" step="0.01" style="width: 60px;"></td>
-                <td><input type="text" class="item-unit" value="${article.unit}" style="width: 60px;"></td>
-                <td><input type="text" class="item-description" value="${safeName}" style="width: 100%;"></td>
-                <td><input type="number" class="item-price" value="${article.price}" min="0" step="0.01" style="width: 80px;"> €</td>
+                <td><input type="text" class="item-unit" style="width: 60px;"></td>
+                <td><input type="text" class="item-description" style="width: 100%;"></td>
+                <td><input type="number" class="item-price" value="0" min="0" step="0.01" style="width: 80px;"> €</td>
                 <td class="item-total" style="text-align: right;">0,00 €</td>
                 <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color: red;">✕</button></td>
             `;
+            newRow.querySelector('.item-unit').value = article.unit;
+            newRow.querySelector('.item-description').value =
+                article.description ? article.name + ' - ' + article.description : article.name;
+            newRow.querySelector('.item-price').value = article.price;
             tbody.appendChild(newRow);
             attachCalculationListeners(newRow);
             calculateTotals();
@@ -1445,8 +1459,8 @@ function copyInvoiceAsNew(invId) {{
             for p in existing_payments:
                 pid, _, booking_id, amount, pay_date, notes, booking_ref = p
                 s += f'''            <tr>
-                <td style="padding:6px 8px;">{pay_date or "–"}</td>
-                <td style="padding:6px 8px;">#{booking_id} {booking_ref}</td>
+                <td style="padding:6px 8px;">{_html.escape(str(pay_date or "–"))}</td>
+                <td style="padding:6px 8px;">#{booking_id} {_html.escape(str(booking_ref or ""))}</td>
                 <td style="padding:6px 8px; text-align:right;">{fmt_eur(amount)}</td>
                 <td style="padding:6px 8px; text-align:center;">
                     <a href="javascript:void(0);" onclick="deletePayment({pid})" style="color:#c00;">✕ Entfernen</a>
@@ -1503,7 +1517,7 @@ function copyInvoiceAsNew(invId) {{
                     default_alloc = min(open_due, b_free)
                     match_mark = ' ✓' if b_free == open_due else ''
                     s += f'''            <tr>
-                <td style="padding:6px 8px;">{b_date or "–"}</td>
+                <td style="padding:6px 8px;">{_html.escape(str(b_date or "–"))}</td>
                 <td style="padding:6px 8px;">{_html.escape(str(b_recipient or ""))}</td>
                 <td style="padding:6px 8px; text-align:right;">{fmt_eur(b_amount)}</td>
                 <td style="padding:6px 8px; text-align:right;">{fmt_eur(b_free)}{match_mark}</td>

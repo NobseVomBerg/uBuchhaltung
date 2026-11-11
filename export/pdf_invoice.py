@@ -32,9 +32,10 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     """PDF für eine bestehende Rechnung erzeugen.
 
     Returns:
-        tuple: (pdf_bytes, pdf_path) oder (None, None), falls Rechnung/Positionen fehlen.
+        tuple: (pdf_bytes, pdf_path) oder (None, None), falls Rechnung/Positionen fehlen
+        oder die ID zu einem Angebot gehört (dessen PDFPath bleibt unberührt).
     """
-    invoice = db.get_invoice_by_id(invoice_id)
+    invoice = db.get_document(invoice_id, 'invoice')
     if not invoice:
         print(f"Invoice {invoice_id} not found")
         return None, None
