@@ -7,6 +7,7 @@ POST request handlers for form submissions
 import os
 import json
 import datetime
+import time
 from urllib.parse import quote
 import auth
 import userctx
@@ -16,6 +17,7 @@ from .period import parse_iso_date, valid_period
 from db import Database
 from db.core import fk_explained
 from db.matching import is_bank_effective
+from db.accounts import DEFAULT_CASH_ACCOUNT
 from money import to_minor, from_minor, multiply, tax_from_net, round_minor, fmt_eur
 from decimal import Decimal
 
@@ -728,6 +730,24 @@ def handle_update_bankaccount(db: Database, post_data):
     bank_name = post_data.get("bank_name", [""])[0]
     skr_raw = post_data.get("skr_account", [""])[0]
     skr_account = int(skr_raw) if skr_raw.strip() else None
+    current = db.get_account_by_id(account_id)
+    old_skr = current[7] if current else None
+    if skr_account != old_skr:
+        # Ob ein Buchungssatz eine Zahlung ist und in welche Richtung, lesen EÜR und
+        # DATEV-Export daran ab, welche Konten gerade Geldkonten sind – das Vorzeichen
+        # stammt aber vom Zeitpunkt der Buchung bzw. des Imports. Hängen schon Sätze am
+        # alten oder am neuen Konto, würde die Umstellung sie umdeuten (Ausgabe ↔ Einnahme).
+        affected = db.count_entries_on_account_numbers([old_skr, skr_account])
+        if affected:
+            msg = (f'SKR-Konto nicht geändert: {affected} Buchungssätze führen das bisherige '
+                   f'oder das neue Konto. Die Umstellung würde sie anders lesen als gebucht '
+                   f'(Einnahme statt Ausgabe). Das Konto lässt sich nur umstellen, solange '
+                   f'keine Buchungen daran hängen – z. B. vor dem ersten Import.')
+            return 303, f"/masterdata/bankaccounts/edit?id={account_id}&error={quote(msg)}"
+    if skr_account == DEFAULT_CASH_ACCOUNT:
+        # Ältere Datenbanken kennen das Kassenkonto 1600 noch nicht – ohne das Konto im
+        # Kontenrahmen bliebe die Umstellung einer Kasse auf 1600 wirkungslos.
+        db.ensure_cash_coa()
     db.update_account(account_id, name, holder, iban, bic, bank_name, skr_account=skr_account)
     return 303, "/masterdata/bankaccounts"
 
@@ -1108,14 +1128,45 @@ def _store_fdb_result(result):
 
 
 # ── SQL-Konsole ──────────────────────────────────────────────────────────────
-# PRAGMAs, die in der Konsole auch mit Argument/Wert erlaubt sind. Alle übrigen
-# lassen sich nur lesen: user_version, journal_mode, writable_schema usw.
-# greifen in Migration und Datensicherung ein.
+# PRAGMAs laufen in der Konsole nur per Positivliste, alles andere ist gesperrt:
+#  * _CONSOLE_PRAGMAS_WITH_ARG: auch mit Argument/Wert erlaubt (Abfragen, Prüfläufe,
+#    Verbindungseinstellungen),
+#  * _CONSOLE_PRAGMAS_READ: nur OHNE Argument erlaubt, dann fragen sie bloß ab.
+# Gesperrt sind damit user_version=…, journal_mode=…, writable_schema usw., die in
+# Migration und Datensicherung eingreifen, aber auch Aufrufe ohne Argument, die die
+# Datenbank verändern (optimize, incremental_vacuum, wal_checkpoint), und unbekannte
+# Namen. Die Tabellenfunktionen pragma_<name> meldet SQLite mit derselben Aktion
+# (SQLITE_PRAGMA, Name und Argument wie bei PRAGMA) – sie fallen unter dieselbe Regel.
 _CONSOLE_PRAGMAS_WITH_ARG = frozenset({
     'table_info', 'table_xinfo', 'table_list', 'index_list', 'index_info',
     'index_xinfo', 'foreign_key_list', 'foreign_key_check', 'integrity_check',
     'quick_check', 'foreign_keys', 'defer_foreign_keys', 'case_sensitive_like',
 })
+_CONSOLE_PRAGMAS_READ = frozenset({
+    'user_version', 'schema_version', 'application_id', 'data_version',
+    'journal_mode', 'synchronous', 'locking_mode', 'page_size', 'page_count',
+    'max_page_count', 'freelist_count', 'encoding', 'auto_vacuum', 'cache_size',
+    'busy_timeout', 'secure_delete', 'temp_store', 'recursive_triggers',
+    'database_list', 'collation_list', 'compile_options', 'function_list',
+    'module_list', 'pragma_list',
+})
+
+# Grenzen je Anfrage: Eine endlose rekursive CTE hielte sonst die Sperre auf der
+# Datenbank und einen Thread bis zum Neustart; zeroblob(1000000000) oder eine riesige
+# Ausgabe könnten den Prozess per Speichermangel beenden. Als Modulkonstanten, damit
+# Tests sie klein setzen können (handle_execute_sql liest sie bei jedem Aufruf).
+_CONSOLE_TIME_LIMIT_S = 60              # alle Befehle einer Anfrage zusammen, inkl. Lesen der Ergebnisse
+_CONSOLE_MAX_VALUE_BYTES = 2_000_000    # größter einzelner Wert (SQLITE_LIMIT_LENGTH, ab Python 3.11)
+_CONSOLE_MAX_COLUMNS = 250              # Spalten je Ergebnis/Tabelle (SQLITE_LIMIT_COLUMN, ab Python 3.11)
+_CONSOLE_MAX_OUTPUT_ROWS = 200_000      # Zeilen der Ausgabe je Anfrage (Kopfzeilen mitgezählt)
+_CONSOLE_MAX_OUTPUT_BYTES = 20_000_000  # UTF-8-Bytes der Ausgabe je Anfrage
+
+
+# SQL-Funktionen, die aus der Datenbank hinausführen. fts3_tokenizer gibt in SQLite-Builds
+# mit ENABLE_FTS3_TOKENIZER (Debian/Ubuntu, also auch das Docker-Image) Speicheradressen
+# preis und springt eine übergebene Adresse an – damit lässt sich der Server zum Absturz
+# bringen und fremder Code ausführen. load_extension lädt beliebige Bibliotheken.
+_CONSOLE_FUNCTIONS_DENIED = frozenset({'fts3_tokenizer', 'load_extension'})
 
 
 def _console_authorizer(action, arg1, arg2, dbname, source):
@@ -1123,19 +1174,51 @@ def _console_authorizer(action, arg1, arg2, dbname, source):
 
     ATTACH/DETACH würden andere Dateien öffnen (auth.db, Datenbanken anderer
     Nutzer); VACUUM (auch VACUUM INTO) läuft intern über ATTACH und ist damit
-    ebenfalls gesperrt. Diese Sperren nicht aufweichen.
+    ebenfalls gesperrt. PRAGMAs: siehe Positivlisten oben; gesperrte Funktionen:
+    _CONSOLE_FUNCTIONS_DENIED. Diese Sperren nicht aufweichen.
     """
     import sqlite3
     if action in (sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH):
         return sqlite3.SQLITE_DENY
-    if (action == sqlite3.SQLITE_PRAGMA and arg2 is not None
-            and (arg1 or '').lower() not in _CONSOLE_PRAGMAS_WITH_ARG):
+    if action == sqlite3.SQLITE_PRAGMA:
+        name = (arg1 or '').lower()
+        if name in _CONSOLE_PRAGMAS_WITH_ARG or (arg2 is None and name in _CONSOLE_PRAGMAS_READ):
+            return sqlite3.SQLITE_OK
+        return sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_FUNCTION and (arg2 or '').lower() in _CONSOLE_FUNCTIONS_DENIED:
         return sqlite3.SQLITE_DENY
     return sqlite3.SQLITE_OK
 
 
+def _console_cell(value):
+    """Ein Wert als Text für die Ausgabe. BLOBs erscheinen nur mit ihrer Größe – als Text
+    wären sie ein Mehrfaches so groß und für niemanden lesbar."""
+    if value is None:
+        return ''
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return f'<BLOB {len(value)} Bytes>'
+    return str(value)
+
+
+def _console_result_lines(cursor):
+    """Kopfzeile und Zeilen des aktuellen Ergebnisses als `;`-getrennter Text.
+
+    Zeile für Zeile gelesen, nie blockweise: So kann der Aufrufer an den Ausgabegrenzen
+    aufhören, bevor weitere (womöglich sehr große) Zeilen im Speicher liegen.
+    """
+    if cursor.description:
+        yield ';'.join(d[0] for d in cursor.description)
+    for row in cursor:
+        yield ';'.join(_console_cell(v) for v in row)
+
+
 def handle_execute_sql(db: Database, post_data):
-    """Handle SQL command execution – returns JSON with results."""
+    """Handle SQL command execution – returns JSON with results.
+
+    Je Anfrage gelten ein Zeitlimit (_CONSOLE_TIME_LIMIT_S) und Größengrenzen für Werte
+    und Ausgabe (_CONSOLE_MAX_*); wird das Zeitlimit überschritten, bricht die Anfrage
+    ab und wird zurückgerollt. Diese Grenzen nicht aufweichen.
+    """
     import sqlite3, json
     
     sql_commands = post_data.get("sql_commands", [""])[0]
@@ -1147,34 +1230,80 @@ def handle_execute_sql(db: Database, post_data):
     commands = [cmd.strip() for cmd in sql_commands.split(';') if cmd.strip()]
     
     output_lines = []
+    output_bytes = 0
+    output_truncated = False
     errors = []
     success_count = 0
-    
+    timed_out_at = None
+
     conn = sqlite3.connect(db.db_name)
     conn.set_authorizer(_console_authorizer)
+    if hasattr(conn, 'setlimit'):                   # ab Python 3.11
+        conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _CONSOLE_MAX_VALUE_BYTES)
+        # Python holt eine Ergebniszeile ganz, bevor die Ausgabegrenze prüfen kann: Erst
+        # Wertgröße × Spaltenzahl begrenzt, was eine einzelne Zeile an Speicher belegt.
+        conn.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, _CONSOLE_MAX_COLUMNS)
+    deadline = time.monotonic() + _CONSOLE_TIME_LIMIT_S
+    conn.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 10000)
     cursor = conn.cursor()
 
     try:
         for i, command in enumerate(commands, 1):
+            if time.monotonic() > deadline:
+                timed_out_at = i
+                break
             try:
                 cursor.execute(command)
                 success_count += 1
-                # SELECT-Ergebnis ausgeben
-                if command.lstrip().upper().startswith('SELECT'):
-                    col_names = [d[0] for d in cursor.description] if cursor.description else []
-                    if col_names:
-                        output_lines.append(';'.join(col_names))
-                    for row in cursor.fetchall():
-                        output_lines.append(';'.join(str(v) if v is not None else '' for v in row))
+                # SELECT-Ergebnis ausgeben – bis zu den Ausgabegrenzen, danach nur noch ausführen
+                if command.lstrip().upper().startswith('SELECT') and not output_truncated:
+                    for line in _console_result_lines(cursor):
+                        size = len(line.encode('utf-8')) + 1        # + Zeilenumbruch
+                        if (len(output_lines) >= _CONSOLE_MAX_OUTPUT_ROWS
+                                or output_bytes + size > _CONSOLE_MAX_OUTPUT_BYTES):
+                            output_truncated = True
+                            break
+                        output_lines.append(line)
+                        output_bytes += size
             except sqlite3.Error as e:
                 msg = str(e)
+                if (isinstance(e, sqlite3.OperationalError) and 'interrupted' in msg
+                        and time.monotonic() > deadline):
+                    # Vom Fortschrittshandler abgebrochen. Die Frist mitprüfen: Der Text
+                    # allein träfe auch „no such table: interrupted“.
+                    timed_out_at = i
+                    break
                 if 'not authorized' in msg or 'authorization denied' in msg:
-                    msg = ('nicht erlaubt – ATTACH, DETACH, VACUUM und das Setzen von '
-                           'PRAGMAs sind in der Konsole gesperrt')
+                    msg = ('nicht erlaubt – ATTACH, DETACH, VACUUM sowie verändernde oder '
+                           'unbekannte PRAGMAs sind in der Konsole gesperrt, ebenso die '
+                           'Funktionen fts3_tokenizer und load_extension')
                 errors.append(f"Befehl {i}: {msg}")
 
+        if timed_out_at is not None:
+            conn.rollback()
+            return json.dumps({
+                "success_count": 0,
+                "total": len(commands),
+                # Ehrlich bleiben: rollback() nimmt nur die offene Transaktion zurück. Die
+                # beginnt Python erst vor dem ersten INSERT/UPDATE/DELETE – DDL davor und
+                # alles vor einem ausdrücklichen COMMIT steht schon.
+                "errors": [f"Befehl {timed_out_at}: abgebrochen – Zeitlimit von "
+                           f"{_CONSOLE_TIME_LIMIT_S} s überschritten. Nicht festgeschriebene "
+                           "Änderungen dieser Anfrage wurden zurückgenommen. Was schon "
+                           "festgeschrieben war, bleibt bestehen: Befehle vor einem COMMIT und "
+                           "Strukturbefehle (CREATE, ALTER, DROP) vor der ersten Datenänderung."],
+                "output": ""
+            }, ensure_ascii=False)
+
         conn.commit()
-        
+        if output_truncated:
+            max_size = (f'{_CONSOLE_MAX_OUTPUT_BYTES // 1_000_000} MB'
+                        if _CONSOLE_MAX_OUTPUT_BYTES % 1_000_000 == 0
+                        else f'{_CONSOLE_MAX_OUTPUT_BYTES} Bytes')
+            output_lines.append(
+                f'… Ausgabe gekürzt (mehr als {_CONSOLE_MAX_OUTPUT_ROWS} Zeilen bzw. {max_size}) '
+                f'– bitte mit WHERE oder LIMIT eingrenzen')
+
         return json.dumps({
             "success_count": success_count,
             "total": len(commands),
@@ -2184,21 +2313,28 @@ def handle_update_asset(db: Database, post_data: dict):
 
 
 def handle_book_depreciation(db: Database, post_data: dict):
-    """AfA für ein Jahr buchen"""
+    """AfA für ein Jahr buchen: Umbuchung „Aufwand an Anlagekonto“ (kein Bankkonto).
+
+    ``coa_id`` ist das Aufwandskonto, ``asset_coa_id`` (optional) das Anlagekonto – ohne
+    Angabe gilt das der Anlage bzw. ihrer Kategorie. Lehnt die Datenbank ab (Jahr schon
+    gebucht, kein Anlagekonto), geht die Meldung als ``err`` an die Anlagenseite zurück."""
     asset_id    = int(post_data.get('asset_id', ['0'])[0])
     year        = int(post_data.get('year', ['0'])[0])
-    account_id  = int(post_data.get('account_id', ['0'])[0])
     coa_id      = int(post_data.get('coa_id', ['0'])[0])
+    asset_coa   = post_data.get('asset_coa_id', [''])[0].strip()
+    asset_coa_id = int(asset_coa) if asset_coa else None
     description = post_data.get('description', [''])[0].strip() or None
 
-    db.book_depreciation(
-        asset_id=asset_id,
-        year=year,
-        account_id=account_id,
-        coa_id_expense=coa_id,
-        coa_id_asset=coa_id,
-        description=description,
-    )
+    try:
+        db.book_depreciation(
+            asset_id=asset_id,
+            year=year,
+            coa_id_expense=coa_id,
+            coa_id_asset=asset_coa_id,
+            description=description,
+        )
+    except ValueError as exc:
+        return 303, f'/assets/view?id={asset_id}&err={quote(str(exc), safe="")}'
     return 303, f'/assets/view?id={asset_id}'
 
 
@@ -2207,6 +2343,9 @@ def handle_asset_sale(db: Database, post_data: dict):
     asset_id   = int(post_data.get('asset_id', ['0'])[0])
     sale_date  = post_data.get('sale_date', [''])[0].strip()
     sale_price = float(post_data.get('sale_price', ['0'])[0] or 0)
+    if parse_iso_date(sale_date) is None:
+        # Das Datum steuert, bis wann AfA gebucht werden darf – nur ein ISO-Datum taugt dafür
+        return 303, f'/assets/view?id={asset_id}&err=' + quote('Abgangsdatum fehlt oder ist ungültig (JJJJ-MM-TT).')
 
     db.sell_asset(asset_id, sale_date, sale_price)
     return 303, f'/assets/view?id={asset_id}'

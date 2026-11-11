@@ -21,6 +21,10 @@ SKR_FRAMEWORKS = {
     70: 'SKR70 – Hotels und Gaststätten',
 }
 
+# Kassenkonto, das eine neue Kasse bekommt: SKR04 1600 „Kasse“. Das Verrechnungskonto
+# 1460 ist Geldtransit (WISO bucht darüber), keine Kasse.
+DEFAULT_CASH_ACCOUNT = 1600
+
 
 class AccountsMixin:
     def fetch_chart_of_accounts(self):
@@ -164,10 +168,34 @@ class AccountsMixin:
         row = cursor.fetchone()
         conn.close()
         return row
+    def count_entries_on_account_numbers(self, numbers):
+        """Zahl der Buchungssätze, die eines der Konten (SKR-Nummern) als Konto oder
+        Gegenkonto führen."""
+        numbers = [n for n in numbers if n is not None]
+        if not numbers:
+            return 0
+        marks = ','.join('?' * len(numbers))
+        conn = self._get_connection()
+        try:
+            return conn.execute(
+                f"""SELECT COUNT(*) FROM Bookings b
+                    WHERE b.BookingType = 'entry'
+                      AND (b.COA_ID IN (SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN ({marks}))
+                        OR b.CounterCOA_ID IN (SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN ({marks})))""",
+                numbers + numbers).fetchone()[0]
+        finally:
+            conn.close()
+    def ensure_cash_coa(self):
+        """COA-ID des Kassenkontos 1600 liefern. Fehlt es (Datenbank älter als der
+        Seed-Eintrag), wird es als Standardkonto im dominanten Kontenrahmen nachgelegt
+        (Vorbild ``_ensure_tax_free_revenue_coa``). Nur aufrufen, wo eine Kasse mit
+        1600 angelegt wird – nicht bei Seitenaufrufen."""
+        return self._ensure_standard_coa(DEFAULT_CASH_ACCOUNT, 'Kasse', 'Umlaufvermögenskonten')
     def insert_account(self, name, holder, number, bic, bank_name, is_cash=0, skr_account=None):
-        # Kassenkonten bekommen standardmäßig SKR 1460 (Verrechnungskonto)
+        # Kassenkonten bekommen standardmäßig SKR 1600 (Kasse); das Konto wird bei Bedarf angelegt
         if is_cash and not skr_account:
-            skr_account = 1460
+            self.ensure_cash_coa()
+            skr_account = DEFAULT_CASH_ACCOUNT
         conn = self._get_connection()
         cursor = conn.cursor()
         sql_template = '''

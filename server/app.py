@@ -510,8 +510,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             db.delete_number_range(int(qs["id"][0]))
             self.respond(303, "", headers={"Location": "/masterdata/numberranges"})
         elif path == "/assets/delete":
-            db.delete_asset(int(qs["id"][0]))
-            self.respond(303, "", headers={"Location": "/assets"})
+            asset_id = int(qs["id"][0])
+            try:
+                db.delete_asset(asset_id)
+                location = "/assets"
+            except ValueError as exc:      # gebuchte AfA oder Unteranlagen: nicht löschen
+                location = f"/assets/view?id={asset_id}&err={quote(str(exc), safe='')}"
+            self.respond(303, "", headers={"Location": location})
         elif path == "/asset_categories/delete":
             db.delete_asset_category(int(qs["id"][0]))
             self.respond(303, "", headers={"Location": "/asset_categories"})
@@ -775,7 +780,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path.startswith("/masterdata/bankaccounts/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 account_id = int(query_components["id"][0])
-                self.respond(200, PageBankAccountEdit(db, account_id))
+                self.respond(200, PageBankAccountEdit(
+                    db, account_id, error=query_components.get("error", [None])[0]))
             # ──────────────────────────────────────────────────────────────
             elif self.path == "/miscellaneous" or self.path.startswith("/miscellaneous?"):
                 self.respond(200, PageMiscellaneous(db))
@@ -832,7 +838,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path.startswith("/assets/view"):
                 qc = parse_qs(self.path.split('?', 1)[1])
                 asset_id = int(qc["id"][0])
-                self.respond(200, PageAssetView(db, asset_id))
+                self.respond(200, PageAssetView(db, asset_id, err=qc.get("err", [None])[0]))
             elif self.path == "/asset_categories" or self.path.startswith("/asset_categories?"):
                 self.respond(200, PageAssetCategories(db))
             elif self.path.startswith("/asset_categories/edit"):
@@ -1202,7 +1208,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(status_code, "", headers={"Location": "/masterdata/bankaccounts"})
             elif self.path == "/masterdata/bankaccounts/update":
                 status_code, location = handlers.handle_update_bankaccount(db, post_data)
-                self.respond(status_code, "", headers={"Location": "/masterdata/bankaccounts"})
+                self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/masterdata/numberranges/add":
                 status_code, location = handlers.handle_add_number_range(db, post_data)
                 self.respond(status_code, "", headers={"Location": "/masterdata/numberranges"})

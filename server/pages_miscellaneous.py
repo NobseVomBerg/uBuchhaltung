@@ -50,7 +50,7 @@ def PageMiscellaneous(db: Database):
         s += '\t<div class="rectRounded" style="grid-column: span 2">'
         s += '''
         <h2>SQL-Befehle ausführen</h2>
-        Gib hier SQL-Befehle ein (mehrere Befehle durch Semikolon getrennt):<br>
+        Gib hier SQL-Befehle ein (mehrere Befehle durch Semikolon getrennt). Eine Anfrage läuft höchstens 60 Sekunden, sehr große Ausgaben werden gekürzt:<br>
         <textarea id="sql_input" rows="15" cols="100" class="textareaSql" placeholder="SELECT * FROM ChartOfAccounts WHERE AccountNumber = 6805;"></textarea>
         <div>
             <button type="button" onclick="executeSql()" class="coloredButton bg-orange">SQL ausführen</button>
@@ -85,7 +85,7 @@ def PageMiscellaneous(db: Database):
                 "DELETE FROM BookingDocuments WHERE Booking_ID IN (" + b + ") OR Document_ID IN (" + d + ");\\n" +
                 "UPDATE Assets SET Booking_ID = NULL WHERE Booking_ID IN (" + b + ");\\n" +
                 "UPDATE Assets SET Document_ID = NULL WHERE Document_ID IN (" + d + ");\\n" +
-                "UPDATE AssetDepreciations SET Booking_ID = NULL WHERE Booking_ID IN (" + b + ");\\n" +
+                "UPDATE AssetDepreciations SET Booking_ID = NULL, Status = 'planned', BookedAt = NULL WHERE Booking_ID IN (" + b + ");\\n" +
                 "UPDATE Trips SET DocumentID = NULL WHERE DocumentID IN (" + d + ");\\n" +
                 "DELETE FROM Bookings WHERE DateBooking BETWEEN '" + from + "' AND '" + to + "';\\n" +
                 "DELETE FROM Documents WHERE Date BETWEEN '" + from + "' AND '" + to + "';";
@@ -225,7 +225,8 @@ def PageMiscellaneous(db: Database):
         (Datei &rarr; Export &rarr; &bdquo;Buchungsdaten als CSV&ldquo;).<br>
         2. Tabellen-Export (nur ergänzend, direkt aus der Tabellenansicht exportieren)<br>
         Voraussetzung: Jedes Konto in der <strong>Kontenverwaltung</strong>
-        muss ein <em>SKR-Gegenkonto</em> hinterlegt haben (z.B. 1810 für 2. Bankkonto, 1460 für Kasse).<br>
+        muss ein <em>SKR-Gegenkonto</em> hinterlegt haben (z.B. 1810 für 2. Bankkonto, 1600 für Kasse;
+        das Verrechnungskonto 1460 gilt als Geldtransit).<br>
         Duplikate (gleiche Referenznummer + Konto + Betrag) werden automatisch übersprungen.</p>
         <form method="POST" action="/wiso/import" enctype="multipart/form-data">
             <div class="rowWithObjects">CSV-Datei:&nbsp;<input type="file" name="csvfile" accept=".txt,.csv" required></div>
