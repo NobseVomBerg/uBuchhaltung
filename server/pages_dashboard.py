@@ -8,6 +8,7 @@ All figures come from Bookings (bank type), not from Invoices,
 so that imported WISO/DATEV data is always reflected.
 """
 from datetime import datetime
+import html as _html
 from db import Database
 from money import fmt_eur
 from .pages import Header1, Header2, Header3, Footer
@@ -32,12 +33,16 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
     if not date_to:
         date_to = f'{current_year}-12-31'
 
+    # Der Zeitraum kommt aus Adresse oder Cookie: nur maskiert in HTML einbetten
+    h_from = _html.escape(date_from, quote=True)
+    h_to = _html.escape(date_to, quote=True)
+
     # Display label
     if (date_from[5:] == '01-01' and date_to[5:] == '12-31'
             and date_from[:4] == date_to[:4]):
-        range_label = date_from[:4]
+        range_label = _html.escape(date_from[:4], quote=True)
     else:
-        range_label = f'{date_from} &ndash; {date_to}'
+        range_label = f'{h_from} &ndash; {h_to}'
 
     # ── Data ──────────────────────────────────────────────────────────
     totals  = db.get_dashboard_totals(date_from, date_to, account_ids)
@@ -84,10 +89,10 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
         <div style="display:flex;gap:15px;align-items:center;flex-wrap:wrap;">
             <div>
                 <label>Von:</label>
-                <input type="date" id="dateFrom" value="{date_from}"
+                <input type="date" id="dateFrom" value="{h_from}"
                        onchange="applyDashFilter()">
                 <label>Bis:</label>
-                <input type="date" id="dateTo" value="{date_to}"
+                <input type="date" id="dateTo" value="{h_to}"
                        onchange="applyDashFilter()">
                 {year_buttons}
             </div>

@@ -12,6 +12,7 @@ import auth
 import userctx
 from .pages import Header1, Header2, Header3, Footer
 from .import_preview import match_account
+from .period import parse_iso_date, valid_period
 from db import Database
 from db.core import fk_explained
 from db.matching import is_bank_effective
@@ -850,6 +851,13 @@ def handle_datev_export(db: Database, post_data: dict):
         date_to   = post_data.get('date_to',   [''])[0].strip()
         if not date_from or not date_to:
             return 303, '/miscellaneous?datev_export=error&msg=Datumsbereich+fehlt'
+
+        # Die Daten landen im Dateinamen, in der CSV und in der Antwort: nur ISO-Daten
+        date_from, date_to = parse_iso_date(date_from), parse_iso_date(date_to)
+        if date_from is None or date_to is None:
+            return 303, '/miscellaneous?datev_export=error&msg=' + quote('Ungültiger Datumsbereich')
+        if date_from > date_to:
+            return 303, '/miscellaneous?datev_export=error&msg=' + quote('Das Datum ‚von‘ liegt nach ‚bis‘')
 
         # Unstimmige Splits blockieren den Export: ein Stapel, in dem die
         # Buchungssätze nicht die Bankbewegung ergeben, ist in sich falsch und
@@ -2490,9 +2498,19 @@ def handle_quote_pdf_by_id(quote_id: int):
 
 # ── Arbeitszeiten (WorkTimes) ─────────────────────────────────────────────────
 
+def _period_args(date_from, date_to):
+    """``&from=…&to=…`` für eine Adresse, prozentkodiert. Der Zeitraum kommt aus dem Formular
+    und muss ein gültiges ISO-Datumspaar sein; sonst fehlt er in der Adresse und die Zielseite
+    nimmt Cookie oder Standard (statt dass beliebiger Text in der ``Location`` landet)."""
+    period = valid_period(date_from, date_to)
+    if period is None:
+        return ''
+    return f"&from={quote(period[0], safe='')}&to={quote(period[1], safe='')}"
+
+
 def _wt_redirect(person_id, date_from, date_to):
     """Redirect-Ziel zurück zur Arbeitszeiten-Seite (Person + Zeitraum erhalten)."""
-    return f"/worktime?person={person_id}&from={date_from}&to={date_to}"
+    return f"/worktime?person={quote(str(person_id), safe='')}{_period_args(date_from, date_to)}"
 
 
 def _wt_resolve_city(db: Database, mode, customer_id, free_text):
@@ -2592,7 +2610,8 @@ def _wt_has_overlap(db: Database, person_id, fields, exclude_id=None):
 
 def _wt_overlap_redirect(person_id, date_from, date_to, date):
     msg = quote(f"Überschneidung am {date}: in diesem Zeitraum existiert bereits ein Eintrag.")
-    return 303, f"/worktime?person={person_id}&from={date_from}&to={date_to}&error={msg}"
+    return 303, (f"/worktime?person={quote(str(person_id), safe='')}"
+                 f"{_period_args(date_from, date_to)}&error={msg}")
 
 
 def handle_add_worktime(db: Database, post_data):
@@ -2643,7 +2662,7 @@ def handle_worktime_pdf(db: Database, person_id, date_from, date_to, with_notes=
 
 # ── Fahrten (Fahrtenbuch) ─────────────────────────────────────────────────────
 def _trip_redirect(person_id, date_from, date_to):
-    return f"/trips?person={person_id}&from={date_from}&to={date_to}"
+    return f"/trips?person={quote(str(person_id), safe='')}{_period_args(date_from, date_to)}"
 
 
 def _trip_int(value):
