@@ -178,8 +178,9 @@ kein Subagent darauf:
   mit `urllib.parse.quote(…, safe='')`. Im Browser-JS nie Daten per `innerHTML` oder
   Template-String in HTML setzen, sondern `textContent`, `createElement`, `.value = …`.
   Richtext (Einleitungs-/Schlusstext der Angebote) nur über die Positivliste
-  `server/richtext.sanitize_richtext` (b, strong, i, em, u, p, br, ul, ol, li, div, span, ohne
-  Attribute): beim Speichern UND bei jeder Ausgabe, auch für Altbestand. Jede Antwort trägt
+  `richtext.sanitize_richtext` (b, strong, i, em, u, p, br, ul, ol, li, div, span, ohne
+  Attribute, höchstens 50 Ebenen tief): beim Speichern UND bei jeder Ausgabe – Formular wie
+  PDF-Satz –, auch für Altbestand. Jede Antwort trägt
   `X-Content-Type-Options: nosniff` und `X-Frame-Options: DENY` (`end_headers`); die App
   rahmt sich nicht selbst ein (PDFs öffnen als eigene Seite in einem neuen Tab)
 - **Wiederherstellen** (`server/backup.py`): Ein 7-Zip-Archiv wird vor dem Entpacken
