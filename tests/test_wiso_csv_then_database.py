@@ -1243,6 +1243,15 @@ def test_empfaenger_wird_ergaenzt_wenn_leer_und_sonst_behalten(db_with_coa, tmp_
     assert _row(db_with_coa, user_recipient)['RecipientClient'] == 'Kundin'
 
 
+def test_leerer_empfaenger_bleibt_leer_wenn_wiso_keinen_nennt(db_with_coa, tmp_path):
+    """Nennt WISO keinen Empfänger, bleibt die Zeile, wie sie ist – auch ein leerer Text wird nicht zu
+    NULL (die Übernahme ändert nur, was sie ergänzt)."""
+    booking = _candidate(db_with_coa, recipient_client='')
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, [_record()]))
+    assert result['adopted'] == 1
+    assert _row(db_with_coa, booking)['RecipientClient'] == ''
+
+
 # ── Sätze ohne Quellgruppe ───────────────────────────────────────────────────
 
 def _groupless_records():
