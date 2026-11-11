@@ -628,15 +628,25 @@ class InvoicesMixin:
         Steuersatz-Schlüssel (``_revenue_rate_key``) gebucht hat – oder ``None``.
 
         Gelesen wird NUR aus den Sätzen, die die App selbst für eine Zuordnung angelegt hat
-        (Marke ``PAYMENT_MARK``): beim Satz „Wartekonto an Erlöskonto“ das Gegenkonto, beim
-        Einzelsatz „Erlöskonto an Bank“ das Konto; der jüngste Satz gewinnt. Das Konto der
-        Bankzeile oder der Sätze eines Imports sagt nichts über das Erlöskonto (es kann ein
-        Bankkonto, ein Aufwandskonto oder das Wartekonto sein) und zählt nicht. Das Ergebnis gilt
-        nur, wenn es ein Erlöskonto ist (``is_income_account``: 4000–4999 ohne Wartekonten)."""
+        (Marke ``PAYMENT_MARK``), und nur in der Form, in der sie sie schreibt:
+
+        * Umbuchung „Wartekonto an Erlöskonto“: ``COA`` ist ein Wartekonto
+          (``OPEN_REVENUE_ACCOUNTS``), gelernt wird das Gegenkonto;
+        * Einzelsatz „Erlöskonto an Bank“: das Gegenkonto ist ein Zahlungskonto
+          (``get_payment_coa_ids``), gelernt wird ``COA``.
+
+        Alles andere lehrt nichts – auch „Bank an Debitoren“ nicht, und kein Satz, den ein Nutzer
+        im Split-Editor in eine andere Form gebracht hat (aus „4405 an 4400“ wurde „4736 an 4400“).
+        Der jüngste passende Satz gewinnt. Das Konto der Bankzeile oder der Sätze eines Imports
+        sagt nichts über das Erlöskonto (es kann ein Bankkonto, ein Aufwandskonto oder das
+        Wartekonto sein) und zählt nicht. Das Ergebnis gilt nur, wenn es ein Erlöskonto ist
+        (``is_income_account``: 4000–4999 ohne Wartekonten)."""
         waiting = tuple(number for number, _name in self.OPEN_REVENUE_ACCOUNTS.values())
         waiting_marks = ','.join('?' * len(waiting))
         conn = self._get_connection()
         try:
+            payment_ids = sorted(self._get_payment_coa_ids(conn.cursor()))
+            payment_marks = ','.join('?' * len(payment_ids))
             row = conn.execute(f'''
                 SELECT cand.ID, cand.AccountNumber
                 FROM Bookings k
@@ -647,11 +657,11 @@ class InvoicesMixin:
                     ELSE k.COA_ID END
                 WHERE k.Status = ? AND k.ParentBooking_ID IS NOT NULL
                   AND (i.DocumentType = 'invoice' OR i.DocumentType IS NULL)
-                  AND COALESCE(k.CounterCOA_ID, -1) NOT IN
-                      (SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?)
+                  AND (own.AccountNumber IN ({waiting_marks})
+                       OR k.CounterCOA_ID IN ({payment_marks}))
                   AND {self._revenue_rate_key_sql('i.TaxRate')} = ?
                 ORDER BY k.ID DESC LIMIT 1
-            ''', (*waiting, PAYMENT_MARK, self.DEBTOR_ACCOUNT_NUMBER, key)).fetchone()
+            ''', (*waiting, PAYMENT_MARK, *waiting, *payment_ids, key)).fetchone()
         finally:
             conn.close()
         return row[0] if row and is_income_account(row[1]) else None

@@ -86,32 +86,46 @@ def is_asset_transfer(coa_id, counter_coa_id, liquid_coa_ids, asset_coa_ids, pl_
 def receivable_condition(debtor_coa_ids, payment_coa_ids, alias=''):
     """SQL-Bedingung „Satz ist eine Forderungsbuchung“ samt Parametern – die EINE Definition.
 
-    Eine Forderung (Debitoren an Wartekonto, entsteht beim Versenden der Rechnung) hat das
-    Debitorenkonto 10000 im SOLL – nach der Vorzeichenregel der Umbuchungen: ``COA_ID`` ist 10000
-    und der Betrag positiv, oder ``CounterCOA_ID`` ist 10000 und der Betrag negativ – und auf
-    keiner Seite ein Zahlungskonto (``get_payment_coa_ids``). Sie ist ein eigenständiger Satz und
-    hängt nie an einer Bankbewegung: Der Auto-Abgleich verknüpft sie nicht, ``delete_transaction``
-    löscht sie nicht mit.
+    Eine Forderung (Debitoren an Wartekonto, entsteht beim Versenden der Rechnung) hat auf keiner
+    Seite ein Zahlungskonto (``get_payment_coa_ids``) und das Debitorenkonto 10000 im SOLL:
+
+    * ``COA_ID`` ist 10000 und der Betrag positiv, oder
+    * ``CounterCOA_ID`` ist 10000 und der Betrag negativ (Vorzeichenregel der Umbuchungen), oder
+    * ``COA_ID`` ist 10000 und der Betrag negativ **und** die Beleg-Nr. ist die Nummer einer
+      Rechnung mit negativem Brutto: die Gutschrift. Die App bucht ihre Forderung als „10000 an
+      Wartekonto“ mit negativem Betrag. Ohne eine solche Rechnung ist „10000 an X, negativ“ keine
+      Forderung (10000 stünde dort im Haben).
+
+    Sie ist ein eigenständiger Satz und hängt nie an einer Bankbewegung: Der Auto-Abgleich
+    verknüpft sie nicht, ``delete_transaction`` löscht sie nicht mit.
 
     Keine Forderung ist, was 10000 im HABEN führt: die Zahlung „Bank an 10000“, aber auch
-    Erlösminderung, Skonto und Forderungsverlust („… an 10000“) – sie gehören zur Bankbewegung
-    bzw. zur Zahlung. Die WISO-Zahlungssätze „1210 an 10000“ und ihr Storno haben außerdem ein
-    Zahlungskonto auf einer Seite und bleiben verknüpfbar.
+    Erlösminderung, Skonto und Forderungsverlust („… an 10000“, Betrag positiv) – sie gehören zur
+    Bankbewegung bzw. zur Zahlung. Die WISO-Zahlungssätze „1210 an 10000“ und ihr Storno haben
+    außerdem ein Zahlungskonto auf einer Seite und bleiben verknüpfbar.
 
-    ``alias``: Tabellenalias der Bookings-Zeile. Returns ``(sql, params)``.
+    ``alias``: Tabellenalias der Bookings-Zeile (ohne Alias gilt der Tabellenname).
+    Returns ``(sql, params)``.
     """
     if not debtor_coa_ids:
         return '0', []
     p = f'{alias}.' if alias else ''
+    row = alias or 'Bookings'
     debtor = ','.join('?' * len(debtor_coa_ids))
     payment = ','.join('?' * len(payment_coa_ids))
     # COALESCE auf jeder Seite: Die Bedingung ist nie NULL, ein Satz ohne Konten oder ohne Betrag
     # (NULL) ist schlicht keine Forderung – sonst ergäbe ``NOT (…)`` für ihn NULL und er fiele heraus.
-    sql = (f'((COALESCE({p}COA_ID, -1) IN ({debtor}) AND COALESCE({p}Amount, 0) > 0'
-           f' OR COALESCE({p}CounterCOA_ID, -1) IN ({debtor}) AND COALESCE({p}Amount, 0) < 0)'
+    # Die Rechnung wird über den Tabellennamen bzw. Alias der Zeile angesprochen, damit ``DocumentNumber``
+    # nicht mit einer Spalte der Rechnungstabelle verwechselt werden kann.
+    sql = (f'(('
+           f'(COALESCE({p}COA_ID, -1) IN ({debtor}) AND COALESCE({p}Amount, 0) > 0)'
+           f' OR (COALESCE({p}CounterCOA_ID, -1) IN ({debtor}) AND COALESCE({p}Amount, 0) < 0)'
+           f' OR (COALESCE({p}COA_ID, -1) IN ({debtor}) AND COALESCE({p}Amount, 0) < 0'
+           f' AND EXISTS (SELECT 1 FROM Invoices credit_note'
+           f' WHERE credit_note.InvoiceNumber = {row}.DocumentNumber AND credit_note.SumGross < 0)))'
            f' AND COALESCE({p}COA_ID, -1) NOT IN ({payment})'
            f' AND COALESCE({p}CounterCOA_ID, -1) NOT IN ({payment}))')
-    params = list(debtor_coa_ids) * 2 + list(payment_coa_ids) * 2
+    params = list(debtor_coa_ids) * 3 + list(payment_coa_ids) * 2
     return sql, params
 
 
