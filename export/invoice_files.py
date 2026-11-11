@@ -240,20 +240,24 @@ def _stored_by_name(invoice, extension):
     return None
 
 
-def stored_invoice_path(db, invoice_id: int, kind: str = 'pdf'):
+def stored_invoice_path(db, invoice_id: int, kind: str = 'pdf', invoice=None):
     """Pfad des abgelegten Dokuments einer Rechnung (bzw. eines Angebots).
 
     Der in der Datenbank gespeicherte Pfad zählt nur im Dokumentordner des Nutzers
     (:func:`path_in_documents`). Liegt er außerhalb, gilt er als nicht vorhanden – dann
     greift der Fallback über das Namensschema –; die Antwort verrät davon nichts, nur das
-    Server-Log. Wer ein gespeichertes Dokument öffnet (Download, E-Mail-Anhang), holt den
-    Pfad hier.
+    Server-Log. Wer ein gespeichertes Dokument öffnet (Download, E-Mail-Anhang) oder anzeigt,
+    ob es eines gibt (Listen, Formulare), holt den Pfad hier.
+
+    ``invoice`` ist die schon geladene Zeile (``SELECT *``); damit entfällt das erneute Lesen,
+    etwa je Zeile einer Liste.
 
     Returns:
         tuple: ``(pfad, fehlertext)`` – bei Erfolg ist der Fehlertext ``None``, sonst der Pfad.
     """
     idx, extension, label = _KINDS[kind]
-    invoice = db.get_invoice_by_id(invoice_id)
+    if invoice is None:
+        invoice = db.get_invoice_by_id(invoice_id)
     if not invoice:
         return None, 'Rechnung nicht gefunden.'
 

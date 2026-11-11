@@ -2233,15 +2233,15 @@ def _save_error_text(exc):
         if detail.startswith('UNIQUE') and 'InvoiceNumber' in detail:
             return 'Diese Nummer ist bereits vergeben.'
         if detail.startswith('NOT NULL') and detail.rsplit(': ', 1)[-1] in _NOT_NULL_FIELDS:
-            reason = f'In einer Position fehlt {_NOT_NULL_FIELDS[detail.rsplit(": ", 1)[-1]]}.'
+            reason = f'In einer Position fehlt {_NOT_NULL_FIELDS[detail.rsplit(": ", 1)[-1]]}'
         else:
-            reason = 'Eine Pflichtangabe fehlt oder ist ungültig.'
+            reason = 'Eine Pflichtangabe fehlt oder ist ungültig'
     elif isinstance(exc, sqlite3.Error):
-        reason = 'Die Datenbank hat den Vorgang abgelehnt.'
+        reason = 'Die Datenbank hat den Vorgang abgelehnt'
     elif isinstance(exc, (ArithmeticError, ValueError, TypeError, AttributeError, KeyError)):
-        reason = 'Beträge, Mengen oder Positionen sind ungültig.'
+        reason = 'Beträge, Mengen oder Positionen sind ungültig'
     else:
-        reason = 'Unerwarteter Fehler (Einzelheiten im Server-Log).'
+        reason = 'Unerwarteter Fehler (Einzelheiten im Server-Log)'
     return f'Speichern fehlgeschlagen: {reason} – es wurde nichts gespeichert.'
 
 

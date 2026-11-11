@@ -172,6 +172,16 @@ kein Subagent darauf:
 - **JSON in `<script>`-Blöcken** nur über `pages.script_json`, nie über `json.dumps`
   allein: Ein `</script>` im Wert beendet den Block (XSS). In HTML-Attributen
   (`onclick="…"`) das Ergebnis zusätzlich durch `html.escape`
+- **Ausgabe:** Jeder Wert aus Datenbank oder Anfrage wird beim Einsetzen maskiert – in
+  HTML-Text und -Attributen mit `html.escape(str(wert), quote=True)`, in einem
+  `<script>`-Block nur über `pages.script_json`, in einer Adresse innerhalb von Inline-JS
+  mit `urllib.parse.quote(…, safe='')`. Im Browser-JS nie Daten per `innerHTML` oder
+  Template-String in HTML setzen, sondern `textContent`, `createElement`, `.value = …`.
+  Richtext (Einleitungs-/Schlusstext der Angebote) nur über die Positivliste
+  `server/richtext.sanitize_richtext` (b, strong, i, em, u, p, br, ul, ol, li, div, span, ohne
+  Attribute): beim Speichern UND bei jeder Ausgabe, auch für Altbestand. Jede Antwort trägt
+  `X-Content-Type-Options: nosniff` und `X-Frame-Options: DENY` (`end_headers`); die App
+  rahmt sich nicht selbst ein (PDFs öffnen als eigene Seite in einem neuen Tab)
 - **Wiederherstellen** (`server/backup.py`): Ein 7-Zip-Archiv wird vor dem Entpacken
   aufgelistet (`-t7z`, keine Links, keine absoluten oder `..`-Pfade), dann nach
   `backup/restore_*` entpackt, geprüft (keine Symlinks, Datenbank lesbar und nicht neuer
@@ -347,6 +357,10 @@ kein Subagent darauf:
   (`/invoice/pdf_generate`, `/quote/pdf_generate`; GET → 405) – die Oberfläche
   erzeugt zuerst und lädt dann. Der Stundenzettel (`/worktime/pdf`, GET) schreibt
   nichts auf die Platte (`generate_worktime_pdf(store=False)`)
+- **Belegtyp:** Rechnungen und Angebote teilen sich die Tabelle `Invoices`; jede Rechnungs- und
+  jede Angebotsroute prüft den Typ (`Database.get_document`, `invoices.document_type`, beim
+  Schreiben `… AND DocumentType = …`) – die ID eines Belegs der anderen Art ergibt 404 bzw.
+  „Rechnung/Angebot nicht gefunden.“ und ändert, versendet und erzeugt nichts
 - **Gespeicherte Dokumentpfade** (`Invoices.PDFPath`/`XMLPath`) gelten nur innerhalb des
   Dokumentordners des Benutzers (`<Datenordner>/invoices`, bei Angeboten `quotes`;
   `export/invoice_files.path_in_documents`, aufgelöst mit `realpath`): Die Datenbank lässt
