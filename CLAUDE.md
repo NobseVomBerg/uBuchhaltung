@@ -217,13 +217,19 @@ kein Subagent darauf:
   einschließlich 1460, nicht die eigenen Konten, und eine reine Formlesung hätte Bestand anders
   summiert
 - Migration auf 2.1.0 (`_fill_entry_forms`): Der Bestand bekommt die Form, die 2.0.x ihm
-  gab (Zahlungskonten von damals einschließlich 1000–1099, `_get_legacy_payment_coa_ids`),
-  Spiegel `mirror_legacy`; danach ist jede Auswertung identisch. Vorher legt
-  `initialize_database` eine Sicherung `backup/JJJJMMTT_vor_2.1.0_<Datei>` über die
-  SQLite-Backup-API an – scheitert sie, öffnet die Datenbank nicht (`MigrationBackupError`), sie bleibt
-  auf 2000. Es gibt kein Zurück auf 2.0.x außer über diese Sicherung. Ein Spiegel des Bestands
-  wird nie still umgedeutet: Er bekommt seine Form nur dort, wo seine Herkunft feststeht
-  (Re-Import der WISO-Datenbank, Re-Import des Textexports, Übernahme)
+  gab (Zahlungskonten von damals einschließlich 1000–1099, `_get_legacy_payment_coa_ids`; je
+  Kontopaar einmal eingeordnet, gebündelt über die IDs geschrieben),
+  Spiegel `mirror_legacy`; danach ist jede Auswertung identisch. **Vor jedem Migrationslauf einer
+  bestehenden Datenbank** (`from_version < SCHEMA_VERSION`, Tabellen vorhanden) legt
+  `initialize_database` eine Sicherung `backup/JJJJMMTT_vor_<APP_VERSION>_<Datei>` über die
+  SQLite-Backup-API an: erst unter `<Name>.part`, nach der Prüfung per `os.replace` umbenannt, ein
+  vorhandener Name wird nie überschrieben. Scheitert sie, öffnet die Datenbank nicht
+  (`MigrationBackupError`), sie bleibt auf dem alten Stand. Die Umstellung selbst läuft in EINER
+  Transaktion (`BEGIN` vor `ALTER TABLE`): Nach einem Abbruch ist die Datenbank so wie vorher. Es
+  gibt kein Zurück auf 2.0.x außer über die Sicherung (Anleitung: README). Ein Spiegel des Bestands
+  wird nie still umgedeutet: **Kein Import und keine Maske stellt `mirror_legacy` um** – die Importe
+  erkennen ihn wieder und zählen ihn (`legacy_mirrors`), die Umstellung wäre eine Prüfliste, die den
+  Nutzer entscheiden lässt (`docs/aufgaben.md`)
 - Vorzeichen: Bei Zahlungen trägt der Betrag die Richtung der Geldbewegung
   (Einnahme +), egal auf welcher Seite das Zweckkonto steht. Bei Umbuchungen heißt
   positiv: `COA` im Soll, Gegenkonto im Haben. Fehlt die liquide Seite, bleibt es
@@ -240,9 +246,11 @@ kein Subagent darauf:
   Importe das Vorzeichen ausrichten und die Maske und `insert_booking` die Form **beim Schreiben**
   ableiten – und mit der eine Zeile ohne Form gelesen wird. **1000–1099 gehört nicht mehr dazu**
   (SKR04: Vorräte; früher der SKR03-Kassenbereich): Beide WISO-Importe melden Buchungen darauf
-  (`stock_range_accounts`, Hinweis auf *Verschiedenes*), und `negative_gross` zählt Sätze mit
-  negativem Brutto bei genau einer liquiden Seite (das Vorzeichen richtet sich nach der Geldbewegung,
-  ein Storno wird so wie eine Buchung gelesen – bis das festgeschrieben ist, `docs/aufgaben.md`).
+  (`stock_range_accounts`, Hinweis auf *Verschiedenes*: Buchungen gegen diese Konten werden als
+  Umbuchung gelesen und erscheinen nicht in der EÜR), und `negative_gross` zählt Sätze mit negativem
+  Brutto, deren Vorzeichen der Import ersetzt hat (bei genau einer liquiden Seite richtet es sich nach der
+  Geldbewegung, ein Storno wird so wie eine Buchung gelesen – bis das festgeschrieben ist,
+  `docs/aufgaben.md`).
   Ob ein Satz in die EÜR kommt, entscheidet die
   Sektion in `get_euer_data` – Kind einer Bank- oder Kassenbewegung; eigenständig auf einer
   Kasse oder (ohne Kontofilter) auf 1460; Umbuchung zwischen Anlage- und Erfolgskonto –,
@@ -276,7 +284,9 @@ kein Subagent darauf:
   in einer `BEGIN IMMEDIATE`-Transaktion (der Index fängt zusätzlich ab: `IntegrityError` heißt „bereits verknüpft“); Konten, die `resolve_revenue_coa` anlegen
   könnte, werden vorher in eigenen Verbindungen aufgelöst – nie innerhalb. Nur Zahlungseingänge
   (Betrag > 0) auf versendete Rechnungen (`PAYABLE_STATUSES`), Bankkonto mit SKR-Nummer; frei ist
-  `Betrag − MAX(Zuordnungen, bankwirksame Sätze)` (`_free_minor_sql`, überall dieselbe Formel). Der
+  `Betrag − MAX(Zuordnungen, bankwirksame Sätze)` (`_free_minor_sql`, überall dieselbe Formel – sie
+  rechnet Spiegel roh, die Split-Summe dagegen über `bank_effect`, der einen Spiegel mit bekannter
+  Lesart nach seiner Position zählt; beides ist bewusst nicht dasselbe). Der
   Zuordnungsbetrag wird auf Cent gerundet (halb auf), bevor er gekappt wird; die Steuer eines Teils ist
   anteilig (Cent), der schließende Teil bekommt den Rest der Rechnungssteuer abzüglich der Steuer der
   anderen Zuordnungen (markierte Sätze: die gebuchte, sonst – Altbestand, WISO – die anteilige).
@@ -309,7 +319,20 @@ kein Subagent darauf:
   Nicht-Bankbewegungen oder mit `SourceGroup`-Sätzen (WISO) löst `no_settlement`/`transfer_mismatch`
   nicht aus. Eine Reparatur gibt es nicht
 - Masken schreiben nur, was sie führen (`update_booking_fields`) – Gegenkonto,
-  Kategorie und fremde Kontakte dürfen beim Speichern nicht verloren gehen
+  Kategorie und fremde Kontakte dürfen beim Speichern nicht verloren gehen. **Öffnen und unverändert
+  speichern ändert nichts** (`tests/test_entry_form_roundtrip.py` prüft es für jede Bankbewegung, jeden
+  Satz und das Zuordnen an einem migrierten und einem frischen Bestand, nach geänderter Kontenliste):
+  Welches Konto der Editor als Zweckkonto zeigt, sagt `matching.purpose_in_counter` – `liquid_first`:
+  das Gegenkonto, `purpose_first`/`transfer`: das Konto, Spiegel und Zeilen ohne Form wie in 2.0.x
+  („Bank an 1460“ zeigt 1460: Konto ist ein eigenes Bankkonto, Gegenkonto nicht). Editor, Maske und
+  „vorhandene Buchung zuordnen“ nutzen dieselbe Regel; ein unverändert zurückgeschicktes Konto ändert
+  nichts (verglichen mit dem gespeicherten Stand, nicht mit der Kontenliste von heute), ein unverändert
+  zurückgeschickter Betrag gilt beim Wechsel des Zweckkontos als „nicht geändert“ (Soll/Haben bleibt: die
+  Form kippt, der Betrag wird negiert). Ausgeblendet wird ein Spiegel nur, wenn beide Seiten eigene
+  Bank-/Kassenkonten sind (`is_mirror_row`) – einer mit 1460 bleibt sichtbar und bearbeitbar, die
+  Summenzeile des Editors rechnet ihn wie die Prüfung (`data-sign`, `bank_effect`). **Kein Schreibweg der
+  Masken schreibt dasselbe Konto auf beide Seiten** (400 mit Klartext, `_refuse_same_account`); ein so
+  vorgefundener Satz wird nicht angefasst
 
 ### Demo-Modus & Screenshots
 - `UBUCHHALTUNG_DEMO=1` (`demo.py`): Demodaten liegen **ausschließlich unter
@@ -373,23 +396,26 @@ kein Subagent darauf:
   WISO vergibt je Verrechnungskonto-Buchung eine eigene `ACCOUNTINGID`. Die
   Quellgruppe ist damit feiner und greift nur, wo eine Beleg-Nr. fehlt
 - **Vorzeichen und Form:** Beide Importe richten das Vorzeichen an den liquiden Seiten aus (eigene Konten
-  und 1460; genau eine Seite liquide → Richtung der Geldbewegung, ein negativer Brutto verliert sein
-  Vorzeichen und wird als `negative_gross` gemeldet) und schreiben die Form mit: Konto liquide `liquid_first`,
+  und 1460; genau eine Seite liquide → Richtung der Geldbewegung; ein negativer Brutto, dessen Vorzeichen
+  dabei ersetzt wird, zählt als `negative_gross`) und schreiben die Form mit: Konto liquide `liquid_first`,
   Gegenkonto liquide `purpose_first`, beide `mirror_coa` (der **Rohbetrag**, positiv = Konto im Soll – der
-  Betrag neuer Importe ändert sich dadurch nicht, ein Re-Import findet seine Zeilen), keine `transfer`.
-  **Re-Import stempelt, ändert nichts um:** Bei bekannter `SourceGroup` bekommt ein `mirror_legacy`-Spiegel
-  seine Form aus dem Rohbetrag (`mirror_coa`, bei umgekehrtem Vorzeichen `mirror_counter`; `forms_stamped`,
-  im Replay-Log); weicht eine andere gespeicherte Form von der des frischen Imports ab, wird das nur
-  gemeldet (`form_conflicts`). Der Textexport erkennt einen vorzeichenverkehrten `mirror_legacy`-Spiegel
-  (Beleg-Nr., Datum, Konto, Gegenkonto gleich, Betrag −gross, von der Datei nicht selbst beansprucht)
-  als Duplikat und stempelt ihn `mirror_counter`, statt eine zweite Buchung anzulegen
+  Betrag neuer Importe ändert sich dadurch nicht, ein Re-Import findet seine Zeilen), **keine liquide Seite
+  `transfer`** mit dem Rohbetrag (WISO meint „Konto im Soll“ – auch bei leerem oder unbekanntem Gegenkonto,
+  nie `purpose_first`; die EÜR liest so einen Satz als Umbuchung, ohne Vorsteuerausweis).
+  **Kein Import ändert die Form einer vorhandenen Zeile:** Der Re-Import der Datenbank (bekannte `SourceGroup`)
+  und der des Textexports erkennen einen `mirror_legacy`-Spiegel wieder – mit gleichem oder umgekehrtem
+  Vorzeichen (Beleg-Nr., Datum, Konto, Gegenkonto gleich, von der Datei nicht selbst beansprucht) –, legen
+  keinen zweiten Satz an und lassen Form und Betrag, wie sie sind; sie zählen ihn (`legacy_mirrors`, Hinweis
+  auf *Verschiedenes*). Weicht eine andere gespeicherte Form von der des frischen Imports ab, wird das nur
+  gemeldet (`form_conflicts`)
 - **CSV und Datenbank nacheinander:** Der Datenbank-Import (`_insert_wiso_bookings`) übernimmt eine CSV-Buchung
   (`entry` ohne `SourceGroup`, `AutoMirror`, `Account_ID`) nur, wenn Datum, Betrag, Konto, Beleg-Nr. **und ein
   nicht leerer Text** gleich sind (Leerraum/`casefold`; der latin-1 gelesene WISO-Text wird dafür nach cp1252 umgesetzt) und das
   Gegenkonto nicht widerspricht; gleiches Gegenkonto geht vor, dann die kleinste ID, jede Zeile höchstens einmal.
   Ein `mirror_legacy`-Spiegel mit umgekehrtem Vorzeichen wird übernommen, wenn Konto, Gegenkonto (beide bekannt),
-  Beleg-Nr. und Text gleich sind und die Datenbank nicht selbst eine Zeile mit seinem Betrag enthält; er wird
-  `mirror_counter`. Füllt die Übernahme ein fehlendes Konto, gilt die Form des Imports.
+  Beleg-Nr. und Text gleich sind und die Datenbank nicht selbst eine Zeile mit seinem Betrag enthält; Form und
+  Betrag bleiben (nur die Quellgruppe kommt dazu). Füllt die Übernahme ein fehlendes Konto, ändern sich die
+  Konten des Satzes – dann gilt für ihn die Form des Imports.
   Gleicher Schlüssel + Text bei verschiedenen Gegenkonten ist mehrdeutig → eine Zeile ohne Gegenkonto bleibt liegen.
   Grundsatz: **im Zweifel neu anlegen und melden – nie aufweichen**; ähnliche, nicht übernommene Buchungen stehen
   als `possible_duplicates` auf der Seite. Übernommen wird per UPDATE (im Replay-Log; `adopted_rows`); die

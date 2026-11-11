@@ -30,7 +30,7 @@ class MigrationBackupError(RuntimeError):
 
 
 #: Ab dieser Schema-Zahl (Version 2.1.0) trägt jeder Buchungssatz seine Form
-#: (``Bookings.EntryForm``). Die Migration darauf sichert die Datenbank vorher.
+#: (``Bookings.EntryForm``). Gesichert wird vor jedem Migrationslauf (``initialize_database``).
 ENTRY_FORM_SCHEMA = 2001
 
 
@@ -123,42 +123,58 @@ class SchemaMixin:
         einschließlich des Bereichs 1000–1099) für ihn ergibt. Ein Spiegel bekommt
         ``mirror_legacy``: Welche Konvention sein Betrag hat, weiß nur der, der ihn geschrieben
         hat. Bankzeilen bleiben ohne Form. Zeilen, die schon eine Form tragen, bleiben unberührt –
-        der Schritt ist wiederholbar."""
+        der Schritt ist wiederholbar.
+
+        Eingeordnet wird je Kontopaar einmal (in Python), geschrieben wird gebündelt über die IDs:
+        Ein Bestand hat viele Sätze, aber nur wenige verschiedene Paare."""
         money_ids = self._get_legacy_payment_coa_ids(cursor)
-        pairs = cursor.execute(
-            "SELECT DISTINCT COA_ID, CounterCOA_ID FROM Bookings "
+        form_of_pair = {}
+        ids_by_form = {}
+        rows = cursor.execute(
+            "SELECT ID, COA_ID, CounterCOA_ID FROM Bookings "
             "WHERE BookingType = 'entry' AND EntryForm IS NULL").fetchall()
-        for coa_id, counter_coa_id in pairs:
-            cursor.execute(
-                "UPDATE Bookings SET EntryForm = ? WHERE BookingType = 'entry' "
-                "AND EntryForm IS NULL AND COA_ID IS ? AND CounterCOA_ID IS ?",
-                (read_entry_form(None, coa_id, counter_coa_id, money_ids),
-                 coa_id, counter_coa_id))
+        for booking_id, coa_id, counter_coa_id in rows:
+            pair = (coa_id, counter_coa_id)
+            if pair not in form_of_pair:
+                form_of_pair[pair] = read_entry_form(None, coa_id, counter_coa_id, money_ids)
+            ids_by_form.setdefault(form_of_pair[pair], []).append(booking_id)
+        for form, ids in ids_by_form.items():
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                cursor.execute(
+                    f"UPDATE Bookings SET EntryForm = ? WHERE ID IN ({','.join('?' * len(chunk))})",
+                    [form, *chunk])
 
     def _backup_before_migration(self, label):
-        """Kopie der Datenbank nach ``<Ordner der Datenbank>/backup/JJJJMMTT_vor_<label>_<Datei>``,
-        gezogen über die Backup-API von SQLite (konsistent, auch bei offenen Verbindungen) – bevor
-        die Migration irgendetwas ändert. ``backup/`` wird von der Datensicherung nie erfasst oder
-        gelöscht. Ein vorhandener Name wird nie überschrieben (laufende Nummer). Scheitert die
-        Kopie, ``MigrationBackupError``; eine halbe Kopie wird entfernt. Returns den Pfad."""
+        """Kopie der Datenbank nach ``<Ordner der Datenbank>/backup/JJJJMMTT_vor_<label>_<Datei>``
+        (``label``: die Programmversion, die die Datenbank umstellt), gezogen über die
+        Backup-API von SQLite (konsistent, auch bei offenen Verbindungen) – bevor die Migration
+        irgendetwas ändert. ``backup/`` wird von der Datensicherung nie erfasst oder gelöscht.
+
+        Die Kopie entsteht unter ``<Name>.part`` und bekommt ihren Namen erst, wenn sie vollständig
+        und geprüft ist (``os.replace``): eine abgebrochene Sicherung hinterlässt nie eine Datei, die
+        wie eine gültige aussieht. Ein vorhandener Name wird nie überschrieben (laufende Nummer).
+        Scheitert die Kopie, ``MigrationBackupError``; ein Rest wird entfernt. Returns den Pfad."""
         source_path = os.path.abspath(self.db_name)
         directory = os.path.join(os.path.dirname(source_path), 'backup')
         stamp = datetime.date.today().strftime('%Y%m%d')
         name = os.path.basename(source_path)
         target = os.path.join(directory, f'{stamp}_vor_{label}_{name}')
-        copied = False
+        part = target + '.part'
         try:
             os.makedirs(directory, exist_ok=True)
             number = 1
             while os.path.exists(target):
                 number += 1
                 target = os.path.join(directory, f'{stamp}_vor_{label}_{number}_{name}')
+            part = target + '.part'
+            if os.path.exists(part):
+                os.remove(part)                       # Rest eines abgebrochenen Versuchs
             source = sqlite3.connect(source_path)
             try:
-                destination = sqlite3.connect(target)
+                destination = sqlite3.connect(part)
                 try:
                     source.backup(destination)
-                    copied = True
                     if (destination.execute('PRAGMA user_version').fetchone()[0]
                             != source.execute('PRAGMA user_version').fetchone()[0]):
                         raise sqlite3.DatabaseError('Die Kopie trägt einen anderen Stand als die Datenbank')
@@ -166,12 +182,12 @@ class SchemaMixin:
                     destination.close()
             finally:
                 source.close()
+            os.replace(part, target)
         except Exception as exc:
-            if copied or os.path.exists(target):
-                try:
-                    os.remove(target)
-                except OSError:
-                    pass
+            try:
+                os.remove(part)
+            except OSError:
+                pass
             raise MigrationBackupError(
                 f"Die Datenbank '{self.db_name}' muss auf Version {label} umgestellt werden. Vorher "
                 f"legt das Programm eine Sicherung an, und die ist gescheitert ({exc}). Die "
@@ -212,7 +228,7 @@ class SchemaMixin:
         # bestehende DB handelt und welche Schema-Version sie trägt. Wird unten in
         # _create_extended_schema für die Migration ausgewertet (eigene Connection).
         self._migrate_from_version = cursor.execute("PRAGMA user_version").fetchone()[0]
-        from version import SCHEMA_VERSION, describe_schema_version
+        from version import APP_VERSION, SCHEMA_VERSION, describe_schema_version
         if self._migrate_from_version > SCHEMA_VERSION:
             conn.close()
             raise SchemaTooNewError(
@@ -223,11 +239,12 @@ class SchemaMixin:
         self._migrate_had_tables = cursor.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='Invoices'"
         ).fetchone() is not None
-        if self._migrate_had_tables and self._migrate_from_version < ENTRY_FORM_SCHEMA:
-            # Vor jeder Änderung: ohne Sicherung kein Weg zurück auf 2.0.x (die Zahl in der
-            # Datenbank wird nie zurückgestempelt, 2.0.x öffnet eine 2.1-Datenbank nicht)
+        if self._migrate_had_tables and self._migrate_from_version < SCHEMA_VERSION:
+            # Vor jedem Migrationslauf einer bestehenden Datenbank: ohne Sicherung kein Weg zurück
+            # auf die vorherige Version (die Zahl in der Datenbank wird nie zurückgestempelt, die
+            # ältere Version öffnet die umgestellte Datenbank nicht)
             try:
-                self._backup_before_migration('2.1.0')
+                self._backup_before_migration(APP_VERSION)
             except MigrationBackupError:
                 conn.close()
                 raise
@@ -727,18 +744,31 @@ class SchemaMixin:
         # Bestehende, ältere DBs migrieren (neue Spalten nachziehen). Frische DBs
         # sind durch die CREATE-Statements oben bereits aktuell.
         from version import SCHEMA_VERSION
-        if getattr(self, '_migrate_had_tables', False) and \
-                self._migrate_from_version < SCHEMA_VERSION:
-            self._run_migrations(cursor, self._migrate_from_version)
+        migrating = (getattr(self, '_migrate_had_tables', False)
+                     and self._migrate_from_version < SCHEMA_VERSION)
+        if migrating:
+            # Die Umstellung läuft in EINER Transaktion – ALTER TABLE eingeschlossen: Bricht sie ab,
+            # ist die Datenbank danach so wie vorher (keine leere Spalte, keine halbe Befüllung),
+            # und der nächste Start versucht es noch einmal.
+            if conn.in_transaction:
+                conn.commit()
+            cursor.execute('BEGIN')
+        try:
+            if migrating:
+                self._run_migrations(cursor, self._migrate_from_version)
 
-        self._ensure_invoice_payment_index(cursor)
+            self._ensure_invoice_payment_index(cursor)
 
-        # Schema-Version in der DB hinterlegen (MAJOR × 1000 + SCHEMA_STEP, siehe
-        # version.py). Bei jeder Schema-Änderung SCHEMA_STEP dort erhöhen.
-        cursor.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
+            # Schema-Version in der DB hinterlegen (MAJOR × 1000 + SCHEMA_STEP, siehe
+            # version.py). Bei jeder Schema-Änderung SCHEMA_STEP dort erhöhen.
+            cursor.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
 
-        conn.commit()
-        conn.close()
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
         # Seed-Daten aus seed_data/ laden
         self._seed_chart_of_accounts()

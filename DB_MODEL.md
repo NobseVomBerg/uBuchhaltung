@@ -293,7 +293,9 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 - `BookingType='bank'`: Echte Geldbewegung auf dem Bankkonto (aus WISO-Tabellen-Export oder PDF-Import)
 - `BookingType='entry'`: Buchhalterischer Eintrag (aus WISO-Original-Export oder manuell)
 - `ParentBooking_ID`: Verknüpft einen Entry mit seiner zugehörigen Bankbuchung
-- Doppik-Entries (COA_ID zeigt auf ein SKR-Bankkonto wie 1810) werden in der Anzeige ausgeblendet
+- Doppik-Entries (COA_ID **und** CounterCOA_ID sind eigene Bank-/Kassenkonten, `is_mirror_row`) werden
+  in der Anzeige und im Buchungssatz-Editor ausgeblendet; ein Spiegel mit dem Verrechnungskonto 1460
+  bleibt sichtbar und bearbeitbar
 - `link_bank_to_entries()` verknüpft automatisch anhand mehrstufigem Matching (siehe Datenfluss)
 - `Status='resolved'`: Debitoren-Entry wurde über Stufe 7 als erledigt markiert (Zahlung existiert)
 - `Status='invoice_payment'`: Marke der Buchungssätze, die die App für eine Zahlungszuordnung angelegt hat (Abschnitt 9a). Sie braucht keine Schemaänderung – `Status` ist frei definierbar, die EÜR filtert nur auf `'resolved'`
@@ -329,13 +331,21 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 
   *Migration auf 2.1.0:* Jeder `entry` des Bestands bekam die Form, die 2.0.x ihm gab (die
   Zahlungskonten von damals einschließlich 1000–1099); Spiegel wurden `mirror_legacy`. Danach ist
-  jede Auswertung identisch. Vor der Umstellung legt die App eine Sicherung nach
-  `backup/JJJJMMTT_vor_2.1.0_<Datei>` an.
+  jede Auswertung identisch. Vor jedem Migrationslauf einer bestehenden Datenbank legt die App eine
+  Sicherung nach `backup/JJJJMMTT_vor_<Programmversion>_<Datei>` an (erst als `.part`, dann
+  umbenannt; nie überschrieben); die Umstellung selbst läuft in einer Transaktion. Kein Import und
+  keine Maske stellt einen `mirror_legacy`-Spiegel um – die Importe zählen ihn nur (`legacy_mirrors`).
+
+  *Masken:* Das Zweckkonto, das der Buchungssatz-Editor im Feld „SKR-Konto“ zeigt und
+  „vorhandene Buchung zuordnen“ vorbelegt, bestimmt `purpose_in_counter`: `liquid_first` → das
+  Gegenkonto, `purpose_first`/`transfer` → das Konto, Spiegel und Zeilen ohne Form wie in 2.0.x
+  (Konto ist ein eigenes Bankkonto, Gegenkonto nicht → das Gegenkonto). Öffnen und unverändert
+  speichern ändert keine Spalte.
 - **Split-Summe** (`bank_effect`): Ein Spiegel mit bekannter Lesart (`mirror_coa`,
   `mirror_counter`) wirkt auf das Konto der Bankbewegung nach seiner Position – steht das Konto
   der Bank auf der Seite, auf die sich der Betrag bezieht, ist es der Betrag, auf der anderen
   Seite sein Gegenteil, berührt er das Konto nicht, 0. Alles andere zählt über
-  `is_bank_effective`.
+  `is_bank_effective`. Die Summenzeile des Editors rechnet genauso (`data-sign` je Zeile).
 - **AfA-Buchung** (`book_depreciation`): eine Umbuchung „Aufwand an Anlagekonto“ als
   eigenständiger Satz – `COA_ID` = Aufwandskonto (z. B. 6220), `CounterCOA_ID` =
   Anlagekonto (z. B. 520), `Amount` positiv, `Account_ID` leer, `Status='posted'`,

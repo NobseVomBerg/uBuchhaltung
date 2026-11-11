@@ -455,8 +455,10 @@ def test_changing_the_cash_number_after_an_import_would_turn_an_expense_into_inc
     db.update_account(kasse, row[1], row[2], row[3], row[4], row[5], skr_account=1600)
     # Seit 2.1.0 trägt der Satz seine Form (Umbuchung): Das Kennzeichen im Export kippt nicht mehr
     # auf H. Die Kasse führt jetzt aber 1600, also nimmt die EÜR den Satz auf – als Umbuchung, nicht
-    # als Ausgabe –, und das Dashboard zählt ihn mit dem gespeicherten Betrag (+18,35) als Einnahme.
-    # Die Sperre bleibt nötig.
+    # als Ausgabe: Das Kassenkonto 1600 steht als Zeile in der EÜR (+15,42), 6815 mit −15,42 und die
+    # Vorsteuer 1406 mit +2,93, also mit falschem Vorzeichen. Das Dashboard zählt den Satz mit dem
+    # gespeicherten Betrag (+18,35) als Einnahme. Alles das ist, was die Sperre verhindert – sie
+    # bleibt nötig.
     assert state() == ([('18,35', 'S', '6815', '1600', '3')],
                        {1406: Decimal('2.93'), 1600: Decimal('15.42'), 6815: Decimal('-15.42')},
                        (18.35, 0))

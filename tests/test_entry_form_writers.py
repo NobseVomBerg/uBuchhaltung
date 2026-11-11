@@ -409,6 +409,56 @@ def test_backfill_gives_an_entry_without_a_front_account_its_form(db):
                                                        FORM_PURPOSE_FIRST)
 
 
+def test_backfill_writes_the_account_the_form_and_the_negated_amount_into_the_sql_log(db):
+    """Die ganze Änderung steht als EINE Anweisung im Protokoll: Konto, Form und Betrag – sonst ließe sich
+    der Stand nicht nachspielen."""
+    import os
+    import userctx
+    entry = db.insert_booking('2026-03-01', Decimal('50.00'), counter_coa_id=coa(db, 1800),
+                              booking_type='entry', entry_form=FORM_MIRROR_COA)
+    log = os.path.join(userctx.user_data_dir(), 'sql_operations.sql')
+    before = len(open(log, encoding='utf-8').read().splitlines()) if os.path.exists(log) else 0
+
+    db.backfill_booking_fields(entry, coa_id=coa(db, 6815))
+
+    assert (numbers(db, entry), form_of(db, entry)) == ((6815, 1800, minor('-50.00')),
+                                                       FORM_PURPOSE_FIRST)
+    new = open(log, encoding='utf-8').read().splitlines()[before:]
+    statement = ' '.join(' '.join(new).split())
+    assert len(new) == 1 and statement.startswith('UPDATE Bookings SET COA_ID = COALESCE(COA_ID, ')
+    assert "EntryForm = COALESCE('purpose_first', EntryForm)" in statement
+    assert f'Amount = COALESCE({minor("-50.00")}, Amount) WHERE ID = {entry};' in statement
+
+
+def test_backfill_that_changes_no_account_writes_nothing_into_the_sql_log(db):
+    import os
+    import userctx
+    entry = db.insert_booking('2026-03-01', Decimal('-50.00'), coa_id=coa(db, 6815),
+                              counter_coa_id=coa(db, 1800), booking_type='entry')
+    log = os.path.join(userctx.user_data_dir(), 'sql_operations.sql')
+    before = len(open(log, encoding='utf-8').read().splitlines()) if os.path.exists(log) else 0
+
+    db.backfill_booking_fields(entry, coa_id=coa(db, 4400), document_number='X-1')
+
+    assert (numbers(db, entry), form_of(db, entry)) == ((6815, 1800, minor('-50.00')),
+                                                       FORM_PURPOSE_FIRST)
+    after = len(open(log, encoding='utf-8').read().splitlines()) if os.path.exists(log) else 0
+    assert after == before
+
+
+def test_a_row_the_auto_match_turns_into_a_bank_row_loses_its_form(db):
+    """Schritt 0 von ``link_bank_to_entries``: Ein ``entry`` mit Bankkonto und ohne jedes Konto ist in
+    Wahrheit eine Bankbewegung. Eine Bankzeile hat keine Form."""
+    row = db.insert_booking('2026-03-01', Decimal('-10.00'), account_id=_account(db),
+                            booking_type='entry')
+    assert form_of(db, row) == FORM_PURPOSE_FIRST                    # nichts kontiert
+
+    db.link_bank_to_entries()
+
+    assert query(db, 'SELECT BookingType, EntryForm FROM Bookings WHERE ID = ?', (row,)) == [
+        ('bank', None)]
+
+
 def test_backfill_on_a_bank_row_changes_no_form(db):
     bank = db.insert_booking('2026-03-01', 1, account_id=_account(db), booking_type='bank')
     db.backfill_booking_fields(bank, coa_id=coa(db, 4400))

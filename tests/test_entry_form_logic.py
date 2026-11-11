@@ -18,7 +18,7 @@ from db.matching import (
     ENTRY_TRANSFER, FORM_LIQUID_FIRST, FORM_MIRROR_COA, FORM_MIRROR_COUNTER, FORM_MIRROR_LEGACY,
     FORM_PURPOSE_FIRST, FORM_TRANSFER, MIRROR_FORMS, SIDE_COA, SIDE_COUNTER, bank_effect,
     classify_entry, derive_entry_form, import_entry_form, is_asset_transfer, is_bank_effective,
-    is_mirror_row, read_entry_form, reform, soll_side,
+    is_mirror_row, purpose_in_counter, read_entry_form, reform, soll_side,
 )
 
 GELD, GELD2, ZWECK, ZWECK2 = 10, 11, 20, 30
@@ -175,12 +175,21 @@ def test_reform_keeps_the_role_of_a_side_that_does_not_change_whatever_the_list_
 # ── is_mirror_row ────────────────────────────────────────────────────────────
 
 BANK_IDS = {GELD, GELD2}
+VERRECHNUNG = 12             # ein Zahlungskonto, das kein eigenes Bank-/Kassenkonto ist (1460)
 
 
-@pytest.mark.parametrize('stored', [FORM_MIRROR_COA, FORM_MIRROR_COUNTER])
-def test_a_mirror_with_a_known_reading_is_a_mirror_by_its_form_alone(stored):
-    assert is_mirror_row(stored, ZWECK, ZWECK2, set())
+@pytest.mark.parametrize('stored', [FORM_MIRROR_COA, FORM_MIRROR_COUNTER, FORM_MIRROR_LEGACY, None])
+def test_a_mirror_is_hidden_when_both_sides_are_own_bank_accounts_whatever_its_reading(stored):
+    """Wie in 2.0.x: beide Seiten eigene Bank-/Kassenkonten (``get_bank_coa_ids``) – nicht die Form."""
     assert is_mirror_row(stored, GELD, GELD2, BANK_IDS)
+    assert not is_mirror_row(stored, GELD, ZWECK, BANK_IDS)
+    assert not is_mirror_row(stored, GELD, GELD2, {GELD})      # GELD2 ist (noch) kein eigenes Konto
+
+
+@pytest.mark.parametrize('stored', [FORM_MIRROR_COA, FORM_MIRROR_COUNTER, FORM_MIRROR_LEGACY, None])
+def test_a_mirror_with_the_clearing_account_stays_visible_and_editable(stored):
+    assert not is_mirror_row(stored, VERRECHNUNG, GELD, BANK_IDS)
+    assert not is_mirror_row(stored, GELD, VERRECHNUNG, BANK_IDS)
 
 
 @pytest.mark.parametrize('stored', [FORM_PURPOSE_FIRST, FORM_LIQUID_FIRST, FORM_TRANSFER])
@@ -188,12 +197,31 @@ def test_a_payment_form_is_never_a_mirror_even_if_the_accounts_look_like_one_tod
     assert not is_mirror_row(stored, GELD, GELD2, BANK_IDS)
 
 
-@pytest.mark.parametrize('stored', [FORM_MIRROR_LEGACY, None])
-def test_a_legacy_mirror_and_a_row_without_form_are_mirrors_as_before(stored):
-    """Beide Seiten eigene Bank-/Kassenkonten – wie bisher, nicht nach der Form."""
-    assert is_mirror_row(stored, GELD, GELD2, BANK_IDS)
-    assert not is_mirror_row(stored, GELD, ZWECK, BANK_IDS)
-    assert not is_mirror_row(stored, GELD, GELD2, {GELD})      # GELD2 ist (noch) kein eigenes Konto
+# ── purpose_in_counter ───────────────────────────────────────────────────────
+
+@pytest.mark.parametrize('coa, counter', [(GELD, ZWECK), (ZWECK, GELD), (ZWECK, ZWECK2), (GELD, GELD2),
+                                          (VERRECHNUNG, ZWECK), (GELD, VERRECHNUNG), (None, ZWECK),
+                                          (GELD, None)])
+def test_the_form_decides_where_the_purpose_account_stands_for_the_payment_forms(coa, counter):
+    assert purpose_in_counter(FORM_LIQUID_FIRST, coa, counter, BANK_IDS) == (coa is not None)
+    assert not purpose_in_counter(FORM_PURPOSE_FIRST, coa, counter, BANK_IDS)
+    assert not purpose_in_counter(FORM_TRANSFER, coa, counter, BANK_IDS)
+
+
+@pytest.mark.parametrize('stored', [FORM_MIRROR_COA, FORM_MIRROR_COUNTER, FORM_MIRROR_LEGACY, None])
+@pytest.mark.parametrize('coa, counter, expected', [
+    (GELD, VERRECHNUNG, True),       # Bank an 1460: das Zweckkonto ist 1460, nicht die Bank
+    (GELD, ZWECK, True),
+    (VERRECHNUNG, GELD, False),      # 1460 an Bank: das Zweckkonto steht vorne
+    (ZWECK, GELD, False),
+    (GELD, GELD2, False),            # zwei eigene Konten: ein ausgeblendeter Spiegel
+    (VERRECHNUNG, ZWECK, False),
+    (GELD, None, True),
+])
+def test_a_mirror_and_a_row_without_a_form_read_as_in_2_0_x(stored, coa, counter, expected):
+    """Das Konto ist ein eigenes Bankkonto und das Gegenkonto nicht: Dann ist das Gegenkonto das
+    Zweckkonto – so, wie der Editor es in 2.0.x zeigte (und der Satz beim Speichern unverändert blieb)."""
+    assert purpose_in_counter(stored, coa, counter, BANK_IDS) is expected
 
 
 # ── bank_effect ──────────────────────────────────────────────────────────────
@@ -250,10 +278,11 @@ def test_bank_effect_treats_no_amount_as_zero():
     (True, True, GELD, GELD2, FORM_MIRROR_COA),          # Spiegel: der Rohbetrag, positiv = Konto im Soll
     (True, False, GELD, ZWECK, FORM_LIQUID_FIRST),
     (False, True, ZWECK, GELD, FORM_PURPOSE_FIRST),
+    # keine Seite ein Zahlungskonto: WISO meint „Konto im Soll“ – auch bei leerer oder unbekannter Seite
     (False, False, ZWECK, ZWECK2, FORM_TRANSFER),
-    (False, False, ZWECK, None, FORM_PURPOSE_FIRST),
-    (False, False, None, ZWECK, FORM_LIQUID_FIRST),
-    (False, False, None, None, FORM_PURPOSE_FIRST),
+    (False, False, ZWECK, None, FORM_TRANSFER),
+    (False, False, None, ZWECK, FORM_TRANSFER),
+    (False, False, None, None, FORM_TRANSFER),
     (False, True, None, GELD, FORM_PURPOSE_FIRST),
     # ein Geldkonto, das im Kontenrahmen fehlt (kein Konto), zählt nicht als Seite
     (True, False, None, ZWECK, FORM_LIQUID_FIRST),

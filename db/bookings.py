@@ -8,8 +8,8 @@ import json
 from decimal import Decimal
 from money import to_minor, from_minor
 from db.matching import (
-    ENTRY_FORMS, FORM_LIQUID_FIRST, SIDE_COUNTER, derive_entry_form, is_bank_effective,
-    is_mirror_row, read_entry_form, reform,
+    ENTRY_FORMS, SIDE_COUNTER, derive_entry_form, is_bank_effective, is_mirror_row,
+    purpose_in_counter, read_entry_form, reform,
 )
 from db.invoice_payments import PAYMENT_MARK
 
@@ -324,7 +324,9 @@ class BookingsMixin:
         nachträglichen Verknüpfen einer Zahlung mit einer Rechnung (todo #2).
 
         Bekommt ein Buchungssatz sein Konto erst hier, ändert sich seine Kontierung: Die Form
-        wird neu abgeleitet (``db.matching.reform``), der Betrag behält sein Soll/Haben.
+        wird neu abgeleitet (``db.matching.reform``), der Betrag behält sein Soll/Haben. Dann steht
+        die ganze Änderung (Konto, Form, negierter Betrag) als eine Anweisung im Protokoll – sonst
+        ließe sich der Stand nicht nachspielen.
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -336,7 +338,7 @@ class BookingsMixin:
             old_form = read_entry_form(old[1], old[2], old[3], money_ids)
             form, new_amount = reform(old_form, old[2], old[3], coa_id, old[3], money_ids, old[4])
             amount = new_amount if new_amount != old[4] else None
-        cursor.execute('''
+        sql_template = '''
             UPDATE Bookings SET
                 COA_ID     = COALESCE(COA_ID, ?),
                 TaxRate    = COALESCE(TaxRate, ?),
@@ -344,15 +346,18 @@ class BookingsMixin:
                 Contact_ID = COALESCE(Contact_ID, ?),
                 DocumentNumber = CASE WHEN DocumentNumber IS NULL
                                         OR DocumentNumber = ''
-                                      THEN ? ELSE DocumentNumber END
+                                      THEN ? ELSE DocumentNumber END,
+                EntryForm  = COALESCE(?, EntryForm),
+                Amount     = COALESCE(?, Amount)
             WHERE ID = ?
-        ''', (coa_id, tax_rate, self._minor_opt(tax_amount), contact_id,
-              document_number, booking_id))
-        if form is not None:
-            cursor.execute('UPDATE Bookings SET EntryForm = ?, Amount = COALESCE(?, Amount) '
-                           'WHERE ID = ?', (form, amount, booking_id))
+        '''
+        params = (coa_id, tax_rate, self._minor_opt(tax_amount), contact_id,
+                  document_number, form, amount, booking_id)
+        cursor.execute(sql_template, params)
         conn.commit()
         conn.close()
+        if form is not None:
+            self._log_sql(sql_template, params, 'Buchung nachgetragen: Konto, Form und Betrag')
 
     def check_booking_exists(self, date, amount, account_id=None, foreign_bank_account="", text=""):
         """Anzahl vorhandener Buchungen mit gleichem Datum/Betrag/Konto.
@@ -452,18 +457,15 @@ class BookingsMixin:
             ''', (hit_id,))
         raw = cursor.fetchall()
         bank_coa_ids = self._get_bank_coa_ids(cursor)
-        money_ids = self._get_payment_coa_ids(cursor)
         conn.close()
 
         rows = []
         for coa, counter, amount, rate, tax, text, docnr, stored_form in raw:
             if is_mirror_row(stored_form, coa, counter, bank_coa_ids):
                 continue                      # reiner Doppik-Spiegel
-            # Liquide-zuerst gebuchte Sätze: das Zweckkonto steht hinten
-            purpose = coa
-            if coa is not None and read_entry_form(stored_form, coa, counter,
-                                                   money_ids) == FORM_LIQUID_FIRST:
-                purpose = counter
+            # Geldkonto vorne („Bank an 1460“ eingeschlossen): das Zweckkonto steht hinten
+            purpose = counter if purpose_in_counter(stored_form, coa, counter,
+                                                    bank_coa_ids) else coa
             # Umbuchungen (Privatanteil, Wartekonto) brauchen ihr Gegenkonto
             # mit: ohne das würde eine Kopie zur Bankbewegung und die Summe
             # der Teilbuchungen stimmte nicht mehr.
@@ -576,8 +578,10 @@ class BookingsMixin:
         einen ``entry``, dessen Konten sich wirklich ändern und für den die Form nicht
         ausdrücklich genannt ist; sonst ``None``. Returns ``(form, amount)``: ``amount`` ist der
         negierte Betrag, wenn die Form auf die andere Seite kippt und der Aufrufer keinen eigenen
-        mitgibt (``db.matching.reform``; ein mitgegebener Betrag gilt für die neue Kontierung),
-        sonst ``None`` – dann bleibt der Betrag, wie er ist."""
+        mitgibt (``db.matching.reform``), sonst ``None`` – dann bleibt der Betrag, wie er ist.
+        Ein Betrag, der unverändert zurückkommt, gilt als nicht mitgegeben: Die Masken schicken
+        den gespeicherten Betrag immer mit, und ein Wechsel des Zweckkontos soll Soll/Haben
+        erhalten (ein anderer Betrag gilt dagegen für die neue Kontierung)."""
         if 'entry_form' in values or not ({'coa_id', 'counter_coa_id'} & set(values)):
             return None
         old = conn.execute('SELECT BookingType, EntryForm, COA_ID, CounterCOA_ID, Amount '
@@ -591,7 +595,8 @@ class BookingsMixin:
         money_ids = self._get_payment_coa_ids(conn.cursor())
         old_form = read_entry_form(old[1], old[2], old[3], money_ids)
         form, amount = reform(old_form, old[2], old[3], coa_id, counter_coa_id, money_ids, old[4])
-        return form, (amount if 'amount' not in values and amount != old[4] else None)
+        resent = values.get('amount', old[4]) == old[4]
+        return form, (amount if resent and amount != old[4] else None)
 
     def update_booking_fields(self, booking_id, log_description=None, **fields):
         """Nur die genannten Felder einer Buchung ändern; alle anderen bleiben, wie sie sind.
@@ -602,8 +607,8 @@ class BookingsMixin:
 
         Ändern sich Konto oder Gegenkonto eines Buchungssatzes, bekommt er die dazu passende
         Form (``db.matching.reform``), sofern der Aufrufer sie nicht selbst als ``entry_form``
-        nennt. Ohne eigenen ``amount`` bleibt dabei das Soll/Haben erhalten: Kippt die Form
-        auf die andere Seite, wird der Betrag negiert.
+        nennt. Ohne eigenen ``amount`` – oder mit dem unveränderten gespeicherten – bleibt dabei
+        das Soll/Haben erhalten: Kippt die Form auf die andere Seite, wird der Betrag negiert.
         """
         unknown = set(fields) - set(self._BOOKING_FIELD_COLUMNS)
         if unknown:
@@ -667,7 +672,8 @@ class BookingsMixin:
         
         params = (date_booking, date_tax, account_id, foreign_bank_account,
                   recipient_client, contact_id, coa_id, counter_coa_id, category_id,
-                  to_minor(amount or 0), currency,
+                  reformed[1] if reformed and reformed[1] is not None else to_minor(amount or 0),
+                  currency,
                   tax_rate, self._minor_opt(tax_amount), text, document_number, booking_type, parent_booking_id,
                   reformed[0] if reformed else None, booking_id)
 

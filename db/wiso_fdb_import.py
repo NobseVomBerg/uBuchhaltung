@@ -25,8 +25,7 @@ from collections import namedtuple
 
 from db.core import coa_id
 from db.matching import (
-    FORM_MIRROR_COA, FORM_MIRROR_COUNTER, FORM_MIRROR_LEGACY, LEGACY_CASH_NUMBERS,
-    LEGACY_CASH_RANGE, MIRROR_FORMS,
+    FORM_MIRROR_COA, FORM_MIRROR_LEGACY, LEGACY_CASH_NUMBERS, LEGACY_CASH_RANGE, MIRROR_FORMS,
 )
 from money import from_minor, to_minor
 
@@ -129,21 +128,23 @@ class WisoFdbImportMixin:
             mit ``id``, ``date``, ``amount`` in Euro und ``text`` der vorhandenen
             Buchung), ``assets``, ``depreciations``, ``tax_rows_skipped``,
             ``memo_rows_skipped``, ``missing_coa`` und ``errors``. Dazu
-            ``negative_gross`` (Sätze mit negativem Bruttobetrag und genau einer liquiden Seite:
-            das Vorzeichen richtet sich nach der Geldbewegung, ein Storno oder eine Gutschrift
-            wird so wie eine normale Buchung gelesen), ``stock_range_accounts`` (Konten
-            1000–1099 in den Sätzen: ältere Versionen haben sie als Kasse gelesen; je Konto
-            ``nummer``, ``bezeichnung``, ``anzahl`` der Sätze), ``forms_stamped`` (schon
-            importierte Spiegel, die ihre Form aus dem Rohbetrag bekamen) und
-            ``form_conflicts_count``/``form_conflicts`` (schon importierte Sätze, deren
-            gespeicherte Form von der des frischen Imports abweicht: nur gemeldet, die ersten
-            500 mit ``id``, ``date``, ``amount``, ``text``, ``stored`` und ``fresh``).
+            ``negative_gross`` (Sätze mit negativem Bruttobetrag, deren Vorzeichen der Import
+            ersetzt hat: bei genau einer liquiden Seite richtet es sich nach der Geldbewegung, ein
+            Storno oder eine Gutschrift wird so wie eine normale Buchung gelesen),
+            ``stock_range_accounts`` (Konten 1000–1099 in den Sätzen: ältere Versionen haben sie
+            als Kasse gelesen; je Konto ``nummer``, ``bezeichnung``, ``anzahl`` der Sätze),
+            ``legacy_mirrors`` (Spiegel der Datenbank, die als schon vorhandene Spiegel des
+            Bestands wiedererkannt wurden: Sie stehen noch in der alten Lesart, ihre Form und
+            ihr Betrag bleiben unverändert) und ``form_conflicts_count``/``form_conflicts``
+            (schon importierte Sätze, deren gespeicherte Form von der des frischen Imports
+            abweicht: nur gemeldet, die ersten 500 mit ``id``, ``date``, ``amount``, ``text``,
+            ``stored`` und ``fresh``).
         """
         from importers.wiso_fdb import WisoDatabase
 
         result = {'imported': 0, 'skipped': 0, 'adopted': 0, 'adopted_rows': [],
                   'possible_duplicates_count': 0, 'possible_duplicates': [],
-                  'negative_gross': 0, 'stock_range_accounts': [], 'forms_stamped': 0,
+                  'negative_gross': 0, 'stock_range_accounts': [], 'legacy_mirrors': 0,
                   'form_conflicts_count': 0, 'form_conflicts': [],
                   'assets': 0, 'depreciations': 0, 'tax_rows_skipped': 0,
                   'memo_rows_skipped': 0, 'missing_coa': {}, 'created_coa': {},
@@ -335,19 +336,22 @@ class WisoFdbImportMixin:
           Steuerbetrag ergänzen, wenn beide fehlen. Alles andere – Text,
           Verknüpfungen, Änderungen des Nutzers – bleibt.
         * Die Form (``Bookings.EntryForm``) schreibt der Import mit, wie er das Vorzeichen
-          gesetzt hat (``WisoBooking.form``). Ein übernommener Spiegel des Bestands
-          (``mirror_legacy``, Betrag wie in der Datenbank) bekommt ``mirror_coa``.
+          gesetzt hat (``WisoBooking.form``) – für Sätze, die er neu anlegt. Die Form einer
+          vorhandenen Zeile ändert kein Import: Ein übernommener Spiegel des Bestands
+          (``mirror_legacy``) bleibt einer, nur seine Quellgruppe wird gesetzt, und der Import
+          zählt ihn (``legacy_mirrors``). Füllt die Übernahme ein fehlendes Konto, ändern sich
+          die Konten des Satzes – dann gilt für ihn die Form des Imports.
         * Ein Spiegel des Bestands mit umgekehrtem Vorzeichen (``mirror_legacy``, Betrag
           −gross: Richtung auf dem Gegenkonto) wird übernommen, wenn Konto, Gegenkonto, Beleg-Nr.
           und (nicht leerer) Text gleich sind und nur das Vorzeichen abweicht, und die Datei
           nicht selbst eine Zeile mit dem Betrag dieses Spiegels enthält (dann wäre es deren
-          Duplikat). Er bekommt ``mirror_counter``. Mehrdeutigkeit und „im Zweifel neu
-          anlegen“ gelten wie oben.
+          Duplikat). Form und Betrag bleiben. Mehrdeutigkeit und „im Zweifel neu anlegen“ gelten
+          wie oben.
         * Bekannte ``SourceGroup`` (Re-Import): Statt zu überspringen, wird der Satz mit der
           Zeile der Gruppe verglichen (Datum, Konto, Gegenkonto, |Betrag|). Ein
-          ``mirror_legacy``-Spiegel bekommt seine Form aus dem Rohbetrag (``forms_stamped``,
-          im Replay-Log); weicht eine andere gespeicherte Form von der des frischen Imports ab,
-          wird das nur gemeldet (``form_conflicts``) – nichts wird umgedeutet.
+          ``mirror_legacy``-Spiegel wird gezählt (``legacy_mirrors``); weicht eine andere
+          gespeicherte Form von der des frischen Imports ab, wird das nur gemeldet
+          (``form_conflicts``) – nichts wird umgedeutet.
         * Möglicherweise doppelt: Hat dieser Lauf zu Datum, Betrag und Konto (bzw.
           der Ersatzsuche) einen Satz neu angelegt, werden die dazu geladenen,
           nicht übernommenen Kandidaten gemeldet (``possible_duplicates_count``,
@@ -368,7 +372,6 @@ class WisoFdbImportMixin:
                 EntryForm       = COALESCE(?, EntryForm)
             WHERE ID = ?
         '''
-        stamp_sql = 'UPDATE Bookings SET EntryForm = ? WHERE ID = ?'
         with self.transaction() as tx:
             cursor = tx.conn.cursor()
             coa_map = self._coa_map(cursor)
@@ -447,9 +450,9 @@ class WisoFdbImportMixin:
 
             for booking, coa, counter_coa, amount, number, text, key in prepared:
                 if booking.group and booking.group in known_groups:
-                    # Re-Import: Nichts wird neu angelegt. Der Satz wird mit seiner Zeile
-                    # verglichen – ein Spiegel des Bestands bekommt seine Form, eine abweichende
-                    # Form wird nur gemeldet.
+                    # Re-Import: Nichts wird neu angelegt und nichts geändert. Der Satz wird mit
+                    # seiner Zeile verglichen – ein Spiegel des Bestands wird gezählt, eine
+                    # abweichende Form nur gemeldet.
                     pool = group_rows(booking.group)
                     same = [row for row in pool
                             if row[1] == booking.date and row[2] == coa and row[3] == counter_coa
@@ -459,12 +462,7 @@ class WisoFdbImportMixin:
                         pool.remove(row)
                         row_id, _date, _coa, _counter, row_amount, stored, row_text = row
                         if stored == FORM_MIRROR_LEGACY and booking.form == FORM_MIRROR_COA:
-                            new_form = (FORM_MIRROR_COA if row_amount == amount
-                                        else FORM_MIRROR_COUNTER)
-                            cursor.execute(stamp_sql, (new_form, row_id))
-                            tx.log.append((stamp_sql, (new_form, row_id),
-                                           'WISO-Datenbank-Import: Form des Spiegels festgeschrieben'))
-                            result['forms_stamped'] += 1
+                            result['legacy_mirrors'] += 1
                         elif stored and deviates(stored, booking.form):
                             note_conflict(row_id, booking.date, row_amount, row_text, stored,
                                           booking.form)
@@ -510,8 +508,7 @@ class WisoFdbImportMixin:
                         # des Satzes ändern sich, also gilt die Form des Imports für sie
                         form_value = booking.form
                     elif stored == FORM_MIRROR_LEGACY and booking.form == FORM_MIRROR_COA:
-                        form_value = FORM_MIRROR_COUNTER if flipped else FORM_MIRROR_COA
-                        result['forms_stamped'] += 1
+                        result['legacy_mirrors'] += 1        # bleibt, wie sie ist
                     elif deviates(stored, booking.form):
                         note_conflict(match.id, booking.date, -amount if flipped else amount,
                                       match.shown, stored, booking.form)

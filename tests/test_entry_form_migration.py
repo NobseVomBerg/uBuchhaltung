@@ -333,6 +333,146 @@ def test_a_backup_that_cannot_be_written_is_not_left_behind(old_1600, monkeypatc
     assert _backups(path) == []                                    # keine halbe Kopie
 
 
+def test_every_migration_run_of_an_existing_database_is_backed_up_and_named_after_the_program(
+        old_1600, monkeypatch):
+    """Nicht nur der Schritt auf 2.1.0: Fragt irgendein künftiger Schritt (hier ein erfundener 2.2.0 mit
+    der Schema-Zahl 2002) eine bestehende Datenbank um, entsteht vorher eine Sicherung – mit der Version
+    des Programms im Namen, das umstellt."""
+    path = old_1600
+    _reopen(path)                                                  # 2.1.0: erste Sicherung
+    assert [b.name[9:] for b in _backups(path)] == ['vor_2.1.0_buch.db']
+    monkeypatch.setattr(version, 'SCHEMA_STEP', 2)
+    monkeypatch.setattr(version, 'SCHEMA_VERSION', 2002)
+    monkeypatch.setattr(version, 'APP_VERSION', '2.2.0')
+
+    _reopen(path)
+
+    assert installation.user_version(path) == 2002
+    names = sorted(b.name[9:] for b in _backups(path))
+    assert names == ['vor_2.1.0_buch.db', 'vor_2.2.0_buch.db']
+    newest = next(b for b in _backups(path) if 'vor_2.2.0' in b.name)
+    assert installation.user_version(str(newest)) == 2001          # der Stand vor dem Lauf
+
+
+def test_the_backup_is_published_only_when_it_is_complete(old_1600, monkeypatch):
+    """Die Kopie entsteht unter ``<Name>.part`` und bekommt ihren Namen erst mit ``os.replace``."""
+    import db.schema as schema
+    path = old_1600
+    seen = []
+    real_replace = os.replace
+
+    def spy(source, target):
+        seen.append((source.endswith('.part'), os.path.exists(source), os.path.exists(target),
+                     installation.user_version(source)))
+        return real_replace(source, target)
+
+    monkeypatch.setattr(schema.os, 'replace', spy)
+    _reopen(path)
+    monkeypatch.undo()
+
+    assert seen == [(True, True, False, 2000)]                     # vollständig und geprüft, Ziel frei
+    assert [b.name for b in _backups(path) if b.name.endswith('.part')] == []
+    assert len(_backups(path)) == 1
+
+
+def test_an_interrupted_backup_leaves_no_file_that_looks_like_a_backup(old_1600, monkeypatch):
+    import db.schema as schema
+    path = old_1600
+
+    def broken_replace(source, target):
+        raise OSError('Platte weg')
+
+    monkeypatch.setattr(schema.os, 'replace', broken_replace)
+    try:
+        with pytest.raises(MigrationBackupError):
+            _reopen(path)
+    finally:
+        monkeypatch.undo()
+
+    assert _backups(path) == []                                    # weder Ziel noch ``.part``
+    assert installation.user_version(path) == 2000
+
+
+def test_an_aborted_migration_leaves_the_database_exactly_as_it_was(old_1600, monkeypatch):
+    """Die Umstellung läuft in einer Transaktion: Bricht sie mitten im Befüllen ab, gibt es keine leere
+    Spalte und keine halbe Befüllung – der nächste Start versucht es noch einmal."""
+    path = old_1600
+    before = installation.dump(path)
+
+    def boom(self, cursor):
+        cursor.execute("UPDATE Bookings SET EntryForm = 'transfer' WHERE ID = (SELECT MIN(ID) FROM Bookings)")
+        raise RuntimeError('Abbruch mitten im Befüllen')
+
+    monkeypatch.setattr(Database, '_fill_entry_forms', boom)
+    try:
+        with pytest.raises(RuntimeError, match='Abbruch'):
+            _reopen(path)
+    finally:
+        monkeypatch.undo()
+
+    assert 'EntryForm' not in _columns(path)
+    assert installation.user_version(path) == 2000
+    assert installation.dump(path) == before
+
+    _reopen(path)                                                  # und beim nächsten Start klappt es
+    assert installation.user_version(path) == 2001
+    assert all(form is not None for kind, form, _c, _k in _forms(path).values() if kind == 'entry')
+
+
+def test_the_migration_of_an_old_1x_database_is_one_transaction_too(old_1600, monkeypatch):
+    path = old_1600
+    installation.stamp_user_version(path, 4)
+    before = installation.dump(path)
+
+    def boom(self, cursor):
+        raise RuntimeError('Abbruch')
+
+    monkeypatch.setattr(Database, '_fill_entry_forms', boom)
+    try:
+        with pytest.raises(RuntimeError):
+            _reopen(path)
+    finally:
+        monkeypatch.undo()
+
+    assert installation.user_version(path) == 4 and 'EntryForm' not in _columns(path)
+    assert installation.dump(path) == before
+
+
+def test_filling_the_forms_is_fast_for_a_large_stock(tmp_path):
+    """50 000 Sätze mit 3 000 verschiedenen Kontopaaren: eingeordnet wird je Paar einmal, geschrieben
+    gebündelt. Die Grenze ist großzügig (gemessen: deutlich weniger als eine Sekunde)."""
+    import time
+    path = str(tmp_path / 'buch.db')
+    db = Database(db_name=path)
+    with closing(db._get_connection()) as conn:
+        coa_ids = [row[0] for row in conn.execute(
+            'SELECT ID FROM ChartOfAccounts ORDER BY AccountNumber LIMIT 55')]
+        pairs = [(a, b) for a in coa_ids for b in coa_ids]                  # 3 025 Paare
+        conn.executemany(
+            "INSERT INTO Bookings (DateBooking, COA_ID, CounterCOA_ID, Amount, BookingType) "
+            "VALUES ('2026-01-02', ?, ?, 10000, 'entry')",
+            [pairs[index % len(pairs)] for index in range(50_000)])
+        conn.execute("INSERT INTO Bookings (DateBooking, Amount, BookingType) "
+                     "VALUES ('2026-01-02', 10000, 'bank')")
+        conn.commit()
+    legacy_ids = None
+
+    with closing(db._get_connection()) as conn:
+        cursor = conn.cursor()
+        legacy_ids = db._get_legacy_payment_coa_ids(cursor)
+        started = time.perf_counter()
+        db._fill_entry_forms(cursor)
+        conn.commit()
+        elapsed = time.perf_counter() - started
+        rows = cursor.execute("SELECT COA_ID, CounterCOA_ID, EntryForm, BookingType FROM Bookings").fetchall()
+
+    assert elapsed < 5, f'{elapsed:.2f} s'
+    assert len(rows) == 50_001
+    assert all((form is None) == (kind == 'bank') for _a, _b, form, kind in rows)
+    for coa_id, counter_id, form, kind in rows[:3025]:
+        assert form == read_entry_form(None, coa_id, counter_id, legacy_ids)
+
+
 def test_a_database_that_is_too_new_is_still_refused_and_not_backed_up(old_1600):
     path = old_1600
     installation.stamp_user_version(path, version.SCHEMA_VERSION + 1)

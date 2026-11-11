@@ -5,14 +5,18 @@
 
 Beide Importe schreiben die Form mit, wie sie das Vorzeichen gesetzt haben: Konto liquide →
 ``liquid_first``, Gegenkonto liquide → ``purpose_first``, beide → Spiegel mit dem Rohbetrag
-(``mirror_coa``), keine → ``transfer``. Dazu:
+(``mirror_coa``), keine → ``transfer`` (WISO meint „Konto im Soll“, auch bei leerem oder
+unbekanntem Gegenkonto). Dazu:
 
 * ``negative_gross`` und ``stock_range_accounts`` im Ergebnis (und auf der Seite *Verschiedenes*):
   ein Storno wird nicht vorzeichenrichtig gelesen, und Konten 1000–1099 sind in SKR04 Vorräte;
-* der Weg „erst CSV, dann Datenbank“: Ein übernommener Spiegel des Bestands (``mirror_legacy``)
-  bekommt seine Form, auch einer mit umgekehrtem Vorzeichen (``mirror_counter``);
-* der Re-Import: Ein Spiegel des Bestands bekommt aus dem Rohbetrag seine Form
-  (``forms_stamped``), eine abweichende andere Form wird nur gemeldet (``form_conflicts``);
+* ``negative_gross`` zählt nur Sätze, deren Vorzeichen der Import tatsächlich ersetzt hat;
+* kein Import ändert die Form einer vorhandenen Zeile: Ein Spiegel des Bestands (``mirror_legacy``)
+  bleibt, wie er ist – auch wenn der Re-Import ihn wiedererkennt, mit gleichem oder umgekehrtem
+  Vorzeichen, oder die Übernahme ihn aufnimmt (``legacy_mirrors`` zählt ihn); eine abweichende andere
+  Form wird nur gemeldet (``form_conflicts``);
+* der Weg „erst CSV, dann Datenbank“: Ein Spiegel mit umgekehrtem Vorzeichen wird übernommen und
+  nicht doppelt angelegt;
 * der Re-Import des Textexports erkennt einen vorzeichenverkehrten Spiegel des Bestands und legt
   keinen zweiten an.
 
@@ -31,7 +35,7 @@ from db.matching import (
 )
 from server.pages_miscellaneous import PageMiscellaneous
 from tests.entry_form_helpers import (
-    bank_account, coa, csv_export, execute, minor, query, wiso_database, wiso_row,
+    bank_account, coa, csv_export, datev_rows, execute, minor, query, wiso_database, wiso_row,
 )
 
 KEY19 = '401'
@@ -78,16 +82,16 @@ def test_csv_writes_the_form_the_sign_was_set_with(db):
         ('1600', '1800', '100,00', 'MI', ''),            # beide liquide: Spiegel, Rohbetrag
         ('4405', '4400', '119,00', 'TR', KEY19),         # keine liquide: Umbuchung
         ('6815', '1650', '10,00', 'T2', ''),             # 1650 ist kein Geldkonto: Umbuchung
-        ('6815', '', '5,00', 'GL', ''),                  # Gegenkonto leer: Zweckkonto vorne
-        ('', '4400', '5,00', 'VL', ''),                  # Konto leer: Geldkonto vorne (leer)
+        ('6815', '', '5,00', 'GL', ''),                  # keine Seite liquide, Gegenkonto leer
+        ('', '4400', '5,00', 'VL', ''),                  # keine Seite liquide, Konto leer
     ))
 
     assert result['imported'] == 7 and not result['errors'], result
     assert _forms(db) == {
         'LF': (minor('119.00'), FORM_LIQUID_FIRST), 'PF': (minor('-59.50'), FORM_PURPOSE_FIRST),
         'MI': (minor('100.00'), FORM_MIRROR_COA), 'TR': (minor('119.00'), FORM_TRANSFER),
-        'T2': (minor('10.00'), FORM_TRANSFER), 'GL': (minor('5.00'), FORM_PURPOSE_FIRST),
-        'VL': (minor('5.00'), FORM_LIQUID_FIRST)}
+        'T2': (minor('10.00'), FORM_TRANSFER), 'GL': (minor('5.00'), FORM_TRANSFER),
+        'VL': (minor('5.00'), FORM_TRANSFER)}
 
 
 def test_csv_an_account_missing_in_the_chart_is_no_side_of_the_entry(db):
@@ -105,16 +109,17 @@ def test_csv_reimport_creates_nothing_new(db):
 
     again = db.import_wiso_csv(lines)
 
-    assert (again['imported'], again['skipped'], again['forms_stamped']) == (0, 2, 0)
+    assert (again['imported'], again['skipped'], again['legacy_mirrors']) == (0, 2, 0)
     assert _forms(db) == before
 
 
 # ── Textexport: negative Bruttobeträge und Konten 1000–1099 ─────────────────
 
-def test_csv_counts_negative_gross_rows_with_exactly_one_liquid_side(db):
+def test_csv_counts_the_negative_gross_rows_whose_sign_it_replaced(db):
     result = db.import_wiso_csv(csv_export(
-        ('6815', '1800', '-119,00', 'N1', KEY19),        # Storno einer Ausgabe: gezählt
-        ('1800', '4400', '-50,00', 'N2', KEY19),         # Erstattung einer Einnahme: gezählt
+        ('6815', '1800', '-119,00', 'N1', KEY19),        # Gegenkonto liquide: bleibt negativ – nichts ersetzt
+        ('1800', '4400', '-50,00', 'N2', KEY19),         # Konto liquide: wird positiv – ersetzt, gezählt
+        ('1800', '4400', '-20,00', 'N5', KEY19),         # ebenso
         ('6815', '1800', '119,00', 'P1', KEY19),         # positiv: nicht
         ('4405', '4400', '-119,00', 'N3', KEY19),        # keine liquide Seite: Vorzeichen bleibt
         ('1600', '1800', '-100,00', 'N4', ''),           # Spiegel: Rohbetrag bleibt
@@ -158,49 +163,72 @@ def _legacy_mirror(db, document, coa_nr, counter_nr, amount, date='2026-01-02'):
                              booking_type='entry', entry_form=FORM_MIRROR_LEGACY)
 
 
-def test_csv_reimport_recognises_a_legacy_mirror_with_the_opposite_sign(db):
+def test_csv_reimport_recognises_a_legacy_mirror_with_the_opposite_sign_and_leaves_it_alone(db):
     """Die Datei sagt 1600 an 1800, +100 (Konto im Soll); der Bestand führt den Spiegel mit −100
-    (Richtung auf dem Gegenkonto). Das ist dieselbe Buchung: Der Import legt keine zweite an, und die
-    vorhandene Zeile bekommt die Form, die zu ihrem Betrag passt."""
+    (Richtung auf dem Gegenkonto). Das ist dieselbe Buchung: Der Import legt keine zweite an – und
+    die vorhandene Zeile bleibt, wie sie ist (``mirror_legacy``, ihr Betrag auch): welche Lesart sie
+    hat, entscheidet nicht der Import."""
     twin = _legacy_mirror(db, 'TW-1', 1600, 1800, -100)
+    before = query(db, 'SELECT * FROM Bookings WHERE ID = ?', (twin,))
 
     result = db.import_wiso_csv(csv_export(('1600', '1800', '100,00', 'TW-1', '')))
 
-    assert (result['imported'], result['skipped'], result['forms_stamped']) == (0, 1, 1)
+    assert (result['imported'], result['skipped'], result['legacy_mirrors']) == (0, 1, 1)
     assert query(db, 'SELECT COUNT(*) FROM Bookings') == [(1,)]
+    assert query(db, 'SELECT * FROM Bookings WHERE ID = ?', (twin,)) == before
     assert query(db, 'SELECT Amount, EntryForm FROM Bookings WHERE ID = ?', (twin,)) == [
-        (minor('-100.00'), FORM_MIRROR_COUNTER)]
+        (minor('-100.00'), FORM_MIRROR_LEGACY)]
 
 
-def test_csv_reimport_does_not_double_a_legacy_mirror_with_the_same_sign(db):
+def test_csv_reimport_counts_a_legacy_mirror_with_the_same_sign_and_leaves_it_alone(db):
     """Der Normalfall nach der Migration: Die Zeile steht mit dem Betrag der Datei im Bestand
-    (``mirror_legacy``). Sie ist ein gewöhnliches Duplikat – nichts wird angelegt, nichts gestempelt
-    (ob ihr Betrag auf dem Konto oder dem Gegenkonto steht, weiß die Datei hier nicht besser)."""
+    (``mirror_legacy``). Sie ist ein gewöhnliches Duplikat – nichts wird angelegt, nichts geändert; die
+    Meldung zählt sie als älteren Übertrag in der alten Lesart."""
     twin = _legacy_mirror(db, 'TW-1', 1600, 1800, 100)
 
     result = db.import_wiso_csv(csv_export(('1600', '1800', '100,00', 'TW-1', '')))
 
-    assert (result['imported'], result['skipped'], result['forms_stamped']) == (0, 1, 0)
+    assert (result['imported'], result['skipped'], result['legacy_mirrors']) == (0, 1, 1)
     assert query(db, 'SELECT COUNT(*), MAX(EntryForm) FROM Bookings') == [(1, FORM_MIRROR_LEGACY)]
     assert query(db, 'SELECT ID FROM Bookings') == [(twin,)]
 
 
-def test_csv_reimport_writes_the_stamp_into_the_sql_log(db):
-    twin = _legacy_mirror(db, 'TW-1', 1600, 1800, -100)
-    before = len(_sql_log(db))
-
-    db.import_wiso_csv(csv_export(('1600', '1800', '100,00', 'TW-1', '')))
-
-    assert _sql_log(db)[before:] == [f"UPDATE Bookings SET EntryForm = 'mirror_counter' WHERE ID = {twin};"]
-
-
-def test_csv_reimport_uses_each_twin_once(db):
-    _legacy_mirror(db, 'TW-1', 1600, 1800, -100)
+def test_csv_reimport_counts_a_legacy_mirror_once_however_often_the_file_names_it(db):
+    _legacy_mirror(db, 'TW-1', 1600, 1800, 100)
 
     result = db.import_wiso_csv(csv_export(('1600', '1800', '100,00', 'TW-1', ''),
                                            ('1600', '1800', '100,00', 'TW-1', '')))
 
-    assert (result['imported'], result['skipped'], result['forms_stamped']) == (1, 1, 1)
+    assert (result['imported'], result['skipped'], result['legacy_mirrors']) == (1, 1, 1)
+
+
+def test_csv_reimport_does_not_count_a_mirror_that_is_no_legacy_one(db):
+    db.insert_booking('2026-01-02', 100, coa_id=coa(db, 1600), counter_coa_id=coa(db, 1800),
+                      document_number='TW-1', text='Posten TW-1', booking_type='entry',
+                      entry_form=FORM_MIRROR_COA)
+
+    result = db.import_wiso_csv(csv_export(('1600', '1800', '100,00', 'TW-1', '')))
+
+    assert (result['imported'], result['skipped'], result['legacy_mirrors']) == (0, 1, 0)
+
+
+def test_csv_reimport_writes_nothing_into_the_sql_log_for_a_legacy_mirror(db):
+    _legacy_mirror(db, 'TW-1', 1600, 1800, -100)
+    before = len(_sql_log(db))
+
+    db.import_wiso_csv(csv_export(('1600', '1800', '100,00', 'TW-1', '')))
+
+    assert _sql_log(db)[before:] == []
+
+
+def test_csv_reimport_uses_each_twin_once(db):
+    twin = _legacy_mirror(db, 'TW-1', 1600, 1800, -100)
+
+    result = db.import_wiso_csv(csv_export(('1600', '1800', '100,00', 'TW-1', ''),
+                                           ('1600', '1800', '100,00', 'TW-1', '')))
+
+    assert (result['imported'], result['skipped'], result['legacy_mirrors']) == (1, 1, 1)
+    assert query(db, 'SELECT EntryForm FROM Bookings WHERE ID = ?', (twin,)) == [(FORM_MIRROR_LEGACY,)]
 
 
 @pytest.mark.parametrize('why, setup, line', [
@@ -231,7 +259,7 @@ def test_csv_reimport_leaves_everything_else_alone(db, why, setup, line):
 
     result = db.import_wiso_csv(csv_export(line))
 
-    assert result['forms_stamped'] == 0, why
+    assert result['legacy_mirrors'] == 0, why
     assert result['imported'] == 1, why
     assert query(db, 'SELECT Amount, EntryForm FROM Bookings WHERE ID = ?', (existing,)) == before
 
@@ -244,7 +272,7 @@ def test_csv_reimport_does_not_take_a_twin_that_the_file_claims_itself(db):
     result = db.import_wiso_csv(csv_export(('1600', '1800', '100,00', 'TW-1', ''),
                                            ('1600', '1800', '-100,00', 'TW-1', '')))
 
-    assert (result['imported'], result['skipped'], result['forms_stamped']) == (1, 1, 0)
+    assert (result['imported'], result['skipped'], result['legacy_mirrors']) == (1, 1, 1)
     assert query(db, 'SELECT EntryForm FROM Bookings ORDER BY ID') == [
         (FORM_MIRROR_LEGACY,), (FORM_MIRROR_COA,)]
 
@@ -293,10 +321,27 @@ def test_fdb_writes_the_form_the_sign_was_set_with(db, tmp_path):
         'FD-NG': (minor('-30.00'), FORM_PURPOSE_FIRST)}
 
 
-def test_fdb_counts_negative_gross_rows_with_exactly_one_liquid_side(db, tmp_path):
-    rows = FDB_ROWS + [wiso_row(1000, 1200, -5.0, 'FD-SP'),          # Spiegel: nicht gezählt
-                       wiso_row(8400, 4980, -6.0, 'FD-NT')]           # keine liquide Seite: nicht gezählt
-    assert _import_fdb(db, _fdb(tmp_path, rows))['negative_gross'] == 1
+def test_fdb_counts_the_negative_gross_rows_whose_sign_it_replaced(db, tmp_path):
+    rows = FDB_ROWS + [wiso_row(1200, 8400, -25.0, 'FD-NK'),         # Konto liquide: wird positiv, gezählt
+                       wiso_row(1000, 1200, -5.0, 'FD-SP'),          # Spiegel: nicht gezählt
+                       wiso_row(8400, 4980, -6.0, 'FD-NT')]          # keine liquide Seite: nicht gezählt
+
+    result = _import_fdb(db, _fdb(tmp_path, rows))
+
+    assert result['negative_gross'] == 1
+    forms = _forms(db)
+    assert forms['FD-NK'] == (minor('25.00'), FORM_LIQUID_FIRST)
+    assert forms['FD-NG'] == (minor('-30.00'), FORM_PURPOSE_FIRST)   # bleibt negativ: nichts ersetzt
+
+
+def test_fdb_without_a_liquid_side_puts_the_account_in_the_debit_even_with_an_unknown_counter(db, tmp_path):
+    """WISO meint „Konto im Soll“: keine Seite ein Zahlungskonto → ``transfer`` mit dem Rohbetrag, auch
+    wenn das Gegenkonto im Kontenrahmen fehlt (nicht ``purpose_first``: dort stünde das Gegenkonto im Soll)."""
+    result = _import_fdb(db, _fdb(tmp_path, [wiso_row(4980, 9999, 10.0, 'FD-A6')]))
+
+    assert 9999 in result['missing_coa']
+    assert _forms(db)['FD-A6'] == (minor('10.00'), FORM_TRANSFER)
+    assert datev_rows(db)['FD-A6'][:3] == ('10,00', 'S', '6850')
 
 
 def test_fdb_reports_accounts_in_the_old_cash_range(db, tmp_path):
@@ -312,11 +357,11 @@ def test_fdb_reports_accounts_in_the_old_cash_range(db, tmp_path):
 def test_fdb_without_notable_rows_reports_nothing(db, tmp_path):
     result = _import_fdb(db, _fdb(tmp_path, [wiso_row(4980, 1200, 30.0, 'FD-OK')]))
     assert (result['negative_gross'], result['stock_range_accounts']) == (0, [])
-    assert (result['forms_stamped'], result['form_conflicts'], result['form_conflicts_count']) == \
+    assert (result['legacy_mirrors'], result['form_conflicts'], result['form_conflicts_count']) == \
         (0, [], 0)
 
 
-# ── WISO-Datenbank: Re-Import schreibt die Form fest ─────────────────────────
+# ── WISO-Datenbank: der Re-Import ändert keine Form ───────────────────────────
 
 def _as_legacy(db, *documents):
     """Die Sätze, als hätte sie 2.0.x geschrieben und die Migration ``mirror_legacy`` daraus gemacht."""
@@ -325,26 +370,23 @@ def _as_legacy(db, *documents):
                 (FORM_MIRROR_LEGACY, document))
 
 
-def test_fdb_reimport_stamps_the_legacy_mirrors_from_the_raw_amount(db, tmp_path):
+def test_fdb_reimport_counts_the_legacy_mirrors_and_changes_nothing(db, tmp_path):
     path = _fdb(tmp_path, FDB_ROWS)
     _import_fdb(db, path)
     _as_legacy(db, 'FD-AB', 'FD-EZ', 'FD-VK')
-    before = query(db, 'SELECT COUNT(*) FROM Bookings')
+    before = query(db, 'SELECT * FROM Bookings ORDER BY ID')
 
     again = _import_fdb(db, path)
 
-    assert (again['imported'], again['skipped'], again['forms_stamped']) == (0, len(FDB_ROWS), 3)
+    assert (again['imported'], again['skipped'], again['legacy_mirrors']) == (0, len(FDB_ROWS), 3)
     assert again['form_conflicts_count'] == 0
-    assert query(db, 'SELECT COUNT(*) FROM Bookings') == before
-    forms = _forms(db)
-    assert [forms[doc][1] for doc in ('FD-AB', 'FD-EZ', 'FD-VK')] == [FORM_MIRROR_COA] * 3
-    assert forms['FD-AB'][0] == minor('90.00')                      # der Betrag bleibt
+    assert query(db, 'SELECT * FROM Bookings ORDER BY ID') == before          # keine Zeile verändert
+    assert [_forms(db)[doc][1] for doc in ('FD-AB', 'FD-EZ', 'FD-VK')] == [FORM_MIRROR_LEGACY] * 3
 
-    third = _import_fdb(db, path)
-    assert third['forms_stamped'] == 0                              # nichts mehr festzuschreiben
+    assert _import_fdb(db, path)['legacy_mirrors'] == 3         # und beim nächsten Mal dasselbe
 
 
-def test_fdb_reimport_stamps_a_mirror_with_the_opposite_sign_as_mirror_counter(db, tmp_path):
+def test_fdb_reimport_leaves_a_mirror_with_the_opposite_sign_alone(db, tmp_path):
     path = _fdb(tmp_path, [wiso_row(1000, 1200, 90.0, 'FD-AB')])
     _import_fdb(db, path)
     _as_legacy(db, 'FD-AB')
@@ -352,11 +394,11 @@ def test_fdb_reimport_stamps_a_mirror_with_the_opposite_sign_as_mirror_counter(d
 
     again = _import_fdb(db, path)
 
-    assert again['forms_stamped'] == 1
-    assert _forms(db)['FD-AB'] == (minor('-90.00'), FORM_MIRROR_COUNTER)
+    assert again['legacy_mirrors'] == 1
+    assert _forms(db)['FD-AB'] == (minor('-90.00'), FORM_MIRROR_LEGACY)
 
 
-def test_fdb_reimport_writes_each_stamp_into_the_sql_log(db, tmp_path):
+def test_fdb_reimport_writes_no_form_into_the_sql_log(db, tmp_path):
     path = _fdb(tmp_path, [wiso_row(1000, 1200, 90.0, 'FD-AB')])
     _import_fdb(db, path)
     _as_legacy(db, 'FD-AB')
@@ -364,10 +406,7 @@ def test_fdb_reimport_writes_each_stamp_into_the_sql_log(db, tmp_path):
 
     _import_fdb(db, path)
 
-    new_lines = _sql_log(db)[before:]
-    assert [line for line in new_lines if line.startswith('UPDATE Bookings SET EntryForm')] == [
-        "UPDATE Bookings SET EntryForm = 'mirror_coa' WHERE ID = %d;" % query(
-            db, "SELECT ID FROM Bookings WHERE DocumentNumber = 'FD-AB'")[0][0]]
+    assert [line for line in _sql_log(db)[before:] if 'EntryForm' in line] == []
 
 
 def test_fdb_reimport_reports_a_different_form_and_changes_nothing(db, tmp_path):
@@ -380,7 +419,7 @@ def test_fdb_reimport_reports_a_different_form_and_changes_nothing(db, tmp_path)
 
     again = _import_fdb(db, path)
 
-    assert (again['imported'], again['forms_stamped'], again['form_conflicts_count']) == (0, 0, 1)
+    assert (again['imported'], again['legacy_mirrors'], again['form_conflicts_count']) == (0, 0, 1)
     (conflict,) = again['form_conflicts']
     assert (conflict['stored'], conflict['fresh'], conflict['date'], conflict['amount']) == (
         FORM_TRANSFER, FORM_PURPOSE_FIRST, '2026-01-02', 30.0)
@@ -397,7 +436,7 @@ def test_fdb_reimport_reports_a_legacy_mirror_the_fresh_import_would_not_write_a
 
     again = _import_fdb(db, path)
 
-    assert (again['forms_stamped'], again['form_conflicts_count']) == (0, 1)
+    assert (again['legacy_mirrors'], again['form_conflicts_count']) == (0, 1)
     assert _forms(db)['FD-OLD'][1] == FORM_MIRROR_LEGACY
 
 
@@ -409,13 +448,13 @@ def test_fdb_reimport_does_not_report_two_mirrors_that_disagree_only_in_their_co
 
     again = _import_fdb(db, path)
 
-    assert (again['forms_stamped'], again['form_conflicts_count']) == (0, 0)
+    assert (again['legacy_mirrors'], again['form_conflicts_count']) == (0, 0)
     assert _forms(db)['FD-AB'][1] == FORM_MIRROR_COUNTER
 
 
 # ── WISO-Datenbank nach dem Textexport: Übernahme ─────────────────────────────
 
-def test_adoption_gives_a_legacy_mirror_its_form(db, tmp_path):
+def test_adoption_takes_a_legacy_mirror_and_leaves_its_form(db, tmp_path):
     db.import_wiso_csv(csv_export(('1600', '1800', '90,00', 'AD-1', ''),
                                   ('1800', '4400', '119,00', 'AD-2', KEY19),
                                   ('6850', '1800', '59,50', 'AD-3', KEY19)))
@@ -426,23 +465,23 @@ def test_adoption_gives_a_legacy_mirror_its_form(db, tmp_path):
 
     result = _import_fdb(db, path)
 
-    assert (result['imported'], result['adopted'], result['forms_stamped']) == (0, 3, 1)
+    assert (result['imported'], result['adopted'], result['legacy_mirrors']) == (0, 3, 1)
     assert query(db, 'SELECT COUNT(*) FROM Bookings') == [(3,)]
     assert [form for _amount, form in _forms(db).values()] == [
-        FORM_MIRROR_COA, FORM_LIQUID_FIRST, FORM_PURPOSE_FIRST]
+        FORM_MIRROR_LEGACY, FORM_LIQUID_FIRST, FORM_PURPOSE_FIRST]
 
 
-def test_adoption_takes_a_legacy_mirror_with_the_opposite_sign_and_marks_it_mirror_counter(db, tmp_path):
+def test_adoption_takes_a_legacy_mirror_with_the_opposite_sign_and_leaves_it_alone(db, tmp_path):
     """E4: Konto, Gegenkonto, Beleg-Nr. und Text gleich, nur das Vorzeichen abweicht – übernommen
-    wird die vorhandene Zeile (Betrag bleibt), sie wird ``mirror_counter``."""
+    wird die vorhandene Zeile (nur die Quellgruppe kommt dazu): Betrag und Form bleiben."""
     twin = _legacy_mirror(db, 'AD-1', 1600, 1800, -90)
     path = _fdb(tmp_path, [wiso_row(1000, 1200, 90.0, 'AD-1', text='Posten AD-1')])
 
     result = _import_fdb(db, path)
 
-    assert (result['imported'], result['adopted'], result['forms_stamped']) == (0, 1, 1)
+    assert (result['imported'], result['adopted'], result['legacy_mirrors']) == (0, 1, 1)
     assert query(db, 'SELECT Amount, EntryForm, SourceGroup FROM Bookings WHERE ID = ?', (twin,)) == [
-        (minor('-90.00'), FORM_MIRROR_COUNTER, '701')]
+        (minor('-90.00'), FORM_MIRROR_LEGACY, '701')]
     assert query(db, 'SELECT COUNT(*) FROM Bookings') == [(1,)]
 
 
@@ -485,7 +524,7 @@ def test_adoption_of_the_opposite_sign_is_refused_when_the_file_carries_the_coun
 
     assert (result['adopted'], result['imported']) == (1, 1)
     assert query(db, 'SELECT Amount, EntryForm, SourceGroup FROM Bookings WHERE ID = ?', (twin,)) == [
-        (minor('-90.00'), FORM_MIRROR_COA, '799')]             # die Zeile gehört zur −90-Buchung
+        (minor('-90.00'), FORM_MIRROR_LEGACY, '799')]          # die Zeile gehört zur −90-Buchung
 
 
 def test_adoption_that_fills_a_missing_counter_account_takes_the_form_of_the_import(db, tmp_path):
@@ -516,7 +555,10 @@ def test_a_row_adopted_without_a_form_takes_the_form_of_the_import(db, tmp_path)
 # ── die Seite „Verschiedenes“ ────────────────────────────────────────────────
 
 NOTICE_STOCK = ('Konten 1000&ndash;1099 sind im SKR04 Vorräte; ältere Versionen haben sie als Kasse '
-                'gelesen &ndash; bitte prüfen, ob hier eine Kasse gemeint ist.')
+                'gelesen &ndash; bitte prüfen, ob hier eine Kasse gemeint ist. Buchungen gegen diese '
+                'Konten werden als Umbuchung gelesen und erscheinen nicht in der EÜR.')
+NOTICE_LEGACY = ('ältere Überträge sind noch nach der alten Lesart gespeichert; ihre Form und ihr '
+                 'Betrag wurden nicht verändert.')
 
 
 def _store(name, result):
@@ -540,30 +582,42 @@ def test_page_names_negative_gross_and_the_old_cash_range_for_both_imports(db, n
 
 @pytest.mark.parametrize('name', ['wiso_import_result.json', 'wiso_fdb_result.json'])
 def test_page_shows_no_notice_without_a_reason(db, name):
-    _store(name, {'negative_gross': 0, 'stock_range_accounts': [], 'forms_stamped': 0,
+    _store(name, {'negative_gross': 0, 'stock_range_accounts': [], 'legacy_mirrors': 0,
                   'form_conflicts': [], 'imported': 1})
     html = PageMiscellaneous(db)
     assert 'Negative Bruttobeträge' not in html and NOTICE_STOCK not in html
+    assert NOTICE_LEGACY not in html
 
 
 @pytest.mark.parametrize('name', ['wiso_import_result.json', 'wiso_fdb_result.json'])
 def test_page_survives_a_hand_edited_result_file(db, name):
-    _store(name, {'negative_gross': 'viel', 'stock_range_accounts': 'x', 'forms_stamped': [],
+    _store(name, {'negative_gross': 'viel', 'stock_range_accounts': 'x', 'legacy_mirrors': [],
                   'form_conflicts': {'a': 1}})
     _store(name, {'negative_gross': True, 'stock_range_accounts': [1, None, 'x'],
-                  'forms_stamped': -3, 'form_conflicts': [1, 'x', None]})
-    assert 'Negative Bruttobeträge' not in PageMiscellaneous(db)
+                  'legacy_mirrors': -3, 'form_conflicts': [1, 'x', None]})
+    html = PageMiscellaneous(db)
+    assert 'Negative Bruttobeträge' not in html and NOTICE_LEGACY not in html
 
 
-def test_page_lists_the_conflicts_and_the_stamped_mirrors_of_the_database_import(db):
+@pytest.mark.parametrize('name', ['wiso_import_result.json', 'wiso_fdb_result.json'])
+def test_page_names_the_older_transfers_that_stay_in_the_old_reading(db, name):
+    _store(name, {'legacy_mirrors': 2})
+
+    html = PageMiscellaneous(db)
+
+    assert f'2 {NOTICE_LEGACY}' in html
+
+
+def test_page_lists_the_conflicts_of_the_database_import(db):
     _store('wiso_fdb_result.json', {
-        'forms_stamped': 2, 'form_conflicts_count': 1,
+        'legacy_mirrors': 0, 'form_conflicts_count': 1,
         'form_conflicts': [{'id': 7, 'date': '2026-01-02', 'amount': 30.0, 'text': '<i>Text</i>',
                             'stored': 'transfer', 'fresh': 'purpose_first'}]})
 
     html = PageMiscellaneous(db)
 
-    assert '2 Spiegelbuchungen aus einem früheren Import haben ihre Form bekommen' in html
     assert 'Abweichende Form (1)' in html
     assert '<td>transfer</td><td>purpose_first</td>' in html
     assert '&lt;i&gt;Text&lt;/i&gt;' in html and '<i>Text</i>' not in html
+    assert NOTICE_LEGACY not in html
+    assert 'sonst wurde nichts geändert' not in html

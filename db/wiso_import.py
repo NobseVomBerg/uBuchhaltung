@@ -9,8 +9,8 @@ from collections import Counter
 from decimal import Decimal
 from money import to_minor, from_minor
 from .matching import (
-    FORM_MIRROR_COA, FORM_MIRROR_COUNTER, FORM_MIRROR_LEGACY, LEGACY_CASH_NUMBERS,
-    LEGACY_CASH_RANGE, import_entry_form,
+    FORM_MIRROR_COA, FORM_MIRROR_LEGACY, LEGACY_CASH_NUMBERS, LEGACY_CASH_RANGE,
+    import_entry_form,
 )
 
 #: SKR04-Konten 1000–1099 (Vorräte): Ältere Versionen haben sie als Kasse gelesen.
@@ -34,12 +34,13 @@ class WisoImportMixin:
         Returns:
             dict: {imported: int, updated: int, skipped: int, errors: list[str], format: str}
             Der Original-Export meldet zusätzlich ``negative_gross`` (Zeilen mit negativem
-            Bruttobetrag und genau einer liquiden Seite: das Vorzeichen richtet sich nach der
-            Geldbewegung, ein Storno oder eine Gutschrift wird so wie eine normale Buchung
-            gelesen), ``stock_range_accounts`` (Konten 1000–1099 in der Datei: ältere Versionen
-            haben sie als Kasse gelesen; je Konto ``nummer``, ``bezeichnung``, ``anzahl`` der
-            Zeilen) und ``forms_stamped`` (wiedererkannte Spiegel des Bestands, deren Betrag
-            gegenläufig gespeichert ist: sie bekommen die Form ``mirror_counter``).
+            Bruttobetrag, deren Vorzeichen der Import ersetzt hat: bei genau einer liquiden Seite
+            richtet es sich nach der Geldbewegung, ein Storno oder eine Gutschrift wird so wie
+            eine normale Buchung gelesen), ``stock_range_accounts`` (Konten 1000–1099 in der
+            Datei: ältere Versionen haben sie als Kasse gelesen; je Konto ``nummer``,
+            ``bezeichnung``, ``anzahl`` der Zeilen) und ``legacy_mirrors`` (Spiegel der Datei,
+            die als schon vorhandene Spiegel des Bestands wiedererkannt wurden – mit gleichem oder
+            umgekehrtem Vorzeichen; sie stehen noch in der alten Lesart und bleiben unverändert).
         """
         import csv, io, datetime
 
@@ -112,7 +113,7 @@ class WisoImportMixin:
         imported = 0
         updated = 0
         skipped = 0
-        forms_stamped = 0
+        legacy_mirrors = 0
         negative_gross = 0
         stock_counts = Counter()    # Konto 1000–1099 → Zeilen der Datei
         skipped_rows = []       # Liste übersprungener Zeilen mit Details
@@ -180,9 +181,10 @@ class WisoImportMixin:
                 # Spiegel, der Rohbetrag bleibt (positiv = Konto im Soll). Keine: Umbuchung.
                 konto_liquid, gegen_liquid = _is_liquid(konto_nr), _is_liquid(gegenkonto_nr)
                 if gegen_liquid != konto_liquid:
-                    if amount < 0:
-                        negative_gross += 1       # das Vorzeichen richtet sich nach der Geldbewegung
-                    amount = -abs(amount) if gegen_liquid else abs(amount)
+                    signed = -abs(amount) if gegen_liquid else abs(amount)
+                    if amount < 0 < signed:
+                        negative_gross += 1       # das Vorzeichen der Datei wurde ersetzt
+                    amount = signed
                 form = import_entry_form(coa_id, konto_liquid, counter_coa_id, gegen_liquid)
                 for nr in {konto_nr, gegenkonto_nr}:
                     if nr in STOCK_RANGE:
@@ -240,8 +242,27 @@ class WisoImportMixin:
             (pr['doc'], pr['date'], pr['coa_id'], to_minor(pr['amount'] or 0))
             for pr in parsed_rows if pr['doc'])   # dup_key → Zeilen dieser CSV insgesamt
         legacy_twins  = {}   # (Beleg, Datum, Konto, Gegenkonto, Betrag) → IDs der mirror_legacy-Zeilen
-        stamp_sql = 'UPDATE Bookings SET EntryForm = ? WHERE ID = ?'
-        stamped_ids = []     # vorhandene Zeilen, die ihre Form bekommen haben (für das Protokoll)
+        legacy_known  = {}   # dasselbe → Zahl der mirror_legacy-Zeilen mit genau diesem Betrag
+        legacy_seen   = Counter()
+
+        def _legacy_duplicate(pr, minor_amount):
+            """Ist die Zeile (ein Spiegel mit dem Betrag der Datei) das Duplikat eines Spiegels des
+            Bestands, der noch in der alten Lesart steht (``mirror_legacy``)? Jede vorhandene Zeile
+            zählt höchstens einmal. Nur für die Meldung; geschrieben wird nichts."""
+            if pr['form'] != FORM_MIRROR_COA or pr['coa_id'] is None or pr['counter_coa_id'] is None:
+                return False
+            key = (pr['doc'], pr['date'], pr['coa_id'], pr['counter_coa_id'], minor_amount)
+            if key not in legacy_known:
+                dup_cur.execute(
+                    "SELECT COUNT(*) FROM Bookings WHERE BookingType='entry' AND EntryForm=? "
+                    "AND COALESCE(DocumentNumber,'')=? AND DateBooking=? AND COA_ID=? "
+                    "AND CounterCOA_ID=? AND Amount=?",
+                    (FORM_MIRROR_LEGACY, key[0], key[1], key[2], key[3], key[4]))
+                legacy_known[key] = dup_cur.fetchone()[0]
+            if legacy_seen[key] < legacy_known[key]:
+                legacy_seen[key] += 1
+                return True
+            return False
 
         def _legacy_twin(pr, minor_amount):
             """ID einer Spiegelzeile des Bestands (``mirror_legacy``), die dieselbe Buchung mit
@@ -321,6 +342,8 @@ class WisoImportMixin:
                 seen = csv_dup_seen.get(dup_key, 0)
                 csv_dup_seen[dup_key] = seen + 1
                 if seen < db_dup_counts[dup_key]:
+                    if _legacy_duplicate(pr, minor_amount):
+                        legacy_mirrors += 1
                     skipped += 1
                     skipped_rows.append({
                         'zeile': pr['zeile'], 'datum': booking_date,
@@ -330,13 +353,11 @@ class WisoImportMixin:
                     continue
 
                 # Kein Treffer mit gleichem Betrag: Vielleicht ist die Zeile ein Spiegel des
-                # Bestands mit umgekehrtem Vorzeichen – dann ist sie ein Duplikat, und die
-                # vorhandene Zeile bekommt die Form, die zu ihrem Betrag passt.
+                # Bestands mit umgekehrtem Vorzeichen – dann ist sie ein Duplikat. Die vorhandene
+                # Zeile bleibt, wie sie ist (ihre Lesart ist unbekannt, siehe ``mirror_legacy``).
                 twin = _legacy_twin(pr, minor_amount)
                 if twin is not None:
-                    dup_cur.execute(stamp_sql, (FORM_MIRROR_COUNTER, twin))
-                    stamped_ids.append(twin)
-                    forms_stamped += 1
+                    legacy_mirrors += 1
                     skipped += 1
                     skipped_rows.append({
                         'zeile': pr['zeile'], 'datum': booking_date,
@@ -362,9 +383,6 @@ class WisoImportMixin:
 
         dup_conn.commit()
         dup_conn.close()
-        for twin in stamped_ids:       # wie jede Änderung an einer vorhandenen Buchung: ins Protokoll
-            self._log_sql(stamp_sql, (FORM_MIRROR_COUNTER, twin),
-                          'WISO-CSV-Import: Form des Spiegels festgeschrieben')
 
         return {
             'imported':          imported,
@@ -377,7 +395,7 @@ class WisoImportMixin:
             'stock_range_accounts': [
                 {'nummer': nr, 'bezeichnung': stock_names.get(nr, ''), 'anzahl': count}
                 for nr, count in sorted(stock_counts.items())],
-            'forms_stamped':     forms_stamped,
+            'legacy_mirrors':    legacy_mirrors,
             'errors':            errors,
             'format':            'original'
         }
