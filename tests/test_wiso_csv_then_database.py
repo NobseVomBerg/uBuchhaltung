@@ -12,9 +12,9 @@ Zuordnung. Ein WISO-Satz übernimmt eine Buchung nur, wenn ALLES gilt:
 1. Kandidat ist eine ``entry`` ohne ``SourceGroup``, ohne ``AutoMirror`` und ohne ``Account_ID``;
    gleiches Datum, gleicher Betrag, gleiches Konto (``COA_ID``), gleiche Beleg-Nr. (Leerraum
    zusammengefasst, leer = NULL).
-2. Der Text ist gleich – immer (Leerraum zusammengefasst, Groß-/Kleinschreibung egal; der Text aus der
-   WISO-Datenbank wird von latin-1 nach cp1252 umgesetzt, damit „€“, „–“, „…“ übereinstimmen). Zwei
-   LEERE Texte gelten nur als gleich, wenn das Gegenkonto auf beiden Seiten bekannt und gleich ist.
+2. Der Text ist gleich und nicht leer – immer (Leerraum zusammengefasst, Groß-/Kleinschreibung egal; der
+   Text aus der WISO-Datenbank wird von latin-1 nach cp1252 umgesetzt, damit „€“, „–“, „…“ übereinstimmen).
+   Zwei leere Texte beweisen nichts: solche Sätze werden neu angelegt.
 3. Das Gegenkonto passt: gleich (beide bekannt) oder der Kandidat hat keines. Ein ANDERES Gegenkonto
    passt nie.
 4. Tragen mehrere Sätze desselben Imports denselben Schlüssel und Text, aber verschiedene Gegenkonten,
@@ -22,7 +22,8 @@ Zuordnung. Ein WISO-Satz übernimmt eine Buchung nur, wenn ALLES gilt:
    mit gleichem bekanntem Gegenkonto bleiben übernehmbar.
 5. Gewählt wird zuerst der Kandidat mit gleichem Gegenkonto, dann der ohne; bei Gleichstand die kleinste ID.
 6. Ersatzsuche ohne Konto (``COA_ID IS NULL``): nur wenn es von Anfang an keinen Kandidaten mit Konto
-   gab, und nur bei gleichem bekanntem Gegenkonto UND gleichem, nicht leerem Text.
+   gab, nur bei gleichem bekanntem Gegenkonto und gleichem Text – und nicht, wenn sich zwei Sätze des
+   Imports nur im Konto unterscheiden (welche Zeile zu welchem gehört, ließe sich nur raten).
 
 Übernommen wird: ``SourceGroup`` setzen, leere Konten füllen, ``TaxRate``/``TaxAmount`` (nur wenn beide
 leer sind) und ``RecipientClient`` (wenn leer) ergänzen – sonst bleibt alles. Was nicht übernommen wird,
@@ -556,33 +557,31 @@ def test_text_und_gegenkonto_muessen_passen(db_with_coa, tmp_path, name, overrid
 
 
 #: Leere Texte: der Satz hat den Text '' (Gegenkonto 4400, sofern nicht anders angegeben). Zwei leere
-#: Texte gelten nur als gleich, wenn das Gegenkonto auf beiden Seiten bekannt und gleich ist.
+#: Texte beweisen nichts – auch nicht bei beidseitig bekanntem, gleichem Gegenkonto.
 EMPTY_TEXT_CASES = [
-    ('beide leer, Gegenkonto beidseitig gleich', dict(text=''), dict(), True),
-    ('beide leer (nur Leerraum), Gegenkonto beidseitig gleich', dict(text='  \t '), dict(), True),
-    ('beide leer, Kandidat ohne Gegenkonto', dict(text='', counter=None), dict(), False),
-    ('beide leer, anderes Gegenkonto', dict(text='', counter=1810), dict(), False),
+    ('beide leer, Gegenkonto beidseitig gleich', dict(text=''), dict()),
+    ('beide leer (nur Leerraum), Gegenkonto beidseitig gleich', dict(text='  \t '), dict()),
+    ('beide leer, Kandidat ohne Gegenkonto', dict(text='', counter=None), dict()),
+    ('beide leer, anderes Gegenkonto', dict(text='', counter=1810), dict()),
     ('beide leer, Gegenkonto beidseitig unbekannt', dict(text='', counter=None),
-     dict(CONTRA_ACCOUNTNO=None), False),
-    ('Satz leer, Kandidat mit Text', dict(), dict(), False),
+     dict(CONTRA_ACCOUNTNO=None)),
+    ('Satz leer, Kandidat mit Text', dict(), dict()),
 ]
 
 
-@pytest.mark.parametrize('name,overrides,record_overrides,adopted', EMPTY_TEXT_CASES,
+@pytest.mark.parametrize('name,overrides,record_overrides', EMPTY_TEXT_CASES,
                          ids=[c[0] for c in EMPTY_TEXT_CASES])
-def test_leere_texte_gelten_nur_mit_bekanntem_gleichem_gegenkonto_als_gleich(
-        db_with_coa, tmp_path, name, overrides, record_overrides, adopted):
+def test_leere_texte_gelten_nie_als_gleich(db_with_coa, tmp_path, name, overrides, record_overrides):
+    """Ein leerer Text unterscheidet nichts: Wo Satz oder Zeile keinen Text haben, wird der Satz neu
+    angelegt und die Zeile als „möglicherweise doppelt“ gemeldet."""
     booking = _candidate(db_with_coa, **overrides)
     before = _row(db_with_coa, booking)
     record = _record(ACCOUNTING_TEXT='', **record_overrides)
 
     result = _fdb_import(db_with_coa, _fdb(tmp_path, [record]))
-    if adopted:
-        assert (result['imported'], result['adopted']) == (0, 1)
-        assert _row(db_with_coa, booking)['SourceGroup'] == '900'
-    else:
-        assert (result['imported'], result['adopted']) == (1, 0)
-        assert _row(db_with_coa, booking) == before
+    assert (result['imported'], result['adopted']) == (1, 0)
+    assert _row(db_with_coa, booking) == before
+    assert [d['id'] for d in result['possible_duplicates']] == [booking]
 
 
 def test_kandidat_mit_gegenkonto_passt_nicht_zu_einem_satz_ohne(db_with_coa, tmp_path):
@@ -852,6 +851,28 @@ def test_ersatzsuche_ohne_konto_nimmt_keine_leeren_texte(db_with_coa, tmp_path):
     result = _fdb_import(db_with_coa, _fdb(tmp_path, [dict(_STAMPS, ACCOUNTING_TEXT='')]))
     assert (result['imported'], result['adopted']) == (1, 0)
     assert _row(db_with_coa, booking) == before
+
+
+def test_ersatzsuche_gilt_nicht_bei_saetzen_die_sich_nur_im_konto_unterscheiden(db_with_coa, tmp_path):
+    """Zwei Sätze mit gleichem Datum, Betrag, Text und Gegenkonto, aber auf zwei Konten (6815 und 6300),
+    und eine Zeile ohne Konto: Welcher Satz die Zeile bekäme, ließe sich nur raten – keiner übernimmt sie."""
+    line = _open_line(db_with_coa)
+    before = _row(db_with_coa, line)
+    records = [dict(_STAMPS, ID=1, ACCOUNTINGID=861, ACCOUNTNO=4930),
+               dict(_STAMPS, ID=2, ACCOUNTINGID=862, ACCOUNTNO=4900)]
+
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, records))
+    assert (result['imported'], result['adopted']) == (2, 0)
+    assert _row(db_with_coa, line) == before
+    assert len(_entries(db_with_coa)) == 3
+
+
+def test_ersatzsuche_ohne_konto_bleibt_bei_einem_einzigen_konto_moeglich(db_with_coa, tmp_path):
+    """Gegenprobe: derselbe Satz ohne zweiten Satz auf einem anderen Konto übernimmt die Zeile."""
+    line = _open_line(db_with_coa)
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, [dict(_STAMPS)]))
+    assert (result['imported'], result['adopted']) == (0, 1)
+    assert _row(db_with_coa, line)['COA_ID'] == _coa(db_with_coa, 6815)
 
 
 def test_ersatzsuche_gilt_nur_ohne_kandidaten_mit_konto_von_anfang_an(db_with_coa, tmp_path):
