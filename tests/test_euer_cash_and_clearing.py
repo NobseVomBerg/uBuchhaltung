@@ -762,6 +762,19 @@ def test_is_asset_transfer_truth_table(coa, counter, expected):
     assert is_asset_transfer(coa, counter, LIQUID_, ASSETS_, PL_) is expected
 
 
+@pytest.mark.parametrize('coa, counter, liquid, expected', [
+    pytest.param(6220, 520, set(), True, id='keine-liquide-seite'),
+    pytest.param(6220, 520, {6220}, False, id='aufwandskonto-ist-geldkonto'),
+    pytest.param(520, 6220, {6220}, False, id='aufwandskonto-gegenseite-ist-geldkonto'),
+    pytest.param(6220, 520, {520}, False, id='anlagekonto-ist-geldkonto'),
+    pytest.param(520, 6220, {520}, False, id='anlagekonto-vorne-ist-geldkonto'),
+])
+def test_is_asset_transfer_leaves_the_classification_to_classify_entry(coa, counter, liquid, expected):
+    """Die Einordnung bleibt an EINER Stelle (``classify_entry``): Ist eine Seite ein Geldkonto – auch wenn
+    ein eigenes Konto eine Nummer im Anlage- oder Erfolgsbereich trägt –, ist der Satz keine Umbuchung."""
+    assert is_asset_transfer(coa, counter, liquid, ASSETS_, PL_) is expected
+
+
 @pytest.mark.parametrize('kasse_skr', KASSEN_PARAMS)
 def test_asset_and_loss_account_ranges_follow_the_documented_boundaries(tmp_path, kasse_skr):
     """Anlagekonten sind 1–999, Erfolgskonten 4000–7999 (SKR04): Grenzfälle als Sätze mit dem
