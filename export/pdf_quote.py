@@ -27,8 +27,11 @@ def _pct(tax_rate):
 
 
 def generate_quote_pdf(db: Database, quote_id: int):
-    """PDF für ein bestehendes Angebot erzeugen. Returns (pdf_bytes, pdf_path)."""
-    quote = db.get_invoice_by_id(quote_id)
+    """PDF für ein bestehendes Angebot erzeugen. Returns (pdf_bytes, pdf_path).
+
+    Nur für Angebote: Gehört die ID zu einer Rechnung, wird nichts erzeugt und deren
+    PDFPath bleibt unberührt (``(None, None)``)."""
+    quote = db.get_document(quote_id, 'quote')
     if not quote:
         print(f"Quote {quote_id} not found")
         return None, None
