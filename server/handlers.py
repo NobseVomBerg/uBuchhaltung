@@ -16,6 +16,7 @@ from .import_preview import match_account
 from .period import parse_iso_date, valid_period
 from db import Database
 from db.core import fk_explained
+from db.invoices import InvoiceCol
 from db.matching import is_bank_effective
 from db.accounts import DEFAULT_CASH_ACCOUNT
 from money import to_minor, from_minor, multiply, tax_from_net, round_minor, fmt_eur
@@ -2121,37 +2122,46 @@ def handle_invoice_save(post_body: bytes):
             return json.dumps({'success': False,
                                'error': f'{e} – es wurde nichts gespeichert.'}).encode()
 
-        # If status is 'finalized' and this is a NEW invoice, increment number range
+        # Die Rechnung ist ab hier gespeichert (Commit oben). Scheitert das Fortschreiben des
+        # Nummernkreises, bleibt die Antwort ein Erfolg und nennt nur den Hinweis – sonst legt
+        # der Nutzer dieselbe Rechnung ein zweites Mal an.
+        result = {'success': True, 'invoice_id': invoice_id}
         if status == 'finalized' and not is_update:
-            # Extract year and letter from invoice number (e.g., "26R001" -> year=2026, letter="R")
-            if len(invoice_number) >= 2:
-                year_short = invoice_number[:2]
-                current_year = datetime.datetime.now().year
-                year = 2000 + int(year_short) if int(year_short) <= 99 else int(year_short)
+            try:
+                _advance_invoice_number_range(db, invoice_number)
+            except Exception as e:
+                print(f"WARNUNG: Nummernkreis nicht fortgeschrieben ({invoice_number!r}): {e!r}")
+                result['warning'] = ('Die Rechnung ist gespeichert, aber der Nummernkreis konnte '
+                                     'nicht fortgeschrieben werden – bitte unter Stammdaten '
+                                     '→ Nummernkreise prüfen.')
 
-                if len(invoice_number) > 2:
-                    letter = invoice_number[2]
-                    # Find and increment the number range
-                    ranges = db.fetch_number_ranges('invoice')
-                    for r in ranges:
-                        if r[2] == year and r[3] == letter:
-                            # Extract number from invoice_number
-                            num_part = invoice_number[3:].lstrip('_ABCDEFGHIJKLMNOPQRSTUVWXYZ')
-                            try:
-                                current_num = int(num_part)
-                                db.update_number_range(
-                                    r[0], r[2], r[3], r[4] or '', current_num,
-                                    r[6] or '', r[7] if len(r) > 7 else None)
-                            except:
-                                pass
-                            break
-
-        return json.dumps({'success': True, 'invoice_id': invoice_id}).encode()
+        return json.dumps(result).encode()
 
     except Exception as e:
         import traceback
         traceback.print_exc()
         return json.dumps({'success': False, 'error': str(e)}).encode()
+
+
+def _advance_invoice_number_range(db, invoice_number):
+    """Den Nummernkreis einer neu abgeschlossenen Rechnung auf deren Nummer setzen.
+
+    Aus ``26R001`` werden Jahr 2026 und Buchstabe ``R``; passt ein Nummernkreis, steht sein
+    Zähler danach auf der Nummer der Rechnung. Nummern, die diesem Schema nicht folgen, lösen
+    eine Ausnahme aus – der Aufrufer meldet das als Hinweis.
+    """
+    if len(invoice_number) <= 2:
+        return
+    year_short = invoice_number[:2]
+    year = 2000 + int(year_short) if int(year_short) <= 99 else int(year_short)
+    letter = invoice_number[2]
+    for r in db.fetch_number_ranges('invoice'):
+        if r[2] == year and r[3] == letter:
+            num_part = invoice_number[3:].lstrip('_ABCDEFGHIJKLMNOPQRSTUVWXYZ')
+            db.update_number_range(
+                r[0], r[2], r[3], r[4] or '', int(num_part),
+                r[6] or '', r[7] if len(r) > 7 else None)
+            break
 
 
 def _save_invoice_update(tx, invoice_id, invoice_data):
@@ -2218,11 +2228,15 @@ def handle_send_invoice_email(post_body: bytes):
     if not invoice:
         return json.dumps({'success': False, 'error': 'Rechnung nicht gefunden'}).encode()
     
-    pdf_path = invoice[38]  # PDFPath
+    # Anhang ist die abgelegte PDF der Rechnung; ihr Pfad gilt nur im Dokumentordner des
+    # Nutzers (export.invoice_files.stored_invoice_path). Ohne Datei geht nichts raus.
+    from export.invoice_files import stored_invoice_path
+    pdf_path, _ = stored_invoice_path(db, invoice_id, 'pdf')
     if not pdf_path:
-        return json.dumps({'success': False, 'error': 'Keine PDF-Datei vorhanden'}).encode()
-    
-    invoice_number = invoice[1]  # InvoiceNumber
+        return json.dumps({'success': False,
+                           'error': 'Kein PDF vorhanden – bitte zuerst erzeugen.'}).encode()
+
+    invoice_number = invoice[InvoiceCol.NUMBER]
     
     # Get seller contact for sender information
     own_contacts = db.fetch_contacts(contact_type='own')
@@ -2418,10 +2432,10 @@ def handle_invoice_document_download(invoice_id: int, kind: str = 'pdf'):
 
     Es wird ausschließlich die *gespeicherte* Datei ausgeliefert – nie neu
     erzeugt (todo #3): ab „versendet“ muss der Kunde genau das Dokument
-    bekommen, das im Haus liegt.
+    bekommen, das im Haus liegt. Gilt auch für Angebote (``kind='pdf'``).
 
     Args:
-        invoice_id: ID der Rechnung.
+        invoice_id: ID der Rechnung bzw. des Angebots.
         kind: ``'pdf'`` oder ``'xml'``.
 
     Returns:
@@ -2640,16 +2654,17 @@ def handle_convert_quote_to_invoice(post_data):
         return 303, f"/quote?id={quote_id}"
 
 
-def handle_quote_pdf_by_id(quote_id: int):
-    """PDF für ein bestehendes Angebot erzeugen. Returns (pdf_bytes, filename)."""
+def handle_quote_pdf_generate(quote_id: int):
+    """PDF für ein bestehendes Angebot erzeugen und ablegen (nur per POST aufgerufen).
+
+    Returns:
+        tuple: ``(pdf_bytes, pdf_path)`` oder ``(None, None)``. Heruntergeladen wird
+        anschließend die abgelegte Datei (``handle_invoice_document_download``).
+    """
     from export.pdf_quote import generate_quote_pdf
     db = Database()
     try:
-        pdf_bytes, pdf_path = generate_quote_pdf(db, quote_id)
-        if pdf_bytes is None:
-            return None, None
-        filename = os.path.basename(pdf_path) if pdf_path else f"Angebot_{quote_id}.pdf"
-        return pdf_bytes, filename
+        return generate_quote_pdf(db, quote_id)
     except Exception as e:
         import traceback
         print(f"Error generating quote PDF {quote_id}: {e}")
@@ -2805,11 +2820,14 @@ def handle_update_worktime(db: Database, post_data):
 
 
 def handle_worktime_pdf(db: Database, person_id, date_from, date_to, with_notes=False):
-    """PDF-Stundenzettel erzeugen. Returns (pdf_bytes, filename) oder (None, None)."""
+    """PDF-Stundenzettel für den Download erzeugen. Returns (pdf_bytes, filename) oder (None, None).
+
+    Der Download ist ein GET: Er liefert den Stundenzettel aus, legt aber nichts auf der
+    Platte ab (``store=False``)."""
     from export.pdf_worktime import generate_worktime_pdf
     try:
         pdf_bytes, pdf_path = generate_worktime_pdf(db, int(person_id), date_from, date_to,
-                                                    with_notes=with_notes)
+                                                    with_notes=with_notes, store=False)
         if pdf_bytes is None:
             return None, None
         filename = os.path.basename(pdf_path) if pdf_path else f"Stundenzettel_{person_id}.pdf"

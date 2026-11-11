@@ -71,7 +71,6 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
 - CI testet nur Python 3.13, README nennt 3.10+ → Matrix ergänzen oder Angabe anpassen
 - KI-Doku entschlacken: `CLAUDE.md` und `AGENTS.md` auf Doppelungen prüfen
 - Einheiten auf Artikel-Listen/-Stammdaten prüfen (lesbar statt UN/ECE-Code)
-- Pfadprüfung beim Ausliefern gespeicherter Rechnungen (`stored_invoice_document`) – Security-Review, niedrige Priorität
 - Rechnung speichern scheiterte einmal im Docker-Mehrbenutzerbetrieb mit „FOREIGN KEY constraint failed“ (DB danach sauber, gleicher Request lokal ok, nicht mehr reproduzierbar) – ab 2.0.1 nennt die Meldung den Verweis; bei Wiederauftreten Meldung und `docker logs` auswerten
 - Angebot speichern wie Rechnungen in einer Transaktion (Kopf + Positionen) – heute einzeln committet, ein Fehler hinterlässt halbe Belege
 - PDF-Kopf ans Formular angleichen: „Rechnungsdatum“, Leistungsdatum direkt darunter – Wertspalte für das längere Label verschieben, Golden-Dateien neu erzeugen

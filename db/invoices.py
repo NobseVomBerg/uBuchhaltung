@@ -10,6 +10,20 @@ from money import to_minor, from_minor
 from .core import fk_explained
 
 
+class InvoiceCol:
+    """Positionen der Spalten in einer ``SELECT * FROM Invoices``-Zeile (Reihenfolge laut
+    db/schema.py, neue Spalten stehen immer am Ende). Nur, was benannt gelesen wird; wer eine
+    Zeile neu liest, nimmt diese Namen statt nackter Indizes."""
+    ID = 0
+    NUMBER = 1           # InvoiceNumber
+    DATE = 2             # InvoiceDate
+    BUYER_NAME = 14
+    BUYER_COMPANY = 15
+    DUE_DATE = 27        # PaymentDueDate
+    SUM_GROSS = 38
+    AMOUNT_DUE = 39
+
+
 class InvoicesMixin:
     def fetch_invoices(self, status=None, doc_type='invoice'):
         """Fetch documents, optionally filtered by status.
@@ -626,7 +640,7 @@ class InvoicesMixin:
         conn.close()
         return [self._euro_row(r, 36, 37, 38, 39) for r in rows]
 
-    def resolve_revenue_coa(self, tax_rate):
+    def resolve_revenue_coa(self, tax_rate, create=True):
         """Passendes Erlöskonto für einen Rechnungs-Steuersatz ermitteln.
 
         Lernt zuerst aus der eigenen Historie: das zuletzt bei einer
@@ -637,6 +651,9 @@ class InvoicesMixin:
         nach § 19 Abs. 1 UStG"; wird in älteren DBs ohne dieses Seed-Konto
         automatisch nachgelegt, Vorbild ensure_kasse_exists).
         tax_rate wie in Invoices.TaxRate (0.19, 19, 0 oder -1).
+
+        ``create=False`` schlägt nur nach und legt nichts an (für reine Anzeigen):
+        fehlt das Standardkonto, ist das Ergebnis ``None``.
         """
         if tax_rate is None:
             key = -999.0
@@ -668,7 +685,9 @@ class InvoicesMixin:
         if key == 7:
             return self.get_coa_id_by_account_number(4300)
         if key == 0:
-            return self._ensure_tax_free_revenue_coa()
+            if create:
+                return self._ensure_tax_free_revenue_coa()
+            return self.get_coa_id_by_account_number(self.TAX_FREE_REVENUE_ACCOUNT_NUMBER)
         return None
 
     # Wartekonten für offene Posten: die Rechnung wird beim Versenden hierhin
@@ -680,6 +699,7 @@ class InvoicesMixin:
         0:  (4340, 'Umsatzerlöse 0% noch offen'),
     }
     DEBTOR_ACCOUNT_NUMBER = 10000
+    TAX_FREE_REVENUE_ACCOUNT_NUMBER = 4185
 
     def resolve_open_revenue_coa(self, tax_rate):
         """Wartekonto ("noch offen") zum Steuersatz einer Rechnung.
@@ -814,7 +834,8 @@ class InvoicesMixin:
         dominanten Kontenrahmen nachgelegt – sonst hätten §19-/0%-Rechnungen
         kein Zielkonto."""
         return self._ensure_standard_coa(
-            4185, 'Erlöse als Kleinunternehmer nach § 19 Abs. 1 UStG')
+            self.TAX_FREE_REVENUE_ACCOUNT_NUMBER,
+            'Erlöse als Kleinunternehmer nach § 19 Abs. 1 UStG')
 
     def get_booking_allocations(self, booking_id):
         """Zahlungs-Zuordnungen einer Buchung.

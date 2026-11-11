@@ -296,6 +296,7 @@ _POST_LOCATION = {
     "/masterdata/numberranges/delete": r"/masterdata/numberranges",
     "/masterdata/skr/delete": r"/masterdata/skr\?msg=[^&]+&type=error",
     "/masterdata/skr/togglemenu": r"/masterdata/skr",
+    "/quote/delete": r"/quote",
     "/receipts/delete": r"/receipts",
     "/transactions/delete": r"/transactions",
     "/trips/delete": r"/trips\?person=1&from=2026-01-01&to=2026-12-31",

@@ -869,6 +869,32 @@ function copyInvoiceAsNew(invId) {{
         updateBankDetails();
         calculateTotals();
         
+        // Kontakt- und Bankdaten stammen aus den Stammdaten und kommen als DOM-Knoten
+        // in die Seite (Text bleibt Text, nie Markup). Eine Zeile ist ein Text oder
+        // [Beschriftung, Wert]; zwischen den Zeilen steht je ein <br>-Knoten.
+        function setLines(box, lines) {
+            box.textContent = '';
+            lines.forEach(function(line, i) {
+                if (i > 0) box.appendChild(document.createElement('br'));
+                if (Array.isArray(line)) {
+                    const label = document.createElement('span');
+                    label.className = 'footer-label';
+                    label.textContent = line[0];
+                    box.appendChild(label);
+                    box.appendChild(document.createTextNode(' ' + line[1]));
+                } else {
+                    box.appendChild(document.createTextNode(line));
+                }
+            });
+        }
+        // Hinweistext (kursiv) statt Daten, z. B. wenn noch keine eigene Firma angelegt ist
+        function setHint(box, text) {
+            const hint = document.createElement('em');
+            hint.textContent = text;
+            box.textContent = '';
+            box.appendChild(hint);
+        }
+
         // Update own company data (logo, sender line, footer)
         function updateOwnCompany() {
             const companyId = document.getElementById('own_company_select').value;
@@ -882,8 +908,8 @@ function copyInvoiceAsNew(invId) {{
                 logoImg.src = '';
                 logoImg.style.display = 'none';
                 senderLine.textContent = 'Eigene Adresse in Kontakte anlegen (Typ: own)';
-                footerAddress.innerHTML = '<em>Eigene Firmendaten in Kontakte anlegen</em>';
-                footerContact.innerHTML = '<em>Kontaktdaten fehlen</em>';
+                setHint(footerAddress, 'Eigene Firmendaten in Kontakte anlegen');
+                setHint(footerContact, 'Kontaktdaten fehlen');
                 return;
             }
             
@@ -911,17 +937,18 @@ function copyInvoiceAsNew(invId) {{
                 senderLine.textContent = displayName + ' · ' + company.street + ' · ' + company.postal + ' ' + company.city;
 
                 // Update footer address (MIT Zusatzzeile, falls vorhanden)
-                let addressHtml = displayName + '<br>';
-                if (company.address_line1) addressHtml += company.address_line1 + '<br>';
-                addressHtml += company.street + '<br>';
-                addressHtml += company.postal + ' ' + company.city;
-                footerAddress.innerHTML = addressHtml;
+                const addressLines = [displayName];
+                if (company.address_line1) addressLines.push(company.address_line1);
+                addressLines.push(company.street);
+                addressLines.push(company.postal + ' ' + company.city);
+                setLines(footerAddress, addressLines);
                 
                 // Update footer contact
-                let contactHtml = '<span class="footer-label">Tel</span> ' + (company.phone || '-') + '<br>';
-                contactHtml += '<span class="footer-label">E-Mail</span> ' + (company.email || '-') + '<br>';
-                contactHtml += '<span class="footer-label">UStIdNr</span> ' + (company.tax_id || '-');
-                footerContact.innerHTML = contactHtml;
+                setLines(footerContact, [
+                    ['Tel', company.phone || '-'],
+                    ['E-Mail', company.email || '-'],
+                    ['UStIdNr', company.tax_id || '-']
+                ]);
             }
         }
         
@@ -967,16 +994,17 @@ function copyInvoiceAsNew(invId) {{
             const bankDetails = document.getElementById('bank_details');
             
             if (!bankId) {
-                bankDetails.innerHTML = '';
+                bankDetails.textContent = '';
                 return;
             }
             
             const bank = banksData[bankId];
             if (bank) {
-                let details = '<span class="footer-label">Bank</span> ' + bank.bank_name + '<br>';
-                details += '<span class="footer-label">IBAN</span> ' + bank.iban + '<br>';
-                details += '<span class="footer-label">BIC</span> ' + bank.bic;
-                bankDetails.innerHTML = details;
+                setLines(bankDetails, [
+                    ['Bank', bank.bank_name],
+                    ['IBAN', bank.iban],
+                    ['BIC', bank.bic]
+                ]);
             }
         }
         
@@ -1322,7 +1350,14 @@ function copyInvoiceAsNew(invId) {{
                 if (data.success) {
                     // Stay in grid view with this invoice selected
                     const redirectId = isEdit ? invoiceId : String(data.invoice_id);
-                    window.location.href = '/invoice?id=' + redirectId;
+                    const target = '/invoice?id=' + redirectId;
+                    // Gespeichert, aber mit Hinweis (z. B. Nummernkreis): kurz anzeigen, dann weiter
+                    if (data.warning) {
+                        showMessage(data.warning, 'warn');
+                        setTimeout(function() { window.location.href = target; }, 4000);
+                    } else {
+                        window.location.href = target;
+                    }
                 } else {
                     showMessage('Fehler beim Speichern: ' + (data.error || 'Unbekannter Fehler'), 'error');
                 }
@@ -1350,7 +1385,7 @@ function copyInvoiceAsNew(invId) {{
             }
         }
         function _runPDFGeneration(invoiceId) {
-            fetch('/invoice/pdf_generate?id=' + invoiceId)
+            fetch('/invoice/pdf_generate?id=' + invoiceId, {method: 'POST'})
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {

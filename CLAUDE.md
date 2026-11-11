@@ -122,7 +122,10 @@ kein Subagent darauf:
   `UBUCHHALTUNG_ALLOWED_HOSTS`
 - **Aktionen mit Seiteneffekt nie per GET:** Pfad in `_ACTION_PATHS` eintragen,
   Logik in `_post_action_routes`, im Frontend `appConfirmPost()`/`appPost()`
-  statt eines Links
+  statt eines Links. Mit eigener Antwort statt Weiterleitung: das Erzeugen von
+  Dokumenten (`_GENERATE_PATHS`, JSON, CSRF-Token als Header – im Frontend
+  `fetch(url, {method: 'POST'})`, das Footer-JS hängt das Token an) und Abmelden
+  (`POST /logout` neben `/login` in `_auth_routes_*`); GET → jeweils 405
 - **Automatische Anmeldung** (`auto_login` in `config.json`, `auth.auto_login_user()`):
   ein Administrator wird ohne Passwort angemeldet, Anmeldeseite und andere Benutzer
   sind so lange abgeschaltet – das ist der Betrieb für eine Person. Es gibt dann
@@ -338,6 +341,20 @@ kein Subagent darauf:
 - **Heruntergeladen** wird immer die abgelegte Datei (`/invoice/pdf_download`,
   `/invoice/xml_download`) – nie eine frisch erzeugte. Fehlt sie, kommt 404 mit
   kurzem Klartext, den das Frontend direkt anzeigt
+- **Angebote** gelten genauso: `/quote/pdf_download` liefert nur die abgelegte PDF
+  (`quotes/<Jahr der Erzeugung>/<Angebots-Nr.> <Kunde>.pdf`), sonst 404 „Kein PDF
+  vorhanden – bitte zuerst erzeugen.“. **Erzeugt** wird nur per POST
+  (`/invoice/pdf_generate`, `/quote/pdf_generate`; GET → 405) – die Oberfläche
+  erzeugt zuerst und lädt dann. Der Stundenzettel (`/worktime/pdf`, GET) schreibt
+  nichts auf die Platte (`generate_worktime_pdf(store=False)`)
+- **Gespeicherte Dokumentpfade** (`Invoices.PDFPath`/`XMLPath`) gelten nur innerhalb des
+  Dokumentordners des Benutzers (`<Datenordner>/invoices`, bei Angeboten `quotes`;
+  `export/invoice_files.path_in_documents`, aufgelöst mit `realpath`): Die Datenbank lässt
+  sich per SQL-Konsole oder zurückgespielter Sicherung ändern, sonst ließe sich darüber
+  jede lesbare Datei ausliefern oder löschen. Jede Stelle, die einen gespeicherten Pfad
+  öffnet oder löscht (Download, E-Mail-Anhang, `drop_stale_file`), geht darüber
+  (`stored_invoice_path`). Ein Pfad außerhalb gilt als nicht vorhanden (Fallback über das
+  Namensschema, sonst 404) und steht nur im Server-Log, nie in der Antwort
 - Im Browser läuft der Download über `appDownload()` (`server/pages.py`): Datei
   als Blob holen und per `<a download>` speichern. Kein Tab mit Server-URI –
   der wäre ohne laufenden Server wertlos. Der Dateiname kommt prozentkodiert
