@@ -544,7 +544,8 @@ def PageMiscellaneous(db: Database):
     if _backups:
         _opts = ''.join(f'<option value="{_html.escape(b)}">{_html.escape(b)}</option>' for b in _backups)
         s += f'''
-        <p>Stellt ein Archiv aus <code>backup/</code> im Benutzerverzeichnis wieder her.</p>
+        <p>Stellt ein Archiv aus <code>backup/</code> im Benutzerverzeichnis wieder her.
+        Sicherungen mit „nur DB“ lassen sich nur ohne „vorher löschen“ zurückspielen.</p>
         <form method="POST" action="/backup/restore"
               onsubmit="return confirm('Backup wirklich wiederherstellen? Aktuelle Daten werden ersetzt!')">
             <div class="rowWithObjects">Archiv:&nbsp;<select name="archive">{_opts}</select></div>

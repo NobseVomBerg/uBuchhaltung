@@ -6,8 +6,30 @@ HTML page generation functions
 All functions return complete HTML strings
 """
 import html as _html
+import json
 from db import Database
 from money import fmt_eur
+
+
+def script_json(value) -> str:
+    """JSON zum Einbetten in einen ``<script>``-Block.
+
+    ``json.dumps`` lässt ``<``, ``>`` und ``&`` stehen: Ein ``</script>`` im Wert beendet
+    den Block, und alles danach wäre HTML (XSS). Diese Zeichen und die Zeilentrenner
+    U+2028/U+2029 (in älterem JavaScript ein Zeilenende innerhalb einer Zeichenkette)
+    werden deshalb als ``\\uXXXX`` geschrieben; ``json.loads`` und JavaScript lesen daraus
+    wieder den ursprünglichen Wert.
+
+    Nur für ``<script>``-Blöcke. In einem HTML-Attribut (``onclick="…"``) beendete schon
+    das ``"`` der JSON-Zeichenketten das Attribut: Dort das Ergebnis zusätzlich durch
+    ``html.escape(…, quote=True)`` schicken.
+    """
+    return (json.dumps(value, ensure_ascii=False)
+            .replace('<', '\\u003c')
+            .replace('>', '\\u003e')
+            .replace('&', '\\u0026')
+            .replace('\N{LINE SEPARATOR}', '\\u2028')
+            .replace('\N{PARAGRAPH SEPARATOR}', '\\u2029'))
 
 
 def logo_url(logo):

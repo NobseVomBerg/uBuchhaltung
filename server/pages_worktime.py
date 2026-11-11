@@ -10,9 +10,9 @@ Personen-Filter (Mitarbeiter + eigene Person), Zeitraum-Filter (Monat/Jahr).
 import calendar
 import datetime
 import html as _html
-import json
+from urllib.parse import quote
 from db import Database
-from .pages import Header1, Header2, Header3, Footer
+from .pages import Header1, Header2, Header3, Footer, script_json
 from .period import period_filter_widget
 
 # Arbeitszeit-Arten (Kind) und fachliche Labels
@@ -121,11 +121,13 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
     own_city = (own_rows[0][7] if own_rows else '') or ''
     customer_city = {str(c[0]): (c[7] or '') for c in customers}
 
+    # Der Zeitraum kommt aus Adresse oder Cookie: In Adressen (auch innerhalb von
+    # JavaScript-Zeichenketten) steht er prozentkodiert, in HTML-Attributen maskiert.
     def qs(pid=None, df=None, dt=None):
         pid = person_id if pid is None else pid
         df = date_from if df is None else df
         dt = date_to if dt is None else dt
-        return f'?person={pid}&from={df}&to={dt}'
+        return f'?person={pid}&from={quote(df, safe="")}&to={quote(dt, safe="")}'
 
     # ── Kopfbereiche ─────────────────────────────────────────────────────────
     s = Header1('worktime')
@@ -138,7 +140,7 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
     person_select = (
         '<label>👤 Person:</label> '
         f"<select onchange=\"window.location.href='/worktime?person=' + this.value "
-        f"+ '&from={date_from}&to={date_to}'\">{person_opts}</select>"
+        f"+ '&from={quote(date_from, safe='')}&to={quote(date_to, safe='')}'\">{person_opts}</select>"
     )
     s += Header2(zeiten_submenu('worktime') + ' &nbsp; ' + person_select)
 
@@ -268,9 +270,9 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
         'ownCity': own_city,
         'template': template,
         'today': today.isoformat(),
-        'pdfBase': f'/worktime/pdf?person={person_id}&from={date_from}&to={date_to}',
+        'pdfBase': f'/worktime/pdf?person={person_id}&from={quote(date_from, safe="")}&to={quote(date_to, safe="")}',
     }
-    s += '<script>\nconst WT_DATA = ' + json.dumps(wt_data, ensure_ascii=False) + ';\n'
+    s += '<script>\nconst WT_DATA = ' + script_json(wt_data) + ';\n'
     s += _WORKTIME_JS + '</script>'
 
     # Bei /worktime/edit: Eintrag direkt ins Formular laden
@@ -285,12 +287,12 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
                 'pausetext': (e[11] if len(e) > 11 else '') or '',
             }
             s += ('<script>document.addEventListener("DOMContentLoaded",function(){'
-                  'wtLoadEntry(' + json.dumps(preload, ensure_ascii=False) + ');});</script>')
+                  'wtLoadEntry(' + script_json(preload) + ');});</script>')
 
     # Fehlermeldung (z.B. Überschneidung) über die appMsg-Bar einblenden
     if error_msg:
         s += ('<script>document.addEventListener("DOMContentLoaded",function(){'
-              'appMsg(' + json.dumps(error_msg, ensure_ascii=False) + ',"error");});</script>')
+              'appMsg(' + script_json(error_msg) + ',"error");});</script>')
 
     s += Footer()
     return s
@@ -316,8 +318,8 @@ def _worktime_form(db, person_id, date_from, date_to, customers, edit_id, qstr):
     s += f'''<form method="POST" action="/worktime/add" id="wtForm">
         <input type="hidden" name="id" id="wtId" value="">
         <input type="hidden" name="person_id" value="{person_id}">
-        <input type="hidden" name="from" value="{date_from}">
-        <input type="hidden" name="to" value="{date_to}">
+        <input type="hidden" name="from" value="{_html.escape(date_from, quote=True)}">
+        <input type="hidden" name="to" value="{_html.escape(date_to, quote=True)}">
         <div class="rowWithObjects">
             <button type="button" class="coloredButton btn-sm bg-indigo" onclick="wtOpenPdf()" title="Angezeigten Zeitraum als PDF">📄 PDF</button>
             <label><input type="checkbox" id="wtPdfNotes"> Mit Notiz erstellen</label>

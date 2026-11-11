@@ -382,10 +382,11 @@ def PageSkr(db: Database, edit_id=None, copy_from_id=None, msg=None, msg_type='i
 
     # Flash (z. B. Lösch-Hinweis) – erst nach DOMContentLoaded (appMsg kommt aus Footer)
     if msg:
-        safe = msg.replace('\\', '\\\\').replace("'", "\\'").replace('\n', ' ')
-        safe_type = (msg_type or 'info').replace("'", '')
-        s += (f"<script>document.addEventListener('DOMContentLoaded',function(){{"
-              f"appMsg('{safe}','{safe_type}');}});</script>")
+        from server.pages import script_json
+        # msg kommt aus der Adresse: nur als JSON in den Skriptblock (script_json maskiert
+        # auch </script>), nie von Hand in eine JS-Zeichenkette gesetzt
+        s += ("<script>document.addEventListener('DOMContentLoaded',function(){"
+              f"appMsg({script_json(msg)},{script_json(msg_type or 'info')});}});</script>")
 
     id_row = (f'<input type="hidden" name="id" value="{edit_skr[0]}">' if is_existing else '')
 
