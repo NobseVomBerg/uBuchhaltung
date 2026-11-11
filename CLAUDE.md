@@ -255,6 +255,13 @@ kein Subagent darauf:
   Decimal/Minor Units, nie als float-Summe; DTD/Entities werden abgelehnt, ZIP nur im Speicher mit
   Grenzen, Beträge ≥ 10¹² sind Fehler – diese Schutzmaßnahmen nicht aufweichen
 - Valuta, EndToEndId, Mandatsreferenz, Gläubiger-ID haben im Modell noch keinen Platz (Schemaänderung offen)
+- **Duplikate** = Konto + Buchungsdatum + Betrag, ohne Text (`check_booking_exists`: CAMT und PDF
+  schreiben den Text verschieden, der WISO-Tabellenexport überschreibt ihn), zählbasiert **je Datei**:
+  Der Bestand enthält, was frühere Dateien desselben Laufs angelegt haben – über mehrere Dateien gilt
+  das Maximum, nicht die Summe. „Alle importieren“ (`handle_confirm_import`) entspricht damit den
+  Einzelimporten nacheinander; die Vorschau (`build_import_preview`: `dup_source` = `db`/`upload`)
+  rechnet dasselbe, ohne zu schreiben. Grenzen ohne Bankreferenz im Modell: CAMT-Sammelbuchung gegen
+  PDF-Summenzeile; zwei verschiedene Auszüge desselben Tags mit je einem echten, gleichen Umsatz
 
 ### WISO-Datenübernahme
 - Zwei Wege: die **Textexporte** (`db/wiso_import.py`, CSV) und die
@@ -272,6 +279,11 @@ kein Subagent darauf:
 - **Klammer eines Belegs ist die Beleg-Nr. + Datum**, nicht die `SourceGroup`:
   WISO vergibt je Verrechnungskonto-Buchung eine eigene `ACCOUNTINGID`. Die
   Quellgruppe ist damit feiner und greift nur, wo eine Beleg-Nr. fehlt
+- **CSV und Datenbank nacheinander:** Der Datenbank-Import übernimmt Buchungen des CSV-Imports
+  (`entry` ohne `SourceGroup`) über denselben Schlüssel wie der CSV-Import (Beleg-Nr. + Datum + Konto +
+  Betrag, auch ohne Beleg-Nr.; zählbasiert, `_insert_wiso_bookings`): `SourceGroup` setzen, leere
+  `COA_ID`/`CounterCOA_ID` füllen, sonst nichts ändern oder löschen. Restrisiko: Eine von Hand erfasste
+  `entry` mit gleichem Schlüssel wird mit übernommen
 - Bedienung über *Verschiedenes* → „Import aus der Datenbank"; die Prüfung
   (`WisoDatabase.check`) bricht vor dem Schreiben ab, wenn die WISO-Version
   andere Tabellen/Spalten hat

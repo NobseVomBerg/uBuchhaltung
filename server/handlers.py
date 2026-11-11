@@ -95,6 +95,9 @@ def handle_confirm_import(db: Database, post_data):
     Das Konto wird pro Beleg über dessen IBAN aufgelöst, damit Auszüge
     verschiedener Konten korrekt zugeordnet werden.
 
+    Je Beleg nennt ``results`` ``inserted``, ``skipped`` (Duplikate) und davon
+    ``skipped_upload`` (schon durch einen anderen Beleg desselben Laufs da).
+
     Returns (status_code, json_string).
     """
     import_id = post_data.get("import_id", [""])[0]
@@ -134,12 +137,17 @@ def handle_confirm_import(db: Database, post_data):
         results = []
         any_inserted = False
 
-        # Zählbasierte Duplikat-Erkennung: DB-Bestand pro Schlüssel wird beim
-        # ersten Auftreten ermittelt (vor den Inserts dieses Laufs); übersprungen
-        # werden nur so viele Transaktionen, wie die DB bereits enthält. So
-        # bleiben mehrfach identische Transaktionen (gleicher Tag/Betrag) erhalten.
-        dup_db_counts = {}
-        dup_seen = {}
+        # Zählbasierte Duplikat-Erkennung, JE DATEI: Der Bestand je Schlüssel
+        # (Datum/Betrag/Konto) wird beim ersten Auftreten in der Datei gelesen und
+        # enthält damit auch, was frühere Dateien dieses Laufs angelegt haben;
+        # übersprungen werden nur so viele Umsätze, wie der Bestand bereits hat.
+        # So bleiben mehrfach identische Umsätze innerhalb EINER Datei erhalten,
+        # über mehrere Dateien gilt aber das Maximum statt der Summe (Überlappung
+        # oder dieselbe Datei zweimal verdoppelt nichts) – „Alle importieren“
+        # verhält sich wie die Einzelimporte nacheinander.
+        # run_db_counts hält den Bestand VOR diesem Lauf: ein Duplikat oberhalb
+        # davon geht auf eine andere Datei dieses Uploads zurück.
+        run_db_counts = {}
 
         for i in target_indices:
             if i < 0 or i >= len(files):
@@ -161,7 +169,10 @@ def handle_confirm_import(db: Database, post_data):
             bank_code = fl.get('bank_code') or 'unknown'
             inserted = 0
             skipped = 0
+            skipped_upload = 0    # davon: schon durch eine andere Datei dieses Laufs da
             text_updated = 0
+            dup_db_counts = {}
+            dup_seen = {}
             # Backfill-Kandidaten je Duplikatschlüssel sammeln und erst NACH
             # der Transaktionsschleife anwenden: enthält die Datei mehrere
             # Duplikate desselben Schlüssels mit VERSCHIEDENEN Texten, ist die
@@ -183,6 +194,7 @@ def handle_confirm_import(db: Database, post_data):
                 if dup_key not in dup_db_counts:
                     dup_db_counts[dup_key] = db.check_booking_exists(
                         trans_date, trans_amount, account_id, foreign_iban, text)
+                    run_db_counts.setdefault(dup_key, dup_db_counts[dup_key])
                 seen = dup_seen.get(dup_key, 0)
                 dup_seen[dup_key] = seen + 1
                 if seen < dup_db_counts[dup_key]:
@@ -192,6 +204,8 @@ def handle_confirm_import(db: Database, post_data):
                     backfill_raw[dup_key] = (trans_date, trans_amount,
                                              account_id, text)
                     skipped += 1
+                    if seen >= run_db_counts[dup_key]:
+                        skipped_upload += 1
                     continue
 
                 db.insert_booking(
@@ -220,6 +234,7 @@ def handle_confirm_import(db: Database, post_data):
             fl['imported'] = True
             results.append({'file_index': i, 'filename': fl.get('filename'),
                             'inserted': inserted, 'skipped': skipped,
+                            'skipped_upload': skipped_upload,
                             'text_updated': text_updated,
                             'account_found': True, 'error': None})
 
@@ -1102,6 +1117,7 @@ def handle_wiso_fdb_import(db: Database, post_data):
             f'/miscellaneous?wiso_fdb=ok'
             f'&file={quote(os.path.basename(client))}'
             f'&imported={result["imported"]}&skipped={result["skipped"]}'
+            f'&adopted={result.get("adopted", 0)}'
             f'&assets={result["assets"]}&afa={result["depreciations"]}'
             f'&customers={result["customers"]}&invoices={result["invoices"]}'
             f'&items={result["invoice_items"]}'

@@ -54,7 +54,11 @@ def build_import_preview(db, import_data):
 
     Returns { "files": [ {file_index, filename, bank_code, iban, document_date,
                           account_id, account_name, total, new_count, dup_count,
-                          status, problems, transactions} ] }.
+                          dup_upload_count, status, problems, transactions} ] }.
+
+    dup_count zählt alle möglichen Duplikate; dup_upload_count davon die, die
+    nicht im Bestand stecken, sondern in einer anderen Datei desselben Uploads
+    (bei Transaktionen: "dup_source" = "db" | "upload" | None).
 
     status: "error" = Konto nicht gefunden (Import blockiert),
             "warn"  = Duplikate oder Parse-Hinweise vorhanden,
@@ -64,12 +68,15 @@ def build_import_preview(db, import_data):
     accounts = db.fetch_accounts()
     files_out = []
 
-    # Zählbasierter Duplikat-Zähler über alle Belege hinweg (gleiche Logik wie
-    # der Bestätigungs-Import): als Duplikat gilt eine Transaktion nur, solange
-    # die DB mehr Buchungen mit gleichem Datum/Betrag/Konto enthält, als in
-    # dieser Vorschau bereits gezählt wurden.
-    dup_db_counts = {}
-    dup_seen = {}
+    # Zählbasierter Duplikat-Zähler, je Datei (gleiche Logik wie der
+    # Bestätigungs-Import, nur ohne zu schreiben): db_counts ist der Bestand je
+    # Schlüssel (Datum/Betrag/Konto), planned die Zahl der Umsätze, die frühere
+    # Dateien dieses Uploads je Schlüssel neu anlegen würden. Innerhalb einer
+    # Datei gilt ein Umsatz als Duplikat, solange sie weniger davon enthält als
+    # der Bestand (Quelle "db") bzw. Bestand + planned ("upload"). Über mehrere
+    # Dateien gilt damit das Maximum, nicht die Summe.
+    db_counts = {}
+    planned = {}
 
     for idx, f in enumerate(import_data.get("files", [])):
         iban = f.get("iban")
@@ -78,9 +85,12 @@ def build_import_preview(db, import_data):
 
         new_count = 0
         dup_count = 0
+        dup_upload_count = 0
         has_warn = False
         problems = []
         txns_out = []
+        seen = {}        # Schlüssel -> Umsätze dieser Datei bisher
+        new_here = {}    # Schlüssel -> davon neu (landet nach der Datei in planned)
 
         for t in txns:
             date = t.get("date")
@@ -93,18 +103,26 @@ def build_import_preview(db, import_data):
             if warns:
                 has_warn = True
 
-            is_dup = False
+            dup_source = None
             if account_id is not None and date and amount is not None:
                 dup_key = (date, round(float(amount), 2), account_id)
-                if dup_key not in dup_db_counts:
-                    dup_db_counts[dup_key] = db.check_booking_exists(
+                if dup_key not in db_counts:
+                    db_counts[dup_key] = db.check_booking_exists(
                         date, amount, account_id, foreign_iban, reference
                     )
-                seen = dup_seen.get(dup_key, 0)
-                dup_seen[dup_key] = seen + 1
-                is_dup = seen < dup_db_counts[dup_key]
+                position = seen.get(dup_key, 0)
+                seen[dup_key] = position + 1
+                if position < db_counts[dup_key]:
+                    dup_source = "db"
+                elif position < db_counts[dup_key] + planned.get(dup_key, 0):
+                    dup_source = "upload"
+                else:
+                    new_here[dup_key] = new_here.get(dup_key, 0) + 1
+            is_dup = dup_source is not None
             if is_dup:
                 dup_count += 1
+                if dup_source == "upload":
+                    dup_upload_count += 1
             else:
                 new_count += 1
 
@@ -115,11 +133,17 @@ def build_import_preview(db, import_data):
                 "amount": amount,
                 "foreign_iban": foreign_iban,
                 "dup": is_dup,
+                "dup_source": dup_source,
                 "warn": warns,
             }
             txns_out.append(row)
             if is_dup or warns:
                 problems.append(row)
+
+        # new_here füllt sich nur bei Dateien mit Konto: eine ohne Konto wird nicht
+        # importiert und zählt deshalb nicht zu dem, was folgende Dateien finden.
+        for dup_key, n in new_here.items():
+            planned[dup_key] = planned.get(dup_key, 0) + n
 
         if account_id is None:
             status = "error"
@@ -139,6 +163,7 @@ def build_import_preview(db, import_data):
             "total": len(txns),
             "new_count": new_count,
             "dup_count": dup_count,
+            "dup_upload_count": dup_upload_count,
             "status": status,
             "warnings": list(f.get("warnings") or []),
             "problems": problems,
