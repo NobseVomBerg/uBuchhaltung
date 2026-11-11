@@ -68,8 +68,9 @@ def test_degressive_plan_with_decimal_input(tmp_db):
 def test_book_depreciation_stores_integer(db_with_coa):
     db = db_with_coa
     acct_id = db.fetch_accounts()[0][0]
-    coas = db.fetch_chart_of_accounts()
-    coa_exp, coa_asset = coas[0][0], coas[1][0]
+    # Die AfA-Buchung prüft ihre Konten: Aufwandskonto = Erfolgskonto, Anlagekonto = Klasse 0
+    coa_exp = db.get_coa_id_by_account_number(6220)
+    coa_asset = db.get_coa_id_by_account_number(520)
     aid = db.insert_asset(name="Maschine", purchase_date="2025-01-15",
                           purchase_price=10000.00, useful_life_years=5)
     db.book_depreciation(aid, 2025, acct_id, coa_exp, coa_asset)

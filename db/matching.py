@@ -58,6 +58,28 @@ def classify_entry(coa_id, counter_coa_id, liquid_coa_ids) -> str:
     return ENTRY_TRANSFER
 
 
+# SKR04: Klasse 0 = Anlagevermögen, Klassen 4–7 = Erträge und Aufwendungen. Feste
+# Nummern wie in den übrigen Auswertungen, bis die Funktionskonten-Aufgabe
+# (docs/aufgaben.md) Rollen statt Nummern einführt.
+ASSET_ACCOUNT_RANGE = (1, 999)
+PL_ACCOUNT_RANGE = (4000, 7999)
+
+
+def is_asset_transfer(coa_id, counter_coa_id, liquid_coa_ids, asset_coa_ids, pl_coa_ids) -> bool:
+    """Ist das eine Umbuchung zwischen Anlagekonto und Erfolgskonto?
+
+    Das ist die Form der AfA („Aufwand an Anlagekonto“) und des Restbuchwerts beim
+    Abgang. Der Satz bewegt kein Geld, gehört aber in die EÜR: Wahr, wenn
+    ``classify_entry`` eine Umbuchung ergibt und eine Seite in ``asset_coa_ids``, die
+    andere in ``pl_coa_ids`` liegt. Ein Anlagenkauf (Anlagekonto gegen Geldkonto) oder
+    eine Verbindlichkeit auf der Gegenseite ist keine.
+    """
+    if classify_entry(coa_id, counter_coa_id, liquid_coa_ids) != ENTRY_TRANSFER:
+        return False
+    return ((coa_id in asset_coa_ids and counter_coa_id in pl_coa_ids)
+            or (coa_id in pl_coa_ids and counter_coa_id in asset_coa_ids))
+
+
 class MatchingMixin:
     def get_linked_entry_for_bank(self, bank_booking_id: int):
         """Hole die wichtigsten Felder des ersten verknüpften Entry-Bookings.

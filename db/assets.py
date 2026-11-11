@@ -7,6 +7,13 @@ import os
 import json
 from decimal import Decimal
 from money import to_minor, from_minor
+from .matching import ASSET_ACCOUNT_RANGE, PL_ACCOUNT_RANGE
+
+# Gebucht heißt: die Buchung gibt es – oder der WISO-Import hat das Jahr als gebucht
+# übernommen (Status 'booked', ohne Buchung). Eine Zeile 'posted' ohne vorhandene Buchung
+# (z. B. per SQL-Konsole gelöscht) gilt als nicht gebucht. Festes SQL-Stück, kein Wert.
+_DEPRECIATION_BOOKED = ("(d.Status = 'booked' "
+                        "OR EXISTS (SELECT 1 FROM Bookings b WHERE b.ID = d.Booking_ID))")
 
 
 class AssetsMixin:
@@ -164,11 +171,31 @@ class AssetsMixin:
         conn.commit()
         conn.close()
     def delete_asset(self, asset_id):
+        """Anlage löschen – nur ohne gebuchte AfA und ohne Unteranlagen.
+
+        Buchungen werden nie stillschweigend mitgelöscht (sie blieben sonst verwaist
+        stehen oder verschwänden ohne Spur): Wer eine Anlage mit gebuchter AfA löschen
+        will, löscht erst die AfA-Buchungen. Als gebucht zählt nur ein Jahr, dessen Buchung
+        es gibt; Zeilen des AfA-Plans ohne Buchung (WISO-Import, noch nicht gebuchte oder
+        verwaiste Jahre) hindern das Löschen nicht. ``ValueError`` mit Klartext."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM Assets WHERE ID = ?', (asset_id,))
-        conn.commit()
-        conn.close()
+        try:
+            years = [row[0] for row in conn.execute(
+                'SELECT d.Year FROM AssetDepreciations d WHERE d.Asset_ID = ? '
+                'AND EXISTS (SELECT 1 FROM Bookings b WHERE b.ID = d.Booking_ID) '
+                'ORDER BY d.Year', (asset_id,))]
+            if years:
+                raise ValueError(
+                    'Für diese Anlage ist AfA gebucht (' + ', '.join(str(y) for y in years)
+                    + ') – erst die AfA-Buchungen löschen.')
+            if conn.execute('SELECT 1 FROM Assets WHERE Parent_ID = ? LIMIT 1',
+                            (asset_id,)).fetchone():
+                raise ValueError('Die Anlage hat Erweiterungen (Unteranlagen) – '
+                                 'erst diese löschen.')
+            conn.execute('DELETE FROM Assets WHERE ID = ?', (asset_id,))
+            conn.commit()
+        finally:
+            conn.close()
     def get_depreciations_for_asset(self, asset_id):
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -179,6 +206,17 @@ class AssetsMixin:
         conn.close()
         # DepreciationAmount (3), BookValue (4) -> Euro-Decimal
         return [self._euro_row(r, 3, 4) for r in rows]
+    def get_booked_depreciation_years(self, asset_id) -> set:
+        """Jahre, in denen die AfA der Anlage gebucht ist: die Buchung gibt es oder das Jahr
+        stammt als 'booked' aus dem WISO-Import. Eine Zeile 'posted' ohne vorhandene Buchung
+        gilt als nicht gebucht; ``book_depreciation`` überschreibt sie beim Buchen."""
+        conn = self._get_connection()
+        try:
+            return {row[0] for row in conn.execute(
+                f'SELECT d.Year FROM AssetDepreciations d WHERE d.Asset_ID = ? '
+                f'AND {_DEPRECIATION_BOOKED}', (asset_id,))}
+        finally:
+            conn.close()
     def calculate_depreciation_plan(self, purchase_price, purchase_date, useful_life_years,
                                      depreciation_method='linear'):
         """Calculate full AfA plan. Returns list of dicts per year.
@@ -296,10 +334,58 @@ class AssetsMixin:
             else:
                 break
         return max(0.0, book_value)
-    def book_depreciation(self, asset_id, year, account_id, coa_id_expense,
-                          coa_id_asset, description=None):
-        """Book an AfA entry: creates a Booking and marks depreciation as posted."""
-        import datetime as dt
+    def resolve_asset_coa(self, asset, coa_id_asset=None):
+        """Anlagekonto (COA-ID) einer Anlage: das übergebene, sonst das der Anlage, sonst
+        das ihrer AfA-Kategorie; ``None``, wenn nichts davon gepflegt ist.
+        ``asset`` ist eine Zeile aus ``get_asset_by_id``."""
+        if coa_id_asset:
+            return coa_id_asset
+        if asset[5]:                          # Assets.COA_ID
+            return asset[5]
+        if asset[4]:                          # Assets.AssetCategory_ID
+            category = self.get_asset_category_by_id(asset[4])
+            if category and category[4]:      # AssetCategories.COA_ID
+                return category[4]
+        return None
+    def _require_coa_in_range(self, coa_id, number_range, label):
+        """``ValueError`` mit Klartext, wenn das Konto nicht im Nummernbereich liegt
+        (``label``: „Aufwandskonto“ bzw. „Anlagekonto“)."""
+        conn = self._get_connection()
+        try:
+            row = conn.execute('SELECT AccountNumber, Name FROM ChartOfAccounts WHERE ID = ?',
+                               (coa_id,)).fetchone()
+        finally:
+            conn.close()
+        if row is None or not number_range[0] <= row[0] <= number_range[1]:
+            shown = f'Konto {row[0]} {row[1]}' if row else f'Konto-ID {coa_id}'
+            raise ValueError(f'{shown} ist kein {label} '
+                             f'(erlaubt: Konten {number_range[0]}–{number_range[1]})')
+    def book_depreciation(self, asset_id, year, account_id=None, coa_id_expense=None,
+                          coa_id_asset=None, description=None):
+        """AfA eines Jahres buchen: Umbuchung „Aufwand an Anlagekonto“.
+
+        In der EÜR wird direkt abgeschrieben, ohne Wertberichtigung. Der Satz ist ein
+        eigenständiger Buchungssatz ohne Konto (``Account_ID`` leer, kein Geldfluss):
+        COA = Aufwandskonto, Gegenkonto = Anlagekonto, Betrag POSITIV (COA im Soll).
+        ``classify_entry`` ordnet ihn als Umbuchung ein, der DATEV-Export gibt ihn
+        unverändert als „Aufwand an Anlagekonto“ aus. ``account_id`` wird nicht mehr
+        verwendet; der Parameter bleibt für bestehende Aufrufe.
+
+        Das Anlagekonto kommt aus ``coa_id_asset``, sonst aus der Anlage oder ihrer
+        Kategorie (``resolve_asset_coa``). Das Aufwandskonto muss ein Erfolgskonto
+        (``PL_ACCOUNT_RANGE``), das Anlagekonto ein Anlagekonto (``ASSET_ACCOUNT_RANGE``)
+        sein – sonst könnte ein Satz wie „6220 an 1460“ entstehen, den die EÜR nicht als
+        AfA erkennt. Nach dem Abgang der Anlage (``SaleDate``) gibt es keine AfA mehr; die
+        zeitanteilige AfA im Abgangsjahr selbst plant ``calculate_depreciation_plan`` noch
+        nicht.
+
+        Je Anlage und Jahr gibt es nur eine Buchung: Ist das Jahr schon gebucht (die
+        Buchung gibt es, oder es kam als 'booked' aus dem WISO-Import), kommt ein
+        ``ValueError``. Eine Zeile 'posted', deren Buchung fehlt, gilt als nicht gebucht
+        und wird überschrieben. Prüfung und Anlegen laufen in einer Transaktion, die den
+        Schreibzugriff sofort sperrt – Doppelklick oder zwei gleichzeitige Anfragen buchen
+        nie beide.
+        """
         asset = self.get_asset_by_id(asset_id)
         if not asset:
             raise ValueError(f"Asset {asset_id} not found")
@@ -308,27 +394,48 @@ class AssetsMixin:
         year_entry = next((e for e in plan if e['year'] == year), None)
         if not year_entry:
             raise ValueError(f"No depreciation planned for year {year}")
+        sale_date = asset[15]                     # Assets.SaleDate
+        sale_year = str(sale_date)[:4] if sale_date else ''
+        if sale_year.isdigit() and year > int(sale_year):
+            raise ValueError(f"AfA {year} liegt nach dem Abgang der Anlage ({sale_date})")
+        if not coa_id_expense:
+            raise ValueError("Aufwandskonto fehlt")
+        coa_id_asset = self.resolve_asset_coa(asset, coa_id_asset)
+        if not coa_id_asset:
+            raise ValueError("Anlage hat kein Anlagenkonto")
+        self._require_coa_in_range(coa_id_expense, PL_ACCOUNT_RANGE, 'Aufwandskonto')
+        self._require_coa_in_range(coa_id_asset, ASSET_ACCOUNT_RANGE, 'Anlagekonto')
         amount = year_entry['depreciation']
         if not description:
             description = f"AfA {asset[2]} {year} ({asset[1]})"
         booking_date = f"{year}-12-31"
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO Bookings (DateBooking, DateTax, Account_ID, COA_ID,
-                Amount, Currency, Text, BookingType, Status)
-            VALUES (?, ?, ?, ?, ?, 'EUR', ?, 'entry', 'posted')
-        ''', (booking_date, booking_date, account_id, coa_id_expense,
-              to_minor(-abs(amount)), description))
-        booking_id = cursor.lastrowid
-        # Upsert into AssetDepreciations
-        cursor.execute('''
-            INSERT INTO AssetDepreciations (Asset_ID, Year, DepreciationAmount, BookValue, Booking_ID, Status, BookedAt)
-            VALUES (?, ?, ?, ?, ?, 'posted', CURRENT_TIMESTAMP)
-            ON CONFLICT(Asset_ID, Year) DO UPDATE SET
-                Booking_ID=excluded.Booking_ID, Status='posted', BookedAt=CURRENT_TIMESTAMP,
-                DepreciationAmount=excluded.DepreciationAmount, BookValue=excluded.BookValue
-        ''', (asset_id, year, to_minor(amount), to_minor(year_entry['book_value_end']), booking_id))
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            if conn.execute(
+                    f'SELECT 1 FROM AssetDepreciations d WHERE d.Asset_ID = ? AND d.Year = ? '
+                    f'AND {_DEPRECIATION_BOOKED}', (asset_id, year)).fetchone():
+                raise ValueError(f"AfA {year} ist bereits gebucht")
+            cursor = conn.execute('''
+                INSERT INTO Bookings (DateBooking, DateTax, Account_ID, COA_ID, CounterCOA_ID,
+                    Amount, Currency, Text, BookingType, Status)
+                VALUES (?, ?, NULL, ?, ?, ?, 'EUR', ?, 'entry', 'posted')
+            ''', (booking_date, booking_date, coa_id_expense, coa_id_asset,
+                  to_minor(abs(amount)), description))
+            booking_id = cursor.lastrowid
+            # Upsert into AssetDepreciations
+            conn.execute('''
+                INSERT INTO AssetDepreciations (Asset_ID, Year, DepreciationAmount, BookValue, Booking_ID, Status, BookedAt)
+                VALUES (?, ?, ?, ?, ?, 'posted', CURRENT_TIMESTAMP)
+                ON CONFLICT(Asset_ID, Year) DO UPDATE SET
+                    Booking_ID=excluded.Booking_ID, Status='posted', BookedAt=CURRENT_TIMESTAMP,
+                    DepreciationAmount=excluded.DepreciationAmount, BookValue=excluded.BookValue
+            ''', (asset_id, year, to_minor(amount), to_minor(year_entry['book_value_end']),
+                  booking_id))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
         return booking_id

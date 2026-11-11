@@ -64,8 +64,14 @@ T_UNITS = 'SUP_ARTICLES_UNITS'
 #: tragen in SKR03 wie SKR04 dieselbe Nummer.
 FIRST_PERSONAL_ACCOUNT = 10000
 
-#: Liquide Konten ohne Rückfrage: Kasse und Verrechnungskonto (SKR04).
-#: Die eigenen Bankkonten kommen aus der Anwendung dazu.
+#: Liquide Konten ohne Rückfrage (SKR04-Nummern, nach der Umschlüsselung): 1460 ist das
+#: Verrechnungskonto (Geldtransit). 1000–1099 ist historisch (SKR03-Kassenbereich; in
+#: SKR04 sind es Vorräte) und bleibt, weil vorhandene Bestände ihr Vorzeichen daran
+#: ausgerichtet haben. Die Kasse der App (SKR04 1600) und die Bankkonten zählen über die
+#: eigenen Konten (``Accounts.SKRAccount``). Die Importe richten das Vorzeichen an dieser
+#: Menge aus, ebenso `Database.get_payment_coa_ids`. Nicht ändern, bevor die Richtung
+#: beim Import festgeschrieben wird (docs/aufgaben.md): Sonst liest man Bestände anders,
+#: als sie importiert wurden – ein Re-Import verdoppelte Sätze mit Gegenvorzeichen.
 DEFAULT_LIQUID_ACCOUNTS = frozenset(range(1000, 1100)) | {1460}
 
 #: SKR03 → (SKR04, Bezeichnung) für Konten, die ``BAS_FINACC_PLAN`` nicht führt.
