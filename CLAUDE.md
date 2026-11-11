@@ -187,11 +187,24 @@ kein Subagent darauf:
   dieser Einordnung; der BU-Schlüssel folgt der Richtung der Geldbewegung. Die
   BU-Schlüssel sind fachlich noch nicht gegen einen echten Stapel geprüft
   (`docs/aufgaben.md`) – nicht als richtig voraussetzen
-- Welche Konten „liquide“ sind, hängt vom Zweck ab: Die EÜR nimmt nur die eigenen
-  Bank-/Kassenkonten (`get_bank_coa_ids` – Geld auf dem Verrechnungskonto ist noch
-  nicht geflossen); der DATEV-Export nimmt die Zahlungskonten, an denen die Importe
-  das Vorzeichen ausrichten (`get_payment_coa_ids`: zusätzlich 1000–1099 und das
-  Verrechnungskonto 1460), ebenso die Buchungsmaske beim Bearbeiten
+- Zahlungskonten: EÜR, DATEV-Export und Buchungsmaske (beim Bearbeiten) nehmen dieselbe
+  Menge (`get_payment_coa_ids`), an der auch die Importe das Vorzeichen ausrichten: die
+  SKR-Konten der eigenen Bank- und Kassenkonten, der Kassenbereich 1600–1699 (SKR04) und
+  das Verrechnungskonto 1460 (Geldtransit: WISO bucht darüber aufgeteilte Zahlungen und
+  Anlagen-Umbuchungen). Ob ein Satz in die EÜR kommt, entscheidet die Sektion in
+  `get_euer_data` – Kind einer Bank- oder Kassenbewegung; eigenständig auf einer Kasse
+  oder (ohne Kontofilter) auf 1460; Umbuchung zwischen Anlage- und Erfolgskonto –, nicht
+  die Kontenmenge. `is_bank_effective` und die Split-Summe rechnen weiter nur mit den
+  eigenen Bankkonten (`get_bank_coa_ids`)
+- Kasse = SKR04-Konto 1600: Eine neu angelegte Kasse (`ensure_kasse_exists`,
+  `insert_account`) bekommt 1600, das Konto wird bei Bedarf nachgelegt
+  (`ensure_cash_coa`). Vorhandene Kassen behalten ihre Nummer (leer oder 1460); 1460 ist
+  das Verrechnungskonto, keine Kasse
+- AfA (`book_depreciation`): Umbuchung „Aufwand an Anlagekonto“ (direkte Abschreibung),
+  Betrag positiv, ohne `Account_ID`, je Anlage und Jahr nur einmal (Sperre in einer
+  Transaktion). Löschen der Buchung setzt das Jahr auf `planned` zurück, `delete_asset`
+  lehnt bei gebuchter AfA ab. In der EÜR (Sektion 3), nicht im Dashboard – die AfA ist
+  kein Geldfluss
 - Masken schreiben nur, was sie führen (`update_booking_fields`) – Gegenkonto,
   Kategorie und fremde Kontakte dürfen beim Speichern nicht verloren gehen
 

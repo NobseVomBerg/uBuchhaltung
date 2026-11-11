@@ -2184,21 +2184,28 @@ def handle_update_asset(db: Database, post_data: dict):
 
 
 def handle_book_depreciation(db: Database, post_data: dict):
-    """AfA für ein Jahr buchen"""
+    """AfA für ein Jahr buchen: Umbuchung „Aufwand an Anlagekonto“ (kein Bankkonto).
+
+    ``coa_id`` ist das Aufwandskonto, ``asset_coa_id`` (optional) das Anlagekonto – ohne
+    Angabe gilt das der Anlage bzw. ihrer Kategorie. Lehnt die Datenbank ab (Jahr schon
+    gebucht, kein Anlagekonto), geht die Meldung als ``err`` an die Anlagenseite zurück."""
     asset_id    = int(post_data.get('asset_id', ['0'])[0])
     year        = int(post_data.get('year', ['0'])[0])
-    account_id  = int(post_data.get('account_id', ['0'])[0])
     coa_id      = int(post_data.get('coa_id', ['0'])[0])
+    asset_coa   = post_data.get('asset_coa_id', [''])[0].strip()
+    asset_coa_id = int(asset_coa) if asset_coa else None
     description = post_data.get('description', [''])[0].strip() or None
 
-    db.book_depreciation(
-        asset_id=asset_id,
-        year=year,
-        account_id=account_id,
-        coa_id_expense=coa_id,
-        coa_id_asset=coa_id,
-        description=description,
-    )
+    try:
+        db.book_depreciation(
+            asset_id=asset_id,
+            year=year,
+            coa_id_expense=coa_id,
+            coa_id_asset=asset_coa_id,
+            description=description,
+        )
+    except ValueError as exc:
+        return 303, f'/assets/view?id={asset_id}&err={quote(str(exc), safe="")}'
     return 303, f'/assets/view?id={asset_id}'
 
 

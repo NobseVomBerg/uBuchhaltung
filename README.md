@@ -197,7 +197,7 @@ Zentrale Verwaltung aller Buchungstransaktionen:
 ### 3. Konten-Verwaltung (`/masterdata/bankaccounts`)
 - Übersicht aller Bank-/Kassenkonten (Name, Inhaber, IBAN, BIC, BankName)
 - SKR-Kontozuordnung (`SKRAccount`) für automatische Doppik-Erkennung
-- Kasse als Sonderform (automatisch beim Start angelegt, nicht löschbar)
+- Kasse als Sonderform (automatisch beim Start angelegt, nicht löschbar); eine neue Kasse führt das Kassenkonto 1600 (SKR04)
 - CRUD-Funktionalität
 
 ### 4. Standardkontenrahmen (SKR) (`/masterdata/skr`)
@@ -248,7 +248,8 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 - Steueranteile in der EÜR:
   - Virtuelles 3806 nur aus USt-Anteilen der Einnahmen
   - Virtuelle Vorsteuerkonten 1401/1406 für Ausgaben
-- **Kasse-Buchungen** (Section 2b): Direkte Entry-Buchungen auf Kassenkonto ohne COA-Spiegel (`CounterCOA=NULL`) werden separat erfasst und fließen korrekt in EÜR und Dashboard ein
+- **Kasse-Buchungen**: Buchungen über die Buchungsmaske mit Konto = Kasse zählen in EÜR und Dashboard wie Bankbewegungen. Eigenständige Sätze auf der Kasse – auch direkte Entry-Buchungen ohne COA-Spiegel (`CounterCOA=NULL`, Section 2b) – fließen ebenfalls ein. Die EÜR liest zusätzlich eigenständige Sätze über das Verrechnungskonto 1460 (WISO: „Aufwand an Verrechnung“ gilt mit dem Datum des Satzes als abgeflossen), solange kein Kontofilter gesetzt ist; das Dashboard folgt den Kontobewegungen
+- **Abschreibungen (AfA)** erscheinen in der EÜR (Betriebsausgabe auf dem Aufwandskonto), nicht in den Zahlungskarten des Dashboards – sie sind kein Geldfluss
 
 ### 8. Mahnwesen (`/invoice/reminders`)
 - 3-Stufen-Mahnsystem (Erinnerung → 1. Mahnung → Inkasso)
@@ -274,7 +275,7 @@ Vollständiges Anlagenmanagement mit gesetzeskonformer AfA:
 - **AfA-Methoden**: Linear (anteilig), Degressiv (25%), GWG (≤ 800 €)
 - **Live-Vorschau**: JavaScript-basierte Echtzeit-AfA-Berechnung
 - **Inventarnummern**: Auto-generiert `INV-YY-###`
-- **Buchungsintegration**: AfA-Buchung als Bookings-Eintrag
+- **Buchungsintegration**: AfA-Buchung als Umbuchung „Aufwand an Anlagekonto“ (direkte Abschreibung, je Anlage und Jahr nur einmal, ohne Bankkonto); Löschen der Buchung gibt das Jahr wieder frei, eine Anlage mit gebuchter AfA lässt sich nicht löschen. Wer ein GWG schon beim Kauf auf das Aufwandskonto 6260 (Sofortabschreibung) gebucht hat, darf die AfA nicht zusätzlich buchen – sie zählte doppelt, das Programm prüft das nicht
 - **Erweiterungen**: Sub-Anlagen über Parent_ID
 
 ### 13. Sonstiges (`/miscellaneous`)

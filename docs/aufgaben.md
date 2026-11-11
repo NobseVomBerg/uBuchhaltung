@@ -41,8 +41,10 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
   - der BU-Schlüssel folgt der Geldrichtung statt der Art des Kontos (Erstattung auf ein Aufwandskonto bekommt einen Umsatzsteuer-Schlüssel)
   - Überträge zwischen zwei Geldkonten aus dem WISO-Import: Soll/Haben verkehrt
   - Soll/Haben wird beim Export aus der aktuellen Kontenliste gelesen, das Vorzeichen stammt aus der beim Import – ändert sich die SKR-Nummer eines Bankkontos dazwischen, passt beides nicht mehr zusammen; besser beim Import festschreiben
-- Kassenbuchungen aus der Buchungsmaske (Konto = Kasse) fehlen in EÜR und Dashboard; Sätze über das Verrechnungskonto 1460 liest die EÜR als Umbuchung, einen Satz mit 1460 vorne und leerem Gegenkonto als Zahlung mit Vorsteuer
-- Die Importe behandeln 1000–1099 als Kasse – das ist der SKR03-Bereich, in SKR04 liegt die Kasse auf 1600
+- Split-Summe (`is_bank_effective`, `find_unbalanced_splits`) kennt das Verrechnungskonto 1460 nicht als Geldkonto: Eine Bankzeile mit dem einzigen Kind „X an 1460“ gilt bei Kasse ≠ 1460 als unausgeglichen (DATEV-Export gesperrt), bei Kasse = 1460 gilt „X an 1460“ plus „1460 an Bank“ als unausgeglichen – Regel je Spiegel/Zahlung neu fassen
+- Dashboard zählt bei Bestandskasse = 1460 eigenständige WISO-Teile „X an 1460“ als Kasse und dazu die Bankzeile doppelt (die EÜR stimmt) – Kasse auf 1600 umstellen (in älteren Datenbanken das Konto 1600 vorher im Kontenrahmen anlegen; `handle_update_bankaccount` legt es nicht an) oder 1460 im Dashboard ausnehmen
+- Alte AfA-Sätze (vor 2.0.5: Aufwandskonto auf einem Bank-/Kassenkonto, kein Gegenkonto) stehen im DATEV-Export ohne Gegenkonto; keine automatische Reparatur – Buchung löschen (setzt das Jahr zurück) und neu buchen
+- Vorzeichen der WISO-AfA-Sätze (z. B. „6222 an 0520“) an echten Daten prüfen: gespeichert ist der Rohbetrag, die EÜR liest positiv als „Konto im Soll“
 - Bankbewegung und ihre Buchungssätze in einer Transaktion speichern – heute nur „erst prüfen, dann schreiben“; ein Datenbankfehler beim Schreiben hinterlässt einen halben Stand
 - Ein eigenständiger Buchungssatz bekommt beim Speichern in der Maske das vorgewählte Bankkonto und gilt danach im Kontoauszug-Import als vorhandene Bankbewegung
 - Rechnungsformular (`/invoice?id=…`) läuft bei 1440 px Breite rechts aus dem Viewport
