@@ -17,13 +17,21 @@ Kasse ohne Nummer oder mit 1460 behält „6815 an 1600“ den Betrag der Datei 
 erneuter Import legt nichts neu an) –, und die Demo (die Kasse der Testdaten steht dort als
 Portokasse auf 1610, weil 1600 die automatisch angelegte Kasse trägt).
 
+Die SKR-Nummer eines Kontos lässt sich nur umstellen, solange keine Buchungssätze das bisherige oder das
+neue Konto führen (``handle_update_bankaccount``, ``count_entries_on_account_numbers``): sonst würden
+EÜR und DATEV-Export vorhandene Sätze anders lesen, als sie gebucht wurden (Ausgabe ↔ Einnahme). Die
+Ablehnung kommt als Meldung auf die Bearbeitenseite des Kontos.
+
 Alle Namen und Werte sind erfunden.
 """
 import csv
 import datetime
+import json
 import os
+import re
 from contextlib import closing
 from decimal import Decimal
+from urllib.parse import parse_qs, quote, urlsplit
 
 import pytest
 
@@ -31,13 +39,15 @@ import demo_seed
 from db import Database, _CoreMixin
 from importers.wiso_fdb import DEFAULT_LIQUID_ACCOUNTS
 from money import to_minor
-from server.handlers import handle_datev_export, handle_update_bankaccount
+from server.handlers import handle_add_transaction, handle_datev_export, handle_update_bankaccount
 from server.pages_masterdata import PageBankAccounts
 from server.pages_miscellaneous import PageMiscellaneous
 from tests.fdb_builder import FdbBuilder, INT64, LONG, SHORT, TEXT, TIMESTAMP, Column
-from tests.http_client import get
+from tests.dom_helpers import Dom, assert_same_structure
+from tests.http_client import get, own_origin, post
 
 D1, D2 = '2026-01-01', '2026-12-31'
+PAYLOAD = '</script><img src=x onerror=alert(1)>'
 OLD_CASH_NUMBERS = [None, 1460]            # so haben ältere Datenbanken ihre Kasse
 OLD_ID = {None: 'ohne-skr', 1460: '1460'}
 OLD_PARAMS = [pytest.param(skr, id=f'kasse-{OLD_ID[skr]}') for skr in OLD_CASH_NUMBERS]
@@ -236,6 +246,260 @@ def test_switching_to_1600_on_a_fresh_database_creates_nothing_new(tmp_db):
                                        'name': ['Reisekasse'], 'skr_account': ['1600']})
     assert _cash_accounts(tmp_db)[1] == ('Reisekasse', 1600)
     assert _count_chart(tmp_db, 1600) == 1
+
+
+# ── Die SKR-Nummer eines Kontos lässt sich nur umstellen, solange keine Buchungen daran hängen ──
+# Ob ein Buchungssatz eine Zahlung ist und in welche Richtung, lesen EÜR und DATEV-Export daran ab, welche
+# Konten gerade Geldkonten sind – das Vorzeichen stammt aber vom Zeitpunkt der Buchung bzw. des Imports.
+# Die Kontenverwaltung lehnt die Umstellung deshalb ab, sobald Buchungssätze das bisherige ODER das neue
+# Konto führen (``db.count_entries_on_account_numbers``); alles andere am Konto lässt sich immer ändern.
+
+def _update(db, account_id, name, skr, **extra):
+    form = {'id': [str(account_id)], 'name': [name], 'skr_account': ['' if skr is None else str(skr)]}
+    form.update({key: [value] for key, value in extra.items()})
+    return handle_update_bankaccount(db, form)
+
+
+def _refusal(location, account_id):
+    """Meldung einer Ablehnung (Weiterleitung auf die Bearbeitenseite des Kontos mit ``error``); sonst
+    ``None``."""
+    parts = urlsplit(location)
+    query = parse_qs(parts.query)
+    if parts.path != '/masterdata/bankaccounts/edit' or query.get('id') != [str(account_id)]:
+        return None
+    return query['error'][0] if 'error' in query else None
+
+
+def _skr_of(db, account_id):
+    return db.get_account_by_id(account_id)[7]
+
+
+def _error_message(html):
+    """Die Meldung des ``appMsg``-Aufrufs der Bankkonten-Seite (JSON-Text, Art ``'error'``)."""
+    for script in Dom(html).scripts:
+        found = re.search(r'function\(\)\{appMsg\(', script)
+        if found:
+            value, position = json.JSONDecoder().raw_decode(script, found.end())
+            assert script[position:].startswith(",'error');})"), script[position:position + 30]
+            return value
+    raise AssertionError('kein appMsg-Aufruf in der Seite')
+
+
+@pytest.mark.parametrize('new_number', [None, 1460, 1610], ids=['leer', '1460', '1610'])
+def test_cash_number_is_not_changed_while_entries_hang_on_the_old_number(tmp_db, new_number):
+    """Zwei Importsätze führen 1600 – als Gegenkonto („6815 an 1600“) und als Konto („1600 an 4400“)."""
+    db = tmp_db
+    db.import_wiso_csv(_csv(('6815', '1600', '18,35', 'KS-001', '401'),
+                            ('1600', '4400', '50,00', 'KS-002', '401')))
+    kasse = _cash_id(db)
+
+    status, location = _update(db, kasse, 'Kasse', new_number)
+
+    assert status == 303
+    message = _refusal(location, kasse)
+    assert message is not None and message.startswith(
+        'SKR-Konto nicht geändert: 2 Buchungssätze führen das bisherige oder das neue Konto.')
+    assert _cash_accounts(db) == [('Kasse', 1600)]
+
+
+@pytest.mark.parametrize('old_number', OLD_CASH_NUMBERS, ids=['kasse-ohne-skr', 'kasse-1460'])
+def test_cash_number_is_not_changed_while_entries_hang_on_the_new_number(tmp_db, old_number):
+    db = tmp_db
+    kasse = _cash_id(db)
+    _update(db, kasse, 'Kasse', old_number)                        # vor dem Import: erlaubt
+    db.import_wiso_csv(_csv(('6815', '1600', '18,35', 'KS-001', '401')))      # hängt an 1600
+
+    status, location = _update(db, kasse, 'Kasse', 1600)
+
+    assert status == 303
+    message = _refusal(location, kasse)
+    assert message is not None and message.startswith('SKR-Konto nicht geändert: 1 Buchungssätze führen')
+    assert _skr_of(db, kasse) == old_number
+
+
+def test_refusal_does_not_create_the_cash_account_1600(tmp_path):
+    """Die Ablehnung kommt vor dem Nachlegen von 1600: In einer älteren Datenbank (Kasse 1460, Konto 1600
+    fehlt) bleibt der Kontenrahmen unverändert."""
+    db = _old_database(tmp_path, 1460)
+    db.import_wiso_csv(_csv(('6815', '1460', '10,00', 'VR-001', '')))
+    kasse = _cash_id(db)
+
+    status, location = _update(db, kasse, 'Kasse', 1600)
+
+    assert _refusal(location, kasse) is not None
+    assert _skr_of(db, kasse) == 1460 and 1600 not in _chart_numbers(db)
+
+
+def test_entries_on_neither_number_do_not_block_the_change(tmp_db):
+    db = tmp_db
+    db.import_wiso_csv(_csv(('6815', '1460', '10,00', 'VR-001', '')))      # nur das Verrechnungskonto
+    kasse = _cash_id(db)
+
+    assert _update(db, kasse, 'Kasse', 1610) == (303, '/masterdata/bankaccounts')
+    assert _skr_of(db, kasse) == 1610
+    assert _update(db, kasse, 'Kasse', None) == (303, '/masterdata/bankaccounts')
+    assert _skr_of(db, kasse) is None
+
+
+def test_mask_booking_blocks_the_change_by_its_entry_not_by_the_bank_row(tmp_db):
+    """Die Kassenbuchung der Maske besteht aus einer Bankbewegung (Konto = Kasse) und EINEM Buchungssatz
+    (Gegenkonto 1600) – gezählt wird der Buchungssatz."""
+    db = tmp_db
+    kasse = _cash_id(db)
+    status, _location = handle_add_transaction(db, {
+        'transaction_id': ['0'], 'date': ['2026-03-01'], 'amount': ['-11.90'], 'account': [str(kasse)],
+        'currency': ['EUR'], 'coa_id': [str(_coa(db, 6815))], 'tax_rate': ['19'], 'tax_amount': ['-1.90']})
+    assert status == 303
+
+    _status, location = _update(db, kasse, 'Kasse', 1460)
+
+    assert _refusal(location, kasse).startswith('SKR-Konto nicht geändert: 1 Buchungssätze führen')
+    assert _skr_of(db, kasse) == 1600
+
+
+def _giro_with_entry(db, number=1800):
+    db.insert_account('Prot-Giro', 'Owner', 'DE00PROTECT', 'BIC', 'Bank', is_cash=0, skr_account=number)
+    giro = _cash_id(db, 'Prot-Giro')
+    bank = db.insert_booking('2026-03-01', Decimal('119'), account_id=giro, booking_type='bank')
+    db.insert_booking('2026-03-01', Decimal('119'), coa_id=_coa(db, 4400), counter_coa_id=_coa(db, number),
+                      tax_rate=0.19, tax_amount=Decimal('19'), booking_type='entry',
+                      parent_booking_id=bank)
+    return giro
+
+
+def test_bank_account_number_is_protected_as_well(tmp_db):
+    db = tmp_db
+    giro = _giro_with_entry(db)
+
+    _status, location = _update(db, giro, 'Prot-Giro', 1810)
+
+    assert _refusal(location, giro).startswith('SKR-Konto nicht geändert: 1 Buchungssätze führen')
+    assert _skr_of(db, giro) == 1800
+
+
+def test_bank_account_without_entries_can_change_its_number(tmp_db):
+    db = tmp_db
+    db.insert_account('Prot-Giro', 'Owner', 'DE00PROTECT', 'BIC', 'Bank', is_cash=0, skr_account=1820)
+    giro = _cash_id(db, 'Prot-Giro')
+    assert _update(db, giro, 'Prot-Giro', 1810) == (303, '/masterdata/bankaccounts')
+    assert _skr_of(db, giro) == 1810
+
+
+@pytest.mark.parametrize('number', [1800, None], ids=['mit-nummer', 'ohne-nummer'])
+def test_changes_that_keep_the_number_are_never_refused(tmp_db, number):
+    """Name, Inhaber, IBAN … lassen sich immer ändern – auch wenn Sätze am Konto hängen: Die Nummer
+    bleibt, nichts wird umgedeutet."""
+    db = tmp_db
+    giro = _giro_with_entry(db)
+    if number is None:
+        _execute(db, 'UPDATE Accounts SET SKRAccount = NULL WHERE ID = ?', (giro,))
+
+    result = _update(db, giro, 'Prot-Giro neu', number, holder='Inhaber Neu', iban='DE00PROTECT2')
+
+    assert result == (303, '/masterdata/bankaccounts')
+    row = db.get_account_by_id(giro)
+    assert (row[1], row[2], row[3], row[7]) == ('Prot-Giro neu', 'Inhaber Neu', 'DE00PROTECT2', number)
+
+
+def test_entries_are_counted_once_by_account_or_counter_account(tmp_db):
+    """Gezählt werden Buchungssätze (keine Bankbewegungen), die eines der Konten als Konto ODER Gegenkonto
+    führen – jeder einmal, auch wenn beide Seiten zu den gefragten Nummern gehören."""
+    db = tmp_db
+    kasse = _cash_id(db)
+
+    def entry(coa, counter):
+        db.insert_booking('2026-03-01', Decimal('-5'), coa_id=_coa(db, coa),
+                          counter_coa_id=None if counter is None else _coa(db, counter),
+                          booking_type='entry')
+
+    entry(6815, 1600)                     # Gegenkonto 1600
+    entry(1600, 4400)                     # Konto 1600
+    entry(1600, 1460)                     # beide Seiten gefragt
+    entry(6815, 1460)
+    entry(6815, None)
+    db.insert_booking('2026-03-01', Decimal('-5'), account_id=kasse, coa_id=_coa(db, 1600),
+                      booking_type='bank')                     # Bankbewegung: zählt nicht
+
+    assert db.count_entries_on_account_numbers([1600]) == 3
+    assert db.count_entries_on_account_numbers([1460]) == 2
+    assert db.count_entries_on_account_numbers([1600, 1460]) == 4
+    assert db.count_entries_on_account_numbers([None, 1460]) == 2
+    assert db.count_entries_on_account_numbers([1610]) == 0
+    assert db.count_entries_on_account_numbers([None]) == 0
+    assert db.count_entries_on_account_numbers([]) == 0
+
+
+def test_changing_the_cash_number_after_an_import_would_turn_an_expense_into_income(tmp_db):
+    """Das Schadensbild, das der Schutz verhindert: Die Kasse hat keine Nummer, der Import liest „6815 an
+    1600“ (Ausgabe 18,35) mit dem Betrag der Datei (+18,35). Stellt man die Kasse danach auf 1600, gilt der
+    Satz als Zahlung mit positivem Betrag – die Ausgabe steht in der EÜR als Einnahme, im Export im Haben."""
+    db = tmp_db
+    kasse = _cash_id(db)
+    _update(db, kasse, 'Kasse', None)
+    db.import_wiso_csv(_csv(('6815', '1600', '18,35', 'KS-001', '401')))
+
+    def state():
+        totals = db.get_dashboard_totals(D1, D2)
+        return _datev(db), _euer(db), (totals['income'], totals['expense'])
+
+    before = state()
+    assert before == ([('18,35', 'S', '6815', '1600', '3')], {}, (0, 0))
+
+    _status, location = _update(db, kasse, 'Kasse', 1600)
+
+    assert _refusal(location, kasse) is not None
+    assert state() == before                                       # abgelehnt: nichts hat sich verändert
+
+    row = db.get_account_by_id(kasse)                              # zum Vergleich an der Verwaltung vorbei
+    db.update_account(kasse, row[1], row[2], row[3], row[4], row[5], skr_account=1600)
+    assert state() == ([('18,35', 'H', '6815', '1600', '3')],
+                       {1406: Decimal('2.93'), 6815: Decimal('15.42')}, (18.35, 0))
+
+
+def test_bank_account_page_shows_the_message(tmp_db):
+    db = tmp_db
+    kasse = _cash_id(db)
+    message = 'SKR-Konto nicht geändert: 1 Buchungssätze führen das bisherige oder das neue Konto.'
+
+    assert _error_message(PageBankAccounts(db, edit_id=kasse, error=message)) == message
+    assert not [script for script in Dom(PageBankAccounts(db, edit_id=kasse)).scripts
+                if 'function(){appMsg(' in script]
+
+
+def test_bank_account_page_message_cannot_close_the_script_block(auto_login, server_port):
+    """``error`` kommt aus der Adresse: Ein ``</script>`` darin ändert den Aufbau der Seite nicht, und die
+    Meldung erreicht den Nutzer unverändert."""
+    kasse = _cash_id(auto_login.db)
+    benign = get(server_port, f'/masterdata/bankaccounts/edit?id={kasse}&error=Normale+Meldung')
+    hostile = get(server_port, f'/masterdata/bankaccounts/edit?id={kasse}&error={quote(PAYLOAD)}')
+
+    assert hostile.status == 200
+    assert_same_structure(hostile.text, benign.text)
+    assert '</script><img' not in hostile.text and '<img src=x onerror=alert(1)>' not in hostile.text
+    assert _error_message(hostile.text) == PAYLOAD
+    assert _error_message(benign.text) == 'Normale Meldung'
+
+
+def test_update_route_sends_a_refusal_to_the_edit_page_and_a_change_to_the_list(auto_login, server_port):
+    db = auto_login.db
+    headers = {'Origin': own_origin(server_port)}
+    kasse = _cash_id(db)
+    db.import_wiso_csv(_csv(('6815', '1600', '18,35', 'KS-001', '401')))
+    db.insert_account('Prot-Giro', 'Owner', 'DE00PROTECT', 'BIC', 'Bank', is_cash=0, skr_account=1820)
+    giro = _cash_id(db, 'Prot-Giro')
+
+    refused = post(server_port, '/masterdata/bankaccounts/update', headers=headers, csrf=auto_login.csrf,
+                   form={'id': kasse, 'name': 'Kasse', 'skr_account': ''})
+    saved = post(server_port, '/masterdata/bankaccounts/update', headers=headers, csrf=auto_login.csrf,
+                 form={'id': giro, 'name': 'Prot-Giro', 'skr_account': '1810'})
+
+    assert refused.status == 303
+    message = _refusal(refused.headers['Location'], kasse)
+    assert message is not None and message.startswith('SKR-Konto nicht geändert: 1 Buchungssätze führen')
+    assert _skr_of(db, kasse) == 1600
+    assert _error_message(get(server_port, refused.headers['Location']).text) == message
+    assert (saved.status, saved.headers['Location']) == (303, '/masterdata/bankaccounts')
+    assert _skr_of(db, giro) == 1810
 
 
 # ── Seitenaufrufe legen nichts an ────────────────────────────────────────────
@@ -450,20 +714,21 @@ def test_csv_sign_of_a_cash_account_in_the_first_column(tmp_db, number, liquid):
 
 
 @pytest.mark.parametrize('own_number', [1600, 1610, 1650])
-def test_csv_own_cash_account_numbers_are_liquid_wherever_they_lie(tmp_db, own_number):
+def test_csv_own_cash_account_numbers_are_liquid_wherever_they_lie(tmp_path, own_number):
     """Eine Kasse bestimmt wie ein Bankkonto das Vorzeichen – mit ihrer eigenen Nummer, auch 1600 und
-    Nummern außerhalb des festen Bereichs; ohne eigenes Konto bleibt der Betrag, wie er ist."""
-    db = tmp_db
-    if _count_chart(db, own_number) == 0:
-        db.insert_chart_of_accounts(4, own_number, f'Konto {own_number}', 'Test')
-    _set_cash_number(db, None)
-    db.import_wiso_csv(_csv(('6815', str(own_number), '10,00', 'OHNE-1', '')))
-    _set_cash_number(db, own_number)
+    Nummern außerhalb des festen Bereichs; ohne eigenes Konto bleibt der Betrag, wie er ist. (Zwei
+    Datenbanken: Die Kasse lässt sich nach einem Import nicht mehr auf eine andere Nummer stellen.)"""
+    results = {}
+    for label, cash_number in (('ohne', None), ('eigen', own_number)):
+        db = Database(db_name=str(tmp_path / f'{label}.db'))
+        if _count_chart(db, own_number) == 0:
+            db.insert_chart_of_accounts(4, own_number, f'Konto {own_number}', 'Test')
+        _set_cash_number(db, cash_number)                          # vor dem ersten Import
+        db.import_wiso_csv(_csv(('6815', str(own_number), '10,00', 'KS-1', '')))
+        results[label] = _imported(db)['KS-1'][0]
 
-    db.import_wiso_csv(_csv(('6815', str(own_number), '20,00', 'EIGEN-1', '')))
-
-    assert _imported(db)['OHNE-1'][0] == _minor('10.00')
-    assert _imported(db)['EIGEN-1'][0] == _minor('-20.00')
+    assert results['ohne'] == _minor('10.00')
+    assert results['eigen'] == _minor('-10.00')
 
 
 # ── WISO-Datenbank ───────────────────────────────────────────────────────────

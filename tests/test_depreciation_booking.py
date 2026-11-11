@@ -24,7 +24,9 @@ import csv
 import datetime
 import json
 import re
+import sqlite3
 import threading
+import time
 from collections import Counter
 from contextlib import closing
 from decimal import Decimal
@@ -34,7 +36,9 @@ from urllib.parse import parse_qs, quote, urlsplit
 import pytest
 
 from money import from_minor
-from server.handlers import handle_book_depreciation, handle_datev_export, handle_execute_sql
+from server.handlers import (
+    handle_asset_sale, handle_book_depreciation, handle_datev_export, handle_execute_sql,
+)
 from server.pages_assets import PageAssets, PageAssetView
 from server.pages_miscellaneous import PageMiscellaneous
 from tests.dom_helpers import Dom, app_msg_arguments, assert_same_structure
@@ -367,6 +371,44 @@ def test_eight_simultaneous_bookings_of_the_same_year_create_exactly_one_booking
     assert status == 'posted' and _rows(db, 'SELECT ID FROM Bookings') == [{'ID': booking_id}]
 
 
+def test_booking_waits_for_a_concurrent_writer_before_it_checks_the_year(world):
+    """Prüfung und Anlegen laufen in einer Transaktion, die den Schreibzugriff SOFORT sperrt (``BEGIN
+    IMMEDIATE``): Hält eine andere Anfrage die Sperre, wartet die Buchung, bevor sie prüft – und sieht
+    danach, was die andere gebucht hat. Ohne die sofortige Sperre prüfte sie vorher (Jahr noch frei), legte
+    nach dem Warten aber eine zweite Buchung an."""
+    db = world.db
+    outcome = []
+
+    def second_request():
+        try:
+            db.book_depreciation(world.asset, 2026, None, world.expense, world.anlage)
+            outcome.append('gebucht')
+        except ValueError as exc:
+            outcome.append(str(exc))
+
+    with closing(sqlite3.connect(db.db_name, timeout=30)) as first_request:
+        first_request.execute('PRAGMA foreign_keys = ON')
+        first_request.execute('BEGIN IMMEDIATE')                       # die erste Anfrage hält die Sperre
+        thread = threading.Thread(target=second_request)
+        thread.start()
+        time.sleep(1.0)                                                # die zweite ist bei ihrer Prüfung
+        booking = first_request.execute(
+            "INSERT INTO Bookings (DateBooking, DateTax, COA_ID, CounterCOA_ID, Amount, Currency, Text, "
+            "BookingType, Status) VALUES ('2026-12-31', '2026-12-31', ?, ?, 6000000, 'EUR', 'AfA parallel', "
+            "'entry', 'posted')", (world.expense, world.anlage)).lastrowid
+        first_request.execute(
+            "INSERT INTO AssetDepreciations (Asset_ID, Year, DepreciationAmount, BookValue, Booking_ID, "
+            "Status, BookedAt) VALUES (?, 2026, 6000000, 12000000, ?, 'posted', CURRENT_TIMESTAMP)",
+            (world.asset, booking))
+        first_request.commit()
+    thread.join(timeout=30)
+
+    assert not thread.is_alive()
+    assert outcome == ['AfA 2026 ist bereits gebucht']
+    assert _rows(db, 'SELECT ID FROM Bookings') == [{'ID': booking}]
+    assert _plan_rows(db, world.asset) == [(2026, booking, 'posted')]
+
+
 # ── Gebucht heißt: die Buchung gibt es ───────────────────────────────────────
 
 STALE = ['null', 'dead']
@@ -559,6 +601,78 @@ def test_handler_reports_a_year_after_the_disposal(world):
     assert status == 303 and location.startswith(f'/assets/view?id={world.asset}&err=')
     assert 'liegt nach dem Abgang' in _error_of(location)
     assert _count(db, 'Bookings') == 0
+
+
+# ── Abgangsdatum ─────────────────────────────────────────────────────────────
+# Das Datum steuert, bis wann AfA gebucht werden darf: ``handle_asset_sale`` nimmt nur ein ISO-Datum
+# (``parse_iso_date``). Ältere Einträge in anderer Schreibweise lassen Seite und Buchung nicht abstürzen.
+
+SALE_ERROR = 'Abgangsdatum fehlt oder ist ungültig (JJJJ-MM-TT).'
+
+
+def _sell(db, asset, date, price='500'):
+    return handle_asset_sale(db, {'asset_id': [str(asset)], 'sale_date': [date], 'sale_price': [price]})
+
+
+def test_sale_with_an_iso_date_is_saved(world):
+    db = world.db
+
+    status, location = _sell(db, world.asset, '2027-06-30', '500')
+
+    assert (status, location) == (303, f'/assets/view?id={world.asset}')
+    asset = db.get_asset_by_id(world.asset)
+    assert (asset[15], asset[16], asset[17]) == ('2027-06-30', Decimal('500'), 'sold')
+
+
+def test_sale_date_is_taken_without_surrounding_blanks(world):
+    db = world.db
+    assert _sell(db, world.asset, ' 2027-06-30 ')[1] == f'/assets/view?id={world.asset}'
+    assert db.get_asset_by_id(world.asset)[15] == '2027-06-30'
+
+
+@pytest.mark.parametrize('date', ['', '   ', '15.07.2022', '2022-13-01', '2022-02-30', '2022-7-15',
+                                  '2022/07/15', 'morgen', '1899-12-31', '2201-01-01'],
+                         ids=['leer', 'blanks', 'deutsch', 'monat-13', 'tag-30-feb', 'ohne-nullen',
+                              'schraegstrich', 'text', 'vor-1900', 'nach-2200'])
+def test_sale_with_a_date_that_is_not_an_iso_date_is_refused_and_saves_nothing(world, date):
+    db = world.db
+
+    status, location = _sell(db, world.asset, date)
+
+    assert status == 303 and location.startswith(f'/assets/view?id={world.asset}&err=')
+    assert _error_of(location) == SALE_ERROR
+    asset = db.get_asset_by_id(world.asset)
+    assert (asset[15], asset[16], asset[17]) == (None, None, 'active')
+    db.book_depreciation(world.asset, 2028, None, world.expense, world.anlage)       # kein Abgang
+
+
+@pytest.mark.parametrize('legacy', ['15.07.2022', 'Juli 2022', '??'])
+def test_sale_date_in_another_format_counts_as_no_year_of_disposal(world, legacy):
+    """Ein Altbestand mit ``SaleDate`` in anderer Schreibweise (per SQL gesetzt) lässt weder die Seiten noch
+    ``book_depreciation`` abstürzen: Es gilt kein Abgangsjahr, die AfA bleibt buchbar."""
+    db = world.db
+    _execute(db, "UPDATE Assets SET SaleDate = ?, Status = 'sold' WHERE ID = ?", (legacy, world.asset))
+
+    page = PageAssetView(db, world.asset)
+    listing = PageAssets(db)
+
+    assert '○ Nach Abgang' not in page and 'Laptop Probe' in listing
+    booking = db.book_depreciation(world.asset, 2028, None, world.expense, world.anlage)
+    assert db.get_booking_by_id(booking)[1] == '2028-12-31'
+
+
+def test_sale_route_refuses_a_wrong_date_with_a_message_and_saves_a_right_one(web):
+    refused = _post(web, '/assets/sell', {'asset_id': web.asset, 'sale_date': '15.07.2026', 'sale_price': 0})
+
+    assert refused.status == 303
+    assert _error_of(refused.headers['Location']) == SALE_ERROR
+    assert app_msg_arguments(Dom(get(web.port, refused.headers['Location']).text)) == [SALE_ERROR, 'error']
+    assert web.db.get_asset_by_id(web.asset)[17] == 'active'
+
+    saved = _post(web, '/assets/sell', {'asset_id': web.asset, 'sale_date': '2026-07-15', 'sale_price': 0})
+
+    assert (saved.status, saved.headers['Location']) == (303, f'/assets/view?id={web.asset}')
+    assert web.db.get_asset_by_id(web.asset)[15] == '2026-07-15'
 
 
 # ── Konten werden geprüft ────────────────────────────────────────────────────
