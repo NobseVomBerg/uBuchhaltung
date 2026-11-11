@@ -85,13 +85,22 @@ wie die Einzelimporte nacheinander: derselbe Auszug zweimal im Upload, CAMT und 
 desselben Auszugs oder ein Tages- und ein Monatsauszug verdoppeln nichts, gleiche
 Umsätze innerhalb *einer* Datei bleiben erhalten. Die Vorschau zeigt, was schon in
 einer anderen Datei desselben Uploads steckt („in anderer Datei dieses Uploads“), die
+Meldung nach dem Import nennt die so übersprungenen Umsätze. Passt der Verwendungszweck
+eines solchen Umsatzes zu keinem Umsatz der früheren Dateien (gleich, Anfang des anderen
+oder leer – Leerraum und Groß-/Kleinschreibung zählen nicht), kommt in der Vorschau
+„Text weicht ab, bitte prüfen“ dazu, etwa bei zwei verschiedenen Abos mit demselben
+Betrag am selben Tag; das ist nur ein Hinweis, der Import bleibt beim Maximum.
+
+Ein Umsatz **ohne Datum oder Betrag** legt der Import nie an: Die Vorschau zählt ihn
+weder als neu noch als Duplikat („ohne Datum/Betrag – wird nicht importiert“), die
 Meldung nach dem Import nennt die so übersprungenen Umsätze.
 
 Grenzen (ohne Bankreferenz im Datenmodell nicht lösbar, siehe `docs/aufgaben.md`):
 - Eine CAMT-Sammelbuchung wird in Einzelumsätze zerlegt, die PDF zeigt eine
   Summenzeile: Die Beträge passen nicht zusammen, beides wird angelegt.
 - Zwei *verschiedene* Auszüge desselben Tags mit je einem echten, gleichen Umsatz:
-  das Maximum behält nur einen davon (von Hand nachtragen).
+  das Maximum behält nur einen davon. Die Vorschau markiert abweichende Texte, nachtragen
+  geht nur von Hand – eine Option „trotzdem importieren“ fehlt (`docs/aufgaben.md`).
 - Das VBR-PDF nennt das Jahr nur im Kopf des Auszugs und gilt für alle Zeilen; bei
   einem Auszug über den Jahreswechsel kann das Datum einzelner Zeilen abweichen, und
   derselbe Umsatz aus CAMT wird dann nicht als Duplikat erkannt.
@@ -188,17 +197,32 @@ Split-Positionen (gleicher Betrag/Konto/Tag) werden dadurch korrekt importiert.
 
 **Zusammenspiel mit dem Datenbank-Import (`db/wiso_fdb_import.py`):** Der Schlüssel
 fragt nicht, woher eine Buchung stammt – was der Datenbank-Import schon angelegt hat,
-überspringt der CSV-Import. Umgekehrt erkennt der Datenbank-Import die Buchungen des
-CSV-Imports (`entry` ohne `SourceGroup`) mit demselben Schlüssel wieder: Er setzt die
-`SourceGroup` (WISO-`ACCOUNTINGID`) und füllt leere Konten (`COA_ID`,
-`CounterCOA_ID`), statt eine zweite Buchung anzulegen (Meldung „aus dem CSV-Import
-wiedererkannt“). Auch das zählt: zwei gleich hohe Teilbuchungen übernehmen zwei
-CSV-Zeilen. Text, Empfänger, Verknüpfungen zur Bank und Änderungen des Nutzers bleiben
-unberührt. Fehlte der CSV-Zeile das Konto (im Kontenrahmen unbekannt), sucht der
-Datenbank-Import ersatzweise ohne Konto. Grenze: Eine von Hand erfasste `entry` mit
-gleicher Beleg-Nr., Datum, Konto und Betrag gilt als dieselbe Buchung (die Annahme
-trifft der CSV-Import schon); die WISO-Satz-Id als eigene Spalte würde das exakt machen
-(Schemaänderung, siehe `docs/aufgaben.md`).
+überspringt der CSV-Import. Umgekehrt übernimmt der Datenbank-Import Buchungen des
+CSV-Imports, statt eine zweite anzulegen – aber eng gefasst, lieber eine sichtbare zweite
+Buchung als eine still falsch übernommene:
+- Kandidat ist eine `entry` ohne `SourceGroup`, ohne `AutoMirror` (Spiegelbuchung der
+  Buchungsmaske) und ohne `Account_ID` mit gleichem Datum, Betrag, Konto und gleicher
+  Beleg-Nr. (Leerraum zusammengefasst: „RE  12“ = „RE 12“; auch ohne Beleg-Nr.).
+- Passend ist sie nur mit gleichem **Gegenkonto** (beide gesetzt) oder – hat sie keines –
+  mit gleichem **Text** (Leerraum und Groß-/Kleinschreibung egal). Ein anderes Gegenkonto
+  passt nie. Unter mehreren gewinnt das gleiche Gegenkonto (darunter der gleiche Text), dann
+  der gleiche Text, dann die kleinste ID. Jede Zeile wird höchstens einmal übernommen: zwei
+  gleich hohe Teilbuchungen übernehmen zwei CSV-Zeilen, gleich hohe Zahlungen verschiedener
+  Kunden bekommen jeweils ihr Gegenkonto.
+- Fehlte der CSV-Zeile das Konto (im Kontenrahmen unbekannt), sucht der Datenbank-Import
+  ersatzweise ohne Konto – nur wenn es zum Schlüssel keine Zeile mit Konto gab, und nur mit
+  gleichem Gegenkonto.
+- Übernommen wird mit einem UPDATE (im Replay-Log): `SourceGroup` (WISO-`ACCOUNTINGID`)
+  setzen, leere Konten (`COA_ID`, `CounterCOA_ID`) und einen leeren Empfänger füllen,
+  Steuersatz und -betrag ergänzen, wenn beide fehlen. Text, Verknüpfungen zur Bank und
+  Änderungen des Nutzers bleiben unberührt. Die Seite meldet die Zahl („aus dem CSV-Import
+  wiedererkannt“) und listet die ersten 500 übernommenen Buchungen auf.
+
+Grenze: Eine von Hand erfasste `entry` wird nur übernommen, wenn auch Gegenkonto bzw. Text
+übereinstimmen. Eine CSV-Zeile, deren Gegenkonto oder Betrag nachträglich geändert wurde,
+wird nicht wiedererkannt – es entsteht eine zweite Buchung, die sich in der Buchungsliste
+löschen lässt. Die WISO-Satz-Id als eigene Spalte würde das exakt machen (Schemaänderung,
+siehe `docs/aufgaben.md`).
 
 **BookingType:** `'entry'` (Buchungssatz)
 

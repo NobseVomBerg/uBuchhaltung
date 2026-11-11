@@ -96,7 +96,10 @@ def handle_confirm_import(db: Database, post_data):
     verschiedener Konten korrekt zugeordnet werden.
 
     Je Beleg nennt ``results`` ``inserted``, ``skipped`` (Duplikate) und davon
-    ``skipped_upload`` (schon durch einen anderen Beleg desselben Laufs da).
+    ``skipped_upload`` (schon durch einen anderen Beleg desselben Laufs da) sowie
+    ``skipped_invalid`` (Umsätze ohne Datum oder Betrag: nicht importiert, keine
+    Duplikate und nicht in ``skipped``). ``skipped_upload`` ist beim Einzelimport
+    immer 0: jeder Aufruf liest den Bestand neu.
 
     Returns (status_code, json_string).
     """
@@ -170,6 +173,7 @@ def handle_confirm_import(db: Database, post_data):
             inserted = 0
             skipped = 0
             skipped_upload = 0    # davon: schon durch eine andere Datei dieses Laufs da
+            skipped_invalid = 0   # ohne Datum oder Betrag: nicht importierbar, kein Duplikat
             text_updated = 0
             dup_db_counts = {}
             dup_seen = {}
@@ -187,8 +191,8 @@ def handle_confirm_import(db: Database, post_data):
                 trans_date = trans.get('date')
                 trans_amount = trans.get('amount')
 
-                if trans_date is None or trans_amount is None:
-                    skipped += 1
+                if not trans_date or trans_amount is None:
+                    skipped_invalid += 1
                     continue
                 dup_key = (trans_date, round(float(trans_amount), 2), account_id)
                 if dup_key not in dup_db_counts:
@@ -235,6 +239,7 @@ def handle_confirm_import(db: Database, post_data):
             results.append({'file_index': i, 'filename': fl.get('filename'),
                             'inserted': inserted, 'skipped': skipped,
                             'skipped_upload': skipped_upload,
+                            'skipped_invalid': skipped_invalid,
                             'text_updated': text_updated,
                             'account_found': True, 'error': None})
 

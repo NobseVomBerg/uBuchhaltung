@@ -6,6 +6,8 @@ Sonstiges page – database overview, SQL console, misc tools.
 """
 import html as _html
 from db import Database
+from db.wiso_fdb_import import MAX_ADOPTED_ROWS
+from money import fmt_eur
 
 
 def Header1(active_page=None):
@@ -356,7 +358,8 @@ def PageMiscellaneous(db: Database):
         <strong>Kontenverwaltung</strong> braucht ein hinterlegtes
         <em>SKR-Gegenkonto</em>. Ein zweiter Lauf verdoppelt nichts. Buchungen, die schon
         über den CSV-Import kamen, erkennt der Import an Beleg-Nr., Datum, Konto und Betrag
-        wieder und ergänzt sie, statt sie neu anzulegen.</p>
+        wieder, sofern auch Gegenkonto bzw. Text übereinstimmen, und ergänzt sie, statt sie
+        neu anzulegen; alles andere legt er neu an.</p>
         <form method="POST" action="/wiso/fdb-import">
             <div class="rowWithObjects">Pfad:&nbsp;
                 <input type="text" name="fdb_path" style="min-width:34em"
@@ -438,6 +441,23 @@ def PageMiscellaneous(db: Database):
             s += (f'<p>✅ {_html.escape(str(_fdb["adopted"]))} Buchungssätze waren '
                   'schon aus dem CSV-Import da: Sie haben jetzt die WISO-Kennung und, '
                   'wo sie fehlten, ihre Konten, wurden aber nicht doppelt angelegt.</p>')
+            _adopted_rows = _fdb.get('adopted_rows') or []
+            if _adopted_rows:
+                s += ('<details><summary>Welche Buchungen das waren</summary><table>'
+                      '<tr><th>Datum</th><th>Betrag</th><th>Text</th><th>Buchungs-ID</th></tr>')
+                for _r in _adopted_rows:
+                    try:
+                        _amount = fmt_eur(_r.get('amount'))
+                    except Exception:           # Ergebnisdatei von Hand verändert
+                        _amount = str(_r.get('amount'))
+                    s += (f'<tr><td>{_html.escape(str(_r.get("date") or ""))}</td>'
+                          f'<td>{_html.escape(_amount)}</td>'
+                          f'<td>{_html.escape(str(_r.get("text") or ""))}</td>'
+                          f'<td>{_html.escape(str(_r.get("id") or ""))}</td></tr>')
+                s += '</table>'
+                if len(_adopted_rows) >= MAX_ADOPTED_ROWS:
+                    s += f'<p>Genannt werden die ersten {MAX_ADOPTED_ROWS}.</p>'
+                s += '</details>'
         if _blocker:
             s += ('<h3>\u26a0\ufe0f Diese Datenbank passt nicht zum Importmodul</h3>'
                   '<p>Es wurde <strong>nichts</strong> importiert. Die folgenden '

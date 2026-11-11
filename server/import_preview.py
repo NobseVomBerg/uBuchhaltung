@@ -30,6 +30,20 @@ def match_account(accounts, iban):
     return None, None
 
 
+def _text_key(value):
+    """Verwendungszweck für den Vergleich: Leerraum zusammengefasst, Groß-/Kleinschreibung egal."""
+    return " ".join((value or "").split()).casefold()
+
+
+def _texts_agree(a, b):
+    """Können zwei (mit ``_text_key`` aufbereitete) Verwendungszwecke derselbe Umsatz sein?
+
+    Ja, wenn sie gleich sind, einer der Anfang des anderen ist (PDF und CAMT kürzen
+    verschieden) oder einer leer ist – der leere Text ist der Anfang jedes Textes.
+    """
+    return a.startswith(b) or b.startswith(a)
+
+
 def _transaction_warnings(transaction, document_date=None):
     """Parse-Auffälligkeiten einer Buchung.
 
@@ -54,11 +68,18 @@ def build_import_preview(db, import_data):
 
     Returns { "files": [ {file_index, filename, bank_code, iban, document_date,
                           account_id, account_name, total, new_count, dup_count,
-                          dup_upload_count, status, problems, transactions} ] }.
+                          dup_upload_count, dup_upload_differs_count, status,
+                          problems, transactions} ] }.
 
     dup_count zählt alle möglichen Duplikate; dup_upload_count davon die, die
     nicht im Bestand stecken, sondern in einer anderen Datei desselben Uploads
-    (bei Transaktionen: "dup_source" = "db" | "upload" | None).
+    (bei Transaktionen: "dup_source" = "db" | "upload" | None), und
+    dup_upload_differs_count davon die, deren Verwendungszweck zu keinem Umsatz
+    der früheren Dateien passt ("text_differs"; nur ein Hinweis, der Import
+    entscheidet allein nach Konto/Datum/Betrag).
+
+    Ein Umsatz ohne Datum oder Betrag legt der Import nicht an: Er zählt weder
+    als neu noch als Duplikat und trägt den Befund "incomplete".
 
     status: "error" = Konto nicht gefunden (Import blockiert),
             "warn"  = Duplikate oder Parse-Hinweise vorhanden,
@@ -74,9 +95,11 @@ def build_import_preview(db, import_data):
     # Dateien dieses Uploads je Schlüssel neu anlegen würden. Innerhalb einer
     # Datei gilt ein Umsatz als Duplikat, solange sie weniger davon enthält als
     # der Bestand (Quelle "db") bzw. Bestand + planned ("upload"). Über mehrere
-    # Dateien gilt damit das Maximum, nicht die Summe.
+    # Dateien gilt damit das Maximum, nicht die Summe. prior_texts hält je
+    # Schlüssel die Verwendungszwecke der Umsätze früherer Dateien.
     db_counts = {}
     planned = {}
+    prior_texts = {}
 
     for idx, f in enumerate(import_data.get("files", [])):
         iban = f.get("iban")
@@ -86,11 +109,13 @@ def build_import_preview(db, import_data):
         new_count = 0
         dup_count = 0
         dup_upload_count = 0
+        dup_upload_differs_count = 0
         has_warn = False
         problems = []
         txns_out = []
         seen = {}        # Schlüssel -> Umsätze dieser Datei bisher
         new_here = {}    # Schlüssel -> davon neu (landet nach der Datei in planned)
+        file_texts = {}  # Schlüssel -> Verwendungszwecke dieser Datei (landen in prior_texts)
 
         for t in txns:
             date = t.get("date")
@@ -100,11 +125,16 @@ def build_import_preview(db, import_data):
             foreign_iban = t.get("foreign_iban") or ""
 
             warns = _transaction_warnings(t, f.get("document_date"))
+            # Ohne Datum oder Betrag legt handle_confirm_import nichts an.
+            incomplete = not date or amount is None
+            if incomplete:
+                warns.append("incomplete")
             if warns:
                 has_warn = True
 
             dup_source = None
-            if account_id is not None and date and amount is not None:
+            text_differs = False
+            if account_id is not None and not incomplete:
                 dup_key = (date, round(float(amount), 2), account_id)
                 if dup_key not in db_counts:
                     db_counts[dup_key] = db.check_booking_exists(
@@ -112,18 +142,25 @@ def build_import_preview(db, import_data):
                     )
                 position = seen.get(dup_key, 0)
                 seen[dup_key] = position + 1
+                text = _text_key(reference)
                 if position < db_counts[dup_key]:
                     dup_source = "db"
                 elif position < db_counts[dup_key] + planned.get(dup_key, 0):
                     dup_source = "upload"
+                    text_differs = not any(
+                        _texts_agree(text, other)
+                        for other in prior_texts.get(dup_key, ()))
                 else:
                     new_here[dup_key] = new_here.get(dup_key, 0) + 1
+                file_texts.setdefault(dup_key, []).append(text)
             is_dup = dup_source is not None
             if is_dup:
                 dup_count += 1
                 if dup_source == "upload":
                     dup_upload_count += 1
-            else:
+                    if text_differs:
+                        dup_upload_differs_count += 1
+            elif not incomplete:
                 new_count += 1
 
             row = {
@@ -134,16 +171,20 @@ def build_import_preview(db, import_data):
                 "foreign_iban": foreign_iban,
                 "dup": is_dup,
                 "dup_source": dup_source,
+                "text_differs": text_differs,
                 "warn": warns,
             }
             txns_out.append(row)
             if is_dup or warns:
                 problems.append(row)
 
-        # new_here füllt sich nur bei Dateien mit Konto: eine ohne Konto wird nicht
-        # importiert und zählt deshalb nicht zu dem, was folgende Dateien finden.
+        # new_here und file_texts füllen sich nur bei Dateien mit Konto: eine ohne
+        # Konto wird nicht importiert und zählt deshalb nicht zu dem, was folgende
+        # Dateien finden.
         for dup_key, n in new_here.items():
             planned[dup_key] = planned.get(dup_key, 0) + n
+        for dup_key, texts in file_texts.items():
+            prior_texts.setdefault(dup_key, []).extend(texts)
 
         if account_id is None:
             status = "error"
@@ -164,6 +205,7 @@ def build_import_preview(db, import_data):
             "new_count": new_count,
             "dup_count": dup_count,
             "dup_upload_count": dup_upload_count,
+            "dup_upload_differs_count": dup_upload_differs_count,
             "status": status,
             "warnings": list(f.get("warnings") or []),
             "problems": problems,

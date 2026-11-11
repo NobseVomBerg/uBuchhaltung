@@ -261,7 +261,12 @@ kein Subagent darauf:
   das Maximum, nicht die Summe. „Alle importieren“ (`handle_confirm_import`) entspricht damit den
   Einzelimporten nacheinander; die Vorschau (`build_import_preview`: `dup_source` = `db`/`upload`)
   rechnet dasselbe, ohne zu schreiben. Grenzen ohne Bankreferenz im Modell: CAMT-Sammelbuchung gegen
-  PDF-Summenzeile; zwei verschiedene Auszüge desselben Tags mit je einem echten, gleichen Umsatz
+  PDF-Summenzeile; zwei verschiedene Auszüge desselben Tags mit je einem echten, gleichen Umsatz.
+  Die Vorschau kennzeichnet ein Duplikat aus einer anderen Datei, dessen Verwendungszweck (der Text, den
+  der Import speichert) zu keinem Umsatz früherer Dateien passt (`text_differs`; passend = gleich, Anfang
+  des anderen oder leer, nach Leerraum/`casefold`): nur ein Hinweis, der Import bleibt beim Maximum.
+  Ein Umsatz ohne Datum oder Betrag ist in Vorschau und Import gleich behandelt – nicht importierbar
+  (Befund `incomplete`; je Datei `skipped_invalid`), weder neu noch Duplikat
 
 ### WISO-Datenübernahme
 - Zwei Wege: die **Textexporte** (`db/wiso_import.py`, CSV) und die
@@ -279,11 +284,18 @@ kein Subagent darauf:
 - **Klammer eines Belegs ist die Beleg-Nr. + Datum**, nicht die `SourceGroup`:
   WISO vergibt je Verrechnungskonto-Buchung eine eigene `ACCOUNTINGID`. Die
   Quellgruppe ist damit feiner und greift nur, wo eine Beleg-Nr. fehlt
-- **CSV und Datenbank nacheinander:** Der Datenbank-Import übernimmt Buchungen des CSV-Imports
-  (`entry` ohne `SourceGroup`) über denselben Schlüssel wie der CSV-Import (Beleg-Nr. + Datum + Konto +
-  Betrag, auch ohne Beleg-Nr.; zählbasiert, `_insert_wiso_bookings`): `SourceGroup` setzen, leere
-  `COA_ID`/`CounterCOA_ID` füllen, sonst nichts ändern oder löschen. Restrisiko: Eine von Hand erfasste
-  `entry` mit gleichem Schlüssel wird mit übernommen
+- **CSV und Datenbank nacheinander:** Der Datenbank-Import übernimmt Buchungen des CSV-Imports statt sie
+  neu anzulegen (`_insert_wiso_bookings`) – eng gefasst, lieber eine sichtbare zweite Buchung als eine still
+  falsch übernommene. Kandidat: `entry` ohne `SourceGroup`, `AutoMirror` und `Account_ID` mit gleichem
+  Datum, Betrag, Konto und Beleg-Nr. (Leerraum zusammengefasst, auch ohne Beleg-Nr.); passend nur mit
+  gleichem Gegenkonto, oder – ohne Gegenkonto – gleichem Text; ein anderes Gegenkonto passt nie.
+  Gewählt wird gleiches Gegenkonto (dann gleicher Text), dann gleicher Text, dann die kleinste ID; jede
+  Zeile höchstens einmal (zählbasiert). Fehlte der CSV-Zeile das Konto, wird ersatzweise ohne Konto gesucht –
+  nur ohne Kandidat mit Konto und nur mit gleichem Gegenkonto. Übernommen wird per UPDATE (im Replay-Log):
+  `SourceGroup` setzen, leere Konten und Empfänger füllen, fehlende Steuer (beide Felder leer) ergänzen,
+  sonst nichts ändern oder löschen; die ersten 500 stehen in `result['adopted_rows']`. Restrisiko: Eine
+  von Hand erfasste Buchung wird nur übernommen, wenn auch Gegenkonto bzw. Text stimmen; eine CSV-Zeile mit
+  nachträglich geändertem Gegenkonto oder Betrag wird nicht wiedererkannt (zweite Buchung)
 - Bedienung über *Verschiedenes* → „Import aus der Datenbank"; die Prüfung
   (`WisoDatabase.check`) bricht vor dem Schreiben ab, wenn die WISO-Version
   andere Tabellen/Spalten hat
