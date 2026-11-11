@@ -74,16 +74,15 @@ def _matching_row(rows, counter_coa, text, locked=False, fallback=False):
     """Die Zeile des CSV-Imports, die zu einem WISO-Satz passt – oder ``None``.
 
     ``rows`` haben schon dieselbe Beleg-Nr. und sind nach ID sortiert; ``text`` ist
-    die Vergleichsform des WISO-Satzes. Der Text muss immer gleich sein. Dazu das
-    Gegenkonto: gleich (beide bekannt) oder die Zeile hat keines – dann nur bei
-    nicht leerem Text, denn zwei leere Texte beweisen nichts. Ein anderes
-    Gegenkonto passt nie. Gleiches Gegenkonto geht vor, dann die kleinste ID.
+    die Vergleichsform des WISO-Satzes. Der Text muss immer gleich und nicht leer
+    sein – zwei leere Texte beweisen nichts. Dazu das Gegenkonto: gleich (beide
+    bekannt) oder die Zeile hat keines. Ein anderes Gegenkonto passt nie. Gleiches
+    Gegenkonto geht vor, dann die kleinste ID.
 
     ``locked`` (mehrdeutiger Schlüssel) und ``fallback`` (Ersatzsuche ohne Konto)
-    lassen nur das gleiche Gegenkonto zu; die Ersatzsuche verlangt außerdem einen
-    nicht leeren Text.
+    lassen nur das gleiche Gegenkonto zu.
     """
-    if fallback and not text:
+    if not text:
         return None
     open_row = None
     for row in rows:
@@ -92,7 +91,7 @@ def _matching_row(rows, counter_coa, text, locked=False, fallback=False):
         if row.counter is not None:
             if row.counter == counter_coa:
                 return row
-        elif open_row is None and text and not (locked or fallback):
+        elif open_row is None and not (locked or fallback):
             open_row = row
     return open_row
 
@@ -273,9 +272,8 @@ class WisoFdbImportMixin:
           sind nie Kandidaten.
         * Der Text muss immer gleich sein (Leerraum zusammengefasst, Groß-/Klein-
           schreibung egal; der Text des WISO-Satzes wird dafür von latin-1 nach
-          cp1252 umgesetzt, gespeichert wird er unverändert). Zwei leere Texte
-          gelten nur als gleich, wenn das Gegenkonto auf beiden Seiten bekannt und
-          gleich ist.
+          cp1252 umgesetzt, gespeichert wird er unverändert) und darf nicht leer
+          sein: Zwei leere Texte beweisen nichts, solche Sätze werden neu angelegt.
         * Das Gegenkonto muss gleich sein (beide bekannt) oder dem Kandidaten
           fehlen; ein anderes Gegenkonto passt nie. Gewählt wird zuerst der
           Kandidat mit gleichem Gegenkonto, dann der ohne, bei Gleichstand die
@@ -345,6 +343,7 @@ class WisoFdbImportMixin:
             # mehrdeutig (auch Sätze, die schon eine SourceGroup haben, zählen mit).
             prepared = []
             counters = {}
+            accounts = {}      # dasselbe für die Ersatzsuche: gleicher Satz, verschiedene Konten
             for booking in bookings:
                 coa = coa_map.get(booking.account)
                 counter_coa = coa_map.get(booking.counter_account)
@@ -353,8 +352,14 @@ class WisoFdbImportMixin:
                 text = _comparable(_as_csv_text(booking.text))
                 key = (booking.date, amount, coa, number, text)
                 counters.setdefault(key, set()).add(counter_coa)
+                accounts.setdefault((booking.date, amount, number, text, counter_coa),
+                                    set()).add(coa)
                 prepared.append((booking, coa, counter_coa, amount, number, text, key))
             ambiguous = {key for key, seen in counters.items() if len(seen) > 1}
+            # Die Ersatzsuche kennt das Konto der CSV-Zeile nicht: Unterscheiden sich
+            # zwei Sätze nur im Konto (z. B. zwei gleich hohe Löhne auf zwei
+            # Personenkonten), ließe sich nicht sagen, welche Zeile zu welchem gehört.
+            ambiguous_accounts = {key for key, seen in accounts.items() if len(seen) > 1}
 
             for booking, coa, counter_coa, amount, number, text, key in prepared:
                 if booking.group and booking.group in known_groups:
@@ -369,7 +374,9 @@ class WisoFdbImportMixin:
                 loaded, free = csv_rows(searched[0])
                 match = _matching_row([row for row in free if row.doc == number],
                                       counter_coa, text, locked=key in ambiguous)
-                if match is None and coa is not None and number not in loaded:
+                if (match is None and coa is not None and number not in loaded
+                        and (booking.date, amount, number, text, counter_coa)
+                        not in ambiguous_accounts):
                     searched.append((booking.date, amount, None))
                     free = csv_rows(searched[1])[1]
                     match = _matching_row([row for row in free if row.doc == number],

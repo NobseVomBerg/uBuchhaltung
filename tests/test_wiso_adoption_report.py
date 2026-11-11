@@ -221,13 +221,13 @@ def test_handler_meldet_uebernommene(db_with_coa, tmp_path):
     status, location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [path]})
     assert status == 303 and location.startswith('/miscellaneous?')
     params = _query_of(location)
-    assert (params['wiso_fdb'], params['imported'], params['skipped'], params['adopted']) == (
-        'ok', '1', '0', '5')
+    assert (params['wiso_fdb'], params['imported'], params['skipped'], params['adopted'],
+            params['possible']) == ('ok', '1', '0', '5', '0')
     with open(os.path.join(userctx.user_data_dir(), 'wiso_fdb_result.json'),
               encoding='utf-8') as handle:
         stored = json.load(handle)
     assert stored['adopted'] == 5 and stored['imported'] == 1
-    assert len(stored['adopted_rows']) == 5
+    assert len(stored['adopted_rows']) == 5 and stored['possible_duplicates'] == []
 
     status, location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [path]})
     params = _query_of(location)
@@ -303,6 +303,54 @@ def test_seite_nennt_hoechstens_500_buchungen(db_with_coa, tmp_path):
     assert f'{count} Buchungssätze waren schon aus dem CSV-Import da' in page
 
 
+def _possible(page):
+    """Die Liste „Möglicherweise doppelt“: (Zähler in der Überschrift, Zeilen mit Zellentexten)."""
+    found = re.findall(r'<details><summary>Möglicherweise doppelt \((.*?)\)</summary>(.*?)</details>',
+                       page, re.S)
+    assert len(found) == 1, found
+    count, block = found[0]
+    return count, [re.findall(r'<td>(.*?)</td>', row) for row in re.findall(r'<tr>(.*?)</tr>', block, re.S)
+                   if '<td>' in row], block
+
+
+def test_seite_listet_moegliche_dubletten_und_die_weiterleitung_nennt_sie(db_with_coa, tmp_path):
+    """Eine CSV-Zeile, die nicht übernommen wurde, obwohl ein Satz neu dazukam, steht in einer zweiten
+    aufklappbaren Liste samt Hinweis; die Weiterleitung nennt die Zahl (``possible``)."""
+    os.makedirs(userctx.user_data_dir(), exist_ok=True)
+    _csv_import(db_with_coa)
+    _execute(db_with_coa, "UPDATE Bookings SET Text = 'Büro <b>umbenannt</b>' WHERE Text = 'Probe Buero'")
+    renamed = [r for r in _entries(db_with_coa) if r['Text'] == 'Büro <b>umbenannt</b>'][0]
+
+    status, location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [_fdb(tmp_path)]})
+    params = _query_of(location)
+    assert (params['imported'], params['adopted'], params['possible']) == ('2', '4', '1')
+
+    page = PageMiscellaneous(db_with_coa)
+    count, rows, block = _possible(page)
+    assert count == '1' and rows == [['2024-03-05', '-238,00 \u20ac', 'Büro &lt;b&gt;umbenannt&lt;/b&gt;',
+                                      str(renamed['ID'])]]
+    assert '<b>umbenannt</b>' not in page and 'Bitte prüfen und eine von beiden löschen' in page
+    assert 'Genannt werden die ersten' not in block
+
+
+def test_seite_ohne_moegliche_dubletten_zeigt_keine_zweite_liste(db_with_coa, tmp_path):
+    os.makedirs(userctx.user_data_dir(), exist_ok=True)
+    _csv_import(db_with_coa)
+    handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [_fdb(tmp_path)]})
+    assert 'Möglicherweise doppelt' not in PageMiscellaneous(db_with_coa)
+
+
+@pytest.mark.parametrize('count,note', [(1, False), (499, False), (500, True)])
+def test_hinweis_auf_die_ersten_500_gilt_auch_fuer_moegliche_dubletten(db_with_coa, count, note):
+    _write_result({'possible_duplicates_count': count + 3, 'possible_duplicates': [
+        {'id': n, 'date': '2024-04-02', 'amount': float(n), 'text': f'Zeile {n}'}
+        for n in range(count)]})
+    page = PageMiscellaneous(db_with_coa)
+    shown, rows, _block = _possible(page)
+    assert shown == str(count + 3) and len(rows) == count          # der Zähler nennt alle
+    assert ('Genannt werden die ersten 500.' in page) is note
+
+
 def test_hinweistexte_nennen_die_wiedererkennung(db_with_coa):
     page = PageMiscellaneous(db_with_coa)
     assert 'Duplikate (gleiche Referenznummer + Datum + Konto + Betrag) werden übersprungen' in page
@@ -335,11 +383,14 @@ def test_kaputte_werte_in_der_ergebnisdatei_erscheinen_maskiert(db_with_coa):
         {'id': hostile, 'date': hostile, 'amount': hostile, 'text': hostile},
         {'id': None, 'date': None, 'amount': None, 'text': None},
         {'id': 3, 'date': '2024-01-01', 'amount': [1, 2], 'text': {'a': 1}},
-        {}]})
+        {}], 'possible_duplicates': [
+        {'id': hostile, 'date': hostile, 'amount': hostile, 'text': hostile}]})
     page = PageMiscellaneous(db_with_coa)
+    _count, possible_rows, _block = _possible(page)
+    escaped = '&lt;img src=x onerror=alert(1)&gt;'
+    assert possible_rows == [[escaped, escaped, escaped, escaped]]
 
     rows, block = _details(page)
-    escaped = '&lt;img src=x onerror=alert(1)&gt;'
     assert len(rows) == 4
     assert rows[0] == [escaped, escaped, escaped, escaped]
     assert rows[1] == ['', '-', '', ''] and rows[3] == ['', '-', '', '']
@@ -393,9 +444,11 @@ def _fdb_script(page):
 
 
 def test_meldungsskript_liest_adopted_als_zahl(db_with_coa):
-    """Statisch: ``adopted`` wird als Zahl gelesen und nur bei > 0 genannt."""
+    """Statisch: ``adopted`` und ``possible`` werden als Zahl gelesen und nur bei > 0 genannt."""
     script = _fdb_script(PageMiscellaneous(db_with_coa))
     assert "parseInt(p.get('adopted') || '0')" in script
+    assert "parseInt(p.get('possible') || '0')" in script
+    assert "if (pd > 0) msg += ', ' + pd + ' vorhandene Buchungen m" in script
     assert "if (ad > 0) msg += ', ' + ad + ' aus dem CSV-Import wiedererkannt'" in script
 
 
@@ -434,7 +487,24 @@ def test_meldung_nennt_wiedererkannte_buchungen(db_with_coa, tmp_path):
     (without,) = _shown_messages(script, base + '&adopted=0', tmp_path)
     assert 'wiedererkannt' not in without
     (missing,) = _shown_messages(script, base, tmp_path)
-    assert 'wiedererkannt' not in missing
+    assert 'wiedererkannt' not in missing and 'doppelt' not in missing
+    (possible,) = _shown_messages(script, base + '&adopted=5&possible=3', tmp_path)
+    assert ', 3 vorhandene Buchungen möglicherweise doppelt – siehe Liste unten' in possible
+    (none,) = _shown_messages(script, base + '&possible=0', tmp_path)
+    assert 'doppelt' not in none
+
+
+@pytest.mark.skipif(NODE is None, reason='Node.js nicht installiert – der statische Test '
+                                         '(test_meldungsskript_liest_adopted_als_zahl) deckt es ab')
+@pytest.mark.parametrize('value', ['<script>alert(1)</script>', '2<img src=x onerror=alert(1)>',
+                                   '-3', ''])
+def test_meldung_uebernimmt_keinen_rohen_wert_fuer_moegliche_dubletten(db_with_coa, tmp_path, value):
+    script = _fdb_script(PageMiscellaneous(db_with_coa))
+    (message,) = _shown_messages(
+        script, '?wiso_fdb=ok&imported=1&skipped=0&assets=0&afa=0&possible=' + quote(value), tmp_path)
+    for fragment in ('<script>', '<img', 'onerror', 'alert'):
+        assert fragment not in message, message
+    assert ('2 vorhandene Buchungen' in message) is value.startswith('2')
 
 
 @pytest.mark.skipif(NODE is None, reason='Node.js nicht installiert – der statische Test '

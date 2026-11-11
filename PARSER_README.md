@@ -205,8 +205,8 @@ Buchung als eine still falsch übernommene:
   Beleg-Nr. (Leerraum zusammengefasst: „RE  12“ = „RE 12“; auch ohne Beleg-Nr.).
 - Der **Text** muss immer gleich sein (Leerraum und Groß-/Kleinschreibung egal; die Datenbank
   liefert ihn als latin-1, die CSV als cp1252 – für den Vergleich wird er umgesetzt, gespeichert
-  bleibt der Text der CSV-Zeile). Zwei leere Texte gelten nur als gleich, wenn das Gegenkonto auf
-  beiden Seiten bekannt und gleich ist.
+  bleibt der Text der CSV-Zeile) und darf nicht leer sein – zwei leere Texte beweisen nichts,
+  solche Sätze werden neu angelegt.
 - Das **Gegenkonto** muss gleich sein (beide bekannt) oder der CSV-Zeile fehlen; ein anderes
   passt nie. Unter mehreren gewinnt das gleiche Gegenkonto, dann die kleinste ID. Jede Zeile wird
   höchstens einmal übernommen: zwei gleich hohe Teilbuchungen übernehmen zwei CSV-Zeilen, gleich
