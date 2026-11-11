@@ -369,6 +369,8 @@ def test_second_file_marked_as_upload_duplicate(db_two_accounts):
     assert [t["dup_source"] for t in second["transactions"]] == ["upload", None]
     assert [t["dup"] for t in second["transactions"]] == [True, False]
     assert (second["new_count"], second["dup_count"], second["dup_upload_count"]) == (1, 1, 1)
+    assert all(isinstance(t["text_differs"], bool) for p in (first, second)       # in jeder Zeile
+               for t in p["transactions"])
     assert (first["dup_count"], first["dup_upload_count"], first["status"]) == (0, 0, "ok")
     assert second["status"] == "warn"
     assert [p["dup_source"] for p in second["problems"]] == ["upload"]
@@ -600,6 +602,7 @@ def test_incomplete_transactions_are_neither_new_nor_duplicates(db_two_accounts,
         assert [t["reference"] for t in marked] == [f"unvollständig {k}" for k in INVALID_KINDS]
         assert all(not t["dup"] and t["dup_source"] is None and t["text_differs"] is False
                    for t in marked)
+        assert all(t["warn"][-1] == "incomplete" for t in marked)       # der Befund steht zuletzt
         assert all(t in preview["problems"] for t in marked)        # in der Karte aufgeführt
         assert preview["status"] == "warn"
     assert [t["dup_source"] for t in second["transactions"]] == ["upload", None, None, None, None]

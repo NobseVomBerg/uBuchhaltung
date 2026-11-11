@@ -704,6 +704,62 @@ def test_ersatzsuche_gilt_auch_nicht_wenn_der_kandidat_mit_konto_nicht_passt(db_
     assert len(_entries(db_with_coa)) == 3
 
 
+def test_zuordnung_ist_gierig_in_wiso_reihenfolge(db_with_coa, tmp_path):
+    """Festgeschrieben: Die Zuordnung läuft gierig in der Reihenfolge der WISO-Sätze. Passt für den
+    ersten Satz kein Text, nimmt er die Zeile mit der kleinsten ID – auch wenn deren Text zum
+    NÄCHSTEN Satz gepasst hätte. Die Textzuordnung kann dann vertauscht sein; Datum, Betrag, Konten und
+    Beleg-Nr. sind in beiden Zeilen gleich, also bleibt die Buchführung dieselbe."""
+    first = _candidate(db_with_coa, text='Zahlung Y')
+    second = _candidate(db_with_coa, text='Zahlung X')
+    records = [_record(ID=1, ACCOUNTINGID=861, ACCOUNTING_TEXT='Zahlung Q'),
+               _record(ID=2, ACCOUNTINGID=862, ACCOUNTING_TEXT='Zahlung Y')]
+
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, records))
+    assert (result['imported'], result['adopted']) == (0, 2)
+    rows = [_row(db_with_coa, booking) for booking in (first, second)]
+    assert [row['SourceGroup'] for row in rows] == ['861', '862']        # nicht 862 für „Zahlung Y“
+    assert [row['Text'] for row in rows] == ['Zahlung Y', 'Zahlung X']   # Texte bleiben, wie sie sind
+    same = ('DateBooking', 'Amount', 'COA_ID', 'CounterCOA_ID', 'DocumentNumber', 'TaxRate', 'TaxAmount')
+    assert all(rows[0][field] == rows[1][field] for field in same)
+
+
+def test_ersatzsuche_gilt_je_belegnummer(db_with_coa, tmp_path):
+    """Ob es zum Schlüssel einen Kandidaten mit Konto gab, entscheidet die Beleg-Nr.: eine Zeile mit
+    Konto unter einer ANDEREN Nummer sperrt die Ersatzsuche nicht."""
+    fields = dict(counter=1810, amount=-25.0, date_booking='2024-03-12', tax_rate=None, tax_amount=None)
+    other_number = _candidate(db_with_coa, coa=6815, text='mit Konto', document_number='PR-A', **fields)
+    without_account = _candidate(db_with_coa, coa=None, text='ohne Konto', document_number='PR-B',
+                                 **fields)
+    before = _row(db_with_coa, other_number)
+    record = dict(ID=1, ACCOUNTINGID=871, ACCOUNTING_DATE='2024-03-12 00:00:00', AMOUNTGROSS=25.0,
+                  ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1210, ACCOUNTING_TEXT='Briefmarken',
+                  REFERENCENO='PR-B')
+
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, [record]))
+    assert (result['imported'], result['adopted']) == (0, 1)
+    row = _row(db_with_coa, without_account)
+    assert (row['SourceGroup'], row['COA_ID']) == ('871', _coa(db_with_coa, 6815))
+    assert _row(db_with_coa, other_number) == before
+
+
+def test_ersatzsuche_gilt_je_belegnummer_nach_zusammenfassen_des_leerraums(db_with_coa, tmp_path):
+    """…und „PR  7“ (zwei Leerzeichen) ist dieselbe Nummer wie „PR 7“: die Zeile mit Konto sperrt die
+    Ersatzsuche, auch wenn sie ihres anderen Gegenkontos wegen selbst nicht übernommen wird."""
+    fields = dict(amount=-25.0, date_booking='2024-03-12', tax_rate=None, tax_amount=None)
+    with_account = _candidate(db_with_coa, coa=6815, counter=1800, text='mit Konto',
+                              document_number='PR  7', **fields)
+    without_account = _candidate(db_with_coa, coa=None, counter=1810, text='ohne Konto',
+                                 document_number='PR 7', **fields)
+    before = {i: _row(db_with_coa, i) for i in (with_account, without_account)}
+    record = dict(ID=1, ACCOUNTINGID=872, ACCOUNTING_DATE='2024-03-12 00:00:00', AMOUNTGROSS=25.0,
+                  ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1210, ACCOUNTING_TEXT='Briefmarken',
+                  REFERENCENO='PR 7')
+
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, [record]))
+    assert (result['imported'], result['adopted']) == (1, 0)
+    assert {i: _row(db_with_coa, i) for i in before} == before
+
+
 # ── Was nie übernommen wird ──────────────────────────────────────────────────
 
 def test_buchung_mit_fremder_quellgruppe_wird_nicht_uebernommen(db_with_coa, tmp_path):
@@ -1298,6 +1354,54 @@ def test_detailzeile_maskiert_den_gespeicherten_wert(db_with_coa):
     assert payload not in page and '&lt;script&gt;alert(1)&lt;/script&gt;' in page
 
 
+def _write_result(result):
+    os.makedirs(userctx.user_data_dir(), exist_ok=True)
+    with open(os.path.join(userctx.user_data_dir(), 'wiso_fdb_result.json'), 'w',
+              encoding='utf-8') as handle:
+        json.dump(result, handle)
+
+
+def test_kaputte_werte_in_der_ergebnisdatei_erscheinen_maskiert(db_with_coa):
+    """Feindliche und kaputte Werte in ``adopted_rows`` (Markup, ``null``, Listen als Betrag, leere
+    Zeile) lassen die Seite nicht abstürzen; Markup erscheint maskiert, kaputte Beträge als Text."""
+    hostile = '<img src=x onerror=alert(1)>'
+    _write_result({'adopted': 4, 'adopted_rows': [
+        {'id': hostile, 'date': hostile, 'amount': hostile, 'text': hostile},
+        {'id': None, 'date': None, 'amount': None, 'text': None},
+        {'id': 3, 'date': '2024-01-01', 'amount': [1, 2], 'text': {'a': 1}},
+        {}]})
+    page = PageMiscellaneous(db_with_coa)
+
+    rows, block = _details(page)
+    escaped = '&lt;img src=x onerror=alert(1)&gt;'
+    assert len(rows) == 4
+    assert rows[0] == [escaped, escaped, escaped, escaped]
+    assert rows[1] == ['', '-', '', ''] and rows[3] == ['', '-', '', '']
+    assert rows[2][:2] == ['2024-01-01', '[1, 2]'] and rows[2][3] == '3'
+    assert '<img' not in page and hostile not in page
+
+
+@pytest.mark.parametrize('count,note', [(1, False), (499, False), (500, True), (501, True)])
+def test_hinweis_auf_die_ersten_500_steht_ab_500_zeilen(db_with_coa, count, note):
+    """Die Seite sagt „Genannt werden die ersten 500.“, sobald die Liste die Grenze erreicht."""
+    _write_result({'adopted': count, 'adopted_rows': [
+        {'id': n, 'date': '2024-04-02', 'amount': float(n), 'text': f'Zeile {n}'} for n in range(count)]})
+    page = PageMiscellaneous(db_with_coa)
+    rows, _block = _details(page)
+    assert len(rows) == count
+    assert ('Genannt werden die ersten 500.' in page) is note
+
+
+@pytest.mark.xfail(strict=True, reason='Produktlücke (kleinster Fall in der Meldung): Ist eine Zeile '
+                                       'von adopted_rows kein Objekt oder die Liste keine Liste, '
+                                       'bricht PageMiscellaneous mit AttributeError/TypeError ab')
+@pytest.mark.parametrize('rows', [['text'], [None], [5], 'abc', 5, {'a': 1}],
+                         ids=['Text', 'null', 'Zahl', 'String', 'Zahl statt Liste', 'Objekt statt Liste'])
+def test_kaputte_form_der_ergebnisdatei_laesst_die_seite_nicht_abstuerzen(db_with_coa, rows):
+    _write_result({'adopted': 1, 'adopted_rows': rows})
+    assert '1 Buchungssätze waren schon aus dem CSV-Import da' in PageMiscellaneous(db_with_coa)
+
+
 def _fdb_script(page):
     """Der Skriptblock der Seite, der die Meldung nach dem Datenbank-Import baut."""
     scripts = re.findall(r'<script>(.*?)</script>', page, re.S)
@@ -1413,6 +1517,9 @@ def test_csv_und_datenbank_ueber_den_server_nacheinander(server_port, auto_login
     page = get(server_port, answer.headers['Location'])
     assert page.status == 200
     assert '5 Buchungssätze waren schon aus dem CSV-Import da' in page.text
+    listed, _block = _details(page.text)                       # und die Liste dazu
+    assert sorted(row[0] for row in listed) == ['2024-03-01', '2024-03-05', '2024-03-05',
+                                                '2024-03-05', '2024-03-15']
 
     second = post(server_port, '/wiso/fdb-import', headers={'Origin': own_origin(server_port)},
                   csrf=auto_login.csrf,
