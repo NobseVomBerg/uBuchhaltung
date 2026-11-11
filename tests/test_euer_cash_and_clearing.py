@@ -4,19 +4,24 @@
 """Kasse und Verrechnungskonto 1460 in EÜR und Dashboard (2.0.5).
 
 Die EÜR (``get_euer_data``) nimmt dieselben Zahlungskonten wie der DATEV-Export
-(``get_payment_coa_ids``: eigene Bank- und Kassenkonten, Kassenbereich 1600–1699,
-Verrechnungskonto 1460). Ob ein Satz zählt, entscheidet die Sektion:
+(``get_payment_coa_ids``: eigene Bank- und Kassenkonten – die Kasse einer frischen Datenbank
+führt 1600 –, der historische Bereich 1000–1099 und das Verrechnungskonto 1460). Ob ein Satz
+zählt, entscheidet die Sektion, nicht die Kontenmenge:
 
 1. Buchungssätze unter einer Bankbewegung der gewählten Konten – auch der Kasse
    (Buchungsmaske mit Konto = Kasse);
 2. eigenständige Sätze auf einer Kasse und – ohne Kontofilter – auf 1460;
-2b. eigenständige Sätze mit ``Account_ID`` auf einer Kasse (über ``classify_entry``);
-3. ohne Kontofilter: Umbuchungen zwischen Anlage- und Erfolgskonto (AfA, Restbuchwert).
+2b. eigenständige Sätze mit ``Account_ID`` auf einer Kasse (über ``classify_entry``), ohne
+   Umbuchungen zwischen Anlage- und Erfolgskonto;
+3. ohne Kontofilter: Umbuchungen zwischen Anlage- und Erfolgskonto (AfA, Restbuchwert) – ohne
+   Steuer, der Betrag gilt brutto als Aufwand.
+
+Jede Buchung zählt höchstens einmal (die erste Sektion, die sie findet, gewinnt).
 
 Geprüft werden die Fälle der Vorher/Nachher-Tabelle (A, A2, C, D, E1–E4, F, G, I) mit
 Kasse ohne SKR-Nummer, mit 1600 und mit 1460 – das Ergebnis darf nicht von der Nummer der
-Kasse abhängen –, der Kontofilter, die Doppelzählung (jeder Satz in genau einer Sektion,
-auch wenn der Abgleich ihn später mit einer Bankbewegung verknüpft), die Umbuchungen
+Kasse abhängen –, der Kontofilter, die Doppelzählung (auch wenn der Abgleich einen Satz später
+mit einer Bankbewegung verknüpft, und für Sätze, die mehrere Sektionen finden), die Umbuchungen
 zwischen Anlage- und Erfolgskonto und das Dashboard (folgt den Kontobewegungen: 1460 und
 AfA zählen dort nicht). Der Test für die AfA-Buchung selbst steht in
 ``test_depreciation_booking.py``.
@@ -230,6 +235,11 @@ def _book_value_loss(db):
     _standalone(db, 6895, 520, '1200', date='2026-06-30')
 
 
+def _wiso_depreciation_on_cash(db):
+    """Dieselbe Umbuchung mit Konto = Kasse (die Maske kann ein Konto eintragen)."""
+    _standalone(db, 6222, 520, '600', date='2026-12-31', account_id=_accounts(db)[1])
+
+
 def _asset_purchase(db):
     _giro_child(db, 520, 1800, '-1190', 0.19, '-190')
 
@@ -264,6 +274,7 @@ CASES = [
     Case('G-wiso-paar-als-kinder', _g, {1406: '-19', 6815: '-100'}, ('0', '-119', 1)),
     Case('I-konto-kasse-6815-an-1460', _i, {1406: '-19', 6815: '-100'}, ('0', '-119', 1)),
     Case('wiso-afa-6222-an-0520', _wiso_depreciation, {6222: '-600'}, ('0', '0', 0)),
+    Case('wiso-afa-6222-an-0520-konto-kasse', _wiso_depreciation_on_cash, {6222: '-600'}, None),
     Case('restbuchwert-6895-an-0520', _book_value_loss, {6895: '-1200'}, ('0', '0', 0)),
     Case('anlagenkauf-bank-kind-0520-an-1800', _asset_purchase, {520: '-1000', 1406: '-190'},
          ('0', '-1190', 1)),
@@ -284,6 +295,8 @@ def test_euer_and_dashboard_of_every_form_do_not_depend_on_the_cash_account_numb
 
     assert _euer(db) == _decimals(case.euer)
 
+    if case.dash is None:
+        return                        # das Dashboard ist für diesen Fall nicht festgelegt
     income, expense, count = case.dash_1460 if (kasse_skr == 1460 and case.dash_1460) else case.dash
     totals = _dash(db)
     assert (totals['income'], totals['expense'], totals['bank_count']) == \
@@ -338,9 +351,9 @@ def test_mask_booking_on_the_cash_account_creates_bank_row_with_one_child(tmp_pa
 @pytest.mark.parametrize('kasse_skr', KASSEN_PARAMS)
 def test_dashboard_months_show_the_cash_booking_in_its_month(tmp_path, kasse_skr):
     db = _make_db(tmp_path, kasse_skr)
-    _kasse = _accounts(db)[1]
-    _mask(db, _kasse, 6815, '-11.90', 19, '-1.90', date='2026-03-01')
-    _mask(db, _kasse, 4400, '23.80', 19, '3.80', date='2026-05-20')
+    kasse = _accounts(db)[1]
+    _mask(db, kasse, 6815, '-11.90', 19, '-1.90', date='2026-03-01')
+    _mask(db, kasse, 4400, '23.80', 19, '3.80', date='2026-05-20')
 
     months = {m['year_month']: m for m in _monthly(db)}
     assert (months['2026-03']['expense'], months['2026-03']['income']) == (-11.9, 0.0)
@@ -644,7 +657,7 @@ def test_cash_account_entry_with_two_booked_sides_reads_as_a_transfer(tmp_path, 
 
 # ── Unabhängigkeit von der Kassennummer, breite Kombination ──────────────────
 
-# (Zweckkonto, Betrag, Steuersatz, Steuer) wie in tests/test_entry_forms.py, dazu Erstattung,
+# (Zweckkonto, Betrag, Satz, Steuer) wie in tests/test_entry_forms.py, dazu Erstattung,
 # Storno, Aufwand ohne Steuer und Privatentnahme
 PURPOSES = [
     (4400, '119.00', 0.19, '19.00'), (6815, '-59.50', 0.19, '-9.50'),
@@ -652,10 +665,18 @@ PURPOSES = [
     (6815, '59.50', 0.19, '9.50'), (4400, '-119.00', 0.19, '-19.00'),
     (6805, '-10.00', None, None), (2100, '-50.00', None, None),
 ]
-LIQUID_SIDES = [1800, 1460, 1600, 1610]          # eigene Bank, Verrechnungskonto, Kasse, Nebenkasse
-FORMS = ([('zweckkonto-vorne', side) for side in LIQUID_SIDES]
-         + [('geldkonto-vorne', side) for side in LIQUID_SIDES]
-         + [('gegenkonto-leer', None), ('vorne-leer', None)])
+# Geldseiten, die in jeder Datenbank liquide sind: das eigene Bankkonto, das Verrechnungskonto und der
+# feste Bereich 1000–1099 (hier 1050). Die Kasse der App zählt über ihr eigenes Konto: 1600 ist nur
+# dann liquide, wenn die Kasse es führt.
+FIXED_SIDES = [1800, 1460, 1050]
+OWN_CASH_SIDE = 1600
+
+
+def _forms(kasse_skr):
+    sides = FIXED_SIDES + ([OWN_CASH_SIDE] if kasse_skr == OWN_CASH_SIDE else [])
+    return ([('zweckkonto-vorne', side) for side in sides]
+            + [('geldkonto-vorne', side) for side in sides]
+            + [('gegenkonto-leer', None), ('vorne-leer', None)])
 
 
 def _form_accounts(form, purpose, side):
@@ -677,12 +698,13 @@ def _expected_payment(purpose, amount, rate, tax):
 
 def _combination_db(tmp_path, kasse_skr):
     """Alle Kombinationen aus Zweckkonto, Form und liquider Seite als Kinder je einer Girobewegung,
-    jede an einem eigenen Tag. Liefert die Datenbank und {Tag: (Zweckkonto, Betrag, Satz, Steuer)}."""
+    jede an einem eigenen Tag. Liefert die Datenbank und {Tag: (Zweckkonto, Form, liquide Seite)}."""
     db = _make_db(tmp_path, kasse_skr, f'kombination-{KASSE_ID[kasse_skr]}.db')
+    assert db.insert_chart_of_accounts(4, 1050, 'Kassenbereich 1050', 'Test')
     day = datetime.date(2026, 1, 1)
     rows = {}
     for purpose in PURPOSES:
-        for form, side in FORMS:
+        for form, side in _forms(kasse_skr):
             coa, counter = _form_accounts(form, purpose[0], side)
             _giro_child(db, coa, counter, purpose[1], purpose[2], purpose[3], date=day.isoformat())
             rows[day.isoformat()] = (purpose, form, side)
@@ -691,20 +713,24 @@ def _combination_db(tmp_path, kasse_skr):
 
 
 def test_euer_of_a_bank_child_does_not_depend_on_the_account_number_of_the_cash_account(tmp_path):
-    """Differenztest: Ein Kind einer Girobewegung mit Bank, Verrechnungskonto, Kasse oder
-    Nebenkasse als Geldseite (Zweckkonto vorne oder Geldkonto vorne) ergibt in der EÜR dieselben
-    Zahlen wie mit dem eigenen Bankkonto – egal, ob die Kasse keine SKR-Nummer, 1600 oder 1460
-    führt."""
+    """Differenztest: Ein Kind einer Girobewegung mit Bank, Verrechnungskonto oder dem festen Bereich
+    1000–1099 als Geldseite (Zweckkonto vorne oder Geldkonto vorne) ergibt in der EÜR dieselben Zahlen
+    wie mit dem eigenen Bankkonto – egal, ob die Kasse keine SKR-Nummer, 1600 oder 1460 führt. Führt die
+    Kasse 1600, ist auch 1600 eine solche Geldseite."""
     results = {}
     for kasse_skr in KASSEN:
         db, rows = _combination_db(tmp_path, kasse_skr)
-        assert len(rows) == len(PURPOSES) * len(FORMS)
-        results[kasse_skr] = {day: _euer(db, date_from=day, date_to=day) for day in rows}
+        assert len(rows) == len(PURPOSES) * len(_forms(kasse_skr))
+        results[kasse_skr] = {rows[day]: _euer(db, date_from=day, date_to=day) for day in rows}
 
-    for day, (purpose, form, side) in rows.items():
-        expected = _decimals(_expected_payment(*purpose))
-        for kasse_skr in KASSEN:
-            assert results[kasse_skr][day] == expected, (KASSE_ID[kasse_skr], purpose, form, side)
+    for kasse_skr in KASSEN:
+        for (purpose, form, side), euer in results[kasse_skr].items():
+            assert euer == _decimals(_expected_payment(*purpose)), \
+                (KASSE_ID[kasse_skr], purpose, form, side)
+    common = set(results[None]) & set(results[1600]) & set(results[1460])
+    assert len(common) == len(PURPOSES) * (2 * len(FIXED_SIDES) + 2)
+    assert all(results[None][combo] == results[1600][combo] == results[1460][combo]
+               for combo in common)
 
 
 # ── Umbuchungen zwischen Anlage- und Erfolgskonto (Sektion 3) ────────────────
@@ -772,6 +798,87 @@ def test_asset_transfers_show_only_the_loss_account(tmp_path, kasse_skr, coa, co
     db = _make_db(tmp_path, kasse_skr)
     _standalone(db, coa, counter, amount, date='2026-12-31')
     assert _euer(db) == _decimals(expected)
+
+
+@pytest.mark.parametrize('coa, counter, amount, rate, tax, expected', [
+    pytest.param(6220, 520, '119', 0.19, '19', {6220: '-119'}, id='aufwand-an-anlage-19'),
+    pytest.param(520, 6220, '-119', 0.19, '-19', {6220: '-119'}, id='anlage-vorne-19'),
+    pytest.param(6222, 520, '107', 0.07, '7', {6222: '-107'}, id='aufwand-an-anlage-7'),
+    pytest.param(6220, 520, '-119', 0.19, '-19', {6220: '119'}, id='storno'),
+    pytest.param(6895, 520, '1190', 0.19, '190', {6895: '-1190'}, id='restbuchwert'),
+])
+@pytest.mark.parametrize('kasse_skr', KASSEN_PARAMS)
+def test_asset_transfer_books_no_tax(tmp_path, kasse_skr, coa, counter, amount, rate, tax,
+                                     expected):
+    """FESTGESCHRIEBEN (Sektion 3 ohne Steuer): Eine Umbuchung zwischen Anlage- und Erfolgskonto ist
+    keine Zahlung. Steuersatz und -betrag bleiben unberücksichtigt, der Betrag steht – wie gebucht,
+    also BRUTTO – als Aufwand; es entsteht keine Zeile 1401/1406/3806. („6220 an 0520“ +119 mit 19 %
+    ergibt 6220 −119, nicht 6220 −100 und 1406 +19.)"""
+    db = _make_db(tmp_path, kasse_skr)
+    _standalone(db, coa, counter, amount, rate, tax, date='2026-12-31')
+
+    result = _euer(db)
+
+    assert result == _decimals(expected)
+    assert not {1401, 1406, 3806} & set(result)
+
+
+@pytest.mark.parametrize('kasse_skr', KASSEN_PARAMS)
+def test_bank_child_transfers_between_other_accounts_keep_their_tax(tmp_path, kasse_skr):
+    """Gegenprobe: Nur die Umbuchungen zwischen Anlage- und Erfolgskonto (Sektion 3) lassen die Steuer
+    weg. Die Umbuchung 4405 → 4400 unter einer Bankbewegung bucht die USt wie bisher."""
+    db = _make_db(tmp_path, kasse_skr)
+    _giro_child(db, 4405, 4400, '119.00', 0.19, '19.00')
+    assert _euer(db) == {4400: Decimal('100'), 3806: Decimal('19')}
+
+
+@pytest.mark.parametrize('kasse_skr', KASSEN_PARAMS)
+def test_asset_transfer_entered_on_a_cash_account_counts_exactly_once(tmp_path, kasse_skr):
+    """Ein eigenständiger Satz Anlage ↔ Erfolgskonto mit Konto = Kasse („6222 an 0520“ +600) ist eine
+    Umbuchung der Sektion 3 und nicht zusätzlich ein Kassensatz der Sektion 2b: Ohne Filter zählt er
+    einmal (6222 −600, nicht −1200), mit dem Filter „nur Kasse“ gar nicht – die Umbuchung hängt an
+    keinem Konto, auch nicht an dem in Konto eingetragenen."""
+    db = _make_db(tmp_path, kasse_skr)
+    giro, kasse = _accounts(db)
+    _standalone(db, 6222, 520, '600', date='2026-12-31', account_id=kasse)
+
+    assert _euer(db) == {6222: Decimal('-600')}
+    assert _euer(db, [giro, kasse]) == {6222: Decimal('-600')}
+    assert _euer(db, [kasse]) == {}
+    assert _euer(db, [giro]) == {}
+
+
+@pytest.mark.parametrize('kasse_skr', KASSEN_PARAMS)
+def test_asset_transfer_with_tax_entered_on_a_cash_account_counts_once_and_without_tax(
+        tmp_path, kasse_skr):
+    db = _make_db(tmp_path, kasse_skr)
+    _giro, kasse = _accounts(db)
+    _standalone(db, 6220, 520, '119', 0.19, '19', date='2026-12-31', account_id=kasse)
+    assert _euer(db) == {6220: Decimal('-119')}
+
+
+DEPRECIATION_COUNTERS = [pytest.param(skr, counter, id=f'{counter}-{KASSE_ID[skr]}')
+                         for counter in ('1460', 'kasse-skr', 'kasse-konto-und-1460')
+                         for skr in KASSEN if not (counter == 'kasse-skr' and skr is None)]
+
+
+@pytest.mark.parametrize('kasse_skr, counter', DEPRECIATION_COUNTERS)
+def test_depreciation_linked_entry_touching_a_cash_account_counts_once(tmp_path, kasse_skr,
+                                                                       counter):
+    """Jede Buchung ist über ihre ID eindeutig: Ein von der AfA-Planzeile referenzierter Satz, der
+    zugleich das Verrechnungskonto oder das Kassenkonto berührt (Sektion 2 findet ihn über die Konten,
+    Sektion 3 über die Planzeile, Sektion 2b über das Konto), zählt einmal."""
+    db = _make_db(tmp_path, kasse_skr)
+    _giro, kasse = _accounts(db)
+    asset = db.insert_asset('Altlaptop', '2026-01-10', 1800.0, 3, coa_id=_coa(db, 520))
+    counter_number = _kasse_skr(db) if counter == 'kasse-skr' else 1460
+    booking = _standalone(db, 6220, counter_number, '-600', date='2026-12-31',
+                          account_id=kasse if counter == 'kasse-konto-und-1460' else None)
+    _execute(db, "INSERT INTO AssetDepreciations (Asset_ID, Year, DepreciationAmount, BookValue, "
+                 "Booking_ID, Status, BookedAt) VALUES (?, 2026, 6000000, 12000000, ?, 'posted', "
+                 "CURRENT_TIMESTAMP)", (asset, booking))
+
+    assert _euer(db) == {6220: Decimal('-600')}
 
 
 @pytest.mark.parametrize('kasse_skr', KASSEN_PARAMS)

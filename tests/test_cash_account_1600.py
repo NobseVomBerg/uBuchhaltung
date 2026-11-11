@@ -10,13 +10,16 @@ aber nur dort, wo eine Kasse mit 1600 entsteht: Eine vorhandene Kasse behält ih
 oder 1460), Seitenaufrufe legen nichts an, und eine Kasse, die der Nutzer auf 1600 umstellt
 (``handle_update_bankaccount``), bekommt das Konto.
 
-Dazu die Zahlungskonten (``get_payment_coa_ids``: eigene Bank-/Kassenkonten, Kassenbereich
-1600–1699, Verrechnungskonto 1460 – der SKR03-Bereich 1000–1099 gehört nicht mehr dazu), die
-beide WISO-Importe daran ausrichten, und die Demo (die Kasse der Testdaten steht dort als
+Dazu die Zahlungskonten (``get_payment_coa_ids``: eigene Bank-/Kassenkonten, der feste Bereich
+1000–1099 und das Verrechnungskonto 1460), an denen beide WISO-Importe das Vorzeichen ausrichten:
+1600 ist ein Zahlungskonto nur, solange ein eigenes Konto die Nummer führt – in einer Datenbank mit
+Kasse ohne Nummer oder mit 1460 behält „6815 an 1600“ den Betrag der Datei (wie in 2.0.3, ein
+erneuter Import legt nichts neu an) –, und die Demo (die Kasse der Testdaten steht dort als
 Portokasse auf 1610, weil 1600 die automatisch angelegte Kasse trägt).
 
 Alle Namen und Werte sind erfunden.
 """
+import csv
 import datetime
 import os
 from contextlib import closing
@@ -28,7 +31,7 @@ import demo_seed
 from db import Database, _CoreMixin
 from importers.wiso_fdb import DEFAULT_LIQUID_ACCOUNTS
 from money import to_minor
-from server.handlers import handle_update_bankaccount
+from server.handlers import handle_datev_export, handle_update_bankaccount
 from server.pages_masterdata import PageBankAccounts
 from server.pages_miscellaneous import PageMiscellaneous
 from tests.fdb_builder import FdbBuilder, INT64, LONG, SHORT, TEXT, TIMESTAMP, Column
@@ -264,53 +267,66 @@ def test_viewing_pages_creates_no_chart_account_and_leaves_the_cash_account_alon
 
 
 # ── Zahlungskonten ───────────────────────────────────────────────────────────
+# Fest liquide sind der SKR03-Kassenbereich 1000–1099 und das Verrechnungskonto 1460
+# (``DEFAULT_LIQUID_ACCOUNTS``). 1600 und jedes weitere Kassenkonto zählen nur, wenn ein eigenes Konto
+# (``Accounts.SKRAccount``) die Nummer führt – eine Datenbank mit Kasse ohne Nummer oder mit 1460
+# liest „6815 an 1600“ also wie bisher (2.0.3).
 
 def _numbers(db, coa_ids):
     by_id = db.get_coa_id_to_number_map()
     return {by_id[coa_id] for coa_id in coa_ids}
 
 
-def test_boundaries_of_the_cash_range_in_the_import_constant():
-    assert all(number in DEFAULT_LIQUID_ACCOUNTS for number in (1600, 1601, 1650, 1698, 1699, 1460))
+def _set_cash_number(db, number):
+    """Die Kasse in den Stammdaten auf ``number`` (None = leer) stellen."""
+    status, _location = handle_update_bankaccount(
+        db, {'id': [str(_cash_id(db))], 'name': ['Kasse'],
+             'skr_account': ['' if number is None else str(number)]})
+    assert status == 303
+
+
+def test_import_constant_is_the_skr03_cash_range_and_the_clearing_account():
+    """Festgeschrieben: 1000–1099 und 1460 – 1600 gehört nicht dazu (es zählt nur über das eigene
+    Kassenkonto, siehe ``get_payment_coa_ids``)."""
+    assert DEFAULT_LIQUID_ACCOUNTS == frozenset(range(1000, 1100)) | {1460}
+    assert all(number in DEFAULT_LIQUID_ACCOUNTS for number in (1000, 1050, 1099, 1460))
     assert not any(number in DEFAULT_LIQUID_ACCOUNTS
-                   for number in (999, 1000, 1050, 1099, 1100, 1459, 1461, 1599, 1700, 1800))
-    assert len(DEFAULT_LIQUID_ACCOUNTS) == 101                     # 1600–1699 und 1460
+                   for number in (999, 1100, 1459, 1461, 1599, 1600, 1610, 1650, 1699, 1700, 1800))
 
 
-def test_payment_accounts_are_own_accounts_plus_cash_range_plus_clearing_account(tmp_db):
-    """Bank-/Kassen-COAs ∪ vorhandene Konten aus 1600–1699 ∪ 1460 – und das unabhängig davon,
-    ob die Kasse ihre Nummer führt."""
+def test_payment_accounts_are_own_accounts_plus_skr03_cash_range_plus_clearing_account(tmp_db):
+    """Bank-/Kassen-COAs ∪ vorhandene Konten aus 1000–1099 ∪ 1460. 1600 ist Zahlungskonto nur,
+    solange ein eigenes Konto es führt."""
     db = tmp_db
     for number in (999, 1000, 1050, 1099, 1100, 1599, 1650, 1699, 1700):
         assert db.insert_chart_of_accounts(4, number, f'Grenzkonto {number}', 'Test')
     db.insert_account('Pay-Giro', 'Owner', 'DE00PAYMENTIDS', 'BIC', 'Bank', is_cash=0,
                       skr_account=1800)
-    handle_update_bankaccount(db, {'id': [str(_cash_id(db))], 'name': ['Kasse'],
-                                   'skr_account': ['']})              # die Kasse führt nichts
+    never = {999, 1100, 1599, 1699, 1700}
 
+    _set_cash_number(db, None)                                       # die Kasse führt nichts
     numbers = _numbers(db, db.get_payment_coa_ids())
-
-    in_range = {n for n in _chart_numbers(db) if 1600 <= n <= 1699}
-    assert in_range == {1600, 1610, 1650, 1699}
-    assert numbers == {1800} | in_range | {1460}
-    assert numbers.isdisjoint({999, 1000, 1050, 1099, 1100, 1599, 1700})
+    assert numbers == {1800, 1000, 1050, 1099, 1460}
+    assert numbers.isdisjoint(never | {1600, 1610, 1650})
     with closing(db._get_connection()) as conn:
         assert db._get_payment_coa_ids(conn.cursor()) == db.get_payment_coa_ids()
 
+    _set_cash_number(db, 1600)                                       # jetzt führt die Kasse 1600
+    assert _numbers(db, db.get_payment_coa_ids()) == {1800, 1600, 1000, 1050, 1099, 1460}
 
-def test_own_accounts_count_even_outside_the_cash_range(tmp_db):
-    """Eine Kasse, die der Nutzer auf eine Nummer außerhalb des Bereichs stellt (hier 1050), ist ein
-    eigenes Konto und zählt – ein fremdes Konto 1050 nicht."""
-    db = tmp_db
-    for number in (1050, 1099):
-        db.insert_chart_of_accounts(4, number, f'Konto {number}', 'Test')
-    assert _numbers(db, db.get_payment_coa_ids()).isdisjoint({1050, 1099})
-
-    handle_update_bankaccount(db, {'id': [str(_cash_id(db))], 'name': ['Kasse'],
-                                   'skr_account': ['1050']})
-
+    db.insert_account('Reisekasse', '', '', '', '', is_cash=1, skr_account=1650)
     numbers = _numbers(db, db.get_payment_coa_ids())
-    assert 1050 in numbers and 1099 not in numbers and 1600 in numbers
+    assert numbers == {1800, 1600, 1650, 1000, 1050, 1099, 1460}      # 1610 und 1699 bleiben draußen
+    assert numbers.isdisjoint(never | {1610})
+
+    _set_cash_number(db, 1460)                                       # Kasse zurück auf das Verrechnungskonto
+    assert _numbers(db, db.get_payment_coa_ids()) == {1800, 1650, 1000, 1050, 1099, 1460}
+
+
+def test_payment_accounts_of_a_fresh_database_hold_its_cash_account(tmp_db):
+    numbers = _numbers(tmp_db, tmp_db.get_payment_coa_ids())
+    assert numbers == {1600, 1460}                                   # die Kasse und das Verrechnungskonto
+    assert tmp_db.get_bank_coa_ids() == {_coa(tmp_db, 1600)}
 
 
 # ── WISO-Textexport (CSV) ────────────────────────────────────────────────────
@@ -331,66 +347,123 @@ def _imported(db):
         db, 'SELECT DocumentNumber, Amount, TaxAmount FROM Bookings ORDER BY ID')}
 
 
-def test_csv_cash_bookings_on_1600_get_the_sign_of_the_money_flow_and_count_in_the_euer(tmp_db):
+def _datev(db):
+    """Zeilen des DATEV-Stapels als (Umsatz, S/H, Konto, Gegenkonto, BU), über den echten Handler."""
+    result = handle_datev_export(db, {'date_from': [D1], 'date_to': [D2]})
+    assert isinstance(result[0], bytes), result
+    lines = [line for line in result[0].decode('cp1252').split('\r\n') if line]
+    rows = [next(csv.reader([line], delimiter=';', quotechar='"')) for line in lines[2:]]
+    return [(r[0], r[1], r[6], r[7], r[8]) for r in rows]
+
+
+def _minor(value):
+    return None if value is None else to_minor(Decimal(value))
+
+
+def test_csv_cash_bookings_on_1600_of_a_fresh_database_get_the_sign_of_the_money_flow(tmp_db):
+    """Frische Datenbank: Die Kasse führt 1600, also ist 1600 ein Zahlungskonto. Ausgabe: Aufwand an
+    Kasse (negativ), Einnahme: Kasse an Erlös (positiv) – beide zählen genau einmal in der EÜR."""
     db = tmp_db
     result = db.import_wiso_csv(_csv(('6815', '1600', '18,35', 'KS-001', '401'),
                                      ('1600', '4400', '50,00', 'KS-002', '401')))
 
     assert result['imported'] == 2 and not result['errors'], result
-    assert _imported(db) == {'KS-001': (to_minor(Decimal('-18.35')), to_minor(Decimal('-2.93'))),
-                             'KS-002': (to_minor(Decimal('50.00')), to_minor(Decimal('7.98')))}
+    assert _imported(db) == {'KS-001': (_minor('-18.35'), _minor('-2.93')),
+                             'KS-002': (_minor('50.00'), _minor('7.98'))}
     assert _euer(db) == {1406: Decimal('-2.93'), 6815: Decimal('-15.42'),
                          3806: Decimal('7.98'), 4400: Decimal('42.02')}
     totals = db.get_dashboard_totals(D1, D2)
     assert (totals['income'], totals['expense'], totals['bank_count']) == (50.0, -18.35, 2)
+    assert _datev(db) == [('18,35', 'S', '6815', '1600', '9'), ('50,00', 'S', '1600', '4400', '3')]
+
+
+# Kassenposten wie in einem WISO-Export: Ausgabe und Einnahme über 1600, dazu ein Satz über 1050
+# (SKR03-Kassenbereich, bleibt liquide) und einer über 1650 (kein Zahlungskonto, solange kein
+# eigenes Konto es führt)
+OLD_CASH_CSV = _csv(('6815', '1600', '18,35', 'KS-001', '401'),
+                    ('1600', '4400', '50,00', 'KS-002', '401'),
+                    ('6815', '1050', '10,00', 'KS-003', ''),
+                    ('6815', '1650', '10,00', 'KS-004', ''))
+
+
+@pytest.mark.parametrize('cash_number', OLD_PARAMS)
+def test_csv_booking_on_1600_keeps_the_raw_amount_when_no_cash_account_carries_1600(
+        tmp_path, cash_number):
+    """Datenbank mit Kasse ohne Nummer oder mit 1460: 1600 ist KEIN Zahlungskonto, „6815 an 1600“
+    behält den Betrag der Datei – Beträge, DATEV-Zeilen und EÜR sind dieselben wie in 2.0.3
+    (gemessen an ``git archive 4d535cf`` mit demselben Kontenrahmen). Ein erneuter Import
+    derselben Datei legt nichts neu an."""
+    db = Database(db_name=str(tmp_path / 'buch.db'))
+    for number in (1050, 1650):
+        db.insert_chart_of_accounts(4, number, f'Konto {number}', 'Test')
+    _set_cash_number(db, cash_number)
+
+    result = db.import_wiso_csv(OLD_CASH_CSV)
+
+    assert result['imported'] == 4 and not result['errors'], result
+    assert _imported(db) == {'KS-001': (_minor('18.35'), _minor('2.93')),      # Rohbetrag, positiv
+                             'KS-002': (_minor('50.00'), _minor('7.98')),
+                             'KS-003': (_minor('-10.00'), None),                # 1050 bleibt liquide
+                             'KS-004': (_minor('10.00'), None)}
+    assert _datev(db) == [('18,35', 'S', '6815', '1600', '3'), ('50,00', 'S', '1600', '4400', '3'),
+                          ('10,00', 'S', '6815', '1050', '0'), ('10,00', 'S', '6815', '1650', '0')]
+    assert _euer(db) == {}                                  # keine Kasse führt 1600: in keiner Sektion
+    assert db.get_dashboard_totals(D1, D2)['bank_count'] == 0
+
+    again = db.import_wiso_csv(OLD_CASH_CSV)
+
+    assert (again['imported'], again['skipped']) == (0, 4)
+    assert _query(db, 'SELECT COUNT(*) FROM Bookings') == [(4,)]
 
 
 @pytest.mark.parametrize('number, liquid', [
-    (999, False), (1000, False), (1050, False), (1099, False), (1100, False),   # SKR03-Kasse
+    (999, False), (1000, True), (1050, True), (1099, True), (1100, False),      # SKR03-Kasse
     (1459, False), (1460, True), (1461, False),
-    (1599, False), (1600, True), (1650, True), (1699, True), (1700, False),
+    (1599, False), (1600, False), (1650, False), (1699, False), (1700, False),
 ])
-def test_csv_sign_follows_the_cash_range_1600_to_1699_and_the_clearing_account(tmp_db, number,
-                                                                               liquid):
-    """Eine Kasse ohne SKR-Nummer: Nur der feste Bereich entscheidet. Ist das Gegenkonto liquide,
-    ist die Ausgabe negativ; sonst bleibt der Betrag, wie die Datei ihn nennt."""
+def test_csv_sign_follows_the_skr03_cash_range_and_the_clearing_account(tmp_db, number, liquid):
+    """Kasse ohne SKR-Nummer: Nur der feste Bereich (1000–1099, 1460) entscheidet. Ist das Gegenkonto
+    liquide, ist die Ausgabe negativ; sonst bleibt der Betrag, wie die Datei ihn nennt."""
     db = tmp_db
-    handle_update_bankaccount(db, {'id': [str(_cash_id(db))], 'name': ['Kasse'],
-                                   'skr_account': ['']})
+    _set_cash_number(db, None)
     if _count_chart(db, number) == 0:
         assert db.insert_chart_of_accounts(4, number, f'Grenzkonto {number}', 'Test')
 
     db.import_wiso_csv(_csv(('6815', str(number), '10,00', f'GR-{number}', '')))
 
-    assert _imported(db)[f'GR-{number}'][0] == to_minor(Decimal('-10.00' if liquid else '10.00'))
+    assert _imported(db)[f'GR-{number}'][0] == _minor('-10.00' if liquid else '10.00')
 
 
-@pytest.mark.parametrize('number, liquid', [(1000, False), (1050, False), (1600, True)])
+@pytest.mark.parametrize('number, liquid', [(1000, True), (1050, True), (1100, False), (1600, False)])
 def test_csv_sign_of_a_cash_account_in_the_first_column(tmp_db, number, liquid):
     """Konto liquide, Gegenkonto Zweckkonto: Der Betrag wird positiv (Einnahme). Steht ein
-    SKR03-Kassenkonto (1000–1099) vorne, bleibt der Betrag, wie er in der Datei steht."""
+    Konto vorne, das nicht liquide ist (hier 1600 ohne eigenes Kassenkonto), bleibt der Betrag, wie
+    er in der Datei steht."""
     db = tmp_db
-    handle_update_bankaccount(db, {'id': [str(_cash_id(db))], 'name': ['Kasse'],
-                                   'skr_account': ['']})
+    _set_cash_number(db, None)
     if _count_chart(db, number) == 0:
         db.insert_chart_of_accounts(4, number, f'Grenzkonto {number}', 'Test')
 
     db.import_wiso_csv(_csv((str(number), '4400', '-10,00', f'KV-{number}', '')))
 
-    assert _imported(db)[f'KV-{number}'][0] == to_minor(Decimal('10.00' if liquid else '-10.00'))
+    assert _imported(db)[f'KV-{number}'][0] == _minor('10.00' if liquid else '-10.00')
 
 
-def test_csv_own_account_numbers_are_liquid_too(tmp_db):
-    """Eine Kasse mit einer Nummer außerhalb des Bereichs (hier 1050) bestimmt wie ein Bankkonto
-    das Vorzeichen."""
+@pytest.mark.parametrize('own_number', [1600, 1610, 1650])
+def test_csv_own_cash_account_numbers_are_liquid_wherever_they_lie(tmp_db, own_number):
+    """Eine Kasse bestimmt wie ein Bankkonto das Vorzeichen – mit ihrer eigenen Nummer, auch 1600 und
+    Nummern außerhalb des festen Bereichs; ohne eigenes Konto bleibt der Betrag, wie er ist."""
     db = tmp_db
-    db.insert_chart_of_accounts(4, 1050, 'Konto 1050', 'Test')
-    handle_update_bankaccount(db, {'id': [str(_cash_id(db))], 'name': ['Kasse'],
-                                   'skr_account': ['1050']})
+    if _count_chart(db, own_number) == 0:
+        db.insert_chart_of_accounts(4, own_number, f'Konto {own_number}', 'Test')
+    _set_cash_number(db, None)
+    db.import_wiso_csv(_csv(('6815', str(own_number), '10,00', 'OHNE-1', '')))
+    _set_cash_number(db, own_number)
 
-    db.import_wiso_csv(_csv(('6815', '1050', '10,00', 'EIG-1050', '')))
+    db.import_wiso_csv(_csv(('6815', str(own_number), '20,00', 'EIGEN-1', '')))
 
-    assert _imported(db)['EIG-1050'][0] == to_minor(Decimal('-10.00'))
+    assert _imported(db)['OHNE-1'][0] == _minor('10.00')
+    assert _imported(db)['EIGEN-1'][0] == _minor('-20.00')
 
 
 # ── WISO-Datenbank ───────────────────────────────────────────────────────────
@@ -417,39 +490,78 @@ def _wiso_database(path, rows, extra_chart=()):
     return builder.write(str(path))
 
 
-def test_wiso_database_cash_bookings_on_1600_get_the_sign_of_the_money_flow(tmp_path):
-    """SKR03 1000 (Kasse) wird zu SKR04 1600. Ausgabe: Aufwand an Kasse; Einnahme: Kasse an Erlös."""
+# Kassenposten der WISO-Datenbank: Ausgabe und Einnahme über SKR03 1000 (→ SKR04 1600) und ein Satz über
+# SKR03 1040 (→ SKR04 1050, im festen Kassenbereich)
+OLD_CASH_ROWS = [
+    dict(AMOUNTNET=15.42, AMOUNTGROSS=18.35, TAXRATE=19.0, ACCOUNTNO=4980, CONTRA_ACCOUNTNO=1000,
+         ACCOUNTING_TEXT='Kassenposten Ausgabe', REFERENCENO='KD-001'),
+    dict(AMOUNTNET=42.02, AMOUNTGROSS=50.0, TAXRATE=19.0, ACCOUNTNO=1000, CONTRA_ACCOUNTNO=8400,
+         ACCOUNTING_TEXT='Kassenposten Einnahme', REFERENCENO='KD-002'),
+    dict(AMOUNTGROSS=10.0, ACCOUNTNO=4980, CONTRA_ACCOUNTNO=1040, ACCOUNTING_TEXT='Posten 1050',
+         REFERENCENO='KD-003'),
+]
+OLD_CASH_CHART = [(1040, 1050, 'Konto 1050')]
+
+
+def test_wiso_database_cash_bookings_on_1600_of_a_fresh_database_get_the_sign_of_the_money_flow(
+        tmp_path):
+    """SKR03 1000 (Kasse) wird zu SKR04 1600. Frische Datenbank: Die Kasse führt 1600 – Ausgabe: Aufwand
+    an Kasse; Einnahme: Kasse an Erlös."""
     db = Database(db_name=str(tmp_path / 'buch.db'))
-    path = _wiso_database(tmp_path / 'db1.fdb', [
-        dict(AMOUNTNET=15.42, AMOUNTGROSS=18.35, TAXRATE=19.0, ACCOUNTNO=4980,
-             CONTRA_ACCOUNTNO=1000, ACCOUNTING_TEXT='Kassenposten Ausgabe', REFERENCENO='KD-001'),
-        dict(AMOUNTNET=42.02, AMOUNTGROSS=50.0, TAXRATE=19.0, ACCOUNTNO=1000,
-             CONTRA_ACCOUNTNO=8400, ACCOUNTING_TEXT='Kassenposten Einnahme', REFERENCENO='KD-002')])
+    path = _wiso_database(tmp_path / 'db1.fdb', OLD_CASH_ROWS, OLD_CASH_CHART)
 
     result = db.import_wiso_fdb(path, with_assets=False, with_invoices=False)
 
-    assert result['imported'] == 2 and not result['errors'], result
-    assert _imported(db) == {'KD-001': (to_minor(Decimal('-18.35')), to_minor(Decimal('-2.93'))),
-                             'KD-002': (to_minor(Decimal('50.00')), to_minor(Decimal('7.98')))}
+    assert result['imported'] == 3 and not result['errors'], result
+    assert _imported(db) == {'KD-001': (_minor('-18.35'), _minor('-2.93')),
+                             'KD-002': (_minor('50.00'), _minor('7.98')),
+                             'KD-003': (_minor('-10.00'), None)}
     rows = _query(db, 'SELECT c.AccountNumber, g.AccountNumber FROM Bookings b '
                       'JOIN ChartOfAccounts c ON c.ID = b.COA_ID '
                       'JOIN ChartOfAccounts g ON g.ID = b.CounterCOA_ID ORDER BY b.ID')
-    assert rows == [(6850, 1600), (1600, 4400)]
+    assert rows == [(6850, 1600), (1600, 4400), (6850, 1050)]
     assert _euer(db) == {1406: Decimal('-2.93'), 6850: Decimal('-15.42'),
                          3806: Decimal('7.98'), 4400: Decimal('42.02')}
     totals = db.get_dashboard_totals(D1, D2)
     assert (totals['income'], totals['expense'], totals['bank_count']) == (50.0, -18.35, 2)
+    assert _datev(db) == [('18,35', 'S', '6850', '1600', '9'), ('50,00', 'S', '1600', '4400', '3'),
+                          ('10,00', 'S', '6850', '1050', '0')]
 
 
-@pytest.mark.parametrize('skr03, skr04, liquid', [
-    (1000, 1600, True), (1010, 1699, True), (1020, 1700, False), (1030, 1599, False),
-    (1040, 1050, False), (1360, 1460, True),
-], ids=['kasse-1600', 'ende-1699', 'hinter-1699', 'vor-1600', 'skr03-bereich', 'verrechnung-1460'])
-def test_wiso_database_sign_follows_the_cash_range_and_the_clearing_account(tmp_path, skr03, skr04,
-                                                                            liquid):
+@pytest.mark.parametrize('cash_number', OLD_PARAMS)
+def test_wiso_database_booking_on_1600_keeps_the_raw_amount_when_no_cash_account_carries_1600(
+        tmp_path, cash_number):
+    """Wie beim Textexport: Kasse ohne Nummer oder mit 1460 → SKR04 1600 ist kein Zahlungskonto, der
+    Rohbetrag bleibt (Beträge und DATEV-Zeilen wie in 2.0.3); die Sätze über 1050 bleiben liquide."""
     db = Database(db_name=str(tmp_path / 'buch.db'))
-    handle_update_bankaccount(db, {'id': [str(_cash_id(db))], 'name': ['Kasse'],
-                                   'skr_account': ['']})                 # nur der feste Bereich zählt
+    _set_cash_number(db, cash_number)
+    path = _wiso_database(tmp_path / 'db1.fdb', OLD_CASH_ROWS, OLD_CASH_CHART)
+
+    result = db.import_wiso_fdb(path, with_assets=False, with_invoices=False)
+
+    assert result['imported'] == 3 and not result['errors'], result
+    assert _imported(db) == {'KD-001': (_minor('18.35'), _minor('2.93')),
+                             'KD-002': (_minor('50.00'), _minor('7.98')),
+                             'KD-003': (_minor('-10.00'), None)}
+    assert _datev(db) == [('18,35', 'S', '6850', '1600', '3'), ('50,00', 'S', '1600', '4400', '3'),
+                          ('10,00', 'S', '6850', '1050', '0')]
+    assert _euer(db) == {}
+    again = db.import_wiso_fdb(path, with_assets=False, with_invoices=False)
+    assert (again['imported'], again['skipped']) == (0, 3)
+
+
+@pytest.mark.parametrize('cash_number, skr03, skr04, liquid', [
+    (None, 1000, 1600, False), (None, 1010, 1699, False), (None, 1020, 1700, False),
+    (None, 1030, 1599, False), (None, 1040, 1050, True), (None, 1360, 1460, True),
+    (1600, 1000, 1600, True), (1699, 1010, 1699, True), (1699, 1000, 1600, False),
+], ids=['1600-ohne-kasse', '1699-ohne-kasse', '1700', '1599', 'skr03-bereich', 'verrechnung-1460',
+        '1600-mit-kasse', '1699-mit-kasse', '1600-bei-kasse-1699'])
+def test_wiso_database_sign_follows_the_fixed_numbers_and_the_own_cash_account(
+        tmp_path, cash_number, skr03, skr04, liquid):
+    db = Database(db_name=str(tmp_path / 'buch.db'))
+    if cash_number == 1699:
+        db.insert_chart_of_accounts(4, 1699, 'Nebenkasse 99', 'Test')
+    _set_cash_number(db, cash_number)
     path = _wiso_database(tmp_path / 'db1.fdb', [
         dict(AMOUNTGROSS=10.0, ACCOUNTNO=4980, CONTRA_ACCOUNTNO=skr03, ACCOUNTING_TEXT='Posten',
              REFERENCENO='GR-1')], extra_chart=[(1010, 1699, 'Nebenkasse 99'), (1020, 1700, 'Konto 1700'),
@@ -458,7 +570,7 @@ def test_wiso_database_sign_follows_the_cash_range_and_the_clearing_account(tmp_
     result = db.import_wiso_fdb(path, with_assets=False, with_invoices=False)
 
     assert result['imported'] == 1 and not result['errors'], result
-    assert _imported(db)['GR-1'][0] == to_minor(Decimal('-10' if liquid else '10'))
+    assert _imported(db)['GR-1'][0] == _minor('-10' if liquid else '10')
 
 
 # ── Demo ─────────────────────────────────────────────────────────────────────
@@ -477,7 +589,8 @@ def test_test_data_cash_booking_lives_on_1610_in_the_demo(tmp_path):
     assert dict(_cash_accounts(db)) == {'Kasse': 1600, 'Testkasse': 1460}
     assert _query(db, CASH_BOOKING) == [('Testkasse', 6815, 1460, to_minor(Decimal('-18.35')))]
 
-    demo_seed.DemoScenario(db, today=datetime.date(2026, 11, 3)).load_all()   # benennt die Konten um
+    scenario = demo_seed.DemoScenario(db, today=datetime.date(2026, 11, 3))   # benennt die Konten um
+    scenario.load_expenses()          # Ausgaben und Splits der Demo; Rechnungen und PDFs braucht der Fall nicht
 
     assert dict(_cash_accounts(db)) == {'Kasse': 1600, 'Portokasse': 1610}
     assert _query(db, CASH_BOOKING) == [('Portokasse', 6815, 1610, to_minor(Decimal('-18.35')))]
