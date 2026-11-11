@@ -334,6 +334,18 @@ kein Subagent darauf:
   Masken schreibt dasselbe Konto auf beide Seiten** (400 mit Klartext, `_refuse_same_account`); ein so
   vorgefundener Satz wird nicht angefasst
 
+### Diagnose-MCP-Server
+- `tools/mcp_ubuchhaltung.py`: nur Standardbibliothek, stdio; Claude Code startet ihn lokal,
+  er fragt eine laufende Instanz (z. B. den Docker-Container) per HTTP ab
+- Lesend per Konstruktion: genau ein SELECT ohne `;` über `/execute_sql`, nur lesende
+  `pragma_`-Funktionen (`_READ_PRAGMAS`), kein WITH/RECURSIVE/zeroblob/randomblob; Seiten nur
+  aus `_PAGE_ALLOWLIST` samt erlaubten Query-Schlüsseln – diesen Lesewächter (`check_select`,
+  `check_page_path`) nicht aufweichen; neue Seiten und Schlüssel nur für GET-Handler, die
+  nichts schreiben (Nachweis im Test)
+- Zugangsdaten aus der Windows-Anmeldeinformationsverwaltung, keyring oder Umgebung, nie im Repo; über `http://` gehen sie nur
+  an den eigenen Rechner, sonst nur mit `UBUCHHALTUNG_MCP_ALLOW_HTTP`. Registrierung nur
+  lokal (`claude mcp add --scope local`), Einrichtung in `DEPLOYMENT.md`
+
 ### Demo-Modus & Screenshots
 - `UBUCHHALTUNG_DEMO=1` (`demo.py`): Demodaten liegen **ausschließlich unter
   `data/users/demo/`** und werden nur geladen, wenn dieses Verzeichnis fehlt oder leer
