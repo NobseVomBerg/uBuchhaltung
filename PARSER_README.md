@@ -148,8 +148,10 @@ ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNU
 
 **Liquiditäts-Erkennung (`_is_liquid()`):**
 - Bankkonten: Über `Accounts.SKRAccount` JOIN mit ChartOfAccounts
-- Kassenkonten: Kontonummer 1000–1099
-- Verrechnungskonto: 1460
+- Kassenkonten: Kontonummer 1600–1699 (SKR04; 1000–1099 ist dort Vorräte)
+- Verrechnungskonto: 1460 (Geldtransit)
+- Dieselbe Menge (`importers.wiso_fdb.DEFAULT_LIQUID_ACCOUNTS`) nutzen der
+  Datenbank-Import, der DATEV-Export, die EÜR und die Buchungsmaske
 - Bestimmt Vorzeichen der Buchung
 
 **Duplikat-Erkennung (zählbasiert):** REFERENZNUMMER + Datum + COA_ID + Betrag;

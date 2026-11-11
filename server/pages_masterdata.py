@@ -546,7 +546,7 @@ def PageBankAccounts(db: Database, edit_id=None):
             f'<input type="hidden" name="bank_name" value="{ea_bank}">'
             f'<tr><td>Bezeichnung:</td><td>{ea_name}</td></tr>'
             f'<tr><td>Typ:</td><td>Kasse</td></tr>'
-            f'<tr><td>SKR-Gegenkonto:</td><td><input type="number" name="skr_account" value="{ea_skr}" placeholder="z.B. 1460"></td></tr>'
+            f'<tr><td>SKR-Gegenkonto:</td><td><input type="number" name="skr_account" value="{ea_skr}" placeholder="z.B. 1600"></td></tr>'
         )
     else:
         note = ''

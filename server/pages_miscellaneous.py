@@ -225,7 +225,8 @@ def PageMiscellaneous(db: Database):
         (Datei &rarr; Export &rarr; &bdquo;Buchungsdaten als CSV&ldquo;).<br>
         2. Tabellen-Export (nur ergänzend, direkt aus der Tabellenansicht exportieren)<br>
         Voraussetzung: Jedes Konto in der <strong>Kontenverwaltung</strong>
-        muss ein <em>SKR-Gegenkonto</em> hinterlegt haben (z.B. 1810 für 2. Bankkonto, 1460 für Kasse).<br>
+        muss ein <em>SKR-Gegenkonto</em> hinterlegt haben (z.B. 1810 für 2. Bankkonto, 1600 für Kasse;
+        das Verrechnungskonto 1460 gilt als Geldtransit).<br>
         Duplikate (gleiche Referenznummer + Konto + Betrag) werden automatisch übersprungen.</p>
         <form method="POST" action="/wiso/import" enctype="multipart/form-data">
             <div class="rowWithObjects">CSV-Datei:&nbsp;<input type="file" name="csvfile" accept=".txt,.csv" required></div>

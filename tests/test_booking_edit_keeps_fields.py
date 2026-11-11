@@ -19,7 +19,7 @@ WISO-Import): Die Maske zeigt das Geldkonto als „SKR-Konto“. Ein dort gewäh
 meint das Gegenkonto, „Kein SKR-Konto“ nimmt es zurück, ein anderes Geldkonto ersetzt das
 vordere. Maßgeblich sind die Zahlungskonten (``get_payment_coa_ids``, auch 1460), nicht nur
 die eigenen Bankkonten – die Tests dazu laufen auf einer frischen Datenbank, deren
-Standard-Kasse keine SKR-Nummer hat.
+Standard-Kasse 1600 führt (1460 ist darin kein eigenes Konto).
 """
 from contextlib import closing
 from decimal import Decimal
@@ -311,9 +311,9 @@ def test_child_liquid_first_other_money_account_replaces_the_front_account(world
 
 
 # ── Geldkonto vorne, bemessen an den Zahlungskonten (auch 1460) ──────────────
-# Frische Datenbank: Die Standard-Kasse hat keine SKR-Nummer, 1460 ist also kein eigenes
-# Konto – nur ``get_payment_coa_ids`` kennt es als Geldkonto (wie die Importe, die das
-# Vorzeichen eines Satzes daran ausrichten).
+# Frische Datenbank: Die Standard-Kasse führt 1600, 1460 ist also kein eigenes Konto –
+# nur ``get_payment_coa_ids`` kennt es als Geldkonto (wie die Importe, die das Vorzeichen
+# eines Satzes daran ausrichten).
 
 @pytest.fixture
 def fresh(tmp_db):
@@ -325,7 +325,7 @@ def fresh(tmp_db):
     def coa(number):
         return None if number is None else db.get_coa_id_by_account_number(number)
 
-    assert db.get_bank_coa_ids() == {coa(1800), coa(1810)}          # 1460 ist KEIN eigenes Konto …
+    assert db.get_bank_coa_ids() == {coa(1800), coa(1810), coa(1600)}   # 1460 ist KEIN eigenes Konto …
     assert coa(1460) in db.get_payment_coa_ids()                    # … aber ein Zahlungskonto
     return SimpleNamespace(db=db, coa=coa, bank=accounts['Frische-Bank-Eins'])
 
@@ -417,9 +417,9 @@ def test_no_skr_account_on_a_bank_front_row_takes_it_out_of_the_euer(fresh):
 
 
 def test_no_skr_account_on_a_clearing_account_front_row_takes_the_revenue_out_of_the_euer(fresh):
-    """Die EÜR liest „1460 / 4400“ als Umbuchung und bucht den Erlös. Nach „Kein SKR-Konto“
-    zählt der Erlös (4400 samt USt 3806) nicht mehr. (Das Verrechnungskonto selbst führt die
-    EÜR nicht als Geldkonto, siehe docs/aufgaben.md – dazu sagt der Test nichts.)"""
+    """Die EÜR liest „1460 / 4400“ als Zahlung (das Verrechnungskonto ist ein Zahlungskonto)
+    und bucht den Erlös. Nach „Kein SKR-Konto“ zählt der Erlös (4400 samt USt 3806) nicht
+    mehr."""
     row = _front_row(fresh, 'child', 1460)
     before = _euer(fresh.db)
     assert before[4400] == Decimal('100.00') and before[3806] == Decimal('19.00')
@@ -507,11 +507,11 @@ def test_mirror_row_takes_the_choice_as_coa(fresh):
 ])
 def test_clearing_account_front_row_on_a_database_without_any_bank_account(tmp_db, account, choice,
                                                                            counter):
-    """Ganz frische Datenbank: kein Bankkonto, die Standard-Kasse ohne SKR-Nummer. Ein
+    """Ganz frische Datenbank: kein Bankkonto, nur die Standard-Kasse mit 1600. Ein
     eigenständiger Satz „1460 / 4400“ (+119,00, 19 %) behält das Verrechnungskonto vorne."""
     db = tmp_db
     coa = db.get_coa_id_by_account_number
-    assert db.get_bank_coa_ids() == set()
+    assert db.get_bank_coa_ids() == {coa(1600)}
     account_id = next(a[0] for a in db.fetch_accounts() if a[1] == account) if account else None
     row = db.insert_booking(
         '2026-03-05', Decimal('119.00'), account_id=account_id, recipient_client='Testmarkt',

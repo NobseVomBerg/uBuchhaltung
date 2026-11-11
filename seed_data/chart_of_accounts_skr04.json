@@ -12,6 +12,7 @@
         {"account_number": 1406,  "name": "Abziehbare Vorsteuer 19%",                             "description": "Umlaufvermögen",                                    "is_standard": true},
         {"account_number": 1433,  "name": "Entstandene Einfuhrumsatzsteuer",                      "description": "Umlaufvermögen",                                    "is_standard": true},
         {"account_number": 1460,  "name": "Verrechnungskonto",                                    "description": "Umlaufvermögenskonten",                             "is_standard": true},
+        {"account_number": 1600,  "name": "Kasse",                                                "description": "Umlaufvermögenskonten",                             "is_standard": true},
         {"account_number": 1800,  "name": "Bank 0",                                               "description": "Umlaufvermögenskonten",                             "is_standard": true},
         {"account_number": 1810,  "name": "Bank 1",                                               "description": "Umlaufvermögenskonten",                             "is_standard": true},
         {"account_number": 1820,  "name": "Bank 2",                                               "description": "Umlaufvermögenskonten",                             "is_standard": true},

@@ -3,7 +3,7 @@
   "account_renames": {
     "Testbank": {"name": "Geschäftskonto", "bank_name": "Musterbank AG"},
     "Testkonto 2": {"name": "Tagesgeld", "bank_name": "Zweite Musterbank AG"},
-    "Testkasse": {"name": "Portokasse"}
+    "Testkasse": {"name": "Portokasse", "skr_account": 1600}
   },
   "bank_account": "Geschäftskonto",
   "invoices": [

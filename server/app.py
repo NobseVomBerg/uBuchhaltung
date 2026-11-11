@@ -510,8 +510,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             db.delete_number_range(int(qs["id"][0]))
             self.respond(303, "", headers={"Location": "/masterdata/numberranges"})
         elif path == "/assets/delete":
-            db.delete_asset(int(qs["id"][0]))
-            self.respond(303, "", headers={"Location": "/assets"})
+            asset_id = int(qs["id"][0])
+            try:
+                db.delete_asset(asset_id)
+                location = "/assets"
+            except ValueError as exc:      # gebuchte AfA oder Unteranlagen: nicht löschen
+                location = f"/assets/view?id={asset_id}&err={quote(str(exc), safe='')}"
+            self.respond(303, "", headers={"Location": location})
         elif path == "/asset_categories/delete":
             db.delete_asset_category(int(qs["id"][0]))
             self.respond(303, "", headers={"Location": "/asset_categories"})
@@ -832,7 +837,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path.startswith("/assets/view"):
                 qc = parse_qs(self.path.split('?', 1)[1])
                 asset_id = int(qc["id"][0])
-                self.respond(200, PageAssetView(db, asset_id))
+                self.respond(200, PageAssetView(db, asset_id, err=qc.get("err", [None])[0]))
             elif self.path == "/asset_categories" or self.path.startswith("/asset_categories?"):
                 self.respond(200, PageAssetCategories(db))
             elif self.path.startswith("/asset_categories/edit"):

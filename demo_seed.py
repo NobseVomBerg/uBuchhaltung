@@ -52,9 +52,13 @@ def _clip_day(first, day):
 
 def rename_demo_accounts(db, renames):
     """Konten der Testdaten für die Demo schöner benennen (App-Pfad
-    ``update_account``; IBAN/BIC/SKR bleiben). ``renames``: {alter Name:
-    {"name": …, "bank_name": …}}. Idempotent – fehlende alte Namen werden
-    übersprungen."""
+    ``update_account``; IBAN/BIC bleiben). ``renames``: {alter Name:
+    {"name": …, "bank_name": …, "skr_account": …}}. Idempotent – fehlende alte Namen
+    werden übersprungen.
+
+    ``skr_account`` stellt das Konto auf eine andere SKR-Nummer um (die Demo führt die
+    Kasse der Testdaten statt auf dem Verrechnungskonto 1460 auf dem Kassenkonto 1600);
+    Buchungen, die auf der Kasse stehen und die alte Nummer führen, ziehen mit."""
     for old, new in renames.items():
         conn = db._get_connection()
         cur = conn.cursor()
@@ -65,8 +69,29 @@ def rename_demo_accounts(db, renames):
         if not row:
             continue
         acc_id, owner, number, bic, bank_name, skr = row
+        new_skr = new.get("skr_account", skr)
         db.update_account(acc_id, new["name"], owner, number, bic,
-                          new.get("bank_name", bank_name), skr)
+                          new.get("bank_name", bank_name), new_skr)
+        if new_skr != skr:
+            _move_account_bookings(db, acc_id, skr, new_skr)
+
+
+def _move_account_bookings(db, account_id, old_skr, new_skr):
+    """Buchungen eines Kontos, die dessen alte SKR-Nummer führen, auf die neue umstellen."""
+    old_coa = db.get_coa_id_by_account_number(old_skr) if old_skr else None
+    new_coa = db.get_coa_id_by_account_number(new_skr) if new_skr else None
+    if old_coa is None or new_coa is None:
+        return
+    conn = db._get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT ID, COA_ID, CounterCOA_ID FROM Bookings WHERE Account_ID = ? "
+                "AND (COA_ID = ? OR CounterCOA_ID = ?)", (account_id, old_coa, old_coa))
+    rows = cur.fetchall()
+    conn.close()
+    for booking_id, coa, counter in rows:
+        db.update_booking_fields(booking_id, coa_id=new_coa if coa == old_coa else coa,
+                                 counter_coa_id=new_coa if counter == old_coa else counter,
+                                 log_description="Demo-Szenario")
 
 
 class DemoScenario:
