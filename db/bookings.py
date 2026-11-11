@@ -7,7 +7,10 @@ import os
 import json
 from decimal import Decimal
 from money import to_minor, from_minor
-from db.matching import is_bank_effective
+from db.matching import (
+    ENTRY_FORMS, FORM_LIQUID_FIRST, SIDE_COUNTER, derive_entry_form, is_bank_effective,
+    is_mirror_row, read_entry_form, reform,
+)
 from db.invoice_payments import PAYMENT_MARK
 
 
@@ -187,7 +190,7 @@ class BookingsMixin:
         for r in cursor.fetchall():
             coa_id = r[8]          # COA_ID
             counter_coa_id = r[9]  # CounterCOA_ID
-            if coa_id in doppik_coa_ids and counter_coa_id in doppik_coa_ids:
+            if is_mirror_row(r[22], coa_id, counter_coa_id, doppik_coa_ids):  # EntryForm
                 continue  # Doppik-Eintrag verbergen
             normal.append({'type': 'normal', 'date': r[1] or '', 'booking': self._euro_row(r, 11, 14)})
 
@@ -212,7 +215,7 @@ class BookingsMixin:
             # Merge: ersten (nicht-Doppik) Child als Entry-Quelle nutzen
             entry_src = None
             for c in raw_children:
-                if not (c[8] in doppik_coa_ids and c[9] in doppik_coa_ids):
+                if not is_mirror_row(c[22], c[8], c[9], doppik_coa_ids):
                     entry_src = c
                     break
             banks.append({
@@ -248,7 +251,7 @@ class BookingsMixin:
                        document_number=None, date_tax=None,
                        counter_coa_id=None, log_description=None,
                        booking_type='entry', parent_booking_id=None,
-                       auto_mirror=False):
+                       auto_mirror=False, entry_form=None):
         """Insert a new booking into Bookings table
         
         Args:
@@ -270,24 +273,38 @@ class BookingsMixin:
             log_description: Description for SQL logging (optional)
             booking_type: 'bank', 'entry', or 'split_child' (default: 'entry')
             parent_booking_id: FK to parent Bookings row (bank transaction)
+            entry_form: Form des Buchungssatzes (``db.matching.ENTRY_FORMS``). Ohne Angabe wird sie
+                bei einem ``entry`` aus den Konten abgeleitet (``derive_entry_form`` mit den
+                Zahlungskonten von jetzt): Der Betrag bezieht sich auf das Gegenkonto, wie die
+                Buchungsmaske ihn schreibt – ein Spiegel wird so ``mirror_counter``. Schreiber mit
+                einer anderen Konvention (Importe, Umbuchungen) geben die Form ausdrücklich an.
+                Eine Bankzeile hat keine Form.
         
         Returns:
             int: ID of inserted booking
         """
+        if entry_form is not None and entry_form not in ENTRY_FORMS:
+            raise ValueError(f"Unbekannte Form eines Buchungssatzes: {entry_form!r}")
         conn = self._get_connection()
         cursor = conn.cursor()
+        if booking_type != 'entry':
+            entry_form = None
+        elif entry_form is None:
+            entry_form = derive_entry_form(coa_id, counter_coa_id,
+                                           self._get_payment_coa_ids(cursor), SIDE_COUNTER)
         
         sql_template = '''INSERT INTO Bookings
             (DateBooking, DateTax, Account_ID, ForeignBankAccount,
              RecipientClient, Contact_ID, COA_ID, CounterCOA_ID, Category_ID, Amount, Currency,
-             TaxRate, TaxAmount, Text, DocumentNumber, BookingType, ParentBooking_ID, AutoMirror)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
+             TaxRate, TaxAmount, Text, DocumentNumber, BookingType, ParentBooking_ID, AutoMirror,
+             EntryForm)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
 
         params = (date_booking, date_tax, account_id, foreign_bank_account,
                   recipient_client, contact_id, coa_id, counter_coa_id, category_id,
                   to_minor(amount or 0), currency,
                   tax_rate, self._minor_opt(tax_amount), text, document_number, booking_type,
-                  parent_booking_id, 1 if auto_mirror else 0)
+                  parent_booking_id, 1 if auto_mirror else 0, entry_form)
 
         cursor.execute(sql_template, params)
         conn.commit()
@@ -305,9 +322,20 @@ class BookingsMixin:
         """Leere Felder einer Buchung nachtragen – vorhandene Werte werden
         NIE überschrieben (COALESCE). Für die automatische SKR-Zuordnung beim
         nachträglichen Verknüpfen einer Zahlung mit einer Rechnung (todo #2).
+
+        Bekommt ein Buchungssatz sein Konto erst hier, ändert sich seine Kontierung: Die Form
+        wird neu abgeleitet (``db.matching.reform``), der Betrag behält sein Soll/Haben.
         """
         conn = self._get_connection()
         cursor = conn.cursor()
+        old = cursor.execute('SELECT BookingType, EntryForm, COA_ID, CounterCOA_ID, Amount '
+                             'FROM Bookings WHERE ID = ?', (booking_id,)).fetchone()
+        form = amount = None
+        if old and old[0] == 'entry' and old[2] is None and coa_id is not None:
+            money_ids = self._get_payment_coa_ids(cursor)
+            old_form = read_entry_form(old[1], old[2], old[3], money_ids)
+            form, new_amount = reform(old_form, old[2], old[3], coa_id, old[3], money_ids, old[4])
+            amount = new_amount if new_amount != old[4] else None
         cursor.execute('''
             UPDATE Bookings SET
                 COA_ID     = COALESCE(COA_ID, ?),
@@ -320,6 +348,9 @@ class BookingsMixin:
             WHERE ID = ?
         ''', (coa_id, tax_rate, self._minor_opt(tax_amount), contact_id,
               document_number, booking_id))
+        if form is not None:
+            cursor.execute('UPDATE Bookings SET EntryForm = ?, Amount = COALESCE(?, Amount) '
+                           'WHERE ID = ?', (form, amount, booking_id))
         conn.commit()
         conn.close()
 
@@ -410,26 +441,28 @@ class BookingsMixin:
         if group_parent:
             cursor.execute('''
                 SELECT COA_ID, CounterCOA_ID, Amount, TaxRate, TaxAmount,
-                       Text, DocumentNumber
+                       Text, DocumentNumber, EntryForm
                 FROM Bookings WHERE ParentBooking_ID = ? ORDER BY ID
             ''', (group_parent,))
         else:
             cursor.execute('''
                 SELECT COA_ID, CounterCOA_ID, Amount, TaxRate, TaxAmount,
-                       Text, DocumentNumber
+                       Text, DocumentNumber, EntryForm
                 FROM Bookings WHERE ID = ?
             ''', (hit_id,))
         raw = cursor.fetchall()
         bank_coa_ids = self._get_bank_coa_ids(cursor)
+        money_ids = self._get_payment_coa_ids(cursor)
         conn.close()
 
         rows = []
-        for coa, counter, amount, rate, tax, text, docnr in raw:
-            if coa in bank_coa_ids and counter in bank_coa_ids:
+        for coa, counter, amount, rate, tax, text, docnr, stored_form in raw:
+            if is_mirror_row(stored_form, coa, counter, bank_coa_ids):
                 continue                      # reiner Doppik-Spiegel
             # Liquide-zuerst gebuchte Sätze: das Zweckkonto steht hinten
             purpose = coa
-            if coa in bank_coa_ids and counter not in bank_coa_ids:
+            if coa is not None and read_entry_form(stored_form, coa, counter,
+                                                   money_ids) == FORM_LIQUID_FIRST:
                 purpose = counter
             # Umbuchungen (Privatanteil, Wartekonto) brauchen ihr Gegenkonto
             # mit: ohne das würde eine Kopie zur Bankbewegung und die Summe
@@ -508,15 +541,19 @@ class BookingsMixin:
         """
         conn = self._get_connection()
         cursor = conn.cursor()
+        # Die Maske schreibt den Betrag der Bankbewegung, das Gegenkonto ist das Konto der Bank:
+        # Zweckkonto vorne, bei zwei Geldkonten ein Spiegel mit Betrag auf dem Gegenkonto.
+        form = derive_entry_form(coa_id, counter_coa_id, self._get_payment_coa_ids(cursor),
+                                 SIDE_COUNTER)
         sql_template = '''UPDATE Bookings
             SET DateBooking=?, DateTax=?, RecipientClient=?, COA_ID=?,
                 CounterCOA_ID=?, Amount=?, Currency=?, TaxRate=?, TaxAmount=?,
-                Text=?, DocumentNumber=?
+                Text=?, DocumentNumber=?, EntryForm=?
             WHERE ID=?'''
         params = (date_booking, date_tax, recipient_client, coa_id,
                   counter_coa_id, to_minor(amount or 0), currency,
                   tax_rate, self._minor_opt(tax_amount), text, document_number,
-                  child_id)
+                  form, child_id)
         cursor.execute(sql_template, params)
         conn.commit()
         conn.close()
@@ -530,7 +567,31 @@ class BookingsMixin:
         'category_id': 'Category_ID', 'amount': 'Amount', 'currency': 'Currency',
         'tax_rate': 'TaxRate', 'tax_amount': 'TaxAmount', 'text': 'Text',
         'document_number': 'DocumentNumber', 'parent_booking_id': 'ParentBooking_ID',
+        'entry_form': 'EntryForm',
     }
+
+    def _form_after_accounts_change(self, conn, booking_id, values):
+        """Form eines Buchungssatzes, dessen Konto oder Gegenkonto sich ändert – ``values`` sind
+        die geänderten Spalten (Minor Units), wie ``update_booking_fields`` sie schreibt. Nur für
+        einen ``entry``, dessen Konten sich wirklich ändern und für den die Form nicht
+        ausdrücklich genannt ist; sonst ``None``. Returns ``(form, amount)``: ``amount`` ist der
+        negierte Betrag, wenn die Form auf die andere Seite kippt und der Aufrufer keinen eigenen
+        mitgibt (``db.matching.reform``; ein mitgegebener Betrag gilt für die neue Kontierung),
+        sonst ``None`` – dann bleibt der Betrag, wie er ist."""
+        if 'entry_form' in values or not ({'coa_id', 'counter_coa_id'} & set(values)):
+            return None
+        old = conn.execute('SELECT BookingType, EntryForm, COA_ID, CounterCOA_ID, Amount '
+                           'FROM Bookings WHERE ID=?', (booking_id,)).fetchone()
+        if old is None or old[0] != 'entry':
+            return None
+        coa_id = values.get('coa_id', old[2])
+        counter_coa_id = values.get('counter_coa_id', old[3])
+        if (coa_id, counter_coa_id) == (old[2], old[3]):
+            return None
+        money_ids = self._get_payment_coa_ids(conn.cursor())
+        old_form = read_entry_form(old[1], old[2], old[3], money_ids)
+        form, amount = reform(old_form, old[2], old[3], coa_id, counter_coa_id, money_ids, old[4])
+        return form, (amount if 'amount' not in values and amount != old[4] else None)
 
     def update_booking_fields(self, booking_id, log_description=None, **fields):
         """Nur die genannten Felder einer Buchung ändern; alle anderen bleiben, wie sie sind.
@@ -538,22 +599,34 @@ class BookingsMixin:
         Für Masken, die nicht jede Spalte führen: Was das Formular nicht kennt
         (Gegenkonto, Kategorie …), darf beim Speichern nicht geleert werden.
         Feldnamen wie bei ``insert_booking``; ``amount``/``tax_amount`` in Euro.
+
+        Ändern sich Konto oder Gegenkonto eines Buchungssatzes, bekommt er die dazu passende
+        Form (``db.matching.reform``), sofern der Aufrufer sie nicht selbst als ``entry_form``
+        nennt. Ohne eigenen ``amount`` bleibt dabei das Soll/Haben erhalten: Kippt die Form
+        auf die andere Seite, wird der Betrag negiert.
         """
         unknown = set(fields) - set(self._BOOKING_FIELD_COLUMNS)
         if unknown:
             raise TypeError(f"Unbekannte Buchungsfelder: {sorted(unknown)}")
         if not fields:
             return
+        if fields.get('entry_form') is not None and fields['entry_form'] not in ENTRY_FORMS:
+            raise ValueError(f"Unbekannte Form eines Buchungssatzes: {fields['entry_form']!r}")
         values = dict(fields)
         if 'amount' in values:
             values['amount'] = to_minor(values['amount'] or 0)
         if 'tax_amount' in values:
             values['tax_amount'] = self._minor_opt(values['tax_amount'])
-        assignments = ', '.join(f"{self._BOOKING_FIELD_COLUMNS[name]}=?" for name in values)
-        sql_template = f"UPDATE Bookings SET {assignments} WHERE ID=?"
-        params = tuple(values.values()) + (booking_id,)
         conn = self._get_connection()
         try:
+            reformed = self._form_after_accounts_change(conn, booking_id, values)
+            if reformed is not None:
+                values['entry_form'] = reformed[0]
+                if reformed[1] is not None:
+                    values['amount'] = reformed[1]
+            assignments = ', '.join(f"{self._BOOKING_FIELD_COLUMNS[name]}=?" for name in values)
+            sql_template = f"UPDATE Bookings SET {assignments} WHERE ID=?"
+            params = tuple(values.values()) + (booking_id,)
             conn.execute(sql_template, params)
             conn.commit()
         finally:
@@ -581,16 +654,22 @@ class BookingsMixin:
         conn = self._get_connection()
         cursor = conn.cursor()
         
+        # Ändern sich die Konten eines Buchungssatzes, bekommt er die dazu passende Form
+        reformed = self._form_after_accounts_change(
+            conn, booking_id, {'coa_id': coa_id, 'counter_coa_id': counter_coa_id,
+                               'amount': to_minor(amount or 0)})
         sql_template = '''UPDATE Bookings
             SET DateBooking=?, DateTax=?, Account_ID=?, ForeignBankAccount=?,
                 RecipientClient=?, Contact_ID=?, COA_ID=?, CounterCOA_ID=?, Category_ID=?, Amount=?, Currency=?,
-                TaxRate=?, TaxAmount=?, Text=?, DocumentNumber=?, BookingType=COALESCE(?, BookingType), ParentBooking_ID=COALESCE(?, ParentBooking_ID)
+                TaxRate=?, TaxAmount=?, Text=?, DocumentNumber=?, BookingType=COALESCE(?, BookingType), ParentBooking_ID=COALESCE(?, ParentBooking_ID),
+                EntryForm=COALESCE(?, EntryForm)
             WHERE ID=?'''
         
         params = (date_booking, date_tax, account_id, foreign_bank_account,
                   recipient_client, contact_id, coa_id, counter_coa_id, category_id,
                   to_minor(amount or 0), currency,
-                  tax_rate, self._minor_opt(tax_amount), text, document_number, booking_type, parent_booking_id, booking_id)
+                  tax_rate, self._minor_opt(tax_amount), text, document_number, booking_type, parent_booking_id,
+                  reformed[0] if reformed else None, booking_id)
 
         cursor.execute(sql_template, params)
         conn.commit()

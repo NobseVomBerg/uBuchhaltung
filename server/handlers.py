@@ -21,7 +21,7 @@ from db import Database
 from db.core import fk_explained, ForeignKeyError
 from db.invoices import InvoiceCol
 from db.invoice_payments import RECEIVABLE_STATUSES
-from db.matching import is_bank_effective
+from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, read_entry_form
 from db.accounts import DEFAULT_CASH_ACCOUNT
 from money import to_minor, from_minor, multiply, tax_from_net, tax_from_gross, round_minor, fmt_eur
 from decimal import Decimal
@@ -374,8 +374,10 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
         return seq[i] if i < len(seq) else default
 
     bank_coa_ids = db.get_bank_coa_ids()
+    money_ids = db.get_payment_coa_ids()
     # Orientierung bestehender Sätze merken: liquide-zuerst gebuchte Sätze
-    # (COA = Bankkonto, Gegenkonto = Zweckkonto) behalten ihre Richtung.
+    # (COA = Geldkonto, Gegenkonto = Zweckkonto) behalten ihre Richtung – so, wie die
+    # gespeicherte Form (Bookings.EntryForm) sie nennt, nicht nach der Kontenliste von heute.
     existing_by_id = {c[0]: (c[1], c[2])
                       for c in (db.get_child_bookings_for_bank(bank_id) if bank_id else [])}
 
@@ -401,10 +403,12 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
         old_row = db.get_booking_by_id(int(row_id)) if row_id else None
         if old_row:
             old_coa, old_counter = old_row[8], old_row[9]
-            if old_coa in bank_coa_ids and old_counter not in bank_coa_ids:
+            old_form = read_entry_form(old_row[22], old_coa, old_counter, money_ids)
+            if old_form == FORM_LIQUID_FIRST and old_coa is not None:
                 # liquide-zuerst (z. B. Einnahmen aus dem WISO-Import)
                 new_coa, new_counter = old_coa, purpose_coa
-            elif not is_bank_effective(old_coa, old_counter, bank_coa_ids):
+            elif (old_form == FORM_TRANSFER
+                    or not is_bank_effective(old_coa, old_counter, bank_coa_ids)):
                 # Umbuchung (4405→4400, Privatanteil 6805→2100): sie hat kein
                 # Bankkonto als Gegenseite. Würde hier account_coa_id gesetzt,
                 # machte das Speichern der Bankmaske aus dem Beleg eine
@@ -462,10 +466,10 @@ def _write_split_rows(db, bank_id, planned):
     # liquide) tauchen im Editor nicht auf und bleiben deshalb unberührt.
     bank_coa_ids = db.get_bank_coa_ids()
     for child in db.get_child_bookings_for_bank(bank_id):
-        child_id, c_coa, c_counter = child[0], child[1], child[2]
+        child_id, c_coa, c_counter, c_form = child[0], child[1], child[2], child[9]
         if child_id in keep_ids:
             continue
-        if c_coa in bank_coa_ids and c_counter in bank_coa_ids:
+        if is_mirror_row(c_form, c_coa, c_counter, bank_coa_ids):
             continue                      # Doppik-Spiegel: nicht anfassen
         db.delete_transaction(child_id)
 
@@ -585,11 +589,13 @@ def handle_add_transaction(db: Database, post_data):
                 # Gegenkonto – die Richtung des Satzes bleibt, wie im Editor der Bankmaske
                 # (_plan_split_rows). „Kein SKR-Konto“ nimmt die Kontierung zurück: Das
                 # Geldkonto bleibt, das Zweckkonto geht – sonst zählte es unsichtbar weiter.
-                # Maßgeblich sind die Zahlungskonten, an denen die Importe das Vorzeichen
-                # ausgerichtet haben (auch 1460), nicht nur die eigenen Bankkonten.
+                # Maßgeblich ist die gespeicherte Form des Satzes (Geldkonto vorne), nicht die
+                # Kontenliste von heute; ob die Wahl des Nutzers ein Geldkonto ist, entscheiden
+                # die Zahlungskonten (auch 1460), nicht nur die eigenen Bankkonten.
                 liquid_ids = db.get_payment_coa_ids()
                 old_coa, old_counter = existing[8], existing[9]
-                if (old_coa in liquid_ids and old_counter not in liquid_ids
+                old_form = read_entry_form(existing[22], old_coa, old_counter, liquid_ids)
+                if (old_form == FORM_LIQUID_FIRST and old_coa is not None
                         and coa_id not in liquid_ids):
                     fields['coa_id'] = old_coa
                     fields['counter_coa_id'] = coa_id
@@ -800,10 +806,12 @@ def handle_update_bankaccount(db: Database, post_data):
     current = db.get_account_by_id(account_id)
     old_skr = current[7] if current else None
     if skr_account != old_skr:
-        # Ob ein Buchungssatz eine Zahlung ist und in welche Richtung, lesen EÜR und
-        # DATEV-Export daran ab, welche Konten gerade Geldkonten sind – das Vorzeichen
-        # stammt aber vom Zeitpunkt der Buchung bzw. des Imports. Hängen schon Sätze am
-        # alten oder am neuen Konto, würde die Umstellung sie umdeuten (Ausgabe ↔ Einnahme).
+        # Die Form eines Buchungssatzes (Bookings.EntryForm) steht seit 2.1.0 fest, und EÜR
+        # und DATEV-Export lesen sie. Zeilen ohne Form (Roh-SQL), die Zuordnung der Sätze zu
+        # Kasse und Dashboard, die Split-Summe und der Abgleich richten sich aber weiter nach
+        # den Konten, die gerade Geldkonten sind – das Vorzeichen stammt vom Zeitpunkt der
+        # Buchung bzw. des Imports. Hängen schon Sätze am alten oder am neuen Konto, würde die
+        # Umstellung sie umdeuten (Ausgabe ↔ Einnahme); die Sperre bleibt.
         affected = db.count_entries_on_account_numbers([old_skr, skr_account])
         if affected:
             msg = (f'SKR-Konto nicht geändert: {affected} Buchungssätze führen das bisherige '

@@ -23,8 +23,8 @@ Version und wird nicht geöffnet (``db.SchemaTooNewError``).
 """
 
 MAJOR = 2
-SCHEMA_STEP = 0      # +1 bei jeder DB-Schema-Änderung (= mittlere Versionsstelle); höchstens 999
-PATCH = 8            # +1 bei sonstigen Änderungen ohne DB-Bezug
+SCHEMA_STEP = 1      # +1 bei jeder DB-Schema-Änderung (= mittlere Versionsstelle); höchstens 999
+PATCH = 0            # +1 bei sonstigen Änderungen ohne DB-Bezug
 
 SCHEMA_VERSION = MAJOR * 1000 + SCHEMA_STEP   # steht als PRAGMA user_version in der Datenbank
 APP_VERSION = f"{MAJOR}.{SCHEMA_STEP}.{PATCH}"

@@ -474,7 +474,12 @@ def test_purpose_front_row_takes_the_choice_as_coa_and_keeps_the_counter_account
     assert handle_add_transaction(fresh.db, post)[0] == 303
 
     after = _row(fresh.db, row)
-    assert _changed(before, after) == {'COA_ID'}
+    # Ohne Konto vorne wird aus der Umbuchung „vorne leer, Zweckkonto hinten“ – so las die EÜR den Satz
+    # schon immer; seit 2.1.0 steht diese Form am Satz und wird beim Ändern der Konten neu abgeleitet
+    form_changes = (front, back, choice) == (4405, 4400, None)
+    assert _changed(before, after) == ({'COA_ID', 'EntryForm'} if form_changes else {'COA_ID'})
+    if form_changes:
+        assert (before['EntryForm'][0], after['EntryForm'][0]) == ('transfer', 'liquid_first')
     assert after['COA_ID'][0] == fresh.coa(choice)
     assert after['CounterCOA_ID'] == before['CounterCOA_ID']
 
@@ -491,7 +496,9 @@ def test_mirror_row_takes_the_choice_as_coa(fresh):
     assert handle_add_transaction(fresh.db, post)[0] == 303
 
     after = _row(fresh.db, row)
-    assert _changed(before, after) == {'COA_ID'}
+    # aus dem Spiegel wird eine Zahlung: Die Form wird mit den Konten neu abgeleitet
+    assert _changed(before, after) == {'COA_ID', 'EntryForm'}
+    assert (before['EntryForm'][0], after['EntryForm'][0]) == ('mirror_counter', 'purpose_first')
     assert (after['COA_ID'][0], after['CounterCOA_ID'][0]) == (fresh.coa(4300), fresh.coa(1810))
     assert _euer(fresh.db) == {4300: Decimal('500.00')}
 

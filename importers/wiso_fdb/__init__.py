@@ -32,6 +32,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from db.matching import FORM_LIQUID_FIRST, FORM_PURPOSE_FIRST, import_entry_form
+
 from .catalog import Catalog
 from .ods import OdsError, OdsFile
 from .rtf import rtf_to_text
@@ -65,14 +67,14 @@ T_UNITS = 'SUP_ARTICLES_UNITS'
 FIRST_PERSONAL_ACCOUNT = 10000
 
 #: Liquide Konten ohne Rückfrage (SKR04-Nummern, nach der Umschlüsselung): 1460 ist das
-#: Verrechnungskonto (Geldtransit). 1000–1099 ist historisch (SKR03-Kassenbereich; in
-#: SKR04 sind es Vorräte) und bleibt, weil vorhandene Bestände ihr Vorzeichen daran
-#: ausgerichtet haben. Die Kasse der App (SKR04 1600) und die Bankkonten zählen über die
-#: eigenen Konten (``Accounts.SKRAccount``). Die Importe richten das Vorzeichen an dieser
-#: Menge aus, ebenso `Database.get_payment_coa_ids`. Nicht ändern, bevor die Richtung
-#: beim Import festgeschrieben wird (docs/aufgaben.md): Sonst liest man Bestände anders,
-#: als sie importiert wurden – ein Re-Import verdoppelte Sätze mit Gegenvorzeichen.
-DEFAULT_LIQUID_ACCOUNTS = frozenset(range(1000, 1100)) | {1460}
+#: Verrechnungskonto (Geldtransit). Die Kasse der App (SKR04 1600) und die Bankkonten zählen
+#: über die eigenen Konten (``Accounts.SKRAccount``). Die Importe richten das Vorzeichen an
+#: dieser Menge aus und schreiben die Form des Satzes (``Bookings.EntryForm``) mit; ebenso
+#: nimmt `Database.get_payment_coa_ids` sie. Der SKR03-Kassenbereich 1000–1099 gehört seit 2.1.0
+#: nicht mehr dazu – nach der Umschlüsselung sind es in SKR04 Vorräte. Was frühere Versionen
+#: damit importiert haben, hält die Form des Bestands fest (Migration auf 2.1.0); ein neuer Import
+#: meldet Buchungen auf diesen Konten (``stock_range_accounts``).
+DEFAULT_LIQUID_ACCOUNTS = frozenset({1460})
 
 #: SKR03 → (SKR04, Bezeichnung) für Konten, die ``BAS_FINACC_PLAN`` nicht führt.
 #:
@@ -169,6 +171,8 @@ class WisoBooking:
     source_id: Optional[int] = None
     #: SKR03-Nummern, die sich nicht umschlüsseln ließen.
     unmapped: List[int] = field(default_factory=list)
+    #: Form des Satzes (``db.matching.FORM_*``), wie der Import das Vorzeichen gesetzt hat.
+    form: str = ''
 
 
 @dataclass
@@ -323,6 +327,10 @@ class WisoData:
     tax_rows_skipped: int = 0
     #: Übersprungene Erinnerungswert-Buchungen abgegangener Anlagen.
     memo_rows_skipped: int = 0
+    #: Sätze mit negativem Bruttobetrag, deren Vorzeichen der Import durch die Richtung des
+    #: Geldes ersetzt (genau eine Seite liquide): ein Storno oder eine Gutschrift wird so wie
+    #: eine normale Buchung gelesen.
+    negative_gross: int = 0
 
 
 class WisoDatabase:
@@ -528,6 +536,7 @@ class WisoDatabase:
         missing = {} if missing is None else missing
         disposed = disposed or {}
         self._memo_skipped = 0
+        self._negative_gross = 0
         out = []
         for row in self.catalog.rows(T_BOOKINGS):
             gross = row.get('AMOUNTGROSS')
@@ -544,7 +553,9 @@ class WisoDatabase:
             unmapped = [number for number, mapped
                         in ((source_account, account), (source_counter, counter))
                         if number is not None and mapped is None]
-            amount = self._signed(gross, account, counter, liquid)
+            amount, form = self._signed(gross, account, counter, liquid)
+            if float(gross) < 0 and form in (FORM_PURPOSE_FIRST, FORM_LIQUID_FIRST):
+                self._negative_gross += 1          # genau eine Seite liquide: Vorzeichen ersetzt
             tax_rate = row.get('TAXRATE')
             tax_rate = tax_rate / 100.0 if tax_rate else None
             net = row.get('AMOUNTNET')
@@ -563,25 +574,32 @@ class WisoDatabase:
                 group=str(group) if group is not None else '',
                 invoice_id=row.get('INVID'), payment_id=row.get('PAYMENTID'),
                 inventory_id=row.get('INVENTORYID'), source_id=row.get('ID'),
-                unmapped=unmapped,
+                unmapped=unmapped, form=form,
             ))
         return out
 
     @staticmethod
     def _signed(gross, account, counter, liquid):
-        """Vorzeichen aus Sicht des liquiden Kontos.
+        """Vorzeichen aus Sicht des liquiden Kontos und die Form des Satzes.
 
-        Gegenkonto liquide → Geld fließt ab; Konto liquide → Geld kommt an.
-        Berührt keine Seite ein Zahlungskonto, bleibt der Betrag, wie er ist.
+        Gegenkonto liquide → Geld fließt ab (``purpose_first``, Betrag negativ); Konto liquide →
+        Geld kommt an (``liquid_first``, Betrag positiv). Sind beide Seiten liquide, ist der Satz
+        ein Spiegel: Der Rohbetrag bleibt, positiv heißt „Konto im Soll“ (``mirror_coa``).
+        Berührt keine Seite ein Zahlungskonto, bleibt der Betrag, wie er ist (``transfer``; mit
+        einer leeren Seite die Form, die ``classify_entry`` für den Satz ergäbe). Bei genau einer
+        liquiden Seite wird der Betrag zum Betrag der Geldbewegung: Ein negativer Bruttobetrag
+        verliert sein Vorzeichen (``bookings`` zählt das als ``negative_gross``).
+
+        Returns ``(Betrag, Form)``.
         """
         amount = float(gross)
         counter_liquid = counter in liquid
         account_liquid = account in liquid
         if counter_liquid and not account_liquid:
-            return -abs(amount)
-        if account_liquid and not counter_liquid:
-            return abs(amount)
-        return amount
+            amount = -abs(amount)
+        elif account_liquid and not counter_liquid:
+            amount = abs(amount)
+        return amount, import_entry_form(account, account_liquid, counter, counter_liquid)
 
     # ------------------------------------------------------------------
     # Anlagen
@@ -920,6 +938,7 @@ class WisoDatabase:
             customers=customers, invoices=self.invoices(customers),
             company=self.company(),
             unmapped_accounts=missing, memo_rows_skipped=memo,
+            negative_gross=getattr(self, '_negative_gross', 0),
             unmapped_labels={n: labels[n] for n in missing if n in labels},
             tax_rows_skipped=total - len(bookings) - memo)
 

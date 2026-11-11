@@ -137,14 +137,14 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 - `SKRAccount` verknüpft mit ChartOfAccounts.AccountNumber für Doppik-Erkennung
 - Wird von `_get_bank_coa_ids()` genutzt um echte Bankkonten zu identifizieren; die Kasse
   zählt dort wie ein Bankkonto mit, sobald sie eine SKR-Nummer trägt (die Standard-Kasse: 1600)
-- `get_payment_coa_ids()` ergänzt diese Menge um den festen Bereich der Importe
-  (`importers.wiso_fdb.DEFAULT_LIQUID_ACCOUNTS`: 1000–1099 und das Verrechnungskonto 1460,
-  Geldtransit). 1000–1099 ist historisch (SKR03-Kassenbereich) und bleibt, weil vorhandene
-  Bestände ihr Vorzeichen daran ausgerichtet haben – nicht ändern, bevor die Richtung beim
-  Import festgeschrieben wird (`docs/aufgaben.md`). Die Kasse der App zählt über ihr eigenes
-  Konto: Hat sie keine SKR-Nummer (ältere Datenbank), ist 1600 kein Zahlungskonto. EÜR,
-  DATEV-Export und Buchungsmaske nehmen die Menge; Verknüpfung und Split-Summe
-  (`is_bank_effective`) rechnen weiter mit den eigenen Konten
+- `get_payment_coa_ids()` ergänzt diese Menge um das Verrechnungskonto 1460 (Geldtransit;
+  `importers.wiso_fdb.DEFAULT_LIQUID_ACCOUNTS`). Der SKR03-Kassenbereich 1000–1099 gehört seit
+  2.1.0 nicht mehr dazu (in SKR04 sind es Vorräte); die Migration auf 2.1.0 hat ihn für den
+  Bestand festgeschrieben (`Bookings.EntryForm`). Die Kasse der App zählt über ihr eigenes
+  Konto: Hat sie keine SKR-Nummer (ältere Datenbank), ist 1600 kein Zahlungskonto. Die Menge
+  bestimmt, wo die Importe das Vorzeichen setzen, welche Form ein neuer Satz bekommt
+  (`derive_entry_form`) und wie eine Zeile ohne Form gelesen wird; Verknüpfung und
+  Split-Summe (`is_bank_effective`) rechnen mit den eigenen Konten
 
 ---
 
@@ -285,6 +285,9 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 | BookingType | 17 | TEXT | DEFAULT 'entry' | **'bank'** = Bankbewegung, **'entry'** = Buchungssatz |
 | ParentBooking_ID | 18 | INTEGER | FK → Bookings(ID) | Verknüpfung: Entry → Bank-Buchung |
 | Status | 19 | TEXT | | Frei definierbar; belegt sind `'resolved'` (Debitoren-Entry aufgelöst), `'posted'` (AfA-Buchung) und `'invoice_payment'` (Satz einer Rechnungszahlung, siehe 9a) |
+| AutoMirror | 20 | INTEGER | DEFAULT 0 | 1 = die App hat den Satz selbst als Spiegel der Bankbewegung angelegt (wird beim Bearbeiten der Bankzeile mitgezogen) |
+| SourceGroup | 21 | TEXT | | Klammer aus dem Quellsystem (WISO `ACCOUNTINGID`) |
+| EntryForm | 22 | TEXT | | Form des Buchungssatzes (siehe unten): `purpose_first`, `liquid_first`, `transfer`, `mirror_coa`, `mirror_counter`, `mirror_legacy`. Bankzeilen haben keine (NULL). **Immer am Ende angefügt** – die Leser lesen `Bookings` positionsbasiert (`SELECT *`) |
 
 **Business Logic:**
 - `BookingType='bank'`: Echte Geldbewegung auf dem Bankkonto (aus WISO-Tabellen-Export oder PDF-Import)
@@ -300,14 +303,39 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
   wenn BEIDE Seiten kontiert sind und KEINE davon ein Bankkonto ist. Nur
   bankwirksame Sätze zählen in die Split-Summe (Statusbadge, DATEV-Prüfung);
   unvollständig kontierte zählen bewusst mit.
-- **Form eines Buchungssatzes** (`db.matching.classify_entry`, gemeinsam für EÜR
-  und DATEV-Export): Zweckkonto vorne (`COA_ID` = Erlös/Aufwand, `CounterCOA_ID`
-  = Geldkonto oder leer), Geldkonto vorne (v. a. WISO-Import) oder Umbuchung
-  (beide Seiten kontiert, keine liquide). Bei Zahlungen trägt `Amount` die
-  Richtung der Geldbewegung (Einnahme positiv), egal auf welcher Seite das
-  Zweckkonto steht; bei Umbuchungen heißt positiv: `COA_ID` im Soll,
-  `CounterCOA_ID` im Haben. Fehlt die liquide Seite, bleibt es eine Zahlung.
-  Liquide sind die Zahlungskonten (`get_payment_coa_ids`, siehe Tabelle Accounts).
+- **Form eines Buchungssatzes** (`Bookings.EntryForm`, `db/matching.py`): Sie steht beim
+  Schreiben fest, statt bei jedem Lesen aus der Liste der Geldkonten von heute geraten zu
+  werden. Wohin sich der Betrag bezieht und welche Seite bei positivem Betrag im Soll steht
+  (`soll_side`):
+
+  | Form | Geldseite | Betrag = Richtung auf … | bei Betrag > 0 im Soll |
+  |------|-----------|-------------------------|------------------------|
+  | `purpose_first` | Gegenkonto oder leer | dem Gegenkonto | Gegenkonto |
+  | `liquid_first` | Konto oder leer | dem Konto | Konto |
+  | `transfer` | keine (beide Seiten kontiert) | – | Konto |
+  | `mirror_coa` | beide (Spiegel, Doppik) | dem Konto (Rohbetrag der Importe) | Konto |
+  | `mirror_counter` | beide | dem Gegenkonto (so schreibt die Buchungsmaske) | Gegenkonto |
+  | `mirror_legacy` | beide | unbekannt (Altbestand) | Gegenkonto |
+
+  Bei Zahlungen trägt `Amount` die Richtung der Geldbewegung (Einnahme positiv), egal auf welcher
+  Seite das Zweckkonto steht; bei Umbuchungen heißt positiv: `COA_ID` im Soll, `CounterCOA_ID` im
+  Haben. Fehlt das Zweckkonto, wird `purpose_first` gespeichert (die EÜR bucht dann nichts).
+  Jeder Schreibweg setzt die Form (Maske, Buchungssatz-Editor, Rechnung, AfA, Importe); ändern
+  sich Konto oder Gegenkonto, wird sie neu abgeleitet – eine Seite, die gleich bleibt, behält ihre
+  Rolle, und kippt die Seite des Betrags, wird der Betrag negiert (`reform`). EÜR, DATEV-Export,
+  Dashboard und Split-Summe lesen die Form (`read_entry_form`); nur eine Zeile **ohne** Form
+  (`NULL`, per SQL-Konsole angelegt) wird mit den Zahlungskonten von jetzt eingeordnet
+  (`classify_entry`, Spiegel dann wie `mirror_legacy`).
+
+  *Migration auf 2.1.0:* Jeder `entry` des Bestands bekam die Form, die 2.0.x ihm gab (die
+  Zahlungskonten von damals einschließlich 1000–1099); Spiegel wurden `mirror_legacy`. Danach ist
+  jede Auswertung identisch. Vor der Umstellung legt die App eine Sicherung nach
+  `backup/JJJJMMTT_vor_2.1.0_<Datei>` an.
+- **Split-Summe** (`bank_effect`): Ein Spiegel mit bekannter Lesart (`mirror_coa`,
+  `mirror_counter`) wirkt auf das Konto der Bankbewegung nach seiner Position – steht das Konto
+  der Bank auf der Seite, auf die sich der Betrag bezieht, ist es der Betrag, auf der anderen
+  Seite sein Gegenteil, berührt er das Konto nicht, 0. Alles andere zählt über
+  `is_bank_effective`.
 - **AfA-Buchung** (`book_depreciation`): eine Umbuchung „Aufwand an Anlagekonto“ als
   eigenständiger Satz – `COA_ID` = Aufwandskonto (z. B. 6220), `CounterCOA_ID` =
   Anlagekonto (z. B. 520), `Amount` positiv, `Account_ID` leer, `Status='posted'`,
@@ -568,9 +596,13 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
 | Notes | TEXT | | |
 | CreatedAt | DATETIME | | |
 
-Das Paar (`InvoiceID`, `BookingID`) kommt höchstens einmal vor; gesichert wird das nicht durch einen
-UNIQUE-Index, sondern dadurch, dass jeder Schreiber (`assign_invoice_payment`,
-`link_invoice_to_transaction`) Prüfung und Einfügen in einer `BEGIN IMMEDIATE`-Transaktion macht.
+Das Paar (`InvoiceID`, `BookingID`) kommt höchstens einmal vor. Jeder Schreiber
+(`assign_invoice_payment`, `link_invoice_to_transaction`) prüft und fügt in einer
+`BEGIN IMMEDIATE`-Transaktion ein; seit 2.1.0 sichert zusätzlich der UNIQUE-Index
+`ux_invoicepayments_invoice_booking` (ein `IntegrityError` heißt „bereits verknüpft“). Neue
+Datenbanken bekommen ihn gleich, bestehende beim Öffnen – nur wenn sie keine Dubletten tragen; sonst
+wird er übersprungen (kein Fehler), die Prüfliste „Zahlungszuordnungen“ meldet die Dubletten, und
+beim ersten Start ohne Dubletten entsteht er.
 Die Sätze zur Zuordnung stehen in Abschnitt 9a.
 
 ---
@@ -680,17 +712,19 @@ Löschen nicht.
 Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
 
 - Betriebliche Kontensalden werden netto aggregiert (`Amount - TaxAmount`)
-- Das Zweckkonto ist die nicht-liquide Seite des Satzes (`classify_entry`, siehe „Form
-  eines Buchungssatzes“); ein Satz ohne liquide Gegenseite zählt als Zahlung, nicht als Umbuchung
+- Das Zweckkonto folgt der gespeicherten Form des Satzes (`Bookings.EntryForm`, siehe „Form
+  eines Buchungssatzes“): `liquid_first` → Gegenkonto, `purpose_first` → Konto, `transfer` → beide
+  Seiten, Spiegel (`mirror_*`) → nichts; ein Satz ohne liquide Gegenseite zählt als Zahlung, nicht
+  als Umbuchung
 - Virtuelles USt-Konto 3806 enthält nur Steueranteile aus Einnahmekonten
 - Virtuelle Vorsteuerkonten 1401/1406 enthalten Steueranteile aus Ausgabenkonten
 - Konten 3160, 3720, 3740 werden im Dashboard separat als "Sonstige Ausgaben" gezeigt
-- **Liquide Konten** der EÜR sind die Zahlungskonten (`get_payment_coa_ids`, dieselbe Menge wie im DATEV-Export): eigene Bank-/Kassenkonten (die Standard-Kasse trägt 1600), der historische Bereich 1000–1099 und das Verrechnungskonto 1460. Ob ein Satz zählt, entscheidet die Sektion in `get_euer_data()`. Jeder Satz zählt in genau einer Sektion: Die Sammlung ist über die Buchungs-ID eindeutig, die erste Sektion, die einen Satz findet, gewinnt (Reihenfolge 1, 2, 2b, 3); außerdem sind die Sektionen so geschnitten, dass sich die üblichen Fälle gar nicht erst überschneiden:
+- **Liquide Konten** (`get_payment_coa_ids`): eigene Bank-/Kassenkonten (die Standard-Kasse trägt 1600) und das Verrechnungskonto 1460 – nur noch für Zeilen ohne gespeicherte Form (Roh-SQL), die die EÜR damit einordnet. Ob ein Satz zählt, entscheidet die Sektion in `get_euer_data()`. Jeder Satz zählt in genau einer Sektion: Die Sammlung ist über die Buchungs-ID eindeutig, die erste Sektion, die einen Satz findet, gewinnt (Reihenfolge 1, 2, 2b, 3); außerdem sind die Sektionen so geschnitten, dass sich die üblichen Fälle gar nicht erst überschneiden:
   - **Section 1:** Buchungssätze (Kinder) unter einer Bankbewegung der gewählten Konten – auch der Kasse (Buchungsmaske mit Konto = Kasse; die Bankzeile trägt `Account_ID` der Kasse)
   - **Section 2:** eigenständige Sätze (ohne `ParentBooking_ID`), die ein Kassenkonto berühren, und – nur ohne Kontofilter – das Verrechnungskonto 1460 (WISO: „Aufwand an Verrechnung“ gilt mit dem Datum des Satzes als abgeflossen; die spätere Übertragung „Verrechnung an Bank“ ist ein Geldkonten-Spiegel und zählt nicht noch einmal)
-  - **Section 2b (Kasse):** eigenständige Sätze mit `Account_ID` auf einer Kasse (`IsCash=1`), die in Section 2 nicht vorkommen (z. B. `CounterCOA_ID IS NULL`; ältere Einträge, Kasse ohne SKR-Nummer). Sie laufen durch dieselbe Einordnung wie alle Sätze (`classify_entry`). AfA-Buchungen alter Form und Umbuchungen zwischen Anlage- und Erfolgskonto gehören nicht dazu, auch wenn die Maske ihnen eine Kasse als Konto eingetragen hat – sie zählen in Section 3 und mit einem Kontofilter „nur Kasse“ gar nicht (AfA hängt an keinem Konto). Section 2b wird in `get_euer_data()` und `get_dashboard_monthly/totals()` berücksichtigt.
+  - **Section 2b (Kasse):** eigenständige Sätze mit `Account_ID` auf einer Kasse (`IsCash=1`), die in Section 2 nicht vorkommen (z. B. `CounterCOA_ID IS NULL`; ältere Einträge, Kasse ohne SKR-Nummer). Sie laufen durch dieselbe Lesart der Form wie alle Sätze (`read_entry_form`). AfA-Buchungen alter Form und Umbuchungen zwischen Anlage- und Erfolgskonto gehören nicht dazu, auch wenn die Maske ihnen eine Kasse als Konto eingetragen hat – sie zählen in Section 3 und mit einem Kontofilter „nur Kasse“ gar nicht (AfA hängt an keinem Konto). Section 2b wird in `get_euer_data()` und `get_dashboard_monthly/totals()` berücksichtigt.
   - **Section 3 (nicht zahlungswirksam, nur ohne Kontofilter):** eigenständige Umbuchungen zwischen Anlagekonto (SKR04 1–999) und Erfolgskonto (4000–7999) – AfA „Aufwand an Anlagekonto“, Restbuchwert beim Abgang (`is_asset_transfer`) – und die Sätze, auf die `AssetDepreciations.Booking_ID` zeigt (auch alte AfA-Sätze). Das Anlagekonto selbst wird bei Umbuchungen nicht bebucht. Solche Sätze tragen keine Zahlung: `TaxAmount`/`TaxRate` bleiben unberücksichtigt (keine Vorsteuer auf 1401/1406). Der Anlagenkauf mit Vorsteuer als Kind einer Bankbewegung (Section 1) ist davon nicht berührt.
-  - Das **Dashboard** (Zahlungskarten) folgt den Kontobewegungen: Bankbewegungen aller gewählten Konten inkl. Kasse sowie eigenständige Sätze auf Kassenkonten (Section 2/2b); das Verrechnungskonto 1460 und die AfA zählen dort nicht.
+  - Das **Dashboard** (Zahlungskarten) folgt den Kontobewegungen: Bankbewegungen aller gewählten Konten inkl. Kasse sowie eigenständige Sätze auf Kassenkonten (Section 2/2b); das Verrechnungskonto 1460 und die AfA zählen dort nicht. Ein eigenständiger Spiegel mit bekannter Lesart (`mirror_coa`, `mirror_counter`) zählt aus Sicht der Kasse (Abhebung +, Bareinzahlung −); jede andere Zeile mit ihrem Betrag. Dass ein Übertrag Bank ↔ Kasse dabei als Einnahme bzw. Ausgabe zählt, ist ein offener Punkt (`docs/aufgaben.md`).
 - **Bestandskonten** (`NEUTRAL_ACCOUNT_NUMBERS`: 10000 Debitoren, Wartekonten 4340/4345/4405) bleiben komplett draußen – weder Saldo noch USt. Die Einnahme entsteht mit der Umbuchung vom Warte- auf das Erlöskonto bei Zahlung (siehe Abschnitt 9a).
 
 ### Rechnungserstellung

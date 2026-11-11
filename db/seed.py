@@ -8,6 +8,13 @@ import json
 from decimal import Decimal
 from money import to_minor, from_minor
 from .core import coa_id
+from .matching import LEGACY_CASH_NUMBERS
+
+#: Das Verrechnungskonto (Geldtransit), das die Migration auf 2.1.0 zu den Zahlungskonten
+#: des Bestands zählt – dieselbe Nummer wie ``importers.wiso_fdb.DEFAULT_LIQUID_ACCOUNTS``,
+#: bewusst nicht von dort geholt: Der Bestand wird so gelesen, wie 2.0.x ihn las, auch wenn
+#: sich die Konstante der Importe später ändert.
+LEGACY_LIQUID_ACCOUNTS = frozenset({1460})
 
 
 class SeedMixin:
@@ -83,8 +90,18 @@ class SeedMixin:
         """``get_payment_coa_ids`` über einen vorhandenen Cursor (für Auswertungen,
         die ihre Verbindung selbst führen)."""
         from importers.wiso_fdb import DEFAULT_LIQUID_ACCOUNTS
+        return self._coa_ids_with_numbers(cursor, DEFAULT_LIQUID_ACCOUNTS)
+
+    def _get_legacy_payment_coa_ids(self, cursor):
+        """Die Zahlungskonten, wie Version 2.0.x sie las: die eigenen Konten, 1460 und der
+        SKR03-Kassenbereich 1000–1099. Nur die Migration auf 2.1.0 braucht sie – sie legt damit
+        fest, wie jeder Satz des Bestands gelesen wurde (``Bookings.EntryForm``); Leser und
+        Importe nehmen den Bereich nicht mehr."""
+        return self._coa_ids_with_numbers(cursor, LEGACY_LIQUID_ACCOUNTS | frozenset(LEGACY_CASH_NUMBERS))
+
+    def _coa_ids_with_numbers(self, cursor, numbers):
         ids = set(self._get_bank_coa_ids(cursor))
-        numbers = sorted(DEFAULT_LIQUID_ACCOUNTS)
+        numbers = sorted(numbers)
         placeholders = ','.join('?' * len(numbers))
         cursor.execute(
             f'SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN ({placeholders})', numbers)
@@ -94,19 +111,23 @@ class SeedMixin:
     def get_payment_coa_ids(self):
         """COA-IDs aller Zahlungskonten: die eigenen Bank-/Kassenkonten (die Standard-Kasse
         trägt SKR04 1600) plus die Nummern, die die Importe fest als liquide behandeln
-        (``importers.wiso_fdb.DEFAULT_LIQUID_ACCOUNTS``: 1000–1099 und das
-        Verrechnungskonto 1460 als Geldtransit).
+        (``importers.wiso_fdb.DEFAULT_LIQUID_ACCOUNTS``: das Verrechnungskonto 1460 als
+        Geldtransit).
 
         Das ist die Menge, an der beide WISO-Importe das Vorzeichen eines Satzes
-        ausrichten: Steht eines dieser Konten auf einer Seite, trägt der Betrag die
-        Richtung der Geldbewegung. Die Kasse der App zählt über ihr eigenes Konto
+        ausrichten und an der die Buchungsmaske beim Schreiben die Form eines Satzes ableitet
+        (``db.matching.derive_entry_form``): Steht eines dieser Konten auf einer Seite, trägt der
+        Betrag die Richtung der Geldbewegung. Die Kasse der App zählt über ihr eigenes Konto
         (``Accounts.SKRAccount``) – wie die Bankkonten –, nicht über einen festen Bereich:
-        Hat die Kasse keine SKR-Nummer, ist 1600 kein Zahlungskonto. 1000–1099
-        (SKR03-Kassenbereich) ist historisch und bleibt, weil vorhandene Bestände ihr
-        Vorzeichen daran ausgerichtet haben. Dieselbe Menge nehmen der DATEV-Export, die
-        Buchungsmaske beim Bearbeiten und die EÜR (``get_euer_data``) – ob ein Satz dort
-        zählt, entscheidet die Sektion, in der er steht, nicht die Menge. Nur die
-        Split-Summe und die Verknüpfung rechnen noch mit ``get_bank_coa_ids``.
+        Hat die Kasse keine SKR-Nummer, ist 1600 kein Zahlungskonto.
+
+        Gelesen wird damit nur noch, was keine gespeicherte Form hat (``Bookings.EntryForm``
+        leer, per Roh-SQL angelegt): EÜR, DATEV-Export und Dashboard folgen der Form, die ein
+        Satz beim Schreiben bekam – eine Änderung dieser Menge ändert sie nicht. Der frühere
+        SKR03-Kassenbereich 1000–1099 gehört nicht mehr dazu (in SKR04 sind es Vorräte); die
+        Migration auf 2.1.0 hat ihn für den Bestand festgeschrieben
+        (``_get_legacy_payment_coa_ids``). Split-Summe und Verknüpfung rechnen mit
+        ``get_bank_coa_ids``.
         """
         conn = self._get_connection()
         try:
