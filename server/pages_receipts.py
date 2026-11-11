@@ -6,6 +6,7 @@ Receipts page (Belege: Upload, Anzeige und Bearbeitung)
 """
 import datetime
 import html as _html
+from urllib.parse import quote
 from db import Database
 from money import fmt_eur
 from .pages import Header1, Header2, Header3, Footer
@@ -48,6 +49,9 @@ def PageReceipts(db: Database, date_from=None, date_to=None):
         '''
     for row in rows:
         n   = _html.escape(str(row[1] or ''))
+        # In der Adresse innerhalb des onclick steht die Nummer prozentkodiert: Ein nur
+        # HTML-maskiertes Hochkomma löst der Browser dort wieder auf (gespeichertes Skript).
+        n_url = quote(str(row[1] or ''), safe='')
         fn  = _html.escape(str(row[3] or ''))
         pt  = _html.escape(str(row[4] or ''))
         inf = _html.escape(str(row[5] or ''))
@@ -56,7 +60,7 @@ def PageReceipts(db: Database, date_from=None, date_to=None):
         s += (f'<td>'
               f'<a href="#" class="action-icon" onclick="editReceiptFromRow(this); return false;" title="Bearbeiten">&#9998;</a>'
               f' <a href="javascript:void(0);" class="action-icon delete-icon" title="L\u00f6schen"'
-              f' onclick="appConfirmPost(\'/receipts/delete?number={n}\', \'Beleg wirklich löschen?\')">&#128465;</a>'
+              f' onclick="appConfirmPost(\'/receipts/delete?number={n_url}\', \'Beleg wirklich löschen?\')">&#128465;</a>'
               f'</td></tr>')
     s += '''
             </table>

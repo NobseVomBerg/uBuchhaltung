@@ -151,15 +151,25 @@ kein Subagent darauf:
   beschränkt – kein `ATTACH`/`DETACH`/`VACUUM`, PRAGMAs bis auf wenige nur lesend.
   Diese Sperren nicht aufweichen
 - **Zeitraum-Parameter** (`from`/`to` in der Query, Cookie `period`) gelten nur als
-  ISO-Datum (`period.parse_iso_date`); `resolve_period` verwirft alles andere. In HTML
-  maskieren (`html.escape`), in Adressen innerhalb von JavaScript prozentkodieren
-  (`quote`) – ein maskiertes `'` löst der Browser im `onclick` wieder auf.
-  `send_header` in `server/app.py` entfernt CR/LF/NUL aus jedem Header: letzte
-  Sicherung gegen Header-Injection, egal woher ein Wert stammt
-- **Wiederherstellen** (`server/backup.py`) entpackt erst nach `backup/restore_*`,
-  prüft (keine Symlinks, Datenbank lesbar und nicht neuer als das Programm) und ersetzt
-  dann: Der vorherige Stand wird nach `backup/replaced_*` verschoben, nicht vorab
-  gelöscht, und erst nach Erfolg entfernt. Diese Reihenfolge nie umdrehen
+  ISO-Datum (`period.parse_iso_date`/`valid_period`); `resolve_period` verwirft alles
+  andere, Weiterleitungen aus Formularen (`handlers._period_args`) lassen einen
+  ungültigen Zeitraum weg. In HTML maskieren (`html.escape`), in Adressen innerhalb von
+  JavaScript prozentkodieren (`quote`) – ein maskiertes `'` löst der Browser im
+  `onclick` wieder auf. `send_header` in `server/app.py` entfernt CR/LF/NUL aus jedem
+  Header und ersetzt Zeichen außerhalb von Latin-1 durch `?`: letzte Sicherung gegen
+  Header-Injection (und einen 500), egal woher ein Wert stammt
+- **JSON in `<script>`-Blöcken** nur über `pages.script_json`, nie über `json.dumps`
+  allein: Ein `</script>` im Wert beendet den Block (XSS). In HTML-Attributen
+  (`onclick="…"`) das Ergebnis zusätzlich durch `html.escape`
+- **Wiederherstellen** (`server/backup.py`): Ein 7-Zip-Archiv wird vor dem Entpacken
+  aufgelistet (`-t7z`, keine Links, keine absoluten oder `..`-Pfade), dann nach
+  `backup/restore_*` entpackt, geprüft (keine Symlinks, Datenbank lesbar und nicht neuer
+  als das Programm) und erst danach ersetzt. Der vorherige Stand wird nach
+  `backup/replaced_*` verschoben, nicht vorab gelöscht, und erst nach Erfolg entfernt
+  (`replaced_*` nie automatisch aufräumen). Über Dateisystemgrenzen wird kopiert statt
+  umbenannt; beim Überschreiben kommt `buch.db` zuletzt; „vorher löschen“ mit einer
+  Nur-Datenbank-Sicherung wird abgelehnt. Sicherung und Wiederherstellung sperren sich
+  je Datenverzeichnis (`_exclusive`). Diese Reihenfolgen nie umdrehen
 
 ### Buchungssätze
 - Bankbewegung = Zeile `BookingType='bank'`; ihre Buchungssätze sind Kinder
