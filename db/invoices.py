@@ -601,6 +601,27 @@ class InvoicesMixin:
         conn.close()
         return [self._euro_row(r, 36, 37, 38, 39) for r in rows]
 
+    @staticmethod
+    def _revenue_rate_key(tax_rate):
+        """Steuersatz als Vergleichsschlüssel für die Erlöskonten: Prozent, auf zwei
+        Stellen gerundet. ``tax_rate`` wie in Invoices.TaxRate bzw. Bookings.TaxRate (0.19,
+        19, 0 oder -1); 0 und der §19-Sentinel bilden einen gemeinsamen „steuerfrei“-Topf,
+        ``None`` (kein Satz) ist ein eigener. Das SQL-Gegenstück ist ``_revenue_rate_key_sql``."""
+        if tax_rate is None:
+            return -999.0
+        if tax_rate <= 0:
+            return 0.0
+        pct = tax_rate * 100 if tax_rate <= 1 else tax_rate
+        return round(pct, 2)
+
+    @staticmethod
+    def _revenue_rate_key_sql(column):
+        """SQL-Ausdruck, der die Spalte ``column`` (ein Steuersatz) wie ``_revenue_rate_key``
+        zum Vergleichsschlüssel macht."""
+        return (f'(CASE WHEN {column} IS NULL THEN -999.0 WHEN {column} <= 0 THEN 0.0 '
+                f'WHEN {column} <= 1 THEN ROUND({column} * 100, 2) '
+                f'ELSE ROUND({column}, 2) END)')
+
     def resolve_revenue_coa(self, tax_rate, create=True):
         """Passendes Erlöskonto für einen Rechnungs-Steuersatz ermitteln.
 
@@ -613,28 +634,23 @@ class InvoicesMixin:
         automatisch nachgelegt, Vorbild ensure_kasse_exists).
         tax_rate wie in Invoices.TaxRate (0.19, 19, 0 oder -1).
 
+        Für andere Sätze (z. B. 5 %, 16 %) gibt es ohne Historie kein Konto: ``None``. Dann
+        wählt der Nutzer eines (``assign_invoice_payment(revenue_coa_id=…)``), und die
+        Zuordnung merkt es sich über das Erlöskonto der Bankbewegung – geraten wird nicht.
+
         ``create=False`` schlägt nur nach und legt nichts an (für reine Anzeigen):
         fehlt das Standardkonto, ist das Ergebnis ``None``.
         """
-        if tax_rate is None:
-            key = -999.0
-        elif tax_rate <= 0:
-            key = 0.0
-        else:
-            pct = tax_rate * 100 if tax_rate <= 1 else tax_rate
-            key = round(pct, 2)
+        key = self._revenue_rate_key(tax_rate)
         conn = self._get_connection()
         cursor = conn.cursor()
-        cursor.execute('''
+        cursor.execute(f'''
             SELECT b.COA_ID
             FROM InvoicePayments ip
             JOIN Bookings b ON b.ID = ip.BookingID
             JOIN Invoices i ON i.ID = ip.InvoiceID
             WHERE b.COA_ID IS NOT NULL
-              AND (CASE WHEN i.TaxRate IS NULL THEN -999.0
-                        WHEN i.TaxRate <= 0 THEN 0.0
-                        WHEN i.TaxRate <= 1 THEN ROUND(i.TaxRate * 100, 2)
-                        ELSE ROUND(i.TaxRate, 2) END) = ?
+              AND {self._revenue_rate_key_sql('i.TaxRate')} = ?
             ORDER BY ip.ID DESC LIMIT 1
         ''', (key,))
         row = cursor.fetchone()

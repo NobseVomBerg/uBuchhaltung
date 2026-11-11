@@ -63,6 +63,9 @@ def classify_entry(coa_id, counter_coa_id, liquid_coa_ids) -> str:
 # (docs/aufgaben.md) Rollen statt Nummern einführt.
 ASSET_ACCOUNT_RANGE = (1, 999)
 PL_ACCOUNT_RANGE = (4000, 7999)
+# Klasse 4 = Erlöse. Die Wartekonten (4340/4345/4405) liegen darin, sind aber keine Erlöskonten:
+# ``db.reporting.is_income_account`` nimmt sie heraus.
+REVENUE_ACCOUNT_RANGE = (4000, 4999)
 
 
 def is_asset_transfer(coa_id, counter_coa_id, liquid_coa_ids, asset_coa_ids, pl_coa_ids) -> bool:

@@ -17,8 +17,11 @@ Prüfung, Schreiben und Neuberechnung der Rechnung sehen denselben Stand – zwe
 Anfragen legen das Paar (Rechnung, Bankbewegung) nie zweimal an.
 """
 import datetime
+from collections import namedtuple
 
 from money import to_minor, from_minor, prorate, round_minor, fmt_eur
+from .matching import REVENUE_ACCOUNT_RANGE
+from .reporting import is_income_account
 
 PAYMENT_MARK = 'invoice_payment'
 
@@ -28,6 +31,10 @@ PAYABLE_STATUSES = ('sent', 'overdue', 'partial_payment', 'partial')
 
 # 0,01 EUR in Minor Units: Ein Rest darunter gilt als bezahlt.
 _PAID_RESIDUE = 100
+
+NO_REVENUE_COA = ('Für den Steuersatz dieser Rechnung ist kein Erlöskonto hinterlegt – bitte ein '
+                  'Erlöskonto wählen.')
+NOT_A_REVENUE_COA = 'Das gewählte Konto ist kein Erlöskonto.'
 
 
 def next_payment_status(current, gross, paid, due_date, today):
@@ -50,6 +57,18 @@ def next_payment_status(current, gross, paid, due_date, today):
     if current in ('paid', 'partial_payment', 'partial'):
         return 'overdue' if due_date and str(due_date)[:10] < today else 'sent'
     return current
+
+
+class PaymentAssignment(namedtuple('PaymentAssignment',
+                                   'ok message payment_id revenue_coa_id')):
+    """Ergebnis von ``assign_invoice_payment``: ob die Zuordnung zustande kam, bei einer
+    Ablehnung der Klartext für die Oberfläche (sonst ``None``), die ID der Zuordnung und das
+    Erlöskonto (COA-ID), auf das gebucht wurde."""
+    __slots__ = ()
+
+
+def _refused(message):
+    return PaymentAssignment(False, message, None, None)
 
 
 def payment_blocker(doc_type, status, gross):
@@ -122,10 +141,13 @@ class InvoicePaymentsMixin:
             "AND DocumentNumber = ? AND (SourceGroup IS NULL OR SourceGroup = '') ORDER BY ID",
             (bank_id, PAYMENT_MARK, invoice_number))]
 
-    def _payment_prerequisites(self, invoice_id, account_id):
+    def _payment_prerequisites(self, invoice_id, account_id, revenue_coa_id=None):
         """Was vor einer Zuordnung geklärt sein muss, in eigenen Verbindungen: Beim Auflösen
         des Erlöskontos werden bei Bedarf Konten angelegt – das darf nicht innerhalb von
         ``BEGIN IMMEDIATE`` geschehen (ein zweiter Schreiber sperrte sich selbst).
+
+        Das Erlöskonto ergibt sich aus der Rechnung (``resolve_revenue_coa``); ``revenue_coa_id``
+        zählt nur, wenn dafür keines hinterlegt ist, und muss dann ein Erlöskonto sein.
 
         Returns ``(Fehlertext, None)`` oder ``(None, Kontext)``."""
         invoice = self.get_document(invoice_id, 'invoice')
@@ -145,8 +167,9 @@ class InvoicePaymentsMixin:
             return f'Das SKR-Konto {account[7]} des Bankkontos fehlt im Kontenrahmen.', None
         revenue_coa = self.resolve_revenue_coa(invoice[35])
         if revenue_coa is None:
-            return ('Für den Steuersatz dieser Rechnung ist kein Erlöskonto bekannt – die Zahlung '
-                    'lässt sich nicht automatisch kontieren.'), None
+            revenue_coa, error = self._chosen_revenue_coa(revenue_coa_id)
+            if error:
+                return error, None
         return None, {
             'tax_rate': invoice[35], 'account_id': account_id, 'bank_coa': bank_coa,
             'revenue_coa': revenue_coa,
@@ -154,14 +177,78 @@ class InvoicePaymentsMixin:
             'bank_coa_ids': self.get_bank_coa_ids(),
         }
 
-    def payment_precheck(self, invoice_id, account_id):
+    def payment_precheck(self, invoice_id, account_id, revenue_coa_id=None):
         """Fehlertext, wenn sich auf diese Rechnung über dieses Bankkonto keine Zahlung zuordnen
         lässt – sonst ``None``. Für Masken, die die Bankbewegung erst noch anlegen: Wer prüft,
-        bevor er schreibt, hinterlässt keine Bewegung ohne Zuordnung."""
-        return self._payment_prerequisites(invoice_id, account_id)[0]
+        bevor er schreibt, hinterlässt keine Bewegung ohne Zuordnung. ``revenue_coa_id`` wie
+        bei ``assign_invoice_payment``."""
+        return self._payment_prerequisites(invoice_id, account_id, revenue_coa_id)[0]
+
+    # ── Erlöskonto: Wahl, wenn keines hinterlegt ist ────────────────────────
+    def get_revenue_coas(self):
+        """Die Konten, aus denen der Nutzer das Erlöskonto einer Zahlung wählen kann: Erlöskonten
+        4000–4999 (``REVENUE_ACCOUNT_RANGE``) ohne die Wartekonten, die keine Erlöse sind
+        (``db.reporting.is_income_account``). Returns ``[(COA_ID, Kontonummer, Name)]`` nach
+        Kontonummer."""
+        conn = self._get_connection()
+        try:
+            rows = conn.execute(
+                'SELECT ID, AccountNumber, Name FROM ChartOfAccounts '
+                'WHERE AccountNumber BETWEEN ? AND ? ORDER BY AccountNumber, ID',
+                REVENUE_ACCOUNT_RANGE).fetchall()
+        finally:
+            conn.close()
+        return [row for row in rows if is_income_account(row[1])]
+
+    def _chosen_revenue_coa(self, revenue_coa_id):
+        """Das vom Nutzer gewählte Erlöskonto, geprüft: ``(COA-ID, None)`` oder
+        ``(None, Fehlertext)``. Gilt nur, wenn ``resolve_revenue_coa`` keines liefert."""
+        if revenue_coa_id is None or revenue_coa_id == '':
+            return None, NO_REVENUE_COA
+        try:
+            chosen = int(revenue_coa_id)
+        except (TypeError, ValueError):
+            return None, NOT_A_REVENUE_COA
+        if chosen not in {row[0] for row in self.get_revenue_coas()}:
+            return None, NOT_A_REVENUE_COA
+        return chosen, None
+
+    def revenue_coa_choice_needed(self, tax_rate):
+        """Muss der Nutzer das Erlöskonto wählen, weil für diesen Steuersatz keines hinterlegt
+        ist? Steuerfrei/§ 19 nie: Das Konto 4185 legt die Zuordnung bei Bedarf selbst an."""
+        if self._revenue_rate_key(tax_rate) == 0:
+            return False
+        return self.resolve_revenue_coa(tax_rate, create=False) is None
+
+    def suggest_revenue_coa(self, tax_rate):
+        """Vorauswahl für die Kontenwahl – nur das, nie eine stille Entscheidung: das Erlöskonto
+        (``get_revenue_coas``), das unter den Buchungen mit diesem Steuersatz am häufigsten als
+        Konto oder Gegenkonto vorkommt (derselbe Vergleich des Satzes wie in
+        ``resolve_revenue_coa``), bei Gleichstand das mit der kleinsten Kontonummer. Gibt es
+        keinen Treffer: ``None``. Rein lesend."""
+        revenue = {row[0]: row[1] for row in self.get_revenue_coas()}
+        if not revenue:
+            return None
+        key = self._revenue_rate_key(tax_rate)
+        rate_sql = self._revenue_rate_key_sql('TaxRate')
+        marks = ','.join('?' * len(revenue))
+        conn = self._get_connection()
+        try:
+            counts = conn.execute(
+                f'SELECT coa, COUNT(*) FROM ('
+                f'SELECT COA_ID AS coa FROM Bookings WHERE {rate_sql} = ? AND COA_ID IN ({marks}) '
+                f'UNION ALL '
+                f'SELECT CounterCOA_ID FROM Bookings WHERE {rate_sql} = ? '
+                f'AND CounterCOA_ID IN ({marks})) GROUP BY coa',
+                [key, *revenue, key, *revenue]).fetchall()
+        finally:
+            conn.close()
+        if not counts:
+            return None
+        return min(counts, key=lambda row: (-row[1], revenue[row[0]]))[0]
 
     # ── Zuordnen ─────────────────────────────────────────────────────────────
-    def assign_invoice_payment(self, invoice_id, booking_id, amount=None):
+    def assign_invoice_payment(self, invoice_id, booking_id, amount=None, revenue_coa_id=None):
         """Eine Bankbewegung (ganz oder teilweise) einer Rechnung als Zahlung zuordnen.
 
         Der Betrag ist min(Rest der Rechnung, freier Rest der Bewegung, ``amount``);
@@ -187,25 +274,32 @@ class InvoicePaymentsMixin:
         Teil, der die Rechnung schließt, bekommt den Rest – die Summe stimmt so exakt mit der
         Rechnung überein.
 
-        Returns ``(ok, Meldung, payment_id)``; die Meldung ist ein Klartext für die Oberfläche.
+        Das Erlöskonto ergibt sich aus der Rechnung (``resolve_revenue_coa``). Nur wenn dafür
+        keines hinterlegt ist (z. B. 5 %, 16 % ohne Historie), wählt der Nutzer es:
+        ``revenue_coa_id`` muss dann ein Erlöskonto sein (``get_revenue_coas``), sonst lehnt die
+        Zuordnung ab. Ist eines hinterlegt, wird ``revenue_coa_id`` ignoriert. Geraten wird nie.
+
+        Returns ``PaymentAssignment(ok, message, payment_id, revenue_coa_id)``; ``message`` ist
+        bei einer Ablehnung ein Klartext für die Oberfläche, ``revenue_coa_id`` das Erlöskonto,
+        auf das gebucht wurde.
         """
         if self.get_document(invoice_id, 'invoice') is None:
-            return False, 'Rechnung nicht gefunden', None
+            return _refused('Rechnung nicht gefunden')
         booking = self.get_booking_by_id(booking_id)
         if booking is None:
-            return False, 'Buchung nicht gefunden', None
+            return _refused('Buchung nicht gefunden')
         if booking[17] != 'bank':
-            return False, 'Nur Bankbewegungen lassen sich einer Rechnung zuordnen.', None
+            return _refused('Nur Bankbewegungen lassen sich einer Rechnung zuordnen.')
         if any(a[1] == invoice_id for a in self.get_booking_allocations(booking_id)):
-            return False, 'Buchung ist bereits mit dieser Rechnung verknüpft', None
-        error, ctx = self._payment_prerequisites(invoice_id, booking[4])
+            return _refused('Buchung ist bereits mit dieser Rechnung verknüpft')
+        error, ctx = self._payment_prerequisites(invoice_id, booking[4], revenue_coa_id)
         if error:
-            return False, error, None
+            return _refused(error)
         requested = None
         if amount is not None:
             requested = to_minor(amount)
             if requested <= 0:
-                return False, 'Der Betrag muss größer 0 sein.', None
+                return _refused('Der Betrag muss größer 0 sein.')
 
         with self.transaction() as tx:
             conn = tx.conn
@@ -214,29 +308,29 @@ class InvoicePaymentsMixin:
                 'SELECT InvoiceNumber, DocumentType, Status, SumGross, TaxAmount, TaxRate, '
                 'CustomerId FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()
             if invoice is None:
-                return False, 'Rechnung nicht gefunden', None
+                return _refused('Rechnung nicht gefunden')
             number, doc_type, status, gross, tax_total, rate, customer_id = invoice
             if (doc_type or 'invoice') != 'invoice':
-                return False, 'Rechnung nicht gefunden', None
+                return _refused('Rechnung nicht gefunden')
             bank = conn.execute(
                 'SELECT BookingType, Amount, Account_ID, DateBooking, DateTax, RecipientClient, '
                 'Currency FROM Bookings WHERE ID = ?', (booking_id,)).fetchone()
             if bank is None or bank[0] != 'bank':
-                return False, 'Nur Bankbewegungen lassen sich einer Rechnung zuordnen.', None
+                return _refused('Nur Bankbewegungen lassen sich einer Rechnung zuordnen.')
             # Das Paar zuerst: ein zweiter, gleichzeitiger Klick bekommt diese Meldung, auch wenn
             # der erste die Rechnung inzwischen bezahlt gemacht hat.
             if conn.execute('SELECT 1 FROM InvoicePayments WHERE InvoiceID = ? AND BookingID = ?',
                             (invoice_id, booking_id)).fetchone():
-                return False, 'Buchung ist bereits mit dieser Rechnung verknüpft', None
+                return _refused('Buchung ist bereits mit dieser Rechnung verknüpft')
             blocked = payment_blocker(doc_type, status, gross)
             if blocked:
-                return False, blocked, None
+                return _refused(blocked)
             _, bank_amount, account_id, bank_date, bank_tax_date, recipient, currency = bank
             if rate != ctx['tax_rate'] or account_id != ctx['account_id']:
-                return False, ('Rechnung oder Bankbewegung wurde inzwischen geändert – bitte '
-                               'erneut versuchen.'), None
+                return _refused('Rechnung oder Bankbewegung wurde inzwischen geändert – bitte '
+                                'erneut versuchen.')
             if (bank_amount or 0) <= 0:
-                return False, 'Nur Zahlungseingänge lassen sich einer Rechnung zuordnen.', None
+                return _refused('Nur Zahlungseingänge lassen sich einer Rechnung zuordnen.')
 
             paid = conn.execute('SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments '
                                 'WHERE InvoiceID = ?', (invoice_id,)).fetchone()[0]
@@ -244,8 +338,8 @@ class InvoicePaymentsMixin:
             free = self._booking_free_minor(conn, booking_id, ctx['bank_coa_ids'])
             alloc = min(due, free, due if requested is None else requested)
             if alloc <= 0:
-                return (False, 'Kein offener Betrag zuordenbar (Rechnung oder Buchung '
-                               'ausgeschöpft)', None)
+                return _refused('Kein offener Betrag zuordenbar (Rechnung oder Buchung '
+                                'ausgeschöpft)')
 
             tax_total = tax_total or 0
             if alloc == due:
@@ -303,7 +397,7 @@ class InvoicePaymentsMixin:
                       'Payment child (revenue to bank)')
 
             self._recalc_invoice(conn, invoice_id)
-        return True, None, payment_id
+        return PaymentAssignment(True, None, payment_id, ctx['revenue_coa'])
 
     # ── Entfernen ────────────────────────────────────────────────────────────
     def _after_payment_removed(self, conn, invoice_id):
