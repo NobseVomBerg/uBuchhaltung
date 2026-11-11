@@ -478,10 +478,10 @@ def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
     _write_split_rows(db, bank_id, planned)
 
 
-def _new_payment_problem(db, invoice_id, account_id, amount):
+def _new_payment_problem(db, invoice_id, account_id, amount, revenue_coa_id=None):
     """Klartext, warum sich eine NEUE Bankbewegung nicht als Zahlung zu dieser Rechnung anlegen
-    lässt (kein Zahlungseingang, Rechnung nicht zahlbar, Bankkonto ohne SKR-Nummer …) –
-    ``None``, wenn sie sich zuordnen lässt. Geprüft wird vor dem Anlegen."""
+    lässt (kein Zahlungseingang, Rechnung nicht zahlbar, Bankkonto ohne SKR-Nummer, kein
+    Erlöskonto …) – ``None``, wenn sie sich zuordnen lässt. Geprüft wird vor dem Anlegen."""
     try:
         positive = to_minor(amount) > 0
     except (ValueError, TypeError):
@@ -489,7 +489,7 @@ def _new_payment_problem(db, invoice_id, account_id, amount):
     if not positive:
         return ('Der Betrag muss größer 0 sein – nur Zahlungseingänge lassen sich einer '
                 'Rechnung zuordnen.')
-    return db.payment_precheck(invoice_id, account_id)
+    return db.payment_precheck(invoice_id, account_id, revenue_coa_id)
 
 
 def handle_add_transaction(db: Database, post_data):
@@ -509,6 +509,13 @@ def handle_add_transaction(db: Database, post_data):
     tax_amount = post_data.get("tax_amount", [""])[0]
     document_nr = post_data.get("document_nr", [""])[0]
     invoice_id = post_data.get("invoice_id", [""])[0]
+    # Erlöskonto, das der Nutzer wählt, wenn für den Steuersatz der Rechnung keines hinterlegt
+    # ist (sonst ohne Wirkung)
+    raw_revenue_coa = post_data.get("revenue_coa_id", [""])[0].strip()
+    try:
+        revenue_coa_id = int(raw_revenue_coa) if raw_revenue_coa else None
+    except ValueError:
+        revenue_coa_id = -1        # keine Ganzzahl: die Zuordnung lehnt es als „kein Erlöskonto“ ab
     # Buchungssatz-Editor der Bank-Maske aktiv? Dann kommen die Sätze von dort.
     has_split_rows = 'split_amount' in post_data
 
@@ -528,7 +535,7 @@ def handle_add_transaction(db: Database, post_data):
         # Die Kontierung ergibt sich aus der Rechnung (assign_invoice_payment); ein Erlöskonto
         # aus dem Formular zählt hier nicht.
         if invoice_id and transaction_id <= 0:
-            problem = _new_payment_problem(db, invoice_id, account_id, amount)
+            problem = _new_payment_problem(db, invoice_id, account_id, amount, revenue_coa_id)
             if problem:
                 return 400, problem
             coa_id = None
@@ -732,7 +739,8 @@ def handle_add_transaction(db: Database, post_data):
         # Rechnungsseite nennt den Grund, wenn die Zuordnung nicht zustande kam.
         if invoice_id:
             try:
-                ok, message = link_booking_to_invoice_capped(db, invoice_id, transaction_id)
+                ok, message = link_booking_to_invoice_capped(
+                    db, invoice_id, transaction_id, revenue_coa_id=revenue_coa_id)
             except Exception as e:
                 print(f"Error linking booking {transaction_id} to invoice {invoice_id}: {e}")
                 ok, message = False, 'Die Zahlung konnte nicht zugeordnet werden.'
@@ -1791,14 +1799,16 @@ def _sync_receivable_booking(db, invoice_id, status):
         print(f"Error syncing receivable booking for invoice {invoice_id}: {e}")
 
 
-def _backfill_booking_skr(db, booking_id, invoice):
+def _backfill_booking_skr(db, booking_id, invoice, revenue_coa_id):
     """Anzeige der Bankbewegung nach einer Zuordnung ergänzen (todo #2).
 
-    Nur leere Felder werden gefüllt, nichts wird überschrieben: Erlöskonto passend zum
-    Steuersatz der Rechnung, Steuersatz/-betrag (enthaltene USt des Buchungsbetrags), Kunde
-    und Beleg-Nr. Das ist Anzeige – und die Quelle, aus der ``resolve_revenue_coa`` das
-    Erlöskonto je Steuersatz lernt. Die Buchungssätze der Zahlung legt
-    ``Database.assign_invoice_payment`` an, nicht diese Funktion.
+    Nur leere Felder werden gefüllt, nichts wird überschrieben: Erlöskonto (``revenue_coa_id``:
+    das Konto, auf das die Zuordnung tatsächlich gebucht hat), Steuersatz/-betrag (enthaltene USt
+    des Buchungsbetrags), Kunde und Beleg-Nr. Das ist Anzeige – und die Quelle, aus der
+    ``resolve_revenue_coa`` das Erlöskonto je Steuersatz lernt: ein vom Nutzer gewähltes Konto
+    gilt so beim nächsten Mal als Vorgabe. Trägt die Bankzeile schon ein Konto, bleibt es – dann
+    lernt die App nichts. Die Buchungssätze der Zahlung legt ``Database.assign_invoice_payment``
+    an, nicht diese Funktion.
     """
     booking = db.get_booking_by_id(booking_id)
     if not booking:
@@ -1812,27 +1822,30 @@ def _backfill_booking_skr(db, booking_id, invoice):
         # Zuordnung): das Steuerfeld beschreibt die Buchung als Ganzes.
         tax_amount = from_minor(round_minor(
             tax_from_gross(abs(to_minor(booking[11] or 0)), round(rate_pct, 4)), 2))
-    db.backfill_booking_fields(booking_id, coa_id=db.resolve_revenue_coa(rate),
+    db.backfill_booking_fields(booking_id, coa_id=revenue_coa_id,
                                tax_rate=tax_rate, tax_amount=tax_amount,
                                contact_id=invoice[13], document_number=invoice[1])
 
 
-def link_booking_to_invoice_capped(db, invoice_id, booking_id, amount=None):
+def link_booking_to_invoice_capped(db, invoice_id, booking_id, amount=None, revenue_coa_id=None):
     """Buchung einer Rechnung als Zahlung zuordnen (idempotent, gekappt).
 
     Zuordnungsbetrag = min(gewünschter Betrag, offener Rechnungsrest, freier
     Rest der Buchung) – Rechnungen werden nie überbucht, Überschüsse bleiben
     als freier Buchungsrest dem Kunden zuordenbar (todo #2). amount=None
     bedeutet "so viel wie möglich". Zuordnung und Buchungssätze legt
-    ``Database.assign_invoice_payment`` in einer Transaktion an.
+    ``Database.assign_invoice_payment`` in einer Transaktion an. ``revenue_coa_id``: das
+    Erlöskonto, das der Nutzer wählt, wenn für den Steuersatz keines hinterlegt ist (sonst
+    ohne Wirkung).
 
     Returns (True, None) bei Erfolg, sonst (False, Fehlermeldung).
     """
-    ok, message, _payment_id = db.assign_invoice_payment(invoice_id, booking_id, amount)
-    if not ok:
-        return False, message
+    assignment = db.assign_invoice_payment(invoice_id, booking_id, amount, revenue_coa_id)
+    if not assignment.ok:
+        return False, assignment.message
     try:
-        _backfill_booking_skr(db, booking_id, db.get_invoice_by_id(invoice_id))
+        _backfill_booking_skr(db, booking_id, db.get_invoice_by_id(invoice_id),
+                              assignment.revenue_coa_id)
     except Exception as e:
         # Zuordnung ist gespeichert; ein Backfill-Fehler darf sie nicht kippen
         print(f"Error backfilling SKR for booking {booking_id}: {e}")
@@ -1850,6 +1863,7 @@ def handle_link_invoice_payment(post_body: bytes):
     amount_paid = data.get('amount_paid')
     if amount_paid in (None, ''):
         amount_paid = None
+    revenue_coa_id = _json_id(data, 'revenue_coa_id', missing=None)   # nur bei Wahl des Nutzers
 
     if not invoice_id or not transaction_id:
         return 400, "Ungültige Parameter"
@@ -1858,7 +1872,7 @@ def handle_link_invoice_payment(post_body: bytes):
 
     try:
         ok, err = link_booking_to_invoice_capped(db, invoice_id, transaction_id,
-                                                 amount_paid)
+                                                 amount_paid, revenue_coa_id)
         if not ok:
             return 400, err
         return 200, f"/invoice/view?id={invoice_id}"

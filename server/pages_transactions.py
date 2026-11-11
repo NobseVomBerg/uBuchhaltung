@@ -12,6 +12,7 @@ from db.matching import is_bank_effective
 from db.invoices import InvoiceCol
 from db.invoice_payments import PAYABLE_STATUSES
 from .pages import Header1, Header2, Header3, Footer
+from .pages_invoice import revenue_coa_choice
 from .period import period_filter_widget
 
 def _attr(s):
@@ -29,11 +30,13 @@ def _attr(s):
 
 
 def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, date_to=None,
-                     from_invoice=None):
+                     from_invoice=None, revenue_coa_id=None):
     """Generate transactions page with edit functionality.
 
     from_invoice: Rechnungs-ID – belegt die Eingabemaske als Zahlungs-Buchung
-    zu dieser Rechnung vor (todo #2); Nutzer ergänzt nur Datum + Bankkonto.
+    zu dieser Rechnung vor (todo #2); Nutzer ergänzt nur Datum + Bankkonto – und, wenn für den
+    Steuersatz der Rechnung kein Erlöskonto hinterlegt ist, das Erlöskonto (``revenue_coa_id``
+    ist dann die Vorwahl, z. B. von der Rechnungsseite).
     """
     # Header2: Konten als kompaktes Dropdown (treibt weiter die clientseitige
     # filterTransactions-Logik) + Such-/Waehrungs-/Betrags-Filter daneben.
@@ -127,6 +130,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     'account_id': inv[30],          # BankAccountId
                     'document_nr': inv[1] or '',
                     'text': f"Zahlung Rechnung {inv[1] or ''}".strip(),
+                    'revenue_choice': revenue_coa_choice(db, inv[35], selected=revenue_coa_id),
                 }
                 edit_recipient = _html.escape(prefill['recipient'])
                 edit_text = _html.escape(prefill['text'])
@@ -304,6 +308,11 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     if not is_bank_form and not prefill:
         accounting_rows = (f'<tr><td>SKR-Konto:</td><td>'
                            f'<select name="coa_id">{coa_options}</select></td></tr>')
+    elif prefill.get('revenue_choice'):
+        # Für den Steuersatz der Rechnung ist kein Erlöskonto hinterlegt: der Nutzer wählt es
+        select_html, hint_html = prefill['revenue_choice']
+        accounting_rows = (f'<tr><td>Erlöskonto:</td><td>{select_html}'
+                           f'<div class="hint">{hint_html}</div></td></tr>')
 
     # Steuer gehört bei Bankbewegungen zur einzelnen Teilbuchung; die Beleg-Nr.
     # bleibt oben – sie beschreibt die Bankbewegung und liefert die Basis für

@@ -51,6 +51,33 @@ def normalize_status(status):
     """Alt-Wert 'partial' (vor todo #2 geschrieben) auf den Kanon abbilden."""
     return 'partial_payment' if status == 'partial' else status
 
+
+def revenue_coa_choice(db, tax_rate, selected=None):
+    """Pflichtfeld „Erlöskonto“ für eine Rechnungszahlung – nur, wenn für den Steuersatz der
+    Rechnung kein Erlöskonto hinterlegt ist (``Database.revenue_coa_choice_needed``, z. B. 5 %
+    oder 16 %), sonst ``None``: Dann ergibt sich die Kontierung aus der Rechnung.
+
+    Returns ``(select_html, hint_html)``. Vorgewählt ist ``selected`` (wenn es ein wählbares
+    Erlöskonto ist), sonst der Vorschlag ``Database.suggest_revenue_coa`` – eine Vorauswahl, keine
+    Entscheidung; ohne beides steht „bitte wählen“ da. Alle Werte sind maskiert."""
+    if tax_rate is None or not db.revenue_coa_choice_needed(tax_rate):
+        return None
+    accounts = db.get_revenue_coas()
+    if selected not in {coa_id for coa_id, _number, _name in accounts}:
+        selected = db.suggest_revenue_coa(tax_rate)
+    options = '<option value="">— bitte wählen —</option>'
+    for coa_id, number, name in accounts:
+        mark = ' selected' if coa_id == selected else ''
+        label = _html.escape(f'{number} {name}')
+        options += f'<option value="{int(coa_id)}"{mark}>{label}</option>'
+    percent = tax_rate * 100 if tax_rate <= 1 else tax_rate
+    percent_text = f'{percent:g}'.replace('.', ',')
+    hint = (f'Für {percent_text} % ist kein Erlöskonto hinterlegt. Die Wahl gilt künftig als '
+            'Vorgabe für diesen Steuersatz.')
+    return (f'<select name="revenue_coa_id" id="revenueCoa" required>{options}</select>',
+            _html.escape(hint))
+
+
 def document_submenu(active):
     """Gemeinsames Header2-Submenü für Rechnung / Angebot / Mahnwesen.
 
@@ -1510,8 +1537,15 @@ function copyInvoiceAsNew(invId) {{
         if payable:
             open_due = (amount_due if amount_due is not None
                         else (existing_invoice[38] or 0))
+            # Ist für den Steuersatz kein Erlöskonto hinterlegt (z. B. 5 %, 16 %), wählt der
+            # Nutzer es hier – für „Verknüpfen“ und, per Adresse mitgegeben, für die Maske
+            choice = revenue_coa_choice(db, existing_invoice[35])
+            if choice:
+                s += (f'        <p class="hint">{choice[1]}</p>\n'
+                      f'        <p><label>Erlöskonto: {choice[0]}</label></p>\n')
             s += (f'        <p><a href="/transactions?from_invoice={invoice_id}" '
-                  'class="coloredButton btn-sm bg-green">💶 Zahlung verbuchen</a></p>\n')
+                  'class="coloredButton btn-sm bg-green" onclick="return bookPayment(this)">'
+                  '💶 Zahlung verbuchen</a></p>\n')
             linked_booking_ids = {p[2] for p in existing_payments}
             candidates = [c for c in
                           db.get_unallocated_bank_bookings(existing_invoice[13])
@@ -1545,18 +1579,40 @@ function copyInvoiceAsNew(invId) {{
 
         s += f'''    </div>
     <script>
+        // Das gewählte Erlöskonto ('' = es gibt kein Feld: die Kontierung ergibt sich aus der
+        // Rechnung; null = Feld ohne Wahl, der Nutzer wurde darauf hingewiesen)
+        function revenueCoaChoice() {{
+            const field = document.getElementById('revenueCoa');
+            if (!field) return '';
+            if (!field.value) {{
+                showMessage('Bitte ein Erlöskonto wählen.', 'error');
+                return null;
+            }}
+            return field.value;
+        }}
+        function bookPayment(link) {{
+            const coa = revenueCoaChoice();
+            if (coa === null) return false;
+            link.href = '/transactions?from_invoice={invoice_id}'
+                + (coa ? '&revenue_coa_id=' + encodeURIComponent(coa) : '');
+            return true;
+        }}
         function linkPayment(bookingId, button) {{
             const amount = parseFloat(document.getElementById('payAmount_' + bookingId).value);
             if (!amount || amount <= 0) {{
                 showMessage('Betrag muss größer 0 sein.', 'error');
                 return;
             }}
+            const coa = revenueCoaChoice();
+            if (coa === null) return;
+            const payload = {{invoice_id: {invoice_id}, transaction_id: bookingId,
+                             amount_paid: amount}};
+            if (coa) payload.revenue_coa_id = parseInt(coa, 10);
             button.disabled = true;   // ein Doppelklick ordnet nicht doppelt zu
             fetch('/invoice/link-payment', {{
                 method: 'POST',
                 headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{invoice_id: {invoice_id}, transaction_id: bookingId,
-                                      amount_paid: amount}})
+                body: JSON.stringify(payload)
             }})
             .then(r => r.json())
             .then(data => {{

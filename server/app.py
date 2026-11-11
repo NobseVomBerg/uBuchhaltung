@@ -855,7 +855,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
                 from_invoice = int(qs["from_invoice"][0]) if qs.get("from_invoice") else None
                 self.respond(200, PageTransactions(db, date_from=date_from, date_to=date_to,
-                                                   from_invoice=from_invoice), headers=hdrs)
+                                                   from_invoice=from_invoice,
+                                                   revenue_coa_id=_int_param(qs, "revenue_coa_id")),
+                             headers=hdrs)
             elif self.path.startswith("/transactions/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 transaction_id = int(query_components["id"][0])

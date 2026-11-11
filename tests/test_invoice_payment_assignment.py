@@ -138,10 +138,10 @@ def _datev_amount(db, number):
                if str(number) in (konto, gegen))
 
 
-def _assign(db, invoice_id, bank_id, amount=None):
-    ok, message, payment_id = db.assign_invoice_payment(invoice_id, bank_id, amount)
-    assert ok, message
-    return payment_id
+def _assign(db, invoice_id, bank_id, amount=None, revenue_coa_id=None):
+    result = db.assign_invoice_payment(invoice_id, bank_id, amount, revenue_coa_id)
+    assert result.ok, result.message
+    return result.payment_id
 
 
 @pytest.fixture
@@ -369,9 +369,9 @@ def test_rate_without_any_revenue_account_is_rejected_not_guessed(db, acct):
     bank = _bank(db, acct, 105.00)
     before = _count(db)
 
-    ok, message, payment_id = db.assign_invoice_payment(inv, bank)
+    result = db.assign_invoice_payment(inv, bank)
 
-    assert not ok and payment_id is None and 'Erlöskonto' in message
+    assert not result.ok and result.payment_id is None and 'Erlöskonto' in result.message
     assert _count(db) == before and _count(db, 'InvoicePayments') == 0
 
 
@@ -379,9 +379,9 @@ def test_rate_without_any_revenue_account_is_rejected_not_guessed(db, acct):
 
 def _no_change(db, call, expected_in_message):
     bookings, payments = _count(db), _count(db, 'InvoicePayments')
-    ok, message, payment_id = call()
-    assert not ok and payment_id is None
-    assert expected_in_message in message, message
+    result = call()
+    assert not result.ok and result.payment_id is None and result.revenue_coa_id is None
+    assert expected_in_message in result.message, result.message
     assert (_count(db), _count(db, 'InvoicePayments')) == (bookings, payments)
 
 
@@ -1015,9 +1015,9 @@ def test_invoice_page_offers_payments_only_after_sending(db, acct):
     _bank(db, acct, 119.00)
 
     assert 'erst zuordnen, wenn die Rechnung versendet ist' in PageInvoice(db, {}, finalized)
-    assert f'/transactions?from_invoice={finalized}' not in PageInvoice(db, {}, finalized)
+    assert f'href="/transactions?from_invoice={finalized}"' not in PageInvoice(db, {}, finalized)
     page = PageInvoice(db, {}, sent)
-    assert f'/transactions?from_invoice={sent}' in page
+    assert f'href="/transactions?from_invoice={sent}"' in page
     assert 'linkPayment(' in page and 'button.disabled = true' in page
 
 
