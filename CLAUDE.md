@@ -203,7 +203,7 @@ kein Subagent darauf:
   aus `_PAGE_ALLOWLIST` samt erlaubten Query-Schlüsseln – diesen Lesewächter (`check_select`,
   `check_page_path`) nicht aufweichen; neue Seiten und Schlüssel nur für GET-Handler, die
   nichts schreiben (Nachweis im Test)
-- Zugangsdaten aus Windows-Tresor/keyring/Umgebung, nie im Repo; über `http://` gehen sie nur
+- Zugangsdaten aus der Windows-Anmeldeinformationsverwaltung, keyring oder Umgebung, nie im Repo; über `http://` gehen sie nur
   an den eigenen Rechner, sonst nur mit `UBUCHHALTUNG_MCP_ALLOW_HTTP`. Registrierung nur
   lokal (`claude mcp add --scope local`), Einrichtung in `DEPLOYMENT.md`
 
