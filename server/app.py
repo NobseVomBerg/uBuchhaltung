@@ -8,6 +8,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, quote, urlsplit
 from http.cookies import SimpleCookie
 import ipaddress
+import json
 import socket
 import unicodedata
 from db import Database, SchemaTooNewError
@@ -194,6 +195,16 @@ _ACTION_PATHS = frozenset({
     "/asset_categories/delete",
     "/worktime/delete",
     "/trips/delete",
+    "/quote/delete",
+})
+
+# Dokumente erzeugen und ablegen: ebenfalls nur per POST (GET → 405), aber mit JSON-Antwort
+# statt Weiterleitung. Parameter in der Query; das CSRF-Token kommt wie bei /invoice/save
+# als Header (fetch), siehe `_post_generate_document`. Abmelden (POST /logout) liegt bei
+# /login in `_auth_routes_*`.
+_GENERATE_PATHS = frozenset({
+    "/invoice/pdf_generate",
+    "/quote/pdf_generate",
 })
 
 
@@ -397,9 +408,14 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         self.respond(303, "", headers={"Location": "/login"})
         return False
 
+    def _respond_post_only(self):
+        """405 für eine Aktion, die es nur per POST gibt."""
+        self.respond(405, "<h1>405</h1><p>Diese Aktion ist nur per POST möglich.</p>",
+                     headers={"Allow": "POST"})
+
     def _auth_routes_get(self):
-        """Behandelt GET /login, /logout und /setup-admin (alte Lesezeichen: Weiterleitung
-        auf die Ersteinrichtung /setup). True, wenn erledigt."""
+        """Behandelt GET /login, /logout (405: Abmelden gibt es nur per POST) und /setup-admin
+        (alte Lesezeichen: Weiterleitung auf die Ersteinrichtung /setup). True, wenn erledigt."""
         if not userctx.auth_enabled():
             return False                                 # Login-UI erst nach der Ersteinrichtung
         path = self.path.split('?', 1)[0]
@@ -410,21 +426,28 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             self.respond(303, "", headers={"Location": "/setup"})
             return True
         if path == '/logout':
-            auth.delete_session(self._session_token())
-            self.respond(303, "", headers={"Location": "/login",
-                                            "Set-Cookie": self._logout_cookie_header()})
+            self._respond_post_only()
             return True
         return False
 
     def _auth_routes_post(self):
-        """Behandelt POST /login. True, wenn erledigt."""
+        """Behandelt POST /login und POST /logout. True, wenn erledigt."""
         if not userctx.auth_enabled():
             return False                                 # Login-UI erst nach der Ersteinrichtung
         path = self.path.split('?', 1)[0]
-        if path != '/login':
+        if path not in ('/login', '/logout'):
             return False
         length = int(self.headers.get('Content-Length', 0) or 0)
         post_data = parse_qs(self.rfile.read(length).decode('utf-8')) if length else {}
+        if path == '/logout':
+            # Mit gültiger Sitzung nur mit CSRF-Token. Ohne (abgelaufen, anderes Fenster) gibt
+            # es nichts zu schützen und kein Token zu prüfen: nur zur Anmeldeseite.
+            if userctx.get_user() and not self._check_csrf(post_data):
+                return True
+            auth.delete_session(self._session_token())
+            self.respond(303, "", headers={"Location": "/login",
+                                            "Set-Cookie": self._logout_cookie_header()})
+            return True
         ok, username, err = handlers.handle_login(post_data)
         if ok:
             token = auth.create_session(username)
@@ -436,7 +459,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
 
     def _send_invoice_document(self, invoice_id, kind, content_type,
                                disposition='attachment'):
-        """Abgelegtes Rechnungsdokument ausliefern (PDF/XRechnung).
+        """Abgelegtes Rechnungsdokument ausliefern (PDF/XRechnung; Angebote: PDF).
 
         Fehlt die Datei, geht eine kurze Klartext-Meldung mit 404 zurück, die
         das Frontend direkt anzeigen kann (todo #3). ``X-Filename`` trägt den
@@ -532,7 +555,47 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
             self.respond(303, "", headers={"Location":
                 f"/trips?person={quote(str(person_id), safe='')}&from={quote(date_from, safe='')}&to={quote(date_to, safe='')}"})
+        elif path == "/quote/delete":
+            db.delete_quote(int(qs["id"][0]))
+            self.respond(303, "", headers={"Location": "/quote"})
         return True
+
+    def _post_generate_document(self, route):
+        """POST /invoice/pdf_generate und /quote/pdf_generate: PDF (bei einer Rechnung mit
+        E-Rechnungsdaten auch das XML) erzeugen und ablegen; Antwort als JSON. Heruntergeladen
+        wird anschließend die abgelegte Datei (``/…/pdf_download``)."""
+        self._drain_body()
+        qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
+        doc_id = _int_param(qs, 'id')
+        if doc_id is None:
+            self.respond(400, json.dumps({'success': False, 'error': 'Ungültige oder fehlende ID'}),
+                         content_type="application/json")
+            return
+        if route == "/invoice/pdf_generate":
+            result = handlers.handle_invoice_pdf_generate(doc_id)
+            if result.get('pdf_path'):
+                payload = {
+                    'success': True,
+                    'pdf_path': result['pdf_path'],
+                    'filename': result['pdf_filename'],
+                    'xml_filename': result.get('xml_filename'),
+                    'message': 'PDF erfolgreich erstellt',
+                }
+                if result.get('error'):
+                    payload['warning'] = result['error']
+                status_code = 200
+            else:
+                payload = {'success': False,
+                           'error': result.get('error') or 'Fehler beim Erstellen der PDF'}
+                status_code = 500
+        else:
+            pdf_bytes, pdf_path = handlers.handle_quote_pdf_generate(doc_id)
+            if pdf_bytes and pdf_path:
+                payload, status_code = {'success': True, 'pdf_path': pdf_path}, 200
+            else:
+                payload, status_code = {'success': False,
+                                        'error': 'Fehler beim Erstellen der PDF'}, 500
+        self.respond(status_code, json.dumps(payload), content_type="application/json")
 
     def do_GET(self):
         if not self._gate():
@@ -547,9 +610,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if db is False:
             return
         try:
-            if self.path.split('?', 1)[0] in _ACTION_PATHS:
-                self.respond(405, "<h1>405</h1><p>Diese Aktion ist nur per POST möglich.</p>",
-                             headers={"Allow": "POST"})
+            route = self.path.split('?', 1)[0]
+            if route in _ACTION_PATHS or route in _GENERATE_PATHS:
+                self._respond_post_only()
                 return
             if self.path == "/" or self.path == "/dashboard" or self.path.startswith("/dashboard?"):
                 if db.is_first_run():
@@ -636,37 +699,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self._send_invoice_document(invoice_id, 'pdf', "application/pdf",
                                             disposition=disposition)
                 return
-            elif self.path.startswith("/invoice/pdf_generate"):
-                # PDF (und bei E-Rechnungsdaten das XML) erzeugen und ablegen;
-                # heruntergeladen wird anschließend die abgelegte Datei.
-                query_components = parse_qs(self.path.split('?')[1])
-                invoice_id = int(query_components["id"][0])
-
-                result = handlers.handle_invoice_pdf_generate(invoice_id)
-
-                import json
-                if result.get('pdf_path'):
-                    payload = {
-                        'success': True,
-                        'pdf_path': result['pdf_path'],
-                        'filename': result['pdf_filename'],
-                        'xml_filename': result.get('xml_filename'),
-                        'message': 'PDF erfolgreich erstellt',
-                    }
-                    if result.get('error'):
-                        payload['warning'] = result['error']
-                    status_code = 200
-                else:
-                    payload = {'success': False,
-                               'error': result.get('error') or 'Fehler beim Erstellen der PDF'}
-                    status_code = 500
-                response = json.dumps(payload)
-                self.send_response(status_code)
-                self.send_header("Content-type", "application/json")
-                self.send_header("Content-Length", str(len(response.encode())))
-                self.end_headers()
-                self.wfile.write(response.encode())
-                return
             elif self.path == "/invoice/reminders":
                 self.respond(200, pages.PageReminders(db))
             # ── Angebote (Quotes) ─────────────────────────────────────────
@@ -682,42 +714,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path.startswith("/quote/edit"):
                 qs = parse_qs(self.path.split('?')[1])
                 self.respond(200, PageQuote(db, {}, int(qs["id"][0])))
-            elif self.path.startswith("/quote/delete"):
-                qs = parse_qs(self.path.split('?')[1])
-                db.delete_quote(int(qs["id"][0]))
-                self.respond(303, "", headers={"Location": "/quote"})
             elif self.path.startswith("/quote/pdf_download"):
+                # Abgelegte Angebots-PDF ausliefern – wie bei Rechnungen nie neu erzeugt.
+                # inline=1 zeigt sie im Browser an (Viewer-Tab nach dem Erzeugen).
                 qs = parse_qs(self.path.split('?')[1])
                 disposition = 'inline' if qs.get('inline') else 'attachment'
-                pdf_bytes, filename = handlers.handle_quote_pdf_by_id(int(qs["id"][0]))
-                if pdf_bytes:
-                    self.send_response(200)
-                    self.send_header("Content-type", "application/pdf")
-                    self.send_header("Content-Disposition", content_disposition(disposition, filename))
-                    self.send_header("Content-Length", str(len(pdf_bytes)))
-                    self.end_headers()
-                    self.wfile.write(pdf_bytes)
-                else:
-                    self.send_response(500)
-                    self.send_header("Content-type", "text/plain")
-                    self.end_headers()
-                    self.wfile.write(b"Error generating PDF")
-                return
-            elif self.path.startswith("/quote/pdf_generate"):
-                import json as _json
-                qs = parse_qs(self.path.split('?')[1])
-                from export.pdf_quote import generate_quote_pdf
-                pdf_bytes, pdf_path = generate_quote_pdf(db, int(qs["id"][0]))
-                if pdf_bytes and pdf_path:
-                    response = _json.dumps({'success': True, 'pdf_path': pdf_path})
-                    self.send_response(200)
-                else:
-                    response = _json.dumps({'success': False, 'error': 'Fehler beim Erstellen der PDF'})
-                    self.send_response(500)
-                self.send_header("Content-type", "application/json")
-                self.send_header("Content-Length", str(len(response.encode())))
-                self.end_headers()
-                self.wfile.write(response.encode())
+                self._send_invoice_document(int(qs["id"][0]), 'pdf', "application/pdf",
+                                            disposition=disposition)
                 return
             elif self.path == "/dashboard":
                 self.respond(200, PageDashboard(db))
@@ -1047,6 +1050,14 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                          "/quote/save", "/quote/status"):
             if not self._check_csrf():
                 return
+
+        # Dokumente erzeugen (JSON-Antwort): Token aus dem Header, Parameter in der Query
+        route = self.path.split('?', 1)[0]
+        if route in _GENERATE_PATHS:
+            if not self._check_csrf():
+                return
+            self._post_generate_document(route)
+            return
 
         # Handle file upload separately
         if self.path == "/upload_receipts":

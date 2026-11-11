@@ -70,8 +70,14 @@ def _signature_block(ops, line_ops, x, y_top, place_date, name, company, width=2
         ops += _cell(x, y_line - 24, company, size=8)
 
 
-def generate_worktime_pdf(db: Database, person_id, date_from, date_to, with_notes=False):
-    """Stundenzettel-PDF erzeugen. Returns (pdf_bytes, pdf_path) oder (None, None)."""
+def generate_worktime_pdf(db: Database, person_id, date_from, date_to, with_notes=False,
+                          store=True):
+    """Stundenzettel-PDF erzeugen. Returns (pdf_bytes, pdf_path) oder (None, None).
+
+    ``store=False`` legt nichts auf der Platte ab (so liefert der Download unter ``/worktime/pdf``,
+    ein GET, den Stundenzettel aus, ohne zu schreiben); ``pdf_path`` nennt dann nur, wo die Datei
+    läge – daraus entsteht der Dateiname des Downloads.
+    """
     if not person_id:
         return None, None
 
@@ -212,16 +218,17 @@ def generate_worktime_pdf(db: Database, person_id, date_from, date_to, with_note
     # ── Datei speichern (im Datenbereich des aktuellen Nutzers) ──────────────
     import userctx
     pdf_dir = os.path.join(userctx.user_data_dir(), "worktime", str(d_from.year))
-    os.makedirs(pdf_dir, exist_ok=True)
     safe_name = "".join(ch for ch in person_name if ch.isalnum() or ch in (' ', '-', '_')).strip().replace(' ', '_')
     period_tag = f'{d_from.year}-{d_from.month:02d}' if single_month else f'{date_from}_{date_to}'
     pdf_filename = f"Stundenzettel_{safe_name}_{period_tag}.pdf"
     pdf_path = os.path.join(pdf_dir, pdf_filename)
-    try:
-        with open(pdf_path, 'wb') as f:
-            f.write(full_pdf)
-    except Exception as ex:
-        print(f"Error saving worktime PDF: {ex}")
-        return None, None
+    if store:
+        try:
+            os.makedirs(pdf_dir, exist_ok=True)
+            with open(pdf_path, 'wb') as f:
+                f.write(full_pdf)
+        except Exception as ex:
+            print(f"Error saving worktime PDF: {ex}")
+            return None, None
 
     return full_pdf, pdf_path

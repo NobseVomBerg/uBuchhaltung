@@ -39,7 +39,7 @@ def test_invoice_own_footer_includes_sender_excludes(db_with_coa):
     html = PageInvoice(db_with_coa, filters={}, invoice_id=None)
     # Footer (eigene Anschrift) nimmt die Zusatzzeile auf ...
     assert 'company.address_line1' in html
-    assert "if (company.address_line1) addressHtml += company.address_line1" in html
+    assert "if (company.address_line1) addressLines.push(company.address_line1)" in html
     # ... die Absenderzeile dagegen nicht (Reihenfolge displayName -> street).
     assert "senderLine.textContent = displayName + ' · ' + company.street" in html
 

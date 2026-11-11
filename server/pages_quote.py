@@ -130,7 +130,7 @@ def PageQuote(db: Database, filters: dict = None, quote_id=None):
         function handleQuotePDF(quoteId, pdfExists) {
             function _do() {
                 const viewer = window.open('about:blank', '_blank');  // im Klick-Kontext -> kein Popup-Blocker
-                fetch('/quote/pdf_generate?id=' + quoteId)
+                fetch('/quote/pdf_generate?id=' + quoteId, {method: 'POST'})
                     .then(r => r.json())
                     .then(d => {
                         appMsg(d.success ? ('PDF erstellt: ' + d.pdf_path) : ('Fehler: ' + (d.error || '?')), d.success ? 'success' : 'error');
@@ -155,9 +155,7 @@ def PageQuote(db: Database, filters: dict = None, quote_id=None):
             });
         }
         function deleteQuote(quoteId) {
-            appConfirm('Angebot wirklich löschen?', function() {
-                window.location.href = '/quote/delete?id=' + quoteId;
-            });
+            appConfirmPost('/quote/delete?id=' + quoteId, 'Angebot wirklich löschen?');
         }
         function applyQuoteFilters() {
             const status = document.getElementById('statusFilter').value;
@@ -274,7 +272,7 @@ def _quote_form_html(db: Database, quote_id=None):
                 <button onclick="window.location.href='/quote'" class="coloredButton btn-sm bg-gray">← Abbrechen</button>
                 <button onclick="generateQuotePDF()" class="coloredButton btn-sm bg-blue">📄 PDF</button>
                 <button onclick="convertQuote({quote_id})" class="coloredButton btn-sm bg-orange">➔ In Rechnung umwandeln</button>
-                <button onclick="appConfirmHref('/quote/delete?id={quote_id}', 'Angebot wirklich löschen?')" class="coloredButton btn-sm bg-red">🗑 Löschen</button>
+                <button onclick="appConfirmPost('/quote/delete?id={quote_id}', 'Angebot wirklich löschen?')" class="coloredButton btn-sm bg-red">🗑 Löschen</button>
             </div></td></tr>
         </table>'''
     else:
@@ -641,7 +639,7 @@ def _quote_form_html(db: Database, quote_id=None):
             const exists = document.getElementById('pdf_exists').value === 'true';
             function _run() {
                 const viewer = window.open('about:blank', '_blank');  // im Klick-Kontext -> kein Popup-Blocker
-                fetch('/quote/pdf_generate?id='+id).then(r=>r.json())
+                fetch('/quote/pdf_generate?id='+id, {method:'POST'}).then(r=>r.json())
                     .then(d=>{ if(d.success){ document.getElementById('pdf_exists').value='true'; showMessage('PDF erstellt: '+d.pdf_path, 'success');
                                               if (viewer) viewer.location = '/quote/pdf_download?id='+id+'&inline=1'; }
                               else { if (viewer) viewer.close(); showMessage('Fehler: '+(d.error||'?'), 'error'); } })

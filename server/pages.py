@@ -8,6 +8,7 @@ All functions return complete HTML strings
 import html as _html
 import json
 from db import Database
+from db.invoices import InvoiceCol
 from money import fmt_eur
 
 
@@ -164,7 +165,7 @@ def Header1(active_page=None):
     s += ' | '.join(nav_items)
 
     # Angemeldeter Benutzer + Abmelden; bei automatischer Anmeldung gibt es keine
-    # Sitzung, die man beenden könnte
+    # Sitzung, die man beenden könnte. Abmelden ist eine Aktion: POST, kein Link.
     import userctx
     _user = userctx.get_user()
     if userctx.auth_enabled() and _user:
@@ -172,7 +173,7 @@ def Header1(active_page=None):
             s += f'&nbsp;&nbsp;&nbsp; 👤 {_html.escape(_user)}'
         else:
             s += (f'&nbsp;&nbsp;&nbsp; 👤 {_html.escape(_user)} · '
-                  f'<a href="/logout">Abmelden</a>')
+                  '<a href="javascript:void(0);" onclick="appPost(\'/logout\')">Abmelden</a>')
     return s
 
 def Header2(content=""):
@@ -356,8 +357,23 @@ Kommerzielle Lizenz ohne AGPL-Pflichten: <span id="licenseContact"><noscript>E-M
 
 def PageReminders(db: Database):
     """Generate reminders/dunning page for overdue invoices"""
-    from datetime import date, timedelta
-    
+    from datetime import date
+    from decimal import Decimal
+
+    today = date.today()
+
+    def open_amount(inv):
+        """Offener Betrag; Altbestand ohne AmountDue (NULL) gilt als voll offen."""
+        due = inv[InvoiceCol.AMOUNT_DUE]
+        return due if due is not None else (inv[InvoiceCol.SUM_GROSS] or Decimal(0))
+
+    def due_date(inv):
+        """Fälligkeitsdatum als date – None bei leerem oder ungültigem Eintrag."""
+        try:
+            return date.fromisoformat(str(inv[InvoiceCol.DUE_DATE]))
+        except ValueError:
+            return None
+
     overdue = db.get_overdue_invoices()
     due_soon = db.get_invoices_due_soon(days=7)
     
@@ -369,7 +385,7 @@ def PageReminders(db: Database):
     s += "<h2>Mahnwesen & Fälligkeiten</h2>"
     
     # Statistics
-    total_overdue_amount = sum(inv[36] or inv[35] for inv in overdue if inv[35])
+    total_overdue_amount = sum((open_amount(inv) for inv in overdue), Decimal(0))
     overdue_count = len(overdue)
     
     s += f'''
@@ -385,44 +401,42 @@ def PageReminders(db: Database):
         s += "<table style='width: 100%;'>"
         s += "<tr><th>RE-Nr.</th><th>Datum</th><th>Fällig seit</th><th>Kunde</th><th>Betrag</th><th>Überfällig (Tage)</th><th>Aktionen</th></tr>"
         
-        today = date.today()
         for inv in overdue:
-            inv_id = inv[0]
-            inv_number = inv[1]
-            inv_date = inv[2]
-            due_date = inv[20]  # PaymentDueDate
-            buyer_name = inv[12]
-            amount = inv[36] or inv[35]
+            inv_id = inv[InvoiceCol.ID]
+            inv_number = _html.escape(str(inv[InvoiceCol.NUMBER] or ''))
+            inv_date = _html.escape(str(inv[InvoiceCol.DATE] or ''))
+            due_text = _html.escape(str(inv[InvoiceCol.DUE_DATE] or ''))
+            buyer_name = _html.escape(str(inv[InvoiceCol.BUYER_COMPANY]
+                                          or inv[InvoiceCol.BUYER_NAME] or '')[:30])
+            amount = open_amount(inv)
+            due = due_date(inv)
             
-            # Calculate days overdue
-            if due_date:
-                due = date.fromisoformat(due_date)
+            # Calculate days overdue; ohne gültiges Fälligkeitsdatum gibt es keine Verzugstage
+            if due is None:
+                row_style = ""
+                days_text = "–"
+            else:
                 days_overdue = (today - due).days
-            else:
-                days_overdue = 0
-            
-            # Color code by severity
-            if days_overdue > 60:
-                row_style = "background-color: #f8d7da;"  # Red - 3rd reminder
-                severity = "🔴 Mahnstufe 3"
-            elif days_overdue > 30:
-                row_style = "background-color: #fff3cd;"  # Yellow - 2nd reminder
-                severity = "🟡 Mahnstufe 2"
-            else:
-                row_style = "background-color: #d1ecf1;"  # Blue - 1st reminder
-                severity = "🔵 Mahnstufe 1"
+                # Color code by severity
+                if days_overdue > 60:
+                    row_style = "background-color: #f8d7da;"  # Red - 3rd reminder
+                    severity = "🔴 Mahnstufe 3"
+                elif days_overdue > 30:
+                    row_style = "background-color: #fff3cd;"  # Yellow - 2nd reminder
+                    severity = "🟡 Mahnstufe 2"
+                else:
+                    row_style = "background-color: #d1ecf1;"  # Blue - 1st reminder
+                    severity = "🔵 Mahnstufe 1"
+                days_text = f"{days_overdue} Tage<br><small>{severity}</small>"
             
             s += f"<tr style='{row_style}'>"
             s += f"<td>{inv_number}</td>"
             s += f"<td>{inv_date}</td>"
-            s += f"<td>{due_date}</td>"
-            s += f"<td>{buyer_name[:30]}</td>"
+            s += f"<td>{due_text}</td>"
+            s += f"<td>{buyer_name}</td>"
             s += f"<td style='text-align: right;'><strong>{fmt_eur(amount)}</strong></td>"
-            s += f"<td>{days_overdue} Tage<br><small>{severity}</small></td>"
-            s += f"<td>"
-            s += f"<a href='/invoice/view?id={inv_id}'>Ansicht</a> | "
-            s += f"<a href='/invoice/reminder?id={inv_id}' style='color: #dc3545;'>Mahnung erstellen</a>"
-            s += f"</td>"
+            s += f"<td>{days_text}</td>"
+            s += f"<td><a href='/invoice/view?id={inv_id}'>Ansicht</a></td>"
             s += f"</tr>"
         
         s += "</table>"
@@ -437,26 +451,23 @@ def PageReminders(db: Database):
         s += "<tr><th>RE-Nr.</th><th>Datum</th><th>Fälligkeitsdatum</th><th>Kunde</th><th>Betrag</th><th>Verbleibende Tage</th><th>Aktionen</th></tr>"
         
         for inv in due_soon:
-            inv_id = inv[0]
-            inv_number = inv[1]
-            inv_date = inv[2]
-            due_date = inv[20]
-            buyer_name = inv[12]
-            amount = inv[36] or inv[35]
-            
-            if due_date:
-                due = date.fromisoformat(due_date)
-                days_remaining = (due - today).days
-            else:
-                days_remaining = 0
+            inv_id = inv[InvoiceCol.ID]
+            inv_number = _html.escape(str(inv[InvoiceCol.NUMBER] or ''))
+            inv_date = _html.escape(str(inv[InvoiceCol.DATE] or ''))
+            due_text = _html.escape(str(inv[InvoiceCol.DUE_DATE] or ''))
+            buyer_name = _html.escape(str(inv[InvoiceCol.BUYER_COMPANY]
+                                          or inv[InvoiceCol.BUYER_NAME] or '')[:30])
+            amount = open_amount(inv)
+            due = due_date(inv)
+            days_text = f"{(due - today).days} Tage" if due is not None else "–"
             
             s += f"<tr>"
             s += f"<td>{inv_number}</td>"
             s += f"<td>{inv_date}</td>"
-            s += f"<td>{due_date}</td>"
-            s += f"<td>{buyer_name[:30]}</td>"
+            s += f"<td>{due_text}</td>"
+            s += f"<td>{buyer_name}</td>"
             s += f"<td style='text-align: right;'>{fmt_eur(amount)}</td>"
-            s += f"<td>{days_remaining} Tage</td>"
+            s += f"<td>{days_text}</td>"
             s += f"<td><a href='/invoice/view?id={inv_id}'>Ansicht</a></td>"
             s += f"</tr>"
         

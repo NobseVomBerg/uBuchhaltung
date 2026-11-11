@@ -13,7 +13,14 @@ dem sie auch zum Download angeboten wird (todo #2). Dieses Modul bündelt
 
 Heruntergeladen wird stets die abgelegte Datei, nie eine frisch erzeugte: ab
 Status „versendet“ muss der Kunde exakt das Dokument bekommen, das im Haus liegt
-(todo #3).
+(todo #3). Dasselbe gilt für Angebote (``quotes/<Jahr>/…``, geschrieben von
+``export/pdf_quote.py``).
+
+Ein in der Datenbank gespeicherter Dokumentpfad wird nur benutzt, wenn er im
+Dokumentordner des Nutzers liegt (:func:`path_in_documents`): Die Datenbank lässt
+sich per SQL-Konsole oder zurückgespielte Sicherung verändern, und sonst ließe sich
+darüber jede lesbare Datei (``auth.db``, die Datenbank eines anderen Benutzers)
+ausliefern oder löschen.
 """
 import os
 
@@ -28,6 +35,7 @@ _IDX_ROUTE_ID = 22
 _IDX_ORDER_NUMBER = 23
 _IDX_PDF_PATH = 41
 _IDX_XML_PATH = 42
+_IDX_DOCUMENT_TYPE = 45
 
 
 def _col(invoice, idx):
@@ -63,18 +71,55 @@ def invoice_file_path(invoice, extension: str) -> str:
                         f"{invoice_file_stem(invoice)}.{extension}")
 
 
+def is_quote(invoice) -> bool:
+    """True, wenn die Zeile ein Angebot ist (``DocumentType = 'quote'``)."""
+    return _col(invoice, _IDX_DOCUMENT_TYPE) == 'quote'
+
+
+def documents_root(invoice=None) -> str:
+    """Ordner, in dem die Dokumente des aktuellen Nutzers liegen dürfen: ``invoices``,
+    bei einem Angebot ``quotes`` (dorthin schreibt ``generate_quote_pdf``)."""
+    import userctx
+    return os.path.join(userctx.user_data_dir(), 'quotes' if is_quote(invoice) else 'invoices')
+
+
+def path_in_documents(path, invoice=None) -> bool:
+    """Liegt ``path`` – nach Auflösen von Links und ``..`` – im Dokumentordner des Nutzers?
+
+    Gilt für jeden gespeicherten Dokumentpfad, bevor die Datei gelesen oder gelöscht
+    wird. ``invoice`` bestimmt den Ordner (Rechnung oder Angebot, siehe
+    :func:`documents_root`). Alles, was kein Pfad ist (z. B. eine Zahl, die ``open`` als
+    Dateinummer läse) oder sich nicht auflösen lässt, gilt als außerhalb.
+    """
+    if not isinstance(path, str) or not path:
+        return False
+    try:
+        real = os.path.realpath(path)
+        root = os.path.realpath(documents_root(invoice))
+        return os.path.normcase(os.path.commonpath([real, root])) == os.path.normcase(root)
+    except (OSError, ValueError):     # NUL im Pfad, anderes Laufwerk unter Windows …
+        return False
+
+
 def drop_stale_file(old_path, new_path):
     """Vorgänger-Datei löschen, wenn der Name sich geändert hat.
 
     Ändern sich Rechnungsnummer oder Kunde, würde die alte Datei sonst als
-    Dublette liegen bleiben.
+    Dublette liegen bleiben. Gelöscht wird nur im Dokumentordner des Nutzers: Der
+    alte Pfad stammt aus der Datenbank (siehe :func:`path_in_documents`).
     """
     if not old_path or not new_path:
         return
     try:
-        if (os.path.isfile(old_path)
-                and os.path.abspath(old_path) != os.path.abspath(new_path)):
-            os.remove(old_path)
+        if not (isinstance(old_path, str) and os.path.isfile(old_path)):
+            return
+        if os.path.abspath(old_path) == os.path.abspath(new_path):
+            return
+        if not path_in_documents(old_path):
+            print(f"Alte Rechnungsdatei liegt außerhalb des Dokumentordners, "
+                  f"nicht entfernt: {old_path!r}")
+            return
+        os.remove(old_path)
     except OSError as e:      # Nicht löschbar ist kein Grund, den Export abzubrechen
         print(f"Alte Rechnungsdatei nicht entfernt ({old_path}): {e}")
 
@@ -119,7 +164,7 @@ def generate_invoice_documents(db, invoice_id: int, with_xml=None,
             and _col(current, _IDX_STATUS) in FROZEN_STATUSES):
         existing, existing_name, _ = stored_invoice_document(db, invoice_id, 'pdf')
         if existing:
-            result['pdf_path'] = _col(current, _IDX_PDF_PATH) or invoice_file_path(current, 'pdf')
+            result['pdf_path'] = stored_invoice_path(db, invoice_id, 'pdf')[0]
             result['pdf_filename'] = existing_name
             return result
 
@@ -168,30 +213,74 @@ _KINDS = {
 }
 
 
+def _stored_by_name(invoice, extension):
+    """Datei am Namensschema suchen (``None``, wenn es sie nicht gibt).
+
+    Rechnung: ``invoices/<Jahr des Rechnungsdatums>/…``. Beim Angebot steht im Ordnernamen
+    das Jahr der Erzeugung, das der Datensatz nicht kennt – dort zählt der neueste Treffer.
+    """
+    if not is_quote(invoice):
+        candidate = invoice_file_path(invoice, extension)
+        return candidate if os.path.isfile(candidate) else None
+    root = documents_root(invoice)
+    name = f"{invoice_file_stem(invoice)}.{extension}"
+    try:
+        years = sorted(os.listdir(root), reverse=True)
+    except OSError:
+        return None
+    for year in years:
+        candidate = os.path.join(root, year, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def stored_invoice_path(db, invoice_id: int, kind: str = 'pdf'):
+    """Pfad des abgelegten Dokuments einer Rechnung (bzw. eines Angebots).
+
+    Der in der Datenbank gespeicherte Pfad zählt nur im Dokumentordner des Nutzers
+    (:func:`path_in_documents`). Liegt er außerhalb, gilt er als nicht vorhanden – dann
+    greift der Fallback über das Namensschema –; die Antwort verrät davon nichts, nur das
+    Server-Log. Wer ein gespeichertes Dokument öffnet (Download, E-Mail-Anhang), holt den
+    Pfad hier.
+
+    Returns:
+        tuple: ``(pfad, fehlertext)`` – bei Erfolg ist der Fehlertext ``None``, sonst der Pfad.
+    """
+    idx, extension, label = _KINDS[kind]
+    invoice = db.get_invoice_by_id(invoice_id)
+    if not invoice:
+        return None, 'Rechnung nicht gefunden.'
+
+    path = _col(invoice, idx)
+    if path and not path_in_documents(path, invoice):
+        print(f"Dokumentpfad außerhalb des Dokumentordners ignoriert "
+              f"(Dokument {invoice_id}, {kind}): {path!r}")
+        path = None
+    # Fallback: Datei am Namensschema suchen, falls der DB-Pfad fehlt oder
+    # veraltet ist (z. B. nach einem Umzug des Datenverzeichnisses).
+    if not path or not os.path.isfile(path):
+        path = _stored_by_name(invoice, extension)
+
+    if not path:
+        hint = ' – bitte zuerst erzeugen' if is_quote(invoice) else ''
+        return None, f'Kein {label} vorhanden{hint}.'
+    return path, None
+
+
 def stored_invoice_document(db, invoice_id: int, kind: str = 'pdf'):
-    """Abgelegtes Dokument einer Rechnung laden.
+    """Abgelegtes Dokument einer Rechnung (bzw. eines Angebots) laden.
 
     Returns:
         tuple: ``(bytes, dateiname, fehlertext)`` – bei Erfolg ist der
         Fehlertext ``None``, sonst sind Bytes und Dateiname ``None``.
     """
-    idx, extension, label = _KINDS[kind]
-    invoice = db.get_invoice_by_id(invoice_id)
-    if not invoice:
-        return None, None, 'Rechnung nicht gefunden.'
-
-    path = _col(invoice, idx)
-    # Fallback: Datei am Namensschema suchen, falls der DB-Pfad fehlt oder
-    # veraltet ist (z. B. nach einem Umzug des Datenverzeichnisses).
-    if not path or not os.path.isfile(path):
-        candidate = invoice_file_path(invoice, extension)
-        path = candidate if os.path.isfile(candidate) else None
-
-    if not path:
-        return None, None, f'Kein {label} vorhanden.'
+    path, error = stored_invoice_path(db, invoice_id, kind)
+    if error:
+        return None, None, error
     try:
         with open(path, 'rb') as f:
             return f.read(), os.path.basename(path), None
     except OSError as e:
         print(f"Error reading {kind} for invoice {invoice_id}: {e}")
-        return None, None, f'{label} konnte nicht gelesen werden.'
+        return None, None, f'{_KINDS[kind][2]} konnte nicht gelesen werden.'
