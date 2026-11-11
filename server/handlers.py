@@ -16,6 +16,7 @@ from .period import parse_iso_date, valid_period
 from db import Database
 from db.core import fk_explained
 from db.matching import is_bank_effective
+from db.accounts import DEFAULT_CASH_ACCOUNT
 from money import to_minor, from_minor, multiply, tax_from_net, round_minor, fmt_eur
 from decimal import Decimal
 
@@ -728,6 +729,10 @@ def handle_update_bankaccount(db: Database, post_data):
     bank_name = post_data.get("bank_name", [""])[0]
     skr_raw = post_data.get("skr_account", [""])[0]
     skr_account = int(skr_raw) if skr_raw.strip() else None
+    if skr_account == DEFAULT_CASH_ACCOUNT:
+        # Ältere Datenbanken kennen das Kassenkonto 1600 noch nicht – ohne das Konto im
+        # Kontenrahmen bliebe die Umstellung einer Kasse auf 1600 wirkungslos.
+        db.ensure_cash_coa()
     db.update_account(account_id, name, holder, iban, bic, bank_name, skr_account=skr_account)
     return 303, "/masterdata/bankaccounts"
 

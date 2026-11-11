@@ -57,7 +57,8 @@ def rename_demo_accounts(db, renames):
     werden übersprungen.
 
     ``skr_account`` stellt das Konto auf eine andere SKR-Nummer um (die Demo führt die
-    Kasse der Testdaten statt auf dem Verrechnungskonto 1460 auf dem Kassenkonto 1600);
+    Kasse der Testdaten statt auf dem Verrechnungskonto 1460 als Nebenkasse auf 1610 –
+    1600 trägt schon die automatisch angelegte Kasse);
     Buchungen, die auf der Kasse stehen und die alte Nummer führen, ziehen mit."""
     for old, new in renames.items():
         conn = db._get_connection()
