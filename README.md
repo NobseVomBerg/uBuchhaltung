@@ -136,13 +136,15 @@ direkt aus der Datenbankdatei oder aus den Textexporten:
   legt er neu an und meldet ähnliche vorhandene Buchungen als „möglicherweise
   doppelt“: lieber eine sichtbare zweite Buchung als eine still falsch übernommene.
 
-- Beide Importe melden, was sie nicht sicher lesen können: Sätze mit **negativem Bruttobetrag**,
-  deren Vorzeichen der Import durch die Richtung der Geldbewegung ersetzt hat (Storno, Gutschrift –
-  sie werden wie eine normale Buchung gelesen), Buchungen auf **Konten 1000–1099** (in SKR04
+- Beide Importe melden, was sie nicht sicher lesen können: Sätze mit **negativem Bruttobetrag**
+  und genau einem Bank-, Kassen- oder Verrechnungskonto (dort bestimmt die Geldbewegung das
+  Vorzeichen; ein Storno oder eine Gutschrift wird so wie eine normale Buchung gelesen), Buchungen
+  auf **Konten 1000–1099** (in SKR04
   Vorräte; ältere Versionen haben sie als Kasse gelesen – bitte prüfen, ob hier eine Kasse gemeint
   ist; Buchungen gegen diese Konten werden als Umbuchung gelesen und erscheinen nicht in der EÜR) und
   **ältere Überträge** zwischen Bank, Kasse und Verrechnungskonto, die noch nach der alten Lesart
   gespeichert sind: Der Import erkennt sie wieder, legt sie nicht doppelt an und ändert ihre Form nicht.
+  Dasselbe gilt für Buchungen auf Konten 1000–1099, die eine ältere Version als Kasse gespeichert hat.
 
 Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen.
 

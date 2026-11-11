@@ -10,7 +10,7 @@ unbekanntem Gegenkonto). Dazu:
 
 * ``negative_gross`` und ``stock_range_accounts`` im Ergebnis (und auf der Seite *Verschiedenes*):
   ein Storno wird nicht vorzeichenrichtig gelesen, und Konten 1000–1099 sind in SKR04 Vorräte;
-* ``negative_gross`` zählt nur Sätze, deren Vorzeichen der Import tatsächlich ersetzt hat;
+* ``negative_gross`` zählt jeden Satz mit negativem Brutto und genau einer liquiden Seite;
 * kein Import ändert die Form einer vorhandenen Zeile: Ein Spiegel des Bestands (``mirror_legacy``)
   bleibt, wie er ist – auch wenn der Re-Import ihn wiedererkennt, mit gleichem oder umgekehrtem
   Vorzeichen, oder die Übernahme ihn aufnimmt (``legacy_mirrors`` zählt ihn); eine abweichende andere
@@ -18,7 +18,10 @@ unbekanntem Gegenkonto). Dazu:
 * der Weg „erst CSV, dann Datenbank“: Ein Spiegel mit umgekehrtem Vorzeichen wird übernommen und
   nicht doppelt angelegt;
 * der Re-Import des Textexports erkennt einen vorzeichenverkehrten Spiegel des Bestands und legt
-  keinen zweiten an.
+  keinen zweiten an;
+* Zeilen auf Konten 1000–1099, die eine ältere Version mit ihrer Lesart (diese Konten als Kasse, also
+  mit einem anderen Betrag) gespeichert hat, erkennt der Re-Import des Textexports und die Übernahme der
+  Datenbank wieder (``legacy_stock_rows``): kein zweiter Satz, die vorhandene Zeile bleibt.
 
 Alle Namen und Werte sind erfunden.
 """
@@ -35,7 +38,8 @@ from db.matching import (
 )
 from server.pages_miscellaneous import PageMiscellaneous
 from tests.entry_form_helpers import (
-    bank_account, coa, csv_export, datev_rows, execute, minor, query, wiso_database, wiso_row,
+    D1, D2, bank_account, coa, csv_export, datev_rows, euer, execute, minor, query, wiso_database,
+    wiso_row,
 )
 
 KEY19 = '401'
@@ -115,14 +119,15 @@ def test_csv_reimport_creates_nothing_new(db):
 
 # ── Textexport: negative Bruttobeträge und Konten 1000–1099 ─────────────────
 
-def test_csv_counts_the_negative_gross_rows_whose_sign_it_replaced(db):
+def test_csv_counts_every_negative_gross_row_with_exactly_one_liquid_side(db):
+    """Dort bestimmt die Geldseite das Vorzeichen – ob die Zahl dabei ihr Vorzeichen ändert oder zufällig
+    behält. Ein Storno kann als normale Buchung gelesen werden; beides gehört in die Meldung."""
     result = db.import_wiso_csv(csv_export(
-        ('6815', '1800', '-119,00', 'N1', KEY19),        # Gegenkonto liquide: bleibt negativ – nichts ersetzt
-        ('1800', '4400', '-50,00', 'N2', KEY19),         # Konto liquide: wird positiv – ersetzt, gezählt
-        ('1800', '4400', '-20,00', 'N5', KEY19),         # ebenso
+        ('6815', '1800', '-119,00', 'N1', KEY19),        # Storno Aufwand: bleibt −119 – gezählt
+        ('1800', '4400', '-50,00', 'N2', KEY19),         # Storno Erlös: wird +50 – gezählt
         ('6815', '1800', '119,00', 'P1', KEY19),         # positiv: nicht
-        ('4405', '4400', '-119,00', 'N3', KEY19),        # keine liquide Seite: Vorzeichen bleibt
-        ('1600', '1800', '-100,00', 'N4', ''),           # Spiegel: Rohbetrag bleibt
+        ('4405', '4400', '-119,00', 'N3', KEY19),        # keine liquide Seite: Rohbetrag, nicht gezählt
+        ('1600', '1800', '-100,00', 'N4', ''),           # zwei liquide Seiten: Rohbetrag, nicht gezählt
     ))
 
     assert result['negative_gross'] == 2
@@ -131,6 +136,11 @@ def test_csv_counts_the_negative_gross_rows_whose_sign_it_replaced(db):
     assert forms['N2'] == (minor('50.00'), FORM_LIQUID_FIRST)
     assert forms['N3'] == (minor('-119.00'), FORM_TRANSFER)
     assert forms['N4'] == (minor('-100.00'), FORM_MIRROR_COA)
+
+
+def test_csv_does_not_count_a_negative_gross_row_without_a_liquid_side(db):
+    result = db.import_wiso_csv(csv_export(('4405', '4400', '-119,00', 'N3', KEY19)))
+    assert result['negative_gross'] == 0
 
 
 def test_csv_reports_accounts_in_the_old_cash_range(db):
@@ -277,6 +287,163 @@ def test_csv_reimport_does_not_take_a_twin_that_the_file_claims_itself(db):
         (FORM_MIRROR_LEGACY,), (FORM_MIRROR_COA,)]
 
 
+# ── Zeilen auf Konten 1000–1099 aus einer älteren Version ──────────────────────
+
+def _stock_state(db):
+    """Alles, was sich durch einen Re-Import nicht ändern darf: jede Spalte jeder Buchung, DATEV-Zeilen,
+    EÜR und Dashboard."""
+    totals = db.get_dashboard_totals(D1, D2)
+    return (query(db, 'SELECT * FROM Bookings ORDER BY ID'), datev_rows(db), euer(db),
+            (totals['income'], totals['expense']))
+
+
+def _stored_by_2_0_x(db, kind, with_account=True, expense=6815, counter_missing=False):
+    """Eine Zeile, wie 2.0.x sie aus dem Textexport gespeichert hat (Konten 1000–1099 galten als Kasse) und
+    wie die Migration sie festgeschrieben hat. ``kind``: 'counter' – „6815;1050;10“ (Gegenkonto in 1000–1099:
+    Abgang −10, ``purpose_first``), 'account' – „1050;1800;30“ (beide Seiten liquide: Rohbetrag +30,
+    ``mirror_legacy``)."""
+    if with_account:
+        db.insert_chart_of_accounts(4, 1050, 'Vorrat Bürobedarf', 'Test')
+    stock = coa(db, 1050)
+    if kind == 'counter':
+        return db.insert_booking('2026-01-02', Decimal('-10.00'), coa_id=coa(db, expense),
+                                 counter_coa_id=None if counter_missing else stock,
+                                 document_number='LS-1', text='Posten LS-1', booking_type='entry',
+                                 entry_form=FORM_PURPOSE_FIRST)
+    return db.insert_booking('2026-01-03', Decimal('30.00'), coa_id=stock, counter_coa_id=coa(db, 1800),
+                             document_number='LS-2', text='Posten LS-2', booking_type='entry',
+                             entry_form=FORM_MIRROR_LEGACY)
+
+
+STOCK_LINES = {'counter': ('6815', '1050', '10,00', 'LS-1', '', '02.01.2026'),
+               'account': ('1050', '1800', '30,00', 'LS-2', '', '03.01.2026')}
+
+
+@pytest.mark.parametrize('with_account', [True, False], ids=['konto-im-rahmen', 'konto-fehlt'])
+@pytest.mark.parametrize('kind', ['counter', 'account'])
+def test_csv_reimport_does_not_double_a_row_an_older_version_stored_on_an_account_in_1000_1099(
+        db, kind, with_account):
+    """Die Zeile steht mit dem Betrag der alten Regel im Bestand (−10 bzw. +30). Der Import würde sie heute
+    mit einem anderen Betrag schreiben (+10 Umbuchung bzw. −30 Zweckkonto vorne) und fände sie nicht
+    wieder: sie stünde doppelt im Export. Stattdessen ist sie ein Duplikat – die vorhandene Zeile bleibt
+    Spalte für Spalte, EÜR, DATEV und Dashboard ändern sich nicht, der Zähler stimmt."""
+    _stored_by_2_0_x(db, kind, with_account)
+    before = _stock_state(db)
+
+    result = db.import_wiso_csv(csv_export(STOCK_LINES[kind]))
+
+    assert (result['imported'], result['skipped'], result['legacy_stock_rows']) == (0, 1, 1)
+    assert result['stock_range_accounts'][0]['nummer'] == 1050              # die Meldung bleibt
+    assert _stock_state(db) == before
+    assert query(db, 'SELECT COUNT(*) FROM Bookings') == [(1,)]
+
+
+def test_csv_import_on_a_fresh_database_writes_the_stock_rows_as_usual(db):
+    """Kein Fehltreffer: Ohne Altzeile legt der Import beide Zeilen an (Umbuchung bzw. Zweckkonto vorne)."""
+    db.insert_chart_of_accounts(4, 1050, 'Vorrat Bürobedarf', 'Test')
+
+    result = db.import_wiso_csv(csv_export(STOCK_LINES['counter'], STOCK_LINES['account']))
+
+    assert (result['imported'], result['skipped'], result['legacy_stock_rows']) == (2, 0, 0)
+    assert _forms(db) == {'LS-1': (minor('10.00'), FORM_TRANSFER),
+                          'LS-2': (minor('-30.00'), FORM_PURPOSE_FIRST)}
+
+
+def test_csv_reimport_of_a_fresh_import_counts_no_legacy_stock_rows(db):
+    db.insert_chart_of_accounts(4, 1050, 'Vorrat Bürobedarf', 'Test')
+    lines = csv_export(STOCK_LINES['counter'], STOCK_LINES['account'])
+    db.import_wiso_csv(lines)
+    before = _stock_state(db)
+
+    again = db.import_wiso_csv(lines)
+
+    assert (again['imported'], again['skipped'], again['legacy_stock_rows']) == (0, 2, 0)
+    assert _stock_state(db) == before
+
+
+def test_csv_reimport_creates_only_the_row_the_older_version_never_had(db):
+    """Zwei echte gleiche Sätze in der Datei, eine Altzeile im Bestand: Die Altzeile ist das Duplikat
+    EINER Zeile, die andere ist neu."""
+    old = _stored_by_2_0_x(db, 'counter')
+    line = STOCK_LINES['counter']
+
+    result = db.import_wiso_csv(csv_export(line, line))
+
+    assert (result['imported'], result['skipped'], result['legacy_stock_rows']) == (1, 1, 1)
+    assert query(db, 'SELECT COUNT(*) FROM Bookings') == [(2,)]
+    assert query(db, 'SELECT Amount, EntryForm FROM Bookings WHERE ID = ?', (old,)) == [
+        (minor('-10.00'), FORM_PURPOSE_FIRST)]
+    assert query(db, 'SELECT Amount, EntryForm FROM Bookings WHERE ID != ?', (old,)) == [
+        (minor('10.00'), FORM_TRANSFER)]
+
+
+def test_csv_reimport_leaves_a_row_alone_that_another_row_of_the_file_claims_with_its_own_amount(db):
+    """Die Datei hat auch „6815;1800;10“ (Abgang −10): Mit dem Betrag der Altzeile gehört sie dieser Zeile.
+    Eine zweite Zeile mit demselben Betrag bekommt sie nicht noch einmal."""
+    _stored_by_2_0_x(db, 'counter')
+
+    result = db.import_wiso_csv(csv_export(('6815', '1050', '10,00', 'LS-1', ''),
+                                           ('6815', '1800', '10,00', 'LS-1', '')))
+
+    assert (result['imported'], result['skipped'], result['legacy_stock_rows']) == (1, 1, 0)
+
+
+@pytest.mark.parametrize('why, existing, line', [
+    ('anderes-datum', dict(date='2026-01-05'), STOCK_LINES['counter']),
+    ('andere-beleg-nr', dict(document='LS-9'), STOCK_LINES['counter']),
+    ('anderes-gegenkonto', dict(counter=1810), STOCK_LINES['counter']),
+    ('anderes-konto', dict(coa=4400), STOCK_LINES['counter']),
+    ('anderer-betrag', dict(amount='-12.00'), STOCK_LINES['counter']),
+    ('betrag-der-neuen-regel', dict(amount='10.00'), STOCK_LINES['counter']),
+])
+def test_csv_reimport_needs_everything_to_match_for_a_row_of_an_older_version(db, why, existing, line):
+    """Im Zweifel wird neu angelegt: Datum, Beleg-Nr., Konto, Gegenkonto und der Betrag der alten Regel
+    müssen alle stimmen."""
+    db.insert_chart_of_accounts(4, 1050, 'Vorrat Bürobedarf', 'Test')
+    row = dict(date='2026-01-02', document='LS-1', coa=6815, counter=1050, amount='-10.00')
+    row.update(existing)
+    old = db.insert_booking(row['date'], Decimal(row['amount']), coa_id=coa(db, row['coa']),
+                            counter_coa_id=coa(db, row['counter']), document_number=row['document'],
+                            text='Posten', booking_type='entry', entry_form=FORM_PURPOSE_FIRST)
+    before = query(db, 'SELECT * FROM Bookings WHERE ID = ?', (old,))
+
+    result = db.import_wiso_csv(csv_export(line))
+
+    # „betrag-der-neuen-regel“ ist ein gewöhnliches Duplikat (Schlüssel ohne Gegenkonto): kein neuer Satz,
+    # aber auch nichts, das die Altzeilen-Regel zählt
+    assert result['legacy_stock_rows'] == 0, why
+    assert query(db, 'SELECT * FROM Bookings WHERE ID = ?', (old,)) == before
+    assert result['imported'] == (0 if why == 'betrag-der-neuen-regel' else 1), why
+
+
+def test_csv_reimport_does_not_look_for_an_older_amount_when_the_amount_is_the_same(db):
+    """„1050;4400;20“: Konto in 1000–1099 und Rohbetrag – 2.0.x und heute geben denselben Betrag (+20). Die
+    gewöhnliche Duplikatsuche entscheidet, und die Altzeile-Regel zählt nichts."""
+    db.insert_chart_of_accounts(4, 1050, 'Vorrat Bürobedarf', 'Test')
+    old = db.insert_booking('2026-01-02', Decimal('20.00'), coa_id=coa(db, 1050),
+                            counter_coa_id=coa(db, 4400), document_number='LS-3', text='Posten LS-3',
+                            booking_type='entry', entry_form=FORM_LIQUID_FIRST)
+
+    result = db.import_wiso_csv(csv_export(('1050', '4400', '20,00', 'LS-3', '', '02.01.2026')))
+
+    assert (result['imported'], result['skipped'], result['legacy_stock_rows']) == (0, 1, 0)
+    assert query(db, 'SELECT COUNT(*) FROM Bookings') == [(1,)]
+    assert old
+
+
+def test_csv_reimport_finds_an_older_row_without_a_document_number_too(db):
+    db.insert_chart_of_accounts(4, 1050, 'Vorrat Bürobedarf', 'Test')
+    old = db.insert_booking('2026-01-02', Decimal('-10.00'), coa_id=coa(db, 6815),
+                            counter_coa_id=coa(db, 1050), document_number=None, text='Ohne Beleg',
+                            booking_type='entry', entry_form=FORM_PURPOSE_FIRST)
+    before = query(db, 'SELECT * FROM Bookings WHERE ID = ?', (old,))
+
+    result = db.import_wiso_csv(csv_export(('6815', '1050', '10,00', '', '', '02.01.2026')))
+
+    assert (result['imported'], result['skipped'], result['legacy_stock_rows']) == (0, 1, 1)
+    assert query(db, 'SELECT * FROM Bookings WHERE ID = ?', (old,)) == before
+
+
 # ── Tabellen-Export: ein Konto wird erst hier gefüllt ────────────────────────
 
 TABLE_HEADER = 'Buchungsdatum;Empf./Auft.;Verwendungszweck;Kategorie;Beleg Nr.;Betrag\n'
@@ -321,17 +488,24 @@ def test_fdb_writes_the_form_the_sign_was_set_with(db, tmp_path):
         'FD-NG': (minor('-30.00'), FORM_PURPOSE_FIRST)}
 
 
-def test_fdb_counts_the_negative_gross_rows_whose_sign_it_replaced(db, tmp_path):
-    rows = FDB_ROWS + [wiso_row(1200, 8400, -25.0, 'FD-NK'),         # Konto liquide: wird positiv, gezählt
-                       wiso_row(1000, 1200, -5.0, 'FD-SP'),          # Spiegel: nicht gezählt
+def test_fdb_counts_every_negative_gross_row_with_exactly_one_liquid_side(db, tmp_path):
+    rows = FDB_ROWS + [wiso_row(1200, 8400, -25.0, 'FD-NK'),         # Storno Erlös: wird +25, gezählt
+                       wiso_row(1000, 1200, -5.0, 'FD-SP'),          # zwei liquide Seiten: nicht gezählt
                        wiso_row(8400, 4980, -6.0, 'FD-NT')]          # keine liquide Seite: nicht gezählt
 
     result = _import_fdb(db, _fdb(tmp_path, rows))
 
-    assert result['negative_gross'] == 1
+    assert result['negative_gross'] == 2                              # FD-NG (Storno Aufwand) und FD-NK
     forms = _forms(db)
+    assert forms['FD-NG'] == (minor('-30.00'), FORM_PURPOSE_FIRST)   # bleibt negativ: gezählt trotzdem
     assert forms['FD-NK'] == (minor('25.00'), FORM_LIQUID_FIRST)
-    assert forms['FD-NG'] == (minor('-30.00'), FORM_PURPOSE_FIRST)   # bleibt negativ: nichts ersetzt
+    assert forms['FD-SP'] == (minor('-5.00'), FORM_MIRROR_COA)
+    assert forms['FD-NT'] == (minor('-6.00'), FORM_TRANSFER)
+
+
+def test_fdb_does_not_count_a_negative_gross_row_without_a_liquid_side(db, tmp_path):
+    result = _import_fdb(db, _fdb(tmp_path, [wiso_row(8400, 4980, -6.0, 'FD-NT')]))
+    assert result['negative_gross'] == 0
 
 
 def test_fdb_without_a_liquid_side_puts_the_account_in_the_debit_even_with_an_unknown_counter(db, tmp_path):
@@ -552,6 +726,141 @@ def test_a_row_adopted_without_a_form_takes_the_form_of_the_import(db, tmp_path)
     assert _forms(db)['AD-3'] == (minor('-59.50'), FORM_PURPOSE_FIRST)
 
 
+# ── Zeilen auf Konten 1000–1099: die Übernahme CSV → Datenbank ─────────────────
+
+FDB_STOCK_CHART = [(1040, 1050, 'Vorrat Bürobedarf')]
+FDB_STOCK_ROWS = {
+    'counter': lambda group=701: wiso_row(4980, 1040, 10.0, 'LS-1', text='Posten LS-1',
+                                          ACCOUNTINGID=group),                      # 6850 an 1050
+    'account': lambda group=702: wiso_row(1040, 1200, 30.0, 'LS-2', text='Posten LS-2',
+                                          ACCOUNTING_DATE='2026-01-03 00:00:00',
+                                          ACCOUNTINGID=group),                      # 1050 an 1800
+}
+
+
+def _fdb_stock(tmp_path, *rows):
+    return _fdb(tmp_path, list(rows), extra_chart=FDB_STOCK_CHART)
+
+
+def _stock_effects(db):
+    """Was die Auswertungen aus dem Bestand lesen (die Quellgruppe, die die Übernahme setzt, gehört nicht
+    dazu)."""
+    totals = db.get_dashboard_totals(D1, D2)
+    return datev_rows(db), euer(db), (totals['income'], totals['expense'])
+
+
+@pytest.mark.parametrize('kind', ['counter', 'account'])
+def test_adoption_takes_a_csv_row_an_older_version_stored_on_an_account_in_1000_1099(db, tmp_path, kind):
+    """Die CSV-Zeile steht mit dem Betrag der alten Regel (−10 bzw. +30) im Bestand. Der Datenbank-Import
+    würde den Satz heute mit einem anderen Betrag schreiben und fände sie nicht: Dubletten im Export.
+    Stattdessen übernimmt er sie – Betrag und Form bleiben, nur die Quellgruppe kommt dazu."""
+    old = _stored_by_2_0_x(db, kind, expense=6850)
+    before_effects = _stock_effects(db)
+    before = query(db, 'SELECT COA_ID, CounterCOA_ID, Amount, TaxRate, TaxAmount, Text, EntryForm, '
+                       'DocumentNumber, DateBooking FROM Bookings WHERE ID = ?', (old,))
+
+    result = _import_fdb(db, _fdb_stock(tmp_path, FDB_STOCK_ROWS[kind]()))
+
+    assert (result['imported'], result['adopted'], result['legacy_stock_rows']) == (0, 1, 1)
+    assert query(db, 'SELECT COUNT(*) FROM Bookings') == [(1,)]
+    assert query(db, 'SELECT COA_ID, CounterCOA_ID, Amount, TaxRate, TaxAmount, Text, EntryForm, '
+                     'DocumentNumber, DateBooking FROM Bookings WHERE ID = ?', (old,)) == before
+    assert query(db, 'SELECT SourceGroup FROM Bookings WHERE ID = ?', (old,)) == [
+        ('701' if kind == 'counter' else '702',)]
+    assert _stock_effects(db) == before_effects
+    assert result['stock_range_accounts'][0]['nummer'] == 1050
+
+
+@pytest.mark.parametrize('kind', ['counter', 'account'])
+def test_a_reimport_after_such_an_adoption_creates_nothing(db, tmp_path, kind):
+    _stored_by_2_0_x(db, kind, expense=6850)
+    path = _fdb_stock(tmp_path, FDB_STOCK_ROWS[kind]())
+    _import_fdb(db, path)
+    before = query(db, 'SELECT * FROM Bookings ORDER BY ID')
+
+    again = _import_fdb(db, path)
+
+    assert (again['imported'], again['skipped']) == (0, 1)
+    assert query(db, 'SELECT * FROM Bookings ORDER BY ID') == before
+
+
+def test_the_database_import_on_a_fresh_database_writes_the_stock_rows_as_usual(db, tmp_path):
+    result = _import_fdb(db, _fdb_stock(tmp_path, FDB_STOCK_ROWS['counter'](),
+                                        FDB_STOCK_ROWS['account']()))
+
+    assert (result['imported'], result['adopted'], result['legacy_stock_rows']) == (2, 0, 0)
+    assert _forms(db) == {'LS-1': (minor('10.00'), FORM_TRANSFER),
+                          'LS-2': (minor('-30.00'), FORM_PURPOSE_FIRST)}
+
+
+def test_the_database_import_creates_only_the_satz_the_older_version_never_had(db, tmp_path):
+    """Zwei echte gleiche Sätze in der Datenbank, eine Altzeile im Bestand: Die Altzeile gehört EINEM
+    Satz, der andere ist neu."""
+    old = _stored_by_2_0_x(db, 'counter', expense=6850)
+
+    result = _import_fdb(db, _fdb_stock(tmp_path, FDB_STOCK_ROWS['counter'](701),
+                                        FDB_STOCK_ROWS['counter'](709)))
+
+    assert (result['imported'], result['adopted'], result['legacy_stock_rows']) == (1, 1, 1)
+    assert query(db, 'SELECT Amount, EntryForm FROM Bookings WHERE ID = ?', (old,)) == [
+        (minor('-10.00'), FORM_PURPOSE_FIRST)]
+    assert query(db, 'SELECT Amount, EntryForm FROM Bookings WHERE ID != ?', (old,)) == [
+        (minor('10.00'), FORM_TRANSFER)]
+
+
+@pytest.mark.parametrize('why, existing_changes', [
+    ('anderer-text', dict(text='Anderer Text')),
+    ('leerer-text', dict(text='')),
+    ('andere-beleg-nr', dict(document='LS-9')),
+    ('anderes-gegenkonto', dict(counter=1810)),
+    ('anderer-betrag', dict(amount='-12.00')),
+    ('anderes-datum', dict(date='2026-01-09')),
+])
+def test_the_database_import_adopts_an_older_row_only_when_the_protection_rules_hold(
+        db, tmp_path, why, existing_changes):
+    """Dieselben Schutzregeln wie sonst: Text gleich und nicht leer, Beleg-Nr., Datum, Konto, Gegenkonto
+    (und der Betrag der alten Regel). Im Zweifel wird neu angelegt."""
+    db.insert_chart_of_accounts(4, 1050, 'Vorrat Bürobedarf', 'Test')
+    row = dict(date='2026-01-02', document='LS-1', counter=1050, amount='-10.00', text='Posten LS-1')
+    row.update(existing_changes)
+    old = db.insert_booking(row['date'], Decimal(row['amount']), coa_id=coa(db, 6850),
+                            counter_coa_id=coa(db, row['counter']), document_number=row['document'],
+                            text=row['text'], booking_type='entry', entry_form=FORM_PURPOSE_FIRST)
+    before = query(db, 'SELECT * FROM Bookings WHERE ID = ?', (old,))
+
+    result = _import_fdb(db, _fdb_stock(tmp_path, FDB_STOCK_ROWS['counter']()))
+
+    assert (result['adopted'], result['imported'], result['legacy_stock_rows']) == (0, 1, 0), why
+    assert query(db, 'SELECT * FROM Bookings WHERE ID = ?', (old,)) == before
+
+
+def test_the_adoption_of_an_older_row_fills_nothing(db, tmp_path):
+    """Hat die Altzeile kein Gegenkonto (es fehlte im Kontenrahmen), bleibt sie so: Ein neues Konto
+    verlangte eine Form, die zum Betrag der alten Regel passt – die Übernahme setzt nur die Quellgruppe."""
+    old = _stored_by_2_0_x(db, 'counter', expense=6850, counter_missing=True)
+    before = query(db, 'SELECT COA_ID, CounterCOA_ID, Amount, TaxRate, TaxAmount, EntryForm FROM Bookings '
+                       'WHERE ID = ?', (old,))
+
+    result = _import_fdb(db, _fdb_stock(tmp_path, FDB_STOCK_ROWS['counter']()))
+
+    assert (result['adopted'], result['imported'], result['legacy_stock_rows']) == (1, 0, 1)
+    assert query(db, 'SELECT COA_ID, CounterCOA_ID, Amount, TaxRate, TaxAmount, EntryForm FROM Bookings '
+                     'WHERE ID = ?', (old,)) == before
+
+
+def test_the_database_import_leaves_a_row_alone_that_another_satz_claims_with_its_own_amount(db, tmp_path):
+    """Der Datenbank enthält auch „6850 an 1200“ (Abgang −10): Mit dem Betrag der Altzeile gehört sie diesem
+    Satz, und der mit dem Konto 1040 bekommt sie nicht."""
+    old = _stored_by_2_0_x(db, 'counter', expense=6850)
+
+    result = _import_fdb(db, _fdb_stock(tmp_path, FDB_STOCK_ROWS['counter'](),
+                                        wiso_row(4980, 1200, 10.0, 'LS-1', text='Posten LS-1',
+                                                 ACCOUNTINGID=705)))
+
+    assert result['legacy_stock_rows'] == 0
+    assert query(db, 'SELECT Amount FROM Bookings WHERE ID = ?', (old,)) == [(minor('-10.00'),)]
+
+
 # ── die Seite „Verschiedenes“ ────────────────────────────────────────────────
 
 NOTICE_STOCK = ('Konten 1000&ndash;1099 sind im SKR04 Vorräte; ältere Versionen haben sie als Kasse '
@@ -559,6 +868,9 @@ NOTICE_STOCK = ('Konten 1000&ndash;1099 sind im SKR04 Vorräte; ältere Versione
                 'Konten werden als Umbuchung gelesen und erscheinen nicht in der EÜR.')
 NOTICE_LEGACY = ('ältere Überträge sind noch nach der alten Lesart gespeichert; ihre Form und ihr '
                  'Betrag wurden nicht verändert.')
+NOTICE_STOCK_ROWS = ('Buchungen auf Konten 1000&ndash;1099 stammen aus einer älteren Version und sind nach '
+                     'deren Lesart gespeichert; ihre Form und ihr Betrag wurden nicht verändert, und sie '
+                     'wurden nicht erneut angelegt.')
 
 
 def _store(name, result):
@@ -583,10 +895,10 @@ def test_page_names_negative_gross_and_the_old_cash_range_for_both_imports(db, n
 @pytest.mark.parametrize('name', ['wiso_import_result.json', 'wiso_fdb_result.json'])
 def test_page_shows_no_notice_without_a_reason(db, name):
     _store(name, {'negative_gross': 0, 'stock_range_accounts': [], 'legacy_mirrors': 0,
-                  'form_conflicts': [], 'imported': 1})
+                  'legacy_stock_rows': 0, 'form_conflicts': [], 'imported': 1})
     html = PageMiscellaneous(db)
     assert 'Negative Bruttobeträge' not in html and NOTICE_STOCK not in html
-    assert NOTICE_LEGACY not in html
+    assert NOTICE_LEGACY not in html and NOTICE_STOCK_ROWS not in html
 
 
 @pytest.mark.parametrize('name', ['wiso_import_result.json', 'wiso_fdb_result.json'])
@@ -594,9 +906,20 @@ def test_page_survives_a_hand_edited_result_file(db, name):
     _store(name, {'negative_gross': 'viel', 'stock_range_accounts': 'x', 'legacy_mirrors': [],
                   'form_conflicts': {'a': 1}})
     _store(name, {'negative_gross': True, 'stock_range_accounts': [1, None, 'x'],
-                  'legacy_mirrors': -3, 'form_conflicts': [1, 'x', None]})
+                  'legacy_mirrors': -3, 'legacy_stock_rows': 'viele', 'form_conflicts': [1, 'x', None]})
     html = PageMiscellaneous(db)
     assert 'Negative Bruttobeträge' not in html and NOTICE_LEGACY not in html
+    assert NOTICE_STOCK_ROWS not in html
+
+
+@pytest.mark.parametrize('name', ['wiso_import_result.json', 'wiso_fdb_result.json'])
+def test_page_names_the_stock_rows_an_older_version_stored(db, name):
+    _store(name, {'legacy_stock_rows': 3})
+    html = PageMiscellaneous(db)
+    assert f'3 {NOTICE_STOCK_ROWS}' in html
+
+    _store(name, {'legacy_stock_rows': 0})
+    assert NOTICE_STOCK_ROWS not in PageMiscellaneous(db)
 
 
 @pytest.mark.parametrize('name', ['wiso_import_result.json', 'wiso_fdb_result.json'])

@@ -128,14 +128,17 @@ class WisoFdbImportMixin:
             mit ``id``, ``date``, ``amount`` in Euro und ``text`` der vorhandenen
             Buchung), ``assets``, ``depreciations``, ``tax_rows_skipped``,
             ``memo_rows_skipped``, ``missing_coa`` und ``errors``. Dazu
-            ``negative_gross`` (Sätze mit negativem Bruttobetrag, deren Vorzeichen der Import
-            ersetzt hat: bei genau einer liquiden Seite richtet es sich nach der Geldbewegung, ein
-            Storno oder eine Gutschrift wird so wie eine normale Buchung gelesen),
+            ``negative_gross`` (Sätze mit negativem Bruttobetrag und genau einer liquiden Seite:
+            dort bestimmt die Geldbewegung das Vorzeichen, ein Storno oder eine Gutschrift wird so
+            wie eine normale Buchung gelesen),
             ``stock_range_accounts`` (Konten 1000–1099 in den Sätzen: ältere Versionen haben sie
             als Kasse gelesen; je Konto ``nummer``, ``bezeichnung``, ``anzahl`` der Sätze),
             ``legacy_mirrors`` (Spiegel der Datenbank, die als schon vorhandene Spiegel des
             Bestands wiedererkannt wurden: Sie stehen noch in der alten Lesart, ihre Form und
-            ihr Betrag bleiben unverändert) und ``form_conflicts_count``/``form_conflicts``
+            ihr Betrag bleiben unverändert), ``legacy_stock_rows`` (Sätze auf Konten 1000–1099,
+            die eine ältere Version aus dem CSV-Import mit ihrer Lesart – diese Konten als Kasse –
+            gespeichert hat und die der Import übernimmt statt sie neu anzulegen) und
+            ``form_conflicts_count``/``form_conflicts``
             (schon importierte Sätze, deren gespeicherte Form von der des frischen Imports
             abweicht: nur gemeldet, die ersten 500 mit ``id``, ``date``, ``amount``, ``text``,
             ``stored`` und ``fresh``).
@@ -145,6 +148,7 @@ class WisoFdbImportMixin:
         result = {'imported': 0, 'skipped': 0, 'adopted': 0, 'adopted_rows': [],
                   'possible_duplicates_count': 0, 'possible_duplicates': [],
                   'negative_gross': 0, 'stock_range_accounts': [], 'legacy_mirrors': 0,
+                  'legacy_stock_rows': 0,
                   'form_conflicts_count': 0, 'form_conflicts': [],
                   'assets': 0, 'depreciations': 0, 'tax_rows_skipped': 0,
                   'memo_rows_skipped': 0, 'missing_coa': {}, 'created_coa': {},
@@ -347,6 +351,12 @@ class WisoFdbImportMixin:
           nicht selbst eine Zeile mit dem Betrag dieses Spiegels enthält (dann wäre es deren
           Duplikat). Form und Betrag bleiben. Mehrdeutigkeit und „im Zweifel neu anlegen“ gelten
           wie oben.
+        * Ein Satz, der ein Konto 1000–1099 berührt, wird zusätzlich mit dem Betrag gesucht, den die
+          Regel von 2.0.x (diese Konten als Kasse) ergeben hätte: Eine ältere Version hat die Zeile des
+          CSV-Imports so gespeichert. Es gelten dieselben Schutzregeln (Text gleich und nicht leer,
+          Beleg-Nr., Konto, Gegenkonto – hier immer beide bekannt und gleich) und die Datei darf keine
+          Zeile mit diesem Betrag selbst beanspruchen. Übernommen wird mit der Quellgruppe, Form und
+          Betrag bleiben (``legacy_stock_rows``); Steuer und Konten füllt die Übernahme nicht.
         * Bekannte ``SourceGroup`` (Re-Import): Statt zu überspringen, wird der Satz mit der
           Zeile der Gruppe verglichen (Datum, Konto, Gegenkonto, |Betrag|). Ein
           ``mirror_legacy``-Spiegel wird gezählt (``legacy_mirrors``); weicht eine andere
@@ -404,6 +414,7 @@ class WisoFdbImportMixin:
             # mehrdeutig (auch Sätze, die schon eine SourceGroup haben, zählen mit).
             prepared = []
             counters = {}
+            legacy_counters = {}
             accounts = {}      # dasselbe für die Ersatzsuche: gleicher Satz, verschiedene Konten
             for booking in bookings:
                 coa = coa_map.get(booking.account)
@@ -413,10 +424,17 @@ class WisoFdbImportMixin:
                 text = _comparable(_as_csv_text(booking.text))
                 key = (booking.date, amount, coa, number, text)
                 counters.setdefault(key, set()).add(counter_coa)
+                if booking.legacy_amount is not None:
+                    legacy_counters.setdefault(
+                        (booking.date, to_minor(booking.legacy_amount), coa, number, text),
+                        set()).add(counter_coa)
                 accounts.setdefault((booking.date, amount, number, text, counter_coa),
                                     set()).add(coa)
                 prepared.append((booking, coa, counter_coa, amount, number, text, key))
             ambiguous = {key for key, seen in counters.items() if len(seen) > 1}
+            # dasselbe für die Beträge der Regel von 2.0.x (Konten 1000–1099): Sätze, die sich nur im
+            # Gegenkonto unterscheiden, lassen sich keiner Zeile sicher zuordnen
+            legacy_ambiguous = {key for key, seen in legacy_counters.items() if len(seen) > 1}
             # Die Ersatzsuche kennt das Konto der CSV-Zeile nicht: Unterscheiden sich
             # zwei Sätze nur im Konto (z. B. zwei gleich hohe Löhne auf zwei
             # Personenkonten), ließe sich nicht sagen, welche Zeile zu welchem gehört.
@@ -498,11 +516,32 @@ class WisoFdbImportMixin:
                          if row.doc == number and row.form == FORM_MIRROR_LEGACY],
                         counter_coa, text, locked=True)
                     flipped = match is not None
+                legacy_stock = False
+                if (match is None and booking.legacy_amount is not None
+                        and coa is not None and counter_coa is not None):
+                    # Berührt der Satz ein Konto 1000–1099, hat eine ältere Version die CSV-Zeile mit
+                    # dem Betrag ihrer Regel gespeichert. Sonst dieselben Schutzregeln wie oben; eine
+                    # Zeile, die ein anderer Satz der Datenbank mit diesem Betrag beansprucht, ist keine.
+                    legacy_minor = to_minor(booking.legacy_amount)
+                    legacy_key = (booking.date, legacy_minor, coa, number, text)
+                    if legacy_minor != amount and legacy_key not in counters:
+                        free = csv_rows(legacy_key[:3])[1]
+                        match = _matching_row([row for row in free if row.doc == number],
+                                              counter_coa, text, locked=legacy_key in legacy_ambiguous)
+                        legacy_stock = match is not None
                 if match is not None:
                     free.remove(match)
                     stored = match.form
                     form_value = None
-                    if not stored or found_without_account or (
+                    params_fill = (coa, counter_coa, booking.tax_rate,
+                                   self._minor_opt(booking.tax_amount))
+                    if legacy_stock:
+                        # Betrag und Form der älteren Version bleiben, und die Übernahme füllt nichts
+                        # (Konten, Steuer): der Steuerbetrag der Datenbank trüge das Vorzeichen des
+                        # neuen Betrags, und neue Konten verlangten eine Form, die zu ihm passt.
+                        result['legacy_stock_rows'] += 1
+                        params_fill = (None, None, None, None)
+                    elif not stored or found_without_account or (
                             match.counter is None and counter_coa is not None):
                         # Zeile ohne Form, oder die Übernahme füllt ein fehlendes Konto: Die Konten
                         # des Satzes ändern sich, also gilt die Form des Imports für sie
@@ -512,8 +551,7 @@ class WisoFdbImportMixin:
                     elif deviates(stored, booking.form):
                         note_conflict(match.id, booking.date, -amount if flipped else amount,
                                       match.shown, stored, booking.form)
-                    params = (booking.group or None, coa, counter_coa,
-                              booking.tax_rate, self._minor_opt(booking.tax_amount),
+                    params = (booking.group or None, *params_fill,
                               recipients.get(booking.invoice_id) or None, form_value, match.id)
                     cursor.execute(adopt_sql, params)
                     tx.log.append((adopt_sql, params, 'WISO-Datenbank-Import: '
@@ -697,8 +735,8 @@ class WisoFdbImportMixin:
 
         Der Betrag ist der des Buchungssatzes, wie der Import ihn gespeichert hat: Bei genau
         einer liquiden Seite trägt er die Richtung der Geldbewegung (``WisoDatabase._signed``),
-        ein negativer Bruttobetrag verliert dabei sein Vorzeichen (``negative_gross`` im
-        Ergebnis des Imports). Eine stornierte und neu gebuchte Zahlung, die WISO als hin,
+        ein negativer Bruttobetrag verliert dabei sein Vorzeichen oder behält es zufällig
+        (``negative_gross`` im Ergebnis des Imports). Eine stornierte und neu gebuchte Zahlung, die WISO als hin,
         zurück, hin ablegt, ist darin nicht vom Original zu unterscheiden; ``link_invoice_to_transaction``
         ordnet jedes Paar Rechnung–Bewegung höchstens einmal zu und meldet Doppeltes in
         ``payment_warnings``. Eine Gutschrift lässt sich so nicht vorzeichenrichtig zuordnen – bis das

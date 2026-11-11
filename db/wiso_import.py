@@ -34,13 +34,16 @@ class WisoImportMixin:
         Returns:
             dict: {imported: int, updated: int, skipped: int, errors: list[str], format: str}
             Der Original-Export meldet zusätzlich ``negative_gross`` (Zeilen mit negativem
-            Bruttobetrag, deren Vorzeichen der Import ersetzt hat: bei genau einer liquiden Seite
-            richtet es sich nach der Geldbewegung, ein Storno oder eine Gutschrift wird so wie
-            eine normale Buchung gelesen), ``stock_range_accounts`` (Konten 1000–1099 in der
+            Bruttobetrag und genau einer liquiden Seite: dort bestimmt die Geldseite das
+            Vorzeichen, ein Storno oder eine Gutschrift wird so wie eine normale Buchung gelesen –
+            ob die Zahl dabei ihr Vorzeichen ändert oder zufällig behält), ``stock_range_accounts`` (Konten 1000–1099 in der
             Datei: ältere Versionen haben sie als Kasse gelesen; je Konto ``nummer``,
-            ``bezeichnung``, ``anzahl`` der Zeilen) und ``legacy_mirrors`` (Spiegel der Datei,
+            ``bezeichnung``, ``anzahl`` der Zeilen), ``legacy_mirrors`` (Spiegel der Datei,
             die als schon vorhandene Spiegel des Bestands wiedererkannt wurden – mit gleichem oder
-            umgekehrtem Vorzeichen; sie stehen noch in der alten Lesart und bleiben unverändert).
+            umgekehrtem Vorzeichen; sie stehen noch in der alten Lesart und bleiben unverändert)
+            und ``legacy_stock_rows`` (Zeilen auf Konten 1000–1099, die eine ältere Version mit
+            ihrer Lesart – diese Konten als Kasse – gespeichert hat: Sie gelten als Duplikat und
+            werden nicht erneut angelegt).
         """
         import csv, io, datetime
 
@@ -114,6 +117,7 @@ class WisoImportMixin:
         updated = 0
         skipped = 0
         legacy_mirrors = 0
+        legacy_stock_rows = 0
         negative_gross = 0
         stock_counts = Counter()    # Konto 1000–1099 → Zeilen der Datei
         skipped_rows = []       # Liste übersprungener Zeilen mit Details
@@ -180,11 +184,19 @@ class WisoImportMixin:
                 # Dazu die Form des Satzes, wie das Vorzeichen gesetzt wurde. Zwei liquide Seiten:
                 # Spiegel, der Rohbetrag bleibt (positiv = Konto im Soll). Keine: Umbuchung.
                 konto_liquid, gegen_liquid = _is_liquid(konto_nr), _is_liquid(gegenkonto_nr)
+                raw_amount = amount
                 if gegen_liquid != konto_liquid:
-                    signed = -abs(amount) if gegen_liquid else abs(amount)
-                    if amount < 0 < signed:
-                        negative_gross += 1       # das Vorzeichen der Datei wurde ersetzt
-                    amount = signed
+                    if amount < 0:
+                        negative_gross += 1       # die Geldseite bestimmt das Vorzeichen, nicht der Brutto
+                    amount = -abs(amount) if gegen_liquid else abs(amount)
+                # Berührt die Zeile ein Konto 1000–1099, hat eine ältere Version sie mit einem anderen
+                # Betrag gespeichert (diese Konten galten als Kasse): der Betrag der Regel von 2.0.x
+                legacy_amount = None
+                if konto_nr in STOCK_RANGE or gegenkonto_nr in STOCK_RANGE:
+                    legacy_konto = konto_liquid or konto_nr in STOCK_RANGE
+                    legacy_gegen = gegen_liquid or gegenkonto_nr in STOCK_RANGE
+                    legacy_amount = ((-abs(raw_amount) if legacy_gegen else abs(raw_amount))
+                                     if legacy_konto != legacy_gegen else raw_amount)
                 form = import_entry_form(coa_id, konto_liquid, counter_coa_id, gegen_liquid)
                 for nr in {konto_nr, gegenkonto_nr}:
                     if nr in STOCK_RANGE:
@@ -210,6 +222,7 @@ class WisoImportMixin:
                     'konto_nr': konto_nr, 'konto_str': konto_str,
                     'tax_rate': tax_rate, 'tax_amount': tax_amount,
                     'text': text_val, 'doc': doc_number, 'form': form,
+                    'legacy_amount': legacy_amount,
                 })
             except Exception as e:
                 errors.append(f"Zeile {i}: {str(e)}")
@@ -240,7 +253,7 @@ class WisoImportMixin:
         csv_dup_seen  = {}   # dup_key → Anzahl in dieser CSV bereits verarbeiteter Zeilen
         csv_dup_total = Counter(
             (pr['doc'], pr['date'], pr['coa_id'], to_minor(pr['amount'] or 0))
-            for pr in parsed_rows if pr['doc'])   # dup_key → Zeilen dieser CSV insgesamt
+            for pr in parsed_rows)                # dup_key → Zeilen dieser CSV insgesamt
         legacy_twins  = {}   # (Beleg, Datum, Konto, Gegenkonto, Betrag) → IDs der mirror_legacy-Zeilen
         legacy_known  = {}   # dasselbe → Zahl der mirror_legacy-Zeilen mit genau diesem Betrag
         legacy_seen   = Counter()
@@ -261,6 +274,58 @@ class WisoImportMixin:
                 legacy_known[key] = dup_cur.fetchone()[0]
             if legacy_seen[key] < legacy_known[key]:
                 legacy_seen[key] += 1
+                return True
+            return False
+
+        def _db_dup_count(dup_key):
+            """Zeilen im Bestand zu (Beleg, Datum, Konto, Betrag), vor den Einfügungen dieses Laufs –
+            ohne Beleg-Nr. nur Buchungssätze. Je Schlüssel einmal gelesen."""
+            if dup_key not in db_dup_counts:
+                doc, date, coa, minor = dup_key
+                if doc:
+                    sql, params = ('SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND DateBooking=? '
+                                   'AND COA_ID ' + ('=?' if coa is not None else 'IS NULL')
+                                   + ' AND Amount=?'), [doc, date]
+                else:
+                    sql, params = ("SELECT COUNT(*) FROM Bookings WHERE COALESCE(DocumentNumber,'')='' "
+                                   'AND DateBooking=? AND COA_ID ' + ('=?' if coa is not None else 'IS NULL')
+                                   + " AND Amount=? AND BookingType='entry'"), [date]
+                if coa is not None:
+                    params.append(coa)
+                params.append(minor)
+                dup_cur.execute(sql, params)
+                db_dup_counts[dup_key] = dup_cur.fetchone()[0]
+            return db_dup_counts[dup_key]
+
+        legacy_stock_known = {}   # (Beleg, Datum, Konto, Betrag, Gegenkonto) → Zeilen im Bestand
+        legacy_stock_seen  = Counter()
+
+        def _legacy_stock_duplicate(pr, minor_amount):
+            """Hat eine ältere Version diese Zeile schon gespeichert? Berührt sie ein Konto 1000–1099,
+            galt dort die Regel von 2.0.x (diese Konten als Kasse) und gab ihr einen anderen Betrag. Ein
+            Treffer mit diesem Betrag und gleicher Beleg-Nr., gleichem Datum, Konto und Gegenkonto ist
+            dieselbe Buchung: Duplikat, die vorhandene Zeile bleibt, wie sie ist. Jede vorhandene Zeile
+            zählt höchstens einmal, und nicht die, die eine andere Zeile der Datei mit ihrem eigenen
+            Betrag beansprucht. Ein Konto, das im Kontenrahmen fehlt, ist auf beiden Seiten leer
+            und gilt als gleich (der Import legte die Zeile damals auch so an)."""
+            if pr['legacy_amount'] is None:
+                return False
+            legacy_minor = to_minor(pr['legacy_amount'] or 0)
+            if legacy_minor == minor_amount:
+                return False                  # derselbe Betrag: die gewöhnliche Duplikatsuche hat entschieden
+            own = (pr['doc'], pr['date'], pr['coa_id'], legacy_minor)
+            key = own + (pr['counter_coa_id'],)
+            if key not in legacy_stock_known:
+                dup_cur.execute(
+                    "SELECT COUNT(*) FROM Bookings WHERE BookingType='entry' "
+                    "AND COALESCE(DocumentNumber,'')=? AND DateBooking=? AND COA_ID IS ? "
+                    "AND Amount=? AND CounterCOA_ID IS ?",
+                    (pr['doc'], pr['date'], pr['coa_id'], legacy_minor, pr['counter_coa_id']))
+                legacy_stock_known[key] = dup_cur.fetchone()[0]
+            unclaimed = _db_dup_count(own) - csv_dup_total[own]
+            if legacy_stock_seen[key] < legacy_stock_known[key] and unclaimed > 0:
+                legacy_stock_seen[key] += 1
+                db_dup_counts[own] -= 1          # diese Zeile ist verbraucht
                 return True
             return False
 
@@ -304,46 +369,29 @@ class WisoImportMixin:
 
                 # Duplikat-Prüfung
                 minor_amount = to_minor(amount or 0)
-                if doc_number:
-                    dup_key = (doc_number, booking_date, coa_id, minor_amount)
-                    if dup_key not in db_dup_counts:
-                        if coa_id is not None:
-                            dup_cur.execute(
-                                'SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND DateBooking=? AND COA_ID=? AND Amount=?',
-                                (doc_number, booking_date, coa_id, minor_amount)
-                            )
-                        else:
-                            dup_cur.execute(
-                                'SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND DateBooking=? AND COA_ID IS NULL AND Amount=?',
-                                (doc_number, booking_date, minor_amount)
-                            )
-                        db_dup_counts[dup_key] = dup_cur.fetchone()[0]
-                else:
-                    # Ohne Belegnummer (z.B. privat/1%-Methode): nur Entry-Zeilen
-                    # zählen als Treffer. Der Text gehört NICHT in den Schlüssel,
-                    # weil der Tabellen-Export-Import ihn nachträglich überschreibt
-                    # (Verwendungszweck) – gleichartige Zeilen unterscheidet die
-                    # Zählung über die Anzahl, nicht über den Text.
-                    dup_key = ('', booking_date, coa_id, minor_amount)
-                    if dup_key not in db_dup_counts:
-                        if coa_id is not None:
-                            dup_cur.execute(
-                                "SELECT COUNT(*) FROM Bookings WHERE COALESCE(DocumentNumber,'')='' "
-                                "AND DateBooking=? AND COA_ID=? AND Amount=? AND BookingType='entry'",
-                                (booking_date, coa_id, minor_amount)
-                            )
-                        else:
-                            dup_cur.execute(
-                                "SELECT COUNT(*) FROM Bookings WHERE COALESCE(DocumentNumber,'')='' "
-                                "AND DateBooking=? AND COA_ID IS NULL AND Amount=? AND BookingType='entry'",
-                                (booking_date, minor_amount)
-                            )
-                        db_dup_counts[dup_key] = dup_cur.fetchone()[0]
+                # Ohne Belegnummer (z.B. privat/1%-Methode): nur Entry-Zeilen zählen als
+                # Treffer. Der Text gehört NICHT in den Schlüssel, weil der
+                # Tabellen-Export-Import ihn nachträglich überschreibt (Verwendungszweck) –
+                # gleichartige Zeilen unterscheidet die Zählung über die Anzahl, nicht über den Text.
+                dup_key = (doc_number or '', booking_date, coa_id, minor_amount)
+                _db_dup_count(dup_key)
                 seen = csv_dup_seen.get(dup_key, 0)
                 csv_dup_seen[dup_key] = seen + 1
                 if seen < db_dup_counts[dup_key]:
                     if _legacy_duplicate(pr, minor_amount):
                         legacy_mirrors += 1
+                    skipped += 1
+                    skipped_rows.append({
+                        'zeile': pr['zeile'], 'datum': booking_date,
+                        'ref': doc_number, 'konto': pr['konto_str'],
+                        'betrag': amount, 'text': pr['text'][:60],
+                    })
+                    continue
+
+                # Kein Treffer mit diesem Betrag: Vielleicht hat eine ältere Version die Zeile mit dem
+                # Betrag ihrer Regel gespeichert (Konten 1000–1099 als Kasse) – dann ist sie ein Duplikat.
+                if _legacy_stock_duplicate(pr, minor_amount):
+                    legacy_stock_rows += 1
                     skipped += 1
                     skipped_rows.append({
                         'zeile': pr['zeile'], 'datum': booking_date,
@@ -396,6 +444,7 @@ class WisoImportMixin:
                 {'nummer': nr, 'bezeichnung': stock_names.get(nr, ''), 'anzahl': count}
                 for nr, count in sorted(stock_counts.items())],
             'legacy_mirrors':    legacy_mirrors,
+            'legacy_stock_rows': legacy_stock_rows,
             'errors':            errors,
             'format':            'original'
         }

@@ -247,9 +247,9 @@ kein Subagent darauf:
   ableiten – und mit der eine Zeile ohne Form gelesen wird. **1000–1099 gehört nicht mehr dazu**
   (SKR04: Vorräte; früher der SKR03-Kassenbereich): Beide WISO-Importe melden Buchungen darauf
   (`stock_range_accounts`, Hinweis auf *Verschiedenes*: Buchungen gegen diese Konten werden als
-  Umbuchung gelesen und erscheinen nicht in der EÜR), und `negative_gross` zählt Sätze mit negativem
-  Brutto, deren Vorzeichen der Import ersetzt hat (bei genau einer liquiden Seite richtet es sich nach der
-  Geldbewegung, ein Storno wird so wie eine Buchung gelesen – bis das festgeschrieben ist,
+  Umbuchung gelesen und erscheinen nicht in der EÜR), und `negative_gross` zählt jeden Satz mit negativem
+  Brutto und genau einer liquiden Seite (dort bestimmt die Geldbewegung das Vorzeichen, ein Storno wird so
+  wie eine Buchung gelesen – gleich, ob die Zahl ihr Vorzeichen dabei ändert; bis das festgeschrieben ist,
   `docs/aufgaben.md`).
   Ob ein Satz in die EÜR kommt, entscheidet die
   Sektion in `get_euer_data` – Kind einer Bank- oder Kassenbewegung; eigenständig auf einer
@@ -396,8 +396,9 @@ kein Subagent darauf:
   WISO vergibt je Verrechnungskonto-Buchung eine eigene `ACCOUNTINGID`. Die
   Quellgruppe ist damit feiner und greift nur, wo eine Beleg-Nr. fehlt
 - **Vorzeichen und Form:** Beide Importe richten das Vorzeichen an den liquiden Seiten aus (eigene Konten
-  und 1460; genau eine Seite liquide → Richtung der Geldbewegung; ein negativer Brutto, dessen Vorzeichen
-  dabei ersetzt wird, zählt als `negative_gross`) und schreiben die Form mit: Konto liquide `liquid_first`,
+  und 1460; genau eine Seite liquide → Richtung der Geldbewegung; ein negativer Brutto bei genau einer
+  liquiden Seite zählt als `negative_gross`, keine oder zwei liquide Seiten: der Rohbetrag bleibt und
+  zählt nicht) und schreiben die Form mit: Konto liquide `liquid_first`,
   Gegenkonto liquide `purpose_first`, beide `mirror_coa` (der **Rohbetrag**, positiv = Konto im Soll – der
   Betrag neuer Importe ändert sich dadurch nicht, ein Re-Import findet seine Zeilen), **keine liquide Seite
   `transfer`** mit dem Rohbetrag (WISO meint „Konto im Soll“ – auch bei leerem oder unbekanntem Gegenkonto,
@@ -407,7 +408,14 @@ kein Subagent darauf:
   Vorzeichen (Beleg-Nr., Datum, Konto, Gegenkonto gleich, von der Datei nicht selbst beansprucht) –, legen
   keinen zweiten Satz an und lassen Form und Betrag, wie sie sind; sie zählen ihn (`legacy_mirrors`, Hinweis
   auf *Verschiedenes*). Weicht eine andere gespeicherte Form von der des frischen Imports ab, wird das nur
-  gemeldet (`form_conflicts`)
+  gemeldet (`form_conflicts`). **Zeilen auf Konten 1000–1099 aus 2.0.x** (dort als Kasse gelesen, also mit
+  einem anderen Betrag gespeichert: „6815 an 1050“ −10, „1050 an 1800“ +30) erkennen beide Wege am Betrag der
+  alten Regel wieder (Zahlungskonten einschließlich 1000–1099): der Re-Import des Textexports mit einer
+  zusätzlichen Duplikatsuche (gleiche Beleg-Nr., Datum, Konto, Gegenkonto, jede Zeile höchstens einmal, nicht
+  die, die eine andere Zeile der Datei mit ihrem eigenen Betrag beansprucht), die Übernahme CSV → Datenbank
+  über `WisoBooking.legacy_amount` unter denselben Schutzregeln wie sonst. Kein zweiter Satz, Form und Betrag
+  der Altzeile bleiben, die Übernahme füllt nichts; der Zähler heißt `legacy_stock_rows` (Hinweis auf
+  *Verschiedenes*)
 - **CSV und Datenbank nacheinander:** Der Datenbank-Import (`_insert_wiso_bookings`) übernimmt eine CSV-Buchung
   (`entry` ohne `SourceGroup`, `AutoMirror`, `Account_ID`) nur, wenn Datum, Betrag, Konto, Beleg-Nr. **und ein
   nicht leerer Text** gleich sind (Leerraum/`casefold`; der latin-1 gelesene WISO-Text wird dafür nach cp1252 umgesetzt) und das
