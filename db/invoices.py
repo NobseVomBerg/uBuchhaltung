@@ -9,6 +9,7 @@ from decimal import Decimal
 from money import to_minor, from_minor
 from .core import fk_explained
 from .invoice_payments import PAYABLE_STATUSES, PAYMENT_MARK
+from .matching import FORM_TRANSFER
 from .reporting import is_income_account
 
 
@@ -393,10 +394,15 @@ class InvoicesMixin:
                             (invoice_id, transaction_id)).fetchone():
                 raise ValueError(f"Booking {transaction_id} is already linked to invoice {invoice_id}")
 
-            conn.execute('''
-                INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate)
-                VALUES (?, ?, ?, ?)
-            ''', (invoice_id, transaction_id, to_minor(amount_paid), payment_date))
+            try:
+                conn.execute('''
+                    INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate)
+                    VALUES (?, ?, ?, ?)
+                ''', (invoice_id, transaction_id, to_minor(amount_paid), payment_date))
+            except sqlite3.IntegrityError:
+                # der eindeutige Index auf (Rechnung, Bewegung): ein gleichzeitiger zweiter Aufruf
+                raise ValueError(
+                    f"Booking {transaction_id} is already linked to invoice {invoice_id}")
 
             self._recalc_invoice(conn, invoice_id)
             conn.commit()
@@ -816,6 +822,7 @@ class InvoicesMixin:
             text=f"Rechnung {invoice[1]} {customer}".strip(),
             document_number=invoice[1],
             booking_type='entry',
+            entry_form=FORM_TRANSFER,
             log_description="Offener Posten zur Rechnung")
 
     def remove_receivable_booking(self, invoice_id):

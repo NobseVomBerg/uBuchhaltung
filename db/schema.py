@@ -2,12 +2,14 @@
 # SPDX-FileCopyrightText: 2026 unsix IT Engineering
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Database-Mixin: schema."""
+import datetime
 import sqlite3
 import os
 import json
 from decimal import Decimal
 from money import to_minor, from_minor
 from .accounts import DEFAULT_CASH_ACCOUNT
+from .matching import read_entry_form
 
 
 class SchemaTooNewError(RuntimeError):
@@ -17,6 +19,19 @@ class SchemaTooNewError(RuntimeError):
     seine eigene (niedrigere) Schema-Zahl hineinschreiben, und beim nächsten Start
     der neueren Version liefen deren Migrationen erneut.
     """
+
+
+class MigrationBackupError(RuntimeError):
+    """Die Sicherung vor einer Migration ist gescheitert.
+
+    Dann wird die Datenbank nicht geöffnet und nicht verändert: Ohne Sicherung gäbe es nach
+    der Umstellung kein Zurück auf die vorherige Version.
+    """
+
+
+#: Ab dieser Schema-Zahl (Version 2.1.0) trägt jeder Buchungssatz seine Form
+#: (``Bookings.EntryForm``). Die Migration darauf sichert die Datenbank vorher.
+ENTRY_FORM_SCHEMA = 2001
 
 
 class SchemaMixin:
@@ -94,6 +109,75 @@ class SchemaMixin:
             # Bank ist. Eigenständig erfasste Buchungen (WISO/Handerfassung)
             # weichen mindestens in Empfänger, Text oder Steuerdatum ab.
             self._mark_existing_auto_mirrors(cursor)
+        if from_version < ENTRY_FORM_SCHEMA:
+            # 2.1.0: Die Form eines Buchungssatzes (Zweckkonto/Geldkonto vorne, Umbuchung,
+            # Spiegel) steht als Daten am Satz, statt bei jedem Lesen aus der Kontenliste von
+            # heute geraten zu werden. Der Bestand bekommt die Form, mit der 2.0.x ihn las
+            # (_fill_entry_forms) – danach liest jede Auswertung jede Zeile wie vorher.
+            self._add_column_if_missing(cursor, 'Bookings', 'EntryForm', 'TEXT')
+            self._fill_entry_forms(cursor)
+
+    def _fill_entry_forms(self, cursor):
+        """Jedem Buchungssatz (``BookingType='entry'``) ohne Form die Form geben, die
+        ``classify_entry`` mit den Zahlungskonten von 2.0.x (``_get_legacy_payment_coa_ids``,
+        einschließlich des Bereichs 1000–1099) für ihn ergibt. Ein Spiegel bekommt
+        ``mirror_legacy``: Welche Konvention sein Betrag hat, weiß nur der, der ihn geschrieben
+        hat. Bankzeilen bleiben ohne Form. Zeilen, die schon eine Form tragen, bleiben unberührt –
+        der Schritt ist wiederholbar."""
+        money_ids = self._get_legacy_payment_coa_ids(cursor)
+        pairs = cursor.execute(
+            "SELECT DISTINCT COA_ID, CounterCOA_ID FROM Bookings "
+            "WHERE BookingType = 'entry' AND EntryForm IS NULL").fetchall()
+        for coa_id, counter_coa_id in pairs:
+            cursor.execute(
+                "UPDATE Bookings SET EntryForm = ? WHERE BookingType = 'entry' "
+                "AND EntryForm IS NULL AND COA_ID IS ? AND CounterCOA_ID IS ?",
+                (read_entry_form(None, coa_id, counter_coa_id, money_ids),
+                 coa_id, counter_coa_id))
+
+    def _backup_before_migration(self, label):
+        """Kopie der Datenbank nach ``<Ordner der Datenbank>/backup/JJJJMMTT_vor_<label>_<Datei>``,
+        gezogen über die Backup-API von SQLite (konsistent, auch bei offenen Verbindungen) – bevor
+        die Migration irgendetwas ändert. ``backup/`` wird von der Datensicherung nie erfasst oder
+        gelöscht. Ein vorhandener Name wird nie überschrieben (laufende Nummer). Scheitert die
+        Kopie, ``MigrationBackupError``; eine halbe Kopie wird entfernt. Returns den Pfad."""
+        source_path = os.path.abspath(self.db_name)
+        directory = os.path.join(os.path.dirname(source_path), 'backup')
+        stamp = datetime.date.today().strftime('%Y%m%d')
+        name = os.path.basename(source_path)
+        target = os.path.join(directory, f'{stamp}_vor_{label}_{name}')
+        copied = False
+        try:
+            os.makedirs(directory, exist_ok=True)
+            number = 1
+            while os.path.exists(target):
+                number += 1
+                target = os.path.join(directory, f'{stamp}_vor_{label}_{number}_{name}')
+            source = sqlite3.connect(source_path)
+            try:
+                destination = sqlite3.connect(target)
+                try:
+                    source.backup(destination)
+                    copied = True
+                    if (destination.execute('PRAGMA user_version').fetchone()[0]
+                            != source.execute('PRAGMA user_version').fetchone()[0]):
+                        raise sqlite3.DatabaseError('Die Kopie trägt einen anderen Stand als die Datenbank')
+                finally:
+                    destination.close()
+            finally:
+                source.close()
+        except Exception as exc:
+            if copied or os.path.exists(target):
+                try:
+                    os.remove(target)
+                except OSError:
+                    pass
+            raise MigrationBackupError(
+                f"Die Datenbank '{self.db_name}' muss auf Version {label} umgestellt werden. Vorher "
+                f"legt das Programm eine Sicherung an, und die ist gescheitert ({exc}). Die "
+                "Datenbank wurde nicht geöffnet und nicht verändert – bitte Schreibrechte und "
+                "freien Speicherplatz im Ordner der Datenbank prüfen.") from exc
+        return target
 
     def _mark_existing_auto_mirrors(self, cursor):
         """Altbestand: von uBuchhaltung erzeugte Buchungssätze markieren."""
@@ -139,6 +223,14 @@ class SchemaMixin:
         self._migrate_had_tables = cursor.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='Invoices'"
         ).fetchone() is not None
+        if self._migrate_had_tables and self._migrate_from_version < ENTRY_FORM_SCHEMA:
+            # Vor jeder Änderung: ohne Sicherung kein Weg zurück auf 2.0.x (die Zahl in der
+            # Datenbank wird nie zurückgestempelt, 2.0.x öffnet eine 2.1-Datenbank nicht)
+            try:
+                self._backup_before_migration('2.1.0')
+            except MigrationBackupError:
+                conn.close()
+                raise
 
         # Chart of Accounts = Standard Konto Rahmen, 03/04 in Germany or 07 for Austria
         cursor.execute('''
@@ -360,6 +452,11 @@ class SchemaMixin:
                 -- ausdrücklich mit. Wo sie gesetzt ist, muss sie nicht über
                 -- Beleg-Nr. + Datum geraten werden.
                 SourceGroup TEXT,
+                -- Form des Buchungssatzes (2.1.0): purpose_first | liquid_first |
+                -- transfer | mirror_coa | mirror_counter | mirror_legacy, siehe
+                -- db/matching.py. Bankzeilen haben keine (NULL). ANS ENDE anhängen:
+                -- die Leser lesen Bookings positionsbasiert (SELECT *).
+                EntryForm TEXT,
                 FOREIGN KEY (Account_ID) REFERENCES Accounts(ID),
                 FOREIGN KEY (Contact_ID) REFERENCES Contacts(ID),
                 FOREIGN KEY (COA_ID) REFERENCES ChartOfAccounts(ID),
@@ -634,6 +731,8 @@ class SchemaMixin:
                 self._migrate_from_version < SCHEMA_VERSION:
             self._run_migrations(cursor, self._migrate_from_version)
 
+        self._ensure_invoice_payment_index(cursor)
+
         # Schema-Version in der DB hinterlegen (MAJOR × 1000 + SCHEMA_STEP, siehe
         # version.py). Bei jeder Schema-Änderung SCHEMA_STEP dort erhöhen.
         cursor.execute(f"PRAGMA user_version = {int(SCHEMA_VERSION)}")
@@ -645,6 +744,25 @@ class SchemaMixin:
         self._seed_chart_of_accounts()
         self._seed_asset_categories()
         self._seed_tax_keys()
+    def _ensure_invoice_payment_index(self, cursor):
+        """Ein Paar (Rechnung, Bankbewegung) gibt es höchstens einmal in ``InvoicePayments``.
+
+        Neue Datenbanken bekommen den Index gleich, bestehende beim Öffnen – aber nur, wenn
+        sie keine Dubletten enthalten: Der Index ließe sich sonst nicht anlegen. Dann wird er
+        übersprungen (kein Fehler, kein Abbruch); die Prüfliste „Zahlungszuordnungen“ auf
+        *Verschiedenes* meldet die Dubletten, und beim nächsten Start ohne Dubletten entsteht
+        er."""
+        if cursor.execute(
+                "SELECT 1 FROM InvoicePayments GROUP BY InvoiceID, BookingID "
+                "HAVING COUNT(*) > 1 LIMIT 1").fetchone():
+            print("Hinweis: Der eindeutige Index auf den Zahlungszuordnungen wurde nicht angelegt, "
+                  "weil Zahlungen doppelt zugeordnet sind (Prüfliste „Zahlungszuordnungen“ auf "
+                  "Verschiedenes).")
+            return
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_invoicepayments_invoice_booking "
+            "ON InvoicePayments(InvoiceID, BookingID)")
+
     def ensure_kasse_exists(self):
         """Ensure the default 'Kasse' account exists and cannot be deleted.
 

@@ -431,8 +431,9 @@ def test_entries_are_counted_once_by_account_or_counter_account(tmp_db):
 
 def test_changing_the_cash_number_after_an_import_would_turn_an_expense_into_income(tmp_db):
     """Das Schadensbild, das der Schutz verhindert: Die Kasse hat keine Nummer, der Import liest „6815 an
-    1600“ (Ausgabe 18,35) mit dem Betrag der Datei (+18,35). Stellt man die Kasse danach auf 1600, gilt der
-    Satz als Zahlung mit positivem Betrag – die Ausgabe steht in der EÜR als Einnahme, im Export im Haben."""
+    1600“ (Ausgabe 18,35) mit dem Betrag der Datei (+18,35). Stellt man die Kasse danach auf 1600, passen
+    Betrag und Kontenliste nicht mehr zusammen (in 2.0.x kippte der Satz zu einer Einnahme, im Export in
+    den Haben); die Form des Satzes verhindert das Schlimmste, die Sperre bleibt trotzdem."""
     db = tmp_db
     kasse = _cash_id(db)
     _update(db, kasse, 'Kasse', None)
@@ -452,8 +453,13 @@ def test_changing_the_cash_number_after_an_import_would_turn_an_expense_into_inc
 
     row = db.get_account_by_id(kasse)                              # zum Vergleich an der Verwaltung vorbei
     db.update_account(kasse, row[1], row[2], row[3], row[4], row[5], skr_account=1600)
-    assert state() == ([('18,35', 'H', '6815', '1600', '3')],
-                       {1406: Decimal('2.93'), 6815: Decimal('15.42')}, (18.35, 0))
+    # Seit 2.1.0 trägt der Satz seine Form (Umbuchung): Das Kennzeichen im Export kippt nicht mehr
+    # auf H. Die Kasse führt jetzt aber 1600, also nimmt die EÜR den Satz auf – als Umbuchung, nicht
+    # als Ausgabe –, und das Dashboard zählt ihn mit dem gespeicherten Betrag (+18,35) als Einnahme.
+    # Die Sperre bleibt nötig.
+    assert state() == ([('18,35', 'S', '6815', '1600', '3')],
+                       {1406: Decimal('2.93'), 1600: Decimal('15.42'), 6815: Decimal('-15.42')},
+                       (18.35, 0))
 
 
 def test_bank_account_page_shows_the_message(tmp_db):
@@ -531,10 +537,10 @@ def test_viewing_pages_creates_no_chart_account_and_leaves_the_cash_account_alon
 
 
 # ── Zahlungskonten ───────────────────────────────────────────────────────────
-# Fest liquide sind der SKR03-Kassenbereich 1000–1099 und das Verrechnungskonto 1460
-# (``DEFAULT_LIQUID_ACCOUNTS``). 1600 und jedes weitere Kassenkonto zählen nur, wenn ein eigenes Konto
-# (``Accounts.SKRAccount``) die Nummer führt – eine Datenbank mit Kasse ohne Nummer oder mit 1460
-# liest „6815 an 1600“ also wie bisher (2.0.3).
+# Fest liquide ist das Verrechnungskonto 1460 (``DEFAULT_LIQUID_ACCOUNTS``); der SKR03-Kassenbereich
+# 1000–1099 gehört seit 2.1.0 nicht mehr dazu (in SKR04 sind es Vorräte). 1600 und jedes weitere
+# Kassenkonto zählen nur, wenn ein eigenes Konto (``Accounts.SKRAccount``) die Nummer führt – eine
+# Datenbank mit Kasse ohne Nummer oder mit 1460 liest „6815 an 1600“ also wie bisher (2.0.3).
 
 def _numbers(db, coa_ids):
     by_id = db.get_coa_id_to_number_map()
@@ -549,42 +555,42 @@ def _set_cash_number(db, number):
     assert status == 303
 
 
-def test_import_constant_is_the_skr03_cash_range_and_the_clearing_account():
-    """Festgeschrieben: 1000–1099 und 1460 – 1600 gehört nicht dazu (es zählt nur über das eigene
-    Kassenkonto, siehe ``get_payment_coa_ids``)."""
-    assert DEFAULT_LIQUID_ACCOUNTS == frozenset(range(1000, 1100)) | {1460}
-    assert all(number in DEFAULT_LIQUID_ACCOUNTS for number in (1000, 1050, 1099, 1460))
+def test_import_constant_is_the_clearing_account_only():
+    """Festgeschrieben: 1460 – weder 1600 (es zählt nur über das eigene Kassenkonto, siehe
+    ``get_payment_coa_ids``) noch der frühere SKR03-Kassenbereich 1000–1099."""
+    assert DEFAULT_LIQUID_ACCOUNTS == frozenset({1460})
     assert not any(number in DEFAULT_LIQUID_ACCOUNTS
-                   for number in (999, 1100, 1459, 1461, 1599, 1600, 1610, 1650, 1699, 1700, 1800))
+                   for number in (999, 1000, 1050, 1099, 1100, 1459, 1461, 1599, 1600, 1610, 1650,
+                                  1699, 1700, 1800))
 
 
-def test_payment_accounts_are_own_accounts_plus_skr03_cash_range_plus_clearing_account(tmp_db):
-    """Bank-/Kassen-COAs ∪ vorhandene Konten aus 1000–1099 ∪ 1460. 1600 ist Zahlungskonto nur,
-    solange ein eigenes Konto es führt."""
+def test_payment_accounts_are_own_accounts_plus_clearing_account(tmp_db):
+    """Bank-/Kassen-COAs ∪ 1460 – der frühere Bereich 1000–1099 ist kein Zahlungskonto mehr. 1600 ist
+    Zahlungskonto nur, solange ein eigenes Konto es führt."""
     db = tmp_db
     for number in (999, 1000, 1050, 1099, 1100, 1599, 1650, 1699, 1700):
         assert db.insert_chart_of_accounts(4, number, f'Grenzkonto {number}', 'Test')
     db.insert_account('Pay-Giro', 'Owner', 'DE00PAYMENTIDS', 'BIC', 'Bank', is_cash=0,
                       skr_account=1800)
-    never = {999, 1100, 1599, 1699, 1700}
+    never = {999, 1000, 1050, 1099, 1100, 1599, 1699, 1700}
 
     _set_cash_number(db, None)                                       # die Kasse führt nichts
     numbers = _numbers(db, db.get_payment_coa_ids())
-    assert numbers == {1800, 1000, 1050, 1099, 1460}
+    assert numbers == {1800, 1460}
     assert numbers.isdisjoint(never | {1600, 1610, 1650})
     with closing(db._get_connection()) as conn:
         assert db._get_payment_coa_ids(conn.cursor()) == db.get_payment_coa_ids()
 
     _set_cash_number(db, 1600)                                       # jetzt führt die Kasse 1600
-    assert _numbers(db, db.get_payment_coa_ids()) == {1800, 1600, 1000, 1050, 1099, 1460}
+    assert _numbers(db, db.get_payment_coa_ids()) == {1800, 1600, 1460}
 
     db.insert_account('Reisekasse', '', '', '', '', is_cash=1, skr_account=1650)
     numbers = _numbers(db, db.get_payment_coa_ids())
-    assert numbers == {1800, 1600, 1650, 1000, 1050, 1099, 1460}      # 1610 und 1699 bleiben draußen
+    assert numbers == {1800, 1600, 1650, 1460}                        # 1610 und 1699 bleiben draußen
     assert numbers.isdisjoint(never | {1610})
 
     _set_cash_number(db, 1460)                                       # Kasse zurück auf das Verrechnungskonto
-    assert _numbers(db, db.get_payment_coa_ids()) == {1800, 1650, 1000, 1050, 1099, 1460}
+    assert _numbers(db, db.get_payment_coa_ids()) == {1800, 1650, 1460}
 
 
 def test_payment_accounts_of_a_fresh_database_hold_its_cash_account(tmp_db):
@@ -642,8 +648,8 @@ def test_csv_cash_bookings_on_1600_of_a_fresh_database_get_the_sign_of_the_money
 
 
 # Kassenposten wie in einem WISO-Export: Ausgabe und Einnahme über 1600, dazu ein Satz über 1050
-# (SKR03-Kassenbereich, bleibt liquide) und einer über 1650 (kein Zahlungskonto, solange kein
-# eigenes Konto es führt)
+# (SKR03-Kassenbereich, seit 2.1.0 kein Zahlungskonto mehr) und einer über 1650 (kein Zahlungskonto,
+# solange kein eigenes Konto es führt)
 OLD_CASH_CSV = _csv(('6815', '1600', '18,35', 'KS-001', '401'),
                     ('1600', '4400', '50,00', 'KS-002', '401'),
                     ('6815', '1050', '10,00', 'KS-003', ''),
@@ -667,7 +673,7 @@ def test_csv_booking_on_1600_keeps_the_raw_amount_when_no_cash_account_carries_1
     assert result['imported'] == 4 and not result['errors'], result
     assert _imported(db) == {'KS-001': (_minor('18.35'), _minor('2.93')),      # Rohbetrag, positiv
                              'KS-002': (_minor('50.00'), _minor('7.98')),
-                             'KS-003': (_minor('-10.00'), None),                # 1050 bleibt liquide
+                             'KS-003': (_minor('10.00'), None),                 # 1050: kein Geldkonto mehr
                              'KS-004': (_minor('10.00'), None)}
     assert _datev(db) == [('18,35', 'S', '6815', '1600', '3'), ('50,00', 'S', '1600', '4400', '3'),
                           ('10,00', 'S', '6815', '1050', '0'), ('10,00', 'S', '6815', '1650', '0')]
@@ -681,13 +687,14 @@ def test_csv_booking_on_1600_keeps_the_raw_amount_when_no_cash_account_carries_1
 
 
 @pytest.mark.parametrize('number, liquid', [
-    (999, False), (1000, True), (1050, True), (1099, True), (1100, False),      # SKR03-Kasse
+    (999, False), (1000, False), (1050, False), (1099, False), (1100, False),   # SKR03-Kasse: Vorräte
     (1459, False), (1460, True), (1461, False),
     (1599, False), (1600, False), (1650, False), (1699, False), (1700, False),
 ])
-def test_csv_sign_follows_the_skr03_cash_range_and_the_clearing_account(tmp_db, number, liquid):
-    """Kasse ohne SKR-Nummer: Nur der feste Bereich (1000–1099, 1460) entscheidet. Ist das Gegenkonto
-    liquide, ist die Ausgabe negativ; sonst bleibt der Betrag, wie die Datei ihn nennt."""
+def test_csv_sign_follows_only_the_clearing_account_among_the_fixed_numbers(tmp_db, number, liquid):
+    """Kasse ohne SKR-Nummer: Nur das Verrechnungskonto 1460 entscheidet (der frühere Bereich
+    1000–1099 nicht mehr). Ist das Gegenkonto liquide, ist die Ausgabe negativ; sonst bleibt der
+    Betrag, wie die Datei ihn nennt."""
     db = tmp_db
     _set_cash_number(db, None)
     if _count_chart(db, number) == 0:
@@ -698,7 +705,8 @@ def test_csv_sign_follows_the_skr03_cash_range_and_the_clearing_account(tmp_db, 
     assert _imported(db)[f'GR-{number}'][0] == _minor('-10.00' if liquid else '10.00')
 
 
-@pytest.mark.parametrize('number, liquid', [(1000, True), (1050, True), (1100, False), (1600, False)])
+@pytest.mark.parametrize('number, liquid', [(1460, True), (1000, False), (1050, False),
+                                            (1100, False), (1600, False)])
 def test_csv_sign_of_a_cash_account_in_the_first_column(tmp_db, number, liquid):
     """Konto liquide, Gegenkonto Zweckkonto: Der Betrag wird positiv (Einnahme). Steht ein
     Konto vorne, das nicht liquide ist (hier 1600 ohne eigenes Kassenkonto), bleibt der Betrag, wie
@@ -756,7 +764,7 @@ def _wiso_database(path, rows, extra_chart=()):
 
 
 # Kassenposten der WISO-Datenbank: Ausgabe und Einnahme über SKR03 1000 (→ SKR04 1600) und ein Satz über
-# SKR03 1040 (→ SKR04 1050, im festen Kassenbereich)
+# SKR03 1040 (→ SKR04 1050, früher im festen Kassenbereich, seit 2.1.0 kein Geldkonto)
 OLD_CASH_ROWS = [
     dict(AMOUNTNET=15.42, AMOUNTGROSS=18.35, TAXRATE=19.0, ACCOUNTNO=4980, CONTRA_ACCOUNTNO=1000,
          ACCOUNTING_TEXT='Kassenposten Ausgabe', REFERENCENO='KD-001'),
@@ -780,7 +788,7 @@ def test_wiso_database_cash_bookings_on_1600_of_a_fresh_database_get_the_sign_of
     assert result['imported'] == 3 and not result['errors'], result
     assert _imported(db) == {'KD-001': (_minor('-18.35'), _minor('-2.93')),
                              'KD-002': (_minor('50.00'), _minor('7.98')),
-                             'KD-003': (_minor('-10.00'), None)}
+                             'KD-003': (_minor('10.00'), None)}
     rows = _query(db, 'SELECT c.AccountNumber, g.AccountNumber FROM Bookings b '
                       'JOIN ChartOfAccounts c ON c.ID = b.COA_ID '
                       'JOIN ChartOfAccounts g ON g.ID = b.CounterCOA_ID ORDER BY b.ID')
@@ -797,7 +805,7 @@ def test_wiso_database_cash_bookings_on_1600_of_a_fresh_database_get_the_sign_of
 def test_wiso_database_booking_on_1600_keeps_the_raw_amount_when_no_cash_account_carries_1600(
         tmp_path, cash_number):
     """Wie beim Textexport: Kasse ohne Nummer oder mit 1460 → SKR04 1600 ist kein Zahlungskonto, der
-    Rohbetrag bleibt (Beträge und DATEV-Zeilen wie in 2.0.3); die Sätze über 1050 bleiben liquide."""
+    Rohbetrag bleibt (Beträge und DATEV-Zeilen wie in 2.0.3); auch ein Satz über 1050 behält ihn."""
     db = Database(db_name=str(tmp_path / 'buch.db'))
     _set_cash_number(db, cash_number)
     path = _wiso_database(tmp_path / 'db1.fdb', OLD_CASH_ROWS, OLD_CASH_CHART)
@@ -807,7 +815,7 @@ def test_wiso_database_booking_on_1600_keeps_the_raw_amount_when_no_cash_account
     assert result['imported'] == 3 and not result['errors'], result
     assert _imported(db) == {'KD-001': (_minor('18.35'), _minor('2.93')),
                              'KD-002': (_minor('50.00'), _minor('7.98')),
-                             'KD-003': (_minor('-10.00'), None)}
+                             'KD-003': (_minor('10.00'), None)}
     assert _datev(db) == [('18,35', 'S', '6850', '1600', '3'), ('50,00', 'S', '1600', '4400', '3'),
                           ('10,00', 'S', '6850', '1050', '0')]
     assert _euer(db) == {}
@@ -817,7 +825,7 @@ def test_wiso_database_booking_on_1600_keeps_the_raw_amount_when_no_cash_account
 
 @pytest.mark.parametrize('cash_number, skr03, skr04, liquid', [
     (None, 1000, 1600, False), (None, 1010, 1699, False), (None, 1020, 1700, False),
-    (None, 1030, 1599, False), (None, 1040, 1050, True), (None, 1360, 1460, True),
+    (None, 1030, 1599, False), (None, 1040, 1050, False), (None, 1360, 1460, True),
     (1600, 1000, 1600, True), (1699, 1010, 1699, True), (1699, 1000, 1600, False),
 ], ids=['1600-ohne-kasse', '1699-ohne-kasse', '1700', '1599', 'skr03-bereich', 'verrechnung-1460',
         '1600-mit-kasse', '1699-mit-kasse', '1600-bei-kasse-1699'])

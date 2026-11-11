@@ -5,8 +5,16 @@
 import sqlite3
 import os
 import json
+from collections import Counter
 from decimal import Decimal
 from money import to_minor, from_minor
+from .matching import (
+    FORM_MIRROR_COA, FORM_MIRROR_COUNTER, FORM_MIRROR_LEGACY, LEGACY_CASH_NUMBERS,
+    LEGACY_CASH_RANGE, import_entry_form,
+)
+
+#: SKR04-Konten 1000–1099 (Vorräte): Ältere Versionen haben sie als Kasse gelesen.
+STOCK_RANGE = LEGACY_CASH_NUMBERS
 
 
 class WisoImportMixin:
@@ -25,6 +33,13 @@ class WisoImportMixin:
 
         Returns:
             dict: {imported: int, updated: int, skipped: int, errors: list[str], format: str}
+            Der Original-Export meldet zusätzlich ``negative_gross`` (Zeilen mit negativem
+            Bruttobetrag und genau einer liquiden Seite: das Vorzeichen richtet sich nach der
+            Geldbewegung, ein Storno oder eine Gutschrift wird so wie eine normale Buchung
+            gelesen), ``stock_range_accounts`` (Konten 1000–1099 in der Datei: ältere Versionen
+            haben sie als Kasse gelesen; je Konto ``nummer``, ``bezeichnung``, ``anzahl`` der
+            Zeilen) und ``forms_stamped`` (wiedererkannte Spiegel des Bestands, deren Betrag
+            gegenläufig gespeichert ist: sie bekommen die Form ``mirror_counter``).
         """
         import csv, io, datetime
 
@@ -84,6 +99,10 @@ class WisoImportMixin:
         # Bankkonten-SKR-Nummern für Vorzeichen-Logik
         cursor.execute('SELECT SKRAccount FROM Accounts WHERE SKRAccount IS NOT NULL')
         liquid_account_nrs = {row[0] for row in cursor.fetchall()}
+        cursor.execute('SELECT AccountNumber, Name FROM ChartOfAccounts '
+                       'WHERE AccountNumber BETWEEN ? AND ?',
+                       (LEGACY_CASH_RANGE[0], LEGACY_CASH_RANGE[1]))
+        stock_names = {row[0]: row[1] for row in cursor.fetchall()}
         conn.close()
 
         reader = csv.DictReader(io.StringIO(text), delimiter=';', quotechar='"')
@@ -93,15 +112,18 @@ class WisoImportMixin:
         imported = 0
         updated = 0
         skipped = 0
+        forms_stamped = 0
+        negative_gross = 0
+        stock_counts = Counter()    # Konto 1000–1099 → Zeilen der Datei
         skipped_rows = []       # Liste übersprungener Zeilen mit Details
         missing_coa = set()     # SKR-Kontonummern (KONTO), die nicht in ChartOfAccounts gefunden wurden
         missing_counter_coa = set()  # SKR-Kontonummern (GEGENKONTO), die nicht in ChartOfAccounts gefunden wurden
         errors = []
 
         # Dieselbe Menge wie der Datenbank-Import und get_payment_coa_ids (keine zweite
-        # Kopie): 1000–1099 (historisch, SKR03-Kassenbereich – vorhandene Bestände haben
-        # ihr Vorzeichen daran ausgerichtet) und das Verrechnungskonto 1460. Die Kasse der
-        # App (SKR04 1600) zählt über ihr eigenes Konto in liquid_account_nrs.
+        # Kopie): das Verrechnungskonto 1460. Die Kasse der App (SKR04 1600) und die
+        # Bankkonten zählen über ihr eigenes Konto in liquid_account_nrs. Der SKR03-Kassenbereich
+        # 1000–1099 zählt seit 2.1.0 nicht mehr (SKR04: Vorräte); Zeilen darauf meldet der Import.
         from importers.wiso_fdb import DEFAULT_LIQUID_ACCOUNTS
 
         def _is_liquid(nr):
@@ -154,10 +176,17 @@ class WisoImportMixin:
 
                 # Vorzeichen: GEGENKONTO = liquides Konto → Abgang (negativ)
                 #             KONTO      = liquides Konto → Zugang (positiv)
-                if _is_liquid(gegenkonto_nr) and not _is_liquid(konto_nr):
-                    amount = -abs(amount)
-                elif _is_liquid(konto_nr) and not _is_liquid(gegenkonto_nr):
-                    amount = abs(amount)
+                # Dazu die Form des Satzes, wie das Vorzeichen gesetzt wurde. Zwei liquide Seiten:
+                # Spiegel, der Rohbetrag bleibt (positiv = Konto im Soll). Keine: Umbuchung.
+                konto_liquid, gegen_liquid = _is_liquid(konto_nr), _is_liquid(gegenkonto_nr)
+                if gegen_liquid != konto_liquid:
+                    if amount < 0:
+                        negative_gross += 1       # das Vorzeichen richtet sich nach der Geldbewegung
+                    amount = -abs(amount) if gegen_liquid else abs(amount)
+                form = import_entry_form(coa_id, konto_liquid, counter_coa_id, gegen_liquid)
+                for nr in {konto_nr, gegenkonto_nr}:
+                    if nr in STOCK_RANGE:
+                        stock_counts[nr] += 1
 
                 schluessel = row.get('SCHLUESSEL', '').strip()
                 tax_rate = BU_TO_TAXRATE.get(schluessel)
@@ -178,7 +207,7 @@ class WisoImportMixin:
                     'coa_id': coa_id, 'counter_coa_id': counter_coa_id,
                     'konto_nr': konto_nr, 'konto_str': konto_str,
                     'tax_rate': tax_rate, 'tax_amount': tax_amount,
-                    'text': text_val, 'doc': doc_number,
+                    'text': text_val, 'doc': doc_number, 'form': form,
                 })
             except Exception as e:
                 errors.append(f"Zeile {i}: {str(e)}")
@@ -207,6 +236,43 @@ class WisoImportMixin:
         # CSV-Zeilen, wie die DB bereits enthält.
         db_dup_counts = {}   # dup_key → Anzahl Zeilen in DB vor diesem Import
         csv_dup_seen  = {}   # dup_key → Anzahl in dieser CSV bereits verarbeiteter Zeilen
+        csv_dup_total = Counter(
+            (pr['doc'], pr['date'], pr['coa_id'], to_minor(pr['amount'] or 0))
+            for pr in parsed_rows if pr['doc'])   # dup_key → Zeilen dieser CSV insgesamt
+        legacy_twins  = {}   # (Beleg, Datum, Konto, Gegenkonto, Betrag) → IDs der mirror_legacy-Zeilen
+        stamp_sql = 'UPDATE Bookings SET EntryForm = ? WHERE ID = ?'
+        stamped_ids = []     # vorhandene Zeilen, die ihre Form bekommen haben (für das Protokoll)
+
+        def _legacy_twin(pr, minor_amount):
+            """ID einer Spiegelzeile des Bestands (``mirror_legacy``), die dieselbe Buchung mit
+            umgekehrtem Vorzeichen ist, oder ``None``. Der Betrag einer solchen Zeile steht
+            gegenläufig zur Datei (Richtung auf dem Gegenkonto statt Konto im Soll). Verlangt:
+            Spiegel in der Datei, Beleg-Nr., Datum, Konto und Gegenkonto gleich, Betrag
+            −gross – und die Zeile ist nicht schon von einer Zeile dieser Datei mit ihrem eigenen
+            Betrag beansprucht (sonst wäre es deren Duplikat, nicht der Zwilling dieser Zeile).
+            Nichts davon ist geraten: Fehlt eine Bedingung, wird neu angelegt."""
+            if (pr['form'] != FORM_MIRROR_COA or not pr['doc'] or pr['coa_id'] is None
+                    or pr['counter_coa_id'] is None):
+                return None
+            own = (pr['doc'], pr['date'], pr['coa_id'], -minor_amount)
+            if own not in db_dup_counts:
+                dup_cur.execute(
+                    'SELECT COUNT(*) FROM Bookings WHERE DocumentNumber=? AND DateBooking=? '
+                    'AND COA_ID=? AND Amount=?', own)
+                db_dup_counts[own] = dup_cur.fetchone()[0]
+            key = own[:3] + (pr['counter_coa_id'], own[3])
+            if key not in legacy_twins:
+                dup_cur.execute(
+                    "SELECT ID FROM Bookings WHERE BookingType='entry' AND EntryForm=? "
+                    'AND DocumentNumber=? AND DateBooking=? AND COA_ID=? AND CounterCOA_ID=? '
+                    'AND Amount=? ORDER BY ID',
+                    (FORM_MIRROR_LEGACY, own[0], own[1], own[2], pr['counter_coa_id'], own[3]))
+                legacy_twins[key] = [row[0] for row in dup_cur.fetchall()]
+            unclaimed = db_dup_counts[own] - csv_dup_total[own]
+            if legacy_twins[key] and unclaimed > 0:
+                db_dup_counts[own] -= 1          # dieser Zwilling ist verbraucht
+                return legacy_twins[key].pop(0)
+            return None
 
         for pr in parsed_rows:
             try:
@@ -263,16 +329,32 @@ class WisoImportMixin:
                     })
                     continue
 
+                # Kein Treffer mit gleichem Betrag: Vielleicht ist die Zeile ein Spiegel des
+                # Bestands mit umgekehrtem Vorzeichen – dann ist sie ein Duplikat, und die
+                # vorhandene Zeile bekommt die Form, die zu ihrem Betrag passt.
+                twin = _legacy_twin(pr, minor_amount)
+                if twin is not None:
+                    dup_cur.execute(stamp_sql, (FORM_MIRROR_COUNTER, twin))
+                    stamped_ids.append(twin)
+                    forms_stamped += 1
+                    skipped += 1
+                    skipped_rows.append({
+                        'zeile': pr['zeile'], 'datum': booking_date,
+                        'ref': doc_number, 'konto': pr['konto_str'],
+                        'betrag': amount, 'text': pr['text'][:60],
+                    })
+                    continue
+
                 # Mehrzeilige Belege bleiben über DocumentNumber + Datum
                 # zusammen – eine eigene Gruppen-Zeile braucht es nicht.
                 dup_cur.execute('''
                     INSERT INTO Bookings
                         (DateBooking, COA_ID, CounterCOA_ID,
-                         Amount, TaxRate, TaxAmount, Text, DocumentNumber, BookingType)
-                    VALUES (?,?,?,?,?,?,?,?,?)
+                         Amount, TaxRate, TaxAmount, Text, DocumentNumber, BookingType, EntryForm)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)
                 ''', (booking_date, coa_id, pr['counter_coa_id'],
                       to_minor(amount or 0), pr['tax_rate'], self._minor_opt(pr['tax_amount']), pr['text'],
-                      doc_number, 'entry'))
+                      doc_number, 'entry', pr['form']))
                 imported += 1
 
             except Exception as e:
@@ -280,6 +362,9 @@ class WisoImportMixin:
 
         dup_conn.commit()
         dup_conn.close()
+        for twin in stamped_ids:       # wie jede Änderung an einer vorhandenen Buchung: ins Protokoll
+            self._log_sql(stamp_sql, (FORM_MIRROR_COUNTER, twin),
+                          'WISO-CSV-Import: Form des Spiegels festgeschrieben')
 
         return {
             'imported':          imported,
@@ -288,6 +373,11 @@ class WisoImportMixin:
             'skipped_rows':      skipped_rows,
             'missing_coa':       sorted(missing_coa),
             'missing_counter_coa': sorted(missing_counter_coa),
+            'negative_gross':    negative_gross,
+            'stock_range_accounts': [
+                {'nummer': nr, 'bezeichnung': stock_names.get(nr, ''), 'anzahl': count}
+                for nr, count in sorted(stock_counts.items())],
+            'forms_stamped':     forms_stamped,
             'errors':            errors,
             'format':            'original'
         }
@@ -553,6 +643,14 @@ class WisoImportMixin:
                         fields.append('Text=?'); values.append(purpose)
                     if (not is_split) and coa_id_from_category and not t_coa:
                         fields.append('COA_ID=?'); values.append(coa_id_from_category)
+                        # Bekommt ein Buchungssatz sein Konto erst hier, ändert sich seine
+                        # Kontierung: Die Form wird mit den Konten neu abgeleitet
+                        reformed = self._form_after_accounts_change(
+                            conn, t_id, {'coa_id': coa_id_from_category})
+                        if reformed is not None:
+                            fields.append('EntryForm=?'); values.append(reformed[0])
+                            if reformed[1] is not None:
+                                fields.append('Amount=?'); values.append(reformed[1])
                     if fields:
                         values.append(t_id)
                         cursor.execute(

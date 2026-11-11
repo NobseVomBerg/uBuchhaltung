@@ -136,6 +136,11 @@ direkt aus der Datenbankdatei oder aus den Textexporten:
   legt er neu an und meldet ähnliche vorhandene Buchungen als „möglicherweise
   doppelt“: lieber eine sichtbare zweite Buchung als eine still falsch übernommene.
 
+- Beide Importe melden, was sie nicht sicher lesen können: Sätze mit **negativem Bruttobetrag**
+  (Storno, Gutschrift – das Vorzeichen richtet sich nach der Geldbewegung, ein Storno wird so wie
+  eine normale Buchung gelesen) und Buchungen auf **Konten 1000–1099** (in SKR04 Vorräte; ältere
+  Versionen haben sie als Kasse gelesen – bitte prüfen, ob hier eine Kasse gemeint ist).
+
 Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen.
 
 > WISO und MeinBüro sind Marken ihrer jeweiligen Inhaber. uBuchhaltung ist ein
@@ -149,6 +154,12 @@ Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen
   Verantwortung für eine ordnungsgemäße Buchführung und für Steuererklärungen
   bleibt beim Anwender. Eine Prüfung oder Zusicherung der GoBD-Konformität gibt
   es nicht.
+- **Update auf 2.1.0 (Schemaänderung):** Beim ersten Start legt uBuchhaltung vor der Umstellung
+  automatisch eine Sicherung der Datenbank an (`<Datenordner>/backup/JJJJMMTT_vor_2.1.0_<Datei>`);
+  scheitert sie, bleibt die Datenbank unverändert. Danach gibt es **kein Zurück auf 2.0.x** – ältere
+  Versionen öffnen eine 2.1-Datenbank nicht. Wer zurück muss, spielt diese Sicherung ein; was danach
+  eingegeben wurde, geht dabei verloren. Die Umstellung ändert keine Auswertung: EÜR, DATEV-Export
+  und Dashboard zeigen danach dieselben Werte wie vorher.
 - **Noch nicht enthalten:** Umsatzsteuer-Voranmeldung bzw. ELSTER-Übermittlung,
   Bankanbindung per FinTS/PSD2 sowie Kontoauszüge im MT940-Format.
 - **Für den Betrieb im eigenen Netz gebaut**, nicht fürs offene Internet –

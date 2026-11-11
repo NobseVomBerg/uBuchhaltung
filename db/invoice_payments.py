@@ -17,10 +17,11 @@ Prüfung, Schreiben und Neuberechnung der Rechnung sehen denselben Stand – zwe
 Anfragen legen das Paar (Rechnung, Bankbewegung) nie zweimal an.
 """
 import datetime
+import sqlite3
 from collections import namedtuple
 
 from money import to_minor, from_minor, prorate, round_minor, fmt_eur, is_covered
-from .matching import REVENUE_ACCOUNT_RANGE
+from .matching import FORM_LIQUID_FIRST, FORM_PURPOSE_FIRST, FORM_TRANSFER, REVENUE_ACCOUNT_RANGE
 from .reporting import is_income_account
 
 PAYMENT_MARK = 'invoice_payment'
@@ -395,34 +396,42 @@ class InvoicePaymentsMixin:
             else:
                 debtor_side = waiting_side = None
 
-            cursor = conn.execute(
-                'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) '
-                'VALUES (?, ?, ?, ?)', (invoice_id, booking_id, alloc, bank_date))
+            try:
+                cursor = conn.execute(
+                    'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) '
+                    'VALUES (?, ?, ?, ?)', (invoice_id, booking_id, alloc, bank_date))
+            except sqlite3.IntegrityError:
+                # der eindeutige Index auf (Rechnung, Bewegung) – dasselbe wie die Prüfung oben
+                return _refused('Buchung ist bereits mit dieser Rechnung verknüpft')
             payment_id = cursor.lastrowid
             tx.log.append(('INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, '
                            'PaymentDate) VALUES (?, ?, ?, ?)',
                            (invoice_id, booking_id, alloc, bank_date), 'Link invoice to booking'))
 
-            def child(coa_id, counter_coa_id, text, taxed, description):
+            def child(coa_id, counter_coa_id, form, text, taxed, description):
                 sql = ('INSERT INTO Bookings (DateBooking, DateTax, RecipientClient, Contact_ID, '
                        'COA_ID, CounterCOA_ID, Amount, Currency, TaxRate, TaxAmount, Text, '
-                       "DocumentNumber, BookingType, ParentBooking_ID, AutoMirror, Status) "
-                       "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'entry', ?, 0, ?)")
+                       "DocumentNumber, BookingType, ParentBooking_ID, AutoMirror, Status, "
+                       "EntryForm) "
+                       "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'entry', ?, 0, ?, ?)")
                 params = (bank_date, bank_tax_date, recipient or '', customer_id, coa_id,
                           counter_coa_id, alloc, currency or 'EUR',
                           tax_rate if taxed else None, tax_value if taxed else None, text,
-                          number, booking_id, PAYMENT_MARK)
+                          number, booking_id, PAYMENT_MARK, form)
                 conn.execute(sql, params)
                 tx.log.append((sql, params, description))
 
+            # Die Formen stehen fest, nicht aus der Kontenliste abgeleitet: „Bank an Debitoren“
+            # hat das Geldkonto vorne, „Wartekonto an Erlöskonto“ ist eine Umbuchung, „Erlöskonto
+            # an Bank“ das Zweckkonto vorne.
             if debtor_side and waiting_side:
-                child(ctx['bank_coa'], debtor_side, f'Zahlung zu Re. {number}', False,
-                      'Payment child (bank to debtor)')
-                child(waiting_side, ctx['revenue_coa'], f'Umb. zu Re. {number}', True,
-                      'Payment child (open item to revenue)')
+                child(ctx['bank_coa'], debtor_side, FORM_LIQUID_FIRST,
+                      f'Zahlung zu Re. {number}', False, 'Payment child (bank to debtor)')
+                child(waiting_side, ctx['revenue_coa'], FORM_TRANSFER,
+                      f'Umb. zu Re. {number}', True, 'Payment child (open item to revenue)')
             else:
-                child(ctx['revenue_coa'], ctx['bank_coa'], f'Zahlung zu Re. {number}', True,
-                      'Payment child (revenue to bank)')
+                child(ctx['revenue_coa'], ctx['bank_coa'], FORM_PURPOSE_FIRST,
+                      f'Zahlung zu Re. {number}', True, 'Payment child (revenue to bank)')
 
             self._recalc_invoice(conn, invoice_id)
         return PaymentAssignment(True, None, payment_id, ctx['revenue_coa'])

@@ -117,6 +117,7 @@ def _new_values(w):
         'text': ('Text', 'Neuer Text', 'Neuer Text'),
         'document_number': ('DocumentNumber', 'NEU-1', 'NEU-1'),
         'parent_booking_id': ('ParentBooking_ID', w.parent_two, w.parent_two),
+        'entry_form': ('EntryForm', 'transfer', 'transfer'),
     }
 
 

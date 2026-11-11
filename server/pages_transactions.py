@@ -8,7 +8,7 @@ import html as _html
 from decimal import Decimal
 from db import Database
 from money import fmt_eur
-from db.matching import is_bank_effective
+from db.matching import FORM_LIQUID_FIRST, bank_effect, is_bank_effective, is_mirror_row, read_entry_form
 from db.invoices import InvoiceCol
 from db.invoice_payments import PAYABLE_STATUSES
 from .pages import Header1, Header2, Header3, Footer
@@ -139,6 +139,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     # Tabelle (Split anlegen/auflösen), nicht mehr über die Felder oben.
     is_bank_form = bool(edit_trans and edit_trans[17] == 'bank')
     bank_coa_ids = db.get_bank_coa_ids()
+    money_ids = db.get_payment_coa_ids()
+    account_coas = db.get_account_coa_sets()
     split_rows = []
     adopt_candidates = []
     if is_bank_form:
@@ -149,12 +151,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             around_date=edit_trans[1], limit=50)
         for c in db.get_child_bookings_for_bank(edit_trans[0]):
             # Reine Doppik-Spiegel gehören nicht in den Editor
-            if c[1] in bank_coa_ids and c[2] in bank_coa_ids:
+            if is_mirror_row(c[9], c[1], c[2], bank_coa_ids):
                 continue
-            # Liquide-zuerst gebuchte Sätze (COA = Bankkonto): das Zweckkonto
+            # Liquide-zuerst gebuchte Sätze (Form liquid_first): das Zweckkonto
             # steht auf der Gegenseite und gehört ins Kontofeld des Editors.
             purpose_coa = c[1]
-            if c[1] in bank_coa_ids and c[2] not in bank_coa_ids:
+            if c[1] is not None and read_entry_form(c[9], c[1], c[2], money_ids) == FORM_LIQUID_FIRST:
                 purpose_coa = c[2]
             # Umbuchungen (4405→4400, Privatanteil 6805→2100) gehören zum
             # Beleg, bewegen aber kein Geld – sie zählen nicht in die Summe.
@@ -1171,11 +1173,11 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 # erlaubt (Speichern wird nie blockiert) und zeigt "offen".
                 # Umbuchungen (4405→4400, Privatanteil) gehören zum Beleg,
                 # bewegen aber kein Geld und zählen deshalb nicht mit.
-                bank_children = [ch for ch in children
-                                 if is_bank_effective(ch['booking'][8],
-                                                      ch['booking'][9],
-                                                      bank_coa_ids)]
-                child_sum = sum((ch['booking'][11] or 0) for ch in bank_children)
+                parent_coas = account_coas.get(account_id)
+                child_sum = sum(bank_effect(ch['booking'][22], ch['booking'][11],
+                                            ch['booking'][8], ch['booking'][9],
+                                            parent_coas, bank_coa_ids)
+                                for ch in children)
                 rest = (amount or 0) - child_sum
                 all_coded = all(ch['booking'][8] is not None for ch in children)
                 if abs(rest) < Decimal('0.005') and all_coded:
