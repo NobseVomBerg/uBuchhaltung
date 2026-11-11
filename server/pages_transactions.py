@@ -782,10 +782,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 });
         }
 
-        // Befund-Schlüssel der Plausibilitätsprüfung (importers/plausibility.py)
+        // Befund-Schlüssel der Plausibilitätsprüfung (importers/plausibility.py);
+        // incomplete kommt aus der Vorschau (server/import_preview.py)
         var WARN_LABELS = {
             amount: 'Betrag?', date: 'Datum?', daterange: 'Datum weit weg?',
-            empty: 'leer', boiler: 'Kopf-/Fußzeile?', huge: 'Betrag zu groß?'
+            empty: 'leer', boiler: 'Kopf-/Fußzeile?', huge: 'Betrag zu groß?',
+            incomplete: 'ohne Datum/Betrag – wird nicht importiert'
         };
 
         // Befunde, die den ganzen Beleg betreffen (BankStatement.warnings)
@@ -849,7 +851,10 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                  ' · ' + esc(f.document_date || '') + ' · Konto: ' +
                  (f.account_name ? esc(f.account_name) : '<span class="errorColor">nicht gefunden</span>') + '</div>';
             h += '<div class="muted">' + f.total + ' erkannt · ' + f.new_count + ' neu · ' +
-                 f.dup_count + ' mögliche Duplikate</div>';
+                 f.dup_count + ' mögliche Duplikate' +
+                 (f.dup_upload_count ? ' (davon ' + f.dup_upload_count + ' bereits in anderer Datei dieses Uploads' +
+                      (f.dup_upload_differs_count ? ', davon ' + f.dup_upload_differs_count + ' mit abweichendem Text' : '') + ')' : '') +
+                 '</div>';
 
             (f.warnings || []).forEach(w => {
                 h += '<div class="errorColor">⚠ ' + esc(FILE_WARN_LABELS[w] || w) + '</div>';
@@ -861,13 +866,15 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 h += '<table>';
                 f.problems.forEach(p => {
                     let tags = [];
-                    if (p.dup) tags.push('Duplikat');
+                    if (p.dup) tags.push(p.dup_source === 'upload'
+                        ? 'in anderer Datei dieses Uploads' + (p.text_differs ? ' – Text weicht ab, bitte prüfen' : '')
+                        : 'Duplikat');
                     (p.warn || []).forEach(w => tags.push(WARN_LABELS[w] || w));
                     h += '<tr class="row-open"><td>' + esc(clip(p.date,10)) + '</td><td>' + esc(clip(p.recipient,30)) +
                          '</td><td>' + esc(clip(p.reference,40)) + '</td><td>' + fmtAmount(p.amount) +
                          '</td><td>' + tags.join(', ') + '</td></tr>';
                 });
-                h += '</table></div>';
+                h += '</table>';     // kein </div>: das schlösse die Karte, der Import-Knopf bliebe nach dem Import stehen
             }
 
             h += '<button type="button" class="coloredButton btn-sm bg-gray btnToggleDet" data-target="' + detId + '">Alle Einzelbuchungen</button>';
@@ -923,8 +930,10 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 const res = (data.results || [])[0] || {};
                 if (res.account_found === false) { appMsg(res.error || 'Konto nicht gefunden', 'error'); return; }
                 appMsg(res.inserted + ' neu importiert'
-                       + (res.skipped ? ', ' + res.skipped + ' Duplikate übersprungen' : '')
-                       + (res.text_updated ? ', ' + res.text_updated + ' Texte vervollständigt' : ''), 'success');
+                       + (res.skipped ? ', ' + res.skipped + ' Duplikate übersprungen'
+                            + (res.skipped_upload ? ' (davon ' + res.skipped_upload + ' aus anderer Datei dieses Uploads)' : '') : '')
+                       + (res.text_updated ? ', ' + res.text_updated + ' Texte vervollständigt' : '')
+                       + (res.skipped_invalid ? ', ' + res.skipped_invalid + ' ohne Datum/Betrag nicht importiert' : ''), 'success');
                 const card = document.getElementById('beleg-' + idx);
                 if (card) card.remove();
                 refreshTable();
@@ -937,10 +946,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             setImportBusy(true);
             postImport({}).then(data => {
                 if (!data.ok) { appMsg('Fehler: ' + (data.error || 'Import fehlgeschlagen'), 'error'); return; }
-                let ins = 0, skip = 0, failed = 0, txtUpd = 0;
-                (data.results || []).forEach(r => { ins += r.inserted || 0; skip += r.skipped || 0; txtUpd += r.text_updated || 0; if (r.account_found === false) failed++; });
-                appMsg(ins + ' neu importiert' + (skip ? ', ' + skip + ' Duplikate' : '')
+                let ins = 0, skip = 0, skipUp = 0, invalid = 0, failed = 0, txtUpd = 0;
+                (data.results || []).forEach(r => { ins += r.inserted || 0; skip += r.skipped || 0; skipUp += r.skipped_upload || 0; invalid += r.skipped_invalid || 0; txtUpd += r.text_updated || 0; if (r.account_found === false) failed++; });
+                appMsg(ins + ' neu importiert' + (skip ? ', ' + skip + ' Duplikate'
+                            + (skipUp ? ' (davon ' + skipUp + ' aus anderer Datei dieses Uploads)' : '') : '')
                        + (txtUpd ? ', ' + txtUpd + ' Texte vervollständigt' : '')
+                       + (invalid ? ', ' + invalid + ' ohne Datum/Betrag nicht importiert' : '')
                        + (failed ? ', ' + failed + ' ohne Konto' : ''), failed ? 'warn' : 'success');
                 dismissPreview();
                 refreshTable();

@@ -11,14 +11,89 @@ Raten über Beleg-Nr. und Datum.
 
 Das Lesen der Datei erledigt :mod:`importers.wiso_fdb`; hier steht nur die
 Abbildung auf ``Bookings``, ``Assets`` und ``AssetDepreciations``.
+
+CSV-Import und Datenbank-Import lassen sich nacheinander benutzen. Grundsatz: Was
+der CSV-Import schon angelegt hat (``entry`` ohne ``SourceGroup``), übernimmt dieser
+Import nur, wenn es nach Schlüssel (Beleg-Nr., Datum, Konto, Betrag) **und Text**
+derselbe Satz ist und das Gegenkonto nicht widerspricht – die Buchung bekommt die
+``SourceGroup`` und wird nicht ein zweites Mal angelegt. Im Zweifel legt er neu an
+und meldet ähnliche vorhandene Buchungen als möglicherweise doppelt (Regeln:
+:meth:`WisoFdbImportMixin._insert_wiso_bookings`).
 """
 import datetime
+from collections import namedtuple
 
 from db.core import coa_id
-from money import to_minor
+from money import from_minor, to_minor
 
 #: uBuchhaltung rechnet in SKR04.
 SKR04 = 4
+
+#: So viele übernommene und so viele möglicherweise doppelte Buchungen nennt das
+#: Ergebnis einzeln; die Zähler zählen alle.
+MAX_ADOPTED_ROWS = 500
+
+#: Eine Buchung des CSV-Imports als Kandidat; Beleg-Nr. und Text sind für den
+#: Vergleich schon aufbereitet (Leerraum zusammengefasst, Text ohne Groß-/Kleinschreibung),
+#: ``shown`` ist der gespeicherte Text.
+_CsvRow = namedtuple('_CsvRow', 'id doc counter text shown')
+
+
+def _squash(value):
+    """Leerraum zusammenfassen: „RE  12“ und „RE 12“ gelten als dieselbe Beleg-Nr."""
+    return ' '.join((value or '').split())
+
+
+def _comparable(value):
+    """Text für den Vergleich: Leerraum zusammengefasst, Groß-/Kleinschreibung egal.
+
+    Das Auslassungszeichen „…“ zählt als Leerraum: In der WISO-Datenbank ist es das Byte
+    0x85, das als latin-1 gelesen ein Zeilentrenner (U+0085) ist und schon beim Lesen der
+    Datenbank wie Leerraum behandelt wird – der Text kommt von dort ohne „…“ an."""
+    value = (value or '').replace('\u2026', ' ').replace('\x85', ' ')
+    return _squash(value).casefold()
+
+
+def _as_csv_text(value):
+    """Text eines Datenbank-Satzes in der Lesart der CSV – nur für den Vergleich.
+
+    Die CSV wird als cp1252 gelesen, die WISO-Datenbank als latin-1: „€“, „–“, „…“ und
+    andere Zeichen aus 0x80–0x9F kämen von dort als Steuerzeichen an und glichen nie dem
+    Text der CSV-Zeile. Vor dem Zusammenfassen des Leerraums anwenden (U+0085 gälte
+    sonst als Leerraum). Am gespeicherten Text ändert sich nichts; was sich nicht nach
+    latin-1 kodieren lässt, bleibt, wie es ist.
+    """
+    value = value or ''
+    try:
+        return value.encode('latin-1').decode('cp1252', 'replace')
+    except UnicodeEncodeError:
+        return value
+
+
+def _matching_row(rows, counter_coa, text, locked=False, fallback=False):
+    """Die Zeile des CSV-Imports, die zu einem WISO-Satz passt – oder ``None``.
+
+    ``rows`` haben schon dieselbe Beleg-Nr. und sind nach ID sortiert; ``text`` ist
+    die Vergleichsform des WISO-Satzes. Der Text muss immer gleich und nicht leer
+    sein – zwei leere Texte beweisen nichts. Dazu das Gegenkonto: gleich (beide
+    bekannt) oder die Zeile hat keines. Ein anderes Gegenkonto passt nie. Gleiches
+    Gegenkonto geht vor, dann die kleinste ID.
+
+    ``locked`` (mehrdeutiger Schlüssel) und ``fallback`` (Ersatzsuche ohne Konto)
+    lassen nur das gleiche Gegenkonto zu.
+    """
+    if not text:
+        return None
+    open_row = None
+    for row in rows:
+        if row.text != text:
+            continue
+        if row.counter is not None:
+            if row.counter == counter_coa:
+                return row
+        elif open_row is None and not (locked or fallback):
+            open_row = row
+    return open_row
 
 
 class WisoFdbImportMixin:
@@ -37,14 +112,22 @@ class WisoFdbImportMixin:
                 mitnehmen. Die Kundennummern bleiben die aus WISO.
 
         Returns:
-            dict mit ``imported``, ``skipped``, ``assets``, ``depreciations``,
-            ``tax_rows_skipped``, ``memo_rows_skipped``, ``missing_coa`` und
-            ``errors``.
+            dict mit ``imported``, ``skipped``, ``adopted`` (Buchungen aus dem
+            CSV-Import, die wiedererkannt statt neu angelegt wurden),
+            ``adopted_rows`` (davon die ersten 500 mit ``id``, ``date``,
+            ``amount`` in Euro und dem ``text`` des WISO-Satzes),
+            ``possible_duplicates_count`` (vorhandene Buchungen, die einem neu
+            angelegten Satz in Datum, Konto und Betrag gleichen, aber nicht
+            übernommen wurden), ``possible_duplicates`` (davon die ersten 500
+            mit ``id``, ``date``, ``amount`` in Euro und ``text`` der vorhandenen
+            Buchung), ``assets``, ``depreciations``, ``tax_rows_skipped``,
+            ``memo_rows_skipped``, ``missing_coa`` und ``errors``.
         """
         from importers.wiso_fdb import WisoDatabase
 
-        result = {'imported': 0, 'skipped': 0, 'assets': 0,
-                  'depreciations': 0, 'tax_rows_skipped': 0,
+        result = {'imported': 0, 'skipped': 0, 'adopted': 0, 'adopted_rows': [],
+                  'possible_duplicates_count': 0, 'possible_duplicates': [],
+                  'assets': 0, 'depreciations': 0, 'tax_rows_skipped': 0,
                   'memo_rows_skipped': 0, 'missing_coa': {}, 'created_coa': {},
                   'unresolved_accounts': 0, 'blocker': [], 'hints': [],
                   'asset_warnings': [], 'customers': 0, 'invoices': 0,
@@ -175,40 +258,166 @@ class WisoFdbImportMixin:
         nicht, weil ein Vorgang gleichbetragige Zeilen enthalten darf): schon
         vorhandene ``SourceGroup``-Werte werden übersprungen, damit ein zweiter
         Lauf nichts verdoppelt.
+
+        Der CSV-Import schreibt keine ``SourceGroup``. Seine Buchungen übernimmt
+        dieser Import statt sie neu anzulegen (``result['adopted']``, die ersten
+        500 mit Datum, Betrag und Text in ``result['adopted_rows']``) – aber nur,
+        was nach Schlüssel **und Text** derselbe Satz ist. Im Zweifel wird neu
+        angelegt und gemeldet: lieber eine sichtbare zweite Buchung als eine still
+        falsch übernommene.
+
+        * Kandidat ist eine ``entry`` ohne ``SourceGroup``, ohne ``AutoMirror`` und
+          ohne ``Account_ID`` mit gleichem Datum, Betrag und Konto sowie gleicher
+          Beleg-Nr. (Leerraum zusammengefasst). Eigene Einfügungen dieses Laufs
+          sind nie Kandidaten.
+        * Der Text muss immer gleich sein (Leerraum zusammengefasst, Groß-/Klein-
+          schreibung egal; der Text des WISO-Satzes wird dafür von latin-1 nach
+          cp1252 umgesetzt, gespeichert wird er unverändert) und darf nicht leer
+          sein: Zwei leere Texte beweisen nichts, solche Sätze werden neu angelegt.
+        * Das Gegenkonto muss gleich sein (beide bekannt) oder dem Kandidaten
+          fehlen; ein anderes Gegenkonto passt nie. Gewählt wird zuerst der
+          Kandidat mit gleichem Gegenkonto, dann der ohne, bei Gleichstand die
+          kleinste ID. Jeder Kandidat wird höchstens einmal verbraucht – zwei
+          gleich hohe Teilbuchungen übernehmen zwei CSV-Zeilen.
+        * Mehrdeutigkeitssperre: Tragen Sätze dieses Imports mit gleichem Datum,
+          Betrag, Konto, Beleg-Nr. und Text verschiedene Gegenkonten, übernehmen
+          sie keinen Kandidaten ohne Gegenkonto – welcher Satz zu welcher Zeile
+          gehört, ließe sich nur raten. Kandidaten mit gleichem Gegenkonto bleiben
+          erlaubt.
+        * Fehlte der CSV-Zeile das Konto (im Kontenrahmen unbekannt), wird
+          ersatzweise ohne Konto gesucht: nur wenn es zum Schlüssel mit Konto beim
+          Laden keinen Kandidaten gab (nicht, wenn sie bloß aufgebraucht sind), und
+          nur bei gleichem bekanntem Gegenkonto und gleichem, nicht leerem Text.
+        * Übernommen wird mit einem UPDATE (im Replay-Log): ``SourceGroup`` setzen,
+          leere Konten und einen leeren Empfänger füllen, Steuersatz und
+          Steuerbetrag ergänzen, wenn beide fehlen. Alles andere – Text,
+          Verknüpfungen, Änderungen des Nutzers – bleibt.
+        * Möglicherweise doppelt: Hat dieser Lauf zu Datum, Betrag und Konto (bzw.
+          der Ersatzsuche) einen Satz neu angelegt, werden die dazu geladenen,
+          nicht übernommenen Kandidaten gemeldet (``possible_duplicates_count``,
+          die ersten 500 in ``possible_duplicates``) – ohne Rücksicht auf Text und
+          Beleg-Nr.
         """
         recipients = recipients or {}
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        coa_map = self._coa_map(cursor)
-        cursor.execute("SELECT DISTINCT SourceGroup FROM Bookings "
-                       "WHERE SourceGroup IS NOT NULL AND SourceGroup <> ''")
-        known_groups = {row[0] for row in cursor.fetchall()}
+        adopt_sql = '''
+            UPDATE Bookings SET
+                SourceGroup     = COALESCE(?, SourceGroup),
+                COA_ID          = COALESCE(COA_ID, ?),
+                CounterCOA_ID   = COALESCE(CounterCOA_ID, ?),
+                TaxRate         = CASE WHEN TaxRate IS NULL AND TaxAmount IS NULL
+                                       THEN ? ELSE TaxRate END,
+                TaxAmount       = CASE WHEN TaxRate IS NULL AND TaxAmount IS NULL
+                                       THEN ? ELSE TaxAmount END,
+                RecipientClient = COALESCE(NULLIF(RecipientClient, ''), ?, RecipientClient)
+            WHERE ID = ?
+        '''
+        with self.transaction() as tx:
+            cursor = tx.conn.cursor()
+            coa_map = self._coa_map(cursor)
+            cursor.execute("SELECT DISTINCT SourceGroup FROM Bookings "
+                           "WHERE SourceGroup IS NOT NULL AND SourceGroup <> ''")
+            known_groups = {row[0] for row in cursor.fetchall()}
+            pools = {}
+            created_for = set()
 
-        for booking in bookings:
-            if booking.group and booking.group in known_groups:
-                result['skipped'] += 1
-                continue
-            coa = coa_map.get(booking.account)
-            counter_coa = coa_map.get(booking.counter_account)
-            if booking.account is not None and coa is None:
-                result['unresolved_accounts'] += 1
-            if booking.counter_account is not None and counter_coa is None:
-                result['unresolved_accounts'] += 1
-            cursor.execute('''
-                INSERT INTO Bookings
-                    (DateBooking, COA_ID, CounterCOA_ID, Amount, TaxRate,
-                     TaxAmount, Text, DocumentNumber, BookingType, SourceGroup,
-                     RecipientClient)
-                VALUES (?,?,?,?,?,?,?,?,'entry',?,?)
-            ''', (booking.date, coa, counter_coa,
-                  to_minor(booking.amount or 0), booking.tax_rate,
-                  self._minor_opt(booking.tax_amount), booking.text,
-                  booking.document_number or None, booking.group or None,
-                  recipients.get(booking.invoice_id) or None))
-            result['imported'] += 1
+            def csv_rows(key):
+                """Zeilen des CSV-Imports zu (Datum, Betrag, Konto) als Paar
+                (Beleg-Nrn. beim Laden, noch freie Zeilen); je Schlüssel einmal
+                geladen – vor den eigenen Einfügungen dieses Laufs, die so nie
+                Kandidaten sind – und von den Aufrufern nacheinander verbraucht.
+                Die Beleg-Nr. wird in Python verglichen, damit Leerraum nicht zählt."""
+                if key not in pools:
+                    cursor.execute(
+                        "SELECT ID, DocumentNumber, CounterCOA_ID, Text FROM Bookings "
+                        "WHERE BookingType = 'entry' AND COALESCE(SourceGroup, '') = '' "
+                        "AND COALESCE(AutoMirror, 0) = 0 AND Account_ID IS NULL "
+                        "AND DateBooking = ? AND Amount = ? AND COA_ID IS ? "
+                        "ORDER BY ID", key)
+                    rows = [_CsvRow(row[0], _squash(row[1]), row[2],
+                                    _comparable(row[3]), row[3] or '')
+                            for row in cursor.fetchall()]
+                    pools[key] = ({row.doc for row in rows}, rows)
+                return pools[key]
 
-        conn.commit()
-        conn.close()
+            # Einmal über alle Sätze: Schlüssel mit verschiedenen Gegenkonten sind
+            # mehrdeutig (auch Sätze, die schon eine SourceGroup haben, zählen mit).
+            prepared = []
+            counters = {}
+            accounts = {}      # dasselbe für die Ersatzsuche: gleicher Satz, verschiedene Konten
+            for booking in bookings:
+                coa = coa_map.get(booking.account)
+                counter_coa = coa_map.get(booking.counter_account)
+                amount = to_minor(booking.amount or 0)
+                number = _squash(booking.document_number)
+                text = _comparable(_as_csv_text(booking.text))
+                key = (booking.date, amount, coa, number, text)
+                counters.setdefault(key, set()).add(counter_coa)
+                accounts.setdefault((booking.date, amount, number, text, counter_coa),
+                                    set()).add(coa)
+                prepared.append((booking, coa, counter_coa, amount, number, text, key))
+            ambiguous = {key for key, seen in counters.items() if len(seen) > 1}
+            # Die Ersatzsuche kennt das Konto der CSV-Zeile nicht: Unterscheiden sich
+            # zwei Sätze nur im Konto (z. B. zwei gleich hohe Löhne auf zwei
+            # Personenkonten), ließe sich nicht sagen, welche Zeile zu welchem gehört.
+            ambiguous_accounts = {key for key, seen in accounts.items() if len(seen) > 1}
+
+            for booking, coa, counter_coa, amount, number, text, key in prepared:
+                if booking.group and booking.group in known_groups:
+                    result['skipped'] += 1
+                    continue
+                if booking.account is not None and coa is None:
+                    result['unresolved_accounts'] += 1
+                if booking.counter_account is not None and counter_coa is None:
+                    result['unresolved_accounts'] += 1
+
+                searched = [(booking.date, amount, coa)]
+                loaded, free = csv_rows(searched[0])
+                match = _matching_row([row for row in free if row.doc == number],
+                                      counter_coa, text, locked=key in ambiguous)
+                if (match is None and coa is not None and number not in loaded
+                        and (booking.date, amount, number, text, counter_coa)
+                        not in ambiguous_accounts):
+                    searched.append((booking.date, amount, None))
+                    free = csv_rows(searched[1])[1]
+                    match = _matching_row([row for row in free if row.doc == number],
+                                          counter_coa, text, fallback=True)
+                if match is not None:
+                    free.remove(match)
+                    params = (booking.group or None, coa, counter_coa,
+                              booking.tax_rate, self._minor_opt(booking.tax_amount),
+                              recipients.get(booking.invoice_id) or None, match.id)
+                    cursor.execute(adopt_sql, params)
+                    tx.log.append((adopt_sql, params, 'WISO-Datenbank-Import: '
+                                                      'Buchung aus CSV-Import übernommen'))
+                    result['adopted'] += 1
+                    if len(result['adopted_rows']) < MAX_ADOPTED_ROWS:
+                        result['adopted_rows'].append(
+                            {'id': match.id, 'date': booking.date,
+                             'amount': booking.amount or 0.0, 'text': booking.text})
+                    continue
+
+                cursor.execute('''
+                    INSERT INTO Bookings
+                        (DateBooking, COA_ID, CounterCOA_ID, Amount, TaxRate,
+                         TaxAmount, Text, DocumentNumber, BookingType, SourceGroup,
+                         RecipientClient)
+                    VALUES (?,?,?,?,?,?,?,?,'entry',?,?)
+                ''', (booking.date, coa, counter_coa, amount, booking.tax_rate,
+                      self._minor_opt(booking.tax_amount), booking.text,
+                      booking.document_number or None, booking.group or None,
+                      recipients.get(booking.invoice_id) or None))
+                result['imported'] += 1
+                created_for.update(searched)
+
+            # Nicht übernommene Kandidaten zu Schlüsseln, für die dieser Lauf einen
+            # Satz neu angelegt hat: dieselbe Buchung zweimal? Das entscheidet der Nutzer.
+            leftovers = {row.id: (key, row) for key in created_for for row in pools[key][1]}
+            result['possible_duplicates_count'] = len(leftovers)
+            for row_id in sorted(leftovers)[:MAX_ADOPTED_ROWS]:
+                (date, amount, _coa), row = leftovers[row_id]
+                result['possible_duplicates'].append(
+                    {'id': row_id, 'date': date,
+                     'amount': float(from_minor(amount)), 'text': row.shown})
 
     def _insert_wiso_customers(self, customers, result):
         """Kunden übernehmen; die Kundennummer bleibt die aus WISO.

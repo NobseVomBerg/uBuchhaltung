@@ -8,6 +8,7 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 - Docker-Demo (`-e UBUCHHALTUNG_DEMO=1`) einmal im echten Container prüfen und den Umzug einer 1.x-Installation auf 2.0.0
 
 ## Funktionen
+- Sammelimport: Exportdateien und Kontoauszüge als Sammlung hineingeben, ohne auf Importreihenfolgen zu achten – Spalten frei gewählter Exporte erkennen und in einer Vorschau zuordnen, Quellsätze erst in eine Zwischenablage, ein gemeinsamer Abgleich mit sichtbaren Zweifelsfällen; braucht Schemaänderung und Design im Hauptthread (`/effort xhigh`)
 - Kontoauszüge im MT940-Format (CAMT.053 und PDF: DKB, Volksbank Rottweil sind da)
 - CAMT-Zusatzfelder (Valuta, EndToEndId, Mandatsreferenz, Gläubiger-ID) übernehmen – braucht Schemaänderung
 - Rechnungen/Angebote mit gemischten Steuersätzen (7 % und 19 % je Position) – bisher ein Satz je Beleg
@@ -57,6 +58,14 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
 - Dashboard zählt einen Übertrag Giro → Kasse als Einnahme und Ausgabe
 - Bankbewegung und ihre Buchungssätze in einer Transaktion speichern – heute nur „erst prüfen, dann schreiben“; ein Datenbankfehler beim Schreiben hinterlässt einen halben Stand
 - Ein eigenständiger Buchungssatz bekommt beim Speichern in der Maske das vorgewählte Bankkonto und gilt danach im Kontoauszug-Import als vorhandene Bankbewegung
+- Kontoauszug-Import erkennt Duplikate nur über Konto + Datum + Betrag (je Datei gezählt, über Dateien das Maximum): Bankreferenz (AcctSvcrRef/EndToEndId) speichern, gebündelt mit den CAMT-Zusatzfeldern (Schemaänderung). Bis dahin: CAMT-Sammelbuchung gegen PDF-Summenzeile wird doppelt angelegt; zwei verschiedene Auszüge desselben Tags mit je einem echten, gleichen Umsatz verlieren einen
+- Vorschau des Kontoauszug-Imports nach einem Einzelimport neu berechnen – die übrigen Karten zeigen sonst veraltete „neu“-Zahlen (das Ergebnis des Imports stimmt)
+- Kontoauszug-Import: Umsätze, die „Alle importieren“ bzw. der Einzelimport als Duplikat aus einer anderen Datei verwirft, lassen sich nicht gezielt doch importieren (z. B. zwei echte gleiche Beträge am selben Tag in zwei mitten am Tag geteilten Auszügen). Die Vorschau markiert abweichende Texte („Text weicht ab, bitte prüfen“), nachtragen geht nur von Hand – es fehlt eine Option „trotzdem importieren“. Dazu: `skipped_upload` ist beim Einzelimport immer 0 (jeder Aufruf liest den Bestand neu), die Meldung nennt dort also nie „aus anderer Datei dieses Uploads“
+- WISO-Datenbank-Import übernimmt CSV-Buchungen nur bei gleichem Beleg-Nr./Datum/Konto/Betrag **und Text** (das Gegenkonto darf nicht widersprechen); eine CSV-Zeile mit nachträglich geändertem Text, Gegenkonto oder Betrag wird nicht wiedererkannt – die WISO-Satz-Id als eigene Spalte würde das exakt machen (Schemaänderung, mit der Bankreferenz bündeln)
+- Nicht wiedererkannte CSV-Zeilen bleiben als zweite Buchung stehen; auf Kasse/1460 und bei Umbuchungen Anlage ↔ Erfolgskonto zählen sie doppelt in der EÜR, bis eine gelöscht ist (Liste „möglicherweise doppelt“ auf der Seite Verschiedenes)
+- Der Weg „erst CSV, dann Datenbank“ ist nur mit synthetischen Daten geprüft – Gegentest mit einem echten CSV-/Datenbank-Paar steht aus (Texte, Umschlüsselung von Unterkonten, Vorzeichen von Gutschriften)
+- Der Datenbankweg liest Texte als latin-1 statt cp1252 (Anzeige von „€“ u. ä.; für den Vergleich mit der CSV umgesetzt, gespeichert wird der gelesene Text); „…“ (0x85) geht schon im Leser verloren (`_clean` fasst es als Leerraum zusammen) – solche Texte werden nicht wiedererkannt
+- Neu angelegte Buchungen der WISO-Importe stehen nicht im SQL-Protokoll (nur die Übernahmen per UPDATE)
 - Rechnungsformular (`/invoice?id=…`) läuft bei 1440 px Breite rechts aus dem Viewport
 - Invoices-Zeilen werden per Spaltenindex gelesen (u. a. `server/pages_invoice.py`) – bricht bei Schemaänderungen, besser Spaltennamen
 - CI testet nur Python 3.13, README nennt 3.10+ → Matrix ergänzen oder Angabe anpassen
