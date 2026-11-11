@@ -145,13 +145,9 @@ def test_a_script_between_allowed_elements_is_dropped_and_its_neighbours_are_kep
     assert sanitize_richtext('<b>vor</b><script>alert(1)</script><i>nach</i>') == '<b>vor</b><i>nach</i>'
 
 
-@pytest.mark.xfail(strict=True, reason="Befund: <embed> ist ein leeres Element ohne Ende-Tag, steht aber in "
-                                       "_DROP_WITH_CONTENT - aller Text danach geht beim Speichern verloren")
 def test_text_after_a_void_embed_element_is_kept():
-    # Eingabe: '<b>vor</b><embed src=x>Rest<i>mehr</i>'. Erwartet: '<b>vor</b>Rest<i>mehr</i>' (ein <embed>
-    # schließt sich selbst, danach folgt normaler Text). Tatsächlich: '<b>vor</b>' - der Filter verwirft alles
-    # bis zu einem </embed>, das nie kommt. Sicherheitlich unkritisch (es bleibt weniger, nie mehr), aber
-    # stiller Textverlust im Angebot.
+    # <embed> ist ein leeres Element ohne Ende-Tag: nur das Tag fällt weg, der Text danach bleibt
+    # (früher verwarf der Filter alles bis zu einem </embed>, das nie kommt).
     assert sanitize_richtext('<b>vor</b><embed src=x>Rest<i>mehr</i>') == '<b>vor</b>Rest<i>mehr</i>'
 
 

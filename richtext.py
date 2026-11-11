@@ -20,7 +20,8 @@ from html.parser import HTMLParser
 ALLOWED_TAGS = frozenset({'b', 'strong', 'i', 'em', 'u', 'p', 'br', 'ul', 'ol', 'li', 'div', 'span'})
 _VOID_TAGS = frozenset({'br'})
 # Diese Elemente fallen samt Inhalt weg; alle übrigen nicht erlaubten verlieren nur ihr Tag
-_DROP_WITH_CONTENT = frozenset({'script', 'style', 'iframe', 'object', 'embed', 'svg', 'math'})
+# (<embed> ist ein leeres Element ohne Ende-Tag: nur das Tag fällt weg, der Text danach bleibt)
+_DROP_WITH_CONTENT = frozenset({'script', 'style', 'iframe', 'object', 'svg', 'math'})
 # Tiefer verschachtelt als das schreibt kein Editor; weitere Start-Tags fallen weg, ihr Text bleibt
 MAX_DEPTH = 50
 
@@ -75,7 +76,7 @@ def sanitize_richtext(html_text):
     """Editor-HTML auf die Positivliste beschränken (``None`` bei leerem Ergebnis).
 
     Erlaubt sind ``b strong i em u p br ul ol li div span`` ohne Attribute. Skripte, Rahmen und
-    eingebettete Objekte (``script style iframe object embed svg math``) fallen samt Inhalt weg,
+    eingebettete Objekte (``script style iframe object svg math``) fallen samt Inhalt weg,
     alle anderen Elemente behalten nur ihren Text, offene Elemente werden geschlossen.
     Idempotent: ein zweiter Durchgang ändert nichts mehr."""
     if not html_text:
