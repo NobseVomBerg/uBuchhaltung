@@ -128,10 +128,12 @@ direkt aus der Datenbankdatei oder aus den Textexporten:
   sie nicht der erwarteten entspricht.
 - **CSV-Import** der Textexporte (Original- und Tabellen-Export), auch
   wiederholt im Parallelbetrieb – Details in [PARSER_README.md](PARSER_README.md).
-- CSV- und Datenbank-Import lassen sich nacheinander nutzen, ohne Buchungen zu
-  verdoppeln: Der Datenbank-Import erkennt Buchungen des CSV-Imports an Beleg-Nr.,
-  Datum, Konto und Betrag wieder und ergänzt sie. Eine von Hand erfasste Buchung
-  mit denselben Werten gilt dabei als dieselbe.
+- CSV- und Datenbank-Import lassen sich nacheinander nutzen: Der Datenbank-Import
+  erkennt Buchungen des CSV-Imports an Beleg-Nr., Datum, Konto, Betrag und
+  Gegenkonto (bzw. Text) wieder und ergänzt sie, statt sie zu verdoppeln. Was nicht
+  genau übereinstimmt – etwa eine CSV-Zeile mit nachträglich geändertem Gegenkonto
+  oder Betrag, oder eine von Hand erfasste Buchung –, legt er neu an: lieber eine
+  sichtbare zweite Buchung als eine still falsch übernommene.
 
 Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen.
 
@@ -176,10 +178,13 @@ Zentrale Verwaltung aller Buchungstransaktionen:
   - `entry` – Buchungssatz (aus WISO-Original-Export oder manuell)
 - **Kontoauszug-Import**: CAMT.053 (XML/ZIP, alle Banken) oder PDF (DKB, Volksbank Rottweil) –
   Vorschau mit Duplikat-Erkennung und Saldo-Prüfung, erst dann übernehmen. Duplikate erkennt
-  der Import an Konto, Datum und Betrag – auch wenn derselbe Auszug mehrfach im Upload steckt.
+  der Import an Konto, Datum und Betrag – auch wenn derselbe Auszug mehrfach im Upload steckt;
+  weicht der Text eines solchen Umsatzes ab, weist die Vorschau darauf hin. Umsätze ohne Datum
+  oder Betrag legt der Import nicht an.
   Grenzen: Eine CAMT-Sammelbuchung (in Einzelumsätze zerlegt) trifft keine Summenzeile derselben
   PDF und wird doppelt angelegt; zwei verschiedene Auszüge desselben Tags mit je einem echten,
-  gleichen Umsatz behalten nur einen davon. Details in [PARSER_README.md](PARSER_README.md)
+  gleichen Umsatz behalten nur einen davon (der andere lässt sich nur von Hand nachtragen).
+  Details in [PARSER_README.md](PARSER_README.md)
 - **Automatische Verknüpfung**: Bank↔Entry über `ParentBooking_ID` (via `link_bank_to_entries()`)
 - **Merged Display**: Bankbuchungen zeigen verknüpfte Entry-Daten (SKR-Konto, Steuersatz, Belegnr.)
 - **Status-Badges**: ✓ verknüpft / offen für Bankbuchungen; ✓ für Einzelbuchungen und Split-Gruppenköpfe mit vollständig gebuchten Kinder-Einträgen
