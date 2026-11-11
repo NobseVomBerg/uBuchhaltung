@@ -8,6 +8,7 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 - Docker-Demo (`-e UBUCHHALTUNG_DEMO=1`) einmal im echten Container prüfen und den Umzug einer 1.x-Installation auf 2.0.0
 
 ## Funktionen
+- Sammelimport: Exportdateien und Kontoauszüge als Sammlung hineingeben, ohne auf Importreihenfolgen zu achten – Spalten frei gewählter Exporte erkennen und in einer Vorschau zuordnen, Quellsätze erst in eine Zwischenablage, ein gemeinsamer Abgleich mit sichtbaren Zweifelsfällen; braucht Schemaänderung und Design im Hauptthread (`/effort xhigh`)
 - Kontoauszüge im MT940-Format (CAMT.053 und PDF: DKB, Volksbank Rottweil sind da)
 - CAMT-Zusatzfelder (Valuta, EndToEndId, Mandatsreferenz, Gläubiger-ID) übernehmen – braucht Schemaänderung
 - Rechnungen/Angebote mit gemischten Steuersätzen (7 % und 19 % je Position) – bisher ein Satz je Beleg

@@ -843,6 +843,18 @@ def test_ersatzsuche_ohne_konto_braucht_gleiches_gegenkonto_und_gleichen_text(db
     assert all(_row(db_with_coa, i) == before[i] for i in before)
 
 
+def test_ersatzsuche_ohne_konto_nimmt_keine_zeile_ohne_gegenkonto(db_with_coa, tmp_path):
+    """Selbst bei gleichem Text: Eine Zeile ohne Konto UND ohne Gegenkonto hat nichts, woran der Satz
+    sie erkennen könnte (anders als eine Zeile mit Konto, die schon über Datum, Betrag und Konto
+    passt) – sie bleibt, der Satz kommt neu dazu."""
+    line = _open_line(db_with_coa, counter=None)
+    before = _row(db_with_coa, line)
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, [dict(_STAMPS)]))
+    assert (result['imported'], result['adopted']) == (1, 0)
+    assert _row(db_with_coa, line) == before
+    assert [d['id'] for d in result['possible_duplicates']] == [line]
+
+
 def test_ersatzsuche_ohne_konto_nimmt_keine_leeren_texte(db_with_coa, tmp_path):
     """Selbst bei bekanntem, gleichem Gegenkonto: ohne Konto und ohne Text ist die Zeile kein
     Kandidat – leer ist nicht „derselbe Text“."""
@@ -873,6 +885,48 @@ def test_ersatzsuche_ohne_konto_bleibt_bei_einem_einzigen_konto_moeglich(db_with
     result = _fdb_import(db_with_coa, _fdb(tmp_path, [dict(_STAMPS)]))
     assert (result['imported'], result['adopted']) == (0, 1)
     assert _row(db_with_coa, line)['COA_ID'] == _coa(db_with_coa, 6815)
+
+
+def _wage_rows(*accounts):
+    """CSV-Zeilen „70001 an 1810, Lohn 03/2026, LA03, 538,00“ – die Konten fehlen im Kontenrahmen,
+    die Zeilen haben beim CSV-Import also kein Konto."""
+    return [('31.03.2026', str(account), '1810', 'Lohn 03/2026', 'LA03', '538,00', '')
+            for account in accounts]
+
+
+def _wage_record(number, account):
+    return dict(ID=number, ACCOUNTINGID=900 + number, ACCOUNTING_DATE='2026-03-31 00:00:00',
+                AMOUNTGROSS=538.0, ACCOUNTNO=account, CONTRA_ACCOUNTNO=1210,
+                ACCOUNTING_TEXT='Lohn 03/2026', REFERENCENO='LA03')
+
+
+def test_zwei_loehne_auf_zwei_konten_werden_nicht_ueber_die_ersatzsuche_vertauscht(db_with_coa, tmp_path):
+    """Zwei gleich hohe Löhne am selben Tag mit demselben Text auf den Konten 70001 und 70002, beide
+    Konten fehlten beim CSV-Import (die Zeilen haben kein Konto); WISO liefert 70002 vor 70001. Welche
+    Zeile zu welchem Konto gehört, ließe sich nur raten: keine Übernahme, 4 Buchungen, kein
+    vertauschtes Konto."""
+    _csv_import(db_with_coa, _wage_rows(70001, 70002))
+    csv_rows = _entries(db_with_coa)
+    assert [r['COA_ID'] for r in csv_rows] == [None, None]
+
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, [_wage_record(1, 70002), _wage_record(2, 70001)]))
+    assert (result['imported'], result['adopted']) == (2, 0)
+    assert len(_entries(db_with_coa)) == 4
+    assert [_row(db_with_coa, r['ID']) for r in csv_rows] == csv_rows        # unberührt, ohne Konto
+
+
+def test_ein_lohn_ueber_die_ersatzsuche_wird_uebernommen_und_kontiert(db_with_coa, tmp_path):
+    """Gegenprobe: mit nur EINEM solchen Satz greift die Ersatzsuche weiter – die Zeile wird
+    übernommen und bekommt das Konto aus WISO."""
+    _csv_import(db_with_coa, _wage_rows(70001))
+    (line,) = _entries(db_with_coa)
+    assert line['COA_ID'] is None
+
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, [_wage_record(1, 70001)]))
+    assert (result['imported'], result['adopted']) == (0, 1)
+    row = _row(db_with_coa, line['ID'])
+    assert (row['SourceGroup'], row['COA_ID']) == ('901', _coa(db_with_coa, 70001))
+    assert len(_entries(db_with_coa)) == 1
 
 
 def test_ersatzsuche_gilt_nur_ohne_kandidaten_mit_konto_von_anfang_an(db_with_coa, tmp_path):
@@ -1188,6 +1242,22 @@ def test_text_mit_in_cp1252_unbelegten_bytes_bricht_den_import_nicht_ab(db_with_
     second = _fdb_import(db_with_coa, path)
     assert (second['imported'], second['skipped']) == (0, 1)
     assert len(_entries(db_with_coa)) == 1
+
+
+def test_teilzeile_ohne_text_wird_nie_uebernommen(db_with_coa, tmp_path):
+    """„6815/1810 −20, ohne Text“ als Teilzeile des Editors und ein WISO-Satz ohne Text mit gleichem
+    Schlüssel und Gegenkonto: zwei leere Texte beweisen nichts – 2 Buchungen, die Zeile steht als
+    „möglicherweise doppelt“ im Ergebnis."""
+    line = _editor_line(db_with_coa, '', amount=-20.0)
+    before = _row(db_with_coa, line)
+    record = dict(ID=1, ACCOUNTINGID=871, ACCOUNTING_DATE='2024-03-12 00:00:00', AMOUNTGROSS=20.0,
+                  ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1210, ACCOUNTING_TEXT='')
+
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, [record]))
+    assert (result['imported'], result['adopted']) == (1, 0)
+    assert _row(db_with_coa, line) == before
+    assert len(_entries(db_with_coa)) == 2
+    assert [d['id'] for d in result['possible_duplicates']] == [line]
 
 
 def test_umbuchung_mit_gleichem_text_und_gegenkonto_wird_uebernommen(db_with_coa, tmp_path):
