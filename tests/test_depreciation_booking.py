@@ -1,0 +1,849 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 unsix IT Engineering
+# Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
+"""AfA-Buchung (2.0.5): Umbuchung „Aufwand an Anlagekonto“.
+
+``book_depreciation`` bucht die AfA eines Jahres als eigenständigen Buchungssatz ohne Konto
+(``Account_ID`` leer, kein Geldfluss): COA = Aufwandskonto, Gegenkonto = Anlagekonto, Betrag
+POSITIV (COA im Soll), Status ``posted``, Datum 31.12. Je Anlage und Jahr gibt es nur eine
+Buchung (Sperre in einer Transaktion, auch gegen WISO-Zeilen mit Status ``booked`` und gegen
+gleichzeitige Aufrufe). Löscht man die Buchung, geht das Jahr auf ``planned`` zurück;
+``delete_asset`` lehnt ab, solange AfA gebucht ist oder Unteranlagen existieren.
+
+Die AfA zählt in der EÜR (Sektion 3, nur ohne Kontofilter), nicht im Dashboard: Sie ist kein
+Geldfluss. Der DATEV-Export gibt sie unverändert als „Aufwand an Anlagekonto“ aus.
+
+Geprüft werden außerdem Handler, Routen (``/assets/depreciate``, ``/assets/delete``,
+``/assets/view?err=…``) und die Seiten (Anlagenliste, AfA-Plan der Anlage mit dem Formular).
+Alle Namen und Werte sind erfunden.
+"""
+import csv
+import datetime
+import re
+import threading
+from collections import Counter
+from contextlib import closing
+from decimal import Decimal
+from types import SimpleNamespace
+from urllib.parse import parse_qs, quote, urlsplit
+
+import pytest
+
+from money import from_minor
+from server.handlers import handle_book_depreciation, handle_datev_export
+from server.pages_assets import PageAssets, PageAssetView
+from tests.dom_helpers import Dom, app_msg_arguments, assert_same_structure
+from tests.http_client import get, own_origin, post
+
+D1, D2 = '2026-01-01', '2026-12-31'
+PAYLOAD = '</script><img src=x onerror=alert(1)>'
+
+
+# ── Hilfen ───────────────────────────────────────────────────────────────────
+
+def _coa(db, number):
+    return db.get_coa_id_by_account_number(number)
+
+
+def _rows(db, sql, params=()):
+    """Zeilen als Dicts (Spaltenname -> Wert); die Verbindung wird geschlossen."""
+    with closing(db._get_connection()) as conn:
+        cursor = conn.execute(sql, params)
+        names = [column[0] for column in cursor.description]
+        return [dict(zip(names, row)) for row in cursor.fetchall()]
+
+
+def _execute(db, sql, params=()):
+    with closing(db._get_connection()) as conn:
+        conn.execute(sql, params)
+        conn.commit()
+
+
+def _count(db, table):
+    return _rows(db, f'SELECT COUNT(*) AS n FROM {table}')[0]['n']
+
+
+def _plan_rows(db, asset):
+    """AfA-Planzeilen einer Anlage: [(Jahr, Booking_ID, Status)]."""
+    return [(r['Year'], r['Booking_ID'], r['Status'])
+            for r in _rows(db, 'SELECT * FROM AssetDepreciations WHERE Asset_ID = ? ORDER BY Year',
+                           (asset,))]
+
+
+def _euer(db, date_from=D1, date_to=D2, account_ids=None):
+    return {nr: Decimal(str(total))
+            for nr, _name, total in db.get_euer_data(date_from, date_to, account_ids)}
+
+
+def _book(db, asset, year=2026, expense=6220, asset_coa=None, **extra):
+    """AfA über den Handler der Anlagenseite buchen (Formular ``/assets/depreciate``)."""
+    form = {'asset_id': [str(asset)], 'year': [str(year)], 'coa_id': [str(_coa(db, expense))]}
+    if asset_coa:
+        form['asset_coa_id'] = [str(_coa(db, asset_coa))]
+    return handle_book_depreciation(db, {**form, **{k: [str(v)] for k, v in extra.items()}})
+
+
+def _error_of(location):
+    """Die Meldung (``err``) aus der Weiterleitung."""
+    return parse_qs(urlsplit(location).query).get('err', [None])[0]
+
+
+def _datev(db):
+    result = handle_datev_export(db, {'date_from': [D1], 'date_to': [D2]})
+    assert isinstance(result[0], bytes), result
+    lines = [line for line in result[0].decode('cp1252').split('\r\n') if line]
+    rows = [next(csv.reader([line], delimiter=';', quotechar='"')) for line in lines[2:]]
+    return [(r[0], r[1], r[6], r[7], r[8]) for r in rows]
+
+
+@pytest.fixture
+def world(tmp_db):
+    """Frische Datenbank mit Girokonto (SKR 1800) und einem Laptop (1.800 EUR, 3 Jahre linear,
+    Anlagekonto 0520) vom 10.01.2026: 600 EUR AfA je Jahr (2026, 2027, 2028)."""
+    db = tmp_db
+    db.insert_account('Afa-Giro', 'Owner', 'DE00DEPRECIATION', 'BIC', 'Bank', is_cash=0,
+                      skr_account=1800)
+    accounts = db.fetch_accounts()
+    return SimpleNamespace(
+        db=db, giro=next(a[0] for a in accounts if a[1] == 'Afa-Giro'),
+        kasse=next(a[0] for a in accounts if a[6]),
+        asset=db.insert_asset('Laptop Probe', '2026-01-10', 1800.0, 3, coa_id=_coa(db, 520)),
+        expense=_coa(db, 6220), anlage=_coa(db, 520))
+
+
+def _wiso_booked(db, asset, year=2026):
+    """Planzeile, wie der WISO-Import sie anlegt: Status ``booked``, aber keine Buchung."""
+    _execute(db, "INSERT INTO AssetDepreciations (Asset_ID, Year, DepreciationAmount, BookValue, "
+                 "Booking_ID, Status, BookedAt) VALUES (?, ?, 6000000, 12000000, NULL, 'booked', "
+                 "NULL)", (asset, year))
+
+
+def _old_depreciation(db, asset, account_id, year=2026):
+    """AfA-Buchung alter Form (bis 2.0.4): Aufwandskonto auf einem Bank-/Kassenkonto, kein
+    Gegenkonto, Betrag negativ, von der Planzeile referenziert."""
+    booking = db.insert_booking(f'{year}-12-31', Decimal('-600'), account_id=account_id,
+                                coa_id=_coa(db, 6220), booking_type='entry')
+    _execute(db, "UPDATE Bookings SET Status = 'posted' WHERE ID = ?", (booking,))
+    _execute(db, "INSERT INTO AssetDepreciations (Asset_ID, Year, DepreciationAmount, BookValue, "
+                 "Booking_ID, Status, BookedAt) VALUES (?, ?, 6000000, 12000000, ?, 'posted', "
+                 "CURRENT_TIMESTAMP)", (asset, year, booking))
+    return booking
+
+
+# ── Form der Buchung ─────────────────────────────────────────────────────────
+
+def test_depreciation_is_a_transfer_from_expense_to_asset_account_without_a_bank_account(world):
+    db = world.db
+    status, location = _book(db, world.asset)
+
+    assert (status, location) == (303, f'/assets/view?id={world.asset}')
+    bookings = _rows(db, 'SELECT * FROM Bookings')
+    assert len(bookings) == 1
+    booking = bookings[0]
+    assert booking['BookingType'] == 'entry' and booking['Status'] == 'posted'
+    assert booking['Account_ID'] is None and booking['ParentBooking_ID'] is None
+    assert (booking['COA_ID'], booking['CounterCOA_ID']) == (world.expense, world.anlage)
+    assert from_minor(booking['Amount']) == Decimal('600')        # positiv: Aufwandskonto im Soll
+    assert booking['TaxRate'] is None and booking['TaxAmount'] is None
+    assert booking['DateBooking'] == booking['DateTax'] == '2026-12-31'
+    assert booking['Currency'] == 'EUR'
+    asset = db.get_asset_by_id(world.asset)
+    assert booking['Text'] == f'AfA {asset[2]} 2026 ({asset[1]})'
+
+
+def test_depreciation_plan_row_points_at_the_booking(world):
+    db = world.db
+    booking_id = db.book_depreciation(world.asset, 2026, None, world.expense, world.anlage)
+
+    (row,) = _rows(db, 'SELECT * FROM AssetDepreciations')
+    assert (row['Asset_ID'], row['Year'], row['Booking_ID'], row['Status']) == \
+           (world.asset, 2026, booking_id, 'posted')
+    assert row['BookedAt'] is not None
+    assert from_minor(row['DepreciationAmount']) == Decimal('600')
+    assert from_minor(row['BookValue']) == Decimal('1200')
+    assert _rows(db, 'SELECT ID FROM Bookings') == [{'ID': booking_id}]
+
+
+def test_a_given_bank_account_is_ignored(world):
+    """``account_id`` bleibt für bestehende Aufrufe, wird aber nicht mehr verwendet – auch nicht,
+    wenn eine ältere Seite das Feld ``account_id`` noch mitschickt."""
+    db = world.db
+    first = db.book_depreciation(world.asset, 2026, world.giro, world.expense, world.anlage)
+    _book(db, world.asset, 2027, account_id=world.kasse)
+    rows = _rows(db, 'SELECT ID, Account_ID FROM Bookings ORDER BY ID')
+    assert rows[0]['ID'] == first
+    assert [r['Account_ID'] for r in rows] == [None, None]
+
+
+def test_custom_description_is_kept(world):
+    _book(world.db, world.asset, description='AfA Laptop für das Büro')
+    assert _rows(world.db, 'SELECT Text FROM Bookings') == [{'Text': 'AfA Laptop für das Büro'}]
+
+
+def test_each_year_has_its_own_booking_date_and_amount(world):
+    db = world.db
+    for year in (2026, 2027, 2028):
+        _book(db, world.asset, year)
+    rows = _rows(db, 'SELECT DateBooking, Amount FROM Bookings ORDER BY DateBooking')
+    assert [(r['DateBooking'], from_minor(r['Amount'])) for r in rows] == [
+        ('2026-12-31', Decimal('600')), ('2027-12-31', Decimal('600')),
+        ('2028-12-31', Decimal('600'))]
+
+
+# ── Anlagekonto und Aufwandskonto ────────────────────────────────────────────
+
+def test_asset_account_comes_from_the_call_then_the_asset_then_its_category(tmp_db):
+    db = tmp_db
+    db.insert_asset_category('Büro-Probe', 3, 'linear', _coa(db, 500), 'Testkategorie')
+    category = next(c[0] for c in db.fetch_asset_categories() if c[1] == 'Büro-Probe')
+    own = db.insert_asset('Eigenes Konto', '2026-01-10', 1800.0, 3, coa_id=_coa(db, 520),
+                          asset_category_id=category)
+    by_category = db.insert_asset('Konto der Kategorie', '2026-01-10', 1800.0, 3,
+                                  asset_category_id=category)
+    nothing = db.insert_asset('Ohne Konto', '2026-01-10', 1800.0, 3)
+
+    assert db.resolve_asset_coa(db.get_asset_by_id(own)) == _coa(db, 520)
+    assert db.resolve_asset_coa(db.get_asset_by_id(own), _coa(db, 560)) == _coa(db, 560)
+    assert db.resolve_asset_coa(db.get_asset_by_id(by_category)) == _coa(db, 500)
+    assert db.resolve_asset_coa(db.get_asset_by_id(nothing)) is None
+    assert db.resolve_asset_coa(db.get_asset_by_id(nothing), _coa(db, 560)) == _coa(db, 560)
+
+
+def test_booking_uses_the_resolved_asset_account(tmp_db):
+    db = tmp_db
+    db.insert_asset_category('Büro-Probe', 3, 'linear', _coa(db, 500), 'Testkategorie')
+    category = next(c[0] for c in db.fetch_asset_categories() if c[1] == 'Büro-Probe')
+    by_category = db.insert_asset('Konto der Kategorie', '2026-01-10', 1800.0, 3,
+                                  asset_category_id=category)
+    own = db.insert_asset('Eigenes Konto', '2026-01-10', 1800.0, 3, coa_id=_coa(db, 520))
+
+    first = db.book_depreciation(by_category, 2026, None, _coa(db, 6220))
+    second = db.book_depreciation(own, 2026, None, _coa(db, 6220))
+    third = db.book_depreciation(own, 2027, None, _coa(db, 6220), _coa(db, 560))
+
+    assert [db.get_booking_by_id(b)[9] for b in (first, second, third)] == \
+           [_coa(db, 500), _coa(db, 520), _coa(db, 560)]
+
+
+def test_asset_without_any_asset_account_cannot_be_booked(tmp_db):
+    db = tmp_db
+    asset = db.insert_asset('Ohne Konto', '2026-01-10', 1800.0, 3)
+
+    with pytest.raises(ValueError, match='Anlagenkonto'):
+        db.book_depreciation(asset, 2026, None, _coa(db, 6220))
+
+    assert _count(db, 'Bookings') == 0 and _plan_rows(db, asset) == []
+
+
+def test_missing_expense_account_is_refused(world):
+    with pytest.raises(ValueError, match='Aufwandskonto'):
+        world.db.book_depreciation(world.asset, 2026, None, None, world.anlage)
+    assert _count(world.db, 'Bookings') == 0 and _plan_rows(world.db, world.asset) == []
+
+
+def test_handler_reports_a_refusal_instead_of_failing(world):
+    """Der Handler leitet mit ``err`` auf die Anlagenseite zurück; gebucht wird nichts."""
+    db = world.db
+    no_account = db.insert_asset('Ohne Konto', '2026-01-10', 1800.0, 3)
+
+    status, location = _book(db, no_account)
+    assert status == 303
+    assert location.startswith(f'/assets/view?id={no_account}&err=')
+    assert _error_of(location) == 'Anlage hat kein Anlagenkonto'
+
+    status, location = handle_book_depreciation(
+        db, {'asset_id': [str(world.asset)], 'year': ['2026']})            # kein coa_id
+    assert (status, _error_of(location)) == (303, 'Aufwandskonto fehlt')
+
+    status, location = _book(db, world.asset, 2099)
+    assert (status, _error_of(location)) == (303, 'No depreciation planned for year 2099')
+    assert _count(db, 'Bookings') == 0
+
+
+# ── Je Anlage und Jahr nur einmal ────────────────────────────────────────────
+
+def test_second_booking_of_the_same_year_is_refused(world):
+    db = world.db
+    first = db.book_depreciation(world.asset, 2026, None, world.expense, world.anlage)
+
+    with pytest.raises(ValueError, match='AfA 2026 ist bereits gebucht'):
+        db.book_depreciation(world.asset, 2026, None, world.expense, world.anlage)
+
+    assert _rows(db, 'SELECT ID FROM Bookings') == [{'ID': first}]
+    assert _plan_rows(db, world.asset) == [(2026, first, 'posted')]
+
+
+def test_handler_redirects_with_the_message_for_a_second_booking(world):
+    db = world.db
+    _book(db, world.asset)
+
+    status, location = _book(db, world.asset)
+
+    assert status == 303
+    assert location.startswith(f'/assets/view?id={world.asset}&err=')
+    assert _error_of(location) == 'AfA 2026 ist bereits gebucht'
+    assert _count(db, 'Bookings') == 1
+
+
+def test_other_years_and_other_assets_are_not_blocked(world):
+    db = world.db
+    other = db.insert_asset('Drucker Probe', '2026-02-01', 1800.0, 3, coa_id=_coa(db, 520))
+    for asset, year in ((world.asset, 2026), (world.asset, 2027), (other, 2026)):
+        db.book_depreciation(asset, year, None, world.expense, world.anlage)
+    assert _count(db, 'Bookings') == 3
+
+
+def test_year_imported_from_wiso_counts_as_booked(world):
+    """WISO-Zeilen haben Status ``booked`` ohne Buchung – die Sperre gilt auch dafür."""
+    db = world.db
+    _wiso_booked(db, world.asset)
+
+    with pytest.raises(ValueError, match='bereits gebucht'):
+        db.book_depreciation(world.asset, 2026, None, world.expense, world.anlage)
+
+    assert _count(db, 'Bookings') == 0
+    assert _plan_rows(db, world.asset) == [(2026, None, 'booked')]
+    status, location = _book(db, world.asset)
+    assert (status, _error_of(location)) == (303, 'AfA 2026 ist bereits gebucht')
+
+
+def test_year_with_a_plan_row_that_is_not_booked_can_be_booked(world):
+    db = world.db
+    _execute(db, "INSERT INTO AssetDepreciations (Asset_ID, Year, DepreciationAmount, BookValue, "
+                 "Status) VALUES (?, 2026, 6000000, 12000000, 'planned')", (world.asset,))
+
+    booking = db.book_depreciation(world.asset, 2026, None, world.expense, world.anlage)
+
+    assert _plan_rows(db, world.asset) == [(2026, booking, 'posted')]
+
+
+def test_eight_simultaneous_bookings_of_the_same_year_create_exactly_one_booking(world):
+    """Doppelklick oder zwei gleichzeitige Anfragen: Prüfung und Anlegen laufen in einer
+    Transaktion, die den Schreibzugriff sofort sperrt."""
+    db = world.db
+    outcomes = []
+    barrier = threading.Barrier(8)
+
+    def worker():
+        barrier.wait()
+        try:
+            db.book_depreciation(world.asset, 2026, None, world.expense, world.anlage)
+            outcomes.append('gebucht')
+        except ValueError as exc:
+            outcomes.append(str(exc))
+        except Exception as exc:                                  # noqa: BLE001 – das wäre ein Fehler
+            outcomes.append(f'{type(exc).__name__}: {exc}')
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert dict(Counter(outcomes)) == {'gebucht': 1, 'AfA 2026 ist bereits gebucht': 7}
+    assert _count(db, 'Bookings') == 1 and _count(db, 'AssetDepreciations') == 1
+    [(_year, booking_id, status)] = _plan_rows(db, world.asset)
+    assert status == 'posted' and _rows(db, 'SELECT ID FROM Bookings') == [{'ID': booking_id}]
+
+
+# ── Buchung löschen setzt das Jahr zurück ────────────────────────────────────
+
+def test_deleting_the_booking_puts_the_year_back_to_planned_and_it_can_be_booked_again(world):
+    db = world.db
+    first = db.book_depreciation(world.asset, 2026, None, world.expense, world.anlage)
+
+    db.delete_transaction(first)
+
+    (row,) = _rows(db, 'SELECT * FROM AssetDepreciations')
+    assert (row['Booking_ID'], row['Status'], row['BookedAt']) == (None, 'planned', None)
+    assert _count(db, 'Bookings') == 0
+
+    again = db.book_depreciation(world.asset, 2026, None, world.expense, world.anlage)
+
+    assert again != first
+    assert _rows(db, 'SELECT ID FROM Bookings') == [{'ID': again}]          # genau eine Buchung
+    assert _plan_rows(db, world.asset) == [(2026, again, 'posted')]
+
+
+def test_deleting_a_booking_leaves_the_other_years_alone(world):
+    db = world.db
+    first = db.book_depreciation(world.asset, 2026, None, world.expense, world.anlage)
+    second = db.book_depreciation(world.asset, 2027, None, world.expense, world.anlage)
+    unrelated = db.insert_booking('2026-05-01', Decimal('-10'), coa_id=_coa(db, 6815),
+                                  booking_type='entry')
+
+    db.delete_transaction(unrelated)
+    db.delete_transaction(first)
+
+    assert _plan_rows(db, world.asset) == [(2026, None, 'planned'), (2027, second, 'posted')]
+    assert _rows(db, 'SELECT ID FROM Bookings') == [{'ID': second}]
+
+
+def test_old_depreciation_is_replaced_by_deleting_and_booking_again(world):
+    """Der Weg, den docs/aufgaben.md für alte AfA-Sätze nennt: Die Buchung alter Form (Aufwandskonto
+    auf einem Bankkonto, kein Gegenkonto) löschen und neu buchen. Danach stimmen EÜR und DATEV."""
+    db = world.db
+    old = _old_depreciation(db, world.asset, world.giro)
+    assert _datev(db) == [('600,00', 'S', '6220', '', '0')]
+
+    db.delete_transaction(old)
+    db.book_depreciation(world.asset, 2026, None, world.expense, world.anlage)
+
+    assert _euer(db) == {6220: Decimal('-600')}
+    assert _datev(db) == [('600,00', 'S', '6220', '520', '0')]
+
+
+# ── Anlage löschen ───────────────────────────────────────────────────────────
+
+def test_asset_with_booked_depreciation_cannot_be_deleted(world):
+    db = world.db
+    booking = db.book_depreciation(world.asset, 2026, None, world.expense, world.anlage)
+    db.book_depreciation(world.asset, 2027, None, world.expense, world.anlage)
+
+    with pytest.raises(ValueError) as refusal:
+        db.delete_asset(world.asset)
+
+    assert 'AfA gebucht' in str(refusal.value) and '2026, 2027' in str(refusal.value)
+    assert db.get_asset_by_id(world.asset) is not None
+    assert db.get_booking_by_id(booking) is not None
+    assert [r[2] for r in _plan_rows(db, world.asset)] == ['posted', 'posted']
+
+
+def test_asset_with_extensions_cannot_be_deleted_and_nothing_fails_inside_the_database(world):
+    db = world.db
+    extension = db.insert_asset('Speicher Probe', '2026-02-01', 900.0, 3, parent_id=world.asset)
+
+    with pytest.raises(ValueError, match='Unteranlagen'):        # kein sqlite3.IntegrityError
+        db.delete_asset(world.asset)
+
+    assert db.get_asset_by_id(world.asset) is not None and db.get_asset_by_id(extension) is not None
+    db.delete_asset(extension)                                    # erst die Erweiterung …
+    db.delete_asset(world.asset)                                  # … dann die Anlage
+    assert db.get_asset_by_id(world.asset) is None
+
+
+def test_asset_with_booked_depreciation_of_an_extension_cannot_be_deleted_either(world):
+    db = world.db
+    extension = db.insert_asset('Speicher Probe', '2026-02-01', 1800.0, 3, parent_id=world.asset,
+                                coa_id=_coa(db, 520))
+    db.book_depreciation(extension, 2026, None, world.expense, world.anlage)
+
+    with pytest.raises(ValueError, match='AfA gebucht'):
+        db.delete_asset(extension)
+    assert db.get_asset_by_id(extension) is not None
+
+
+def test_asset_without_booked_depreciation_is_deleted_with_its_plan_rows(world):
+    """Planzeilen ohne Buchung (WISO-Import, nicht gebuchte Jahre) hindern das Löschen nicht."""
+    db = world.db
+    _wiso_booked(db, world.asset, 2026)
+    _execute(db, "INSERT INTO AssetDepreciations (Asset_ID, Year, DepreciationAmount, BookValue, "
+                 "Status) VALUES (?, 2027, 6000000, 6000000, 'planned')", (world.asset,))
+
+    db.delete_asset(world.asset)
+
+    assert db.get_asset_by_id(world.asset) is None
+    assert _count(db, 'AssetDepreciations') == 0
+
+
+def test_asset_can_be_deleted_after_its_depreciation_booking_is_deleted(world):
+    db = world.db
+    booking = db.book_depreciation(world.asset, 2026, None, world.expense, world.anlage)
+    db.delete_transaction(booking)
+    db.delete_asset(world.asset)
+    assert db.get_asset_by_id(world.asset) is None
+    assert _count(db, 'Bookings') == 0 and _count(db, 'AssetDepreciations') == 0
+
+
+# ── EÜR, Dashboard, DATEV ────────────────────────────────────────────────────
+
+def test_depreciation_is_an_expense_in_the_euer_and_not_a_cash_flow(world):
+    db = world.db
+    _book(db, world.asset)
+
+    assert _euer(db) == {6220: Decimal('-600')}                   # kein Anlagekonto 0520 darin
+    for ids in (None, [], [world.giro], [world.kasse], [world.giro, world.kasse]):
+        totals = db.get_dashboard_totals(D1, D2, ids)
+        assert (totals['income'], totals['expense'], totals['private'], totals['bank_count']) == \
+               (0, 0, 0, 0)
+        assert all(m['income'] == m['expense'] == m['private'] == 0
+                   for m in db.get_dashboard_monthly(D1, D2, ids))
+
+
+def test_depreciation_counts_in_the_euer_only_when_all_accounts_are_selected(world):
+    db = world.db
+    _book(db, world.asset)
+    assert _euer(db, account_ids=[world.giro, world.kasse]) == {6220: Decimal('-600')}
+    assert _euer(db, account_ids=[world.giro]) == {}
+    assert _euer(db, account_ids=[world.kasse]) == {}
+
+
+def test_depreciation_belongs_to_the_year_of_its_booking_date(tmp_db):
+    db = tmp_db
+    asset = db.insert_asset('Laptop Probe', '2025-01-10', 1800.0, 3, coa_id=_coa(db, 520))
+    _book(db, asset, 2025)
+    _book(db, asset, 2026)
+
+    assert _euer(db, '2025-01-01', '2025-12-31') == {6220: Decimal('-600')}
+    assert _euer(db, '2026-01-01', '2026-12-31') == {6220: Decimal('-600')}
+    assert _euer(db, '2025-01-01', '2026-12-31') == {6220: Decimal('-1200')}
+    assert _euer(db, '2027-01-01', '2027-12-31') == {}
+    assert _euer(db, '2025-01-01', '2025-12-30') == {}            # gebucht zum 31.12.
+    assert _euer(db, '2025-12-31', '2025-12-31') == {6220: Decimal('-600')}
+
+
+@pytest.mark.parametrize('expense, anlage, plan, amount', [
+    (6220, 520, ('Laptop Probe', 1800.0, 3), '600'),
+    (6222, 520, ('Lieferwagen Probe', 24000.0, 6), '4000'),
+    (6260, 670, ('Monitor Probe', 500.0, 3), '500'),
+], ids=['sachanlage', 'fahrzeug', 'gwg'])
+def test_depreciation_shows_the_expense_account_in_euer_and_datev(tmp_db, expense, anlage, plan,
+                                                                  amount):
+    db = tmp_db
+    asset = db.insert_asset(plan[0], '2026-01-10', plan[1], plan[2], coa_id=_coa(db, anlage))
+    _book(db, asset, 2026, expense=expense)
+
+    assert _euer(db) == {expense: -Decimal(amount)}
+    [(umsatz, sh, konto, gegenkonto, bu)] = _datev(db)
+    assert (umsatz, sh, konto, gegenkonto, bu) == \
+           (f'{amount},00', 'S', str(expense), str(anlage), '0')
+
+
+def test_datev_row_of_the_new_depreciation_is_expense_to_asset_account(world):
+    _book(world.db, world.asset)
+    assert _datev(world.db) == [('600,00', 'S', '6220', '520', '0')]
+
+
+def test_old_depreciation_on_a_bank_account_counts_once_in_the_euer(world):
+    """Alte Form auf dem Girokonto: früher fehlte sie in der EÜR, jetzt zählt sie (Sektion 3)."""
+    db = world.db
+    _old_depreciation(db, world.asset, world.giro)
+    assert _euer(db) == {6220: Decimal('-600')}
+
+
+@pytest.mark.parametrize('with_skr', [True, False], ids=['kasse-mit-skr', 'kasse-ohne-skr'])
+def test_old_depreciation_on_the_cash_account_is_no_cash_flow_and_counts_once(world, with_skr):
+    """Alte AfA auf der Kasse: nicht im Dashboard (kein Geldfluss), in der EÜR genau einmal – nicht
+    in Sektion 2b und 3 zugleich. Ein gewöhnlicher Kassensatz daneben zählt in beiden."""
+    db = world.db
+    if not with_skr:
+        _execute(db, 'UPDATE Accounts SET SKRAccount = NULL WHERE IsCash = 1')
+    _old_depreciation(db, world.asset, world.kasse)
+    db.insert_booking('2026-12-30', Decimal('-10'), account_id=world.kasse, coa_id=_coa(db, 6815),
+                      booking_type='entry')
+
+    assert _euer(db) == {6220: Decimal('-600'), 6815: Decimal('-10')}
+    totals = db.get_dashboard_totals(D1, D2)
+    assert (totals['expense'], totals['bank_count']) == (-10.0, 1)
+    december = db.get_dashboard_monthly(D1, D2)[11]
+    assert (december['year_month'], december['expense']) == ('2026-12', -10.0)
+
+
+# ── Routen ───────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def web(auto_login, server_port):
+    """Echter Server (automatische Anmeldung), die Datenbank des Administrators und ein Laptop."""
+    db = auto_login.db
+    asset = db.insert_asset('Laptop Probe', '2026-01-10', 1800.0, 3, coa_id=_coa(db, 520))
+    return SimpleNamespace(
+        db=db, asset=asset, port=server_port, csrf=auto_login.csrf,
+        headers={'Origin': own_origin(server_port)}, expense=_coa(db, 6220), anlage=_coa(db, 520))
+
+
+def _post(web, path, form=None):
+    return post(web.port, path, headers=web.headers, csrf=web.csrf, form=form)
+
+
+def _depreciate(web, **override):
+    form = {'asset_id': web.asset, 'year': 2026, 'coa_id': web.expense, 'asset_coa_id': web.anlage}
+    form.update(override)
+    return _post(web, '/assets/depreciate', form)
+
+
+def test_route_books_the_depreciation_and_redirects_to_the_asset(web):
+    resp = _depreciate(web)
+
+    assert resp.status == 303 and resp.headers['Location'] == f'/assets/view?id={web.asset}'
+    (booking,) = _rows(web.db, 'SELECT * FROM Bookings')
+    assert (booking['Account_ID'], booking['COA_ID'], booking['CounterCOA_ID']) == \
+           (None, web.expense, web.anlage)
+    assert from_minor(booking['Amount']) == Decimal('600')
+
+
+def test_route_shows_the_refusal_on_the_asset_page(web):
+    _depreciate(web)
+
+    resp = _depreciate(web)
+
+    assert resp.status == 303
+    assert _error_of(resp.headers['Location']) == 'AfA 2026 ist bereits gebucht'
+    page = get(web.port, resp.headers['Location'])
+    assert page.status == 200
+    assert app_msg_arguments(Dom(page.text)) == ['AfA 2026 ist bereits gebucht', 'error']
+    assert _count(web.db, 'Bookings') == 1
+
+
+def test_route_without_an_asset_account_shows_the_message(web):
+    no_account = web.db.insert_asset('Ohne Konto', '2026-01-10', 1800.0, 3)
+
+    resp = _depreciate(web, asset_id=no_account, asset_coa_id='')
+
+    assert resp.status == 303
+    page = get(web.port, resp.headers['Location'])
+    assert app_msg_arguments(Dom(page.text)) == ['Anlage hat kein Anlagenkonto', 'error']
+    assert _count(web.db, 'Bookings') == 0
+
+
+def test_delete_route_refuses_while_depreciation_is_booked(web):
+    _depreciate(web)
+
+    resp = _post(web, f'/assets/delete?id={web.asset}')
+
+    assert resp.status == 303
+    assert resp.headers['Location'].startswith(f'/assets/view?id={web.asset}&err=')
+    assert 'AfA gebucht (2026)' in _error_of(resp.headers['Location'])
+    assert web.db.get_asset_by_id(web.asset) is not None and _count(web.db, 'Bookings') == 1
+    page = get(web.port, resp.headers['Location'])
+    assert 'AfA gebucht (2026)' in app_msg_arguments(Dom(page.text))[0]
+
+
+def test_delete_route_refuses_extensions(web):
+    web.db.insert_asset('Speicher Probe', '2026-02-01', 900.0, 3, parent_id=web.asset)
+
+    resp = _post(web, f'/assets/delete?id={web.asset}')
+
+    assert resp.status == 303 and 'Unteranlagen' in _error_of(resp.headers['Location'])
+    assert web.db.get_asset_by_id(web.asset) is not None
+
+
+def test_delete_route_deletes_an_asset_without_depreciation(web):
+    resp = _post(web, f'/assets/delete?id={web.asset}')
+    assert resp.status == 303 and resp.headers['Location'] == '/assets'
+    assert web.db.get_asset_by_id(web.asset) is None
+
+
+def test_delete_route_deletes_after_the_booking_was_deleted(web):
+    _depreciate(web)
+    booking = _rows(web.db, 'SELECT Booking_ID FROM AssetDepreciations')[0]['Booking_ID']
+    assert _post(web, f'/transactions/delete?id={booking}').status == 303
+    assert _plan_rows(web.db, web.asset) == [(2026, None, 'planned')]
+
+    resp = _post(web, f'/assets/delete?id={web.asset}')
+
+    assert resp.headers['Location'] == '/assets' and web.db.get_asset_by_id(web.asset) is None
+
+
+def test_delete_route_is_not_reachable_by_get(web):
+    resp = get(web.port, f'/assets/delete?id={web.asset}')
+    assert resp.status == 405
+    assert web.db.get_asset_by_id(web.asset) is not None
+
+
+def test_message_in_the_address_cannot_close_the_script_block(web):
+    """``err`` kommt aus der Adresse: Ein ``</script>`` darin ändert den Aufbau der Seite nicht,
+    und die Meldung erreicht den Nutzer unverändert."""
+    benign = get(web.port, f'/assets/view?id={web.asset}&err=Normale+Meldung')
+    hostile = get(web.port, f'/assets/view?id={web.asset}&err={quote(PAYLOAD)}')
+
+    assert hostile.status == 200
+    assert_same_structure(hostile.text, benign.text)
+    assert '</script><img' not in hostile.text and '<img src=x onerror=alert(1)>' not in hostile.text
+    assert app_msg_arguments(Dom(hostile.text)) == [PAYLOAD, 'error']
+
+
+def test_message_in_the_address_survives_exotic_characters(web):
+    message = 'Fehler: <b>fett</b> & "zitiert" \'einfach\'   Umlaut äöü 日本\nzweite Zeile'
+    page = get(web.port, f'/assets/view?id={web.asset}&err={quote(message)}')
+    assert app_msg_arguments(Dom(page.text)) == [message, 'error']
+
+
+def test_asset_page_without_a_message_has_no_message_call(web):
+    html = get(web.port, f'/assets/view?id={web.asset}').text
+    assert not [s for s in Dom(html).scripts if 'function(){appMsg(' in s]
+
+
+# ── Anlagenliste ─────────────────────────────────────────────────────────────
+
+THIS_YEAR = datetime.date.today().year
+
+
+def _list_row(html, name):
+    return next(row for row in html.split('<tr>') if f'>{name}<' in row)
+
+
+def test_list_counts_posted_and_booked_years_as_booked_and_planned_years_as_open(tmp_db):
+    """Der Status steht in der Spalte „Status“ der Planzeile (nicht in der Buchungs-Id): ``posted``
+    (Buchung des Programms) und ``booked`` (WISO-Import) gelten als gebucht, ``planned`` nicht."""
+    db = tmp_db
+    posted = db.insert_asset('Anlage Gebucht', f'{THIS_YEAR}-01-10', 1800.0, 3, coa_id=_coa(db, 520))
+    booked = db.insert_asset('Anlage Wiso', f'{THIS_YEAR}-01-10', 2400.0, 3, coa_id=_coa(db, 500))
+    db.insert_asset('Anlage Offen', f'{THIS_YEAR}-01-10', 3000.0, 3, coa_id=_coa(db, 500))
+    _book(db, posted, THIS_YEAR)
+    _wiso_booked(db, booked, THIS_YEAR)
+
+    html = PageAssets(db)
+
+    summary = re.search(rf'AfA {THIS_YEAR} gebucht: ([\d.,]+) € \| AfA {THIS_YEAR} geplant: ([\d.,]+) €',
+                        html)
+    assert summary.groups() == ('1.400,00', '1.000,00')          # 600 + 800 gebucht, 1000 geplant
+    assert '✓ gebucht' in _list_row(html, 'Anlage Gebucht')
+    assert '✓ gebucht' in _list_row(html, 'Anlage Wiso')
+    assert '● offen' in _list_row(html, 'Anlage Offen')
+    assert '✓ gebucht' not in _list_row(html, 'Anlage Offen')
+
+
+def test_list_moves_the_year_back_to_open_after_the_booking_is_deleted(tmp_db):
+    db = tmp_db
+    asset = db.insert_asset('Anlage Gebucht', f'{THIS_YEAR}-01-10', 1800.0, 3, coa_id=_coa(db, 520))
+    _book(db, asset, THIS_YEAR)
+    booking = _rows(db, 'SELECT Booking_ID FROM AssetDepreciations')[0]['Booking_ID']
+    assert f'AfA {THIS_YEAR} gebucht: 600,00 €' in PageAssets(db)
+
+    db.delete_transaction(booking)
+
+    html = PageAssets(db)
+    assert f'AfA {THIS_YEAR} gebucht: 0,00 €' in html and f'AfA {THIS_YEAR} geplant: 600,00 €' in html
+    assert '● offen' in _list_row(html, 'Anlage Gebucht')
+
+
+# ── AfA-Plan der Anlage ──────────────────────────────────────────────────────
+
+def _plan_by_year(html):
+    """{Jahr: HTML der Zeile} der Tabelle „AfA-Plan“."""
+    block = html[html.index('<h3>AfA-Plan</h3>'):html.index('Erweiterungen / Nachkäufe')]
+    parts = re.split(r'<tr(?: class="row-ok")?><td>(\d{4})</td>', block)
+    return {int(parts[i]): parts[i + 1] for i in range(1, len(parts), 2)}
+
+
+def _has_form(row, asset, year):
+    return f'id="depr_form_{asset}_{year}"' in row
+
+
+@pytest.fixture
+def plan_asset(tmp_db):
+    """Anlage mit vier Jahren AfA, die vor zwei Jahren beginnen: zwei vergangene, das laufende und
+    ein künftiges Jahr (600 EUR je Jahr)."""
+    db = tmp_db
+    first = THIS_YEAR - 2
+    asset = db.insert_asset('Plan Probe', f'{first}-01-10', 2400.0, 4, coa_id=_coa(db, 500))
+    return SimpleNamespace(db=db, asset=asset, first=first)
+
+
+def test_plan_marks_posted_and_booked_years_as_booked_and_offers_booking_for_the_others(plan_asset):
+    db, asset, first = plan_asset.db, plan_asset.asset, plan_asset.first
+    _book(db, asset, first)                                          # Buchung des Programms
+    _wiso_booked(db, asset, first + 1)                               # WISO-Import: ohne Buchung
+    booking = _rows(db, 'SELECT Booking_ID FROM AssetDepreciations WHERE Year = ?',
+                    (first,))[0]['Booking_ID']
+
+    plan = _plan_by_year(PageAssetView(db, asset))
+
+    assert set(plan) == {first, first + 1, first + 2, first + 3}
+    assert '✓ Gebucht' in plan[first] and not _has_form(plan[first], asset, first)
+    assert f'<a href="/transactions/edit?id={booking}">Buchung ansehen</a>' in plan[first]
+    assert '✓ Gebucht' in plan[first + 1] and not _has_form(plan[first + 1], asset, first + 1)
+    assert 'Buchung ansehen' not in plan[first + 1]                  # keine Buchung, kein Link
+    assert '● Laufendes Jahr' in plan[first + 2] and _has_form(plan[first + 2], asset, first + 2)
+    assert '○ Geplant' in plan[first + 3] and 'AfA buchen' not in plan[first + 3]
+
+
+def test_plan_offers_booking_again_after_the_booking_is_deleted(plan_asset):
+    db, asset, first = plan_asset.db, plan_asset.asset, plan_asset.first
+    _book(db, asset, first)
+    assert 'AfA buchen' not in _plan_by_year(PageAssetView(db, asset))[first]
+    booking = _rows(db, 'SELECT Booking_ID FROM AssetDepreciations')[0]['Booking_ID']
+
+    db.delete_transaction(booking)
+
+    row = _plan_by_year(PageAssetView(db, asset))[first]
+    assert '⚠ Nicht gebucht' in row and _has_form(row, asset, first) and '✓ Gebucht' not in row
+    assert _book(db, asset, first)[1] == f'/assets/view?id={asset}'      # und lässt sich buchen
+    assert _plan_rows(db, asset)[0][2] == 'posted'
+
+
+def test_plan_does_not_show_the_booking_link_of_a_deleted_booking(plan_asset):
+    db, asset, first = plan_asset.db, plan_asset.asset, plan_asset.first
+    _book(db, asset, first)
+    booking = _rows(db, 'SELECT Booking_ID FROM AssetDepreciations')[0]['Booking_ID']
+    db.delete_transaction(booking)
+    assert f'/transactions/edit?id={booking}' not in PageAssetView(db, asset)
+    assert '/assets/depreciation/view' not in PageAssetView(db, asset)       # alter, toter Link
+
+
+# ── Formular „AfA buchen“ ────────────────────────────────────────────────────
+
+def _depreciation_form(html, asset, year):
+    """{Feldname: [(Kontonummer, vorbelegt)]} der beiden Auswahlfelder des Formulars sowie der
+    Formularblock selbst."""
+    block = re.search(rf'<div id="depr_form_{asset}_{year}".*?</form>', html, re.S).group(0)
+    selects = {}
+    for name, body in re.findall(r'<select name="(\w+)"[^>]*>(.*?)</select>', block, re.S):
+        options = re.findall(r'<option value="(\d*)"( selected)?>([^<]*)</option>', body)
+        selects[name] = [(label.split()[0] if value else '', bool(selected))
+                         for value, selected, label in options]
+    return block, selects
+
+
+def _selected(options):
+    return [number for number, selected in options if selected]
+
+
+@pytest.mark.parametrize('name, price, years, anlage, expected_expense', [
+    ('Laptop Probe', 1800.0, 3, 500, '6220'),             # Sachanlage
+    ('Pkw Probe', 30000.0, 6, 520, '6222'),                # Fahrzeug
+    ('Transporter Probe', 20000.0, 6, 560, '6222'),        # sonstiges Transportmittel
+    ('Monitor Probe', 500.0, 3, 500, '6260'),              # GWG: Sofortabschreibung
+], ids=['sachanlage', 'pkw', 'transportmittel', 'gwg'])
+def test_form_preselects_asset_account_and_expense_account(tmp_db, name, price, years, anlage,
+                                                           expected_expense):
+    db = tmp_db
+    asset = db.insert_asset(name, f'{THIS_YEAR}-01-10', price, years, coa_id=_coa(db, anlage))
+
+    block, selects = _depreciation_form(PageAssetView(db, asset), asset, THIS_YEAR)
+
+    assert _selected(selects['asset_coa_id']) == [str(anlage)]
+    assert _selected(selects['coa_id']) == [expected_expense]
+    assert 'name="account_id"' not in block and 'Buchungskonto' not in block     # kein Bankkonto
+    assert 'required' in re.search(r'<select name="asset_coa_id"[^>]*>', block).group(0)
+    assert 'required' in re.search(r'<select name="coa_id"[^>]*>', block).group(0)
+
+
+def test_form_offers_only_asset_accounts_as_asset_account(tmp_db):
+    db = tmp_db
+    asset = db.insert_asset('Laptop Probe', f'{THIS_YEAR}-01-10', 1800.0, 3, coa_id=_coa(db, 500))
+
+    _block, selects = _depreciation_form(PageAssetView(db, asset), asset, THIS_YEAR)
+
+    numbers = [int(number) for number, _ in selects['asset_coa_id']]
+    assert numbers and all(number < 1000 for number in numbers)
+    expense_numbers = {int(number) for number, _ in selects['coa_id']}
+    assert {6220, 6222, 6260} <= expense_numbers                   # das Aufwandskonto hat die volle Wahl
+
+
+def test_form_without_an_asset_account_forces_a_choice(tmp_db):
+    db = tmp_db
+    asset = db.insert_asset('Ohne Konto', f'{THIS_YEAR}-01-10', 1800.0, 3)
+
+    block, selects = _depreciation_form(PageAssetView(db, asset), asset, THIS_YEAR)
+
+    assert _selected(selects['asset_coa_id']) == []
+    assert selects['asset_coa_id'][0] == ('', False)               # „– bitte wählen –“
+    assert '– bitte wählen –' in block
+    assert _selected(selects['coa_id']) == ['6220']                 # das Aufwandskonto bleibt vorbelegt
+
+
+def test_form_leaves_out_hidden_accounts_except_the_asset_account_itself(tmp_db):
+    db = tmp_db
+    asset = db.insert_asset('Laptop Probe', f'{THIS_YEAR}-01-10', 1800.0, 3, coa_id=_coa(db, 520))
+    for number in (520, 500, 6220):         # eigenes Anlagekonto, anderes Anlagekonto, Aufwandskonto
+        assert db.toggle_coa_show_in_menu(_coa(db, number)) == 0          # jetzt ausgeblendet
+
+    _block, selects = _depreciation_form(PageAssetView(db, asset), asset, THIS_YEAR)
+
+    asset_numbers = [number for number, _ in selects['asset_coa_id']]
+    assert '520' in asset_numbers and '500' not in asset_numbers
+    assert _selected(selects['asset_coa_id']) == ['520']
+    assert '6220' not in [number for number, _ in selects['coa_id']]
+    assert _selected(selects['coa_id']) == ['6222']                 # Pkw-Konto 520 → Fahrzeug-AfA
