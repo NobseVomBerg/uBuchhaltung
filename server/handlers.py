@@ -729,6 +729,20 @@ def handle_update_bankaccount(db: Database, post_data):
     bank_name = post_data.get("bank_name", [""])[0]
     skr_raw = post_data.get("skr_account", [""])[0]
     skr_account = int(skr_raw) if skr_raw.strip() else None
+    current = db.get_account_by_id(account_id)
+    old_skr = current[7] if current else None
+    if skr_account != old_skr:
+        # Ob ein Buchungssatz eine Zahlung ist und in welche Richtung, lesen EÜR und
+        # DATEV-Export daran ab, welche Konten gerade Geldkonten sind – das Vorzeichen
+        # stammt aber vom Zeitpunkt der Buchung bzw. des Imports. Hängen schon Sätze am
+        # alten oder am neuen Konto, würde die Umstellung sie umdeuten (Ausgabe ↔ Einnahme).
+        affected = db.count_entries_on_account_numbers([old_skr, skr_account])
+        if affected:
+            msg = (f'SKR-Konto nicht geändert: {affected} Buchungssätze führen das bisherige '
+                   f'oder das neue Konto. Die Umstellung würde sie anders lesen als gebucht '
+                   f'(Einnahme statt Ausgabe). Das Konto lässt sich nur umstellen, solange '
+                   f'keine Buchungen daran hängen – z. B. vor dem ersten Import.')
+            return 303, f"/masterdata/bankaccounts/edit?id={account_id}&error={quote(msg)}"
     if skr_account == DEFAULT_CASH_ACCOUNT:
         # Ältere Datenbanken kennen das Kassenkonto 1600 noch nicht – ohne das Konto im
         # Kontenrahmen bliebe die Umstellung einer Kasse auf 1600 wirkungslos.
@@ -2219,6 +2233,9 @@ def handle_asset_sale(db: Database, post_data: dict):
     asset_id   = int(post_data.get('asset_id', ['0'])[0])
     sale_date  = post_data.get('sale_date', [''])[0].strip()
     sale_price = float(post_data.get('sale_price', ['0'])[0] or 0)
+    if parse_iso_date(sale_date) is None:
+        # Das Datum steuert, bis wann AfA gebucht werden darf – nur ein ISO-Datum taugt dafür
+        return 303, f'/assets/view?id={asset_id}&err=' + quote('Abgangsdatum fehlt oder ist ungültig (JJJJ-MM-TT).')
 
     db.sell_asset(asset_id, sale_date, sale_price)
     return 303, f'/assets/view?id={asset_id}'

@@ -780,7 +780,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path.startswith("/masterdata/bankaccounts/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 account_id = int(query_components["id"][0])
-                self.respond(200, PageBankAccountEdit(db, account_id))
+                self.respond(200, PageBankAccountEdit(
+                    db, account_id, error=query_components.get("error", [None])[0]))
             # ──────────────────────────────────────────────────────────────
             elif self.path == "/miscellaneous" or self.path.startswith("/miscellaneous?"):
                 self.respond(200, PageMiscellaneous(db))
@@ -1207,7 +1208,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(status_code, "", headers={"Location": "/masterdata/bankaccounts"})
             elif self.path == "/masterdata/bankaccounts/update":
                 status_code, location = handlers.handle_update_bankaccount(db, post_data)
-                self.respond(status_code, "", headers={"Location": "/masterdata/bankaccounts"})
+                self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/masterdata/numberranges/add":
                 status_code, location = handlers.handle_add_number_range(db, post_data)
                 self.respond(status_code, "", headers={"Location": "/masterdata/numberranges"})

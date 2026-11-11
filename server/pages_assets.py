@@ -192,7 +192,10 @@ def _asset_details(db: Database, asset):
     # Gebucht: die Buchung gibt es, oder das Jahr stammt als 'booked' aus dem WISO-Import.
     # Eine Zeile 'posted', deren Buchung fehlt, gilt als nicht gebucht (Buchen-Knopf).
     booked_years = db.get_booked_depreciation_years(asset_id)
-    sale_year = int(str(asset[15])[:4]) if asset[15] else None    # Abgang (SaleDate)
+    # Abgang (SaleDate). Ältere Einträge können ein Datum in anderer Schreibweise tragen –
+    # dann gilt kein Abgangsjahr, statt die Seite abstürzen zu lassen.
+    sale_year = (int(str(asset[15])[:4])
+                 if asset[15] and str(asset[15])[:4].isdigit() else None)
     current_year = datetime.date.today().year
     children = db.get_asset_children(asset_id)
     coa_rows = db.fetch_chart_of_accounts()

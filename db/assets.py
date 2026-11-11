@@ -395,7 +395,8 @@ class AssetsMixin:
         if not year_entry:
             raise ValueError(f"No depreciation planned for year {year}")
         sale_date = asset[15]                     # Assets.SaleDate
-        if sale_date and year > int(str(sale_date)[:4]):
+        sale_year = str(sale_date)[:4] if sale_date else ''
+        if sale_year.isdigit() and year > int(sale_year):
             raise ValueError(f"AfA {year} liegt nach dem Abgang der Anlage ({sale_date})")
         if not coa_id_expense:
             raise ValueError("Aufwandskonto fehlt")

@@ -42,13 +42,16 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
   - Überträge zwischen zwei Geldkonten aus dem WISO-Import: Soll/Haben verkehrt – betrifft seit der Standard-Kasse 1600 auch Überträge Bank ↔ Kasse (Abhebung, Bareinzahlung)
   - Soll/Haben wird beim Export aus der aktuellen Kontenliste gelesen, das Vorzeichen stammt aus der beim Import – ändert sich die SKR-Nummer eines Bankkontos dazwischen, passt beides nicht mehr zusammen; besser beim Import festschreiben
 - Split-Summe (`is_bank_effective`, `find_unbalanced_splits`) kennt das Verrechnungskonto 1460 nicht als Geldkonto: Eine Bankzeile mit dem einzigen Kind „X an 1460“ gilt bei Kasse ≠ 1460 als unausgeglichen (DATEV-Export gesperrt), bei Kasse = 1460 gilt „X an 1460“ plus „1460 an Bank“ als unausgeglichen – Regel je Spiegel/Zahlung neu fassen
-- Dashboard zählt bei Bestandskasse = 1460 eigenständige WISO-Teile „X an 1460“ als Kasse und dazu die Bankzeile doppelt (die EÜR stimmt) – Kasse auf 1600 umstellen oder 1460 im Dashboard ausnehmen
+- Dashboard zählt bei Bestandskasse = 1460 eigenständige WISO-Teile „X an 1460“ als Kasse und dazu die Bankzeile doppelt (die EÜR stimmt) – 1460 im Dashboard ausnehmen. Nicht die Kasse umstellen: Hängen schon Buchungen an 1460 oder 1600, deutet die Umstellung sie um (die Kontenverwaltung lehnt das ab)
 - Dashboard zählt eine Umbuchung Anlage ↔ Erfolgskonto, der die Maske eine Kasse als Konto eingetragen hat, als Kassenbewegung (EÜR stimmt)
 - Die Importe behandeln 1000–1099 als Kasse – das ist der SKR03-Bereich, in SKR04 liegt die Kasse auf 1600; die Richtung eines importierten Satzes beim Import festschreiben statt sie beim Lesen aus der aktuellen Kontenliste abzuleiten – erst dann lässt sich der Bereich gefahrlos ändern
-- Eigenständige WISO-Kassensätze auf 1600 fehlen in EÜR/Dashboard, solange die Kasse der Installation nicht 1600 trägt (ältere Installationen: Kasse ohne SKR oder 1460) – Kasse vor dem Import auf 1600 stellen
+- Eigenständige WISO-Kassensätze auf 1600 fehlen in EÜR/Dashboard, solange die Kasse der Installation nicht 1600 trägt (ältere Installationen: Kasse ohne SKR oder 1460). Die Kasse lässt sich nur auf 1600 stellen, solange noch keine Buchungen an 1600 hängen (vor dem ersten Import); danach bräuchte es eine Umstellung der gespeicherten Vorzeichen – nie als stille Migration
 - Umbuchungen Privat ↔ Erfolgskonto ohne Bankbezug (z. B. Kfz-Privatnutzung „2100 an 4645“, privat bezahlte Betriebsausgabe „6815 an 2180“, Entnahmewert eines Anlageguts) fehlen in der EÜR – fachlich mit dem Steuerbüro klären
 - Alte AfA-Sätze (vor 2.0.5: Aufwandskonto auf einem Bank-/Kassenkonto, kein Gegenkonto) stehen im DATEV-Export ohne Gegenkonto; keine automatische Reparatur – Buchung löschen (setzt das Jahr zurück) und neu buchen
 - Vorzeichen der WISO-AfA-Sätze (z. B. „6222 an 0520“) an echten Daten prüfen: gespeichert ist der Rohbetrag, die EÜR liest positiv als „Konto im Soll“
+- Anlage wieder auf „aktiv“ setzen leert das Abgangsdatum nicht (AfA der Folgejahre bleibt gesperrt); Status „verschrottet“ ohne Datum sperrt nicht
+- WISO-Import nach einer in der App gebuchten AfA desselben Jahres zählt das Jahr doppelt (nur bei paralleler Nutzung beider Programme)
+- AfA-Buchung nimmt als Aufwandskonto jedes Erfolgskonto 4000–7999 an, also auch SKR04-Erlöskonten (bewusst weit, weil selbst angelegte SKR03-Konten wie 4830 dort liegen) – mit den Funktionskonten enger fassen
 - AfA im Abgangsjahr wird voll statt zeitanteilig geplant (`calculate_depreciation_plan` kennt das Abgangsdatum nicht)
 - Der Auto-Abgleich kann eine AfA-Buchung (Umbuchung, 31.12.) an eine gleich hohe Bankbewegung vom 31.12. hängen
 - Dashboard zählt einen Übertrag Giro → Kasse als Einnahme und Ausgabe

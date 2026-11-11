@@ -168,6 +168,23 @@ class AccountsMixin:
         row = cursor.fetchone()
         conn.close()
         return row
+    def count_entries_on_account_numbers(self, numbers):
+        """Zahl der Buchungssätze, die eines der Konten (SKR-Nummern) als Konto oder
+        Gegenkonto führen."""
+        numbers = [n for n in numbers if n is not None]
+        if not numbers:
+            return 0
+        marks = ','.join('?' * len(numbers))
+        conn = self._get_connection()
+        try:
+            return conn.execute(
+                f"""SELECT COUNT(*) FROM Bookings b
+                    WHERE b.BookingType = 'entry'
+                      AND (b.COA_ID IN (SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN ({marks}))
+                        OR b.CounterCOA_ID IN (SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN ({marks})))""",
+                numbers + numbers).fetchone()[0]
+        finally:
+            conn.close()
     def ensure_cash_coa(self):
         """COA-ID des Kassenkontos 1600 liefern. Fehlt es (Datenbank älter als der
         Seed-Eintrag), wird es als Standardkonto im dominanten Kontenrahmen nachgelegt
