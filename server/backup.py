@@ -55,6 +55,11 @@ _EXCLUDED_DIRS = ('backup', 'users', 'tests')
 # andere (Schnappschuss, zurückgespielte Datenbank) beim Öffnen verändern bzw. beschädigen.
 _DB_SIDECARS = ('buch.db-journal', 'buch.db-wal', 'buch.db-shm')
 
+# Pfad mit Laufwerksbuchstaben in einer Archivliste. Unter Windows ist jedes „X:“ am Anfang
+# ein Laufwerk (auch „C:x“, relativ zum Arbeitsverzeichnis dort); anderswo ist „R: oben.pdf“
+# ein gewöhnlicher Dateiname, und nur „X:\…“/„X:/…“ sieht nach einem fremden Pfad aus.
+_DRIVE_PATH = re.compile(r'[A-Za-z]:' if os.name == 'nt' else r'[A-Za-z]:([\\/]|$)')
+
 # Alle 7-Zip-Aufrufe laufen mit stdin=DEVNULL: Ein passwortgeschütztes Archiv ließe 7-Zip
 # sonst bis zum Zeitlimit auf eine Eingabe warten (und so lange die Sperre halten).
 
@@ -76,7 +81,7 @@ def _exclusive(user_dir):
         lock = _locks.setdefault(key, threading.Lock())
     if not lock.acquire(blocking=False):
         raise RuntimeError('Für dieses Datenverzeichnis läuft bereits eine Sicherung '
-                           'oder Wiederherstellung.')
+                           'oder Wiederherstellung – bitte deren Ergebnis abwarten.')
     try:
         yield
     finally:
@@ -176,6 +181,12 @@ def create_backup(user_dir, db_path, scope='all'):
         return archive, os.path.getsize(archive)
 
 
+class _SourceNotEmptied(OSError):
+    """Ein Verzeichnis ist vollständig ans Ziel kopiert, seine Quelle ließ sich danach aber
+    nicht (ganz) leeren. Nur in diesem Fall steht am Ziel verlässlich der ganze Bestand –
+    bei jedem anderen Fehler von ``_move_entry`` ist die Quelle unberührt."""
+
+
 def _remove_entry(path):
     """Datei, Link oder Verzeichnis (samt Inhalt) löschen. Ein Einhängepunkt (Volume) lässt
     sich nicht entfernen (EBUSY): Sein Inhalt wird gelöscht, das leere Verzeichnis bleibt."""
@@ -246,7 +257,10 @@ def _move_entry(src, dst):
             with suppress(OSError):
                 _remove_entry(dst)
         raise
-    _remove_entry(src)
+    try:
+        _remove_entry(src)
+    except OSError as e:
+        raise _SourceNotEmptied(e.errno, f'Quelle ließ sich nach dem Kopieren nicht leeren: {e}') from e
 
 
 def _check_7z_listing(sevenzip, archive):
@@ -263,7 +277,9 @@ def _check_7z_listing(sevenzip, archive):
     if r.returncode != 0:
         raise RuntimeError('Die Datei ist kein lesbares 7-Zip-Archiv.')
     in_entries = False
-    for line in r.stdout.decode('utf-8', errors='replace').splitlines():
+    # Nur an \n trennen: str.splitlines träfe auch Zeichen wie U+0085 oder U+2028, die in
+    # Dateinamen vorkommen dürfen – die Sicherung wäre dann nicht mehr zurückspielbar.
+    for line in r.stdout.decode('utf-8', errors='replace').replace('\r\n', '\n').split('\n'):
         if line.strip() == '----------':
             in_entries = True    # davor steht der Kopf; sein „Path“ ist das Archiv selbst
             continue
@@ -277,7 +293,7 @@ def _check_7z_listing(sevenzip, archive):
             # eines Dateinamens mit Zeilenumbruch – der Rest entginge der Pfadprüfung.
             raise RuntimeError('Unsicherer Pfad im Archiv (Zeilenumbruch im Dateinamen).')
         if key == 'Path':
-            if (value.startswith(('/', '\\')) or re.match(r'[A-Za-z]:', value)
+            if (value.startswith(('/', '\\')) or _DRIVE_PATH.match(value)
                     or '..' in re.split(r'[/\\]', value)):
                 raise RuntimeError(f'Unsicherer Pfad im Archiv: {value}')
         elif key == 'Attributes':
@@ -413,12 +429,21 @@ def _replace_all(staging, user_dir):
         for name in os.listdir(user_dir):
             if name in _EXCLUDED_DIRS:
                 continue
-            # Vorher eintragen: Ein Verzeichnis, das nur kopiert werden konnte, ist bei einem
-            # Fehler beim Leeren der Quelle bereits vollständig in replaced_* und muss zurück
+            try:
+                _move_entry(os.path.join(user_dir, name), os.path.join(replaced, name))
+            except _SourceNotEmptied:
+                # Vollständig in replaced_*, die Quelle aber nur halb geleert: muss zurück
+                moved_out.append(name)
+                raise
+            # Nur was vollständig drüben ist, wird im Fehlerfall zurückgelegt. Bricht das
+            # Kopieren selbst ab, steht das Original noch unberührt da – eine halbe Kopie in
+            # replaced_* darf nie darübergelegt werden (sie wird mit replaced_* verworfen).
             moved_out.append(name)
-            _move_entry(os.path.join(user_dir, name), os.path.join(replaced, name))
         for name in os.listdir(staging):
-            _move_entry(os.path.join(staging, name), os.path.join(user_dir, name))
+            try:
+                _move_entry(os.path.join(staging, name), os.path.join(user_dir, name))
+            except _SourceNotEmptied:
+                pass              # vollständig angekommen; der Rest im Zwischenordner wird verworfen
             moved_in.append(name)
     except Exception as e:
         stuck = False
@@ -432,6 +457,8 @@ def _replace_all(staging, user_dir):
                 continue          # nicht verschoben (rename gescheitert): liegt noch an seinem Platz
             try:
                 _move_entry(os.path.join(replaced, name), os.path.join(user_dir, name))
+            except _SourceNotEmptied:
+                pass              # vollständig zurück; replaced_* wird unten ohnehin entfernt
             except OSError:
                 stuck = True
         if stuck:
@@ -455,14 +482,21 @@ def _overlay(staging, user_dir):
     """
     db_src = os.path.join(staging, 'buch.db')
     replaces_db = os.path.isfile(db_src)
-    for root, dirs, files in os.walk(staging):
-        rel_root = os.path.relpath(root, staging)
-        target_root = user_dir if rel_root == '.' else os.path.join(user_dir, rel_root)
-        os.makedirs(target_root, exist_ok=True)       # auch leere Verzeichnisse der Sicherung
-        for name in files:
-            if rel_root == '.' and name == 'buch.db':
-                continue
-            _move_file(os.path.join(root, name), os.path.join(target_root, name))
+    try:
+        for root, dirs, files in os.walk(staging):
+            rel_root = os.path.relpath(root, staging)
+            target_root = user_dir if rel_root == '.' else os.path.join(user_dir, rel_root)
+            os.makedirs(target_root, exist_ok=True)       # auch leere Verzeichnisse der Sicherung
+            for name in files:
+                if rel_root == '.' and name == 'buch.db':
+                    continue
+                _move_file(os.path.join(root, name), os.path.join(target_root, name))
+    except OSError as e:
+        # Überschreiben lässt sich nicht zurücknehmen – sagen, was der Stand ist
+        raise RuntimeError(
+            'Wiederherstellen abgebrochen: Ein Teil der Dateien ist bereits zurückgespielt'
+            + (', die Datenbank ist noch die bisherige' if replaces_db else '')
+            + f'. Bitte die Ursache beheben und erneut zurückspielen ({e}).') from e
     if replaces_db:
         _move_file(db_src, os.path.join(user_dir, 'buch.db'))
         # Journal/WAL gehören zur alten Datei und würden die zurückgespielte beschädigen

@@ -720,11 +720,66 @@ def test_the_listing_check_rejects_a_line_that_is_not_name_equals_value(monkeypa
         check_listing(monkeypatch, NEWLINE_IN_NAME[case])
 
 
-@pytest.mark.parametrize('path', ['/etc/passwd', '\\server\\share\\x', '\\x', 'C:\\Windows\\x', 'C:x',
+@pytest.mark.parametrize('path', ['/etc/passwd', '\\server\\share\\x', '\\x', 'C:\\Windows\\x', 'C:/x', 'C:',
                                   '../x', 'a/../b', 'a/..', '..', '..\\x', 'a\\..\\b', 'a/b/../../../c'])
 def test_the_listing_check_rejects_unsafe_paths(monkeypatch, path):
     with pytest.raises(RuntimeError, match='Unsicherer Pfad'):
         check_listing(monkeypatch, listing(entry('harmlos.txt'), entry(path)))
+
+
+@pytest.mark.parametrize('path', ['C:x', 'R: oben.pdf', 'a: b.pdf'])
+def test_a_colon_after_the_first_letter_is_a_drive_only_on_windows(monkeypatch, path):
+    """„R: oben.pdf“ ist außerhalb von Windows ein gewöhnlicher Dateiname – eine Sicherung damit
+    muss zurückspielbar bleiben. Unter Windows ist jedes „X:“ am Anfang ein Laufwerk."""
+    import re
+    monkeypatch.setattr(backup_mod, '_DRIVE_PATH', re.compile(r'[A-Za-z]:([\\/]|$)'))
+    check_listing(monkeypatch, listing(entry('harmlos.txt'), entry(path)))
+    monkeypatch.setattr(backup_mod, '_DRIVE_PATH', re.compile(r'[A-Za-z]:'))
+    with pytest.raises(RuntimeError, match='Unsicherer Pfad'):
+        check_listing(monkeypatch, listing(entry('harmlos.txt'), entry(path)))
+
+
+def test_line_separators_other_than_newline_belong_to_the_file_name(monkeypatch):
+    """U+0085 und U+2028 dürfen in Dateinamen stehen; nur „\\n“ trennt die Zeilen der Liste."""
+    check_listing(monkeypatch, listing(entry('Belege/Scan\x85eins.pdf'), entry('Belege/Scan\u2028zwei.pdf'),
+                                       entry('Belege/Scan\x0bdrei.pdf')))
+
+
+def test_a_half_copy_that_cannot_be_cleaned_up_is_never_put_back_over_the_original(
+        user_dir, zip_only, tmp_path, monkeypatch):
+    """Doppelfehler: Das Wegkopieren eines Ordners bricht ab UND die halbe Kopie in replaced_*
+    lässt sich nicht aufräumen. Das Original ist unberührt – die halbe Kopie darf beim
+    Zurückrollen nicht darübergelegt werden."""
+    for i in (2, 3, 4):
+        with open(os.path.join(user_dir, 'Belege', f'beleg{i}.txt'), 'w', encoding='utf-8') as f:
+            f.write(f'Beleg {i} – vollständiger Inhalt')
+    name = zip_only.build(user_dir, standard_files(tmp_path))
+    before = snapshot(user_dir)
+    backup_root = os.path.realpath(os.path.join(user_dir, 'backup'))
+    real_copyfile, real_remove_entry = shutil.copyfile, backup_mod._remove_entry
+    copied = []
+
+    def copyfile(src, dst, *args, **kwargs):
+        if os.path.realpath(dst).startswith(backup_root + os.sep) and os.sep + 'Belege' + os.sep in dst:
+            if copied:
+                with open(dst, 'w', encoding='utf-8') as f:
+                    f.write('ABGESCHNITTEN')
+                raise OSError(errno.ENOSPC, 'Kein Speicherplatz (Test)', dst)
+            copied.append(dst)
+        return real_copyfile(src, dst, *args, **kwargs)
+
+    def remove_entry(path):
+        if os.path.realpath(path).startswith(backup_root + os.sep) and 'replaced_' in path:
+            raise OSError(errno.EIO, 'Aufräumen scheitert (Test)', path)
+        return real_remove_entry(path)
+    with monkeypatch.context() as m:
+        MoveFault(tmp_path, boundary=os.path.join(user_dir, 'backup')).install(m)
+        m.setattr(shutil, 'copyfile', copyfile)
+        m.setattr(backup_mod, '_remove_entry', remove_entry)
+        with pytest.raises(RuntimeError):
+            backup_mod.restore_backup(user_dir, name, wipe=True)
+    assert copied, 'das Kopieren wurde nie versucht'
+    assert snapshot(user_dir) == before
 
 
 @pytest.mark.parametrize('attributes', ['A lrwxrwxrwx', 'A lrwxr-xr-x', 'D lrwxrwxrwx', 'lrwxrwxrwx'])
