@@ -76,6 +76,29 @@ Empfängers markiert.
 4. **Bestätigung**: Erkannte Transaktionen auf `/confirm_transactions` prüfen
 5. **Import**: Nach Bestätigung als `BookingType='bank'` in Bookings-Tabelle
 
+**Duplikat-Erkennung (zählbasiert):** Konto + Buchungsdatum + Betrag, ohne Text –
+CAMT und PDF schreiben denselben Umsatz verschieden, und der WISO-Tabellen-Export
+überschreibt ihn nachträglich. Gezählt wird **je Datei**: Der Bestand je Schlüssel
+enthält auch, was frühere Dateien desselben Laufs angelegt haben; über mehrere
+Dateien gilt das **Maximum**, nicht die Summe. „Alle importieren“ verhält sich damit
+wie die Einzelimporte nacheinander: derselbe Auszug zweimal im Upload, CAMT und PDF
+desselben Auszugs oder ein Tages- und ein Monatsauszug verdoppeln nichts, gleiche
+Umsätze innerhalb *einer* Datei bleiben erhalten. Die Vorschau zeigt, was schon in
+einer anderen Datei desselben Uploads steckt („in anderer Datei dieses Uploads“), die
+Meldung nach dem Import nennt die so übersprungenen Umsätze.
+
+Grenzen (ohne Bankreferenz im Datenmodell nicht lösbar, siehe `docs/aufgaben.md`):
+- Eine CAMT-Sammelbuchung wird in Einzelumsätze zerlegt, die PDF zeigt eine
+  Summenzeile: Die Beträge passen nicht zusammen, beides wird angelegt.
+- Zwei *verschiedene* Auszüge desselben Tags mit je einem echten, gleichen Umsatz:
+  das Maximum behält nur einen davon (von Hand nachtragen).
+- Das VBR-PDF nennt das Jahr nur im Kopf des Auszugs und gilt für alle Zeilen; bei
+  einem Auszug über den Jahreswechsel kann das Datum einzelner Zeilen abweichen, und
+  derselbe Umsatz aus CAMT wird dann nicht als Duplikat erkannt.
+- Die Vorschau wird beim Hochladen berechnet und nach einem Einzelimport nicht neu
+  geladen: Wer zuerst die *spätere* Datei einzeln importiert, sieht für die frühere
+  Karte eine zu hohe „neu“-Zahl. Das Ergebnis des Imports stimmt trotzdem.
+
 ### CAMT.053 (ISO 20022, XML)
 
 `importers/camt.py` liest Kontoauszüge im Bankformat CAMT.053 – für alle Banken,
@@ -162,6 +185,20 @@ ohne Referenznummer: Datum + COA_ID + Betrag (nur Entry-Buchungen, ohne Text —
 der Tabellen-Export überschreibt ihn nachträglich). Übersprungen werden je
 Schlüssel nur so viele Zeilen, wie die DB bereits enthält — gleichartige
 Split-Positionen (gleicher Betrag/Konto/Tag) werden dadurch korrekt importiert.
+
+**Zusammenspiel mit dem Datenbank-Import (`db/wiso_fdb_import.py`):** Der Schlüssel
+fragt nicht, woher eine Buchung stammt – was der Datenbank-Import schon angelegt hat,
+überspringt der CSV-Import. Umgekehrt erkennt der Datenbank-Import die Buchungen des
+CSV-Imports (`entry` ohne `SourceGroup`) mit demselben Schlüssel wieder: Er setzt die
+`SourceGroup` (WISO-`ACCOUNTINGID`) und füllt leere Konten (`COA_ID`,
+`CounterCOA_ID`), statt eine zweite Buchung anzulegen (Meldung „aus dem CSV-Import
+wiedererkannt“). Auch das zählt: zwei gleich hohe Teilbuchungen übernehmen zwei
+CSV-Zeilen. Text, Empfänger, Verknüpfungen zur Bank und Änderungen des Nutzers bleiben
+unberührt. Fehlte der CSV-Zeile das Konto (im Kontenrahmen unbekannt), sucht der
+Datenbank-Import ersatzweise ohne Konto. Grenze: Eine von Hand erfasste `entry` mit
+gleicher Beleg-Nr., Datum, Konto und Betrag gilt als dieselbe Buchung (die Annahme
+trifft der CSV-Import schon); die WISO-Satz-Id als eigene Spalte würde das exakt machen
+(Schemaänderung, siehe `docs/aufgaben.md`).
 
 **BookingType:** `'entry'` (Buchungssatz)
 

@@ -227,7 +227,8 @@ def PageMiscellaneous(db: Database):
         Voraussetzung: Jedes Konto in der <strong>Kontenverwaltung</strong>
         muss ein <em>SKR-Gegenkonto</em> hinterlegt haben (z.B. 1810 für 2. Bankkonto, 1600 für Kasse;
         das Verrechnungskonto 1460 gilt als Geldtransit).<br>
-        Duplikate (gleiche Referenznummer + Konto + Betrag) werden automatisch übersprungen.</p>
+        Duplikate (gleiche Referenznummer + Datum + Konto + Betrag) werden übersprungen &ndash;
+        auch, wenn die Buchungen schon aus dem Datenbank-Import stammen.</p>
         <form method="POST" action="/wiso/import" enctype="multipart/form-data">
             <div class="rowWithObjects">CSV-Datei:&nbsp;<input type="file" name="csvfile" accept=".txt,.csv" required></div>
             <br>
@@ -353,7 +354,9 @@ def PageMiscellaneous(db: Database):
         gesucht. WISO sollte dabei geschlossen sein.<br>
         Voraussetzung wie beim CSV-Import: jedes Konto in der
         <strong>Kontenverwaltung</strong> braucht ein hinterlegtes
-        <em>SKR-Gegenkonto</em>. Ein zweiter Lauf verdoppelt nichts.</p>
+        <em>SKR-Gegenkonto</em>. Ein zweiter Lauf verdoppelt nichts. Buchungen, die schon
+        über den CSV-Import kamen, erkennt der Import an Beleg-Nr., Datum, Konto und Betrag
+        wieder und ergänzt sie, statt sie neu anzulegen.</p>
         <form method="POST" action="/wiso/fdb-import">
             <div class="rowWithObjects">Pfad:&nbsp;
                 <input type="text" name="fdb_path" style="min-width:34em"
@@ -395,6 +398,8 @@ def PageMiscellaneous(db: Database):
                 const rn = parseInt(p.get('invoices') || '0');
                 const kd = parseInt(p.get('customers') || '0');
                 const zl = parseInt(p.get('payments') || '0');
+                const ad = parseInt(p.get('adopted') || '0');
+                if (ad > 0) msg += ', ' + ad + ' aus dem CSV-Import wiedererkannt';
                 if (rn > 0) msg += ', ' + rn + ' Rechnungen mit '
                     + p.get('items') + ' Positionen';
                 if (kd > 0) msg += ', ' + kd + ' Kunden';
@@ -429,6 +434,10 @@ def PageMiscellaneous(db: Database):
         if _fdb.get('file'):
             s += (f'<p>\U0001F4C4 Zuletzt gelesen: '
                   f'<code>{_html.escape(str(_fdb["file"]))}</code></p>')
+        if _fdb.get('adopted'):
+            s += (f'<p>✅ {_html.escape(str(_fdb["adopted"]))} Buchungssätze waren '
+                  'schon aus dem CSV-Import da: Sie haben jetzt die WISO-Kennung und, '
+                  'wo sie fehlten, ihre Konten, wurden aber nicht doppelt angelegt.</p>')
         if _blocker:
             s += ('<h3>\u26a0\ufe0f Diese Datenbank passt nicht zum Importmodul</h3>'
                   '<p>Es wurde <strong>nichts</strong> importiert. Die folgenden '

@@ -11,6 +11,11 @@ Raten über Beleg-Nr. und Datum.
 
 Das Lesen der Datei erledigt :mod:`importers.wiso_fdb`; hier steht nur die
 Abbildung auf ``Bookings``, ``Assets`` und ``AssetDepreciations``.
+
+CSV-Import und Datenbank-Import lassen sich nacheinander benutzen: Was der
+CSV-Import schon angelegt hat (``entry`` ohne ``SourceGroup``), erkennt dieser
+Import am Schlüssel des CSV-Imports wieder (Beleg-Nr., Datum, Konto, Betrag),
+setzt die ``SourceGroup`` darauf und legt es nicht ein zweites Mal an.
 """
 import datetime
 
@@ -37,13 +42,14 @@ class WisoFdbImportMixin:
                 mitnehmen. Die Kundennummern bleiben die aus WISO.
 
         Returns:
-            dict mit ``imported``, ``skipped``, ``assets``, ``depreciations``,
-            ``tax_rows_skipped``, ``memo_rows_skipped``, ``missing_coa`` und
-            ``errors``.
+            dict mit ``imported``, ``skipped``, ``adopted`` (Buchungen aus dem
+            CSV-Import, die wiedererkannt statt neu angelegt wurden),
+            ``assets``, ``depreciations``, ``tax_rows_skipped``,
+            ``memo_rows_skipped``, ``missing_coa`` und ``errors``.
         """
         from importers.wiso_fdb import WisoDatabase
 
-        result = {'imported': 0, 'skipped': 0, 'assets': 0,
+        result = {'imported': 0, 'skipped': 0, 'adopted': 0, 'assets': 0,
                   'depreciations': 0, 'tax_rows_skipped': 0,
                   'memo_rows_skipped': 0, 'missing_coa': {}, 'created_coa': {},
                   'unresolved_accounts': 0, 'blocker': [], 'hints': [],
@@ -175,6 +181,17 @@ class WisoFdbImportMixin:
         nicht, weil ein Vorgang gleichbetragige Zeilen enthalten darf): schon
         vorhandene ``SourceGroup``-Werte werden übersprungen, damit ein zweiter
         Lauf nichts verdoppelt.
+
+        Der CSV-Import schreibt keine ``SourceGroup``. Seine Buchungen erkennt
+        dieser Import am Schlüssel des CSV-Imports wieder (Beleg-Nr., Datum,
+        Konto, Betrag): die erste passende ``entry`` ohne ``SourceGroup`` bekommt
+        die Quellgruppe und ihre fehlende Kontierung, statt dass eine zweite
+        Buchung entsteht (``result['adopted']``). Es wird gezählt – zwei gleich
+        hohe Teilbuchungen übernehmen zwei CSV-Zeilen, und eigene Einfügungen
+        dieses Laufs sind nie Kandidaten. Nichts wird gelöscht oder überschrieben:
+        Text, Empfänger, Verknüpfungen und Änderungen des Nutzers bleiben, nur
+        leere Konten werden gefüllt. Fehlte der CSV-Zeile das Konto (im
+        Kontenrahmen unbekannt), wird ersatzweise ohne Konto gesucht.
         """
         recipients = recipients or {}
         conn = self._get_connection()
@@ -183,6 +200,19 @@ class WisoFdbImportMixin:
         cursor.execute("SELECT DISTINCT SourceGroup FROM Bookings "
                        "WHERE SourceGroup IS NOT NULL AND SourceGroup <> ''")
         known_groups = {row[0] for row in cursor.fetchall()}
+        csv_pool = {}
+
+        def csv_candidates(key):
+            """IDs der CSV-Buchungen zu einem Schlüssel; je Schlüssel einmal
+            geladen und von den Aufrufern nacheinander verbraucht."""
+            if key not in csv_pool:
+                cursor.execute(
+                    "SELECT ID FROM Bookings WHERE BookingType = 'entry' "
+                    "AND COALESCE(SourceGroup, '') = '' "
+                    "AND COALESCE(DocumentNumber, '') = ? AND DateBooking = ? "
+                    "AND COA_ID IS ? AND Amount = ? ORDER BY ID", key)
+                csv_pool[key] = [row[0] for row in cursor.fetchall()]
+            return csv_pool[key]
 
         for booking in bookings:
             if booking.group and booking.group in known_groups:
@@ -194,14 +224,31 @@ class WisoFdbImportMixin:
                 result['unresolved_accounts'] += 1
             if booking.counter_account is not None and counter_coa is None:
                 result['unresolved_accounts'] += 1
+            amount = to_minor(booking.amount or 0)
+
+            number = booking.document_number or ''
+            candidates = csv_candidates((number, booking.date, coa, amount))
+            if not candidates and coa is not None:
+                candidates = csv_candidates((number, booking.date, None, amount))
+            if candidates:
+                cursor.execute('''
+                    UPDATE Bookings SET
+                        SourceGroup   = COALESCE(?, SourceGroup),
+                        COA_ID        = COALESCE(COA_ID, ?),
+                        CounterCOA_ID = COALESCE(CounterCOA_ID, ?)
+                    WHERE ID = ?
+                ''', (booking.group or None, coa, counter_coa,
+                      candidates.pop(0)))
+                result['adopted'] += 1
+                continue
+
             cursor.execute('''
                 INSERT INTO Bookings
                     (DateBooking, COA_ID, CounterCOA_ID, Amount, TaxRate,
                      TaxAmount, Text, DocumentNumber, BookingType, SourceGroup,
                      RecipientClient)
                 VALUES (?,?,?,?,?,?,?,?,'entry',?,?)
-            ''', (booking.date, coa, counter_coa,
-                  to_minor(booking.amount or 0), booking.tax_rate,
+            ''', (booking.date, coa, counter_coa, amount, booking.tax_rate,
                   self._minor_opt(booking.tax_amount), booking.text,
                   booking.document_number or None, booking.group or None,
                   recipients.get(booking.invoice_id) or None))
