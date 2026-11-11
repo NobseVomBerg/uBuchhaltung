@@ -9,7 +9,10 @@ from decimal import Decimal
 from db import Database
 from money import fmt_eur
 from db.matching import is_bank_effective
+from db.invoices import InvoiceCol
+from db.invoice_payments import PAYABLE_STATUSES
 from .pages import Header1, Header2, Header3, Footer
+from .pages_invoice import revenue_coa_choice
 from .period import period_filter_widget
 
 def _attr(s):
@@ -27,11 +30,13 @@ def _attr(s):
 
 
 def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, date_to=None,
-                     from_invoice=None):
+                     from_invoice=None, revenue_coa_id=None):
     """Generate transactions page with edit functionality.
 
     from_invoice: Rechnungs-ID – belegt die Eingabemaske als Zahlungs-Buchung
-    zu dieser Rechnung vor (todo #2); Nutzer ergänzt nur Datum + Bankkonto.
+    zu dieser Rechnung vor (todo #2); Nutzer ergänzt nur Datum + Bankkonto – und, wenn für den
+    Steuersatz der Rechnung kein Erlöskonto hinterlegt ist, das Erlöskonto (``revenue_coa_id``
+    ist dann die Vorwahl, z. B. von der Rechnungsseite).
     """
     # Header2: Konten als kompaktes Dropdown (treibt weiter die clientseitige
     # filterTransactions-Logik) + Such-/Waehrungs-/Betrags-Filter daneben.
@@ -107,39 +112,25 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     edit_trans = tuple(edit_trans)
 
     # Vorbelegung aus einer Rechnung (todo #2): "Zahlung verbuchen" öffnet
-    # /transactions?from_invoice=<id>. Nur für offene Rechnungen (kein Angebot,
-    # nicht draft/cancelled/paid) mit Restbetrag > 0.
+    # /transactions?from_invoice=<id>. Nur für zahlbare Rechnungen (versendet, kein Angebot,
+    # nicht bezahlt/storniert) mit Restbetrag > 0. Erlöskonto und Steuer bietet die Maske nicht
+    # an: Die Kontierung ergibt sich aus der Rechnung (Database.assign_invoice_payment).
     prefill = {}
     if from_invoice and not edit_trans:
-        inv = db.get_invoice_by_id(from_invoice)
-        is_invoice = inv and not (len(inv) > 45 and inv[45] == 'quote')
-        if is_invoice and inv[40] not in ('draft', 'cancelled', 'paid'):
+        inv = db.get_document(from_invoice, 'invoice')
+        if inv and inv[InvoiceCol.STATUS] in PAYABLE_STATUSES:
             due = inv[39] if inv[39] is not None else (inv[38] or 0)
             if due > 0:
-                rate = inv[35]
-                # DB speichert teils 0.19, teils 19; Sentinel -1 = §19 ohne USt
-                rate_pct = 0 if not rate or rate < 0 else (rate * 100 if rate <= 1 else rate)
-                if inv[37] and due == (inv[38] or 0):
-                    tax_val = f"{inv[37]:.2f}"   # voller Rest: exakter Rechnungswert
-                elif rate_pct:
-                    # Teilrest: enthaltene USt proportional (Formel wie calculateTax)
-                    tax_val = f"{float(due) * rate_pct / (100 + rate_pct):.2f}"
-                else:
-                    tax_val = ''
                 prefill = {
                     'invoice_id': inv[0],
                     'invoice_number': inv[1] or '',
                     'recipient': inv[15] or inv[14] or '',
                     'contact_id': inv[13],
                     'amount': f"{due:.2f}",
-                    'tax_rate': f"{rate_pct:g}" if rate_pct else '',
-                    'tax_amount': tax_val,
-                    # Erlöskonto: aus Historie gelernt, Fallback 4400 bei 19%. Anzeigen legt
-                    # nichts an: fehlt das Standardkonto, bleibt die Auswahl leer – angelegt
-                    # wird erst beim Speichern der Zuordnung.
-                    'coa_id': db.resolve_revenue_coa(rate, create=False),
+                    'account_id': inv[30],          # BankAccountId
                     'document_nr': inv[1] or '',
                     'text': f"Zahlung Rechnung {inv[1] or ''}".strip(),
+                    'revenue_choice': revenue_coa_choice(db, inv[35], selected=revenue_coa_id),
                 }
                 edit_recipient = _html.escape(prefill['recipient'])
                 edit_text = _html.escape(prefill['text'])
@@ -199,11 +190,13 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             '<p class="successColor"><strong>Zahlung zu Rechnung '
             f'{_html.escape(str(prefill["invoice_number"]))}</strong> – wird beim '
             'Speichern automatisch verknüpft; bitte Buchungsdatum und '
-            'Bankkonto/Kasse ergänzen.</p>')
+            'Bankkonto/Kasse ergänzen. Die Kontierung (Erlöskonto, Umsatzsteuer) entsteht '
+            'aus der Rechnung.</p>')
 
-    # Formularzeile "Rechnung": Dropdown offener Rechnungen (todo #2). Bei einer
-    # Buchung ohne freien Rest entfällt das Dropdown; bestehende Zuordnungen
-    # werden angezeigt und nur über die Rechnungsseite gelöst.
+    # Formularzeile "Rechnung": Dropdown offener Rechnungen (todo #2). Eine bestehende
+    # Buchung bekommt es nur als Bankbewegung mit Betrag > 0 und freiem Rest (nur
+    # Zahlungseingänge lassen sich zuordnen); bestehende Zuordnungen werden angezeigt und nur
+    # über die Rechnungsseite gelöst.
     allocated_ids = {a[1] for a in allocations}
     invoice_options = ''
     for oinv in open_invoices:
@@ -213,7 +206,9 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         sel = ' selected' if prefill.get('invoice_id') == oinv[0] else ''
         olabel = f"{oinv[1] or oinv[0]} — {oinv[15] or oinv[14] or ''} — offen {fmt_eur(oinv_due)}"
         invoice_options += f'<option value="{oinv[0]}"{sel}>{_html.escape(olabel)}</option>'
-    show_invoice_select = (not edit_trans) or (booking_free is not None and booking_free > 0)
+    show_invoice_select = (not edit_trans) or (
+        is_bank_form and (edit_trans[11] or 0) > 0 and booking_free is not None
+        and booking_free > 0)
     invoice_field = ''
     if show_invoice_select:
         invoice_field = ('<select name="invoice_id">'
@@ -230,6 +225,9 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     if invoice_field or alloc_note:
         invoice_row = f'<tr><td>Rechnung:</td><td>{invoice_field}{alloc_note}</td></tr>'
 
+    # Eine Rechnungszahlung braucht das Bankkonto: ohne SKR-Nummer des Kontos lässt sie sich nicht
+    # kontieren (Database.assign_invoice_payment)
+    account_required = ' required' if prefill else ''
     id_display = (f'<tr><td>ID:</td><td style="color: #666;">{transaction_id}'
                   f'<input type="hidden" name="transaction_id" value="{transaction_id}"></td></tr>'
                   if edit_trans else '')
@@ -247,10 +245,10 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     <tr><td>Steuerdatum:</td><td><input type="date" name="date_tax" value="{edit_trans[2] if edit_trans and edit_trans[2] else ""}"></td></tr>
                     <tr><td>Empfänger/Auftragg.:</td><td><input type="text" name="recipient" value="{edit_recipient}" size="40"></td></tr>
                     <tr><td>Verwendungszweck:</td><td><textarea name="text" rows="3" cols="42">{edit_text}</textarea></td></tr>
-                    <tr><td>Bankkonto:</td><td><select name="account">
+                    <tr><td>Bankkonto:</td><td><select name="account"{account_required}>
                         <option value="">-- Kein Konto --</option>
     '''
-    selected_account_id = edit_trans[4] if edit_trans else None
+    selected_account_id = edit_trans[4] if edit_trans else prefill.get('account_id')
     # Konto über COA/CounterCOA ableiten wenn nicht direkt gesetzt
     if edit_trans and not selected_account_id:
         _edit_coa = edit_trans[8]
@@ -295,7 +293,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     # ── Kontierungsfelder ────────────────────────────────────────────────────
     # Bei Bankbewegungen werden Konto, Steuer und Beleg-Nr. je Buchungssatz im
     # Editor unterhalb gepflegt – hier oben würden sie doppelt geführt.
-    selected_coa_id = edit_trans[8] if edit_trans else prefill.get('coa_id')
+    selected_coa_id = edit_trans[8] if edit_trans else None
     coa_options = '<option value="">-- Kein SKR-Konto --</option>'
     for coa in coa_accounts:
         is_selected = bool(selected_coa_id and coa[0] == selected_coa_id)
@@ -307,23 +305,28 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         coa_options += f'<option value="{coa[0]}" {selected}>{_html.escape(str(coa_display))}</option>'
 
     accounting_rows = ''
-    if not is_bank_form:
+    if not is_bank_form and not prefill:
         accounting_rows = (f'<tr><td>SKR-Konto:</td><td>'
                            f'<select name="coa_id">{coa_options}</select></td></tr>')
+    elif prefill.get('revenue_choice'):
+        # Für den Steuersatz der Rechnung ist kein Erlöskonto hinterlegt: der Nutzer wählt es
+        select_html, hint_html = prefill['revenue_choice']
+        accounting_rows = (f'<tr><td>Erlöskonto:</td><td>{select_html}'
+                           f'<div class="hint">{hint_html}</div></td></tr>')
 
     # Steuer gehört bei Bankbewegungen zur einzelnen Teilbuchung; die Beleg-Nr.
     # bleibt oben – sie beschreibt die Bankbewegung und liefert die Basis für
     # die Suffixe der Teilbuchungen (26F123 → _A, _B).
     tax_rows = ''
-    if not is_bank_form:
+    if not is_bank_form and not prefill:
         tax_rows = (
             f'<tr><td>Steuersatz (%):</td><td><input type="number" step="0.01"'
             f' class="noButtons" name="tax_rate" id="tax_rate"'
-            f' value="{edit_trans[13]*100 if edit_trans and edit_trans[13] else prefill.get("tax_rate", "")}"'
+            f' value="{edit_trans[13]*100 if edit_trans and edit_trans[13] else ""}"'
             f' placeholder="z.B. 19 für 19%"></td></tr>'
             f'<tr><td>Steuerbetrag:</td><td><input type="number" step="0.01"'
             f' class="noButtons" name="tax_amount" id="tax_amount"'
-            f' value="{edit_trans[14] if edit_trans and edit_trans[14] else prefill.get("tax_amount", "")}"></td></tr>')
+            f' value="{edit_trans[14] if edit_trans and edit_trans[14] else ""}"></td></tr>')
     tax_rows += (
         f'<tr><td>Beleg-Nr.:</td><td><input type="text" name="document_nr"'
         f' value="{_html.escape(str(edit_trans[16])) if edit_trans and edit_trans[16] else _html.escape(str(prefill.get("document_nr", "")))}"></td></tr>')
@@ -653,7 +656,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 }}
             </script>
     '''
-    if not is_bank_form:
+    if not is_bank_form and not prefill:
         s+= '''
             <script>
                 // Automatische Berechnung des Steuerbetrags.

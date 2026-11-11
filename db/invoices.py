@@ -8,6 +8,8 @@ import json
 from decimal import Decimal
 from money import to_minor, from_minor
 from .core import fk_explained
+from .invoice_payments import PAYABLE_STATUSES, PAYMENT_MARK
+from .reporting import is_income_account
 
 
 class InvoiceCol:
@@ -369,63 +371,36 @@ class InvoicesMixin:
         self.update_invoice_status(quote_id, 'converted')
         return new_invoice_id
     def link_invoice_to_transaction(self, invoice_id, transaction_id, amount_paid):
-        """Link an invoice to a payment booking via InvoicePayments and recalculate AmountDue."""
+        """Link an invoice to a payment booking via InvoicePayments and recalculate AmountDue.
+
+        Der WISO-Import ordnet darüber mit Vorzeichen zu (Storno, Gutschrift) und legt keine
+        Buchungssätze an – WISO liefert sie mit. Deshalb keine Prüfung von Status, Vorzeichen
+        oder Buchungsart; die Oberfläche ordnet über ``assign_invoice_payment`` zu. Die
+        Dublettenprüfung läuft in derselben Transaktion wie das Einfügen."""
         conn = self._get_connection()
-        cursor = conn.cursor()
         try:
-            cursor.execute('SELECT SumGross FROM Invoices WHERE ID = ?', (invoice_id,))
-            invoice_data = cursor.fetchone()
-            if not invoice_data:
+            conn.execute('BEGIN IMMEDIATE')
+            if not conn.execute('SELECT 1 FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone():
                 raise ValueError(f"Invoice {invoice_id} not found")
 
             # Get payment date from booking
-            cursor.execute('SELECT DateBooking FROM Bookings WHERE ID = ?', (transaction_id,))
-            booking = cursor.fetchone()
+            booking = conn.execute('SELECT DateBooking FROM Bookings WHERE ID = ?',
+                                   (transaction_id,)).fetchone()
             payment_date = booking[0] if booking else None
 
             # Prevent duplicate links for the same booking
-            cursor.execute(
-                'SELECT ID FROM InvoicePayments WHERE InvoiceID = ? AND BookingID = ?',
-                (invoice_id, transaction_id))
-            if cursor.fetchone():
+            if conn.execute('SELECT ID FROM InvoicePayments WHERE InvoiceID = ? AND BookingID = ?',
+                            (invoice_id, transaction_id)).fetchone():
                 raise ValueError(f"Booking {transaction_id} is already linked to invoice {invoice_id}")
 
-            cursor.execute('''
+            conn.execute('''
                 INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate)
                 VALUES (?, ?, ?, ?)
             ''', (invoice_id, transaction_id, to_minor(amount_paid), payment_date))
 
-            # Recalculate AmountDue from all payments – alles in Minor Units (exakt).
-            cursor.execute(
-                'SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
-                (invoice_id,))
-            total_paid_minor = cursor.fetchone()[0]
-            gross_minor = invoice_data[0] or 0          # SumGross ist bereits Minor Units
-            new_due_minor = gross_minor - total_paid_minor
-            new_due = from_minor(new_due_minor)
-
-            cursor.execute('''
-                UPDATE Invoices
-                SET AmountDue = ?, UpdatedAt = CURRENT_TIMESTAMP
-                WHERE ID = ?
-            ''', (new_due_minor, invoice_id))
-
-            # Auto-update status (100 Minor Units = 0,01 EUR bei SCALE=4).
-            # new_due < 100 statt abs(): auch überzahlte Rechnungen gelten als bezahlt.
-            if new_due_minor < 100:
-                new_status = 'paid'
-            elif total_paid_minor > 0:
-                new_status = 'partial_payment'
-            else:
-                new_status = None
-
-            if new_status:
-                cursor.execute('''
-                    UPDATE Invoices SET Status = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE ID = ?
-                ''', (new_status, invoice_id))
-
+            self._recalc_invoice(conn, invoice_id)
             conn.commit()
-            print(f"Invoice {invoice_id} linked to booking {transaction_id}, new due: {new_due:.2f}")
+            print(f"Invoice {invoice_id} linked to booking {transaction_id}")
 
         except Exception as e:
             print(f"Error linking invoice to transaction: {e}")
@@ -453,47 +428,9 @@ class InvoicesMixin:
         conn.close()
         return [self._euro_row(r, 3) for r in rows]  # Amount (Index 3) -> Euro-Decimal
     def delete_invoice_payment(self, payment_id):
-        """Remove an InvoicePayments entry and recalculate AmountDue on the invoice."""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute('SELECT InvoiceID, Amount FROM InvoicePayments WHERE ID = ?', (payment_id,))
-            row = cursor.fetchone()
-            if not row:
-                raise ValueError(f"InvoicePayment {payment_id} not found")
-            invoice_id = row[0]
-
-            cursor.execute('DELETE FROM InvoicePayments WHERE ID = ?', (payment_id,))
-
-            # Recalculate AmountDue – alles in Minor Units (exakt).
-            cursor.execute('SELECT SumGross FROM Invoices WHERE ID = ?', (invoice_id,))
-            sum_gross = cursor.fetchone()[0]            # bereits Minor Units
-            cursor.execute(
-                'SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
-                (invoice_id,))
-            total_paid_minor = cursor.fetchone()[0]
-            new_due_minor = (sum_gross or 0) - total_paid_minor
-            new_due = from_minor(new_due_minor)
-
-            # Recalculate status (100 Minor Units = 0,01 EUR bei SCALE=4)
-            if new_due_minor < 100:
-                new_status = 'paid'
-            elif total_paid_minor > 0:
-                new_status = 'partial_payment'
-            else:
-                new_status = 'finalized'
-
-            cursor.execute('''
-                UPDATE Invoices SET AmountDue = ?, Status = ?, UpdatedAt = CURRENT_TIMESTAMP
-                WHERE ID = ?
-            ''', (new_due_minor, new_status, invoice_id))
-
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        """Eine Zuordnung samt ihren Buchungssätzen entfernen und die Rechnung neu rechnen –
+        siehe ``unassign_invoice_payment``."""
+        self.unassign_invoice_payment(payment_id)
     def update_invoice_pdf_path(self, invoice_id, pdf_path):
         """Update PDFPath field for an invoice
         
@@ -631,105 +568,127 @@ class InvoicesMixin:
         Neuberechnung bliebe die Rechnung fälschlich auf "bezahlt"/Rest 0.
         adjust_status=False aktualisiert nur AmountDue (für manuelle
         Statuswechsel, deren Wahl nicht sofort überschrieben werden soll).
+        Die Statusregel steht in ``db.invoice_payments.next_payment_status``.
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
         try:
-            cursor.execute('SELECT SumGross, Status FROM Invoices WHERE ID = ?',
-                           (invoice_id,))
-            row = cursor.fetchone()
-            if not row:
-                return
-            gross_minor = row[0] or 0
-            status = row[1]
-            cursor.execute(
-                'SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
-                (invoice_id,))
-            total_paid_minor = cursor.fetchone()[0]
-            new_due_minor = gross_minor - total_paid_minor
-
-            new_status = None
-            if adjust_status:
-                if total_paid_minor > 0 and new_due_minor < 100:
-                    new_status = 'paid'
-                elif total_paid_minor > 0:
-                    new_status = 'partial_payment'
-                elif status in ('paid', 'partial_payment', 'partial'):
-                    # Zahlungs-Status ohne Zahlungen → zurück auf Abgeschlossen
-                    new_status = 'finalized'
-
-            if new_status:
-                cursor.execute('''
-                    UPDATE Invoices SET AmountDue = ?, Status = ?,
-                                        UpdatedAt = CURRENT_TIMESTAMP
-                    WHERE ID = ?''', (new_due_minor, new_status, invoice_id))
-            else:
-                cursor.execute('''
-                    UPDATE Invoices SET AmountDue = ?, UpdatedAt = CURRENT_TIMESTAMP
-                    WHERE ID = ?''', (new_due_minor, invoice_id))
+            conn.execute('BEGIN IMMEDIATE')
+            self._recalc_invoice(conn, invoice_id, adjust_status)
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
     def get_open_invoices(self):
         """Offene Rechnungen für die Zahlungs-Zuordnung.
 
-        Nicht draft/cancelled/paid, Restbetrag > 0; Altbestand ohne AmountDue
-        (NULL) gilt als offen. Volle Invoice-Rows (Euro-Decimals wie üblich).
+        Nur zahlbare Status (versendet, überfällig, Teilzahlung – ``PAYABLE_STATUSES``),
+        Restbetrag > 0; Altbestand ohne AmountDue (NULL) gilt als offen. Volle
+        Invoice-Rows (Euro-Decimals wie üblich).
         """
+        marks = ','.join('?' * len(PAYABLE_STATUSES))
         conn = self._get_connection()
         cursor = conn.cursor()
-        cursor.execute('''
+        cursor.execute(f'''
             SELECT * FROM Invoices
             WHERE (DocumentType = 'invoice' OR DocumentType IS NULL)
-            AND Status NOT IN ('draft', 'cancelled', 'paid')
+            AND Status IN ({marks})
             AND (AmountDue IS NULL OR AmountDue > 0)
             ORDER BY InvoiceDate DESC, InvoiceNumber DESC
-        ''')
+        ''', PAYABLE_STATUSES)
         rows = cursor.fetchall()
         conn.close()
         return [self._euro_row(r, 36, 37, 38, 39) for r in rows]
 
+    @staticmethod
+    def _revenue_rate_key(tax_rate):
+        """Steuersatz als Vergleichsschlüssel für die Erlöskonten: Prozent, auf zwei
+        Stellen gerundet. ``tax_rate`` wie in Invoices.TaxRate bzw. Bookings.TaxRate (0.19,
+        19, 0 oder -1); 0 und der §19-Sentinel bilden einen gemeinsamen „steuerfrei“-Topf,
+        ``None`` (kein Satz) ist ein eigener. Das SQL-Gegenstück ist ``_revenue_rate_key_sql``."""
+        if tax_rate is None:
+            return -999.0
+        if tax_rate <= 0:
+            return 0.0
+        pct = tax_rate * 100 if tax_rate <= 1 else tax_rate
+        return round(pct, 2)
+
+    @staticmethod
+    def _revenue_rate_key_sql(column):
+        """SQL-Ausdruck, der die Spalte ``column`` (ein Steuersatz) wie ``_revenue_rate_key``
+        zum Vergleichsschlüssel macht."""
+        return (f'(CASE WHEN {column} IS NULL THEN -999.0 WHEN {column} <= 0 THEN 0.0 '
+                f'WHEN {column} <= 1 THEN ROUND({column} * 100, 2) '
+                f'ELSE ROUND({column}, 2) END)')
+
+    def _learned_revenue_coa(self, key):
+        """Das Erlöskonto, auf das die App zuletzt eine Zahlung zu einer Rechnung mit diesem
+        Steuersatz-Schlüssel (``_revenue_rate_key``) gebucht hat – oder ``None``.
+
+        Gelesen wird NUR aus den Sätzen, die die App selbst für eine Zuordnung angelegt hat
+        (Marke ``PAYMENT_MARK``), und nur in der Form, in der sie sie schreibt:
+
+        * Umbuchung „Wartekonto an Erlöskonto“: ``COA`` ist ein Wartekonto
+          (``OPEN_REVENUE_ACCOUNTS``), gelernt wird das Gegenkonto;
+        * Einzelsatz „Erlöskonto an Bank“: das Gegenkonto ist ein Zahlungskonto
+          (``get_payment_coa_ids``), gelernt wird ``COA``.
+
+        Alles andere lehrt nichts – auch „Bank an Debitoren“ nicht, und kein Satz, den ein Nutzer
+        im Split-Editor in eine andere Form gebracht hat (aus „4405 an 4400“ wurde „4736 an 4400“).
+        Der jüngste passende Satz gewinnt. Das Konto der Bankzeile oder der Sätze eines Imports
+        sagt nichts über das Erlöskonto (es kann ein Bankkonto, ein Aufwandskonto oder das
+        Wartekonto sein) und zählt nicht. Das Ergebnis gilt nur, wenn es ein Erlöskonto ist
+        (``is_income_account``: 4000–4999 ohne Wartekonten)."""
+        waiting = tuple(number for number, _name in self.OPEN_REVENUE_ACCOUNTS.values())
+        waiting_marks = ','.join('?' * len(waiting))
+        conn = self._get_connection()
+        try:
+            payment_ids = sorted(self._get_payment_coa_ids(conn.cursor()))
+            payment_marks = ','.join('?' * len(payment_ids))
+            row = conn.execute(f'''
+                SELECT cand.ID, cand.AccountNumber
+                FROM Bookings k
+                JOIN Invoices i ON i.InvoiceNumber = k.DocumentNumber
+                LEFT JOIN ChartOfAccounts own ON own.ID = k.COA_ID
+                JOIN ChartOfAccounts cand ON cand.ID = CASE
+                    WHEN own.AccountNumber IN ({waiting_marks}) THEN k.CounterCOA_ID
+                    ELSE k.COA_ID END
+                WHERE k.Status = ? AND k.ParentBooking_ID IS NOT NULL
+                  AND (i.DocumentType = 'invoice' OR i.DocumentType IS NULL)
+                  AND (own.AccountNumber IN ({waiting_marks})
+                       OR k.CounterCOA_ID IN ({payment_marks}))
+                  AND {self._revenue_rate_key_sql('i.TaxRate')} = ?
+                ORDER BY k.ID DESC LIMIT 1
+            ''', (*waiting, PAYMENT_MARK, *waiting, *payment_ids, key)).fetchone()
+        finally:
+            conn.close()
+        return row[0] if row and is_income_account(row[1]) else None
+
     def resolve_revenue_coa(self, tax_rate, create=True):
         """Passendes Erlöskonto für einen Rechnungs-Steuersatz ermitteln.
 
-        Lernt zuerst aus der eigenen Historie: das zuletzt bei einer
-        Zahlungs-Zuordnung verwendete Erlöskonto einer Rechnung mit gleichem
-        Steuersatz (0% und §19-Sentinel -1 bilden einen gemeinsamen
-        "steuerfrei"-Topf). Fallback auf die Standardkonten: 19% → 4400,
-        7% → 4300, steuerfrei/§19 → 4185 (DATEV: "Erlöse als Kleinunternehmer
-        nach § 19 Abs. 1 UStG"; wird in älteren DBs ohne dieses Seed-Konto
-        automatisch nachgelegt, Vorbild ensure_kasse_exists).
+        Lernt zuerst aus der eigenen Historie (``_learned_revenue_coa``): das zuletzt von der
+        App bei einer Zahlungs-Zuordnung gebuchte Erlöskonto einer Rechnung mit gleichem
+        Steuersatz (0% und §19-Sentinel -1 bilden einen gemeinsamen "steuerfrei"-Topf).
+        Fallback auf die Standardkonten: 19% → 4400, 7% → 4300, steuerfrei/§19 → 4185
+        (DATEV: "Erlöse als Kleinunternehmer nach § 19 Abs. 1 UStG"; wird in älteren DBs ohne
+        dieses Seed-Konto automatisch nachgelegt, Vorbild ensure_kasse_exists).
         tax_rate wie in Invoices.TaxRate (0.19, 19, 0 oder -1).
+
+        Für andere Sätze (z. B. 5 %, 16 %) gibt es ohne Historie kein Konto: ``None``. Dann
+        wählt der Nutzer eines (``assign_invoice_payment(revenue_coa_id=…)``); die Sätze der
+        Zuordnung tragen es, und die nächste Rechnung mit diesem Satz übernimmt es – geraten
+        wird nie.
 
         ``create=False`` schlägt nur nach und legt nichts an (für reine Anzeigen):
         fehlt das Standardkonto, ist das Ergebnis ``None``.
         """
-        if tax_rate is None:
-            key = -999.0
-        elif tax_rate <= 0:
-            key = 0.0
-        else:
-            pct = tax_rate * 100 if tax_rate <= 1 else tax_rate
-            key = round(pct, 2)
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT b.COA_ID
-            FROM InvoicePayments ip
-            JOIN Bookings b ON b.ID = ip.BookingID
-            JOIN Invoices i ON i.ID = ip.InvoiceID
-            WHERE b.COA_ID IS NOT NULL
-              AND (CASE WHEN i.TaxRate IS NULL THEN -999.0
-                        WHEN i.TaxRate <= 0 THEN 0.0
-                        WHEN i.TaxRate <= 1 THEN ROUND(i.TaxRate * 100, 2)
-                        ELSE ROUND(i.TaxRate, 2) END) = ?
-            ORDER BY ip.ID DESC LIMIT 1
-        ''', (key,))
-        row = cursor.fetchone()
-        conn.close()
-        if row:
-            return row[0]
+        key = self._revenue_rate_key(tax_rate)
+        learned = self._learned_revenue_coa(key)
+        if learned is not None:
+            return learned
         if key == 19:
             return self.get_coa_id_by_account_number(4400)
         if key == 7:
@@ -796,24 +755,25 @@ class InvoicesMixin:
     def get_receivable_booking(self, invoice_id):
         """Forderungsbuchung einer Rechnung oder None.
 
-        Erkannt über Beleg-Nr. + Debitorenkonto – dieselbe Klammer, die auch
-        Stufe 7 des Auto-Abgleichs benutzt. Ein eigenes Schema-Feld wäre dafür
-        zu viel: Rechnungsnummern sind eindeutig.
+        Erkannt über Beleg-Nr. + ``db.matching.receivable_condition`` (Debitoren 10000 im Soll,
+        kein Zahlungskonto) – dieselbe Bedingung wie überall, damit ein WISO-Storno
+        „10000 an 1810“ oder eine Erlösminderung „… an 10000“ mit der Rechnungsnummer nicht
+        als Forderung gilt. Ein eigenes Schema-Feld wäre dafür zu viel: Rechnungsnummern sind
+        eindeutig.
         """
         invoice = self.get_invoice_by_id(invoice_id)
         if not invoice:
             return None
-        debtor_coa = self.get_coa_id_by_account_number(self.DEBTOR_ACCOUNT_NUMBER)
-        if not debtor_coa:
-            return None
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT ID FROM Bookings WHERE DocumentNumber = ? AND COA_ID = ?"
-            " AND BookingType = 'entry' ORDER BY ID LIMIT 1",
-            (invoice[1], debtor_coa))
-        row = cursor.fetchone()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            receivable_sql, receivable_params = self._receivable_sql(cursor)
+            cursor.execute(
+                f"SELECT ID FROM Bookings WHERE DocumentNumber = ? AND BookingType = 'entry' "
+                f"AND {receivable_sql} ORDER BY ID LIMIT 1", [invoice[1], *receivable_params])
+            row = cursor.fetchone()
+        finally:
+            conn.close()
         return row[0] if row else None
 
     def ensure_receivable_booking(self, invoice_id):
@@ -906,24 +866,27 @@ class InvoicesMixin:
         return [self._euro_row(r, 3) for r in rows]
 
     def get_booking_unallocated_amount(self, booking_id):
-        """Nicht zugeordneter Rest einer Buchung in Euro (Decimal, min. 0)."""
+        """Freier Rest einer Bankbewegung in Euro (Decimal, min. 0).
+
+        Nur ein Zahlungseingang (Bankbewegung mit Betrag > 0) lässt sich einer Rechnung
+        zuordnen; für alles andere ist der Rest 0. Frei ist, was weder zugeordnet noch bereits
+        bankwirksam kontiert ist (``_free_minor_sql``) – eine schon als Erlös gebuchte
+        Bewegung ist keine Rechnungszahlung mehr."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT ABS(COALESCE(Amount, 0)) - COALESCE(
-                       (SELECT SUM(ip.Amount) FROM InvoicePayments ip
-                        WHERE ip.BookingID = Bookings.ID), 0)
-            FROM Bookings WHERE ID = ?
-        ''', (booking_id,))
-        row = cursor.fetchone()
-        conn.close()
-        if not row or row[0] is None or row[0] <= 0:
-            return Decimal(0)
-        return from_minor(row[0])
+        try:
+            row = conn.execute('SELECT BookingType, Amount FROM Bookings WHERE ID = ?',
+                               (booking_id,)).fetchone()
+            if not row or row[0] != 'bank' or (row[1] or 0) <= 0:
+                return Decimal(0)
+            free = self._booking_free_minor(conn, booking_id,
+                                            self._get_bank_coa_ids(conn.cursor()))
+        finally:
+            conn.close()
+        return from_minor(free) if free > 0 else Decimal(0)
 
     def get_unallocated_bank_bookings(self, contact_id=None, contact_only=False,
                                       limit=20):
-        """Bank-Zahlungseingänge mit noch nicht zugeordnetem Rest.
+        """Bank-Zahlungseingänge mit freiem Rest (``_free_minor_sql``).
 
         Kandidaten für die Verknüpfung mit offenen Rechnungen (Import-Fall,
         Über-/Sammelzahlungen). Buchungen des Kontakts stehen vorn, danach
@@ -936,14 +899,11 @@ class InvoicesMixin:
         params = [contact_id] if contact_filter else []
         conn = self._get_connection()
         cursor = conn.cursor()
+        free_sql, free_params = self._free_minor_sql(self._get_bank_coa_ids(cursor))
         cursor.execute(f'''
             SELECT * FROM (
                 SELECT b.ID, b.DateBooking, b.RecipientClient, b.Contact_ID,
-                       b.Amount,
-                       ABS(b.Amount) - COALESCE((SELECT SUM(ip.Amount)
-                                                 FROM InvoicePayments ip
-                                                 WHERE ip.BookingID = b.ID), 0)
-                           AS FreeMinor
+                       b.Amount, {free_sql} AS FreeMinor
                 FROM Bookings b
                 WHERE b.BookingType = 'bank' AND b.Amount > 0 {contact_filter}
             )
@@ -951,7 +911,7 @@ class InvoicesMixin:
             ORDER BY CASE WHEN ? IS NOT NULL AND Contact_ID = ? THEN 0 ELSE 1 END,
                      DateBooking DESC, ID DESC
             LIMIT ?
-        ''', params + [contact_id, contact_id, limit])
+        ''', free_params + params + [contact_id, contact_id, limit])
         rows = cursor.fetchall()
         conn.close()
         return [self._euro_row(r, 4, 5) for r in rows]
@@ -959,28 +919,40 @@ class InvoicesMixin:
     def get_open_items_for_contact(self, contact_id):
         """Offene Posten eines Kontakts für die Kontaktseite.
 
+        Forderungen sind die versendeten Rechnungen (``PAYABLE_STATUSES``) mit Rest; ein
+        Guthaben ist der freie Rest eines Zahlungseingangs des Kontakts. Nicht versendete
+        (abgeschlossene) Rechnungen werden getrennt geführt und gehen nicht in den Saldo ein –
+        sie stehen noch nicht in den Büchern.
+
         Returns dict:
-          open_invoices: [(ID, InvoiceNumber, InvoiceDate, Status, Offen€)]
-          credits:       [(BookingID, DateBooking, RecipientClient, Contact_ID,
-                           Amount€, Frei€)]  – nicht zugeordnete Zahlungs-Reste
-          saldo:         Forderungen − Guthaben (Euro-Decimal)
+          open_invoices:   [(ID, InvoiceNumber, InvoiceDate, Status, Offen€)]
+          unsent_invoices: dasselbe für abgeschlossene, noch nicht versendete Rechnungen
+          credits:         [(BookingID, DateBooking, RecipientClient, Contact_ID,
+                             Amount€, Frei€)]  – nicht zugeordnete Zahlungs-Reste
+          saldo:           Forderungen (versendet) − Guthaben (Euro-Decimal)
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT ID, InvoiceNumber, InvoiceDate, Status,
-                   COALESCE(AmountDue, SumGross, 0)
-            FROM Invoices
-            WHERE CustomerId = ?
-              AND (DocumentType = 'invoice' OR DocumentType IS NULL)
-              AND Status NOT IN ('draft', 'cancelled', 'paid')
-              AND (AmountDue IS NULL OR AmountDue > 0)
-            ORDER BY InvoiceDate DESC, ID DESC
-        ''', (contact_id,))
-        open_invoices = [self._euro_row(r, 4) for r in cursor.fetchall()]
+
+        def invoices_with_status(statuses):
+            marks = ','.join('?' * len(statuses))
+            rows = conn.execute(f'''
+                SELECT ID, InvoiceNumber, InvoiceDate, Status,
+                       COALESCE(AmountDue, SumGross, 0)
+                FROM Invoices
+                WHERE CustomerId = ?
+                  AND (DocumentType = 'invoice' OR DocumentType IS NULL)
+                  AND Status IN ({marks})
+                  AND (AmountDue IS NULL OR AmountDue > 0)
+                ORDER BY InvoiceDate DESC, ID DESC
+            ''', (contact_id, *statuses)).fetchall()
+            return [self._euro_row(r, 4) for r in rows]
+
+        open_invoices = invoices_with_status(PAYABLE_STATUSES)
+        unsent_invoices = invoices_with_status(('finalized',))
         conn.close()
         credits = self.get_unallocated_bank_bookings(contact_id, contact_only=True,
                                                      limit=100)
         saldo = (sum((r[4] for r in open_invoices), Decimal(0))
                  - sum((r[5] for r in credits), Decimal(0)))
-        return {'open_invoices': open_invoices, 'credits': credits, 'saldo': saldo}
+        return {'open_invoices': open_invoices, 'unsent_invoices': unsent_invoices,
+                'credits': credits, 'saldo': saldo}

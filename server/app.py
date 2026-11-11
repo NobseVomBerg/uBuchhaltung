@@ -731,7 +731,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path.startswith("/invoice/view") or self.path.startswith("/invoice/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 invoice_id = int(query_components["id"][0])
-                self.respond(200, PageInvoice(db, {}, invoice_id))
+                self.respond(200, PageInvoice(
+                    db, {}, invoice_id,
+                    payment_error=query_components.get("payment_error", [None])[0]))
             elif self.path.startswith("/invoice/xml_download"):
                 # Abgelegte XRechnung ausliefern – nur herunterladen, nie frisch erzeugen
                 # (todo #3); eine Route, die das XML neu baute, gibt es nicht.
@@ -837,7 +839,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     db, account_id, error=query_components.get("error", [None])[0]))
             # ──────────────────────────────────────────────────────────────
             elif self.path == "/miscellaneous" or self.path.startswith("/miscellaneous?"):
-                self.respond(200, PageMiscellaneous(db))
+                qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
+                self.respond(200, PageMiscellaneous(
+                    db, check_payments=qs.get("check_payments", [""])[0] == "1"))
             elif self.path == "/receipts" or self.path.startswith("/receipts?"):
                 qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
                 date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
@@ -853,7 +857,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
                 from_invoice = int(qs["from_invoice"][0]) if qs.get("from_invoice") else None
                 self.respond(200, PageTransactions(db, date_from=date_from, date_to=date_to,
-                                                   from_invoice=from_invoice), headers=hdrs)
+                                                   from_invoice=from_invoice,
+                                                   revenue_coa_id=_int_param(qs, "revenue_coa_id")),
+                             headers=hdrs)
             elif self.path.startswith("/transactions/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 transaction_id = int(query_components["id"][0])
@@ -1183,7 +1189,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(status_code, response, content_type="application/json")
             elif self.path == "/transactions/add":
                 status_code, location = handlers.handle_add_transaction(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                if status_code == 400:           # abgelehnt, nichts gespeichert: Grund als Klartext
+                    self.respond(400, location, content_type="text/plain; charset=utf-8")
+                else:
+                    self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/documents/link":
                 status_code, location = handlers.handle_link_document(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})

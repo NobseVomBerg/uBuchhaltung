@@ -241,7 +241,7 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 - **XRechnung XML-Export** (`export/xrechnung_invoice.py`, UBL): EN 16931 konform
 - **Rechnungsstatus**: Entwurf → Finalisiert → Versendet → Bezahlt (+ Teilzahlung, Überfällig, Storniert)
 - **Nummernkreise**: Format YY[Buchstabe][Präfix]### mit Auto-Inkrementierung
-- **Zahlungsverknüpfung**: Rechnungen mit Bankbuchungen verbinden, Teilzahlungen
+- **Zahlungsverknüpfung**: Eingehende Bankbewegungen einer versendeten Rechnung zuordnen – ganz, in Teilen (Teilzahlung) oder eine Überweisung auf mehrere Rechnungen (Sammelzahlung); ein Überschuss bleibt als Guthaben beim Kunden stehen. Die Zuordnung legt ihre Buchungssätze selbst an und nimmt sie beim Entfernen wieder mit; eine Prüfliste unter *Sonstiges* zeigt Unstimmigkeiten
 - **Offene Posten**: Mit dem Status *Versendet* wird die Rechnung als Forderung
   gebucht (10000 Debitoren an Wartekonto 4405 / 4345 / 4340 je nach Steuersatz);
   die Zahlung erzeugt zwei Buchungssätze – *Zahlung* (Bank an Debitoren) und

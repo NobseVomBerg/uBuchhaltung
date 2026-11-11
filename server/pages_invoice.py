@@ -8,6 +8,7 @@ import json
 import html as _html
 from db import Database
 from db.invoices import InvoiceCol
+from db.invoice_payments import PAYABLE_STATUSES
 from money import fmt_eur
 from export.einvoice_model import unit_display
 from export.invoice_files import stored_invoice_path
@@ -50,6 +51,33 @@ def normalize_status(status):
     """Alt-Wert 'partial' (vor todo #2 geschrieben) auf den Kanon abbilden."""
     return 'partial_payment' if status == 'partial' else status
 
+
+def revenue_coa_choice(db, tax_rate, selected=None):
+    """Pflichtfeld „Erlöskonto“ für eine Rechnungszahlung – nur, wenn für den Steuersatz der
+    Rechnung kein Erlöskonto hinterlegt ist (``Database.revenue_coa_choice_needed``, z. B. 5 %
+    oder 16 %), sonst ``None``: Dann ergibt sich die Kontierung aus der Rechnung.
+
+    Returns ``(select_html, hint_html)``. Vorgewählt ist ``selected`` (wenn es ein wählbares
+    Erlöskonto ist), sonst der Vorschlag ``Database.suggest_revenue_coa`` – eine Vorauswahl, keine
+    Entscheidung; ohne beides steht „bitte wählen“ da. Alle Werte sind maskiert."""
+    if tax_rate is None or not db.revenue_coa_choice_needed(tax_rate):
+        return None
+    accounts = db.get_revenue_coas()
+    if selected not in {coa_id for coa_id, _number, _name in accounts}:
+        selected = db.suggest_revenue_coa(tax_rate)
+    options = '<option value="">— bitte wählen —</option>'
+    for coa_id, number, name in accounts:
+        mark = ' selected' if coa_id == selected else ''
+        label = _html.escape(f'{number} {name}')
+        options += f'<option value="{int(coa_id)}"{mark}>{label}</option>'
+    percent = tax_rate * 100 if tax_rate <= 1 else tax_rate
+    percent_text = f'{percent:g}'.replace('.', ',')
+    hint = (f'Für {percent_text} % ist kein Erlöskonto hinterlegt. Die Wahl gilt künftig als '
+            'Vorgabe für diesen Steuersatz.')
+    return (f'<select name="revenue_coa_id" id="revenueCoa" required>{options}</select>',
+            _html.escape(hint))
+
+
 def document_submenu(active):
     """Gemeinsames Header2-Submenü für Rechnung / Angebot / Mahnwesen.
 
@@ -66,11 +94,14 @@ def document_submenu(active):
     ])
 
 
-def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=None):
+def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=None,
+                payment_error=None):
     """Generate invoice list page with search and filter
 
     copy_from: ID einer Quellrechnung – das Formular öffnet sich dann als
     neue Rechnung mit deren Inhalten (todo #4).
+    payment_error: Grund, warum eine Zahlung aus der Buchungsmaske nicht zugeordnet werden
+    konnte (Klartext, wird maskiert ausgegeben).
     """
     filters = filters or {}
     
@@ -242,17 +273,17 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
     '''
     s+= '</div><!-- Ende gridLeftCol -->'
     s+= '<div class="gridRightCol" style="order:2; min-width:820px;">'
-    s+= _invoice_form_html(db, invoice_id, copy_from)
+    s+= _invoice_form_html(db, invoice_id, copy_from, payment_error)
     s+= '</div><!-- Ende gridRightCol --></div><!-- Ende grid2Cols -->'
     s+= Footer()
     return s
 
-def _invoice_form_html(db: Database, invoice_id=None, copy_from=None):
+def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_error=None):
     """Generate invoice form HTML block (no page wrapper).
 
     copy_from: ID einer Quellrechnung. Deren Inhalte füllen das Formular, es
     bleibt aber eine *neue* Rechnung – frisches Datum, frische Nummer, Entwurf
-    (todo #4).
+    (todo #4). payment_error: siehe PageInvoice.
     """
     import datetime
     import json
@@ -1446,6 +1477,14 @@ function copyInvoiceAsNew(invId) {{
     <div style="margin: 30px 0; padding: 20px; border: 1px solid #ddd; border-radius: 4px;">
         <h3>Zahlungsverknüpfungen</h3>
 '''
+        if payment_error:
+            s += f'        <p class="errorColor">{_html.escape(str(payment_error))}</p>\n'
+        findings = db.find_payment_inconsistencies(invoice_id)
+        if findings:
+            s += ('        <div class="warnColor"><strong>Zahlungszuordnung prüfen:</strong><ul>\n'
+                  + ''.join(f'            <li>{_html.escape(f["text"])}</li>\n' for f in findings)
+                  + '        </ul>Alle Rechnungen mit Unstimmigkeiten zeigt die Prüfung unter '
+                  '<a href="/miscellaneous?check_payments=1">Sonstiges</a>.</div>\n')
         if existing_payments:
             total_paid = sum(p[3] for p in existing_payments)
             s += '''        <table style="width:100%; border-collapse:collapse;">
@@ -1487,15 +1526,26 @@ function copyInvoiceAsNew(invId) {{
         # (Import-Fall). "Bezahlt" ergibt sich automatisch aus der Zuordnung.
         is_invoice_doc = (len(existing_invoice) <= 45
                           or existing_invoice[45] != 'quote')
+        # Zahlbar ist eine Rechnung erst ab „versendet“ (PAYABLE_STATUSES; 'partial' ist
+        # schon auf 'partial_payment' abgebildet): Davor steht sie noch nicht in den Büchern.
         payable = (is_invoice_doc
-                   and invoice_status in ('finalized', 'sent', 'overdue',
-                                          'partial_payment')
+                   and invoice_status in PAYABLE_STATUSES
                    and (amount_due is None or amount_due > 0))
+        if is_invoice_doc and invoice_status in ('draft', 'finalized'):
+            s += ('        <p class="hint">Zahlungen lassen sich erst zuordnen, wenn die '
+                  'Rechnung versendet ist.</p>\n')
         if payable:
             open_due = (amount_due if amount_due is not None
                         else (existing_invoice[38] or 0))
+            # Ist für den Steuersatz kein Erlöskonto hinterlegt (z. B. 5 %, 16 %), wählt der
+            # Nutzer es hier – für „Verknüpfen“ und, per Adresse mitgegeben, für die Maske
+            choice = revenue_coa_choice(db, existing_invoice[35])
+            if choice:
+                s += (f'        <p class="hint">{choice[1]}</p>\n'
+                      f'        <p><label>Erlöskonto: {choice[0]}</label></p>\n')
             s += (f'        <p><a href="/transactions?from_invoice={invoice_id}" '
-                  'class="coloredButton btn-sm bg-green">💶 Zahlung verbuchen</a></p>\n')
+                  'class="coloredButton btn-sm bg-green" onclick="return bookPayment(this)">'
+                  '💶 Zahlung verbuchen</a></p>\n')
             linked_booking_ids = {p[2] for p in existing_payments}
             candidates = [c for c in
                           db.get_unallocated_bank_bookings(existing_invoice[13])
@@ -1522,33 +1572,63 @@ function copyInvoiceAsNew(invId) {{
                 <td style="padding:6px 8px; text-align:right;">{fmt_eur(b_amount)}</td>
                 <td style="padding:6px 8px; text-align:right;">{fmt_eur(b_free)}{match_mark}</td>
                 <td style="padding:6px 8px; text-align:right;"><input type="number" step="0.01" class="noButtons" id="payAmount_{b_id}" value="{default_alloc:.2f}" style="width:90px; text-align:right;"></td>
-                <td style="padding:6px 8px;"><button onclick="linkPayment({b_id})" class="coloredButton btn-sm bg-blue">Verknüpfen</button></td>
+                <td style="padding:6px 8px;"><button onclick="linkPayment({b_id}, this)" class="coloredButton btn-sm bg-blue">Verknüpfen</button></td>
             </tr>
 '''
                 s += '        </table>\n'
 
         s += f'''    </div>
     <script>
-        function linkPayment(bookingId) {{
+        // Das gewählte Erlöskonto ('' = es gibt kein Feld: die Kontierung ergibt sich aus der
+        // Rechnung; null = Feld ohne Wahl, der Nutzer wurde darauf hingewiesen)
+        function revenueCoaChoice() {{
+            const field = document.getElementById('revenueCoa');
+            if (!field) return '';
+            if (!field.value) {{
+                showMessage('Bitte ein Erlöskonto wählen.', 'error');
+                return null;
+            }}
+            return field.value;
+        }}
+        function bookPayment(link) {{
+            const coa = revenueCoaChoice();
+            if (coa === null) return false;
+            link.href = '/transactions?from_invoice={invoice_id}'
+                + (coa ? '&revenue_coa_id=' + encodeURIComponent(coa) : '');
+            return true;
+        }}
+        function linkPayment(bookingId, button) {{
             const amount = parseFloat(document.getElementById('payAmount_' + bookingId).value);
             if (!amount || amount <= 0) {{
                 showMessage('Betrag muss größer 0 sein.', 'error');
                 return;
             }}
+            const coa = revenueCoaChoice();
+            if (coa === null) return;
+            const payload = {{invoice_id: {invoice_id}, transaction_id: bookingId,
+                             amount_paid: amount}};
+            if (coa) payload.revenue_coa_id = parseInt(coa, 10);
+            button.disabled = true;   // ein Doppelklick ordnet nicht doppelt zu
             fetch('/invoice/link-payment', {{
                 method: 'POST',
                 headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{invoice_id: {invoice_id}, transaction_id: bookingId,
-                                      amount_paid: amount}})
+                body: JSON.stringify(payload)
             }})
             .then(r => r.json())
             .then(data => {{
                 if (data.success) {{ location.reload(); }}
-                else {{ showMessage('Fehler: ' + (data.error || 'Unbekannt'), 'error'); }}
+                else {{
+                    button.disabled = false;
+                    showMessage('Fehler: ' + (data.error || 'Unbekannt'), 'error');
+                }}
+            }})
+            .catch(() => {{
+                button.disabled = false;
+                showMessage('Fehler: Die Zahlung konnte nicht verknüpft werden.', 'error');
             }});
         }}
         function deletePayment(paymentId) {{
-            showConfirm('Zahlungsverkn\u00fcpfung wirklich entfernen?', function() {{
+            showConfirm('Zahlungsverkn\u00fcpfung wirklich entfernen? Die von der App daf\u00fcr angelegten Buchungss\u00e4tze werden mit entfernt.', function() {{
                 fetch('/invoice/delete-payment', {{
                     method: 'POST',
                     headers: {{'Content-Type': 'application/json'}},

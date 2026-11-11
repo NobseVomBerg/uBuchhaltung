@@ -20,9 +20,10 @@ from .richtext import sanitize_richtext as _sanitize_richtext
 from db import Database
 from db.core import fk_explained, ForeignKeyError
 from db.invoices import InvoiceCol
+from db.invoice_payments import RECEIVABLE_STATUSES
 from db.matching import is_bank_effective
 from db.accounts import DEFAULT_CASH_ACCOUNT
-from money import to_minor, from_minor, multiply, tax_from_net, round_minor, fmt_eur
+from money import to_minor, from_minor, multiply, tax_from_net, tax_from_gross, round_minor, fmt_eur
 from decimal import Decimal
 
 try:
@@ -478,6 +479,20 @@ def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
     _write_split_rows(db, bank_id, planned)
 
 
+def _new_payment_problem(db, invoice_id, account_id, amount, revenue_coa_id=None):
+    """Klartext, warum sich eine NEUE Bankbewegung nicht als Zahlung zu dieser Rechnung anlegen
+    lässt (kein Zahlungseingang, Rechnung nicht zahlbar, Bankkonto ohne SKR-Nummer, kein
+    Erlöskonto …) – ``None``, wenn sie sich zuordnen lässt. Geprüft wird vor dem Anlegen."""
+    try:
+        positive = to_minor(amount) > 0
+    except (ValueError, TypeError):
+        positive = False
+    if not positive:
+        return ('Der Betrag muss größer 0 sein – nur Zahlungseingänge lassen sich einer '
+                'Rechnung zuordnen.')
+    return db.payment_precheck(invoice_id, account_id, revenue_coa_id)
+
+
 def handle_add_transaction(db: Database, post_data):
     """Handle manual booking entry (insert or update)"""
     transaction_id = int(post_data.get("transaction_id", ["0"])[0])
@@ -495,20 +510,42 @@ def handle_add_transaction(db: Database, post_data):
     tax_amount = post_data.get("tax_amount", [""])[0]
     document_nr = post_data.get("document_nr", [""])[0]
     invoice_id = post_data.get("invoice_id", [""])[0]
+    # Erlöskonto, das der Nutzer wählt, wenn für den Steuersatz der Rechnung keines hinterlegt
+    # ist (sonst ohne Wirkung)
+    raw_revenue_coa = post_data.get("revenue_coa_id", [""])[0].strip()
+    try:
+        revenue_coa_id = int(raw_revenue_coa) if raw_revenue_coa else None
+    except ValueError:
+        revenue_coa_id = -1        # keine Ganzzahl: die Zuordnung lehnt es als „kein Erlöskonto“ ab
     # Buchungssatz-Editor der Bank-Maske aktiv? Dann kommen die Sätze von dort.
     has_split_rows = 'split_amount' in post_data
 
     try:
+        # Der Betrag muss eine endliche Zahl unter einer Billion sein: nan, inf oder 1e30 ließen
+        # sich nicht speichern und kämen sonst als 500 mit dem Namen der Ausnahme zurück.
+        if _finite_number(amount, None) is None:
+            return 400, 'Der Betrag ist keine gültige Zahl.'
+
         # Convert IDs to int or None
         account_id = int(account_id) if account_id else None
         contact_id = int(contact_id) if contact_id else None
         coa_id = int(coa_id) if coa_id else None
         invoice_id = int(invoice_id) if invoice_id else None
-        
+
         # Convert tax_rate from percentage to decimal
         tax_rate = float(tax_rate) / 100 if tax_rate else None
         tax_amount = float(tax_amount) if tax_amount else None
-        
+
+        # Eine neue Bankbewegung als Zahlung zu einer Rechnung: erst prüfen, dann anlegen –
+        # sonst bliebe bei einer unzulässigen Zuordnung eine Bewegung ohne Zuordnung zurück.
+        # Die Kontierung ergibt sich aus der Rechnung (assign_invoice_payment); ein Erlöskonto
+        # aus dem Formular zählt hier nicht.
+        if invoice_id and transaction_id <= 0:
+            problem = _new_payment_problem(db, invoice_id, account_id, amount, revenue_coa_id)
+            if problem:
+                return 400, problem
+            coa_id = None
+
         # Update or insert booking
         if transaction_id > 0:
             # Check if this is an unlinked bank booking being completed
@@ -669,6 +706,7 @@ def handle_add_transaction(db: Database, post_data):
             # When a bank booking is created with a COA already set,
             # immediately create the linked accounting entry child so the
             # green checkmark appears without requiring a second edit.
+            # (Bei einer Rechnungszahlung legt die Zuordnung die Sätze an: coa_id ist dort None.)
             elif new_booking_type == 'bank' and coa_id:
                 # Look up the account's SKR-COA to set as the liquid counter side
                 account_coa_id = _bank_counter_coa(db, account_id)
@@ -703,12 +741,17 @@ def handle_add_transaction(db: Database, post_data):
                 print(f"Error consuming number range {suggest_range_id}: {e}")
 
         # Zahlungs-Zuordnung zur Rechnung (todo #2): idempotent und gekappt;
-        # ein Fehler hier darf die bereits gespeicherte Buchung nicht zum 500 machen.
+        # ein Fehler hier darf die bereits gespeicherte Buchung nicht zum 500 machen. Die
+        # Rechnungsseite nennt den Grund, wenn die Zuordnung nicht zustande kam.
         if invoice_id:
             try:
-                link_booking_to_invoice_capped(db, invoice_id, transaction_id)
+                ok, message = link_booking_to_invoice_capped(
+                    db, invoice_id, transaction_id, revenue_coa_id=revenue_coa_id)
             except Exception as e:
                 print(f"Error linking booking {transaction_id} to invoice {invoice_id}: {e}")
+                ok, message = False, 'Die Zahlung konnte nicht zugeordnet werden.'
+            if not ok:
+                return 303, f"/invoice/edit?id={invoice_id}&payment_error={quote(message)}"
             return 303, f"/invoice/edit?id={invoice_id}"
 
         return 303, "/transactions"
@@ -1740,21 +1783,17 @@ def _ensure_sent_documents(db, invoice_id, current_status, new_status):
     return None
 
 
-# Ab "versendet" ist die Rechnung ein offener Posten; davor (Entwurf,
-# finalisiert) und nach dem Storno nicht. Zustands- statt übergangsgesteuert,
-# damit auch Sprünge wie finalized → paid richtig landen.
-_RECEIVABLE_STATUSES = frozenset(
-    {'sent', 'partial_payment', 'overdue', 'paid'})
-
-
 def _sync_receivable_booking(db, invoice_id, status):
-    """Forderungsbuchung (Debitoren an Wartekonto) am Status ausrichten.
+    """Forderungsbuchung (Debitoren an Wartekonto) am Status ausrichten: ab „versendet“ gibt es
+    sie, davor und nach dem Storno nicht (``RECEIVABLE_STATUSES``). Nimmt eine Zuordnung die
+    letzte Zahlung einer Rechnung weg, richtet ``Database._after_payment_removed`` die
+    Forderung nach derselben Regel aus.
 
     Ein Fehler hier darf den Statuswechsel nicht kippen – die Buchung lässt
     sich jederzeit nachziehen, ein halb gesetzter Status nicht.
     """
     try:
-        if status in _RECEIVABLE_STATUSES:
+        if status in RECEIVABLE_STATUSES:
             db.ensure_receivable_booking(invoice_id)
         else:
             db.remove_receivable_booking(invoice_id)
@@ -1762,126 +1801,52 @@ def _sync_receivable_booking(db, invoice_id, status):
         print(f"Error syncing receivable booking for invoice {invoice_id}: {e}")
 
 
-def _backfill_booking_skr(db, booking_id, invoice, alloc=None):
-    """SKR-Teil einer verknüpften Zahlung automatisch nachtragen (todo #2).
+def _backfill_booking_skr(db, booking_id, invoice, revenue_coa_id):
+    """Anzeige der Bankbewegung nach einer Zuordnung ergänzen (todo #2).
 
-    Beim nachträglichen Verknüpfen bestehender Buchungen (z. B. importierter
-    Kontoauszug) werden NUR leere Felder gefüllt: Erlöskonto passend zum
-    Steuersatz der Rechnung, Steuersatz/-betrag (enthaltene USt des
-    Buchungsbetrags), Kunde und Beleg-Nr. Bei Bankbuchungen ohne Buchungssatz
-    entstehen zusätzlich die 'entry'-Kindbuchungen – siehe
-    _insert_payment_children.
+    Nur leere Felder werden gefüllt, nichts wird überschrieben: Erlöskonto (``revenue_coa_id``:
+    das Konto, auf das die Zuordnung tatsächlich gebucht hat), Steuersatz/-betrag (enthaltene USt
+    des Buchungsbetrags), Kunde und Beleg-Nr. Das ist reine Anzeige und speist nichts: Das
+    Erlöskonto je Steuersatz lernt ``resolve_revenue_coa`` allein aus den Buchungssätzen der
+    Zuordnung. Die Buchungssätze der Zahlung legt ``Database.assign_invoice_payment`` an, nicht
+    diese Funktion.
     """
     booking = db.get_booking_by_id(booking_id)
     if not booking:
         return
     rate = invoice[35]
     rate_pct = 0 if not rate or rate < 0 else (rate * 100 if rate <= 1 else rate)
-    coa_id = db.resolve_revenue_coa(rate)
     tax_rate = rate_pct / 100 if rate_pct else None
     tax_amount = None
     if rate_pct:
         # Enthaltene USt des gesamten Buchungsbetrags (nicht nur der
         # Zuordnung): das Steuerfeld beschreibt die Buchung als Ganzes.
-        gross = abs(float(booking[11] or 0))
-        tax_amount = round(gross * rate_pct / (100 + rate_pct), 2)
-    db.backfill_booking_fields(booking_id, coa_id=coa_id, tax_rate=tax_rate,
-                               tax_amount=tax_amount, contact_id=invoice[13],
-                               document_number=invoice[1])
-
-    booking = db.get_booking_by_id(booking_id)
-    # Existenzprüfung ungefiltert: get_linked_entry_for_bank blendet
-    # Doppik-Spiegel aus – danach entstünde bei jedem Aufruf ein weiteres Kind.
-    if (booking[17] == 'bank' and booking[8]
-            and not db.get_child_bookings_for_bank(booking_id)):
-        _insert_payment_children(db, booking, invoice, coa_id, alloc)
+        tax_amount = from_minor(round_minor(
+            tax_from_gross(abs(to_minor(booking[11] or 0)), round(rate_pct, 4)), 2))
+    db.backfill_booking_fields(booking_id, coa_id=revenue_coa_id,
+                               tax_rate=tax_rate, tax_amount=tax_amount,
+                               contact_id=invoice[13], document_number=invoice[1])
 
 
-def _insert_payment_children(db, booking, invoice, revenue_coa_id, alloc=None):
-    """Buchungssätze einer Rechnungszahlung unter der Bankbewegung anlegen.
-
-    Steht die Rechnung als offener Posten in den Büchern (Forderungsbuchung
-    Debitoren an Wartekonto), entstehen wie bei WISO ZWEI Sätze:
-
-        Zahlung zu Re. X   Bank        an Debitoren      (bankwirksam)
-        Umb. zu Re. X      Wartekonto  an Erlöskonto     (nur Umbuchung)
-
-    Erst die Umbuchung macht den Erlös in der EÜR sichtbar – der offene Posten
-    verschwindet damit in gleicher Höhe. Ohne Forderungsbuchung (Fremdbelege,
-    Altbestand) bleibt es beim bisherigen einzelnen Spiegel-Satz.
-    """
-    account_coa_id = _bank_counter_coa(db, booking[4])
-    receivable_id = db.get_receivable_booking(invoice[0])
-    receivable = db.get_booking_by_id(receivable_id) if receivable_id else None
-
-    if not (receivable and account_coa_id and receivable[8] and receivable[9]):
-        db.insert_booking(
-            date_booking=booking[1], date_tax=booking[2],
-            amount=float(booking[11] or 0),
-            recipient_client=booking[6] or '',
-            contact_id=booking[7], coa_id=booking[8],
-            counter_coa_id=account_coa_id,
-            currency=booking[12] or 'EUR',
-            tax_rate=booking[13],
-            tax_amount=float(booking[14]) if booking[14] is not None else None,
-            text=booking[15] or '', document_number=booking[16],
-            booking_type='entry', parent_booking_id=booking[0],
-            auto_mirror=True,
-            log_description="Auto entry child on invoice link (todo #2)")
-        return
-
-    debtor_coa, open_coa = receivable[8], receivable[9]
-    bank_amount = float(booking[11] or 0)
-    # Teilzahlung: nur der zugeordnete Betrag wird umgebucht. Das Vorzeichen
-    # kommt von der Bankbewegung (Gutschrift positiv, Erstattung negativ).
-    amount = bank_amount if alloc is None else \
-        abs(float(alloc)) * (1 if bank_amount >= 0 else -1)
-    rate = invoice[35]
-    rate_pct = 0 if not rate or rate < 0 else (rate * 100 if rate <= 1 else rate)
-    tax_rate = rate_pct / 100 if rate_pct else None
-    tax_amount = round(abs(amount) * rate_pct / (100 + rate_pct), 2) \
-        if rate_pct else None
-    if tax_amount and amount < 0:
-        tax_amount = -tax_amount
-    common = dict(
-        date_booking=booking[1], date_tax=booking[2],
-        recipient_client=booking[6] or '', contact_id=booking[7],
-        currency=booking[12] or 'EUR', amount=amount,
-        document_number=invoice[1], booking_type='entry',
-        parent_booking_id=booking[0])
-    db.insert_booking(coa_id=account_coa_id, counter_coa_id=debtor_coa,
-                      text=f"Zahlung zu Re. {invoice[1]}", **common,
-                      log_description="Payment child (bank to debtor)")
-    db.insert_booking(coa_id=open_coa, counter_coa_id=revenue_coa_id,
-                      tax_rate=tax_rate, tax_amount=tax_amount,
-                      text=f"Umb. zu Re. {invoice[1]}", **common,
-                      log_description="Payment child (open item to revenue)")
-
-
-def link_booking_to_invoice_capped(db, invoice_id, booking_id, amount=None):
+def link_booking_to_invoice_capped(db, invoice_id, booking_id, amount=None, revenue_coa_id=None):
     """Buchung einer Rechnung als Zahlung zuordnen (idempotent, gekappt).
 
     Zuordnungsbetrag = min(gewünschter Betrag, offener Rechnungsrest, freier
     Rest der Buchung) – Rechnungen werden nie überbucht, Überschüsse bleiben
     als freier Buchungsrest dem Kunden zuordenbar (todo #2). amount=None
-    bedeutet "so viel wie möglich".
+    bedeutet "so viel wie möglich". Zuordnung und Buchungssätze legt
+    ``Database.assign_invoice_payment`` in einer Transaktion an. ``revenue_coa_id``: das
+    Erlöskonto, das der Nutzer wählt, wenn für den Steuersatz keines hinterlegt ist (sonst
+    ohne Wirkung).
 
     Returns (True, None) bei Erfolg, sonst (False, Fehlermeldung).
     """
-    invoice = db.get_invoice_by_id(invoice_id)
-    if not invoice or (len(invoice) > 45 and invoice[45] == 'quote'):
-        return False, "Rechnung nicht gefunden"
-    if any(a[1] == invoice_id for a in db.get_booking_allocations(booking_id)):
-        return False, "Buchung ist bereits mit dieser Rechnung verknüpft"
-    due = invoice[39] if invoice[39] is not None else (invoice[38] or Decimal(0))
-    alloc = min(due, db.get_booking_unallocated_amount(booking_id))
-    if amount is not None:
-        alloc = min(alloc, Decimal(str(amount)))
-    if alloc <= 0:
-        return False, "Kein offener Betrag zuordenbar (Rechnung oder Buchung ausgeschöpft)"
-    db.link_invoice_to_transaction(invoice_id, booking_id, alloc)
+    assignment = db.assign_invoice_payment(invoice_id, booking_id, amount, revenue_coa_id)
+    if not assignment.ok:
+        return False, assignment.message
     try:
-        _backfill_booking_skr(db, booking_id, invoice, alloc)
+        _backfill_booking_skr(db, booking_id, db.get_invoice_by_id(invoice_id),
+                              assignment.revenue_coa_id)
     except Exception as e:
         # Zuordnung ist gespeichert; ein Backfill-Fehler darf sie nicht kippen
         print(f"Error backfilling SKR for booking {booking_id}: {e}")
@@ -1899,6 +1864,7 @@ def handle_link_invoice_payment(post_body: bytes):
     amount_paid = data.get('amount_paid')
     if amount_paid in (None, ''):
         amount_paid = None
+    revenue_coa_id = _json_id(data, 'revenue_coa_id', missing=None)   # nur bei Wahl des Nutzers
 
     if not invoice_id or not transaction_id:
         return 400, "Ungültige Parameter"
@@ -1907,7 +1873,7 @@ def handle_link_invoice_payment(post_body: bytes):
 
     try:
         ok, err = link_booking_to_invoice_capped(db, invoice_id, transaction_id,
-                                                 amount_paid)
+                                                 amount_paid, revenue_coa_id)
         if not ok:
             return 400, err
         return 200, f"/invoice/view?id={invoice_id}"
@@ -1930,7 +1896,7 @@ def handle_delete_invoice_payment(post_body: bytes):
     db = Database()
 
     try:
-        db.delete_invoice_payment(payment_id)
+        db.unassign_invoice_payment(payment_id)
         return 200, "ok"
     except Exception as e:
         print(f"Error deleting invoice payment: {e}")
@@ -1995,7 +1961,7 @@ def _invoice_is_frozen(invoice_id):
     if not invoice_id:
         return False
     row = Database().get_invoice_by_id(invoice_id)
-    return bool(row) and (row[40] == 'partial' or row[40] in _RECEIVABLE_STATUSES)
+    return bool(row) and (row[40] == 'partial' or row[40] in RECEIVABLE_STATUSES)
 
 
 def handle_invoice_save(post_body: bytes):

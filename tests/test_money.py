@@ -196,3 +196,28 @@ def test_fmt_eur_without_symbol():
     assert fmt_eur(36153.58, symbol=False) == "36.153,58"
     assert fmt_eur(-12, symbol=False) == "-12,00"
     assert fmt_eur(None, symbol=False) == "-"
+
+
+# ── is_covered: Rest unter einem Cent gilt als beglichen ──────────────────────
+
+@pytest.mark.parametrize("total, paid, expected", [
+    (1190000, 1190000, True),          # genau
+    (1190000, 1500000, True),          # Überzahlung
+    (1190000, 1189950, True),          # Rest 0,005 € – unter einem Cent
+    (1190000, 1189900, False),         # Rest 0,01 €
+    (1190000, 500000, False),          # Teilzahlung
+    (1190000, 0, False),               # nichts gezahlt
+    (1190000, -1190000, False),        # Zahlung in Gegenrichtung
+    (0, 0, False),                     # ohne Betrag gibt es nichts zu decken
+    (0, 100, False),
+    (-1190000, -1190000, True),        # Gutschrift: negative Zahlungen decken
+    (-1190000, -1189950, True),
+    (-1190000, -500000, False),
+    (-1190000, 1190000, False),
+])
+def test_is_covered(total, paid, expected):
+    assert money.is_covered(total, paid) is expected
+
+
+def test_paid_residue_is_one_cent():
+    assert money.PAID_RESIDUE == money.to_minor("0.01")

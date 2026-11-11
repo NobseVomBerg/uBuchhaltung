@@ -9,13 +9,13 @@ from decimal import Decimal
 from money import to_minor, from_minor
 from .matching import (
     classify_entry, is_asset_transfer, ASSET_ACCOUNT_RANGE, PL_ACCOUNT_RANGE,
-    ENTRY_MIRROR, ENTRY_EMPTY, ENTRY_PURPOSE_FIRST, ENTRY_TRANSFER,
+    REVENUE_ACCOUNT_RANGE, ENTRY_MIRROR, ENTRY_EMPTY, ENTRY_PURPOSE_FIRST, ENTRY_TRANSFER,
 )
 
 # SKR04-Kontenklasse 4 = Betriebliche Erträge (Erlöse). Einzige Quelle für die
 # Einnahmen-Klassifizierung in EÜR/Dashboard – die frühere Aufzählung
 # (4400/4640/4845) übersah z. B. 4185 (§19), 4300 (7%) und 4736 (Skonti).
-INCOME_ACCOUNT_RANGE = (4000, 4999)
+INCOME_ACCOUNT_RANGE = REVENUE_ACCOUNT_RANGE
 
 # Bestandskonten des Offene-Posten-Verfahrens: die Forderung aus einer
 # versendeten Rechnung (10000) und die Wartekonten, auf denen der Erlös bis zur

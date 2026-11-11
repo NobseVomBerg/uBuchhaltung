@@ -185,17 +185,21 @@ def test_deleting_the_payment_reopens_the_item(tmp_db, monkeypatch):
     assert tmp_db.get_child_bookings_for_bank(bk) == []
     assert tmp_db.get_receivable_booking(inv) == receivable
     assert tmp_db.get_invoice_by_id(inv)[39] == Decimal('119.0000')
+    assert tmp_db.get_invoice_by_id(inv)[40] == 'sent'      # versendet bleibt versendet
 
 
 def test_payment_without_open_item_keeps_single_child(tmp_db):
-    """Fremdbeleg/Altbestand ohne Forderungsbuchung: unverändert ein Satz."""
-    inv = _invoice(tmp_db, 'R-NOOP', gross=119.00)
+    """Versendete Rechnung ohne Forderungsbuchung (Altbestand): ein Satz, und zwar über den
+    zugeordneten Betrag."""
+    inv = _invoice(tmp_db, 'R-NOOP', gross=119.00, status='sent')
     acct = _bank_account(tmp_db)
     bk = tmp_db.insert_booking('2026-02-01', 119.00, account_id=acct,
                                booking_type='bank')
     ok, err = link_booking_to_invoice_capped(tmp_db, inv, bk)
     assert ok, err
-    assert len(tmp_db.get_child_bookings_for_bank(bk)) == 1
+    kids = tmp_db.get_child_bookings_for_bank(bk)
+    assert len(kids) == 1
+    assert kids[0][4] == Decimal('119.0000')
 
 
 # ── Bankwirksamkeit ──────────────────────────────────────────────────────────

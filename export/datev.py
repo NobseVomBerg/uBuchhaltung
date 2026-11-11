@@ -37,6 +37,7 @@ dagegen der Richtung der Geldbewegung: Einnahme = Umsatzsteuer, Ausgabe = Vorste
 """
 import datetime
 
+from db.invoices import InvoicesMixin
 from db.matching import classify_entry, ENTRY_LIQUID_FIRST, ENTRY_TRANSFER
 
 # ─── Spaltenindizes ───────────────────────────────────────────────────────────
@@ -88,23 +89,34 @@ _ROW_DEFAULTS = {
 
 
 
+# BU-Schlüssel nach Steuersatz (auf zwei Stellen gerundete Prozent):
+# (Ausgabe/Vorsteuer, Einnahme/Umsatzsteuer)
+_BU_BY_RATE = {19.0: ('9', '3'), 7.0: ('8', '2'), 16.0: ('7', '5'), 5.0: ('6', '4')}
+
+
 def _taxrate_to_bu(tax_rate, sh: str = 'S') -> str:
     """TaxRate (float/None) + Zahlungsrichtung → DATEV BU-Schlüssel.
 
     ``sh`` meint die Richtung der Geldbewegung, nicht das S/H-Kennzeichen der
     Zeile (das hängt am Feld „Konto“ und kann umgekehrt sein):
 
-    S (Ausgabe/Vorsteuer): 19% → '9', 7% → '8'
-    H (Einnahme/Umsatzsteuer): 19% → '3', 7% → '2'
+    S (Ausgabe/Vorsteuer):     19 % → '9', 7 % → '8', 16 % → '7', 5 % → '6'
+    H (Einnahme/Umsatzsteuer): 19 % → '3', 7 % → '2', 16 % → '5', 5 % → '4'
+
+    Der Satz gilt exakt: Er steht als Bruch (0.19) oder als Prozentzahl (19) in den Büchern und
+    wird wie bei ``Database.resolve_revenue_coa`` auf zwei Stellen gerundete Prozent gebracht.
+    0, kein Satz und jeder andere Satz (auch 0.107) ergeben '0' – nie den Schlüssel eines anderen
+    Satzes.
+
+    Die Schlüssel für 16 % und 5 % (die befristeten Sätze von Juli bis Dezember 2020) sind, wie
+    alle BU-Schlüssel, noch nicht gegen einen echten Buchungsstapel geprüft (``docs/aufgaben.md``).
     """
     if tax_rate is None:
         return '0'
-    r = round(float(tax_rate), 4)
-    if r >= 0.19:
-        return '3' if sh == 'H' else '9'
-    if r >= 0.07:
-        return '2' if sh == 'H' else '8'
-    return '0'
+    keys = _BU_BY_RATE.get(InvoicesMixin._revenue_rate_key(float(tax_rate)))
+    if keys is None:
+        return '0'
+    return keys[1] if sh == 'H' else keys[0]
 
 
 def _fmt_amount(value) -> str:

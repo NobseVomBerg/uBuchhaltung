@@ -97,6 +97,30 @@ def round_minor(minor: int, dp: int = 2) -> int:
     return int((Decimal(int(minor)) / step).quantize(_ONE, rounding=ROUND_HALF_UP)) * step
 
 
+def prorate(total_minor: int, part_minor: int, whole_minor: int) -> int:
+    """Anteil ``part/whole`` von ``total`` in Minor Units, HALF_UP gerundet.
+
+    Beispiel: der Steueranteil einer Teilzahlung = prorate(Steuer, Teilzahlung, Brutto).
+    Exakt in Decimal, kein float.
+    """
+    return int((Decimal(int(total_minor)) * Decimal(int(part_minor)) / Decimal(int(whole_minor)))
+               .quantize(_ONE, rounding=ROUND_HALF_UP))
+
+
+PAID_RESIDUE = 10 ** (SCALE - 2)   # 0,01 EUR: ein Rest darunter gilt als beglichen
+
+
+def is_covered(total_minor: int, paid_minor: int) -> bool:
+    """Deckt ``paid`` den Betrag ``total`` – bis auf einen Rest unter einem Cent?
+
+    Vorzeichenbewusst: Eine Gutschrift (negativer Betrag) wird durch negative Zahlungen gedeckt.
+    Eine Zahlung in Gegenrichtung oder ohne Betrag deckt nie, ein Betrag von 0 ebenso wenig.
+    Die Überzahlung gilt als gedeckt.
+    """
+    sign = (total_minor > 0) - (total_minor < 0)
+    return paid_minor * sign > 0 and (total_minor - paid_minor) * sign < PAID_RESIDUE
+
+
 def tax_from_net(net_minor: int, rate) -> int:
     """Steuerbetrag aus Netto. rate als Prozentzahl (z.B. 19 oder 7)."""
     r = _to_decimal(rate)
