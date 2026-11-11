@@ -61,8 +61,9 @@ def _result_count(value):
 
 
 def _import_notices(result):
-    """Hinweise zu Vorzeichen und Konten 1000–1099 aus dem Ergebnis eines WISO-Imports (Text- und
-    Datenbank-Import melden beide ``negative_gross`` und ``stock_range_accounts``) als HTML."""
+    """Hinweise zu Vorzeichen, Konten 1000–1099 und älteren Überträgen aus dem Ergebnis eines
+    WISO-Imports (Text- und Datenbank-Import melden beide ``negative_gross``,
+    ``stock_range_accounts`` und ``legacy_mirrors``) als HTML."""
     s = ''
     negative = _result_count(result.get('negative_gross'))
     if negative:
@@ -75,13 +76,18 @@ def _import_notices(result):
     if accounts:
         s += (f'<h3>\u26a0\ufe0f Konten 1000&ndash;1099 &ndash; {len(accounts)}</h3>'
               '<p>Konten 1000&ndash;1099 sind im SKR04 Vorräte; ältere Versionen haben sie als '
-              'Kasse gelesen &ndash; bitte prüfen, ob hier eine Kasse gemeint ist.</p>'
+              'Kasse gelesen &ndash; bitte prüfen, ob hier eine Kasse gemeint ist. Buchungen gegen '
+              'diese Konten werden als Umbuchung gelesen und erscheinen nicht in der EÜR.</p>'
               '<table><tr><th>Konto</th><th>Bezeichnung</th><th>Buchungen</th></tr>')
         for row in accounts:
             s += (f'<tr><td>{_html.escape(str(row.get("nummer", "")))}</td>'
                   f'<td>{_html.escape(str(row.get("bezeichnung", "")))}</td>'
                   f'<td>{_html.escape(str(row.get("anzahl", "")))}</td></tr>')
         s += '</table>'
+    legacy = _result_count(result.get('legacy_mirrors'))
+    if legacy:
+        s += (f'<p>\u2139\ufe0f {legacy} ältere Überträge sind noch nach der alten Lesart '
+              'gespeichert; ihre Form und ihr Betrag wurden nicht verändert.</p>')
     return s
 
 
@@ -416,11 +422,6 @@ def PageMiscellaneous(db: Database, check_payments: bool = False):
                       f"<td>{_html.escape(str(_r.get('text','')))}</td></tr>")
             s += '</table>'
         s += _import_notices(_last_result)
-        _stamped = _result_count(_last_result.get('forms_stamped'))
-        if _stamped:
-            s += (f'<p>\u2705 {_stamped} Spiegelbuchungen aus einem früheren Import waren schon da '
-                  '(mit umgekehrtem Vorzeichen gespeichert): Sie wurden wiedererkannt und nicht '
-                  'doppelt angelegt.</p>')
         if _errors:
             s += f'<h3>\u274c Parse-Fehler &ndash; {len(_errors)} Einträge</h3><ul>'
             for _e in _errors:
@@ -557,11 +558,6 @@ def PageMiscellaneous(db: Database, check_payments: bool = False):
                 s += f'<p>Genannt werden die ersten {MAX_ADOPTED_ROWS}.</p>'
             s += '</details>'
         s += _import_notices(_fdb)
-        _stamped = _result_count(_fdb.get('forms_stamped'))
-        if _stamped:
-            s += (f'<p>\u2705 {_stamped} Spiegelbuchungen aus einem früheren Import haben ihre Form '
-                  'bekommen (Konto oder Gegenkonto als Seite des Betrags); sonst wurde nichts '
-                  'geändert.</p>')
         _conflict_rows = _fdb_result_rows(_fdb.get('form_conflicts'))
         if _conflict_rows:
             _conflict_count = _result_count(_fdb.get('form_conflicts_count')) or len(_conflict_rows)

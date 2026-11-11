@@ -32,7 +32,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from db.matching import FORM_LIQUID_FIRST, FORM_PURPOSE_FIRST, import_entry_form
+from db.matching import import_entry_form
 
 from .catalog import Catalog
 from .ods import OdsError, OdsFile
@@ -554,7 +554,7 @@ class WisoDatabase:
                         in ((source_account, account), (source_counter, counter))
                         if number is not None and mapped is None]
             amount, form = self._signed(gross, account, counter, liquid)
-            if float(gross) < 0 and form in (FORM_PURPOSE_FIRST, FORM_LIQUID_FIRST):
+            if float(gross) < 0 < amount:
                 self._negative_gross += 1          # genau eine Seite liquide: Vorzeichen ersetzt
             tax_rate = row.get('TAXRATE')
             tax_rate = tax_rate / 100.0 if tax_rate else None
@@ -585,10 +585,11 @@ class WisoDatabase:
         Gegenkonto liquide → Geld fließt ab (``purpose_first``, Betrag negativ); Konto liquide →
         Geld kommt an (``liquid_first``, Betrag positiv). Sind beide Seiten liquide, ist der Satz
         ein Spiegel: Der Rohbetrag bleibt, positiv heißt „Konto im Soll“ (``mirror_coa``).
-        Berührt keine Seite ein Zahlungskonto, bleibt der Betrag, wie er ist (``transfer``; mit
-        einer leeren Seite die Form, die ``classify_entry`` für den Satz ergäbe). Bei genau einer
-        liquiden Seite wird der Betrag zum Betrag der Geldbewegung: Ein negativer Bruttobetrag
-        verliert sein Vorzeichen (``bookings`` zählt das als ``negative_gross``).
+        Berührt keine Seite ein Zahlungskonto, bleibt der Betrag, wie er ist, und WISO meint
+        „Konto im Soll“ (``transfer``) – auch bei einer leeren oder unbekannten Seite. Bei genau
+        einer liquiden Seite wird der Betrag zum Betrag der Geldbewegung: Ein negativer
+        Bruttobetrag, der dabei positiv wird, verliert sein Vorzeichen (``bookings`` zählt das als
+        ``negative_gross``).
 
         Returns ``(Betrag, Form)``.
         """

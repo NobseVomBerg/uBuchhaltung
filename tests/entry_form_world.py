@@ -231,6 +231,29 @@ def build(db_path, cash_number=1600):
     return db
 
 
+def add_roundtrip_rows(db):
+    """Zeilen, die der Test „Öffnen und unverändert speichern“ zusätzlich braucht (``build`` bleibt, wie
+    es ist – die Sollwerte der Migration hängen daran): Sätze unter einer Bankbewegung, die das Konto
+    der Bank und ein Konto ohne eigenes Bankkonto (1460, 1050) zusammenführen, in beiden
+    Reihenfolgen, und eigenständige Sätze mit einem Geldkonto vorne, die der Editor als „vorhandene
+    Buchung“ anbietet. Roh geschrieben, ohne Form (wie 2.0.x): in einer migrierten Datenbank tragen
+    sie danach ihre Form, in einer frisch gebauten bleiben sie Zeilen ohne Form."""
+    alpha = _account_id(db, 'Giro Alpha')
+    for date, amount, rows in (
+            ('2026-07-01', '70.00', [('RT-1', 1800, 1460, '70.00')]),     # Bank an Verrechnungskonto
+            ('2026-07-02', '20.00', [('RT-2', 1800, 1050, '20.00')]),     # Bank an Konto 1050
+            ('2026-07-03', '-15.00', [('RT-3', 1460, 1800, '15.00')]),    # Verrechnungskonto an Bank
+            ('2026-07-04', '-25.00', [('RT-4', 1050, 1800, '25.00')]),    # Konto 1050 an Bank
+            ('2026-07-05', '30.00', [('RT-5', 1050, 4400, '30.00')])):    # Geldkonto 1050 vorne
+        bank = db.insert_booking(date, Decimal(amount), account_id=alpha, booking_type='bank',
+                                 text=f'Bewegung {date}')
+        for document, coa_number, counter_number, child_amount in rows:
+            _raw_entry(db, date, coa_number, counter_number, child_amount, document, parent=bank)
+    _raw_entry(db, '2026-07-06', 1810, 4400, '12.00', 'RT-7')              # Geldkonto Giro Beta vorne
+    _raw_entry(db, '2026-07-06', 1800, 4400, '11.00', 'RT-8')              # Geldkonto Giro Alpha vorne
+    _raw_entry(db, '2026-07-06', 1460, 4400, '9.00', 'RT-9')               # Verrechnungskonto vorne
+
+
 def to_state_2000(db_path):
     """Die Datenbank in den Stand zurückversetzen, den 2.0.x geschrieben hat: Spalte ``EntryForm`` und
     eindeutiger Index auf den Zahlungszuordnungen entfernt, ``PRAGMA user_version`` = 2000."""

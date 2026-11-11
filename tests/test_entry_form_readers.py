@@ -155,15 +155,49 @@ def test_an_account_created_after_the_import_does_not_turn_the_marker_around(db)
     assert datev_rows(db)['SP-1'][:4] == ('119,00', 'S', '6815', '1800')
 
 
-def test_a_negative_gross_stays_as_it_was_and_is_counted(db):
+def test_a_negative_gross_is_counted_only_where_the_import_replaced_its_sign(db):
     """Storno 6815 an 1800, brutto −119: Der Import nimmt das Vorzeichen der Geldbewegung (−119, wie
-    bisher) und meldet die Zeile; ein Storno wird so wie eine normale Buchung gelesen."""
+    bisher), das hier zufällig dem der Datei gleicht – nichts ersetzt, nichts gemeldet. Bei 1800 an
+    4400, brutto −50, dreht er das Vorzeichen ins Positive: Das wird gezählt (ein Storno wird so wie
+    eine normale Buchung gelesen)."""
     result = db.import_wiso_csv(csv_export(('6815', '1800', '-119,00', 'ST-1', KEY19),
-                                           ('6815', '1800', '119,00', 'AU-1', KEY19)))
+                                           ('6815', '1800', '119,00', 'AU-1', KEY19),
+                                           ('1800', '4400', '-50,00', 'ST-2', KEY19)))
 
     assert result['negative_gross'] == 1
     assert _by_ref(db)['ST-1'] == (minor('-119.00'), FORM_PURPOSE_FIRST)
     assert _by_ref(db)['AU-1'] == (minor('-119.00'), FORM_PURPOSE_FIRST)
+    assert _by_ref(db)['ST-2'] == (minor('50.00'), FORM_LIQUID_FIRST)
+
+
+def test_an_import_without_a_liquid_side_puts_the_account_in_the_debit(db):
+    """CSV „6815;1050;10“ (das Konto 1050 gibt es nicht): Keine Seite ist ein Zahlungskonto. WISO meint
+    „Konto im Soll“ – ``transfer`` mit dem Rohbetrag, DATEV **S** 6815 (früher als „Zweckkonto vorne“
+    gelesen: H 6815). Als eigenständiger Satz steht er in keiner Sektion der EÜR."""
+    result = db.import_wiso_csv(csv_export(('6815', '1050', '10,00', 'A6-1', KEY19)))
+
+    assert result['missing_counter_coa'] == [1050]
+    assert _by_ref(db)['A6-1'] == (minor('10.00'), FORM_TRANSFER)
+    assert datev_rows(db)['A6-1'][:3] == ('10,00', 'S', '6815')
+    assert euer(db) == {}
+
+
+def test_such_an_import_under_a_bank_movement_is_a_transfer_in_the_euer(db):
+    """Hängt der Satz an einer Bankbewegung, liest die EÜR ihn als Umbuchung: Das Konto bekommt −netto,
+    ein Vorsteuerausweis gibt es nicht (kein Zweckkonto). Früher, als Zahlung gelesen, stand 6815 mit
+    +8,40 und 1406 mit +1,60 darin – mit falschem Vorzeichen."""
+    db.import_wiso_csv(csv_export(('6815', '1050', '10,00', 'A6-1', KEY19)))
+    db.insert_booking('2026-01-02', Decimal('-10.00'), account_id=_bank_id(db), booking_type='bank')
+    assert db.link_bank_to_entries()['linked'] == 1
+
+    assert euer(db) == {6815: Decimal('-8.40')}
+
+
+def test_the_same_without_any_counter_account(db):
+    db.import_wiso_csv(csv_export(('6815', '', '10,00', 'A6-2', KEY19)))
+
+    assert _by_ref(db)['A6-2'] == (minor('10.00'), FORM_TRANSFER)
+    assert datev_rows(db)['A6-2'][:3] == ('10,00', 'S', '6815')
 
 
 # ── die Matrix aus der Analyse: Kasse mit 1600 (S1), ohne Nummer (S3), mit dem Verrechnungskonto (S4) ──
