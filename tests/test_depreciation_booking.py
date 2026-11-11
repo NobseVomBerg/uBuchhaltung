@@ -533,7 +533,8 @@ def test_depreciation_after_the_year_of_disposal_is_refused(world):
     db.book_depreciation(world.asset, 2026, None, world.expense, world.anlage)
     db.book_depreciation(world.asset, 2027, None, world.expense, world.anlage)
 
-    with pytest.raises(ValueError, match='liegt nach dem Abgang'):
+    with pytest.raises(ValueError,
+                       match=r'^AfA 2028 liegt nach dem Abgang der Anlage \(2027-06-30\)$'):
         db.book_depreciation(world.asset, 2028, None, world.expense, world.anlage)
 
     assert _count(db, 'Bookings') == 2
@@ -570,6 +571,25 @@ def test_expense_account_outside_4000_to_7999_is_refused(world, expense):
     with pytest.raises(ValueError, match='Aufwandskonto'):
         db.book_depreciation(world.asset, 2026, None, _coa(db, expense), world.anlage)
     assert _count(db, 'Bookings') == 0 and _plan_rows(db, world.asset) == []
+
+
+@pytest.mark.parametrize('expense, anlage, message', [
+    (1800, None, 'Konto 1800 Bank 0 ist kein Aufwandskonto (erlaubt: Konten 4000–7999)'),
+    (None, 1800, 'Konto 1800 Bank 0 ist kein Anlagekonto (erlaubt: Konten 1–999)'),
+    (999999, None, 'Konto-ID 999999 ist kein Aufwandskonto (erlaubt: Konten 4000–7999)'),
+    (None, 999999, 'Konto-ID 999999 ist kein Anlagekonto (erlaubt: Konten 1–999)'),
+], ids=['aufwand-bank', 'anlage-bank', 'aufwand-unbekannt', 'anlage-unbekannt'])
+def test_refusals_name_the_account_and_the_allowed_range(world, expense, anlage, message):
+    """Die Meldung nennt das Konto und den erlaubten Bereich – so steht sie auch im Handler (``err``)."""
+    db = world.db
+    expense_coa = world.expense if expense is None else expense if expense == 999999 else _coa(db, expense)
+    anlage_coa = world.anlage if anlage is None else anlage if anlage == 999999 else _coa(db, anlage)
+
+    with pytest.raises(ValueError) as refusal:
+        db.book_depreciation(world.asset, 2026, None, expense_coa, anlage_coa)
+
+    assert str(refusal.value) == message
+    assert _count(db, 'Bookings') == 0
 
 
 def test_unknown_account_ids_are_refused(world):
@@ -827,7 +847,8 @@ def test_depreciation_hung_on_an_equal_bank_movement_still_counts_once(world):
 @pytest.mark.parametrize('with_skr', [True, False], ids=['kasse-mit-skr', 'kasse-ohne-skr'])
 def test_old_depreciation_on_the_cash_account_is_no_cash_flow_and_counts_once(world, with_skr):
     """Alte AfA auf der Kasse: nicht im Dashboard (kein Geldfluss), in der EÜR genau einmal – nicht
-    in Sektion 2b und 3 zugleich. Ein gewöhnlicher Kassensatz daneben zählt in beiden."""
+    in Sektion 2b und 3 zugleich – und nur ohne Kontofilter (die AfA hängt an keinem Konto, auch nicht
+    an der Kasse). Ein gewöhnlicher Kassensatz daneben zählt in beiden."""
     db = world.db
     if not with_skr:
         _execute(db, 'UPDATE Accounts SET SKRAccount = NULL WHERE IsCash = 1')
@@ -836,6 +857,10 @@ def test_old_depreciation_on_the_cash_account_is_no_cash_flow_and_counts_once(wo
                       booking_type='entry')
 
     assert _euer(db) == {6220: Decimal('-600'), 6815: Decimal('-10')}
+    assert _euer(db, account_ids=[world.giro, world.kasse]) == {6220: Decimal('-600'),
+                                                                6815: Decimal('-10')}
+    assert _euer(db, account_ids=[world.kasse]) == {6815: Decimal('-10')}      # ohne die AfA
+    assert _euer(db, account_ids=[world.giro]) == {}
     totals = db.get_dashboard_totals(D1, D2)
     assert (totals['expense'], totals['bank_count']) == (-10.0, 1)
     december = db.get_dashboard_monthly(D1, D2)[11]
@@ -1083,7 +1108,8 @@ def test_plan_offers_no_booking_for_years_after_the_disposal(plan_asset):
     for year in (first, first + 1):                                  # bis einschließlich Abgangsjahr
         assert _has_form(plan[year], asset, year), year
     for year in (first + 2, first + 3):                              # danach: kein Knopf, kein Formular
-        assert 'AfA buchen' not in plan.get(year, '') and not _has_form(plan.get(year, ''), asset, year), year
+        assert '○ Nach Abgang' in plan[year], year
+        assert 'AfA buchen' not in plan[year] and not _has_form(plan[year], asset, year), year
 
 
 @pytest.mark.parametrize('how', STALE)
@@ -1201,5 +1227,6 @@ def test_form_forces_a_choice_when_the_asset_account_is_not_in_the_list(tmp_db):
 
     assert _selected(selects['asset_coa_id']) == []
     assert selects['asset_coa_id'][0] == ('', False) and '– bitte wählen –' in block
+    assert 'required' in re.search(r'<select name="asset_coa_id"[^>]*>', block).group(0)
     assert all(int(number) < 1000 for number, _ in selects['asset_coa_id'][1:])
     assert _selected(selects['coa_id']) == ['6220']
