@@ -122,7 +122,10 @@ kein Subagent darauf:
   `UBUCHHALTUNG_ALLOWED_HOSTS`
 - **Aktionen mit Seiteneffekt nie per GET:** Pfad in `_ACTION_PATHS` eintragen,
   Logik in `_post_action_routes`, im Frontend `appConfirmPost()`/`appPost()`
-  statt eines Links
+  statt eines Links. Mit eigener Antwort statt Weiterleitung: das Erzeugen von
+  Dokumenten (`_GENERATE_PATHS`, JSON, CSRF-Token als Header – im Frontend
+  `fetch(url, {method: 'POST'})`, das Footer-JS hängt das Token an) und Abmelden
+  (`POST /logout` neben `/login` in `_auth_routes_*`); GET → jeweils 405
 - **Automatische Anmeldung** (`auto_login` in `config.json`, `auth.auto_login_user()`):
   ein Administrator wird ohne Passwort angemeldet, Anmeldeseite und andere Benutzer
   sind so lange abgeschaltet – das ist der Betrieb für eine Person. Es gibt dann
@@ -169,6 +172,17 @@ kein Subagent darauf:
 - **JSON in `<script>`-Blöcken** nur über `pages.script_json`, nie über `json.dumps`
   allein: Ein `</script>` im Wert beendet den Block (XSS). In HTML-Attributen
   (`onclick="…"`) das Ergebnis zusätzlich durch `html.escape`
+- **Ausgabe:** Jeder Wert aus Datenbank oder Anfrage wird beim Einsetzen maskiert – in
+  HTML-Text und -Attributen mit `html.escape(str(wert), quote=True)`, in einem
+  `<script>`-Block nur über `pages.script_json`, in einer Adresse innerhalb von Inline-JS
+  mit `urllib.parse.quote(…, safe='')`. Im Browser-JS nie Daten per `innerHTML` oder
+  Template-String in HTML setzen, sondern `textContent`, `createElement`, `.value = …`.
+  Richtext (Einleitungs-/Schlusstext der Angebote) nur über die Positivliste
+  `richtext.sanitize_richtext` (b, strong, i, em, u, p, br, ul, ol, li, div, span, ohne
+  Attribute, höchstens 50 Ebenen tief): beim Speichern UND bei jeder Ausgabe – Formular wie
+  PDF-Satz –, auch für Altbestand. Jede Antwort trägt
+  `X-Content-Type-Options: nosniff` und `X-Frame-Options: DENY` (`end_headers`); die App
+  rahmt sich nicht selbst ein (PDFs öffnen als eigene Seite in einem neuen Tab)
 - **Wiederherstellen** (`server/backup.py`): Ein 7-Zip-Archiv wird vor dem Entpacken
   aufgelistet (`-t7z`, keine Links, keine absoluten oder `..`-Pfade), dann nach
   `backup/restore_*` entpackt, geprüft (keine Symlinks, Datenbank lesbar und nicht neuer
@@ -338,6 +352,24 @@ kein Subagent darauf:
 - **Heruntergeladen** wird immer die abgelegte Datei (`/invoice/pdf_download`,
   `/invoice/xml_download`) – nie eine frisch erzeugte. Fehlt sie, kommt 404 mit
   kurzem Klartext, den das Frontend direkt anzeigt
+- **Angebote** gelten genauso: `/quote/pdf_download` liefert nur die abgelegte PDF
+  (`quotes/<Jahr der Erzeugung>/<Angebots-Nr.> <Kunde>.pdf`), sonst 404 „Kein PDF
+  vorhanden – bitte zuerst erzeugen.“. **Erzeugt** wird nur per POST
+  (`/invoice/pdf_generate`, `/quote/pdf_generate`; GET → 405) – die Oberfläche
+  erzeugt zuerst und lädt dann. Der Stundenzettel (`/worktime/pdf`, GET) schreibt
+  nichts auf die Platte (`generate_worktime_pdf(store=False)`)
+- **Belegtyp:** Rechnungen und Angebote teilen sich die Tabelle `Invoices`; jede Rechnungs- und
+  jede Angebotsroute prüft den Typ (`Database.get_document`, `invoices.document_type`, beim
+  Schreiben `… AND DocumentType = …`) – die ID eines Belegs der anderen Art ergibt 404 bzw.
+  „Rechnung/Angebot nicht gefunden.“ und ändert, versendet und erzeugt nichts
+- **Gespeicherte Dokumentpfade** (`Invoices.PDFPath`/`XMLPath`) gelten nur innerhalb des
+  Dokumentordners des Benutzers (`<Datenordner>/invoices`, bei Angeboten `quotes`;
+  `export/invoice_files.path_in_documents`, aufgelöst mit `realpath`): Die Datenbank lässt
+  sich per SQL-Konsole oder zurückgespielter Sicherung ändern, sonst ließe sich darüber
+  jede lesbare Datei ausliefern oder löschen. Jede Stelle, die einen gespeicherten Pfad
+  öffnet oder löscht (Download, E-Mail-Anhang, `drop_stale_file`), geht darüber
+  (`stored_invoice_path`). Ein Pfad außerhalb gilt als nicht vorhanden (Fallback über das
+  Namensschema, sonst 404) und steht nur im Server-Log, nie in der Antwort
 - Im Browser läuft der Download über `appDownload()` (`server/pages.py`): Datei
   als Blob holen und per `<a download>` speichern. Kein Tab mit Server-URI –
   der wäre ohne laufenden Server wertlos. Der Dateiname kommt prozentkodiert

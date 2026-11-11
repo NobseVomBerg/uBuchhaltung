@@ -70,6 +70,16 @@ COUNTRIES = [
 ]
 
 
+ENTITY_TYPES = ('company', 'person')
+
+
+def _entity_type(value, default='company'):
+    """Art des Kontakts nur aus der Positivliste (``?entity=`` kommt aus der Adresse, ``EntityType``
+    aus der Datenbank): alles andere ergibt die Vorgabe. Der Wert steht in einem Attribut und in
+    einer JavaScript-Zeichenkette."""
+    return value if value in ENTITY_TYPES else default
+
+
 # ── Helper: option builders ───────────────────────────────────────────────────
 
 def _checkbox_grid(items, name, active_keys, wide=False):
@@ -177,6 +187,8 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
       30=is_primary_contact, 31=role_keys
     """
 
+    entity_type = _entity_type(entity_type)
+
     def g(idx, default=''):
         if c is None:
             return default
@@ -233,6 +245,8 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
     # Felder, die Auswahl-Helfer speisen (legal_form, country, salutation) oder
     # IDs/Flags sind, bleiben bewusst roh, damit Options-Matching/Logik stimmt.
     _esc = _html.escape
+    contact_id_val    = _esc(str(contact_id_val))
+    date_of_birth     = _esc(str(date_of_birth))
     customer_number   = _esc(str(customer_number))
     display_name_val  = _esc(str(display_name_val))
     abbreviation      = _esc(str(abbreviation))
@@ -473,24 +487,34 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
             const feedback = document.getElementById('abbreviation_feedback');
             if (!abbr || !feedback) return;
             const value = abbr.value.trim();
-            if (!value) {{ feedback.innerHTML = ''; abbr.style.borderColor = ''; return; }}
+            if (!value) {{ feedback.textContent = ''; abbr.style.borderColor = ''; return; }}
             const excludeId = '{contact_id_val}';
             const url = '/masterdata/contacts/check-abbreviation?value=' + encodeURIComponent(value)
                         + (excludeId ? '&exclude_id=' + excludeId : '');
             fetch(url)
                 .then(r => r.json())
                 .then(data => {{
+                    feedback.textContent = '';
                     if (data.exists) {{
-                        feedback.innerHTML = '&#x26A0; Bereits vergeben &rarr; <a href="#" onclick="useAbbrevSuggestion(\\'' + data.suggestion + '\\');return false;">' + data.suggestion + '</a>';
+                        // Der Vorschlag ist vom eingegebenen Kürzel abgeleitet: nur als Text einsetzen
+                        feedback.appendChild(document.createTextNode('\\u26A0 Bereits vergeben \\u2192 '));
+                        const link = document.createElement('a');
+                        link.href = '#';
+                        link.textContent = data.suggestion;
+                        link.addEventListener('click', function(ev) {{
+                            ev.preventDefault();
+                            useAbbrevSuggestion(data.suggestion);
+                        }});
+                        feedback.appendChild(link);
                         feedback.style.color = '#c00';
                         abbr.style.borderColor = '#c00';
                     }} else {{
-                        feedback.innerHTML = '&#x2713;';
+                        feedback.textContent = '\\u2713';
                         feedback.style.color = 'green';
                         abbr.style.borderColor = '';
                     }}
                 }})
-                .catch(() => {{ feedback.innerHTML = ''; }});
+                .catch(() => {{ feedback.textContent = ''; }});
         }}
 
         function useAbbrevSuggestion(s) {{
@@ -567,17 +591,20 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
     s += Header3(header3)
 
     if error_msg:
-        s += f'<div class="msg-error" style="margin:8px 16px;">{error_msg}</div>'
+        # error_msg kommt aus der Adresse (?error=): nur als JSON in den Skriptblock, nie roh in die Seite
+        from server.pages import script_json
+        s += ('<script>document.addEventListener("DOMContentLoaded",function(){'
+              'appMsg(' + script_json(error_msg) + ',"error");});</script>')
 
     # ── Formular bestimmen (rechte Spalte): Bearbeiten oder Neu ──────────────
     edit_contact = db.get_contact_by_id(edit_contact_id) if edit_contact_id else None
     if edit_contact:
         entity_type = 'company'
         try:
-            entity_type = edit_contact[15] or 'company'
+            entity_type = _entity_type(edit_contact[15])
         except (IndexError, TypeError):
             pass
-        display_name_shown = edit_contact[3] or '–'
+        display_name_shown = _html.escape(str(edit_contact[3] or '–'))
         form_title = f'Kontakt bearbeiten: <em>{display_name_shown}</em>'
         form_html = _contact_form(
             db, form_action='/masterdata/contacts/update', entity_type=entity_type,
@@ -585,7 +612,7 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
             extra_hidden=f'<input type="hidden" name="contact_id" value="{edit_contact_id}">',
         )
     else:
-        entity_type  = new_entity_type or 'company'
+        entity_type  = _entity_type(new_entity_type)
         entity_label = "<span style=\"font-size: 0.8em;\">🏢</span> Unternehmen</span>" if entity_type == 'company' else "<span style=\"font-size: 0.8em;\">👤 Person</span>"
         form_title   = f'Neuer Kontakt: {entity_label}'
         form_html    = _contact_form(db, form_action='/masterdata/contacts/add',
@@ -620,7 +647,7 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
                     st = normalize_status(inv[3])
                     s += (f'<tr><td><a href="/invoice/edit?id={inv[0]}">'
                           f'{_html.escape(str(inv[1] or inv[0]))}</a></td>'
-                          f'<td>{inv[2] or "–"}</td>'
+                          f'<td>{_html.escape(str(inv[2] or "–"))}</td>'
                           f'<td>{_html.escape(INVOICE_STATUS_LABELS.get(st, st))}</td>'
                           f'<td style="text-align:right;">{fmt_eur(inv[4])}</td></tr>')
                 s += '</table>'
@@ -630,7 +657,7 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
                 for c in items['credits']:
                     s += (f'<tr><td><a href="/transactions/edit?id={c[0]}">#{c[0]}</a> '
                           f'{_html.escape(str(c[2] or ""))}</td>'
-                          f'<td>{c[1] or "–"}</td>'
+                          f'<td>{_html.escape(str(c[1] or "–"))}</td>'
                           f'<td style="text-align:right;">{fmt_eur(c[5])}</td></tr>')
                 s += '</table>'
             saldo = items['saldo']
@@ -649,17 +676,20 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
           "<th>Kd-Nr.</th><th>Kürzel</th><th>Position / Firma</th><th>E-Mail</th><th>Telefon</th><th>Aktionen</th></tr>")
 
     for c in contacts:
+        # Alles aus der Datenbank steht maskiert in der Tabelle (Import und Formular nehmen
+        # beliebigen Text an)
+        _e = _html.escape
         cid              = c[0]
         c_type           = c[1] or 'customer'
-        cust_nr          = c[2] or ''
-        display_name     = c[3] or '–'
-        company_name     = c[4] or ''
-        email            = c[9] or ''
-        phone            = c[10] or ''
+        cust_nr          = _e(str(c[2] or ''))
+        display_name     = _e(str(c[3] or '–'))
+        company_name     = _e(str(c[4] or ''))
+        email            = _e(str(c[9] or ''))
+        phone            = _e(str(c[10] or ''))
         entity_type_row  = c[15] if len(c) > 15 else 'company'
-        abbreviation_val = c[26] if len(c) > 26 else ''
+        abbreviation_val = _e(str(c[26] or '')) if len(c) > 26 else ''
         type_keys_raw    = c[27] if len(c) > 27 else ''
-        job_title_val    = c[28] if len(c) > 28 else ''
+        job_title_val    = _e(str(c[28] or '')) if len(c) > 28 else ''
         entity_icon      = "🏢" if entity_type_row == 'company' else "👤"
 
         # Typ-Tags (aus ContactTypeLinks; für 'own' Fallback)
@@ -669,12 +699,12 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
         elif type_keys_raw:
             type_tags = ' '.join(
                 #f'<span style="background:#f1f3f4;padding:1px 6px;border-radius:3px;font-size:.85em;">{type_labels.get(tk.strip(), tk.strip())}</span>'
-                f'<small>{type_labels.get(tk.strip(), tk.strip())}</small>'
+                f'<small>{_e(type_labels.get(tk.strip(), tk.strip()))}</small>'
                 for tk in type_keys_raw.split(',') if tk.strip()
             )
         else:
             #type_tags = f'<span style="color:#999;font-size:.85em;">{type_labels.get(c_type, c_type)}</span>'
-            type_tags = f'<small>{type_labels.get(c_type, c_type)}</small>'
+            type_tags = f'<small>{_e(str(type_labels.get(c_type, c_type)))}</small>'
 
         # Positions/Firma-Spalte
         if entity_type_row == 'person':

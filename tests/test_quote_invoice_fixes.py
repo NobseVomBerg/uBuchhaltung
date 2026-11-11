@@ -28,7 +28,7 @@ def test_invoice_tax_rate_nan_safe(db_with_coa):
     assert _BUGGY_INV not in html
 
 
-def _make_doc(db, tax_rate, number):
+def _make_doc(db, tax_rate, number, document_type='invoice'):
     """Minimale Rechnung/Angebot (gleiche Tabelle) mit gegebenem Steuersatz."""
     return db.insert_invoice({
         'invoice_number': number, 'invoice_date': '2026-06-01',
@@ -36,6 +36,7 @@ def _make_doc(db, tax_rate, number):
         'buyer_name': 'B', 'buyer_company': 'B GmbH',
         'tax_rate': tax_rate, 'sum_net': 0, 'tax_amount': 0,
         'sum_gross': 0, 'amount_due': 0, 'status': 'draft',
+        'document_type': document_type,
     })
 
 
@@ -52,7 +53,7 @@ def test_invoice_tax_prefill_from_stored_value(db_with_coa):
 
 
 def test_quote_tax_prefill_from_stored_value(db_with_coa):
-    qid = _make_doc(db_with_coa, 0, 'QTAX-0')
+    qid = _make_doc(db_with_coa, 0, 'QTAX-0', 'quote')   # das Angebotsformular zeigt nur Angebote
     html = PageQuote(db_with_coa, {}, qid)
     assert 'id="tax_rate" value="0"' in html
     assert '__TAX_PCT__' not in html

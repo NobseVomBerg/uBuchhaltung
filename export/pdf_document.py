@@ -307,7 +307,13 @@ def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross
 # ── Fließtext (Einleitungs-/Schlusstext, Phase 1: fett/kursiv + Umbruch) ───────
 
 def _richtext_paragraphs(html_text):
-    """contenteditable-HTML in Absätze aus (text, bold, italic)-Runs zerlegen."""
+    """contenteditable-HTML in Absätze aus (text, bold, italic)-Runs zerlegen.
+
+    Der Text läuft zuerst durch die Positivliste (``richtext.sanitize_richtext``): Altbestand
+    und Importe kommen roh aus der Datenbank, und reiner Text mit einem ``<`` (Zahlungstext
+    „<14 Tagen“) bliebe sonst als vermeintliches Tag auf der Strecke."""
+    from richtext import sanitize_richtext
+    html_text = sanitize_richtext(html_text)
     if not html_text:
         return []
     t = re.sub(r'(?i)<\s*br\s*/?>', '\n', html_text)
