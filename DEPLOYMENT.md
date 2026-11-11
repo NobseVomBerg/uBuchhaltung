@@ -312,11 +312,11 @@ dort genannten Endungen `UBUCHHALTUNG_ALLOWED_HOSTS` auf der Instanz setzen).
   `UBUCHHALTUNG_MCP_PASSWORD` im Klartext – nur zusammen mit `UBUCHHALTUNG_MCP_USER`.
 - HTTPS mit eigenem Zertifikat: `UBUCHHALTUNG_MCP_CAFILE` auf die Zertifikatsdatei (PEM)
   zeigen lassen, in der Registrierung zusätzlich `--env UBUCHHALTUNG_MCP_CAFILE=<Pfad>`.
-- Weitere Variablen: `UBUCHHALTUNG_MCP_CREDENTIAL` (Zielname im Tresor bzw. keyring-Dienst,
+- Weitere Variablen: `UBUCHHALTUNG_MCP_CREDENTIAL` (Zielname in der Anmeldeinformationsverwaltung bzw. keyring-Dienst,
   Standard `uBuchhaltung-MCP`), `UBUCHHALTUNG_MCP_TIMEOUT` (Sekunden je Anfrage, Standard 30)
   und `UBUCHHALTUNG_MCP_ALLOW_HTTP` (`1`/`true`/`yes`/`ja`: Zugangsdaten bewusst über
   unverschlüsseltes `http://` an einen fremden Rechner senden).
-- Meldet der Server „Tresoreintrag ist kein UTF-16-Text“, den Eintrag mit `cmdkey` neu
+- Meldet der Server „Eintrag in der Anmeldeinformationsverwaltung ist kein UTF-16-Text“, den Eintrag mit `cmdkey` neu
   anlegen (Schritt 1).
 
 ## Umzug auf Version 2

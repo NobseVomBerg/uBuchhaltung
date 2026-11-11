@@ -48,7 +48,7 @@ Anmeldung, meldet das Werkzeug einen Fehler mit Einrichtungshinweis.
 
 Einrichtung (Windows, PowerShell):
 
-1. Zugangsdaten ablegen (fragt das Passwort ab; es liegt dann verschlüsselt im Windows-Tresor)::
+1. Zugangsdaten ablegen (fragt das Passwort ab; es liegt dann verschlüsselt in der Windows-Anmeldeinformationsverwaltung)::
 
        cmdkey /generic:uBuchhaltung-MCP /user:<Benutzer> /pass
 
@@ -269,14 +269,14 @@ def check_page_path(path):
 
 # ── Zugangsdaten ─────────────────────────────────────────────────────────────
 def _decode_credential_blob(raw):
-    """Passwort-Blob eines Tresoreintrags (UTF-16-LE) als Text; ein abschließendes Nullzeichen entfällt.
+    """Passwort-Blob eines Eintrags der Anmeldeinformationsverwaltung (UTF-16-LE) als Text; ein abschließendes Nullzeichen entfällt.
 
     Die Fehlermeldung nennt weder Bytes noch Länge – sonst gäbe sie Teile des Passworts preis.
     """
     try:
         text = raw.decode("utf-16-le")
     except UnicodeDecodeError:
-        raise ValueError("Tresoreintrag ist kein UTF-16-Text – bitte mit cmdkey neu anlegen") from None
+        raise ValueError("Eintrag in der Anmeldeinformationsverwaltung ist kein UTF-16-Text – bitte mit cmdkey neu anlegen") from None
     return text[:-1] if text.endswith("\x00") else text
 
 
@@ -329,7 +329,7 @@ def _read_windows_credential(target):
 
 
 def load_credentials(env):
-    """(Benutzer, Passwort) aus Umgebung, Windows-Tresor oder keyring; sonst ``(None, None)``."""
+    """(Benutzer, Passwort) aus Umgebung, Windows-Anmeldeinformationsverwaltung oder keyring; sonst ``(None, None)``."""
     target = (env.get("UBUCHHALTUNG_MCP_CREDENTIAL") or "").strip() or DEFAULT_CREDENTIAL
     user = (env.get("UBUCHHALTUNG_MCP_USER") or "").strip() or None
     password = env.get("UBUCHHALTUNG_MCP_PASSWORD") or None

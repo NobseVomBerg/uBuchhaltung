@@ -5,7 +5,7 @@
 
 Fünf Teile:
   1. Wächter für SQL und Seitenpfade, HTML-Umwandlung, Kürzung (reine Funktionen),
-  2. Zugangsdaten (Umgebung, Windows-Tresor, keyring),
+  2. Zugangsdaten (Umgebung, Windows-Anmeldeinformationsverwaltung, keyring),
   3. MCP-Protokoll über ``Server.handle``/``serve`` (ohne Instanz),
   4. die Werkzeuge gegen einen echten Server auf 127.0.0.1 (Anmeldung mit Passwort, abgelaufene
      Sitzung, automatische Anmeldung, falsches Passwort, Nachweis „nichts wird geschrieben“),
@@ -46,7 +46,7 @@ TOOL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
                          "tools", "mcp_ubuchhaltung.py")
 WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32",
                                   reason="Windows-Anmeldeinformationsverwaltung")
-# Ein Tresorziel, das es garantiert nicht gibt: Auf einem Entwicklungsrechner mit eingerichtetem
+# Ein Zielname in der Anmeldeinformationsverwaltung, den es garantiert nicht gibt: Auf einem Entwicklungsrechner mit eingerichtetem
 # Eintrag "uBuchhaltung-MCP" läse der Standardname sonst echte Zugangsdaten.
 NO_SUCH_ENTRY = f"nicht-vorhanden-{uuid.uuid4()}"
 
@@ -451,7 +451,7 @@ def test_a_broken_vault_blob_is_reported_without_revealing_any_byte(raw):
     with pytest.raises(ValueError) as caught:
         mcp._decode_credential_blob(raw)
     message = str(caught.value)
-    assert message == "Tresoreintrag ist kein UTF-16-Text – bitte mit cmdkey neu anlegen"
+    assert message == "Eintrag in der Anmeldeinformationsverwaltung ist kein UTF-16-Text – bitte mit cmdkey neu anlegen"
     assert not re.search(r"\d|0x|position", message.replace("UTF-16", ""))       # weder Byte noch Länge
     assert caught.value.__suppress_context__                                    # und kein Zwischenfehler in der Kette
 
@@ -462,7 +462,7 @@ def test_a_broken_vault_entry_is_a_tool_error_with_that_message(monkeypatch):
     monkeypatch.setattr(mcp, "_read_windows_credential", broken)
     text, is_error = call(mcp.Server(env={"UBUCHHALTUNG_MCP_URL": "https://nas.local"}), "info")
     assert is_error
-    assert text == "Tresoreintrag ist kein UTF-16-Text – bitte mit cmdkey neu anlegen"
+    assert text == "Eintrag in der Anmeldeinformationsverwaltung ist kein UTF-16-Text – bitte mit cmdkey neu anlegen"
 
 
 @pytest.mark.parametrize("value, expected", [
