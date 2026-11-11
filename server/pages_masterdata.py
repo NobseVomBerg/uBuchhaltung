@@ -498,7 +498,7 @@ def PageSkrEdit(db: Database, id):
 # BANK ACCOUNTS (Bankkonten)
 # ══════════════════════════════════════════════════════════════════════
 
-def PageBankAccounts(db: Database, edit_id=None):
+def PageBankAccounts(db: Database, edit_id=None, error=None):
     """Bankkonten (Stammdaten): Übersicht links, Inline-Formular rechts.
 
     Kasse-Konten sind bis auf das SKR-Gegenkonto schreibgeschützt (Name/Typ
@@ -614,13 +614,18 @@ def PageBankAccounts(db: Database, edit_id=None):
         }
     </script>
     '''
+    if error:
+        from server.pages import script_json
+        # error kommt aus der Adresse: nur als JSON in den Skriptblock
+        s += ("<script>document.addEventListener('DOMContentLoaded',function(){"
+              f"appMsg({script_json(error)},'error');}});</script>")
     s += Footer()
     return s
 
 
-def PageBankAccountEdit(db: Database, account_id):
+def PageBankAccountEdit(db: Database, account_id, error=None):
     """Thin-Wrapper – Inline-Bearbeiten in der kombinierten Bankkonten-Seite."""
-    return PageBankAccounts(db, edit_id=account_id)
+    return PageBankAccounts(db, edit_id=account_id, error=error)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
