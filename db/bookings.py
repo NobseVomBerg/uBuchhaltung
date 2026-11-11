@@ -603,7 +603,8 @@ class BookingsMixin:
 
         Bereinigt vor dem Löschen alle referenzierenden Zeilen:
         BookingDocuments und InvoicePayments werden gelöscht,
-        Assets.Booking_ID und AssetDepreciations.Booking_ID werden auf NULL gesetzt.
+        Assets.Booking_ID wird auf NULL gesetzt. Eine AfA-Planzeile verliert ihre Buchung
+        und geht zurück auf 'planned' – das Jahr lässt sich neu buchen.
         Rechnungen gelöschter Zahlungen werden neu berechnet (AmountDue/Status),
         damit keine verwaisten "bezahlt"-Zustände zurückbleiben (todo #2).
         """
@@ -623,7 +624,8 @@ class BookingsMixin:
         cursor.execute(f'DELETE FROM BookingDocuments WHERE Booking_ID IN ({placeholders})', all_ids)
         cursor.execute(f'DELETE FROM InvoicePayments WHERE BookingID IN ({placeholders})', all_ids)
         cursor.execute(f'UPDATE Assets SET Booking_ID = NULL WHERE Booking_ID IN ({placeholders})', all_ids)
-        cursor.execute(f'UPDATE AssetDepreciations SET Booking_ID = NULL WHERE Booking_ID IN ({placeholders})', all_ids)
+        cursor.execute(f"UPDATE AssetDepreciations SET Booking_ID = NULL, Status = 'planned', "
+                       f"BookedAt = NULL WHERE Booking_ID IN ({placeholders})", all_ids)
 
         if child_ids:
             child_placeholders = ','.join('?' * len(child_ids))

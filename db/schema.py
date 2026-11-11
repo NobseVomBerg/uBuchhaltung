@@ -7,6 +7,7 @@ import os
 import json
 from decimal import Decimal
 from money import to_minor, from_minor
+from .accounts import DEFAULT_CASH_ACCOUNT
 
 
 class SchemaTooNewError(RuntimeError):
@@ -645,15 +646,22 @@ class SchemaMixin:
         self._seed_asset_categories()
         self._seed_tax_keys()
     def ensure_kasse_exists(self):
-        """Ensure the default 'Kasse' account exists and cannot be deleted"""
+        """Ensure the default 'Kasse' account exists and cannot be deleted.
+
+        Eine neu angelegte Kasse bekommt das Kassenkonto 1600 (SKR04); fehlt es im
+        Kontenrahmen, wird es nachgelegt. Eine vorhandene Kasse bleibt unverändert,
+        mit oder ohne SKR-Nummer."""
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*) FROM Accounts WHERE IsCash = 1')
         count = cursor.fetchone()[0]
-        if count == 0:
-            cursor.execute('''
-                INSERT INTO Accounts (Name, Owner, Number, BIC, BankName, IsCash)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', ("Kasse", "", "", "", "", 1))
-            conn.commit()
         conn.close()
+        if count == 0:
+            self.ensure_cash_coa()
+            conn = self._get_connection()
+            conn.execute('''
+                INSERT INTO Accounts (Name, Owner, Number, BIC, BankName, IsCash, SKRAccount)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', ("Kasse", "", "", "", "", 1, DEFAULT_CASH_ACCOUNT))
+            conn.commit()
+            conn.close()

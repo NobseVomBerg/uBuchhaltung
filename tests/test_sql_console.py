@@ -5,7 +5,8 @@
 
 Drei Teile:
   1. handle_execute_sql(): Der SQLite-Authorizer sperrt ATTACH, DETACH, VACUUM (auch
-     VACUUM INTO) und das Setzen von PRAGMAs bis auf wenige Namen; alles andere läuft
+     VACUUM INTO) und alle PRAGMAs außer einer Positivliste (lesende ohne Argument,
+     wenige mit Argument – auch als pragma_…-Tabellenfunktion); alles andere läuft
      in der eigenen Datenbank wie bisher,
   2. auth.sql_console_allowed(): ohne eingerichtete Installation immer, danach nur
      Administratoren,
@@ -32,8 +33,9 @@ from server import handlers
 from tests import installation
 from tests.http_client import get, post
 
-CONSOLE_DENIED = ("nicht erlaubt – ATTACH, DETACH, VACUUM und das Setzen von PRAGMAs "
-                  "sind in der Konsole gesperrt")
+CONSOLE_DENIED = ("nicht erlaubt – ATTACH, DETACH, VACUUM sowie verändernde oder unbekannte "
+                  "PRAGMAs sind in der Konsole gesperrt, ebenso die Funktionen fts3_tokenizer "
+                  "und load_extension")
 ADMIN_ONLY = "Die SQL-Konsole steht nur Administratoren zur Verfügung."
 NOTICE = "nur Administratoren zur Verfügung"                     # Hinweis statt der Konsole
 EXPORT_HINT = "Die Datei kann direkt im SQL-Konsolenbereich eingefügt werden."

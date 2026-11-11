@@ -79,29 +79,38 @@ class SeedMixin:
         conn.close()
         return ids
 
+    def _get_payment_coa_ids(self, cursor):
+        """``get_payment_coa_ids`` über einen vorhandenen Cursor (für Auswertungen,
+        die ihre Verbindung selbst führen)."""
+        from importers.wiso_fdb import DEFAULT_LIQUID_ACCOUNTS
+        ids = set(self._get_bank_coa_ids(cursor))
+        numbers = sorted(DEFAULT_LIQUID_ACCOUNTS)
+        placeholders = ','.join('?' * len(numbers))
+        cursor.execute(
+            f'SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN ({placeholders})', numbers)
+        ids.update(row[0] for row in cursor.fetchall())
+        return ids
+
     def get_payment_coa_ids(self):
-        """COA-IDs aller Zahlungskonten: eigene Bank-/Kassenkonten, dazu die Nummern,
-        die die Importe fest als liquide behandeln (1000–1099 und das Verrechnungskonto
-        1460).
+        """COA-IDs aller Zahlungskonten: die eigenen Bank-/Kassenkonten (die Standard-Kasse
+        trägt SKR04 1600) plus die Nummern, die die Importe fest als liquide behandeln
+        (``importers.wiso_fdb.DEFAULT_LIQUID_ACCOUNTS``: 1000–1099 und das
+        Verrechnungskonto 1460 als Geldtransit).
 
         Das ist die Menge, an der beide WISO-Importe das Vorzeichen eines Satzes
-        ausrichten (``importers.wiso_fdb.DEFAULT_LIQUID_ACCOUNTS``): Steht eines dieser
-        Konten auf einer Seite, trägt der Betrag die Richtung der Geldbewegung. Der
-        DATEV-Export braucht dieselbe Menge, um Soll und Haben richtig abzulesen. Die
-        EÜR nimmt bewusst nur ``get_bank_coa_ids`` – Geld auf dem Verrechnungskonto ist
-        noch nicht geflossen.
+        ausrichten: Steht eines dieser Konten auf einer Seite, trägt der Betrag die
+        Richtung der Geldbewegung. Die Kasse der App zählt über ihr eigenes Konto
+        (``Accounts.SKRAccount``) – wie die Bankkonten –, nicht über einen festen Bereich:
+        Hat die Kasse keine SKR-Nummer, ist 1600 kein Zahlungskonto. 1000–1099
+        (SKR03-Kassenbereich) ist historisch und bleibt, weil vorhandene Bestände ihr
+        Vorzeichen daran ausgerichtet haben. Dieselbe Menge nehmen der DATEV-Export, die
+        Buchungsmaske beim Bearbeiten und die EÜR (``get_euer_data``) – ob ein Satz dort
+        zählt, entscheidet die Sektion, in der er steht, nicht die Menge. Nur die
+        Split-Summe und die Verknüpfung rechnen noch mit ``get_bank_coa_ids``.
         """
-        from importers.wiso_fdb import DEFAULT_LIQUID_ACCOUNTS
         conn = self._get_connection()
         try:
-            cursor = conn.cursor()
-            ids = set(self._get_bank_coa_ids(cursor))
-            numbers = sorted(DEFAULT_LIQUID_ACCOUNTS)
-            placeholders = ','.join('?' * len(numbers))
-            cursor.execute(
-                f'SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN ({placeholders})', numbers)
-            ids.update(row[0] for row in cursor.fetchall())
-            return ids
+            return self._get_payment_coa_ids(conn.cursor())
         finally:
             conn.close()
 
