@@ -373,12 +373,14 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
   frei (Guthaben beim Kontakt; der DATEV-Export bleibt gesperrt, bis er kontiert ist).
 - **Erlöskonto:** Es ergibt sich aus der Rechnung (`resolve_revenue_coa`: gelernt, sonst 4400 bei
   19 %, 4300 bei 7 %, 4185 steuerfrei/§ 19). **Gelernt wird nur aus den markierten Sätzen** der
-  Zuordnungen (`Status='invoice_payment'`) von Rechnungen mit demselben Steuersatz: beim Satz „Wartekonto
-  an Erlöskonto“ das Gegenkonto, beim Einzelsatz „Erlöskonto an Bank“ das Konto; der jüngste Satz
-  gewinnt. Das Ergebnis gilt nur, wenn es ein Erlöskonto 4000–4999 (`REVENUE_ACCOUNT_RANGE`) und kein
-  Wartekonto (4340/4345/4405) ist, sonst greift das Standardkonto. Das Konto der Bankzeile (der
-  Anzeige-Backfill) und die Sätze des WISO-Imports lehren nichts: Dort kann ein Bank-, Aufwands- oder
-  Wartekonto stehen. Nur wenn für den Satz kein Konto hinterlegt ist – z. B. bei 5 % oder 16 % ohne
+  Zuordnungen (`Status='invoice_payment'`) von Rechnungen mit demselben Steuersatz, und nur in der Form,
+  in der die App sie schreibt: bei der Umbuchung „Wartekonto an Erlöskonto“ (`COA` ist ein Wartekonto)
+  das Gegenkonto, beim Einzelsatz „Erlöskonto an Bank“ (das Gegenkonto ist ein Zahlungskonto) das Konto;
+  der jüngste Satz gewinnt. Ein Satz, den ein Nutzer im Split-Editor in eine andere Form gebracht hat
+  (aus „4405 an 4400“ wurde „4736 an 4400“), lehrt nichts. Das Ergebnis gilt nur, wenn es ein
+  Erlöskonto 4000–4999 (`REVENUE_ACCOUNT_RANGE`) und kein Wartekonto (4340/4345/4405) ist, sonst
+  greift das Standardkonto. Das Konto der Bankzeile (der Anzeige-Backfill) und die Sätze des
+  WISO-Imports lehren nichts: Dort kann ein Bank-, Aufwands- oder Wartekonto stehen. Nur wenn für den Satz kein Konto hinterlegt ist – z. B. bei 5 % oder 16 % ohne
   Historie – wählt der Nutzer es (`revenue_coa_id`, im Formular „Erlöskonto“): ein vorhandenes
   Erlöskonto (`get_revenue_coas`, kein Wartekonto), sonst lehnt `assign_invoice_payment` ab – die
   Prüfung liegt in der DB-Schicht. Ist ein Konto hinterlegt, wird die Wahl ignoriert.
@@ -419,9 +421,11 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
   `delete_transaction` hängt eine als Kind vorgefundene Forderung ab, statt sie zu löschen. Die Regel
   steht an einer Stelle (`db.matching.receivable_condition`): Der Satz führt Debitoren (10000) im **Soll**
   – nach der Vorzeichenregel der Umbuchungen `COA` = 10000 bei Betrag > 0 oder Gegenkonto = 10000 bei
-  Betrag < 0 – und hat auf keiner Seite ein Zahlungskonto. Was 10000 im Haben führt (die Zahlung „Bank an
-  10000“, Erlösminderung, Skonto, Forderungsverlust „… an 10000“), ist keine Forderung; solche Sätze
-  gehören zur Bewegung und werden mit ihr gelöscht. Auch `assign_invoice_payment` und
+  Betrag < 0; bei einer **Gutschrift** (Rechnung mit negativem Brutto) bucht die App „10000 an Wartekonto“
+  mit negativem Betrag, dann gilt auch `COA` = 10000 mit Betrag < 0, sofern die Beleg-Nr. die Nummer einer
+  Rechnung mit negativem Brutto ist – und hat auf keiner Seite ein Zahlungskonto. Was 10000 im Haben
+  führt (die Zahlung „Bank an 10000“, Erlösminderung, Skonto, Forderungsverlust „… an 10000“), ist
+  keine Forderung; solche Sätze gehören zur Bewegung und werden mit ihr gelöscht. Auch `assign_invoice_payment` und
   `get_receivable_booking` suchen die Forderung so (nicht „erster Satz mit Konto 10000“, der einen
   WISO-Storno „10000 an 1810“ träfe). Stufe 7 des Auto-Abgleichs setzt die Forderung erst auf
   `resolved`, wenn die Summe der Sätze „… an 10000“ mit gleicher Beleg-Nr. den Forderungsbetrag erreicht

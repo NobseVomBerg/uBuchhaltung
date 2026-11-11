@@ -40,7 +40,7 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
 - SKR07 (Österreich) erst, wenn die Steuerlogik dafür ansteht (andere Voranmeldung und Gewinnermittlung) – bewusst später
 
 ## Fehler & Technik
-- DATEV-Export vor der ersten Weitergabe ans Steuerbüro gegen einen echten Buchungsstapel prüfen. Bekannt:
+- DATEV-Export vor der ersten Weitergabe ans Steuerbüro gegen einen echten Buchungsstapel prüfen (inkl. der BU-Schlüssel für 16 %/5 %). Bekannt:
   - Forderung (10000/4405) und Umbuchung bei Zahlung (4405/4400) tragen beide einen Steuerschlüssel → je bezahlter Rechnung zweimal Umsatzsteuer
   - der BU-Schlüssel folgt der Geldrichtung statt der Art des Kontos (Erstattung auf ein Aufwandskonto bekommt einen Umsatzsteuer-Schlüssel)
   - Überträge zwischen zwei Geldkonten aus dem WISO-Import: Soll/Haben verkehrt – betrifft seit der Standard-Kasse 1600 auch Überträge Bank ↔ Kasse (Abhebung, Bareinzahlung)

@@ -136,13 +136,17 @@ def _balance(db, number):
     return Decimal(soll - haben) / 10000
 
 
-def _datev(db):
-    """Exportierte Zeilen als (Betrag, Konto, Gegenkonto); der Export darf nicht gesperrt sein."""
+def _datev_fields(db):
+    """Alle Felder der exportierten Zeilen; der Export darf nicht gesperrt sein."""
     result = handle_datev_export(db, {'date_from': [RANGE[0]], 'date_to': [RANGE[1]]})
     assert isinstance(result[0], bytes), f'DATEV-Export gesperrt: {result}'
     lines = [ln for ln in result[0].decode('cp1252').split('\r\n') if ln]
-    fields = [next(csv.reader([ln], delimiter=';', quotechar='"')) for ln in lines[2:]]
-    return [(f[0], f[6], f[7]) for f in fields]
+    return [next(csv.reader([ln], delimiter=';', quotechar='"')) for ln in lines[2:]]
+
+
+def _datev(db):
+    """Exportierte Zeilen als (Betrag, Konto, Gegenkonto); der Export darf nicht gesperrt sein."""
+    return [(f[0], f[6], f[7]) for f in _datev_fields(db)]
 
 
 def _datev_amount(db, number):
@@ -433,6 +437,24 @@ def test_chosen_revenue_account_books_one_row_with_the_tax_share(db, acct, rate,
     assert db.find_payment_inconsistencies() == []
 
 
+@pytest.mark.parametrize('rate, gross, number, bu', [
+    pytest.param(0.16, 116.00, 4401, '5', id='16-Prozent'),
+    pytest.param(0.05, 105.00, 4402, '4', id='5-Prozent'),
+])
+def test_payment_on_a_temporary_rate_exports_its_own_tax_key(db, acct, rate, gross, number, bu):
+    """Die DATEV-Zeile einer Einnahme zu 16 % bzw. 5 % trägt den Schlüssel dieses Satzes (früher den
+    für 7 % bzw. gar keinen). Wie alle BU-Schlüssel ist er noch nicht gegen einen echten Stapel
+    geprüft."""
+    coa = _revenue_account(db, number, 'Erlöse zum Satz')
+    inv = _sent(db, 'R-BU', gross, rate=rate)
+
+    _assign(db, inv, _bank(db, acct, gross), revenue_coa_id=coa)
+
+    rows = _datev_fields(db)
+    assert [(f[0], f[6], f[7], f[8]) for f in rows] == [
+        (f'{gross:.2f}'.replace('.', ','), str(number), '1800', bu)]
+
+
 def test_partial_payments_at_sixteen_percent_split_the_tax_exactly(db, acct):
     coa = _revenue_account(db, 4401, 'Erlöse 16 % USt')
     inv = _sent(db, 'R-16T', 116.00, rate=0.16)
@@ -649,6 +671,58 @@ def test_a_collective_payment_over_19_and_7_percent_leaves_every_later_invoice_o
     assert [c[:2] for c in _children(db, banks[2])] == [(1800, 10000), (4340, 4185)]
     assert _euer(db) == {4400: 200.0, 4300: 200.0, 4185: 100.0, 3806: 52.0}
     assert db.find_payment_inconsistencies() == []
+
+
+def _marked_row(db, bank, number, coa, counter):
+    """Ein Satz mit der Marke einer Zuordnung, in einer Form nach Wahl – auch einer, die die App
+    selbst nie schreibt (aus dem Editor verbogen)."""
+    _exec(db, "INSERT INTO Bookings (DateBooking, Amount, Currency, COA_ID, CounterCOA_ID, "
+              "DocumentNumber, BookingType, ParentBooking_ID, AutoMirror, Status) "
+              "VALUES ('2026-02-01', 1190000, 'EUR', ?, ?, ?, 'entry', ?, 0, ?)",
+          coa, counter, number, bank, PAYMENT_MARK)
+
+
+@pytest.mark.parametrize('coa, counter, learned', [
+    pytest.param(4405, 'special', True, id='Wartekonto-an-Erlös'),
+    pytest.param(4345, 'special', True, id='anderes-Wartekonto-an-Erlös'),
+    pytest.param('special', 1800, True, id='Erlös-an-Bank'),
+    pytest.param('special', 1460, True, id='Erlös-an-Verrechnungskonto'),
+    pytest.param(1800, 10000, False, id='Bank-an-Debitoren'),
+    pytest.param(4736, 'special', False, id='verbogen-Erlös-an-Erlös'),
+    pytest.param('special', 4736, False, id='verbogen-umgekehrt'),
+    pytest.param('special', 10000, False, id='Erlös-an-Debitoren'),
+    pytest.param('special', 6815, False, id='Erlös-an-Aufwand'),
+    pytest.param(6815, 'special', False, id='Aufwand-an-Erlös'),
+    pytest.param(4405, None, False, id='Wartekonto-ohne-Gegenkonto'),
+])
+def test_only_rows_in_the_form_the_app_writes_teach_a_revenue_account(db, acct, coa, counter, learned):
+    """Eine Umbuchung lehrt nur, wenn ihr Konto ein Wartekonto ist (gelernt wird das Gegenkonto), ein
+    Einzelsatz nur, wenn sein Gegenkonto ein Zahlungskonto ist (gelernt wird das Konto). Was ein
+    Nutzer im Split-Editor aus einem markierten Satz gemacht hat, lehrt nichts: Früher wurde aus
+    „4405 an 4400“, im Editor zu „4736 an 4400“ geändert, das Konto 4736 für 19 % gelernt."""
+    special = _revenue_account(db, 4401, 'Erlöse Sonderfall')
+    _sent(db, 'R-N2', 119.00)
+    bank = _bank(db, acct, 119.00)
+    number = lambda value: special if value == 'special' else (None if value is None else _coa(db, value))
+
+    _marked_row(db, bank, 'R-N2', number(coa), number(counter))
+
+    expected = special if learned else _coa(db, 4400)
+    assert db.resolve_revenue_coa(0.19) == expected
+
+
+def test_a_marked_row_changed_in_the_editor_does_not_steer_the_next_invoice(db, acct):
+    first, second = _sent(db, 'R-ED1', 119.00), _sent(db, 'R-ED2', 119.00)
+    b1, b2 = _bank(db, acct, 119.00), _bank(db, acct, 119.00, date='2026-02-02')
+    _assign(db, first, b1)
+    transfer = _raw(db, "SELECT ID FROM Bookings WHERE ParentBooking_ID = ? AND COA_ID = ?",
+                    b1, _coa(db, 4405))[0][0]
+    _set_row_account(db, transfer, 'COA_ID', _coa(db, 4736))             # „4405 an 4400“ → „4736 an 4400“
+
+    assert db.resolve_revenue_coa(0.19) == _coa(db, 4400)
+    _assign(db, second, b2)
+
+    assert [c[:2] for c in _children(db, b2)] == [(1800, 10000), (4405, 4400)]   # nicht auf 4736
 
 
 def test_get_revenue_coas_lists_revenue_accounts_only(db):
@@ -1882,30 +1956,134 @@ def test_an_amount_that_rounds_to_zero_is_refused(db, acct, amount):
 _DEBTOR, _WAITING, _BANK_ID, _SALES = 10, 20, 9, 30
 
 
-@pytest.mark.parametrize('coa, counter, amount, expected', [
-    pytest.param(_DEBTOR, _WAITING, 100, True, id='10000-an-Wartekonto'),
-    pytest.param(_WAITING, _DEBTOR, -100, True, id='negativ-gebucht'),
-    pytest.param(_DEBTOR, None, 100, True, id='ohne-Gegenkonto'),
-    pytest.param(_WAITING, _DEBTOR, 100, False, id='Erlösminderung-an-10000'),
-    pytest.param(_SALES, _DEBTOR, 100, False, id='Skonto-an-10000'),
-    pytest.param(_DEBTOR, _WAITING, -100, False, id='10000-im-Haben'),
-    pytest.param(_BANK_ID, _DEBTOR, 100, False, id='Bank-an-10000'),
-    pytest.param(_DEBTOR, _BANK_ID, 100, False, id='Storno-10000-an-Bank'),
-    pytest.param(None, None, 100, False, id='ohne-Konten'),
-    pytest.param(_DEBTOR, _WAITING, 0, False, id='Betrag-0'),
-    pytest.param(_DEBTOR, _WAITING, None, False, id='ohne-Betrag'),
+@pytest.mark.parametrize('coa, counter, amount, document, expected', [
+    pytest.param(_DEBTOR, _WAITING, 100, None, True, id='10000-an-Wartekonto'),
+    pytest.param(_WAITING, _DEBTOR, -100, None, True, id='negativ-gebucht'),
+    pytest.param(_DEBTOR, None, 100, None, True, id='ohne-Gegenkonto'),
+    pytest.param(_WAITING, _DEBTOR, 100, None, False, id='Erlösminderung-an-10000'),
+    pytest.param(_SALES, _DEBTOR, 100, None, False, id='Skonto-an-10000'),
+    pytest.param(_DEBTOR, _WAITING, -100, None, False, id='10000-im-Haben'),
+    pytest.param(_BANK_ID, _DEBTOR, 100, None, False, id='Bank-an-10000'),
+    pytest.param(_DEBTOR, _BANK_ID, 100, None, False, id='Storno-10000-an-Bank'),
+    pytest.param(None, None, 100, None, False, id='ohne-Konten'),
+    pytest.param(_DEBTOR, _WAITING, 0, None, False, id='Betrag-0'),
+    pytest.param(_DEBTOR, _WAITING, None, None, False, id='ohne-Betrag'),
+    # Gutschrift: Die Forderung einer Rechnung mit negativem Brutto ist „10000 an Wartekonto“ mit
+    # negativem Betrag – 10000 steht im Soll, nur das Vorzeichen ist umgekehrt
+    pytest.param(_DEBTOR, _WAITING, -100, 'GS-1', True, id='Gutschrift'),
+    pytest.param(_DEBTOR, None, -100, 'GS-1', True, id='Gutschrift-ohne-Gegenkonto'),
+    pytest.param(_DEBTOR, _WAITING, -100, 'R-1', False, id='negativ-zu-positiver-Rechnung'),
+    pytest.param(_DEBTOR, _WAITING, -100, 'R-0', False, id='negativ-zu-Rechnung-ueber-0'),
+    pytest.param(_DEBTOR, _WAITING, -100, 'UNBEKANNT', False, id='negativ-ohne-Rechnung'),
+    pytest.param(_DEBTOR, _WAITING, -100, None, False, id='negativ-ohne-Beleg-Nr'),
+    pytest.param(_DEBTOR, _BANK_ID, -100, 'GS-1', False, id='Gutschrift-Zahlungskonto-Gegenseite'),
+    pytest.param(_BANK_ID, _DEBTOR, -100, 'GS-1', False, id='Gutschrift-Zahlungskonto-vorne'),
+    pytest.param(_DEBTOR, _WAITING, 0, 'GS-1', False, id='Gutschrift-Betrag-0'),
+    pytest.param(_DEBTOR, _WAITING, None, 'GS-1', False, id='Gutschrift-ohne-Betrag'),
+    pytest.param(_WAITING, _DEBTOR, 100, 'GS-1', False, id='Erlösminderung-zur-Gutschrift'),
 ])
-def test_receivable_condition_means_10000_on_the_debit_side(coa, counter, amount, expected):
+def test_receivable_condition_means_10000_on_the_debit_side(coa, counter, amount, document, expected):
     con = sqlite3.connect(':memory:')
     try:
-        con.execute('CREATE TABLE Bookings (COA_ID INTEGER, CounterCOA_ID INTEGER, Amount INTEGER)')
-        con.execute('INSERT INTO Bookings VALUES (?, ?, ?)', (coa, counter, amount))
+        con.execute('CREATE TABLE Bookings (COA_ID INTEGER, CounterCOA_ID INTEGER, Amount INTEGER, '
+                    'DocumentNumber TEXT)')
+        con.execute('CREATE TABLE Invoices (InvoiceNumber TEXT, SumGross INTEGER)')
+        con.executemany('INSERT INTO Invoices VALUES (?, ?)',
+                        [('GS-1', -1190000), ('R-1', 1190000), ('R-0', 0)])
+        con.execute('INSERT INTO Bookings VALUES (?, ?, ?, ?)', (coa, counter, amount, document))
         sql, params = receivable_condition([_DEBTOR], [_BANK_ID])
         matches = con.execute(f'SELECT COUNT(*) FROM Bookings WHERE {sql}', params).fetchone()[0]
         others = con.execute(f'SELECT COUNT(*) FROM Bookings WHERE NOT {sql}', params).fetchone()[0]
+        aliased_sql, aliased_params = receivable_condition([_DEBTOR], [_BANK_ID], alias='r')
+        aliased = con.execute(f'SELECT COUNT(*) FROM Bookings r WHERE {aliased_sql}',
+                              aliased_params).fetchone()[0]
     finally:
         con.close()
     assert (matches, others) == ((1, 0) if expected else (0, 1))        # nie NULL
+    assert aliased == matches                                           # mit und ohne Alias dasselbe
+
+
+# ── Gutschrift: Forderung mit negativem Betrag ───────────────────────────────
+
+def _receivable_rows(db, number):
+    return _raw(db, "SELECT COA_ID, CounterCOA_ID, Amount FROM Bookings WHERE DocumentNumber = ? "
+                    "AND BookingType = 'entry'", number)
+
+
+def test_a_credit_note_keeps_exactly_one_receivable_over_every_status_change(db):
+    """Die Forderung einer Rechnung über −119 € ist „10000 an Wartekonto“ mit negativem Betrag. Sie
+    muss als Forderung erkannt werden: Sonst bucht jeder Statuswechsel eine weitere, und zurück auf
+    Entwurf entfernt keine."""
+    inv = _sent(db, 'GS-1', -119.00)
+    assert _receivable_rows(db, 'GS-1') == [(_coa(db, 10000), _coa(db, 4405), -1190000)]
+    assert db.get_receivable_booking(inv) is not None
+
+    for status in ('overdue', 'sent', 'paid', 'sent', 'overdue', 'sent'):
+        db.update_invoice_status(inv, status)
+        handlers._sync_receivable_booking(db, inv, status)
+        assert len(_receivable_rows(db, 'GS-1')) == 1, status
+
+    for status in ('draft', 'finalized', 'cancelled'):
+        db.update_invoice_status(inv, 'sent')
+        handlers._sync_receivable_booking(db, inv, 'sent')
+        assert len(_receivable_rows(db, 'GS-1')) == 1, status
+        db.update_invoice_status(inv, status)
+        handlers._sync_receivable_booking(db, inv, status)
+        assert _receivable_rows(db, 'GS-1') == [], status               # zurück: keine Forderung mehr
+    assert _balance(db, 10000) == 0
+
+
+def test_auto_link_never_adopts_the_receivable_of_a_credit_note(db, acct):
+    inv = _sent(db, 'GS-AUTO', -119.00, invoice_date='2026-03-20')
+    receivable = db.get_receivable_booking(inv)
+    assert receivable is not None
+    refund = _bank(db, acct, -119.00, date='2026-03-20', recipient='Käufer AG')
+
+    result = db.link_bank_to_entries()
+
+    assert result['linked'] == 0
+    assert db.get_booking_by_id(receivable)[18] is None                 # eigenständig geblieben
+    assert db.get_child_bookings_for_bank(refund) == []
+    assert receivable not in [c[0] for c in db.get_unlinked_entry_bookings()]
+
+
+def test_deleting_a_movement_keeps_the_receivable_of_a_credit_note(db, acct):
+    inv = _sent(db, 'GS-DEL', -119.00)
+    receivable = db.get_receivable_booking(inv)
+    refund = _bank(db, acct, -119.00)
+    _adopt(db, receivable, refund)
+    assert [f['category'] for f in db.find_payment_inconsistencies(inv)
+            if f['category'] == 'receivable_attached'] == ['receivable_attached']   # sie ist erkannt
+
+    db.delete_transaction(refund)
+
+    assert db.get_booking_by_id(refund) is None
+    kept = db.get_booking_by_id(receivable)
+    assert kept is not None and kept[18] is None and kept[19] is None   # abgehängt und wieder offen
+    assert _receivable_rows(db, 'GS-DEL') == [(_coa(db, 10000), _coa(db, 4405), -1190000)]
+
+
+def test_a_negative_10000_row_without_a_matching_credit_note_is_not_a_receivable(db, acct):
+    """„10000 an Erlöse“ mit negativem Betrag zu einer Rechnung mit positivem Brutto oder ohne
+    Rechnung ist keine Forderung (10000 steht dort im Haben): Sie geht mit ihrer Bewegung und ist
+    ein Editor-Kandidat."""
+    inv = _sent(db, 'R-POSITIV', 119.00)
+    real = db.get_receivable_booking(inv)
+    bank = _bank(db, acct, 100.00)
+    attached = db.insert_booking('2026-02-01', -100.00, coa_id=_coa(db, 10000),
+                                 counter_coa_id=_coa(db, 4400), booking_type='entry',
+                                 parent_booking_id=bank, document_number='R-POSITIV')
+    loose = db.insert_booking('2026-02-02', -50.00, coa_id=_coa(db, 10000),
+                              counter_coa_id=_coa(db, 4400), booking_type='entry',
+                              document_number='OHNE-RECHNUNG')
+    assert db.get_receivable_booking(inv) == real                        # die echte, nicht die verirrte
+    assert loose in [c[0] for c in db.get_unlinked_entry_bookings()]
+    assert [f for f in db.find_payment_inconsistencies() if f['category'] == 'receivable_attached'] == []
+
+    db.delete_transaction(bank)
+
+    assert db.get_booking_by_id(attached) is None                        # ging mit der Bewegung
+    assert db.get_booking_by_id(real) is not None
 
 
 def _discount_case(db, acct):

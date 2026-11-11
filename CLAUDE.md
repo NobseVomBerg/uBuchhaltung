@@ -206,9 +206,9 @@ kein Subagent darauf:
   positiv: `COA` im Soll, Gegenkonto im Haben. Fehlt die liquide Seite, bleibt es
   eine Zahlung (wie `is_bank_effective`)
 - DATEV: Das Soll/Haben-Kennzeichen bezieht sich auf das Feld „Konto“ und folgt
-  dieser Einordnung; der BU-Schlüssel folgt der Richtung der Geldbewegung. Die
-  BU-Schlüssel sind fachlich noch nicht gegen einen echten Stapel geprüft
-  (`docs/aufgaben.md`) – nicht als richtig voraussetzen
+  dieser Einordnung; der BU-Schlüssel folgt der Richtung der Geldbewegung und dem exakten
+  Steuersatz (19, 7, 16, 5 %; jeder andere Satz '0'). Die BU-Schlüssel sind fachlich noch
+  nicht gegen einen echten Stapel geprüft (`docs/aufgaben.md`) – nicht als richtig voraussetzen
 - Zahlungskonten: EÜR, DATEV-Export und Buchungsmaske (beim Bearbeiten) nehmen dieselbe
   Menge (`get_payment_coa_ids`), an der auch die Importe das Vorzeichen ausrichten: die
   SKR-Konten der eigenen Bank- und Kassenkonten – die Kasse der App (SKR04 1600) zählt wie
@@ -250,20 +250,24 @@ kein Subagent darauf:
   anteilig (Cent), der schließende Teil bekommt den Rest der Rechnungssteuer abzüglich der Steuer der
   anderen Zuordnungen (markierte Sätze: die gebuchte, sonst – Altbestand, WISO – die anteilige).
   **Erlöskonto:** Es ergibt sich aus der Rechnung (`resolve_revenue_coa`) und wird NUR aus den markierten
-  Sätzen gelernt (Satz „Wartekonto an Erlöskonto“: Gegenkonto, Einzelsatz „Erlöskonto an Bank“: Konto;
-  der jüngste gewinnt) und gilt nur als Erlöskonto 4000–4999 ohne Wartekonten, sonst 4400/4300/4185. Das
-  Konto der Bankzeile (Anzeige-Backfill) und Sätze des WISO-Imports lehren nichts – es kann ein Bank-,
-  Aufwands- oder Wartekonto sein. Ist für den Satz (z. B. 5 %, 16 %) keines hinterlegt, wählt der Nutzer
-  es (`revenue_coa_id`): ein Erlöskonto, in der DB-Schicht geprüft, sonst Ablehnung;
-  `suggest_revenue_coa` ist nur die Vorauswahl, nie eine Entscheidung.
+  Sätzen gelernt, und nur in der Form, in der die App sie schreibt (Umbuchung „Wartekonto an Erlöskonto“:
+  `COA` ist ein Wartekonto, gelernt wird das Gegenkonto; Einzelsatz „Erlöskonto an Bank“: das Gegenkonto
+  ist ein Zahlungskonto, gelernt wird `COA`; der jüngste gewinnt) – was ein Nutzer im Split-Editor in
+  eine andere Form gebracht hat, lehrt nichts. Es gilt nur als Erlöskonto 4000–4999 ohne Wartekonten,
+  sonst 4400/4300/4185. Das Konto der Bankzeile (Anzeige-Backfill) und Sätze des WISO-Imports lehren
+  nichts – es kann ein Bank-, Aufwands- oder Wartekonto sein. Ist für den Satz (z. B. 5 %, 16 %)
+  keines hinterlegt, wählt der Nutzer es (`revenue_coa_id`): ein Erlöskonto, in der DB-Schicht
+  geprüft, sonst Ablehnung; `suggest_revenue_coa` ist nur die Vorauswahl, nie eine Entscheidung.
   Status und Rest berechnet `next_payment_status` (nie zurück auf „abgeschlossen“, „storniert“
   bleibt; „Rest unter einem Cent gilt als beglichen“ steht in `money.is_covered`).
   **Die Forderung (`10000 an Wartekonto`) ist nie Kind einer Bankbewegung:** `matching.receivable_condition`
-  (10000 im SOLL – `COA` = 10000 bei Betrag > 0 oder Gegenkonto = 10000 bei Betrag < 0 – und keine Seite
-  ein Zahlungskonto) schließt sie aus Auto-Abgleich und Editor-Kandidaten aus, `delete_transaction` hängt
-  sie ab statt sie zu löschen. Was 10000 im Haben führt (Erlösminderung, Skonto, Forderungsverlust
-  „… an 10000“), ist keine Forderung und geht mit seiner Bewegung. Alle Stellen suchen die Forderung
-  über diese Bedingung (auch `assign_invoice_payment`, `get_receivable_booking`). Stufe 7 des
+  (10000 im SOLL – `COA` = 10000 bei Betrag > 0 oder Gegenkonto = 10000 bei Betrag < 0, bei einer
+  Gutschrift `COA` = 10000 mit negativem Betrag und der Beleg-Nr. einer Rechnung mit negativem Brutto –
+  und keine Seite ein Zahlungskonto) schließt sie aus Auto-Abgleich und Editor-Kandidaten aus,
+  `delete_transaction` hängt sie ab statt sie zu löschen. Was 10000 im Haben führt (Erlösminderung,
+  Skonto, Forderungsverlust „… an 10000“), ist keine Forderung und geht mit seiner Bewegung. Alle
+  Stellen suchen die Forderung über diese Bedingung (auch `assign_invoice_payment`,
+  `get_receivable_booking`). Stufe 7 des
   Auto-Abgleichs setzt sie erst auf `resolved`, wenn die Summe der Sätze „… an 10000“ mit gleicher
   Beleg-Nr. den Forderungsbetrag erreicht; `unassign` setzt das zurück. Die Forderung geht mit der
   letzten Zahlung, wenn der Status der Rechnung kein Forderungsstatus ist (`RECEIVABLE_STATUSES`, z. B.
