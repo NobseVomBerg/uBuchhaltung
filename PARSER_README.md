@@ -306,6 +306,7 @@ Nach jedem WISO-Import wird `link_bank_to_entries()` aufgerufen:
     - Stufe 6: Text-Similarity ohne Belegnummer (`SequenceMatcher`)
     - Stufe 7: Debitoren-Auflösung (`Status='resolved'` für Debitoren-Entries, deren Zahlung bereits verknüpft ist)
 - Doppik-Filter: Entry-Buchungen auf SKR-Bankkonten (z.B. 1810) werden ignoriert
+- Forderungsbuchungen (Debitoren 10000 an Wartekonto, entstehen beim Versenden einer Rechnung) werden in keiner Stufe verknüpft – sie gehören zur Rechnung, nicht zur Bankbewegung (Ausnahme: die Quellklammer aus dem WISO-Datenbankimport). Die WISO-Zahlungssätze „Bank an 10000“ bleiben verknüpfbar
 - Ergebnis: `Entry.ParentBooking_ID → Bank.ID`
 
 ### Encoding

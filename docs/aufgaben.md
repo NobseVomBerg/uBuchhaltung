@@ -13,6 +13,9 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 - CAMT-Zusatzfelder (Valuta, EndToEndId, Mandatsreferenz, Gläubiger-ID) übernehmen – braucht Schemaänderung
 - Rechnungen/Angebote mit gemischten Steuersätzen (7 % und 19 % je Position) – bisher ein Satz je Beleg
 - Leistungszeitraum (von–bis) als Alternative zum Leistungsdatum, z. B. für monatliche Leistungen – PDF-Kopf und E-Rechnung (CII BillingSpecifiedPeriod / UBL InvoicePeriod); braucht Schemaänderung
+- Zahlungssätze einer Zuordnung (Marke `invoice_payment`) im Buchungssatz-Editor schreibgeschützt zeigen – bisher lassen sie sich dort ändern, und das Löschen einer Zeile entfernt die ganze Zuordnung
+- Skonto bei der Zahlungszuordnung (Abzug als eigener Satz, Steuerkorrektur)
+- Gutschrift und Erstattung als negative Zuordnung – erst zusammen mit einem Stornobeleg; bis dahin lassen sich nur Zahlungseingänge zuordnen
 - Umsatzsteuer-Voranmeldung (ELSTER)
 - GoBD-Modus, je Datenverzeichnis einstellbar (Ersteinrichtung fragt: Steuerbüro oder selbst?); vor Umsetzung Design im Hauptthread (`/effort xhigh`):
   - Festschreibung abgeschlossener Zeiträume, Korrektur nur per Storno/Gegenbuchung, kein Löschen
@@ -37,7 +40,7 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
 - SKR07 (Österreich) erst, wenn die Steuerlogik dafür ansteht (andere Voranmeldung und Gewinnermittlung) – bewusst später
 
 ## Fehler & Technik
-- DATEV-Export vor der ersten Weitergabe ans Steuerbüro gegen einen echten Buchungsstapel prüfen. Bekannt:
+- DATEV-Export vor der ersten Weitergabe ans Steuerbüro gegen einen echten Buchungsstapel prüfen (inkl. der BU-Schlüssel für 16 %/5 %). Bekannt:
   - Forderung (10000/4405) und Umbuchung bei Zahlung (4405/4400) tragen beide einen Steuerschlüssel → je bezahlter Rechnung zweimal Umsatzsteuer
   - der BU-Schlüssel folgt der Geldrichtung statt der Art des Kontos (Erstattung auf ein Aufwandskonto bekommt einen Umsatzsteuer-Schlüssel)
   - Überträge zwischen zwei Geldkonten aus dem WISO-Import: Soll/Haben verkehrt – betrifft seit der Standard-Kasse 1600 auch Überträge Bank ↔ Kasse (Abhebung, Bareinzahlung)

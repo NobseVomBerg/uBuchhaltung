@@ -8,6 +8,7 @@ import json
 from decimal import Decimal
 from money import to_minor, from_minor
 from db.matching import is_bank_effective
+from db.invoice_payments import PAYMENT_MARK
 
 
 class BookingsMixin:
@@ -598,45 +599,81 @@ class BookingsMixin:
         # Optional SQL logging
         if log_description:
             self._log_sql(sql_template, params, log_description)
-    def delete_transaction(self, booking_id: int):
-        """Buchung (und verknüpfte Kinder via ParentBooking_ID) löschen.
+    @staticmethod
+    def _delete_booking_rows(conn, booking_ids):
+        """Buchungen samt aller Verweise auf sie löschen, in der Transaktion von ``conn``:
+        BookingDocuments und InvoicePayments werden gelöscht, Assets.Booking_ID wird auf NULL
+        gesetzt. Eine AfA-Planzeile verliert ihre Buchung und geht zurück auf 'planned' – das
+        Jahr lässt sich neu buchen. Gelöscht wird nur, was in ``booking_ids`` steht – die
+        Kinder davon zuerst, dann die übrigen (Fremdschlüssel)."""
+        if not booking_ids:
+            return
+        marks = ','.join('?' * len(booking_ids))
+        conn.execute(f'DELETE FROM BookingDocuments WHERE Booking_ID IN ({marks})', booking_ids)
+        conn.execute(f'DELETE FROM InvoicePayments WHERE BookingID IN ({marks})', booking_ids)
+        conn.execute(f'UPDATE Assets SET Booking_ID = NULL WHERE Booking_ID IN ({marks})',
+                     booking_ids)
+        conn.execute("UPDATE AssetDepreciations SET Booking_ID = NULL, Status = 'planned', "
+                     f"BookedAt = NULL WHERE Booking_ID IN ({marks})", booking_ids)
+        conn.execute(f'DELETE FROM Bookings WHERE ID IN ({marks}) AND ParentBooking_ID IN ({marks})',
+                     booking_ids + booking_ids)
+        conn.execute(f'DELETE FROM Bookings WHERE ID IN ({marks})', booking_ids)
 
-        Bereinigt vor dem Löschen alle referenzierenden Zeilen:
-        BookingDocuments und InvoicePayments werden gelöscht,
-        Assets.Booking_ID wird auf NULL gesetzt. Eine AfA-Planzeile verliert ihre Buchung
-        und geht zurück auf 'planned' – das Jahr lässt sich neu buchen.
-        Rechnungen gelöschter Zahlungen werden neu berechnet (AmountDue/Status),
-        damit keine verwaisten "bezahlt"-Zustände zurückbleiben (todo #2).
+    def delete_transaction(self, booking_id: int):
+        """Buchung (und verknüpfte Kinder via ParentBooking_ID) löschen – in EINER Transaktion,
+        auch die Neuberechnung der betroffenen Rechnungen.
+
+        Bereinigt vor dem Löschen alle referenzierenden Zeilen (``_delete_booking_rows``).
+        Rechnungen gelöschter Zahlungen werden neu berechnet (AmountDue/Status), damit keine
+        verwaisten "bezahlt"-Zustände zurückbleiben (todo #2).
+
+        * **Bankbewegung:** Ihre Kinder und alle Zuordnungen gehen mit. Eine Forderungsbuchung
+          (``db.matching.receivable_condition``), die ein Altbestand als Kind angehängt hat,
+          gehört zur Rechnung und bleibt: Sie wird abgehängt (``ParentBooking_ID`` und Status
+          leer) und ist damit wieder offen.
+        * **Buchungssatz einer Zuordnung** (Marke ``'invoice_payment'``, auch aus dem
+          Split-Editor): Die ganze Zuordnung wird entfernt (``unassign_invoice_payment``) –
+          Zahlungs- und Umbuchungssatz bleiben nie einzeln übrig.
+        * **Eintrag mit eigener Zuordnung** (Altbestand): Die Zuordnung wird gelöscht.
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT Status, ParentBooking_ID FROM Bookings WHERE ID = ?',
+                               (booking_id,)).fetchone()
+            if row is None:
+                conn.commit()
+                return
+            if row[0] == PAYMENT_MARK and row[1] is not None:
+                self.remove_assignment_for_child(conn, booking_id)
+                conn.commit()
+                return
 
-        # Alle betroffenen IDs: Parent + direkte Kinder
-        cursor.execute('SELECT ID FROM Bookings WHERE ParentBooking_ID = ?', (booking_id,))
-        child_ids = [row[0] for row in cursor.fetchall()]
-        all_ids = [booking_id] + child_ids
-        placeholders = ','.join('?' * len(all_ids))
+            receivable_sql, receivable_params = self._receivable_sql(conn.cursor())
+            child_ids = [r[0] for r in conn.execute(
+                'SELECT ID FROM Bookings WHERE ParentBooking_ID = ?', (booking_id,))]
+            kept_ids = [r[0] for r in conn.execute(
+                "SELECT ID FROM Bookings WHERE ParentBooking_ID = ? AND BookingType = 'entry' "
+                f"AND {receivable_sql}", [booking_id] + receivable_params)]
+            deleted_ids = [booking_id] + [c for c in child_ids if c not in kept_ids]
+            marks = ','.join('?' * len(deleted_ids))
+            affected_invoice_ids = [r[0] for r in conn.execute(
+                f'SELECT DISTINCT InvoiceID FROM InvoicePayments WHERE BookingID IN ({marks})',
+                deleted_ids)]
 
-        cursor.execute(f'SELECT DISTINCT InvoiceID FROM InvoicePayments '
-                       f'WHERE BookingID IN ({placeholders})', all_ids)
-        affected_invoice_ids = [row[0] for row in cursor.fetchall()]
-
-        cursor.execute(f'DELETE FROM BookingDocuments WHERE Booking_ID IN ({placeholders})', all_ids)
-        cursor.execute(f'DELETE FROM InvoicePayments WHERE BookingID IN ({placeholders})', all_ids)
-        cursor.execute(f'UPDATE Assets SET Booking_ID = NULL WHERE Booking_ID IN ({placeholders})', all_ids)
-        cursor.execute(f"UPDATE AssetDepreciations SET Booking_ID = NULL, Status = 'planned', "
-                       f"BookedAt = NULL WHERE Booking_ID IN ({placeholders})", all_ids)
-
-        if child_ids:
-            child_placeholders = ','.join('?' * len(child_ids))
-            cursor.execute(f'DELETE FROM Bookings WHERE ID IN ({child_placeholders})', child_ids)
-        cursor.execute('DELETE FROM Bookings WHERE ID = ?', (booking_id,))
-
-        conn.commit()
-        conn.close()
-
-        for inv_id in affected_invoice_ids:
-            self.recalc_invoice_payment_state(inv_id)
+            if kept_ids:
+                kept_marks = ','.join('?' * len(kept_ids))
+                conn.execute('UPDATE Bookings SET ParentBooking_ID = NULL, Status = NULL '
+                             f'WHERE ID IN ({kept_marks})', kept_ids)
+            self._delete_booking_rows(conn, deleted_ids)
+            for invoice_id in affected_invoice_ids:
+                self._after_payment_removed(conn, invoice_id)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
     def get_booking_by_id(self, booking_id):
         """Get a single booking by ID"""
         conn = self._get_connection()
