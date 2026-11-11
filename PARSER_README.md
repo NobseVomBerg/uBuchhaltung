@@ -76,6 +76,38 @@ Empfängers markiert.
 4. **Bestätigung**: Erkannte Transaktionen auf `/confirm_transactions` prüfen
 5. **Import**: Nach Bestätigung als `BookingType='bank'` in Bookings-Tabelle
 
+**Duplikat-Erkennung (zählbasiert):** Konto + Buchungsdatum + Betrag, ohne Text –
+CAMT und PDF schreiben denselben Umsatz verschieden, und der WISO-Tabellen-Export
+überschreibt ihn nachträglich. Gezählt wird **je Datei**: Der Bestand je Schlüssel
+enthält auch, was frühere Dateien desselben Laufs angelegt haben; über mehrere
+Dateien gilt das **Maximum**, nicht die Summe. „Alle importieren“ verhält sich damit
+wie die Einzelimporte nacheinander: derselbe Auszug zweimal im Upload, CAMT und PDF
+desselben Auszugs oder ein Tages- und ein Monatsauszug verdoppeln nichts, gleiche
+Umsätze innerhalb *einer* Datei bleiben erhalten. Die Vorschau zeigt, was schon in
+einer anderen Datei desselben Uploads steckt („in anderer Datei dieses Uploads“), die
+Meldung nach dem Import nennt die so übersprungenen Umsätze. Passt der Verwendungszweck
+eines solchen Umsatzes zu keinem Umsatz der früheren Dateien (gleich, Anfang des anderen
+oder leer – Leerraum, Groß-/Kleinschreibung und ein führendes „Storno:“ zählen nicht), kommt in der Vorschau
+„Text weicht ab, bitte prüfen“ dazu, etwa bei zwei verschiedenen Abos mit demselben
+Betrag am selben Tag; das ist nur ein Hinweis, der Import bleibt beim Maximum.
+
+Ein Umsatz **ohne Datum oder Betrag** legt der Import nie an: Die Vorschau zählt ihn
+weder als neu noch als Duplikat („ohne Datum/Betrag – wird nicht importiert“), die
+Meldung nach dem Import nennt die so übersprungenen Umsätze.
+
+Grenzen (ohne Bankreferenz im Datenmodell nicht lösbar, siehe `docs/aufgaben.md`):
+- Eine CAMT-Sammelbuchung wird in Einzelumsätze zerlegt, die PDF zeigt eine
+  Summenzeile: Die Beträge passen nicht zusammen, beides wird angelegt.
+- Zwei *verschiedene* Auszüge desselben Tags mit je einem echten, gleichen Umsatz:
+  das Maximum behält nur einen davon. Die Vorschau markiert abweichende Texte, nachtragen
+  geht nur von Hand – eine Option „trotzdem importieren“ fehlt (`docs/aufgaben.md`).
+- Das VBR-PDF nennt das Jahr nur im Kopf des Auszugs und gilt für alle Zeilen; bei
+  einem Auszug über den Jahreswechsel kann das Datum einzelner Zeilen abweichen, und
+  derselbe Umsatz aus CAMT wird dann nicht als Duplikat erkannt.
+- Die Vorschau wird beim Hochladen berechnet und nach einem Einzelimport nicht neu
+  geladen: Wer zuerst die *spätere* Datei einzeln importiert, sieht für die frühere
+  Karte eine zu hohe „neu“-Zahl. Das Ergebnis des Imports stimmt trotzdem.
+
 ### CAMT.053 (ISO 20022, XML)
 
 `importers/camt.py` liest Kontoauszüge im Bankformat CAMT.053 – für alle Banken,
@@ -162,6 +194,45 @@ ohne Referenznummer: Datum + COA_ID + Betrag (nur Entry-Buchungen, ohne Text —
 der Tabellen-Export überschreibt ihn nachträglich). Übersprungen werden je
 Schlüssel nur so viele Zeilen, wie die DB bereits enthält — gleichartige
 Split-Positionen (gleicher Betrag/Konto/Tag) werden dadurch korrekt importiert.
+
+**Zusammenspiel mit dem Datenbank-Import (`db/wiso_fdb_import.py`):** Der Schlüssel
+fragt nicht, woher eine Buchung stammt – was der Datenbank-Import schon angelegt hat,
+überspringt der CSV-Import. Umgekehrt übernimmt der Datenbank-Import Buchungen des
+CSV-Imports, statt eine zweite anzulegen – aber eng gefasst, lieber eine sichtbare zweite
+Buchung als eine still falsch übernommene:
+- Kandidat ist eine `entry` ohne `SourceGroup`, ohne `AutoMirror` (Spiegelbuchung der
+  Buchungsmaske) und ohne `Account_ID` mit gleichem Datum, Betrag, Konto und gleicher
+  Beleg-Nr. (Leerraum zusammengefasst: „RE  12“ = „RE 12“; auch ohne Beleg-Nr.).
+- Der **Text** muss immer gleich sein (Leerraum und Groß-/Kleinschreibung egal; die Datenbank
+  liefert ihn als latin-1, die CSV als cp1252 – für den Vergleich wird er umgesetzt, gespeichert
+  bleibt der Text der CSV-Zeile) und darf nicht leer sein – zwei leere Texte beweisen nichts,
+  solche Sätze werden neu angelegt.
+- Das **Gegenkonto** muss gleich sein (beide bekannt) oder der CSV-Zeile fehlen; ein anderes
+  passt nie. Unter mehreren gewinnt das gleiche Gegenkonto, dann die kleinste ID. Jede Zeile wird
+  höchstens einmal übernommen: zwei gleich hohe Teilbuchungen übernehmen zwei CSV-Zeilen, gleich
+  hohe Zahlungen verschiedener Kunden mit verschiedenem Text bekommen jeweils ihr Gegenkonto.
+- **Mehrdeutig** ist ein Schlüssel, wenn Sätze des Imports mit gleichem Datum, Betrag, Konto,
+  Beleg-Nr. und Text verschiedene Gegenkonten tragen: Dann nehmen sie keine Zeile ohne
+  Gegenkonto (welcher Satz zu welcher Zeile gehört, ließe sich nur raten); Zeilen mit gleichem
+  Gegenkonto bleiben erlaubt.
+- Fehlte der CSV-Zeile das Konto (im Kontenrahmen unbekannt), sucht der Datenbank-Import
+  ersatzweise ohne Konto – nur wenn es zum Schlüssel keine Zeile mit Konto gab, und nur mit
+  gleichem Gegenkonto und gleichem, nicht leerem Text.
+- Übernommen wird mit einem UPDATE (im Replay-Log): `SourceGroup` (WISO-`ACCOUNTINGID`)
+  setzen, leere Konten (`COA_ID`, `CounterCOA_ID`) und einen leeren Empfänger füllen,
+  Steuersatz und -betrag ergänzen, wenn beide fehlen. Text, Verknüpfungen zur Bank und
+  Änderungen des Nutzers bleiben unberührt. Die Seite meldet die Zahl („aus dem CSV-Import
+  wiedererkannt“) und listet die ersten 500 übernommenen Buchungen auf.
+- **Möglicherweise doppelt:** Hat der Import zu Datum, Betrag und Konto einen Satz neu angelegt,
+  meldet er die dazu vorhandenen, nicht übernommenen Buchungen (Zähler und die ersten 500 auf der
+  Seite *Verschiedenes*, ohne Rücksicht auf Text und Beleg-Nr.). Stimmt es, ist von beiden eine
+  zu löschen.
+
+Grenze: Eine von Hand erfasste `entry` wird nur übernommen, wenn auch der Text stimmt. Eine
+CSV-Zeile, deren Text, Gegenkonto oder Betrag nachträglich geändert wurde, wird nicht
+wiedererkannt – es entsteht eine zweite Buchung, die unter „möglicherweise doppelt“ steht und
+sich in der Buchungsliste löschen lässt. Die WISO-Satz-Id als eigene Spalte würde das exakt
+machen (Schemaänderung, siehe `docs/aufgaben.md`).
 
 **BookingType:** `'entry'` (Buchungssatz)
 

@@ -6,6 +6,8 @@ Sonstiges page – database overview, SQL console, misc tools.
 """
 import html as _html
 from db import Database
+from db.wiso_fdb_import import MAX_ADOPTED_ROWS
+from money import fmt_eur
 
 
 def Header1(active_page=None):
@@ -23,6 +25,33 @@ def Header3(content=""):
 def Footer():
     from server.pages import Footer as _F
     return _F()
+
+
+def _fdb_result_rows(rows):
+    """Zeilen einer gespeicherten Ergebnisliste (``adopted_rows``, ``possible_duplicates``).
+
+    Die Ergebnisdatei liegt im Datenordner und kann von Hand verändert sein: Was keine
+    Liste ist, gilt als leer, Einträge, die kein Objekt sind, übergeht die Seite –
+    statt mit einem Fehler abzubrechen (samt SQL-Konsole).
+    """
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _fdb_rows_table(rows):
+    """Datum, Betrag, Text und Buchungs-ID der Zeilen aus :func:`_fdb_result_rows` als Tabelle."""
+    s = '<table><tr><th>Datum</th><th>Betrag</th><th>Text</th><th>Buchungs-ID</th></tr>'
+    for row in rows:
+        try:
+            amount = fmt_eur(row.get('amount'))
+        except Exception:                       # Ergebnisdatei von Hand verändert
+            amount = str(row.get('amount'))
+        s += (f'<tr><td>{_html.escape(str(row.get("date") or ""))}</td>'
+              f'<td>{_html.escape(amount)}</td>'
+              f'<td>{_html.escape(str(row.get("text") or ""))}</td>'
+              f'<td>{_html.escape(str(row.get("id") or ""))}</td></tr>')
+    return s + '</table>'
 
 
 def PageMiscellaneous(db: Database):
@@ -227,7 +256,8 @@ def PageMiscellaneous(db: Database):
         Voraussetzung: Jedes Konto in der <strong>Kontenverwaltung</strong>
         muss ein <em>SKR-Gegenkonto</em> hinterlegt haben (z.B. 1810 für 2. Bankkonto, 1600 für Kasse;
         das Verrechnungskonto 1460 gilt als Geldtransit).<br>
-        Duplikate (gleiche Referenznummer + Konto + Betrag) werden automatisch übersprungen.</p>
+        Duplikate (gleiche Referenznummer + Datum + Konto + Betrag) werden übersprungen &ndash;
+        auch, wenn die Buchungen schon aus dem Datenbank-Import stammen.</p>
         <form method="POST" action="/wiso/import" enctype="multipart/form-data">
             <div class="rowWithObjects">CSV-Datei:&nbsp;<input type="file" name="csvfile" accept=".txt,.csv" required></div>
             <br>
@@ -353,7 +383,9 @@ def PageMiscellaneous(db: Database):
         gesucht. WISO sollte dabei geschlossen sein.<br>
         Voraussetzung wie beim CSV-Import: jedes Konto in der
         <strong>Kontenverwaltung</strong> braucht ein hinterlegtes
-        <em>SKR-Gegenkonto</em>. Ein zweiter Lauf verdoppelt nichts.</p>
+        <em>SKR-Gegenkonto</em>. Ein zweiter Lauf verdoppelt nichts. Buchungen, die schon
+        über den CSV-Import kamen, ergänzt der Import, statt sie neu anzulegen;
+        wiedererkannt wird ein Satz nur, wenn Beleg-Nr., Datum, Konto, Betrag und Text übereinstimmen (und das Gegenkonto nicht widerspricht); alles andere wird neu angelegt und, wo eine ähnliche Buchung schon da ist, als möglicherweise doppelt gemeldet.</p>
         <form method="POST" action="/wiso/fdb-import">
             <div class="rowWithObjects">Pfad:&nbsp;
                 <input type="text" name="fdb_path" style="min-width:34em"
@@ -395,6 +427,10 @@ def PageMiscellaneous(db: Database):
                 const rn = parseInt(p.get('invoices') || '0');
                 const kd = parseInt(p.get('customers') || '0');
                 const zl = parseInt(p.get('payments') || '0');
+                const ad = parseInt(p.get('adopted') || '0');
+                const pd = parseInt(p.get('possible') || '0');
+                if (ad > 0) msg += ', ' + ad + ' aus dem CSV-Import wiedererkannt';
+                if (pd > 0) msg += ', ' + pd + ' vorhandene Buchungen m\\u00f6glicherweise doppelt \\u2013 siehe Liste unten';
                 if (rn > 0) msg += ', ' + rn + ' Rechnungen mit '
                     + p.get('items') + ' Positionen';
                 if (kd > 0) msg += ', ' + kd + ' Kunden';
@@ -429,6 +465,29 @@ def PageMiscellaneous(db: Database):
         if _fdb.get('file'):
             s += (f'<p>\U0001F4C4 Zuletzt gelesen: '
                   f'<code>{_html.escape(str(_fdb["file"]))}</code></p>')
+        if _fdb.get('adopted'):
+            s += (f'<p>✅ {_html.escape(str(_fdb["adopted"]))} Buchungssätze waren '
+                  'schon aus dem CSV-Import da: Sie haben jetzt die WISO-Kennung; '
+                  'leere Konten, Steuer und Empfänger wurden ergänzt, sie wurden aber nicht '
+                  'doppelt angelegt.</p>')
+            _adopted_rows = _fdb_result_rows(_fdb.get('adopted_rows'))
+            if _adopted_rows:
+                s += ('<details><summary>Welche Buchungen das waren</summary>'
+                      + _fdb_rows_table(_adopted_rows))
+                if len(_adopted_rows) >= MAX_ADOPTED_ROWS:
+                    s += f'<p>Genannt werden die ersten {MAX_ADOPTED_ROWS}.</p>'
+                s += '</details>'
+        _possible_rows = _fdb_result_rows(_fdb.get('possible_duplicates'))
+        if _possible_rows:
+            _possible_count = _fdb.get('possible_duplicates_count', len(_possible_rows))
+            s += ('<p>Diese Buchungen gleichen einem neu angelegten Satz in Datum, Konto und '
+                  'Betrag, aber nicht im Text bzw. Gegenkonto. Bitte prüfen und eine von beiden '
+                  'löschen, falls es derselbe Vorgang ist.</p>'
+                  f'<details><summary>Möglicherweise doppelt ({_html.escape(str(_possible_count))})'
+                  '</summary>' + _fdb_rows_table(_possible_rows))
+            if len(_possible_rows) >= MAX_ADOPTED_ROWS:
+                s += f'<p>Genannt werden die ersten {MAX_ADOPTED_ROWS}.</p>'
+            s += '</details>'
         if _blocker:
             s += ('<h3>\u26a0\ufe0f Diese Datenbank passt nicht zum Importmodul</h3>'
                   '<p>Es wurde <strong>nichts</strong> importiert. Die folgenden '
