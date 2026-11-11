@@ -58,6 +58,212 @@ def classify_entry(coa_id, counter_coa_id, liquid_coa_ids) -> str:
     return ENTRY_TRANSFER
 
 
+# ── Gespeicherte Form (Bookings.EntryForm) ───────────────────────────────────
+# ``classify_entry`` fragt die Kontenliste von HEUTE. Ein Satz, der gestern geschrieben wurde,
+# soll aber morgen noch genauso gelesen werden – auch wenn ein Konto inzwischen Geldkonto
+# geworden ist oder aufgehört hat, eines zu sein. Deshalb schreibt jeder Schreibweg die Form
+# als Daten mit, und die Auswertungen lesen sie, statt sie neu zu erraten.
+#
+#   Form            Geldseite          Betrag = Richtung auf …   bei Betrag > 0 im Soll
+#   purpose_first   Gegenkonto/leer    dem Gegenkonto            Gegenkonto
+#   liquid_first    Konto/leer         dem Konto                 Konto
+#   transfer        keine              (Umbuchung)               Konto
+#   mirror_coa      beide              dem Konto                 Konto
+#   mirror_counter  beide              dem Gegenkonto            Gegenkonto
+#   mirror_legacy   beide              unbekannt (Altbestand)    Gegenkonto
+#
+# ``mirror_legacy`` setzt die Migration auf 2.1.0 bei jedem Spiegel des Bestands: Welche der
+# beiden Konventionen ein Import oder die Maske damals benutzt hat, steht nicht in den Daten.
+# Die Zeile wird gelesen, wie sie vorher gelesen wurde. Kein Import stellt sie um (die Importe
+# zählen sie nur: ``legacy_mirrors``), und eine Maske ändert ihre Form nur zusammen mit den Konten
+# (``reform``); die Umstellung bleibt einer Prüfliste vorbehalten, die den Nutzer entscheiden
+# lässt (``docs/aufgaben.md``).
+FORM_PURPOSE_FIRST = ENTRY_PURPOSE_FIRST
+FORM_LIQUID_FIRST = ENTRY_LIQUID_FIRST
+FORM_TRANSFER = ENTRY_TRANSFER
+FORM_MIRROR_COA = 'mirror_coa'
+FORM_MIRROR_COUNTER = 'mirror_counter'
+FORM_MIRROR_LEGACY = 'mirror_legacy'
+
+ENTRY_FORMS = (FORM_PURPOSE_FIRST, FORM_LIQUID_FIRST, FORM_TRANSFER,
+               FORM_MIRROR_COA, FORM_MIRROR_COUNTER, FORM_MIRROR_LEGACY)
+MIRROR_FORMS = (FORM_MIRROR_COA, FORM_MIRROR_COUNTER, FORM_MIRROR_LEGACY)
+
+SIDE_COA = 'coa'
+SIDE_COUNTER = 'counter'
+
+_SOLL_SIDE = {
+    FORM_PURPOSE_FIRST: SIDE_COUNTER,
+    FORM_LIQUID_FIRST: SIDE_COA,
+    FORM_TRANSFER: SIDE_COA,
+    FORM_MIRROR_COA: SIDE_COA,
+    FORM_MIRROR_COUNTER: SIDE_COUNTER,
+    FORM_MIRROR_LEGACY: SIDE_COUNTER,
+}
+
+
+def soll_side(form) -> str:
+    """Welche Seite des Satzes steht bei positivem Betrag im Soll? ``'coa'`` (Feld „Konto“)
+    oder ``'counter'`` (Gegenkonto). Daran hängt das Soll/Haben-Kennzeichen des DATEV-Exports."""
+    return _SOLL_SIDE[form]
+
+
+def derive_entry_form(coa_id, counter_coa_id, money_ids, sign_side) -> str:
+    """Form für einen Satz, der JETZT geschrieben wird – aus den Konten und der Menge der
+    Geldkonten (``Database.get_payment_coa_ids``) zu diesem Zeitpunkt.
+
+    Bei einer Zahlung folgt die Form der Kontierung (``classify_entry``); ein Satz ohne
+    Zweckkonto (heute ``ENTRY_EMPTY``) gilt als „Zweckkonto vorne“: Die EÜR bucht nichts,
+    der Betrag steht wie bisher auf der Gegenkonto-Seite. Nur beim Spiegel (beide Seiten
+    Geldkonten) lässt sich die Form nicht aus den Konten ablesen: ``sign_side`` sagt, auf
+    welche Seite sich der Betrag bezieht – ``'coa'`` (Importe: positiv = Konto im Soll) oder
+    ``'counter'`` (Buchungsmaske: Betrag = Richtung auf dem Bankkonto im Gegenkonto)."""
+    kind = classify_entry(coa_id, counter_coa_id, money_ids)
+    if kind == ENTRY_MIRROR:
+        return FORM_MIRROR_COA if sign_side == SIDE_COA else FORM_MIRROR_COUNTER
+    if kind == ENTRY_EMPTY:
+        return FORM_PURPOSE_FIRST
+    return kind
+
+
+def _form_from_roles(coa_id, coa_is_money, counter_coa_id, counter_is_money, sign_side) -> str:
+    """Wie ``derive_entry_form``, nur sagt der Aufrufer selbst, welche Seite ein Geldkonto ist
+    (statt dass die Kontenliste von heute es entscheidet). Eine Seite ohne Konto ist nie eines."""
+    money = set()
+    if coa_is_money and coa_id is not None:
+        money.add(coa_id)
+    if counter_is_money and counter_coa_id is not None:
+        money.add(counter_coa_id)
+    return derive_entry_form(coa_id, counter_coa_id, money, sign_side)
+
+
+def import_entry_form(coa_id, coa_is_money, counter_coa_id, counter_is_money) -> str:
+    """Form eines Satzes, den ein Import schreibt. Wie ``derive_entry_form``, nur bestimmt der
+    Import selbst, welche Seite ein Geldkonto ist (nach Kontonummern, daran richtet er auch das
+    Vorzeichen aus), nicht die Kontenliste. Eine Seite ohne Konto ist nie ein Geldkonto. Ein
+    Spiegel trägt den Rohbetrag der Datei: positiv heißt „Konto im Soll“ (``mirror_coa``).
+
+    Ist keine Seite ein Zahlungskonto, bleibt der Rohbetrag, und WISO meint „Konto im Soll“:
+    ``transfer`` (positiv = Konto im Soll) – auch bei leerem oder unbekanntem Gegenkonto, nie
+    ``purpose_first`` (dort stünde das Gegenkonto im Soll)."""
+    if not (coa_is_money or counter_is_money):
+        return FORM_TRANSFER
+    return _form_from_roles(coa_id, coa_is_money, counter_coa_id, counter_is_money, SIDE_COA)
+
+
+def read_entry_form(stored, coa_id, counter_coa_id, money_ids) -> str:
+    """Die Form eines Satzes zum Lesen: die gespeicherte (``Bookings.EntryForm``) – nur für
+    eine Zeile ohne Form (per Roh-SQL angelegt) die Einordnung mit der Kontenliste von heute,
+    also die Lesart vor der Form. Ein Spiegel ohne Form gilt als ``mirror_legacy``."""
+    if stored in ENTRY_FORMS:
+        return stored
+    kind = classify_entry(coa_id, counter_coa_id, money_ids)
+    if kind == ENTRY_MIRROR:
+        return FORM_MIRROR_LEGACY
+    if kind == ENTRY_EMPTY:
+        return FORM_PURPOSE_FIRST
+    return kind
+
+
+#: Welche Seite eines Satzes ein Geldkonto ist, je Form: (Konto, Gegenkonto).
+_MONEY_SIDES = {
+    FORM_PURPOSE_FIRST: (False, True),
+    FORM_LIQUID_FIRST: (True, False),
+    FORM_TRANSFER: (False, False),
+    FORM_MIRROR_COA: (True, True),
+    FORM_MIRROR_COUNTER: (True, True),
+    FORM_MIRROR_LEGACY: (True, True),
+}
+
+
+def reform(old_form, old_coa_id, old_counter_coa_id, coa_id, counter_coa_id, money_ids, amount):
+    """Neue Form samt Betrag, wenn sich Konto oder Gegenkonto eines bestehenden Satzes ändern.
+
+    Eine Seite, die gleich bleibt, behält ihre Rolle (Geldkonto oder nicht) aus der alten Form –
+    der Satz wurde so geschrieben, und die Kontenliste von heute ändert daran nichts. Nur eine
+    Seite, die sich ändert, wird mit den Zahlungskonten von jetzt (``money_ids``) eingeordnet.
+
+    Der Betrag bezieht sich weiter auf dieselbe Seite wie vorher (``soll_side`` der alten
+    Form). Passt die neue Kontierung nur mit der anderen Seite – etwa wenn aus „Aufwand an
+    Bank“ eine Umbuchung wird –, kippt die Form und der Betrag wird negiert: im Soll/Haben
+    ist das dieselbe Buchung. Ein Spiegel bleibt, was er war (auch ``mirror_legacy``), solange
+    beide Seiten Geldkonten sind – die Änderung der Konten sagt nichts über die Lesart seines
+    Betrags. Returns ``(form, amount)``; ``amount`` darf ``None`` sein."""
+    side = soll_side(old_form)
+    old_coa_money, old_counter_money = _MONEY_SIDES[old_form]
+    coa_money = old_coa_money if coa_id == old_coa_id else coa_id in money_ids
+    counter_money = (old_counter_money if counter_coa_id == old_counter_coa_id
+                     else counter_coa_id in money_ids)
+    form = _form_from_roles(coa_id, coa_money, counter_coa_id, counter_money, side)
+    if old_form in MIRROR_FORMS and form in MIRROR_FORMS:
+        form = old_form
+    if soll_side(form) != side and amount is not None:
+        amount = -amount
+    return form, amount
+
+
+def is_mirror_row(stored, coa_id, counter_coa_id, bank_coa_ids) -> bool:
+    """Rein liquider Spiegel (Doppik), der in Listen und im Buchungssatz-Editor ausgeblendet wird?
+
+    Wie in 2.0.x: beide Seiten sind eigene Bank-/Kassenkonten (``Database.get_bank_coa_ids``).
+    Ein Spiegel mit dem Verrechnungskonto (1460) oder einem anderen Konto, das kein eigenes ist,
+    bleibt sichtbar und bearbeitbar – auch wenn seine Form bekannt ist. Eine Zahlung oder
+    Umbuchung (``purpose_first``, ``liquid_first``, ``transfer``) ist nie ein Spiegel: Ihre
+    Form steht fest, auch wenn eines ihrer Konten später ein eigenes Bankkonto wird."""
+    if stored in ENTRY_FORMS and stored not in MIRROR_FORMS:
+        return False
+    return coa_id in bank_coa_ids and counter_coa_id in bank_coa_ids
+
+
+def purpose_in_counter(stored, coa_id, counter_coa_id, bank_coa_ids) -> bool:
+    """Steht das Zweckkonto eines Satzes auf der Gegenseite („Geldkonto vorne“)? Danach richten
+    sich der Buchungssatz-Editor (das Feld „SKR-Konto“ zeigt das Zweckkonto), die Maske und der
+    Kontovorschlag; speichert die Maske, bleibt das Geldkonto vorne, wie es war.
+
+    ``liquid_first``: ja (sofern ein Konto da ist). ``purpose_first`` und ``transfer``: nein.
+    Alles andere – ein Spiegel (auch einer mit bekannter Lesart) und eine Zeile ohne Form –
+    liest sich wie in 2.0.x: Das Konto ist ein eigenes Bankkonto, das Gegenkonto nicht (eigene
+    Bank-/Kassenkonten: ``Database.get_bank_coa_ids``). So bleibt „Bank an 1460“ im Editor ein Satz
+    mit dem Zweckkonto 1460 und wird beim Speichern nicht zu „Bank an Bank“."""
+    if stored == FORM_LIQUID_FIRST:
+        return coa_id is not None
+    if stored in (FORM_PURPOSE_FIRST, FORM_TRANSFER):
+        return False
+    return coa_id in bank_coa_ids and counter_coa_id not in bank_coa_ids
+
+
+def bank_effect(stored, amount, coa_id, counter_coa_id, parent_coa_ids, bank_coa_ids):
+    """Wirkung eines Buchungssatzes auf das Konto seiner Bankbewegung (Split-Summe).
+
+    ``stored`` ist die gespeicherte Form (oder ``None``), ``parent_coa_ids`` die COA-IDs des
+    Kontos der Bankbewegung (``Accounts.SKRAccount``; leer/``None``, wenn es keine
+    SKR-Nummer hat). Ein Spiegel mit bekannter Lesart (``mirror_coa``/``mirror_counter``)
+    wirkt nach seiner Position: Steht das Konto der Bank auf der Seite, auf die sich der
+    Betrag bezieht, ist es der Betrag, auf der anderen Seite sein Gegenteil, berührt er das
+    Konto nicht, ist es 0. Alles andere – auch ``mirror_legacy`` – zählt wie bisher
+    (``is_bank_effective``: der Betrag, wenn der Satz ein eigenes Bankkonto berührt oder nicht
+    ganz kontiert ist, sonst 0)."""
+    amount = amount or 0
+    if stored in (FORM_MIRROR_COA, FORM_MIRROR_COUNTER) and parent_coa_ids:
+        if stored == FORM_MIRROR_COA:
+            reference, other = coa_id, counter_coa_id
+        else:
+            reference, other = counter_coa_id, coa_id
+        if reference in parent_coa_ids:
+            return amount
+        if other in parent_coa_ids:
+            return -amount
+        return 0
+    return amount if is_bank_effective(coa_id, counter_coa_id, bank_coa_ids) else 0
+
+
+# SKR04-Konten 1000–1099 sind Vorräte. Bis 2.0.x galten sie als Kasse (der SKR03-Kassenbereich,
+# den die WISO-Importe fest als liquide behandelt haben); die Migration auf 2.1.0 schreibt
+# fest, wie der Bestand damals gelesen wurde. Seither sind sie kein Geldkonto mehr – Importe
+# melden Buchungen darauf (``stock_range_accounts``).
+LEGACY_CASH_RANGE = (1000, 1099)
+LEGACY_CASH_NUMBERS = range(LEGACY_CASH_RANGE[0], LEGACY_CASH_RANGE[1] + 1)
+
 # SKR04: Klasse 0 = Anlagevermögen, Klassen 4–7 = Erträge und Aufwendungen. Feste
 # Nummern wie in den übrigen Auswertungen, bis die Funktionskonten-Aufgabe
 # (docs/aufgaben.md) Rollen statt Nummern einführt.
@@ -68,16 +274,22 @@ PL_ACCOUNT_RANGE = (4000, 7999)
 REVENUE_ACCOUNT_RANGE = (4000, 4999)
 
 
-def is_asset_transfer(coa_id, counter_coa_id, liquid_coa_ids, asset_coa_ids, pl_coa_ids) -> bool:
+def is_asset_transfer(coa_id, counter_coa_id, liquid_coa_ids, asset_coa_ids, pl_coa_ids,
+                      form=None) -> bool:
     """Ist das eine Umbuchung zwischen Anlagekonto und Erfolgskonto?
 
     Das ist die Form der AfA („Aufwand an Anlagekonto“) und des Restbuchwerts beim
-    Abgang. Der Satz bewegt kein Geld, gehört aber in die EÜR: Wahr, wenn
-    ``classify_entry`` eine Umbuchung ergibt und eine Seite in ``asset_coa_ids``, die
-    andere in ``pl_coa_ids`` liegt. Ein Anlagenkauf (Anlagekonto gegen Geldkonto) oder
-    eine Verbindlichkeit auf der Gegenseite ist keine.
+    Abgang. Der Satz bewegt kein Geld, gehört aber in die EÜR: Wahr, wenn der Satz eine
+    Umbuchung ist und eine Seite in ``asset_coa_ids``, die andere in ``pl_coa_ids`` liegt.
+    Ein Anlagenkauf (Anlagekonto gegen Geldkonto) oder eine Verbindlichkeit auf der
+    Gegenseite ist keine.
+
+    ``form`` ist die gelesene Form des Satzes (``read_entry_form``); ohne sie ordnet
+    ``classify_entry`` mit ``liquid_coa_ids`` ein.
     """
-    if classify_entry(coa_id, counter_coa_id, liquid_coa_ids) != ENTRY_TRANSFER:
+    if form is None:
+        form = classify_entry(coa_id, counter_coa_id, liquid_coa_ids)
+    if form != ENTRY_TRANSFER:
         return False
     return ((coa_id in asset_coa_ids and counter_coa_id in pl_coa_ids)
             or (coa_id in pl_coa_ids and counter_coa_id in asset_coa_ids))
@@ -130,6 +342,28 @@ def receivable_condition(debtor_coa_ids, payment_coa_ids, alias=''):
 
 
 class MatchingMixin:
+    @staticmethod
+    def _account_coa_sets(cursor):
+        """{Accounts.ID: COA-IDs seines SKR-Kontos} – Konten ohne SKR-Nummer fehlen. Daran
+        erkennt ``bank_effect`` die Seite der Bankbewegung in einem Spiegel."""
+        cursor.execute('''
+            SELECT a.ID, c.ID FROM Accounts a
+            JOIN ChartOfAccounts c ON c.AccountNumber = a.SKRAccount
+            WHERE a.SKRAccount IS NOT NULL
+        ''')
+        sets = {}
+        for account_id, coa_id in cursor.fetchall():
+            sets.setdefault(account_id, set()).add(coa_id)
+        return sets
+
+    def get_account_coa_sets(self):
+        """Öffentliche Variante von ``_account_coa_sets`` (ohne Cursor-Parameter)."""
+        conn = self._get_connection()
+        try:
+            return self._account_coa_sets(conn.cursor())
+        finally:
+            conn.close()
+
     def _receivable_sql(self, cursor, alias=''):
         """``receivable_condition`` für diese Datenbank, gelesen über ``cursor`` (so läuft sie
         auch innerhalb einer laufenden Transaktion). Returns ``(sql, params)``."""
@@ -167,17 +401,15 @@ class MatchingMixin:
         bank_coa_ids = self._get_bank_coa_ids(cursor)
         cursor.execute('''
             SELECT COA_ID, CounterCOA_ID, TaxRate, TaxAmount,
-                   DocumentNumber, Contact_ID, Category_ID
+                   DocumentNumber, Contact_ID, Category_ID, EntryForm
             FROM Bookings
             WHERE ParentBooking_ID = ?
             ORDER BY ID
         ''', (bank_booking_id,))
         for row in cursor.fetchall():
-            coa_id = row[0]
-            counter_coa_id = row[1]
-            if not (coa_id in bank_coa_ids and counter_coa_id in bank_coa_ids):
+            if not is_mirror_row(row[7], row[0], row[1], bank_coa_ids):
                 conn.close()
-                return self._euro_row(row, 3)  # TaxAmount an Index 3 -> Euro-Decimal
+                return self._euro_row(row[:7], 3)  # TaxAmount an Index 3 -> Euro-Decimal
         conn.close()
         return None
     def get_child_bookings_for_bank(self, bank_booking_id: int):
@@ -193,7 +425,7 @@ class MatchingMixin:
         werden (Herkunft ist aus den Werten allein nicht rekonstruierbar).
 
         Returns: [(ID, COA_ID, CounterCOA_ID, AutoMirror,
-                   Amount€, TaxRate, TaxAmount€, DocumentNumber, Text)]
+                   Amount€, TaxRate, TaxAmount€, DocumentNumber, Text, EntryForm)]
         Die Indizes 0–3 sind stabil; die weiteren Felder speisen den
         Buchungssatz-Editor der Bank-Maske.
         """
@@ -201,7 +433,7 @@ class MatchingMixin:
         cursor = conn.cursor()
         cursor.execute('''
             SELECT ID, COA_ID, CounterCOA_ID, COALESCE(AutoMirror, 0),
-                   Amount, TaxRate, TaxAmount, DocumentNumber, Text
+                   Amount, TaxRate, TaxAmount, DocumentNumber, Text, EntryForm
             FROM Bookings WHERE ParentBooking_ID = ? ORDER BY ID
         ''', (bank_booking_id,))
         rows = cursor.fetchall()
@@ -222,7 +454,7 @@ class MatchingMixin:
         zur Rechnung, nicht zu einer Bankbewegung.
 
         Returns: [(ID, DateBooking, Amount€, DocumentNumber, Text,
-                   RecipientClient, COA_ID)]
+                   RecipientClient, COA_ID, CounterCOA_ID, EntryForm)]
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -232,7 +464,7 @@ class MatchingMixin:
         params = receivable_params + ([around_date] if around_date else []) + [limit]
         cursor.execute(f'''
             SELECT ID, DateBooking, Amount, DocumentNumber, Text,
-                   RecipientClient, COA_ID
+                   RecipientClient, COA_ID, CounterCOA_ID, EntryForm
             FROM Bookings
             WHERE BookingType = 'entry' AND ParentBooking_ID IS NULL
               AND Account_ID IS NULL
@@ -266,9 +498,10 @@ class MatchingMixin:
         conn = self._get_connection()
         cursor = conn.cursor()
         bank_coa_ids = self._get_bank_coa_ids(cursor)
+        account_coas = self._account_coa_sets(cursor)
         cursor.execute('''
-            SELECT p.ID, p.DateBooking, p.Amount, p.Text,
-                   e.Amount, e.COA_ID, e.CounterCOA_ID
+            SELECT p.ID, p.DateBooking, p.Amount, p.Text, p.Account_ID,
+                   e.Amount, e.COA_ID, e.CounterCOA_ID, e.EntryForm
             FROM Bookings p
             JOIN Bookings e ON e.ParentBooking_ID = p.ID
             WHERE p.BookingType = 'bank'
@@ -288,11 +521,11 @@ class MatchingMixin:
 
         parents = {}
         sums = {}
-        for bank_id, date, amount, text, child_amount, coa, counter in rows:
+        for bank_id, date, amount, text, account_id, child_amount, coa, counter, form in rows:
             parents[bank_id] = (date, amount, text)
             sums.setdefault(bank_id, 0)
-            if is_bank_effective(coa, counter, bank_coa_ids):
-                sums[bank_id] += (child_amount or 0)
+            sums[bank_id] += bank_effect(form, child_amount, coa, counter,
+                                         account_coas.get(account_id), bank_coa_ids)
 
         result = []
         for bank_id, (date, amount, text) in parents.items():
@@ -442,7 +675,7 @@ class MatchingMixin:
 
         # ── Schritt 0: Altdaten-Reparatur ─────────────────────────────────
         cursor.execute('''
-            UPDATE Bookings SET BookingType = 'bank'
+            UPDATE Bookings SET BookingType = 'bank', EntryForm = NULL
             WHERE (BookingType IS NULL OR BookingType = 'entry')
               AND Account_ID IS NOT NULL
               AND COA_ID IS NULL
@@ -607,6 +840,7 @@ class MatchingMixin:
             WHERE a.SKRAccount IS NOT NULL
         ''')
         own_coa_of_account = dict(cursor.fetchall())
+        account_coas = self._account_coa_sets(cursor)
 
         def _source_group_match(bank_id, bank_date, bank_amount, account_id):
             """Eindeutige SourceGroup zu dieser Bankbewegung finden.
@@ -640,8 +874,9 @@ class MatchingMixin:
                     continue
                 if not any(own_coa in (m[2], m[3]) for m in members):
                     continue
-                total = sum(m[1] or 0 for m in members
-                            if is_bank_effective(m[2], m[3], bank_coa_ids))
+                total = sum(bank_effect(m[5], m[1], m[2], m[3],
+                                        account_coas.get(account_id), bank_coa_ids)
+                            for m in members)
                 if abs(total - bank_amount) < 50:
                     hits.append(group)
             return hits[0] if len(hits) == 1 else None
@@ -680,8 +915,9 @@ class MatchingMixin:
                     continue
                 if not any(own_coa in (m[2], m[3]) for m in members):
                     continue
-                summe = sum(m[1] or 0 for m in members
-                            if is_bank_effective(m[2], m[3], bank_coa_ids))
+                summe = sum(bank_effect(m[5], m[1], m[2], m[3],
+                                        account_coas.get(account_id), bank_coa_ids)
+                            for m in members)
                 kandidaten.append((gruppe, summe, members))
             if len(kandidaten) < 2:
                 return None            # Einzelgruppen erledigt Stufe 0
@@ -700,7 +936,7 @@ class MatchingMixin:
 
         def _source_group_members(group):
             cursor.execute('''
-                SELECT ID, Amount, COA_ID, CounterCOA_ID, Text FROM Bookings
+                SELECT ID, Amount, COA_ID, CounterCOA_ID, Text, EntryForm FROM Bookings
                 WHERE BookingType = 'entry' AND SourceGroup = ?
             ''', (group,))
             return cursor.fetchall()

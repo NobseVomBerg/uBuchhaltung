@@ -32,6 +32,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from db.matching import LEGACY_CASH_NUMBERS, import_entry_form
+
 from .catalog import Catalog
 from .ods import OdsError, OdsFile
 from .rtf import rtf_to_text
@@ -65,14 +67,14 @@ T_UNITS = 'SUP_ARTICLES_UNITS'
 FIRST_PERSONAL_ACCOUNT = 10000
 
 #: Liquide Konten ohne Rückfrage (SKR04-Nummern, nach der Umschlüsselung): 1460 ist das
-#: Verrechnungskonto (Geldtransit). 1000–1099 ist historisch (SKR03-Kassenbereich; in
-#: SKR04 sind es Vorräte) und bleibt, weil vorhandene Bestände ihr Vorzeichen daran
-#: ausgerichtet haben. Die Kasse der App (SKR04 1600) und die Bankkonten zählen über die
-#: eigenen Konten (``Accounts.SKRAccount``). Die Importe richten das Vorzeichen an dieser
-#: Menge aus, ebenso `Database.get_payment_coa_ids`. Nicht ändern, bevor die Richtung
-#: beim Import festgeschrieben wird (docs/aufgaben.md): Sonst liest man Bestände anders,
-#: als sie importiert wurden – ein Re-Import verdoppelte Sätze mit Gegenvorzeichen.
-DEFAULT_LIQUID_ACCOUNTS = frozenset(range(1000, 1100)) | {1460}
+#: Verrechnungskonto (Geldtransit). Die Kasse der App (SKR04 1600) und die Bankkonten zählen
+#: über die eigenen Konten (``Accounts.SKRAccount``). Die Importe richten das Vorzeichen an
+#: dieser Menge aus und schreiben die Form des Satzes (``Bookings.EntryForm``) mit; ebenso
+#: nimmt `Database.get_payment_coa_ids` sie. Der SKR03-Kassenbereich 1000–1099 gehört seit 2.1.0
+#: nicht mehr dazu – nach der Umschlüsselung sind es in SKR04 Vorräte. Was frühere Versionen
+#: damit importiert haben, hält die Form des Bestands fest (Migration auf 2.1.0); ein neuer Import
+#: meldet Buchungen auf diesen Konten (``stock_range_accounts``).
+DEFAULT_LIQUID_ACCOUNTS = frozenset({1460})
 
 #: SKR03 → (SKR04, Bezeichnung) für Konten, die ``BAS_FINACC_PLAN`` nicht führt.
 #:
@@ -169,6 +171,12 @@ class WisoBooking:
     source_id: Optional[int] = None
     #: SKR03-Nummern, die sich nicht umschlüsseln ließen.
     unmapped: List[int] = field(default_factory=list)
+    #: Form des Satzes (``db.matching.FORM_*``), wie der Import das Vorzeichen gesetzt hat.
+    form: str = ''
+    #: Betrag, den die Regel von 2.0.x (Zahlungskonten einschließlich 1000–1099) ergeben hätte –
+    #: nur bei einem Satz, der ein Konto 1000–1099 berührt, sonst ``None``. Hat ein älterer Import
+    #: den Satz geschrieben, steht er so in der Datenbank (``db.wiso_fdb_import``).
+    legacy_amount: Optional[float] = None
 
 
 @dataclass
@@ -323,6 +331,10 @@ class WisoData:
     tax_rows_skipped: int = 0
     #: Übersprungene Erinnerungswert-Buchungen abgegangener Anlagen.
     memo_rows_skipped: int = 0
+    #: Sätze mit negativem Bruttobetrag und genau einer liquiden Seite: Dort bestimmt die
+    #: Richtung des Geldes das Vorzeichen, ein Storno oder eine Gutschrift wird so wie eine
+    #: normale Buchung gelesen – gleich, ob die Zahl dabei ihr Vorzeichen ändert.
+    negative_gross: int = 0
 
 
 class WisoDatabase:
@@ -525,9 +537,11 @@ class WisoDatabase:
         verkauftes Anlagegut weiterplant. :meth:`read` füllt das selbst.
         """
         liquid = set(DEFAULT_LIQUID_ACCOUNTS) | set(liquid_accounts or ())
+        legacy_liquid = liquid | set(LEGACY_CASH_NUMBERS)        # die Menge von 2.0.x
         missing = {} if missing is None else missing
         disposed = disposed or {}
         self._memo_skipped = 0
+        self._negative_gross = 0
         out = []
         for row in self.catalog.rows(T_BOOKINGS):
             gross = row.get('AMOUNTGROSS')
@@ -544,7 +558,13 @@ class WisoDatabase:
             unmapped = [number for number, mapped
                         in ((source_account, account), (source_counter, counter))
                         if number is not None and mapped is None]
-            amount = self._signed(gross, account, counter, liquid)
+            amount, form = self._signed(gross, account, counter, liquid)
+            if float(gross) < 0 and (account in liquid) != (counter in liquid):
+                self._negative_gross += 1          # genau eine Seite liquide: sie bestimmt das Vorzeichen
+            legacy_amount = None
+            if account in LEGACY_CASH_NUMBERS or counter in LEGACY_CASH_NUMBERS:
+                legacy_amount = self._signed_amount(
+                    gross, account in legacy_liquid, counter in legacy_liquid)
             tax_rate = row.get('TAXRATE')
             tax_rate = tax_rate / 100.0 if tax_rate else None
             net = row.get('AMOUNTNET')
@@ -563,24 +583,39 @@ class WisoDatabase:
                 group=str(group) if group is not None else '',
                 invoice_id=row.get('INVID'), payment_id=row.get('PAYMENTID'),
                 inventory_id=row.get('INVENTORYID'), source_id=row.get('ID'),
-                unmapped=unmapped,
+                unmapped=unmapped, form=form, legacy_amount=legacy_amount,
             ))
         return out
 
     @staticmethod
     def _signed(gross, account, counter, liquid):
-        """Vorzeichen aus Sicht des liquiden Kontos.
+        """Vorzeichen aus Sicht des liquiden Kontos und die Form des Satzes.
 
-        Gegenkonto liquide → Geld fließt ab; Konto liquide → Geld kommt an.
-        Berührt keine Seite ein Zahlungskonto, bleibt der Betrag, wie er ist.
+        Gegenkonto liquide → Geld fließt ab (``purpose_first``, Betrag negativ); Konto liquide →
+        Geld kommt an (``liquid_first``, Betrag positiv). Sind beide Seiten liquide, ist der Satz
+        ein Spiegel: Der Rohbetrag bleibt, positiv heißt „Konto im Soll“ (``mirror_coa``).
+        Berührt keine Seite ein Zahlungskonto, bleibt der Betrag, wie er ist, und WISO meint
+        „Konto im Soll“ (``transfer``) – auch bei einer leeren oder unbekannten Seite. Bei genau
+        einer liquiden Seite wird der Betrag zum Betrag der Geldbewegung: Ein negativer
+        Bruttobetrag verliert dabei sein Vorzeichen oder behält es zufällig (``bookings`` zählt jeden
+        solchen Satz als ``negative_gross``).
+
+        Returns ``(Betrag, Form)``.
         """
-        amount = float(gross)
         counter_liquid = counter in liquid
         account_liquid = account in liquid
+        amount = WisoDatabase._signed_amount(gross, account_liquid, counter_liquid)
+        return amount, import_entry_form(account, account_liquid, counter, counter_liquid)
+
+    @staticmethod
+    def _signed_amount(gross, account_liquid, counter_liquid):
+        """Der Betrag zu den liquiden Seiten: bei genau einer die Richtung der Geldbewegung, sonst
+        der Rohbetrag."""
+        amount = float(gross)
         if counter_liquid and not account_liquid:
-            return -abs(amount)
-        if account_liquid and not counter_liquid:
-            return abs(amount)
+            amount = -abs(amount)
+        elif account_liquid and not counter_liquid:
+            amount = abs(amount)
         return amount
 
     # ------------------------------------------------------------------
@@ -920,6 +955,7 @@ class WisoDatabase:
             customers=customers, invoices=self.invoices(customers),
             company=self.company(),
             unmapped_accounts=missing, memo_rows_skipped=memo,
+            negative_gross=getattr(self, '_negative_gross', 0),
             unmapped_labels={n: labels[n] for n in missing if n in labels},
             tax_rows_skipped=total - len(bookings) - memo)
 

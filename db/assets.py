@@ -7,7 +7,7 @@ import os
 import json
 from decimal import Decimal
 from money import to_minor, from_minor
-from .matching import ASSET_ACCOUNT_RANGE, PL_ACCOUNT_RANGE
+from .matching import ASSET_ACCOUNT_RANGE, FORM_TRANSFER, PL_ACCOUNT_RANGE
 
 # Gebucht heißt: die Buchung gibt es – oder der WISO-Import hat das Jahr als gebucht
 # übernommen (Status 'booked', ohne Buchung). Eine Zeile 'posted' ohne vorhandene Buchung
@@ -418,10 +418,10 @@ class AssetsMixin:
                 raise ValueError(f"AfA {year} ist bereits gebucht")
             cursor = conn.execute('''
                 INSERT INTO Bookings (DateBooking, DateTax, Account_ID, COA_ID, CounterCOA_ID,
-                    Amount, Currency, Text, BookingType, Status)
-                VALUES (?, ?, NULL, ?, ?, ?, 'EUR', ?, 'entry', 'posted')
+                    Amount, Currency, Text, BookingType, Status, EntryForm)
+                VALUES (?, ?, NULL, ?, ?, ?, 'EUR', ?, 'entry', 'posted', ?)
             ''', (booking_date, booking_date, coa_id_expense, coa_id_asset,
-                  to_minor(abs(amount)), description))
+                  to_minor(abs(amount)), description, FORM_TRANSFER))
             booking_id = cursor.lastrowid
             # Upsert into AssetDepreciations
             conn.execute('''

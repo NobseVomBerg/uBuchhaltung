@@ -60,7 +60,7 @@ def test_describe_schema_version(number, text):
 
 def _evaluate_version_module(**constants):
     """version.py mit anderen Werten für MAJOR, SCHEMA_STEP und PATCH auswerten: Die Regeln gelten für
-    jede Zahl, nicht nur für die heutigen (SCHEMA_STEP und PATCH sind noch beide 0)."""
+    jede Zahl, nicht nur für die heutigen."""
     with open(version.__file__, encoding="utf-8") as f:
         source = f.read()
     for name, value in constants.items():

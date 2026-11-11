@@ -12,14 +12,17 @@ drei Formen:
 * Geldkonto vorne (v. a. aus dem WISO-Import),
 * Umbuchung (beide Seiten kontiert, keine liquide, z. B. 4405 → 4400).
 
-``db.matching.classify_entry`` ordnet das an EINER Stelle ein. Geprüft werden die
-Wahrheitstabelle, die EÜR (``get_euer_data``: ein Satz ohne liquide Gegenseite
-bleibt eine Zahlung) und das Soll/Haben-Kennzeichen des DATEV-Exports (hängt am
+``db.matching.classify_entry`` ordnet das an EINER Stelle ein – beim Schreiben; seit 2.1.0 steht
+das Ergebnis als Form am Satz (``Bookings.EntryForm``, siehe test_entry_form_*.py), und die
+Auswertungen lesen sie. Eine Zeile ohne Form (per Roh-SQL angelegt) wird weiter mit der Kontenliste
+von heute eingeordnet. Geprüft werden die Wahrheitstabelle, die EÜR (``get_euer_data``: ein Satz ohne
+liquide Gegenseite bleibt eine Zahlung) und das Soll/Haben-Kennzeichen des DATEV-Exports (hängt am
 Feld „Konto“; der BU-Schlüssel folgt der Richtung der Geldbewegung).
 
 Beträge werden exakt als Decimal bzw. in der DATEV-Schreibweise verglichen.
 """
 import csv
+from contextlib import closing
 from decimal import Decimal
 from itertools import product
 
@@ -344,6 +347,14 @@ def _export(db, with_payment_ids=True):
     return _datev_rows(csv_bytes)
 
 
+def _ohne_formen(db):
+    """Die Zeilen wie per Roh-SQL angelegt: ohne Form. Nur dann ordnet der Export mit den Zahlungskonten
+    ein, die er bekommt – ohne sie gilt allein das Vorzeichen."""
+    with closing(db._get_connection()) as conn:
+        conn.execute('UPDATE Bookings SET EntryForm = NULL')
+        conn.commit()
+
+
 def _alle_faelle_buchen(db):
     for number, (_id, coa, counter, amount, rate, _expected) in enumerate(DATEV_FAELLE, start=1):
         _book_entry(db, f'DV{number:02d}', coa, counter, amount, rate)
@@ -358,8 +369,10 @@ def test_datev_marker_follows_the_form_of_the_entry(bank_db, coa, counter, amoun
 @pytest.mark.parametrize('coa, counter, amount, rate, expected', DATEV_PARAMS)
 def test_datev_without_liquid_ids_keeps_the_sign_rule(bank_db, coa, counter, amount, rate,
                                                       expected):
-    """Ohne ``liquid_coa_ids`` (None) gilt allein das Vorzeichen: positiv = H, negativ = S."""
+    """Eine Zeile ohne Form und ohne ``liquid_coa_ids`` (None): Es gilt allein das Vorzeichen,
+    positiv = H, negativ = S."""
     _book_entry(bank_db, 'DV01', coa, counter, amount, rate)
+    _ohne_formen(bank_db)
     umsatz, sh, konto, gegenkonto, bu = _feld(_export(bank_db, with_payment_ids=False)['DV01'])
     assert sh == ('H' if Decimal(amount) >= 0 else 'S')
     assert (umsatz, konto, gegenkonto, bu) == (expected[0], *expected[2:])
@@ -367,8 +380,10 @@ def test_datev_without_liquid_ids_keeps_the_sign_rule(bank_db, coa, counter, amo
 
 def test_datev_empty_liquid_set_is_not_the_legacy_rule(bank_db):
     """Nur ``None`` wählt die reine Vorzeichen-Regel. Eine leere Menge heißt „es gibt keine
-    Geldkonten“: „6815 / 1800, −59,50“ ist dann eine Umbuchung (H), keine Ausgabe (S)."""
+    Geldkonten“: „6815 / 1800, −59,50“ ist dann – ohne gespeicherte Form – eine Umbuchung (H),
+    keine Ausgabe (S)."""
     _book_entry(bank_db, 'DV01', 6815, 1800, '-59.50', 0.19)
+    _ohne_formen(bank_db)
     bookings = bank_db.fetch_bookings_range('2026-03-01', '2026-03-31')
 
     csv_bytes, _exported = datev.export_to_datev(
@@ -383,6 +398,7 @@ def test_datev_tax_key_is_the_same_with_and_without_liquid_ids(bank_db):
     sich allein das Soll/Haben-Kennzeichen (Spalte 1), und zwar genau bei den Formen, in
     denen das Kennzeichen der Vorzeichen-Regel widerspricht."""
     _alle_faelle_buchen(bank_db)
+    _ohne_formen(bank_db)
     mit = _export(bank_db)
     ohne = _export(bank_db, with_payment_ids=False)
 
@@ -403,6 +419,45 @@ def test_datev_tax_key_is_the_same_with_and_without_liquid_ids(bank_db):
     assert geaendert == erwartet
     # Geldkonto vorne (5, davon einmal mit Betrag 0), vorne leer (1), Umbuchung (2), Privatanteil (2)
     assert len(erwartet) == 10
+
+
+# (Form, Betrag, erwartetes Kennzeichen am Feld „Konto“): Die gespeicherte Form entscheidet, welche Seite
+# bei positivem Betrag im Soll steht – nicht die Liste der Geldkonten und nicht das Vorzeichen allein.
+FORM_KENNZEICHEN = [
+    ('purpose_first', '100.00', 'H'), ('purpose_first', '-100.00', 'S'),
+    ('liquid_first', '100.00', 'S'), ('liquid_first', '-100.00', 'H'),
+    ('transfer', '100.00', 'S'), ('transfer', '-100.00', 'H'),
+    ('mirror_coa', '100.00', 'S'), ('mirror_coa', '-100.00', 'H'),
+    ('mirror_counter', '100.00', 'H'), ('mirror_counter', '-100.00', 'S'),
+    ('mirror_legacy', '100.00', 'H'), ('mirror_legacy', '-100.00', 'S'),
+]
+
+
+@pytest.mark.parametrize('form, amount, expected', FORM_KENNZEICHEN)
+@pytest.mark.parametrize('with_payment_ids', [True, False])
+def test_datev_marker_follows_the_stored_form_whatever_the_accounts_look_like(
+        bank_db, form, amount, expected, with_payment_ids):
+    """Dieselben Konten (6815 / 4400: für die Kontenliste eine Umbuchung), nur die Form wechselt."""
+    bank_db.insert_booking('2026-03-10', Decimal(amount), coa_id=_coa(bank_db, 6815),
+                           counter_coa_id=_coa(bank_db, 4400), document_number='DV01',
+                           booking_type='entry', entry_form=form)
+
+    assert _feld(_export(bank_db, with_payment_ids=with_payment_ids)['DV01'])[1] == expected
+
+
+@pytest.mark.parametrize('form, amount, expected', [
+    ('mirror_coa', '500.00', 'S'), ('mirror_coa', '-500.00', 'H'),
+    ('mirror_counter', '500.00', 'H'), ('mirror_counter', '-500.00', 'S'),
+])
+def test_datev_marker_of_a_mirror_between_two_own_banks(bank_db, form, amount, expected):
+    """Spiegel Bank an Bank: ``mirror_coa`` (Betrag auf dem Konto, so schreiben ihn die Importe) hat
+    das Konto bei positivem Betrag im Soll, ``mirror_counter`` (so schreibt ihn die Maske) das
+    Gegenkonto."""
+    bank_db.insert_booking('2026-03-10', Decimal(amount), coa_id=_coa(bank_db, 1800),
+                           counter_coa_id=_coa(bank_db, 1810), document_number='DV01',
+                           booking_type='entry', entry_form=form)
+
+    assert _feld(_export(bank_db)['DV01'])[1] == expected
 
 
 def test_datev_handler_delivers_the_new_markers(bank_db):
@@ -462,7 +517,7 @@ def test_payment_ids_on_a_fresh_database_hold_the_standard_cash_and_the_clearing
     assert tmp_db.get_bank_coa_ids() == {_coa(tmp_db, 1600)}     # die Standard-Kasse führt 1600
     numbers = _numbers(tmp_db, tmp_db.get_payment_coa_ids())
     assert {1460, 1600} <= numbers                               # 1600 über das eigene Konto
-    assert numbers <= {1460, 1600} | set(range(1000, 1100))
+    assert numbers <= {1460, 1600}
 
 
 def test_payment_ids_hold_own_banks_and_the_clearing_account_but_no_purpose_accounts(bank_db):
@@ -474,17 +529,17 @@ def test_payment_ids_hold_own_banks_and_the_clearing_account_but_no_purpose_acco
     assert {1800, 1810, 1460} <= numbers
     # keine Erlös-, Aufwand-, Steuer-, Privat- oder Forderungskonten
     assert numbers.isdisjoint({4400, 4300, 4405, 6815, 6805, 1401, 1406, 3806, 2100, 10000})
-    assert numbers <= {1800, 1810, 1460, 1600} | set(range(1000, 1100))
+    assert numbers <= {1800, 1810, 1460, 1600}
 
 
-def test_payment_ids_cover_the_cash_range_1000_to_1099(tmp_db):
-    """Historischer Bereich der Importe (SKR03-Kasse): vorhandene Bestände haben ihr Vorzeichen
-    daran ausgerichtet, deshalb gilt er unverändert."""
+def test_payment_ids_do_not_cover_the_old_cash_range_1000_to_1099(tmp_db):
+    """Bis 2.0.x galt der SKR03-Kassenbereich als Geldkonto; in SKR04 sind 1000–1099 Vorräte. Seit
+    2.1.0 gehört der Bereich nicht mehr dazu – was frühere Versionen damit importiert haben, hält die
+    Form des Bestands fest (test_entry_form_migration.py)."""
     for number in (999, 1000, 1050, 1099, 1100):
-        assert tmp_db.insert_chart_of_accounts(4, number, f'Kasse {number}', '')
+        assert tmp_db.insert_chart_of_accounts(4, number, f'Konto {number}', '')
     numbers = _numbers(tmp_db, tmp_db.get_payment_coa_ids())
-    assert {1000, 1050, 1099} <= numbers
-    assert numbers.isdisjoint({999, 1100})
+    assert numbers.isdisjoint({999, 1000, 1050, 1099, 1100})
 
 
 def test_payment_ids_count_1600_through_the_own_cash_account_not_through_a_range(tmp_db):

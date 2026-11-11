@@ -1530,6 +1530,8 @@ def test_inconsistency_check_reports_every_category(db, acct):
     e = _sent(db, 'R-E', 238.00)
     bank_e = _bank(db, acct, 238.00, date='2026-02-05')
     con = sqlite3.connect(db.db_name)
+    # Dubletten gibt es nur in einem Bestand aus der Zeit vor dem eindeutigen Index (2.1.0)
+    con.execute('DROP INDEX IF EXISTS ux_invoicepayments_invoice_booking')
     for _ in range(2):
         con.execute('INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) '
                     'VALUES (?, ?, 1190000, ?)', (e, bank_e, '2026-02-05'))
