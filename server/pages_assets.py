@@ -59,8 +59,10 @@ def PageAssets(db: Database, status_filter='', edit_id=None, new_parent_id=None,
         depr_this_year = year_entry['depreciation'] if year_entry else 0.0
 
         existing = db.get_depreciations_for_asset(asset_id)
-        booked_years = {e[2]: e[5] for e in existing}  # year → status
+        booked_years = {e[2]: e[6] for e in existing}  # Jahr → Status (Index 5 ist die Booking_ID)
         depr_status = booked_years.get(current_year, 'planned')
+        if depr_status == 'booked':                    # aus dem WISO-Import: ebenfalls gebucht
+            depr_status = 'posted'
 
         if status == 'active':
             total_purchase += purchase_price
