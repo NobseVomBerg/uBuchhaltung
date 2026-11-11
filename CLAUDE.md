@@ -152,10 +152,12 @@ kein Subagent darauf:
   mit Argument die Abfrage-PRAGMAs (`_CONSOLE_PRAGMAS_WITH_ARG`), ohne Argument nur
   rein lesende (`_CONSOLE_PRAGMAS_READ`) – auch als `pragma_…`-Tabellenfunktion, die
   SQLite mit derselben Authorizer-Aktion meldet. Alles andere ist gesperrt, auch
-  `optimize`, `incremental_vacuum` und `wal_checkpoint` ohne Argument. Je Anfrage
-  gelten ein Zeitlimit (60 s für alle Befehle zusammen, danach Abbruch und Rollback)
-  sowie Größengrenzen für einzelne Werte (20 MB) und die Ausgabe (200000 Zeilen bzw.
-  20 MB, danach gekürzt). Diese Sperren nicht aufweichen
+  `optimize`, `incremental_vacuum` und `wal_checkpoint` ohne Argument. Gesperrte
+  Funktionen: `fts3_tokenizer` (springt in Debian-/Ubuntu-Builds von SQLite eine
+  übergebene Speicheradresse an – Absturz bzw. fremder Code) und `load_extension`.
+  Je Anfrage gelten ein Zeitlimit (60 s für alle Befehle zusammen, danach Abbruch und
+  Rollback) sowie Größengrenzen für einzelne Werte (2 MB), Spalten (250) und die
+  Ausgabe (200000 Zeilen bzw. 20 MB, danach gekürzt). Diese Sperren nicht aufweichen
 - **Zeitraum-Parameter** (`from`/`to` in der Query, Cookie `period`) gelten nur als
   ISO-Datum (`period.parse_iso_date`/`valid_period`); `resolve_period` verwirft alles
   andere, Weiterleitungen aus Formularen (`handlers._period_args`) lassen einen

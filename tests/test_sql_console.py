@@ -34,7 +34,8 @@ from tests import installation
 from tests.http_client import get, post
 
 CONSOLE_DENIED = ("nicht erlaubt – ATTACH, DETACH, VACUUM sowie verändernde oder unbekannte "
-                  "PRAGMAs sind in der Konsole gesperrt")
+                  "PRAGMAs sind in der Konsole gesperrt, ebenso die Funktionen fts3_tokenizer "
+                  "und load_extension")
 ADMIN_ONLY = "Die SQL-Konsole steht nur Administratoren zur Verfügung."
 NOTICE = "nur Administratoren zur Verfügung"                     # Hinweis statt der Konsole
 EXPORT_HINT = "Die Datei kann direkt im SQL-Konsolenbereich eingefügt werden."
