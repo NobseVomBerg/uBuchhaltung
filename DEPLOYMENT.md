@@ -225,6 +225,100 @@ gleichzeitig auf demselben `data/` betreiben** (SQLite-Locking).
   Volume einbinden, `UBUCHHALTUNG_HOST=0.0.0.0` setzen, Port veröffentlichen –
   für Docker siehe den Abschnitt **Docker** oben.
 
+## Diagnose mit Claude Code (MCP, nur lesend)
+
+Mit `tools/mcp_ubuchhaltung.py` kann Claude Code eine laufende Instanz (z. B. den
+Docker-Container im LAN) untersuchen, ohne Browser. Der Server läuft **lokal auf dem
+Entwicklungsrechner** – Claude Code startet ihn als stdio-MCP-Server – und fragt die
+Instanz per HTTP ab wie ein Skript. Auf dem NAS bzw. im Container ist nichts zu
+installieren; nötig sind nur Python (ab 3.10) und die Standardbibliothek.
+
+**Was er kann** – fünf Werkzeuge:
+
+| Werkzeug | Zweck |
+|---|---|
+| `info` | Adresse, Anmeldung und Version der Instanz |
+| `sql` | genau ein `SELECT` in der Datenbank des angemeldeten Kontos |
+| `db_check` | `quick_check` (mit `full`: `integrity_check`), Fremdschlüssel, Schema-Version, Journal-Modus, Tabellenzahl |
+| `schema` | alle Tabellen mit Zeilenzahl; mit Tabellenname: `CREATE`-Anweisung, Spalten, Fremdschlüssel, Indizes |
+| `page` | eine geprüfte Anzeigeseite der App per GET, als Text (z. B. `/about`, `/invoice?id=3`, `/users`) |
+
+`sql` gibt zuerst die Spaltennamen als JSON-Array aus, dann jede Zeile als JSON-Array (`NULL`
+als `null`, Zahlen als Zahlen); so bleiben Zeilenumbrüche und Semikolons in Werten
+eindeutig. **Geldbeträge stehen als Ganzzahl in Minor Units** (Skalierung 4: `1190000` =
+119,00 €). Gleich benannte Spalten (`a.ID`, `b.ID`) benennt SQLite um (`ID`, `ID:1`) – besser
+mit `AS` unterscheiden. BLOB-Spalten lassen sich nur über `hex(x)` oder `length(x)` abfragen.
+
+**Was er nicht kann – und seine Grenzen:**
+
+- **SQL:** nur ein einzelnes `SELECT` ohne `;` (kein `INSERT`/`UPDATE`/`DELETE`, kein
+  `PRAGMA` zum Setzen, keine zweite Anweisung). `pragma_<name>` als Tabellenfunktion ist nur
+  für rein lesende Namen erlaubt (`_READ_PRAGMAS`, z. B. `table_info`, `foreign_key_check`,
+  `quick_check`, `user_version`); `pragma_optimize` zum Beispiel würde schreiben. Gesperrt
+  sind außerdem `WITH`/`RECURSIVE`, `zeroblob`, `randomblob`, Blockkommentare außer am Anfang
+  und Abfragen über 20 000 Zeichen.
+- **Seiten:** nur aus einer Positivliste geprüfter Anzeigeseiten mit den je Seite erlaubten
+  Query-Parametern (`_PAGE_ALLOWLIST` in `tools/mcp_ubuchhaltung.py`). Manche GET-Routen der
+  App ändern Daten oder erzeugen PDFs, und manche Seiten schreiben je nach Parameter.
+  Aktionen, PDF-Erzeugung, `/login` und `/logout` stehen nicht in der Liste.
+- **Sonst:** Außer der Anmeldung und der SQL-Konsole (`/execute_sql`) sendet er keine POSTs.
+  Antworten der Instanz begrenzt er auf 16 MiB und auf die doppelte Zeitgrenze je Anfrage.
+  Das Passwort steht nie in Ausgaben oder Logs.
+- **Restrisiko:** Die SQL-Konsole der Instanz hat kein Zeitlimit. Die Sperren fangen die
+  üblichen Endlosabfragen ab, aber nicht jede aufwendige (etwa Kreuzprodukte großer
+  Tabellen). Solche Abfragen belasten die Instanz und blockieren Schreibzugriffe, solange
+  sie laufen.
+
+**Voraussetzung:** ein Konto mit Administratorrechten – die SQL-Konsole steht nur
+Administratoren zur Verfügung und sieht ausschließlich die Datenbank des angemeldeten
+Kontos. Bei automatischer Anmeldung braucht der Server keine Zugangsdaten; dort gilt die
+Hostnamen-Prüfung aus „Schutz vor fremden Webseiten“ (bei einem Namen außerhalb der
+dort genannten Endungen `UBUCHHALTUNG_ALLOWED_HOSTS` auf der Instanz setzen).
+
+**Einrichtung unter Windows (PowerShell):**
+
+1. Zugangsdaten ablegen. `cmdkey` fragt das Passwort ab; es liegt danach verschlüsselt in
+   der Windows-Anmeldeinformationsverwaltung, nicht im Projektordner:
+   ```powershell
+   cmdkey /generic:uBuchhaltung-MCP /user:<Benutzer> /pass
+   ```
+2. Server registrieren. Der lokale Scope hält die Adresse außerhalb des Repos. **Empfohlen
+   ist HTTPS** (`https://…`, bei eigenem Zertifikat zusätzlich
+   `--env UBUCHHALTUNG_MCP_CAFILE=<Pfad>`). Über `http://` sendet der Server Benutzername und
+   Passwort nur an den eigenen Rechner (`localhost`, `127.0.0.1`, `::1`). Im reinen LAN ohne
+   HTTPS muss die Ausnahme bewusst gesetzt werden; Passwort und Sitzung gehen dann
+   unverschlüsselt durchs Netz:
+   ```powershell
+   claude mcp add --scope local ubuchhaltung --env UBUCHHALTUNG_MCP_URL=http://nas.local:2824 --env UBUCHHALTUNG_MCP_ALLOW_HTTP=1 -- python <Projektordner>\tools\mcp_ubuchhaltung.py
+   ```
+   Bei automatischer Anmeldung der Instanz werden keine Zugangsdaten gesendet; dort braucht
+   es die Ausnahme nicht.
+3. Optional ohne Nachfrage freigeben, in `.claude/settings.local.json` (steht nicht im Repo).
+   Alle Werkzeuge:
+   ```json
+   {"permissions": {"allow": ["mcp__ubuchhaltung"]}}
+   ```
+   Oder nur einzelne, z. B. die reinen Prüfwerkzeuge – bei `sql` und `page` fragt Claude Code
+   dann weiter nach:
+   ```json
+   {"permissions": {"allow": ["mcp__ubuchhaltung__info", "mcp__ubuchhaltung__schema", "mcp__ubuchhaltung__db_check"]}}
+   ```
+
+**Andere Systeme und Sonderfälle:**
+
+- Linux/macOS: in der Registrierung zusätzlich `--env UBUCHHALTUNG_MCP_USER=<Benutzer>`
+  angeben und das Passwort mit dem Paket `keyring` ablegen
+  (`keyring set uBuchhaltung-MCP <Benutzer>`). Als Notlösung geht
+  `UBUCHHALTUNG_MCP_PASSWORD` im Klartext – nur zusammen mit `UBUCHHALTUNG_MCP_USER`.
+- HTTPS mit eigenem Zertifikat: `UBUCHHALTUNG_MCP_CAFILE` auf die Zertifikatsdatei (PEM)
+  zeigen lassen, in der Registrierung zusätzlich `--env UBUCHHALTUNG_MCP_CAFILE=<Pfad>`.
+- Weitere Variablen: `UBUCHHALTUNG_MCP_CREDENTIAL` (Zielname im Tresor bzw. keyring-Dienst,
+  Standard `uBuchhaltung-MCP`), `UBUCHHALTUNG_MCP_TIMEOUT` (Sekunden je Anfrage, Standard 30)
+  und `UBUCHHALTUNG_MCP_ALLOW_HTTP` (`1`/`true`/`yes`/`ja`: Zugangsdaten bewusst über
+  unverschlüsseltes `http://` an einen fremden Rechner senden).
+- Meldet der Server „Tresoreintrag ist kein UTF-16-Text“, den Eintrag mit `cmdkey` neu
+  anlegen (Schritt 1).
+
 ## Umzug auf Version 2
 
 **Was sich ändert:** Ab Version 2.0.0 gibt es nur noch die Ablage `data/users/<Name>/`.
