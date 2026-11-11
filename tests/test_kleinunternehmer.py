@@ -15,7 +15,7 @@ from server.pages_invoice import PageInvoice
 from server.pages_quote import PageQuote
 
 
-def _make_doc(db, number, tax_rate, gross):
+def _make_doc(db, number, tax_rate, gross, document_type='invoice'):
     return db.insert_invoice({
         'invoice_number': number, 'invoice_date': '2026-06-01',
         'seller_name': 'S', 'seller_company': 'S GmbH',
@@ -23,6 +23,7 @@ def _make_doc(db, number, tax_rate, gross):
         'buyer_name': 'B', 'buyer_company': 'B GmbH',
         'tax_rate': tax_rate, 'sum_net': 100.0, 'tax_amount': 0.0 if tax_rate < 0 else 19.0,
         'sum_gross': gross, 'amount_due': gross, 'status': 'finalized',
+        'document_type': document_type,
     })
 
 
@@ -58,7 +59,7 @@ def test_quote_new_has_tax_checkbox_checked(db_with_coa):
 
 
 def test_quote_exempt_checkbox_unchecked(db_with_coa):
-    qid = _make_doc(db_with_coa, 'KU-QUOTE', -1, 100.0)
+    qid = _make_doc(db_with_coa, 'KU-QUOTE', -1, 100.0, 'quote')   # das Angebotsformular zeigt nur Angebote
     html = PageQuote(db_with_coa, {}, qid)
     assert 'id="show_tax"' in html
     assert 'id="show_tax" checked' not in html

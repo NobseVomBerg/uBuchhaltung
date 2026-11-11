@@ -173,7 +173,7 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
             buyer_name = _html.escape(str(invoice[14] or '')[:30])  # BuyerName is now at index 14 (was 13)
             sum_net = invoice[36]  # SumNet is at index 36 (was 34)
             sum_gross = invoice[38]  # SumGross is at index 38 (was 36)
-            status = normalize_status(invoice[40])  # Status is at index 40 (was 38)
+            status = normalize_status(invoice[InvoiceCol.STATUS])
             
             # Status color and label from shared module constants
             status_color = INVOICE_STATUS_COLORS.get(status, '#888')
@@ -191,8 +191,8 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
             s+= f"<td>"
             # PDF-Symbol laedt nur herunter, was abgelegt ist (todo #3) – gefragt wird dasselbe
             # wie beim Download (geprüfter Pfad mit Fallback auf das Namensschema)
-            has_pdf = "true" if stored_invoice_path(db, inv_id, 'pdf')[0] else "false"
-            has_xml = "true" if stored_invoice_path(db, inv_id, 'xml')[0] else "false"
+            has_pdf = "true" if stored_invoice_path(db, inv_id, 'pdf', invoice)[0] else "false"
+            has_xml = "true" if stored_invoice_path(db, inv_id, 'xml', invoice)[0] else "false"
             pdf_title = 'PDF herunterladen' if has_pdf == "true" else 'Kein PDF vorhanden'
             s+= (f'<a href="javascript:void(0);" onclick="downloadInvoiceDocs({inv_id}, '
                  f'{has_pdf}, {has_xml})" class="action-icon" title="{pdf_title}">&#128196;</a> ')
@@ -356,8 +356,8 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None):
     s += f'<input type="hidden" id="is_edit_mode" value="{str(is_edit_mode).lower()}">'
     s += f'<input type="hidden" id="invoice_status_value" value="{_html.escape(str(invoice_status))}">'
     # Check if PDF/XML actually exist – dieselbe Frage wie beim Download (geprüfter Pfad mit Fallback)
-    pdf_file_exists = bool(is_edit_mode and stored_invoice_path(db, invoice_id, 'pdf')[0])
-    xml_file_exists = bool(is_edit_mode and stored_invoice_path(db, invoice_id, 'xml')[0])
+    pdf_file_exists = bool(is_edit_mode and stored_invoice_path(db, invoice_id, 'pdf', existing_invoice)[0])
+    xml_file_exists = bool(is_edit_mode and stored_invoice_path(db, invoice_id, 'xml', existing_invoice)[0])
     s += f'<input type="hidden" id="pdf_exists" value="{str(pdf_file_exists).lower()}">'
     s += f'<input type="hidden" id="xml_exists" value="{str(xml_file_exists).lower()}">'
     s += '<div id="invoice_msg" class="no-pdf" style="display:none; margin-bottom:10px;"></div>'

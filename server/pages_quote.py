@@ -107,7 +107,7 @@ def PageQuote(db: Database, filters: dict = None, quote_id=None):
             color = QUOTE_STATUS_COLORS.get(status, '#888')
             label = _html.escape(str(QUOTE_STATUS_LABELS.get(status, status)))
             # dieselbe Frage wie beim Download: geprüfter Pfad mit Fallback auf das Namensschema
-            pdf_exists = "true" if stored_invoice_path(db, qid, 'pdf')[0] else "false"
+            pdf_exists = "true" if stored_invoice_path(db, qid, 'pdf', q)[0] else "false"
             s += "<tr>"
             s += f"<td>{q_number}</td><td>{q_date}</td><td>{buyer}</td>"
             s += f"<td style='text-align:right;'>{fmt_eur(sum_net)}</td>"
@@ -243,7 +243,7 @@ def _quote_form_html(db: Database, quote_id=None):
         page_title = "Neues Angebot erstellen"
         is_edit = False
 
-    pdf_file_exists = bool(is_edit and stored_invoice_path(db, quote_id, 'pdf')[0])
+    pdf_file_exists = bool(is_edit and stored_invoice_path(db, quote_id, 'pdf', existing)[0])
 
     # Die ID gehört nur in den Bearbeiten-Modus (ein fremder oder unbekannter Beleg ergibt das
     # leere Formular, das beim Speichern ein neues Angebot anlegt)
