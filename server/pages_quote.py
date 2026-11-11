@@ -148,11 +148,7 @@ def PageQuote(db: Database, filters: dict = None, quote_id=None):
         }
         function convertQuote(quoteId) {
             appConfirm('Aus diesem Angebot eine Rechnung erstellen? Das Angebot wird als "Umgewandelt" markiert.', function() {
-                const f = document.createElement('form');
-                f.method = 'POST'; f.action = '/quote/convert';
-                const i = document.createElement('input');
-                i.type = 'hidden'; i.name = 'quote_id'; i.value = quoteId;
-                f.appendChild(i); document.body.appendChild(f); f.submit();
+                appPost('/quote/convert', {quote_id: quoteId});
             });
         }
         function deleteQuote(quoteId) {
@@ -671,9 +667,7 @@ def _quote_form_html(db: Database, quote_id=None):
         }
         function convertQuote(id){
             appConfirm('Aus diesem Angebot eine Rechnung erstellen? Das Angebot wird als "Umgewandelt" markiert.', function() {
-                const f=document.createElement('form'); f.method='POST'; f.action='/quote/convert';
-                const i=document.createElement('input'); i.type='hidden'; i.name='quote_id'; i.value=id;
-                f.appendChild(i); document.body.appendChild(f); f.submit();
+                appPost('/quote/convert', {quote_id: id});
             });
         }
     </script>

@@ -1934,7 +1934,7 @@ def handle_delete_invoice_payment(post_body: bytes):
         return 200, "ok"
     except Exception as e:
         print(f"Error deleting invoice payment: {e}")
-        return 500, str(e)
+        return 500, "Die Zahlungszuordnung konnte nicht entfernt werden."
 
 
 def _rate_to_pct(value, default=Decimal('19')):

@@ -518,6 +518,34 @@ class InvoicesMixin:
             raise
         finally:
             conn.close()
+    def document_path_in_use(self, path, exclude_id):
+        """Verweist ein ANDERER Beleg auf diese Datei (PDFPath/XMLPath, nach Auflösen des Pfads)?
+
+        Schutz vor dem Löschen fremder Dokumente: Der gespeicherte Pfad eines Belegs lässt sich
+        per SQL-Konsole oder zurückgespielter Sicherung auf die Datei eines anderen umbiegen."""
+        try:
+            real = os.path.realpath(path)
+        except (OSError, ValueError, TypeError):
+            return False
+        conn = self._get_connection()
+        try:
+            rows = conn.execute(
+                'SELECT PDFPath, XMLPath FROM Invoices '
+                'WHERE ID <> ? AND (PDFPath IS NOT NULL OR XMLPath IS NOT NULL)',
+                (exclude_id if exclude_id is not None else -1,)).fetchall()
+        finally:
+            conn.close()
+        for row in rows:
+            for stored in row:
+                if not isinstance(stored, str) or not stored:
+                    continue
+                try:
+                    if os.path.realpath(stored) == real:
+                        return True
+                except (OSError, ValueError):
+                    continue
+        return False
+
     def update_invoice_xml_path(self, invoice_id, xml_path):
         """Update XMLPath field for an invoice (XRechnung-Datei)
 

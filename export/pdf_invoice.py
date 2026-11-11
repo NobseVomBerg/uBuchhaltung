@@ -170,7 +170,7 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
             f.write(full_pdf)
         print(f"PDF saved to: {pdf_path}")
         # Umbenannte Rechnung (neue Nummer/anderer Kunde): Vorgänger entfernen
-        drop_stale_file(invoice[41] if len(invoice) > 41 else None, pdf_path)
+        drop_stale_file(invoice[41] if len(invoice) > 41 else None, pdf_path, db, invoice_id)
         db.update_invoice_pdf_path(invoice_id, pdf_path)
     except Exception as e:
         print(f"Error saving PDF file: {e}")

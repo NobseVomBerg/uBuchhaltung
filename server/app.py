@@ -223,7 +223,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
 
     def end_headers(self):
-        if self.path.endswith('.css') or self.path.endswith('.js') or self.path.endswith('.png'):
+        path = getattr(self, 'path', '')           # fehlt bei einer kaputten Anfragezeile
+        if path.endswith('.css') or path.endswith('.js') or path.endswith('.png'):
             self.send_header('Cache-Control', 'public, max-age=86400')  # Cache this File for 1d
         else:
             self.send_header('Cache-Control', 'no-cache')               # HTML etc no caching
