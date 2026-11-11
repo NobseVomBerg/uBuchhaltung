@@ -7,8 +7,9 @@ Asset management pages (Anlagenverzeichnis)
 import datetime
 import html as _html
 from db import Database
+from db.matching import ASSET_ACCOUNT_RANGE
 from money import fmt_eur
-from .pages import Header1, Header2, Header3, Footer
+from .pages import Header1, Header2, Header3, Footer, script_json
 
 
 # ─── Helper ──────────────────────────────────────────────────────────────────
@@ -26,11 +27,13 @@ def _fmt(value):
 
 # ─── PageAssets ──────────────────────────────────────────────────────────────
 
-def PageAssets(db: Database, status_filter='', edit_id=None, new_parent_id=None):
+def PageAssets(db: Database, status_filter='', edit_id=None, new_parent_id=None, err=None):
     """Anlagenverzeichnis (grid2Cols): Liste links, Formular + Details rechts.
 
     Rechts: ohne Auswahl ein 'Neue Anlage'-Formular; mit Auswahl das
     Bearbeiten-Formular plus Detail-Blöcke (AfA-Plan, Erweiterungen, Verkauf).
+    ``err`` ist eine Fehlermeldung einer abgelehnten Aktion (AfA-Buchung, Löschen);
+    sie erscheint als Meldung am Seitenrand.
     """
     assets = db.fetch_assets(status=status_filter if status_filter else None, parent_only=True)
     current_year = datetime.date.today().year
@@ -56,9 +59,8 @@ def PageAssets(db: Database, status_filter='', edit_id=None, new_parent_id=None)
         year_entry = next((e for e in plan if e['year'] == current_year), None)
         depr_this_year = year_entry['depreciation'] if year_entry else 0.0
 
-        existing = db.get_depreciations_for_asset(asset_id)
-        booked_years = {e[2]: e[5] for e in existing}  # year → status
-        depr_status = booked_years.get(current_year, 'planned')
+        # Gebucht: die Buchung gibt es, oder das Jahr stammt als 'booked' aus dem WISO-Import
+        depr_status = 'posted' if current_year in db.get_booked_depreciation_years(asset_id) else 'planned'
 
         if status == 'active':
             total_purchase += purchase_price
@@ -155,6 +157,9 @@ def PageAssets(db: Database, status_filter='', edit_id=None, new_parent_id=None)
         }
     </script>
     '''
+    if err:
+        s += ('<script>document.addEventListener("DOMContentLoaded",function(){'
+              'appMsg(' + script_json(err) + ',"error");});</script>')
     s += Footer()
     return s
 
@@ -164,9 +169,9 @@ def PageAssetEdit(db: Database, asset_id=None, parent_id=None):
     return PageAssets(db, edit_id=asset_id, new_parent_id=parent_id)
 
 
-def PageAssetView(db: Database, asset_id):
+def PageAssetView(db: Database, asset_id, err=None):
     """Thin-Wrapper – Detail/Bearbeiten in der kombinierten Seite (rechte Spalte)."""
-    return PageAssets(db, edit_id=asset_id)
+    return PageAssets(db, edit_id=asset_id, err=err)
 
 
 # ─── PageAssetView ────────────────────────────────────────────────────────────
@@ -184,10 +189,17 @@ def _asset_details(db: Database, asset):
 
     plan = db.calculate_depreciation_plan(purchase_price, purchase_date, useful_life, method)
     booked = {e[2]: e for e in db.get_depreciations_for_asset(asset_id)}  # year → row
+    # Gebucht: die Buchung gibt es, oder das Jahr stammt als 'booked' aus dem WISO-Import.
+    # Eine Zeile 'posted', deren Buchung fehlt, gilt als nicht gebucht (Buchen-Knopf).
+    booked_years = db.get_booked_depreciation_years(asset_id)
+    # Abgang (SaleDate). Ältere Einträge können ein Datum in anderer Schreibweise tragen –
+    # dann gilt kein Abgangsjahr, statt die Seite abstürzen zu lassen.
+    sale_year = (int(str(asset[15])[:4])
+                 if asset[15] and str(asset[15])[:4].isdigit() else None)
     current_year = datetime.date.today().year
     children = db.get_asset_children(asset_id)
-    accounts = db.fetch_accounts()
     coa_rows = db.fetch_chart_of_accounts()
+    asset_coa = db.resolve_asset_coa(asset)       # Vorbelegung des Anlagekontos
 
     # ── AfA-Plan ──
     s = '<div class="rectRounded"><h3>AfA-Plan</h3>'
@@ -201,19 +213,26 @@ def _asset_details(db: Database, asset):
         bv_end = entry['book_value_end']
         meth = _method_label(entry['method'])
         booked_entry = booked.get(yr)
-        if booked_entry:
+        is_booked = yr in booked_years
+        if is_booked:
             depr_status_label = '<span style="color:green;">✓ Gebucht</span>'
-            action = f'<a href="/assets/depreciation/view?asset_id={asset_id}&year={yr}">Buchung ansehen</a>'
+            booking_id = booked_entry[5] if booked_entry else None    # fehlt bei importierter AfA
+            action = (f'<a href="/transactions/edit?id={int(booking_id)}">Buchung ansehen</a>'
+                      if booking_id else '')
+        elif sale_year is not None and yr > sale_year:
+            # Nach dem Abgang gibt es keine AfA mehr – und keinen Buchen-Knopf
+            depr_status_label = '<span style="color:#aaa;">○ Nach Abgang</span>'
+            action = ''
         elif yr < current_year:
             depr_status_label = '<span style="color:orange;">⚠ Nicht gebucht</span>'
-            action = _book_depr_button(asset_id, yr, accounts, coa_rows)
+            action = _book_depr_button(asset_id, yr, coa_rows, asset_coa, entry['method'])
         elif yr == current_year:
             depr_status_label = '<span style="color:#0066cc;">● Laufendes Jahr</span>'
-            action = _book_depr_button(asset_id, yr, accounts, coa_rows)
+            action = _book_depr_button(asset_id, yr, coa_rows, asset_coa, entry['method'])
         else:
             depr_status_label = '<span style="color:#aaa;">○ Geplant</span>'
             action = ''
-        row_style = ' class="row-ok"' if booked_entry else ''
+        row_style = ' class="row-ok"' if is_booked else ''
         s += f'<tr{row_style}><td>{yr}</td><td style="text-align:right;">{_fmt(bv_start)}</td><td style="text-align:right;">{_fmt(depr)}</td><td style="text-align:right;">{_fmt(bv_end)}</td><td>{meth}</td><td>{depr_status_label}</td><td>{action}</td></tr>'
 
     s += '</table></div>'
@@ -252,17 +271,45 @@ def _asset_details(db: Database, asset):
     return s
 
 
-def _book_depr_button(asset_id, year, accounts, coa_rows):
-    """Render inline form to book depreciation for a specific year."""
+def _depr_expense_number(method, asset_number):
+    """Vorbelegung des Aufwandskontos der AfA (SKR04): 6220 Sachanlagen, 6222 Fahrzeuge
+    (Anlagekonten 520 Pkw, 560 sonstige Transportmittel), 6260 GWG-Sofortabschreibung."""
+    if method == 'GWG':
+        return 6260
+    if asset_number in (520, 560):
+        return 6222
+    return 6220
+
+
+def _book_depr_button(asset_id, year, coa_rows, asset_coa=None, method=''):
+    """Render inline form to book depreciation for a specific year.
+
+    Die AfA ist eine Umbuchung „Aufwand an Anlagekonto“ und hängt an keinem Bankkonto:
+    Das Anlagekonto (Konten unter 1000) ist mit dem der Anlage vorbelegt – steht dieses
+    nicht in der Liste, bleibt die Auswahl leer („– bitte wählen –“) –, das Aufwandskonto
+    mit der passenden AfA-Sammelstelle (``_depr_expense_number``)."""
     form_id = f"depr_form_{asset_id}_{year}"
-    account_options = ''.join(
-        f'<option value="{a[0]}">{_html.escape(str(a[1] or ""))}</option>' for a in accounts
-    )
-    # Filter likely expense accounts (SKR 03/04 Abschreibungen ~ 4830)
-    coa_options = ''.join(
-        f'<option value="{c[0]}">{_html.escape(str(c[2] or ""))} {_html.escape(str(c[3] or ""))}</option>'
-        for c in coa_rows if (c[7] if len(c) > 7 else 1)
-    )
+    # Ausgeblendete Konten (ShowInMenu=0) fehlen – außer dem Anlagekonto der Anlage
+    shown = [c for c in coa_rows if (c[7] if len(c) > 7 else 1) or c[0] == asset_coa]
+    asset_number = next((c[2] for c in coa_rows if c[0] == asset_coa), None)
+    expense_coa = next((c[0] for c in shown
+                        if c[2] == _depr_expense_number(method, asset_number)), None)
+
+    def options(rows, selected):
+        # Ohne Vorbelegung zwingt die leere Auswahl zu einer bewussten Wahl
+        head = '' if selected is not None else '<option value="">– bitte wählen –</option>'
+        return head + ''.join(
+            f'<option value="{c[0]}"{" selected" if c[0] == selected else ""}>'
+            f'{_html.escape(str(c[2] or ""))} {_html.escape(str(c[3] or ""))}</option>'
+            for c in rows)
+
+    asset_rows = [c for c in shown if c[2] is not None
+                  and ASSET_ACCOUNT_RANGE[0] <= c[2] <= ASSET_ACCOUNT_RANGE[1]]
+    # Ein Anlagekonto außerhalb der Liste (z. B. an der Anlage ein Konto ab 1000 gepflegt)
+    # wird nicht vorbelegt: Sonst nähme der Browser stillschweigend das erste Konto der Liste.
+    asset_selected = asset_coa if any(c[0] == asset_coa for c in asset_rows) else None
+    asset_options = options(asset_rows, asset_selected)
+    coa_options = options(shown, expense_coa)
     return f'''
         <button type="button" onclick="document.getElementById('{form_id}').style.display='block'; this.style.display='none';"
             style="font-size:0.85em; padding:2px 8px;">AfA buchen</button>
@@ -271,11 +318,11 @@ def _book_depr_button(asset_id, year, accounts, coa_rows):
                 <input type="hidden" name="asset_id" value="{asset_id}">
                 <input type="hidden" name="year" value="{year}">
                 <table class="form-table" style="font-size:0.85em;">
-                    <tr><td>Buchungskonto:</td><td>
-                        <select name="account_id" style="width:180px;">{account_options}</select>
+                    <tr><td>Anlagekonto:</td><td>
+                        <select name="asset_coa_id" style="width:180px;" required>{asset_options}</select>
                     </td></tr>
                     <tr><td>Aufwandskonto (SKR):</td><td>
-                        <select name="coa_id" style="width:180px;">{coa_options}</select>
+                        <select name="coa_id" style="width:180px;" required>{coa_options}</select>
                     </td></tr>
                     <tr><td>Beschreibung:</td><td>
                         <input type="text" name="description" placeholder="optional" style="width:180px;">

@@ -195,11 +195,32 @@ kein Subagent darauf:
   dieser Einordnung; der BU-Schlüssel folgt der Richtung der Geldbewegung. Die
   BU-Schlüssel sind fachlich noch nicht gegen einen echten Stapel geprüft
   (`docs/aufgaben.md`) – nicht als richtig voraussetzen
-- Welche Konten „liquide“ sind, hängt vom Zweck ab: Die EÜR nimmt nur die eigenen
-  Bank-/Kassenkonten (`get_bank_coa_ids` – Geld auf dem Verrechnungskonto ist noch
-  nicht geflossen); der DATEV-Export nimmt die Zahlungskonten, an denen die Importe
-  das Vorzeichen ausrichten (`get_payment_coa_ids`: zusätzlich 1000–1099 und das
-  Verrechnungskonto 1460), ebenso die Buchungsmaske beim Bearbeiten
+- Zahlungskonten: EÜR, DATEV-Export und Buchungsmaske (beim Bearbeiten) nehmen dieselbe
+  Menge (`get_payment_coa_ids`), an der auch die Importe das Vorzeichen ausrichten: die
+  SKR-Konten der eigenen Bank- und Kassenkonten – die Kasse der App (SKR04 1600) zählt wie
+  ein Bankkonto über ihr eigenes Konto, nicht über einen Bereich – plus der feste Bereich
+  der Importe (`DEFAULT_LIQUID_ACCOUNTS`): 1000–1099 und das Verrechnungskonto 1460
+  (Geldtransit: WISO bucht darüber aufgeteilte Zahlungen und Anlagen-Umbuchungen).
+  1000–1099 ist historisch (SKR03-Kassenbereich) und bleibt, weil vorhandene Bestände ihr
+  Vorzeichen daran ausgerichtet haben – nicht ändern, bevor die Richtung beim Import
+  festgeschrieben wird (`docs/aufgaben.md`). Ob ein Satz in die EÜR kommt, entscheidet die
+  Sektion in `get_euer_data` – Kind einer Bank- oder Kassenbewegung; eigenständig auf einer
+  Kasse oder (ohne Kontofilter) auf 1460; Umbuchung zwischen Anlage- und Erfolgskonto –,
+  nicht die Kontenmenge; jede Buchung zählt dabei höchstens einmal (Schlüssel: ihre ID).
+  `is_bank_effective` und die Split-Summe rechnen weiter nur mit den eigenen Bankkonten
+  (`get_bank_coa_ids`)
+- Kasse = SKR04-Konto 1600 als eigenes Konto: Eine neu angelegte Kasse
+  (`ensure_kasse_exists`, `insert_account`) bekommt 1600, das Konto wird bei Bedarf
+  nachgelegt (`ensure_cash_coa`). Vorhandene Kassen behalten ihre Nummer (leer oder 1460);
+  1460 ist das Verrechnungskonto, keine Kasse. Hat die Kasse keine SKR-Nummer, ist 1600
+  kein Zahlungskonto
+- AfA (`book_depreciation`): Umbuchung „Aufwand an Anlagekonto“ (direkte Abschreibung),
+  Betrag positiv, ohne `Account_ID`, je Anlage und Jahr nur einmal (Sperre in einer
+  Transaktion). Aufwandskonto = Erfolgskonto (4000–7999), Anlagekonto = Konto 1–999, nach
+  dem Abgang der Anlage keine AfA mehr. „Gebucht“ heißt: die Buchung gibt es (oder
+  WISO-`booked`). Löschen der Buchung setzt das Jahr auf `planned` zurück, `delete_asset`
+  lehnt bei gebuchter AfA ab. In der EÜR (Sektion 3, ohne Steuer), nicht im Dashboard – die
+  AfA ist kein Geldfluss
 - Masken schreiben nur, was sie führen (`update_booking_fields`) – Gegenkonto,
   Kategorie und fremde Kontakte dürfen beim Speichern nicht verloren gehen
 

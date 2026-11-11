@@ -147,9 +147,14 @@ ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNU
     wird automatisch 19% gesetzt und TaxAmount berechnet
 
 **Liquiditäts-Erkennung (`_is_liquid()`):**
-- Bankkonten: Über `Accounts.SKRAccount` JOIN mit ChartOfAccounts
-- Kassenkonten: Kontonummer 1000–1099
-- Verrechnungskonto: 1460
+- Bankkonten und die Kasse der App: Über `Accounts.SKRAccount` JOIN mit ChartOfAccounts
+  (die Standard-Kasse trägt SKR04 1600; hat die Kasse keine SKR-Nummer, ist 1600 nicht liquide)
+- Fester Bereich der Importe: 1000–1099 (historisch, SKR03-Kassenbereich – vorhandene Bestände
+  haben ihr Vorzeichen daran ausgerichtet; nicht ändern, bevor die Richtung beim Import
+  festgeschrieben wird, siehe `docs/aufgaben.md`)
+- Verrechnungskonto: 1460 (Geldtransit)
+- Dieselbe Menge (`importers.wiso_fdb.DEFAULT_LIQUID_ACCOUNTS`) nutzen der
+  Datenbank-Import, der DATEV-Export, die EÜR und die Buchungsmaske
 - Bestimmt Vorzeichen der Buchung
 
 **Duplikat-Erkennung (zählbasiert):** REFERENZNUMMER + Datum + COA_ID + Betrag;

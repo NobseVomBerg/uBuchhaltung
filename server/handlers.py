@@ -17,6 +17,7 @@ from .period import parse_iso_date, valid_period
 from db import Database
 from db.core import fk_explained
 from db.matching import is_bank_effective
+from db.accounts import DEFAULT_CASH_ACCOUNT
 from money import to_minor, from_minor, multiply, tax_from_net, round_minor, fmt_eur
 from decimal import Decimal
 
@@ -729,6 +730,24 @@ def handle_update_bankaccount(db: Database, post_data):
     bank_name = post_data.get("bank_name", [""])[0]
     skr_raw = post_data.get("skr_account", [""])[0]
     skr_account = int(skr_raw) if skr_raw.strip() else None
+    current = db.get_account_by_id(account_id)
+    old_skr = current[7] if current else None
+    if skr_account != old_skr:
+        # Ob ein Buchungssatz eine Zahlung ist und in welche Richtung, lesen EÜR und
+        # DATEV-Export daran ab, welche Konten gerade Geldkonten sind – das Vorzeichen
+        # stammt aber vom Zeitpunkt der Buchung bzw. des Imports. Hängen schon Sätze am
+        # alten oder am neuen Konto, würde die Umstellung sie umdeuten (Ausgabe ↔ Einnahme).
+        affected = db.count_entries_on_account_numbers([old_skr, skr_account])
+        if affected:
+            msg = (f'SKR-Konto nicht geändert: {affected} Buchungssätze führen das bisherige '
+                   f'oder das neue Konto. Die Umstellung würde sie anders lesen als gebucht '
+                   f'(Einnahme statt Ausgabe). Das Konto lässt sich nur umstellen, solange '
+                   f'keine Buchungen daran hängen – z. B. vor dem ersten Import.')
+            return 303, f"/masterdata/bankaccounts/edit?id={account_id}&error={quote(msg)}"
+    if skr_account == DEFAULT_CASH_ACCOUNT:
+        # Ältere Datenbanken kennen das Kassenkonto 1600 noch nicht – ohne das Konto im
+        # Kontenrahmen bliebe die Umstellung einer Kasse auf 1600 wirkungslos.
+        db.ensure_cash_coa()
     db.update_account(account_id, name, holder, iban, bic, bank_name, skr_account=skr_account)
     return 303, "/masterdata/bankaccounts"
 
@@ -2294,21 +2313,28 @@ def handle_update_asset(db: Database, post_data: dict):
 
 
 def handle_book_depreciation(db: Database, post_data: dict):
-    """AfA für ein Jahr buchen"""
+    """AfA für ein Jahr buchen: Umbuchung „Aufwand an Anlagekonto“ (kein Bankkonto).
+
+    ``coa_id`` ist das Aufwandskonto, ``asset_coa_id`` (optional) das Anlagekonto – ohne
+    Angabe gilt das der Anlage bzw. ihrer Kategorie. Lehnt die Datenbank ab (Jahr schon
+    gebucht, kein Anlagekonto), geht die Meldung als ``err`` an die Anlagenseite zurück."""
     asset_id    = int(post_data.get('asset_id', ['0'])[0])
     year        = int(post_data.get('year', ['0'])[0])
-    account_id  = int(post_data.get('account_id', ['0'])[0])
     coa_id      = int(post_data.get('coa_id', ['0'])[0])
+    asset_coa   = post_data.get('asset_coa_id', [''])[0].strip()
+    asset_coa_id = int(asset_coa) if asset_coa else None
     description = post_data.get('description', [''])[0].strip() or None
 
-    db.book_depreciation(
-        asset_id=asset_id,
-        year=year,
-        account_id=account_id,
-        coa_id_expense=coa_id,
-        coa_id_asset=coa_id,
-        description=description,
-    )
+    try:
+        db.book_depreciation(
+            asset_id=asset_id,
+            year=year,
+            coa_id_expense=coa_id,
+            coa_id_asset=asset_coa_id,
+            description=description,
+        )
+    except ValueError as exc:
+        return 303, f'/assets/view?id={asset_id}&err={quote(str(exc), safe="")}'
     return 303, f'/assets/view?id={asset_id}'
 
 
@@ -2317,6 +2343,9 @@ def handle_asset_sale(db: Database, post_data: dict):
     asset_id   = int(post_data.get('asset_id', ['0'])[0])
     sale_date  = post_data.get('sale_date', [''])[0].strip()
     sale_price = float(post_data.get('sale_price', ['0'])[0] or 0)
+    if parse_iso_date(sale_date) is None:
+        # Das Datum steuert, bis wann AfA gebucht werden darf – nur ein ISO-Datum taugt dafür
+        return 303, f'/assets/view?id={asset_id}&err=' + quote('Abgangsdatum fehlt oder ist ungültig (JJJJ-MM-TT).')
 
     db.sell_asset(asset_id, sale_date, sale_price)
     return 303, f'/assets/view?id={asset_id}'

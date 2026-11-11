@@ -131,9 +131,20 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 | SKRAccount | INTEGER | | Zugeordnete SKR-Kontonummer (z.B. 1810) |
 
 **Business Logic:**
-- Konto "Kasse" wird automatisch beim Start erstellt
+- Konto "Kasse" wird automatisch beim Start erstellt, neu angelegt mit `SKRAccount` 1600
+  (SKR04 „Kasse“, bei Bedarf in den Kontenrahmen nachgelegt). Eine vorhandene Kasse
+  bleibt unverändert – mit oder ohne SKR-Nummer, auch mit 1460 (Verrechnungskonto)
 - `SKRAccount` verknüpft mit ChartOfAccounts.AccountNumber für Doppik-Erkennung
-- Wird von `_get_bank_coa_ids()` genutzt um echte Bankkonten zu identifizieren
+- Wird von `_get_bank_coa_ids()` genutzt um echte Bankkonten zu identifizieren; die Kasse
+  zählt dort wie ein Bankkonto mit, sobald sie eine SKR-Nummer trägt (die Standard-Kasse: 1600)
+- `get_payment_coa_ids()` ergänzt diese Menge um den festen Bereich der Importe
+  (`importers.wiso_fdb.DEFAULT_LIQUID_ACCOUNTS`: 1000–1099 und das Verrechnungskonto 1460,
+  Geldtransit). 1000–1099 ist historisch (SKR03-Kassenbereich) und bleibt, weil vorhandene
+  Bestände ihr Vorzeichen daran ausgerichtet haben – nicht ändern, bevor die Richtung beim
+  Import festgeschrieben wird (`docs/aufgaben.md`). Die Kasse der App zählt über ihr eigenes
+  Konto: Hat sie keine SKR-Nummer (ältere Datenbank), ist 1600 kein Zahlungskonto. EÜR,
+  DATEV-Export und Buchungsmaske nehmen die Menge; Verknüpfung und Split-Summe
+  (`is_bank_effective`) rechnen weiter mit den eigenen Konten
 
 ---
 
@@ -295,6 +306,16 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
   Richtung der Geldbewegung (Einnahme positiv), egal auf welcher Seite das
   Zweckkonto steht; bei Umbuchungen heißt positiv: `COA_ID` im Soll,
   `CounterCOA_ID` im Haben. Fehlt die liquide Seite, bleibt es eine Zahlung.
+  Liquide sind die Zahlungskonten (`get_payment_coa_ids`, siehe Tabelle Accounts).
+- **AfA-Buchung** (`book_depreciation`): eine Umbuchung „Aufwand an Anlagekonto“ als
+  eigenständiger Satz – `COA_ID` = Aufwandskonto (z. B. 6220), `CounterCOA_ID` =
+  Anlagekonto (z. B. 520), `Amount` positiv, `Account_ID` leer, `Status='posted'`,
+  Datum 31.12. Sie bewegt kein Geld und ist über `AssetDepreciations.Booking_ID`
+  verknüpft. Das Aufwandskonto muss ein Erfolgskonto (4000–7999), das Anlagekonto ein
+  Anlagekonto (1–999) sein, sonst lehnt `book_depreciation` ab (`ValueError`); nach dem
+  Abgang der Anlage (`Assets.SaleDate`) wird keine AfA mehr gebucht. Ältere Sätze
+  (Aufwandskonto mit `Account_ID`, kein Gegenkonto) bleiben lesbar und zählen in der EÜR
+  einmal; im DATEV-Export fehlt ihnen das Gegenkonto.
 
 ---
 
@@ -505,11 +526,22 @@ erschiene als Ausgabe.
 | Year | INTEGER | NOT NULL | |
 | DepreciationAmount | REAL | NOT NULL | AfA-Betrag |
 | BookValue | REAL | NOT NULL | Restbuchwert |
-| Booking_ID | INTEGER | FK → Bookings | |
-| Status | TEXT | DEFAULT 'planned' | 'planned', 'booked' |
+| Booking_ID | INTEGER | FK → Bookings | AfA-Buchung (siehe „AfA-Buchung“ bei Bookings) |
+| Status | TEXT | DEFAULT 'planned' | 'planned', 'posted' (vom Programm gebucht), 'booked' (WISO-Import, ohne Booking_ID) |
 | BookedAt | DATETIME | | |
 
 **Indizes:** UNIQUE(Asset_ID, Year)
+
+**Business Logic:** Je Anlage und Jahr gibt es höchstens eine AfA-Buchung: `book_depreciation`
+lehnt ein Jahr ab, dessen Buchung es gibt (`Booking_ID` zeigt auf eine vorhandene Zeile in
+`Bookings`) oder das den Status `booked` hat (`ValueError`, Prüfung und Anlegen in einer
+Transaktion). „Gebucht“ heißt also: die Buchung gibt es. Eine Zeile `posted`, deren Buchung
+fehlt (z. B. per SQL-Konsole gelöscht), gilt als nicht gebucht – die Anlagenseite bietet das
+Buchen wieder an und `book_depreciation` überschreibt die Zeile. Wird die Buchung über die
+Anwendung gelöscht (`delete_transaction`, ebenso die SQL-Vorlage „Zeitbereich löschen“), geht
+die Zeile auf `planned` zurück. `delete_asset` lehnt ab, solange eine AfA-Buchung existiert
+oder Unteranlagen existieren; `booked`-Zeilen aus dem WISO-Import (ohne Buchung) hindern das
+Löschen nicht.
 
 ---
 
@@ -549,7 +581,12 @@ Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
 - Virtuelles USt-Konto 3806 enthält nur Steueranteile aus Einnahmekonten
 - Virtuelle Vorsteuerkonten 1401/1406 enthalten Steueranteile aus Ausgabenkonten
 - Konten 3160, 3720, 3740 werden im Dashboard separat als "Sonstige Ausgaben" gezeigt
-- **Section 2b (Kasse):** Entry-Buchungen mit `Account_ID` auf einem Kassenkonto (`IsCash=1`) und `CounterCOA_ID IS NULL` werden direkt erfasst (kein Bank-Spiegel nötig). Wird in `get_euer_data()` und `get_dashboard_monthly/totals()` berücksichtigt.
+- **Liquide Konten** der EÜR sind die Zahlungskonten (`get_payment_coa_ids`, dieselbe Menge wie im DATEV-Export): eigene Bank-/Kassenkonten (die Standard-Kasse trägt 1600), der historische Bereich 1000–1099 und das Verrechnungskonto 1460. Ob ein Satz zählt, entscheidet die Sektion in `get_euer_data()`. Jeder Satz zählt in genau einer Sektion: Die Sammlung ist über die Buchungs-ID eindeutig, die erste Sektion, die einen Satz findet, gewinnt (Reihenfolge 1, 2, 2b, 3); außerdem sind die Sektionen so geschnitten, dass sich die üblichen Fälle gar nicht erst überschneiden:
+  - **Section 1:** Buchungssätze (Kinder) unter einer Bankbewegung der gewählten Konten – auch der Kasse (Buchungsmaske mit Konto = Kasse; die Bankzeile trägt `Account_ID` der Kasse)
+  - **Section 2:** eigenständige Sätze (ohne `ParentBooking_ID`), die ein Kassenkonto berühren, und – nur ohne Kontofilter – das Verrechnungskonto 1460 (WISO: „Aufwand an Verrechnung“ gilt mit dem Datum des Satzes als abgeflossen; die spätere Übertragung „Verrechnung an Bank“ ist ein Geldkonten-Spiegel und zählt nicht noch einmal)
+  - **Section 2b (Kasse):** eigenständige Sätze mit `Account_ID` auf einer Kasse (`IsCash=1`), die in Section 2 nicht vorkommen (z. B. `CounterCOA_ID IS NULL`; ältere Einträge, Kasse ohne SKR-Nummer). Sie laufen durch dieselbe Einordnung wie alle Sätze (`classify_entry`). AfA-Buchungen alter Form und Umbuchungen zwischen Anlage- und Erfolgskonto gehören nicht dazu, auch wenn die Maske ihnen eine Kasse als Konto eingetragen hat – sie zählen in Section 3 und mit einem Kontofilter „nur Kasse“ gar nicht (AfA hängt an keinem Konto). Section 2b wird in `get_euer_data()` und `get_dashboard_monthly/totals()` berücksichtigt.
+  - **Section 3 (nicht zahlungswirksam, nur ohne Kontofilter):** eigenständige Umbuchungen zwischen Anlagekonto (SKR04 1–999) und Erfolgskonto (4000–7999) – AfA „Aufwand an Anlagekonto“, Restbuchwert beim Abgang (`is_asset_transfer`) – und die Sätze, auf die `AssetDepreciations.Booking_ID` zeigt (auch alte AfA-Sätze). Das Anlagekonto selbst wird bei Umbuchungen nicht bebucht. Solche Sätze tragen keine Zahlung: `TaxAmount`/`TaxRate` bleiben unberücksichtigt (keine Vorsteuer auf 1401/1406). Der Anlagenkauf mit Vorsteuer als Kind einer Bankbewegung (Section 1) ist davon nicht berührt.
+  - Das **Dashboard** (Zahlungskarten) folgt den Kontobewegungen: Bankbewegungen aller gewählten Konten inkl. Kasse sowie eigenständige Sätze auf Kassenkonten (Section 2/2b); das Verrechnungskonto 1460 und die AfA zählen dort nicht.
 - **Bestandskonten** (`NEUTRAL_ACCOUNT_NUMBERS`: 10000 Debitoren, Wartekonten 4340/4345/4405) bleiben komplett draußen – weder Saldo noch USt. Die Einnahme entsteht mit der Umbuchung vom Warte- auf das Erlöskonto bei Zahlung (siehe Abschnitt 9a).
 
 ### Rechnungserstellung
@@ -569,8 +606,20 @@ Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
 1. AssetCategories → Nutzungsdauer + Methode
 2. Assets → Erfassung
 3. AssetDepreciations → automatische AfA-Pläne
-4. Buchungsintegration über Booking_ID
+4. Buchungsintegration über Booking_ID: book_depreciation legt je Jahr genau eine
+   Umbuchung „Aufwand an Anlagekonto“ an (Betrag positiv, ohne Account_ID, 31.12.),
+   Sperre gegen Doppelbuchung in derselben Transaktion
+5. EÜR: Section 3 (Aufwandskonto = −AfA); DATEV-Export: „Aufwand an Anlagekonto“, BU 0
 ```
+
+Das Anlagekonto kommt aus dem Formular, sonst aus der Anlage oder ihrer Kategorie. Bei der
+EÜR wird direkt abgeschrieben (Gegenkonto = Anlagekonto, kein Wertberichtigungskonto).
+Aufwandskonto = Erfolgskonto (4000–7999) und Anlagekonto = Konto 1–999 werden geprüft, damit
+kein Satz wie „6220 an 1460“ entsteht; nach dem Abgang der Anlage (`SaleDate`) wird keine AfA
+mehr gebucht. Die zeitanteilige AfA im Abgangsjahr plant die Anwendung noch nicht (volle
+Jahres-AfA, `docs/aufgaben.md`).
+Hinweis GWG: Wer den Kauf schon auf das Aufwandskonto 6260 (Sofortabschreibung) gebucht hat
+und zusätzlich die AfA bucht, zählt doppelt – das Programm prüft das nicht.
 
 ---
 

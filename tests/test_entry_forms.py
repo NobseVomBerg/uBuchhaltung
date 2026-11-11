@@ -224,7 +224,8 @@ def bank_without_skr(tmp_db):
     """Ein Bankkonto ohne SKR-Nummer: seine Buchungssätze haben kein Gegenkonto."""
     acct = _bank_account(tmp_db, 'Ohne-SKR', None)
     assert tmp_db.get_account_by_id(acct)[7] is None          # SKRAccount
-    assert tmp_db.get_bank_coa_ids() == set()
+    # Das Bankkonto trägt nichts bei; es bleibt allein die Standard-Kasse mit 1600
+    assert tmp_db.get_bank_coa_ids() == {_coa(tmp_db, 1600)}
     return acct
 
 
@@ -416,11 +417,11 @@ def test_datev_handler_delivers_the_new_markers(bank_db):
         assert _feld(rows[f'DV{number:02d}']) == expected, fall_id
 
 
-def test_datev_fresh_database_standard_cash_without_skr_number(tmp_db):
-    """Frische Datenbank: Die Standard-Kasse hat keine SKR-Nummer, das Verrechnungskonto 1460
-    ist trotzdem ein Zahlungskonto. Mit ``get_bank_coa_ids`` allein wäre „6815 / 1460“ eine
-    Umbuchung und bekäme H."""
-    assert tmp_db.get_bank_coa_ids() == set()
+def test_datev_fresh_database_clearing_account_is_a_payment_account(tmp_db):
+    """Frische Datenbank: Die Standard-Kasse führt 1600, das Verrechnungskonto 1460 ist kein
+    eigenes Konto und trotzdem ein Zahlungskonto. Mit ``get_bank_coa_ids`` allein wäre
+    „6815 / 1460“ eine Umbuchung und bekäme H."""
+    assert tmp_db.get_bank_coa_ids() == {_coa(tmp_db, 1600)}
     _book_entry(tmp_db, 'DV01', 6815, 1460, '-18.35', 0.19)
     _book_entry(tmp_db, 'DV02', 1460, 4400, '50.00', None)
     _book_entry(tmp_db, 'DV03', 4400, 1460, '50.00', None)
@@ -457,28 +458,54 @@ def _numbers(db, coa_ids):
     return {by_id[coa_id] for coa_id in coa_ids}
 
 
-def test_payment_ids_on_a_fresh_database_hold_the_clearing_account(tmp_db):
-    assert tmp_db.get_bank_coa_ids() == set()          # die Standard-Kasse hat keine SKR-Nummer
+def test_payment_ids_on_a_fresh_database_hold_the_standard_cash_and_the_clearing_account(tmp_db):
+    assert tmp_db.get_bank_coa_ids() == {_coa(tmp_db, 1600)}     # die Standard-Kasse führt 1600
     numbers = _numbers(tmp_db, tmp_db.get_payment_coa_ids())
-    assert 1460 in numbers
-    assert numbers <= {1460} | set(range(1000, 1100))
+    assert {1460, 1600} <= numbers                               # 1600 über das eigene Konto
+    assert numbers <= {1460, 1600} | set(range(1000, 1100))
 
 
 def test_payment_ids_hold_own_banks_and_the_clearing_account_but_no_purpose_accounts(bank_db):
     bank_ids = bank_db.get_bank_coa_ids()
     payment_ids = bank_db.get_payment_coa_ids()
     assert bank_ids <= payment_ids
-    assert _numbers(bank_db, bank_ids) == {1800, 1810}
+    assert _numbers(bank_db, bank_ids) == {1800, 1810, 1600}      # die Standard-Kasse führt 1600
     numbers = _numbers(bank_db, payment_ids)
     assert {1800, 1810, 1460} <= numbers
     # keine Erlös-, Aufwand-, Steuer-, Privat- oder Forderungskonten
     assert numbers.isdisjoint({4400, 4300, 4405, 6815, 6805, 1401, 1406, 3806, 2100, 10000})
-    assert numbers <= {1800, 1810, 1460} | set(range(1000, 1100))
+    assert numbers <= {1800, 1810, 1460, 1600} | set(range(1000, 1100))
 
 
 def test_payment_ids_cover_the_cash_range_1000_to_1099(tmp_db):
+    """Historischer Bereich der Importe (SKR03-Kasse): vorhandene Bestände haben ihr Vorzeichen
+    daran ausgerichtet, deshalb gilt er unverändert."""
     for number in (999, 1000, 1050, 1099, 1100):
         assert tmp_db.insert_chart_of_accounts(4, number, f'Kasse {number}', '')
     numbers = _numbers(tmp_db, tmp_db.get_payment_coa_ids())
     assert {1000, 1050, 1099} <= numbers
     assert numbers.isdisjoint({999, 1100})
+
+
+def test_payment_ids_count_1600_through_the_own_cash_account_not_through_a_range(tmp_db):
+    """Die Kasse der App (SKR04 1600) zählt wie die Bankkonten über ihr eigenes Konto: Auch ein
+    Konto im Bereich 1600–1699 ohne eigenes Konto dazu ist kein Zahlungskonto."""
+    for number in (1620, 1650, 1699):
+        assert tmp_db.insert_chart_of_accounts(4, number, f'Kasse {number}', '')
+    assert _numbers(tmp_db, tmp_db.get_bank_coa_ids()) == {1600}
+    numbers = _numbers(tmp_db, tmp_db.get_payment_coa_ids())
+    assert 1600 in numbers
+    assert numbers.isdisjoint({1620, 1650, 1699})
+
+
+def test_payment_ids_leave_out_1600_when_the_cash_account_has_no_skr_number(tmp_db):
+    """Hat die Kasse keine SKR-Nummer (ältere Datenbank), ist 1600 – obwohl im Kontenrahmen –
+    kein Zahlungskonto; das Verrechnungskonto 1460 bleibt eins."""
+    cash = next(a for a in tmp_db.fetch_accounts() if a[6] == 1)         # IsCash
+    tmp_db.update_account(cash[0], cash[1], cash[2], cash[3], cash[4], cash[5], skr_account=None)
+    assert tmp_db.get_account_by_id(cash[0])[7] is None                  # SKRAccount
+    assert tmp_db.get_coa_id_by_account_number(1600) is not None         # im Kontenrahmen vorhanden
+    assert tmp_db.get_bank_coa_ids() == set()
+    numbers = _numbers(tmp_db, tmp_db.get_payment_coa_ids())
+    assert 1600 not in numbers
+    assert 1460 in numbers
