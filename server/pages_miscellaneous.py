@@ -229,6 +229,26 @@ def PageMiscellaneous(db: Database):
         </script>
         '''
     s += '\t\t</div>'
+    # ── Zahlungszuordnungen prüfen (nur Anzeige) ──────────────────────────────
+    s += '\t\t<div class="rectRounded">'
+    s += '<h2>Zahlungszuordnungen</h2>'
+    findings = db.find_payment_inconsistencies()
+    if not findings:
+        s += '<p class="successColor">Keine Unstimmigkeiten gefunden.</p>'
+    else:
+        shown = findings[:50]
+        s += ('<p>Bei diesen Rechnungen passen Zuordnung, Buchungssätze oder offener Rest nicht '
+              'zusammen. Die Liste ändert nichts &ndash; die Rechnung öffnen und die '
+              'Buchungen prüfen.</p><table><tr><th>Rechnung</th><th>Befund</th></tr>')
+        for finding in shown:
+            number = _html.escape(finding['invoice_number'] or '–')
+            if finding['invoice_id'] is not None:
+                number = f'<a href="/invoice/edit?id={int(finding["invoice_id"])}">{number}</a>'
+            s += f'<tr><td>{number}</td><td>{_html.escape(finding["text"])}</td></tr>'
+        s += '</table>'
+        if len(findings) > len(shown):
+            s += f'<p>und {len(findings) - len(shown)} weitere</p>'
+    s += '\t\t</div>'
     s += '\t</div>'
 
     s += '\t<div class="rectRounded">'

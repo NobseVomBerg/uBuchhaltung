@@ -8,6 +8,7 @@ import json
 from decimal import Decimal
 from money import to_minor, from_minor
 from .core import fk_explained
+from .invoice_payments import PAYABLE_STATUSES
 
 
 class InvoiceCol:
@@ -369,63 +370,36 @@ class InvoicesMixin:
         self.update_invoice_status(quote_id, 'converted')
         return new_invoice_id
     def link_invoice_to_transaction(self, invoice_id, transaction_id, amount_paid):
-        """Link an invoice to a payment booking via InvoicePayments and recalculate AmountDue."""
+        """Link an invoice to a payment booking via InvoicePayments and recalculate AmountDue.
+
+        Der WISO-Import ordnet darüber mit Vorzeichen zu (Storno, Gutschrift) und legt keine
+        Buchungssätze an – WISO liefert sie mit. Deshalb keine Prüfung von Status, Vorzeichen
+        oder Buchungsart; die Oberfläche ordnet über ``assign_invoice_payment`` zu. Die
+        Dublettenprüfung läuft in derselben Transaktion wie das Einfügen."""
         conn = self._get_connection()
-        cursor = conn.cursor()
         try:
-            cursor.execute('SELECT SumGross FROM Invoices WHERE ID = ?', (invoice_id,))
-            invoice_data = cursor.fetchone()
-            if not invoice_data:
+            conn.execute('BEGIN IMMEDIATE')
+            if not conn.execute('SELECT 1 FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone():
                 raise ValueError(f"Invoice {invoice_id} not found")
 
             # Get payment date from booking
-            cursor.execute('SELECT DateBooking FROM Bookings WHERE ID = ?', (transaction_id,))
-            booking = cursor.fetchone()
+            booking = conn.execute('SELECT DateBooking FROM Bookings WHERE ID = ?',
+                                   (transaction_id,)).fetchone()
             payment_date = booking[0] if booking else None
 
             # Prevent duplicate links for the same booking
-            cursor.execute(
-                'SELECT ID FROM InvoicePayments WHERE InvoiceID = ? AND BookingID = ?',
-                (invoice_id, transaction_id))
-            if cursor.fetchone():
+            if conn.execute('SELECT ID FROM InvoicePayments WHERE InvoiceID = ? AND BookingID = ?',
+                            (invoice_id, transaction_id)).fetchone():
                 raise ValueError(f"Booking {transaction_id} is already linked to invoice {invoice_id}")
 
-            cursor.execute('''
+            conn.execute('''
                 INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate)
                 VALUES (?, ?, ?, ?)
             ''', (invoice_id, transaction_id, to_minor(amount_paid), payment_date))
 
-            # Recalculate AmountDue from all payments – alles in Minor Units (exakt).
-            cursor.execute(
-                'SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
-                (invoice_id,))
-            total_paid_minor = cursor.fetchone()[0]
-            gross_minor = invoice_data[0] or 0          # SumGross ist bereits Minor Units
-            new_due_minor = gross_minor - total_paid_minor
-            new_due = from_minor(new_due_minor)
-
-            cursor.execute('''
-                UPDATE Invoices
-                SET AmountDue = ?, UpdatedAt = CURRENT_TIMESTAMP
-                WHERE ID = ?
-            ''', (new_due_minor, invoice_id))
-
-            # Auto-update status (100 Minor Units = 0,01 EUR bei SCALE=4).
-            # new_due < 100 statt abs(): auch überzahlte Rechnungen gelten als bezahlt.
-            if new_due_minor < 100:
-                new_status = 'paid'
-            elif total_paid_minor > 0:
-                new_status = 'partial_payment'
-            else:
-                new_status = None
-
-            if new_status:
-                cursor.execute('''
-                    UPDATE Invoices SET Status = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE ID = ?
-                ''', (new_status, invoice_id))
-
+            self._recalc_invoice(conn, invoice_id)
             conn.commit()
-            print(f"Invoice {invoice_id} linked to booking {transaction_id}, new due: {new_due:.2f}")
+            print(f"Invoice {invoice_id} linked to booking {transaction_id}")
 
         except Exception as e:
             print(f"Error linking invoice to transaction: {e}")
@@ -453,47 +427,9 @@ class InvoicesMixin:
         conn.close()
         return [self._euro_row(r, 3) for r in rows]  # Amount (Index 3) -> Euro-Decimal
     def delete_invoice_payment(self, payment_id):
-        """Remove an InvoicePayments entry and recalculate AmountDue on the invoice."""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute('SELECT InvoiceID, Amount FROM InvoicePayments WHERE ID = ?', (payment_id,))
-            row = cursor.fetchone()
-            if not row:
-                raise ValueError(f"InvoicePayment {payment_id} not found")
-            invoice_id = row[0]
-
-            cursor.execute('DELETE FROM InvoicePayments WHERE ID = ?', (payment_id,))
-
-            # Recalculate AmountDue – alles in Minor Units (exakt).
-            cursor.execute('SELECT SumGross FROM Invoices WHERE ID = ?', (invoice_id,))
-            sum_gross = cursor.fetchone()[0]            # bereits Minor Units
-            cursor.execute(
-                'SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
-                (invoice_id,))
-            total_paid_minor = cursor.fetchone()[0]
-            new_due_minor = (sum_gross or 0) - total_paid_minor
-            new_due = from_minor(new_due_minor)
-
-            # Recalculate status (100 Minor Units = 0,01 EUR bei SCALE=4)
-            if new_due_minor < 100:
-                new_status = 'paid'
-            elif total_paid_minor > 0:
-                new_status = 'partial_payment'
-            else:
-                new_status = 'finalized'
-
-            cursor.execute('''
-                UPDATE Invoices SET AmountDue = ?, Status = ?, UpdatedAt = CURRENT_TIMESTAMP
-                WHERE ID = ?
-            ''', (new_due_minor, new_status, invoice_id))
-
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        """Eine Zuordnung samt ihren Buchungssätzen entfernen und die Rechnung neu rechnen –
+        siehe ``unassign_invoice_payment``."""
+        self.unassign_invoice_payment(payment_id)
     def update_invoice_pdf_path(self, invoice_id, pdf_path):
         """Update PDFPath field for an invoice
         
@@ -631,61 +567,36 @@ class InvoicesMixin:
         Neuberechnung bliebe die Rechnung fälschlich auf "bezahlt"/Rest 0.
         adjust_status=False aktualisiert nur AmountDue (für manuelle
         Statuswechsel, deren Wahl nicht sofort überschrieben werden soll).
+        Die Statusregel steht in ``db.invoice_payments.next_payment_status``.
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
         try:
-            cursor.execute('SELECT SumGross, Status FROM Invoices WHERE ID = ?',
-                           (invoice_id,))
-            row = cursor.fetchone()
-            if not row:
-                return
-            gross_minor = row[0] or 0
-            status = row[1]
-            cursor.execute(
-                'SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
-                (invoice_id,))
-            total_paid_minor = cursor.fetchone()[0]
-            new_due_minor = gross_minor - total_paid_minor
-
-            new_status = None
-            if adjust_status:
-                if total_paid_minor > 0 and new_due_minor < 100:
-                    new_status = 'paid'
-                elif total_paid_minor > 0:
-                    new_status = 'partial_payment'
-                elif status in ('paid', 'partial_payment', 'partial'):
-                    # Zahlungs-Status ohne Zahlungen → zurück auf Abgeschlossen
-                    new_status = 'finalized'
-
-            if new_status:
-                cursor.execute('''
-                    UPDATE Invoices SET AmountDue = ?, Status = ?,
-                                        UpdatedAt = CURRENT_TIMESTAMP
-                    WHERE ID = ?''', (new_due_minor, new_status, invoice_id))
-            else:
-                cursor.execute('''
-                    UPDATE Invoices SET AmountDue = ?, UpdatedAt = CURRENT_TIMESTAMP
-                    WHERE ID = ?''', (new_due_minor, invoice_id))
+            conn.execute('BEGIN IMMEDIATE')
+            self._recalc_invoice(conn, invoice_id, adjust_status)
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
     def get_open_invoices(self):
         """Offene Rechnungen für die Zahlungs-Zuordnung.
 
-        Nicht draft/cancelled/paid, Restbetrag > 0; Altbestand ohne AmountDue
-        (NULL) gilt als offen. Volle Invoice-Rows (Euro-Decimals wie üblich).
+        Nur zahlbare Status (versendet, überfällig, Teilzahlung – ``PAYABLE_STATUSES``),
+        Restbetrag > 0; Altbestand ohne AmountDue (NULL) gilt als offen. Volle
+        Invoice-Rows (Euro-Decimals wie üblich).
         """
+        marks = ','.join('?' * len(PAYABLE_STATUSES))
         conn = self._get_connection()
         cursor = conn.cursor()
-        cursor.execute('''
+        cursor.execute(f'''
             SELECT * FROM Invoices
             WHERE (DocumentType = 'invoice' OR DocumentType IS NULL)
-            AND Status NOT IN ('draft', 'cancelled', 'paid')
+            AND Status IN ({marks})
             AND (AmountDue IS NULL OR AmountDue > 0)
             ORDER BY InvoiceDate DESC, InvoiceNumber DESC
-        ''')
+        ''', PAYABLE_STATUSES)
         rows = cursor.fetchall()
         conn.close()
         return [self._euro_row(r, 36, 37, 38, 39) for r in rows]
@@ -906,24 +817,27 @@ class InvoicesMixin:
         return [self._euro_row(r, 3) for r in rows]
 
     def get_booking_unallocated_amount(self, booking_id):
-        """Nicht zugeordneter Rest einer Buchung in Euro (Decimal, min. 0)."""
+        """Freier Rest einer Bankbewegung in Euro (Decimal, min. 0).
+
+        Nur ein Zahlungseingang (Bankbewegung mit Betrag > 0) lässt sich einer Rechnung
+        zuordnen; für alles andere ist der Rest 0. Frei ist, was weder zugeordnet noch bereits
+        bankwirksam kontiert ist (``_free_minor_sql``) – eine schon als Erlös gebuchte
+        Bewegung ist keine Rechnungszahlung mehr."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT ABS(COALESCE(Amount, 0)) - COALESCE(
-                       (SELECT SUM(ip.Amount) FROM InvoicePayments ip
-                        WHERE ip.BookingID = Bookings.ID), 0)
-            FROM Bookings WHERE ID = ?
-        ''', (booking_id,))
-        row = cursor.fetchone()
-        conn.close()
-        if not row or row[0] is None or row[0] <= 0:
-            return Decimal(0)
-        return from_minor(row[0])
+        try:
+            row = conn.execute('SELECT BookingType, Amount FROM Bookings WHERE ID = ?',
+                               (booking_id,)).fetchone()
+            if not row or row[0] != 'bank' or (row[1] or 0) <= 0:
+                return Decimal(0)
+            free = self._booking_free_minor(conn, booking_id,
+                                            self._get_bank_coa_ids(conn.cursor()))
+        finally:
+            conn.close()
+        return from_minor(free) if free > 0 else Decimal(0)
 
     def get_unallocated_bank_bookings(self, contact_id=None, contact_only=False,
                                       limit=20):
-        """Bank-Zahlungseingänge mit noch nicht zugeordnetem Rest.
+        """Bank-Zahlungseingänge mit freiem Rest (``_free_minor_sql``).
 
         Kandidaten für die Verknüpfung mit offenen Rechnungen (Import-Fall,
         Über-/Sammelzahlungen). Buchungen des Kontakts stehen vorn, danach
@@ -936,14 +850,11 @@ class InvoicesMixin:
         params = [contact_id] if contact_filter else []
         conn = self._get_connection()
         cursor = conn.cursor()
+        free_sql, free_params = self._free_minor_sql(self._get_bank_coa_ids(cursor))
         cursor.execute(f'''
             SELECT * FROM (
                 SELECT b.ID, b.DateBooking, b.RecipientClient, b.Contact_ID,
-                       b.Amount,
-                       ABS(b.Amount) - COALESCE((SELECT SUM(ip.Amount)
-                                                 FROM InvoicePayments ip
-                                                 WHERE ip.BookingID = b.ID), 0)
-                           AS FreeMinor
+                       b.Amount, {free_sql} AS FreeMinor
                 FROM Bookings b
                 WHERE b.BookingType = 'bank' AND b.Amount > 0 {contact_filter}
             )
@@ -951,7 +862,7 @@ class InvoicesMixin:
             ORDER BY CASE WHEN ? IS NOT NULL AND Contact_ID = ? THEN 0 ELSE 1 END,
                      DateBooking DESC, ID DESC
             LIMIT ?
-        ''', params + [contact_id, contact_id, limit])
+        ''', free_params + params + [contact_id, contact_id, limit])
         rows = cursor.fetchall()
         conn.close()
         return [self._euro_row(r, 4, 5) for r in rows]
@@ -959,28 +870,40 @@ class InvoicesMixin:
     def get_open_items_for_contact(self, contact_id):
         """Offene Posten eines Kontakts für die Kontaktseite.
 
+        Forderungen sind die versendeten Rechnungen (``PAYABLE_STATUSES``) mit Rest; ein
+        Guthaben ist der freie Rest eines Zahlungseingangs des Kontakts. Nicht versendete
+        (abgeschlossene) Rechnungen werden getrennt geführt und gehen nicht in den Saldo ein –
+        sie stehen noch nicht in den Büchern.
+
         Returns dict:
-          open_invoices: [(ID, InvoiceNumber, InvoiceDate, Status, Offen€)]
-          credits:       [(BookingID, DateBooking, RecipientClient, Contact_ID,
-                           Amount€, Frei€)]  – nicht zugeordnete Zahlungs-Reste
-          saldo:         Forderungen − Guthaben (Euro-Decimal)
+          open_invoices:   [(ID, InvoiceNumber, InvoiceDate, Status, Offen€)]
+          unsent_invoices: dasselbe für abgeschlossene, noch nicht versendete Rechnungen
+          credits:         [(BookingID, DateBooking, RecipientClient, Contact_ID,
+                             Amount€, Frei€)]  – nicht zugeordnete Zahlungs-Reste
+          saldo:           Forderungen (versendet) − Guthaben (Euro-Decimal)
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT ID, InvoiceNumber, InvoiceDate, Status,
-                   COALESCE(AmountDue, SumGross, 0)
-            FROM Invoices
-            WHERE CustomerId = ?
-              AND (DocumentType = 'invoice' OR DocumentType IS NULL)
-              AND Status NOT IN ('draft', 'cancelled', 'paid')
-              AND (AmountDue IS NULL OR AmountDue > 0)
-            ORDER BY InvoiceDate DESC, ID DESC
-        ''', (contact_id,))
-        open_invoices = [self._euro_row(r, 4) for r in cursor.fetchall()]
+
+        def invoices_with_status(statuses):
+            marks = ','.join('?' * len(statuses))
+            rows = conn.execute(f'''
+                SELECT ID, InvoiceNumber, InvoiceDate, Status,
+                       COALESCE(AmountDue, SumGross, 0)
+                FROM Invoices
+                WHERE CustomerId = ?
+                  AND (DocumentType = 'invoice' OR DocumentType IS NULL)
+                  AND Status IN ({marks})
+                  AND (AmountDue IS NULL OR AmountDue > 0)
+                ORDER BY InvoiceDate DESC, ID DESC
+            ''', (contact_id, *statuses)).fetchall()
+            return [self._euro_row(r, 4) for r in rows]
+
+        open_invoices = invoices_with_status(PAYABLE_STATUSES)
+        unsent_invoices = invoices_with_status(('finalized',))
         conn.close()
         credits = self.get_unallocated_bank_bookings(contact_id, contact_only=True,
                                                      limit=100)
         saldo = (sum((r[4] for r in open_invoices), Decimal(0))
                  - sum((r[5] for r in credits), Decimal(0)))
-        return {'open_invoices': open_invoices, 'credits': credits, 'saldo': saldo}
+        return {'open_invoices': open_invoices, 'unsent_invoices': unsent_invoices,
+                'credits': credits, 'saldo': saldo}

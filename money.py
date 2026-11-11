@@ -97,6 +97,16 @@ def round_minor(minor: int, dp: int = 2) -> int:
     return int((Decimal(int(minor)) / step).quantize(_ONE, rounding=ROUND_HALF_UP)) * step
 
 
+def prorate(total_minor: int, part_minor: int, whole_minor: int) -> int:
+    """Anteil ``part/whole`` von ``total`` in Minor Units, HALF_UP gerundet.
+
+    Beispiel: der Steueranteil einer Teilzahlung = prorate(Steuer, Teilzahlung, Brutto).
+    Exakt in Decimal, kein float.
+    """
+    return int((Decimal(int(total_minor)) * Decimal(int(part_minor)) / Decimal(int(whole_minor)))
+               .quantize(_ONE, rounding=ROUND_HALF_UP))
+
+
 def tax_from_net(net_minor: int, rate) -> int:
     """Steuerbetrag aus Netto. rate als Prozentzahl (z.B. 19 oder 7)."""
     r = _to_decimal(rate)
