@@ -50,7 +50,7 @@ def PageMiscellaneous(db: Database):
         s += '\t<div class="rectRounded" style="grid-column: span 2">'
         s += '''
         <h2>SQL-Befehle ausführen</h2>
-        Gib hier SQL-Befehle ein (mehrere Befehle durch Semikolon getrennt):<br>
+        Gib hier SQL-Befehle ein (mehrere Befehle durch Semikolon getrennt). Eine Anfrage läuft höchstens 60 Sekunden, sehr große Ausgaben werden gekürzt:<br>
         <textarea id="sql_input" rows="15" cols="100" class="textareaSql" placeholder="SELECT * FROM ChartOfAccounts WHERE AccountNumber = 6805;"></textarea>
         <div>
             <button type="button" onclick="executeSql()" class="coloredButton bg-orange">SQL ausführen</button>

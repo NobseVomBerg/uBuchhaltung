@@ -148,8 +148,14 @@ kein Subagent darauf:
   `userctx._read_config()`, nicht über `get_mode()`
 - **SQL-Konsole** (`handle_execute_sql`): nur Administratoren
   (`auth.sql_console_allowed`); per SQLite-Authorizer auf die eigene Datenbank
-  beschränkt – kein `ATTACH`/`DETACH`/`VACUUM`, PRAGMAs bis auf wenige nur lesend.
-  Diese Sperren nicht aufweichen
+  beschränkt – kein `ATTACH`/`DETACH`/`VACUUM`. PRAGMAs laufen nur per Positivliste:
+  mit Argument die Abfrage-PRAGMAs (`_CONSOLE_PRAGMAS_WITH_ARG`), ohne Argument nur
+  rein lesende (`_CONSOLE_PRAGMAS_READ`) – auch als `pragma_…`-Tabellenfunktion, die
+  SQLite mit derselben Authorizer-Aktion meldet. Alles andere ist gesperrt, auch
+  `optimize`, `incremental_vacuum` und `wal_checkpoint` ohne Argument. Je Anfrage
+  gelten ein Zeitlimit (60 s für alle Befehle zusammen, danach Abbruch und Rollback)
+  sowie Größengrenzen für einzelne Werte (20 MB) und die Ausgabe (200000 Zeilen bzw.
+  20 MB, danach gekürzt). Diese Sperren nicht aufweichen
 - **Zeitraum-Parameter** (`from`/`to` in der Query, Cookie `period`) gelten nur als
   ISO-Datum (`period.parse_iso_date`/`valid_period`); `resolve_period` verwirft alles
   andere, Weiterleitungen aus Formularen (`handlers._period_args`) lassen einen
