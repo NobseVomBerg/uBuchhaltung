@@ -155,16 +155,15 @@ def test_an_account_created_after_the_import_does_not_turn_the_marker_around(db)
     assert datev_rows(db)['SP-1'][:4] == ('119,00', 'S', '6815', '1800')
 
 
-def test_a_negative_gross_is_counted_only_where_the_import_replaced_its_sign(db):
+def test_a_negative_gross_with_exactly_one_liquid_side_is_counted_whatever_its_sign_becomes(db):
     """Storno 6815 an 1800, brutto −119: Der Import nimmt das Vorzeichen der Geldbewegung (−119, wie
-    bisher), das hier zufällig dem der Datei gleicht – nichts ersetzt, nichts gemeldet. Bei 1800 an
-    4400, brutto −50, dreht er das Vorzeichen ins Positive: Das wird gezählt (ein Storno wird so wie
-    eine normale Buchung gelesen)."""
+    bisher; gelesen wird es als Ausgabe, gemeint ist eine Erstattung) – gezählt wird er trotzdem, wie
+    1800 an 4400 mit brutto −50, das ins Positive gedreht wird."""
     result = db.import_wiso_csv(csv_export(('6815', '1800', '-119,00', 'ST-1', KEY19),
                                            ('6815', '1800', '119,00', 'AU-1', KEY19),
                                            ('1800', '4400', '-50,00', 'ST-2', KEY19)))
 
-    assert result['negative_gross'] == 1
+    assert result['negative_gross'] == 2
     assert _by_ref(db)['ST-1'] == (minor('-119.00'), FORM_PURPOSE_FIRST)
     assert _by_ref(db)['AU-1'] == (minor('-119.00'), FORM_PURPOSE_FIRST)
     assert _by_ref(db)['ST-2'] == (minor('50.00'), FORM_LIQUID_FIRST)

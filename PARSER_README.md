@@ -193,9 +193,10 @@ ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNU
   negativ), beide → `mirror_coa` (der Rohbetrag der Datei bleibt, positiv = Konto im Soll), keine →
   `transfer` mit dem Rohbetrag (WISO meint „Konto im Soll“, auch bei leerem oder unbekanntem Gegenkonto;
   die EÜR liest so einen Satz als Umbuchung, ohne Vorsteuerausweis). Bei genau einer liquiden Seite
-  wird der Betrag zum Betrag der Geldbewegung; ein **negativer Bruttobetrag**, der dabei positiv wird,
-  verliert sein Vorzeichen, und der Import zählt solche Zeilen (`negative_gross`) – ein Storno oder
-  eine Gutschrift wird so wie eine normale Buchung gelesen
+  wird der Betrag zum Betrag der Geldbewegung; ein **negativer Bruttobetrag** verliert dabei sein
+  Vorzeichen oder behält es zufällig, und der Import zählt jede solche Zeile (`negative_gross`) –
+  ein Storno oder eine Gutschrift wird so wie eine normale Buchung gelesen. Ohne liquide Seite oder
+  mit zwei bleibt der Rohbetrag, und die Zeile zählt nicht
 
 **Form beim Re-Import:** Kein Import ändert die Form einer vorhandenen Zeile. Findet der Textexport zu
 einer Zeile keinen Treffer mit gleichem Betrag, aber einen Spiegel des Bestands (`mirror_legacy`) mit
@@ -204,6 +205,16 @@ gleichem Beleg, Datum, Konto, Gegenkonto und dem Betrag −gross, den die Datei 
 bleibt, wie er ist. Der Import zählt solche Spiegel – mit gleichem wie mit umgekehrtem Vorzeichen –
 als `legacy_mirrors`; die Seite *Verschiedenes* nennt die Zahl („noch nach der alten Lesart
 gespeichert“).
+
+**Zeilen auf Konten 1000–1099 aus einer älteren Version:** Bis 2.0.x galten diese Konten als Kasse, die
+Zeile stand mit dem Betrag dieser Regel im Bestand („6815 an 1050“ −10, „1050 an 1800“ +30); heute gibt
+derselbe Import ihr einen anderen Betrag und fände sie nicht wieder. Berührt eine Zeile ein Konto in
+1000–1099 und unterscheiden sich die Beträge der alten und der heutigen Regel, sucht die Duplikatsuche
+zusätzlich mit dem Betrag der alten Regel: Gleiche Beleg-Nr. (auch leer), gleiches Datum, Konto und
+Gegenkonto (ein im Kontenrahmen fehlendes Konto gilt auf beiden Seiten als gleich) – dann ist die Zeile
+ein Duplikat. Jede vorhandene Zeile zählt höchstens einmal, und nicht die, die eine andere Zeile der
+Datei mit ihrem eigenen Betrag beansprucht. Die Altzeile bleibt, wie sie ist (Form und Betrag); der
+Import zählt sie als `legacy_stock_rows`, und die Seite *Verschiedenes* nennt die Zahl.
 
 **Duplikat-Erkennung (zählbasiert):** REFERENZNUMMER + Datum + COA_ID + Betrag;
 ohne Referenznummer: Datum + COA_ID + Betrag (nur Entry-Buchungen, ohne Text —
@@ -238,6 +249,12 @@ Buchung als eine still falsch übernommene:
   auf dem Gegenkonto) wird übernommen, wenn Konto, Gegenkonto (beide bekannt), Beleg-Nr. und Text
   gleich sind – und die Datenbank nicht selbst eine Zeile mit seinem Betrag enthält. Form und Betrag
   bleiben (`legacy_mirrors` zählt ihn).
+- Ein Satz, der ein Konto 1000–1099 berührt, wird zusätzlich mit dem Betrag der alten Regel gesucht
+  (eine ältere Version hat die CSV-Zeile so gespeichert, siehe oben): dieselben Schutzregeln, und die
+  Datenbank darf keinen Satz mit diesem Betrag selbst beanspruchen. Übernommen wird nur mit der
+  Quellgruppe – Betrag, Form, Konten und Steuer der Altzeile bleiben (`legacy_stock_rows`). Eine Altzeile,
+  deren Konto im Kontenrahmen fehlte (`COA_ID` leer), findet diese Suche nicht: Dann entsteht eine zweite
+  Buchung (Grenze, `docs/aufgaben.md`).
 - Übernommen wird mit einem UPDATE (im Replay-Log): `SourceGroup` (WISO-`ACCOUNTINGID`)
   setzen, leere Konten (`COA_ID`, `CounterCOA_ID`) und einen leeren Empfänger füllen,
   Steuersatz und -betrag ergänzen, wenn beide fehlen. Die Form: Ein `mirror_legacy`-Spiegel bleibt einer;

@@ -63,15 +63,16 @@ def _result_count(value):
 def _import_notices(result):
     """Hinweise zu Vorzeichen, Konten 1000–1099 und älteren Überträgen aus dem Ergebnis eines
     WISO-Imports (Text- und Datenbank-Import melden beide ``negative_gross``,
-    ``stock_range_accounts`` und ``legacy_mirrors``) als HTML."""
+    ``stock_range_accounts``, ``legacy_stock_rows`` und ``legacy_mirrors``) als HTML."""
     s = ''
     negative = _result_count(result.get('negative_gross'))
     if negative:
         s += (f'<h3>\u26a0\ufe0f Negative Bruttobeträge &ndash; {negative} Sätze</h3>'
               '<p>Bei diesen Sätzen steht genau ein Zahlungskonto (Bank, Kasse oder '
               'Verrechnungskonto) auf einer Seite. Das Vorzeichen richtet sich dann nach der '
-              'Geldbewegung; ein negativer Bruttobetrag verliert es. Stornos und Gutschriften '
-              'können dadurch als normale Buchung gelesen werden &ndash; bitte nachsehen.</p>')
+              'Geldbewegung, nicht nach dem negativen Bruttobetrag. Stornos und Gutschriften '
+              'können dadurch als normale Buchung gelesen werden &ndash; eine Erstattung etwa als '
+              'Ausgabe &ndash; bitte nachsehen.</p>')
     accounts = [row for row in (result.get('stock_range_accounts') or []) if isinstance(row, dict)]
     if accounts:
         s += (f'<h3>\u26a0\ufe0f Konten 1000&ndash;1099 &ndash; {len(accounts)}</h3>'
@@ -84,6 +85,11 @@ def _import_notices(result):
                   f'<td>{_html.escape(str(row.get("bezeichnung", "")))}</td>'
                   f'<td>{_html.escape(str(row.get("anzahl", "")))}</td></tr>')
         s += '</table>'
+    stock_legacy = _result_count(result.get('legacy_stock_rows'))
+    if stock_legacy:
+        s += (f'<p>\u2139\ufe0f {stock_legacy} Buchungen auf Konten 1000&ndash;1099 stammen aus einer '
+              'älteren Version und sind nach deren Lesart gespeichert; ihre Form und ihr Betrag '
+              'wurden nicht verändert, und sie wurden nicht erneut angelegt.</p>')
     legacy = _result_count(result.get('legacy_mirrors'))
     if legacy:
         s += (f'<p>\u2139\ufe0f {legacy} ältere Überträge sind noch nach der alten Lesart '
