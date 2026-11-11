@@ -98,8 +98,10 @@ class WisoImportMixin:
         missing_counter_coa = set()  # SKR-Kontonummern (GEGENKONTO), die nicht in ChartOfAccounts gefunden wurden
         errors = []
 
-        # Dieselbe Menge wie der Datenbank-Import und get_payment_coa_ids: Kasse
-        # 1600–1699 (SKR04) und Verrechnungskonto 1460
+        # Dieselbe Menge wie der Datenbank-Import und get_payment_coa_ids (keine zweite
+        # Kopie): 1000–1099 (historisch, SKR03-Kassenbereich – vorhandene Bestände haben
+        # ihr Vorzeichen daran ausgerichtet) und das Verrechnungskonto 1460. Die Kasse der
+        # App (SKR04 1600) zählt über ihr eigenes Konto in liquid_account_nrs.
         from importers.wiso_fdb import DEFAULT_LIQUID_ACCOUNTS
 
         def _is_liquid(nr):

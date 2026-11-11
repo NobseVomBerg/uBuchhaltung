@@ -7,6 +7,7 @@ Asset management pages (Anlagenverzeichnis)
 import datetime
 import html as _html
 from db import Database
+from db.matching import ASSET_ACCOUNT_RANGE
 from money import fmt_eur
 from .pages import Header1, Header2, Header3, Footer, script_json
 
@@ -58,11 +59,8 @@ def PageAssets(db: Database, status_filter='', edit_id=None, new_parent_id=None,
         year_entry = next((e for e in plan if e['year'] == current_year), None)
         depr_this_year = year_entry['depreciation'] if year_entry else 0.0
 
-        existing = db.get_depreciations_for_asset(asset_id)
-        booked_years = {e[2]: e[6] for e in existing}  # Jahr → Status (Index 5 ist die Booking_ID)
-        depr_status = booked_years.get(current_year, 'planned')
-        if depr_status == 'booked':                    # aus dem WISO-Import: ebenfalls gebucht
-            depr_status = 'posted'
+        # Gebucht: die Buchung gibt es, oder das Jahr stammt als 'booked' aus dem WISO-Import
+        depr_status = 'posted' if current_year in db.get_booked_depreciation_years(asset_id) else 'planned'
 
         if status == 'active':
             total_purchase += purchase_price
@@ -191,6 +189,10 @@ def _asset_details(db: Database, asset):
 
     plan = db.calculate_depreciation_plan(purchase_price, purchase_date, useful_life, method)
     booked = {e[2]: e for e in db.get_depreciations_for_asset(asset_id)}  # year → row
+    # Gebucht: die Buchung gibt es, oder das Jahr stammt als 'booked' aus dem WISO-Import.
+    # Eine Zeile 'posted', deren Buchung fehlt, gilt als nicht gebucht (Buchen-Knopf).
+    booked_years = db.get_booked_depreciation_years(asset_id)
+    sale_year = int(str(asset[15])[:4]) if asset[15] else None    # Abgang (SaleDate)
     current_year = datetime.date.today().year
     children = db.get_asset_children(asset_id)
     coa_rows = db.fetch_chart_of_accounts()
@@ -208,14 +210,16 @@ def _asset_details(db: Database, asset):
         bv_end = entry['book_value_end']
         meth = _method_label(entry['method'])
         booked_entry = booked.get(yr)
-        # Gebucht ist ein Jahr mit Status 'posted' (Buchung des Programms) oder 'booked'
-        # (WISO-Import); nach dem Löschen der Buchung steht es wieder auf 'planned'.
-        is_booked = booked_entry is not None and booked_entry[6] in ('posted', 'booked')
+        is_booked = yr in booked_years
         if is_booked:
             depr_status_label = '<span style="color:green;">✓ Gebucht</span>'
-            booking_id = booked_entry[5]               # fehlt bei importierter AfA
+            booking_id = booked_entry[5] if booked_entry else None    # fehlt bei importierter AfA
             action = (f'<a href="/transactions/edit?id={int(booking_id)}">Buchung ansehen</a>'
                       if booking_id else '')
+        elif sale_year is not None and yr > sale_year:
+            # Nach dem Abgang gibt es keine AfA mehr – und keinen Buchen-Knopf
+            depr_status_label = '<span style="color:#aaa;">○ Nach Abgang</span>'
+            action = ''
         elif yr < current_year:
             depr_status_label = '<span style="color:orange;">⚠ Nicht gebucht</span>'
             action = _book_depr_button(asset_id, yr, coa_rows, asset_coa, entry['method'])
@@ -278,8 +282,9 @@ def _book_depr_button(asset_id, year, coa_rows, asset_coa=None, method=''):
     """Render inline form to book depreciation for a specific year.
 
     Die AfA ist eine Umbuchung „Aufwand an Anlagekonto“ und hängt an keinem Bankkonto:
-    Das Anlagekonto (Konten unter 1000) ist mit dem der Anlage vorbelegt, das
-    Aufwandskonto mit der passenden AfA-Sammelstelle (``_depr_expense_number``)."""
+    Das Anlagekonto (Konten unter 1000) ist mit dem der Anlage vorbelegt – steht dieses
+    nicht in der Liste, bleibt die Auswahl leer („– bitte wählen –“) –, das Aufwandskonto
+    mit der passenden AfA-Sammelstelle (``_depr_expense_number``)."""
     form_id = f"depr_form_{asset_id}_{year}"
     # Ausgeblendete Konten (ShowInMenu=0) fehlen – außer dem Anlagekonto der Anlage
     shown = [c for c in coa_rows if (c[7] if len(c) > 7 else 1) or c[0] == asset_coa]
@@ -295,7 +300,12 @@ def _book_depr_button(asset_id, year, coa_rows, asset_coa=None, method=''):
             f'{_html.escape(str(c[2] or ""))} {_html.escape(str(c[3] or ""))}</option>'
             for c in rows)
 
-    asset_options = options([c for c in shown if c[2] is not None and c[2] < 1000], asset_coa)
+    asset_rows = [c for c in shown if c[2] is not None
+                  and ASSET_ACCOUNT_RANGE[0] <= c[2] <= ASSET_ACCOUNT_RANGE[1]]
+    # Ein Anlagekonto außerhalb der Liste (z. B. an der Anlage ein Konto ab 1000 gepflegt)
+    # wird nicht vorbelegt: Sonst nähme der Browser stillschweigend das erste Konto der Liste.
+    asset_selected = asset_coa if any(c[0] == asset_coa for c in asset_rows) else None
+    asset_options = options(asset_rows, asset_selected)
     coa_options = options(shown, expense_coa)
     return f'''
         <button type="button" onclick="document.getElementById('{form_id}').style.display='block'; this.style.display='none';"

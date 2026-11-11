@@ -92,17 +92,21 @@ class SeedMixin:
         return ids
 
     def get_payment_coa_ids(self):
-        """COA-IDs aller Zahlungskonten: eigene Bank-/Kassenkonten, dazu die Nummern,
-        die die Importe fest als liquide behandeln (Kasse 1600–1699 und das
+        """COA-IDs aller Zahlungskonten: die eigenen Bank-/Kassenkonten (die Standard-Kasse
+        trägt SKR04 1600) plus die Nummern, die die Importe fest als liquide behandeln
+        (``importers.wiso_fdb.DEFAULT_LIQUID_ACCOUNTS``: 1000–1099 und das
         Verrechnungskonto 1460 als Geldtransit).
 
         Das ist die Menge, an der beide WISO-Importe das Vorzeichen eines Satzes
-        ausrichten (``importers.wiso_fdb.DEFAULT_LIQUID_ACCOUNTS``): Steht eines dieser
-        Konten auf einer Seite, trägt der Betrag die Richtung der Geldbewegung. Dieselbe
-        Menge nehmen der DATEV-Export, die Buchungsmaske beim Bearbeiten und die EÜR
-        (``get_euer_data``) – ob ein Satz dort zählt, entscheidet die Sektion, in der er
-        steht, nicht die Menge. Nur die Split-Summe und die Verknüpfung rechnen noch
-        mit ``get_bank_coa_ids``.
+        ausrichten: Steht eines dieser Konten auf einer Seite, trägt der Betrag die
+        Richtung der Geldbewegung. Die Kasse der App zählt über ihr eigenes Konto
+        (``Accounts.SKRAccount``) – wie die Bankkonten –, nicht über einen festen Bereich:
+        Hat die Kasse keine SKR-Nummer, ist 1600 kein Zahlungskonto. 1000–1099
+        (SKR03-Kassenbereich) ist historisch und bleibt, weil vorhandene Bestände ihr
+        Vorzeichen daran ausgerichtet haben. Dieselbe Menge nehmen der DATEV-Export, die
+        Buchungsmaske beim Bearbeiten und die EÜR (``get_euer_data``) – ob ein Satz dort
+        zählt, entscheidet die Sektion, in der er steht, nicht die Menge. Nur die
+        Split-Summe und die Verknüpfung rechnen noch mit ``get_bank_coa_ids``.
         """
         conn = self._get_connection()
         try:

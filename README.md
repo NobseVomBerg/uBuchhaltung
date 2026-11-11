@@ -275,7 +275,7 @@ Vollständiges Anlagenmanagement mit gesetzeskonformer AfA:
 - **AfA-Methoden**: Linear (anteilig), Degressiv (25%), GWG (≤ 800 €)
 - **Live-Vorschau**: JavaScript-basierte Echtzeit-AfA-Berechnung
 - **Inventarnummern**: Auto-generiert `INV-YY-###`
-- **Buchungsintegration**: AfA-Buchung als Umbuchung „Aufwand an Anlagekonto“ (direkte Abschreibung, je Anlage und Jahr nur einmal, ohne Bankkonto); Löschen der Buchung gibt das Jahr wieder frei, eine Anlage mit gebuchter AfA lässt sich nicht löschen. Wer ein GWG schon beim Kauf auf das Aufwandskonto 6260 (Sofortabschreibung) gebucht hat, darf die AfA nicht zusätzlich buchen – sie zählte doppelt, das Programm prüft das nicht
+- **Buchungsintegration**: AfA-Buchung als Umbuchung „Aufwand an Anlagekonto“ (direkte Abschreibung, je Anlage und Jahr nur einmal, ohne Bankkonto; Aufwandskonto = Erfolgskonto, Anlagekonto = Anlagekonto, nach dem Abgang der Anlage keine AfA mehr); Löschen der Buchung gibt das Jahr wieder frei, eine Anlage mit gebuchter AfA lässt sich nicht löschen. Wer ein GWG schon beim Kauf auf das Aufwandskonto 6260 (Sofortabschreibung) gebucht hat, darf die AfA nicht zusätzlich buchen – sie zählte doppelt, das Programm prüft das nicht
 - **Erweiterungen**: Sub-Anlagen über Parent_ID
 
 ### 13. Sonstiges (`/miscellaneous`)
