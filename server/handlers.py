@@ -1137,9 +1137,17 @@ _CONSOLE_PRAGMAS_READ = frozenset({
 # Ausgabe könnten den Prozess per Speichermangel beenden. Als Modulkonstanten, damit
 # Tests sie klein setzen können (handle_execute_sql liest sie bei jedem Aufruf).
 _CONSOLE_TIME_LIMIT_S = 60              # alle Befehle einer Anfrage zusammen, inkl. Lesen der Ergebnisse
-_CONSOLE_MAX_VALUE_BYTES = 20_000_000   # größter einzelner Wert/Zeile (SQLITE_LIMIT_LENGTH, ab Python 3.11)
+_CONSOLE_MAX_VALUE_BYTES = 2_000_000    # größter einzelner Wert (SQLITE_LIMIT_LENGTH, ab Python 3.11)
+_CONSOLE_MAX_COLUMNS = 250              # Spalten je Ergebnis/Tabelle (SQLITE_LIMIT_COLUMN, ab Python 3.11)
 _CONSOLE_MAX_OUTPUT_ROWS = 200_000      # Zeilen der Ausgabe je Anfrage (Kopfzeilen mitgezählt)
 _CONSOLE_MAX_OUTPUT_BYTES = 20_000_000  # UTF-8-Bytes der Ausgabe je Anfrage
+
+
+# SQL-Funktionen, die aus der Datenbank hinausführen. fts3_tokenizer gibt in SQLite-Builds
+# mit ENABLE_FTS3_TOKENIZER (Debian/Ubuntu, also auch das Docker-Image) Speicheradressen
+# preis und springt eine übergebene Adresse an – damit lässt sich der Server zum Absturz
+# bringen und fremder Code ausführen. load_extension lädt beliebige Bibliotheken.
+_CONSOLE_FUNCTIONS_DENIED = frozenset({'fts3_tokenizer', 'load_extension'})
 
 
 def _console_authorizer(action, arg1, arg2, dbname, source):
@@ -1147,8 +1155,8 @@ def _console_authorizer(action, arg1, arg2, dbname, source):
 
     ATTACH/DETACH würden andere Dateien öffnen (auth.db, Datenbanken anderer
     Nutzer); VACUUM (auch VACUUM INTO) läuft intern über ATTACH und ist damit
-    ebenfalls gesperrt. PRAGMAs: siehe Positivlisten oben. Diese Sperren nicht
-    aufweichen.
+    ebenfalls gesperrt. PRAGMAs: siehe Positivlisten oben; gesperrte Funktionen:
+    _CONSOLE_FUNCTIONS_DENIED. Diese Sperren nicht aufweichen.
     """
     import sqlite3
     if action in (sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH):
@@ -1157,6 +1165,8 @@ def _console_authorizer(action, arg1, arg2, dbname, source):
         name = (arg1 or '').lower()
         if name in _CONSOLE_PRAGMAS_WITH_ARG or (arg2 is None and name in _CONSOLE_PRAGMAS_READ):
             return sqlite3.SQLITE_OK
+        return sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_FUNCTION and (arg2 or '').lower() in _CONSOLE_FUNCTIONS_DENIED:
         return sqlite3.SQLITE_DENY
     return sqlite3.SQLITE_OK
 
@@ -1211,6 +1221,9 @@ def handle_execute_sql(db: Database, post_data):
     conn.set_authorizer(_console_authorizer)
     if hasattr(conn, 'setlimit'):                   # ab Python 3.11
         conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _CONSOLE_MAX_VALUE_BYTES)
+        # Python holt eine Ergebniszeile ganz, bevor die Ausgabegrenze prüfen kann: Erst
+        # Wertgröße × Spaltenzahl begrenzt, was eine einzelne Zeile an Speicher belegt.
+        conn.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, _CONSOLE_MAX_COLUMNS)
     deadline = time.monotonic() + _CONSOLE_TIME_LIMIT_S
     conn.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 10000)
     cursor = conn.cursor()
@@ -1235,12 +1248,16 @@ def handle_execute_sql(db: Database, post_data):
                         output_bytes += size
             except sqlite3.Error as e:
                 msg = str(e)
-                if isinstance(e, sqlite3.OperationalError) and 'interrupted' in msg:
-                    timed_out_at = i                                # vom Fortschrittshandler abgebrochen
+                if (isinstance(e, sqlite3.OperationalError) and 'interrupted' in msg
+                        and time.monotonic() > deadline):
+                    # Vom Fortschrittshandler abgebrochen. Die Frist mitprüfen: Der Text
+                    # allein träfe auch „no such table: interrupted“.
+                    timed_out_at = i
                     break
                 if 'not authorized' in msg or 'authorization denied' in msg:
                     msg = ('nicht erlaubt – ATTACH, DETACH, VACUUM sowie verändernde oder '
-                           'unbekannte PRAGMAs sind in der Konsole gesperrt')
+                           'unbekannte PRAGMAs sind in der Konsole gesperrt, ebenso die '
+                           'Funktionen fts3_tokenizer und load_extension')
                 errors.append(f"Befehl {i}: {msg}")
 
         if timed_out_at is not None:
@@ -1248,12 +1265,14 @@ def handle_execute_sql(db: Database, post_data):
             return json.dumps({
                 "success_count": 0,
                 "total": len(commands),
-                # Ehrlich bleiben: rollback() nimmt nur die offene Transaktion zurück. DDL
-                # ohne vorheriges DML und alles vor einem ausdrücklichen COMMIT steht schon.
+                # Ehrlich bleiben: rollback() nimmt nur die offene Transaktion zurück. Die
+                # beginnt Python erst vor dem ersten INSERT/UPDATE/DELETE – DDL davor und
+                # alles vor einem ausdrücklichen COMMIT steht schon.
                 "errors": [f"Befehl {timed_out_at}: abgebrochen – Zeitlimit von "
                            f"{_CONSOLE_TIME_LIMIT_S} s überschritten. Nicht festgeschriebene "
-                           "Änderungen dieser Anfrage wurden zurückgenommen; Strukturbefehle "
-                           "(CREATE, ALTER, DROP) und Befehle vor einem COMMIT bleiben bestehen."],
+                           "Änderungen dieser Anfrage wurden zurückgenommen. Was schon "
+                           "festgeschrieben war, bleibt bestehen: Befehle vor einem COMMIT und "
+                           "Strukturbefehle (CREATE, ALTER, DROP) vor der ersten Datenänderung."],
                 "output": ""
             }, ensure_ascii=False)
 
