@@ -12,10 +12,9 @@ vorausgefüllt.
 import calendar
 import datetime
 import html as _html
-import json
 from urllib.parse import quote
 from db import Database
-from .pages import Header1, Header2, Header3, Footer
+from .pages import Header1, Header2, Header3, Footer, script_json
 from .period import period_filter_widget
 from .pages_worktime import _persons, zeiten_submenu
 
@@ -157,7 +156,7 @@ def PageTrips(db: Database, person_id=None, date_from=None, date_to=None,
         'template': template,
         'today': today.isoformat(),
     }
-    s += '<script>\nconst TRIPS_DATA = ' + json.dumps(trips_data, ensure_ascii=False) + ';\n'
+    s += '<script>\nconst TRIPS_DATA = ' + script_json(trips_data) + ';\n'
     s += _TRIPS_JS + '</script>'
 
     if edit_id:
@@ -174,11 +173,11 @@ def PageTrips(db: Database, person_id=None, date_from=None, date_to=None,
                 'document': e[13] if e[13] is not None else '',
             }
             s += ('<script>document.addEventListener("DOMContentLoaded",function(){'
-                  'trLoadEntry(' + json.dumps(preload, ensure_ascii=False) + ');});</script>')
+                  'trLoadEntry(' + script_json(preload) + ');});</script>')
 
     if error_msg:
         s += ('<script>document.addEventListener("DOMContentLoaded",function(){'
-              'appMsg(' + json.dumps(error_msg, ensure_ascii=False) + ',"error");});</script>')
+              'appMsg(' + script_json(error_msg) + ',"error");});</script>')
 
     s += Footer()
     return s

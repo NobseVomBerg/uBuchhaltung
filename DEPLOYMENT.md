@@ -117,6 +117,10 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
 - `data/users/<user>/` – pro Nutzer: `buch.db` sowie `logos/`, `invoices/`,
   `quotes/`, `worktime/`.
 - Für ein Backup genügt es, das gesamte `data/`-Verzeichnis zu sichern.
+- Die Wiederherstellung in der App prüft das Archiv, bevor sie am Datenverzeichnis etwas
+  ändert. Bleibt nach einem Absturz mitten im Wiederherstellen ein Ordner
+  `backup/replaced_…` zurück, enthält er den Stand von davor – von dort zurückkopieren
+  und den Ordner erst danach löschen.
 - Das Löschen eines Nutzers in der Benutzerverwaltung entfernt nur das Login;
   das zugehörige Datenverzeichnis bleibt erhalten und kann bei Bedarf manuell
   entfernt werden.

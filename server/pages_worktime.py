@@ -10,10 +10,9 @@ Personen-Filter (Mitarbeiter + eigene Person), Zeitraum-Filter (Monat/Jahr).
 import calendar
 import datetime
 import html as _html
-import json
 from urllib.parse import quote
 from db import Database
-from .pages import Header1, Header2, Header3, Footer
+from .pages import Header1, Header2, Header3, Footer, script_json
 from .period import period_filter_widget
 
 # Arbeitszeit-Arten (Kind) und fachliche Labels
@@ -273,7 +272,7 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
         'today': today.isoformat(),
         'pdfBase': f'/worktime/pdf?person={person_id}&from={quote(date_from, safe="")}&to={quote(date_to, safe="")}',
     }
-    s += '<script>\nconst WT_DATA = ' + json.dumps(wt_data, ensure_ascii=False) + ';\n'
+    s += '<script>\nconst WT_DATA = ' + script_json(wt_data) + ';\n'
     s += _WORKTIME_JS + '</script>'
 
     # Bei /worktime/edit: Eintrag direkt ins Formular laden
@@ -288,12 +287,12 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
                 'pausetext': (e[11] if len(e) > 11 else '') or '',
             }
             s += ('<script>document.addEventListener("DOMContentLoaded",function(){'
-                  'wtLoadEntry(' + json.dumps(preload, ensure_ascii=False) + ');});</script>')
+                  'wtLoadEntry(' + script_json(preload) + ');});</script>')
 
     # Fehlermeldung (z.B. Überschneidung) über die appMsg-Bar einblenden
     if error_msg:
         s += ('<script>document.addEventListener("DOMContentLoaded",function(){'
-              'appMsg(' + json.dumps(error_msg, ensure_ascii=False) + ',"error");});</script>')
+              'appMsg(' + script_json(error_msg) + ',"error");});</script>')
 
     s += Footer()
     return s

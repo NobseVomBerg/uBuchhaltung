@@ -73,8 +73,13 @@ _HEADER_UNSAFE = str.maketrans('', '', '\r\n\0')
 
 
 def _header_safe(value):
-    """Name oder Wert eines HTTP-Headers ohne CR, LF und NUL."""
-    return str(value).translate(_HEADER_UNSAFE)
+    """Name oder Wert eines HTTP-Headers ohne CR, LF und NUL, nur mit Latin-1-Zeichen.
+
+    ``http.server`` schreibt Header als Latin-1; jedes Zeichen darüber hinaus (ein „€“ oder
+    Emoji in einem Dateinamen oder einer Adresse) würde dort einen UnicodeEncodeError und
+    damit einen 500 auslösen. Es wird durch ``?`` ersetzt.
+    """
+    return str(value).translate(_HEADER_UNSAFE).encode('latin-1', 'replace').decode('latin-1')
 
 
 def _int_param(qs, name):
