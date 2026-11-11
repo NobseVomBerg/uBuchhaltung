@@ -6,7 +6,7 @@ import sqlite3
 import os
 import json
 from decimal import Decimal
-from money import to_minor, from_minor
+from money import to_minor, from_minor, is_covered
 
 
 def is_bank_effective(coa_id, counter_coa_id, bank_coa_ids) -> bool:
@@ -86,12 +86,17 @@ def is_asset_transfer(coa_id, counter_coa_id, liquid_coa_ids, asset_coa_ids, pl_
 def receivable_condition(debtor_coa_ids, payment_coa_ids, alias=''):
     """SQL-Bedingung „Satz ist eine Forderungsbuchung“ samt Parametern – die EINE Definition.
 
-    Eine Forderung (Debitoren an Wartekonto, entsteht beim Versenden der Rechnung) berührt das
-    Debitorenkonto 10000 (als Konto oder Gegenkonto) und hat auf keiner Seite ein Zahlungskonto
-    (``get_payment_coa_ids``). Sie ist ein eigenständiger Satz und hängt nie an einer
-    Bankbewegung: Der Auto-Abgleich verknüpft sie nicht, ``delete_transaction`` löscht sie nicht
-    mit. Die WISO-Zahlungssätze „1210 an 10000“ und ihr Storno haben ein Zahlungskonto auf einer
-    Seite und bleiben verknüpfbar.
+    Eine Forderung (Debitoren an Wartekonto, entsteht beim Versenden der Rechnung) hat das
+    Debitorenkonto 10000 im SOLL – nach der Vorzeichenregel der Umbuchungen: ``COA_ID`` ist 10000
+    und der Betrag positiv, oder ``CounterCOA_ID`` ist 10000 und der Betrag negativ – und auf
+    keiner Seite ein Zahlungskonto (``get_payment_coa_ids``). Sie ist ein eigenständiger Satz und
+    hängt nie an einer Bankbewegung: Der Auto-Abgleich verknüpft sie nicht, ``delete_transaction``
+    löscht sie nicht mit.
+
+    Keine Forderung ist, was 10000 im HABEN führt: die Zahlung „Bank an 10000“, aber auch
+    Erlösminderung, Skonto und Forderungsverlust („… an 10000“) – sie gehören zur Bankbewegung
+    bzw. zur Zahlung. Die WISO-Zahlungssätze „1210 an 10000“ und ihr Storno haben außerdem ein
+    Zahlungskonto auf einer Seite und bleiben verknüpfbar.
 
     ``alias``: Tabellenalias der Bookings-Zeile. Returns ``(sql, params)``.
     """
@@ -100,9 +105,10 @@ def receivable_condition(debtor_coa_ids, payment_coa_ids, alias=''):
     p = f'{alias}.' if alias else ''
     debtor = ','.join('?' * len(debtor_coa_ids))
     payment = ','.join('?' * len(payment_coa_ids))
-    # COALESCE auf jeder Seite: Die Bedingung ist nie NULL, ein Satz ohne Konten (NULL) ist
-    # schlicht keine Forderung – sonst ergäbe ``NOT (…)`` für ihn NULL und er fiele heraus.
-    sql = (f'((COALESCE({p}COA_ID, -1) IN ({debtor}) OR COALESCE({p}CounterCOA_ID, -1) IN ({debtor}))'
+    # COALESCE auf jeder Seite: Die Bedingung ist nie NULL, ein Satz ohne Konten oder ohne Betrag
+    # (NULL) ist schlicht keine Forderung – sonst ergäbe ``NOT (…)`` für ihn NULL und er fiele heraus.
+    sql = (f'((COALESCE({p}COA_ID, -1) IN ({debtor}) AND COALESCE({p}Amount, 0) > 0'
+           f' OR COALESCE({p}CounterCOA_ID, -1) IN ({debtor}) AND COALESCE({p}Amount, 0) < 0)'
            f' AND COALESCE({p}COA_ID, -1) NOT IN ({payment})'
            f' AND COALESCE({p}CounterCOA_ID, -1) NOT IN ({payment}))')
     params = list(debtor_coa_ids) * 2 + list(payment_coa_ids) * 2
@@ -118,6 +124,19 @@ class MatchingMixin:
         debtor_coa_ids = [row[0] for row in cursor.fetchall()]
         return receivable_condition(debtor_coa_ids, sorted(self._get_payment_coa_ids(cursor)),
                                     alias)
+
+    @staticmethod
+    def _debtor_settled_minor(cursor, number, debtor_coa_ids):
+        """Summe der Sätze „… an Debitoren“ (Zahlungen, Skonti, Gutschriften) mit dieser Beleg-Nr.,
+        die an einer Bankbewegung hängen, in Minor Units. Ob sie die Forderung ausgleicht, sagt
+        ``money.is_covered`` – Stufe 7 des Auto-Abgleichs und das Entfernen einer Zuordnung
+        fragen beide danach."""
+        marks = ','.join('?' * len(debtor_coa_ids))
+        cursor.execute(
+            f"SELECT COALESCE(SUM(Amount), 0) FROM Bookings WHERE BookingType = 'entry' "
+            f"AND ParentBooking_ID IS NOT NULL AND DocumentNumber = ? "
+            f"AND CounterCOA_ID IN ({marks})", [number, *debtor_coa_ids])
+        return cursor.fetchone()[0]
 
     def get_linked_entry_for_bank(self, bank_booking_id: int):
         """Hole die wichtigsten Felder des ersten verknüpften Entry-Bookings.
@@ -387,9 +406,11 @@ class MatchingMixin:
         Stufe 7 – Debitoren-Auflösung (nach der Hauptschleife):
             Debitoren-Entries (COA 10000) bei Rechnungserstellung haben
             ein früheres Datum als die spätere Zahlung und können daher
-            nie per Datum matchen.  Wenn eine Zahlung-Entry (gleiche
-            DocumentNumber, CounterCOA=Debitoren) bereits verknüpft ist,
-            wird der Debitoren-Entry als Status='resolved' markiert.
+            nie per Datum matchen.  Erreicht die Summe der bereits
+            verknüpften Sätze „… an Debitoren“ (gleiche DocumentNumber,
+            CounterCOA=Debitoren) den Betrag des Debitoren-Entry, wird er
+            als Status='resolved' markiert – nicht schon nach der ersten
+            Teilzahlung (``money.is_covered``).
 
         Nach dem Linken wird der Text der Bank-Buchung durch den Text der
         Entry-Buchung ersetzt (WISO-kuratierter Text hat Vorrang).
@@ -1003,9 +1024,10 @@ class MatchingMixin:
         # Debitoren-Entries (COA 10000) entstehen bei Rechnungserstellung
         # und haben ein früheres Datum als Bank- und Zahlungsbuchungen.
         # Sie können nie per Datum-Match verknüpft werden.
-        # Lösung: Wenn eine Zahlung-Entry (COA = Bank, CounterCOA =
-        # Debitoren) mit gleicher DocumentNumber bereits verknüpft ist,
-        # setze Status = 'resolved' auf dem Debitoren-Entry.
+        # Lösung: Gleichen die bereits verknüpften Zahlung-Entries (CounterCOA =
+        # Debitoren) mit gleicher DocumentNumber zusammen den Betrag des
+        # Debitoren-Entry aus, setze Status = 'resolved' auf ihm – bei einer
+        # Teilzahlung bleibt er offen.
         cursor.execute('''
             SELECT ID FROM ChartOfAccounts
             WHERE AccountNumber = 10000
@@ -1015,7 +1037,7 @@ class MatchingMixin:
         if debitoren_row:
             debitoren_coa_id = debitoren_row[0]
             cursor.execute('''
-                SELECT ID, DocumentNumber
+                SELECT ID, DocumentNumber, Amount
                 FROM Bookings
                 WHERE BookingType = 'entry'
                   AND ParentBooking_ID IS NULL
@@ -1024,20 +1046,13 @@ class MatchingMixin:
             ''', (debitoren_coa_id,))
             debitoren_entries = cursor.fetchall()
 
-            for deb_id, doc_nr in debitoren_entries:
+            for deb_id, doc_nr, deb_amount in debitoren_entries:
                 if not doc_nr:
                     continue
-                # Suche eine verknüpfte Zahlung-Entry mit gleicher DocNr
-                # und CounterCOA = Debitoren (d.h. Zahlung auf Debitor)
-                cursor.execute('''
-                    SELECT ID FROM Bookings
-                    WHERE BookingType = 'entry'
-                      AND ParentBooking_ID IS NOT NULL
-                      AND DocumentNumber = ?
-                      AND CounterCOA_ID = ?
-                    LIMIT 1
-                ''', (doc_nr, debitoren_coa_id))
-                if cursor.fetchone():
+                # Summe der verknüpften Zahlung-Entries mit gleicher DocNr
+                # und CounterCOA = Debitoren (d.h. Zahlungen auf den Debitor)
+                settled = self._debtor_settled_minor(cursor, doc_nr, [debitoren_coa_id])
+                if is_covered(deb_amount or 0, settled):
                     cursor.execute(
                         "UPDATE Bookings SET Status = 'resolved'"
                         " WHERE ID = ?",
