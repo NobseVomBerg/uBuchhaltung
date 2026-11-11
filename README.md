@@ -166,7 +166,8 @@ Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen
   zeigen danach dieselben Werte wie vorher.
   **Sicherung zurückspielen** (die Oberfläche bietet das nicht an): uBuchhaltung beenden, die Datei
   `backup/<Datum>_vor_<Version>_buch.db` im Datenordner des Nutzers (`data/users/<Name>/`, im Container
-  das eingebundene Datenverzeichnis) über `buch.db` kopieren und eine ältere Programmversion starten.
+  das eingebundene Datenverzeichnis) über `buch.db` kopieren – liegen daneben Dateien `buch.db-journal`,
+  `buch.db-wal` oder `buch.db-shm`, diese vorher löschen – und eine ältere Programmversion starten.
   Was nach der Umstellung eingegeben wurde, geht dabei verloren.
 - **Noch nicht enthalten:** Umsatzsteuer-Voranmeldung bzw. ELSTER-Übermittlung,
   Bankanbindung per FinTS/PSD2 sowie Kontoauszüge im MT940-Format.
