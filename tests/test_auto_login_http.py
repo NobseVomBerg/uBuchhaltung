@@ -468,7 +468,7 @@ def test_the_setup_over_https_marks_the_session_cookie_secure(tls_server_port):
 def test_the_logout_cookie_is_cleared_over_https_too(tls_server_port):
     installation.set_up(auto_login=False)
     token = auth.create_session("admin")
-    resp = get(tls_server_port, "/logout", headers=_cookie(token))
+    resp = post(tls_server_port, "/logout", headers=_cookie(token), csrf=auth.csrf_for(token))
     assert resp.status == 303
     assert "Max-Age=0" in _flags(resp)
 
@@ -494,7 +494,7 @@ def test_a_post_without_session_does_not_disturb_the_next_request_on_the_connect
 def test_logout_ends_the_session_and_clears_the_cookie(server_port, login_users):
     token = login_users["alice"]
     assert get(server_port, "/about", headers=_cookie(token)).status == 200
-    resp = get(server_port, "/logout", headers=_cookie(token))
+    resp = post(server_port, "/logout", headers=_cookie(token), csrf=auth.csrf_for(token))
     assert resp.status == 303 and resp.headers["Location"] == "/login"
     assert resp.headers["Set-Cookie"].startswith("session=;") and "Max-Age=0" in resp.headers["Set-Cookie"]
     assert auth.get_session_user(token) is None

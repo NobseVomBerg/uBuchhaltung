@@ -10,13 +10,14 @@ Phase-1-Umsetzung: Fließtext vor/nach den Positionen mit einfacher Formatierung
 (fett/kursiv) – mehrseitiger Rich-Text folgt in Phase 2.
 """
 import datetime
-import os
 import html as _html
 from db import Database
 from money import fmt_eur
 from export.einvoice_model import unit_display
+from export.invoice_files import stored_invoice_path
 from .pages import Header1, Header2, Header3, Footer, logo_url
 from .pages_invoice import _json_for_script, document_submenu
+from .richtext import sanitize_richtext
 
 
 # Angebots-Status
@@ -97,18 +98,18 @@ def PageQuote(db: Database, filters: dict = None, quote_id=None):
         for q in quotes:
             qid = q[0]
             q_number = _html.escape(str(q[1] or ''))
-            q_date = q[2]
-            buyer = _html.escape(str(q[14] or ''))
+            q_date = _html.escape(str(q[2] or ''))
+            buyer = _html.escape(str(q[14] or '')[:30])
             sum_net = q[36]
             sum_gross = q[38]
             status = q[40]
-            valid_until = q[46] if len(q) > 46 else ''
+            valid_until = _html.escape(str(q[46] or '')) if len(q) > 46 else ''
             color = QUOTE_STATUS_COLORS.get(status, '#888')
-            label = QUOTE_STATUS_LABELS.get(status, status)
-            pdf_path = q[41] if len(q) > 41 else None
-            pdf_exists = "true" if (pdf_path and os.path.exists(pdf_path)) else "false"
+            label = _html.escape(str(QUOTE_STATUS_LABELS.get(status, status)))
+            # dieselbe Frage wie beim Download: geprüfter Pfad mit Fallback auf das Namensschema
+            pdf_exists = "true" if stored_invoice_path(db, qid, 'pdf', q)[0] else "false"
             s += "<tr>"
-            s += f"<td>{q_number}</td><td>{q_date}</td><td>{buyer[:30]}</td>"
+            s += f"<td>{q_number}</td><td>{q_date}</td><td>{buyer}</td>"
             s += f"<td style='text-align:right;'>{fmt_eur(sum_net)}</td>"
             s += f"<td style='text-align:right;'><strong>{fmt_eur(sum_gross)}</strong></td>"
             s += f"<td style='color:{color};'><strong>{label}</strong></td>"
@@ -130,7 +131,7 @@ def PageQuote(db: Database, filters: dict = None, quote_id=None):
         function handleQuotePDF(quoteId, pdfExists) {
             function _do() {
                 const viewer = window.open('about:blank', '_blank');  // im Klick-Kontext -> kein Popup-Blocker
-                fetch('/quote/pdf_generate?id=' + quoteId)
+                fetch('/quote/pdf_generate?id=' + quoteId, {method: 'POST'})
                     .then(r => r.json())
                     .then(d => {
                         appMsg(d.success ? ('PDF erstellt: ' + d.pdf_path) : ('Fehler: ' + (d.error || '?')), d.success ? 'success' : 'error');
@@ -147,17 +148,11 @@ def PageQuote(db: Database, filters: dict = None, quote_id=None):
         }
         function convertQuote(quoteId) {
             appConfirm('Aus diesem Angebot eine Rechnung erstellen? Das Angebot wird als "Umgewandelt" markiert.', function() {
-                const f = document.createElement('form');
-                f.method = 'POST'; f.action = '/quote/convert';
-                const i = document.createElement('input');
-                i.type = 'hidden'; i.name = 'quote_id'; i.value = quoteId;
-                f.appendChild(i); document.body.appendChild(f); f.submit();
+                appPost('/quote/convert', {quote_id: quoteId});
             });
         }
         function deleteQuote(quoteId) {
-            appConfirm('Angebot wirklich löschen?', function() {
-                window.location.href = '/quote/delete?id=' + quoteId;
-            });
+            appConfirmPost('/quote/delete?id=' + quoteId, 'Angebot wirklich löschen?');
         }
         function applyQuoteFilters() {
             const status = document.getElementById('statusFilter').value;
@@ -184,7 +179,9 @@ def _quote_form_html(db: Database, quote_id=None):
     existing = None
     existing_items = []
     if quote_id:
-        existing = db.get_invoice_by_id(quote_id)
+        # Nur Angebote: die ID einer Rechnung zeigt hier kein fremdes Dokument im falschen
+        # Formular, sondern das leere Formular für ein neues Angebot
+        existing = db.get_document(quote_id, 'quote')
         if existing:
             existing_items = db.get_invoice_items(quote_id)
 
@@ -194,15 +191,15 @@ def _quote_form_html(db: Database, quote_id=None):
     articles = db.fetch_articles(active_only=True)
 
     if existing:
-        quote_number = _html.escape(str(existing[1] or ''))
+        quote_number = str(existing[1] or '')
         quote_date = existing[2] or ''
         selected_own_id = existing[3]
         selected_customer_id = existing[13]
         quote_status = existing[40]
         valid_until = existing[46] if len(existing) > 46 else ''
-        intro_text = existing[47] if len(existing) > 47 else ''
-        closing_text = existing[48] if len(existing) > 48 else ''
-        pdf_path = existing[41] if len(existing) > 41 else None
+        # Fließtext: auch Altbestand läuft über die Positivliste, nie roh in die Seite
+        intro_text = sanitize_richtext(existing[47] if len(existing) > 47 else '')
+        closing_text = sanitize_richtext(existing[48] if len(existing) > 48 else '')
         # Steuersatz aus dem gespeicherten Angebot vorbelegen. Gespeichert als
         # Dezimal (0.19) bzw. 0; Sentinel -1 = kein USt-Ausweis (Kleinunternehmer).
         _r = existing[35] if len(existing) > 35 and existing[35] is not None else None
@@ -211,7 +208,7 @@ def _quote_form_html(db: Database, quote_id=None):
             tax_pct = 19
         else:
             tax_pct = float(_r) * 100 if 0 <= float(_r) <= 1 else float(_r)
-        page_title = f"Angebot {quote_number} bearbeiten"
+        page_title = f"Angebot {_html.escape(quote_number)} bearbeiten"
         is_edit = True
     else:
         # nächste Angebotsnummer ermitteln (Letter 'A')
@@ -237,17 +234,18 @@ def _quote_form_html(db: Database, quote_id=None):
         valid_until = ''
         intro_text = ''
         closing_text = ''
-        pdf_path = None
         tax_pct = 19
         show_tax = True
         page_title = "Neues Angebot erstellen"
         is_edit = False
 
-    pdf_file_exists = bool(pdf_path and os.path.exists(pdf_path))
+    pdf_file_exists = bool(is_edit and stored_invoice_path(db, quote_id, 'pdf', existing)[0])
 
-    s = f'<input type="hidden" id="quote_id" value="{quote_id or ""}">'
+    # Die ID gehört nur in den Bearbeiten-Modus (ein fremder oder unbekannter Beleg ergibt das
+    # leere Formular, das beim Speichern ein neues Angebot anlegt)
+    s = f'<input type="hidden" id="quote_id" value="{quote_id if is_edit else ""}">'
     s += f'<input type="hidden" id="is_edit_mode" value="{str(is_edit).lower()}">'
-    s += f'<input type="hidden" id="quote_status_value" value="{quote_status}">'
+    s += f'<input type="hidden" id="quote_status_value" value="{_html.escape(str(quote_status))}">'
     s += f'<input type="hidden" id="pdf_exists" value="{str(pdf_file_exists).lower()}">'
     s += '<div id="quote_msg" class="no-pdf" style="display:none; margin-bottom:10px;"></div>'
 
@@ -256,7 +254,7 @@ def _quote_form_html(db: Database, quote_id=None):
     s += f'<h2>{page_title}</h2>'
     if is_edit:
         color = QUOTE_STATUS_COLORS.get(quote_status, '#888')
-        label = QUOTE_STATUS_LABELS.get(quote_status, quote_status)
+        label = _html.escape(str(QUOTE_STATUS_LABELS.get(quote_status, quote_status)))
         status_opts = ''.join(
             f'<option value="{k}"{" selected" if k == quote_status else ""}>{v}</option>'
             for k, v in QUOTE_STATUS_LABELS.items())
@@ -274,7 +272,7 @@ def _quote_form_html(db: Database, quote_id=None):
                 <button onclick="window.location.href='/quote'" class="coloredButton btn-sm bg-gray">← Abbrechen</button>
                 <button onclick="generateQuotePDF()" class="coloredButton btn-sm bg-blue">📄 PDF</button>
                 <button onclick="convertQuote({quote_id})" class="coloredButton btn-sm bg-orange">➔ In Rechnung umwandeln</button>
-                <button onclick="appConfirmHref('/quote/delete?id={quote_id}', 'Angebot wirklich löschen?')" class="coloredButton btn-sm bg-red">🗑 Löschen</button>
+                <button onclick="appConfirmPost('/quote/delete?id={quote_id}', 'Angebot wirklich löschen?')" class="coloredButton btn-sm bg-red">🗑 Löschen</button>
             </div></td></tr>
         </table>'''
     else:
@@ -296,9 +294,9 @@ def _quote_form_html(db: Database, quote_id=None):
             </div>
             <div class="invoice-meta">
                 <table class="invoice-meta-table">'''
-    s += f'<tr><td>Datum:</td><td><input type="date" id="quote_date" value="{quote_date}" style="width:150px;"></td></tr>'
-    s += f'<tr><td>Angebots-Nr.:</td><td><input type="text" id="quote_number" value="{quote_number}" style="width:150px;"></td></tr>'
-    s += f'<tr><td>g&uuml;ltig bis:</td><td><input type="date" id="valid_until" value="{valid_until or ""}" style="width:150px;"></td></tr>'
+    s += f'<tr><td>Datum:</td><td><input type="date" id="quote_date" value="{_html.escape(str(quote_date))}" style="width:150px;"></td></tr>'
+    s += f'<tr><td>Angebots-Nr.:</td><td><input type="text" id="quote_number" value="{_html.escape(quote_number)}" style="width:150px;"></td></tr>'
+    s += f'<tr><td>g&uuml;ltig bis:</td><td><input type="date" id="valid_until" value="{_html.escape(str(valid_until or ""))}" style="width:150px;"></td></tr>'
     s += '''
                     <tr><td>Kunden-Nr.:</td><td><input type="text" id="customer_number" readonly style="width:150px; background-color:#f0f0f0;"></td></tr>
                 </table>
@@ -353,8 +351,8 @@ def _quote_form_html(db: Database, quote_id=None):
             <tbody id="quote_items_body">'''
     if existing_items:
         for idx, item in enumerate(existing_items, 1):
-            quantity = item[5]; unit = unit_display(item[6])
-            description = _html.escape(str(item[4] or '')); price = item[7]; total = item[8]
+            quantity = _html.escape(str(item[5])); unit = _html.escape(str(unit_display(item[6])))
+            description = _html.escape(str(item[4] or '')); price = _html.escape(str(item[7])); total = item[8]
             s += f'''
                 <tr class="invoice-item-row" data-row="{idx}">
                     <td>{idx}</td>
@@ -481,6 +479,8 @@ def _quote_form_html(db: Database, quote_id=None):
             disp.textContent = a; num.value = c.customer_number;
         }
 
+        // Name und Einheit der Artikel stammen aus den Stammdaten: Sie kommen als DOM-Knoten
+        // (textContent) in die Seite, nie als Markup.
         function filterArticles(query) {
             const dropdown = document.getElementById('articleDropdown');
             const q = query.toLowerCase();
@@ -488,12 +488,20 @@ def _quote_form_html(db: Database, quote_id=None):
                 !q || a.name.toLowerCase().includes(q)
             );
             if (!entries.length) { dropdown.style.display = 'none'; return; }
-            dropdown.innerHTML = entries.map(([id, a]) =>
-                '<div class="article-option" onmousedown="selectArticle(' + id + ')">' +
-                '<strong>' + a.name + '</strong>' +
-                '<span class="article-option-meta">' + a.unit + ' · ' + fmtDe(a.price) + ' € · ' + a.taxRate + '%</span>' +
-                '</div>'
-            ).join('');
+            dropdown.textContent = '';
+            entries.forEach(([id, a]) => {
+                const option = document.createElement('div');
+                option.className = 'article-option';
+                option.addEventListener('mousedown', () => selectArticle(id));
+                const name = document.createElement('strong');
+                name.textContent = a.name;
+                const meta = document.createElement('span');
+                meta.className = 'article-option-meta';
+                meta.textContent = a.unit + ' · ' + fmtDe(a.price) + ' € · ' + a.taxRate + '%';
+                option.appendChild(name);
+                option.appendChild(meta);
+                dropdown.appendChild(option);
+            });
             dropdown.style.display = 'block';
         }
         function selectArticle(articleId) {
@@ -524,16 +532,19 @@ def _quote_form_html(db: Database, quote_id=None):
             const tb = document.getElementById('quote_items_body');
             const r = document.createElement('tr');
             r.className='invoice-item-row'; r.setAttribute('data-row', rowCounter); r.setAttribute('data-article-id', articleId);
-            const dn = a.description ? a.name + ' - ' + a.description : a.name;
-            const safeName = dn.replace(/"/g, '&quot;');
+            // Das Gerüst enthält keine Artikeldaten; Einheit, Text und Preis kommen als Wert in die
+            // Felder (in das Markup eingesetzt, bräche ein " im Namen aus dem Attribut)
             r.innerHTML = `
                 <td>${rowCounter}</td>
                 <td><input type="number" class="item-quantity" value="1" min="0" step="0.01" style="width:60px;"></td>
-                <td><input type="text" class="item-unit" value="${a.unit}" style="width:60px;"></td>
-                <td><input type="text" class="item-description" value="${safeName}" style="width:100%;"></td>
-                <td><input type="number" class="item-price" value="${a.price}" min="0" step="0.01" style="width:80px;"> €</td>
+                <td><input type="text" class="item-unit" style="width:60px;"></td>
+                <td><input type="text" class="item-description" style="width:100%;"></td>
+                <td><input type="number" class="item-price" value="0" min="0" step="0.01" style="width:80px;"> €</td>
                 <td class="item-total" style="text-align:right;">0,00 €</td>
                 <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color:red;">✕</button></td>`;
+            r.querySelector('.item-unit').value = a.unit;
+            r.querySelector('.item-description').value = a.description ? a.name + ' - ' + a.description : a.name;
+            r.querySelector('.item-price').value = a.price;
             tb.appendChild(r); attachCalculationListeners(r); calculateTotals();
         }
         function removeRow(b){ b.closest('tr').remove(); renumberRows(); calculateTotals(); }
@@ -641,7 +652,7 @@ def _quote_form_html(db: Database, quote_id=None):
             const exists = document.getElementById('pdf_exists').value === 'true';
             function _run() {
                 const viewer = window.open('about:blank', '_blank');  // im Klick-Kontext -> kein Popup-Blocker
-                fetch('/quote/pdf_generate?id='+id).then(r=>r.json())
+                fetch('/quote/pdf_generate?id='+id, {method:'POST'}).then(r=>r.json())
                     .then(d=>{ if(d.success){ document.getElementById('pdf_exists').value='true'; showMessage('PDF erstellt: '+d.pdf_path, 'success');
                                               if (viewer) viewer.location = '/quote/pdf_download?id='+id+'&inline=1'; }
                               else { if (viewer) viewer.close(); showMessage('Fehler: '+(d.error||'?'), 'error'); } })
@@ -656,9 +667,7 @@ def _quote_form_html(db: Database, quote_id=None):
         }
         function convertQuote(id){
             appConfirm('Aus diesem Angebot eine Rechnung erstellen? Das Angebot wird als "Umgewandelt" markiert.', function() {
-                const f=document.createElement('form'); f.method='POST'; f.action='/quote/convert';
-                const i=document.createElement('input'); i.type='hidden'; i.name='quote_id'; i.value=id;
-                f.appendChild(i); document.body.appendChild(f); f.submit();
+                appPost('/quote/convert', {quote_id: id});
             });
         }
     </script>

@@ -100,8 +100,10 @@ def PageMasterData(db: Database):
 # ARTICLES (Artikel)
 # ══════════════════════════════════════════════════════════════════════
 
-def PageArticles(db: Database, edit_article_id=None):
-    """Generate articles management page with inline edit form (grid2Cols layout)"""
+def PageArticles(db: Database, edit_article_id=None, error=None):
+    """Generate articles management page with inline edit form (grid2Cols layout)
+
+    ``error``: Meldung nach einem abgelehnten Speichern (``?error=`` der Weiterleitung)."""
     articles = db.fetch_articles()
 
     # Artikel zum Bearbeiten laden
@@ -287,6 +289,11 @@ def PageArticles(db: Database, edit_article_id=None):
     </script>
     '''
 
+    if error:
+        from server.pages import script_json
+        # error kommt aus der Adresse: nur als JSON in den Skriptblock
+        s += ("<script>document.addEventListener('DOMContentLoaded',function(){"
+              f"appMsg({script_json(error)},'error');}});</script>")
     s += Footer()
     return s
 
@@ -672,9 +679,9 @@ def PageNumberRanges(db: Database, edit_id=None):
         nr_desc    = edit_nr[6] or ''
         nr_format  = edit_nr[7] if len(edit_nr) > 7 and edit_nr[7] else '{yy}{l}{nnn}{s}'
         next_formatted = db._apply_number_format(nr_format, nr_year, nr_letter, nr_curnum + 1, nr_prefix)
-        type_field = (f'<input type="hidden" name="type" value="{nr_type}">'
-                      f'<tr><td>Typ:</td><td><strong>{type_names.get(nr_type, nr_type)}</strong></td></tr>')
-        preview = f'<p class="muted">Nächste Nummer wird sein: <strong>{next_formatted}</strong></p>'
+        type_field = (f'<input type="hidden" name="type" value="{_html.escape(str(nr_type))}">'
+                      f'<tr><td>Typ:</td><td><strong>{_html.escape(str(type_names.get(nr_type, nr_type)))}</strong></td></tr>')
+        preview = f'<p class="muted">Nächste Nummer wird sein: <strong>{_html.escape(str(next_formatted))}</strong></p>'
         id_row = f'<input type="hidden" name="id" value="{edit_nr[0]}">'
         action_buttons = ('<input type="submit" value="Aktualisieren" class="coloredButton btn-sm bg-green">'
                           '<button type="button" onclick="window.location.href=\'/masterdata/numberranges\'" class="coloredButton btn-sm bg-gray">← Abbrechen</button>')
@@ -692,6 +699,10 @@ def PageNumberRanges(db: Database, edit_id=None):
         id_row = ''
         action_buttons = ('<input type="submit" value="Nummernkreis hinzufügen" '
                           'formaction="/masterdata/numberranges/add" class="coloredButton btn-sm bg-green">')
+
+    # Alles, was aus der Datenbank kommt, steht maskiert in den Eingabefeldern
+    nr_year, nr_letter, nr_prefix, nr_curnum, nr_desc, nr_format = (
+        _html.escape(str(v)) for v in (nr_year, nr_letter, nr_prefix, nr_curnum, nr_desc, nr_format))
 
     s += f'''
     <div class="grid2Cols gridMain">
@@ -736,9 +747,10 @@ def PageNumberRanges(db: Database, edit_id=None):
             description = r[6] or ''
             number_format = r[7] if len(r) > 7 and r[7] else '{yy}{l}{nnn}{s}'
             next_formatted = db._apply_number_format(number_format, year, letter, current_num + 1, suffix)
-            s += (f"<tr><td>{range_id}</td><td>{year}</td><td>{letter}</td><td>{suffix}</td>"
-                  f"<td><code>{number_format}</code></td><td style='text-align:right;'>{current_num}</td>"
-                  f"<td><strong>{next_formatted}</strong></td><td>{description}</td>"
+            h = _html.escape
+            s += (f"<tr><td>{range_id}</td><td>{h(str(year))}</td><td>{h(str(letter))}</td><td>{h(str(suffix))}</td>"
+                  f"<td><code>{h(str(number_format))}</code></td><td style='text-align:right;'>{h(str(current_num))}</td>"
+                  f"<td><strong>{h(str(next_formatted))}</strong></td><td>{h(str(description))}</td>"
                   f"<td><a href='javascript:void(0)' onclick='openEditForm(\"/masterdata/numberranges/edit?id={range_id}\")' class='action-icon' title='Bearbeiten'>&#9998;</a>"
                   f" <a href='javascript:void(0);' class='action-icon delete-icon' title='Löschen'"
                   f" onclick=\"appConfirmPost('/masterdata/numberranges/delete?id={range_id}', 'Nummernkreis wirklich löschen?')\">&#128465;</a></td></tr>")

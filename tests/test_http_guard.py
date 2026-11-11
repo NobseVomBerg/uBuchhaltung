@@ -296,6 +296,7 @@ _POST_LOCATION = {
     "/masterdata/numberranges/delete": r"/masterdata/numberranges",
     "/masterdata/skr/delete": r"/masterdata/skr\?msg=[^&]+&type=error",
     "/masterdata/skr/togglemenu": r"/masterdata/skr",
+    "/quote/delete": r"/quote",
     "/receipts/delete": r"/receipts",
     "/transactions/delete": r"/transactions",
     "/trips/delete": r"/trips\?person=1&from=2026-01-01&to=2026-12-31",
@@ -479,6 +480,71 @@ def test_multi_mode_session_write_with_own_origin_deletes_article(server_port, a
     assert a.db.get_article_by_id(a.article_id) is None
 
 
+# -- Abmelden: nur per POST, mit Token, wenn es eine Sitzung gibt ----------------------
+@pytest.fixture
+def alice_session(multi_user_mode):
+    """Angemeldete Nutzerin ``alice`` (Dummy-Zugangsdaten): Sitzung, Cookie und CSRF-Token."""
+    token = auth.create_session("alice")
+    return SimpleNamespace(token=token, cookie={"Cookie": f"session={token}"}, csrf=auth.csrf_for(token))
+
+
+def test_get_on_logout_is_405_and_keeps_the_session(server_port, alice_session):
+    resp = get(server_port, "/logout", headers=alice_session.cookie)
+    assert resp.status == 405
+    assert resp.headers["Allow"] == "POST"
+    assert "Set-Cookie" not in resp.headers
+    assert auth.get_session_user(alice_session.token) == "alice"
+
+
+def test_get_on_logout_without_a_session_is_405_too(server_port, multi_user_mode):
+    resp = get(server_port, "/logout")
+    assert resp.status == 405 and resp.headers["Allow"] == "POST"
+
+
+def test_post_on_logout_with_token_ends_the_session_and_clears_the_cookie(server_port, alice_session):
+    resp = post(server_port, "/logout", headers={**alice_session.cookie, "Origin": own_origin(server_port)},
+                csrf=alice_session.csrf)
+    assert resp.status == 303 and resp.headers["Location"] == "/login"
+    assert resp.headers["Set-Cookie"].startswith("session=;") and "Max-Age=0" in resp.headers["Set-Cookie"]
+    assert auth.get_session_user(alice_session.token) is None
+
+
+@pytest.mark.parametrize("token", [
+    pytest.param(None, id="ohne-Token"),
+    pytest.param("falsch", id="falsches-Token"),
+    pytest.param(auth.csrf_for("auto-login:admin"), id="Token-eines-anderen-Benutzers"),
+])
+def test_post_on_logout_without_a_valid_token_is_403_and_keeps_the_session(server_port, alice_session, token):
+    resp = post(server_port, "/logout", headers=alice_session.cookie, csrf=token)
+    assert resp.status == 403
+    assert "Set-Cookie" not in resp.headers
+    assert auth.get_session_user(alice_session.token) == "alice"
+
+
+@pytest.mark.parametrize("headers", [
+    pytest.param({"Origin": FOREIGN_ORIGIN}, id="fremder-Origin"),
+    pytest.param({"Sec-Fetch-Site": "cross-site"}, id="fremde-Seite"),
+])
+def test_post_on_logout_from_a_foreign_page_is_403_and_keeps_the_session(server_port, alice_session, headers):
+    # Eine fremde Seite darf niemanden abmelden – auch nicht mit gültigem Token
+    resp = post(server_port, "/logout", headers={**alice_session.cookie, **headers}, csrf=alice_session.csrf)
+    assert resp.status == 403
+    assert auth.get_session_user(alice_session.token) == "alice"
+
+
+def test_post_on_logout_without_a_session_just_goes_to_the_login_page(server_port, multi_user_mode):
+    # Abgelaufene Sitzung (anderes Fenster): nichts zu schützen, kein Token zu prüfen
+    resp = post(server_port, "/logout")
+    assert resp.status == 303 and resp.headers["Location"] == "/login"
+    assert "Max-Age=0" in resp.headers["Set-Cookie"]
+
+
+def test_logout_is_not_reachable_with_the_automatic_login(server_port, auto_login):
+    # Ohne Sitzung gibt es nichts zu beenden – beide Methoden führen auf die Startseite
+    assert get(server_port, "/logout").headers["Location"] == "/"
+    assert post(server_port, "/logout", csrf=auto_login.csrf).headers["Location"] == "/"
+
+
 # ── Teil 3: Listenseiten lösen Aktionen per POST aus ─────────────────────────
 def _calls(html, function):
     """Aufrufe von function(…) im HTML – ohne die Definition 'function name(' im Footer."""
@@ -544,3 +610,13 @@ def test_unlink_is_a_post_action_not_a_link(db_with_coa, render):
     assert re.search(r"""href=['"]/documents/unlink""", html) is None
     assert re.search(r"appPost\(\s*['\"]/documents/unlink\?doc_id=%d&(?:amp;)?booking_id=%d['\"]"
                      % (doc_id, booking_id), html)
+
+
+def test_header_logs_out_with_a_post_action_not_with_a_link(multi_user_mode):
+    from server.pages import Header1
+    import userctx
+    userctx.set_user("alice")
+    header = Header1("dashboard")
+    assert re.search(r"""href=['"]/logout""", header) is None
+    assert "appPost('/logout')" in header and "Abmelden" in header
+    assert _calls(header, "appConfirmHref") == []

@@ -1,14 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 unsix IT Engineering
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
-"""Rechnung speichern: Fehler im Klartext und alles-oder-nichts.
+"""Rechnung und Angebot speichern: Fehler im Klartext und alles-oder-nichts.
 
 SQLite meldet nur „FOREIGN KEY constraint failed“. Die Oberfläche soll sagen,
 welcher Verweis ins Leere zeigt – und ein gescheiterter Speicherversuch darf
-nichts halb Gespeichertes zurücklassen.
+nichts halb Gespeichertes zurücklassen. Seit 2.0.7 gilt das auch für Angebote (Kopf und
+Positionen in EINER Transaktion); die Meldungen nennen den Grund („Diese Nummer ist bereits
+vergeben.“, „Angebot nicht gefunden.“), nie SQL- oder Python-Texte. Scheitert nach dem Speichern einer
+abgeschlossenen Rechnung das Fortschreiben des Nummernkreises, bleibt die Antwort ein Erfolg mit
+Hinweis (``warning``).
 """
 import json
 import sqlite3
+
+import pytest
 
 import server.handlers as handlers
 from db.core import ForeignKeyError, explain_fk_violation, fk_explained
@@ -165,3 +171,285 @@ def test_a_failing_replay_log_does_not_report_a_saved_invoice_as_failed(tmp_db, 
     assert _count(tmp_db, 'SELECT COUNT(*) FROM Invoices') == 1
     assert _count(tmp_db, 'SELECT COUNT(*) FROM InvoiceItems') == 1
     assert 'Replay-Log' in capsys.readouterr().out          # der Fehler steht im Server-Log
+
+
+# ── Angebote: dieselbe Transaktion und dieselben Klartext-Meldungen (2.0.7) ──
+def _quote_payload(own_id, cust_id, **over):
+    p = {
+        'quoteNumber': '26A200', 'quoteDate': '2026-06-07', 'customerId': cust_id, 'ownCompanyId': own_id,
+        'validUntil': '2026-07-07', 'taxRate': 0.19, 'status': 'draft',
+        'introText': '<b>Hallo</b>', 'closingText': 'Gruß',
+        'items': [{'position': 1, 'quantity': 1, 'unit': 'C62', 'description': 'Beratung',
+                   'unitPrice': 100.0, 'taxRate': 19}],
+    }
+    p.update(over)
+    return p
+
+
+def _save_quote(payload):
+    return json.loads(handlers.handle_quote_save(json.dumps(payload).encode()))
+
+
+def _quote_state(db, quote_id):
+    """Kopf (Nummer, Status, Gültigkeit, Texte, Summen) und Positionen des Angebots, roh."""
+    con = sqlite3.connect(db.db_name)
+    try:
+        head = con.execute('SELECT InvoiceNumber, Status, ValidUntil, IntroText, ClosingText, SumNet, SumGross '
+                           'FROM Invoices WHERE ID = ?', (quote_id,)).fetchone()
+        items = con.execute('SELECT * FROM InvoiceItems WHERE InvoiceId = ? ORDER BY Position', (quote_id,)).fetchall()
+    finally:
+        con.close()
+    return head, items
+
+
+MISSING_QUANTITY = {'position': 2, 'description': 'Zweite Position', 'unitPrice': 5.0, 'taxRate': 19}
+QUANTITY_MESSAGE = 'Speichern fehlgeschlagen: In einer Position fehlt die Menge – es wurde nichts gespeichert.'
+
+
+def test_failing_quote_item_leaves_no_quote_header(tmp_db, monkeypatch):
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
+    bad = _quote_payload(own, cust)
+    bad['items'].append(dict(MISSING_QUANTITY))
+    resp = _save_quote(bad)
+    assert resp == {'success': False, 'error': QUANTITY_MESSAGE}
+    assert _count(tmp_db, 'SELECT COUNT(*) FROM Invoices') == 0
+    assert _count(tmp_db, 'SELECT COUNT(*) FROM InvoiceItems') == 0
+    # derselbe Versuch, jetzt korrekt, klappt mit derselben Nummer
+    assert _save_quote(_quote_payload(own, cust))['success'] is True
+
+
+def test_failed_quote_update_keeps_header_and_old_items(tmp_db, monkeypatch):
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
+    quote_id = _save_quote(_quote_payload(own, cust))['quote_id']
+    before = _quote_state(tmp_db, quote_id)
+    bad = _quote_payload(own, cust, quoteId=quote_id, quoteNumber='26A999', introText='neu', status='sent',
+                         validUntil='2030-01-01')
+    bad['items'] = [{'position': 1, 'quantity': 4, 'description': 'Geändert', 'unitPrice': 9.0, 'taxRate': 19},
+                    dict(MISSING_QUANTITY)]
+    assert _save_quote(bad) == {'success': False, 'error': QUANTITY_MESSAGE}
+    assert _quote_state(tmp_db, quote_id) == before               # Kopf und die alte Position, unverändert
+    assert len(before[1]) == 1
+
+
+def test_failed_quote_update_through_a_bad_reference_keeps_everything(tmp_db, monkeypatch):
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
+    quote_id = _save_quote(_quote_payload(own, cust))['quote_id']
+    before = _quote_state(tmp_db, quote_id)
+    resp = _save_quote(_quote_payload(own, cust, quoteId=quote_id, quoteNumber='26A998', ownCompanyId=9999))
+    assert resp['success'] is False and resp['error'] == 'Eigene Firma nicht gefunden'
+    assert _quote_state(tmp_db, quote_id) == before
+
+
+@pytest.mark.parametrize('save, payload_for, number_field', [
+    pytest.param(_save, lambda own, cust, number: _payload(own, cust, invoiceNumber=number),
+                 'invoiceNumber', id='Rechnung'),
+    pytest.param(_save_quote, lambda own, cust, number: _quote_payload(own, cust, quoteNumber=number),
+                 'quoteNumber', id='Angebot'),
+])
+def test_duplicate_number_is_reported_in_plain_words(tmp_db, monkeypatch, save, payload_for, number_field):
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
+    assert save(payload_for(own, cust, '26X500'))['success'] is True
+    again = save(payload_for(own, cust, '26X500'))
+    assert again == {'success': False, 'error': 'Diese Nummer ist bereits vergeben.'}
+    assert 'UNIQUE' not in again['error'] and 'Invoices' not in again['error']
+    assert _count(tmp_db, 'SELECT COUNT(*) FROM Invoices WHERE InvoiceNumber = ?', '26X500') == 1
+
+
+def test_a_quote_cannot_take_the_number_of_an_invoice_and_vice_versa(tmp_db, monkeypatch):
+    # Rechnungen und Angebote teilen sich die Tabelle und damit die eindeutige Nummer
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
+    assert _save(_payload(own, cust, invoiceNumber='26X600'))['success'] is True
+    assert _save_quote(_quote_payload(own, cust, quoteNumber='26X600'))['error'] == 'Diese Nummer ist bereits vergeben.'
+    assert _save_quote(_quote_payload(own, cust, quoteNumber='26X601'))['success'] is True
+    assert _save(_payload(own, cust, invoiceNumber='26X601'))['error'] == 'Diese Nummer ist bereits vergeben.'
+
+
+def test_renumbering_a_quote_to_a_taken_number_keeps_the_quote(tmp_db, monkeypatch):
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
+    first = _save_quote(_quote_payload(own, cust, quoteNumber='26A001'))['quote_id']
+    second = _save_quote(_quote_payload(own, cust, quoteNumber='26A002'))['quote_id']
+    before = _quote_state(tmp_db, second)
+    resp = _save_quote(_quote_payload(own, cust, quoteId=second, quoteNumber='26A001', introText='neu'))
+    assert resp == {'success': False, 'error': 'Diese Nummer ist bereits vergeben.'}
+    assert _quote_state(tmp_db, second) == before and first != second
+
+
+@pytest.mark.parametrize('save, payload_for, key, expected', [
+    pytest.param(_save, lambda o, c, i: _payload(o, c, invoiceId=i), 'invoice', 'Rechnung nicht gefunden.',
+                 id='Rechnung-unbekannt'),
+    pytest.param(_save_quote, lambda o, c, i: _quote_payload(o, c, quoteId=i), 'quote', 'Angebot nicht gefunden.',
+                 id='Angebot-unbekannt'),
+])
+def test_updating_an_unknown_document_says_so(tmp_db, monkeypatch, save, payload_for, key, expected):
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
+    assert save(payload_for(own, cust, 99999)) == {'success': False, 'error': expected}
+    assert _count(tmp_db, 'SELECT COUNT(*) FROM Invoices') == 0
+
+
+def test_updating_the_other_kind_says_not_found_and_changes_nothing(tmp_db, monkeypatch):
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
+    invoice_id = _save(_payload(own, cust, invoiceNumber='26R300'))['invoice_id']
+    quote_id = _save_quote(_quote_payload(own, cust, quoteNumber='26A300'))['quote_id']
+    invoice_before, quote_before = _quote_state(tmp_db, invoice_id), _quote_state(tmp_db, quote_id)
+    assert _save_quote(_quote_payload(own, cust, quoteId=invoice_id, quoteNumber='26A301'))['error'] == \
+        'Angebot nicht gefunden.'
+    assert _save(_payload(own, cust, invoiceId=quote_id, invoiceNumber='26R301'))['error'] == \
+        'Rechnung nicht gefunden.'
+    assert _quote_state(tmp_db, invoice_id) == invoice_before and _quote_state(tmp_db, quote_id) == quote_before
+
+
+@pytest.mark.parametrize('mutate, reason', [
+    pytest.param(lambda item: item.update(quantity='abc'), 'Beträge, Mengen oder Positionen sind ungültig',
+                 id='Menge-ist-Text'),
+    pytest.param(lambda item: item.update(unitPrice='viel'), 'Beträge, Mengen oder Positionen sind ungültig',
+                 id='Preis-ist-Text'),
+    pytest.param(lambda item: item.update(description=None), 'In einer Position fehlt die Bezeichnung',
+                 id='ohne-Bezeichnung'),
+])
+def test_save_errors_name_the_reason_without_sql_or_python_details(tmp_db, monkeypatch, capsys, mutate, reason):
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
+    for save, payload_for in ((_save, _payload), (_save_quote, _quote_payload)):
+        payload = payload_for(own, cust)
+        mutate(payload['items'][0])
+        resp = save(payload)
+        assert resp == {'success': False, 'error': f'Speichern fehlgeschlagen: {reason} – es wurde nichts gespeichert.'}
+        for leak in ('sqlite3', 'IntegrityError', 'NOT NULL', 'InvoiceItems', 'Decimal', 'ValueError', 'Traceback'):
+            assert leak not in resp['error'], leak
+    assert 'Traceback' in capsys.readouterr().err                   # die Einzelheiten stehen im Server-Log
+    assert _count(tmp_db, 'SELECT COUNT(*) FROM Invoices') == 0
+
+
+def test_unexpected_exception_is_reported_as_unexpected_without_its_text(tmp_db, monkeypatch):
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError('Interna: /home/niemand/geheim.db')
+    monkeypatch.setattr(tmp_db, 'insert_invoice_item', boom)
+    for save, payload in ((_save, _payload(own, cust)), (_save_quote, _quote_payload(own, cust))):
+        resp = save(payload)
+        assert resp == {'success': False, 'error': 'Speichern fehlgeschlagen: Unerwarteter Fehler '
+                                                    '(Einzelheiten im Server-Log) – es wurde nichts gespeichert.'}
+    assert _count(tmp_db, 'SELECT COUNT(*) FROM Invoices') == 0
+
+
+# ── Nummernkreis nach dem Abschließen einer neuen Rechnung (2.0.7) ────────────
+NUMBER_RANGE_WARNING = ('Die Rechnung ist gespeichert, aber der Nummernkreis konnte nicht fortgeschrieben '
+                        'werden – bitte unter Stammdaten → Nummernkreise prüfen.')
+
+
+def _counter(db, letter='R'):
+    return [r[5] for r in db.fetch_number_ranges('invoice') if r[3] == letter][0]
+
+
+def test_finalizing_a_new_invoice_advances_its_number_range(tmp_db, monkeypatch):
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
+    tmp_db.insert_number_range('invoice', 2026, 'R', current_number=5)
+    tmp_db.insert_number_range('invoice', 2026, 'B', current_number=40)         # andere Kreise bleiben
+    resp = _save(_payload(own, cust, invoiceNumber='26R007', status='finalized'))
+    assert resp['success'] is True and 'warning' not in resp                    # der Normalfall: kein Hinweis
+    assert _counter(tmp_db, 'R') == 7 and _counter(tmp_db, 'B') == 40
+
+
+@pytest.mark.parametrize('payload', [
+    pytest.param({'status': 'draft'}, id='Entwurf'),
+    pytest.param({'status': 'sent'}, id='versendet'),
+])
+def test_only_finalizing_advances_the_number_range(tmp_db, monkeypatch, payload):
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
+    tmp_db.insert_number_range('invoice', 2026, 'R', current_number=5)
+    assert _save(_payload(own, cust, invoiceNumber='26R007', **payload))['success'] is True
+    assert _counter(tmp_db) == 5
+
+
+def test_updating_a_finalized_invoice_does_not_advance_the_number_range_again(tmp_db, monkeypatch):
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
+    tmp_db.insert_number_range('invoice', 2026, 'R', current_number=5)
+    invoice_id = _save(_payload(own, cust, invoiceNumber='26R007', status='finalized'))['invoice_id']
+    tmp_db.update_number_range(tmp_db.fetch_number_ranges('invoice')[0][0], 2026, 'R', '', 20, '', None)
+    resp = _save(_payload(own, cust, invoiceNumber='26R007', status='finalized', invoiceId=invoice_id))
+    assert resp['success'] is True and 'warning' not in resp
+    assert _counter(tmp_db) == 20
+
+
+def test_without_a_matching_number_range_nothing_is_advanced_and_nothing_is_reported(tmp_db, monkeypatch):
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
+    tmp_db.insert_number_range('invoice', 2026, 'R', current_number=5)
+    resp = _save(_payload(own, cust, invoiceNumber='26X007', status='finalized'))
+    assert resp['success'] is True and 'warning' not in resp and _counter(tmp_db) == 5
+
+
+@pytest.mark.parametrize('number', ['RE-2026-17', '26R01a', 'Rechnung', 'X'])
+def test_a_number_outside_the_scheme_saves_the_invoice_and_warns(tmp_db, monkeypatch, capsys, number):
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
+    tmp_db.insert_number_range('invoice', 2026, 'R', current_number=5)
+    resp = _save(_payload(own, cust, invoiceNumber=number, status='finalized'))
+    # Gespeichert: die Antwort bleibt ein Erfolg (sonst legt der Nutzer dieselbe Rechnung noch einmal an) …
+    assert resp['success'] is True and resp['invoice_id']
+    assert _count(tmp_db, 'SELECT COUNT(*) FROM Invoices WHERE InvoiceNumber = ?', number) == 1
+    # … und nennt nur den Hinweis; der Zähler blieb stehen
+    if number in ('RE-2026-17', '26R01a', 'Rechnung'):
+        assert resp['warning'] == NUMBER_RANGE_WARNING
+        assert 'Nummernkreis nicht fortgeschrieben' in capsys.readouterr().out
+    else:
+        assert 'warning' not in resp                              # zu kurz für das Schema: nichts zu tun
+    assert _counter(tmp_db) == 5
+
+
+def test_a_failing_number_range_update_warns_but_keeps_the_invoice(tmp_db, monkeypatch):
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
+    tmp_db.insert_number_range('invoice', 2026, 'R', current_number=5)
+
+    def full_disk(*args, **kwargs):
+        raise sqlite3.OperationalError('database is locked')
+    monkeypatch.setattr(tmp_db, 'update_number_range', full_disk)
+    resp = _save(_payload(own, cust, invoiceNumber='26R007', status='finalized'))
+    assert resp['success'] is True and resp['warning'] == NUMBER_RANGE_WARNING
+    assert 'locked' not in json.dumps(resp)
+    # Ein zweiter Speichern-Klick scheiterte an der vergebenen Nummer – deshalb darf die erste Antwort kein Fehler sein
+    again = _save(_payload(own, cust, invoiceNumber='26R007', status='finalized'))
+    assert again == {'success': False, 'error': 'Diese Nummer ist bereits vergeben.'}
+
+
+def test_advance_invoice_number_range_sets_the_counter_to_the_invoice_number(tmp_db):
+    tmp_db.insert_number_range('invoice', 2026, 'R', prefix='', current_number=5, description='Hauptkreis')
+    handlers._advance_invoice_number_range(tmp_db, '26R012')
+    assert _counter(tmp_db) == 12
+    handlers._advance_invoice_number_range(tmp_db, '26R003')                   # zählt nach der Nummer, nicht hoch
+    assert _counter(tmp_db) == 3
+    assert tmp_db.fetch_number_ranges('invoice')[0][6] == 'Hauptkreis'          # sonstige Angaben des Kreises bleiben
+
+
+@pytest.mark.parametrize('number', ['', '26', 'x'])
+def test_advance_invoice_number_range_ignores_numbers_that_are_too_short(tmp_db, number):
+    tmp_db.insert_number_range('invoice', 2026, 'R', current_number=5)
+    handlers._advance_invoice_number_range(tmp_db, number)
+    assert _counter(tmp_db) == 5
+
+
+@pytest.mark.parametrize('number', ['RE-2026-17', '26R01a', 'ab123'])
+def test_advance_invoice_number_range_raises_for_a_number_outside_the_scheme(tmp_db, number):
+    tmp_db.insert_number_range('invoice', 2026, 'R', current_number=5)
+    with pytest.raises(ValueError):
+        handlers._advance_invoice_number_range(tmp_db, number)
+    assert _counter(tmp_db) == 5
+
+
+def test_invoice_form_shows_the_warning_before_it_leaves_the_page(db_with_coa):
+    html = PageInvoice(db_with_coa, filters={}, invoice_id=None)
+    assert "if (data.warning)" in html and "showMessage(data.warning, 'warn')" in html

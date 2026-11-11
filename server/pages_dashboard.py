@@ -75,7 +75,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
         header2_content += (
             f'<input type="checkbox" id="dacct_{aid}" value="{aid}"{chk}'
             f' onchange="syncDashAccounts()"> '
-            f'<label for="dacct_{aid}">{name}</label> &nbsp; '
+            f'<label for="dacct_{aid}">{_html.escape(str(name))}</label> &nbsp; '
         )
 
     # ── Year buttons ──────────────────────────────────────────────────

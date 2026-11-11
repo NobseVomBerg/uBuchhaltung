@@ -134,8 +134,10 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     'amount': f"{due:.2f}",
                     'tax_rate': f"{rate_pct:g}" if rate_pct else '',
                     'tax_amount': tax_val,
-                    # Erlöskonto: aus Historie gelernt, Fallback 4400 bei 19%
-                    'coa_id': db.resolve_revenue_coa(rate),
+                    # Erlöskonto: aus Historie gelernt, Fallback 4400 bei 19%. Anzeigen legt
+                    # nichts an: fehlt das Standardkonto, bleibt die Auswahl leer – angelegt
+                    # wird erst beim Speichern der Zuordnung.
+                    'coa_id': db.resolve_revenue_coa(rate, create=False),
                     'document_nr': inv[1] or '',
                     'text': f"Zahlung Rechnung {inv[1] or ''}".strip(),
                 }
