@@ -221,9 +221,14 @@ function appConfirmHref(url, text) {
   appConfirm(text, function() { window.location.href = url; });
 }
 /* Aktion mit Seiteneffekt (Löschen …) als POST abschicken – nie als Link/GET. */
-function appPost(url) {
+function appPost(url, fields) {
   var f = document.createElement('form');
   f.method = 'post'; f.action = url; f.hidden = true;
+  Object.keys(fields || {}).forEach(function (name) {
+    var x = document.createElement('input');
+    x.type = 'hidden'; x.name = name; x.value = fields[name];
+    f.appendChild(x);
+  });
   var meta = document.querySelector('meta[name="csrf-token"]');
   if (meta && meta.content) {
     var i = document.createElement('input');

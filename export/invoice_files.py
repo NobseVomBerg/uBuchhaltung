@@ -101,12 +101,14 @@ def path_in_documents(path, invoice=None) -> bool:
         return False
 
 
-def drop_stale_file(old_path, new_path):
+def drop_stale_file(old_path, new_path, db=None, invoice_id=None):
     """Vorgänger-Datei löschen, wenn der Name sich geändert hat.
 
     Ändern sich Rechnungsnummer oder Kunde, würde die alte Datei sonst als
     Dublette liegen bleiben. Gelöscht wird nur im Dokumentordner des Nutzers: Der
-    alte Pfad stammt aus der Datenbank (siehe :func:`path_in_documents`).
+    alte Pfad stammt aus der Datenbank (siehe :func:`path_in_documents`). Mit ``db``
+    bleibt die Datei außerdem liegen, wenn ein anderer Beleg auf sie verweist – sonst
+    ließe sich über einen umgebogenen Pfad die archivierte PDF einer fremden Rechnung löschen.
     """
     if not old_path or not new_path:
         return
@@ -118,6 +120,9 @@ def drop_stale_file(old_path, new_path):
         if not path_in_documents(old_path):
             print(f"Alte Rechnungsdatei liegt außerhalb des Dokumentordners, "
                   f"nicht entfernt: {old_path!r}")
+            return
+        if db is not None and db.document_path_in_use(old_path, invoice_id):
+            print(f"Alte Rechnungsdatei gehört zu einem anderen Beleg, nicht entfernt: {old_path!r}")
             return
         os.remove(old_path)
     except OSError as e:      # Nicht löschbar ist kein Grund, den Export abzubrechen
@@ -203,7 +208,7 @@ def _write_xrechnung(db, invoice, invoice_id):
         os.makedirs(os.path.dirname(xml_path), exist_ok=True)
         with open(xml_path, 'w', encoding='utf-8') as f:
             f.write(xml_content)
-        drop_stale_file(_col(invoice, _IDX_XML_PATH), xml_path)
+        drop_stale_file(_col(invoice, _IDX_XML_PATH), xml_path, db, invoice_id)
         db.update_invoice_xml_path(invoice_id, xml_path)
         return xml_path
     except Exception as e:
@@ -218,6 +223,12 @@ _KINDS = {
 }
 
 
+def _is_document_file(path, invoice):
+    """Datei vorhanden UND – nach Auflösen von Links – im Dokumentordner (ein Symlink am
+    Namensschema, der hinausführt, zählt nicht)."""
+    return os.path.isfile(path) and path_in_documents(path, invoice)
+
+
 def _stored_by_name(invoice, extension):
     """Datei am Namensschema suchen (``None``, wenn es sie nicht gibt).
 
@@ -226,7 +237,7 @@ def _stored_by_name(invoice, extension):
     """
     if not is_quote(invoice):
         candidate = invoice_file_path(invoice, extension)
-        return candidate if os.path.isfile(candidate) else None
+        return candidate if _is_document_file(candidate, invoice) else None
     root = documents_root(invoice)
     name = f"{invoice_file_stem(invoice)}.{extension}"
     try:
@@ -235,7 +246,7 @@ def _stored_by_name(invoice, extension):
         return None
     for year in years:
         candidate = os.path.join(root, year, name)
-        if os.path.isfile(candidate):
+        if _is_document_file(candidate, invoice):
             return candidate
     return None
 

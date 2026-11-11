@@ -12,6 +12,7 @@ ohne jedes Attribut, Text maskiert. Liest der Parser etwas anders als ein Browse
 an der Sicherheit – heraus kommt ausschließlich Markup, das hier erzeugt wurde.
 """
 import html
+from collections import Counter
 from html.parser import HTMLParser
 
 # Was der Editor erzeugt (fett, kursiv, unterstrichen, Absätze, Listen) und was der PDF-Satz
@@ -20,6 +21,8 @@ ALLOWED_TAGS = frozenset({'b', 'strong', 'i', 'em', 'u', 'p', 'br', 'ul', 'ol', 
 _VOID_TAGS = frozenset({'br'})
 # Diese Elemente fallen samt Inhalt weg; alle übrigen nicht erlaubten verlieren nur ihr Tag
 _DROP_WITH_CONTENT = frozenset({'script', 'style', 'iframe', 'object', 'embed', 'svg', 'math'})
+# Tiefer verschachtelt als das schreibt kein Editor; weitere Start-Tags fallen weg, ihr Text bleibt
+MAX_DEPTH = 50
 
 
 class _Cleaner(HTMLParser):
@@ -27,6 +30,7 @@ class _Cleaner(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.out = []
         self.open = []              # geöffnete erlaubte Elemente, zum Schließen
+        self._open_count = Counter()  # dieselben je Tag gezählt – End-Tags ohne Suche in der Liste
         self._skip = None           # Element, dessen Inhalt gerade wegfällt
         self._skip_depth = 0        # Verschachtelung gleichnamiger Elemente darin
 
@@ -37,9 +41,12 @@ class _Cleaner(HTMLParser):
         elif tag in _DROP_WITH_CONTENT:
             self._skip, self._skip_depth = tag, 1
         elif tag in ALLOWED_TAGS:           # attrs fallen weg: kein style, href, on…
-            self.out.append(f'<{tag}>')
-            if tag not in _VOID_TAGS:
+            if tag in _VOID_TAGS:
+                self.out.append(f'<{tag}>')
+            elif len(self.open) < MAX_DEPTH:
+                self.out.append(f'<{tag}>')
                 self.open.append(tag)
+                self._open_count[tag] += 1
 
     def handle_endtag(self, tag):
         if self._skip:
@@ -47,9 +54,10 @@ class _Cleaner(HTMLParser):
                 self._skip_depth -= 1
                 if not self._skip_depth:
                     self._skip = None
-        elif tag in self.open:              # ein überzähliges </p> oder </br> bleibt ohne Wirkung
+        elif self._open_count[tag]:         # ein überzähliges </p> oder </br> bleibt ohne Wirkung
             while True:
                 top = self.open.pop()
+                self._open_count[top] -= 1
                 self.out.append(f'</{top}>')
                 if top == tag:
                     break
