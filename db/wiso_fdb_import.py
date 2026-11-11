@@ -45,7 +45,12 @@ def _squash(value):
 
 
 def _comparable(value):
-    """Text für den Vergleich: Leerraum zusammengefasst, Groß-/Kleinschreibung egal."""
+    """Text für den Vergleich: Leerraum zusammengefasst, Groß-/Kleinschreibung egal.
+
+    Das Auslassungszeichen „…“ zählt als Leerraum: In der WISO-Datenbank ist es das Byte
+    0x85, das als latin-1 gelesen ein Zeilentrenner (U+0085) ist und schon beim Lesen der
+    Datenbank wie Leerraum behandelt wird – der Text kommt von dort ohne „…“ an."""
+    value = (value or '').replace('\u2026', ' ').replace('\x85', ' ')
     return _squash(value).casefold()
 
 
@@ -305,7 +310,7 @@ class WisoFdbImportMixin:
                                        THEN ? ELSE TaxRate END,
                 TaxAmount       = CASE WHEN TaxRate IS NULL AND TaxAmount IS NULL
                                        THEN ? ELSE TaxAmount END,
-                RecipientClient = COALESCE(NULLIF(RecipientClient, ''), ?)
+                RecipientClient = COALESCE(NULLIF(RecipientClient, ''), ?, RecipientClient)
             WHERE ID = ?
         '''
         with self.transaction() as tx:
