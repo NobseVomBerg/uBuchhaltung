@@ -85,7 +85,7 @@ def PageMiscellaneous(db: Database):
                 "DELETE FROM BookingDocuments WHERE Booking_ID IN (" + b + ") OR Document_ID IN (" + d + ");\\n" +
                 "UPDATE Assets SET Booking_ID = NULL WHERE Booking_ID IN (" + b + ");\\n" +
                 "UPDATE Assets SET Document_ID = NULL WHERE Document_ID IN (" + d + ");\\n" +
-                "UPDATE AssetDepreciations SET Booking_ID = NULL WHERE Booking_ID IN (" + b + ");\\n" +
+                "UPDATE AssetDepreciations SET Booking_ID = NULL, Status = 'planned', BookedAt = NULL WHERE Booking_ID IN (" + b + ");\\n" +
                 "UPDATE Trips SET DocumentID = NULL WHERE DocumentID IN (" + d + ");\\n" +
                 "DELETE FROM Bookings WHERE DateBooking BETWEEN '" + from + "' AND '" + to + "';\\n" +
                 "DELETE FROM Documents WHERE Date BETWEEN '" + from + "' AND '" + to + "';";
