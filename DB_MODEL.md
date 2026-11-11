@@ -284,7 +284,7 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 | DocumentNumber | 16 | TEXT | | Belegnummer |
 | BookingType | 17 | TEXT | DEFAULT 'entry' | **'bank'** = Bankbewegung, **'entry'** = Buchungssatz |
 | ParentBooking_ID | 18 | INTEGER | FK → Bookings(ID) | Verknüpfung: Entry → Bank-Buchung |
-| Status | 19 | TEXT | | Frei definierbar |
+| Status | 19 | TEXT | | Frei definierbar; belegt sind `'resolved'` (Debitoren-Entry aufgelöst), `'posted'` (AfA-Buchung) und `'invoice_payment'` (Satz einer Rechnungszahlung, siehe 9a) |
 
 **Business Logic:**
 - `BookingType='bank'`: Echte Geldbewegung auf dem Bankkonto (aus WISO-Tabellen-Export oder PDF-Import)
@@ -293,6 +293,7 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 - Doppik-Entries (COA_ID zeigt auf ein SKR-Bankkonto wie 1810) werden in der Anzeige ausgeblendet
 - `link_bank_to_entries()` verknüpft automatisch anhand mehrstufigem Matching (siehe Datenfluss)
 - `Status='resolved'`: Debitoren-Entry wurde über Stufe 7 als erledigt markiert (Zahlung existiert)
+- `Status='invoice_payment'`: Marke der Buchungssätze, die die App für eine Zahlungszuordnung angelegt hat (Abschnitt 9a). Sie braucht keine Schemaänderung – `Status` ist frei definierbar, die EÜR filtert nur auf `'resolved'`
 - **Bankwirksamkeit** (`db.matching.is_bank_effective`): Unter einer Bankbewegung
   hängen auch reine Umbuchungen – die Zahlungs-Umbuchung `4405 → 4400` einer
   Rechnung oder ein Privatanteil `6805 → 2100`. Nicht bankwirksam ist ein Satz,
@@ -329,8 +330,8 @@ Büro und damit auch der Struktur importierter Altdaten.
 | Zeitpunkt | Buchung | Soll → Haben |
 |---|---|---|
 | Rechnung versendet | Forderung | `10000 Debitoren` → Wartekonto |
-| Zahlung (Kind der Bankbewegung) | `Zahlung zu Re. X` | Bankkonto → `10000 Debitoren` |
-| Zahlung (Kind der Bankbewegung) | `Umb. zu Re. X` | Wartekonto → Erlöskonto |
+| Zahlung (Kind der Bankbewegung, `Status='invoice_payment'`) | `Zahlung zu Re. X` | Bankkonto → `10000 Debitoren` |
+| Zahlung (Kind der Bankbewegung, `Status='invoice_payment'`) | `Umb. zu Re. X` | Wartekonto → Erlöskonto |
 
 Wartekonten nach Steuersatz: **19 % → 4405**, **7 % → 4345**, **0 %/§19 → 4340**
 (`Database.resolve_open_revenue_coa`). Erlöskonten wie bisher 4400/4300/4185
@@ -349,6 +350,56 @@ sind Bestandskonten und bleiben aus der EÜR heraus
 auf das Erlöskonto. Ohne diese Regel höbe `4405 −netto` den Erlös `4400 +netto`
 wieder auf (beide liegen in der Erlösklasse 4000–4999) und die Forderung
 erschiene als Ausgabe.
+
+**Zahlungszuordnung (Rechnung ↔ Bankbewegung):** Eine Zuordnung besteht aus genau einer
+`InvoicePayments`-Zeile und den Sätzen, die die App für sie angelegt hat. Diese Sätze sind eindeutig
+bestimmt durch `ParentBooking_ID` (die Bankbewegung), `DocumentNumber` (die Rechnungsnummer) und die
+Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
+(`assign_invoice_payment`, `db/invoice_payments.py`), und eine, die sie entfernt
+(`unassign_invoice_payment`).
+
+- **Voraussetzungen:** nur Zahlungseingänge (Bankbewegung mit Betrag > 0) auf versendete Rechnungen
+  (`sent`, `overdue`, `partial_payment`; `PAYABLE_STATUSES`) mit positivem Brutto; das Bankkonto der
+  Bewegung braucht eine SKR-Nummer; das Paar (Rechnung, Bewegung) gibt es höchstens einmal. Negative
+  Zuordnungen (Storno, Gutschrift) kennt nur der WISO-Import (`link_invoice_to_transaction`, mit
+  Vorzeichen und ohne eigene Sätze).
+- **Betrag:** min(Rest der Rechnung, freier Rest der Bewegung, gewünschter Betrag). Frei ist
+  `Betrag − MAX(Σ Zuordnungen, Σ bankwirksame Sätze darunter)` (`_free_minor_sql`, dieselbe Formel für
+  Zuordnung, Kandidatenlisten und Kontakt-Guthaben): eine schon als Erlös kontierte Bewegung ist keine
+  Rechnungszahlung mehr. *Sammelzahlung* = mehrere Zuordnungen derselben Bewegung, jede mit eigenen
+  Sätzen; *Teilzahlung* = mehrere Bewegungen auf eine Rechnung; bei einer *Überzahlung* bleibt der Rest
+  frei (Guthaben beim Kontakt; der DATEV-Export bleibt gesperrt, bis er kontiert ist).
+- **Sätze:** mit Forderung `Bank → 10000` (ohne Steuer) und `Wartekonto → Erlöskonto` (mit Steuer);
+  ohne Forderung (Satz ohne Wartekonto, Bestand vor den Forderungsbuchungen) ein Satz
+  `Erlöskonto → Bank` über den zugeordneten Betrag. Datum, Steuerdatum und Empfänger stammen von der
+  Bewegung, der Kontakt von der Rechnung. Die Steuer eines Teils ist der anteilige Rechnungsbetrag
+  (auf den Cent gerundet); der Teil, der die Rechnung schließt, bekommt den Rest – die Summe der
+  Zahlungssätze stimmt immer mit der Steuer der Rechnung überein.
+- **Gleichzeitigkeit:** Prüfung, Schreiben und Neuberechnung laufen in einer `BEGIN IMMEDIATE`-Transaktion;
+  zwei gleichzeitige Anfragen legen das Paar nicht doppelt an (es gibt keinen UNIQUE-Index). Konten,
+  die dabei angelegt werden könnten (`resolve_revenue_coa`), löst die Funktion vorher in eigenen
+  Verbindungen auf.
+- **Entfernen:** `unassign_invoice_payment` löscht die markierten Sätze des Paars (nie Sätze mit
+  `SourceGroup`, nie Sätze ohne Marke – Altbestand und WISO-Sätze bleiben stehen) und die Zuordnung,
+  setzt eine durch Stufe 7 aufgelöste Forderung wieder auf offen, wenn kein Satz „… an Debitoren“ zur
+  Rechnung bleibt, und rechnet die Rechnung neu. `delete_transaction` einer Bankbewegung nimmt ihre
+  Sätze und Zuordnungen mit; das Löschen eines markierten Satzes (auch im Split-Editor) entfernt die
+  ganze Zuordnung.
+- **Status der Rechnung** (`next_payment_status`, vorzeichenbewusst für die WISO-Gutschrift): Zahlung in
+  Höhe der Rechnung (Rest unter einem Cent) → `paid`, sonst `partial_payment`; ohne Zahlung wieder
+  `overdue` (Fälligkeit überschritten) bzw. `sent` – nie zurück auf `finalized`, eine stornierte
+  Rechnung bleibt `cancelled`. Zahlungen lassen sich erst nach dem Versenden zuordnen.
+- **Die Forderung ist nie Kind einer Bankbewegung.** Der Auto-Abgleich (`link_bank_to_entries`,
+  alle Stufen außer der Quellklammer 0) und die Kandidaten des Buchungssatz-Editors schließen sie aus;
+  `delete_transaction` hängt eine als Kind vorgefundene Forderung ab, statt sie zu löschen. Die Regel
+  steht an einer Stelle (`db.matching.receivable_condition`): Der Satz berührt Debitoren (10000) und
+  hat auf keiner Seite ein Zahlungskonto – die WISO-Zahlungssätze „Bank an 10000“ und ihr Storno
+  bleiben verknüpfbar.
+- **Prüfung:** `find_payment_inconsistencies(invoice_id=None)` meldet, rein lesend, Zuordnungen ohne Satz
+  „Bank an Debitoren“, an einer Bankbewegung hängende Forderungen, Zahlungssätze ohne Zuordnung,
+  Zuordnung ≠ Umbuchung, Zuordnungen auf einen Satz oder einen Ausgang, doppelte Zuordnungen, versendete
+  Rechnungen mit Status „Entwurf/abgeschlossen“ und einen Rest, der nicht zu den Zuordnungen passt. Die
+  Liste steht auf der Seite *Verschiedenes*, der Hinweis auf der Rechnungsseite.
 
 ---
 
@@ -466,11 +517,17 @@ erschiene als Ausgabe.
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
 | ID | INTEGER | PRIMARY KEY | |
-| InvoiceID | INTEGER | FK → Invoices | |
-| BookingID | INTEGER | FK → Bookings | |
-| Amount | REAL | | Zahlungsbetrag |
-| PaymentDate | DATE | | |
+| InvoiceID | INTEGER | NOT NULL, FK → Invoices (ON DELETE CASCADE) | |
+| BookingID | INTEGER | NOT NULL, FK → Bookings | Bankbewegung der Zahlung (Altbestand: auch ein Buchungssatz) |
+| Amount | INTEGER | NOT NULL | Zahlungsbetrag in Minor Units (1 = 0,0001 EUR). Das Vorzeichen trägt nur der WISO-Import (Storno, Gutschrift); die Oberfläche legt nur positive Beträge an |
+| PaymentDate | DATE | NOT NULL | Datum der Bankbewegung |
 | Notes | TEXT | | |
+| CreatedAt | DATETIME | | |
+
+Das Paar (`InvoiceID`, `BookingID`) kommt höchstens einmal vor; gesichert wird das nicht durch einen
+UNIQUE-Index, sondern dadurch, dass jeder Schreiber (`assign_invoice_payment`,
+`link_invoice_to_transaction`) Prüfung und Einfügen in einer `BEGIN IMMEDIATE`-Transaktion macht.
+Die Sätze zur Zuordnung stehen in Abschnitt 9a.
 
 ---
 
@@ -567,6 +624,9 @@ Löschen nicht.
    - Stufe 6: Text-Similarity ohne Belegnummer (SequenceMatcher)
    - Stufe 7: Debitoren-Auflösung (Status='resolved' für Debitoren-Entries
      deren Zahlung bereits verknüpft ist, datumsunabhängig)
+   Forderungsbuchungen (Debitoren 10000 ohne Zahlungskonto) werden in keiner Stufe
+   verknüpft (außer über die Quellklammer, Stufe 0) – sie gehören zur Rechnung
+   (siehe 9a, `receivable_condition`)
 4. Entry.ParentBooking_ID → Bank.ID
 5. Doppik-Entries (COA_ID = Bankkonto-SKR) werden ausgeblendet
 ```
@@ -597,7 +657,8 @@ Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
 3. Contacts (Type='customer') → Buyer-Snapshot
 4. Accounts → Bank-Snapshot
 5. Articles → InvoiceItems
-6. Status: draft → finalized → sent → paid
+6. Status: draft → finalized → sent → paid (dazwischen partial_payment, overdue; cancelled)
+7. Versenden bucht die Forderung; Zahlungen lassen sich ab sent zuordnen (siehe 9a)
 ```
 
 ### AfA-Berechnung
@@ -634,5 +695,5 @@ und zusätzlich die AfA bucht, zählt doppelt – das Programm prüft das nicht.
 
 ---
 
-**Dokumentversion:** 2.3
-**Letzte Aktualisierung:** 12. Juli 2026 (Umbenennung in uBuchhaltung; Schema unverändert)
+**Dokumentversion:** 2.4
+**Letzte Aktualisierung:** 11. November 2026 (Zahlungszuordnung Rechnung ↔ Bankbewegung; Schema unverändert)

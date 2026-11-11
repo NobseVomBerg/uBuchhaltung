@@ -66,4 +66,6 @@ def test_delete_payment_restores_amount_due(tmp_db):
     due, status = con.execute("SELECT AmountDue, Status FROM Invoices WHERE ID=?", (inv_id,)).fetchone()
     con.close()
     assert due == 1190000     # 119.00 als Minor Units (seit Phase 1e)
-    assert status == 'finalized'
+    # Ohne Zahlung ist die Rechnung wieder offen: eine bezahlte Rechnung war versendet und
+    # fällt nie auf „abgeschlossen“ zurück (Fälligkeit hier nicht gesetzt → „versendet“)
+    assert status == 'sent'

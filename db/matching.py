@@ -80,7 +80,42 @@ def is_asset_transfer(coa_id, counter_coa_id, liquid_coa_ids, asset_coa_ids, pl_
             or (coa_id in pl_coa_ids and counter_coa_id in asset_coa_ids))
 
 
+def receivable_condition(debtor_coa_ids, payment_coa_ids, alias=''):
+    """SQL-Bedingung „Satz ist eine Forderungsbuchung“ samt Parametern – die EINE Definition.
+
+    Eine Forderung (Debitoren an Wartekonto, entsteht beim Versenden der Rechnung) berührt das
+    Debitorenkonto 10000 (als Konto oder Gegenkonto) und hat auf keiner Seite ein Zahlungskonto
+    (``get_payment_coa_ids``). Sie ist ein eigenständiger Satz und hängt nie an einer
+    Bankbewegung: Der Auto-Abgleich verknüpft sie nicht, ``delete_transaction`` löscht sie nicht
+    mit. Die WISO-Zahlungssätze „1210 an 10000“ und ihr Storno haben ein Zahlungskonto auf einer
+    Seite und bleiben verknüpfbar.
+
+    ``alias``: Tabellenalias der Bookings-Zeile. Returns ``(sql, params)``.
+    """
+    if not debtor_coa_ids:
+        return '0', []
+    p = f'{alias}.' if alias else ''
+    debtor = ','.join('?' * len(debtor_coa_ids))
+    payment = ','.join('?' * len(payment_coa_ids))
+    # COALESCE auf jeder Seite: Die Bedingung ist nie NULL, ein Satz ohne Konten (NULL) ist
+    # schlicht keine Forderung – sonst ergäbe ``NOT (…)`` für ihn NULL und er fiele heraus.
+    sql = (f'((COALESCE({p}COA_ID, -1) IN ({debtor}) OR COALESCE({p}CounterCOA_ID, -1) IN ({debtor}))'
+           f' AND COALESCE({p}COA_ID, -1) NOT IN ({payment})'
+           f' AND COALESCE({p}CounterCOA_ID, -1) NOT IN ({payment}))')
+    params = list(debtor_coa_ids) * 2 + list(payment_coa_ids) * 2
+    return sql, params
+
+
 class MatchingMixin:
+    def _receivable_sql(self, cursor, alias=''):
+        """``receivable_condition`` für diese Datenbank, gelesen über ``cursor`` (so läuft sie
+        auch innerhalb einer laufenden Transaktion). Returns ``(sql, params)``."""
+        cursor.execute('SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?',
+                       (self.DEBTOR_ACCOUNT_NUMBER,))
+        debtor_coa_ids = [row[0] for row in cursor.fetchall()]
+        return receivable_condition(debtor_coa_ids, sorted(self._get_payment_coa_ids(cursor)),
+                                    alias)
+
     def get_linked_entry_for_bank(self, bank_booking_id: int):
         """Hole die wichtigsten Felder des ersten verknüpften Entry-Bookings.
 
@@ -147,14 +182,18 @@ class MatchingMixin:
 
         around_date sortiert die zeitlich nächstliegenden nach vorn.
 
+        Forderungsbuchungen (``receivable_condition``) sind keine Kandidaten: Sie gehören
+        zur Rechnung, nicht zu einer Bankbewegung.
+
         Returns: [(ID, DateBooking, Amount€, DocumentNumber, Text,
                    RecipientClient, COA_ID)]
         """
         conn = self._get_connection()
         cursor = conn.cursor()
+        receivable_sql, receivable_params = self._receivable_sql(cursor)
         order = ("ABS(JULIANDAY(DateBooking) - JULIANDAY(?)), DateBooking DESC"
                  if around_date else "DateBooking DESC")
-        params = ([around_date] if around_date else []) + [limit]
+        params = receivable_params + ([around_date] if around_date else []) + [limit]
         cursor.execute(f'''
             SELECT ID, DateBooking, Amount, DocumentNumber, Text,
                    RecipientClient, COA_ID
@@ -162,6 +201,7 @@ class MatchingMixin:
             WHERE BookingType = 'entry' AND ParentBooking_ID IS NULL
               AND Account_ID IS NULL
               AND (Status IS NULL OR Status != 'resolved')
+              AND NOT {receivable_sql}
             ORDER BY {order}
             LIMIT ?
         ''', params)
@@ -351,6 +391,10 @@ class MatchingMixin:
         Nach dem Linken wird der Text der Bank-Buchung durch den Text der
         Entry-Buchung ersetzt (WISO-kuratierter Text hat Vorrang).
 
+        Forderungsbuchungen (``receivable_condition``) werden nie verknüpft – weder einzeln
+        noch als Teil einer Beleg-Gruppe: Sie gehören zur Rechnung, nicht zur Bankbewegung.
+        Die Stufe 0 (Quellklammer) bleibt davon unberührt.
+
         Returns:
             dict mit { 'linked': int, 'skipped': int, 'repaired': int,
                         'resolved': int, 'errors': list[str] }
@@ -395,6 +439,12 @@ class MatchingMixin:
         ''')
         bank_bookings = cursor.fetchall()
 
+        # Forderungsbuchungen: nie Kind einer Bankbewegung (IDs einmal zu Beginn laden)
+        receivable_sql, receivable_params = self._receivable_sql(cursor)
+        cursor.execute(f"SELECT ID FROM Bookings WHERE BookingType = 'entry' AND {receivable_sql}",
+                       receivable_params)
+        receivable_ids = {row[0] for row in cursor.fetchall()}
+
         linked = 0
         skipped = 0
         errors = []
@@ -417,8 +467,9 @@ class MatchingMixin:
             return filtered
 
         def _filter_already(entries):
-            """Bereits in diesem Durchlauf verknüpfte Entries rausfiltern."""
-            return [e for e in entries if e[0] not in already_linked_entry_ids]
+            """Bereits in diesem Durchlauf verknüpfte Entries und Forderungen rausfiltern."""
+            return [e for e in entries
+                    if e[0] not in already_linked_entry_ids and e[0] not in receivable_ids]
 
         import re
         from difflib import SequenceMatcher
@@ -486,12 +537,14 @@ class MatchingMixin:
 
         def _link_docnr_group(bank_id, docnr, bank_date):
             """Alle Buchungen eines Belegs desselben Tages mit der Bank
-            verknüpfen (ersetzt die frühere BookingGroup-Klammer)."""
-            cursor.execute('''
+            verknüpfen (ersetzt die frühere BookingGroup-Klammer) – außer der
+            Forderung zur Rechnung."""
+            cursor.execute(f'''
                 UPDATE Bookings SET ParentBooking_ID = ?
                 WHERE DocumentNumber = ? AND DateBooking = ?
                   AND BookingType = 'entry' AND ParentBooking_ID IS NULL
-            ''', (bank_id, docnr, bank_date))
+                  AND NOT {receivable_sql}
+            ''', [bank_id, docnr, bank_date] + receivable_params)
             cursor.execute(
                 'SELECT ID FROM Bookings WHERE DocumentNumber = ?'
                 ' AND DateBooking = ?', (docnr, bank_date))
@@ -499,11 +552,12 @@ class MatchingMixin:
                 already_linked_entry_ids.add(r[0])
 
         def _docnr_ids(docnr, bank_date):
-            """IDs aller Buchungen eines Belegs an diesem Tag."""
-            cursor.execute(
-                "SELECT ID FROM Bookings WHERE DocumentNumber = ?"
-                " AND DateBooking = ? AND BookingType = 'entry'",
-                (docnr, bank_date))
+            """IDs aller Buchungen eines Belegs an diesem Tag (ohne Forderungen)."""
+            cursor.execute(f'''
+                SELECT ID FROM Bookings WHERE DocumentNumber = ?
+                  AND DateBooking = ? AND BookingType = 'entry'
+                  AND NOT {receivable_sql}
+            ''', [docnr, bank_date] + receivable_params)
             return {r[0] for r in cursor.fetchall()}
 
         # COA des jeweils eigenen Zahlungskontos – nur damit lässt sich unter

@@ -13,6 +13,9 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 - CAMT-Zusatzfelder (Valuta, EndToEndId, Mandatsreferenz, Gläubiger-ID) übernehmen – braucht Schemaänderung
 - Rechnungen/Angebote mit gemischten Steuersätzen (7 % und 19 % je Position) – bisher ein Satz je Beleg
 - Leistungszeitraum (von–bis) als Alternative zum Leistungsdatum, z. B. für monatliche Leistungen – PDF-Kopf und E-Rechnung (CII BillingSpecifiedPeriod / UBL InvoicePeriod); braucht Schemaänderung
+- Zahlungssätze einer Zuordnung (Marke `invoice_payment`) im Buchungssatz-Editor schreibgeschützt zeigen – bisher lassen sie sich dort ändern, und das Löschen einer Zeile entfernt die ganze Zuordnung
+- Skonto bei der Zahlungszuordnung (Abzug als eigener Satz, Steuerkorrektur)
+- Gutschrift und Erstattung als negative Zuordnung – erst zusammen mit einem Stornobeleg; bis dahin lassen sich nur Zahlungseingänge zuordnen
 - Umsatzsteuer-Voranmeldung (ELSTER)
 - GoBD-Modus, je Datenverzeichnis einstellbar (Ersteinrichtung fragt: Steuerbüro oder selbst?); vor Umsetzung Design im Hauptthread (`/effort xhigh`):
   - Festschreibung abgeschlossener Zeiträume, Korrektur nur per Storno/Gegenbuchung, kein Löschen

@@ -731,7 +731,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path.startswith("/invoice/view") or self.path.startswith("/invoice/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 invoice_id = int(query_components["id"][0])
-                self.respond(200, PageInvoice(db, {}, invoice_id))
+                self.respond(200, PageInvoice(
+                    db, {}, invoice_id,
+                    payment_error=query_components.get("payment_error", [None])[0]))
             elif self.path.startswith("/invoice/xml_download"):
                 # Abgelegte XRechnung ausliefern – nur herunterladen, nie frisch erzeugen
                 # (todo #3); eine Route, die das XML neu baute, gibt es nicht.
@@ -1183,7 +1185,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(status_code, response, content_type="application/json")
             elif self.path == "/transactions/add":
                 status_code, location = handlers.handle_add_transaction(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                if status_code == 400:           # abgelehnt, nichts gespeichert: Grund als Klartext
+                    self.respond(400, location, content_type="text/plain; charset=utf-8")
+                else:
+                    self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/documents/link":
                 status_code, location = handlers.handle_link_document(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})

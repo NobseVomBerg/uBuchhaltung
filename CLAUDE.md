@@ -235,6 +235,24 @@ kein Subagent darauf:
   WISO-`booked`). Löschen der Buchung setzt das Jahr auf `planned` zurück, `delete_asset`
   lehnt bei gebuchter AfA ab. In der EÜR (Sektion 3, ohne Steuer), nicht im Dashboard – die
   AfA ist kein Geldfluss
+- Rechnungszahlung: `assign_invoice_payment` (`db/invoice_payments.py`) ist die einzige Stelle, die
+  eine Zuordnung Rechnung ↔ Bankbewegung anlegt, `unassign_invoice_payment` die einzige, die sie
+  entfernt (`delete_transaction` geht darüber, wenn die Bankbewegung oder ein markierter Satz fällt). Eine
+  Zuordnung = eine `InvoicePayments`-Zeile + „Bank an Debitoren“ und „Wartekonto an Erlöskonto“ (ohne
+  Forderung: „Erlöskonto an Bank“), erkennbar an `ParentBooking_ID` = Bankbewegung, `DocumentNumber` =
+  Rechnungsnummer und `Status='invoice_payment'`. Entfernt werden nur diese markierten Sätze, nie Sätze
+  mit `SourceGroup` und nie unmarkierte (Altbestand, WISO). Prüfung, Schreiben und Neuberechnung laufen
+  in einer `BEGIN IMMEDIATE`-Transaktion (kein UNIQUE-Index); Konten, die `resolve_revenue_coa` anlegen
+  könnte, werden vorher in eigenen Verbindungen aufgelöst – nie innerhalb. Nur Zahlungseingänge
+  (Betrag > 0) auf versendete Rechnungen (`PAYABLE_STATUSES`), Bankkonto mit SKR-Nummer; frei ist
+  `Betrag − MAX(Zuordnungen, bankwirksame Sätze)` (`_free_minor_sql`, überall dieselbe Formel); die
+  Steuer eines Teils ist anteilig (Cent), der schließende Teil bekommt den Rest. Status und Rest
+  berechnet `next_payment_status` (nie zurück auf „abgeschlossen“, „storniert“ bleibt). **Die Forderung
+  (`10000 an Wartekonto`) ist nie Kind einer Bankbewegung:** `matching.receivable_condition` (Satz berührt
+  10000, keine Seite ein Zahlungskonto) schließt sie aus Auto-Abgleich und Editor-Kandidaten aus,
+  `delete_transaction` hängt sie ab statt sie zu löschen. Negative Zuordnungen kennt nur der
+  WISO-Import (`link_invoice_to_transaction`, mit Vorzeichen, ohne Sätze). `find_payment_inconsistencies`
+  prüft nur lesend (Seite *Verschiedenes*, Hinweis auf der Rechnungsseite); eine Reparatur gibt es nicht
 - Masken schreiben nur, was sie führen (`update_booking_fields`) – Gegenkonto,
   Kategorie und fremde Kontakte dürfen beim Speichern nicht verloren gehen
 
@@ -405,7 +423,7 @@ kein Subagent darauf:
 ## Governance
 
 - **Owner:** NobseVomBerg
-- **Letzte Aktualisierung:** 2026-11-10
+- **Letzte Aktualisierung:** 2026-11-11
 - **Modell-Versionen:** Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5 (Stand November 2026);
   `settings.json` und Agents nutzen Aliase (`fable`, `opus` …), die der neuesten Version folgen
 - **Bei Modell-Updates:** Modell-Routing oben, `.claude/settings.json` (`modelSettings`

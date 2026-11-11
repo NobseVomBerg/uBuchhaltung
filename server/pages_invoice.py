@@ -8,6 +8,7 @@ import json
 import html as _html
 from db import Database
 from db.invoices import InvoiceCol
+from db.invoice_payments import PAYABLE_STATUSES
 from money import fmt_eur
 from export.einvoice_model import unit_display
 from export.invoice_files import stored_invoice_path
@@ -66,11 +67,14 @@ def document_submenu(active):
     ])
 
 
-def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=None):
+def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=None,
+                payment_error=None):
     """Generate invoice list page with search and filter
 
     copy_from: ID einer Quellrechnung – das Formular öffnet sich dann als
     neue Rechnung mit deren Inhalten (todo #4).
+    payment_error: Grund, warum eine Zahlung aus der Buchungsmaske nicht zugeordnet werden
+    konnte (Klartext, wird maskiert ausgegeben).
     """
     filters = filters or {}
     
@@ -242,17 +246,17 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
     '''
     s+= '</div><!-- Ende gridLeftCol -->'
     s+= '<div class="gridRightCol" style="order:2; min-width:820px;">'
-    s+= _invoice_form_html(db, invoice_id, copy_from)
+    s+= _invoice_form_html(db, invoice_id, copy_from, payment_error)
     s+= '</div><!-- Ende gridRightCol --></div><!-- Ende grid2Cols -->'
     s+= Footer()
     return s
 
-def _invoice_form_html(db: Database, invoice_id=None, copy_from=None):
+def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_error=None):
     """Generate invoice form HTML block (no page wrapper).
 
     copy_from: ID einer Quellrechnung. Deren Inhalte füllen das Formular, es
     bleibt aber eine *neue* Rechnung – frisches Datum, frische Nummer, Entwurf
-    (todo #4).
+    (todo #4). payment_error: siehe PageInvoice.
     """
     import datetime
     import json
@@ -1446,6 +1450,14 @@ function copyInvoiceAsNew(invId) {{
     <div style="margin: 30px 0; padding: 20px; border: 1px solid #ddd; border-radius: 4px;">
         <h3>Zahlungsverknüpfungen</h3>
 '''
+        if payment_error:
+            s += f'        <p class="errorColor">{_html.escape(str(payment_error))}</p>\n'
+        findings = db.find_payment_inconsistencies(invoice_id)
+        if findings:
+            s += ('        <div class="warnColor"><strong>Zahlungszuordnung prüfen:</strong><ul>\n'
+                  + ''.join(f'            <li>{_html.escape(f["text"])}</li>\n' for f in findings)
+                  + '        </ul>Alle Rechnungen mit Unstimmigkeiten stehen unter '
+                  '<a href="/miscellaneous">Sonstiges</a>.</div>\n')
         if existing_payments:
             total_paid = sum(p[3] for p in existing_payments)
             s += '''        <table style="width:100%; border-collapse:collapse;">
@@ -1487,10 +1499,14 @@ function copyInvoiceAsNew(invId) {{
         # (Import-Fall). "Bezahlt" ergibt sich automatisch aus der Zuordnung.
         is_invoice_doc = (len(existing_invoice) <= 45
                           or existing_invoice[45] != 'quote')
+        # Zahlbar ist eine Rechnung erst ab „versendet“ (PAYABLE_STATUSES; 'partial' ist
+        # schon auf 'partial_payment' abgebildet): Davor steht sie noch nicht in den Büchern.
         payable = (is_invoice_doc
-                   and invoice_status in ('finalized', 'sent', 'overdue',
-                                          'partial_payment')
+                   and invoice_status in PAYABLE_STATUSES
                    and (amount_due is None or amount_due > 0))
+        if is_invoice_doc and invoice_status in ('draft', 'finalized'):
+            s += ('        <p class="hint">Zahlungen lassen sich erst zuordnen, wenn die '
+                  'Rechnung versendet ist.</p>\n')
         if payable:
             open_due = (amount_due if amount_due is not None
                         else (existing_invoice[38] or 0))
@@ -1522,19 +1538,20 @@ function copyInvoiceAsNew(invId) {{
                 <td style="padding:6px 8px; text-align:right;">{fmt_eur(b_amount)}</td>
                 <td style="padding:6px 8px; text-align:right;">{fmt_eur(b_free)}{match_mark}</td>
                 <td style="padding:6px 8px; text-align:right;"><input type="number" step="0.01" class="noButtons" id="payAmount_{b_id}" value="{default_alloc:.2f}" style="width:90px; text-align:right;"></td>
-                <td style="padding:6px 8px;"><button onclick="linkPayment({b_id})" class="coloredButton btn-sm bg-blue">Verknüpfen</button></td>
+                <td style="padding:6px 8px;"><button onclick="linkPayment({b_id}, this)" class="coloredButton btn-sm bg-blue">Verknüpfen</button></td>
             </tr>
 '''
                 s += '        </table>\n'
 
         s += f'''    </div>
     <script>
-        function linkPayment(bookingId) {{
+        function linkPayment(bookingId, button) {{
             const amount = parseFloat(document.getElementById('payAmount_' + bookingId).value);
             if (!amount || amount <= 0) {{
                 showMessage('Betrag muss größer 0 sein.', 'error');
                 return;
             }}
+            button.disabled = true;   // ein Doppelklick ordnet nicht doppelt zu
             fetch('/invoice/link-payment', {{
                 method: 'POST',
                 headers: {{'Content-Type': 'application/json'}},
@@ -1544,11 +1561,19 @@ function copyInvoiceAsNew(invId) {{
             .then(r => r.json())
             .then(data => {{
                 if (data.success) {{ location.reload(); }}
-                else {{ showMessage('Fehler: ' + (data.error || 'Unbekannt'), 'error'); }}
+                else {{
+                    button.disabled = false;
+                    showMessage('Fehler: ' + (data.error || 'Unbekannt'), 'error');
+                }}
+            }})
+            .catch(() => {{
+                button.disabled = false;
+                showMessage('Fehler: Die Zahlung konnte nicht verknüpft werden.', 'error');
             }});
         }}
         function deletePayment(paymentId) {{
-            showConfirm('Zahlungsverkn\u00fcpfung wirklich entfernen?', function() {{
+            showConfirm('Zahlungsverkn\u00fcpfung wirklich entfernen? Die zugeh\u00f6rigen ' +
+                        'Buchungss\u00e4tze werden mit entfernt.', function() {{
                 fetch('/invoice/delete-payment', {{
                     method: 'POST',
                     headers: {{'Content-Type': 'application/json'}},
