@@ -13,31 +13,28 @@ JavaScript, Set-Cookie-Headern, Weiterleitungen und Dateinamen. Deshalb gelten n
 - ``_header_safe``/``send_header`` (CR/LF/NUL und Zeichen außerhalb von Latin-1) und ``_int_param``
 - ``period_filter_widget`` und die Seiten Trips, Arbeitszeiten, Dashboard mit feindlichen Werten:
   kein roher Wert in der Ausgabe, der DOM-Aufbau hängt nicht vom Wert ab
-- JSON in ``<script>``-Blöcken (``pages.script_json``): ``?error=``, gespeicherte Daten
 - über den echten Server: Seiten mit feindlicher Adresse/feindlichem Cookie, ``person=abc``,
   Header-Injektion in der Rohantwort, Weiterleitungen von ``/trips/add`` und ``/worktime/add``
 - ``handle_datev_export`` mit ungültigen Daten
 
 Alle Werte sind erfundene Testdaten.
 """
-import json
 import re
 import socket
 import sqlite3
 import sys
 import urllib.parse
 from datetime import datetime
-from html.parser import HTMLParser
 from types import SimpleNamespace
 
 import pytest
 
 from server import handlers, period
 from server.app import SimpleWebServer, _header_safe, _int_param
-from server.pages import script_json
 from server.pages_dashboard import PageDashboard
 from server.pages_trips import PageTrips
 from server.pages_worktime import PageWorkTimes
+from tests.dom_helpers import Dom, assert_same_structure, data_block
 from tests.http_client import TIMEOUT, get, post
 
 SCRIPT = '<script>alert(1)</script>'
@@ -368,66 +365,6 @@ def test_int_param_survives_a_number_longer_than_python_converts():
     assert result is None if limit else result == int(digits)
 
 
-# ── Hilfen zum Prüfen von HTML ───────────────────────────────────────────────
-class Dom(HTMLParser):
-    """Liest HTML wie ein Browser: Starttags mit Attributen, Text der <script>-Elemente."""
-
-    def __init__(self, text):
-        super().__init__(convert_charrefs=True)
-        self.tags, self.scripts, self._in_script = [], [], False
-        self.feed(text)
-        self.close()
-
-    def handle_starttag(self, tag, attrs):
-        self.tags.append((tag, dict(attrs)))
-        if tag == 'script':
-            self._in_script = True
-            self.scripts.append('')
-
-    def handle_endtag(self, tag):
-        if tag == 'script':
-            self._in_script = False
-
-    def handle_data(self, data):
-        if self._in_script:
-            self.scripts[-1] += data
-
-    @property
-    def names(self):
-        return [tag for tag, _ in self.tags]
-
-    def one(self, tag, **attrs):
-        found = [a for t, a in self.tags if t == tag and all(a.get(k) == v for k, v in attrs.items())]
-        assert len(found) == 1, f'{tag} {attrs}: {len(found)} Treffer'
-        return found[0]
-
-    def all(self, tag):
-        return [a for t, a in self.tags if t == tag]
-
-
-def _data_block(dom, name):
-    """Der JSON-Block ``const <name> = {…};`` einer Seite als Python-Objekt."""
-    for script in dom.scripts:
-        found = re.search(rf'const {name} = (.*?);\n', script, re.S)
-        if found:
-            return json.loads(found.group(1))
-    raise AssertionError(f'kein Datenblock {name}')
-
-
-def assert_same_structure(hostile, benign):
-    """Der Aufbau der Seite hängt nicht vom feindlichen Wert ab: dieselben Elemente in
-    derselben Reihenfolge, dieselbe Zahl <script>-Blöcke, keine zusätzlichen Ereignis-Attribute
-    mit Skriptcode."""
-    a, b = Dom(hostile), Dom(benign)
-    assert a.names == b.names, 'durch den Wert sind Elemente hinzugekommen oder weggefallen'
-    assert len(a.scripts) == len(b.scripts)
-    for tag, attrs in a.tags:
-        for name, value in attrs.items():
-            assert not (name.startswith('on') and 'alert(' in (value or '')), (tag, name, value)
-    dangerous = ('img', 'iframe', 'svg', 'object', 'embed', 'link', 'meta', 'base')
-    assert [t for t in a.names if t in dangerous] == [t for t in b.names if t in dangerous]
-
-
 # ── period_filter_widget ─────────────────────────────────────────────────────
 WIDGET = period.period_filter_widget
 
@@ -557,6 +494,46 @@ def test_worktime_page_never_renders_an_unchecked_period(tmp_db, date_from, date
             assert raw not in html or raw in ('x', 'y')
 
 
+class Sneaky(str):
+    """Eine Zeichenkette, die als Datum besteht (``date.fromisoformat``, ``quote`` und
+    ``html.escape`` sehen ihren Inhalt), sich aber als etwas anderes ausgibt, sobald man sie
+    einsetzt (f-String, ``str()``). So zeigt sich jede Stelle einer Seite, an der der Zeitraum
+    ohne Kodierung oder Maskierung eingesetzt wird – auch dort, wo ein feindlicher Wert
+    schon vor der Seite am Datumstest scheitern würde (Arbeitszeiten)."""
+
+    def __new__(cls, content, shown):
+        value = super().__new__(cls, content)
+        value.shown = shown
+        return value
+
+    def __str__(self):
+        return self.shown
+
+    def __format__(self, spec):
+        return self.shown
+
+
+@pytest.mark.parametrize('page', [PageWorkTimes, PageTrips], ids=['arbeitszeiten', 'fahrten'])
+def test_period_is_encoded_wherever_a_page_puts_it_into_an_address_or_attribute(tmp_db, page):
+    driver = _driver(tmp_db)
+    tmp_db.insert_worktime(driver, '2026-06-03', start_time='08:00', end_time='16:00', note='Tag')
+    tmp_db.insert_trip(driver, '2026-06-03', destination='Hamburg', distance_km=290)
+    benign = page(tmp_db, person_id=driver, date_from='2026-06-01', date_to='2026-06-30')
+    sneaky = page(tmp_db, person_id=driver, date_from=Sneaky('2026-06-01', HOSTILE_FROM),
+                  date_to=Sneaky('2026-06-30', HOSTILE_TO))
+    assert '<img src=x onerror=alert(1)>' not in sneaky
+    assert '<script>alert(2)</script>' not in sneaky
+    assert_same_structure(sneaky, benign)
+    a, b = Dom(sneaky), Dom(benign)
+    for kind in ('a', 'select'):                         # Löschlinks, Personenauswahl
+        assert [t.get('onclick') or t.get('onchange') for t in a.all(kind)] == \
+            [t.get('onclick') or t.get('onchange') for t in b.all(kind)], kind
+    assert [i.get('value') for i in a.all('input') if i.get('type') == 'hidden'] == \
+        [i.get('value') for i in b.all('input') if i.get('type') == 'hidden']
+    if page is PageWorkTimes:
+        assert data_block(a, 'WT_DATA')['pdfBase'] == data_block(b, 'WT_DATA')['pdfBase']
+
+
 def test_worktime_page_keeps_valid_dates_in_their_old_form(tmp_db):
     driver = _driver(tmp_db)
     entry = tmp_db.insert_worktime(driver, '2026-06-03', start_time='08:00', end_time='16:00', note='Tag')
@@ -565,7 +542,7 @@ def test_worktime_page_keeps_valid_dates_in_their_old_form(tmp_db):
     assert '<input type="hidden" name="to" value="2026-06-30">' in html
     assert (f"appConfirmPost('/worktime/delete?person={driver}&from=2026-06-01&to=2026-06-30"
             f"&id={entry}', 'Eintrag wirklich löschen?')") in html
-    data = _data_block(Dom(html), 'WT_DATA')
+    data = data_block(Dom(html), 'WT_DATA')
     assert data['pdfBase'] == f'/worktime/pdf?person={driver}&from=2026-06-01&to=2026-06-30'
 
 
@@ -598,39 +575,6 @@ def test_dashboard_keeps_valid_dates_in_their_old_form(tmp_db):
     assert 'Betriebsausgaben (2026)' in html
     html = PageDashboard(tmp_db, '2026-03-01', '2026-03-31')
     assert 'Betriebsausgaben (2026-03-01 &ndash; 2026-03-31)' in html
-
-
-# ── JSON in <script>-Blöcken ─────────────────────────────────────────────────
-@pytest.mark.parametrize('value', [
-    '</script><img src=x onerror=alert(1)>', '<!--', '-->', 'a&b', 'a\u2028b\u2029c', "x'y\"z\\w",
-    {'k</script>': ['<b>', 1, None, True, 2.5]}, ['ä', 'ö', 'ß', '€', '日本'], 'Zeile\nZwei\tTab',
-    {'verschachtelt': {'a': [{'b': '</script>'}]}}, '', 0, None, [],
-])
-def test_script_json_reads_back_as_the_original_value(value):
-    out = script_json(value)
-    assert json.loads(out) == value
-
-
-@pytest.mark.parametrize('value', ['</script>', '<', '>', '&', '\u2028', '\u2029', '<!-- <script>',
-                                   {'<': '>'}, ['</SCRIPT>']])
-def test_script_json_leaves_no_character_that_could_close_or_open_an_element(value):
-    out = script_json(value)
-    for char in '<>&\u2028\u2029':
-        assert char not in out, f'{char!r} steht roh in {out!r}'
-    assert '</' not in out
-
-
-def test_script_json_escapes_with_unicode_escapes():
-    out = script_json('</script>&\u2028\u2029')
-    assert out.lower() == '"\\u003c/script\\u003e\\u0026\\u2028\\u2029"'
-
-
-@pytest.mark.parametrize('value', [
-    'Hamburg', 'Büro Süd', {'a': 1, 'b': [1, 2.5, None, True, 'ä']}, ['x', {'y': 'z'}], 42, None,
-    'Zeile\nZwei', "x'y\"z\\w", '日本',
-])
-def test_script_json_is_json_dumps_for_values_without_the_special_characters(value):
-    assert script_json(value) == json.dumps(value, ensure_ascii=False)
 
 
 # ── Über den echten Server ───────────────────────────────────────────────────
@@ -992,94 +936,6 @@ def test_the_overlap_redirect_of_a_worktime_drops_an_invalid_period_and_keeps_th
     assert '<' not in _location(raw) and 'alert' not in _location(raw)
 
 
-# ── JSON in <script>: ?error= und gespeicherte Daten ─────────────────────────
-ERROR_PAYLOAD = '</script><img src=x onerror=alert(1)>'
-
-
-def _app_msg_argument(dom):
-    for script in dom.scripts:
-        found = re.search(r'appMsg\((.*),"error"\);', script)
-        if found:
-            return found.group(1)
-    raise AssertionError('keine Fehlermeldung in der Seite')
-
-
-@pytest.mark.parametrize('page', ['/trips', '/worktime'])
-def test_the_error_parameter_cannot_close_the_script_block(server_port, zeiten, page):
-    benign = get(server_port, f'{page}?error=Normale+Meldung')
-    hostile = get(server_port, f'{page}?{encode(error=ERROR_PAYLOAD)}')
-    assert hostile.status == 200
-    assert_same_structure(hostile.text, benign.text)
-    assert '</script><img' not in hostile.text
-    # Die Meldung kommt trotzdem unverändert beim Nutzer an
-    assert json.loads(_app_msg_argument(Dom(hostile.text))) == ERROR_PAYLOAD
-
-
-@pytest.mark.parametrize('page', ['/trips', '/worktime'])
-def test_the_error_parameter_survives_exotic_characters(server_port, zeiten, page):
-    message = 'Fehler: <b>fett</b> & "zitiert" \'einfach\' \u2028 Umlaut äöü 日本'
-    resp = get(server_port, f'{page}?{encode(error=message)}')
-    assert resp.status == 200
-    assert json.loads(_app_msg_argument(Dom(resp.text))) == message
-
-
-def _pages(db, person, trip, worktime):
-    return {
-        'trips': PageTrips(db, person_id=person, date_from='2026-03-01', date_to='2026-03-31'),
-        'trips-edit': PageTrips(db, person_id=person, date_from='2026-03-01', date_to='2026-03-31',
-                                edit_id=trip),
-        'worktime': PageWorkTimes(db, person_id=person, date_from='2026-03-01', date_to='2026-03-31'),
-        'worktime-edit': PageWorkTimes(db, person_id=person, date_from='2026-03-01',
-                                       date_to='2026-03-31', edit_id=worktime),
-    }
-
-
-def test_stored_data_with_a_script_end_tag_cannot_close_the_block(auto_login):
-    """Fahrtziel, Notiz, Ort und Name stehen in JSON-Blöcken (bekannte Strecken, Vorlage,
-    Bearbeiten, Städte) und in HTML – ein </script> darin ändert den Aufbau der Seite nicht."""
-    db = auto_login.db
-    evil = '</script><img src=x onerror=alert(1)>'
-    db.insert_contact(contact_type='own', entity_type='person', display_name=f'Person {evil}',
-                      first_name='Erika', last_name='Probe', street=f'Weg {evil}', city=f'Ort {evil}')
-    db.insert_contact(contact_type='customer', entity_type='company', display_name=f'Kunde {evil}',
-                      company_name=f'Kunde {evil}', city=f'Stadt {evil}')
-    person = db.fetch_contacts(contact_type='own')[0][0]
-    trip = db.insert_trip(person, '2026-03-10', start_point=f'Start {evil}', destination=f'Ziel {evil}',
-                          vehicle=f'Auto {evil}', reason=f'Grund {evil}', distance_km=12)
-    worktime = db.insert_worktime(person, '2026-03-10', start_time='08:00', end_time='16:00',
-                                  location_mode='other', location_city=f'Ort {evil}',
-                                  note=f'Notiz {evil}', pause_text=f'Pause {evil}')
-    hostile = _pages(db, person, trip, worktime)
-
-    # Maßstab: dieselben Seiten mit harmlosem Text an denselben Stellen
-    con = sqlite3.connect(db.db_name)
-    try:
-        con.execute("UPDATE Trips SET StartPoint='Start x', Destination='Ziel x', Vehicle='Auto x', Reason='Grund x'")
-        con.execute("UPDATE WorkTimes SET LocationCity='Ort x', Note='Notiz x', PauseText='Pause x'")
-        con.execute("UPDATE Contacts SET DisplayName='Person x'")
-        con.execute("UPDATE ContactAddresses SET Street='Weg x', City='Ort x'")
-        con.commit()
-    finally:
-        con.close()
-    benign = _pages(db, person, trip, worktime)
-
-    for name in hostile:
-        assert_same_structure(hostile[name], benign[name])
-        assert '</script><img' not in hostile[name], name
-        assert '<img src=x onerror=alert(1)>' not in hostile[name], name
-
-
-def test_stored_data_with_a_script_end_tag_is_still_readable_in_the_data_block(auto_login):
-    db = auto_login.db
-    db.insert_contact(contact_type='own', entity_type='person', display_name='Erika Probe',
-                      first_name='Erika', last_name='Probe')
-    person = db.fetch_contacts(contact_type='own')[0][0]
-    db.insert_trip(person, '2026-03-10', start_point='A', destination='</script>Ziel', distance_km=12)
-    data = _data_block(Dom(PageTrips(db, person_id=person, date_from='2026-03-01', date_to='2026-03-31')),
-                       'TRIPS_DATA')
-    assert data['knownRoutes'] == {'a|</script>ziel': 12}
-
-
 # ── DATEV-Export mit ungültigen Daten ────────────────────────────────────────
 @pytest.fixture
 def booked_plain(tmp_db):
@@ -1137,6 +993,13 @@ INVALID_EXPORTS = {
 }
 
 
+# Welche Meldung zu welchem Fall gehört – ein bloßes „Fehler“ ließe offen, ob die Prüfung oder erst
+# das Fehlen von Buchungen im (leeren) Zeitraum angeschlagen hat
+DATEV_MESSAGE = {case: 'Ungültiger Datumsbereich' for case in INVALID_EXPORTS}
+DATEV_MESSAGE.update({'vertauscht': 'liegt nach', 'leer-von': 'Datumsbereich fehlt',
+                      'leer-bis': 'Datumsbereich fehlt'})
+
+
 @pytest.mark.parametrize('case', list(INVALID_EXPORTS))
 def test_datev_export_rejects_an_invalid_period_and_exports_nothing(booked_plain, monkeypatch, case):
     from export import datev
@@ -1150,6 +1013,8 @@ def test_datev_export_rejects_an_invalid_period_and_exports_nothing(booked_plain
     assert location.startswith('/miscellaneous?datev_export=error'), location
     for bad in ('<', '>', '"', "'", '\r', '\n', 'alert', 'Set-Cookie'):
         assert bad not in location, (bad, location)
+    message = urllib.parse.parse_qs(urllib.parse.urlsplit(location).query)['msg'][0]
+    assert DATEV_MESSAGE[case] in message, message
     assert called == [], 'trotz ungültigem Zeitraum wurde exportiert'
     assert date_taxes(booked_plain) == before, 'DateTax wurde verändert'
 

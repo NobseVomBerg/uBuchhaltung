@@ -556,6 +556,17 @@ def test_wipe_replaces_the_old_state_and_leaves_the_exceptions_alone(user_dir, f
     assert leftovers(user_dir) == []
 
 
+@WIPE
+def test_empty_directories_of_the_archive_are_created(user_dir, fmt, tmp_path, wipe):
+    """Auch ein Ordner ohne Dateien gehört zur Sicherung (z. B. ein leeres Belege/ oder invoices/)."""
+    name = fmt.build(user_dir, standard_files(tmp_path), dirs=['leer', 'Belege/auch leer', 'a/b/c'])
+    backup_mod.restore_backup(user_dir, name, wipe=wipe)
+    for rel in ('leer', 'Belege/auch leer', 'a/b/c'):
+        path = os.path.join(user_dir, *rel.split('/'))
+        assert os.path.isdir(path) and os.listdir(path) == [], rel
+    assert leftovers(user_dir) == []
+
+
 def test_restoring_twice_works(user_dir, fmt, tmp_path):
     name = fmt.build(user_dir, standard_files(tmp_path))
     backup_mod.restore_backup(user_dir, name, wipe=True)
@@ -713,7 +724,10 @@ def test_restore_works_in_a_directory_with_special_characters(tmp_path, monkeypa
     im Pfad (z. B. der Projektordner) dürfen sie nicht verfälschen."""
     monkeypatch.setattr(backup_mod, '_find_sevenzip', lambda: None)
     folder = tmp_path / 'Büro Daten #1 100% ?x' / 'user'
-    folder.mkdir(parents=True)
+    try:
+        folder.mkdir(parents=True)
+    except OSError as exc:                                    # z. B. „?“ in Windows-Pfaden
+        pytest.skip(f'das Dateisystem erlaubt diesen Ordnernamen nicht ({exc})')
     write_db(folder / 'buch.db', value='original')
     (folder / 'notiz.txt').write_text('Notiz Version 1', encoding='utf-8')
     name = Archives('zip', tmp_path).build(str(folder), standard_files(tmp_path))
