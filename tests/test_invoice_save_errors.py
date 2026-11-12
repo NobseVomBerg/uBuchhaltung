@@ -7,9 +7,9 @@ SQLite meldet nur „FOREIGN KEY constraint failed“. Die Oberfläche soll sage
 welcher Verweis ins Leere zeigt – und ein gescheiterter Speicherversuch darf
 nichts halb Gespeichertes zurücklassen. Seit 2.0.7 gilt das auch für Angebote (Kopf und
 Positionen in EINER Transaktion); die Meldungen nennen den Grund („Diese Nummer ist bereits
-vergeben.“, „Angebot nicht gefunden.“), nie SQL- oder Python-Texte. Scheitert nach dem Speichern einer
-abgeschlossenen Rechnung das Fortschreiben des Nummernkreises, bleibt die Antwort ein Erfolg mit
-Hinweis (``warning``).
+vergeben.“, „Angebot nicht gefunden.“), nie SQL- oder Python-Texte. Seit 2.1.2 vergibt das erste
+Speichern – auch als Entwurf – die Rechnungsnummer, in derselben Transaktion: Scheitert das
+Speichern, ist die Nummer nicht verbraucht (die Nummernkreise prüft test_invoice_numbering.py).
 """
 import json
 import sqlite3
@@ -342,16 +342,12 @@ def test_unexpected_exception_is_reported_as_unexpected_without_its_text(tmp_db,
     assert _count(tmp_db, 'SELECT COUNT(*) FROM Invoices') == 0
 
 
-# ── Nummernkreis nach dem Abschließen einer neuen Rechnung (2.0.7) ────────────
-NUMBER_RANGE_WARNING = ('Die Rechnung ist gespeichert, aber der Nummernkreis konnte nicht fortgeschrieben '
-                        'werden – bitte unter Stammdaten → Nummernkreise prüfen.')
-
-
+# ── Nummernkreis: das erste Speichern verbraucht die Nummer (2.1.2) ───────────
 def _counter(db, letter='R'):
     return [r[5] for r in db.fetch_number_ranges('invoice') if r[3] == letter][0]
 
 
-def test_finalizing_a_new_invoice_advances_its_number_range(tmp_db, monkeypatch):
+def test_saving_a_new_invoice_with_its_own_number_lifts_its_number_range(tmp_db, monkeypatch):
     own, cust = _make_contacts(tmp_db)
     monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
     tmp_db.insert_number_range('invoice', 2026, 'R', current_number=5)
@@ -361,19 +357,25 @@ def test_finalizing_a_new_invoice_advances_its_number_range(tmp_db, monkeypatch)
     assert _counter(tmp_db, 'R') == 7 and _counter(tmp_db, 'B') == 40
 
 
-@pytest.mark.parametrize('payload', [
-    pytest.param({'status': 'draft'}, id='Entwurf'),
-    pytest.param({'status': 'sent'}, id='versendet'),
+@pytest.mark.parametrize('payload, stored_status', [
+    pytest.param({'status': 'draft'}, 'draft', id='Entwurf'),
+    pytest.param({'status': 'finalized'}, 'finalized', id='abgeschlossen'),
+    pytest.param({'status': 'sent'}, 'draft', id='versendet-nur-ueber-den-Status'),
+    pytest.param({'status': 'paid'}, 'draft', id='bezahlt-nur-ueber-den-Status'),
 ])
-def test_only_finalizing_advances_the_number_range(tmp_db, monkeypatch, payload):
+def test_the_first_save_uses_the_number_whatever_the_status(tmp_db, monkeypatch, payload, stored_status):
+    """Auch ein Entwurf verbraucht die Nummer (sonst bekäme die zweite neue Rechnung dieselbe
+    Nummer vorgeschlagen). Der Status kommt nie vom Client: nur Entwurf oder abgeschlossen."""
     own, cust = _make_contacts(tmp_db)
     monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
     tmp_db.insert_number_range('invoice', 2026, 'R', current_number=5)
-    assert _save(_payload(own, cust, invoiceNumber='26R007', **payload))['success'] is True
-    assert _counter(tmp_db) == 5
+    resp = _save(_payload(own, cust, invoiceNumber='26R007', **payload))
+    assert resp['success'] is True
+    assert _counter(tmp_db) == 7
+    assert tmp_db.get_invoice_by_id(resp['invoice_id'])[40] == stored_status
 
 
-def test_updating_a_finalized_invoice_does_not_advance_the_number_range_again(tmp_db, monkeypatch):
+def test_updating_a_finalized_invoice_does_not_touch_the_number_range_again(tmp_db, monkeypatch):
     own, cust = _make_contacts(tmp_db)
     monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
     tmp_db.insert_number_range('invoice', 2026, 'R', current_number=5)
@@ -384,7 +386,7 @@ def test_updating_a_finalized_invoice_does_not_advance_the_number_range_again(tm
     assert _counter(tmp_db) == 20
 
 
-def test_without_a_matching_number_range_nothing_is_advanced_and_nothing_is_reported(tmp_db, monkeypatch):
+def test_without_a_matching_number_range_nothing_is_lifted_and_nothing_is_reported(tmp_db, monkeypatch):
     own, cust = _make_contacts(tmp_db)
     monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
     tmp_db.insert_number_range('invoice', 2026, 'R', current_number=5)
@@ -393,61 +395,46 @@ def test_without_a_matching_number_range_nothing_is_advanced_and_nothing_is_repo
 
 
 @pytest.mark.parametrize('number', ['RE-2026-17', '26R01a', 'Rechnung', 'X'])
-def test_a_number_outside_the_scheme_saves_the_invoice_and_warns(tmp_db, monkeypatch, capsys, number):
+def test_a_number_outside_the_scheme_is_saved_as_it_is_and_moves_no_counter(tmp_db, monkeypatch, number):
+    """Seit 2.1.2 gibt es keinen Hinweis „Nummernkreis nicht fortgeschrieben“ mehr: Der Zähler gehört
+    zur Transaktion des Speicherns, eine eigene Nummer außerhalb der Formatvorlage lässt ihn stehen."""
     own, cust = _make_contacts(tmp_db)
     monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
     tmp_db.insert_number_range('invoice', 2026, 'R', current_number=5)
     resp = _save(_payload(own, cust, invoiceNumber=number, status='finalized'))
-    # Gespeichert: die Antwort bleibt ein Erfolg (sonst legt der Nutzer dieselbe Rechnung noch einmal an) …
-    assert resp['success'] is True and resp['invoice_id']
+    assert resp['success'] is True and resp['invoice_id'] and 'warning' not in resp
     assert _count(tmp_db, 'SELECT COUNT(*) FROM Invoices WHERE InvoiceNumber = ?', number) == 1
-    # … und nennt nur den Hinweis; der Zähler blieb stehen
-    if number in ('RE-2026-17', '26R01a', 'Rechnung'):
-        assert resp['warning'] == NUMBER_RANGE_WARNING
-        assert 'Nummernkreis nicht fortgeschrieben' in capsys.readouterr().out
-    else:
-        assert 'warning' not in resp                              # zu kurz für das Schema: nichts zu tun
     assert _counter(tmp_db) == 5
 
 
-def test_a_failing_number_range_update_warns_but_keeps_the_invoice(tmp_db, monkeypatch):
+def test_a_failing_number_range_saves_nothing(tmp_db, monkeypatch):
     own, cust = _make_contacts(tmp_db)
     monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
     tmp_db.insert_number_range('invoice', 2026, 'R', current_number=5)
 
-    def full_disk(*args, **kwargs):
+    def locked(*args, **kwargs):
         raise sqlite3.OperationalError('database is locked')
-    monkeypatch.setattr(tmp_db, 'update_number_range', full_disk)
+    monkeypatch.setattr(tmp_db, 'allocate_invoice_number', locked)
     resp = _save(_payload(own, cust, invoiceNumber='26R007', status='finalized'))
-    assert resp['success'] is True and resp['warning'] == NUMBER_RANGE_WARNING
+    assert resp == {'success': False, 'error': 'Speichern fehlgeschlagen: Die Datenbank hat den Vorgang '
+                                               'abgelehnt – es wurde nichts gespeichert.'}
     assert 'locked' not in json.dumps(resp)
-    # Ein zweiter Speichern-Klick scheiterte an der vergebenen Nummer – deshalb darf die erste Antwort kein Fehler sein
-    again = _save(_payload(own, cust, invoiceNumber='26R007', status='finalized'))
-    assert again == {'success': False, 'error': 'Diese Nummer ist bereits vergeben.'}
+    assert _count(tmp_db, 'SELECT COUNT(*) FROM Invoices') == 0 and _counter(tmp_db) == 5
 
 
-def test_advance_invoice_number_range_sets_the_counter_to_the_invoice_number(tmp_db):
-    tmp_db.insert_number_range('invoice', 2026, 'R', prefix='', current_number=5, description='Hauptkreis')
-    handlers._advance_invoice_number_range(tmp_db, '26R012')
-    assert _counter(tmp_db) == 12
-    handlers._advance_invoice_number_range(tmp_db, '26R003')                   # zählt nach der Nummer, nicht hoch
-    assert _counter(tmp_db) == 3
-    assert tmp_db.fetch_number_ranges('invoice')[0][6] == 'Hauptkreis'          # sonstige Angaben des Kreises bleiben
-
-
-@pytest.mark.parametrize('number', ['', '26', 'x'])
-def test_advance_invoice_number_range_ignores_numbers_that_are_too_short(tmp_db, number):
+def test_a_failed_save_does_not_use_the_number(tmp_db, monkeypatch):
+    """Der Zähler rückt in der Transaktion des Speicherns vor: scheitert eine Position, ist die
+    Nummer nicht verbraucht, und derselbe Versuch bekommt sie wieder."""
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
     tmp_db.insert_number_range('invoice', 2026, 'R', current_number=5)
-    handlers._advance_invoice_number_range(tmp_db, number)
+    bad = _payload(own, cust, invoiceNumber='26R006')
+    bad['items'].append({'position': 2, 'quantity': 1, 'unit': 'C62', 'description': None,
+                         'unitPrice': 5.0, 'taxRate': 19})
+    assert _save(bad)['success'] is False
     assert _counter(tmp_db) == 5
-
-
-@pytest.mark.parametrize('number', ['RE-2026-17', '26R01a', 'ab123'])
-def test_advance_invoice_number_range_raises_for_a_number_outside_the_scheme(tmp_db, number):
-    tmp_db.insert_number_range('invoice', 2026, 'R', current_number=5)
-    with pytest.raises(ValueError):
-        handlers._advance_invoice_number_range(tmp_db, number)
-    assert _counter(tmp_db) == 5
+    assert _save(_payload(own, cust, invoiceNumber='26R006'))['success'] is True
+    assert _counter(tmp_db) == 6
 
 
 def test_invoice_form_shows_the_warning_before_it_leaves_the_page(db_with_coa):

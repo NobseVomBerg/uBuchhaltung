@@ -196,6 +196,7 @@ _ACTION_PATHS = frozenset({
     "/worktime/delete",
     "/trips/delete",
     "/quote/delete",
+    "/invoice/delete",
 })
 
 # Dokumente erzeugen und ablegen: ebenfalls nur per POST (GET → 405), aber mit JSON-Antwort
@@ -588,6 +589,16 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         elif path == "/quote/delete":
             db.delete_quote(int(qs["id"][0]))
             self.respond(303, "", headers={"Location": "/quote"})
+        elif path == "/invoice/delete":
+            invoice_id = _int_param(qs, "id")
+            if invoice_id is None:
+                self.respond(400, "Ungültige oder fehlende ID.", content_type="text/plain; charset=utf-8")
+            else:
+                status_code, location = handlers.handle_delete_invoice(db, invoice_id)
+                if status_code == 404:
+                    self.respond(404, location, content_type="text/plain; charset=utf-8")
+                else:
+                    self.respond(status_code, "", headers={"Location": location})
         return True
 
     def _post_generate_document(self, db, route):
@@ -660,7 +671,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 handler = {"/invoice/save": handlers.handle_invoice_save,
                            "/invoice/send-email": handlers.handle_send_invoice_email,
                            "/quote/save": handlers.handle_quote_save}[path]
-                status_code, response = 200, handler(post_body).decode('utf-8')
+                body = handler(post_body)
+                # Das Speichern einer Rechnung meldet eine gesperrte Angabe mit 409 (JsonBody.status)
+                status_code, response = getattr(body, 'status', 200), body.decode('utf-8')
             elif path in ("/invoice/link-payment", "/invoice/delete-payment"):
                 handler = {"/invoice/link-payment": handlers.handle_link_invoice_payment,
                            "/invoice/delete-payment": handlers.handle_delete_invoice_payment}[path]
@@ -736,7 +749,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 copy_from = (int(query_components['copy_from'][0])
                              if 'copy_from' in query_components else None)
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
-                self.respond(200, PageInvoice(db, filters, invoice_id, copy_from=copy_from),
+                self.respond(200, PageInvoice(db, filters, invoice_id, copy_from=copy_from,
+                                              err=query_components.get('err', [None])[0]),
                              headers=hdrs)
             elif self.path.startswith("/invoice/view") or self.path.startswith("/invoice/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
@@ -771,7 +785,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 if 'status' in qs:
                     filters['status'] = qs['status'][0]
                 quote_id = int(qs['id'][0]) if 'id' in qs else None
-                self.respond(200, PageQuote(db, filters, quote_id))
+                self.respond(200, PageQuote(db, filters, quote_id, err=qs.get('err', [None])[0]))
             elif self.path.startswith("/quote/edit"):
                 qs = parse_qs(self.path.split('?')[1])
                 self.respond(200, PageQuote(db, {}, int(qs["id"][0])))
@@ -880,12 +894,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
                 status_code, body = handlers.handle_transaction_suggest(db, qs)
                 self.respond(status_code, body, content_type="application/json")
-            elif self.path == "/masterdata/numberranges":
-                self.respond(200, PageNumberRanges(db))
+            elif self.path == "/masterdata/numberranges" or self.path.startswith("/masterdata/numberranges?"):
+                qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
+                self.respond(200, PageNumberRanges(db, err=qs.get('err', [None])[0]))
             elif self.path.startswith("/masterdata/numberranges/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 range_id = int(query_components["id"][0])
-                self.respond(200, PageNumberRangesEdit(db, range_id))
+                self.respond(200, PageNumberRangesEdit(db, range_id, err=query_components.get('err', [None])[0]))
             # ── Assets / Anlagenverzeichnis ───────────────────────────────
             elif self.path == "/assets" or self.path.startswith("/assets?"):
                 status_filter = ''
@@ -1214,10 +1229,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/masterdata/numberranges/add":
                 status_code, location = handlers.handle_add_number_range(db, post_data)
-                self.respond(status_code, "", headers={"Location": "/masterdata/numberranges"})
+                self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/masterdata/numberranges/update":
                 status_code, location = handlers.handle_update_number_range(db, post_data)
-                self.respond(status_code, "", headers={"Location": "/masterdata/numberranges"})
+                self.respond(status_code, "", headers={"Location": location})
             # ── Master Data POST Routes ───────────────────────────────────
             # SKR
             elif self.path == "/masterdata/skr/add":
