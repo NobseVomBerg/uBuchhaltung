@@ -9,8 +9,11 @@ Ergebnis im Ausgabeordner:
 
 * ``zugferd-normalfall.pdf``            – hybride E-Rechnung, Demo-Rechnung mit 19 % USt
 * ``zugferd-kleinunternehmer.pdf``      – § 19 UStG (Kategorie E mit Befreiungsgrund)
+* ``zugferd-berichtigt.pdf``             – berichtigte Fassung einer versendeten Rechnung (Leistungsdatum
+                                         geändert): mit Hinweis als BT-22 (CII) und „Fassung: 2“ im PDF
 * ``xrechnung-normalfall.xml``          – UBL-XRechnung zur Normalfall-Rechnung
 * ``xrechnung-kleinunternehmer.xml``    – UBL-XRechnung zum Kleinunternehmer-Fall
+* ``xrechnung-berichtigt.xml``          – UBL-XRechnung zur berichtigten Fassung (``cbc:Note``)
 
 Alles entsteht in einem temporären Datenverzeichnis; echte Daten werden nie angefasst.
 """
@@ -65,6 +68,57 @@ def _clone_as_exempt(db, invoice_id):
     return new_id
 
 
+def _clone_for_correction(db, invoice_id):
+    """Kopie einer Demo-Rechnung (19 % USt, Leitweg-ID) als Entwurf für den Berichtigen-Fall."""
+    inv = db.get_invoice_by_id(invoice_id)
+    items = db.get_invoice_items(invoice_id)
+    data = {
+        'invoice_number': 'BE-DEMO-1', 'invoice_date': str(inv[2]),
+        'own_company_id': inv[3], 'seller_name': inv[4], 'seller_company': inv[5],
+        'seller_street': inv[6], 'seller_postal_code': inv[7], 'seller_city': inv[8],
+        'seller_country': inv[9], 'seller_vat_id': inv[10], 'seller_email': inv[11],
+        'seller_phone': inv[12], 'customer_id': inv[13], 'buyer_name': inv[14],
+        'buyer_company': inv[15], 'buyer_street': inv[16], 'buyer_postal_code': inv[17],
+        'buyer_city': inv[18], 'buyer_country': inv[19], 'buyer_route_id': LEITWEG_ID,
+        'currency': inv[24], 'delivery_date': inv[25] or str(inv[2]), 'payment_terms': inv[26],
+        'payment_due_date': inv[27], 'bank_name': inv[31], 'bank_iban': inv[32], 'bank_bic': inv[33],
+        'tax_category': inv[34], 'tax_rate': inv[35], 'sum_net': inv[36], 'tax_amount': inv[37],
+        'sum_gross': inv[38], 'amount_due': inv[38], 'status': 'finalized',
+    }
+    new_id = db.insert_invoice(data)
+    for it in items:
+        db.insert_invoice_item({
+            'invoice_id': new_id, 'position': it[2], 'description': it[4], 'quantity': it[5],
+            'unit': it[6], 'price_per_unit': it[7], 'total_net': it[8],
+            'tax_category': it[9], 'tax_rate': it[10]})
+    return new_id
+
+
+def _correct_delivery_date(db, invoice_id):
+    """Die Rechnung versenden (Fassung 1 entsteht) und das Leistungsdatum berichtigen: Fassung 2 trägt den
+    Hinweis. Genau diesen Weg geht die Oberfläche (Status „versendet“, danach Speichern als Berichtigung)."""
+    from export.invoice_files import generate_invoice_documents
+    change = db.set_invoice_status(invoice_id, 'sent', 'demo')
+    if not change.ok:
+        sys.exit(f'berichtigt: {change.message}')
+    first = generate_invoice_documents(db, invoice_id, overwrite_sent=True)
+    if first['error']:
+        sys.exit(f'berichtigt (Fassung 1): {first["error"]}')
+    delivery = db.get_invoice_by_id(invoice_id)[25]
+    corrected = db.correct_invoice(invoice_id, {'delivery_date': _day_before(delivery)}, 1, 'demo')
+    if not corrected.corrected or corrected.version != 2:
+        sys.exit('berichtigt: die Berichtigung hat keine Fassung 2 angelegt')
+    second = generate_invoice_documents(db, invoice_id, overwrite_sent=True)
+    if second['error']:
+        sys.exit(f'berichtigt (Fassung 2): {second["error"]}')
+    return second
+
+
+def _day_before(iso_date):
+    import datetime
+    return (datetime.date.fromisoformat(str(iso_date)[:10]) - datetime.timedelta(days=1)).isoformat()
+
+
 def main(outdir):
     from db import Database
     from export.invoice_files import generate_invoice_documents, invoice_file_path
@@ -89,6 +143,12 @@ def main(outdir):
         xml = XRechnungGenerator().generate_xml(inv, items, db=db)
         with open(os.path.join(outdir, f'xrechnung-{label}.xml'), 'w', encoding='utf-8') as f:
             f.write(xml)
+    corrected_id = _clone_for_correction(db, normal[0])
+    result = _correct_delivery_date(db, corrected_id)
+    shutil.copyfile(result['pdf_path'], os.path.join(outdir, 'zugferd-berichtigt.pdf'))
+    inv, items = db.get_invoice_by_id(corrected_id), db.get_invoice_items(corrected_id)
+    with open(os.path.join(outdir, 'xrechnung-berichtigt.xml'), 'w', encoding='utf-8') as f:
+        f.write(XRechnungGenerator().generate_xml(inv, items, db=db))
     print('Beispiele in', outdir, sorted(os.listdir(outdir)))
 
 

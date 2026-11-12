@@ -49,6 +49,9 @@ uBuchhaltung verwaltet Buchführung für kleine/mittlere Unternehmen mit Fokus a
 │                     │ verweist bei umgewandelten Rechnungen aufs Angebot)
 │ • InvoiceItems      │ Rechnungs-/Angebotspositionen
 │ • InvoicePayments   │ Zahlungsverknüpfungen
+│ • InvoiceCorrections│ Protokoll: Berichtigungen und Statuswechsel
+│ • InvoiceDocument-  │ abgelegte Fassungen (PDF/XML) einer Rechnung
+│   Versions          │
 └─────────────────────┘
 
 ┌─────────────────────┐
@@ -398,7 +401,8 @@ gebucht, beim Zurückholen auf Entwurf (nur ohne Zahlung) und beim Stornieren vo
 Hängt an einer Rechnung eine Forderung, die die App nicht entfernen darf, lässt sie sich nicht
 auf Entwurf zurückholen (Klartext, nichts geändert). Beim Zurückholen wandern PDF und XML in
 `invoices/<Jahr>/Fassungen/<ID>/`; der Ordner gilt als „war schon versendet“, die Rechnungsnummer
-wird dann nie wieder vergeben.
+wird dann nie wieder vergeben. Jeder gelungene Wechsel steht im Protokoll `InvoiceCorrections`
+(Abschnitt 14b), und beim ersten Versand setzt `send` den Zeitpunkt `Invoices.SentAt`.
 
 **Auswertungsneutral:** Forderungen (10000) und Wartekonten (4340/4345/4405)
 sind Bestandskonten und bleiben aus der EÜR heraus
@@ -591,6 +595,29 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
 | XMLPath | 42 | TEXT | | XRechnung, gleicher Name mit `.xml` |
 | CreatedAt | 43 | DATETIME | DEFAULT NOW | |
 | UpdatedAt | 44 | DATETIME | | |
+| **Angebot / Beleg** | | | | |
+| DocumentType | 45 | TEXT | NOT NULL, DEFAULT 'invoice' | `'invoice'` \| `'quote'` |
+| ValidUntil | 46 | DATE | | Angebot: gültig bis |
+| IntroText | 47 | TEXT | | Angebot: Text vor den Positionen |
+| ClosingText | 48 | TEXT | | Angebot: Text nach den Positionen |
+| SourceQuoteId | 49 | INTEGER | FK → Invoices ON DELETE SET NULL | Rechnung: Quell-Angebot |
+| **Fassungen, Versand, Stornobeleg (Schema 2002, seit 2.2.0)** | | | | |
+| InvoiceKind | 50 | TEXT | | NULL = Rechnung; für den Stornobeleg vorgesehen, noch ungenutzt |
+| CancelsInvoiceId | 51 | INTEGER | UNIQUE (Index `ux_invoices_cancels`, nur wenn gesetzt) | Stornobeleg: die stornierte Rechnung – noch ungenutzt |
+| ReplacesInvoiceId | 52 | INTEGER | | neue Rechnung: die ersetzte, stornierte – noch ungenutzt |
+| SentAt | 53 | DATETIME | | erstmals versendet (UTC, gesetzt beim Übergang `send`); Import und Altbestand: NULL |
+| DocumentVersion | 54 | INTEGER | | Nummer der aktuellen Fassung; NULL = Fassung 1 |
+
+Die Spalten 50–54 hängen an der Tabelle: frische und migrierte Datenbank haben dieselbe Reihenfolge
+(`db.invoices.InvoiceCol`). Der Bestand behält überall NULL.
+
+**Fassungen und Berichtigen:** Eine versendete Rechnung hat gesperrte Finanzangaben (`db/invoice_lock.py`);
+Zahlungshinweis, Anschrift, Bestellnummer, Leitweg-ID und Leistungsdatum ändert nur eine **Berichtigung**
+(`Database.correct_invoice`, `db/invoice_versions.py`): Die Dateien der bisherigen Fassung wandern nach
+`invoices/<Jahr>/Fassungen/<ID>/` (Tabelle 13a), jedes geänderte Feld steht im Protokoll (13b), und
+`DocumentVersion` zählt um eins hoch. Zurückholen auf Entwurf legt die Dateien ebenso ab (und zählt hoch, wenn
+eine Datei abgelegt wurde). Die berichtigte Fassung trägt einen Hinweis (PDF-Zeile, CII BT-22, UBL `cbc:Note`),
+der sich aus dem Stand dieser Tabellen ergibt (`Database.correction_notice`).
 
 ---
 
@@ -632,6 +659,42 @@ Datenbanken bekommen ihn gleich, bestehende beim Öffnen – nur wenn sie keine 
 wird er übersprungen (kein Fehler), die Prüfliste „Zahlungszuordnungen“ meldet die Dubletten, und
 beim ersten Start ohne Dubletten entsteht er.
 Die Sätze zur Zuordnung stehen in Abschnitt 9a.
+
+---
+
+### 14a. InvoiceDocumentVersions (abgelegte Fassungen)
+
+| Spalte | Typ | Constraints | Beschreibung |
+|--------|-----|-------------|--------------|
+| ID | INTEGER | PRIMARY KEY AUTOINCREMENT | |
+| InvoiceID | INTEGER | NOT NULL | die Rechnung (bewusst ohne FK: die Fassung überlebt das Löschen eines Entwurfs) |
+| Version | INTEGER | NOT NULL | die abgelegte Fassung |
+| Kind | TEXT | NOT NULL | `'pdf'` \| `'xml'` |
+| RelPath | TEXT | NOT NULL | Pfad der Datei relativ zum Ordner `invoices/` des Benutzers (`/` als Trenner) |
+| Sha256 | TEXT | | Prüfsumme der abgelegten Datei |
+| ArchivedAt | DATETIME | DEFAULT NOW | UTC |
+| Reason | TEXT | NOT NULL | `'corrected'` (Berichtigung) \| `'reopened'` (Zurückholen auf Entwurf) |
+
+**Indizes:** UNIQUE(InvoiceID, Version, Kind). Dateien aus 2.1.2, zu denen es keine Zeile gibt, zeigt die
+Rechnungsseite ohne Fassungsnummer.
+
+### 14b. InvoiceCorrections (Protokoll)
+
+| Spalte | Typ | Constraints | Beschreibung |
+|--------|-----|-------------|--------------|
+| ID | INTEGER | PRIMARY KEY AUTOINCREMENT | |
+| InvoiceID | INTEGER | NOT NULL | die Rechnung (ohne FK, wie oben) |
+| InvoiceNumber | TEXT | | Momentaufnahme der Rechnungsnummer |
+| Version | INTEGER | NOT NULL | die Fassung, die durch den Eintrag entstand bzw. gilt |
+| ChangedAt | DATETIME | DEFAULT NOW | UTC |
+| UserName | TEXT | | angemeldeter Benutzer (bei automatischer Anmeldung der Administrator) |
+| Action | TEXT | NOT NULL | `'correct'` (Berichtigung) \| `'status'` (Statuswechsel) |
+| Field | TEXT | | Spaltenname (`PaymentTerms`, `OrderNumber`, `BuyerRouteID`, `DeliveryDate`, `Buyer…` der Anschrift) bzw. `'Status'` |
+| OldValue / NewValue | TEXT | | alter und neuer Wert; beim Status die Status-Schlüssel (`sent`, `draft` …) |
+
+**Indizes:** `idx_invoicecorrections_invoice` auf `InvoiceID`. Statuswechsel schreibt `set_invoice_status` in
+derselben Transaktion; was die Zahlungslogik am Status ändert, steht nicht darin. Aus dem Protokoll und
+`Invoices.SentAt` ergibt sich, ob eine Rechnung schon einmal versendet war (`Database.was_sent_before`).
 
 ---
 
@@ -794,6 +857,7 @@ und zusätzlich die AfA bucht, zählt doppelt – das Programm prüft das nicht.
 
 1. **Foreign Keys:** `PRAGMA foreign_keys = ON`
 2. **ON DELETE CASCADE:** InvoiceItems, AssetDepreciations, ContactAddresses, CompanyDetails, PersonDetails
+   (nicht: `InvoiceCorrections`, `InvoiceDocumentVersions` – Protokoll und Fassungen überleben das Löschen eines Entwurfs)
 3. **Snapshot-Prinzip:** Invoices kopieren Stammdaten bei Erstellung
 4. **Datum-Format:** ISO 8601 (YYYY-MM-DD)
 5. **Steuersätze:** Dezimal (0.19 = 19%)
@@ -801,5 +865,5 @@ und zusätzlich die AfA bucht, zählt doppelt – das Programm prüft das nicht.
 
 ---
 
-**Dokumentversion:** 2.4
-**Letzte Aktualisierung:** 11. November 2026 (Zahlungszuordnung Rechnung ↔ Bankbewegung; Schema unverändert)
+**Dokumentversion:** 2.5
+**Letzte Aktualisierung:** 12. November 2026 (Fassungen und Protokoll versendeter Rechnungen; Schema 2002)

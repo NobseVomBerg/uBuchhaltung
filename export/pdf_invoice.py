@@ -12,11 +12,12 @@ Dokument-Bausteine (Kopf, Adressen, Positionstabelle, Beträge) liegen in
 nur die rechnungsspezifischen Teile (Zahlungsbedingungen, Bankverbindung, Fußzeile).
 """
 import datetime
+import html
 import os
 from db import Database
 from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path)
 from .cii_invoice import generate_cii
-from .einvoice_model import unit_display
+from .einvoice_model import correction_note_text, correction_notice, unit_display
 from .invoice_files import drop_stale_file, invoice_file_path
 from . import pdf_document as D
 
@@ -133,6 +134,11 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
         meta_rows.append(("Kunden-Nr.:", buyer_customer_number))
     if invoice[25]:
         meta_rows.append(("Leistungsdatum:", invoice[25]))
+    # Eine berichtigte Fassung nennt ihre Nummer im Kopf und trägt den Hinweis vor der Positionstabelle
+    # (derselbe Text steht als BT-22 in der eingebetteten E-Rechnung); er ergibt sich aus dem Stand der Datenbank
+    notice = correction_notice(db, invoice)
+    if notice:
+        meta_rows.append(("Fassung:", str(notice.version)))
     # Absenderzeile im Adressfeld OHNE Zusatzzeile (sonst zu lang); die
     # Zusatzzeile erscheint nur in der Fußzeile.
     sender_line = " · ".join(p for p in [
@@ -142,6 +148,9 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     address_lines = D.address_block(buyer_company, buyer_name, buyer_addr_extra,
                                     buyer_street, buyer_postal, buyer_city, buyer_country)
     flow.y = D.draw_letterhead(flow.ops, image, "Rechnung", meta_rows, sender_line, address_lines)
+    if notice:
+        D.flow_richtext(flow, f'<b>{html.escape(correction_note_text(notice), quote=False)}</b>',
+                        size=9, leading=12)
 
     items = [{'pos': it[2], 'quantity': it[5], 'unit': unit_display(it[6]),
               'description': it[4], 'price': it[7], 'total': it[8]} for it in invoice_items]

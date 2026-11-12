@@ -30,6 +30,7 @@ Kontext bei moderatem Token-Einsatz. NIE alle Module gleichzeitig laden.
 | `contacts.py` | Kontakte (normalisiert), Adressen, Personen/Firmen |
 | `invoices.py` | Rechnungen, Positionen, Zahlungen, überfällig/fällig, Forderungsbuchung (`_book_receivable`, `_receivable_removal`), Entwurf löschen, Angebot → Rechnung |
 | `invoice_lock.py` | Sperre versendeter Rechnungen (`update_invoice_fields`, `check_changes`) und Statusübergänge (`set_invoice_status`, `TRANSITIONS`; Status, Forderung und Fassungen in einer Transaktion) |
+| `invoice_versions.py` | Berichtigen (`correct_invoice`), Fassungen (`InvoiceDocumentVersions`, `_archive_documents`) und Protokoll (`InvoiceCorrections`, `get_invoice_protocol`), `was_sent_before`, Hinweis der berichtigten Fassung (`correction_notice`) |
 | `numbering.py` | Nummernkreise (Rechnungsnummern etc.; `allocate_invoice_number`, `release_invoice_number`, `number_format_error`) |
 | `articles.py` | Artikel-Stammdaten |
 | `receipts.py` / `worktimes.py` | Belege bzw. Arbeitszeiten |

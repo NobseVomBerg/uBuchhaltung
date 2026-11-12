@@ -3,15 +3,16 @@
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Das Formular einer versendeten Rechnung überschreibt nichts still (2.1.2).
 
-Bei einer versendeten Rechnung bleiben Begleittext, Anschrift, Bestellnummer, Leitweg-ID und
-Leistungsdatum änderbar. Früher setzte die Maske beim Laden die Leitweg-ID auf den heutigen Wert der
+Bei einer versendeten Rechnung bleiben Zahlungshinweis, Anschrift, Bestellnummer, Leitweg-ID und
+Leistungsdatum änderbar – seit 2.2.0 als Berichtigung mit neuer Fassung und Protokoll (Einzelheiten:
+test_invoice_correction.py; hier geht es darum, dass nichts still geschieht). Früher setzte die Maske beim Laden die Leitweg-ID auf den heutigen Wert der
 Stammdaten (bei einem Kunden außerhalb der Auswahl auf leer) und jedes Speichern holte die heutige
 Anschrift. Jetzt:
 
 * Die Maske zeigt die **gespeicherten** Werte (Anschrift der Rechnung, Leitweg-ID) und holt beim Laden
   nichts aus den Stammdaten.
 * Geschickt und geschrieben wird nur, was der Nutzer geändert hat; ein unverändertes Speichern ändert
-  keine Spalte (auch nicht den Leerwert an die Stelle von ``NULL``).
+  keine Spalte (auch nicht den Leerwert an die Stelle von ``NULL``) und legt weder Fassung noch Protokoll an.
 * Leitweg-ID und Bestellnummer sind normale Eingabefelder.
 * Die Anschrift wird nur auf ausdrücklichen Wunsch neu aus den Stammdaten **desselben** Kunden
   übernommen: Kästchen „Anschrift aus den Stammdaten übernehmen“ (``refreshAddress``), das alt → neu
@@ -28,11 +29,12 @@ import pytest
 import server.handlers as handlers
 from server.pages_invoice import PageInvoice
 from tests.dom_helpers import Dom
-from tests.invoice_world import (build_world, columns, finance, force_status, make_invoice, make_payload,
-                                 save, save_raw, snapshot)
+from tests.invoice_world import (CORRECTION_COLUMNS, build_world, columns, finance, force_status, make_invoice,
+                                 make_payload, save, save_open, save_raw, snapshot)
 
-HINT = ('Änderbar sind Begleittext, Anschrift, Bestellnummer, Leitweg-ID und Leistungsdatum. '
-        'Das abgelegte Dokument (PDF/XML) bleibt dabei unverändert.')
+HINT = ('Diese Rechnung ist versendet. Änderbar sind Zahlungshinweis, Anschrift, Bestellnummer, Leitweg-ID und '
+        'Leistungsdatum. Jede Änderung wird protokolliert; die bisherige Fassung bleibt als Datei erhalten, und es '
+        'entsteht eine neue Fassung, die dem Kunden erneut zugehen muss.')
 
 
 @pytest.fixture
@@ -109,26 +111,28 @@ def test_an_unchanged_save_of_a_sent_invoice_changes_no_column_although_the_mast
 def test_only_what_changed_is_written(world):
     invoice_id = make_invoice(world, 'sent')
     before = columns(world.db, invoice_id)
-    assert save({'invoiceId': invoice_id, 'orderNumber': 'B-4711'})['success'] is True
+    assert save_open(world, invoice_id, orderNumber='B-4711')['success'] is True
     after = columns(world.db, invoice_id)
-    assert {k: (before[k], after[k]) for k in before if before[k] != after[k]} == {
-        'OrderNumber': ('B-17', 'B-4711')}
+    changed = {k: (before[k], after[k]) for k in before if before[k] != after[k]}
+    assert changed.pop('DocumentVersion') == (None, 2) and 'UpdatedAt' in changed     # die Berichtigung selbst
+    assert changed.pop('UpdatedAt')[0] is None
+    assert changed == {'OrderNumber': ('B-17', 'B-4711')}
 
 
 def test_a_change_that_only_adds_a_line_break_is_still_written(world):
     """Verglichen wird genau: Ein Zeilenumbruch mehr im Begleittext ist eine Änderung."""
     invoice_id = make_invoice(world, 'sent')
-    assert save({'invoiceId': invoice_id, 'paymentTerms': 'Zahlbar in 14 Tagen\n'})['success'] is True
+    assert save_open(world, invoice_id, paymentTerms='Zahlbar in 14 Tagen\n')['success'] is True
     assert columns(world.db, invoice_id)['PaymentTerms'] == 'Zahlbar in 14 Tagen\n'
 
 
 def test_the_leitweg_id_and_the_order_number_are_normal_inputs(world):
     invoice_id = make_invoice(world, 'sent')
-    assert save({'invoiceId': invoice_id, 'buyerReference': '991-12345-67', 'orderNumber': 'B-9'})['success']
+    assert save_open(world, invoice_id, buyerReference='991-12345-67', orderNumber='B-9')['success']
     stored = columns(world.db, invoice_id)
     assert (stored['BuyerReference'], stored['BuyerRouteID'], stored['OrderNumber']) == ('991-12345-67',
                                                                                      '991-12345-67', 'B-9')
-    assert save({'invoiceId': invoice_id, 'buyerReference': None, 'orderNumber': None})['success']
+    assert save_open(world, invoice_id, buyerReference=None, orderNumber=None)['success']
     stored = columns(world.db, invoice_id)
     assert (stored['BuyerReference'], stored['BuyerRouteID'], stored['OrderNumber']) == (None, None, None)
 
@@ -138,9 +142,9 @@ def test_the_complete_form_of_a_sent_invoice_does_not_pull_the_address_either(wo
     invoice_id = make_invoice(world, 'sent')
     before = columns(world.db, invoice_id)
     change_customer_master(world)
-    assert save(make_payload(world, invoiceId=invoice_id, orderNumber='B-5'))['success'] is True
+    assert save(make_payload(world, invoiceId=invoice_id, documentVersion=1, orderNumber='B-5'))['success'] is True
     after = columns(world.db, invoice_id)
-    assert {k for k in before if before[k] != after[k]} == {'OrderNumber'}
+    assert {k for k in before if before[k] != after[k]} - set(CORRECTION_COLUMNS) == {'OrderNumber'}
 
 
 def test_the_address_request_takes_only_the_master_data_of_the_invoices_own_customer(world):
@@ -265,3 +269,37 @@ def test_the_script_sends_only_what_the_user_changed(world):
     # kein unbedingtes Mitschicken der vier Felder mehr
     assert "paymentTerms: document.getElementById('payment_terms').value,\n                    orderNumber" \
            not in script.split('const changes')[1].split('sendInvoice(changes')[0]
+
+
+def test_the_script_sends_the_loaded_version_and_asks_before_correcting(world):
+    from server.pages_invoice import CORRECT_QUESTION
+    from server.pages import script_json
+    script = script_of(world)
+    changes = script.split('const changes')[1].split('sendInvoice(changes')[0]
+    assert "documentVersion: parseInt(document.getElementById('document_version').value)" in changes
+    assert "if (Object.keys(changes).length === 2)" in changes and "'Es wurde nichts geändert.'" in changes
+    assert f"showConfirm({script_json(CORRECT_QUESTION)}, function() {{ sendInvoice(changes" in script
+    assert "if (data.documentVersion) document.getElementById('document_version').value = data.documentVersion;" \
+        in script
+    assert 'Berichtigt: Fassung' in script                                  # die Maske sagt, dass es eine neue gibt
+    assert CORRECT_QUESTION == ('Rechnung berichtigen? Die bisherige Fassung bleibt als Datei erhalten, die '
+                                'Änderung wird protokolliert, und die neue Fassung muss dem Kunden erneut zugehen.')
+
+
+def test_the_form_carries_the_version_it_loaded(world):
+    from tests.invoice_world import save_open
+    invoice_id = make_invoice(world, 'sent')
+    assert Dom(page(world, invoice_id)).one('input', id='document_version')['value'] == '1'
+    assert save_open(world, invoice_id, orderNumber='B-2')['documentVersion'] == 2
+    assert Dom(page(world, invoice_id)).one('input', id='document_version')['value'] == '2'
+    draft = make_invoice(world, 'draft', number='26R101')
+    assert Dom(page(world, draft)).one('input', id='document_version')['value'] == '1'
+    assert Dom(PageInvoice(world.db, {}, None)).one('input', id='document_version')['value'] == ''
+
+
+def test_the_save_button_of_a_sent_invoice_is_called_correcting(world):
+    sent = page(world, make_invoice(world, 'sent'))
+    draft = page(world, make_invoice(world, 'draft', number='26R101'))
+    assert '✏ Berichtigen</button>' in sent and '💾 Speichern</button>' not in sent
+    assert '💾 Speichern</button>' in draft and 'Berichtigen</button>' not in draft
+

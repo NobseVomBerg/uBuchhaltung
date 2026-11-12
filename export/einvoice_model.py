@@ -31,7 +31,7 @@ _INV = dict(
     buyer_route_id=22, order_number=23, currency=24, delivery_date=25,
     payment_terms=26, payment_due_date=27, bank_name=31, bank_iban=32,
     bank_bic=33, tax_category=34, tax_rate=35, sum_net=36, tax_amount=37,
-    sum_gross=38, amount_due=39,
+    sum_gross=38, amount_due=39, document_version=54,
 )
 # Spaltenindizes der InvoiceItems-Zeile
 _ITM = dict(position=2, description=4, quantity=5, unit=6, price=7, total_net=8,
@@ -195,11 +195,39 @@ class EInvoice:
     bank_name: str = ''
     iban: str = ''
     bic: str = ''
+    notes: List[str] = field(default_factory=list)     # BT-22: Freitext zur Rechnung (Hinweis einer Berichtigung)
     warnings: List[str] = field(default_factory=list)
 
     @property
     def is_exempt(self) -> bool:
         return any(t.category == 'E' for t in self.tax_breakdown)
+
+
+def _german_date(day) -> str:
+    return day.strftime('%d.%m.%Y')
+
+
+def correction_note_text(notice) -> str:
+    """Der Hinweis einer berichtigten Fassung im Klartext, für PDF, CII (BT-22) und UBL (``cbc:Note``) derselbe:
+    „Berichtigte Fassung vom 12.11.2026 – ersetzt die Fassung vom 04.03.2026 (geändert: Leistungsdatum)“.
+    ``notice``: :class:`db.invoice_versions.CorrectionNotice`. Ist das Datum der ersetzten Fassung unbekannt,
+    entfällt dieser Teil."""
+    text = f'Berichtigte Fassung vom {_german_date(notice.corrected_on)}'
+    if notice.replaces_on:
+        text += f' – ersetzt die Fassung vom {_german_date(notice.replaces_on)}'
+    if notice.fields:
+        text += f' (geändert: {", ".join(notice.fields)})'
+    return text
+
+
+def correction_notice(db, invoice):
+    """Der Hinweis, den die Rechnungszeile ``invoice`` (aus ``db.get_invoice_by_id``) trägt, wenn ihre
+    aktuelle Fassung eine Berichtigung ist (``Database.correction_notice``) – sonst ``None``. Ohne Datenbank
+    oder bei einer Rechnung in Fassung 1 gibt es keinen und keine Abfrage."""
+    version = invoice[_INV['document_version']] if len(invoice) > _INV['document_version'] else None
+    if db is None or not version or version <= 1:
+        return None
+    return db.correction_notice(invoice[_INV['id']])
 
 
 def _party(name, street, postal, city, country, vat_id='', email='', phone='',
@@ -317,6 +345,7 @@ def build_einvoice(db, invoice, items) -> EInvoice:
                    col('buyer_country'), vat_id=col('buyer_vat_id') or '',
                    email=buyer_email, contact=col('buyer_name'))
 
+    notice = correction_notice(db, invoice)
     return EInvoice(
         number=_text(col('number')) or 'DRAFT',
         issue_date=_iso_date(col('date')) or date.today(),
@@ -332,4 +361,5 @@ def build_einvoice(db, invoice, items) -> EInvoice:
         bank_name=_text(col('bank_name')),
         iban=_text(col('bank_iban')).replace(' ', ''),
         bic=_text(col('bank_bic')).replace(' ', ''),
+        notes=[correction_note_text(notice)] if notice else [],
         warnings=warnings)

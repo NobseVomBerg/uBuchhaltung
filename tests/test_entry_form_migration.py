@@ -109,7 +109,7 @@ def test_migration_leaves_euer_datev_dashboard_and_split_check_as_they_were(old)
 
     after = world.evaluate(path)               # öffnet die Datenbank und migriert sie
 
-    assert installation.user_version(path) == version.SCHEMA_VERSION == 2001
+    assert installation.user_version(path) == version.SCHEMA_VERSION
     expected = GOLDEN[str(cash)]
     assert set(after) == set(expected)
     for section in expected:
@@ -242,7 +242,7 @@ def test_the_migration_makes_a_backup_of_the_old_state_first(old_1600):
     assert installation.user_version(str(backup)) == 2000
     assert 'EntryForm' not in _columns(str(backup))
     assert installation.dump(str(backup)) == before                # Zeile für Zeile der alte Stand
-    assert installation.user_version(path) == 2001                 # die Datenbank selbst: migriert
+    assert installation.user_version(path) == version.SCHEMA_VERSION   # die Datenbank selbst: migriert
 
 
 def test_the_backup_is_never_overwritten(old_1600):
@@ -293,7 +293,7 @@ def test_a_failing_backup_stops_the_opening_and_leaves_the_database_at_2000(old_
 
     (Path(path).parent / 'backup').unlink()                        # Ursache behoben: jetzt klappt es
     _reopen(path)
-    assert installation.user_version(path) == 2001 and len(_backups(path)) == 1
+    assert installation.user_version(path) == version.SCHEMA_VERSION and len(_backups(path)) == 1
 
 
 def test_a_backup_that_cannot_be_written_is_not_left_behind(old_1600, monkeypatch):
@@ -335,24 +335,25 @@ def test_a_backup_that_cannot_be_written_is_not_left_behind(old_1600, monkeypatc
 
 def test_every_migration_run_of_an_existing_database_is_backed_up_and_named_after_the_program(
         old_1600, monkeypatch):
-    """Nicht nur der Schritt auf 2.1.0: Fragt irgendein künftiger Schritt (hier ein erfundener 2.2.0 mit
-    der Schema-Zahl 2002) eine bestehende Datenbank um, entsteht vorher eine Sicherung – mit der Version
+    """Nicht nur die Schritte bis 2.2.0: Fragt irgendein künftiger Schritt (hier ein erfundener 2.3.0 mit
+    der Schema-Zahl 2003) eine bestehende Datenbank um, entsteht vorher eine Sicherung – mit der Version
     des Programms im Namen, das umstellt."""
     path = old_1600
     current = version.APP_VERSION
-    _reopen(path)                                                  # Schema 2001: erste Sicherung
+    stamped = version.SCHEMA_VERSION
+    _reopen(path)                                                  # der heutige Stand: erste Sicherung
     assert [b.name[9:] for b in _backups(path)] == [f'vor_{current}_buch.db']
-    monkeypatch.setattr(version, 'SCHEMA_STEP', 2)
-    monkeypatch.setattr(version, 'SCHEMA_VERSION', 2002)
-    monkeypatch.setattr(version, 'APP_VERSION', '2.2.0')
+    monkeypatch.setattr(version, 'SCHEMA_STEP', 3)
+    monkeypatch.setattr(version, 'SCHEMA_VERSION', 2003)
+    monkeypatch.setattr(version, 'APP_VERSION', '2.3.0')
 
     _reopen(path)
 
-    assert installation.user_version(path) == 2002
+    assert installation.user_version(path) == 2003
     names = sorted(b.name[9:] for b in _backups(path))
-    assert names == [f'vor_{current}_buch.db', 'vor_2.2.0_buch.db']
-    newest = next(b for b in _backups(path) if 'vor_2.2.0' in b.name)
-    assert installation.user_version(str(newest)) == 2001          # der Stand vor dem Lauf
+    assert names == [f'vor_{current}_buch.db', 'vor_2.3.0_buch.db']
+    newest = next(b for b in _backups(path) if 'vor_2.3.0' in b.name)
+    assert installation.user_version(str(newest)) == stamped       # der Stand vor dem Lauf
 
 
 def test_the_backup_is_published_only_when_it_is_complete(old_1600, monkeypatch):
@@ -416,7 +417,7 @@ def test_an_aborted_migration_leaves_the_database_exactly_as_it_was(old_1600, mo
     assert installation.dump(path) == before
 
     _reopen(path)                                                  # und beim nächsten Start klappt es
-    assert installation.user_version(path) == 2001
+    assert installation.user_version(path) == version.SCHEMA_VERSION
     assert all(form is not None for kind, form, _c, _k in _forms(path).values() if kind == 'entry')
 
 
@@ -486,12 +487,12 @@ def test_a_database_that_is_too_new_is_still_refused_and_not_backed_up(old_1600)
 
 def test_the_migration_stamps_the_database_so_that_2_0_x_refuses_it(old_1600):
     """2.0.x liest die Zahl in der Datenbank und öffnet nichts, was höher ist als 2000 – die
-    migrierte Datenbank trägt 2001 und wird nie zurückgestempelt."""
+    migrierte Datenbank trägt die Zahl des Programms (2001 oder höher) und wird nie zurückgestempelt."""
     path = old_1600
     _reopen(path)
-    assert installation.user_version(path) == 2001 > 2000
+    assert installation.user_version(path) == version.SCHEMA_VERSION > 2000
     _reopen(path)
-    assert installation.user_version(path) == 2001
+    assert installation.user_version(path) == version.SCHEMA_VERSION
 
 
 # ── der Server: Fehlerseite statt Absturz ────────────────────────────────────
@@ -514,7 +515,7 @@ def test_the_server_shows_a_page_when_the_backup_before_the_migration_fails(auto
 
     blocker.unlink()                                               # Ursache behoben: die Seite kommt
     assert get(server_port, '/about').status == 200
-    assert installation.user_version(path) == 2001
+    assert installation.user_version(path) == version.SCHEMA_VERSION
     assert len(_backups(path)) == 1
 
 
@@ -526,7 +527,7 @@ def test_a_1x_database_is_backed_up_and_migrated_through_all_steps(old_1600):
 
     _reopen(path)
 
-    assert installation.user_version(path) == 2001
+    assert installation.user_version(path) == version.SCHEMA_VERSION
     assert len(_backups(path)) == 1 and installation.user_version(str(_backups(path)[0])) == 4
     assert all(form is not None for kind, form, _c, _k in _forms(path).values() if kind == 'entry')
 
@@ -547,7 +548,7 @@ def test_a_2_0_x_backup_can_be_restored_and_is_migrated_on_the_next_start(old_16
 
     assert installation.user_version(str(db_path)) == 2000
     _reopen(str(db_path))
-    assert installation.user_version(str(db_path)) == 2001
+    assert installation.user_version(str(db_path)) == version.SCHEMA_VERSION
     assert any(path.name.endswith(f'_vor_{version.APP_VERSION}_buch.db')
                for path in _backups(str(db_path)))
 
@@ -588,7 +589,7 @@ def test_an_existing_database_with_duplicate_payments_starts_without_the_index(o
     db = _reopen(path)
 
     assert INDEX not in _indexes(path)
-    assert installation.user_version(path) == 2001
+    assert installation.user_version(path) == version.SCHEMA_VERSION
     assert 'doppelt zugeordnet' in capsys.readouterr().out
     assert [f for f in db.find_payment_inconsistencies(invoice) if f['category'] == 'duplicate_payment']
 
