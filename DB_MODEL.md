@@ -398,8 +398,10 @@ hat (ohne `SourceGroup`, Wartekonto als Gegenkonto, keiner Bankbewegung zugeordn
 Der Statuswechsel einer Rechnung (`Database.set_invoice_status`) bucht und entfernt die
 Forderung in derselben Transaktion wie den Status: Beim Versenden und Reaktivieren (nur eine
 stornierte Rechnung ohne Stornorechnung) wird sie gebucht, beim Zurückholen auf Entwurf (nur ohne
-Zahlung) entfernt. Auf „storniert“ setzt der Status nicht: Das ist `cancel_invoice` (Abschnitt 9b) –
-es löscht die Forderung nie, sondern bucht ihre Gegenbuchung. Bei einem Storno-Paar (Rechnung mit
+Zahlung) entfernt. Auf „storniert“ setzt der Status nur eine Rechnung ohne positiven Betrag (Gutschrift,
+0-€-Rechnung – sie bekommt keine Stornorechnung): Die Forderung der App geht mit, solange keine Zahlung daran hängt.
+Für jede andere ist das `cancel_invoice` (Abschnitt 9b) – es löscht die Forderung nie, sondern bucht ihre
+Gegenbuchung. Bei einem Storno-Paar (Rechnung mit
 Stornorechnung und die Stornorechnung selbst) entfernen weder `remove_receivable_booking` noch das
 Entfernen der letzten Zahlung etwas (`_drop_receivable`).
 Hängt an einer Rechnung eine Forderung, die die App nicht entfernen darf, lässt sie sich nicht
@@ -518,8 +520,10 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
 ### 9b. Stornorechnung (`cancel_invoice`, seit 2.2.1)
 
 Eine versendete Rechnung wird nicht über den Status storniert, sondern über „Stornieren“
-(`Database.cancel_invoice`, `db/invoice_storno.py`; Route `POST /invoice/cancel`). Es entsteht ein
-eigener Beleg in `Invoices` (Abschnitt 12):
+(`Database.cancel_invoice`, `db/invoice_storno.py`; Route `POST /invoice/cancel`). Ausnahme: Eine Rechnung ohne
+positiven Betrag (Brutto ≤ 0) bekommt keine Stornorechnung – sie lässt sich über den Status auf „storniert“ setzen
+(Abschnitt 9a). Das Stornodatum liegt nicht vor dem Rechnungsdatum und nicht in der Zukunft (nach dem Tag des Servers;
+ein Tippfehler legte sonst einen Nummernkreis 2062 an). Es entsteht ein eigener Beleg in `Invoices` (Abschnitt 12):
 
 - **Stornorechnung:** Nummer aus dem Rechnungskreis des Jahres des Stornodatums; Kopf der
   Ursprungsrechnung (Anschrift-Momentaufnahme, Leistungsdatum, Bank, Steuer, Leitweg-ID) ohne
@@ -546,7 +550,8 @@ eigener Beleg in `Invoices` (Abschnitt 12):
   `cac:BillingReference`; im XML stehen die Beträge positiv, das PDF zeigt die gespeicherten negativen.
 
 Alles läuft in einer Transaktion (`BEGIN IMMEDIATE`): Es gelingt ganz oder gar nicht, eine Nummer wird nur bei
-Erfolg verbraucht.
+Erfolg verbraucht. Zeigt dabei ein Verweis der Rechnung ins Leere (gelöschtes Bankkonto, Kunde …), nennt die Antwort ihn
+im Klartext (409); repariert wird nichts.
 
 ---
 
@@ -871,7 +876,7 @@ Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
 5. Articles → InvoiceItems
 6. Status: draft → finalized → sent → paid (dazwischen partial_payment, overdue; cancelled)
 7. Versenden bucht die Forderung; Zahlungen lassen sich ab sent zuordnen (siehe 9a)
-8. Stornieren (nicht über den Status): Stornorechnung als eigener Beleg, Gegenbuchung der Forderung (siehe 9b)
+8. Stornieren (über den Status nur bei Brutto ≤ 0): Stornorechnung als eigener Beleg, Gegenbuchung der Forderung (siehe 9b)
 ```
 
 ### AfA-Berechnung

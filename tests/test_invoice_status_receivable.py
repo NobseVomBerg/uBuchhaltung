@@ -7,10 +7,11 @@
   Forderung („Debitoren an Wartekonto“) – gelingt eines nicht, ändert sich nichts. Die Schreibsperre
   liegt von der Prüfung bis zum Commit; kein zweiter Schreiber kommt dazwischen.
 * **Nie ein Satz mit Quellklammer:** Die App entfernt nur die Forderung, die sie selbst gebucht hat (ohne
-  ``SourceGroup``, Wartekonto als Gegenkonto, keiner Bankbewegung zugeordnet) – beim Zurückholen und beim
-  Entfernen der letzten Zahlung einer von Hand stornierten Rechnung (Altbestand ohne Stornorechnung). Das
-  Zurückholen einer Rechnung mit anderer Forderung wird mit Klartext abgelehnt, nichts ändert sich. Eine
-  Stornorechnung (``cancel_invoice``) löscht nie eine Forderung (test_invoice_storno.py).
+  ``SourceGroup``, Wartekonto als Gegenkonto, keiner Bankbewegung zugeordnet) – beim Zurückholen, beim Storno
+  von Hand (nur eine Rechnung ohne positiven Betrag: Gutschrift, 0-€-Rechnung) und beim Entfernen der letzten
+  Zahlung einer von Hand stornierten Rechnung (Altbestand ohne Stornorechnung). Das Zurückholen einer Rechnung
+  mit anderer Forderung wird mit Klartext abgelehnt, nichts ändert sich. Eine Stornorechnung
+  (``cancel_invoice``) löscht nie eine Forderung (test_invoice_storno.py).
 
 Alle Namen, Adressen und Nummern sind erfundene Testwerte.
 """
@@ -163,6 +164,59 @@ def test_the_status_does_not_cancel_and_removes_no_receivable(world):
     assert columns(world.db, invoice_id)['Status'] == 'sent' and len(receivables(world, invoice_id)) == 1
 
 
+CREDIT = [{'position': 1, 'quantity': 1, 'unit': 'C62', 'description': 'Gutschrift', 'unitPrice': -100.0,
+           'taxRate': 19}]                                               # eine Rechnung über −119,00 brutto
+
+
+def send_credit(w, number='G-100'):
+    """Eine versendete Rechnung ohne positiven Betrag (Gutschrift): Sie lässt sich über den Status stornieren."""
+    return send(w, number=number, items=CREDIT)
+
+
+def test_cancelling_an_invoice_without_a_positive_amount_by_hand_removes_the_app_receivable(world):
+    invoice_id = send_credit(world)
+    assert len(receivables(world, invoice_id)) == 1
+    assert set_invoice_status(invoice_id, 'cancelled')[0] == 200
+    assert receivables(world, invoice_id) == [] and columns(world.db, invoice_id)['Status'] == 'cancelled'
+
+
+def test_cancelling_by_hand_never_deletes_an_imported_receivable(world):
+    invoice_id = send_credit(world)
+    booking = receivables(world, invoice_id)[0][0]
+    mark_imported(world, booking)
+    assert set_invoice_status(invoice_id, 'cancelled')[0] == 200
+    assert columns(world.db, invoice_id)['Status'] == 'cancelled'
+    assert [r[0] for r in receivables(world, invoice_id)] == [booking]
+
+
+def test_cancelling_by_hand_never_deletes_a_receivable_booked_by_hand_or_attached(world):
+    first, second = send_credit(world, 'G-101'), send_credit(world, 'G-102')
+    hand_booked(world, receivables(world, first)[0][0])
+    attach_to_bank(world, receivables(world, second)[0][0])
+    assert set_invoice_status(first, 'cancelled')[0] == 200
+    assert set_invoice_status(second, 'cancelled')[0] == 200
+    assert len(receivables(world, first)) == 1 and len(receivables(world, second)) == 1
+
+
+def test_cancelling_by_hand_keeps_the_receivable_while_a_payment_hangs_on_it(world):
+    invoice_id = send_credit(world)
+    add_payment(world, invoice_id, -119.0)                               # wie der WISO-Import sie zuordnet
+    assert set_invoice_status(invoice_id, 'cancelled')[0] == 200
+    assert len(receivables(world, invoice_id)) == 1
+
+
+def test_a_failing_cancel_removal_leaves_the_status(world, monkeypatch):
+    invoice_id = send_credit(world)
+    before = snapshot(world.db)
+
+    def broken(self, conn, invoice_id, number):
+        raise RuntimeError('Löschen nicht möglich')
+    monkeypatch.setattr(type(world.db), '_drop_receivable', broken)
+    with pytest.raises(RuntimeError):
+        world.db.set_invoice_status(invoice_id, 'cancelled')
+    assert snapshot(world.db) == before and columns(world.db, invoice_id)['Status'] == 'sent'
+
+
 def test_a_credit_note_keeps_every_kind_of_receivable(world):
     """Das Stornieren entfernt nie eine Forderung – die der App nicht (``test_invoice_storno.py`` zeigt die Gegenbuchung),
     eine importierte, von Hand gebuchte oder an eine Bankbewegung gehängte erst recht nicht."""
@@ -279,6 +333,20 @@ def test_the_write_lock_is_held_from_the_check_to_the_commit(world, monkeypatch,
         return original(self, *args, **kwargs)
     monkeypatch.setattr(type(world.db), step, watching)
     assert world.db.set_invoice_status(invoice_id, status).ok is True
+    assert seen == [True]
+
+
+def test_the_write_lock_is_held_from_the_check_to_the_commit_when_cancelling_by_hand(world, monkeypatch):
+    """Auch hier (Rechnung ohne positiven Betrag): Zwischen Prüfung des Betrags und Schreiben kommt niemand dazwischen."""
+    invoice_id = send_credit(world)
+    seen = []
+    original = type(world.db)._drop_receivable
+
+    def watching(self, *args, **kwargs):
+        seen.append(locked_for_others(world))
+        return original(self, *args, **kwargs)
+    monkeypatch.setattr(type(world.db), '_drop_receivable', watching)
+    assert world.db.set_invoice_status(invoice_id, 'cancelled').ok is True
     assert seen == [True]
 
 

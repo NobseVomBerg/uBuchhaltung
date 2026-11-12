@@ -1780,7 +1780,8 @@ def handle_update_invoice_status(post_body: bytes):
     Der Wechsel läuft in ``Database.set_invoice_status`` in einer Transaktion: Status, Forderungsbuchung
     (beim Versenden und Reaktivieren gebucht, beim Zurückholen entfernt) und beim
     Zurückholen das Ablegen der versendeten Dokumente in „Fassungen“ gelingen gemeinsam oder gar nicht.
-    Auf „storniert“ setzt diese Route nie (409): Das ist ``/invoice/cancel`` (``handle_invoice_cancel``).
+    Auf „storniert“ setzt diese Route nur eine Rechnung ohne positiven Betrag (Gutschrift, 0-€-Rechnung); jede andere
+    wird über ``/invoice/cancel`` (``handle_invoice_cancel``) storniert, hier 409.
     Hier folgt danach nur das Erzeugen des Dokuments beim Versenden (Entwurf/abgeschlossen → versendet,
     oder eine stornierte Rechnung ohne Datei). Zwischen versendet und überfällig wird nichts gebucht
     und nichts erzeugt.

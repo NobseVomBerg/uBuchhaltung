@@ -7,8 +7,9 @@ Eine versendete Rechnung wird über „Stornieren“ storniert: Es entsteht ein 
 Rechnungskreis (Jahr des Stornodatums), negativen Beträgen, ``InvoiceKind = 'storno'`` und ``CancelsInvoiceId``; die
 Rechnung wird „storniert“, und – hat die App ihre Forderung gebucht – die Gegenbuchung hebt die Forderung auf. Die
 Forderung der Ursprungsrechnung wird nie gelöscht. Zahlungen bleiben an der stornierten Rechnung; der Stornorechnung
-lässt sich keine Zahlung zuordnen, und sie ist ganz gesperrt. Die Dokumente stehen in
-``test_invoice_storno_documents.py``.
+lässt sich keine Zahlung zuordnen, und sie ist ganz gesperrt. Das Stornodatum liegt nie in der Zukunft. Eine Rechnung
+ohne positiven Betrag (Gutschrift, 0-€-Rechnung) bekommt keine Stornorechnung, sondern wird über den Status storniert.
+Die Dokumente stehen in ``test_invoice_storno_documents.py``.
 
 Alle Namen, Adressen und Nummern sind erfundene Testwerte.
 """
@@ -24,19 +25,21 @@ import pytest
 
 import server.handlers as handlers
 import userctx
-from db.invoice_lock import (CHANGED_MESSAGE, HAS_STORNO_MESSAGE, InvoiceLocked, STORNO_LABEL,
-                             STORNO_LOCKED_MESSAGE, STORNO_STATUS_MESSAGE, allowed_targets)
+from db import invoice_storno
+from db.invoice_lock import (CANCEL_VIA_STORNO_MESSAGE, CHANGED_MESSAGE, HAS_STORNO_MESSAGE, InvoiceLocked,
+                             STORNO_LABEL, STORNO_LOCKED_MESSAGE, STORNO_STATUS_MESSAGE, allowed_targets)
 from db.invoice_payments import PAYMENT_MARK, STORNO_PAYMENT_MESSAGE
-from db.invoice_storno import (NO_COUNTER_BOOKING_HINT, STORNO_DATE_BEFORE_MESSAGE, STORNO_DATE_MESSAGE,
-                               STORNO_FAILED_MESSAGE, STORNO_PAYMENT_TEXT, Storno)
+from db.invoice_storno import (NO_COUNTER_BOOKING_HINT, NO_POSITIVE_AMOUNT_MESSAGE, STORNO_DATE_BEFORE_MESSAGE,
+                               STORNO_DATE_FUTURE_MESSAGE, STORNO_DATE_MESSAGE, STORNO_FAILED_MESSAGE,
+                               STORNO_PAYMENT_TEXT, Storno)
 from db.invoices import InvoiceNotDeletable
 from server.pages import Footer, PageReminders
 from server.pages_invoice import PageInvoice, STORNO_COPY_MESSAGE, cancel_question
 from tests.document_helpers import post_json, state
 from tests.dom_helpers import Dom, app_msg_arguments
 from tests.http_client import FOREIGN_ORIGIN, get
-from tests.invoice_world import (build_world, columns, force_status, make_invoice, make_payload, protocol,
-                                 query_rows, run_sql, save, save_raw, set_invoice_status, snapshot)
+from tests.invoice_world import (add_payment, build_world, columns, force_status, make_invoice, make_payload,
+                                 protocol, query_rows, run_sql, save, save_raw, set_invoice_status, snapshot)
 
 USER = 'anna'
 RANGE = ('2026-01-01', '2027-12-31')
@@ -80,6 +83,15 @@ def cancel(w, invoice_id, day='2026-07-01'):
     storno = w.db.cancel_invoice(invoice_id, day, USER)
     assert storno.ok is True, storno.message
     return storno
+
+
+def at(monkeypatch, day):
+    """Den Tag, den der Server für „heute“ hält (``db.invoice_storno._today``), auf ``day`` (JJJJ-MM-TT) stellen."""
+    monkeypatch.setattr(invoice_storno, '_today', lambda: datetime.date.fromisoformat(day))
+
+
+def tomorrow():
+    return (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
 
 
 def bookings_of(db, number):
@@ -202,7 +214,8 @@ def test_every_locked_status_can_be_cancelled(world, status):
     assert columns(world.db, storno.storno_id)['Status'] == 'sent'
 
 
-def test_the_number_comes_from_the_circle_of_the_year_of_the_storno_date(world):
+def test_the_number_comes_from_the_circle_of_the_year_of_the_storno_date(world, monkeypatch):
+    at(monkeypatch, '2027-01-04')                                        # heute ist der 4.1.2027: Storno im Folgejahr
     db = world.db
     invoice_id = sent(world, invoiceDate='2026-12-28', deliveryDate='2026-12-28')
     assert db.fetch_number_ranges('invoice')[0][2] == 2026 and len(db.fetch_number_ranges('invoice')) == 1
@@ -396,16 +409,62 @@ def test_an_unknown_status_is_refused_not_cancelled(world):
 
 
 @pytest.mark.parametrize('gross', [0, -1190000])
-def test_an_invoice_without_a_positive_amount_is_refused(world, gross):
+def test_an_invoice_without_a_positive_amount_is_refused_with_the_way_through_the_status(world, gross):
     invoice_id = sent(world)
     run_sql(world.db, 'UPDATE Invoices SET SumGross = ? WHERE ID = ?', gross, invoice_id)
-    refused(world, invoice_id, message='Eine Rechnung ohne positiven Betrag lässt sich nicht stornieren.')
+    refused(world, invoice_id, message=NO_POSITIVE_AMOUNT_MESSAGE)
+    assert NO_POSITIVE_AMOUNT_MESSAGE == ('Eine Rechnung ohne positiven Betrag bekommt keine Stornorechnung – sie lässt '
+                                          'sich über den Status auf „Storniert“ setzen.')
 
 
 def test_a_storno_date_before_the_invoice_date_is_refused(world):
     invoice_id = sent(world)                                                  # Rechnungsdatum 2026-06-07
     refused(world, invoice_id, day='2026-06-06', code=400, message=STORNO_DATE_BEFORE_MESSAGE)
     assert cancel(world, invoice_id, '2026-06-07').ok                         # derselbe Tag geht
+
+
+def test_a_storno_date_in_the_future_is_refused_and_creates_nothing(world):
+    """Ein Tippfehler (2062) legte einen Nummernkreis 2062 an und war nicht umkehrbar: Das Stornodatum liegt nie nach
+    dem heutigen Tag des Servers (400, nichts wird geschrieben – kein Beleg, kein Zähler, kein Kreis)."""
+    db = world.db
+    invoice_id = sent(world)
+    circles = db.fetch_number_ranges('invoice')
+    for day in (tomorrow(), '2062-07-01', '2200-12-31'):
+        refused(world, invoice_id, day=day, code=400, message=STORNO_DATE_FUTURE_MESSAGE)
+    assert STORNO_DATE_FUTURE_MESSAGE == 'Das Stornodatum darf nicht in der Zukunft liegen.'
+    assert db.fetch_number_ranges('invoice') == circles and [r[2] for r in circles] == [2026]     # kein Kreis 2062
+    assert query_rows(db, "SELECT * FROM Invoices WHERE InvoiceKind = 'storno'") == []
+    assert columns(db, invoice_id)['Status'] == 'sent'
+    assert cancel(world, invoice_id, datetime.date.today().isoformat()).storno_number == '26R001'      # heute geht
+
+
+def test_the_storno_date_may_be_today_but_not_a_day_later(world, monkeypatch):
+    invoice_id = sent(world)
+    at(monkeypatch, '2026-07-01')
+    refused(world, invoice_id, day='2026-07-02', code=400, message=STORNO_DATE_FUTURE_MESSAGE)
+    assert cancel(world, invoice_id, '2026-07-01').ok
+
+
+def test_a_caller_may_name_the_day_that_counts_as_today(world, monkeypatch):
+    """Die Demodaten laufen zu einem Szenariodatum (``DemoScenario(today=…)``) und geben es als ``today`` an: Die Grenze
+    „nicht in der Zukunft“ misst dann daran, nicht am Tag des Servers – in beide Richtungen."""
+    at(monkeypatch, '2026-07-01')                                             # der Tag des Servers
+    invoice_id = sent(world)
+    refused(world, invoice_id, day='2026-07-05', code=400, message=STORNO_DATE_FUTURE_MESSAGE)
+    before = tables(world.db)
+    early = world.db.cancel_invoice(invoice_id, '2026-07-01', USER, today=datetime.date(2026, 6, 30))
+    assert (early.ok, early.code, early.message) == (False, 400, STORNO_DATE_FUTURE_MESSAGE)
+    assert tables(world.db) == before
+    later = world.db.cancel_invoice(invoice_id, '2026-07-05', USER, today=datetime.date(2026, 7, 5))
+    assert later.ok is True and columns(world.db, later.storno_id)['InvoiceDate'] == '2026-07-05'
+
+
+def test_the_route_answers_a_future_storno_date_with_400(world):
+    invoice_id = sent(world)
+    before = tables(world.db)
+    code, text = handlers.handle_invoice_cancel(json.dumps({'invoiceId': invoice_id, 'date': '2062-07-01'}).encode())
+    assert (code, json.loads(text)) == (400, {'success': False, 'error': STORNO_DATE_FUTURE_MESSAGE})
+    assert tables(world.db) == before
 
 
 @pytest.mark.parametrize('day', [None, '', ' ', '2026-7-1', '01.07.2026', '2026-02-30', ' 2026-07-01', '2026-07-01 ',
@@ -490,6 +549,34 @@ def test_the_write_lock_is_held_from_the_check_to_the_commit(world, monkeypatch)
     monkeypatch.setattr(type(world.db), '_book_receivable', watching)
     assert world.db.cancel_invoice(invoice_id, '2026-07-01').ok is True
     assert seen == [True]
+
+
+@pytest.mark.parametrize('table, reference, label', [
+    ('Accounts', 'bank', 'Bankkonto'),
+    ('Contacts', 'cust', 'Kunde'),
+    ('Contacts', 'own', 'Eigene Firma'),
+])
+def test_a_dangling_reference_is_named_in_the_refusal(world, table, reference, label):
+    """Zeigt ein Verweis der Rechnung ins Leere (hier per SQL-Konsole gelöscht, die ohne Fremdschlüsselprüfung
+    arbeitet), nennt die Antwort ihn im Klartext statt nur „konnte nicht gespeichert werden“. Weiter wird nichts
+    geschrieben, die Nummer nicht verbraucht und nichts „repariert“ (der Verweis bleibt, wie er ist)."""
+    db = world.db
+    invoice_id = sent(world)
+    missing = getattr(world, reference)
+    run_sql(db, f'DELETE FROM {table} WHERE ID = ?', missing)
+    before, circles = tables(db), db.fetch_number_ranges('invoice')
+
+    storno = db.cancel_invoice(invoice_id, '2026-07-01', USER)
+
+    assert (storno.ok, storno.code) == (False, 409)
+    assert storno.message == ('Die Stornierung konnte nicht gespeichert werden: Verweis ins Leere – '
+                              f'{label} mit ID {missing} gibt es nicht (Tabelle {table})')
+    assert (storno.storno_id, storno.storno_number, storno.counter_booked) == (None, None, False)
+    assert tables(db) == before and db.fetch_number_ranges('invoice') == circles
+    column = {'bank': 'BankAccountId', 'cust': 'CustomerId', 'own': 'OwnCompanyId'}[reference]
+    assert columns(db, invoice_id)[column] == missing and columns(db, invoice_id)['Status'] == 'sent'
+    code, text = handlers.handle_invoice_cancel(json.dumps({'invoiceId': invoice_id, 'date': '2026-07-01'}).encode())
+    assert (code, json.loads(text)) == (409, {'success': False, 'error': storno.message})
 
 
 def test_two_cancellations_racing_make_one_credit_note(world):
@@ -705,11 +792,108 @@ def _status_options(html):
     return re.findall(r'value="(\w+)"', html.split('id="statusChangeSelect"')[1].split('</select>')[0])
 
 
-def test_the_status_select_of_the_pages_never_offers_cancelled(world, credit_note):
+def test_the_status_select_of_a_positive_invoice_never_offers_cancelled(world, credit_note):
     assert _status_options(PageInvoice(world.db, {}, credit_note[0])) == ['cancelled']      # bleibt storniert
     assert _status_options(PageInvoice(world.db, {}, credit_note[1])) == []                 # keine Auswahl
     open_invoice = sent(world, number='T-101')
     assert _status_options(PageInvoice(world.db, {}, open_invoice)) == ['sent', 'draft', 'finalized', 'overdue']
+
+
+# ── Rechnung ohne positiven Betrag: Gutschrift und 0-€-Rechnung ─────────────
+# Sie bekommt keine Stornorechnung (negiert wäre die Gutschrift eine Rechnung, bei 0 € ist nichts zu verrechnen) und
+# lässt sich wie bis 2.2.0 über den Status auf „storniert“ setzen: ohne Zahlung geht die Forderung der App mit, mit
+# Zahlung bleibt sie. Eine Rechnung mit positivem Betrag nimmt den Weg über „Stornieren“ (test_invoice_lock.py).
+
+CREDIT = [{'position': 1, 'quantity': 1, 'unit': 'C62', 'description': 'Gutschrift', 'unitPrice': -100.0,
+           'taxRate': 19}]                                                  # −100,00 netto, −119,00 brutto
+FREE = [{'position': 1, 'quantity': 1, 'unit': 'C62', 'description': 'Kulanz', 'unitPrice': 0.0, 'taxRate': 19}]
+NO_POSITIVE = [pytest.param(CREDIT, -1190000, id='Gutschrift'), pytest.param(FREE, 0, id='0-Euro-Rechnung')]
+
+
+@pytest.mark.parametrize('items, gross', NO_POSITIVE)
+def test_such_an_invoice_is_cancelled_through_the_status_and_gets_no_credit_note(world, items, gross):
+    db = world.db
+    invoice_id = sent(world, number='G-1', items=items)
+    assert columns(db, invoice_id)['SumGross'] == gross
+    circles = db.fetch_number_ranges('invoice')
+
+    refused(world, invoice_id, message=NO_POSITIVE_AMOUNT_MESSAGE)           # „Stornieren“ lehnt ab und nennt den Weg
+    code, answer = set_invoice_status(invoice_id, 'cancelled')
+
+    assert (code, answer) == (200, {'success': True, 'invoice_id': invoice_id})
+    assert columns(db, invoice_id)['Status'] == 'cancelled'
+    assert db.find_storno_invoice(invoice_id) is None
+    assert query_rows(db, "SELECT * FROM Invoices WHERE InvoiceKind = 'storno'") == []
+    assert db.fetch_number_ranges('invoice') == circles                      # keine Nummer verbraucht
+    assert [(r['OldValue'], r['NewValue']) for r in protocol(db, invoice_id, 'status')][-1] == ('sent', 'cancelled')
+
+
+@pytest.mark.parametrize('status', ['sent', 'overdue', 'partial_payment', 'partial', 'paid'])
+def test_every_locked_status_of_such_an_invoice_can_be_cancelled_through_the_status(world, status):
+    invoice_id = sent(world, number='G-1', items=CREDIT)
+    force_status(world.db, invoice_id, status)
+    change = world.db.set_invoice_status(invoice_id, 'cancelled', USER)
+    assert (change.ok, change.kind, change.old) == (True, 'cancel', 'partial_payment' if status == 'partial' else status)
+    assert columns(world.db, invoice_id)['Status'] == 'cancelled'
+
+
+def test_cancelling_such_an_invoice_takes_the_receivable_of_the_app_along_unless_a_payment_hangs_on_it(world):
+    db = world.db
+    lone, paid = sent(world, number='G-1', items=CREDIT), sent(world, number='G-2', items=CREDIT)
+    add_payment(world, paid, -119.0)                                         # wie der WISO-Import sie zuordnet
+    assert db.get_receivable_booking(lone) is not None and db.get_receivable_booking(paid) is not None
+    receivable = db.get_receivable_booking(paid)
+
+    assert set_invoice_status(lone, 'cancelled')[0] == 200
+    assert set_invoice_status(paid, 'cancelled')[0] == 200
+
+    assert db.get_receivable_booking(lone) is None                           # ohne Zahlung geht die Forderung
+    assert db.get_receivable_booking(paid) == receivable                     # mit Zahlung bleibt sie stehen
+    assert [columns(db, i)['Status'] for i in (lone, paid)] == ['cancelled', 'cancelled']
+
+
+def test_the_status_still_refuses_to_cancel_a_positive_invoice_and_names_the_way(world):
+    invoice_id = sent(world)
+    before = snapshot(world.db)
+    code, answer = set_invoice_status(invoice_id, 'cancelled')
+    assert (code, answer['success'], answer['error']) == (409, False, CANCEL_VIA_STORNO_MESSAGE)
+    assert snapshot(world.db) == before
+
+
+def test_the_amount_is_read_from_the_stored_invoice_in_the_transaction(world):
+    """Entschieden wird am gespeicherten Betrag, nicht an dem, was die Maske anzeigt: Ändert sich die Rechnung zwischen
+    Anzeige und Klick (SQL-Konsole), gilt der Stand von jetzt."""
+    invoice_id = sent(world, number='G-1', items=CREDIT)
+    page = PageInvoice(world.db, {}, invoice_id)
+    assert 'cancelled' in _status_options(page)
+    run_sql(world.db, 'UPDATE Invoices SET SumGross = 1190000 WHERE ID = ?', invoice_id)
+    before = snapshot(world.db)
+    code, answer = set_invoice_status(invoice_id, 'cancelled')
+    assert (code, answer['error']) == (409, CANCEL_VIA_STORNO_MESSAGE) and snapshot(world.db) == before
+
+
+def test_a_cancelled_invoice_without_a_positive_amount_can_be_revived(world):
+    """Wiederbeleben wie beim Altbestand: Die Forderung wird neu gebucht, die Rechnung ist wieder versendet."""
+    db = world.db
+    invoice_id = sent(world, number='G-1', items=CREDIT)
+    set_invoice_status(invoice_id, 'cancelled')
+    assert db.get_receivable_booking(invoice_id) is None
+    assert allowed_targets('cancelled', 0, False, -1190000) == ['sent', 'overdue']
+    assert set_invoice_status(invoice_id, 'sent')[0] == 200
+    assert columns(db, invoice_id)['Status'] == 'sent' and db.get_receivable_booking(invoice_id) is not None
+
+
+@pytest.mark.parametrize('items, gross', NO_POSITIVE)
+def test_the_page_of_such_an_invoice_offers_the_status_and_no_cancel_button(world, items, gross):
+    invoice_id = sent(world, number='G-1', items=items)
+    html = PageInvoice(world.db, {}, invoice_id)
+    assert 'cancelInvoice(' not in html and 'Stornieren &hellip;' not in html
+    assert _status_options(html) == ['sent', 'draft', 'finalized', 'overdue', 'cancelled']
+    positive = sent(world, number='T-101')
+    html = PageInvoice(world.db, {}, positive)
+    assert f'onclick="cancelInvoice({positive})"' in html and 'cancelled' not in _status_options(html)
+    set_invoice_status(invoice_id, 'cancelled')
+    assert _status_options(PageInvoice(world.db, {}, invoice_id)) == ['cancelled', 'sent', 'overdue']
 
 
 # ── Seiten und Liste ─────────────────────────────────────────────────────────
@@ -753,6 +937,7 @@ def test_only_a_sent_invoice_offers_cancelling_and_the_dialog_has_a_date_field(w
     assert "fetch('/invoice/cancel'" in script and 'invoiceId: invId, date: day' in script
     assert json.dumps(cancel_question('T-100'), ensure_ascii=False) in script        # die Rückfrage mit der Nummer
     assert '"min": "2026-06-07"' in script and '"label": "Stornodatum:"' in script        # nicht vor dem Rechnungsdatum
+    assert f'"max": "{datetime.date.today().isoformat()}"' in script                      # und nicht nach heute
     assert cancel_question('T-100') == ('Rechnung T-100 stornieren? Es entsteht eine Stornorechnung mit eigener '
                                         'Nummer, die dem Kunden zugehen muss. Das lässt sich nicht rückgängig machen.')
     assert f'"value": "{max(datetime.date.today().isoformat(), "2026-06-07")}"' in script       # vorbelegt mit heute
@@ -878,8 +1063,8 @@ def test_the_cancel_script_asks_posts_and_follows_the_answer(world, tmp_path, an
                 {'day': '2026-07-02', 'answer': answer, 'fail': fail})
     today = datetime.date.today().isoformat()
     assert log['asked'] == [{'text': cancel_question('T-100'), 'field': {
-        'label': 'Stornodatum:', 'min': '2026-06-07', 'value': max(today, '2026-06-07'),
-        'error': 'Bitte ein Stornodatum angeben, das nicht vor dem Rechnungsdatum liegt.'}}]
+        'label': 'Stornodatum:', 'min': '2026-06-07', 'max': today, 'value': max(today, '2026-06-07'),
+        'error': 'Bitte ein Stornodatum angeben, das weder vor dem Rechnungsdatum noch in der Zukunft liegt.'}}]
     (request,) = log['requests']
     assert request['url'] == '/invoice/cancel' and request['init']['method'] == 'POST'
     assert json.loads(request['init']['body']) == {'invoiceId': 7, 'date': '2026-07-02'}
@@ -891,7 +1076,7 @@ APP_CONFIRM_RUNNER = r"""
 const fs = require('fs'), vm = require('vm');
 const scenario = JSON.parse(process.argv[3]);
 const log = {ok: []};
-const element = () => ({style: {}, hidden: true, value: '', min: '', textContent: ''});
+const element = () => ({style: {}, hidden: true, value: '', min: '', max: '', textContent: ''});
 const elements = {};
 ['app_confirm_text', 'app_confirm_date_row', 'app_confirm_date', 'app_confirm_date_label', 'app_confirm_date_error',
  'app_confirm_ok', 'app_confirm'].forEach(id => { elements[id] = element(); });
@@ -900,7 +1085,8 @@ vm.runInNewContext(fs.readFileSync(process.argv[2], 'utf8'), sandbox);
 const onOk = (value) => log.ok.push(value === undefined ? null : value);
 vm.runInContext('appConfirm', sandbox)('Frage', onOk, scenario.field);
 log.row = {hidden: elements.app_confirm_date_row.hidden, label: elements.app_confirm_date_label.textContent,
-           min: elements.app_confirm_date.min, value: elements.app_confirm_date.value};
+           min: elements.app_confirm_date.min, max: elements.app_confirm_date.max,
+           value: elements.app_confirm_date.value};
 elements.app_confirm_date.value = scenario.entered;
 elements.app_confirm_ok.onclick();
 log.display = elements.app_confirm.style.display;
@@ -909,18 +1095,23 @@ console.log(JSON.stringify(log));
 """
 
 
+DATE_FIELD = {'label': 'Stornodatum:', 'min': '2026-06-07', 'max': '2026-11-12', 'value': '2026-07-01',
+              'error': 'FEHLER'}
+
+
 @NO_NODE
 @pytest.mark.parametrize('field, entered, ok, display, problem', [
     (None, '', [None], 'none', ''),                                           # ohne Datumsfeld wie bisher
-    ({'label': 'Stornodatum:', 'min': '2026-06-07', 'value': '2026-07-01', 'error': 'FEHLER'}, '2026-07-02',
-     ['2026-07-02'], 'none', ''),
-    ({'label': 'Stornodatum:', 'min': '2026-06-07', 'value': '2026-07-01', 'error': 'FEHLER'}, '2026-06-07',
-     ['2026-06-07'], 'none', ''),                                             # der Tag des Rechnungsdatums geht
-    ({'label': 'Stornodatum:', 'min': '2026-06-07', 'value': '2026-07-01', 'error': 'FEHLER'}, '2026-06-06', [],
-     'flex', 'FEHLER'),                                                       # zu früh: der Dialog bleibt offen
-    ({'label': 'Stornodatum:', 'min': '2026-06-07', 'value': '2026-07-01', 'error': 'FEHLER'}, '', [], 'flex',
-     'FEHLER'),
-], ids=['ohne-Datum', 'gueltig', 'am-Rechnungstag', 'zu-frueh', 'leer'])
+    (DATE_FIELD, '2026-07-02', ['2026-07-02'], 'none', ''),
+    (DATE_FIELD, '2026-06-07', ['2026-06-07'], 'none', ''),                   # der Tag des Rechnungsdatums geht
+    (DATE_FIELD, '2026-11-12', ['2026-11-12'], 'none', ''),                   # und heute
+    (DATE_FIELD, '2026-06-06', [], 'flex', 'FEHLER'),                         # zu früh: der Dialog bleibt offen
+    (DATE_FIELD, '2026-11-13', [], 'flex', 'FEHLER'),                         # in der Zukunft: ebenso
+    (DATE_FIELD, '2062-07-01', [], 'flex', 'FEHLER'),
+    (DATE_FIELD, '', [], 'flex', 'FEHLER'),
+    ({**DATE_FIELD, 'max': None}, '2062-07-01', ['2062-07-01'], 'none', ''),  # ohne max keine Obergrenze (wie min)
+], ids=['ohne-Datum', 'gueltig', 'am-Rechnungstag', 'heute', 'zu-frueh', 'morgen', 'Tippfehler-2062', 'leer',
+        'ohne-max'])
 def test_the_confirm_dialog_checks_the_date_before_it_closes(tmp_path, field, entered, ok, display, problem):
     footer = Footer().split('<script>')[1].split('</script>')[0]
     source = footer[footer.index('function appConfirm('):footer.index('function appConfirmHref(')]
@@ -928,7 +1119,8 @@ def test_the_confirm_dialog_checks_the_date_before_it_closes(tmp_path, field, en
     assert log['ok'] == ok and log['problem'] == problem
     assert log['display'] == display
     if field:
-        assert log['row'] == {'hidden': False, 'label': 'Stornodatum:', 'min': '2026-06-07', 'value': '2026-07-01'}
+        assert log['row'] == {'hidden': False, 'label': 'Stornodatum:', 'min': '2026-06-07',
+                              'max': field['max'] or '', 'value': '2026-07-01'}
     else:
         assert log['row']['hidden'] is True
 
@@ -970,6 +1162,7 @@ def test_over_http_a_refusal_carries_its_status_and_text_and_writes_nothing(serv
     before = tables(books.db)
     for payload, status, error in (
             ({'invoiceId': invoice_id, 'date': '2026-06-01'}, 400, STORNO_DATE_BEFORE_MESSAGE),
+            ({'invoiceId': invoice_id, 'date': '2062-07-01'}, 400, STORNO_DATE_FUTURE_MESSAGE),
             ({'invoiceId': invoice_id, 'date': 'morgen'}, 400, STORNO_DATE_MESSAGE),
             ({'invoiceId': invoice_id}, 400, STORNO_DATE_MESSAGE),
             ({'invoiceId': 99999, 'date': '2026-07-01'}, 404, 'Rechnung nicht gefunden.')):
