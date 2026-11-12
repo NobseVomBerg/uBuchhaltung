@@ -515,7 +515,9 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
   eine `SourceGroup` tragen (WISO liefert seine Sätze selbst, z. B. Barzahlungen ohne Bankbewegung),
   lösen weder „Zuordnung ohne Ausgleichssatz“ noch „Zuordnung ≠ Umbuchung“ aus. Die Abfragen gehen von
   den Zuordnungen aus bzw. fassen je Rechnung vorab zusammen: Der Aufwand wächst linear mit dem Bestand
-  (4000 Bewegungen, 4000 Forderungen, 1000 Zuordnungen: unter einer Sekunde). Die Liste steht auf der
+  (4000 Bewegungen, 4000 Forderungen, 1000 Zuordnungen: unter einer Sekunde). Die Forderungen der App für die beiden
+  Storno-Kategorien liest die Liste einmal für alle Paare und Alt-Stornos (`_app_receivable_amounts`), nicht je
+  Rechnung nachgeschlagen – die Zahl der Anweisungen hängt nicht von der Zahl der Paare ab. Die Liste steht auf der
   Seite *Verschiedenes* und läuft **nur auf Klick** („Zahlungszuordnungen prüfen“, `GET
   /miscellaneous?check_payments=1`), nicht bei jedem Laden der Seite; der Hinweis auf der Rechnungsseite
   prüft nur diese eine Rechnung.
@@ -578,10 +580,16 @@ Dokument den Hinweis „Ersetzt die stornierte Rechnung … (Stornorechnung …)
 stornierten Rechnung in derselben Transaktion auf sie über (`_move_replaced_payments`): Je Zuordnung wird sie samt Sätzen
 entfernt, die neue Rechnung bekommt, was sie noch braucht (eigene Sätze mit dem Datum der Bankbewegung, ihrem
 Steuersatz und Erlöskonto; die Steuer eines Teils anteilig, der schließende Teil bekommt den Rest), ein Rest wird an
-der stornierten Rechnung wieder zugeordnet. Was sich nicht eindeutig neu schreiben lässt (Import, überbuchte
-Bewegung, von Hand geänderte Sätze), bleibt dort; eine Sammelzahlung zieht nur mit dem Anteil der stornierten Rechnung um. Gleicher Kunde und gleiche Währung sind Voraussetzung, ebenso ein
-hinterlegtes Erlöskonto für den Steuersatz der neuen Rechnung. Ein Hinweis in der Antwort nennt, was geschah; scheitert
-eine Zuordnung, ist der Versand abgelehnt und nichts geändert.
+der stornierten Rechnung wieder zugeordnet. Umgezogen wird nur, was die App genau so geschrieben hat: Die Sätze einer
+Zuordnung müssen die sein, die die Zuordnung dafür schreibt (Bestand, Bankkonto und Konten in ihrer Rolle, Betrag,
+Datum, Steuerdatum, Steuersatz, Steuerbetrag – anteilig oder als schließender Teil der Rest –, keine Kategorie, kein Beleg
+und kein anderer Verweis an den Sätzen, kein verwaister markierter Satz unter der Bewegung). Was sich so nicht eindeutig neu
+schreiben lässt (Import, überbuchte Bewegung, geänderte oder ergänzte Sätze), bleibt an der stornierten Rechnung; eine
+Sammelzahlung zieht nur mit dem Anteil der stornierten Rechnung um. Gleicher Kunde und gleiche Währung sind
+Voraussetzung, ebenso ein hinterlegtes Erlöskonto für den Steuersatz der neuen Rechnung. Ein Hinweis in der Antwort nennt,
+was geschah und bei dem, was bleibt, den Grund (je Grund einmal). Jede Zuordnung läuft in einem Savepoint: Lässt sie sich
+nicht neu buchen, bleibt sie unverändert liegen, und der Versand gelingt; nur ein Datenbankfehler mitten im Umzug lehnt
+ihn ab (nichts geändert).
 
 ---
 
