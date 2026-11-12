@@ -29,7 +29,8 @@ Kontext bei moderatem Token-Einsatz. NIE alle Module gleichzeitig laden.
 | `assets.py` | Anlagen, Kategorien, AfA-Plan/-Buchung |
 | `contacts.py` | Kontakte (normalisiert), Adressen, Personen/Firmen |
 | `invoices.py` | Rechnungen, Positionen, Zahlungen, überfällig/fällig |
-| `numbering.py` | Nummernkreise (Rechnungsnummern etc.) |
+| `invoice_lock.py` | Sperre versendeter Rechnungen (`update_invoice_fields`, `check_changes`) und Statusübergänge (`set_invoice_status`, `TRANSITIONS`) |
+| `numbering.py` | Nummernkreise (Rechnungsnummern etc.; `allocate_invoice_number`, `release_invoice_number`) |
 | `articles.py` | Artikel-Stammdaten |
 | `receipts.py` / `worktimes.py` | Belege bzw. Arbeitszeiten |
 | `reporting.py` | Dashboard-Kennzahlen + EÜR |

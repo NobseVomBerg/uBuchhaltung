@@ -5,8 +5,19 @@
 import sqlite3
 import os
 import json
+import re
+import datetime
+from collections import namedtuple
 from decimal import Decimal
 from money import to_minor, from_minor
+
+DEFAULT_NUMBER_FORMAT = '{yy}{l}{nnn}{s}'
+_NUMBER_TOKENS = re.compile(r'(\{yyyy\}|\{yy\}|\{l\}|\{nnn\}|\{nn\}|\{n\}|\{s\})')
+# Mehr freie Nummern überspringt kein Kreis: Wer so viele belegte Nummern vor sich hat (oder eine
+# Formatvorlage ohne Zähler), bekommt einen Fehler statt einer Endlosschleife
+_MAX_SKIPPED_NUMBERS = 10000
+
+NumberRange = namedtuple('NumberRange', 'id year letter suffix current fmt')
 
 
 class NumberRangeMixin:
@@ -156,9 +167,11 @@ class NumberRangeMixin:
 
         Für Vorschläge in Formularen: der Nutzer soll die Nummer sehen, ohne
         dass jeder Klick eine verbrennt. Verbraucht wird sie erst beim
-        Speichern (consume_number).
+        Speichern (Rechnungen: ``allocate_invoice_number``, sonst consume_number).
 
-        Genommen wird der Kreis des angefragten Jahres, sonst der jüngste.
+        Genommen wird der Kreis des angefragten Jahres, sonst der jüngste. Bei Rechnungen ist der
+        Vorschlag die Nummer, die ``allocate_invoice_number`` vergäbe: eine schon belegte Nummer
+        wird übersprungen.
         Returns: (formatierte Nummer, range_id) oder (None, None).
         """
         ranges = self.fetch_number_ranges(range_type)
@@ -170,10 +183,150 @@ class NumberRangeMixin:
         chosen = chosen or ranges[0]
         # Spalten: 0=ID, 2=Year, 3=Letter, 4=Prefix, 5=CurrentNumber, 7=NumberFormat
         fmt = chosen[7] if len(chosen) > 7 and chosen[7] else None
+        if range_type == 'invoice':
+            rng = NumberRange(chosen[0], chosen[2], chosen[3] or '', chosen[4] or '',
+                              chosen[5] or 0, fmt or DEFAULT_NUMBER_FORMAT)
+            conn = self._get_connection()
+            try:
+                return self._next_free_number(conn, rng)[0], chosen[0]
+            finally:
+                conn.close()
         number = self._apply_number_format(
-            fmt or '{yy}{l}{nnn}{s}', chosen[2], chosen[3] or '',
+            fmt or DEFAULT_NUMBER_FORMAT, chosen[2], chosen[3] or '',
             (chosen[5] or 0) + 1, chosen[4] or '')
         return number, chosen[0]
+
+    # ── Rechnungsnummern: vergeben beim ersten Speichern ─────────────────────
+    # Der Zähler gehört zur Transaktion des Aufrufers: scheitert das Speichern, ist auch die Nummer
+    # nicht verbraucht. Löscht der Nutzer einen Entwurf, gibt ``release_invoice_number`` sie zurück.
+
+    @staticmethod
+    def _invoice_ranges(conn):
+        """Die Nummernkreise der Rechnungen, jüngstes Jahr zuerst (wie ``fetch_number_ranges``)."""
+        rows = conn.execute(
+            "SELECT ID, Year, Letter, Prefix, CurrentNumber, NumberFormat FROM NumberRanges "
+            "WHERE Type = 'invoice' ORDER BY Year DESC, Letter, Prefix").fetchall()
+        return [NumberRange(r[0], r[1], r[2] or '', r[3] or '', r[4] or 0,
+                            r[5] or DEFAULT_NUMBER_FORMAT) for r in rows]
+
+    @staticmethod
+    def _range_for_year(ranges, year):
+        """Der Kreis des Jahres, sonst der jüngste, ohne Kreise ``None``."""
+        return next((r for r in ranges if r.year == year), None) or (ranges[0] if ranges else None)
+
+    @staticmethod
+    def _year_of(invoice_date):
+        text = str(invoice_date or '')[:4]
+        return int(text) if text.isdigit() else datetime.date.today().year
+
+    def _format_range_number(self, rng, number):
+        return self._apply_number_format(rng.fmt, rng.year, rng.letter, number, rng.suffix)
+
+    @staticmethod
+    def _invoice_number_taken(conn, number):
+        # Rechnungen und Angebote teilen sich die Tabelle und damit die eindeutige Nummer
+        return conn.execute('SELECT 1 FROM Invoices WHERE InvoiceNumber = ?', (number,)).fetchone() is not None
+
+    def _next_free_number(self, conn, rng):
+        """Die nächste Nummer des Kreises, die noch keine Rechnung und kein Angebot trägt, mit ihrer
+        laufenden Nummer – ohne den Zähler anzufassen."""
+        number = rng.current + 1
+        for _ in range(_MAX_SKIPPED_NUMBERS):
+            text = self._format_range_number(rng, number)
+            if not self._invoice_number_taken(conn, text):
+                return text, number
+            number += 1
+        raise ValueError('Im Nummernkreis ist keine freie Rechnungsnummer zu finden.')
+
+    def _number_in_range(self, rng, text):
+        """Die laufende Nummer, wenn ``text`` zur Formatvorlage des Kreises passt (Jahr, Buchstabe
+        und Zusatz wie im Kreis), sonst ``None``."""
+        parts, numeric = _NUMBER_TOKENS.split(rng.fmt), 0
+        pattern = ''
+        for part in parts:
+            if part == '{yyyy}':
+                pattern += re.escape(str(rng.year))
+            elif part == '{yy}':
+                pattern += re.escape(str(rng.year)[-2:])
+            elif part == '{l}':
+                pattern += re.escape(rng.letter.upper())
+            elif part == '{s}':
+                pattern += re.escape(rng.suffix)
+            elif part in ('{nnn}', '{nn}', '{n}'):
+                numeric += 1
+                pattern += {'{nnn}': r'(\d{3,})', '{nn}': r'(\d{2,})', '{n}': r'(\d+)'}[part]
+            else:
+                pattern += re.escape(part)
+        match = re.fullmatch(pattern, text) if numeric == 1 else None
+        return int(match.group(1)) if match else None
+
+    def _take_next_number(self, conn, rng):
+        """Den Zähler um eins weiterschieben (``UPDATE … RETURNING``: kein Lesen und Schreiben
+        dazwischen) und die Nummer liefern; eine schon belegte Nummer wird übersprungen."""
+        for _ in range(_MAX_SKIPPED_NUMBERS):
+            number = conn.execute(
+                'UPDATE NumberRanges SET CurrentNumber = COALESCE(CurrentNumber, 0) + 1 '
+                'WHERE ID = ? RETURNING CurrentNumber', (rng.id,)).fetchone()[0]
+            text = self._format_range_number(rng, number)
+            if not self._invoice_number_taken(conn, text):
+                return text
+        raise ValueError('Im Nummernkreis ist keine freie Rechnungsnummer zu finden.')
+
+    def allocate_invoice_number(self, conn, invoice_date, requested=None):
+        """Die Nummer einer neuen Rechnung vergeben – in der Transaktion von ``conn``.
+
+        Der Kreis ergibt sich aus dem Jahr von ``invoice_date`` (sonst der jüngste).
+
+        * ``requested`` fehlt, oder es ist der Vorschlag (``peek_next_number``): Der Zähler rückt um
+          eins vor, die Nummer wird nach der Formatvorlage des Kreises gebildet; eine schon belegte
+          Nummer wird übersprungen. Gibt es für das Jahr noch keinen Kreis, entsteht er (Buchstabe,
+          Zusatz und Vorlage des jüngsten Kreises, ohne einen: ``R``).
+        * ``requested`` ist eine eigene Nummer: Sie wird so übernommen. Passt sie zur Vorlage eines
+          Kreises, hebt sie dessen Zähler auf ihre laufende Nummer – nie nach unten.
+
+        Returns die Nummer. Ist sie belegt, scheitert erst das Einfügen der Rechnung (eindeutige
+        Nummer)."""
+        if not conn.in_transaction:
+            conn.execute('BEGIN IMMEDIATE')
+        requested = (requested or '').strip()
+        ranges = self._invoice_ranges(conn)
+        year = self._year_of(invoice_date)
+        rng = self._range_for_year(ranges, year)
+        if requested:
+            if rng is not None and requested == self._next_free_number(conn, rng)[0]:
+                return self._take_next_number(conn, rng)
+            for other in ranges:
+                number = self._number_in_range(other, requested)
+                if number is not None:
+                    conn.execute('UPDATE NumberRanges SET CurrentNumber = ? WHERE ID = ? '
+                                 'AND COALESCE(CurrentNumber, 0) < ?', (number, other.id, number))
+            return requested
+        if rng is None or rng.year != year:
+            base = ranges[0] if ranges else None
+            letter, suffix, fmt = ((base.letter, base.suffix, base.fmt) if base
+                                   else ('R', '', DEFAULT_NUMBER_FORMAT))
+            cursor = conn.execute(
+                "INSERT INTO NumberRanges (Type, Year, Letter, Prefix, CurrentNumber, Description, "
+                "NumberFormat) VALUES ('invoice', ?, ?, ?, 0, '', ?)", (year, letter, suffix, fmt))
+            rng = NumberRange(cursor.lastrowid, year, letter, suffix, 0, fmt)
+        return self._take_next_number(conn, rng)
+
+    def release_invoice_number(self, conn, number):
+        """Die Nummer eines gelöschten Entwurfs zurückgeben – in der Transaktion von ``conn``.
+
+        Der Zähler geht um eins zurück, aber nur, wenn er genau auf dieser Nummer steht: Wurde
+        danach schon eine höhere vergeben, bleibt die Lücke. Returns ``True``, wenn ein Zähler
+        zurückging."""
+        if not conn.in_transaction:
+            conn.execute('BEGIN IMMEDIATE')
+        released = False
+        for rng in self._invoice_ranges(conn):
+            running = self._number_in_range(rng, number or '')
+            if running is not None and running > 0:
+                released |= conn.execute(
+                    'UPDATE NumberRanges SET CurrentNumber = CurrentNumber - 1 '
+                    'WHERE ID = ? AND CurrentNumber = ?', (rng.id, running)).rowcount > 0
+        return released
 
     def consume_number(self, range_id, number):
         """Zähler nachziehen, wenn die gespeicherte Nummer der Vorschau entspricht.

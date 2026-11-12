@@ -272,10 +272,10 @@ def build_einvoice(db, invoice, items) -> EInvoice:
     line_total = sum(ln.net for ln in lines)
     tax_total = sum(t.amount for t in breakdown)
     grand = line_total + tax_total
-    stored_due = to_minor(col('amount_due') or 0)
-    prepaid = grand - stored_due if 0 < stored_due < grand else 0
+    # Das Dokument zeigt den Betrag der Rechnung, nie den Stand der Zahlungen: Ein Dokument ist die
+    # Rechnung, die der Kunde bekommen hat, nicht der offene Posten von heute (AmountDue).
     totals = Totals(line_total=line_total, tax_basis=line_total, tax_total=tax_total,
-                    grand_total=grand, prepaid=prepaid, payable=grand - prepaid)
+                    grand_total=grand, prepaid=0, payable=grand)
 
     for label, stored, derived in (('Netto', col('sum_net'), line_total),
                                    ('Steuer', col('tax_amount'), tax_total),

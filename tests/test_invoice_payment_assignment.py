@@ -23,6 +23,7 @@ from decimal import Decimal
 import pytest
 
 from db import Database
+from db.invoice_lock import status_group
 from db.invoice_payments import PAYMENT_MARK, next_payment_status, payment_blocker
 from db.matching import REVENUE_ACCOUNT_RANGE, receivable_condition
 from db.reporting import INCOME_ACCOUNT_RANGE
@@ -1168,7 +1169,7 @@ def test_partial_payment_whose_movement_is_deleted_stays_sent_and_frozen(db, acc
     db.delete_transaction(bank)
 
     assert _invoice_state(db, inv) == ('sent', 119)               # vorher: „abgeschlossen“
-    assert handlers._invoice_is_frozen(inv) is True               # eingefroren, nicht mehr änderbar
+    assert status_group(_invoice_state(db, inv)[0]) != 'editable'  # eingefroren, nicht mehr änderbar
     assert _balance(db, 10000) == 119 and _euer(db) == {}         # die Forderung steht offen
 
 

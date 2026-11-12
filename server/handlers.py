@@ -19,7 +19,9 @@ from .period import parse_iso_date, valid_period
 from .richtext import sanitize_richtext as _sanitize_richtext
 from db import Database
 from db.core import fk_explained, ForeignKeyError
-from db.invoices import InvoiceCol
+from db.invoices import InvoiceCol, InvoiceNotDeletable, QuoteNotConvertible
+from db.invoice_lock import (DocumentNotFound, EDITABLE_STATUSES, InvoiceLocked, STATUS_LABELS,
+                             status_group)
 from db.invoice_payments import RECEIVABLE_STATUSES
 from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
 from db.accounts import DEFAULT_CASH_ACCOUNT
@@ -1763,7 +1765,13 @@ def _json_id(data, key, missing=_REQUIRED):
 
 
 def handle_update_invoice_status(post_body: bytes):
-    """Update invoice status and increment number range if finalizing
+    """Status einer Rechnung setzen – nach der Übergangstabelle ``db.invoice_lock.TRANSITIONS``.
+
+    Der Wechsel selbst läuft in ``Database.set_invoice_status`` (eine Transaktion), hier folgt, was
+    die Art des Übergangs verlangt: Beim Versenden (Entwurf/abgeschlossen → versendet) wird die
+    Forderung gebucht und das Dokument erzeugt, beim Zurückholen und Stornieren die Forderung wieder
+    ausgerichtet, beim Reaktivieren einer stornierten Rechnung beides nachgezogen. Zwischen
+    versendet und überfällig wird nichts gebucht und nichts erzeugt.
 
     Returns tuple: (status_code, json_body)
     """
@@ -1775,85 +1783,39 @@ def handle_update_invoice_status(post_body: bytes):
 
     if not invoice_id or not new_status:
         return 400, '{"success": false, "error": "Fehlende Parameter"}'
-    
+
     db = Database()
-    
+
     # Validate status
-    valid_statuses = ['draft', 'finalized', 'sent', 'partial_payment', 'overdue', 'paid', 'cancelled']
-    if new_status not in valid_statuses:
+    if new_status not in STATUS_LABELS:
         return 400, '{"success": false, "error": "Ung\u00fcltiger Status"}'
-    
+
     # Nur Rechnungen: ein Angebot wird hier nie versendet (und bekommt keine Rechnungs-PDF)
-    invoice = db.get_document(invoice_id, 'invoice')
-    if not invoice:
+    if not db.get_document(invoice_id, 'invoice'):
         return 404, '{"success": false, "error": "Rechnung nicht gefunden"}'
-    
-    current_status = invoice[40] or 'draft'
-    
-    # If transitioning from draft to finalized, increment number range
-    if current_status == 'draft' and new_status == 'finalized':
-        invoice_number = invoice[1]  # InvoiceNumber
-        
-        # Parse invoice number to find matching range
-        # Format: YYLPnnn (e.g., 26R001)
-        if invoice_number and len(invoice_number) >= 3:
-            year_short = invoice_number[:2]
-            letter = invoice_number[2] if len(invoice_number) > 2 else ''
-            
-            # Find corresponding number range
-            try:
-                current_year = datetime.datetime.now().year
-                year_full = 2000 + int(year_short) if int(year_short) >= 0 else current_year
-                
-                ranges = db.fetch_number_ranges('invoice')
-                for r in ranges:
-                    if r[2] == year_full and r[3] == letter:
-                        # Increment this range
-                        new_number = (r[5] or 0) + 1
-                        db.update_number_range(
-                            range_id=r[0],
-                            year=r[2],
-                            letter=r[3],
-                            prefix=r[4] or '',
-                            current_number=new_number,
-                            description=r[6] or '',
-                            number_format=r[7] if len(r) > 7 else None
-                        )
-                        print(f"Incremented number range {r[0]} to {new_number}")
-                        break
-            except Exception as e:
-                print(f"Warning: Could not increment number range: {e}")
-                # Continue with status update even if increment fails
-    
-    # Validate: 'paid' requires at least one linked payment
-    if new_status == 'paid':
-        payments = db.get_invoice_payments(invoice_id)
-        if not payments:
-            return 400, '{"success": false, "error": "Bezahlt nur m\u00f6glich, wenn mindestens eine Zahlung verkn\u00fcpft ist."}'
-    
-    # Update status
-    db.update_invoice_status(invoice_id, new_status)
-    # AmountDue an die tatsächlichen Zahlungen angleichen – heilt verwaiste
-    # Zustände (z. B. "bezahlt" mit Rest 0, aber ohne Zahlungen; todo #2).
-    # Status bleibt die manuelle Wahl (adjust_status=False).
-    db.recalc_invoice_payment_state(invoice_id, adjust_status=False)
-    _sync_receivable_booking(db, invoice_id, new_status)
+
+    change = db.set_invoice_status(invoice_id, new_status)
+    if not change.ok:
+        return change.code, json.dumps({'success': False, 'error': change.message})
+    if change.kind in ('send', 'revive', 'reopen', 'cancel'):
+        _sync_receivable_booking(db, invoice_id, new_status)
     print(f"Invoice {invoice_id} status updated to: {new_status}")
 
     result = {'success': True, 'invoice_id': invoice_id}
-    warning = _ensure_sent_documents(db, invoice_id, current_status, new_status)
+    warning = _ensure_sent_documents(db, invoice_id, change.old, new_status)
     if warning:
         result['warning'] = warning
     return 200, json.dumps(result)
 
 
 def _ensure_sent_documents(db, invoice_id, current_status, new_status):
-    """Beim Wechsel auf „versendet“ das PDF (+ XML) erzeugen (todo #2).
+    """Beim Versenden das PDF (+ XML) erzeugen (todo #2).
 
-    Ab „versendet“ darf die Rechnung nicht mehr geändert werden – ab hier muss
-    also das Dokument vorliegen, das der Kunde bekommt. Beim Eintritt in den
-    Status wird es neu geschrieben; ist die Rechnung bereits versendet, bleibt
-    die vorhandene Datei unangetastet und wird nur nachgezogen, wenn sie fehlt.
+    Ab „versendet“ darf die Rechnung nicht mehr geändert werden – ab hier muss also das Dokument
+    vorliegen, das der Kunde bekommt. Beim Eintritt aus Entwurf/abgeschlossen wird es neu
+    geschrieben. Wird eine stornierte Rechnung wieder versendet, bleibt eine vorhandene Datei
+    unangetastet und wird nur erzeugt, wenn sie fehlt. Alle übrigen Wechsel (versendet ↔ überfällig,
+    derselbe Status noch einmal, Teilzahlung/bezahlt → versendet) erzeugen nichts.
 
     Returns:
         str | None: Warntext, falls das Dokument nicht erzeugt werden konnte.
@@ -1861,14 +1823,13 @@ def _ensure_sent_documents(db, invoice_id, current_status, new_status):
     if new_status != 'sent':
         return None
 
-    from export.invoice_files import generate_invoice_documents, stored_invoice_document
+    from export.invoice_files import generate_invoice_documents, stored_invoice_path
 
-    if current_status == 'sent':
-        existing, _, _ = stored_invoice_document(db, invoice_id, 'pdf')
-        if existing:
-            return None
+    entering = current_status in EDITABLE_STATUSES
+    if not entering and (current_status != 'cancelled' or stored_invoice_path(db, invoice_id, 'pdf')[0]):
+        return None
     try:
-        result = generate_invoice_documents(db, invoice_id, overwrite_sent=True)
+        result = generate_invoice_documents(db, invoice_id, overwrite_sent=entering)
     except Exception as e:
         import traceback
         print(f"Error generating documents for invoice {invoice_id}: {e}")
@@ -2052,225 +2013,227 @@ def recompute_invoice_totals(items, default_rate_pct):
             from_minor(gross_minor), [from_minor(n) for n in line_net_minors])
 
 
-def _invoice_is_frozen(invoice_id):
-    """True, wenn die gespeicherte Rechnung schon versendet (eingefroren) ist."""
-    if not invoice_id:
-        return False
-    row = Database().get_invoice_by_id(invoice_id)
-    return bool(row) and (row[40] == 'partial' or row[40] in RECEIVABLE_STATUSES)
+class JsonBody(bytes):
+    """Body einer JSON-Antwort mit ihrem Statuscode (Vorgabe 200): ``handle_invoice_save`` liefert wie
+    die übrigen Speichern-Routen den Body, ``app._post_json_route`` liest ``status`` dazu."""
+    status = 200
+
+
+def _json_body(payload, status=200):
+    body = JsonBody(json.dumps(payload).encode())
+    body.status = status
+    return body
+
+
+class _SaveRefused(Exception):
+    """Das Speichern wird abgelehnt: ``text`` geht als Fehlermeldung an die Oberfläche."""
+
+    def __init__(self, text, status=200):
+        super().__init__(text)
+        self.text = text
+        self.status = status
 
 
 def handle_invoice_save(post_body: bytes):
     """Save or update invoice to database
 
-    Returns JSON response with invoice_id
+    Returns the JSON response (bytes) with invoice_id. Status und Rest (``AmountDue``) kommen nie vom
+    Client: eine neue Rechnung ist ein Entwurf (oder abgeschlossen), jeder andere Status wird über
+    ``/invoice/status`` gesetzt. Bei einer versendeten Rechnung lehnt ``Database.update_invoice_fields``
+    jede Änderung an Finanzangaben ab (``db.invoice_lock``): Antwort mit Statuscode 409.
     """
     data = _json_request(post_body)         # kein gültiges Objekt: InvalidRequest → 400 (app.py)
     try:
-        # Check if this is an update (invoiceId present) or new invoice
-        invoice_id = data.get('invoiceId')
-        is_update = invoice_id is not None
-        
-        # Extract invoice data
-        invoice_number = data.get('invoiceNumber')
-        invoice_date = data.get('invoiceDate')
-        customer_id = data.get('customerId')
-        customer_number = data.get('customerNumber')
-        own_company_id = data.get('ownCompanyId')
-        buyer_reference = data.get('buyerReference')
-        payment_terms = data.get('paymentTerms')
-        payment_terms_days = data.get('paymentTermsDays', 14)
-        due_date = data.get('dueDate')
-        bank_account_id = data.get('bankAccountId')
-        net_amount = data.get('netAmount')
-        tax_rate = data.get('taxRate')
-        show_tax = data.get('showTax', True)   # False = Kleinunternehmer (§19), keine USt
-        tax_amount = data.get('taxAmount')
-        gross_amount = data.get('grossAmount')
-        currency = data.get('currency', 'EUR')
-        status = data.get('status', 'draft')
-        payment_means_code = data.get('paymentMeansCode', '58')
-        payment_means_text = data.get('paymentMeansText', 'SEPA Überweisung')
-        items = data.get('items', [])
-        
-        # XRechnung optional fields
-        order_number = data.get('orderNumber')
-        delivery_date = data.get('deliveryDate')
-        discount_percentage = data.get('discountPercentage')
-        discount_days = data.get('discountDays')
-        
-        # Validate required fields
-        if not invoice_number or not invoice_date or not customer_id or not own_company_id:
-            return json.dumps({'success': False, 'error': 'Pflichtfelder fehlen'}).encode()
-        
-        if not items or len(items) == 0:
-            return json.dumps({'success': False, 'error': 'Mindestens eine Position erforderlich'}).encode()
-
-        # Leistungsdatum ist Pflicht (§ 14 UStG). Bereits versendete Rechnungen
-        # sind eingefroren und werden nicht nachträglich geprüft.
-        if not delivery_date and not _invoice_is_frozen(invoice_id if is_update else None):
-            return json.dumps({'success': False, 'error':
-                'Leistungsdatum fehlt – Pflichtangabe nach § 14 UStG '
-                '(Datum der Lieferung/Leistung).'}).encode()
-
-        # Phase 2: Summen serverseitig exakt neu berechnen – den vom Client
-        # gelieferten net/tax/gross-Werten wird bewusst nicht vertraut. Bei
-        # Kleinunternehmer (§19) wird ohne Steuer gerechnet (Brutto = Netto).
-        net_amount, tax_amount, gross_amount, line_nets = recompute_invoice_totals(
-            items, _rate_to_pct(tax_rate if show_tax else 0))
-        # Sentinel -1 in TaxRate kennzeichnet "kein USt-Ausweis" (vs. echte 0%).
-        stored_tax_rate = tax_rate if show_tax else -1
-
-        db = Database()
-        
-        # Get customer data for invoice
-        customer = db.get_contact_by_id(customer_id)
-        if not customer:
-            return json.dumps({'success': False, 'error': 'Kunde nicht gefunden'}).encode()
-        
-        # Build customer name and address
-        customer_name = customer[4] or customer[3] or ''  # Company or Name
-        customer_address_parts = []
-        if customer[4]:  # Company
-            customer_address_parts.append(customer[4])
-        if customer[3]:  # Name
-            customer_address_parts.append(customer[3])
-        if customer[5]:  # Street
-            customer_address_parts.append(customer[5])
-        if customer[6] or customer[7]:  # PostalCode, City
-            city_line = f"{customer[6] or ''} {customer[7] or ''}".strip()
-            if city_line:
-                customer_address_parts.append(city_line)
-        if customer[8]:  # Country
-            customer_address_parts.append(customer[8])
-        customer_address = '\n'.join(customer_address_parts)
-        
-        # Get own company for sender line
-        own_company = db.get_contact_by_id(own_company_id)
-        if not own_company:
-            return json.dumps({'success': False, 'error': 'Eigene Firma nicht gefunden'}).encode()
-        
-        sender_name = own_company[4] or own_company[3] or ''
-        sender_street = own_company[5] or ''
-        sender_postal = own_company[6] or ''
-        sender_city = own_company[7] or ''
-        sender_line = f"{sender_name}, {sender_street}, {sender_postal} {sender_city}".strip()
-        
-        # Get bank account data
-        iban = None
-        account_name = None
-        bic = None
-        if bank_account_id:
-            account = db.get_account_by_id(bank_account_id)
-            if account:
-                iban = account[3]  # IBAN
-                bic = account[4]  # BIC
-                account_name = account[2]  # Inhaber
-        
-        # Calculate remaining amount (initially = gross amount)
-        remaining_amount = gross_amount
-        
-        # Prepare invoice data dictionary
-        invoice_data = {
-            'invoice_number': invoice_number,
-            'invoice_date': invoice_date,
-            'own_company_id': own_company_id,
-            'seller_name': own_company[4] or own_company[3] or '',
-            'seller_company': own_company[4] or '',
-            'seller_street': own_company[5] or '',
-            'seller_postal_code': own_company[6] or '',
-            'seller_city': own_company[7] or '',
-            'seller_country': own_company[8] or 'DE',
-            'seller_vat_id': own_company[11] or '',
-            'seller_email': own_company[9] or '',
-            'seller_phone': own_company[10] or '',
-            'customer_id': customer_id,
-            'buyer_name': customer[4] or customer[3] or '',
-            'buyer_company': customer[4] or '',
-            'buyer_street': customer[5] or '',
-            'buyer_postal_code': customer[6] or '',
-            'buyer_city': customer[7] or '',
-            'buyer_country': customer[8] or 'DE',
-            'buyer_vat_id': customer[11] or '',
-            'buyer_reference': buyer_reference,
-            'buyer_route_id': buyer_reference,  # Same as buyer_reference for XRechnung
-            'order_number': order_number,
-            'currency': currency,
-            'delivery_date': delivery_date,
-            'payment_terms': payment_terms,
-            'payment_due_date': due_date,
-            'skonto_days': discount_days,
-            'skonto_percent': discount_percentage,
-            'bank_account_id': bank_account_id,
-            'bank_name': account[5] if bank_account_id and account else '',
-            'bank_iban': iban or '',
-            'bank_bic': bic or '',
-            'tax_category': 'S',  # Standard tax
-            'tax_rate': stored_tax_rate,
-            'sum_net': net_amount,
-            'tax_amount': tax_amount,
-            'sum_gross': gross_amount,
-            'amount_due': remaining_amount,
-            'status': status,
-            'pdf_path': None,
-            'xml_path': None
-        }
-        
-        # Kopf und Positionen in EINER Transaktion: scheitert ein Schritt, bleibt
-        # nichts halb gespeichert zurück – kein Kopf ohne Positionen (der nächste
-        # Versuch scheiterte sonst an der schon vergebenen Rechnungs-Nr.) und
-        # keine gelöschten Positionen hinter einem gescheiterten Update.
-        try:
-            with db.transaction() as tx:
-                if is_update:
-                    _save_invoice_update(tx, invoice_id, invoice_data)
-                else:
-                    invoice_id = db.insert_invoice(invoice_data, tx=tx)
-
-                # Positionen (Positionssumme serverseitig berechnet)
-                for idx, item in enumerate(items):
-                    db.insert_invoice_item({
-                        'invoice_id': invoice_id,
-                        'position': item.get('position'),
-                        'article_id': None,  # No article linkage for now
-                        'description': item.get('description'),
-                        'quantity': item.get('quantity'),
-                        'unit': item.get('unit', 'C62'),  # C62 = piece
-                        'price_per_unit': item.get('unitPrice'),
-                        'total_net': line_nets[idx],
-                        'tax_category': 'S',
-                        'tax_rate': item.get('taxRate', tax_rate)
-                    }, tx=tx)
-        except DocumentNotFound as e:
-            return json.dumps({'success': False, 'error': str(e)}).encode()
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return json.dumps({'success': False, 'error': _save_error_text(e)}).encode()
-
-        # Die Rechnung ist ab hier gespeichert (Commit oben). Scheitert das Fortschreiben des
-        # Nummernkreises, bleibt die Antwort ein Erfolg und nennt nur den Hinweis – sonst legt
-        # der Nutzer dieselbe Rechnung ein zweites Mal an.
-        result = {'success': True, 'invoice_id': invoice_id}
-        if status == 'finalized' and not is_update:
-            try:
-                _advance_invoice_number_range(db, invoice_number)
-            except Exception as e:
-                print(f"WARNUNG: Nummernkreis nicht fortgeschrieben ({invoice_number!r}): {e!r}")
-                result['warning'] = ('Die Rechnung ist gespeichert, aber der Nummernkreis konnte '
-                                     'nicht fortgeschrieben werden – bitte unter Stammdaten '
-                                     '→ Nummernkreise prüfen.')
-
-        return json.dumps(result).encode()
-
+        return _save_invoice(data)
+    except _SaveRefused as refusal:
+        return _json_body({'success': False, 'error': refusal.text}, refusal.status)
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return json.dumps({'success': False, 'error': _save_error_text(e)}).encode()
+        return _json_body({'success': False, 'error': _save_error_text(e)})
 
 
-class DocumentNotFound(LookupError):
-    """Das Aktualisieren trifft keinen Beleg des erwarteten Typs (Rechnung bzw. Angebot)."""
+def _buyer_snapshot(customer):
+    """Anschrift des Kunden als Momentaufnahme für die Rechnung (Felder wie ``insert_invoice``)."""
+    return {
+        'buyer_name': customer[4] or customer[3] or '',
+        'buyer_company': customer[4] or '',
+        'buyer_street': customer[5] or '',
+        'buyer_postal_code': customer[6] or '',
+        'buyer_city': customer[7] or '',
+        'buyer_country': customer[8] or 'DE',
+    }
+
+
+def _open_invoice_fields(db, stored, data):
+    """Die Felder einer versendeten oder stornierten Rechnung, die sich noch ändern lassen: Das
+    Formular schickt für sie nur Begleittext, Bestellnummer, Leitweg-ID und Leistungsdatum (kein
+    ``items``) – die Anschrift wird aus den Stammdaten des Kunden der Rechnung neu übernommen. Ein
+    Entwurf oder eine unbekannte Rechnung wird so nicht gespeichert: Dort gilt das komplette Formular."""
+    fields = {}
+    for key, field in (('paymentTerms', 'payment_terms'), ('orderNumber', 'order_number'),
+                       ('deliveryDate', 'delivery_date')):
+        if key in data:
+            fields[field] = data[key]
+    if 'buyerReference' in data:
+        fields['buyer_reference'] = fields['buyer_route_id'] = data['buyerReference']
+    customer_id = stored[13]      # CustomerId
+    customer = db.get_contact_by_id(customer_id) if customer_id else None
+    if customer:
+        fields.update(_buyer_snapshot(customer))
+    return fields
+
+
+def _invoice_fields(db, data, stored):
+    """Kopf und Positionen aus dem Formular: ``(invoice_data, item_rows)``, Summen serverseitig
+    exakt neu berechnet. Fehlt etwas, :class:`_SaveRefused`."""
+    invoice_number = data.get('invoiceNumber')
+    invoice_date = data.get('invoiceDate')
+    customer_id = data.get('customerId')
+    own_company_id = data.get('ownCompanyId')
+    buyer_reference = data.get('buyerReference')
+    payment_terms = data.get('paymentTerms')
+    due_date = data.get('dueDate')
+    bank_account_id = data.get('bankAccountId')
+    tax_rate = data.get('taxRate')
+    show_tax = data.get('showTax', True)   # False = Kleinunternehmer (§19), keine USt
+    currency = data.get('currency', 'EUR')
+    items = data.get('items', [])
+
+    # XRechnung optional fields
+    order_number = data.get('orderNumber')
+    delivery_date = data.get('deliveryDate')
+    discount_percentage = data.get('discountPercentage')
+    discount_days = data.get('discountDays')
+
+    # Validate required fields
+    if not invoice_number or not invoice_date or not customer_id or not own_company_id:
+        raise _SaveRefused('Pflichtfelder fehlen')
+
+    if not items or len(items) == 0:
+        raise _SaveRefused('Mindestens eine Position erforderlich')
+
+    # Leistungsdatum ist Pflicht (§ 14 UStG). Bereits versendete Rechnungen
+    # sind eingefroren und werden nicht nachträglich geprüft.
+    frozen = stored is not None and status_group(stored[InvoiceCol.STATUS]) != 'editable'
+    if not delivery_date and not frozen:
+        raise _SaveRefused('Leistungsdatum fehlt – Pflichtangabe nach § 14 UStG '
+                           '(Datum der Lieferung/Leistung).')
+
+    # Phase 2: Summen serverseitig exakt neu berechnen – den vom Client
+    # gelieferten net/tax/gross-Werten wird bewusst nicht vertraut. Bei
+    # Kleinunternehmer (§19) wird ohne Steuer gerechnet (Brutto = Netto).
+    net_amount, tax_amount, gross_amount, line_nets = recompute_invoice_totals(
+        items, _rate_to_pct(tax_rate if show_tax else 0))
+    # Sentinel -1 in TaxRate kennzeichnet "kein USt-Ausweis" (vs. echte 0%).
+    stored_tax_rate = tax_rate if show_tax else -1
+
+    # Get customer data for invoice
+    customer = db.get_contact_by_id(customer_id)
+    if not customer:
+        raise _SaveRefused('Kunde nicht gefunden')
+
+    # Get own company for sender line
+    own_company = db.get_contact_by_id(own_company_id)
+    if not own_company:
+        raise _SaveRefused('Eigene Firma nicht gefunden')
+
+    # Get bank account data
+    iban = None
+    bic = None
+    account = None
+    if bank_account_id:
+        account = db.get_account_by_id(bank_account_id)
+        if account:
+            iban = account[3]  # IBAN
+            bic = account[4]  # BIC
+
+    invoice_data = {
+        'invoice_number': invoice_number,
+        'invoice_date': invoice_date,
+        'own_company_id': own_company_id,
+        'seller_name': own_company[4] or own_company[3] or '',
+        'seller_company': own_company[4] or '',
+        'seller_street': own_company[5] or '',
+        'seller_postal_code': own_company[6] or '',
+        'seller_city': own_company[7] or '',
+        'seller_country': own_company[8] or 'DE',
+        'seller_vat_id': own_company[11] or '',
+        'seller_email': own_company[9] or '',
+        'seller_phone': own_company[10] or '',
+        'customer_id': customer_id,
+        **_buyer_snapshot(customer),
+        'buyer_vat_id': customer[11] or '',
+        'buyer_reference': buyer_reference,
+        'buyer_route_id': buyer_reference,  # Same as buyer_reference for XRechnung
+        'order_number': order_number,
+        'currency': currency,
+        'delivery_date': delivery_date,
+        'payment_terms': payment_terms,
+        'payment_due_date': due_date,
+        'skonto_days': discount_days,
+        'skonto_percent': discount_percentage,
+        'bank_account_id': bank_account_id,
+        'bank_name': account[5] if bank_account_id and account else '',
+        'bank_iban': iban or '',
+        'bank_bic': bic or '',
+        'tax_category': 'S',  # Standard tax
+        'tax_rate': stored_tax_rate,
+        'sum_net': net_amount,
+        'tax_amount': tax_amount,
+        'sum_gross': gross_amount,
+        'amount_due': gross_amount,   # vor dem Versenden gibt es keine Zahlung; danach rechnet es die Zahlungslogik
+    }
+    # Positionen (Positionssumme serverseitig berechnet)
+    item_rows = [{
+        'position': item.get('position'),
+        'article_id': None,  # No article linkage for now
+        'description': item.get('description'),
+        'quantity': item.get('quantity'),
+        'unit': item.get('unit', 'C62'),  # C62 = piece
+        'price_per_unit': item.get('unitPrice'),
+        'total_net': line_nets[idx],
+        'tax_category': 'S',
+        'tax_rate': item.get('taxRate', tax_rate),
+    } for idx, item in enumerate(items)]
+    return invoice_data, item_rows
+
+
+def _save_invoice(data):
+    # Check if this is an update (invoiceId present) or new invoice
+    invoice_id = data.get('invoiceId')
+    is_update = invoice_id is not None
+    db = Database()
+    # Der Stand vor dem Speichern bestimmt nur, welche Angaben das Formular mitbringen muss; ob
+    # etwas gesperrt ist, entscheidet ``update_invoice_fields`` in der Transaktion des Schreibens
+    stored = db.get_document(invoice_id, 'invoice') if is_update else None
+    if (stored is not None and 'items' not in data
+            and status_group(stored[InvoiceCol.STATUS]) != 'editable'):
+        invoice_data, item_rows = _open_invoice_fields(db, stored, data), None
+    else:
+        invoice_data, item_rows = _invoice_fields(db, data, stored)
+
+    # Kopf und Positionen in EINER Transaktion: scheitert ein Schritt, bleibt
+    # nichts halb gespeichert zurück – kein Kopf ohne Positionen (der nächste
+    # Versuch scheiterte sonst an der schon vergebenen Rechnungs-Nr.), keine gelöschten
+    # Positionen hinter einem gescheiterten Update und keine verbrauchte Rechnungsnummer.
+    try:
+        with db.transaction() as tx:
+            if is_update:
+                db.update_invoice_fields(tx, invoice_id, invoice_data, item_rows)
+            else:
+                # Die Nummer wird beim ersten Speichern vergeben – auch als Entwurf
+                invoice_data['invoice_number'] = db.allocate_invoice_number(
+                    tx.conn, invoice_data['invoice_date'], invoice_data['invoice_number'])
+                invoice_data['status'] = 'finalized' if data.get('status') == 'finalized' else 'draft'
+                invoice_id = db.insert_invoice(invoice_data, tx=tx)
+                for item in item_rows:
+                    db.insert_invoice_item({**item, 'invoice_id': invoice_id}, tx=tx)
+    except InvoiceLocked as locked:
+        raise _SaveRefused(str(locked), 409) from None
+    except DocumentNotFound as missing:
+        raise _SaveRefused(str(missing)) from None
+    return _json_body({'success': True, 'invoice_id': invoice_id})
 
 
 _NOT_NULL_FIELDS = {
@@ -2305,76 +2268,6 @@ def _save_error_text(exc):
     else:
         reason = 'Unerwarteter Fehler (Einzelheiten im Server-Log)'
     return f'Speichern fehlgeschlagen: {reason} – es wurde nichts gespeichert.'
-
-
-def _advance_invoice_number_range(db, invoice_number):
-    """Den Nummernkreis einer neu abgeschlossenen Rechnung auf deren Nummer setzen.
-
-    Aus ``26R001`` werden Jahr 2026 und Buchstabe ``R``; passt ein Nummernkreis, steht sein
-    Zähler danach auf der Nummer der Rechnung. Nummern, die diesem Schema nicht folgen, lösen
-    eine Ausnahme aus – der Aufrufer meldet das als Hinweis.
-    """
-    if len(invoice_number) <= 2:
-        return
-    year_short = invoice_number[:2]
-    year = 2000 + int(year_short) if int(year_short) <= 99 else int(year_short)
-    letter = invoice_number[2]
-    for r in db.fetch_number_ranges('invoice'):
-        if r[2] == year and r[3] == letter:
-            num_part = invoice_number[3:].lstrip('_ABCDEFGHIJKLMNOPQRSTUVWXYZ')
-            db.update_number_range(
-                r[0], r[2], r[3], r[4] or '', int(num_part),
-                r[6] or '', r[7] if len(r) > 7 else None)
-            break
-
-
-def _save_invoice_update(tx, invoice_id, invoice_data):
-    """Kopf einer bestehenden Rechnung überschreiben und ihre Positionen
-    entfernen – die neuen schreibt der Aufrufer in derselben Transaktion.
-
-    Trifft die ID keine Rechnung (es gibt sie nicht oder es ist ein Angebot), wird
-    :class:`DocumentNotFound` ausgelöst und die Transaktion zurückgerollt."""
-    cursor = tx.conn.cursor()
-    cursor.execute('DELETE FROM InvoiceItems WHERE InvoiceId = ?', (invoice_id,))
-    refs = {'OwnCompanyId': invoice_data['own_company_id'],
-            'CustomerId': invoice_data['customer_id'],
-            'BankAccountId': invoice_data['bank_account_id']}
-    with fk_explained(tx.conn, 'Invoices', refs):
-        cursor.execute('''
-                UPDATE Invoices SET
-                    InvoiceNumber=?, InvoiceDate=?, OwnCompanyId=?,
-                    SellerName=?, SellerCompany=?, SellerStreet=?, SellerPostalCode=?, SellerCity=?, SellerCountry=?,
-                    SellerVATID=?, SellerEmail=?, SellerPhone=?,
-                    CustomerId=?, BuyerName=?, BuyerCompany=?, BuyerStreet=?, BuyerPostalCode=?, BuyerCity=?, BuyerCountry=?,
-                    BuyerVATID=?, BuyerReference=?, BuyerRouteID=?,
-                    OrderNumber=?, Currency=?, DeliveryDate=?,
-                    PaymentTerms=?, PaymentDueDate=?, SkontoDays=?, SkontoPercent=?,
-                    BankAccountId=?, BankName=?, BankIBAN=?, BankBIC=?,
-                    TaxCategory=?, TaxRate=?, SumNet=?, TaxAmount=?, SumGross=?, AmountDue=?,
-                    Status=?
-                WHERE ID=? AND COALESCE(DocumentType, 'invoice') = 'invoice'
-            ''', (
-                invoice_data['invoice_number'], invoice_data['invoice_date'], invoice_data['own_company_id'],
-                invoice_data['seller_name'], invoice_data['seller_company'], invoice_data['seller_street'], invoice_data['seller_postal_code'],
-                invoice_data['seller_city'], invoice_data['seller_country'],
-                invoice_data['seller_vat_id'], invoice_data['seller_email'], invoice_data['seller_phone'],
-                invoice_data['customer_id'], invoice_data['buyer_name'], invoice_data['buyer_company'], invoice_data['buyer_street'],
-                invoice_data['buyer_postal_code'], invoice_data['buyer_city'], invoice_data['buyer_country'],
-                invoice_data['buyer_vat_id'], invoice_data['buyer_reference'], invoice_data['buyer_route_id'],
-                invoice_data['order_number'], invoice_data['currency'], invoice_data['delivery_date'],
-                invoice_data['payment_terms'], invoice_data['payment_due_date'],
-                invoice_data['skonto_days'], invoice_data['skonto_percent'],
-                invoice_data['bank_account_id'], invoice_data['bank_name'], invoice_data['bank_iban'], invoice_data['bank_bic'],
-                invoice_data['tax_category'], invoice_data['tax_rate'],
-                to_minor(invoice_data['sum_net'] or 0),
-                to_minor(invoice_data['tax_amount'] or 0),
-                to_minor(invoice_data['sum_gross'] or 0),
-                to_minor(invoice_data['amount_due'] or 0),
-                invoice_data['status'],
-                invoice_id
-            ))
-    if cursor.rowcount == 0:
-        raise DocumentNotFound('Rechnung nicht gefunden.')
 
 
 def handle_send_invoice_email(post_body: bytes):
@@ -2812,7 +2705,10 @@ def handle_update_quote_status(post_body: bytes):
 
 
 def handle_convert_quote_to_invoice(post_data):
-    """Angebot in Rechnung umwandeln. Returns (303, redirect_path)."""
+    """Angebot in Rechnung umwandeln. Returns (303, redirect_path).
+
+    Ein Angebot wird nur einmal umgewandelt; versucht es jemand ein zweites Mal (oder ist es
+    abgelehnt), geht die Weiterleitung mit dem Grund als ``err`` zurück auf das Angebot."""
     raw = post_data.get('quote_id', [None])
     quote_id = raw[0] if isinstance(raw, list) else raw
     if not quote_id:
@@ -2823,9 +2719,36 @@ def handle_convert_quote_to_invoice(post_data):
         if new_invoice_id:
             return 303, f"/invoice?id={new_invoice_id}"
         return 303, f"/quote?id={quote_id}"
+    except QuoteNotConvertible as refusal:
+        return 303, f"/quote?id={int(quote_id)}&err={quote(str(refusal), safe='')}"
     except Exception as e:
         print(f"Error converting quote {quote_id}: {e}")
         return 303, f"/quote?id={quote_id}"
+
+
+def handle_delete_invoice(db: Database, invoice_id):
+    """Entwurf löschen (``POST /invoice/delete``). Returns (status_code, Weiterleitung bzw. Text).
+
+    Gelöscht wird nur ein Entwurf ohne Zahlung und Forderung (``Database.delete_draft_invoice``);
+    sonst geht die Weiterleitung mit dem Grund als ``err`` zurück auf die Rechnung. Die abgelegten
+    Dokumente des Entwurfs räumt erst der erfolgreiche Löschvorgang weg – nur im Dokumentordner und
+    nur, wenn kein anderer Beleg auf sie verweist. Die ID eines Angebots ergibt 404."""
+    from export.invoice_files import remove_document_file, stored_invoice_path
+
+    invoice = db.get_document(invoice_id, 'invoice')
+    if invoice is None:
+        return 404, 'Rechnung nicht gefunden.'
+    paths = [stored_invoice_path(db, invoice_id, kind, invoice)[0] for kind in ('pdf', 'xml')]
+    try:
+        db.delete_draft_invoice(invoice_id)
+    except DocumentNotFound:
+        return 404, 'Rechnung nicht gefunden.'
+    except InvoiceNotDeletable as refusal:
+        return 303, f"/invoice?id={invoice_id}&err={quote(str(refusal), safe='')}"
+    for path in paths:
+        if path:
+            remove_document_file(path, db, invoice_id)
+    return 303, "/invoice"
 
 
 def handle_quote_pdf_generate(quote_id: int):
