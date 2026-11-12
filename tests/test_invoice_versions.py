@@ -284,6 +284,32 @@ def test_a_file_that_another_document_points_to_is_not_moved(world):
     assert os.path.isfile(pdf)                                           # sie bleibt für den anderen Beleg liegen
 
 
+def test_a_bent_path_never_moves_the_version_of_another_invoice(world):
+    """Der gespeicherte Pfad zeigt auf die Fassung eines anderen Belegs (SQL-Konsole, zurückgespielte
+    Sicherung): Sie bleibt, wo sie ist – sonst verlöre der andere Beleg sein Merkmal „war schon
+    versendet“ und seine Nummer würde beim Löschen wieder frei. Abgelegt wird die eigene Datei."""
+    from export.invoice_files import was_sent_before
+    first = new_invoice(world)
+    send(first)
+    own_pdf, _own_xml = stored(world, first)
+    second = new_invoice(world, customerId=world.cust2)
+    send(second)
+    assert reopen(second)[0] == 200
+    versions_of_second = archived(second)
+    foreign = os.path.join(folder(second), next(n for n in versions_of_second if n.endswith('.pdf')))
+    world.db.update_invoice_pdf_path(first, foreign)
+
+    assert reopen(first)[0] == 200
+    assert archived(second) == versions_of_second and was_sent_before(second) is True
+    assert not os.path.exists(own_pdf)                                   # die eigene versendete Datei ist abgelegt
+    assert len(archived(first)) == 2 and all(n.count('versendet bis') == 1 for n in archived(first))
+
+    number = number_of(world, second)
+    assert delete(world, second) == (303, '/invoice')
+    assert counter(world.db) == 2                                        # die Nummer bleibt vergeben
+    assert number not in (world.db.peek_next_number('invoice', 2026)[0],)
+
+
 def test_a_failing_move_refuses_the_reopening_and_changes_nothing(world, monkeypatch):
     """Das XML lässt sich nicht verschieben: Das PDF geht zurück, Status, Pfade, Forderung bleiben."""
     invoice_id = new_invoice(world)

@@ -215,8 +215,10 @@ def archive_sent_documents(db, invoice_id: int, today=None):
 
     Verschoben wird nur, was der Nutzer als Dokument der Rechnung sieht (``stored_invoice_path``:
     gespeicherter Pfad im Dokumentordner, sonst die Datei am Namensschema) und kein anderer Beleg als
-    seine Datei führt. Ein gespeicherter Pfad außerhalb des Dokumentordners bleibt, wo er ist. Das
-    Eintragen der geleerten Pfade ist Sache des Aufrufers.
+    seine Datei führt – dazu die Datei am Namensschema, wenn der gespeicherte Pfad woandershin zeigt.
+    Ein gespeicherter Pfad außerhalb des Dokumentordners bleibt, wo er ist, ebenso eine Datei, die
+    schon in einem Ordner „Fassungen“ liegt (ein umgebogener Pfad verschiebt nie die Fassung eines
+    anderen Belegs). Das Eintragen der geleerten Pfade ist Sache des Aufrufers.
 
     Scheitert ein Verschieben, geht das schon Verschobene zurück und es folgt ein ``OSError``.
 
@@ -229,14 +231,21 @@ def archive_sent_documents(db, invoice_id: int, today=None):
     moved = []
     try:
         for kind in ('pdf', 'xml'):
-            path = stored_invoice_path(db, invoice_id, kind, invoice)[0]
-            if not path or db.document_path_in_use(path, invoice_id):
-                continue
-            stem, extension = os.path.splitext(os.path.basename(path))
-            os.makedirs(folder, exist_ok=True)
-            target = _version_name(folder, stem, extension, day)
-            shutil.move(path, target)
-            moved.append((path, target))
+            # Das Dokument, das die Rechnung führt, und die Datei am Namensschema – zeigt der
+            # gespeicherte Pfad woandershin, bliebe die versendete Datei sonst als Entwurfsdatei liegen
+            candidates = [stored_invoice_path(db, invoice_id, kind, invoice)[0],
+                          _stored_by_name(invoice, _KINDS[kind][1], db)]
+            for path in candidates:
+                # Was schon eine Fassung ist (auch die eines anderen Belegs), bleibt, wo es ist;
+                # eine schon verschobene Datei gibt es an ihrem Platz nicht mehr
+                if (not path or not os.path.isfile(path) or _in_versions(path)
+                        or db.document_path_in_use(path, invoice_id)):
+                    continue
+                stem, extension = os.path.splitext(os.path.basename(path))
+                os.makedirs(folder, exist_ok=True)
+                target = _version_name(folder, stem, extension, day)
+                shutil.move(path, target)
+                moved.append((path, target))
     except OSError:
         restore_archived(moved)
         raise
