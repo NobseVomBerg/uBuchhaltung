@@ -20,9 +20,10 @@ from .richtext import sanitize_richtext as _sanitize_richtext
 from db import Database
 from db.core import fk_explained, ForeignKeyError
 from db.invoices import (InvoiceCol, InvoiceNotDeletable, QUOTE_STAYS_CONVERTED_MESSAGE,
-                         QUOTE_STAYS_CONVERTED_SQL, QuoteNotConvertible, QuoteStatusLocked)
+                         QUOTE_STAYS_CONVERTED_SQL, QuoteNotConvertible, QuoteStatusLocked, is_storno_row)
 from db.invoice_lock import (DocumentNotFound, EDITABLE_STATUSES, InvoiceLocked, STATUS_LABELS,
                              buyer_snapshot, status_group)
+from db.invoice_storno import NO_COUNTER_BOOKING_HINT
 from db.invoice_versions import CorrectionInvalid
 from db.invoice_payments import RECEIVABLE_STATUSES
 from db.numbering import NumberRangeError, number_format_error
@@ -1777,8 +1778,9 @@ def handle_update_invoice_status(post_body: bytes):
     """Status einer Rechnung setzen – nach der Übergangstabelle ``db.invoice_lock.TRANSITIONS``.
 
     Der Wechsel läuft in ``Database.set_invoice_status`` in einer Transaktion: Status, Forderungsbuchung
-    (beim Versenden und Reaktivieren gebucht, beim Zurückholen und Stornieren entfernt) und beim
+    (beim Versenden und Reaktivieren gebucht, beim Zurückholen entfernt) und beim
     Zurückholen das Ablegen der versendeten Dokumente in „Fassungen“ gelingen gemeinsam oder gar nicht.
+    Auf „storniert“ setzt diese Route nie (409): Das ist ``/invoice/cancel`` (``handle_invoice_cancel``).
     Hier folgt danach nur das Erzeugen des Dokuments beim Versenden (Entwurf/abgeschlossen → versendet,
     oder eine stornierte Rechnung ohne Datei). Zwischen versendet und überfällig wird nichts gebucht
     und nichts erzeugt.
@@ -1817,6 +1819,60 @@ def handle_update_invoice_status(post_body: bytes):
     if warning:
         result['warning'] = warning
     return 200, json.dumps(result)
+
+
+def handle_invoice_cancel(post_body: bytes):
+    """Eine versendete Rechnung stornieren (``POST /invoice/cancel``, JSON ``{"invoiceId", "date"}``).
+
+    ``Database.cancel_invoice`` legt in einer Transaktion die Stornorechnung (eigene Nummer, negative Beträge,
+    Status „versendet“) an, setzt die Rechnung auf „storniert“ und bucht – hat die App die Forderung gebucht – die
+    Gegenbuchung dazu. Hier folgt danach nur das Dokument der Stornorechnung (PDF, bei E-Rechnungsdaten auch XML);
+    scheitert es, bleibt die Stornierung gespeichert und die Antwort trägt eine ``warning`` – „PDF + E-Rechnung“
+    erzeugt die fehlende Datei. ``hint`` sagt, dass es keine Gegenbuchung gab.
+
+    ``invoiceId`` liest die Route streng als Ganzzahl (wie ``/invoice/save``), das Datum prüft die Datenbankschicht.
+    Returns tuple: (status_code, json_body)
+    """
+    data = _json_request(post_body)
+    if data.get('invoiceId') is None:
+        raise InvalidRequest('invoiceId fehlt')
+    try:
+        invoice_id = _invoice_id(data)
+    except _SaveRefused as refusal:
+        return refusal.status, json.dumps({'success': False, 'error': refusal.text})
+
+    db = Database()
+    storno = db.cancel_invoice(invoice_id, data.get('date'), userctx.get_user())
+    if not storno.ok:
+        return storno.code, json.dumps({'success': False, 'error': storno.message})
+    print(f"Invoice {invoice_id} cancelled by credit note {storno.storno_number}")
+
+    result = {'success': True, 'storno_id': storno.storno_id, 'storno_number': storno.storno_number}
+    if not storno.counter_booked:
+        result['hint'] = NO_COUNTER_BOOKING_HINT
+    warning = _generate_storno_documents(db, storno.storno_id)
+    if warning:
+        result['warning'] = warning
+    return 200, json.dumps(result)
+
+
+def _generate_storno_documents(db, storno_id):
+    """Nach dem Stornieren das PDF (+ XML) der Stornorechnung erzeugen. Returns einen Warntext, falls das nicht
+    gelang; „PDF + E-Rechnung“ erzeugt die fehlende Datei dann (eine eingefrorene Rechnung ohne abgelegtes PDF
+    darf erzeugt werden)."""
+    from export.invoice_files import generate_invoice_documents
+    try:
+        result = generate_invoice_documents(db, storno_id, overwrite_sent=True)
+    except Exception as e:
+        import traceback
+        print(f"Error generating documents for credit note {storno_id}: {e}")
+        traceback.print_exc()
+        return ('Die Stornorechnung ist gespeichert, aber das Dokument konnte nicht erstellt werden – '
+                'bitte „PDF + E-Rechnung“ ausführen.')
+    if result.get('error'):
+        return (f"Die Stornorechnung ist gespeichert, aber: {result['error']} Bitte „PDF + E-Rechnung“ "
+                "ausführen.")
+    return None
 
 
 def _ensure_sent_documents(db, invoice_id, current_status, new_status):
@@ -2396,7 +2452,8 @@ def handle_send_invoice_email(post_body: bytes):
             pdf_path=pdf_path,
             sender_name=sender_name,
             sender_email=sender_email,
-            message_text=message_text
+            message_text=message_text,
+            storno=is_storno_row(invoice)
         )
         
         if success:

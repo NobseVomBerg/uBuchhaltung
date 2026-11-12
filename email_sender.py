@@ -25,7 +25,7 @@ class EmailSender:
         self.smtp_password = smtp_password or os.getenv('SMTP_PASSWORD', '')
         
     def send_invoice_email(self, recipient_email, recipient_name, invoice_number, 
-                          pdf_path, sender_name, sender_email, message_text=None):
+                          pdf_path, sender_name, sender_email, message_text=None, storno=False):
         """Send invoice via email
         
         Args:
@@ -36,6 +36,7 @@ class EmailSender:
             sender_name: Name of sender
             sender_email: Email address of sender
             message_text: Optional custom message text
+            storno: Der Beleg ist eine Stornorechnung (eigener Betreff und Standardtext – sie fordert nichts an)
             
         Returns:
             tuple: (success: bool, error_message: str or None)
@@ -51,10 +52,22 @@ class EmailSender:
             msg = MIMEMultipart()
             msg['From'] = f"{sender_name} <{sender_email or self.smtp_user}>"
             msg['To'] = f"{recipient_name} <{recipient_email}>"
-            msg['Subject'] = f"Rechnung {invoice_number}"
+            msg['Subject'] = f"{'Stornorechnung' if storno else 'Rechnung'} {invoice_number}"
             
             # Email body
-            if not message_text:
+            if not message_text and storno:
+                message_text = f"""Sehr geehrte Damen und Herren,
+
+anbei erhalten Sie die Stornorechnung {invoice_number}.
+
+Der Betrag wird verrechnet bzw. erstattet.
+
+Bei Rückfragen stehen wir Ihnen gerne zur Verfügung.
+
+Mit freundlichen Grüßen
+{sender_name}
+"""
+            elif not message_text:
                 message_text = f"""Sehr geehrte Damen und Herren,
 
 anbei erhalten Sie die Rechnung {invoice_number}.

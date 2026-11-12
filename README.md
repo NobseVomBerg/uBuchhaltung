@@ -105,7 +105,7 @@ Anmeldung). Vorher eine Datensicherung anlegen – Ablauf und Rückweg unter
 | **Buchen** | Bankbewegungen und Buchungssätze, Split-Buchungen, Kontierungs-Vorschlag aus der Historie, Belege verknüpfen |
 | **Kontenrahmen** | SKR04 vorbelegt, eigene Konten (auch weiterer Rahmen wie SKR03) anlegbar, DATEV-Steuerschlüssel |
 | **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR) |
-| **Rechnungen & Angebote** | PDF als hybride E-Rechnung (ZUGFeRD/Factur-X, EN 16931) und XRechnung, E-Mail-Versand, Nummernkreise, offene Posten, Mahnwesen, Kleinunternehmerregelung |
+| **Rechnungen & Angebote** | PDF als hybride E-Rechnung (ZUGFeRD/Factur-X, EN 16931) und XRechnung, E-Mail-Versand, Nummernkreise, Stornorechnung als eigener Beleg, offene Posten, Mahnwesen, Kleinunternehmerregelung |
 | **Anlagen** | Anlagenverzeichnis mit AfA (linear, degressiv, GWG) |
 | **Import & Export** | Kontoauszüge im Bankformat CAMT.053 (XML oder ZIP, jede Bank) oder als PDF (DKB, Volksbank Rottweil), [Datenübernahme aus WISO Mein Büro](#datenübernahme-aus-wiso-mein-büro), DATEV-Buchungsstapel |
 | **Außerdem** | Arbeitszeiten mit Stundenzettel, Fahrtenbuch, ein Benutzer ohne Anmeldung oder mehrere mit Login, Datensicherung, Dark Mode |
@@ -263,7 +263,7 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 - **E-Mail-Versand**: SMTP, PDF-Anhang, Empfänger aus Kontakten
 - **ZUGFeRD / Factur-X** (`export/cii_invoice.py`, `export/pdfa.py`): jede neu erzeugte Rechnungs-PDF ist PDF/A-3b mit eingebetteter `factur-x.xml` (Profil EN 16931)
 - **XRechnung XML-Export** (`export/xrechnung_invoice.py`, UBL): EN 16931 konform
-- **Rechnungsstatus**: Entwurf → Finalisiert → Versendet → Bezahlt (+ Teilzahlung, Überfällig, Storniert)
+- **Rechnungsstatus**: Entwurf → Finalisiert → Versendet → Bezahlt (+ Teilzahlung, Überfällig, Storniert); storniert wird über „Stornieren“: Die **Stornorechnung** entsteht als eigener Beleg mit eigener Nummer (Gutschrift Typ 381, UBL `CreditNote`, PDF „Stornorechnung“), die Forderung bekommt eine Gegenbuchung statt gelöscht zu werden
 - **Nummernkreise**: Format YY[Buchstabe][Präfix]### mit Auto-Inkrementierung
 - **Zahlungsverknüpfung**: Eingehende Bankbewegungen einer versendeten Rechnung zuordnen – ganz, in Teilen (Teilzahlung) oder eine Überweisung auf mehrere Rechnungen (Sammelzahlung); ein Überschuss bleibt als Guthaben beim Kunden stehen. Die Zuordnung legt ihre Buchungssätze selbst an und nimmt sie beim Entfernen wieder mit; eine Prüfliste unter *Sonstiges* zeigt Unstimmigkeiten
 - **Offene Posten**: Mit dem Status *Versendet* wird die Rechnung als Forderung

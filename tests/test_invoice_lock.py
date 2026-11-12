@@ -14,7 +14,8 @@
 * Die Übergangstabelle (``TRANSITIONS``) ist vollständig geprüft – jedes Paar, mit und ohne Zahlung –
   und die Folgen eines Übergangs: Versenden bucht die Forderung und erzeugt das Dokument, versendet ↔
   überfällig bucht und erzeugt nichts (auch bei einer Rechnung ohne Forderung der App, wie ein
-  Import sie hinterlässt).
+  Import sie hinterlässt). Auf „storniert“ setzt kein Übergang: Das ist ``cancel_invoice``
+  (test_invoice_storno.py).
 * Zwei gleichzeitige Anfragen laufen nacheinander: Prüfen und Schreiben sehen denselben Stand.
 
 Alle Namen, Adressen und Nummern sind erfundene Testwerte.
@@ -33,9 +34,9 @@ import pytest
 
 import server.handlers as handlers
 import userctx
-from db.invoice_lock import (CHANGED_MESSAGE, CLOSED_MESSAGE, InvoiceLocked, LOCKED_MESSAGE,
-                             LOCKED_PAID_HINT, LOCKED_UNPAID_HINT, NUMBER_KEPT_MESSAGE, STATUS_LABELS,
-                             allowed_targets, canonical_status, check_changes, status_group)
+from db.invoice_lock import (CANCEL_VIA_STORNO_MESSAGE, CHANGED_MESSAGE, CLOSED_MESSAGE, InvoiceLocked,
+                             LOCKED_MESSAGE, LOCKED_PAID_HINT, LOCKED_UNPAID_HINT, NUMBER_KEPT_MESSAGE,
+                             STATUS_LABELS, allowed_targets, canonical_status, check_changes, status_group)
 from export.invoice_files import generate_invoice_documents
 from server.pages_invoice import PageInvoice
 from tests.document_helpers import post_json, row, stored_documents
@@ -567,8 +568,6 @@ ALLOWED = {
     ('sent', 'draft'): UNPAID, ('sent', 'finalized'): UNPAID,
     ('overdue', 'draft'): UNPAID, ('overdue', 'finalized'): UNPAID,
     ('sent', 'paid'): PAID, ('overdue', 'paid'): PAID, ('partial_payment', 'paid'): PAID,
-    ('sent', 'cancelled'): ANY, ('overdue', 'cancelled'): ANY,
-    ('partial_payment', 'cancelled'): ANY, ('paid', 'cancelled'): ANY,
     ('partial_payment', 'sent'): UNPAID, ('partial_payment', 'overdue'): UNPAID,
     ('paid', 'sent'): UNPAID, ('paid', 'overdue'): UNPAID,
     ('cancelled', 'sent'): ANY, ('cancelled', 'overdue'): ANY,
@@ -631,6 +630,8 @@ def test_a_refused_transition_names_the_reason(world):
     assert code == 400 and 'mindestens eine Zahlung' in answer['error']
     code, answer = set_invoice_status(make_invoice(world, 'draft', number='26R102'), 'cancelled')
     assert code == 409 and 'Entwurf' in answer['error']
+    code, answer = set_invoice_status(make_invoice(world, 'sent', number='26R103'), 'cancelled')
+    assert code == 409 and answer['error'] == CANCEL_VIA_STORNO_MESSAGE
 
 
 def test_paid_without_any_payment_heals_to_sent_and_overdue_but_only_then(world):
@@ -725,28 +726,32 @@ def test_with_a_payment_there_is_no_way_back_and_the_receivable_stays(world):
     assert world.db.get_receivable_booking(invoice_id) == receivable
 
 
-def test_cancelling_by_hand_keeps_todays_bookings(world):
-    """Storno über den Status (bis zum Stornobeleg, 2.2.0): ohne Zahlung geht die Forderung, mit Zahlung
-    bleibt sie stehen."""
-    lone = make_invoice(world, 'finalized')
-    set_invoice_status(lone, 'sent')
-    assert set_invoice_status(lone, 'cancelled')[0] == 200
-    assert world.db.get_receivable_booking(lone) is None
-    paid = make_invoice(world, 'finalized', number='26R101')
-    set_invoice_status(paid, 'sent')
+@pytest.mark.parametrize('status', ['sent', 'overdue', 'partial_payment', 'paid'])
+def test_the_status_never_cancels_an_invoice_any_more_that_is_the_credit_note(world, status):
+    """Storniert wird über „Stornieren“ (``cancel_invoice``), nicht über den Status: Der Klick auf „storniert“ wird
+    abgelehnt, nichts wird geschrieben, und die Auswahl bietet es nicht an."""
+    invoice_id = make_invoice(world, 'finalized')
+    set_invoice_status(invoice_id, 'sent')
     booking = world.db.insert_booking('2026-07-01', 50.0, booking_type='bank', account_id=world.bank)
-    assert handlers.link_booking_to_invoice_capped(world.db, paid, booking, 50.0)[0]
-    assert set_invoice_status(paid, 'cancelled')[0] == 200
-    assert world.db.get_receivable_booking(paid) is not None
+    assert handlers.link_booking_to_invoice_capped(world.db, invoice_id, booking, 50.0)[0]
+    force_status(world.db, invoice_id, status)
+    before = snapshot(world.db)
+    code, answer = set_invoice_status(invoice_id, 'cancelled')
+    assert (code, answer['success'], answer['error']) == (409, False, CANCEL_VIA_STORNO_MESSAGE)
+    assert snapshot(world.db) == before
+    assert 'cancelled' not in allowed_targets(status, 1)
 
 
 def test_reviving_a_cancelled_invoice_books_the_receivable_but_keeps_its_document(world):
+    """Eine stornierte Rechnung ohne Stornorechnung (Altbestand, Import) lässt sich wiederbeleben: Die Forderung wird
+    neu gebucht, die vorhandene Datei bleibt."""
     invoice_id = make_invoice(world, 'finalized')
     set_invoice_status(invoice_id, 'sent')
     pdf = columns(world.db, invoice_id)['PDFPath']
     with open(pdf, 'wb') as f:
         f.write(b'%PDF-1.4 versendete Fassung')
-    set_invoice_status(invoice_id, 'cancelled')
+    world.db.update_invoice_status(invoice_id, 'cancelled')               # wie ein Bestand: von Hand storniert,
+    assert world.db.remove_receivable_booking(invoice_id) is True         # die Forderung ist weg
     assert world.db.get_receivable_booking(invoice_id) is None
     assert set_invoice_status(invoice_id, 'sent')[0] == 200
     assert world.db.get_receivable_booking(invoice_id) is not None
@@ -966,11 +971,11 @@ def test_the_copy_form_of_a_sent_invoice_is_an_open_new_draft(world):
 @pytest.mark.parametrize('status, payments, offered', [
     ('draft', 0, ['draft', 'finalized', 'sent']),
     ('finalized', 0, ['finalized', 'draft', 'sent']),
-    ('sent', 0, ['sent', 'draft', 'finalized', 'overdue', 'cancelled']),
-    ('overdue', 0, ['overdue', 'draft', 'finalized', 'sent', 'cancelled']),
-    ('sent', 1, ['sent', 'overdue', 'paid', 'cancelled']),
-    ('partial_payment', 1, ['partial_payment', 'paid', 'cancelled']),
-    ('paid', 1, ['paid', 'cancelled']),
+    ('sent', 0, ['sent', 'draft', 'finalized', 'overdue']),
+    ('overdue', 0, ['overdue', 'draft', 'finalized', 'sent']),
+    ('sent', 1, ['sent', 'overdue', 'paid']),
+    ('partial_payment', 1, ['partial_payment', 'paid']),
+    ('paid', 1, ['paid']),
     ('cancelled', 0, ['cancelled', 'sent', 'overdue']),
 ])
 def test_the_status_select_offers_only_the_allowed_targets(world, status, payments, offered):

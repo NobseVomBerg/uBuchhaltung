@@ -15,11 +15,22 @@ import datetime
 import html
 import os
 from db import Database
+from db.invoice_lock import STORNO_KIND
 from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path)
 from .cii_invoice import generate_cii
 from .einvoice_model import correction_note_text, correction_notice, unit_display
 from .invoice_files import drop_stale_file, invoice_file_path
 from . import pdf_document as D
+
+STORNO_TITLE = 'Stornorechnung'
+
+
+def _german_date(value):
+    """ISO-Datum (``JJJJ-MM-TT``) als ``TT.MM.JJJJ``; was sich nicht lesen lässt, bleibt, wie es ist."""
+    try:
+        return datetime.date.fromisoformat(str(value)[:10]).strftime('%d.%m.%Y')
+    except ValueError:
+        return str(value or '')
 
 
 def _pct(tax_rate):
@@ -48,6 +59,15 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
 
     invoice_number = invoice[1] or 'DRAFT'
     invoice_date = invoice[2] or datetime.datetime.now().strftime('%Y-%m-%d')
+    # Stornorechnung: eigener Titel, „zu Rechnung Nr. … vom …“ unter dem Titel, die gespeicherten (negativen)
+    # Beträge; sie trägt nie den Hinweis einer Berichtigung
+    storno = len(invoice) > 50 and invoice[50] == STORNO_KIND
+    doc_title = STORNO_TITLE if storno else 'Rechnung'
+    subtitle = None
+    if storno:
+        original = db.get_invoice_by_id(invoice[51]) if invoice[51] else None
+        if original is not None:
+            subtitle = f"zu Rechnung Nr. {original[1]} vom {_german_date(original[2])}"
 
     seller_name = invoice[4] or ''
     seller_company = invoice[5] or ''
@@ -136,7 +156,7 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
         meta_rows.append(("Leistungsdatum:", invoice[25]))
     # Eine berichtigte Fassung nennt ihre Nummer im Kopf und trägt den Hinweis vor der Positionstabelle
     # (derselbe Text steht als BT-22 in der eingebetteten E-Rechnung); er ergibt sich aus dem Stand der Datenbank
-    notice = correction_notice(db, invoice)
+    notice = None if storno else correction_notice(db, invoice)
     if notice:
         meta_rows.append(("Fassung:", str(notice.version)))
     # Absenderzeile im Adressfeld OHNE Zusatzzeile (sonst zu lang); die
@@ -147,7 +167,8 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     buyer_country = invoice[19] if len(invoice) > 19 else None
     address_lines = D.address_block(buyer_company, buyer_name, buyer_addr_extra,
                                     buyer_street, buyer_postal, buyer_city, buyer_country)
-    flow.y = D.draw_letterhead(flow.ops, image, "Rechnung", meta_rows, sender_line, address_lines)
+    flow.y = D.draw_letterhead(flow.ops, image, doc_title, meta_rows, sender_line, address_lines,
+                               subtitle=subtitle)
     if notice:
         D.flow_richtext(flow, f'<b>{html.escape(correction_note_text(notice), quote=False)}</b>',
                         size=9, leading=12)
@@ -165,8 +186,8 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     # Schlägt die Erzeugung fehl, bricht das PDF ab – kein stilles Nicht-Hybrid-PDF.
     facturx_xml = generate_cii(invoice, invoice_items, db=db)
     full_pdf = build_multi_page_pdf(
-        flow.finish(), image=image, title=f"Rechnung {invoice_number}",
-        author=seller_company or seller_name, subject=f"Rechnung an {buyer_company or buyer_name}",
+        flow.finish(), image=image, title=f"{doc_title} {invoice_number}",
+        author=seller_company or seller_name, subject=f"{doc_title} an {buyer_company or buyer_name}",
         facturx_xml=facturx_xml)
 
     # PDF-Datei speichern (im Datenbereich des aktuellen Nutzers) unter der

@@ -215,8 +215,15 @@ _JSON_PATHS = frozenset({
     "/invoice/link-payment",
     "/invoice/delete-payment",
     "/invoice/status",
+    "/invoice/cancel",
     "/quote/save",
     "/quote/status",
+})
+
+# Aktionen mit Seiteneffekt unter den JSON-Routen: GET ergibt 405 (wie bei `_ACTION_PATHS`/`_GENERATE_PATHS`).
+# Stornieren legt einen Beleg an, siehe `handlers.handle_invoice_cancel`.
+_POST_ONLY_JSON_PATHS = frozenset({
+    "/invoice/cancel",
 })
 
 
@@ -698,8 +705,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 status_code, msg = handler(post_body)
                 response = json.dumps({'success': True} if status_code == 200
                                       else {'success': False, 'error': msg})
-            else:                                  # /invoice/status, /quote/status
+            else:                                  # /invoice/status, /invoice/cancel, /quote/status
                 handler = {"/invoice/status": handlers.handle_update_invoice_status,
+                           "/invoice/cancel": handlers.handle_invoice_cancel,
                            "/quote/status": handlers.handle_update_quote_status}[path]
                 status_code, response = handler(post_body)
         except handlers.InvalidRequest:
@@ -727,7 +735,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             return
         try:
             route = self.path.split('?', 1)[0]
-            if route in _ACTION_PATHS or route in _GENERATE_PATHS:
+            if route in _ACTION_PATHS or route in _GENERATE_PATHS or route in _POST_ONLY_JSON_PATHS:
                 self._respond_post_only()
                 return
             if self.path == "/" or self.path == "/dashboard" or self.path.startswith("/dashboard?"):

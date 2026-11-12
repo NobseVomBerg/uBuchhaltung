@@ -6,7 +6,12 @@
 Liest ausschließlich das neutrale Modell aus :mod:`export.einvoice_model`; die
 Datenbank-Zeile wird nur noch dort übersetzt. Für ZUGFeRD/Factur-X (CII) siehe
 :mod:`export.cii_invoice`.
+
+Eine Rechnung (Typ 380) ist ein ``Invoice``, eine Stornorechnung (Typ 381) ein ``CreditNote`` – mit
+``CreditNoteTypeCode``, ``BillingReference`` auf die Ursprungsrechnung, ohne ``DueDate`` und mit
+``CreditNoteLine``/``CreditedQuantity``. Der Rest ist derselbe Code.
 """
+import threading
 import xml.etree.ElementTree as ET
 from decimal import Decimal
 from xml.dom import minidom
@@ -19,9 +24,14 @@ _NS = {
     'cac': 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2',
     'cbc': 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2',
 }
-_INVOICE = f'{{{_NS[""]}}}'
+_CREDIT_NOTE_NS = 'urn:oasis:names:specification:ubl:schema:xsd:CreditNote-2'
 _CAC = f'{{{_NS["cac"]}}}'
 _CBC = f'{{{_NS["cbc"]}}}'
+CREDIT_NOTE_TYPE_CODE = '381'
+
+# Das Präfix '' (Standard-Namensraum) gehört je nach Dokument dem Invoice- oder dem CreditNote-Namensraum; die
+# Registrierung gilt prozessweit. Zwei gleichzeitige Erzeugungen (Server) dürfen sich nicht dazwischenfunken.
+_SERIALIZE = threading.Lock()
 
 CUSTOMIZATION_ID = 'urn:cen.eu:en16931:2017#compliant#urn:xeinkauf.de:kosit:xrechnung_3.0'
 PROFILE_ID = 'urn:fdc:peppol.eu:2017:poacc:billing:01:1.0'
@@ -65,19 +75,28 @@ class XRechnungGenerator:
         return self.generate_from_model(build_einvoice(db, invoice, invoice_items))
 
     def generate_from_model(self, inv: EInvoice) -> str:
-        # Präfixe (cac/cbc) und Default-Namespace für die Serialisierung
-        for prefix, uri in _NS.items():
-            ET.register_namespace(prefix, uri)
-        root = ET.Element(f'{_INVOICE}Invoice')
+        credit_note = inv.type_code == CREDIT_NOTE_TYPE_CODE
+        namespace = _CREDIT_NOTE_NS if credit_note else _NS['']
+        with _SERIALIZE:
+            # Präfixe (cac/cbc) und Default-Namespace für die Serialisierung
+            for prefix, uri in {**_NS, '': namespace}.items():
+                ET.register_namespace(prefix, uri)
+            xml_string = ET.tostring(self._build(inv, namespace, credit_note), encoding='unicode')
+        return minidom.parseString(xml_string).toprettyxml(indent='  ')
+
+    def _build(self, inv: EInvoice, namespace: str, credit_note: bool):
+        """Das Dokument als Elementbaum. Die Reihenfolge der Elemente folgt der UBL-2.1-XSD (Invoice-2 bzw.
+        CreditNote-2); die Unterschiede der Gutschrift stehen an den markierten Stellen."""
+        root = ET.Element(f'{{{namespace}}}{"CreditNote" if credit_note else "Invoice"}')
         cur = inv.currency
 
         _sub(root, _CBC, 'CustomizationID', CUSTOMIZATION_ID)
         _sub(root, _CBC, 'ProfileID', PROFILE_ID)
         _sub(root, _CBC, 'ID', inv.number)
         _sub(root, _CBC, 'IssueDate', inv.issue_date.isoformat())
-        if inv.due_date:
+        if inv.due_date and not credit_note:                   # eine CreditNote kennt kein DueDate auf Kopfebene
             _sub(root, _CBC, 'DueDate', inv.due_date.isoformat())
-        _sub(root, _CBC, 'InvoiceTypeCode', inv.type_code)
+        _sub(root, _CBC, 'CreditNoteTypeCode' if credit_note else 'InvoiceTypeCode', inv.type_code)
         for note in inv.notes:                                 # BT-22; im Schema zwischen Typ und Währung
             _sub(root, _CBC, 'Note', note)
         _sub(root, _CBC, 'DocumentCurrencyCode', cur)
@@ -86,6 +105,11 @@ class XRechnungGenerator:
         if inv.order_reference:
             order = _sub(root, _CAC, 'OrderReference')
             _sub(order, _CBC, 'ID', inv.order_reference)
+        if inv.preceding_invoice_number:                       # BG-3: die Ursprungsrechnung (nach OrderReference)
+            billing = _sub(_sub(root, _CAC, 'BillingReference'), _CAC, 'InvoiceDocumentReference')
+            _sub(billing, _CBC, 'ID', inv.preceding_invoice_number)
+            if inv.preceding_invoice_date:
+                _sub(billing, _CBC, 'IssueDate', inv.preceding_invoice_date.isoformat())
 
         self._party(root, 'AccountingSupplierParty', inv.seller, seller=True)
         self._party(root, 'AccountingCustomerParty', inv.buyer, seller=False)
@@ -132,9 +156,10 @@ class XRechnungGenerator:
         _sub(mon, _CBC, 'PayableAmount', _amount(inv.totals.payable), currencyID=cur)
 
         for ln in inv.lines:
-            line = _sub(root, _CAC, 'InvoiceLine')
+            line = _sub(root, _CAC, 'CreditNoteLine' if credit_note else 'InvoiceLine')
             _sub(line, _CBC, 'ID', str(ln.position))
-            _sub(line, _CBC, 'InvoicedQuantity', _qty(ln.quantity), unitCode=ln.unit_code)
+            _sub(line, _CBC, 'CreditedQuantity' if credit_note else 'InvoicedQuantity',
+                 _qty(ln.quantity), unitCode=ln.unit_code)
             _sub(line, _CBC, 'LineExtensionAmount', _amount(ln.net), currencyID=cur)
             item = _sub(line, _CAC, 'Item')
             _sub(item, _CBC, 'Name', ln.name)
@@ -145,9 +170,7 @@ class XRechnungGenerator:
             _sub(scheme, _CBC, 'ID', 'VAT')
             price = _sub(line, _CAC, 'Price')
             _sub(price, _CBC, 'PriceAmount', _price(ln.unit_price), currencyID=cur)
-
-        xml_string = ET.tostring(root, encoding='unicode')
-        return minidom.parseString(xml_string).toprettyxml(indent='  ')
+        return root
 
     def _party(self, root, tag, party: Party, seller: bool):
         wrapper = _sub(root, _CAC, tag)

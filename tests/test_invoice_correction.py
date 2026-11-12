@@ -280,9 +280,14 @@ def test_the_version_the_form_loaded_is_stale_after_another_correction(world):
     assert save_open(world, invoice_id, version=2, paymentTerms='Zahlbar sofort')['documentVersion'] == 3
 
 
-def test_a_cancelled_invoice_cannot_be_corrected(world):
+@pytest.mark.parametrize('how', ['credit-note', 'by-hand'])
+def test_a_cancelled_invoice_cannot_be_corrected(world, how):
+    """Eine stornierte Rechnung – mit Stornorechnung oder (Altbestand) von Hand storniert – ist ganz gesperrt."""
     invoice_id = sent_invoice(world)
-    assert set_invoice_status(invoice_id, 'cancelled')[0] == 200
+    if how == 'credit-note':
+        assert world.db.cancel_invoice(invoice_id, '2026-07-01', USER).ok
+    else:
+        world.db.update_invoice_status(invoice_id, 'cancelled')
     before, documents = snapshot(world.db), stored_documents(userctx.DATA_ROOT)
     resp = save_raw({'invoiceId': invoice_id, 'documentVersion': 1, 'orderNumber': 'B-99'})
     assert resp.status == 409 and json.loads(resp)['error'] == CLOSED_MESSAGE

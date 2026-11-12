@@ -26,13 +26,19 @@ from .reporting import is_income_account
 
 PAYMENT_MARK = 'invoice_payment'
 
+# Wert von ``Invoices.InvoiceKind`` einer Stornorechnung (``db/invoice_storno.py``). Hier definiert, weil
+# dieses Modul das unterste der Rechnungsmodule ist; ``db.invoice_lock`` reicht den Namen weiter.
+STORNO_KIND = 'storno'
+STORNO_PAYMENT_MESSAGE = 'Einer Stornorechnung lässt sich keine Zahlung zuordnen.'
+
 # Auf diese Status lässt sich eine Zahlung zuordnen: ab „versendet“ ist die Rechnung ein
 # offener Posten. 'partial' ist der Alt-Wert von 'partial_payment'.
 PAYABLE_STATUSES = ('sent', 'overdue', 'partial_payment', 'partial')
 
 # Ab „versendet“ ist die Rechnung ein offener Posten und hat eine Forderungsbuchung; davor
-# (Entwurf, abgeschlossen) und nach dem Storno nicht. Zustands- statt übergangsgesteuert, damit
-# auch Sprünge wie abgeschlossen → bezahlt richtig landen.
+# (Entwurf, abgeschlossen) und nach einem Storno von Hand (Altbestand, ohne Stornorechnung) nicht.
+# Zustands- statt übergangsgesteuert, damit auch Sprünge wie abgeschlossen → bezahlt richtig landen.
+# Eine Rechnung mit Stornorechnung behält ihre Forderung in jedem Fall (``_drop_receivable``).
 RECEIVABLE_STATUSES = frozenset({'sent', 'partial_payment', 'overdue', 'paid'})
 
 NO_REVENUE_COA = ('Für den Steuersatz dieser Rechnung ist kein Erlöskonto hinterlegt – bitte ein '
@@ -74,10 +80,13 @@ def _refused(message):
     return PaymentAssignment(False, message, None, None)
 
 
-def payment_blocker(doc_type, status, gross):
-    """Warum sich auf diese Rechnung keine Zahlung zuordnen lässt – ``None``, wenn doch."""
+def payment_blocker(doc_type, status, gross, kind=None):
+    """Warum sich auf diese Rechnung keine Zahlung zuordnen lässt – ``None``, wenn doch. ``kind`` ist
+    ``Invoices.InvoiceKind``: Einer Stornorechnung wird nie eine Zahlung zugeordnet."""
     if (doc_type or 'invoice') != 'invoice':
         return 'Rechnung nicht gefunden'
+    if kind == STORNO_KIND:
+        return STORNO_PAYMENT_MESSAGE
     if status == 'paid':
         return 'Die Rechnung ist bereits bezahlt.'
     if status == 'cancelled':
@@ -95,15 +104,16 @@ class InvoicePaymentsMixin:
     # ── Bausteine ────────────────────────────────────────────────────────────
     def _recalc_invoice(self, conn, invoice_id, adjust_status=True, today=None):
         """AmountDue (und, mit ``adjust_status``, der Status) aus den Zahlungen neu berechnen –
-        in der Transaktion von ``conn``, ohne zu committen."""
-        row = conn.execute('SELECT SumGross, Status, PaymentDueDate FROM Invoices WHERE ID = ?',
+        in der Transaktion von ``conn``, ohne zu committen. Der Status einer Stornorechnung ändert sich
+        dabei nie."""
+        row = conn.execute('SELECT SumGross, Status, PaymentDueDate, InvoiceKind FROM Invoices WHERE ID = ?',
                            (invoice_id,)).fetchone()
         if row is None:
             return
-        gross, status, due_date = row[0] or 0, row[1], row[2]
+        gross, status, due_date, kind = row[0] or 0, row[1], row[2], row[3]
         paid = conn.execute('SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments '
                             'WHERE InvoiceID = ?', (invoice_id,)).fetchone()[0]
-        if adjust_status:
+        if adjust_status and kind != STORNO_KIND:
             status = next_payment_status(status, gross, paid, due_date,
                                          today or datetime.date.today().isoformat())
         conn.execute('UPDATE Invoices SET AmountDue = ?, Status = ?, UpdatedAt = CURRENT_TIMESTAMP '
@@ -156,7 +166,9 @@ class InvoicePaymentsMixin:
         invoice = self.get_document(invoice_id, 'invoice')
         if invoice is None:
             return 'Rechnung nicht gefunden', None
-        blocked = payment_blocker(invoice[45], invoice[40], invoice[38])
+        # Spalten der Rechnungszeile: 38 = SumGross, 40 = Status, 45 = DocumentType, 50 = InvoiceKind
+        blocked = payment_blocker(invoice[45], invoice[40], invoice[38],
+                                  invoice[50] if len(invoice) > 50 else None)
         if blocked:
             return blocked, None
         account = self.get_account_by_id(account_id) if account_id else None
@@ -319,10 +331,10 @@ class InvoicePaymentsMixin:
             conn.execute('BEGIN IMMEDIATE')
             invoice = conn.execute(
                 'SELECT InvoiceNumber, DocumentType, Status, SumGross, TaxAmount, TaxRate, '
-                'CustomerId FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()
+                'CustomerId, InvoiceKind FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()
             if invoice is None:
                 return _refused('Rechnung nicht gefunden')
-            number, doc_type, status, gross, tax_total, rate, customer_id = invoice
+            number, doc_type, status, gross, tax_total, rate, customer_id, kind = invoice
             if (doc_type or 'invoice') != 'invoice':
                 return _refused('Rechnung nicht gefunden')
             bank = conn.execute(
@@ -335,7 +347,7 @@ class InvoicePaymentsMixin:
             if conn.execute('SELECT 1 FROM InvoicePayments WHERE InvoiceID = ? AND BookingID = ?',
                             (invoice_id, booking_id)).fetchone():
                 return _refused('Buchung ist bereits mit dieser Rechnung verknüpft')
-            blocked = payment_blocker(doc_type, status, gross)
+            blocked = payment_blocker(doc_type, status, gross, kind)
             if blocked:
                 return _refused(blocked)
             _, bank_amount, account_id, bank_date, bank_tax_date, recipient, currency = bank
@@ -449,7 +461,8 @@ class InvoicePaymentsMixin:
           Statuswechsel (``RECEIVABLE_STATUSES``) und nur die, die die App selbst gebucht hat
           (``_drop_receivable``: nie ein Satz mit ``SourceGroup``). Die Reihenfolge „erst
           stornieren, dann die Zahlung entfernen“ endet damit im selben Zustand wie die
-          umgekehrte."""
+          umgekehrte – außer bei einer Rechnung mit Stornorechnung: Deren Forderung bleibt, samt der
+          Gegenbuchung der Stornorechnung (``_drop_receivable``)."""
         row = conn.execute('SELECT InvoiceNumber FROM Invoices WHERE ID = ?',
                            (invoice_id,)).fetchone()
         if row is None:
@@ -499,8 +512,8 @@ class InvoicePaymentsMixin:
         Rechnung neu rechnen (Rest, Status: zurück auf versendet bzw. überfällig, nie auf
         abgeschlossen; eine stornierte Rechnung bleibt storniert). Die Forderung bleibt
         stehen und ist damit wieder offen – außer die Rechnung ist kein offener Posten mehr
-        (storniert) und es war ihre letzte Zahlung (``_after_payment_removed``). Alles in
-        einer Transaktion.
+        (storniert von Hand, ohne Stornorechnung) und es war ihre letzte Zahlung
+        (``_after_payment_removed``). Alles in einer Transaktion.
 
         Returns die Rechnungs-ID; ``ValueError``, wenn es die Zuordnung nicht gibt."""
         with self.transaction() as tx:
@@ -724,12 +737,15 @@ class InvoicePaymentsMixin:
                     f'Die Rechnung steht als Forderung in den Büchern, hat aber noch den Status '
                     f'„{status}“ (nicht versendet).')
 
-        for inv, number, gross, due, paid in conn.execute(
+        for inv, number, gross, due, paid, kind in conn.execute(
                 "SELECT i.ID, i.InvoiceNumber, i.SumGross, i.AmountDue, "
-                "COALESCE((SELECT SUM(Amount) FROM InvoicePayments WHERE InvoiceID = i.ID), 0) "
+                "COALESCE((SELECT SUM(Amount) FROM InvoicePayments WHERE InvoiceID = i.ID), 0), "
+                "i.InvoiceKind "
                 f"FROM Invoices i WHERE {is_invoice}{only} ORDER BY i.InvoiceNumber",
                 only_params):
-            if due is None or due < 0 or due != (gross or 0) - paid:
+            # Der Rest einer Stornorechnung ist ihr negativer Betrag (es gibt keine Zahlung): kein Befund
+            overpaid = due is not None and due < 0 and kind != STORNO_KIND
+            if due is None or overpaid or due != (gross or 0) - paid:
                 add('amount_due_mismatch', inv, number,
                     f'Offen sind {euro(due)}, nach den Zuordnungen müssten es '
                     f'{euro((gross or 0) - paid)} sein.')
