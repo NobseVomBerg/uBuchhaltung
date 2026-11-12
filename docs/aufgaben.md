@@ -15,8 +15,8 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 - Leistungszeitraum (von–bis) als Alternative zum Leistungsdatum, z. B. für monatliche Leistungen – PDF-Kopf und E-Rechnung (CII BillingSpecifiedPeriod / UBL InvoicePeriod); braucht Schemaänderung
 - Zahlungssätze einer Zuordnung (Marke `invoice_payment`) im Buchungssatz-Editor schreibgeschützt zeigen – bisher lassen sie sich dort ändern, und das Löschen einer Zeile entfernt die ganze Zuordnung
 - Skonto bei der Zahlungszuordnung (Abzug als eigener Satz, Steuerkorrektur)
-- Stornobeleg: Stornorechnung als eigener Beleg mit eigener Nummer (CII Typ 381 mit Bezug auf die Ursprungsrechnung, UBL CreditNote, PDF „Stornorechnung“), Gegenbuchung der Forderung statt Löschen, Zahlungen auf die neue Rechnung verschieben oder Erstattung; optional „Stornieren und neu ausstellen“. Ersetzt den manuellen Status „storniert“ (heute ohne Beleg und ohne Gegenbuchung); braucht Schemaänderung
-- Gutschrift und Erstattung als negative Zuordnung – erst zusammen mit einem Stornobeleg; bis dahin lassen sich nur Zahlungseingänge zuordnen
+- Zahlungen rund ums Storno: Zahlung einer stornierten Rechnung auf die neue Rechnung verschieben, Erstattung und Gutschrift als negative Zuordnung (bisher lassen sich nur Zahlungseingänge zuordnen), Guthaben des Kunden anzeigen; optional „Stornieren und neu ausstellen“ (`ReplacesInvoiceId`)
+- Stornorechnung nachträglich zu einer von Hand stornierten Rechnung ausstellen (Altbestand, Import)
 - Zurückholen einer versendeten Rechnung entfernt die Forderung auch nach einem DATEV-Export: Hinweis oder Sperre ab dem Export (braucht ein Merkmal „exportiert“ je Buchung; Schemaänderung)
 - Löschen des Entwurfs einer Rechnung aus einem Angebot setzt das Angebot auf „angenommen“, nicht auf den Status davor: den früheren Status am Angebot merken (Schemaänderung)
 - Umsatzsteuer-Voranmeldung (ELSTER)

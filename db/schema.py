@@ -627,8 +627,8 @@ class SchemaMixin:
 
                 -- Fassungen, Versand, Stornobeleg (Schema 2002, Index 50-54; Reihenfolge wie die
                 -- ALTER TABLE der Migration in _run_migrations)
-                InvoiceKind TEXT,                              -- NULL = Rechnung; für den Stornobeleg vorgesehen
-                CancelsInvoiceId INTEGER,                      -- Stornobeleg: die stornierte Rechnung (noch ungenutzt)
+                InvoiceKind TEXT,                              -- NULL = Rechnung, 'storno' = Stornorechnung (seit 2.2.1)
+                CancelsInvoiceId INTEGER,                      -- Stornorechnung: die stornierte Rechnung (seit 2.2.1)
                 ReplacesInvoiceId INTEGER,                     -- neue Rechnung: die ersetzte, stornierte (noch ungenutzt)
                 SentAt DATETIME,                               -- erstmals versendet (UTC); Import und Altbestand: NULL
                 DocumentVersion INTEGER,                       -- Nummer der aktuellen Fassung; NULL = Fassung 1

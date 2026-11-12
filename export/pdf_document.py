@@ -130,7 +130,7 @@ def address_block(company, name, addr_extra, street, postal, city, country=None)
     return [ln for ln in lines if ln]
 
 
-def draw_letterhead(ops, image, title, meta_rows, sender_line, address_lines):
+def draw_letterhead(ops, image, title, meta_rows, sender_line, address_lines, subtitle=None):
     """Briefkopf zeichnen und y unterhalb des Titels zurückgeben.
 
     Aufbau (wie das Eingabeformular):
@@ -138,6 +138,8 @@ def draw_letterhead(ops, image, title, meta_rows, sender_line, address_lines):
       - Meta-Block (Datum, Nr., Kunden-Nr.) oben **rechts**, Label/Wert-Spalten
       - kleine Absenderzeile (kursiv) + Empfängeradresse links
       - Titel (fett) rechtsbündig, beginnend an der Meta-Spalte
+      - optional ``subtitle`` unter dem Titel (Stornorechnung: „zu Rechnung Nr. … vom …“): eine Zeile, die bis
+        zum rechten Rand verkleinert wird – passt sie auch klein nicht, bricht sie an Wortgrenzen um
     """
     # Logo oben links (Bild-XObject; q/cm/Do/Q ist Grafik, hier vor dem Text).
     # Pixelmaße bleiben hochauflösend, die Darstellung wird in eine Punkt-Box
@@ -171,6 +173,21 @@ def draw_letterhead(ops, image, title, meta_rows, sender_line, address_lines):
     # ersten Empfängeradress-Zeile; kleiner als zuvor, aber größer als die
     # Tabellen-Header.
     text(ops, META_LABEL_X, ADDR_TOP, title, font='/F2', size=13)
+    if subtitle:
+        max_w, size = RIGHT - META_LABEL_X, 9
+        while size > 7 and text_width(subtitle, size) > max_w:
+            size -= 0.5
+        lines, current = [], ''
+        for word in subtitle.split(' '):
+            trial = f'{current} {word}'.strip()
+            if current and text_width(trial, size) > max_w:
+                lines.append(current)
+                current = word
+            else:
+                current = trial
+        lines.append(current)
+        for number, line in enumerate(lines):
+            text(ops, META_LABEL_X, ADDR_TOP - 15 - 11 * number, line, size=size)
 
     # Tabelle beginnt unterhalb von Empfängeradresse UND Meta-Block. Zusätzlicher
     # Abstand (~2 Header-Zeilen), damit die Header-Zeile nicht ins Anschriftfenster

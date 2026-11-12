@@ -26,9 +26,9 @@ import sqlite3
 from collections import namedtuple
 
 from .invoice_lock import (
-    CHANGED_MESSAGE, CLOSED, CLOSED_MESSAGE, COLUMN_OF, EDITABLE, FIELDS, FROZEN_STATUSES, LABEL_OF,
+    CHANGED_MESSAGE, CLOSED, COLUMN_OF, EDITABLE, FIELDS, FROZEN_STATUSES, LABEL_OF,
     DocumentNotFound, InvoiceLocked, _Refusal, as_document_version, buyer_snapshot, changed_open_fields,
-    check_changes, document_version, invoice_row, lock_message, status_group)
+    check_changes, closed_message, document_version, invoice_row, is_storno, lock_message, row_group)
 
 CORRECTION_ARCHIVE_FAILED_MESSAGE = ('Die bisherigen Dokumente (PDF/XML) ließen sich nicht in den Ordner '
                                      '„Fassungen“ verschieben – die Rechnung wurde nicht berichtigt.')
@@ -86,10 +86,11 @@ def local_datetime(timestamp):
     return moment.replace(tzinfo=datetime.timezone.utc).astimezone().replace(tzinfo=None)
 
 
-def _is_iso_date(value):
+def is_iso_date(value):
     """Ist ``value`` ein ISO-Datum ``JJJJ-MM-TT`` – ein Kalendertag, den es gibt, Jahr 1900–2200, ohne
     Leerraum und ohne andere Schreibweise (dieselbe Regel wie ``server.period.parse_iso_date``; die
-    Datenbankschicht lädt das Server-Package nicht)?"""
+    Datenbankschicht lädt das Server-Package nicht)? Gilt für das Leistungsdatum einer Berichtigung und das
+    Stornodatum (``cancel_invoice``)."""
     if not isinstance(value, str) or not _ISO_DATE.fullmatch(value):
         return False
     try:
@@ -182,7 +183,8 @@ class InvoiceVersionsMixin:
 
         Scheitert das Verschieben, das Festhalten der Fassung oder das Speichern, liegen die Dokumente wieder dort,
         wo sie waren, und nichts ist geändert. Raises :class:`InvoiceLocked` (mit Klartext) bei einer gesperrten
-        Angabe, einer stornierten Rechnung, einer veralteten Fassung oder einem Fehler beim Speichern,
+        Angabe, einer stornierten Rechnung oder Stornorechnung (beide ganz gesperrt), einer veralteten Fassung
+        oder einem Fehler beim Speichern,
         :class:`CorrectionInvalid` bei einem ungültigen Leistungsdatum, :class:`DocumentNotFound`, wenn es die
         Rechnung nicht gibt. Returns :class:`Correction`."""
         unknown = sorted(key for key in changes if key not in COLUMN_OF)
@@ -196,7 +198,7 @@ class InvoiceVersionsMixin:
                 row = invoice_row(conn, invoice_id)
                 if row is None:
                     raise DocumentNotFound('Rechnung nicht gefunden.')
-                group = status_group(row['Status'])
+                group = row_group(row)
                 if group == EDITABLE:
                     raise InvoiceLocked(CHANGED_MESSAGE)        # inzwischen zurückgeholt: die Maske ist veraltet
                 version = document_version(row)
@@ -214,15 +216,15 @@ class InvoiceVersionsMixin:
                 if problems:
                     payments = conn.execute('SELECT COUNT(*) FROM InvoicePayments WHERE InvoiceID = ?',
                                             (invoice_id,)).fetchone()[0]
-                    raise InvoiceLocked(lock_message(row['Status'], payments), problems)
+                    raise InvoiceLocked(lock_message(row['Status'], payments, is_storno(row)), problems)
                 open_data = changed_open_fields(row, changes)
                 if group == CLOSED:
                     if open_data:
-                        raise InvoiceLocked(CLOSED_MESSAGE, [LABEL_OF[key] or key for key in open_data])
+                        raise InvoiceLocked(closed_message(row), [LABEL_OF[key] or key for key in open_data])
                     return Correction(False, version, 0)
                 if not open_data:
                     return Correction(False, version, 0)
-                if 'delivery_date' in open_data and not _is_iso_date(open_data['delivery_date']):
+                if 'delivery_date' in open_data and not is_iso_date(open_data['delivery_date']):
                     raise CorrectionInvalid(DELIVERY_DATE_MESSAGE)
                 if _as_int(expected_version) != version:
                     raise InvoiceLocked(CHANGED_MESSAGE)

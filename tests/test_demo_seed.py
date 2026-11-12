@@ -10,7 +10,7 @@ import pytest
 import demo
 import demo_seed
 import userctx
-from db import Database
+from db import Database, invoice_storno
 from tests import installation
 
 
@@ -97,18 +97,67 @@ def test_demo_has_open_overdue_and_partial_invoices(tmp_path):
 
 
 def test_invoice_list_statistics_use_gross_and_payments(tmp_path):
-    """Statistik der Rechnungsliste: Brutto-Summe, bezahlt (inkl. Teilzahlung), offen."""
+    """Statistik der Rechnungsliste: Brutto-Summe, bezahlt (inkl. Teilzahlung), offen – ohne Stornorechnungen; eine
+    stornierte Rechnung zählt nur in der Summe, nicht in „bezahlt“ und „offen“."""
     import re
     from server.pages_invoice import PageInvoice
     db = _build(tmp_path, datetime.date(2026, 11, 3))
     con = sqlite3.connect(db.db_name)
-    gross, due = con.execute(
-        "SELECT SUM(SumGross), SUM(AmountDue) FROM Invoices WHERE DocumentType = 'invoice'"
-    ).fetchone()
+    rows = con.execute("SELECT SumGross, AmountDue, Status FROM Invoices "
+                       "WHERE DocumentType = 'invoice' AND InvoiceKind IS NOT 'storno'").fetchall()
+    gross = sum(g for g, _due, _status in rows)
+    paid_expected = sum(g - due for g, due, status in rows if status != 'cancelled')
+    open_expected = sum(due for _g, due, status in rows if status not in ('paid', 'cancelled'))
     html = PageInvoice(db, {"date_from": "2000-01-01", "date_to": "2100-12-31"})
     m = re.search(r"Gesamtsumme: ([\d.,]+) € \| \s*Bezahlt: ([\d.,]+) € \| \s*Offen: ([\d.,]+) €", html)
     assert m, "Statistikzeile nicht gefunden"
     total, paid, open_ = (float(x.replace('.', '').replace(',', '.')) for x in m.groups())
     assert total == pytest.approx(gross / 10000, abs=0.01)
-    assert open_ == pytest.approx(due / 10000, abs=0.01)
-    assert paid == pytest.approx((gross - due) / 10000, abs=0.01) and paid > 0
+    assert open_ == pytest.approx(open_expected / 10000, abs=0.01)
+    assert paid == pytest.approx(paid_expected / 10000, abs=0.01) and paid > 0
+    assert "Stornorechnungen (nicht mitgezählt): 1" in html
+
+
+@pytest.mark.parametrize("today", [
+    datetime.date(2027, 3, 31),      # Storno am 1.1.: Rechnung im Vorjahr, Stornorechnung gleich im neuen Jahr
+    datetime.date(2027, 4, 1),       # Storno am 2.1.
+    datetime.date(2027, 4, 2),
+    datetime.date(2027, 4, 4),
+    datetime.date(2028, 3, 31),      # Schaltjahr
+    datetime.date(2026, 11, 3),      # mitten im Jahr: Rechnung und Stornorechnung im selben Jahr
+])
+def test_demo_credit_note_is_never_dated_in_the_future_and_numbers_stay_consistent(tmp_path, monkeypatch, today):
+    """Das Stornodatum liegt nie nach dem Szenariodatum – auch an Jahresgrenzen, wo die Stornorechnung einen neuen
+    Nummernkreis anlegt und die Rechnungen danach in diesem Kreis weiterzählen. Der Server-Tag ist auf einen früheren
+    Tag gestellt: Das Szenario läuft zu seinem eigenen Datum, die Prüfung „nicht in der Zukunft“ misst daran."""
+    monkeypatch.setattr(invoice_storno, "_today", lambda: datetime.date(2026, 1, 1))
+    db = _build(tmp_path, today)
+    con = sqlite3.connect(db.db_name)
+    ((storno_number, storno_date, original_id),) = con.execute(
+        "SELECT InvoiceNumber, InvoiceDate, CancelsInvoiceId FROM Invoices WHERE InvoiceKind = 'storno'").fetchall()
+    original_date = con.execute("SELECT InvoiceDate FROM Invoices WHERE ID = ?", (original_id,)).fetchone()[0]
+    assert original_date <= storno_date <= today.isoformat()
+    assert storno_number[:2] == storno_date[2:4]                       # Nummer aus dem Kreis des Jahres des Stornodatums
+    # je Jahr zählt der Kreis genau bis zur höchsten vergebenen Nummer: keine doppelte, keine Lücke am Jahreswechsel
+    numbers = [r[0] for r in con.execute("SELECT InvoiceNumber FROM Invoices WHERE InvoiceNumber LIKE '__R___'")]
+    for _id, _type, year, letter, _prefix, current, _desc, _fmt in db.fetch_number_ranges("invoice"):
+        in_year = sorted(int(n[3:]) for n in numbers if n[:3] == f"{year % 100:02d}{letter}")
+        assert in_year == list(range(1, current + 1)), (year, in_year, current)
+
+
+def test_demo_has_a_credit_note_pair_with_a_counter_booking(tmp_path):
+    """Die Demo enthält ein Storno-Paar, entstanden über ``cancel_invoice``: Stornorechnung mit eigener Nummer,
+    Ursprungsrechnung storniert, Forderung und Gegenbuchung heben sich auf."""
+    db = _build(tmp_path, datetime.date(2026, 11, 3))
+    con = sqlite3.connect(db.db_name)
+    ((storno_id, storno_number, original_id, gross),) = con.execute(
+        "SELECT ID, InvoiceNumber, CancelsInvoiceId, SumGross FROM Invoices WHERE InvoiceKind = 'storno'").fetchall()
+    original_number, status, original_gross = con.execute(
+        "SELECT InvoiceNumber, Status, SumGross FROM Invoices WHERE ID = ?", (original_id,)).fetchone()
+    assert status == "cancelled" and gross == -original_gross and gross < 0
+    debtors = con.execute(
+        "SELECT SUM(Amount) FROM Bookings WHERE DocumentNumber IN (?, ?) AND BookingType = 'entry' "
+        "AND COA_ID = (SELECT ID FROM ChartOfAccounts WHERE AccountNumber = 10000)",
+        (original_number, storno_number)).fetchone()[0]
+    assert debtors == 0
+    assert db.find_payment_inconsistencies() == []

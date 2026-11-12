@@ -7,7 +7,7 @@
   ``/quote/pdf_generate``): GET ergibt 405 und ändert nichts, POST braucht Herkunft und Token.
 * Heruntergeladen wird nur, was abgelegt ist (``/quote/pdf_download``); ``/invoice/xml`` gibt es nicht
   mehr, ``/invoice/xml_download`` liefert die abgelegte Datei.
-* Die sieben JSON-Routen (``app._JSON_PATHS``) antworten auf unbrauchbare Bodys mit 400
+* Die acht JSON-Routen (``app._JSON_PATHS``) antworten auf unbrauchbare Bodys mit 400
   „Ungültige Anfrage.“ und danach weiter.
 * Jede Antwort trägt ``X-Content-Type-Options: nosniff`` und ``X-Frame-Options: DENY`` – auch die
   Fehlerantwort auf eine kaputte Anfragezeile.
@@ -286,6 +286,7 @@ HANDLER = {                     # Route -> Handler, den `_post_json_route` aufru
     '/invoice/link-payment': 'handle_link_invoice_payment',
     '/invoice/delete-payment': 'handle_delete_invoice_payment',
     '/invoice/status': 'handle_update_invoice_status',
+    '/invoice/cancel': 'handle_invoice_cancel',
     '/quote/save': 'handle_quote_save',
     '/quote/status': 'handle_update_quote_status',
 }
@@ -299,7 +300,7 @@ INVALID_REQUEST = {'success': False, 'error': 'Ungültige Anfrage.'}
 def test_json_route_expectations_cover_all_json_paths():
     # Kommt eine JSON-Route hinzu, braucht sie hier einen Handler und eine Erwartung
     assert set(HANDLER) == set(server_app._JSON_PATHS)
-    assert len(JSON_ROUTES) == 7
+    assert len(JSON_ROUTES) == 8
 
 
 UNUSABLE_BODIES = {
@@ -334,6 +335,7 @@ EMPTY_OBJECT = {
     '/invoice/status': (400, 'Ungültige Anfrage.'),
     '/invoice/send-email': (400, 'Ungültige Anfrage.'),
     '/invoice/delete-payment': (400, 'Ungültige Anfrage.'),
+    '/invoice/cancel': (400, 'Ungültige Anfrage.'),
     '/quote/status': (400, 'Ungültige Anfrage.'),
     '/invoice/link-payment': (400, 'Ungültige Parameter'),
     '/invoice/save': (200, 'Pflichtfelder fehlen'),

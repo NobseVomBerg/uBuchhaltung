@@ -37,12 +37,15 @@ Buchungssatzes, die er beim Schreiben bekommen hat (``Bookings.EntryForm``, Spal
 „Konto“ im Soll, ist das Kennzeichen S bei positivem Betrag, sonst H. Nur eine Zeile ohne Form
 (per Roh-SQL angelegt) wird mit den Zahlungskonten ``liquid_coa_ids`` eingeordnet; ohne sie
 gilt allein das Vorzeichen. Der BU-Schlüssel (Spalte 8) folgt dagegen der Richtung der
-Geldbewegung: Einnahme = Umsatzsteuer, Ausgabe = Vorsteuer.
+Geldbewegung: Einnahme = Umsatzsteuer, Ausgabe = Vorsteuer. Eine Umbuchung hat keine Geldseite:
+Steht auf einer Seite ein Erlös-, Wartekonto oder Debitoren, gilt immer die Umsatzsteuer-Richtung
+(``_bu_direction``) – auch bei negativem Betrag, wie ihn die Gegenbuchung einer Stornorechnung hat.
 """
 import datetime
 
 from db.invoices import InvoicesMixin
-from db.matching import ENTRY_FORMS, SIDE_COA, SIDE_COUNTER, read_entry_form, soll_side
+from db.matching import (ENTRY_FORMS, FORM_TRANSFER, SIDE_COA, SIDE_COUNTER, read_entry_form,
+                         soll_side)
 
 # ─── Spaltenindizes ───────────────────────────────────────────────────────────
 _C_AMOUNT      = 0
@@ -121,6 +124,38 @@ def _taxrate_to_bu(tax_rate, sh: str = 'S') -> str:
     if keys is None:
         return '0'
     return keys[1] if sh == 'H' else keys[0]
+
+
+#: Konten der Erlösseite (SKR04), nach denen eine Umbuchung ihren BU-Schlüssel richtet: Erlös- und Wartekonten
+#: (4000–4999) und Debitoren (10000–69999), je Bereich von/bis einschließlich
+REVENUE_SIDE_RANGES = ((4000, 4999), (10000, 69999))
+
+
+def _is_revenue_side_account(number) -> bool:
+    """Gehört die Kontonummer zur Erlösseite (``REVENUE_SIDE_RANGES``)? Sie darf Zahl oder Text sein; fehlt sie oder
+    ist sie nicht numerisch, zählt sie nicht."""
+    try:
+        number = int(number)
+    except (TypeError, ValueError):
+        return False
+    return any(low <= number <= high for low, high in REVENUE_SIDE_RANGES)
+
+
+def _bu_direction(form, is_inflow: bool, *account_numbers) -> str:
+    """Richtung für den BU-Schlüssel (``_taxrate_to_bu``): ``'H'`` Umsatzsteuer, ``'S'`` Vorsteuer.
+
+    Bei einer Zahlung ist es die Richtung der Geldbewegung: Einnahme ``'H'``, Ausgabe ``'S'``. Eine Umbuchung
+    (``transfer``) hat keine Geldseite – ihr Vorzeichen sagt nur, welche Seite im Soll steht, die Steuerart ergibt
+    sich aus den Konten. Steht auf einer Seite ein Konto der Erlösseite, gilt deshalb immer ``'H'``, auch bei
+    negativem Betrag: Die Gegenbuchung einer Stornorechnung („Debitoren an Wartekonto“, negativ) bekommt so den
+    Schlüssel der Forderung und dreht sie im Stapel zurück. Jede andere Umbuchung (z. B. Aufwand an Anlagekonto)
+    und jeder Zahlungssatz bleiben beim Vorzeichen.
+
+    ``form``: die gelesene Form des Satzes (``None``, wenn sie unbekannt ist – dann zählt allein das Vorzeichen),
+    ``account_numbers``: die Kontonummern seiner beiden Seiten."""
+    if form == FORM_TRANSFER and any(_is_revenue_side_account(number) for number in account_numbers):
+        return 'H'
+    return 'H' if is_inflow else 'S'
 
 
 def _fmt_amount(value) -> str:
@@ -266,9 +301,11 @@ def export_to_datev(bookings, coa_id_to_number: dict,
         is_inflow = amount_f >= 0
         stored_form = row[22] if len(row) > 22 else None
         if stored_form in ENTRY_FORMS or liquid_coa_ids is not None:
-            side = soll_side(read_entry_form(stored_form, coa_id, counter_coa_id, liquid_coa_ids))
+            form = read_entry_form(stored_form, coa_id, counter_coa_id, liquid_coa_ids)
+            side = soll_side(form)
         else:
-            side = SIDE_COUNTER                  # keine Form, keine Geldkonten: allein das Vorzeichen
+            form = None                          # keine Form, keine Geldkonten: allein das Vorzeichen
+            side = SIDE_COUNTER
         # S/H-Kennzeichen gehört zum Feld „Konto“ und hängt daran, ob dieses Konto bei positivem
         # Betrag im Soll steht (Geldkonto vorne, Umbuchung, Spiegel mit Betrag auf dem Konto) oder
         # im Haben (Zweckkonto vorne: Einnahme = Konto im Haben, Ausgabe = Konto im Soll).
@@ -286,8 +323,10 @@ def export_to_datev(bookings, coa_id_to_number: dict,
         cols[_C_WKZ]         = currency
         cols[_C_KONTO]       = konto
         cols[_C_GEGENKONTO]  = gegenkonto
-        # Der BU-Schlüssel folgt der Richtung der Geldbewegung, nicht dem S/H-Kennzeichen.
-        cols[_C_BU]          = _taxrate_to_bu(tax_rate, 'H' if is_inflow else 'S')
+        # Der BU-Schlüssel folgt der Richtung der Geldbewegung, nicht dem S/H-Kennzeichen; eine Umbuchung mit
+        # Erlös- oder Debitorenkonto schlüsselt immer nach der Umsatzsteuer (_bu_direction).
+        cols[_C_BU]          = _taxrate_to_bu(tax_rate, _bu_direction(
+            form, is_inflow, coa_id_to_number.get(coa_id), coa_id_to_number.get(counter_coa_id)))
         cols[_C_BELEGDATUM]  = _fmt_ddmm(date_booking)
         cols[_C_BELEGFELD1]  = doc_number[:12]
         cols[_C_TEXT]        = text[:60]

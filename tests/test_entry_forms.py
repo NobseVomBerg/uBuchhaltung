@@ -284,8 +284,9 @@ def test_euer_receipt_without_bank_account_counts_as_payment_once_linked(bank_db
 # Das Kennzeichen bezieht sich auf das Feld „Konto“ (= COA):
 #   Geldkonto vorne und Umbuchung: positiver Betrag = S, negativer = H
 #   Zweckkonto vorne (auch mit leerem Gegenkonto), Spiegel, leer: positiv = H, negativ = S
-# BU: nur Steuersatz und Vorzeichen des Betrags (Einnahme 19 % = 3, 7 % = 2;
-#     Ausgabe 19 % = 9, 7 % = 8; sonst 0).
+# BU: Steuersatz und Vorzeichen des Betrags (Einnahme 19 % = 3, 7 % = 2; Ausgabe 19 % = 9, 7 % = 8; sonst 0) –
+#     nur eine Umbuchung mit Erlös-, Wartekonto oder Debitoren schlüsselt immer nach der Umsatzsteuer
+#     (4405 an 4400 mit −119: 3 statt 9; ``export.datev._bu_direction``, Tests in test_datev_export.py).
 _SPALTE_SH, _SPALTE_KONTO, _SPALTE_GEGENKONTO, _SPALTE_BU, _SPALTE_BELEG = 1, 6, 7, 8, 10
 
 # (id, COA, Gegenkonto, Betrag, Steuersatz, (Umsatz, S/H, Konto, Gegenkonto, BU))
@@ -298,7 +299,7 @@ DATEV_FAELLE = [
     ('gegenkonto-leer-ausgabe', 6815, None, '-59.50', 0.19, ('59,50', 'S', '6815', '', '9')),
     ('vorne-leer-ausgabe', None, 6815, '-59.50', 0.19, ('59,50', 'H', '', '6815', '9')),
     ('umbuchung-positiv', 4405, 4400, '119.00', 0.19, ('119,00', 'S', '4405', '4400', '3')),
-    ('umbuchung-negativ', 4405, 4400, '-119.00', 0.19, ('119,00', 'H', '4405', '4400', '9')),
+    ('umbuchung-negativ', 4405, 4400, '-119.00', 0.19, ('119,00', 'H', '4405', '4400', '3')),
     ('privatanteil', 2100, 6805, '7.50', None, ('7,50', 'S', '2100', '6805', '0')),
     ('privatanteil-negativ', 6805, 2100, '-7.50', None, ('7,50', 'H', '6805', '2100', '0')),
     ('spiegel-positiv', 1800, 1810, '500.00', None, ('500,00', 'H', '1800', '1810', '0')),
@@ -370,12 +371,14 @@ def test_datev_marker_follows_the_form_of_the_entry(bank_db, coa, counter, amoun
 def test_datev_without_liquid_ids_keeps_the_sign_rule(bank_db, coa, counter, amount, rate,
                                                       expected):
     """Eine Zeile ohne Form und ohne ``liquid_coa_ids`` (None): Es gilt allein das Vorzeichen,
-    positiv = H, negativ = S."""
+    positiv = H, negativ = S – für das Kennzeichen wie für den BU-Schlüssel (auch eine Umbuchung mit
+    Erlösseite ist ohne Form keine erkennbare Umbuchung)."""
     _book_entry(bank_db, 'DV01', coa, counter, amount, rate)
     _ohne_formen(bank_db)
     umsatz, sh, konto, gegenkonto, bu = _feld(_export(bank_db, with_payment_ids=False)['DV01'])
     assert sh == ('H' if Decimal(amount) >= 0 else 'S')
-    assert (umsatz, konto, gegenkonto, bu) == (expected[0], *expected[2:])
+    assert (umsatz, konto, gegenkonto) == (expected[0], *expected[2:4])
+    assert bu == datev._taxrate_to_bu(rate, 'H' if Decimal(amount) >= 0 else 'S')
 
 
 def test_datev_empty_liquid_set_is_not_the_legacy_rule(bank_db):
@@ -394,23 +397,30 @@ def test_datev_empty_liquid_set_is_not_the_legacy_rule(bank_db):
 
 
 def test_datev_tax_key_is_the_same_with_and_without_liquid_ids(bank_db):
-    """Der BU-Schlüssel hängt nur an Steuersatz und Betragsvorzeichen: In jeder Zeile ändert
+    """Der BU-Schlüssel hängt an Steuersatz und Betragsvorzeichen: In jeder Zeile ändert
     sich allein das Soll/Haben-Kennzeichen (Spalte 1), und zwar genau bei den Formen, in
-    denen das Kennzeichen der Vorzeichen-Regel widerspricht."""
+    denen das Kennzeichen der Vorzeichen-Regel widerspricht. Einzige Ausnahme beim BU-Schlüssel:
+    die negative Umbuchung mit Erlösseite („4405 an 4400“, −119) – erst mit den Zahlungskonten
+    ist sie als Umbuchung erkennbar und schlüsselt nach der Umsatzsteuer, ohne bleibt das Vorzeichen."""
     _alle_faelle_buchen(bank_db)
     _ohne_formen(bank_db)
     mit = _export(bank_db)
     ohne = _export(bank_db, with_payment_ids=False)
 
     assert mit.keys() == ohne.keys() and len(mit) == len(DATEV_FAELLE)
-    geaendert = set()
+    geaendert, anderer_bu = set(), set()
     for doc, fields in mit.items():
         other = ohne[doc]
-        assert fields[_SPALTE_BU] == other[_SPALTE_BU], doc
-        assert [v for i, v in enumerate(fields) if i != _SPALTE_SH] == \
-               [v for i, v in enumerate(other) if i != _SPALTE_SH], doc
+        if fields[_SPALTE_BU] != other[_SPALTE_BU]:
+            anderer_bu.add(doc)
+        assert [v for i, v in enumerate(fields) if i not in (_SPALTE_SH, _SPALTE_BU)] == \
+               [v for i, v in enumerate(other) if i not in (_SPALTE_SH, _SPALTE_BU)], doc
         if fields[_SPALTE_SH] != other[_SPALTE_SH]:
             geaendert.add(doc)
+    negativ = next(f'DV{number:02d}' for number, (fall_id, *_rest) in enumerate(DATEV_FAELLE, start=1)
+                   if fall_id == 'umbuchung-negativ')
+    assert anderer_bu == {negativ}
+    assert (mit[negativ][_SPALTE_BU], ohne[negativ][_SPALTE_BU]) == ('3', '9')
 
     erwartet = {f'DV{number:02d}'
                 for number, (_id, _coa, _counter, amount, _rate, expected)

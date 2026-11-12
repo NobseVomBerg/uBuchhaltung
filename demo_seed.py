@@ -13,6 +13,8 @@ DATEV-Export dieselbe Logik zeigen wie bei echten Daten:
   *Zahlung* und *Umbuchung* Wartekonto→Erlöskonto, Status *bezahlt*/*Teilzahlung*.
   Keine Zahlung vor dem Rechnungsdatum; Zahlungen in der Zukunft entfallen
   (Rechnung bleibt offen bzw. überfällig).
+* Storno: Eine Rechnung mit ``cancel_after_days`` wird nach so vielen Tagen über ``Database.cancel_invoice``
+  storniert (Stornorechnung mit eigener Nummer, Gegenbuchung der Forderung) – die Demo enthält so ein Storno-Paar.
 * Ausgaben/Splits: Bankbewegung mit Buchungssätzen als Kinder
   (``ParentBooking_ID``), Splits wie im Split-Editor.
 
@@ -202,6 +204,26 @@ class DemoScenario:
             except Exception as exc:                       # PDF ist Beiwerk
                 print(f"Demo: PDF zu {number} nicht erzeugt: {exc}")
             self._pay(invoice_id, number, customers[spec["customer_number"]], inv_date, spec)
+            self._cancel(invoice_id, number, inv_date, spec)
+
+    def _cancel(self, invoice_id, number, inv_date, spec):
+        """Storno wie im UI: Stornorechnung samt Gegenbuchung, danach ihr PDF/XRechnung. Nur an einem Tag, der nicht
+        in der Zukunft liegt – gemessen am Szenariodatum, das für die Prüfung des Stornodatums auch ``today`` der
+        Datenbankschicht ist (ein Szenario mit späterem Datum als dem des Servers bleibt möglich)."""
+        after = spec.get("cancel_after_days")
+        if after is None:
+            return
+        day = inv_date + datetime.timedelta(days=after)
+        if day > self.today:
+            return
+        result = self.db.cancel_invoice(invoice_id, day.isoformat(), "demo", today=self.today)
+        if not result.ok:
+            raise RuntimeError(f"Storno zu {number}: {result.message}")
+        from export.invoice_files import generate_invoice_documents
+        try:
+            generate_invoice_documents(self.db, result.storno_id, overwrite_sent=True)
+        except Exception as exc:                           # PDF ist Beiwerk
+            print(f"Demo: PDF zu {result.storno_number} nicht erzeugt: {exc}")
 
     def _pay(self, invoice_id, number, customer, inv_date, spec):
         from server import handlers
