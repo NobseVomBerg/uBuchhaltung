@@ -21,6 +21,16 @@ def _attr(s):
     return _html.escape(str(s or ''), quote=True).replace("'", '&#39;')
 
 
+def _rate_text(rate):
+    """Steuersatz, wie der Editor ihn zeigt (Spalte „St.%“): ``0.19`` → ``'19'``, keiner → ``''``."""
+    return f"{round(float(rate) * 100, 2):g}" if rate else ''
+
+
+def _tax_text(tax):
+    """Steuerbetrag, wie der Editor ihn zeigt (Spalte „St.-Betrag“): zwei Stellen, keiner → ``''``."""
+    return '' if tax is None else f"{tax:.2f}"
+
+
 # Spaltenindizes in Bookings (SELECT *):
 # [0]  ID            [1]  DateBooking   [2]  DateTax       [3]  (unbenutzt)
 # [4]  Account_ID    [5]  ForeignBankAccount               [6]  RecipientClient
@@ -149,7 +159,10 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         adopt_candidates = db.get_unlinked_entry_bookings(
             around_date=edit_trans[1], limit=50)
         parent_coas = account_coas.get(edit_trans[4])      # SKR-Konto der Bankbewegung
-        for c in db.get_child_bookings_for_bank(edit_trans[0]):
+        children = db.get_child_bookings_for_bank(edit_trans[0])
+        # Importierte Sätze und AfA-Buchungen löst das Entfernen nur von der Bankbewegung
+        detachable = db.detachable_split_rows([c[0] for c in children])
+        for c in children:
             # Reine Doppik-Spiegel (beide Seiten eigene Bank-/Kassenkonten) gehören nicht in den
             # Editor – ein Spiegel mit 1460 schon
             if is_mirror_row(c[9], c[1], c[2], bank_coa_ids):
@@ -164,6 +177,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 'id': c[0], 'coa_id': purpose_coa, 'amount': c[4],
                 'tax_rate': c[5], 'tax_amount': c[6],
                 'docnr': c[7] or '', 'text': c[8] or '',
+                'detach': c[0] in detachable,
                 'nobank': nobank, 'counter_coa_id': c[2] if nobank else None,
                 # Was der Satz auf dem Konto der Bankbewegung bewegt, im Vergleich zum Betrag
                 # (1, -1 oder 0): so rechnet der Editor wie die Prüfung auf dem Server
@@ -372,11 +386,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         def _split_row(row=None, template=False):
             rid = '' if template or not row else row['id']
             amount = '' if template or not row else f"{row['amount']:.2f}"
-            rate = ''
-            if row and not template and row['tax_rate']:
-                rate = f"{round(float(row['tax_rate']) * 100, 2):g}"
-            tax = '' if template or not row or row['tax_amount'] is None \
-                else f"{row['tax_amount']:.2f}"
+            rate = '' if template or not row else _rate_text(row['tax_rate'])
+            tax = '' if template or not row else _tax_text(row['tax_amount'])
             docnr = '' if template or not row else _attr(row['docnr'])
             text = '' if template or not row else _attr(row['text'])
             sel_coa = row['coa_id'] if row and not template else None
@@ -413,6 +424,14 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             # kopierte Umbuchung ihr Ziel nicht mitbringen.
             hint = (f'<input type="hidden" name="split_counter_coa"'
                     f' value="{counter or ""}">') + hint
+            # Was das ✕ beim Speichern tut (Database.remove_split_row): Eine importierte Buchung und
+            # eine AfA-Buchung bleiben bestehen und werden nur gelöst, jede andere wird gelöscht.
+            if template:
+                remove_title = 'Teilbuchung entfernen'
+            elif row and row.get('detach'):
+                remove_title = 'Von der Bankbewegung lösen – die Buchung bleibt bestehen'
+            else:
+                remove_title = 'Teilbuchung entfernen – die Buchung wird beim Speichern gelöscht'
             # Spaltenfolge: Verwendungszweck zuerst – er benennt die Zeile.
             # Die Feldnamen bleiben; gelesen wird zeilenweise über den Index,
             # die Reihenfolge INNERHALB einer Zeile spielt dafür keine Rolle.
@@ -434,7 +453,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 f' name="split_tax_amount" value="{tax}"></td>'
                 f'<td><input type="text" name="split_docnr" value="{docnr}"></td>'
                 f'<td><a href="javascript:void(0)" class="action-icon delete-icon"'
-                f' title="Teilbuchung entfernen" onclick="splitRemove(this)">&#10005;</a></td>'
+                f' title="{remove_title}" onclick="splitRemove(this)">&#10005;</a></td>'
                 f'</tr>')
 
         rows_html = ''.join(_split_row(r) for r in split_rows)
@@ -458,9 +477,11 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             # Geldkonto vorne: Das Kontofeld des Editors nimmt das Zweckkonto (sonst hieße „1460 an
             # 4400“ nach dem Zuordnen „1460 an 1460“)
             purpose = c[7] if purpose_in_counter(c[8], c[6], c[7], bank_coa_ids) else c[6]
+            # Steuersatz und -betrag kommen mit in die Zeile (splitAdopt): Die Buchung behält ihre Steuer
             adopt_opts += (f'<option value="{c[0]}" data-amount="{c[2]:.2f}"'
                            f' data-docnr="{_attr(c[3])}" data-text="{_attr(c[4])}"'
-                           f' data-coa="{purpose or ""}">{_html.escape(label)}</option>')
+                           f' data-coa="{purpose or ""}" data-rate="{_attr(_rate_text(c[9]))}"'
+                           f' data-tax="{_attr(_tax_text(c[10]))}">{_html.escape(label)}</option>')
         if adopt_opts:
             adopt_widget = (
                 '<select id="adoptSelect" style="max-width:340px;">'
@@ -562,7 +583,9 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 }}
                 function splitAdopt() {{
                     // Bestehende Buchung per ID zuordnen: Zeile mit ihrer ID
-                    // anlegen; das Speichern setzt ParentBooking_ID.
+                    // anlegen; das Speichern setzt ParentBooking_ID. Auch Steuersatz
+                    // und -betrag kommen in die Zeile – sonst bliebe sie leer und die
+                    // Buchung verlöre ihre Steuer.
                     const sel = document.getElementById('adoptSelect');
                     const opt = sel.options[sel.selectedIndex];
                     if (!opt || !opt.value) return;
@@ -574,6 +597,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     row.querySelector('.splitAmount').value = opt.dataset.amount;
                     row.querySelector('[name=split_docnr]').value = opt.dataset.docnr || '';
                     row.querySelector('[name=split_text]').value = opt.dataset.text || '';
+                    row.querySelector('[name=split_tax_rate]').value = opt.dataset.rate || '';
+                    row.querySelector('[name=split_tax_amount]').value = opt.dataset.tax || '';
                     const coaSel = row.querySelector('[name=split_coa]');
                     if (opt.dataset.coa) coaSel.value = opt.dataset.coa;
                     tpl.parentNode.insertBefore(row, tpl);

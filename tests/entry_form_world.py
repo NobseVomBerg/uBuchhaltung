@@ -236,8 +236,10 @@ def add_roundtrip_rows(db):
     es ist – die Sollwerte der Migration hängen daran): Sätze unter einer Bankbewegung, die das Konto
     der Bank und ein Konto ohne eigenes Bankkonto (1460, 1050) zusammenführen, in beiden
     Reihenfolgen, und eigenständige Sätze mit einem Geldkonto vorne, die der Editor als „vorhandene
-    Buchung“ anbietet. Roh geschrieben, ohne Form (wie 2.0.x): in einer migrierten Datenbank tragen
-    sie danach ihre Form, in einer frisch gebauten bleiben sie Zeilen ohne Form."""
+    Buchung“ anbietet, dazu eigenständige Buchungen mit eigener Steuer, eigenem Steuerdatum, Empfänger,
+    Kategorie und Quellgruppe und importierte Sätze mit jeder Geldseite (leer, Bank der Bewegung, andere
+    Bank, Kasse, Verrechnungskonto). Roh geschrieben, ohne Form (wie 2.0.x): in einer migrierten
+    Datenbank tragen sie danach ihre Form, in einer frisch gebauten bleiben sie Zeilen ohne Form."""
     alpha = _account_id(db, 'Giro Alpha')
     for date, amount, rows in (
             ('2026-07-01', '70.00', [('RT-1', 1800, 1460, '70.00')]),     # Bank an Verrechnungskonto
@@ -252,6 +254,43 @@ def add_roundtrip_rows(db):
     _raw_entry(db, '2026-07-06', 1810, 4400, '12.00', 'RT-7')              # Geldkonto Giro Beta vorne
     _raw_entry(db, '2026-07-06', 1800, 4400, '11.00', 'RT-8')              # Geldkonto Giro Alpha vorne
     _raw_entry(db, '2026-07-06', 1460, 4400, '9.00', 'RT-9')               # Verrechnungskonto vorne
+
+    # Eigenständige Buchungen mit allem, was ihnen selbst gehört – Steuer, Steuerdatum, Empfänger,
+    # Kategorie, Quellgruppe, Status. „Vorhandene Buchung zuordnen“, erneut Speichern und die Maske dürfen
+    # an keiner dieser Spalten etwas ändern. Ohne Kontakt: Die Bankmaske zeigt den Kontakt des ersten Satzes
+    # an und schreibt ihn beim Speichern auf eine Bankbewegung ohne Kontakt – davon handelt dieser Test nicht.
+    with closing(db._get_connection()) as conn:
+        category = conn.execute("INSERT INTO Categories (Name, Text) VALUES ('Büro', 'Kategorie A')").lastrowid
+        conn.commit()
+    for document, date, coa_number, counter_number, amount, rate, tax, group in (
+            ('RT-10', '2026-07-08', 6815, 1800, '-119.00', 0.19, '-19.00', None),      # Aufwand 19 %
+            ('RT-11', '2026-07-09', 4300, 1800, '107.00', 0.07, '7.00', None),         # Erlös 7 %
+            ('RT-12', '2026-07-10', 1810, 4300, '53.50', 0.07, '3.50', 'sg-rt-12')):   # Geldkonto vorne, aus WISO
+        booking_id = _raw_entry(db, date, coa_number, counter_number, amount, document,
+                                tax_rate=rate, tax_amount=tax)
+        with closing(db._get_connection()) as conn:
+            conn.execute("UPDATE Bookings SET DateTax = ?, RecipientClient = ?, Category_ID = ?, "
+                         "SourceGroup = ?, Status = 'offen' WHERE ID = ?",
+                         ('2026-07-20', 'Lieferant Eins', category, group, booking_id))
+            conn.commit()
+
+    # Importierte Sätze (Quellklammer) mit jeder Geldseite: leer, das Konto der Bewegung (Giro Alpha), ein anderes
+    # eigenes Bankkonto (Giro Beta), die Kasse (1600), das Verrechnungskonto – das Geldkonto hinten („6850 an …“,
+    # Betrag −119,00) und vorne („… an 4400“, +119,00), je mit 19 % Steuer. „Vorhandene Buchung zuordnen“ und das ✕
+    # lassen jeden dieser Sätze, wie er war – nur ein leeres Gegenkonto füllt das Zuordnen mit dem Konto der Bank
+    # (siehe test_entry_form_roundtrip.py). Ein leeres Geldkonto vorne fehlt hier mit Absicht: Dort ersetzt das
+    # Zuordnen das Zweckkonto hinten durch das Konto der Bank (wie bei ALT-11), und das ✕ nimmt es nicht zurück.
+    for kind, rows in (('P', [(6850, side, '-119.00', '-19.00') for side in (None, 1800, 1810, 1600, 1460)]),
+                       ('L', [(side, 4400, '119.00', '19.00') for side in (1800, 1810, 1600, 1460)])):
+        for coa_number, counter_number, amount, tax in rows:
+            side = counter_number if kind == 'P' else coa_number
+            document = f'MS-{kind}-{side or "leer"}'
+            booking_id = _raw_entry(db, '2026-07-11', coa_number, counter_number, amount, document,
+                                    tax_rate=0.19, tax_amount=tax)
+            with closing(db._get_connection()) as conn:
+                conn.execute('UPDATE Bookings SET SourceGroup = ? WHERE ID = ?',
+                             (f'sg-{document.lower()}', booking_id))
+                conn.commit()
 
 
 def to_state_2000(db_path):
