@@ -159,7 +159,10 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         adopt_candidates = db.get_unlinked_entry_bookings(
             around_date=edit_trans[1], limit=50)
         parent_coas = account_coas.get(edit_trans[4])      # SKR-Konto der Bankbewegung
-        for c in db.get_child_bookings_for_bank(edit_trans[0]):
+        children = db.get_child_bookings_for_bank(edit_trans[0])
+        # Importierte Sätze und AfA-Buchungen löst das Entfernen nur von der Bankbewegung
+        detachable = db.detachable_split_rows([c[0] for c in children])
+        for c in children:
             # Reine Doppik-Spiegel (beide Seiten eigene Bank-/Kassenkonten) gehören nicht in den
             # Editor – ein Spiegel mit 1460 schon
             if is_mirror_row(c[9], c[1], c[2], bank_coa_ids):
@@ -174,6 +177,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 'id': c[0], 'coa_id': purpose_coa, 'amount': c[4],
                 'tax_rate': c[5], 'tax_amount': c[6],
                 'docnr': c[7] or '', 'text': c[8] or '',
+                'detach': c[0] in detachable,
                 'nobank': nobank, 'counter_coa_id': c[2] if nobank else None,
                 # Was der Satz auf dem Konto der Bankbewegung bewegt, im Vergleich zum Betrag
                 # (1, -1 oder 0): so rechnet der Editor wie die Prüfung auf dem Server
@@ -420,6 +424,14 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             # kopierte Umbuchung ihr Ziel nicht mitbringen.
             hint = (f'<input type="hidden" name="split_counter_coa"'
                     f' value="{counter or ""}">') + hint
+            # Was das ✕ beim Speichern tut (Database.remove_split_row): Eine importierte Buchung und
+            # eine AfA-Buchung bleiben bestehen und werden nur gelöst, jede andere wird gelöscht.
+            if template:
+                remove_title = 'Teilbuchung entfernen'
+            elif row and row.get('detach'):
+                remove_title = 'Von der Bankbewegung lösen – die Buchung bleibt bestehen'
+            else:
+                remove_title = 'Teilbuchung entfernen – die Buchung wird beim Speichern gelöscht'
             # Spaltenfolge: Verwendungszweck zuerst – er benennt die Zeile.
             # Die Feldnamen bleiben; gelesen wird zeilenweise über den Index,
             # die Reihenfolge INNERHALB einer Zeile spielt dafür keine Rolle.
@@ -441,7 +453,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 f' name="split_tax_amount" value="{tax}"></td>'
                 f'<td><input type="text" name="split_docnr" value="{docnr}"></td>'
                 f'<td><a href="javascript:void(0)" class="action-icon delete-icon"'
-                f' title="Teilbuchung entfernen" onclick="splitRemove(this)">&#10005;</a></td>'
+                f' title="{remove_title}" onclick="splitRemove(this)">&#10005;</a></td>'
                 f'</tr>')
 
         rows_html = ''.join(_split_row(r) for r in split_rows)

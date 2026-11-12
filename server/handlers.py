@@ -362,8 +362,9 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
 
     Die Zeilen kommen als gleichnamige Felder (split_id, split_amount, …); ein
     leeres split_id legt eine neue Teilbuchung an, weggelassene IDs werden
-    gelöscht. Die Summe wird NICHT erzwungen – Teilerfassung ist erlaubt und
-    an der dreistufigen Statusanzeige der Übersicht erkennbar.
+    entfernt (``_write_split_rows``: gelöscht, ein importierter Satz oder eine
+    AfA-Buchung nur abgehängt). Die Summe wird NICHT erzwungen – Teilerfassung
+    ist erlaubt und an der dreistufigen Statusanzeige der Übersicht erkennbar.
 
     Neue Zeilen bekommen Datum, Steuerdatum, Empfänger und Währung der
     Bankbewegung; Konto, Steuer, Beleg-Nr. und Text gehören der Teilbuchung. Ein
@@ -497,7 +498,9 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
 
 
 def _write_split_rows(db, bank_id, planned):
-    """Geplante Buchungssätze (aus ``_plan_split_rows``) schreiben und entfernte Zeilen löschen."""
+    """Geplante Buchungssätze (aus ``_plan_split_rows``) schreiben; die Sätze der Zeilen, die der Nutzer
+    entfernt hat, übernimmt ``Database.remove_split_row``: gelöscht, ein Satz aber, der nicht im Editor
+    entstanden ist (Import, AfA-Buchung), nur von der Bankbewegung abgehängt."""
     keep_ids = set()
     for rid, fields, adopt in planned:
         if rid is not None:
@@ -515,7 +518,7 @@ def _write_split_rows(db, bank_id, planned):
                                        **fields)
             keep_ids.add(new_id)
 
-    # Entfernte Zeilen löschen – Doppik-Spiegel (COA und Gegenkonto beide
+    # Vom Nutzer entfernte Zeilen – Doppik-Spiegel (COA und Gegenkonto beide
     # liquide) tauchen im Editor nicht auf und bleiben deshalb unberührt.
     bank_coa_ids = db.get_bank_coa_ids()
     for child in db.get_child_bookings_for_bank(bank_id):
@@ -524,7 +527,7 @@ def _write_split_rows(db, bank_id, planned):
             continue
         if is_mirror_row(c_form, c_coa, c_counter, bank_coa_ids):
             continue                      # Doppik-Spiegel: nicht anfassen
-        db.delete_transaction(child_id)
+        db.remove_split_row(child_id)
 
 
 def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
