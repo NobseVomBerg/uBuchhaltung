@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 unsix IT Engineering
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
-"""Gemeinsame Hilfen der Tests zu Rechnungen: Sperre, Nummern, Löschen (2.1.2).
+"""Gemeinsame Hilfen der Tests zu Rechnungen: Sperre, Nummern, Löschen (2.1.2), Berichtigen (2.2.0).
 
 Eine kleine Welt (zwei eigene Firmen, zwei Kunden, zwei Bankkonten), das Formular einer Rechnung mit
 zwei Positionen und Hilfen, um Rechnungen in einen Status zu versetzen und den Stand der Tabellen zu
@@ -91,7 +91,9 @@ def add_payment(w, invoice_id, amount=50.0):
 
 
 def snapshot(db):
-    return state(db, 'Invoices', 'InvoiceItems', 'InvoicePayments', 'Bookings', 'NumberRanges')
+    """Alles, was eine Rechnungsoperation schreiben kann – samt Protokoll und abgelegten Fassungen."""
+    return state(db, 'Invoices', 'InvoiceItems', 'InvoicePayments', 'Bookings', 'NumberRanges',
+                 'InvoiceCorrections', 'InvoiceDocumentVersions')
 
 
 def columns(db, invoice_id):
@@ -104,10 +106,15 @@ OPEN_COLUMNS = ('PaymentTerms', 'OrderNumber', 'BuyerReference', 'BuyerRouteID',
                 'BuyerName', 'BuyerCompany', 'BuyerStreet', 'BuyerPostalCode', 'BuyerCity', 'BuyerCountry')
 
 
+# Was eine Berichtigung nebenbei schreibt: der Zeitstempel, die Nummer der Fassung und die Dokumentpfade
+CORRECTION_COLUMNS = ('UpdatedAt', 'DocumentVersion', 'PDFPath', 'XMLPath')
+
+
 def finance(db, invoice_id):
-    """Alles, was bei einer versendeten Rechnung gesperrt ist: die Zeile ohne die änderbaren Felder,
-    dazu die Positionen."""
-    kept = {k: v for k, v in columns(db, invoice_id).items() if k not in OPEN_COLUMNS and k != 'UpdatedAt'}
+    """Alles, was bei einer versendeten Rechnung gesperrt ist: die Zeile ohne die änderbaren Felder (und ohne
+    das, was eine Berichtigung nebenbei schreibt), dazu die Positionen."""
+    kept = {k: v for k, v in columns(db, invoice_id).items()
+            if k not in OPEN_COLUMNS and k not in CORRECTION_COLUMNS}
     with contextlib.closing(sqlite3.connect(db.db_name)) as con:
         kept['items'] = con.execute('SELECT * FROM InvoiceItems WHERE InvoiceId = ? ORDER BY ID',
                                     (invoice_id,)).fetchall()
@@ -120,6 +127,46 @@ def set_invoice_status(invoice_id, status):
     return code, json.loads(body)
 
 
+
+
+def document_version(db, invoice_id):
+    """Die Nummer der aktuellen Fassung (NULL in der Datenbank gilt als 1)."""
+    return columns(db, invoice_id)['DocumentVersion'] or 1
+
+
+def save_open(w, invoice_id, version=None, **fields):
+    """Eine versendete Rechnung berichtigen, wie die Maske es tut: nur die genannten Felder, dazu die Fassung,
+    die sie geladen hat (``version``; Vorgabe: die aktuelle). Liefert die Antwort als Dict."""
+    return save({'invoiceId': invoice_id,
+                 'documentVersion': document_version(w.db, invoice_id) if version is None else version,
+                 **fields})
+
+
+def query_rows(db, sql, *args):
+    """Zeilen einer Abfrage als Dicts (Spaltenname -> Wert)."""
+    with contextlib.closing(sqlite3.connect(db.db_name)) as con:
+        con.row_factory = sqlite3.Row
+        return [dict(r) for r in con.execute(sql, args)]
+
+
+def run_sql(db, statement, *args):
+    """Eine Anweisung an der App vorbei ausführen (wie die SQL-Konsole oder eine zurückgespielte Sicherung)."""
+    with contextlib.closing(sqlite3.connect(db.db_name)) as con:
+        con.execute(statement, args)
+        con.commit()
+
+
+def protocol(db, invoice_id, action=None):
+    """Das Protokoll der Rechnung (``InvoiceCorrections``), älteste Zeile zuerst; mit ``action`` nur diese Art."""
+    where, args = ('AND Action = ?', (action,)) if action else ('', ())
+    return query_rows(db, f'SELECT * FROM InvoiceCorrections WHERE InvoiceID = ? {where} ORDER BY ID',
+                      invoice_id, *args)
+
+
+def archived_versions(db, invoice_id):
+    """Die abgelegten Fassungen der Rechnung (``InvoiceDocumentVersions``), ältere zuerst."""
+    return query_rows(db, 'SELECT * FROM InvoiceDocumentVersions WHERE InvoiceID = ? ORDER BY Version, Kind',
+                      invoice_id)
 
 
 def booking_count(db):

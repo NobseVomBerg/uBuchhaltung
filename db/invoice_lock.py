@@ -6,16 +6,19 @@
 Es gibt genau EINE Stelle, die entscheidet, was an einer gespeicherten Rechnung noch änderbar
 ist und welchen Status sie als Nächstes bekommen darf. Jeder Schreibweg auf eine Rechnung geht
 darüber: ``update_invoice_fields`` (Speichern im Formular) und ``set_invoice_status``
-(Statuswechsel). Zwischenstand bis zum geführten Berichtigen mit Fassungen und Protokoll und bis
-zum Stornobeleg (``docs/aufgaben.md``).
+(Statuswechsel). Das Berichtigen einer versendeten Rechnung (``correct_invoice``, db/invoice_versions.py)
+ruft ``update_invoice_fields`` auf und legt dazu Fassung und Protokoll an. Der Stornobeleg steht in
+``docs/aufgaben.md``.
 
 Statusgruppen:
 
-* **bearbeitbar** (``draft``, ``finalized``): alles änderbar.
+* **bearbeitbar** (``draft``, ``finalized``): alles änderbar – außer der Rechnungsnummer einer Rechnung, die
+  schon einmal versendet war (``was_sent_before``).
 * **gesperrt** (``sent``, ``overdue``, ``partial_payment``, ``partial``, ``paid``): Finanzangaben –
   Nummer, Rechnungsdatum, Kunde, eigene Firma, Positionen, Steuer, Summen, Fälligkeit, Skonto,
-  Bank und Käufer-USt-IdNr. – sind gesperrt. Weiter änderbar bleiben Begleittext, Anschrift des
-  Kunden, Bestellnummer, Leitweg-ID und Leistungsdatum (ohne Fassung und Protokoll).
+  Bank und Käufer-USt-IdNr. – sind gesperrt. Weiter änderbar bleiben Zahlungshinweis, Anschrift des
+  Kunden, Bestellnummer, Leitweg-ID und Leistungsdatum – aber nur als Berichtigung, mit neuer Fassung
+  und Protokoll.
 * **abgeschlossen** (``cancelled``): nichts mehr änderbar.
 
 Verglichen wird mit dem gespeicherten Stand, in der Transaktion des Schreibens (``BEGIN
@@ -103,7 +106,7 @@ FIELDS = (
     ('tax_amount', 'TaxAmount', LOCKED_DERIVED, None),
     ('sum_gross', 'SumGross', LOCKED_DERIVED, None),
     ('amount_due', 'AmountDue', LOCKED_DERIVED, None),
-    ('payment_terms', 'PaymentTerms', OPEN_INPUT, 'Begleittext'),
+    ('payment_terms', 'PaymentTerms', OPEN_INPUT, 'Zahlungshinweis'),
     ('order_number', 'OrderNumber', OPEN_INPUT, 'Bestellnummer'),
     ('buyer_reference', 'BuyerReference', OPEN_INPUT, 'Leitweg-ID'),
     ('buyer_route_id', 'BuyerRouteID', OPEN_INPUT, 'Leitweg-ID'),
@@ -127,6 +130,7 @@ LOCKED_UNPAID_HINT = 'Ohne zugeordnete Zahlung lässt sie sich über den Status 
 LOCKED_PAID_HINT = 'Zu dieser Rechnung sind Zahlungen zugeordnet.'
 CLOSED_MESSAGE = 'Stornierte Rechnung: Sie lässt sich nicht mehr ändern.'
 CHANGED_MESSAGE = 'Die Rechnung wurde inzwischen geändert – bitte die Seite neu laden.'
+NUMBER_KEPT_MESSAGE = 'Die Rechnung war bereits versendet – ihre Nummer bleibt.'
 # Zurückholen (versendet/überfällig → Entwurf/abgeschlossen) nimmt die Forderungsbuchung mit: nur die, die die
 # App selbst gebucht hat und die an nichts hängt. Alles andere bleibt stehen – dann bleibt auch die Rechnung
 REOPEN_IMPORTED_MESSAGE = ('Die Buchungen dieser Rechnung stammen aus einem Import – sie lässt sich nicht '
@@ -139,6 +143,11 @@ REOPEN_PAYMENT_MESSAGE = ('Zu dieser Rechnung gibt es Zahlungsbuchungen – sie 
                           'zurückholen. Erst die Zuordnung entfernen.')
 ARCHIVE_FAILED_MESSAGE = ('Die versendeten Dokumente (PDF/XML) ließen sich nicht in den Ordner „Fassungen“ '
                           'verschieben – der Status wurde nicht geändert.')
+
+
+def document_version(row):
+    """Die Nummer der aktuellen Fassung einer Rechnung (``Invoices.DocumentVersion``; NULL gilt als 1)."""
+    return row.get('DocumentVersion') or 1
 
 
 class DocumentNotFound(LookupError):
@@ -263,7 +272,7 @@ def _items_differ(stored_rows, items):
 
 
 def changed_open_fields(row, changes):
-    """Von den Angaben in ``changes`` die änderbaren (Begleittext, Bestellnummer, Leitweg-ID,
+    """Von den Angaben in ``changes`` die änderbaren (Zahlungshinweis, Bestellnummer, Leitweg-ID,
     Leistungsdatum, Anschrift), deren Wert vom gespeicherten abweicht. Verglichen wird genau
     (leer und ``None`` sind dasselbe): Ein unverändertes Speichern schreibt keine Spalte – auch
     nicht den Leerwert an die Stelle von ``NULL`` –, eine Änderung nur am Zeilenumbruch aber schon."""
@@ -292,7 +301,7 @@ def check_changes(row, changes, stored_items=None, items=None):
 
     ``row``: die gespeicherte Rechnung (Spalte → Wert), ``changes``: die beabsichtigten Werte
     (Schlüssel wie bei ``insert_invoice``). Es zählen nur die Schlüssel, die ``changes`` nennt –
-    wer nur den Begleittext schickt, ändert sonst nichts. Eine bearbeitbare Rechnung hat nichts
+    wer nur den Zahlungshinweis schickt, ändert sonst nichts. Eine bearbeitbare Rechnung hat nichts
     Gesperrtes; bei einer gesperrten zählen die Finanzangaben, bei einer abgeschlossenen auch die
     übrigen Eingaben. Abgeleitete Werte (Absender, Bank, Summen, Anschrift) werden nicht
     verglichen: Sie ändern sich nur mit der Eingabe, aus der sie stammen.
@@ -425,7 +434,7 @@ def _begin_immediate(conn):
 
 
 class InvoiceLockMixin:
-    def update_invoice_fields(self, tx, invoice_id, invoice_data, items=None):
+    def update_invoice_fields(self, tx, invoice_id, invoice_data, items=None, correcting=False):
         """Eine gespeicherte Rechnung in der Transaktion ``tx`` aktualisieren – die einzige Stelle,
         die den Kopf einer Rechnung beim Speichern im Formular überschreibt.
 
@@ -433,9 +442,12 @@ class InvoiceLockMixin:
         unbekannte Schlüssel gibt es hier nicht), ``items``: die Positionen wie bei
         ``insert_invoice_item`` (ohne ``invoice_id``) oder ``None`` für „Positionen unverändert“.
 
-        * bearbeitbar: alle Felder werden geschrieben, die Positionen ersetzt;
+        * bearbeitbar: alle Felder werden geschrieben, die Positionen ersetzt – die Rechnungsnummer
+          nicht mehr, sobald die Rechnung schon einmal versendet war (:class:`InvoiceLocked`);
         * gesperrt: ändert ``check_changes`` etwas Gesperrtes, bleibt alles, wie es ist
-          (:class:`InvoiceLocked`); sonst werden nur die änderbaren Felder geschrieben;
+          (:class:`InvoiceLocked`); sonst werden die änderbaren Felder geschrieben – aber nur mit
+          ``correcting=True``, dem Aufruf aus ``correct_invoice``, das Fassung und Protokoll anlegt; ohne
+          ihn ist eine Änderung daran eine Berichtigung, die hier nicht stattfinden darf;
         * abgeschlossen: nichts wird geschrieben, jede Änderung wird abgelehnt.
 
         Geprüft wird gegen den Stand in der Transaktion, geschrieben mit der Statusgruppe in der
@@ -452,6 +464,10 @@ class InvoiceLockMixin:
             raise DocumentNotFound('Rechnung nicht gefunden.')
         group = status_group(row['Status'])
         if group == EDITABLE:
+            if ('invoice_number' in invoice_data
+                    and _text(row['InvoiceNumber']) != _text(invoice_data['invoice_number'])
+                    and self.was_sent_before(invoice_id, conn)):
+                raise InvoiceLocked(NUMBER_KEPT_MESSAGE, [LABEL_OF['invoice_number']])
             if invoice_data:
                 self._write_fields(conn, invoice_id, invoice_data, EDITABLE)
             if items is not None:
@@ -476,6 +492,8 @@ class InvoiceLockMixin:
             return 'unchanged'
         if not open_data:
             return 'unchanged'
+        if not correcting:
+            raise InvoiceLocked(CHANGED_MESSAGE)
         self._write_fields(conn, invoice_id, open_data, LOCKED)
         return 'open'
 
@@ -500,7 +518,7 @@ class InvoiceLockMixin:
         if cursor.rowcount != 1:
             raise InvoiceLocked(CHANGED_MESSAGE)
 
-    def set_invoice_status(self, invoice_id, new_status):
+    def set_invoice_status(self, invoice_id, new_status, user_name=None):
         """Den Status einer Rechnung setzen – nach der Übergangstabelle (``TRANSITIONS``), in EINER
         Transaktion: Prüfen, Status, Forderungsbuchung und (beim Zurückholen) das Ablegen der
         versendeten Dokumente gelingen gemeinsam oder gar nicht.
@@ -510,13 +528,20 @@ class InvoiceLockMixin:
         (``StatusChange.kind``):
 
         * ``send`` / ``revive``: die Forderung wird gebucht („Debitoren an Wartekonto“, nur zu einem
-          Steuersatz mit Wartekonto);
+          Steuersatz mit Wartekonto); ``send`` setzt außerdem ``SentAt``, den Zeitpunkt des ersten
+          Versands (ein späteres Versenden ändert ihn nicht);
         * ``reopen``: die Forderung wird entfernt – aber nur eine, die die App selbst gebucht hat und
           die an nichts hängt, sonst wird das Zurückholen mit Klartext abgelehnt (nichts geändert).
-          PDF und XML wandern nach ``invoices/<Jahr>/Fassungen/<ID>/`` (``archive_sent_documents``),
-          ihre Pfade werden geleert; scheitert das Verschieben, bleibt alles, wie es war;
+          PDF und XML wandern nach ``invoices/<Jahr>/Fassungen/<ID>/`` (``archive_sent_documents``) und
+          werden in ``InvoiceDocumentVersions`` festgehalten, ihre Pfade werden geleert, die Fassung
+          zählt um eins hoch (nur, wenn eine Datei abgelegt wurde); scheitert das Verschieben, bleibt
+          alles, wie es war;
         * ``cancel``: die Forderung geht, solange nichts an ihr hängt (keine Zahlung, nicht von der
           App gebucht: bleibt stehen).
+
+        Jeder gelungene Wechsel (außer demselben Status) steht im Protokoll ``InvoiceCorrections``
+        (``Action='status'``) – wer ihn ausgelöst hat, sagt ``user_name``. Was die Zahlungslogik am Status
+        ändert (``_recalc_invoice``), protokolliert sie nicht.
 
         Das Erzeugen des Dokuments beim Versenden bleibt dem Aufrufer, danach. Returns
         :class:`StatusChange`, bei einer Ablehnung mit Klartext in ``message`` und dem Statuscode
@@ -555,17 +580,29 @@ class InvoiceLockMixin:
                     (new, invoice_id, row['Status'] or 'draft'))
                 if cursor.rowcount != 1:
                     raise _Refusal(CHANGED_MESSAGE, 409)
+                version = document_version(row)
                 if kind != 'switch':
                     self._recalc_invoice(conn, invoice_id, adjust_status=False)
+                if kind == 'send':
+                    conn.execute('UPDATE Invoices SET SentAt = COALESCE(SentAt, CURRENT_TIMESTAMP) '
+                                 'WHERE ID = ?', (invoice_id,))
                 if kind in ('send', 'revive'):
                     self._book_receivable(tx, row, accounts)
                 elif kind == 'cancel':
                     self._drop_receivable(conn, invoice_id, row['InvoiceNumber'])
                 elif kind == 'reopen':
                     self._drop_receivable(conn, invoice_id, row['InvoiceNumber'])
-                    archived = self._archive_sent_documents(invoice_id)
+                    now = conn.execute('SELECT CURRENT_TIMESTAMP').fetchone()[0]
+                    archived = self._archive_documents(conn, invoice_id, version, 'reopened', now,
+                                                       ARCHIVE_FAILED_MESSAGE)
                     conn.execute('UPDATE Invoices SET PDFPath = NULL, XMLPath = NULL WHERE ID = ?',
                                  (invoice_id,))
+                    if archived:
+                        version += 1
+                        conn.execute('UPDATE Invoices SET DocumentVersion = ? WHERE ID = ?',
+                                     (version, invoice_id))
+                self._log_invoice_change(conn, invoice_id, row['InvoiceNumber'], user_name, 'status',
+                                         'Status', old, new, version)
         except _Refusal as refusal:
             return StatusChange(False, str(refusal), refusal.code, old, new, None)
         except BaseException:
@@ -595,17 +632,6 @@ class InvoiceLockMixin:
                         (row['InvoiceNumber'], PAYMENT_MARK)).fetchone():
             return REOPEN_PAYMENT_MESSAGE
         return None
-
-    def _archive_sent_documents(self, invoice_id):
-        """PDF und XML der versendeten Rechnung nach „Fassungen“ verschieben (``export.invoice_files``);
-        :class:`_Refusal`, wenn das scheitert (dort ist dann alles zurückgelegt). Returns die
-        Verschiebungen ``[(alter Pfad, neuer Pfad)]``."""
-        from export.invoice_files import archive_sent_documents
-        try:
-            return archive_sent_documents(self, invoice_id)
-        except OSError as exc:
-            print(f"Dokumente der Rechnung {invoice_id} nicht abgelegt: {exc}")
-            raise _Refusal(ARCHIVE_FAILED_MESSAGE, 409) from None
 
     @staticmethod
     def _restore_archived(moved):

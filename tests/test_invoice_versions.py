@@ -8,9 +8,10 @@ Geht eine versendete Rechnung zurück auf Entwurf, hat der Kunde ihr PDF (und XM
 * Beide wandern nach ``invoices/<Jahr>/Fassungen/<ID>/<Name> – versendet bis <JJJJ-MM-TT>.<Endung>``
   (verschoben, nie überschrieben, nie gelöscht), die Pfade der Rechnung werden geleert. Scheitert das
   Verschieben, bleibt alles, wie es war.
-* Der Ordner ist das Merkmal „war schon versendet“: Löscht der Nutzer den Entwurf, bleibt die Nummer
-  vergeben (die Lücke bleibt) und nichts in „Fassungen“ wird angefasst. Ein Entwurf ohne Vorgeschichte
-  gibt seine Nummer weiter frei.
+* „War schon versendet“ (``Database.was_sent_before``: Versandzeitpunkt, Protokoll oder – wie in 2.1.2 – eine
+  Datei im Ordner): Löscht der Nutzer den Entwurf, bleibt die Nummer vergeben (die Lücke bleibt) und nichts in
+  „Fassungen“ wird angefasst. Ein Entwurf ohne Vorgeschichte gibt seine Nummer weiter frei.
+  (Fassung, Protokoll und Berichtigen: test_invoice_correction.py, test_invoice_sent_history.py.)
 * Erneutes Versenden erzeugt eine neue Datei, die archivierte bleibt; zweimal zurückholen ergibt zwei
   Fassungen. Ein gespeicherter Pfad außerhalb des Dokumentordners wird nie verschoben.
 * Datensicherung und Wiederherstellung nehmen den Ordner mit.
@@ -128,15 +129,18 @@ def test_an_overdue_invoice_is_archived_too(world):
     assert len(archived(invoice_id)) == 2
 
 
-def test_an_invoice_without_documents_leaves_no_trace(world):
-    """Ein Bestand ohne abgelegte Dokumente: nichts zu verschieben, kein Ordner, die Nummer bleibt frei."""
+def test_an_invoice_without_documents_leaves_no_folder(world):
+    """Ein Bestand ohne abgelegte Dokumente: nichts zu verschieben, kein Ordner, keine Fassung – die Dateiprobe
+    findet nichts. Dass die Rechnung versendet war, hält seit 2.2.0 das Protokoll fest (test_invoice_sent_history.py)."""
     invoice_id = new_invoice(world)
-    from tests.invoice_world import force_status
+    from tests.invoice_world import archived_versions, columns, force_status
     force_status(world.db, invoice_id, 'sent')
     assert reopen(invoice_id)[0] == 200
     assert archived(invoice_id) == [] and not os.path.exists(folder(invoice_id))
     from export.invoice_files import was_sent_before
     assert was_sent_before(invoice_id) is False
+    assert archived_versions(world.db, invoice_id) == [] and columns(world.db, invoice_id)['DocumentVersion'] is None
+    assert world.db.was_sent_before(invoice_id) is True              # das Protokoll kennt den Statuswechsel
 
 
 # ── Die Nummer bleibt vergeben (Reproduktion des Prüfers) ─────────────────────

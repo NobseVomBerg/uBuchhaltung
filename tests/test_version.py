@@ -49,6 +49,7 @@ def test_schema_version_lies_above_every_1x_stamp():
     pytest.param(1000, "1.0", id="Beginn-von-MAJOR-1"),
     pytest.param(2000, "2.0", id="2.0"),
     pytest.param(2001, "2.1", id="2.1"),
+    pytest.param(2002, "2.2", id="2.2"),
     pytest.param(2010, "2.10", id="zweistelliger-Schemastand"),
     pytest.param(2999, "2.999", id="letzter-Stand-von-MAJOR-2"),
     pytest.param(3000, "3.0", id="MAJOR-3"),

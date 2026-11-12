@@ -29,6 +29,11 @@ class InvoiceCol:
     AMOUNT_DUE = 39
     STATUS = 40
     DOCUMENT_TYPE = 45   # 'invoice' | 'quote'
+    INVOICE_KIND = 50    # NULL = Rechnung (Stornobeleg vorgesehen, noch ungenutzt)
+    CANCELS_INVOICE_ID = 51
+    REPLACES_INVOICE_ID = 52
+    SENT_AT = 53         # erstmals versendet (UTC, CURRENT_TIMESTAMP); Import: NULL
+    DOCUMENT_VERSION = 54    # Nummer der aktuellen Fassung; NULL = Fassung 1
 
 
 # Aus diesen Status wird ein Angebot in eine Rechnung umgewandelt – einmal: danach ist es „converted“.
@@ -281,11 +286,15 @@ class InvoicesMixin:
             if not tx:
                 conn.close()
     def update_invoice_status(self, invoice_id, status):
-        """Update invoice status"""
+        """Update invoice status. Der ungeprüfte Baustein für Seed und Tests (der Weg der Oberfläche ist
+        ``set_invoice_status``): Wer auf „versendet“ setzt, bekommt wie dort den Versandzeitpunkt, falls
+        die Rechnung noch keinen hat; ein Protokoll schreibt dieser Weg nicht."""
         conn = self._get_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute('UPDATE Invoices SET Status = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE ID = ?', (status, invoice_id))
+            cursor.execute('UPDATE Invoices SET Status = ?, UpdatedAt = CURRENT_TIMESTAMP, '
+                           "SentAt = CASE WHEN ? = 'sent' THEN COALESCE(SentAt, CURRENT_TIMESTAMP) ELSE SentAt END "
+                           'WHERE ID = ?', (status, status, invoice_id))
             conn.commit()
         except Exception as e:
             print(f"Error updating invoice status: {e}")
@@ -322,7 +331,7 @@ class InvoicesMixin:
         abgeschlossener Entwurf wird erst auf „Entwurf“ zurückgesetzt: Eine schon heruntergeladene
         PDF soll nicht spurlos verschwinden können. Die Rechnungsnummer geht an den Nummernkreis
         zurück (``release_invoice_number``) – außer die Rechnung war schon einmal versendet
-        (``export.invoice_files.was_sent_before``): Dann bleibt die Lücke. Stammt der Entwurf aus einem
+        (``was_sent_before``): Dann bleibt die Lücke. Stammt der Entwurf aus einem
         Angebot und gibt es keine weitere Rechnung dazu, ist das Angebot wieder umwandelbar.
 
         Die abgelegten Dokumente des Entwurfs räumt der Aufrufer nach dem Commit weg; was in
@@ -348,10 +357,9 @@ class InvoicesMixin:
             if conn.execute(f"SELECT 1 FROM Bookings WHERE DocumentNumber = ? AND BookingType = 'entry' "
                             f"AND {receivable_sql}", [number, *receivable_params]).fetchone():
                 raise InvoiceNotDeletable('Zu dieser Rechnung gibt es eine Forderungsbuchung.')
-            # War die Rechnung schon einmal versendet (ihre Fassung liegt in „Fassungen“), hat der Kunde
-            # ein Dokument mit dieser Nummer: Sie wird nie wieder vergeben, die Lücke bleibt
-            from export.invoice_files import was_sent_before
-            if not was_sent_before(invoice_id):
+            # War die Rechnung schon einmal versendet, kann der Kunde ein Dokument mit dieser Nummer haben:
+            # Sie wird nie wieder vergeben, die Lücke bleibt
+            if not self.was_sent_before(invoice_id, conn):
                 self.release_invoice_number(conn, number)
             conn.execute("DELETE FROM Invoices WHERE ID = ? AND COALESCE(Status, 'draft') = 'draft'",
                          (invoice_id,))
