@@ -16,13 +16,20 @@ Status „versendet“ muss der Kunde exakt das Dokument bekommen, das im Haus l
 (todo #3). Dasselbe gilt für Angebote (``quotes/<Jahr>/…``, geschrieben von
 ``export/pdf_quote.py``).
 
+Geht eine versendete Rechnung zurück auf Entwurf, wandern ihre Dokumente in
+``invoices/<Jahr>/Fassungen/<ID>/`` (:func:`archive_sent_documents`): Der Kunde hat sie bekommen, sie
+verschwinden nicht und werden nie überschrieben. Der Ordner ist zugleich das Merkmal „war schon
+versendet“ (:func:`was_sent_before`): Der Entwurf gibt seine Rechnungsnummer dann nie zurück.
+
 Ein in der Datenbank gespeicherter Dokumentpfad wird nur benutzt, wenn er im
 Dokumentordner des Nutzers liegt (:func:`path_in_documents`): Die Datenbank lässt
 sich per SQL-Konsole oder zurückgespielte Sicherung verändern, und sonst ließe sich
 darüber jede lesbare Datei (``auth.db``, die Datenbank eines anderen Benutzers)
 ausliefern oder löschen.
 """
+import datetime
 import os
+import shutil
 
 from db.invoice_lock import FROZEN_STATUSES
 from db.invoices import document_type
@@ -139,6 +146,9 @@ def remove_document_file(path, db=None, invoice_id=None):
         if not path_in_documents(path):
             print(f"Rechnungsdatei liegt außerhalb des Dokumentordners, nicht entfernt: {path!r}")
             return False
+        if _in_versions(path):
+            print(f"Rechnungsdatei gehört zu einer versendeten Fassung, nicht entfernt: {path!r}")
+            return False
         if db is not None and db.document_path_in_use(path, invoice_id):
             print(f"Rechnungsdatei gehört zu einem anderen Beleg, nicht entfernt: {path!r}")
             return False
@@ -147,6 +157,106 @@ def remove_document_file(path, db=None, invoice_id=None):
     except OSError as e:      # Nicht löschbar ist kein Grund, den Vorgang abzubrechen
         print(f"Rechnungsdatei nicht entfernt ({path}): {e}")
         return False
+
+
+# ── Fassungen: was versendet war, bleibt liegen ─────────────────────────────────
+FASSUNGEN = 'Fassungen'
+
+
+def versions_dir(invoice) -> str:
+    """Ablageordner der versendeten Fassungen einer Rechnung: ``invoices/<Jahr>/Fassungen/<ID>``."""
+    return os.path.join(invoice_dir(invoice), FASSUNGEN, str(_col(invoice, 0)))
+
+
+def _in_versions(path) -> bool:
+    """Liegt ``path`` in einem Ordner „Fassungen“ unter dem Dokumentordner? Dort wird nie gelöscht."""
+    try:
+        relative = os.path.relpath(os.path.realpath(path), os.path.realpath(documents_root()))
+    except (OSError, ValueError):
+        return False
+    return FASSUNGEN in relative.split(os.sep)[:-1]
+
+
+def was_sent_before(invoice_id) -> bool:
+    """Wurde diese Rechnung schon versendet und danach auf Entwurf zurückgeholt? Das Merkmal ist der
+    Ordner ``Fassungen/<ID>`` mit einer Datei darin, in irgendeinem Jahresordner (das Rechnungsdatum
+    kann sich im Entwurf ändern). Eine Rechnung ohne abgelegte Dokumente hinterlässt keine Spur."""
+    import userctx
+    root = os.path.join(userctx.user_data_dir(), 'invoices')
+    try:
+        years = os.listdir(root)
+    except OSError:
+        return False
+    for year in years:
+        folder = os.path.join(root, year, FASSUNGEN, str(invoice_id))
+        try:
+            if any(os.path.isfile(os.path.join(folder, name)) for name in os.listdir(folder)):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _version_name(folder, stem, extension, day):
+    """Ein Dateiname im Ordner der Fassungen, der noch nicht vergeben ist:
+    ``<Name> – versendet bis <JJJJ-MM-TT>.<Endung>``, bei Kollision mit Zähler (``… (2)``)."""
+    name = f"{stem} – versendet bis {day}{extension}"
+    counter = 1
+    while os.path.exists(os.path.join(folder, name)):
+        counter += 1
+        name = f"{stem} – versendet bis {day} ({counter}){extension}"
+    return os.path.join(folder, name)
+
+
+def archive_sent_documents(db, invoice_id: int, today=None):
+    """PDF und XML der versendeten Rechnung nach ``Fassungen/<ID>/`` **verschieben** – beim
+    Zurückholen auf Entwurf. Was dort hinkommt, ist die Datei, die der Kunde bekommen hat: Sie wird
+    nie überschrieben (ein vergebener Name bekommt einen Zähler) und nie gelöscht.
+
+    Verschoben wird nur, was der Nutzer als Dokument der Rechnung sieht (``stored_invoice_path``:
+    gespeicherter Pfad im Dokumentordner, sonst die Datei am Namensschema) und kein anderer Beleg als
+    seine Datei führt. Ein gespeicherter Pfad außerhalb des Dokumentordners bleibt, wo er ist. Das
+    Eintragen der geleerten Pfade ist Sache des Aufrufers.
+
+    Scheitert ein Verschieben, geht das schon Verschobene zurück und es folgt ein ``OSError``.
+
+    Returns: ``[(alter Pfad, neuer Pfad)]``."""
+    invoice = db.get_document(invoice_id, 'invoice')
+    if invoice is None:
+        return []
+    day = today or datetime.date.today().isoformat()
+    folder = versions_dir(invoice)
+    moved = []
+    try:
+        for kind in ('pdf', 'xml'):
+            path = stored_invoice_path(db, invoice_id, kind, invoice)[0]
+            if not path or db.document_path_in_use(path, invoice_id):
+                continue
+            stem, extension = os.path.splitext(os.path.basename(path))
+            os.makedirs(folder, exist_ok=True)
+            target = _version_name(folder, stem, extension, day)
+            shutil.move(path, target)
+            moved.append((path, target))
+    except OSError:
+        restore_archived(moved)
+        raise
+    return moved
+
+
+def restore_archived(moved):
+    """Verschobene Dokumente zurücklegen (``[(alter Pfad, neuer Pfad)]`` aus
+    :func:`archive_sent_documents`) und einen dabei leer gewordenen Ordner entfernen."""
+    for old, new in reversed(moved):
+        try:
+            if os.path.isfile(new) and not os.path.exists(old):
+                shutil.move(new, old)
+        except OSError as e:
+            print(f"Fassung konnte nicht zurückgelegt werden ({new} → {old}): {e}")
+    for _old, new in moved:
+        try:
+            os.rmdir(os.path.dirname(new))
+        except OSError:
+            pass
 
 
 def wants_xrechnung(invoice) -> bool:

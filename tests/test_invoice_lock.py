@@ -268,21 +268,56 @@ def test_the_complete_form_cannot_change_the_imported_figures_either(world):
     assert snapshot(world.db) == before
 
 
-@pytest.mark.parametrize('shape', ['komplettes-Formular', 'nur-die-aenderbaren-Felder'])
-def test_the_address_of_a_sent_invoice_follows_the_customer_master_data_on_save(world, shape):
-    invoice_id = make_invoice(world, 'sent')
-    locked_before = finance(world.db, invoice_id)
+def _rename_customer(world):
     world.db.update_contact(world.cust, contact_type='customer', entity_type='company',
                             display_name='Malermeister Pinsel', company_name='Malermeister Pinsel GmbH',
                             customer_number='K-100', street='Pinselallee 7', postal_code='12345',
                             city='Farbstadt', email='info@example.com')
-    payload = (make_payload(world, invoiceId=invoice_id) if shape == 'komplettes-Formular'
-               else {'invoiceId': invoice_id})
+
+
+ADDRESS_COLUMNS = ('BuyerName', 'BuyerCompany', 'BuyerStreet', 'BuyerPostalCode', 'BuyerCity', 'BuyerCountry')
+
+
+@pytest.mark.parametrize('shape', ['komplettes-Formular', 'nur-die-aenderbaren-Felder'])
+def test_saving_a_sent_invoice_leaves_its_address_as_it_was(world, shape):
+    """Die Anschrift ist eine Momentaufnahme vom Erstellen: Ein Speichern holt sie nicht still aus den
+    Stammdaten (2.1.2) – auch dann nicht, wenn gleichzeitig ein anderes änderbares Feld geschrieben wird."""
+    invoice_id = make_invoice(world, 'sent')
+    locked_before = finance(world.db, invoice_id)
+    address_before = {k: columns(world.db, invoice_id)[k] for k in ADDRESS_COLUMNS}
+    _rename_customer(world)
+    form = {'paymentTerms': 'Zahlbar sofort'}
+    payload = (make_payload(world, invoiceId=invoice_id, **form) if shape == 'komplettes-Formular'
+               else {'invoiceId': invoice_id, **form})
+    assert save(payload)['success'] is True
+    stored = columns(world.db, invoice_id)
+    assert stored['PaymentTerms'] == 'Zahlbar sofort'                    # das Geschriebene kam an …
+    assert {k: stored[k] for k in ADDRESS_COLUMNS} == address_before      # … die Anschrift blieb
+    assert finance(world.db, invoice_id) == locked_before
+
+
+@pytest.mark.parametrize('shape', ['komplettes-Formular', 'nur-die-aenderbaren-Felder'])
+def test_the_address_follows_the_master_data_of_the_same_customer_on_explicit_request(world, shape):
+    invoice_id = make_invoice(world, 'sent')
+    locked_before = finance(world.db, invoice_id)
+    _rename_customer(world)
+    payload = (make_payload(world, invoiceId=invoice_id, refreshAddress=True)
+               if shape == 'komplettes-Formular' else {'invoiceId': invoice_id, 'refreshAddress': True})
     assert save(payload)['success'] is True
     stored = columns(world.db, invoice_id)
     assert (stored['BuyerCompany'], stored['BuyerStreet'], stored['BuyerPostalCode'],
             stored['BuyerCity']) == ('Malermeister Pinsel GmbH', 'Pinselallee 7', '12345', 'Farbstadt')
     assert finance(world.db, invoice_id) == locked_before
+    assert stored['CustomerId'] == world.cust                            # derselbe Kunde, nie ein anderer
+
+
+def test_the_address_request_of_a_cancelled_invoice_is_refused(world):
+    invoice_id = make_invoice(world, 'cancelled')
+    _rename_customer(world)
+    before = snapshot(world.db)
+    resp = save_raw({'invoiceId': invoice_id, 'refreshAddress': True})
+    assert resp.status == 409 and json.loads(resp)['error'] == CLOSED_MESSAGE
+    assert snapshot(world.db) == before
 
 
 def test_changed_master_data_of_the_company_and_the_bank_do_not_alter_a_sent_invoice(world):

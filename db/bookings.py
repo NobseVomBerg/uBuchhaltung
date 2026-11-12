@@ -251,7 +251,7 @@ class BookingsMixin:
                        document_number=None, date_tax=None,
                        counter_coa_id=None, log_description=None,
                        booking_type='entry', parent_booking_id=None,
-                       auto_mirror=False, entry_form=None):
+                       auto_mirror=False, entry_form=None, tx=None):
         """Insert a new booking into Bookings table
         
         Args:
@@ -279,13 +279,15 @@ class BookingsMixin:
                 Buchungsmaske ihn schreibt – ein Spiegel wird so ``mirror_counter``. Schreiber mit
                 einer anderen Konvention (Importe, Umbuchungen) geben die Form ausdrücklich an.
                 Eine Bankzeile hat keine Form.
+            tx: optionale :class:`db.core.Transaction` – dann wird darin geschrieben und erst mit
+                ihr committet (der Eintrag im Replay-Log folgt nach dem Commit)
         
         Returns:
             int: ID of inserted booking
         """
         if entry_form is not None and entry_form not in ENTRY_FORMS:
             raise ValueError(f"Unbekannte Form eines Buchungssatzes: {entry_form!r}")
-        conn = self._get_connection()
+        conn = tx.conn if tx else self._get_connection()
         cursor = conn.cursor()
         if booking_type != 'entry':
             entry_form = None
@@ -307,13 +309,17 @@ class BookingsMixin:
                   parent_booking_id, 1 if auto_mirror else 0, entry_form)
 
         cursor.execute(sql_template, params)
-        conn.commit()
         last_id = cursor.lastrowid
-        conn.close()
+        if not tx:
+            conn.commit()
+            conn.close()
         
         # Optional SQL logging
         if log_description:
-            self._log_sql(sql_template, params, log_description)
+            if tx:
+                tx.log.append((sql_template, params, log_description))
+            else:
+                self._log_sql(sql_template, params, log_description)
         
         return last_id
     def backfill_booking_fields(self, booking_id, coa_id=None, tax_rate=None,

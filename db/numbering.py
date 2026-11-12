@@ -18,6 +18,23 @@ _NUMBER_TOKENS = re.compile(r'(\{yyyy\}|\{yy\}|\{l\}|\{nnn\}|\{nn\}|\{n\}|\{s\})
 _MAX_SKIPPED_NUMBERS = 10000
 
 NumberRange = namedtuple('NumberRange', 'id year letter suffix current fmt')
+_COUNTER_TOKENS = ('{nnn}', '{nn}', '{n}')
+
+
+class NumberRangeError(ValueError):
+    """Ein Nummernkreis liefert keine Rechnungsnummer (Formatvorlage ohne Zähler, zu viele belegte
+    Nummern hintereinander); ``str(exc)`` ist ein Klartext für die Oberfläche."""
+
+
+def number_format_error(fmt):
+    """Klartext, warum eine Formatvorlage keine Nummern liefern kann, sonst ``None``: Sie braucht genau
+    einen Zähler (``{n}``, ``{nn}`` oder ``{nnn}``). Ohne Zähler hieße jede Nummer des Kreises gleich, mit
+    mehreren bliebe offen, welcher zählt."""
+    if sum(fmt.count(token) for token in _COUNTER_TOKENS) != 1:
+        return ('Die Formatvorlage braucht genau einen Zähler: {n}, {nn} oder {nnn} '
+                '(zum Beispiel {yy}{l}{nnn}{s}).')
+    return None
+
 
 
 class NumberRangeMixin:
@@ -139,13 +156,18 @@ class NumberRangeMixin:
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # Atomic increment: UPDATE...RETURNING avoids SELECT + UPDATE race
+        # Atomares Hochzählen: Der UPDATE nimmt die Schreibsperre, das SELECT danach liest den eigenen
+        # Stand – kein anderer Schreiber kommt dazwischen (kein RETURNING: das kennen ältere SQLite-Versionen nicht)
+        key = (range_type, year, letter, prefix)
         cursor.execute('''
             UPDATE NumberRanges SET CurrentNumber = CurrentNumber + 1
             WHERE Type = ? AND Year = ? AND Letter = ? AND Prefix = ?
-            RETURNING CurrentNumber, NumberFormat
-        ''', (range_type, year, letter, prefix))
-        row = cursor.fetchone()
+        ''', key)
+        row = None
+        if cursor.rowcount > 0:
+            cursor.execute('SELECT CurrentNumber, NumberFormat FROM NumberRanges '
+                           'WHERE Type = ? AND Year = ? AND Letter = ? AND Prefix = ?', key)
+            row = cursor.fetchone()
 
         if row:
             next_num, number_format = row
@@ -172,7 +194,8 @@ class NumberRangeMixin:
         Genommen wird der Kreis des angefragten Jahres, sonst der jüngste. Bei Rechnungen ist der
         Vorschlag die Nummer, die ``allocate_invoice_number`` vergäbe: eine schon belegte Nummer
         wird übersprungen.
-        Returns: (formatierte Nummer, range_id) oder (None, None).
+        Returns: (formatierte Nummer, range_id); ohne Kreis (None, None), und liefert der Kreis keine
+        Nummer (Formatvorlage ohne Zähler) (None, range_id) – das Ansehen wirft nie einen Fehler.
         """
         ranges = self.fetch_number_ranges(range_type)
         if not ranges:
@@ -189,6 +212,9 @@ class NumberRangeMixin:
             conn = self._get_connection()
             try:
                 return self._next_free_number(conn, rng)[0], chosen[0]
+            except ValueError:
+                # Formatvorlage ohne Zähler o. Ä.: kein Vorschlag (die Seite zeigt einen Hinweis) – nie ein Fehler
+                return None, chosen[0]
             finally:
                 conn.close()
         number = self._apply_number_format(
@@ -229,14 +255,17 @@ class NumberRangeMixin:
 
     def _next_free_number(self, conn, rng):
         """Die nächste Nummer des Kreises, die noch keine Rechnung und kein Angebot trägt, mit ihrer
-        laufenden Nummer – ohne den Zähler anzufassen."""
+        laufenden Nummer – ohne den Zähler anzufassen. ``ValueError`` bei einer Formatvorlage ohne
+        (oder mit mehreren) Zähler und wenn zu viele Nummern hintereinander belegt sind."""
+        if number_format_error(rng.fmt):
+            raise NumberRangeError(f'Der Nummernkreis liefert keine Rechnungsnummer. {number_format_error(rng.fmt)}')
         number = rng.current + 1
         for _ in range(_MAX_SKIPPED_NUMBERS):
             text = self._format_range_number(rng, number)
             if not self._invoice_number_taken(conn, text):
                 return text, number
             number += 1
-        raise ValueError('Im Nummernkreis ist keine freie Rechnungsnummer zu finden.')
+        raise NumberRangeError('Im Nummernkreis ist keine freie Rechnungsnummer zu finden.')
 
     def _number_in_range(self, rng, text):
         """Die laufende Nummer, wenn ``text`` zur Formatvorlage des Kreises passt (Jahr, Buchstabe
@@ -261,16 +290,21 @@ class NumberRangeMixin:
         return int(match.group(1)) if match else None
 
     def _take_next_number(self, conn, rng):
-        """Den Zähler um eins weiterschieben (``UPDATE … RETURNING``: kein Lesen und Schreiben
-        dazwischen) und die Nummer liefern; eine schon belegte Nummer wird übersprungen."""
+        """Den Zähler um eins weiterschieben und die Nummer liefern; eine schon belegte Nummer wird
+        übersprungen. In der Transaktion von ``conn`` (``allocate_invoice_number`` holt die
+        Schreibsperre): Das Lesen nach dem ``UPDATE`` sieht den eigenen Stand, kein anderer Schreiber
+        kommt dazwischen."""
+        if number_format_error(rng.fmt):
+            raise NumberRangeError(f'Der Nummernkreis liefert keine Rechnungsnummer. {number_format_error(rng.fmt)}')
         for _ in range(_MAX_SKIPPED_NUMBERS):
-            number = conn.execute(
-                'UPDATE NumberRanges SET CurrentNumber = COALESCE(CurrentNumber, 0) + 1 '
-                'WHERE ID = ? RETURNING CurrentNumber', (rng.id,)).fetchone()[0]
+            conn.execute('UPDATE NumberRanges SET CurrentNumber = COALESCE(CurrentNumber, 0) + 1 '
+                         'WHERE ID = ?', (rng.id,))
+            number = conn.execute('SELECT CurrentNumber FROM NumberRanges WHERE ID = ?',
+                                  (rng.id,)).fetchone()[0]
             text = self._format_range_number(rng, number)
             if not self._invoice_number_taken(conn, text):
                 return text
-        raise ValueError('Im Nummernkreis ist keine freie Rechnungsnummer zu finden.')
+        raise NumberRangeError('Im Nummernkreis ist keine freie Rechnungsnummer zu finden.')
 
     def allocate_invoice_number(self, conn, invoice_date, requested=None):
         """Die Nummer einer neuen Rechnung vergeben – in der Transaktion von ``conn``.
@@ -293,7 +327,11 @@ class NumberRangeMixin:
         year = self._year_of(invoice_date)
         rng = self._range_for_year(ranges, year)
         if requested:
-            if rng is not None and requested == self._next_free_number(conn, rng)[0]:
+            try:
+                is_proposal = rng is not None and requested == self._next_free_number(conn, rng)[0]
+            except NumberRangeError:        # ein Kreis ohne brauchbare Vorlage hindert keine eigene Nummer
+                is_proposal = False
+            if is_proposal:
                 return self._take_next_number(conn, rng)
             for other in ranges:
                 number = self._number_in_range(other, requested)

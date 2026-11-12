@@ -182,3 +182,106 @@ def test_over_http_the_second_click_lands_on_the_quote_with_a_message(server_por
     assert app_msg_arguments(Dom(page.text)) == ['Dieses Angebot wurde bereits in eine Rechnung umgewandelt.',
                                                  'error']
     assert len(invoices_of(books.db, quote_id)) == 1
+
+
+# ── Der Umweg über den Status ────────────────────────────────────────────────
+
+def quote_status(status_value, quote_id):
+    import json
+    code, body = handlers.handle_update_quote_status(
+        json.dumps({'quote_id': quote_id, 'status': status_value}).encode())
+    return code, json.loads(body)
+
+
+def quote_save(db, quote_id, status_value, **over):
+    import json
+    w = build_world(db)
+    payload = {'quoteId': quote_id, 'quoteNumber': '26A001', 'quoteDate': '2026-06-09', 'customerId': w.cust,
+               'ownCompanyId': w.own, 'validUntil': '2026-07-09', 'taxRate': 0.19, 'status': status_value,
+               'items': [{'position': 1, 'quantity': 1, 'unit': 'C62', 'description': 'Position 1',
+                          'unitPrice': 100.0, 'taxRate': 19}]}
+    payload.update(over)
+    return json.loads(handlers.handle_quote_save(json.dumps(payload).encode()))
+
+
+@pytest.fixture
+def routed(numbered, monkeypatch):
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: numbered)
+    return numbered
+
+
+STAYS = 'Aus diesem Angebot wurde schon eine Rechnung erstellt – es bleibt „Umgewandelt“, solange es diese Rechnung gibt.'
+
+
+@pytest.mark.parametrize('target', ['accepted', 'draft', 'sent', 'rejected'])
+def test_a_converted_quote_cannot_leave_its_status_while_the_invoice_exists(routed, target):
+    """Sonst ließe es sich über den Statusweg zurück auf „angenommen“ setzen und ein zweites Mal umwandeln."""
+    quote_id = quote(routed)
+    first = routed.convert_quote_to_invoice(quote_id)
+    before = state(routed, 'Invoices', 'InvoiceItems', 'NumberRanges')
+    code, body = quote_status(target, quote_id)
+    assert (code, body['success'], body['error']) == (409, False, STAYS)
+    assert status_of(routed, quote_id) == 'converted'
+    assert state(routed, 'Invoices', 'InvoiceItems', 'NumberRanges') == before
+    with pytest.raises(QuoteNotConvertible):                 # die zweite Umwandlung scheitert wie vorher
+        routed.convert_quote_to_invoice(quote_id)
+    assert invoices_of(routed, quote_id) == [first]
+
+
+def test_the_status_detour_does_not_open_a_second_conversion(routed):
+    quote_id = quote(routed)
+    routed.convert_quote_to_invoice(quote_id)
+    quote_status('accepted', quote_id)                       # früher möglich
+    with pytest.raises(QuoteNotConvertible):
+        routed.convert_quote_to_invoice(quote_id)
+    assert len(invoices_of(routed, quote_id)) == 1
+
+
+@pytest.mark.parametrize('target', ['accepted', 'draft', 'sent', 'rejected'])
+def test_saving_a_converted_quote_cannot_change_its_status_either(routed, target):
+    quote_id = quote(routed)
+    routed.convert_quote_to_invoice(quote_id)
+    before = state(routed, 'Invoices', 'InvoiceItems')
+    resp = quote_save(routed, quote_id, target)
+    assert resp == {'success': False, 'error': STAYS}
+    assert state(routed, 'Invoices', 'InvoiceItems') == before          # auch die Positionen sind noch da
+
+
+def test_saving_a_converted_quote_with_its_status_unchanged_works(routed):
+    quote_id = quote(routed)
+    routed.convert_quote_to_invoice(quote_id)
+    assert quote_save(routed, quote_id, 'converted', validUntil='2026-08-01') == {'success': True,
+                                                                                   'quote_id': quote_id}
+    assert status_of(routed, quote_id) == 'converted'
+
+
+def test_a_quote_whose_invoice_is_gone_can_change_its_status_again(routed):
+    """Wird der Entwurf gelöscht, geht das Angebot auf „angenommen“ zurück; ein veralteter Status
+    „umgewandelt“ ohne Rechnung hält niemanden fest."""
+    quote_id = quote(routed)
+    new_id = routed.convert_quote_to_invoice(quote_id)
+    assert handlers.handle_delete_invoice(routed, new_id) == (303, '/invoice')
+    assert status_of(routed, quote_id) == 'accepted'
+    routed.update_invoice_status(quote_id, 'converted')       # ein Bestand mit veraltetem Status
+    assert quote_status('rejected', quote_id)[0] == 200
+
+
+def test_the_other_quote_statuses_move_freely(routed):
+    quote_id = quote(routed, status='draft')
+    for target in ('sent', 'accepted', 'rejected', 'draft'):
+        assert quote_status(target, quote_id)[0] == 200 and status_of(routed, quote_id) == target
+
+
+def test_a_template_without_a_counter_refuses_the_conversion_in_plain_words(routed):
+    import sqlite3
+    con = sqlite3.connect(routed.db_name)
+    con.execute("UPDATE NumberRanges SET NumberFormat = '{yy}{l}' WHERE Type = 'invoice'")
+    con.commit()
+    con.close()
+    quote_id = quote(routed)
+    before = state(routed, 'Invoices', 'InvoiceItems', 'NumberRanges')
+    code, location = handlers.handle_convert_quote_to_invoice({'quote_id': [str(quote_id)]})
+    assert code == 303 and location.startswith(f'/quote?id={quote_id}&err=')
+    assert 'Formatvorlage' in parse_qs(urlsplit(location).query)['err'][0]
+    assert state(routed, 'Invoices', 'InvoiceItems', 'NumberRanges') == before
+    assert status_of(routed, quote_id) == 'accepted' and invoices_of(routed, quote_id) == []

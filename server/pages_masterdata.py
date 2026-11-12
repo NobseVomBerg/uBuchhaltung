@@ -639,10 +639,11 @@ def PageBankAccountEdit(db: Database, account_id, error=None):
 # NUMBER RANGES (Nummernkreise)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def PageNumberRanges(db: Database, edit_id=None):
+def PageNumberRanges(db: Database, edit_id=None, err=None):
     """Nummernkreise (Stammdaten): gruppierte Übersicht links, Inline-Formular rechts.
 
-    Bearbeiten lädt den Nummernkreis ins rechte Formular; der Typ ist dabei fix.
+    Bearbeiten lädt den Nummernkreis ins rechte Formular; der Typ ist dabei fix. ``err``: Klartext,
+    warum das Speichern abgelehnt wurde (z. B. eine Formatvorlage ohne Zähler).
     """
     import datetime
     current_year = datetime.datetime.now().year
@@ -665,7 +666,8 @@ def PageNumberRanges(db: Database, edit_id=None):
 
     legend = ('<p class="muted">Format-Platzhalter: <code>{yy}</code> Jahr 2-stellig, '
               '<code>{yyyy}</code> Jahr 4-stellig, <code>{l}</code> Buchstabe, '
-              '<code>{nnn}</code> lfd. Nr. 3-stellig, <code>{s}</code> Suffix. '
+              '<code>{nnn}</code> lfd. Nr. 3-stellig (<code>{nn}</code> 2-stellig, <code>{n}</code> ohne Nullen; '
+              'genau einer davon je Format), <code>{s}</code> Suffix. '
               'Beispiel <code>{yy}{l}{nnn}{s}</code> → <strong>26F001</strong>.</p>')
 
     # Formular-Werte (Bearbeiten oder Neu)
@@ -757,6 +759,10 @@ def PageNumberRanges(db: Database, edit_id=None):
         s += "</table>"
 
     s += '</div><!-- Ende gridLeftCol --></div><!-- Ende grid2Cols -->'
+    if err:
+        from server.pages import script_json
+        s += ('<script>document.addEventListener("DOMContentLoaded",function(){'
+              'appMsg(' + script_json(err) + ',"error");});</script>')
     s += '''
     <script>
         function openEditForm(url) {
@@ -784,6 +790,6 @@ def PageNumberRanges(db: Database, edit_id=None):
     return s
 
 
-def PageNumberRangesEdit(db: Database, range_id):
+def PageNumberRangesEdit(db: Database, range_id, err=None):
     """Thin-Wrapper – Inline-Bearbeiten in der kombinierten Nummernkreis-Seite."""
-    return PageNumberRanges(db, edit_id=range_id)
+    return PageNumberRanges(db, edit_id=range_id, err=err)

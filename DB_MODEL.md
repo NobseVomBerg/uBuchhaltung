@@ -389,7 +389,16 @@ Die Forderungsbuchung ist ein eigenständiger Entry ohne `Account_ID` und ohne
 `ParentBooking_ID`; erkannt wird sie über `DocumentNumber` + Debitorenkonto
 (`get_receivable_booking`). `ensure_receivable_booking` ist idempotent,
 `remove_receivable_booking` nimmt sie beim Rückstufen auf Entwurf zurück –
-aber nur, solange keine Zahlung daran hängt.
+aber nur, solange keine Zahlung daran hängt, und nur die Forderung, die die App selbst gebucht
+hat (ohne `SourceGroup`, Wartekonto als Gegenkonto, keiner Bankbewegung zugeordnet:
+`_receivable_removal`); eine importierte oder von Hand gebuchte bleibt immer stehen.
+Der Statuswechsel einer Rechnung (`Database.set_invoice_status`) bucht und entfernt die
+Forderung in derselben Transaktion wie den Status: Beim Versenden und Reaktivieren wird sie
+gebucht, beim Zurückholen auf Entwurf (nur ohne Zahlung) und beim Stornieren von Hand entfernt.
+Hängt an einer Rechnung eine Forderung, die die App nicht entfernen darf, lässt sie sich nicht
+auf Entwurf zurückholen (Klartext, nichts geändert). Beim Zurückholen wandern PDF und XML in
+`invoices/<Jahr>/Fassungen/<ID>/`; der Ordner gilt als „war schon versendet“, die Rechnungsnummer
+wird dann nie wieder vergeben.
 
 **Auswertungsneutral:** Forderungen (10000) und Wartekonten (4340/4345/4405)
 sind Bestandskonten und bleiben aus der EÜR heraus
@@ -455,8 +464,8 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
   sie nicht mehr ausgleichen (Summe < Forderungsbetrag, `money.is_covered`), und rechnet die Rechnung
   neu. War es die letzte Zahlung und ist der Status der Rechnung kein Forderungsstatus
   (`RECEIVABLE_STATUSES`: versendet, Teilzahlung, überfällig, bezahlt – also etwa storniert), geht auch
-  die Forderung, wie beim Statuswechsel: „erst stornieren, dann die Zahlung entfernen“ endet im selben
-  Zustand wie die umgekehrte Reihenfolge. `delete_transaction` einer Bankbewegung nimmt ihre Sätze und
+  die Forderung (die die App selbst gebucht hat, nie ein Satz mit `SourceGroup`), wie beim Statuswechsel:
+  „erst stornieren, dann die Zahlung entfernen“ endet im selben Zustand wie die umgekehrte Reihenfolge. `delete_transaction` einer Bankbewegung nimmt ihre Sätze und
   Zuordnungen mit; das Löschen eines markierten Satzes (auch im Split-Editor) entfernt die ganze
   Zuordnung.
 - **Status der Rechnung** (`next_payment_status`, vorzeichenbewusst für die WISO-Gutschrift): Zahlung in

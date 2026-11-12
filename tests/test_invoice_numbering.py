@@ -307,3 +307,200 @@ def test_releasing_a_number_needs_the_counter_to_stand_on_it(tmp_db):
     finally:
         con.close()
     assert _counter(tmp_db) == 4
+
+
+# ── Eine Formatvorlage ohne Zähler sperrt nichts ─────────────────────────────
+
+def _break_the_template(db, fmt='{yy}{l}'):
+    """Eine Vorlage, wie sie ein Altbestand oder die SQL-Konsole hinterlässt (die Maske lehnt sie ab)."""
+    con = sqlite3.connect(db.db_name)
+    con.execute("UPDATE NumberRanges SET NumberFormat = ? WHERE Type = 'invoice'", (fmt,))
+    con.commit()
+    con.close()
+
+
+@pytest.mark.parametrize('fmt', ['{yy}{l}', '{yy}{l}{nnn}{nn}', '{yyyy}-{s}'])
+def test_a_template_without_one_counter_gives_no_proposal_instead_of_an_error(world, fmt):
+    db, own, cust = world
+    _break_the_template(db, fmt)
+    number, range_id = db.peek_next_number('invoice', 2026)
+    assert number is None and range_id is not None
+
+
+def test_the_invoice_page_stays_usable_with_a_template_without_a_counter(world):
+    """Früher war nach der ersten Rechnung mit dieser Vorlage (Nummer „26R“) jede neue belegt: das Ansehen
+    des Vorschlags lief 10 000 Nummern lang und warf – die Rechnungsseite kam nicht mehr."""
+    from server.pages_invoice import PageInvoice
+    from tests.dom_helpers import Dom
+    db, own, cust = world
+    _break_the_template(db, '{yy}{l}')
+    assert _save(_payload(own, cust, invoiceNumber='26R'))['success'] is True       # eigene Nummer
+    html = PageInvoice(db, {}, None)
+    dom = Dom(html)
+    assert dom.one('input', id='invoice_number')['value'] == ''
+    assert 'Der Nummernkreis liefert keine Nummer' in html and '{nnn}' in html
+    assert dom.one('input', id='number_suggestion')['value'] == ''
+
+
+def test_saving_with_such_a_template_is_refused_in_plain_words(world):
+    db, own, cust = world
+    _break_the_template(db, '{yy}{l}')
+    before = db.fetch_number_ranges('invoice')
+    resp = _save(_payload(own, cust, invoiceNumber='26R', numberSuggestion='26R'))
+    assert resp['success'] is False
+    assert 'Formatvorlage' in resp['error'] and 'Zähler' in resp['error']
+    assert 'Traceback' not in json.dumps(resp) and db.fetch_number_ranges('invoice') == before
+    assert db.get_invoice_by_id(1) is None
+
+
+@pytest.mark.parametrize('fmt', ['{yy}{l}', '{yy}{l}{nnn}{nn}', '{n}{n}', 'Rechnung'])
+def test_a_template_without_one_counter_is_an_error_in_plain_words(fmt):
+    from db.numbering import number_format_error
+    assert number_format_error(fmt) and 'genau einen Zähler' in number_format_error(fmt)
+
+
+@pytest.mark.parametrize('fmt', ['{yy}{l}{nnn}{s}', '{yyyy}-{nn}', 'RE{n}', '{l}/{yy}/{nnn}'])
+def test_templates_with_exactly_one_counter_are_accepted(tmp_db, fmt):
+    from db.numbering import number_format_error
+    assert number_format_error(fmt) is None
+    tmp_db.insert_number_range('invoice', 2026, 'R', number_format=fmt)
+    assert len(tmp_db.fetch_number_ranges('invoice')) == 1
+
+
+def test_the_masterdata_form_refuses_a_template_without_a_counter(tmp_db):
+    from urllib.parse import parse_qs, urlsplit
+    form = {'type': ['invoice'], 'year': ['2026'], 'letter': ['R'], 'prefix': [''],
+            'current_number': ['0'], 'description': [''], 'number_format': ['{yy}{l}']}
+    code, location = handlers.handle_add_number_range(tmp_db, form)
+    assert code == 303 and location.startswith('/masterdata/numberranges?err=')
+    assert 'genau einen Zähler' in parse_qs(urlsplit(location).query)['err'][0]
+    assert tmp_db.fetch_number_ranges('invoice') == []
+    tmp_db.insert_number_range('invoice', 2026, 'R', current_number=3)
+    range_id = tmp_db.fetch_number_ranges('invoice')[0][0]
+    code, location = handlers.handle_update_number_range(tmp_db, {**form, 'id': [str(range_id)]})
+    assert code == 303 and location.startswith(f'/masterdata/numberranges/edit?id={range_id}&err=')
+    assert tmp_db.fetch_number_ranges('invoice')[0][7] == '{yy}{l}{nnn}{s}'             # nichts überschrieben
+    ok = {**form, 'id': [str(range_id)], 'number_format': ['{yy}{l}{nn}']}
+    assert handlers.handle_update_number_range(tmp_db, ok) == (303, '/masterdata/numberranges')
+    assert tmp_db.fetch_number_ranges('invoice')[0][7] == '{yy}{l}{nn}'
+
+
+def test_the_number_range_page_shows_the_refusal(tmp_db):
+    from server.pages_masterdata import PageNumberRanges
+    from tests.dom_helpers import app_msg_arguments, Dom
+    html = PageNumberRanges(tmp_db, err='Die Formatvorlage braucht genau einen Zähler: {n}.')
+    assert app_msg_arguments(Dom(html)) == ['Die Formatvorlage braucht genau einen Zähler: {n}.', 'error']
+    assert 'function(){appMsg(' not in PageNumberRanges(tmp_db)             # ohne Fehler keine Meldung
+
+
+# ── Ein veralteter Vorschlag zählt nicht als eigene Nummer ──────────────────────
+
+def test_an_unchanged_stale_suggestion_gets_a_fresh_number(world):
+    """Zwei Fenster haben denselben Vorschlag 26R001: Das zweite Speichern bekommt 26R002 statt „bereits vergeben“."""
+    db, own, cust = world
+    proposal = db.peek_next_number('invoice', 2026)[0]
+    first = _save(_payload(own, cust, invoiceNumber=proposal, numberSuggestion=proposal))
+    second = _save(_payload(own, cust, invoiceNumber=proposal, numberSuggestion=proposal))
+    assert (first['success'], first['invoice_number']) == (True, '26R001')
+    assert (second['success'], second['invoice_number']) == (True, '26R002')      # die Nummer, die gilt
+    assert _number(db, second['invoice_id']) == '26R002' and _counter(db) == 2
+
+
+def test_a_number_the_user_typed_stays_an_own_number(world):
+    db, own, cust = world
+    proposal = db.peek_next_number('invoice', 2026)[0]
+    own_number = _save(_payload(own, cust, invoiceNumber='26R050', numberSuggestion=proposal))
+    assert (own_number['invoice_number'], _counter(db)) == ('26R050', 50)
+    taken = _save(_payload(own, cust, invoiceNumber='26R050', numberSuggestion=proposal))
+    assert taken == {'success': False, 'error': 'Diese Nummer ist bereits vergeben.'}   # eine eigene Nummer bleibt eigen
+
+
+def test_without_a_suggestion_the_number_is_an_own_number_as_before(world):
+    db, own, cust = world
+    assert _save(_payload(own, cust, invoiceNumber='26R001'))['invoice_number'] == '26R001'
+    assert _save(_payload(own, cust, invoiceNumber='26R001')) == {
+        'success': False, 'error': 'Diese Nummer ist bereits vergeben.'}
+
+
+def test_the_response_names_the_number_for_a_new_invoice_only(world):
+    db, own, cust = world
+    created = _save(_payload(own, cust, invoiceNumber='26R001'))
+    updated = _save(_payload(own, cust, invoiceNumber='26R001', invoiceId=created['invoice_id']))
+    assert 'invoice_number' in created and 'invoice_number' not in updated
+
+
+def test_two_windows_with_twenty_saves_each_hand_out_forty_distinct_numbers(world):
+    """Beide Fenster nehmen den Vorschlag, den sie gerade sehen – meist schon verbraucht: Keine Nummer
+    doppelt, keine abgelehnt, keine Lücke."""
+    db, own, cust = world
+    results, errors = [], []
+
+    def window():
+        try:
+            for _ in range(20):
+                suggestion = db.peek_next_number('invoice', 2026)[0]
+                results.append(_save(_payload(own, cust, invoiceNumber=suggestion, numberSuggestion=suggestion)))
+        except Exception as exc:                      # pragma: no cover - nur bei einem Fehler
+            errors.append(exc)
+
+    threads = [threading.Thread(target=window) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == [] and all(r['success'] for r in results), [r for r in results if not r['success']]
+    numbers = sorted(r['invoice_number'] for r in results)
+    assert numbers == [f'26R{n:03d}' for n in range(1, 41)]
+    assert _counter(db) == 40
+
+
+# ── Jahreswechsel ────────────────────────────────────────────────────────────
+
+def test_an_invoice_of_next_year_takes_next_years_number_although_the_form_suggested_this_years(world):
+    """Rechnung vom 2027-01-04 bei vorhandenem Kreis 2026, Vorschlag unverändert → 27R001, der Kreis 2026 bleibt."""
+    db, own, cust = world
+    db.update_number_range(db.fetch_number_ranges('invoice')[0][0], 2026, 'R', current_number=5)
+    proposal = db.peek_next_number('invoice', 2026)[0]
+    assert proposal == '26R006'
+    resp = _save(_payload(own, cust, invoiceNumber=proposal, numberSuggestion=proposal,
+                          invoiceDate='2027-01-04', deliveryDate='2027-01-04'))
+    assert (resp['success'], resp['invoice_number']) == (True, '27R001')
+    assert (_counter(db, year=2026), _counter(db, year=2027)) == (5, 1)
+    assert _number(db, resp['invoice_id']) == '27R001'
+
+
+def test_an_invoice_of_the_previous_year_continues_that_years_range(tmp_db, monkeypatch):
+    from tests.test_invoice_recompute import _make_contacts
+    own, cust = _make_contacts(tmp_db)
+    monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
+    tmp_db.insert_number_range('invoice', 2025, 'R', current_number=40)
+    tmp_db.insert_number_range('invoice', 2026, 'R', current_number=2)
+    resp = _save(_payload(own, cust, invoiceNumber='26R003', numberSuggestion='26R003',
+                          invoiceDate='2025-12-30', deliveryDate='2025-12-30'))
+    assert (resp['success'], resp['invoice_number']) == (True, '25R041')
+    assert (_counter(tmp_db, year=2025), _counter(tmp_db, year=2026)) == (41, 2)
+
+
+def test_an_own_number_for_another_year_is_not_replaced(world):
+    db, own, cust = world
+    resp = _save(_payload(own, cust, invoiceNumber='27R777', numberSuggestion='26R001',
+                          invoiceDate='2027-01-04', deliveryDate='2027-01-04'))
+    assert (resp['success'], resp['invoice_number']) == (True, '27R777')
+
+
+# ── Kein RETURNING ───────────────────────────────────────────────────────────
+
+def test_the_counters_are_incremented_without_returning():
+    """``UPDATE … RETURNING`` kennt SQLite erst seit 3.35; ältere Versionen in verbreiteten Distributionen
+    würden die Nummernvergabe mit einem Syntaxfehler beenden."""
+    import inspect
+    import db.numbering as numbering
+    assert 'RETURNING' not in inspect.getsource(numbering).replace('kein RETURNING', '').replace(
+        'ohne RETURNING', '')
+
+
+def test_get_next_number_still_counts_up_and_creates_a_range(tmp_db):
+    tmp_db.insert_number_range('receipt_company', 2026, 'B', current_number=4)
+    assert tmp_db.get_next_number('receipt_company', 2026, 'B') == '26B005'
+    assert tmp_db.get_next_number('receipt_company', 2026, 'B') == '26B006'
+    assert tmp_db.get_next_number('receipt_company', 2026, 'C') == '26C001'            # neuer Kreis

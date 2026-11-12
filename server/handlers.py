@@ -19,10 +19,12 @@ from .period import parse_iso_date, valid_period
 from .richtext import sanitize_richtext as _sanitize_richtext
 from db import Database
 from db.core import fk_explained, ForeignKeyError
-from db.invoices import InvoiceCol, InvoiceNotDeletable, QuoteNotConvertible
+from db.invoices import (InvoiceCol, InvoiceNotDeletable, QUOTE_STAYS_CONVERTED_MESSAGE,
+                         QUOTE_STAYS_CONVERTED_SQL, QuoteNotConvertible, QuoteStatusLocked)
 from db.invoice_lock import (DocumentNotFound, EDITABLE_STATUSES, InvoiceLocked, STATUS_LABELS,
-                             status_group)
+                             buyer_snapshot, status_group)
 from db.invoice_payments import RECEIVABLE_STATUSES
+from db.numbering import NumberRangeError, number_format_error
 from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
 from db.accounts import DEFAULT_CASH_ACCOUNT
 from money import to_minor, from_minor, multiply, tax_from_net, tax_from_gross, round_minor, fmt_eur
@@ -1692,6 +1694,9 @@ def handle_add_number_range(db: Database, post_data):
     current_number = int(post_data.get('current_number', ['0'])[0] or 0)
     description = post_data.get('description', [''])[0]
     number_format = post_data.get('number_format', ['{yy}{l}{nnn}{s}'])[0].strip() or '{yy}{l}{nnn}{s}'
+    error = number_format_error(number_format)
+    if error:
+        return 303, f"/masterdata/numberranges?err={quote(error, safe='')}"
 
     db.insert_number_range(
         range_type=range_type,
@@ -1715,6 +1720,9 @@ def handle_update_number_range(db: Database, post_data):
     current_number = int(post_data.get('current_number', ['0'])[0] or 0)
     description = post_data.get('description', [''])[0]
     number_format = post_data.get('number_format', ['{yy}{l}{nnn}{s}'])[0].strip() or '{yy}{l}{nnn}{s}'
+    error = number_format_error(number_format)
+    if error:
+        return 303, f"/masterdata/numberranges/edit?id={range_id}&err={quote(error, safe='')}"
 
     db.update_number_range(
         range_id=range_id,
@@ -1767,11 +1775,12 @@ def _json_id(data, key, missing=_REQUIRED):
 def handle_update_invoice_status(post_body: bytes):
     """Status einer Rechnung setzen – nach der Übergangstabelle ``db.invoice_lock.TRANSITIONS``.
 
-    Der Wechsel selbst läuft in ``Database.set_invoice_status`` (eine Transaktion), hier folgt, was
-    die Art des Übergangs verlangt: Beim Versenden (Entwurf/abgeschlossen → versendet) wird die
-    Forderung gebucht und das Dokument erzeugt, beim Zurückholen und Stornieren die Forderung wieder
-    ausgerichtet, beim Reaktivieren einer stornierten Rechnung beides nachgezogen. Zwischen
-    versendet und überfällig wird nichts gebucht und nichts erzeugt.
+    Der Wechsel läuft in ``Database.set_invoice_status`` in einer Transaktion: Status, Forderungsbuchung
+    (beim Versenden und Reaktivieren gebucht, beim Zurückholen und Stornieren entfernt) und beim
+    Zurückholen das Ablegen der versendeten Dokumente in „Fassungen“ gelingen gemeinsam oder gar nicht.
+    Hier folgt danach nur das Erzeugen des Dokuments beim Versenden (Entwurf/abgeschlossen → versendet,
+    oder eine stornierte Rechnung ohne Datei). Zwischen versendet und überfällig wird nichts gebucht
+    und nichts erzeugt.
 
     Returns tuple: (status_code, json_body)
     """
@@ -1797,11 +1806,12 @@ def handle_update_invoice_status(post_body: bytes):
     change = db.set_invoice_status(invoice_id, new_status)
     if not change.ok:
         return change.code, json.dumps({'success': False, 'error': change.message})
-    if change.kind in ('send', 'revive', 'reopen', 'cancel'):
-        _sync_receivable_booking(db, invoice_id, new_status)
     print(f"Invoice {invoice_id} status updated to: {new_status}")
 
     result = {'success': True, 'invoice_id': invoice_id}
+    if change.archived:
+        result['hint'] = ('Die versendeten Dokumente (PDF/XML) liegen jetzt im Ordner „Fassungen“ '
+                          'dieser Rechnung und bleiben dort erhalten.')
     warning = _ensure_sent_documents(db, invoice_id, change.old, new_status)
     if warning:
         result['warning'] = warning
@@ -1842,12 +1852,12 @@ def _ensure_sent_documents(db, invoice_id, current_status, new_status):
 
 def _sync_receivable_booking(db, invoice_id, status):
     """Forderungsbuchung (Debitoren an Wartekonto) am Status ausrichten: ab „versendet“ gibt es
-    sie, davor und nach dem Storno nicht (``RECEIVABLE_STATUSES``). Nimmt eine Zuordnung die
-    letzte Zahlung einer Rechnung weg, richtet ``Database._after_payment_removed`` die
-    Forderung nach derselben Regel aus.
+    sie, davor und nach dem Storno nicht (``RECEIVABLE_STATUSES``). Nur noch für die Demodaten
+    (``demo_seed``) – der Statuswechsel der Oberfläche bucht und entfernt sie selbst in seiner
+    Transaktion (``Database.set_invoice_status``). Nimmt eine Zuordnung die letzte Zahlung einer
+    Rechnung weg, richtet ``Database._after_payment_removed`` die Forderung nach derselben Regel aus.
 
-    Ein Fehler hier darf den Statuswechsel nicht kippen – die Buchung lässt
-    sich jederzeit nachziehen, ein halb gesetzter Status nicht.
+    Ein Fehler hier kippt den Aufrufer nicht – die Buchung lässt sich jederzeit nachziehen.
     """
     try:
         if status in RECEIVABLE_STATUSES:
@@ -2053,23 +2063,12 @@ def handle_invoice_save(post_body: bytes):
         return _json_body({'success': False, 'error': _save_error_text(e)})
 
 
-def _buyer_snapshot(customer):
-    """Anschrift des Kunden als Momentaufnahme für die Rechnung (Felder wie ``insert_invoice``)."""
-    return {
-        'buyer_name': customer[4] or customer[3] or '',
-        'buyer_company': customer[4] or '',
-        'buyer_street': customer[5] or '',
-        'buyer_postal_code': customer[6] or '',
-        'buyer_city': customer[7] or '',
-        'buyer_country': customer[8] or 'DE',
-    }
-
-
 def _open_invoice_fields(db, stored, data):
-    """Die Felder einer versendeten oder stornierten Rechnung, die sich noch ändern lassen: Das
-    Formular schickt für sie nur Begleittext, Bestellnummer, Leitweg-ID und Leistungsdatum (kein
-    ``items``) – die Anschrift wird aus den Stammdaten des Kunden der Rechnung neu übernommen. Ein
-    Entwurf oder eine unbekannte Rechnung wird so nicht gespeichert: Dort gilt das komplette Formular."""
+    """Die Felder einer versendeten oder stornierten Rechnung, die sich noch ändern lassen. Das
+    Formular schickt für sie nur, was der Nutzer geändert hat (kein ``items``): Begleittext,
+    Bestellnummer, Leitweg-ID, Leistungsdatum. Die Anschrift bleibt, wie sie steht – nur mit
+    ``refreshAddress`` wird sie neu aus den Stammdaten desselben Kunden übernommen. Ein Entwurf oder
+    eine unbekannte Rechnung wird so nicht gespeichert: Dort gilt das komplette Formular."""
     fields = {}
     for key, field in (('paymentTerms', 'payment_terms'), ('orderNumber', 'order_number'),
                        ('deliveryDate', 'delivery_date')):
@@ -2077,10 +2076,10 @@ def _open_invoice_fields(db, stored, data):
             fields[field] = data[key]
     if 'buyerReference' in data:
         fields['buyer_reference'] = fields['buyer_route_id'] = data['buyerReference']
-    customer_id = stored[13]      # CustomerId
-    customer = db.get_contact_by_id(customer_id) if customer_id else None
-    if customer:
-        fields.update(_buyer_snapshot(customer))
+    if data.get('refreshAddress') is True:
+        customer = db.get_contact_by_id(stored[13]) if stored[13] else None    # CustomerId
+        if customer:
+            fields.update(buyer_snapshot(customer))
     return fields
 
 
@@ -2162,7 +2161,7 @@ def _invoice_fields(db, data, stored):
         'seller_email': own_company[9] or '',
         'seller_phone': own_company[10] or '',
         'customer_id': customer_id,
-        **_buyer_snapshot(customer),
+        **(buyer_snapshot(customer) if not frozen or data.get('refreshAddress') is True else {}),
         'buyer_vat_id': customer[11] or '',
         'buyer_reference': buyer_reference,
         'buyer_route_id': buyer_reference,  # Same as buyer_reference for XRechnung
@@ -2222,18 +2221,27 @@ def _save_invoice(data):
             if is_update:
                 db.update_invoice_fields(tx, invoice_id, invoice_data, item_rows)
             else:
-                # Die Nummer wird beim ersten Speichern vergeben – auch als Entwurf
+                # Die Nummer wird beim ersten Speichern vergeben – auch als Entwurf. Ist die Nummer des
+                # Formulars noch der Vorschlag, den es beim Öffnen bekam (``numberSuggestion``), zählt sie
+                # nicht als eigene: Ein zweites Fenster kann ihn inzwischen verbraucht haben, vergeben wird
+                # frisch, und die Antwort nennt die Nummer, die gilt.
+                requested = invoice_data['invoice_number']
+                if requested == data.get('numberSuggestion'):
+                    requested = None
                 invoice_data['invoice_number'] = db.allocate_invoice_number(
-                    tx.conn, invoice_data['invoice_date'], invoice_data['invoice_number'])
+                    tx.conn, invoice_data['invoice_date'], requested)
                 invoice_data['status'] = 'finalized' if data.get('status') == 'finalized' else 'draft'
                 invoice_id = db.insert_invoice(invoice_data, tx=tx)
                 for item in item_rows:
                     db.insert_invoice_item({**item, 'invoice_id': invoice_id}, tx=tx)
     except InvoiceLocked as locked:
         raise _SaveRefused(str(locked), 409) from None
-    except DocumentNotFound as missing:
-        raise _SaveRefused(str(missing)) from None
-    return _json_body({'success': True, 'invoice_id': invoice_id})
+    except (DocumentNotFound, NumberRangeError) as refusal:
+        raise _SaveRefused(str(refusal)) from None
+    result = {'success': True, 'invoice_id': invoice_id}
+    if not is_update:
+        result['invoice_number'] = invoice_data['invoice_number']
+    return _json_body(result)
 
 
 _NOT_NULL_FIELDS = {
@@ -2644,7 +2652,7 @@ def handle_quote_save(post_body: bytes):
                         'tax_category': 'S',
                         'tax_rate': item.get('taxRate', tax_rate),
                     }, tx=tx)
-        except DocumentNotFound as e:
+        except (DocumentNotFound, QuoteStatusLocked) as e:
             return json.dumps({'success': False, 'error': str(e)}).encode()
 
         return json.dumps({'success': True, 'quote_id': quote_id}).encode()
@@ -2670,7 +2678,7 @@ def _save_quote_update(tx, quote_id, doc):
                 CustomerId=?, BuyerName=?, BuyerCompany=?, BuyerStreet=?, BuyerPostalCode=?, BuyerCity=?, BuyerCountry=?, BuyerVATID=?,
                 Currency=?, TaxCategory=?, TaxRate=?, SumNet=?, TaxAmount=?, SumGross=?, AmountDue=?,
                 Status=?, ValidUntil=?, IntroText=?, ClosingText=?
-            WHERE ID=? AND DocumentType='quote'
+            WHERE ID=? AND DocumentType='quote' AND ''' + QUOTE_STAYS_CONVERTED_SQL + ''' 
         ''', (
             doc['invoice_number'], doc['invoice_date'], doc['own_company_id'],
             doc['seller_name'], doc['seller_company'], doc['seller_street'], doc['seller_postal_code'], doc['seller_city'], doc['seller_country'],
@@ -2680,9 +2688,13 @@ def _save_quote_update(tx, quote_id, doc):
             to_minor(doc['sum_net'] or 0), to_minor(doc['tax_amount'] or 0),
             to_minor(doc['sum_gross'] or 0), to_minor(doc['amount_due'] or 0),
             doc['status'], doc['valid_until'], doc['intro_text'], doc['closing_text'],
-            quote_id,
+            quote_id, doc['status'],
         ))
     if cursor.rowcount == 0:
+        # Es gibt das Angebot, aber es soll den Status „umgewandelt“ verlassen, obwohl eine Rechnung daraus besteht
+        if tx.conn.execute("SELECT 1 FROM Invoices WHERE ID = ? AND DocumentType = 'quote'",
+                           (quote_id,)).fetchone():
+            raise QuoteStatusLocked(QUOTE_STAYS_CONVERTED_MESSAGE)
         raise DocumentNotFound('Angebot nicht gefunden.')
 
 
@@ -2700,7 +2712,12 @@ def handle_update_quote_status(post_body: bytes):
     quote = db.get_document(quote_id, 'quote')
     if not quote:
         return 404, '{"success": false, "error": "Angebot nicht gefunden"}'
-    db.update_invoice_status(quote_id, new_status)
+    try:
+        db.set_quote_status(quote_id, new_status)
+    except DocumentNotFound:
+        return 404, '{"success": false, "error": "Angebot nicht gefunden"}'
+    except QuoteStatusLocked as refusal:
+        return 409, json.dumps({'success': False, 'error': str(refusal)})
     return 200, f'{{"success": true, "quote_id": {quote_id}}}'
 
 
@@ -2719,7 +2736,7 @@ def handle_convert_quote_to_invoice(post_data):
         if new_invoice_id:
             return 303, f"/invoice?id={new_invoice_id}"
         return 303, f"/quote?id={quote_id}"
-    except QuoteNotConvertible as refusal:
+    except (QuoteNotConvertible, NumberRangeError) as refusal:
         return 303, f"/quote?id={int(quote_id)}&err={quote(str(refusal), safe='')}"
     except Exception as e:
         print(f"Error converting quote {quote_id}: {e}")

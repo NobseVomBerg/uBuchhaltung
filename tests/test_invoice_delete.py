@@ -292,7 +292,7 @@ def test_the_list_shows_the_trash_icon_for_drafts_only(world):
            for i, status in enumerate(STATUS_LABELS)}
     html = PageInvoice(world.db, {}, None)
     list_part = html.split('Ende gridLeftCol')[0]
-    shown = {int(i) for i in re.findall(r'onclick="deleteInvoiceDraft\((\d+)\)"', list_part)}
+    shown = {int(i) for i in re.findall(r'onclick="deleteInvoiceDraft\((\d+), false\)"', list_part)}
     assert shown == {ids['draft']}
     assert 'class="action-icon delete-icon" title="Entwurf löschen"' in list_part
     assert "appConfirmPost('/invoice/delete?id=' + invoiceId" in list_part         # POST nach Rückfrage, kein Link
