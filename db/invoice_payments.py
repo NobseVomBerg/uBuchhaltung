@@ -10,11 +10,12 @@ App für sie erzeugt hat. Diese Sätze sind eindeutig bestimmt durch
 * ``DocumentNumber``   = die Rechnungsnummer,
 * ``Status``           = ``PAYMENT_MARK`` (``'invoice_payment'``).
 
-Es gibt genau EINE Stelle, die Zuordnungen anlegt (``assign_invoice_payment``) und EINE, die sie
-entfernt (``unassign_invoice_payment``); ``delete_transaction`` und der WISO-Import gehen über
-dieselben Bausteine. Anlegen und Entfernen laufen in einer Transaktion mit ``BEGIN IMMEDIATE``:
-Prüfung, Schreiben und Neuberechnung der Rechnung sehen denselben Stand – zwei gleichzeitige
-Anfragen legen das Paar (Rechnung, Bankbewegung) nie zweimal an.
+Es gibt genau EINE Stelle, die Zahlungen zuordnet (``assign_invoice_payment``: Zahlungseingang auf eine
+Rechnung), EINE, die eine Stornorechnung erstattet (``assign_storno_refund``: Zahlungsausgang auf eine
+Stornorechnung, seit 2.2.3), und EINE, die Zuordnungen entfernt (``unassign_invoice_payment``);
+``delete_transaction`` und der WISO-Import gehen über dieselben Bausteine. Anlegen und Entfernen laufen in
+einer Transaktion mit ``BEGIN IMMEDIATE``: Prüfung, Schreiben und Neuberechnung der Rechnung sehen denselben
+Stand – zwei gleichzeitige Anfragen legen das Paar (Rechnung, Bankbewegung) nie zweimal an.
 """
 import datetime
 import sqlite3
@@ -30,6 +31,16 @@ PAYMENT_MARK = 'invoice_payment'
 # dieses Modul das unterste der Rechnungsmodule ist; ``db.invoice_lock`` reicht den Namen weiter.
 STORNO_KIND = 'storno'
 STORNO_PAYMENT_MESSAGE = 'Einer Stornorechnung lässt sich keine Zahlung zuordnen.'
+
+# Die Erstattung einer Stornorechnung (``assign_storno_refund``) und der Schutz des Guthabens
+REFUND_ONLY_STORNO_MESSAGE = 'Erstatten lässt sich nur auf eine Stornorechnung.'
+REFUND_ONLY_OUTGOING_MESSAGE = 'Nur Zahlungsausgänge lassen sich als Erstattung zuordnen.'
+REFUND_NO_CREDIT_MESSAGE = 'Zu dieser Stornorechnung gibt es kein Guthaben zu erstatten.'
+REFUND_EXHAUSTED_MESSAGE = 'Kein offener Betrag zuordenbar (Guthaben oder Buchung ausgeschöpft)'
+ALREADY_REFUNDED_MESSAGE = ('Zu dieser Rechnung wurde bereits erstattet – erst die Erstattung an der Stornorechnung '
+                            'entfernen.')
+MOVE_REFUNDED_HINT = ('Die Zahlungen der stornierten Rechnung {number} bleiben dort: Zu ihr wurde bereits erstattet. '
+                      'Bitte von Hand zuordnen.')
 
 # Auf diese Status lässt sich eine Zahlung zuordnen: ab „versendet“ ist die Rechnung ein
 # offener Posten. 'partial' ist der Alt-Wert von 'partial_payment'.
@@ -70,7 +81,9 @@ def payment_rows(*, number, customer_id, bank_id, bank_date, bank_tax_date, reci
     schreibt sie, der Umzug der Zahlungen vergleicht den Bestand damit.
 
     ``number``: Nummer der Rechnung (Beleg-Nr.), ``customer_id``: ihr Kunde, ``bank_id``/``bank_date``/``bank_tax_date``/
-    ``recipient``/``currency``: die Bankbewegung, ``amount``: der zugeordnete Betrag (Minor Units), ``tax_rate`` (als
+    ``recipient``/``currency``: die Bankbewegung, ``amount``: der zugeordnete Betrag (Minor Units; bei der Erstattung einer
+    Stornorechnung, ``assign_storno_refund``, negativ – ebenso ``tax_value``, und ``number`` ist dann die Nummer der
+    Stornorechnung), ``tax_rate`` (als
     Bruchteil, ``None`` ohne Steuer) und ``tax_value`` (Minor Units) die Steuer der Zuordnung, ``bank_coa``/``revenue_coa``:
     Konto der Bank und Erlöskonto (COA-IDs). Mit Forderung (``debtor_side`` und ``waiting_side`` gegeben) sind es „Bank an
     Debitoren“ (``liquid_first``, ohne Steuer) und „Wartekonto an Erlöskonto“ (``transfer``, mit Steuer), ohne Forderung
@@ -84,12 +97,14 @@ def payment_rows(*, number, customer_id, bank_id, bank_date, bank_tax_date, reci
             'TaxAmount': tax_value if taxed else None, 'Text': text, 'DocumentNumber': number,
             'ParentBooking_ID': bank_id, 'Status': PAYMENT_MARK, 'EntryForm': form}, description)
 
+    # Eine Zahlung ist positiv, eine Erstattung negativ – der Text nennt, was es ist (die Zahlungssätze bleiben wortgleich)
+    paid, moved = ('Zahlung', 'Umb.') if amount >= 0 else ('Erstattung', 'Umb. Erstattung')
     if debtor_side and waiting_side:
-        return [row(bank_coa, debtor_side, FORM_LIQUID_FIRST, f'Zahlung zu Re. {number}', False,
+        return [row(bank_coa, debtor_side, FORM_LIQUID_FIRST, f'{paid} zu Re. {number}', False,
                     'Payment child (bank to debtor)'),
-                row(waiting_side, revenue_coa, FORM_TRANSFER, f'Umb. zu Re. {number}', True,
+                row(waiting_side, revenue_coa, FORM_TRANSFER, f'{moved} zu Re. {number}', True,
                     'Payment child (open item to revenue)')]
-    return [row(revenue_coa, bank_coa, FORM_PURPOSE_FIRST, f'Zahlung zu Re. {number}', True,
+    return [row(revenue_coa, bank_coa, FORM_PURPOSE_FIRST, f'{paid} zu Re. {number}', True,
                 'Payment child (revenue to bank)')]
 
 
@@ -112,6 +127,13 @@ MOVE_SKIP_REASONS = {
 # Die stornierte Rechnung, wie der Umzug sie braucht: ID, Nummer, Brutto und Steuer (Minor Units), Steuersatz (wie in
 # ``Invoices.TaxRate``) und Kunde
 _Replaced = namedtuple('_Replaced', 'id number gross tax_total rate customer_id')
+
+# Eine geprüfte und ausgerechnete Erstattung (``assign_storno_refund``): Nummer und Kunde der Stornorechnung, die stornierte
+# Rechnung und ihr Steuersatz (wie in ``Invoices.TaxRate``), die Bankbewegung (Konto, Datum, Steuerdatum, Empfänger, Währung),
+# der erstattete Betrag und seine Steuer (positiv, Minor Units; ``tax`` ist ``None`` ohne Steuersatz) und das Erlöskonto der
+# Zahlungen (``None``: keine Zuordnung mit markierten Sätzen)
+_Refund = namedtuple('_Refund', 'number customer_id original_id rate account_id bank_date bank_tax_date recipient '
+                                'currency amount tax revenue_coa')
 
 
 def next_payment_status(current, gross, paid, due_date, today):
@@ -138,9 +160,9 @@ def next_payment_status(current, gross, paid, due_date, today):
 
 class PaymentAssignment(namedtuple('PaymentAssignment',
                                    'ok message payment_id revenue_coa_id')):
-    """Ergebnis von ``assign_invoice_payment``: ob die Zuordnung zustande kam, bei einer
-    Ablehnung der Klartext für die Oberfläche (sonst ``None``), die ID der Zuordnung und das
-    Erlöskonto (COA-ID), auf das gebucht wurde."""
+    """Ergebnis von ``assign_invoice_payment`` und ``assign_storno_refund``: ob die Zuordnung
+    zustande kam, bei einer Ablehnung der Klartext für die Oberfläche (sonst ``None``), die ID
+    der Zuordnung und das Erlöskonto (COA-ID), auf das gebucht wurde."""
     __slots__ = ()
 
 
@@ -154,6 +176,11 @@ class PaymentMoveFailed(ValueError):
     und rollt damit alles zurück, was der Wechsel in seiner Transaktion geschrieben hat (``db.invoice_lock._Refusal`` ist von
     hier aus nicht erreichbar: Zirkelimport). Eine Zuordnung, die sich nur nicht neu buchen lässt, ist dagegen erwartet: Sie
     bleibt an der stornierten Rechnung, und der Versand gelingt (``_move_replaced_payments``)."""
+
+
+class PaymentRemovalRefused(ValueError):
+    """Das Entfernen einer Zuordnung (``unassign_invoice_payment``) wird abgelehnt, weil das Guthaben eines Storno-Paares
+    sonst negativ würde (mehr erstattet als gezahlt); ``str(exc)`` ist der Klartext für die Oberfläche."""
 
 
 def payment_blocker(doc_type, status, gross, kind=None):
@@ -196,26 +223,60 @@ class InvoicePaymentsMixin:
                      'WHERE ID = ?', (gross - paid, status, invoice_id))
 
     @staticmethod
+    def _bank_effective_sql(bank_coa_ids):
+        """SQL-Bedingung (ohne ``AND``) und Parameter: Der Buchungssatz ``k`` ist bankwirksam – er berührt ein eigenes
+        Bankkonto oder ist nicht ganz kontiert (``db.matching.is_bank_effective``). Die EINE Bedingung für den freien Rest
+        einer Bankbewegung, ob Eingang (``_free_minor_sql``) oder Ausgang (``_free_outgoing_minor_sql``)."""
+        marks = ','.join('?' * len(bank_coa_ids))
+        return (f'(k.COA_ID IS NULL OR k.CounterCOA_ID IS NULL '
+                f'OR k.COA_ID IN ({marks}) OR k.CounterCOA_ID IN ({marks}))'), list(bank_coa_ids) * 2
+
+    @staticmethod
     def _free_minor_sql(bank_coa_ids, alias='b'):
         """SQL-Ausdruck (und Parameter) für den freien Rest einer Bankbewegung in Minor Units:
 
             Betrag − MAX(Σ Zuordnungen, Σ bankwirksame Buchungssätze darunter)
 
         Die EINE Formel für Zuordnung, Kandidatenlisten und Kontakt-Guthaben. Der Rest kann
-        negativ sein (überbucht). Bankwirksam: ``db.matching.is_bank_effective``."""
-        marks = ','.join('?' * len(bank_coa_ids))
+        negativ sein (überbucht). Bankwirksam: ``db.matching.is_bank_effective``. Für einen Ausgang gilt
+        ``_free_outgoing_minor_sql``."""
+        effective, params = InvoicePaymentsMixin._bank_effective_sql(bank_coa_ids)
         expr = (f'{alias}.Amount - MAX('
                 f'COALESCE((SELECT SUM(ip.Amount) FROM InvoicePayments ip '
                 f'WHERE ip.BookingID = {alias}.ID), 0), '
                 f'COALESCE((SELECT SUM(k.Amount) FROM Bookings k '
                 f'WHERE k.ParentBooking_ID = {alias}.ID '
-                f'AND (k.COA_ID IS NULL OR k.CounterCOA_ID IS NULL '
-                f'OR k.COA_ID IN ({marks}) OR k.CounterCOA_ID IN ({marks}))), 0))')
-        return expr, list(bank_coa_ids) * 2
+                f'AND {effective}), 0))')
+        return expr, params
+
+    @staticmethod
+    def _free_outgoing_minor_sql(bank_coa_ids, alias='b'):
+        """SQL-Ausdruck (und Parameter) für den freien Rest einer ausgehenden Bankbewegung (Betrag < 0) in Minor Units,
+        als positive Zahl:
+
+            |Betrag| − MAX(−Σ Zuordnungen, −Σ bankwirksame Buchungssätze darunter)
+
+        Die Formel für die Erstattung einer Stornorechnung (``assign_storno_refund``) und ihre Kandidatenliste; die
+        Bedingung „bankwirksam“ ist dieselbe wie in ``_free_minor_sql``. Der Rest kann negativ sein (überbucht)."""
+        effective, params = InvoicePaymentsMixin._bank_effective_sql(bank_coa_ids)
+        expr = (f'-{alias}.Amount - MAX('
+                f'-COALESCE((SELECT SUM(ip.Amount) FROM InvoicePayments ip '
+                f'WHERE ip.BookingID = {alias}.ID), 0), '
+                f'-COALESCE((SELECT SUM(k.Amount) FROM Bookings k '
+                f'WHERE k.ParentBooking_ID = {alias}.ID '
+                f'AND {effective}), 0))')
+        return expr, params
 
     def _booking_free_minor(self, conn, booking_id, bank_coa_ids):
         """Freier Rest einer Bankbewegung in Minor Units (siehe ``_free_minor_sql``)."""
         expr, params = self._free_minor_sql(bank_coa_ids)
+        row = conn.execute(f'SELECT {expr} FROM Bookings b WHERE b.ID = ?',
+                           params + [booking_id]).fetchone()
+        return row[0] if row and row[0] is not None else 0
+
+    def _booking_free_outgoing_minor(self, conn, booking_id, bank_coa_ids):
+        """Freier Rest einer ausgehenden Bankbewegung in Minor Units, positiv (siehe ``_free_outgoing_minor_sql``)."""
+        expr, params = self._free_outgoing_minor_sql(bank_coa_ids)
         row = conn.execute(f'SELECT {expr} FROM Bookings b WHERE b.ID = ?',
                            params + [booking_id]).fetchone()
         return row[0] if row and row[0] is not None else 0
@@ -231,26 +292,32 @@ class InvoicePaymentsMixin:
         """Die Steuer eines Teils der Rechnung: anteilig am Betrag, auf den Cent gerundet (halb auf)."""
         return round_minor(prorate(tax_total, amount, gross), 2)
 
-    def _remaining_tax(self, conn, invoice_id, number, gross, tax_total, except_booking=None):
-        """Die Steuer des Teils, der die Rechnung schließt: Rechnungssteuer minus die Steuer der anderen Zuordnungen. Hat eine
-        markierte Sätze, zählt deren gebuchte Steuer (nur die Zahlungssätze tragen Steuer, nicht „Bank an Debitoren“); sonst
-        (Altbestand, WISO-Import) ihr anteiliger Betrag – eine Suche über die Beleg-Nr. fände Sätze mit anderer oder fehlender
-        Nummer nicht. ``except_booking``: eine Bankbewegung, deren Zuordnung nicht mitzählt – so fragt der Umzug, was diese
-        Zuordnung als schließender Teil bekommen hätte."""
+    def _allocations_tax(self, conn, invoice_id, number, gross, tax_total, except_booking=None):
+        """Die Steuer, die die Zuordnungen einer Rechnung tragen: Hat eine markierte Sätze, zählt deren gebuchte Steuer (nur
+        die Zahlungssätze tragen Steuer, nicht „Bank an Debitoren“); sonst (Altbestand, WISO-Import) ihr anteiliger Betrag –
+        eine Suche über die Beleg-Nr. fände Sätze mit anderer oder fehlender Nummer nicht. ``except_booking``: eine
+        Bankbewegung, deren Zuordnung nicht mitzählt. Die EINE Rechenstelle für den schließenden Teil einer Zahlung
+        (``_remaining_tax``) und die Erstattung einer Stornorechnung (``assign_storno_refund``)."""
         skip, params = ((' AND BookingID <> ?', (invoice_id, except_booking)) if except_booking is not None
                         else ('', (invoice_id,)))
-        taxed_before = 0
+        taxed = 0
         for other_booking, other_amount in conn.execute(
                 f'SELECT BookingID, SUM(Amount) FROM InvoicePayments WHERE InvoiceID = ?{skip} GROUP BY BookingID',
                 params).fetchall():
             marked = self._payment_children(conn, other_booking, number)
             if marked:
-                taxed_before += conn.execute(
+                taxed += conn.execute(
                     f"SELECT COALESCE(SUM(TaxAmount), 0) FROM Bookings WHERE ID IN "
                     f"({','.join('?' * len(marked))})", marked).fetchone()[0]
             else:
-                taxed_before += self._prorated_tax(tax_total, other_amount, gross)
-        return tax_total - taxed_before
+                taxed += self._prorated_tax(tax_total, other_amount, gross)
+        return taxed
+
+    def _remaining_tax(self, conn, invoice_id, number, gross, tax_total, except_booking=None):
+        """Die Steuer des Teils, der die Rechnung schließt: Rechnungssteuer minus die Steuer der anderen Zuordnungen
+        (``_allocations_tax``). ``except_booking``: eine Bankbewegung, deren Zuordnung nicht mitzählt – so fragt der Umzug,
+        was diese Zuordnung als schließender Teil bekommen hätte."""
+        return tax_total - self._allocations_tax(conn, invoice_id, number, gross, tax_total, except_booking)
 
     @staticmethod
     def _payment_children(conn, bank_id, invoice_number):
@@ -280,6 +347,20 @@ class InvoicePaymentsMixin:
                 return coa
         return None
 
+    def _bank_coa_of(self, account_id, what='Zahlung'):
+        """Das SKR-Konto (COA-ID) des Bankkontos einer Bewegung: ``(Fehlertext, None)`` oder ``(None, COA-ID)``. Ohne
+        SKR-Nummer lässt sich nichts kontieren. ``what``: das Wort in der Meldung ('Zahlung' oder 'Erstattung')."""
+        account = self.get_account_by_id(account_id) if account_id else None
+        if account is None:
+            return f'Für die {what} fehlt das Bankkonto.', None
+        if not account[7]:
+            return ('Das Bankkonto hat keine SKR-Nummer – bitte in den Stammdaten ergänzen, '
+                    f'sonst lässt sich die {what} nicht kontieren.'), None
+        bank_coa = self.get_coa_id_by_account_number(account[7])
+        if bank_coa is None:
+            return f'Das SKR-Konto {account[7]} des Bankkontos fehlt im Kontenrahmen.', None
+        return None, bank_coa
+
     def _payment_prerequisites(self, invoice_id, account_id, revenue_coa_id=None):
         """Was vor einer Zuordnung geklärt sein muss, in eigenen Verbindungen: Beim Auflösen
         des Erlöskontos werden bei Bedarf Konten angelegt – das darf nicht innerhalb von
@@ -297,15 +378,9 @@ class InvoicePaymentsMixin:
                                   invoice[50] if len(invoice) > 50 else None)
         if blocked:
             return blocked, None
-        account = self.get_account_by_id(account_id) if account_id else None
-        if account is None:
-            return 'Für die Zahlung fehlt das Bankkonto.', None
-        if not account[7]:
-            return ('Das Bankkonto hat keine SKR-Nummer – bitte in den Stammdaten ergänzen, '
-                    'sonst lässt sich die Zahlung nicht kontieren.'), None
-        bank_coa = self.get_coa_id_by_account_number(account[7])
-        if bank_coa is None:
-            return f'Das SKR-Konto {account[7]} des Bankkontos fehlt im Kontenrahmen.', None
+        error, bank_coa = self._bank_coa_of(account_id)
+        if error:
+            return error, None
         revenue_coa = self.resolve_revenue_coa(invoice[35])
         if revenue_coa is None:
             revenue_coa, error = self._chosen_revenue_coa(revenue_coa_id)
@@ -403,8 +478,9 @@ class InvoicePaymentsMixin:
         derselben Bewegung, eine Teilzahlung mehrere Bewegungen auf eine Rechnung.
 
         Zugelassen sind nur Zahlungseingänge (Bewegung mit Betrag > 0) auf versendete
-        Rechnungen; das Bankkonto braucht eine SKR-Nummer. Negative Zuordnungen (Erstattung,
-        Gutschrift) gibt es nur im WISO-Import (``link_invoice_to_transaction``).
+        Rechnungen; das Bankkonto braucht eine SKR-Nummer. Negative Zuordnungen gibt es sonst nur
+        im WISO-Import (``link_invoice_to_transaction``); die Erstattung einer Stornorechnung
+        legt ``assign_storno_refund`` an.
 
         Geschrieben werden die InvoicePayments-Zeile und die Buchungssätze, alle mit Datum,
         Steuerdatum und Empfänger der Bewegung, der Rechnungsnummer als Beleg-Nr. und der
@@ -545,6 +621,165 @@ class InvoicePaymentsMixin:
         self._recalc_invoice(conn, invoice_id)
         return PaymentAssignment(True, None, payment_id, ctx['revenue_coa'])
 
+    # ── Erstattung einer Stornorechnung ──────────────────────────────────────
+    def assign_storno_refund(self, storno_id, booking_id, amount=None, revenue_coa_id=None):
+        """Eine ausgehende Bankbewegung (ganz oder teilweise) als Erstattung einer Stornorechnung zuordnen.
+
+        Eigener Weg neben ``assign_invoice_payment``. Das Guthaben des Kunden – Σ Zuordnungen beider Belege des Paares
+        (stornierte Rechnung und Stornorechnung, ``get_storno_credit``) – gleicht die Erstattung aus: Sie ist die Zuordnung
+        eines Zahlungsausgangs (Bewegung mit Betrag < 0) an der Stornorechnung, mit negativem Betrag. Der erstattete Betrag
+        ist min(Guthaben, freier Rest der Bewegung, ``amount``); ``amount=None`` heißt „so viel wie möglich“. Der freie Rest
+        eines Ausgangs ist ``|Betrag| − MAX(−Σ Zuordnungen, −Σ bankwirksame Sätze)`` (``_free_outgoing_minor_sql``), eine
+        Sammel-Überweisung also mehrere Erstattungen derselben Bewegung. Das Bankkonto braucht eine SKR-Nummer; der Betrag
+        wird auf Cent gerundet (halb auf), bevor er gekappt wird.
+
+        Geschrieben werden die InvoicePayments-Zeile (an der Stornorechnung, Betrag −r) und die Buchungssätze, alle mit
+        Datum, Steuerdatum, Empfänger und Währung der Bewegung, der **Nummer der Stornorechnung** als Beleg-Nr. und der Marke
+        ``PAYMENT_MARK`` – über ``payment_rows``, dieselbe Stelle wie die Zuordnung einer Zahlung, mit negativem Betrag:
+        Hat die Stornorechnung eine Gegenbuchung (``_receivable_sides``), ``Bank an Debitoren`` (ohne Steuer) und
+        ``Wartekonto an Erlöskonto`` (mit Steuer), sonst der Einzelsatz ``Erlöskonto an Bank``.
+
+        Die Steuer nimmt zurück, was die Zahlungen an der stornierten Rechnung gebucht haben (``_allocations_tax``): Gleicht
+        die Erstattung das Guthaben ganz aus, ist es der Rest – die Steuer der Zahlungen abzüglich der früherer Erstattungen –,
+        sonst der anteilige Betrag (Cent, halb auf; nie mehr als der Rest). Die Summe über alle Erstattungen ist so genau die
+        Steuer der Zahlungen. Ohne Steuersatz (§ 19, 0 %) gibt es keine.
+
+        Das Erlöskonto ist das der Zahlungen (``_payment_revenue_coa`` über die markierten Sätze ihrer jüngsten Zuordnung); hat
+        keine Zuordnung markierte Sätze (Import), das für den Steuersatz hinterlegte (``resolve_revenue_coa``), und gibt es
+        auch das nicht, wählt der Nutzer es (``revenue_coa_id``, ein Erlöskonto, sonst Ablehnung). Konten, die das Auflösen
+        anlegen könnte, entstehen vor der Transaktion in eigenen Verbindungen – erst, wenn die Erstattung sich buchen lässt.
+
+        Abgelehnt wird mit Klartext, nichts geschrieben: keine Stornorechnung, keine ausgehende Bankbewegung, das Paar ist
+        schon zugeordnet, es gibt kein Guthaben, die Bewegung ist ausgeschöpft, das Bankkonto hat keine SKR-Nummer, kein
+        Erlöskonto. Geprüft wird vor der Transaktion und, mit frisch gelesenem Stand, in ihr (``BEGIN IMMEDIATE``).
+
+        Returns ``PaymentAssignment(ok, message, payment_id, revenue_coa_id)`` wie ``assign_invoice_payment``."""
+        requested = None
+        if amount is not None:
+            requested = round_minor(to_minor(amount), 2)
+            if requested <= 0:
+                return _refused('Der Betrag muss größer 0 sein.')
+        bank_coa_ids = self.get_bank_coa_ids()
+
+        # Vorprüfung ohne Schreibsperre: abgelehnt wird, bevor ein Konto angelegt wird
+        conn = self._get_connection()
+        try:
+            refusal, plan = self._refund_plan(conn, storno_id, booking_id, requested, bank_coa_ids)
+        finally:
+            conn.close()
+        if refusal:
+            return _refused(refusal)
+        error, bank_coa = self._bank_coa_of(plan.account_id, 'Erstattung')
+        if error:
+            return _refused(error)
+        fallback = None
+        if plan.revenue_coa is None:
+            fallback = self.resolve_revenue_coa(plan.rate)
+            if fallback is None:
+                fallback, error = self._chosen_revenue_coa(revenue_coa_id)
+                if error:
+                    return _refused(error)
+        account_id, rate = plan.account_id, plan.rate
+
+        with self.transaction() as tx:
+            conn = tx.conn
+            conn.execute('BEGIN IMMEDIATE')
+            refusal, plan = self._refund_plan(conn, storno_id, booking_id, requested, bank_coa_ids)
+            if refusal:
+                return _refused(refusal)
+            revenue_coa = plan.revenue_coa or fallback
+            if plan.rate != rate or plan.account_id != account_id or revenue_coa is None:
+                return _refused('Rechnung oder Bankbewegung wurde inzwischen geändert – bitte erneut versuchen.')
+
+            debtor_side, waiting_side = self._receivable_sides(conn, plan.number)
+            try:
+                cursor = conn.execute(
+                    'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) VALUES (?, ?, ?, ?)',
+                    (storno_id, booking_id, -plan.amount, plan.bank_date))
+            except sqlite3.IntegrityError:
+                # der eindeutige Index auf (Rechnung, Bewegung) – dasselbe wie die Prüfung im Plan
+                return _refused('Buchung ist bereits mit dieser Rechnung verknüpft')
+            payment_id = cursor.lastrowid
+            tx.log.append(('INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) VALUES (?, ?, ?, ?)',
+                           (storno_id, booking_id, -plan.amount, plan.bank_date), 'Link storno invoice to booking (refund)'))
+
+            tax_rate = self._booking_tax_rate(plan.rate)
+            for row in payment_rows(number=plan.number, customer_id=plan.customer_id, bank_id=booking_id,
+                                    bank_date=plan.bank_date, bank_tax_date=plan.bank_tax_date,
+                                    recipient=plan.recipient, currency=plan.currency, amount=-plan.amount,
+                                    tax_rate=tax_rate, tax_value=-plan.tax if tax_rate else None, bank_coa=bank_coa,
+                                    revenue_coa=revenue_coa, debtor_side=debtor_side, waiting_side=waiting_side):
+                params = tuple(row.values[column] for column in PAYMENT_ROW_COLUMNS)
+                conn.execute(_PAYMENT_ROW_INSERT, params)
+                tx.log.append((_PAYMENT_ROW_INSERT, params, row.description))
+
+            self._recalc_invoice(conn, storno_id)
+        return PaymentAssignment(True, None, payment_id, revenue_coa)
+
+    def _refund_plan(self, conn, storno_id, booking_id, requested, bank_coa_ids):
+        """Eine Erstattung prüfen und ausrechnen – nur lesend, in der Verbindung (Transaktion) ``conn``: die Stornorechnung
+        ``storno_id`` mit ihrer stornierten Rechnung, die Bankbewegung ``booking_id``, das Guthaben, der freie Rest der
+        Bewegung (``bank_coa_ids``: die eigenen Bankkonten) und der gewünschte Betrag ``requested`` (Minor Units, auf Cent
+        gerundet, oder ``None``). Returns ``(Klartext, None)`` bei einer Ablehnung, sonst ``(None, _Refund)``."""
+        storno = conn.execute(
+            'SELECT InvoiceNumber, DocumentType, InvoiceKind, CancelsInvoiceId, CustomerId, SumGross, TaxAmount '
+            'FROM Invoices WHERE ID = ?', (storno_id,)).fetchone()
+        if storno is None or (storno[1] or 'invoice') != 'invoice':
+            return 'Rechnung nicht gefunden', None
+        number, _type, kind, original_id, customer_id, gross, tax_total = storno
+        original = None
+        if kind == STORNO_KIND and original_id is not None:
+            original = conn.execute('SELECT InvoiceNumber, SumGross, TaxAmount, TaxRate FROM Invoices WHERE ID = ?',
+                                    (original_id,)).fetchone()
+        if original is None:
+            return REFUND_ONLY_STORNO_MESSAGE, None
+        bank = conn.execute(
+            'SELECT BookingType, Amount, Account_ID, DateBooking, DateTax, RecipientClient, Currency '
+            'FROM Bookings WHERE ID = ?', (booking_id,)).fetchone()
+        if bank is None:
+            return 'Buchung nicht gefunden', None
+        if bank[0] != 'bank' or (bank[1] or 0) >= 0:
+            return REFUND_ONLY_OUTGOING_MESSAGE, None
+        if conn.execute('SELECT 1 FROM InvoicePayments WHERE InvoiceID = ? AND BookingID = ?',
+                        (storno_id, booking_id)).fetchone():
+            return 'Buchung ist bereits mit dieser Rechnung verknüpft', None
+        original_number, original_gross, original_tax, rate = original
+
+        paid = conn.execute('SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
+                            (original_id,)).fetchone()[0]
+        refunded = -conn.execute('SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
+                                 (storno_id,)).fetchone()[0]
+        credit = paid - refunded
+        if paid <= 0 or credit <= 0:
+            return REFUND_NO_CREDIT_MESSAGE, None
+        free = self._booking_free_outgoing_minor(conn, booking_id, bank_coa_ids)
+        if free <= 0:
+            return REFUND_EXHAUSTED_MESSAGE, None
+        refund = min(credit, free, credit if requested is None else requested)
+
+        tax = None
+        if self._booking_tax_rate(rate):
+            paid_tax = self._allocations_tax(conn, original_id, original_number, original_gross or 0, original_tax or 0)
+            refunded_tax = -self._allocations_tax(conn, storno_id, number, gross or 0, tax_total or 0)
+            if refund == credit:
+                tax = paid_tax - refunded_tax
+            else:
+                tax = min(self._prorated_tax(paid_tax, refund, paid), paid_tax - refunded_tax)
+            tax = max(tax, 0)
+        return None, _Refund(number, customer_id, original_id, rate, bank[2], bank[3], bank[4], bank[5], bank[6],
+                             refund, tax, self._refund_revenue_coa(conn, original_id, original_number))
+
+    def _refund_revenue_coa(self, conn, original_id, original_number):
+        """Das Erlöskonto (COA-ID), auf das die Zahlungen der stornierten Rechnung gebucht sind: das der jüngsten Zuordnung,
+        deren markierte Sätze eines nennen (``_payment_revenue_coa``) – wenn es ein Erlöskonto ist, sonst keines. ``None``,
+        wenn keine Zuordnung markierte Sätze hat (Import, Altbestand)."""
+        for (bank_id,) in conn.execute('SELECT BookingID FROM InvoicePayments WHERE InvoiceID = ? ORDER BY ID DESC',
+                                       (original_id,)).fetchall():
+            coa = self._payment_revenue_coa(conn, self._payment_children(conn, bank_id, original_number))
+            if coa is not None:
+                return coa if coa in {row[0] for row in self._income_coas(conn.cursor())} else None
+        return None
+
     # ── Entfernen ────────────────────────────────────────────────────────────
     def _after_payment_removed(self, conn, invoice_id):
         """Nach dem Entfernen von Zahlungen, in der Transaktion von ``conn``:
@@ -612,13 +847,38 @@ class InvoicePaymentsMixin:
         (storniert von Hand, ohne Stornorechnung) und es war ihre letzte Zahlung
         (``_after_payment_removed``). Alles in einer Transaktion.
 
-        Returns die Rechnungs-ID; ``ValueError``, wenn es die Zuordnung nicht gibt."""
+        Die Erstattung einer Stornorechnung (``assign_storno_refund``) geht auf demselben Weg: Zuordnung und markierte Sätze
+        gehen, Forderung und Gegenbuchung des Paares bleiben, das Guthaben ist danach wieder da. Eine **Zahlung** an einer
+        stornierten Rechnung mit Stornorechnung lässt sich dagegen nicht entfernen, wenn danach mehr erstattet als gezahlt wäre
+        (:class:`PaymentRemovalRefused`, in der Transaktion geprüft) – erst die Erstattung entfernen.
+
+        Returns die Rechnungs-ID; ``ValueError``, wenn es die Zuordnung nicht gibt, :class:`PaymentRemovalRefused` (auch ein
+        ``ValueError``), wenn das Guthaben sonst negativ würde."""
         with self.transaction() as tx:
             tx.conn.execute('BEGIN IMMEDIATE')
+            blocker = self._refund_removal_blocker(tx.conn, payment_id)
+            if blocker:
+                raise PaymentRemovalRefused(blocker)
             invoice_id = self._unassign(tx.conn, payment_id)
         if invoice_id is None:
             raise ValueError(f"InvoicePayment {payment_id} not found")
         return invoice_id
+
+    @staticmethod
+    def _refund_removal_blocker(conn, payment_id):
+        """Klartext, wenn das Entfernen dieser Zuordnung das Guthaben eines Storno-Paares negativ machte, sonst ``None``: Sie ist
+        eine Zahlung (Betrag > 0) an einer stornierten Rechnung mit Stornorechnung, und danach wären die Zahlungen kleiner als
+        die Erstattungen. In der Transaktion von ``conn``."""
+        row = conn.execute(
+            'SELECT ip.InvoiceID, ip.Amount, s.ID FROM InvoicePayments ip '
+            'JOIN Invoices s ON s.CancelsInvoiceId = ip.InvoiceID AND s.InvoiceKind = ? WHERE ip.ID = ?',
+            (STORNO_KIND, payment_id)).fetchone()
+        if row is None or row[1] <= 0:
+            return None
+        original_id, amount, storno_id = row
+        paid, storno_sum = (conn.execute('SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
+                                         (invoice_id,)).fetchone()[0] for invoice_id in (original_id, storno_id))
+        return ALREADY_REFUNDED_MESSAGE if paid - amount + storno_sum < 0 else None
 
     def remove_assignment_for_child(self, conn, child_id):
         """Einen markierten Buchungssatz einer Zuordnung löschen heißt: die ganze Zuordnung
@@ -814,8 +1074,10 @@ class InvoicePaymentsMixin:
         Bankkonto ohne SKR-Nummer, Sätze, die jemand von Hand geändert oder ergänzt hat oder an denen ein Beleg hängt – es
         bleibt an der stornierten Rechnung und steht im Hinweis, mit dem Grund. Beurteilt wird jede Zuordnung gegen den
         Stand VOR dem ersten Umzug: Der Steuer-Rest des schließenden Teils hängt von den anderen Zuordnungen ab, die sich mit
-        jedem Umzug ändern. Nichts zieht um, wenn Kunde oder Währung abweichen oder für den Steuersatz der neuen Rechnung kein
-        Erlöskonto hinterlegt ist. Eine Sammelzahlung zieht nur mit der Zuordnung um, die zur stornierten Rechnung gehört.
+        jedem Umzug ändern. Nichts zieht um, wenn Kunde oder Währung abweichen, für den Steuersatz der neuen Rechnung kein
+        Erlöskonto hinterlegt ist oder zur stornierten Rechnung schon erstattet wurde (``assign_storno_refund``; Σ Zuordnungen
+        der Stornorechnung < 0 – der Hinweis nennt es). Eine Sammelzahlung zieht nur mit der Zuordnung um, die zur stornierten
+        Rechnung gehört.
 
         Jede Zuordnung läuft in einem Savepoint: Lässt sie sich nicht vollständig mit den erwarteten Beträgen neu buchen,
         geht der Savepoint zurück (die Zuordnung liegt unverändert an der stornierten Rechnung, ihre Einträge im Replay-Log
@@ -836,6 +1098,10 @@ class InvoicePaymentsMixin:
                              (old_id,)).fetchone()[0]
         if total <= 0:
             return 0, None
+        # Wurde schon erstattet (Zuordnungen an der Stornorechnung), gäbe der Umzug Geld doppelt aus: nichts zieht um
+        if conn.execute('SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID IN '
+                        '(SELECT ID FROM Invoices WHERE CancelsInvoiceId = ?)', (old_id,)).fetchone()[0] < 0:
+            return 0, MOVE_REFUNDED_HINT.format(number=old_number)
 
         def euro(minor):
             return fmt_eur(from_minor(minor))
@@ -960,7 +1226,11 @@ class InvoicePaymentsMixin:
         * ``storno_counter_mismatch`` bei einer Rechnung mit Stornorechnung steht nur eine der beiden
                                  Buchungen („Forderung“ der Rechnung, Gegenbuchung der Stornorechnung);
         * ``legacy_cancelled_open`` eine von Hand stornierte Rechnung ohne Stornorechnung, deren
-                                 Forderung noch in den Büchern steht.
+                                 Forderung noch in den Büchern steht;
+        * ``refund_exceeds_credit`` zu einer Stornorechnung ist mehr erstattet als zur stornierten Rechnung
+                                 gezahlt wurde (Σ Zuordnungen beider Belege < 0) – etwa nach dem Löschen der
+                                 Bankbewegung einer Zahlung. Eine intakte Erstattung (Zuordnung an der
+                                 Stornorechnung mit ihren Sätzen) ergibt in keiner Kategorie einen Befund.
 
         ``no_settlement`` und ``transfer_mismatch`` betrachten nur Zuordnungen, deren Buchung
         eine Bankbewegung ohne Sätze mit Quellklammer (``SourceGroup``) ist: Der WISO-Import
@@ -1193,4 +1463,17 @@ class InvoicePaymentsMixin:
                 add('legacy_cancelled_open', inv, number,
                     f'Die Rechnung ist storniert, ihre Forderung steht aber noch in den Büchern ({euro(booked)}). '
                     f'Abhilfe: „Stornorechnung nachträglich erstellen“.')
+
+        # Mehr erstattet als gezahlt: die Zuordnungen des Paares (Zahlungen minus Erstattungen) ergeben ein negatives Guthaben,
+        # etwa nach dem Löschen der Bankbewegung einer Zahlung. Je Rechnung vorab zusammengefasst, nicht je Paar nachgeschlagen.
+        for storno_id, storno_number, original_number, paid, refunded in conn.execute(
+                "WITH sums AS (SELECT InvoiceID, SUM(Amount) AS Total FROM InvoicePayments GROUP BY InvoiceID) "
+                "SELECT s.ID, s.InvoiceNumber, o.InvoiceNumber, COALESCE(po.Total, 0), -COALESCE(ps.Total, 0) "
+                "FROM Invoices s JOIN Invoices o ON o.ID = s.CancelsInvoiceId "
+                "LEFT JOIN sums po ON po.InvoiceID = o.ID LEFT JOIN sums ps ON ps.InvoiceID = s.ID "
+                f"WHERE s.InvoiceKind = ?{pair_only} AND COALESCE(po.Total, 0) + COALESCE(ps.Total, 0) < 0 "
+                "ORDER BY o.InvoiceNumber, s.ID", [STORNO_KIND, *only_params, *only_params]):
+            add('refund_exceeds_credit', storno_id, storno_number,
+                f'Zur Stornorechnung {storno_number} ist mehr erstattet ({euro(refunded)}) als zur Rechnung '
+                f'{original_number} gezahlt wurde ({euro(paid)}).')
         return findings

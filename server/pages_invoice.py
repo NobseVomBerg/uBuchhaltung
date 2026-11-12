@@ -15,7 +15,7 @@ from db.invoice_lock import (CLOSED, EDITABLE, LOCKED_STATUSES, NUMBER_KEPT_MESS
                              buyer_snapshot, canonical_status, status_group)
 from db.invoice_payments import PAYABLE_STATUSES
 from db.invoice_versions import DELIVERY_DATE_MESSAGE, PROTOCOL_LABELS, local_date, local_datetime
-from money import fmt_eur
+from money import fmt_eur, format_plain, to_minor
 from export.einvoice_model import unit_display
 from export.invoice_files import stored_invoice_path, version_files
 from .pages import (
@@ -172,6 +172,135 @@ def revenue_coa_choice(db, tax_rate, selected=None):
             'Vorgabe für diesen Steuersatz.')
     return (f'<select name="revenue_coa_id" id="revenueCoa" required>{options}</select>',
             _html.escape(hint))
+
+
+# Erstattung auf der Seite der Stornorechnung (Database.assign_storno_refund): Rückfrage beim Entfernen und das Skript, das
+# zuordnet und entfernt. Es nutzt die Routen der Zahlungen (/invoice/link-payment, /invoice/delete-payment); die Platzhalter
+# ersetzt der Aufrufer (Rechnungs-ID als Ganzzahl, Rückfrage über script_json).
+REFUND_CONFIRM_QUESTION = ('Erstattung wirklich entfernen? Die von der App dafür angelegten Buchungssätze werden mit '
+                           'entfernt; das Guthaben des Kunden steht danach wieder aus.')
+
+_REFUND_SCRIPT = """    <script>
+        // Das gewählte Erlöskonto ('' = es gibt kein Feld: die Kontierung ergibt sich aus den Zahlungen; null = Feld
+        // ohne Wahl, der Nutzer wurde darauf hingewiesen)
+        function revenueCoaChoice() {
+            const field = document.getElementById('revenueCoa');
+            if (!field) return '';
+            if (!field.value) {
+                showMessage('Bitte ein Erlöskonto wählen.', 'error');
+                return null;
+            }
+            return field.value;
+        }
+        // Eine ausgehende Bankbewegung als Erstattung dieser Stornorechnung zuordnen
+        function linkRefund(bookingId, button) {
+            const amount = parseFloat(document.getElementById('refundAmount_' + bookingId).value);
+            if (!amount || amount <= 0) {
+                showMessage('Betrag muss größer 0 sein.', 'error');
+                return;
+            }
+            const coa = revenueCoaChoice();
+            if (coa === null) return;
+            const payload = {invoice_id: __INVOICE_ID__, transaction_id: bookingId, amount_paid: amount};
+            if (coa) payload.revenue_coa_id = parseInt(coa, 10);
+            button.disabled = true;   // ein Doppelklick ordnet nicht doppelt zu
+            fetch('/invoice/link-payment', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) { location.reload(); }
+                else {
+                    button.disabled = false;
+                    showMessage('Fehler: ' + (data.error || 'Unbekannt'), 'error');
+                }
+            })
+            .catch(() => {
+                button.disabled = false;
+                showMessage('Fehler: Die Erstattung konnte nicht zugeordnet werden.', 'error');
+            });
+        }
+        function deleteRefund(paymentId) {
+            showConfirm(__CONFIRM__, function() {
+                fetch('/invoice/delete-payment', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({payment_id: paymentId})
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) { location.reload(); }
+                    else { showMessage('Fehler: ' + (data.error || 'Unbekannt'), 'error'); }
+                });
+            });
+        }
+    </script>
+"""
+
+
+def _refund_box_html(db, invoice_id, invoice, refunds, credit):
+    """Kasten der Stornorechnung zu ihren Zahlungen: Solange das Guthaben des Kunden offen ist (``credit`` > 0) oder es
+    Erstattungen gibt, der Kasten „Erstattung“ (``Database.assign_storno_refund``) – solange Guthaben bleibt, zuerst die
+    ausgehenden Bankbewegungen mit freiem Rest zum Zuordnen (Betrag vorbelegt mit dem kleineren von Guthaben und freiem
+    Rest; Erlöskonto zu wählen, wenn sich keines ermitteln lässt), darunter die zugeordneten Erstattungen mit „Entfernen“.
+    Sonst nur der Hinweis, dass einer Stornorechnung keine Zahlung zugeordnet wird. ``invoice``: ihre Zeile, ``refunds``:
+    ihre Zuordnungen (``Database.get_invoice_payments``), ``credit``: das Guthaben (Euro, ``Database.get_storno_credit``).
+    Alle Werte aus der Datenbank sind maskiert; die Seite bleibt sonst schreibgeschützt."""
+    credit = credit or 0
+    if credit <= 0 and not refunds:
+        return ('    <div class="rectRounded no-pdf"><h3>Zahlungsverknüpfungen</h3>\n'
+                '        <p class="hint">Einer Stornorechnung lässt sich keine Zahlung zuordnen.</p>\n    </div>\n')
+    h = '    <div class="rectRounded no-pdf" id="refund_box">\n        <h3>Erstattung</h3>\n'
+    findings = db.find_payment_inconsistencies(invoice_id)
+    if findings:
+        h += ('        <div class="warnColor"><strong>Zahlungszuordnung prüfen:</strong><ul>\n'
+              + ''.join(f'            <li>{_html.escape(f["text"])}</li>\n' for f in findings)
+              + '        </ul>Alle Rechnungen mit Unstimmigkeiten zeigt die Prüfung unter '
+              '<a href="/miscellaneous?check_payments=1">Sonstiges</a>.</div>\n')
+    if credit > 0:
+        choice = revenue_coa_choice(db, invoice[35])
+        if choice:
+            h += (f'        <p class="hint">{choice[1]}</p>\n'
+                  f'        <p><label>Erlöskonto: {choice[0]}</label></p>\n')
+        linked = {refund[2] for refund in refunds}
+        candidates = [c for c in db.get_unallocated_outgoing_bookings(invoice[13]) if c[0] not in linked]
+        if candidates:
+            h += ('        <h4>Ausgehende Bankbewegung als Erstattung zuordnen</h4>\n'
+                  '        <table class="refundTable">\n'
+                  '            <tr><th>Datum</th><th>Empfänger/Auftragg.</th><th class="num">Betrag</th>'
+                  '<th class="num">Frei</th><th class="num">Erstatten</th><th></th></tr>\n')
+            for b_id, b_date, b_recipient, _contact, b_amount, b_free in candidates:
+                match_mark = ' ✓' if b_free == credit else ''
+                h += ('            <tr><td>%s</td><td>%s</td><td class="num">%s</td><td class="num">%s</td>'
+                      '<td class="num"><input type="number" step="0.01" min="0.01" class="noButtons" '
+                      'id="refundAmount_%d" value="%s"></td>'
+                      '<td><button onclick="linkRefund(%d, this)" class="coloredButton btn-sm bg-blue">'
+                      'Als Erstattung zuordnen</button></td></tr>\n'
+                      % (_html.escape(str(b_date or '–')), _html.escape(str(b_recipient or '')),
+                         _html.escape(fmt_eur(b_amount)), _html.escape(fmt_eur(b_free) + match_mark), int(b_id),
+                         format_plain(to_minor(min(credit, b_free))), int(b_id)))
+            h += '        </table>\n'
+        else:
+            h += ('        <p class="hint">Es gibt keine ausgehende Bankbewegung mit freiem Rest, die sich als '
+                  'Erstattung zuordnen ließe.</p>\n')
+    elif credit == 0:
+        h += '        <p class="hint">Das Guthaben ist vollständig erstattet.</p>\n'
+    if refunds:
+        h += ('        <h4>Zugeordnete Erstattungen</h4>\n'
+              '        <table class="refundTable">\n'
+              '            <tr><th>Datum</th><th>Buchung</th><th class="num">Betrag</th><th></th></tr>\n')
+        for payment_id, _invoice, booking_id, amount, pay_date, _notes, booking_ref in refunds:
+            h += ('            <tr><td>%s</td><td><a href="/transactions/edit?id=%d">#%d %s</a></td>'
+                  '<td class="num">%s</td><td><a href="javascript:void(0);" onclick="deleteRefund(%d)" '
+                  'class="action-icon delete-icon">&#10005; Entfernen</a></td></tr>\n'
+                  % (_html.escape(str(pay_date or '–')), int(booking_id), int(booking_id),
+                     _html.escape(str(booking_ref or '')), _html.escape(fmt_eur(amount)), int(payment_id)))
+        h += '        </table>\n'
+    h += '    </div>\n'
+    return h + _REFUND_SCRIPT.replace('__INVOICE_ID__', str(int(invoice_id))).replace(
+        '__CONFIRM__', script_json(REFUND_CONFIRM_QUESTION))
 
 
 def document_submenu(active):
@@ -449,6 +578,7 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
                         if existing_invoice and not is_copy and not is_storno else None)
     # Guthaben des Kunden aus Zahlungen auf die stornierte Rechnung (beide Belege des Paares zeigen es)
     storno_credit = db.get_storno_credit(invoice_id) if existing_invoice and not is_copy else None
+    storno_refunded = db.get_storno_refunded(invoice_id) if existing_invoice and not is_copy else None
     doc_title = STORNO_LABEL if is_storno else 'Rechnung'
 
     # Get company data (own contact)
@@ -632,6 +762,8 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
         if storno_credit is not None and storno_credit > 0:
             storno_row += ('<tr><td>Storno:</td><td>Guthaben des Kunden: %s – Zahlungen auf die stornierte Rechnung</td></tr>'
                            % _html.escape(fmt_eur(storno_credit)))
+        elif storno_credit == 0 and storno_refunded:
+            storno_row += '<tr><td>Storno:</td><td>Guthaben vollständig erstattet.</td></tr>'
         if replacement_invoice:
             storno_row += ('<tr><td>Neue Rechnung:</td><td><a href="/invoice?id=%d">%s</a></td></tr>'
                            % (int(replacement_invoice[0]), _html.escape(str(replacement_invoice[1]))))
@@ -1794,10 +1926,10 @@ function copyInvoiceAsNew(invId) {{
     '''.replace('__CORRECT_QUESTION__', script_json(CORRECT_QUESTION)
                 ).replace('__DELIVERY_DATE_MESSAGE__', script_json(DELIVERY_DATE_MESSAGE))
 
-    # Einer Stornorechnung lassen sich keine Zahlungen zuordnen: statt des Kastens ein Hinweis
+    # Einer Stornorechnung lassen sich keine Zahlungen zuordnen: statt des Kastens ein Hinweis – solange das Guthaben des
+    # Kunden aber offen ist oder es Erstattungen gibt, der Kasten „Erstattung“
     if is_storno:
-        s += ('    <div class="rectRounded no-pdf"><h3>Zahlungsverknüpfungen</h3>\n'
-              '        <p class="hint">Einer Stornorechnung lässt sich keine Zahlung zuordnen.</p>\n    </div>\n')
+        s += _refund_box_html(db, invoice_id, existing_invoice, existing_payments, storno_credit)
 
     # Payment history section (edit mode only)
     if is_edit_mode and invoice_id and not is_storno:

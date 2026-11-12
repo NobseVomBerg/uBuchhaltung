@@ -25,7 +25,7 @@ from db.invoice_lock import (DocumentNotFound, EDITABLE_STATUSES, InvoiceLocked,
                              buyer_snapshot, status_group)
 from db.invoice_storno import NO_COUNTER_BOOKING_HINT
 from db.invoice_versions import CorrectionInvalid
-from db.invoice_payments import RECEIVABLE_STATUSES
+from db.invoice_payments import RECEIVABLE_STATUSES, PaymentRemovalRefused
 from db.numbering import NumberRangeError, number_format_error
 from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
 from db.accounts import DEFAULT_CASH_ACCOUNT
@@ -2027,6 +2027,13 @@ def link_booking_to_invoice_capped(db, invoice_id, booking_id, amount=None, reve
 def handle_link_invoice_payment(post_body: bytes):
     """Link invoice to a payment booking via InvoicePayments table.
 
+    Für eine Stornorechnung ist es die Erstattung: Die ausgehende Bankbewegung wird ihr zugeordnet
+    (``Database.assign_storno_refund``, gekappt auf Guthaben und freien Rest der Bewegung; ``amount_paid`` ist
+    der gewünschte Erstattungsbetrag). Vom Anzeige-Backfill der Zahlung (``_backfill_booking_skr``) bleibt nur
+    der Kunde: Ohne ihn füllte die Bankmaske ihn beim ersten Speichern ein (sie zeigt den Kontakt der Sätze
+    darunter), und „Öffnen und unverändert speichern“ änderte etwas. Erlöskonto, Steuer und Beleg-Nr. bekommt
+    die Bankzeile einer Erstattung nicht – sie gehören zur Rechnung, nicht zur Bewegung.
+
     Returns tuple: (status_code, message_or_path)
     """
     data = _json_request(post_body)
@@ -2043,8 +2050,19 @@ def handle_link_invoice_payment(post_body: bytes):
     db = Database()
 
     try:
-        ok, err = link_booking_to_invoice_capped(db, invoice_id, transaction_id,
-                                                 amount_paid, revenue_coa_id)
+        invoice = db.get_document(invoice_id, 'invoice')
+        if is_storno_row(invoice):
+            refund = db.assign_storno_refund(invoice_id, transaction_id, amount_paid, revenue_coa_id)
+            ok, err = refund.ok, refund.message
+            if ok:
+                try:
+                    db.backfill_booking_fields(transaction_id, contact_id=invoice[13])      # 13 = CustomerId
+                except Exception as e:
+                    # Zuordnung ist gespeichert; ein Backfill-Fehler darf sie nicht kippen
+                    print(f"Error backfilling contact for booking {transaction_id}: {e}")
+        else:
+            ok, err = link_booking_to_invoice_capped(db, invoice_id, transaction_id,
+                                                     amount_paid, revenue_coa_id)
         if not ok:
             return 400, err
         return 200, f"/invoice/view?id={invoice_id}"
@@ -2069,6 +2087,8 @@ def handle_delete_invoice_payment(post_body: bytes):
     try:
         db.unassign_invoice_payment(payment_id)
         return 200, "ok"
+    except PaymentRemovalRefused as e:
+        return 409, str(e)             # abgelehnt, nichts geändert (Guthaben würde negativ)
     except Exception as e:
         print(f"Error deleting invoice payment: {e}")
         return 500, "Die Zahlungszuordnung konnte nicht entfernt werden."

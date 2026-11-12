@@ -15,7 +15,9 @@ zur Nummer und zum Datum der Stornorechnung (die Forderung einer Gutschrift, ``d
 Hat die Ursprungsrechnung keine Forderung der App (Import, Steuersatz ohne Wartekonto, importierte oder von Hand
 gebuchte Forderung), gibt es keine Gegenbuchung. Zahlungen bleiben an der stornierten Rechnung; ihr Betrag ist das
 **Guthaben** des Kunden (``get_storno_credits``), und beim Versenden der Ersatzrechnung gehen sie auf diese über
-(``InvoicePaymentsMixin._move_replaced_payments``). Der Stornorechnung lässt sich keine Zahlung zuordnen.
+(``InvoicePaymentsMixin._move_replaced_payments``) oder werden erstattet (``InvoicePaymentsMixin.assign_storno_refund``,
+seit 2.2.3: eine ausgehende Bankbewegung, zugeordnet an der Stornorechnung). Der Stornorechnung lässt sich sonst keine Zahlung
+zuordnen.
 
 Eine von Hand stornierte Rechnung ohne Stornorechnung (Altbestand) bekommt sie nachträglich: Es entsteht dieselbe
 Stornorechnung, die Rechnung bleibt „storniert“ (ihr Status und ihr Protokoll ändern sich nicht), und steht ihre
@@ -78,11 +80,13 @@ REISSUE_FAILED_MESSAGE = f'{REISSUE_FAILED_PREFIX} – nichts wurde geändert.'
 Reissue = namedtuple('Reissue', 'ok message code invoice_id invoice_number', defaults=(None, None))
 
 #: Beide Belege eines Storno-Paares und das Guthaben des Kunden: die Zuordnungen beider Belege zusammen (Minor Units).
-#: Heute trägt nur die stornierte Rechnung Zahlungen; was später an der Stornorechnung hängt (eine Erstattung), zählt hier mit.
+#: Die stornierte Rechnung trägt die Zahlungen, die Stornorechnung die Erstattungen (negativ, ``assign_storno_refund``);
+#: ``Refunded`` ist die Summe der Erstattungen als positive Zahl.
 _CREDIT_SQL = ('SELECT s.ID AS StornoID, s.InvoiceNumber AS StornoNumber, s.InvoiceDate AS StornoDate, '
                'o.ID AS OriginalID, o.InvoiceNumber AS OriginalNumber, '
                '(SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = o.ID) '
-               '+ (SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = s.ID) AS Credit '
+               '+ (SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = s.ID) AS Credit, '
+               '-(SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = s.ID) AS Refunded '
                'FROM Invoices s JOIN Invoices o ON o.ID = s.CancelsInvoiceId WHERE s.InvoiceKind = ?')
 
 
@@ -408,6 +412,17 @@ class InvoiceStornoMixin:
         finally:
             conn.close()
         return from_minor(row[5]) if row else None
+
+    def get_storno_refunded(self, invoice_id):
+        """Die Summe der Erstattungen des Storno-Paares, zu dem dieser Beleg gehört (die stornierte Rechnung oder ihre
+        Stornorechnung), in Euro (Decimal, positiv): die Zuordnungen an der Stornorechnung (``assign_storno_refund``).
+        ``None`` für jeden anderen Beleg."""
+        conn = self._get_connection()
+        try:
+            row = conn.execute(f'{_CREDIT_SQL} AND (s.ID = ? OR o.ID = ?)', (STORNO_KIND, invoice_id, invoice_id)).fetchone()
+        finally:
+            conn.close()
+        return from_minor(row[6]) if row else None
 
     def get_storno_credits_for_contact(self, contact_id):
         """Die Storno-Paare dieses Kunden mit Guthaben über 0, das jüngste Datum der Stornorechnung zuerst:
