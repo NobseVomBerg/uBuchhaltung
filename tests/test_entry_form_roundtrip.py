@@ -180,10 +180,8 @@ def _stored(db, booking_id):
             'WHERE ID = ?', (booking_id,)).fetchone()
 
 
-GELDKONTEN = {1800, 1810, 1460, 1050, 1600}
-
 # Spalten, die das Zuordnen ändern darf: die Verknüpfung – und bei einer Buchung, der ein Konto oder das
-# Gegenkonto fehlt, die Konten samt Form und Betrag (das Gegenkonto wird das Konto der Bank). Wann genau,
+# Gegenkonto fehlt, die Konten samt Form und Betrag (ein leeres Gegenkonto füllt das Konto der Bank). Wann genau,
 # legen die Prüfungen im Test fest; jede andere Spalte bleibt, wie sie ist.
 ACCOUNT_COLUMNS = ('COA_ID', 'CounterCOA_ID', 'Amount', 'EntryForm')
 ADOPTION_CHANGES = ('ParentBooking_ID',) + ACCOUNT_COLUMNS
@@ -203,24 +201,24 @@ def _made_outside_the_editor(db, row):
 
 
 def test_assigning_an_existing_booking_keeps_its_accounts_amount_and_form(neuer_bestand):
-    """Eine Buchung mit einem Geldkonto vorne (Bank, Kasse, 1460, 1050) und einem Zweckkonto hinten
-    behält Konten, Betrag und Form, wenn man sie einer Bankbewegung zuordnet; jede andere behält
-    wenigstens Konto und Betrag, jede Buchung alle übrigen Spalten (Steuer, Datum, Steuerdatum, Empfänger
-    …) – beim Zuordnen und bei jedem weiteren Speichern. Wieder entfernt wird eine importierte oder eine
-    AfA-Buchung nur gelöst (danach wie vor dem Zuordnen, das AfA-Jahr bleibt gebucht), jede andere gelöscht;
+    """Eine Buchung mit Konten auf beiden Seiten – Geldkonto vorne oder hinten, gleich welches (Bank der Bewegung,
+    andere Bank, Kasse, 1460, 1050) – behält Konten, Betrag und Form, wenn man sie einer Bankbewegung zuordnet;
+    nur ein leeres Gegenkonto füllt das Konto der Bank. Jede Buchung behält alle übrigen Spalten (Steuer, Datum,
+    Steuerdatum, Empfänger …) – beim Zuordnen und bei jedem weiteren Speichern. Wieder entfernt wird eine
+    importierte oder eine AfA-Buchung nur gelöst und ist danach wie vor dem Zuordnen (das AfA-Jahr bleibt
+    gebucht; außer einem gefüllten Gegenkonto, das das ✕ nicht zurücknehmen kann), jede andere wird gelöscht;
     sonst bleibt alles."""
     problems = []
     for index, step in enumerate(STEPS):
         db = neuer_bestand(index)
         alpha = _accounts(db)['Giro Alpha'][0]
+        bank_coa = db.get_coa_id_by_account_number(1800)                    # das SKR-Konto von Giro Alpha
         names = _names(db)
         candidates = [row[0] for row in db.get_unlinked_entry_bookings(limit=500)]
         assert candidates
         for candidate in candidates:
             coa, counter, amount, form, _parent = _stored(db, candidate)
             label = f'[{step}] {_label(db, candidate)[2]}'
-            geldkonto_vorne = (counter is not None and names.get(coa) in GELDKONTEN
-                               and names.get(counter) not in GELDKONTEN)
             bank_id = db.insert_booking('2026-08-01', Decimal('1.00'), account_id=alpha,
                                         booking_type='bank', text='Zuordnungsziel')
             post, options = open_form(db, bank_id)
@@ -233,11 +231,9 @@ def test_assigning_an_existing_booking_keeps_its_accounts_amount_and_form(neuer_
             complete = coa is not None and counter is not None
             if now[4] != bank_id:
                 problems.append(f'{label}: nicht der Bankbewegung zugeordnet')
-            if complete and now[0] != coa:
-                problems.append(f'{label}: Konto {names.get(coa)} -> {names.get(now[0])}')
-            if geldkonto_vorne and (now[1], now[3]) != (counter, form):
-                problems.append(f'{label}: Gegenkonto/Form {(names.get(counter), form)} -> '
-                                f'{(names.get(now[1]), now[3])}')
+            if complete and now[:4] != (coa, counter, amount, form):
+                problems.append(f'{label}: Konten/Betrag/Form {(names.get(coa), names.get(counter), amount, form)} '
+                                f'-> {(names.get(now[0]), names.get(now[1]), now[2], now[3])}')
             if (now[0], now[1]) == (coa, counter) and (now[2], now[3]) != (amount, form):
                 problems.append(f'{label}: Betrag/Form {(amount, form)} -> {(now[2], now[3])}')
             for booking_id, row in before.items():
@@ -271,9 +267,14 @@ def test_assigning_an_existing_booking_keeps_its_accounts_amount_and_form(neuer_
             elif candidate not in gone:
                 problems.append(f'{label} ging beim Entfernen verloren')
             else:
+                # Alle Spalten wie vor dem Zuordnen. Ausgenommen ein leeres Gegenkonto: Das Zuordnen füllt es mit
+                # dem Konto der Bank, und ob es vorher leer war, steht nach dem Zuordnen nirgends mehr.
+                filled = coa is not None and counter is None
                 for line in differences({candidate: before[candidate]}, {candidate: gone[candidate]}, names,
-                                        ignore=ACCOUNT_COLUMNS):
+                                        ignore=('CounterCOA_ID', 'EntryForm') if filled else ()):
                     problems.append(f'{label} entfernt: {line}')
+                if filled and gone[candidate]['CounterCOA_ID'] != bank_coa:
+                    problems.append(f'{label}: Gegenkonto nicht mit dem Konto der Bank gefüllt')
             if _plan_of_depreciations(db) != plan:
                 problems.append(f'{label}: der AfA-Plan änderte sich beim Entfernen')
             for booking_id, row in settled.items():

@@ -324,7 +324,9 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
   Haben. Fehlt das Zweckkonto, wird `purpose_first` gespeichert (die EÜR bucht dann nichts).
   Jeder Schreibweg setzt die Form (Maske, Buchungssatz-Editor, Rechnung, AfA, Importe); ändern
   sich Konto oder Gegenkonto, wird sie neu abgeleitet – eine Seite, die gleich bleibt, behält ihre
-  Rolle, und kippt die Seite des Betrags, wird der Betrag negiert (`reform`). EÜR, DATEV-Export,
+  Rolle, und kippt die Seite des Betrags, wird der Betrag negiert (`reform`) – und mit ihm der
+  Steuerbetrag, der das Vorzeichen des Betrags trägt, sofern der Aufrufer ihn nicht ändert
+  (`_form_after_accounts_change`). EÜR, DATEV-Export,
   Dashboard und Split-Summe lesen die Form (`read_entry_form`); nur eine Zeile **ohne** Form
   (`NULL`, per SQL-Konsole angelegt) wird mit den Zahlungskonten von jetzt eingeordnet
   (`classify_entry`, Spiegel dann wie `mirror_legacy`).
@@ -344,6 +346,8 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
   Buchung in die Zeile (`data-rate`/`data-tax` der Option) und schreibt sie nur, wenn das Formular sie
   mitbringt; Datum, Steuerdatum und Empfänger eines Satzes folgen der Bankbewegung nur, wenn er sie
   vorher mit ihr geteilt hat (`_plan_split_rows`, je Feld gleicher Wert wie die Bankbewegung bis jetzt).
+  Steht auf der Geldseite eines Satzes (hinten, Zweckkonto vorne) schon ein anderes Zahlungskonto,
+  überschreibt das Zuordnen es nicht; ein leeres Gegenkonto füllt das Konto der Bank.
   Entfernt der Nutzer die Zeile eines importierten Satzes (`SourceGroup`), einer AfA-Buchung oder einer
   als Kind angehängten Forderung, wird der Satz nur abgehängt (`remove_split_row`), jeder andere gelöscht.
 - **Split-Summe** (`bank_effect`): Ein Spiegel mit bekannter Lesart (`mirror_coa`,

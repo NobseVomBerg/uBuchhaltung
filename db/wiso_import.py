@@ -718,6 +718,8 @@ class WisoImportMixin:
                             fields.append('EntryForm=?'); values.append(reformed[0])
                             if reformed[1] is not None:
                                 fields.append('Amount=?'); values.append(reformed[1])
+                            if reformed[2] is not None:
+                                fields.append('TaxAmount=?'); values.append(reformed[2])
                     if fields:
                         values.append(t_id)
                         cursor.execute(
