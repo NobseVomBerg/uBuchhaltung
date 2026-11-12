@@ -78,6 +78,10 @@ kein Subagent darauf:
 - Commits nur im Hauptthread, nicht in den Agents. Format
   `typ(bereich): deutsche Kurzbeschreibung`, z. B. `fix(einvoice): …`,
   `chore(version): 1.6.19 – …`
+- Autor eines Commits ist der Owner, Claude steht als `Co-Authored-By` darunter – auch in
+  Cloud-Sessions, in denen Git sonst „Claude“ als Autor einträgt: `git commit --author=…` mit
+  der Identität der bisherigen Commits des Owners im Repo
+  (`git log --author=NobseVomBerg -1 --format='%an <%ae>'`). Keine `Claude-Session`-Zeile
 - Gezielt lesen: erst Grep/Glob, keine Reads über 2000 Zeilen; für `db/`
   die Modul-Landkarte im db-navigate-Skill
 - Architektur-Entscheidungen in dieser Datei festhalten, statt sie jedes Mal
