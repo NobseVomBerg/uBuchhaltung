@@ -37,7 +37,7 @@ _INV = dict(
     buyer_route_id=22, order_number=23, currency=24, delivery_date=25,
     payment_terms=26, payment_due_date=27, bank_name=31, bank_iban=32,
     bank_bic=33, tax_category=34, tax_rate=35, sum_net=36, tax_amount=37,
-    sum_gross=38, amount_due=39, invoice_kind=50, cancels_invoice_id=51, document_version=54,
+    sum_gross=38, amount_due=39, invoice_kind=50, cancels_invoice_id=51, replaces_invoice_id=52, document_version=54,
 )
 # Spaltenindizes der InvoiceItems-Zeile
 _ITM = dict(position=2, description=4, quantity=5, unit=6, price=7, total_net=8,
@@ -247,6 +247,31 @@ def storno_note_text(number, day) -> str:
     return f'{text} vom {_german_date(day)}' if day else text
 
 
+def replacement_note_text(number, storno_number) -> str:
+    """Der Hinweis einer Ersatzrechnung im Klartext, für PDF, CII (BT-22) und UBL (``cbc:Note``) derselbe: „Ersetzt die
+    stornierte Rechnung R26001 (Stornorechnung R26002)“; ohne bekannte Stornorechnung entfällt die Klammer."""
+    text = f'Ersetzt die stornierte Rechnung {number}'
+    return f'{text} (Stornorechnung {storno_number})' if storno_number else text
+
+
+def replacement_note(db, invoice):
+    """Der Hinweis, den die Rechnungszeile ``invoice`` (aus ``db.get_invoice_by_id``) trägt, wenn sie eine stornierte
+    Rechnung ersetzt (``Invoices.ReplacesInvoiceId``) – sonst ``None``. Er ergibt sich aus dem Stand der Datenbank, nicht
+    aus einem Parameter: Auch ein später über „PDF + E-Rechnung“ erzeugtes Dokument trägt ihn. Ohne Datenbank, ohne
+    Verweis oder ohne die ersetzte Rechnung gibt es keinen Hinweis; die Nummer der Stornorechnung nennt
+    ``db.find_storno_invoice``."""
+    column = _INV['replaces_invoice_id']
+    replaced_id = invoice[column] if len(invoice) > column else None
+    # nur eine positive Ganzzahl verweist auf eine Rechnung (die Spalte lässt sich per SQL beschreiben)
+    if db is None or isinstance(replaced_id, bool) or not isinstance(replaced_id, int) or replaced_id <= 0:
+        return None
+    original = db.get_invoice_by_id(replaced_id)
+    if original is None:
+        return None
+    storno = db.find_storno_invoice(replaced_id)
+    return replacement_note_text(_text(original[_INV['number']]), _text(storno[1]) if storno else '')
+
+
 def _party(name, street, postal, city, country, vat_id='', email='', phone='',
            contact='', tax_number=''):
     return Party(name=_text(name), street=_text(street), postal_code=_text(postal),
@@ -375,8 +400,10 @@ def build_einvoice(db, invoice, items) -> EInvoice:
             preceding_date = _iso_date(original[_INV['date']])
             notes = [storno_note_text(preceding_number, preceding_date)]
     else:
+        # Eine Ersatzrechnung nennt die stornierte Rechnung; eine berichtigte Fassung dazu ihren Hinweis
         notice = correction_notice(db, invoice)
-        notes = [correction_note_text(notice)] if notice else []
+        notes = [note for note in (replacement_note(db, invoice), correction_note_text(notice) if notice else None)
+                 if note]
     return EInvoice(
         number=_text(col('number')) or 'DRAFT',
         issue_date=_iso_date(col('date')) or date.today(),

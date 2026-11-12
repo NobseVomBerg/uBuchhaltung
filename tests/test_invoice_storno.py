@@ -396,9 +396,21 @@ def test_a_draft_is_not_cancelled(world, status):
                                        'Entwurf ist.')
 
 
-def test_an_already_cancelled_invoice_of_the_old_stock_is_refused(world):
+def test_an_already_cancelled_invoice_of_the_old_stock_gets_its_credit_note_afterwards(world):
+    """Eine von Hand stornierte Rechnung ohne Stornorechnung (Altbestand) bekommt sie seit 2.2.2 nachträglich – früher
+    lehnte ``cancel_invoice`` sie als „bereits storniert“ ab. Die Rechnung selbst bleibt, wie sie ist; die zweite
+    Stornierung wird abgelehnt."""
+    db = world.db
     invoice_id = sent(world)
-    world.db.update_invoice_status(invoice_id, 'cancelled')                  # Altbestand: von Hand storniert
+    db.update_invoice_status(invoice_id, 'cancelled')                        # Altbestand: von Hand storniert
+    before, log_before = columns(db, invoice_id), protocol(db, invoice_id)
+
+    storno = cancel(world, invoice_id)
+
+    assert storno.counter_booked is True and storno.storno_number == '26R001'
+    assert {k: v for k, v in columns(db, invoice_id).items() if k != 'UpdatedAt'} == \
+        {k: v for k, v in before.items() if k != 'UpdatedAt'}
+    assert protocol(db, invoice_id) == log_before                            # keine Statuszeile: nichts hat sich geändert
     refused(world, invoice_id, message='Die Rechnung ist bereits storniert.')
 
 
@@ -945,7 +957,9 @@ def test_only_a_sent_invoice_offers_cancelling_and_the_dialog_has_a_date_field(w
         force_status(world.db, invoice_id, status)
         assert 'cancelInvoice(' in PageInvoice(world.db, {}, invoice_id)
     force_status(world.db, invoice_id, 'cancelled')
-    assert 'cancelInvoice(' not in PageInvoice(world.db, {}, invoice_id)
+    html = PageInvoice(world.db, {}, invoice_id)                              # von Hand storniert, ohne Stornorechnung:
+    assert 'Stornieren &hellip;' not in html and 'Stornieren und neu ausstellen' not in html     # kein Stornieren mehr …
+    assert f'onclick="cancelInvoice({invoice_id})"' in html and 'Stornorechnung nachträglich erstellen &hellip;' in html   # … aber die Stornorechnung nachträglich
 
 
 def test_the_list_marks_credit_notes_and_leaves_them_out_of_the_sums(world, credit_note):

@@ -653,7 +653,8 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
                           f'<td style="text-align:right;">{fmt_eur(inv[4])}</td></tr>')
             return table + '</table>'
 
-        if items['open_invoices'] or items['credits'] or items['unsent_invoices']:
+        if (items['open_invoices'] or items['credits'] or items['storno_credits']
+                or items['unsent_invoices']):
             s += '<div class="rectRounded"><h3>Offene Posten</h3>'
             if items['open_invoices']:
                 s += invoice_table(items['open_invoices'])
@@ -666,11 +667,21 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
                           f'<td>{_html.escape(str(c[1] or "–"))}</td>'
                           f'<td style="text-align:right;">{fmt_eur(c[5])}</td></tr>')
                 s += '</table>'
+            if items['storno_credits']:
+                s += ('<h4>Guthaben aus stornierten Rechnungen</h4>'
+                      '<table><tr><th>Beleg</th><th>Datum</th><th>Guthaben</th></tr>')
+                for c in items['storno_credits']:
+                    s += (f'<tr><td><a href="/invoice/edit?id={int(c[0])}">Stornorechnung '
+                          f'{_html.escape(str(c[1] or c[0]))}</a> zu Rechnung '
+                          f'<a href="/invoice/edit?id={int(c[3])}">{_html.escape(str(c[4] or c[3]))}</a></td>'
+                          f'<td>{_html.escape(str(c[2] or "–"))}</td>'
+                          f'<td style="text-align:right;">{fmt_eur(c[5])}</td></tr>')
+                s += '</table>'
             saldo = items['saldo']
             saldo_color = '#c00' if saldo > 0 else '#2a2'
             s += (f'<p><strong>Saldo: <span style="color:{saldo_color};">'
                   f'{fmt_eur(saldo)}</span></strong> (Forderungen aus versendeten Rechnungen '
-                  '− Guthaben aus nicht kontierten Zahlungen)</p>')
+                  '− Guthaben aus nicht kontierten Zahlungen und stornierten Rechnungen)</p>')
             if items['unsent_invoices']:
                 s += ('<h4>Noch nicht versendet (nicht im Saldo)</h4>'
                       + invoice_table(items['unsent_invoices']))

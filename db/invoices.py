@@ -31,7 +31,7 @@ class InvoiceCol:
     DOCUMENT_TYPE = 45   # 'invoice' | 'quote'
     INVOICE_KIND = 50    # NULL = Rechnung, 'storno' = Stornorechnung (seit 2.2.1)
     CANCELS_INVOICE_ID = 51  # Stornorechnung: die stornierte Rechnung
-    REPLACES_INVOICE_ID = 52  # noch ungenutzt (für „Stornieren und neu ausstellen“ vorgesehen)
+    REPLACES_INVOICE_ID = 52  # Ersatzrechnung: die stornierte Rechnung, die sie ersetzt (seit 2.2.2)
     SENT_AT = 53         # erstmals versendet (UTC, CURRENT_TIMESTAMP); Import: NULL
     DOCUMENT_VERSION = 54    # Nummer der aktuellen Fassung; NULL = Fassung 1
 
@@ -1134,8 +1134,9 @@ class InvoicesMixin:
         """Offene Posten eines Kontakts für die Kontaktseite.
 
         Forderungen sind die versendeten Rechnungen (``PAYABLE_STATUSES``) mit Rest – eine
-        Stornorechnung nie, ein Guthaben aus einer stornierten, schon bezahlten Rechnung wird hier
-        nicht geführt; ein Guthaben ist der freie Rest eines Zahlungseingangs des Kontakts. Nicht versendete
+        Stornorechnung nie; ein Guthaben ist der freie Rest eines Zahlungseingangs des Kontakts oder
+        das Guthaben eines Storno-Paares des Kontakts (Zahlungen auf die stornierte Rechnung,
+        ``get_storno_credits_for_contact``): Beides steht auf dem Debitorenkonto im Haben. Nicht versendete
         (abgeschlossene) Rechnungen werden getrennt geführt und gehen nicht in den Saldo ein –
         sie stehen noch nicht in den Büchern.
 
@@ -1144,7 +1145,10 @@ class InvoicesMixin:
           unsent_invoices: dasselbe für abgeschlossene, noch nicht versendete Rechnungen
           credits:         [(BookingID, DateBooking, RecipientClient, Contact_ID,
                              Amount€, Frei€)]  – nicht zugeordnete Zahlungs-Reste
-          saldo:           Forderungen (versendet) − Guthaben (Euro-Decimal)
+          storno_credits:  [(ID der Stornorechnung, Nummer, Datum, ID der stornierten Rechnung, Nummer,
+                             Guthaben€)]  – Guthaben aus stornierten Rechnungen, jüngstes zuerst
+          saldo:           Forderungen (versendet) − Guthaben − Guthaben aus stornierten Rechnungen
+                           (Euro-Decimal)
         """
         conn = self._get_connection()
 
@@ -1168,7 +1172,9 @@ class InvoicesMixin:
         conn.close()
         credits = self.get_unallocated_bank_bookings(contact_id, contact_only=True,
                                                      limit=100)
+        storno_credits = self.get_storno_credits_for_contact(contact_id)
         saldo = (sum((r[4] for r in open_invoices), Decimal(0))
-                 - sum((r[5] for r in credits), Decimal(0)))
+                 - sum((r[5] for r in credits), Decimal(0))
+                 - sum((r[5] for r in storno_credits), Decimal(0)))
         return {'open_invoices': open_invoices, 'unsent_invoices': unsent_invoices,
-                'credits': credits, 'saldo': saldo}
+                'credits': credits, 'storno_credits': storno_credits, 'saldo': saldo}

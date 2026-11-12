@@ -629,7 +629,7 @@ class SchemaMixin:
                 -- ALTER TABLE der Migration in _run_migrations)
                 InvoiceKind TEXT,                              -- NULL = Rechnung, 'storno' = Stornorechnung (seit 2.2.1)
                 CancelsInvoiceId INTEGER,                      -- Stornorechnung: die stornierte Rechnung (seit 2.2.1)
-                ReplacesInvoiceId INTEGER,                     -- neue Rechnung: die ersetzte, stornierte (noch ungenutzt)
+                ReplacesInvoiceId INTEGER,                     -- neue Rechnung: die ersetzte, stornierte (seit 2.2.2)
                 SentAt DATETIME,                               -- erstmals versendet (UTC); Import und Altbestand: NULL
                 DocumentVersion INTEGER,                       -- Nummer der aktuellen Fassung; NULL = Fassung 1
 

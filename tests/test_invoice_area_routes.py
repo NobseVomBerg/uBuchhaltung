@@ -287,6 +287,7 @@ HANDLER = {                     # Route -> Handler, den `_post_json_route` aufru
     '/invoice/delete-payment': 'handle_delete_invoice_payment',
     '/invoice/status': 'handle_update_invoice_status',
     '/invoice/cancel': 'handle_invoice_cancel',
+    '/invoice/reissue': 'handle_invoice_reissue',
     '/quote/save': 'handle_quote_save',
     '/quote/status': 'handle_update_quote_status',
 }
@@ -300,7 +301,7 @@ INVALID_REQUEST = {'success': False, 'error': 'Ungültige Anfrage.'}
 def test_json_route_expectations_cover_all_json_paths():
     # Kommt eine JSON-Route hinzu, braucht sie hier einen Handler und eine Erwartung
     assert set(HANDLER) == set(server_app._JSON_PATHS)
-    assert len(JSON_ROUTES) == 8
+    assert len(JSON_ROUTES) == 9
 
 
 UNUSABLE_BODIES = {
@@ -336,6 +337,7 @@ EMPTY_OBJECT = {
     '/invoice/send-email': (400, 'Ungültige Anfrage.'),
     '/invoice/delete-payment': (400, 'Ungültige Anfrage.'),
     '/invoice/cancel': (400, 'Ungültige Anfrage.'),
+    '/invoice/reissue': (400, 'Ungültige Anfrage.'),
     '/quote/status': (400, 'Ungültige Anfrage.'),
     '/invoice/link-payment': (400, 'Ungültige Parameter'),
     '/invoice/save': (200, 'Pflichtfelder fehlen'),

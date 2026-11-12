@@ -1784,7 +1784,8 @@ def handle_update_invoice_status(post_body: bytes):
     wird über ``/invoice/cancel`` (``handle_invoice_cancel``) storniert, hier 409.
     Hier folgt danach nur das Erzeugen des Dokuments beim Versenden (Entwurf/abgeschlossen → versendet,
     oder eine stornierte Rechnung ohne Datei). Zwischen versendet und überfällig wird nichts gebucht
-    und nichts erzeugt.
+    und nichts erzeugt. Versendet die Route eine Ersatzrechnung, ziehen die Zahlungen der stornierten Rechnung um
+    (in derselben Transaktion); die Antwort nennt in ``hint``, was geschah.
 
     Returns tuple: (status_code, json_body)
     """
@@ -1816,6 +1817,8 @@ def handle_update_invoice_status(post_body: bytes):
     if change.archived:
         result['hint'] = ('Die versendeten Dokumente (PDF/XML) liegen jetzt im Ordner „Fassungen“ '
                           'dieser Rechnung und bleiben dort erhalten.')
+    if change.payment_hint:             # Versand einer Ersatzrechnung: was mit den Zahlungen der stornierten geschah
+        result['hint'] = change.payment_hint
     warning = _ensure_sent_documents(db, invoice_id, change.old, new_status)
     if warning:
         result['warning'] = warning
@@ -1832,6 +1835,11 @@ def handle_invoice_cancel(post_body: bytes):
     erzeugt die fehlende Datei. ``hint`` sagt, dass es keine Gegenbuchung gab.
 
     ``invoiceId`` liest die Route streng als Ganzzahl (wie ``/invoice/save``), das Datum prüft die Datenbankschicht.
+
+    ``reissue`` (Wahrheitswert, ohne Angabe ``false``; alles andere ist eine ungültige Anfrage, bevor etwas geschieht):
+    Mit ``true`` legt die Route nach der Stornierung und dem Dokument der Stornorechnung den Entwurf der neuen Rechnung
+    an (``Database.create_replacement_draft``, „Stornieren und neu ausstellen“) und nennt ihn als ``replacement_id``. Das ist eine
+    zweite Transaktion: Scheitert sie, bleibt die Stornierung stehen, und die Antwort trägt dazu eine ``warning``.
     Returns tuple: (status_code, json_body)
     """
     data = _json_request(post_body)
@@ -1841,6 +1849,9 @@ def handle_invoice_cancel(post_body: bytes):
         invoice_id = _invoice_id(data)
     except _SaveRefused as refusal:
         return refusal.status, json.dumps({'success': False, 'error': refusal.text})
+    reissue = data.get('reissue', False)
+    if not isinstance(reissue, bool):
+        raise InvalidRequest('reissue ist kein Wahrheitswert')
 
     db = Database()
     storno = db.cancel_invoice(invoice_id, data.get('date'), userctx.get_user())
@@ -1854,7 +1865,42 @@ def handle_invoice_cancel(post_body: bytes):
     warning = _generate_storno_documents(db, storno.storno_id)
     if warning:
         result['warning'] = warning
+    if reissue:
+        replacement = db.create_replacement_draft(invoice_id, userctx.get_user())
+        if replacement.ok:
+            print(f"Invoice {invoice_id} replaced by draft {replacement.invoice_number}")
+            result['replacement_id'] = replacement.invoice_id
+        else:
+            note = (f'Der Entwurf der neuen Rechnung wurde nicht angelegt: {replacement.message} – „Neu ausstellen“ '
+                    'auf der Seite der stornierten Rechnung holt es nach.')
+            result['warning'] = f"{result['warning']} {note}" if result.get('warning') else note
     return 200, json.dumps(result)
+
+
+def handle_invoice_reissue(post_body: bytes):
+    """Zu einer stornierten Rechnung den Entwurf der neuen Rechnung anlegen (``POST /invoice/reissue``, JSON
+    ``{"invoiceId"}``, „Neu ausstellen“): ``Database.create_replacement_draft`` – die Daten der stornierten Rechnung,
+    neue Nummer, heutiges Datum, Entwurf. Die Antwort nennt ihn (``replacement_id``, ``replacement_number``); eine
+    Ablehnung trägt Statuscode und Klartext (``error``), und nichts wurde geschrieben. ``invoiceId`` liest die Route
+    streng als Ganzzahl (wie ``/invoice/cancel``).
+
+    Returns tuple: (status_code, json_body)
+    """
+    data = _json_request(post_body)
+    if data.get('invoiceId') is None:
+        raise InvalidRequest('invoiceId fehlt')
+    try:
+        invoice_id = _invoice_id(data)
+    except _SaveRefused as refusal:
+        return refusal.status, json.dumps({'success': False, 'error': refusal.text})
+
+    db = Database()
+    replacement = db.create_replacement_draft(invoice_id, userctx.get_user())
+    if not replacement.ok:
+        return replacement.code, json.dumps({'success': False, 'error': replacement.message})
+    print(f"Invoice {invoice_id} replaced by draft {replacement.invoice_number}")
+    return 200, json.dumps({'success': True, 'replacement_id': replacement.invoice_id,
+                            'replacement_number': replacement.invoice_number})
 
 
 def _generate_storno_documents(db, storno_id):
