@@ -97,11 +97,13 @@ def payment_rows(*, number, customer_id, bank_id, bank_date, bank_tax_date, reci
 # Reihenfolge nennt der Hinweis die vorkommenden Gründe, je Grund einmal.
 MOVE_SKIP_REASONS = {
     'import': 'Zuordnung aus einem Import',
+    'unmarked': 'die Buchungssätze der Zahlung stammen aus einer älteren Version oder wurden von Hand angelegt',
     'no_skr': 'das Bankkonto hat keine SKR-Nummer',
     'overbooked': 'die Bankbewegung ist überbucht',
-    'edited': 'die Buchungssätze der Zahlung wurden von Hand geändert oder tragen einen Beleg',
+    'edited': 'die Buchungssätze der Zahlung wurden von Hand geändert oder ergänzt oder tragen einen Beleg',
     'tax_date': ('die Buchungssätze der Zahlung tragen ein anderes Steuerdatum als die Bankbewegung '
                  '(z. B. nach einem DATEV-Export)'),
+    'revenue_account': 'das Erlöskonto der Zahlung ist nicht das heute für den Steuersatz hinterlegte',
     'multiple': 'die Bankbewegung ist mehrfach zugeordnet',
     'no_incoming': 'keine Bankbewegung mit Zahlungseingang',
     'rebook': 'die Zuordnung ließ sich nicht neu buchen',
@@ -516,22 +518,7 @@ class InvoicePaymentsMixin:
         tax_rate = self._booking_tax_rate(rate)
         tax_value = tax_part if tax_rate else None
 
-        # Die Forderung wird wie überall gesucht (``receivable_condition``): ein Satz mit 10000
-        # im Soll und der Rechnungsnummer, kein WISO-Storno „10000 an 1810“
-        receivable_sql, receivable_params = self._receivable_sql(conn.cursor())
-        receivable = conn.execute(
-            f"SELECT COA_ID, CounterCOA_ID FROM Bookings WHERE DocumentNumber = ? "
-            f"AND BookingType = 'entry' AND {receivable_sql} ORDER BY ID LIMIT 1",
-            [number] + receivable_params).fetchone()
-        if receivable:
-            debtor_ids = {r[0] for r in conn.execute(
-                'SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?',
-                (self.DEBTOR_ACCOUNT_NUMBER,))}
-            # Normalfall „10000 an Wartekonto“; negativ gebucht steht 10000 als Gegenkonto
-            debtor_side, waiting_side = (receivable if receivable[0] in debtor_ids
-                                         else (receivable[1], receivable[0]))
-        else:
-            debtor_side = waiting_side = None
+        debtor_side, waiting_side = self._receivable_sides(conn, number)
 
         try:
             cursor = conn.execute(
@@ -649,6 +636,25 @@ class InvoicePaymentsMixin:
         if conn.execute('SELECT 1 FROM Bookings WHERE ID = ?', (child_id,)).fetchone():
             self._delete_booking_rows(conn, [child_id])
 
+    def _debtor_coa_ids(self, conn):
+        return {r[0] for r in conn.execute('SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?',
+                                           (self.DEBTOR_ACCOUNT_NUMBER,))}
+
+    def _receivable_sides(self, conn, number):
+        """``(Debitorenkonto, Wartekonto)`` der Forderung zu dieser Rechnungsnummer – die Konten, auf die eine Zuordnung
+        „Bank an Debitoren“ und „Wartekonto an Erlöskonto“ bucht –, ``(None, None)`` ohne Forderung (dann ist es der
+        Einzelsatz „Erlöskonto an Bank“). Die Forderung wird wie überall gesucht (``receivable_condition``): ein Satz mit
+        10000 im Soll und der Rechnungsnummer, kein WISO-Storno „10000 an 1810“; die älteste gilt."""
+        receivable_sql, receivable_params = self._receivable_sql(conn.cursor())
+        receivable = conn.execute(
+            f"SELECT COA_ID, CounterCOA_ID FROM Bookings WHERE DocumentNumber = ? "
+            f"AND BookingType = 'entry' AND {receivable_sql} ORDER BY ID LIMIT 1",
+            [number] + receivable_params).fetchone()
+        if not receivable:
+            return None, None
+        # Normalfall „10000 an Wartekonto“; negativ gebucht steht 10000 als Gegenkonto
+        return receivable if receivable[0] in self._debtor_coa_ids(conn) else (receivable[1], receivable[0])
+
     # ── Umzug auf die Ersatzrechnung ─────────────────────────────────────────
     def _same_payment_row(self, stored, expected, ignore_tax_date=False):
         """Ist der gespeicherte Satz (Spalte → Wert) genau der erwartete (``payment_rows``)? Der Steuersatz zählt als gleich,
@@ -696,11 +702,25 @@ class InvoicePaymentsMixin:
                 "WHERE ip.BookingID = k.ParentBooking_ID AND i.InvoiceNumber = k.DocumentNumber) LIMIT 1",
                 (bank_id, PAYMENT_MARK)).fetchone():
             return None
+        # Ein Satz ohne Marke unter der Bewegung, der zur Rechnung gehört (ihre Beleg-Nr.) oder die Debitoren berührt – etwa
+        # ein von Hand ergänztes Skonto „… an 10000“ –, bliebe beim Umzug an der stornierten Rechnung zurück: Die neue
+        # Rechnung zeigte einen offenen Rest, den es nicht gibt
+        debtor_ids = sorted(self._debtor_coa_ids(conn))
+        debtor_marks = ','.join('?' * len(debtor_ids)) or 'NULL'
+        if conn.execute(
+                "SELECT 1 FROM Bookings WHERE ParentBooking_ID = ? AND (Status IS NULL OR Status <> ?) AND ("
+                f"DocumentNumber = ? OR COA_ID IN ({debtor_marks}) OR CounterCOA_ID IN ({debtor_marks})) LIMIT 1",
+                [bank_id, PAYMENT_MARK, old.number, *debtor_ids, *debtor_ids]).fetchone():
+            return None
         columns = ('ID', *PAYMENT_ROW_COLUMNS, *_PAYMENT_ROW_UNWRITTEN)
         rows = [dict(zip(columns, values)) for values in conn.execute(
             f"SELECT {', '.join(columns)} FROM Bookings WHERE ParentBooking_ID = ? AND Status = ? AND DocumentNumber = ? "
             "ORDER BY ID", (bank_id, PAYMENT_MARK, old.number))]
-        if sorted(row['EntryForm'] or '' for row in rows) not in ([FORM_LIQUID_FIRST, FORM_TRANSFER], [FORM_PURPOSE_FIRST]):
+        # Debitoren- und Wartekonto sind die der Forderung, wie ``_assign_in_tx`` sie heute fände – nicht irgendein Konto
+        # in dieser Rolle
+        debtor_side, waiting_side = self._receivable_sides(conn, old.number)
+        wanted_forms = [FORM_LIQUID_FIRST, FORM_TRANSFER] if debtor_side and waiting_side else [FORM_PURPOSE_FIRST]
+        if sorted(row['EntryForm'] or '' for row in rows) != wanted_forms:
             return None
         if self._booking_attachments_exist(conn, [row['ID'] for row in rows]):
             return None
@@ -709,19 +729,21 @@ class InvoicePaymentsMixin:
         revenue_coa = self._payment_revenue_coa(conn, [row['ID'] for row in rows])
         if revenue_coa not in {row[0] for row in self._income_coas(conn.cursor())}:
             return None
-        debtor_side = waiting_side = None
-        if len(rows) == 2:
-            debtor_side = by_form[FORM_LIQUID_FIRST]['CounterCOA_ID']
-            waiting_side = by_form[FORM_TRANSFER]['COA_ID']
-            debtor_ids = {row[0] for row in conn.execute('SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?',
-                                                         (self.DEBTOR_ACCOUNT_NUMBER,))}
-            if debtor_side not in debtor_ids or waiting_side not in self._waiting_coa_ids(conn):
-                return None
+        if len(rows) == 2 and (debtor_side not in debtor_ids or waiting_side not in self._waiting_coa_ids(conn)):
+            return None
 
         tax_rate = self._booking_tax_rate(old.rate)
-        taxes = ({self._prorated_tax(old.tax_total, amount, old.gross),
-                  self._remaining_tax(conn, old.id, old.number, old.gross, old.tax_total, except_booking=bank_id)}
-                 if tax_rate else {None})
+        taxes = {None}
+        if tax_rate:
+            taxes = {self._prorated_tax(old.tax_total, amount, old.gross)}
+            # Den Rest der Rechnungssteuer bekommt nur der Teil, der die Rechnung geschlossen hat – also nur, wenn sie voll
+            # bezahlt war. Bei einer offenen Rechnung wäre „der Rest“ die ganze übrige Steuer: ein Wert, den die App nie
+            # schreibt, ein Nutzer von Hand aber schon
+            paid = conn.execute('SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
+                                (old.id,)).fetchone()[0]
+            if paid >= old.gross:
+                taxes.add(self._remaining_tax(conn, old.id, old.number, old.gross, old.tax_total,
+                                              except_booking=bank_id))
         for tax_value in taxes:
             expected = payment_rows(
                 number=old.number, customer_id=old.customer_id, bank_id=bank_id, bank_date=bank[3], bank_tax_date=bank[4],
@@ -753,7 +775,11 @@ class InvoicePaymentsMixin:
                         "AND SourceGroup <> '' LIMIT 1", (bank_id,)).fetchone():
             return None, 'import'
         if not self._payment_children(conn, bank_id, old.number):
-            return None, 'import'                                    # keine eigenen Sätze: die Zuordnung eines Imports
+            # keine markierten Sätze: die Zuordnung eines Imports – oder Sätze ohne Marke zu dieser Rechnung (eine ältere
+            # Version der App, von Hand angelegt)
+            unmarked = conn.execute('SELECT 1 FROM Bookings WHERE ParentBooking_ID = ? AND DocumentNumber = ? LIMIT 1',
+                                    (bank_id, old.number)).fetchone()
+            return None, 'unmarked' if unmarked else 'import'
         if (conn.execute('SELECT COUNT(*) FROM InvoicePayments WHERE InvoiceID = ? AND BookingID = ?',
                          (old.id, bank_id)).fetchone()[0] != 1
                 or conn.execute('SELECT 1 FROM InvoicePayments WHERE InvoiceID = ? AND BookingID = ?',
@@ -833,8 +859,19 @@ class InvoicePaymentsMixin:
             'SELECT ID, BookingID, Amount FROM InvoicePayments WHERE InvoiceID = ? ORDER BY PaymentDate, ID',
             (old_id,)).fetchall()
         positive = sum(amount for _pay_id, _bank_id, amount in payments if amount > 0)   # eine negative bleibt unberührt
-        verdicts = [self._movable_payment(conn, replaced, new_id, bank_id, amount, move['bank_coas'],
-                                          move['bank_coa_ids']) for _pay_id, bank_id, amount in payments]
+        same_rate = self._tax_rate_key(old_rate) == self._tax_rate_key(row['TaxRate'])
+
+        def verdict(bank_id, amount):
+            found, reason = self._movable_payment(conn, replaced, new_id, bank_id, amount, move['bank_coas'],
+                                                  move['bank_coa_ids'])
+            # Bei gleichem Steuersatz bleibt der Erlös auf seinem Konto: Liegt die Zahlung auf einem anderen als dem heute
+            # hinterlegten (von Hand geändert, oder inzwischen ein anderes gelernt), buchte der Umzug sie im vergangenen
+            # Zeitraum um
+            if found is not None and same_rate and found[1] != move['revenue_coa']:
+                return None, 'revenue_account'
+            return found, reason
+
+        verdicts = [verdict(bank_id, amount) for _pay_id, bank_id, amount in payments]
         moved = skipped = 0
         reasons = set()
         for (pay_id, bank_id, amount), (found, reason) in zip(payments, verdicts):
