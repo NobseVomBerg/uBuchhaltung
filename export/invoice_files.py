@@ -24,6 +24,7 @@ ausliefern oder löschen.
 """
 import os
 
+from db.invoice_lock import FROZEN_STATUSES
 from db.invoices import document_type
 from .pdf_core import safe_filename_component
 
@@ -65,10 +66,18 @@ def invoice_dir(invoice=None) -> str:
     return os.path.join(userctx.user_data_dir(), 'invoices', year)
 
 
-def invoice_file_path(invoice, extension: str) -> str:
-    """Vollständiger Ablagepfad für ``extension`` ("pdf" / "xml")."""
-    return os.path.join(invoice_dir(invoice),
-                        f"{invoice_file_stem(invoice)}.{extension}")
+def invoice_file_path(invoice, extension: str, db=None) -> str:
+    """Vollständiger Ablagepfad für ``extension`` ("pdf" / "xml").
+
+    Mit ``db``: Gehört der Name schon zur abgelegten Datei eines ANDEREN Belegs (zwei Nummern, die
+    zum selben Dateinamen werden, etwa durch ersetzte Sonderzeichen), bekommt der Dateiname die ID
+    der Rechnung als Zusatz – die Datei eines anderen Belegs wird nie überschrieben."""
+    path = os.path.join(invoice_dir(invoice), f"{invoice_file_stem(invoice)}.{extension}")
+    invoice_id = _col(invoice, 0)
+    if db is not None and invoice_id is not None and db.document_path_in_use(path, invoice_id):
+        path = os.path.join(invoice_dir(invoice),
+                            f"{invoice_file_stem(invoice)} (ID {invoice_id}).{extension}")
+    return path
 
 
 def is_quote(invoice) -> bool:
@@ -113,20 +122,31 @@ def drop_stale_file(old_path, new_path, db=None, invoice_id=None):
     if not old_path or not new_path:
         return
     try:
-        if not (isinstance(old_path, str) and os.path.isfile(old_path)):
-            return
         if os.path.abspath(old_path) == os.path.abspath(new_path):
             return
-        if not path_in_documents(old_path):
-            print(f"Alte Rechnungsdatei liegt außerhalb des Dokumentordners, "
-                  f"nicht entfernt: {old_path!r}")
-            return
-        if db is not None and db.document_path_in_use(old_path, invoice_id):
-            print(f"Alte Rechnungsdatei gehört zu einem anderen Beleg, nicht entfernt: {old_path!r}")
-            return
-        os.remove(old_path)
-    except OSError as e:      # Nicht löschbar ist kein Grund, den Export abzubrechen
-        print(f"Alte Rechnungsdatei nicht entfernt ({old_path}): {e}")
+    except (OSError, ValueError, TypeError):
+        return
+    remove_document_file(old_path, db, invoice_id)
+
+
+def remove_document_file(path, db=None, invoice_id=None):
+    """Eine abgelegte Rechnungsdatei löschen – nur im Dokumentordner des Nutzers
+    (:func:`path_in_documents`) und, mit ``db``, nur wenn kein anderer Beleg auf sie verweist.
+    Returns ``True``, wenn die Datei gelöscht wurde."""
+    try:
+        if not (isinstance(path, str) and os.path.isfile(path)):
+            return False
+        if not path_in_documents(path):
+            print(f"Rechnungsdatei liegt außerhalb des Dokumentordners, nicht entfernt: {path!r}")
+            return False
+        if db is not None and db.document_path_in_use(path, invoice_id):
+            print(f"Rechnungsdatei gehört zu einem anderen Beleg, nicht entfernt: {path!r}")
+            return False
+        os.remove(path)
+        return True
+    except OSError as e:      # Nicht löschbar ist kein Grund, den Vorgang abzubrechen
+        print(f"Rechnungsdatei nicht entfernt ({path}): {e}")
+        return False
 
 
 def wants_xrechnung(invoice) -> bool:
@@ -134,8 +154,8 @@ def wants_xrechnung(invoice) -> bool:
     return bool(_col(invoice, _IDX_ROUTE_ID) or _col(invoice, _IDX_ORDER_NUMBER))
 
 
-# Ab diesen Stati ist die Rechnung versendet und damit eingefroren
-FROZEN_STATUSES = frozenset({'sent', 'partial_payment', 'overdue', 'paid'})
+# Ab diesen Stati (``db.invoice_lock.FROZEN_STATUSES``: versendet … bezahlt, storniert) ist die
+# Rechnung eingefroren
 _IDX_STATUS = 40
 
 
@@ -204,7 +224,7 @@ def _write_xrechnung(db, invoice, invoice_id):
     try:
         items = db.get_invoice_items(invoice_id)
         xml_content = XRechnungGenerator().generate_xml(invoice, items, db=db)
-        xml_path = invoice_file_path(invoice, 'xml')
+        xml_path = invoice_file_path(invoice, 'xml', db)
         os.makedirs(os.path.dirname(xml_path), exist_ok=True)
         with open(xml_path, 'w', encoding='utf-8') as f:
             f.write(xml_content)
@@ -229,14 +249,28 @@ def _is_document_file(path, invoice):
     return os.path.isfile(path) and path_in_documents(path, invoice)
 
 
-def _stored_by_name(invoice, extension):
+def _stored_by_name(invoice, extension, db=None):
     """Datei am Namensschema suchen (``None``, wenn es sie nicht gibt).
 
     Rechnung: ``invoices/<Jahr des Rechnungsdatums>/…``. Beim Angebot steht im Ordnernamen
     das Jahr der Erzeugung, das der Datensatz nicht kennt – dort zählt der neueste Treffer.
+
+    Mit ``db`` wird nie die abgelegte Datei eines ANDEREN Belegs genommen (zwei Nummern, die zum
+    selben Dateinamen werden): Eine Rechnung findet dann ihre Datei mit dem Zusatz aus
+    :func:`invoice_file_path`, sonst keine.
     """
+    own_id = _col(invoice, 0)
+
+    def belongs_to_another(path):
+        return db is not None and own_id is not None and db.document_path_in_use(path, own_id)
+
     if not is_quote(invoice):
         candidate = invoice_file_path(invoice, extension)
+        if not _is_document_file(candidate, invoice):
+            return None
+        if not belongs_to_another(candidate):
+            return candidate
+        candidate = invoice_file_path(invoice, extension, db)       # mit der ID im Namen
         return candidate if _is_document_file(candidate, invoice) else None
     root = documents_root(invoice)
     name = f"{invoice_file_stem(invoice)}.{extension}"
@@ -246,7 +280,7 @@ def _stored_by_name(invoice, extension):
         return None
     for year in years:
         candidate = os.path.join(root, year, name)
-        if _is_document_file(candidate, invoice):
+        if _is_document_file(candidate, invoice) and not belongs_to_another(candidate):
             return candidate
     return None
 
@@ -280,7 +314,7 @@ def stored_invoice_path(db, invoice_id: int, kind: str = 'pdf', invoice=None):
     # Fallback: Datei am Namensschema suchen, falls der DB-Pfad fehlt oder
     # veraltet ist (z. B. nach einem Umzug des Datenverzeichnisses).
     if not path or not os.path.isfile(path):
-        path = _stored_by_name(invoice, extension)
+        path = _stored_by_name(invoice, extension, db)
 
     if not path:
         hint = ' – bitte zuerst erzeugen' if is_quote(invoice) else ''

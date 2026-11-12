@@ -8,12 +8,13 @@ import json
 import html as _html
 from db import Database
 from db.invoices import InvoiceCol
+from db.invoice_lock import CLOSED, EDITABLE, STATUS_LABELS, allowed_targets, status_group
 from db.invoice_payments import PAYABLE_STATUSES
 from money import fmt_eur
 from export.einvoice_model import unit_display
 from export.invoice_files import stored_invoice_path
 from .pages import (
-    Header1, Header2, Header3, Footer, logo_url,
+    Header1, Header2, Header3, Footer, logo_url, script_json,
 )
 from .period import period_filter_widget
 
@@ -36,15 +37,7 @@ INVOICE_STATUS_COLORS: dict = {
     'paid':            '#00aa00',
     'cancelled':       '#cc0000',
 }
-INVOICE_STATUS_LABELS: dict = {
-    'draft':           'Entwurf',
-    'finalized':       'Abgeschlossen',
-    'sent':            'Versendet',
-    'partial_payment': 'Teilzahlung',
-    'overdue':         'Überfällig',
-    'paid':            'Bezahlt',
-    'cancelled':       'Storniert',
-}
+INVOICE_STATUS_LABELS: dict = STATUS_LABELS     # eine Quelle: db/invoice_lock.py
 
 
 def normalize_status(status):
@@ -95,13 +88,15 @@ def document_submenu(active):
 
 
 def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=None,
-                payment_error=None):
+                payment_error=None, err=None):
     """Generate invoice list page with search and filter
 
     copy_from: ID einer Quellrechnung – das Formular öffnet sich dann als
     neue Rechnung mit deren Inhalten (todo #4).
     payment_error: Grund, warum eine Zahlung aus der Buchungsmaske nicht zugeordnet werden
     konnte (Klartext, wird maskiert ausgegeben).
+    err: Grund, warum eine Aktion abgelehnt wurde (z. B. das Löschen einer versendeten Rechnung) –
+    Klartext, kommt als Meldung auf die Seite.
     """
     filters = filters or {}
     
@@ -228,6 +223,9 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
             s+= (f'<a href="javascript:void(0);" onclick="downloadInvoiceDocs({inv_id}, '
                  f'{has_pdf}, {has_xml})" class="action-icon" title="{pdf_title}">&#128196;</a> ')
             s+= f"<a href='/invoice?id={inv_id}' class='action-icon' title='{action_title}'>{action_icon}</a>"
+            if status == 'draft':
+                s+= (f' <a href="javascript:void(0);" onclick="deleteInvoiceDraft({int(inv_id)})" '
+                     'class="action-icon delete-icon" title="Entwurf löschen">&#128465;</a>')
             s+= f"</td>"
             s+= f"</tr>"
         
@@ -246,6 +244,11 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
             if (hasXml) appDownload('/invoice/xml_download?id=' + invoiceId);
         }
         
+        // Löschen gibt es nur für Entwürfe (POST, nach Rückfrage)
+        function deleteInvoiceDraft(invoiceId) {
+            appConfirmPost('/invoice/delete?id=' + invoiceId, 'Entwurf wirklich löschen?');
+        }
+
         function applyInvoiceFilters() {
             const dateFrom = document.getElementById('dateFrom').value;
             const dateTo = document.getElementById('dateTo').value;
@@ -275,6 +278,9 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
     s+= '<div class="gridRightCol" style="order:2; min-width:820px;">'
     s+= _invoice_form_html(db, invoice_id, copy_from, payment_error)
     s+= '</div><!-- Ende gridRightCol --></div><!-- Ende grid2Cols -->'
+    if err:
+        s += ('<script>document.addEventListener("DOMContentLoaded",function(){'
+              'appMsg(' + script_json(err) + ',"error");});</script>')
     s+= Footer()
     return s
 
@@ -343,29 +349,10 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
         page_title = f"Rechnung {_html.escape(invoice_number)} bearbeiten"
         is_edit_mode = True
     else:
-        # Creating new invoice - generate next number
-        invoice_ranges = db.fetch_number_ranges('invoice')
-        invoice_number = ''
-        if invoice_ranges:
-            # Find the range for current year, or use the first available
-            current_range = None
-            for r in invoice_ranges:
-                if r[2] == current_year:
-                    current_range = r
-                    break
-            if not current_range and invoice_ranges:
-                current_range = invoice_ranges[0]
-            
-            if current_range:
-                # r: ID=0, Type=1, Year=2, Letter=3, Prefix=4, CurrentNumber=5, Description=6
-                year = current_range[2]
-                letter = current_range[3]
-                prefix = current_range[4] or ''
-                current_num = current_range[5] or 0
-                next_num = current_num + 1
-                year_short = str(year)[-2:]
-                invoice_number = f"{year_short}{letter}{prefix}{next_num:03d}"
-        
+        # Creating new invoice - Vorschlag aus dem Nummernkreis (Formatvorlage und Zusatz des Kreises,
+        # eine schon belegte Nummer wird übersprungen); verbraucht wird die Nummer erst beim Speichern
+        invoice_number = db.peek_next_number('invoice', current_year)[0] or ''
+
         # Kopie: Datum von heute, alles andere aus der Quelle (todo #4)
         invoice_date = today_iso if is_copy else ''
         selected_own_company_id = (existing_invoice[3] if is_copy
@@ -381,11 +368,22 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
             page_title = "Neue Rechnung erstellen"
         is_edit_mode = False
     
+    # Versendet (gesperrt) oder storniert: Die Finanzangaben stehen im Formular nicht mehr offen
+    # (db/invoice_lock.py; serverseitig entscheidet check_changes, das Formular zeigt es nur an).
+    # Bei einer versendeten Rechnung bleiben Begleittext, Bestellnummer, Leitweg-ID und
+    # Leistungsdatum änderbar, bei einer stornierten nichts.
+    group = status_group(invoice_status) if is_edit_mode else EDITABLE
+    locked = group != EDITABLE
+    closed = group == CLOSED
+    lock_attr = ' disabled' if locked else ''
+    closed_attr = ' disabled' if closed else ''
+
     # Die ID gehört nur in den Bearbeiten-Modus: ein unbekannter oder fremder Beleg (Angebot)
     # ergibt ein leeres Formular, das beim Speichern eine neue Rechnung anlegt
     s = f'<input type="hidden" id="invoice_id" value="{invoice_id if is_edit_mode else ""}">'
     s += f'<input type="hidden" id="is_edit_mode" value="{str(is_edit_mode).lower()}">'
     s += f'<input type="hidden" id="invoice_status_value" value="{_html.escape(str(invoice_status))}">'
+    s += f'<input type="hidden" id="invoice_locked" value="{str(locked).lower()}">'
     # Check if PDF/XML actually exist – dieselbe Frage wie beim Download (geprüfter Pfad mit Fallback)
     pdf_file_exists = bool(is_edit_mode and stored_invoice_path(db, invoice_id, 'pdf', existing_invoice)[0])
     xml_file_exists = bool(is_edit_mode and stored_invoice_path(db, invoice_id, 'xml', existing_invoice)[0])
@@ -396,13 +394,21 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
         payment_count = len(existing_payments)
         status_color  = INVOICE_STATUS_COLORS.get(invoice_status, '#888')
         status_label  = _html.escape(str(INVOICE_STATUS_LABELS.get(invoice_status, invoice_status)))
+        # Angeboten werden nur die Status, auf die die Rechnung gesetzt werden darf (Übergangstabelle)
+        targets = allowed_targets(invoice_status, payment_count)
         status_options_html = ''.join(
-            '<option value="{k}"{sel}{dis}>{v}</option>'.format(
-                k=k, v=v,
-                sel=' selected' if k == invoice_status else '',
-                dis=' disabled' if k == 'paid' and payment_count == 0 else '')
-            for k, v in INVOICE_STATUS_LABELS.items()
+            '<option value="{k}"{sel}>{v}</option>'.format(
+                k=_html.escape(k), v=_html.escape(str(INVOICE_STATUS_LABELS.get(k, k))),
+                sel=' selected' if k == invoice_status else '')
+            for k in [invoice_status, *targets]
         )
+        set_status_attr = '' if targets else ' disabled'
+        save_button = ('' if closed else
+                       '<button onclick="saveInvoice()" class="coloredButton btn-sm bg-green">💾 Speichern</button>')
+        # Löschen gibt es nur für einen Entwurf (POST nach Rückfrage); sonst erst auf Entwurf zurücksetzen
+        delete_button = ('' if invoice_status != 'draft' else
+                         f'<button onclick="appConfirmPost(\'/invoice/delete?id={int(invoice_id)}\', '
+                         '\'Entwurf wirklich löschen?\')" class="coloredButton btn-sm bg-red">🗑 Löschen</button>')
         s += '<div class="rectRounded no-pdf">' #right Column Headline, Status and Buttons
         s += f'<h2>{page_title}</h2>'
         s += f'''
@@ -411,11 +417,15 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
                 <td>Status:</td>
                 <td><div class="rowWithObjects">
                     '''
-        if invoice_status not in ('draft', 'finalized'):
+        if locked:
             s += '<div class="rectRounded bg-red">'
         s += f'<strong class="coloredButtonNoClick btn-smNoClick bg-back" style="color:{status_color}; hover:none;">{status_label}</strong>'
-        if invoice_status not in ('draft', 'finalized'):
-            s += ' &nbsp; &nbsp; &#9888; Nicht im Entwurfsstatus! &Auml;nderungen k&ouml;nnen trotzdem gespeichert werden.</div>'
+        if closed:
+            s += ' &nbsp; &nbsp; &#9888; Storniert: Die Rechnung l&auml;sst sich nicht mehr &auml;ndern.</div>'
+        elif locked:
+            s += (' &nbsp; &nbsp; &#9888; Versendet: Betr&auml;ge, Positionen, Nummer, Datum und Kunde sind gesperrt. '
+                  '&Auml;nderbar bleiben Begleittext, Bestellnummer, Leitweg-ID und Leistungsdatum; die '
+                  'Anschrift wird beim Speichern aus den Stammdaten &uuml;bernommen.</div>')
         s += f'''
                 </div></td>
             </tr>
@@ -423,31 +433,25 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
                 <td>Neuer Status:</td>
                 <td><div class="rowWithObjects">
                     <select id="statusChangeSelect">{status_options_html}</select>
-                    <button onclick="setInvoiceStatus({invoice_id})" class="coloredButton btn-sm bg-blue">&#9888; Status setzen</button>
+                    <button onclick="setInvoiceStatus({invoice_id})" class="coloredButton btn-sm bg-blue"{set_status_attr}>&#9888; Status setzen</button>
                 </div></td>
             </tr>
             <tr>
                 <td>Rechnung:</td>
                 <td><div class="rowWithObjects">
-                    <button onclick="saveInvoice()" class="coloredButton btn-sm bg-green">💾 Speichern</button>
+                    {save_button}
                     <button onclick="window.location.href='/invoice'" class="coloredButton btn-sm bg-gray">← Abbrechen</button>
                     <button onclick="generatePDF()" class="coloredButton btn-sm bg-blue">📄 PDF + E-Rechnung</button>
                     <button onclick="downloadPDF()" class="coloredButton btn-sm bg-blue">⬇ Herunterladen</button>
                     <button onclick="copyInvoiceAsNew({invoice_id})" class="coloredButton btn-sm bg-gray">📋 Als neu kopieren</button>
+                    {delete_button}
                 </div></td>
             </tr>
         </table>
     </div>
 <script>
-const _payCount = {payment_count};
 function setInvoiceStatus(invId) {{
   var ns = document.getElementById('statusChangeSelect').value;
-  if (ns === 'paid' && _payCount === 0) {{
-    showMessage('Bezahlt wird automatisch gesetzt, sobald eine Zahlung verbucht ist \u2013 ' +
-                'siehe "Zahlungsverkn\u00fcpfungen" unten (Zahlung verbuchen bzw. ' +
-                'vorhandene Buchung verkn\u00fcpfen).', 'error');
-    return;
-  }}
   fetch('/invoice/status', {{method: 'POST', headers: {{'Content-Type': 'application/json'}},
     body: JSON.stringify({{invoice_id: invId, status: ns}})}}).then(r => r.json())
   .then(data => {{
@@ -487,14 +491,13 @@ function copyInvoiceAsNew(invId) {{
                 <table class="invoice-meta-table">
                     <tr><td>Rechnungsdatum:</td><td><input type="date" id="invoice_date" value="'''
     s += _html.escape(str(invoice_date)) if invoice_date else ''
-    s += '''" style="width: 150px;"></td></tr>
-    '''
+    s += '" style="width: 150px;"' + lock_attr + '></td></tr>\n    '
     # Leistungsdatum direkt unter dem Rechnungsdatum: die beiden Daten gehören
     # zusammen und werden zusammen gepflegt
     _dd = existing_invoice[25] if existing_invoice and len(existing_invoice) > 25 and existing_invoice[25] else ''
     s += ('<tr><td title="Datum der Lieferung/Leistung bzw. Leistungszeitraum (Pflichtangabe nach § 14 UStG)">Leistungsdatum:</td>'
-          f'<td><input type="date" id="delivery_date" required value="{_html.escape(str(_dd))}" style="width: 150px;"></td></tr>')
-    s += f'<tr><td>Rechnungs-Nr.:</td><td><input type="text" id="invoice_number" value="{_html.escape(invoice_number)}" style="width: 150px;"></td></tr>'
+          f'<td><input type="date" id="delivery_date" required value="{_html.escape(str(_dd))}" style="width: 150px;"{closed_attr}></td></tr>')
+    s += f'<tr><td>Rechnungs-Nr.:</td><td><input type="text" id="invoice_number" value="{_html.escape(invoice_number)}" style="width: 150px;"{lock_attr}></td></tr>'
     s += '''
                     <tr><td>Kunden-Nr.:</td><td><input type="text" id="customer_number" readonly style="width: 150px; background-color: #f0f0f0;"></td></tr>
                 </table>
@@ -503,7 +506,7 @@ function copyInvoiceAsNew(invId) {{
         
         <div class="invoice-address-block">
             <div class="invoice-customer-address">
-                <select id="own_company_select" onchange="updateOwnCompany()" style="margin-bottom: 10px; width: 100%;" class="no-pdf">
+                <select id="own_company_select" onchange="updateOwnCompany()" style="margin-bottom: 10px; width: 100%;" class="no-pdf"''' + lock_attr + '''>
                     <option value="">-- Eigene Firma auswählen --</option>
     '''
     
@@ -527,7 +530,7 @@ function copyInvoiceAsNew(invId) {{
         s += 'Eigene Adresse in Kontakte anlegen (Typ: own)'
     
     s += '''            </div>
-                <select id="customer_select" onchange="updateCustomerAddress()" style="margin-bottom: 10px; width: 100%;" class="no-pdf">
+                <select id="customer_select" onchange="updateCustomerAddress()" style="margin-bottom: 10px; width: 100%;" class="no-pdf"''' + lock_attr + '''>
                     <option value="">-- Kunde auswählen --</option>
     '''
     
@@ -573,12 +576,12 @@ function copyInvoiceAsNew(invId) {{
             s += f'''
                 <tr class="invoice-item-row" data-row="{idx}">
                     <td>{idx}</td>
-                    <td><input type="number" class="item-quantity" value="{quantity}" min="0" step="0.01" style="width: 60px;"></td>
-                    <td><input type="text" class="item-unit" value="{unit}" style="width: 60px;"></td>
-                    <td><input type="text" class="item-description" value="{description}" style="width: 100%;"></td>
-                    <td><input type="number" class="item-price" value="{price}" min="0" step="0.01" style="width: 80px;"> €</td>
+                    <td><input type="number" class="item-quantity" value="{quantity}" min="0" step="0.01" style="width: 60px;"{lock_attr}></td>
+                    <td><input type="text" class="item-unit" value="{unit}" style="width: 60px;"{lock_attr}></td>
+                    <td><input type="text" class="item-description" value="{description}" style="width: 100%;"{lock_attr}></td>
+                    <td><input type="number" class="item-price" value="{price}" min="0" step="0.01" style="width: 80px;"{lock_attr}> €</td>
                     <td class="item-total" style="text-align: right;">{fmt_eur(total)}</td>
-                    <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color: red;">✕</button></td>
+                    <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color: red;"{lock_attr}>✕</button></td>
                 </tr>'''
     else:
         s += '''
@@ -603,13 +606,13 @@ function copyInvoiceAsNew(invId) {{
                 </tr>
                 <tr class="no-pdf">
                     <td colspan="7" style="text-align: right; border: none;">
-                        <label><input type="checkbox" id="show_tax" __SHOW_TAX_CHECKED__ onchange="calculateTotals()"> Umsatzsteuer ausweisen</label>
+                        <label><input type="checkbox" id="show_tax" __SHOW_TAX_CHECKED__''' + lock_attr + ''' onchange="calculateTotals()"> Umsatzsteuer ausweisen</label>
                         <small style="color:#888;">(aus = Kleinunternehmer §&nbsp;19 UStG; Hinweis ggf. unten im Text)</small>
                     </td>
                 </tr>
                 <tr class="totals-row" id="tax_row">
                     <td colspan="4" style="text-align: right; border: none;">Mehrwertsteuer</td>
-                    <td style="text-align: right; border: none;"><input type="number" id="tax_rate" value="__TAX_PCT__" min="0" max="100" step="0.1" style="width: 50px;">% auf <span id="tax_base">0,00</span> € netto:</td>
+                    <td style="text-align: right; border: none;"><input type="number" id="tax_rate" value="__TAX_PCT__" min="0" max="100" step="0.1" style="width: 50px;"''' + lock_attr + '''>% auf <span id="tax_base">0,00</span> € netto:</td>
                     <td id="tax_amount" style="text-align: right; font-weight: bold;">0,00 €</td>
                     <td class="no-pdf" style="border: none;"></td>
                 </tr>
@@ -622,12 +625,12 @@ function copyInvoiceAsNew(invId) {{
         </table>
         
         <div style="margin: 10px 0;" class="no-pdf">
-            <button type="button" onclick="addFreeRow()" style="margin-right: 10px;">+ Position frei editierbar hinzufügen</button>
+            <button type="button" onclick="addFreeRow()" style="margin-right: 10px;"''' + lock_attr + '''>+ Position frei editierbar hinzufügen</button>
             <span style="position:relative; display:inline-block;">
                 <input type="text" id="articleComboInput" placeholder="Artikel suchen …"
                        style="width:280px; padding:4px 8px;" autocomplete="off"
                        oninput="filterArticles(this.value)" onfocus="filterArticles(this.value)"
-                       onblur="setTimeout(()=>document.getElementById('articleDropdown').style.display='none',150)">
+                       onblur="setTimeout(()=>document.getElementById('articleDropdown').style.display='none',150)"''' + lock_attr + '''>
                 <div id="articleDropdown" style="display:none; position:absolute; top:100%; left:0;
                      width:440px; background:#fff; border:1px solid #ccc; border-radius:4px;
                      max-height:280px; overflow-y:auto; z-index:999;
@@ -642,7 +645,7 @@ function copyInvoiceAsNew(invId) {{
     
     # Payment terms text
     payment_terms_text = _html.escape(str(existing_invoice[26])) if existing_invoice and existing_invoice[26] else 'Bitte überweisen Sie den Gesamtbetrag ohne jeden Abzug unter Angabe der Rechnungsnummer innerhalb von 14 Tagen ab Rechnungsdatum auf das unten angegebene Konto. Vielen Dank.'
-    s += f'<textarea id="payment_terms" rows="3" style="width: 100%;">{payment_terms_text}</textarea>'
+    s += f'<textarea id="payment_terms" rows="3" style="width: 100%;"{closed_attr}>{payment_terms_text}</textarea>'
     
     s += '''
         </div>
@@ -682,7 +685,7 @@ function copyInvoiceAsNew(invId) {{
                     </td>
                     <td class="footer-col-right">
                         <strong>Bankverbindung</strong><br>
-                        <select id="bank_account_select" onchange="updateBankDetails()" style="width: 100%; margin-top: 5px;" class="no-pdf">
+                        <select id="bank_account_select" onchange="updateBankDetails()" style="width: 100%; margin-top: 5px;" class="no-pdf"''' + lock_attr + '''>
                             <option value="">-- Konto auswählen --</option>
     '''
     
@@ -713,7 +716,7 @@ function copyInvoiceAsNew(invId) {{
                     <td style="padding: 8px;">
                         <input type="text" id="order_number" style="width: 300px;" placeholder="z.B. PO-2026-12345" value="'''
     s += _html.escape(str(existing_invoice[23])) if existing_invoice and len(existing_invoice) > 23 and existing_invoice[23] else ''  # OrderNumber is now at index 23 (was 21)
-    s += '''">
+    s += '"' + closed_attr + '''>
                         <br><small style="color: #666;">Bestellnummer des Kunden (falls vorhanden)</small>
                     </td>
                 </tr>
@@ -763,7 +766,7 @@ function copyInvoiceAsNew(invId) {{
             s += '14'
     else:
         s += '14'
-    s += '''" min="0" style="width: 100px;"> Tage
+    s += '" min="0" style="width: 100px;"' + lock_attr + '''> Tage
                         <br><small style="color: #666;">Anzahl der Tage bis zur Fälligkeit (Standard: 14 Tage)</small>
                     </td>
                 </tr>
@@ -772,7 +775,7 @@ function copyInvoiceAsNew(invId) {{
                     <td style="padding: 8px;">
                         <input type="date" id="payment_due_date" style="width: 200px;" value="'''
     s += _html.escape(str(due_date_value or ''))  # PaymentDueDate (bei einer Kopie leer)
-    s += '''">
+    s += '"' + lock_attr + '''>
                         <br><small style="color: #666;">Wird automatisch berechnet oder kann manuell festgelegt werden</small>
                     </td>
                 </tr>
@@ -781,11 +784,11 @@ function copyInvoiceAsNew(invId) {{
                     <td style="padding: 8px;">
                         <input type="number" id="discount_percentage" min="0" max="100" step="0.1" style="width: 80px;" placeholder="z.B. 2" value="'''
     s += _html.escape(str(existing_invoice[29])) if existing_invoice and len(existing_invoice) > 29 and existing_invoice[29] else ''  # SkontoPercent is now at index 29 (was 27)
-    s += '''"> %
+    s += '"' + lock_attr + '''> %
                         bei Zahlung innerhalb von
                         <input type="number" id="discount_days" min="0" style="width: 80px;" placeholder="z.B. 7" value="'''
     s += _html.escape(str(existing_invoice[28])) if existing_invoice and len(existing_invoice) > 28 and existing_invoice[28] else ''  # SkontoDays is now at index 28 (was 26)
-    s += '''"> Tagen
+    s += '"' + lock_attr + '''> Tagen
                         <br><small style="color: #666;">Skonto-Abzug bei frühzeitiger Zahlung (optional)</small>
                     </td>
                 </tr>
@@ -1265,8 +1268,20 @@ function copyInvoiceAsNew(invId) {{
             // Check if we're editing an existing invoice
             const invoiceId = document.getElementById('invoice_id').value;
             const isEdit = invoiceId !== '';
-            const currentStatus = document.getElementById('invoice_status_value')?.value || 'draft';
-            
+
+            // Versendete Rechnung: Betraege, Positionen, Nummer, Datum und Kunde sind gesperrt (der Server
+            // lehnt jede Aenderung daran ab) - geschickt werden nur die Felder, die sich noch aendern lassen
+            if (isEdit && document.getElementById('invoice_locked').value === 'true') {
+                sendInvoice({
+                    invoiceId: parseInt(invoiceId),
+                    paymentTerms: document.getElementById('payment_terms').value,
+                    orderNumber: document.getElementById('order_number').value || null,
+                    buyerReference: document.getElementById('buyer_route_id').value || null,
+                    deliveryDate: document.getElementById('delivery_date').value || null
+                }, isEdit, invoiceId);
+                return;
+            }
+
             // Get selected own company ID
             const ownCompanyId = document.getElementById('own_company_select').value;
             if (!ownCompanyId) {
@@ -1368,7 +1383,6 @@ function copyInvoiceAsNew(invId) {{
                 taxAmount: taxAmount,
                 grossAmount: grossAmount,
                 currency: 'EUR',
-                status: currentStatus,
                 paymentMeansCode: document.getElementById('payment_means_code').value || '58',
                 paymentMeansText: document.getElementById('payment_means_text').value || 'SEPA Überweisung',
                 items: items,
@@ -1383,8 +1397,12 @@ function copyInvoiceAsNew(invId) {{
             if (isEdit) {
                 invoiceData.invoiceId = parseInt(invoiceId);
             }
-            
-            // Send to server
+
+            sendInvoice(invoiceData, isEdit, invoiceId);
+        }
+
+        // Send to server
+        function sendInvoice(invoiceData, isEdit, invoiceId) {
             fetch('/invoice/save', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},

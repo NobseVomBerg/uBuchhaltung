@@ -15,7 +15,7 @@ from db import Database
 from money import fmt_eur
 from export.einvoice_model import unit_display
 from export.invoice_files import stored_invoice_path
-from .pages import Header1, Header2, Header3, Footer, logo_url
+from .pages import Header1, Header2, Header3, Footer, logo_url, script_json
 from .pages_invoice import _json_for_script, document_submenu
 from .richtext import sanitize_richtext
 
@@ -37,8 +37,9 @@ QUOTE_STATUS_LABELS = {
 }
 
 
-def PageQuote(db: Database, filters: dict = None, quote_id=None):
-    """Angebotsliste + Formular."""
+def PageQuote(db: Database, filters: dict = None, quote_id=None, err=None):
+    """Angebotsliste + Formular. ``err``: Grund, warum eine Aktion abgelehnt wurde (z. B. ein Angebot,
+    das schon umgewandelt ist) – Klartext, kommt als Meldung auf die Seite."""
     filters = filters or {}
     status_filter = filters.get('status', '')
     search_query = filters.get('search', '')
@@ -168,6 +169,9 @@ def PageQuote(db: Database, filters: dict = None, quote_id=None):
     s += '<div class="gridRightCol" style="order:2; min-width:820px;">'
     s += _quote_form_html(db, quote_id)
     s += '</div><!-- Ende gridRightCol --></div><!-- Ende grid2Cols -->'
+    if err:
+        s += ('<script>document.addEventListener("DOMContentLoaded",function(){'
+              'appMsg(' + script_json(err) + ',"error");});</script>')
     s += Footer()
     return s
 

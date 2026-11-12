@@ -102,3 +102,48 @@ def test_pdf_shows_readable_unit_but_xml_keeps_code(tmp_db, monkeypatch, tmp_pat
     assert 'Std.' in words and 'HUR' not in words
     xml = generate_cii(tmp_db.get_invoice_by_id(iid), tmp_db.get_invoice_items(iid), db=tmp_db)
     assert b'unitCode="HUR"' in xml
+
+
+# ── Das Dokument zeigt nie den Stand der Zahlungen (2.1.2) ───────────────────
+
+def _partly_paid(db, case='std19', paid=50.00):
+    """Rechnung des Falls mit einer Teilzahlung: ``AmountDue`` ist kleiner als der Rechnungsbetrag."""
+    iid = make_case(db, case)
+    booking = db.insert_booking('2026-04-01', paid, booking_type='bank')
+    db.link_invoice_to_transaction(iid, booking, paid)
+    assert db.get_invoice_by_id(iid)[39] < db.get_invoice_by_id(iid)[38]
+    return iid
+
+
+def test_the_model_shows_the_invoice_amount_not_the_open_amount(tmp_db):
+    iid = _partly_paid(tmp_db)
+    model = build_einvoice(tmp_db, tmp_db.get_invoice_by_id(iid), tmp_db.get_invoice_items(iid))
+    assert model.totals.prepaid == 0
+    assert model.totals.payable == model.totals.grand_total == 1779100      # 177,91 € in Minor Units
+    assert model.warnings == []
+
+
+def test_cii_and_ubl_of_a_partly_paid_invoice_state_no_prepaid_amount(tmp_db):
+    from export.cii_invoice import generate_cii
+    from export.xrechnung_invoice import XRechnungGenerator
+    iid = _partly_paid(tmp_db)
+    inv, items = tmp_db.get_invoice_by_id(iid), tmp_db.get_invoice_items(iid)
+    cii = generate_cii(inv, items, db=tmp_db).decode('utf-8')
+    ubl = XRechnungGenerator().generate_xml(inv, items, db=tmp_db)
+    assert 'TotalPrepaidAmount' not in cii and 'PrepaidAmount' not in ubl
+    assert '<ram:DuePayableAmount>177.91</ram:DuePayableAmount>' in cii
+    assert '<cbc:PayableAmount currencyID="EUR">177.91</cbc:PayableAmount>' in ubl
+
+
+def test_the_documents_do_not_change_with_the_payments(tmp_db):
+    """Dasselbe Dokument vor und nach der Zahlung: Ein Dokument ist die Rechnung, die der Kunde bekam."""
+    from export.cii_invoice import generate_cii
+    from export.xrechnung_invoice import XRechnungGenerator
+    iid = make_case(tmp_db, 'std19')
+    inv, items = tmp_db.get_invoice_by_id(iid), tmp_db.get_invoice_items(iid)
+    before = (generate_cii(inv, items, db=tmp_db), XRechnungGenerator().generate_xml(inv, items, db=tmp_db))
+    booking = tmp_db.insert_booking('2026-04-01', 50.00, booking_type='bank')
+    tmp_db.link_invoice_to_transaction(iid, booking, 50.00)
+    inv = tmp_db.get_invoice_by_id(iid)
+    after = (generate_cii(inv, items, db=tmp_db), XRechnungGenerator().generate_xml(inv, items, db=tmp_db))
+    assert after == before

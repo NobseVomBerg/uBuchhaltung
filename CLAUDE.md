@@ -501,11 +501,60 @@ kein Subagent darauf:
 - **Leistungsdatum ist Pflicht** (§ 14 UStG): Formular `required`, vorbelegt mit dem Rechnungsdatum,
   Server lehnt Speichern ohne ab (`handle_invoice_save`; nicht bei Angeboten, nicht bei bereits
   versendeten Rechnungen/Importen); steht im PDF-Kopfblock und in CII/UBL. Angebot → Rechnung setzt es auf das Rechnungsdatum
-- Versendete Rechnungen (Status sent/partial_payment/overdue/paid) werden von
-  „PDF + E-Rechnung“ nicht neu erzeugt (`overwrite_sent` nur beim Eintritt in „versendet“)
+- Versendete und stornierte Rechnungen (`db.invoice_lock.FROZEN_STATUSES`) werden von
+  „PDF + E-Rechnung“ nicht neu erzeugt (`overwrite_sent` nur beim Eintritt aus Entwurf/abgeschlossen in
+  „versendet“); liegt für sie noch keine Datei vor (Import, gescheiterte Erzeugung), darf sie erzeugt werden
 - **Erzeugt** wird nur an zwei Stellen: über „PDF + E-Rechnung“ im Formular und
-  automatisch beim Wechsel auf Status **versendet** (ab da ist die Rechnung
-  eingefroren). Eine bereits versendete Rechnung wird nicht überschrieben
+  automatisch beim Wechsel von Entwurf/abgeschlossen auf Status **versendet** (ab da ist die Rechnung
+  eingefroren). Eine bereits versendete Rechnung wird nicht überschrieben; versendet ↔ überfällig erzeugt nichts
+- **Sperre versendeter Rechnungen** (`db/invoice_lock.py`, seit 2.1.2) – **Zwischenstand** bis zum geführten
+  Berichtigen mit Fassungen und Protokoll und bis zum Stornobeleg (`docs/aufgaben.md`). Eine Stelle entscheidet
+  (`check_changes`, Statusgruppen), und jeder Schreibweg auf eine Rechnung geht darüber: das Speichern
+  (`Database.update_invoice_fields`) und der Statuswechsel (`Database.set_invoice_status`) – nie
+  `update_invoice_status` (der ungeprüfte Baustein für Angebote, Seed und Tests). Bearbeitbar ist alles bei
+  `draft`/`finalized`. Bei `sent`/`overdue`/`partial_payment`/`partial`/`paid` sind Nummer, Rechnungsdatum,
+  Kunde, eigene Firma, Positionen, Steuer, Summen, Fälligkeit, Skonto, Bank, Währung und Käufer-USt-IdNr.
+  gesperrt: `/invoice/save` antwortet mit **409** und einem Klartext, nichts der Anfrage wird geschrieben.
+  Änderbar bleiben der Begleittext (`PaymentTerms`, der Zahlungshinweis unter den Positionen), die Anschrift
+  (wird beim Speichern aus den Stammdaten des Kunden der Rechnung neu übernommen), Bestellnummer, Leitweg-ID
+  und Leistungsdatum – ohne Fassung und Protokoll. `cancelled`: gar
+  nichts mehr. Geprüft wird gegen den gespeicherten Stand **in der Transaktion** (`BEGIN IMMEDIATE`, das
+  `UPDATE` trägt die Statusgruppe im `WHERE`): zwei gleichzeitige Anfragen laufen nacheinander. Was das
+  Formular unverändert zurückschickt, ist kein Verstoß (Beträge in Minor Units, Positionen Feld für Feld,
+  Einheiten wie `unit_display` sie zeigt, Steuersatz 0,19 = 19). Für eine versendete Rechnung schickt das
+  Formular nur die änderbaren Felder (kein `items`); Absender, Bank und Käufer-USt-IdNr. sind abgeleitet und
+  werden bei Sperre nie neu aus den Stammdaten geholt. **Status und `AmountDue` kommen nie vom Client:** eine
+  neue Rechnung ist `draft` (oder `finalized`), `AmountDue` ist im Entwurf das Brutto, danach rechnet es die
+  Zahlungslogik. Ein unbekannter Status gilt als gesperrt
+- **Statusübergänge** (`db.invoice_lock.TRANSITIONS`; die Statusauswahl bietet nur die erlaubten Ziele,
+  `set_invoice_status` lehnt den Rest mit Klartext ab – 409, „bezahlt“ ohne Zahlung 400): Entwurf ↔
+  abgeschlossen frei. **Entwurf/abgeschlossen → versendet** („Versenden“) ist der einzige Übergang, der die
+  Forderung bucht und das Dokument erzeugt. Versendet ↔ überfällig bucht und erzeugt nichts (auch bei einem
+  Import ohne Forderung der App). Teilzahlung/bezahlt und der Rückweg setzt die Zahlungslogik
+  (`next_payment_status`); „bezahlt“ von Hand nur mit mindestens einer Zahlung (Skonto), der Rückweg von
+  bezahlt/Teilzahlung nach versendet/überfällig von Hand nur ohne Zahlung (verwaister Zustand).
+  Versendet/überfällig → Entwurf/abgeschlossen („zurückholen“) nur ohne Zahlung; die Forderung wird entfernt.
+  → storniert von Hand aus versendet/überfällig/Teilzahlung/bezahlt, mit dem bisherigen Buchungsverhalten
+  (die Forderung bleibt, solange eine Zahlung daran hängt) – bis zum Stornobeleg. Storniert → versendet/
+  überfällig bucht die Forderung neu und lässt ein vorhandenes Dokument stehen
+- **Rechnungsnummer beim ersten Speichern** (`allocate_invoice_number`, `release_invoice_number`,
+  `peek_next_number` in `db/numbering.py`): Die Nummer wird in der Transaktion des Speicherns vergeben – auch
+  als Entwurf, bei Angebot → Rechnung ebenso –, der Zähler rückt dort vor (`UPDATE … RETURNING`); scheitert das
+  Speichern, ist sie nicht verbraucht. Der Vorschlag der Maske ist genau diese Nummer (Formatvorlage und Zusatz
+  des Kreises, eine belegte Nummer wird übersprungen). Eine eigene Nummer, die zur Vorlage eines Kreises passt,
+  hebt dessen Zähler, nie nach unten. Statuswechsel und spätere Änderungen zählen nie. Das Löschen eines
+  Entwurfs gibt die Nummer zurück, wenn der Zähler genau auf ihr steht (sonst bleibt eine Lücke)
+- **Entwurf löschen** (`POST /invoice/delete?id=`, `Database.delete_draft_invoice`): nur Status `draft`, ohne
+  zugeordnete Zahlung und ohne Forderungsbuchung, in einer Transaktion; eine Ablehnung geht mit dem Grund
+  (`err`) zurück auf die Rechnung. Ein Quellangebot im Status `converted` ohne weitere Rechnung geht auf
+  `accepted` zurück. PDF und XML räumt `handlers.handle_delete_invoice` danach weg – nur im Dokumentordner und
+  nur, wenn kein anderer Beleg darauf verweist. Ein abgeschlossener Entwurf wird erst auf Entwurf
+  zurückgesetzt. **Angebot → Rechnung** (`convert_quote_to_invoice`) geht einmal je Angebot und nur aus
+  Entwurf/versendet/angenommen (`UPDATE … WHERE Status IN (…)` in einer Transaktion; Klartext bei der Ablehnung)
+- **Dateinamen-Kollision:** Gehört der Zielpfad der abgelegten Datei eines anderen Belegs (zwei Nummern, die zum
+  selben Namen werden), bekommt der Name die ID als Zusatz (`<Nr.> <Kunde> (ID n).pdf`,
+  `invoice_file_path(…, db)`); der Rückfall über das Namensschema nimmt nie die Datei eines anderen Belegs.
+  **Das Dokument zeigt nie den Stand der Zahlungen** (`prepaid` ist immer 0, Zahlbetrag = Brutto)
 - **Heruntergeladen** wird immer die abgelegte Datei (`/invoice/pdf_download`,
   `/invoice/xml_download`) – nie eine frisch erzeugte. Fehlt sie, kommt 404 mit
   kurzem Klartext, den das Frontend direkt anzeigt
@@ -562,7 +611,7 @@ kein Subagent darauf:
 ## Governance
 
 - **Owner:** NobseVomBerg
-- **Letzte Aktualisierung:** 2026-11-11
+- **Letzte Aktualisierung:** 2026-11-12
 - **Modell-Versionen:** Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5 (Stand November 2026);
   `settings.json` und Agents nutzen Aliase (`fable`, `opus` …), die der neuesten Version folgen
 - **Bei Modell-Updates:** Modell-Routing oben, `.claude/settings.json` (`modelSettings`

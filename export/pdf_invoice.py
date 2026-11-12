@@ -162,7 +162,7 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
 
     # PDF-Datei speichern (im Datenbereich des aktuellen Nutzers) unter der
     # Namenskonvention "[Rechnungs-Nr.] [Kundenname]" (todo #2)
-    pdf_path = invoice_file_path(invoice, 'pdf')
+    pdf_path = invoice_file_path(invoice, 'pdf', db)
 
     try:
         os.makedirs(os.path.dirname(pdf_path), exist_ok=True)

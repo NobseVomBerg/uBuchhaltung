@@ -8,6 +8,7 @@ import json
 from decimal import Decimal
 from money import to_minor, from_minor
 from .core import fk_explained
+from .invoice_lock import DocumentNotFound
 from .invoice_payments import PAYABLE_STATUSES, PAYMENT_MARK
 from .matching import FORM_TRANSFER
 from .reporting import is_income_account
@@ -27,6 +28,23 @@ class InvoiceCol:
     AMOUNT_DUE = 39
     STATUS = 40
     DOCUMENT_TYPE = 45   # 'invoice' | 'quote'
+
+
+# Aus diesen Status wird ein Angebot in eine Rechnung umgewandelt – einmal: danach ist es „converted“.
+# Ein abgelehntes Angebot wird erst wieder angenommen.
+QUOTE_CONVERTIBLE_STATUSES = ('draft', 'sent', 'accepted')
+# Dorthin geht ein Angebot zurück, wenn der Entwurf seiner Rechnung gelöscht wird
+QUOTE_RESTORED_STATUS = 'accepted'
+
+
+class QuoteNotConvertible(ValueError):
+    """Das Angebot lässt sich nicht (noch einmal) in eine Rechnung umwandeln; ``str(exc)`` ist ein
+    Klartext für die Oberfläche."""
+
+
+class InvoiceNotDeletable(ValueError):
+    """Die Rechnung lässt sich nicht löschen (nur ein Entwurf ohne Zahlung und Forderung);
+    ``str(exc)`` ist ein Klartext für die Oberfläche."""
 
 
 def document_type(row):
@@ -261,19 +279,47 @@ class InvoicesMixin:
             raise
         finally:
             conn.close()
-    def delete_invoice(self, invoice_id):
-        """Delete an invoice and its items (cascade)"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute('DELETE FROM Invoices WHERE ID = ?', (invoice_id,))
-            conn.commit()
-        except Exception as e:
-            print(f"Error deleting invoice: {e}")
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+    def delete_draft_invoice(self, invoice_id):
+        """Einen Entwurf löschen – samt Positionen (CASCADE), in EINER Transaktion.
+
+        Nur eine Rechnung im Status ``draft``, ohne zugeordnete Zahlung und ohne Forderungsbuchung
+        (:class:`InvoiceNotDeletable` sonst, :class:`DocumentNotFound` ohne Rechnung). Ein
+        abgeschlossener Entwurf wird erst auf „Entwurf“ zurückgesetzt: Eine schon heruntergeladene
+        PDF soll nicht spurlos verschwinden können. Die Rechnungsnummer geht an den Nummernkreis
+        zurück (``release_invoice_number``). Stammt der Entwurf aus einem Angebot und gibt es keine
+        weitere Rechnung dazu, ist das Angebot wieder umwandelbar.
+
+        Die abgelegten Dokumente räumt der Aufrufer nach dem Commit weg."""
+        with self.transaction() as tx:
+            conn = tx.conn
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT InvoiceNumber, Status, DocumentType, SourceQuoteId '
+                               'FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()
+            if row is None or (row[2] or 'invoice') != 'invoice':
+                raise DocumentNotFound('Rechnung nicht gefunden.')
+            number, status, _, quote_id = row
+            status = status or 'draft'
+            if status != 'draft':
+                raise InvoiceNotDeletable(
+                    'Eine abgeschlossene Rechnung lässt sich nicht löschen – erst auf „Entwurf“ '
+                    'zurücksetzen.' if status == 'finalized' else
+                    'Nur ein Entwurf lässt sich löschen.')
+            if conn.execute('SELECT 1 FROM InvoicePayments WHERE InvoiceID = ?',
+                            (invoice_id,)).fetchone():
+                raise InvoiceNotDeletable('Zu dieser Rechnung sind Zahlungen zugeordnet.')
+            receivable_sql, receivable_params = self._receivable_sql(conn.cursor())
+            if conn.execute(f"SELECT 1 FROM Bookings WHERE DocumentNumber = ? AND BookingType = 'entry' "
+                            f"AND {receivable_sql}", [number, *receivable_params]).fetchone():
+                raise InvoiceNotDeletable('Zu dieser Rechnung gibt es eine Forderungsbuchung.')
+            self.release_invoice_number(conn, number)
+            conn.execute("DELETE FROM Invoices WHERE ID = ? AND COALESCE(Status, 'draft') = 'draft'",
+                         (invoice_id,))
+            if quote_id is not None:
+                conn.execute(
+                    "UPDATE Invoices SET Status = ?, UpdatedAt = CURRENT_TIMESTAMP "
+                    "WHERE ID = ? AND DocumentType = 'quote' AND Status = 'converted' "
+                    "AND NOT EXISTS (SELECT 1 FROM Invoices o WHERE o.SourceQuoteId = ?)",
+                    (QUOTE_RESTORED_STATUS, quote_id, quote_id))
     def delete_quote(self, quote_id):
         """Ein Angebot löschen (inkl. Positionen via CASCADE).
 
@@ -296,80 +342,83 @@ class InvoicesMixin:
         finally:
             conn.close()
     def convert_quote_to_invoice(self, quote_id):
-        """Ein angenommenes Angebot in eine neue Rechnung kopieren.
+        """Ein Angebot in eine neue Rechnung kopieren – einmal je Angebot, in EINER Transaktion.
 
-        Kopiert Kopf, Texte und Positionen in eine neue Rechnung (DocumentType
-        'invoice', Status 'draft', SourceQuoteId=quote_id). Bank/Zahlung bleiben leer
-        (im Bearbeiten-Modus zu ergänzen). Das Angebot erhält Status 'converted'.
+        Kopiert Kopf, Texte und Positionen in eine neue Rechnung (DocumentType 'invoice', Status
+        'draft', SourceQuoteId=quote_id). Bank/Zahlung bleiben leer (im Bearbeiten-Modus zu
+        ergänzen). Die Nummer kommt aus dem Nummernkreis (``allocate_invoice_number``), das Angebot
+        bekommt den Status 'converted'. Umgewandelt wird nur aus ``QUOTE_CONVERTIBLE_STATUSES``: Der
+        Statuswechsel des Angebots ist ein ``UPDATE … WHERE Status IN (…)`` – zwei gleichzeitige
+        Anfragen legen nie zwei Rechnungen an.
 
         Returns:
             new_invoice_id oder None (falls Angebot fehlt / kein Angebot ist).
+        Raises:
+            QuoteNotConvertible: das Angebot ist schon umgewandelt oder abgelehnt.
         """
         import datetime
-        quote = self.get_invoice_by_id(quote_id)
-        if not quote:
-            return None
-        # Nur echte Angebote umwandeln
-        if (quote[45] if len(quote) > 45 else 'invoice') != 'quote':
-            return None
+        today = datetime.date.today().isoformat()
+        with self.transaction() as tx:
+            conn = tx.conn
+            conn.execute('BEGIN IMMEDIATE')
+            quote = self._euro_row(
+                conn.execute('SELECT * FROM Invoices WHERE ID = ?', (quote_id,)).fetchone(),
+                36, 37, 38, 39)
+            # Nur echte Angebote umwandeln
+            if quote is None or document_type(quote) != 'quote':
+                return None
+            marks = ','.join('?' * len(QUOTE_CONVERTIBLE_STATUSES))
+            if conn.execute(
+                    "UPDATE Invoices SET Status = 'converted', UpdatedAt = CURRENT_TIMESTAMP "
+                    f"WHERE ID = ? AND DocumentType = 'quote' AND COALESCE(Status, 'draft') IN ({marks})",
+                    (quote_id, *QUOTE_CONVERTIBLE_STATUSES)).rowcount != 1:
+                raise QuoteNotConvertible(
+                    'Dieses Angebot wurde bereits in eine Rechnung umgewandelt.'
+                    if quote[InvoiceCol.STATUS] == 'converted' else
+                    'Ein abgelehntes Angebot lässt sich nicht in eine Rechnung umwandeln – erst auf '
+                    '„Angenommen“ setzen.')
+            sum_gross = quote[38] or 0
+            invoice_data = {
+                'invoice_number': self.allocate_invoice_number(conn, today),
+                'invoice_date': today,
+                'own_company_id': quote[3],
+                'seller_name': quote[4], 'seller_company': quote[5],
+                'seller_street': quote[6], 'seller_postal_code': quote[7],
+                'seller_city': quote[8], 'seller_country': quote[9] or 'DE',
+                'seller_vat_id': quote[10], 'seller_email': quote[11], 'seller_phone': quote[12],
+                'customer_id': quote[13],
+                'buyer_name': quote[14], 'buyer_company': quote[15],
+                'buyer_street': quote[16], 'buyer_postal_code': quote[17],
+                'buyer_city': quote[18], 'buyer_country': quote[19] or 'DE',
+                'buyer_vat_id': quote[20], 'buyer_reference': quote[21], 'buyer_route_id': quote[22],
+                'order_number': quote[23], 'currency': quote[24] or 'EUR',
+                'delivery_date': today,  # Pflicht, = Rechnungsdatum
+                'payment_terms': None, 'payment_due_date': None,
+                'skonto_days': None, 'skonto_percent': None,
+                'bank_account_id': None, 'bank_name': None, 'bank_iban': None, 'bank_bic': None,
+                'tax_category': quote[34] or 'S', 'tax_rate': quote[35],
+                'sum_net': quote[36] or 0, 'tax_amount': quote[37] or 0,
+                'sum_gross': sum_gross, 'amount_due': sum_gross,
+                'status': 'draft', 'pdf_path': None, 'xml_path': None,
+                'document_type': 'invoice',
+                'valid_until': None,
+                'intro_text': quote[47] if len(quote) > 47 else None,
+                'closing_text': quote[48] if len(quote) > 48 else None,
+                'source_quote_id': quote_id,
+            }
+            new_invoice_id = self.insert_invoice(invoice_data, tx=tx)
 
-        # Neue Rechnungsnummer ermitteln: vorhandenen Invoice-Range nutzen, sonst 'R'.
-        year = datetime.datetime.now().year
-        letter, prefix = 'R', ''
-        for r in self.fetch_number_ranges('invoice'):
-            # r: ID,Type,Year,Letter,Prefix,...
-            if r[2] == year:
-                letter, prefix = r[3], (r[4] or '')
-                break
-        else:
-            ranges = self.fetch_number_ranges('invoice')
-            if ranges:
-                letter, prefix = ranges[0][3], (ranges[0][4] or '')
-        new_number = self.get_next_number('invoice', year, letter, prefix)
-
-        sum_gross = quote[38] or 0
-        invoice_data = {
-            'invoice_number': new_number,
-            'invoice_date': datetime.date.today().isoformat(),
-            'own_company_id': quote[3],
-            'seller_name': quote[4], 'seller_company': quote[5],
-            'seller_street': quote[6], 'seller_postal_code': quote[7],
-            'seller_city': quote[8], 'seller_country': quote[9] or 'DE',
-            'seller_vat_id': quote[10], 'seller_email': quote[11], 'seller_phone': quote[12],
-            'customer_id': quote[13],
-            'buyer_name': quote[14], 'buyer_company': quote[15],
-            'buyer_street': quote[16], 'buyer_postal_code': quote[17],
-            'buyer_city': quote[18], 'buyer_country': quote[19] or 'DE',
-            'buyer_vat_id': quote[20], 'buyer_reference': quote[21], 'buyer_route_id': quote[22],
-            'order_number': quote[23], 'currency': quote[24] or 'EUR',
-            'delivery_date': datetime.date.today().isoformat(),  # Pflicht, = Rechnungsdatum
-            'payment_terms': None, 'payment_due_date': None,
-            'skonto_days': None, 'skonto_percent': None,
-            'bank_account_id': None, 'bank_name': None, 'bank_iban': None, 'bank_bic': None,
-            'tax_category': quote[34] or 'S', 'tax_rate': quote[35],
-            'sum_net': quote[36] or 0, 'tax_amount': quote[37] or 0,
-            'sum_gross': sum_gross, 'amount_due': sum_gross,
-            'status': 'draft', 'pdf_path': None, 'xml_path': None,
-            'document_type': 'invoice',
-            'valid_until': None,
-            'intro_text': quote[47] if len(quote) > 47 else None,
-            'closing_text': quote[48] if len(quote) > 48 else None,
-            'source_quote_id': quote_id,
-        }
-        new_invoice_id = self.insert_invoice(invoice_data)
-
-        # Positionen kopieren (Euro-Decimals werden in insert_invoice_item zu Minor)
-        for it in self.get_invoice_items(quote_id):
-            self.insert_invoice_item({
-                'invoice_id': new_invoice_id,
-                'position': it[2], 'article_id': it[3],
-                'description': it[4], 'quantity': it[5], 'unit': it[6] or 'C62',
-                'price_per_unit': it[7] or 0, 'total_net': it[8] or 0,
-                'tax_category': it[9] or 'S', 'tax_rate': it[10],
-            })
-
-        # Angebot als umgewandelt markieren
-        self.update_invoice_status(quote_id, 'converted')
+            # Positionen kopieren (Euro-Decimals werden in insert_invoice_item zu Minor)
+            for row in conn.execute('SELECT * FROM InvoiceItems WHERE InvoiceId = ? ORDER BY Position',
+                                    (quote_id,)).fetchall():
+                it = self._euro_row(row, 7, 8)
+                self.insert_invoice_item({
+                    'invoice_id': new_invoice_id,
+                    'position': it[2], 'article_id': it[3],
+                    'description': it[4], 'quantity': it[5], 'unit': it[6] or 'C62',
+                    'price_per_unit': it[7] or 0, 'total_net': it[8] or 0,
+                    'tax_category': it[9] or 'S', 'tax_rate': it[10],
+                }, tx=tx)
         return new_invoice_id
     def link_invoice_to_transaction(self, invoice_id, transaction_id, amount_paid):
         """Link an invoice to a payment booking via InvoicePayments and recalculate AmountDue.

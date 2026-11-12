@@ -303,10 +303,17 @@ _POST_LOCATION = {
     "/worktime/delete": r"/worktime\?person=1&from=2026-01-01&to=2026-12-31",
 }
 
+# Aktionspfade, die eine nicht vorhandene ID mit 404 und Klartext beantworten, statt umzuleiten:
+# /invoice/delete trifft nur eine Rechnung; die ID eines Angebots ist dort ebenso „nicht gefunden“
+_POST_NOT_FOUND = {
+    "/invoice/delete": "Rechnung nicht gefunden.",
+}
+
 
 def test_post_expectations_cover_all_action_paths():
-    # Kommt ein Aktionspfad hinzu, braucht er hier ein Redirect-Ziel
-    assert set(_POST_LOCATION) == set(_ACTION_PATHS)
+    # Kommt ein Aktionspfad hinzu, braucht er hier ein Redirect-Ziel (oder eine 404-Antwort)
+    assert set(_POST_LOCATION).isdisjoint(_POST_NOT_FOUND)
+    assert set(_POST_LOCATION) | set(_POST_NOT_FOUND) == set(_ACTION_PATHS)
 
 
 @pytest.mark.parametrize("path", sorted(_ACTION_PATHS))
@@ -319,8 +326,12 @@ def test_get_on_action_path_is_405(server_port, auto_login, path):
 @pytest.mark.parametrize("path", sorted(_ACTION_PATHS))
 def test_post_on_action_path_is_handled(server_port, auto_login, path):
     # Ein Pfad in _ACTION_PATHS ohne Zweig in _post_action_routes bliebe unbeantwortet
-    # (Timeout); die Anfrage muss also mit dem erwarteten Redirect enden.
+    # (Timeout); die Anfrage muss also mit dem erwarteten Redirect (oder der 404-Antwort) enden.
     resp = post(server_port, f"{path}?{_ACTION_QUERY}", csrf=auto_login.csrf)
+    if path in _POST_NOT_FOUND:
+        assert resp.status == 404
+        assert resp.text == _POST_NOT_FOUND[path]
+        return
     assert resp.status == 303
     assert re.fullmatch(_POST_LOCATION[path], resp.headers["Location"])
 
