@@ -299,7 +299,10 @@ class InvoicePaymentsMixin:
             parent_coas = account_coas.get(account_id)
             effect = sum(bank_effect(form, row_amount, coa_id, counter_coa_id, parent_coas, bank_coa_ids)
                          for form, row_amount, coa_id, counter_coa_id in rows_of.get(ident, ()))
-            result.append((ident, date, recipient, contact, amount, -amount - max(-allocated.get(ident, 0), -effect)))
+            # nie mehr frei als der Betrag der Bewegung (eine positive Zuordnung unter einem Ausgang – die Bewegung wurde nach
+            # der Zahlung umgedreht – machte ihn sonst „freier“, als er ist)
+            free = min(-amount - max(-allocated.get(ident, 0), -effect), -amount)
+            result.append((ident, date, recipient, contact, amount, free))
         return result
 
     def _booking_free_outgoing_minor(self, conn, booking_id, bank_coa_ids):
@@ -1155,7 +1158,7 @@ class InvoicePaymentsMixin:
         jedem Umzug ändern. Nichts zieht um, wenn Kunde oder Währung abweichen oder für den Steuersatz der neuen Rechnung kein
         Erlöskonto hinterlegt ist. Wurde zur stornierten Rechnung schon erstattet (``assign_storno_refund``; Σ Zuordnungen der
         Stornorechnung < 0), zieht höchstens das verbleibende Guthaben um – die Zahlungen der stornierten Rechnung (ihre positiven
-        Zuordnungen; eine negative des WISO-Imports bleibt, wie sonst, unberührt und zählt nicht) minus die Erstattungen vor
+        Zuordnungen; eine negative des WISO-Imports bleibt, wie sonst, unberührt, mindert aber das Guthaben) minus die Erstattungen vor
         dem Umzug (``movable_left``): Je umziehbarer Zuordnung ist der Teil min(Betrag, Rest der neuen Rechnung,
         ``movable_left``), endet er bei 0 der Umzug, und nach einem gelungenen Umzug sinkt ``movable_left`` um den Teil. Der
         Rest einer Zuordnung bleibt wie sonst an der stornierten Rechnung; so ist danach nie mehr erstattet als gezahlt, und der
@@ -1207,9 +1210,10 @@ class InvoicePaymentsMixin:
             'SELECT ID, BookingID, Amount FROM InvoicePayments WHERE InvoiceID = ? ORDER BY PaymentDate, ID',
             (old_id,)).fetchall()
         positive = sum(amount for _pay_id, _bank_id, amount in payments if amount > 0)   # eine negative bleibt unberührt
-        # Höchstens das verbleibende Guthaben zieht um: die Zahlungen abzüglich der Erstattungen, sonst wäre danach mehr erstattet
-        # als gezahlt. Ohne Erstattung ist es die Summe aller Zahlungen und bremst nie.
-        movable_left = positive - refunded
+        # Höchstens das verbleibende Guthaben zieht um: ALLE Zuordnungen der stornierten Rechnung – auch eine negative des
+        # WISO-Imports (Rücklastschrift), die selbst nie umzieht – abzüglich der Erstattungen. Sonst wäre danach mehr erstattet
+        # als gezahlt. Ohne Erstattung und ohne negative Zuordnung ist es die Summe aller Zahlungen und bremst nie.
+        movable_left = total - refunded
         same_rate = self._tax_rate_key(old_rate) == self._tax_rate_key(row['TaxRate'])
 
         def verdict(bank_id, amount):
@@ -1267,7 +1271,11 @@ class InvoicePaymentsMixin:
                 skipped += amount
                 reasons.add('rebook')
 
-        kept = positive - moved - skipped - refunded
+        # Was an der stornierten Rechnung bleibt, ist ihr Guthaben: das Übersprungene höchstens bis dorthin (ein Teil davon kann
+        # schon erstattet sein – er steht in seinem eigenen Satz und zählt nicht zweimal), der Rest ohne Hindernis
+        credit_left = max(total - moved - refunded, 0)
+        skipped = min(skipped, credit_left)
+        kept = credit_left - skipped
         notes = []
         if moved:
             notes.append(f'Zahlungen der stornierten Rechnung {old_number} über {euro(moved)} sind jetzt dieser '
