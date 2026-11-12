@@ -236,8 +236,9 @@ def add_roundtrip_rows(db):
     es ist – die Sollwerte der Migration hängen daran): Sätze unter einer Bankbewegung, die das Konto
     der Bank und ein Konto ohne eigenes Bankkonto (1460, 1050) zusammenführen, in beiden
     Reihenfolgen, und eigenständige Sätze mit einem Geldkonto vorne, die der Editor als „vorhandene
-    Buchung“ anbietet. Roh geschrieben, ohne Form (wie 2.0.x): in einer migrierten Datenbank tragen
-    sie danach ihre Form, in einer frisch gebauten bleiben sie Zeilen ohne Form."""
+    Buchung“ anbietet, dazu eigenständige Buchungen mit eigener Steuer, eigenem Steuerdatum, Empfänger,
+    Kategorie und Quellgruppe. Roh geschrieben, ohne Form (wie 2.0.x): in einer migrierten
+    Datenbank tragen sie danach ihre Form, in einer frisch gebauten bleiben sie Zeilen ohne Form."""
     alpha = _account_id(db, 'Giro Alpha')
     for date, amount, rows in (
             ('2026-07-01', '70.00', [('RT-1', 1800, 1460, '70.00')]),     # Bank an Verrechnungskonto
@@ -252,6 +253,25 @@ def add_roundtrip_rows(db):
     _raw_entry(db, '2026-07-06', 1810, 4400, '12.00', 'RT-7')              # Geldkonto Giro Beta vorne
     _raw_entry(db, '2026-07-06', 1800, 4400, '11.00', 'RT-8')              # Geldkonto Giro Alpha vorne
     _raw_entry(db, '2026-07-06', 1460, 4400, '9.00', 'RT-9')               # Verrechnungskonto vorne
+
+    # Eigenständige Buchungen mit allem, was ihnen selbst gehört – Steuer, Steuerdatum, Empfänger,
+    # Kategorie, Quellgruppe, Status. „Vorhandene Buchung zuordnen“, erneut Speichern und die Maske dürfen
+    # an keiner dieser Spalten etwas ändern. Ohne Kontakt: Die Bankmaske zeigt den Kontakt des ersten Satzes
+    # an und schreibt ihn beim Speichern auf eine Bankbewegung ohne Kontakt – davon handelt dieser Test nicht.
+    with closing(db._get_connection()) as conn:
+        category = conn.execute("INSERT INTO Categories (Name, Text) VALUES ('Büro', 'Kategorie A')").lastrowid
+        conn.commit()
+    for document, date, coa_number, counter_number, amount, rate, tax, group in (
+            ('RT-10', '2026-07-08', 6815, 1800, '-119.00', 0.19, '-19.00', None),      # Aufwand 19 %
+            ('RT-11', '2026-07-09', 4300, 1800, '107.00', 0.07, '7.00', None),         # Erlös 7 %
+            ('RT-12', '2026-07-10', 1810, 4300, '53.50', 0.07, '3.50', 'sg-rt-12')):   # Geldkonto vorne, aus WISO
+        booking_id = _raw_entry(db, date, coa_number, counter_number, amount, document,
+                                tax_rate=rate, tax_amount=tax)
+        with closing(db._get_connection()) as conn:
+            conn.execute("UPDATE Bookings SET DateTax = ?, RecipientClient = ?, Category_ID = ?, "
+                         "SourceGroup = ?, Status = 'offen' WHERE ID = ?",
+                         ('2026-07-20', 'Lieferant Eins', category, group, booking_id))
+            conn.commit()
 
 
 def to_state_2000(db_path):

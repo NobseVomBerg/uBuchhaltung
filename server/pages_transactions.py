@@ -21,6 +21,16 @@ def _attr(s):
     return _html.escape(str(s or ''), quote=True).replace("'", '&#39;')
 
 
+def _rate_text(rate):
+    """Steuersatz, wie der Editor ihn zeigt (Spalte „St.%“): ``0.19`` → ``'19'``, keiner → ``''``."""
+    return f"{round(float(rate) * 100, 2):g}" if rate else ''
+
+
+def _tax_text(tax):
+    """Steuerbetrag, wie der Editor ihn zeigt (Spalte „St.-Betrag“): zwei Stellen, keiner → ``''``."""
+    return '' if tax is None else f"{tax:.2f}"
+
+
 # Spaltenindizes in Bookings (SELECT *):
 # [0]  ID            [1]  DateBooking   [2]  DateTax       [3]  (unbenutzt)
 # [4]  Account_ID    [5]  ForeignBankAccount               [6]  RecipientClient
@@ -372,11 +382,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         def _split_row(row=None, template=False):
             rid = '' if template or not row else row['id']
             amount = '' if template or not row else f"{row['amount']:.2f}"
-            rate = ''
-            if row and not template and row['tax_rate']:
-                rate = f"{round(float(row['tax_rate']) * 100, 2):g}"
-            tax = '' if template or not row or row['tax_amount'] is None \
-                else f"{row['tax_amount']:.2f}"
+            rate = '' if template or not row else _rate_text(row['tax_rate'])
+            tax = '' if template or not row else _tax_text(row['tax_amount'])
             docnr = '' if template or not row else _attr(row['docnr'])
             text = '' if template or not row else _attr(row['text'])
             sel_coa = row['coa_id'] if row and not template else None
@@ -458,9 +465,11 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             # Geldkonto vorne: Das Kontofeld des Editors nimmt das Zweckkonto (sonst hieße „1460 an
             # 4400“ nach dem Zuordnen „1460 an 1460“)
             purpose = c[7] if purpose_in_counter(c[8], c[6], c[7], bank_coa_ids) else c[6]
+            # Steuersatz und -betrag kommen mit in die Zeile (splitAdopt): Die Buchung behält ihre Steuer
             adopt_opts += (f'<option value="{c[0]}" data-amount="{c[2]:.2f}"'
                            f' data-docnr="{_attr(c[3])}" data-text="{_attr(c[4])}"'
-                           f' data-coa="{purpose or ""}">{_html.escape(label)}</option>')
+                           f' data-coa="{purpose or ""}" data-rate="{_attr(_rate_text(c[9]))}"'
+                           f' data-tax="{_attr(_tax_text(c[10]))}">{_html.escape(label)}</option>')
         if adopt_opts:
             adopt_widget = (
                 '<select id="adoptSelect" style="max-width:340px;">'
@@ -562,7 +571,9 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 }}
                 function splitAdopt() {{
                     // Bestehende Buchung per ID zuordnen: Zeile mit ihrer ID
-                    // anlegen; das Speichern setzt ParentBooking_ID.
+                    // anlegen; das Speichern setzt ParentBooking_ID. Auch Steuersatz
+                    // und -betrag kommen in die Zeile – sonst bliebe sie leer und die
+                    // Buchung verlöre ihre Steuer.
                     const sel = document.getElementById('adoptSelect');
                     const opt = sel.options[sel.selectedIndex];
                     if (!opt || !opt.value) return;
@@ -574,6 +585,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     row.querySelector('.splitAmount').value = opt.dataset.amount;
                     row.querySelector('[name=split_docnr]').value = opt.dataset.docnr || '';
                     row.querySelector('[name=split_text]').value = opt.dataset.text || '';
+                    row.querySelector('[name=split_tax_rate]').value = opt.dataset.rate || '';
+                    row.querySelector('[name=split_tax_amount]').value = opt.dataset.tax || '';
                     const coaSel = row.querySelector('[name=split_coa]');
                     if (opt.dataset.coa) coaSel.value = opt.dataset.coa;
                     tpl.parentNode.insertBefore(row, tpl);

@@ -340,7 +340,10 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
   „vorhandene Buchung zuordnen“ vorbelegt, bestimmt `purpose_in_counter`: `liquid_first` → das
   Gegenkonto, `purpose_first`/`transfer` → das Konto, Spiegel und Zeilen ohne Form wie in 2.0.x
   (Konto ist ein eigenes Bankkonto, Gegenkonto nicht → das Gegenkonto). Öffnen und unverändert
-  speichern ändert keine Spalte.
+  speichern ändert keine Spalte. „Vorhandene Buchung zuordnen“ nimmt Steuersatz und -betrag der
+  Buchung in die Zeile (`data-rate`/`data-tax` der Option) und schreibt sie nur, wenn das Formular sie
+  mitbringt; Datum, Steuerdatum und Empfänger eines Satzes folgen der Bankbewegung nur, wenn er sie
+  vorher mit ihr geteilt hat (`_plan_split_rows`, je Feld gleicher Wert wie die Bankbewegung bis jetzt).
 - **Split-Summe** (`bank_effect`): Ein Spiegel mit bekannter Lesart (`mirror_coa`,
   `mirror_counter`) wirkt auf das Konto der Bankbewegung nach seiner Position – steht das Konto
   der Bank auf der Seite, auf die sich der Betrag bezieht, ist es der Betrag, auf der anderen

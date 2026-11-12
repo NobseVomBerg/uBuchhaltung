@@ -26,7 +26,7 @@ class _Form(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.fields = []              # [(Name, Wert)]
-        self.adopt_options = []       # [dict(value, amount, docnr, text, coa)]
+        self.adopt_options = []       # [dict(value, amount, docnr, text, coa, rate, tax)]
         self._in_form = False
         self._select = None           # [Name, [(Wert, ausgewählt)], ist_adopt]
         self._option = None           # [Wert, ausgewählt, Text]
@@ -70,7 +70,8 @@ class _Form(HTMLParser):
                 self.adopt_options.append({
                     'value': value, 'amount': attrs.get('data-amount', ''),
                     'docnr': attrs.get('data-docnr', ''), 'text': attrs.get('data-text', ''),
-                    'coa': attrs.get('data-coa', '')})
+                    'coa': attrs.get('data-coa', ''), 'rate': attrs.get('data-rate', ''),
+                    'tax': attrs.get('data-tax', '')})
             self._option = None
         elif tag == 'select' and self._select is not None:
             name, options, is_adopt, disabled = self._select
@@ -113,13 +114,16 @@ def add_row(post, **values):
     return result
 
 
-def adopt_row(post, option):
+def adopt_row(post, option, **row):
     """Das Skript der Seite (``splitAdopt``): eine Zeile aus der Vorlage mit den Angaben der
-    gewählten Buchung. Steuersatz und -betrag bleiben leer."""
+    gewählten Buchung – Betrag, Beleg-Nr., Text, Zweckkonto, Steuersatz und -betrag. ``row`` überschreibt
+    Felder der Zeile (``split_amount=…``), wie wenn der Nutzer sie danach ändert."""
     values = dict(split_id=option['value'], split_amount=option['amount'],
-                  split_docnr=option['docnr'], split_text=option['text'])
+                  split_docnr=option['docnr'], split_text=option['text'],
+                  split_tax_rate=option.get('rate', ''), split_tax_amount=option.get('tax', ''))
     if option['coa']:
         values['split_coa'] = option['coa']
+    values.update(row)
     return add_row(post, **values)
 
 

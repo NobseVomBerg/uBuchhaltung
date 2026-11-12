@@ -454,7 +454,9 @@ class MatchingMixin:
         zur Rechnung, nicht zu einer Bankbewegung.
 
         Returns: [(ID, DateBooking, Amount€, DocumentNumber, Text,
-                   RecipientClient, COA_ID, CounterCOA_ID, EntryForm)]
+                   RecipientClient, COA_ID, CounterCOA_ID, EntryForm, TaxRate, TaxAmount€)]
+        Steuersatz und -betrag stehen für die Zeile des Editors bereit: Beim Zuordnen bleibt die
+        Steuer der Buchung, sonst fehlte sie danach in EÜR und DATEV-Export.
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -464,7 +466,7 @@ class MatchingMixin:
         params = receivable_params + ([around_date] if around_date else []) + [limit]
         cursor.execute(f'''
             SELECT ID, DateBooking, Amount, DocumentNumber, Text,
-                   RecipientClient, COA_ID, CounterCOA_ID, EntryForm
+                   RecipientClient, COA_ID, CounterCOA_ID, EntryForm, TaxRate, TaxAmount
             FROM Bookings
             WHERE BookingType = 'entry' AND ParentBooking_ID IS NULL
               AND Account_ID IS NULL
@@ -475,7 +477,7 @@ class MatchingMixin:
         ''', params)
         rows = cursor.fetchall()
         conn.close()
-        return [self._euro_row(r, 2) for r in rows]
+        return [self._euro_row(r, 2, 10) for r in rows]   # Amount, TaxAmount
 
     def find_unbalanced_splits(self, date_from: str, date_to: str):
         """Bankbewegungen im Zeitraum, deren Buchungssätze nicht aufgehen.
