@@ -506,11 +506,18 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
   bankwirksame Erlössätze unter einer Bewegung, deren Beleg-Nr. eine Rechnungsnummer ist, ohne Zuordnung
   für das Paar – unabhängig vom Text), Zuordnung ≠ Umbuchung, Zuordnungen auf einen Satz oder einen
   Ausgang, doppelte Zuordnungen, versendete Rechnungen mit Status „Entwurf/abgeschlossen“ und einen Rest,
-  der nicht zu den Zuordnungen passt (der Rest einer Stornorechnung ist ihr negativer Betrag: kein Befund). Zuordnungen, deren Buchung keine Bankbewegung ist oder deren Sätze
+  der nicht zu den Zuordnungen passt (der Rest einer Stornorechnung ist ihr negativer Betrag: kein Befund). Zwei
+  Kategorien gelten dem Storno-Paar und zählen nur Forderungen, die die App selbst gebucht hat (ohne `SourceGroup`,
+  Wartekonto als Gegenkonto): `storno_counter_mismatch` – von der Forderung der Rechnung und der Gegenbuchung der
+  Stornorechnung steht nur eine – und `legacy_cancelled_open` – eine von Hand stornierte Rechnung (Brutto > 0) ohne
+  Stornorechnung, deren Forderung noch in den Büchern steht (Abhilfe: „Stornorechnung nachträglich erstellen“). Ein
+  intaktes Paar, auch mit Guthaben aus Zahlungen auf die stornierte Rechnung, ergibt keinen Befund. Zuordnungen, deren Buchung keine Bankbewegung ist oder deren Sätze
   eine `SourceGroup` tragen (WISO liefert seine Sätze selbst, z. B. Barzahlungen ohne Bankbewegung),
   lösen weder „Zuordnung ohne Ausgleichssatz“ noch „Zuordnung ≠ Umbuchung“ aus. Die Abfragen gehen von
   den Zuordnungen aus bzw. fassen je Rechnung vorab zusammen: Der Aufwand wächst linear mit dem Bestand
-  (4000 Bewegungen, 4000 Forderungen, 1000 Zuordnungen: unter einer Sekunde). Die Liste steht auf der
+  (4000 Bewegungen, 4000 Forderungen, 1000 Zuordnungen: unter einer Sekunde). Die Forderungen der App für die beiden
+  Storno-Kategorien liest die Liste einmal für alle Paare und Alt-Stornos (`_app_receivable_amounts`), nicht je
+  Rechnung nachgeschlagen – die Zahl der Anweisungen hängt nicht von der Zahl der Paare ab. Die Liste steht auf der
   Seite *Verschiedenes* und läuft **nur auf Klick** („Zahlungszuordnungen prüfen“, `GET
   /miscellaneous?check_payments=1`), nicht bei jedem Laden der Seite; der Hinweis auf der Rechnungsseite
   prüft nur diese eine Rechnung.
@@ -541,8 +548,13 @@ ein Tippfehler legte sonst einen Nummernkreis 2062 an). Es entsteht ein eigener 
   ausgeglichen, die EÜR ändert sich nicht. Ohne Forderung der App (Import, Steuersatz ohne Wartekonto,
   importierte oder von Hand gebuchte Forderung) gibt es keine Gegenbuchung.
 - **Zahlungen** bleiben an der stornierten Rechnung (Zahlungen und ihre Sätze unverändert); wurde schon
-  gezahlt, steht das Guthaben des Kunden als Haben-Saldo auf den Debitoren, bis es erstattet wird (offen,
-  `docs/aufgaben.md`). Der Stornorechnung lässt sich keine Zahlung zuordnen.
+  gezahlt, steht das Guthaben des Kunden als Haben-Saldo auf den Debitoren, bis es auf die Ersatzrechnung
+  übergeht (siehe unten) oder erstattet wird (offen, `docs/aufgaben.md`). Der Stornorechnung lässt sich keine
+  Zahlung zuordnen.
+- **Guthaben** = Summe von `InvoicePayments.Amount` über beide Belege des Paares (stornierte Rechnung und
+  Stornorechnung; `get_storno_credits`, `get_storno_credit`, `get_storno_credits_for_contact`), rein lesend: in der
+  Rechnungsliste „Erstattung offen: …“ an der Stornorechnung, als Zeile auf beiden Seiten, bei den offenen Posten des
+  Kontakts (`storno_credits`; der Saldo zieht es ab, weil 10000 es im Haben führt).
 - **Gesperrt:** Die Stornorechnung ist ganz gesperrt (`db.invoice_lock.row_group`): Status, Speichern, Berichtigen,
   Löschen, Kopieren werden abgelehnt. Eine stornierte Rechnung mit Stornorechnung lässt sich nicht
   wiederbeleben.
@@ -552,6 +564,32 @@ ein Tippfehler legte sonst einen Nummernkreis 2062 an). Es entsteht ein eigener 
 Alles läuft in einer Transaktion (`BEGIN IMMEDIATE`): Es gelingt ganz oder gar nicht, eine Nummer wird nur bei
 Erfolg verbraucht. Zeigt dabei ein Verweis der Rechnung ins Leere (gelöschtes Bankkonto, Kunde …), nennt die Antwort ihn
 im Klartext (409); repariert wird nichts.
+
+**Nachträglich:** Eine von Hand stornierte Rechnung (Status `cancelled`, Brutto > 0) ohne Stornorechnung bekommt sie über
+denselben Weg: Status und Protokoll der Rechnung bleiben, die Gegenbuchung folgt nur, wenn die App ihre Forderung gebucht
+hat und sie noch steht.
+
+**Neu ausstellen** (`Database.create_replacement_draft`, Route `POST /invoice/reissue` und `reissue` in
+`/invoice/cancel`, seit 2.2.2): Zu einer stornierten Rechnung mit Stornorechnung entsteht der Entwurf einer neuen
+Rechnung (Kopf und Positionen der stornierten, positiv; neue Nummer aus dem Kreis des heutigen Jahres, heutiges Datum,
+Fälligkeit um das alte Zahlungsziel verschoben, `Status='draft'`) mit `ReplacesInvoiceId` = die stornierte Rechnung –
+höchstens eine je stornierter Rechnung (geprüft in der Transaktion, ohne Index). Die Ersatzrechnung trägt in ihrem
+Dokument den Hinweis „Ersetzt die stornierte Rechnung … (Stornorechnung …)“ (PDF, CII BT-22, UBL `cbc:Note`).
+
+**Zahlungen ziehen um:** Beim Versenden der Ersatzrechnung (`set_invoice_status`, Art `send`) gehen die Zahlungen der
+stornierten Rechnung in derselben Transaktion auf sie über (`_move_replaced_payments`): Je Zuordnung wird sie samt Sätzen
+entfernt, die neue Rechnung bekommt, was sie noch braucht (eigene Sätze mit dem Datum der Bankbewegung, ihrem
+Steuersatz und Erlöskonto; die Steuer eines Teils anteilig, der schließende Teil bekommt den Rest), ein Rest wird an
+der stornierten Rechnung wieder zugeordnet. Umgezogen wird nur, was die App genau so geschrieben hat: Die Sätze einer
+Zuordnung müssen die sein, die die Zuordnung dafür schreibt (Bestand, Bankkonto und Konten in ihrer Rolle, Betrag,
+Datum, Steuerdatum, Steuersatz, Steuerbetrag – anteilig oder als schließender Teil der Rest –, keine Kategorie, kein Beleg
+und kein anderer Verweis an den Sätzen, kein verwaister markierter Satz unter der Bewegung). Was sich so nicht eindeutig neu
+schreiben lässt (Import, überbuchte Bewegung, geänderte oder ergänzte Sätze), bleibt an der stornierten Rechnung; eine
+Sammelzahlung zieht nur mit dem Anteil der stornierten Rechnung um. Gleicher Kunde und gleiche Währung sind
+Voraussetzung, ebenso ein hinterlegtes Erlöskonto für den Steuersatz der neuen Rechnung. Ein Hinweis in der Antwort nennt,
+was geschah und bei dem, was bleibt, den Grund (je Grund einmal). Jede Zuordnung läuft in einem Savepoint: Lässt sie sich
+nicht neu buchen, bleibt sie unverändert liegen, und der Versand gelingt; nur ein Datenbankfehler mitten im Umzug lehnt
+ihn ab (nichts geändert).
 
 ---
 
@@ -652,7 +690,7 @@ im Klartext (409); repariert wird nichts.
 | **Fassungen, Versand, Stornobeleg (Schema 2002, seit 2.2.0)** | | | | |
 | InvoiceKind | 50 | TEXT | | NULL = Rechnung, `'storno'` = Stornorechnung (seit 2.2.1) |
 | CancelsInvoiceId | 51 | INTEGER | UNIQUE (Index `ux_invoices_cancels`, nur wenn gesetzt) | Stornorechnung: die stornierte Rechnung (seit 2.2.1) |
-| ReplacesInvoiceId | 52 | INTEGER | | neue Rechnung: die ersetzte, stornierte – noch ungenutzt |
+| ReplacesInvoiceId | 52 | INTEGER | | Ersatzrechnung: die ersetzte, stornierte Rechnung (seit 2.2.2, ohne Index; höchstens eine Ersatzrechnung je stornierter Rechnung, in der Transaktion geprüft) |
 | SentAt | 53 | DATETIME | | erstmals versendet (UTC, gesetzt beim Übergang `send`); Import und Altbestand: NULL |
 | DocumentVersion | 54 | INTEGER | | Nummer der aktuellen Fassung; NULL = Fassung 1 |
 

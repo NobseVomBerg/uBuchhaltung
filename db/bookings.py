@@ -13,6 +13,18 @@ from db.matching import (
 )
 from db.invoice_payments import PAYMENT_MARK
 
+# Alle Verweise auf ``Bookings.ID`` im Schema als (Tabelle, Spalte) – das, was ``_delete_booking_rows`` mit einer Buchung
+# wegräumt (BookingDocuments, InvoicePayments), umbiegt (Assets, AssetDepreciations) oder woran es sonst scheiterte (eine
+# Kindbuchung, ``ParentBooking_ID``). ``_booking_attachments_exist`` fragt danach; ``tests/test_invoice_reissue.py`` hält
+# die Liste gegen das Schema.
+BOOKING_REFERENCES = (
+    ('BookingDocuments', 'Booking_ID'),
+    ('InvoicePayments', 'BookingID'),
+    ('Assets', 'Booking_ID'),
+    ('AssetDepreciations', 'Booking_ID'),
+    ('Bookings', 'ParentBooking_ID'),
+)
+
 
 class BookingsMixin:
     def fetch_bookings(self):
@@ -733,6 +745,17 @@ class BookingsMixin:
         conn.execute(f'DELETE FROM Bookings WHERE ID IN ({marks}) AND ParentBooking_ID IN ({marks})',
                      booking_ids + booking_ids)
         conn.execute(f'DELETE FROM Bookings WHERE ID IN ({marks})', booking_ids)
+
+    @staticmethod
+    def _booking_attachments_exist(conn, booking_ids):
+        """Hängt an einer dieser Buchungen etwas, das ``_delete_booking_rows`` mit ihr wegräumt oder umbiegt – ein Beleg, eine
+        Zuordnung, eine Anlage, ein AfA-Jahr, eine Kindbuchung (``BOOKING_REFERENCES``)? Rein lesend, in der Transaktion von
+        ``conn``. Wer Buchungen löscht und neu schreibt, darf das nur, wenn nichts daran hängt: Es ginge sonst mit verloren."""
+        if not booking_ids:
+            return False
+        marks = ','.join('?' * len(booking_ids))
+        sql = ' UNION ALL '.join(f'SELECT 1 FROM {table} WHERE {column} IN ({marks})' for table, column in BOOKING_REFERENCES)
+        return conn.execute(f'{sql} LIMIT 1', list(booking_ids) * len(BOOKING_REFERENCES)).fetchone() is not None
 
     def delete_transaction(self, booking_id: int):
         """Buchung (und verknüpfte Kinder via ParentBooking_ID) löschen – in EINER Transaktion,

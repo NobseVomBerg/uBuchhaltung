@@ -33,7 +33,7 @@ from decimal import Decimal, InvalidOperation
 
 from money import to_minor
 from .core import fk_explained
-from .invoice_payments import PAYMENT_MARK, STORNO_KIND
+from .invoice_payments import PAYMENT_MARK, STORNO_KIND, PaymentMoveFailed
 
 EDITABLE_STATUSES = frozenset({'draft', 'finalized'})
 LOCKED_STATUSES = frozenset({'sent', 'overdue', 'partial_payment', 'partial', 'paid'})
@@ -399,8 +399,11 @@ TRANSITIONS = {
 }
 
 Verdict = namedtuple('Verdict', 'kind message code')
-# ``archived``: wie viele versendete Dokumente (PDF/XML) das Zurückholen in „Fassungen“ abgelegt hat
-StatusChange = namedtuple('StatusChange', 'ok message code old new kind archived', defaults=(0,))
+# ``archived``: wie viele versendete Dokumente (PDF/XML) das Zurückholen in „Fassungen“ abgelegt hat;
+# ``moved``: wie viel von den Zahlungen der stornierten Rechnung das Versenden einer Ersatzrechnung auf sie übertragen hat
+# (Minor Units), ``payment_hint``: der Hinweis dazu für den Nutzer (``None``, wenn es nichts zu sagen gab)
+StatusChange = namedtuple('StatusChange', 'ok message code old new kind archived moved payment_hint',
+                          defaults=(0, 0, None))
 
 
 def _quoted(status):
@@ -595,7 +598,11 @@ class InvoiceLockMixin:
 
         * ``send`` / ``revive``: die Forderung wird gebucht („Debitoren an Wartekonto“, nur zu einem
           Steuersatz mit Wartekonto); ``send`` setzt außerdem ``SentAt``, den Zeitpunkt des ersten
-          Versands (ein späteres Versenden ändert ihn nicht);
+          Versands (ein späteres Versenden ändert ihn nicht). Ersetzt die versendete Rechnung eine stornierte
+          (``Invoices.ReplacesInvoiceId``), ziehen die Zahlungen der stornierten Rechnung auf sie um
+          (``_move_replaced_payments``, ``StatusChange.moved``/``payment_hint``); eine Zuordnung, die sich nicht neu
+          buchen lässt, bleibt an der stornierten Rechnung (der Hinweis nennt den Grund), nur ein Datenbankfehler mitten im
+          Umzug lehnt den Versand ab (409, nichts geändert);
         * ``reopen``: die Forderung wird entfernt – aber nur eine, die die App selbst gebucht hat und
           die an nichts hängt, sonst wird das Zurückholen mit Klartext abgelehnt (nichts geändert).
           PDF und XML wandern nach ``invoices/<Jahr>/Fassungen/<ID>/`` (``archive_sent_documents``) und
@@ -621,7 +628,9 @@ class InvoiceLockMixin:
         # Konten, die der Wechsel braucht, werden bei Bedarf angelegt – in eigenen Verbindungen, nie
         # innerhalb der Transaktion (ein zweiter Schreiber sperrte sich selbst)
         accounts, accounts_key = self._receivable_accounts_for(invoice_id, new)
-        old = kind = None
+        move = self._payment_move_context(invoice_id, new)
+        old = kind = payment_hint = None
+        moved = 0
         archived = []
         try:
             with self.transaction() as tx:
@@ -663,6 +672,16 @@ class InvoiceLockMixin:
                                  'WHERE ID = ?', (invoice_id,))
                 if kind in ('send', 'revive'):
                     self._book_receivable(tx, row, accounts)
+                    if kind == 'send' and move:
+                        # Die Zahlungen der stornierten Rechnung ziehen auf die Ersatzrechnung um – in dieser
+                        # Transaktion: scheitert etwas, ist auch der Versand nicht passiert
+                        if (row['ReplacesInvoiceId'] != move['replaced_id']
+                                or self._revenue_rate_key(row['TaxRate']) != self._revenue_rate_key(move['tax_rate'])):
+                            raise _Refusal(CHANGED_MESSAGE, 409)      # inzwischen geändert: das Erlöskonto gälte nicht mehr
+                        try:
+                            moved, payment_hint = self._move_replaced_payments(tx, row, move)
+                        except PaymentMoveFailed as exc:
+                            raise _Refusal(str(exc), 409) from None
                 elif kind == 'cancel':
                     self._drop_receivable(conn, invoice_id, row['InvoiceNumber'])
                 elif kind == 'reopen':
@@ -684,7 +703,37 @@ class InvoiceLockMixin:
             # Auch ein scheiternder Commit: die Dokumente liegen wieder dort, wo die Rechnung sie sucht
             self._restore_archived(archived)
             raise
-        return StatusChange(True, None, 200, old, new, kind, len(archived))
+        return StatusChange(True, None, 200, old, new, kind, len(archived), moved, payment_hint)
+
+    def _payment_move_context(self, invoice_id, new):
+        """Was der Umzug der Zahlungen beim Versenden einer Ersatzrechnung vor der Transaktion braucht, sonst ``None``:
+        der Wechsel ist ein Versand (``send``), und die Rechnung ersetzt eine stornierte (``Invoices.ReplacesInvoiceId``).
+        Wie bei der Forderung werden Konten, die das Auflösen anlegen könnte, in eigenen Verbindungen aufgelöst – nie in
+        der Transaktion. Der Schlüssel ``revenue_coa`` ist das Erlöskonto der neuen Rechnung (``resolve_revenue_coa``;
+        ``None``: für ihren Steuersatz ist keines hinterlegt, dann zieht nichts um), ``bank_coas`` das SKR-Konto
+        {Account_ID: COA-ID} jedes Bankkontos, über das die stornierte Rechnung bezahlt wurde (nur mit SKR-Nummer)."""
+        if new != 'sent':
+            return None
+        conn = self._get_connection()
+        try:
+            row = invoice_row(conn, invoice_id)
+            if row is None or not row.get('ReplacesInvoiceId') or check_transition(row['Status'], new, 0).kind != 'send':
+                return None
+            replaced_id = row['ReplacesInvoiceId']
+            account_ids = [r[0] for r in conn.execute(
+                'SELECT DISTINCT b.Account_ID FROM InvoicePayments ip JOIN Bookings b ON b.ID = ip.BookingID '
+                'WHERE ip.InvoiceID = ? AND b.Account_ID IS NOT NULL', (replaced_id,))]
+        finally:
+            conn.close()
+        bank_coas = {}
+        for account_id in account_ids:
+            account = self.get_account_by_id(account_id)
+            coa = self.get_coa_id_by_account_number(account[7]) if account and account[7] else None
+            if coa is not None:
+                bank_coas[account_id] = coa
+        return {'replaced_id': replaced_id, 'tax_rate': row['TaxRate'],
+                'revenue_coa': self.resolve_revenue_coa(row['TaxRate']), 'bank_coas': bank_coas,
+                'bank_coa_ids': self.get_bank_coa_ids()}
 
     def _receivable_accounts_for(self, invoice_id, new):
         """``(Konten, Schlüssel des Steuersatzes)`` für einen Wechsel, der die Forderung bucht (Entwurf,

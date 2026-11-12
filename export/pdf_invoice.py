@@ -18,7 +18,7 @@ from db import Database
 from db.invoice_lock import STORNO_KIND
 from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path)
 from .cii_invoice import generate_cii
-from .einvoice_model import correction_note_text, correction_notice, unit_display
+from .einvoice_model import correction_note_text, correction_notice, replacement_note, unit_display
 from .invoice_files import drop_stale_file, invoice_file_path
 from . import pdf_document as D
 
@@ -157,6 +157,7 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     # Eine berichtigte Fassung nennt ihre Nummer im Kopf und trägt den Hinweis vor der Positionstabelle
     # (derselbe Text steht als BT-22 in der eingebetteten E-Rechnung); er ergibt sich aus dem Stand der Datenbank
     notice = None if storno else correction_notice(db, invoice)
+    replaced = None if storno else replacement_note(db, invoice)
     if notice:
         meta_rows.append(("Fassung:", str(notice.version)))
     # Absenderzeile im Adressfeld OHNE Zusatzzeile (sonst zu lang); die
@@ -169,6 +170,10 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
                                     buyer_street, buyer_postal, buyer_city, buyer_country)
     flow.y = D.draw_letterhead(flow.ops, image, doc_title, meta_rows, sender_line, address_lines,
                                subtitle=subtitle)
+    # Die Ersatzrechnung nennt die stornierte Rechnung (derselbe Text steht als BT-22 in der E-Rechnung), vor dem
+    # Hinweis einer berichtigten Fassung
+    if replaced:
+        D.flow_richtext(flow, f'<b>{html.escape(replaced, quote=False)}</b>', size=9, leading=12)
     if notice:
         D.flow_richtext(flow, f'<b>{html.escape(correction_note_text(notice), quote=False)}</b>',
                         size=9, leading=12)

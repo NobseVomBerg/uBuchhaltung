@@ -31,7 +31,7 @@ class InvoiceCol:
     DOCUMENT_TYPE = 45   # 'invoice' | 'quote'
     INVOICE_KIND = 50    # NULL = Rechnung, 'storno' = Stornorechnung (seit 2.2.1)
     CANCELS_INVOICE_ID = 51  # Stornorechnung: die stornierte Rechnung
-    REPLACES_INVOICE_ID = 52  # noch ungenutzt (für „Stornieren und neu ausstellen“ vorgesehen)
+    REPLACES_INVOICE_ID = 52  # Ersatzrechnung: die stornierte Rechnung, die sie ersetzt (seit 2.2.2)
     SENT_AT = 53         # erstmals versendet (UTC, CURRENT_TIMESTAMP); Import: NULL
     DOCUMENT_VERSION = 54    # Nummer der aktuellen Fassung; NULL = Fassung 1
 
@@ -984,13 +984,30 @@ class InvoicesMixin:
         das Entfernen (``_receivable_removal``) und die Gegenbuchung beim Stornieren (``cancel_invoice``)."""
         return not source_group and counter in waiting_ids
 
+    def _app_receivable_amounts(self, conn, number=None):
+        """Die Forderungsbuchungen, die die App selbst gebucht hat (``_is_app_receivable``), gleich ob sie an einer
+        Bankbewegung hängen, als ``{Beleg-Nr.: [(ID, Betrag in Minor Units)]}``, älteste zuerst.
+
+        Ohne ``number`` in EINER Abfrage über den ganzen Bestand – für alles, was viele Rechnungen auf einmal braucht
+        (``find_payment_inconsistencies``): Je Rechnung nachzuschlagen wäre quadratisch, ``DocumentNumber`` ist nicht
+        indiziert. Mit ``number`` nur diese Rechnung. Dieselbe Bedingung (``receivable_condition``) und dieselbe
+        Einordnung (``_is_app_receivable``) für beide – es gibt keine zweite Definition."""
+        waiting_ids = self._waiting_coa_ids(conn)
+        receivable_sql, receivable_params = self._receivable_sql(conn.cursor())
+        only, only_params = (' AND DocumentNumber = ?', [number]) if number is not None else ('', [])
+        found = {}
+        for booking_id, document_number, amount, source_group, counter in conn.execute(
+                "SELECT ID, DocumentNumber, Amount, COALESCE(SourceGroup, ''), CounterCOA_ID FROM Bookings "
+                f"WHERE BookingType = 'entry' AND DocumentNumber IS NOT NULL AND {receivable_sql}{only} ORDER BY ID",
+                [*receivable_params, *only_params]):
+            if self._is_app_receivable(source_group, counter, waiting_ids):
+                found.setdefault(document_number, []).append((booking_id, amount or 0))
+        return found
+
     def _app_receivable_ids(self, conn, number):
         """IDs der Forderungsbuchungen einer Rechnung, die die App selbst gebucht hat (``_is_app_receivable``),
         gleich ob sie an einer Bankbewegung hängen."""
-        waiting_ids = self._waiting_coa_ids(conn)
-        return [booking_id for booking_id, _parent, source_group, _coa, counter
-                in self._receivable_rows(conn, number)
-                if self._is_app_receivable(source_group, counter, waiting_ids)]
+        return [booking_id for booking_id, _amount in self._app_receivable_amounts(conn, number).get(number, [])]
 
     def _receivable_removal(self, conn, number):
         """Welche Forderungsbuchungen einer Rechnung darf die App entfernen? Nur die, die sie selbst
@@ -1134,8 +1151,9 @@ class InvoicesMixin:
         """Offene Posten eines Kontakts für die Kontaktseite.
 
         Forderungen sind die versendeten Rechnungen (``PAYABLE_STATUSES``) mit Rest – eine
-        Stornorechnung nie, ein Guthaben aus einer stornierten, schon bezahlten Rechnung wird hier
-        nicht geführt; ein Guthaben ist der freie Rest eines Zahlungseingangs des Kontakts. Nicht versendete
+        Stornorechnung nie; ein Guthaben ist der freie Rest eines Zahlungseingangs des Kontakts oder
+        das Guthaben eines Storno-Paares des Kontakts (Zahlungen auf die stornierte Rechnung,
+        ``get_storno_credits_for_contact``): Beides steht auf dem Debitorenkonto im Haben. Nicht versendete
         (abgeschlossene) Rechnungen werden getrennt geführt und gehen nicht in den Saldo ein –
         sie stehen noch nicht in den Büchern.
 
@@ -1144,7 +1162,10 @@ class InvoicesMixin:
           unsent_invoices: dasselbe für abgeschlossene, noch nicht versendete Rechnungen
           credits:         [(BookingID, DateBooking, RecipientClient, Contact_ID,
                              Amount€, Frei€)]  – nicht zugeordnete Zahlungs-Reste
-          saldo:           Forderungen (versendet) − Guthaben (Euro-Decimal)
+          storno_credits:  [(ID der Stornorechnung, Nummer, Datum, ID der stornierten Rechnung, Nummer,
+                             Guthaben€)]  – Guthaben aus stornierten Rechnungen, jüngstes zuerst
+          saldo:           Forderungen (versendet) − Guthaben − Guthaben aus stornierten Rechnungen
+                           (Euro-Decimal)
         """
         conn = self._get_connection()
 
@@ -1168,7 +1189,9 @@ class InvoicesMixin:
         conn.close()
         credits = self.get_unallocated_bank_bookings(contact_id, contact_only=True,
                                                      limit=100)
+        storno_credits = self.get_storno_credits_for_contact(contact_id)
         saldo = (sum((r[4] for r in open_invoices), Decimal(0))
-                 - sum((r[5] for r in credits), Decimal(0)))
+                 - sum((r[5] for r in credits), Decimal(0))
+                 - sum((r[5] for r in storno_credits), Decimal(0)))
         return {'open_invoices': open_invoices, 'unsent_invoices': unsent_invoices,
-                'credits': credits, 'saldo': saldo}
+                'credits': credits, 'storno_credits': storno_credits, 'saldo': saldo}
