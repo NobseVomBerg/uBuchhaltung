@@ -23,6 +23,7 @@ from db.invoices import (InvoiceCol, InvoiceNotDeletable, QUOTE_STAYS_CONVERTED_
                          QUOTE_STAYS_CONVERTED_SQL, QuoteNotConvertible, QuoteStatusLocked)
 from db.invoice_lock import (DocumentNotFound, EDITABLE_STATUSES, InvoiceLocked, STATUS_LABELS,
                              buyer_snapshot, status_group)
+from db.invoice_versions import CorrectionInvalid
 from db.invoice_payments import RECEIVABLE_STATUSES
 from db.numbering import NumberRangeError, number_format_error
 from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
@@ -1803,7 +1804,7 @@ def handle_update_invoice_status(post_body: bytes):
     if not db.get_document(invoice_id, 'invoice'):
         return 404, '{"success": false, "error": "Rechnung nicht gefunden"}'
 
-    change = db.set_invoice_status(invoice_id, new_status)
+    change = db.set_invoice_status(invoice_id, new_status, userctx.get_user())
     if not change.ok:
         return change.code, json.dumps({'success': False, 'error': change.message})
     print(f"Invoice {invoice_id} status updated to: {new_status}")
@@ -2049,8 +2050,9 @@ def handle_invoice_save(post_body: bytes):
 
     Returns the JSON response (bytes) with invoice_id. Status und Rest (``AmountDue``) kommen nie vom
     Client: eine neue Rechnung ist ein Entwurf (oder abgeschlossen), jeder andere Status wird über
-    ``/invoice/status`` gesetzt. Bei einer versendeten Rechnung lehnt ``Database.update_invoice_fields``
-    jede Änderung an Finanzangaben ab (``db.invoice_lock``): Antwort mit Statuscode 409.
+    ``/invoice/status`` gesetzt. Bei einer versendeten Rechnung lehnt ``Database.correct_invoice`` jede
+    Änderung an Finanzangaben ab (``db.invoice_lock``): Antwort mit Statuscode 409; die änderbaren Felder
+    schreibt sie als Berichtigung (neue Fassung, Protokoll).
     """
     data = _json_request(post_body)         # kein gültiges Objekt: InvalidRequest → 400 (app.py)
     try:
@@ -2063,12 +2065,13 @@ def handle_invoice_save(post_body: bytes):
         return _json_body({'success': False, 'error': _save_error_text(e)})
 
 
-def _open_invoice_fields(db, stored, data):
+def _open_invoice_fields(data):
     """Die Felder einer versendeten oder stornierten Rechnung, die sich noch ändern lassen. Das
-    Formular schickt für sie nur, was der Nutzer geändert hat (kein ``items``): Begleittext,
+    Formular schickt für sie nur, was der Nutzer geändert hat (kein ``items``): Zahlungshinweis,
     Bestellnummer, Leitweg-ID, Leistungsdatum. Die Anschrift bleibt, wie sie steht – nur mit
-    ``refreshAddress`` wird sie neu aus den Stammdaten desselben Kunden übernommen. Ein Entwurf oder
-    eine unbekannte Rechnung wird so nicht gespeichert: Dort gilt das komplette Formular."""
+    ``refreshAddress`` wird sie neu aus den Stammdaten desselben Kunden übernommen (das erledigt
+    ``Database.correct_invoice``). Ein Entwurf oder eine unbekannte Rechnung wird so nicht gespeichert:
+    Dort gilt das komplette Formular."""
     fields = {}
     for key, field in (('paymentTerms', 'payment_terms'), ('orderNumber', 'order_number'),
                        ('deliveryDate', 'delivery_date')):
@@ -2076,10 +2079,6 @@ def _open_invoice_fields(db, stored, data):
             fields[field] = data[key]
     if 'buyerReference' in data:
         fields['buyer_reference'] = fields['buyer_route_id'] = data['buyerReference']
-    if data.get('refreshAddress') is True:
-        customer = db.get_contact_by_id(stored[13]) if stored[13] else None    # CustomerId
-        if customer:
-            fields.update(buyer_snapshot(customer))
     return fields
 
 
@@ -2161,7 +2160,7 @@ def _invoice_fields(db, data, stored):
         'seller_email': own_company[9] or '',
         'seller_phone': own_company[10] or '',
         'customer_id': customer_id,
-        **(buyer_snapshot(customer) if not frozen or data.get('refreshAddress') is True else {}),
+        **(buyer_snapshot(customer) if not frozen else {}),
         'buyer_vat_id': customer[11] or '',
         'buyer_reference': buyer_reference,
         'buyer_route_id': buyer_reference,  # Same as buyer_reference for XRechnung
@@ -2198,19 +2197,42 @@ def _invoice_fields(db, data, stored):
     return invoice_data, item_rows
 
 
+def _invoice_id(data):
+    """``invoiceId`` des Formulars als Ganzzahl; fehlt es (oder ist es ``null``), ist es eine neue Rechnung
+    (``None``). Gelesen wird nur eine ganze Zahl – als Zahl, als ganzzahliger Bruch (``1.0``) oder als Text in
+    Normalform (``"1"``). Alles andere (``1.5``, ``true``, ``"01"``, ``"1.0"``, ``" 1"``, ``""``) lehnt die Anfrage
+    ab: Die Datenbank fände die Rechnung 1 auch damit, aber den Ordner ``Fassungen/1.0`` gibt es nicht – die
+    Nummernsperre eines Bestands aus 2.1.2 griffe nicht."""
+    value = data.get('invoiceId')
+    if value is None:
+        return None
+    try:
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        elif isinstance(value, str) and value.isascii() and value.isdigit() and str(int(value)) == value:
+            value = int(value)
+    except ValueError:                           # mehr Ziffern, als Python in eine Zahl wandelt
+        value = None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise _SaveRefused('Ungültige Rechnungs-ID', 400)
+    return value
+
+
 def _save_invoice(data):
     # Check if this is an update (invoiceId present) or new invoice
-    invoice_id = data.get('invoiceId')
+    invoice_id = _invoice_id(data)
     is_update = invoice_id is not None
     db = Database()
     # Der Stand vor dem Speichern bestimmt nur, welche Angaben das Formular mitbringen muss; ob
     # etwas gesperrt ist, entscheidet ``update_invoice_fields`` in der Transaktion des Schreibens
     stored = db.get_document(invoice_id, 'invoice') if is_update else None
-    if (stored is not None and 'items' not in data
-            and status_group(stored[InvoiceCol.STATUS]) != 'editable'):
-        invoice_data, item_rows = _open_invoice_fields(db, stored, data), None
+    sent = stored is not None and status_group(stored[InvoiceCol.STATUS]) != 'editable'
+    if sent and 'items' not in data:
+        invoice_data, item_rows = _open_invoice_fields(data), None
     else:
         invoice_data, item_rows = _invoice_fields(db, data, stored)
+    if sent:
+        return _correct_invoice(db, invoice_id, invoice_data, item_rows, data)
 
     # Kopf und Positionen in EINER Transaktion: scheitert ein Schritt, bleibt
     # nichts halb gespeichert zurück – kein Kopf ohne Positionen (der nächste
@@ -2242,6 +2264,52 @@ def _save_invoice(data):
     if not is_update:
         result['invoice_number'] = invoice_data['invoice_number']
     return _json_body(result)
+
+
+def _correct_invoice(db, invoice_id, invoice_data, item_rows, data):
+    """Das Speichern einer versendeten (oder stornierten) Rechnung ist eine Berichtigung
+    (``Database.correct_invoice``): Ohne Abweichung vom Gespeicherten geschieht nichts; sonst legt sie in
+    einer Transaktion die neue Fassung und das Protokoll an. ``documentVersion`` ist die Fassung, die die Maske
+    geladen hat – fehlt sie oder ist sie veraltet, wird abgelehnt (409). Danach erzeugt dieser Weg das
+    Dokument der neuen Fassung, wenn es eines abgelegt gab; scheitert das, bleibt die Berichtigung gespeichert
+    und die Antwort trägt eine Warnung."""
+    try:
+        correction = db.correct_invoice(
+            invoice_id, invoice_data, data.get('documentVersion'), userctx.get_user(),
+            refresh_address=data.get('refreshAddress') is True, items=item_rows)
+    except InvoiceLocked as locked:
+        raise _SaveRefused(str(locked), 409) from None
+    except CorrectionInvalid as invalid:                # vor jedem allgemeinen ValueError: eine ungültige Angabe, 400
+        raise _SaveRefused(str(invalid), 400) from None
+    except DocumentNotFound as refusal:
+        raise _SaveRefused(str(refusal)) from None
+    result = {'success': True, 'invoice_id': invoice_id}
+    if correction.corrected:
+        result['documentVersion'] = correction.version
+        if correction.archived:
+            warning = _generate_corrected_documents(db, invoice_id)
+            if warning:
+                result['warning'] = warning
+    return _json_body(result)
+
+
+def _generate_corrected_documents(db, invoice_id):
+    """Nach einer Berichtigung das PDF (+ XML) der neuen Fassung erzeugen – die bisherigen liegen in
+    „Fassungen“. Returns einen Warntext, falls das nicht gelang; „PDF + E-Rechnung“ erzeugt die fehlende Datei
+    dann (eine eingefrorene Rechnung ohne abgelegtes PDF darf erzeugt werden)."""
+    from export.invoice_files import generate_invoice_documents
+    try:
+        result = generate_invoice_documents(db, invoice_id, overwrite_sent=True)
+    except Exception as e:
+        import traceback
+        print(f"Error generating documents for corrected invoice {invoice_id}: {e}")
+        traceback.print_exc()
+        return ('Die Berichtigung ist gespeichert, aber das neue Dokument konnte nicht erstellt werden – '
+                'bitte „PDF + E-Rechnung“ ausführen.')
+    if result.get('error'):
+        return (f"Die Berichtigung ist gespeichert, aber: {result['error']} Bitte „PDF + E-Rechnung“ "
+                "ausführen.")
+    return None
 
 
 _NOT_NULL_FIELDS = {
@@ -2525,6 +2593,35 @@ def handle_invoice_document_download(invoice_id: int, kind: str = 'pdf', doc_typ
     except Exception as e:
         import traceback
         print(f"Error reading {kind} for invoice {invoice_id}: {e}")
+        traceback.print_exc()
+        return None, None, 'Dokument konnte nicht gelesen werden.'
+
+
+def handle_invoice_version_download(invoice_id: int, filename, year=None):
+    """Eine abgelegte Fassung (PDF/XML aus ``Fassungen/<ID>``) zum Download laden – rein lesend.
+
+    ``filename`` ist der Dateiname aus der Anfrage; er muss eine Datei im Fassungen-Ordner genau dieser
+    Rechnung sein (``export.invoice_files.version_file_path``), die ID eines Angebots oder einer anderen
+    Rechnung liefert nichts. ``year`` (der Jahresordner) trennt gleiche Namen in zwei Jahresordnern: Ist er
+    angegeben, muss die Datei in genau diesem Ordner liegen, sonst gilt der erste Treffer.
+
+    Returns:
+        tuple: ``(bytes, dateiname, fehlertext)``; bei Erfolg ist der Fehlertext ``None``.
+    """
+    from export.invoice_files import version_file_path
+
+    db = Database()
+    try:
+        if db.get_document(invoice_id, 'invoice') is None:
+            return None, None, 'Rechnung nicht gefunden.'
+        path = version_file_path(invoice_id, filename, year)
+        if not path:
+            return None, None, 'Diese Fassung gibt es nicht.'
+        with open(path, 'rb') as f:
+            return f.read(), os.path.basename(path), None
+    except Exception as e:
+        import traceback
+        print(f"Error reading version {filename!r} of invoice {invoice_id}: {e}")
         traceback.print_exc()
         return None, None, 'Dokument konnte nicht gelesen werden.'
 

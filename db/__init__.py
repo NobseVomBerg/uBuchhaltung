@@ -24,10 +24,11 @@ from .numbering import NumberRangeMixin
 from .invoice_payments import InvoicePaymentsMixin
 from .invoices import InvoicesMixin
 from .invoice_lock import InvoiceLockMixin
+from .invoice_versions import InvoiceVersionsMixin
 from .reporting import ReportingMixin
 
 
-class Database(SchemaMixin, SeedMixin, ReceiptsMixin, WorkTimesMixin, TripsMixin, BookingsMixin, MatchingMixin, AccountsMixin, AssetsMixin, WisoImportMixin, WisoFdbImportMixin, ContactsMixin, ArticlesMixin, NumberRangeMixin, InvoicePaymentsMixin, InvoicesMixin, InvoiceLockMixin, ReportingMixin, _CoreMixin):
+class Database(SchemaMixin, SeedMixin, ReceiptsMixin, WorkTimesMixin, TripsMixin, BookingsMixin, MatchingMixin, AccountsMixin, AssetsMixin, WisoImportMixin, WisoFdbImportMixin, ContactsMixin, ArticlesMixin, NumberRangeMixin, InvoicePaymentsMixin, InvoicesMixin, InvoiceLockMixin, InvoiceVersionsMixin, ReportingMixin, _CoreMixin):
     """Komposition aller Domaenen-Mixins. Siehe db/<domaene>.py."""
     pass
 

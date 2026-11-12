@@ -109,6 +109,8 @@ def build_cii(inv: EInvoice) -> bytes:
     _sub(doc, _RAM, 'ID', inv.number)
     _sub(doc, _RAM, 'TypeCode', inv.type_code)
     _date(doc, 'IssueDateTime', inv.issue_date)
+    for note in inv.notes:                                     # BT-22; im Schema nach IssueDateTime
+        _sub(_sub(doc, _RAM, 'IncludedNote'), _RAM, 'Content', note)
 
     trade = _sub(root, _RSM, 'SupplyChainTradeTransaction')
 

@@ -498,6 +498,24 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         """
         data, filename, error = handlers.handle_invoice_document_download(
             invoice_id, kind, doc_type)
+        self._send_document(data, filename, error, content_type, disposition)
+
+    def _send_version_document(self, qs):
+        """Eine abgelegte Fassung (``/invoice/version_download?id=…&file=…&year=…``) ausliefern – nur lesend. Die
+        Antwort für ein unbekanntes, fremdes oder ungültiges Ziel ist immer dieselbe: 404 mit Klartext."""
+        invoice_id = _int_param(qs, 'id')
+        filename = qs.get('file', [None])[0]
+        year = qs.get('year', [None])[0]
+        if invoice_id is None or filename is None:
+            self._send_document(None, None, 'Diese Fassung gibt es nicht.', '', 'attachment')
+            return
+        data, name, error = handlers.handle_invoice_version_download(invoice_id, filename, year)
+        content_type = 'application/xml' if (name or '').lower().endswith('.xml') else 'application/pdf'
+        self._send_document(data, name, error, content_type, 'attachment')
+
+    def _send_document(self, data, filename, error, content_type, disposition):
+        """Ein Dokument als Antwort: bei ``data is None`` 404 mit dem Klartext ``error``, sonst die Bytes
+        mit dem Dateinamen im Kopf (``X-Filename``, prozentkodiert)."""
         if data is None:
             body = (error or 'Dokument nicht gefunden.').encode('utf-8')
             self.send_response(404)
@@ -764,6 +782,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 query_components = parse_qs(self.path.split('?')[1])
                 self._send_invoice_document(int(query_components["id"][0]), 'xml',
                                             "application/xml")
+                return
+            elif self.path.split('?', 1)[0] == "/invoice/version_download":
+                # Eine abgelegte Fassung (Ordner Fassungen/<ID>) ausliefern – rein lesend; der Dateiname
+                # ist ein reiner Name, gefunden wird er nur unter den Dokumenten dieser Rechnung, mit year
+                # in genau diesem Jahresordner (ein leeres year= ist angegeben und ungültig)
+                self._send_version_document(parse_qs(self.path.split('?', 1)[1], keep_blank_values=True)
+                                            if '?' in self.path else {})
                 return
             elif self.path.startswith("/invoice/pdf_download"):
                 # Abgelegtes Rechnungs-PDF ausliefern – nur herunterladen, nicht

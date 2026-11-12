@@ -165,7 +165,9 @@ Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen
   nicht, öffnet die Datenbank nicht und bleibt unverändert; bricht die Umstellung selbst ab, ist die
   Datenbank danach so wie vorher. Danach gibt es **kein Zurück auf 2.0.x** – ältere Versionen öffnen
   eine 2.1-Datenbank nicht. Die Umstellung ändert keine Auswertung: EÜR, DATEV-Export und Dashboard
-  zeigen danach dieselben Werte wie vorher.
+  zeigen danach dieselben Werte wie vorher. Das Update auf 2.2.0 (Fassungen und Protokoll versendeter
+  Rechnungen, ebenfalls eine Schemaänderung) legt vor der Umstellung genauso eine Sicherung an; ein Zurück auf
+  2.1.x gibt es nur über diese Sicherung.
   **Sicherung zurückspielen** (die Oberfläche bietet das nicht an): uBuchhaltung beenden, die Datei
   `backup/<Datum>_vor_<Version>_buch.db` im Datenordner des Nutzers (`data/users/<Name>/`, im Container
   das eingebundene Datenverzeichnis) über `buch.db` kopieren – liegen daneben Dateien `buch.db-journal`,

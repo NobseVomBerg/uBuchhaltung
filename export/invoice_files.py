@@ -16,10 +16,13 @@ Status „versendet“ muss der Kunde exakt das Dokument bekommen, das im Haus l
 (todo #3). Dasselbe gilt für Angebote (``quotes/<Jahr>/…``, geschrieben von
 ``export/pdf_quote.py``).
 
-Geht eine versendete Rechnung zurück auf Entwurf, wandern ihre Dokumente in
+Geht eine versendete Rechnung zurück auf Entwurf oder wird sie berichtigt, wandern ihre Dokumente in
 ``invoices/<Jahr>/Fassungen/<ID>/`` (:func:`archive_sent_documents`): Der Kunde hat sie bekommen, sie
-verschwinden nicht und werden nie überschrieben. Der Ordner ist zugleich das Merkmal „war schon
-versendet“ (:func:`was_sent_before`): Der Entwurf gibt seine Rechnungsnummer dann nie zurück.
+verschwinden nicht und werden nie überschrieben. Welche Fassung das war, hält ``InvoiceDocumentVersions``
+fest (``db/invoice_versions.py``); heruntergeladen werden sie über :func:`version_file_path` (Name und Jahresordner:
+dieselbe Datei kann in zwei Jahresordnern liegen). Ein Ordner mit einer Datei ist auch bei einem Bestand ohne
+Protokoll das Merkmal „war schon versendet“ (:func:`was_sent_before`, ein Teil der Frage
+``Database.was_sent_before``).
 
 Ein in der Datenbank gespeicherter Dokumentpfad wird nur benutzt, wenn er im
 Dokumentordner des Nutzers liegt (:func:`path_in_documents`): Die Datenbank lässt
@@ -177,24 +180,91 @@ def _in_versions(path) -> bool:
     return FASSUNGEN in relative.split(os.sep)[:-1]
 
 
+def _folder_id(invoice_id):
+    """Der Ordnername ``<ID>`` unter ``Fassungen`` zu einer Rechnungs-ID: die ID als Ganzzahl, nie als der Text, den
+    die Anfrage schrieb – die Datenbank findet die Rechnung 1 auch mit ``1.0`` oder ``'01'``, einen Ordner dieses Namens
+    gibt es nicht. ``None``, wenn sich die ID nicht als Ganzzahl lesen lässt."""
+    if isinstance(invoice_id, bool):
+        return None
+    try:
+        return str(int(invoice_id))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def was_sent_before(invoice_id) -> bool:
-    """Wurde diese Rechnung schon versendet und danach auf Entwurf zurückgeholt? Das Merkmal ist der
-    Ordner ``Fassungen/<ID>`` mit einer Datei darin, in irgendeinem Jahresordner (das Rechnungsdatum
-    kann sich im Entwurf ändern). Eine Rechnung ohne abgelegte Dokumente hinterlässt keine Spur."""
+    """Liegt zu dieser Rechnung eine versendete Fassung im Ordner ``Fassungen/<ID>``, in irgendeinem
+    Jahresordner (das Rechnungsdatum kann sich im Entwurf ändern)? Das ist die Dateiprobe, mit der 2.1.2 den
+    Entwurf einer zurückgeholten Rechnung erkannte; eine Rechnung ohne abgelegte Dokumente hinterlässt hier
+    keine Spur. Die ganze Frage „war schon versendet“ stellt ``Database.was_sent_before``: Versandzeitpunkt,
+    Protokoll und diese Probe. Eine ID, die keine Ganzzahl ist, hat keine Fassung."""
     import userctx
+    folder_id = _folder_id(invoice_id)
+    if folder_id is None:
+        return False
     root = os.path.join(userctx.user_data_dir(), 'invoices')
     try:
         years = os.listdir(root)
     except OSError:
         return False
     for year in years:
-        folder = os.path.join(root, year, FASSUNGEN, str(invoice_id))
+        folder = os.path.join(root, year, FASSUNGEN, folder_id)
         try:
             if any(os.path.isfile(os.path.join(folder, name)) for name in os.listdir(folder)):
                 return True
         except OSError:
             continue
     return False
+
+
+def version_files(invoice_id):
+    """Die abgelegten Dokumente (PDF, XML) einer Rechnung in ihren Ordnern ``invoices/<Jahr>/Fassungen/<ID>``,
+    über alle Jahresordner: ``[(Dateiname, Pfad, Jahr)]``, nach Name sortiert (``Jahr`` ist der Name des
+    Jahresordners). Nur gewöhnliche Dateien, die nach Auflösen von Links im Dokumentordner liegen
+    (:func:`path_in_documents`). Eine ID, die keine Ganzzahl ist, hat keine."""
+    import userctx
+    found = []
+    folder_id = _folder_id(invoice_id)
+    if folder_id is None:
+        return found
+    root = os.path.join(userctx.user_data_dir(), 'invoices')
+    try:
+        years = sorted(os.listdir(root))
+    except OSError:
+        return found
+    for year in years:
+        folder = os.path.join(root, year, FASSUNGEN, folder_id)
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(folder, name)
+            if (os.path.splitext(name)[1].lower() in ('.pdf', '.xml') and os.path.isfile(path)
+                    and path_in_documents(path)):
+                found.append((name, path, year))
+    return sorted(found)
+
+
+def version_file_path(invoice_id, filename, year=None):
+    """Der Pfad einer abgelegten Fassung, um sie auszuliefern – ``None``, wenn es sie nicht gibt.
+
+    ``filename`` kommt aus der Anfrage und ist ein reiner Dateiname: ohne Pfadtrenner, ohne ``..``, ohne
+    Steuerzeichen. Gefunden wird er nur unter den Dokumenten dieser Rechnung (:func:`version_files`) –
+    nie eine Datei außerhalb von ``Fassungen/<ID>`` oder zu einer anderen Rechnung.
+
+    ``year`` – der Jahresordner, ebenfalls aus der Anfrage – trennt gleiche Namen in zwei Jahresordnern. Ist er
+    angegeben, muss er ein reiner Ordnername aus (ASCII-)Ziffern sein und die Datei in genau diesem Ordner liegen;
+    ohne ``year`` gilt der erste Treffer."""
+    if (not isinstance(filename, str) or not filename or filename in ('.', '..')
+            or any(c in filename for c in '/\\') or any(ord(c) < 32 for c in filename)):
+        return None
+    if year is not None and not (isinstance(year, str) and year.isascii() and year.isdigit()):
+        return None
+    for name, path, folder_year in version_files(invoice_id):
+        if name == filename and (year is None or folder_year == year):
+            return path
+    return None
 
 
 def _version_name(folder, stem, extension, day):
@@ -210,7 +280,7 @@ def _version_name(folder, stem, extension, day):
 
 def archive_sent_documents(db, invoice_id: int, today=None):
     """PDF und XML der versendeten Rechnung nach ``Fassungen/<ID>/`` **verschieben** – beim
-    Zurückholen auf Entwurf. Was dort hinkommt, ist die Datei, die der Kunde bekommen hat: Sie wird
+    Zurückholen auf Entwurf und beim Berichtigen. Was dort hinkommt, ist die Datei, die der Kunde bekommen hat: Sie wird
     nie überschrieben (ein vergebener Name bekommt einen Zähler) und nie gelöscht.
 
     Verschoben wird nur, was der Nutzer als Dokument der Rechnung sieht (``stored_invoice_path``:
@@ -285,7 +355,9 @@ def generate_invoice_documents(db, invoice_id: int, with_xml=None,
     Das PDF ist PDF/A-3b mit eingebetteter ``factur-x.xml`` (Profil EN 16931).
     Eine bereits versendete Rechnung (siehe :data:`FROZEN_STATUSES`) wird nicht
     neu erzeugt, solange ihr PDF vorliegt – ``overwrite_sent=True`` erzwingt es
-    (nur beim Eintritt in den Status „versendet“).
+    (nur beim Eintritt in den Status „versendet“ und nach einer Berichtigung, wenn die bisherige
+    Fassung in „Fassungen“ liegt). Fehlt das PDF einer versendeten Rechnung (Import, gescheiterte
+    Erzeugung nach einer Berichtigung), wird es auch ohne ``overwrite_sent`` erzeugt.
 
     Args:
         db: Datenbank-Instanz.
