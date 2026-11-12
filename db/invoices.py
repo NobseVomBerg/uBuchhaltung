@@ -755,7 +755,9 @@ class InvoicesMixin:
 
         Alles andere lehrt nichts – auch „Bank an Debitoren“ nicht, und kein Satz, den ein Nutzer
         im Split-Editor in eine andere Form gebracht hat (aus „4405 an 4400“ wurde „4736 an 4400“).
-        Der jüngste passende Satz gewinnt. Das Konto der Bankzeile oder der Sätze eines Imports
+        Auch ein Satz mit negativem Betrag lehrt nichts: Die Sätze einer Erstattung
+        (``assign_storno_refund``) nehmen den Erlös zurück, sie nennen kein Erlöskonto für künftige
+        Zahlungen. Der jüngste passende Satz gewinnt. Das Konto der Bankzeile oder der Sätze eines Imports
         sagt nichts über das Erlöskonto (es kann ein Bankkonto, ein Aufwandskonto oder das
         Wartekonto sein) und zählt nicht. Das Ergebnis gilt nur, wenn es ein Erlöskonto ist
         (``is_income_account``: 4000–4999 ohne Wartekonten)."""
@@ -773,7 +775,7 @@ class InvoicesMixin:
                 JOIN ChartOfAccounts cand ON cand.ID = CASE
                     WHEN own.AccountNumber IN ({waiting_marks}) THEN k.CounterCOA_ID
                     ELSE k.COA_ID END
-                WHERE k.Status = ? AND k.ParentBooking_ID IS NOT NULL
+                WHERE k.Status = ? AND k.ParentBooking_ID IS NOT NULL AND k.Amount > 0
                   AND (i.DocumentType = 'invoice' OR i.DocumentType IS NULL)
                   AND (own.AccountNumber IN ({waiting_marks})
                        OR k.CounterCOA_ID IN ({payment_marks}))
@@ -1146,6 +1148,29 @@ class InvoicesMixin:
         rows = cursor.fetchall()
         conn.close()
         return [self._euro_row(r, 4, 5) for r in rows]
+
+    def get_unallocated_outgoing_bookings(self, contact_id=None, contact_only=False,
+                                          limit=20):
+        """Bank-Zahlungsausgänge mit freiem Rest (``_outgoing_free_minor``: der Rest rechnet über ``bank_effect`` wie die
+        Split-Summe, ein Import-Spiegel auf dem Konto der Bewegung verbraucht sie) – die Kandidaten für die Erstattung
+        einer Stornorechnung (``assign_storno_refund``). Wie ``get_unallocated_bank_bookings``: Buchungen des Kontakts stehen
+        vorn, danach Datum absteigend, ``contact_only=True`` filtert hart auf den Kontakt. Der Aufwand wächst linear mit dem
+        Bestand: Der freie Rest aller Ausgänge kommt aus wenigen gesammelten Abfragen, nicht je Bewegung eine.
+
+        Returns: [(BookingID, DateBooking, RecipientClient, Contact_ID,
+                   Amount€ (negativ), Frei€ (positiv))]
+        """
+        conn = self._get_connection()
+        try:
+            rows = self._outgoing_free_minor(conn, self._get_bank_coa_ids(conn.cursor()),
+                                             contact_id=contact_id if contact_only and contact_id else None)
+        finally:
+            conn.close()
+        rows = [row for row in rows if row[5] > 0]
+        rows.sort(key=lambda row: (row[1] or '', row[0]), reverse=True)            # Datum absteigend, dann ID absteigend
+        if contact_id is not None:
+            rows.sort(key=lambda row: row[3] != contact_id)                         # die des Kontakts zuerst (stabil)
+        return [self._euro_row(row, 4, 5) for row in rows[:limit]]
 
     def get_open_items_for_contact(self, contact_id):
         """Offene Posten eines Kontakts für die Kontaktseite.

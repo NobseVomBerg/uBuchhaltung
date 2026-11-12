@@ -11,7 +11,7 @@ from db.matching import (
     ENTRY_FORMS, SIDE_COUNTER, derive_entry_form, is_bank_effective, is_mirror_row,
     purpose_in_counter, read_entry_form, reform,
 )
-from db.invoice_payments import PAYMENT_MARK
+from db.invoice_payments import PAYMENT_MARK, PaymentRemovalRefused
 
 # Alle Verweise auf ``Bookings.ID`` im Schema als (Tabelle, Spalte) – das, was ``_delete_booking_rows`` mit einer Buchung
 # wegräumt (BookingDocuments, InvoicePayments), umbiegt (Assets, AssetDepreciations) oder woran es sonst scheiterte (eine
@@ -773,6 +773,11 @@ class BookingsMixin:
           Split-Editor): Die ganze Zuordnung wird entfernt (``unassign_invoice_payment``) –
           Zahlungs- und Umbuchungssatz bleiben nie einzeln übrig.
         * **Eintrag mit eigener Zuordnung** (Altbestand): Die Zuordnung wird gelöscht.
+
+        Eine **Zahlung** an einer stornierten Rechnung mit Stornorechnung geht auf keinem dieser Wege verloren, wenn danach mehr
+        erstattet als gezahlt wäre: ``PaymentRemovalRefused`` (``_refund_removal_blocker``, vor dem ersten Schreiben in der
+        Transaktion geprüft, nichts ist geändert) – erst die Erstattung an der Stornorechnung entfernen. Das Löschen einer
+        Erstattung bleibt frei.
         """
         conn = self._get_connection()
         try:
@@ -787,14 +792,13 @@ class BookingsMixin:
                 conn.commit()
                 return
 
-            receivable_sql, receivable_params = self._receivable_sql(conn.cursor())
-            child_ids = [r[0] for r in conn.execute(
-                'SELECT ID FROM Bookings WHERE ParentBooking_ID = ?', (booking_id,))]
-            kept_ids = [r[0] for r in conn.execute(
-                "SELECT ID FROM Bookings WHERE ParentBooking_ID = ? AND BookingType = 'entry' "
-                f"AND {receivable_sql}", [booking_id] + receivable_params)]
-            deleted_ids = [booking_id] + [c for c in child_ids if c not in kept_ids]
+            deleted_ids, kept_ids = self._delete_scope(conn, booking_id)
             marks = ','.join('?' * len(deleted_ids))
+            payment_ids = [r[0] for r in conn.execute(
+                f'SELECT ID FROM InvoicePayments WHERE BookingID IN ({marks}) ORDER BY ID', deleted_ids)]
+            blocker = self._refund_removal_blocker(conn, payment_ids)
+            if blocker:
+                raise PaymentRemovalRefused(blocker)
             affected_invoice_ids = [r[0] for r in conn.execute(
                 f'SELECT DISTINCT InvoiceID FROM InvoicePayments WHERE BookingID IN ({marks})',
                 deleted_ids)]
@@ -810,6 +814,52 @@ class BookingsMixin:
         except Exception:
             conn.rollback()
             raise
+        finally:
+            conn.close()
+
+    def _delete_scope(self, conn, booking_id):
+        """Was ``delete_transaction`` mit dieser Buchung (keinem markierten Satz einer Zuordnung) tut: ``(gelöscht, abgehängt)``
+        als ID-Listen – die Buchung und ihre Kinder, außer den Forderungsbuchungen (``db.matching.receivable_condition``), die
+        nur abgehängt werden. Rein lesend, in der Transaktion von ``conn``."""
+        receivable_sql, receivable_params = self._receivable_sql(conn.cursor())
+        child_ids = [r[0] for r in conn.execute(
+            'SELECT ID FROM Bookings WHERE ParentBooking_ID = ?', (booking_id,))]
+        kept_ids = [r[0] for r in conn.execute(
+            "SELECT ID FROM Bookings WHERE ParentBooking_ID = ? AND BookingType = 'entry' "
+            f"AND {receivable_sql}", [booking_id] + receivable_params)]
+        return [booking_id] + [c for c in child_ids if c not in kept_ids], kept_ids
+
+    def _payments_removed_by_delete(self, conn, booking_id):
+        """IDs der Zuordnungen (``InvoicePayments``), die ``delete_transaction(booking_id)`` entfernt – rein lesend, in der
+        Transaktion von ``conn``: bei einem markierten Satz einer Zuordnung die ganze Zuordnung (``remove_assignment_for_child``),
+        sonst alle Zuordnungen der gelöschten Buchungen (``_delete_scope``)."""
+        row = conn.execute('SELECT Status, ParentBooking_ID, DocumentNumber FROM Bookings WHERE ID = ?',
+                           (booking_id,)).fetchone()
+        if row is None:
+            return []
+        if row[0] == PAYMENT_MARK and row[1] is not None:
+            return self._assignment_ids(conn, row[1], row[2])
+        deleted_ids, _kept_ids = self._delete_scope(conn, booking_id)
+        marks = ','.join('?' * len(deleted_ids))
+        return [r[0] for r in conn.execute(
+            f'SELECT ID FROM InvoicePayments WHERE BookingID IN ({marks}) ORDER BY ID', deleted_ids)]
+
+    def split_removal_blocker(self, booking_ids):
+        """Klartext, wenn der Bank-Editor die Zeilen dieser Sätze nicht alle entfernen dürfte (``remove_split_row``, nacheinander
+        für jeden Satz), weil dabei die Zahlung einer stornierten Rechnung wegfiele, zu der schon erstattet wurde
+        (``PaymentRemovalRefused``) – sonst ``None``. Rein lesend: Die Maske fragt es vor dem ersten Schreiben, damit ein
+        Speichern ganz oder gar nicht gelingt. Geprüft werden alle Sätze zusammen (zwei Zahlungen, von denen jede allein gehen
+        dürfte, zusammen aber nicht), und nur die, die das Entfernen löscht: ein importierter Satz oder eine AfA-Buchung wird
+        nur abgehängt (``detachable_split_rows``) und nimmt keine Zuordnung mit."""
+        ids = [int(booking_id) for booking_id in booking_ids]
+        detached = self.detachable_split_rows(ids)
+        conn = self._get_connection()
+        try:
+            payment_ids = set()
+            for booking_id in ids:
+                if booking_id not in detached:
+                    payment_ids.update(self._payments_removed_by_delete(conn, booking_id))
+            return self._refund_removal_blocker(conn, payment_ids)
         finally:
             conn.close()
 
@@ -851,8 +901,9 @@ class BookingsMixin:
         sonst bleibt jede Spalte, wie sie ist. Er ist danach wieder eine eigenständige Buchung (Liste,
         Zuordnen-Widget, EÜR wie vor dem Zuordnen), das AfA-Jahr bleibt gebucht und der nächste
         Abgleich findet den Satz wieder. Jeder andere Satz wird gelöscht (``delete_transaction``,
-        markierte Zahlungssätze mit ihrer ganzen Zuordnung). ``delete_transaction`` selbst – eine Buchung
-        ausdrücklich aus der Liste löschen – bleibt unverändert."""
+        markierte Zahlungssätze mit ihrer ganzen Zuordnung) – mit dessen Prüfung: Die Zahlung einer stornierten Rechnung, zu der
+        schon erstattet wurde, geht nicht (``PaymentRemovalRefused``; der Editor fragt das vorab, ``split_removal_blocker``).
+        ``delete_transaction`` selbst – eine Buchung ausdrücklich aus der Liste löschen – bleibt unverändert."""
         if booking_id not in self.detachable_split_rows([booking_id]):
             self.delete_transaction(booking_id)
             return

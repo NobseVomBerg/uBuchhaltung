@@ -281,8 +281,8 @@ def test_removing_the_payment_afterwards_keeps_both_receivables(world, amount):
 
 
 def test_what_the_check_list_says_about_a_paid_and_cancelled_invoice(world):
-    """Bezahlt und storniert (Erstattung folgt mit 2.2.2): Die Prüfliste meldet dazu nichts Falsches – weder für die
-    Rechnung noch für die Stornorechnung."""
+    """Bezahlt und storniert, noch nicht erstattet (die Erstattung: ``test_invoice_refund.py``): Die Prüfliste meldet
+    dazu nichts Falsches – weder für die Rechnung noch für die Stornorechnung."""
     invoice_id = sent(world)
     pay(world, invoice_id, 119.0)
     storno = cancel(world, invoice_id)

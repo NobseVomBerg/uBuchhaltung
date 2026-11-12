@@ -31,7 +31,7 @@ import pytest
 import export.invoice_files as invoice_files
 import server.handlers as handlers
 from db.invoice_lock import CHANGED_MESSAGE
-from db.invoice_payments import STORNO_PAYMENT_MESSAGE, PaymentAssignment
+from db.invoice_payments import ALREADY_REFUNDED_MESSAGE, STORNO_PAYMENT_MESSAGE, PaymentAssignment, PaymentRemovalRefused
 from db.invoice_storno import (NO_COUNTER_BOOKING_HINT, REISSUE_FAILED_MESSAGE, REISSUE_NO_STORNO_MESSAGE,
                                REISSUE_NOT_CANCELLED_MESSAGE, REISSUE_STORNO_MESSAGE, Reissue)
 from db.numbering import NumberRangeError
@@ -1115,6 +1115,198 @@ def test_the_hint_names_each_reason_once_in_a_fixed_order_with_the_total_of_what
         f'nicht automatisch übernehmen und bleiben an der stornierten Rechnung: {REASON_IMPORT}; {REASON_NO_SKR}.')
 
 
+# ── Umzug nach einer Erstattung: höchstens das verbleibende Guthaben ─────────
+#
+# Wurde zur stornierten Rechnung schon erstattet (Zuordnungen an der Stornorechnung), zieht höchstens das verbleibende Guthaben des
+# Paares um – Σ Zuordnungen beider Belege vor dem Umzug. So ist danach nie mehr erstattet als gezahlt. Den Weg „von Hand zuordnen“, den
+# der frühere Hinweis riet, gibt es nicht (die Zahlung lässt sich nicht entfernen, die Bewegung hat keinen freien Rest).
+
+def refund_part(w, storno_id, amount, day='2026-07-10'):
+    """Einen Teil des Guthabens erstatten: ein Ausgang über ``amount`` € auf das Giro-Konto, als Erstattung der Stornorechnung
+    zugeordnet. Liefert die Bankbewegung."""
+    bank = w.db.insert_booking(day, -amount, booking_type='bank', account_id=w.bank, recipient_client=CUSTOMER_TEXT)
+    result = w.db.assign_storno_refund(storno_id, bank, amount)
+    assert result.ok is True, result.message
+    return bank
+
+
+def euer_on_day(db, day):
+    """EÜR eines Tages: Kontonummer → Betrag."""
+    return {number: round(total, 2) for number, _name, total in db.get_euer_data(day, day)}
+
+
+def bookkeeping_adds_up(db, s):
+    """Die Bücher gehen nach dem Umzug auf: Das Konto Debitoren ist der offene Rest der neuen Rechnung minus das Guthaben des
+    Kunden, das Wartekonto das Gegenstück, die Prüfliste meldet nichts, und es ist nie mehr erstattet als gezahlt."""
+    credit = int(db.get_storno_credit(s.s1) * 10000)
+    assert credit >= 0
+    assert ledger(db)[DEBTORS] == columns(db, s.r2)['AmountDue'] - credit
+    assert ledger(db)[WAITING] == -ledger(db)[DEBTORS]
+    assert findings(db) == []
+
+
+def test_after_a_partial_refund_only_the_remaining_credit_moves_and_the_rest_stays_at_the_cancelled_invoice(world, monkeypatch):
+    """50,00 € gezahlt, 20,00 € erstattet, Ersatzrechnung über 119,00 €: 30,00 € ziehen um, 20,00 € bleiben an R1 – das Guthaben ist
+    danach 0 (20,00 € Zahlung gegen 20,00 € Erstattung)."""
+    s = paid_scenario(world, monkeypatch)
+    db = world.db
+    out = refund_part(world, s.s1, 20.0)
+    r2_number = columns(db, s.r2)['InvoiceNumber']
+    assert db.get_storno_credit(s.s1) == 30 and euer(db) == {4400: 25.21, 3806: 4.79}
+
+    code, body = set_invoice_status(s.r2, 'sent')
+
+    assert (code, body['hint']) == (200, HINT_ALL.replace('50,00', '30,00')
+                                    + ' 20,00 € sind bereits erstattet und bleiben an der stornierten Rechnung.')
+    assert allocations(db, s.r1) == [(s.booking, 200000, '2026-07-01')]                # der Rest der Zahlung
+    assert allocations(db, s.r2) == [(s.booking, 300000, '2026-07-01')]
+    assert allocations(db, s.s1) == [(out, -200000, '2026-07-10')]
+    assert db.get_storno_credit(s.s1) == 0 and db.get_storno_refunded(s.s1) == 20
+    assert standing(db, s.r1, s.s1, s.r2) == [('cancelled', 990000), ('sent', -990000), ('partial_payment', 890000)]
+    assert payment_rows(db, 'T-100') == [(1800, DEBTORS, 200000, None, '2026-07-01', 'liquid_first'),
+                                         (WAITING, 4400, 200000, 31900, '2026-07-01', 'transfer')]
+    assert payment_rows(db, r2_number) == [(1800, DEBTORS, 300000, None, '2026-07-01', 'liquid_first'),
+                                           (WAITING, 4400, 300000, 47900, '2026-07-01', 'transfer')]
+    # Debitoren: Forderung R2 minus 30,00 € Zahlung = 89,00 €; Wartekonto das Gegenstück; Erlöse: 30,00 € (netto 25,21)
+    assert ledger(db) == {DEBTORS: 890000, WAITING: -890000, 4345: 0, 4400: -300000, 4300: 0}
+    # EÜR: am Zahlungstag bleibt die Summe der Steuer bei 7,98 (4,79 + 3,19), die Erstattung nimmt 3,19 zurück
+    assert euer_on_day(db, '2026-07-01') == {4400: 42.02, 3806: 7.98} and euer_on_day(db, '2026-07-10') == {4400: -16.81, 3806: -3.19}
+    assert euer(db) == {4400: 25.21, 3806: 4.79}
+    bookkeeping_adds_up(db, s)
+    # die Zahlung an R1 lässt sich nicht entfernen (sonst wäre mehr erstattet als gezahlt) – die Erstattung schon
+    with pytest.raises(PaymentRemovalRefused) as raised:
+        db.unassign_invoice_payment(db.get_invoice_payments(s.r1)[0][0])
+    assert str(raised.value) == ALREADY_REFUNDED_MESSAGE and db.get_storno_credit(s.s1) == 0
+    db.unassign_invoice_payment(db.get_invoice_payments(s.s1)[0][0])
+    assert db.get_storno_credit(s.s1) == 20 and db.find_payment_inconsistencies() == []
+
+
+def test_after_a_full_refund_nothing_moves_and_the_hint_names_the_refund(world, monkeypatch):
+    s = paid_scenario(world, monkeypatch)
+    refund_part(world, s.s1, 50.0)
+    stays_untouched(s, 'Es wurden keine Zahlungen der stornierten Rechnung T-100 übernommen. '
+                       '50,00 € sind bereits erstattet und bleiben an der stornierten Rechnung.')
+    assert world.db.get_storno_credit(s.s1) == 0 and allocations(world.db, s.r1) == [(s.booking, 500000, '2026-07-01')]
+
+
+def test_two_payments_a_refund_and_a_smaller_replacement_leave_the_rest_of_the_credit(world, monkeypatch):
+    """Zahlungen über 50,00 € und 30,00 €, 40,00 € erstattet (Guthaben 40,00 €), Ersatzrechnung über 25,00 €: 25,00 € ziehen um (die
+    ältere Zahlung zuerst, mit einem Rest von 25,00 €); das Guthaben ist danach 15,00 €. Davon lässt sich der Rest erstatten."""
+    db = world.db
+    r1 = sent(world)
+    pay(world, r1, 50.0)
+    pay(world, r1, 30.0)
+    s1 = cancel(world, r1, '2026-07-02').storno_id
+    refund_part(world, s1, 40.0)
+    r2 = reissue(db, r1, monkeypatch)
+    edit_draft(world, r2, [dict(ONE_ITEM[0], unitPrice=21.01)])                        # 21,01 + 3,99 = 25,00
+    assert columns(db, r2)['SumGross'] == 250000
+    s = SimpleNamespace(r1=r1, s1=s1, r2=r2)
+
+    code, body = set_invoice_status(r2, 'sent')
+
+    assert (code, body['hint']) == (200, 'Zahlungen der stornierten Rechnung T-100 über 25,00 € sind jetzt dieser Rechnung '
+                                         'zugeordnet. 40,00 € sind bereits erstattet und bleiben an der stornierten Rechnung. '
+                                         '15,00 € bleiben als Guthaben des Kunden an der stornierten Rechnung.')
+    assert [a[1] for a in allocations(db, r1)] == [300000, 250000] and [a[1] for a in allocations(db, r2)] == [250000]
+    assert db.get_storno_credit(s1) == 15 and standing(db, r2) == [('paid', 0)]
+    assert ledger(db)[DEBTORS] == -150000
+    bookkeeping_adds_up(db, s)
+    for payment in db.get_invoice_payments(r1):                                         # keine der Zahlungen darf gehen
+        with pytest.raises(PaymentRemovalRefused):
+            db.unassign_invoice_payment(payment[0])
+    assert db.get_storno_credit(s1) == 15
+    bank = db.insert_booking('2026-07-12', -15.0, booking_type='bank', account_id=world.bank, recipient_client=CUSTOMER_TEXT)
+    assert db.assign_storno_refund(s1, bank).ok is True                                  # der Rest des Guthabens lässt sich erstatten
+    assert db.get_storno_credit(s1) == 0 and euer(db) == {4400: 21.01, 3806: 3.99}        # übrig bleibt der Erlös der neuen Rechnung
+    assert db.find_payment_inconsistencies() == []
+
+
+@pytest.mark.parametrize('refunded, replacement_net, moved, credit_left', [
+    (0, 100.00, 50, 0),                  # ohne Erstattung wie bisher: alles zieht um
+    (20, 100.00, 30, 0),
+    (50, 100.00, 0, 0),
+    (20, 16.81, 20, 10),                 # 20,00 €: nimmt die neue Rechnung, 10,00 € bleiben als Guthaben
+    (30, 100.00, 20, 0),
+    (10, 100.00, 40, 0),
+], ids=['ohne-Erstattung', '20-erstattet', 'alles-erstattet', 'kleine-Ersatzrechnung', '30-erstattet', '10-erstattet'])
+def test_never_more_moves_than_the_credit_and_the_books_add_up(world, monkeypatch, refunded, replacement_net, moved,
+                                                                credit_left):
+    s = paid_scenario(world, monkeypatch)
+    db = world.db
+    if refunded:
+        refund_part(world, s.s1, float(refunded))
+    edit_draft(world, s.r2, [dict(ONE_ITEM[0], unitPrice=replacement_net)])
+    due_before = columns(db, s.r2)['SumGross']
+
+    code, body = set_invoice_status(s.r2, 'sent')
+
+    assert code == 200
+    assert sum(a[1] for a in allocations(db, s.r2)) == moved * 10000
+    assert db.get_storno_credit(s.s1) == credit_left
+    assert ('sind bereits erstattet' in body['hint']) == bool(refunded)
+    assert columns(db, s.r2)['AmountDue'] == due_before - moved * 10000
+    bookkeeping_adds_up(db, s)
+
+
+def test_with_a_refund_the_payments_that_cannot_move_are_named_and_the_credit_counts_the_refund_once(world, monkeypatch):
+    """Eine Zahlung aus einem Import (bleibt) und eine der App (zieht um), 20,00 € erstattet: Der Hinweis nennt das Umgezogene, das
+    Erstattete und den Grund für das, was bleibt – das Übersprungene nur bis zum verbleibenden Guthaben (30,00 € bleiben, 20,00 €
+    davon sind erstattet: 10,00 €), damit Erstattetes nicht zweimal im Hinweis steht."""
+    db = world.db
+    r1 = sent(world)
+    add_payment(world, r1, 30.0)                                                        # Import, 01.07.: bleibt
+    booking = pay(world, r1, 50.0)
+    s1 = cancel(world, r1, '2026-07-02').storno_id
+    r2 = reissue(db, r1, monkeypatch)
+    refund_part(world, s1, 20.0)
+    assert db.get_storno_credit(s1) == 60
+    known = [f[0] for f in findings(db)]                                                # der Import hat keine Sätze: bekannt
+
+    code, body = set_invoice_status(r2, 'sent')
+
+    assert (code, body['hint']) == (200, 'Zahlungen der stornierten Rechnung T-100 über 50,00 € sind jetzt dieser Rechnung '
+                                         'zugeordnet. 20,00 € sind bereits erstattet und bleiben an der stornierten Rechnung. '
+                                         f'10,00 € ließen sich nicht automatisch übernehmen und bleiben an der stornierten '
+                                         f'Rechnung: {REASON_IMPORT}.')
+    assert [(a[0], a[1]) for a in allocations(db, r2)] == [(booking, 500000)]
+    assert db.get_storno_credit(s1) == 10 and [f[0] for f in findings(db)] == known         # nichts Neues in der Prüfliste
+    assert [f[3] for f in findings(db) if f[0] == 'transfer_mismatch'] == [
+        'Zugeordnet sind 30,00 €, auf das Erlöskonto umgebucht 0,00 €.']                      # nur noch der Import
+
+
+def test_a_negative_allocation_of_an_import_lowers_the_cap_of_the_move(world, monkeypatch):
+    """Eine negative Zuordnung des WISO-Imports an der stornierten Rechnung zieht nie um, mindert aber ihr Guthaben: Umziehen
+    darf nur, was danach noch da ist – 30,00 € Zahlung, −10,00 € aus dem Import, 5,00 € erstattet, also 15,00 €. Sonst wäre
+    danach mehr erstattet als gezahlt."""
+    db = world.db
+    r1 = sent(world)
+    app_booking = pay(world, r1, 30.0)
+    negative = add_payment(world, r1, -10.0)
+    s1 = cancel(world, r1, '2026-07-02').storno_id
+    r2 = reissue(db, r1, monkeypatch)
+    refund_part(world, s1, 5.0)
+
+    code, body = set_invoice_status(r2, 'sent')
+
+    assert (code, body['hint']) == (200, 'Zahlungen der stornierten Rechnung T-100 über 15,00 € sind jetzt dieser Rechnung '
+                                         'zugeordnet. 5,00 € sind bereits erstattet und bleiben an der stornierten Rechnung.')
+    assert allocations(db, r2) == [(app_booking, 150000, '2026-07-01')]
+    assert allocations(db, r1) == [(negative, -100000, '2026-07-01'), (app_booking, 150000, '2026-07-01')]
+    assert db.get_storno_credit(s1) == 0 and 'refund_exceeds_credit' not in [f[0] for f in findings(db)]
+
+
+def test_a_refund_to_another_pair_leaves_this_credit_alone(world, monkeypatch):
+    """Die Erstattung eines anderen Paares ändert das Guthaben dieses Paares nicht: Es zieht alles um."""
+    s = paid_scenario(world, monkeypatch)
+    other_r = sent(world, number='T-200')
+    pay(world, other_r, 50.0)
+    other_s = cancel(world, other_r, '2026-07-03').storno_id
+    refund_part(world, other_s, 50.0)
+    code, body = set_invoice_status(s.r2, 'sent')
+    assert (code, body['hint']) == (200, HINT_ALL) and world.db.get_storno_credit(s.s1) == 0
+
+
 # ── Umgezogen wird nur, was die App genau so geschrieben hat ─────────────────
 #
 # Der Umzug entfernt die Sätze einer Zuordnung und schreibt sie neu. Was ein Nutzer an ihnen geändert hat, ginge dabei still
@@ -1479,9 +1671,9 @@ def test_a_mix_moves_what_it_can_and_names_the_rest(world, monkeypatch):
                                                    for f in world.db.find_payment_inconsistencies()]
 
 
-def test_a_negative_allocation_stays_and_is_not_counted_in_the_hint(world, monkeypatch):
-    """Negative Zuordnungen kennt nur der WISO-Import (``link_invoice_to_transaction``): Sie bleiben liegen, und der
-    Hinweis rechnet mit den positiven Zahlungen."""
+def test_a_negative_allocation_stays_and_only_the_credit_that_is_left_moves(world, monkeypatch):
+    """Negative Zuordnungen kennt nur der WISO-Import (``link_invoice_to_transaction``): Sie bleiben liegen und mindern das
+    Guthaben – von 30,00 € Zahlung ziehen 20,00 € um, 10,00 € bleiben und gleichen die −10,00 € aus (Guthaben 0, nie negativ)."""
     r1 = sent(world)
     app_booking = pay(world, r1, 30.0)
     refund = add_payment(world, r1, -10.0)
@@ -1490,10 +1682,10 @@ def test_a_negative_allocation_stays_and_is_not_counted_in_the_hint(world, monke
 
     code, body = set_invoice_status(r2, 'sent')
 
-    assert code == 200 and body['hint'] == ('Zahlungen der stornierten Rechnung T-100 über 30,00 € sind jetzt dieser '
+    assert code == 200 and body['hint'] == ('Zahlungen der stornierten Rechnung T-100 über 20,00 € sind jetzt dieser '
                                             'Rechnung zugeordnet.')
-    assert allocations(world.db, r2) == [(app_booking, 300000, '2026-07-01')]
-    assert allocations(world.db, r1) == [(refund, -100000, '2026-07-01')]
+    assert allocations(world.db, r2) == [(app_booking, 200000, '2026-07-01')]
+    assert allocations(world.db, r1) == [(refund, -100000, '2026-07-01'), (app_booking, 100000, '2026-07-01')]
 
 
 def test_a_collective_payment_moves_only_its_share(world, monkeypatch):
