@@ -7,8 +7,9 @@
   ``/invoice/cancel``): Zu einer stornierten Rechnung mit Stornorechnung legt die App den Entwurf einer neuen Rechnung an
   (``ReplacesInvoiceId``) – höchstens einen, mit neuer Nummer, heutigem Datum und verschobener Fälligkeit.
 * **Zahlungen ziehen um**: Beim Versenden der Ersatzrechnung gehen die Zahlungen der stornierten Rechnung in der
-  Transaktion des Statuswechsels auf sie über (``_move_replaced_payments``); was sich nicht eindeutig umschreiben lässt,
-  bleibt, und der Hinweis nennt es.
+  Transaktion des Statuswechsels auf sie über (``_move_replaced_payments``); es zieht nur um, was die App genau so
+  geschrieben hat – alles andere bleibt, und der Hinweis nennt den Grund. Eine Zuordnung, die sich nicht neu buchen lässt,
+  geht mit ihrem Savepoint zurück und bricht den Versand nicht ab.
 * **Hinweis im Dokument**, **Guthaben** des Storno-Paares (Zahlungen auf die stornierte Rechnung), die **nachträgliche
   Stornorechnung** für eine von Hand stornierte Rechnung und zwei neue Kategorien der **Prüfliste**.
 
@@ -16,6 +17,7 @@ Das Beispiel: Rechnung R1 über 119,00 € (19 %), 50,00 € gezahlt, storniert 
 
 Alle Namen, Adressen und Nummern sind erfundene Testwerte.
 """
+import contextlib
 import datetime
 import json
 import re
@@ -112,6 +114,64 @@ def payment_rows(db, invoice_number):
             'b.EntryForm FROM Bookings b LEFT JOIN ChartOfAccounts c ON c.ID = b.COA_ID '
             'LEFT JOIN ChartOfAccounts g ON g.ID = b.CounterCOA_ID '
             "WHERE b.DocumentNumber = ? AND b.Status = 'invoice_payment' ORDER BY b.ID", invoice_number)]
+
+
+# Die Gründe, aus denen der Hinweis nennt, dass eine Zuordnung an der stornierten Rechnung bleibt (fest, in dieser Reihenfolge)
+REASON_IMPORT = 'Zuordnung aus einem Import'
+REASON_NO_SKR = 'das Bankkonto hat keine SKR-Nummer'
+REASON_OVERBOOKED = 'die Bankbewegung ist überbucht'
+REASON_EDITED = 'die Buchungssätze der Zahlung wurden von Hand geändert oder tragen einen Beleg'
+REASON_TAX_DATE = ('die Buchungssätze der Zahlung tragen ein anderes Steuerdatum als die Bankbewegung '
+                   '(z. B. nach einem DATEV-Export)')
+REASON_MULTIPLE = 'die Bankbewegung ist mehrfach zugeordnet'
+REASON_NO_INCOMING = 'keine Bankbewegung mit Zahlungseingang'
+REASON_REBOOK = 'die Zuordnung ließ sich nicht neu buchen'
+
+
+def not_moved(*reasons, amount='50,00 €'):
+    """Der Hinweis, wenn nichts umgezogen ist und ``amount`` aus diesen Gründen an der stornierten Rechnung bleibt."""
+    return ('Es wurden keine Zahlungen der stornierten Rechnung T-100 übernommen. '
+            f'{amount} ließen sich nicht automatisch übernehmen und bleiben an der stornierten Rechnung: '
+            f'{"; ".join(reasons)}.')
+
+
+def partly_paid(w, monkeypatch, movement=50.0, assigned=50.0):
+    """R1 über 119,00 €, eine Bankbewegung über ``movement`` mit ``assigned`` davon zugeordnet, R1 storniert, R2 als Entwurf."""
+    r1 = sent(w)
+    booking = w.db.insert_booking('2026-07-01', movement, booking_type='bank', account_id=w.bank,
+                                  recipient_client=CUSTOMER_TEXT)
+    ok, error = handlers.link_booking_to_invoice_capped(w.db, r1, booking, assigned)
+    assert ok, error
+    s1 = cancel(w, r1, '2026-07-02')
+    return SimpleNamespace(r1=r1, s1=s1.storno_id, r2=reissue(w.db, r1, monkeypatch), booking=booking, w=w)
+
+
+def book_tables(db, exclude_number):
+    """Bookings, InvoicePayments und BookingDocuments Zeile für Zeile (jede Spalte), ohne die Sätze mit der Beleg-Nr.
+    ``exclude_number`` – das ist die Forderung der neuen Rechnung."""
+    return {'Bookings': query_rows(db, "SELECT * FROM Bookings WHERE COALESCE(DocumentNumber, '') <> ? ORDER BY ID",
+                                   exclude_number),
+            'InvoicePayments': query_rows(db, 'SELECT * FROM InvoicePayments ORDER BY ID'),
+            'BookingDocuments': query_rows(db, 'SELECT * FROM BookingDocuments ORDER BY ID')}
+
+
+def stays_untouched(s, hint, receivable=1190000):
+    """R2 wird versendet, die Zahlung bleibt mit allen Sätzen an R1 und der Hinweis nennt den Grund. Die Bücher ändern sich
+    nur um die Forderung von R2 (``receivable``, Minor Units): kein Satz und keine Verknüpfung anders, Debitoren-Saldo und
+    EÜR stimmen, und die Prüfliste meldet nichts Neues."""
+    db = s.w.db
+    r2_number = columns(db, s.r2)['InvoiceNumber']
+    books_before, r1_before = book_tables(db, r2_number), columns(db, s.r1)
+    ledger_before, euer_before, findings_before = ledger(db), euer(db), findings(db)
+
+    code, body = set_invoice_status(s.r2, 'sent')
+
+    assert (code, body.get('hint')) == (200, hint), body
+    assert book_tables(db, r2_number) == books_before and columns(db, s.r1) == r1_before
+    assert columns(db, s.r2)['Status'] == 'sent' and allocations(db, s.r2) == []
+    assert ledger(db) == {**ledger_before, DEBTORS: ledger_before[DEBTORS] + receivable,
+                          WAITING: ledger_before[WAITING] - receivable}   # nur die Forderung der neuen Rechnung
+    assert euer(db) == euer_before and findings(db) == findings_before
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -920,8 +980,7 @@ def test_another_customer_or_currency_moves_nothing(world, monkeypatch, over):
     assert world.db.find_payment_inconsistencies() == []
 
 
-NOT_AUTOMATIC = ('Es wurden keine Zahlungen der stornierten Rechnung T-100 übernommen. 50,00 € ließen sich nicht '
-                 'automatisch übernehmen (Import oder Sammelbuchung) und bleiben an der stornierten Rechnung.')
+NOT_AUTOMATIC = not_moved(REASON_IMPORT)
 
 
 def test_an_import_allocation_without_postings_stays(world, monkeypatch):
@@ -954,7 +1013,7 @@ def test_a_posting_edited_by_hand_keeps_the_payment_where_it_is(world, monkeypat
     s = paid_scenario(world, monkeypatch)
     run_sql(world.db, "UPDATE Bookings SET Amount = 400000 WHERE ParentBooking_ID = ? AND EntryForm = 'liquid_first'",
             s.booking)                                                        # ein Satz von Hand geändert
-    _send_without_move(s, world, NOT_AUTOMATIC)
+    _send_without_move(s, world, not_moved(REASON_EDITED))
 
 
 def test_an_overbooked_movement_stays(world, monkeypatch):
@@ -963,14 +1022,373 @@ def test_an_overbooked_movement_stays(world, monkeypatch):
     run_sql(world.db, 'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) VALUES (?, ?, 500000, '
                       "'2026-07-01')", other, s.booking)                       # 100,00 € zugeordnet, 50,00 € gebucht
     assert world.db.get_booking_unallocated_amount(s.booking) == 0
-    _send_without_move(s, world, NOT_AUTOMATIC)
+    _send_without_move(s, world, not_moved(REASON_OVERBOOKED))
     assert allocations(world.db, other) == [(s.booking, 500000, '2026-07-01')]
 
 
 def test_a_bank_account_without_an_skr_number_stays(world, monkeypatch):
     s = paid_scenario(world, monkeypatch)
     run_sql(world.db, 'UPDATE Accounts SET SKRAccount = NULL WHERE ID = ?', world.bank)
-    _send_without_move(s, world, NOT_AUTOMATIC)
+    _send_without_move(s, world, not_moved(REASON_NO_SKR))
+
+
+def test_a_changed_skr_number_of_the_bank_keeps_the_payment_and_the_send_goes_through(world, monkeypatch):
+    """Die Lage des Reviews: Die SKR-Nummer des Bankkontos wurde nach der Zahlung geändert, und unter der Bewegung hängt ein
+    weiterer, unfertiger Satz. Früher lehnte der Versand ab (409); jetzt wird er versendet, und die Zahlung bleibt – die
+    Sätze liegen auf dem alten Bankkonto, das die App heute nicht mehr schreiben würde."""
+    s = paid_scenario(world, monkeypatch)
+    db = world.db
+    if not query_rows(db, 'SELECT ID FROM ChartOfAccounts WHERE AccountNumber = 1810'):
+        run_sql(db, "INSERT INTO ChartOfAccounts (AccountNumber, Name) VALUES (1810, 'Bank 2')")
+    run_sql(db, 'UPDATE Accounts SET SKRAccount = 1810 WHERE ID = ?', world.bank)
+    run_sql(db, "INSERT INTO Bookings (DateBooking, Amount, BookingType, ParentBooking_ID, COA_ID, EntryForm) "
+                "SELECT '2026-07-01', 10000, 'entry', ?, ID, 'purpose_first' FROM ChartOfAccounts "
+                "WHERE AccountNumber = 4400", s.booking)                       # ohne Gegenkonto: zählt als bankwirksam
+    stays_untouched(s, not_moved(REASON_EDITED))
+    assert allocations(db, s.r1) == [(s.booking, 500000, '2026-07-01')]
+
+
+@pytest.mark.parametrize('change', [
+    pytest.param("UPDATE Bookings SET Amount = -500000 WHERE ID = ?", id='Ausgang'),
+    pytest.param("UPDATE Bookings SET BookingType = 'entry' WHERE ID = ?", id='keine-Bankbewegung'),
+])
+def test_an_allocation_on_something_that_is_no_incoming_bank_movement_stays(world, monkeypatch, change):
+    s = paid_scenario(world, monkeypatch)
+    run_sql(world.db, change, s.booking)
+    _send_without_move(s, world, not_moved(REASON_NO_INCOMING))
+
+
+def test_a_movement_the_replacement_is_already_assigned_to_stays(world, monkeypatch):
+    s = partly_paid(world, monkeypatch, movement=100.0)
+    db = world.db
+    run_sql(db, 'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) VALUES (?, ?, 100000, '
+                "'2026-07-01')", s.r2, s.booking)                              # R2 ist dieser Bewegung schon zugeordnet
+    r2_number = columns(db, s.r2)['InvoiceNumber']
+    before = book_tables(db, r2_number)
+
+    code, body = set_invoice_status(s.r2, 'sent')
+
+    assert (code, body['hint']) == (200, not_moved(REASON_MULTIPLE))
+    assert book_tables(db, r2_number) == before
+    assert allocations(db, s.r1) == [(s.booking, 500000, '2026-07-01')]
+    assert allocations(db, s.r2) == [(s.booking, 100000, '2026-07-01')]
+
+
+def test_a_duplicate_allocation_row_of_the_pair_stays(world, monkeypatch):
+    """Ein Bestand mit doppelter Zuordnungszeile (der eindeutige Index fehlt dort): Welche der beiden Zeilen gälte, ist nicht
+    zu entscheiden – beide bleiben, und beide stehen im Hinweis."""
+    s = paid_scenario(world, monkeypatch)
+    db = world.db
+    run_sql(db, 'DROP INDEX ux_invoicepayments_invoice_booking')
+    run_sql(db, 'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) VALUES (?, ?, 100000, '
+                "'2026-07-01')", s.r1, s.booking)
+    r2_number = columns(db, s.r2)['InvoiceNumber']
+    before = book_tables(db, r2_number)
+
+    code, body = set_invoice_status(s.r2, 'sent')
+
+    assert (code, body['hint']) == (200, not_moved(REASON_MULTIPLE, amount='60,00 €'))
+    assert book_tables(db, r2_number) == before and allocations(db, s.r2) == []
+
+
+def test_the_hint_names_each_reason_once_in_a_fixed_order_with_the_total_of_what_stays(world, monkeypatch):
+    db = world.db
+    r1 = sent(world)
+    pay(world, r1, 30.0)                                                      # zieht um (01.07.)
+    earlier = db.insert_booking('2026-06-30', 10.0, booking_type='bank', account_id=world.bank2,
+                                recipient_client=CUSTOMER_TEXT)
+    assert handlers.link_booking_to_invoice_capped(db, r1, earlier, 10.0)[0]
+    run_sql(db, 'UPDATE Accounts SET SKRAccount = NULL WHERE ID = ?', world.bank2)   # dieses Bankkonto: keine SKR-Nummer mehr
+    add_payment(world, r1, 20.0)                                              # Import: bleibt
+    another = db.insert_booking('2026-07-02', 5.0, booking_type='bank', account_id=world.bank)
+    db.link_invoice_to_transaction(r1, another, 5.0)                          # noch ein Import: derselbe Grund, einmal genannt
+    cancel(world, r1, '2026-07-10')
+    r2 = reissue(db, r1, monkeypatch)
+
+    code, body = set_invoice_status(r2, 'sent')
+
+    # die Zuordnung ohne SKR-Nummer kommt zuerst an die Reihe (30.06.), der Hinweis nennt trotzdem erst den Import
+    assert code == 200 and body['hint'] == (
+        'Zahlungen der stornierten Rechnung T-100 über 30,00 € sind jetzt dieser Rechnung zugeordnet. 35,00 € ließen sich '
+        f'nicht automatisch übernehmen und bleiben an der stornierten Rechnung: {REASON_IMPORT}; {REASON_NO_SKR}.')
+
+
+# ── Umgezogen wird nur, was die App genau so geschrieben hat ─────────────────
+#
+# Der Umzug entfernt die Sätze einer Zuordnung und schreibt sie neu. Was ein Nutzer an ihnen geändert hat, ginge dabei still
+# verloren; deshalb zieht eine Zuordnung nur um, wenn ihre Sätze genau die sind, die ``_assign_in_tx`` dafür schreibt. Je
+# Fall ist genau EINE Bedingung verletzt: Die Zuordnung bleibt an der stornierten Rechnung, kein Satz und keine Verknüpfung
+# ändert sich, und der Hinweis nennt den Grund.
+
+def _coa(db, number):
+    return db.get_coa_id_by_account_number(number)
+
+
+def edit_row(db, booking, form, **changes):
+    """Spalten des Satzes mit dieser Form unter der Bewegung an der App vorbei ändern (wie die SQL-Konsole)."""
+    assignments = ', '.join(f'{column} = ?' for column in changes)
+    run_sql(db, f'UPDATE Bookings SET {assignments} WHERE ParentBooking_ID = ? AND EntryForm = ?',
+            *changes.values(), booking, form)
+
+
+def row_id(db, booking, form):
+    return query_rows(db, 'SELECT ID FROM Bookings WHERE ParentBooking_ID = ? AND EntryForm = ?', booking, form)[0]['ID']
+
+
+def _with_category(db, s):
+    run_sql(db, "INSERT INTO Categories (Name) VALUES ('Beratung')")
+    edit_row(db, s.booking, 'transfer', Category_ID=query_rows(db, 'SELECT ID FROM Categories')[0]['ID'])
+
+
+def _with_document(db, s):
+    run_sql(db, "INSERT INTO Documents (Date, Filename) VALUES ('2026-07-01', 'Kontoauszug.pdf')")
+    run_sql(db, 'INSERT INTO BookingDocuments (Booking_ID, Document_ID, RelationType) VALUES (?, ?, ?)',
+            row_id(db, s.booking, 'transfer'), query_rows(db, 'SELECT ID FROM Documents')[0]['ID'], 'receipt')
+
+
+def _with_asset(db, s):
+    db.insert_asset('Laptop', '2026-07-01', 1000.0, 3, booking_id=row_id(db, s.booking, 'transfer'))
+
+
+def _with_depreciation(db, s):
+    db.insert_asset('Laptop', '2026-07-01', 1000.0, 3)
+    run_sql(db, 'INSERT INTO AssetDepreciations (Asset_ID, Year, DepreciationAmount, BookValue, Booking_ID, Status) '
+                "VALUES (?, 2026, 1000000, 9000000, ?, 'booked')",
+            query_rows(db, 'SELECT ID FROM Assets')[0]['ID'], row_id(db, s.booking, 'liquid_first'))
+
+
+def _with_child_booking(db, s):
+    db.insert_booking('2026-07-01', 1.0, booking_type='entry', parent_booking_id=row_id(db, s.booking, 'transfer'),
+                      coa_id=_coa(db, 4400), counter_coa_id=_coa(db, 4405))
+
+
+def _with_allocation_on_the_row(db, s):
+    other = sent(s.w, number='T-200')                                         # eine andere Rechnung zeigt auf den Satz
+    run_sql(db, 'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) VALUES (?, ?, 10000, '
+                "'2026-07-01')", other, row_id(db, s.booking, 'transfer'))
+
+
+def _row_deleted(db, s):
+    run_sql(db, 'DELETE FROM Bookings WHERE ID = ?', row_id(db, s.booking, 'transfer'))
+
+
+def _extra_marked_row(db, s):
+    columns_ = ('DateBooking, DateTax, RecipientClient, Contact_ID, COA_ID, CounterCOA_ID, Amount, Currency, TaxRate, '
+                'TaxAmount, Text, DocumentNumber, BookingType, ParentBooking_ID, AutoMirror, Status, EntryForm')
+    run_sql(db, f"INSERT INTO Bookings ({columns_}) SELECT {columns_} FROM Bookings "
+                "WHERE ParentBooking_ID = ? AND EntryForm = 'transfer'", s.booking)
+
+
+def _other_document_number(db, s):
+    edit_row(db, s.booking, 'liquid_first', DocumentNumber='KA-07')
+
+
+HAND_CHANGES = [
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'transfer', TaxAmount=80000), id='Steuerbetrag-2-Cent'),
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'transfer', TaxRate=0.07), id='Steuersatz'),
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'transfer', DateBooking='2026-06-30'), id='Datum'),
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'liquid_first', Text='Anzahlung Juli'), id='Text'),
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'transfer', RecipientClient='Bau AG'), id='Empfaenger'),
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'transfer', Contact_ID=s.w.cust2), id='Kontakt'),
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'liquid_first', Currency='USD'), id='Waehrung'),
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'liquid_first', Account_ID=s.w.bank), id='Bankkonto-am-Satz'),
+    pytest.param(_with_category, id='Kategorie'),
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'transfer', Amount=400000), id='Betrag'),
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'liquid_first', COA_ID=_coa(db, 4400)), id='Konto-Bank'),
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'liquid_first', CounterCOA_ID=_coa(db, 4400)), id='Konto-Debitoren'),
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'transfer', COA_ID=_coa(db, 4400)), id='Konto-Wartekonto'),
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'transfer', CounterCOA_ID=_coa(db, 6815)), id='Konto-Erloes'),
+    pytest.param(_row_deleted, id='Satz-geloescht'),
+    pytest.param(_extra_marked_row, id='zusaetzlicher-markierter-Satz'),
+    pytest.param(_other_document_number, id='Beleg-Nr-eines-Satzes'),
+    pytest.param(_with_document, id='Beleg-verknuepft'),
+    pytest.param(_with_asset, id='Anlage-am-Satz'),
+    pytest.param(_with_depreciation, id='AfA-Jahr-am-Satz'),
+    pytest.param(_with_child_booking, id='Kindbuchung-am-Satz'),
+    pytest.param(_with_allocation_on_the_row, id='Zuordnung-am-Satz'),
+]
+
+
+@pytest.mark.parametrize('change', HAND_CHANGES)
+def test_a_payment_whose_postings_are_not_exactly_what_the_app_writes_stays_untouched(world, monkeypatch, change):
+    s = partly_paid(world, monkeypatch)
+    change(world.db, s)
+    stays_untouched(s, not_moved(REASON_EDITED))
+    assert allocations(world.db, s.r1) == [(s.booking, 500000, '2026-07-01')]
+
+
+def _stamped_like_a_datev_export(db, s):
+    """Der DATEV-Export stempelt sein Datum als Steuerdatum auf die exportierten Sätze – nicht auf die Bankzeile."""
+    db.update_bookings_date_tax_batch(
+        [row['ID'] for row in query_rows(db, 'SELECT ID FROM Bookings WHERE ParentBooking_ID = ?', s.booking)], '2026-08-03')
+
+
+@pytest.mark.parametrize('change', [
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'liquid_first', DateTax='2026-06-30'), id='ein-Satz'),
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'transfer', DateTax='2026-06-30'), id='der-andere-Satz'),
+    pytest.param(_stamped_like_a_datev_export, id='DATEV-Export'),
+])
+def test_a_payment_whose_postings_only_carry_another_tax_date_stays_and_the_hint_says_so(world, monkeypatch, change):
+    """Sätze, die schon in einem DATEV-Export standen, tragen dessen Datum als Steuerdatum: Sie ziehen nicht um (der Umzug
+    schriebe sie neu), und der Hinweis nennt genau das statt „von Hand geändert“."""
+    s = partly_paid(world, monkeypatch)
+    change(world.db, s)
+    stays_untouched(s, not_moved(REASON_TAX_DATE))
+    assert allocations(world.db, s.r1) == [(s.booking, 500000, '2026-07-01')]
+
+
+def test_another_tax_date_next_to_another_change_counts_as_edited(world, monkeypatch):
+    s = partly_paid(world, monkeypatch)
+    _stamped_like_a_datev_export(world.db, s)
+    edit_row(world.db, s.booking, 'transfer', Text='von Hand')
+    stays_untouched(s, not_moved(REASON_EDITED))
+
+
+def single_posting(w, monkeypatch):
+    """16 %: kein Wartekonto, also keine Forderung – die Zuordnung ist der Einzelsatz „Erlöskonto an Bank“ (``purpose_first``).
+    Eine zweite Rechnung zu 16 % mit ihrer Zahlung lehrt das Erlöskonto weiter, auch wenn der Satz der ersten geändert wird."""
+    db = w.db
+    r1 = sent(w, items=[dict(ONE_ITEM[0], taxRate=16)], taxRate=0.16)           # 100 netto + 16 USt = 116
+    booking = db.insert_booking('2026-07-01', 50.0, booking_type='bank', account_id=w.bank, recipient_client=CUSTOMER_TEXT)
+    assert handlers.link_booking_to_invoice_capped(db, r1, booking, 50.0, revenue_coa_id=_coa(db, 4400))[0]
+    assert payment_rows(db, 'T-100') == [(4400, 1800, 500000, 69000, '2026-07-01', 'purpose_first')]
+    teacher = sent(w, number='T-300', items=[dict(ONE_ITEM[0], taxRate=16)], taxRate=0.16)
+    taught = db.insert_booking('2026-07-03', 20.0, booking_type='bank', account_id=w.bank, recipient_client=CUSTOMER_TEXT)
+    assert handlers.link_booking_to_invoice_capped(db, teacher, taught, 20.0, revenue_coa_id=_coa(db, 4400))[0]
+    s1 = cancel(w, r1, '2026-07-02')
+    return SimpleNamespace(r1=r1, s1=s1.storno_id, r2=reissue(db, r1, monkeypatch), booking=booking, w=w)
+
+
+@pytest.mark.parametrize('change', [
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'purpose_first', CounterCOA_ID=_coa(db, 4400)), id='Konto-Bank'),
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'purpose_first', COA_ID=_coa(db, 6815)), id='Konto-Erloes'),
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'purpose_first', TaxAmount=70000), id='Steuerbetrag'),
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'purpose_first', DateBooking='2026-06-30'), id='Datum'),
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'purpose_first', EntryForm='transfer'), id='Form'),
+    pytest.param(lambda db, s: edit_row(db, s.booking, 'purpose_first', Text='Anzahlung'), id='Text'),
+])
+def test_the_single_posting_form_is_held_to_the_same_rule(world, monkeypatch, change):
+    s = single_posting(world, monkeypatch)
+    change(world.db, s)
+    stays_untouched(s, not_moved(REASON_EDITED), receivable=0)
+
+
+def test_an_unmarked_posting_under_the_movement_stays_as_it_is_and_the_payment_moves(world, monkeypatch):
+    """Nur die markierten Sätze der Zuordnung zählen: Eine von Hand ergänzte, nicht markierte Buchung unter der Bewegung
+    bleibt unberührt, und die Zahlung zieht um."""
+    s = paid_scenario(world, monkeypatch)
+    db = world.db
+    extra = db.insert_booking('2026-07-01', 1.0, booking_type='entry', parent_booking_id=s.booking,
+                              coa_id=_coa(db, 6815), counter_coa_id=_coa(db, 4400))
+    before = query_rows(db, 'SELECT * FROM Bookings WHERE ID = ?', extra)
+
+    code, body = set_invoice_status(s.r2, 'sent')
+
+    assert code == 200 and body['hint'] == HINT_ALL
+    assert allocations(db, s.r1) == [] and query_rows(db, 'SELECT * FROM Bookings WHERE ID = ?', extra) == before
+
+
+@pytest.mark.parametrize('movement', [50.0, 100.0], ids=['ohne-freien-Rest', 'mit-freiem-Rest'])
+def test_a_marked_posting_with_another_document_number_is_neither_rewritten_nor_doubled(world, monkeypatch, movement):
+    """Trägt einer der beiden Sätze eine andere Beleg-Nr. (die Auszugsnummer), fände die alte Fassung nur den anderen: Sie
+    löschte ihn, buchte „Bank an Debitoren“ ein zweites Mal – oder ließ den Versand scheitern. Jetzt bleibt alles."""
+    s = partly_paid(world, monkeypatch, movement=movement)
+    _other_document_number(world.db, s)
+    stays_untouched(s, not_moved(REASON_EDITED))
+    assert balance(world.db, DEBTORS) == 1190000 - 1190000 - 500000 + 1190000        # Forderung, Gegenbuchung, Zahlung, R2
+
+
+def test_an_orphaned_marked_posting_under_the_movement_keeps_every_assignment_of_it(world, monkeypatch):
+    """Ein markierter Satz, dessen Beleg-Nr. zu keiner der Bewegung zugeordneten Rechnung gehört, hält die ganze Bewegung
+    fest – auch den Teil einer Sammelzahlung, der für sich in Ordnung wäre."""
+    db = world.db
+    r1, other = sent(world), sent(world, number='T-200')
+    booking = db.insert_booking('2026-07-01', 100.0, booking_type='bank', account_id=world.bank,
+                                recipient_client=CUSTOMER_TEXT)
+    assert handlers.link_booking_to_invoice_capped(db, r1, booking, 50.0)[0]
+    assert handlers.link_booking_to_invoice_capped(db, other, booking, 50.0)[0]
+    s1 = cancel(world, r1, '2026-07-02')
+    s = SimpleNamespace(r1=r1, s1=s1.storno_id, r2=reissue(db, r1, monkeypatch), booking=booking, w=world)
+    run_sql(db, "UPDATE Bookings SET DocumentNumber = 'KA-07' WHERE ParentBooking_ID = ? AND DocumentNumber = 'T-200' "
+                "AND EntryForm = 'liquid_first'", booking)
+    stays_untouched(s, not_moved(REASON_EDITED))
+
+
+def test_a_payment_without_tax_moves_too(world, monkeypatch):
+    """§ 19 / 0 %: Die Sätze der Zuordnung tragen weder Steuersatz noch Steuerbetrag, der Vergleich erwartet dort keinen."""
+    items = [dict(ONE_ITEM[0], taxRate=0)]
+    s = paid_scenario(world, monkeypatch, items=items, taxRate=-1)             # § 19: Wartekonto 4340, keine Steuer
+    db = world.db
+    assert [(r[0], r[1], r[3]) for r in payment_rows(db, 'T-100')] == [(1800, DEBTORS, None), (4340, 4185, None)]
+    euer_before = euer(db)
+
+    code, body = set_invoice_status(s.r2, 'sent')
+
+    assert code == 200 and body['hint'] == HINT_ALL
+    assert allocations(db, s.r1) == [] and allocations(db, s.r2) == [(s.booking, 500000, '2026-07-01')]
+    assert euer(db) == euer_before and db.find_payment_inconsistencies() == []
+
+
+@pytest.mark.parametrize('days', [('2026-07-01', '2026-07-15'), ('2026-07-15', '2026-07-01')],
+                         ids=['schliessender-Teil-zuletzt', 'schliessender-Teil-zuerst'])
+def test_the_closing_part_moves_with_its_tax_remainder_whatever_the_order_of_the_dates(world, monkeypatch, days):
+    """119,00 € in zwei Teilen: 15,00 € mit der anteiligen Steuer 2,40 €, danach 104,00 €, die die Rechnung schließen und den
+    Rest bekommen – 16,60 €, nicht die anteiligen 16,61 €. Beide Teile ziehen um, gleich in welcher Reihenfolge der Bankdaten:
+    Der Umzug beurteilt jede Zuordnung gegen den Stand VOR dem ersten Umzug, sonst fehlte dem zweiten Teil der erste."""
+    db = world.db
+    r1 = sent(world)
+    first = db.insert_booking(days[0], 15.0, booking_type='bank', account_id=world.bank, recipient_client=CUSTOMER_TEXT)
+    second = db.insert_booking(days[1], 104.0, booking_type='bank', account_id=world.bank,
+                               recipient_client=CUSTOMER_TEXT)
+    assert handlers.link_booking_to_invoice_capped(db, r1, first, 15.0)[0]
+    assert handlers.link_booking_to_invoice_capped(db, r1, second, 104.0)[0]
+    taxes = [r[3] for r in payment_rows(db, 'T-100') if r[5] == 'transfer']
+    assert taxes == [24000, 166000] and columns(db, r1)['Status'] == 'paid'    # 16,60 € – anteilig wären es 16,61 €
+    cancel(world, r1, '2026-07-20')
+    r2 = reissue(db, r1, monkeypatch)
+    euer_before = euer(db)
+
+    code, body = set_invoice_status(r2, 'sent')
+
+    assert code == 200 and body['hint'] == ('Zahlungen der stornierten Rechnung T-100 über 119,00 € sind jetzt dieser '
+                                            'Rechnung zugeordnet.')
+    assert sorted(a[0] for a in allocations(db, r2)) == sorted([first, second]) and allocations(db, r1) == []
+    r2_taxes = [r[3] for r in payment_rows(db, columns(db, r2)['InvoiceNumber']) if r[5] == 'transfer']
+    assert sum(r2_taxes) == 190000                                            # die ganze Steuer der Rechnung, auf den Cent
+    assert columns(db, r2)['Status'] == 'paid' and euer(db) == euer_before
+    assert db.find_payment_inconsistencies() == []
+
+
+def test_the_rows_of_the_move_check_are_those_the_assignment_writes(world):
+    """Der Vergleich beim Umzug und das Schreiben der Zuordnung nehmen dieselben Werte (``payment_rows``)."""
+    from db.invoice_payments import PAYMENT_ROW_COLUMNS, payment_rows as expected_rows
+    db = world.db
+    r1 = sent(world)
+    booking = pay(world, r1, 50.0)
+    stored = query_rows(db, 'SELECT * FROM Bookings WHERE ParentBooking_ID = ? ORDER BY ID', booking)
+    bank = query_rows(db, 'SELECT * FROM Bookings WHERE ID = ?', booking)[0]
+    rows = expected_rows(number='T-100', customer_id=world.cust, bank_id=booking, bank_date=bank['DateBooking'],
+                         bank_tax_date=bank['DateTax'], recipient=bank['RecipientClient'], currency=bank['Currency'],
+                         amount=500000, tax_rate=0.19, tax_value=79800, bank_coa=_coa(db, 1800),
+                         revenue_coa=_coa(db, 4400), debtor_side=_coa(db, DEBTORS), waiting_side=_coa(db, WAITING))
+    assert [row.description for row in rows] == ['Payment child (bank to debtor)', 'Payment child (open item to revenue)']
+    for written, row in zip(stored, rows):
+        assert {column: written[column] for column in PAYMENT_ROW_COLUMNS} == dict(row.values)
+        assert (written['BookingType'], written['AutoMirror'], written['SourceGroup']) == ('entry', 0, None)
+
+
+def test_the_move_check_knows_every_reference_to_a_booking_the_schema_has(world):
+    """Was ``_delete_booking_rows`` mit einem Satz wegräumt, prüft der Umzug vorher: Kommt im Schema ein Verweis auf
+    ``Bookings`` dazu, muss ``BOOKING_REFERENCES`` ihn nennen."""
+    from db.bookings import BOOKING_REFERENCES
+    conn = sqlite3.connect(world.db.db_name)
+    try:
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+        found = {(table, fk[3]) for table in tables for fk in conn.execute(f'PRAGMA foreign_key_list("{table}")')
+                 if fk[2] == 'Bookings'}
+    finally:
+        conn.close()
+    assert found == set(BOOKING_REFERENCES)
 
 
 def test_a_mix_moves_what_it_can_and_names_the_rest(world, monkeypatch):
@@ -985,7 +1403,7 @@ def test_a_mix_moves_what_it_can_and_names_the_rest(world, monkeypatch):
 
     assert code == 200 and body['hint'] == ('Zahlungen der stornierten Rechnung T-100 über 30,00 € sind jetzt dieser '
                                             'Rechnung zugeordnet. 20,00 € ließen sich nicht automatisch übernehmen '
-                                            '(Import oder Sammelbuchung) und bleiben an der stornierten Rechnung.')
+                                            f'und bleiben an der stornierten Rechnung: {REASON_IMPORT}.')
     assert allocations(world.db, r2) == [(app_booking, 300000, '2026-07-01')]
     assert allocations(world.db, r1) == [(imported, 200000, '2026-07-01')]
     assert world.db.get_storno_credits() == {world.db.find_storno_invoice(r1)[0]: 20}
@@ -1098,14 +1516,24 @@ def test_the_stale_context_is_refused(world, monkeypatch, what):
     assert snapshot(world.db) == before
 
 
-# ── Ganz oder gar nicht ──────────────────────────────────────────────────────
+# ── Eine Zuordnung, die sich nicht neu buchen lässt, bleibt – der Versand gelingt ──────────────────────────────────
+
+def replay_lines():
+    """Das Replay-Log (``sql_operations.sql``) des Benutzers der Tests, Zeile für Zeile."""
+    import os
+    import userctx
+    path = os.path.join(userctx.user_data_dir(), 'sql_operations.sql')
+    return open(path, encoding='utf-8').read().splitlines() if os.path.exists(path) else []
+
 
 @pytest.mark.parametrize('failing_call', [1, 2], ids=['neue-Zuordnung', 'Rest-an-der-stornierten'])
-def test_a_failing_assignment_rolls_the_whole_send_back(world, monkeypatch, failing_call):
+def test_an_assignment_that_cannot_be_rebooked_stays_and_the_send_goes_through(world, monkeypatch, failing_call):
+    """Scheitert das Neubuchen einer Zuordnung (hier: die Ablehnung kommt beim ersten oder zweiten Schreiben, nachdem
+    ``_unassign`` die Sätze schon entfernt hat), geht ein Savepoint zurück: Die Zuordnung liegt wieder unverändert an der
+    stornierten Rechnung, die Ersatzrechnung wird trotzdem versendet, und der Hinweis nennt den Grund."""
     s = paid_scenario(world, monkeypatch)
     db = world.db
     edit_draft(world, s.r2, [dict(ONE_ITEM[0], unitPrice=33.61)])              # 40,00: es gibt eine zweite Zuordnung (Rest)
-    before = snapshot(db)
     original, calls = type(db)._assign_in_tx, []
 
     def failing(self, tx, *args, **kwargs):
@@ -1115,33 +1543,88 @@ def test_a_failing_assignment_rolls_the_whole_send_back(world, monkeypatch, fail
         return original(self, tx, *args, **kwargs)
     monkeypatch.setattr(type(db), '_assign_in_tx', failing)
 
-    code, body = set_invoice_status(s.r2, 'sent')
+    stays_untouched(s, not_moved(REASON_REBOOK), receivable=400000)
 
-    assert code == 409 and body['success'] is False
-    assert body['error'] == ('Die Zahlungen der stornierten Rechnung T-100 ließen sich nicht übernehmen: Kein offener Betrag '
-                             'zuordenbar (Rechnung oder Buchung ausgeschöpft). Die Rechnung wurde nicht versendet.')
     assert len(calls) == failing_call
-    assert snapshot(db) == before                                             # Zuordnungen, Sätze, Protokoll: wie vorher
-    row = columns(db, s.r2)
-    assert (row['Status'], row['SentAt']) == ('draft', None) and bookings_of(db, row['InvoiceNumber']) == []
     assert allocations(db, s.r1) == [(s.booking, 500000, '2026-07-01')]
     monkeypatch.setattr(type(db), '_assign_in_tx', original)
-    assert set_invoice_status(s.r2, 'sent')[0] == 200                         # ohne den Fehler geht es
+    assert set_invoice_status(s.r2, 'draft')[0] == 200                        # nichts ist zurückgeblieben: ohne den Fehler
+    code, body = set_invoice_status(s.r2, 'sent')                             # zieht die Zahlung beim nächsten Versand um
+    assert code == 200 and body['hint'].startswith('Zahlungen der stornierten Rechnung T-100 über 40,00 € sind jetzt')
 
 
-def test_a_wrong_amount_rolls_the_whole_send_back_too(world, monkeypatch):
+def test_a_wrong_amount_is_no_better_than_a_refusal(world, monkeypatch):
     s = paid_scenario(world, monkeypatch)
     db = world.db
-    before = snapshot(db)
     original = type(db)._assign_in_tx
 
     def writes_less(self, tx, invoice_id, booking_id, requested, ctx, allow_cancelled=False):
         return original(self, tx, invoice_id, booking_id, requested - 10000, ctx, allow_cancelled)
     monkeypatch.setattr(type(db), '_assign_in_tx', writes_less)
 
+    stays_untouched(s, not_moved(REASON_REBOOK))
+
+
+def test_the_middle_one_of_three_assignments_that_cannot_be_rebooked_stays_and_the_others_move(world, monkeypatch):
+    """Die mittlere Zuordnung scheitert, NACHDEM ihre neuen Sätze und Log-Einträge geschrieben sind: Der Savepoint nimmt die
+    Sätze zurück, ihre Einträge fehlen im Replay-Log, die erste und die dritte Zuordnung ziehen um."""
+    db = world.db
+    r1 = sent(world)
+    bookings = []
+    for day in ('2026-07-01', '2026-07-02', '2026-07-03'):
+        booking = db.insert_booking(day, 30.0, booking_type='bank', account_id=world.bank, recipient_client=CUSTOMER_TEXT)
+        assert handlers.link_booking_to_invoice_capped(db, r1, booking, 30.0)[0]
+        bookings.append(booking)
+    first, middle, last = bookings
+    cancel(world, r1, '2026-07-10')
+    r2 = reissue(db, r1, monkeypatch)
+    original = type(db)._assign_in_tx
+
+    def middle_fails_after_writing(self, tx, invoice_id, booking_id, *args, **kwargs):
+        result = original(self, tx, invoice_id, booking_id, *args, **kwargs)
+        return PaymentAssignment(False, 'ausgeschöpft', None, None) if (invoice_id, booking_id) == (r2, middle) else result
+    monkeypatch.setattr(type(db), '_assign_in_tx', middle_fails_after_writing)
+
+    def middle_rows():
+        return (query_rows(db, 'SELECT * FROM Bookings WHERE ParentBooking_ID = ? ORDER BY ID', middle),
+                query_rows(db, 'SELECT * FROM InvoicePayments WHERE BookingID = ? ORDER BY ID', middle))
+    before, log_before = middle_rows(), len(replay_lines())
+
+    code, body = set_invoice_status(r2, 'sent')
+
+    assert code == 200 and body['hint'] == (
+        'Zahlungen der stornierten Rechnung T-100 über 60,00 € sind jetzt dieser Rechnung zugeordnet. 30,00 € ließen sich '
+        f'nicht automatisch übernehmen und bleiben an der stornierten Rechnung: {REASON_REBOOK}.')
+    assert sorted(a[0] for a in allocations(db, r2)) == [first, last]
+    assert allocations(db, r1) == [(middle, 300000, '2026-07-02')] and middle_rows() == before
+    assert columns(db, r2)['Status'] == 'partial_payment' and db.find_payment_inconsistencies() == []
+    log = replay_lines()[log_before:]
+    for kept in (first, last):                                                # die umgezogenen stehen im Log …
+        assert any(f'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) VALUES ({r2}, {kept}, '
+                   in line for line in log)
+        assert any(f"'entry', {kept}, 0, 'invoice_payment'" in line for line in log)
+    assert not any(f'VALUES ({r2}, {middle}, ' in line or f"'entry', {middle}, 0, 'invoice_payment'" in line
+                   for line in log)                                           # … die gescheiterte nicht
+
+
+def test_an_unexpected_database_error_still_rolls_the_whole_send_back(world, monkeypatch):
+    """Nur Unerwartetes lehnt den Versand ab: ein Datenbankfehler mitten im Umzug – alles zurück, 409, nichts geändert."""
+    s = paid_scenario(world, monkeypatch)
+    db = world.db
+    before = snapshot(db)
+
+    def raising(self, tx, *args, **kwargs):
+        raise sqlite3.OperationalError('disk I/O error')
+    monkeypatch.setattr(type(db), '_assign_in_tx', raising)
+
     code, body = set_invoice_status(s.r2, 'sent')
 
-    assert code == 409 and 'Der zugeordnete Betrag weicht ab.' in body['error'] and snapshot(db) == before
+    assert code == 409 and body['success'] is False
+    assert body['error'].startswith('Die Zahlungen der stornierten Rechnung T-100 ließen sich nicht übernehmen: ')
+    assert 'disk I/O error' in body['error'] and body['error'].endswith('Die Rechnung wurde nicht versendet.')
+    assert snapshot(db) == before
+    row = columns(db, s.r2)
+    assert (row['Status'], row['SentAt']) == ('draft', None) and allocations(db, s.r1) == [(s.booking, 500000, '2026-07-01')]
 
 
 def test_the_write_lock_is_held_while_the_payments_move(world, monkeypatch):
@@ -1768,3 +2251,85 @@ def test_the_check_page_lists_the_new_categories_escaped(world):
     run_sql(world.db, 'DELETE FROM Bookings WHERE ID = ?', bookings_of(world.db, storno_number)[0][0])   # die Gegenbuchung fehlt
     page = PageMiscellaneous(world.db, check_payments=True)
     assert 'T-<b>x</b>' not in page and 'T-&lt;b&gt;x&lt;/b&gt;' in page
+
+
+# ── Die Prüfliste liest die Forderungen der App einmal ───────────────────────
+
+def _bulk_stock(db, template, start, count):
+    """Roh in die Tabellen geschrieben (ohne Dokument, ohne Zähler): ``count`` Storno-Paare ``P<i>``/``S<i>`` ab Nummer
+    ``start`` – ``i % 4``: 0 vollständig, 1 ohne Gegenbuchung der Stornorechnung, 2 ohne Forderung der Rechnung, 3 ohne
+    beides – und ebenso viele von Hand stornierte Rechnungen ``L<i>`` ohne Stornorechnung, deren Forderung bei geradem ``i``
+    noch steht."""
+    with contextlib.closing(sqlite3.connect(db.db_name)) as con:
+        names = [row[1] for row in con.execute('PRAGMA table_info(Invoices)')]
+        debtors = con.execute('SELECT ID FROM ChartOfAccounts WHERE AccountNumber = 10000').fetchone()[0]
+        waiting = con.execute('SELECT ID FROM ChartOfAccounts WHERE AccountNumber = 4405').fetchone()[0]
+
+        def invoice(number, **over):
+            values = {**template, 'ID': None, 'InvoiceNumber': number, 'InvoiceKind': None, 'CancelsInvoiceId': None, **over}
+            return con.execute(f"INSERT INTO Invoices ({', '.join(names)}) VALUES ({', '.join('?' * len(names))})",
+                               [values[name] for name in names]).lastrowid
+
+        def booking(number, amount):
+            con.execute("INSERT INTO Bookings (DateBooking, Amount, BookingType, DocumentNumber, COA_ID, CounterCOA_ID, "
+                        "EntryForm) VALUES ('2026-07-01', ?, 'entry', ?, ?, ?, 'transfer')",
+                        (amount, number, debtors, waiting))
+
+        for i in range(start, start + count):
+            original = invoice(f'P{i}', Status='cancelled')
+            invoice(f'S{i}', Status='sent', InvoiceKind='storno', CancelsInvoiceId=original,
+                    SumGross=-template['SumGross'])
+            if i % 4 in (0, 1):
+                booking(f'P{i}', template['SumGross'])
+            if i % 4 in (0, 2):
+                booking(f'S{i}', -template['SumGross'])
+            invoice(f'L{i}', Status='cancelled')
+            if i % 2 == 0:
+                booking(f'L{i}', template['SumGross'])
+        con.commit()
+
+
+def _storno_findings(found):
+    return sorted((f['category'], f['invoice_number']) for f in found
+                  if f['category'] in ('storno_counter_mismatch', 'legacy_cancelled_open'))
+
+
+def _expected_storno_findings(total):
+    return sorted([('storno_counter_mismatch', f'P{i}') for i in range(total) if i % 4 in (1, 2)]
+                  + [('legacy_cancelled_open', f'L{i}') for i in range(total) if i % 2 == 0])
+
+
+def test_the_check_list_reads_the_receivables_of_the_app_once_so_the_number_of_statements_does_not_grow(world, monkeypatch):
+    """Die beiden Storno-Kategorien schlugen je Paar bzw. je Rechnung die Forderungen nach (``DocumentNumber`` ist nicht
+    indiziert: quadratisch). Jetzt werden sie einmal gelesen: Bei 5 und bei 40 Paaren läuft dieselbe Zahl von Anweisungen, und
+    die Befunde bleiben die, die jedes Paar und jede Alt-Stornierung für sich ergäbe."""
+    db = world.db
+    template = columns(db, sent(world))
+    statements = []
+    original = type(db)._get_connection
+
+    def counting(self):
+        conn = original(self)
+        conn.set_trace_callback(statements.append)
+        return conn
+    monkeypatch.setattr(type(db), '_get_connection', counting)
+
+    runs = {}
+    for total, added in ((5, 5), (40, 35)):
+        _bulk_stock(db, template, total - added, added)
+        statements.clear()
+        found = db.find_payment_inconsistencies()
+        runs[total] = len(statements)
+        assert _storno_findings(found) == _expected_storno_findings(total)
+    assert runs[5] == runs[40], runs
+
+    # der Filter auf eine Rechnung liest weiter gezielt – und ergibt dieselben Befunde wie der Gesamtlauf
+    by_number = {row['InvoiceNumber']: row['ID'] for row in query_rows(db, 'SELECT ID, InvoiceNumber FROM Invoices')}
+    everything = db.find_payment_inconsistencies()
+    for number in ('P0', 'P1', 'P2', 'P3', 'L0', 'L1', 'L2'):
+        mine = [f for f in everything if f['invoice_id'] == by_number[number]]
+        assert _storno_findings(db.find_payment_inconsistencies(by_number[number])) == _storno_findings(mine)
+    assert _storno_findings(db.find_payment_inconsistencies(by_number['P1'])) == [('storno_counter_mismatch', 'P1')]
+    assert _storno_findings(db.find_payment_inconsistencies(by_number['S1'])) == [('storno_counter_mismatch', 'P1')]
+    assert _storno_findings(db.find_payment_inconsistencies(by_number['L2'])) == [('legacy_cancelled_open', 'L2')]
+    assert _storno_findings(db.find_payment_inconsistencies(by_number['P0'])) == []

@@ -336,7 +336,10 @@ kein Subagent darauf:
   (`_app_receivable_ids`; ein Import löst keinen Fehlalarm aus): `storno_counter_mismatch` (von Forderung der
   Rechnung und Gegenbuchung der Stornorechnung steht nur eine) und `legacy_cancelled_open` (von Hand storniert,
   keine Stornorechnung, die Forderung steht noch); ein intaktes Paar, auch mit Guthaben, ergibt keinen Befund.
-  Eine Reparatur gibt es nicht
+  **Diese Forderungen liest die Prüfliste einmal für alle Paare und Alt-Stornos** (`_app_receivable_amounts`, mit
+  Beträgen; dieselbe Bedingung `receivable_condition` und dieselbe Einordnung `_is_app_receivable` wie
+  `_app_receivable_ids`, das darauf aufsetzt) – je Rechnung nachzuschlagen wäre quadratisch, `DocumentNumber` hat keinen
+  Index; nur der Filter auf eine Rechnung (`invoice_id`) liest gezielt. Eine Reparatur gibt es nicht
 - Masken schreiben nur, was sie führen (`update_booking_fields`) – Gegenkonto,
   Kategorie und fremde Kontakte dürfen beim Speichern nicht verloren gehen. **Öffnen und unverändert
   speichern ändert nichts** (`tests/test_entry_form_roundtrip.py` prüft es für jede Bankbewegung, jeden
@@ -613,20 +616,37 @@ kein Subagent darauf:
   (`_payment_move_context` löst das Erlöskonto vorher in eigenen Verbindungen auf, `_move_replaced_payments` schreibt;
   `update_invoice_status`, der ungeprüfte Baustein für Seed und Tests, zieht nie um). Voraussetzung: gleicher Kunde und
   gleiche Währung und ein hinterlegtes Erlöskonto für den Steuersatz der neuen Rechnung – sonst bleibt alles, und der
-  Hinweis sagt es. Umgezogen wird je Zuordnung (älteste zuerst, solange die neue Rechnung offen ist), und nur, was sich
-  eindeutig neu schreiben lässt (`_movable_payment`: Bankbewegung mit Zahlungseingang und SKR-Konto, nicht überbucht,
-  ohne Sätze mit `SourceGroup`, mit den unveränderten markierten Sätzen der App, genau eine Zuordnung zum Paar);
-  Importe (Zuordnung ohne Sätze), überbuchte Bewegungen und von Hand geänderte Sätze bleiben an der stornierten
-  Rechnung; eine Sammelzahlung zieht nur mit dem Anteil der stornierten Rechnung um, die Zuordnungen anderer Rechnungen
-  bleiben. Je Zuordnung wird sie samt Sätzen entfernt (`_unassign`), die neue Rechnung
+  Hinweis sagt es. Umgezogen wird je Zuordnung (älteste zuerst, solange die neue Rechnung offen ist), und nur, was die
+  App **genau so geschrieben hat** und sich eindeutig neu schreiben lässt (`_movable_payment`: Bankbewegung mit
+  Zahlungseingang und SKR-Konto, nicht überbucht, ohne Sätze mit `SourceGroup`, genau eine Zuordnung zum Paar).
+  **Die Sätze der Zuordnung müssen genau die sein, die `_assign_in_tx` dafür schreibt** (`_revenue_coa_if_as_written`,
+  Vergleich mit `payment_rows` – derselben Stelle, aus der das Schreiben seine Werte nimmt): der Bestand („Bank an
+  Debitoren“ und „Wartekonto an Erlöskonto“ oder der Einzelsatz „Erlöskonto an Bank“, keiner mehr, keiner weniger), das
+  Bankkonto der Bewegung, die übrigen Konten in ihrer Rolle, Betrag, Datum, Steuerdatum, Empfänger, Währung, Kunde, Text,
+  Steuersatz, der Steuerbetrag (anteilig oder, als schließender Teil, der Rest: `_prorated_tax`, `_remaining_tax`), keine
+  Kategorie; kein Beleg und kein anderer Verweis an den Sätzen, den `_delete_booking_rows` wegräumt
+  (`_booking_attachments_exist`, `BOOKING_REFERENCES`), und unter der Bewegung kein markierter Satz mit einer Beleg-Nr.,
+  die zu keiner ihrer Zuordnungen gehört. Sonst bleibt die Zuordnung liegen – der Umzug löschte die Sätze und schriebe sie
+  neu, eine von Hand korrigierte Steuer, ein geändertes Datum oder ein verknüpfter Beleg gingen verloren, ein markierter
+  Satz mit geänderter Beleg-Nr. bliebe als Doppelbuchung stehen. Beurteilt wird jede Zuordnung gegen den Stand VOR dem
+  ersten Umzug (der Steuer-Rest des schließenden Teils hängt von den anderen ab). Importe (Zuordnung ohne Sätze),
+  überbuchte Bewegungen und geänderte Sätze bleiben an der stornierten Rechnung; eine Sammelzahlung zieht nur mit dem Anteil
+  der stornierten Rechnung um, die Zuordnungen anderer Rechnungen bleiben. Je Zuordnung wird sie samt Sätzen entfernt
+  (`_unassign`), die neue Rechnung
   bekommt den Betrag, den sie noch braucht (`_assign_in_tx`: Datum der Bankbewegung, Steuersatz und Erlöskonto der neuen
   Rechnung; Steuer anteilig, der schließende Teil den Rest), und ein Rest wird an der stornierten Rechnung wieder
   zugeordnet (`allow_cancelled`, auf dem bisherigen Erlöskonto): Er ist ihr Guthaben. Weicht der Steuersatz ab, ändert sich
-  die Umsatzsteuer am Zahlungstag; bei gleichem Satz und Betrag bleibt die EÜR unverändert. Was geschah, nennt `hint`
-  in der Antwort (`StatusChange.payment_hint`). Scheitert eine Zuordnung, obwohl alles stimmte, lehnt der Versand ab
-  (409, `PaymentMoveFailed` → `_Refusal`) und nichts ist geändert. Entfernt der Nutzer die Zahlung an der neuen Rechnung
-  später von Hand, wandert nichts zurück: Der Betrag ist freier Rest der Bewegung (Guthaben in den offenen Posten) und
-  lässt sich jeder offenen Rechnung zuordnen
+  die Umsatzsteuer am Zahlungstag; bei gleichem Satz und Betrag bleibt die EÜR unverändert. **Je Zuordnung läuft das in
+  einem Savepoint:** Lässt sie sich nicht vollständig mit den erwarteten Beträgen neu buchen, geht er zurück (Zuordnung und
+  Sätze unverändert, ihre Einträge im Replay-Log entfallen), sie zählt als übersprungen, der Versand gelingt, die nächste
+  Zuordnung kommt an die Reihe; nur ein unerwarteter Datenbankfehler lehnt den Versand ab (409, `PaymentMoveFailed` →
+  `_Refusal`) und nichts ist geändert. **Was geschah, nennt `hint` in der Antwort** (`StatusChange.payment_hint`) – und
+  bei dem, was bleibt, den wirklichen Grund (`MOVE_SKIP_REASONS`: Import, Bankkonto ohne SKR-Nummer, überbuchte Bewegung,
+  geänderte Sätze oder Beleg, allein ein anderes Steuerdatum – so stempelt der DATEV-Export die exportierten Sätze, sie
+  ziehen deshalb nicht um –, mehrfach zugeordnete Bewegung, keine Bankbewegung mit Zahlungseingang, nicht neu buchbar), je
+  Grund einmal in fester Reihenfolge, mit dem Betrag des Übersprungenen insgesamt. Entfernt der Nutzer die Zahlung an der
+  neuen Rechnung später von Hand, wandert nichts zurück: Der Betrag ist freier Rest der Bewegung (Guthaben in den offenen
+  Posten) und lässt sich jeder offenen Rechnung zuordnen
 - **Stornobeleg** (`Database.cancel_invoice`, `db/invoice_storno.py`, seit 2.2.1; `POST /invoice/cancel`, JSON
   `{"invoiceId", "date"}` – `invoiceId` streng als Ganzzahl wie bei `/invoice/save` –, Route in `_JSON_PATHS` und
   `_POST_ONLY_JSON_PATHS`: CSRF-Token und Herkunft wie `/invoice/status`, GET → 405): Eine versendete Rechnung

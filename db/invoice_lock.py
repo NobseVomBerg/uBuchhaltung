@@ -600,8 +600,9 @@ class InvoiceLockMixin:
           Steuersatz mit Wartekonto); ``send`` setzt außerdem ``SentAt``, den Zeitpunkt des ersten
           Versands (ein späteres Versenden ändert ihn nicht). Ersetzt die versendete Rechnung eine stornierte
           (``Invoices.ReplacesInvoiceId``), ziehen die Zahlungen der stornierten Rechnung auf sie um
-          (``_move_replaced_payments``, ``StatusChange.moved``/``payment_hint``); scheitert das, ist die Rechnung
-          nicht versendet (409, nichts geändert);
+          (``_move_replaced_payments``, ``StatusChange.moved``/``payment_hint``); eine Zuordnung, die sich nicht neu
+          buchen lässt, bleibt an der stornierten Rechnung (der Hinweis nennt den Grund), nur ein Datenbankfehler mitten im
+          Umzug lehnt den Versand ab (409, nichts geändert);
         * ``reopen``: die Forderung wird entfernt – aber nur eine, die die App selbst gebucht hat und
           die an nichts hängt, sonst wird das Zurückholen mit Klartext abgelehnt (nichts geändert).
           PDF und XML wandern nach ``invoices/<Jahr>/Fassungen/<ID>/`` (``archive_sent_documents``) und

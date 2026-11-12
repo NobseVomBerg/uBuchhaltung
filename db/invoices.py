@@ -984,13 +984,30 @@ class InvoicesMixin:
         das Entfernen (``_receivable_removal``) und die Gegenbuchung beim Stornieren (``cancel_invoice``)."""
         return not source_group and counter in waiting_ids
 
+    def _app_receivable_amounts(self, conn, number=None):
+        """Die Forderungsbuchungen, die die App selbst gebucht hat (``_is_app_receivable``), gleich ob sie an einer
+        Bankbewegung hängen, als ``{Beleg-Nr.: [(ID, Betrag in Minor Units)]}``, älteste zuerst.
+
+        Ohne ``number`` in EINER Abfrage über den ganzen Bestand – für alles, was viele Rechnungen auf einmal braucht
+        (``find_payment_inconsistencies``): Je Rechnung nachzuschlagen wäre quadratisch, ``DocumentNumber`` ist nicht
+        indiziert. Mit ``number`` nur diese Rechnung. Dieselbe Bedingung (``receivable_condition``) und dieselbe
+        Einordnung (``_is_app_receivable``) für beide – es gibt keine zweite Definition."""
+        waiting_ids = self._waiting_coa_ids(conn)
+        receivable_sql, receivable_params = self._receivable_sql(conn.cursor())
+        only, only_params = (' AND DocumentNumber = ?', [number]) if number is not None else ('', [])
+        found = {}
+        for booking_id, document_number, amount, source_group, counter in conn.execute(
+                "SELECT ID, DocumentNumber, Amount, COALESCE(SourceGroup, ''), CounterCOA_ID FROM Bookings "
+                f"WHERE BookingType = 'entry' AND DocumentNumber IS NOT NULL AND {receivable_sql}{only} ORDER BY ID",
+                [*receivable_params, *only_params]):
+            if self._is_app_receivable(source_group, counter, waiting_ids):
+                found.setdefault(document_number, []).append((booking_id, amount or 0))
+        return found
+
     def _app_receivable_ids(self, conn, number):
         """IDs der Forderungsbuchungen einer Rechnung, die die App selbst gebucht hat (``_is_app_receivable``),
         gleich ob sie an einer Bankbewegung hängen."""
-        waiting_ids = self._waiting_coa_ids(conn)
-        return [booking_id for booking_id, _parent, source_group, _coa, counter
-                in self._receivable_rows(conn, number)
-                if self._is_app_receivable(source_group, counter, waiting_ids)]
+        return [booking_id for booking_id, _amount in self._app_receivable_amounts(conn, number).get(number, [])]
 
     def _receivable_removal(self, conn, number):
         """Welche Forderungsbuchungen einer Rechnung darf die App entfernen? Nur die, die sie selbst

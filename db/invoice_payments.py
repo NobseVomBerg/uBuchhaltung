@@ -45,6 +45,72 @@ NO_REVENUE_COA = ('Für den Steuersatz dieser Rechnung ist kein Erlöskonto hint
                   'Erlöskonto wählen.')
 NOT_A_REVENUE_COA = 'Das gewählte Konto ist kein Erlöskonto.'
 
+# Die Spalten, die ``_assign_in_tx`` für jeden Satz einer Zuordnung schreibt, in der Reihenfolge des INSERT (dazu die festen
+# Werte BookingType 'entry' und AutoMirror 0). Daran erkennt der Umzug der Zahlungen beim Versenden einer Ersatzrechnung, ob
+# die Sätze einer Zuordnung noch die der App sind (``payment_rows``, ``InvoicePaymentsMixin._same_payment_row``).
+PAYMENT_ROW_COLUMNS = ('DateBooking', 'DateTax', 'RecipientClient', 'Contact_ID', 'COA_ID', 'CounterCOA_ID', 'Amount',
+                       'Currency', 'TaxRate', 'TaxAmount', 'Text', 'DocumentNumber', 'ParentBooking_ID', 'Status',
+                       'EntryForm')
+# Dazu prüft der Vergleich: BookingType (fest 'entry') und was die App an so einem Satz nie schreibt – er muss leer sein, gesetzt
+# hat es ein Nutzer oder ein Import
+_PAYMENT_ROW_UNWRITTEN = ('BookingType', 'Account_ID', 'ForeignBankAccount', 'Category_ID', 'SourceGroup')
+_PAYMENT_ROW_INSERT = ('INSERT INTO Bookings (DateBooking, DateTax, RecipientClient, Contact_ID, '
+                       'COA_ID, CounterCOA_ID, Amount, Currency, TaxRate, TaxAmount, Text, '
+                       "DocumentNumber, BookingType, ParentBooking_ID, AutoMirror, Status, "
+                       "EntryForm) "
+                       "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'entry', ?, 0, ?, ?)")
+
+# Ein Satz einer Zuordnung: ``values`` {Spalte: Wert} für ``PAYMENT_ROW_COLUMNS``, ``description`` für das Replay-Log
+PaymentRow = namedtuple('PaymentRow', 'values description')
+
+
+def payment_rows(*, number, customer_id, bank_id, bank_date, bank_tax_date, recipient, currency, amount, tax_rate,
+                 tax_value, bank_coa, revenue_coa, debtor_side=None, waiting_side=None):
+    """Die Buchungssätze, die die App für eine Zuordnung schreibt – die EINE Stelle, die ihre Werte festlegt: ``_assign_in_tx``
+    schreibt sie, der Umzug der Zahlungen vergleicht den Bestand damit.
+
+    ``number``: Nummer der Rechnung (Beleg-Nr.), ``customer_id``: ihr Kunde, ``bank_id``/``bank_date``/``bank_tax_date``/
+    ``recipient``/``currency``: die Bankbewegung, ``amount``: der zugeordnete Betrag (Minor Units), ``tax_rate`` (als
+    Bruchteil, ``None`` ohne Steuer) und ``tax_value`` (Minor Units) die Steuer der Zuordnung, ``bank_coa``/``revenue_coa``:
+    Konto der Bank und Erlöskonto (COA-IDs). Mit Forderung (``debtor_side`` und ``waiting_side`` gegeben) sind es „Bank an
+    Debitoren“ (``liquid_first``, ohne Steuer) und „Wartekonto an Erlöskonto“ (``transfer``, mit Steuer), ohne Forderung
+    der Einzelsatz „Erlöskonto an Bank“ (``purpose_first``, mit Steuer). Die Formen stehen fest, nicht aus der Kontenliste
+    abgeleitet."""
+    def row(coa_id, counter_coa_id, form, text, taxed, description):
+        return PaymentRow({
+            'DateBooking': bank_date, 'DateTax': bank_tax_date, 'RecipientClient': recipient or '',
+            'Contact_ID': customer_id, 'COA_ID': coa_id, 'CounterCOA_ID': counter_coa_id, 'Amount': amount,
+            'Currency': currency or 'EUR', 'TaxRate': tax_rate if taxed else None,
+            'TaxAmount': tax_value if taxed else None, 'Text': text, 'DocumentNumber': number,
+            'ParentBooking_ID': bank_id, 'Status': PAYMENT_MARK, 'EntryForm': form}, description)
+
+    if debtor_side and waiting_side:
+        return [row(bank_coa, debtor_side, FORM_LIQUID_FIRST, f'Zahlung zu Re. {number}', False,
+                    'Payment child (bank to debtor)'),
+                row(waiting_side, revenue_coa, FORM_TRANSFER, f'Umb. zu Re. {number}', True,
+                    'Payment child (open item to revenue)')]
+    return [row(revenue_coa, bank_coa, FORM_PURPOSE_FIRST, f'Zahlung zu Re. {number}', True,
+                'Payment child (revenue to bank)')]
+
+
+# Warum eine Zuordnung beim Umzug auf die Ersatzrechnung an der stornierten Rechnung bleibt: Kennung → Klartext. In dieser
+# Reihenfolge nennt der Hinweis die vorkommenden Gründe, je Grund einmal.
+MOVE_SKIP_REASONS = {
+    'import': 'Zuordnung aus einem Import',
+    'no_skr': 'das Bankkonto hat keine SKR-Nummer',
+    'overbooked': 'die Bankbewegung ist überbucht',
+    'edited': 'die Buchungssätze der Zahlung wurden von Hand geändert oder tragen einen Beleg',
+    'tax_date': ('die Buchungssätze der Zahlung tragen ein anderes Steuerdatum als die Bankbewegung '
+                 '(z. B. nach einem DATEV-Export)'),
+    'multiple': 'die Bankbewegung ist mehrfach zugeordnet',
+    'no_incoming': 'keine Bankbewegung mit Zahlungseingang',
+    'rebook': 'die Zuordnung ließ sich nicht neu buchen',
+}
+
+# Die stornierte Rechnung, wie der Umzug sie braucht: ID, Nummer, Brutto und Steuer (Minor Units), Steuersatz (wie in
+# ``Invoices.TaxRate``) und Kunde
+_Replaced = namedtuple('_Replaced', 'id number gross tax_total rate customer_id')
+
 
 def next_payment_status(current, gross, paid, due_date, today):
     """Status einer Rechnung, nachdem sich ihre Zahlungen geändert haben.
@@ -81,9 +147,11 @@ def _refused(message):
 
 
 class PaymentMoveFailed(ValueError):
-    """Der Umzug der Zahlungen einer stornierten Rechnung auf ihre Ersatzrechnung ist gescheitert; ``str(exc)`` ist der
-    Klartext. ``Database.set_invoice_status`` macht daraus eine Ablehnung und rollt damit alles zurück, was der Wechsel in
-    seiner Transaktion geschrieben hat (``db.invoice_lock._Refusal`` ist von hier aus nicht erreichbar: Zirkelimport)."""
+    """Der Umzug der Zahlungen einer stornierten Rechnung auf ihre Ersatzrechnung ist an etwas Unerwartetem gescheitert (ein
+    Datenbankfehler mitten im Umzug); ``str(exc)`` ist der Klartext. ``Database.set_invoice_status`` macht daraus eine Ablehnung
+    und rollt damit alles zurück, was der Wechsel in seiner Transaktion geschrieben hat (``db.invoice_lock._Refusal`` ist von
+    hier aus nicht erreichbar: Zirkelimport). Eine Zuordnung, die sich nur nicht neu buchen lässt, ist dagegen erwartet: Sie
+    bleibt an der stornierten Rechnung, und der Versand gelingt (``_move_replaced_payments``)."""
 
 
 def payment_blocker(doc_type, status, gross, kind=None):
@@ -149,6 +217,38 @@ class InvoicePaymentsMixin:
         row = conn.execute(f'SELECT {expr} FROM Bookings b WHERE b.ID = ?',
                            params + [booking_id]).fetchone()
         return row[0] if row and row[0] is not None else 0
+
+    @staticmethod
+    def _booking_tax_rate(rate):
+        """Der Steuersatz, den die Sätze einer Zuordnung tragen, aus ``Invoices.TaxRate``: Der steht teils als 0.19, teils
+        als 19; -1 ist der Sentinel für „§ 19, keine USt“ (wie 0 oder kein Satz: ``None``)."""
+        return None if not rate or rate < 0 else (rate if rate <= 1 else rate / 100)
+
+    @staticmethod
+    def _prorated_tax(tax_total, amount, gross):
+        """Die Steuer eines Teils der Rechnung: anteilig am Betrag, auf den Cent gerundet (halb auf)."""
+        return round_minor(prorate(tax_total, amount, gross), 2)
+
+    def _remaining_tax(self, conn, invoice_id, number, gross, tax_total, except_booking=None):
+        """Die Steuer des Teils, der die Rechnung schließt: Rechnungssteuer minus die Steuer der anderen Zuordnungen. Hat eine
+        markierte Sätze, zählt deren gebuchte Steuer (nur die Zahlungssätze tragen Steuer, nicht „Bank an Debitoren“); sonst
+        (Altbestand, WISO-Import) ihr anteiliger Betrag – eine Suche über die Beleg-Nr. fände Sätze mit anderer oder fehlender
+        Nummer nicht. ``except_booking``: eine Bankbewegung, deren Zuordnung nicht mitzählt – so fragt der Umzug, was diese
+        Zuordnung als schließender Teil bekommen hätte."""
+        skip, params = ((' AND BookingID <> ?', (invoice_id, except_booking)) if except_booking is not None
+                        else ('', (invoice_id,)))
+        taxed_before = 0
+        for other_booking, other_amount in conn.execute(
+                f'SELECT BookingID, SUM(Amount) FROM InvoicePayments WHERE InvoiceID = ?{skip} GROUP BY BookingID',
+                params).fetchall():
+            marked = self._payment_children(conn, other_booking, number)
+            if marked:
+                taxed_before += conn.execute(
+                    f"SELECT COALESCE(SUM(TaxAmount), 0) FROM Bookings WHERE ID IN "
+                    f"({','.join('?' * len(marked))})", marked).fetchone()[0]
+            else:
+                taxed_before += self._prorated_tax(tax_total, other_amount, gross)
+        return tax_total - taxed_before
 
     @staticmethod
     def _payment_children(conn, bank_id, invoice_number):
@@ -408,28 +508,12 @@ class InvoicePaymentsMixin:
                             'ausgeschöpft)')
 
         tax_total = tax_total or 0
+        # Der schließende Teil bekommt den Rest der Rechnungssteuer, jeder andere den anteiligen Betrag
         if alloc == due:
-            # Der schließende Teil bekommt den Rest der Rechnungssteuer: Rechnungssteuer minus
-            # die Steuer der anderen Zuordnungen. Hat eine markierte Sätze, zählt deren
-            # gebuchte Steuer (nur die Zahlungssätze tragen Steuer, nicht „Bank an
-            # Debitoren“); sonst (Altbestand, WISO-Import) ihr anteiliger Betrag – eine Suche
-            # über die Beleg-Nr. fände Sätze mit anderer oder fehlender Nummer nicht.
-            taxed_before = 0
-            for other_booking, other_amount in conn.execute(
-                    'SELECT BookingID, SUM(Amount) FROM InvoicePayments WHERE InvoiceID = ? '
-                    'GROUP BY BookingID', (invoice_id,)).fetchall():
-                marked = self._payment_children(conn, other_booking, number)
-                if marked:
-                    taxed_before += conn.execute(
-                        f"SELECT COALESCE(SUM(TaxAmount), 0) FROM Bookings WHERE ID IN "
-                        f"({','.join('?' * len(marked))})", marked).fetchone()[0]
-                else:
-                    taxed_before += round_minor(prorate(tax_total, other_amount, gross), 2)
-            tax_part = tax_total - taxed_before
+            tax_part = self._remaining_tax(conn, invoice_id, number, gross, tax_total)
         else:
-            tax_part = round_minor(prorate(tax_total, alloc, gross), 2)
-        # TaxRate steht teils als 0.19, teils als 19; -1 ist der Sentinel für „§ 19, keine USt“
-        tax_rate = None if not rate or rate < 0 else (rate if rate <= 1 else rate / 100)
+            tax_part = self._prorated_tax(tax_total, alloc, gross)
+        tax_rate = self._booking_tax_rate(rate)
         tax_value = tax_part if tax_rate else None
 
         # Die Forderung wird wie überall gesucht (``receivable_condition``): ein Satz mit 10000
@@ -461,30 +545,15 @@ class InvoicePaymentsMixin:
                        'PaymentDate) VALUES (?, ?, ?, ?)',
                        (invoice_id, booking_id, alloc, bank_date), 'Link invoice to booking'))
 
-        def child(coa_id, counter_coa_id, form, text, taxed, description):
-            sql = ('INSERT INTO Bookings (DateBooking, DateTax, RecipientClient, Contact_ID, '
-                   'COA_ID, CounterCOA_ID, Amount, Currency, TaxRate, TaxAmount, Text, '
-                   "DocumentNumber, BookingType, ParentBooking_ID, AutoMirror, Status, "
-                   "EntryForm) "
-                   "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'entry', ?, 0, ?, ?)")
-            params = (bank_date, bank_tax_date, recipient or '', customer_id, coa_id,
-                      counter_coa_id, alloc, currency or 'EUR',
-                      tax_rate if taxed else None, tax_value if taxed else None, text,
-                      number, booking_id, PAYMENT_MARK, form)
-            conn.execute(sql, params)
-            tx.log.append((sql, params, description))
-
-        # Die Formen stehen fest, nicht aus der Kontenliste abgeleitet: „Bank an Debitoren“
-        # hat das Geldkonto vorne, „Wartekonto an Erlöskonto“ ist eine Umbuchung, „Erlöskonto
-        # an Bank“ das Zweckkonto vorne.
-        if debtor_side and waiting_side:
-            child(ctx['bank_coa'], debtor_side, FORM_LIQUID_FIRST,
-                  f'Zahlung zu Re. {number}', False, 'Payment child (bank to debtor)')
-            child(waiting_side, ctx['revenue_coa'], FORM_TRANSFER,
-                  f'Umb. zu Re. {number}', True, 'Payment child (open item to revenue)')
-        else:
-            child(ctx['revenue_coa'], ctx['bank_coa'], FORM_PURPOSE_FIRST,
-                  f'Zahlung zu Re. {number}', True, 'Payment child (revenue to bank)')
+        # Die Formen stehen fest, nicht aus der Kontenliste abgeleitet: „Bank an Debitoren“ hat das Geldkonto vorne,
+        # „Wartekonto an Erlöskonto“ ist eine Umbuchung, „Erlöskonto an Bank“ das Zweckkonto vorne (``payment_rows``).
+        for row in payment_rows(number=number, customer_id=customer_id, bank_id=booking_id, bank_date=bank_date,
+                                bank_tax_date=bank_tax_date, recipient=recipient, currency=currency, amount=alloc,
+                                tax_rate=tax_rate, tax_value=tax_value, bank_coa=ctx['bank_coa'],
+                                revenue_coa=ctx['revenue_coa'], debtor_side=debtor_side, waiting_side=waiting_side):
+            params = tuple(row.values[column] for column in PAYMENT_ROW_COLUMNS)
+            conn.execute(_PAYMENT_ROW_INSERT, params)
+            tx.log.append((_PAYMENT_ROW_INSERT, params, row.description))
 
         self._recalc_invoice(conn, invoice_id)
         return PaymentAssignment(True, None, payment_id, ctx['revenue_coa'])
@@ -581,35 +650,125 @@ class InvoicePaymentsMixin:
             self._delete_booking_rows(conn, [child_id])
 
     # ── Umzug auf die Ersatzrechnung ─────────────────────────────────────────
-    def _movable_payment(self, conn, old_id, old_number, new_id, bank_id, amount, bank_coas, bank_coa_ids):
-        """Lässt sich die Zuordnung (stornierte Rechnung ``old_id``, Bankbewegung ``bank_id``) über ``amount`` umziehen?
-        Nur, was die App selbst angelegt hat und was sich eindeutig neu schreiben lässt: eine Bankbewegung mit
-        Zahlungseingang, deren Konto eine SKR-Nummer hat (``bank_coas``) und die nicht überbucht ist, ohne Sätze mit
-        Quellklammer (WISO), mit den markierten Sätzen der App – alle über ``amount`` und mit erkennbarem Erlöskonto
-        (``_payment_revenue_coa``) –, genau eine Zuordnung zum Paar und keine der neuen Rechnung zur selben Bewegung.
-        Returns ``(Account_ID der Bewegung, Erlöskonto der bisherigen Sätze)`` oder ``None``."""
-        bank = conn.execute('SELECT BookingType, Amount, Account_ID FROM Bookings WHERE ID = ?', (bank_id,)).fetchone()
-        if bank is None or bank[0] != 'bank' or (bank[1] or 0) <= 0 or amount <= 0 or bank[2] not in bank_coas:
+    def _same_payment_row(self, stored, expected, ignore_tax_date=False):
+        """Ist der gespeicherte Satz (Spalte → Wert) genau der erwartete (``payment_rows``)? Der Steuersatz zählt als gleich,
+        wenn es derselbe Satz ist (0.19 wie 19, ``_tax_rate_key``), ein leerer Empfänger wie ein fehlender. Was die App nie
+        schreibt – Konto, Fremdkonto, Kategorie, Quellklammer – muss leer sein. ``ignore_tax_date`` lässt das Steuerdatum
+        aus: nur, um den Grund zu benennen (der DATEV-Export stempelt es auf die exportierten Sätze) – umgezogen wird so
+        ein Satz trotzdem nicht."""
+        for column in PAYMENT_ROW_COLUMNS:
+            if ignore_tax_date and column == 'DateTax':
+                continue
+            have, want = stored[column], expected[column]
+            if column == 'TaxRate':
+                same = self._tax_rate_key(have) == self._tax_rate_key(want)
+            elif column == 'RecipientClient':
+                same = (have or '') == (want or '')
+            else:
+                same = have == want
+            if not same:
+                return False
+        return (stored['BookingType'] == 'entry' and stored['Account_ID'] is None and not stored['ForeignBankAccount']
+                and stored['Category_ID'] is None and not stored['SourceGroup'])
+
+    def _revenue_coa_if_as_written(self, conn, old, bank_id, bank, amount, bank_coa, ignore_tax_date=False):
+        """Das Erlöskonto der Zuordnung (stornierte Rechnung ``old``, Bankbewegung ``bank_id`` mit den Angaben ``bank``, wie
+        ``_movable_payment`` sie liest, über ``amount``, Bankkonto ``bank_coa``), wenn ihre Sätze GENAU die sind, die
+        ``_assign_in_tx`` dafür schreibt – sonst ``None``. Der Umzug entfernt die Sätze und schreibt sie neu: Was ein Nutzer
+        daran geändert hat, ginge still verloren, und ein Satz mit anderer Beleg-Nr. bliebe als Doppelbuchung stehen. Es gilt:
+
+        1. Satzbestand: unter der Bewegung stehen zu dieser Zuordnung (``Status`` = Marke, ``DocumentNumber`` = Nummer der
+           Rechnung) genau die erwarteten Sätze – „Bank an Debitoren“ (``liquid_first``) und „Wartekonto an Erlöskonto“
+           (``transfer``) oder der Einzelsatz „Erlöskonto an Bank“ (``purpose_first``), keiner mehr, keiner weniger;
+        2. jede Spalte hat den Wert, den ``payment_rows`` für diese Zuordnung ergibt: Datum, Steuerdatum, Empfänger und Währung
+           der Bewegung, Kunde der Rechnung, Betrag, Text, Steuersatz, das Bankkonto der Bewegung; die übrigen Konten in der
+           Rolle, die die Form verlangt (Debitoren, ein Wartekonto, ein Erlöskonto); Kategorie, Konto und Fremdkonto leer;
+        3. der Steuerbetrag ist einer der beiden, die die Zuordnungslogik ergibt: anteilig (``_prorated_tax``) oder, als
+           schließender Teil, der Rest (``_remaining_tax``, ohne die Zuordnung selbst);
+        4. an keinem Satz hängt etwas, das ``_delete_booking_rows`` mit ihm wegräumt (``_booking_attachments_exist``);
+        5. unter der Bewegung steht kein markierter Satz, dessen Beleg-Nr. zu keiner Rechnung gehört, die der Bewegung
+           zugeordnet ist.
+
+        ``ignore_tax_date`` prüft dasselbe ohne das Steuerdatum – ``_movable_payment`` benennt damit den Grund."""
+        if conn.execute(
+                "SELECT 1 FROM Bookings k WHERE k.ParentBooking_ID = ? AND k.Status = ? AND NOT EXISTS ("
+                "SELECT 1 FROM InvoicePayments ip JOIN Invoices i ON i.ID = ip.InvoiceID "
+                "WHERE ip.BookingID = k.ParentBooking_ID AND i.InvoiceNumber = k.DocumentNumber) LIMIT 1",
+                (bank_id, PAYMENT_MARK)).fetchone():
             return None
+        columns = ('ID', *PAYMENT_ROW_COLUMNS, *_PAYMENT_ROW_UNWRITTEN)
+        rows = [dict(zip(columns, values)) for values in conn.execute(
+            f"SELECT {', '.join(columns)} FROM Bookings WHERE ParentBooking_ID = ? AND Status = ? AND DocumentNumber = ? "
+            "ORDER BY ID", (bank_id, PAYMENT_MARK, old.number))]
+        if sorted(row['EntryForm'] or '' for row in rows) not in ([FORM_LIQUID_FIRST, FORM_TRANSFER], [FORM_PURPOSE_FIRST]):
+            return None
+        if self._booking_attachments_exist(conn, [row['ID'] for row in rows]):
+            return None
+
+        by_form = {row['EntryForm']: row for row in rows}
+        revenue_coa = self._payment_revenue_coa(conn, [row['ID'] for row in rows])
+        if revenue_coa not in {row[0] for row in self._income_coas(conn.cursor())}:
+            return None
+        debtor_side = waiting_side = None
+        if len(rows) == 2:
+            debtor_side = by_form[FORM_LIQUID_FIRST]['CounterCOA_ID']
+            waiting_side = by_form[FORM_TRANSFER]['COA_ID']
+            debtor_ids = {row[0] for row in conn.execute('SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?',
+                                                         (self.DEBTOR_ACCOUNT_NUMBER,))}
+            if debtor_side not in debtor_ids or waiting_side not in self._waiting_coa_ids(conn):
+                return None
+
+        tax_rate = self._booking_tax_rate(old.rate)
+        taxes = ({self._prorated_tax(old.tax_total, amount, old.gross),
+                  self._remaining_tax(conn, old.id, old.number, old.gross, old.tax_total, except_booking=bank_id)}
+                 if tax_rate else {None})
+        for tax_value in taxes:
+            expected = payment_rows(
+                number=old.number, customer_id=old.customer_id, bank_id=bank_id, bank_date=bank[3], bank_tax_date=bank[4],
+                recipient=bank[5], currency=bank[6], amount=amount, tax_rate=tax_rate, tax_value=tax_value,
+                bank_coa=bank_coa, revenue_coa=revenue_coa, debtor_side=debtor_side, waiting_side=waiting_side)
+            if all(self._same_payment_row(by_form[row.values['EntryForm']], row.values, ignore_tax_date)
+                   for row in expected):
+                return revenue_coa
+        return None
+
+    def _movable_payment(self, conn, old, new_id, bank_id, amount, bank_coas, bank_coa_ids):
+        """Lässt sich die Zuordnung (stornierte Rechnung ``old``, Bankbewegung ``bank_id``) über ``amount`` umziehen? Nur, was
+        die App genau so geschrieben hat, wie ``_assign_in_tx`` es schreiben würde, und was sich eindeutig neu schreiben lässt:
+        eine Bankbewegung mit Zahlungseingang, deren Konto eine SKR-Nummer hat (``bank_coas``) und die nicht überbucht ist;
+        keine Sätze mit Quellklammer (WISO) darunter; genau eine Zuordnung zum Paar und keine der neuen Rechnung zur selben
+        Bewegung; und markierte Sätze, die unverändert sind (``_revenue_coa_if_as_written``).
+
+        ``old``: die stornierte Rechnung (``_Replaced``). Returns ``((Account_ID der Bewegung, Erlöskonto der bisherigen
+        Sätze), None)``, sonst ``(None, Grund)`` – der Grund ist ein Schlüssel von ``MOVE_SKIP_REASONS``."""
+        bank = conn.execute('SELECT BookingType, Amount, Account_ID, DateBooking, DateTax, RecipientClient, Currency '
+                            'FROM Bookings WHERE ID = ?', (bank_id,)).fetchone()
+        if bank is None or bank[0] != 'bank' or (bank[1] or 0) <= 0:
+            return None, 'no_incoming'
+        if amount <= 0:
+            return None, 'import'                                    # eine negative Zuordnung kennt nur der WISO-Import
+        if bank[2] not in bank_coas:
+            return None, 'no_skr'
         if conn.execute("SELECT 1 FROM Bookings WHERE ParentBooking_ID = ? AND SourceGroup IS NOT NULL "
                         "AND SourceGroup <> '' LIMIT 1", (bank_id,)).fetchone():
-            return None
-        children = self._payment_children(conn, bank_id, old_number)
-        if not children:
-            return None
-        if conn.execute('SELECT COUNT(*) FROM InvoicePayments WHERE InvoiceID = ? AND BookingID = ?',
-                        (old_id, bank_id)).fetchone()[0] != 1:
-            return None
-        if conn.execute('SELECT 1 FROM InvoicePayments WHERE InvoiceID = ? AND BookingID = ?',
-                        (new_id, bank_id)).fetchone():
-            return None
-        if conn.execute(f"SELECT 1 FROM Bookings WHERE ID IN ({','.join('?' * len(children))}) AND Amount <> ? LIMIT 1",
-                        [*children, amount]).fetchone():
-            return None
+            return None, 'import'
+        if not self._payment_children(conn, bank_id, old.number):
+            return None, 'import'                                    # keine eigenen Sätze: die Zuordnung eines Imports
+        if (conn.execute('SELECT COUNT(*) FROM InvoicePayments WHERE InvoiceID = ? AND BookingID = ?',
+                         (old.id, bank_id)).fetchone()[0] != 1
+                or conn.execute('SELECT 1 FROM InvoicePayments WHERE InvoiceID = ? AND BookingID = ?',
+                                (new_id, bank_id)).fetchone()):
+            return None, 'multiple'
+        revenue_coa = self._revenue_coa_if_as_written(conn, old, bank_id, bank, amount, bank_coas[bank[2]])
+        if revenue_coa is None:
+            # Weicht allein das Steuerdatum ab (der DATEV-Export stempelt es auf die exportierten Sätze), sagt der
+            # Hinweis das – die Zuordnung bleibt trotzdem: Die Sätze stehen so in einem Export
+            only_tax_date = self._revenue_coa_if_as_written(conn, old, bank_id, bank, amount, bank_coas[bank[2]],
+                                                            ignore_tax_date=True) is not None
+            return None, 'tax_date' if only_tax_date else 'edited'
         if self._booking_free_minor(conn, bank_id, bank_coa_ids) < 0:
-            return None
-        revenue_coa = self._payment_revenue_coa(conn, children)
-        return None if revenue_coa is None else (bank[2], revenue_coa)
+            return None, 'overbooked'
+        return (bank[2], revenue_coa), None
 
     def _move_replaced_payments(self, tx, row, move):
         """Beim Versenden einer Ersatzrechnung (``Invoices.ReplacesInvoiceId``, ``db/invoice_storno.py``) gehen die
@@ -623,22 +782,30 @@ class InvoicePaymentsMixin:
         noch braucht, mit ihren eigenen Sätzen (Datum der Bankbewegung, ihr Steuersatz und ihr Erlöskonto,
         ``_assign_in_tx``), und ein Rest bleibt an der stornierten Rechnung – dort wieder mit Sätzen auf dem bisherigen
         Erlöskonto (``allow_cancelled``). Die Steuer jedes Teils rechnet ``_assign_in_tx`` wie bei jeder Zuordnung; die
-        Forderung der stornierten Rechnung samt Gegenbuchung bleibt stehen. Nicht umgezogen wird, was sich nicht
-        eindeutig neu schreiben lässt (``_movable_payment``: Import, eine überbuchte Bewegung, ein Bankkonto ohne
-        SKR-Nummer, von Hand geänderte Sätze) – es bleibt an der stornierten Rechnung und steht im Hinweis –, und
-        nichts, wenn Kunde oder Währung abweichen oder für den Steuersatz der neuen Rechnung kein Erlöskonto
-        hinterlegt ist. Eine Sammelzahlung zieht nur mit der Zuordnung um, die zur stornierten Rechnung gehört.
+        Forderung der stornierten Rechnung samt Gegenbuchung bleibt stehen.
 
-        Returns ``(Betrag in Minor Units, der umgezogen ist, Hinweis für den Nutzer oder None)``. Scheitert eine
-        Zuordnung, obwohl die Voraussetzungen stimmten, folgt :class:`PaymentMoveFailed`: Der Aufrufer rollt alles zurück."""
+        Umgezogen wird nur, was die App genau so geschrieben hat (``_movable_payment``): Import, eine überbuchte Bewegung, ein
+        Bankkonto ohne SKR-Nummer, Sätze, die jemand von Hand geändert oder ergänzt hat oder an denen ein Beleg hängt – es
+        bleibt an der stornierten Rechnung und steht im Hinweis, mit dem Grund. Beurteilt wird jede Zuordnung gegen den
+        Stand VOR dem ersten Umzug: Der Steuer-Rest des schließenden Teils hängt von den anderen Zuordnungen ab, die sich mit
+        jedem Umzug ändern. Nichts zieht um, wenn Kunde oder Währung abweichen oder für den Steuersatz der neuen Rechnung kein
+        Erlöskonto hinterlegt ist. Eine Sammelzahlung zieht nur mit der Zuordnung um, die zur stornierten Rechnung gehört.
+
+        Jede Zuordnung läuft in einem Savepoint: Lässt sie sich nicht vollständig mit den erwarteten Beträgen neu buchen,
+        geht der Savepoint zurück (die Zuordnung liegt unverändert an der stornierten Rechnung, ihre Einträge im Replay-Log
+        ``tx.log`` entfallen), sie zählt als übersprungen, und die nächste kommt an die Reihe. Nur ein Datenbankfehler mitten
+        im Umzug ist unerwartet: Er löst :class:`PaymentMoveFailed` aus, und der Aufrufer rollt alles zurück.
+
+        Returns ``(Betrag in Minor Units, der umgezogen ist, Hinweis für den Nutzer oder None)``."""
         conn = tx.conn
         new_id, old_id = row['ID'], move['replaced_id']
-        old = conn.execute('SELECT InvoiceNumber, DocumentType, Status, TaxRate, CustomerId, Currency '
+        old = conn.execute('SELECT InvoiceNumber, DocumentType, Status, TaxRate, CustomerId, Currency, SumGross, TaxAmount '
                            'FROM Invoices WHERE ID = ?', (old_id,)).fetchone()
         if (old is None or (old[1] or 'invoice') != 'invoice' or old[2] != 'cancelled'
                 or not conn.execute('SELECT 1 FROM Invoices WHERE CancelsInvoiceId = ?', (old_id,)).fetchone()):
             return 0, None
-        old_number, _type, _status, old_rate, old_customer, old_currency = old
+        old_number, _type, _status, old_rate, old_customer, old_currency, old_gross, old_tax = old
+        replaced = _Replaced(old_id, old_number, old_gross or 0, old_tax or 0, old_rate, old_customer)
         total = conn.execute('SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
                              (old_id,)).fetchone()[0]
         if total <= 0:
@@ -655,28 +822,26 @@ class InvoicePaymentsMixin:
                        'Für den Steuersatz dieser Rechnung ist kein Erlöskonto hinterlegt. Bitte die Zuordnung dort '
                        'entfernen und hier mit Erlöskonto zuordnen.')
 
-        def check(result, expected):
-            """Die Zuordnung kam mit genau dem Betrag zustande – sonst alles zurück."""
-            booked = None
-            if result.ok:
-                booked = conn.execute('SELECT Amount FROM InvoicePayments WHERE ID = ?',
-                                      (result.payment_id,)).fetchone()
-            if not result.ok or booked is None or booked[0] != expected:
-                reason = result.message if not result.ok else 'Der zugeordnete Betrag weicht ab.'
-                raise PaymentMoveFailed(
-                    f'Die Zahlungen der stornierten Rechnung {old_number} ließen sich nicht übernehmen: '
-                    f'{reason if reason.endswith(".") else reason + "."} Die Rechnung wurde nicht versendet.')
+        def booked(result, expected):
+            """Die Zuordnung kam mit genau dem Betrag zustande."""
+            if not result.ok:
+                return False
+            amount = conn.execute('SELECT Amount FROM InvoicePayments WHERE ID = ?', (result.payment_id,)).fetchone()
+            return amount is not None and amount[0] == expected
 
         payments = conn.execute(
             'SELECT ID, BookingID, Amount FROM InvoicePayments WHERE InvoiceID = ? ORDER BY PaymentDate, ID',
             (old_id,)).fetchall()
         positive = sum(amount for _pay_id, _bank_id, amount in payments if amount > 0)   # eine negative bleibt unberührt
+        verdicts = [self._movable_payment(conn, replaced, new_id, bank_id, amount, move['bank_coas'],
+                                          move['bank_coa_ids']) for _pay_id, bank_id, amount in payments]
         moved = skipped = 0
-        for pay_id, bank_id, amount in payments:
-            found = self._movable_payment(conn, old_id, old_number, new_id, bank_id, amount, move['bank_coas'],
-                                          move['bank_coa_ids'])
+        reasons = set()
+        for (pay_id, bank_id, amount), (found, reason) in zip(payments, verdicts):
             if found is None:
-                skipped += max(amount, 0)
+                if amount > 0:
+                    skipped += amount
+                    reasons.add(reason)
                 continue
             due_new = (row['SumGross'] or 0) - conn.execute(
                 'SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?', (new_id,)).fetchone()[0]
@@ -684,18 +849,34 @@ class InvoicePaymentsMixin:
                 break
             account_id, revenue_coa_old = found
             part = min(amount, due_new)
-            self._unassign(conn, pay_id)
-            check(self._assign_in_tx(
-                tx, new_id, bank_id, part,
-                {'tax_rate': row['TaxRate'], 'account_id': account_id, 'bank_coa': move['bank_coas'][account_id],
-                 'revenue_coa': move['revenue_coa'], 'bank_coa_ids': move['bank_coa_ids']}), part)
-            if amount > part:
-                check(self._assign_in_tx(
-                    tx, old_id, bank_id, amount - part,
-                    {'tax_rate': old_rate, 'account_id': account_id, 'bank_coa': move['bank_coas'][account_id],
-                     'revenue_coa': revenue_coa_old, 'bank_coa_ids': move['bank_coa_ids']},
-                    allow_cancelled=True), amount - part)
-            moved += part
+            log_length = len(tx.log)
+            try:
+                conn.execute('SAVEPOINT payment_move')
+                self._unassign(conn, pay_id)
+                rebooked = booked(self._assign_in_tx(
+                    tx, new_id, bank_id, part,
+                    {'tax_rate': row['TaxRate'], 'account_id': account_id,
+                     'bank_coa': move['bank_coas'][account_id], 'revenue_coa': move['revenue_coa'],
+                     'bank_coa_ids': move['bank_coa_ids']}), part)
+                if rebooked and amount > part:
+                    rebooked = booked(self._assign_in_tx(
+                        tx, old_id, bank_id, amount - part,
+                        {'tax_rate': old_rate, 'account_id': account_id, 'bank_coa': move['bank_coas'][account_id],
+                         'revenue_coa': revenue_coa_old, 'bank_coa_ids': move['bank_coa_ids']},
+                        allow_cancelled=True), amount - part)
+                if not rebooked:
+                    conn.execute('ROLLBACK TO payment_move')
+                    del tx.log[log_length:]
+                conn.execute('RELEASE payment_move')
+            except sqlite3.Error as exc:
+                raise PaymentMoveFailed(
+                    f'Die Zahlungen der stornierten Rechnung {old_number} ließen sich nicht übernehmen: '
+                    f'Datenbankfehler ({exc}). Die Rechnung wurde nicht versendet.') from exc
+            if rebooked:
+                moved += part
+            else:
+                skipped += amount
+                reasons.add('rebook')
 
         kept = positive - moved - skipped
         notes = []
@@ -709,8 +890,9 @@ class InvoicePaymentsMixin:
         if moved and self._tax_rate_key(old_rate) != self._tax_rate_key(row['TaxRate']):
             notes.append('Der Steuersatz weicht ab – die Umsatzsteuer am Zahlungstag ändert sich.')
         if skipped:
-            notes.append(f'{euro(skipped)} ließen sich nicht automatisch übernehmen (Import oder Sammelbuchung) und '
-                         'bleiben an der stornierten Rechnung.')
+            why = '; '.join(text for key, text in MOVE_SKIP_REASONS.items() if key in reasons)
+            notes.append(f'{euro(skipped)} ließen sich nicht automatisch übernehmen und bleiben an der stornierten '
+                         f'Rechnung: {why}.')
         return moved, ' '.join(notes)
 
     # ── Prüfung ──────────────────────────────────────────────────────────────
@@ -747,12 +929,13 @@ class InvoicePaymentsMixin:
         eine Bankbewegung ohne Sätze mit Quellklammer (``SourceGroup``) ist: Der WISO-Import
         liefert seine Sätze selbst (und kennt Barzahlungen ohne Bankbewegung). Die beiden
         letzten Kategorien zählen nur Forderungen, die die App selbst gebucht hat
-        (``_app_receivable_ids``), damit ein Import keinen Fehlalarm auslöst; ein intaktes Paar
+        (``_app_receivable_amounts``), damit ein Import keinen Fehlalarm auslöst; ein intaktes Paar
         mit Guthaben (Zahlungen an der stornierten Rechnung) ergibt keinen Befund.
 
         Die Abfragen gehen von den Zuordnungen aus bzw. fassen je Rechnung vorab zusammen; die
-        Rechnungsnummern mit Forderung werden einmal gelesen. Der Aufwand wächst so linear mit
-        dem Bestand (4000 Bewegungen/Forderungen, 1000 Zuordnungen: unter einer Sekunde).
+        Rechnungsnummern mit Forderung und die Forderungen der App (mit ihren Beträgen) werden
+        je einmal gelesen. Der Aufwand wächst so linear mit dem Bestand (4000 Bewegungen/Forderungen,
+        1000 Zuordnungen: unter einer Sekunde), die Zahl der Anweisungen nicht mit der Zahl der Paare.
         """
         conn = self._get_connection()
         try:
@@ -933,13 +1116,30 @@ class InvoicePaymentsMixin:
 
         # Storno-Paare: Die Forderung der Rechnung und die Gegenbuchung der Stornorechnung gehören zusammen
         pair_only = ' AND (o.ID = ? OR s.ID = ?)' if invoice_id is not None else ''
-        for original_id, original_number, storno_number in conn.execute(
-                "SELECT o.ID, o.InvoiceNumber, s.InvoiceNumber FROM Invoices s "
-                "JOIN Invoices o ON o.ID = s.CancelsInvoiceId "
-                f"WHERE s.InvoiceKind = ?{pair_only} ORDER BY o.InvoiceNumber, s.ID",
-                [STORNO_KIND, *only_params, *only_params]).fetchall():
-            has_receivable = bool(self._app_receivable_ids(conn, original_number))
-            has_counter = bool(self._app_receivable_ids(conn, storno_number))
+        pairs = conn.execute(
+            "SELECT o.ID, o.InvoiceNumber, s.InvoiceNumber FROM Invoices s "
+            "JOIN Invoices o ON o.ID = s.CancelsInvoiceId "
+            f"WHERE s.InvoiceKind = ?{pair_only} ORDER BY o.InvoiceNumber, s.ID",
+            [STORNO_KIND, *only_params, *only_params]).fetchall()
+        # Von Hand storniert (Altbestand), keine Stornorechnung – und die Forderung steht noch in den Büchern
+        legacy = conn.execute(
+            "SELECT i.ID, i.InvoiceNumber FROM Invoices i WHERE i.Status = 'cancelled' "
+            "AND COALESCE(i.SumGross, 0) > 0 AND i.InvoiceKind IS NOT ? "
+            f"AND NOT EXISTS (SELECT 1 FROM Invoices s WHERE s.CancelsInvoiceId = i.ID) AND {is_invoice}{only} "
+            "ORDER BY i.InvoiceNumber", [STORNO_KIND, *only_params]).fetchall()
+
+        # Die Forderungen der App werden für alle Paare und Rechnungen zusammen einmal gelesen – je Rechnung nachzuschlagen
+        # wäre quadratisch (``DocumentNumber`` ist nicht indiziert). Der Filter auf eine Rechnung liest gezielt.
+        app_receivables = self._app_receivable_amounts(conn) if invoice_id is None and (pairs or legacy) else None
+
+        def app_receivables_of(number):
+            if app_receivables is not None:
+                return app_receivables.get(number, [])
+            return self._app_receivable_amounts(conn, number).get(number, [])
+
+        for original_id, original_number, storno_number in pairs:
+            has_receivable = bool(app_receivables_of(original_number))
+            has_counter = bool(app_receivables_of(storno_number))
             if has_receivable and not has_counter:
                 add('storno_counter_mismatch', original_id, original_number,
                     f'Zur Rechnung steht die Forderung, aber die Gegenbuchung der Stornorechnung '
@@ -949,17 +1149,10 @@ class InvoicePaymentsMixin:
                     f'Die Stornorechnung {storno_number} hat eine Gegenbuchung, aber zur Rechnung steht '
                     f'keine Forderung der App – auf dem Debitorenkonto steht ein Haben-Überhang.')
 
-        # Von Hand storniert (Altbestand), keine Stornorechnung – und die Forderung steht noch in den Büchern
-        for inv, number in conn.execute(
-                "SELECT i.ID, i.InvoiceNumber FROM Invoices i WHERE i.Status = 'cancelled' "
-                "AND COALESCE(i.SumGross, 0) > 0 AND i.InvoiceKind IS NOT ? "
-                f"AND NOT EXISTS (SELECT 1 FROM Invoices s WHERE s.CancelsInvoiceId = i.ID) AND {is_invoice}{only} "
-                "ORDER BY i.InvoiceNumber", [STORNO_KIND, *only_params]).fetchall():
-            receivable = self._app_receivable_ids(conn, number)
+        for inv, number in legacy:
+            receivable = app_receivables_of(number)
             if receivable:
-                booked = conn.execute(
-                    f"SELECT COALESCE(SUM(Amount), 0) FROM Bookings WHERE ID IN ({','.join('?' * len(receivable))})",
-                    receivable).fetchone()[0]
+                booked = sum(amount for _booking_id, amount in receivable)
                 add('legacy_cancelled_open', inv, number,
                     f'Die Rechnung ist storniert, ihre Forderung steht aber noch in den Büchern ({euro(booked)}). '
                     f'Abhilfe: „Stornorechnung nachträglich erstellen“.')
