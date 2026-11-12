@@ -1251,7 +1251,8 @@ def test_never_more_moves_than_the_credit_and_the_books_add_up(world, monkeypatc
 
 def test_with_a_refund_the_payments_that_cannot_move_are_named_and_the_credit_counts_the_refund_once(world, monkeypatch):
     """Eine Zahlung aus einem Import (bleibt) und eine der App (zieht um), 20,00 € erstattet: Der Hinweis nennt das Umgezogene, das
-    Erstattete und den Grund für das, was bleibt – ein Guthaben nennt er nicht (die Erstattung ist schon abgezogen)."""
+    Erstattete und den Grund für das, was bleibt – das Übersprungene nur bis zum verbleibenden Guthaben (30,00 € bleiben, 20,00 €
+    davon sind erstattet: 10,00 €), damit Erstattetes nicht zweimal im Hinweis steht."""
     db = world.db
     r1 = sent(world)
     add_payment(world, r1, 30.0)                                                        # Import, 01.07.: bleibt
@@ -1266,7 +1267,7 @@ def test_with_a_refund_the_payments_that_cannot_move_are_named_and_the_credit_co
 
     assert (code, body['hint']) == (200, 'Zahlungen der stornierten Rechnung T-100 über 50,00 € sind jetzt dieser Rechnung '
                                          'zugeordnet. 20,00 € sind bereits erstattet und bleiben an der stornierten Rechnung. '
-                                         f'30,00 € ließen sich nicht automatisch übernehmen und bleiben an der stornierten '
+                                         f'10,00 € ließen sich nicht automatisch übernehmen und bleiben an der stornierten '
                                          f'Rechnung: {REASON_IMPORT}.')
     assert [(a[0], a[1]) for a in allocations(db, r2)] == [(booking, 500000)]
     assert db.get_storno_credit(s1) == 10 and [f[0] for f in findings(db)] == known         # nichts Neues in der Prüfliste
@@ -1274,9 +1275,10 @@ def test_with_a_refund_the_payments_that_cannot_move_are_named_and_the_credit_co
         'Zugeordnet sind 30,00 €, auf das Erlöskonto umgebucht 0,00 €.']                      # nur noch der Import
 
 
-def test_a_negative_allocation_of_an_import_is_no_payment_for_the_cap_of_the_move(world, monkeypatch):
-    """Eine negative Zuordnung des WISO-Imports an der stornierten Rechnung bleibt unberührt (wie ohne Erstattung) und zählt nicht als
-    Zahlung: Umziehen darf, was gezahlt und nicht erstattet ist – 30,00 € Zahlung, 5,00 € erstattet, also 25,00 €."""
+def test_a_negative_allocation_of_an_import_lowers_the_cap_of_the_move(world, monkeypatch):
+    """Eine negative Zuordnung des WISO-Imports an der stornierten Rechnung zieht nie um, mindert aber ihr Guthaben: Umziehen
+    darf nur, was danach noch da ist – 30,00 € Zahlung, −10,00 € aus dem Import, 5,00 € erstattet, also 15,00 €. Sonst wäre
+    danach mehr erstattet als gezahlt."""
     db = world.db
     r1 = sent(world)
     app_booking = pay(world, r1, 30.0)
@@ -1287,10 +1289,11 @@ def test_a_negative_allocation_of_an_import_is_no_payment_for_the_cap_of_the_mov
 
     code, body = set_invoice_status(r2, 'sent')
 
-    assert (code, body['hint']) == (200, 'Zahlungen der stornierten Rechnung T-100 über 25,00 € sind jetzt dieser Rechnung '
+    assert (code, body['hint']) == (200, 'Zahlungen der stornierten Rechnung T-100 über 15,00 € sind jetzt dieser Rechnung '
                                          'zugeordnet. 5,00 € sind bereits erstattet und bleiben an der stornierten Rechnung.')
-    assert allocations(db, r2) == [(app_booking, 250000, '2026-07-01')]
-    assert allocations(db, r1) == [(negative, -100000, '2026-07-01'), (app_booking, 50000, '2026-07-01')]
+    assert allocations(db, r2) == [(app_booking, 150000, '2026-07-01')]
+    assert allocations(db, r1) == [(negative, -100000, '2026-07-01'), (app_booking, 150000, '2026-07-01')]
+    assert db.get_storno_credit(s1) == 0 and 'refund_exceeds_credit' not in [f[0] for f in findings(db)]
 
 
 def test_a_refund_to_another_pair_leaves_this_credit_alone(world, monkeypatch):
@@ -1668,9 +1671,9 @@ def test_a_mix_moves_what_it_can_and_names_the_rest(world, monkeypatch):
                                                    for f in world.db.find_payment_inconsistencies()]
 
 
-def test_a_negative_allocation_stays_and_is_not_counted_in_the_hint(world, monkeypatch):
-    """Negative Zuordnungen kennt nur der WISO-Import (``link_invoice_to_transaction``): Sie bleiben liegen, und der
-    Hinweis rechnet mit den positiven Zahlungen."""
+def test_a_negative_allocation_stays_and_only_the_credit_that_is_left_moves(world, monkeypatch):
+    """Negative Zuordnungen kennt nur der WISO-Import (``link_invoice_to_transaction``): Sie bleiben liegen und mindern das
+    Guthaben – von 30,00 € Zahlung ziehen 20,00 € um, 10,00 € bleiben und gleichen die −10,00 € aus (Guthaben 0, nie negativ)."""
     r1 = sent(world)
     app_booking = pay(world, r1, 30.0)
     refund = add_payment(world, r1, -10.0)
@@ -1679,10 +1682,10 @@ def test_a_negative_allocation_stays_and_is_not_counted_in_the_hint(world, monke
 
     code, body = set_invoice_status(r2, 'sent')
 
-    assert code == 200 and body['hint'] == ('Zahlungen der stornierten Rechnung T-100 über 30,00 € sind jetzt dieser '
+    assert code == 200 and body['hint'] == ('Zahlungen der stornierten Rechnung T-100 über 20,00 € sind jetzt dieser '
                                             'Rechnung zugeordnet.')
-    assert allocations(world.db, r2) == [(app_booking, 300000, '2026-07-01')]
-    assert allocations(world.db, r1) == [(refund, -100000, '2026-07-01')]
+    assert allocations(world.db, r2) == [(app_booking, 200000, '2026-07-01')]
+    assert allocations(world.db, r1) == [(refund, -100000, '2026-07-01'), (app_booking, 100000, '2026-07-01')]
 
 
 def test_a_collective_payment_moves_only_its_share(world, monkeypatch):

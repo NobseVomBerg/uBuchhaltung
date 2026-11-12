@@ -866,8 +866,10 @@ def handle_add_transaction(db: Database, post_data):
 
         return 303, "/transactions"
     except (_Refused, PaymentRemovalRefused) as e:
-        # abgelehnt, nichts gespeichert; die zweite Art nur, wenn sich der Bestand zwischen Planen und Schreiben geändert hat
-        # (``_plan_split_rows`` fragt das Entfernen einer Zahlung schon vorher): Klartext statt 500
+        # abgelehnt. ``_Refused`` kommt aus dem Planen: nichts ist gespeichert. ``PaymentRemovalRefused`` kommt erst beim
+        # Schreiben – nur, wenn sich der Bestand zwischen Planen und Schreiben geändert hat oder die Zeilen einzeln nicht in
+        # dieser Reihenfolge gehen (``_plan_split_rows`` prüft sie zusammen): Dann ist die Zahlung geschützt geblieben, was
+        # davor geschrieben wurde (Bankzeile, frühere Zeilen), steht aber schon – Klartext statt 500
         return 400, str(e)
     except Exception as e:
         import traceback

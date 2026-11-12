@@ -942,6 +942,18 @@ def counting_connections(db, monkeypatch, *, steps=None, statements=None):
     monkeypatch.setattr(type(db), '_get_connection', counting)
 
 
+def test_the_free_rest_of_an_outgoing_movement_is_never_more_than_its_amount(world):
+    """Eine positive Zuordnung unter einem Ausgang (die Bewegung wurde nach der Zahlung umgedreht) machte ihn „freier“, als er ist:
+    50,00 € Ausgang mit +30,00 € Zuordnung und ihrem Satz „Bank an Debitoren“ ergäben 80,00 € frei. Frei ist nie mehr als der
+    Betrag der Bewegung."""
+    db = world.db
+    bank = out_with(world, (1800, DEBTORS, 30.0, FORM_LIQUID), allocated=30.0)
+    with closing(db._get_connection()) as conn:
+        assert db._booking_free_outgoing_minor(conn, bank, db.get_bank_coa_ids()) == 500000
+    assert [(row[0], row[-1]) for row in db.get_unallocated_outgoing_bookings(None, limit=100) if row[0] == bank] in (
+        [(bank, 50.0)], [(bank, 500000)])
+
+
 def test_the_free_rest_of_an_outgoing_movement_is_asked_in_few_statements(world, monkeypatch):
     """Der freie Rest aller Ausgänge kommt aus wenigen gesammelten Abfragen: Die Zahl der Anweisungen ist bei 3 und bei 30 Ausgängen
     – mit Sätzen und Zuordnungen darunter – dieselbe (kein „eine Abfrage je Bewegung“)."""
