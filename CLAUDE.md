@@ -537,15 +537,19 @@ kein Subagent darauf:
 - **Berichtigen** (`Database.correct_invoice`, `db/invoice_versions.py`, seit 2.2.0): Das Speichern der änderbaren
   Felder einer versendeten Rechnung ist eine Berichtigung – kein eigener Schreibweg, es bleibt bei `/invoice/save`
   mit dem Teil-Payload (Knopf „Berichtigen“, nach Rückfrage). Gesperrte Felder werden zuerst abgelehnt; ohne Abweichung
-  vom Gespeicherten passiert nichts – auch ohne `documentVersion`.
+  vom Gespeicherten passiert nichts – auch ohne `documentVersion`. **Das Leistungsdatum bleibt ein Datum:** Steht es
+  unter den geänderten Angaben, muss es ein ISO-Datum sein (`CorrectionInvalid`, 400, vor dem Verschieben der
+  Dokumente; die Maske schickt ein geleertes gar nicht erst ab) – ein unverändertes, auch leeres (Import), ist kein
+  Verstoß.
   Sonst in EINER Transaktion (`BEGIN IMMEDIATE`, die Rechnung wird neu gelesen): Die Fassung, die die Maske
   geladen hat (`documentVersion`; `Invoices.DocumentVersion`, NULL = 1), muss die aktuelle sein, sonst 409 (fehlt
   sie oder ist sie veraltet, wird nichts geschrieben); PDF und XML wandern nach `Fassungen/<ID>/`
   (`archive_sent_documents`) und stehen mit Fassung, Pfad (relativ zu `invoices/`) und SHA-256 in
   `InvoiceDocumentVersions`, ihre Pfade in der Rechnung werden geleert; jedes geänderte Feld ist eine Zeile in
   `InvoiceCorrections` (`Action='correct'`: wer, wann, alt, neu, neue Fassung – bei `refreshAddress` je
-  Anschriftsspalte eine); `DocumentVersion` zählt um eins hoch. Scheitert das Verschieben oder der Commit, liegen
-  die Dateien wieder am alten Platz (409, nichts geändert). Danach erzeugt `handlers._correct_invoice` das Dokument
+  Anschriftsspalte eine); `DocumentVersion` zählt um eins hoch. Scheitert das Verschieben, das Festhalten in
+  `InvoiceDocumentVersions` (`_archive_documents`) oder der Commit, liegen die Dateien wieder am alten Platz (409,
+  nichts geändert). Danach erzeugt `handlers._correct_invoice` das Dokument
   der neuen Fassung – nur, wenn eines abgelegt war (ein Import bekommt Felder und Protokoll, kein Dokument).
   Scheitert das Erzeugen, bleibt die Berichtigung gespeichert, die Antwort trägt eine Warnung, und „PDF +
   E-Rechnung“ erzeugt die fehlende Datei (die Regel „eingefroren, aber keine Datei vorhanden“). **Die berichtigte
@@ -553,8 +557,10 @@ kein Subagent darauf:
   `cbc:Note`; TypeCode 380 und Nummer bleiben): Er ergibt sich aus dem Stand der Datenbank
   (`correction_notice`: `DocumentVersion` > 1 und Berichtigungen zur aktuellen Fassung, keine Rückkehr auf
   Entwurf danach), nicht aus einem Parameter – auch ein später über „PDF + E-Rechnung“ erzeugtes Dokument trägt
-  ihn, eine nach dem Zurückholen neu versendete Rechnung nicht. Zeitpunkte stehen in UTC, Dokumente und
-  Oberfläche nennen die Ortszeit. Die stornierte Rechnung bleibt ganz gesperrt
+  ihn, eine nach dem Zurückholen neu versendete Rechnung nicht. „Ersetzt die Fassung vom …“ nennt den jüngsten
+  Protokolleintrag vor der ersten Berichtigung der aktuellen Fassung, der eine Berichtigung oder ein Versand
+  (Entwurf/abgeschlossen → versendet) ist, sonst `SentAt`, sonst entfällt der Teil. Zeitpunkte stehen in UTC,
+  Dokumente und Oberfläche nennen die Ortszeit. Die stornierte Rechnung bleibt ganz gesperrt
 - **Statusübergänge** (`db.invoice_lock.TRANSITIONS`; die Statusauswahl bietet nur die erlaubten Ziele,
   `set_invoice_status` lehnt den Rest mit Klartext ab – 409, „bezahlt“ ohne Zahlung 400): Entwurf ↔
   abgeschlossen frei. **Entwurf/abgeschlossen → versendet** („Versenden“) ist der einzige Übergang, der die
@@ -592,7 +598,9 @@ kein Subagent darauf:
   Eine eigene Nummer, die zur Vorlage eines Kreises passt, hebt dessen Zähler, nie nach unten. Statuswechsel und
   spätere Änderungen zählen nie. **War die Rechnung schon einmal versendet** (`Database.was_sent_before`), ist die
   Nummer auch im Entwurf gesperrt (409 „Die Rechnung war bereits versendet – ihre Nummer bleibt.“; die Maske zeigt
-  das Feld `readonly` mit Hinweis). Eine Formatvorlage braucht **genau einen Zähler** (`{n}`, `{nn}` oder `{nnn}`,
+  das Feld `readonly` mit Hinweis; eine Nummer, die sich nur durch Leerraum unterscheidet, bleibt unberührt und wird
+  nicht geschrieben). `invoiceId` liest `/invoice/save` als Ganzzahl (`"1"` und `1.0` gelten, alles andere – `"01"`,
+  `1.5`, `true` – ist 400): Der Ordner `Fassungen/<ID>` heißt nach der Zahl. Eine Formatvorlage braucht **genau einen Zähler** (`{n}`, `{nn}` oder `{nnn}`,
   `number_format_error`): Beim Speichern eines Nummernkreises wird sie sonst mit Klartext abgelehnt; ein
   Altbestand mit anderer Vorlage lässt den Vorschlag leer (Hinweis in der Maske, `peek_next_number` wirft nie)
   und das Speichern mit dem Klartext `NumberRangeError` scheitern, nie die Seite
@@ -632,10 +640,12 @@ kein Subagent darauf:
   **Das Dokument zeigt nie den Stand der Zahlungen** (`prepaid` ist immer 0, Zahlbetrag = Brutto)
 - **Heruntergeladen** wird immer die abgelegte Datei (`/invoice/pdf_download`,
   `/invoice/xml_download`) – nie eine frisch erzeugte. Fehlt sie, kommt 404 mit
-  kurzem Klartext, den das Frontend direkt anzeigt. Die Fassungen liefert `GET /invoice/version_download?id=&file=`,
+  kurzem Klartext, den das Frontend direkt anzeigt. Die Fassungen liefert `GET /invoice/version_download?id=&file=&year=`,
   rein lesend: `file` ist ein reiner Dateiname (kein Trenner, kein `..`), gefunden wird nur eine `.pdf`-/`.xml`-Datei
-  in einem Ordner `Fassungen/<id>` genau dieser Rechnung (`path_in_documents`); alles andere – fremde ID, Angebot,
-  Pfadanteil – ist 404
+  in einem Ordner `Fassungen/<id>` genau dieser Rechnung (`path_in_documents`); `year` (Jahresordner, nur ASCII-Ziffern;
+  die Links des Kastens tragen es immer) trennt gleiche Dateinamen in zwei Jahresordnern – die Datei muss in genau diesem
+  Ordner liegen, ohne `year` gilt der erste Treffer; alles andere – fremde ID, Angebot, Pfadanteil, ungültiges oder
+  leeres `year` – ist 404
 - **Angebote** gelten genauso: `/quote/pdf_download` liefert nur die abgelegte PDF
   (`quotes/<Jahr der Erzeugung>/<Angebots-Nr.> <Kunde>.pdf`), sonst 404 „Kein PDF
   vorhanden – bitte zuerst erzeugen.“. **Erzeugt** wird nur per POST

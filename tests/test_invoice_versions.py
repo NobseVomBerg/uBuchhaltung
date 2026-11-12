@@ -33,7 +33,7 @@ from server.pages import script_json
 from server.pages_invoice import PageInvoice, delete_question
 from tests.document_helpers import read_file, write_file
 from tests.dom_helpers import Dom
-from tests.invoice_world import (build_world, columns, make_invoice, make_payload, save,
+from tests.invoice_world import (build_world, columns, make_invoice, make_payload, run_sql, save,
                                  set_invoice_status, snapshot)
 
 TODAY = datetime.date.today().isoformat()
@@ -358,6 +358,45 @@ def test_a_failing_commit_puts_the_documents_back(world, monkeypatch):
     assert snapshot(world.db) == before
 
 
+def test_a_failing_version_row_refuses_the_reopening_and_puts_the_documents_back(world):
+    """Das Verschieben gelang, das Festhalten in ``InvoiceDocumentVersions`` nicht (hier weist ein Trigger das
+    ``INSERT`` ab): Das Zurückholen wird mit Klartext abgelehnt (409), keine Ausnahme bis in den Handler; die
+    Dokumente liegen wieder am alten Platz, Status, Pfade und Fassung sind unverändert."""
+    invoice_id = new_invoice(world)
+    send(invoice_id)
+    pdf, xml = stored(world, invoice_id)
+    before, files = snapshot(world.db), (read_file(pdf), read_file(xml))
+    run_sql(world.db, "CREATE TRIGGER boom BEFORE INSERT ON InvoiceDocumentVersions "
+                      "BEGIN SELECT RAISE(ABORT, 'boom'); END")
+
+    code, body = reopen(invoice_id)
+
+    assert (code, body['success'], body['error']) == (409, False, ARCHIVE_FAILED_MESSAGE)
+    assert 'boom' not in str(body)
+    assert (read_file(pdf), read_file(xml)) == files
+    assert archived(invoice_id) == [] and not os.path.exists(folder(invoice_id))
+    assert snapshot(world.db) == before                    # Status, Pfade, Fassung, Forderung, Protokoll, Fassungstabelle
+    cols = columns(world.db, invoice_id)
+    assert (cols['Status'], cols['PDFPath'], cols['XMLPath'], cols['DocumentVersion']) == ('sent', pdf, xml, None)
+
+
+def test_an_unexpected_error_while_holding_the_documents_puts_them_back_for_the_reopening_too(world, monkeypatch):
+    invoice_id = new_invoice(world)
+    send(invoice_id)
+    pdf, xml = stored(world, invoice_id)
+    before, files = snapshot(world.db), (read_file(pdf), read_file(xml))
+
+    def broken(path):
+        raise RuntimeError('Programmfehler')
+    monkeypatch.setattr('db.invoice_versions._sha256', broken)
+
+    with pytest.raises(RuntimeError):
+        world.db.set_invoice_status(invoice_id, 'draft')
+
+    assert (read_file(pdf), read_file(xml)) == files and archived(invoice_id) == []
+    assert snapshot(world.db) == before
+
+
 # ── Das Merkmal „war schon versendet“ ──────────────────────────────────────
 
 def test_was_sent_before_looks_for_a_file_in_any_year_folder(world):
@@ -369,6 +408,44 @@ def test_was_sent_before_looks_for_a_file_in_any_year_folder(world):
     write_file(os.path.join(root, '2025', 'Fassungen', '7', 'alt.pdf'))
     assert was_sent_before(7) is True                                    # das Rechnungsdatum kann sich geändert haben
     assert was_sent_before(8) is False and was_sent_before(70) is False
+
+
+@pytest.mark.parametrize('given', [7, '7', 7.0, '07', ' 7', '+7'])
+def test_the_file_probes_read_the_id_as_a_number_so_the_same_folder_is_meant(given):
+    """Die Datenbank findet die Rechnung 7 auch mit ``7.0`` oder ``'07'``; der Ordner heißt ``7`` – die Proben lesen
+    die ID als Ganzzahl, damit ``Fassungen/7.0`` und ``Fassungen/07`` nicht der Weg an der Nummernsperre vorbei sind."""
+    from export.invoice_files import version_files, was_sent_before
+    write_file(os.path.join(userctx.user_data_dir(), 'invoices', '2026', 'Fassungen', '7', 'alt.pdf'))
+    assert was_sent_before(given) is True
+    assert [name for name, _path, _year in version_files(given)] == ['alt.pdf']
+
+
+@pytest.mark.parametrize('given', ['abc', '', None, [7], {'id': 7}, True, 'x7', '7;', '7.0', float('nan'),
+                                   float('inf')])
+def test_an_id_that_is_no_number_has_no_files(given):
+    from export.invoice_files import version_files, was_sent_before
+    write_file(os.path.join(userctx.user_data_dir(), 'invoices', '2026', 'Fassungen', '7', 'alt.pdf'))
+    write_file(os.path.join(userctx.user_data_dir(), 'invoices', '2026', 'Fassungen', '1', 'alt.pdf'))
+    assert was_sent_before(given) is False and version_files(given) == []
+
+
+def test_version_files_name_the_year_folder_and_a_year_picks_exactly_that_folder():
+    from export.invoice_files import version_file_path, version_files
+    root = os.path.join(userctx.user_data_dir(), 'invoices')
+    write_file(os.path.join(root, '2025', 'Fassungen', '7', 'a.pdf'), b'A25')
+    write_file(os.path.join(root, '2026', 'Fassungen', '7', 'a.pdf'), b'A26')
+    write_file(os.path.join(root, '2026', 'Fassungen', '7', 'b.xml'), b'<b/>')
+    write_file(os.path.join(root, '2026', 'Fassungen', '8', 'a.pdf'), b'andere Rechnung')
+
+    assert [(name, year) for name, _path, year in version_files(7)] == [
+        ('a.pdf', '2025'), ('a.pdf', '2026'), ('b.xml', '2026')]
+    assert read_file(version_file_path(7, 'a.pdf', '2025')) == b'A25'
+    assert read_file(version_file_path(7, 'a.pdf', '2026')) == b'A26'
+    assert read_file(version_file_path(7, 'a.pdf')) == b'A25'              # ohne Jahr: der erste Treffer, wie bisher
+    assert version_file_path(7, 'b.xml', '2025') is None                   # der Ordner 2025 hat die Datei nicht
+    assert version_file_path(7, 'a.pdf', '2024') is None                   # es gibt keinen Ordner 2024
+    for year in ('..', '../2026', '20a6', '', ' 2026', '2026 ', '2026/', '\u0662\u0660\u0662\u0666', 2026, b'2026'):
+        assert version_file_path(7, 'a.pdf', year) is None, year
 
 
 # ── Die Oberfläche beim Löschen ──────────────────────────────────────────────

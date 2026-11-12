@@ -13,8 +13,12 @@
 Alle Namen, Adressen und Nummern sind erfundene Testwerte.
 """
 import datetime
+import hashlib
 import json
 import os
+import re
+import shutil
+import subprocess
 import time
 from urllib.parse import parse_qs, urlsplit
 
@@ -22,11 +26,12 @@ import pytest
 
 import server.handlers as handlers
 import userctx
-from server.pages_invoice import PageInvoice
+from server.pages import script_json
+from server.pages_invoice import CORRECT_QUESTION, PageInvoice
 from tests.document_helpers import table_rows, write_file
-from tests.dom_helpers import Dom
-from tests.invoice_world import (archived_versions, build_world, columns, make_invoice, run_sql, save_open,
-                                 set_invoice_status)
+from tests.dom_helpers import Dom, data_block
+from tests.invoice_world import (archived_versions, build_world, columns, make_invoice, make_payload, run_sql,
+                                 save, save_open, set_invoice_status)
 
 TODAY = datetime.date.today()
 TODAY_DE = TODAY.strftime('%d.%m.%Y')
@@ -62,9 +67,10 @@ def rows_of(section, title):
     return table_rows(part)[1:]
 
 
-def downloads(section):
-    """Was die Download-Links aufrufen: ``[(Rechnungs-ID, Dateiname)]``. Die Adresse steht als JavaScript-Zeichenkette
-    im ``onclick`` (``&`` darin als ``\\u0026``); sie wird gelesen, wie der Browser sie läse."""
+def download_queries(section):
+    """Was die Download-Links aufrufen, als Abfrage (``{'id': [...], 'file': [...], 'year': [...]}``). Die Adresse
+    steht als JavaScript-Zeichenkette im ``onclick`` (``&`` darin als ``\\u0026``); sie wird gelesen, wie der Browser
+    sie läse."""
     found = []
     for a in Dom(section).all('a'):
         call = a.get('onclick', '')
@@ -73,10 +79,14 @@ def downloads(section):
         assert call.endswith(')') and a['href'] == 'javascript:void(0);'
         address = json.loads(call[len('appDownload('):-1])
         assert address.isascii() and "'" not in address and ' ' not in address       # alles kodiert
-        query = parse_qs(urlsplit(address).query)
         assert urlsplit(address).path == '/invoice/version_download'
-        found.append((int(query['id'][0]), query['file'][0]))
+        found.append(parse_qs(urlsplit(address).query))
     return found
+
+
+def downloads(section):
+    """Was die Download-Links aufrufen: ``[(Rechnungs-ID, Dateiname)]``."""
+    return [(int(query['id'][0]), query['file'][0]) for query in download_queries(section)]
 
 
 # ── Wann es den Kasten gibt ──────────────────────────────────────────────────
@@ -175,6 +185,63 @@ def test_the_download_address_is_percent_encoded_for_names_with_quotes_and_amper
     assert "O'Brien" not in section and "& Söhne" not in section                         # im Markup nur kodiert
 
 
+def test_every_link_names_its_year_folder_and_loads_the_file_of_its_own_row(world):
+    """Ändert sich das Rechnungsdatum im Entwurf, liegt dieselbe Datei (gleicher Name) in zwei Jahresordnern. Die Links
+    trugen nur den Namen und luden beide Male den ersten Treffer; jetzt trägt jeder das Jahr seiner Zeile."""
+    invoice_id = make_invoice(world, 'draft')                                       # Rechnungsdatum 2026-06-07
+    assert set_invoice_status(invoice_id, 'sent')[0] == 200
+    assert set_invoice_status(invoice_id, 'draft')[0] == 200                         # Fassung 1 → 2026/Fassungen/<ID>
+    assert save(make_payload(world, invoiceId=invoice_id, invoiceDate='2027-01-04'))['success'] is True
+    assert set_invoice_status(invoice_id, 'sent')[0] == 200
+    assert save_open(world, invoice_id, orderNumber='B-99')['documentVersion'] == 3  # Fassung 2 → 2027/Fassungen/<ID>
+    rows = archived_versions(world.db, invoice_id)
+    assert len(rows) == 4 and len({r['RelPath'].rsplit('/', 1)[-1] for r in rows}) == 2    # zwei Namen, je zweimal
+    assert {r['RelPath'].split('/')[0] for r in rows} == {'2026', '2027'}
+
+    queries = download_queries(box(world, invoice_id))
+
+    assert len(queries) == 4 and all(query['year'] and query['year'][0].isdigit() for query in queries)
+    assert sorted(f"{q['year'][0]}/Fassungen/{q['id'][0]}/{q['file'][0]}" for q in queries) == sorted(
+        r['RelPath'] for r in rows)                                                  # genau die abgelegten Dateien
+    for query in queries:
+        data, _name, error = handlers.handle_invoice_version_download(
+            int(query['id'][0]), query['file'][0], query['year'][0])
+        assert error is None
+        row = next(r for r in rows if r['RelPath'] == f"{query['year'][0]}/Fassungen/{query['id'][0]}/{query['file'][0]}")
+        assert hashlib.sha256(data).hexdigest() == row['Sha256'], row['RelPath']     # die Datei seiner Zeile
+
+
+def test_the_year_of_a_link_is_the_folder_in_the_table_row_and_for_a_loose_file_the_folder_it_lies_in(world):
+    invoice_id = sent_invoice(world)
+    save_open(world, invoice_id, orderNumber='B-2')
+    write_file(os.path.join(userctx.DATA_ROOT, 'invoices', '2025', 'Fassungen', str(invoice_id),
+                            '26R100 Malermeister Pinsel – versendet bis 2025-12-30.pdf'))      # kein Tabelleneintrag
+
+    queries = download_queries(box(world, invoice_id))
+
+    assert sorted((q['year'][0], q['file'][0].rsplit('.', 1)[1]) for q in queries) == [
+        ('2025', 'pdf'), ('2026', 'pdf'), ('2026', 'xml')]
+
+
+def test_a_table_row_whose_file_lies_in_another_year_folder_shows_no_link_for_the_wrong_one(world):
+    """Die Zeile nennt 2026, die Datei liegt aber in 2027: Kein Link zu einer gleichnamigen Datei eines anderen Jahres
+    – die Datei erscheint als lose Datei mit dem Jahr, in dem sie liegt."""
+    invoice_id = sent_invoice(world)
+    save_open(world, invoice_id, orderNumber='B-2')
+    root = os.path.join(userctx.DATA_ROOT, 'invoices')
+    moved = os.path.join(root, '2027', 'Fassungen', str(invoice_id))
+    os.makedirs(moved)
+    folder = os.path.join(root, '2026', 'Fassungen', str(invoice_id))
+    xml = next(n for n in os.listdir(folder) if n.endswith('.xml'))
+    os.replace(os.path.join(folder, xml), os.path.join(moved, xml))
+
+    section = box(world, invoice_id)
+
+    assert sorted((q['year'][0], q['file'][0].rsplit('.', 1)[1]) for q in download_queries(section)) == [
+        ('2026', 'pdf'), ('2027', 'xml')]
+    assert 'Datei nicht mehr vorhanden' in section
+
+
 # ── Das Protokoll ────────────────────────────────────────────────────────────
 
 def test_values_from_the_database_are_escaped_in_the_box(world):
@@ -230,3 +297,81 @@ def test_the_box_survives_a_deleted_draft_page_for_an_unknown_id(world):
     assert 'id="invoice_versions"' not in html
     assert columns(world.db, make_invoice(world, 'draft'))['DocumentVersion'] is None
     assert archived_versions(world.db, 99999) == []
+
+
+# ── Die Nummer der Fassung ist immer eine Zahl ───────────────────────────────
+
+@pytest.mark.parametrize('stored, shown', [('2"><img src=x onerror=alert(1)>', '1'), ('abc', '1'), (0, '1'), (-2, '1'),
+                                           (2.5, '1'), (1, '1'), (3, '3'), (None, '1')])
+def test_the_hidden_version_field_carries_only_a_whole_number(world, stored, shown):
+    """``Invoices.DocumentVersion`` lässt sich per SQL-Konsole oder zurückgespielter Sicherung beschreiben: Ein Text
+    dort stand unmaskiert im Attribut (``"><img …``). Ausgegeben wird nur eine positive Ganzzahl, sonst 1."""
+    invoice_id = sent_invoice(world)
+    run_sql(world.db, 'UPDATE Invoices SET DocumentVersion = ? WHERE ID = ?', stored, invoice_id)
+
+    html = PageInvoice(world.db, {}, invoice_id)
+
+    assert '<img src=x' not in html and 'onerror=alert(1)' not in html
+    assert Dom(html).one('input', id='document_version')['value'] == shown
+    assert Dom(html).names.count('img') == Dom(PageInvoice(world.db, {}, None)).names.count('img')
+
+
+# ── Daten in der Seite sind keine Platzhalter ────────────────────────────────
+
+PLACEHOLDER = '__CORRECT_QUESTION__'
+NODE = shutil.which('node')
+
+
+def _placeholder_page(world):
+    """Die Seite einer versendeten und berichtigten Rechnung, deren Kunde, Bestellnummer und Zahlungshinweis der Name
+    des Platzhalters sind (im Formular, in den Kundendaten des Skripts und im Protokoll)."""
+    world.db.update_contact(world.cust, contact_type='customer', entity_type='company', display_name=PLACEHOLDER,
+                            company_name=PLACEHOLDER, customer_number='K-100', street='Kundenweg 5',
+                            postal_code='54321', city='Kundenhausen', email='info@example.com')
+    invoice_id = sent_invoice(world, orderNumber=PLACEHOLDER)
+    save_open(world, invoice_id, paymentTerms=f'{PLACEHOLDER} sofort')
+    return invoice_id, PageInvoice(world.db, {}, invoice_id)
+
+
+def test_a_customer_named_like_the_placeholder_is_shown_unchanged(world):
+    """Die Rückfrage „Berichtigen“ wurde mit einem ``replace`` über die ganze Seite eingesetzt: Ein Kunde oder eine
+    Bestellnummer namens ``__CORRECT_QUESTION__`` bekam den Fragetext samt Anführungszeichen und zerstörte das Skript."""
+    invoice_id, html = _placeholder_page(world)
+    dom = Dom(html)
+    question = script_json(CORRECT_QUESTION)
+
+    assert html.count(question) == 1                                    # nur dort, wo die Rückfrage gebraucht wird
+    assert f'showConfirm({question}, function() {{ sendInvoice(changes, isEdit, invoiceId); }});' in html
+    assert data_block(dom, 'customersData')[str(world.cust)]['name'] == PLACEHOLDER
+    assert dom.one('input', id='order_number')['value'] == PLACEHOLDER
+    address = re.search(r'<div id="customer_address_display"[^>]*>(.*?)</div>', html, re.S).group(1)
+    assert address.startswith(PLACEHOLDER)
+    assert f'>{PLACEHOLDER}</option>' in html
+    assert html.split('<textarea id="payment_terms"')[1].split('</textarea>')[0].endswith(f'>{PLACEHOLDER} sofort')
+    protocol_rows = rows_of(html[html.index('id="invoice_versions"'):], 'Protokoll')
+    assert protocol_rows[-1][2:] == ['Zahlungshinweis', f'Zahlbar in 14 Tagen → {PLACEHOLDER} sofort']
+
+
+@pytest.mark.skipif(NODE is None, reason='Node.js nicht installiert – der statische Test '
+                                         '(test_a_customer_named_like_the_placeholder_is_shown_unchanged) deckt es ab')
+def test_every_script_block_of_such_a_page_still_parses(world, tmp_path):
+    _invoice_id, html = _placeholder_page(world)
+    blocks = Dom(html).scripts
+    assert any('function saveInvoice()' in block for block in blocks)
+    for index, block in enumerate(blocks):
+        source = tmp_path / f'block{index}.js'
+        source.write_text(block, encoding='utf-8')
+        done = subprocess.run([NODE, '--check', str(source)], capture_output=True, text=True, timeout=60)
+        assert done.returncode == 0, f'Block {index}: {done.stderr}'
+
+
+def test_the_box_is_not_touched_by_the_replacements_of_the_form(world):
+    """Der Kasten steht mit Daten aus der Datenbank in der Seite; die Platzhalter des Formulars (``__TAX_PCT__``,
+    ``__SHOW_TAX_CHECKED__``) gelten für dessen Vorlage, nicht für ihn."""
+    invoice_id = sent_invoice(world)
+    save_open(world, invoice_id, orderNumber='__TAX_PCT__', paymentTerms='__SHOW_TAX_CHECKED__')
+
+    rows = rows_of(box(world, invoice_id), 'Protokoll')
+
+    assert [r[2:] for r in rows][-2:] == [['Zahlungshinweis', 'Zahlbar in 14 Tagen → __SHOW_TAX_CHECKED__'],
+                                          ['Bestellnummer', 'B-17 → __TAX_PCT__']]

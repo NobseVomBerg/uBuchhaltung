@@ -145,9 +145,19 @@ ARCHIVE_FAILED_MESSAGE = ('Die versendeten Dokumente (PDF/XML) ließen sich nich
                           'verschieben – der Status wurde nicht geändert.')
 
 
+def as_document_version(value):
+    """Eine gespeicherte Fassungsnummer als Zahl: Nur eine positive Ganzzahl zählt, alles andere (NULL, Text, 0, eine
+    negative Zahl, ein Wahrheitswert) gilt als Fassung 1. Die Spalte lässt sich per SQL-Konsole oder zurückgespielter
+    Sicherung beschreiben, und die Nummer landet in Seiten und Dokumenten."""
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return 1
+
+
 def document_version(row):
-    """Die Nummer der aktuellen Fassung einer Rechnung (``Invoices.DocumentVersion``; NULL gilt als 1)."""
-    return row.get('DocumentVersion') or 1
+    """Die Nummer der aktuellen Fassung einer Rechnung (``Invoices.DocumentVersion``; NULL gilt als 1,
+    siehe :func:`as_document_version`)."""
+    return as_document_version(row.get('DocumentVersion'))
 
 
 class DocumentNotFound(LookupError):
@@ -443,7 +453,8 @@ class InvoiceLockMixin:
         ``insert_invoice_item`` (ohne ``invoice_id``) oder ``None`` für „Positionen unverändert“.
 
         * bearbeitbar: alle Felder werden geschrieben, die Positionen ersetzt – die Rechnungsnummer
-          nicht mehr, sobald die Rechnung schon einmal versendet war (:class:`InvoiceLocked`);
+          nicht mehr, sobald die Rechnung schon einmal versendet war (:class:`InvoiceLocked`; ist die neue
+          Nummer bis auf Leerraum die gespeicherte, wird sie nicht geschrieben);
         * gesperrt: ändert ``check_changes`` etwas Gesperrtes, bleibt alles, wie es ist
           (:class:`InvoiceLocked`); sonst werden die änderbaren Felder geschrieben – aber nur mit
           ``correcting=True``, dem Aufruf aus ``correct_invoice``, das Fassung und Protokoll anlegt; ohne
@@ -464,10 +475,13 @@ class InvoiceLockMixin:
             raise DocumentNotFound('Rechnung nicht gefunden.')
         group = status_group(row['Status'])
         if group == EDITABLE:
-            if ('invoice_number' in invoice_data
-                    and _text(row['InvoiceNumber']) != _text(invoice_data['invoice_number'])
+            if ('invoice_number' in invoice_data and invoice_data['invoice_number'] != row['InvoiceNumber']
                     and self.was_sent_before(invoice_id, conn)):
-                raise InvoiceLocked(NUMBER_KEPT_MESSAGE, [LABEL_OF['invoice_number']])
+                if _text(row['InvoiceNumber']) != _text(invoice_data['invoice_number']):
+                    raise InvoiceLocked(NUMBER_KEPT_MESSAGE, [LABEL_OF['invoice_number']])
+                # Gleich bis auf Leerraum: Die Sperre hat nichts zu beanstanden, geschrieben wird die Nummer aber nicht –
+                # sonst stünde ``'26R001 '`` in der Datenbank (das Dict des Aufrufers bleibt, wie es ist)
+                invoice_data = {key: value for key, value in invoice_data.items() if key != 'invoice_number'}
             if invoice_data:
                 self._write_fields(conn, invoice_id, invoice_data, EDITABLE)
             if items is not None:

@@ -27,6 +27,7 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -39,8 +40,13 @@ from pdfminer.pdftypes import resolve1, stream_value
 
 import server.handlers as handlers
 import userctx
-from db.invoice_lock import CHANGED_MESSAGE, CLOSED_MESSAGE, LOCKED_MESSAGE
+from db.invoice_lock import CHANGED_MESSAGE, CLOSED_MESSAGE, LOCKED_MESSAGE, document_version as version_of
+from db.invoice_versions import CORRECTION_ARCHIVE_FAILED_MESSAGE, DELIVERY_DATE_MESSAGE, CorrectionInvalid
+from export.einvoice_model import correction_note_text
+from server.pages import script_json
+from server.pages_invoice import CORRECT_QUESTION, PageInvoice
 from tests.document_helpers import read_file, stored_documents, write_file
+from tests.dom_helpers import Dom
 from tests.invoice_world import (archived_versions, build_world, columns, document_version, finance,
                                  make_invoice, make_payload, protocol, run_sql, save, save_open,
                                  save_raw, set_invoice_status, snapshot)
@@ -308,6 +314,176 @@ def test_a_form_loaded_before_the_invoice_was_taken_back_writes_nothing(world):
     assert str(refused.value) == CHANGED_MESSAGE and snapshot(world.db) == before
 
 
+# ── Das Leistungsdatum bleibt ein Datum ──────────────────────────────────────
+
+OTHER_CHANGES = {'orderNumber': 'B-99', 'paymentTerms': 'Zahlbar sofort'}
+BAD_DELIVERY_DATES = [(None, {}), ('', {}), ('31.12.2026', {}), ('irgendwann', {}), ('2026-13-01', {}),
+                      (' 2026-06-01', {}), ('2026-06-01 ', {}), (20260601, {}), (['2026-06-01'], {}),
+                      (None, OTHER_CHANGES), ('irgendwann', OTHER_CHANGES)]
+
+
+@pytest.mark.parametrize('value, others', BAD_DELIVERY_DATES)
+def test_a_correction_cannot_empty_the_delivery_date_or_fill_it_with_text(world, value, others):
+    """Eine Rechnung braucht ihr Leistungsdatum (§ 14 UStG): Die Berichtigung lehnt ab (400), bevor sie ein
+    Dokument verschiebt – auch die übrigen Änderungen der Anfrage werden nicht geschrieben."""
+    invoice_id = sent_invoice(world)
+    before, documents = snapshot(world.db), stored_documents(userctx.DATA_ROOT)
+
+    resp = save_raw({'invoiceId': invoice_id, 'documentVersion': 1, 'deliveryDate': value, **others})
+
+    assert resp.status == 400 and json.loads(resp) == {'success': False, 'error': DELIVERY_DATE_MESSAGE}
+    assert snapshot(world.db) == before and stored_documents(userctx.DATA_ROOT) == documents
+    assert archived_files(invoice_id) == [] and not os.path.exists(versions_dir(invoice_id))
+
+
+def test_a_valid_iso_date_is_a_correction_and_the_unchanged_date_is_none(world):
+    invoice_id = sent_invoice(world)
+    before = snapshot(world.db)
+    assert save_open(world, invoice_id, deliveryDate='2026-06-05') == {'success': True, 'invoice_id': invoice_id}
+    assert snapshot(world.db) == before                                    # unverändert: keine Fassung
+    assert save_open(world, invoice_id, deliveryDate='2026-06-01')['documentVersion'] == 2
+    assert columns(world.db, invoice_id)['DeliveryDate'] == '2026-06-01'
+
+
+@pytest.mark.parametrize('stored', [None, ''])
+def test_an_imported_invoice_without_a_delivery_date_can_still_be_corrected_in_the_other_fields(world, stored):
+    """Was die Maske unverändert zurückschickt – auch ein leeres Leistungsdatum –, ist kein Verstoß."""
+    invoice_id = make_invoice(world, 'sent')
+    run_sql(world.db, 'UPDATE Invoices SET DeliveryDate = ? WHERE ID = ?', stored, invoice_id)
+    for shown in (None, ''):
+        before = snapshot(world.db)
+        assert save_open(world, invoice_id, deliveryDate=shown) == {'success': True, 'invoice_id': invoice_id}
+        assert snapshot(world.db) == before
+
+    answer = save_open(world, invoice_id, orderNumber='B-99', deliveryDate=None)
+
+    assert answer == {'success': True, 'invoice_id': invoice_id, 'documentVersion': 2}
+    row = columns(world.db, invoice_id)
+    assert row['OrderNumber'] == 'B-99' and not row['DeliveryDate']
+    resp = save_raw({'invoiceId': invoice_id, 'documentVersion': 2, 'deliveryDate': 'irgendwann'})
+    assert resp.status == 400                                              # Text statt eines Datums geht auch hier nicht
+    assert save_open(world, invoice_id, deliveryDate='2026-06-01')['documentVersion'] == 3    # ein Datum lässt sich nachtragen
+
+
+def test_a_stored_delivery_date_that_is_not_iso_is_no_violation_while_it_stays(world):
+    invoice_id = make_invoice(world, 'sent')
+    run_sql(world.db, "UPDATE Invoices SET DeliveryDate = '31.12.2026' WHERE ID = ?", invoice_id)
+
+    answer = save_open(world, invoice_id, deliveryDate='31.12.2026', orderNumber='B-99')
+
+    assert answer['documentVersion'] == 2 and columns(world.db, invoice_id)['DeliveryDate'] == '31.12.2026'
+
+
+def test_the_database_layer_refuses_an_invalid_delivery_date_before_it_moves_anything(world):
+    invoice_id = sent_invoice(world)
+    before, documents = snapshot(world.db), stored_documents(userctx.DATA_ROOT)
+    with pytest.raises(CorrectionInvalid) as refused:
+        world.db.correct_invoice(invoice_id, {'delivery_date': None, 'order_number': 'B-99'}, 1, USER)
+    assert str(refused.value) == DELIVERY_DATE_MESSAGE and isinstance(refused.value, ValueError)
+    assert snapshot(world.db) == before and stored_documents(userctx.DATA_ROOT) == documents
+    assert archived_files(invoice_id) == []
+
+
+# ── Die Maske: ein geleertes Leistungsdatum wird nicht abgeschickt ───────────
+
+NODE = shutil.which('node')
+NO_NODE = pytest.mark.skipif(NODE is None, reason='Node.js nicht installiert – die statische Prüfung '
+                                                  '(test_the_form_checks_the_delivery_date_before_it_asks) deckt es ab')
+
+
+def _form_script(world, invoice_id):
+    return next(s for s in Dom(PageInvoice(world.db, {}, invoice_id)).scripts if 'function saveInvoice()' in s)
+
+
+def test_the_form_checks_the_delivery_date_before_it_asks_and_names_the_same_text(world):
+    script = _form_script(world, sent_invoice(world))
+    guard = script.index("if ('deliveryDate' in changes && !changes.deliveryDate)")
+    assert guard < script.index(f'showConfirm({script_json(CORRECT_QUESTION)}')       # vor der Rückfrage „Berichtigen“
+    assert f'showMessage({script_json(DELIVERY_DATE_MESSAGE)}, \'error\')' in script
+    assert '__CORRECT_QUESTION__' not in script and '__DELIVERY_DATE_MESSAGE__' not in script
+
+
+def _run_save_invoice(world, invoice_id, tmp_path, fields, initial):
+    """``saveInvoice()`` der Seite einer versendeten Rechnung in Node ausführen, mit Attrappen für das DOM und die
+    Meldungen: liefert, was gemeldet, gefragt und abgeschickt wurde."""
+    script = _form_script(world, invoice_id)
+    start = script.index('function saveInvoice()')
+    source = tmp_path / 'save_invoice.js'
+    source.write_text(script[start:script.index('// Send to server', start)], encoding='utf-8')
+    runner = tmp_path / 'run.js'
+    runner.write_text(
+        "const fs = require('fs'), vm = require('vm');\n"
+        "const scenario = JSON.parse(process.argv[3]);\n"
+        "const log = {messages: [], asked: [], sent: [], focused: []};\n"
+        "const elements = {};\n"
+        "for (const [id, value] of Object.entries(scenario.fields)) {\n"
+        "  elements[id] = {value: value, focus() { log.focused.push(id); }};\n"
+        "}\n"
+        "const sandbox = {document: {getElementById: id => elements[id] || null}, Object, parseInt,\n"
+        "  initialOpenFields: scenario.initial,\n"
+        "  showMessage: (text, type) => log.messages.push([text, type]),\n"
+        "  showConfirm: (text, ok) => { log.asked.push(text); ok(); },\n"
+        "  sendInvoice: changes => log.sent.push(changes)};\n"
+        "vm.runInNewContext(fs.readFileSync(process.argv[2], 'utf8') + '\\nsaveInvoice();', sandbox);\n"
+        "console.log(JSON.stringify(log));\n", encoding='utf-8')
+    base = {'invoice_id': str(invoice_id), 'invoice_locked': 'true', 'document_version': '1', 'payment_terms': 'P',
+            'order_number': '', 'buyer_route_id': '', 'delivery_date': ''}
+    done = subprocess.run([NODE, str(runner), str(source), json.dumps({'fields': {**base, **fields},
+                                                                         'initial': initial})],
+                          capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+@NO_NODE
+def test_the_form_does_not_send_a_cleared_delivery_date(world, tmp_path):
+    invoice_id = sent_invoice(world)
+    initial = {'paymentTerms': 'P', 'orderNumber': 'B-17', 'buyerReference': '', 'deliveryDate': '2026-06-05'}
+
+    log = _run_save_invoice(world, invoice_id, tmp_path, {'order_number': 'B-99', 'delivery_date': ''}, initial)
+
+    assert log['messages'] == [[DELIVERY_DATE_MESSAGE, 'error']]
+    assert log['asked'] == [] and log['sent'] == [] and log['focused'] == ['delivery_date']
+
+
+@NO_NODE
+def test_the_form_sends_an_unchanged_empty_delivery_date_of_an_import_no_more_and_a_new_date(world, tmp_path):
+    invoice_id = sent_invoice(world)
+    imported = {'paymentTerms': 'P', 'orderNumber': '', 'buyerReference': '', 'deliveryDate': ''}
+
+    log = _run_save_invoice(world, invoice_id, tmp_path, {'order_number': 'B-99'}, imported)
+
+    assert log['messages'] == [] and log['asked'] == [CORRECT_QUESTION]            # nur die Bestellnummer ist geändert
+    assert log['sent'] == [{'invoiceId': invoice_id, 'documentVersion': 1, 'orderNumber': 'B-99'}]
+
+    log = _run_save_invoice(world, invoice_id, tmp_path, {'delivery_date': '2026-06-01'}, imported)
+
+    assert log['messages'] == [] and log['sent'] == [
+        {'invoiceId': invoice_id, 'documentVersion': 1, 'deliveryDate': '2026-06-01'}]
+
+
+# ── Die Nummer der Fassung ist immer eine Zahl ───────────────────────────────
+
+@pytest.mark.parametrize('stored, expected', [(None, 1), (0, 1), (-3, 1), (True, 1), (2.5, 1), ('abc', 1),
+                                              ('2"><img src=x onerror=alert(1)>', 1), (1, 1), (2, 2), (17, 17)])
+def test_only_a_positive_whole_number_counts_as_the_version(stored, expected):
+    assert version_of({'DocumentVersion': stored}) == expected
+    assert version_of({}) == 1
+
+
+def test_a_version_that_is_no_number_counts_as_version_1_for_the_notice_and_the_documents(world):
+    from export.invoice_files import generate_invoice_documents
+    invoice_id = sent_invoice(world)
+    run_sql(world.db, 'UPDATE Invoices SET DocumentVersion = ? WHERE ID = ?', 'abc', invoice_id)
+
+    assert world.db.correction_notice(invoice_id) is None
+    result = generate_invoice_documents(world.db, invoice_id, overwrite_sent=True)
+
+    assert result['error'] is None
+    page = pdf_text(result['pdf_path'])
+    assert 'Fassung:' not in page and 'Berichtigte Fassung' not in page
+
+
 # ── Die Dokumente der bisherigen Fassung bleiben ─────────────────────────────
 
 def test_the_sent_documents_move_byte_for_byte_with_their_hash_and_a_row(world):
@@ -504,6 +680,41 @@ def test_a_failure_while_writing_the_rows_puts_the_documents_back_too(world, mon
     assert snapshot(world.db) == before
 
 
+def test_a_failing_version_row_puts_the_documents_back_and_refuses_the_correction(world):
+    """Das Verschieben gelang, das Festhalten in ``InvoiceDocumentVersions`` nicht (hier weist ein Trigger das
+    ``INSERT`` ab): Die Dokumente liegen wieder am gespeicherten Pfad, die Antwort ist die des gescheiterten Ablegens."""
+    invoice_id = sent_invoice(world)
+    cols = columns(world.db, invoice_id)
+    before, files = snapshot(world.db), (read_file(cols['PDFPath']), read_file(cols['XMLPath']))
+    run_sql(world.db, "CREATE TRIGGER boom BEFORE INSERT ON InvoiceDocumentVersions "
+                      "BEGIN SELECT RAISE(ABORT, 'boom'); END")
+
+    resp = save_raw({'invoiceId': invoice_id, 'documentVersion': 1, 'orderNumber': 'B-99'})
+
+    assert resp.status == 409
+    assert json.loads(resp) == {'success': False, 'error': CORRECTION_ARCHIVE_FAILED_MESSAGE}
+    assert (read_file(cols['PDFPath']), read_file(cols['XMLPath'])) == files
+    assert archived_files(invoice_id) == [] and not os.path.exists(versions_dir(invoice_id))
+    assert snapshot(world.db) == before                     # Felder, Fassung, Pfade, Protokoll, Fassungstabelle
+    assert columns(world.db, invoice_id)['DocumentVersion'] is None
+
+
+def test_an_unexpected_error_while_holding_the_documents_puts_them_back_too(world, monkeypatch):
+    invoice_id = sent_invoice(world)
+    cols = columns(world.db, invoice_id)
+    before, files = snapshot(world.db), (read_file(cols['PDFPath']), read_file(cols['XMLPath']))
+
+    def broken(path):
+        raise RuntimeError('Programmfehler')
+    monkeypatch.setattr('db.invoice_versions._sha256', broken)
+
+    resp = save_raw({'invoiceId': invoice_id, 'documentVersion': 1, 'orderNumber': 'B-99'})
+
+    assert json.loads(resp)['success'] is False and 'Programmfehler' not in resp.decode()
+    assert (read_file(cols['PDFPath']), read_file(cols['XMLPath'])) == files and archived_files(invoice_id) == []
+    assert snapshot(world.db) == before
+
+
 def test_a_failing_generation_keeps_the_correction_and_warns(world, monkeypatch):
     invoice_id = sent_invoice(world)
 
@@ -661,18 +872,102 @@ def test_the_replaced_version_is_dated_by_the_earlier_correction_else_by_the_sen
     save_open(world, invoice_id, orderNumber='B-3')
     run_sql(world.db, "UPDATE InvoiceCorrections SET ChangedAt = '2026-03-04 10:00:00' "      # die erste war im März
                   "WHERE InvoiceID = ? AND Version = 2", invoice_id)
-    run_sql(world.db, "UPDATE Invoices SET SentAt = '2026-01-15 08:00:00' WHERE ID = ?", invoice_id)
+    run_sql(world.db, "UPDATE InvoiceCorrections SET ChangedAt = '2026-01-16 10:00:00' "      # der Versand im Januar
+                  "WHERE InvoiceID = ? AND Action = 'status'", invoice_id)
+    run_sql(world.db, "UPDATE Invoices SET SentAt = '2026-01-15 10:00:00' WHERE ID = ?", invoice_id)   # SentAt einen Tag früher
     third = world.db.correction_notice(invoice_id)
     assert (third.version, third.replaces_on) == (3, datetime.date(2026, 3, 4))
 
     run_sql(world.db, "DELETE FROM InvoiceCorrections WHERE InvoiceID = ? AND Version = 2", invoice_id)
-    assert world.db.correction_notice(invoice_id).replaces_on == datetime.date(2026, 1, 15)   # ohne sie: der Versand
+    assert world.db.correction_notice(invoice_id).replaces_on == datetime.date(2026, 1, 16)   # ohne sie: der Versand im Protokoll
 
-    run_sql(world.db, "UPDATE Invoices SET SentAt = NULL WHERE ID = ?", invoice_id)               # ohne beides entfällt es
+    run_sql(world.db, "DELETE FROM InvoiceCorrections WHERE InvoiceID = ? AND Action = 'status'", invoice_id)
+    assert world.db.correction_notice(invoice_id).replaces_on == datetime.date(2026, 1, 15)   # ohne ihn: SentAt (Bestand)
+
+    run_sql(world.db, "UPDATE Invoices SET SentAt = NULL WHERE ID = ?", invoice_id)               # ohne alles entfällt es
     unknown = world.db.correction_notice(invoice_id)
     assert unknown.replaces_on is None
-    from export.einvoice_model import correction_note_text
     assert correction_note_text(unknown) == f'Berichtigte Fassung vom {TODAY_DE} (geändert: Bestellnummer)'
+
+
+def _date_the_newest_row(world, invoice_id, stamp):
+    """Die jüngste Protokollzeile auf einen Zeitpunkt in der Vergangenheit legen – so lässt sich prüfen, aus
+    welchem Eintrag ein Datum stammt."""
+    run_sql(world.db, "UPDATE InvoiceCorrections SET ChangedAt = ? WHERE ID = "
+                      "(SELECT MAX(ID) FROM InvoiceCorrections WHERE InvoiceID = ?)", stamp, invoice_id)
+
+
+def test_after_sending_again_the_replaced_version_is_dated_by_that_sending_not_the_first_one(world):
+    """Versendet (Januar), zurückgeholt, neu versendet (heute), berichtigt: Ersetzt wird die Fassung, die heute an
+    den Kunden ging – nicht die des ersten Versands."""
+    invoice_id = sent_invoice(world)
+    run_sql(world.db, "UPDATE InvoiceCorrections SET ChangedAt = '2026-01-05 10:00:00' WHERE InvoiceID = ?", invoice_id)
+    run_sql(world.db, "UPDATE Invoices SET SentAt = '2026-01-05 10:00:00' WHERE ID = ?", invoice_id)
+    assert set_invoice_status(invoice_id, 'draft')[0] == 200
+    assert set_invoice_status(invoice_id, 'sent')[0] == 200                    # Fassung 2 geht heute an den Kunden
+
+    assert save_open(world, invoice_id, orderNumber='B-99')['documentVersion'] == 3
+
+    notice_ = world.db.correction_notice(invoice_id)
+    assert (notice_.version, notice_.corrected_on, notice_.replaces_on) == (3, TODAY, TODAY)
+    assert correction_note_text(notice_) == (
+        f'Berichtigte Fassung vom {TODAY_DE} – ersetzt die Fassung vom {TODAY_DE} (geändert: Bestellnummer)')
+    assert notice('Bestellnummer') in pdf_text(columns(world.db, invoice_id)['PDFPath']).replace('\n', ' ')
+
+
+def test_after_a_correction_reopening_and_sending_the_replaced_version_is_dated_by_the_second_sending(world):
+    invoice_id = sent_invoice(world)
+    _date_the_newest_row(world, invoice_id, '2026-01-05 10:00:00')                  # erster Versand
+    save_open(world, invoice_id, orderNumber='B-2')                                 # Fassung 2
+    _date_the_newest_row(world, invoice_id, '2026-02-10 10:00:00')                  # … im Februar berichtigt
+    assert set_invoice_status(invoice_id, 'draft')[0] == 200                         # zurückgeholt: Fassung 3
+    assert set_invoice_status(invoice_id, 'sent')[0] == 200
+    _date_the_newest_row(world, invoice_id, '2026-03-20 10:00:00')                  # zweiter Versand im März
+
+    assert save_open(world, invoice_id, orderNumber='B-3')['documentVersion'] == 4
+
+    notice_ = world.db.correction_notice(invoice_id)
+    assert (notice_.version, notice_.corrected_on) == (4, TODAY)
+    assert notice_.replaces_on == datetime.date(2026, 3, 20)                         # nicht SentAt (heute) und nicht Januar
+
+
+def test_two_corrections_in_a_row_the_second_replaces_the_version_of_the_first(world):
+    invoice_id = sent_invoice(world)
+    save_open(world, invoice_id, orderNumber='B-2', paymentTerms='Zahlbar sofort')    # eine Berichtigung, zwei Zeilen
+    run_sql(world.db, "UPDATE InvoiceCorrections SET ChangedAt = '2026-03-04 10:00:00' "
+                      "WHERE InvoiceID = ? AND Action = 'correct'", invoice_id)
+
+    save_open(world, invoice_id, orderNumber='B-3')
+
+    notice_ = world.db.correction_notice(invoice_id)
+    assert (notice_.version, notice_.replaces_on) == (3, datetime.date(2026, 3, 4))
+
+
+def test_a_taking_back_without_files_does_not_hide_the_second_sending_behind_the_first_correction(world):
+    """Ein Import hat keine Dateien: Das Zurückholen zählt die Fassung nicht hoch. Die Berichtigung danach ersetzt
+    trotzdem die Fassung, die beim zweiten Versand an den Kunden ging – nicht die der ersten Berichtigung."""
+    invoice_id = make_invoice(world, 'sent')
+    save_open(world, invoice_id, orderNumber='B-2')                                 # Fassung 2, ohne Datei
+    _date_the_newest_row(world, invoice_id, '2026-02-10 10:00:00')
+    assert set_invoice_status(invoice_id, 'draft')[0] == 200
+    assert document_version(world.db, invoice_id) == 2                              # keine Datei: keine neue Fassung
+    assert set_invoice_status(invoice_id, 'sent')[0] == 200
+    _date_the_newest_row(world, invoice_id, '2026-03-20 10:00:00')                  # zweiter Versand im März
+
+    assert save_open(world, invoice_id, orderNumber='B-3')['documentVersion'] == 3
+
+    assert world.db.correction_notice(invoice_id).replaces_on == datetime.date(2026, 3, 20)
+
+
+def test_an_import_without_a_sending_time_and_a_protocol_names_no_replaced_version(world):
+    invoice_id = make_invoice(world, 'sent')
+    assert columns(world.db, invoice_id)['SentAt'] is None and protocol(world.db, invoice_id) == []
+
+    save_open(world, invoice_id, orderNumber='B-9')
+
+    notice_ = world.db.correction_notice(invoice_id)
+    assert notice_.replaces_on is None                                  # die eigene Berichtigung ersetzt nichts
+    assert correction_note_text(notice_) == f'Berichtigte Fassung vom {TODAY_DE} (geändert: Bestellnummer)'
 
 
 @pytest.mark.skipif(not hasattr(time, 'tzset'), reason='Zeitzone lässt sich nur unter Unix umstellen')

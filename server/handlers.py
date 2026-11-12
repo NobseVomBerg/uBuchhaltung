@@ -23,6 +23,7 @@ from db.invoices import (InvoiceCol, InvoiceNotDeletable, QUOTE_STAYS_CONVERTED_
                          QUOTE_STAYS_CONVERTED_SQL, QuoteNotConvertible, QuoteStatusLocked)
 from db.invoice_lock import (DocumentNotFound, EDITABLE_STATUSES, InvoiceLocked, STATUS_LABELS,
                              buyer_snapshot, status_group)
+from db.invoice_versions import CorrectionInvalid
 from db.invoice_payments import RECEIVABLE_STATUSES
 from db.numbering import NumberRangeError, number_format_error
 from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
@@ -2196,9 +2197,30 @@ def _invoice_fields(db, data, stored):
     return invoice_data, item_rows
 
 
+def _invoice_id(data):
+    """``invoiceId`` des Formulars als Ganzzahl; fehlt es (oder ist es ``null``), ist es eine neue Rechnung
+    (``None``). Gelesen wird nur eine ganze Zahl – als Zahl, als ganzzahliger Bruch (``1.0``) oder als Text in
+    Normalform (``"1"``). Alles andere (``1.5``, ``true``, ``"01"``, ``"1.0"``, ``" 1"``, ``""``) lehnt die Anfrage
+    ab: Die Datenbank fände die Rechnung 1 auch damit, aber den Ordner ``Fassungen/1.0`` gibt es nicht – die
+    Nummernsperre eines Bestands aus 2.1.2 griffe nicht."""
+    value = data.get('invoiceId')
+    if value is None:
+        return None
+    try:
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        elif isinstance(value, str) and value.isascii() and value.isdigit() and str(int(value)) == value:
+            value = int(value)
+    except ValueError:                           # mehr Ziffern, als Python in eine Zahl wandelt
+        value = None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise _SaveRefused('Ungültige Rechnungs-ID', 400)
+    return value
+
+
 def _save_invoice(data):
     # Check if this is an update (invoiceId present) or new invoice
-    invoice_id = data.get('invoiceId')
+    invoice_id = _invoice_id(data)
     is_update = invoice_id is not None
     db = Database()
     # Der Stand vor dem Speichern bestimmt nur, welche Angaben das Formular mitbringen muss; ob
@@ -2257,6 +2279,8 @@ def _correct_invoice(db, invoice_id, invoice_data, item_rows, data):
             refresh_address=data.get('refreshAddress') is True, items=item_rows)
     except InvoiceLocked as locked:
         raise _SaveRefused(str(locked), 409) from None
+    except CorrectionInvalid as invalid:                # vor jedem allgemeinen ValueError: eine ungültige Angabe, 400
+        raise _SaveRefused(str(invalid), 400) from None
     except DocumentNotFound as refusal:
         raise _SaveRefused(str(refusal)) from None
     result = {'success': True, 'invoice_id': invoice_id}
@@ -2573,12 +2597,13 @@ def handle_invoice_document_download(invoice_id: int, kind: str = 'pdf', doc_typ
         return None, None, 'Dokument konnte nicht gelesen werden.'
 
 
-def handle_invoice_version_download(invoice_id: int, filename):
+def handle_invoice_version_download(invoice_id: int, filename, year=None):
     """Eine abgelegte Fassung (PDF/XML aus ``Fassungen/<ID>``) zum Download laden – rein lesend.
 
     ``filename`` ist der Dateiname aus der Anfrage; er muss eine Datei im Fassungen-Ordner genau dieser
     Rechnung sein (``export.invoice_files.version_file_path``), die ID eines Angebots oder einer anderen
-    Rechnung liefert nichts.
+    Rechnung liefert nichts. ``year`` (der Jahresordner) trennt gleiche Namen in zwei Jahresordnern: Ist er
+    angegeben, muss die Datei in genau diesem Ordner liegen, sonst gilt der erste Treffer.
 
     Returns:
         tuple: ``(bytes, dateiname, fehlertext)``; bei Erfolg ist der Fehlertext ``None``.
@@ -2589,7 +2614,7 @@ def handle_invoice_version_download(invoice_id: int, filename):
     try:
         if db.get_document(invoice_id, 'invoice') is None:
             return None, None, 'Rechnung nicht gefunden.'
-        path = version_file_path(invoice_id, filename)
+        path = version_file_path(invoice_id, filename, year)
         if not path:
             return None, None, 'Diese Fassung gibt es nicht.'
         with open(path, 'rb') as f:
