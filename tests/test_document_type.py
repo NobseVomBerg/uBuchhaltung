@@ -295,6 +295,11 @@ COLUMN_OF = {
     'AMOUNT_DUE': 'AmountDue',
     'STATUS': 'Status',
     'DOCUMENT_TYPE': 'DocumentType',
+    'INVOICE_KIND': 'InvoiceKind',                 # ab 2.2.0 (Schema 2002), Index 50–54
+    'CANCELS_INVOICE_ID': 'CancelsInvoiceId',
+    'REPLACES_INVOICE_ID': 'ReplacesInvoiceId',
+    'SENT_AT': 'SentAt',
+    'DOCUMENT_VERSION': 'DocumentVersion',
 }
 
 

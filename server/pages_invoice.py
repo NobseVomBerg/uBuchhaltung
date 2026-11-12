@@ -6,14 +6,17 @@
 import datetime
 import json
 import html as _html
+import re
+from urllib.parse import quote
 from db import Database
 from db.invoices import InvoiceCol
-from db.invoice_lock import (CLOSED, EDITABLE, STATUS_LABELS, allowed_targets, buyer_snapshot,
-                             status_group)
+from db.invoice_lock import (CLOSED, EDITABLE, NUMBER_KEPT_MESSAGE, STATUS_LABELS, allowed_targets,
+                             as_document_version, buyer_snapshot, status_group)
 from db.invoice_payments import PAYABLE_STATUSES
+from db.invoice_versions import DELIVERY_DATE_MESSAGE, PROTOCOL_LABELS, local_date, local_datetime
 from money import fmt_eur
 from export.einvoice_model import unit_display
-from export.invoice_files import stored_invoice_path, was_sent_before
+from export.invoice_files import stored_invoice_path, version_files
 from .pages import (
     Header1, Header2, Header3, Footer, logo_url, script_json,
 )
@@ -45,6 +48,13 @@ INVOICE_STATUS_LABELS: dict = STATUS_LABELS     # eine Quelle: db/invoice_lock.p
 DELETE_DRAFT_QUESTION = 'Entwurf wirklich löschen?'
 DELETE_SENT_BEFORE_NOTE = ('Diese Rechnung war bereits versendet. Die versendete Fassung bleibt im Ordner '
                            '„Fassungen“ erhalten, die Nummer wird nicht neu vergeben.')
+
+# Versendete Rechnung: was änderbar ist und was eine Änderung bewirkt (Berichtigen, db/invoice_versions.py)
+SENT_HINT = ('Diese Rechnung ist versendet. Änderbar sind Zahlungshinweis, Anschrift, Bestellnummer, Leitweg-ID '
+             'und Leistungsdatum. Jede Änderung wird protokolliert; die bisherige Fassung bleibt als Datei '
+             'erhalten, und es entsteht eine neue Fassung, die dem Kunden erneut zugehen muss.')
+CORRECT_QUESTION = ('Rechnung berichtigen? Die bisherige Fassung bleibt als Datei erhalten, die Änderung wird '
+                    'protokolliert, und die neue Fassung muss dem Kunden erneut zugehen.')
 
 
 def _address_text(snapshot, separator):
@@ -245,7 +255,7 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
                  f'{has_pdf}, {has_xml})" class="action-icon" title="{pdf_title}">&#128196;</a> ')
             s+= f"<a href='/invoice?id={inv_id}' class='action-icon' title='{action_title}'>{action_icon}</a>"
             if status == 'draft':
-                sent_before = 'true' if was_sent_before(inv_id) else 'false'
+                sent_before = 'true' if db.was_sent_before(inv_id) else 'false'
                 s+= (f' <a href="javascript:void(0);" onclick="deleteInvoiceDraft({int(inv_id)}, {sent_before})" '
                      'class="action-icon delete-icon" title="Entwurf löschen">&#128465;</a>')
             s+= f"</td>"
@@ -399,13 +409,20 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
     
     # Versendet (gesperrt) oder storniert: Die Finanzangaben stehen im Formular nicht mehr offen
     # (db/invoice_lock.py; serverseitig entscheidet check_changes, das Formular zeigt es nur an).
-    # Bei einer versendeten Rechnung bleiben Begleittext, Bestellnummer, Leitweg-ID und
-    # Leistungsdatum änderbar, bei einer stornierten nichts.
+    # Bei einer versendeten Rechnung bleiben Zahlungshinweis, Anschrift, Bestellnummer, Leitweg-ID und
+    # Leistungsdatum änderbar (als Berichtigung), bei einer stornierten nichts.
     group = status_group(invoice_status) if is_edit_mode else EDITABLE
     locked = group != EDITABLE
     closed = group == CLOSED
     lock_attr = ' disabled' if locked else ''
     closed_attr = ' disabled' if closed else ''
+    # Eine Rechnung, die schon einmal versendet war, behält ihre Nummer auch als Entwurf (der Kunde kennt sie)
+    number_kept = is_edit_mode and group == EDITABLE and db.was_sent_before(invoice_id)
+    number_attr = lock_attr or (' readonly' if number_kept else '')
+    # Nummer der Fassung, die diese Maske geladen hat: Beim Berichtigen schickt sie sie mit (Schutz davor, eine
+    # inzwischen anderweitig berichtigte Rechnung zu überschreiben)
+    document_version = (as_document_version(existing_invoice[InvoiceCol.DOCUMENT_VERSION])
+                        if is_edit_mode and len(existing_invoice) > InvoiceCol.DOCUMENT_VERSION else '')
     # Leitweg-ID: im Entwurf folgt sie dem Kunden (schreibgeschützt); bei einer versendeten Rechnung steht
     # der gespeicherte Wert da und ist ein normales Eingabefeld
     route_attr = closed_attr if locked else ' readonly'
@@ -419,6 +436,7 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
     s += f'<input type="hidden" id="is_edit_mode" value="{str(is_edit_mode).lower()}">'
     s += f'<input type="hidden" id="invoice_status_value" value="{_html.escape(str(invoice_status))}">'
     s += f'<input type="hidden" id="invoice_locked" value="{str(locked).lower()}">'
+    s += f'<input type="hidden" id="document_version" value="{document_version}">'
     # Die Nummer im Feld ist nur ein Vorschlag, solange sie unverändert bleibt: Dann vergibt der Server beim
     # Speichern frisch (ein zweites Fenster kann den Vorschlag inzwischen verbraucht haben)
     s += ('<input type="hidden" id="number_suggestion" value="'
@@ -443,11 +461,12 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
         )
         set_status_attr = '' if targets else ' disabled'
         save_button = ('' if closed else
-                       '<button onclick="saveInvoice()" class="coloredButton btn-sm bg-green">💾 Speichern</button>')
+                       '<button onclick="saveInvoice()" class="coloredButton btn-sm bg-green">'
+                       + ('✏ Berichtigen' if locked else '💾 Speichern') + '</button>')
         # Löschen gibt es nur für einen Entwurf (POST nach Rückfrage); sonst erst auf Entwurf zurücksetzen
         delete_button = ('' if invoice_status != 'draft' else
                          f'<button onclick="appConfirmPost(\'/invoice/delete?id={int(invoice_id)}\', '
-                         + _html.escape(script_json(delete_question(was_sent_before(invoice_id))))
+                         + _html.escape(script_json(delete_question(db.was_sent_before(invoice_id))))
                          + ')" class="coloredButton btn-sm bg-red">🗑 Löschen</button>')
         s += '<div class="rectRounded no-pdf">' #right Column Headline, Status and Buttons
         s += f'<h2>{page_title}</h2>'
@@ -463,9 +482,7 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
         if closed:
             s += ' &nbsp; &nbsp; &#9888; Storniert: Die Rechnung l&auml;sst sich nicht mehr &auml;ndern.</div>'
         elif locked:
-            s += (' &nbsp; &nbsp; &#9888; Versendet: Betr&auml;ge, Positionen, Nummer, Datum und Kunde sind gesperrt. '
-                  '&Auml;nderbar sind Begleittext, Anschrift, Bestellnummer, Leitweg-ID und Leistungsdatum. '
-                  'Das abgelegte Dokument (PDF/XML) bleibt dabei unver&auml;ndert.</div>')
+            s += f' &nbsp; &nbsp; &#9888; {_html.escape(SENT_HINT)}</div>'
         s += f'''
                 </div></td>
             </tr>
@@ -537,7 +554,9 @@ function copyInvoiceAsNew(invId) {{
     _dd = existing_invoice[25] if existing_invoice and len(existing_invoice) > 25 and existing_invoice[25] else ''
     s += ('<tr><td title="Datum der Lieferung/Leistung bzw. Leistungszeitraum (Pflichtangabe nach § 14 UStG)">Leistungsdatum:</td>'
           f'<td><input type="date" id="delivery_date" required value="{_html.escape(str(_dd))}" style="width: 150px;"{closed_attr}></td></tr>')
-    s += f'<tr><td>Rechnungs-Nr.:</td><td><input type="text" id="invoice_number" value="{_html.escape(invoice_number)}" style="width: 150px;"{lock_attr}></td></tr>'
+    s += f'<tr><td>Rechnungs-Nr.:</td><td><input type="text" id="invoice_number" value="{_html.escape(invoice_number)}" style="width: 150px;"{number_attr}></td></tr>'
+    if number_kept:
+        s += f'<tr class="no-pdf"><td colspan="2" class="hint">{_html.escape(NUMBER_KEPT_MESSAGE)}</td></tr>'
     if number_hint:
         s += ('<tr class="no-pdf"><td colspan="2" class="hint">Der Nummernkreis liefert keine Nummer – bitte die '
               'Formatvorlage unter Stammdaten &rarr; Nummernkreise pr&uuml;fen (genau ein Z&auml;hler: '
@@ -1346,7 +1365,8 @@ function copyInvoiceAsNew(invId) {{
 
             // Versendete Rechnung: Betraege, Positionen, Nummer, Datum und Kunde sind gesperrt (der Server
             // lehnt jede Aenderung daran ab) - geschickt wird nur, was sich noch aendern laesst UND was der
-            // Nutzer geaendert hat; die Anschrift nur auf ausdruecklichen Wunsch (Kaestchen)
+            // Nutzer geaendert hat; die Anschrift nur auf ausdruecklichen Wunsch (Kaestchen). Das Speichern
+            // ist hier ein Berichtigen: nach Rueckfrage, mit der Fassung, die diese Maske geladen hat
             if (isEdit && document.getElementById('invoice_locked').value === 'true') {
                 const current = {
                     paymentTerms: document.getElementById('payment_terms').value,
@@ -1354,13 +1374,24 @@ function copyInvoiceAsNew(invId) {{
                     buyerReference: document.getElementById('buyer_route_id').value || null,
                     deliveryDate: document.getElementById('delivery_date').value || null
                 };
-                const changes = {invoiceId: parseInt(invoiceId)};
+                const changes = {invoiceId: parseInt(invoiceId),
+                                 documentVersion: parseInt(document.getElementById('document_version').value)};
                 Object.keys(current).forEach(function(key) {
                     if ((current[key] || '') !== (initialOpenFields[key] || '')) changes[key] = current[key];
                 });
                 const refresh = document.getElementById('refresh_address');
                 if (refresh && refresh.checked) changes.refreshAddress = true;
-                sendInvoice(changes, isEdit, invoiceId);
+                if (Object.keys(changes).length === 2) {         // nur die ID und die Fassung: nichts geändert
+                    showMessage('Es wurde nichts geändert.', 'info');
+                    return;
+                }
+                // Das Leistungsdatum ist Pflicht: geleert wird es nicht (ein leeres, unverändertes - Import - schon)
+                if ('deliveryDate' in changes && !changes.deliveryDate) {
+                    showMessage(__DELIVERY_DATE_MESSAGE__, 'error');
+                    document.getElementById('delivery_date').focus();
+                    return;
+                }
+                showConfirm(__CORRECT_QUESTION__, function() { sendInvoice(changes, isEdit, invoiceId); });
                 return;
             }
 
@@ -1498,6 +1529,8 @@ function copyInvoiceAsNew(invId) {{
                     // Stay in grid view with this invoice selected
                     const redirectId = isEdit ? invoiceId : String(data.invoice_id);
                     const target = '/invoice?id=' + redirectId;
+                    // Berichtigt: die Maske kennt jetzt die neue Fassung (die Seite wird gleich neu geladen)
+                    if (data.documentVersion) document.getElementById('document_version').value = data.documentVersion;
                     // Gespeichert, aber mit Hinweis (z. B. Nummernkreis): kurz anzeigen, dann weiter
                     if (data.warning) {
                         showMessage(data.warning, 'warn');
@@ -1508,6 +1541,10 @@ function copyInvoiceAsNew(invId) {{
                         showMessage('Gespeichert mit der Rechnungsnummer ' + data.invoice_number
                                     + ' (der Vorschlag ' + invoiceData.invoiceNumber + ' war inzwischen vergeben).', 'info');
                         setTimeout(function() { window.location.href = target; }, 3500);
+                    } else if (data.documentVersion) {
+                        showMessage('Berichtigt: Fassung ' + data.documentVersion
+                                    + '. Die neue Fassung muss dem Kunden erneut zugehen.', 'success');
+                        setTimeout(function() { window.location.href = target; }, 2500);
                     } else {
                         window.location.href = target;
                     }
@@ -1576,7 +1613,8 @@ function copyInvoiceAsNew(invId) {{
                 document.getElementById('xml_exists')?.value === 'true');
         }
     </script>
-    '''
+    '''.replace('__CORRECT_QUESTION__', script_json(CORRECT_QUESTION)
+                ).replace('__DELIVERY_DATE_MESSAGE__', script_json(DELIVERY_DATE_MESSAGE))
 
     # Payment history section (edit mode only)
     if is_edit_mode and invoice_id:
@@ -1755,5 +1793,91 @@ function copyInvoiceAsNew(invId) {{
     # Steuersatz-Feld + USt-Checkbox serverseitig vorbelegen (Platzhalter im Template)
     s = s.replace('__TAX_PCT__', f'{tax_pct:g}')
     s = s.replace('__SHOW_TAX_CHECKED__', 'checked' if show_tax else '')
+    # Der Kasten steht voller Daten aus der Datenbank: Er kommt erst nach den Ersetzungen dazu
+    if is_edit_mode and invoice_id:
+        s += _versions_box_html(db, invoice_id)
     return s
 
+
+# ── Fassungen und Protokoll ──────────────────────────────────────────────────
+
+_REASON_LABELS = {'corrected': 'berichtigt', 'reopened': 'zurückgeholt'}
+_SENT_UNTIL = re.compile(r'versendet bis (\d{4})-(\d{2})-(\d{2})')
+
+
+def _german_date(day):
+    return day.strftime('%d.%m.%Y') if day else '–'
+
+
+def _download_link(invoice_id, year, filename, label):
+    """Link, der eine abgelegte Fassung über ``appDownload`` lädt (``/invoice/version_download``). Er trägt den
+    Jahresordner: Dieselbe Datei kann in zwei Jahresordnern liegen, der Name allein träfe den ersten."""
+    url = (f'/invoice/version_download?id={int(invoice_id)}&file={quote(filename, safe="")}'
+           f'&year={quote(year, safe="")}')
+    return (f'<a href="javascript:void(0);" onclick="{_html.escape("appDownload(" + script_json(url) + ")")}">'
+            f'{_html.escape(label)}</a>')
+
+
+def _version_rows(db, invoice_id):
+    """Die abgelegten Fassungen als Zeilen ``(Fassung, versendet bis, Anlass, [(Art, Jahresordner, Dateiname,
+    vorhanden)])``: die in ``InvoiceDocumentVersions`` festgehaltenen (der Jahresordner steht im ``RelPath``), dazu
+    die Dateien in ``Fassungen/<ID>``, zu denen es keine Tabellenzeile gibt (Altbestand aus 2.1.2) – die erscheinen
+    ohne Fassungsnummer, mit dem Jahresordner, in dem sie liegen. „Vorhanden“ heißt: im Jahresordner der Zeile."""
+    present = {(year, name) for name, _path, year in version_files(invoice_id)}
+    grouped, known = {}, set()
+    for version, kind, rel_path, _sha, archived_at, reason in db.get_document_versions(invoice_id):
+        year, filename = rel_path.split('/', 1)[0], rel_path.rsplit('/', 1)[-1]
+        known.add((year, filename))
+        row = grouped.setdefault((version, archived_at, reason), [])
+        row.append((kind.upper(), year, filename, (year, filename) in present))
+    rows = [(version, _german_date(local_date(archived_at)), _REASON_LABELS.get(reason, reason or '–'), files)
+            for (version, archived_at, reason), files in sorted(
+                grouped.items(), key=lambda kv: (kv[0][0], str(kv[0][1] or '')))]
+    loose = {}
+    for year, filename in sorted(present - known):
+        stem, extension = filename.rsplit('.', 1) if '.' in filename else (filename, '')
+        loose.setdefault((year, stem), []).append((extension.upper(), year, filename, True))
+    for (_year, stem), files in loose.items():
+        found = _SENT_UNTIL.search(stem)
+        until = '.'.join(reversed(found.groups())) if found else '–'
+        rows.append(('–', until, '–', files))
+    return rows
+
+
+def _protocol_value(field, value):
+    if value is None or value == '':
+        return '–'
+    return STATUS_LABELS.get(value, value) if field == 'Status' else value
+
+
+def _versions_box_html(db, invoice_id):
+    """Kasten „Fassungen und Protokoll“ auf der Rechnungsseite: die abgelegten Fassungen (mit Download je
+    Datei) und das Protokoll der Berichtigungen und Statuswechsel. Leer, wenn es nichts gibt. Jeder Wert aus
+    der Datenbank ist maskiert, Dateinamen stehen prozentkodiert in der Adresse."""
+    versions = _version_rows(db, invoice_id)
+    protocol = db.get_invoice_protocol(invoice_id)
+    if not versions and not protocol:
+        return ''
+    h = '    <div class="rectRounded no-pdf" id="invoice_versions">\n        <h3>Fassungen und Protokoll</h3>\n'
+    if versions:
+        h += ('        <h4>Abgelegte Fassungen</h4>\n        <table class="versionTable">\n'
+              '            <tr><th>Fassung</th><th>Versendet bis</th><th>Anlass</th><th>Dateien</th></tr>\n')
+        for number, until, reason, files in versions:
+            links = ' '.join(_download_link(invoice_id, year, name, kind) if present
+                             else f'<span class="muted" title="Datei nicht mehr vorhanden">{_html.escape(kind)}</span>'
+                             for kind, year, name, present in files)
+            h += (f'            <tr><td>{_html.escape(str(number))}</td><td>{_html.escape(until)}</td>'
+                  f'<td>{_html.escape(reason)}</td><td>{links}</td></tr>\n')
+        h += '        </table>\n'
+    if protocol:
+        h += ('        <h4>Protokoll</h4>\n        <table class="versionTable">\n'
+              '            <tr><th>Datum</th><th>Benutzer</th><th>Feld</th><th>Alt &rarr; Neu</th></tr>\n')
+        for changed_at, user, _action, field, old, new, _version in protocol:
+            moment = local_datetime(changed_at)
+            when = moment.strftime('%d.%m.%Y %H:%M') if moment else str(changed_at or '–')
+            change = f'{_protocol_value(field, old)} \u2192 {_protocol_value(field, new)}'
+            h += (f'            <tr><td>{_html.escape(when)}</td><td>{_html.escape(user or "–")}</td>'
+                  f'<td>{_html.escape(PROTOCOL_LABELS.get(field, field or "–"))}</td>'
+                  f'<td>{_html.escape(change)}</td></tr>\n')
+        h += '        </table>\n'
+    return h + '    </div>\n'

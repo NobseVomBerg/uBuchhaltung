@@ -33,6 +33,21 @@ class MigrationBackupError(RuntimeError):
 #: (``Bookings.EntryForm``). Gesichert wird vor jedem Migrationslauf (``initialize_database``).
 ENTRY_FORM_SCHEMA = 2001
 
+#: Ab dieser Schema-Zahl (Version 2.2.0) führt eine Rechnung den Versandzeitpunkt und den Zähler ihrer
+#: Fassung (``Invoices.SentAt``, ``Invoices.DocumentVersion``), dazu die Spalten für den Stornobeleg
+#: (``InvoiceKind``, ``CancelsInvoiceId``, ``ReplacesInvoiceId``); Fassungen und Protokoll haben eigene
+#: Tabellen (``InvoiceDocumentVersions``, ``InvoiceCorrections``).
+INVOICE_VERSIONS_SCHEMA = 2002
+
+#: Die Spalten, die Schema 2002 an ``Invoices`` anhängt (in dieser Reihenfolge; Index 50 bis 54)
+_INVOICE_VERSION_COLUMNS = (
+    ('InvoiceKind', 'TEXT'),
+    ('CancelsInvoiceId', 'INTEGER'),
+    ('ReplacesInvoiceId', 'INTEGER'),
+    ('SentAt', 'DATETIME'),
+    ('DocumentVersion', 'INTEGER'),
+)
+
 
 class SchemaMixin:
     def _column_exists(self, cursor, table, column):
@@ -116,6 +131,13 @@ class SchemaMixin:
             # (_fill_entry_forms) – danach liest jede Auswertung jede Zeile wie vorher.
             self._add_column_if_missing(cursor, 'Bookings', 'EntryForm', 'TEXT')
             self._fill_entry_forms(cursor)
+        if from_version < INVOICE_VERSIONS_SCHEMA:
+            # 2.2.0: Fassungen und Protokoll einer Rechnung. Die Spalten kommen in der Reihenfolge ans Ende,
+            # in der sie auch das CREATE TABLE der frischen Datenbank führt; alle Werte des Bestands
+            # bleiben NULL (``DocumentVersion`` NULL = Fassung 1). Die Tabellen und der Index entstehen
+            # in ``_ensure_invoice_version_schema``.
+            for column, definition in _INVOICE_VERSION_COLUMNS:
+                self._add_column_if_missing(cursor, 'Invoices', column, definition)
 
     def _fill_entry_forms(self, cursor):
         """Jedem Buchungssatz (``BookingType='entry'``) ohne Form die Form geben, die
@@ -603,6 +625,14 @@ class SchemaMixin:
                 ClosingText TEXT,                              -- Fließtext nach Positionen
                 SourceQuoteId INTEGER,                         -- Rechnung: Quell-Angebot
 
+                -- Fassungen, Versand, Stornobeleg (Schema 2002, Index 50-54; Reihenfolge wie die
+                -- ALTER TABLE der Migration in _run_migrations)
+                InvoiceKind TEXT,                              -- NULL = Rechnung; für den Stornobeleg vorgesehen
+                CancelsInvoiceId INTEGER,                      -- Stornobeleg: die stornierte Rechnung (noch ungenutzt)
+                ReplacesInvoiceId INTEGER,                     -- neue Rechnung: die ersetzte, stornierte (noch ungenutzt)
+                SentAt DATETIME,                               -- erstmals versendet (UTC); Import und Altbestand: NULL
+                DocumentVersion INTEGER,                       -- Nummer der aktuellen Fassung; NULL = Fassung 1
+
                 FOREIGN KEY (OwnCompanyId) REFERENCES Contacts(ID),
                 FOREIGN KEY (CustomerId) REFERENCES Contacts(ID),
                 FOREIGN KEY (BankAccountId) REFERENCES Accounts(ID),
@@ -757,6 +787,7 @@ class SchemaMixin:
             if migrating:
                 self._run_migrations(cursor, self._migrate_from_version)
 
+            self._ensure_invoice_version_schema(cursor)
             self._ensure_invoice_payment_index(cursor)
 
             # Schema-Version in der DB hinterlegen (MAJOR × 1000 + SCHEMA_STEP, siehe
@@ -774,6 +805,45 @@ class SchemaMixin:
         self._seed_chart_of_accounts()
         self._seed_asset_categories()
         self._seed_tax_keys()
+    def _ensure_invoice_version_schema(self, cursor):
+        """Die Tabellen für Protokoll und Fassungen einer Rechnung und der eindeutige Index auf dem
+        Stornobeleg. Läuft bei der Umstellung in deren Transaktion (nach dem Anfügen der Spalten), bei einer
+        frischen Datenbank gleich beim Anlegen.
+
+        Beide Tabellen haben bewusst keinen Fremdschlüssel auf ``Invoices``: Protokoll und abgelegte
+        Fassungen überleben das Löschen eines Entwurfs."""
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS InvoiceCorrections (
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                InvoiceID INTEGER NOT NULL,
+                InvoiceNumber TEXT,                            -- Momentaufnahme: Nummer zur Zeit des Eintrags
+                Version INTEGER NOT NULL,                      -- die Fassung, die durch den Eintrag entstand bzw. gilt
+                ChangedAt DATETIME DEFAULT CURRENT_TIMESTAMP,  -- UTC
+                UserName TEXT,
+                Action TEXT NOT NULL,                          -- 'correct' (Berichtigung) | 'status' (Statuswechsel)
+                Field TEXT,                                    -- Spaltenname bzw. 'Status'
+                OldValue TEXT,
+                NewValue TEXT
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_invoicecorrections_invoice "
+                       "ON InvoiceCorrections(InvoiceID)")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS InvoiceDocumentVersions (
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                InvoiceID INTEGER NOT NULL,
+                Version INTEGER NOT NULL,                      -- die abgelegte Fassung
+                Kind TEXT NOT NULL,                            -- 'pdf' | 'xml'
+                RelPath TEXT NOT NULL,                         -- relativ zum Ordner invoices/ des Benutzers
+                Sha256 TEXT,
+                ArchivedAt DATETIME DEFAULT CURRENT_TIMESTAMP, -- UTC
+                Reason TEXT NOT NULL,                          -- 'corrected' | 'reopened'
+                UNIQUE(InvoiceID, Version, Kind)
+            )
+        """)
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_invoices_cancels "
+                       "ON Invoices(CancelsInvoiceId) WHERE CancelsInvoiceId IS NOT NULL")
+
     def _ensure_invoice_payment_index(self, cursor):
         """Ein Paar (Rechnung, Bankbewegung) gibt es höchstens einmal in ``InvoicePayments``.
 

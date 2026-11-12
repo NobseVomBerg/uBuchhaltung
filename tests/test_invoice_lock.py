@@ -7,8 +7,9 @@
   Änderung an Nummer, Rechnungsdatum, Kunde, eigener Firma, Positionen, Steuer, Fälligkeit, Skonto,
   Bank und Währung ab (409, ein Klartext, nichts wird geschrieben – auch nicht die änderbaren Felder
   derselben Anfrage). Unverändert Zurückgeschicktes ist kein Verstoß, auch nicht in anderer Darstellung
-  (Beträge in Minor Units, Einheiten wie das Formular sie zeigt). Begleittext, Anschrift, Bestellnummer,
-  Leitweg-ID und Leistungsdatum bleiben änderbar; eine stornierte Rechnung ist ganz gesperrt.
+  (Beträge in Minor Units, Einheiten wie das Formular sie zeigt). Zahlungshinweis, Anschrift, Bestellnummer,
+  Leitweg-ID und Leistungsdatum bleiben änderbar – als Berichtigung mit neuer Fassung und Protokoll
+  (test_invoice_correction.py); eine stornierte Rechnung ist ganz gesperrt.
 * Status und ``AmountDue`` kommen nie vom Client.
 * Die Übergangstabelle (``TRANSITIONS``) ist vollständig geprüft – jedes Paar, mit und ohne Zahlung –
   und die Folgen eines Übergangs: Versenden bucht die Forderung und erzeugt das Dokument, versendet ↔
@@ -25,15 +26,16 @@ import os
 import re
 import sqlite3
 import threading
+from html import unescape
 from itertools import product
 
 import pytest
 
 import server.handlers as handlers
 import userctx
-from db.invoice_lock import (CLOSED_MESSAGE, InvoiceLocked, LOCKED_MESSAGE, LOCKED_PAID_HINT,
-                             LOCKED_UNPAID_HINT, STATUS_LABELS, allowed_targets, canonical_status,
-                             check_changes, status_group)
+from db.invoice_lock import (CHANGED_MESSAGE, CLOSED_MESSAGE, InvoiceLocked, LOCKED_MESSAGE,
+                             LOCKED_PAID_HINT, LOCKED_UNPAID_HINT, NUMBER_KEPT_MESSAGE, STATUS_LABELS,
+                             allowed_targets, canonical_status, check_changes, status_group)
 from export.invoice_files import generate_invoice_documents
 from server.pages_invoice import PageInvoice
 from tests.document_helpers import post_json, row, stored_documents
@@ -190,7 +192,7 @@ def test_the_refusal_is_a_plain_text_without_internals(world):
 # ── Was bei einer versendeten Rechnung änderbar bleibt ───────────────────────
 
 OPEN_CHANGES = {
-    'Begleittext': ({'paymentTerms': 'Zahlbar sofort, ohne Abzug'}, {'PaymentTerms': 'Zahlbar sofort, ohne Abzug'}),
+    'Zahlungshinweis': ({'paymentTerms': 'Zahlbar sofort, ohne Abzug'}, {'PaymentTerms': 'Zahlbar sofort, ohne Abzug'}),
     'Bestellnummer': ({'orderNumber': 'B-99'}, {'OrderNumber': 'B-99'}),
     'Leitweg-ID': ({'buyerReference': '991-99999-99'},
                    {'BuyerReference': '991-99999-99', 'BuyerRouteID': '991-99999-99'}),
@@ -206,11 +208,14 @@ def test_the_open_fields_of_a_sent_invoice_are_saved_and_the_rest_stays(world, g
     locked_before = finance(world.db, invoice_id)
     form, expected = OPEN_CHANGES[group]
     if shape == 'komplettes-Formular':
-        payload = make_payload(world, invoiceId=invoice_id, **form)
+        payload = make_payload(world, invoiceId=invoice_id, documentVersion=1, **form)
     else:
-        payload = {'invoiceId': invoice_id, **form}
+        payload = {'invoiceId': invoice_id, 'documentVersion': 1, **form}
     resp = save_raw(payload)
-    assert json.loads(resp) == {'success': True, 'invoice_id': invoice_id} and resp.status == 200
+    # Das Speichern einer versendeten Rechnung ist eine Berichtigung: Fassung 2 (Einzelheiten:
+    # test_invoice_correction.py)
+    assert json.loads(resp) == {'success': True, 'invoice_id': invoice_id, 'documentVersion': 2}
+    assert resp.status == 200
     stored = columns(world.db, invoice_id)
     for column, value in expected.items():
         assert stored[column] == value
@@ -247,9 +252,9 @@ def test_an_imported_invoice_takes_its_open_fields_although_the_form_could_not_r
     versendete Rechnung deshalb nur die änderbaren Felder, und die gehen durch."""
     invoice_id = imported_invoice(world)
     before = finance(world.db, invoice_id)
-    assert save({'invoiceId': invoice_id, 'orderNumber': 'B-99', 'paymentTerms': 'Zahlbar in 10 Tagen',
-                 'deliveryDate': '2026-02-02', 'buyerReference': None}) == {'success': True,
-                                                                           'invoice_id': invoice_id}
+    assert save({'invoiceId': invoice_id, 'documentVersion': 1, 'orderNumber': 'B-99',
+                 'paymentTerms': 'Zahlbar in 10 Tagen', 'deliveryDate': '2026-02-02',
+                 'buyerReference': None}) == {'success': True, 'invoice_id': invoice_id, 'documentVersion': 2}
     stored = columns(world.db, invoice_id)
     assert (stored['OrderNumber'], stored['PaymentTerms'], stored['DeliveryDate']) == (
         'B-99', 'Zahlbar in 10 Tagen', '2026-02-02')
@@ -286,7 +291,7 @@ def test_saving_a_sent_invoice_leaves_its_address_as_it_was(world, shape):
     locked_before = finance(world.db, invoice_id)
     address_before = {k: columns(world.db, invoice_id)[k] for k in ADDRESS_COLUMNS}
     _rename_customer(world)
-    form = {'paymentTerms': 'Zahlbar sofort'}
+    form = {'paymentTerms': 'Zahlbar sofort', 'documentVersion': 1}
     payload = (make_payload(world, invoiceId=invoice_id, **form) if shape == 'komplettes-Formular'
                else {'invoiceId': invoice_id, **form})
     assert save(payload)['success'] is True
@@ -301,8 +306,9 @@ def test_the_address_follows_the_master_data_of_the_same_customer_on_explicit_re
     invoice_id = make_invoice(world, 'sent')
     locked_before = finance(world.db, invoice_id)
     _rename_customer(world)
-    payload = (make_payload(world, invoiceId=invoice_id, refreshAddress=True)
-               if shape == 'komplettes-Formular' else {'invoiceId': invoice_id, 'refreshAddress': True})
+    payload = (make_payload(world, invoiceId=invoice_id, refreshAddress=True, documentVersion=1)
+               if shape == 'komplettes-Formular'
+               else {'invoiceId': invoice_id, 'refreshAddress': True, 'documentVersion': 1})
     assert save(payload)['success'] is True
     stored = columns(world.db, invoice_id)
     assert (stored['BuyerCompany'], stored['BuyerStreet'], stored['BuyerPostalCode'],
@@ -441,8 +447,13 @@ def test_the_database_layer_refuses_a_locked_change_too(world):
             db.update_invoice_fields(tx, invoice_id, {'invoice_number': '26R999', 'order_number': 'B-99'})
     assert refused.value.fields == ['Rechnungsnummer'] and str(refused.value).startswith(LOCKED_MESSAGE)
     assert snapshot(db) == before
-    with db.transaction() as tx:                       # das Änderbare geht
-        assert db.update_invoice_fields(tx, invoice_id, {'order_number': 'B-99'}) == 'open'
+    # Das Änderbare ist eine Berichtigung: hier geht es nicht (keine neue Fassung, kein Protokoll) …
+    with pytest.raises(InvoiceLocked) as changed:
+        with db.transaction() as tx:
+            db.update_invoice_fields(tx, invoice_id, {'order_number': 'B-99'})
+    assert str(changed.value) == CHANGED_MESSAGE and snapshot(db) == before
+    # … sondern nur über correct_invoice, das Fassung und Protokoll anlegt
+    assert db.correct_invoice(invoice_id, {'order_number': 'B-99'}, 1, 'anna').corrected is True
     assert columns(db, invoice_id)['OrderNumber'] == 'B-99'
 
 
@@ -692,7 +703,12 @@ def test_taking_a_sent_invoice_back_removes_the_receivable_and_makes_it_editable
     assert save(make_payload(world, invoiceId=invoice_id, invoiceNumber='26R999'))['success'] is False
     assert set_invoice_status(invoice_id, 'draft')[0] == 200
     assert world.db.get_receivable_booking(invoice_id) is None
-    assert save(make_payload(world, invoiceId=invoice_id, invoiceNumber='26R999'))['success'] is True
+    # ein Entwurf nimmt wieder jede Änderung – nur die Nummer nicht: Der Kunde kennt sie (war schon versendet)
+    changed_date = save(make_payload(world, invoiceId=invoice_id, dueDate='2026-07-01', orderNumber='B-18'))
+    assert changed_date['success'] is True and columns(world.db, invoice_id)['PaymentDueDate'] == '2026-07-01'
+    renumbered = save_raw(make_payload(world, invoiceId=invoice_id, invoiceNumber='26R999'))
+    assert renumbered.status == 409 and json.loads(renumbered)['error'] == NUMBER_KEPT_MESSAGE
+    assert columns(world.db, invoice_id)['InvoiceNumber'] == '26R100'
 
 
 def test_with_a_payment_there_is_no_way_back_and_the_receivable_stays(world):
@@ -852,8 +868,10 @@ def test_over_http_a_locked_change_is_409_and_the_open_fields_are_200(server_por
                         make_payload(books, invoiceId=invoice_id, invoiceNumber='26R999'), books.csrf)
     assert refused.status == 409 and refused.headers['Content-Type'].startswith('application/json')
     assert json.loads(refused.text)['error'].startswith(LOCKED_MESSAGE)
-    saved = post_json(server_port, '/invoice/save', {'invoiceId': invoice_id, 'orderNumber': 'B-99'}, books.csrf)
-    assert saved.status == 200 and json.loads(saved.text) == {'success': True, 'invoice_id': invoice_id}
+    saved = post_json(server_port, '/invoice/save',
+                      {'invoiceId': invoice_id, 'documentVersion': 1, 'orderNumber': 'B-99'}, books.csrf)
+    assert saved.status == 200 and json.loads(saved.text) == {'success': True, 'invoice_id': invoice_id,
+                                                              'documentVersion': 2}
     assert row(books.db, invoice_id)[23] == 'B-99'                       # Spalte 23 = OrderNumber
 
 
@@ -902,8 +920,12 @@ def test_the_form_of_a_sent_invoice_locks_the_finance_fields_and_keeps_the_open_
     assert 'Änderungen können trotzdem gespeichert werden' not in html
     assert 'k&ouml;nnen trotzdem gespeichert werden' not in html
     assert 'Nicht im Entwurfsstatus' not in html
-    assert 'Betr&auml;ge, Positionen, Nummer, Datum und Kunde sind gesperrt' in html
-    assert len(_buttons(dom, 'saveInvoice()')) == 1                  # Speichern bleibt: Begleittext & Co. sind änderbar
+    assert ('Diese Rechnung ist versendet. Änderbar sind Zahlungshinweis, Anschrift, Bestellnummer, Leitweg-ID und '
+            'Leistungsdatum. Jede Änderung wird protokolliert; die bisherige Fassung bleibt als Datei erhalten, und es '
+            'entsteht eine neue Fassung, die dem Kunden erneut zugehen muss.') in unescape(html)
+    assert 'Betr&auml;ge, Positionen, Nummer, Datum und Kunde sind gesperrt' not in html     # der Text von 2.1.2
+    assert len(_buttons(dom, 'saveInvoice()')) == 1                  # der Knopf bleibt: Zahlungshinweis & Co. sind änderbar
+    assert '✏ Berichtigen</button>' in html and '💾 Speichern</button>' not in html
 
 
 def test_the_form_of_a_draft_is_fully_editable_and_offers_deleting(world):

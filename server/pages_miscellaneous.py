@@ -156,7 +156,11 @@ def PageMiscellaneous(db: Database, check_payments: bool = False):
                 "-- Reihenfolge beachtet Fremdschlüssel. Dateien im Dateisystem bleiben erhalten.\\n" +
                 "DELETE FROM InvoicePayments WHERE InvoiceID IN (" + i + ") OR BookingID IN (" + b + ");\\n" +
                 "DELETE FROM InvoiceItems WHERE InvoiceId IN (" + i + ");\\n" +
+                "DELETE FROM InvoiceCorrections WHERE InvoiceID IN (" + i + ");\\n" +
+                "DELETE FROM InvoiceDocumentVersions WHERE InvoiceID IN (" + i + ");\\n" +
                 "UPDATE Invoices SET SourceQuoteId = NULL WHERE SourceQuoteId IN (" + i + ");\\n" +
+                "UPDATE Invoices SET CancelsInvoiceId = NULL WHERE CancelsInvoiceId IN (" + i + ");\\n" +
+                "UPDATE Invoices SET ReplacesInvoiceId = NULL WHERE ReplacesInvoiceId IN (" + i + ");\\n" +
                 "DELETE FROM Invoices WHERE InvoiceDate BETWEEN '" + from + "' AND '" + to + "';  -- Rechnungen UND Angebote\\n" +
                 "DELETE FROM BookingDocuments WHERE Booking_ID IN (" + b + ") OR Document_ID IN (" + d + ");\\n" +
                 "UPDATE Assets SET Booking_ID = NULL WHERE Booking_ID IN (" + b + ");\\n" +

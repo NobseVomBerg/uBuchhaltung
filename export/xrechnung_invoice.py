@@ -78,6 +78,8 @@ class XRechnungGenerator:
         if inv.due_date:
             _sub(root, _CBC, 'DueDate', inv.due_date.isoformat())
         _sub(root, _CBC, 'InvoiceTypeCode', inv.type_code)
+        for note in inv.notes:                                 # BT-22; im Schema zwischen Typ und Währung
+            _sub(root, _CBC, 'Note', note)
         _sub(root, _CBC, 'DocumentCurrencyCode', cur)
         if inv.buyer_reference:
             _sub(root, _CBC, 'BuyerReference', inv.buyer_reference)

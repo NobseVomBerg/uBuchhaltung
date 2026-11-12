@@ -127,6 +127,9 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .wt-weekend td			{ color: #c0392b; }					 /* Sa/So abgesetzt */
 .wt-sum td				{ font-weight: 700; border-top: 2px solid #888; }
 
+/* Fassungen und Protokoll einer Rechnung (Rechnungsseite): lange Werte brechen um */
+.versionTable td		{ vertical-align: top; overflow-wrap: anywhere; }
+
 
 /* dark mode */
 @media (prefers-color-scheme: dark) {

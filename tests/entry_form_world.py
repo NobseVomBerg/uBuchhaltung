@@ -293,9 +293,29 @@ def add_roundtrip_rows(db):
                 conn.commit()
 
 
+def to_state_2001(db_path):
+    """Die Datenbank in den Stand zurückversetzen, den 2.1.x geschrieben hat: die Spalten ``SentAt``,
+    ``DocumentVersion``, ``InvoiceKind``, ``CancelsInvoiceId``, ``ReplacesInvoiceId`` an ``Invoices``, der
+    eindeutige Index auf dem Stornobeleg und die Tabellen ``InvoiceCorrections`` und
+    ``InvoiceDocumentVersions`` entfernt, ``PRAGMA user_version`` = 2001. Wiederholbar: Was schon fehlt, wird
+    übersprungen."""
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute('DROP INDEX IF EXISTS ux_invoices_cancels')
+        present = {row[1] for row in conn.execute('PRAGMA table_info(Invoices)')}
+        for column in ('DocumentVersion', 'SentAt', 'ReplacesInvoiceId', 'CancelsInvoiceId', 'InvoiceKind'):
+            if column in present:
+                conn.execute(f'ALTER TABLE Invoices DROP COLUMN {column}')
+        conn.execute('DROP TABLE IF EXISTS InvoiceCorrections')
+        conn.execute('DROP TABLE IF EXISTS InvoiceDocumentVersions')
+        conn.execute('PRAGMA user_version = 2001')
+        conn.commit()
+
+
 def to_state_2000(db_path):
-    """Die Datenbank in den Stand zurückversetzen, den 2.0.x geschrieben hat: Spalte ``EntryForm`` und
-    eindeutiger Index auf den Zahlungszuordnungen entfernt, ``PRAGMA user_version`` = 2000."""
+    """Die Datenbank in den Stand zurückversetzen, den 2.0.x geschrieben hat: zusätzlich zu 2.1.x
+    (``to_state_2001``) Spalte ``EntryForm`` und eindeutiger Index auf den Zahlungszuordnungen entfernt,
+    ``PRAGMA user_version`` = 2000."""
+    to_state_2001(db_path)
     with closing(sqlite3.connect(db_path)) as conn:
         conn.execute('DROP INDEX IF EXISTS ux_invoicepayments_invoice_booking')
         conn.execute('ALTER TABLE Bookings DROP COLUMN EntryForm')
