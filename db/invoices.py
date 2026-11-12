@@ -1151,34 +1151,26 @@ class InvoicesMixin:
 
     def get_unallocated_outgoing_bookings(self, contact_id=None, contact_only=False,
                                           limit=20):
-        """Bank-Zahlungsausgänge mit freiem Rest (``_free_outgoing_minor_sql``) – die Kandidaten für die
-        Erstattung einer Stornorechnung (``assign_storno_refund``). Wie ``get_unallocated_bank_bookings``:
-        Buchungen des Kontakts stehen vorn, danach Datum absteigend, ``contact_only=True`` filtert hart auf den
-        Kontakt.
+        """Bank-Zahlungsausgänge mit freiem Rest (``_outgoing_free_minor``: der Rest rechnet über ``bank_effect`` wie die
+        Split-Summe, ein Import-Spiegel auf dem Konto der Bewegung verbraucht sie) – die Kandidaten für die Erstattung
+        einer Stornorechnung (``assign_storno_refund``). Wie ``get_unallocated_bank_bookings``: Buchungen des Kontakts stehen
+        vorn, danach Datum absteigend, ``contact_only=True`` filtert hart auf den Kontakt. Der Aufwand wächst linear mit dem
+        Bestand: Der freie Rest aller Ausgänge kommt aus wenigen gesammelten Abfragen, nicht je Bewegung eine.
 
         Returns: [(BookingID, DateBooking, RecipientClient, Contact_ID,
                    Amount€ (negativ), Frei€ (positiv))]
         """
-        contact_filter = 'AND b.Contact_ID = ?' if contact_only and contact_id else ''
-        params = [contact_id] if contact_filter else []
         conn = self._get_connection()
-        cursor = conn.cursor()
-        free_sql, free_params = self._free_outgoing_minor_sql(self._get_bank_coa_ids(cursor))
-        cursor.execute(f'''
-            SELECT * FROM (
-                SELECT b.ID, b.DateBooking, b.RecipientClient, b.Contact_ID,
-                       b.Amount, {free_sql} AS FreeMinor
-                FROM Bookings b
-                WHERE b.BookingType = 'bank' AND b.Amount < 0 {contact_filter}
-            )
-            WHERE FreeMinor > 0
-            ORDER BY CASE WHEN ? IS NOT NULL AND Contact_ID = ? THEN 0 ELSE 1 END,
-                     DateBooking DESC, ID DESC
-            LIMIT ?
-        ''', free_params + params + [contact_id, contact_id, limit])
-        rows = cursor.fetchall()
-        conn.close()
-        return [self._euro_row(r, 4, 5) for r in rows]
+        try:
+            rows = self._outgoing_free_minor(conn, self._get_bank_coa_ids(conn.cursor()),
+                                             contact_id=contact_id if contact_only and contact_id else None)
+        finally:
+            conn.close()
+        rows = [row for row in rows if row[5] > 0]
+        rows.sort(key=lambda row: (row[1] or '', row[0]), reverse=True)            # Datum absteigend, dann ID absteigend
+        if contact_id is not None:
+            rows.sort(key=lambda row: row[3] != contact_id)                         # die des Kontakts zuerst (stabil)
+        return [self._euro_row(row, 4, 5) for row in rows[:limit]]
 
     def get_open_items_for_contact(self, contact_id):
         """Offene Posten eines Kontakts für die Kontaktseite.

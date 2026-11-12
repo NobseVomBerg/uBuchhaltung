@@ -581,8 +581,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             db.delete_receipt(qs["number"][0])
             self.respond(303, "", headers={"Location": "/receipts"})
         elif path == "/transactions/delete":
-            db.delete_transaction(int(qs["id"][0]))
-            self.respond(303, "", headers={"Location": "/transactions"})
+            status_code, location = handlers.handle_delete_transaction(db, int(qs["id"][0]))
+            self.respond(status_code, "", headers={"Location": location})
         elif path == "/documents/unlink":
             doc_id = int(qs["doc_id"][0])
             booking_id = int(qs["booking_id"][0])
@@ -919,7 +919,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 from_invoice = int(qs["from_invoice"][0]) if qs.get("from_invoice") else None
                 self.respond(200, PageTransactions(db, date_from=date_from, date_to=date_to,
                                                    from_invoice=from_invoice,
-                                                   revenue_coa_id=_int_param(qs, "revenue_coa_id")),
+                                                   revenue_coa_id=_int_param(qs, "revenue_coa_id"),
+                                                   err=qs.get("err", [None])[0]),
                              headers=hdrs)
             elif self.path.startswith("/transactions/edit"):
                 query_components = parse_qs(self.path.split('?')[1])

@@ -438,8 +438,12 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   `Betrag − MAX(Σ Zuordnungen, Σ bankwirksame Sätze darunter)` (`_free_minor_sql`, dieselbe Formel für
   Zuordnung, Kandidatenlisten und Kontakt-Guthaben): eine schon als Erlös kontierte Bewegung ist keine
   Rechnungszahlung mehr. Für den Ausgang einer Erstattung gilt
-  `|Betrag| − MAX(−Σ Zuordnungen, −Σ bankwirksame Sätze)` (`_free_outgoing_minor_sql`, dieselbe Bedingung
-  „bankwirksam“); `_free_minor_sql` bleibt, wie es war. *Sammelzahlung* = mehrere Zuordnungen derselben Bewegung, jede mit eigenen
+  `|Betrag| − MAX(−Σ Zuordnungen, −Σ Wirkung der Sätze auf das Konto der Bewegung)` (`_outgoing_free_minor`, in
+  Python: die Wirkung rechnet `db.matching.bank_effect` – wie die Split-Summe, ein Spiegel mit bekannter Lesart zählt nach
+  seiner Position auf dem Konto der Bewegung; der Import-Spiegel „1810 an 1800“ mit +50 unter einem Ausgang über 50
+  verbraucht ihn, die Umbuchung ist keine Erstattung). Anders als `_free_minor_sql`, das einen Spiegel roh rechnet und
+  bleibt, wie es war. Die Kandidatenliste der Erstattung liest den freien Rest aller Ausgänge aus wenigen gesammelten
+  Abfragen (Aufwand linear). *Sammelzahlung* = mehrere Zuordnungen derselben Bewegung, jede mit eigenen
   Sätzen; *Teilzahlung* = mehrere Bewegungen auf eine Rechnung; bei einer *Überzahlung* bleibt der Rest
   frei (Guthaben beim Kontakt; der DATEV-Export bleibt gesperrt, bis er kontiert ist).
 - **Erlöskonto:** Es ergibt sich aus der Rechnung (`resolve_revenue_coa`: gelernt, sonst 4400 bei
@@ -485,7 +489,11 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   nicht aber bei einer Rechnung mit Stornorechnung: Ihre Forderung und die Gegenbuchung bleiben stehen. `delete_transaction` einer Bankbewegung nimmt ihre Sätze und
   Zuordnungen mit; das Löschen eines markierten Satzes (auch im Split-Editor) entfernt die ganze
   Zuordnung. Eine Erstattung geht auf demselben Weg; eine Zahlung an einer stornierten Rechnung mit Stornorechnung
-  lässt sich dagegen nicht entfernen, wenn danach mehr erstattet als gezahlt wäre (`PaymentRemovalRefused`).
+  lässt sich dagegen auf **keinem** Weg entfernen, wenn danach mehr erstattet als gezahlt wäre (`PaymentRemovalRefused`,
+  `_refund_removal_blocker`, vor dem ersten Schreiben in der Transaktion): nicht auf der Rechnungsseite, nicht mit dem ✕
+  an einer Zeile der Zahlung im Bank-Editor (der Editor prüft alle entfernten Zeilen zusammen beim Planen, ein Speichern
+  gelingt ganz oder gar nicht), nicht mit dem Löschen eines Satzes oder der Bankbewegung (`delete_transaction`, Liste:
+  Weiterleitung mit dem Grund). Das Entfernen einer Erstattung bleibt frei.
 - **Status der Rechnung** (`next_payment_status`, vorzeichenbewusst für die WISO-Gutschrift): Zahlung in
   Höhe der Rechnung (Rest unter einem Cent) → `paid`, sonst `partial_payment`; ohne Zahlung wieder
   `overdue` (Fälligkeit überschritten) bzw. `sent` – nie zurück auf `finalized`, eine stornierte
@@ -517,7 +525,7 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   Stornorechnung steht nur eine – und `legacy_cancelled_open` – eine von Hand stornierte Rechnung (Brutto > 0) ohne
   Stornorechnung, deren Forderung noch in den Büchern steht (Abhilfe: „Stornorechnung nachträglich erstellen“). Dazu
   `refund_exceeds_credit`: Zur Stornorechnung ist mehr erstattet als zur stornierten Rechnung gezahlt wurde (Σ Zuordnungen
-  beider Belege < 0). Ein intaktes Paar, auch mit Guthaben aus Zahlungen auf die stornierte Rechnung oder mit Erstattung,
+  beider Belege < 0) – die App lässt es nicht mehr entstehen, die Kategorie meldet Eingriffe an ihr vorbei. Ein intaktes Paar, auch mit Guthaben aus Zahlungen auf die stornierte Rechnung oder mit Erstattung,
   ergibt keinen Befund. Zuordnungen, deren Buchung keine Bankbewegung ist oder deren Sätze
   eine `SourceGroup` tragen (WISO liefert seine Sätze selbst, z. B. Barzahlungen ohne Bankbewegung),
   lösen weder „Zuordnung ohne Ausgleichssatz“ noch „Zuordnung ≠ Umbuchung“ aus. Die Abfragen gehen von
@@ -570,9 +578,13 @@ ein Tippfehler legte sonst einen Nummernkreis 2062 an). Es entsteht ein eigener 
   sonst der Einzelsatz `Erlöskonto → Bank`. Erstattet wird min(Guthaben, freier Rest der Bewegung, gewünschter Betrag); eine
   Überweisung kann mehrere Stornorechnungen erstatten. Die Steuer nimmt zurück, was die Zahlungen an der stornierten Rechnung
   gebucht haben: anteilig, die Erstattung, die das Guthaben ausgleicht, den Rest – die Summe aller Erstattungen ist die Steuer
-  der Zahlungen. Das Erlöskonto ist das der Zahlungen (sonst das hinterlegte oder die Wahl des Nutzers). In der EÜR stehen
-  negativer Erlös und negative Umsatzsteuer am Tag der Erstattung; das Dashboard zählt die Bankbewegung als Ausgabe. Nach einer
-  Erstattung zieht nichts mehr auf die Ersatzrechnung um.
+  der Zahlungen, solange sich die Zahlungen der stornierten Rechnung nach der ersten Erstattung nicht ändern (wird danach eine
+  Zahlung entfernt oder zieht ein Teil um, kann die Summe um Cent abweichen). Das Erlöskonto ist das der Zahlungen, wenn alle
+  dasselbe tragen; liegen sie auf mehr als einem Erlöskonto (ein Satz wurde im Editor geändert), wählt der Nutzer das der
+  Erstattung (die Seite zeigt die Auswahl mit dem Hinweis); ohne markierte Sätze (Import) ist es das hinterlegte oder die Wahl
+  des Nutzers. In der EÜR stehen negativer Erlös und negative Umsatzsteuer am Tag der Erstattung; das Dashboard zählt die
+  Bankbewegung als Ausgabe. Nach einer Erstattung zieht höchstens das verbleibende Guthaben auf die Ersatzrechnung um (siehe
+  *Zahlungen ziehen um*).
 - **Gesperrt:** Die Stornorechnung ist ganz gesperrt (`db.invoice_lock.row_group`): Status, Speichern, Berichtigen,
   Löschen, Kopieren werden abgelehnt. Eine stornierte Rechnung mit Stornorechnung lässt sich nicht
   wiederbeleben.
@@ -603,7 +615,11 @@ Zuordnung müssen die sein, die die Zuordnung dafür schreibt (Bestand, Bankkont
 Datum, Steuerdatum, Steuersatz, Steuerbetrag – anteilig oder als schließender Teil der Rest –, keine Kategorie, kein Beleg
 und kein anderer Verweis an den Sätzen, kein verwaister markierter Satz unter der Bewegung). Was sich so nicht eindeutig neu
 schreiben lässt (Import, überbuchte Bewegung, geänderte oder ergänzte Sätze), bleibt an der stornierten Rechnung; eine
-Sammelzahlung zieht nur mit dem Anteil der stornierten Rechnung um. Gleicher Kunde und gleiche Währung sind
+Sammelzahlung zieht nur mit dem Anteil der stornierten Rechnung um. Wurde zur stornierten Rechnung schon erstattet, zieht
+höchstens das verbleibende Guthaben um (die Zahlungen minus die Erstattungen vor dem Umzug): Je Zuordnung ist der Teil
+min(Betrag, Rest der neuen Rechnung, verbleibendes Guthaben), der Rest der Zuordnung bleibt an der stornierten Rechnung, und
+nach dem Umzug ist nie mehr erstattet als gezahlt (50,00 € gezahlt, 20,00 € erstattet, Ersatzrechnung über 119,00 €: 30,00 €
+ziehen um, 20,00 € bleiben); der Hinweis nennt das Erstattete. Gleicher Kunde und gleiche Währung sind
 Voraussetzung, ebenso ein hinterlegtes Erlöskonto für den Steuersatz der neuen Rechnung. Ein Hinweis in der Antwort nennt,
 was geschah und bei dem, was bleibt, den Grund (je Grund einmal). Jede Zuordnung läuft in einem Savepoint: Lässt sie sich
 nicht neu buchen, bleibt sie unverändert liegen, und der Versand gelingt; nur ein Datenbankfehler mitten im Umzug lehnt
