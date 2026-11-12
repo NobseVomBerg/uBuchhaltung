@@ -225,7 +225,9 @@ def correction_notice(db, invoice):
     aktuelle Fassung eine Berichtigung ist (``Database.correction_notice``) – sonst ``None``. Ohne Datenbank
     oder bei einer Rechnung in Fassung 1 gibt es keinen und keine Abfrage."""
     version = invoice[_INV['document_version']] if len(invoice) > _INV['document_version'] else None
-    if db is None or not version or version <= 1:
+    # nur eine Ganzzahl über 1 ist eine berichtigte Fassung (die Spalte lässt sich per SQL beschreiben: ein Text
+    # oder 0 gilt als Fassung 1, wie ``db.invoice_lock.as_document_version`` es liest)
+    if db is None or isinstance(version, bool) or not isinstance(version, int) or version <= 1:
         return None
     return db.correction_notice(invoice[_INV['id']])
 

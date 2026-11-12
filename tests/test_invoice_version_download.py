@@ -10,6 +10,10 @@ eines Angebots, ein Name, der nur außerhalb von „Fassungen“ existiert – i
 Auch eine Datei aus 2.1.2, zu der es keine Tabellenzeile gibt, lässt sich laden. Der Dateiname kommt prozentkodiert im
 Header ``X-Filename`` (Umlaute!).
 
+``year`` (der Jahresordner, ``…&year=2026``) trennt gleiche Dateinamen in zwei Jahresordnern – das Rechnungsdatum kann sich
+im Entwurf ändern: Die Links der Rechnungsseite tragen es immer. Es muss ein reiner Ordnername aus Ziffern sein und der
+Treffer in genau diesem Ordner liegen, sonst 404; ohne ``year`` gilt der erste Treffer wie bisher.
+
 Im selben Zug: Bei automatischer Anmeldung ist der Administrator der Benutzer im Protokoll.
 
 Alle Namen, Adressen und Nummern sind erfundene Testwerte.
@@ -55,8 +59,9 @@ def archived_names(invoice_id):
     return sorted(os.listdir(versions_folder(invoice_id)))
 
 
-def url(invoice_id, name):
-    return f'/invoice/version_download?id={invoice_id}&file={quote(name, safe="")}'
+def url(invoice_id, name, year=None):
+    address = f'/invoice/version_download?id={invoice_id}&file={quote(name, safe="")}'
+    return address if year is None else f'{address}&year={quote(year, safe="")}'
 
 
 # ── Ausgeliefert wird, was abgelegt ist ──────────────────────────────────────
@@ -199,6 +204,44 @@ def test_the_folder_of_another_year_is_searched_too(server_port, books):
     resp = get(server_port, url(invoice_id, name))
     assert resp.status == 200 and resp.body == b'<alt/>' and resp.headers['Content-Type'] == 'application/xml'
     assert unquote(resp.headers['X-Filename']) == name
+
+
+def test_the_same_name_in_two_year_folders_is_told_apart_by_the_year(server_port, books):
+    """Das Rechnungsdatum kann sich im Entwurf ändern: Dann liegt dieselbe Datei (gleicher Name) in zwei Jahresordnern.
+    Der Name allein lieferte immer den ersten Treffer, den Link der zweiten Fassung also die falsche Datei."""
+    invoice_id = corrected_over_http(server_port, books)
+    name = next(n for n in archived_names(invoice_id) if n.endswith('.pdf'))
+    write_file(os.path.join(versions_folder(invoice_id, '2025'), name), b'%PDF-1.4 aus 2025')
+    current = read_file(os.path.join(versions_folder(invoice_id), name))
+
+    older = get(server_port, url(invoice_id, name, '2025'))
+    newer = get(server_port, url(invoice_id, name, '2026'))
+
+    assert older.status == 200 and older.body == b'%PDF-1.4 aus 2025'
+    assert newer.status == 200 and newer.body == current
+    assert unquote(older.headers['X-Filename']) == unquote(newer.headers['X-Filename']) == name
+    assert get(server_port, url(invoice_id, name)).body == b'%PDF-1.4 aus 2025'   # ohne Jahr: der erste Treffer, wie bisher
+
+
+def test_a_year_folder_without_the_file_is_404(server_port, books):
+    invoice_id = corrected_over_http(server_port, books)
+    name = archived_names(invoice_id)[0]
+    write_file(os.path.join(versions_folder(invoice_id, '2025'), 'andere Datei.pdf'), b'%PDF-1.4 andere')
+    for year in ('2025', '2024', '2027'):                        # der Ordner hat die Datei nicht / es gibt ihn nicht
+        resp = get(server_port, url(invoice_id, name, year))
+        assert resp.status == 404 and resp.text == 'Diese Fassung gibt es nicht.', year
+    assert get(server_port, url(invoice_id, name, '2026')).status == 200
+
+
+@pytest.mark.parametrize('year', ['..', '../x', '../2026', '20a6', '', ' 2026', '2026 ', '2026/', '2026/..', '%2e%2e',
+                                  '\u0662\u0660\u0662\u0666', 'Fassungen', '2026.0', '-2026', '+2026', '\x00',
+                                  '2026\x00'])
+def test_a_year_that_is_not_a_plain_digit_folder_name_is_404(server_port, books, year):
+    invoice_id = corrected_over_http(server_port, books)
+    name = archived_names(invoice_id)[0]
+    resp = get(server_port, url(invoice_id, name, year))
+    assert resp.status == 404 and resp.text == 'Diese Fassung gibt es nicht.'
+    assert user_dir() not in resp.text
 
 
 def test_a_stored_relative_path_is_never_the_way_to_a_file(server_port, books):

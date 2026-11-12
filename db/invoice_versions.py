@@ -21,18 +21,27 @@ Ortszeit (``local_date``).
 import datetime
 import hashlib
 import os
+import re
 import sqlite3
 from collections import namedtuple
 
 from .invoice_lock import (
     CHANGED_MESSAGE, CLOSED, CLOSED_MESSAGE, COLUMN_OF, EDITABLE, FIELDS, FROZEN_STATUSES, LABEL_OF,
-    DocumentNotFound, InvoiceLocked, _Refusal, buyer_snapshot, changed_open_fields, check_changes,
-    document_version, invoice_row, lock_message, status_group)
+    DocumentNotFound, InvoiceLocked, _Refusal, as_document_version, buyer_snapshot, changed_open_fields,
+    check_changes, document_version, invoice_row, lock_message, status_group)
 
 CORRECTION_ARCHIVE_FAILED_MESSAGE = ('Die bisherigen Dokumente (PDF/XML) ließen sich nicht in den Ordner '
                                      '„Fassungen“ verschieben – die Rechnung wurde nicht berichtigt.')
 CORRECTION_FAILED_MESSAGE = ('Die Berichtigung konnte nicht gespeichert werden – die Rechnung und ihre '
                              'Dokumente sind unverändert.')
+DELIVERY_DATE_MESSAGE = 'Das Leistungsdatum fehlt oder ist kein gültiges Datum – eine Rechnung braucht es.'
+
+
+class CorrectionInvalid(ValueError):
+    """Eine Berichtigung enthält eine ungültige Angabe (``str(exc)`` ist der Klartext): Nichts wurde geändert."""
+
+
+_ISO_DATE = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}')
 
 #: Ergebnis von ``correct_invoice``: ob berichtigt wurde (sonst war nichts anders als gespeichert), die Nummer
 #: der jetzt aktuellen Fassung und wie viele Dokumente dabei nach „Fassungen“ wanderten
@@ -60,7 +69,8 @@ _NOTICE_ORDER = ('Leistungsdatum', 'Anschrift', 'Zahlungshinweis', 'Bestellnumme
 
 #: Aus diesen Status ist eine Rechnung hervorgegangen, wenn sie versendet war (Altwert ``partial`` eingeschlossen)
 _SENT_STATUSES = tuple(sorted(FROZEN_STATUSES))
-_BACK_TO_EDITABLE = ('draft', 'finalized')
+#: Die bearbeitbaren Status: Ziel des Zurückholens und Ausgangspunkt eines Versands
+_EDITABLE = ('draft', 'finalized')
 
 
 # ── Zeitpunkte ───────────────────────────────────────────────────────────────
@@ -74,6 +84,18 @@ def local_datetime(timestamp):
     except ValueError:
         return None
     return moment.replace(tzinfo=datetime.timezone.utc).astimezone().replace(tzinfo=None)
+
+
+def _is_iso_date(value):
+    """Ist ``value`` ein ISO-Datum ``JJJJ-MM-TT`` – ein Kalendertag, den es gibt, Jahr 1900–2200, ohne
+    Leerraum und ohne andere Schreibweise (dieselbe Regel wie ``server.period.parse_iso_date``; die
+    Datenbankschicht lädt das Server-Package nicht)?"""
+    if not isinstance(value, str) or not _ISO_DATE.fullmatch(value):
+        return False
+    try:
+        return 1900 <= datetime.date.fromisoformat(value).year <= 2200
+    except ValueError:
+        return False
 
 
 def local_date(timestamp):
@@ -153,10 +175,16 @@ class InvoiceVersionsMixin:
         Spalte eine Protokollzeile); ``items``: die Positionen des kompletten Formulars, nur zum Vergleich –
         sie sind gesperrt. Das neue Dokument erzeugt der Aufrufer nach dem Commit.
 
-        Scheitert das Verschieben oder das Speichern, liegen die Dokumente wieder dort, wo sie waren, und
-        nichts ist geändert. Raises :class:`InvoiceLocked` (mit Klartext) bei einer gesperrten Angabe, einer
-        stornierten Rechnung, einer veralteten Fassung oder einem Fehler beim Speichern,
-        :class:`DocumentNotFound`, wenn es die Rechnung nicht gibt. Returns :class:`Correction`."""
+        Das Leistungsdatum ist Pflicht (§ 14 UStG): Steht es unter den geänderten Angaben, muss der neue Wert ein
+        ISO-Datum sein – eine Berichtigung leert es nicht und füllt es nicht mit Text. Ein unverändertes
+        Leistungsdatum, auch ein leeres (Import), ist kein Verstoß. Das wird vor dem Verschieben der Dokumente
+        geprüft.
+
+        Scheitert das Verschieben, das Festhalten der Fassung oder das Speichern, liegen die Dokumente wieder dort,
+        wo sie waren, und nichts ist geändert. Raises :class:`InvoiceLocked` (mit Klartext) bei einer gesperrten
+        Angabe, einer stornierten Rechnung, einer veralteten Fassung oder einem Fehler beim Speichern,
+        :class:`CorrectionInvalid` bei einem ungültigen Leistungsdatum, :class:`DocumentNotFound`, wenn es die
+        Rechnung nicht gibt. Returns :class:`Correction`."""
         unknown = sorted(key for key in changes if key not in COLUMN_OF)
         if unknown:
             raise ValueError(f'unbekannte Rechnungsfelder: {", ".join(unknown)}')
@@ -194,6 +222,8 @@ class InvoiceVersionsMixin:
                     return Correction(False, version, 0)
                 if not open_data:
                     return Correction(False, version, 0)
+                if 'delivery_date' in open_data and not _is_iso_date(open_data['delivery_date']):
+                    raise CorrectionInvalid(DELIVERY_DATE_MESSAGE)
                 if _as_int(expected_version) != version:
                     raise InvoiceLocked(CHANGED_MESSAGE)
                 new_version = version + 1
@@ -211,7 +241,7 @@ class InvoiceVersionsMixin:
                     raise InvoiceLocked(CHANGED_MESSAGE)
         except _Refusal as refusal:                              # das Verschieben ist gescheitert (dort zurückgelegt)
             raise InvoiceLocked(str(refusal)) from None
-        except (InvoiceLocked, DocumentNotFound):
+        except (InvoiceLocked, DocumentNotFound, CorrectionInvalid):
             self._restore_archived(moved)
             raise
         except (sqlite3.Error, OSError) as exc:
@@ -230,8 +260,11 @@ class InvoiceVersionsMixin:
         oder ``'reopened'``, ``now`` der Zeitpunkt. Die Pfade in der Rechnung leert der Aufrufer.
 
         Entweder gelingt beides, oder die Dateien liegen wieder am alten Platz und es folgt
-        :class:`_Refusal` (``failure_message``). Hängen mehrere Dateien einer Art an der Rechnung, bekommt nur
-        die erste eine Zeile; die übrigen liegen im Ordner und erscheinen als Dateien ohne Fassungsnummer.
+        :class:`_Refusal` (``failure_message``) – auch wenn das Festhalten an der Datenbank scheitert
+        (``sqlite3.Error``). Jede andere Ausnahme legt sie ebenfalls zurück und wird weitergereicht: Der Aufrufer
+        kennt die Verschiebungen erst, wenn diese Methode sie liefert, und könnte sie sonst nicht zurücklegen.
+        Hängen mehrere Dateien einer Art an der Rechnung, bekommt nur die erste eine Zeile; die übrigen liegen im
+        Ordner und erscheinen als Dateien ohne Fassungsnummer.
         Returns die Verschiebungen ``[(alter Pfad, neuer Pfad)]``."""
         from export.invoice_files import archive_sent_documents, documents_root, restore_archived
         try:
@@ -251,10 +284,13 @@ class InvoiceVersionsMixin:
                     '(InvoiceID, Version, Kind, RelPath, Sha256, ArchivedAt, Reason) VALUES (?, ?, ?, ?, ?, ?, ?)',
                     (invoice_id, version, kind, os.path.relpath(new, root).replace(os.sep, '/'),
                      _sha256(new), now, reason))
-        except OSError as exc:
+        except (OSError, sqlite3.Error) as exc:
             print(f"Dokumente der Rechnung {invoice_id} nicht festgehalten: {exc}")
             restore_archived(moved)
             raise _Refusal(failure_message, 409) from None
+        except BaseException:
+            restore_archived(moved)
+            raise
         return moved
 
     @staticmethod
@@ -324,34 +360,40 @@ class InvoiceVersionsMixin:
         kennt (``Action='correct'``, ``Version`` = die aktuelle). Wurde die Rechnung danach auf Entwurf oder
         Abgeschlossen zurückgeholt, ist sie keine mehr: Eine neu versendete Rechnung trägt keinen Hinweis.
 
-        Das Datum der ersetzten Fassung ist das der Berichtigung, die sie erzeugt hat, sonst ``SentAt``, sonst
-        unbekannt (``None``)."""
+        Das Datum der ersetzten Fassung ist das des jüngsten Protokolleintrags vor der ersten Berichtigung der
+        aktuellen Fassung, der eine Berichtigung oder ein Versand ist (Entwurf/abgeschlossen → versendet): So
+        heißt es nach Zurückholen und erneutem Versenden das des zweiten Versands, nicht des ersten. Gibt es
+        keinen (Bestand ohne Protokoll), ist es ``Invoices.SentAt``, sonst unbekannt (``None``)."""
         conn = self._get_connection()
         try:
             head = conn.execute('SELECT DocumentVersion, SentAt FROM Invoices WHERE ID = ?',
                                 (invoice_id,)).fetchone()
-            if head is None or (head[0] or 1) <= 1:
+            if head is None:
                 return None
-            version = head[0]
+            version = as_document_version(head[0])
+            if version <= 1:
+                return None
             entries = conn.execute(
                 "SELECT ID, Field, ChangedAt FROM InvoiceCorrections "
                 "WHERE InvoiceID = ? AND Action = 'correct' AND Version = ? ORDER BY ID",
                 (invoice_id, version)).fetchall()
             if not entries:
                 return None
-            marks = ','.join('?' * len(_BACK_TO_EDITABLE))
+            marks = ','.join('?' * len(_EDITABLE))
             if conn.execute(
                     "SELECT 1 FROM InvoiceCorrections WHERE InvoiceID = ? AND Action = 'status' AND ID > ? "
                     f"AND NewValue IN ({marks}) LIMIT 1",
-                    (invoice_id, entries[-1][0], *_BACK_TO_EDITABLE)).fetchone():
+                    (invoice_id, entries[-1][0], *_EDITABLE)).fetchone():
                 return None
             corrected_on = local_date(entries[0][2])
             if corrected_on is None:
                 return None
-            earlier = conn.execute(
-                "SELECT ChangedAt FROM InvoiceCorrections WHERE InvoiceID = ? AND Action = 'correct' "
-                "AND Version = ? ORDER BY ID LIMIT 1", (invoice_id, version - 1)).fetchone()
-            replaces_on = local_date(earlier[0]) if earlier else local_date(head[1])
+            replaced = conn.execute(
+                "SELECT ChangedAt FROM InvoiceCorrections WHERE InvoiceID = ? AND ID < ? AND (Action = 'correct' "
+                "OR (Action = 'status' AND Field = 'Status' AND NewValue = 'sent' "
+                f"AND OldValue IN ({marks}))) ORDER BY ID DESC LIMIT 1",
+                (invoice_id, entries[0][0], *_EDITABLE)).fetchone()
+            replaces_on = local_date(replaced[0]) if replaced else local_date(head[1])
         finally:
             conn.close()
         labels = {_NOTICE_LABELS[field] for _id, field, _at in entries if field in _NOTICE_LABELS}

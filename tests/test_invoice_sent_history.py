@@ -310,6 +310,94 @@ def test_the_number_of_a_draft_that_was_sent_cannot_be_changed(world):
         '26R001', 'B-18', '2026-07-01')
 
 
+def test_a_number_that_differs_only_by_white_space_is_not_written_for_a_draft_that_was_sent(world):
+    """Die Sperre vergleicht die Nummer ohne Leerraum – geschrieben wurde aber der Rohwert: ``'26R001 '`` landete in
+    der Datenbank. Jetzt bleibt die gespeicherte Nummer, wie sie ist."""
+    invoice_id = new_invoice(world)
+    set_invoice_status(invoice_id, 'sent')
+    set_invoice_status(invoice_id, 'draft')
+    for index, given in enumerate(('26R001 ', ' 26R001', '26R001\n', '26R001\t', '26R001  '), 20):
+        resp = save_raw(make_payload(world, invoiceId=invoice_id, invoiceNumber=given, orderNumber=f'B-{index}'))
+        assert json.loads(resp) == {'success': True, 'invoice_id': invoice_id}, given
+        stored = columns(world.db, invoice_id)
+        assert stored['InvoiceNumber'] == '26R001', repr(given)           # exakt die alte Nummer
+        assert stored['OrderNumber'] == f'B-{index}'                       # alles andere wird geschrieben
+
+
+def test_the_database_layer_leaves_the_number_and_the_callers_data_alone(world):
+    invoice_id = new_invoice(world)
+    set_invoice_status(invoice_id, 'sent')
+    set_invoice_status(invoice_id, 'draft')
+    data = {'invoice_number': '26R001 ', 'order_number': 'B-99'}
+    with world.db.transaction() as tx:
+        assert world.db.update_invoice_fields(tx, invoice_id, data) == 'edited'
+    assert data == {'invoice_number': '26R001 ', 'order_number': 'B-99'}    # das Dict des Aufrufers bleibt
+    stored = columns(world.db, invoice_id)
+    assert (stored['InvoiceNumber'], stored['OrderNumber']) == ('26R001', 'B-99')
+    with world.db.transaction() as tx:                                       # nur die Nummer: nichts zu schreiben
+        assert world.db.update_invoice_fields(tx, invoice_id, {'invoice_number': ' 26R001'}) == 'edited'
+    assert columns(world.db, invoice_id)['InvoiceNumber'] == '26R001'
+
+
+def legacy_draft(w):
+    """Ein Entwurf wie aus einem Bestand von 2.1.2: zurückgeholt, aber ohne ``SentAt`` und ohne Protokoll – nur der
+    Ordner ``Fassungen/<ID>`` verrät, dass die Rechnung schon einmal versendet war."""
+    invoice_id = new_invoice(w)
+    write_file(os.path.join(userctx.DATA_ROOT, 'invoices', '2026', 'Fassungen', str(invoice_id), 'alt.pdf'))
+    assert columns(w.db, invoice_id)['SentAt'] is None and protocol(w.db, invoice_id) == []
+    assert w.db.was_sent_before(invoice_id) is True
+    return invoice_id
+
+
+def _id_forms(invoice_id):
+    """Wie die Anfrage die ID schreiben kann: ``(Wert, erwartete Antwort)`` – eine ganze Zahl in Normalform ist
+    die Rechnung (die Nummer bleibt: 409), alles andere ist eine ungültige ID (400)."""
+    kept, invalid = (409, NUMBER_KEPT_MESSAGE), (400, 'Ungültige Rechnungs-ID')
+    return {
+        'int': (invoice_id, kept), 'float': (float(invoice_id), kept), 'text': (str(invoice_id), kept),
+        'text-mit-fuehrender-Null': (f'0{invoice_id}', invalid), 'text-mit-Nachkomma': (f'{invoice_id}.0', invalid),
+        'text-mit-Leerraum': (f' {invoice_id} ', invalid), 'text-mit-Vorzeichen': (f'+{invoice_id}', invalid),
+        'text-mit-Exponent': (f'{invoice_id}e0', invalid), 'Bruch': (invoice_id + 0.5, invalid),
+        'Wahrheitswert': (True, invalid), 'leerer-Text': ('', invalid), 'Text': ('abc', invalid),
+        'Liste': ([invoice_id], invalid), 'Objekt': ({'id': invoice_id}, invalid),
+        'unendlich': (float('inf'), invalid),
+    }
+
+
+@pytest.mark.parametrize('form', list(_id_forms(1)))
+def test_the_number_of_a_2_1_2_draft_stays_whatever_form_the_id_is_written_in(world, form):
+    """Die Datenbank findet die Rechnung 1 auch mit ``1.0`` oder ``'01'`` – der Ordner ``Fassungen/1.0`` gibt es nicht,
+    die Nummernsperre eines Bestands von 2.1.2 griff dann nicht. Die ID wird als Ganzzahl gelesen, sonst abgelehnt."""
+    invoice_id = legacy_draft(world)
+    sent_id, (status, error) = _id_forms(invoice_id)[form]
+    before = snapshot(world.db)
+
+    resp = save_raw(make_payload(world, invoiceId=sent_id, invoiceNumber='26R777', orderNumber='B-18'))
+
+    assert resp.status == status and json.loads(resp) == {'success': False, 'error': error}
+    assert columns(world.db, invoice_id)['InvoiceNumber'] == '26R001'
+    assert snapshot(world.db) == before                                         # auch sonst wurde nichts geschrieben
+
+
+@pytest.mark.parametrize('form', ['int', 'float', 'text'])
+def test_a_whole_number_in_any_of_these_forms_saves_and_the_answer_carries_the_integer(world, form):
+    invoice_id = new_invoice(world)
+    sent_id = _id_forms(invoice_id)[form][0]
+
+    resp = save_raw(make_payload(world, invoiceId=sent_id, orderNumber='B-18'))
+
+    assert resp.status == 200 and json.loads(resp) == {'success': True, 'invoice_id': invoice_id}
+    assert isinstance(json.loads(resp)['invoice_id'], int)
+    assert columns(world.db, invoice_id)['OrderNumber'] == 'B-18'
+
+
+def test_an_absent_or_null_id_is_a_new_invoice_as_before(world):
+    for payload in (make_payload(world, invoiceNumber='26R801'), make_payload(world, invoiceId=None,
+                                                                                 invoiceNumber='26R802')):
+        answer = json.loads(save_raw(payload))
+        assert answer['success'] is True and isinstance(answer['invoice_id'], int)
+
+
 def test_the_database_layer_refuses_the_number_too(world):
     invoice_id = new_invoice(world)
     set_invoice_status(invoice_id, 'sent')

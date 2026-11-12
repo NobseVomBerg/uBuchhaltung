@@ -11,9 +11,9 @@ from urllib.parse import quote
 from db import Database
 from db.invoices import InvoiceCol
 from db.invoice_lock import (CLOSED, EDITABLE, NUMBER_KEPT_MESSAGE, STATUS_LABELS, allowed_targets,
-                             buyer_snapshot, status_group)
+                             as_document_version, buyer_snapshot, status_group)
 from db.invoice_payments import PAYABLE_STATUSES
-from db.invoice_versions import PROTOCOL_LABELS, local_date, local_datetime
+from db.invoice_versions import DELIVERY_DATE_MESSAGE, PROTOCOL_LABELS, local_date, local_datetime
 from money import fmt_eur
 from export.einvoice_model import unit_display
 from export.invoice_files import stored_invoice_path, version_files
@@ -421,7 +421,7 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
     number_attr = lock_attr or (' readonly' if number_kept else '')
     # Nummer der Fassung, die diese Maske geladen hat: Beim Berichtigen schickt sie sie mit (Schutz davor, eine
     # inzwischen anderweitig berichtigte Rechnung zu überschreiben)
-    document_version = ((existing_invoice[InvoiceCol.DOCUMENT_VERSION] or 1)
+    document_version = (as_document_version(existing_invoice[InvoiceCol.DOCUMENT_VERSION])
                         if is_edit_mode and len(existing_invoice) > InvoiceCol.DOCUMENT_VERSION else '')
     # Leitweg-ID: im Entwurf folgt sie dem Kunden (schreibgeschützt); bei einer versendeten Rechnung steht
     # der gespeicherte Wert da und ist ein normales Eingabefeld
@@ -1385,6 +1385,12 @@ function copyInvoiceAsNew(invId) {{
                     showMessage('Es wurde nichts geändert.', 'info');
                     return;
                 }
+                // Das Leistungsdatum ist Pflicht: geleert wird es nicht (ein leeres, unverändertes - Import - schon)
+                if ('deliveryDate' in changes && !changes.deliveryDate) {
+                    showMessage(__DELIVERY_DATE_MESSAGE__, 'error');
+                    document.getElementById('delivery_date').focus();
+                    return;
+                }
                 showConfirm(__CORRECT_QUESTION__, function() { sendInvoice(changes, isEdit, invoiceId); });
                 return;
             }
@@ -1607,7 +1613,8 @@ function copyInvoiceAsNew(invId) {{
                 document.getElementById('xml_exists')?.value === 'true');
         }
     </script>
-    '''
+    '''.replace('__CORRECT_QUESTION__', script_json(CORRECT_QUESTION)
+                ).replace('__DELIVERY_DATE_MESSAGE__', script_json(DELIVERY_DATE_MESSAGE))
 
     # Payment history section (edit mode only)
     if is_edit_mode and invoice_id:
@@ -1783,13 +1790,12 @@ function copyInvoiceAsNew(invId) {{
     </script>
 '''
 
-    if is_edit_mode and invoice_id:
-        s += _versions_box_html(db, invoice_id)
-
     # Steuersatz-Feld + USt-Checkbox serverseitig vorbelegen (Platzhalter im Template)
-    s = s.replace('__CORRECT_QUESTION__', script_json(CORRECT_QUESTION))
     s = s.replace('__TAX_PCT__', f'{tax_pct:g}')
     s = s.replace('__SHOW_TAX_CHECKED__', 'checked' if show_tax else '')
+    # Der Kasten steht voller Daten aus der Datenbank: Er kommt erst nach den Ersetzungen dazu
+    if is_edit_mode and invoice_id:
+        s += _versions_box_html(db, invoice_id)
     return s
 
 
@@ -1803,32 +1809,35 @@ def _german_date(day):
     return day.strftime('%d.%m.%Y') if day else '–'
 
 
-def _download_link(invoice_id, filename, label):
-    """Link, der eine abgelegte Fassung über ``appDownload`` lädt (``/invoice/version_download``)."""
-    url = f'/invoice/version_download?id={int(invoice_id)}&file={quote(filename, safe="")}'
+def _download_link(invoice_id, year, filename, label):
+    """Link, der eine abgelegte Fassung über ``appDownload`` lädt (``/invoice/version_download``). Er trägt den
+    Jahresordner: Dieselbe Datei kann in zwei Jahresordnern liegen, der Name allein träfe den ersten."""
+    url = (f'/invoice/version_download?id={int(invoice_id)}&file={quote(filename, safe="")}'
+           f'&year={quote(year, safe="")}')
     return (f'<a href="javascript:void(0);" onclick="{_html.escape("appDownload(" + script_json(url) + ")")}">'
             f'{_html.escape(label)}</a>')
 
 
 def _version_rows(db, invoice_id):
-    """Die abgelegten Fassungen als Zeilen ``(Fassung, versendet bis, Anlass, [(Art, Dateiname, vorhanden)])``:
-    die in ``InvoiceDocumentVersions`` festgehaltenen, dazu die Dateien in ``Fassungen/<ID>``, zu denen es keine
-    Tabellenzeile gibt (Altbestand aus 2.1.2) – die erscheinen ohne Fassungsnummer."""
-    present = {name for name, _path in version_files(invoice_id)}
+    """Die abgelegten Fassungen als Zeilen ``(Fassung, versendet bis, Anlass, [(Art, Jahresordner, Dateiname,
+    vorhanden)])``: die in ``InvoiceDocumentVersions`` festgehaltenen (der Jahresordner steht im ``RelPath``), dazu
+    die Dateien in ``Fassungen/<ID>``, zu denen es keine Tabellenzeile gibt (Altbestand aus 2.1.2) – die erscheinen
+    ohne Fassungsnummer, mit dem Jahresordner, in dem sie liegen. „Vorhanden“ heißt: im Jahresordner der Zeile."""
+    present = {(year, name) for name, _path, year in version_files(invoice_id)}
     grouped, known = {}, set()
     for version, kind, rel_path, _sha, archived_at, reason in db.get_document_versions(invoice_id):
-        filename = rel_path.rsplit('/', 1)[-1]
-        known.add(filename)
+        year, filename = rel_path.split('/', 1)[0], rel_path.rsplit('/', 1)[-1]
+        known.add((year, filename))
         row = grouped.setdefault((version, archived_at, reason), [])
-        row.append((kind.upper(), filename, filename in present))
+        row.append((kind.upper(), year, filename, (year, filename) in present))
     rows = [(version, _german_date(local_date(archived_at)), _REASON_LABELS.get(reason, reason or '–'), files)
             for (version, archived_at, reason), files in sorted(
                 grouped.items(), key=lambda kv: (kv[0][0], str(kv[0][1] or '')))]
     loose = {}
-    for filename in sorted(present - known):
+    for year, filename in sorted(present - known):
         stem, extension = filename.rsplit('.', 1) if '.' in filename else (filename, '')
-        loose.setdefault(stem, []).append((extension.upper(), filename, True))
-    for stem, files in loose.items():
+        loose.setdefault((year, stem), []).append((extension.upper(), year, filename, True))
+    for (_year, stem), files in loose.items():
         found = _SENT_UNTIL.search(stem)
         until = '.'.join(reversed(found.groups())) if found else '–'
         rows.append(('–', until, '–', files))
@@ -1854,9 +1863,9 @@ def _versions_box_html(db, invoice_id):
         h += ('        <h4>Abgelegte Fassungen</h4>\n        <table class="versionTable">\n'
               '            <tr><th>Fassung</th><th>Versendet bis</th><th>Anlass</th><th>Dateien</th></tr>\n')
         for number, until, reason, files in versions:
-            links = ' '.join(_download_link(invoice_id, name, kind) if present
+            links = ' '.join(_download_link(invoice_id, year, name, kind) if present
                              else f'<span class="muted" title="Datei nicht mehr vorhanden">{_html.escape(kind)}</span>'
-                             for kind, name, present in files)
+                             for kind, year, name, present in files)
             h += (f'            <tr><td>{_html.escape(str(number))}</td><td>{_html.escape(until)}</td>'
                   f'<td>{_html.escape(reason)}</td><td>{links}</td></tr>\n')
         h += '        </table>\n'

@@ -19,9 +19,10 @@ Status „versendet“ muss der Kunde exakt das Dokument bekommen, das im Haus l
 Geht eine versendete Rechnung zurück auf Entwurf oder wird sie berichtigt, wandern ihre Dokumente in
 ``invoices/<Jahr>/Fassungen/<ID>/`` (:func:`archive_sent_documents`): Der Kunde hat sie bekommen, sie
 verschwinden nicht und werden nie überschrieben. Welche Fassung das war, hält ``InvoiceDocumentVersions``
-fest (``db/invoice_versions.py``); heruntergeladen werden sie über :func:`version_file_path`. Ein Ordner mit
-einer Datei ist auch bei einem Bestand ohne Protokoll das Merkmal „war schon versendet“
-(:func:`was_sent_before`, ein Teil der Frage ``Database.was_sent_before``).
+fest (``db/invoice_versions.py``); heruntergeladen werden sie über :func:`version_file_path` (Name und Jahresordner:
+dieselbe Datei kann in zwei Jahresordnern liegen). Ein Ordner mit einer Datei ist auch bei einem Bestand ohne
+Protokoll das Merkmal „war schon versendet“ (:func:`was_sent_before`, ein Teil der Frage
+``Database.was_sent_before``).
 
 Ein in der Datenbank gespeicherter Dokumentpfad wird nur benutzt, wenn er im
 Dokumentordner des Nutzers liegt (:func:`path_in_documents`): Die Datenbank lässt
@@ -179,20 +180,35 @@ def _in_versions(path) -> bool:
     return FASSUNGEN in relative.split(os.sep)[:-1]
 
 
+def _folder_id(invoice_id):
+    """Der Ordnername ``<ID>`` unter ``Fassungen`` zu einer Rechnungs-ID: die ID als Ganzzahl, nie als der Text, den
+    die Anfrage schrieb – die Datenbank findet die Rechnung 1 auch mit ``1.0`` oder ``'01'``, einen Ordner dieses Namens
+    gibt es nicht. ``None``, wenn sich die ID nicht als Ganzzahl lesen lässt."""
+    if isinstance(invoice_id, bool):
+        return None
+    try:
+        return str(int(invoice_id))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def was_sent_before(invoice_id) -> bool:
     """Liegt zu dieser Rechnung eine versendete Fassung im Ordner ``Fassungen/<ID>``, in irgendeinem
     Jahresordner (das Rechnungsdatum kann sich im Entwurf ändern)? Das ist die Dateiprobe, mit der 2.1.2 den
     Entwurf einer zurückgeholten Rechnung erkannte; eine Rechnung ohne abgelegte Dokumente hinterlässt hier
     keine Spur. Die ganze Frage „war schon versendet“ stellt ``Database.was_sent_before``: Versandzeitpunkt,
-    Protokoll und diese Probe."""
+    Protokoll und diese Probe. Eine ID, die keine Ganzzahl ist, hat keine Fassung."""
     import userctx
+    folder_id = _folder_id(invoice_id)
+    if folder_id is None:
+        return False
     root = os.path.join(userctx.user_data_dir(), 'invoices')
     try:
         years = os.listdir(root)
     except OSError:
         return False
     for year in years:
-        folder = os.path.join(root, year, FASSUNGEN, str(invoice_id))
+        folder = os.path.join(root, year, FASSUNGEN, folder_id)
         try:
             if any(os.path.isfile(os.path.join(folder, name)) for name in os.listdir(folder)):
                 return True
@@ -203,17 +219,21 @@ def was_sent_before(invoice_id) -> bool:
 
 def version_files(invoice_id):
     """Die abgelegten Dokumente (PDF, XML) einer Rechnung in ihren Ordnern ``invoices/<Jahr>/Fassungen/<ID>``,
-    über alle Jahresordner: ``[(Dateiname, Pfad)]``, nach Name sortiert. Nur gewöhnliche Dateien, die nach
-    Auflösen von Links im Dokumentordner liegen (:func:`path_in_documents`)."""
+    über alle Jahresordner: ``[(Dateiname, Pfad, Jahr)]``, nach Name sortiert (``Jahr`` ist der Name des
+    Jahresordners). Nur gewöhnliche Dateien, die nach Auflösen von Links im Dokumentordner liegen
+    (:func:`path_in_documents`). Eine ID, die keine Ganzzahl ist, hat keine."""
     import userctx
-    root = os.path.join(userctx.user_data_dir(), 'invoices')
     found = []
+    folder_id = _folder_id(invoice_id)
+    if folder_id is None:
+        return found
+    root = os.path.join(userctx.user_data_dir(), 'invoices')
     try:
         years = sorted(os.listdir(root))
     except OSError:
         return found
     for year in years:
-        folder = os.path.join(root, year, FASSUNGEN, str(invoice_id))
+        folder = os.path.join(root, year, FASSUNGEN, folder_id)
         try:
             names = os.listdir(folder)
         except OSError:
@@ -222,21 +242,27 @@ def version_files(invoice_id):
             path = os.path.join(folder, name)
             if (os.path.splitext(name)[1].lower() in ('.pdf', '.xml') and os.path.isfile(path)
                     and path_in_documents(path)):
-                found.append((name, path))
+                found.append((name, path, year))
     return sorted(found)
 
 
-def version_file_path(invoice_id, filename):
+def version_file_path(invoice_id, filename, year=None):
     """Der Pfad einer abgelegten Fassung, um sie auszuliefern – ``None``, wenn es sie nicht gibt.
 
     ``filename`` kommt aus der Anfrage und ist ein reiner Dateiname: ohne Pfadtrenner, ohne ``..``, ohne
     Steuerzeichen. Gefunden wird er nur unter den Dokumenten dieser Rechnung (:func:`version_files`) –
-    nie eine Datei außerhalb von ``Fassungen/<ID>`` oder zu einer anderen Rechnung."""
+    nie eine Datei außerhalb von ``Fassungen/<ID>`` oder zu einer anderen Rechnung.
+
+    ``year`` – der Jahresordner, ebenfalls aus der Anfrage – trennt gleiche Namen in zwei Jahresordnern. Ist er
+    angegeben, muss er ein reiner Ordnername aus (ASCII-)Ziffern sein und die Datei in genau diesem Ordner liegen;
+    ohne ``year`` gilt der erste Treffer."""
     if (not isinstance(filename, str) or not filename or filename in ('.', '..')
             or any(c in filename for c in '/\\') or any(ord(c) < 32 for c in filename)):
         return None
-    for name, path in version_files(invoice_id):
-        if name == filename:
+    if year is not None and not (isinstance(year, str) and year.isascii() and year.isdigit()):
+        return None
+    for name, path, folder_year in version_files(invoice_id):
+        if name == filename and (year is None or folder_year == year):
             return path
     return None
 
