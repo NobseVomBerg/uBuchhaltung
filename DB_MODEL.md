@@ -420,28 +420,32 @@ erschiene als Ausgabe.
 **Zahlungszuordnung (Rechnung ↔ Bankbewegung):** Eine Zuordnung besteht aus genau einer
 `InvoicePayments`-Zeile und den Sätzen, die die App für sie angelegt hat. Diese Sätze sind eindeutig
 bestimmt durch `ParentBooking_ID` (die Bankbewegung), `DocumentNumber` (die Rechnungsnummer) und die
-Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
-(`assign_invoice_payment`, `db/invoice_payments.py`), und eine, die sie entfernt
-(`unassign_invoice_payment`).
+Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
+(`assign_invoice_payment`, `db/invoice_payments.py`), eine, die eine Stornorechnung erstattet
+(`assign_storno_refund`, Abschnitt 9b), und eine, die Zuordnungen entfernt (`unassign_invoice_payment`).
 
 - **Voraussetzungen:** nur Zahlungseingänge (Bankbewegung mit Betrag > 0) auf versendete Rechnungen
   (`sent`, `overdue`, `partial_payment`; `PAYABLE_STATUSES`) mit positivem Brutto; das Bankkonto der
   Bewegung braucht eine SKR-Nummer; das Paar (Rechnung, Bewegung) gibt es höchstens einmal. Negative
-  Zuordnungen (Storno, Gutschrift) kennt nur der WISO-Import (`link_invoice_to_transaction`, mit
-  Vorzeichen und ohne eigene Sätze). Einer **Stornorechnung** (`InvoiceKind='storno'`) lässt sich nie eine
+  Zuordnungen (Storno, Gutschrift) kennt der WISO-Import (`link_invoice_to_transaction`, mit
+  Vorzeichen und ohne eigene Sätze) und die Erstattung einer Stornorechnung (`assign_storno_refund`, mit Sätzen).
+  Einer **Stornorechnung** (`InvoiceKind='storno'`) lässt sich nie eine
   Zahlung zuordnen (`payment_blocker`; auch `link_invoice_to_transaction` lehnt ab), und sie ist nie ein
-  Kandidat für die Zuordnung.
+  Kandidat für die Zuordnung – ihre Zuordnung ist allein die Erstattung.
 - **Betrag:** min(Rest der Rechnung, freier Rest der Bewegung, gewünschter Betrag); der gewünschte Betrag
   wird vorher auf Cent gerundet (halb auf, `118,995 → 119,00`; ≤ 0 nach dem Runden lehnt ab), sonst bliebe
   ein Bruchteil eines Cents auf dem Debitorenkonto stehen. Frei ist
   `Betrag − MAX(Σ Zuordnungen, Σ bankwirksame Sätze darunter)` (`_free_minor_sql`, dieselbe Formel für
   Zuordnung, Kandidatenlisten und Kontakt-Guthaben): eine schon als Erlös kontierte Bewegung ist keine
-  Rechnungszahlung mehr. *Sammelzahlung* = mehrere Zuordnungen derselben Bewegung, jede mit eigenen
+  Rechnungszahlung mehr. Für den Ausgang einer Erstattung gilt
+  `|Betrag| − MAX(−Σ Zuordnungen, −Σ bankwirksame Sätze)` (`_free_outgoing_minor_sql`, dieselbe Bedingung
+  „bankwirksam“); `_free_minor_sql` bleibt, wie es war. *Sammelzahlung* = mehrere Zuordnungen derselben Bewegung, jede mit eigenen
   Sätzen; *Teilzahlung* = mehrere Bewegungen auf eine Rechnung; bei einer *Überzahlung* bleibt der Rest
   frei (Guthaben beim Kontakt; der DATEV-Export bleibt gesperrt, bis er kontiert ist).
 - **Erlöskonto:** Es ergibt sich aus der Rechnung (`resolve_revenue_coa`: gelernt, sonst 4400 bei
-  19 %, 4300 bei 7 %, 4185 steuerfrei/§ 19). **Gelernt wird nur aus den markierten Sätzen** der
-  Zuordnungen (`Status='invoice_payment'`) von Rechnungen mit demselben Steuersatz, und nur in der Form,
+  19 %, 4300 bei 7 %, 4185 steuerfrei/§ 19). **Gelernt wird nur aus den markierten Sätzen mit positivem
+  Betrag** der Zuordnungen (`Status='invoice_payment'`; die Sätze einer Erstattung lehren nichts) von Rechnungen
+  mit demselben Steuersatz, und nur in der Form,
   in der die App sie schreibt: bei der Umbuchung „Wartekonto an Erlöskonto“ (`COA` ist ein Wartekonto)
   das Gegenkonto, beim Einzelsatz „Erlöskonto an Bank“ (das Gegenkonto ist ein Zahlungskonto) das Konto;
   der jüngste Satz gewinnt. Ein Satz, den ein Nutzer im Split-Editor in eine andere Form gebracht hat
@@ -480,7 +484,8 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
   „erst von Hand stornieren, dann die Zahlung entfernen“ endet im selben Zustand wie die umgekehrte Reihenfolge –
   nicht aber bei einer Rechnung mit Stornorechnung: Ihre Forderung und die Gegenbuchung bleiben stehen. `delete_transaction` einer Bankbewegung nimmt ihre Sätze und
   Zuordnungen mit; das Löschen eines markierten Satzes (auch im Split-Editor) entfernt die ganze
-  Zuordnung.
+  Zuordnung. Eine Erstattung geht auf demselben Weg; eine Zahlung an einer stornierten Rechnung mit Stornorechnung
+  lässt sich dagegen nicht entfernen, wenn danach mehr erstattet als gezahlt wäre (`PaymentRemovalRefused`).
 - **Status der Rechnung** (`next_payment_status`, vorzeichenbewusst für die WISO-Gutschrift): Zahlung in
   Höhe der Rechnung (Rest unter einem Cent) → `paid`, sonst `partial_payment`; ohne Zahlung wieder
   `overdue` (Fälligkeit überschritten) bzw. `sent` – nie zurück auf `finalized`, eine stornierte
@@ -510,8 +515,10 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
   Kategorien gelten dem Storno-Paar und zählen nur Forderungen, die die App selbst gebucht hat (ohne `SourceGroup`,
   Wartekonto als Gegenkonto): `storno_counter_mismatch` – von der Forderung der Rechnung und der Gegenbuchung der
   Stornorechnung steht nur eine – und `legacy_cancelled_open` – eine von Hand stornierte Rechnung (Brutto > 0) ohne
-  Stornorechnung, deren Forderung noch in den Büchern steht (Abhilfe: „Stornorechnung nachträglich erstellen“). Ein
-  intaktes Paar, auch mit Guthaben aus Zahlungen auf die stornierte Rechnung, ergibt keinen Befund. Zuordnungen, deren Buchung keine Bankbewegung ist oder deren Sätze
+  Stornorechnung, deren Forderung noch in den Büchern steht (Abhilfe: „Stornorechnung nachträglich erstellen“). Dazu
+  `refund_exceeds_credit`: Zur Stornorechnung ist mehr erstattet als zur stornierten Rechnung gezahlt wurde (Σ Zuordnungen
+  beider Belege < 0). Ein intaktes Paar, auch mit Guthaben aus Zahlungen auf die stornierte Rechnung oder mit Erstattung,
+  ergibt keinen Befund. Zuordnungen, deren Buchung keine Bankbewegung ist oder deren Sätze
   eine `SourceGroup` tragen (WISO liefert seine Sätze selbst, z. B. Barzahlungen ohne Bankbewegung),
   lösen weder „Zuordnung ohne Ausgleichssatz“ noch „Zuordnung ≠ Umbuchung“ aus. Die Abfragen gehen von
   den Zuordnungen aus bzw. fassen je Rechnung vorab zusammen: Der Aufwand wächst linear mit dem Bestand
@@ -549,12 +556,23 @@ ein Tippfehler legte sonst einen Nummernkreis 2062 an). Es entsteht ein eigener 
   importierte oder von Hand gebuchte Forderung) gibt es keine Gegenbuchung.
 - **Zahlungen** bleiben an der stornierten Rechnung (Zahlungen und ihre Sätze unverändert); wurde schon
   gezahlt, steht das Guthaben des Kunden als Haben-Saldo auf den Debitoren, bis es auf die Ersatzrechnung
-  übergeht (siehe unten) oder erstattet wird (offen, `docs/aufgaben.md`). Der Stornorechnung lässt sich keine
-  Zahlung zuordnen.
+  übergeht (siehe unten) oder erstattet wird (siehe *Erstattung*). Der Stornorechnung lässt sich keine
+  Zahlung zuordnen, nur eine Erstattung.
 - **Guthaben** = Summe von `InvoicePayments.Amount` über beide Belege des Paares (stornierte Rechnung und
   Stornorechnung; `get_storno_credits`, `get_storno_credit`, `get_storno_credits_for_contact`), rein lesend: in der
-  Rechnungsliste „Erstattung offen: …“ an der Stornorechnung, als Zeile auf beiden Seiten, bei den offenen Posten des
-  Kontakts (`storno_credits`; der Saldo zieht es ab, weil 10000 es im Haben führt).
+  Rechnungsliste „Erstattung offen: …“ an der Stornorechnung (nach voller Erstattung wieder „Stornorechnung“), als Zeile
+  auf beiden Seiten, bei den offenen Posten des Kontakts (`storno_credits`; der Saldo zieht es ab, weil 10000 es im Haben
+  führt). Alle zeigen das verbleibende Guthaben.
+- **Erstattung** (`Database.assign_storno_refund`, seit 2.2.3): Eine ausgehende Bankbewegung (Betrag < 0, Bankkonto mit
+  SKR-Nummer) wird der Stornorechnung zugeordnet – eine `InvoicePayments`-Zeile mit **negativem** Betrag und Sätze mit der
+  **Nummer der Stornorechnung** als Beleg-Nr. (Marke `invoice_payment`, Datum, Steuerdatum, Empfänger und Währung der
+  Bewegung), negativ: Hat die Stornorechnung eine Gegenbuchung, `Bank → 10000` und `Wartekonto → Erlöskonto` (mit Steuer),
+  sonst der Einzelsatz `Erlöskonto → Bank`. Erstattet wird min(Guthaben, freier Rest der Bewegung, gewünschter Betrag); eine
+  Überweisung kann mehrere Stornorechnungen erstatten. Die Steuer nimmt zurück, was die Zahlungen an der stornierten Rechnung
+  gebucht haben: anteilig, die Erstattung, die das Guthaben ausgleicht, den Rest – die Summe aller Erstattungen ist die Steuer
+  der Zahlungen. Das Erlöskonto ist das der Zahlungen (sonst das hinterlegte oder die Wahl des Nutzers). In der EÜR stehen
+  negativer Erlös und negative Umsatzsteuer am Tag der Erstattung; das Dashboard zählt die Bankbewegung als Ausgabe. Nach einer
+  Erstattung zieht nichts mehr auf die Ersatzrechnung um.
 - **Gesperrt:** Die Stornorechnung ist ganz gesperrt (`db.invoice_lock.row_group`): Status, Speichern, Berichtigen,
   Löschen, Kopieren werden abgelehnt. Eine stornierte Rechnung mit Stornorechnung lässt sich nicht
   wiederbeleben.
@@ -732,13 +750,13 @@ der sich aus dem Stand dieser Tabellen ergibt (`Database.correction_notice`).
 | ID | INTEGER | PRIMARY KEY | |
 | InvoiceID | INTEGER | NOT NULL, FK → Invoices (ON DELETE CASCADE) | |
 | BookingID | INTEGER | NOT NULL, FK → Bookings | Bankbewegung der Zahlung (Altbestand: auch ein Buchungssatz) |
-| Amount | INTEGER | NOT NULL | Zahlungsbetrag in Minor Units (1 = 0,0001 EUR). Das Vorzeichen trägt nur der WISO-Import (Storno, Gutschrift); die Oberfläche legt nur positive Beträge an |
+| Amount | INTEGER | NOT NULL | Zahlungsbetrag in Minor Units (1 = 0,0001 EUR). Negativ sind die Zuordnungen des WISO-Imports (Storno, Gutschrift) und die Erstattung einer Stornorechnung (an der Stornorechnung); sonst legt die Oberfläche nur positive Beträge an |
 | PaymentDate | DATE | NOT NULL | Datum der Bankbewegung |
 | Notes | TEXT | | |
 | CreatedAt | DATETIME | | |
 
 Das Paar (`InvoiceID`, `BookingID`) kommt höchstens einmal vor. Jeder Schreiber
-(`assign_invoice_payment`, `link_invoice_to_transaction`) prüft und fügt in einer
+(`assign_invoice_payment`, `assign_storno_refund`, `link_invoice_to_transaction`) prüft und fügt in einer
 `BEGIN IMMEDIATE`-Transaktion ein; seit 2.1.0 sichert zusätzlich der UNIQUE-Index
 `ux_invoicepayments_invoice_booking` (ein `IntegrityError` heißt „bereits verknüpft“). Neue
 Datenbanken bekommen ihn gleich, bestehende beim Öffnen – nur wenn sie keine Dubletten tragen; sonst
@@ -915,6 +933,7 @@ Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
 6. Status: draft → finalized → sent → paid (dazwischen partial_payment, overdue; cancelled)
 7. Versenden bucht die Forderung; Zahlungen lassen sich ab sent zuordnen (siehe 9a)
 8. Stornieren (über den Status nur bei Brutto ≤ 0): Stornorechnung als eigener Beleg, Gegenbuchung der Forderung (siehe 9b)
+9. Erstatten (Guthaben nach dem Storno): ausgehende Bankbewegung an der Stornorechnung zuordnen (siehe 9b)
 ```
 
 ### AfA-Berechnung

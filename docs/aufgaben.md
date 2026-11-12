@@ -15,7 +15,6 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 - Leistungszeitraum (von–bis) als Alternative zum Leistungsdatum, z. B. für monatliche Leistungen – PDF-Kopf und E-Rechnung (CII BillingSpecifiedPeriod / UBL InvoicePeriod); braucht Schemaänderung
 - Zahlungssätze einer Zuordnung (Marke `invoice_payment`) im Buchungssatz-Editor schreibgeschützt zeigen – bisher lassen sie sich dort ändern, und das Löschen einer Zeile entfernt die ganze Zuordnung
 - Skonto bei der Zahlungszuordnung (Abzug als eigener Satz, Steuerkorrektur)
-- Erstattung und Gutschrift als negative Zuordnung auf die Stornorechnung (bisher lassen sich nur Zahlungseingänge zuordnen): `_free_minor_sql` vorzeichenbewusst; das Guthaben des Kunden ist schon die Summe der Zuordnungen beider Belege
 - Zurückholen einer versendeten Rechnung entfernt die Forderung auch nach einem DATEV-Export: Hinweis oder Sperre ab dem Export (braucht ein Merkmal „exportiert“ je Buchung; Schemaänderung)
 - Löschen des Entwurfs einer Rechnung aus einem Angebot setzt das Angebot auf „angenommen“, nicht auf den Status davor: den früheren Status am Angebot merken (Schemaänderung)
 - Umsatzsteuer-Voranmeldung (ELSTER)

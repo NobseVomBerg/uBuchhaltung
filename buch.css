@@ -131,6 +131,10 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 /* Fassungen und Protokoll einer Rechnung (Rechnungsseite): lange Werte brechen um */
 .versionTable td		{ vertical-align: top; overflow-wrap: anywhere; }
 
+/* Erstattung auf der Seite einer Stornorechnung: Beträge rechtsbündig, schmales Betragsfeld */
+.refundTable th.num, .refundTable td.num	{ text-align: right; }
+.refundTable input[type=number]	{ width: 90px; text-align: right; }
+
 
 /* dark mode */
 @media (prefers-color-scheme: dark) {

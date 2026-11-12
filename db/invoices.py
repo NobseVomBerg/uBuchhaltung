@@ -755,7 +755,9 @@ class InvoicesMixin:
 
         Alles andere lehrt nichts – auch „Bank an Debitoren“ nicht, und kein Satz, den ein Nutzer
         im Split-Editor in eine andere Form gebracht hat (aus „4405 an 4400“ wurde „4736 an 4400“).
-        Der jüngste passende Satz gewinnt. Das Konto der Bankzeile oder der Sätze eines Imports
+        Auch ein Satz mit negativem Betrag lehrt nichts: Die Sätze einer Erstattung
+        (``assign_storno_refund``) nehmen den Erlös zurück, sie nennen kein Erlöskonto für künftige
+        Zahlungen. Der jüngste passende Satz gewinnt. Das Konto der Bankzeile oder der Sätze eines Imports
         sagt nichts über das Erlöskonto (es kann ein Bankkonto, ein Aufwandskonto oder das
         Wartekonto sein) und zählt nicht. Das Ergebnis gilt nur, wenn es ein Erlöskonto ist
         (``is_income_account``: 4000–4999 ohne Wartekonten)."""
@@ -773,7 +775,7 @@ class InvoicesMixin:
                 JOIN ChartOfAccounts cand ON cand.ID = CASE
                     WHEN own.AccountNumber IN ({waiting_marks}) THEN k.CounterCOA_ID
                     ELSE k.COA_ID END
-                WHERE k.Status = ? AND k.ParentBooking_ID IS NOT NULL
+                WHERE k.Status = ? AND k.ParentBooking_ID IS NOT NULL AND k.Amount > 0
                   AND (i.DocumentType = 'invoice' OR i.DocumentType IS NULL)
                   AND (own.AccountNumber IN ({waiting_marks})
                        OR k.CounterCOA_ID IN ({payment_marks}))
@@ -1137,6 +1139,37 @@ class InvoicesMixin:
                        b.Amount, {free_sql} AS FreeMinor
                 FROM Bookings b
                 WHERE b.BookingType = 'bank' AND b.Amount > 0 {contact_filter}
+            )
+            WHERE FreeMinor > 0
+            ORDER BY CASE WHEN ? IS NOT NULL AND Contact_ID = ? THEN 0 ELSE 1 END,
+                     DateBooking DESC, ID DESC
+            LIMIT ?
+        ''', free_params + params + [contact_id, contact_id, limit])
+        rows = cursor.fetchall()
+        conn.close()
+        return [self._euro_row(r, 4, 5) for r in rows]
+
+    def get_unallocated_outgoing_bookings(self, contact_id=None, contact_only=False,
+                                          limit=20):
+        """Bank-Zahlungsausgänge mit freiem Rest (``_free_outgoing_minor_sql``) – die Kandidaten für die
+        Erstattung einer Stornorechnung (``assign_storno_refund``). Wie ``get_unallocated_bank_bookings``:
+        Buchungen des Kontakts stehen vorn, danach Datum absteigend, ``contact_only=True`` filtert hart auf den
+        Kontakt.
+
+        Returns: [(BookingID, DateBooking, RecipientClient, Contact_ID,
+                   Amount€ (negativ), Frei€ (positiv))]
+        """
+        contact_filter = 'AND b.Contact_ID = ?' if contact_only and contact_id else ''
+        params = [contact_id] if contact_filter else []
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        free_sql, free_params = self._free_outgoing_minor_sql(self._get_bank_coa_ids(cursor))
+        cursor.execute(f'''
+            SELECT * FROM (
+                SELECT b.ID, b.DateBooking, b.RecipientClient, b.Contact_ID,
+                       b.Amount, {free_sql} AS FreeMinor
+                FROM Bookings b
+                WHERE b.BookingType = 'bank' AND b.Amount < 0 {contact_filter}
             )
             WHERE FreeMinor > 0
             ORDER BY CASE WHEN ? IS NOT NULL AND Contact_ID = ? THEN 0 ELSE 1 END,
