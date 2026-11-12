@@ -8,11 +8,12 @@ import json
 import html as _html
 from db import Database
 from db.invoices import InvoiceCol
-from db.invoice_lock import CLOSED, EDITABLE, STATUS_LABELS, allowed_targets, status_group
+from db.invoice_lock import (CLOSED, EDITABLE, STATUS_LABELS, allowed_targets, buyer_snapshot,
+                             status_group)
 from db.invoice_payments import PAYABLE_STATUSES
 from money import fmt_eur
 from export.einvoice_model import unit_display
-from export.invoice_files import stored_invoice_path
+from export.invoice_files import stored_invoice_path, was_sent_before
 from .pages import (
     Header1, Header2, Header3, Footer, logo_url, script_json,
 )
@@ -38,6 +39,26 @@ INVOICE_STATUS_COLORS: dict = {
     'cancelled':       '#cc0000',
 }
 INVOICE_STATUS_LABELS: dict = STATUS_LABELS     # eine Quelle: db/invoice_lock.py
+
+
+# Löschen eines Entwurfs: Rückfrage, und – war die Rechnung schon einmal versendet – der Hinweis, was bleibt
+DELETE_DRAFT_QUESTION = 'Entwurf wirklich löschen?'
+DELETE_SENT_BEFORE_NOTE = ('Diese Rechnung war bereits versendet. Die versendete Fassung bleibt im Ordner '
+                           '„Fassungen“ erhalten, die Nummer wird nicht neu vergeben.')
+
+
+def _address_text(snapshot, separator):
+    """Anschrift aus ``buyer_snapshot``-Feldern als Text (Firma oder Name, Straße, PLZ Ort, Land
+    außerhalb Deutschlands), getrennt durch ``separator``."""
+    place = f"{snapshot.get('buyer_postal_code') or ''} {snapshot.get('buyer_city') or ''}".strip()
+    country = snapshot.get('buyer_country') or 'DE'
+    parts = [snapshot.get('buyer_company') or snapshot.get('buyer_name') or '',
+             snapshot.get('buyer_street') or '', place, country if country != 'DE' else '']
+    return separator.join(part for part in parts if part)
+
+
+def delete_question(sent_before):
+    return f'{DELETE_DRAFT_QUESTION} {DELETE_SENT_BEFORE_NOTE}' if sent_before else DELETE_DRAFT_QUESTION
 
 
 def normalize_status(status):
@@ -224,7 +245,8 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
                  f'{has_pdf}, {has_xml})" class="action-icon" title="{pdf_title}">&#128196;</a> ')
             s+= f"<a href='/invoice?id={inv_id}' class='action-icon' title='{action_title}'>{action_icon}</a>"
             if status == 'draft':
-                s+= (f' <a href="javascript:void(0);" onclick="deleteInvoiceDraft({int(inv_id)})" '
+                sent_before = 'true' if was_sent_before(inv_id) else 'false'
+                s+= (f' <a href="javascript:void(0);" onclick="deleteInvoiceDraft({int(inv_id)}, {sent_before})" '
                      'class="action-icon delete-icon" title="Entwurf löschen">&#128465;</a>')
             s+= f"</td>"
             s+= f"</tr>"
@@ -244,9 +266,11 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
             if (hasXml) appDownload('/invoice/xml_download?id=' + invoiceId);
         }
         
-        // Löschen gibt es nur für Entwürfe (POST, nach Rückfrage)
-        function deleteInvoiceDraft(invoiceId) {
-            appConfirmPost('/invoice/delete?id=' + invoiceId, 'Entwurf wirklich löschen?');
+        // Löschen gibt es nur für Entwürfe (POST, nach Rückfrage); war die Rechnung schon einmal versendet,
+        // sagt die Rückfrage, was bleibt
+        function deleteInvoiceDraft(invoiceId, sentBefore) {
+            appConfirmPost('/invoice/delete?id=' + invoiceId,
+                           sentBefore ? __DELETE_SENT_BEFORE__ : __DELETE_QUESTION__);
         }
 
         function applyInvoiceFilters() {
@@ -273,7 +297,8 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
             window.location.href = '/invoice';
         }
     </script>
-    '''
+    '''.replace('__DELETE_QUESTION__', script_json(DELETE_DRAFT_QUESTION)
+                ).replace('__DELETE_SENT_BEFORE__', script_json(delete_question(True)))
     s+= '</div><!-- Ende gridLeftCol -->'
     s+= '<div class="gridRightCol" style="order:2; min-width:820px;">'
     s+= _invoice_form_html(db, invoice_id, copy_from, payment_error)
@@ -337,6 +362,7 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
             tax_pct = float(_r) * 100 if 0 <= float(_r) <= 1 else float(_r)
 
     # Determine invoice number and initial values
+    number_hint = False
     if existing_invoice and not is_copy:
         # Editing existing invoice - use existing data
         # existing_invoice structure: ID=0, InvoiceNumber=1, InvoiceDate=2, OwnCompanyId=3, SellerName=4, SellerCompany=5, ..., CustomerId=13, BuyerName=14, BuyerCompany=15, ..., Status=40, PDFPath=41
@@ -351,7 +377,10 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
     else:
         # Creating new invoice - Vorschlag aus dem Nummernkreis (Formatvorlage und Zusatz des Kreises,
         # eine schon belegte Nummer wird übersprungen); verbraucht wird die Nummer erst beim Speichern
-        invoice_number = db.peek_next_number('invoice', current_year)[0] or ''
+        invoice_number, suggestion_range = db.peek_next_number('invoice', current_year)
+        invoice_number = invoice_number or ''
+        # Es gibt einen Kreis, aber keine Nummer daraus (Formatvorlage ohne Zähler): kein Vorschlag, dafür ein Hinweis
+        number_hint = (suggestion_range is not None and not invoice_number)
 
         # Kopie: Datum von heute, alles andere aus der Quelle (todo #4)
         invoice_date = today_iso if is_copy else ''
@@ -377,6 +406,12 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
     closed = group == CLOSED
     lock_attr = ' disabled' if locked else ''
     closed_attr = ' disabled' if closed else ''
+    # Leitweg-ID: im Entwurf folgt sie dem Kunden (schreibgeschützt); bei einer versendeten Rechnung steht
+    # der gespeicherte Wert da und ist ein normales Eingabefeld
+    route_attr = closed_attr if locked else ' readonly'
+    route_help = ('Gespeicherter Wert; bei einer versendeten Rechnung frei änderbar (nur bei B2G-Rechnungen erforderlich)'
+                  if locked else
+                  'Wird automatisch vom Kunden übernommen (nur bei B2G-Rechnungen erforderlich)')
 
     # Die ID gehört nur in den Bearbeiten-Modus: ein unbekannter oder fremder Beleg (Angebot)
     # ergibt ein leeres Formular, das beim Speichern eine neue Rechnung anlegt
@@ -384,6 +419,10 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
     s += f'<input type="hidden" id="is_edit_mode" value="{str(is_edit_mode).lower()}">'
     s += f'<input type="hidden" id="invoice_status_value" value="{_html.escape(str(invoice_status))}">'
     s += f'<input type="hidden" id="invoice_locked" value="{str(locked).lower()}">'
+    # Die Nummer im Feld ist nur ein Vorschlag, solange sie unverändert bleibt: Dann vergibt der Server beim
+    # Speichern frisch (ein zweites Fenster kann den Vorschlag inzwischen verbraucht haben)
+    s += ('<input type="hidden" id="number_suggestion" value="'
+          f'{"" if is_edit_mode else _html.escape(invoice_number)}">')
     # Check if PDF/XML actually exist – dieselbe Frage wie beim Download (geprüfter Pfad mit Fallback)
     pdf_file_exists = bool(is_edit_mode and stored_invoice_path(db, invoice_id, 'pdf', existing_invoice)[0])
     xml_file_exists = bool(is_edit_mode and stored_invoice_path(db, invoice_id, 'xml', existing_invoice)[0])
@@ -408,7 +447,8 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
         # Löschen gibt es nur für einen Entwurf (POST nach Rückfrage); sonst erst auf Entwurf zurücksetzen
         delete_button = ('' if invoice_status != 'draft' else
                          f'<button onclick="appConfirmPost(\'/invoice/delete?id={int(invoice_id)}\', '
-                         '\'Entwurf wirklich löschen?\')" class="coloredButton btn-sm bg-red">🗑 Löschen</button>')
+                         + _html.escape(script_json(delete_question(was_sent_before(invoice_id))))
+                         + ')" class="coloredButton btn-sm bg-red">🗑 Löschen</button>')
         s += '<div class="rectRounded no-pdf">' #right Column Headline, Status and Buttons
         s += f'<h2>{page_title}</h2>'
         s += f'''
@@ -424,8 +464,8 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
             s += ' &nbsp; &nbsp; &#9888; Storniert: Die Rechnung l&auml;sst sich nicht mehr &auml;ndern.</div>'
         elif locked:
             s += (' &nbsp; &nbsp; &#9888; Versendet: Betr&auml;ge, Positionen, Nummer, Datum und Kunde sind gesperrt. '
-                  '&Auml;nderbar bleiben Begleittext, Bestellnummer, Leitweg-ID und Leistungsdatum; die '
-                  'Anschrift wird beim Speichern aus den Stammdaten &uuml;bernommen.</div>')
+                  '&Auml;nderbar sind Begleittext, Anschrift, Bestellnummer, Leitweg-ID und Leistungsdatum. '
+                  'Das abgelegte Dokument (PDF/XML) bleibt dabei unver&auml;ndert.</div>')
         s += f'''
                 </div></td>
             </tr>
@@ -458,7 +498,7 @@ function setInvoiceStatus(invId) {{
     if (!data.success) {{ showMessage('Fehler: ' + (data.error || '?'), 'error'); return; }}
     // "Versendet" erzeugt das PDF automatisch (todo #2) - Hinweis, falls das
     // nicht geklappt hat; sonst direkt neu laden.
-    if (data.warning) {{ showMessage(data.warning, 'warn'); setTimeout(function() {{ location.reload(); }}, 2500); }}
+    if (data.warning || data.hint) {{ showMessage(data.warning || data.hint, data.warning ? 'warn' : 'info'); setTimeout(function() {{ location.reload(); }}, 3500); }}
     else {{ location.reload(); }}
   }});
 }}
@@ -498,6 +538,10 @@ function copyInvoiceAsNew(invId) {{
     s += ('<tr><td title="Datum der Lieferung/Leistung bzw. Leistungszeitraum (Pflichtangabe nach § 14 UStG)">Leistungsdatum:</td>'
           f'<td><input type="date" id="delivery_date" required value="{_html.escape(str(_dd))}" style="width: 150px;"{closed_attr}></td></tr>')
     s += f'<tr><td>Rechnungs-Nr.:</td><td><input type="text" id="invoice_number" value="{_html.escape(invoice_number)}" style="width: 150px;"{lock_attr}></td></tr>'
+    if number_hint:
+        s += ('<tr class="no-pdf"><td colspan="2" class="hint">Der Nummernkreis liefert keine Nummer – bitte die '
+              'Formatvorlage unter Stammdaten &rarr; Nummernkreise pr&uuml;fen (genau ein Z&auml;hler: '
+              '{n}, {nn} oder {nnn}).</td></tr>')
     s += '''
                     <tr><td>Kunden-Nr.:</td><td><input type="text" id="customer_number" readonly style="width: 150px; background-color: #f0f0f0;"></td></tr>
                 </table>
@@ -539,10 +583,24 @@ function copyInvoiceAsNew(invId) {{
         selected = 'selected' if existing_invoice and customer[0] == selected_customer_id else ''
         s += f'<option value="{customer[0]}" {selected}>{cust_name}</option>'
     
+    # Eine versendete Rechnung zeigt ihre gespeicherte Anschrift (Momentaufnahme beim Erstellen), nicht die
+    # heutigen Stammdaten; die Stammdaten übernimmt nur ein ausdrücklicher Wunsch (Kästchen unter der Anschrift)
+    stored_address, refresh_html = '', ''
+    if locked and existing_invoice:
+        keys = ('buyer_name', 'buyer_company', 'buyer_street', 'buyer_postal_code', 'buyer_city', 'buyer_country')
+        stored_snapshot = dict(zip(keys, existing_invoice[14:20]))
+        stored_address = _html.escape(_address_text(stored_snapshot, '\n'))
+        master = db.get_contact_by_id(existing_invoice[13]) if existing_invoice[13] and not closed else None
+        if master:
+            fresh = buyer_snapshot(master)
+            if any((stored_snapshot[k] or ('DE' if k == 'buyer_country' else ''))
+                   != (fresh[k] or '') for k in keys):
+                refresh_html = ('<div class="no-pdf hint"><label><input type="checkbox" id="refresh_address"> '
+                                'Anschrift aus den Stammdaten &uuml;bernehmen</label><br>'
+                                + _html.escape(_address_text(stored_snapshot, ', ')) + ' &rarr; '
+                                + _html.escape(_address_text(fresh, ', ')) + '</div>')
     s += '''                </select>
-                <div id="customer_address_display" style="min-height: 80px; white-space: pre-line;">
-                    
-                </div>
+                <div id="customer_address_display" style="min-height: 80px; white-space: pre-line;">''' + stored_address + '''</div>''' + refresh_html + '''
             </div>
         </div>
         
@@ -723,10 +781,10 @@ function copyInvoiceAsNew(invId) {{
                 <tr>
                     <td style="padding: 8px; vertical-align: top;"><strong>Leitweg-ID:</strong></td>
                     <td style="padding: 8px;">
-                        <input type="text" id="buyer_route_id" style="width: 300px;" placeholder="z.B. 991-ABCDE-12" readonly value="'''
+                        <input type="text" id="buyer_route_id" style="width: 300px;" placeholder="z.B. 991-ABCDE-12"''' + route_attr + ''' value="'''
     s += _html.escape(str(existing_invoice[22])) if existing_invoice and len(existing_invoice) > 22 and existing_invoice[22] else ''  # BuyerRouteID is now at index 22 (was 20)
     s += '''">
-                        <br><small style="color: #666;">Wird automatisch vom Kunden übernommen (nur bei B2G-Rechnungen erforderlich)</small>
+                        <br><small style="color: #666;">''' + route_help + '''</small>
                     </td>
                 </tr>
                 <tr>
@@ -892,7 +950,8 @@ function copyInvoiceAsNew(invId) {{
             const inv = document.getElementById('invoice_date');
             const del = document.getElementById('delivery_date');
             let touched = !!del.value && del.value !== inv.value;
-            if (!del.value) del.value = inv.value;
+            // Eine versendete Rechnung ohne Leistungsdatum (Import) bleibt ohne: Vorbelegt nur im Entwurf
+            if (!del.value && document.getElementById('invoice_locked').value !== 'true') del.value = inv.value;
             del.addEventListener('input', () => { touched = true; });
             inv.addEventListener('change', () => { if (!touched) del.value = inv.value; });
         })();
@@ -904,6 +963,14 @@ function copyInvoiceAsNew(invId) {{
         updateCustomerAddress();
         updateBankDetails();
         calculateTotals();
+
+        // Stand beim Laden: Eine versendete Rechnung schickt beim Speichern nur, was der Nutzer davon ändert
+        const initialOpenFields = {
+            paymentTerms: document.getElementById('payment_terms').value,
+            orderNumber: document.getElementById('order_number').value,
+            buyerReference: document.getElementById('buyer_route_id').value,
+            deliveryDate: document.getElementById('delivery_date').value
+        };
         
         // Kontakt- und Bankdaten stammen aus den Stammdaten und kommen als DOM-Knoten
         // in die Seite (Text bleibt Text, nie Markup). Eine Zeile ist ein Text oder
@@ -997,6 +1064,14 @@ function copyInvoiceAsNew(invId) {{
             
             console.log('updateCustomerAddress called, customerId:', customerId);
             console.log('customersData:', customersData);
+
+            // Eine versendete Rechnung behält ihre gespeicherte Anschrift und Leitweg-ID: Das Formular
+            // überschreibt beim Laden nichts aus den Stammdaten (nur die Kundennummer wird angezeigt)
+            if (document.getElementById('invoice_locked').value === 'true') {
+                const savedCustomer = customersData[customerId];
+                customerNumberField.value = savedCustomer ? savedCustomer.customer_number : '';
+                return;
+            }
             
             if (!customerId) {
                 addressDisplay.innerHTML = '';
@@ -1270,15 +1345,22 @@ function copyInvoiceAsNew(invId) {{
             const isEdit = invoiceId !== '';
 
             // Versendete Rechnung: Betraege, Positionen, Nummer, Datum und Kunde sind gesperrt (der Server
-            // lehnt jede Aenderung daran ab) - geschickt werden nur die Felder, die sich noch aendern lassen
+            // lehnt jede Aenderung daran ab) - geschickt wird nur, was sich noch aendern laesst UND was der
+            // Nutzer geaendert hat; die Anschrift nur auf ausdruecklichen Wunsch (Kaestchen)
             if (isEdit && document.getElementById('invoice_locked').value === 'true') {
-                sendInvoice({
-                    invoiceId: parseInt(invoiceId),
+                const current = {
                     paymentTerms: document.getElementById('payment_terms').value,
                     orderNumber: document.getElementById('order_number').value || null,
                     buyerReference: document.getElementById('buyer_route_id').value || null,
                     deliveryDate: document.getElementById('delivery_date').value || null
-                }, isEdit, invoiceId);
+                };
+                const changes = {invoiceId: parseInt(invoiceId)};
+                Object.keys(current).forEach(function(key) {
+                    if ((current[key] || '') !== (initialOpenFields[key] || '')) changes[key] = current[key];
+                });
+                const refresh = document.getElementById('refresh_address');
+                if (refresh && refresh.checked) changes.refreshAddress = true;
+                sendInvoice(changes, isEdit, invoiceId);
                 return;
             }
 
@@ -1368,6 +1450,8 @@ function copyInvoiceAsNew(invId) {{
             // Collect invoice data
             const invoiceData = {
                 invoiceNumber: invoiceNumber,
+                // Die vorgeschlagene Nummer: bleibt sie unverändert, vergibt der Server beim Speichern frisch
+                numberSuggestion: isEdit ? null : (document.getElementById('number_suggestion').value || null),
                 invoiceDate: invoiceDate,
                 customerId: parseInt(customerId),
                 customerNumber: document.getElementById('customer_number').value,
@@ -1418,6 +1502,12 @@ function copyInvoiceAsNew(invId) {{
                     if (data.warning) {
                         showMessage(data.warning, 'warn');
                         setTimeout(function() { window.location.href = target; }, 4000);
+                    } else if (!isEdit && data.invoice_number && data.invoice_number !== invoiceData.invoiceNumber) {
+                        // Der Vorschlag war inzwischen vergeben: die Maske zeigt die Nummer, die gilt
+                        document.getElementById('invoice_number').value = data.invoice_number;
+                        showMessage('Gespeichert mit der Rechnungsnummer ' + data.invoice_number
+                                    + ' (der Vorschlag ' + invoiceData.invoiceNumber + ' war inzwischen vergeben).', 'info');
+                        setTimeout(function() { window.location.href = target; }, 3500);
                     } else {
                         window.location.href = target;
                     }

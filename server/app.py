@@ -894,12 +894,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
                 status_code, body = handlers.handle_transaction_suggest(db, qs)
                 self.respond(status_code, body, content_type="application/json")
-            elif self.path == "/masterdata/numberranges":
-                self.respond(200, PageNumberRanges(db))
+            elif self.path == "/masterdata/numberranges" or self.path.startswith("/masterdata/numberranges?"):
+                qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
+                self.respond(200, PageNumberRanges(db, err=qs.get('err', [None])[0]))
             elif self.path.startswith("/masterdata/numberranges/edit"):
                 query_components = parse_qs(self.path.split('?')[1])
                 range_id = int(query_components["id"][0])
-                self.respond(200, PageNumberRangesEdit(db, range_id))
+                self.respond(200, PageNumberRangesEdit(db, range_id, err=query_components.get('err', [None])[0]))
             # ── Assets / Anlagenverzeichnis ───────────────────────────────
             elif self.path == "/assets" or self.path.startswith("/assets?"):
                 status_filter = ''
@@ -1228,10 +1229,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/masterdata/numberranges/add":
                 status_code, location = handlers.handle_add_number_range(db, post_data)
-                self.respond(status_code, "", headers={"Location": "/masterdata/numberranges"})
+                self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/masterdata/numberranges/update":
                 status_code, location = handlers.handle_update_number_range(db, post_data)
-                self.respond(status_code, "", headers={"Location": "/masterdata/numberranges"})
+                self.respond(status_code, "", headers={"Location": location})
             # ── Master Data POST Routes ───────────────────────────────────
             # SKR
             elif self.path == "/masterdata/skr/add":
