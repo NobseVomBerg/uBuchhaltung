@@ -69,6 +69,27 @@ def cancel_question(number):
             'zugehen muss. Das lässt sich nicht rückgängig machen.')
 
 
+def reissue_question(number):
+    """Rückfrage zu „Stornieren und neu ausstellen“: Stornorechnung und Entwurf der neuen Rechnung."""
+    return (f'Rechnung {number} stornieren und neu ausstellen? Es entsteht eine Stornorechnung mit eigener Nummer, '
+            'die dem Kunden zugehen muss, und ein Entwurf einer neuen Rechnung mit den Angaben dieser Rechnung. '
+            'Das Stornieren lässt sich nicht rückgängig machen.')
+
+
+def new_draft_question(number):
+    """Rückfrage zu „Neu ausstellen“ an einer stornierten Rechnung mit Stornorechnung: der Entwurf der neuen Rechnung."""
+    return (f'Zur stornierten Rechnung {number} einen neuen Entwurf anlegen? Er übernimmt Kunde und Positionen, '
+            'bekommt eine neue Nummer und das heutige Datum. Beim Versenden gehen die Zahlungen der stornierten '
+            'Rechnung auf ihn über.')
+
+
+def late_cancel_question(number):
+    """Rückfrage zur nachträglichen Stornorechnung für eine von Hand stornierte Rechnung (Altbestand)."""
+    return (f'Zur stornierten Rechnung {number} eine Stornorechnung erstellen? Sie bekommt eine eigene Nummer und muss '
+            'dem Kunden zugehen. Steht die Forderung noch in den Büchern, wird sie ausgeglichen. Das lässt sich nicht '
+            'rückgängig machen.')
+
+
 def _address_text(snapshot, separator):
     """Anschrift aus ``buyer_snapshot``-Feldern als Text (Firma oder Name, Straße, PLZ Ort, Land
     außerhalb Deutschlands), getrennt durch ``separator``."""
@@ -80,21 +101,40 @@ def _address_text(snapshot, separator):
 
 
 # Stornieren: Rückfrage mit Stornodatum (appConfirm mit Datumsfeld), dann POST /invoice/cancel und weiter auf die
-# Seite der Stornorechnung. Die Platzhalter ersetzt `script_json` (Rechnungsnummer und Datum stehen nie als Markup da).
+# Seite der Stornorechnung – mit `reissue` („Stornieren und neu ausstellen“) auf die des Entwurfs der neuen Rechnung.
+# Die Platzhalter ersetzt `script_json` (Rechnungsnummer und Datum stehen nie als Markup da).
 _CANCEL_SCRIPT = """// Stornieren: Es entsteht eine Stornorechnung (eigener Beleg); danach öffnet sich ihre Seite
-function cancelInvoice(invId) {
-  appConfirm(__QUESTION__, function(day) {
+// (mit reissue: die des Entwurfs der neuen Rechnung)
+function cancelInvoice(invId, reissue) {
+  appConfirm(reissue ? __REISSUE_QUESTION__ : __QUESTION__, function(day) {
+    var request = reissue ? {invoiceId: invId, date: day, reissue: true} : {invoiceId: invId, date: day};
     fetch('/invoice/cancel', {method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({invoiceId: invId, date: day})}).then(r => r.json())
+      body: JSON.stringify(request)}).then(r => r.json())
     .then(data => {
       if (!data.success) { showMessage('Fehler: ' + (data.error || '?'), 'error'); return; }
-      var target = '/invoice?id=' + data.storno_id;
+      var target = '/invoice?id=' + (data.replacement_id ? data.replacement_id : data.storno_id);
       var note = [data.warning, data.hint].filter(Boolean).join(' ');
       if (note) { showMessage(note, data.warning ? 'warn' : 'info'); setTimeout(function() { window.location.href = target; }, 3500); }
       else { window.location.href = target; }
     })
     .catch(function(err) { showMessage('Fehler: ' + err.message, 'error'); });
   }, __DATE_FIELD__);
+}
+"""
+
+# Neu ausstellen: Zur stornierten Rechnung (mit Stornorechnung) entsteht der Entwurf einer neuen Rechnung
+# (POST /invoice/reissue); danach öffnet sich seine Seite.
+_REISSUE_SCRIPT = """// Neu ausstellen: Es entsteht der Entwurf einer neuen Rechnung; danach öffnet sich seine Seite
+function reissueInvoice(invId) {
+  appConfirm(__QUESTION__, function() {
+    fetch('/invoice/reissue', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({invoiceId: invId})}).then(r => r.json())
+    .then(data => {
+      if (!data.success) { showMessage('Fehler: ' + (data.error || '?'), 'error'); return; }
+      window.location.href = '/invoice?id=' + data.replacement_id;
+    })
+    .catch(function(err) { showMessage('Fehler: ' + err.message, 'error'); });
+  });
 }
 """
 
@@ -261,7 +301,8 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
     else:
         s+= "<table style='width: 100%;'>"
         s+= "<tr><th>RE-Nr.</th><th>Datum</th><th>Kunde</th><th>Netto</th><th>Brutto</th><th>Status</th><th>Aktionen</th></tr>"
-        
+        storno_credits = db.get_storno_credits()        # eine Abfrage für die ganze Liste
+
         for invoice in invoices:
             # invoice: ID=0, InvoiceNumber=1, InvoiceDate=2, OwnCompanyId=3, SellerName=4, SellerCompany=5, ..., CustomerId=13, BuyerName=14, BuyerCompany=15, ..., TaxRate=35, SumNet=36, TaxAmount=37, SumGross=38, AmountDue=39, Status=40, PDFPath=41
             inv_id = invoice[0]
@@ -273,9 +314,13 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
             status = normalize_status(invoice[InvoiceCol.STATUS])
             
             # Status color and label from shared module constants; eine Stornorechnung trägt statt des Status
-            # (versendet) ihre Kennzeichnung
+            # (versendet) ihre Kennzeichnung – und, solange der Kunde ein Guthaben aus Zahlungen auf die stornierte
+            # Rechnung hat, den Betrag, der noch zu erstatten bleibt
             if is_storno_row(invoice):
-                status_color, status_label = STORNO_COLOR, _html.escape(STORNO_LABEL)
+                credit = storno_credits.get(inv_id)
+                status_color = STORNO_COLOR
+                status_label = _html.escape(f'Erstattung offen: {fmt_eur(credit)}' if credit and credit > 0
+                                            else STORNO_LABEL)
             else:
                 status_color = INVOICE_STATUS_COLORS.get(status, '#888')
                 status_label = _html.escape(str(INVOICE_STATUS_LABELS.get(status, status)))
@@ -398,6 +443,12 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
     storno_original = db.find_cancelled_invoice(invoice_id) if is_storno else None
     storno_invoice = (db.find_storno_invoice(invoice_id)
                       if existing_invoice and not is_copy and not is_storno else None)
+    # Neu ausstellen: Die stornierte Rechnung kennt ihre Ersatzrechnung, die Ersatzrechnung die stornierte Rechnung
+    replacement_invoice = db.find_replacement_invoice(invoice_id) if storno_invoice else None
+    replaced_invoice = (db.find_replaced_invoice(invoice_id)
+                        if existing_invoice and not is_copy and not is_storno else None)
+    # Guthaben des Kunden aus Zahlungen auf die stornierte Rechnung (beide Belege des Paares zeigen es)
+    storno_credit = db.get_storno_credit(invoice_id) if existing_invoice and not is_copy else None
     doc_title = STORNO_LABEL if is_storno else 'Rechnung'
 
     # Get company data (own contact)
@@ -532,18 +583,43 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
         # Stornorechnung nicht
         can_cancel = (not is_storno and not closed and canonical_status(invoice_status) in LOCKED_STATUSES
                       and gross > 0)
-        cancel_button = ('<button onclick="cancelInvoice(%d)" class="coloredButton btn-sm bg-red">'
-                         '&#10060; Stornieren &hellip;</button>' % int(invoice_id)) if can_cancel else ''
+        # Eine von Hand stornierte Rechnung (Altbestand) mit positivem Betrag bekommt ihre Stornorechnung nachträglich;
+        # zu einer stornierten Rechnung mit Stornorechnung und ohne Ersatzrechnung gibt es „Neu ausstellen“
+        can_late_cancel = (not is_storno and canonical_status(invoice_status) == 'cancelled' and gross > 0
+                           and storno_invoice is None)
+        can_reissue = (storno_invoice is not None and canonical_status(invoice_status) == 'cancelled'
+                       and replacement_invoice is None)
+        cancel_button = ''
+        if can_cancel:
+            cancel_button = ('<button onclick="cancelInvoice(%d)" class="coloredButton btn-sm bg-red">'
+                             '&#10060; Stornieren &hellip;</button>\n'
+                             '                    <button onclick="cancelInvoice(%d, true)" '
+                             'class="coloredButton btn-sm bg-red">&#10060; Stornieren und neu ausstellen '
+                             '&hellip;</button>' % (int(invoice_id), int(invoice_id)))
+        elif can_late_cancel:
+            cancel_button = ('<button onclick="cancelInvoice(%d)" class="coloredButton btn-sm bg-red">'
+                             '&#10060; Stornorechnung nachträglich erstellen &hellip;</button>' % int(invoice_id))
+        elif can_reissue:
+            cancel_button = ('<button onclick="reissueInvoice(%d)" class="coloredButton btn-sm bg-blue">'
+                             '&#8635; Neu ausstellen &hellip;</button>' % int(invoice_id))
         copy_button = ('' if is_storno else
                        f'<button onclick="copyInvoiceAsNew({invoice_id})" class="coloredButton btn-sm bg-gray">📋 Als neu kopieren</button>')
-        if can_cancel:
+        invoice_number_text = existing_invoice[1] or ''
+        if can_cancel or can_late_cancel:
             invoice_day = str(existing_invoice[2])[:10]
-            values = {'QUESTION': script_json(cancel_question(existing_invoice[1] or '')),
+            values = {'QUESTION': script_json(cancel_question(invoice_number_text) if can_cancel
+                                              else late_cancel_question(invoice_number_text)),
+                      'REISSUE_QUESTION': script_json(reissue_question(invoice_number_text)),
                       'DATE_FIELD': script_json({'label': 'Stornodatum:', 'min': invoice_day, 'max': today_iso,
                                                  'value': max(today_iso, invoice_day), 'error': STORNO_DATE_ERROR})}
             # in einem Durchgang: Die Rechnungsnummer in der Frage darf kein Platzhalter sein
-            cancel_script = re.sub(r'__(QUESTION|DATE_FIELD)__', lambda m: values[m.group(1)], _CANCEL_SCRIPT)
-        # Hinweiszeile zum Storno-Paar (Link auf den jeweils anderen Beleg); alles maskiert
+            cancel_script = re.sub(r'__(QUESTION|REISSUE_QUESTION|DATE_FIELD)__', lambda m: values[m.group(1)],
+                                   _CANCEL_SCRIPT)
+        elif can_reissue:
+            cancel_script = _REISSUE_SCRIPT.replace(
+                '__QUESTION__', script_json(new_draft_question(invoice_number_text)))
+        # Hinweiszeilen zum Storno-Paar (Link auf den jeweils anderen Beleg), zum Guthaben und zu Ersatzrechnung und
+        # ersetzter Rechnung; alles maskiert
         storno_row = ''
         if is_storno and storno_original:
             storno_row = ('<tr><td>Storno:</td><td>Stornorechnung zu Rechnung <a href="/invoice?id=%d">%s</a> vom %s</td></tr>'
@@ -553,6 +629,18 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
             storno_row = ('<tr><td>Storno:</td><td>Storniert durch Stornorechnung <a href="/invoice?id=%d">%s</a> vom %s</td></tr>'
                           % (int(storno_invoice[0]), _html.escape(str(storno_invoice[1])),
                              _html.escape(_german_date(local_date(storno_invoice[2])))))
+        if storno_credit is not None and storno_credit > 0:
+            storno_row += ('<tr><td>Storno:</td><td>Guthaben des Kunden: %s – Zahlungen auf die stornierte Rechnung</td></tr>'
+                           % _html.escape(fmt_eur(storno_credit)))
+        if replacement_invoice:
+            storno_row += ('<tr><td>Neue Rechnung:</td><td><a href="/invoice?id=%d">%s</a></td></tr>'
+                           % (int(replacement_invoice[0]), _html.escape(str(replacement_invoice[1]))))
+        if replaced_invoice:
+            replaced_storno = (' (Stornorechnung <a href="/invoice?id=%d">%s</a>)'
+                               % (int(replaced_invoice[2]), _html.escape(str(replaced_invoice[3])))
+                               if replaced_invoice[2] is not None else '')
+            storno_row += ('<tr><td>Ersetzt:</td><td>stornierte Rechnung <a href="/invoice?id=%d">%s</a>%s</td></tr>'
+                           % (int(replaced_invoice[0]), _html.escape(str(replaced_invoice[1])), replaced_storno))
         status_row = '' if is_storno else f'''
             <tr>
                 <td>Neuer Status:</td>
@@ -604,7 +692,8 @@ function setInvoiceStatus(invId) {{
     if (!data.success) {{ showMessage('Fehler: ' + (data.error || '?'), 'error'); return; }}
     // "Versendet" erzeugt das PDF automatisch (todo #2) - Hinweis, falls das
     // nicht geklappt hat; sonst direkt neu laden.
-    if (data.warning || data.hint) {{ showMessage(data.warning || data.hint, data.warning ? 'warn' : 'info'); setTimeout(function() {{ location.reload(); }}, 3500); }}
+    var note = [data.warning, data.hint].filter(Boolean).join(' ');
+    if (note) {{ showMessage(note, data.warning ? 'warn' : 'info'); setTimeout(function() {{ location.reload(); }}, 3500); }}
     else {{ location.reload(); }}
   }});
 }}

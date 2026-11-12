@@ -216,14 +216,17 @@ _JSON_PATHS = frozenset({
     "/invoice/delete-payment",
     "/invoice/status",
     "/invoice/cancel",
+    "/invoice/reissue",
     "/quote/save",
     "/quote/status",
 })
 
 # Aktionen mit Seiteneffekt unter den JSON-Routen: GET ergibt 405 (wie bei `_ACTION_PATHS`/`_GENERATE_PATHS`).
-# Stornieren legt einen Beleg an, siehe `handlers.handle_invoice_cancel`.
+# Stornieren und Neu ausstellen legen einen Beleg an, siehe `handlers.handle_invoice_cancel` und
+# `handlers.handle_invoice_reissue`.
 _POST_ONLY_JSON_PATHS = frozenset({
     "/invoice/cancel",
+    "/invoice/reissue",
 })
 
 
@@ -705,9 +708,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 status_code, msg = handler(post_body)
                 response = json.dumps({'success': True} if status_code == 200
                                       else {'success': False, 'error': msg})
-            else:                                  # /invoice/status, /invoice/cancel, /quote/status
+            else:                  # /invoice/status, /invoice/cancel, /invoice/reissue, /quote/status
                 handler = {"/invoice/status": handlers.handle_update_invoice_status,
                            "/invoice/cancel": handlers.handle_invoice_cancel,
+                           "/invoice/reissue": handlers.handle_invoice_reissue,
                            "/quote/status": handlers.handle_update_quote_status}[path]
                 status_code, response = handler(post_body)
         except handlers.InvalidRequest:
