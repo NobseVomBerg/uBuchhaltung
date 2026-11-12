@@ -362,11 +362,24 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
 
     Die Zeilen kommen als gleichnamige Felder (split_id, split_amount, …); ein
     leeres split_id legt eine neue Teilbuchung an, weggelassene IDs werden
-    gelöscht. Die Summe wird NICHT erzwungen – Teilerfassung ist erlaubt und
-    an der dreistufigen Statusanzeige der Übersicht erkennbar.
+    entfernt (``_write_split_rows``: gelöscht, ein importierter Satz oder eine
+    AfA-Buchung nur abgehängt). Die Summe wird NICHT erzwungen – Teilerfassung
+    ist erlaubt und an der dreistufigen Statusanzeige der Übersicht erkennbar.
 
-    Gemeinsame Felder (Datum, Steuerdatum, Empfänger, Währung) kommen von der
-    Bankbewegung; Konto, Steuer, Beleg-Nr. und Text gehören der Teilbuchung.
+    Neue Zeilen bekommen Datum, Steuerdatum, Empfänger und Währung der
+    Bankbewegung; Konto, Steuer, Beleg-Nr. und Text gehören der Teilbuchung. Ein
+    bestehender Satz folgt der Bankbewegung in Datum, Steuerdatum und Empfänger
+    nur, wenn er den Wert vorher mit ihr geteilt hat (derselbe Wert wie die
+    Bankbewegung bis jetzt trägt; leer = leer), je Feld für sich: Ein eigener Wert
+    – eine zugeordnete Bestandsbuchung – bleibt über jedes Speichern. Ordnet der
+    Editor eine vorhandene Buchung zu, behält sie Datum, Steuerdatum, Empfänger und
+    Währung ebenfalls.
+
+    Die Steuer eines bestehenden Satzes schreibt der Editor nur, wenn das Formular
+    sie mitbringt: Fehlt das Feld, oder sind beim Zuordnen einer vorhandenen Buchung
+    beide Felder leer (so schickt sie ein Browser mit dem alten Skript der Seite),
+    bleibt der gespeicherte Wert. Sonst gilt, was in der Zeile steht; leer heißt
+    keine Steuer. Auf dem Server wird sie nie nachgerechnet.
 
     Erst werden ALLE Zeilen gelesen und geprüft, dann geschrieben: Eine ungültige
     Zahl in einer späteren Zeile bricht ab, bevor eine frühere gespeichert ist.
@@ -387,12 +400,16 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
         return seq[i] if i < len(seq) else default
 
     bank_coa_ids = db.get_bank_coa_ids()
+    payment_coa_ids = db.get_payment_coa_ids()
     # Orientierung bestehender Sätze merken: liquide-zuerst gebuchte Sätze
     # (COA = Geldkonto, Gegenkonto = Zweckkonto) behalten ihre Richtung – so, wie die
     # gespeicherte Form (Bookings.EntryForm) sie nennt; ein Spiegel und eine Zeile ohne Form
     # lesen sich wie in 2.0.x (purpose_in_counter).
     existing_by_id = {c[0]: (c[1], c[2])
                       for c in (db.get_child_bookings_for_bank(bank_id) if bank_id else [])}
+    # Was die Bankbewegung bis jetzt trägt – sie wird erst nach dem Planen geschrieben. Daran zeigt
+    # sich, ob ein Satz Datum, Steuerdatum oder Empfänger mit ihr geteilt hat.
+    bank_row = db.get_booking_by_id(bank_id) if bank_id else None
 
     # Schritt 1: alle Zeilen lesen und prüfen (Zahlen, Bestandsbuchungen) – noch
     # ohne zu schreiben.
@@ -403,8 +420,10 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
         if not raw_amount and not raw_coa:
             continue                      # komplett leere Zeile ignorieren
         row_id = _at(ids, i).strip()
-        row_rate = _at(rates, i).strip()
-        row_tax = _at(tax_amounts, i).strip()
+        sent_rate = _at(rates, i, None)   # None: das Formular bringt das Feld gar nicht mit
+        sent_tax = _at(tax_amounts, i, None)
+        row_rate = (sent_rate or '').strip()
+        row_tax = (sent_tax or '').strip()
         purpose_coa = int(raw_coa) if raw_coa else None
         new_coa, new_counter = purpose_coa, account_coa_id
         # Mitgeliefertes Gegenkonto (Umbuchung): eine per Vorschlag kopierte
@@ -435,8 +454,21 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
                 # machte das Speichern der Bankmaske aus dem Beleg eine
                 # Zahlung – das Gegenkonto bleibt deshalb unangetastet.
                 new_counter = old_counter
+            elif old_counter in payment_coa_ids and old_counter != account_coa_id:
+                # Zweckkonto vorne, und die Geldseite hinten ist schon ein ANDERES Zahlungskonto (die
+                # Kasse, ein anderes eigenes Bankkonto, das Verrechnungskonto 1460): Der Satz sagt, über
+                # welches Konto er bezahlt wurde – das Zuordnen überschreibt das nicht. Konten und Form
+                # bleiben, die Split-Summe zählt ihn, wie ``bank_effect`` ihn für diese Bankbewegung
+                # zählt; wer das Konto ändern will, tut es ausdrücklich. Ein leeres Gegenkonto füllt
+                # weiter das Konto der Bank.
+                new_counter = old_counter
         if not (old_row and (new_coa, new_counter) == (old_coa, old_counter)):
             _refuse_same_account(db, new_coa, new_counter, f'Zeile {i + 1}: ')
+        rid = int(row_id) if row_id else None
+        # Zeilen können auch bestehende, bisher unverknüpfte Buchungen
+        # sein ("vorhandene Buchung zuordnen"): dann wird die Verbindung
+        # per ID hergestellt – Belegnummern spielen dabei keine Rolle.
+        adopt = rid is not None and rid not in existing_by_id
         fields = dict(
             date_booking=date,
             date_tax=date_tax,
@@ -445,29 +477,46 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
             coa_id=new_coa,
             counter_coa_id=new_counter,
             currency=currency,
-            tax_rate=float(row_rate) / 100 if row_rate else None,
-            tax_amount=float(row_tax) if row_tax else None,
             text=_at(texts, i),
             document_number=_at(docnrs, i).strip() or None,
         )
-        if old_row and int(row_id) not in existing_by_id:
+        # Steuer: Ein bestehender Satz behält sie, wenn das Formular sie nicht mitbringt – das Feld fehlt,
+        # oder beim Zuordnen sind beide leer (so schickt sie ein Browser mit dem alten Skript der Seite,
+        # das die Steuer der Buchung nicht in die Zeile übernahm). Sonst gilt, was in der Zeile steht.
+        adopted_without_tax = adopt and not row_rate and not row_tax
+        if not (old_row and (sent_rate is None or adopted_without_tax)):
+            fields['tax_rate'] = float(row_rate) / 100 if row_rate else None
+        if not (old_row and (sent_tax is None or adopted_without_tax)):
+            fields['tax_amount'] = float(row_tax) if row_tax else None
+        if old_row and adopt:
             # Adoption einer bestehenden Buchung: ihre eigenen Stammdaten
             # (Datum, Steuerdatum, Empfänger, Währung) bleiben erhalten –
-            # überschrieben würden sonst korrekt erfasste Angaben.
-            fields.update(date_booking=old_row[1], date_tax=old_row[2],
-                          recipient_client=old_row[6],
-                          currency=old_row[12] or 'EUR')
-        rid = int(row_id) if row_id else None
-        # Zeilen können auch bestehende, bisher unverknüpfte Buchungen
-        # sein ("vorhandene Buchung zuordnen"): dann wird die Verbindung
-        # per ID hergestellt – Belegnummern spielen dabei keine Rolle.
-        adopt = rid is not None and rid not in existing_by_id
+            # überschrieben würden sonst korrekt erfasste Angaben. Sie werden
+            # gar nicht erst geschrieben (auch ein leeres Feld bleibt leer).
+            for name in ('date_booking', 'date_tax', 'recipient_client', 'currency'):
+                del fields[name]
+        elif old_row:
+            # Satz unter dieser Bankbewegung: Datum, Steuerdatum und Empfänger folgen ihrer Änderung nur,
+            # wenn er den Wert mit ihr geteilt hat (derselbe wie bis jetzt, leer = leer). Hat er einen
+            # eigenen – eine zugeordnete Bestandsbuchung, ein verknüpfter Beleg –, bleibt der, je Feld.
+            for name, column in (('date_booking', 1), ('date_tax', 2), ('recipient_client', 6)):
+                if (old_row[column] or None) != (bank_row[column] or None):
+                    del fields[name]
+        if old_row:
+            # Text und Beleg-Nr. schreibt der Editor nur, wenn die Zeile sie geändert hat (leer und NULL sind
+            # dasselbe): Ein Satz, den man zuordnet und wieder löst, soll in jeder Spalte so dastehen wie vorher.
+            if (old_row[15] or '') == fields['text']:
+                del fields['text']
+            if (old_row[16] or None) == fields['document_number']:
+                del fields['document_number']
         planned.append((rid, fields, adopt))
     return planned
 
 
 def _write_split_rows(db, bank_id, planned):
-    """Geplante Buchungssätze (aus ``_plan_split_rows``) schreiben und entfernte Zeilen löschen."""
+    """Geplante Buchungssätze (aus ``_plan_split_rows``) schreiben; die Sätze der Zeilen, die der Nutzer
+    entfernt hat, übernimmt ``Database.remove_split_row``: gelöscht, ein Satz aber, der nicht im Editor
+    entstanden ist (Import, AfA-Buchung), nur von der Bankbewegung abgehängt."""
     keep_ids = set()
     for rid, fields, adopt in planned:
         if rid is not None:
@@ -485,7 +534,7 @@ def _write_split_rows(db, bank_id, planned):
                                        **fields)
             keep_ids.add(new_id)
 
-    # Entfernte Zeilen löschen – Doppik-Spiegel (COA und Gegenkonto beide
+    # Vom Nutzer entfernte Zeilen – Doppik-Spiegel (COA und Gegenkonto beide
     # liquide) tauchen im Editor nicht auf und bleiben deshalb unberührt.
     bank_coa_ids = db.get_bank_coa_ids()
     for child in db.get_child_bookings_for_bank(bank_id):
@@ -494,7 +543,7 @@ def _write_split_rows(db, bank_id, planned):
             continue
         if is_mirror_row(c_form, c_coa, c_counter, bank_coa_ids):
             continue                      # Doppik-Spiegel: nicht anfassen
-        db.delete_transaction(child_id)
+        db.remove_split_row(child_id)
 
 
 def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,

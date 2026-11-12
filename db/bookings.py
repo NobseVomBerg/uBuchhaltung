@@ -324,25 +324,28 @@ class BookingsMixin:
         nachträglichen Verknüpfen einer Zahlung mit einer Rechnung (todo #2).
 
         Bekommt ein Buchungssatz sein Konto erst hier, ändert sich seine Kontierung: Die Form
-        wird neu abgeleitet (``db.matching.reform``), der Betrag behält sein Soll/Haben. Dann steht
-        die ganze Änderung (Konto, Form, negierter Betrag) als eine Anweisung im Protokoll – sonst
+        wird neu abgeleitet (``db.matching.reform``), der Betrag behält sein Soll/Haben – und mit
+        ihm der gespeicherte Steuerbetrag, der das Vorzeichen des Betrags trägt. Dann steht die ganze
+        Änderung (Konto, Form, negierter Betrag und Steuerbetrag) als eine Anweisung im Protokoll – sonst
         ließe sich der Stand nicht nachspielen.
         """
         conn = self._get_connection()
         cursor = conn.cursor()
-        old = cursor.execute('SELECT BookingType, EntryForm, COA_ID, CounterCOA_ID, Amount '
+        old = cursor.execute('SELECT BookingType, EntryForm, COA_ID, CounterCOA_ID, Amount, TaxAmount '
                              'FROM Bookings WHERE ID = ?', (booking_id,)).fetchone()
-        form = amount = None
+        form = amount = negated_tax = None
         if old and old[0] == 'entry' and old[2] is None and coa_id is not None:
             money_ids = self._get_payment_coa_ids(cursor)
             old_form = read_entry_form(old[1], old[2], old[3], money_ids)
             form, new_amount = reform(old_form, old[2], old[3], coa_id, old[3], money_ids, old[4])
             amount = new_amount if new_amount != old[4] else None
+            if amount is not None and old[5]:
+                negated_tax = -old[5]
         sql_template = '''
             UPDATE Bookings SET
                 COA_ID     = COALESCE(COA_ID, ?),
                 TaxRate    = COALESCE(TaxRate, ?),
-                TaxAmount  = COALESCE(TaxAmount, ?),
+                TaxAmount  = COALESCE(?, TaxAmount, ?),
                 Contact_ID = COALESCE(Contact_ID, ?),
                 DocumentNumber = CASE WHEN DocumentNumber IS NULL
                                         OR DocumentNumber = ''
@@ -351,13 +354,14 @@ class BookingsMixin:
                 Amount     = COALESCE(?, Amount)
             WHERE ID = ?
         '''
-        params = (coa_id, tax_rate, self._minor_opt(tax_amount), contact_id,
+        params = (coa_id, tax_rate, negated_tax, self._minor_opt(tax_amount), contact_id,
                   document_number, form, amount, booking_id)
         cursor.execute(sql_template, params)
         conn.commit()
         conn.close()
         if form is not None:
-            self._log_sql(sql_template, params, 'Buchung nachgetragen: Konto, Form und Betrag')
+            self._log_sql(sql_template, params,
+                          'Buchung nachgetragen: Konto, Form, Betrag und Steuerbetrag')
 
     def check_booking_exists(self, date, amount, account_id=None, foreign_bank_account="", text=""):
         """Anzahl vorhandener Buchungen mit gleichem Datum/Betrag/Konto.
@@ -576,15 +580,23 @@ class BookingsMixin:
         """Form eines Buchungssatzes, dessen Konto oder Gegenkonto sich ändert – ``values`` sind
         die geänderten Spalten (Minor Units), wie ``update_booking_fields`` sie schreibt. Nur für
         einen ``entry``, dessen Konten sich wirklich ändern und für den die Form nicht
-        ausdrücklich genannt ist; sonst ``None``. Returns ``(form, amount)``: ``amount`` ist der
-        negierte Betrag, wenn die Form auf die andere Seite kippt und der Aufrufer keinen eigenen
-        mitgibt (``db.matching.reform``), sonst ``None`` – dann bleibt der Betrag, wie er ist.
+        ausdrücklich genannt ist; sonst ``None``. Returns ``(form, amount, tax_amount)``: ``amount``
+        ist der negierte Betrag, wenn die Form auf die andere Seite kippt und der Aufrufer keinen
+        eigenen mitgibt (``db.matching.reform``), sonst ``None`` – dann bleibt der Betrag, wie er ist.
         Ein Betrag, der unverändert zurückkommt, gilt als nicht mitgegeben: Die Masken schicken
         den gespeicherten Betrag immer mit, und ein Wechsel des Zweckkontos soll Soll/Haben
-        erhalten (ein anderer Betrag gilt dagegen für die neue Kontierung)."""
+        erhalten (ein anderer Betrag gilt dagegen für die neue Kontierung).
+
+        Mit dem Betrag dreht der **Steuerbetrag**: Er trägt das Vorzeichen des Betrags (die EÜR
+        rechnet Netto = Betrag − Steuer). ``tax_amount`` ist der negierte gespeicherte Steuerbetrag,
+        wenn der Betrag negiert wird und der Aufrufer ihn nicht oder unverändert mitgibt; ein Steuerbetrag,
+        den der Aufrufer ändert (auch leert), gilt wie eingegeben, ebenso ein Satz ohne Steuer
+        – dann ist es ``None`` und der Aufrufer schreibt, was er hat. Alle Schreibwege, die den Betrag
+        so negieren, nehmen diesen Wert mit (``update_booking_fields``, ``update_booking``, der
+        Tabellen-Export, ``backfill_booking_fields``)."""
         if 'entry_form' in values or not ({'coa_id', 'counter_coa_id'} & set(values)):
             return None
-        old = conn.execute('SELECT BookingType, EntryForm, COA_ID, CounterCOA_ID, Amount '
+        old = conn.execute('SELECT BookingType, EntryForm, COA_ID, CounterCOA_ID, Amount, TaxAmount '
                            'FROM Bookings WHERE ID=?', (booking_id,)).fetchone()
         if old is None or old[0] != 'entry':
             return None
@@ -596,7 +608,11 @@ class BookingsMixin:
         old_form = read_entry_form(old[1], old[2], old[3], money_ids)
         form, amount = reform(old_form, old[2], old[3], coa_id, counter_coa_id, money_ids, old[4])
         resent = values.get('amount', old[4]) == old[4]
-        return form, (amount if resent and amount != old[4] else None)
+        negated = resent and amount != old[4]
+        tax_amount = None
+        if negated and old[5] and values.get('tax_amount', old[5]) == old[5]:
+            tax_amount = -old[5]
+        return form, (amount if negated else None), tax_amount
 
     def update_booking_fields(self, booking_id, log_description=None, **fields):
         """Nur die genannten Felder einer Buchung ändern; alle anderen bleiben, wie sie sind.
@@ -608,7 +624,9 @@ class BookingsMixin:
         Ändern sich Konto oder Gegenkonto eines Buchungssatzes, bekommt er die dazu passende
         Form (``db.matching.reform``), sofern der Aufrufer sie nicht selbst als ``entry_form``
         nennt. Ohne eigenen ``amount`` – oder mit dem unveränderten gespeicherten – bleibt dabei
-        das Soll/Haben erhalten: Kippt die Form auf die andere Seite, wird der Betrag negiert.
+        das Soll/Haben erhalten: Kippt die Form auf die andere Seite, wird der Betrag negiert –
+        und mit ihm der Steuerbetrag, sofern ihn der Aufrufer nicht ändert
+        (``_form_after_accounts_change``).
         """
         unknown = set(fields) - set(self._BOOKING_FIELD_COLUMNS)
         if unknown:
@@ -629,6 +647,8 @@ class BookingsMixin:
                 values['entry_form'] = reformed[0]
                 if reformed[1] is not None:
                     values['amount'] = reformed[1]
+                if reformed[2] is not None:
+                    values['tax_amount'] = reformed[2]
             assignments = ', '.join(f"{self._BOOKING_FIELD_COLUMNS[name]}=?" for name in values)
             sql_template = f"UPDATE Bookings SET {assignments} WHERE ID=?"
             params = tuple(values.values()) + (booking_id,)
@@ -660,9 +680,11 @@ class BookingsMixin:
         cursor = conn.cursor()
         
         # Ändern sich die Konten eines Buchungssatzes, bekommt er die dazu passende Form
+        # (kippt sie, drehen Betrag und unveränderter Steuerbetrag mit)
         reformed = self._form_after_accounts_change(
             conn, booking_id, {'coa_id': coa_id, 'counter_coa_id': counter_coa_id,
-                               'amount': to_minor(amount or 0)})
+                               'amount': to_minor(amount or 0),
+                               'tax_amount': self._minor_opt(tax_amount)})
         sql_template = '''UPDATE Bookings
             SET DateBooking=?, DateTax=?, Account_ID=?, ForeignBankAccount=?,
                 RecipientClient=?, Contact_ID=?, COA_ID=?, CounterCOA_ID=?, Category_ID=?, Amount=?, Currency=?,
@@ -674,7 +696,9 @@ class BookingsMixin:
                   recipient_client, contact_id, coa_id, counter_coa_id, category_id,
                   reformed[1] if reformed and reformed[1] is not None else to_minor(amount or 0),
                   currency,
-                  tax_rate, self._minor_opt(tax_amount), text, document_number, booking_type, parent_booking_id,
+                  tax_rate,
+                  reformed[2] if reformed and reformed[2] is not None else self._minor_opt(tax_amount),
+                  text, document_number, booking_type, parent_booking_id,
                   reformed[0] if reformed else None, booking_id)
 
         cursor.execute(sql_template, params)
@@ -759,6 +783,60 @@ class BookingsMixin:
             raise
         finally:
             conn.close()
+
+    def detachable_split_rows(self, booking_ids):
+        """Welche dieser Sätze löst der Bank-Editor beim Entfernen ihrer Zeile nur von der Bankbewegung,
+        statt sie zu löschen? Returns die IDs als ``set``.
+
+        Es sind Sätze, die nachweislich nicht im Editor entstanden sind: importierte (mit
+        Quellklammer ``SourceGroup``), AfA-Buchungen (ein Jahr des AfA-Plans verweist mit
+        ``Booking_ID`` auf sie – so erkennt ``db/assets.py`` ein Jahr als gebucht) und
+        Forderungsbuchungen (``db.matching.receivable_condition``), die ein Altbestand als Kind
+        angehängt hat – sie gehören zur Rechnung, wie beim Löschen der Bankbewegung
+        (``delete_transaction``). Ein markierter Zahlungssatz (``PAYMENT_MARK``) nie: Er geht mit
+        seiner ganzen Zuordnung."""
+        ids = [int(booking_id) for booking_id in booking_ids]
+        if not ids:
+            return set()
+        marks = ','.join('?' * len(ids))
+        conn = self._get_connection()
+        try:
+            receivable_sql, receivable_params = self._receivable_sql(conn.cursor(), alias='b')
+            rows = conn.execute(
+                f"SELECT b.ID FROM Bookings b WHERE b.ID IN ({marks}) AND b.BookingType = 'entry' "
+                "AND COALESCE(b.Status, '') != ? "
+                "AND (COALESCE(b.SourceGroup, '') != '' "
+                "     OR EXISTS (SELECT 1 FROM AssetDepreciations d WHERE d.Booking_ID = b.ID) "
+                f"     OR ({receivable_sql}))",
+                ids + [PAYMENT_MARK] + list(receivable_params)).fetchall()
+        finally:
+            conn.close()
+        return {row[0] for row in rows}
+
+    def remove_split_row(self, booking_id):
+        """Die Zeile eines Satzes im Buchungssatz-Editor der Bankmaske entfernen.
+
+        Ein Satz, der nachweislich nicht im Editor entstanden ist (``detachable_split_rows``: Import,
+        AfA-Buchung), wird **abgehängt**: ``ParentBooking_ID`` leer und ein vom Abgleich gesetzter Status
+        ``resolved`` zurückgesetzt – wie beim Abhängen einer Forderung (``delete_transaction``) –,
+        sonst bleibt jede Spalte, wie sie ist. Er ist danach wieder eine eigenständige Buchung (Liste,
+        Zuordnen-Widget, EÜR wie vor dem Zuordnen), das AfA-Jahr bleibt gebucht und der nächste
+        Abgleich findet den Satz wieder. Jeder andere Satz wird gelöscht (``delete_transaction``,
+        markierte Zahlungssätze mit ihrer ganzen Zuordnung). ``delete_transaction`` selbst – eine Buchung
+        ausdrücklich aus der Liste löschen – bleibt unverändert."""
+        if booking_id not in self.detachable_split_rows([booking_id]):
+            self.delete_transaction(booking_id)
+            return
+        sql = ("UPDATE Bookings SET ParentBooking_ID = NULL, "
+               "Status = CASE WHEN Status = 'resolved' THEN NULL ELSE Status END WHERE ID = ?")
+        conn = self._get_connection()
+        try:
+            conn.execute(sql, (booking_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        self._log_sql(sql, (booking_id,), "Split row detach")
+
     def get_booking_by_id(self, booking_id):
         """Get a single booking by ID"""
         conn = self._get_connection()

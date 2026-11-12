@@ -61,7 +61,11 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
 - Der Auto-Abgleich kann eine AfA-Buchung (Umbuchung, 31.12.) an eine gleich hohe Bankbewegung vom 31.12. hängen
 - Dashboard zählt einen Übertrag Giro ↔ Kasse als Einnahme bzw. Ausgabe der Kasse (Abhebung +, Bareinzahlung −, aus der Form des Spiegels gelesen) – ein Übertrag gehört nicht in Einnahmen und Ausgaben, sondern als Umbuchung herausgerechnet
 - Bankbewegung und ihre Buchungssätze in einer Transaktion speichern – heute nur „erst prüfen, dann schreiben“; ein Datenbankfehler beim Schreiben hinterlässt einen halben Stand
-- „Vorhandene Buchung zuordnen“ im Buchungssatz-Editor lässt Steuersatz und -betrag der Buchung leer (das Skript der Seite übernimmt nur Betrag, Beleg-Nr., Text und Konto): Beim Speichern gehen sie verloren, die EÜR rechnet danach ohne Steuer. Und ab dem zweiten Speichern gleicht der Editor Datum, Steuerdatum und Empfänger einer zugeordneten Buchung an die Bankbewegung an
+- Bank-Editor: eine von Hand angelegte, später zugeordnete Buchung wird beim Entfernen der Zeile gelöscht (nicht von im Editor angelegten Zeilen unterscheidbar). Dasselbe gilt für Sätze aus dem WISO-Textexport (keine Quellklammer)
+- Bank-Editor: Steuer einer zugeordneten Buchung lässt sich erst beim zweiten Speichern leeren
+- Bank-Editor: Zuordnen eines Satzes mit leerem Konto vorne und Zweckkonto hinten ersetzt das Zweckkonto durch das Konto der Bank – stattdessen die leere Seite füllen oder den Satz unverändert lassen
+- Bank-Editor: Das Gegenkonto eines zugeordneten Satzes mit Zweckkonto vorne lässt sich in der Zeile nicht ändern (nur über die Buchungsmaske)
+- Bankmaske übernimmt den Kontakt des ersten Satzes auf eine Bankbewegung ohne Kontakt
 - Ein eigenständiger Buchungssatz bekommt beim Speichern in der Maske das vorgewählte Bankkonto und gilt danach im Kontoauszug-Import als vorhandene Bankbewegung
 - Kontoauszug-Import erkennt Duplikate nur über Konto + Datum + Betrag (je Datei gezählt, über Dateien das Maximum): Bankreferenz (AcctSvcrRef/EndToEndId) speichern, gebündelt mit den CAMT-Zusatzfeldern (Schemaänderung). Bis dahin: CAMT-Sammelbuchung gegen PDF-Summenzeile wird doppelt angelegt; zwei verschiedene Auszüge desselben Tags mit je einem echten, gleichen Umsatz verlieren einen
 - Vorschau des Kontoauszug-Imports nach einem Einzelimport neu berechnen – die übrigen Karten zeigen sonst veraltete „neu“-Zahlen (das Ergebnis des Imports stimmt)
