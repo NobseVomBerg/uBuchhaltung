@@ -60,7 +60,7 @@ CORRECT_QUESTION = ('Rechnung berichtigen? Die bisherige Fassung bleibt als Date
 
 
 # Stornieren (db/invoice_storno.py): Rückfrage mit Stornodatum; eine Stornorechnung lässt sich nicht kopieren
-STORNO_DATE_ERROR = 'Bitte ein Stornodatum angeben, das nicht vor dem Rechnungsdatum liegt.'
+STORNO_DATE_ERROR = 'Bitte ein Stornodatum angeben, das weder vor dem Rechnungsdatum noch in der Zukunft liegt.'
 STORNO_COPY_MESSAGE = 'Eine Stornorechnung lässt sich nicht kopieren.'
 
 
@@ -508,8 +508,10 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
             status_color  = INVOICE_STATUS_COLORS.get(invoice_status, '#888')
             status_label  = _html.escape(str(INVOICE_STATUS_LABELS.get(invoice_status, invoice_status)))
         # Angeboten werden nur die Status, auf die die Rechnung gesetzt werden darf (Übergangstabelle); „storniert“
-        # nie (Stornieren ist ein eigener Knopf), und eine Rechnung mit Stornorechnung bleibt storniert
-        targets = allowed_targets(invoice_status, payment_count, storno_invoice is not None)
+        # nur für eine Rechnung ohne positiven Betrag (sonst ist Stornieren ein eigener Knopf), und eine Rechnung
+        # mit Stornorechnung bleibt storniert
+        gross = existing_invoice[InvoiceCol.SUM_GROSS] or 0
+        targets = allowed_targets(invoice_status, payment_count, storno_invoice is not None, gross)
         status_options_html = ''.join(
             '<option value="{k}"{sel}>{v}</option>'.format(
                 k=_html.escape(k), v=_html.escape(str(INVOICE_STATUS_LABELS.get(k, k))),
@@ -525,9 +527,11 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
                          f'<button onclick="appConfirmPost(\'/invoice/delete?id={int(invoice_id)}\', '
                          + _html.escape(script_json(delete_question(db.was_sent_before(invoice_id))))
                          + ')" class="coloredButton btn-sm bg-red">🗑 Löschen</button>')
-        # Stornieren gibt es für eine versendete Rechnung (gesperrt, noch nicht storniert), nie für eine
-        # Stornorechnung; kopieren lässt sich eine Stornorechnung nicht
-        can_cancel = (not is_storno and not closed and canonical_status(invoice_status) in LOCKED_STATUSES)
+        # Stornieren gibt es für eine versendete Rechnung mit positivem Betrag (gesperrt, noch nicht storniert), nie für
+        # eine Stornorechnung; eine ohne positiven Betrag wird über den Status storniert. Kopieren lässt sich eine
+        # Stornorechnung nicht
+        can_cancel = (not is_storno and not closed and canonical_status(invoice_status) in LOCKED_STATUSES
+                      and gross > 0)
         cancel_button = ('<button onclick="cancelInvoice(%d)" class="coloredButton btn-sm bg-red">'
                          '&#10060; Stornieren &hellip;</button>' % int(invoice_id)) if can_cancel else ''
         copy_button = ('' if is_storno else
@@ -535,7 +539,7 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
         if can_cancel:
             invoice_day = str(existing_invoice[2])[:10]
             values = {'QUESTION': script_json(cancel_question(existing_invoice[1] or '')),
-                      'DATE_FIELD': script_json({'label': 'Stornodatum:', 'min': invoice_day,
+                      'DATE_FIELD': script_json({'label': 'Stornodatum:', 'min': invoice_day, 'max': today_iso,
                                                  'value': max(today_iso, invoice_day), 'error': STORNO_DATE_ERROR})}
             # in einem Durchgang: Die Rechnungsnummer in der Frage darf kein Platzhalter sein
             cancel_script = re.sub(r'__(QUESTION|DATE_FIELD)__', lambda m: values[m.group(1)], _CANCEL_SCRIPT)

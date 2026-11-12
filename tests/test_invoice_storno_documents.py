@@ -28,6 +28,7 @@ from pdfminer.pdftypes import resolve1, stream_value
 import export.invoice_files as invoice_files
 import server.handlers as handlers
 import userctx
+from db import invoice_storno
 from db.invoice_storno import STORNO_PAYMENT_TEXT
 from export.cii_invoice import NS, generate_cii
 from export.einvoice_model import build_einvoice, storno_note_text
@@ -319,7 +320,8 @@ def test_the_documents_of_the_credit_note_have_their_own_name_and_the_original_s
     assert not os.path.isdir(os.path.join(userctx.DATA_ROOT, 'invoices', '2026', 'Fassungen'))   # nichts „abgelegt“
 
 
-def test_the_folder_is_the_year_of_the_storno_date(world):
+def test_the_folder_is_the_year_of_the_storno_date(world, monkeypatch):
+    monkeypatch.setattr(invoice_storno, '_today', lambda: datetime.date(2027, 1, 4))     # heute: Storno im Folgejahr
     _invoice_id, storno_id = cancelled(world, day='2027-01-04', invoiceDate='2026-12-28', deliveryDate='2026-12-28')
     path = columns(world.db, storno_id)['PDFPath']
     assert os.path.dirname(path).endswith(os.path.join('invoices', '2027')) and os.path.isfile(path)

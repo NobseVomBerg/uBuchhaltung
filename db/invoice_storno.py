@@ -3,10 +3,10 @@
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Database-Mixin: Stornorechnung (seit 2.2.1).
 
-Eine versendete Rechnung wird nicht mehr von Hand auf „storniert“ gesetzt, sondern über ``cancel_invoice``: Es
-entsteht ein eigener Beleg, die **Stornorechnung** – mit eigener Nummer aus dem Rechnungskreis (Jahr des
-Stornodatums), dem Kopf der Ursprungsrechnung, ihren Positionen mit negativer Menge und exakt negierten Summen,
-dem Status „versendet“, ``InvoiceKind = 'storno'`` und ``CancelsInvoiceId`` = die Ursprungsrechnung. Die
+Eine versendete Rechnung mit positivem Betrag wird nicht mehr von Hand auf „storniert“ gesetzt, sondern über
+``cancel_invoice``: Es entsteht ein eigener Beleg, die **Stornorechnung** – mit eigener Nummer aus dem Rechnungskreis
+(Jahr des Stornodatums), dem Kopf der Ursprungsrechnung, ihren Positionen mit negativer Menge und exakt negierten
+Summen, dem Status „versendet“, ``InvoiceKind = 'storno'`` und ``CancelsInvoiceId`` = die Ursprungsrechnung. Die
 Ursprungsrechnung wird „storniert“.
 
 Die Forderung der Ursprungsrechnung („Debitoren an Wartekonto“) wird dabei nie gelöscht. Hat die App sie gebucht,
@@ -19,11 +19,18 @@ geschieht, steht in ``docs/aufgaben.md``. Der Stornorechnung lässt sich keine Z
 Alles – Prüfung, Nummer, Beleg, Positionen, Status der Ursprungsrechnung, Protokoll, Gegenbuchung, Neuberechnung –
 läuft in EINER Transaktion (``BEGIN IMMEDIATE``): Es gelingt ganz oder gar nicht, und eine verbrauchte Nummer gibt
 es nach einem Fehler nicht. Das Dokument der Stornorechnung erzeugt der Aufrufer danach.
+
+Das Stornodatum liegt nie in der Zukunft (nach dem heutigen Tag des Servers, ``_today``): Ein Tippfehler (2062) legte
+sonst einen Nummernkreis 2062 an, und das ließe sich nicht umkehren. Eine Rechnung ohne positiven Betrag (Gutschrift,
+0-€-Rechnung) bekommt keine Stornorechnung; sie lässt sich über den Status auf „storniert“ setzen
+(``db.invoice_lock.TRANSITIONS``, Art ``cancel``).
 """
+import datetime
 import sqlite3
 from collections import namedtuple
 
 from money import from_minor
+from .core import ForeignKeyError
 from .invoice_lock import (
     CHANGED_MESSAGE, EDITABLE_STATUSES, LOCKED_STATUSES, STORNO_KIND, _Refusal, canonical_status,
     document_version, invoice_row, is_storno)
@@ -35,7 +42,11 @@ STORNO_PAYMENT_TEXT = 'Der Betrag wird verrechnet bzw. erstattet.'
 
 STORNO_DATE_MESSAGE = 'Das Stornodatum fehlt oder ist kein gültiges Datum.'
 STORNO_DATE_BEFORE_MESSAGE = 'Das Stornodatum darf nicht vor dem Rechnungsdatum liegen.'
-STORNO_FAILED_MESSAGE = 'Die Stornierung konnte nicht gespeichert werden – nichts wurde geändert.'
+STORNO_DATE_FUTURE_MESSAGE = 'Das Stornodatum darf nicht in der Zukunft liegen.'
+NO_POSITIVE_AMOUNT_MESSAGE = ('Eine Rechnung ohne positiven Betrag bekommt keine Stornorechnung – sie lässt sich '
+                              'über den Status auf „Storniert“ setzen.')
+STORNO_FAILED_PREFIX = 'Die Stornierung konnte nicht gespeichert werden'
+STORNO_FAILED_MESSAGE = f'{STORNO_FAILED_PREFIX} – nichts wurde geändert.'
 #: Hinweis an den Nutzer, wenn die Stornierung keine Gegenbuchung anlegt
 NO_COUNTER_BOOKING_HINT = ('Zu dieser Rechnung gibt es keine von der App gebuchte Forderung – es wurde keine '
                            'Gegenbuchung angelegt.')
@@ -47,28 +58,39 @@ Storno = namedtuple('Storno', 'ok message code storno_id storno_number counter_b
                     defaults=(None, None, False))
 
 
+def _today():
+    """Der heutige Tag des Servers (Ortsdatum) – eine eigene Funktion, damit Tests ihn stellen können."""
+    return datetime.date.today()
+
+
 def _negated(value):
     """``-value``, ohne aus einer 0 eine ``-0.0`` zu machen."""
     return -value if value else value
 
 
 class InvoiceStornoMixin:
-    def cancel_invoice(self, invoice_id, storno_date, user_name=None):
+    def cancel_invoice(self, invoice_id, storno_date, user_name=None, *, today=None):
         """Eine versendete Rechnung stornieren: die Stornorechnung anlegen, die Rechnung auf „storniert“ setzen und – hat
         die App ihre Forderung gebucht – die Gegenbuchung dazu. ``storno_date`` (ISO-Datum) ist das Rechnungsdatum der
         Stornorechnung und bestimmt Nummernkreis (Jahr) und Datum der Gegenbuchung; ``user_name`` steht im Protokoll.
+        ``today``: der Tag, nach dem kein Stornodatum liegen darf (``datetime.date``); ohne Angabe der heutige Tag des
+        Servers. Nur die Demodaten geben ihn an – sie laufen zu einem Szenariodatum, das auch ein anderer Tag sein kann.
 
         Abgelehnt wird (``Storno.ok`` falsch, ``message`` im Klartext, ``code`` der Statuscode, nichts geschrieben):
-        ein Stornodatum, das kein ISO-Datum ist (400); eine unbekannte ID oder die ID eines Angebots (404); eine
-        Stornorechnung, ein Entwurf, eine abgeschlossene oder schon stornierte Rechnung, ein unbekannter Status, eine
-        Rechnung ohne positiven Betrag, eine Rechnung mit Stornorechnung (409); ein Stornodatum vor dem Rechnungsdatum
-        (400); ein Nummernkreis ohne brauchbare Nummer (409); ein Fehler beim Speichern (409).
+        ein Stornodatum, das kein ISO-Datum ist oder nach heute liegt (400); eine unbekannte ID oder die ID eines
+        Angebots (404); eine Stornorechnung, ein Entwurf, eine abgeschlossene oder schon stornierte Rechnung, ein
+        unbekannter Status, eine Rechnung ohne positiven Betrag (sie wird über den Status storniert), eine Rechnung
+        mit Stornorechnung (409); ein Stornodatum vor dem Rechnungsdatum (400); ein Nummernkreis ohne brauchbare
+        Nummer (409); ein Fehler beim Speichern (409) – zeigt dabei ein Verweis der Rechnung ins Leere
+        (``ForeignKeyError``), steht er im Klartext in der Meldung.
 
         Die Konten der Forderung werden vor der Transaktion aufgelöst (sie legt bei Bedarf Konten an – in eigenen
         Verbindungen, nie darin); eine abgelehnte Stornierung legt auch keines an. Das Dokument der Stornorechnung
         erzeugt der Aufrufer nach dem Commit. Returns :class:`Storno`."""
         if not is_iso_date(storno_date):
             return Storno(False, STORNO_DATE_MESSAGE, 400)
+        if storno_date > (today or _today()).isoformat():
+            return Storno(False, STORNO_DATE_FUTURE_MESSAGE, 400)
         # Vorprüfung ohne Schreibsperre: Abgelehnt wird vor dem Auflösen der Konten; die Prüfung in der Transaktion
         # (derselbe Aufruf) entscheidet endgültig
         conn = self._get_connection()
@@ -124,6 +146,11 @@ class InvoiceStornoMixin:
                 self._recalc_invoice(conn, storno_id, adjust_status=False)
         except _Refusal as refusal:
             return Storno(False, str(refusal), refusal.code)
+        except ForeignKeyError as exc:
+            # Ein Verweis der Rechnung (Bankkonto, Kunde, eigene Firma …) zeigt ins Leere, etwa nach einem Eingriff über
+            # die SQL-Konsole: Der Klartext nennt ihn, geschrieben ist nichts, die Nummer nicht verbraucht
+            print(f"Stornierung der Rechnung {invoice_id} nicht gespeichert: {exc}")
+            return Storno(False, f'{STORNO_FAILED_PREFIX}: {exc}', 409)
         except sqlite3.Error as exc:
             if isinstance(exc, sqlite3.IntegrityError) and 'CancelsInvoiceId' in str(exc):
                 # der eindeutige Index auf der Stornorechnung: ein gleichzeitiger zweiter Aufruf war schneller
@@ -159,7 +186,7 @@ class InvoiceStornoMixin:
         if status not in LOCKED_STATUSES:
             return f'Der Status „{status}“ ist unbekannt – die Rechnung lässt sich nicht stornieren.', 409
         if (row['SumGross'] or 0) <= 0:
-            return 'Eine Rechnung ohne positiven Betrag lässt sich nicht stornieren.', 409
+            return NO_POSITIVE_AMOUNT_MESSAGE, 409
         existing = conn.execute('SELECT ID, InvoiceNumber, InvoiceDate FROM Invoices WHERE CancelsInvoiceId = ?',
                                 (row['ID'],)).fetchone()
         if existing:

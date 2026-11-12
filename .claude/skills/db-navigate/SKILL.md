@@ -29,7 +29,7 @@ Kontext bei moderatem Token-Einsatz. NIE alle Module gleichzeitig laden.
 | `assets.py` | Anlagen, Kategorien, AfA-Plan/-Buchung |
 | `contacts.py` | Kontakte (normalisiert), Adressen, Personen/Firmen |
 | `invoices.py` | Rechnungen, Positionen, Zahlungen, überfällig/fällig, Forderungsbuchung (`_book_receivable`, `_receivable_removal`), Entwurf löschen, Angebot → Rechnung |
-| `invoice_lock.py` | Sperre versendeter Rechnungen (`update_invoice_fields`, `check_changes`, `row_group`: die Stornorechnung ist ganz gesperrt) und Statusübergänge (`set_invoice_status`, `TRANSITIONS` – kein Übergang nach „storniert“; Status, Forderung und Fassungen in einer Transaktion) |
+| `invoice_lock.py` | Sperre versendeter Rechnungen (`update_invoice_fields`, `check_changes`, `row_group`: die Stornorechnung ist ganz gesperrt) und Statusübergänge (`set_invoice_status`, `TRANSITIONS` – nach „storniert“ nur bei Brutto ≤ 0 (`NO_POSITIVE`), sonst `cancel_invoice`; Status, Forderung und Fassungen in einer Transaktion) |
 | `invoice_versions.py` | Berichtigen (`correct_invoice`), Fassungen (`InvoiceDocumentVersions`, `_archive_documents`) und Protokoll (`InvoiceCorrections`, `get_invoice_protocol`), `was_sent_before`, Hinweis der berichtigten Fassung (`correction_notice`), `is_iso_date` |
 | `invoice_storno.py` | Stornorechnung (`cancel_invoice`: Beleg, negierte Positionen, Gegenbuchung der Forderung in einer Transaktion; `find_storno_invoice`, `find_cancelled_invoice`) |
 | `numbering.py` | Nummernkreise (Rechnungsnummern etc.; `allocate_invoice_number`, `release_invoice_number`, `number_format_error`) |

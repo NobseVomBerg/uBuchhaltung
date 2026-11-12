@@ -14,8 +14,9 @@
 * Die Übergangstabelle (``TRANSITIONS``) ist vollständig geprüft – jedes Paar, mit und ohne Zahlung –
   und die Folgen eines Übergangs: Versenden bucht die Forderung und erzeugt das Dokument, versendet ↔
   überfällig bucht und erzeugt nichts (auch bei einer Rechnung ohne Forderung der App, wie ein
-  Import sie hinterlässt). Auf „storniert“ setzt kein Übergang: Das ist ``cancel_invoice``
-  (test_invoice_storno.py).
+  Import sie hinterlässt). Auf „storniert“ setzt der Status nur eine Rechnung ohne positiven Betrag
+  (Gutschrift, 0-€-Rechnung – Art ``cancel``, entschieden am gespeicherten Betrag); für jede andere ist das
+  ``cancel_invoice`` (test_invoice_storno.py).
 * Zwei gleichzeitige Anfragen laufen nacheinander: Prüfen und Schreiben sehen denselben Stand.
 
 Alle Namen, Adressen und Nummern sind erfundene Testwerte.
@@ -27,6 +28,7 @@ import os
 import re
 import sqlite3
 import threading
+from decimal import Decimal
 from html import unescape
 from itertools import product
 
@@ -36,13 +38,14 @@ import server.handlers as handlers
 import userctx
 from db.invoice_lock import (CANCEL_VIA_STORNO_MESSAGE, CHANGED_MESSAGE, CLOSED_MESSAGE, InvoiceLocked,
                              LOCKED_MESSAGE, LOCKED_PAID_HINT, LOCKED_UNPAID_HINT, NUMBER_KEPT_MESSAGE,
-                             STATUS_LABELS, allowed_targets, canonical_status, check_changes, status_group)
+                             STATUS_LABELS, allowed_targets, canonical_status, check_changes, check_transition,
+                             status_group)
 from export.invoice_files import generate_invoice_documents
 from server.pages_invoice import PageInvoice
 from tests.document_helpers import post_json, row, stored_documents
 from tests.dom_helpers import Dom
 from tests.invoice_world import (GROSS, add_payment, booking_count, build_world, columns, finance,
-                                 force_status, make_invoice, make_payload, save, save_raw,
+                                 force_status, make_invoice, make_payload, run_sql, save, save_raw,
                                  set_invoice_status, snapshot)
 
 LOCKED = ['sent', 'overdue', 'partial_payment', 'partial', 'paid']
@@ -559,8 +562,9 @@ def test_generating_still_overwrites_the_document_of_a_draft(world):
 
 # ── Die Übergangstabelle, vollständig ────────────────────────────────────────
 
-# (von, nach) -> Bedingung an die zugeordneten Zahlungen; was hier fehlt, ist verboten
-ANY, UNPAID, PAID = 'any', 'unpaid', 'paid'
+# (von, nach) -> Bedingung an die zugeordneten Zahlungen bzw. den Betrag; was hier fehlt, ist verboten.
+# „Storniert“ von Hand (NOPOS) nur für eine Rechnung, deren gespeicherter Betrag nicht positiv ist
+ANY, UNPAID, PAID, NOPOS = 'any', 'unpaid', 'paid', 'no_positive'
 ALLOWED = {
     ('draft', 'finalized'): ANY, ('finalized', 'draft'): ANY,
     ('draft', 'sent'): ANY, ('finalized', 'sent'): ANY,
@@ -568,32 +572,36 @@ ALLOWED = {
     ('sent', 'draft'): UNPAID, ('sent', 'finalized'): UNPAID,
     ('overdue', 'draft'): UNPAID, ('overdue', 'finalized'): UNPAID,
     ('sent', 'paid'): PAID, ('overdue', 'paid'): PAID, ('partial_payment', 'paid'): PAID,
+    ('sent', 'cancelled'): NOPOS, ('overdue', 'cancelled'): NOPOS,
+    ('partial_payment', 'cancelled'): NOPOS, ('paid', 'cancelled'): NOPOS,
     ('partial_payment', 'sent'): UNPAID, ('partial_payment', 'overdue'): UNPAID,
     ('paid', 'sent'): UNPAID, ('paid', 'overdue'): UNPAID,
     ('cancelled', 'sent'): ANY, ('cancelled', 'overdue'): ANY,
 }
 
 
-def expected_to_pass(old, new, payments):
+def expected_to_pass(old, new, payments, gross=GROSS):
     old, new = canonical_status(old), canonical_status(new)
     if old == new:
         return True
     condition = ALLOWED.get((old, new))
     return (condition == ANY or (condition == UNPAID and not payments)
-            or (condition == PAID and payments > 0))
+            or (condition == PAID and payments > 0) or (condition == NOPOS and gross <= 0))
 
 
+@pytest.mark.parametrize('gross', [GROSS, 0, -GROSS], ids=['positiv', 'null', 'negativ'])
 @pytest.mark.parametrize('payments', [0, 1])
 @pytest.mark.parametrize('old, new', list(product(ALL_STATUSES + ['partial'], ALL_STATUSES)))
-def test_every_status_transition_follows_the_table(world, old, new, payments):
+def test_every_status_transition_follows_the_table(world, old, new, payments, gross):
     invoice_id = make_invoice(world, 'draft')
+    run_sql(world.db, 'UPDATE Invoices SET SumGross = ? WHERE ID = ?', gross, invoice_id)   # der gespeicherte Betrag zählt
     if payments:
         add_payment(world, invoice_id)
     force_status(world.db, invoice_id, old)
     before = snapshot(world.db)
     change = world.db.set_invoice_status(invoice_id, new)
     stored = columns(world.db, invoice_id)['Status']
-    if expected_to_pass(old, new, payments):
+    if expected_to_pass(old, new, payments, gross):
         assert change.ok is True and change.message is None and change.code == 200
         assert (change.old, change.new) == (canonical_status(old), new)
         assert stored == (old if canonical_status(old) == new else new)   # derselbe Status: nichts geschrieben
@@ -601,15 +609,29 @@ def test_every_status_transition_follows_the_table(world, old, new, payments):
         assert change.ok is False and change.message and change.code in (400, 409)
         assert stored == old                                              # nichts wurde geschrieben
         assert snapshot(world.db) == before
-        assert new not in allowed_targets(old, payments)
-    if expected_to_pass(old, new, payments) and canonical_status(old) != new:
-        assert new in allowed_targets(old, payments)
+        assert new not in allowed_targets(old, payments, gross=gross)
+    if expected_to_pass(old, new, payments, gross) and canonical_status(old) != new:
+        assert new in allowed_targets(old, payments, gross=gross)
 
 
+@pytest.mark.parametrize('gross', [None, GROSS, 0, -GROSS], ids=['ohne-Angabe', 'positiv', 'null', 'negativ'])
 @pytest.mark.parametrize('old, payments', list(product(ALL_STATUSES, [0, 1])))
-def test_the_status_select_offers_exactly_the_allowed_targets(old, payments):
-    offered = allowed_targets(old, payments)
-    assert offered == [new for new in STATUS_LABELS if new != old and expected_to_pass(old, new, payments)]
+def test_the_status_select_offers_exactly_the_allowed_targets(old, payments, gross):
+    offered = allowed_targets(old, payments, gross=gross)
+    amount = GROSS if gross is None else gross             # ohne Angabe gilt der Betrag als positiv
+    assert offered == [new for new in STATUS_LABELS if new != old and expected_to_pass(old, new, payments, amount)]
+
+
+@pytest.mark.parametrize('old', ['sent', 'overdue', 'partial_payment', 'paid'])
+@pytest.mark.parametrize('payments', [0, 1])
+def test_cancelled_is_allowed_from_every_locked_status_only_without_a_positive_amount(old, payments):
+    """Nur das Vorzeichen des Betrags zählt – in Minor Units wie in Euro; ohne Angabe gilt er als positiv."""
+    for positive in (None, 1, 1190000, Decimal('119.00'), Decimal('0.01')):
+        verdict = check_transition(old, 'cancelled', payments, gross=positive)
+        assert (verdict.kind, verdict.message, verdict.code) == (None, CANCEL_VIA_STORNO_MESSAGE, 409), positive
+    for not_positive in (0, -1, -1190000, Decimal('0.00'), Decimal('-119.00')):
+        verdict = check_transition(old, 'cancelled', payments, gross=not_positive)
+        assert (verdict.kind, verdict.message, verdict.code) == ('cancel', None, 200), not_positive
 
 
 def test_an_unknown_status_value_is_refused_and_an_unknown_current_status_is_locked(world):
@@ -728,8 +750,8 @@ def test_with_a_payment_there_is_no_way_back_and_the_receivable_stays(world):
 
 @pytest.mark.parametrize('status', ['sent', 'overdue', 'partial_payment', 'paid'])
 def test_the_status_never_cancels_an_invoice_any_more_that_is_the_credit_note(world, status):
-    """Storniert wird über „Stornieren“ (``cancel_invoice``), nicht über den Status: Der Klick auf „storniert“ wird
-    abgelehnt, nichts wird geschrieben, und die Auswahl bietet es nicht an."""
+    """Eine Rechnung mit positivem Betrag wird über „Stornieren“ (``cancel_invoice``) storniert, nicht über den
+    Status: Der Klick auf „storniert“ wird abgelehnt, nichts wird geschrieben, und die Auswahl bietet es nicht an."""
     invoice_id = make_invoice(world, 'finalized')
     set_invoice_status(invoice_id, 'sent')
     booking = world.db.insert_booking('2026-07-01', 50.0, booking_type='bank', account_id=world.bank)
@@ -968,18 +990,27 @@ def test_the_copy_form_of_a_sent_invoice_is_an_open_new_draft(world):
     assert dom.one('input', id='invoice_locked')['value'] == 'false'
 
 
-@pytest.mark.parametrize('status, payments, offered', [
-    ('draft', 0, ['draft', 'finalized', 'sent']),
-    ('finalized', 0, ['finalized', 'draft', 'sent']),
-    ('sent', 0, ['sent', 'draft', 'finalized', 'overdue']),
-    ('overdue', 0, ['overdue', 'draft', 'finalized', 'sent']),
-    ('sent', 1, ['sent', 'overdue', 'paid']),
-    ('partial_payment', 1, ['partial_payment', 'paid']),
-    ('paid', 1, ['paid']),
-    ('cancelled', 0, ['cancelled', 'sent', 'overdue']),
+@pytest.mark.parametrize('status, payments, gross, offered', [
+    ('draft', 0, GROSS, ['draft', 'finalized', 'sent']),
+    ('finalized', 0, GROSS, ['finalized', 'draft', 'sent']),
+    ('sent', 0, GROSS, ['sent', 'draft', 'finalized', 'overdue']),
+    ('overdue', 0, GROSS, ['overdue', 'draft', 'finalized', 'sent']),
+    ('sent', 1, GROSS, ['sent', 'overdue', 'paid']),
+    ('partial_payment', 1, GROSS, ['partial_payment', 'paid']),
+    ('paid', 1, GROSS, ['paid']),
+    ('cancelled', 0, GROSS, ['cancelled', 'sent', 'overdue']),
+    # eine Rechnung ohne positiven Betrag (Gutschrift, 0-€-Rechnung) lässt sich über den Status stornieren
+    ('draft', 0, 0, ['draft', 'finalized', 'sent']),
+    ('sent', 0, 0, ['sent', 'draft', 'finalized', 'overdue', 'cancelled']),
+    ('overdue', 0, -GROSS, ['overdue', 'draft', 'finalized', 'sent', 'cancelled']),
+    ('sent', 1, 0, ['sent', 'overdue', 'paid', 'cancelled']),
+    ('partial_payment', 1, -GROSS, ['partial_payment', 'paid', 'cancelled']),
+    ('paid', 1, 0, ['paid', 'cancelled']),
+    ('cancelled', 0, -GROSS, ['cancelled', 'sent', 'overdue']),
 ])
-def test_the_status_select_offers_only_the_allowed_targets(world, status, payments, offered):
+def test_the_status_select_offers_only_the_allowed_targets(world, status, payments, gross, offered):
     invoice_id = make_invoice(world, 'draft')
+    run_sql(world.db, 'UPDATE Invoices SET SumGross = ? WHERE ID = ?', gross, invoice_id)
     if payments:
         add_payment(world, invoice_id)
     force_status(world.db, invoice_id, status)
