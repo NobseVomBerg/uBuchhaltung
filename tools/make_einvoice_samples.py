@@ -13,10 +13,14 @@ Ergebnis im Ausgabeordner:
                                          geändert): mit Hinweis als BT-22 (CII) und „Fassung: 2“ im PDF
 * ``zugferd-storno.pdf``                 – Stornorechnung zu einer versendeten Rechnung: Gutschrift (Typ 381) mit
                                          Bezug auf die Ursprungsrechnung (BT-25/BT-26) und Hinweis als BT-22
+* ``zugferd-ersatz.pdf``                 – Ersatzrechnung zu einer stornierten Rechnung (Rechnung versenden, stornieren,
+                                         neu ausstellen, versenden): Typ 380 mit dem Hinweis „Ersetzt die stornierte
+                                         Rechnung … (Stornorechnung …)“ als BT-22
 * ``xrechnung-normalfall.xml``          – UBL-XRechnung zur Normalfall-Rechnung
 * ``xrechnung-kleinunternehmer.xml``    – UBL-XRechnung zum Kleinunternehmer-Fall
 * ``xrechnung-berichtigt.xml``          – UBL-XRechnung zur berichtigten Fassung (``cbc:Note``)
 * ``xrechnung-storno.xml``              – UBL-``CreditNote`` zur Stornorechnung (``cac:BillingReference``)
+* ``xrechnung-ersatz.xml``              – UBL-XRechnung zur Ersatzrechnung (``cbc:Note``)
 
 Alles entsteht in einem temporären Datenverzeichnis; echte Daten werden nie angefasst.
 """
@@ -138,6 +142,33 @@ def _cancel_sample(db, invoice_id):
     return result, storno.storno_id
 
 
+def _replacement_sample(db, invoice_id):
+    """Die Rechnung versenden, stornieren, neu ausstellen und die neue Rechnung versenden – genau der Weg der
+    Oberfläche („Stornieren und neu ausstellen“, danach „Versenden“). Liefert das Ergebnis von
+    ``generate_invoice_documents`` für die Ersatzrechnung und deren ID."""
+    import datetime
+    from export.invoice_files import generate_invoice_documents
+    change = db.set_invoice_status(invoice_id, 'sent', 'demo')
+    if not change.ok:
+        sys.exit(f'ersatz: {change.message}')
+    original = generate_invoice_documents(db, invoice_id, overwrite_sent=True)
+    if original['error']:
+        sys.exit(f'ersatz (stornierte Rechnung): {original["error"]}')
+    storno = db.cancel_invoice(invoice_id, datetime.date.today().isoformat(), 'demo')
+    if not storno.ok:
+        sys.exit(f'ersatz (Stornierung): {storno.message}')
+    draft = db.create_replacement_draft(invoice_id, 'demo')
+    if not draft.ok:
+        sys.exit(f'ersatz (neu ausstellen): {draft.message}')
+    change = db.set_invoice_status(draft.invoice_id, 'sent', 'demo')
+    if not change.ok:
+        sys.exit(f'ersatz (Versand): {change.message}')
+    result = generate_invoice_documents(db, draft.invoice_id, overwrite_sent=True)
+    if result['error']:
+        sys.exit(f'ersatz (Ersatzrechnung): {result["error"]}')
+    return result, draft.invoice_id
+
+
 def _day_before(iso_date):
     import datetime
     return (datetime.date.fromisoformat(str(iso_date)[:10]) - datetime.timedelta(days=1)).isoformat()
@@ -178,6 +209,12 @@ def main(outdir):
     shutil.copyfile(result['pdf_path'], os.path.join(outdir, 'zugferd-storno.pdf'))
     inv, items = db.get_invoice_by_id(storno_id), db.get_invoice_items(storno_id)
     with open(os.path.join(outdir, 'xrechnung-storno.xml'), 'w', encoding='utf-8') as f:
+        f.write(XRechnungGenerator().generate_xml(inv, items, db=db))
+    replace_source = _clone_for_correction(db, normal[0], 'ER-DEMO-1')
+    result, replacement_id = _replacement_sample(db, replace_source)
+    shutil.copyfile(result['pdf_path'], os.path.join(outdir, 'zugferd-ersatz.pdf'))
+    inv, items = db.get_invoice_by_id(replacement_id), db.get_invoice_items(replacement_id)
+    with open(os.path.join(outdir, 'xrechnung-ersatz.xml'), 'w', encoding='utf-8') as f:
         f.write(XRechnungGenerator().generate_xml(inv, items, db=db))
     print('Beispiele in', outdir, sorted(os.listdir(outdir)))
 
