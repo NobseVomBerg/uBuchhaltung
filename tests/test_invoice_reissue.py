@@ -120,7 +120,9 @@ def payment_rows(db, invoice_number):
 REASON_IMPORT = 'Zuordnung aus einem Import'
 REASON_NO_SKR = 'das Bankkonto hat keine SKR-Nummer'
 REASON_OVERBOOKED = 'die Bankbewegung ist überbucht'
-REASON_EDITED = 'die Buchungssätze der Zahlung wurden von Hand geändert oder tragen einen Beleg'
+REASON_EDITED = 'die Buchungssätze der Zahlung wurden von Hand geändert oder ergänzt oder tragen einen Beleg'
+REASON_UNMARKED = 'die Buchungssätze der Zahlung stammen aus einer älteren Version oder wurden von Hand angelegt'
+REASON_REVENUE = 'das Erlöskonto der Zahlung ist nicht das heute für den Steuersatz hinterlegte'
 REASON_TAX_DATE = ('die Buchungssätze der Zahlung tragen ein anderes Steuerdatum als die Bankbewegung '
                    '(z. B. nach einem DATEV-Export)')
 REASON_MULTIPLE = 'die Bankbewegung ist mehrfach zugeordnet'
@@ -1286,6 +1288,70 @@ def test_an_unmarked_posting_under_the_movement_stays_as_it_is_and_the_payment_m
 
     assert code == 200 and body['hint'] == HINT_ALL
     assert allocations(db, s.r1) == [] and query_rows(db, 'SELECT * FROM Bookings WHERE ID = ?', extra) == before
+
+
+def test_the_whole_tax_of_the_invoice_on_a_part_payment_is_a_hand_change(world, monkeypatch):
+    """Die App gibt den Rest der Rechnungssteuer nur dem Teil, der die Rechnung schließt. Bei einer Teilzahlung auf eine
+    offene Rechnung ist „die ganze Steuer“ (19,00 statt anteilig 7,98) von Hand eingetragen – sie wird nicht überschrieben."""
+    s = partly_paid(world, monkeypatch)
+    edit_row(world.db, s.booking, 'transfer', TaxAmount=190000)
+    stays_untouched(s, not_moved(REASON_EDITED))
+    assert payment_rows(world.db, 'T-100')[-1][3] == 190000
+
+
+def _discount_row(db, s, **columns_):
+    """Ein von Hand ergänzter Satz ohne Marke unter der Bewegung (wie der Split-Editor ihn schreibt)."""
+    values = dict(coa_id=_coa(db, 4400), counter_coa_id=_coa(db, DEBTORS), document_number='T-100', text='Skonto')
+    values.update(columns_)
+    return db.insert_booking('2026-07-01', 2.38, booking_type='entry', parent_booking_id=s.booking, **values)
+
+
+@pytest.mark.parametrize('columns_', [
+    pytest.param({}, id='Skonto-an-Debitoren-mit-Beleg-Nr'),
+    pytest.param({'document_number': None}, id='an-Debitoren-ohne-Beleg-Nr'),
+    pytest.param({'counter_coa_id': None, 'coa_id': None}, id='nur-die-Beleg-Nr'),
+])
+def test_an_unmarked_posting_that_belongs_to_the_invoice_keeps_the_payment(world, monkeypatch, columns_):
+    """Ein ergänzter Satz, der zur Rechnung gehört (ihre Beleg-Nr.) oder die Debitoren berührt – ein Skonto „… an 10000“ –,
+    bliebe beim Umzug zurück: Die Ersatzrechnung zeigte einen offenen Rest, den es nicht gibt. Die Zahlung bleibt."""
+    s = partly_paid(world, monkeypatch)
+    values = dict(columns_)
+    if values.get('coa_id', 1) is None:
+        values.update(coa_id=_coa(world.db, 6815), counter_coa_id=_coa(world.db, 4400))
+    _discount_row(world.db, s, **values)
+    stays_untouched(s, not_moved(REASON_EDITED))
+
+
+def test_postings_without_the_mark_are_named_as_such_not_as_an_import(world, monkeypatch):
+    """Sätze einer älteren Version der App tragen die Beleg-Nr., aber keine Marke: Sie bleiben, und der Hinweis nennt das."""
+    s = partly_paid(world, monkeypatch)
+    run_sql(world.db, 'UPDATE Bookings SET Status = NULL WHERE ParentBooking_ID = ?', s.booking)
+    stays_untouched(s, not_moved(REASON_UNMARKED))
+
+
+def _taught_again(w, number='T-300'):
+    """Eine weitere Rechnung zu 19 % mit ihrer Zahlung: Ihr Satz ist der jüngste, er lehrt das Erlöskonto 4400."""
+    teacher = sent(w, number=number)
+    booking = w.db.insert_booking('2026-07-03', 20.0, booking_type='bank', account_id=w.bank, recipient_client=CUSTOMER_TEXT)
+    assert handlers.link_booking_to_invoice_capped(w.db, teacher, booking, 20.0)[0]
+
+
+def test_a_revenue_account_other_than_the_one_on_file_keeps_the_payment_at_the_same_tax_rate(world, monkeypatch):
+    """Liegt der Erlös der Zahlung auf einem anderen Erlöskonto als dem heute hinterlegten (von Hand auf 4300 geändert),
+    buchte der Umzug ihn im vergangenen Zeitraum um. Bei gleichem Steuersatz bleibt die Zahlung."""
+    s = partly_paid(world, monkeypatch)
+    _taught_again(world)
+    edit_row(world.db, s.booking, 'transfer', CounterCOA_ID=_coa(world.db, 4300))
+    stays_untouched(s, not_moved(REASON_REVENUE))
+
+
+def test_another_waiting_account_than_the_one_of_the_receivable_is_a_hand_change(world, monkeypatch):
+    """Das Wartekonto der Zahlung ist das der Forderung – ein anderes Wartekonto (4345) in derselben Rolle ist geändert."""
+    s = partly_paid(world, monkeypatch)
+    other = world.db._ensure_standard_coa(4345, 'Erlöse 7 % noch nicht vereinnahmt', 'Umsatzerlöse') \
+        if _coa(world.db, 4345) is None else _coa(world.db, 4345)
+    edit_row(world.db, s.booking, 'transfer', COA_ID=other)
+    stays_untouched(s, not_moved(REASON_EDITED))
 
 
 @pytest.mark.parametrize('movement', [50.0, 100.0], ids=['ohne-freien-Rest', 'mit-freiem-Rest'])
