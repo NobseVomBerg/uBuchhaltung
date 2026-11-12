@@ -124,8 +124,9 @@ kein Subagent darauf:
   Logik in `_post_action_routes`, im Frontend `appConfirmPost()`/`appPost()`
   statt eines Links. Mit eigener Antwort statt Weiterleitung: das Erzeugen von
   Dokumenten (`_GENERATE_PATHS`, JSON, CSRF-Token als Header – im Frontend
-  `fetch(url, {method: 'POST'})`, das Footer-JS hängt das Token an) und Abmelden
-  (`POST /logout` neben `/login` in `_auth_routes_*`); GET → jeweils 405
+  `fetch(url, {method: 'POST'})`, das Footer-JS hängt das Token an), Abmelden
+  (`POST /logout` neben `/login` in `_auth_routes_*`) und das Stornieren einer Rechnung
+  (`/invoice/cancel`: JSON-Route in `_JSON_PATHS`, dazu `_POST_ONLY_JSON_PATHS`); GET → jeweils 405
 - **Automatische Anmeldung** (`auto_login` in `config.json`, `auth.auto_login_user()`):
   ein Administrator wird ohne Passwort angemeldet, Anmeldeseite und andere Benutzer
   sind so lange abgeschaltet – das ist der Betrieb für eine Person. Es gibt dann
@@ -239,7 +240,9 @@ kein Subagent darauf:
   eine Zahlung (wie `is_bank_effective`). Spiegel: siehe Form
 - DATEV: Das Soll/Haben-Kennzeichen bezieht sich auf das Feld „Konto“ und folgt der Form
   (`soll_side`: steht bei positivem Betrag das Feld „Konto“ im Soll, ist es bei positivem Betrag S);
-  der BU-Schlüssel folgt der Richtung der Geldbewegung und dem exakten
+  der BU-Schlüssel folgt der Richtung der Geldbewegung – bei einer Umbuchung (`transfer`) mit Erlös-, Warte- oder
+  Debitorenkonto (4000–4999, 10000–69999) immer der Umsatzsteuer-Richtung, unabhängig vom Vorzeichen (`_bu_direction`:
+  die Gegenbuchung einer Stornorechnung dreht so die Forderung zurück) – und dem exakten
   Steuersatz (19, 7, 16, 5 %; jeder andere Satz '0'). Die BU-Schlüssel sind fachlich noch
   nicht gegen einen echten Stapel geprüft (`docs/aufgaben.md`) – nicht als richtig voraussetzen
 - Zahlungskonten (`get_payment_coa_ids`): die SKR-Konten der eigenen Bank- und Kassenkonten –
@@ -315,9 +318,12 @@ kein Subagent darauf:
   Auto-Abgleichs setzt sie erst auf `resolved`, wenn die Summe der Sätze „… an 10000“ mit gleicher
   Beleg-Nr. den Forderungsbetrag erreicht; `unassign` setzt das zurück. Die Forderung geht mit der
   letzten Zahlung, wenn der Status der Rechnung kein Forderungsstatus ist (`RECEIVABLE_STATUSES`, z. B.
-  storniert) – gleicher Endzustand, egal ob erst storniert oder erst entfernt wird; **entfernt wird nur die
-  Forderung, die die App selbst gebucht hat** (`_receivable_removal`: ohne `SourceGroup`, Wartekonto als
-  Gegenkonto, keiner Bankbewegung zugeordnet), nie eine importierte oder von Hand gebuchte.
+  eine von Hand stornierte Rechnung: Altbestand oder ohne positiven Betrag) – gleicher Endzustand, egal ob erst storniert oder erst
+  entfernt wird; **entfernt wird nur die Forderung, die die App selbst gebucht hat** (`_receivable_removal`:
+  ohne `SourceGroup`, Wartekonto als Gegenkonto, keiner Bankbewegung zugeordnet), nie eine importierte oder von
+  Hand gebuchte. **Ausnahme Storno-Paar:** Hat die Rechnung eine Stornorechnung (oder ist sie eine), bleiben die
+  Forderung der Ursprungsrechnung und die Gegenbuchung der Stornorechnung in jedem Fall stehen
+  (`_drop_receivable`, auch für `remove_receivable_booking`) – was mit den Zahlungen geschieht, ändert daran nichts.
   Negative Zuordnungen kennt nur der WISO-Import (`link_invoice_to_transaction`, mit Vorzeichen, ohne
   Sätze). `find_payment_inconsistencies` prüft nur lesend und linear im Bestand (Seite *Verschiedenes*:
   nur auf Klick, `?check_payments=1`, nie beim Laden; Hinweis auf der Rechnungsseite); Zuordnungen auf
@@ -509,8 +515,7 @@ kein Subagent darauf:
 - **Erzeugt** wird nur an zwei Stellen: über „PDF + E-Rechnung“ im Formular und
   automatisch beim Wechsel von Entwurf/abgeschlossen auf Status **versendet** (ab da ist die Rechnung
   eingefroren). Eine bereits versendete Rechnung wird nicht überschrieben; versendet ↔ überfällig erzeugt nichts
-- **Sperre versendeter Rechnungen** (`db/invoice_lock.py`, seit 2.1.2) – **Zwischenstand** bis zum Stornobeleg
-  (`docs/aufgaben.md`). Eine Stelle entscheidet
+- **Sperre versendeter Rechnungen** (`db/invoice_lock.py`, seit 2.1.2). Eine Stelle entscheidet
   (`check_changes`, Statusgruppen), und jeder Schreibweg auf eine Rechnung geht darüber: das Speichern
   (`Database.update_invoice_fields`, bei einer versendeten Rechnung nur aus `correct_invoice`) und der
   Statuswechsel (`Database.set_invoice_status`) – nie
@@ -519,8 +524,9 @@ kein Subagent darauf:
   Kunde, eigene Firma, Positionen, Steuer, Summen, Fälligkeit, Skonto, Bank, Währung und Käufer-USt-IdNr.
   gesperrt: `/invoice/save` antwortet mit **409** und einem Klartext, nichts der Anfrage wird geschrieben.
   Änderbar bleiben der Zahlungshinweis (`PaymentTerms`, der Text unter den Positionen), die Anschrift,
-  Bestellnummer, Leitweg-ID und Leistungsdatum – aber nur als **Berichtigung** (siehe dort). `cancelled`: gar
-  nichts mehr. Geprüft wird gegen den gespeicherten Stand **in der Transaktion** (`BEGIN IMMEDIATE`, das
+  Bestellnummer, Leitweg-ID und Leistungsdatum – aber nur als **Berichtigung** (siehe dort). `cancelled` und
+  die Stornorechnung (`row_group`: `InvoiceKind='storno'` gilt als abgeschlossen, gleich welchen Status sie trägt):
+  gar nichts mehr. Geprüft wird gegen den gespeicherten Stand **in der Transaktion** (`BEGIN IMMEDIATE`, das
   `UPDATE` trägt die Statusgruppe im `WHERE`): zwei gleichzeitige Anfragen laufen nacheinander. Was das
   Formular unverändert zurückschickt, ist kein Verstoß (Beträge in Minor Units, Positionen Feld für Feld,
   Einheiten wie `unit_display` sie zeigt, Steuersatz 0,19 = 19). **Die Maske überschreibt bei einer
@@ -570,9 +576,16 @@ kein Subagent darauf:
   bezahlt/Teilzahlung nach versendet/überfällig von Hand nur ohne Zahlung (verwaister Zustand).
   Versendet/überfällig → Entwurf/abgeschlossen („zurückholen“) nur ohne Zahlung; die Forderung wird entfernt
   und die versendeten Dokumente wandern nach „Fassungen“ (siehe dort).
-  → storniert von Hand aus versendet/überfällig/Teilzahlung/bezahlt, mit dem bisherigen Buchungsverhalten
-  (die Forderung bleibt, solange eine Zahlung daran hängt) – bis zum Stornobeleg. Storniert → versendet/
-  überfällig bucht die Forderung neu und lässt ein vorhandenes Dokument stehen.
+  **Nach „storniert“ geht der Status nur für eine Rechnung ohne positiven Betrag** (Brutto ≤ 0: selbst angelegte Gutschrift,
+  0-€-Rechnung – sie bekommt keine Stornorechnung), mit dem bisherigen Buchungsverhalten (Art `cancel`: die Forderung geht,
+  solange keine Zahlung daran hängt und nur die der App). Das entscheidet `check_transition` am Betrag, den
+  `set_invoice_status` in der Transaktion liest (Bedingung `NO_POSITIVE` in `TRANSITIONS`; `check_transition` und
+  `allowed_targets` nehmen ihn als `gross`, ohne Angabe gilt er als positiv). Für Brutto > 0 lehnt
+  `set_invoice_status(…, 'cancelled')` mit 409 ab: Storniert wird über „Stornieren“ (Absatz *Stornobeleg*); die Seite zeigt den
+  Knopf nur bei Brutto > 0 und „Storniert“ in der Statusauswahl nur bei Brutto ≤ 0. Storniert → versendet/
+  überfällig („wiederbeleben“) gibt es nur für eine stornierte Rechnung **ohne** Stornorechnung (Altbestand,
+  Import, von Hand storniert): bucht die Forderung neu und lässt ein vorhandenes Dokument stehen; mit Stornorechnung 409 – sie bleibt
+  storniert. Die Stornorechnung selbst ändert ihren Status nie (409).
   **Status, Forderungsbuchung und (beim Zurückholen) das Ablegen der Dokumente laufen in EINER Transaktion**
   (`set_invoice_status`, `BEGIN IMMEDIATE` von der Prüfung bis zum Commit): Sie gelingen gemeinsam oder gar nicht;
   nur das Erzeugen des Dokuments beim Versenden folgt danach (`handle_update_invoice_status`). **Jeder gelungene
@@ -581,10 +594,52 @@ kein Subagent darauf:
   lassen es NULL). Konten, die
   das Buchen anlegen könnte, werden vorher in eigenen Verbindungen aufgelöst (`_receivable_accounts`), nie
   innerhalb. **Die App entfernt nur die Forderung, die sie selbst gebucht hat** (`_receivable_removal`: ohne
-  `SourceGroup`, Wartekonto als Gegenkonto, keiner Bankbewegung zugeordnet) – beim Zurückholen, beim Storno von
-  Hand und beim Entfernen der letzten Zahlung (`_drop_receivable`): nie ein Satz mit Quellklammer. Hängt an der
-  Rechnung eine importierte, von Hand gebuchte oder an eine Bankbewegung gehängte Forderung oder ein Zahlungssatz,
-  lehnt das Zurückholen mit Klartext ab (409, nichts geändert); Storno und Zahlungsentfernen lassen sie stehen
+  `SourceGroup`, Wartekonto als Gegenkonto, keiner Bankbewegung zugeordnet) – beim Zurückholen, beim Storno von Hand
+  (Brutto ≤ 0) und beim Entfernen der letzten Zahlung einer von Hand stornierten Rechnung (`_drop_receivable`): nie ein
+  Satz mit Quellklammer. Hängt an der Rechnung eine importierte, von Hand gebuchte oder an eine Bankbewegung gehängte
+  Forderung oder ein Zahlungssatz, lehnt das Zurückholen mit Klartext ab (409, nichts geändert); Stornieren, Storno von
+  Hand und Zahlungsentfernen lassen sie stehen
+- **Stornobeleg** (`Database.cancel_invoice`, `db/invoice_storno.py`, seit 2.2.1; `POST /invoice/cancel`, JSON
+  `{"invoiceId", "date"}` – `invoiceId` streng als Ganzzahl wie bei `/invoice/save` –, Route in `_JSON_PATHS` und
+  `_POST_ONLY_JSON_PATHS`: CSRF-Token und Herkunft wie `/invoice/status`, GET → 405): Eine versendete Rechnung
+  (versendet/überfällig/Teilzahlung/bezahlt) wird über den Knopf „Stornieren …“ storniert, mit Rückfrage und Stornodatum
+  (vorbelegt mit heute, nicht vor dem Rechnungsdatum und nicht nach heute; `appConfirm` hat dafür ein optionales Datumsfeld
+  mit `min`/`max`) – der Knopf erscheint nur bei Brutto > 0, eine Rechnung ohne positiven Betrag wird über den Status
+  storniert (*Statusübergänge*). Es entsteht ein
+  eigener Beleg, die **Stornorechnung**: Nummer aus dem Rechnungskreis des **Jahres des Stornodatums**
+  (`allocate_invoice_number`), Kopf der Ursprungsrechnung (Anschrift-Momentaufnahme, Leistungsdatum, Bank, Steuer, Leitweg-ID …)
+  ohne Fälligkeit und Skonto, `PaymentTerms` = „Der Betrag wird verrechnet bzw. erstattet.“ (`STORNO_PAYMENT_TEXT`),
+  `InvoiceKind='storno'`, `CancelsInvoiceId`, Status `sent` mit `SentAt`, **Summen exakt negiert** (Minor Units mal −1,
+  nichts neu gerechnet), Positionen mit negativer Menge und positivem Einzelpreis, `AmountDue` = ihr (negatives) Brutto.
+  Die Ursprungsrechnung wird `cancelled`. Alles in EINER Transaktion (`BEGIN IMMEDIATE`: Prüfung, Nummer, Beleg, Positionen,
+  Status, je eine Protokollzeile für beide Belege, Gegenbuchung, Neuberechnung) – ganz oder gar nicht, nach einem Fehler ist
+  keine Nummer verbraucht; die Konten der Forderung löst sie vorher in eigenen Verbindungen auf, aber erst, wenn die Rechnung
+  sich stornieren lässt. Abgelehnt wird mit Klartext und Statuscode, nichts geschrieben: Stornodatum kein ISO-Datum, vor
+  dem Rechnungsdatum oder **in der Zukunft** (400; maßgeblich ist `_today()`, das Ortsdatum des Servers – sonst legte ein
+  Tippfehler wie 2062 einen Nummernkreis 2062 an; nur die Demodaten übergeben ihr Szenariodatum als `today`), unbekannte ID oder
+  Angebot (404), Stornorechnung, Entwurf/abgeschlossen, schon storniert, unbekannter Status, Brutto ≤ 0, schon eine
+  Stornorechnung (409; der eindeutige Index auf `CancelsInvoiceId` fängt es zusätzlich ab); scheitert das Speichern an einem
+  Verweis ins Leere (`ForeignKeyError`, etwa ein gelöschtes Bankkonto), nennt die Meldung ihn im Klartext (409, nichts
+  „repariert“). **Die Forderung wird nie gelöscht:** Hat die App sie gebucht (`_is_app_receivable`, dieselbe Einordnung
+  wie in `_receivable_removal`, nur dass es nicht zählt, ob sie an einer Bankbewegung hängt), bucht die Stornierung die
+  **Gegenbuchung** („Debitoren an Wartekonto“ über `_book_receivable`, Form `transfer`, negativer Betrag und negative Steuer,
+  Datum und Beleg-Nr. der Stornorechnung – für `receivable_condition` die Forderung einer Gutschrift); sonst (Import,
+  Steuersatz ohne Wartekonto, importierte oder von Hand gebuchte Forderung) keine, und die Antwort trägt einen `hint`. Zahlungen
+  bleiben an der stornierten Rechnung (Zahlung zur neuen Rechnung, Erstattung, Guthaben-Anzeige: `docs/aufgaben.md`);
+  **der Stornorechnung lässt sich keine Zahlung zuordnen** (`payment_blocker`, `assign_invoice_payment`,
+  `link_invoice_to_transaction`; sie ist nie Kandidat, nie offener oder überfälliger Posten), und die Zahlungslogik ändert
+  ihren Status nie. **Die Stornorechnung ist ganz gesperrt:** Status (409), Speichern, Berichtigen, Löschen, Kopieren – jede
+  Abweichung wird mit „Stornorechnung: Sie lässt sich nicht ändern.“ abgelehnt, unverändertes Speichern ändert nichts. Ihre
+  Seite ist schreibgeschützt und nennt die Ursprungsrechnung (Link); die Seite der stornierten Rechnung nennt die
+  Stornorechnung. In der Rechnungsliste trägt die Stornorechnung statt des Status „Stornorechnung“, zeigt negative Beträge
+  und zählt in keiner Summe der Statistik mit. **Dokument:** Typ 381 – CII mit `ram:InvoiceReferencedDocument` (BT-25/BT-26)
+  und BT-22 „Storno zu Rechnung … vom …“, UBL als `CreditNote` mit `cac:BillingReference`, `cbc:CreditedQuantity` und ohne
+  `cbc:DueDate` (derselbe Code wie die Rechnung, `export/xrechnung_invoice.py`); im XML stehen die Beträge **positiv** (das
+  Modell negiert genau einmal), das PDF zeigt die gespeicherten negativen Beträge mit dem Titel „Stornorechnung“ und „zu
+  Rechnung Nr. … vom …“; sie trägt nie den Berichtigungs-Hinweis. Das Dokument der Ursprungsrechnung bleibt unangetastet.
+  Erzeugt wird es nach dem Commit (`handle_invoice_cancel`; ein Fehler dabei lässt die Stornierung stehen, die Antwort trägt
+  eine `warning`, „PDF + E-Rechnung“ erzeugt die Datei nach). Der E-Mail-Versand nennt sie „Stornorechnung“ und fordert nichts
+  an
 - **Rechnungsnummer beim ersten Speichern** (`allocate_invoice_number`, `release_invoice_number`,
   `peek_next_number` in `db/numbering.py`): Die Nummer wird in der Transaktion des Speicherns vergeben – auch
   als Entwurf, bei Angebot → Rechnung ebenso –, der Zähler rückt dort vor (`UPDATE` + `SELECT` in der
@@ -694,7 +749,8 @@ kein Subagent darauf:
   `SCHEMA_STEP` und `PATCH` auf 0
 - Migration auf 2.2.0 (`INVOICE_VERSIONS_SCHEMA`, Schema 2002): hängt `Invoices` fünf Spalten an (`InvoiceKind`,
   `CancelsInvoiceId`, `ReplacesInvoiceId`, `SentAt`, `DocumentVersion`; die ersten drei sind für den Stornobeleg
-  angelegt und noch ungenutzt) und legt `InvoiceCorrections`, `InvoiceDocumentVersions` und den eindeutigen Index
+  angelegt – `InvoiceKind` und `CancelsInvoiceId` nutzt er seit 2.2.1 ohne Schemaänderung, `ReplacesInvoiceId` ist noch
+  ungenutzt) und legt `InvoiceCorrections`, `InvoiceDocumentVersions` und den eindeutigen Index
   auf `CancelsInvoiceId` an – ebenfalls nach der Sicherung und in einer Transaktion. Der Bestand behält überall
   NULL (`DocumentVersion` NULL = Fassung 1), nichts wird umgedeutet. Frische und migrierte Datenbank haben dieselbe
   Spaltenreihenfolge (`InvoiceCol`, Index 50–54). Die beiden neuen Tabellen haben bewusst keinen Fremdschlüssel:

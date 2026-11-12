@@ -12,6 +12,11 @@ Beträge sind durchgehend ganzzahlige Minor Units (:mod:`money`), nie float. Die
 Steueraufschlüsselung ist eine Liste (Vorbereitung für gemischte Steuersätze);
 Summen werden aus den Positionen abgeleitet und sind damit exakt konsistent
 (BR-CO-10 … BR-CO-16).
+
+Eine Stornorechnung (``Invoices.InvoiceKind = 'storno'``) ist eine Gutschrift (Typ 381) mit Bezug auf die
+Ursprungsrechnung (BT-25/BT-26). Die Datenbank führt sie mit negativer Menge und negativen Summen (so zeigt sie das
+PDF); im Modell – und damit in CII und UBL – stehen die Beträge positiv, wie EN 16931 es für 381 verlangt: Das Modell
+negiert Mengen, Zeilen-, Steuer- und Gesamtsummen genau einmal.
 """
 import re
 from dataclasses import dataclass, field
@@ -19,6 +24,7 @@ from datetime import date
 from decimal import Decimal
 from typing import List, Optional
 
+from db.invoice_lock import STORNO_KIND
 from money import multiply, round_minor, tax_from_net, to_minor
 
 # Spaltenindizes der Invoices-Zeile (``SELECT *``), siehe db/schema.py
@@ -31,7 +37,7 @@ _INV = dict(
     buyer_route_id=22, order_number=23, currency=24, delivery_date=25,
     payment_terms=26, payment_due_date=27, bank_name=31, bank_iban=32,
     bank_bic=33, tax_category=34, tax_rate=35, sum_net=36, tax_amount=37,
-    sum_gross=38, amount_due=39, document_version=54,
+    sum_gross=38, amount_due=39, invoice_kind=50, cancels_invoice_id=51, document_version=54,
 )
 # Spaltenindizes der InvoiceItems-Zeile
 _ITM = dict(position=2, description=4, quantity=5, unit=6, price=7, total_net=8,
@@ -180,7 +186,7 @@ class Totals:
 class EInvoice:
     number: str
     issue_date: date
-    type_code: str                       # 380 = Rechnung
+    type_code: str                       # 380 = Rechnung, 381 = Gutschrift (Stornorechnung)
     currency: str
     seller: Party
     buyer: Party
@@ -196,6 +202,8 @@ class EInvoice:
     iban: str = ''
     bic: str = ''
     notes: List[str] = field(default_factory=list)     # BT-22: Freitext zur Rechnung (Hinweis einer Berichtigung)
+    preceding_invoice_number: str = ''                 # BT-25: Nummer der Ursprungsrechnung (Stornorechnung)
+    preceding_invoice_date: Optional[date] = None      # BT-26: deren Rechnungsdatum
     warnings: List[str] = field(default_factory=list)
 
     @property
@@ -232,6 +240,13 @@ def correction_notice(db, invoice):
     return db.correction_notice(invoice[_INV['id']])
 
 
+def storno_note_text(number, day) -> str:
+    """Der Hinweis einer Stornorechnung im Klartext (BT-22): „Storno zu Rechnung R26001 vom 15.01.2026“; ohne
+    bekanntes Datum der Ursprungsrechnung entfällt „vom …“."""
+    text = f'Storno zu Rechnung {number}'
+    return f'{text} vom {_german_date(day)}' if day else text
+
+
 def _party(name, street, postal, city, country, vat_id='', email='', phone='',
            contact='', tax_number=''):
     return Party(name=_text(name), street=_text(street), postal_code=_text(postal),
@@ -261,13 +276,16 @@ def build_einvoice(db, invoice, items) -> EInvoice:
     # Sentinel -1 = Kleinunternehmer (§ 19 UStG): keine Umsatzsteuer
     exempt = raw_rate is not None and Decimal(str(raw_rate)) < 0
     default_rate = Decimal('0') if exempt else rate_to_pct(raw_rate, Decimal('19'))
+    # Stornorechnung: gespeichert negativ, im Modell (CII/UBL, Typ 381) positiv – einmal negiert, hier
+    storno = col('invoice_kind') == STORNO_KIND
+    sign = -1 if storno else 1
 
     lines: List[Line] = []
     unknown_units: List[str] = []
     for it in items:
-        qty = Decimal(str(it[_ITM['quantity']] if it[_ITM['quantity']] is not None else 1))
+        qty = Decimal(str(it[_ITM['quantity']] if it[_ITM['quantity']] is not None else 1)) * sign
         price = to_minor(it[_ITM['price']] or 0)
-        net = to_minor(it[_ITM['total_net']] or 0)
+        net = to_minor(it[_ITM['total_net']] or 0) * sign
         if exempt:
             category, rate = 'E', Decimal('0')
         else:
@@ -310,7 +328,7 @@ def build_einvoice(db, invoice, items) -> EInvoice:
     for label, stored, derived in (('Netto', col('sum_net'), line_total),
                                    ('Steuer', col('tax_amount'), tax_total),
                                    ('Brutto', col('sum_gross'), grand)):
-        if stored is not None and to_minor(stored) != derived:
+        if stored is not None and to_minor(stored) * sign != derived:
             warnings.append(f'{label} gespeichert {stored} ≠ aus Positionen {derived}')
 
     # Kontakt-Fallbacks (E-Mail/Steuernummer der Beteiligten)
@@ -347,11 +365,22 @@ def build_einvoice(db, invoice, items) -> EInvoice:
                    col('buyer_country'), vat_id=col('buyer_vat_id') or '',
                    email=buyer_email, contact=col('buyer_name'))
 
-    notice = correction_notice(db, invoice)
+    preceding_number, preceding_date, notes = '', None, []
+    if storno:
+        # Bezug auf die Ursprungsrechnung (BT-25/BT-26) und der Hinweis dazu (BT-22); eine Stornorechnung trägt nie
+        # den Hinweis einer Berichtigung
+        original = db.get_invoice_by_id(col('cancels_invoice_id')) if db is not None and col('cancels_invoice_id') else None
+        if original is not None:
+            preceding_number = _text(original[_INV['number']])
+            preceding_date = _iso_date(original[_INV['date']])
+            notes = [storno_note_text(preceding_number, preceding_date)]
+    else:
+        notice = correction_notice(db, invoice)
+        notes = [correction_note_text(notice)] if notice else []
     return EInvoice(
         number=_text(col('number')) or 'DRAFT',
         issue_date=_iso_date(col('date')) or date.today(),
-        type_code='380',
+        type_code='381' if storno else '380',
         currency=_text(col('currency')) or 'EUR',
         seller=seller, buyer=buyer, lines=lines, tax_breakdown=breakdown,
         totals=totals,
@@ -363,5 +392,5 @@ def build_einvoice(db, invoice, items) -> EInvoice:
         bank_name=_text(col('bank_name')),
         iban=_text(col('bank_iban')).replace(' ', ''),
         bic=_text(col('bank_bic')).replace(' ', ''),
-        notes=[correction_note_text(notice)] if notice else [],
+        notes=notes, preceding_invoice_number=preceding_number, preceding_invoice_date=preceding_date,
         warnings=warnings)

@@ -107,8 +107,8 @@ def test_draft_invoice_has_no_open_item(tmp_db, monkeypatch):
 
 
 def test_open_item_survives_when_payment_exists(tmp_db, monkeypatch):
-    """Storno nach Zahlung räumt die Forderung nicht weg – das entscheidet
-    der Nutzer, sonst verschwände ein bereits exportierter Beleg."""
+    """Storno nach Zahlung räumt die Forderung nicht weg – sonst verschwände ein bereits exportierter
+    Beleg. Die Stornorechnung bucht die Gegenbuchung dazu (``test_invoice_storno.py``)."""
     inv = _invoice(tmp_db, 'R-OP4', gross=119.00)
     _set_status(tmp_db, inv, 'sent', monkeypatch)
     acct = _bank_account(tmp_db)
@@ -117,7 +117,7 @@ def test_open_item_survives_when_payment_exists(tmp_db, monkeypatch):
     ok, err = link_booking_to_invoice_capped(tmp_db, inv, bk)
     assert ok, err
 
-    _set_status(tmp_db, inv, 'cancelled', monkeypatch)
+    assert tmp_db.cancel_invoice(inv, '2026-02-15').ok
     assert tmp_db.get_receivable_booking(inv) is not None
 
 

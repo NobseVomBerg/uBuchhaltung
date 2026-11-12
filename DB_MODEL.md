@@ -396,8 +396,14 @@ aber nur, solange keine Zahlung daran hängt, und nur die Forderung, die die App
 hat (ohne `SourceGroup`, Wartekonto als Gegenkonto, keiner Bankbewegung zugeordnet:
 `_receivable_removal`); eine importierte oder von Hand gebuchte bleibt immer stehen.
 Der Statuswechsel einer Rechnung (`Database.set_invoice_status`) bucht und entfernt die
-Forderung in derselben Transaktion wie den Status: Beim Versenden und Reaktivieren wird sie
-gebucht, beim Zurückholen auf Entwurf (nur ohne Zahlung) und beim Stornieren von Hand entfernt.
+Forderung in derselben Transaktion wie den Status: Beim Versenden und Reaktivieren (nur eine
+stornierte Rechnung ohne Stornorechnung) wird sie gebucht, beim Zurückholen auf Entwurf (nur ohne
+Zahlung) entfernt. Auf „storniert“ setzt der Status nur eine Rechnung ohne positiven Betrag (Gutschrift,
+0-€-Rechnung – sie bekommt keine Stornorechnung): Die Forderung der App geht mit, solange keine Zahlung daran hängt.
+Für jede andere ist das `cancel_invoice` (Abschnitt 9b) – es löscht die Forderung nie, sondern bucht ihre
+Gegenbuchung. Bei einem Storno-Paar (Rechnung mit
+Stornorechnung und die Stornorechnung selbst) entfernen weder `remove_receivable_booking` noch das
+Entfernen der letzten Zahlung etwas (`_drop_receivable`).
 Hängt an einer Rechnung eine Forderung, die die App nicht entfernen darf, lässt sie sich nicht
 auf Entwurf zurückholen (Klartext, nichts geändert). Beim Zurückholen wandern PDF und XML in
 `invoices/<Jahr>/Fassungen/<ID>/`; der Ordner gilt als „war schon versendet“, die Rechnungsnummer
@@ -422,7 +428,9 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
   (`sent`, `overdue`, `partial_payment`; `PAYABLE_STATUSES`) mit positivem Brutto; das Bankkonto der
   Bewegung braucht eine SKR-Nummer; das Paar (Rechnung, Bewegung) gibt es höchstens einmal. Negative
   Zuordnungen (Storno, Gutschrift) kennt nur der WISO-Import (`link_invoice_to_transaction`, mit
-  Vorzeichen und ohne eigene Sätze).
+  Vorzeichen und ohne eigene Sätze). Einer **Stornorechnung** (`InvoiceKind='storno'`) lässt sich nie eine
+  Zahlung zuordnen (`payment_blocker`; auch `link_invoice_to_transaction` lehnt ab), und sie ist nie ein
+  Kandidat für die Zuordnung.
 - **Betrag:** min(Rest der Rechnung, freier Rest der Bewegung, gewünschter Betrag); der gewünschte Betrag
   wird vorher auf Cent gerundet (halb auf, `118,995 → 119,00`; ≤ 0 nach dem Runden lehnt ab), sonst bliebe
   ein Bruchteil eines Cents auf dem Debitorenkonto stehen. Frei ist
@@ -469,13 +477,15 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
   neu. War es die letzte Zahlung und ist der Status der Rechnung kein Forderungsstatus
   (`RECEIVABLE_STATUSES`: versendet, Teilzahlung, überfällig, bezahlt – also etwa storniert), geht auch
   die Forderung (die die App selbst gebucht hat, nie ein Satz mit `SourceGroup`), wie beim Statuswechsel:
-  „erst stornieren, dann die Zahlung entfernen“ endet im selben Zustand wie die umgekehrte Reihenfolge. `delete_transaction` einer Bankbewegung nimmt ihre Sätze und
+  „erst von Hand stornieren, dann die Zahlung entfernen“ endet im selben Zustand wie die umgekehrte Reihenfolge –
+  nicht aber bei einer Rechnung mit Stornorechnung: Ihre Forderung und die Gegenbuchung bleiben stehen. `delete_transaction` einer Bankbewegung nimmt ihre Sätze und
   Zuordnungen mit; das Löschen eines markierten Satzes (auch im Split-Editor) entfernt die ganze
   Zuordnung.
 - **Status der Rechnung** (`next_payment_status`, vorzeichenbewusst für die WISO-Gutschrift): Zahlung in
   Höhe der Rechnung (Rest unter einem Cent) → `paid`, sonst `partial_payment`; ohne Zahlung wieder
   `overdue` (Fälligkeit überschritten) bzw. `sent` – nie zurück auf `finalized`, eine stornierte
-  Rechnung bleibt `cancelled`. Zahlungen lassen sich erst nach dem Versenden zuordnen.
+  Rechnung bleibt `cancelled`, und der Status einer Stornorechnung ändert sich nie. Zahlungen lassen sich
+  erst nach dem Versenden zuordnen.
 - **Die Forderung ist nie Kind einer Bankbewegung.** Der Auto-Abgleich (`link_bank_to_entries`,
   alle Stufen außer der Quellklammer 0) und die Kandidaten des Buchungssatz-Editors schließen sie aus;
   `delete_transaction` hängt eine als Kind vorgefundene Forderung ab, statt sie zu löschen. Die Regel
@@ -496,7 +506,7 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
   bankwirksame Erlössätze unter einer Bewegung, deren Beleg-Nr. eine Rechnungsnummer ist, ohne Zuordnung
   für das Paar – unabhängig vom Text), Zuordnung ≠ Umbuchung, Zuordnungen auf einen Satz oder einen
   Ausgang, doppelte Zuordnungen, versendete Rechnungen mit Status „Entwurf/abgeschlossen“ und einen Rest,
-  der nicht zu den Zuordnungen passt. Zuordnungen, deren Buchung keine Bankbewegung ist oder deren Sätze
+  der nicht zu den Zuordnungen passt (der Rest einer Stornorechnung ist ihr negativer Betrag: kein Befund). Zuordnungen, deren Buchung keine Bankbewegung ist oder deren Sätze
   eine `SourceGroup` tragen (WISO liefert seine Sätze selbst, z. B. Barzahlungen ohne Bankbewegung),
   lösen weder „Zuordnung ohne Ausgleichssatz“ noch „Zuordnung ≠ Umbuchung“ aus. Die Abfragen gehen von
   den Zuordnungen aus bzw. fassen je Rechnung vorab zusammen: Der Aufwand wächst linear mit dem Bestand
@@ -504,6 +514,44 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
   Seite *Verschiedenes* und läuft **nur auf Klick** („Zahlungszuordnungen prüfen“, `GET
   /miscellaneous?check_payments=1`), nicht bei jedem Laden der Seite; der Hinweis auf der Rechnungsseite
   prüft nur diese eine Rechnung.
+
+---
+
+### 9b. Stornorechnung (`cancel_invoice`, seit 2.2.1)
+
+Eine versendete Rechnung wird nicht über den Status storniert, sondern über „Stornieren“
+(`Database.cancel_invoice`, `db/invoice_storno.py`; Route `POST /invoice/cancel`). Ausnahme: Eine Rechnung ohne
+positiven Betrag (Brutto ≤ 0) bekommt keine Stornorechnung – sie lässt sich über den Status auf „storniert“ setzen
+(Abschnitt 9a). Das Stornodatum liegt nicht vor dem Rechnungsdatum und nicht in der Zukunft (nach dem Tag des Servers;
+ein Tippfehler legte sonst einen Nummernkreis 2062 an). Es entsteht ein eigener Beleg in `Invoices` (Abschnitt 12):
+
+- **Stornorechnung:** Nummer aus dem Rechnungskreis des Jahres des Stornodatums; Kopf der
+  Ursprungsrechnung (Anschrift-Momentaufnahme, Leistungsdatum, Bank, Steuer, Leitweg-ID) ohne
+  Fälligkeit und Skonto, `PaymentTerms` = „Der Betrag wird verrechnet bzw. erstattet.“,
+  `InvoiceKind='storno'`, `CancelsInvoiceId` = die Ursprungsrechnung, Status `sent` mit `SentAt`;
+  `SumNet`, `TaxAmount`, `SumGross` **exakt negiert** (Minor Units mal −1, nichts neu gerechnet),
+  `AmountDue` = ihr negatives Brutto. Positionen: dieselbe Reihenfolge, `Quantity` und `TotalNet`
+  negiert, `PricePerUnit` unverändert. Die Ursprungsrechnung wird `cancelled`; beide Belege bekommen eine
+  Protokollzeile (`Action='status'`).
+- **Gegenbuchung:** Hat die App die Forderung gebucht (ohne `SourceGroup`, Wartekonto als Gegenkonto – gleich,
+  ob sie an einer Bankbewegung hängt), entsteht „Debitoren an Wartekonto“ mit **negativem** Betrag und
+  negativer Steuer, Datum = Stornodatum, Beleg-Nr. = Stornonummer, Form `transfer`. Für
+  `db.matching.receivable_condition` ist das die Forderung einer Gutschrift (Beleg-Nr. einer Rechnung mit
+  negativem Brutto). Die Forderung der Ursprungsrechnung bleibt stehen; Debitoren und Wartekonto sind danach
+  ausgeglichen, die EÜR ändert sich nicht. Ohne Forderung der App (Import, Steuersatz ohne Wartekonto,
+  importierte oder von Hand gebuchte Forderung) gibt es keine Gegenbuchung.
+- **Zahlungen** bleiben an der stornierten Rechnung (Zahlungen und ihre Sätze unverändert); wurde schon
+  gezahlt, steht das Guthaben des Kunden als Haben-Saldo auf den Debitoren, bis es erstattet wird (offen,
+  `docs/aufgaben.md`). Der Stornorechnung lässt sich keine Zahlung zuordnen.
+- **Gesperrt:** Die Stornorechnung ist ganz gesperrt (`db.invoice_lock.row_group`): Status, Speichern, Berichtigen,
+  Löschen, Kopieren werden abgelehnt. Eine stornierte Rechnung mit Stornorechnung lässt sich nicht
+  wiederbeleben.
+- **Dokument:** CII Typ 381 mit `ram:InvoiceReferencedDocument` (BT-25/BT-26), UBL als `CreditNote` mit
+  `cac:BillingReference`; im XML stehen die Beträge positiv, das PDF zeigt die gespeicherten negativen.
+
+Alles läuft in einer Transaktion (`BEGIN IMMEDIATE`): Es gelingt ganz oder gar nicht, eine Nummer wird nur bei
+Erfolg verbraucht. Zeigt dabei ein Verweis der Rechnung ins Leere (gelöschtes Bankkonto, Kunde …), nennt die Antwort ihn
+im Klartext (409); repariert wird nichts.
 
 ---
 
@@ -602,8 +650,8 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zuordnungen anlegt
 | ClosingText | 48 | TEXT | | Angebot: Text nach den Positionen |
 | SourceQuoteId | 49 | INTEGER | FK → Invoices ON DELETE SET NULL | Rechnung: Quell-Angebot |
 | **Fassungen, Versand, Stornobeleg (Schema 2002, seit 2.2.0)** | | | | |
-| InvoiceKind | 50 | TEXT | | NULL = Rechnung; für den Stornobeleg vorgesehen, noch ungenutzt |
-| CancelsInvoiceId | 51 | INTEGER | UNIQUE (Index `ux_invoices_cancels`, nur wenn gesetzt) | Stornobeleg: die stornierte Rechnung – noch ungenutzt |
+| InvoiceKind | 50 | TEXT | | NULL = Rechnung, `'storno'` = Stornorechnung (seit 2.2.1) |
+| CancelsInvoiceId | 51 | INTEGER | UNIQUE (Index `ux_invoices_cancels`, nur wenn gesetzt) | Stornorechnung: die stornierte Rechnung (seit 2.2.1) |
 | ReplacesInvoiceId | 52 | INTEGER | | neue Rechnung: die ersetzte, stornierte – noch ungenutzt |
 | SentAt | 53 | DATETIME | | erstmals versendet (UTC, gesetzt beim Übergang `send`); Import und Altbestand: NULL |
 | DocumentVersion | 54 | INTEGER | | Nummer der aktuellen Fassung; NULL = Fassung 1 |
@@ -828,6 +876,7 @@ Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
 5. Articles → InvoiceItems
 6. Status: draft → finalized → sent → paid (dazwischen partial_payment, overdue; cancelled)
 7. Versenden bucht die Forderung; Zahlungen lassen sich ab sent zuordnen (siehe 9a)
+8. Stornieren (über den Status nur bei Brutto ≤ 0): Stornorechnung als eigener Beleg, Gegenbuchung der Forderung (siehe 9b)
 ```
 
 ### AfA-Berechnung

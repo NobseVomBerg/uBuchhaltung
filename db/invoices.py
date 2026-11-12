@@ -8,9 +8,9 @@ import json
 from decimal import Decimal
 from money import to_minor, from_minor
 from .core import fk_explained
-from .invoice_lock import (DocumentNotFound, invoice_row, REOPEN_ATTACHED_MESSAGE,
+from .invoice_lock import (DocumentNotFound, has_storno, invoice_row, REOPEN_ATTACHED_MESSAGE,
                            REOPEN_FOREIGN_MESSAGE, REOPEN_IMPORTED_MESSAGE)
-from .invoice_payments import PAYABLE_STATUSES, PAYMENT_MARK
+from .invoice_payments import PAYABLE_STATUSES, PAYMENT_MARK, STORNO_KIND, STORNO_PAYMENT_MESSAGE
 from .matching import FORM_TRANSFER
 from .reporting import is_income_account
 
@@ -29,9 +29,9 @@ class InvoiceCol:
     AMOUNT_DUE = 39
     STATUS = 40
     DOCUMENT_TYPE = 45   # 'invoice' | 'quote'
-    INVOICE_KIND = 50    # NULL = Rechnung (Stornobeleg vorgesehen, noch ungenutzt)
-    CANCELS_INVOICE_ID = 51
-    REPLACES_INVOICE_ID = 52
+    INVOICE_KIND = 50    # NULL = Rechnung, 'storno' = Stornorechnung (seit 2.2.1)
+    CANCELS_INVOICE_ID = 51  # Stornorechnung: die stornierte Rechnung
+    REPLACES_INVOICE_ID = 52  # noch ungenutzt (für „Stornieren und neu ausstellen“ vorgesehen)
     SENT_AT = 53         # erstmals versendet (UTC, CURRENT_TIMESTAMP); Import: NULL
     DOCUMENT_VERSION = 54    # Nummer der aktuellen Fassung; NULL = Fassung 1
 
@@ -76,6 +76,11 @@ def document_type(row):
     if row is not None and len(row) > InvoiceCol.DOCUMENT_TYPE:
         return row[InvoiceCol.DOCUMENT_TYPE] or 'invoice'
     return 'invoice'
+
+
+def is_storno_row(row):
+    """Ist die Invoices-Zeile (Tupel aus ``SELECT *``) eine Stornorechnung (``InvoiceKind = 'storno'``)?"""
+    return row is not None and len(row) > InvoiceCol.INVOICE_KIND and row[InvoiceCol.INVOICE_KIND] == STORNO_KIND
 
 
 class InvoicesMixin:
@@ -475,12 +480,16 @@ class InvoicesMixin:
         Der WISO-Import ordnet darüber mit Vorzeichen zu (Storno, Gutschrift) und legt keine
         Buchungssätze an – WISO liefert sie mit. Deshalb keine Prüfung von Status, Vorzeichen
         oder Buchungsart; die Oberfläche ordnet über ``assign_invoice_payment`` zu. Die
-        Dublettenprüfung läuft in derselben Transaktion wie das Einfügen."""
+        Dublettenprüfung läuft in derselben Transaktion wie das Einfügen. Einer Stornorechnung
+        (``cancel_invoice``) lässt sich nie eine Zahlung zuordnen (``ValueError``)."""
         conn = self._get_connection()
         try:
             conn.execute('BEGIN IMMEDIATE')
-            if not conn.execute('SELECT 1 FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone():
+            invoice = conn.execute('SELECT InvoiceKind FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()
+            if not invoice:
                 raise ValueError(f"Invoice {invoice_id} not found")
+            if invoice[0] == STORNO_KIND:
+                raise ValueError(STORNO_PAYMENT_MESSAGE)
 
             # Get payment date from booking
             booking = conn.execute('SELECT DateBooking FROM Bookings WHERE ID = ?',
@@ -612,8 +621,9 @@ class InvoicesMixin:
         finally:
             conn.close()
     def get_overdue_invoices(self):
-        """Get all overdue invoices (sent status, past due date, amount due > 0)
-        
+        """Get all overdue invoices (sent status, past due date, amount due > 0). Eine Stornorechnung ist nie
+        überfällig (sie hat keine Fälligkeit, ihr Rest ist negativ) und kommt hier ausdrücklich nicht vor.
+
         Returns:
             List of invoice tuples with overdue invoices
         """
@@ -626,6 +636,7 @@ class InvoicesMixin:
             SELECT * FROM Invoices
             WHERE Status IN ('finalized', 'sent')
             AND (DocumentType = 'invoice' OR DocumentType IS NULL)
+            AND InvoiceKind IS NOT 'storno'
             AND PaymentDueDate < ?
             AND (AmountDue IS NULL OR AmountDue > 0)
             ORDER BY PaymentDueDate ASC
@@ -634,8 +645,8 @@ class InvoicesMixin:
         conn.close()
         return [self._euro_row(r, 36, 37, 38, 39) for r in invoices]
     def get_invoices_due_soon(self, days=7):
-        """Get invoices due within the next N days
-        
+        """Get invoices due within the next N days (ohne Stornorechnungen, wie ``get_overdue_invoices``)
+
         Args:
             days: Number of days to look ahead
             
@@ -653,6 +664,7 @@ class InvoicesMixin:
             SELECT * FROM Invoices
             WHERE Status IN ('finalized', 'sent')
             AND (DocumentType = 'invoice' OR DocumentType IS NULL)
+            AND InvoiceKind IS NOT 'storno'
             AND PaymentDueDate BETWEEN ? AND ?
             AND (AmountDue IS NULL OR AmountDue > 0)
             ORDER BY PaymentDueDate ASC
@@ -690,7 +702,8 @@ class InvoicesMixin:
 
         Nur zahlbare Status (versendet, überfällig, Teilzahlung – ``PAYABLE_STATUSES``),
         Restbetrag > 0; Altbestand ohne AmountDue (NULL) gilt als offen. Volle
-        Invoice-Rows (Euro-Decimals wie üblich).
+        Invoice-Rows (Euro-Decimals wie üblich). Eine Stornorechnung ist nie dabei: Ihr lässt sich
+        keine Zahlung zuordnen.
         """
         marks = ','.join('?' * len(PAYABLE_STATUSES))
         conn = self._get_connection()
@@ -698,6 +711,7 @@ class InvoicesMixin:
         cursor.execute(f'''
             SELECT * FROM Invoices
             WHERE (DocumentType = 'invoice' OR DocumentType IS NULL)
+            AND InvoiceKind IS NOT 'storno'
             AND Status IN ({marks})
             AND (AmountDue IS NULL OR AmountDue > 0)
             ORDER BY InvoiceDate DESC, InvoiceNumber DESC
@@ -914,7 +928,11 @@ class InvoicesMixin:
     def _book_receivable(self, tx, row, accounts):
         """Die Forderung einer Rechnung („Debitoren an Wartekonto“) in der Transaktion ``tx`` buchen,
         wenn es sie noch nicht gibt. ``row``: die Rechnung (Spalte → Wert, Minor Units), ``accounts``:
-        siehe ``_receivable_accounts``. Returns die Buchungs-ID oder ``None`` (Angebot, kein Wartekonto)."""
+        siehe ``_receivable_accounts``. Returns die Buchungs-ID oder ``None`` (Angebot, kein Wartekonto).
+
+        Bei einer Stornorechnung (``cancel_invoice``) ist es ihre Gegenbuchung: Betrag und Steuer stehen mit
+        dem negativen Vorzeichen der Stornorechnung da – die Forderung einer Gutschrift
+        (``db.matching.receivable_condition``)."""
         if accounts is None or (row.get('DocumentType') or 'invoice') != 'invoice':
             return None
         number = row['InvoiceNumber']
@@ -925,6 +943,7 @@ class InvoicesMixin:
         rate = row['TaxRate']
         tax_rate = (rate if rate <= 1 else rate / 100) if rate and rate > 0 else None
         customer = row['BuyerCompany'] or row['BuyerName'] or ''
+        label = 'Stornorechnung' if row.get('InvoiceKind') == STORNO_KIND else 'Rechnung'
         return self.insert_booking(
             date_booking=row['InvoiceDate'],
             amount=from_minor(row['SumGross'] or 0),
@@ -935,7 +954,7 @@ class InvoicesMixin:
             currency=row['Currency'] or 'EUR',
             tax_rate=tax_rate,
             tax_amount=from_minor(row['TaxAmount']) if row['TaxAmount'] else None,
-            text=f"Rechnung {number} {customer}".strip(),
+            text=f"{label} {number} {customer}".strip(),
             document_number=number,
             booking_type='entry',
             entry_form=FORM_TRANSFER,
@@ -952,24 +971,42 @@ class InvoicesMixin:
             f"WHERE DocumentNumber = ? AND BookingType = 'entry' AND {receivable_sql} ORDER BY ID",
             [number, *receivable_params]).fetchall()
 
+    def _waiting_coa_ids(self, conn):
+        """Die COA-IDs der Wartekonten (``OPEN_REVENUE_ACCOUNTS``) in der Transaktion von ``conn``."""
+        waiting = tuple(n for n, _name in self.OPEN_REVENUE_ACCOUNTS.values())
+        return {r[0] for r in conn.execute(
+            f"SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN ({','.join('?' * len(waiting))})", waiting)}
+
+    @staticmethod
+    def _is_app_receivable(source_group, counter, waiting_ids):
+        """Hat die App diese Forderungsbuchung selbst gebucht? Ohne Quellklammer (``SourceGroup`` – Import) und mit
+        einem Wartekonto als Gegenkonto; ob sie an einer Bankbewegung hängt, sagt das nicht. Die EINE Einordnung für
+        das Entfernen (``_receivable_removal``) und die Gegenbuchung beim Stornieren (``cancel_invoice``)."""
+        return not source_group and counter in waiting_ids
+
+    def _app_receivable_ids(self, conn, number):
+        """IDs der Forderungsbuchungen einer Rechnung, die die App selbst gebucht hat (``_is_app_receivable``),
+        gleich ob sie an einer Bankbewegung hängen."""
+        waiting_ids = self._waiting_coa_ids(conn)
+        return [booking_id for booking_id, _parent, source_group, _coa, counter
+                in self._receivable_rows(conn, number)
+                if self._is_app_receivable(source_group, counter, waiting_ids)]
+
     def _receivable_removal(self, conn, number):
         """Welche Forderungsbuchungen einer Rechnung darf die App entfernen? Nur die, die sie selbst
-        gebucht hat und die an nichts hängt: ohne Quellklammer (``SourceGroup`` – Import), mit einem
-        Wartekonto (``OPEN_REVENUE_ACCOUNTS``) als Gegenkonto, keiner Bankbewegung zugeordnet. Alles andere
-        gehört dem Nutzer oder einem Import und wird nie gelöscht.
+        gebucht hat (``_is_app_receivable``) und die an nichts hängt: keiner Bankbewegung zugeordnet. Alles
+        andere gehört dem Nutzer oder einem Import und wird nie gelöscht.
 
         Returns ``(IDs der löschbaren, Klartext zur ersten nicht löschbaren oder None)`` –
         der Klartext ist der Grund, mit dem ein Zurückholen der Rechnung abgelehnt wird."""
-        waiting = tuple(n for n, _name in self.OPEN_REVENUE_ACCOUNTS.values())
-        waiting_ids = {r[0] for r in conn.execute(
-            f"SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN ({','.join('?' * len(waiting))})", waiting)}
+        waiting_ids = self._waiting_coa_ids(conn)
         removable, reasons = [], []
         for booking_id, parent, source_group, _coa, counter in self._receivable_rows(conn, number):
             if source_group:
                 reasons.append((0, REOPEN_IMPORTED_MESSAGE))
             elif parent is not None:
                 reasons.append((1, REOPEN_ATTACHED_MESSAGE))
-            elif counter not in waiting_ids:
+            elif not self._is_app_receivable(source_group, counter, waiting_ids):
                 reasons.append((2, REOPEN_FOREIGN_MESSAGE))
             else:
                 removable.append(booking_id)
@@ -978,20 +1015,35 @@ class InvoicesMixin:
     def _drop_receivable(self, conn, invoice_id, number):
         """Die Forderungsbuchung einer Rechnung entfernen, in der Transaktion von ``conn`` – nur, solange
         nichts daran hängt (keine Zahlung) und nur eine, die die App selbst gebucht hat
-        (``_receivable_removal``). Returns ``True``, wenn gelöscht wurde."""
+        (``_receivable_removal``). Returns ``True``, wenn gelöscht wurde.
+
+        Gehört die Rechnung zu einem Storno-Paar (sie hat eine Stornorechnung, oder sie ist eine), wird nie
+        etwas entfernt: Die Forderung der Ursprungsrechnung und die Gegenbuchung der Stornorechnung bleiben
+        stehen, was auch mit den Zahlungen geschieht."""
+        if self._in_storno_pair(conn, invoice_id):
+            return False
         if conn.execute('SELECT 1 FROM InvoicePayments WHERE InvoiceID = ?', (invoice_id,)).fetchone():
             return False
         removable, _ = self._receivable_removal(conn, number)
         self._delete_booking_rows(conn, removable)
         return bool(removable)
 
+    @staticmethod
+    def _in_storno_pair(conn, invoice_id):
+        """Ist die Rechnung die Ursprungsrechnung einer Stornorechnung oder selbst eine Stornorechnung?"""
+        if has_storno(conn, invoice_id):
+            return True
+        row = conn.execute('SELECT InvoiceKind FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()
+        return row is not None and row[0] == STORNO_KIND
+
     def remove_receivable_booking(self, invoice_id):
-        """Forderungsbuchung wieder entfernen (Rechnung zurück auf Entwurf, storniert).
+        """Forderungsbuchung wieder entfernen (Rechnung zurück auf Entwurf, storniert von Hand).
 
         Nur solange nichts daran hängt: keine Zahlung auf der Rechnung und die Buchung keiner
         Bankbewegung zugeordnet – und nur eine, die die App selbst gebucht hat: eine importierte
         (``SourceGroup``) oder von Hand gebuchte bleibt immer stehen. Der Statuswechsel entfernt sie
         selbst in seiner Transaktion (``Database.set_invoice_status``); dieser Weg ist für alles andere.
+        Bei einem Storno-Paar (Rechnung mit Stornorechnung oder die Stornorechnung selbst) entfernt er nichts.
 
         Returns: True, wenn gelöscht wurde.
         """
@@ -1081,8 +1133,9 @@ class InvoicesMixin:
     def get_open_items_for_contact(self, contact_id):
         """Offene Posten eines Kontakts für die Kontaktseite.
 
-        Forderungen sind die versendeten Rechnungen (``PAYABLE_STATUSES``) mit Rest; ein
-        Guthaben ist der freie Rest eines Zahlungseingangs des Kontakts. Nicht versendete
+        Forderungen sind die versendeten Rechnungen (``PAYABLE_STATUSES``) mit Rest – eine
+        Stornorechnung nie, ein Guthaben aus einer stornierten, schon bezahlten Rechnung wird hier
+        nicht geführt; ein Guthaben ist der freie Rest eines Zahlungseingangs des Kontakts. Nicht versendete
         (abgeschlossene) Rechnungen werden getrennt geführt und gehen nicht in den Saldo ein –
         sie stehen noch nicht in den Büchern.
 
@@ -1103,6 +1156,7 @@ class InvoicesMixin:
                 FROM Invoices
                 WHERE CustomerId = ?
                   AND (DocumentType = 'invoice' OR DocumentType IS NULL)
+                  AND InvoiceKind IS NOT 'storno'
                   AND Status IN ({marks})
                   AND (AmountDue IS NULL OR AmountDue > 0)
                 ORDER BY InvoiceDate DESC, ID DESC

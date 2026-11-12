@@ -7,8 +7,9 @@ Es gibt genau EINE Stelle, die entscheidet, was an einer gespeicherten Rechnung 
 ist und welchen Status sie als Nächstes bekommen darf. Jeder Schreibweg auf eine Rechnung geht
 darüber: ``update_invoice_fields`` (Speichern im Formular) und ``set_invoice_status``
 (Statuswechsel). Das Berichtigen einer versendeten Rechnung (``correct_invoice``, db/invoice_versions.py)
-ruft ``update_invoice_fields`` auf und legt dazu Fassung und Protokoll an. Der Stornobeleg steht in
-``docs/aufgaben.md``.
+ruft ``update_invoice_fields`` auf und legt dazu Fassung und Protokoll an. Storniert wird über ``cancel_invoice``
+(db/invoice_storno.py): Es entsteht eine Stornorechnung. Nur eine Rechnung ohne positiven Betrag (Gutschrift,
+0-€-Rechnung) bekommt keine; sie lässt sich über den Status auf „storniert“ setzen (Art ``cancel``).
 
 Statusgruppen:
 
@@ -20,6 +21,8 @@ Statusgruppen:
   Kunden, Bestellnummer, Leitweg-ID und Leistungsdatum – aber nur als Berichtigung, mit neuer Fassung
   und Protokoll.
 * **abgeschlossen** (``cancelled``): nichts mehr änderbar.
+* Eine **Stornorechnung** (``InvoiceKind = 'storno'``) ist ganz gesperrt, was auch ihr Status sagt: wie eine
+  abgeschlossene, mit eigener Meldung; ihr Status lässt sich nie ändern.
 
 Verglichen wird mit dem gespeicherten Stand, in der Transaktion des Schreibens (``BEGIN
 IMMEDIATE``): Was das Formular unverändert zurückschickt, ist kein Verstoß – Beträge in Minor
@@ -30,7 +33,7 @@ from decimal import Decimal, InvalidOperation
 
 from money import to_minor
 from .core import fk_explained
-from .invoice_payments import PAYMENT_MARK
+from .invoice_payments import PAYMENT_MARK, STORNO_KIND
 
 EDITABLE_STATUSES = frozenset({'draft', 'finalized'})
 LOCKED_STATUSES = frozenset({'sent', 'overdue', 'partial_payment', 'partial', 'paid'})
@@ -48,6 +51,9 @@ STATUS_LABELS = {
 }
 
 EDITABLE, LOCKED, CLOSED = 'editable', 'locked', 'closed'
+
+#: So heißt eine Stornorechnung in Liste und Seiten (sie hat den Status „versendet“, ist aber ein eigener Beleg)
+STORNO_LABEL = 'Stornorechnung'
 
 
 def canonical_status(status):
@@ -129,6 +135,10 @@ LOCKED_MESSAGE = ('Versendete Rechnung: Beträge, Positionen, Nummer, Datum und 
 LOCKED_UNPAID_HINT = 'Ohne zugeordnete Zahlung lässt sie sich über den Status zurück auf Entwurf holen.'
 LOCKED_PAID_HINT = 'Zu dieser Rechnung sind Zahlungen zugeordnet.'
 CLOSED_MESSAGE = 'Stornierte Rechnung: Sie lässt sich nicht mehr ändern.'
+STORNO_LOCKED_MESSAGE = 'Stornorechnung: Sie lässt sich nicht ändern.'
+STORNO_STATUS_MESSAGE = 'Der Status einer Stornorechnung lässt sich nicht ändern.'
+CANCEL_VIA_STORNO_MESSAGE = 'Storniert wird über „Stornieren“ – dabei entsteht eine Stornorechnung.'
+HAS_STORNO_MESSAGE = 'Zu dieser Rechnung gibt es eine Stornorechnung – sie bleibt storniert.'
 CHANGED_MESSAGE = 'Die Rechnung wurde inzwischen geändert – bitte die Seite neu laden.'
 NUMBER_KEPT_MESSAGE = 'Die Rechnung war bereits versendet – ihre Nummer bleibt.'
 # Zurückholen (versendet/überfällig → Entwurf/abgeschlossen) nimmt die Forderungsbuchung mit: nur die, die die
@@ -181,8 +191,26 @@ class InvoiceLocked(Exception):
         self.fields = list(fields)
 
 
-def lock_message(status, payments):
+def is_storno(row):
+    """Ist die gespeicherte Rechnung (Spalte → Wert, siehe :func:`invoice_row`) eine Stornorechnung?"""
+    return row.get('InvoiceKind') == STORNO_KIND
+
+
+def row_group(row):
+    """Statusgruppe einer gespeicherten Rechnung (Spalte → Wert): wie :func:`status_group`, nur dass eine
+    Stornorechnung ganz gesperrt ist (``CLOSED``), gleich welchen Status sie trägt."""
+    return CLOSED if is_storno(row) else status_group(row.get('Status'))
+
+
+def closed_message(row):
+    """Klartext zu einer ganz gesperrten Rechnung: stornierte oder Stornorechnung."""
+    return STORNO_LOCKED_MESSAGE if is_storno(row) else CLOSED_MESSAGE
+
+
+def lock_message(status, payments, storno=False):
     """Klartext, warum sich diese Rechnung nicht (mehr) ändern lässt."""
+    if storno:
+        return STORNO_LOCKED_MESSAGE
     if status_group(status) == CLOSED:
         return CLOSED_MESSAGE
     return f'{LOCKED_MESSAGE} {LOCKED_PAID_HINT if payments else LOCKED_UNPAID_HINT}'
@@ -319,7 +347,7 @@ def check_changes(row, changes, stored_items=None, items=None):
     ``stored_items``/``items`` (beide angegeben): die Positionen, gespeichert und neu.
 
     Returns die Bezeichnungen der Angaben, die sich änderten (leer: nichts Gesperrtes)."""
-    group = status_group(row.get('Status'))
+    group = row_group(row)
     if group == EDITABLE:
         return []
     kinds = (LOCKED_INPUT,) if group == LOCKED else (LOCKED_INPUT, OPEN_INPUT)
@@ -343,24 +371,30 @@ def check_changes(row, changes, stored_items=None, items=None):
 #   reopen     zurückholen (versendet/überfällig → Entwurf/abgeschlossen): die Forderung wird wieder entfernt,
 #              die versendeten Dokumente wandern nach „Fassungen“ (nichts davon halb: scheitert eines, bleibt alles)
 #   mark_paid  „bezahlt“ von Hand (Skonto): nichts
-#   cancel     stornieren von Hand: Forderung wie bisher (bleibt, solange eine Zahlung daran hängt)
-#   revive     storniert → versendet/überfällig: Forderung wieder buchen, ein fehlendes Dokument nachziehen
+#   cancel     storniert von Hand – nur für eine Rechnung ohne positiven Betrag (``NO_POSITIVE``: Gutschrift, 0-€-Rechnung),
+#              die keine Stornorechnung bekommt: Die Forderung geht, solange nichts an ihr hängt (keine Zahlung; nur die
+#              der App, sonst bleibt sie stehen)
+#   revive     storniert → versendet/überfällig: Forderung wieder buchen, ein fehlendes Dokument nachziehen –
+#              nur für eine stornierte Rechnung OHNE Stornorechnung (Altbestand, Import, von Hand storniert)
 #   heal       bezahlt/Teilzahlung → versendet/überfällig, nur ohne Zahlung: heilt einen verwaisten Zustand
 #   same       derselbe Status
+# Eine Rechnung mit positivem Betrag wird nicht über den Status storniert, sondern über „Stornieren“
+# (``cancel_invoice``, db/invoice_storno.py): Für sie lehnt ``check_transition`` den Übergang nach ``cancelled`` ab.
 UNPAID, PAID = 'unpaid', 'paid'      # Bedingung: keine bzw. mindestens eine zugeordnete Zahlung
+NO_POSITIVE = 'no_positive'          # Bedingung: der Betrag (Brutto) der Rechnung ist nicht positiv
 
 TRANSITIONS = {
     'draft': {'finalized': ('free', None), 'sent': ('send', None)},
     'finalized': {'draft': ('free', None), 'sent': ('send', None)},
     'sent': {'overdue': ('switch', None), 'draft': ('reopen', UNPAID),
              'finalized': ('reopen', UNPAID), 'paid': ('mark_paid', PAID),
-             'cancelled': ('cancel', None)},
+             'cancelled': ('cancel', NO_POSITIVE)},
     'overdue': {'sent': ('switch', None), 'draft': ('reopen', UNPAID),
                 'finalized': ('reopen', UNPAID), 'paid': ('mark_paid', PAID),
-                'cancelled': ('cancel', None)},
+                'cancelled': ('cancel', NO_POSITIVE)},
     'partial_payment': {'paid': ('mark_paid', PAID), 'sent': ('heal', UNPAID),
-                        'overdue': ('heal', UNPAID), 'cancelled': ('cancel', None)},
-    'paid': {'sent': ('heal', UNPAID), 'overdue': ('heal', UNPAID), 'cancelled': ('cancel', None)},
+                        'overdue': ('heal', UNPAID), 'cancelled': ('cancel', NO_POSITIVE)},
+    'paid': {'sent': ('heal', UNPAID), 'overdue': ('heal', UNPAID), 'cancelled': ('cancel', NO_POSITIVE)},
     'cancelled': {'sent': ('revive', None), 'overdue': ('revive', None)},
 }
 
@@ -373,10 +407,14 @@ def _quoted(status):
     return f'„{STATUS_LABELS.get(status, status)}“'
 
 
-def check_transition(old, new, payments):
+def check_transition(old, new, payments, has_storno=False, gross=None):
     """Darf eine Rechnung vom Status ``old`` auf ``new``, wenn ``payments`` Zahlungen zugeordnet
     sind? Returns ``Verdict(kind, message, code)``: bei Erlaubnis die Art des Übergangs, sonst ein
-    Klartext und der Statuscode für die Antwort."""
+    Klartext und der Statuscode für die Antwort. ``has_storno``: Zu der Rechnung gibt es eine
+    Stornorechnung – sie bleibt storniert (kein Übergang ``revive``). ``gross``: der gespeicherte Betrag
+    (Brutto, in Minor Units oder Euro – nur ob er positiv ist, zählt); ohne Angabe gilt er als positiv. Nach
+    ``cancelled`` darf nur eine Rechnung ohne positiven Betrag (``NO_POSITIVE``), jede andere wird über
+    „Stornieren“ storniert."""
     old, new = canonical_status(old), canonical_status(new)
     if new == old:
         return Verdict('same', None, 200)
@@ -384,6 +422,10 @@ def check_transition(old, new, payments):
     if rule is None:
         return Verdict(None, _not_allowed(old, new), 409)
     kind, condition = rule
+    if kind == 'revive' and has_storno:
+        return Verdict(None, HAS_STORNO_MESSAGE, 409)
+    if condition == NO_POSITIVE and (gross is None or gross > 0):
+        return Verdict(None, CANCEL_VIA_STORNO_MESSAGE, 409)
     if condition == UNPAID and payments:
         if kind == 'reopen':
             return Verdict(None, 'Zu dieser Rechnung sind Zahlungen zugeordnet – sie lässt sich '
@@ -415,12 +457,15 @@ def _not_allowed(old, new):
     return f'Der Status {_quoted(old)} lässt sich nicht auf {_quoted(new)} setzen.'
 
 
-def allowed_targets(status, payments):
+def allowed_targets(status, payments, has_storno=False, gross=None):
     """Die Status, auf die diese Rechnung gesetzt werden darf (ohne den aktuellen) – in der
-    Reihenfolge von ``STATUS_LABELS``. Die Statusauswahl der Oberfläche bietet nur diese an."""
+    Reihenfolge von ``STATUS_LABELS``. Die Statusauswahl der Oberfläche bietet nur diese an;
+    „storniert“ gehört nur dazu, wenn die Rechnung keinen positiven Betrag hat (``gross``, siehe
+    ``check_transition``; ohne Angabe gilt er als positiv – dann geht es über ``cancel_invoice``), und
+    eine Rechnung mit Stornorechnung (``has_storno``) bleibt storniert."""
     return [new for new in STATUS_LABELS
             if new != canonical_status(status)
-            and check_transition(status, new, payments).message is None]
+            and check_transition(status, new, payments, has_storno, gross).message is None]
 
 
 # ── Zugriff auf die gespeicherte Rechnung ────────────────────────────────────
@@ -434,6 +479,12 @@ def invoice_row(conn, invoice_id):
         return None
     row = dict(zip((column[0] for column in cursor.description), values))
     return row if (row.get('DocumentType') or 'invoice') == 'invoice' else None
+
+
+def has_storno(conn, invoice_id):
+    """Gibt es zu dieser Rechnung eine Stornorechnung (``Invoices.CancelsInvoiceId``)? In der Transaktion
+    von ``conn``."""
+    return conn.execute('SELECT 1 FROM Invoices WHERE CancelsInvoiceId = ?', (invoice_id,)).fetchone() is not None
 
 
 def _begin_immediate(conn):
@@ -459,7 +510,8 @@ class InvoiceLockMixin:
           (:class:`InvoiceLocked`); sonst werden die änderbaren Felder geschrieben – aber nur mit
           ``correcting=True``, dem Aufruf aus ``correct_invoice``, das Fassung und Protokoll anlegt; ohne
           ihn ist eine Änderung daran eine Berichtigung, die hier nicht stattfinden darf;
-        * abgeschlossen: nichts wird geschrieben, jede Änderung wird abgelehnt.
+        * abgeschlossen: nichts wird geschrieben, jede Änderung wird abgelehnt – ebenso bei einer
+          Stornorechnung, die immer so behandelt wird (:data:`STORNO_LOCKED_MESSAGE`).
 
         Geprüft wird gegen den Stand in der Transaktion, geschrieben mit der Statusgruppe in der
         ``WHERE``-Bedingung – eine zweite Anfrage, die die Rechnung inzwischen versendet hat, ändert
@@ -473,7 +525,7 @@ class InvoiceLockMixin:
         row = invoice_row(conn, invoice_id)
         if row is None:
             raise DocumentNotFound('Rechnung nicht gefunden.')
-        group = status_group(row['Status'])
+        group = row_group(row)
         if group == EDITABLE:
             if ('invoice_number' in invoice_data and invoice_data['invoice_number'] != row['InvoiceNumber']
                     and self.was_sent_before(invoice_id, conn)):
@@ -498,11 +550,11 @@ class InvoiceLockMixin:
         if problems:
             payments = conn.execute('SELECT COUNT(*) FROM InvoicePayments WHERE InvoiceID = ?',
                                     (invoice_id,)).fetchone()[0]
-            raise InvoiceLocked(lock_message(row['Status'], payments), problems)
+            raise InvoiceLocked(lock_message(row['Status'], payments, is_storno(row)), problems)
         open_data = changed_open_fields(row, invoice_data)
         if group == CLOSED:
             if open_data:
-                raise InvoiceLocked(CLOSED_MESSAGE, [LABEL_OF[key] or key for key in open_data])
+                raise InvoiceLocked(closed_message(row), [LABEL_OF[key] or key for key in open_data])
             return 'unchanged'
         if not open_data:
             return 'unchanged'
@@ -550,8 +602,13 @@ class InvoiceLockMixin:
           werden in ``InvoiceDocumentVersions`` festgehalten, ihre Pfade werden geleert, die Fassung
           zählt um eins hoch (nur, wenn eine Datei abgelegt wurde); scheitert das Verschieben, bleibt
           alles, wie es war;
-        * ``cancel``: die Forderung geht, solange nichts an ihr hängt (keine Zahlung, nicht von der
-          App gebucht: bleibt stehen).
+        * ``cancel``: die Forderung geht, solange nichts an ihr hängt (keine Zahlung; nicht von der App
+          gebucht: bleibt stehen).
+
+        Auf „storniert“ setzt dieser Weg nur eine Rechnung ohne positiven Betrag (Gutschrift, 0-€-Rechnung – sie
+        bekommt keine Stornorechnung); entschieden wird in der Transaktion am gespeicherten Betrag. Für jede andere ist
+        es ``cancel_invoice`` (Stornorechnung), hier 409. Eine stornierte Rechnung mit Stornorechnung bleibt storniert
+        (409), die Stornorechnung selbst ändert ihren Status nie (409).
 
         Jeder gelungene Wechsel (außer demselben Status) steht im Protokoll ``InvoiceCorrections``
         (``Action='status'``) – wer ihn ausgelöst hat, sagt ``user_name``. Was die Zahlungslogik am Status
@@ -574,9 +631,13 @@ class InvoiceLockMixin:
                 if row is None:
                     raise _Refusal('Rechnung nicht gefunden', 404)
                 old = canonical_status(row['Status'])
+                if is_storno(row):
+                    raise _Refusal(STORNO_STATUS_MESSAGE, 409)
                 payments = conn.execute('SELECT COUNT(*) FROM InvoicePayments WHERE InvoiceID = ?',
                                         (invoice_id,)).fetchone()[0]
-                verdict = check_transition(old, new, payments)
+                verdict = check_transition(old, new, payments,
+                                           old == 'cancelled' and has_storno(conn, invoice_id),
+                                           row['SumGross'] or 0)
                 if verdict.message:
                     raise _Refusal(verdict.message, verdict.code)
                 kind = verdict.kind

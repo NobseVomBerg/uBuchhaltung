@@ -9,9 +9,10 @@ import html as _html
 import re
 from urllib.parse import quote
 from db import Database
-from db.invoices import InvoiceCol
-from db.invoice_lock import (CLOSED, EDITABLE, NUMBER_KEPT_MESSAGE, STATUS_LABELS, allowed_targets,
-                             as_document_version, buyer_snapshot, status_group)
+from db.invoices import InvoiceCol, is_storno_row
+from db.invoice_lock import (CLOSED, EDITABLE, LOCKED_STATUSES, NUMBER_KEPT_MESSAGE, STATUS_LABELS,
+                             STORNO_LABEL, STORNO_LOCKED_MESSAGE, allowed_targets, as_document_version,
+                             buyer_snapshot, canonical_status, status_group)
 from db.invoice_payments import PAYABLE_STATUSES
 from db.invoice_versions import DELIVERY_DATE_MESSAGE, PROTOCOL_LABELS, local_date, local_datetime
 from money import fmt_eur
@@ -42,6 +43,7 @@ INVOICE_STATUS_COLORS: dict = {
     'cancelled':       '#cc0000',
 }
 INVOICE_STATUS_LABELS: dict = STATUS_LABELS     # eine Quelle: db/invoice_lock.py
+STORNO_COLOR = INVOICE_STATUS_COLORS['cancelled']   # eine Stornorechnung trägt statt des Status ihre Kennzeichnung
 
 
 # Löschen eines Entwurfs: Rückfrage, und – war die Rechnung schon einmal versendet – der Hinweis, was bleibt
@@ -57,6 +59,16 @@ CORRECT_QUESTION = ('Rechnung berichtigen? Die bisherige Fassung bleibt als Date
                     'protokolliert, und die neue Fassung muss dem Kunden erneut zugehen.')
 
 
+# Stornieren (db/invoice_storno.py): Rückfrage mit Stornodatum; eine Stornorechnung lässt sich nicht kopieren
+STORNO_DATE_ERROR = 'Bitte ein Stornodatum angeben, das weder vor dem Rechnungsdatum noch in der Zukunft liegt.'
+STORNO_COPY_MESSAGE = 'Eine Stornorechnung lässt sich nicht kopieren.'
+
+
+def cancel_question(number):
+    return (f'Rechnung {number} stornieren? Es entsteht eine Stornorechnung mit eigener Nummer, die dem Kunden '
+            'zugehen muss. Das lässt sich nicht rückgängig machen.')
+
+
 def _address_text(snapshot, separator):
     """Anschrift aus ``buyer_snapshot``-Feldern als Text (Firma oder Name, Straße, PLZ Ort, Land
     außerhalb Deutschlands), getrennt durch ``separator``."""
@@ -65,6 +77,26 @@ def _address_text(snapshot, separator):
     parts = [snapshot.get('buyer_company') or snapshot.get('buyer_name') or '',
              snapshot.get('buyer_street') or '', place, country if country != 'DE' else '']
     return separator.join(part for part in parts if part)
+
+
+# Stornieren: Rückfrage mit Stornodatum (appConfirm mit Datumsfeld), dann POST /invoice/cancel und weiter auf die
+# Seite der Stornorechnung. Die Platzhalter ersetzt `script_json` (Rechnungsnummer und Datum stehen nie als Markup da).
+_CANCEL_SCRIPT = """// Stornieren: Es entsteht eine Stornorechnung (eigener Beleg); danach öffnet sich ihre Seite
+function cancelInvoice(invId) {
+  appConfirm(__QUESTION__, function(day) {
+    fetch('/invoice/cancel', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({invoiceId: invId, date: day})}).then(r => r.json())
+    .then(data => {
+      if (!data.success) { showMessage('Fehler: ' + (data.error || '?'), 'error'); return; }
+      var target = '/invoice?id=' + data.storno_id;
+      var note = [data.warning, data.hint].filter(Boolean).join(' ');
+      if (note) { showMessage(note, data.warning ? 'warn' : 'info'); setTimeout(function() { window.location.href = target; }, 3500); }
+      else { window.location.href = target; }
+    })
+    .catch(function(err) { showMessage('Fehler: ' + err.message, 'error'); });
+  }, __DATE_FIELD__);
+}
+"""
 
 
 def delete_question(sent_before):
@@ -130,7 +162,11 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
     Klartext, kommt als Meldung auf die Seite.
     """
     filters = filters or {}
-    
+
+    # Eine Stornorechnung lässt sich nicht kopieren: Das Formular bleibt leer, mit Hinweis
+    if copy_from and not invoice_id and is_storno_row(db.get_document(copy_from, 'invoice')):
+        copy_from, err = None, err or STORNO_COPY_MESSAGE
+
     # Get filter parameters
     status_filter = filters.get('status', '')
     search_query = filters.get('search', '')
@@ -201,10 +237,14 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
     def _due(inv):
         return inv[39] if inv[39] is not None else _gross(inv)
 
-    total_count = len(invoices)
-    total_sum = sum(_gross(inv) for inv in invoices)
-    paid_sum = sum(_gross(inv) - _due(inv) for inv in invoices if inv[40] != 'cancelled')
-    open_sum = sum(_due(inv) for inv in invoices if inv[40] not in ('paid', 'cancelled'))
+    # Stornorechnungen zählen in keiner Summe mit (negative Beträge, kein Rest, keine Zahlung); ihre Zahl steht dabei
+    counted = [inv for inv in invoices if not is_storno_row(inv)]
+    storno_count = len(invoices) - len(counted)
+    total_count = len(counted)
+    total_sum = sum(_gross(inv) for inv in counted)
+    paid_sum = sum(_gross(inv) - _due(inv) for inv in counted if inv[40] != 'cancelled')
+    open_sum = sum(_due(inv) for inv in counted if inv[40] not in ('paid', 'cancelled'))
+    storno_note = (f' | Stornorechnungen (nicht mitgezählt): {storno_count}' if storno_count else '')
 
     s+= '<div class="grid2Cols gridMain"><div class="gridLeftCol" style="order:1">'
     s+= f'''
@@ -213,7 +253,7 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
         {total_count} Rechnung(en) | 
         Gesamtsumme: {fmt_eur(total_sum)} | 
         Bezahlt: {fmt_eur(paid_sum)} | 
-        Offen: {fmt_eur(open_sum)}
+        Offen: {fmt_eur(open_sum)}{storno_note}
     </div>
     '''
     if not invoices:
@@ -232,9 +272,13 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
             sum_gross = invoice[38]  # SumGross is at index 38 (was 36)
             status = normalize_status(invoice[InvoiceCol.STATUS])
             
-            # Status color and label from shared module constants
-            status_color = INVOICE_STATUS_COLORS.get(status, '#888')
-            status_label = _html.escape(str(INVOICE_STATUS_LABELS.get(status, status)))
+            # Status color and label from shared module constants; eine Stornorechnung trägt statt des Status
+            # (versendet) ihre Kennzeichnung
+            if is_storno_row(invoice):
+                status_color, status_label = STORNO_COLOR, _html.escape(STORNO_LABEL)
+            else:
+                status_color = INVOICE_STATUS_COLORS.get(status, '#888')
+                status_label = _html.escape(str(INVOICE_STATUS_LABELS.get(status, status)))
             
             s+= f"<tr>"
             s+= f"<td>{inv_number}</td>"
@@ -331,6 +375,7 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
     current_year = datetime.datetime.now().year
     today_iso = datetime.date.today().isoformat()
 
+    cancel_script = ''           # nur eine versendete Rechnung kann storniert werden (Skript steht hinter dem Formular)
     # Load existing invoice if invoice_id is provided
     existing_invoice = None
     existing_items = []
@@ -347,6 +392,13 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
             existing_payments = [] if is_copy else db.get_invoice_payments(source_id)
         else:
             is_copy = False
+
+    # Storno-Paar: Die Stornorechnung nennt ihre Ursprungsrechnung, die stornierte Rechnung ihre Stornorechnung
+    is_storno = bool(existing_invoice) and not is_copy and is_storno_row(existing_invoice)
+    storno_original = db.find_cancelled_invoice(invoice_id) if is_storno else None
+    storno_invoice = (db.find_storno_invoice(invoice_id)
+                      if existing_invoice and not is_copy and not is_storno else None)
+    doc_title = STORNO_LABEL if is_storno else 'Rechnung'
 
     # Get company data (own contact)
     own_contacts = db.fetch_contacts(contact_type='own')
@@ -382,7 +434,8 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
         selected_customer_id = existing_invoice[13]  # CustomerId is now at index 13 (was 12)
         invoice_status = normalize_status(existing_invoice[40])  # Status at index 40
         due_date_value = existing_invoice[27] if len(existing_invoice) > 27 else None
-        page_title = f"Rechnung {_html.escape(invoice_number)} bearbeiten"
+        page_title = (f"Stornorechnung {_html.escape(invoice_number)}" if is_storno
+                      else f"Rechnung {_html.escape(invoice_number)} bearbeiten")
         is_edit_mode = True
     else:
         # Creating new invoice - Vorschlag aus dem Nummernkreis (Formatvorlage und Zusatz des Kreises,
@@ -411,7 +464,7 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
     # (db/invoice_lock.py; serverseitig entscheidet check_changes, das Formular zeigt es nur an).
     # Bei einer versendeten Rechnung bleiben Zahlungshinweis, Anschrift, Bestellnummer, Leitweg-ID und
     # Leistungsdatum änderbar (als Berichtigung), bei einer stornierten nichts.
-    group = status_group(invoice_status) if is_edit_mode else EDITABLE
+    group = (CLOSED if is_storno else status_group(invoice_status)) if is_edit_mode else EDITABLE
     locked = group != EDITABLE
     closed = group == CLOSED
     lock_attr = ' disabled' if locked else ''
@@ -449,10 +502,16 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
     s += '<div id="invoice_msg" class="no-pdf" style="display:none; margin-bottom:10px;"></div>'
     if is_edit_mode:
         payment_count = len(existing_payments)
-        status_color  = INVOICE_STATUS_COLORS.get(invoice_status, '#888')
-        status_label  = _html.escape(str(INVOICE_STATUS_LABELS.get(invoice_status, invoice_status)))
-        # Angeboten werden nur die Status, auf die die Rechnung gesetzt werden darf (Übergangstabelle)
-        targets = allowed_targets(invoice_status, payment_count)
+        if is_storno:
+            status_color, status_label = STORNO_COLOR, _html.escape(STORNO_LABEL)
+        else:
+            status_color  = INVOICE_STATUS_COLORS.get(invoice_status, '#888')
+            status_label  = _html.escape(str(INVOICE_STATUS_LABELS.get(invoice_status, invoice_status)))
+        # Angeboten werden nur die Status, auf die die Rechnung gesetzt werden darf (Übergangstabelle); „storniert“
+        # nur für eine Rechnung ohne positiven Betrag (sonst ist Stornieren ein eigener Knopf), und eine Rechnung
+        # mit Stornorechnung bleibt storniert
+        gross = existing_invoice[InvoiceCol.SUM_GROSS] or 0
+        targets = allowed_targets(invoice_status, payment_count, storno_invoice is not None, gross)
         status_options_html = ''.join(
             '<option value="{k}"{sel}>{v}</option>'.format(
                 k=_html.escape(k), v=_html.escape(str(INVOICE_STATUS_LABELS.get(k, k))),
@@ -468,6 +527,40 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
                          f'<button onclick="appConfirmPost(\'/invoice/delete?id={int(invoice_id)}\', '
                          + _html.escape(script_json(delete_question(db.was_sent_before(invoice_id))))
                          + ')" class="coloredButton btn-sm bg-red">🗑 Löschen</button>')
+        # Stornieren gibt es für eine versendete Rechnung mit positivem Betrag (gesperrt, noch nicht storniert), nie für
+        # eine Stornorechnung; eine ohne positiven Betrag wird über den Status storniert. Kopieren lässt sich eine
+        # Stornorechnung nicht
+        can_cancel = (not is_storno and not closed and canonical_status(invoice_status) in LOCKED_STATUSES
+                      and gross > 0)
+        cancel_button = ('<button onclick="cancelInvoice(%d)" class="coloredButton btn-sm bg-red">'
+                         '&#10060; Stornieren &hellip;</button>' % int(invoice_id)) if can_cancel else ''
+        copy_button = ('' if is_storno else
+                       f'<button onclick="copyInvoiceAsNew({invoice_id})" class="coloredButton btn-sm bg-gray">📋 Als neu kopieren</button>')
+        if can_cancel:
+            invoice_day = str(existing_invoice[2])[:10]
+            values = {'QUESTION': script_json(cancel_question(existing_invoice[1] or '')),
+                      'DATE_FIELD': script_json({'label': 'Stornodatum:', 'min': invoice_day, 'max': today_iso,
+                                                 'value': max(today_iso, invoice_day), 'error': STORNO_DATE_ERROR})}
+            # in einem Durchgang: Die Rechnungsnummer in der Frage darf kein Platzhalter sein
+            cancel_script = re.sub(r'__(QUESTION|DATE_FIELD)__', lambda m: values[m.group(1)], _CANCEL_SCRIPT)
+        # Hinweiszeile zum Storno-Paar (Link auf den jeweils anderen Beleg); alles maskiert
+        storno_row = ''
+        if is_storno and storno_original:
+            storno_row = ('<tr><td>Storno:</td><td>Stornorechnung zu Rechnung <a href="/invoice?id=%d">%s</a> vom %s</td></tr>'
+                          % (int(storno_original[0]), _html.escape(str(storno_original[1])),
+                             _html.escape(_german_date(local_date(storno_original[2])))))
+        elif storno_invoice:
+            storno_row = ('<tr><td>Storno:</td><td>Storniert durch Stornorechnung <a href="/invoice?id=%d">%s</a> vom %s</td></tr>'
+                          % (int(storno_invoice[0]), _html.escape(str(storno_invoice[1])),
+                             _html.escape(_german_date(local_date(storno_invoice[2])))))
+        status_row = '' if is_storno else f'''
+            <tr>
+                <td>Neuer Status:</td>
+                <td><div class="rowWithObjects">
+                    <select id="statusChangeSelect">{status_options_html}</select>
+                    <button onclick="setInvoiceStatus({invoice_id})" class="coloredButton btn-sm bg-blue"{set_status_attr}>&#9888; Status setzen</button>
+                </div></td>
+            </tr>'''
         s += '<div class="rectRounded no-pdf">' #right Column Headline, Status and Buttons
         s += f'<h2>{page_title}</h2>'
         s += f'''
@@ -479,20 +572,15 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
         if locked:
             s += '<div class="rectRounded bg-red">'
         s += f'<strong class="coloredButtonNoClick btn-smNoClick bg-back" style="color:{status_color}; hover:none;">{status_label}</strong>'
-        if closed:
+        if is_storno:
+            s += f' &nbsp; &nbsp; &#9888; {_html.escape(STORNO_LOCKED_MESSAGE)}</div>'
+        elif closed:
             s += ' &nbsp; &nbsp; &#9888; Storniert: Die Rechnung l&auml;sst sich nicht mehr &auml;ndern.</div>'
         elif locked:
             s += f' &nbsp; &nbsp; &#9888; {_html.escape(SENT_HINT)}</div>'
         s += f'''
                 </div></td>
-            </tr>
-            <tr>
-                <td>Neuer Status:</td>
-                <td><div class="rowWithObjects">
-                    <select id="statusChangeSelect">{status_options_html}</select>
-                    <button onclick="setInvoiceStatus({invoice_id})" class="coloredButton btn-sm bg-blue"{set_status_attr}>&#9888; Status setzen</button>
-                </div></td>
-            </tr>
+            </tr>{storno_row}{status_row}
             <tr>
                 <td>Rechnung:</td>
                 <td><div class="rowWithObjects">
@@ -500,7 +588,8 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
                     <button onclick="window.location.href='/invoice'" class="coloredButton btn-sm bg-gray">← Abbrechen</button>
                     <button onclick="generatePDF()" class="coloredButton btn-sm bg-blue">📄 PDF + E-Rechnung</button>
                     <button onclick="downloadPDF()" class="coloredButton btn-sm bg-blue">⬇ Herunterladen</button>
-                    <button onclick="copyInvoiceAsNew({invoice_id})" class="coloredButton btn-sm bg-gray">📋 Als neu kopieren</button>
+                    {copy_button}
+                    {cancel_button}
                     {delete_button}
                 </div></td>
             </tr>
@@ -623,7 +712,7 @@ function copyInvoiceAsNew(invId) {{
             </div>
         </div>
         
-        <h1 class="invoice-title">Rechnung</h1>
+        <h1 class="invoice-title">''' + doc_title + '''</h1>
         
         <table class="invoice-items" id="invoice_table">
             <thead>
@@ -1616,8 +1705,13 @@ function copyInvoiceAsNew(invId) {{
     '''.replace('__CORRECT_QUESTION__', script_json(CORRECT_QUESTION)
                 ).replace('__DELIVERY_DATE_MESSAGE__', script_json(DELIVERY_DATE_MESSAGE))
 
+    # Einer Stornorechnung lassen sich keine Zahlungen zuordnen: statt des Kastens ein Hinweis
+    if is_storno:
+        s += ('    <div class="rectRounded no-pdf"><h3>Zahlungsverknüpfungen</h3>\n'
+              '        <p class="hint">Einer Stornorechnung lässt sich keine Zahlung zuordnen.</p>\n    </div>\n')
+
     # Payment history section (edit mode only)
-    if is_edit_mode and invoice_id:
+    if is_edit_mode and invoice_id and not is_storno:
         amount_due = existing_invoice[39] if existing_invoice else 0
         s += f'''
     <div style="margin: 30px 0; padding: 20px; border: 1px solid #ddd; border-radius: 4px;">
@@ -1793,9 +1887,12 @@ function copyInvoiceAsNew(invId) {{
     # Steuersatz-Feld + USt-Checkbox serverseitig vorbelegen (Platzhalter im Template)
     s = s.replace('__TAX_PCT__', f'{tax_pct:g}')
     s = s.replace('__SHOW_TAX_CHECKED__', 'checked' if show_tax else '')
-    # Der Kasten steht voller Daten aus der Datenbank: Er kommt erst nach den Ersetzungen dazu
+    # Der Kasten steht voller Daten aus der Datenbank: Er kommt erst nach den Ersetzungen dazu – ebenso das
+    # Skript zum Stornieren, das die Rechnungsnummer in seiner Rückfrage trägt
     if is_edit_mode and invoice_id:
         s += _versions_box_html(db, invoice_id)
+        if cancel_script:
+            s += '<script>\n' + cancel_script + '</script>\n'
     return s
 
 
