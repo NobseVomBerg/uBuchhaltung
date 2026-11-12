@@ -13,7 +13,7 @@ from db.invoices import InvoiceCol, is_storno_row
 from db.invoice_lock import (CLOSED, EDITABLE, LOCKED_STATUSES, NUMBER_KEPT_MESSAGE, STATUS_LABELS,
                              STORNO_LABEL, STORNO_LOCKED_MESSAGE, allowed_targets, as_document_version,
                              buyer_snapshot, canonical_status, status_group)
-from db.invoice_payments import PAYABLE_STATUSES
+from db.invoice_payments import MIXED_REVENUE_MESSAGE, PAYABLE_STATUSES
 from db.invoice_versions import DELIVERY_DATE_MESSAGE, PROTOCOL_LABELS, local_date, local_datetime
 from money import fmt_eur, format_plain, to_minor
 from export.einvoice_model import unit_display
@@ -148,30 +148,38 @@ def normalize_status(status):
     return 'partial_payment' if status == 'partial' else status
 
 
-def revenue_coa_choice(db, tax_rate, selected=None):
-    """Pflichtfeld „Erlöskonto“ für eine Rechnungszahlung – nur, wenn für den Steuersatz der
-    Rechnung kein Erlöskonto hinterlegt ist (``Database.revenue_coa_choice_needed``, z. B. 5 %
-    oder 16 %), sonst ``None``: Dann ergibt sich die Kontierung aus der Rechnung.
-
-    Returns ``(select_html, hint_html)``. Vorgewählt ist ``selected`` (wenn es ein wählbares
-    Erlöskonto ist), sonst der Vorschlag ``Database.suggest_revenue_coa`` – eine Vorauswahl, keine
-    Entscheidung; ohne beides steht „bitte wählen“ da. Alle Werte sind maskiert."""
-    if tax_rate is None or not db.revenue_coa_choice_needed(tax_rate):
-        return None
+def _revenue_coa_select(db, tax_rate, selected=None):
+    """Das Auswahlfeld „Erlöskonto“ (``revenue_coa_id``, Pflichtfeld) mit den wählbaren Erlöskonten
+    (``Database.get_revenue_coas``). Vorgewählt ist ``selected`` (wenn es ein wählbares Erlöskonto ist), sonst der
+    Vorschlag ``Database.suggest_revenue_coa`` – eine Vorauswahl, keine Entscheidung; ohne beides steht „bitte wählen“
+    da. Alle Werte sind maskiert."""
     accounts = db.get_revenue_coas()
     if selected not in {coa_id for coa_id, _number, _name in accounts}:
-        selected = db.suggest_revenue_coa(tax_rate)
+        selected = db.suggest_revenue_coa(tax_rate) if tax_rate is not None else None
     options = '<option value="">— bitte wählen —</option>'
     for coa_id, number, name in accounts:
         mark = ' selected' if coa_id == selected else ''
         label = _html.escape(f'{number} {name}')
         options += f'<option value="{int(coa_id)}"{mark}>{label}</option>'
+    return f'<select name="revenue_coa_id" id="revenueCoa" required>{options}</select>'
+
+
+def revenue_coa_choice(db, tax_rate, selected=None, teaches=True):
+    """Pflichtfeld „Erlöskonto“ für eine Rechnungszahlung – nur, wenn für den Steuersatz der
+    Rechnung kein Erlöskonto hinterlegt ist (``Database.revenue_coa_choice_needed``, z. B. 5 %
+    oder 16 %), sonst ``None``: Dann ergibt sich die Kontierung aus der Rechnung.
+
+    Returns ``(select_html, hint_html)`` (Auswahl: ``_revenue_coa_select``). ``teaches``: Die Wahl einer Zahlung gilt
+    künftig als Vorgabe für diesen Steuersatz (so lernt ``resolve_revenue_coa``) – der Hinweis sagt es; die Wahl einer
+    Erstattung lehrt nichts (``teaches=False``, die Sätze einer Erstattung zählen nicht). Alle Werte sind maskiert."""
+    if tax_rate is None or not db.revenue_coa_choice_needed(tax_rate):
+        return None
     percent = tax_rate * 100 if tax_rate <= 1 else tax_rate
     percent_text = f'{percent:g}'.replace('.', ',')
-    hint = (f'Für {percent_text} % ist kein Erlöskonto hinterlegt. Die Wahl gilt künftig als '
-            'Vorgabe für diesen Steuersatz.')
-    return (f'<select name="revenue_coa_id" id="revenueCoa" required>{options}</select>',
-            _html.escape(hint))
+    hint = f'Für {percent_text} % ist kein Erlöskonto hinterlegt.'
+    if teaches:
+        hint += ' Die Wahl gilt künftig als Vorgabe für diesen Steuersatz.'
+    return _revenue_coa_select(db, tax_rate, selected), _html.escape(hint)
 
 
 # Erstattung auf der Seite der Stornorechnung (Database.assign_storno_refund): Rückfrage beim Entfernen und das Skript, das
@@ -260,7 +268,11 @@ def _refund_box_html(db, invoice_id, invoice, refunds, credit):
               + '        </ul>Alle Rechnungen mit Unstimmigkeiten zeigt die Prüfung unter '
               '<a href="/miscellaneous?check_payments=1">Sonstiges</a>.</div>\n')
     if credit > 0:
-        choice = revenue_coa_choice(db, invoice[35])
+        # Erlöskonto zu wählen: für den Steuersatz ist keines hinterlegt (die Wahl lehrt nichts), oder die Zahlungen liegen auf
+        # verschiedenen Erlöskonten – dann sagt der Satz, warum
+        choice = revenue_coa_choice(db, invoice[35], teaches=False)
+        if db.refund_revenue_coas_differ(invoice_id):
+            choice = (_revenue_coa_select(db, invoice[35]), _html.escape(MIXED_REVENUE_MESSAGE))
         if choice:
             h += (f'        <p class="hint">{choice[1]}</p>\n'
                   f'        <p><label>Erlöskonto: {choice[0]}</label></p>\n')

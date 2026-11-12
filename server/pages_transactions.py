@@ -11,7 +11,7 @@ from money import fmt_eur
 from db.matching import bank_effect, is_bank_effective, is_mirror_row, purpose_in_counter
 from db.invoices import InvoiceCol
 from db.invoice_payments import PAYABLE_STATUSES
-from .pages import Header1, Header2, Header3, Footer
+from .pages import Header1, Header2, Header3, Footer, script_json
 from .pages_invoice import revenue_coa_choice
 from .period import period_filter_widget
 
@@ -40,13 +40,15 @@ def _tax_text(tax):
 
 
 def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, date_to=None,
-                     from_invoice=None, revenue_coa_id=None):
+                     from_invoice=None, revenue_coa_id=None, err=None):
     """Generate transactions page with edit functionality.
 
     from_invoice: Rechnungs-ID – belegt die Eingabemaske als Zahlungs-Buchung
     zu dieser Rechnung vor (todo #2); Nutzer ergänzt nur Datum + Bankkonto – und, wenn für den
     Steuersatz der Rechnung kein Erlöskonto hinterlegt ist, das Erlöskonto (``revenue_coa_id``
     ist dann die Vorwahl, z. B. von der Rechnungsseite).
+    err: Grund, warum eine Aktion der Liste abgelehnt wurde (Löschen einer Buchung, ``/transactions/delete``);
+    Klartext aus der Adresse, nur als JSON im Skriptblock und per ``appMsg`` angezeigt.
     """
     # Header2: Konten als kompaktes Dropdown (treibt weiter die clientseitige
     # filterTransactions-Logik) + Such-/Waehrungs-/Betrags-Filter daneben.
@@ -1528,5 +1530,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
     </script>
     '''
 
+    if err:
+        s += ('<script>document.addEventListener("DOMContentLoaded",function(){'
+              'appMsg(' + script_json(err) + ',"error");});</script>')
     s+= Footer()
     return s

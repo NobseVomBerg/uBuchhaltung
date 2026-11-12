@@ -11,8 +11,10 @@ Erlös am Tag der Erstattung zurücknehmen. Hier steht, was dazugehört:
 * die Sätze Spalte für Spalte, die Steuer in allen Varianten (voll, in Teilen, in mehreren Zahlungen, ohne Forderung,
   § 19, nach dem Umzug eines Teils), Salden, EÜR, DATEV-Export und Dashboard;
 * jede Ablehnung (nichts geschrieben), die Kappung auf Guthaben, freien Rest und gewünschten Betrag, eine Sammel-
-  Überweisung, Bewegungen mit anderen Sätzen darunter;
-* das Entfernen (der Stand ist Zeile für Zeile wieder da), der Schutz des Guthabens und kein Umzug nach einer Erstattung;
+  Überweisung, Bewegungen mit anderen Sätzen darunter; der freie Rest eines Ausgangs rechnet die Sätze nach ihrer Wirkung auf das
+  Konto der Bewegung (``bank_effect``, auch ein Import-Spiegel) und in wenigen Abfragen; Zahlungen auf verschiedenen Erlöskonten;
+* das Entfernen (der Stand ist Zeile für Zeile wieder da) und der Schutz des Guthabens auf jedem Weg: Rechnungsseite, Bank-
+  Editor, Löschen eines Satzes oder der Bankbewegung, Liste (der Umzug nach einer Erstattung: ``test_invoice_reissue.py``);
 * die Prüfliste (eine intakte Erstattung ergibt keinen Befund, ``refund_exceeds_credit``), die Seiten, die Liste, die offenen
   Posten des Kontakts, die Routen und der Bank-Editor.
 
@@ -23,26 +25,31 @@ Alle Namen, Adressen und Nummern sind erfundene Testwerte.
 import csv
 import json
 import re
+import sqlite3
 import threading
+from contextlib import closing
+from types import SimpleNamespace
+from urllib.parse import unquote
 
 import pytest
 
 import server.handlers as handlers
 from db import Database
-from db.invoice_payments import (ALREADY_REFUNDED_MESSAGE, MOVE_REFUNDED_HINT, NO_REVENUE_COA, NOT_A_REVENUE_COA,
+from db.invoice_payments import (ALREADY_REFUNDED_MESSAGE, MIXED_REVENUE_MESSAGE, NO_REVENUE_COA, NOT_A_REVENUE_COA,
                                  PAYMENT_MARK, REFUND_EXHAUSTED_MESSAGE, REFUND_NO_CREDIT_MESSAGE,
                                  REFUND_ONLY_OUTGOING_MESSAGE, REFUND_ONLY_STORNO_MESSAGE, STORNO_PAYMENT_MESSAGE,
                                  PaymentRemovalRefused)
 from server.handlers import handle_add_transaction, handle_datev_export
 from server.pages_contacts import PageContacts
-from server.pages_invoice import PageInvoice, REFUND_CONFIRM_QUESTION
+from server.pages_invoice import PageInvoice, REFUND_CONFIRM_QUESTION, revenue_coa_choice
+from server.pages_transactions import PageTransactions
 from tests.document_helpers import post_json
-from tests.dom_helpers import Dom
-from tests.entry_form_roundtrip import differences, drop_row, open_form, snapshot as bookings_snapshot, submit
-from tests.http_client import FOREIGN_ORIGIN, get
+from tests.dom_helpers import Dom, app_msg_arguments
+from tests.entry_form_roundtrip import add_row, differences, drop_row, open_form, snapshot as bookings_snapshot, submit
+from tests.http_client import FOREIGN_ORIGIN, get, post
 from tests.invoice_world import add_payment, columns, make_invoice, query_rows, run_sql, set_invoice_status
 from tests.test_invoice_reissue import (CUSTOMER_TEXT, _list_cells, _plain, allocations, edit_draft, findings, ledger,
-                                        paid_scenario, payment_rows, standing, stays_untouched)
+                                        paid_scenario, payment_rows, standing)
 from tests.test_invoice_storno import (DEBTORS, NO_NODE, NODE, ONE_ITEM, WAITING, _node, balance,  # noqa: F401
                                        bookings_of, books, cancel, euer, pay, sent, sent_over_http, tables, world)
 
@@ -105,6 +112,13 @@ def comparable(db):
 def refund_rows(db, number='26R001'):
     """Die markierten Sätze der Erstattung (und jeder Zuordnung) zu dieser Beleg-Nr. – wie ``payment_rows``."""
     return payment_rows(db, number)
+
+
+def unguarded(monkeypatch):
+    """Die Prüfung vor dem Entfernen einer Zahlung (``_refund_removal_blocker``) abschalten: So entstand „mehr erstattet als
+    gezahlt“ bis zu dieser Version (Löschen der Bankbewegung einer Zahlung nach der Erstattung), und so entsteht es weiter
+    durch einen Eingriff an der App vorbei (SQL-Konsole, zurückgespielte Sicherung). Die Prüfliste meldet den Zustand."""
+    monkeypatch.setattr(Database, '_refund_removal_blocker', staticmethod(lambda conn, payment_ids: None))
 
 
 # ── Das durchgerechnete Beispiel ─────────────────────────────────────────────
@@ -342,6 +356,122 @@ def test_a_refund_row_never_teaches_a_revenue_account_but_a_payment_row_still_do
     assert db._learned_revenue_coa(key) == coa(db, 4300)
     run_sql(db, 'UPDATE Bookings SET Amount = 50000, TaxAmount = 6900 WHERE ParentBooking_ID = ?', out)      # derselbe Satz, positiv
     assert db._learned_revenue_coa(key) == coa(db, 4400)                                    # … lehrt sofort wieder
+
+
+# ── Zahlungen auf verschiedenen Erlöskonten ──────────────────────────────────
+# Tragen die markierten Sätze der Zahlungen mehr als ein Erlöskonto (ein Umbuchungssatz wurde im Editor geändert), buchte die
+# Erstattung früher alles auf das Konto der jüngsten Zahlung zurück. Jetzt wählt der Nutzer das Erlöskonto der Erstattung.
+
+def mixed_payments(w, second_account=4300):
+    """R1: 50,00 € und 30,00 € gezahlt, der Umbuchungssatz der zweiten Zahlung von Hand auf ``second_account`` umkontiert
+    (statt 4400), storniert, dazu ein Ausgang über 80,00 € – liefert (R1, S1, Ausgang)."""
+    db = w.db
+    r1 = sent(w)
+    pay(w, r1, 50.0)
+    second = pay(w, r1, 30.0)
+    run_sql(db, "UPDATE Bookings SET CounterCOA_ID = ? WHERE ParentBooking_ID = ? AND EntryForm = 'transfer'",
+            coa(db, second_account), second)
+    s1 = cancel(w, r1, '2026-07-02').storno_id
+    return r1, s1, outgoing(w, 80.0, '2026-07-10')
+
+
+def test_payments_on_two_revenue_accounts_need_the_choice_of_the_user_and_nothing_is_written_without_it(world):
+    db = world.db
+    _r1, s1, out = mixed_payments(world)
+    assert MIXED_REVENUE_MESSAGE == ('Die Zahlungen dieser Rechnung liegen auf verschiedenen Erlöskonten – bitte das Erlöskonto '
+                                     'für die Erstattung wählen.')
+
+    refused(world, s1, out, MIXED_REVENUE_MESSAGE)                                       # tables() vergleicht alle Tabellen
+    refused(world, s1, out, MIXED_REVENUE_MESSAGE, revenue_coa_id='')
+    refused(world, s1, out, MIXED_REVENUE_MESSAGE, revenue_coa_id=None)
+    refused(world, s1, out, NOT_A_REVENUE_COA, revenue_coa_id=coa(db, WAITING))          # ein Wartekonto ist kein Erlöskonto
+    refused(world, s1, out, NOT_A_REVENUE_COA, revenue_coa_id=coa(db, 1800))
+    refused(world, s1, out, NOT_A_REVENUE_COA, revenue_coa_id='abc')
+    assert db.refund_revenue_coas_differ(s1) is True
+
+
+@pytest.mark.parametrize('chosen', [4300, 4400, 4185])
+def test_the_chosen_revenue_account_carries_the_refund(world, chosen):
+    db = world.db
+    r1, s1, out = mixed_payments(world)
+
+    result = refund(world, s1, out, revenue_coa_id=coa(db, chosen))
+
+    assert result.revenue_coa_id == coa(db, chosen)
+    assert refund_rows(db) == [(1800, DEBTORS, -800000, None, '2026-07-10', FORM_LIQUID),
+                               (WAITING, chosen, -800000, -127700, '2026-07-10', FORM_TRANSFER)]      # Steuer der Zahlungen: 12,77
+    assert db.get_storno_credit(r1) == 0 and db.find_payment_inconsistencies() == []
+    assert ledger(db)[DEBTORS] == 0 and ledger(db)[WAITING] == 0
+    assert euer_on(db, '2026-07-10').get(3806) == -12.77                                  # die Umsatzsteuer geht ganz zurück
+
+
+def test_the_choice_is_asked_for_every_refund_while_the_payments_stay_on_two_accounts(world):
+    db = world.db
+    _r1, s1, _out = mixed_payments(world)
+    first, second = outgoing(world, 30.0, '2026-07-11'), outgoing(world, 50.0, '2026-07-12')
+    refund(world, s1, first, 30.0, revenue_coa_id=coa(db, 4400))
+    refused(world, s1, second, MIXED_REVENUE_MESSAGE)
+    refund(world, s1, second, revenue_coa_id=coa(db, 4300))
+    assert [row[1] for row in refund_rows(db) if row[0] == WAITING] == [4400, 4300]
+
+
+def test_a_non_revenue_account_among_the_payments_also_needs_the_choice(world):
+    db = world.db
+    _r1, s1, out = mixed_payments(world, second_account=6815)
+    refused(world, s1, out, MIXED_REVENUE_MESSAGE)
+    assert refund(world, s1, out, revenue_coa_id=coa(db, 4400)).revenue_coa_id == coa(db, 4400)
+
+
+def test_payments_on_one_revenue_account_need_no_choice_and_a_given_one_is_ignored(world):
+    """Alle Zahlungen auf demselben Erlöskonto (auch einem, das nicht das übliche ist): wie bisher dieses – eine Wahl des Nutzers
+    zählt dann nicht."""
+    db = world.db
+    r1, s1, out = mixed_payments(world, second_account=4400)
+    assert db.refund_revenue_coas_differ(s1) is False and db.refund_revenue_coas_differ(r1) is False
+    assert refund(world, s1, out, revenue_coa_id=coa(db, 4300)).revenue_coa_id == coa(db, 4400)
+
+
+def test_without_marked_rows_the_stored_account_decides_as_before_and_a_credit_note_only_asks_when_the_payments_differ(world):
+    db = world.db
+    r1 = sent(world)
+    add_payment(world, r1, 50.0)                                                         # Import: keine markierten Sätze
+    s1 = cancel(world, r1, '2026-07-02').storno_id
+    assert db.refund_revenue_coas_differ(s1) is False
+    assert refund(world, s1, outgoing(world, 50.0)).revenue_coa_id == coa(db, 4400)      # das hinterlegte Konto
+    assert db.refund_revenue_coas_differ(99999) is False and db.refund_revenue_coas_differ(sent(world, number='T-200')) is False
+
+
+def test_the_credit_note_page_offers_the_revenue_account_when_the_payments_differ(world):
+    db = world.db
+    r1, s1, _out = mixed_payments(world)
+    html = PageInvoice(db, {}, s1)
+    box = box_of(html)
+    select = Dom(box).one('select', id='revenueCoa')
+    assert 'required' in select and select['name'] == 'revenue_coa_id'
+    assert f'<p class="hint">{MIXED_REVENUE_MESSAGE}</p>' in box                          # der Satz steht oben als Hinweis
+    assert 'Die Wahl gilt künftig' not in box and 'kein Erlöskonto hinterlegt' not in box
+    options = [(o.get('value'), 'selected' in o) for o in Dom(box).all('option')]
+    assert ('', False) in options and str(coa(db, 4400)) in [value for value, _s in options]
+    # die Seite der stornierten Rechnung hat den Kasten nicht; ohne verschiedene Konten fehlt die Auswahl
+    assert box_of(PageInvoice(db, {}, r1)) is None
+    other_world_r, other_s, _paid = paid_and_cancelled(world, number='T-300')
+    assert 'id="revenueCoa"' not in box_of(PageInvoice(db, {}, other_s))
+
+
+def test_the_hint_of_the_box_does_not_promise_a_default_but_the_payment_form_still_does(world):
+    """Die Wahl einer Erstattung lehrt kein Erlöskonto (``_learned_revenue_coa`` liest nur positive Sätze) – der Kasten sagt
+    es nicht. Bei der Zahlung bleibt der Satz."""
+    db = world.db
+    hint = 'Die Wahl gilt künftig als Vorgabe für diesen Steuersatz.'
+    imported = make_invoice(world, 'sent', number='T-201', items=SIXTEEN, taxRate=0.16)
+    add_payment(world, imported, 116.0)
+    s1 = cancel(world, imported, '2026-07-02').storno_id
+    box = box_of(PageInvoice(db, {}, s1))
+    assert 'Für 16 % ist kein Erlöskonto hinterlegt.' in box and hint not in box
+    open_16 = make_invoice(world, 'sent', number='T-202', items=SIXTEEN, taxRate=0.16)
+    page = PageInvoice(db, {}, open_16)
+    assert 'Für 16 % ist kein Erlöskonto hinterlegt. ' + hint in page
+    assert revenue_coa_choice(db, 0.16)[1].endswith(hint) and not revenue_coa_choice(db, 0.16, teaches=False)[1].endswith(hint)
 
 
 # ── § 19 und der Umzug eines Teils ───────────────────────────────────────────
@@ -679,17 +809,184 @@ def test_the_formula_of_the_free_rest_of_a_payment_is_unchanged():
                                                              'InvoicePayments ip WHERE ip.BookingID = x.ID), 0), ')
 
 
-def test_the_formula_of_the_free_rest_of_an_outgoing_movement_has_the_same_condition_for_bank_effective_rows():
-    out_expr, out_params = Database._free_outgoing_minor_sql([3, 5], 'x')
-    assert out_params == [3, 5, 3, 5]
-    assert out_expr == ('-x.Amount - MAX(-COALESCE((SELECT SUM(ip.Amount) FROM InvoicePayments ip WHERE ip.BookingID = x.ID), 0), '
-                        '-COALESCE((SELECT SUM(k.Amount) FROM Bookings k WHERE k.ParentBooking_ID = x.ID AND (k.COA_ID IS NULL '
-                        'OR k.CounterCOA_ID IS NULL OR k.COA_ID IN (?,?) OR k.CounterCOA_ID IN (?,?))), 0))')
+def test_the_condition_bank_effective_of_the_payment_formula_is_unchanged():
+    """Die Bedingung „bankwirksam“ des Zahlungseingangs (``_bank_effective_sql``) ist Zeichen für Zeichen die, die sie war; der
+    freie Rest eines Ausgangs rechnet nicht mehr damit (``_outgoing_free_minor``, über ``bank_effect``)."""
     condition = Database._bank_effective_sql([3, 5])
-    assert condition[0] in out_expr and condition[0] in Database._free_minor_sql([3, 5])[0]        # die EINE Bedingung
-    assert condition[1] == [3, 5, 3, 5]
+    assert condition == ('(k.COA_ID IS NULL OR k.CounterCOA_ID IS NULL OR k.COA_ID IN (?,?) OR k.CounterCOA_ID IN (?,?))',
+                         [3, 5, 3, 5])
+    assert condition[0] in Database._free_minor_sql([3, 5])[0]
+    assert not hasattr(Database, '_free_outgoing_minor_sql')
 
 
+# ── Freier Rest eines Ausgangs: die Sätze nach ihrer Wirkung auf das Konto der Bewegung ──
+# Der freie Rest ist ``|Betrag| − MAX(−Σ Zuordnungen, −Σ Wirkung der Sätze)``; die Wirkung eines Satzes ist die, mit der die
+# Split-Summe rechnet (``bank_effect``). Ein Spiegel aus dem Import (``mirror_coa``, Rohbetrag, positiv = Konto im Soll) unter
+# einem Ausgang „Bank → Tagesgeld“ steht als „1810 an 1800“ mit **+50**: Roh gerechnet sähe er nicht verbraucht aus.
+
+def savings_account(w):
+    """Ein zweites eigenes Bankkonto „Tagesgeld“ (SKR 1810): Eine Überweisung dorthin ist ein Ausgang mit einem Spiegel darunter."""
+    w.db.insert_account('Tagesgeld', 'Eigene Firma GmbH', 'DE02120300000000202051', 'TESTDE2X', 'Testbank AG', is_cash=0,
+                        skr_account=1810)
+
+
+def out_with(w, *rows, amount=50.0, source_group=None, allocated=None, no_form=False):
+    """Ein Ausgang über ``amount`` € mit Sätzen darunter, je ``(Konto-Nr., Gegenkonto-Nr., Betrag in €, Form)``; ``allocated``:
+    eine Zuordnung (Betrag in €, negativ) an der Bewegung wie der WISO-Import sie anlegt; ``no_form``: die Sätze ohne gespeicherte
+    Form (per Roh-SQL angelegt)."""
+    db = w.db
+    bank = outgoing(w, amount, '2026-07-10')
+    for number, counter, value, form in rows:
+        row = db.insert_booking('2026-07-10', value, coa_id=coa(db, number), counter_coa_id=coa(db, counter),
+                                booking_type='entry', parent_booking_id=bank, entry_form=form)
+        if source_group:
+            run_sql(db, 'UPDATE Bookings SET SourceGroup = ? WHERE ID = ?', source_group, row)
+        if no_form:
+            run_sql(db, 'UPDATE Bookings SET EntryForm = NULL WHERE ID = ?', row)
+    if allocated is not None:
+        target = query_rows(db, "SELECT ID FROM Invoices WHERE InvoiceNumber = 'T-190'")
+        other = target[0]['ID'] if target else sent(w, number='T-190')
+        run_sql(db, 'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) VALUES (?, ?, ?, ?)',
+                other, bank, int(round(allocated * 10000)), '2026-07-10')
+    return bank
+
+
+def split_sum_rest(db, bank):
+    """Was die Split-Summe zur Bewegung sagt: ihr Rest in € (Betrag minus Wirkung der Sätze); 0, wenn sie aufgeht."""
+    return {row[0]: row[3] for row in db.find_unbalanced_splits(*RANGE)}.get(bank, 0)
+
+
+MIRROR_COA, MIRROR_COUNTER, MIRROR_LEGACY, PURPOSE = 'mirror_coa', 'mirror_counter', 'mirror_legacy', 'purpose_first'
+
+#: (Sätze, Optionen von ``out_with``, freier Rest in €) unter einem Ausgang über 50,00 € auf das Giro-Konto 1800
+FREE_REST_CASES = {
+    'Import-Spiegel-mirror_coa-+50': ([(1810, 1800, 50.0, MIRROR_COA)], {}, 0),
+    'mirror_coa-in-die-andere-Richtung': ([(1800, 1810, 50.0, MIRROR_COA)], {}, 50),
+    'mirror_counter-Betrag-auf-dem-Gegenkonto': ([(1810, 1800, -50.0, MIRROR_COUNTER)], {}, 0),
+    'mirror_counter-Bank-vorne': ([(1800, 1810, 50.0, MIRROR_COUNTER)], {}, 0),
+    'mirror_legacy-roh-negativ': ([(1810, 1800, -50.0, MIRROR_LEGACY)], {}, 0),
+    'mirror_legacy-roh-positiv': ([(1810, 1800, 50.0, MIRROR_LEGACY)], {}, 50),
+    'ohne-Form-roh-negativ': ([(1810, 1800, -50.0, MIRROR_LEGACY)], {'no_form': True}, 0),
+    'ohne-Form-roh-positiv': ([(1810, 1800, 50.0, MIRROR_LEGACY)], {'no_form': True}, 50),
+    'teilweise-kontiert': ([(6815, 1800, -20.0, PURPOSE)], {}, 30),
+    'WISO-Spiegel': ([(1810, 1800, 50.0, MIRROR_COA)], {'source_group': 'WISO-TEST-1'}, 0),
+    'WISO-Ausgabe-teilweise': ([(6815, 1800, -30.0, PURPOSE)], {'source_group': 'WISO-TEST-2'}, 20),
+    'negative-Import-Zuordnung': ([], {'allocated': -30.0}, 20),
+    'Zuordnung-größer-als-der-Satz': ([(6815, 1800, -20.0, PURPOSE)], {'allocated': -30.0}, 20),
+    'Satz-größer-als-die-Zuordnung': ([(6815, 1800, -20.0, PURPOSE)], {'allocated': -10.0}, 30),
+    'positiver-Satz-unter-negativer-Bewegung': ([(6815, 1800, 20.0, PURPOSE)], {}, 50),
+    'Umbuchung-ohne-Geldkonto': ([(6815, 4400, -20.0, 'transfer')], {}, 50),
+    'ohne-Sätze': ([], {}, 50),
+}
+
+
+@pytest.mark.parametrize('rows, options, free', list(FREE_REST_CASES.values()), ids=list(FREE_REST_CASES))
+def test_the_free_rest_of_an_outgoing_movement_counts_the_rows_by_their_effect_on_its_account(world, rows, options, free):
+    db = world.db
+    savings_account(world)
+    r1, s1, _paid = paid_and_cancelled(world)                                  # 50,00 € Guthaben
+    bank = out_with(world, *rows, **options)
+    candidates = {c[0]: c[5] for c in db.get_unallocated_outgoing_bookings()}
+    if rows and not options.get('allocated'):
+        # so sieht es auch die Split-Summe: frei ist, was ihr Rest noch fasst – nie mehr als der Betrag der Bewegung selbst
+        assert free == min(50, -split_sum_rest(db, bank))
+
+    if free == 0:
+        assert bank not in candidates                                          # die Umbuchung ist keine Erstattung
+        refused(world, s1, bank, REFUND_EXHAUSTED_MESSAGE)
+    else:
+        assert candidates[bank] == free
+        refund(world, s1, bank)
+        assert allocations(db, s1)[0][1] == -free * 10000                      # erstattet wird höchstens der freie Rest
+        assert db.get_storno_credit(r1) == 50 - free
+
+
+def test_the_import_mirror_to_the_savings_account_is_no_candidate_and_no_refund(world):
+    """Die Überweisung Giro → Tagesgeld, wie der Import sie schreibt („1810 an 1800“ mit +50): kein Kandidat, und die Erstattung
+    lehnt mit dem Klartext ab – nichts geschrieben. Ohne den Spiegel (oder mit einem Betrag, der die Bewegung nicht verbraucht)
+    wäre sie ein Kandidat mit „Frei 50,00“."""
+    db = world.db
+    savings_account(world)
+    _r1, s1, _paid = paid_and_cancelled(world)
+    transfer = out_with(world, (1810, 1800, 50.0, MIRROR_COA))
+    free_one = outgoing(world, 50.0, '2026-07-09')
+
+    assert [(c[0], c[5]) for c in db.get_unallocated_outgoing_bookings()] == [(free_one, 50)]
+    assert refused(world, s1, transfer, REFUND_EXHAUSTED_MESSAGE).message == 'Kein offener Betrag zuordenbar (Guthaben oder Buchung ausgeschöpft)'
+    assert db.find_unbalanced_splits(*RANGE) == []                              # für die Split-Summe geht der Spiegel auf
+
+
+def test_the_free_rest_of_a_payment_still_counts_a_mirror_raw(world):
+    """Beim Eingang bleibt es bewusst bei der Rohrechnung (``_free_minor_sql``): Der Spiegel „1800 an 1810“ mit +50 unter einem
+    Eingang über 50 gilt dort als verbraucht – wie bisher."""
+    db = world.db
+    savings_account(world)
+    incoming = db.insert_booking('2026-07-09', 50.0, booking_type='bank', account_id=world.bank, recipient_client=CUSTOMER_TEXT)
+    db.insert_booking('2026-07-09', 50.0, coa_id=coa(db, 1800), counter_coa_id=coa(db, 1810), booking_type='entry',
+                      parent_booking_id=incoming, entry_form=MIRROR_COA)
+    assert db.get_booking_unallocated_amount(incoming) == 0 and incoming not in [c[0] for c in db.get_unallocated_bank_bookings()]
+
+
+def counting_connections(db, monkeypatch, *, steps=None, statements=None):
+    """Jede Verbindung der Datenbankschicht zählt mit: ``statements`` sammelt die SQL-Anweisungen, ``steps`` die Schritte der
+    SQLite-Maschine (alle 100 Befehle ein Eintrag) – ein Maß für die Arbeit, das nicht an der Uhr hängt."""
+    original = type(db)._get_connection
+
+    def counting(self):
+        conn = original(self)
+        if statements is not None:
+            conn.set_trace_callback(statements.append)
+        if steps is not None:
+            conn.set_progress_handler(lambda: (steps.append(1), 0)[1], 100)
+        return conn
+    monkeypatch.setattr(type(db), '_get_connection', counting)
+
+
+def test_the_free_rest_of_an_outgoing_movement_is_asked_in_few_statements(world, monkeypatch):
+    """Der freie Rest aller Ausgänge kommt aus wenigen gesammelten Abfragen: Die Zahl der Anweisungen ist bei 3 und bei 30 Ausgängen
+    – mit Sätzen und Zuordnungen darunter – dieselbe (kein „eine Abfrage je Bewegung“)."""
+    db = world.db
+    savings_account(world)
+    statements = []
+    counting_connections(db, monkeypatch, statements=statements)
+    counts, made = {}, 0
+    for total in (3, 30):
+        while made < total:
+            made += 1
+            out_with(world, (6815, 1800, -10.0, PURPOSE), (1810, 1800, 5.0, MIRROR_COA), allocated=-1.0 if made % 2 else None)
+        statements.clear()
+        assert len(db.get_unallocated_outgoing_bookings(None, limit=100)) == total
+        counts[total] = len(statements)
+    assert counts[3] == counts[30], counts
+    assert counts[30] <= 12, counts
+
+
+def test_the_candidate_list_does_not_grow_with_outgoing_movements_times_allocations(world, monkeypatch):
+    """Vorher las die Kandidatenliste je Ausgang die Zuordnungen aller Bewegungen (``InvoicePayments`` hat keinen Index auf
+    ``BookingID`` allein): 20 000 Ausgänge × 5 000 Zuordnungen brauchten gut 5 s je Seitenaufruf. Gemessen an den Schritten der
+    SQLite-Maschine – deterministisch, nicht an der Uhr: Das Vierfache an Ausgängen und Zuordnungen kostet etwa das Vierfache, nicht
+    das Sechzehnfache."""
+    db = world.db
+    invoice = sent(world)
+    steps = []
+    counting_connections(db, monkeypatch, steps=steps)
+    cost, made = {}, 0
+    for total in (50, 200):
+        with closing(sqlite3.connect(db.db_name)) as con:
+            con.executemany("INSERT INTO Bookings (DateBooking, Amount, Account_ID, BookingType) VALUES ('2026-01-01', ?, ?, 'bank')",
+                            [(-10000 - n, world.bank) for n in range(made, total)])
+            con.executemany("INSERT INTO Bookings (DateBooking, Amount, Account_ID, BookingType) VALUES ('2026-01-01', ?, ?, 'bank')",
+                            [(10000 + n, world.bank) for n in range(made, total)])
+            incoming = [row[0] for row in con.execute("SELECT ID FROM Bookings WHERE Amount > 0 AND ID NOT IN "
+                                                      "(SELECT BookingID FROM InvoicePayments)")]
+            con.executemany("INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) VALUES (?, ?, 5, '2026-01-01')",
+                            [(invoice, booking) for booking in incoming])
+            con.commit()
+        made = total
+        steps.clear()
+        assert len(db.get_unallocated_outgoing_bookings(None, limit=1000)) == total
+        cost[total] = len(steps)
+    assert cost[200] < 8 * cost[50], cost
 # ── Entfernen ────────────────────────────────────────────────────────────────
 
 def test_removing_a_refund_restores_every_row_of_every_table(world):
@@ -812,14 +1109,16 @@ def test_a_payment_of_an_invoice_without_credit_note_is_removed_as_before(world)
         db.unassign_invoice_payment(99999)
 
 
-def test_deleting_the_payment_movement_stays_allowed_and_the_check_list_names_the_excess(world):
-    """``delete_transaction`` einer Bankbewegung bleibt, wie es ist. Der Zustand „mehr erstattet als gezahlt“ erscheint in der
-    Prüfliste – auf beiden Seiten des Paares."""
+def test_the_check_list_names_a_refund_beyond_the_payments_when_the_guard_was_bypassed(world, monkeypatch):
+    """Die Prüfliste bleibt für Eingriffe an der App vorbei (und Bestand aus älteren Versionen): Der Zustand „mehr erstattet als
+    gezahlt“ erscheint in der Prüfliste – auf beiden Seiten des Paares. Die App selbst lässt ihn nicht mehr entstehen
+    (``test_no_way_removes_a_payment_the_refund_needs``)."""
     db = world.db
     r1, s1, paid_booking = paid_and_cancelled(world)
     refund(world, s1, outgoing(world, 50.0))
     assert db.find_payment_inconsistencies() == []
 
+    unguarded(monkeypatch)
     db.delete_transaction(paid_booking)
 
     expected = [('refund_exceeds_credit', s1, '26R001',
@@ -846,27 +1145,301 @@ def test_the_handler_answers_a_refused_removal_with_409_and_the_text(world):
     assert handlers.handle_delete_invoice_payment(json.dumps({'payment_id': 99999}).encode())[0] == 500
 
 
-# ── Kein automatischer Umzug nach einer Erstattung ───────────────────────────
+# ── Schutz des Guthabens auf jedem Weg ───────────────────────────────────────
+# Das Guthaben eines Storno-Paares wird auf keinem Weg der Oberfläche negativ: die Rechnungsseite, der Bank-Editor (✕ an einer
+# Zeile der Zahlung), das Löschen eines Satzes und das Löschen der Bankbewegung fragen vor dem ersten Schreiben dieselbe Prüfung
+# (``_refund_removal_blocker``) und lehnen mit dem Klartext ab – nichts ist dann geändert. Das Entfernen der Erstattung bleibt frei.
 
-REFUNDED_HINT = ('Die Zahlungen der stornierten Rechnung T-100 bleiben dort: Zu ihr wurde bereits erstattet. '
-                 'Bitte von Hand zuordnen.')
+def refunded_pair(w, refunded=20.0):
+    """R1 (50,00 € gezahlt) storniert, ``refunded`` € erstattet – die Namen, die die Wege brauchen: die Zahlung (ID der Zuordnung,
+    Bankbewegung, ihre beiden Sätze) und die Erstattung (dasselbe)."""
+    db = w.db
+    r1, s1, paid_booking = paid_and_cancelled(w)
+    out = outgoing(w, refunded, '2026-07-10')
+    refund(w, s1, out, refunded)
+
+    def children(bank):
+        return [row['ID'] for row in query_rows(db, 'SELECT ID FROM Bookings WHERE ParentBooking_ID = ? ORDER BY ID', bank)]
+    return SimpleNamespace(w=w, db=db, r1=r1, s1=s1, bank=paid_booking, kids=children(paid_booking), out=out,
+                           refund_kids=children(out), payment_id=db.get_invoice_payments(r1)[0][0],
+                           refund_id=db.get_invoice_payments(s1)[0][0])
 
 
-def test_after_a_refund_the_replacement_takes_nothing_and_the_hint_says_why(world, monkeypatch):
-    assert MOVE_REFUNDED_HINT.format(number='T-100') == REFUNDED_HINT
-    s = paid_scenario(world, monkeypatch)
-    refund(world, s.s1, outgoing(world, 20.0))
-    stays_untouched(s, REFUNDED_HINT)
-    assert world.db.get_storno_credit(s.s1) == 30                                   # das Guthaben ist noch da
-    assert world.db.find_payment_inconsistencies() == []
+def _refusal(call):
+    """Der Klartext, mit dem ``call`` das Entfernen ablehnt – ``None``, wenn es gelingt."""
+    try:
+        call()
+    except PaymentRemovalRefused as exc:
+        return str(exc)
+    return None
 
 
-def test_after_a_full_refund_the_replacement_takes_nothing_either(world, monkeypatch):
-    s = paid_scenario(world, monkeypatch)
-    refund(world, s.s1, outgoing(world, 50.0))
-    stays_untouched(s, REFUNDED_HINT)
-    assert world.db.get_storno_credit(s.s1) == 0
+def _invoice_page(c, payment_id=None):
+    status, message = handlers.handle_delete_invoice_payment(json.dumps({'payment_id': payment_id or c.payment_id}).encode())
+    if status == 409:
+        return message
+    assert (status, message) == (200, 'ok'), (status, message)
+    return None
 
+
+def _editor(c, *dropped, bank=None):
+    """Die Maske der Bankbewegung öffnen, die Zeilen dieser Sätze entfernen (✕) und speichern, wie der Browser es schickt:
+    der Klartext der Ablehnung (400), ``None``, wenn es gespeichert wurde."""
+    post_data, _options = open_form(c.db, bank or c.bank)
+    for row_id in dropped:
+        post_data = drop_row(post_data, row_id)
+    status, text = handle_add_transaction(c.db, post_data)
+    if status == 400:
+        return text
+    assert status == 303, (status, text)
+    return None
+
+
+def _delete_route(c, booking_id):
+    """``POST /transactions/delete``: der Grund aus der Weiterleitung auf die Liste – ``None`` bei einer Löschung."""
+    status, location = handlers.handle_delete_transaction(c.db, booking_id)
+    assert status == 303
+    if location == '/transactions':
+        return None
+    assert location.startswith('/transactions?err='), location
+    return unquote(location[len('/transactions?err='):])
+
+
+PAYMENT_WAYS = {
+    'Rechnungsseite': _invoice_page,
+    'unassign_invoice_payment': lambda c: _refusal(lambda: c.db.unassign_invoice_payment(c.payment_id)),
+    'Editor-Satz-1': lambda c: _editor(c, c.kids[0]),
+    'Editor-Satz-2': lambda c: _editor(c, c.kids[1]),
+    'Editor-beide-Sätze': lambda c: _editor(c, *c.kids),
+    'remove_split_row-1': lambda c: _refusal(lambda: c.db.remove_split_row(c.kids[0])),
+    'remove_split_row-2': lambda c: _refusal(lambda: c.db.remove_split_row(c.kids[1])),
+    'delete_transaction-Satz-1': lambda c: _refusal(lambda: c.db.delete_transaction(c.kids[0])),
+    'delete_transaction-Satz-2': lambda c: _refusal(lambda: c.db.delete_transaction(c.kids[1])),
+    'delete_transaction-Bankbewegung': lambda c: _refusal(lambda: c.db.delete_transaction(c.bank)),
+    'Löschroute-Satz': lambda c: _delete_route(c, c.kids[0]),
+    'Löschroute-Bankbewegung': lambda c: _delete_route(c, c.bank),
+}
+
+
+@pytest.mark.parametrize('way', list(PAYMENT_WAYS.values()), ids=list(PAYMENT_WAYS))
+def test_no_way_removes_a_payment_the_refund_needs(world, way):
+    db = world.db
+    c = refunded_pair(world)
+    before = comparable(db)
+
+    assert way(c) == ALREADY_REFUNDED_MESSAGE == (
+        'Zu dieser Rechnung wurde bereits erstattet – erst die Erstattung an der Stornorechnung entfernen.')
+
+    assert comparable(db) == before                                          # Bookings, InvoicePayments, Invoices: Zeile für Zeile
+    assert db.get_storno_credit(c.r1) == 30 and len(db.get_invoice_payments(c.r1)) == 1
+    # nach dem Entfernen der Erstattung geht derselbe Weg wieder
+    db.unassign_invoice_payment(c.refund_id)
+    assert way(c) is None
+    assert db.get_invoice_payments(c.r1) == [] and db.get_storno_credit(c.r1) == 0
+    assert db.find_payment_inconsistencies() == []
+
+
+REFUND_WAYS = {
+    'Rechnungsseite': lambda c: _invoice_page(c, c.refund_id),
+    'unassign_invoice_payment': lambda c: _refusal(lambda: c.db.unassign_invoice_payment(c.refund_id)),
+    'Editor-Satz-1': lambda c: _editor(c, c.refund_kids[0], bank=c.out),
+    'Editor-Satz-2': lambda c: _editor(c, c.refund_kids[1], bank=c.out),
+    'remove_split_row': lambda c: _refusal(lambda: c.db.remove_split_row(c.refund_kids[1])),
+    'delete_transaction-Satz': lambda c: _refusal(lambda: c.db.delete_transaction(c.refund_kids[0])),
+    'delete_transaction-Bankbewegung': lambda c: _refusal(lambda: c.db.delete_transaction(c.out)),
+    'Löschroute-Satz': lambda c: _delete_route(c, c.refund_kids[0]),
+    'Löschroute-Bankbewegung': lambda c: _delete_route(c, c.out),
+}
+
+
+@pytest.mark.parametrize('way', list(REFUND_WAYS.values()), ids=list(REFUND_WAYS))
+def test_removing_a_refund_stays_free_on_every_way(world, way):
+    db = world.db
+    c = refunded_pair(world)
+    assert way(c) is None
+    assert db.get_invoice_payments(c.s1) == [] and db.get_storno_credit(c.r1) == 50       # das Guthaben ist wieder da
+    assert len(db.get_invoice_payments(c.r1)) == 1                                        # die Zahlung bleibt
+    assert db.find_payment_inconsistencies() == []
+
+
+def test_a_save_with_several_changes_stores_nothing_when_one_row_would_remove_the_payment(world):
+    """Alles oder nichts: Wer im Editor die Bankzeile ändert, eine Zeile ergänzt UND die Zeile der geschützten Zahlung entfernt,
+    bekommt die Ablehnung – gespeichert ist nichts, auch nicht die Änderung der Bankzeile und die neue Zeile."""
+    db = world.db
+    c = refunded_pair(world)
+    before = comparable(db)
+    post_data, _options = open_form(db, c.bank)
+    post_data['recipient'] = ['Geändert & Söhne']
+    post_data = add_row(post_data, split_amount='5.00', split_coa=str(coa(db, 6815)), split_text='neue Zeile')
+    post_data = drop_row(post_data, c.kids[1])
+
+    assert handle_add_transaction(db, post_data) == (400, ALREADY_REFUNDED_MESSAGE)
+
+    assert comparable(db) == before
+    assert query_rows(db, 'SELECT RecipientClient FROM Bookings WHERE ID = ?', c.bank) == [
+        {'RecipientClient': CUSTOMER_TEXT}]
+    assert [r['ID'] for r in query_rows(db, 'SELECT ID FROM Bookings WHERE ParentBooking_ID = ?', c.bank)] == c.kids
+    # ohne die Erstattung gelingt dasselbe Speichern – alle Änderungen auf einmal
+    db.unassign_invoice_payment(c.refund_id)
+    assert handle_add_transaction(db, post_data)[0] == 303
+    assert query_rows(db, 'SELECT RecipientClient FROM Bookings WHERE ID = ?', c.bank) == [
+        {'RecipientClient': 'Geändert & Söhne'}]
+    assert [r['Text'] for r in query_rows(db, 'SELECT Text FROM Bookings WHERE ParentBooking_ID = ? ORDER BY ID', c.bank)] == [
+        'neue Zeile']
+
+
+def test_a_collective_payment_loses_only_the_row_of_the_invoice_without_credit_note(world):
+    """Eine Überweisung über 100,00 € zahlt R1 (50,00 €, später storniert und teilweise erstattet) und R3 (50,00 €): Im Editor geht
+    die Zeile von R3 – die von R1 nicht. Beide stehen unter derselben Bankbewegung."""
+    db = world.db
+    r1, r3 = sent(world), sent(world, number='T-103')
+    bank = db.insert_booking('2026-07-01', 100.0, booking_type='bank', account_id=world.bank, recipient_client=CUSTOMER_TEXT)
+    for invoice in (r1, r3):
+        assert handlers.link_booking_to_invoice_capped(db, invoice, bank, 50.0) == (True, None)
+    s1 = cancel(world, r1, '2026-07-02').storno_id
+    refund(world, s1, outgoing(world, 20.0, '2026-07-10'), 20.0)
+    rows_of = {number: [r['ID'] for r in query_rows(
+        db, 'SELECT ID FROM Bookings WHERE ParentBooking_ID = ? AND DocumentNumber = ? ORDER BY ID', bank, number)]
+        for number in ('T-100', 'T-103')}
+    c = SimpleNamespace(db=db, bank=bank)
+    before = comparable(db)
+
+    assert _editor(c, *rows_of['T-100']) == ALREADY_REFUNDED_MESSAGE
+    assert _editor(c, rows_of['T-103'][0], *rows_of['T-100']) == ALREADY_REFUNDED_MESSAGE        # auch zusammen mit der erlaubten
+    assert comparable(db) == before
+
+    assert _editor(c, *rows_of['T-103']) is None                                                  # R3 allein geht
+    assert [(a[1], a[3]) for a in db.get_booking_allocations(bank)] == [(r1, 50)]
+    assert db.get_invoice_payments(r3) == [] and db.get_storno_credit(r1) == 30
+
+
+def test_the_prevention_looks_at_all_removals_of_one_save_together(world):
+    """Zwei Zuordnungen desselben Paares (Doppel aus einem Altbestand: ein eindeutiger Index auf (Rechnung, Bewegung) fehlt dort),
+    von denen jede allein gehen dürfte – 50,00 € gezahlt, 40,00 € erstattet: jede allein lässt 50 ≥ 40 –, aber zusammen nicht."""
+    db = world.db
+    r1 = sent(world)
+    pay(world, r1, 50.0)
+    pay(world, r1, 50.0)
+    s1 = cancel(world, r1, '2026-07-02').storno_id
+    refund(world, s1, outgoing(world, 40.0, '2026-07-10'), 40.0)
+    first, second = [p[0] for p in db.get_invoice_payments(r1)]
+    with closing(sqlite3.connect(db.db_name)) as con:
+        blocker = Database._refund_removal_blocker
+        assert blocker(con, [first]) is None and blocker(con, [second]) is None
+        assert blocker(con, [first, second]) == ALREADY_REFUNDED_MESSAGE
+        assert blocker(con, [first, second, db.get_invoice_payments(s1)[0][0]]) is None          # mit der Erstattung geht alles
+        assert blocker(con, []) is None and blocker(con, [db.get_invoice_payments(s1)[0][0]]) is None
+
+
+def test_the_check_of_the_editor_is_read_only(world):
+    db = world.db
+    c = refunded_pair(world)
+    before = comparable(db)
+    assert db.split_removal_blocker([]) is None
+    assert db.split_removal_blocker(c.kids) == db.split_removal_blocker([c.kids[0]]) == ALREADY_REFUNDED_MESSAGE
+    assert db.split_removal_blocker(c.refund_kids) is None and db.split_removal_blocker([99999]) is None
+    assert db.split_removal_blocker([str(c.kids[1])]) == ALREADY_REFUNDED_MESSAGE                    # IDs aus dem Formular sind Text
+    assert comparable(db) == before
+
+
+def test_a_row_the_editor_only_detaches_takes_no_assignment_with_it(world):
+    """Ein importierter Satz (Quellklammer) wird beim ✕ nur abgehängt, nicht gelöscht – hängt eine Zahlung (Altbestand: eine
+    Zuordnung an einem Buchungssatz statt an der Bankbewegung) an ihm, bleibt sie, und die Prüfung hat nichts dagegen."""
+    db = world.db
+    r1, s1, _paid = paid_and_cancelled(world)
+    other = db.insert_booking('2026-07-05', 30.0, booking_type='bank', account_id=world.bank, recipient_client=CUSTOMER_TEXT)
+    entry = db.insert_booking('2026-07-05', 30.0, coa_id=coa(db, 4400), counter_coa_id=coa(db, 1800), booking_type='entry',
+                              parent_booking_id=other, entry_form=FORM_PURPOSE)
+    run_sql(db, 'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) VALUES (?, ?, 300000, ?)',
+            r1, entry, '2026-07-05')
+    refund(world, s1, outgoing(world, 60.0, '2026-07-10'), 60.0)                  # 80,00 € gezahlt, 60,00 € erstattet
+    before = comparable(db)
+
+    run_sql(db, "UPDATE Bookings SET SourceGroup = 'WISO-TEST-9' WHERE ID = ?", entry)
+    assert db.split_removal_blocker([entry]) is None and _delete_route(SimpleNamespace(db=db), entry) == ALREADY_REFUNDED_MESSAGE
+    assert db.detachable_split_rows([entry]) == {entry}
+    run_sql(db, "UPDATE Bookings SET SourceGroup = NULL WHERE ID = ?", entry)
+    assert db.split_removal_blocker([entry]) == ALREADY_REFUNDED_MESSAGE                              # gelöscht würde sie mitgehen
+    assert comparable(db)['InvoicePayments'] == before['InvoicePayments']
+
+
+def test_a_state_that_changed_between_planning_and_writing_is_a_refusal_and_not_a_500(world, monkeypatch):
+    """Die Prüfung im Plan ist die Vorab-Prüfung; maßgeblich bleibt die in der Transaktion des Löschens. Ändert sich der Bestand
+    dazwischen (zwei Fenster), antwortet der Handler mit dem Klartext statt mit einem Fehler – und die Zahlung bleibt."""
+    db = world.db
+    c = refunded_pair(world)
+    monkeypatch.setattr(Database, 'split_removal_blocker', lambda self, ids: None)        # der Plan sah noch nichts
+    assert _editor(c, c.kids[1]) == ALREADY_REFUNDED_MESSAGE
+    assert len(db.get_invoice_payments(c.r1)) == 1 and db.get_storno_credit(c.r1) == 30
+
+
+# ── Über den Server: Liste und Editor ────────────────────────────────────────
+
+def test_over_http_the_list_route_redirects_with_the_reason_and_the_list_shows_it(server_port, books):
+    db = books.db
+    r1, s1, paid_booking = _http_pair(server_port, books)
+    refund(books, s1, outgoing(books, 20.0, '2026-07-10'), 20.0)
+    kids = [r['ID'] for r in query_rows(db, 'SELECT ID FROM Bookings WHERE ParentBooking_ID = ? ORDER BY ID', paid_booking)]
+    before = comparable(db)
+
+    for booking in (kids[0], paid_booking):
+        resp = post(server_port, f'/transactions/delete?id={booking}', csrf=books.csrf)
+        assert resp.status == 303, booking
+        assert unquote(resp.headers['Location']) == f'/transactions?err={ALREADY_REFUNDED_MESSAGE}'
+        assert comparable(db) == before
+        page = get(server_port, resp.headers['Location'])
+        assert page.status == 200 and app_msg_arguments(Dom(page.text)) == [ALREADY_REFUNDED_MESSAGE, 'error']
+
+    free = db.insert_booking('2026-08-01', 5.0, booking_type='entry')                   # eine gewöhnliche Löschung bleibt, wie sie war
+    ok = post(server_port, f'/transactions/delete?id={free}', csrf=books.csrf)
+    assert (ok.status, ok.headers['Location']) == (303, '/transactions') and db.get_booking_by_id(free) is None
+
+
+def test_over_http_the_editor_answers_with_the_text_and_stores_nothing(server_port, books):
+    db = books.db
+    r1, s1, paid_booking = _http_pair(server_port, books)
+    refund(books, s1, outgoing(books, 20.0, '2026-07-10'), 20.0)
+    kids = [r['ID'] for r in query_rows(db, 'SELECT ID FROM Bookings WHERE ParentBooking_ID = ? ORDER BY ID', paid_booking)]
+    post_data, _options = open_form(db, paid_booking)
+    post_data = drop_row(post_data, kids[0])
+    before = comparable(db)
+
+    fields = [(name, value) for name, values in post_data.items() for value in values] + [('csrf', books.csrf)]
+    resp = post(server_port, '/transactions/add', form=fields)
+
+    assert resp.status == 400 and resp.headers['Content-Type'].startswith('text/plain')
+    assert resp.text == ALREADY_REFUNDED_MESSAGE and comparable(db) == before
+
+
+LIST_RUNNER = r"""
+const fs = require('fs'), vm = require('vm');
+const log = {messages: []};
+const sandbox = {document: {addEventListener: (name, handler) => { if (name === 'DOMContentLoaded') handler(); }},
+  appMsg: (text, type) => log.messages.push([text, type])};
+vm.runInNewContext(fs.readFileSync(process.argv[2], 'utf8'), sandbox);
+console.log(JSON.stringify(log));
+"""
+
+
+@NO_NODE
+def test_the_script_block_of_the_reason_on_the_list_parses_and_shows_it_as_an_error(world, tmp_path):
+    reason = ALREADY_REFUNDED_MESSAGE + ' </script> "\'x'
+    block = next(s for s in Dom(PageTransactions(world.db, err=reason)).scripts if re.search(r'function\(\)\{appMsg\(', s))
+    log = _node(tmp_path, block.split('</script>')[0], LIST_RUNNER)
+    assert log == {'messages': [[reason, 'error']]}
+
+
+def test_the_list_page_shows_a_hostile_reason_only_as_text(world):
+    hostile = '</script><img src=x onerror=alert(1)>'
+    html = PageTransactions(world.db, err=hostile)
+    assert '<img' not in html and app_msg_arguments(Dom(html)) == [hostile, 'error']
+    assert app_msg_arguments(Dom(PageTransactions(world.db, err=ALREADY_REFUNDED_MESSAGE))) == [ALREADY_REFUNDED_MESSAGE, 'error']
+    assert 'DOMContentLoaded",function(){appMsg(' not in PageTransactions(world.db)               # ohne Grund keine Meldung
+
+
+# ── Umzug und Erstattung ─────────────────────────────────────────────────────
+# Nach einer Erstattung zieht höchstens das verbleibende Guthaben auf die Ersatzrechnung um (``test_invoice_reissue.py``,
+# „Umzug nach einer Erstattung“). Hier die Gegenrichtung und die Paare, die nichts miteinander zu tun haben.
 
 def test_without_a_refund_the_payments_move_as_before_and_the_remaining_credit_can_be_refunded(world, monkeypatch):
     """Die Gegenrichtung braucht keine Sonderregel: Nach dem Umzug ist das Guthaben entsprechend kleiner."""
@@ -982,12 +1555,13 @@ def test_a_refund_row_without_its_assignment_is_an_orphan_payment_row(world):
     assert {f['category'] for f in db.find_payment_inconsistencies()} >= {'orphan_payment_rows'}
 
 
-def test_the_new_category_is_found_for_the_pair_and_for_no_other_invoice(world):
+def test_the_new_category_is_found_for_the_pair_and_for_no_other_invoice(world, monkeypatch):
     db = world.db
     r1, s1, paid_booking = paid_and_cancelled(world)
     other = sent(world, number='T-200')
     refund(world, s1, outgoing(world, 30.0))
     pay(world, other, 10.0)
+    unguarded(monkeypatch)
     db.delete_transaction(paid_booking)
 
     expected = [('refund_exceeds_credit', s1, '26R001',
@@ -999,10 +1573,11 @@ def test_the_new_category_is_found_for_the_pair_and_for_no_other_invoice(world):
     assert findings(db) == [] and db.get_storno_credit(r1) == 0
 
 
-def test_the_check_list_stays_read_only_with_refunds(world):
+def test_the_check_list_stays_read_only_with_refunds(world, monkeypatch):
     db = world.db
     r1, s1, paid_booking = paid_and_cancelled(world)
     refund(world, s1, outgoing(world, 50.0))
+    unguarded(monkeypatch)
     db.delete_transaction(paid_booking)
     before = comparable(db)
     assert findings(db) != []
