@@ -759,6 +759,60 @@ class BookingsMixin:
             raise
         finally:
             conn.close()
+
+    def detachable_split_rows(self, booking_ids):
+        """Welche dieser Sätze löst der Bank-Editor beim Entfernen ihrer Zeile nur von der Bankbewegung,
+        statt sie zu löschen? Returns die IDs als ``set``.
+
+        Es sind Sätze, die nachweislich nicht im Editor entstanden sind: importierte (mit
+        Quellklammer ``SourceGroup``), AfA-Buchungen (ein Jahr des AfA-Plans verweist mit
+        ``Booking_ID`` auf sie – so erkennt ``db/assets.py`` ein Jahr als gebucht) und
+        Forderungsbuchungen (``db.matching.receivable_condition``), die ein Altbestand als Kind
+        angehängt hat – sie gehören zur Rechnung, wie beim Löschen der Bankbewegung
+        (``delete_transaction``). Ein markierter Zahlungssatz (``PAYMENT_MARK``) nie: Er geht mit
+        seiner ganzen Zuordnung."""
+        ids = [int(booking_id) for booking_id in booking_ids]
+        if not ids:
+            return set()
+        marks = ','.join('?' * len(ids))
+        conn = self._get_connection()
+        try:
+            receivable_sql, receivable_params = self._receivable_sql(conn.cursor(), alias='b')
+            rows = conn.execute(
+                f"SELECT b.ID FROM Bookings b WHERE b.ID IN ({marks}) AND b.BookingType = 'entry' "
+                "AND COALESCE(b.Status, '') != ? "
+                "AND (COALESCE(b.SourceGroup, '') != '' "
+                "     OR EXISTS (SELECT 1 FROM AssetDepreciations d WHERE d.Booking_ID = b.ID) "
+                f"     OR ({receivable_sql}))",
+                ids + [PAYMENT_MARK] + list(receivable_params)).fetchall()
+        finally:
+            conn.close()
+        return {row[0] for row in rows}
+
+    def remove_split_row(self, booking_id):
+        """Die Zeile eines Satzes im Buchungssatz-Editor der Bankmaske entfernen.
+
+        Ein Satz, der nachweislich nicht im Editor entstanden ist (``detachable_split_rows``: Import,
+        AfA-Buchung), wird **abgehängt**: ``ParentBooking_ID`` leer und ein vom Abgleich gesetzter Status
+        ``resolved`` zurückgesetzt – wie beim Abhängen einer Forderung (``delete_transaction``) –,
+        sonst bleibt jede Spalte, wie sie ist. Er ist danach wieder eine eigenständige Buchung (Liste,
+        Zuordnen-Widget, EÜR wie vor dem Zuordnen), das AfA-Jahr bleibt gebucht und der nächste
+        Abgleich findet den Satz wieder. Jeder andere Satz wird gelöscht (``delete_transaction``,
+        markierte Zahlungssätze mit ihrer ganzen Zuordnung). ``delete_transaction`` selbst – eine Buchung
+        ausdrücklich aus der Liste löschen – bleibt unverändert."""
+        if booking_id not in self.detachable_split_rows([booking_id]):
+            self.delete_transaction(booking_id)
+            return
+        sql = ("UPDATE Bookings SET ParentBooking_ID = NULL, "
+               "Status = CASE WHEN Status = 'resolved' THEN NULL ELSE Status END WHERE ID = ?")
+        conn = self._get_connection()
+        try:
+            conn.execute(sql, (booking_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        self._log_sql(sql, (booking_id,), "Split row detach")
+
     def get_booking_by_id(self, booking_id):
         """Get a single booking by ID"""
         conn = self._get_connection()

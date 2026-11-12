@@ -12,7 +12,8 @@ Buchungen** wie vorher:
 * jeder Buchungssatz in der Buchungsmaske,
 * „vorhandene Buchung zuordnen“ (Konten, Betrag und Form der Buchung bleiben; jede andere Spalte –
   Steuer, Datum, Steuerdatum, Empfänger, Text, Beleg-Nr., Kategorie, Quellgruppe – ebenso, auch beim
-  zweiten Speichern) und die Zeile wieder entfernen (nur die Buchung geht, sonst bleibt alles).
+  zweiten Speichern) und die Zeile wieder entfernen (eine importierte oder AfA-Buchung wird nur gelöst und ist
+  danach wie vor dem Zuordnen, jede andere geht; sonst bleibt alles).
 
 Der Bestand: ein migrierter (alle Schreibwege, Spiegel in beiden Konventionen, Konto 1000–1099, dazu
 Sätze unter einer Bankbewegung, die das Konto der Bank mit 1460 und 1050 zusammenführen) und ein frisch
@@ -184,14 +185,30 @@ GELDKONTEN = {1800, 1810, 1460, 1050, 1600}
 # Spalten, die das Zuordnen ändern darf: die Verknüpfung – und bei einer Buchung, der ein Konto oder das
 # Gegenkonto fehlt, die Konten samt Form und Betrag (das Gegenkonto wird das Konto der Bank). Wann genau,
 # legen die Prüfungen im Test fest; jede andere Spalte bleibt, wie sie ist.
-ADOPTION_CHANGES = ('ParentBooking_ID', 'COA_ID', 'CounterCOA_ID', 'Amount', 'EntryForm')
+ACCOUNT_COLUMNS = ('COA_ID', 'CounterCOA_ID', 'Amount', 'EntryForm')
+ADOPTION_CHANGES = ('ParentBooking_ID',) + ACCOUNT_COLUMNS
+
+
+def _plan_of_depreciations(db):
+    with closing(db._get_connection()) as conn:
+        return conn.execute('SELECT * FROM AssetDepreciations ORDER BY ID').fetchall()
+
+
+def _made_outside_the_editor(db, row):
+    """Eine importierte Buchung (Quellklammer) oder eine AfA-Buchung (ein Jahr des AfA-Plans verweist auf sie):
+    Entfernt man ihre Zeile im Editor, wird sie nur abgehängt."""
+    with closing(db._get_connection()) as conn:
+        return bool(row['SourceGroup']) or bool(conn.execute(
+            'SELECT 1 FROM AssetDepreciations WHERE Booking_ID = ?', (row['ID'],)).fetchone())
 
 
 def test_assigning_an_existing_booking_keeps_its_accounts_amount_and_form(neuer_bestand):
     """Eine Buchung mit einem Geldkonto vorne (Bank, Kasse, 1460, 1050) und einem Zweckkonto hinten
     behält Konten, Betrag und Form, wenn man sie einer Bankbewegung zuordnet; jede andere behält
     wenigstens Konto und Betrag, jede Buchung alle übrigen Spalten (Steuer, Datum, Steuerdatum, Empfänger
-    …) – beim Zuordnen und bei jedem weiteren Speichern. Wieder entfernt geht nur diese Buchung."""
+    …) – beim Zuordnen und bei jedem weiteren Speichern. Wieder entfernt wird eine importierte oder eine
+    AfA-Buchung nur gelöst (danach wie vor dem Zuordnen, das AfA-Jahr bleibt gebucht), jede andere gelöscht;
+    sonst bleibt alles."""
     problems = []
     for index, step in enumerate(STEPS):
         db = neuer_bestand(index)
@@ -237,17 +254,28 @@ def test_assigning_an_existing_booking_keeps_its_accounts_amount_and_form(neuer_
             for line in differences(settled, snapshot(db), names):
                 problems.append(f'{label} erneut gespeichert: {line}')
 
-            # wieder entfernen (✕ und speichern): nur diese Buchung geht
+            # wieder entfernen (✕ und speichern): Eine importierte oder AfA-Buchung wird nur gelöst, jede andere
+            # Buchung geht; sonst ändert sich nichts
             third, _ = open_form(db, bank_id)
             if str(candidate) not in third['split_id']:
                 own = {a[7] for a in db.fetch_accounts() if a[7]}
                 if not (names.get(coa) in own and names.get(counter) in own):    # ein Spiegel fehlt
                     problems.append(f'{label}: steht nach dem Zuordnen nicht im Editor')
                 continue
+            plan = _plan_of_depreciations(db)
             submit(db, drop_row(third, candidate))
             gone = snapshot(db)
-            if candidate in gone:
-                problems.append(f'{label} blieb nach dem Entfernen')
+            if not _made_outside_the_editor(db, before[candidate]):
+                if candidate in gone:
+                    problems.append(f'{label} blieb nach dem Entfernen')
+            elif candidate not in gone:
+                problems.append(f'{label} ging beim Entfernen verloren')
+            else:
+                for line in differences({candidate: before[candidate]}, {candidate: gone[candidate]}, names,
+                                        ignore=ACCOUNT_COLUMNS):
+                    problems.append(f'{label} entfernt: {line}')
+            if _plan_of_depreciations(db) != plan:
+                problems.append(f'{label}: der AfA-Plan änderte sich beim Entfernen')
             for booking_id, row in settled.items():
                 if booking_id != candidate and gone.get(booking_id) != row:
                     problems.append(f'{label}: Buchung {booking_id} änderte sich beim Entfernen')

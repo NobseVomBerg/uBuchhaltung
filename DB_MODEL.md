@@ -344,6 +344,8 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
   Buchung in die Zeile (`data-rate`/`data-tax` der Option) und schreibt sie nur, wenn das Formular sie
   mitbringt; Datum, Steuerdatum und Empfänger eines Satzes folgen der Bankbewegung nur, wenn er sie
   vorher mit ihr geteilt hat (`_plan_split_rows`, je Feld gleicher Wert wie die Bankbewegung bis jetzt).
+  Entfernt der Nutzer die Zeile eines importierten Satzes (`SourceGroup`), einer AfA-Buchung oder einer
+  als Kind angehängten Forderung, wird der Satz nur abgehängt (`remove_split_row`), jeder andere gelöscht.
 - **Split-Summe** (`bank_effect`): Ein Spiegel mit bekannter Lesart (`mirror_coa`,
   `mirror_counter`) wirkt auf das Konto der Bankbewegung nach seiner Position – steht das Konto
   der Bank auf der Seite, auf die sich der Betrag bezieht, ist es der Betrag, auf der anderen

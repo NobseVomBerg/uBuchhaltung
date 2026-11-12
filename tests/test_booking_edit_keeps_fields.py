@@ -868,6 +868,11 @@ def test_plan_split_rows_with_an_invalid_number_raises_and_writes_nothing(world,
 
 
 def _edited_post_with_a_new_row_and_the_second_row_removed(w, booking):
+    # Die entfernte Zeile ist im Editor entstanden, also ohne Quellklammer – nur so wird sie gelöscht;
+    # ein importierter Satz wird nur abgehängt (``Database.remove_split_row``, test_split_editor_removal.py)
+    with closing(w.db._get_connection()) as conn:
+        conn.execute('UPDATE Bookings SET SourceGroup = NULL WHERE ID = ?', (booking.second,))
+        conn.commit()
     post = _form_post(w.db, booking.bank)
     _edit_everything(post)                                   # erste Zeile geändert
     _drop_editor_row(post, 1)                                # zweite Zeile entfernt

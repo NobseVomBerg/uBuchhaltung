@@ -342,7 +342,13 @@ kein Subagent darauf:
   der Bankbewegung nur, wenn er sie vorher mit ihr geteilt hat** (gleicher Wert wie die Bankbewegung bis
   jetzt, leer = leer; je Feld für sich): Ein Satz mit eigenem Wert – eine zugeordnete Bestandsbuchung, ein
   verknüpfter Beleg – behält ihn über jedes Speichern; neue Zeilen bekommen die Werte der Bankbewegung
-  (`tests/test_split_editor_assignment.py`)
+  (`tests/test_split_editor_assignment.py`). **Entfernt der Nutzer die Zeile eines Satzes, der nachweislich
+  nicht im Editor entstanden ist – importiert (`SourceGroup`), eine AfA-Buchung (ein Plan-Jahr verweist
+  auf sie) oder eine als Kind angehängte Forderung (`receivable_condition`) –, wird er abgehängt statt gelöscht** (`Database.remove_split_row`: `ParentBooking_ID` leer, ein
+  Status `resolved` zurückgesetzt, sonst jede Spalte unverändert; das AfA-Jahr bleibt gebucht, der nächste
+  Abgleich findet ihn wieder); jede andere Zeile wird gelöscht, ein markierter Zahlungssatz mit seiner
+  ganzen Zuordnung, und `delete_transaction` aus der Liste bleibt ein ausdrückliches Löschen
+  (`tests/test_split_editor_removal.py`)
 
 ### Demo-Modus & Screenshots
 - `UBUCHHALTUNG_DEMO=1` (`demo.py`): Demodaten liegen **ausschließlich unter
