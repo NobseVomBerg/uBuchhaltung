@@ -315,7 +315,9 @@ kein Subagent darauf:
   Auto-Abgleichs setzt sie erst auf `resolved`, wenn die Summe der Sätze „… an 10000“ mit gleicher
   Beleg-Nr. den Forderungsbetrag erreicht; `unassign` setzt das zurück. Die Forderung geht mit der
   letzten Zahlung, wenn der Status der Rechnung kein Forderungsstatus ist (`RECEIVABLE_STATUSES`, z. B.
-  storniert) – gleicher Endzustand, egal ob erst storniert oder erst entfernt wird.
+  storniert) – gleicher Endzustand, egal ob erst storniert oder erst entfernt wird; **entfernt wird nur die
+  Forderung, die die App selbst gebucht hat** (`_receivable_removal`: ohne `SourceGroup`, Wartekonto als
+  Gegenkonto, keiner Bankbewegung zugeordnet), nie eine importierte oder von Hand gebuchte.
   Negative Zuordnungen kennt nur der WISO-Import (`link_invoice_to_transaction`, mit Vorzeichen, ohne
   Sätze). `find_payment_inconsistencies` prüft nur lesend und linear im Bestand (Seite *Verschiedenes*:
   nur auf Klick, `?check_payments=1`, nie beim Laden; Hinweis auf der Rechnungsseite); Zuordnungen auf
@@ -501,11 +503,100 @@ kein Subagent darauf:
 - **Leistungsdatum ist Pflicht** (§ 14 UStG): Formular `required`, vorbelegt mit dem Rechnungsdatum,
   Server lehnt Speichern ohne ab (`handle_invoice_save`; nicht bei Angeboten, nicht bei bereits
   versendeten Rechnungen/Importen); steht im PDF-Kopfblock und in CII/UBL. Angebot → Rechnung setzt es auf das Rechnungsdatum
-- Versendete Rechnungen (Status sent/partial_payment/overdue/paid) werden von
-  „PDF + E-Rechnung“ nicht neu erzeugt (`overwrite_sent` nur beim Eintritt in „versendet“)
+- Versendete und stornierte Rechnungen (`db.invoice_lock.FROZEN_STATUSES`) werden von
+  „PDF + E-Rechnung“ nicht neu erzeugt (`overwrite_sent` nur beim Eintritt aus Entwurf/abgeschlossen in
+  „versendet“); liegt für sie noch keine Datei vor (Import, gescheiterte Erzeugung), darf sie erzeugt werden
 - **Erzeugt** wird nur an zwei Stellen: über „PDF + E-Rechnung“ im Formular und
-  automatisch beim Wechsel auf Status **versendet** (ab da ist die Rechnung
-  eingefroren). Eine bereits versendete Rechnung wird nicht überschrieben
+  automatisch beim Wechsel von Entwurf/abgeschlossen auf Status **versendet** (ab da ist die Rechnung
+  eingefroren). Eine bereits versendete Rechnung wird nicht überschrieben; versendet ↔ überfällig erzeugt nichts
+- **Sperre versendeter Rechnungen** (`db/invoice_lock.py`, seit 2.1.2) – **Zwischenstand** bis zum geführten
+  Berichtigen mit Fassungen und Protokoll und bis zum Stornobeleg (`docs/aufgaben.md`). Eine Stelle entscheidet
+  (`check_changes`, Statusgruppen), und jeder Schreibweg auf eine Rechnung geht darüber: das Speichern
+  (`Database.update_invoice_fields`) und der Statuswechsel (`Database.set_invoice_status`) – nie
+  `update_invoice_status` (der ungeprüfte Baustein für Seed und Tests; Angebote: `set_quote_status`). Bearbeitbar ist alles bei
+  `draft`/`finalized`. Bei `sent`/`overdue`/`partial_payment`/`partial`/`paid` sind Nummer, Rechnungsdatum,
+  Kunde, eigene Firma, Positionen, Steuer, Summen, Fälligkeit, Skonto, Bank, Währung und Käufer-USt-IdNr.
+  gesperrt: `/invoice/save` antwortet mit **409** und einem Klartext, nichts der Anfrage wird geschrieben.
+  Änderbar bleiben der Begleittext (`PaymentTerms`, der Zahlungshinweis unter den Positionen), die Anschrift,
+  Bestellnummer, Leitweg-ID und Leistungsdatum – ohne Fassung und Protokoll, das abgelegte Dokument (PDF/XML)
+  bleibt dabei unverändert. `cancelled`: gar
+  nichts mehr. Geprüft wird gegen den gespeicherten Stand **in der Transaktion** (`BEGIN IMMEDIATE`, das
+  `UPDATE` trägt die Statusgruppe im `WHERE`): zwei gleichzeitige Anfragen laufen nacheinander. Was das
+  Formular unverändert zurückschickt, ist kein Verstoß (Beträge in Minor Units, Positionen Feld für Feld,
+  Einheiten wie `unit_display` sie zeigt, Steuersatz 0,19 = 19). **Die Maske überschreibt bei einer
+  versendeten Rechnung nichts still:** Sie zeigt die gespeicherten Werte (Anschrift der Rechnung, Leitweg-ID)
+  und holt beim Laden nichts aus den Stammdaten; sie schickt nur die Felder, die der Nutzer geändert hat (kein
+  `items`), und der Server schreibt nur, was vom Gespeicherten abweicht (`changed_open_fields`) – ein
+  unverändertes Speichern ändert keine Spalte, auch nicht `NULL` zu leer. Die Anschrift ist eine
+  Momentaufnahme und kommt nur auf ausdrücklichen Wunsch (`refreshAddress`, Kästchen „Anschrift aus den
+  Stammdaten übernehmen“, mit alt → neu, nur bei Abweichung) neu aus den Stammdaten **desselben** Kunden; Absender,
+  Bank und Käufer-USt-IdNr. sind abgeleitet und werden bei Sperre nie neu geholt. **Status und `AmountDue` kommen nie vom Client:** eine
+  neue Rechnung ist `draft` (oder `finalized`), `AmountDue` ist im Entwurf das Brutto, danach rechnet es die
+  Zahlungslogik. Ein unbekannter Status gilt als gesperrt
+- **Statusübergänge** (`db.invoice_lock.TRANSITIONS`; die Statusauswahl bietet nur die erlaubten Ziele,
+  `set_invoice_status` lehnt den Rest mit Klartext ab – 409, „bezahlt“ ohne Zahlung 400): Entwurf ↔
+  abgeschlossen frei. **Entwurf/abgeschlossen → versendet** („Versenden“) ist der einzige Übergang, der die
+  Forderung bucht und das Dokument erzeugt. Versendet ↔ überfällig bucht und erzeugt nichts (auch bei einem
+  Import ohne Forderung der App). Teilzahlung/bezahlt und der Rückweg setzt die Zahlungslogik
+  (`next_payment_status`); „bezahlt“ von Hand nur mit mindestens einer Zahlung (Skonto), der Rückweg von
+  bezahlt/Teilzahlung nach versendet/überfällig von Hand nur ohne Zahlung (verwaister Zustand).
+  Versendet/überfällig → Entwurf/abgeschlossen („zurückholen“) nur ohne Zahlung; die Forderung wird entfernt
+  und die versendeten Dokumente wandern nach „Fassungen“ (siehe dort).
+  → storniert von Hand aus versendet/überfällig/Teilzahlung/bezahlt, mit dem bisherigen Buchungsverhalten
+  (die Forderung bleibt, solange eine Zahlung daran hängt) – bis zum Stornobeleg. Storniert → versendet/
+  überfällig bucht die Forderung neu und lässt ein vorhandenes Dokument stehen.
+  **Status, Forderungsbuchung und (beim Zurückholen) das Ablegen der Dokumente laufen in EINER Transaktion**
+  (`set_invoice_status`, `BEGIN IMMEDIATE` von der Prüfung bis zum Commit): Sie gelingen gemeinsam oder gar nicht;
+  nur das Erzeugen des Dokuments beim Versenden folgt danach (`handle_update_invoice_status`). Konten, die
+  das Buchen anlegen könnte, werden vorher in eigenen Verbindungen aufgelöst (`_receivable_accounts`), nie
+  innerhalb. **Die App entfernt nur die Forderung, die sie selbst gebucht hat** (`_receivable_removal`: ohne
+  `SourceGroup`, Wartekonto als Gegenkonto, keiner Bankbewegung zugeordnet) – beim Zurückholen, beim Storno von
+  Hand und beim Entfernen der letzten Zahlung (`_drop_receivable`): nie ein Satz mit Quellklammer. Hängt an der
+  Rechnung eine importierte, von Hand gebuchte oder an eine Bankbewegung gehängte Forderung oder ein Zahlungssatz,
+  lehnt das Zurückholen mit Klartext ab (409, nichts geändert); Storno und Zahlungsentfernen lassen sie stehen
+- **Rechnungsnummer beim ersten Speichern** (`allocate_invoice_number`, `release_invoice_number`,
+  `peek_next_number` in `db/numbering.py`): Die Nummer wird in der Transaktion des Speicherns vergeben – auch
+  als Entwurf, bei Angebot → Rechnung ebenso –, der Zähler rückt dort vor (`UPDATE` + `SELECT` in der
+  `BEGIN IMMEDIATE`-Transaktion, kein `RETURNING`: ältere SQLite-Versionen kennen es nicht); scheitert das
+  Speichern, ist sie nicht verbraucht. Der Vorschlag der Maske ist genau diese Nummer (Formatvorlage und Zusatz
+  des Kreises, eine belegte Nummer wird übersprungen). **Die Nummer im Feld zählt nur als Vorschlag, solange
+  sie unverändert bleibt:** Die Maske schickt ihn mit (`numberSuggestion`); ist die Nummer beim Speichern genau
+  dieser Vorschlag, vergibt der Server frisch – ein zweites Fenster kann ihn verbraucht haben – und nennt die
+  vergebene Nummer in der Antwort (`invoice_number`), die Maske zeigt sie. **Vergeben wird nach dem Jahr des
+  Rechnungsdatums:** Gibt es für das Jahr keinen Kreis, entsteht er (Buchstabe, Zusatz, Vorlage des jüngsten).
+  Eine eigene Nummer, die zur Vorlage eines Kreises passt, hebt dessen Zähler, nie nach unten. Statuswechsel und
+  spätere Änderungen zählen nie. Eine Formatvorlage braucht **genau einen Zähler** (`{n}`, `{nn}` oder `{nnn}`,
+  `number_format_error`): Beim Speichern eines Nummernkreises wird sie sonst mit Klartext abgelehnt; ein
+  Altbestand mit anderer Vorlage lässt den Vorschlag leer (Hinweis in der Maske, `peek_next_number` wirft nie)
+  und das Speichern mit dem Klartext `NumberRangeError` scheitern, nie die Seite
+- **Entwurf löschen** (`POST /invoice/delete?id=`, `Database.delete_draft_invoice`): nur Status `draft`, ohne
+  zugeordnete Zahlung und ohne Forderungsbuchung, in einer Transaktion; eine Ablehnung geht mit dem Grund
+  (`err`) zurück auf die Rechnung. Ein Quellangebot im Status `converted` ohne weitere Rechnung geht auf
+  `accepted` zurück. PDF und XML des Entwurfs räumt `handlers.handle_delete_invoice` danach weg – nur im
+  Dokumentordner, nur wenn kein anderer Beleg darauf verweist und nie etwas in „Fassungen“
+  (`remove_document_file`). Ein abgeschlossener Entwurf wird erst auf Entwurf
+  zurückgesetzt. **Angebot → Rechnung** (`convert_quote_to_invoice`) geht einmal je Angebot und nur aus
+  Entwurf/versendet/angenommen (`UPDATE … WHERE Status IN (…)` in einer Transaktion; Klartext bei der Ablehnung).
+  Ein Angebot **bleibt „umgewandelt“, solange es eine Rechnung daraus gibt**: `/quote/status`
+  (`set_quote_status`) und `/quote/save` (`QUOTE_STAYS_CONVERTED_SQL` im `UPDATE`) lassen den Status nicht
+  verlassen – sonst ließe es sich auf „angenommen“ setzen und ein zweites Mal umwandeln
+- **Fassungen (`export/invoice_files.py`):** Geht eine versendete Rechnung zurück auf Entwurf/abgeschlossen,
+  **verschiebt** `archive_sent_documents` PDF und XML nach
+  `invoices/<Jahr>/Fassungen/<ID>/<bisheriger Name> – versendet bis <JJJJ-MM-TT>.<pdf|xml>` – nie überschreiben
+  (ein vergebener Name bekommt einen Zähler), nie löschen, nur Dateien im Dokumentordner, die kein anderer Beleg
+  führt (ein umgebogener Pfad außerhalb bleibt, wo er ist; was schon in einem Ordner „Fassungen“ liegt,
+  wird nie weiterverschoben; zeigt der gespeicherte Pfad woandershin, wird zusätzlich die Datei am
+  Namensschema abgelegt), `PDFPath`/`XMLPath` werden geleert. Scheitert ein
+  Verschieben, geht das Verschobene zurück und das Zurückholen wird abgelehnt (auch ein scheiternder Commit legt
+  es zurück). Erneutes Versenden erzeugt eine neue Datei am Namensschema; die Fassung bleibt. **Der Ordner
+  ist das Merkmal „war schon versendet“** (`was_sent_before`, ohne Schemaänderung; eine Datei in
+  `Fassungen/<ID>` in irgendeinem Jahresordner): `delete_draft_invoice` gibt die Nummer dann **nie** frei (die
+  Lücke bleibt), und die Rückfrage beim Löschen sagt es. Der Ordner liegt unter `invoices/` und ist damit Teil
+  von Datensicherung und Wiederherstellung (`tests/test_invoice_versions.py` prüft es)
+- **Dateinamen-Kollision:** Gehört der Zielpfad der abgelegten Datei eines anderen Belegs (zwei Nummern, die zum
+  selben Namen werden), bekommt der Name die ID als Zusatz (`<Nr.> <Kunde> (ID n).pdf`,
+  `invoice_file_path(…, db)`); der Rückfall über das Namensschema nimmt nie die Datei eines anderen Belegs.
+  **Das Dokument zeigt nie den Stand der Zahlungen** (`prepaid` ist immer 0, Zahlbetrag = Brutto)
 - **Heruntergeladen** wird immer die abgelegte Datei (`/invoice/pdf_download`,
   `/invoice/xml_download`) – nie eine frisch erzeugte. Fehlt sie, kommt 404 mit
   kurzem Klartext, den das Frontend direkt anzeigt
@@ -562,7 +653,7 @@ kein Subagent darauf:
 ## Governance
 
 - **Owner:** NobseVomBerg
-- **Letzte Aktualisierung:** 2026-11-11
+- **Letzte Aktualisierung:** 2026-11-12
 - **Modell-Versionen:** Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5 (Stand November 2026);
   `settings.json` und Agents nutzen Aliase (`fable`, `opus` …), die der neuesten Version folgen
 - **Bei Modell-Updates:** Modell-Routing oben, `.claude/settings.json` (`modelSettings`

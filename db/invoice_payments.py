@@ -446,8 +446,10 @@ class InvoicePaymentsMixin:
         * AmountDue und Status der Rechnung werden neu gerechnet.
         * Ist keine Zahlung mehr übrig und der Status der Rechnung kein Forderungsstatus
           (storniert, Entwurf, abgeschlossen), geht auch die Forderungsbuchung – so wie beim
-          Statuswechsel (``RECEIVABLE_STATUSES``). Die Reihenfolge „erst stornieren, dann die
-          Zahlung entfernen“ endet damit im selben Zustand wie die umgekehrte."""
+          Statuswechsel (``RECEIVABLE_STATUSES``) und nur die, die die App selbst gebucht hat
+          (``_drop_receivable``: nie ein Satz mit ``SourceGroup``). Die Reihenfolge „erst
+          stornieren, dann die Zahlung entfernen“ endet damit im selben Zustand wie die
+          umgekehrte."""
         row = conn.execute('SELECT InvoiceNumber FROM Invoices WHERE ID = ?',
                            (invoice_id,)).fetchone()
         if row is None:
@@ -468,13 +470,8 @@ class InvoicePaymentsMixin:
         self._recalc_invoice(conn, invoice_id)
 
         status = conn.execute('SELECT Status FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()[0]
-        if status not in RECEIVABLE_STATUSES and not conn.execute(
-                'SELECT 1 FROM InvoicePayments WHERE InvoiceID = ?', (invoice_id,)).fetchone():
-            receivable_sql, receivable_params = self._receivable_sql(conn.cursor())
-            stale = [r[0] for r in conn.execute(
-                f"SELECT ID FROM Bookings WHERE BookingType = 'entry' AND ParentBooking_ID IS NULL "
-                f"AND DocumentNumber = ? AND {receivable_sql}", [number] + receivable_params)]
-            self._delete_booking_rows(conn, stale)
+        if status not in RECEIVABLE_STATUSES:
+            self._drop_receivable(conn, invoice_id, number)
 
     def _unassign(self, conn, payment_id):
         """Eine Zuordnung samt ihren Buchungssätzen in der Transaktion von ``conn`` entfernen.
