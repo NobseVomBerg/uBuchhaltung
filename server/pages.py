@@ -202,6 +202,8 @@ def Footer():
 <div id="app_confirm" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.45);z-index:9999;align-items:center;justify-content:center;">
   <div class="modalBox">
     <p id="app_confirm_text" style="margin:0 0 22px;font-size:15px;line-height:1.4;"></p>
+    <p id="app_confirm_date_row" class="modalField" hidden><label><span id="app_confirm_date_label"></span>
+      <input type="date" id="app_confirm_date"></label><br><span id="app_confirm_date_error" class="errorColor"></span></p>
     <button id="app_confirm_ok" class="coloredButton bg-green">OK</button>
     <button class="coloredButton bg-gray" style="margin-left:10px;"
             onclick="document.getElementById('app_confirm').style.display='none'">Abbrechen</button>
@@ -209,11 +211,27 @@ def Footer():
 </div>
 <div id="app_msg" style="display:none;position:fixed;bottom:20px;right:20px;max-width:420px;padding:12px 18px;border-radius:5px;font-size:14px;box-shadow:0 2px 10px rgba(0,0,0,.2);z-index:10000;"></div>
 <script>
-function appConfirm(text, onOk) {
+/* Rückfrage; optional mit Datumsfeld (dateField: {label, value, min, error}): Der Dialog bleibt offen und nennt
+   dateField.error, bis das Datum gültig ist (nicht leer, nicht vor min); onOk bekommt es als Text JJJJ-MM-TT. */
+function appConfirm(text, onOk, dateField) {
   document.getElementById('app_confirm_text').textContent = text;
+  var row = document.getElementById('app_confirm_date_row');
+  var date = document.getElementById('app_confirm_date');
+  var problem = document.getElementById('app_confirm_date_error');
+  row.hidden = !dateField;
+  problem.textContent = '';
+  if (dateField) {
+    document.getElementById('app_confirm_date_label').textContent = dateField.label;
+    date.min = dateField.min || '';
+    date.value = dateField.value || '';
+  }
   document.getElementById('app_confirm_ok').onclick = function() {
+    if (dateField && (!date.value || (date.min && date.value < date.min))) {
+      problem.textContent = dateField.error || 'Bitte ein gültiges Datum angeben.';
+      return;
+    }
     document.getElementById('app_confirm').style.display = 'none';
-    onOk();
+    onOk(dateField ? date.value : undefined);
   };
   document.getElementById('app_confirm').style.display = 'flex';
 }

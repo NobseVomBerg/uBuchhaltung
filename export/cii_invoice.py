@@ -4,7 +4,8 @@
 """CII-XML (UN/CEFACT Cross Industry Invoice) für ZUGFeRD 2.x / Factur-X.
 
 Profil EN 16931 (Guideline ``urn:cen.eu:en16931:2017``). Liest nur das
-neutrale Modell aus :mod:`export.einvoice_model`. Kundendaten werden vom
+neutrale Modell aus :mod:`export.einvoice_model`; eine Stornorechnung ist Typ 381 mit dem Bezug auf die
+Ursprungsrechnung (``ram:InvoiceReferencedDocument``) und positiven Beträgen. Kundendaten werden vom
 XML-Serializer der Standardbibliothek escaped; Steuerzeichen, die in XML 1.0
 nicht vorkommen dürfen, werden vorher entfernt.
 """
@@ -23,7 +24,7 @@ NS = {
 }
 GUIDELINE_EN16931 = 'urn:cen.eu:en16931:2017'
 
-_RSM, _RAM, _UDT = (f'{{{NS[k]}}}' for k in ('rsm', 'ram', 'udt'))
+_RSM, _RAM, _UDT, _QDT = (f'{{{NS[k]}}}' for k in ('rsm', 'ram', 'udt', 'qdt'))
 _ILLEGAL_XML = re.compile('[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]')
 
 
@@ -59,6 +60,13 @@ def _rate(r: Decimal) -> str:
 def _date(parent, tag, d):
     wrapper = _sub(parent, _RAM, tag)
     _sub(wrapper, _UDT, 'DateTimeString', d.strftime('%Y%m%d'), format='102')
+
+
+def _formatted_date(parent, tag, d):
+    """Datum in einem ``FormattedDateTimeType`` (Bezug auf ein Dokument): ``qdt:DateTimeString`` statt
+    ``udt:DateTimeString``."""
+    wrapper = _sub(parent, _RAM, tag)
+    _sub(wrapper, _QDT, 'DateTimeString', d.strftime('%Y%m%d'), format='102')
 
 
 def _tax_ids(party: Party):
@@ -181,6 +189,11 @@ def build_cii(inv: EInvoice) -> bytes:
     if t.prepaid:
         _sub(summ, _RAM, 'TotalPrepaidAmount', _amt(t.prepaid))
     _sub(summ, _RAM, 'DuePayableAmount', _amt(t.payable))
+    if inv.preceding_invoice_number:                           # BG-3: Bezug auf die Ursprungsrechnung (Gutschrift)
+        reference = _sub(settle, _RAM, 'InvoiceReferencedDocument')   # im Schema nach der Summenbildung
+        _sub(reference, _RAM, 'IssuerAssignedID', inv.preceding_invoice_number)
+        if inv.preceding_invoice_date:
+            _formatted_date(reference, 'FormattedIssueDateTime', inv.preceding_invoice_date)
 
     ET.indent(root, space='  ')
     return ET.tostring(root, encoding='utf-8', xml_declaration=True)

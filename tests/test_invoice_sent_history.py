@@ -144,8 +144,8 @@ def test_the_payment_logic_does_not_write_the_protocol(world):
     assert ok, err
     assert columns(world.db, invoice_id)['Status'] == 'partial_payment'       # die Zahlungslogik setzt ihn
     assert status_rows(world, invoice_id) == rows                              # … ohne Protokollzeile
-    assert set_invoice_status(invoice_id, 'cancelled')[0] == 200               # der Klick dagegen steht drin
-    assert status_rows(world, invoice_id)[-1][:2] == ('partial_payment', 'cancelled')
+    assert set_invoice_status(invoice_id, 'paid')[0] == 200                    # der Klick dagegen steht drin
+    assert status_rows(world, invoice_id)[-1][:2] == ('partial_payment', 'paid')
 
 
 def test_the_protocol_row_carries_the_new_version_when_taking_back_made_one(world):

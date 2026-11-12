@@ -28,6 +28,8 @@
      "items": [{"description": "Projektberatung Q1–Q2", "quantity": 112, "unit": "HUR", "price_per_unit": 110, "tax_rate": 19}]},
     {"customer_number": "K011", "days_ago": 120, "due_days": 30, "pay_after_days": 25,
      "items": [{"description": "Hosting und Wartung (Jahrespaket)", "quantity": 1, "unit": "C62", "price_per_unit": 6800, "tax_rate": 19}]},
+    {"customer_number": "K004", "days_ago": 95, "due_days": 14, "pay_after_days": null, "cancel_after_days": 6,
+     "items": [{"description": "Workshop Datenschutz (storniert)", "quantity": 8, "unit": "HUR", "price_per_unit": 140, "tax_rate": 19}]},
     {"customer_number": "K007", "days_ago": 70, "due_days": 14, "pay_after_days": 16, "partial_share": 0.5,
      "items": [{"description": "Projektberatung Sommer", "quantity": 60, "unit": "HUR", "price_per_unit": 115, "tax_rate": 19}]},
     {"customer_number": "K012", "days_ago": 40, "due_days": 14, "pay_after_days": null,
