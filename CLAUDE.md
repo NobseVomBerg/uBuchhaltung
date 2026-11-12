@@ -584,7 +584,9 @@ kein Subagent darauf:
   **verschiebt** `archive_sent_documents` PDF und XML nach
   `invoices/<Jahr>/Fassungen/<ID>/<bisheriger Name> – versendet bis <JJJJ-MM-TT>.<pdf|xml>` – nie überschreiben
   (ein vergebener Name bekommt einen Zähler), nie löschen, nur Dateien im Dokumentordner, die kein anderer Beleg
-  führt (ein umgebogener Pfad außerhalb bleibt, wo er ist), `PDFPath`/`XMLPath` werden geleert. Scheitert ein
+  führt (ein umgebogener Pfad außerhalb bleibt, wo er ist; was schon in einem Ordner „Fassungen“ liegt,
+  wird nie weiterverschoben; zeigt der gespeicherte Pfad woandershin, wird zusätzlich die Datei am
+  Namensschema abgelegt), `PDFPath`/`XMLPath` werden geleert. Scheitert ein
   Verschieben, geht das Verschobene zurück und das Zurückholen wird abgelehnt (auch ein scheiternder Commit legt
   es zurück). Erneutes Versenden erzeugt eine neue Datei am Namensschema; die Fassung bleibt. **Der Ordner
   ist das Merkmal „war schon versendet“** (`was_sent_before`, ohne Schemaänderung; eine Datei in
