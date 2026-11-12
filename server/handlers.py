@@ -365,8 +365,20 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
     gelöscht. Die Summe wird NICHT erzwungen – Teilerfassung ist erlaubt und
     an der dreistufigen Statusanzeige der Übersicht erkennbar.
 
-    Gemeinsame Felder (Datum, Steuerdatum, Empfänger, Währung) kommen von der
-    Bankbewegung; Konto, Steuer, Beleg-Nr. und Text gehören der Teilbuchung.
+    Neue Zeilen bekommen Datum, Steuerdatum, Empfänger und Währung der
+    Bankbewegung; Konto, Steuer, Beleg-Nr. und Text gehören der Teilbuchung. Ein
+    bestehender Satz folgt der Bankbewegung in Datum, Steuerdatum und Empfänger
+    nur, wenn er den Wert vorher mit ihr geteilt hat (derselbe Wert wie die
+    Bankbewegung bis jetzt trägt; leer = leer), je Feld für sich: Ein eigener Wert
+    – eine zugeordnete Bestandsbuchung – bleibt über jedes Speichern. Ordnet der
+    Editor eine vorhandene Buchung zu, behält sie Datum, Steuerdatum, Empfänger und
+    Währung ebenfalls.
+
+    Die Steuer eines bestehenden Satzes schreibt der Editor nur, wenn das Formular
+    sie mitbringt: Fehlt das Feld, oder sind beim Zuordnen einer vorhandenen Buchung
+    beide Felder leer (so schickt sie ein Browser mit dem alten Skript der Seite),
+    bleibt der gespeicherte Wert. Sonst gilt, was in der Zeile steht; leer heißt
+    keine Steuer. Auf dem Server wird sie nie nachgerechnet.
 
     Erst werden ALLE Zeilen gelesen und geprüft, dann geschrieben: Eine ungültige
     Zahl in einer späteren Zeile bricht ab, bevor eine frühere gespeichert ist.
@@ -393,6 +405,9 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
     # lesen sich wie in 2.0.x (purpose_in_counter).
     existing_by_id = {c[0]: (c[1], c[2])
                       for c in (db.get_child_bookings_for_bank(bank_id) if bank_id else [])}
+    # Was die Bankbewegung bis jetzt trägt – sie wird erst nach dem Planen geschrieben. Daran zeigt
+    # sich, ob ein Satz Datum, Steuerdatum oder Empfänger mit ihr geteilt hat.
+    bank_row = db.get_booking_by_id(bank_id) if bank_id else None
 
     # Schritt 1: alle Zeilen lesen und prüfen (Zahlen, Bestandsbuchungen) – noch
     # ohne zu schreiben.
@@ -403,8 +418,10 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
         if not raw_amount and not raw_coa:
             continue                      # komplett leere Zeile ignorieren
         row_id = _at(ids, i).strip()
-        row_rate = _at(rates, i).strip()
-        row_tax = _at(tax_amounts, i).strip()
+        sent_rate = _at(rates, i, None)   # None: das Formular bringt das Feld gar nicht mit
+        sent_tax = _at(tax_amounts, i, None)
+        row_rate = (sent_rate or '').strip()
+        row_tax = (sent_tax or '').strip()
         purpose_coa = int(raw_coa) if raw_coa else None
         new_coa, new_counter = purpose_coa, account_coa_id
         # Mitgeliefertes Gegenkonto (Umbuchung): eine per Vorschlag kopierte
@@ -437,6 +454,11 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
                 new_counter = old_counter
         if not (old_row and (new_coa, new_counter) == (old_coa, old_counter)):
             _refuse_same_account(db, new_coa, new_counter, f'Zeile {i + 1}: ')
+        rid = int(row_id) if row_id else None
+        # Zeilen können auch bestehende, bisher unverknüpfte Buchungen
+        # sein ("vorhandene Buchung zuordnen"): dann wird die Verbindung
+        # per ID hergestellt – Belegnummern spielen dabei keine Rolle.
+        adopt = rid is not None and rid not in existing_by_id
         fields = dict(
             date_booking=date,
             date_tax=date_tax,
@@ -445,23 +467,31 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
             coa_id=new_coa,
             counter_coa_id=new_counter,
             currency=currency,
-            tax_rate=float(row_rate) / 100 if row_rate else None,
-            tax_amount=float(row_tax) if row_tax else None,
             text=_at(texts, i),
             document_number=_at(docnrs, i).strip() or None,
         )
-        if old_row and int(row_id) not in existing_by_id:
+        # Steuer: Ein bestehender Satz behält sie, wenn das Formular sie nicht mitbringt – das Feld fehlt,
+        # oder beim Zuordnen sind beide leer (so schickt sie ein Browser mit dem alten Skript der Seite,
+        # das die Steuer der Buchung nicht in die Zeile übernahm). Sonst gilt, was in der Zeile steht.
+        adopted_without_tax = adopt and not row_rate and not row_tax
+        if not (old_row and (sent_rate is None or adopted_without_tax)):
+            fields['tax_rate'] = float(row_rate) / 100 if row_rate else None
+        if not (old_row and (sent_tax is None or adopted_without_tax)):
+            fields['tax_amount'] = float(row_tax) if row_tax else None
+        if old_row and adopt:
             # Adoption einer bestehenden Buchung: ihre eigenen Stammdaten
             # (Datum, Steuerdatum, Empfänger, Währung) bleiben erhalten –
             # überschrieben würden sonst korrekt erfasste Angaben.
             fields.update(date_booking=old_row[1], date_tax=old_row[2],
                           recipient_client=old_row[6],
                           currency=old_row[12] or 'EUR')
-        rid = int(row_id) if row_id else None
-        # Zeilen können auch bestehende, bisher unverknüpfte Buchungen
-        # sein ("vorhandene Buchung zuordnen"): dann wird die Verbindung
-        # per ID hergestellt – Belegnummern spielen dabei keine Rolle.
-        adopt = rid is not None and rid not in existing_by_id
+        elif old_row:
+            # Satz unter dieser Bankbewegung: Datum, Steuerdatum und Empfänger folgen ihrer Änderung nur,
+            # wenn er den Wert mit ihr geteilt hat (derselbe wie bis jetzt, leer = leer). Hat er einen
+            # eigenen – eine zugeordnete Bestandsbuchung, ein verknüpfter Beleg –, bleibt der, je Feld.
+            for name, column in (('date_booking', 1), ('date_tax', 2), ('recipient_client', 6)):
+                if (old_row[column] or None) != (bank_row[column] or None):
+                    del fields[name]
         planned.append((rid, fields, adopt))
     return planned
 

@@ -10,8 +10,9 @@ Buchungen** wie vorher:
 
 * jede Bankbewegung im Buchungssatz-Editor,
 * jeder Buchungssatz in der Buchungsmaske,
-* „vorhandene Buchung zuordnen“ (Konten, Betrag und Form der Buchung bleiben) und die Zeile wieder
-  entfernen (nur die Buchung geht, sonst bleibt alles).
+* „vorhandene Buchung zuordnen“ (Konten, Betrag und Form der Buchung bleiben; jede andere Spalte –
+  Steuer, Datum, Steuerdatum, Empfänger, Text, Beleg-Nr., Kategorie, Quellgruppe – ebenso, auch beim
+  zweiten Speichern) und die Zeile wieder entfernen (nur die Buchung geht, sonst bleibt alles).
 
 Der Bestand: ein migrierter (alle Schreibwege, Spiegel in beiden Konventionen, Konto 1000–1099, dazu
 Sätze unter einer Bankbewegung, die das Konto der Bank mit 1460 und 1050 zusammenführen) und ein frisch
@@ -180,15 +181,17 @@ def _stored(db, booking_id):
 
 GELDKONTEN = {1800, 1810, 1460, 1050, 1600}
 
-# Ab dem zweiten Speichern gleicht der Editor Datum, Steuerdatum und Empfänger einer zugeordneten Buchung an
-# die Bankbewegung an (nur das Speichern der Zuordnung selbst lässt sie, wie sie sind – so schon in 2.0.x).
-ADOPTION_ALIGNS = ('DateBooking', 'DateTax', 'RecipientClient')
+# Spalten, die das Zuordnen ändern darf: die Verknüpfung – und bei einer Buchung, der ein Konto oder das
+# Gegenkonto fehlt, die Konten samt Form und Betrag (das Gegenkonto wird das Konto der Bank). Wann genau,
+# legen die Prüfungen im Test fest; jede andere Spalte bleibt, wie sie ist.
+ADOPTION_CHANGES = ('ParentBooking_ID', 'COA_ID', 'CounterCOA_ID', 'Amount', 'EntryForm')
 
 
 def test_assigning_an_existing_booking_keeps_its_accounts_amount_and_form(neuer_bestand):
     """Eine Buchung mit einem Geldkonto vorne (Bank, Kasse, 1460, 1050) und einem Zweckkonto hinten
     behält Konten, Betrag und Form, wenn man sie einer Bankbewegung zuordnet; jede andere behält
-    wenigstens Konto und Betrag. Wieder entfernt geht nur diese Buchung."""
+    wenigstens Konto und Betrag, jede Buchung alle übrigen Spalten (Steuer, Datum, Steuerdatum, Empfänger
+    …) – beim Zuordnen und bei jedem weiteren Speichern. Wieder entfernt geht nur diese Buchung."""
     problems = []
     for index, step in enumerate(STEPS):
         db = neuer_bestand(index)
@@ -223,12 +226,15 @@ def test_assigning_an_existing_booking_keeps_its_accounts_amount_and_form(neuer_
             for booking_id, row in before.items():
                 if booking_id != candidate and after[booking_id] != row:
                     problems.append(f'{label}: Buchung {booking_id} geändert')
+            for line in differences({candidate: before[candidate]}, {candidate: after[candidate]}, names,
+                                    ignore=ADOPTION_CHANGES):
+                problems.append(f'{label} zugeordnet: {line}')
 
             # zugeordnet erneut speichern, ohne etwas zu ändern: bleibt, wie es ist
             again, _ = open_form(db, bank_id)
             settled = snapshot(db)
             submit(db, again)
-            for line in differences(settled, snapshot(db), names, ignore=ADOPTION_ALIGNS):
+            for line in differences(settled, snapshot(db), names):
                 problems.append(f'{label} erneut gespeichert: {line}')
 
             # wieder entfernen (✕ und speichern): nur diese Buchung geht

@@ -238,7 +238,7 @@ def test_the_migration_makes_a_backup_of_the_old_state_first(old_1600):
     _reopen(path)
 
     (backup,) = _backups(path)
-    assert backup.name.endswith('_vor_2.1.0_buch.db') and backup.name[:8].isdigit()
+    assert backup.name.endswith(f'_vor_{version.APP_VERSION}_buch.db') and backup.name[:8].isdigit()
     assert installation.user_version(str(backup)) == 2000
     assert 'EntryForm' not in _columns(str(backup))
     assert installation.dump(str(backup)) == before                # Zeile für Zeile der alte Stand
@@ -249,7 +249,7 @@ def test_the_backup_is_never_overwritten(old_1600):
     path = old_1600
     target = Path(path).parent / 'backup'
     target.mkdir()
-    taken = target / f"{datetime.date.today():%Y%m%d}_vor_2.1.0_buch.db"
+    taken = target / f"{datetime.date.today():%Y%m%d}_vor_{version.APP_VERSION}_buch.db"
     taken.write_bytes(b'ein anderer Stand')
 
     _reopen(path)
@@ -339,8 +339,9 @@ def test_every_migration_run_of_an_existing_database_is_backed_up_and_named_afte
     der Schema-Zahl 2002) eine bestehende Datenbank um, entsteht vorher eine Sicherung – mit der Version
     des Programms im Namen, das umstellt."""
     path = old_1600
-    _reopen(path)                                                  # 2.1.0: erste Sicherung
-    assert [b.name[9:] for b in _backups(path)] == ['vor_2.1.0_buch.db']
+    current = version.APP_VERSION
+    _reopen(path)                                                  # Schema 2001: erste Sicherung
+    assert [b.name[9:] for b in _backups(path)] == [f'vor_{current}_buch.db']
     monkeypatch.setattr(version, 'SCHEMA_STEP', 2)
     monkeypatch.setattr(version, 'SCHEMA_VERSION', 2002)
     monkeypatch.setattr(version, 'APP_VERSION', '2.2.0')
@@ -349,7 +350,7 @@ def test_every_migration_run_of_an_existing_database_is_backed_up_and_named_afte
 
     assert installation.user_version(path) == 2002
     names = sorted(b.name[9:] for b in _backups(path))
-    assert names == ['vor_2.1.0_buch.db', 'vor_2.2.0_buch.db']
+    assert names == [f'vor_{current}_buch.db', 'vor_2.2.0_buch.db']
     newest = next(b for b in _backups(path) if 'vor_2.2.0' in b.name)
     assert installation.user_version(str(newest)) == 2001          # der Stand vor dem Lauf
 
@@ -547,7 +548,8 @@ def test_a_2_0_x_backup_can_be_restored_and_is_migrated_on_the_next_start(old_16
     assert installation.user_version(str(db_path)) == 2000
     _reopen(str(db_path))
     assert installation.user_version(str(db_path)) == 2001
-    assert any(path.name.endswith('_vor_2.1.0_buch.db') for path in _backups(str(db_path)))
+    assert any(path.name.endswith(f'_vor_{version.APP_VERSION}_buch.db')
+               for path in _backups(str(db_path)))
 
 
 # ── der eindeutige Index auf den Zahlungszuordnungen ──────────────────────────
