@@ -400,6 +400,7 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
         return seq[i] if i < len(seq) else default
 
     bank_coa_ids = db.get_bank_coa_ids()
+    payment_coa_ids = db.get_payment_coa_ids()
     # Orientierung bestehender Sätze merken: liquide-zuerst gebuchte Sätze
     # (COA = Geldkonto, Gegenkonto = Zweckkonto) behalten ihre Richtung – so, wie die
     # gespeicherte Form (Bookings.EntryForm) sie nennt; ein Spiegel und eine Zeile ohne Form
@@ -453,6 +454,14 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
                 # machte das Speichern der Bankmaske aus dem Beleg eine
                 # Zahlung – das Gegenkonto bleibt deshalb unangetastet.
                 new_counter = old_counter
+            elif old_counter in payment_coa_ids and old_counter != account_coa_id:
+                # Zweckkonto vorne, und die Geldseite hinten ist schon ein ANDERES Zahlungskonto (die
+                # Kasse, ein anderes eigenes Bankkonto, das Verrechnungskonto 1460): Der Satz sagt, über
+                # welches Konto er bezahlt wurde – das Zuordnen überschreibt das nicht. Konten und Form
+                # bleiben, die Split-Summe zählt ihn, wie ``bank_effect`` ihn für diese Bankbewegung
+                # zählt; wer das Konto ändern will, tut es ausdrücklich. Ein leeres Gegenkonto füllt
+                # weiter das Konto der Bank.
+                new_counter = old_counter
         if not (old_row and (new_coa, new_counter) == (old_coa, old_counter)):
             _refuse_same_account(db, new_coa, new_counter, f'Zeile {i + 1}: ')
         rid = int(row_id) if row_id else None
@@ -482,10 +491,10 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
         if old_row and adopt:
             # Adoption einer bestehenden Buchung: ihre eigenen Stammdaten
             # (Datum, Steuerdatum, Empfänger, Währung) bleiben erhalten –
-            # überschrieben würden sonst korrekt erfasste Angaben.
-            fields.update(date_booking=old_row[1], date_tax=old_row[2],
-                          recipient_client=old_row[6],
-                          currency=old_row[12] or 'EUR')
+            # überschrieben würden sonst korrekt erfasste Angaben. Sie werden
+            # gar nicht erst geschrieben (auch ein leeres Feld bleibt leer).
+            for name in ('date_booking', 'date_tax', 'recipient_client', 'currency'):
+                del fields[name]
         elif old_row:
             # Satz unter dieser Bankbewegung: Datum, Steuerdatum und Empfänger folgen ihrer Änderung nur,
             # wenn er den Wert mit ihr geteilt hat (derselbe wie bis jetzt, leer = leer). Hat er einen
@@ -493,6 +502,13 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
             for name, column in (('date_booking', 1), ('date_tax', 2), ('recipient_client', 6)):
                 if (old_row[column] or None) != (bank_row[column] or None):
                     del fields[name]
+        if old_row:
+            # Text und Beleg-Nr. schreibt der Editor nur, wenn die Zeile sie geändert hat (leer und NULL sind
+            # dasselbe): Ein Satz, den man zuordnet und wieder löst, soll in jeder Spalte so dastehen wie vorher.
+            if (old_row[15] or '') == fields['text']:
+                del fields['text']
+            if (old_row[16] or None) == fields['document_number']:
+                del fields['document_number']
         planned.append((rid, fields, adopt))
     return planned
 
