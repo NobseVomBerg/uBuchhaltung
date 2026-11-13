@@ -6,14 +6,51 @@ import sqlite3
 import os
 import json
 from decimal import Decimal
-from money import to_minor, from_minor
-from .matching import ASSET_ACCOUNT_RANGE, FORM_TRANSFER, PL_ACCOUNT_RANGE
+from money import FACTOR, to_minor, from_minor, round_minor
+from .matching import ASSET_ACCOUNT_RANGE, FORM_TRANSFER, PL_ACCOUNT_RANGE, depreciation_effect
 
 # Gebucht heißt: die Buchung gibt es – oder der WISO-Import hat das Jahr als gebucht
 # übernommen (Status 'booked', ohne Buchung). Eine Zeile 'posted' ohne vorhandene Buchung
 # (z. B. per SQL-Konsole gelöscht) gilt als nicht gebucht. Festes SQL-Stück, kein Wert.
 _DEPRECIATION_BOOKED = ("(d.Status = 'booked' "
                         "OR EXISTS (SELECT 1 FROM Bookings b WHERE b.ID = d.Booking_ID))")
+
+# Ein Cent in Minor Units: Der Plan rechnet in ganzen Cent.
+_CENT = FACTOR // 100
+
+# Methode der gebuchten Jahre in der Fortschreibung des Plans (``depreciation_plan``).
+METHOD_BOOKED = 'gebucht'
+
+
+def _cents(minor):
+    """Minor Units -> ganze Cent, kaufmännisch gerundet."""
+    return round_minor(minor, 2) // _CENT
+
+
+def _euro(cents):
+    """Ganze Cent -> Euro als float auf zwei Stellen (die Seiten rechnen mit float)."""
+    return float(from_minor(cents * _CENT))
+
+
+def _spread(rest, months):
+    """``rest`` (ganze Cent, > 0) im Verhältnis der ``months`` (je Jahr > 0) auf die Jahre verteilen.
+
+    Je Jahr kaufmännisch gerundet, ganzzahlig (``rest * m / M``, halb auf); das letzte Jahr bekommt
+    den Rest, sodass die Summe genau ``rest`` ist. Überschießt die Rundung den Rest, wird das letzte
+    Jahr auf 0 begrenzt und der Überschuss von den Jahren davor abgezogen – kein Jahr wird negativ."""
+    total = sum(months)
+    amounts = [(rest * m * 2 + total) // (2 * total) for m in months]
+    amounts[-1] = rest - sum(amounts[:-1])
+    excess = -amounts[-1] if amounts[-1] < 0 else 0
+    if excess:
+        amounts[-1] = 0
+        for i in range(len(amounts) - 2, -1, -1):
+            cut = min(excess, amounts[i])
+            amounts[i] -= cut
+            excess -= cut
+            if not excess:
+                break
+    return amounts
 
 
 class AssetsMixin:
@@ -313,22 +350,118 @@ class AssetsMixin:
                 year += 1
 
         return plan
+    def depreciation_plan(self, asset_id):
+        """AfA-Plan einer Anlage: gebuchte Jahre sind Geschichte, der Rest verteilt sich neu.
+
+        Liefert je Jahr ein dict wie ``calculate_depreciation_plan`` (``year``, ``book_value_start``,
+        ``depreciation``, ``book_value_end``, ``method``, Beträge als float auf zwei Stellen) und
+        zusätzlich ``booked`` (das Jahr ist gebucht: die Buchung gibt es oder es kam als 'booked' aus
+        dem WISO-Import) und ``bookable`` (``book_depreciation`` nimmt das Jahr jetzt an: jedes nicht
+        gebuchte Jahr der Formel, in der Fortschreibung nur das erste offene). Unbekannte Anlage: leere
+        Liste. Gerechnet wird in ganzen Cent.
+
+        **Gebucht** ist, was in den Büchern steht: Bei einem von der App gebuchten Jahr (die Planzeile
+        zeigt über ``Booking_ID`` auf eine vorhandene Buchung) ist der gebuchte Betrag die Wirkung dieser
+        Buchung auf das Anlagekonto (``db.matching.depreciation_effect``: „Aufwand an Anlagekonto“ zählt
+        +|Betrag|; dreht der Nutzer die Buchung zur Rückbuchung um, zählt sie negativ und das Jahr gilt
+        mit 0 als gebucht) – ändert der Nutzer die Buchung im Editor, folgt der Plan –, bei einem
+        importierten Jahr (Status 'booked', keine Buchung) ``DepreciationAmount``.
+
+        **Unverändert:** Gibt es keine gebuchten Jahre, oder stimmt jedes gebuchte Jahr auf den Cent mit
+        dem gleichen Jahr von ``calculate_depreciation_plan`` überein, ist das Ergebnis genau dieser
+        Plan (linear, degressiv, GWG) – für eine nur in der App geführte Anlage ändert sich nichts.
+
+        **Fortschreibung** (die Geschichte weicht ab: Import, nachträglich geänderter Anschaffungswert
+        oder Betrag einer Buchung): Gebuchte Jahre stehen mit ihrem gebuchten Betrag im Plan (Methode
+        ``METHOD_BOOKED``), ihr Buchwert rechnet fortlaufend vom heutigen Anschaffungswert (Ende =
+        Anschaffungswert minus die gebuchten Beträge bis einschließlich des Jahres, nie unter 0; Anfang
+        = Ende plus Betrag) – so schließt das erste offene Jahr an. Der Restbuchwert (Anschaffungswert
+        minus alle gebuchten Beträge) verteilt sich linear auf die Monate vom ersten offenen Jahr bis
+        zum Planende (Kaufmonat plus Nutzungsdauer; erstes offenes Jahr: das Jahr nach dem größten
+        gebuchten Jahr, mindestens das Kaufjahr). Nicht gebuchte Jahre zwischen gebuchten bekommen
+        keine eigene Zeile – ihr Betrag steckt im Rest. Ein Rest ≤ 0 ergibt keine offenen Jahre; ist
+        die Nutzungsdauer abgelaufen, kommt der ganze Rest ins erste offene Jahr. Ein Jahr, das auf 0 Cent
+        rundet, entfällt (die Summe bleibt der Rest), und buchbar ist das erste verbleibende offene Jahr.
+        GWG-Regel und degressive Rechnung gelten hier nicht. Fehlt Preis, Kaufdatum oder Nutzungsdauer, bleiben nur
+        die gebuchten Jahre. Buchbar ist nur das erste offene Jahr: Ein späteres Jahr zuerst zu buchen
+        machte die Jahre davor zu Lücken.
+        """
+        conn = self._get_connection()
+        try:
+            return self._depreciation_plan_on(conn, asset_id)
+        finally:
+            conn.close()
+    def _depreciation_plan_on(self, conn, asset_id):
+        """``depreciation_plan`` über eine vorhandene Verbindung – ``book_depreciation`` liest den Plan
+        so in seiner Transaktion, nach der Schreibsperre."""
+        import datetime as dt
+        row = conn.execute('SELECT PurchasePrice, PurchaseDate, UsefulLifeYears, DepreciationMethod '
+                           'FROM Assets WHERE ID = ?', (asset_id,)).fetchone()
+        if row is None:
+            return []
+        price, purchase_date, useful_life, method = row
+        booked = {}
+        for year, plan_amount, booking_id, amount, form, number, counter_number in conn.execute(
+                f'SELECT d.Year, d.DepreciationAmount, k.ID, k.Amount, k.EntryForm, c.AccountNumber, g.AccountNumber '
+                f'FROM AssetDepreciations d LEFT JOIN Bookings k ON k.ID = d.Booking_ID '
+                f'LEFT JOIN ChartOfAccounts c ON c.ID = k.COA_ID LEFT JOIN ChartOfAccounts g ON g.ID = k.CounterCOA_ID '
+                f'WHERE d.Asset_ID = ? AND {_DEPRECIATION_BOOKED}', (asset_id,)):
+            # gebucht ist, was in den Büchern steht: bei einer Buchung ihre Wirkung auf das Anlagekonto (eine
+            # Umkehrung zählt negativ, das Jahr bleibt mit 0 gebucht), sonst die Zeile des Imports
+            booked[year] = (plan_amount if booking_id is None
+                            else max(0, depreciation_effect(form, amount, number, counter_number)))
+        old = self.calculate_depreciation_plan(from_minor(price or 0), purchase_date, useful_life, method)
+        old_by_year = {entry['year']: entry for entry in old}
+        if all(year in old_by_year and amount == to_minor(old_by_year[year]['depreciation'])
+               for year, amount in booked.items()):
+            return [dict(entry, booked=entry['year'] in booked, bookable=entry['year'] not in booked)
+                    for entry in old]
+
+        plan, spent = [], 0
+        for year, amount in sorted(booked.items()):
+            cents = _cents(amount)
+            spent += cents
+            left = max(0, _cents(price or 0) - spent)
+            plan.append({'year': year, 'book_value_start': _euro(left + cents), 'depreciation': _euro(cents),
+                         'book_value_end': _euro(left), 'method': METHOD_BOOKED, 'booked': True,
+                         'bookable': False})
+        if not old:                                   # Preis, Kaufdatum oder Nutzungsdauer fehlen
+            return plan
+        rest = _cents(price) - spent
+        if rest <= 0:
+            return plan
+        bought = dt.date.fromisoformat(str(purchase_date)[:10])
+        begin = bought.year * 12 + bought.month - 1                   # erster Planmonat (Monatszähler)
+        end = begin + 12 * int(useful_life)                           # Planende, exklusiv
+        first = max(max(booked) + 1, bought.year)                     # erstes offenes Jahr
+        years = list(range(first, (end - 1) // 12 + 1))
+        if years:
+            amounts = _spread(rest, [min(end, y * 12 + 12) - max(begin, y * 12) for y in years])
+        else:                                         # Nutzungsdauer abgelaufen: der ganze Rest
+            years, amounts = [first], [rest]
+        # ein Jahr, das auf 0 Cent rundet, entfällt (die Summe bleibt der Rest): Es gäbe nichts zu buchen
+        years_and_amounts = [(year, amount) for year, amount in zip(years, amounts) if amount > 0]
+        for index, (year, amount) in enumerate(years_and_amounts):
+            plan.append({'year': year, 'book_value_start': _euro(rest), 'depreciation': _euro(amount),
+                         'book_value_end': _euro(rest - amount), 'method': 'linear', 'booked': False,
+                         'bookable': index == 0})
+            rest -= amount
+        return plan
     def get_book_value_at_date(self, asset_id, at_date=None):
-        """Calculate current book value of an asset at a given date."""
+        """Calculate current book value of an asset at a given date.
+
+        Aus ``depreciation_plan``: der Buchwert am Ende des letzten Planjahrs bis zum Jahr des
+        Datums, davor der Anschaffungswert."""
         import datetime as dt
         asset = self.get_asset_by_id(asset_id)
         if not asset:
             return 0.0
         purchase_price = float(asset[7]) if asset[7] is not None else 0.0   # PurchasePrice
-        purchase_date = asset[6]    # PurchaseDate
-        useful_life = asset[8]      # UsefulLifeYears
-        method = asset[9]           # DepreciationMethod
         if at_date is None:
             at_date = dt.date.today()
-        plan = self.calculate_depreciation_plan(purchase_price, purchase_date, useful_life, method)
         current_year = at_date.year
         book_value = purchase_price
-        for entry in plan:
+        for entry in self.depreciation_plan(asset_id):
             if entry['year'] <= current_year:
                 book_value = entry['book_value_end']
             else:
@@ -376,23 +509,30 @@ class AssetsMixin:
         (``PL_ACCOUNT_RANGE``), das Anlagekonto ein Anlagekonto (``ASSET_ACCOUNT_RANGE``)
         sein – sonst könnte ein Satz wie „6220 an 1460“ entstehen, den die EÜR nicht als
         AfA erkennt. Nach dem Abgang der Anlage (``SaleDate``) gibt es keine AfA mehr; die
-        zeitanteilige AfA im Abgangsjahr selbst plant ``calculate_depreciation_plan`` noch
-        nicht.
+        zeitanteilige AfA im Abgangsjahr selbst plant ``depreciation_plan`` noch nicht.
+
+        Betrag und Buchwert kommen aus ``depreciation_plan``; ein Jahr, das dort nicht
+        vorkommt, wird abgelehnt (``ValueError`` „No depreciation planned …“, zuerst, noch vor
+        den Prüfungen von Abgang und Konten, und erneut mit dem Plan der Transaktion). In der
+        Fortschreibung des Plans (die gebuchte Geschichte weicht von der Formel ab) ist nur das
+        erste offene Jahr buchbar: Jedes andere lehnt ``book_depreciation`` mit Klartext ab –
+        sonst würden die Jahre davor zu Lücken, und ihr Betrag wanderte in die späteren Jahre.
+        Für eine nur in der App geführte Anlage gilt jede Reihenfolge.
 
         Je Anlage und Jahr gibt es nur eine Buchung: Ist das Jahr schon gebucht (die
         Buchung gibt es, oder es kam als 'booked' aus dem WISO-Import), kommt ein
         ``ValueError``. Eine Zeile 'posted', deren Buchung fehlt, gilt als nicht gebucht
         und wird überschrieben. Prüfung und Anlegen laufen in einer Transaktion, die den
         Schreibzugriff sofort sperrt – Doppelklick oder zwei gleichzeitige Anfragen buchen
-        nie beide.
+        nie beide. Der Plan wird erst in dieser Transaktion gelesen: Die Fortschreibung hängt
+        an den gebuchten Jahren, und ein anderes Buchen derselben Anlage (oder ein Import)
+        zwischen Lesen und Sperre würde den Betrag sonst umrechnen.
         """
         asset = self.get_asset_by_id(asset_id)
         if not asset:
             raise ValueError(f"Asset {asset_id} not found")
-        plan = self.calculate_depreciation_plan(
-            asset[7], asset[6], asset[8], asset[9])
-        year_entry = next((e for e in plan if e['year'] == year), None)
-        if not year_entry:
+        if not any(e['year'] == year for e in self.depreciation_plan(asset_id)):
+            # wie bisher vor den übrigen Prüfungen; maßgeblich ist der Plan in der Transaktion (unten)
             raise ValueError(f"No depreciation planned for year {year}")
         sale_date = asset[15]                     # Assets.SaleDate
         sale_year = str(sale_date)[:4] if sale_date else ''
@@ -405,17 +545,22 @@ class AssetsMixin:
             raise ValueError("Anlage hat kein Anlagenkonto")
         self._require_coa_in_range(coa_id_expense, PL_ACCOUNT_RANGE, 'Aufwandskonto')
         self._require_coa_in_range(coa_id_asset, ASSET_ACCOUNT_RANGE, 'Anlagekonto')
-        amount = year_entry['depreciation']
         if not description:
             description = f"AfA {asset[2]} {year} ({asset[1]})"
         booking_date = f"{year}-12-31"
         conn = self._get_connection()
         try:
             conn.execute('BEGIN IMMEDIATE')
-            if conn.execute(
-                    f'SELECT 1 FROM AssetDepreciations d WHERE d.Asset_ID = ? AND d.Year = ? '
-                    f'AND {_DEPRECIATION_BOOKED}', (asset_id, year)).fetchone():
+            plan = self._depreciation_plan_on(conn, asset_id)
+            year_entry = next((e for e in plan if e['year'] == year), None)
+            if not year_entry:
+                raise ValueError(f"No depreciation planned for year {year}")
+            if year_entry['booked']:                  # ``_DEPRECIATION_BOOKED``, in dieser Transaktion gelesen
                 raise ValueError(f"AfA {year} ist bereits gebucht")
+            if not year_entry['bookable']:            # Fortschreibung: nur das erste offene Jahr
+                first = next(e['year'] for e in plan if e['bookable'])
+                raise ValueError(f"AfA {year} lässt sich erst buchen, wenn {first} gebucht ist.")
+            amount = year_entry['depreciation']
             cursor = conn.execute('''
                 INSERT INTO Bookings (DateBooking, DateTax, Account_ID, COA_ID, CounterCOA_ID,
                     Amount, Currency, Text, BookingType, Status, EntryForm)

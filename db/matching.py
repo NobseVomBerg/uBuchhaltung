@@ -295,6 +295,29 @@ def is_asset_transfer(coa_id, counter_coa_id, liquid_coa_ids, asset_coa_ids, pl_
             or (coa_id in pl_coa_ids and counter_coa_id in asset_coa_ids))
 
 
+def depreciation_effect(stored_form, amount, coa_number, counter_number) -> int:
+    """Wirkung eines AfA-Satzes auf sein Anlagekonto, vorzeichenrichtig (Minor Units) – der Betrag, den der
+    AfA-Plan der App für das Jahr als gebucht zählt (``Database.depreciation_plan``, WISO-Datenbank-Import).
+
+    Steht ein Anlagekonto (``ASSET_ACCOUNT_RANGE``) im **Haben**, ist es eine Abschreibung: **+|Betrag|**
+    („Aufwand an Anlagekonto“). Steht es im **Soll**, ist es eine Korrektur oder Zuschreibung – WISO schreibt
+    eine Umkehrung mit vertauschten Konten: **−|Betrag|**. Berührt keine Seite ein Anlagekonto oder beide,
+    zählt der Satz +|Betrag| (die AfA alter Form auf einem Bankkonto, Konto ohne Nummer).
+
+    Die Soll-Seite folgt der gespeicherten Form (``soll_side``): Bei positivem Betrag steht die Seite der Form
+    im Soll, bei negativem die andere – eine Zeile ohne Form gilt als ``transfer``. Konten und Betrag so, wie die
+    Zeile in den Büchern steht; ein Kontentausch mit negiertem Betrag (``reform``) ändert das Ergebnis nicht."""
+    amount = amount or 0
+    form = stored_form if stored_form in ENTRY_FORMS else FORM_TRANSFER
+    soll_is_coa = (soll_side(form) == SIDE_COA) == (amount >= 0)
+    low, high = ASSET_ACCOUNT_RANGE
+    coa_asset = coa_number is not None and low <= coa_number <= high
+    counter_asset = counter_number is not None and low <= counter_number <= high
+    if coa_asset == counter_asset:
+        return abs(amount)
+    return -abs(amount) if coa_asset == soll_is_coa else abs(amount)
+
+
 def receivable_condition(debtor_coa_ids, payment_coa_ids, alias=''):
     """SQL-Bedingung „Satz ist eine Forderungsbuchung“ samt Parametern – die EINE Definition.
 

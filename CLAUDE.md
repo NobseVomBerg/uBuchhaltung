@@ -279,7 +279,19 @@ kein Subagent darauf:
   dem Abgang der Anlage keine AfA mehr. „Gebucht“ heißt: die Buchung gibt es (oder
   WISO-`booked`). Löschen der Buchung setzt das Jahr auf `planned` zurück, `delete_asset`
   lehnt bei gebuchter AfA ab. In der EÜR (Sektion 3, ohne Steuer), nicht im Dashboard – die
-  AfA ist kein Geldfluss
+  AfA ist kein Geldfluss. **Plan (`Database.depreciation_plan`, seit 2.2.6):** Die gebuchten Jahre sind Geschichte, der Rest
+  verteilt sich neu. Gebucht ist, was in den Büchern steht – bei einem von der App gebuchten Jahr die Wirkung der verknüpften
+  Buchung auf das Anlagekonto (`matching.depreciation_effect`: Anlagekonto im Haben +, im Soll −, nie unter 0), bei einem
+  importierten Jahr (`booked` ohne Buchung) `DepreciationAmount`. **Unverändert-Regel:** Stimmt jedes gebuchte Jahr auf den
+  Cent mit der Formel (`calculate_depreciation_plan`, unverändert: linear, degressiv, GWG) überein, ist der Plan genau die
+  Formel – für eine nur in der App geführte Anlage ändert sich nichts. **Fortschreibung** bei abweichender Geschichte
+  (Import, geänderter Anschaffungswert oder geänderte AfA-Buchung): Restbuchwert = Anschaffungswert − gebuchte Beträge, ab
+  dem Jahr nach dem größten gebuchten Jahr linear nach Monaten bis zum Planende (Kaufmonat + 12 × Nutzungsdauer), ganzzahlig
+  in Cent, das letzte Jahr den Rest; abgelaufene Nutzungsdauer → ganzer Rest im nächsten Jahr; Jahre mit 0 Cent entfallen;
+  keine GWG-/degressive Regel; Buchwerte fortlaufend aus dem heutigen Anschaffungswert. In der Fortschreibung ist **nur das
+  erste offene Jahr buchbar** (`bookable`; Lücken bekommen keine Zeile, ihr Betrag steckt im Rest). `book_depreciation` liest
+  den Plan in seiner Transaktion (`BEGIN IMMEDIATE`), bucht genau den Planbetrag; Anlagenseiten, `get_book_value_at_date`
+  und die Prüfungen des WISO-Imports nehmen denselben Plan
 - Rechnungszahlung: `assign_invoice_payment` (`db/invoice_payments.py`) ist die einzige Stelle, die
   eine Zahlung Rechnung ↔ Bankbewegung zuordnet, `assign_storno_refund` die einzige, die eine Stornorechnung
   erstattet (*Stornobeleg*), `unassign_invoice_payment` die einzige, die eine Zuordnung
@@ -518,7 +530,12 @@ kein Subagent darauf:
 - **Anlagen:** Anschaffungswert und Verkaufserlös stehen beide **netto** in den
   Büchern. Der Erlös trägt in WISO keine `INVENTORYID` – gemeinsam ist ihm mit
   dem Anlagegut nur der Abgangstext; ist er nicht eindeutig, bleibt das Feld
-  leer statt falsch
+  leer statt falsch. **Anschaffungswert** (`_purchase_price`, seit 2.2.6): Summe der positiven Zahlungen plus der in WISO
+  eingetragene Wert (`PURCHASEAMOUNTNET`), wenn er über 1,00 € liegt und nicht auf den Cent der Zahlungssumme gleicht – bis
+  1,00 € ist er ein Behelf des Nutzers bei der Erstanlage und zählt nicht, bei Gleichheit ist dieselbe Anschaffung zweimal
+  erfasst und zählt einmal; ohne Zahlungen wie bisher. Zählt der eingetragene Wert zusätzlich, warnt der Import je Anlage
+  (Zusammensetzung); bleibt bei einer nicht abgegangenen Anlage ohne geplantes Jahr nach den gebuchten Jahren ein Rest über
+  1,00 €, warnt er ebenfalls (`depreciation_rest_warnings`)
 - **Vorausgeplante AfA (seit 2.2.5):** WISO schreibt den ganzen AfA-Plan sofort als Buchungssätze, ohne Kennzeichen für
   „geplant“. **Ein AfA-Satz mit Datum nach dem Importtag wird nie als Buchung angelegt** (Stichtag `today`, Standard: Ortsdatum;
   `future_depreciations_skipped`) – gebucht wird im jeweiligen Jahr in der App. AfA-Satz = Satz mit `INVENTORYID` und
@@ -535,9 +552,11 @@ kein Subagent darauf:
   wird der AfA-Satz nachgetragen. Hat die Gruppe im Jahr eine Zeile, die nicht genau passt (vom Nutzer geändert), gilt das
   Jahr als gebucht (Nachweis; jede Zeile für höchstens einen Satz, genaue Treffer zuerst). Künftige AfA-Buchungen aus einem
   Import bis 2.2.4 bleiben und zählen als gebucht (`future_depreciations_kept`). Zugeordnet wird die Anlage über die
-  Inventarnummer, nur wenn sie eindeutig ist – sonst Warnung, kein Abgleich. Weicht der Plan der App von WISOs Werten der
-  geplanten Jahre ab, meldet der Import es je Anlage (`depreciation_plan_mismatches`): `book_depreciation` rechnet noch mit
-  dem eigenen linearen Plan (`docs/aufgaben.md`). Diese Regeln nicht aufweichen – jede Lockerung führt zu doppelter oder
+  Inventarnummer, nur wenn sie eindeutig ist – sonst Warnung, kein Abgleich. Eine Planzeile, die der Buchungsschritt auf
+  `booked` hebt oder die neu als `booked` entsteht, trägt den **Betrag der Bücher** (Wirkung der AfA-Sätze des Jahres auf
+  das Anlagekonto, nie unter 0); der Planwert aus WISO aktualisiert nur `planned`-Zeilen, eine `booked`-Zeile gleicht allein
+  der Buchungsschritt an den Betrag der Bücher an. Weicht der Plan der App (`depreciation_plan`) in einem geplanten Jahr um
+  mehr als 1,00 € von WISOs Wert ab, meldet der Import es je Anlage (`depreciation_plan_mismatches`). Diese Regeln nicht aufweichen – jede Lockerung führt zu doppelter oder
   fehlender AfA
 - **Rechnungen:** der Positionstext steht **nicht** bei der Rechnungsposition,
   sondern als RTF-Blob (`ARTDESCR`) an der Auftragsposition, auf die

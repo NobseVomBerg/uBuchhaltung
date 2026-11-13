@@ -141,9 +141,17 @@ direkt aus der Datenbankdatei oder aus den Textexporten:
   sonst steht es als geplant im Plan und ist im jeweiligen Jahr in der App zu buchen (das
   geschieht nicht von selbst). Hat die App ein Jahr schon gebucht, legt ein späterer Import den
   AfA-Satz dafür nicht an und meldet es. Die Anlage der App wird über die Inventarnummer
-  gefunden; fehlt sie oder ist sie mehrfach vergeben, meldet der Import das. Rechnet die App die
-  geplante AfA anders als WISO (z. B. degressiv), meldet er auch das: Beim Buchen gilt der Plan
-  der App.
+  gefunden; fehlt sie oder ist sie mehrfach vergeben, meldet der Import das. Beim Buchen rechnet
+  die App die offenen Jahre aus dem Restbuchwert der gebuchten Jahre neu (verteilt auf die
+  Restnutzungsdauer); weicht ihr Plan für ein geplantes Jahr um mehr als 1 € von dem aus WISO
+  ab, meldet der Import das: Beim Buchen gilt der Plan der App. Ein gebuchtes Jahr steht mit dem
+  Betrag, den die Bücher führen (eine Korrektur mit vertauschten Konten mindert ihn); ein erneuter
+  Import ändert gebuchte Jahre nicht, gleicht nur einen abweichenden Planbetrag an die Bücher an.
+  Plant WISO nichts mehr, die App aber noch ein offenes Jahr, meldet der Import den Restbuchwert.
+- Der Anschaffungswert einer Anlage ist die Summe ihrer Zahlungen plus ein von Hand
+  eingetragener Wert; ein Behelfsbetrag bis 1 € und ein Wert, der der Zahlungssumme gleicht
+  (dieselbe Anschaffung doppelt erfasst), zählen nicht. Zählen beide Beträge, weist der Import
+  darauf hin.
 - Vor dem Schreiben prüft der Import die Tabellenstruktur und bricht ab, wenn
   sie nicht der erwarteten entspricht.
 - **CSV-Import** der Textexporte (Original- und Tabellen-Export), auch
@@ -331,6 +339,7 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 Vollständiges Anlagenmanagement mit gesetzeskonformer AfA:
 - **BMF-Kategorien**: 30 vordefinierte Kategorien aus `seed_data/`
 - **AfA-Methoden**: Linear (anteilig), Degressiv (25%), GWG (≤ 800 €)
+- **AfA-Plan mit Fortschreibung**: Gebuchte Jahre bleiben, wie sie gebucht sind (maßgeblich ist der Betrag der Buchung). Weicht ein gebuchtes Jahr vom Plan ab (Import, nachträglich geänderter Anschaffungswert oder Betrag einer Buchung), verteilt sich der Restbuchwert linear auf die Restnutzungsdauer (keine degressive Fortschreibung, keine GWG-Regel), und gebucht wird Jahr für Jahr der Reihe nach – die App rechnet so; ob das steuerlich passt, klärt das Steuerbüro
 - **Live-Vorschau**: JavaScript-basierte Echtzeit-AfA-Berechnung
 - **Inventarnummern**: Auto-generiert `INV-YY-###`
 - **Buchungsintegration**: AfA-Buchung als Umbuchung „Aufwand an Anlagekonto“ (direkte Abschreibung, je Anlage und Jahr nur einmal, ohne Bankkonto; Aufwandskonto = Erfolgskonto, Anlagekonto = Anlagekonto, nach dem Abgang der Anlage keine AfA mehr); Löschen der Buchung gibt das Jahr wieder frei, eine Anlage mit gebuchter AfA lässt sich nicht löschen. Wer ein GWG schon beim Kauf auf das Aufwandskonto 6260 (Sofortabschreibung) gebucht hat, darf die AfA nicht zusätzlich buchen – sie zählte doppelt, das Programm prüft das nicht
