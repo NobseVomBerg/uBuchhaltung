@@ -258,9 +258,9 @@ kein Subagent darauf:
   (SKR04: Vorräte; früher der SKR03-Kassenbereich): Beide WISO-Importe melden Buchungen darauf
   (`stock_range_accounts`, Hinweis auf *Verschiedenes*: Buchungen gegen diese Konten werden als
   Umbuchung gelesen und erscheinen nicht in der EÜR), und `negative_gross` zählt jeden Satz mit negativem
-  Brutto und genau einer liquiden Seite (dort bestimmt die Geldbewegung das Vorzeichen, ein Storno wird so
-  wie eine Buchung gelesen – gleich, ob die Zahl ihr Vorzeichen dabei ändert; bis das festgeschrieben ist,
-  `docs/aufgaben.md`).
+  Brutto und genau einer liquiden Seite (dort bestimmt die Geldbewegung das Vorzeichen – **festgeschrieben** nach der
+  Messung an echten Daten: WISO schreibt den Brutto nie negativ, Konto = Soll, Umkehrungen stehen als vertauschte Konten;
+  der Zähler ist der Wächter für Dateien außerhalb dieses Musters).
   Ob ein Satz in die EÜR kommt, entscheidet die
   Sektion in `get_euer_data` – Kind einer Bank- oder Kassenbewegung; eigenständig auf einer
   Kasse oder (ohne Kontofilter) auf 1460; Umbuchung zwischen Anlage- und Erfolgskonto –,
@@ -486,6 +486,11 @@ kein Subagent darauf:
   die, die eine andere Zeile der Datei mit ihrem eigenen Betrag beansprucht), die Übernahme CSV → Datenbank
   über `WisoBooking.legacy_amount` unter denselben Schutzregeln wie sonst. Kein zweiter Satz, Form und Betrag
   der Altzeile bleiben, die Übernahme füllt nichts; der Zähler heißt `legacy_stock_rows` (Hinweis auf
+  *Verschiedenes*)
+- **Textimport** (`import_wiso_csv`): Kodierung in der Reihenfolge BOM → strenges UTF-8 → cp1252 (cp1252 dekodiert fast alles
+  und darf deshalb nie zuerst stehen). Fehlermeldungen nennen **keine Feldwerte der Datei** (ein DATEV-Stapel trägt Berater- und
+  Mandantennummer im Vorlauf; er wird am ersten Feld `EXTF`/`DTVF` erkannt und mit Klartext abgelehnt). Ein Steuerschlüssel, den
+  `TaxKeys` nicht kennt, wird nicht geraten: Die Zeile kommt ohne Steuersatz und zählt in `unknown_tax_keys` (Hinweis auf
   *Verschiedenes*)
 - **CSV und Datenbank nacheinander:** Der Datenbank-Import (`_insert_wiso_bookings`) übernimmt eine CSV-Buchung
   (`entry` ohne `SourceGroup`, `AutoMirror`, `Account_ID`) nur, wenn Datum, Betrag, Konto, Beleg-Nr. **und ein
