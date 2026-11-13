@@ -18,21 +18,34 @@ verlieren:
   Teilüberweisungen eines Anlagenkaufs; über die Oberfläche nicht exportierbar.
 * **Vollständigkeit** – die Exporte umfassen nur ausgewählte Jahre.
 
-Zwei Eigenheiten der Datenbank, die dieses Modul kapselt:
+Drei Eigenheiten der Datenbank, die dieses Modul kapselt:
 
 1. **Kontonummern sind SKR03.** ``BAS_FINACC_PLAN`` bildet sie in der Spalte
    ``SKR04`` auf den hier verwendeten Rahmen ab (1210 → 1810 Bank,
    1360 → 1460 Verrechnungskonto, 8405 → 4405 „Erlöse 19 % noch offen“).
+   Später angelegte Konten fehlen dort; ihre SKR04-Nummer speichert WISO je Konto
+   in ``FINT_EXTERNDEFS`` (siehe :meth:`WisoDatabase.chart`).
 2. **Steuerzeilen sind eigene Sätze.** WISO bucht DATEV-artig: eine Zeile
    trägt den Bruttobetrag, eine zweite die Umsatz- bzw. Vorsteuer. Sätze ohne
    ``AMOUNTGROSS`` sind genau diese Steuerzeilen; uBuchhaltung führt die Steuer
    am Buchungssatz selbst und lässt sie deshalb weg.
+3. **Der AfA-Plan steht sofort als Buchungssätze da.** WISO schreibt die AfA aller
+   Jahre auf einmal in ``MOV_FINACC_ACCRECORDS`` (mit ``INVENTORYID`` und
+   ``INVENTORYAMORTID``), auch die künftigen, ohne Kennzeichen „geplant“. Der Leser
+   liefert sie und kennzeichnet sie: Welcher Satz ein AfA-Satz ist, zu welchem Planjahr er
+   gehört und ob sein Datum nach dem Stichtag (``today``) liegt, steht an
+   :class:`WisoBooking` (``is_depreciation``, ``depreciation_year``, ``future_depreciation``;
+   erkannt am ``INVENTORYAMORTID`` des Satzes, an WISOs Buchungsart oder ersatzweise an der
+   AfA-Tabelle, siehe :func:`_is_depreciation`). Ob ein künftiger Satz angelegt wird,
+   entscheidet der Import: nie.
 """
+import datetime
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from db.matching import LEGACY_CASH_NUMBERS, import_entry_form
+from money import round_minor, to_minor
 
 from .catalog import Catalog
 from .ods import OdsError, OdsFile
@@ -53,6 +66,11 @@ T_ASSET_PAYMENTS = 'MOV_INVENTORY_BOOKINGS'
 #: Selbst angelegte Unterkonten (z. B. „Kfz-Versicherung <Fahrzeug>“). Sie
 #: stehen nicht im Kontenrahmen, nennen aber ihr Basiskonto.
 T_SUBACCOUNTS = 'FINT_ACCOUNTS'
+#: Zusatzwerte je Konto und Kontenplan. Die Art 82 trägt in ``EXTERNVALUE`` die SKR04-Nummer,
+#: die WISO zum Konto speichert – auch für Unterkonten, die ``BAS_FINACC_PLAN`` nicht führt.
+T_EXTERN = 'FINT_EXTERNDEFS'
+EXTERN_KIND_SKR04 = 82
+EXTERN_COLUMNS = ('ACCOUNTNO', 'FINTABLEID', 'EXTERNKIND', 'EXTERNVALUE')
 #: Rechnungen, Kunden, eigene Firma. Der Positionstext steht nicht bei der
 #: Rechnungsposition, sondern bei der zugehörigen Auftragsposition.
 T_INVOICES = 'MOV_INVOICES'
@@ -61,6 +79,13 @@ T_ORDER_POSITIONS = 'MOV_ORDERS_POSITIONS'
 T_CUSTOMERS = 'BAS_CUSTOMERS'
 T_COMPANY = 'BAS_COMPANY'
 T_UNITS = 'SUP_ARTICLES_UNITS'
+
+#: Buchungsart (``MOV_FINACC_ACCRECORDS.ACCOUNTINGKIND``) der AfA-Sätze. Gemessen an einer Datenbank
+#: einer WISO-Version: Alle AfA-Sätze tragen 28 (und ``BOOKINGKIND`` 41), die Abgangsbuchungen 31
+#: (``BOOKINGKIND`` 44/45). Eine andere Version kann anders zählen – die Spalte ist optional, und ohne
+#: sie (oder mit einer anderen Zahl) erkennt der Leser den AfA-Satz wie zuvor über ``INVENTORYAMORTID``
+#: bzw. die AfA-Tabelle.
+ACCOUNTING_KIND_DEPRECIATION = 28
 
 #: Personenkonten (Debitoren/Kreditoren) stehen nicht im Sachkontenrahmen und
 #: tragen in SKR03 wie SKR04 dieselbe Nummer.
@@ -131,6 +156,78 @@ def _country(value: Optional[str]) -> str:
     return COUNTRIES.get(code, code if len(code) == 2 else 'DE')
 
 
+def _has_columns(catalog, table, columns) -> bool:
+    """Führt ``catalog`` die Tabelle mit allen diesen Spalten (im aktuellen Satzformat)?"""
+    relation = catalog.relation_id.get(table)
+    if relation is None:
+        return False
+    found = {column.name for column in catalog.columns(relation, catalog.relation_format[relation])}
+    return set(columns) <= found
+
+
+def _cutoff(today=None) -> str:
+    """Stichtag als ISO-Datum: ``None`` ist heute (Ortsdatum), sonst ein ``date`` oder ein ISO-Text.
+
+    Ein Datum **nach** dem Stichtag gilt als künftig."""
+    if today is None:
+        today = datetime.date.today()
+    if isinstance(today, datetime.date):
+        return today.isoformat()[:10]
+    return datetime.date.fromisoformat(str(today)[:10]).isoformat()
+
+
+def _positive_whole(value) -> Optional[int]:
+    """Eine positive ganze Zahl aus einer Zahl oder einem Text aus Ziffern, sonst ``None``."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not (text.isascii() and text.isdigit()):
+            return None
+        try:
+            number = int(text)
+        except ValueError:                      # absurd lange Ziffernfolge
+            return None
+        return number if number > 0 else None
+    if isinstance(value, float):
+        return int(value) if value.is_integer() and value > 0 else None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    return None
+
+
+def _cents(value) -> Optional[int]:
+    """Ein WISO-Betrag ohne Vorzeichen, auf den Cent gerundet, in Minor Units – zum Vergleich zweier
+    Beträge (``None`` ohne Betrag)."""
+    return None if value is None else round_minor(to_minor(abs(value)), 2)
+
+
+def _is_depreciation(row: dict, inventory_id, date: Optional[str], gross, amort_amounts) -> bool:
+    """Ist der Buchungssatz ``row`` ein AfA-Satz? Nur ein Satz mit ``INVENTORYID`` kann einer sein; dann
+    entscheidet in dieser Reihenfolge:
+
+    1. ``INVENTORYAMORTID`` gesetzt – der Verweis auf die AfA-Zeile: ja.
+    2. WISOs Buchungsart: ``ACCOUNTINGKIND`` = :data:`ACCOUNTING_KIND_DEPRECIATION` – ja, auch bei leerem
+       ``INVENTORYAMORTID`` (die Spalte ``ACCOUNTINGKIND`` ist optional).
+    3. Der Satz hat die Spalte ``INVENTORYAMORTID``, aber keinen Wert: nein – eine Abgangsbuchung o. Ä. am
+       Anlagegut, auch wenn sie am Tag einer AfA-Zeile steht.
+    4. Nur wenn der Satz die Spalte nicht kennt (die Tabelle hat sie nicht, oder er steht in einem älteren
+       Satzformat: ``catalog.rows`` liefert dann gar keinen Schlüssel statt ``None``), und nicht Art 28 ist:
+       ersatzweise die AfA-Tabelle – eine Zeile derselben Anlage mit demselben Datum **und** demselben Betrag
+       (|``AMOUNTGROSS``| = |``AMORT_AMOUNT``|, auf den Cent). ``amort_amounts`` ist
+       :meth:`WisoDatabase._depreciation_index`.
+    """
+    if inventory_id is None:
+        return False
+    if row.get('INVENTORYAMORTID') is not None:
+        return True
+    if row.get('ACCOUNTINGKIND') == ACCOUNTING_KIND_DEPRECIATION:
+        return True
+    if 'INVENTORYAMORTID' in row:
+        return False
+    return _cents(gross) in amort_amounts.get((inventory_id, date), ())
+
+
 def _after_disposal_year(date: Optional[str], sale_date: Optional[str]) -> bool:
     """Liegt ``date`` nach dem Jahr, in dem das Anlagegut abgegangen ist?
 
@@ -177,6 +274,28 @@ class WisoBooking:
     #: nur bei einem Satz, der ein Konto 1000–1099 berührt, sonst ``None``. Hat ein älterer Import
     #: den Satz geschrieben, steht er so in der Datenbank (``db.wiso_fdb_import``).
     legacy_amount: Optional[float] = None
+    #: Ein AfA-Satz: Der Satz trägt eine ``INVENTORYID`` und ``INVENTORYAMORTID`` oder WISOs Buchungsart
+    #: der AfA (``ACCOUNTINGKIND``, :data:`ACCOUNTING_KIND_DEPRECIATION`). Kennt er die Spalte
+    #: ``INVENTORYAMORTID`` nicht (die Tabelle hat sie nicht, oder er steht in einem älteren Satzformat),
+    #: erkennt der Leser ihn ersatzweise an der AfA-Tabelle (``MOV_INVENTORY_AMORTIZATIONS``): Zeile
+    #: derselben Anlage mit demselben Datum und demselben Betrag. Ein Satz mit leerer ``INVENTORYAMORTID``
+    #: und anderer Buchungsart – eine Abgangsbuchung am Anlagegut – ist keiner.
+    is_depreciation: bool = False
+    #: Ein AfA-Satz mit einem Datum **nach** dem Stichtag: WISO hat ihn mit dem AfA-Plan vorab geschrieben, gebucht
+    #: wird im jeweiligen Jahr in der App. Der Leser liefert ihn, kennzeichnet ihn aber nur – er zählt in keinem
+    #: Zähler des Lesers. Der Import legt ihn nie an; nur ein vorhandener Satz derselben Gruppe (Bestand aus einem
+    #: Import bis 2.2.4) wird wiedererkannt.
+    future_depreciation: bool = False
+    #: Das Planjahr des AfA-Satzes: das Jahr des ``BOOKINGDATE`` der Zeile, auf die ``INVENTORYAMORTID``
+    #: zeigt; sonst (Ersatzweg über die AfA-Tabelle, keine passende Zeile) das Jahr des Satzdatums. ``None``, wenn
+    #: der Satz kein AfA-Satz ist oder kein Datum trägt.
+    depreciation_year: Optional[int] = None
+    #: Konto und Gegenkonto, wie ein Import bis 2.2.4 sie gelesen hat (ohne die von WISO gespeicherte
+    #: SKR04-Nummer, nur über das Basiskonto) – nur gesetzt, wenn sie von ``account`` bzw.
+    #: ``counter_account`` abweichen. Ein Satz, den ein solcher Import schon geschrieben hat, steht
+    #: auf diesem Basiskonto (``db.wiso_fdb_import``).
+    legacy_account: Optional[int] = None
+    legacy_counter_account: Optional[int] = None
 
 
 @dataclass
@@ -331,6 +450,11 @@ class WisoData:
     tax_rows_skipped: int = 0
     #: Übersprungene Erinnerungswert-Buchungen abgegangener Anlagen.
     memo_rows_skipped: int = 0
+    #: Unterkonten von Zahlungskonten, die in der App keine Zahlungskonten sind: je neuer Kontonummer
+    #: (``nummer``) mit dem Konto, unter dem ein Import bis 2.2.4 sie gelesen hat (``basis``, ein
+    #: Zahlungskonto), und der Zahl der Sätze (``anzahl``). Auf der Seite des Satzes ändert sich damit das
+    #: Vorzeichen und die Form – er wird als Umbuchung gelesen. Nur gemeldet, nicht behandelt.
+    liquid_subaccounts: List[dict] = field(default_factory=list)
     #: Sätze mit negativem Bruttobetrag und genau einer liquiden Seite. WISO schreibt den
     #: Bruttobetrag nicht negativ (Umkehrungen stehen als vertauschte Konten); der Zähler ist
     #: ein Wächter für Sätze außerhalb dieses Musters. Die Regel ist festgeschrieben: Bei genau
@@ -354,6 +478,7 @@ class WisoDatabase:
             except (OdsError, OSError):
                 self._standard = None       # ohne Standardrahmen geht es auch
         self._chart = None
+        self._legacy_chart = None
 
     def close(self):
         self.catalog.close()
@@ -432,8 +557,22 @@ class WisoDatabase:
     def chart(self) -> Dict[int, WisoAccount]:
         """SKR03-Nummer → Konto. Mandantenrahmen schlägt Standardrahmen.
 
-        ``BAS_FINACC_PLAN`` führt jedes Konto je Buchungsjahr; genommen wird
-        der jüngste Eintrag, weil die SKR04-Zuordnung über die Jahre stabil ist.
+        Die SKR04-Nummer eines Kontos kommt in dieser Reihenfolge:
+
+        1. ``BAS_FINACC_PLAN`` führt jedes Konto je Buchungsjahr; genommen wird
+           der jüngste Eintrag, weil die SKR04-Zuordnung über die Jahre stabil ist.
+           Was dort eine SKR04-Nummer nennt, wird nie überschrieben.
+        2. Für jedes Konto ohne Nummer die, die WISO zum Konto speichert
+           (``FINT_EXTERNDEFS``, Art 82, siehe :meth:`_stored_skr04`) – so behalten
+           später angelegte Unterkonten ihre eigene Nummer. Konten aus ``KNOWN_EQUIVALENTS``
+           nehmen daran nicht teil.
+        3. Nur für Konten ohne gespeicherte Nummer der Rückgriff auf das Basiskonto
+           (:meth:`_resolve_subaccounts`).
+        4. ``KNOWN_EQUIVALENTS``.
+
+        Ohne ``FINT_EXTERNDEFS`` (Tabelle oder Spalten fehlen) entfällt Schritt 2 –
+        das Ergebnis ist dann das der Versionen bis 2.2.4. Diese Zuordnung
+        ohne Schritt 2 hält :meth:`_legacy_skr04` für den Abgleich mit älteren Importen bereit.
         """
         if self._chart is not None:
             return self._chart
@@ -452,8 +591,14 @@ class WisoDatabase:
                 chart[number] = WisoAccount(
                     skr03=number, skr04=row.get('SKR04'),
                     text=_clean(row.get('ACCOUNTTEXT')), year=year or None)
-        self._resolve_subaccounts(chart)
+        bases, labels = self._subaccounts()
+        legacy = dict(chart)                       # WisoAccount wird ersetzt, nie verändert
+        self._resolve_subaccounts(legacy, bases, labels)
+        self._apply_known_equivalents(legacy)
+        self._apply_stored_skr04(chart, bases, labels)
+        self._resolve_subaccounts(chart, bases, labels)
         self._apply_known_equivalents(chart)
+        self._legacy_chart = legacy
         self._chart = chart
         return chart
 
@@ -472,15 +617,9 @@ class WisoDatabase:
                 skr03=skr03, skr04=skr04,
                 text=(known.text if known and known.text else text))
 
-    def _resolve_subaccounts(self, chart):
-        """Selbst angelegte Unterkonten über ihr Basiskonto anschließen.
-
-        WISO erlaubt Unterkonten je Fahrzeug oder Projekt („4532 laufende
-        Kfz-Betriebskosten Tesla“ unter „4530“). Sie stehen nur in
-        ``FINT_ACCOUNTS`` und nennen dort mit ``BASEACCOUNTNO`` ihr Basiskonto –
-        über das sie dieselbe SKR04-Nummer erben. Die Kette wird verfolgt, denn
-        ein Basiskonto kann selbst ein Unterkonto sein.
-        """
+    def _subaccounts(self):
+        """Selbst angelegte Unterkonten aus ``FINT_ACCOUNTS``: ``(Basiskonten, Bezeichnungen)``,
+        beide nach SKR03-Nummer des Kontos. Merkt sich die Bezeichnungen für :meth:`read`."""
         bases, labels = {}, {}
         for row in self._safe_rows(T_SUBACCOUNTS):
             number = row.get('ACCOUNTNO')
@@ -493,7 +632,89 @@ class WisoDatabase:
             if base:
                 bases.setdefault(number, base)
         self.account_labels = labels
+        return bases, labels
 
+    def _stored_skr04(self) -> Dict[int, int]:
+        """SKR03-Nummer → die SKR04-Nummer, die WISO zum Konto speichert.
+
+        ``FINT_EXTERNDEFS`` führt Zusatzwerte je Konto (``ACCOUNTNO``) und Kontenplan
+        (``FINTABLEID``, die höhere Zahl ist der jüngere Plan); die Art 82 nennt in
+        ``EXTERNVALUE`` die SKR04-Nummer. Je Konto gilt der Wert aus dem jüngsten Plan, der
+        eine brauchbare Nummer nennt: Text oder Zahl, nur eine ganze Zahl von 1 bis 9999 zählt –
+        ein leerer, nicht numerischer, negativer oder zu großer Wert wird übergangen, als stünde
+        er nicht da. Eine gespeicherte Nummer gilt nur für Sachkonten: ``ACCOUNTNO`` unter
+        ``FIRST_PERSONAL_ACCOUNT``; Personenkonten (Debitoren/Kreditoren) tragen in beiden
+        Rahmen dieselbe Nummer und bekommen nie einen Eintrag daraus.
+        Gelesen wird aus dem Mandanten; was er zu einem Konto nicht nennt, ergänzt der
+        Standardrahmen (Mandant schlägt Standard, die Plan-Nummern beider Dateien sind nicht
+        vergleichbar). Fehlt die Tabelle oder eine ihrer Spalten (``EXTERN_COLUMNS``), wird die
+        Datei übergangen – der Leser verhält sich dann wie bis 2.2.4.
+        """
+        stored: Dict[int, int] = {}
+        for source in (self._standard, self.catalog):
+            if source is None or not _has_columns(source, T_EXTERN, EXTERN_COLUMNS):
+                continue
+            newest: Dict[int, tuple] = {}
+            for row in source.rows(T_EXTERN):
+                if row.get('EXTERNKIND') != EXTERN_KIND_SKR04:
+                    continue
+                account = row.get('ACCOUNTNO')
+                number = _positive_whole(row.get('EXTERNVALUE'))
+                if (number is None or number >= FIRST_PERSONAL_ACCOUNT
+                        or not isinstance(account, (int, float)) or isinstance(account, bool)
+                        or account >= FIRST_PERSONAL_ACCOUNT):
+                    continue
+                plan = row.get('FINTABLEID')
+                plan = plan if isinstance(plan, (int, float)) and not isinstance(plan, bool) else 0
+                if account not in newest or plan >= newest[account][0]:
+                    newest[account] = (plan, number)
+            stored.update({account: number for account, (_plan, number) in newest.items()})
+        return stored
+
+    def _apply_stored_skr04(self, chart, bases, labels):
+        """Konten ohne SKR04-Nummer in ``BAS_FINACC_PLAN`` bekommen die gespeicherte Nummer –
+        außer den Konten aus ``KNOWN_EQUIVALENTS``: Die behalten exakt die Zuordnung, die sie vor
+        der gespeicherten Nummer hatten (Rückgriff auf das Basiskonto, sonst der geprüfte Nachtrag).
+
+        Der Text: die Bezeichnung aus ``FINT_ACCOUNTS`` (wie bei Unterkonten), sonst der Text, den
+        der Plan zum Konto führt, sonst der des Basiskontos, sonst leer. Fehlt das SKR04-Konto im
+        Kontenrahmen der App, legt der Import es mit dieser Bezeichnung an.
+        """
+        for number, skr04 in self._stored_skr04().items():
+            known = chart.get(number)
+            if (known is not None and known.skr04) or number in KNOWN_EQUIVALENTS:
+                continue
+            text = (labels.get(number) or (known.text if known else '')
+                    or self._base_text(chart, bases, number))
+            chart[number] = WisoAccount(skr03=number, skr04=skr04, text=text,
+                                        year=known.year if known else None)
+
+    @staticmethod
+    def _base_text(chart, bases, number):
+        """Text des nächsten Basiskontos, das der Kontenrahmen mit Text führt – sonst leer."""
+        seen = {number}
+        base = bases.get(number)
+        while base is not None and base not in seen:
+            seen.add(base)
+            account = chart.get(base)
+            if account is not None and account.text:
+                return account.text
+            base = bases.get(base)
+        return ''
+
+    @staticmethod
+    def _resolve_subaccounts(chart, bases, labels):
+        """Unterkonten ohne SKR04-Nummer über ihr Basiskonto anschließen – der Rückgriff.
+
+        WISO erlaubt Unterkonten je Fahrzeug oder Projekt („4532 laufende
+        Kfz-Betriebskosten Tesla“ unter „4530“). Sie stehen nur in
+        ``FINT_ACCOUNTS`` und nennen dort mit ``BASEACCOUNTNO`` ihr Basiskonto.
+        Hat WISO zum Unterkonto keine eigene Nummer gespeichert (:meth:`_stored_skr04`) und
+        nennt auch ``BAS_FINACC_PLAN`` keine, erbt es die SKR04-Nummer des Basiskontos – das
+        ist nur eine Näherung: eigene Unterkonten fallen dabei auf das Basiskonto zusammen.
+        Die Kette wird verfolgt, denn ein Basiskonto kann selbst ein Unterkonto sein.
+        ``bases`` und ``labels`` liefert :meth:`_subaccounts`.
+        """
         def known(number):
             account = chart.get(number)
             return account is not None and account.skr04
@@ -522,11 +743,22 @@ class WisoDatabase:
         missing[number] = missing.get(number, 0) + 1
         return None
 
+    def _legacy_skr04(self, number, current):
+        """Die SKR04-Nummer, die ein Import bis 2.2.4 zu ``number`` gelesen hat (Zuordnung ohne die
+        von WISO gespeicherte Nummer, siehe :meth:`chart`) – nur, wenn sie von ``current`` abweicht,
+        sonst ``None``."""
+        if number is None or number >= FIRST_PERSONAL_ACCOUNT:
+            return None
+        self.chart()
+        account = self._legacy_chart.get(number)
+        old = account.skr04 if account is not None else None
+        return old if old and old != current else None
+
     # ------------------------------------------------------------------
     # Buchungen
     # ------------------------------------------------------------------
     def bookings(self, liquid_accounts=None, missing=None,
-                 disposed=None) -> List[WisoBooking]:
+                 disposed=None, today=None) -> List[WisoBooking]:
         """Buchungssätze lesen, umschlüsseln und vorzeichenrichtig stellen.
 
         ``liquid_accounts`` sind SKR04-Nummern der eigenen Zahlungskonten; sie
@@ -535,12 +767,31 @@ class WisoDatabase:
 
         ``disposed`` bildet Anlagegut-Id auf Abgangsdatum ab. Damit fallen die
         AfA-Buchungen des Erinnerungswerts weg, die WISO für ein längst
-        verkauftes Anlagegut weiterplant. :meth:`read` füllt das selbst.
+        verkauftes Anlagegut weiterplant (``memo_rows_skipped``; die Regel hat
+        Vorrang vor der folgenden). :meth:`read` füllt das selbst.
+
+        ``today`` ist der Stichtag (``None``: heute, sonst ein ``date`` oder ein
+        ISO-Datum). WISO schreibt den ganzen AfA-Plan sofort als Buchungssätze, auch
+        für künftige Jahre. Welcher Satz ein **AfA-Satz** ist, regelt :func:`_is_depreciation`
+        (``INVENTORYAMORTID``, WISOs Buchungsart, ersatzweise die AfA-Tabelle); eine
+        Abgangsbuchung am Anlagegut ist keiner. Ein AfA-Satz mit einem Datum **nach** dem
+        Stichtag wird geliefert und gekennzeichnet (``WisoBooking.future_depreciation``): Der
+        Import legt ihn nie an (gebucht wird im jeweiligen Jahr in der App) und zählt ihn selbst.
+        Der Leser zählt für solche Sätze nichts – weder fehlende Konten noch negative Beträge noch
+        Unterkonten von Zahlungskonten –, und sie stehen nicht unter den übersprungenen Sätzen
+        (``tax_rows_skipped``, ``memo_rows_skipped``). ``WisoBooking.depreciation_year`` nennt das
+        Planjahr eines AfA-Satzes. Sätze ohne ``INVENTORYID`` sind nie betroffen.
+
+        Unterkonten von Zahlungskonten, die in der App keine sind (``liquid_subaccounts``),
+        zählt der Leser nur: Vorzeichen und Form folgen der neuen Nummer.
         """
         liquid = set(DEFAULT_LIQUID_ACCOUNTS) | set(liquid_accounts or ())
         legacy_liquid = liquid | set(LEGACY_CASH_NUMBERS)        # die Menge von 2.0.x
         missing = {} if missing is None else missing
         disposed = disposed or {}
+        cutoff = _cutoff(today)
+        amort_years, amort_amounts = self._depreciation_index()
+        liquid_subaccounts: Dict[tuple, int] = {}
         self._memo_skipped = 0
         self._negative_gross = 0
         out = []
@@ -548,19 +799,30 @@ class WisoDatabase:
             gross = row.get('AMOUNTGROSS')
             if gross is None:
                 continue                     # reine Steuerzeile, siehe Modulkopf
-            if _after_disposal_year(_date(row.get('ACCOUNTING_DATE')),
-                                    disposed.get(row.get('INVENTORYID'))):
+            date = _date(row.get('ACCOUNTING_DATE'))
+            inventory_id = row.get('INVENTORYID')
+            if _after_disposal_year(date, disposed.get(inventory_id)):
                 self._memo_skipped += 1
                 continue
+            amort_id = row.get('INVENTORYAMORTID')
+            is_depreciation = _is_depreciation(row, inventory_id, date, gross, amort_amounts)
+            future = is_depreciation and bool(date and date > cutoff)
+            depreciation_year = None
+            if is_depreciation:
+                depreciation_year = amort_years.get(amort_id)
+                if depreciation_year is None and date:
+                    depreciation_year = int(date[:4])
             source_account = row.get('ACCOUNTNO')
             source_counter = row.get('CONTRA_ACCOUNTNO')
-            account = self._to_skr04(source_account, missing)
-            counter = self._to_skr04(source_counter, missing)
+            # Ein künftiger AfA-Satz kommt nicht in die Bücher: Er soll in keinem Zähler stehen
+            counting = {} if future else missing
+            account = self._to_skr04(source_account, counting)
+            counter = self._to_skr04(source_counter, counting)
             unmapped = [number for number, mapped
                         in ((source_account, account), (source_counter, counter))
                         if number is not None and mapped is None]
             amount, form = self._signed(gross, account, counter, liquid)
-            if float(gross) < 0 and (account in liquid) != (counter in liquid):
+            if not future and float(gross) < 0 and (account in liquid) != (counter in liquid):
                 self._negative_gross += 1          # genau eine Seite liquide: sie bestimmt das Vorzeichen
             legacy_amount = None
             if account in LEGACY_CASH_NUMBERS or counter in LEGACY_CASH_NUMBERS:
@@ -574,19 +836,48 @@ class WisoDatabase:
                 tax_amount = round(abs(gross) - abs(net), 2)
                 if amount < 0:
                     tax_amount = -tax_amount
+            legacy_account = self._legacy_skr04(source_account, account)
+            legacy_counter = self._legacy_skr04(source_counter, counter)
+            for legacy, current in ((legacy_account, account), (legacy_counter, counter)):
+                if not future and legacy in liquid and current is not None and current not in liquid:
+                    key = (current, legacy)         # ein Zahlungskonto, das jetzt keines mehr ist
+                    liquid_subaccounts[key] = liquid_subaccounts.get(key, 0) + 1
             group = row.get('ACCOUNTINGID')
             out.append(WisoBooking(
-                date=_date(row.get('ACCOUNTING_DATE')),
+                date=date,
                 amount=amount, account=account, counter_account=counter,
                 tax_rate=tax_rate, tax_amount=tax_amount,
                 text=_clean(row.get('ACCOUNTING_TEXT')),
                 document_number=_clean(row.get('REFERENCENO')),
                 group=str(group) if group is not None else '',
                 invoice_id=row.get('INVID'), payment_id=row.get('PAYMENTID'),
-                inventory_id=row.get('INVENTORYID'), source_id=row.get('ID'),
+                inventory_id=inventory_id, source_id=row.get('ID'),
                 unmapped=unmapped, form=form, legacy_amount=legacy_amount,
+                is_depreciation=is_depreciation, depreciation_year=depreciation_year,
+                future_depreciation=future,
+                legacy_account=legacy_account, legacy_counter_account=legacy_counter,
             ))
+        self._liquid_subaccounts = [
+            {'nummer': number, 'basis': basis, 'anzahl': count}
+            for (number, basis), count in sorted(liquid_subaccounts.items())]
         return out
+
+    def _depreciation_index(self):
+        """Die AfA-Tabelle für die Zuordnung der Buchungssätze zu ihrem Planjahr:
+        ``({ID der AfA-Zeile: Jahr ihres BOOKINGDATE}, {(INVENTORYID, ISO-Datum): {Beträge}})``. Die
+        Beträge (``AMORT_AMOUNT``) stehen ohne Vorzeichen auf den Cent gerundet in Minor Units
+        (:func:`_cents`) – für den Ersatzweg von :func:`_is_depreciation`."""
+        years, amounts = {}, {}
+        for row in self._safe_rows(T_DEPRECIATIONS):
+            date = _date(row.get('BOOKINGDATE'))
+            if not date:
+                continue
+            cents = _cents(row.get('AMORT_AMOUNT'))
+            if cents is not None:
+                amounts.setdefault((row.get('INVENTORYID'), date), set()).add(cents)
+            if row.get('ID') is not None:
+                years[row['ID']] = int(date[:4])
+        return years, amounts
 
     @staticmethod
     def _signed(gross, account, counter, liquid):
@@ -625,7 +916,8 @@ class WisoDatabase:
     # Anlagen
     # ------------------------------------------------------------------
     def assets(self, missing=None) -> List[WisoAsset]:
-        """Anlagegüter mit AfA-Plan und den Zahlungen des Kaufs."""
+        """Anlagegüter mit AfA-Plan und den Zahlungen des Kaufs. Der AfA-Plan bleibt vollständig – auch seine
+        künftigen Jahre (der Stichtag gilt den Buchungssätzen, :meth:`bookings`)."""
         missing = {} if missing is None else missing
         if T_ASSETS not in self.catalog.relation_id:
             return []
@@ -762,6 +1054,9 @@ class WisoDatabase:
         nachträgliche Anschaffungskosten. Der Restwert eines Jahres ist deshalb
         die Summe der bis dahin geleisteten Zahlungen minus der kumulierten AfA
         – so und nur so trifft er WISOs eigene Werte.
+
+        Die Planjahre bleiben vollständig, auch die künftigen: Den Status eines Jahres im Plan der App
+        bestimmt, ob sein AfA-Satz in den Büchern steht (``db.wiso_fdb_import``), nicht sein Datum.
 
         ``RESIDUALVALUE_AMOUNT`` bleibt ungenutzt: das Feld ist in den Daten
         nicht durchgängig gepflegt.
@@ -939,16 +1234,21 @@ class WisoDatabase:
         return sorted(out, key=lambda i: (i.date or '', i.number))
 
     # ------------------------------------------------------------------
-    def read(self, liquid_accounts=None) -> WisoData:
+    def read(self, liquid_accounts=None, today=None) -> WisoData:
         """Alles auf einmal lesen – das, was der Import braucht.
 
         Reihenfolge mit Absicht: erst die Anlagen, denn ihre Abgangsdaten
         entscheiden, welche AfA-Buchungen noch echt sind.
+
+        ``today`` ist der Stichtag für vorausgeplante AfA (``None``: heute, sonst ein
+        ``date`` oder ein ISO-Datum): Ein AfA-Satz danach trägt ``future_depreciation``
+        (der Import legt ihn nie an).
         """
+        cutoff = _cutoff(today)
         missing: Dict[int, int] = {}
         assets = self.assets(missing)
         disposed = {a.source_id: a.sale_date for a in assets if a.sale_date}
-        bookings = self.bookings(liquid_accounts, missing, disposed)
+        bookings = self.bookings(liquid_accounts, missing, disposed, cutoff)
         customers = self.customers()
         memo = getattr(self, '_memo_skipped', 0)
         total = self.catalog.count(T_BOOKINGS)
@@ -958,13 +1258,14 @@ class WisoDatabase:
             customers=customers, invoices=self.invoices(customers),
             company=self.company(),
             unmapped_accounts=missing, memo_rows_skipped=memo,
+            liquid_subaccounts=getattr(self, '_liquid_subaccounts', []),
             negative_gross=getattr(self, '_negative_gross', 0),
             unmapped_labels={n: labels[n] for n in missing if n in labels},
             tax_rows_skipped=total - len(bookings) - memo)
 
 
 def read_wiso_database(path, standard_chart_path=None,
-                       liquid_accounts=None) -> WisoData:
+                       liquid_accounts=None, today=None) -> WisoData:
     """Bequemer Einzeiler für den Regelfall."""
     with WisoDatabase(path, standard_chart_path) as wiso:
-        return wiso.read(liquid_accounts)
+        return wiso.read(liquid_accounts, today)

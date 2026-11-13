@@ -6,7 +6,7 @@ Sonstiges page – database overview, SQL console, misc tools.
 """
 import html as _html
 from db import Database
-from db.wiso_fdb_import import MAX_ADOPTED_ROWS
+from db.wiso_fdb_import import MAX_ADOPTED_ROWS, MAX_LIQUID_SUBACCOUNTS
 from money import fmt_eur
 
 
@@ -61,12 +61,16 @@ def _result_count(value):
 
 
 def _import_notices(result):
-    """Hinweise zu Vorzeichen, Konten 1000–1099, unbekannten Steuerschlüsseln und älteren
-    Überträgen aus dem Ergebnis eines WISO-Imports (Text- und Datenbank-Import melden beide
-    ``negative_gross``, ``stock_range_accounts``, ``legacy_stock_rows`` und ``legacy_mirrors``;
-    ``unknown_tax_keys`` – eine Liste von ``{'schluessel', 'anzahl'}`` – kommt nur vom Textimport)
-    als HTML. Die Ergebnisdatei kann von Hand verändert sein: Was nicht passt, gilt als leer
-    bzw. 0, und jeder Wert aus ihr wird maskiert."""
+    """Hinweise zu Vorzeichen, Konten 1000–1099, unbekannten Steuerschlüsseln, älteren
+    Überträgen, Unterkonten und AfA aus dem Ergebnis eines WISO-Imports (Text- und Datenbank-Import
+    melden beide ``negative_gross``, ``stock_range_accounts``, ``legacy_stock_rows`` und
+    ``legacy_mirrors``; ``unknown_tax_keys`` – eine Liste von ``{'schluessel', 'anzahl'}`` – kommt
+    nur vom Textimport, vom Datenbank-Import kommen ``subaccount_rows``,
+    ``future_depreciations_skipped`` (mit ``depreciations_planned``), ``future_depreciations_kept``,
+    ``depreciation_conflicts`` mit der Liste ``depreciation_conflict_rows`` aus ``{'anlage', 'jahr'}`` und die Liste
+    ``liquid_subaccounts`` aus ``{'nummer', 'basis', 'anzahl'}``) als HTML. Die Ergebnisdatei kann
+    von Hand verändert sein: Was nicht passt, gilt als leer bzw. 0, und jeder Wert aus ihr wird
+    maskiert."""
     s = ''
     negative = _result_count(result.get('negative_gross'))
     if negative:
@@ -100,6 +104,35 @@ def _import_notices(result):
             s += (f'<tr><td>{_html.escape(str(row.get("schluessel", "")), quote=True)}</td>'
                   f'<td>{_html.escape(str(_result_count(row.get("anzahl"))), quote=True)}</td></tr>')
         s += '</table>'
+    liquid = _fdb_result_rows(result.get('liquid_subaccounts'))
+    if liquid:
+        s += (f'<h3>\u26a0\ufe0f Unterkonten von Zahlungskonten &ndash; {len(liquid)}</h3>'
+              '<p>Diese Konten sind in WISO Unterkonten eines Bank-, Kassen- oder Verrechnungskontos, '
+              'in der App aber kein Zahlungskonto. Buchungen darauf werden als Umbuchung gelesen und '
+              'erscheinen nicht in der EÜR. Bitte das Konto vor dem Import als Bank- oder Kassenkonto '
+              'anlegen und neu importieren.</p>'
+              '<table><tr><th>Konto</th><th>Unterkonto von</th><th>Buchungen</th></tr>')
+        for row in liquid:
+            s += (f'<tr><td>{_html.escape(str(row.get("nummer", "")), quote=True)}</td>'
+                  f'<td>{_html.escape(str(row.get("basis", "")), quote=True)}</td>'
+                  f'<td>{_html.escape(str(row.get("anzahl", "")), quote=True)}</td></tr>')
+        s += '</table>'
+        if len(liquid) >= MAX_LIQUID_SUBACCOUNTS:
+            s += f'<p>Genannt werden die ersten {MAX_LIQUID_SUBACCOUNTS}.</p>'
+    conflicts = _fdb_result_rows(result.get('depreciation_conflict_rows'))
+    conflict_count = _result_count(result.get('depreciation_conflicts')) or len(conflicts)
+    if conflict_count:
+        s += (f'<h3>\u26a0\ufe0f AfA schon in der App gebucht &ndash; {conflict_count}</h3>'
+              '<p>Für diese Jahre ist die AfA schon in der App gebucht; der AfA-Satz aus der '
+              'WISO-Datenbank wurde nicht übernommen.</p>')
+        if conflicts:
+            s += '<table><tr><th>Anlage</th><th>Jahr</th></tr>'
+            for row in conflicts:
+                s += (f'<tr><td>{_html.escape(str(row.get("anlage", "")), quote=True)}</td>'
+                      f'<td>{_html.escape(str(row.get("jahr", "")), quote=True)}</td></tr>')
+            s += '</table>'
+            if conflict_count > len(conflicts):
+                s += f'<p>Genannt werden die ersten {len(conflicts)}.</p>'
     stock_legacy = _result_count(result.get('legacy_stock_rows'))
     if stock_legacy:
         s += (f'<p>\u2139\ufe0f {stock_legacy} Buchungen auf Konten 1000&ndash;1099 stammen aus einer '
@@ -109,6 +142,24 @@ def _import_notices(result):
     if legacy:
         s += (f'<p>\u2139\ufe0f {legacy} ältere Überträge sind noch nach der alten Lesart '
               'gespeichert; ihre Form und ihr Betrag wurden nicht verändert.</p>')
+    subaccounts = _result_count(result.get('subaccount_rows'))
+    if subaccounts:
+        s += (f'<p>\u2139\ufe0f {subaccounts} Buchungen stehen aus einem älteren Import noch auf dem '
+              'Basiskonto statt auf dem eigenen Unterkonto. Sie bleiben unverändert &ndash; für die '
+              'getrennten Konten die Daten in eine frische Datenbank importieren.</p>')
+    future = _result_count(result.get('future_depreciations_skipped'))
+    if future:
+        s += (f'<p>\u2139\ufe0f {future} vorausgeplante AfA-Sätze mit einem Datum nach dem Importtag '
+              'wurden nicht als Buchung übernommen.')
+        planned = _result_count(result.get('depreciations_planned'))
+        if planned:
+            s += (f' {planned} Jahre stehen als geplant im AfA-Plan der Anlagen; die AfA ist im '
+                  'jeweiligen Jahr in der App zu buchen.')
+        s += '</p>'
+    kept = _result_count(result.get('future_depreciations_kept'))
+    if kept:
+        s += (f'<p>\u2139\ufe0f {kept} AfA-Buchungen mit einem Datum nach dem Importtag stammen aus einem '
+              'früheren Import. Sie bleiben unverändert in den Büchern; ihre Jahre gelten als gebucht.</p>')
     return s
 
 
@@ -638,9 +689,10 @@ def PageMiscellaneous(db: Database, check_payments: bool = False):
         if _asset_warnings:
             s += (f'<h3>\u26a0\ufe0f Auff\u00e4lligkeiten im Anlagenverzeichnis '
                   f'&ndash; {len(_asset_warnings)}</h3>'
-                  '<p>Diese Anlageg\u00fcter sind in WISO in sich nicht stimmig. '
-                  '\u00dcbernommen wurde jeweils der gerechnete Wert; nachsehen '
-                  'lohnt sich trotzdem:</p><ul>')
+                  '<p>Diese Anlageg\u00fcter sind in WISO in sich nicht stimmig oder lassen sich '
+                  'nicht mit dem AfA-Plan der App abgleichen. Wo ein Wert gerechnet werden '
+                  'musste, wurde der gerechnete \u00fcbernommen; nachsehen lohnt sich '
+                  'trotzdem:</p><ul>')
             for _w in _asset_warnings:
                 s += f'<li>{_html.escape(str(_w))}</li>'
             s += '</ul>'

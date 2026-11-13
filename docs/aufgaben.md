@@ -55,9 +55,12 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
 - Alte AfA-Sätze (vor 2.0.5: Aufwandskonto auf einem Bank-/Kassenkonto, kein Gegenkonto) stehen im DATEV-Export ohne Gegenkonto; keine automatische Reparatur – Buchung löschen (setzt das Jahr zurück) und neu buchen
 - Vorzeichen der WISO-AfA-Sätze (z. B. „6222 an 0520“) an echten Daten prüfen: gespeichert ist der Rohbetrag mit der Form `transfer`, die EÜR liest positiv als „Konto im Soll“
 - Anlage wieder auf „aktiv“ setzen leert das Abgangsdatum nicht (AfA der Folgejahre bleibt gesperrt); Status „verschrottet“ ohne Datum sperrt nicht
-- WISO-Import nach einer in der App gebuchten AfA desselben Jahres zählt das Jahr doppelt (nur bei paralleler Nutzung beider Programme)
+- WISO-Textimport (CSV) nach einer in der App gebuchten AfA desselben Jahres zählt das Jahr doppelt (nur bei paralleler Nutzung beider Programme); der Datenbank-Import lässt den AfA-Satz eines in der App gebuchten Jahres aus (`depreciation_conflicts`)
+- WISO-Datenbank-Import: Ein Satz ohne `ACCOUNTINGID` auf einem Unterkonto wird beim Re-Import über einen Import bis 2.2.4 ein zweites Mal angelegt (ohne Quellgruppe sucht die Übernahme am Konto: 6530 alt, 6532 neu); ob es solche Sätze gibt, ist an echten Daten zu prüfen
 - AfA-Buchung nimmt als Aufwandskonto jedes Erfolgskonto 4000–7999 an, also auch SKR04-Erlöskonten (bewusst weit, weil selbst angelegte SKR03-Konten wie 4830 dort liegen) – mit den Funktionskonten enger fassen
 - AfA im Abgangsjahr wird voll statt zeitanteilig geplant (`calculate_depreciation_plan` kennt das Abgangsdatum nicht)
+- Künftige AfA-Jahre einer importierten Anlage: `book_depreciation` und die Anlagenseite rechnen mit dem eigenen linearen Plan (Gesamtsumme ab dem Kaufmonat) statt vom Restbuchwert der gebuchten Jahre über die Restnutzungsdauer; nachträgliche Anschaffungskosten und Teilzahlungen kennt der Plan nicht. Der WISO-Datenbank-Import meldet die Abweichung je Anlage (`depreciation_plan_mismatches`)
+- WISO-Datenbank-Import: `_purchase_price` nimmt bei vorhandenen Zahlungen nur deren Summe und lässt einen eingetragenen Anschaffungswert weg (richtig: beides, ein Behelfswert bis 1 € zählt nicht)
 - Der Auto-Abgleich kann eine AfA-Buchung (Umbuchung, 31.12.) an eine gleich hohe Bankbewegung vom 31.12. hängen
 - Dashboard zählt einen Übertrag Giro ↔ Kasse als Einnahme bzw. Ausgabe der Kasse (Abhebung +, Bareinzahlung −, aus der Form des Spiegels gelesen) – ein Übertrag gehört nicht in Einnahmen und Ausgaben, sondern als Umbuchung herausgerechnet
 - Bankbewegung und ihre Buchungssätze in einer Transaktion speichern – heute nur „erst prüfen, dann schreiben“; ein Datenbankfehler beim Schreiben hinterlässt einen halben Stand

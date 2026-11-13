@@ -11,6 +11,7 @@ Pointer-Pages, Data-Pages, RLE-komprimierte Sätze, Blobs und die drei
 Systemtabellen ``RDB$PAGES``, ``RDB$RELATIONS``, ``RDB$RELATION_FIELDS`` sowie
 ``RDB$FORMATS``.
 """
+import copy
 import datetime
 import struct
 
@@ -43,10 +44,16 @@ class Column:
 
 
 class Table:
-    def __init__(self, relation_id, name, columns):
+    def __init__(self, relation_id, name, columns, old_columns=None):
         self.relation_id, self.name = relation_id, name
         self.columns = columns
         self.rows = []
+        # Ein älteres Satzformat (die Tabelle bekam später Spalten hinzu): ``old_columns`` sind der Anfang von
+        # ``columns``. Sätze dieses Formats liefert ``add_old``; der Leser sieht für sie keinen Schlüssel der
+        # neuen Spalten (statt ``None``).
+        self.old = Table(relation_id, name, [copy.copy(c) for c in old_columns]) if old_columns else None
+        self.format_number = 1 if old_columns else 0
+        self.old_rows = []
         offset = _round_up((len(columns) + 7) // 8, 4)   # Nullvektor
         for column in columns:
             offset = _round_up(offset, _ALIGN[column.dtype])
@@ -56,6 +63,11 @@ class Table:
 
     def add(self, **values):
         self.rows.append(values)
+        return self
+
+    def add_old(self, **values):
+        """Ein Satz im älteren Format: nur dessen Spalten."""
+        self.old_rows.append(values)
         return self
 
 
@@ -87,8 +99,8 @@ class FdbBuilder:
         self.tables = []
         self._next_relation = FIRST_USER_RELATION
 
-    def table(self, name, columns):
-        table = Table(self._next_relation, name, columns)
+    def table(self, name, columns, old_columns=None):
+        table = Table(self._next_relation, name, columns, old_columns)
         self._next_relation += 1
         self.tables.append(table)
         return table
@@ -160,7 +172,7 @@ class FdbBuilder:
             relations_rows.append((relation_id, 0, name))
 
         for table in self.tables:
-            relations_rows.append((table.relation_id, 0, table.name))
+            relations_rows.append((table.relation_id, table.format_number, table.name))
             for index, column in enumerate(table.columns):
                 fields_rows.append((table.name, column.name, index))
 
@@ -169,13 +181,19 @@ class FdbBuilder:
         for table in self.tables:
             blobs = []
             table_records[table.relation_id] = [
-                _record(self._encode(table, row, blobs)) for row in table.rows]
+                _record(self._encode(table, row, blobs), fmt=table.format_number) for row in table.rows]
+            if table.old:
+                table_records[table.relation_id] += [
+                    _record(self._encode(table.old, row, blobs), fmt=0) for row in table.old_rows]
             blob_records[table.relation_id] = blobs
 
         # RDB$FORMATS: je Tabelle ein Deskriptorblob
         format_blobs = []
         for table in self.tables:
-            formats_rows.append((table.relation_id, 0, len(format_blobs)))
+            if table.old:
+                formats_rows.append((table.relation_id, 0, len(format_blobs)))
+                format_blobs.append(self._descriptor_blob(table.old))
+            formats_rows.append((table.relation_id, table.format_number, len(format_blobs)))
             format_blobs.append(self._descriptor_blob(table))
         blob_records[R_FORMATS] = format_blobs
 
