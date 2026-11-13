@@ -113,7 +113,7 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 | Name | TEXT | | Kontobezeichnung |
 | Description | TEXT | | Zusätzliche Beschreibung |
 | IsStandard | INTEGER | DEFAULT 0 | 1=Standard-Konto, 0=eigene Ergänzung |
-| PrivateSharePercent | INTEGER | DEFAULT 0 | Privatanteil in % (0–100); wird bei Matching/Export berücksichtigt |
+| PrivateSharePercent | INTEGER | DEFAULT 0 | Privatanteil in % (0–100); wird gepflegt und angezeigt, aber in keiner Auswertung (EÜR, Dashboard, DATEV-Export, Abgleich) berücksichtigt |
 | ShowInMenu | INTEGER | DEFAULT 1 | 1=im Auswahlmenü sichtbar, 0=ausgeblendet |
 
 ---
@@ -871,7 +871,7 @@ derselben Transaktion; was die Zahlungslogik am Status ändert, steht nicht dari
 | DepreciationAmount | REAL | NOT NULL | AfA-Betrag |
 | BookValue | REAL | NOT NULL | Restbuchwert |
 | Booking_ID | INTEGER | FK → Bookings | AfA-Buchung (siehe „AfA-Buchung“ bei Bookings) |
-| Status | TEXT | DEFAULT 'planned' | 'planned', 'posted' (vom Programm gebucht), 'booked' (WISO-Import, ohne Booking_ID) |
+| Status | TEXT | DEFAULT 'planned' | 'planned' (geplant), 'posted' (vom Programm gebucht), 'booked' (WISO-Import: der AfA-Satz der WISO-Datenbank steht in den Büchern, ohne Booking_ID) |
 | BookedAt | DATETIME | | |
 
 **Indizes:** UNIQUE(Asset_ID, Year)
@@ -886,6 +886,35 @@ Anwendung gelöscht (`delete_transaction`, ebenso die SQL-Vorlage „Zeitbereich
 die Zeile auf `planned` zurück. `delete_asset` lehnt ab, solange eine AfA-Buchung existiert
 oder Unteranlagen existieren; `booked`-Zeilen aus dem WISO-Import (ohne Buchung) hindern das
 Löschen nicht.
+
+**WISO-Datenbank-Import** (`import_wiso_fdb`, `_insert_wiso_bookings`, `_insert_wiso_assets`): WISO schreibt den
+ganzen AfA-Plan sofort als Buchungssätze, auch für künftige Jahre. Der Import legt einen AfA-Satz mit einem Datum
+nach dem Importtag nie an (Stichtag = heute, `today`; `future_depreciations_skipped` im Ergebnis); ein Satz, den ein
+früherer Import (bis 2.2.4) schon geschrieben hat – auch einer, den der Nutzer geändert hat –, bleibt unverändert, und
+sein Jahr gilt als gebucht (`future_depreciations_kept`). Als AfA-Satz gilt ein Satz mit `INVENTORYID` und `INVENTORYAMORTID`, mit WISOs
+Buchungsart (`ACCOUNTINGKIND` 28) oder – wenn er die Spalte nicht kennt – mit Datum und Betrag einer Zeile der
+AfA-Tabelle. **Der Status eines Planjahrs folgt der Buchung, nicht dem Datum:** `booked`, wenn der AfA-Satz der
+Anlage für dieses Jahr in den Büchern steht (neu angelegt, aus dem CSV-Import übernommen oder als vorhandene
+Zeile seiner Gruppe wiedererkannt), sonst `planned` – dann bucht die App das Jahr im jeweiligen Jahr selbst
+(`book_depreciation`; nicht automatisch). Ein bisher geplantes Jahr, dessen Satz jetzt in den Büchern steht,
+wird `booked` – in der Transaktion der Buchungen und auch ohne Anlagenimport (`with_assets=False`). Fehlt der
+Satz in einer bekannten Quellgruppe, die mehrere Jahre trägt (der Erstlauf hat nur die vergangenen angelegt),
+wird er nur nachgetragen, wenn die Gruppe für das Planjahr keine Zeile hat, die Anlage in der App eindeutig zugeordnet
+ist **und** ihre Planzeile dieses Jahres existiert, `planned` ist und nicht von der App gebucht; sonst nie (ein Satz
+einer bekannten Gruppe wird nicht neu angelegt – der Nutzer kann ihn gelöscht haben). Gleicht einem AfA-Satz keine Zeile
+seiner Gruppe genau, hat die Gruppe aber eine freie Zeile mit einem Datum im Planjahr, hat der Nutzer ihn geändert: Er
+steht in den Büchern, das Jahr gilt als gebucht, und es wird nichts angelegt (erst bekommt jeder Satz seine genaue Zeile,
+jede Zeile dient höchstens einem Satz). Hat die App ein Jahr schon selbst gebucht (`Booking_ID`
+zeigt auf eine vorhandene Buchung), bleibt die Planzeile unverändert, und der AfA-Satz der WISO-Datenbank für dieses
+Jahr wird nicht angelegt (`depreciation_conflicts`, Seite *Verschiedenes*). Zugeordnet wird die Anlage über
+die Inventarnummer (`Assets.InventoryNumber` = `INVNO`), nur wenn sie in der WISO-Datenbank eindeutig ist; sonst
+steht eine Warnung in `asset_warnings`, und die AfA-Sätze der Anlage nehmen am Abgleich nicht teil. Der Buchungsschritt
+liest die Planjahre der App in seiner schreibenden Transaktion (`BEGIN IMMEDIATE`): Zwischen Lesen und Schreiben bucht
+keine andere Anfrage ein Jahr. Eine vorhandene Anlage behält beim Re-Import ihr Anlagekonto (`COA_ID`).
+`book_depreciation` rechnet mit dem eigenen Plan der App (linear, degressiv, GWG) und überschreibt den WISO-Betrag
+der Planzeile: Rechnet der WISO-Plan anders, meldet der Import das je Anlage (`depreciation_plan_mismatches`,
+Warnung in `asset_warnings`). Bestand aus einem Import bis 2.2.4 (künftige AfA-Buchungen, Jahre `booked`) wird nicht
+angefasst.
 
 ---
 

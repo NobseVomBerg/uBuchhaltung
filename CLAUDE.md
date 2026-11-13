@@ -459,10 +459,17 @@ kein Subagent darauf:
 - Der Datenbankweg ist genauer: `MOV_FINACC_ACCRECORDS.ACCOUNTINGID` nennt die
   Zusammengehörigkeit von Teilbuchungen ausdrücklich (→ `Bookings.SourceGroup`),
   liefert die Anlagenverwaltung mit und umfasst alle Jahre
-- WISO rechnet intern in **SKR03**; `BAS_FINACC_PLAN.SKR04` liefert die
-  Umschlüsselung, selbst angelegte Unterkonten erben sie über
-  `FINT_ACCOUNTS.BASEACCOUNTNO`. Konten ohne Zuordnung werden **gemeldet, nicht
-  geraten**; fehlende SKR04-Konten legt der Import mit WISOs Bezeichnung an
+- WISO rechnet intern in **SKR03**. Die SKR04-Nummer eines Kontos kommt in dieser Reihenfolge (`WisoDatabase.chart()`, seit 2.2.5):
+  `BAS_FINACC_PLAN.SKR04` (nur die alten Kontenpläne; Mandant schlägt Standard; **wird nie überschrieben**) → die von WISO
+  **gespeicherte Nummer** (`FINT_EXTERNDEFS.EXTERNVALUE` bei `EXTERNKIND = 82`, jüngster Plan = höchste `FINTABLEID`; nur
+  Sachkonten: `ACCOUNTNO` < 10000, Wert 1–9999; nicht für Konten aus `KNOWN_EQUIVALENTS`) → das Basiskonto
+  (`FINT_ACCOUNTS.BASEACCOUNTNO`, nur noch Rückgriff) → `KNOWN_EQUIVALENTS`. Eigene Unterkonten (z. B. je Fahrzeug: 4532 → 6532)
+  behalten so ihre Nummer – die Trennung ist fachlich nötig, „Basis + Abstand“ ist nicht WISOs Regel. Konten ohne Zuordnung
+  werden **gemeldet, nicht geraten**; fehlende SKR04-Konten legt der Import mit WISOs Bezeichnung an. Ein Bestand aus einem
+  Import bis 2.2.4 (Sätze auf dem Basiskonto) bleibt, wie er ist: Der Re-Import erkennt ihn an der Quellgruppe, legt keinen
+  zweiten Satz an und zählt ihn (`subaccount_rows`); eine vorhandene Anlage behält ihr Konto (`COALESCE(COA_ID, ?)`). Ist das
+  Unterkonto eines Zahlungskontos in der App kein Zahlungskonto, wird das gemeldet (`liquid_subaccounts`: gelesen als
+  Umbuchung, nicht in der EÜR) – keine Sonderbehandlung
 - **Klammer eines Belegs ist die Beleg-Nr. + Datum**, nicht die `SourceGroup`:
   WISO vergibt je Verrechnungskonto-Buchung eine eigene `ACCOUNTINGID`. Die
   Quellgruppe ist damit feiner und greift nur, wo eine Beleg-Nr. fehlt
@@ -512,6 +519,26 @@ kein Subagent darauf:
   Büchern. Der Erlös trägt in WISO keine `INVENTORYID` – gemeinsam ist ihm mit
   dem Anlagegut nur der Abgangstext; ist er nicht eindeutig, bleibt das Feld
   leer statt falsch
+- **Vorausgeplante AfA (seit 2.2.5):** WISO schreibt den ganzen AfA-Plan sofort als Buchungssätze, ohne Kennzeichen für
+  „geplant“. **Ein AfA-Satz mit Datum nach dem Importtag wird nie als Buchung angelegt** (Stichtag `today`, Standard: Ortsdatum;
+  `future_depreciations_skipped`) – gebucht wird im jeweiligen Jahr in der App. AfA-Satz = Satz mit `INVENTORYID` und
+  `INVENTORYAMORTID` oder `ACCOUNTINGKIND = 28` (gemessen an einer WISO-Version); Spalte da und leer, Art nicht 28 → kein
+  AfA-Satz (Abgangsbuchung); kennt der Satz die Spalte nicht, zählt gleiche Anlage, gleiches Datum und gleicher Betrag einer
+  Zeile der AfA-Tabelle. **Der Planstatus folgt der Buchung, nicht dem Datum:** Ein Planjahr (`AssetDepreciations`) ist
+  `booked`, wenn sein AfA-Satz in den Büchern steht (angelegt, aus CSV übernommen oder in der bekannten Quellgruppe
+  wiedererkannt), sonst `planned`; `_insert_wiso_bookings` führt den Status vorhandener Planzeilen in seiner Transaktion mit
+  (`BEGIN IMMEDIATE`, die Planjahre werden darin gelesen; auch bei `with_assets=False`), `_insert_wiso_assets` legt neue
+  Planzeilen nach derselben Menge an, hebt sonst nie und senkt nie. Reihenfolge im Lauf: Buchungen vor Anlagen. **Hat die App
+  ein Jahr selbst gebucht** (`Booking_ID` zeigt auf eine vorhandene Buchung), bleibt die Planzeile unverändert und der AfA-Satz
+  der Datenbank wird nicht angelegt (`depreciation_conflicts`). **Bekannte Quellgruppe:** Ein Satz wird nie neu angelegt – mit
+  einer Ausnahme: Fehlt der Gruppe für das Jahr jede Zeile und führt die eindeutig zugeordnete Anlage das Jahr als `planned`,
+  wird der AfA-Satz nachgetragen. Hat die Gruppe im Jahr eine Zeile, die nicht genau passt (vom Nutzer geändert), gilt das
+  Jahr als gebucht (Nachweis; jede Zeile für höchstens einen Satz, genaue Treffer zuerst). Künftige AfA-Buchungen aus einem
+  Import bis 2.2.4 bleiben und zählen als gebucht (`future_depreciations_kept`). Zugeordnet wird die Anlage über die
+  Inventarnummer, nur wenn sie eindeutig ist – sonst Warnung, kein Abgleich. Weicht der Plan der App von WISOs Werten der
+  geplanten Jahre ab, meldet der Import es je Anlage (`depreciation_plan_mismatches`): `book_depreciation` rechnet noch mit
+  dem eigenen linearen Plan (`docs/aufgaben.md`). Diese Regeln nicht aufweichen – jede Lockerung führt zu doppelter oder
+  fehlender AfA
 - **Rechnungen:** der Positionstext steht **nicht** bei der Rechnungsposition,
   sondern als RTF-Blob (`ARTDESCR`) an der Auftragsposition, auf die
   `ORDPOSID` zeigt – dort hat der Nutzer ihn für den Beleg angepasst.
@@ -913,7 +940,7 @@ kein Subagent darauf:
 ## Governance
 
 - **Owner:** NobseVomBerg
-- **Letzte Aktualisierung:** 2026-11-12
+- **Letzte Aktualisierung:** 2026-11-13
 - **Modell-Versionen:** Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5 (Stand November 2026);
   `settings.json` und Agents nutzen Aliase (`fable`, `opus` …), die der neuesten Version folgen
 - **Bei Modell-Updates:** Modell-Routing oben, `.claude/settings.json` (`modelSettings`

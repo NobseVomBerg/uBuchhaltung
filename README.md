@@ -123,7 +123,27 @@ direkt aus der Datenbankdatei oder aus den Textexporten:
   Jahre einschließlich der Zusammengehörigkeit von Teilbuchungen, Anlagen,
   Kunden sowie Rechnungen mit ihren Positionen.
 - Konten werden von SKR03 nach SKR04 umgeschlüsselt. Konten ohne eindeutige
-  Zuordnung werden gemeldet, nicht geraten.
+  Zuordnung werden gemeldet, nicht geraten. Selbst angelegte Unterkonten (z. B. je
+  Fahrzeug) behalten die SKR04-Nummer, die WISO zu ihnen speichert; nur wo WISO keine
+  nennt, gilt ersatzweise die Nummer des Basiskontos – solche Unterkonten fallen dann auf
+  dem Basiskonto zusammen. Ältere Versionen haben Unterkonten auf das
+  Basiskonto geschrieben: Ein erneuter Import legt diese Buchungen nicht doppelt an und ändert
+  sie nicht, meldet sie aber (für getrennte Konten die Daten in eine frische Datenbank
+  importieren). Ist ein Unterkonto eines Bank-, Kassen- oder Verrechnungskontos in der App
+  kein Zahlungskonto, meldet der Import es: Buchungen darauf würden als Umbuchung gelesen und
+  erschienen nicht in der EÜR – das Konto vorher als Bank- oder Kassenkonto anlegen und neu
+  importieren.
+- Der AfA-Plan der Anlagen wird übernommen, aber nur gebucht, was zum Importtag fällig ist:
+  WISO schreibt die AfA aller Jahre sofort als Buchungssätze, auch für künftige. Sätze mit einem
+  Datum nach dem Importtag legt der Import nie als Buchung an; was ein früherer Import schon
+  gebucht hat, bleibt unverändert, und sein Jahr gilt als gebucht. Der Status eines Jahres im
+  AfA-Plan folgt der Buchung: Steht der AfA-Satz in den Büchern, gilt das Jahr als gebucht,
+  sonst steht es als geplant im Plan und ist im jeweiligen Jahr in der App zu buchen (das
+  geschieht nicht von selbst). Hat die App ein Jahr schon gebucht, legt ein späterer Import den
+  AfA-Satz dafür nicht an und meldet es. Die Anlage der App wird über die Inventarnummer
+  gefunden; fehlt sie oder ist sie mehrfach vergeben, meldet der Import das. Rechnet die App die
+  geplante AfA anders als WISO (z. B. degressiv), meldet er auch das: Beim Buchen gilt der Plan
+  der App.
 - Vor dem Schreiben prüft der Import die Tabellenstruktur und bricht ab, wenn
   sie nicht der erwarteten entspricht.
 - **CSV-Import** der Textexporte (Original- und Tabellen-Export), auch
