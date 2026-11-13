@@ -156,7 +156,11 @@ elif 'sparkasse' in text.lower():
 Zwei Export-Formate mit **automatischer Format-Erkennung**:
 
 1. **Original-Export** (9 Spalten) → `BookingType='entry'`
-2. **Tabellen-Export** (6 Spalten) → `BookingType='bank'`
+2. **Tabellen-Export** (7 Spalten, ältere Exporte 6) → `BookingType='bank'`
+
+Ein DATEV-Buchungsstapel (erstes Feld `EXTF`/`DTVF`) wird erkannt und mit Klartext abgelehnt; die
+Meldungen der Formaterkennung nennen keinen Feldwert der Datei (der Vorlauf trägt Berater- und
+Mandantennummer).
 
 Nach dem Import wird automatisch `link_bank_to_entries()` aufgerufen, das Bank- und Entry-Buchungen über `ParentBooking_ID` verknüpft.
 
@@ -193,9 +197,10 @@ ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNU
   negativ), beide → `mirror_coa` (der Rohbetrag der Datei bleibt, positiv = Konto im Soll), keine →
   `transfer` mit dem Rohbetrag (WISO meint „Konto im Soll“, auch bei leerem oder unbekanntem Gegenkonto;
   die EÜR liest so einen Satz als Umbuchung, ohne Vorsteuerausweis). Bei genau einer liquiden Seite
-  wird der Betrag zum Betrag der Geldbewegung; ein **negativer Bruttobetrag** verliert dabei sein
-  Vorzeichen oder behält es zufällig, und der Import zählt jede solche Zeile (`negative_gross`) –
-  ein Storno oder eine Gutschrift wird so wie eine normale Buchung gelesen. Ohne liquide Seite oder
+  wird der Betrag zum Betrag der Geldbewegung; diese Regel ist nach einer Messung an echten
+  Daten festgeschrieben: WISO schreibt den Bruttobetrag nicht negativ (Konto = Soll, Umkehrungen wie
+  Storno oder Erstattung stehen mit vertauschten Konten). Ein **negativer Bruttobetrag** fällt aus
+  diesem Muster; der Import zählt jede solche Zeile (`negative_gross`) als Wächter. Ohne liquide Seite oder
   mit zwei bleibt der Rohbetrag, und die Zeile zählt nicht
 
 **Form beim Re-Import:** Kein Import ändert die Form einer vorhandenen Zeile. Findet der Textexport zu
@@ -357,7 +362,15 @@ Nach jedem WISO-Import wird `link_bank_to_entries()` aufgerufen:
 
 ### Encoding
 
-Automatische Erkennung: CP1252 (Standard), UTF-8-SIG, UTF-8, Latin-1
+Automatische Erkennung in dieser Reihenfolge: UTF-8 mit BOM, strenges UTF-8, CP1252 (so schreibt WISO),
+Latin-1. CP1252 dekodiert fast jede Bytefolge und steht deshalb nie zuerst; eine Datei mit BOM, die
+danach kein gültiges UTF-8 ist, wird abgelehnt.
+
+### Steuerschlüssel
+
+`SCHLUESSEL` wird über die Tabelle `TaxKeys` in einen Steuersatz übersetzt. Ein Schlüssel, den die
+Tabelle nicht kennt, wird nicht geraten: Die Zeile kommt ohne Steuersatz und zählt in
+`unknown_tax_keys` (Hinweis auf der Seite *Verschiedenes*).
 
 ---
 

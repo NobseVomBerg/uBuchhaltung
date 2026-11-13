@@ -61,18 +61,22 @@ def _result_count(value):
 
 
 def _import_notices(result):
-    """Hinweise zu Vorzeichen, Konten 1000–1099 und älteren Überträgen aus dem Ergebnis eines
-    WISO-Imports (Text- und Datenbank-Import melden beide ``negative_gross``,
-    ``stock_range_accounts``, ``legacy_stock_rows`` und ``legacy_mirrors``) als HTML."""
+    """Hinweise zu Vorzeichen, Konten 1000–1099, unbekannten Steuerschlüsseln und älteren
+    Überträgen aus dem Ergebnis eines WISO-Imports (Text- und Datenbank-Import melden beide
+    ``negative_gross``, ``stock_range_accounts``, ``legacy_stock_rows`` und ``legacy_mirrors``;
+    ``unknown_tax_keys`` – eine Liste von ``{'schluessel', 'anzahl'}`` – kommt nur vom Textimport)
+    als HTML. Die Ergebnisdatei kann von Hand verändert sein: Was nicht passt, gilt als leer
+    bzw. 0, und jeder Wert aus ihr wird maskiert."""
     s = ''
     negative = _result_count(result.get('negative_gross'))
     if negative:
         s += (f'<h3>\u26a0\ufe0f Negative Bruttobeträge &ndash; {negative} Sätze</h3>'
               '<p>Bei diesen Sätzen steht genau ein Zahlungskonto (Bank, Kasse oder '
               'Verrechnungskonto) auf einer Seite. Das Vorzeichen richtet sich dann nach der '
-              'Geldbewegung, nicht nach dem negativen Bruttobetrag. Stornos und Gutschriften '
-              'können dadurch als normale Buchung gelesen werden &ndash; eine Erstattung etwa als '
-              'Ausgabe &ndash; bitte nachsehen.</p>')
+              'Geldbewegung, nicht nach dem negativen Bruttobetrag. WISO schreibt Bruttobeträge '
+              'üblicherweise nicht negativ &ndash; Stornos und Erstattungen stehen dort mit '
+              'vertauschten Konten. Diese Sätze fallen aus dem Muster (bearbeitete Datei, andere '
+              'Programmversion) &ndash; bitte nachsehen.</p>')
     accounts = [row for row in (result.get('stock_range_accounts') or []) if isinstance(row, dict)]
     if accounts:
         s += (f'<h3>\u26a0\ufe0f Konten 1000&ndash;1099 &ndash; {len(accounts)}</h3>'
@@ -84,6 +88,17 @@ def _import_notices(result):
             s += (f'<tr><td>{_html.escape(str(row.get("nummer", "")))}</td>'
                   f'<td>{_html.escape(str(row.get("bezeichnung", "")))}</td>'
                   f'<td>{_html.escape(str(row.get("anzahl", "")))}</td></tr>')
+        s += '</table>'
+    tax_keys = _fdb_result_rows(result.get('unknown_tax_keys'))
+    if tax_keys:
+        total = sum(_result_count(row.get('anzahl')) for row in tax_keys)
+        s += (f'<h3>\u26a0\ufe0f Unbekannte Steuerschlüssel &ndash; {total} Zeilen</h3>'
+              '<p>Diese Zeilen tragen einen Steuerschlüssel, den die App nicht kennt. Sie wurden '
+              'ohne Steuersatz importiert &ndash; bitte prüfen, ob dort Steuer zu buchen ist.</p>'
+              '<table><tr><th>Schlüssel</th><th>Zeilen</th></tr>')
+        for row in tax_keys:
+            s += (f'<tr><td>{_html.escape(str(row.get("schluessel", "")), quote=True)}</td>'
+                  f'<td>{_html.escape(str(_result_count(row.get("anzahl"))), quote=True)}</td></tr>')
         s += '</table>'
     stock_legacy = _result_count(result.get('legacy_stock_rows'))
     if stock_legacy:

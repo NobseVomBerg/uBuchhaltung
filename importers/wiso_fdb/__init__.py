@@ -331,9 +331,10 @@ class WisoData:
     tax_rows_skipped: int = 0
     #: Übersprungene Erinnerungswert-Buchungen abgegangener Anlagen.
     memo_rows_skipped: int = 0
-    #: Sätze mit negativem Bruttobetrag und genau einer liquiden Seite: Dort bestimmt die
-    #: Richtung des Geldes das Vorzeichen, ein Storno oder eine Gutschrift wird so wie eine
-    #: normale Buchung gelesen – gleich, ob die Zahl dabei ihr Vorzeichen ändert.
+    #: Sätze mit negativem Bruttobetrag und genau einer liquiden Seite. WISO schreibt den
+    #: Bruttobetrag nicht negativ (Umkehrungen stehen als vertauschte Konten); der Zähler ist
+    #: ein Wächter für Sätze außerhalb dieses Musters. Die Regel ist festgeschrieben: Bei genau
+    #: einer liquiden Seite bestimmt die Geldbewegung das Vorzeichen.
     negative_gross: int = 0
 
 
@@ -596,9 +597,11 @@ class WisoDatabase:
         ein Spiegel: Der Rohbetrag bleibt, positiv heißt „Konto im Soll“ (``mirror_coa``).
         Berührt keine Seite ein Zahlungskonto, bleibt der Betrag, wie er ist, und WISO meint
         „Konto im Soll“ (``transfer``) – auch bei einer leeren oder unbekannten Seite. Bei genau
-        einer liquiden Seite wird der Betrag zum Betrag der Geldbewegung: Ein negativer
-        Bruttobetrag verliert dabei sein Vorzeichen oder behält es zufällig (``bookings`` zählt jeden
-        solchen Satz als ``negative_gross``).
+        einer liquiden Seite wird der Betrag zum Betrag der Geldbewegung. WISO schreibt den
+        Bruttobetrag nicht negativ (Umkehrungen stehen als vertauschte Konten); ``bookings``
+        zählt einen negativen Brutto trotzdem als ``negative_gross`` – ein Wächter für Sätze
+        außerhalb dieses Musters. Die Regel ist festgeschrieben: Bei genau einer liquiden Seite
+        bestimmt die Geldbewegung das Vorzeichen.
 
         Returns ``(Betrag, Form)``.
         """
