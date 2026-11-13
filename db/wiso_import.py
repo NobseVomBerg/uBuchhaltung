@@ -16,6 +16,11 @@ from .matching import (
 #: SKR04-Konten 1000–1099 (Vorräte): Ältere Versionen haben sie als Kasse gelesen.
 STOCK_RANGE = LEGACY_CASH_NUMBERS
 
+#: Der Import nennt höchstens so viele verschiedene unbekannte Steuerschlüssel (``unknown_tax_keys``),
+#: jeden höchstens so lang: Die Werte stammen aus der Datei und landen in der Ergebnisdatei und auf der Seite.
+MAX_UNKNOWN_TAX_KEYS = 50
+MAX_TAX_KEY_LENGTH = 20
+
 
 class WisoImportMixin:
     def import_wiso_csv(self, csv_bytes: bytes) -> dict:
@@ -26,30 +31,47 @@ class WisoImportMixin:
         1. Original-Export (9 Spalten):
            ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER
            
-        2. Tabellen-Export (6 Spalten):
-           Buchungsdatum;Empf./Auft.;Verwendungszweck;Kategorie;Beleg Nr.;Betrag
-           
+        2. Tabellen-Export (7 Spalten):
+           Buchungsdatum;Empf./Auft.;Konto-Nr. / IBAN;Verwendungszweck;Kategorie;opt. Beleg Nr.;Betrag
+           Die Spalte ``opt. Beleg Nr.`` kann ``Beleg Nr.`` heißen; ältere Exporte haben die
+           Spalte ``Konto-Nr. / IBAN`` nicht.
+
         Format wird automatisch erkannt. Tabellen-Export aktualisiert bestehende Buchungen.
 
         Returns:
             dict: {imported: int, updated: int, skipped: int, errors: list[str], format: str}
+            ``format`` ist ``original``, ``table``, ``datev`` (ein DATEV-Buchungsstapel: lässt sich
+            hier nicht importieren) oder ``unknown``; die Meldung zu den beiden letzten nennt
+            keinen Wert aus der Datei.
             Der Original-Export meldet zusätzlich ``negative_gross`` (Zeilen mit negativem
-            Bruttobetrag und genau einer liquiden Seite: dort bestimmt die Geldseite das
-            Vorzeichen, ein Storno oder eine Gutschrift wird so wie eine normale Buchung gelesen –
-            ob die Zahl dabei ihr Vorzeichen ändert oder zufällig behält), ``stock_range_accounts`` (Konten 1000–1099 in der
-            Datei: ältere Versionen haben sie als Kasse gelesen; je Konto ``nummer``,
-            ``bezeichnung``, ``anzahl`` der Zeilen), ``legacy_mirrors`` (Spiegel der Datei,
-            die als schon vorhandene Spiegel des Bestands wiedererkannt wurden – mit gleichem oder
-            umgekehrtem Vorzeichen; sie stehen noch in der alten Lesart und bleiben unverändert)
-            und ``legacy_stock_rows`` (Zeilen auf Konten 1000–1099, die eine ältere Version mit
-            ihrer Lesart – diese Konten als Kasse – gespeichert hat: Sie gelten als Duplikat und
-            werden nicht erneut angelegt).
+            Bruttobetrag und genau einer liquiden Seite: WISO schreibt den Bruttobetrag nicht
+            negativ – Umkehrungen stehen als vertauschte Konten; der Zähler ist ein Wächter für
+            Sätze außerhalb dieses Musters. Die Regel ist festgeschrieben: Bei genau einer
+            liquiden Seite bestimmt die Geldbewegung das Vorzeichen), ``stock_range_accounts``
+            (Konten 1000–1099 in der Datei: ältere Versionen haben sie als Kasse gelesen; je Konto
+            ``nummer``, ``bezeichnung``, ``anzahl`` der Zeilen), ``legacy_mirrors`` (Spiegel der
+            Datei, die als schon vorhandene Spiegel des Bestands wiedererkannt wurden – mit
+            gleichem oder umgekehrtem Vorzeichen; sie stehen noch in der alten Lesart und bleiben
+            unverändert), ``legacy_stock_rows`` (Zeilen auf Konten 1000–1099, die eine ältere
+            Version mit ihrer Lesart – diese Konten als Kasse – gespeichert hat: Sie gelten als
+            Duplikat und werden nicht erneut angelegt) und ``unknown_tax_keys`` (Steuerschlüssel
+            der Datei, die ``TaxKeys`` nicht kennt, ausgenommen leer und ``0``: Die Zeilen sind
+            ohne Steuersatz importiert. Liste von ``{'schluessel': str, 'anzahl': int}``, nach
+            Schlüssel sortiert, höchstens 50 Einträge, der Schlüssel auf 20 Zeichen gekürzt, leer,
+            wenn es keinen gibt. Gezählt werden nur Zeilen, die tatsächlich importiert wurden –
+            kein Duplikat).
         """
         import csv, io, datetime
 
-        # Encoding-Erkennung: CP1252 zuerst, dann Fallback
+        # Kodierung: Mit UTF-8-BOM strikt UTF-8, sonst zuerst strenges UTF-8, dann cp1252, zuletzt
+        # latin-1. cp1252 dekodiert fast jede Bytefolge und darf deshalb nie zuerst stehen: Eine
+        # UTF-8-Datei würde so zu Mojibake („Ã¼“ statt „ü“), ein BOM zu einem Zeichenpräfix im ersten
+        # Spaltennamen. Ein einzelnes 0xE4 (cp1252-„ä“) ist kein gültiges UTF-8 und fällt auf cp1252.
+        # Eine Datei mit BOM, die danach kein gültiges UTF-8 ist, ist beschädigt: abgelehnt, nicht geraten.
+        encodings = (('utf-8-sig',) if csv_bytes.startswith(b'\xef\xbb\xbf')
+                     else ('utf-8', 'cp1252', 'latin-1'))
         text = None
-        for enc in ('cp1252', 'utf-8-sig', 'utf-8', 'latin-1'):
+        for enc in encodings:
             try:
                 text = csv_bytes.decode(enc)
                 break
@@ -58,21 +80,31 @@ class WisoImportMixin:
         if text is None:
             return {'imported': 0, 'updated': 0, 'skipped': 0,
                     'errors': ['Encoding der Datei nicht erkennbar'], 'format': 'unknown'}
-        
+
         # Format-Erkennung über Header-Zeile
         # Anführungszeichen und Whitespace aus den Spaltenbezeichnungen entfernen
         first_line = text.split('\n')[0].strip()
         headers = [h.strip().strip('"').strip("'") for h in first_line.split(';')]
-        
+
         # Tabellen-Format erkennen (Empf./Auft. + Verwendungszweck vorhanden)
         if any('Empf' in h or 'Auft' in h for h in headers) and any('Verwendungszweck' in h for h in headers):
             return self._import_wiso_table_format(text)
         # Original-Format erkennen (KONTO + GEGENKONTO vorhanden)
         elif 'KONTO' in headers and 'GEGENKONTO' in headers:
             return self._import_wiso_original_format(text)
+        # Ein DATEV-Buchungsstapel beginnt mit dem Vorlauf (erstes Feld EXTF bzw. DTVF, dann Berater-
+        # und Mandantennummer). Die Meldungen unten nennen keinen Feldwert der Datei.
+        elif headers[0].strip().casefold() in ('extf', 'dtvf'):
+            return {'imported': 0, 'updated': 0, 'skipped': 0,
+                    'errors': ['Das ist ein DATEV-Buchungsstapel. Er lässt sich hier nicht importieren '
+                               '– bitte den Fibu-Export (Bewegungsdaten) oder die WISO-Datenbank '
+                               'verwenden.'],
+                    'format': 'datev'}
         else:
             return {'imported': 0, 'updated': 0, 'skipped': 0,
-                    'errors': [f'Unbekanntes Format. Gefundene Spalten: {", ".join(headers)}'], 
+                    'errors': ['Unbekanntes Format: In der ersten Zeile fehlen die Spalten des '
+                               'WISO-Exports (KONTO und GEGENKONTO bzw. Empf./Auft. und '
+                               f'Verwendungszweck). Spalten in der ersten Zeile: {len(headers)}.'],
                     'format': 'unknown'}
     def _import_wiso_original_format(self, text: str) -> dict:
         """Import des Original WISO-Exports (9 Spalten).
@@ -83,7 +115,9 @@ class WisoImportMixin:
         Mapping:
             KONTO      → ChartOfAccounts.AccountNumber → COA_ID
             GEGENKONTO → ChartOfAccounts.AccountNumber → CounterCOA_ID
-            SCHLUESSEL → BU-Schlüssel → TaxRate (401=19%, 402=7%, 121=0%)
+            SCHLUESSEL → BU-Schlüssel → TaxRate (401=19%, 402=7%, 121=0%); ein Schlüssel, den
+                         ``TaxKeys`` nicht kennt, bekommt keinen Steuersatz und wird gezählt
+                         (``unknown_tax_keys``, siehe :meth:`import_wiso_csv`)
 
         Returns:
             dict: {imported: int, updated: int, skipped: int, errors: list[str]}
@@ -120,6 +154,7 @@ class WisoImportMixin:
         legacy_stock_rows = 0
         negative_gross = 0
         stock_counts = Counter()    # Konto 1000–1099 → Zeilen der Datei
+        unknown_keys = Counter()    # Steuerschlüssel ohne Eintrag in TaxKeys → importierte Zeilen
         skipped_rows = []       # Liste übersprungener Zeilen mit Details
         missing_coa = set()     # SKR-Kontonummern (KONTO), die nicht in ChartOfAccounts gefunden wurden
         missing_counter_coa = set()  # SKR-Kontonummern (GEGENKONTO), die nicht in ChartOfAccounts gefunden wurden
@@ -187,7 +222,9 @@ class WisoImportMixin:
                 raw_amount = amount
                 if gegen_liquid != konto_liquid:
                     if amount < 0:
-                        negative_gross += 1       # die Geldseite bestimmt das Vorzeichen, nicht der Brutto
+                        # WISO schreibt den Brutto nicht negativ (Umkehrungen stehen als vertauschte
+                        # Konten): Wächter für Sätze außerhalb des Musters. Die Geldseite bestimmt das Vorzeichen.
+                        negative_gross += 1
                     amount = -abs(amount) if gegen_liquid else abs(amount)
                 # Berührt die Zeile ein Konto 1000–1099, hat eine ältere Version sie mit einem anderen
                 # Betrag gespeichert (diese Konten galten als Kasse): der Betrag der Regel von 2.0.x
@@ -204,9 +241,15 @@ class WisoImportMixin:
 
                 schluessel = row.get('SCHLUESSEL', '').strip()
                 tax_rate = BU_TO_TAXRATE.get(schluessel)
+                # Ein Schlüssel, den TaxKeys nicht kennt (leer und 0 sind keiner), wird nicht geraten:
+                # Die Zeile kommt ohne Steuersatz und wird gezählt, sobald sie importiert ist (unten).
+                # In TaxKeys steht auch ein Schlüssel ohne Satz (z. B. 400) – der ist bekannt.
+                unknown_key = (schluessel[:MAX_TAX_KEY_LENGTH]
+                               if schluessel not in ('', '0') and schluessel not in BU_TO_TAXRATE else None)
                 # 4405→4400 Umbuchung: implizit 19% USt, auch ohne BU-Schlüssel
                 if tax_rate is None and konto_nr == 4405 and gegenkonto_nr == 4400:
                     tax_rate = 0.19
+                    unknown_key = None      # die Zeile bekommt ihren Satz – nichts zu melden
                 # Steuerbetrag berechnen (Brutto → MwSt-Anteil)
                 tax_amount = None
                 if tax_rate is not None and tax_rate > 0 and amount != 0:
@@ -222,7 +265,7 @@ class WisoImportMixin:
                     'konto_nr': konto_nr, 'konto_str': konto_str,
                     'tax_rate': tax_rate, 'tax_amount': tax_amount,
                     'text': text_val, 'doc': doc_number, 'form': form,
-                    'legacy_amount': legacy_amount,
+                    'legacy_amount': legacy_amount, 'unknown_key': unknown_key,
                 })
             except Exception as e:
                 errors.append(f"Zeile {i}: {str(e)}")
@@ -425,6 +468,8 @@ class WisoImportMixin:
                       to_minor(amount or 0), pr['tax_rate'], self._minor_opt(pr['tax_amount']), pr['text'],
                       doc_number, 'entry', pr['form']))
                 imported += 1
+                if pr['unknown_key'] is not None:
+                    unknown_keys[pr['unknown_key']] += 1
 
             except Exception as e:
                 errors.append(f"Zeile {pr['zeile']}: {str(e)}")
@@ -445,15 +490,19 @@ class WisoImportMixin:
                 for nr, count in sorted(stock_counts.items())],
             'legacy_mirrors':    legacy_mirrors,
             'legacy_stock_rows': legacy_stock_rows,
+            'unknown_tax_keys': [
+                {'schluessel': key, 'anzahl': count}
+                for key, count in sorted(unknown_keys.items())[:MAX_UNKNOWN_TAX_KEYS]],
             'errors':            errors,
             'format':            'original'
         }
     def _import_wiso_table_format(self, text: str) -> dict:
-        """Import des WISO Tabellen-Exports (6 Spalten).
-        
+        """Import des WISO Tabellen-Exports (7 Spalten).
+
         CSV-Spalten:
-            Buchungsdatum;Empf./Auft.;Verwendungszweck;Kategorie;Beleg Nr./opt. Beleg Nr.;Betrag
-        
+            Buchungsdatum;Empf./Auft.;Konto-Nr. / IBAN;Verwendungszweck;Kategorie;opt. Beleg Nr./Beleg Nr.;Betrag
+            (ältere Exporte haben die Spalte ``Konto-Nr. / IBAN`` nicht)
+
         Dieser Import aktualisiert bestehende Buchungen mit zusätzlichen Daten:
         - RecipientClient (Empf./Auft.)
         - Text (Verwendungszweck) - Zeilenumbrüche werden in Leerzeichen konvertiert
@@ -503,9 +552,12 @@ class WisoImportMixin:
             # Zeilenwerte normalisieren
             row = {k.strip(): (v.strip() if isinstance(v, str) else v) for k, v in row.items() if k}
             try:
-                # Datum parsen – Footer-Zeilen (reine Ziffernfolge als Datum) überspringen
+                # Datum parsen – die Fußzeile des Exports (reine Ziffernfolge als Datum) ist keine
+                # Buchung und zählt in keinem Zähler mit
                 date_str = row.get('Buchungsdatum', '').strip()[:10]
-                if not date_str or date_str.lstrip('-').isdigit():
+                if date_str.lstrip('-').isdigit():
+                    continue
+                if not date_str:
                     skipped += 1
                     continue
                 try:

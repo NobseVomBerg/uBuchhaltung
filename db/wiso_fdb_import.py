@@ -129,8 +129,10 @@ class WisoFdbImportMixin:
             Buchung), ``assets``, ``depreciations``, ``tax_rows_skipped``,
             ``memo_rows_skipped``, ``missing_coa`` und ``errors``. Dazu
             ``negative_gross`` (Sätze mit negativem Bruttobetrag und genau einer liquiden Seite:
-            dort bestimmt die Geldbewegung das Vorzeichen, ein Storno oder eine Gutschrift wird so
-            wie eine normale Buchung gelesen),
+            WISO schreibt den Bruttobetrag nicht negativ – Umkehrungen stehen als vertauschte
+            Konten; der Zähler ist ein Wächter für Sätze außerhalb dieses Musters. Die Regel ist
+            festgeschrieben: Bei genau einer liquiden Seite bestimmt die Geldbewegung das
+            Vorzeichen),
             ``stock_range_accounts`` (Konten 1000–1099 in den Sätzen: ältere Versionen haben sie
             als Kasse gelesen; je Konto ``nummer``, ``bezeichnung``, ``anzahl`` der Sätze),
             ``legacy_mirrors`` (Spiegel der Datenbank, die als schon vorhandene Spiegel des
@@ -734,14 +736,12 @@ class WisoFdbImportMixin:
         keine Auszüge), tritt der Buchungssatz selbst an ihre Stelle.
 
         Der Betrag ist der des Buchungssatzes, wie der Import ihn gespeichert hat: Bei genau
-        einer liquiden Seite trägt er die Richtung der Geldbewegung (``WisoDatabase._signed``),
-        ein negativer Bruttobetrag verliert dabei sein Vorzeichen oder behält es zufällig
-        (``negative_gross`` im Ergebnis des Imports). Eine stornierte und neu gebuchte Zahlung, die WISO als hin,
-        zurück, hin ablegt, ist darin nicht vom Original zu unterscheiden; ``link_invoice_to_transaction``
-        ordnet jedes Paar Rechnung–Bewegung höchstens einmal zu und meldet Doppeltes in
-        ``payment_warnings``. Eine Gutschrift lässt sich so nicht vorzeichenrichtig zuordnen – bis das
-        Vorzeichen negativer Bruttobeträge an echten Daten gemessen und festgeschrieben ist
-        (``docs/aufgaben.md``), bleibt es bei dieser Lesart.
+        einer liquiden Seite trägt er die Richtung der Geldbewegung (``WisoDatabase._signed``).
+        WISO schreibt eine Rückzahlung an den Kunden mit vertauschten Konten (Debitor an Geld);
+        nach dem Import trägt sie das umgekehrte Vorzeichen der Zahlung.
+        ``link_invoice_to_transaction`` ordnet jedes Paar Rechnung–Bewegung höchstens einmal zu
+        und meldet Doppeltes in ``payment_warnings``. Ob eine Gutschrift so vorzeichenrichtig
+        zugeordnet wird, ist an echten Daten nicht geprüft.
         """
         from importers.wiso_fdb import DEFAULT_LIQUID_ACCOUNTS
 

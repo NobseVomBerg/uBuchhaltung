@@ -225,6 +225,8 @@ def test_fehlende_skr04_konten_werden_angelegt(db_with_coa, tmp_path):
     chart.add(ID=4855, SKR04=6899, BOOKINGYEAR=2024,
               ACCOUNTTEXT='Werkzeugkosten Werkstatt Nord')
     bookings = _bookings_table(builder)
+    # Ein negativer Brutto kommt in echten WISO-Daten nicht vor (Umkehrungen stehen als vertauschte
+    # Konten): Der Satz deckt den Wächter-Fall ab (``negative_gross``, genau eine liquide Seite).
     bookings.add(ID=1, ACCOUNTINGID=1, ACCOUNTING_DATE='2024-05-02 00:00:00',
                  AMOUNTGROSS=-410.0, ACCOUNTNO=4855, CONTRA_ACCOUNTNO=1210,
                  ACCOUNTING_TEXT='Werkzeug')

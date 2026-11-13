@@ -9,7 +9,7 @@ Beide Importe schreiben die Form mit, wie sie das Vorzeichen gesetzt haben: Kont
 unbekanntem Gegenkonto). Dazu:
 
 * ``negative_gross`` und ``stock_range_accounts`` im Ergebnis (und auf der Seite *Verschiedenes*):
-  ein Storno wird nicht vorzeichenrichtig gelesen, und Konten 1000–1099 sind in SKR04 Vorräte;
+  ein negativer Brutto fällt aus WISOs Muster (Wächter), und Konten 1000–1099 sind in SKR04 Vorräte;
 * ``negative_gross`` zählt jeden Satz mit negativem Brutto und genau einer liquiden Seite;
 * kein Import ändert die Form einer vorhandenen Zeile: Ein Spiegel des Bestands (``mirror_legacy``)
   bleibt, wie er ist – auch wenn der Re-Import ihn wiedererkennt, mit gleichem oder umgekehrtem
@@ -120,8 +120,8 @@ def test_csv_reimport_creates_nothing_new(db):
 # ── Textexport: negative Bruttobeträge und Konten 1000–1099 ─────────────────
 
 def test_csv_counts_every_negative_gross_row_with_exactly_one_liquid_side(db):
-    """Dort bestimmt die Geldseite das Vorzeichen – ob die Zahl dabei ihr Vorzeichen ändert oder zufällig
-    behält. Ein Storno kann als normale Buchung gelesen werden; beides gehört in die Meldung."""
+    """Dort bestimmt die Geldseite das Vorzeichen – ob die Zahl dabei ihr Vorzeichen ändert oder
+    behält. WISO schreibt den Brutto nicht negativ; jede solche Zeile gehört in die Meldung."""
     result = db.import_wiso_csv(csv_export(
         ('6815', '1800', '-119,00', 'N1', KEY19),        # Storno Aufwand: bleibt −119 – gezählt
         ('1800', '4400', '-50,00', 'N2', KEY19),         # Storno Erlös: wird +50 – gezählt
@@ -886,7 +886,8 @@ def test_page_names_negative_gross_and_the_old_cash_range_for_both_imports(db, n
     html = PageMiscellaneous(db)
 
     assert 'Negative Bruttobeträge &ndash; 3 Sätze' in html
-    assert 'Stornos und Gutschriften' in html and 'als normale Buchung gelesen werden' in html
+    assert 'Stornos und Erstattungen stehen dort mit vertauschten Konten' in html
+    assert 'als normale Buchung gelesen werden' not in html
     assert NOTICE_STOCK in html
     assert '<td>1050</td><td>&lt;b&gt;Vorrat&lt;/b&gt;</td><td>4</td>' in html     # maskiert
     assert '<b>Vorrat</b>' not in html

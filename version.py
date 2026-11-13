@@ -24,7 +24,7 @@ Version und wird nicht geöffnet (``db.SchemaTooNewError``).
 
 MAJOR = 2
 SCHEMA_STEP = 2      # +1 bei jeder DB-Schema-Änderung (= mittlere Versionsstelle); höchstens 999
-PATCH = 3            # +1 bei sonstigen Änderungen ohne DB-Bezug
+PATCH = 4            # +1 bei sonstigen Änderungen ohne DB-Bezug
 
 SCHEMA_VERSION = MAJOR * 1000 + SCHEMA_STEP   # steht als PRAGMA user_version in der Datenbank
 APP_VERSION = f"{MAJOR}.{SCHEMA_STEP}.{PATCH}"

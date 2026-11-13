@@ -488,7 +488,7 @@ kein Subagent darauf:
   der Altzeile bleiben, die Übernahme füllt nichts; der Zähler heißt `legacy_stock_rows` (Hinweis auf
   *Verschiedenes*)
 - **Textimport** (`import_wiso_csv`): Kodierung in der Reihenfolge BOM → strenges UTF-8 → cp1252 (cp1252 dekodiert fast alles
-  und darf deshalb nie zuerst stehen). Fehlermeldungen nennen **keine Feldwerte der Datei** (ein DATEV-Stapel trägt Berater- und
+  und darf deshalb nie zuerst stehen). Die Meldungen der Formaterkennung nennen **keine Feldwerte der Datei** (ein DATEV-Stapel trägt Berater- und
   Mandantennummer im Vorlauf; er wird am ersten Feld `EXTF`/`DTVF` erkannt und mit Klartext abgelehnt). Ein Steuerschlüssel, den
   `TaxKeys` nicht kennt, wird nicht geraten: Die Zeile kommt ohne Steuersatz und zählt in `unknown_tax_keys` (Hinweis auf
   *Verschiedenes*)

@@ -138,7 +138,8 @@ direkt aus der Datenbankdatei oder aus den Textexporten:
 
 - Beide Importe melden, was sie nicht sicher lesen können: Sätze mit **negativem Bruttobetrag**
   und genau einem Bank-, Kassen- oder Verrechnungskonto (dort bestimmt die Geldbewegung das
-  Vorzeichen; ein Storno oder eine Gutschrift wird so wie eine normale Buchung gelesen), Buchungen
+  Vorzeichen; WISO schreibt Beträge üblicherweise nicht negativ, ein solcher Satz fällt aus dem Muster),
+  im Textexport **Steuerschlüssel, die die App nicht kennt** (die Zeile kommt ohne Steuersatz), Buchungen
   auf **Konten 1000–1099** (in SKR04
   Vorräte; ältere Versionen haben sie als Kasse gelesen – bitte prüfen, ob hier eine Kasse gemeint
   ist; Buchungen gegen diese Konten werden als Umbuchung gelesen und erscheinen nicht in der EÜR) und
