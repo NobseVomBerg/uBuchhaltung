@@ -355,6 +355,178 @@ def test_restbuchwert_beruecksichtigt_nachtraegliche_anschaffungskosten(tmp_path
     assert asset.depreciations[1].book_value == pytest.approx(1999.16 - 187.98)
 
 
+W1_ZWEI_BETRAEGE = ('Der Anschaffungswert (2.000,00 €) setzt sich aus dem in WISO eingetragenen Wert (1.500,00 €) und '
+                    'den Zahlungen (500,00 €) zusammen – bitte prüfen, ob beides zur Anschaffung gehört.')
+
+
+def _anlage(tmp_path, stated, payments, plan=(), life=3):
+    """Eine Anlage (Kauf 07.06.2022) mit eingetragenem Wert (``PURCHASEAMOUNTNET``), Zahlungen
+    ``[(Datum, Betrag)]`` und AfA-Zeilen ``[(Datum, AfA, kumuliert)]``; liefert die gelesene Anlage."""
+    builder, assets, pay, depreciations = _asset_builder()
+    assets.add(ID=5, INVNO=1, LABEL='Anlage Probe', PURCHASEDATE='2022-06-07 00:00:00',
+               PURCHASEAMOUNTNET=stated, SERVICELIFE=life, FINACIALACCOUNT=320, FINACIALACCOUNT_AFA=4832)
+    for number, (date, amount) in enumerate(payments, start=1):
+        pay.add(ID=number, INVENTORYID=5, BOOKINGDATE=f'{date} 00:00:00', AMOUNTNET=amount, DESCRIPTION='Zahlung')
+    for number, (date, amount, cumulated) in enumerate(plan, start=1):
+        depreciations.add(ID=number, INVENTORYID=5, BOOKINGDATE=f'{date} 00:00:00', AMORT_AMOUNT=amount,
+                          AMORT_CUMULATED_AMOUNT=cumulated)
+    return read_wiso_database(builder.write(str(tmp_path / 'a.fdb'))).assets[0]
+
+
+def test_ein_eingetragener_wert_und_die_zahlungen_zaehlen_beide(tmp_path):
+    """Das Gerät steht von Hand mit 1.500 € in ``PURCHASEAMOUNTNET``, die Montage als Zahlung über 500 €: zwei
+    echte Beträge, der Anschaffungswert ist die Summe."""
+    asset = _anlage(tmp_path, 1500.0, [('2022-06-07', 500.0)])
+    assert asset.purchase_price == pytest.approx(2000.0)
+
+
+@pytest.mark.parametrize('stated', [0.01, 0.5, 1.0])
+def test_ein_behelfsbetrag_bis_ein_euro_zaehlt_nicht(tmp_path, stated):
+    """Der Nutzer trägt bei der Erstanlage oft 1 € als Behelf ein: Er gehört nicht zum Anschaffungswert."""
+    asset = _anlage(tmp_path, stated, [('2022-06-07', 3000.0)])
+    assert asset.purchase_price == pytest.approx(3000.0)
+
+
+def test_ein_wert_knapp_ueber_der_behelfsgrenze_zaehlt(tmp_path):
+    asset = _anlage(tmp_path, 1.01, [('2022-06-07', 3000.0)])
+    assert asset.purchase_price == pytest.approx(3001.01)
+
+
+def test_ein_eingetragener_wert_gleich_der_zahlungssumme_zaehlt_einmal(tmp_path):
+    """Dieselbe Anschaffung zweimal erfasst (von Hand und über die Zahlungen): einmal. Verglichen wird auf den
+    Cent – 500,10 € + 1.500,20 € ergeben als float 2000.3000000000002, nicht 2000.3."""
+    payments = [('2022-06-07', 500.1), ('2022-06-09', 1500.2)]
+    assert 500.1 + 1500.2 != 2000.3
+    asset = _anlage(tmp_path, 2000.3, payments)
+    assert asset.purchase_price == pytest.approx(2000.3) and asset.warnings == []
+
+
+def test_ein_eingetragener_wert_einen_cent_neben_der_zahlungssumme_ist_ein_zweiter_betrag(tmp_path):
+    asset = _anlage(tmp_path, 3000.31, [('2022-06-07', 3000.3)])
+    assert asset.purchase_price == pytest.approx(6000.61)
+
+
+def test_ohne_zahlungen_gilt_der_eingetragene_wert_wie_bisher(tmp_path):
+    assert _anlage(tmp_path, 4200.0, []).purchase_price == pytest.approx(4200.0)
+    assert _anlage(tmp_path, 0.01, []).purchase_price == 0.0              # der Platzhalter zählt nicht
+    assert _anlage(tmp_path, 1.0, []).purchase_price == pytest.approx(1.0)
+
+
+def test_zwei_echte_betraege_werden_als_auffaelligkeit_der_anlage_gemeldet(tmp_path):
+    asset = _anlage(tmp_path, 1500.0, [('2022-06-07', 500.0)])
+
+    assert asset.purchase_price == pytest.approx(2000.0)
+    assert asset.warnings == [W1_ZWEI_BETRAEGE]
+
+
+def test_ein_wert_einen_cent_neben_der_zahlungssumme_wird_gemeldet_nicht_still_addiert(tmp_path):
+    """Zahlung 6.000,00 €, eingetragen 5.999,99 €: Das ist kein „gleich“, die Beträge zählen beide – und der
+    Nutzer erfährt es, statt dass der Anschaffungswert still fast doppelt so hoch ist."""
+    asset = _anlage(tmp_path, 5999.99, [('2022-06-07', 6000.0)])
+
+    assert asset.purchase_price == pytest.approx(11999.99)
+    assert asset.warnings == [
+        'Der Anschaffungswert (11.999,99 €) setzt sich aus dem in WISO eingetragenen Wert (5.999,99 €) und den '
+        'Zahlungen (6.000,00 €) zusammen – bitte prüfen, ob beides zur Anschaffung gehört.']
+
+
+@pytest.mark.parametrize('stated, payments', [
+    (1.0, [('2022-06-07', 3000.0)]),                                        # Behelf bis 1,00 €
+    (0.01, [('2022-06-07', 3000.0)]),                                       # WISOs Platzhalter
+    (3000.0, [('2022-06-07', 3000.0)]),                                     # dieselbe Anschaffung doppelt erfasst
+    (2000.3, [('2022-06-07', 500.1), ('2022-06-09', 1500.2)]),              # gleich auf den Cent (Gleitkomma-Rauschen)
+    (4200.0, []),                                                           # keine Zahlungen: wie bisher
+], ids=['behelf', 'platzhalter', 'gleich', 'gleich-mit-rauschen', 'ohne-zahlungen'])
+def test_ohne_zaehlenden_eingetragenen_wert_gibt_es_keinen_hinweis(tmp_path, stated, payments):
+    assert _anlage(tmp_path, stated, payments).warnings == []
+
+
+def test_der_hinweis_auf_die_zusammensetzung_steht_vor_dem_hinweis_zum_restwert(tmp_path):
+    """Zwei echte Beträge (2.000 €), WISO bucht beim Abgang 1.300 € aus, der Plan ergibt 1.200 €: beide Hinweise."""
+    builder, assets, payments, depreciations = _asset_builder()
+    assets.add(ID=11, INVNO=7, LABEL='Zwei Betraege', PURCHASEDATE='2020-01-01 00:00:00',
+               PURCHASEAMOUNTNET=1500.0, SALEDATE='2021-12-31 00:00:00', SERVICELIFE=5,
+               FINACIALACCOUNT=320, FINACIALACCOUNT_AFA=4832)
+    payments.add(ID=1, INVENTORYID=11, BOOKINGDATE='2020-01-01 00:00:00', AMOUNTNET=500.0, DESCRIPTION='Montage')
+    payments.add(ID=2, INVENTORYID=11, BOOKINGDATE='2021-12-31 00:00:00', AMOUNTNET=-1300.0, REMOVEACCOUNT=1,
+                 DESCRIPTION='Abschaffung')
+    depreciations.add(ID=1, INVENTORYID=11, BOOKINGDATE='2020-12-31 00:00:00',
+                      AMORT_AMOUNT=400.0, AMORT_CUMULATED_AMOUNT=400.0)
+    depreciations.add(ID=2, INVENTORYID=11, BOOKINGDATE='2021-12-31 00:00:00',
+                      AMORT_AMOUNT=400.0, AMORT_CUMULATED_AMOUNT=800.0)
+
+    asset = read_wiso_database(builder.write(str(tmp_path / 'a.fdb'))).assets[0]
+
+    assert len(asset.warnings) == 2 and asset.warnings[0] == W1_ZWEI_BETRAEGE
+    assert asset.warnings[1].startswith('WISO bucht beim Abgang 1300.00 € aus')
+
+
+def test_die_buchwerte_der_planjahre_zaehlen_den_eingetragenen_wert_ab_dem_kaufjahr(tmp_path):
+    """Der eingetragene Wert trägt kein Datum und gilt ab dem Kaufjahr; die Zahlungen zählen ab ihrem Jahr."""
+    asset = _anlage(tmp_path, 1500.0, [('2022-06-07', 500.0), ('2023-09-01', 300.0)],
+                    plan=[('2022-12-31', 100.0, 100.0), ('2023-12-31', 200.0, 300.0)])
+
+    assert asset.purchase_price == pytest.approx(2300.0)
+    assert [(d.year, d.book_value) for d in asset.depreciations] == [
+        (2022, pytest.approx(1500.0 + 500.0 - 100.0)), (2023, pytest.approx(1500.0 + 500.0 + 300.0 - 300.0))]
+    assert asset.residual_value == pytest.approx(2000.0)
+
+
+def test_die_buchwerte_ohne_zaehlenden_eingetragenen_wert_bleiben_wie_bisher(tmp_path):
+    """Behelf und doppelte Erfassung ändern die Basis des Buchwerts nicht."""
+    plan = [('2022-12-31', 100.0, 100.0), ('2023-12-31', 200.0, 300.0)]
+    for stated in (1.0, 2000.0):
+        asset = _anlage(tmp_path, stated, [('2022-06-07', 2000.0)], plan=plan)
+        assert asset.purchase_price == pytest.approx(2000.0), stated
+        assert [d.book_value for d in asset.depreciations] == [pytest.approx(1900.0), pytest.approx(1700.0)], stated
+
+
+def test_doppelt_erfasst_rechnet_der_plan_mit_dem_einfachen_wert_und_die_warnung_bleibt(tmp_path):
+    """Eingetragen 30.756,30 € und dieselbe Summe als Zahlung: Der AfA-Plan rechnet mit dem einfachen Wert; bucht
+    WISO beim Abgang den doppelten aus, steht die Abweichung als Warnung da."""
+    builder, assets, payments, depreciations = _asset_builder()
+    assets.add(ID=10, INVNO=6, LABEL='Doppelt erfasst', PURCHASEDATE='2018-06-12 00:00:00',
+               PURCHASEAMOUNTNET=30756.30, SALEDATE='2019-07-05 00:00:00', SERVICELIFE=5,
+               FINACIALACCOUNT=320, FINACIALACCOUNT_AFA=4832)
+    payments.add(ID=1, INVENTORYID=10, BOOKINGDATE='2018-06-12 00:00:00', AMOUNTNET=30756.30, DESCRIPTION='Kauf')
+    payments.add(ID=2, INVENTORYID=10, BOOKINGDATE='2019-07-05 00:00:00', AMOUNTNET=-48184.87, REMOVEACCOUNT=1,
+                 DESCRIPTION='Abschaffung')
+    depreciations.add(ID=1, INVENTORYID=10, BOOKINGDATE='2018-12-31 00:00:00',
+                      AMORT_AMOUNT=7176.47, AMORT_CUMULATED_AMOUNT=7176.47)
+    depreciations.add(ID=2, INVENTORYID=10, BOOKINGDATE='2019-12-31 00:00:00',
+                      AMORT_AMOUNT=6151.26, AMORT_CUMULATED_AMOUNT=13327.73)
+
+    asset = read_wiso_database(builder.write(str(tmp_path / 'a.fdb'))).assets[0]
+
+    assert asset.purchase_price == pytest.approx(30756.30)
+    assert [d.book_value for d in asset.depreciations] == [pytest.approx(30756.30 - 7176.47),
+                                                           pytest.approx(30756.30 - 13327.73)]
+    assert asset.residual_value == pytest.approx(17428.57)
+    assert len(asset.warnings) == 1 and '48184.87' in asset.warnings[0] and '17428.57' in asset.warnings[0]
+
+
+def test_bei_zwei_echten_betraegen_stimmt_der_ausgebuchte_restwert_mit_dem_plan_ueberein(tmp_path):
+    """Anlage mit eingetragenem Wert und Zahlung: WISO bucht beim Abgang den Restbuchwert aus der Summe aus –
+    der Plan der App rechnet mit derselben Summe, es gibt keine Abweichung zu melden."""
+    builder, assets, payments, depreciations = _asset_builder()
+    assets.add(ID=11, INVNO=7, LABEL='Zwei Betraege', PURCHASEDATE='2020-01-01 00:00:00',
+               PURCHASEAMOUNTNET=1500.0, SALEDATE='2021-12-31 00:00:00', SERVICELIFE=5,
+               FINACIALACCOUNT=320, FINACIALACCOUNT_AFA=4832)
+    payments.add(ID=1, INVENTORYID=11, BOOKINGDATE='2020-01-01 00:00:00', AMOUNTNET=500.0, DESCRIPTION='Montage')
+    payments.add(ID=2, INVENTORYID=11, BOOKINGDATE='2021-12-31 00:00:00', AMOUNTNET=-1200.0, REMOVEACCOUNT=1,
+                 DESCRIPTION='Abschaffung')
+    depreciations.add(ID=1, INVENTORYID=11, BOOKINGDATE='2020-12-31 00:00:00',
+                      AMORT_AMOUNT=400.0, AMORT_CUMULATED_AMOUNT=400.0)
+    depreciations.add(ID=2, INVENTORYID=11, BOOKINGDATE='2021-12-31 00:00:00',
+                      AMORT_AMOUNT=400.0, AMORT_CUMULATED_AMOUNT=800.0)
+
+    asset = read_wiso_database(builder.write(str(tmp_path / 'a.fdb'))).assets[0]
+
+    assert asset.purchase_price == pytest.approx(2000.0)
+    assert asset.residual_value == pytest.approx(1200.0)
+    assert asset.warnings == [W1_ZWEI_BETRAEGE]                           # nur der Hinweis auf die Zusammensetzung
+
+
 def test_verkaufserloes_kommt_ueber_den_abgangstext(tmp_path):
     """WISO verknüpft den Erlös **nicht** mit dem Anlagegut – gemeinsam ist
     beiden nur der Abgangstext. Der Restwert steht in der REMOVEACCOUNT-Zeile."""

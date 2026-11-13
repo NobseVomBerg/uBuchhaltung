@@ -7,6 +7,7 @@ Asset management pages (Anlagenverzeichnis)
 import datetime
 import html as _html
 from db import Database
+from db.assets import METHOD_BOOKED
 from db.matching import ASSET_ACCOUNT_RANGE
 from money import fmt_eur
 from .pages import Header1, Header2, Header3, Footer, script_json
@@ -18,7 +19,8 @@ def _status_label(status):
     return {'active': 'Aktiv', 'sold': 'Verkauft', 'scrapped': 'Abgang'}.get(status, status)
 
 def _method_label(method):
-    return {'linear': 'Linear', 'degressive': 'Degressiv', 'both': 'Linear / Degressiv', 'GWG': 'GWG (Sofort)'}.get(method, method)
+    return {'linear': 'Linear', 'degressive': 'Degressiv', 'both': 'Linear / Degressiv', 'GWG': 'GWG (Sofort)',
+            METHOD_BOOKED: 'Wie gebucht'}.get(method, method)
 
 def _fmt(value):
     """Format number as German currency string."""
@@ -49,11 +51,10 @@ def PageAssets(db: Database, status_filter='', edit_id=None, new_parent_id=None,
         asset_id = a[0]
         purchase_price = float(a[7]) if a[7] is not None else 0.0  # Decimal -> float für Summen/Anzeige
         purchase_date = a[6]
-        useful_life = a[8]
         method = a[9]
         status = a[17]
 
-        plan = db.calculate_depreciation_plan(purchase_price, purchase_date, useful_life, method)
+        plan = db.depreciation_plan(asset_id)
         book_value = db.get_book_value_at_date(asset_id)
 
         year_entry = next((e for e in plan if e['year'] == current_year), None)
@@ -181,13 +182,9 @@ def _asset_details(db: Database, asset):
     Erweiterungen/Nachkäufe, Verkauf/Abgang) für die rechte Spalte.
     Die Stammdaten kommen aus dem Bearbeiten-Formular darüber."""
     asset_id = asset[0]
-    purchase_date = asset[6]
-    purchase_price = asset[7]
-    useful_life = asset[8]
-    method = asset[9]
     status = asset[17]
 
-    plan = db.calculate_depreciation_plan(purchase_price, purchase_date, useful_life, method)
+    plan = db.depreciation_plan(asset_id)
     booked = {e[2]: e for e in db.get_depreciations_for_asset(asset_id)}  # year → row
     # Gebucht: die Buchung gibt es, oder das Jahr stammt als 'booked' aus dem WISO-Import.
     # Eine Zeile 'posted', deren Buchung fehlt, gilt als nicht gebucht (Buchen-Knopf).
@@ -225,10 +222,12 @@ def _asset_details(db: Database, asset):
             action = ''
         elif yr < current_year:
             depr_status_label = '<span style="color:orange;">⚠ Nicht gebucht</span>'
-            action = _book_depr_button(asset_id, yr, coa_rows, asset_coa, entry['method'])
+            action = (_book_depr_button(asset_id, yr, coa_rows, asset_coa, entry['method'])
+                      if entry['bookable'] else '')
         elif yr == current_year:
             depr_status_label = '<span style="color:#0066cc;">● Laufendes Jahr</span>'
-            action = _book_depr_button(asset_id, yr, coa_rows, asset_coa, entry['method'])
+            action = (_book_depr_button(asset_id, yr, coa_rows, asset_coa, entry['method'])
+                      if entry['bookable'] else '')
         else:
             depr_status_label = '<span style="color:#aaa;">○ Geplant</span>'
             action = ''

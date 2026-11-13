@@ -319,6 +319,20 @@ Kontonummer `nummer`, `basis` – das Zahlungskonto, unter dem ein älterer Impo
 Vorzeichen und Form folgen der neuen Nummer). Abhilfe: das Konto vor dem Import als Bank- oder Kassenkonto
 anlegen und neu importieren.
 
+**Anschaffungswert einer Anlage (Datenbank-Import):** Der Leser (`WisoDatabase._purchase_price`) nimmt die Summe der
+**positiven** Zahlungen (`MOV_INVENTORY_BOOKINGS`; negative Zeilen sind der Abgang) **plus** den eingetragenen Wert
+(`BAS_INVENTORY.PURCHASEAMOUNTNET`), wenn dieser zählt – gerechnet in Minor Units, nie als float-Summe. Er zählt nicht, wenn
+er **bis 1,00 €** beträgt (`PRICE_HELPER_LIMIT`: ein Behelfsbetrag, den der Nutzer bei der Erstanlage einträgt), und nicht,
+wenn er **auf den Cent gleich der Summe der Zahlungen** ist (dieselbe Anschaffung zweimal erfasst, von Hand und über die
+Zahlungen: sie zählt einmal; die Warnung zum Restbuchwert bei einem Abgang, den WISO mit dem doppelten Wert bucht, bleibt).
+Sonst sind es zwei echte Beträge (ein Gerät von Hand eingetragen, die Montage als Zahlung), und der Anschaffungswert ist ihre
+Summe – dann steht in `asset_warnings`: „{Anlage}: Der Anschaffungswert ({Summe} €) setzt sich aus dem in WISO eingetragenen
+Wert ({eingetragen} €) und den Zahlungen ({Zahlungen} €) zusammen – bitte prüfen, ob beides zur Anschaffung gehört.“ (ein
+Wert, der der Zahlungssumme nur um einen Cent nicht gleicht, würde sonst still den Anschaffungswert fast verdoppeln). Ohne
+Zahlungen gilt wie bisher `PURCHASEAMOUNTNET`, wenn es über dem Platzhalter 0,01 € (`PRICE_PLACEHOLDER`) liegt. Der
+Buchwert eines Planjahrs (`_depreciations`) ist die Summe der bis zum Jahr geleisteten Zahlungen plus der zählende eingetragene
+Wert – dieser trägt kein Datum und gilt ab dem Kaufjahr – minus die kumulierte AfA.
+
 **Vorausgeplante AfA (Datenbank-Import):** WISO schreibt den ganzen AfA-Plan sofort als Buchungssätze in
 `MOV_FINACC_ACCRECORDS` (`INVENTORYID` gesetzt), auch für künftige Jahre und ohne Kennzeichen „geplant“. Ob ein
 Satz mit `INVENTORYID` ein **AfA-Satz** ist, entscheidet der Leser in dieser Reihenfolge (`_is_depreciation`):
@@ -354,6 +368,21 @@ automatisch. Der Buchungsschritt führt den Status mit, in derselben Transaktion
 Büchern steht – ein Bestand ohne Plan (Import bis 2.2.4 ohne Anlagen) bekommt so alle Jahre als gebucht, auch wenn die
 Anlage der App inzwischen gelöscht wurde. Ein bisher geplantes Jahr wird nur dann `booked`, wenn sein Satz in den Büchern
 steht; ein anderer Status ändert sich nie (auch ein `booked` aus einem Import bis 2.2.4 bleibt).
+**Ein gebuchtes Jahr trägt den Betrag der Bücher:** Der Buchungsschritt liefert `{(INVENTORYID, Jahr): Betrag}` – die
+**Wirkung auf das Anlagekonto** (`db.matching.depreciation_effect`) der angelegten, aus dem CSV-Import übernommenen oder
+wiedererkannten Zeile, bei einer vom Nutzer geänderten Zeile die der gespeicherten Zeile, bei mehreren AfA-Sätzen eines Jahres die
+Summe: Eine Abschreibung („6222 an 520“) zählt +|Betrag|, eine Korrektur mit vertauschten Konten („520 an 6222“, Anlagekonto im
+Soll) −|Betrag|; die Soll-Seite folgt der gespeicherten Form (bei Form `transfer`: Betrag > 0 – Konto im Soll, Betrag < 0 –
+Gegenkonto im Soll); berührt keine Seite ein Anlagekonto (1–999) oder beide, zählt der Satz +|Betrag|. Die Summe eines Jahres ist
+nie unter 0: Übersteigen die Korrekturen die Abschreibung, steht 0, und das Jahr bleibt gebucht. Eine Planzeile, die der Lauf auf
+`booked` hebt (am Ende der Transaktion der Buchungen) oder neu als `booked` anlegt, bekommt den Betrag als `DepreciationAmount`,
+nicht den Planwert aus WISO. Betrag und Buchwert einer vorhandenen Planzeile aktualisiert der Re-Import nur, solange sie `planned`
+ist; eine Zeile `booked` bleibt – auch wenn WISO den Betrag inzwischen ändert oder den Satz nicht mehr liefert: Der Plan der App
+nimmt die gebuchten Beträge als Geschichte, und die Summe der AfA in den Büchern (Abschreibungen minus Korrekturen) soll der
+Anschaffungswert bleiben. Einzige Ausnahme: Steht der Satz in diesem Lauf in den Büchern und weicht der Betrag einer Zeile `booked`
+(nicht von der App gebucht) davon ab – Bestand aus einem Import bis 2.2.5, der den Planwert aus WISO trägt –, gleicht der
+Buchungsschritt sie an die Bücher an (nur bei Abweichung; im Replay-Log wie das Anheben, am Ende der Transaktion der Buchungen).
+Steht der Satz nicht in den Büchern dieses Laufs, bleibt die Zeile, wie sie ist.
 
 **Geänderter AfA-Satz:** Gleicht einem AfA-Satz einer bekannten Gruppe keine Zeile genau (Datum, Konten, |Betrag|), hat die
 Gruppe aber noch eine freie Zeile mit einem Datum im Planjahr (`depreciation_year`; gleich welcher Betrag, welcher Tag,
@@ -379,10 +408,26 @@ Buchung der App, gibt das Löschen das Jahr frei, und der nächste Import legt d
 Inventarnummer gefunden (`Assets.InventoryNumber` = `INVNO`), aber nur, wenn sie in der WISO-Datenbank eindeutig ist:
 Anlagen ohne Inventarnummer oder mit einer mehrfach vergebenen nehmen am Abgleich nicht teil (für ihre AfA-Sätze gilt
 der Stichtag und sonst die Gruppenlogik ohne Anlagenbezug) und stehen in `asset_warnings`. `book_depreciation` rechnet mit
-dem eigenen Plan der App (`calculate_depreciation_plan`: linear, degressiv, GWG) und überschreibt den Betrag der Planzeile:
-Nach dem Schreiben der Anlagen vergleicht der Import je Anlage mit geplanten Jahren die Pläne; weicht ein Jahr um mehr als
-einen Cent ab oder plant die App dafür keine AfA, steht eine Warnung in `asset_warnings` und zählt in
-`depreciation_plan_mismatches` – beim Buchen gilt der Plan der App.
+dem Plan der App (`Database.depreciation_plan`) und überschreibt den Betrag der Planzeile: Die gebuchten Jahre stehen mit
+ihrem gebuchten Betrag im Plan, der Restbuchwert (Anschaffungswert minus gebuchte Beträge) verteilt sich linear auf die
+Monate bis zum Planende (Kaufmonat plus Nutzungsdauer), je Jahr kaufmännisch auf den Cent gerundet, das letzte Jahr
+bekommt den Rest; nicht gebuchte Jahre zwischen gebuchten haben keine eigene Zeile, und ein Jahr, das auf 0 Cent rundet,
+entfällt (die Summe bleibt der Rest). Nur eine Anlage, deren gebuchte Jahre alle
+dem Plan der Formel (`calculate_depreciation_plan`: linear, degressiv, GWG) gleichen, behält diesen. Gebucht ist, was in den
+Büchern steht: bei einem von der App gebuchten Jahr die Wirkung der Buchung auf das Anlagekonto (ändert der Nutzer die Buchung im
+Editor, folgt der Plan; eine zur Rückbuchung umgedrehte Buchung zählt mit 0), bei einem importierten Jahr die Planzeile – ändert
+der Nutzer eine **importierte** AfA-Buchung nachträglich, folgt der Plan nicht (keine Verknüpfung zwischen Planjahr und
+importierter Buchung). Die Buchwerte der gebuchten Jahre rechnen fortlaufend vom
+heutigen Anschaffungswert, und in der Fortschreibung bucht `book_depreciation` nur das erste offene Jahr (sonst würden die Jahre
+davor zu Lücken). Nach dem Schreiben der Anlagen vergleicht der Import je Anlage mit geplanten Jahren die Pläne; weicht ein Jahr
+um **mehr als 1,00 €** ab oder plant die App dafür keine AfA, steht eine Warnung in `asset_warnings` und zählt in
+`depreciation_plan_mismatches` – beim Buchen gilt der Plan der App. Die Schwelle: WISOs Plan rechnet mit dem Behelfsbetrag
+bis 1 €, den der Anschaffungswert der App nicht enthält; kleinere Abweichungen sind damit erklärt.
+**Restbuchwert ohne WISO-Plan:** Hat eine **nicht abgegangene** Anlage nach dem Lauf kein geplantes Jahr mehr (alle Sätze aus
+WISO stehen in den Büchern), plant die App aber noch ein offenes Jahr mit mehr als 1,00 € – etwa weil der Anschaffungswert größer
+ist als die Basis von WISOs Plan –, steht in `asset_warnings`: „{Anlage}: Nach den gebuchten Jahren bleibt ein Restbuchwert von
+{R} €, für den WISO keine AfA mehr plant – bitte den Anschaffungswert prüfen, bevor die AfA in der App gebucht wird.“
+(`depreciation_rest_warnings` zählt sie). Eine abgegangene Anlage ist ausgenommen: Ihren Restbuchwert bucht der Abgang aus.
 
 **Reihenfolge und Sperre:** Der Buchungsschritt läuft in EINER schreibenden Transaktion (`BEGIN IMMEDIATE`), die als
 Erstes die Anlagen der App und ihre Planjahre liest (`_link_assets`) – zwischen Lesen und Schreiben kann keine andere

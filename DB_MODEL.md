@@ -897,7 +897,18 @@ AfA-Tabelle. **Der Status eines Planjahrs folgt der Buchung, nicht dem Datum:** 
 Anlage für dieses Jahr in den Büchern steht (neu angelegt, aus dem CSV-Import übernommen oder als vorhandene
 Zeile seiner Gruppe wiedererkannt), sonst `planned` – dann bucht die App das Jahr im jeweiligen Jahr selbst
 (`book_depreciation`; nicht automatisch). Ein bisher geplantes Jahr, dessen Satz jetzt in den Büchern steht,
-wird `booked` – in der Transaktion der Buchungen und auch ohne Anlagenimport (`with_assets=False`). Fehlt der
+wird `booked` – in der Transaktion der Buchungen und auch ohne Anlagenimport (`with_assets=False`) – und trägt als
+`DepreciationAmount` den Betrag, den die **Bücher** für den Satz führen: die Wirkung der angelegten, übernommenen oder
+wiedererkannten Zeile auf das Anlagekonto (`db.matching.depreciation_effect`: eine Abschreibung „Aufwand an Anlagekonto“
+zählt +|Betrag|, eine Korrektur oder Zuschreibung mit dem Anlagekonto im Soll – WISO schreibt sie mit vertauschten Konten –
+−|Betrag|; bei einer vom Nutzer geänderten Zeile die der gespeicherten Zeile), bei mehreren Sätzen eines Jahres die Summe,
+nie unter 0 (ein Jahr, dessen Korrekturen die Abschreibung übersteigen, bleibt mit 0 gebucht) – nicht den Planwert aus WISO;
+ebenso eine neu angelegte Planzeile eines gebuchten Jahres. Betrag und Buchwert einer vorhandenen Planzeile aktualisiert der
+Re-Import nur, solange sie `planned` ist; eine Zeile `booked` bleibt, wie sie ist (Buchwert, Status) – auch wenn WISO den
+Betrag des Jahres inzwischen ändert oder den Satz nicht mehr liefert. Einzige Ausnahme: Steht der Satz in diesem Lauf in den
+Büchern und weicht der Betrag einer Zeile `booked` (nicht von der App gebucht) von dem der Bücher ab – Bestand aus einem Import
+bis 2.2.5, der den Planwert aus WISO trägt –, gleicht der Buchungsschritt sie an die Bücher an (nur bei Abweichung, im
+Replay-Log wie das Anheben). Fehlt der
 Satz in einer bekannten Quellgruppe, die mehrere Jahre trägt (der Erstlauf hat nur die vergangenen angelegt),
 wird er nur nachgetragen, wenn die Gruppe für das Planjahr keine Zeile hat, die Anlage in der App eindeutig zugeordnet
 ist **und** ihre Planzeile dieses Jahres existiert, `planned` ist und nicht von der App gebucht; sonst nie (ein Satz
@@ -911,10 +922,49 @@ die Inventarnummer (`Assets.InventoryNumber` = `INVNO`), nur wenn sie in der WIS
 steht eine Warnung in `asset_warnings`, und die AfA-Sätze der Anlage nehmen am Abgleich nicht teil. Der Buchungsschritt
 liest die Planjahre der App in seiner schreibenden Transaktion (`BEGIN IMMEDIATE`): Zwischen Lesen und Schreiben bucht
 keine andere Anfrage ein Jahr. Eine vorhandene Anlage behält beim Re-Import ihr Anlagekonto (`COA_ID`).
-`book_depreciation` rechnet mit dem eigenen Plan der App (linear, degressiv, GWG) und überschreibt den WISO-Betrag
-der Planzeile: Rechnet der WISO-Plan anders, meldet der Import das je Anlage (`depreciation_plan_mismatches`,
-Warnung in `asset_warnings`). Bestand aus einem Import bis 2.2.4 (künftige AfA-Buchungen, Jahre `booked`) wird nicht
-angefasst.
+`book_depreciation` rechnet mit dem Plan der App (`depreciation_plan`, siehe unten) und überschreibt den WISO-Betrag
+der Planzeile: Weicht ein geplantes Jahr um mehr als 1,00 € vom WISO-Betrag ab oder plant die App dafür nichts, meldet der
+Import das je Anlage (`depreciation_plan_mismatches`, Warnung in `asset_warnings`; der Behelfsbetrag bis 1 € in WISOs
+`PURCHASEAMOUNTNET`, der nicht zum Anschaffungswert zählt, erklärt kleinere Abweichungen). Plant WISO für eine nicht
+abgegangene Anlage kein Jahr mehr (alle Sätze stehen in den Büchern), die App aber noch ein offenes Jahr über 1,00 €,
+meldet der Import den Restbuchwert (`depreciation_rest_warnings`, Warnung in `asset_warnings`). Bestand aus einem Import bis
+2.2.4 (künftige AfA-Buchungen, Jahre `booked`) wird nicht angefasst. Der Anschaffungswert einer importierten Anlage ist die
+Summe der positiven Zahlungen plus der eingetragene Wert (`PURCHASEAMOUNTNET`), wenn dieser über 1,00 € liegt und nicht
+auf den Cent der Zahlungssumme gleicht (dann ist dieselbe Anschaffung doppelt erfasst: sie zählt einmal); ohne Zahlungen
+gilt der eingetragene Wert wie bisher. Zählt der eingetragene Wert zusätzlich zu den Zahlungen, nennt eine Warnung in
+`asset_warnings` die Zusammensetzung des Anschaffungswerts (Details: `PARSER_README.md`). Grenze: Ändert der Nutzer eine
+**importierte** AfA-Buchung nachträglich, folgt der Plan nicht – zwischen Planjahr und importierter Buchung gibt es keine
+Verknüpfung (`Booking_ID` schreibt nur `book_depreciation`).
+
+**AfA-Plan der App** (`Database.depreciation_plan`, `db/assets.py`; `calculate_depreciation_plan` ist die reine Formel aus
+Preis, Datum, Dauer und Methode und bleibt sein Baustein): Gebuchte Jahre (`_DEPRECIATION_BOOKED`: Status `booked` oder
+eine vorhandene Buchung) sind Geschichte, und **gebucht ist, was in den Büchern steht**: Zeigt die Planzeile über
+`Booking_ID` auf eine vorhandene Buchung (die App hat das Jahr gebucht), ist der gebuchte Betrag die Wirkung dieser Buchung
+auf das Anlagekonto (`depreciation_effect`: „Aufwand an Anlagekonto“ zählt +|Betrag|, auch nach einem Kontentausch mit
+negiertem Betrag; dreht der Nutzer die Buchung zur Rückbuchung um, zählt sie negativ, und das Jahr gilt mit 0 als gebucht) –
+ändert der Nutzer die Buchung im Editor, folgt der Plan –, bei einem importierten Jahr (Status `booked`, keine Buchung)
+`DepreciationAmount`. Gibt es keine gebuchten Jahre, oder gleicht jedes gebuchte Jahr auf den Cent dem Jahr der Formel,
+ist der Plan genau diese Formel (linear, degressiv, GWG) – für eine nur in der App geführte Anlage ändert sich nichts.
+Weicht die Geschichte ab (WISO-Import, nachträglich geänderter Anschaffungswert oder Betrag einer Buchung), gilt die
+**Fortschreibung**: Die gebuchten Jahre stehen mit ihrem gebuchten Betrag (Methode „gebucht“), ihr Buchwert rechnet
+fortlaufend vom heutigen Anschaffungswert (Ende = Anschaffungswert minus die gebuchten Beträge bis einschließlich des
+Jahres, nie unter 0; Anfang = Ende plus Betrag) – der gespeicherte `BookValue` der Planzeile geht nicht ein, damit das
+erste offene Jahr anschließt und der Buchwert nach einer Preisänderung stimmt. Der Restbuchwert (Anschaffungswert minus
+alle gebuchten Beträge) verteilt sich linear auf die Monate vom ersten offenen Jahr (das Jahr nach dem größten
+gebuchten, mindestens das Kaufjahr) bis zum Planende (Kaufmonat plus Nutzungsdauer): je Jahr
+`Rest × Monate / Gesamtmonate`, ganzzahlig in Cent kaufmännisch gerundet, das letzte Jahr bekommt den Rest (nie negativ).
+Nicht gebuchte Jahre zwischen gebuchten haben keine eigene Zeile, ihr Betrag steckt im Rest; ein Rest ≤ 0 ergibt keine offenen
+Jahre, nach abgelaufener Nutzungsdauer kommt der ganze Rest ins erste offene Jahr. Ein offenes Jahr, das auf 0 Cent rundet,
+entfällt (die Summe bleibt der Rest; es gäbe nichts zu buchen), buchbar ist das erste verbleibende. GWG-Regel und degressive
+Rechnung gelten in der Fortschreibung nicht. Fehlt Preis, Kaufdatum oder Nutzungsdauer, bleiben nur die gebuchten Jahre. **In der
+Fortschreibung ist nur das erste offene Jahr buchbar** (`bookable` im Plan, die Detailseite zeigt den Knopf nur dort):
+Ein späteres Jahr zuerst zu buchen machte die Jahre davor zu Lücken, und ihr Betrag wanderte in die späteren Jahre;
+`book_depreciation` lehnt es mit „AfA {Jahr} lässt sich erst buchen, wenn {erstes offenes Jahr} gebucht ist.“ ab. Für eine
+nur in der App geführte Anlage gilt jede Reihenfolge. `book_depreciation`
+liest den Plan erst in seiner Transaktion (nach `BEGIN IMMEDIATE`) und nimmt Betrag und Buchwert daraus; ein Jahr, das im
+Plan nicht vorkommt, lehnt es ab. Nach dem Buchen des ersten offenen Jahres bleiben die übrigen offenen Jahre bis auf die
+Rundung gleich: Gemessen an Stichproben (Reste ab 100 €) ändert sich ein mittleres Jahr um höchstens 1 Cent, das letzte Jahr
+(es nimmt den Rest und trägt die Rundungsunterschiede) um höchstens so viele Cent, wie offene Jahre davor liegen.
 
 ---
 
@@ -986,7 +1036,8 @@ Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
 ```
 1. AssetCategories → Nutzungsdauer + Methode
 2. Assets → Erfassung
-3. AssetDepreciations → automatische AfA-Pläne
+3. AssetDepreciations → AfA-Plan: Formel (calculate_depreciation_plan) und Fortschreibung
+   nach gebuchten Jahren (depreciation_plan: gebuchte Jahre bleiben, der Rest verteilt sich neu)
 4. Buchungsintegration über Booking_ID: book_depreciation legt je Jahr genau eine
    Umbuchung „Aufwand an Anlagekonto“ an (Betrag positiv, ohne Account_ID, 31.12.),
    Sperre gegen Doppelbuchung in derselben Transaktion

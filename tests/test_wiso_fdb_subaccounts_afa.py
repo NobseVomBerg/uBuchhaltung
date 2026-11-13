@@ -24,8 +24,22 @@ gebucht wird dann im Jahr selbst in der App (``book_depreciation``). Hat die App
 legt ein späterer Import den AfA-Satz der Datenbank nicht an (``depreciation_conflicts``). Einen AfA-Satz, dem
 keine Zeile seiner bekannten Gruppe genau gleicht, hat der Nutzer geändert, wenn die Gruppe eine freie Zeile im
 Planjahr hat: Er gilt als vorhanden. Hat sie keine, wird er nur nachgetragen, wenn die Anlage in der App eindeutig
-zugeordnet ist und ihre Planzeile des Jahres ``planned`` ist. Rechnet die App die geplanten Jahre anders als WISO,
-meldet der Import das (``depreciation_plan_mismatches``).
+zugeordnet ist und ihre Planzeile des Jahres ``planned`` ist. Rechnet die App die geplanten Jahre um mehr als 1,00 €
+anders als WISO (Plan der App: ``Database.depreciation_plan`` – gebuchte Jahre bleiben, der Rest verteilt sich auf die
+Restnutzungsdauer), meldet der Import das (``depreciation_plan_mismatches``).
+
+Teil 3 – **Anschaffungswert.** Ein eingetragener Wert (``PURCHASEAMOUNTNET``) kommt zu den Zahlungen hinzu und zählt in jedem
+Planjahr zum Buchwert; ein Behelfsbetrag bis 1,00 € und ein Wert, der auf den Cent der Zahlungssumme gleicht (dieselbe
+Anschaffung doppelt erfasst), zählen nicht (die Fälle des Lesers selbst: ``tests/test_wiso_fdb.py``). Zählen beide Beträge,
+steht eine Warnung zur Zusammensetzung in ``asset_warnings``; plant WISO für eine nicht abgegangene Anlage nichts mehr, die App
+aber noch ein offenes Jahr über 1,00 €, eine zum Restbuchwert (``depreciation_rest_warnings``).
+
+Teil 4 – **Die Geschichte ist, was in den Büchern steht.** Ein gebuchtes Jahr trägt den Betrag, den die Bücher für den AfA-Satz
+führen – seine Wirkung auf das Anlagekonto: eine Abschreibung +|Betrag|, eine Korrektur mit vertauschten Konten −|Betrag|, nie
+unter 0 (nicht den Planwert aus WISO; bei mehreren Sätzen eines Jahres die Summe); eine Planzeile ``booked`` ändert der
+Re-Import nicht, der Buchungsschritt gleicht nur einen abweichenden Betrag an die Bücher an. Der Plan der App rechnet mit diesen
+Beträgen: Nach dem Buchen aller offenen Jahre ist die Netto-Summe der AfA in den Büchern (Abschreibungen minus Korrekturen) der
+Anschaffungswert, und in der Fortschreibung ist nur das erste offene Jahr buchbar.
 
 Alle Namen, Nummern und Beträge sind erfunden; die Datenbanken baut ``tests/fdb_builder.py``.
 """
@@ -33,6 +47,7 @@ import datetime
 import json
 import os
 import sqlite3
+from decimal import Decimal
 
 import pytest
 
@@ -124,11 +139,13 @@ AFA_PLAN = [('2024-12-31', 1250.0, 1250.0), ('2025-12-31', 1500.0, 2750.0),
 
 
 def _asset(number=1, label='Dienstwagen', plan=AFA_PLAN, sale=None, price=6000.0, purchase='2024-03-15',
-           account=320, id=None):
+           account=320, id=None, stated=0.01, disposal=None):
     """Eine Anlage; ``id`` ist ``BAS_INVENTORY.ID``, auf die ``INVENTORYID`` der Buchungen zeigt (ohne
-    Angabe aus der Inventarnummer), ``account`` ihr Anlagekonto (SKR03)."""
+    Angabe aus der Inventarnummer), ``account`` ihr Anlagekonto (SKR03), ``price`` die Zahlung des Kaufs,
+    ``stated`` der eingetragene Wert (``PURCHASEAMOUNTNET``; 0,01 € ist WISOs Platzhalter), ``disposal`` der
+    Betrag der Abgangszeile (am Verkaufstag ``sale``), den WISO ausbucht."""
     return dict(id=number + 4 if id is None else id, number=number, label=label, plan=list(plan), sale=sale,
-                price=price, purchase=purchase, account=account)
+                price=price, purchase=purchase, account=account, stated=stated, disposal=disposal)
 
 
 def _amort_id(asset, index):
@@ -163,11 +180,14 @@ def _asset_tables(builder, assets):
         Column('RESIDUALVALUE_AMOUNT', INT64, 8, scale=-2)])
     for asset in assets:
         inventory.add(ID=asset['id'], INVNO=asset['number'], LABEL=asset['label'],
-                      PURCHASEDATE=f'{asset["purchase"]} 00:00:00', PURCHASEAMOUNTNET=0.01,
+                      PURCHASEDATE=f'{asset["purchase"]} 00:00:00', PURCHASEAMOUNTNET=asset['stated'],
                       SALEDATE=f'{asset["sale"]} 00:00:00' if asset['sale'] else None,
                       SERVICELIFE=4, FINACIALACCOUNT=asset['account'], FINACIALACCOUNT_AFA=4832)
         payments.add(ID=asset['id'], INVENTORYID=asset['id'], BOOKINGDATE=f'{asset["purchase"]} 00:00:00',
                      AMOUNTNET=asset['price'], DESCRIPTION='Kauf')
+        if asset['disposal'] is not None:
+            payments.add(ID=asset['id'] + 1000, INVENTORYID=asset['id'], BOOKINGDATE=f'{asset["sale"]} 00:00:00',
+                         AMOUNTNET=-asset['disposal'], REMOVEACCOUNT=1, DESCRIPTION='Abschaffung')
         for index, (date, amount, cumulated) in enumerate(asset['plan'], start=1):
             plans.add(ID=_amort_id(asset, index), INVENTORYID=asset['id'],
                       BOOKINGDATE=f'{date} 00:00:00', AMORT_AMOUNT=amount,
@@ -1091,7 +1111,7 @@ def test_the_conflict_list_is_sorted_and_limited_to_100_the_counter_counts_all(d
     booked = db_with_coa._insert_wiso_bookings(bookings, result, None)
 
     assert MAX_CONFLICT_ROWS == 100
-    assert (result['depreciation_conflicts'], result['imported'], booked) == (120, 0, set())
+    assert (result['depreciation_conflicts'], result['imported'], booked) == (120, 0, {})
     assert len(result['depreciation_conflict_rows']) == 100
     assert [row['anlage'] for row in result['depreciation_conflict_rows']] == [
         f'Anlage {number:03d}' for number in range(1, 101)]
@@ -1120,14 +1140,35 @@ def test_the_planned_rows_of_an_import_up_to_2_2_4_stay_as_they_are(db_with_coa,
         assert result['depreciation_plan_mismatches'] == 0, today            # und nichts zu vergleichen
 
 
-def test_an_existing_booked_year_with_a_new_amount_keeps_its_status(db_with_coa, tmp_path):
+def test_an_existing_booked_year_stays_as_it_is_when_wiso_changes_its_amount(db_with_coa, tmp_path):
+    """Die Geschichte ist, was in den Büchern steht: Ändert WISO den Betrag eines Jahres, dessen AfA-Satz schon
+    gebucht ist, bleibt die Planzeile ``booked`` ganz, wie sie ist (Betrag und Buchwert) – wie die Buchung."""
     run(db_with_coa, _car_fdb(tmp_path), today=JUNE)
-    changed = _asset(plan=[(date, amount + 1.0 if date[:4] == '2024' else amount, cumulated)
+    before = _plan(db_with_coa)
+    changed = _asset(plan=[(date, amount + 1.0, cumulated + 1.0) if date[:4] == '2024' else (date, amount, cumulated)
                            for date, amount, cumulated in AFA_PLAN])
 
     run(db_with_coa, _car_fdb(tmp_path, changed, name='changed.fdb'), today=JUNE)
 
-    assert _plan(db_with_coa)[0][:2] + _plan(db_with_coa)[0][3:] == (2024, 12510000, 'booked', None)
+    assert _plan(db_with_coa)[0][:2] + _plan(db_with_coa)[0][3:] == (2024, 12500000, 'booked', None)
+    assert _plan(db_with_coa)[:2] == before[:2]                              # auch der Buchwert
+
+
+def test_a_booked_year_whose_afa_satz_is_missing_from_the_file_stays_booked_on_a_reimport(db_with_coa, tmp_path):
+    """Liefert WISO den AfA-Satz eines schon gebuchten Jahres nicht mehr (hier 2025, die Zeile der AfA-Tabelle nennt
+    1.450 €): Das Jahr steht in diesem Lauf nicht in den Büchern – seine Planzeile ``booked`` bleibt trotzdem ganz,
+    wie sie ist, statt auf ``planned`` zurückzufallen oder WISOs Wert zu übernehmen."""
+    run(db_with_coa, _car_fdb(tmp_path), today=AFTER_YEAR_END)
+    before = _plan(db_with_coa)
+    changed = _asset(plan=[(date, 1450.0, cumulated) if date[:4] == '2025' else (date, amount, cumulated)
+                           for date, amount, cumulated in AFA_PLAN])
+    records = [record for record in _afa_records(changed) if record['ACCOUNTING_DATE'][:4] != '2025']
+    path = _fdb(tmp_path / 'changed.fdb', records, assets=[changed])
+
+    result = run(db_with_coa, path, today=AFTER_YEAR_END)
+
+    assert result['imported'] == 0 and len(_afa_bookings(db_with_coa)) == 3          # nichts kommt hinzu oder fällt weg
+    assert _plan(db_with_coa) == before                                             # Betrag, Buchwert, Status
 
 
 def test_the_cutoff_defaults_to_the_day_of_the_import(db_with_coa, tmp_path):
@@ -1678,7 +1719,10 @@ def test_a_changed_future_afa_satz_of_a_2_2_4_stock_is_kept_too(db_with_coa, tmp
 
     assert (result['imported'], result['skipped']) == (0, 5)
     assert (result['future_depreciations_kept'], result['future_depreciations_skipped']) == (3, 0)
-    assert _bookings(db_with_coa) == stored and _plan(db_with_coa) == plan_before
+    assert _bookings(db_with_coa) == stored                                        # die Bücher bleiben, wie sie sind
+    # die Planzeile 2027 trägt den Betrag der Bücher (15.010 statt 15.000 €), sonst bleibt der Plan, wie er ist
+    expected = [row[:1] + (15010000,) + row[2:] if row[0] == 2027 else row for row in plan_before]
+    assert _plan(db_with_coa) == expected
 
 
 def test_a_changed_afa_satz_of_a_year_the_app_booked_is_still_a_conflict(db_with_coa, tmp_path):
@@ -1987,16 +2031,20 @@ def test_a_degressive_plan_from_wiso_is_reported_once_per_asset(db_with_coa, tmp
 
     result = run(db_with_coa, path, today=JUNE)
 
+    # die gebuchten Jahre (1.125,00 und 1.218,75 €) weichen vom linearen Plan ab: Der Rest von 3.656,25 € verteilt
+    # sich auf die 26 Monate bis zum Planende (2026 und 2027 je 12, 2028 zwei)
     assert result['asset_warnings'] == [
-        'Dienstwagen: Die App plant die künftige AfA anders als WISO (2026: App 1.500,00 €, WISO 914,06 €). '
+        'Dienstwagen: Die App plant die künftige AfA anders als WISO (2026: App 1.687,50 €, WISO 914,06 €). '
         'Beim Buchen in der App gilt der Plan der App – bitte prüfen.']
     assert result['depreciation_plan_mismatches'] == 1
     assert _statuses(db_with_coa) == ['booked', 'booked', 'planned', 'planned', 'planned']   # gebucht wird nichts
     json.dumps(result)                                                    # die Ergebnisdatei bleibt schreibbar
 
 
-def test_a_year_the_app_does_not_plan_at_all_is_reported_as_no_afa(db_with_coa, tmp_path):
-    """Eine Anlage bis 800 € schreibt die App als GWG in einem Jahr ab; WISO verteilt sie."""
+def test_an_asset_under_the_gwg_limit_spread_by_wiso_is_planned_by_the_app_from_the_rest(db_with_coa, tmp_path):
+    """Eine Anlage bis 800 € schriebe die App als GWG in einem Jahr ab; WISO verteilt sie über Jahre, zwei sind
+    gebucht. Die App plant die offenen Jahre aus dem Rest (420 € auf 26 Monate: 2026 193,85 €), statt sie zu
+    verweigern – die Abweichung zu WISO (140 € je Jahr) wird gemeldet, und die Jahre sind buchbar."""
     small = [(f'{year}-12-31', 140.0, 140.0 * (year - 2023)) for year in range(2024, 2029)]
     asset = _asset(plan=small, price=700.0)
     path = _fdb(tmp_path / 'a.fdb', _afa_records(asset), assets=[asset])
@@ -2004,9 +2052,42 @@ def test_a_year_the_app_does_not_plan_at_all_is_reported_as_no_afa(db_with_coa, 
     result = run(db_with_coa, path, today=JUNE)
 
     assert result['asset_warnings'] == [
-        'Dienstwagen: Die App plant die künftige AfA anders als WISO (2026: App keine AfA, WISO 140,00 €). '
+        'Dienstwagen: Die App plant die künftige AfA anders als WISO (2026: App 193,85 €, WISO 140,00 €). '
         'Beim Buchen in der App gilt der Plan der App – bitte prüfen.']
     assert result['depreciation_plan_mismatches'] == 1
+    booking = _book_in_app(db_with_coa, 2026)
+    assert query(db_with_coa, 'SELECT DepreciationAmount, Status, Booking_ID FROM AssetDepreciations '
+                              'WHERE Year = 2026') == [(1938500, 'posted', booking)]
+    assert [row[1] for row in _plan(db_with_coa)][:3] == [1400000, 1400000, 1938500]
+
+
+def test_a_year_the_app_does_not_plan_at_all_is_reported_as_no_afa(db_with_coa, tmp_path):
+    """WISO plant ein Jahr über das Planende der App hinaus, die Jahre davor stimmen: Für 2029 hat die App keine
+    Zeile."""
+    longer = AFA_PLAN + [('2029-12-31', 100.0, 6100.0)]
+    asset = _asset(plan=longer)
+    path = _fdb(tmp_path / 'a.fdb', _afa_records(asset), assets=[asset])
+
+    result = run(db_with_coa, path, today=JUNE)
+
+    assert result['asset_warnings'] == [
+        'Dienstwagen: Die App plant die künftige AfA anders als WISO (2029: App keine AfA, WISO 100,00 €). '
+        'Beim Buchen in der App gilt der Plan der App – bitte prüfen.']
+    assert result['depreciation_plan_mismatches'] == 1
+
+
+@pytest.mark.parametrize('amount, reported', [(1.0, False), (1.01, True)])
+def test_a_year_the_app_does_not_plan_counts_as_zero_for_the_threshold(db_with_coa, tmp_path, amount, reported):
+    """Plant WISO ein Jahr, für das die App keine Zeile hat, gilt dieselbe Schwelle wie sonst: bis 1,00 € keine
+    Warnung (ein Jahr, das auf 0 Cent rundet, entfällt im Plan der App), darüber schon."""
+    longer = AFA_PLAN + [('2029-12-31', amount, 6000.0 + amount)]
+    asset = _asset(plan=longer)
+    path = _fdb(tmp_path / 'a.fdb', _afa_records(asset), assets=[asset])
+
+    result = run(db_with_coa, path, today=JUNE)
+
+    assert result['depreciation_plan_mismatches'] == (1 if reported else 0)
+    assert any('2029: App keine AfA' in warning for warning in result['asset_warnings']) is reported
 
 
 def test_a_plan_the_app_plans_the_same_is_not_reported(db_with_coa, tmp_path):
@@ -2016,8 +2097,12 @@ def test_a_plan_the_app_plans_the_same_is_not_reported(db_with_coa, tmp_path):
     assert not any('plant die künftige AfA' in warning for warning in result['asset_warnings'])
 
 
-@pytest.mark.parametrize('difference,reported', [(0.01, False), (0.02, True), (-0.01, False), (-0.02, True)])
-def test_the_plans_may_differ_by_a_cent(db_with_coa, tmp_path, difference, reported):
+@pytest.mark.parametrize('difference,reported', [
+    (0.01, False), (0.99, False), (1.00, False), (1.01, True), (2.0, True),
+    (-0.01, False), (-0.99, False), (-1.00, False), (-1.01, True), (-2.0, True)])
+def test_the_plans_may_differ_by_up_to_one_euro(db_with_coa, tmp_path, difference, reported):
+    """Schwelle: mehr als 1,00 €. WISO rechnet seinen Plan mit dem Behelfsbetrag bis 1 €, den die App nicht
+    übernimmt; er erklärt kleine Abweichungen."""
     plan = [(date, round(amount + difference, 2) if date[:4] == '2027' else amount, cumulated)
             for date, amount, cumulated in AFA_PLAN]
     asset = _asset(plan=plan)
@@ -2026,18 +2111,54 @@ def test_the_plans_may_differ_by_a_cent(db_with_coa, tmp_path, difference, repor
     result = run(db_with_coa, path, today=JUNE)
 
     assert (result['depreciation_plan_mismatches'] == 1) is reported
+    assert any('plant die künftige AfA' in warning for warning in result['asset_warnings']) is reported
+
+
+def test_a_wiso_plan_of_the_rest_book_value_over_the_remaining_life_with_the_one_euro_helper_is_not_reported(
+        db_with_coa, tmp_path):
+    """WISOs Rechenweg: nach den gebuchten Jahren verteilt sich der Restbuchwert auf die Restnutzungsdauer – mit
+    dem Behelfsbetrag von 1 € in ``PURCHASEAMOUNTNET`` als Teil der Basis (6.001 €). Die App rechnet mit 6.000 €
+    (der Behelf zählt nicht): Ihre Beträge liegen um Cent unter WISOs (1.499,79 gegen 1.500,25 €), keine Warnung."""
+    wiso = [('2024-12-31', 1250.21, 1250.21), ('2025-12-31', 1500.25, 2750.46), ('2026-12-31', 1500.25, 4250.71),
+            ('2027-12-31', 1500.25, 5750.96), ('2028-12-31', 250.04, 6001.0)]
+    asset = _asset(plan=wiso, stated=1.0)
+    path = _fdb(tmp_path / 'a.fdb', _afa_records(asset), assets=[asset])
+
+    result = run(db_with_coa, path, today=JUNE)
+
+    price = query(db_with_coa, "SELECT PurchasePrice FROM Assets WHERE InventoryNumber = '1'")
+    assert price == [(60000000,)]                                           # der Behelf zählt nicht
+    assert result['depreciation_plan_mismatches'] == 0 and result['asset_warnings'] == []
+    assert [row[3] for row in _plan(db_with_coa)] == ['booked', 'booked', 'planned', 'planned', 'planned']
 
 
 def test_only_the_planned_years_are_compared_not_the_booked_ones(db_with_coa, tmp_path):
-    """Das Jahr 2024 weicht ab, steht aber als gebucht im Plan: Das gebuchte Jahr steht in den Büchern, der
-    Vergleich gilt dem, was die App noch bucht."""
-    plan = [(date, 900.0 if date[:4] == '2024' else amount, cumulated) for date, amount, cumulated in AFA_PLAN]
+    """Das Jahr 2024 weicht von der App ab (900 statt 1.250 €), steht aber als gebucht im Plan: Das gebuchte
+    Jahr steht in den Büchern, der Vergleich gilt dem, was die App noch bucht. Die App rechnet die offenen
+    Jahre vom Rest (3.600 € auf 26 Monate: 1.661,54 / 1.661,54 / 276,92 €) – wie WISO es hier tut."""
+    plan = [('2024-12-31', 900.0, 900.0), ('2025-12-31', 1500.0, 2400.0), ('2026-12-31', 1661.54, 4061.54),
+            ('2027-12-31', 1661.54, 5723.08), ('2028-12-31', 276.92, 6000.0)]
     asset = _asset(plan=plan)
     path = _fdb(tmp_path / 'a.fdb', _afa_records(asset), assets=[asset])
 
     result = run(db_with_coa, path, today=JUNE)
 
     assert result['depreciation_plan_mismatches'] == 0
+    assert _plan(db_with_coa)[0][:2] == (2024, 9000000)                         # das gebuchte Jahr bleibt, wie es ist
+
+
+def test_a_booked_year_that_differs_from_the_wiso_plan_of_the_planned_years_moves_the_app_plan(db_with_coa, tmp_path):
+    """Gegenprobe: Behält WISO die ursprünglichen Beträge der offenen Jahre, obwohl 2024 abweicht, ist der Plan der
+    App (er verteilt den Rest neu) um mehr als einen Euro anders – die Warnung nennt das erste Jahr."""
+    plan = [(date, 900.0 if date[:4] == '2024' else amount, cumulated) for date, amount, cumulated in AFA_PLAN]
+    asset = _asset(plan=plan)
+    path = _fdb(tmp_path / 'a.fdb', _afa_records(asset), assets=[asset])
+
+    result = run(db_with_coa, path, today=JUNE)
+
+    assert result['depreciation_plan_mismatches'] == 1
+    assert result['asset_warnings'][0].startswith(
+        'Dienstwagen: Die App plant die künftige AfA anders als WISO (2026: App 1.661,54 €, WISO 1.500,00 €).')
 
 
 def test_a_year_booked_in_the_app_is_not_compared_either(db_with_coa, tmp_path):
@@ -2076,6 +2197,436 @@ def test_the_warnings_about_unmatched_assets_are_masked_too(db_with_coa, tmp_pat
     html = PageMiscellaneous(db_with_coa)
 
     assert '<li>Wagen &lt;b&gt;fett&lt;/b&gt;: hat keine Inventarnummer' in html and '<b>fett</b>' not in html
+
+
+# ── Anschaffungswert: eingetragener Wert und Zahlungen ───────────────────────
+
+@pytest.mark.parametrize('stated,price,book_values', [
+    (500.0, 65000000, [52500000, 37500000, 22500000, 7500000, 5000000]),       # zwei echte Beträge: 6.000 + 500
+    (6000.0, 60000000, [47500000, 32500000, 17500000, 2500000, 0]),            # doppelt erfasst: einmal
+    (1.0, 60000000, [47500000, 32500000, 17500000, 2500000, 0]),               # Behelf bis 1,00 €: zählt nicht
+    (0.01, 60000000, [47500000, 32500000, 17500000, 2500000, 0]),              # WISOs Platzhalter
+], ids=['zwei-betraege', 'doppelt-erfasst', 'behelf', 'platzhalter'])
+def test_the_purchase_price_and_the_book_values_of_the_plan_years_follow_the_entered_value(
+        db_with_coa, tmp_path, stated, price, book_values):
+    """Die Anlage ist als Zahlung über 6.000 € erfasst; ``PURCHASEAMOUNTNET`` steht daneben: Ein echter eingetragener
+    Wert kommt zum Anschaffungswert hinzu und zählt in jedem Planjahr (ab dem Kaufjahr) zum Buchwert; ein Behelf bis
+    1,00 € und die Doppelung der Zahlungssumme zählen nicht."""
+    asset = _asset(stated=stated)
+    path = _fdb(tmp_path / 'a.fdb', _afa_records(asset), assets=[asset])
+
+    run(db_with_coa, path, today=JUNE)
+
+    assert query(db_with_coa, "SELECT PurchasePrice FROM Assets WHERE InventoryNumber = '1'") == [(price,)]
+    assert [row[2] for row in _plan(db_with_coa)] == book_values
+
+
+# ── Die Geschichte ist, was in den Büchern steht ─────────────────────────────
+
+def _net_afa(db):
+    """Netto-AfA in den Büchern (Minor Units), nach Soll und Haben am Anlagekonto 520 – aus WISO und aus der App, nicht
+    über die Planzeilen: Eine Abschreibung („6222 an 520“) zählt +|Betrag|, eine Korrektur oder Rückbuchung (520
+    im Soll) −|Betrag|. Form ``transfer``: Bei positivem Betrag steht das Konto im Soll, bei negativem das Gegenkonto."""
+    expense, asset = coa(db, 6222), coa(db, 520)
+    total = 0
+    for account, counter, amount in query(
+            db, 'SELECT COA_ID, CounterCOA_ID, Amount FROM Bookings WHERE (COA_ID = ? AND CounterCOA_ID = ?) '
+                'OR (COA_ID = ? AND CounterCOA_ID = ?)', (expense, asset, asset, expense)):
+        soll = account if amount > 0 else counter
+        total += abs(amount) if soll == expense else -abs(amount)
+    return total
+
+
+def _asset_id(db, number='1'):
+    return query(db, 'SELECT ID FROM Assets WHERE InventoryNumber = ?', (number,))[0][0]
+
+
+def test_when_wiso_changes_the_amount_of_a_booked_year_the_books_still_add_up_to_the_purchase_price(
+        db_with_coa, tmp_path):
+    """WISO ändert nach dem Import den Betrag von 2025 (1.500 → 1.400 €). Die Buchung in den Büchern bleibt, die
+    Planzeile folgt WISO nicht: Der Plan der App rechnet mit dem, was gebucht ist, und die Summe der AfA in den
+    Büchern ist, nachdem alle offenen Jahre gebucht sind, der Anschaffungswert."""
+    run(db_with_coa, _car_fdb(tmp_path), today=JUNE)
+    changed = _asset(plan=[(date, 1400.0 if date[:4] == '2025' else amount, cumulated)
+                           for date, amount, cumulated in AFA_PLAN])
+
+    run(db_with_coa, _car_fdb(tmp_path, changed, name='changed.fdb'), today=JUNE)
+
+    assert query(db_with_coa, "SELECT Amount FROM Bookings WHERE DateBooking = '2025-12-31' AND COA_ID = ?",
+                 (coa(db_with_coa, 6222),)) == [(15000000,)]
+    assert [row[:2] for row in _plan(db_with_coa)][:2] == [(2024, 12500000), (2025, 15000000)]
+    for year in (2026, 2027, 2028):
+        _book_in_app(db_with_coa, year)
+    assert _net_afa(db_with_coa) == 60000000
+
+
+# ── Korrekturen: die Wirkung auf das Anlagekonto, nicht der |Betrag| ─────────
+
+CORRECTED_PLAN = [('2024-12-31', 1125.0, 1125.0), ('2025-12-31', 1218.75, 2343.75), ('2026-12-31', 914.06, 3257.81),
+                  ('2027-12-31', 1371.10, 4628.91), ('2028-12-31', 1371.09, 6000.0)]
+
+
+def _correction(asset, amount, index=2, date='2025-12-31', text='Afa Korrektur'):
+    """Eine Korrektur der AfA eines Jahres, wie WISO sie schreibt: dieselben Konten vertauscht („520 an 6222“)."""
+    return _record(320, 4832, amount, text, date=date, INVENTORYID=asset['id'], INVENTORYAMORTID=_amort_id(asset, index))
+
+
+def _book_all_open_years(db):
+    asset_id = _asset_id(db)
+    while True:
+        bookable = [e for e in db.depreciation_plan(asset_id) if e['bookable']]
+        if not bookable:
+            return
+        db.book_depreciation(asset_id, bookable[0]['year'], coa_id_expense=coa(db, 6222))
+
+
+def test_a_correction_with_swapped_accounts_reduces_its_year_and_the_books_add_up_to_the_purchase_price(
+        db_with_coa, tmp_path):
+    """2025: der reguläre Satz 1.218,75 € und eine Korrektur über 200 € mit vertauschten Konten. Die Planzeile trägt die
+    Wirkung auf das Anlagekonto (1.018,75 €), und nach dem Buchen aller offenen Jahre ist die Netto-Summe in den
+    Büchern – Abschreibungen minus Korrekturen – der Anschaffungswert."""
+    asset = _asset(plan=CORRECTED_PLAN)
+    path = _fdb(tmp_path / 'a.fdb', _afa_records(asset) + [_correction(asset, 200.0)], assets=[asset])
+
+    result = run(db_with_coa, path, today=JUNE)
+
+    assert result['imported'] == 3                                              # zwei Sätze 2024/2025 und die Korrektur
+    assert query(db_with_coa, 'SELECT Year, DepreciationAmount, Status FROM AssetDepreciations WHERE Year = 2025') == [
+        (2025, 10187500, 'booked')]
+    assert _net_afa(db_with_coa) == 21437500                                    # 1.125,00 + 1.018,75
+    _book_all_open_years(db_with_coa)
+    assert _net_afa(db_with_coa) == 60000000
+
+
+def test_a_reimport_of_a_corrected_year_changes_nothing(db_with_coa, tmp_path):
+    asset = _asset(plan=CORRECTED_PLAN)
+    path = _fdb(tmp_path / 'a.fdb', _afa_records(asset) + [_correction(asset, 200.0)], assets=[asset])
+    run(db_with_coa, path, today=JUNE)
+    plan_before, books_before = _plan(db_with_coa), query(db_with_coa, 'SELECT * FROM Bookings ORDER BY ID')
+
+    again = run(db_with_coa, path, today=JUNE)
+
+    assert again['imported'] == 0 and _plan(db_with_coa) == plan_before
+    assert query(db_with_coa, 'SELECT * FROM Bookings ORDER BY ID') == books_before
+
+
+def test_corrections_bigger_than_the_regular_amount_leave_the_year_booked_with_zero(db_with_coa, tmp_path):
+    """Regulär 1.218,75 €, Korrekturen 1.300 €: Die Wirkung ist negativ – gespeichert wird 0, das Jahr bleibt gebucht."""
+    asset = _asset(plan=CORRECTED_PLAN)
+    records = _afa_records(asset) + [_correction(asset, 1300.0)]
+    path = _fdb(tmp_path / 'a.fdb', records, assets=[asset])
+
+    run(db_with_coa, path, today=JUNE)
+
+    assert query(db_with_coa, 'SELECT Year, DepreciationAmount, Status FROM AssetDepreciations WHERE Year = 2025') == [
+        (2025, 0, 'booked')]
+    plan = db_with_coa.depreciation_plan(_asset_id(db_with_coa))
+    assert [(e['year'], e['depreciation'], e['booked']) for e in plan][:2] == [(2024, 1125.0, True), (2025, 0.0, True)]
+    assert [e['year'] for e in plan if e['bookable']] == [2026]
+
+
+def test_a_correction_stored_by_an_older_import_is_read_with_its_stored_accounts(db_with_coa, tmp_path):
+    """Wiedererkannt wird die gespeicherte Zeile: Auch wenn der Nutzer die Korrektur im Editor auf die Normalform
+    umgestellt hat (Konten wie die Abschreibung), zählt beim nächsten Lauf das, was in den Büchern steht."""
+    asset = _asset(plan=CORRECTED_PLAN)
+    path = _fdb(tmp_path / 'a.fdb', _afa_records(asset) + [_correction(asset, 200.0)], assets=[asset])
+    run(db_with_coa, path, today=JUNE)
+    assert query(db_with_coa, 'SELECT DepreciationAmount FROM AssetDepreciations WHERE Year = 2025') == [(10187500,)]
+    execute(db_with_coa, 'UPDATE Bookings SET COA_ID = ?, CounterCOA_ID = ? WHERE Amount = 2000000 AND COA_ID = ?',
+            (coa(db_with_coa, 6222), coa(db_with_coa, 520), coa(db_with_coa, 520)))      # jetzt „6222 an 520“ über 200 €
+
+    run(db_with_coa, path, today=JUNE)
+
+    assert query(db_with_coa, 'SELECT DepreciationAmount FROM AssetDepreciations WHERE Year = 2025') == [(14187500,)]
+
+
+# ── Eine gebuchte Planzeile mit abweichendem Betrag wird an die Bücher angeglichen ──
+
+def test_a_booked_plan_row_with_another_amount_than_the_books_is_adjusted_on_the_next_import(db_with_coa, tmp_path):
+    """Bestand aus 2.2.5: Die Planzeile 2025 trägt den Planwert aus WISO (1.400 €), die Buchung 1.500 €. Der nächste Import
+    gleicht die Zeile an die Bücher an – und nach dem Buchen aller offenen Jahre ist die Netto-Summe der Anschaffungswert."""
+    path = _car_fdb(tmp_path)
+    run(db_with_coa, path, today=JUNE)
+    execute(db_with_coa, 'UPDATE AssetDepreciations SET DepreciationAmount = 14000000 WHERE Year = 2025')
+
+    run(db_with_coa, path, today=JUNE)
+
+    assert query(db_with_coa, 'SELECT DepreciationAmount, Status FROM AssetDepreciations WHERE Year = 2025') == [
+        (15000000, 'booked')]
+    _book_all_open_years(db_with_coa)
+    assert _net_afa(db_with_coa) == 60000000
+
+
+def test_nothing_is_written_when_the_plan_rows_and_the_books_agree(db_with_coa, tmp_path, monkeypatch):
+    """Stimmen Planzeile und Bücher überein, schreibt der Lauf nichts an den Planzeilen – und das Replay-Log bekommt
+    keinen Eintrag."""
+    path = _car_fdb(tmp_path)
+    run(db_with_coa, path, today=JUNE)
+    before = _plan(db_with_coa)
+    logged = []
+    monkeypatch.setattr(type(db_with_coa), '_log_sql', lambda self, *entry: logged.append(entry))
+
+    run(db_with_coa, path, today=JUNE)
+
+    assert _plan(db_with_coa) == before
+    assert [entry for entry in logged if 'AssetDepreciations' in entry[0]] == []
+
+
+def test_an_adjusted_plan_row_is_logged_once_for_the_replay(db_with_coa, tmp_path, monkeypatch):
+    path = _car_fdb(tmp_path)
+    run(db_with_coa, path, today=JUNE)
+    execute(db_with_coa, 'UPDATE AssetDepreciations SET DepreciationAmount = 14000000 WHERE Year = 2025')
+    logged = []
+    monkeypatch.setattr(type(db_with_coa), '_log_sql', lambda self, *entry: logged.append(entry))
+
+    run(db_with_coa, path, today=JUNE)
+
+    adjusted = [entry for entry in logged if 'AssetDepreciations' in entry[0]]
+    assert len(adjusted) == 1 and adjusted[0][1][0] == 15000000
+    assert 'angeglichen' in adjusted[0][2]
+
+
+def test_a_booked_plan_row_whose_satz_is_not_in_the_books_of_the_run_stays_as_it_is(db_with_coa, tmp_path):
+    """Steht der Satz weder in der Datei noch in den Büchern dieses Laufs, gibt es nichts anzugleichen: Die Zeile bleibt,
+    auch mit einem abweichenden Betrag."""
+    path = _car_fdb(tmp_path)
+    run(db_with_coa, path, today=AFTER_YEAR_END)
+    execute(db_with_coa, 'UPDATE AssetDepreciations SET DepreciationAmount = 14000000 WHERE Year = 2025')
+    records = [record for record in _afa_records(CAR) if record['ACCOUNTING_DATE'][:4] != '2025']
+    fewer = _fdb(tmp_path / 'fewer.fdb', records, assets=[CAR])
+
+    run(db_with_coa, fewer, today=AFTER_YEAR_END)
+
+    assert query(db_with_coa, 'SELECT DepreciationAmount FROM AssetDepreciations WHERE Year = 2025') == [(14000000,)]
+
+
+def test_the_adjustment_never_touches_a_year_the_app_booked_or_a_planned_one(db_with_coa, tmp_path):
+    """Das SQL des Angleichens trifft nur eine Planzeile ``booked`` ohne Buchung der App – und nur, wenn der Betrag
+    abweicht."""
+    from db.wiso_fdb_import import _PLAN_ADJUST_SQL
+    run(db_with_coa, _car_fdb(tmp_path), today=JUNE)
+    _book_in_app(db_with_coa, 2026)                                           # 2026: von der App gebucht (posted)
+    asset_id = _asset_id(db_with_coa)
+
+    def adjust(year, amount):
+        with sqlite3.connect(db_with_coa.db_name) as conn:
+            return conn.execute(_PLAN_ADJUST_SQL, (amount, asset_id, year, amount)).rowcount
+
+    assert adjust(2026, 1) == 0                                                # von der App gebucht
+    assert adjust(2027, 1) == 0                                                # geplant
+    assert adjust(2024, 12500000) == 0                                         # gleicher Betrag: nichts zu schreiben
+    assert adjust(2024, 1) == 1                                                # gebucht aus dem Import, anderer Betrag
+    assert query(db_with_coa, 'SELECT Year, DepreciationAmount FROM AssetDepreciations WHERE Year IN (2026, 2027) '
+                              'ORDER BY Year') == [(2026, 15000000), (2027, 15000000)]
+
+
+def test_a_planned_year_that_the_import_books_carries_the_amount_of_the_books_not_the_wiso_plan_value(
+        db_with_coa, tmp_path):
+    """Der AfA-Satz 2026 steht in WISO mit 1.490 €, die Planzeile aus der AfA-Tabelle nennt 1.500 €. Kommt der Satz
+    nach dem Jahreswechsel in die Bücher, trägt die Planzeile (jetzt ``booked``) den Betrag der Bücher."""
+    run(db_with_coa, _car_fdb(tmp_path), today=JUNE)
+    assert _plan(db_with_coa)[2][:2] == (2026, 15000000) and _statuses(db_with_coa)[2] == 'planned'
+    records = _afa_records(CAR)
+    records[2]['AMOUNTGROSS'] = 1490.0
+    path = _fdb(tmp_path / 'b.fdb', records, assets=[CAR])
+
+    run(db_with_coa, path, today=AFTER_YEAR_END)
+
+    assert query(db_with_coa, 'SELECT Year, DepreciationAmount, Status FROM AssetDepreciations WHERE Year = 2026') == [
+        (2026, 14900000, 'booked')]
+    assert query(db_with_coa, "SELECT Amount FROM Bookings WHERE DateBooking = '2026-12-31' AND COA_ID = ?",
+                 (coa(db_with_coa, 6222),)) == [(14900000,)]
+
+
+def test_a_new_plan_row_of_a_booked_year_carries_the_amount_of_the_books(db_with_coa, tmp_path):
+    records = _afa_records(CAR)
+    records[0]['AMOUNTGROSS'] = 1240.0                                       # der Satz 2024: 1.240 statt 1.250 €
+    path = _fdb(tmp_path / 'a.fdb', records, assets=[CAR])
+
+    run(db_with_coa, path, today=JUNE)
+
+    assert [row[:4] for row in _plan(db_with_coa)][:2] == [
+        (2024, 12400000, 47500000, 'booked'), (2025, 15000000, 32500000, 'booked')]       # der Buchwert bleibt der aus WISO
+
+
+def test_a_planned_year_whose_booking_the_user_changed_carries_the_changed_amount(db_with_coa, tmp_path):
+    """Hat der Nutzer die Buchung eines AfA-Satzes geändert (1.500 → 1.400 €), steht in den Büchern deren Betrag:
+    Wird die Planzeile gebucht, trägt sie ihn."""
+    path = _car_fdb(tmp_path)
+    run(db_with_coa, path, today=AFTER_YEAR_END)
+    execute(db_with_coa, "UPDATE Bookings SET Amount = 14000000 WHERE DateBooking = '2026-12-31' AND COA_ID = ?",
+            (coa(db_with_coa, 6222),))
+    execute(db_with_coa, "UPDATE AssetDepreciations SET Status = 'planned' WHERE Year = 2026")
+
+    run(db_with_coa, path, today=AFTER_YEAR_END)
+
+    assert query(db_with_coa, 'SELECT Year, DepreciationAmount, Status FROM AssetDepreciations WHERE Year = 2026') == [
+        (2026, 14000000, 'booked')]
+
+
+def test_an_afa_satz_adopted_from_the_csv_import_gives_its_plan_year_the_amount_of_that_row(db_with_coa, tmp_path):
+    """Der Satz 2026 steht schon als Zeile des Textexports (ohne Quellgruppe) in den Büchern: Der Datenbank-Import
+    übernimmt sie statt eine zweite anzulegen, und die Planzeile des Jahres (jetzt ``booked``) trägt ihren Betrag."""
+    path = _car_fdb(tmp_path)
+    run(db_with_coa, path, today=JUNE)
+    csv_row = db_with_coa.insert_booking('2026-12-31', Decimal('1500'), coa_id=coa(db_with_coa, 6222),
+                                         counter_coa_id=coa(db_with_coa, 520), booking_type='entry',
+                                         text='Afa fuer Inventar Dienstwagen')
+
+    result = run(db_with_coa, path, today=AFTER_YEAR_END)
+
+    assert (result['adopted'], result['imported']) == (1, 0)
+    assert query(db_with_coa, 'SELECT SourceGroup FROM Bookings WHERE ID = ?', (csv_row,)) == [('703',)]
+    assert query(db_with_coa, 'SELECT Year, DepreciationAmount, Status FROM AssetDepreciations WHERE Year = 2026') == [
+        (2026, 15000000, 'booked')]
+
+
+def test_two_afa_rows_of_one_year_add_up_in_the_plan_row(db_with_coa, tmp_path):
+    extra = _record(4832, 320, 100.0, 'Afa fuer Inventar Dienstwagen Nachtrag', date='2026-12-31',
+                    INVENTORYID=CAR['id'], INVENTORYAMORTID=_amort_id(CAR, 3))
+    path = _fdb(tmp_path / 'a.fdb', _afa_records(CAR) + [extra], assets=[CAR])
+
+    result = run(db_with_coa, path, today=AFTER_YEAR_END)
+
+    assert result['imported'] == 4
+    assert query(db_with_coa, 'SELECT Year, DepreciationAmount, Status FROM AssetDepreciations WHERE Year = 2026') == [
+        (2026, 16000000, 'booked')]
+
+
+def test_a_year_booked_in_the_app_and_a_later_price_from_wiso_keep_the_books_and_the_plan_in_line(
+        db_with_coa, tmp_path):
+    """Nach einer App-Buchung trägt ein Re-Import einen zusätzlich eingetragenen Wert nach (Anschaffungswert 7.200
+    statt 6.000 €): Die Buchwerte der gebuchten Jahre rechnen vom neuen Preis, das erste offene Jahr schließt an,
+    und nach dem Buchen aller offenen Jahre ist die Summe der AfA in den Büchern der neue Anschaffungswert."""
+    run(db_with_coa, _car_fdb(tmp_path), today=JUNE)
+    _book_in_app(db_with_coa, 2026)
+    richer = _asset(stated=1200.0)
+    run(db_with_coa, _car_fdb(tmp_path, richer, name='richer.fdb'), today=JUNE)
+    asset_id = _asset_id(db_with_coa)
+
+    plan = db_with_coa.depreciation_plan(asset_id)
+
+    assert [(e['year'], e['depreciation'], e['book_value_start'], e['book_value_end'], e['booked']) for e in plan] == [
+        (2024, 1250.0, 7200.0, 5950.0, True), (2025, 1500.0, 5950.0, 4450.0, True),
+        (2026, 1500.0, 4450.0, 2950.0, True), (2027, 2528.57, 2950.0, 421.43, False),
+        (2028, 421.43, 421.43, 0.0, False)]
+    assert db_with_coa.get_book_value_at_date(asset_id, datetime.date(2026, 12, 31)) == 2950.0
+    for year in (2027, 2028):
+        _book_in_app(db_with_coa, year)
+    assert _net_afa(db_with_coa) == 72000000
+
+
+def test_in_the_continuation_only_the_first_open_year_can_be_booked_in_the_app(db_with_coa, tmp_path):
+    """Nur 2022 und 2023 stehen als AfA-Sätze in den Büchern, 2024 bis 2026 sind offen (WISO plant degressiv, die
+    Geschichte weicht vom linearen Plan ab): Das laufende Jahr 2026 vor 2024 zu buchen machte 2024 und 2025 zu
+    Lücken – die App lehnt es ab und schreibt nichts."""
+    plan = [('2022-12-31', 1125.0, 1125.0), ('2023-12-31', 1218.75, 2343.75), ('2024-12-31', 914.06, 3257.81),
+            ('2025-12-31', 1371.10, 4628.91), ('2026-12-31', 1371.09, 6000.0)]
+    asset = _asset(plan=plan, purchase='2022-03-15')
+    path = _fdb(tmp_path / 'a.fdb', _afa_records(asset)[:2], assets=[asset])
+    run(db_with_coa, path, today=JUNE)
+    asset_id = _asset_id(db_with_coa)
+    books_before = _net_afa(db_with_coa)
+
+    for year in (2026, 2025):
+        with pytest.raises(ValueError, match=f'^AfA {year} lässt sich erst buchen, wenn 2024 gebucht ist\\.$'):
+            _book_in_app(db_with_coa, year)
+
+    assert _net_afa(db_with_coa) == books_before and _statuses(db_with_coa)[2:] == ['planned'] * 3
+    for year in (2024, 2025, 2026):
+        _book_in_app(db_with_coa, year)
+    assert _net_afa(db_with_coa) == 60000000
+    assert [e['bookable'] for e in db_with_coa.depreciation_plan(asset_id)] == [False] * 5
+
+
+# ── Hinweise zum Anschaffungswert beim Import ────────────────────────────────
+
+TODAY_ALL_BOOKED = '2029-06-01'                      # nach dem letzten Planjahr 2028: alle AfA-Sätze stehen in den Büchern
+PAST_PLAN = [('2020-12-31', 1250.0, 1250.0), ('2021-12-31', 1500.0, 2750.0), ('2022-12-31', 1500.0, 4250.0),
+             ('2023-12-31', 1500.0, 5750.0), ('2024-12-31', 250.0, 6000.0)]
+WARN_COMPOSITION = ('Dienstwagen: Der Anschaffungswert (11.999,99 €) setzt sich aus dem in WISO eingetragenen Wert '
+                    '(5.999,99 €) und den Zahlungen (6.000,00 €) zusammen – bitte prüfen, ob beides zur Anschaffung '
+                    'gehört.')
+WARN_REST = ('Dienstwagen: Nach den gebuchten Jahren bleibt ein Restbuchwert von 5.999,99 €, für den WISO keine AfA '
+             'mehr plant – bitte den Anschaffungswert prüfen, bevor die AfA in der App gebucht wird.')
+
+
+def test_an_entered_value_one_cent_off_the_payments_is_reported_with_the_rest_book_value(db_with_coa, tmp_path):
+    """Zahlung 6.000,00 €, eingetragen 5.999,99 €, alle Jahre aus WISO gebucht: Der Anschaffungswert (11.999,99 €) ist
+    fast doppelt so hoch wie die Basis von WISOs Plan – zwei Hinweise, und der Rest wird nicht still planbar."""
+    asset = _asset(stated=5999.99)
+    path = _fdb(tmp_path / 'a.fdb', _afa_records(asset), assets=[asset])
+
+    result = run(db_with_coa, path, today=TODAY_ALL_BOOKED)
+
+    assert result['asset_warnings'] == [WARN_COMPOSITION, WARN_REST]
+    assert result['depreciation_rest_warnings'] == 1 and result['depreciation_plan_mismatches'] == 0
+    assert query(db_with_coa, "SELECT PurchasePrice FROM Assets WHERE InventoryNumber = '1'") == [(119999900,)]
+    json.dumps(result)
+
+
+@pytest.mark.parametrize('stated', [0.01, 1.0, 6000.0], ids=['platzhalter', 'behelf', 'doppelt-erfasst'])
+def test_no_hint_for_a_placeholder_a_helper_amount_or_the_same_purchase_entered_twice(db_with_coa, tmp_path, stated):
+    asset = _asset(stated=stated)
+    path = _fdb(tmp_path / 'a.fdb', _afa_records(asset), assets=[asset])
+
+    result = run(db_with_coa, path, today=TODAY_ALL_BOOKED)
+
+    assert result['asset_warnings'] == [] and result['depreciation_rest_warnings'] == 0
+
+
+def test_a_sold_asset_with_a_rest_gets_no_rest_hint_and_the_double_entry_only_the_known_one(db_with_coa, tmp_path):
+    """Verkauft im Jahr 2026: Der Restbuchwert (3.000 €) ist ausgebucht, nicht offen. Dieselbe Anschaffung zweimal
+    erfasst (eingetragen = Zahlungssumme): WISO bucht beim Abgang 9.000 € aus, der Plan ergibt 3.000 € – wie bisher
+    nur dieser Hinweis, keiner zur Zusammensetzung."""
+    plan = [('2024-12-31', 1250.0, 1250.0), ('2025-12-31', 1500.0, 2750.0), ('2026-12-31', 250.0, 3000.0)]
+    asset = _asset(plan=plan, sale='2026-03-01', stated=6000.0, disposal=9000.0)
+    path = _fdb(tmp_path / 'a.fdb', _afa_records(asset), assets=[asset])
+
+    result = run(db_with_coa, path, today=TODAY_ALL_BOOKED)
+
+    assert result['asset_warnings'] == [
+        'Dienstwagen: WISO bucht beim Abgang 9000.00 € aus, der AfA-Plan ergibt 3000.00 € (Anschaffung 6000.00 € '
+        'minus kumulierte AfA). Übernommen wurde der gerechnete Wert.']
+    assert result['depreciation_rest_warnings'] == 0
+
+
+@pytest.mark.parametrize('sale, warned', [(None, True), ('2026-03-01', False)], ids=['aktiv', 'abgegangen'])
+def test_the_rest_hint_is_for_assets_that_are_not_sold(db_with_coa, tmp_path, sale, warned):
+    """Dasselbe Planende 2026 mit 3.000 € Rest: Eine aktive Anlage wird gemeldet, eine abgegangene nicht."""
+    plan = [('2024-12-31', 1250.0, 1250.0), ('2025-12-31', 1500.0, 2750.0), ('2026-12-31', 250.0, 3000.0)]
+    asset = _asset(plan=plan, sale=sale)
+    path = _fdb(tmp_path / 'a.fdb', _afa_records(asset), assets=[asset])
+
+    result = run(db_with_coa, path, today=TODAY_ALL_BOOKED)
+
+    assert result['depreciation_rest_warnings'] == (1 if warned else 0)
+    assert any('Restbuchwert von 3.000,00 €' in warning for warning in result['asset_warnings']) is warned
+
+
+def test_an_asset_with_a_planned_year_gets_the_plan_hint_not_the_rest_hint(db_with_coa, tmp_path):
+    """WISO plant noch Jahre (2027, 2028): Gemessen wird der Plan der geplanten Jahre, nicht der Rest."""
+    asset = _asset(plan=DEGRESSIVE)
+    path = _fdb(tmp_path / 'a.fdb', _afa_records(asset), assets=[asset])
+
+    result = run(db_with_coa, path, today=JUNE)
+
+    assert result['depreciation_plan_mismatches'] == 1 and result['depreciation_rest_warnings'] == 0
+
+
+def test_the_page_masks_the_asset_name_in_the_composition_and_rest_hints(db_with_coa, tmp_path):
+    os.makedirs(userctx.user_data_dir(), exist_ok=True)
+    asset = _asset(label='Wagen <script>alert(1)</script>', plan=PAST_PLAN, purchase='2020-03-15', stated=5999.99)
+    path = _fdb(tmp_path / 'a.fdb', _afa_records(asset), assets=[asset])
+
+    status, _location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [str(path)], 'with_assets': ['1']})
+    html = PageMiscellaneous(db_with_coa)
+
+    assert status == 303
+    assert ('<li>Wagen &lt;script&gt;alert(1)&lt;/script&gt;: Der Anschaffungswert (11.999,99 €) setzt sich aus dem '
+            'in WISO eingetragenen Wert (5.999,99 €)') in html
+    assert '<li>Wagen &lt;script&gt;alert(1)&lt;/script&gt;: Nach den gebuchten Jahren bleibt ein Restbuchwert' in html
+    assert 'Wagen <script>alert(1)</script>' not in html
 
 
 # ═════════════════════════════════════════════════════════════════════════════

@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from db.matching import LEGACY_CASH_NUMBERS, import_entry_form
-from money import round_minor, to_minor
+from money import format_de, from_minor, round_minor, to_minor
 
 from .catalog import Catalog
 from .ods import OdsError, OdsFile
@@ -330,7 +330,8 @@ class WisoAsset:
     number: Optional[int] = None
     label: str = ''
     purchase_date: Optional[str] = None
-    #: Anschaffungswert **netto** – Summe der Teilzahlungen.
+    #: Anschaffungswert **netto** – Summe der Teilzahlungen, plus ein echter eingetragener Wert
+    #: (``PURCHASEAMOUNTNET``, siehe :meth:`WisoDatabase._purchase_price`).
     purchase_price: float = 0.0
     sale_date: Optional[str] = None
     #: Verkaufserlös **netto**; None, wenn er sich nicht zuordnen ließ.
@@ -943,12 +944,20 @@ class WisoDatabase:
             asset_id = row.get('ID')
             payments = sorted(by_asset_payment.get(asset_id, []),
                               key=lambda p: p.date or '')
-            price = self._purchase_price(row.get('PURCHASEAMOUNTNET'), payments)
+            stated = row.get('PURCHASEAMOUNTNET')
+            price = self._purchase_price(stated, payments)
             disposal = by_asset_disposal.get(asset_id)
             sale_date = _date(row.get('SALEDATE'))
+            entered = self._entered_price(stated, payments)
             schedule = self._depreciations(
-                by_asset_depreciation.get(asset_id, []), payments, sale_date)
+                by_asset_depreciation.get(asset_id, []), payments, sale_date, entered)
             residual, warnings = self._residual_value(schedule, disposal, price)
+            if entered:
+                warnings.insert(0, (
+                    f'Der Anschaffungswert ({format_de(to_minor(price))} €) setzt sich aus dem in WISO '
+                    f'eingetragenen Wert ({format_de(to_minor(entered))} €) und den Zahlungen '
+                    f'({format_de(self._paid(payments))} €) zusammen – bitte prüfen, ob beides zur '
+                    'Anschaffung gehört.'))
             out.append(WisoAsset(
                 number=row.get('INVNO'), label=_clean(row.get('LABEL')),
                 purchase_date=_date(row.get('PURCHASEDATE')),
@@ -973,7 +982,8 @@ class WisoDatabase:
         Abgangszeile wird nur als Gegenprobe genommen: sie kann daneben liegen,
         wenn das Anlagegut in WISO doppelt erfasst wurde – von Hand **und**
         über die Zahlungen. Dann bucht WISO den doppelten Wert aus, während der
-        AfA-Plan mit dem einfachen rechnet. Eine Abweichung wird gemeldet, denn
+        AfA-Plan mit dem einfachen rechnet (:meth:`_purchase_price` zählt eine
+        doppelt erfasste Anschaffung einmal). Eine Abweichung wird gemeldet, denn
         sie zeigt einen Fehler im Quellbestand an, den nur der Nutzer klären kann.
         """
         warnings = []
@@ -1025,24 +1035,60 @@ class WisoDatabase:
 
     #: WISO trägt ``PURCHASEAMOUNTNET`` nur ein, wenn der Wert von Hand kam;
     #: wird das Anlagegut aus Zahlungen aufgebaut, steht dort dieser Platzhalter.
+    #: Gilt nur ohne Zahlungen (``_purchase_price``); mit Zahlungen gilt die Behelfsgrenze.
     PRICE_PLACEHOLDER = 0.01
+
+    #: Behelfsgrenze für ``PURCHASEAMOUNTNET`` bei vorhandenen Zahlungen (1,00 €): Gemessen an echten
+    #: Daten trägt der Nutzer bei der Erstanlage eines Anlageguts oft einen Behelfsbetrag von 1 € ein.
+    #: Ein Wert bis zu dieser Grenze (einschließlich) zählt dann nie zum Anschaffungswert.
+    PRICE_HELPER_LIMIT = 1.00
+
+    @staticmethod
+    def _paid(payments) -> int:
+        """Summe der **positiven** Zahlungen in Minor Units. Negative Zeilen in
+        ``MOV_INVENTORY_BOOKINGS`` sind der Abgang, nicht Teil der Anschaffung."""
+        return sum(to_minor(p.amount) for p in payments if p.amount > 0)
+
+    @staticmethod
+    def _entered_price(stated, payments) -> float:
+        """Der eingetragene Wert (``PURCHASEAMOUNTNET``), soweit er **zusätzlich** zu den Zahlungen
+        zum Anschaffungswert zählt, sonst ``0.0``.
+
+        Er zählt nur, wenn es Zahlungen gibt, und dann, wenn er **über** der Behelfsgrenze liegt
+        (:attr:`PRICE_HELPER_LIMIT`) und **nicht** auf den Cent gleich der Summe der Zahlungen ist:
+
+        * bis zur Grenze: Behelfsbetrag, zählt nicht;
+        * gleich der Zahlungssumme: dieselbe Anschaffung zweimal erfasst (von Hand **und** über die
+          Zahlungen), zählt einmal – :meth:`_residual_value` meldet die Folgen im Quellbestand;
+        * sonst: zwei echte Beträge (z. B. ein Gerät von Hand eingetragen, die Montage als Zahlung).
+          :meth:`assets` meldet das als Auffälligkeit der Anlage – ein Wert, der der Zahlungssumme
+          nur um einen Cent nicht gleicht, wäre sonst still ein zweiter Betrag.
+        """
+        paid = WisoDatabase._paid(payments)
+        if paid <= 0 or not stated or stated <= 0:
+            return 0.0
+        cents = _cents(stated)
+        if cents <= to_minor(WisoDatabase.PRICE_HELPER_LIMIT) or cents == round_minor(paid, 2):
+            return 0.0
+        return stated
 
     @staticmethod
     def _purchase_price(stated, payments):
-        """Anschaffungswert = Summe der **positiven** Zahlungen.
+        """Anschaffungswert **netto** in Euro.
 
-        Negative Zeilen in ``MOV_INVENTORY_BOOKINGS`` sind der Abgang, nicht
-        Teil der Anschaffung. Für das einzige Anlagegut mit einem echten
-        ``PURCHASEAMOUNTNET`` liefern beide Wege denselben Betrag – die Summe
-        ist deshalb auch dort maßgeblich und dient als Gegenprobe.
+        Mit Zahlungen: die Summe der **positiven** Zahlungen **plus** der eingetragene Wert
+        (``PURCHASEAMOUNTNET``), wenn er zählt (:meth:`_entered_price`: nicht als Behelf bis 1,00 €,
+        nicht als Doppelung der Zahlungssumme). Gerechnet wird in Minor Units. Ohne Zahlungen gilt wie
+        bisher ``PURCHASEAMOUNTNET``, wenn es über dem Platzhalter (:attr:`PRICE_PLACEHOLDER`) liegt.
         """
-        paid = round(sum(p.amount for p in payments if p.amount > 0), 2)
+        paid = WisoDatabase._paid(payments)
         if paid > 0:
-            return paid
+            entered = to_minor(WisoDatabase._entered_price(stated, payments))
+            return float(from_minor(round_minor(paid + entered, 2)))
         return stated if stated and stated > WisoDatabase.PRICE_PLACEHOLDER else 0.0
 
     @staticmethod
-    def _depreciations(rows, payments, sale_date=None):
+    def _depreciations(rows, payments, sale_date=None, entered=0.0):
         """AfA-Zeilen mit jahresbezogenem Restbuchwert.
 
         Im **Abgangsjahr** steht noch die zeitanteilige AfA – die gehört dazu.
@@ -1053,7 +1099,10 @@ class WisoDatabase:
         Der Anschaffungswert **wächst**: spätere Teilzahlungen sind
         nachträgliche Anschaffungskosten. Der Restwert eines Jahres ist deshalb
         die Summe der bis dahin geleisteten Zahlungen minus der kumulierten AfA
-        – so und nur so trifft er WISOs eigene Werte.
+        – so und nur so trifft er WISOs eigene Werte. ``entered`` ist der
+        eingetragene Wert, soweit er zum Anschaffungswert zählt
+        (:meth:`_entered_price`): Er trägt kein Datum und gilt ab dem Kaufjahr,
+        also in jedem Planjahr, zur Basis.
 
         Die Planjahre bleiben vollständig, auch die künftigen: Den Status eines Jahres im Plan der App
         bestimmt, ob sein AfA-Satz in den Büchern steht (``db.wiso_fdb_import``), nicht sein Datum.
@@ -1068,13 +1117,13 @@ class WisoDatabase:
                 continue
             year = int(date[:4]) if date else None
             cumulated = row.get('AMORT_CUMULATED_AMOUNT') or 0.0
-            base = round(sum(p.amount for p in payments
-                             if p.amount > 0
-                             and (year is None or (p.date or '')[:4] <= str(year))), 2)
+            base = to_minor(entered) + sum(
+                to_minor(p.amount) for p in payments
+                if p.amount > 0 and (year is None or (p.date or '')[:4] <= str(year)))
             out.append(WisoDepreciation(
                 year=year, date=date,
                 amount=row.get('AMORT_AMOUNT') or 0.0, cumulated=cumulated,
-                book_value=max(0.0, round(base - cumulated, 2))))
+                book_value=float(from_minor(max(0, round_minor(base - to_minor(cumulated), 2))))))
         return out
 
     def _safe_rows(self, table, blobs=False):

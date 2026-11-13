@@ -1128,7 +1128,9 @@ def test_list_counts_posted_and_booked_years_as_booked_and_planned_years_as_open
 
     summary = re.search(rf'AfA {THIS_YEAR} gebucht: ([\d.,]+) € \| AfA {THIS_YEAR} geplant: ([\d.,]+) €',
                         html)
-    assert summary.groups() == ('1.400,00', '1.000,00')          # 600 + 800 gebucht, 1000 geplant
+    # 600 + 600 gebucht – das WISO-Jahr zählt mit seinem gebuchten Betrag (600), nicht mit dem Planbetrag der
+    # Anlage (800); 1000 geplant
+    assert summary.groups() == ('1.200,00', '1.000,00')
     assert '✓ gebucht' in _list_row(html, 'Anlage Gebucht')
     assert '✓ gebucht' in _list_row(html, 'Anlage Wiso')
     assert '● offen' in _list_row(html, 'Anlage Offen')

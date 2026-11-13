@@ -26,6 +26,7 @@ from collections import namedtuple
 from db.core import coa_id
 from db.matching import (
     FORM_MIRROR_COA, FORM_MIRROR_LEGACY, LEGACY_CASH_NUMBERS, LEGACY_CASH_RANGE, MIRROR_FORMS,
+    depreciation_effect,
 )
 from money import FACTOR, format_de, from_minor, to_minor
 
@@ -50,9 +51,17 @@ _APP_BOOKED_SQL = ('EXISTS (SELECT 1 FROM Bookings b '
                    'WHERE b.ID = AssetDepreciations.Booking_ID)')
 
 #: Ein Planjahr, dessen AfA-Satz in den Büchern steht, ist gebucht – ein Jahr, das die App selbst
-#: gebucht hat, bleibt unberührt. Festes SQL-Stück, kein Wert.
-_PLAN_BOOKED_SQL = ("UPDATE AssetDepreciations SET Status = 'booked' WHERE Asset_ID = ? AND Year = ? "
-                    f"AND Status = 'planned' AND NOT {_APP_BOOKED_SQL}")
+#: gebucht hat, bleibt unberührt. Der gebuchte Betrag ist der des Satzes **in den Büchern** (Parameter 1),
+#: nicht der Planwert aus WISO. Festes SQL-Stück, kein Wert.
+_PLAN_BOOKED_SQL = ("UPDATE AssetDepreciations SET Status = 'booked', DepreciationAmount = ? "
+                    f"WHERE Asset_ID = ? AND Year = ? AND Status = 'planned' AND NOT {_APP_BOOKED_SQL}")
+
+#: Eine Planzeile ``booked``, deren Betrag vom Betrag der Bücher abweicht (Bestand aus einem Import bis 2.2.5 trägt
+#: den Planwert aus WISO), bekommt den Betrag der Bücher – nur wenn er abweicht, und nie bei einem von der App
+#: gebuchten Jahr. Festes SQL-Stück, kein Wert.
+_PLAN_ADJUST_SQL = ("UPDATE AssetDepreciations SET DepreciationAmount = ? "
+                    f"WHERE Asset_ID = ? AND Year = ? AND Status = 'booked' AND DepreciationAmount <> ? "
+                    f"AND NOT {_APP_BOOKED_SQL}")
 
 #: Eine WISO-Anlage und ihre Anlage in der App (über die Inventarnummer): ``asset_id`` (``None``: es gibt
 #: keine), ``name`` (Bezeichnung, sonst Inventarnummer) und ``years`` – ihre Planjahre als
@@ -252,9 +261,19 @@ class WisoFdbImportMixin:
             (Bezeichnung oder Inventarnummer) und ``jahr``. Die Zuordnung zur Anlage der App läuft über
             die Inventarnummer, nur wenn sie in der WISO-Datenbank eindeutig ist (sonst steht eine
             Warnung in ``asset_warnings``). ``depreciation_plan_mismatches`` zählt Anlagen, deren
-            geplante Jahre die App anders plant als WISO (Warnung in ``asset_warnings``): Beim Buchen
-            gilt der Plan der App. Bestand aus einem Import bis 2.2.4 (künftige AfA-Buchungen mit
-            Quellgruppe, Jahre ``booked``) bleibt unberührt.
+            geplante Jahre die App um mehr als 1,00 € anders plant als WISO (Warnung in
+            ``asset_warnings``): Beim Buchen gilt der Plan der App (``Database.depreciation_plan``:
+            gebuchte Jahre bleiben, der Rest verteilt sich auf die Restnutzungsdauer).
+            ``depreciation_rest_warnings`` zählt nicht abgegangene Anlagen, für die WISO kein Jahr mehr
+            plant (alle Sätze stehen in den Büchern), die App aber noch ein offenes Jahr über 1,00 €
+            (Warnung mit dem Restbuchwert in ``asset_warnings``). Zählt ein eingetragener Wert
+            (``PURCHASEAMOUNTNET``) zusätzlich zu den Zahlungen zum Anschaffungswert, steht eine Warnung
+            zur Zusammensetzung in ``asset_warnings``. Ein gebuchtes Jahr trägt den Betrag, den die Bücher
+            für den Satz führen (die Wirkung auf das Anlagekonto: eine Korrektur mit vertauschten Konten
+            mindert ihn); eine Planzeile ``booked`` ändert der Re-Import nicht – außer, dass der Buchungsschritt
+            ihren Betrag an die Bücher angleicht, wenn er abweicht. Bestand aus
+            einem Import bis 2.2.4 (künftige AfA-Buchungen mit Quellgruppe, Jahre ``booked``) bleibt
+            unberührt.
         """
         from importers.wiso_fdb import WisoDatabase
 
@@ -267,7 +286,7 @@ class WisoFdbImportMixin:
                   'assets': 0, 'depreciations': 0, 'depreciations_planned': 0,
                   'future_depreciations_skipped': 0, 'future_depreciations_kept': 0,
                   'depreciation_conflicts': 0, 'depreciation_conflict_rows': [],
-                  'depreciation_plan_mismatches': 0,
+                  'depreciation_plan_mismatches': 0, 'depreciation_rest_warnings': 0,
                   'tax_rows_skipped': 0,
                   'memo_rows_skipped': 0, 'missing_coa': {}, 'created_coa': {},
                   'unresolved_accounts': 0, 'blocker': [], 'hints': [],
@@ -300,10 +319,10 @@ class WisoFdbImportMixin:
             result['negative_gross'] = data.negative_gross
             result['liquid_subaccounts'] = data.liquid_subaccounts[:MAX_LIQUID_SUBACCOUNTS]
             result['stock_range_accounts'] = self._stock_range_accounts(data.bookings)
-            booked_years = self._insert_wiso_bookings(
+            booked_amounts = self._insert_wiso_bookings(
                 data.bookings, result, self._recipients_by_invoice(data), data.assets)
             if with_assets:
-                self._insert_wiso_assets(data.assets, result, booked_years)
+                self._insert_wiso_assets(data.assets, result, booked_amounts)
             if with_invoices:
                 contacts = self._insert_wiso_customers(data.customers, result)
                 self._insert_wiso_invoices(data, contacts, result)
@@ -473,8 +492,12 @@ class WisoFdbImportMixin:
     def _insert_wiso_bookings(self, bookings, result, recipients=None, assets=()):
         """Buchungssätze schreiben; ``SourceGroup`` trägt die Split-Klammer.
 
-        Returns die Menge der Planjahre, deren AfA-Satz danach in den Büchern steht:
-        ``{(INVENTORYID, Jahr)}`` – für den Status der Planzeilen in :meth:`_insert_wiso_assets`.
+        Returns die Planjahre, deren AfA-Satz danach in den Büchern steht, mit dem Betrag, den die Bücher
+        dafür führen: ``{(INVENTORYID, Jahr): Betrag in Minor Units}`` – die Wirkung der angelegten,
+        übernommenen oder wiedererkannten Zeile auf das Anlagekonto (``db.matching.depreciation_effect``:
+        Abschreibung +|Betrag|, eine Korrektur mit dem Anlagekonto im Soll −|Betrag|; bei einer vom Nutzer
+        geänderten Zeile die der gespeicherten Zeile), bei mehreren AfA-Sätzen eines Jahres die Summe, nie
+        unter 0 – für Status und Betrag der Planzeilen in :meth:`_insert_wiso_assets`.
 
         Alles läuft in EINER schreibenden Transaktion (``BEGIN IMMEDIATE``). Sie liest als Erstes die
         Anlagen der App und ihre Planjahre (:meth:`_link_assets`, ``assets`` sind die WISO-Anlagen):
@@ -564,8 +587,12 @@ class WisoFdbImportMixin:
             in ``depreciation_conflict_rows``.
           - Steht der Satz danach in den Büchern (neu angelegt, aus dem CSV-Import übernommen oder
             als Zeile seiner bekannten Gruppe wiedererkannt), merkt sich der Lauf ``(INVENTORYID,
-            Jahr)`` als gebucht, und ein geplantes Jahr der App wird sofort ``booked`` – in derselben
-            Transaktion, auch ohne dass Anlagen importiert werden.
+            Jahr)`` mit seinem Betrag aus den Büchern als gebucht, und ein geplantes Jahr der App wird
+            ``booked`` – in derselben Transaktion (am Ende des Laufs, mit der Summe der Sätze des
+            Jahres als ``DepreciationAmount``), auch ohne dass Anlagen importiert werden. Eine Planzeile, die
+            schon ``booked`` ist (nicht von der App gebucht) und einen anderen Betrag trägt – Bestand aus einem
+            Import bis 2.2.5 –, bekommt den Betrag der Bücher (nur wenn er abweicht; im Replay-Log wie die
+            Anhebung). Steht der Satz in diesem Lauf nicht in den Büchern, bleibt die Zeile, wie sie ist.
           - **Geänderter Satz:** Gleicht einem AfA-Satz einer bekannten Gruppe keine Zeile genau, hat die Gruppe
             aber noch eine freie Zeile mit einem Datum im Planjahr (``depreciation_year``; gleich welcher
             Betrag, welcher Tag, welche Konten), hat der Nutzer den Satz geändert: Er steht in den Büchern, es
@@ -598,7 +625,8 @@ class WisoFdbImportMixin:
           Beleg-Nr.
         """
         recipients = recipients or {}
-        booked_years = set()             # (INVENTORYID, Jahr) der AfA-Sätze, die in den Büchern stehen
+        booked_amounts = {}              # (INVENTORYID, Jahr) -> Betrag der AfA-Sätze in den Büchern (Minor Units)
+        raise_rows = {}                  # (INVENTORYID, Jahr) -> Anlage der App, deren Planzeile gebucht wird
         depreciation_cases = {}          # (INVENTORYID, Jahr) -> Eintrag für die Ergebnisliste
         adopt_sql = '''
             UPDATE Bookings SET
@@ -618,6 +646,7 @@ class WisoFdbImportMixin:
             cursor = tx.conn.cursor()
             links, excluded = self._link_assets(assets, result, cursor)
             coa_map = self._coa_map(cursor)
+            number_of = dict(cursor.execute('SELECT ID, AccountNumber FROM ChartOfAccounts').fetchall())
             cursor.execute("SELECT DISTINCT SourceGroup FROM Bookings "
                            "WHERE SourceGroup IS NOT NULL AND SourceGroup <> ''")
             known_groups = {row[0] for row in cursor.fetchall()}
@@ -701,24 +730,34 @@ class WisoFdbImportMixin:
                 Form selbst."""
                 return stored != fresh and not (stored in MIRROR_FORMS and fresh in MIRROR_FORMS)
 
-            def in_books(booking, year, link):
-                """Der AfA-Satz zum Planjahr ``year`` steht in den Büchern: Der Lauf merkt es sich (für
-                die neuen Planzeilen), und ein geplantes Jahr der App wird sofort ``booked`` – eines, das
-                die App selbst gebucht hat, bleibt. Kein AfA-Satz (``year`` leer): nichts."""
+            def in_books(booking, year, link, row=None, row_id=None):
+                """Der AfA-Satz zum Planjahr ``year`` steht in den Büchern: Der Lauf merkt sich das Jahr mit
+                dem Betrag, den die Bücher führen, und ein geplantes Jahr der App wird am Ende des Laufs
+                ``booked`` (siehe dort) – eines, das die App selbst gebucht hat, bleibt. Kein AfA-Satz
+                (``year`` leer): nichts.
+
+                ``row`` ist die Zeile in den Büchern als ``(Betrag, COA_ID, CounterCOA_ID, EntryForm)``; ohne
+                sie liest ``row_id`` sie. Der Betrag des Satzes ist seine **Wirkung auf das Anlagekonto**
+                (``depreciation_effect``): Abschreibung +|Betrag|, Korrektur (Anlagekonto im Soll) −|Betrag|;
+                mehrere Sätze eines Jahres summieren sich."""
                 if year is None:
                     return
-                booked_years.add((booking.inventory_id, year))
+                if row is None:
+                    row = cursor.execute('SELECT Amount, COA_ID, CounterCOA_ID, EntryForm FROM Bookings '
+                                         'WHERE ID = ?', (row_id,)).fetchone()
+                minor, row_coa, row_counter, row_form = row
+                key = (booking.inventory_id, year)
+                booked_amounts[key] = booked_amounts.get(key, 0) + depreciation_effect(
+                    row_form, minor, number_of.get(row_coa), number_of.get(row_counter))
                 if link is not None and link.asset_id is not None:
-                    cursor.execute(_PLAN_BOOKED_SQL, (link.asset_id, year))
-                    if cursor.rowcount > 0:
-                        tx.log.append((_PLAN_BOOKED_SQL, (link.asset_id, year),
-                                       'WISO-Datenbank-Import: AfA-Planjahr als gebucht gesetzt'))
+                    raise_rows[key] = link.asset_id
 
             def recognize(booking, coa, counter_coa, amount, text):
                 """Gleicht eine Zeile der bekannten Gruppe dem Satz genau (Datum, Konto, Gegenkonto, |Betrag|) –
                 oder, bei einem Unterkonto, dem Satz, den ein Import bis 2.2.4 auf das Basiskonto geschrieben hat?
                 Die Zeile bleibt, wie sie ist, und wird verbraucht (jede Zeile gehört höchstens einem Satz); ein
-                Spiegel des Bestands wird gezählt, eine abweichende Form nur gemeldet."""
+                Spiegel des Bestands wird gezählt, eine abweichende Form nur gemeldet. Liefert die Zeile in den
+                Büchern als ``(Betrag, COA_ID, CounterCOA_ID, EntryForm)``, ohne Zeile ``None``."""
                 pool = group_rows(booking.group)
                 same = [row for row in pool
                         if row[1] == booking.date and row[2] == coa and row[3] == counter_coa
@@ -731,7 +770,7 @@ class WisoFdbImportMixin:
                         result['legacy_mirrors'] += 1
                     elif stored and deviates(stored, booking.form):
                         note_conflict(row_id, booking.date, row_amount, row_text, stored, booking.form)
-                    return True
+                    return row_amount or 0, row[2], row[3], stored
                 if booking.legacy_account is not None or booking.legacy_counter_account is not None:
                     # Ein Import bis 2.2.4 hat den Satz auf das Basiskonto geschrieben statt auf das
                     # Unterkonto: Die Zeile bleibt, wie sie ist, und wird nur gezählt.
@@ -739,23 +778,23 @@ class WisoFdbImportMixin:
                     if old is not None:
                         pool.remove(old)
                         result['subaccount_rows'] += 1
-                        return True
-                return False
+                        return old[4] or 0, old[2], old[3], old[5]
+                return None
 
             def year_row(booking, year):
                 """Nachweis für einen AfA-Satz, dem keine Zeile seiner bekannten Gruppe genau gleicht: Hat die
                 Gruppe noch eine freie Zeile mit einem Datum im Planjahr ``year`` (gleich welcher Betrag, welcher
                 Tag, welche Konten), hat der Nutzer den Satz geändert, und das Jahr steht in den Büchern. Die Zeile
-                wird verbraucht – sie dient höchstens einem AfA-Satz als Nachweis. Ohne Planjahr (kein AfA-Satz)
-                gibt es keinen."""
+                wird verbraucht – sie dient höchstens einem AfA-Satz als Nachweis. Liefert sie als ``(Betrag,
+                COA_ID, CounterCOA_ID, EntryForm)``; ohne Planjahr (kein AfA-Satz) oder ohne Zeile ``None``."""
                 if year is None:
-                    return False
+                    return None
                 pool = group_rows(booking.group)
                 row = next((r for r in pool if str(r[1] or '')[:4] == str(year)), None)
                 if row is None:
-                    return False
+                    return None
                 pool.remove(row)
-                return True
+                return row[4] or 0, row[2], row[3], row[5]
 
             # Re-Import: Erst werden die genauen Treffer ALLER Sätze aller bekannten Gruppen vergeben, erst danach
             # dienen die übrigen Zeilen als Nachweis für einen geänderten AfA-Satz (``year_row``). Sonst nähme der
@@ -774,9 +813,9 @@ class WisoFdbImportMixin:
                 link = (links.get(booking.inventory_id) or _NO_ASSET) if participates else None
                 plan = link.years.get(year) if participates else None
                 known = index in exact
-                if known and exact[index]:
+                if known and exact[index] is not None:
                     # Re-Import: Die Zeile des Satzes steht schon, wie sie ist – neu angelegt wird nichts.
-                    in_books(booking, year, link)
+                    in_books(booking, year, link, exact[index])
                     result['skipped'] += 1
                     if booking.future_depreciation:
                         result['future_depreciations_kept'] += 1
@@ -786,8 +825,9 @@ class WisoFdbImportMixin:
                     # weder neu noch aus einer CSV-Zeile, kein Nachtrag, kein Konflikt mit der App. Was ein
                     # früherer Import schon geschrieben hat, bleibt – auch geändert (eine Zeile der Gruppe im
                     # Planjahr genügt).
-                    if known and year_row(booking, year):
-                        in_books(booking, year, link)
+                    kept = year_row(booking, year) if known else None
+                    if kept is not None:
+                        in_books(booking, year, link, kept)
                         result['skipped'] += 1
                         result['future_depreciations_kept'] += 1
                     else:
@@ -802,8 +842,9 @@ class WisoFdbImportMixin:
                 if known:
                     # Keine Zeile der Gruppe passt genau. Ein AfA-Satz mit einer Zeile der Gruppe im Planjahr ist
                     # vom Nutzer geändert: Das Jahr steht in den Büchern, nichts wird angelegt.
-                    if year_row(booking, year):
-                        in_books(booking, year, link)
+                    changed = year_row(booking, year)
+                    if changed is not None:
+                        in_books(booking, year, link, changed)
                         result['skipped'] += 1
                         continue
                     # Sonst bleibt der Satz weg (der Nutzer kann die Buchung gelöscht haben). Nachgetragen wird
@@ -888,7 +929,7 @@ class WisoFdbImportMixin:
                         result['adopted_rows'].append(
                             {'id': match.id, 'date': booking.date,
                              'amount': booking.amount or 0.0, 'text': booking.text})
-                    in_books(booking, year, link)
+                    in_books(booking, year, link, row_id=match.id)
                     continue
 
                 cursor.execute('''
@@ -903,7 +944,7 @@ class WisoFdbImportMixin:
                       recipients.get(booking.invoice_id) or None, booking.form or None))
                 result['imported'] += 1
                 created_for.update(searched)
-                in_books(booking, year, link)
+                in_books(booking, year, link, (amount, coa, counter_coa, booking.form or None))
 
             # Nicht übernommene Kandidaten zu Schlüsseln, für die dieser Lauf einen
             # Satz neu angelegt hat: dieselbe Buchung zweimal? Das entscheidet der Nutzer.
@@ -919,7 +960,27 @@ class WisoFdbImportMixin:
             result['depreciation_conflict_rows'] = sorted(
                 depreciation_cases.values(),
                 key=lambda case: (case['anlage'], case['jahr']))[:MAX_CONFLICT_ROWS]
-        return booked_years
+
+            # Das Jahr bleibt gebucht, auch wenn Korrekturen den Betrag unter 0 drücken: dann steht 0
+            booked_amounts = {key: max(0, total) for key, total in booked_amounts.items()}
+            # Ein geplantes Jahr der App, dessen AfA-Satz jetzt in den Büchern steht, wird gebucht – mit dem
+            # Betrag der Bücher (bei mehreren Sätzen des Jahres ihre Summe), nicht dem Planwert aus WISO. Eine
+            # Planzeile, die schon ``booked`` ist, aber einen anderen Betrag trägt (Bestand aus einem Import bis
+            # 2.2.5), bekommt den Betrag der Bücher – nur wenn er abweicht, sonst wird nichts geschrieben.
+            for key, asset_id in raise_rows.items():
+                params = (booked_amounts[key], asset_id, key[1])
+                cursor.execute(_PLAN_BOOKED_SQL, params)
+                if cursor.rowcount > 0:
+                    tx.log.append((_PLAN_BOOKED_SQL, params,
+                                   'WISO-Datenbank-Import: AfA-Planjahr als gebucht gesetzt'))
+                    continue
+                params = params + (booked_amounts[key],)
+                cursor.execute(_PLAN_ADJUST_SQL, params)
+                if cursor.rowcount > 0:
+                    tx.log.append((_PLAN_ADJUST_SQL, params,
+                                   'WISO-Datenbank-Import: Betrag eines gebuchten AfA-Planjahrs an die Bücher '
+                                   'angeglichen'))
+        return booked_amounts
 
     def _insert_wiso_customers(self, customers, result):
         """Kunden übernehmen; die Kundennummer bleibt die aus WISO.
@@ -1135,7 +1196,7 @@ class WisoFdbImportMixin:
                 return parent_id
         return passend[0][0]
 
-    def _insert_wiso_assets(self, assets, result, booked_years=frozenset()):
+    def _insert_wiso_assets(self, assets, result, booked_amounts=None):
         """Anlagegüter samt AfA-Plan übernehmen.
 
         Die Inventarnummer ist der Schlüssel: ein zweiter Lauf aktualisiert
@@ -1146,22 +1207,31 @@ class WisoFdbImportMixin:
         Der AfA-Plan: WISO plant alle Jahre sofort und schreibt die AfA-Sätze gleich mit; Sätze nach dem
         Stichtag legt der Import nie an (:meth:`import_wiso_fdb`). **Der Status eines Planjahrs folgt der
         Buchung, nicht dem Datum:** ``booked``, wenn der AfA-Satz der Anlage für dieses Jahr in den
-        Büchern steht (``booked_years``, aus :meth:`_insert_wiso_bookings`: ``{(INVENTORYID,
-        Jahr)}`` – auch ein künftiger Satz aus einem früheren Import zählt), sonst ``planned`` – dann
-        bucht die App das Jahr selbst (``book_depreciation``).
-        Gibt es das Jahr schon, werden Betrag und Buchwert aktualisiert, und der Status geht nur von
-        ``planned`` auf ``booked``, wenn der Satz jetzt in den Büchern steht; sonst bleibt er, wie er
-        ist (auch ein ``booked`` aus einem Import bis 2.2.4). **Hat die App das Jahr selbst gebucht**
-        (``AssetDepreciations.Booking_ID`` zeigt auf eine vorhandene Buchung), bleibt die Zeile ganz
-        unverändert. ``result['depreciations']`` zählt alle Planjahre dieses Laufs,
-        ``depreciations_planned`` die, die danach ``planned`` sind (und nicht von der App gebucht).
+        Büchern steht (``booked_amounts``, aus :meth:`_insert_wiso_bookings`: ``{(INVENTORYID, Jahr):
+        Betrag}`` – auch ein künftiger Satz aus einem früheren Import zählt), sonst ``planned`` – dann
+        bucht die App das Jahr selbst (``book_depreciation``). **Ein gebuchtes Jahr trägt den Betrag der
+        Bücher** (die Wirkung der Zeile des AfA-Satzes auf das Anlagekonto, bei einer vom Nutzer geänderten
+        Zeile die der gespeicherten Zeile), nicht den Planwert aus WISO: Der AfA-Plan der App
+        (``depreciation_plan``) nimmt die gebuchten Beträge als Geschichte, und die Summe in den Büchern soll
+        der Anschaffungswert bleiben.
+        Gibt es das Jahr schon, werden Betrag und Buchwert nur aktualisiert, solange die Zeile
+        ``planned`` ist (und nicht von der App gebucht); dabei geht sie auf ``booked``, wenn der Satz
+        jetzt in den Büchern steht. Eine Zeile ``booked`` (auch aus einem Import bis 2.2.4) und ein von
+        der App gebuchtes Jahr (``AssetDepreciations.Booking_ID`` zeigt auf eine vorhandene Buchung)
+        bleiben unverändert – WISO ändert die Geschichte nicht, die in den Büchern steht (nur der
+        Buchungsschritt gleicht den Betrag einer ``booked``-Zeile an die Bücher an).
+        ``result['depreciations']`` zählt alle Planjahre dieses Laufs, ``depreciations_planned`` die, die
+        danach ``planned`` sind (und nicht von der App gebucht).
 
-        Danach prüft :meth:`_check_depreciation_plans`, ob die App die geplanten Jahre so plant wie WISO.
+        Danach prüfen :meth:`_check_depreciation_plans`, ob die App die geplanten Jahre so plant wie WISO,
+        und :meth:`_check_rest_book_values`, ob sie Jahre plant, für die WISO nichts mehr plant.
         """
+        booked_amounts = booked_amounts or {}
         conn = self._get_connection()
         cursor = conn.cursor()
         coa_map = self._coa_map(cursor)
         checks = []
+        rest_checks = []
 
         for asset in assets:
             number = str(asset.number) if asset.number is not None else None
@@ -1204,8 +1274,10 @@ class WisoFdbImportMixin:
             for entry in asset.depreciations:
                 if entry.year is None:
                     continue
-                amounts = (to_minor(entry.amount or 0), to_minor(entry.book_value or 0))
-                status = 'booked' if (asset.source_id, entry.year) in booked_years else 'planned'
+                wiso_minor = to_minor(entry.amount or 0)
+                in_books = booked_amounts.get((asset.source_id, entry.year))
+                amounts = (wiso_minor if in_books is None else in_books, to_minor(entry.book_value or 0))
+                status = 'planned' if in_books is None else 'booked'
                 cursor.execute(f'''
                     INSERT INTO AssetDepreciations
                         (Asset_ID, Year, DepreciationAmount, BookValue, Status)
@@ -1213,9 +1285,8 @@ class WisoFdbImportMixin:
                     ON CONFLICT(Asset_ID, Year) DO UPDATE SET
                         DepreciationAmount=excluded.DepreciationAmount,
                         BookValue=excluded.BookValue,
-                        Status=CASE WHEN excluded.Status = 'booked' AND Status = 'planned'
-                                    THEN 'booked' ELSE Status END
-                    WHERE NOT {_APP_BOOKED_SQL}
+                        Status=excluded.Status
+                    WHERE Status = 'planned' AND NOT {_APP_BOOKED_SQL}
                 ''', (asset_id, entry.year) + amounts + (status,))
                 result['depreciations'] += 1
                 state = cursor.execute(
@@ -1223,33 +1294,41 @@ class WisoFdbImportMixin:
                     'WHERE Asset_ID = ? AND Year = ?', (asset_id, entry.year)).fetchone()
                 if state[0] == 'planned' and not state[1]:
                     result['depreciations_planned'] += 1
-                    planned.append((entry.year, amounts[0]))
+                    planned.append((entry.year, wiso_minor))
             if planned:
                 checks.append((asset_id, asset, planned))
+            elif not asset.sale_date:
+                rest_checks.append((asset_id, asset))
 
         conn.commit()
         conn.close()
         self._check_depreciation_plans(checks, result)
+        self._check_rest_book_values(rest_checks, result)
 
     def _check_depreciation_plans(self, checks, result):
         """Warnt, wenn die App die geplanten Jahre einer Anlage anders plant als WISO.
 
-        ``book_depreciation`` rechnet mit dem eigenen Plan (``calculate_depreciation_plan``: linear,
-        degressiv, GWG) und überschreibt den Betrag der Planzeile – ein WISO-Plan, der anders rechnet
-        (anderer Satz, andere Aufteilung), liefe beim Buchen auseinander. Je Anlage mit einem
-        geplanten Jahr (``checks``: Anlage der App, WISO-Anlage und ihre geplanten Jahre mit dem
-        WISO-Betrag) wird der Plan der App so berechnet wie beim Buchen und verglichen. Weicht ein Jahr
-        um mehr als einen Cent ab oder plant die App dafür gar keine AfA, kommt **eine** Warnung in
+        ``book_depreciation`` bucht den Betrag aus dem Plan der App (``depreciation_plan``: die
+        gebuchten Jahre bleiben, der Restbuchwert verteilt sich linear auf die Restnutzungsdauer) und
+        überschreibt den Betrag der Planzeile – ein WISO-Plan, der anders rechnet (anderer Satz,
+        andere Aufteilung), liefe beim Buchen auseinander. Je Anlage mit einem geplanten Jahr
+        (``checks``: Anlage der App, WISO-Anlage und ihre geplanten Jahre mit dem WISO-Betrag) wird
+        der Plan der App so berechnet wie beim Buchen und verglichen. Weicht ein Jahr um **mehr als
+        1,00 €** ab – ein Jahr, das die App gar nicht plant, zählt dabei mit 0 –, kommt **eine** Warnung in
         ``asset_warnings`` (das erste abweichende Jahr) und zählt in
-        ``depreciation_plan_mismatches``. Gebucht wird nichts.
+        ``depreciation_plan_mismatches``. Die Schwelle: WISO rechnet seinen Plan mit dem Behelfsbetrag
+        bis 1 €, den der Nutzer bei der Erstanlage in ``PURCHASEAMOUNTNET`` einträgt und den der
+        Anschaffungswert der App nicht enthält – er erklärt kleine Abweichungen, die keine Warnung
+        wert sind. Gebucht wird nichts.
         """
         for asset_id, asset, planned in checks:
-            row = self.get_asset_by_id(asset_id)
-            plan = self.calculate_depreciation_plan(row[7], row[6], row[8], row[9])
+            plan = self.depreciation_plan(asset_id)
             for year, wiso_minor in planned:
                 entry = next((e for e in plan if e['year'] == year), None)
                 app_minor = to_minor(entry['depreciation']) if entry else None
-                if app_minor is not None and abs(app_minor - wiso_minor) <= FACTOR // 100:
+                # dieselbe Schwelle, wenn die App für das Jahr keine Zeile hat (ein Jahr, das auf 0 Cent
+                # rundet, entfällt im Plan der App): WISOs Betrag bis 1,00 € ist keine Warnung wert
+                if abs((app_minor or 0) - wiso_minor) <= FACTOR:
                     continue
                 app = 'keine AfA' if app_minor is None else f'{format_de(app_minor)} €'
                 result['asset_warnings'].append(
@@ -1258,3 +1337,26 @@ class WisoFdbImportMixin:
                     'Beim Buchen in der App gilt der Plan der App – bitte prüfen.')
                 result['depreciation_plan_mismatches'] += 1
                 break
+
+    def _check_rest_book_values(self, checks, result):
+        """Warnt bei einer Anlage, für die WISO keine AfA mehr plant, die App aber noch Jahre.
+
+        ``checks``: nicht abgegangene Anlagen (Anlage der App, WISO-Anlage), die nach diesem Lauf kein
+        geplantes Jahr mehr haben – alle Jahre aus WISO stehen in den Büchern. Hat der Plan der App
+        (``depreciation_plan``) trotzdem ein offenes Jahr über 1,00 €, bleibt nach den gebuchten Jahren ein
+        Restbuchwert, den nur die App abschreiben würde – etwa weil der Anschaffungswert (ein eingetragener
+        Wert zusätzlich zu den Zahlungen) größer ist als die Basis von WISOs Plan. Kommt **eine** Warnung
+        in ``asset_warnings`` und zählt in ``depreciation_rest_warnings``; sie nennt den Restbuchwert (die
+        Summe der offenen Jahre). Eine abgegangene Anlage ist ausgenommen: Ihren Restbuchwert bucht der
+        Abgang aus. Der Rest bis 1,00 € ist der Behelfsbetrag und keine Warnung wert. Gebucht wird nichts.
+        """
+        for asset_id, asset in checks:
+            open_rows = [e for e in self.depreciation_plan(asset_id) if not e['booked']]
+            if not any(to_minor(e['depreciation']) > FACTOR for e in open_rows):
+                continue
+            rest = sum(to_minor(e['depreciation']) for e in open_rows)
+            result['asset_warnings'].append(
+                f'{_asset_name(asset)}: Nach den gebuchten Jahren bleibt ein Restbuchwert von '
+                f'{format_de(rest)} €, für den WISO keine AfA mehr plant – bitte den Anschaffungswert '
+                'prüfen, bevor die AfA in der App gebucht wird.')
+            result['depreciation_rest_warnings'] += 1
