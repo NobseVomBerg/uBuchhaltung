@@ -7,6 +7,7 @@ import os
 import json
 from decimal import Decimal
 from money import to_minor, from_minor
+from db import datev_keys
 from db.matching import (
     ENTRY_FORMS, SIDE_COUNTER, derive_entry_form, is_bank_effective, is_mirror_row,
     purpose_in_counter, read_entry_form, reform,
@@ -591,8 +592,26 @@ class BookingsMixin:
         'category_id': 'Category_ID', 'amount': 'Amount', 'currency': 'Currency',
         'tax_rate': 'TaxRate', 'tax_amount': 'TaxAmount', 'text': 'Text',
         'document_number': 'DocumentNumber', 'parent_booking_id': 'ParentBooking_ID',
-        'entry_form': 'EntryForm',
+        'entry_form': 'EntryForm', 'datev_key': 'DatevKey',
     }
+
+    def _datev_key_stale(self, conn, booking_id, values):
+        """Fällt der mitgebrachte BU-Schlüssel (``Bookings.DatevKey``) dieses Satzes weg? Ja, wenn er einen hat und
+        sich Konto, Gegenkonto oder Steuersatz gegenüber dem gespeicherten Stand ändern – er passt dann nicht mehr
+        zu den Konten und zum Satz, der Export leitet ihn neu ab. ``values`` sind die geänderten Spalten, wie
+        ``update_booking_fields`` sie schreibt; nennt der Aufrufer ``datev_key`` selbst, bestimmt er ihn
+        (nie wegfallen). Der Steuersatz zählt als Prozentzahl: 0.19 und 19 sind derselbe, kein Satz und 0 auch. Die
+        EINE Stelle für ``update_booking_fields`` und ``update_booking``; kein Schreibweg der Masken setzt den
+        Schlüssel, die Importe füllen ihn nur."""
+        if 'datev_key' in values or not ({'coa_id', 'counter_coa_id', 'tax_rate'} & set(values)):
+            return False
+        old = conn.execute('SELECT DatevKey, COA_ID, CounterCOA_ID, TaxRate FROM Bookings WHERE ID=?',
+                           (booking_id,)).fetchone()
+        if old is None or old[0] is None:
+            return False
+        return (('coa_id' in values and values['coa_id'] != old[1])
+                or ('counter_coa_id' in values and values['counter_coa_id'] != old[2])
+                or ('tax_rate' in values and datev_keys.percent(values['tax_rate']) != datev_keys.percent(old[3])))
 
     def _form_after_accounts_change(self, conn, booking_id, values):
         """Form eines Buchungssatzes, dessen Konto oder Gegenkonto sich ändert – ``values`` sind
@@ -645,6 +664,10 @@ class BookingsMixin:
         das Soll/Haben erhalten: Kippt die Form auf die andere Seite, wird der Betrag negiert –
         und mit ihm der Steuerbetrag, sofern ihn der Aufrufer nicht ändert
         (``_form_after_accounts_change``).
+
+        Ändern sich Konto, Gegenkonto oder Steuersatz, fällt der mitgebrachte BU-Schlüssel
+        (``datev_key``) weg, sofern der Aufrufer ihn nicht selbst nennt (``_datev_key_stale``).
+        ``datev_key`` selbst ist ein Schlüssel von 1 bis 9999 oder ``None`` (sonst ``ValueError``).
         """
         unknown = set(fields) - set(self._BOOKING_FIELD_COLUMNS)
         if unknown:
@@ -658,8 +681,12 @@ class BookingsMixin:
             values['amount'] = to_minor(values['amount'] or 0)
         if 'tax_amount' in values:
             values['tax_amount'] = self._minor_opt(values['tax_amount'])
+        if 'datev_key' in values:
+            values['datev_key'] = datev_keys.checked_key(values['datev_key'])
         conn = self._get_connection()
         try:
+            if self._datev_key_stale(conn, booking_id, values):
+                values['datev_key'] = None
             reformed = self._form_after_accounts_change(conn, booking_id, values)
             if reformed is not None:
                 values['entry_form'] = reformed[0]
@@ -703,11 +730,14 @@ class BookingsMixin:
             conn, booking_id, {'coa_id': coa_id, 'counter_coa_id': counter_coa_id,
                                'amount': to_minor(amount or 0),
                                'tax_amount': self._minor_opt(tax_amount)})
+        # Ändern sich Konto, Gegenkonto oder Steuersatz, fällt der mitgebrachte BU-Schlüssel weg
+        key_stale = self._datev_key_stale(
+            conn, booking_id, {'coa_id': coa_id, 'counter_coa_id': counter_coa_id, 'tax_rate': tax_rate})
         sql_template = '''UPDATE Bookings
             SET DateBooking=?, DateTax=?, Account_ID=?, ForeignBankAccount=?,
                 RecipientClient=?, Contact_ID=?, COA_ID=?, CounterCOA_ID=?, Category_ID=?, Amount=?, Currency=?,
                 TaxRate=?, TaxAmount=?, Text=?, DocumentNumber=?, BookingType=COALESCE(?, BookingType), ParentBooking_ID=COALESCE(?, ParentBooking_ID),
-                EntryForm=COALESCE(?, EntryForm)
+                EntryForm=COALESCE(?, EntryForm), DatevKey=CASE WHEN ? THEN NULL ELSE DatevKey END
             WHERE ID=?'''
         
         params = (date_booking, date_tax, account_id, foreign_bank_account,
@@ -717,7 +747,7 @@ class BookingsMixin:
                   tax_rate,
                   reformed[2] if reformed and reformed[2] is not None else self._minor_opt(tax_amount),
                   text, document_number, booking_type, parent_booking_id,
-                  reformed[0] if reformed else None, booking_id)
+                  reformed[0] if reformed else None, 1 if key_stale else 0, booking_id)
 
         cursor.execute(sql_template, params)
         conn.commit()

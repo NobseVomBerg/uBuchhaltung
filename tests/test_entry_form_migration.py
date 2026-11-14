@@ -4,7 +4,8 @@
 """Die Migration auf 2.1.0: Jeder Buchungssatz bekommt seine Form (``Bookings.EntryForm``).
 
 Die Migration darf nichts umdeuten. Der Bestand bekommt die Form, mit der 2.0.x ihn las; danach zeigen
-EÜR, DATEV-Zeilen, Dashboard und die Prüfung auf unstimmige Splits **dieselben Werte wie vorher**. Als
+EÜR, DATEV-Zeilen (ohne die Spalte BU-Schlüssel, die seit 2.3.0 der Art des Zweckkontos folgt), Dashboard und
+die Prüfung auf unstimmige Splits **dieselben Werte wie vorher**. Als
 Maßstab dienen Werte, die der Stand 2.0.8 über dieselbe Datenbank gelesen hat
 (``fixtures/entry_form_golden_2_0_8.json``; Aufbau und Neuerzeugung: ``entry_form_world.py``) – für einen
 Bestand mit allen Schreibwegen und Kassen mit 1600, mit dem Verrechnungskonto 1460 und ohne Nummer.
@@ -87,6 +88,16 @@ def _roundtrip(value):
     return json.loads(json.dumps(value, ensure_ascii=False, sort_keys=True))
 
 
+def _comparable(section, value):
+    """Eine Auswertung zum Vergleich mit dem Maßstab von 2.0.8. Im DATEV-Stapel fehlt die Spalte „BU-Schlüssel“: Sie
+    kommt seit 2.3.0 nach der Art des Zweckkontos (``db/datev_keys.py``), 2.0.8 kannte nur die Geldrichtung – der
+    Schlüssel gehört nicht zu dem, was die Migration nicht ändern darf (Betrag, Kennzeichen, Konten, Belegfeld)."""
+    value = _roundtrip(value)
+    if section == 'datev':
+        value = [row[:5] + row[6:] for row in value]
+    return value
+
+
 # ── der Ausgangspunkt ────────────────────────────────────────────────────────
 
 def test_the_world_is_a_2_0_x_database_before_the_migration(old):
@@ -103,8 +114,9 @@ def test_the_world_is_a_2_0_x_database_before_the_migration(old):
 
 def test_migration_leaves_euer_datev_dashboard_and_split_check_as_they_were(old):
     """EÜR (alle Konten, nur Kasse, ein Bankkonto), jede Zeile des DATEV-Stapels (Betrag, Soll/Haben,
-    Konten, BU-Schlüssel), Dashboard (Summen und Monate, ebenso gefiltert) und die unstimmigen Splits:
-    nach der Migration dieselben Werte, die 2.0.8 über die Datenbank las."""
+    Konten, Belegfeld – der BU-Schlüssel folgt seit 2.3.0 der Art des Zweckkontos, ``_comparable``), Dashboard
+    (Summen und Monate, ebenso gefiltert) und die unstimmigen Splits: nach der Migration dieselben Werte, die
+    2.0.8 über die Datenbank las."""
     path, cash = old
 
     after = world.evaluate(path)               # öffnet die Datenbank und migriert sie
@@ -113,7 +125,7 @@ def test_migration_leaves_euer_datev_dashboard_and_split_check_as_they_were(old)
     expected = GOLDEN[str(cash)]
     assert set(after) == set(expected)
     for section in expected:
-        assert _roundtrip(after[section]) == expected[section], section
+        assert _comparable(section, after[section]) == _comparable(section, expected[section]), section
 
 
 def test_the_golden_values_have_teeth_the_world_covers_every_difficult_shape():
@@ -202,13 +214,14 @@ def test_the_migration_does_not_touch_a_row_that_already_has_a_form(old_1600):
 def test_a_wrongly_filled_form_does_not_pass_the_comparison(old_1600, document, wrong, section):
     path = old_1600
     _reopen(path)
-    assert _roundtrip(world.evaluate(path))[section] == GOLDEN['1600'][section]    # richtig gefüllt: gleich
+    expected = _comparable(section, GOLDEN['1600'][section])
+    assert _comparable(section, world.evaluate(path)[section]) == expected         # richtig gefüllt: gleich
 
     with closing(sqlite3.connect(path)) as con:
         con.execute('UPDATE Bookings SET EntryForm = ? WHERE DocumentNumber = ?', (wrong, document))
         con.commit()
 
-    assert _roundtrip(world.evaluate(path))[section] != GOLDEN['1600'][section]
+    assert _comparable(section, world.evaluate(path)[section]) != expected
 
 
 def test_filling_all_forms_from_the_current_account_list_would_not_pass_the_comparison(old_1600):
@@ -224,9 +237,9 @@ def test_filling_all_forms_from_the_current_account_list_would_not_pass_the_comp
                             (read_entry_form(None, coa, counter, money), row_id))
         con.commit()
 
-    after = _roundtrip(world.evaluate(path))
+    after = world.evaluate(path)
 
-    assert after['datev'] != GOLDEN['1600']['datev']
+    assert _comparable('datev', after['datev']) != _comparable('datev', GOLDEN['1600']['datev'])
 
 
 # ── Sicherung, Wiederholung ──────────────────────────────────────────────────
@@ -335,24 +348,24 @@ def test_a_backup_that_cannot_be_written_is_not_left_behind(old_1600, monkeypatc
 
 def test_every_migration_run_of_an_existing_database_is_backed_up_and_named_after_the_program(
         old_1600, monkeypatch):
-    """Nicht nur die Schritte bis 2.2.0: Fragt irgendein künftiger Schritt (hier ein erfundener 2.3.0 mit
-    der Schema-Zahl 2003) eine bestehende Datenbank um, entsteht vorher eine Sicherung – mit der Version
+    """Nicht nur die Schritte bis 2.3.0: Fragt irgendein künftiger Schritt (hier ein erfundener 2.4.0 mit
+    der Schema-Zahl 2004) eine bestehende Datenbank um, entsteht vorher eine Sicherung – mit der Version
     des Programms im Namen, das umstellt."""
     path = old_1600
     current = version.APP_VERSION
     stamped = version.SCHEMA_VERSION
     _reopen(path)                                                  # der heutige Stand: erste Sicherung
     assert [b.name[9:] for b in _backups(path)] == [f'vor_{current}_buch.db']
-    monkeypatch.setattr(version, 'SCHEMA_STEP', 3)
-    monkeypatch.setattr(version, 'SCHEMA_VERSION', 2003)
-    monkeypatch.setattr(version, 'APP_VERSION', '2.3.0')
+    monkeypatch.setattr(version, 'SCHEMA_STEP', 4)
+    monkeypatch.setattr(version, 'SCHEMA_VERSION', 2004)
+    monkeypatch.setattr(version, 'APP_VERSION', '2.4.0')
 
     _reopen(path)
 
-    assert installation.user_version(path) == 2003
+    assert installation.user_version(path) == 2004
     names = sorted(b.name[9:] for b in _backups(path))
-    assert names == [f'vor_{current}_buch.db', 'vor_2.3.0_buch.db']
-    newest = next(b for b in _backups(path) if 'vor_2.3.0' in b.name)
+    assert names == [f'vor_{current}_buch.db', 'vor_2.4.0_buch.db']
+    newest = next(b for b in _backups(path) if 'vor_2.4.0' in b.name)
     assert installation.user_version(str(newest)) == stamped       # der Stand vor dem Lauf
 
 

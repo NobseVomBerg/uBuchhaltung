@@ -979,6 +979,32 @@ class InvoicesMixin:
         return {r[0] for r in conn.execute(
             f"SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN ({','.join('?' * len(waiting))})", waiting)}
 
+    def get_waiting_account_numbers(self):
+        """Die Kontonummern der Wartekonten (``OPEN_REVENUE_ACCOUNTS``), die der Kontenrahmen führt, als sortierte
+        Liste – der DATEV-Export erkennt an ihnen die Rechnungskette (Forderung, „Wartekonto an Erlöskonto“)."""
+        conn = self._get_connection()
+        try:
+            ids = sorted(self._waiting_coa_ids(conn))
+            return [row[0] for row in conn.execute(
+                f"SELECT AccountNumber FROM ChartOfAccounts WHERE ID IN ({','.join('?' * len(ids))}) "
+                "ORDER BY AccountNumber", ids)] if ids else []
+        finally:
+            conn.close()
+
+    def get_datev_invoice_data(self):
+        """Liefert für den DATEV-Export, was die Rechnungskette von der Rechnung braucht, in EINER Abfrage über alle
+        Rechnungen (nicht je Buchung): ``{Rechnungsnummer: (Leistungsdatum, Land des Käufers)}`` – ohne Angebote.
+        Zahlungen und Umbuchungen gehören oft zu einer Rechnung früherer Zeiträume, deshalb nicht nur die des
+        Exportzeitraums."""
+        conn = self._get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT InvoiceNumber, DeliveryDate, BuyerCountry FROM Invoices "
+                "WHERE DocumentType = 'invoice' OR DocumentType IS NULL").fetchall()
+        finally:
+            conn.close()
+        return {number: (delivery, country) for number, delivery, country in rows}
+
     @staticmethod
     def _is_app_receivable(source_group, counter, waiting_ids):
         """Hat die App diese Forderungsbuchung selbst gebucht? Ohne Quellklammer (``SourceGroup`` – Import) und mit

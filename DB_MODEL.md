@@ -79,7 +79,7 @@ Beim Erstellen der Datenbank werden folgende Tabellen automatisch befüllt (nur 
 |---------|--------|----------|
 | ChartOfAccounts | `seed_data/chart_of_accounts_skr04.json` + optional `seed_data/private/` | 56 Standard + eigene |
 | AssetCategories | `seed_data/asset_categories.json` | 30 BMF-Kategorien |
-| TaxKeys | `seed_data/tax_keys.json` | 50 DATEV-BU-Schlüssel |
+| TaxKeys | `seed_data/tax_keys.json` | 53 DATEV-BU-Schlüssel |
 
 ### Testdaten (`seed_data/test/`)
 
@@ -191,6 +191,8 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 | LegalForm | TEXT | | Rechtsform (GmbH, AG, UG, ...) |
 | TaxID | TEXT | | Umsatzsteuer-ID |
 | BuyerRouteID | TEXT | | XRechnung: Leitweg-ID |
+| DatevConsultantNo | TEXT | | Beraternummer für den Vorlauf des DATEV-Stapels (2.3.0, Schema 2003): eine Zahl von 1001 bis 9999999, nur ASCII-Ziffern ohne führende Null; NULL = nicht eingetragen. Nur die eigene Firma (`ContactType='own'`) trägt sie (`Database.get_datev_numbers`); der WISO-Datenbank-Import füllt sie, wenn beide Felder leer sind (erst nach den Buchungen) |
+| DatevClientNo | TEXT | | Mandantennummer: eine Zahl von 1 bis 99999, nur ASCII-Ziffern ohne führende Null; NULL = nicht eingetragen |
 
 #### 3d. PersonDetails (1:1)
 
@@ -234,7 +236,9 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 
 ### 6. TaxKeys (DATEV-Steuerschlüssel)
 
-**Zweck:** BU-Schlüssel nach DATEV-Standard. Wird aus `seed_data/tax_keys.json` geseeded (50 Einträge).
+**Zweck:** BU-Schlüssel (Code → Steuersatz) für den WISO-Textimport. Wird aus `seed_data/tax_keys.json` geseeded (53 Einträge); Schema 2003
+berichtigt und ergänzt in bestehenden Datenbanken 100, 120, 121 („Verwendung von Gegenständen 19 %“, vorher fälschlich „steuerfrei“), 122 und 490
+(ohne Satz) – `schema.TAX_KEY_CORRECTIONS`. Der Export schlüsselt nicht aus dieser Tabelle, sondern aus `db/datev_keys.py`.
 
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
@@ -244,7 +248,8 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 | TaxType | TEXT | | 'USt', 'VSt', 'steuerfrei', '§13b', 'keine', 'UStfrei' |
 
 **Verwendung:**
-- WISO-Original-Import: SCHLUESSEL → `get_tax_rate_for_bu()` → TaxRate
+- WISO-Original-Import: SCHLUESSEL → zuerst die Regeln von `db/datev_keys.py` (`key_rate`: 401/101/121 Regelsatz, 402/102/122 ermäßigt,
+  7/6/5/4 die anderen Sätze, im zweiten Halbjahr 2020 mit 16/5/19/7 %), sonst `TaxKeys` → TaxRate
 - TaxAmount-Berechnung: `|Brutto| - |Brutto| / (1 + Rate)`
 
 ---
@@ -291,6 +296,7 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 | AutoMirror | 20 | INTEGER | DEFAULT 0 | 1 = die App hat den Satz selbst als Spiegel der Bankbewegung angelegt (wird beim Bearbeiten der Bankzeile mitgezogen) |
 | SourceGroup | 21 | TEXT | | Klammer aus dem Quellsystem (WISO `ACCOUNTINGID`) |
 | EntryForm | 22 | TEXT | | Form des Buchungssatzes (siehe unten): `purpose_first`, `liquid_first`, `transfer`, `mirror_coa`, `mirror_counter`, `mirror_legacy`. Bankzeilen haben keine (NULL). **Immer am Ende angefügt** – die Leser lesen `Bookings` positionsbasiert (`SELECT *`) |
+| DatevKey | 23 | INTEGER | | BU-Schlüssel, den die Quelle der Buchung mitgebracht hat (2.3.0, Schema 2003): ganze Zahl 1–9999, NULL = keiner (0 wird nie gespeichert) – der DATEV-Export gibt ihn unverändert aus, sonst leitet er ihn ab. Nur die Importe schreiben ihn – der WISO-Datenbank-Import an eine vorhandene Zeile nur, wenn sie denselben Steuersatz trägt wie der WISO-Satz (`datev_key_rate_mismatches`); er fällt (NULL), wenn sich Konto, Gegenkonto oder Steuersatz ändern (`update_booking_fields`, `update_booking`, der Tabellen-Export des Textimports, der ein leeres Konto füllt) |
 
 **Business Logic:**
 - `BookingType='bank'`: Echte Geldbewegung auf dem Bankkonto (aus WISO-Tabellen-Export oder PDF-Import)
@@ -1018,7 +1024,7 @@ und der Plan der Hauptanlage rechnet wieder ohne sie.
 ```
 1. WISO-Tabellen-Export  → Bookings mit BookingType='bank' (Bankbewegungen)
 2. WISO-Original-Export  → Bookings mit BookingType='entry' (Buchungssätze)
-   (inkl. TaxRate aus TaxKeys-DB, TaxAmount berechnet)
+   (inkl. TaxRate aus den Schlüsselregeln bzw. TaxKeys, `DatevKey` = SCHLUESSEL, TaxAmount berechnet)
 3. link_bank_to_entries() verknüpft automatisch:
    - Stufe 1: Datum + normalisierter Empfänger + Betrag
    - Stufe 2: Datum + Betrag (eindeutig nach Doppik-Filter)
@@ -1097,6 +1103,28 @@ Anschaffungswert der Hauptanlage und werden mit ihr abgeschrieben (siehe „AfA-
 Hinweis GWG: Wer den Kauf schon auf das Aufwandskonto 6260 (Sofortabschreibung) gebucht hat
 und zusätzlich die AfA bucht, zählt doppelt – das Programm prüft das nicht.
 
+### DATEV-Export (seit 2.3.0, `export/datev.py`, Regeln in `db/datev_keys.py`)
+
+Der Stapel (EXTF 700) bildet den nach, den WISO Mein Büro schreibt – gemessen an einem Datenbestand; ob die Kanzlei ihn so annimmt, klärt das
+Steuerbüro. Das Soll/Haben-Kennzeichen folgt der Form des Satzes. Der **BU-Schlüssel** (Spalte 8):
+
+```
+1. Bookings.DatevKey gesetzt (Import, 1–9999)  → unverändert ausgeben (auch 490, 100, 121 ohne Satz)
+2. sonst ableiten nach Art des Zweckkontos und Satz:
+     Erlöskonto → Umsatzsteuer 101 (19 %) / 102 (7 %) / 5 (16 %) / 4 (5 %)
+     anderes Zweckkonto → Vorsteuer 401 / 402 / 7 / 6, auch bei einer Erstattung
+     Debitor, Spiegel, kein Satz, anderer Satz → 0   (auch die AfA „Aufwand an Anlagekonto“: Vorsteuer-Art, aber ohne Satz)
+   vom 2020-07-01 bis 2020-12-31 tauschen die Plätze (16 %/5 % = Regelsatz/ermäßigt, 19 %/7 % = die anderen)
+3. Rechnungskette (Umbuchung mit Debitor oder Wartekonto: Forderung, Wartekonto an Erlöskonto, Stornogegenbuchung)
+   → Schlüssel 0, aber der Satz in Spalte 40 (EU-Steuersatz, „19,00“)
+```
+
+Dazu: Leistungsdatum (114) nur an der Forderung, Land (119) an der Rechnungskette, Spalte 115 leer, Belegfeld 1 ohne Leerzeichen bis 36
+Zeichen, Buchungstext ohne Zeilenumbrüche und andere Steuerzeichen (je Zeichen ein Leerzeichen, vor dem Kürzen auf 60 Zeichen), im Vorlauf
+Berater- und Mandantennummer der eigenen Firma (`CompanyDetails`, 1001–9999999 bzw. 1–99999 ohne führende Null, sonst Platzhalter). Die Rechnungsdaten (Leistungsdatum,
+Land) liest der Handler in einer Abfrage über alle Rechnungen (`get_datev_invoice_data`), die Wartekonten aus `OPEN_REVENUE_ACCOUNTS`
+(`get_waiting_account_numbers`).
+
 ---
 
 ## Besonderheiten
@@ -1111,5 +1139,5 @@ und zusätzlich die AfA bucht, zählt doppelt – das Programm prüft das nicht.
 
 ---
 
-**Dokumentversion:** 2.5
-**Letzte Aktualisierung:** 12. November 2026 (Fassungen und Protokoll versendeter Rechnungen; Schema 2002)
+**Dokumentversion:** 2.6
+**Letzte Aktualisierung:** 14. November 2026 (BU-Schlüssel am Buchungssatz, DATEV-Nummern der eigenen Firma; Schema 2003)

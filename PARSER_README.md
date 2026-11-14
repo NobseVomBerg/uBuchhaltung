@@ -176,11 +176,13 @@ ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNU
 **Automatisches Mapping:**
 - **KONTO** → `ChartOfAccounts.AccountNumber` → `COA_ID` (Sollkonto)
 - **GEGENKONTO** → `ChartOfAccounts.AccountNumber` → `CounterCOA_ID` (Habenkonto)
-- **SCHLUESSEL** → Steuersatz-Lookup über `TaxKeys`-Tabelle (50 BU-Schlüssel)
-  - z.B. 9/401 → 19%, 8/402 → 7%, 121 → 0%, 490 → 0%
+- **SCHLUESSEL** → Steuersatz: zuerst die Regeln des Exports (`db/datev_keys.py`, `key_rate`), sonst die `TaxKeys`-Tabelle (53 BU-Schlüssel);
+  eine ganze Zahl von 1 bis 9999 steht außerdem als `Bookings.DatevKey` am Satz und geht unverändert in den DATEV-Stapel
+  - z.B. 401/101/121 → Regelsatz (19 %), 402/102/122 → ermäßigt (7 %), 7/6/5/4 → die anderen Sätze (16 %/5 %), 490 und 100 → kein Satz;
+    vom 2020-07-01 bis 2020-12-31 gelten für 401/402/7/6/101/102/5/4/121/122 die vertauschten Sätze (16/5/19/7 %)
 - **TaxAmount**: Automatisch berechnet als `|Brutto| - |Brutto| / (1 + TaxRate)`
-- **Spezialfall 4405→4400**: Wenn kein BU-Schlüssel vorhanden ist,
-    wird automatisch 19% gesetzt und TaxAmount berechnet
+- **Spezialfall 4405→4400**: Wenn kein BU-Schlüssel vorhanden ist (`SCHLUESSEL` leer oder 0),
+    wird automatisch 19% gesetzt und TaxAmount berechnet; eine Zeile mit einem Schlüssel – auch einem ohne Satz wie 490 – behält, was er sagt
 
 **Liquiditäts-Erkennung (`_is_liquid()`):**
 - Bankkonten und die Kasse der App: Über `Accounts.SKRAccount` JOIN mit ChartOfAccounts
@@ -520,9 +522,20 @@ danach kein gültiges UTF-8 ist, wird abgelehnt.
 
 ### Steuerschlüssel
 
-`SCHLUESSEL` wird über die Tabelle `TaxKeys` in einen Steuersatz übersetzt. Ein Schlüssel, den die
-Tabelle nicht kennt, wird nicht geraten: Die Zeile kommt ohne Steuersatz und zählt in
-`unknown_tax_keys` (Hinweis auf der Seite *Verschiedenes*).
+`SCHLUESSEL` wird in einen Steuersatz übersetzt: zuerst über die Regeln des Exports (`db/datev_keys.py`: die Schlüssel 401, 402, 7, 6,
+101, 102, 5, 4, 121 und 122, im zweiten Halbjahr 2020 mit den vertauschten Sätzen), sonst über die Tabelle `TaxKeys`. Ein Schlüssel, den
+beide nicht kennen, wird nicht geraten: Die Zeile kommt ohne Steuersatz und zählt in `unknown_tax_keys` (Hinweis auf der Seite
+*Verschiedenes*). Ein Schlüssel von 1 bis 9999 wird am Satz gespeichert (`Bookings.DatevKey`); leer, 0 und alles andere bleibt ohne –
+der Export leitet ihn dann ab. Der Import legt nur neue Zeilen an: Ein Duplikat bleibt, wie es ist (auch ohne Schlüssel).
+
+Beim Import aus der WISO-Datenbank liest `importers/wiso_fdb` den Schlüssel aus `DATEVVATKEY` (optionale Spalte) und die Berater- und
+Mandantennummer aus `SYS_FINACCSYSTEMS` (Satz „Datev-Format“, nur `NAME`, `CONSULTANT_NO`, `CLIENT_NO`; Berater 1001–9999999, Mandant
+1–99999, nur Ziffern ohne führende Null; ein Lesefehler der Tabelle ergibt keine Nummern und einen Hinweis, keinen Abbruch). Ein erneuter
+Import trägt den Schlüssel an einer wiedererkannten Zeile nach – nur diese Spalte, nur wo sie leer ist, nur bei genauem Treffer **und nur, wenn
+die Zeile denselben Steuersatz trägt wie der WISO-Satz** (Prozentzahl, kein Satz = 0 %; sonst bleibt der Schlüssel leer, der Export leitet ihn aus
+dem Satz der App ab, und `datev_key_rate_mismatches` zählt den Fall; das gilt ebenso für die Übernahme einer CSV-Buchung, dort für den Satz nach
+der Übernahme). Die Nummern der eigenen Firma trägt der Import ein, nachdem die Buchungen geschrieben sind, und nur wenn beide Felder dort
+leer sind. Der Tabellen-Export, der ein leeres Konto aus der Kategorie füllt, lässt den Schlüssel der Zeile fallen.
 
 ---
 

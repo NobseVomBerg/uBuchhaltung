@@ -88,7 +88,7 @@ def test_the_mask_turns_the_tax_amount_with_the_amount(db):
 
     assert _stored(db, entry) == (minor('-119.00'), minor('-19.00'), FORM_PURPOSE_FIRST)
     assert euer(db) == EXPECTED_AFTER                      # nicht 6815 −138,00 und 1406 +19,00
-    assert datev_rows(db)[BELEG] == ('119,00', 'S', '6815', '1800', '9')
+    assert datev_rows(db)[BELEG] == ('119,00', 'S', '6815', '1800', '401')
 
 
 def test_the_editor_turns_the_tax_amount_with_the_amount(db):
@@ -98,7 +98,7 @@ def test_the_editor_turns_the_tax_amount_with_the_amount(db):
 
     assert _stored(db, entry) == (minor('-119.00'), minor('-19.00'), FORM_PURPOSE_FIRST)
     assert euer(db) == EXPECTED_AFTER
-    assert datev_rows(db)[BELEG] == ('119,00', 'S', '6815', '1800', '9')
+    assert datev_rows(db)[BELEG] == ('119,00', 'S', '6815', '1800', '401')
 
 
 def test_the_way_back_keeps_amount_and_tax_amount_in_step(db):

@@ -95,7 +95,7 @@ def _bookings_by_doc(db, doc):
     conn = db._get_connection()
     cur = conn.cursor()
     cur.execute(
-        'SELECT ID, RecipientClient, TaxRate, NULL, Text '
+        'SELECT ID, RecipientClient, TaxRate, DatevKey, Text '
         'FROM Bookings WHERE DocumentNumber=? ORDER BY ID', (doc,))
     rows = cur.fetchall()
     conn.close()
@@ -118,9 +118,10 @@ def test_recipient_propagated_to_docnr_split(db_with_coa):
     rows = _bookings_by_doc(db, doc)
     assert len(rows) == 4
     # Beleg-Split: alle Zeilen tragen dieselbe Beleg-Nr. (die Klammer)
-    # Steuersatz: 490 -> 0.0, ohne Schlüssel -> None
-    tax_rates = sorted([(r[2] if r[2] is not None else -1) for r in rows])
-    assert tax_rates == [-1, 0.0, 0.0, 0.0]
+    # 490 (ohne Vorsteuerabzug) hat seit 2.3.0 keinen Satz in TaxKeys (vorher 0.0) und steht als Schlüssel am Satz;
+    # ohne Schlüssel: kein Schlüssel und kein Satz
+    assert [r[2] for r in rows] == [None] * 4
+    assert sorted(r[3] or 0 for r in rows) == [0, 490, 490, 490]
     # Vor dem Tabellen-Import: noch kein Empfänger
     assert all((r[1] or '') == '' for r in rows)
 

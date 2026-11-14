@@ -42,8 +42,9 @@ Drei Eigenheiten der Datenbank, die dieses Modul kapselt:
 import datetime
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
+from db.datev_keys import client_no, consultant_no, parse_key
 from db.matching import LEGACY_CASH_NUMBERS, import_entry_form
 from money import format_de, from_minor, round_minor, to_minor
 
@@ -79,6 +80,10 @@ T_ORDER_POSITIONS = 'MOV_ORDERS_POSITIONS'
 T_CUSTOMERS = 'BAS_CUSTOMERS'
 T_COMPANY = 'BAS_COMPANY'
 T_UNITS = 'SUP_ARTICLES_UNITS'
+#: Die Fibu-Schnittstellen. Der Satz „Datev-Format“ trägt Berater- und Mandantennummer des DATEV-Stapels. Die Tabelle trägt
+#: auch Zugangsdaten anderer Schnittstellen: Der Leser benutzt allein ``NAME``, ``CONSULTANT_NO`` und ``CLIENT_NO``.
+T_FIN_SYSTEMS = 'SYS_FINACCSYSTEMS'
+DATEV_FORMAT_NAME = 'Datev-Format'
 
 #: Buchungsart (``MOV_FINACC_ACCRECORDS.ACCOUNTINGKIND``) der AfA-Sätze. Gemessen an einer Datenbank
 #: einer WISO-Version: Alle AfA-Sätze tragen 28 (und ``BOOKINGKIND`` 41), die Abgangsbuchungen 31
@@ -143,6 +148,11 @@ def _clean(text) -> str:
     if not isinstance(text, str):
         return ''
     return _WHITESPACE.sub(' ', text.replace('\x00', '')).strip()
+
+
+def _stripped(value):
+    """Ein Text ohne Leerraum an den Rändern; jeder andere Wert (Zahl, ``None``) unverändert."""
+    return value.strip() if isinstance(value, str) else value
 
 
 def _date(value: Optional[str]) -> Optional[str]:
@@ -296,6 +306,9 @@ class WisoBooking:
     #: auf diesem Basiskonto (``db.wiso_fdb_import``).
     legacy_account: Optional[int] = None
     legacy_counter_account: Optional[int] = None
+    #: Der BU-Schlüssel, den WISO am Satz gespeichert hat (``DATEVVATKEY``): eine ganze Zahl von 1 bis 9999. ``None``,
+    #: wenn die Spalte fehlt, leer oder 0 ist oder etwas anderes trägt – die App leitet ihn dann beim Export ab.
+    datev_key: Optional[int] = None
 
 
 @dataclass
@@ -461,6 +474,12 @@ class WisoData:
     #: ein Wächter für Sätze außerhalb dieses Musters. Die Regel ist festgeschrieben: Bei genau
     #: einer liquiden Seite bestimmt die Geldbewegung das Vorzeichen.
     negative_gross: int = 0
+    #: Berater- und Mandantennummer aus dem Satz „Datev-Format“ der Fibu-Schnittstellen, beide gültig (Berater 1001–9999999,
+    #: Mandant 1–99999, nur Ziffern ohne führende Null) – sonst ``None``
+    datev_numbers: Optional[Tuple[str, str]] = None
+    #: Die Tabelle der Fibu-Schnittstellen ließ sich nicht lesen (ein Lese- oder Dekodierfehler): Der Import läuft weiter,
+    #: die Nummern fehlen, und er nennt das in seinen Hinweisen – ohne einen Wert aus der Tabelle oder den Fehlertext
+    datev_numbers_unreadable: bool = False
 
 
 class WisoDatabase:
@@ -480,6 +499,7 @@ class WisoDatabase:
                 self._standard = None       # ohne Standardrahmen geht es auch
         self._chart = None
         self._legacy_chart = None
+        self._datev_numbers_unreadable = False
 
     def close(self):
         self.catalog.close()
@@ -504,6 +524,7 @@ class WisoDatabase:
     }
     #: Schön, wenn vorhanden – ihr Fehlen kostet nur einzelne Angaben.
     OPTIONAL = {
+        T_BOOKINGS: ('DATEVVATKEY',),
         T_ASSETS: ('ID', 'INVNO', 'LABEL', 'PURCHASEDATE', 'SERVICELIFE'),
         T_DEPRECIATIONS: ('INVENTORYID', 'BOOKINGDATE', 'AMORT_AMOUNT'),
         T_ASSET_PAYMENTS: ('INVENTORYID', 'BOOKINGDATE', 'AMOUNTNET'),
@@ -514,6 +535,7 @@ class WisoDatabase:
         T_ORDER_POSITIONS: ('ID', 'ARTDESCR', 'PRICENET', 'UNITCODE'),
         T_CUSTOMERS: ('ID', 'CUSTNO', 'NAME1'),
         T_COMPANY: ('NAME1',),
+        T_FIN_SYSTEMS: ('NAME', 'CONSULTANT_NO', 'CLIENT_NO'),
     }
 
     def columns_of(self, table):
@@ -857,6 +879,7 @@ class WisoDatabase:
                 is_depreciation=is_depreciation, depreciation_year=depreciation_year,
                 future_depreciation=future,
                 legacy_account=legacy_account, legacy_counter_account=legacy_counter,
+                datev_key=parse_key(row.get('DATEVVATKEY')),
             ))
         self._liquid_subaccounts = [
             {'nummer': number, 'basis': basis, 'anzahl': count}
@@ -1152,6 +1175,28 @@ class WisoDatabase:
                 phone=_clean(row.get('PHONE1')))
         return None
 
+    def datev_numbers(self) -> Optional[Tuple[str, str]]:
+        """Berater- und Mandantennummer des DATEV-Stapels: ``(Beraternummer, Mandantennummer)`` aus dem Satz
+        „Datev-Format“ der Fibu-Schnittstellen (``SYS_FINACCSYSTEMS``), beide nur als Zahlen (Berater 1001–9999999,
+        Mandant 1–99999, nur Ziffern ohne führende Null) – sonst ``None``; fehlt die Tabelle oder eine Spalte, passiert nichts.
+
+        Die Tabelle trägt auch Zugangsdaten anderer Schnittstellen. Benutzt wird allein ``NAME``, ``CONSULTANT_NO``
+        und ``CLIENT_NO``; kein anderer Wert aus ihr verlässt diese Methode – auch nicht im Fehlerfall: Jeder Lese- oder
+        Dekodierfehler beim Lesen der Tabelle gibt ``None`` (``datev_numbers_unreadable`` hält ihn fest, ohne den
+        Fehlertext) und bricht den Import nicht ab."""
+        self._datev_numbers_unreadable = False
+        try:
+            for row in self._safe_rows(T_FIN_SYSTEMS):
+                if _clean(row.get('NAME')) != DATEV_FORMAT_NAME:
+                    continue
+                consultant, client = (consultant_no(_stripped(row.get('CONSULTANT_NO'))),
+                                      client_no(_stripped(row.get('CLIENT_NO'))))
+                if consultant and client:
+                    return consultant, client
+        except Exception:                      # kein Fehler dieser Nebentabelle darf den Import der Buchungen verhindern
+            self._datev_numbers_unreadable = True
+        return None
+
     def customers(self) -> List[WisoCustomer]:
         """Kunden mit ihrer WISO-Kundennummer.
 
@@ -1303,10 +1348,12 @@ class WisoDatabase:
         memo = getattr(self, '_memo_skipped', 0)
         total = self.catalog.count(T_BOOKINGS)
         labels = getattr(self, 'account_labels', {})
+        numbers = self.datev_numbers()
         return WisoData(
             bookings=bookings, assets=assets, chart=self.chart(),
             customers=customers, invoices=self.invoices(customers),
-            company=self.company(),
+            company=self.company(), datev_numbers=numbers,
+            datev_numbers_unreadable=self._datev_numbers_unreadable,
             unmapped_accounts=missing, memo_rows_skipped=memo,
             liquid_subaccounts=getattr(self, '_liquid_subaccounts', []),
             negative_gross=getattr(self, '_negative_gross', 0),

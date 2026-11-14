@@ -409,7 +409,7 @@ def test_datev_of_cash_mask_bookings_is_unchanged(tmp_path, kasse_skr):
     _mask(db, kasse, 6815, '-11.90', 19, '-1.90')
     _mask(db, kasse, 4400, '11.90', 19, '1.90', date='2026-03-02')
     counter = '' if kasse_skr is None else str(kasse_skr)
-    assert _datev(db) == [('11,90', 'S', '6815', counter, '9'), ('11,90', 'H', '4400', counter, '3')]
+    assert _datev(db) == [('11,90', 'S', '6815', counter, '401'), ('11,90', 'H', '4400', counter, '101')]
 
 
 @pytest.mark.parametrize('kasse_skr', KASSEN_PARAMS)

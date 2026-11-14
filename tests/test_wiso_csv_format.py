@@ -148,12 +148,12 @@ def test_only_the_whole_first_field_marks_a_datev_batch(db_with_coa):
 # ── Unbekannte Steuerschlüssel ───────────────────────────────────────────────
 
 def test_unknown_tax_keys_are_counted_and_their_rows_imported_without_a_rate(db_with_coa):
-    """100 und 181 stehen nicht in TaxKeys (echte Daten); 400 steht dort, hat aber keinen Satz – bekannt.
-    Leer und 0 sind kein Schlüssel."""
+    """181 und 250 stehen nicht in TaxKeys (100 seit 2.3.0 schon: Umsatzsteuer 0 %); 400 steht dort, hat aber keinen
+    Satz – bekannt. Leer und 0 sind kein Schlüssel."""
     result = db_with_coa.import_wiso_csv(csv_export(
         ('6815', '1800', '119,00', 'K1', '181'),
         ('6815', '1800', '59,50', 'K2', '181'),
-        ('6815', '1800', '23,80', 'K3', '100'),
+        ('6815', '1800', '23,80', 'K3', '250'),
         ('6815', '1800', '11,90', 'K4', '401'),       # bekannt: 19 %
         ('6815', '1800', '5,95', 'K5', '400'),        # bekannt, ohne Satz
         ('6815', '1800', '3,57', 'K6', '0'),
@@ -162,28 +162,31 @@ def test_unknown_tax_keys_are_counted_and_their_rows_imported_without_a_rate(db_
 
     assert result['errors'] == []
     assert result['imported'] == 7
-    assert result['unknown_tax_keys'] == [{'schluessel': '100', 'anzahl': 1},
-                                          {'schluessel': '181', 'anzahl': 2}]
+    assert result['unknown_tax_keys'] == [{'schluessel': '181', 'anzahl': 2},
+                                          {'schluessel': '250', 'anzahl': 1}]
     rates = dict(query(db_with_coa, "SELECT DocumentNumber, TaxRate FROM Bookings WHERE BookingType = 'entry'"))
     assert [rates[ref] for ref in ('K1', 'K2', 'K3', 'K5', 'K6', 'K7')] == [None] * 6
     assert rates['K4'] == pytest.approx(0.19)
     assert query(db_with_coa, "SELECT TaxAmount FROM Bookings WHERE DocumentNumber = 'K1'") == [(None,)]
 
 
-def test_the_transfer_to_the_revenue_account_gets_its_rate_and_is_not_reported(db_with_coa):
-    """„4405 an 4400“ bekommt 19 % auch ohne bekannten Schlüssel – dann stimmt „ohne Steuersatz
-    importiert“ nicht, und die Zeile zählt nicht."""
+def test_the_transfer_to_the_revenue_account_gets_its_rate_without_a_key_and_is_not_reported(db_with_coa):
+    """„4405 an 4400“ bekommt 19 %, wenn die Zeile keinen Schlüssel trägt (leer oder 0) – dann stimmt „ohne Steuersatz
+    importiert“ nicht, und die Zeile zählt nicht. Mit einem Schlüssel, den die App nicht kennt, gilt das nicht mehr (seit 2.3.0):
+    Er wird nicht geraten, die Zeile kommt wie jede andere ohne Satz und zählt."""
     result = db_with_coa.import_wiso_csv(csv_export(
-        ('4405', '4400', '119,00', 'U1', '181'),
-        ('6815', '1800', '59,50', 'U2', '181'),
+        ('4405', '4400', '119,00', 'U1', ''),
+        ('4405', '4400', '59,50', 'U3', '0'),
+        ('4405', '4400', '29,75', 'U4', '181'),
+        ('6815', '1800', '14,88', 'U2', '181'),
     ))
 
     assert result['errors'] == []
-    assert result['imported'] == 2
-    assert result['unknown_tax_keys'] == [{'schluessel': '181', 'anzahl': 1}]
+    assert result['imported'] == 4
+    assert result['unknown_tax_keys'] == [{'schluessel': '181', 'anzahl': 2}]
     rates = dict(query(db_with_coa, "SELECT DocumentNumber, TaxRate FROM Bookings WHERE BookingType = 'entry'"))
-    assert rates['U1'] == pytest.approx(0.19)
-    assert rates['U2'] is None
+    assert rates['U1'] == pytest.approx(0.19) and rates['U3'] == pytest.approx(0.19)
+    assert rates['U4'] is None and rates['U2'] is None
 
 
 def test_without_an_unknown_tax_key_the_list_is_empty(db_with_coa):
@@ -196,7 +199,7 @@ def test_without_an_unknown_tax_key_the_list_is_empty(db_with_coa):
 
 def test_only_rows_that_are_imported_are_counted(db_with_coa):
     """Ein zweiter Lauf legt nichts an (Duplikate) und zählt deshalb auch keinen Schlüssel."""
-    lines = csv_export(('6815', '1800', '119,00', 'D1', '181'), ('6815', '1800', '59,50', 'D2', '100'))
+    lines = csv_export(('6815', '1800', '119,00', 'D1', '181'), ('6815', '1800', '59,50', 'D2', '250'))
     first = db_with_coa.import_wiso_csv(lines)
     again = db_with_coa.import_wiso_csv(lines)
 

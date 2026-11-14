@@ -185,7 +185,9 @@ class _CoreMixin:
             (SELECT GROUP_CONCAT(pr.RoleKey, ',')
              FROM PersonRoles pr
              WHERE pr.ContactID = c.ID
-             ORDER BY pr.RoleKey)          AS role_keys         -- 31
+             ORDER BY pr.RoleKey)          AS role_keys,        -- 31
+            cd.DatevConsultantNo           AS datev_consultant_no, -- 32 (2.3.0, nur die eigene Firma trägt sie)
+            cd.DatevClientNo               AS datev_client_no   -- 33
         FROM Contacts c
         LEFT JOIN CompanyDetails    cd ON c.ID = cd.ContactID
         LEFT JOIN PersonDetails     pd ON c.ID = pd.ContactID

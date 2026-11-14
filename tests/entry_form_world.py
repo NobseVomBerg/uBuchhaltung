@@ -293,12 +293,35 @@ def add_roundtrip_rows(db):
                 conn.commit()
 
 
+def to_state_2002(db_path):
+    """Die Datenbank in den Stand zurückversetzen, den 2.2.x geschrieben hat: die Spalte ``DatevKey`` an
+    ``Bookings`` und die Spalten ``DatevConsultantNo`` und ``DatevClientNo`` an ``CompanyDetails`` entfernt,
+    ``TaxKeys`` wie in 2.2.x (121 als „steuerfrei“, 490 mit Satz 0, ohne 100/120/122), ``PRAGMA user_version`` =
+    2002. Wiederholbar: Was schon fehlt, wird übersprungen."""
+    with closing(sqlite3.connect(db_path)) as conn:
+        for table, columns in (('Bookings', ('DatevKey',)),
+                               ('CompanyDetails', ('DatevClientNo', 'DatevConsultantNo'))):
+            present = {row[1] for row in conn.execute(f'PRAGMA table_info({table})')}
+            for column in columns:
+                if column in present:
+                    conn.execute(f'ALTER TABLE {table} DROP COLUMN {column}')
+        conn.execute("DELETE FROM TaxKeys WHERE Code IN ('100', '120', '122')")
+        conn.execute("INSERT OR REPLACE INTO TaxKeys (Code, Description, TaxRate, TaxType) VALUES "
+                     "('121', 'Steuerfrei (Kleinunternehmer etc.)', 0.0, 'steuerfrei')")
+        conn.execute("INSERT OR REPLACE INTO TaxKeys (Code, Description, TaxRate, TaxType) VALUES "
+                     "('490', 'Ohne Vorsteuerabzug', 0.0, 'keine')")
+        conn.execute('PRAGMA user_version = 2002')
+        conn.commit()
+
+
 def to_state_2001(db_path):
-    """Die Datenbank in den Stand zurückversetzen, den 2.1.x geschrieben hat: die Spalten ``SentAt``,
+    """Die Datenbank in den Stand zurückversetzen, den 2.1.x geschrieben hat: zusätzlich zu 2.2.x
+    (``to_state_2002``) die Spalten ``SentAt``,
     ``DocumentVersion``, ``InvoiceKind``, ``CancelsInvoiceId``, ``ReplacesInvoiceId`` an ``Invoices``, der
     eindeutige Index auf dem Stornobeleg und die Tabellen ``InvoiceCorrections`` und
     ``InvoiceDocumentVersions`` entfernt, ``PRAGMA user_version`` = 2001. Wiederholbar: Was schon fehlt, wird
     übersprungen."""
+    to_state_2002(db_path)
     with closing(sqlite3.connect(db_path)) as conn:
         conn.execute('DROP INDEX IF EXISTS ux_invoices_cancels')
         present = {row[1] for row in conn.execute('PRAGMA table_info(Invoices)')}

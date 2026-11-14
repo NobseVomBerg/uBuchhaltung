@@ -48,6 +48,26 @@ _INVOICE_VERSION_COLUMNS = (
     ('DocumentVersion', 'INTEGER'),
 )
 
+#: Ab dieser Schema-Zahl (Version 2.3.0) trägt ein Buchungssatz den BU-Schlüssel, den seine Quelle mitgebracht
+#: hat (``Bookings.DatevKey``, NULL = keiner, der Export leitet ihn ab), und die eigene Firma Berater- und
+#: Mandantennummer für den Vorlauf des DATEV-Stapels (``CompanyDetails.DatevConsultantNo``/``DatevClientNo``).
+#: ``TaxKeys`` ist berichtigt und ergänzt (``TAX_KEY_CORRECTIONS``).
+DATEV_KEY_SCHEMA = 2003
+
+#: Die Spalten, die Schema 2003 an ``CompanyDetails`` anhängt (in dieser Reihenfolge)
+_DATEV_NUMBER_COLUMNS = ('DatevConsultantNo', 'DatevClientNo')
+
+#: Die Zeilen von ``TaxKeys``, die Schema 2003 berichtigt oder ergänzt (Code, Bezeichnung, Satz, Art) – dieselben wie
+#: in ``seed_data/tax_keys.json``, das eine frische Datenbank anlegt. Der 121 war als „steuerfrei“ geführt, ist aber die
+#: Umsatzsteuer der Verwendung von Gegenständen; der 490 trägt keinen Satz.
+TAX_KEY_CORRECTIONS = (
+    ('100', 'Umsatzsteuer 0 %', 0.0, 'USt'),
+    ('120', 'Verwendung von Gegenständen 0 %', 0.0, 'USt'),
+    ('121', 'Verwendung von Gegenständen 19 %', 0.19, 'USt'),
+    ('122', 'Verwendung von Gegenständen 7 %', 0.07, 'USt'),
+    ('490', 'ohne Vorsteuerabzug', None, 'keine'),
+)
+
 
 class SchemaMixin:
     def _column_exists(self, cursor, table, column):
@@ -138,6 +158,33 @@ class SchemaMixin:
             # in ``_ensure_invoice_version_schema``.
             for column, definition in _INVOICE_VERSION_COLUMNS:
                 self._add_column_if_missing(cursor, 'Invoices', column, definition)
+        if from_version < DATEV_KEY_SCHEMA:
+            # 2.3.0: Der BU-Schlüssel, den die Quelle einer Buchung mitgebracht hat, steht als Daten am Satz;
+            # Berater- und Mandantennummer stehen bei der eigenen Firma. Die Spalten kommen in der Reihenfolge ans
+            # Ende, in der sie auch das CREATE TABLE der frischen Datenbank führt; der Bestand behält überall NULL
+            # (NULL = kein Schlüssel mitgebracht: Der Export leitet ihn ab) – nichts wird umgedeutet.
+            self._add_column_if_missing(cursor, 'Bookings', 'DatevKey', 'INTEGER')
+            for column in _DATEV_NUMBER_COLUMNS:
+                self._add_column_if_missing(cursor, 'CompanyDetails', column, 'TEXT')
+            self._correct_tax_keys(cursor)
+
+    def _correct_tax_keys(self, cursor):
+        """Die Zeilen von ``TAX_KEY_CORRECTIONS`` in ``TaxKeys`` berichtigen (eine abweichende Zeile wird überschrieben,
+        eine fehlende angelegt); eine schon richtige Zeile und alles andere bleibt unberührt (auch ihre Reihenfolge in
+        der Datei: kein ``INSERT OR REPLACE``, das die Zeile neu schriebe). Eine leere Tabelle bleibt leer:
+        ``_seed_tax_keys`` legt sie dann vollständig an – mit denselben Zeilen aus ``seed_data/tax_keys.json`` –, was
+        bei fünf vorab geschriebenen Zeilen unterbliebe."""
+        if cursor.execute('SELECT 1 FROM TaxKeys LIMIT 1').fetchone() is None:
+            return
+        for code, description, rate, tax_type in TAX_KEY_CORRECTIONS:
+            row = cursor.execute('SELECT Description, TaxRate, TaxType FROM TaxKeys WHERE Code = ?',
+                                 (code,)).fetchone()
+            if row is None:
+                cursor.execute('INSERT INTO TaxKeys (Code, Description, TaxRate, TaxType) VALUES (?, ?, ?, ?)',
+                               (code, description, rate, tax_type))
+            elif tuple(row) != (description, rate, tax_type):
+                cursor.execute('UPDATE TaxKeys SET Description = ?, TaxRate = ?, TaxType = ? WHERE Code = ?',
+                               (description, rate, tax_type, code))
 
     def _fill_entry_forms(self, cursor):
         """Jedem Buchungssatz (``BookingType='entry'``) ohne Form die Form geben, die
@@ -375,6 +422,10 @@ class SchemaMixin:
                 LegalForm    TEXT,
                 TaxID        TEXT,
                 BuyerRouteID TEXT,
+                -- DATEV-Vorlauf der eigenen Firma (2.3.0, Schema 2003; Reihenfolge wie das ALTER TABLE der
+                -- Migration): Beraternummer 4–7, Mandantennummer 1–5 Ziffern; NULL = nicht eingetragen
+                DatevConsultantNo TEXT,
+                DatevClientNo     TEXT,
                 FOREIGN KEY (ContactID) REFERENCES Contacts(ID) ON DELETE CASCADE
             )
         ''')
@@ -496,6 +547,10 @@ class SchemaMixin:
                 -- db/matching.py. Bankzeilen haben keine (NULL). ANS ENDE anhängen:
                 -- die Leser lesen Bookings positionsbasiert (SELECT *).
                 EntryForm TEXT,
+                -- BU-Schlüssel, den die Quelle der Buchung mitgebracht hat (2.3.0, Index 23): eine ganze Zahl
+                -- von 1 bis 9999. NULL = keiner (0 wird nie gespeichert), der DATEV-Export leitet ihn ab; er
+                -- fällt (NULL), wenn sich Konto, Gegenkonto oder Steuersatz ändern.
+                DatevKey INTEGER,
                 FOREIGN KEY (Account_ID) REFERENCES Accounts(ID),
                 FOREIGN KEY (Contact_ID) REFERENCES Contacts(ID),
                 FOREIGN KEY (COA_ID) REFERENCES ChartOfAccounts(ID),

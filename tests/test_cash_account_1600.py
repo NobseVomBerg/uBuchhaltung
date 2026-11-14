@@ -444,7 +444,7 @@ def test_changing_the_cash_number_after_an_import_would_turn_an_expense_into_inc
         return _datev(db), _euer(db), (totals['income'], totals['expense'])
 
     before = state()
-    assert before == ([('18,35', 'S', '6815', '1600', '3')], {}, (0, 0))
+    assert before == ([('18,35', 'S', '6815', '1600', '401')], {}, (0, 0))
 
     _status, location = _update(db, kasse, 'Kasse', 1600)
 
@@ -459,7 +459,7 @@ def test_changing_the_cash_number_after_an_import_would_turn_an_expense_into_inc
     # Vorsteuer 1406 mit +2,93, also mit falschem Vorzeichen. Das Dashboard zählt den Satz mit dem
     # gespeicherten Betrag (+18,35) als Einnahme. Alles das ist, was die Sperre verhindert – sie
     # bleibt nötig.
-    assert state() == ([('18,35', 'S', '6815', '1600', '3')],
+    assert state() == ([('18,35', 'S', '6815', '1600', '401')],
                        {1406: Decimal('2.93'), 1600: Decimal('15.42'), 6815: Decimal('-15.42')},
                        (18.35, 0))
 
@@ -646,7 +646,7 @@ def test_csv_cash_bookings_on_1600_of_a_fresh_database_get_the_sign_of_the_money
                          3806: Decimal('7.98'), 4400: Decimal('42.02')}
     totals = db.get_dashboard_totals(D1, D2)
     assert (totals['income'], totals['expense'], totals['bank_count']) == (50.0, -18.35, 2)
-    assert _datev(db) == [('18,35', 'S', '6815', '1600', '9'), ('50,00', 'S', '1600', '4400', '3')]
+    assert _datev(db) == [('18,35', 'S', '6815', '1600', '401'), ('50,00', 'S', '1600', '4400', '401')]
 
 
 # Kassenposten wie in einem WISO-Export: Ausgabe und Einnahme über 1600, dazu ein Satz über 1050
@@ -677,7 +677,7 @@ def test_csv_booking_on_1600_keeps_the_raw_amount_when_no_cash_account_carries_1
                              'KS-002': (_minor('50.00'), _minor('7.98')),
                              'KS-003': (_minor('10.00'), None),                 # 1050: kein Geldkonto mehr
                              'KS-004': (_minor('10.00'), None)}
-    assert _datev(db) == [('18,35', 'S', '6815', '1600', '3'), ('50,00', 'S', '1600', '4400', '3'),
+    assert _datev(db) == [('18,35', 'S', '6815', '1600', '401'), ('50,00', 'S', '1600', '4400', '401'),
                           ('10,00', 'S', '6815', '1050', '0'), ('10,00', 'S', '6815', '1650', '0')]
     assert _euer(db) == {}                                  # keine Kasse führt 1600: in keiner Sektion
     assert db.get_dashboard_totals(D1, D2)['bank_count'] == 0
@@ -799,7 +799,7 @@ def test_wiso_database_cash_bookings_on_1600_of_a_fresh_database_get_the_sign_of
                          3806: Decimal('7.98'), 4400: Decimal('42.02')}
     totals = db.get_dashboard_totals(D1, D2)
     assert (totals['income'], totals['expense'], totals['bank_count']) == (50.0, -18.35, 2)
-    assert _datev(db) == [('18,35', 'S', '6850', '1600', '9'), ('50,00', 'S', '1600', '4400', '3'),
+    assert _datev(db) == [('18,35', 'S', '6850', '1600', '401'), ('50,00', 'S', '1600', '4400', '101'),
                           ('10,00', 'S', '6850', '1050', '0')]
 
 
@@ -818,7 +818,7 @@ def test_wiso_database_booking_on_1600_keeps_the_raw_amount_when_no_cash_account
     assert _imported(db) == {'KD-001': (_minor('18.35'), _minor('2.93')),
                              'KD-002': (_minor('50.00'), _minor('7.98')),
                              'KD-003': (_minor('10.00'), None)}
-    assert _datev(db) == [('18,35', 'S', '6850', '1600', '3'), ('50,00', 'S', '1600', '4400', '3'),
+    assert _datev(db) == [('18,35', 'S', '6850', '1600', '401'), ('50,00', 'S', '1600', '4400', '101'),
                           ('10,00', 'S', '6850', '1050', '0')]
     assert _euer(db) == {}
     again = db.import_wiso_fdb(path, with_assets=False, with_invoices=False)

@@ -32,6 +32,7 @@ from db.matching import (
     ENTRY_EMPTY, ENTRY_LIQUID_FIRST, ENTRY_MIRROR, ENTRY_PURPOSE_FIRST, ENTRY_TRANSFER,
     classify_entry, is_bank_effective,
 )
+from db import datev_keys
 from export import datev
 from server.handlers import handle_add_transaction, handle_datev_export
 
@@ -280,39 +281,41 @@ def test_euer_receipt_without_bank_account_counts_as_payment_once_linked(bank_db
     assert _euer(bank_db) == {6815: Decimal('-50.00'), 1406: Decimal('-9.50')}
 
 
-# ── C. DATEV: Soll/Haben folgt der Form, der BU-Schlüssel der Geldrichtung ───
+# ── C. DATEV: Soll/Haben folgt der Form, der BU-Schlüssel der Art des Zweckkontos ───
 # Das Kennzeichen bezieht sich auf das Feld „Konto“ (= COA):
 #   Geldkonto vorne und Umbuchung: positiver Betrag = S, negativer = H
 #   Zweckkonto vorne (auch mit leerem Gegenkonto), Spiegel, leer: positiv = H, negativ = S
-# BU: Steuersatz und Vorzeichen des Betrags (Einnahme 19 % = 3, 7 % = 2; Ausgabe 19 % = 9, 7 % = 8; sonst 0) –
-#     nur eine Umbuchung mit Erlös-, Wartekonto oder Debitoren schlüsselt immer nach der Umsatzsteuer
-#     (4405 an 4400 mit −119: 3 statt 9; ``export.datev._bu_direction``, Tests in test_datev_export.py).
+# BU: Art des Zweckkontos und Steuersatz (Erlöskonto 19 % = 101, 7 % = 102; jedes andere Zweckkonto 19 % = 401,
+#     7 % = 402; sonst 0) – nicht das Vorzeichen des Betrags; die Umbuchung „Wartekonto an Erlöskonto“ ist die
+#     Rechnungskette und trägt keinen Schlüssel (``db.datev_keys``, Tests in test_datev_export.py). Ohne gespeicherte
+#     Form und ohne Zahlungskonten (``None``) gilt wie bisher allein die Richtung der Geldbewegung.
 _SPALTE_SH, _SPALTE_KONTO, _SPALTE_GEGENKONTO, _SPALTE_BU, _SPALTE_BELEG = 1, 6, 7, 8, 10
+_SPALTE_STEUERSATZ, _SPALTE_LAND = 40, 119
 
 # (id, COA, Gegenkonto, Betrag, Steuersatz, (Umsatz, S/H, Konto, Gegenkonto, BU))
 DATEV_FAELLE = [
-    ('zweckkonto-vorne-einnahme', 4400, 1800, '119.00', 0.19, ('119,00', 'H', '4400', '1800', '3')),
-    ('zweckkonto-vorne-ausgabe', 6815, 1800, '-59.50', 0.19, ('59,50', 'S', '6815', '1800', '9')),
-    ('geldkonto-vorne-einnahme', 1800, 4400, '119.00', 0.19, ('119,00', 'S', '1800', '4400', '3')),
-    ('geldkonto-vorne-ausgabe', 1800, 6815, '-59.50', 0.19, ('59,50', 'H', '1800', '6815', '9')),
-    ('gegenkonto-leer-einnahme', 4400, None, '119.00', 0.19, ('119,00', 'H', '4400', '', '3')),
-    ('gegenkonto-leer-ausgabe', 6815, None, '-59.50', 0.19, ('59,50', 'S', '6815', '', '9')),
-    ('vorne-leer-ausgabe', None, 6815, '-59.50', 0.19, ('59,50', 'H', '', '6815', '9')),
-    ('umbuchung-positiv', 4405, 4400, '119.00', 0.19, ('119,00', 'S', '4405', '4400', '3')),
-    ('umbuchung-negativ', 4405, 4400, '-119.00', 0.19, ('119,00', 'H', '4405', '4400', '3')),
+    ('zweckkonto-vorne-einnahme', 4400, 1800, '119.00', 0.19, ('119,00', 'H', '4400', '1800', '101')),
+    ('zweckkonto-vorne-ausgabe', 6815, 1800, '-59.50', 0.19, ('59,50', 'S', '6815', '1800', '401')),
+    ('geldkonto-vorne-einnahme', 1800, 4400, '119.00', 0.19, ('119,00', 'S', '1800', '4400', '101')),
+    ('geldkonto-vorne-ausgabe', 1800, 6815, '-59.50', 0.19, ('59,50', 'H', '1800', '6815', '401')),
+    ('gegenkonto-leer-einnahme', 4400, None, '119.00', 0.19, ('119,00', 'H', '4400', '', '101')),
+    ('gegenkonto-leer-ausgabe', 6815, None, '-59.50', 0.19, ('59,50', 'S', '6815', '', '401')),
+    ('vorne-leer-ausgabe', None, 6815, '-59.50', 0.19, ('59,50', 'H', '', '6815', '401')),
+    ('umbuchung-positiv', 4405, 4400, '119.00', 0.19, ('119,00', 'S', '4405', '4400', '0')),
+    ('umbuchung-negativ', 4405, 4400, '-119.00', 0.19, ('119,00', 'H', '4405', '4400', '0')),
     ('privatanteil', 2100, 6805, '7.50', None, ('7,50', 'S', '2100', '6805', '0')),
     ('privatanteil-negativ', 6805, 2100, '-7.50', None, ('7,50', 'H', '6805', '2100', '0')),
     ('spiegel-positiv', 1800, 1810, '500.00', None, ('500,00', 'H', '1800', '1810', '0')),
     ('spiegel-negativ', 1800, 1810, '-500.00', None, ('500,00', 'S', '1800', '1810', '0')),
     ('leer-positiv', None, None, '10.00', None, ('10,00', 'H', '', '', '0')),
     ('leer-negativ', None, None, '-10.00', None, ('10,00', 'S', '', '', '0')),
-    ('zweckkonto-vorne-einnahme-7', 4300, 1800, '107.00', 0.07, ('107,00', 'H', '4300', '1800', '2')),
-    ('zweckkonto-vorne-ausgabe-7', 6815, 1800, '-107.00', 0.07, ('107,00', 'S', '6815', '1800', '8')),
-    ('geldkonto-vorne-einnahme-7', 1800, 4300, '107.00', 0.07, ('107,00', 'S', '1800', '4300', '2')),
-    ('geldkonto-vorne-ausgabe-7', 1800, 6815, '-107.00', 0.07, ('107,00', 'H', '1800', '6815', '8')),
+    ('zweckkonto-vorne-einnahme-7', 4300, 1800, '107.00', 0.07, ('107,00', 'H', '4300', '1800', '102')),
+    ('zweckkonto-vorne-ausgabe-7', 6815, 1800, '-107.00', 0.07, ('107,00', 'S', '6815', '1800', '402')),
+    ('geldkonto-vorne-einnahme-7', 1800, 4300, '107.00', 0.07, ('107,00', 'S', '1800', '4300', '102')),
+    ('geldkonto-vorne-ausgabe-7', 1800, 6815, '-107.00', 0.07, ('107,00', 'H', '1800', '6815', '402')),
     ('ohne-steuer', 6815, 1800, '-10.00', 0.0, ('10,00', 'S', '6815', '1800', '0')),
-    ('betrag-null-zweckkonto-vorne', 4400, 1800, '0.00', 0.19, ('0,00', 'H', '4400', '1800', '3')),
-    ('betrag-null-geldkonto-vorne', 1800, 4400, '0.00', 0.19, ('0,00', 'S', '1800', '4400', '3')),
+    ('betrag-null-zweckkonto-vorne', 4400, 1800, '0.00', 0.19, ('0,00', 'H', '4400', '1800', '101')),
+    ('betrag-null-geldkonto-vorne', 1800, 4400, '0.00', 0.19, ('0,00', 'S', '1800', '4400', '101')),
 ]
 DATEV_PARAMS = [pytest.param(*fall[1:], id=fall[0]) for fall in DATEV_FAELLE]
 
@@ -343,7 +346,8 @@ def _export(db, with_payment_ids=True):
     bookings = db.fetch_bookings_range('2026-03-01', '2026-03-31')
     csv_bytes, exported = datev.export_to_datev(
         bookings, db.get_coa_id_to_number_map(), '2026-03-01', '2026-03-31',
-        liquid_coa_ids=db.get_payment_coa_ids() if with_payment_ids else None)
+        liquid_coa_ids=db.get_payment_coa_ids() if with_payment_ids else None,
+        waiting_numbers=db.get_waiting_account_numbers())
     assert exported == [b[0] for b in bookings]
     return _datev_rows(csv_bytes)
 
@@ -371,14 +375,15 @@ def test_datev_marker_follows_the_form_of_the_entry(bank_db, coa, counter, amoun
 def test_datev_without_liquid_ids_keeps_the_sign_rule(bank_db, coa, counter, amount, rate,
                                                       expected):
     """Eine Zeile ohne Form und ohne ``liquid_coa_ids`` (None): Es gilt allein das Vorzeichen,
-    positiv = H, negativ = S – für das Kennzeichen wie für den BU-Schlüssel (auch eine Umbuchung mit
-    Erlösseite ist ohne Form keine erkennbare Umbuchung)."""
+    positiv = H, negativ = S – für das Kennzeichen wie für die Art des BU-Schlüssels (positiv Umsatzsteuer,
+    negativ Vorsteuer; auch eine Umbuchung mit Erlösseite ist ohne Form keine erkennbare Umbuchung)."""
     _book_entry(bank_db, 'DV01', coa, counter, amount, rate)
     _ohne_formen(bank_db)
     umsatz, sh, konto, gegenkonto, bu = _feld(_export(bank_db, with_payment_ids=False)['DV01'])
     assert sh == ('H' if Decimal(amount) >= 0 else 'S')
     assert (umsatz, konto, gegenkonto) == (expected[0], *expected[2:4])
-    assert bu == datev._taxrate_to_bu(rate, 'H' if Decimal(amount) >= 0 else 'S')
+    kind = datev_keys.KIND_VAT if Decimal(amount) >= 0 else datev_keys.KIND_INPUT
+    assert bu == str(datev_keys.derive_key(kind, rate, '2026-03-10'))
 
 
 def test_datev_empty_liquid_set_is_not_the_legacy_rule(bank_db):
@@ -393,34 +398,39 @@ def test_datev_empty_liquid_set_is_not_the_legacy_rule(bank_db):
         bookings, bank_db.get_coa_id_to_number_map(), '2026-03-01', '2026-03-31',
         liquid_coa_ids=set())
 
-    assert _feld(_datev_rows(csv_bytes)['DV01']) == ('59,50', 'H', '6815', '1800', '9')
+    assert _feld(_datev_rows(csv_bytes)['DV01']) == ('59,50', 'H', '6815', '1800', '401')
 
 
 def test_datev_tax_key_is_the_same_with_and_without_liquid_ids(bank_db):
-    """Der BU-Schlüssel hängt an Steuersatz und Betragsvorzeichen: In jeder Zeile ändert
-    sich allein das Soll/Haben-Kennzeichen (Spalte 1), und zwar genau bei den Formen, in
-    denen das Kennzeichen der Vorzeichen-Regel widerspricht. Einzige Ausnahme beim BU-Schlüssel:
-    die negative Umbuchung mit Erlösseite („4405 an 4400“, −119) – erst mit den Zahlungskonten
-    ist sie als Umbuchung erkennbar und schlüsselt nach der Umsatzsteuer, ohne bleibt das Vorzeichen."""
+    """Der BU-Schlüssel hängt an der Art des Zweckkontos und am Steuersatz (mit Form), ohne Form und ohne
+    Zahlungskonten am Vorzeichen des Betrags. In jeder Zeile ändert sich allein das Soll/Haben-Kennzeichen
+    (Spalte 1), und zwar genau bei den Formen, in denen das Kennzeichen der Vorzeichen-Regel widerspricht –
+    und bei den beiden Umbuchungen „Wartekonto an Erlöskonto“: Erst mit den Zahlungskonten ist sie als
+    Umbuchung erkennbar, die Rechnungskette (kein Schlüssel, Satz in Spalte 40, Land in Spalte 119); ohne bleibt
+    die Richtung der Geldbewegung (positiv Umsatzsteuer 101, negativ Vorsteuer 401)."""
     _alle_faelle_buchen(bank_db)
     _ohne_formen(bank_db)
     mit = _export(bank_db)
     ohne = _export(bank_db, with_payment_ids=False)
 
     assert mit.keys() == ohne.keys() and len(mit) == len(DATEV_FAELLE)
+    nummer = {fall_id: f'DV{number:02d}' for number, (fall_id, *_rest) in enumerate(DATEV_FAELLE, start=1)}
+    umbuchungen = {nummer['umbuchung-positiv'], nummer['umbuchung-negativ']}
     geaendert, anderer_bu = set(), set()
     for doc, fields in mit.items():
         other = ohne[doc]
         if fields[_SPALTE_BU] != other[_SPALTE_BU]:
             anderer_bu.add(doc)
-        assert [v for i, v in enumerate(fields) if i not in (_SPALTE_SH, _SPALTE_BU)] == \
-               [v for i, v in enumerate(other) if i not in (_SPALTE_SH, _SPALTE_BU)], doc
+        ausgenommen = {_SPALTE_SH, _SPALTE_BU, _SPALTE_STEUERSATZ, _SPALTE_LAND} if doc in umbuchungen else {_SPALTE_SH, _SPALTE_BU}
+        assert [v for i, v in enumerate(fields) if i not in ausgenommen] == \
+               [v for i, v in enumerate(other) if i not in ausgenommen], doc
         if fields[_SPALTE_SH] != other[_SPALTE_SH]:
             geaendert.add(doc)
-    negativ = next(f'DV{number:02d}' for number, (fall_id, *_rest) in enumerate(DATEV_FAELLE, start=1)
-                   if fall_id == 'umbuchung-negativ')
-    assert anderer_bu == {negativ}
-    assert (mit[negativ][_SPALTE_BU], ohne[negativ][_SPALTE_BU]) == ('3', '9')
+    assert anderer_bu == umbuchungen
+    assert [mit[doc][_SPALTE_BU] for doc in sorted(umbuchungen)] == ['0', '0']
+    assert (ohne[nummer['umbuchung-positiv']][_SPALTE_BU], ohne[nummer['umbuchung-negativ']][_SPALTE_BU]) == ('101', '401')
+    assert [mit[doc][_SPALTE_STEUERSATZ] for doc in sorted(umbuchungen)] == ['19,00', '19,00']       # Rechnungskette
+    assert [mit[doc][_SPALTE_LAND] for doc in sorted(umbuchungen)] == ['DE', 'DE']
 
     erwartet = {f'DV{number:02d}'
                 for number, (_id, _coa, _counter, amount, _rate, expected)
@@ -493,14 +503,14 @@ def test_datev_fresh_database_clearing_account_is_a_payment_account(tmp_db):
     result = handle_datev_export(tmp_db, {'date_from': ['2026-03-01'], 'date_to': ['2026-03-31']})
     assert isinstance(result[0], bytes), result
     rows = _datev_rows(result[0])
-    assert _feld(rows['DV01']) == ('18,35', 'S', '6815', '1460', '9')    # Zweckkonto vorne, Kasse hinten
+    assert _feld(rows['DV01']) == ('18,35', 'S', '6815', '1460', '401')  # Zweckkonto vorne, Kasse hinten
     assert _feld(rows['DV02']) == ('50,00', 'S', '1460', '4400', '0')    # Kasse vorne, Einnahme
     assert _feld(rows['DV03']) == ('50,00', 'H', '4400', '1460', '0')    # Zweckkonto vorne, Einnahme
 
 
 @pytest.mark.parametrize('zweck, amount, rate, tax, expected', [
-    pytest.param(4400, '119.00', 0.19, '19.00', ('119,00', 'H', '4400', '', '3'), id='einnahme'),
-    pytest.param(6815, '-59.50', 0.19, '-9.50', ('59,50', 'S', '6815', '', '9'), id='ausgabe'),
+    pytest.param(4400, '119.00', 0.19, '19.00', ('119,00', 'H', '4400', '', '101'), id='einnahme'),
+    pytest.param(6815, '-59.50', 0.19, '-9.50', ('59,50', 'S', '6815', '', '401'), id='ausgabe'),
 ])
 def test_datev_bank_without_skr_saved_through_the_mask(tmp_db, bank_without_skr, zweck, amount,
                                                        rate, tax, expected):

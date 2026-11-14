@@ -114,25 +114,26 @@ def test_the_mask_withdrawal_stays_as_it_was(db):
 
 
 def test_an_expense_paid_from_the_cash_account_is_the_same_in_every_version(db):
-    """6815 an 1600 mit der Kasse 1600: −18,35, ``purpose_first``, DATEV S 6815, BU 9."""
+    """6815 an 1600 mit der Kasse 1600: −18,35, ``purpose_first``, DATEV S 6815, BU 401 (der Schlüssel des
+    Exports bleibt am Satz)."""
     db.import_wiso_csv(csv_export(('6815', '1600', '18,35', 'KA-1', KEY19)))
 
     assert _by_ref(db)['KA-1'] == (minor('-18.35'), FORM_PURPOSE_FIRST)
-    assert datev_rows(db)['KA-1'] == ('18,35', 'S', '6815', '1600', '9')
+    assert datev_rows(db)['KA-1'] == ('18,35', 'S', '6815', '1600', '401')
     assert db.get_dashboard_totals(D1, D2)['expense'] == -18.35
     assert euer(db)[6815] == Decimal('-15.42')
 
 
 def test_the_same_expense_with_a_cash_account_without_a_number_is_a_transfer(db):
-    """Kasse ohne SKR-Nummer: 1600 ist kein Geldkonto, ``transfer`` – BU-Schlüssel und EÜR sind
-    eigene Punkte (``docs/aufgaben.md``) und hier nur festgehalten."""
+    """Kasse ohne SKR-Nummer: 1600 ist kein Geldkonto, ``transfer`` – der BU-Schlüssel des Exports (401) bleibt
+    am Satz, die EÜR ist ein eigener Punkt (``docs/aufgaben.md``) und hier nur festgehalten."""
     cash = cash_account_id(db)
     db.update_account(cash, 'Kasse', '', '', '', '', skr_account=None)
 
     db.import_wiso_csv(csv_export(('6815', '1600', '18,35', 'KA-2', KEY19)))
 
     assert _by_ref(db)['KA-2'] == (minor('18.35'), FORM_TRANSFER)
-    assert datev_rows(db)['KA-2'] == ('18,35', 'S', '6815', '1600', '3')
+    assert datev_rows(db)['KA-2'] == ('18,35', 'S', '6815', '1600', '401')
     assert euer(db) == {}
 
 
@@ -205,8 +206,8 @@ def test_the_same_without_any_counter_account(db):
 # vorne) im Soll, beim Übertrag im Soll des Kontos, das das Geld bekommt.
 MATRIX = [
     (('6815', '1800', '119,00', 'R1'), {
-        1600: ('-119.00', FORM_PURPOSE_FIRST, 'S', '9'), None: ('-119.00', FORM_PURPOSE_FIRST, 'S', '9'),
-        1460: ('-119.00', FORM_PURPOSE_FIRST, 'S', '9')}),
+        1600: ('-119.00', FORM_PURPOSE_FIRST, 'S', '401'), None: ('-119.00', FORM_PURPOSE_FIRST, 'S', '401'),
+        1460: ('-119.00', FORM_PURPOSE_FIRST, 'S', '401')}),
     (('1600', '1800', '100,00', 'R2'), {                          # Abhebung
         1600: ('100.00', FORM_MIRROR_COA, 'S', '0'), None: ('-100.00', FORM_PURPOSE_FIRST, 'S', '0'),
         1460: ('-100.00', FORM_PURPOSE_FIRST, 'S', '0')}),
@@ -220,11 +221,11 @@ MATRIX = [
         1600: ('50.00', FORM_MIRROR_COA, 'S', '0'), None: ('50.00', FORM_MIRROR_COA, 'S', '0'),
         1460: ('50.00', FORM_MIRROR_COA, 'S', '0')}),
     (('6815', '1600', '18,35', 'R6'), {                           # Ausgabe aus der Kasse
-        1600: ('-18.35', FORM_PURPOSE_FIRST, 'S', '9'), None: ('18.35', FORM_TRANSFER, 'S', '3'),
-        1460: ('18.35', FORM_TRANSFER, 'S', '3')}),
+        1600: ('-18.35', FORM_PURPOSE_FIRST, 'S', '401'), None: ('18.35', FORM_TRANSFER, 'S', '401'),
+        1460: ('18.35', FORM_TRANSFER, 'S', '401')}),
     (('6815', '1800', '-119,00', 'R7'), {                         # Storno: Vorzeichen der Geldbewegung
-        1600: ('-119.00', FORM_PURPOSE_FIRST, 'S', '9'), None: ('-119.00', FORM_PURPOSE_FIRST, 'S', '9'),
-        1460: ('-119.00', FORM_PURPOSE_FIRST, 'S', '9')}),
+        1600: ('-119.00', FORM_PURPOSE_FIRST, 'S', '401'), None: ('-119.00', FORM_PURPOSE_FIRST, 'S', '401'),
+        1460: ('-119.00', FORM_PURPOSE_FIRST, 'S', '401')}),
 ]
 
 
@@ -267,7 +268,7 @@ def test_changing_the_number_of_a_bank_account_does_not_change_how_a_booked_row_
     _bank, child = _child_payment(db)
     before = (euer(db), datev_rows(db)['ZB-1'])
     assert before[0] == {6815: Decimal('-100.00'), 1406: Decimal('-19.00')}
-    assert before[1] == ('119,00', 'S', '6815', '1800', '9')
+    assert before[1] == ('119,00', 'S', '6815', '1800', '401')
 
     db.update_account(_bank_id(db), 'Form-Bank-Eins', 'Owner', 'DE0001', 'BIC', 'Bank',
                       skr_account=1900)
@@ -289,7 +290,7 @@ def test_the_cash_account_gaining_or_losing_its_number_does_not_change_a_booked_
                       document_number='KA-9', booking_type='entry', parent_booking_id=bank)
     before = (euer(db), datev_rows(db)['KA-9'])
     assert before[0] == {6815: Decimal('-100.00'), 1406: Decimal('-19.00')}
-    assert before[1] == ('119,00', 'S', '6815', '1600', '9')
+    assert before[1] == ('119,00', 'S', '6815', '1600', '401')
 
     db.update_account(cash_account_id(db), 'Kasse', '', '', '', '', skr_account=skr_after)
 

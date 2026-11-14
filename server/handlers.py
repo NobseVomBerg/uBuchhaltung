@@ -18,6 +18,7 @@ from .import_preview import match_account
 from .period import parse_iso_date, valid_period
 from .richtext import sanitize_richtext as _sanitize_richtext
 from db import Database
+from db import datev_keys
 from db.core import fk_explained, ForeignKeyError
 from db.invoices import (InvoiceCol, InvoiceNotDeletable, QUOTE_STAYS_CONVERTED_MESSAGE,
                          QUOTE_STAYS_CONVERTED_SQL, QuoteNotConvertible, QuoteStatusLocked, is_storno_row)
@@ -1096,9 +1097,13 @@ def handle_datev_export(db: Database, post_data: dict):
             return 303, f'/miscellaneous?datev_export=error&msg=Keine+Buchungen+im+Zeitraum+{date_from}+bis+{date_to}'
 
         coa_map = db.get_coa_id_to_number_map()
+        consultant_no, client_no = db.get_datev_numbers()
         csv_bytes, exported_ids = datev_module.export_to_datev(
             bookings, coa_map, date_from, date_to,
-            liquid_coa_ids=db.get_payment_coa_ids()
+            liquid_coa_ids=db.get_payment_coa_ids(),
+            waiting_numbers=db.get_waiting_account_numbers(),
+            invoices=db.get_datev_invoice_data(),
+            consultant_no=consultant_no, client_no=client_no
         )
 
         # Steuerdatum der exportierten Buchungen auf heute setzen
@@ -1517,6 +1522,26 @@ def handle_execute_sql(db: Database, post_data):
     finally:
         conn.close()
 
+def _datev_number_args(post_data):
+    """Berater- und Mandantennummer aus dem Formular einer Firma: ``(Beraternummer, Mandantennummer, Fehler)``.
+
+    Nur das Formular der eigenen Firma führt die beiden Felder (``datev_consultant_no``, ``datev_client_no``); fehlt eines,
+    ist der Wert ``None`` – die Datenbank lässt die gespeicherte Nummer dann, wie sie ist. Ein leeres Feld leert sie. Sonst
+    zählen nur Ziffern (Berater 4–7, Mandant 1–5 Stellen); alles andere ist ein Klartext als ``Fehler`` und nichts wird
+    geschrieben."""
+    numbers = []
+    for field, valid, error in (('datev_consultant_no', datev_keys.consultant_no, datev_keys.CONSULTANT_NO_ERROR),
+                                ('datev_client_no', datev_keys.client_no, datev_keys.CLIENT_NO_ERROR)):
+        if field not in post_data:
+            numbers.append(None)
+            continue
+        value = post_data[field][0].strip()
+        if value and valid(value) is None:
+            return None, None, error
+        numbers.append(value)
+    return numbers[0], numbers[1], None
+
+
 def handle_add_contact(db: Database, post_data):
     """Handle adding a new contact (Option C schema)"""
     from urllib.parse import quote
@@ -1530,6 +1555,9 @@ def handle_add_contact(db: Database, post_data):
         is_unique, _ = db.check_abbreviation_unique(abbr)
         if not is_unique:
             return 303, f'/masterdata/contacts?error={quote(f"Kürzel bereits vergeben: {abbr}")}'
+    consultant_no, client_no, number_error = _datev_number_args(post_data)
+    if number_error:
+        return 303, f'/masterdata/contacts?error={quote(number_error)}'
 
     # Multi-value fields (checkboxes). 'own' ist Systemtyp und mit anderen Typen
     # kombinierbar; ist es gewählt, wird es Primärtyp, die übrigen bleiben Links.
@@ -1575,6 +1603,8 @@ def handle_add_contact(db: Database, post_data):
             is_primary_contact= 1 if _get('is_primary_contact') == '1' else 0,
             type_keys         = type_keys,
             role_keys         = role_keys,
+            datev_consultant_no = consultant_no,
+            datev_client_no     = client_no,
         )
         return 303, '/masterdata/contacts'
     except Exception as e:
@@ -1598,6 +1628,9 @@ def handle_update_contact(db: Database, post_data):
         is_unique, _ = db.check_abbreviation_unique(abbr, exclude_id=contact_id)
         if not is_unique:
             return 303, f'/masterdata/contacts/edit?id={contact_id}&error={quote(f"Kürzel bereits vergeben: {abbr}")}'
+    consultant_no, client_no, number_error = _datev_number_args(post_data)
+    if number_error:
+        return 303, f'/masterdata/contacts/edit?id={contact_id}&error={quote(number_error)}'
 
     # Multi-value fields (checkboxes). 'own' ist Systemtyp (Spalte ContactType) und
     # darf mit anderen Typen kombiniert werden (z.B. eigene Firma als Kunde einer
@@ -1642,6 +1675,8 @@ def handle_update_contact(db: Database, post_data):
             is_primary_contact= 1 if _get('is_primary_contact') == '1' else 0,
             type_keys         = type_keys,
             role_keys         = role_keys,
+            datev_consultant_no = consultant_no,
+            datev_client_no     = client_no,
         )
         return 303, '/masterdata/contacts'
     except Exception as e:

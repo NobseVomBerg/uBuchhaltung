@@ -47,6 +47,12 @@ def _build(tmp_path, kind, cash_number):
         world.to_state_2000(path)
         _CoreMixin._initialized_dbs.discard(os.path.abspath(path))
         db = Database(db_name=path)                   # öffnen = migrieren
+    # Jeder Satz trägt einen mitgebrachten BU-Schlüssel (wie nach einem Import; beim Migrieren aus 2.2.x entsteht die
+    # Spalte leer, deshalb erst jetzt): Er übersteht jedes Öffnen und unveränderte Speichern wie jede andere Spalte –
+    # ``snapshot`` vergleicht alle Spalten aller Buchungen, auch ``DatevKey``
+    with closing(db._get_connection()) as conn:
+        conn.execute("UPDATE Bookings SET DatevKey = 401 + (ID % 5) WHERE BookingType = 'entry'")
+        conn.commit()
     return db
 
 
@@ -239,9 +245,13 @@ def test_assigning_an_existing_booking_keeps_its_accounts_amount_and_form(neuer_
             for booking_id, row in before.items():
                 if booking_id != candidate and after[booking_id] != row:
                     problems.append(f'{label}: Buchung {booking_id} geändert')
+            # Der mitgebrachte BU-Schlüssel (``DatevKey``) bleibt – außer die Konten ändern sich: Mit dem gefüllten
+            # Gegenkonto passt er nicht mehr zum gespeicherten Stand und fällt weg (``_datev_key_stale``)
             for line in differences({candidate: before[candidate]}, {candidate: after[candidate]}, names,
-                                    ignore=ADOPTION_CHANGES):
+                                    ignore=ADOPTION_CHANGES + (() if complete else ('DatevKey',))):
                 problems.append(f'{label} zugeordnet: {line}')
+            if not complete and after[candidate]['DatevKey'] is not None:
+                problems.append(f'{label}: der Schlüssel blieb trotz gefülltem Konto')
 
             # zugeordnet erneut speichern, ohne etwas zu ändern: bleibt, wie es ist
             again, _ = open_form(db, bank_id)
@@ -268,10 +278,11 @@ def test_assigning_an_existing_booking_keeps_its_accounts_amount_and_form(neuer_
                 problems.append(f'{label} ging beim Entfernen verloren')
             else:
                 # Alle Spalten wie vor dem Zuordnen. Ausgenommen ein leeres Gegenkonto: Das Zuordnen füllt es mit
-                # dem Konto der Bank, und ob es vorher leer war, steht nach dem Zuordnen nirgends mehr.
+                # dem Konto der Bank, und ob es vorher leer war, steht nach dem Zuordnen nirgends mehr – ebenso der
+                # BU-Schlüssel, der mit dem gefüllten Konto wegfiel.
                 filled = coa is not None and counter is None
                 for line in differences({candidate: before[candidate]}, {candidate: gone[candidate]}, names,
-                                        ignore=('CounterCOA_ID', 'EntryForm') if filled else ()):
+                                        ignore=('CounterCOA_ID', 'EntryForm', 'DatevKey') if filled else ()):
                     problems.append(f'{label} entfernt: {line}')
                 if filled and gone[candidate]['CounterCOA_ID'] != bank_coa:
                     problems.append(f'{label}: Gegenkonto nicht mit dem Konto der Bank gefüllt')
