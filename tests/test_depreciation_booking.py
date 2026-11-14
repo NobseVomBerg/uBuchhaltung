@@ -846,9 +846,11 @@ def test_asset_with_extensions_cannot_be_deleted_and_nothing_fails_inside_the_da
 
 def test_asset_with_booked_depreciation_of_an_extension_cannot_be_deleted_either(world):
     db = world.db
-    extension = db.insert_asset('Speicher Probe', '2026-02-01', 1800.0, 3, parent_id=world.asset,
-                                coa_id=_coa(db, 520))
+    # Bestand: Eine Erweiterung mit eigener gebuchter AfA (seit 2.2.7 bucht ``book_depreciation`` für eine
+    # Erweiterung ohne gebuchtes Jahr nicht mehr – ihre AfA läuft über die Hauptanlage)
+    extension = db.insert_asset('Speicher Probe', '2026-02-01', 1800.0, 3, coa_id=_coa(db, 520))
     db.book_depreciation(extension, 2026, None, world.expense, world.anlage)
+    _execute(db, 'UPDATE Assets SET Parent_ID = ? WHERE ID = ?', (world.asset, extension))
 
     with pytest.raises(ValueError, match='AfA gebucht'):
         db.delete_asset(extension)
@@ -1219,13 +1221,14 @@ def test_plan_offers_no_booking_for_years_after_the_disposal(plan_asset):
     db, asset, first = plan_asset.db, plan_asset.asset, plan_asset.first
     db.sell_asset(asset, f'{first + 1}-06-30', 100.0)                # Abgang im zweiten Planjahr
 
-    plan = _plan_by_year(PageAssetView(db, asset))
+    html = PageAssetView(db, asset)
+    plan = _plan_by_year(html)
 
+    assert set(plan) == {first, first + 1}                           # der Plan endet mit dem Abgangsjahr
     for year in (first, first + 1):                                  # bis einschließlich Abgangsjahr
         assert _has_form(plan[year], asset, year), year
-    for year in (first + 2, first + 3):                              # danach: kein Knopf, kein Formular
-        assert '○ Nach Abgang' in plan[year], year
-        assert 'AfA buchen' not in plan[year] and not _has_form(plan[year], asset, year), year
+    for year in (first + 2, first + 3):                              # danach: keine Zeile, kein Formular
+        assert f'depr_form_{asset}_{year}' not in html, year
 
 
 @pytest.mark.parametrize('how', STALE)

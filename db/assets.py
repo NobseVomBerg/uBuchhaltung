@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: 2026 unsix IT Engineering
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Database-Mixin: assets."""
+import datetime
 import sqlite3
 import os
 import json
@@ -14,6 +15,15 @@ from .matching import ASSET_ACCOUNT_RANGE, FORM_TRANSFER, PL_ACCOUNT_RANGE, depr
 # (z. B. per SQL-Konsole gelöscht) gilt als nicht gebucht. Festes SQL-Stück, kein Wert.
 _DEPRECIATION_BOOKED = ("(d.Status = 'booked' "
                         "OR EXISTS (SELECT 1 FROM Bookings b WHERE b.ID = d.Booking_ID))")
+
+# Eine Unter-Anlage ``c`` zählt zu ihrer Hauptanlage (``counts_toward_parent``), wenn sie gar keine eigene Zeile
+# in ``AssetDepreciations`` hat – gleich welchen Status: Löscht der Nutzer ihre einzige AfA-Buchung, bleibt die
+# Planzeile als 'planned' stehen, und sie bleibt eine eigene Anlage – und keine eigenen Unter-Anlagen. Hauptanlage,
+# Datum und Preis prüfen ``_counting_extension_on`` und ``_additions_on``. Festes SQL-Stück, kein Wert.
+_COUNTS_TOWARD_PARENT = (
+    "c.Parent_ID IS NOT NULL AND c.Parent_ID <> c.ID "
+    "AND NOT EXISTS (SELECT 1 FROM AssetDepreciations d WHERE d.Asset_ID = c.ID) "
+    "AND NOT EXISTS (SELECT 1 FROM Assets g WHERE g.Parent_ID = c.ID)")
 
 # Ein Cent in Minor Units: Der Plan rechnet in ganzen Cent.
 _CENT = FACTOR // 100
@@ -51,6 +61,77 @@ def _spread(rest, months):
             if not excess:
                 break
     return amounts
+
+
+def _iso_day(value):
+    """Das Datum aus den ersten zehn Zeichen (so liest es auch ``calculate_depreciation_plan``);
+    ``None``, wenn sich keines lesen lässt."""
+    try:
+        return datetime.date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def _disposal_year(sale_date):
+    """Das Abgangsjahr: die ersten vier Zeichen des Abgangsdatums, wenn sie ASCII-Ziffern sind; sonst
+    ``None`` (ältere Einträge können ein Datum in anderer Schreibweise tragen)."""
+    text = str(sale_date)[:4] if sale_date else ''
+    return int(text) if text.isascii() and text.isdigit() else None
+
+
+def _extension(purchase_date, price):
+    """``(Tag, Cent)`` einer Unter-Anlage, die zählen darf: lesbares Anschaffungsdatum und Preis über
+    0; sonst ``None``."""
+    day, cents = _iso_day(purchase_date), _cents(price or 0)
+    return (day, cents) if day is not None and cents > 0 else None
+
+
+def _plannable(purchase_date, price, useful_life):
+    """Kann die Anlage einen AfA-Plan tragen (``calculate_depreciation_plan``)? Nur dann hängt sich eine
+    Erweiterung an sie: lesbares Kaufdatum, Preis über 0 Cent und Nutzungsdauer über 0."""
+    return (_iso_day(purchase_date) is not None and _cents(price or 0) > 0
+            and isinstance(useful_life, (int, float)) and useful_life > 0)
+
+
+def _continue(rest, first, later, begin, end):
+    """Den Restbuchwert ``rest`` (ganze Cent) ab dem Jahr ``first`` linear nach Monaten bis zum Planende
+    ``end`` verteilen (``begin``/``end``: Monatszähler, ``end`` exklusiv). Liefert ``(Jahr, Rest vor dem
+    Jahr, Betrag)`` je Jahr.
+
+    ``later`` (Jahr → Cent) sind spätere Erweiterungen: Im Jahr der Erweiterung kommt ihr Betrag zum Rest
+    (als wäre er zu Jahresbeginn aufgewendet) und verteilt sich mit ihm neu bis zum Planende. Ein Rest
+    ≤ 0 ergibt in seinem Abschnitt keine Zeilen – die nächste Erweiterung wird trotzdem addiert. Ist
+    die Nutzungsdauer abgelaufen, kommt der ganze Rest ins erste Jahr des Abschnitts; ein Jahr, das
+    auf 0 Cent rundet, entfällt (die Summe bleibt der Rest)."""
+    rows, year = [], first
+    pending = sorted((y, c) for y, c in later.items() if y > first)
+    last_year = (end - 1) // 12
+    while True:
+        stop = pending[0][0] if pending else None
+        if rest > 0:
+            years = list(range(year, last_year + 1))
+            if years:
+                amounts = _spread(rest, [min(end, y * 12 + 12) - max(begin, y * 12) for y in years])
+            else:                                     # Nutzungsdauer abgelaufen: der ganze Rest
+                years, amounts = [year], [rest]
+            for y, a in zip(years, amounts):
+                if stop is not None and y >= stop:
+                    break
+                if a > 0:
+                    rows.append((y, rest, a))
+                    rest -= a
+        if stop is None:
+            break
+        rest += pending.pop(0)[1]
+        year = stop
+    return rows
+
+
+def _linear_entries(rows):
+    """Planzeilen (Form von ``calculate_depreciation_plan``, Methode 'linear') zu den
+    ``(Jahr, Rest vor dem Jahr, Betrag)`` von ``_continue``."""
+    return [{'year': year, 'book_value_start': _euro(before), 'depreciation': _euro(amount),
+             'book_value_end': _euro(before - amount), 'method': 'linear'} for year, before, amount in rows]
 
 
 class AssetsMixin:
@@ -200,6 +281,12 @@ class AssetsMixin:
         conn.commit()
         conn.close()
     def sell_asset(self, asset_id, sale_date, sale_price):
+        """Abgang einer Anlage buchen (Verkauf oder Verschrottung): Abgangsdatum, Erlös, Status 'sold'.
+
+        Eine Erweiterung, die zur Hauptanlage zählt (``counts_toward_parent``), hat keinen eigenen Abgang – ihr
+        Wert steckt in der Hauptanlage: ``ValueError`` mit Klartext, nichts wird geschrieben."""
+        if self.counts_toward_parent(asset_id):
+            raise ValueError('Der Abgang einer Erweiterung lässt sich nicht einzeln buchen – sie gehört zur Hauptanlage.')
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
@@ -214,7 +301,12 @@ class AssetsMixin:
         stehen oder verschwänden ohne Spur): Wer eine Anlage mit gebuchter AfA löschen
         will, löscht erst die AfA-Buchungen. Als gebucht zählt nur ein Jahr, dessen Buchung
         es gibt; Zeilen des AfA-Plans ohne Buchung (WISO-Import, noch nicht gebuchte oder
-        verwaiste Jahre) hindern das Löschen nicht. ``ValueError`` mit Klartext."""
+        verwaiste Jahre) hindern das Löschen nicht.
+
+        Eine Erweiterung, die zur Hauptanlage zählt (``counts_toward_parent``), steckt in deren Plan und in
+        ihren Buchungen: Hat die Hauptanlage seit dem Jahr der Erweiterung (nie vor ihrem Kaufjahr) ein
+        gebuchtes Jahr (``_DEPRECIATION_BOOKED``, auch ein importiertes), lässt sie sich nicht löschen;
+        ohne ein solches Jahr schon. ``ValueError`` mit Klartext."""
         conn = self._get_connection()
         try:
             years = [row[0] for row in conn.execute(
@@ -229,6 +321,17 @@ class AssetsMixin:
                             (asset_id,)).fetchone():
                 raise ValueError('Die Anlage hat Erweiterungen (Unteranlagen) – '
                                  'erst diese löschen.')
+            extension = self._counting_extension_on(conn, asset_id)
+            if extension:
+                parent_id, extension_year = extension[:2]
+                parent_years = [row[0] for row in conn.execute(
+                    f'SELECT d.Year FROM AssetDepreciations d WHERE d.Asset_ID = ? AND d.Year >= ? '
+                    f'AND {_DEPRECIATION_BOOKED} ORDER BY d.Year', (parent_id, extension_year))]
+                if parent_years:
+                    raise ValueError(
+                        'Die Hauptanlage hat seit dem Jahr dieser Erweiterung AfA gebucht ('
+                        + ', '.join(str(y) for y in parent_years)
+                        + ') – die Erweiterung steckt in diesen Buchungen und lässt sich nicht löschen.')
             conn.execute('DELETE FROM Assets WHERE ID = ?', (asset_id,))
             conn.commit()
         finally:
@@ -252,6 +355,79 @@ class AssetsMixin:
             return {row[0] for row in conn.execute(
                 f'SELECT d.Year FROM AssetDepreciations d WHERE d.Asset_ID = ? '
                 f'AND {_DEPRECIATION_BOOKED}', (asset_id,))}
+        finally:
+            conn.close()
+    def counts_toward_parent(self, asset_id) -> bool:
+        """Zählt die Unter-Anlage (Erweiterung, ``Assets.Parent_ID``) zu ihrer Hauptanlage?
+
+        Nachträgliche Anschaffungskosten erhöhen den Anschaffungswert der Hauptanlage, statt eine eigene
+        Anlage mit eigenem Plan zu sein (``depreciation_plan``). Sie zählen, wenn alles gilt: Die
+        Hauptanlage gibt es (und ist nicht die Anlage selbst) und kann einen Plan haben (lesbares Kaufdatum,
+        Preis über 0 Cent, Nutzungsdauer über 0), die Unter-Anlage hat **gar keine eigene Zeile** in
+        ``AssetDepreciations`` – gleich welchen Status – und **keine eigenen Unter-Anlagen**, ihr
+        Anschaffungsdatum ist ein Datum und ihr Preis über 0. Eine Unter-Anlage mit eigener AfA-Zeile (Bestand,
+        WISO-Import; auch eine, deren einzige Buchung gelöscht wurde: ihre Planzeile bleibt ``planned``) oder
+        unter einer Hauptanlage ohne Plan bleibt eine eigene Anlage mit eigenem Plan und fließt nicht in die
+        Hauptanlage."""
+        conn = self._get_connection()
+        try:
+            return self._counts_toward_parent_on(conn, asset_id)
+        finally:
+            conn.close()
+    def _counts_toward_parent_on(self, conn, asset_id):
+        """``counts_toward_parent`` über eine vorhandene Verbindung."""
+        return self._counting_extension_on(conn, asset_id) is not None
+    def _counting_extension_on(self, conn, asset_id):
+        """``(Hauptanlage-ID, Jahr, Cent)`` der Unter-Anlage, wenn sie zur Hauptanlage zählt
+        (``counts_toward_parent``), sonst ``None``. Das Jahr ist das ihres Anschaffungsdatums – maßgeblich ist
+        der Tag, an dem die Kosten entstanden sind, nicht der der Zahlung –, nie vor dem Kaufjahr der
+        Hauptanlage. Die Hauptanlage wird dabei einmal gelesen."""
+        row = conn.execute(
+            'SELECT c.Parent_ID, c.PurchaseDate, c.PurchasePrice, p.PurchaseDate, p.PurchasePrice, p.UsefulLifeYears '
+            'FROM Assets c JOIN Assets p ON p.ID = c.Parent_ID '
+            f'WHERE c.ID = ? AND {_COUNTS_TOWARD_PARENT}', (asset_id,)).fetchone()
+        if row is None or not _plannable(*row[3:]):
+            return None
+        extension = _extension(row[1], row[2])
+        if extension is None:
+            return None
+        day, cents = extension
+        return row[0], max(day.year, _iso_day(row[3]).year), cents
+    def _additions_on(self, conn, asset_id):
+        """``(Jahr, Cent)`` der Unter-Anlagen von ``asset_id``, die zu ihr zählen (``counts_toward_parent``).
+
+        Das Jahr ist das des Anschaffungsdatums der Erweiterung – maßgeblich ist der Tag, an dem die Kosten
+        entstanden sind, nicht der der Zahlung –, nie vor dem Kaufjahr der Hauptanlage. Kann die Anlage keinen
+        Plan haben, zählt keine Unter-Anlage zu ihr. Die Hauptanlage wird einmal gelesen."""
+        parent = conn.execute('SELECT PurchaseDate, PurchasePrice, UsefulLifeYears FROM Assets WHERE ID = ?',
+                              (asset_id,)).fetchone()
+        if parent is None or not _plannable(*parent):
+            return []
+        bought = _iso_day(parent[0])
+        additions = []
+        for purchase_date, price in conn.execute(
+                f'SELECT c.PurchaseDate, c.PurchasePrice FROM Assets c '
+                f'WHERE c.Parent_ID = ? AND {_COUNTS_TOWARD_PARENT} ORDER BY c.ID', (asset_id,)):
+            extension = _extension(purchase_date, price)
+            if extension:
+                day, cents = extension
+                additions.append((max(day.year, bought.year), cents))
+        return additions
+    def acquisition_cost(self, asset_id, year=None) -> float:
+        """Anschaffungswert in Euro (zwei Stellen): der Preis der Anlage plus die zählenden Erweiterungen
+        (``counts_toward_parent``) mit Jahr ≤ ``year`` (Standard: das laufende Jahr; das Jahr einer Erweiterung
+        ist das ihres Anschaffungsdatums, nie vor dem Kaufjahr der Anlage). Für eine Erweiterung selbst ist es
+        ihr eigener Preis, eine unbekannte Anlage ergibt 0."""
+        if year is None:
+            year = datetime.date.today().year
+        conn = self._get_connection()
+        try:
+            row = conn.execute('SELECT PurchasePrice FROM Assets WHERE ID = ?', (asset_id,)).fetchone()
+            if row is None:
+                return 0.0
+            return _euro(_cents(row[0] or 0)
+                         + sum(cents for added_year, cents in self._additions_on(conn, asset_id)
+                               if added_year <= year))
         finally:
             conn.close()
     def calculate_depreciation_plan(self, purchase_price, purchase_date, useful_life_years,
@@ -358,7 +534,13 @@ class AssetsMixin:
         zusätzlich ``booked`` (das Jahr ist gebucht: die Buchung gibt es oder es kam als 'booked' aus
         dem WISO-Import) und ``bookable`` (``book_depreciation`` nimmt das Jahr jetzt an: jedes nicht
         gebuchte Jahr der Formel, in der Fortschreibung nur das erste offene). Unbekannte Anlage: leere
-        Liste. Gerechnet wird in ganzen Cent.
+        Liste; ebenso eine Erweiterung, die zur Hauptanlage zählt (``counts_toward_parent``: ihre AfA
+        steckt im Plan der Hauptanlage). Gerechnet wird in ganzen Cent.
+
+        **Der Plan endet mit dem Abgangsjahr** (``SaleDate``: die ersten vier Zeichen, wenn sie Ziffern
+        sind): Nicht gebuchte Jahre danach entfallen – in der Unverändert-Regel wie in der Fortschreibung –,
+        gebuchte bleiben. Das Abgangsjahr selbst steht, wie es ist (die zeitanteilige AfA im Abgangsjahr
+        ist offen).
 
         **Gebucht** ist, was in den Büchern steht: Bei einem von der App gebuchten Jahr (die Planzeile
         zeigt über ``Booking_ID`` auf eine vorhandene Buchung) ist der gebuchte Betrag die Wirkung dieser
@@ -368,23 +550,37 @@ class AssetsMixin:
         importierten Jahr (Status 'booked', keine Buchung) ``DepreciationAmount``.
 
         **Unverändert:** Gibt es keine gebuchten Jahre, oder stimmt jedes gebuchte Jahr auf den Cent mit
-        dem gleichen Jahr von ``calculate_depreciation_plan`` überein, ist das Ergebnis genau dieser
-        Plan (linear, degressiv, GWG) – für eine nur in der App geführte Anlage ändert sich nichts.
+        dem gleichen Jahr des erwarteten Plans überein, ist das Ergebnis genau dieser Plan – ohne
+        Erweiterungen ist er ``calculate_depreciation_plan`` (linear, degressiv, GWG): Für eine nur in der
+        App geführte Anlage ändert sich nichts.
 
-        **Fortschreibung** (die Geschichte weicht ab: Import, nachträglich geänderter Anschaffungswert
-        oder Betrag einer Buchung): Gebuchte Jahre stehen mit ihrem gebuchten Betrag im Plan (Methode
-        ``METHOD_BOOKED``), ihr Buchwert rechnet fortlaufend vom heutigen Anschaffungswert (Ende =
-        Anschaffungswert minus die gebuchten Beträge bis einschließlich des Jahres, nie unter 0; Anfang
-        = Ende plus Betrag) – so schließt das erste offene Jahr an. Der Restbuchwert (Anschaffungswert
-        minus alle gebuchten Beträge) verteilt sich linear auf die Monate vom ersten offenen Jahr bis
-        zum Planende (Kaufmonat plus Nutzungsdauer; erstes offenes Jahr: das Jahr nach dem größten
-        gebuchten Jahr, mindestens das Kaufjahr). Nicht gebuchte Jahre zwischen gebuchten bekommen
-        keine eigene Zeile – ihr Betrag steckt im Rest. Ein Rest ≤ 0 ergibt keine offenen Jahre; ist
-        die Nutzungsdauer abgelaufen, kommt der ganze Rest ins erste offene Jahr. Ein Jahr, das auf 0 Cent
-        rundet, entfällt (die Summe bleibt der Rest), und buchbar ist das erste verbleibende offene Jahr.
-        GWG-Regel und degressive Rechnung gelten hier nicht. Fehlt Preis, Kaufdatum oder Nutzungsdauer, bleiben nur
-        die gebuchten Jahre. Buchbar ist nur das erste offene Jahr: Ein späteres Jahr zuerst zu buchen
-        machte die Jahre davor zu Lücken.
+        **Erweiterungen** (Unter-Anlagen, die zählen – ``counts_toward_parent``) erhöhen den Anschaffungswert
+        der Hauptanlage; maßgeblich ist das Anschaffungsdatum der Erweiterung, nicht das der Zahlung. Im Jahr,
+        in dem sie entstehen, zählen sie wie zu Jahresbeginn aufgewendet (keine Kürzung nach Monaten): Der
+        Restbuchwert plus Erweiterung verteilt sich linear nach Monaten auf die Restnutzungsdauer der
+        Hauptanlage. Fällt die Erweiterung ins Anschaffungsjahr der Hauptanlage, ist es die Formel auf
+        Anschaffungswert plus Erweiterung (ab dem Kaufmonat der Hauptanlage). Der erwartete Plan ist dann
+        die Formel auf den Anschaffungswert samt Erweiterungen des Kaufjahrs bis zum Jahr vor der ersten
+        späteren Erweiterung; ab diesem Jahr rechnet ``_continue`` linear über die Restnutzungsdauer – auch bei
+        degressiver Methode oder GWG der Hauptanlage (dieselbe Vereinfachung wie in der Fortschreibung), und
+        jede weitere Erweiterung kommt in ihrem Jahr zum Rest. Nach dem Ende der Nutzungsdauer steht der
+        ganze Betrag im Jahr der Erweiterung.
+
+        **Fortschreibung** (die Geschichte weicht ab: Import, nachträglich geänderter Anschaffungswert,
+        Betrag einer Buchung, eine Erweiterung in einem schon gebuchten Jahr): Gebuchte Jahre stehen mit
+        ihrem gebuchten Betrag im Plan (Methode ``METHOD_BOOKED``), ihr Buchwert rechnet fortlaufend vom
+        heutigen Anschaffungswert (Ende = Anschaffungswert bis zu diesem Jahr einschließlich der
+        Erweiterungen minus die gebuchten Beträge bis einschließlich des Jahres, nie unter 0; Anfang = Ende
+        plus Betrag) – so schließt das erste offene Jahr an. Der Restbuchwert (Anschaffungswert samt den
+        Erweiterungen bis zum ersten offenen Jahr minus alle gebuchten Beträge) verteilt sich linear auf die
+        Monate vom ersten offenen Jahr bis zum Planende (Kaufmonat plus Nutzungsdauer; erstes offenes Jahr:
+        das Jahr nach dem größten gebuchten Jahr, mindestens das Kaufjahr); spätere Erweiterungen kommen in
+        ihrem Jahr zum Rest. Nicht gebuchte Jahre zwischen gebuchten bekommen keine eigene Zeile – ihr Betrag
+        steckt im Rest. Ein Rest ≤ 0 ergibt keine offenen Jahre; ist die Nutzungsdauer abgelaufen, kommt der
+        ganze Rest ins erste offene Jahr. Ein Jahr, das auf 0 Cent rundet, entfällt (die Summe bleibt der
+        Rest), und buchbar ist das erste verbleibende offene Jahr. GWG-Regel und degressive Rechnung gelten
+        hier nicht. Fehlt Preis, Kaufdatum oder Nutzungsdauer, bleiben nur die gebuchten Jahre. Buchbar ist
+        nur das erste offene Jahr: Ein späteres Jahr zuerst zu buchen machte die Jahre davor zu Lücken.
         """
         conn = self._get_connection()
         try:
@@ -394,12 +590,11 @@ class AssetsMixin:
     def _depreciation_plan_on(self, conn, asset_id):
         """``depreciation_plan`` über eine vorhandene Verbindung – ``book_depreciation`` liest den Plan
         so in seiner Transaktion, nach der Schreibsperre."""
-        import datetime as dt
-        row = conn.execute('SELECT PurchasePrice, PurchaseDate, UsefulLifeYears, DepreciationMethod '
+        row = conn.execute('SELECT PurchasePrice, PurchaseDate, UsefulLifeYears, DepreciationMethod, SaleDate '
                            'FROM Assets WHERE ID = ?', (asset_id,)).fetchone()
-        if row is None:
-            return []
-        price, purchase_date, useful_life, method = row
+        if row is None or self._counts_toward_parent_on(conn, asset_id):
+            return []                                 # unbekannt – oder eine Erweiterung: ihre AfA steckt in der Hauptanlage
+        price, purchase_date, useful_life, method, sale_date = row
         booked = {}
         for year, plan_amount, booking_id, amount, form, number, counter_number in conn.execute(
                 f'SELECT d.Year, d.DepreciationAmount, k.ID, k.Amount, k.EntryForm, c.AccountNumber, g.AccountNumber '
@@ -410,55 +605,79 @@ class AssetsMixin:
             # Umkehrung zählt negativ, das Jahr bleibt mit 0 gebucht), sonst die Zeile des Imports
             booked[year] = (plan_amount if booking_id is None
                             else max(0, depreciation_effect(form, amount, number, counter_number)))
-        old = self.calculate_depreciation_plan(from_minor(price or 0), purchase_date, useful_life, method)
-        old_by_year = {entry['year']: entry for entry in old}
-        if all(year in old_by_year and amount == to_minor(old_by_year[year]['depreciation'])
-               for year, amount in booked.items()):
-            return [dict(entry, booked=entry['year'] in booked, bookable=entry['year'] not in booked)
-                    for entry in old]
+        additions = {}                                # Jahr -> Cent der zählenden Erweiterungen
+        for year, cents in self._additions_on(conn, asset_id):
+            additions[year] = additions.get(year, 0) + cents
 
-        plan, spent = [], 0
-        for year, amount in sorted(booked.items()):
-            cents = _cents(amount)
-            spent += cents
-            left = max(0, _cents(price or 0) - spent)
-            plan.append({'year': year, 'book_value_start': _euro(left + cents), 'depreciation': _euro(cents),
-                         'book_value_end': _euro(left), 'method': METHOD_BOOKED, 'booked': True,
-                         'bookable': False})
-        if not old:                                   # Preis, Kaufdatum oder Nutzungsdauer fehlen
-            return plan
-        rest = _cents(price) - spent
-        if rest <= 0:
-            return plan
-        bought = dt.date.fromisoformat(str(purchase_date)[:10])
-        begin = bought.year * 12 + bought.month - 1                   # erster Planmonat (Monatszähler)
-        end = begin + 12 * int(useful_life)                           # Planende, exklusiv
-        first = max(max(booked) + 1, bought.year)                     # erstes offenes Jahr
-        years = list(range(first, (end - 1) // 12 + 1))
-        if years:
-            amounts = _spread(rest, [min(end, y * 12 + 12) - max(begin, y * 12) for y in years])
-        else:                                         # Nutzungsdauer abgelaufen: der ganze Rest
-            years, amounts = [first], [rest]
-        # ein Jahr, das auf 0 Cent rundet, entfällt (die Summe bleibt der Rest): Es gäbe nichts zu buchen
-        years_and_amounts = [(year, amount) for year, amount in zip(years, amounts) if amount > 0]
-        for index, (year, amount) in enumerate(years_and_amounts):
-            plan.append({'year': year, 'book_value_start': _euro(rest), 'depreciation': _euro(amount),
-                         'book_value_end': _euro(rest - amount), 'method': 'linear', 'booked': False,
-                         'bookable': index == 0})
-            rest -= amount
-        return plan
+        def cost_until(year):                         # Anschaffungswert samt Erweiterungen bis zu diesem Jahr (Cent)
+            return _cents(price or 0) + sum(cents for added, cents in additions.items() if added <= year)
+
+        bought = _iso_day(purchase_date)
+        buy = bought.year if bought else None
+        later = {year: cents for year, cents in additions.items() if buy is not None and year > buy}
+        # Die Formel rechnet auf den Anschaffungswert samt den Erweiterungen des Kaufjahrs (ab dem Kaufmonat)
+        base = (price or 0) + additions.get(buy, 0) * _CENT
+        old = self.calculate_depreciation_plan(from_minor(base), purchase_date, useful_life, method)
+        if old:                                       # sonst fehlen Preis, Kaufdatum oder Nutzungsdauer
+            begin = bought.year * 12 + bought.month - 1                   # erster Planmonat (Monatszähler)
+            end = begin + 12 * int(useful_life)                           # Planende, exklusiv
+        expected = old
+        if old and later:
+            # Ab der ersten späteren Erweiterung linear nach Monaten über die Restnutzungsdauer (auch bei
+            # degressiver Methode oder GWG der Hauptanlage); davor gilt die Formel
+            first_later = min(later)
+            kept = [entry for entry in old if entry['year'] < first_later]
+            rest = (_cents(base) + later[first_later]
+                    - sum(_cents(to_minor(entry['depreciation'])) for entry in kept))
+            expected = kept + _linear_entries(_continue(
+                rest, first_later, {y: c for y, c in later.items() if y > first_later}, begin, end))
+        expected_by_year = {entry['year']: entry for entry in expected}
+        if all(year in expected_by_year and amount == to_minor(expected_by_year[year]['depreciation'])
+               for year, amount in booked.items()):
+            plan = [dict(entry, booked=entry['year'] in booked, bookable=entry['year'] not in booked)
+                    for entry in expected]
+        else:
+            plan, spent = [], 0
+            for year, amount in sorted(booked.items()):
+                cents = _cents(amount)
+                spent += cents
+                left = max(0, cost_until(year) - spent)
+                plan.append({'year': year, 'book_value_start': _euro(left + cents), 'depreciation': _euro(cents),
+                             'book_value_end': _euro(left), 'method': METHOD_BOOKED, 'booked': True,
+                             'bookable': False})
+            if old:
+                first = max(max(booked) + 1, buy)                         # erstes offenes Jahr
+                open_rows = _linear_entries(_continue(
+                    cost_until(first) - spent, first, {y: c for y, c in additions.items() if y > first}, begin, end))
+                plan += [dict(entry, booked=False, bookable=index == 0) for index, entry in enumerate(open_rows)]
+        disposal_year = _disposal_year(sale_date)         # der Plan endet mit dem Abgangsjahr; Gebuchtes bleibt
+        return [entry for entry in plan if entry['booked'] or disposal_year is None or entry['year'] <= disposal_year]
     def get_book_value_at_date(self, asset_id, at_date=None):
         """Calculate current book value of an asset at a given date.
 
         Aus ``depreciation_plan``: der Buchwert am Ende des letzten Planjahrs bis zum Jahr des
-        Datums, davor der Anschaffungswert."""
-        import datetime as dt
+        Datums, davor der Anschaffungswert. Nach dem Abgang ist er 0.0 – der Abgang hat den Rest ausgebucht:
+        Lässt sich ``SaleDate`` als ISO-Datum lesen, ab diesem Tag (am Abgangstag selbst und danach);
+        sonst, wenn die ersten vier Zeichen ein Jahr ergeben (``_disposal_year``, wie beim Ende des Plans),
+        sobald das Jahr des Datums nach dem Abgangsjahr liegt; sonst gilt kein Abgang. Eine Erweiterung, die
+        zur Hauptanlage zählt (``counts_toward_parent``), hat keinen eigenen Wert (0.0): er steckt in der
+        Hauptanlage."""
         asset = self.get_asset_by_id(asset_id)
         if not asset:
             return 0.0
-        purchase_price = float(asset[7]) if asset[7] is not None else 0.0   # PurchasePrice
         if at_date is None:
-            at_date = dt.date.today()
+            at_date = datetime.date.today()
+        sold = _iso_day(asset[15])                                          # SaleDate
+        if sold is not None:
+            if at_date >= sold:
+                return 0.0
+        else:
+            disposal_year = _disposal_year(asset[15])
+            if disposal_year is not None and at_date.year > disposal_year:
+                return 0.0
+        if self.counts_toward_parent(asset_id):
+            return 0.0
+        purchase_price = float(asset[7]) if asset[7] is not None else 0.0   # PurchasePrice
         current_year = at_date.year
         book_value = purchase_price
         for entry in self.depreciation_plan(asset_id):
@@ -508,12 +727,18 @@ class AssetsMixin:
         Kategorie (``resolve_asset_coa``). Das Aufwandskonto muss ein Erfolgskonto
         (``PL_ACCOUNT_RANGE``), das Anlagekonto ein Anlagekonto (``ASSET_ACCOUNT_RANGE``)
         sein – sonst könnte ein Satz wie „6220 an 1460“ entstehen, den die EÜR nicht als
-        AfA erkennt. Nach dem Abgang der Anlage (``SaleDate``) gibt es keine AfA mehr; die
-        zeitanteilige AfA im Abgangsjahr selbst plant ``depreciation_plan`` noch nicht.
+        AfA erkennt. Nach dem Abgang der Anlage (``SaleDate``) gibt es keine AfA mehr: Der Plan endet
+        mit dem Abgangsjahr, ein Jahr danach lehnt ``book_depreciation`` mit dem Abgang als Begründung
+        ab; die zeitanteilige AfA im Abgangsjahr selbst plant ``depreciation_plan`` noch nicht.
+
+        Eine Erweiterung, die zur Hauptanlage zählt (``counts_toward_parent``), hat keine eigene AfA: Ihr
+        Betrag steckt im Plan der Hauptanlage, ``book_depreciation`` lehnt sie als Erstes ab. Eine
+        Unter-Anlage mit eigener AfA-Zeile (Bestand) oder unter einer Hauptanlage ohne Plan bleibt eine eigene
+        Anlage und lässt sich buchen.
 
         Betrag und Buchwert kommen aus ``depreciation_plan``; ein Jahr, das dort nicht
-        vorkommt, wird abgelehnt (``ValueError`` „No depreciation planned …“, zuerst, noch vor
-        den Prüfungen von Abgang und Konten, und erneut mit dem Plan der Transaktion). In der
+        vorkommt, wird abgelehnt (``ValueError`` „No depreciation planned …“, nach der Prüfung des
+        Abgangs, aber noch vor den Prüfungen der Konten, und erneut mit dem Plan der Transaktion). In der
         Fortschreibung des Plans (die gebuchte Geschichte weicht von der Formel ab) ist nur das
         erste offene Jahr buchbar: Jedes andere lehnt ``book_depreciation`` mit Klartext ab –
         sonst würden die Jahre davor zu Lücken, und ihr Betrag wanderte in die späteren Jahre.
@@ -531,13 +756,16 @@ class AssetsMixin:
         asset = self.get_asset_by_id(asset_id)
         if not asset:
             raise ValueError(f"Asset {asset_id} not found")
-        if not any(e['year'] == year for e in self.depreciation_plan(asset_id)):
-            # wie bisher vor den übrigen Prüfungen; maßgeblich ist der Plan in der Transaktion (unten)
-            raise ValueError(f"No depreciation planned for year {year}")
+        if self.counts_toward_parent(asset_id):
+            raise ValueError('Die AfA einer Erweiterung läuft über die Hauptanlage – bitte dort buchen.')
         sale_date = asset[15]                     # Assets.SaleDate
-        sale_year = str(sale_date)[:4] if sale_date else ''
-        if sale_year.isdigit() and year > int(sale_year):
+        sale_year = _disposal_year(sale_date)
+        if sale_year is not None and year > sale_year:
+            # vor der Planprüfung: Der Plan endet mit dem Abgangsjahr und kennt diese Jahre nicht mehr
             raise ValueError(f"AfA {year} liegt nach dem Abgang der Anlage ({sale_date})")
+        if not any(e['year'] == year for e in self.depreciation_plan(asset_id)):
+            # vor den Prüfungen der Konten; maßgeblich ist der Plan in der Transaktion (unten)
+            raise ValueError(f"No depreciation planned for year {year}")
         if not coa_id_expense:
             raise ValueError("Aufwandskonto fehlt")
         coa_id_asset = self.resolve_asset_coa(asset, coa_id_asset)

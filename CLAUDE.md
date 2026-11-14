@@ -291,7 +291,38 @@ kein Subagent darauf:
   keine GWG-/degressive Regel; Buchwerte fortlaufend aus dem heutigen Anschaffungswert. In der Fortschreibung ist **nur das
   erste offene Jahr buchbar** (`bookable`; Lücken bekommen keine Zeile, ihr Betrag steckt im Rest). `book_depreciation` liest
   den Plan in seiner Transaktion (`BEGIN IMMEDIATE`), bucht genau den Planbetrag; Anlagenseiten, `get_book_value_at_date`
-  und die Prüfungen des WISO-Imports nehmen denselben Plan
+  und die Prüfungen des WISO-Imports nehmen denselben Plan. **Der Plan endet mit dem Abgangsjahr** (`SaleDate`, die ersten
+  vier Zeichen): offene Jahre danach entfallen – in der Unverändert-Regel wie in der Fortschreibung –, gebuchte bleiben;
+  `book_depreciation` lehnt ein Jahr danach noch vor der Planprüfung mit dem Abgang als Begründung ab, und
+  `get_book_value_at_date` ist 0, sobald der Abgang erreicht ist: bei einem ISO-`SaleDate` am Abgangstag und danach, bei
+  einem Datum, das kein ISO-Datum ist, aber mit einem Jahr beginnt, ab dem Jahr danach (wie das Planende); ohne lesbares
+  Jahr gilt kein Abgang (die zeitanteilige AfA im Abgangsjahr bleibt offen).
+  **Erweiterungen (seit 2.2.7):** Nachträgliche Anschaffungskosten (Unter-Anlagen, `Assets.Parent_ID`) erhöhen den
+  Anschaffungswert der Hauptanlage. Eine Unter-Anlage **zählt** (`Database.counts_toward_parent`), wenn ihre Hauptanlage
+  einen Plan haben kann (lesbares Kaufdatum, Preis > 0 Cent, Nutzungsdauer > 0), sie **gar keine eigene Zeile in
+  `AssetDepreciations`** (gleich welchen Status) und keine eigenen Unter-Anlagen hat und ihr Datum und ihr Preis (> 0)
+  lesbar sind. „Keine Zeile“ statt „kein gebuchtes Jahr“, weil die Planzeile nach dem Löschen der einzigen AfA-Buchung als
+  `planned` stehen bleibt: Die Unter-Anlage bleibt eine eigene Anlage und lässt sich neu buchen, statt ihren Betrag in die
+  Zukunft der Hauptanlage zu verschieben. Sie hat **keinen eigenen Plan** (`depreciation_plan` leer, `get_book_value_at_date`
+  0), wird nicht gebucht (`book_depreciation` lehnt ab: Die AfA läuft über die Hauptanlage), hat keinen eigenen Abgang
+  (`sell_asset` lehnt ab, die Seite zeigt das Formular nicht) und keinen eigenen Status (`handle_update_asset` lehnt einen
+  Status ≠ `active` ab: „Eine Erweiterung behält den Status der Hauptanlage.“); Nutzungsdauer, Methode und Anlagekonto der
+  Hauptanlage gelten (kein eigener Codepfad: gebucht wird allein an der Hauptanlage). Eine Unter-Anlage mit eigener AfA-Zeile
+  (Bestand, WISO) oder unter einer Hauptanlage ohne Plan bleibt eine eigene Anlage mit ihrem Plan (wie bis 2.2.6) und fließt
+  nicht in die Hauptanlage. **Löschen** (`delete_asset`): Eine zählende Erweiterung lässt sich nicht löschen, sobald die
+  Hauptanlage seit dem Jahr der Erweiterung (nie vor ihrem Kaufjahr) ein gebuchtes Jahr (`_DEPRECIATION_BOOKED`) hat – sie
+  steckt in diesen Buchungen; ohne ein solches Jahr schon. Maßgeblich ist das Anschaffungsdatum der Erweiterung (wann die Kosten
+  entstehen, nicht die Zahlung), ihr Jahr nie vor dem Kaufjahr der Hauptanlage. Im Jahr der Erweiterung zählt sie **wie zu
+  Jahresbeginn aufgewendet** (keine Kürzung nach Monaten): Restbuchwert plus Erweiterung verteilen sich linear nach Monaten
+  auf die Restnutzungsdauer (`_continue`). **Ausnahme Anschaffungsjahr:** Die Formel rechnet auf Anschaffungswert plus
+  Erweiterung, ab dem Kaufmonat der Hauptanlage. Ab der ersten späteren Erweiterung rechnet der erwartete Plan linear über die
+  Restnutzungsdauer (auch bei degressiver Methode oder GWG der Hauptanlage – dieselbe Vereinfachung wie die Fortschreibung),
+  und die Unverändert-Regel vergleicht die gebuchten Jahre mit diesem Plan. Entsteht eine Erweiterung in einem schon
+  gebuchten Jahr, stimmt die Geschichte nicht mehr: Fortschreibung, ihr Betrag geht in den Rest ab dem ersten offenen Jahr
+  (die Buchwerte der gebuchten Jahre rechnen vom Anschaffungswert samt Erweiterungen bis zu diesem Jahr). Nach dem Ende der
+  Nutzungsdauer steht der ganze Betrag im Jahr der Erweiterung. `Database.acquisition_cost(asset_id, year)` = Preis plus
+  zählende Erweiterungen mit Jahr ≤ `year` (Standard: laufendes Jahr; die Anlagenliste zeigt ihn). `handle_add_asset` legt
+  keine Erweiterung einer Erweiterung an
 - Rechnungszahlung: `assign_invoice_payment` (`db/invoice_payments.py`) ist die einzige Stelle, die
   eine Zahlung Rechnung ↔ Bankbewegung zuordnet, `assign_storno_refund` die einzige, die eine Stornorechnung
   erstattet (*Stornobeleg*), `unassign_invoice_payment` die einzige, die eine Zuordnung
@@ -959,7 +990,7 @@ kein Subagent darauf:
 ## Governance
 
 - **Owner:** NobseVomBerg
-- **Letzte Aktualisierung:** 2026-11-13
+- **Letzte Aktualisierung:** 2026-11-14
 - **Modell-Versionen:** Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5 (Stand November 2026);
   `settings.json` und Agents nutzen Aliase (`fable`, `opus` …), die der neuesten Version folgen
 - **Bei Modell-Updates:** Modell-Routing oben, `.claude/settings.json` (`modelSettings`
