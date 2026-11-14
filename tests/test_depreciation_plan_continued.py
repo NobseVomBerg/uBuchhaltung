@@ -985,11 +985,13 @@ def test_the_asset_page_offers_no_booking_after_the_disposal_in_the_continuation
     asset, first = _page_asset(world)
     db.sell_asset(asset, f'{THIS_YEAR}-06-30', 3000.0)
 
-    plan = _plan_by_year(PageAssetView(db, asset))
+    html = PageAssetView(db, asset)
+    plan = _plan_by_year(html)
 
     assert 'AfA buchen' in plan[THIS_YEAR]
+    assert set(plan) == set(range(first, THIS_YEAR + 1))                   # der Plan endet mit dem Abgangsjahr
     for year in range(THIS_YEAR + 1, first + 10):
-        assert '○ Nach Abgang' in plan[year] and 'AfA buchen' not in plan[year], year
+        assert f'depr_form_{asset}_{year}' not in html, year
 
 
 def test_the_list_counts_the_open_year_of_the_continuation_with_the_plan_amount(world):

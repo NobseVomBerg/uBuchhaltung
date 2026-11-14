@@ -2582,6 +2582,17 @@ def handle_add_asset(db: Database, post_data: dict):
     notes             = post_data.get('notes', [''])[0].strip()
     parent_id         = post_data.get('parent_id', [None])[0] or None
 
+    if parent_id:
+        # Eine Erweiterung gehört zu einer vorhandenen Hauptanlage, nicht zu einer anderen Erweiterung –
+        # sonst fehlte ihr Betrag im Plan (``Database.counts_toward_parent``). Die Meldung geht wie bei jeder
+        # abgelehnten Aktion der Anlagenseite als ``err`` an die Seite der Anlage (``/assets/view``)
+        parent = db.get_asset_by_id(int(parent_id))
+        refusal = ('Die Hauptanlage gibt es nicht.' if parent is None
+                   else 'Eine Erweiterung kann keine eigene Erweiterung bekommen.' if parent[19]  # Parent_ID
+                   else None)
+        if refusal:
+            return 303, f'/assets/view?id={int(parent_id)}&err={quote(refusal, safe="")}'
+
     db.insert_asset(
         name=name,
         description=description,
@@ -2618,6 +2629,12 @@ def handle_update_asset(db: Database, post_data: dict):
     document_id       = post_data.get('document_id', [None])[0] or None
     notes             = post_data.get('notes', [''])[0].strip()
     status            = post_data.get('status', ['active'])[0]
+
+    if status != 'active' and db.counts_toward_parent(asset_id):
+        # Eine Erweiterung hat keinen eigenen Abgang (``Database.sell_asset``) und damit auch keinen eigenen
+        # Status: nichts wird geschrieben, die Meldung geht wie bei jeder abgelehnten Aktion als ``err`` an die Seite
+        return 303, (f'/assets/view?id={asset_id}&err='
+                     + quote('Eine Erweiterung behält den Status der Hauptanlage.', safe=''))
 
     db.update_asset(
         asset_id=asset_id,
@@ -2674,7 +2691,10 @@ def handle_asset_sale(db: Database, post_data: dict):
         # Das Datum steuert, bis wann AfA gebucht werden darf – nur ein ISO-Datum taugt dafür
         return 303, f'/assets/view?id={asset_id}&err=' + quote('Abgangsdatum fehlt oder ist ungültig (JJJJ-MM-TT).')
 
-    db.sell_asset(asset_id, sale_date, sale_price)
+    try:
+        db.sell_asset(asset_id, sale_date, sale_price)
+    except ValueError as exc:                     # eine Erweiterung bucht keinen eigenen Abgang
+        return 303, f'/assets/view?id={asset_id}&err={quote(str(exc), safe="")}'
     return 303, f'/assets/view?id={asset_id}'
 
 

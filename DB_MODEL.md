@@ -856,7 +856,7 @@ derselben Transaktion; was die Zahlungslogik am Status ändert, steht nicht dari
 | SalePrice | REAL | | |
 | Status | TEXT | DEFAULT 'active' | 'active', 'sold', 'scrapped' |
 | Notes | TEXT | | |
-| Parent_ID | INTEGER | FK → Assets | Erweiterungen |
+| Parent_ID | INTEGER | FK → Assets | Erweiterung (Unter-Anlage): Nachträgliche Anschaffungskosten der Hauptanlage; sie zählt zu ihr, solange sie keine eigene Zeile in `AssetDepreciations` hat und die Hauptanlage einen Plan haben kann (siehe „AfA-Plan der App“) |
 | CreatedAt | DATETIME | DEFAULT NOW | |
 
 ---
@@ -885,7 +885,9 @@ Buchen wieder an und `book_depreciation` überschreibt die Zeile. Wird die Buchu
 Anwendung gelöscht (`delete_transaction`, ebenso die SQL-Vorlage „Zeitbereich löschen“), geht
 die Zeile auf `planned` zurück. `delete_asset` lehnt ab, solange eine AfA-Buchung existiert
 oder Unteranlagen existieren; `booked`-Zeilen aus dem WISO-Import (ohne Buchung) hindern das
-Löschen nicht.
+Löschen nicht. Eine Erweiterung, die zur Hauptanlage zählt (siehe „AfA-Plan der App“), lehnt es außerdem ab, sobald die
+Hauptanlage seit dem Jahr der Erweiterung (nie vor ihrem Kaufjahr) ein gebuchtes Jahr hat – hier zählt auch ein als `booked`
+importiertes Jahr –, weil die Erweiterung in diesen Buchungen steckt; ohne ein solches Jahr lässt sie sich löschen.
 
 **WISO-Datenbank-Import** (`import_wiso_fdb`, `_insert_wiso_bookings`, `_insert_wiso_assets`): WISO schreibt den
 ganzen AfA-Plan sofort als Buchungssätze, auch für künftige Jahre. Der Import legt einen AfA-Satz mit einem Datum
@@ -965,6 +967,47 @@ liest den Plan erst in seiner Transaktion (nach `BEGIN IMMEDIATE`) und nimmt Bet
 Plan nicht vorkommt, lehnt es ab. Nach dem Buchen des ersten offenen Jahres bleiben die übrigen offenen Jahre bis auf die
 Rundung gleich: Gemessen an Stichproben (Reste ab 100 €) ändert sich ein mittleres Jahr um höchstens 1 Cent, das letzte Jahr
 (es nimmt den Rest und trägt die Rundungsunterschiede) um höchstens so viele Cent, wie offene Jahre davor liegen.
+
+**Abgang:** Der Plan endet mit dem Abgangsjahr (`Assets.SaleDate`, die ersten vier Zeichen): Nicht gebuchte Jahre danach
+entfallen – in der Unverändert-Regel wie in der Fortschreibung –, gebuchte bleiben; das Abgangsjahr selbst steht, wie es
+ist (die zeitanteilige AfA im Abgangsjahr plant die App noch nicht). `book_depreciation` lehnt ein Jahr nach dem Abgang
+mit dem Abgang als Begründung ab, und `get_book_value_at_date` liefert 0, sobald der Abgang erreicht ist (der Abgang hat den
+Rest ausgebucht): Lässt sich `SaleDate` als ISO-Datum lesen, am Abgangstag selbst und danach; lässt es sich nicht als ISO-Datum
+lesen, beginnt aber mit einem Jahr (die ersten vier Zeichen, wie beim Ende des Plans), ab dem Jahr nach dem Abgangsjahr – im
+Abgangsjahr gilt noch der Planwert; ohne lesbares Jahr gilt kein Abgang.
+
+**Erweiterungen** (seit 2.2.7; `Assets.Parent_ID`): Nachträgliche Anschaffungskosten erhöhen den Anschaffungswert der
+Hauptanlage, statt eine eigene Anlage mit eigenem Plan zu sein – die App rechnet es so (ob das steuerlich passt, klärt das
+Steuerbüro). Eine Unter-Anlage **zählt** zur Hauptanlage (`Database.counts_toward_parent`), wenn die Hauptanlage existiert
+und einen Plan haben kann (lesbares Kaufdatum, Preis über 0 Cent, Nutzungsdauer über 0), die Unter-Anlage **gar keine eigene
+Zeile in `AssetDepreciations`** (gleich welchen Status) und keine eigenen Unter-Anlagen hat und ihr Anschaffungsdatum ein Datum
+und ihr Preis größer 0 ist. „Keine Zeile“ statt „kein gebuchtes Jahr“: Löscht der Nutzer die einzige AfA-Buchung einer
+Unter-Anlage, bleibt ihre Planzeile als `planned` stehen – sie bleibt eine eigene Anlage und lässt sich neu buchen, statt dass
+ihr Betrag in die Zukunft der Hauptanlage wandert. Eine Erweiterung hat keinen eigenen Plan (`depreciation_plan` leer,
+`get_book_value_at_date` 0), `book_depreciation` lehnt sie ab (die AfA läuft über die Hauptanlage), `sell_asset` lehnt ihren
+Abgang ab (die Anlagenseite zeigt das Formular nicht), `handle_update_asset` lehnt einen Status ungleich `active` ab (nichts
+wird geschrieben), und die Anlagenseite verweist auf die Hauptanlage; Nutzungsdauer, Methode und Anlagekonto der Hauptanlage
+gelten – gebucht wird allein an der Hauptanlage. Eine Unter-Anlage mit eigener AfA-Zeile (Bestand, WISO-Import) oder unter einer
+Hauptanlage ohne Plan bleibt eine eigene Anlage mit ihrem Plan (wie bis 2.2.6) und fließt nicht in die Hauptanlage; fehlen ihre
+Planzeilen, zählt sie wieder. Maßgeblich ist das
+Anschaffungsdatum der Erweiterung – der Tag, an dem die Kosten entstehen, nicht die Zahlung –; ihr Jahr ist nie früher als
+das Kaufjahr der Hauptanlage. Im Jahr der Erweiterung zählt sie **wie zu Jahresbeginn aufgewendet** (keine Kürzung nach
+Monaten): Der Restbuchwert plus Erweiterung verteilt sich linear nach Monaten auf die Restnutzungsdauer der Hauptanlage.
+**Ausnahme Anschaffungsjahr:** Fällt die Erweiterung ins Kaufjahr der Hauptanlage, rechnet die Formel auf Anschaffungswert
+plus Erweiterung, ab dem Kaufmonat der Hauptanlage. Der erwartete Plan ist die Formel auf den Anschaffungswert samt den
+Erweiterungen des Kaufjahrs bis zum Jahr vor der ersten späteren Erweiterung; ab diesem Jahr verteilt er den Rest linear
+nach Monaten bis zum Planende (auch bei degressiver Methode oder GWG der Hauptanlage – dieselbe Vereinfachung wie in der
+Fortschreibung), jede weitere Erweiterung kommt in ihrem Jahr zum Rest, und liegt eine Erweiterung nach dem Ende der
+Nutzungsdauer, steht ihr ganzer Betrag im Jahr der Erweiterung. Die Unverändert-Regel vergleicht die gebuchten Jahre mit diesem
+Plan. Entsteht eine Erweiterung in einem Jahr, das schon gebucht ist, weicht die Geschichte ab: Fortschreibung, ihr Betrag
+steckt im Rest ab dem ersten offenen Jahr, und die Buchwerte der gebuchten Jahre rechnen vom Anschaffungswert samt
+Erweiterungen bis zu diesem Jahr. Ohne Erweiterungen ändert sich nichts. `Database.acquisition_cost(asset_id, year)` ist der
+Preis der Anlage plus die zählenden Erweiterungen mit Jahr ≤ `year` (Standard: laufendes Jahr); die Anlagenliste zeigt ihn als
+Anschaffungskosten. Die Anlagenseite legt keine Erweiterung einer Erweiterung an (`handle_add_asset` lehnt ab).
+**Löschen:** Eine zählende Erweiterung lässt sich nicht löschen, sobald die Hauptanlage seit dem Jahr der Erweiterung (nie vor
+ihrem Kaufjahr) ein gebuchtes Jahr hat (`_DEPRECIATION_BOOKED`, auch ein importiertes) – die Erweiterung steckt in diesen
+Buchungen (`delete_asset`: „Die Hauptanlage hat seit dem Jahr dieser Erweiterung AfA gebucht (…)“); ohne ein solches Jahr schon,
+und der Plan der Hauptanlage rechnet wieder ohne sie.
 
 ---
 
@@ -1048,8 +1091,9 @@ Das Anlagekonto kommt aus dem Formular, sonst aus der Anlage oder ihrer Kategori
 EÜR wird direkt abgeschrieben (Gegenkonto = Anlagekonto, kein Wertberichtigungskonto).
 Aufwandskonto = Erfolgskonto (4000–7999) und Anlagekonto = Konto 1–999 werden geprüft, damit
 kein Satz wie „6220 an 1460“ entsteht; nach dem Abgang der Anlage (`SaleDate`) wird keine AfA
-mehr gebucht. Die zeitanteilige AfA im Abgangsjahr plant die Anwendung noch nicht (volle
-Jahres-AfA, `docs/aufgaben.md`).
+mehr gebucht – der Plan endet mit dem Abgangsjahr. Die zeitanteilige AfA im Abgangsjahr plant die
+Anwendung noch nicht (volle Jahres-AfA, `docs/aufgaben.md`). Erweiterungen (Unter-Anlagen) erhöhen den
+Anschaffungswert der Hauptanlage und werden mit ihr abgeschrieben (siehe „AfA-Plan der App“).
 Hinweis GWG: Wer den Kauf schon auf das Aufwandskonto 6260 (Sofortabschreibung) gebucht hat
 und zusätzlich die AfA bucht, zählt doppelt – das Programm prüft das nicht.
 

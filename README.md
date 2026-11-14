@@ -336,14 +336,14 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 - Jahreswechsel-Support
 
 ### 12. Anlagenverzeichnis (`/assets`)
-Vollständiges Anlagenmanagement mit gesetzeskonformer AfA:
+Anlagenverwaltung mit AfA-Plan:
 - **BMF-Kategorien**: 30 vordefinierte Kategorien aus `seed_data/`
 - **AfA-Methoden**: Linear (anteilig), Degressiv (25%), GWG (≤ 800 €)
 - **AfA-Plan mit Fortschreibung**: Gebuchte Jahre bleiben, wie sie gebucht sind (maßgeblich ist der Betrag der Buchung). Weicht ein gebuchtes Jahr vom Plan ab (Import, nachträglich geänderter Anschaffungswert oder Betrag einer Buchung), verteilt sich der Restbuchwert linear auf die Restnutzungsdauer (keine degressive Fortschreibung, keine GWG-Regel), und gebucht wird Jahr für Jahr der Reihe nach – die App rechnet so; ob das steuerlich passt, klärt das Steuerbüro
 - **Live-Vorschau**: JavaScript-basierte Echtzeit-AfA-Berechnung
 - **Inventarnummern**: Auto-generiert `INV-YY-###`
-- **Buchungsintegration**: AfA-Buchung als Umbuchung „Aufwand an Anlagekonto“ (direkte Abschreibung, je Anlage und Jahr nur einmal, ohne Bankkonto; Aufwandskonto = Erfolgskonto, Anlagekonto = Anlagekonto, nach dem Abgang der Anlage keine AfA mehr); Löschen der Buchung gibt das Jahr wieder frei, eine Anlage mit gebuchter AfA lässt sich nicht löschen. Wer ein GWG schon beim Kauf auf das Aufwandskonto 6260 (Sofortabschreibung) gebucht hat, darf die AfA nicht zusätzlich buchen – sie zählte doppelt, das Programm prüft das nicht
-- **Erweiterungen**: Sub-Anlagen über Parent_ID
+- **Buchungsintegration**: AfA-Buchung als Umbuchung „Aufwand an Anlagekonto“ (direkte Abschreibung, je Anlage und Jahr nur einmal, ohne Bankkonto; Aufwandskonto = Erfolgskonto, Anlagekonto = Anlagekonto, nach dem Abgang der Anlage keine AfA mehr); Löschen der Buchung gibt das Jahr wieder frei, eine Anlage mit gebuchter AfA lässt sich nicht löschen – eine Erweiterung auch dann nicht, sobald die Hauptanlage seit ihrem Jahr AfA gebucht hat (die Erweiterung steckt in diesen Buchungen). Wer ein GWG schon beim Kauf auf das Aufwandskonto 6260 (Sofortabschreibung) gebucht hat, darf die AfA nicht zusätzlich buchen – sie zählte doppelt, das Programm prüft das nicht
+- **Erweiterungen**: Sub-Anlagen über Parent_ID. Nachträgliche Anschaffungskosten erhöhen den Anschaffungswert der Hauptanlage und werden mit ihr über die Restnutzungsdauer abgeschrieben: Im Jahr, in dem die Kosten entstehen (Datum der Erweiterung, nicht der Zahlung), zählen sie wie zu Jahresbeginn aufgewendet, im Anschaffungsjahr der Hauptanlage ab deren Kaufmonat – die App rechnet so; ob das steuerlich passt, klärt das Steuerbüro. Eine Erweiterung hat keinen eigenen Plan, keinen eigenen Abgang und wird nicht einzeln gebucht; Nutzungsdauer, Methode und Anlagekonto der Hauptanlage gelten. Eine Unter-Anlage mit eigener AfA-Zeile (Bestand) oder unter einer Hauptanlage ohne Plan (Preis, Kaufdatum oder Nutzungsdauer fehlen) bleibt eine eigene Anlage. Der AfA-Plan einer verkauften Anlage endet mit dem Abgangsjahr
 
 ### 13. Sonstiges (`/miscellaneous`)
 - **Datenbank-Übersicht**: Tabellenstatistiken

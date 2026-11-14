@@ -1039,8 +1039,9 @@ class WisoDatabase:
     PRICE_PLACEHOLDER = 0.01
 
     #: Behelfsgrenze für ``PURCHASEAMOUNTNET`` bei vorhandenen Zahlungen (1,00 €): Gemessen an echten
-    #: Daten trägt der Nutzer bei der Erstanlage eines Anlageguts oft einen Behelfsbetrag von 1 € ein.
-    #: Ein Wert bis zu dieser Grenze (einschließlich) zählt dann nie zum Anschaffungswert.
+    #: Daten steht dort bei der Erstanlage eines Anlageguts oft ein Behelfsbetrag von 0,01 €; die
+    #: Grenze von 1,00 € bleibt die Regel. Ein Wert bis zu ihr (einschließlich) zählt nie zum
+    #: Anschaffungswert.
     PRICE_HELPER_LIMIT = 1.00
 
     @staticmethod

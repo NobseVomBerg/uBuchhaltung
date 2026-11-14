@@ -16,15 +16,27 @@ from .pages import Header1, Header2, Header3, Footer, script_json
 # ─── Helper ──────────────────────────────────────────────────────────────────
 
 def _status_label(status):
-    return {'active': 'Aktiv', 'sold': 'Verkauft', 'scrapped': 'Abgang'}.get(status, status)
+    # ein unbekannter Wert kommt aus der Datenbank (SQL-Konsole, Sicherung) und wird maskiert
+    return {'active': 'Aktiv', 'sold': 'Verkauft', 'scrapped': 'Abgang'}.get(
+        status, _html.escape(str(status or ''), quote=True))
 
 def _method_label(method):
     return {'linear': 'Linear', 'degressive': 'Degressiv', 'both': 'Linear / Degressiv', 'GWG': 'GWG (Sofort)',
-            METHOD_BOOKED: 'Wie gebucht'}.get(method, method)
+            METHOD_BOOKED: 'Wie gebucht'}.get(method, _html.escape(str(method or ''), quote=True))
 
 def _fmt(value):
     """Format number as German currency string."""
     return fmt_eur(value)
+
+
+# Wie eine Erweiterung (Unter-Anlage, die zur Hauptanlage zählt) abgeschrieben wird – siehe
+# ``Database.depreciation_plan``
+EXTENSION_HINT = ('Eine Erweiterung erhöht den Anschaffungswert dieser Anlage ab dem Jahr ihres Datums '
+                  '(im Anschaffungsjahr ab dem Kaufmonat) und wird über die restliche Nutzungsdauer mit '
+                  'abgeschrieben; Nutzungsdauer, Methode und Anlagekonto der Hauptanlage gelten. Maßgeblich '
+                  'ist das Datum, an dem die Kosten entstanden sind, nicht das Zahlungsdatum.')
+EXTENSION_FORM_HINT = ('Nutzungsdauer, Methode und Anlagekonto der Hauptanlage gelten; das Datum ist der Tag, '
+                       'an dem die Kosten entstanden sind.')
 
 
 # ─── PageAssets ──────────────────────────────────────────────────────────────
@@ -49,7 +61,7 @@ def PageAssets(db: Database, status_filter='', edit_id=None, new_parent_id=None,
 
     for a in assets:
         asset_id = a[0]
-        purchase_price = float(a[7]) if a[7] is not None else 0.0  # Decimal -> float für Summen/Anzeige
+        purchase_price = db.acquisition_cost(asset_id)  # Preis samt zählenden Erweiterungen, passend zum Buchwert
         purchase_date = a[6]
         method = a[9]
         status = a[17]
@@ -74,7 +86,7 @@ def PageAssets(db: Database, status_filter='', edit_id=None, new_parent_id=None,
         asset_rows.append({
             'id': asset_id, 'inv': _html.escape(str(a[1] or '')), 'name': _html.escape(str(a[2] or '')),
             'cat': _html.escape(str(a[22] or '')) if len(a) > 22 else '',   # CategoryName from JOIN
-            'purchase_date': purchase_date, 'purchase_price': purchase_price,
+            'purchase_date': _html.escape(str(purchase_date or ''), quote=True), 'purchase_price': purchase_price,
             'book_value': book_value, 'depr_this_year': depr_this_year,
             'depr_status': depr_status, 'status': status, 'method': method,
         })
@@ -127,7 +139,7 @@ def PageAssets(db: Database, status_filter='', edit_id=None, new_parent_id=None,
             status_color = {'active': 'green', 'sold': '#888', 'scrapped': '#cc0000'}.get(row['status'], '#000')
             s += (f"<tr><td><a href='javascript:void(0)' onclick='openEditForm(\"/assets/edit?id={aid}\")'>{row['inv'] or ''}</a></td>"
                   f"<td><a href='javascript:void(0)' onclick='openEditForm(\"/assets/edit?id={aid}\")'>{row['name']}</a></td>"
-                  f"<td>{row['cat'] or ''}</td><td>{row['purchase_date'] or ''}</td>"
+                  f"<td>{row['cat'] or ''}</td><td>{row['purchase_date']}</td>"
                   f"<td style='text-align:right;'>{_fmt(row['purchase_price'])}</td>"
                   f"<td style='text-align:right;'>{_fmt(row['book_value'])}</td>"
                   f"<td style='text-align:right;'>{_fmt(row['depr_this_year'])}{depr_badge}</td>"
@@ -184,15 +196,13 @@ def _asset_details(db: Database, asset):
     asset_id = asset[0]
     status = asset[17]
 
+    # Eine Erweiterung, die zur Hauptanlage zählt, hat keinen eigenen Plan und keine eigene Buchung
+    counts_toward_parent = db.counts_toward_parent(asset_id)
     plan = db.depreciation_plan(asset_id)
     booked = {e[2]: e for e in db.get_depreciations_for_asset(asset_id)}  # year → row
     # Gebucht: die Buchung gibt es, oder das Jahr stammt als 'booked' aus dem WISO-Import.
     # Eine Zeile 'posted', deren Buchung fehlt, gilt als nicht gebucht (Buchen-Knopf).
     booked_years = db.get_booked_depreciation_years(asset_id)
-    # Abgang (SaleDate). Ältere Einträge können ein Datum in anderer Schreibweise tragen –
-    # dann gilt kein Abgangsjahr, statt die Seite abstürzen zu lassen.
-    sale_year = (int(str(asset[15])[:4])
-                 if asset[15] and str(asset[15])[:4].isdigit() else None)
     current_year = datetime.date.today().year
     children = db.get_asset_children(asset_id)
     coa_rows = db.fetch_chart_of_accounts()
@@ -200,8 +210,13 @@ def _asset_details(db: Database, asset):
 
     # ── AfA-Plan ──
     s = '<div class="rectRounded"><h3>AfA-Plan</h3>'
-    s += f'<table border="1" style="width:100%; border-collapse:collapse;">'
-    s += '<tr><th>Jahr</th><th style="text-align:right;">Buchwert Anfang</th><th style="text-align:right;">AfA</th><th style="text-align:right;">Buchwert Ende</th><th>Methode</th><th>Status</th><th>Aktion</th></tr>'
+    if counts_toward_parent:
+        # Der Plan ist leer: Ihre AfA steckt im Plan der Hauptanlage
+        s += (f'<p>Die AfA dieser Erweiterung läuft über die Hauptanlage. '
+              f'<a href="/assets/edit?id={int(asset[19])}">Zur Hauptanlage</a></p>')     # Assets.Parent_ID
+    else:
+        s += f'<table border="1" style="width:100%; border-collapse:collapse;">'
+        s += '<tr><th>Jahr</th><th style="text-align:right;">Buchwert Anfang</th><th style="text-align:right;">AfA</th><th style="text-align:right;">Buchwert Ende</th><th>Methode</th><th>Status</th><th>Aktion</th></tr>'
 
     for entry in plan:
         yr = entry['year']
@@ -216,10 +231,6 @@ def _asset_details(db: Database, asset):
             booking_id = booked_entry[5] if booked_entry else None    # fehlt bei importierter AfA
             action = (f'<a href="/transactions/edit?id={int(booking_id)}">Buchung ansehen</a>'
                       if booking_id else '')
-        elif sale_year is not None and yr > sale_year:
-            # Nach dem Abgang gibt es keine AfA mehr – und keinen Buchen-Knopf
-            depr_status_label = '<span style="color:#aaa;">○ Nach Abgang</span>'
-            action = ''
         elif yr < current_year:
             depr_status_label = '<span style="color:orange;">⚠ Nicht gebucht</span>'
             action = (_book_depr_button(asset_id, yr, coa_rows, asset_coa, entry['method'])
@@ -234,7 +245,7 @@ def _asset_details(db: Database, asset):
         row_style = ' class="row-ok"' if is_booked else ''
         s += f'<tr{row_style}><td>{yr}</td><td style="text-align:right;">{_fmt(bv_start)}</td><td style="text-align:right;">{_fmt(depr)}</td><td style="text-align:right;">{_fmt(bv_end)}</td><td>{meth}</td><td>{depr_status_label}</td><td>{action}</td></tr>'
 
-    s += '</table></div>'
+    s += '</div>' if counts_toward_parent else '</table></div>'
 
     # ── Erweiterungen / Sub-Anlagen ──
     s += '<div class="rectRounded"><h3>Erweiterungen / Nachkäufe</h3>'
@@ -245,18 +256,22 @@ def _asset_details(db: Database, asset):
             ch_id = ch[0]
             ch_inv = _html.escape(str(ch[1] or ''))
             ch_name = _html.escape(str(ch[2] or ''))
-            ch_date = ch[6]
+            ch_date = _html.escape(str(ch[6] or ''), quote=True)
             ch_price = ch[7]
-            ch_bv = db.get_book_value_at_date(ch_id)
-            s += f'<tr><td>{ch_inv}</td><td>{ch_name}</td><td>{ch_date}</td><td style="text-align:right;">{_fmt(ch_price)}</td><td style="text-align:right;">{_fmt(ch_bv)}</td><td><a href="/assets/edit?id={ch_id}">Öffnen</a></td></tr>'
+            # Eine zählende Erweiterung hat keinen eigenen Restbuchwert: Er steckt in der Hauptanlage
+            ch_bv = ('in der Hauptanlage' if db.counts_toward_parent(ch_id)
+                     else _fmt(db.get_book_value_at_date(ch_id)))
+            s += f'<tr><td>{ch_inv}</td><td>{ch_name}</td><td>{ch_date}</td><td style="text-align:right;">{_fmt(ch_price)}</td><td style="text-align:right;">{ch_bv}</td><td><a href="/assets/edit?id={ch_id}">Öffnen</a></td></tr>'
         s += '</table>'
+        s += f'<p class="hint">{EXTENSION_HINT}</p>'
     else:
         s += '<p><em>Keine Erweiterungen vorhanden.</em></p>'
-    s += f'<p><a href="/assets/new?parent_id={asset_id}">+ Erweiterung hinzufügen</a></p>'
+    if not asset[19]:                             # Assets.Parent_ID: eine Erweiterung bekommt keine eigene Erweiterung
+        s += f'<p><a href="/assets/new?parent_id={asset_id}">+ Erweiterung hinzufügen</a></p>'
     s += '</div>'
 
-    # ── Verkauf / Abgang ──
-    if status == 'active':
+    # ── Verkauf / Abgang ── (eine Erweiterung, die zur Hauptanlage zählt, hat keinen eigenen Abgang)
+    if status == 'active' and not counts_toward_parent:
         s += f'''<div class="rectRounded" id="sell_form"><h3>Anlage verkaufen / Abgang buchen</h3>
         <form method="POST" action="/assets/sell">
             <input type="hidden" name="asset_id" value="{asset_id}">
@@ -355,9 +370,9 @@ def _asset_form(db: Database, asset=None, parent_asset=None):
         'description': _html.escape(str(asset[3] or '')) if asset else '',
         'cat': asset[4] if asset else '',
         'coa': asset[5] if asset else '',
-        'purchase_date': asset[6] if asset else '',
-        'purchase_price': asset[7] if asset else '',
-        'useful_life': asset[8] if asset else '',
+        'purchase_date': _html.escape(str(asset[6] or ''), quote=True) if asset else '',
+        'purchase_price': _html.escape(str(asset[7] if asset[7] is not None else ''), quote=True) if asset else '',
+        'useful_life': _html.escape(str(asset[8] if asset[8] is not None else ''), quote=True) if asset else '',
         'method': asset[9] if asset else 'linear',
         'serial': _html.escape(str(asset[10] or '')) if asset else '',
         'location': _html.escape(str(asset[11] or '')) if asset else '',
@@ -374,6 +389,7 @@ def _asset_form(db: Database, asset=None, parent_asset=None):
 
     if parent_asset:
         s += f'<p>🔗 Erweiterung von: <strong>{_html.escape(str(parent_asset[2] or ""))}</strong></p>'
+        s += f'<p class="hint">{EXTENSION_FORM_HINT}</p>'
 
     s += f'<form method="POST" action="{action}">'
     if is_edit:
