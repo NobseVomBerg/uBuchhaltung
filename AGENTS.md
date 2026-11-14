@@ -22,9 +22,9 @@ Pragmatische Hinweise für KI-/Coding-Agenten in diesem Repository.
 - Bookings unterscheiden `BookingType='bank'` und `BookingType='entry'`
 - Verknüpfung Bank↔Entry über `ParentBooking_ID`
 - Bei WISO-Original-Import gilt:
-  - `TaxRate` aus `TaxKeys` (BU-Schlüssel)
+  - `TaxRate` aus dem BU-Schlüssel: zuerst `datev_keys.key_rate` (datumsabhängig), sonst `TaxKeys`; der Schlüssel steht als `Bookings.DatevKey` am Satz
   - `TaxAmount` aus Brutto abgeleitet
-  - Spezialfall `4405 -> 4400`: 19% setzen, auch ohne BU-Schlüssel
+  - Spezialfall `4405 -> 4400`: 19% setzen, aber nur ohne BU-Schlüssel (leer oder 0)
 - EÜR im Dashboard basiert auf Bookings:
   - Netto-Aggregation (`Amount - TaxAmount`)
   - Virtuelles 3806 nur aus USt-Anteilen der Einnahmen

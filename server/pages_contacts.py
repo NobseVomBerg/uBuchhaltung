@@ -184,7 +184,7 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
       17=legal_form, 18=salutation, 19=title, 20=first_name, 21=last_name,
       22=date_of_birth, 23=company_contact_id, 24=company_name_free, 25=address_line1,
       26=abbreviation, 27=type_keys, 28=job_title, 29=department,
-      30=is_primary_contact, 31=role_keys
+      30=is_primary_contact, 31=role_keys, 32=datev_consultant_no, 33=datev_client_no
     """
 
     entity_type = _entity_type(entity_type)
@@ -232,6 +232,8 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
     legal_form       = g(17, '')
     tax_id           = g(11, '')
     buyer_route_id   = g(14, '')
+    datev_consultant_no = g(32, '')
+    datev_client_no     = g(33, '')
     # person
     salutation       = g(18, '')
     title_val        = g(19, '')
@@ -260,6 +262,8 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
     company_name      = _esc(str(company_name))
     tax_id            = _esc(str(tax_id))
     buyer_route_id    = _esc(str(buyer_route_id))
+    datev_consultant_no = _esc(str(datev_consultant_no), quote=True)
+    datev_client_no     = _esc(str(datev_client_no), quote=True)
     title_val         = _esc(str(title_val))
     first_name        = _esc(str(first_name))
     last_name         = _esc(str(last_name))
@@ -309,6 +313,18 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
     else:
         roles_section = ''
 
+    # Berater- und Mandantennummer für den Vorlauf des DATEV-Stapels: nur im Formular der eigenen Firma
+    datev_section = ''
+    if entity_type == 'company' and contact_type == 'own':
+        datev_section = f'''
+        <tr><td>DATEV-Beraternummer:</td>
+            <td><input type="text" name="datev_consultant_no" value="{datev_consultant_no}" inputmode="numeric"
+                       pattern="[1-9][0-9]{{3,6}}" maxlength="7" placeholder="1001–9999999">
+                <small class="muted">Vorlauf des DATEV-Stapels</small></td></tr>
+        <tr><td>DATEV-Mandantennummer:</td>
+            <td><input type="text" name="datev_client_no" value="{datev_client_no}" inputmode="numeric"
+                       pattern="[1-9][0-9]{{0,4}}" maxlength="5" placeholder="1–99999"></td></tr>'''
+
     # Nur die zur Entität passende Sektion rendern (Handler verträgt fehlende Felder)
     if entity_type == 'company':
         entity_section = f'''
@@ -322,6 +338,7 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
         <tr><td>Leitweg-ID (B2G):</td>
             <td><input type="text" name="buyer_route_id" value="{buyer_route_id}" placeholder="z.B. 991-ABCDE-12">
                 <small class="muted">Nur für öffentliche Auftraggeber (XRechnung B2G)</small></td></tr>
+        {datev_section}
         '''
     else:
         entity_section = f'''

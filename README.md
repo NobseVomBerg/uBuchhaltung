@@ -164,6 +164,11 @@ direkt aus der Datenbankdatei oder aus den Textexporten:
   legt er neu an und meldet ähnliche vorhandene Buchungen als „möglicherweise
   doppelt“: lieber eine sichtbare zweite Buchung als eine still falsch übernommene.
 
+- Der **BU-Schlüssel** der Buchung (aus der Datenbank `DATEVVATKEY`, aus dem Textexport `SCHLUESSEL`) bleibt am Buchungssatz und geht
+  unverändert in den DATEV-Stapel; ein erneuter Import der Datenbank trägt ihn an schon importierten Buchungen nach – nur dort, wo er fehlt
+  und die Buchung denselben Steuersatz trägt wie in WISO (sonst leitet der Export den Schlüssel aus dem Satz der App ab; die Seite
+  *Verschiedenes* nennt die Zahl solcher Buchungen). Berater- und Mandantennummer übernimmt der Datenbank-Import in die Stammdaten der
+  eigenen Firma, wenn beide Felder dort leer sind.
 - Beide Importe melden, was sie nicht sicher lesen können: Sätze mit **negativem Bruttobetrag**
   und genau einem Bank-, Kassen- oder Verrechnungskonto (dort bestimmt die Geldbewegung das
   Vorzeichen; WISO schreibt Beträge üblicherweise nicht negativ, ein solcher Satz fällt aus dem Muster),
@@ -196,7 +201,9 @@ Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen
   eine 2.1-Datenbank nicht. Die Umstellung ändert keine Auswertung: EÜR, DATEV-Export und Dashboard
   zeigen danach dieselben Werte wie vorher. Das Update auf 2.2.0 (Fassungen und Protokoll versendeter
   Rechnungen, ebenfalls eine Schemaänderung) legt vor der Umstellung genauso eine Sicherung an; ein Zurück auf
-  2.1.x gibt es nur über diese Sicherung.
+  2.1.x gibt es nur über diese Sicherung. Dasselbe gilt für das Update auf 2.3.0 (BU-Schlüssel am Buchungssatz und
+  DATEV-Nummern der eigenen Firma): Zurück auf 2.2.x nur über die Sicherung. Anders als die früheren Umstellungen ändert 2.3.0 den
+  **DATEV-Export**: Er schreibt andere BU-Schlüssel (siehe unten).
   **Sicherung zurückspielen** (die Oberfläche bietet das nicht an): uBuchhaltung beenden, die Datei
   `backup/<Datum>_vor_<Version>_buch.db` im Datenordner des Nutzers (`data/users/<Name>/`, im Container
   das eingebundene Datenverzeichnis) über `buch.db` kopieren – liegen daneben Dateien `buch.db-journal`,
@@ -349,13 +356,16 @@ Anlagenverwaltung mit AfA-Plan:
 - **Datenbank-Übersicht**: Tabellenstatistiken
 - **DB-Export**: INSERT-Statements nach `data/db-export.sql`
 - **WISO Import**: Automatische Format-Erkennung (Original + Tabellen-Export)
-  - BU-Schlüssel → Steuersatz-Lookup aus TaxKeys-Tabelle
+  - BU-Schlüssel → Steuersatz (zuerst die Regeln des Exports, sonst TaxKeys-Tabelle) und am Buchungssatz gespeichert (`Bookings.DatevKey`)
   - Automatische TaxAmount-Berechnung (Brutto → MwSt-Anteil)
   - 4405→4400 wird auch ohne BU-Schlüssel mit 19% USt angereichert
   - Tabellen-Export: optionale `Konto-Nr. / IBAN`-Spalte (6- und 7-spaltig)
   - Tabellen-Export Matching: bank+entry-Paare ohne Belegnummer (Privatentnahmen, Gebühren) werden als Einheit erkannt und aktualisiert
   - Nach Import: automatische Bank↔Entry-Verknüpfung (`link_bank_to_entries()`)
 - **DATEV-Export** (`export/datev.py`): Buchungsstapel als DATEV-CSV (nur Entry-Buchungen); das Soll/Haben-Kennzeichen richtet sich danach, ob das Zweck- oder das Geldkonto im Feld „Konto“ steht
+  - Der Stapel **bildet den nach, den WISO Mein Büro schreibt** (gemessen an einem Datenbestand) – nicht mehr und nicht weniger: Ob das Steuerbüro ihn so annimmt, klärt es selbst; eine Zusicherung gibt es nicht
+  - BU-Schlüssel: der an der Buchung gespeicherte (Import), sonst abgeleitet nach der Art des Zweckkontos und dem Steuersatz – Vorsteuer 401/402 (19/7 %), Umsatzsteuer 101/102, im zweiten Halbjahr 2020 mit den vertauschten Sätzen 16/5 %; die Rechnungskette (Forderung, Wartekonto→Erlöskonto) trägt keinen Schlüssel, aber den Steuersatz in Spalte 40
+  - Berater- und Mandantennummer stehen im Kontaktformular der eigenen Firma (sonst Platzhalter im Vorlauf; die Seite *Verschiedenes* weist darauf hin)
   - Prüft vorab die Splits des Zeitraums: Ergeben die *bankwirksamen*
     Buchungssätze nicht den Betrag der Bankbewegung, wird der Export mit Datum,
     Betrag und Rest abgelehnt. Umbuchungen (Wartekonto→Erlöskonto,
@@ -537,7 +547,7 @@ uBuchhaltung/
 ├── LICENSE                    # AGPL-3.0 (kommerzielle Lizenz auf Anfrage, siehe unten)
 ├── CLA.md · CONTRIBUTING.md   # Beitragsregeln + Contributor License Agreement
 ├── seed_data/                 # Initialisierungsdaten (JSON)
-│   ├── tax_keys.json          # 50 DATEV-Steuerschlüssel (BU-Codes)
+│   ├── tax_keys.json          # 53 DATEV-Steuerschlüssel (BU-Codes)
 │   ├── asset_categories.json  # 30 BMF-AfA-Kategorien
 │   ├── chart_of_accounts_skr04.json  # Standard-SKR04-Kontenrahmen
 │   ├── private/               # Benutzerspezifisch (in .gitignore)

@@ -13,7 +13,7 @@ from decimal import Decimal
 
 from export import datev
 from money import to_minor
-from tests.fdb_builder import Column, FdbBuilder, INT64, LONG, SHORT, TEXT, TIMESTAMP
+from tests.fdb_builder import Column, FdbBuilder, INT64, LONG, SHORT, TEXT, TIMESTAMP, VARYING
 
 D1, D2 = '2026-01-01', '2026-12-31'
 CSV_HEADER = "ID;DATUM;KONTO;GEGENKONTO;TEXT;REFERENZNUMMER;BRUTTOBETRAG;SCHLUESSEL;USTIDENTNUMMER\n"
@@ -100,8 +100,13 @@ def csv_export(*lines):
     return (CSV_HEADER + '\n'.join(rows) + '\n').encode('utf-8')
 
 
-def wiso_database(path, rows, extra_chart=()):
-    """Synthetische WISO-Datenbank: Kontenrahmen (SKR03 → SKR04) und Buchungssätze ``rows``."""
+def wiso_database(path, rows, extra_chart=(), key_column=False, systems=None):
+    """Synthetische WISO-Datenbank: Kontenrahmen (SKR03 → SKR04) und Buchungssätze ``rows``.
+
+    ``key_column``: Die Tabelle der Buchungen hat die Spalte ``DATEVVATKEY`` (BU-Schlüssel; ein Satz nennt ihn als
+    ``DATEVVATKEY=401``). ``systems``: Sätze der Fibu-Schnittstellen (``SYS_FINACCSYSTEMS``: ``NAME``,
+    ``CONSULTANT_NO``, ``CLIENT_NO``, dazu ``USERPASSWORD`` als Zugangsdaten, die der Leser nie anfasst); ohne die
+    Angabe gibt es die Tabelle nicht."""
     builder = FdbBuilder(page_size=16384)
     chart = builder.table('BAS_FINACC_PLAN', [
         Column('ID', LONG, 4), Column('SKR04', LONG, 4), Column('BOOKINGYEAR', SHORT, 2),
@@ -116,12 +121,18 @@ def wiso_database(path, rows, extra_chart=()):
         Column('AMOUNTNET', INT64, 8, scale=-2), Column('AMOUNTGROSS', INT64, 8, scale=-2),
         Column('TAXRATE', INT64, 8, scale=-2), Column('ACCOUNTNO', LONG, 4),
         Column('CONTRA_ACCOUNTNO', LONG, 4), Column('ACCOUNTING_TEXT', TEXT, 60),
-        Column('REFERENCENO', TEXT, 20)])
+        Column('REFERENCENO', TEXT, 20)] + ([Column('DATEVVATKEY', SHORT, 2)] if key_column else []))
     for number, row in enumerate(rows, start=1):
         row = dict(row)
         group = row.pop('ACCOUNTINGID', 700 + number)
         date = row.pop('ACCOUNTING_DATE', '2026-01-02 00:00:00')
         bookings.add(ID=number, ACCOUNTINGID=group, ACCOUNTING_DATE=date, **row)
+    if systems is not None:
+        table = builder.table('SYS_FINACCSYSTEMS', [
+            Column('ID', LONG, 4), Column('NAME', VARYING, 42), Column('CONSULTANT_NO', VARYING, 12),
+            Column('CLIENT_NO', VARYING, 12), Column('USERPASSWORD', VARYING, 32)])
+        for number, system in enumerate(systems, start=1):
+            table.add(ID=number, **system)
     return builder.write(str(path))
 
 

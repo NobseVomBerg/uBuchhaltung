@@ -36,9 +36,9 @@ EXPENSE_19 = dict(number=6815, counter=1800, amount='-119.00', rate=0.19, tax='-
 REVENUE_7 = dict(number=4300, counter=1800, amount='107.00', rate=0.07, tax='7.00', doc='AR-7')
 CASES = [
     pytest.param(EXPENSE_19, {6815: Decimal('-100.00'), 1406: Decimal('-19.00')},
-                 ('119,00', 'S', '6815', '1800', '9'), id='aufwand-19'),
+                 ('119,00', 'S', '6815', '1800', '401'), id='aufwand-19'),
     pytest.param(REVENUE_7, {4300: Decimal('100.00'), 3806: Decimal('7.00')},
-                 ('107,00', 'H', '4300', '1800', '2'), id='erloes-7'),
+                 ('107,00', 'H', '4300', '1800', '102'), id='erloes-7'),
 ]
 
 
@@ -192,7 +192,7 @@ def test_a_tax_changed_in_the_row_is_taken(db):
 
     assert _tax(db, booking) == (0.07, minor('-7.79'))
     assert euer(db) == {6815: Decimal('-111.21'), 1401: Decimal('-7.79')}
-    assert datev_rows(db)['ER-19'][4] == '8'                      # 7 % Vorsteuer
+    assert datev_rows(db)['ER-19'][4] == '402'                    # 7 % Vorsteuer
 
 
 def test_a_tax_cleared_in_the_row_of_a_saved_booking_is_cleared(db):

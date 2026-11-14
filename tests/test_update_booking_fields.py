@@ -81,7 +81,9 @@ def world(db_with_coa):
 
 
 def _full_booking(w):
-    """Eine Buchung, in der jede Spalte außer dem veralteten BookingGroup_ID belegt ist."""
+    """Eine Buchung, in der jede Spalte außer dem veralteten BookingGroup_ID und dem BU-Schlüssel (``DatevKey``)
+    belegt ist: Der Schlüssel fällt weg, wenn sich Konto, Gegenkonto oder Steuersatz ändern – das prüft
+    ``test_datev_key_writes.py``, nicht dieser Vergleich der ganzen Zeile."""
     db = w.db
     bid = db.insert_booking(
         '2026-03-01', Decimal('-59.50'), date_tax='2026-03-02', account_id=w.bank_one,
@@ -94,7 +96,7 @@ def _full_booking(w):
         conn.execute("UPDATE Bookings SET Status='offen', SourceGroup='SG-1' WHERE ID=?", (bid,))
         conn.commit()
     empty = [name for name, (value, _type) in _row(db, bid).items() if value is None]
-    assert empty == ['BookingGroup_ID']
+    assert empty == ['BookingGroup_ID', 'DatevKey']
     return bid
 
 

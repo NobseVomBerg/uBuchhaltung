@@ -147,6 +147,13 @@ def test_the_column_positions_of_the_row_reader_match_the_schema(stock):
 
 # ── Der Bestand bleibt ───────────────────────────────────────────────────────
 
+#: Was die Umstellung auf 2.3.0 (Schema 2003) an den Tabellen ändert, die diese Prüfung mitliest: ``Bookings`` und
+#: ``CompanyDetails`` bekommen Spalten am Ende (alle NULL), fünf Zeilen von ``TaxKeys`` werden berichtigt. Hier gilt der
+#: Stand von 2.2.x; Schema 2003 prüft ``test_datev_schema_2003.py``.
+_ADDED_BY_2003 = {'Bookings': 1, 'CompanyDetails': 2}
+_CORRECTED_BY_2003 = ('100', '120', '121', '122', '490')
+
+
 def test_existing_rows_stay_untouched_and_the_new_values_are_empty(stock):
     before_invoices = _contents(stock)['Invoices']
     before_rest = _contents(stock, skip={'Invoices'})
@@ -158,6 +165,13 @@ def test_existing_rows_stay_untouched_and_the_new_values_are_empty(stock):
     assert [row[:50] for row in after['Invoices']] == before_invoices           # jede Spalte jeder Zeile
     assert all(row[50:] == (None,) * 5 for row in after['Invoices'])
     for table, rows in before_rest.items():
+        if table in _ADDED_BY_2003:                                             # die Spalten von 2.3.0 am Ende, leer
+            added = _ADDED_BY_2003[table]
+            assert all(row[-added:] == (None,) * added for row in after[table]), table
+            after[table] = [row[:-added] for row in after[table]]
+        elif table == 'TaxKeys':
+            rows = [row for row in rows if row[0] not in _CORRECTED_BY_2003]
+            after[table] = [row for row in after[table] if row[0] not in _CORRECTED_BY_2003]
         assert after[table] == rows, table                                      # alle anderen Tabellen
     assert after['InvoiceCorrections'] == [] and after['InvoiceDocumentVersions'] == []
 

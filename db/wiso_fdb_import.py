@@ -24,6 +24,7 @@ import datetime
 from collections import namedtuple
 
 from db.core import coa_id
+from db.datev_keys import percent
 from db.matching import (
     FORM_MIRROR_COA, FORM_MIRROR_LEGACY, LEGACY_CASH_NUMBERS, LEGACY_CASH_RANGE, MIRROR_FORMS,
     depreciation_effect,
@@ -72,8 +73,9 @@ _NO_ASSET = _AssetLink('', None, {})
 
 #: Eine Buchung des CSV-Imports als Kandidat; Beleg-Nr. und Text sind für den
 #: Vergleich schon aufbereitet (Leerraum zusammengefasst, Text ohne Groß-/Kleinschreibung),
-#: ``shown`` ist der gespeicherte Text, ``form`` die gespeicherte Form (``Bookings.EntryForm``).
-_CsvRow = namedtuple('_CsvRow', 'id doc counter text shown form')
+#: ``shown`` ist der gespeicherte Text, ``form`` die gespeicherte Form (``Bookings.EntryForm``),
+#: ``rate``/``tax_amount`` der gespeicherte Steuersatz und -betrag, ``key`` der gespeicherte BU-Schlüssel.
+_CsvRow = namedtuple('_CsvRow', 'id doc counter text shown form rate tax_amount key')
 
 #: SKR04-Konten 1000–1099 (Vorräte): Ältere Versionen haben sie als Kasse gelesen.
 STOCK_RANGE = LEGACY_CASH_NUMBERS
@@ -115,6 +117,13 @@ def _as_csv_text(value):
         return value.encode('latin-1').decode('cp1252', 'replace')
     except UnicodeEncodeError:
         return value
+
+
+def _same_rate(stored, fresh) -> bool:
+    """Trägt die Zeile der App denselben Steuersatz wie der Satz der WISO-Datenbank? Verglichen wird die Prozentzahl auf
+    zwei Stellen (``datev_keys.percent``: 0.19 und 19 sind gleich); kein Satz und 0 % gelten als gleich. Nur dann darf der
+    BU-Schlüssel des WISO-Satzes an die vorhandene Zeile: Er gehört zu dem Satz, für den WISO ihn geschrieben hat."""
+    return percent(stored) == percent(fresh)
 
 
 def _matching_row(rows, counter_coa, text, locked=False, fallback=False):
@@ -223,6 +232,16 @@ class WisoFdbImportMixin:
             abweicht: nur gemeldet, die ersten 500 mit ``id``, ``date``, ``amount``, ``text``,
             ``stored`` und ``fresh``).
 
+            BU-Schlüssel (``Bookings.DatevKey``, aus ``DATEVVATKEY``): Ein neuer Satz bekommt ihn, die Übernahme einer
+            CSV-Buchung füllt ihn nur, wo er fehlt, und der Re-Import trägt ihn an einer wiedererkannten Zeile einer
+            bekannten Quellgruppe nach – nur diese Spalte, nur wo sie leer ist, nur bei genauem Treffer
+            (``datev_keys_filled`` zählt es). **An eine vorhandene Zeile geht er nur, wenn sie denselben Steuersatz trägt wie
+            der WISO-Satz** (Prozentzahl, kein Satz = 0 %; bei der Übernahme gilt der Satz, den die Zeile nach der Übernahme
+            trägt): Sonst bleibt ``DatevKey`` leer – der Export leitet ihn aus dem Satz der App ab – und der Fall zählt in
+            ``datev_key_rate_mismatches``. ``datev_numbers_set`` ist 1, wenn Berater- und Mandantennummer aus
+            ``SYS_FINACCSYSTEMS`` in die Stammdaten der eigenen Firma kamen (nur, wenn beide Felder dort leer waren, und erst
+            nachdem die Buchungen geschrieben sind).
+
             Unterkonten: ``subaccount_rows`` zählt Sätze, die ein Import bis 2.2.4 schon auf das
             **Basiskonto** geschrieben hat (z. B. 6530), während der Leser dem Unterkonto heute seine
             eigene, von WISO gespeicherte SKR04-Nummer gibt (z. B. 6532). Der Re-Import erkennt sie
@@ -282,7 +301,8 @@ class WisoFdbImportMixin:
                   'negative_gross': 0, 'stock_range_accounts': [], 'legacy_mirrors': 0,
                   'legacy_stock_rows': 0, 'subaccount_rows': 0,
                   'form_conflicts_count': 0, 'form_conflicts': [],
-                  'liquid_subaccounts': [],
+                  'liquid_subaccounts': [], 'datev_keys_filled': 0, 'datev_key_rate_mismatches': 0,
+                  'datev_numbers_set': 0,
                   'assets': 0, 'depreciations': 0, 'depreciations_planned': 0,
                   'future_depreciations_skipped': 0, 'future_depreciations_kept': 0,
                   'depreciation_conflicts': 0, 'depreciation_conflict_rows': [],
@@ -308,6 +328,9 @@ class WisoFdbImportMixin:
                 result['errors'] += blocker
                 return result
             data = wiso.read(self._liquid_skr_accounts(), today=today)
+            if data.datev_numbers_unreadable:
+                result['hints'].append('Berater- und Mandantennummer ließen sich nicht aus der WISO-Datenbank lesen '
+                                       '(Tabelle SYS_FINACCSYSTEMS) – bitte in den Stammdaten der eigenen Firma eintragen.')
             result['tax_rows_skipped'] = data.tax_rows_skipped
             result['memo_rows_skipped'] = data.memo_rows_skipped
             result['missing_coa'] = {
@@ -321,6 +344,8 @@ class WisoFdbImportMixin:
             result['stock_range_accounts'] = self._stock_range_accounts(data.bookings)
             booked_amounts = self._insert_wiso_bookings(
                 data.bookings, result, self._recipients_by_invoice(data), data.assets)
+            # Die Stammdaten erst, wenn die Buchungen geschrieben sind: Scheitert der Import, bleiben sie, wie sie waren
+            result['datev_numbers_set'] = self._fill_datev_numbers(data.datev_numbers)
             if with_assets:
                 self._insert_wiso_assets(data.assets, result, booked_amounts)
             if with_invoices:
@@ -365,6 +390,26 @@ class WisoFdbImportMixin:
     def _coa_map(self, cursor):
         cursor.execute('SELECT AccountNumber, ID FROM ChartOfAccounts')
         return {row[0]: row[1] for row in cursor.fetchall()}
+
+    def _fill_datev_numbers(self, numbers):
+        """Berater- und Mandantennummer aus der WISO-Datenbank (``(Beraternummer, Mandantennummer)``, beide gültig)
+        in die Stammdaten der eigenen Firma – nur, wenn beide Felder dort leer sind: Eine eingetragene Nummer bleibt,
+        und ohne eigene Firma (Unternehmen) passiert nichts. Returns 1, wenn sie übernommen wurden, sonst 0."""
+        if not numbers:
+            return 0
+        sql = ("UPDATE CompanyDetails SET DatevConsultantNo = ?, DatevClientNo = ? WHERE ContactID = "
+               "(SELECT c.ID FROM Contacts c JOIN CompanyDetails d ON d.ContactID = c.ID "
+               "WHERE c.ContactType = 'own' ORDER BY c.ID LIMIT 1) "
+               "AND COALESCE(DatevConsultantNo, '') = '' AND COALESCE(DatevClientNo, '') = ''")
+        conn = self._get_connection()
+        try:
+            changed = conn.execute(sql, tuple(numbers)).rowcount > 0
+            conn.commit()
+        finally:
+            conn.close()
+        if changed:
+            self._log_sql(sql, tuple(numbers), 'WISO-Datenbank-Import: DATEV-Berater- und Mandantennummer übernommen')
+        return 1 if changed else 0
 
     def _stock_range_accounts(self, bookings):
         """Konten 1000–1099 (SKR04: Vorräte) in den Sätzen: ``[{'nummer', 'bezeichnung',
@@ -618,6 +663,16 @@ class WisoFdbImportMixin:
             er unverändert und sein Jahr gilt als gebucht (``future_depreciations_kept``, auch in
             ``skipped``); ein geplantes Jahr der App wird ``booked``, ein von der App gebuchtes bleibt, wie es
             ist. Sonst zählt er in ``future_depreciations_skipped``.
+        * BU-Schlüssel (``WisoBooking.datev_key``, eine ganze Zahl von 1 bis 9999 oder keiner): Ein neuer Satz schreibt ihn
+          mit; die Übernahme einer CSV-Zeile setzt ihn nur, wo er noch fehlt (``COALESCE``); eine wiedererkannte Zeile einer
+          bekannten Quellgruppe (genauer Treffer) bekommt ihn per eigenem UPDATE nur, wenn ``DatevKey`` leer ist
+          (``datev_keys_filled``). Eine Zeile ohne genauen Treffer (vom Nutzer geändert, Unterkonto-Bestand) bekommt nichts, und ein
+          vorhandener Schlüssel bleibt immer. **Der Schlüssel geht nur an eine Zeile, die denselben Steuersatz trägt wie der
+          WISO-Satz** (``_same_rate``: Prozentzahl, kein Satz und 0 % sind gleich; bei der Übernahme zählt der Satz, den die
+          Zeile nach dem UPDATE trägt – das UPDATE füllt ihren Satz, wenn Satz und Steuerbetrag leer sind): Sonst bleibt
+          ``DatevKey`` leer, der Export leitet ihn aus dem Satz der App ab, und der Fall zählt in
+          ``datev_key_rate_mismatches``. Gleichen sich in einer Gruppe mehrere Zeilen in Datum, Konten und Betrag, bekommt der
+          Satz zuerst die Zeile mit seinem Steuersatz – ein Schlüssel geht nie an die Zeile eines anderen Satzes.
         * Möglicherweise doppelt: Hat dieser Lauf zu Datum, Betrag und Konto (bzw.
           der Ersatzsuche) einen Satz neu angelegt, werden die dazu geladenen,
           nicht übernommenen Kandidaten gemeldet (``possible_duplicates_count``,
@@ -638,9 +693,13 @@ class WisoFdbImportMixin:
                 TaxAmount       = CASE WHEN TaxRate IS NULL AND TaxAmount IS NULL
                                        THEN ? ELSE TaxAmount END,
                 RecipientClient = COALESCE(NULLIF(RecipientClient, ''), ?, RecipientClient),
-                EntryForm       = COALESCE(?, EntryForm)
+                EntryForm       = COALESCE(?, EntryForm),
+                DatevKey        = COALESCE(DatevKey, ?)
             WHERE ID = ?
         '''
+        # Eine wiedererkannte Zeile einer bekannten Quellgruppe bekommt – nur, wenn sie noch keinen hat – den BU-Schlüssel
+        # der Datenbank; sonst bleibt sie, wie sie ist
+        datev_key_sql = 'UPDATE Bookings SET DatevKey = ? WHERE ID = ? AND DatevKey IS NULL'
         with self.transaction() as tx:
             tx.conn.execute('BEGIN IMMEDIATE')
             cursor = tx.conn.cursor()
@@ -661,13 +720,14 @@ class WisoFdbImportMixin:
                 Die Beleg-Nr. wird in Python verglichen, damit Leerraum nicht zählt."""
                 if key not in pools:
                     cursor.execute(
-                        "SELECT ID, DocumentNumber, CounterCOA_ID, Text, EntryForm FROM Bookings "
+                        "SELECT ID, DocumentNumber, CounterCOA_ID, Text, EntryForm, TaxRate, TaxAmount, DatevKey "
+                        "FROM Bookings "
                         "WHERE BookingType = 'entry' AND COALESCE(SourceGroup, '') = '' "
                         "AND COALESCE(AutoMirror, 0) = 0 AND Account_ID IS NULL "
                         "AND DateBooking = ? AND Amount = ? AND COA_ID IS ? "
                         "ORDER BY ID", key)
                     rows = [_CsvRow(row[0], _squash(row[1]), row[2],
-                                    _comparable(row[3]), row[3] or '', row[4])
+                                    _comparable(row[3]), row[3] or '', row[4], row[5], row[6], row[7])
                             for row in cursor.fetchall()]
                     pools[key] = ({row.doc for row in rows}, rows)
                 return pools[key]
@@ -711,7 +771,7 @@ class WisoFdbImportMixin:
                 von den Aufrufern nacheinander verbraucht."""
                 if group not in group_pools:
                     cursor.execute(
-                        "SELECT ID, DateBooking, COA_ID, CounterCOA_ID, Amount, EntryForm, Text "
+                        "SELECT ID, DateBooking, COA_ID, CounterCOA_ID, Amount, EntryForm, Text, TaxRate, DatevKey "
                         "FROM Bookings WHERE BookingType = 'entry' AND SourceGroup = ? "
                         "ORDER BY ID", (group,))
                     group_pools[group] = [list(row) for row in cursor.fetchall()]
@@ -752,6 +812,22 @@ class WisoFdbImportMixin:
                 if link is not None and link.asset_id is not None:
                     raise_rows[key] = link.asset_id
 
+            def fill_datev_key(booking, row_id, row_rate, row_key):
+                """Der BU-Schlüssel der Datenbank an die wiedererkannte Zeile – nur ihre Spalte ``DatevKey``, nur wenn
+                sie noch leer ist und denselben Steuersatz trägt wie der WISO-Satz (``datev_keys_filled`` zählt es; ein
+                zweiter Lauf findet nichts mehr). Trägt sie einen anderen Satz – der Nutzer hat ihn geändert –, bleibt sie
+                ohne Schlüssel (``datev_key_rate_mismatches``): Der Schlüssel gehört zum Satz, für den WISO ihn geschrieben hat."""
+                if booking.datev_key is None or row_key is not None:
+                    return
+                if not _same_rate(row_rate, booking.tax_rate):
+                    result['datev_key_rate_mismatches'] += 1
+                    return
+                params = (booking.datev_key, row_id)
+                cursor.execute(datev_key_sql, params)
+                if cursor.rowcount > 0:
+                    result['datev_keys_filled'] += 1
+                    tx.log.append((datev_key_sql, params, 'WISO-Datenbank-Import: BU-Schlüssel nachgetragen'))
+
             def recognize(booking, coa, counter_coa, amount, text):
                 """Gleicht eine Zeile der bekannten Gruppe dem Satz genau (Datum, Konto, Gegenkonto, |Betrag|) –
                 oder, bei einem Unterkonto, dem Satz, den ein Import bis 2.2.4 auf das Basiskonto geschrieben hat?
@@ -762,14 +838,18 @@ class WisoFdbImportMixin:
                 same = [row for row in pool
                         if row[1] == booking.date and row[2] == coa and row[3] == counter_coa
                         and abs(row[4]) == abs(amount)]
-                row = next((r for r in same if r[4] == amount), same[0] if same else None)
+                # Gleichen sich mehrere Zeilen: erst die mit dem Betrag des Satzes, darunter die mit seinem Steuersatz –
+                # der Schlüssel eines Satzes soll nicht an der Zeile eines anderen hängen
+                signed = [r for r in same if r[4] == amount] or same
+                row = next((r for r in signed if _same_rate(r[7], booking.tax_rate)), signed[0] if signed else None)
                 if row is not None:
                     pool.remove(row)
-                    row_id, _date, _coa, _counter, row_amount, stored, row_text = row
+                    row_id, _date, _coa, _counter, row_amount, stored, row_text, row_rate, row_key = row
                     if stored == FORM_MIRROR_LEGACY and booking.form == FORM_MIRROR_COA:
                         result['legacy_mirrors'] += 1
                     elif stored and deviates(stored, booking.form):
                         note_conflict(row_id, booking.date, row_amount, row_text, stored, booking.form)
+                    fill_datev_key(booking, row_id, row_rate, row_key)
                     return row_amount or 0, row[2], row[3], stored
                 if booking.legacy_account is not None or booking.legacy_counter_account is not None:
                     # Ein Import bis 2.2.4 hat den Satz auf das Basiskonto geschrieben statt auf das
@@ -919,8 +999,17 @@ class WisoFdbImportMixin:
                     elif deviates(stored, booking.form):
                         note_conflict(match.id, booking.date, -amount if flipped else amount,
                                       match.shown, stored, booking.form)
+                    # Der BU-Schlüssel geht nur an die Zeile, die nach dem UPDATE denselben Steuersatz trägt wie der
+                    # WISO-Satz: Das UPDATE füllt den Satz nur, wenn Satz und Steuerbetrag der Zeile leer sind
+                    key_value = None
+                    if booking.datev_key is not None and match.key is None:
+                        row_rate = params_fill[2] if match.rate is None and match.tax_amount is None else match.rate
+                        if _same_rate(row_rate, booking.tax_rate):
+                            key_value = booking.datev_key
+                        else:
+                            result['datev_key_rate_mismatches'] += 1
                     params = (booking.group or None, *params_fill,
-                              recipients.get(booking.invoice_id) or None, form_value, match.id)
+                              recipients.get(booking.invoice_id) or None, form_value, key_value, match.id)
                     cursor.execute(adopt_sql, params)
                     tx.log.append((adopt_sql, params, 'WISO-Datenbank-Import: '
                                                       'Buchung aus CSV-Import übernommen'))
@@ -936,12 +1025,12 @@ class WisoFdbImportMixin:
                     INSERT INTO Bookings
                         (DateBooking, COA_ID, CounterCOA_ID, Amount, TaxRate,
                          TaxAmount, Text, DocumentNumber, BookingType, SourceGroup,
-                         RecipientClient, EntryForm)
-                    VALUES (?,?,?,?,?,?,?,?,'entry',?,?,?)
+                         RecipientClient, EntryForm, DatevKey)
+                    VALUES (?,?,?,?,?,?,?,?,'entry',?,?,?,?)
                 ''', (booking.date, coa, counter_coa, amount, booking.tax_rate,
                       self._minor_opt(booking.tax_amount), booking.text,
                       booking.document_number or None, booking.group or None,
-                      recipients.get(booking.invoice_id) or None, booking.form or None))
+                      recipients.get(booking.invoice_id) or None, booking.form or None, booking.datev_key))
                 result['imported'] += 1
                 created_for.update(searched)
                 in_books(booking, year, link, (amount, coa, counter_coa, booking.form or None))

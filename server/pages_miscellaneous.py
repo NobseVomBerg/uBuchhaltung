@@ -160,6 +160,17 @@ def _import_notices(result):
     if kept:
         s += (f'<p>\u2139\ufe0f {kept} AfA-Buchungen mit einem Datum nach dem Importtag stammen aus einem '
               'früheren Import. Sie bleiben unverändert in den Büchern; ihre Jahre gelten als gebucht.</p>')
+    keys_filled = _result_count(result.get('datev_keys_filled'))
+    if keys_filled:
+        s += (f'<p>\u2139\ufe0f {keys_filled} schon importierte Buchungen haben den BU-Schlüssel aus der '
+              'WISO-Datenbank bekommen (für den DATEV-Export); sonst blieb an ihnen nichts geändert.</p>')
+    mismatches = _result_count(result.get('datev_key_rate_mismatches'))
+    if mismatches:
+        s += (f'<p>\u2139\ufe0f {mismatches} Buchungen tragen in der App einen anderen Steuersatz als in WISO &ndash; '
+              'ihr DATEV-Schlüssel wurde nicht übernommen, der Export leitet ihn aus dem Satz der App ab.</p>')
+    if _result_count(result.get('datev_numbers_set')):
+        s += ('<p>\u2139\ufe0f Berater- und Mandantennummer für den DATEV-Export stehen jetzt in den Stammdaten der '
+              'eigenen Firma (aus der WISO-Datenbank).</p>')
     return s
 
 
@@ -320,10 +331,17 @@ def PageMiscellaneous(db: Database, check_payments: bool = False):
     s += '\t\t<div class="rectRounded">'
     import datetime
     cur_year = datetime.date.today().year
+    datev_hint = ''
+    if db.get_datev_numbers() == (None, None):
+        datev_hint = ('<p class="hint warnColor">'
+                      + _html.escape('Berater- und Mandantennummer fehlen – in den Stammdaten der eigenen Firma '
+                                     'eintragen (Kontakt als Unternehmen angelegt). Der Stapel trägt bis dahin '
+                                     'Platzhalter.', quote=True)
+                      + '</p>')
     s += f'''
         <h2>DATEV Export</h2>
         <p>Exportiert Buchungen als <strong>DATEV Buchungsstapel-CSV</strong> (EXTF 700, Encoding CP1252).<br>
-        Das Feld <em>Datum Zuord. Steuerperiode</em> wird für alle exportierten Buchungen auf das <strong>heutige Datum</strong> gesetzt.</p>
+        Das <em>Steuerdatum</em> der exportierten Buchungen wird auf das <strong>heutige Datum</strong> gesetzt.</p>
         <form method="POST" action="/datev/export">
             <div class="rowWithObjects">
                 <label>Von:&nbsp;<input type="date" name="date_from" value="{cur_year}-01-01" required></label>
@@ -332,6 +350,7 @@ def PageMiscellaneous(db: Database, check_payments: bool = False):
             <br>
             <button type="submit" class="coloredButton bg-blue">&#x1F4E5; DATEV-CSV exportieren</button>
         </form>
+        {datev_hint}
         <script>
         (function() {{
             const p = new URLSearchParams(window.location.search);

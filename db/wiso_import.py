@@ -8,6 +8,7 @@ import json
 from collections import Counter
 from decimal import Decimal
 from money import to_minor, from_minor
+from .datev_keys import key_rate, parse_key
 from .matching import (
     FORM_MIRROR_COA, FORM_MIRROR_LEGACY, LEGACY_CASH_NUMBERS, LEGACY_CASH_RANGE,
     import_entry_form,
@@ -115,9 +116,12 @@ class WisoImportMixin:
         Mapping:
             KONTO      → ChartOfAccounts.AccountNumber → COA_ID
             GEGENKONTO → ChartOfAccounts.AccountNumber → CounterCOA_ID
-            SCHLUESSEL → BU-Schlüssel → TaxRate (401=19%, 402=7%, 121=0%); ein Schlüssel, den
-                         ``TaxKeys`` nicht kennt, bekommt keinen Steuersatz und wird gezählt
-                         (``unknown_tax_keys``, siehe :meth:`import_wiso_csv`)
+            SCHLUESSEL → BU-Schlüssel → TaxRate: zuerst die Tabelle der Regeln (``db.datev_keys.key_rate``: 401/101/121
+                         Regelsatz, 402/102/122 ermäßigt, 7/6/5/4 die anderen Sätze – im zweiten Halbjahr 2020 mit
+                         16 % und 5 %), sonst ``TaxKeys``; ein Schlüssel, den beide nicht kennen, bekommt keinen
+                         Steuersatz und wird gezählt (``unknown_tax_keys``, siehe :meth:`import_wiso_csv`). Ein Schlüssel von
+                         1 bis 9999 steht außerdem am Satz (``Bookings.DatevKey``) und geht unverändert in den
+                         DATEV-Stapel; leer, 0 und alles andere bleiben ohne (der Export leitet ihn ab)
 
         Returns:
             dict: {imported: int, updated: int, skipped: int, errors: list[str]}
@@ -240,14 +244,22 @@ class WisoImportMixin:
                         stock_counts[nr] += 1
 
                 schluessel = row.get('SCHLUESSEL', '').strip()
-                tax_rate = BU_TO_TAXRATE.get(schluessel)
-                # Ein Schlüssel, den TaxKeys nicht kennt (leer und 0 sind keiner), wird nicht geraten:
+                # Der Schlüssel steht am Satz, wenn er eine ganze Zahl von 1 bis 9999 ist; den Satz nennt zuerst die
+                # Tabelle der Regeln (mit den befristeten Sätzen im zweiten Halbjahr 2020), sonst TaxKeys
+                datev_key = parse_key(schluessel)
+                tax_rate = key_rate(datev_key, booking_date)
+                known_key = tax_rate is not None
+                if not known_key:
+                    tax_rate = BU_TO_TAXRATE.get(schluessel)
+                    known_key = schluessel in BU_TO_TAXRATE
+                # Ein Schlüssel, den die Regeln und TaxKeys nicht kennen (leer und 0 sind keiner), wird nicht geraten:
                 # Die Zeile kommt ohne Steuersatz und wird gezählt, sobald sie importiert ist (unten).
                 # In TaxKeys steht auch ein Schlüssel ohne Satz (z. B. 400) – der ist bekannt.
                 unknown_key = (schluessel[:MAX_TAX_KEY_LENGTH]
-                               if schluessel not in ('', '0') and schluessel not in BU_TO_TAXRATE else None)
-                # 4405→4400 Umbuchung: implizit 19% USt, auch ohne BU-Schlüssel
-                if tax_rate is None and konto_nr == 4405 and gegenkonto_nr == 4400:
+                               if schluessel not in ('', '0') and not known_key else None)
+                # 4405→4400 Umbuchung: implizit 19% USt, aber nur ohne BU-Schlüssel (leer oder 0) – eine Zeile mit einem
+                # Schlüssel, auch einem ohne Satz (490), behält, was der Schlüssel sagt
+                if schluessel in ('', '0') and tax_rate is None and konto_nr == 4405 and gegenkonto_nr == 4400:
                     tax_rate = 0.19
                     unknown_key = None      # die Zeile bekommt ihren Satz – nichts zu melden
                 # Steuerbetrag berechnen (Brutto → MwSt-Anteil)
@@ -265,7 +277,7 @@ class WisoImportMixin:
                     'konto_nr': konto_nr, 'konto_str': konto_str,
                     'tax_rate': tax_rate, 'tax_amount': tax_amount,
                     'text': text_val, 'doc': doc_number, 'form': form,
-                    'legacy_amount': legacy_amount, 'unknown_key': unknown_key,
+                    'legacy_amount': legacy_amount, 'unknown_key': unknown_key, 'datev_key': datev_key,
                 })
             except Exception as e:
                 errors.append(f"Zeile {i}: {str(e)}")
@@ -462,11 +474,11 @@ class WisoImportMixin:
                 dup_cur.execute('''
                     INSERT INTO Bookings
                         (DateBooking, COA_ID, CounterCOA_ID,
-                         Amount, TaxRate, TaxAmount, Text, DocumentNumber, BookingType, EntryForm)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)
+                         Amount, TaxRate, TaxAmount, Text, DocumentNumber, BookingType, EntryForm, DatevKey)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
                 ''', (booking_date, coa_id, pr['counter_coa_id'],
                       to_minor(amount or 0), pr['tax_rate'], self._minor_opt(pr['tax_amount']), pr['text'],
-                      doc_number, 'entry', pr['form']))
+                      doc_number, 'entry', pr['form'], pr['datev_key']))
                 imported += 1
                 if pr['unknown_key'] is not None:
                     unknown_keys[pr['unknown_key']] += 1
@@ -762,6 +774,10 @@ class WisoImportMixin:
                         fields.append('Text=?'); values.append(purpose)
                     if (not is_split) and coa_id_from_category and not t_coa:
                         fields.append('COA_ID=?'); values.append(coa_id_from_category)
+                        # Ein mitgebrachter BU-Schlüssel passt nicht mehr zum neuen Konto: Er fällt – dieselbe Regel
+                        # (``_datev_key_stale``) wie in ``update_booking_fields``
+                        if self._datev_key_stale(conn, t_id, {'coa_id': coa_id_from_category}):
+                            fields.append('DatevKey=?'); values.append(None)
                         # Bekommt ein Buchungssatz sein Konto erst hier, ändert sich seine
                         # Kontierung: Die Form wird mit den Konten neu abgeleitet
                         reformed = self._form_after_accounts_change(

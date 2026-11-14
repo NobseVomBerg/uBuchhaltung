@@ -7,6 +7,7 @@ import os
 import json
 from decimal import Decimal
 from money import to_minor, from_minor
+from . import datev_keys
 
 
 class ContactsMixin:
@@ -78,6 +79,47 @@ class ContactsMixin:
             n += 1
         conn.close()
         return False, f'{base}999'
+    def get_datev_numbers(self):
+        """Berater- und Mandantennummer für den Vorlauf des DATEV-Stapels, aus den Stammdaten der eigenen Firma:
+        ``(Beraternummer, Mandantennummer)`` als Ziffernfolgen (4–7 bzw. 1–5 Stellen) – oder ``(None, None)``,
+        wenn sie nicht beide eingetragen und gültig sind (ein per SQL-Konsole gesetzter anderer Wert gilt als nicht
+        eingetragen). Der Stapel trägt dann Platzhalter. Gibt es mehrere eigene Firmen, gilt die erste mit beiden."""
+        conn = self._get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT cd.DatevConsultantNo, cd.DatevClientNo FROM Contacts c "
+                "JOIN CompanyDetails cd ON cd.ContactID = c.ID WHERE c.ContactType = 'own' ORDER BY c.ID").fetchall()
+        finally:
+            conn.close()
+        for consultant, client in rows:
+            consultant, client = datev_keys.consultant_no(consultant), datev_keys.client_no(client)
+            if consultant and client:
+                return consultant, client
+        return None, None
+
+    @staticmethod
+    def _datev_numbers_for(contact_type, entity_type, consultant_no, client_no, stored=(None, None)):
+        """``(Beraternummer, Mandantennummer)``, wie ``CompanyDetails`` sie bekommt. Nur die eigene Firma
+        (``contact_type`` ``own``, ``entity_type`` ``company``) trägt sie, bei jedem anderen Kontakt bleiben beide
+        leer (NULL). ``None`` heißt „unverändert“ (``stored``), ein leerer Text „leeren“; alles andere muss eine
+        Ziffernfolge von 4–7 bzw. 1–5 Stellen sein, sonst ``ValueError`` mit Klartext."""
+        if contact_type != 'own' or entity_type != 'company':
+            return None, None
+        numbers = []
+        for given, kept, valid, error in ((consultant_no, stored[0], datev_keys.consultant_no,
+                                           datev_keys.CONSULTANT_NO_ERROR),
+                                          (client_no, stored[1], datev_keys.client_no, datev_keys.CLIENT_NO_ERROR)):
+            if given is None:
+                numbers.append(kept)
+            elif str(given).strip() == '':
+                numbers.append(None)
+            else:
+                number = valid(given)
+                if number is None:
+                    raise ValueError(error)
+                numbers.append(number)
+        return tuple(numbers)
+
     def insert_contact(self, contact_type='customer', entity_type='company',
                        display_name=None, customer_number=None, abbreviation='',
                        email='', phone='', notes='', logo='',
@@ -90,13 +132,17 @@ class ContactsMixin:
                        date_of_birth='', company_contact_id=None, company_name_free='',
                        job_title='', department='', is_primary_contact=0,
                        # multi-value
-                       type_keys=None, role_keys=None):
+                       type_keys=None, role_keys=None,
+                       # DATEV-Vorlauf (nur die eigene Firma, sonst ignoriert)
+                       datev_consultant_no=None, datev_client_no=None):
         """Insert a new contact with sub-table records."""
         conn = self._get_connection()
         cursor = conn.cursor()
         if not customer_number or not str(customer_number).strip():
             customer_number = None
         try:
+            datev_numbers = self._datev_numbers_for(contact_type, entity_type,
+                                                    datev_consultant_no, datev_client_no)
             cursor.execute(
                 'INSERT INTO Contacts (ContactType, EntityType, DisplayName, CustomerNumber, Abbreviation, Email, Phone, Notes, Logo) '
                 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -113,10 +159,11 @@ class ContactsMixin:
 
             if entity_type == 'company':
                 cursor.execute(
-                    'INSERT INTO CompanyDetails (ContactID, CompanyName, LegalForm, TaxID, BuyerRouteID) '
-                    'VALUES (?, ?, ?, ?, ?)',
+                    'INSERT INTO CompanyDetails (ContactID, CompanyName, LegalForm, TaxID, BuyerRouteID, '
+                    'DatevConsultantNo, DatevClientNo) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?)',
                     (contact_id, company_name or None, legal_form or None,
-                     tax_id or None, buyer_route_id or None)
+                     tax_id or None, buyer_route_id or None, *datev_numbers)
                 )
             elif entity_type == 'person':
                 cursor.execute(
@@ -167,13 +214,22 @@ class ContactsMixin:
                        salutation='', title='', first_name='', last_name='',
                        date_of_birth='', company_contact_id=None, company_name_free='',
                        job_title='', department='', is_primary_contact=0,
-                       type_keys=None, role_keys=None):
-        """Update an existing contact and all sub-table records."""
+                       type_keys=None, role_keys=None,
+                       datev_consultant_no=None, datev_client_no=None):
+        """Update an existing contact and all sub-table records.
+
+        ``datev_consultant_no``/``datev_client_no`` (nur die eigene Firma trägt sie): ``None`` lässt die
+        gespeicherte Nummer, wie sie ist (die Firmendaten werden gelöscht und neu geschrieben – sie dürfen dabei
+        nicht verloren gehen), ein leerer Text leert sie."""
         conn = self._get_connection()
         cursor = conn.cursor()
         if not customer_number or not str(customer_number).strip():
             customer_number = None
         try:
+            stored = cursor.execute('SELECT DatevConsultantNo, DatevClientNo FROM CompanyDetails WHERE ContactID=?',
+                                    (contact_id,)).fetchone() or (None, None)
+            datev_numbers = self._datev_numbers_for(contact_type, entity_type,
+                                                    datev_consultant_no, datev_client_no, stored)
             cursor.execute(
                 'UPDATE Contacts SET ContactType=?, EntityType=?, DisplayName=?, CustomerNumber=?, Abbreviation=?, '
                 'Email=?, Phone=?, Notes=?, Logo=? WHERE ID=?',
@@ -193,10 +249,11 @@ class ContactsMixin:
             cursor.execute('DELETE FROM PersonDetails  WHERE ContactID=?', (contact_id,))
             if entity_type == 'company':
                 cursor.execute(
-                    'INSERT INTO CompanyDetails (ContactID, CompanyName, LegalForm, TaxID, BuyerRouteID) '
-                    'VALUES (?, ?, ?, ?, ?)',
+                    'INSERT INTO CompanyDetails (ContactID, CompanyName, LegalForm, TaxID, BuyerRouteID, '
+                    'DatevConsultantNo, DatevClientNo) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?)',
                     (contact_id, company_name or None, legal_form or None,
-                     tax_id or None, buyer_route_id or None)
+                     tax_id or None, buyer_route_id or None, *datev_numbers)
                 )
             elif entity_type == 'person':
                 cursor.execute(

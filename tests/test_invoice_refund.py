@@ -1685,12 +1685,13 @@ def _datev(db):
     assert isinstance(result[0], bytes), f'DATEV-Export gesperrt: {result}'
     lines = [ln for ln in result[0].decode('cp1252').split('\r\n') if ln]
     rows = [next(csv.reader([ln], delimiter=';', quotechar='"')) for ln in lines[2:]]
-    return [{'amount': f[0], 'sh': f[1], 'konto': f[6], 'gegen': f[7], 'bu': f[8], 'date': f[9], 'beleg': f[10]} for f in rows]
+    return [{'amount': f[0], 'sh': f[1], 'konto': f[6], 'gegen': f[7], 'bu': f[8], 'date': f[9], 'beleg': f[10],
+             'rate': f[40]} for f in rows]
 
 
 def test_the_export_carries_the_refund_rows_with_the_opposite_debit_credit_mark_and_the_same_tax_key(world):
-    """Zahlung und Erstattung: gleicher Betrag, entgegengesetztes S/H, derselbe BU-Schlüssel (die Umbuchung mit Erlöskonto
-    schlüsselt immer nach der Umsatzsteuer, ``_bu_direction``) – das Konto bleibt, der Stapel geht auf."""
+    """Zahlung und Erstattung: gleicher Betrag, entgegengesetztes S/H, derselbe BU-Schlüssel (die Umbuchung „Wartekonto an
+    Erlöskonto“ ist die Rechnungskette: kein Schlüssel, aber der Satz in Spalte 40) – das Konto bleibt, der Stapel geht auf."""
     db = world.db
     _r1, s1, _paid = paid_and_cancelled(world)
     refund(world, s1, outgoing(world, 50.0, '2026-07-10'))
@@ -1700,15 +1701,15 @@ def test_the_export_carries_the_refund_rows_with_the_opposite_debit_credit_mark_
     paid_tax, refund_tax = rows[('T-100', '4405', '4400')], rows[('26R001', '4405', '4400')]
     assert (paid_bank['amount'], paid_bank['sh'], paid_bank['bu'], paid_bank['date']) == ('50,00', 'S', '0', '0107')
     assert (refund_bank['amount'], refund_bank['sh'], refund_bank['bu'], refund_bank['date']) == ('50,00', 'H', '0', '1007')
-    assert (paid_tax['amount'], paid_tax['sh'], paid_tax['bu']) == ('50,00', 'S', '3')
-    assert (refund_tax['amount'], refund_tax['sh'], refund_tax['bu']) == ('50,00', 'H', '3')           # BU 3: 19 % USt
+    assert (paid_tax['amount'], paid_tax['sh'], paid_tax['bu'], paid_tax['rate']) == ('50,00', 'S', '0', '19,00')
+    assert (refund_tax['amount'], refund_tax['sh'], refund_tax['bu'], refund_tax['rate']) == ('50,00', 'H', '0', '19,00')
     assert db.find_unbalanced_splits(*RANGE) == []
 
 
-def test_the_export_gives_the_single_refund_row_the_opposite_mark_and_the_input_tax_key_of_its_direction(world):
-    """Der Einzelsatz „Erlöskonto an Bank“ ist keine Umbuchung: Sein BU-Schlüssel folgt der Richtung der Geldbewegung – die
-    Erstattung (Ausgang) bekommt den Schlüssel der Vorsteuer-Richtung (16 %: 7), die Zahlung den der Umsatzsteuer (16 %: 5).
-    Das ist die Regel des Exports (``_bu_direction``); sie bleibt hier unberührt (``docs/aufgaben.md``)."""
+def test_the_export_gives_the_single_refund_row_the_opposite_mark_and_the_same_tax_key_as_the_payment(world):
+    """Der Einzelsatz „Erlöskonto an Bank“ ist keine Umbuchung: Sein BU-Schlüssel folgt der Art des Zweckkontos, nicht der
+    Richtung der Geldbewegung – die Erstattung (Ausgang) auf das Erlöskonto trägt wie die Zahlung den Umsatzsteuer-Schlüssel
+    (16 %: 5), nur das S/H ist umgekehrt."""
     db = world.db
     r1 = sixteen_percent(world)
     booking = db.insert_booking('2026-07-01', 116.0, booking_type='bank', account_id=world.bank)
@@ -1718,7 +1719,7 @@ def test_the_export_gives_the_single_refund_row_the_opposite_mark_and_the_input_
 
     rows = {r['beleg']: r for r in _datev(db)}
     assert (rows['T-201']['amount'], rows['T-201']['sh'], rows['T-201']['bu']) == ('116,00', 'H', '5')
-    assert (rows['26R001']['amount'], rows['26R001']['sh'], rows['26R001']['bu']) == ('116,00', 'S', '7')
+    assert (rows['26R001']['amount'], rows['26R001']['sh'], rows['26R001']['bu']) == ('116,00', 'S', '5')
     assert (rows['26R001']['konto'], rows['26R001']['gegen']) == ('4300', '1800')
 
 

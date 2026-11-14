@@ -242,13 +242,30 @@ kein Subagent darauf:
   (Einnahme +), egal auf welcher Seite das Zweckkonto steht. Bei Umbuchungen heißt
   positiv: `COA` im Soll, Gegenkonto im Haben. Fehlt die liquide Seite, bleibt es
   eine Zahlung (wie `is_bank_effective`). Spiegel: siehe Form
-- DATEV: Das Soll/Haben-Kennzeichen bezieht sich auf das Feld „Konto“ und folgt der Form
-  (`soll_side`: steht bei positivem Betrag das Feld „Konto“ im Soll, ist es bei positivem Betrag S);
-  der BU-Schlüssel folgt der Richtung der Geldbewegung – bei einer Umbuchung (`transfer`) mit Erlös-, Warte- oder
-  Debitorenkonto (4000–4999, 10000–69999) immer der Umsatzsteuer-Richtung, unabhängig vom Vorzeichen (`_bu_direction`:
-  die Gegenbuchung einer Stornorechnung dreht so die Forderung zurück) – und dem exakten
-  Steuersatz (19, 7, 16, 5 %; jeder andere Satz '0'). Die BU-Schlüssel sind fachlich noch
-  nicht gegen einen echten Stapel geprüft (`docs/aufgaben.md`) – nicht als richtig voraussetzen
+- DATEV (seit 2.3.0 dem Stapel nachgebildet, den WISO schreibt – gemessen an einem Datenbestand, keine Zusicherung, dass die
+  Kanzlei ihn so annimmt): Das Soll/Haben-Kennzeichen bezieht sich auf das Feld „Konto“ und folgt der Form
+  (`soll_side`: steht bei positivem Betrag das Feld „Konto“ im Soll, ist es bei positivem Betrag S).
+  **Der BU-Schlüssel steht als Daten am Satz, wenn die Quelle ihn mitbringt** (`Bookings.DatevKey`, ganze Zahl 1–9999, Zeilenspalte 23;
+  nur die Importe schreiben ihn, kein App-Schreibweg): Der Export gibt ihn unverändert aus – auch 490/100/121 ohne Satz; alles andere in der
+  Spalte (0, über 9999, Text) gilt als keiner. **Er fällt (NULL), wenn sich Konto, Gegenkonto oder Steuersatz gegenüber dem gespeicherten Stand
+  ändern** – `update_booking_fields` und `update_booking` über EINE Stelle (`_datev_key_stale`, Satz als Prozentzahl, im selben UPDATE),
+  sofern der Aufrufer `datev_key` nicht selbst nennt, dazu der Tabellen-Export des Textimports, der ein leeres Konto aus der Kategorie füllt
+  (dieselbe Stelle); ein unverändert zurückgeschickter Wert lässt ihn stehen (auch das Zuordnen im Editor, das ein leeres Gegenkonto füllt:
+  dann fällt er). **Wo keiner gespeichert ist, leitet der Export ihn ab** (`db/datev_keys.py`, reine Funktionen) – nach
+  der **Art des Zweckkontos** statt der Geldrichtung (Erlöskonto 4000–4999: Umsatzsteuer, jedes andere Zweckkonto: Vorsteuer – auch bei einer
+  Erstattung; Debitor und Spiegel: keiner; fehlt das Zweckkonto, zählt die Geldrichtung) und dem exakten Satz: Regelsatz 19 / ermäßigt 7 /
+  „anderer Regelsatz“ 16 / „anderer ermäßigter“ 5 % → Vorsteuer 401/402/7/6, Umsatzsteuer 101/102/5/4, **vom 2020-07-01 bis 2020-12-31 tauschen
+  die Plätze** (16/5/19/7 %); kein Satz, 0 % und jeder andere Satz → 0 (so auch die AfA, die Umbuchung „Aufwand an Anlagekonto“: Vorsteuer-Art,
+  aber ohne Steuersatz). Die **Rechnungskette** (Forderung, „Wartekonto an Erlöskonto“,
+  Gegenbuchung einer Stornorechnung: Umbuchung mit Debitor oder Wartekonto, `booking_kind`) trägt keinen Schlüssel, aber in Spalte 40 den Satz
+  (`19,00`, an jeder Umsatzsteuer-Zeile mit Satz über 0); Leistungsdatum (114) nur an der Forderung (das der Rechnung, sonst das Buchungsdatum),
+  Land (119) an der Kette (zwei Buchstaben groß, leer/D/Deutschland = DE, sonst leer; ohne Rechnung DE), Spalte 115 leer (`DateTax` setzt der
+  Handler weiter). Belegfeld 1 ohne Leerzeichen, bis 36 Zeichen; im Buchungstext (Spalte 13) werden Zeilenumbrüche, Tabulatoren und andere
+  Steuerzeichen vor dem Kürzen auf 60 Zeichen zu Leerzeichen. Der Vorlauf trägt Berater- und Mandantennummer der eigenen Firma
+  (`CompanyDetails.DatevConsultantNo`/`DatevClientNo`, ganze Zahlen aus ASCII-Ziffern ohne führende Null: Berater 1001–9999999, Mandant 1–99999;
+  im Kontaktformular der eigenen Firma gepflegt, `Database.get_datev_numbers`), sonst Platzhalter und ein Hinweis auf *Verschiedenes*. Jeder Wert, der in den Stapel geht, ist streng geprüft –
+  ein per SQL-Konsole gesetzter anderer Wert gilt als nicht vorhanden, nie roh ausgegeben. Die Schlüssel sind nicht gegen einen echten Stapel
+  der Kanzlei geprüft (`docs/aufgaben.md`) – nicht als richtig voraussetzen
 - Zahlungskonten (`get_payment_coa_ids`): die SKR-Konten der eigenen Bank- und Kassenkonten –
   die Kasse der App (SKR04 1600) zählt wie ein Bankkonto über ihr eigenes Konto, nicht über
   einen Bereich – plus das Verrechnungskonto 1460 (`DEFAULT_LIQUID_ACCOUNTS`; Geldtransit: WISO
@@ -539,9 +556,27 @@ kein Subagent darauf:
   *Verschiedenes*)
 - **Textimport** (`import_wiso_csv`): Kodierung in der Reihenfolge BOM → strenges UTF-8 → cp1252 (cp1252 dekodiert fast alles
   und darf deshalb nie zuerst stehen). Die Meldungen der Formaterkennung nennen **keine Feldwerte der Datei** (ein DATEV-Stapel trägt Berater- und
-  Mandantennummer im Vorlauf; er wird am ersten Feld `EXTF`/`DTVF` erkannt und mit Klartext abgelehnt). Ein Steuerschlüssel, den
-  `TaxKeys` nicht kennt, wird nicht geraten: Die Zeile kommt ohne Steuersatz und zählt in `unknown_tax_keys` (Hinweis auf
-  *Verschiedenes*)
+  Mandantennummer im Vorlauf; er wird am ersten Feld `EXTF`/`DTVF` erkannt und mit Klartext abgelehnt). `SCHLUESSEL` (ganze Zahl 1–9999) steht am
+  Satz (`DatevKey`); der Steuersatz kommt zuerst aus der Tabelle der Regeln (`datev_keys.key_rate`: 401/101/121 Regelsatz, 402/102/122 ermäßigt,
+  7/6/5/4 die anderen Sätze – im zweiten Halbjahr 2020 mit 16/5/19/7 %), sonst aus `TaxKeys` (2.3.0: 100, 120, 121 „Verwendung von Gegenständen“, 122
+  ergänzt bzw. berichtigt, 490 ohne Satz). Ein Schlüssel, den beide nicht kennen, wird nicht geraten: Die Zeile kommt ohne Steuersatz und zählt
+  in `unknown_tax_keys` (Hinweis auf *Verschiedenes*). Die stille 19 % bei „4405 an 4400“ gilt **nur ohne Schlüssel** (leer oder 0): Eine Zeile
+  mit einem Schlüssel, auch einem ohne Satz (490), behält, was er sagt. Der Import schreibt nur neue Zeilen – ein Duplikat bleibt, wie es ist,
+  auch ohne Schlüssel
+- **BU-Schlüssel und Nummern aus der WISO-Datenbank:** `DATEVVATKEY` (optionale Spalte; leer, 0 und alles außer 1–9999 ist keiner) steht beim neuen Satz
+  am Satz (`WisoBooking.datev_key`), die Übernahme einer CSV-Buchung füllt ihn nur, wo er fehlt (`COALESCE`), und der Re-Import trägt ihn an der
+  wiedererkannten Zeile einer bekannten Quellgruppe nach – **nur diese Spalte, nur wo sie leer ist, nur bei genauem Treffer** (`datev_keys_filled`;
+  eine vom Nutzer geänderte Zeile bekommt nichts, ein vorhandener Schlüssel bleibt) – **und nur, wenn die vorhandene Zeile denselben Steuersatz
+  trägt wie der WISO-Satz** (`_same_rate`: Prozentzahl, kein Satz = 0 %; bei der Übernahme gilt der Satz, den die Zeile nach dem UPDATE trägt –
+  es füllt ihn, wenn Satz und Steuerbetrag leer sind): Sonst bleibt `DatevKey` leer, der Export leitet ihn aus dem Satz der App ab, und der Fall
+  zählt in `datev_key_rate_mismatches` (Hinweis auf *Verschiedenes*) – der Schlüssel gehört zu dem Satz, für den WISO ihn geschrieben hat, und
+  der Nutzer kann ihn mit `update_booking_fields` geändert haben. Gleichen sich in einer Gruppe mehrere Zeilen in Datum, Konten und Betrag,
+  bekommt der Satz zuerst die Zeile mit seinem Steuersatz: Ein Schlüssel hängt nie an der Zeile eines anderen Satzes. Berater- und Mandantennummer
+  stehen in `SYS_FINACCSYSTEMS` (Satz `NAME` = „Datev-Format“; **nur** `NAME`, `CONSULTANT_NO`, `CLIENT_NO` – die Tabelle trägt auch Zugangsdaten
+  anderer Schnittstellen; nichts davon wird geloggt) und gehen nur in die eigene Firma (Unternehmen), wenn deren beide Felder leer sind
+  (`datev_numbers_set`) – **erst nachdem die Buchungen geschrieben sind** (scheitert der Import, bleiben die Stammdaten, wie sie waren); fehlt Tabelle
+  oder Spalte, passiert nichts (Hinweis, kein Blocker), und ein Lese- oder Dekodierfehler der Tabelle (`datev_numbers_unreadable`) gibt „keine
+  Nummern“ und einen Hinweis ohne Fehlertext, nie einen Abbruch
 - **CSV und Datenbank nacheinander:** Der Datenbank-Import (`_insert_wiso_bookings`) übernimmt eine CSV-Buchung
   (`entry` ohne `SourceGroup`, `AutoMirror`, `Account_ID`) nur, wenn Datum, Betrag, Konto, Beleg-Nr. **und ein
   nicht leerer Text** gleich sind (Leerraum/`casefold`; der latin-1 gelesene WISO-Text wird dafür nach cp1252 umgesetzt) und das
@@ -971,7 +1006,7 @@ kein Subagent darauf:
   Versionsstelle und `PRAGMA user_version` ziehen automatisch mit; PATCH dabei auf 0.
   Der neue Migrationsschritt prüft gegen die neue Zahl (`if from_version < 2001:`)
 - In der Datenbank steht `SCHEMA_VERSION = MAJOR × 1000 + SCHEMA_STEP` (2.0.x → 2000,
-  2.1.x → 2001, 2.2.x → 2002); Datenbanken aus 1.x tragen 0 bis 6. Eine Datenbank mit höherer Zahl
+  2.1.x → 2001, 2.2.x → 2002, 2.3.x → 2003); Datenbanken aus 1.x tragen 0 bis 6. Eine Datenbank mit höherer Zahl
   als das Programm wird nicht geöffnet (`db.SchemaTooNewError`) – nie zurückstempeln
 - Sonstige Änderungen ohne DB-Bezug: nur `PATCH` +1; große Umbrüche: `MAJOR` +1,
   `SCHEMA_STEP` und `PATCH` auf 0
@@ -983,6 +1018,11 @@ kein Subagent darauf:
   NULL (`DocumentVersion` NULL = Fassung 1), nichts wird umgedeutet. Frische und migrierte Datenbank haben dieselbe
   Spaltenreihenfolge (`InvoiceCol`, Index 50–54). Die beiden neuen Tabellen haben bewusst keinen Fremdschlüssel:
   Protokoll und Fassungen überleben das Löschen eines Entwurfs
+- Migration auf 2.3.0 (`DATEV_KEY_SCHEMA`, Schema 2003): hängt `Bookings.DatevKey` (Index 23, NULL = keiner mitgebracht) und
+  `CompanyDetails.DatevConsultantNo`/`DatevClientNo` an – nach der Sicherung und in EINER Transaktion – und berichtigt `TaxKeys`
+  (`TAX_KEY_CORRECTIONS`: 100/120/121/122/490 – eine abweichende Zeile wird an ihrer Stelle überschrieben, eine fehlende angelegt, eine richtige
+  bleibt unberührt; nur wenn die Tabelle Zeilen hat, die leere legt `_seed_tax_keys` vollständig an). Der Bestand behält überall NULL, nichts
+  wird umgedeutet; frische und migrierte Datenbank haben dieselbe Spaltenreihenfolge
 - Anzeige auf der About-Seite
 
 ---
