@@ -375,6 +375,9 @@ Anlagenverwaltung mit AfA-Plan:
   - Der Stapel **bildet den nach, den WISO Mein Büro schreibt** (gemessen an einem Datenbestand) – nicht mehr und nicht weniger: Ob das Steuerbüro ihn so annimmt, klärt es selbst; eine Zusicherung gibt es nicht
   - BU-Schlüssel: der an der Buchung gespeicherte (Import), sonst abgeleitet nach der Art des Zweckkontos und dem Steuersatz – Vorsteuer 401/402 (19/7 %), Umsatzsteuer 101/102, im zweiten Halbjahr 2020 mit den vertauschten Sätzen 16/5 %; die Rechnungskette (Forderung, Wartekonto→Erlöskonto) trägt keinen Schlüssel, aber den Steuersatz in Spalte 40
   - Berater- und Mandantennummer stehen im Kontaktformular der eigenen Firma (sonst Platzhalter im Vorlauf; die Seite *Sonstiges* weist darauf hin)
+  - Exportiert wird je Kalenderjahr (der Stapel kennt nur Tag und Monat); ein Zeitraum über den Jahreswechsel wird abgelehnt
+  - Bankbewegungen ohne Buchungssatz stehen nicht im Stapel: Gibt es im Zeitraum welche (die kein Übertrag zwischen eigenen Konten deckt), nennt der Export Anzahl und Beträge und exportiert erst nach ausdrücklicher Bestätigung
+  - Ein Übertrag zwischen zwei eigenen Konten, der auf beiden Bankbewegungen kontiert ist, steht nur einmal im Stapel (die Zeile der Ausgangsseite). Wo das nicht sicher zu erkennen ist, bleibt jede Zeile stehen und der Export weist auf die mögliche Doppelung hin; läuft ein Übertrag über die Grenze des Zeitraums, sagt er auch das. Die Erkennung zählt gleich hohe Bewegungen zwischen denselben Konten im Umkreis weniger Tage; sie setzt vollständig eingelesene Kontoauszüge voraus
   - Prüft vorab die Splits des Zeitraums: Ergeben die *bankwirksamen*
     Buchungssätze nicht den Betrag der Bankbewegung, wird der Export mit Datum,
     Betrag und Rest abgelehnt. Umbuchungen (Wartekonto→Erlöskonto,

@@ -191,7 +191,11 @@ def _make_meta_row(date_from: str, date_to: str, consultant_no=None, client_no=N
     """DATEV-Metadatenzeile (erste Zeile der Datei).
 
     Berater- und Mandantennummer stammen aus den Stammdaten der eigenen Firma; sie gelten nur beide und nur als
-    Ziffernfolgen (Berater 4–7, Mandant 1–5 Stellen), sonst stehen die Platzhalter da."""
+    Ziffernfolgen (Berater 4–7, Mandant 1–5 Stellen), sonst stehen die Platzhalter da.
+
+    Der Stapel gilt für genau ein Kalenderjahr: Das Wirtschaftsjahr beginnt am 1. Januar des Jahres von ``date_from``, und das
+    Belegdatum (Spalte 9) trägt nur Tag und Monat. Ein abweichendes Wirtschaftsjahr wird nicht unterstützt; deshalb lehnt
+    ``handlers.handle_datev_export`` einen Zeitraum über den Jahreswechsel ab."""
     consultant, client = datev_keys.consultant_no(consultant_no), datev_keys.client_no(client_no)
     if not (consultant and client):
         consultant, client = PLACEHOLDER_CONSULTANT_NO, PLACEHOLDER_CLIENT_NO

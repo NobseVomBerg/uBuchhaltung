@@ -911,7 +911,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path == "/miscellaneous" or self.path.startswith("/miscellaneous?"):
                 qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
                 self.respond(200, PageMiscellaneous(
-                    db, check_payments=qs.get("check_payments", [""])[0] == "1"))
+                    db, check_payments=qs.get("check_payments", [""])[0] == "1",
+                    datev_confirm=qs.get("datev_export", [""])[0] == "confirm",
+                    datev_from=qs.get("datev_from", [None])[0], datev_to=qs.get("datev_to", [None])[0],
+                    datev_check=qs.get("datev_check", [None])[0]))
             elif self.path == "/receipts" or self.path.startswith("/receipts?"):
                 qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
                 date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))

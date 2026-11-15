@@ -5,9 +5,11 @@
 Sonstiges page – database overview, SQL console, misc tools.
 """
 import html as _html
+import re
 from db import Database
 from db.wiso_fdb_import import MAX_ADOPTED_ROWS, MAX_LIQUID_SUBACCOUNTS
 from money import fmt_eur
+from .period import parse_iso_date
 
 
 def Header1(active_page=None):
@@ -112,6 +114,30 @@ def _wiso_stock_confirmation(stock):
     return (f'<p class="warnColor">\u26a0\ufe0f {_html.escape(notice)}</p>'
             '<div class="rowWithObjects"><label><input type="checkbox" name="confirm_existing" value="1" required>'
             f'&nbsp;{_html.escape(STOCK_CONFIRM_LABEL)}</label></div>')
+
+
+#: Hinweise im DATEV-Formular: ``DATEV_TRANSFER_NOTE`` steht dauernd dort (der Export liefert eine Datei, kein Skript sieht
+#: seine Antwort); ``DATEV_CONFIRM_NOTICE`` (``{von}``/``{bis}``: der Zeitraum, für den der Hinweis kam) und das Pflicht-Kästchen
+#: kommen über das Absenden, nachdem der Export Hinweise zum Stapel gemeldet hat (Meldung darunter).
+DATEV_TRANSFER_NOTE = ('Überträge zwischen eigenen Konten, die auf beiden Bankbewegungen kontiert sind, stehen nur einmal im '
+                       'Stapel (Ausgangsseite). Wo das nicht sicher zu erkennen ist, bleibt jede Zeile stehen und der Export '
+                       'weist darauf hin.')
+DATEV_CONFIRM_NOTICE = 'Für den Zeitraum {von} bis {bis} gibt es Hinweise zum Stapel (Meldung unten).'
+DATEV_CONFIRM_LABEL = 'Trotzdem exportieren'
+
+#: Die Prüfsumme des Hinweises (``handlers._datev_check``): 16 Kleinbuchstaben und Ziffern, sonst gilt sie nicht
+_DATEV_CHECK = re.compile(r'[0-9a-f]{16}')
+
+
+def _datev_confirmation(date_from, date_to, check):
+    """Hinweis, Pflicht-Kästchen (``confirm_export``) und das versteckte Feld ``confirmed_check`` im DATEV-Formular, nachdem der
+    Export Hinweise zum Stapel gemeldet hat. Die Bestätigung gilt nur für genau diesen Hinweis: Ändert sich der Zeitraum oder
+    der Bestand, passt die Prüfsumme nicht mehr, und der Hinweis kommt neu. Alle Werte sind geprüft (ISO-Daten, 16 Zeichen
+    Prüfsumme) und maskiert."""
+    return (f'<input type="hidden" name="confirmed_check" value="{_html.escape(check, quote=True)}">'
+            f'<p class="warnColor">\u26a0\ufe0f {_html.escape(DATEV_CONFIRM_NOTICE.format(von=date_from, bis=date_to))}</p>'
+            '<div class="rowWithObjects"><label><input type="checkbox" name="confirm_export" value="1" required>'
+            f'&nbsp;{_html.escape(DATEV_CONFIRM_LABEL)}</label></div>')
 
 
 def _import_notices(result):
@@ -249,12 +275,18 @@ def _import_notices(result):
     return s
 
 
-def PageMiscellaneous(db: Database, check_payments: bool = False):
+def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm: bool = False,
+                      datev_from=None, datev_to=None, datev_check=None):
     """Generate Sonstiges page (database overview, SQL console, misc tools).
 
     ``check_payments``: die Prüfliste der Zahlungszuordnungen mit anzeigen. Sie läuft nur auf
     Klick (``?check_payments=1``), nicht bei jedem Laden der Seite – bei einem großen Bestand
-    braucht sie einen Moment."""
+    braucht sie einen Moment.
+
+    ``datev_confirm``, ``datev_from``, ``datev_to``, ``datev_check``: Der DATEV-Export hat Hinweise zum Stapel gemeldet
+    (``?datev_export=confirm&datev_from=…&datev_to=…&datev_check=…``). Sind beide Daten ISO-Daten im selben Jahr und die
+    Prüfsumme 16 Kleinbuchstaben oder Ziffern, trägt das Formular den Zeitraum und verlangt die ausdrückliche Bestätigung
+    (Pflicht-Kästchen); sonst bleibt es bei der Vorgabe des laufenden Jahres und ohne Kästchen. Die Seite schreibt dabei nichts."""
     import urllib.parse
     from urllib.parse import parse_qs, urlparse
     s = Header1('miscellaneous')
@@ -413,15 +445,27 @@ def PageMiscellaneous(db: Database, check_payments: bool = False):
                                      'eintragen (Kontakt als Unternehmen angelegt). Der Stapel trägt bis dahin '
                                      'Platzhalter.', quote=True)
                       + '</p>')
+    # Nach den Hinweisen zum Stapel trägt das Formular den Zeitraum, für den sie kamen, und verlangt die Bestätigung – nur bei
+    # zwei ISO-Daten im selben Jahr und einer Prüfsumme in der erwarteten Form; alles andere (auch ein untergeschobener Wert)
+    # bleibt unbeachtet.
+    form_from, form_to, confirmation = f'{cur_year}-01-01', f'{cur_year}-12-31', ''
+    asked_from, asked_to = parse_iso_date(datev_from), parse_iso_date(datev_to)
+    if (datev_confirm and asked_from and asked_to and asked_from[:4] == asked_to[:4]
+            and isinstance(datev_check, str) and _DATEV_CHECK.fullmatch(datev_check)):
+        form_from, form_to = asked_from, asked_to
+        confirmation = _datev_confirmation(asked_from, asked_to, datev_check)
+    transfer_note = _html.escape(DATEV_TRANSFER_NOTE, quote=True)
     s += f'''
         <h2>DATEV Export</h2>
         <p>Exportiert Buchungen als <strong>DATEV Buchungsstapel-CSV</strong> (EXTF 700, Encoding CP1252).<br>
         Das <em>Steuerdatum</em> der exportierten Buchungen wird auf das <strong>heutige Datum</strong> gesetzt.</p>
+        <p class="hint">{transfer_note}</p>
         <form method="POST" action="/datev/export">
             <div class="rowWithObjects">
-                <label>Von:&nbsp;<input type="date" name="date_from" value="{cur_year}-01-01" required></label>
-                <label>Bis:&nbsp;<input type="date" name="date_to" value="{cur_year}-12-31" required></label>
+                <label>Von:&nbsp;<input type="date" name="date_from" value="{_html.escape(form_from, quote=True)}" required></label>
+                <label>Bis:&nbsp;<input type="date" name="date_to" value="{_html.escape(form_to, quote=True)}" required></label>
             </div>
+            {confirmation}
             <br>
             <button type="submit" class="coloredButton bg-blue">&#x1F4E5; DATEV-CSV exportieren</button>
         </form>
@@ -433,7 +477,12 @@ def PageMiscellaneous(db: Database, check_payments: bool = False):
             if (status === 'error') {{
                 const div = document.createElement('div');
                 div.style = 'margin-top:10px; padding:8px 14px; background:#f8d7da; color:#721c24; border-radius:4px; display:inline-block;';
-                div.textContent = '❌ DATEV-Export Fehler: ' + decodeURIComponent(p.get('msg') || '');
+                div.textContent = '❌ DATEV-Export Fehler: ' + (p.get('msg') || '');
+                document.currentScript.parentNode.insertBefore(div, document.currentScript);
+            }} else if (status === 'confirm') {{
+                const div = document.createElement('div');
+                div.style = 'margin-top:10px; padding:8px 14px; background:#fff3cd; color:#856404; border-radius:4px; display:inline-block;';
+                div.textContent = '⚠️ DATEV-Export: ' + (p.get('msg') || '');
                 document.currentScript.parentNode.insertBefore(div, document.currentScript);
             }}
         }})();

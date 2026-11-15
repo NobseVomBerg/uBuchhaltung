@@ -7,6 +7,7 @@ POST request handlers for form submissions
 import os
 import json
 import math
+import hashlib
 import sqlite3
 import datetime
 import time
@@ -1045,10 +1046,94 @@ def handle_db_export(db: Database):
     try:
         tables, rows = db.export_to_sql(filepath)
         return 303, f"/miscellaneous?export=ok&tables={tables}&rows={rows}"
-    except Exception as e:
+    except Exception:
         import traceback
-        traceback.print_exc()
-        return 303, f"/miscellaneous?export=error&msg={str(e)}"
+        traceback.print_exc()                       # der volle Fehler steht im Server-Log, nicht in der Adresse
+        return 303, f"/miscellaneous?export=error&msg={quote('Export fehlgeschlagen.')}"
+
+
+#: Der Stapel kennt nur Tag und Monat des Belegdatums, und sein Wirtschaftsjahr beginnt am 1. Januar: Ein Zeitraum über den
+#: Jahreswechsel würde Buchungen des Folgejahres still auf das Jahr des Vorlaufs legen.
+DATEV_YEAR_REFUSED = ('Der Zeitraum geht über den Jahreswechsel – der Stapel kennt nur Tag und Monat. '
+                      'Bitte je Kalenderjahr einzeln exportieren.')
+
+
+def _datev_entries(rows, limit=5):
+    """„Datum Betrag EUR; …; und k weitere“ für die ersten ``limit`` von ``rows`` ``[(Datum, Betrag€)]`` – nie Text oder Empfänger."""
+    parts = [f"{day} {fmt_eur(amount, symbol=False)} EUR" for day, amount in rows[:limit]]
+    if len(rows) > limit:
+        parts.append(f"und {len(rows) - limit} weitere")
+    return '; '.join(parts)
+
+
+def _datev_unbooked_hint(unbooked):
+    """Hinweis auf Bankbewegungen ohne Buchungssatz (``Database.check_transfers``): Anzahl, Eingänge und Ausgänge getrennt statt
+    einer Summe mit Vorzeichen und die ersten fünf."""
+    incoming = sum(to_minor(amount) for _bid, _day, amount in unbooked if amount > 0)
+    outgoing = -sum(to_minor(amount) for _bid, _day, amount in unbooked if amount < 0)
+    count = ('1 Bankbewegung im Zeitraum hat keinen Buchungssatz und steht'
+             if len(unbooked) == 1 else
+             f'{len(unbooked)} Bankbewegungen im Zeitraum haben keinen Buchungssatz und stehen')
+    return (f"{count} nicht im Stapel (Eingänge {fmt_eur(from_minor(incoming), symbol=False)} EUR, "
+            f"Ausgänge {fmt_eur(from_minor(outgoing), symbol=False)} EUR) – "
+            + _datev_entries([(day, amount) for _bid, day, amount in unbooked]) + '.')
+
+
+def _datev_elsewhere_hint(elsewhere, elsewhere_out):
+    """Hinweis 2 (``Database.check_transfers``): Überträge, deren Eingangs-Satz dieser Stapel weglässt, weil die Ausgangsseite in
+    einem anderen Zeitraum steht – und, in einem eigenen Satz, Überträge mit ihrer Ausgangsseite in diesem Stapel und ihrer
+    Eingangsseite außerhalb (wurde der andere Zeitraum schon exportiert, bevor beide Seiten kontiert waren, stehen sie dort auch)."""
+    parts = []
+    if elsewhere:
+        entries = _datev_entries([(day, amount) for _eid, day, amount in elsewhere])
+        if len(elsewhere) == 1:
+            parts.append('1 Übertrag zwischen eigenen Konten steht mit seiner Ausgangsseite außerhalb des Zeitraums und deshalb '
+                         f'nicht in diesem Stapel – {entries}. Er gehört in den Stapel des Zeitraums seiner Ausgangsseite.')
+        else:
+            parts.append(f'{len(elsewhere)} Überträge zwischen eigenen Konten stehen mit ihrer Ausgangsseite außerhalb des Zeitraums '
+                         f'und deshalb nicht in diesem Stapel – {entries}. Sie gehören in den Stapel des Zeitraums ihrer Ausgangsseite.')
+    if elsewhere_out:
+        entries = _datev_entries([(day, amount) for _eid, day, amount in elsewhere_out])
+        if len(elsewhere_out) == 1:
+            parts.append('1 Übertrag steht mit seiner Ausgangsseite in diesem Stapel, seine Eingangsseite liegt außerhalb des '
+                         'Zeitraums – wurde der andere Zeitraum schon exportiert, bevor beide Seiten kontiert waren, steht er dort '
+                         f'ebenfalls: {entries}.')
+        else:
+            parts.append(f'{len(elsewhere_out)} Überträge stehen mit ihrer Ausgangsseite in diesem Stapel, ihre Eingangsseite liegt '
+                         'außerhalb des Zeitraums – wurde der andere Zeitraum schon exportiert, bevor beide Seiten kontiert waren, '
+                         f'stehen sie dort ebenfalls: {entries}.')
+    return ' '.join(parts)
+
+
+def _datev_doubtful_hint(doubtful, trigger=None):
+    """Hinweis 3 (``Database.check_transfers``): Überträge, die möglicherweise doppelt im Stapel stehen – Eingangs-Sätze, die der
+    Stapel behält, obwohl im Umfeld ein Ausgang mit Satz oder anders kontiert liegt, Ausgangs-Sätze neben einem anders kontierten
+    Eingang und eigenständige Spiegel neben einer kontierten Bankbewegung. ``trigger`` (Datum, Betrag€) nennt die älteste
+    Bewegung, die das Zusammenlegen sperrt oder den Hinweis auslöst – nur Datum und Betrag."""
+    entries = _datev_entries([(day, amount) for _eid, day, amount in doubtful])
+    cause = ('im Umfeld ist nicht jede Bankbewegung kontiert, die beiden Seiten liegen weit auseinander, oder es gibt zusätzlich '
+             'einen eigenständigen Umbuchungssatz')
+    if len(doubtful) == 1:
+        text = (f'1 Übertrag zwischen eigenen Konten steht möglicherweise doppelt im Stapel – {cause}: {entries}. '
+                'Bitte die Bankbewegungen dieses Tages prüfen.')
+    else:
+        text = (f'{len(doubtful)} Überträge zwischen eigenen Konten stehen möglicherweise doppelt im Stapel – {cause}: {entries}. '
+                'Bitte die Bankbewegungen dieser Tage prüfen.')
+    if trigger:
+        text += f' (Auslöser im Umfeld: {trigger[0]} {fmt_eur(trigger[1], symbol=False)} EUR)'
+    return text
+
+
+def _datev_check(date_from, date_to, check):
+    """Prüfsumme des Hinweises: der Zeitraum und ALLE Einträge aller Hinweise (je Hinweisart: Satz- bzw. Bankbewegungs-ID, Datum und
+    Betrag in Minor Units – auch die, die der Wortlaut nicht nennt, und der Auslöser), nicht der Wortlaut. Die Bestätigung gilt nur,
+    solange nichts davon sich ändert: Wird eine Bewegung kontiert und kommt eine andere dazu, kommt der Hinweis neu."""
+    parts = [date_from, date_to]
+    for kind, rows in (('unbooked', check.unbooked), ('elsewhere', check.elsewhere), ('elsewhere_out', check.elsewhere_out),
+                       ('doubtful', check.doubtful)):
+        parts.append(kind + ':' + ';'.join(f'{entry_id},{day},{to_minor(amount)}' for entry_id, day, amount in rows))
+    parts.append('trigger:' + (f'{check.trigger[0]},{to_minor(check.trigger[1])}' if check.trigger else ''))
+    return hashlib.sha256('|'.join(parts).encode()).hexdigest()[:16]
 
 
 def handle_datev_export(db: Database, post_data: dict):
@@ -1057,9 +1142,22 @@ def handle_datev_export(db: Database, post_data: dict):
     Setzt dabei für alle exportierten Buchungen das Steuerdatum (DateTax)
     auf das heutige Datum.
 
+    Der Zeitraum liegt in einem Kalenderjahr (``DATEV_YEAR_REFUSED``). Unstimmige Splits sperren den Export. Danach
+    sammelt ``Database.check_transfers`` Hinweise (null bis drei, in dieser Reihenfolge): Bankbewegungen im Zeitraum ohne
+    Buchungssatz, die kein Spiegel der Gegenseite deckt, fehlen im Stapel; Überträge zwischen eigenen Konten, deren
+    Eingangs-Satz der Stapel weglässt, weil die Ausgangsseite außerhalb des Zeitraums liegt, fehlen darin ebenfalls (und
+    umgekehrt: Steht die Ausgangsseite hier und die Eingangsseite außerhalb, steht der Übertrag vielleicht auch in einem schon
+    exportierten anderen Stapel); und Eingangs-Sätze, die der Stapel behält, obwohl im Umfeld ein Ausgang mit Satz oder anders
+    kontiert liegt (ebenso Ausgangs-Sätze neben einem anders kontierten Eingang und eigenständige Spiegel neben einer
+    kontierten Bankbewegung), stehen möglicherweise doppelt darin. Gibt es Hinweise, läuft der Export nur mit ausdrücklicher
+    Bestätigung (``confirm_export`` = ``1`` und ``confirmed_check`` = ``_datev_check`` über Zeitraum und alle Einträge des frisch
+    berechneten Hinweises), sonst leitet er mit dem Hinweis zurück (``datev_export=confirm``). Überträge zwischen eigenen Konten, die auf
+    beiden Bankbewegungen kontiert sind, stehen nur einmal im Stapel (``Database.check_transfers``: die Eingangsseite fällt
+    weg, wo es sicher zu erkennen ist); die weggelassenen Sätze bekommen kein Steuerdatum.
+
     Returns:
         (csv_bytes, filename)  – für einen Datei-Download, oder
-        (303, location_str)    – bei Fehler (Redirect)
+        (303, location_str)    – bei Fehler oder fehlender Bestätigung (Redirect)
     """
     import datetime
     import traceback
@@ -1077,6 +1175,8 @@ def handle_datev_export(db: Database, post_data: dict):
             return 303, '/miscellaneous?datev_export=error&msg=' + quote('Ungültiger Datumsbereich')
         if date_from > date_to:
             return 303, '/miscellaneous?datev_export=error&msg=' + quote('Das Datum ‚von‘ liegt nach ‚bis‘')
+        if date_from[:4] != date_to[:4]:
+            return 303, '/miscellaneous?datev_export=error&msg=' + quote(DATEV_YEAR_REFUSED)
 
         # Unstimmige Splits blockieren den Export: ein Stapel, in dem die
         # Buchungssätze nicht die Bankbewegung ergeben, ist in sich falsch und
@@ -1092,7 +1192,29 @@ def handle_datev_export(db: Database, post_data: dict):
                    'Bankbewegung – ' + '; '.join(parts))
             return 303, f'/miscellaneous?datev_export=error&msg={quote(msg)}'
 
-        bookings = db.fetch_bookings_range(date_from, date_to)
+        # Was im Stapel fehlt oder doppelt stehen könnte, darf nicht still so bleiben – das kann gewollt sein (etwa im
+        # Parallelbetrieb mit einer anderen Buchhaltung), also verlangt der Export eine ausdrückliche Bestätigung, und die gilt
+        # nur für genau diesen Hinweis (Prüfsumme über Zeitraum und alle Einträge). Die Meldung nennt weder Text noch Empfänger
+        # der Bankbewegungen.
+        check = db.check_transfers(date_from, date_to)
+        hints = []
+        if check.unbooked:
+            hints.append(_datev_unbooked_hint(check.unbooked))
+        if check.elsewhere or check.elsewhere_out:
+            hints.append(_datev_elsewhere_hint(check.elsewhere, check.elsewhere_out))
+        if check.doubtful:
+            hints.append(_datev_doubtful_hint(check.doubtful, check.trigger))
+        if hints:
+            checksum = _datev_check(date_from, date_to, check)
+            if not (post_data.get('confirm_export', [''])[0] == '1'
+                    and post_data.get('confirmed_check', [''])[0] == checksum):
+                msg = 'Nicht exportiert: ' + ' '.join(hints) + ' Bitte bestätigen, um trotzdem zu exportieren.'
+                return 303, ('/miscellaneous?datev_export=confirm'
+                             f'&datev_from={date_from}&datev_to={date_to}&datev_check={checksum}&msg={quote(msg)}')
+
+        # Ein Übertrag zwischen eigenen Konten, auf beiden Bankbewegungen kontiert, steht nur einmal im Stapel: Die Sätze der
+        # Eingangsseite fehlen (gezählt über den ganzen Bestand, nicht nur im Zeitraum) und bekommen kein Steuerdatum.
+        bookings = [row for row in db.fetch_bookings_range(date_from, date_to) if row[0] not in check.omitted]
         if not bookings:
             return 303, f'/miscellaneous?datev_export=error&msg=Keine+Buchungen+im+Zeitraum+{date_from}+bis+{date_to}'
 
@@ -1116,8 +1238,7 @@ def handle_datev_export(db: Database, post_data: dict):
 
     except Exception as e:
         traceback.print_exc()
-        msg = str(e).replace(' ', '+')
-        return 303, f'/miscellaneous?datev_export=error&msg={msg}'
+        return 303, f'/miscellaneous?datev_export=error&msg={quote(str(e))}'
 
 
 #: Größte Anfrage des Logo-Uploads in Bytes (die Datei samt Multipart-Rahmen); die Grenze gilt vor dem Lesen

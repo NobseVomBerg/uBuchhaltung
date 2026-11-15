@@ -5,7 +5,11 @@
 import sqlite3
 import os
 import json
+import bisect
+import datetime
+import re
 from decimal import Decimal
+from typing import NamedTuple, Optional
 from money import to_minor, from_minor, is_covered
 
 
@@ -364,6 +368,404 @@ def receivable_condition(debtor_coa_ids, payment_coa_ids, alias=''):
     return sql, params
 
 
+#: Wie viele Tage zwischen zwei Elementen eines Übertrags zwischen eigenen Konten höchstens liegen, damit sie zu einem
+#: Abschnitt gehören (die Wertstellung auf beiden Konten liegt meist 0–3 Tage, über Feiertage bis zu einer Woche
+#: auseinander). Gilt für ``settle_transfers``.
+TRANSFER_DAY_WINDOW = 7
+
+#: Das Umfeld eines Abschnitts: die Elemente derselben Gruppe, die höchstens so viele Tage vor seinem ersten oder nach seinem
+#: letzten Element liegen. Gilt für ``settle_transfers``.
+TRANSFER_NEIGHBOUR_DAYS = 14
+
+_ISO_DAY = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}')
+
+
+def _iso_day(value):
+    """Das Datum einer Zeile der Übertrags-Rechnung: nur ``JJJJ-MM-TT`` – ein Kalendertag, Jahr 1900–2200, ohne Zeitanteil und
+    ohne andere Schreibweise (dieselbe Regel wie ``server.period.parse_iso_date``; die Datenbankschicht lädt das Server-Package
+    nicht, und ``db.invoice_versions`` lädt diese Datei). Alles andere ist ``None``: Die Zeile nimmt nicht teil – im Stapel
+    steht sie nach ihrem Text, nicht nach einem Kalendertag, und das Umfeld (± Tage) läuft nie über das Datumsende hinaus."""
+    if not isinstance(value, str) or not _ISO_DAY.fullmatch(value):
+        return None
+    try:
+        day = datetime.date.fromisoformat(value)
+    except ValueError:
+        return None
+    return day if 1900 <= day.year <= 2200 else None
+
+
+def _whole(value):
+    """Ein Betrag in Minor Units: nur eine ganze Zahl (nie ein Text, ein ``bool`` oder eine Kommazahl) – sonst ``None``."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+# ── Überträge zwischen eigenen Konten: zählen statt paaren ───────────────────────────────────────────────────────────
+# Wer beide Bankbewegungen eines Übertrags kontiert (Maske, Bank-Editor), bekommt unter jeder einen Spiegel: „1810 an 1800“
+# und „1800 an 1810“ stünden im DATEV-Stapel als dieselbe Buchung zweimal. Einzelne Spiegel zu paaren ist nicht
+# zuverlässig (zwei gleich hohe Überträge, von denen jeder nur auf einer Seite kontiert ist, sähen wie ein Paar aus). Deshalb
+# wird gezählt: Je Richtung und Betrag werden die Bankbewegungen mit Spiegel-Satz („Beine“), die ohne Satz und die
+# eigenständigen Spiegel auf einer Zeitachse zu Gruppen zusammengefasst; eine Lücke von mehr als ``TRANSFER_DAY_WINDOW`` Tagen
+# trennt sie in Abschnitte. Zusammengelegt wird nur, wo es ohne Paarbildung sicher ist: Im Abschnitt und in seinem Umfeld
+# (``TRANSFER_NEIGHBOUR_DAYS``) darf keine Ausgangsbewegung ohne Satz und kein eigenständiger Spiegel liegen – sonst könnte
+# ein Eingangs-Satz der einzige seines Übertrags sein, dessen Ausgang nur außerhalb des Abschnitts steht. Eine Bewegung ohne
+# Satz gilt nur als gedeckt, wenn die Zahl der überschüssigen Spiegel der Gegenseite – gezählt gegen die Sätze der anderen Seite
+# im Umfeld, auch gegen anders kontierte Bankbewegungen – für alle ihrer Seite reicht; ein ganz unkontierter Übertrag zwischen
+# kontierten wird so gemeldet. Eine Bankbewegung, die anders kontiert ist (Zahlung, Umbuchung in anderer Form), bildet keine Gruppe
+# und legt nichts zusammen, zählt aber als verbraucht. Bleibt ein Eingangs-Satz trotz eines Ausgangs-Spiegels oder einer anders
+# kontierten Ausgangsbewegung im Umfeld im Stapel (oder steht ein eigenständiger Spiegel neben einer kontierten Bankbewegung), steht
+# sein Übertrag möglicherweise doppelt – das meldet der Export, mit der Bewegung im Umfeld, die das Zusammenlegen sperrt. Die Rechnung
+# kennt weder Datenbank noch Formen: ``transfer_legs`` macht aus den Zeilen Beine, ``settle_transfers`` zählt.
+
+class TransferLeg(NamedTuple):
+    """Ein Bein eines Übertrags: eine Bankbewegung ``R`` auf einem eigenen Konto.
+
+    Mit Spiegel-Satz (``entry_id`` gesetzt): ``R`` hat ein Kind, das ein Spiegel zwischen ``account`` und ``other`` ist;
+    ``amount`` ist der Betrag des Spiegels. Ohne Satz (``entry_id`` ``None``): ``R`` hat gar kein Kind, ``amount`` ist ihr
+    Betrag, das Gegenkonto bleibt unbekannt. Die Richtung kommt allein aus dem Vorzeichen von ``R`` (nie aus der Form des
+    Satzes – ein ``mirror_legacy`` wird nicht gedeutet): ``R < 0`` ist ein Ausgang von ``account``, ``R > 0`` ein Eingang."""
+    bank_id: int
+    account: int                                     # Accounts.ID des Kontos von R
+    outgoing: bool
+    amount: int                                      # |Betrag| in Minor Units, > 0
+    day: datetime.date                               # Datum von R
+    other: Optional[int] = None                      # das andere Konto des Spiegels
+    entry_id: Optional[int] = None                   # der Spiegel-Satz
+    entry_day: Optional[datetime.date] = None        # Datum des Spiegel-Satzes
+
+
+class TransferMirror(NamedTuple):
+    """Ein eigenständiger Spiegel (``entry`` ohne Bankbewegung) zwischen zwei teilnehmenden Konten. Mit bekannter Lesart
+    (``known``): ``out_account`` verliert ``amount``, ``in_account`` bekommt ihn. Ohne – ``mirror_legacy`` oder gar keine
+    Form –: die Konten stehen in beliebiger Reihenfolge; so ein Spiegel legt nichts zusammen und deckt nichts, wird aber als
+    möglicherweise doppelt genannt, wenn im Umfeld eine kontierte Bankbewegung gleichen Betrags zwischen denselben Konten liegt."""
+    entry_id: int
+    day: datetime.date
+    out_account: int
+    in_account: int
+    amount: int
+    known: bool = True
+
+
+class TransferOther(NamedTuple):
+    """Eine Bankbewegung auf einem teilnehmenden Konto, die Kinder hat, aber kein Spiegel-Kind zwischen eigenen Konten: Sie ist
+    anders kontiert (etwa als Zahlung oder als Umbuchung in einer anderen Form) und kann doch die Seite eines Übertrags sein.
+    Sie bildet keine Gruppe und legt nichts zusammen; sie zählt in der Deckung als verbraucht und lässt einen Satz der
+    Gegenseite im Umfeld als möglicherweise doppelt nennen."""
+    bank_id: int
+    account: int
+    outgoing: bool
+    amount: int                                      # |Betrag| der Bankbewegung in Minor Units, > 0
+    day: datetime.date
+
+
+class StackEntry(NamedTuple):
+    """Ein Satz im Stapel: ID, Datum des Satzes und Betrag in Minor Units."""
+    entry_id: int
+    day: datetime.date
+    amount: int
+
+
+class MergedSection(NamedTuple):
+    """Ein Abschnitt, dessen Eingangs-Sätze der Export weglässt: diese Sätze (``omitted``) und die Ausgangs-Sätze, deren Übertrag
+    sie sind (``outgoing``). Je Abschnitt zählt ``Database.check_transfers``, ob der Zeitraum einen Hinweis braucht."""
+    omitted: tuple
+    outgoing: tuple
+
+
+class DoubtfulEntry(NamedTuple):
+    """Ein Satz im Stapel, dessen Übertrag möglicherweise doppelt darin steht (``day`` und ``amount`` des Satzes): ein
+    Eingangs-Satz, der bleibt, obwohl im Umfeld seines Abschnitts ein Ausgang mit Spiegel oder anders kontiert liegt, ein
+    Ausgangs-Satz mit einer anders kontierten Eingangsbewegung im Umfeld oder ein eigenständiger Spiegel mit einer kontierten
+    Bankbewegung im Umfeld. ``trigger`` ist der Tag der ältesten Bewegung, die das Zusammenlegen sperrt oder den Hinweis
+    auslöst (Ausgang ohne Satz, eigenständiger Spiegel, anders kontierte Bewegung), sonst ``None``."""
+    entry_id: int
+    day: datetime.date
+    amount: int
+    trigger: Optional[datetime.date] = None
+
+
+class TransferSettlement(NamedTuple):
+    omitted: dict           # {Satz-ID: StackEntry} – die Eingangs-Sätze, die der Export weglässt
+    covered: frozenset      # IDs der Bankbewegungen ohne Satz, die ein Abschnitt deckt
+    doubtful: dict          # {Satz-ID: DoubtfulEntry} – Sätze, deren Übertrag möglicherweise doppelt im Stapel steht
+    merged: list            # [MergedSection] – die Abschnitte, deren Eingangs-Sätze wegfallen
+
+
+_OUT_BOOKED, _IN_BOOKED, _OUT_FREE, _IN_FREE, _STANDALONE = range(5)
+
+
+def own_transfer_accounts(account_coas):
+    """``{Accounts.ID: COA-IDs}`` der eigenen Konten, die an der Erkennung der Überträge teilnehmen: Bank-/Kassenkonten mit
+    SKR-Nummer, die kein anderes eigenes Konto ebenfalls trägt. Haben zwei Konten dieselbe Nummer, nimmt keins von beiden
+    teil – ein Satz auf dieser Nummer ließe sich keinem der beiden zuordnen: Es gibt kein Bein, nichts wird zusammengelegt,
+    und eine Bankbewegung ohne Satz auf einem von ihnen wird gemeldet. ``account_coas`` ist ``_account_coa_sets``."""
+    holders = {}
+    for account_id, coa_ids in account_coas.items():
+        for coa_id in coa_ids:
+            holders.setdefault(coa_id, set()).add(account_id)
+    return {account_id: frozenset(coa_ids) for account_id, coa_ids in account_coas.items()
+            if coa_ids and all(len(holders[coa_id]) == 1 for coa_id in coa_ids)}
+
+
+def transfer_legs(bank_rows, with_children, entry_rows, account_coas, bank_coa_ids):
+    """Aus den Zeilen der Datenbank die Beine, die eigenständigen Spiegel und die anders kontierten Bankbewegungen für
+    ``settle_transfers`` machen – ohne Datenbankzugriff.
+
+    ``bank_rows``: ``(ID, DateBooking, Amount, Account_ID)`` der Bankbewegungen (Betrag ≠ 0); ``with_children``: die IDs der
+    Bankbewegungen, die mindestens ein Kind haben; ``entry_rows``: ``(ID, ParentBooking_ID, DateBooking, Amount, COA_ID,
+    CounterCOA_ID, EntryForm)`` der Sätze, deren beide Seiten eigene Bank-/Kassenkonten sind; ``account_coas`` und
+    ``bank_coa_ids`` wie ``Database._account_coa_sets`` und ``_get_bank_coa_ids``.
+
+    Ein **Bein mit Spiegel** ist eine Bankbewegung auf einem teilnehmenden Konto (``own_transfer_accounts``) mit einem Kind,
+    für das ``is_mirror_row`` gilt und dessen Seiten genau dieses Konto und ein anderes teilnehmendes sind; mehrere
+    Spiegel-Kinder sind mehrere Beine. Ein **Bein ohne Satz** ist eine Bankbewegung auf einem teilnehmenden Konto ohne ein
+    einziges Kind. Eine Bankbewegung mit Kindern, aber ohne Spiegel-Kind, ist kein Bein, sondern **anders kontiert**
+    (``TransferOther``). Ein **eigenständiger Spiegel** (``ParentBooking_ID`` leer) mit bekannter Lesart
+    (``mirror_coa``/``mirror_counter``) nimmt an den Gruppen teil – welches Konto verliert, sagt ``bank_effect`` –; mit
+    ``mirror_legacy`` oder ohne Form legt er nichts zusammen und deckt nichts (``known=False``).
+
+    Eine Zeile nimmt nur teil, wenn ihr Datum ein ISO-Datum (``_iso_day``) und ihr Betrag eine ganze Zahl ist (``_whole``): Ein
+    Satz mit unlesbarem Datum oder Betrag ist kein Bein, seine Bankbewegung also anders kontiert."""
+    own = own_transfer_accounts(account_coas)
+    owner = {coa_id: account_id for account_id, coa_ids in own.items() for coa_id in coa_ids}
+    banks = {}
+    for bank_id, date, amount, account_id in bank_rows:
+        day, minor = _iso_day(date), _whole(amount)
+        if account_id in own and minor and day is not None:
+            banks[bank_id] = (account_id, minor, day)
+
+    legs = [TransferLeg(bank_id, account_id, amount < 0, abs(amount), day)
+            for bank_id, (account_id, amount, day) in banks.items() if bank_id not in with_children]
+    mirrors, legged = [], set()
+    for entry_id, parent_id, date, amount, coa_id, counter_coa_id, form in entry_rows:
+        day, minor = _iso_day(date), _whole(amount)
+        side_a, side_b = owner.get(coa_id), owner.get(counter_coa_id)
+        if (not minor or day is None or side_a is None or side_b is None or side_a == side_b
+                or not is_mirror_row(form, coa_id, counter_coa_id, bank_coa_ids)):
+            continue
+        if parent_id is None:
+            if form in (FORM_MIRROR_COA, FORM_MIRROR_COUNTER):
+                loses_coa_side = bank_effect(form, minor, coa_id, counter_coa_id, own[side_a], bank_coa_ids) < 0
+                out_account, in_account = (side_a, side_b) if loses_coa_side else (side_b, side_a)
+                mirrors.append(TransferMirror(entry_id, day, out_account, in_account, abs(minor)))
+            else:
+                mirrors.append(TransferMirror(entry_id, day, side_a, side_b, abs(minor), False))
+        elif parent_id in banks:
+            account_id, bank_amount, bank_day = banks[parent_id]
+            if account_id in (side_a, side_b):
+                other = side_b if account_id == side_a else side_a
+                legs.append(TransferLeg(parent_id, account_id, bank_amount < 0, abs(minor), bank_day, other, entry_id, day))
+                legged.add(parent_id)
+    others = [TransferOther(bank_id, account_id, amount < 0, abs(amount), day)
+              for bank_id, (account_id, amount, day) in banks.items() if bank_id in with_children and bank_id not in legged]
+    return legs, mirrors, others
+
+
+def _any_between(days, low, high):
+    """Liegt in der aufsteigenden Liste ``days`` ein Tag von ``low`` bis ``high`` (einschließlich)?"""
+    return _first_between(days, low, high) is not None
+
+
+def _first_between(days, low, high):
+    """Der früheste Tag der aufsteigenden Liste ``days`` von ``low`` bis ``high`` (einschließlich), sonst ``None``."""
+    index = bisect.bisect_left(days, low)
+    return days[index] if index < len(days) and days[index] <= high else None
+
+
+def _count_between(days, low, high):
+    """Wie viele Tage der aufsteigenden Liste ``days`` liegen von ``low`` bis ``high`` (einschließlich)?"""
+    return bisect.bisect_right(days, high) - bisect.bisect_left(days, low)
+
+
+def _earliest(*days):
+    """Der früheste der Tage, die nicht ``None`` sind – ``None``, wenn es keinen gibt."""
+    known = [day for day in days if day is not None]
+    return min(known) if known else None
+
+
+class _Around(NamedTuple):
+    """Was zum Umfeld eines Abschnitts gehört, aus der ganzen Gruppe: die Tage (aufsteigend) der Ausgänge ohne Satz und der
+    eigenständigen Spiegel (``blocking``), der Ausgänge und Eingänge mit Spiegel, der anders kontierten Ausgänge auf dem
+    Ausgangskonto und der anders kontierten Eingänge auf dem Eingangskonto – und die Länge des Umfelds."""
+    blocking: list
+    booked_out: list
+    booked_in: list
+    other_out: list
+    other_in: list
+    reach: datetime.timedelta
+
+
+def _settle_section(section, around, omitted, covered, doubtful, merged):
+    """Ein Abschnitt einer Gruppe (siehe ``settle_transfers``): zählen, zusammenlegen, auf Doppelung hinweisen, decken."""
+    kinds = ([], [], [], [], [])
+    for _day, _id, kind, member in section:
+        kinds[kind].append(member)
+    out_booked, in_booked, out_free, in_free, standalone = kinds
+    a_m, b_m, a_c, b_c, s = len(out_booked), len(in_booked), len(out_free), len(in_free), len(standalone)
+    low, high = section[0][0] - around.reach, section[-1][0] + around.reach
+    out_around, in_around = _count_between(around.booked_out, low, high), _count_between(around.booked_in, low, high)
+    a_o, b_o = _count_between(around.other_out, low, high), _count_between(around.other_in, low, high)
+    blocker = _first_between(around.blocking, low, high)
+    if a_m >= 1 and b_m >= 1 and a_m >= b_m + b_c and blocker is None:
+        entries = tuple(StackEntry(leg.entry_id, leg.entry_day, leg.amount) for leg in in_booked)
+        omitted.update((entry.entry_id, entry) for entry in entries)
+        merged.append(MergedSection(entries, tuple(StackEntry(leg.entry_id, leg.entry_day, leg.amount) for leg in out_booked)))
+    elif b_m >= 1 and (out_around or a_o):
+        trigger = _earliest(blocker, _first_between(around.other_out, low, high))
+        for leg in in_booked:
+            doubtful[leg.entry_id] = DoubtfulEntry(leg.entry_id, leg.entry_day, leg.amount, trigger)
+    if a_m >= 1 and b_o:
+        trigger = _first_between(around.other_in, low, high)
+        for leg in out_booked:
+            doubtful[leg.entry_id] = DoubtfulEntry(leg.entry_id, leg.entry_day, leg.amount, trigger)
+    if standalone and (out_around or in_around):
+        for mirror in standalone:
+            doubtful[mirror.entry_id] = DoubtfulEntry(mirror.entry_id, mirror.day, mirror.amount)
+        s = 0                                                       # ein Spiegel neben einer kontierten Bankbewegung deckt nichts
+    if a_c <= max(0, b_m - out_around - a_o) + s:
+        covered.update(leg.bank_id for leg in out_free)
+    if b_c <= max(0, a_m - in_around - b_o) + s:
+        covered.update(leg.bank_id for leg in in_free)
+
+
+def settle_transfers(legs, mirrors=(), others=(), window=TRANSFER_DAY_WINDOW, neighbour=TRANSFER_NEIGHBOUR_DAYS):
+    """Überträge zwischen eigenen Konten zählen: welche Eingangs-Sätze der DATEV-Export weglässt, weil ihre Buchung schon
+    in einem Ausgangs-Satz steht, welche Bankbewegungen ohne Satz durch die Spiegel der Gegenseite gedeckt sind und welche
+    Sätze möglicherweise doppelt im Stapel stehen. Eine reine Rechnung über ``TransferLeg``, ``TransferMirror`` und
+    ``TransferOther`` (``transfer_legs``) – keine Datenbank, höchstens O(n log n): Gruppen über Wörterbücher, je Gruppe einmal
+    sortiert, das Umfeld über Halbierungssuche auf den sortierten Tagen.
+
+    **Gruppen.** Schlüssel ist (Ausgangskonto X, Eingangskonto Y, Betrag a). Hinein gehören die Ausgangs-Beine mit Spiegel
+    X → Y, die Eingangs-Beine mit Spiegel (auf Y, Gegenkonto X) und die eigenständigen Spiegel mit bekannter Lesart X → Y – und,
+    nur wenn die Gruppe dadurch nicht erst entsteht, die Ausgänge ohne Satz auf X und die Eingänge ohne Satz auf Y mit dem
+    Betrag a (ein Bein ohne Satz kann so in mehreren Gruppen liegen). Jede Gruppe wird nach Datum sortiert (dann nach ID) und
+    in **Abschnitte** zerlegt: Ein neuer beginnt, wenn der Abstand zum vorherigen Element größer als ``window`` Tage ist. Das
+    **Umfeld** eines Abschnitts sind alle Elemente der Gruppe, die höchstens ``neighbour`` Tage vor seinem ersten oder nach
+    seinem letzten Element liegen (er selbst gehört dazu); dazu gehören auch die anders kontierten Ausgänge auf X und die anders
+    kontierten Eingänge auf Y mit dem Betrag a.
+
+    Je Abschnitt: ``a_m`` Ausgänge mit Spiegel, ``a_c`` Ausgänge ohne Satz, ``b_m`` Eingänge mit Spiegel, ``b_c`` Eingänge
+    ohne Satz, ``s`` eigenständige Spiegel; im Umfeld ``A``/``B`` Ausgänge/Eingänge mit Spiegel und ``a_o``/``b_o`` anders
+    kontierte Ausgänge/Eingänge.
+
+    **Zusammenlegen.** Die Eingangs-Sätze eines Abschnitts fallen aus dem Stapel genau dann, wenn ``a_m ≥ 1``, ``b_m ≥ 1``
+    und ``a_m ≥ b_m + b_c`` gilt und im UMFELD kein Ausgang ohne Satz und kein eigenständiger Spiegel liegt: Jede
+    Ausgangsbewegung dort trägt ihren Satz, und es gibt mindestens so viele Ausgänge wie Eingänge – jeder Eingang gehört zu
+    einem Ausgang, dessen Satz im Stapel steht. Dann fallen ALLE ``b_m`` Eingangs-Sätze des Abschnitts weg, sonst keiner
+    (welcher zu welchem Ausgang gehört, bleibt offen: Gepaart wird nicht). Anders kontierte Bewegungen ändern daran nichts.
+
+    **Möglicherweise doppelt** (``doubtful``). Bleiben die Eingangs-Sätze eines Abschnitts im Stapel, liegt aber in seinem
+    Umfeld mindestens ein Ausgang mit Spiegel oder ein anders kontierter Ausgang (``A`` oder ``a_o``), steht jeder dieser
+    Eingangs-Sätze möglicherweise doppelt im Stapel; ebenso jeder Ausgangs-Satz eines Abschnitts, in dessen Umfeld ein anders
+    kontierter Eingang liegt (``b_o``). Ebenso ein eigenständiger Spiegel mit bekannter Lesart, in dessen Umfeld ein Bein mit
+    Spiegel liegt (ein Import-Spiegel und eine kontierte Bankbewegung), und ein eigenständiger Spiegel ohne bekannte Lesart
+    (``known=False``), neben dem im Umfeld ein Bein mit Spiegel zwischen denselben Konten und mit demselben Betrag liegt.
+
+    **Gedeckt.** Die Ausgänge ohne Satz eines Abschnitts gelten als gedeckt genau dann, wenn
+    ``a_c ≤ max(0, b_m − A − a_o) + s``, die Eingänge ohne Satz, wenn ``b_c ≤ max(0, a_m − B − b_o) + s``: Ein Eingangs-Satz,
+    dessen Ausgang mit Satz oder anders kontiert in der Nähe steht, ist dessen Gegenseite, nicht die eines Ausgangs ohne
+    Satz. ``s`` zählt nur, wenn im Umfeld kein Bein mit Spiegel liegt – ein Spiegel neben einer kontierten Bankbewegung deckt
+    nichts (er wird als möglicherweise doppelt genannt). Reicht es nicht, ist KEINE ohne Satz dieser Seite in diesem Abschnitt
+    gedeckt. Eine Bewegung ist gedeckt, wenn sie es in mindestens einem Abschnitt ist.
+
+    Returns: ``TransferSettlement(omitted, covered, doubtful, merged)``."""
+    groups = {}
+    free_out, free_in = {}, {}
+    other_out, other_in = {}, {}
+    booked_pairs = {}                        # (kleineres Konto, größeres Konto, Betrag) -> Tage der Beine mit Spiegel, beide Richtungen
+    unknown = []
+    for leg in legs:
+        if leg.entry_id is None:
+            (free_out if leg.outgoing else free_in).setdefault((leg.account, leg.amount), []).append(leg)
+            continue
+        booked_pairs.setdefault((min(leg.account, leg.other), max(leg.account, leg.other), leg.amount), []).append(leg.day)
+        if leg.outgoing:
+            groups.setdefault((leg.account, leg.other, leg.amount), []).append((leg.day, leg.bank_id, _OUT_BOOKED, leg))
+        else:
+            groups.setdefault((leg.other, leg.account, leg.amount), []).append((leg.day, leg.bank_id, _IN_BOOKED, leg))
+    for mirror in mirrors:
+        if mirror.known:
+            groups.setdefault((mirror.out_account, mirror.in_account, mirror.amount), []).append(
+                (mirror.day, mirror.entry_id, _STANDALONE, mirror))
+        else:
+            unknown.append(mirror)
+    for other in others:
+        (other_out if other.outgoing else other_in).setdefault((other.account, other.amount), []).append(other.day)
+    for days in (*other_out.values(), *other_in.values(), *booked_pairs.values()):
+        days.sort()
+
+    omitted, covered, doubtful, merged = {}, set(), {}, []
+    reach = datetime.timedelta(days=neighbour)
+    for (out_account, in_account, amount), members in groups.items():
+        members.extend((leg.day, leg.bank_id, _OUT_FREE, leg) for leg in free_out.get((out_account, amount), ()))
+        members.extend((leg.day, leg.bank_id, _IN_FREE, leg) for leg in free_in.get((in_account, amount), ()))
+        members.sort(key=lambda member: member[:3])
+        around = _Around([member[0] for member in members if member[2] in (_OUT_FREE, _STANDALONE)],
+                         [member[0] for member in members if member[2] == _OUT_BOOKED],
+                         [member[0] for member in members if member[2] == _IN_BOOKED],
+                         other_out.get((out_account, amount), ()), other_in.get((in_account, amount), ()), reach)
+        section, previous = [], None
+        for member in members:
+            if previous is not None and (member[0] - previous).days > window:
+                _settle_section(section, around, omitted, covered, doubtful, merged)
+                section = []
+            section.append(member)
+            previous = member[0]
+        _settle_section(section, around, omitted, covered, doubtful, merged)
+    for mirror in unknown:
+        days = booked_pairs.get((min(mirror.out_account, mirror.in_account), max(mirror.out_account, mirror.in_account),
+                                 mirror.amount), ())
+        if _any_between(days, mirror.day - reach, mirror.day + reach):
+            doubtful[mirror.entry_id] = DoubtfulEntry(mirror.entry_id, mirror.day, mirror.amount)
+    return TransferSettlement(omitted, frozenset(covered), doubtful, merged)
+
+
+def _edge_entries(entries, count, from_start):
+    """Die ``count`` Einträge von ``entries`` (nach Datum sortiert), die an dem Rand des Zeitraums liegen, über den ihr Übertrag
+    läuft: höchstens ``from_start`` vom Anfang, der Rest vom Ende."""
+    first = min(count, from_start)
+    return entries[:first] + (entries[len(entries) - (count - first):] if count > first else [])
+
+
+def _boundary_entries(merged, first, last):
+    """Die Sätze, die ein Zeitraum ``first`` bis ``last`` in Hinweis 2 nennt, je Abschnitt gezählt: Fallen im Zeitraum mehr
+    Eingangs-Sätze eines Abschnitts weg, als Ausgangs-Sätze dieses Abschnitts im Zeitraum stehen, fehlen die überzähligen in
+    diesem Stapel (``incoming``: ihre Ausgangsseite steht im Stapel eines anderen Zeitraums). Stehen umgekehrt mehr Ausgangs-Sätze
+    im Zeitraum, als Eingangs-Sätze des Abschnitts wegfallen, und fallen außerhalb welche weg, stehen die überzähligen Ausgangs-Sätze
+    hier und ihre Eingangsseite in einem anderen Stapel – dort vielleicht auch (``outgoing``; höchstens so viele, wie
+    Eingangs-Sätze außerhalb wegfallen). Genannt werden die Sätze am Rand, über den der Übertrag läuft: Vom Anfang so viele, wie
+    zu Beginn des Zeitraums unterwegs sind (Ausgänge vor dem Zeitraum, deren Eingang noch aussteht – oder umgekehrt), der Rest vom
+    Ende; eine lange, ausgeglichene Reihe davor zählt nicht. Returns ``(incoming, outgoing)``, je ``[StackEntry]`` nach Datum
+    und ID."""
+    incoming, outgoing = [], []
+    for section in merged:
+        omitted_here = sorted((entry for entry in section.omitted if first <= entry.day <= last), key=lambda entry: (entry.day, entry.entry_id))
+        outgoing_here = sorted((entry for entry in section.outgoing if first <= entry.day <= last), key=lambda entry: (entry.day, entry.entry_id))
+        surplus = len(omitted_here) - len(outgoing_here)
+        if surplus == 0:
+            continue
+        omitted_before = sum(1 for entry in section.omitted if entry.day < first)
+        outgoing_before = sum(1 for entry in section.outgoing if entry.day < first)
+        if surplus > 0:
+            outside = len(section.outgoing) - len(outgoing_here)
+            incoming += _edge_entries(omitted_here, min(surplus, outside), max(0, outgoing_before - omitted_before))
+        else:
+            outside = len(section.omitted) - len(omitted_here)
+            outgoing += _edge_entries(outgoing_here, min(-surplus, outside), max(0, omitted_before - outgoing_before))
+    key = lambda entry: (entry.day, entry.entry_id)
+    return sorted(incoming, key=key), sorted(outgoing, key=key)
+
+
+class TransferCheck(NamedTuple):
+    """Was ``Database.check_transfers`` für einen Zeitraum findet."""
+    unbooked: list      # [(BankID, DateBooking, Amount€)]: Bankbewegungen im Zeitraum ohne Buchungssatz, die kein Abschnitt deckt
+    omitted: set        # die Sätze, die der Export weglässt (über den ganzen Bestand)
+    elsewhere: list     # [(Satz-ID, DateBooking, Amount€)]: weggelassene Eingangs-Sätze im Zeitraum, deren Ausgangsseite im Stapel eines anderen Zeitraums steht
+    elsewhere_out: list  # [(Satz-ID, DateBooking, Amount€)]: Ausgangs-Sätze im Zeitraum, deren Eingangsseite außerhalb weggelassen wird
+    doubtful: list      # [(Satz-ID, DateBooking, Amount€)]: Sätze im Zeitraum, deren Übertrag möglicherweise doppelt im Stapel steht
+    trigger: Optional[tuple]    # (Datum, Betrag€) der ältesten Bewegung, die einen dieser Sätze auslöst (Hinweis 3), sonst ``None``
+
+
 class MatchingMixin:
     @staticmethod
     def _account_coa_sets(cursor):
@@ -560,6 +962,96 @@ class MatchingMixin:
                                from_minor(rest), text or ''))
         result.sort(key=lambda r: (r[1], r[0]))
         return result
+
+    def _settle_stock(self, cursor):
+        """Den ganzen Bestand lesen und die Überträge zwischen eigenen Konten zählen (``settle_transfers``). Gelesen wird
+        immer alles, nicht ein Zeitraum: Ein Abschnitt kann über eine Zeitraumgrenze reichen. Drei Abfragen, keine je
+        Zeile: die Bankbewegungen, die Bankbewegungen mit Kindern und die Sätze zwischen eigenen Konten."""
+        bank_coa_ids = self._get_bank_coa_ids(cursor)
+        account_coas = self._account_coa_sets(cursor)
+        cursor.execute("SELECT ID, DateBooking, Amount, Account_ID FROM Bookings "
+                       "WHERE BookingType = 'bank' AND Amount <> 0 AND Account_ID IS NOT NULL")
+        bank_rows = cursor.fetchall()
+        cursor.execute('SELECT DISTINCT ParentBooking_ID FROM Bookings WHERE ParentBooking_ID IS NOT NULL')
+        with_children = {row[0] for row in cursor.fetchall()}
+        entry_rows = []
+        if bank_coa_ids:
+            marks = ','.join('?' * len(bank_coa_ids))
+            cursor.execute(f"""
+                SELECT ID, ParentBooking_ID, DateBooking, Amount, COA_ID, CounterCOA_ID, EntryForm FROM Bookings
+                WHERE BookingType = 'entry' AND COA_ID IN ({marks}) AND CounterCOA_ID IN ({marks})
+            """, [*bank_coa_ids, *bank_coa_ids])
+            entry_rows = cursor.fetchall()
+        legs, mirrors, others = transfer_legs(bank_rows, with_children, entry_rows, account_coas, bank_coa_ids)
+        return settle_transfers(legs, mirrors, others)
+
+    def check_transfers(self, date_from: str, date_to: str) -> TransferCheck:
+        """Was der DATEV-Export für diesen Zeitraum wissen muss, aus EINEM Stand der Datenbank (nur lesend; die Rechnung
+        steht in ``settle_transfers``, höchstens O(n log n) im Bestand):
+
+        * ``unbooked``: Bankbewegungen im Zeitraum ohne einen einzigen Buchungssatz – im Stapel stehen nur Sätze, sie fehlen
+          darin –, sofern keine Gegenseite sie deckt. Gemeint ist eine Zeile ``BookingType='bank'`` mit ``DateBooking`` im
+          Zeitraum, Betrag ≠ 0 (eine Zahl) und ohne Kind (``ParentBooking_ID``); ein Kind mit Datum außerhalb des Zeitraums
+          zählt als kontiert. Eine Bankzeile mit eigenem ``COA_ID``, aber ohne Kind, zählt mit, ebenso eine Kassenbewegung.
+          Bewegungen auf einem Konto ohne SKR-Nummer oder mit einer Nummer, die ein anderes Konto auch trägt, sind nie gedeckt.
+        * ``omitted``: die Eingangs-Sätze, die der Export weglässt, weil derselbe Übertrag schon in einem Ausgangs-Satz steht –
+          über den ganzen Bestand, nicht je Zeitraum.
+        * ``elsewhere`` und ``elsewhere_out`` (Hinweis 2), je Abschnitt gezählt (``_boundary_entries``): weggelassene Sätze im
+          Zeitraum, die über die Zahl der Ausgangs-Sätze des Abschnitts im Zeitraum hinausgehen – ihr Übertrag steht in diesem
+          Stapel nicht, sondern mit seiner Ausgangsseite im Stapel eines anderen Zeitraums –, und umgekehrt Ausgangs-Sätze im
+          Zeitraum, die über die weggelassenen Sätze des Abschnitts im Zeitraum hinausgehen, während dessen Eingangsseite
+          außerhalb wegfällt: Wurde der andere Zeitraum schon exportiert, bevor beide Seiten kontiert waren, stehen sie dort
+          ebenfalls.
+        * ``doubtful`` und ``trigger`` (Hinweis 3): die Sätze im Zeitraum, deren Übertrag möglicherweise doppelt im Stapel
+          steht (Eingangs-Sätze, die bleiben, obwohl im Umfeld ein Ausgang mit Spiegel oder anders kontiert liegt;
+          Ausgangs-Sätze neben einem anders kontierten Eingang; eigenständige Spiegel neben einer kontierten Bankbewegung), und
+          die älteste Bewegung, die das Zusammenlegen sperrt oder den Hinweis auslöst.
+
+        Returns: ``TransferCheck(unbooked, omitted, elsewhere, elsewhere_out, doubtful, trigger)``, die Listen nach Datum und ID."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            settlement = self._settle_stock(cursor)
+            cursor.execute("""
+                SELECT b.ID, b.DateBooking, b.Amount FROM Bookings b
+                WHERE b.BookingType = 'bank' AND b.DateBooking BETWEEN ? AND ? AND b.Amount <> 0
+                  AND typeof(b.Amount) IN ('integer', 'real')
+                  AND NOT EXISTS (SELECT 1 FROM Bookings c WHERE c.ParentBooking_ID = b.ID)
+                ORDER BY b.DateBooking, b.ID
+            """, (date_from, date_to))
+            unbooked = [(bank_id, date, from_minor(amount)) for bank_id, date, amount in cursor.fetchall()
+                        if bank_id not in settlement.covered]
+        finally:
+            conn.close()
+        first, last = _iso_day(date_from), _iso_day(date_to)
+        elsewhere, elsewhere_out, doubtful, trigger = [], [], [], None
+        if first is not None and last is not None:
+            incoming, outgoing = _boundary_entries(settlement.merged, first, last)
+            elsewhere = [(entry.entry_id, entry.day.isoformat(), from_minor(entry.amount)) for entry in incoming]
+            elsewhere_out = [(entry.entry_id, entry.day.isoformat(), from_minor(entry.amount)) for entry in outgoing]
+            named = sorted((entry for entry in settlement.doubtful.values() if first <= entry.day <= last),
+                           key=lambda entry: (entry.day, entry.entry_id))
+            doubtful = [(entry.entry_id, entry.day.isoformat(), from_minor(entry.amount)) for entry in named]
+            triggered = [entry for entry in named if entry.trigger is not None]
+            if triggered:
+                oldest = min(triggered, key=lambda entry: (entry.trigger, entry.entry_id))
+                trigger = (oldest.trigger.isoformat(), from_minor(oldest.amount))
+        return TransferCheck(unbooked, set(settlement.omitted), elsewhere, elsewhere_out, doubtful, trigger)
+
+    def find_unbooked_bank_movements(self, date_from: str, date_to: str):
+        """Bankbewegungen im Zeitraum ohne Buchungssatz, die keine Gegenseite deckt (``check_transfers``).
+
+        Returns: [(BankID, DateBooking, Amount€)] nach Datum und ID."""
+        return self.check_transfers(date_from, date_to).unbooked
+
+    def duplicate_transfer_rows(self) -> set:
+        """IDs der Eingangs-Sätze, die der DATEV-Export weglässt, weil derselbe Übertrag zwischen eigenen Konten schon in einem
+        Ausgangs-Satz steht (``settle_transfers``) – über den ganzen Bestand."""
+        conn = self._get_connection()
+        try:
+            return set(self._settle_stock(conn.cursor()).omitted)
+        finally:
+            conn.close()
 
     def find_unlinked_booking_by_date_amount(self, date: str, amount: float):
         """Suche nach einer unverknüpften Buchung/Beleg-Gruppe anhand Datum + Betrag.
