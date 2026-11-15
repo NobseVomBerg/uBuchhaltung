@@ -1,4 +1,4 @@
-# uBuchhaltung im lokalen Netzwerk betreiben (Mehrbenutzer + HTTPS)
+# uBuchhaltung betreiben (Netzwerk, Docker, Mehrbenutzer, HTTPS)
 
 uBuchhaltung legt die Daten jedes Benutzers isoliert unter `data/users/<user>/`
 ab. Bei der **Ersteinrichtung im Browser** wird der erste Administrator angelegt –
@@ -45,6 +45,8 @@ Version 2 automatisch um – siehe [Umzug auf Version 2](#umzug-auf-version-2).
 | `UBUCHHALTUNG_CERT` | *(keine)*   | Pfad zur TLS-Zertifikatsdatei (PEM) ⇒ HTTPS. |
 | `UBUCHHALTUNG_KEY`  | *(keine)*   | Pfad zum privaten TLS-Schlüssel (PEM). |
 | `UBUCHHALTUNG_ALLOWED_HOSTS` | *(leer)* | Zusätzliche Hostnamen (Kommaliste), unter denen die App erreichbar sein darf – siehe „Schutz vor fremden Webseiten“. |
+| `SMTP_HOST` / `SMTP_PORT` | `smtp.gmail.com` / `587` | Ausgangsserver für den E-Mail-Versand von Rechnungen. |
+| `SMTP_USER` / `SMTP_PASSWORD` | *(leer)* | Zugangsdaten für den Versand; ohne sie lehnt die App den Versand mit einem Hinweis ab. |
 
 Sind `UBUCHHALTUNG_CERT` **und** `UBUCHHALTUNG_KEY` gesetzt, läuft der Server über HTTPS und
 setzt das `Secure`-Flag der Session-Cookies.
@@ -114,8 +116,9 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
 ## Daten & Backup
 
 - `data/auth.db` – zentrale Benutzer-/Session-Verwaltung.
-- `data/users/<user>/` – pro Nutzer: `buch.db` sowie `logos/`, `invoices/`,
-  `quotes/`, `worktime/`.
+- `data/users/<user>/` – pro Nutzer: `buch.db` sowie `Belege/`, `invoices/`,
+  `quotes/`, `worktime/`, `logos/`, `backup/`, die SQL-Protokolle
+  (`sql_operations.log`/`.sql`) und, wenn angelegt, `db-export.sql`.
 - Für ein Backup genügt es, das gesamte `data/`-Verzeichnis zu sichern.
 - Die Wiederherstellung in der App prüft das Archiv, bevor sie am Datenverzeichnis etwas
   ändert. Bleibt nach einem Absturz mitten im Wiederherstellen ein Ordner
@@ -144,7 +147,7 @@ ghcr.io/nobsevomberg/ubuchhaltung:latest
 | Tag | Inhalt |
 |---|---|
 | `:latest` | neuester Release (empfohlen) |
-| `:1.6.16`, `:1.6`, `:1` | fester Release bzw. neuester innerhalb der Reihe – zum Festhalten oder Zurückgehen |
+| `:2.3.2`, `:2.3`, `:2` (Beispiel) | fester Release bzw. neuester innerhalb der Reihe – zum Festhalten einer Version (nach einer Schemaänderung führt nur die Sicherung zurück) |
 | `:edge` | aktueller Entwicklungsstand von `main`, ungetestet im Betrieb |
 
 Releases entstehen automatisch: Kommt auf `main` eine neue Version aus
@@ -175,9 +178,6 @@ dieses eine Verzeichnis.
   davorschalten.
 - 7-Zip ist im Image enthalten – Datensicherungen entstehen als `.7zip`,
   die Log-Rotation komprimiert nach `.7z`.
-- GHCR-Hinweis (einmalig): Nach dem ersten Workflow-Lauf das Paket unter
-  GitHub → Profil → Packages → `ubuchhaltung` → Package settings auf
-  **Public** stellen, sonst verlangt der Pull eine Anmeldung.
 
 ### Unraid
 
@@ -225,12 +225,12 @@ gleichzeitig auf demselben `data/` betreiben** (SQLite-Locking).
   Volume einbinden, `UBUCHHALTUNG_HOST=0.0.0.0` setzen, Port veröffentlichen –
   für Docker siehe den Abschnitt **Docker** oben.
 
-## Diagnose mit Claude Code (MCP, nur lesend)
+## Diagnose-Schnittstelle (MCP, nur lesend)
 
-Mit `tools/mcp_ubuchhaltung.py` kann Claude Code eine laufende Instanz (z. B. den
-Docker-Container im LAN) untersuchen, ohne Browser. Der Server läuft **lokal auf dem
-Entwicklungsrechner** – Claude Code startet ihn als stdio-MCP-Server – und fragt die
-Instanz per HTTP ab wie ein Skript. Auf dem NAS bzw. im Container ist nichts zu
+Mit `tools/mcp_ubuchhaltung.py` lässt sich eine laufende Instanz (z. B. der
+Docker-Container im LAN) von einem MCP-fähigen Client untersuchen, ohne Browser. Der Server
+läuft **lokal auf dem Rechner des Clients** – der Client startet ihn als stdio-MCP-Server – und
+fragt die Instanz per HTTP ab wie ein Skript. Auf dem NAS bzw. im Container ist nichts zu
 installieren; nötig sind nur Python (ab 3.10) und die Standardbibliothek.
 
 **Was er kann** – fünf Werkzeuge:
@@ -264,10 +264,10 @@ mit `AS` unterscheiden. BLOB-Spalten lassen sich nur über `hex(x)` oder `length
 - **Sonst:** Außer der Anmeldung und der SQL-Konsole (`/execute_sql`) sendet er keine POSTs.
   Antworten der Instanz begrenzt er auf 16 MiB und auf die doppelte Zeitgrenze je Anfrage.
   Das Passwort steht nie in Ausgaben oder Logs.
-- **Restrisiko:** Die SQL-Konsole der Instanz hat kein Zeitlimit. Die Sperren fangen die
-  üblichen Endlosabfragen ab, aber nicht jede aufwendige (etwa Kreuzprodukte großer
-  Tabellen). Solche Abfragen belasten die Instanz und blockieren Schreibzugriffe, solange
-  sie laufen.
+- **Restrisiko:** Die SQL-Konsole der Instanz bricht jede Anfrage nach 60 Sekunden ab. Die
+  Sperren lassen die üblichen Endlosabfragen gar nicht erst durch, aber nicht jede aufwendige
+  (etwa Kreuzprodukte großer Tabellen). Solche Abfragen belasten die Instanz und blockieren
+  Schreibzugriffe, bis sie enden oder abgebrochen werden.
 
 **Voraussetzung:** ein Konto mit Administratorrechten – die SQL-Konsole steht nur
 Administratoren zur Verfügung und sieht ausschließlich die Datenbank des angemeldeten
@@ -298,7 +298,7 @@ dort genannten Endungen `UBUCHHALTUNG_ALLOWED_HOSTS` auf der Instanz setzen).
    ```json
    {"permissions": {"allow": ["mcp__ubuchhaltung"]}}
    ```
-   Oder nur einzelne, z. B. die reinen Prüfwerkzeuge – bei `sql` und `page` fragt Claude Code
+   Oder nur einzelne, z. B. die reinen Prüfwerkzeuge – bei `sql` und `page` fragt der Client
    dann weiter nach:
    ```json
    {"permissions": {"allow": ["mcp__ubuchhaltung__info", "mcp__ubuchhaltung__schema", "mcp__ubuchhaltung__db_check"]}}
@@ -411,7 +411,10 @@ Ersteinrichtung:
 
 ## Schema-Migrationen
 
-Bestehende Nutzer-DBs werden beim Start automatisch an die aktuelle
-Schema-Version angeglichen (neue Spalten werden nachgezogen; `PRAGMA
-user_version` spiegelt die `SCHEMA_VERSION` aus `version.py`). Es ist also kein
-manuelles „DB löschen & neu" mehr nötig.
+Bestehende Nutzer-Datenbanken werden beim Start automatisch auf den aktuellen
+Schemastand gebracht (`PRAGMA user_version` spiegelt die `SCHEMA_VERSION` aus
+`version.py`). Davor legt die App eine Sicherung unter
+`backup/JJJJMMTT_vor_<Version>_buch.db` im Datenordner des Nutzers an; ein Zurück auf
+eine ältere Version gibt es nur über diese Sicherung (Anleitung im README, Abschnitt
+„Gut zu wissen“). Eine Datenbank, die von einer neueren Version stammt, öffnet die App
+nicht.

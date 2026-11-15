@@ -6,7 +6,7 @@
 #  * fontTools – bettet Liberation Sans als Untermenge in die erzeugten
 #    PDF/A-3-Dokumente ein (export/pdfa.py). Pflicht, sonst keine PDF-Erzeugung.
 #  * pdfplumber – PDF-Parsing von Kontoauszügen/Belegen im document_parser.py.
-#    Fehlt es, läuft die App weiter – nur die PDF-Erkennung ist deaktiviert.
+#    Derzeit Pflicht: Die Parser importieren es beim Start (siehe docs/aufgaben.md).
 #
 # Installation:  pip install -r requirements.txt
 

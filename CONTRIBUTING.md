@@ -27,3 +27,6 @@ Mit dem Absenden eines Pull Requests stimmst du den Bedingungen des CLA zu.
 - Kleine, fokussierte Commits sind leichter zu reviewen als ein großer.
 - Tests nur mit anonymisierten Daten (`seed_data/test/`); ein automatischer
   Check (`tests/check_anonymized.py`) erzwingt das.
+- Vor dem Pull Request `python -m pytest -q` (Voraussetzung:
+  `pip install -r requirements-dev.txt`) und `python tests/check_anonymized.py`
+  ausführen; beides läuft auch in der CI.

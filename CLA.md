@@ -1,9 +1,7 @@
 # Contributor License Agreement (CLA)
 
-> **Hinweis:** Dieses CLA sichert dem Projektinhaber die Rechte an allen
-> Beiträgen, damit das Projekt dual lizenziert werden kann (AGPL-3.0-or-later
-> und kommerziell). Es ist ein Entwurf und wird vor dem ersten produktiven
-> Einsatz juristisch geprüft.
+> Dieses CLA sichert dem Projektinhaber die Rechte an allen Beiträgen, damit
+> das Projekt dual lizenziert werden kann (AGPL-3.0-or-later und kommerziell).
 
 ---
 

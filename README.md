@@ -8,8 +8,8 @@ Deutschland** – Belege, Bankbuchungen, Einnahmen-Überschuss-Rechnung,
 Rechnungen mit XRechnung, Anlagen mit AfA und DATEV-Export. Läuft im eigenen
 Netz (Docker, Unraid, Proxmox oder direkt mit Python); die Daten bleiben bei dir.
 
-> **Status:** Im eigenen Betrieb des Entwicklers im Einsatz und in aktiver
-> Weiterentwicklung. Oberfläche und Dokumentation sind deutschsprachig.
+> **Status:** In aktiver Weiterentwicklung; neue Versionen erscheinen als
+> Docker-Image und GitHub-Release. Oberfläche und Dokumentation sind deutschsprachig.
 
 *In English:* uBuchhaltung is a self-hosted bookkeeping web app for freelancers
 and small businesses in Germany – SKR charts of accounts, EÜR (cash-basis
@@ -117,7 +117,7 @@ Alle Funktionen ausführlich: [Funktionen im Detail](#funktionen-im-detail).
 uBuchhaltung kann vorhandene Daten aus WISO Mein Büro (Desktop) übernehmen –
 direkt aus der Datenbankdatei oder aus den Textexporten:
 
-- **Import aus der Datenbank** (*Verschiedenes → Import aus der Datenbank*):
+- **Import aus der Datenbank** (*Sonstiges → Import aus der Datenbank*):
   liest die Firebird-Dateien (`.FDB`) des Mandanten direkt in Python – ohne
   Firebird-Installation, Treiber oder DLL. Übernommen werden Buchungen aller
   Jahre einschließlich der Zusammengehörigkeit von Teilbuchungen, Anlagen,
@@ -165,18 +165,18 @@ direkt aus der Datenbankdatei oder aus den Textexporten:
   doppelt“: lieber eine sichtbare zweite Buchung als eine still falsch übernommene.
 - Der Datenbank-Import ist für einen **leeren Bestand** und **eine** WISO-Datenbank je Bestand
   gedacht; ein weiterer Import ist möglich, verlangt aber eine ausdrückliche Bestätigung (ein
-  Hinweis auf *Verschiedenes* nennt, was schon im Bestand steht). Legt WISO Buchungen neu an (etwa
+  Hinweis auf *Sonstiges* nennt, was schon im Bestand steht). Legt WISO Buchungen neu an (etwa
   nach einem DATEV-Export), erkennt der Import sie an Datum, Konten, Steuersatz, Betrag und Beleg-Nr.
   wieder, hängt die vorhandene Buchung an die neue Kennung um und legt sie nicht doppelt an.
   Buchungen, die es in WISO nicht mehr gibt (gelöscht oder mit anderem Inhalt neu angelegt),
-  bleiben im Bestand stehen und stehen in einer Liste auf *Verschiedenes* – gelöscht wird nichts,
+  bleiben im Bestand stehen und stehen in einer Liste auf *Sonstiges* – gelöscht wird nichts,
   das bleibt Handarbeit. Eine nachträgliche Änderung innerhalb einer weiter bestehenden Buchung
   (anderer Betrag, entfallene Teilbuchung) bemerkt der Import nicht.
 
 - Der **BU-Schlüssel** der Buchung (aus der Datenbank `DATEVVATKEY`, aus dem Textexport `SCHLUESSEL`) bleibt am Buchungssatz und geht
   unverändert in den DATEV-Stapel; ein erneuter Import der Datenbank trägt ihn an schon importierten Buchungen nach – nur dort, wo er fehlt
   und die Buchung denselben Steuersatz trägt wie in WISO (sonst leitet der Export den Schlüssel aus dem Satz der App ab; die Seite
-  *Verschiedenes* nennt die Zahl solcher Buchungen). Berater- und Mandantennummer übernimmt der Datenbank-Import in die Stammdaten der
+  *Sonstiges* nennt die Zahl solcher Buchungen). Berater- und Mandantennummer übernimmt der Datenbank-Import in die Stammdaten der
   eigenen Firma, wenn beide Felder dort leer sind.
 - Beide Importe melden, was sie nicht sicher lesen können: Sätze mit **negativem Bruttobetrag**
   und genau einem Bank-, Kassen- oder Verrechnungskonto (dort bestimmt die Geldbewegung das
@@ -191,7 +191,7 @@ direkt aus der Datenbankdatei oder aus den Textexporten:
 
 Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen.
 
-> WISO und MeinBüro sind Marken ihrer jeweiligen Inhaber. uBuchhaltung ist ein
+> WISO, MeinBüro und DATEV sind Marken ihrer jeweiligen Inhaber. uBuchhaltung ist ein
 > unabhängiges Projekt und steht in keiner Verbindung zu den Markeninhabern oder
 > dem Hersteller. Die Namen dienen allein der Bezeichnung der unterstützten
 > Importformate.
@@ -202,7 +202,7 @@ Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen
   Verantwortung für eine ordnungsgemäße Buchführung und für Steuererklärungen
   bleibt beim Anwender. Eine Prüfung oder Zusicherung der GoBD-Konformität gibt
   es nicht.
-- **Update auf 2.1.0 (Schemaänderung):** Vor jeder Umstellung einer bestehenden Datenbank legt
+- **Updates mit Schemaänderung (ab 2.1.0):** Vor jeder Umstellung einer bestehenden Datenbank legt
   uBuchhaltung beim Start automatisch eine Sicherung an: `<Datenordner>/backup/JJJJMMTT_vor_<Version>_buch.db`
   (z. B. `20261111_vor_2.1.0_buch.db`; eine vorhandene Datei wird nie überschrieben). Gelingt die Sicherung
   nicht, öffnet die Datenbank nicht und bleibt unverändert; bricht die Umstellung selbst ab, ist die
@@ -307,7 +307,7 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 - **PDF-Generierung** (`export/pdf_invoice.py` auf Basis von `export/pdf_core.py`): A4-Layout, Logo, Umlaute, dreispaltiger Footer
 - **E-Mail-Versand**: SMTP, PDF-Anhang, Empfänger aus Kontakten
 - **ZUGFeRD / Factur-X** (`export/cii_invoice.py`, `export/pdfa.py`): jede neu erzeugte Rechnungs-PDF ist PDF/A-3b mit eingebetteter `factur-x.xml` (Profil EN 16931)
-- **XRechnung XML-Export** (`export/xrechnung_invoice.py`, UBL): EN 16931 konform
+- **XRechnung XML-Export** (`export/xrechnung_invoice.py`, UBL): nach EN 16931 erzeugt; die Beispieldateien der CI werden mit Mustang (XSD, Schematron) geprüft, eine Zusicherung der Konformität gibt es nicht
 - **Rechnungsstatus**: Entwurf → Finalisiert → Versendet → Bezahlt (+ Teilzahlung, Überfällig, Storniert); storniert wird über „Stornieren“ (Stornodatum nicht in der Zukunft): Die **Stornorechnung** entsteht als eigener Beleg mit eigener Nummer (Gutschrift Typ 381, UBL `CreditNote`, PDF „Stornorechnung“), die Forderung bekommt eine Gegenbuchung statt gelöscht zu werden; eine Rechnung ohne positiven Betrag (Gutschrift, 0-€-Rechnung) bekommt keine Stornorechnung und wird über den Status storniert. „Stornieren und neu ausstellen“ legt dazu den Entwurf einer neuen Rechnung mit den Angaben der alten an (auch nachträglich über „Neu ausstellen“ an der stornierten Rechnung); beim Versenden gehen die Zahlungen der stornierten Rechnung auf sie über, was sich nicht eindeutig umschreiben lässt, bleibt dort, und ein Hinweis nennt es. Zahlungen, die an der stornierten Rechnung bleiben, zeigt die App als Guthaben des Kunden (Rechnungsliste, Belegseiten, offene Posten des Kontakts); eine ausgehende Bankbewegung lässt sich auf der Seite der Stornorechnung als Erstattung zuordnen und nimmt den Erlös am Tag der Erstattung zurück; eine Zahlung, die dafür gebraucht wird, lässt sich auf keinem Weg entfernen, solange die Erstattung steht, und auf die Ersatzrechnung zieht höchstens das verbleibende Guthaben um. Eine von Hand stornierte Rechnung bekommt ihre Stornorechnung nachträglich
 - **Nummernkreise**: Format YY[Buchstabe][Präfix]### mit Auto-Inkrementierung
 - **Zahlungsverknüpfung**: Eingehende Bankbewegungen einer versendeten Rechnung zuordnen – ganz, in Teilen (Teilzahlung) oder eine Überweisung auf mehrere Rechnungen (Sammelzahlung); ein Überschuss bleibt als Guthaben beim Kunden stehen. Die Zuordnung legt ihre Buchungssätze selbst an und nimmt sie beim Entfernen wieder mit; eine Prüfliste unter *Sonstiges* zeigt Unstimmigkeiten
@@ -330,11 +330,11 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 - Steueranteile in der EÜR:
   - Virtuelles 3806 nur aus USt-Anteilen der Einnahmen
   - Virtuelle Vorsteuerkonten 1401/1406 für Ausgaben
-- **Kasse-Buchungen**: Buchungen über die Buchungsmaske mit Konto = Kasse zählen in EÜR und Dashboard wie Bankbewegungen. Eigenständige Sätze auf der Kasse – auch direkte Entry-Buchungen ohne COA-Spiegel (`CounterCOA=NULL`, Section 2b) – fließen ebenfalls ein. Die EÜR liest zusätzlich eigenständige Sätze über das Verrechnungskonto 1460 (WISO: „Aufwand an Verrechnung“ gilt mit dem Datum des Satzes als abgeflossen), solange kein Kontofilter gesetzt ist; das Dashboard folgt den Kontobewegungen
+- **Kasse-Buchungen**: Buchungen über die Buchungsmaske mit Konto = Kasse zählen in EÜR und Dashboard wie Bankbewegungen. Eigenständige Sätze auf der Kasse – auch direkte Entry-Buchungen ohne COA-Spiegel (`CounterCOA=NULL`) – fließen ebenfalls ein. Die EÜR liest zusätzlich eigenständige Sätze über das Verrechnungskonto 1460 (WISO: „Aufwand an Verrechnung“ gilt mit dem Datum des Satzes als abgeflossen), solange kein Kontofilter gesetzt ist; das Dashboard folgt den Kontobewegungen
 - **Abschreibungen (AfA)** erscheinen in der EÜR (Betriebsausgabe auf dem Aufwandskonto), nicht in den Zahlungskarten des Dashboards – sie sind kein Geldfluss
 
 ### 8. Mahnwesen (`/invoice/reminders`)
-- 3-Stufen-Mahnsystem (Erinnerung → 1. Mahnung → Inkasso)
+- Übersicht überfälliger Rechnungen mit drei Mahnstufen nach Verzugstagen (bis 30, bis 60, über 60 Tage)
 - Fälligkeitsvorschau (7 Tage)
 - Farbcodierung nach Dringlichkeit
 
@@ -363,7 +363,7 @@ Anlagenverwaltung mit AfA-Plan:
 
 ### 13. Sonstiges (`/miscellaneous`)
 - **Datenbank-Übersicht**: Tabellenstatistiken
-- **DB-Export**: INSERT-Statements nach `data/db-export.sql`
+- **DB-Export**: INSERT-Statements nach `db-export.sql` im Datenverzeichnis des Benutzers (`data/users/<Name>/`)
 - **WISO Import**: Automatische Format-Erkennung (Original + Tabellen-Export)
   - BU-Schlüssel → Steuersatz (zuerst die Regeln des Exports, sonst TaxKeys-Tabelle) und am Buchungssatz gespeichert (`Bookings.DatevKey`)
   - Automatische TaxAmount-Berechnung (Brutto → MwSt-Anteil)
@@ -374,7 +374,7 @@ Anlagenverwaltung mit AfA-Plan:
 - **DATEV-Export** (`export/datev.py`): Buchungsstapel als DATEV-CSV (nur Entry-Buchungen); das Soll/Haben-Kennzeichen richtet sich danach, ob das Zweck- oder das Geldkonto im Feld „Konto“ steht
   - Der Stapel **bildet den nach, den WISO Mein Büro schreibt** (gemessen an einem Datenbestand) – nicht mehr und nicht weniger: Ob das Steuerbüro ihn so annimmt, klärt es selbst; eine Zusicherung gibt es nicht
   - BU-Schlüssel: der an der Buchung gespeicherte (Import), sonst abgeleitet nach der Art des Zweckkontos und dem Steuersatz – Vorsteuer 401/402 (19/7 %), Umsatzsteuer 101/102, im zweiten Halbjahr 2020 mit den vertauschten Sätzen 16/5 %; die Rechnungskette (Forderung, Wartekonto→Erlöskonto) trägt keinen Schlüssel, aber den Steuersatz in Spalte 40
-  - Berater- und Mandantennummer stehen im Kontaktformular der eigenen Firma (sonst Platzhalter im Vorlauf; die Seite *Verschiedenes* weist darauf hin)
+  - Berater- und Mandantennummer stehen im Kontaktformular der eigenen Firma (sonst Platzhalter im Vorlauf; die Seite *Sonstiges* weist darauf hin)
   - Prüft vorab die Splits des Zeitraums: Ergeben die *bankwirksamen*
     Buchungssätze nicht den Betrag der Bankbewegung, wird der Export mit Datum,
     Betrag und Rest abgelehnt. Umbuchungen (Wartekonto→Erlöskonto,
@@ -440,8 +440,9 @@ liegen im gemounteten Datenverzeichnis. Zum Selbstbauen liegt eine
 
 ### Voraussetzungen (ohne Docker)
 - Python 3.10+
-- Der Kern läuft mit der Standardbibliothek. Externe Abhängigkeiten (nur für
-  PDF-Parsing) installieren:
+- Der Kern (Webserver, Datenbank) läuft mit der Standardbibliothek. Zusätzlich nötig
+  sind `fonttools` (PDF-Erzeugung von Rechnungen und Angeboten) und `pdfplumber`
+  (Lesen von PDF-Kontoauszügen). Beide installiert:
 
 ```bash
 pip install -r requirements.txt
@@ -465,6 +466,9 @@ $env:SMTP_PORT = "587"
 $env:SMTP_USER = "ihre-email@gmail.com"
 $env:SMTP_PASSWORD = "ihr-app-passwort"
 ```
+
+Im Container als Umgebungsvariablen setzen (`-e SMTP_HOST=… -e SMTP_USER=… -e SMTP_PASSWORD=…`);
+Standard für Host und Port: `smtp.gmail.com`, 587.
 
 ### Kontoauszug-Import
 
@@ -510,6 +514,7 @@ uBuchhaltung/
 ├── demo.py · demo_seed.py     # Demo-Modus (UBUCHHALTUNG_DEMO=1) und seine Beispieldaten
 ├── version.py                 # Single Source of Truth für die Versionsnummer
 ├── money.py                   # Geld als Festkomma-Integer (Minor Units, SCALE=4)
+├── richtext.py                # Bereinigung des Angebots-Fließtexts (Positivliste)
 ├── auth.py                    # Benutzer/Sessions/CSRF
 ├── userctx.py                 # Request-Kontext: Benutzer, Datenpfade, config.json
 ├── layout.py                  # Umzug einer Version-1-Ablage nach data/users/<Name>/ (beim Start)
@@ -531,21 +536,26 @@ uBuchhaltung/
 │   └── wiso_fdb/              #   Lesen der WISO-Datenbankdateien (Firebird, reines Python)
 ├── export/                    # Ausgabe-/Export-Generatoren (Package)
 │   ├── pdf_core.py            #   Gemeinsame PDF-Primitive (Builder, Logo, Escaping)
-│   ├── pdf_invoice.py         #   PDF-Rechnungs-/Angebotsgenerierung
+│   ├── pdf_document.py        #   Gemeinsame Bausteine für Rechnungs- und Angebots-PDF
+│   ├── pdf_invoice.py         #   PDF-Rechnungsgenerierung
+│   ├── pdf_quote.py           #   PDF-Angebotsgenerierung
 │   ├── pdf_worktime.py        #   PDF-Stundenzettel (Arbeitszeiten)
+│   ├── invoice_files.py       #   Ablage und Dateinamen der Rechnungs- und Angebotsdokumente
 │   ├── einvoice_model.py      #   neutrales E-Rechnungsmodell (EN 16931)
 │   ├── xrechnung_invoice.py   #   XRechnung XML (UBL)
 │   ├── cii_invoice.py         #   CII-XML für ZUGFeRD/Factur-X
 │   ├── pdfa.py                #   PDF/A-3b: Schriften, XMP, OutputIntent, Anhang
-│   └── datev.py               #   DATEV-Buchungsstapel-Export (CSV)
+│   ├── datev.py               #   DATEV-Buchungsstapel-Export (CSV)
+│   ├── fonts/                 #   Liberation Sans (OFL), als Untermenge eingebettet
+│   └── icc/                   #   sRGB-Profil für den PDF/A-OutputIntent
 ├── email_sender.py            # E-Mail-Versand (SMTP)
 ├── buch.css                   # Stylesheet (inkl. Dark Mode; versioniert via ?v=)
 ├── README.md                  # Diese Datei
 ├── DB_MODEL.md                # Detailliertes Datenbankmodell
 ├── PARSER_README.md           # Dokumentation Parser & CSV-Import
 ├── DEPLOYMENT.md              # LAN-/HTTPS-/Mehrbenutzer-Betrieb
-├── AGENTS.md                  # Leitfaden für KI-/Coding-Agenten im Repo
-├── requirements.txt           # Laufzeit-Dependencies (pdfplumber)
+├── AGENTS.md                  # Hinweise zur Codebasis für Entwicklungswerkzeuge
+├── requirements.txt           # Laufzeit-Abhängigkeiten (fonttools, pdfplumber)
 ├── requirements-dev.txt       # zusätzlich Test-Dependencies (pytest)
 ├── run_https.ps1              # HTTPS-Schnellstart (selbstsigniertes Zertifikat)
 ├── Dockerfile · compose.yaml  # Container-Betrieb (Standardport 2824)
@@ -553,6 +563,7 @@ uBuchhaltung/
 ├── unraid-template.xml        # Fertiges Docker-Template für Unraid
 ├── ca_profile.xml             # Profil für Unraid Community Applications
 ├── .github/workflows/         # CI: Tests bei jedem Push; neue Version auf main → Release + :latest, sonst :edge
+├── .github/FUNDING.yml        # Verweis auf GitHub Sponsors
 ├── LICENSE                    # AGPL-3.0 (kommerzielle Lizenz auf Anfrage, siehe unten)
 ├── CLA.md · CONTRIBUTING.md   # Beitragsregeln + Contributor License Agreement
 ├── seed_data/                 # Initialisierungsdaten (JSON)
@@ -580,10 +591,13 @@ uBuchhaltung/
 │   ├── import_preview.py      # Kontoauszug-Import-Vorschau (Duplikat-Zähler)
 │   ├── multipart.py           # Multipart-Parser (E-Mail-Parser-basiert)
 │   ├── period.py              # Zeitraum-Auswahl (Cookie-basiert)
+│   ├── richtext.py            # Richtext-Filter der Seiten (Modul im Projektstamm)
 │   └── backup.py              # Datensicherung/Wiederherstellung
 ├── tests/                     # pytest-Suite (nur anonymisierte Daten,
 │                              #   Guard: tests/check_anonymized.py)
-├── tools/screenshots.mjs      # Erzeugt docs/screenshots/ im Demo-Modus (Playwright)
+├── tools/                     # mcp_ubuchhaltung.py (Diagnose, nur lesend), make_einvoice_samples.py
+│                              #   (Beispiel-E-Rechnungen für die CI), make_srgb_icc.py (sRGB-Profil),
+│                              #   screenshots.mjs (erzeugt docs/screenshots/ im Demo-Modus, Playwright)
 ├── docs/                      # Screenshots fürs README, Icon, offene Aufgaben (aufgaben.md)
 └── data/                      # Laufzeitdaten (in .gitignore)
     ├── config.json            # eingerichtet (mode), automatische Anmeldung (auto_login)
@@ -643,7 +657,7 @@ ausschließlich erfunden bzw. anonymisiert.
   je Nutzer isolierte Daten; optional HTTPS (siehe [DEPLOYMENT.md](DEPLOYMENT.md))
 - **Ohne Anmeldung** (automatische Anmeldung für einen Benutzer) gibt es keine
   Passwortabfrage – nur auf `localhost` bzw. im eigenen, vertrauenswürdigen Netz betreiben
-- ⚠️ Konzipiert für lokalen bzw. LAN-Einsatz – **nicht für das offene Internet**
+- **Wichtig:** Konzipiert für lokalen bzw. LAN-Einsatz – **nicht für das offene Internet**
   (kein Rate-Limiting, einfacher HTTP-Server, SQL-Konsole mit direktem Schreibzugriff
   auf die eigene Datenbank)
 

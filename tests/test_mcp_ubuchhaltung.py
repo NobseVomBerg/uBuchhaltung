@@ -1300,7 +1300,7 @@ def test_load_and_limit_tricks_are_refused_before_anything_is_sent(login_mode, q
     text, is_error = call(login_mode.server, "sql", query=query)
     assert is_error
     assert message in text
-    assert "kein Zeitlimit" in text or "Blockkommentare" in text
+    assert "bricht erst nach 60 s ab" in text or "Blockkommentare" in text
     assert login_mode.client.session_token is None
 
 

@@ -264,7 +264,7 @@ kein Subagent darauf:
   Handler weiter). Belegfeld 1 ohne Leerzeichen, bis 36 Zeichen; im Buchungstext (Spalte 13) werden Zeilenumbrüche, Tabulatoren und andere
   Steuerzeichen vor dem Kürzen auf 60 Zeichen zu Leerzeichen. Der Vorlauf trägt Berater- und Mandantennummer der eigenen Firma
   (`CompanyDetails.DatevConsultantNo`/`DatevClientNo`, ganze Zahlen aus ASCII-Ziffern ohne führende Null: Berater 1001–9999999, Mandant 1–99999;
-  im Kontaktformular der eigenen Firma gepflegt, `Database.get_datev_numbers`), sonst Platzhalter und ein Hinweis auf *Verschiedenes*. Jeder Wert, der in den Stapel geht, ist streng geprüft –
+  im Kontaktformular der eigenen Firma gepflegt, `Database.get_datev_numbers`), sonst Platzhalter und ein Hinweis auf *Sonstiges*. Jeder Wert, der in den Stapel geht, ist streng geprüft –
   ein per SQL-Konsole gesetzter anderer Wert gilt als nicht vorhanden, nie roh ausgegeben. Die Schlüssel sind nicht gegen einen echten Stapel
   der Kanzlei geprüft (`docs/aufgaben.md`) – nicht als richtig voraussetzen
 - Zahlungskonten (`get_payment_coa_ids`): die SKR-Konten der eigenen Bank- und Kassenkonten –
@@ -274,7 +274,7 @@ kein Subagent darauf:
   Importe das Vorzeichen ausrichten und die Maske und `insert_booking` die Form **beim Schreiben**
   ableiten – und mit der eine Zeile ohne Form gelesen wird. **1000–1099 gehört nicht mehr dazu**
   (SKR04: Vorräte; früher der SKR03-Kassenbereich): Beide WISO-Importe melden Buchungen darauf
-  (`stock_range_accounts`, Hinweis auf *Verschiedenes*: Buchungen gegen diese Konten werden als
+  (`stock_range_accounts`, Hinweis auf *Sonstiges*: Buchungen gegen diese Konten werden als
   Umbuchung gelesen und erscheinen nicht in der EÜR), und `negative_gross` zählt jeden Satz mit negativem
   Brutto und genau einer liquiden Seite (dort bestimmt die Geldbewegung das Vorzeichen – **festgeschrieben** nach der
   Messung an echten Daten: WISO schreibt den Brutto nie negativ, Konto = Soll, Umkehrungen stehen als vertauschte Konten;
@@ -401,7 +401,7 @@ kein Subagent darauf:
   (`_drop_receivable`, auch für `remove_receivable_booking`) – was mit den Zahlungen geschieht, ändert daran nichts.
   Negative Zuordnungen kennen der WISO-Import (`link_invoice_to_transaction`, mit Vorzeichen, ohne
   Sätze) und die Erstattung einer Stornorechnung (`assign_storno_refund`, mit Sätzen).
-  `find_payment_inconsistencies` prüft nur lesend und linear im Bestand (Seite *Verschiedenes*:
+  `find_payment_inconsistencies` prüft nur lesend und linear im Bestand (Seite *Sonstiges*:
   nur auf Klick, `?check_payments=1`, nie beim Laden; Hinweis auf der Rechnungsseite); Zuordnungen auf
   Nicht-Bankbewegungen oder mit `SourceGroup`-Sätzen (WISO) löst `no_settlement`/`transfer_mismatch`
   nicht aus. Zwei Kategorien gelten dem Storno-Paar und zählen nur Forderungen, die die App selbst gebucht hat
@@ -546,7 +546,7 @@ kein Subagent darauf:
   und der des Textexports erkennen einen `mirror_legacy`-Spiegel wieder – mit gleichem oder umgekehrtem
   Vorzeichen (Beleg-Nr., Datum, Konto, Gegenkonto gleich, von der Datei nicht selbst beansprucht) –, legen
   keinen zweiten Satz an und lassen Form und Betrag, wie sie sind; sie zählen ihn (`legacy_mirrors`, Hinweis
-  auf *Verschiedenes*). Weicht eine andere gespeicherte Form von der des frischen Imports ab, wird das nur
+  auf *Sonstiges*). Weicht eine andere gespeicherte Form von der des frischen Imports ab, wird das nur
   gemeldet (`form_conflicts`). **Zeilen auf Konten 1000–1099 aus 2.0.x** (dort als Kasse gelesen, also mit
   einem anderen Betrag gespeichert: „6815 an 1050“ −10, „1050 an 1800“ +30) erkennen beide Wege am Betrag der
   alten Regel wieder (Zahlungskonten einschließlich 1000–1099): der Re-Import des Textexports mit einer
@@ -554,14 +554,14 @@ kein Subagent darauf:
   die, die eine andere Zeile der Datei mit ihrem eigenen Betrag beansprucht), die Übernahme CSV → Datenbank
   über `WisoBooking.legacy_amount` unter denselben Schutzregeln wie sonst. Kein zweiter Satz, Form und Betrag
   der Altzeile bleiben, die Übernahme füllt nichts; der Zähler heißt `legacy_stock_rows` (Hinweis auf
-  *Verschiedenes*)
+  *Sonstiges*)
 - **Textimport** (`import_wiso_csv`): Kodierung in der Reihenfolge BOM → strenges UTF-8 → cp1252 (cp1252 dekodiert fast alles
   und darf deshalb nie zuerst stehen). Die Meldungen der Formaterkennung nennen **keine Feldwerte der Datei** (ein DATEV-Stapel trägt Berater- und
   Mandantennummer im Vorlauf; er wird am ersten Feld `EXTF`/`DTVF` erkannt und mit Klartext abgelehnt). `SCHLUESSEL` (ganze Zahl 1–9999) steht am
   Satz (`DatevKey`); der Steuersatz kommt zuerst aus der Tabelle der Regeln (`datev_keys.key_rate`: 401/101/121 Regelsatz, 402/102/122 ermäßigt,
   7/6/5/4 die anderen Sätze – im zweiten Halbjahr 2020 mit 16/5/19/7 %), sonst aus `TaxKeys` (2.3.0: 100, 120, 121 „Verwendung von Gegenständen“, 122
   ergänzt bzw. berichtigt, 490 ohne Satz). Ein Schlüssel, den beide nicht kennen, wird nicht geraten: Die Zeile kommt ohne Steuersatz und zählt
-  in `unknown_tax_keys` (Hinweis auf *Verschiedenes*). Die stille 19 % bei „4405 an 4400“ gilt **nur ohne Schlüssel** (leer oder 0): Eine Zeile
+  in `unknown_tax_keys` (Hinweis auf *Sonstiges*). Die stille 19 % bei „4405 an 4400“ gilt **nur ohne Schlüssel** (leer oder 0): Eine Zeile
   mit einem Schlüssel, auch einem ohne Satz (490), behält, was er sagt. Der Import schreibt nur neue Zeilen – ein Duplikat bleibt, wie es ist,
   auch ohne Schlüssel
 - **BU-Schlüssel und Nummern aus der WISO-Datenbank:** `DATEVVATKEY` (optionale Spalte; leer, 0 und alles außer 1–9999 ist keiner) steht beim neuen Satz
@@ -570,7 +570,7 @@ kein Subagent darauf:
   eine vom Nutzer geänderte Zeile bekommt nichts, ein vorhandener Schlüssel bleibt) – **und nur, wenn die vorhandene Zeile denselben Steuersatz
   trägt wie der WISO-Satz** (`_same_rate`: Prozentzahl, kein Satz = 0 %; bei der Übernahme gilt der Satz, den die Zeile nach dem UPDATE trägt –
   es füllt ihn, wenn Satz und Steuerbetrag leer sind): Sonst bleibt `DatevKey` leer, der Export leitet ihn aus dem Satz der App ab, und der Fall
-  zählt in `datev_key_rate_mismatches` (Hinweis auf *Verschiedenes*) – der Schlüssel gehört zu dem Satz, für den WISO ihn geschrieben hat, und
+  zählt in `datev_key_rate_mismatches` (Hinweis auf *Sonstiges*) – der Schlüssel gehört zu dem Satz, für den WISO ihn geschrieben hat, und
   der Nutzer kann ihn mit `update_booking_fields` geändert haben. Gleichen sich in einer Gruppe mehrere Zeilen in Datum, Konten und Betrag,
   bekommt der Satz zuerst die Zeile mit seinem Steuersatz: Ein Schlüssel hängt nie an der Zeile eines anderen Satzes. Berater- und Mandantennummer
   stehen in `SYS_FINACCSYSTEMS` (Satz `NAME` = „Datev-Format“; **nur** `NAME`, `CONSULTANT_NO`, `CLIENT_NO` – die Tabelle trägt auch Zugangsdaten
@@ -615,7 +615,7 @@ kein Subagent darauf:
   `legacy_mirrors`/`form_conflicts`, BU-Schlüssel nur wo leer). Gezählt wird `regrouped_rows`, bei abweichendem Text zusätzlich
   `regrouped_text_differs`; die Zusammenfassung nach dem Import nennt sie (`regrouped`, `orphans` in der Weiterleitung; angezeigt nur, wenn > 0).
   **Verwaiste Zeilen ohne Treffer** meldet der Lauf (`orphaned_rows_count`, die ersten 50 in `orphaned_rows`: ID, Datum, Betrag,
-  Kontonummern, Text) und die Seite *Verschiedenes* mit Links auf die Buchungen: Die Liste nennt Buchungen, deren Quelle (Quellgruppe)
+  Kontonummern, Text) und die Seite *Sonstiges* mit Links auf die Buchungen: Die Liste nennt Buchungen, deren Quelle (Quellgruppe)
   in der WISO-Datenbank nicht mehr steht – dort gelöscht oder mit anderem Inhalt neu angelegt. Sie zählen in den Auswertungen weiter mit,
   **gelöscht wird nichts**. **Eine Änderung innerhalb einer weiter bestehenden Buchungsgruppe (anderer Betrag, entfallene Teilbuchung)
   bemerkt der Import nicht: Die vorhandene Zeile bleibt, wie sie ist.** Grenzen: Die Suche braucht dieselben Konten (ein Bestand aus
@@ -625,7 +625,7 @@ kein Subagent darauf:
   Inhalt umgehängt werden – nicht unterstützt. Rechnet WISO den AfA-Plan eines schon importierten Jahres mit anderem Betrag unter neuer
   Gruppe neu, steht die alte AfA-Buchung in der Liste der nicht mehr vorhandenen Buchungen und die neue zusätzlich in den Büchern – bis
   zum Bereinigen zählt das Jahr doppelt. Die verwaisten Zeilen werden einmal gelesen und nach (Datum, Konto, Gegenkonto, Betrag) abgelegt (linear)
-- Bedienung über *Verschiedenes* → „Import aus der Datenbank"; die Prüfung
+- Bedienung über *Sonstiges* → „Import aus der Datenbank"; die Prüfung
   (`WisoDatabase.check`) bricht vor dem Schreiben ab, wenn die WISO-Version
   andere Tabellen/Spalten hat. **Der Import ist für einen leeren Bestand gedacht:** Ist `Bookings` nicht leer
   (`Database.wiso_import_stock`: `bookings` = alle Zeilen, `wiso_rows` = `entry` mit Quellgruppe), zeigt das Formular über dem
