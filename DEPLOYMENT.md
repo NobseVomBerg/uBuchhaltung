@@ -231,7 +231,7 @@ Mit `tools/mcp_ubuchhaltung.py` lässt sich eine laufende Instanz (z. B. der
 Docker-Container im LAN) von einem MCP-fähigen Client untersuchen, ohne Browser. Der Server
 läuft **lokal auf dem Rechner des Clients** – der Client startet ihn als stdio-MCP-Server – und
 fragt die Instanz per HTTP ab wie ein Skript. Auf dem NAS bzw. im Container ist nichts zu
-installieren; nötig sind nur Python (ab 3.10) und die Standardbibliothek.
+installieren; nötig sind nur Python (ab 3.13) und die Standardbibliothek.
 
 **Was er kann** – fünf Werkzeuge:
 

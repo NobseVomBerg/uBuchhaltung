@@ -89,7 +89,7 @@ Unter Unraid geht es ohne Kommandozeile: im Tab **Apps** (Community Applications
 nach „uBuchhaltung“ suchen. Danach unter `http://<host>:2824` öffnen; die
 Ersteinrichtung läuft im Browser.
 Ohne Docker: `pip install -r requirements.txt` und `python main.py`
-(Python 3.10+, dann unter `http://localhost:8080`). Mehr dazu unter
+(Python 3.13 oder neuer, dann unter `http://localhost:8080`). Mehr dazu unter
 [Installation und Start](#installation-und-start) und in
 [DEPLOYMENT.md](DEPLOYMENT.md).
 
@@ -439,7 +439,7 @@ liegen im gemounteten Datenverzeichnis. Zum Selbstbauen liegt eine
 `compose.yaml` im Repo (`docker compose up -d --build`).
 
 ### Voraussetzungen (ohne Docker)
-- Python 3.10+
+- Python 3.13 oder neuer (damit wird getestet, das Docker-Image nutzt dieselbe Version)
 - Der Kern (Webserver, Datenbank) läuft mit der Standardbibliothek. Zusätzlich nötig
   sind `fonttools` (PDF-Erzeugung von Rechnungen und Angeboten) und `pdfplumber`
   (Lesen von PDF-Kontoauszügen). Beide installiert:
