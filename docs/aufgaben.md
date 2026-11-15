@@ -84,7 +84,6 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
 - Rechnungsformular (`/invoice?id=…`) läuft bei 1440 px Breite rechts aus dem Viewport
 - Invoices-Zeilen werden per Spaltenindex gelesen (noch rund 50 Stellen in `server/pages_invoice.py`; `InvoiceCol` gibt es, genutzt in `server/pages.py`) – bricht bei Schemaänderungen, besser Spaltennamen
 - `pdfplumber` ist derzeit Pflicht: Die PDF-Parser importieren es beim Start, ohne das Paket startet die App nicht – Import verzögern, damit CAMT-Import und alles andere ohne es laufen
-- CI testet nur Python 3.13, README nennt 3.10+ → Matrix ergänzen oder Angabe anpassen
 - Hinweisdateien für Entwicklungswerkzeuge (`CLAUDE.md`, `AGENTS.md`) auf Doppelungen prüfen und kürzen
 - Einheiten auf Artikel-Listen/-Stammdaten prüfen (lesbar statt UN/ECE-Code)
 - Rechnung speichern scheiterte einmal im Docker-Mehrbenutzerbetrieb mit „FOREIGN KEY constraint failed“ (DB danach sauber, gleicher Request lokal ok, nicht mehr reproduzierbar) – ab 2.0.1 nennt die Meldung den Verweis; bei Wiederauftreten Meldung und `docker logs` auswerten
