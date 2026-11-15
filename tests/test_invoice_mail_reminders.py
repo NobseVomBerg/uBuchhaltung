@@ -114,6 +114,33 @@ def test_mail_without_smtp_credentials_reports_it_and_sends_nothing(mail, monkey
     assert mail.smtp.connections == []
 
 
+@pytest.mark.parametrize('recipient', [
+    'kunde@example.org>, <spion@example.net', 'a@example.de, c@example.net', 'a@example.de;c@example.net', '"x" <a@example.de>', 'a@example.de (Kommentar)',
+    'a b@example.com', 'a@b@example.com'])
+def test_mail_to_anything_but_one_plain_address_is_refused_before_a_connection(mail, recipient):
+    assert send(invoice_id=mail.invoice, recipient_email=recipient, recipient_name='Erika') == {
+        'success': False, 'error': 'Ungültige E-Mail-Adresse.'}
+    assert mail.smtp.connections == [] and mail.smtp.sent == []
+
+
+def test_mail_with_an_unusable_smtp_port_says_so_and_sends_nothing(mail, monkeypatch):
+    monkeypatch.setenv('SMTP_PORT', 'abc')                    # früher: ValueError aus int(), als Text in der Antwort
+    assert send(invoice_id=mail.invoice, **MAIL) == {
+        'success': False, 'error': 'Der Mailserver ist nicht richtig eingerichtet (SMTP_PORT).'}
+    assert mail.smtp.connections == [] and mail.smtp.sent == []
+
+
+def test_an_unexpected_error_of_the_mail_route_is_logged_but_not_shown(mail, monkeypatch, capsys):
+    import email_sender
+
+    def broken(self, *args, **kwargs):
+        raise RuntimeError('geheim: /var/lib/buch/privat/pfad')
+
+    monkeypatch.setattr(email_sender.EmailSender, 'send_invoice_email', broken)
+    assert send(invoice_id=mail.invoice, **MAIL) == {'success': False, 'error': 'Fehler beim E-Mail-Versand.'}
+    assert 'geheim: /var/lib/buch/privat/pfad' in capsys.readouterr().err        # der volle Fehler steht im Server-Log
+
+
 def test_mail_route_over_http(server_port, auto_login, monkeypatch):
     smtp = fake_smtp(monkeypatch)
     books = make_books(auto_login)

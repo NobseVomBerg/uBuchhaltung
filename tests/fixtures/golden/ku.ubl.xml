@@ -76,7 +76,7 @@
       <cac:TaxCategory>
         <cbc:ID>E</cbc:ID>
         <cbc:Percent>0</cbc:Percent>
-        <cbc:TaxExemptionReason>Gemäß § 19 UStG wird keine Umsatzsteuer berechnet.</cbc:TaxExemptionReason>
+        <cbc:TaxExemptionReason>Es gilt die Steuerbefreiung für Kleinunternehmer nach § 19 UStG. Es wird keine Umsatzsteuer berechnet.</cbc:TaxExemptionReason>
         <cac:TaxScheme>
           <cbc:ID>VAT</cbc:ID>
         </cac:TaxScheme>

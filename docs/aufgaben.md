@@ -83,6 +83,8 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
 - Anlagenformular einer Erweiterung verlangt weiter Nutzungsdauer und Methode, obwohl die der Hauptanlage gelten
 - Rechnungsformular (`/invoice?id=…`) läuft bei 1440 px Breite rechts aus dem Viewport
 - Invoices-Zeilen werden per Spaltenindex gelesen (noch rund 50 Stellen in `server/pages_invoice.py`; `InvoiceCol` gibt es, genutzt in `server/pages.py`) – bricht bei Schemaänderungen, besser Spaltennamen
+- Hinweis auf § 19 UStG: aus WISO importierte Kleinunternehmer-Rechnungen tragen 0 % statt des Platzhalters „ohne Steuerausweis“ – ein für sie nachträglich erzeugtes Dokument bekommt den Hinweis nicht; eine Einstellung „Kleinunternehmer“ an der eigenen Firma wäre besser als die Vorbelegung nach der letzten Rechnung
+- Logo: Die Dateiauswahl im Kontaktformular lässt auch SVG/BMP wählen, der Server lehnt sie ab → Auswahl auf die erlaubten Formate begrenzen; WEBP braucht eine Pillow-Version mit WEBP-Unterstützung
 - `pdfplumber` ist derzeit Pflicht: Die PDF-Parser importieren es beim Start, ohne das Paket startet die App nicht – Import verzögern, damit CAMT-Import und alles andere ohne es laufen
 - Hinweisdateien für Entwicklungswerkzeuge (`CLAUDE.md`, `AGENTS.md`) auf Doppelungen prüfen und kürzen
 - Einheiten auf Artikel-Listen/-Stammdaten prüfen (lesbar statt UN/ECE-Code)

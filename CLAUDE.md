@@ -115,7 +115,10 @@ kein Subagent darauf:
   ihren PATCH-Sprung und wird mit dem Merge veröffentlicht
 - Container-Standardport 2824; Betriebsdoku (Unraid/Proxmox) in `DEPLOYMENT.md`
 - Jeder Push (alle Branches) führt `.github/workflows/tests.yml` aus:
-  Anonymisierungs-Guard + pytest
+  Anonymisierungs-Guard + pytest (Python 3.13, wie das Docker-Image – die Mindestversion)
+- Neuere Python-Versionen prüft `.github/workflows/tests-python-versions.yml` einmal in der Woche und
+  von Hand (`workflow_dispatch`), nicht bei jedem Push: Die Suite braucht je Version gut 20 Minuten.
+  Eine neue Python-Version dort in der Liste ergänzen
 - **CLA-Zustimmung** (`.github/workflows/cla.yml`, `tools/cla_check.py`, nur Standardbibliothek):
   Zugestimmt wird je Pull Request mit einem Kommentar, der den Satz aus `CLA.md` samt Fassung in
   einer eigenen Zeile trägt – vom Konto, das den Pull Request geöffnet hat, und von jedem weiteren
@@ -200,6 +203,19 @@ kein Subagent darauf:
   PDF-Satz –, auch für Altbestand. Jede Antwort trägt
   `X-Content-Type-Options: nosniff` und `X-Frame-Options: DENY` (`end_headers`); die App
   rahmt sich nicht selbst ein (PDFs öffnen als eigene Seite in einem neuen Tab)
+- **Logos** (seit 2.3.3): Als Logo gelten nur Bilddateien der Positivliste `export/pdf_core.LOGO_CONTENT_TYPES` (PNG, JPG, GIF,
+  WEBP – kein SVG). Sie gilt an allen vier Stellen: Upload (`handle_logo_upload`: Endung UND Kennbytes müssen passen, Anfrage
+  höchstens 5 MB, geprüft an `Content-Length` vor dem Lesen), Auslieferung (`/data/logos/`, `/seed_data/private/`: alles andere 404),
+  Einbettung ins PDF (`resolve_logo_path`) und Hinweis im Kontaktformular (`logo_on_server`). `resolve_logo_path` nimmt vom
+  gespeicherten Wert nur den Dateinamen und sucht ihn im `logos`-Verzeichnis des Benutzers (mit `realpath` geprüft; daneben nur
+  `seed_data/private`): Ein frei eingetragener Serverpfad ergibt kein Logo – nicht aufweichen
+- **E-Mail-Versand** (`email_sender.py`, seit 2.3.3): immer verschlüsselt und mit Zertifikatsprüfung (`ssl.create_default_context()`;
+  Port 465 `SMTP_SSL`, sonst STARTTLS – ohne STARTTLS-Angebot wird nicht angemeldet). Es gibt keinen Schalter zum Abschalten; ein
+  eigenes CA-Zertifikat kommt über `SSL_CERT_FILE` (`DEPLOYMENT.md`). Meldungen an den Nutzer nennen nie Exception-Text oder
+  Serverpfade (der volle Fehler steht im Server-Log); Namen gehen über `formataddr` in den Kopf, CR/LF wird abgelehnt
+- **Fehlerantworten über `send_error`** (`server/app.py`): tragen immer Statuszeile und Schutz-Header, auch bei einer kaputten
+  Anfragezeile – unabhängig vom Patch-Stand der Standardbibliothek (eine echte HTTP/0.9-Anfrage bekommt ihre normale Antwort
+  weiter ohne Kopf)
 - **Wiederherstellen** (`server/backup.py`): Ein 7-Zip-Archiv wird vor dem Entpacken
   aufgelistet (`-t7z`, keine Links, keine absoluten oder `..`-Pfade), dann nach
   `backup/restore_*` entpackt, geprüft (keine Symlinks, Datenbank lesbar und nicht neuer
@@ -705,6 +721,18 @@ kein Subagent darauf:
 - **Leistungsdatum ist Pflicht** (§ 14 UStG): Formular `required`, vorbelegt mit dem Rechnungsdatum,
   Server lehnt Speichern ohne ab (`handle_invoice_save`; nicht bei Angeboten, nicht bei bereits
   versendeten Rechnungen/Importen); steht im PDF-Kopfblock und in CII/UBL. Angebot → Rechnung setzt es auf das Rechnungsdatum
+- **Hinweis auf § 19 UStG (seit 2.3.3):** Ein Beleg ohne Steuerausweis (`Invoices.TaxRate` = Platzhalter −1, Häkchen
+  „Umsatzsteuer ausweisen“ aus) trägt den Hinweis auf die Steuerbefreiung für Kleinunternehmer automatisch – Rechnung,
+  Stornorechnung und Angebot. EIN Wortlaut an EINER Stelle (`export/einvoice_model.EXEMPT_REASON_KLEINUNTERNEHMER`) für PDF
+  (Zeile unter dem Summenblock, `draw_item_table(…, tax_note=…)`), CII (BT-120) und UBL. Ob das PDF ihn druckt, entscheidet
+  `small_business_note`: nur beim Platzhalter (nicht bei 0 %), und nur dann nicht, wenn ein gedruckter Freitext des Belegs –
+  Rechnung: Zahlungshinweis; Angebot: Einleitung, Schluss – das Gesetz ausdrücklich zitiert („§ 19“/„§ 19a“, höchstens
+  „Abs./Satz n“ dazwischen, direkt gefolgt von „UStG“/„Umsatzsteuergesetz“). Geprüft wird der Text, wie das PDF ihn druckt
+  (Richtext erst durch `sanitize_richtext`); Positionstexte, das Wort „Kleinunternehmer“ allein oder „§ 19 BGB“ unterdrücken
+  nichts. Ein fehlender Hinweis wiegt schwerer als ein doppelter: die Erkennung nicht lockern. Abgelegte Dokumente bleiben,
+  wie sie sind. **Das Häkchen eines neuen Belegs** (ohne Quelle: kein Bearbeiten, Kopieren, Umwandeln, Neu-Ausstellen) folgt
+  der jüngsten gewöhnlichen Rechnung (`Database.last_document_shows_tax`: keine Stornorechnung, keine Ersatzrechnung, kein
+  Angebot; ohne eine solche ist es an); startet es abgehakt, sagt die Maske das sichtbar
 - Versendete und stornierte Rechnungen (`db.invoice_lock.FROZEN_STATUSES`) werden von
   „PDF + E-Rechnung“ nicht neu erzeugt (`overwrite_sent` nur beim Eintritt aus Entwurf/abgeschlossen in
   „versendet“); liegt für sie noch keine Datei vor (Import, gescheiterte Erzeugung), darf sie erzeugt werden

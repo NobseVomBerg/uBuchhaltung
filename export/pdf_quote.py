@@ -17,7 +17,7 @@ from db import Database
 from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path,
                        safe_filename_component)
 from . import pdf_document as D
-from .einvoice_model import unit_display
+from .einvoice_model import small_business_note, unit_display
 
 
 def _pct(tax_rate):
@@ -131,9 +131,12 @@ def generate_quote_pdf(db: Database, quote_id: int):
 
     items = [{'pos': it[2], 'quantity': it[5], 'unit': unit_display(it[6]),
               'description': it[4], 'price': it[7], 'total': it[8]} for it in items_rows]
+    # Ohne Umsatzsteuerausweis (§ 19 UStG) steht der Hinweis unter den Summen – es sei denn, Einleitung oder Schluss
+    # (Richtext) zitieren das Gesetz schon; Positionstexte zählen nicht
+    tax_note = small_business_note(tax_rate, intro_text, closing_text)
     D.draw_item_table(flow, items, tax_rate_pct=_pct(tax_rate),
                       sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross,
-                      show_tax=show_tax)
+                      show_tax=show_tax, tax_note=tax_note)
 
     # Schlusstext: eine Zeile tiefer beginnen, dann seitenweise fließen lassen
     D.flow_richtext(flow, closing_text, size=10, leading=14, gap_before=20)

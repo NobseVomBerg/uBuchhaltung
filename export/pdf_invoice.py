@@ -18,7 +18,8 @@ from db import Database
 from db.invoice_lock import STORNO_KIND
 from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path)
 from .cii_invoice import generate_cii
-from .einvoice_model import correction_note_text, correction_notice, replacement_note, unit_display
+from .einvoice_model import (correction_note_text, correction_notice, replacement_note, small_business_note,
+                             unit_display)
 from .invoice_files import drop_stale_file, invoice_file_path
 from . import pdf_document as D
 
@@ -180,9 +181,13 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
 
     items = [{'pos': it[2], 'quantity': it[5], 'unit': unit_display(it[6]),
               'description': it[4], 'price': it[7], 'total': it[8]} for it in invoice_items]
+    # Ohne Umsatzsteuerausweis (§ 19 UStG) steht der Hinweis unter den Summen – es sei denn, der Zahlungshinweis (ein
+    # Richtext, samt Standardtext) zitiert das Gesetz schon; Positionstexte zählen nicht. Derselbe Wortlaut steht als
+    # BT-120 in der E-Rechnung
+    tax_note = small_business_note(tax_rate, payment_terms)
     D.draw_item_table(flow, items, tax_rate_pct=_pct(tax_rate),
                       sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross,
-                      show_tax=show_tax)
+                      show_tax=show_tax, tax_note=tax_note)
 
     # Zahlungsbedingungen (Fließtext)
     D.flow_richtext(flow, payment_terms, size=9, leading=12, gap_before=6)

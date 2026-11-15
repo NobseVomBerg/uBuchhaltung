@@ -10,6 +10,9 @@ Wird von den spezifischen Generatoren genutzt:
 
 Bereitgestellt werden:
   - escape_pdf_string(s)              – String-Literale für ``(…)``-Syntax escapen
+  - LOGO_CONTENT_TYPES, logo_extension, logo_content_matches
+                                      – Positivliste der Logo-Dateien (Endung, Kennbytes)
+  - resolve_logo_path(logo)           – gespeicherten Logo-Wert in eine ladbare Datei auflösen
   - load_image_xobject(path, ...)     – Bild (Logo) als komprimiertes RGB-XObject laden
   - build_single_page_pdf(ops, ...)   – einseitiges A4-PDF/A aus Content-Operatoren bauen
 
@@ -17,6 +20,7 @@ Schriften im erzeugten PDF (eingebettet, PDF/A-3b):  /F1 Liberation Sans ·
 /F2 Liberation Sans Bold · /F3 Liberation Sans Italic (metrisch = Helvetica)
 Ein optionales Bild ist als  /Logo  in den Page-Resources referenzierbar.
 """
+import os
 import zlib
 
 
@@ -83,37 +87,87 @@ def logo_display_size(image, max_width_pt, max_height_pt):
     return pw * scale, ph * scale
 
 
+# Logo-Dateien: Positivliste der Endungen mit ihrem Content-Type. Es sind die Formate, die
+# ``load_image_xobject`` über Pillow lädt (PNG, JPEG, GIF und – mit dem libwebp des Pillow-Pakets –
+# WEBP). Upload (``server/handlers.py``), Auslieferung (``server/app.py``, ``server/pages.py``) und
+# ``resolve_logo_path`` nehmen dieselbe Liste. SVG und HTML gehören bewusst nicht dazu: Eine so
+# ausgelieferte Datei wäre ein Skript im Ursprung der App.
+LOGO_CONTENT_TYPES = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+}
+
+# Die Pillow-Formatnamen dazu, aus derselben Liste abgeleitet: Sie heißen wie der Teil des Content-Types hinter dem
+# „/“, groß geschrieben (PNG, JPEG, GIF, WEBP). ``load_image_xobject`` öffnet nur diese Formate – eine Datei mit der
+# Endung ``.png`` und anderem Inhalt (TIFF, EPS, PSD …; Altbestand, zurückgespielte Sicherung) ginge sonst an einen
+# anderen Decoder von Pillow.
+LOGO_PILLOW_FORMATS = tuple(sorted({content_type.split('/')[1].upper() for content_type in LOGO_CONTENT_TYPES.values()}))
+
+# Kennbytes am Dateianfang je Endung (WEBP: ``RIFF`` + 4 Bytes + ``WEBP``, siehe ``logo_content_matches``)
+_LOGO_SIGNATURES = {
+    '.png': (b'\x89PNG\r\n\x1a\n',),
+    '.jpg': (b'\xff\xd8\xff',),
+    '.jpeg': (b'\xff\xd8\xff',),
+    '.gif': (b'GIF87a', b'GIF89a'),
+}
+
+
+def logo_extension(filename):
+    """Endung (klein, mit Punkt), wenn sie zur Positivliste der Logo-Dateien gehört, sonst ``None``."""
+    extension = os.path.splitext(str(filename or ''))[1].lower()
+    return extension if extension in LOGO_CONTENT_TYPES else None
+
+
+def logo_content_matches(extension, data):
+    """Passen die ersten Bytes der Datei zur Endung (``.png`` → PNG, ``.jpg``/``.jpeg`` → JPEG usw.)?"""
+    if extension == '.webp':
+        return len(data) >= 12 and data[:4] == b'RIFF' and data[8:12] == b'WEBP'
+    return data.startswith(_LOGO_SIGNATURES.get(extension, ()))
+
+
 def resolve_logo_path(logo):
     """Gespeicherten Logo-Wert in einen physischen Dateipfad für die PDF-
-    Einbettung auflösen. Liefert ``None``, wenn die Datei nicht lokal ladbar ist.
+    Einbettung auflösen. Liefert ``None``, wenn es dafür keine Datei gibt.
 
-    Hintergrund: In der DB steht nur der *logische* Pfad ``data/logos/<datei>``
-    (bzw. ein ``/seed_data/private/…``-Pfad). Im Mehrbenutzer-Modus liegt die
-    Datei physisch unter ``data/users/<user>/logos/<datei>`` – ``os.path.exists``
-    auf dem logischen Pfad schlägt dort fehl (Logo fehlte im PDF). Wir lösen den
-    Pfad analog zum HTTP-Handler (Basename → Nutzer-logos-Verzeichnis) auf.
+    In der DB steht der *logische* Pfad ``data/logos/<datei>`` (bzw. ein
+    ``/seed_data/private/…``-Pfad); im Mehrbenutzer-Modus liegt die Datei physisch
+    unter ``data/users/<user>/logos/<datei>``. Gültig ist nur der **Dateiname**:
+    - im ``logos``-Verzeichnis des aktuellen Nutzers oder
+    - unter ``seed_data/private``, wenn der gespeicherte Wert diesen Ordner nennt,
+    und nur mit einer Endung der Positivliste (``LOGO_CONTENT_TYPES``). Das Ergebnis
+    muss nach ``realpath`` im Ordner liegen (kein Link nach außen). Jeder andere Wert –
+    ein beliebiger Dateipfad, ``../``, das Verzeichnis eines anderen Nutzers – ergibt
+    ``None``: kein Logo im PDF, kein Fehler. Sonst ließe sich über das Logo-Feld jede
+    lesbare Bilddatei des Servers in ein PDF einbetten.
     """
-    import os
     if not logo:
         return None
     s = str(logo).strip().replace('\\', '/')
     if s.startswith(('http://', 'https://')):
         return None                      # Remote-URLs koennen wir nicht einbetten
-    if os.path.isfile(s):
-        return s                         # bereits ein gueltiger (z.B. Single-User-)Pfad
     name = os.path.basename(s)
+    if not logo_extension(name):
+        return None
+    folders = []
     try:
         import userctx
-        cand = os.path.join(userctx.user_subdir('logos', create=False), name)
-        if os.path.isfile(cand):
-            return cand
+        folders.append(userctx.user_subdir('logos', create=False))
     except Exception:
         pass
     # Geteiltes Privat-Seed-Logo (Eigentuemer-Setup)
     if 'seed_data/private' in s:
-        cand = os.path.join('seed_data', 'private', name)
-        if os.path.isfile(cand):
-            return cand
+        folders.append(os.path.join('seed_data', 'private'))
+    for folder in folders:
+        try:
+            base = os.path.realpath(folder)
+            target = os.path.realpath(os.path.join(base, name))
+        except (OSError, ValueError):
+            continue
+        if target.startswith(base + os.sep) and logo_extension(target) and os.path.isfile(target):
+            return target
     return None
 
 
@@ -126,6 +180,9 @@ def load_image_xobject(path: str, max_width: int = 600, max_height: int = 320):
             verkleinert. Bewusst großzügig, damit das Logo bei kleiner
             Punkt-Darstellung scharf bleibt (siehe :func:`logo_display_size`).
 
+    Es werden nur die Formate der Logo-Positivliste geöffnet (``LOGO_PILLOW_FORMATS``: PNG, JPEG,
+    GIF, WEBP), gleich wie die Datei heißt: Eine Datei in einem anderen Format ergibt ``None``.
+
     Returns:
         dict mit Schlüsseln ``data`` (zlib-komprimierte RGB-Bytes), ``width``,
         ``height``, ``filter`` ('/FlateDecode') – oder ``None`` bei Fehler/Datei fehlt.
@@ -135,7 +192,7 @@ def load_image_xobject(path: str, max_width: int = 600, max_height: int = 320):
         return None
     try:
         from PIL import Image
-        img = Image.open(path)
+        img = Image.open(path, formats=LOGO_PILLOW_FORMATS)
         if img.width > max_width or img.height > max_height:
             img.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
         if img.mode != 'RGB':

@@ -18,6 +18,7 @@ Ursprungsrechnung (BT-25/BT-26). Die Datenbank führt sie mit negativer Menge un
 PDF); im Modell – und damit in CII und UBL – stehen die Beträge positiv, wie EN 16931 es für 381 verlangt: Das Modell
 negiert Mengen, Zeilen-, Steuer- und Gesamtsummen genau einmal.
 """
+import html
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -26,6 +27,7 @@ from typing import List, Optional
 
 from db.invoice_lock import STORNO_KIND
 from money import multiply, round_minor, tax_from_net, to_minor
+from richtext import sanitize_richtext
 
 # Spaltenindizes der Invoices-Zeile (``SELECT *``), siehe db/schema.py
 _INV = dict(
@@ -43,8 +45,9 @@ _INV = dict(
 _ITM = dict(position=2, description=4, quantity=5, unit=6, price=7, total_net=8,
             tax_category=9, tax_rate=10)
 
+# Ein Wortlaut für alle Ausgaben: BT-120 (CII), ``cbc:TaxExemptionReason`` (UBL) und der Hinweis im PDF
 EXEMPT_REASON_KLEINUNTERNEHMER = (
-    'Gemäß § 19 UStG wird keine Umsatzsteuer berechnet.')
+    'Es gilt die Steuerbefreiung für Kleinunternehmer nach § 19 UStG. Es wird keine Umsatzsteuer berechnet.')
 
 # Freitext-Einheiten der Rechnungsmaske -> UN/ECE Recommendation 20
 _UNIT_CODES = {
@@ -116,6 +119,42 @@ def rate_to_pct(value, default=Decimal('19')) -> Decimal:
     if 0 < r < 1:
         r = r * 100
     return r.quantize(Decimal('0.01')).normalize() if r else Decimal('0')
+
+
+# Ein Freitext trägt die Steuerbefreiung schon, wenn er das Gesetz ausdrücklich zitiert: „§ 19“ (auch „§19“ und „§ 19a“,
+# nicht „§ 190“), höchstens gefolgt von „Abs. n“ / „Absatz n“ und danach „Satz n“ / „S. n“, und unmittelbar danach „UStG“
+# oder „Umsatzsteuergesetz“ – dazwischen nur Leerraum (auch ein geschütztes). Jedes Füllwort („des“, „gem.“ …), „§ 19 BGB“,
+# „§ 19 der AGB“ oder nur das Wort „Kleinunternehmer“ genügt nicht: Dann steht der Hinweis eben doppelt. Gesucht wird im
+# casefold-Text.
+_LAW_CITATION = re.compile(
+    r'§\s*19a?(?![0-9])'
+    r'(?:\s*(?:abs\.?|absatz)\s*[0-9]+(?:\s*(?:satz|s\.)\s*[0-9]+)?)?'
+    r'\s*(?:ustg|umsatzsteuergesetz)')
+# die Tags der Positivliste, die ``sanitize_richtext`` stehen lässt (ein loses „<“ ist dort längst als „&lt;“ maskiert)
+_HTML_TAG = re.compile(r'<[^<>]*>')
+
+
+def _printed_text(richtext) -> str:
+    """Der Text eines Richtext-Feldes, wie das PDF ihn setzt (``export.pdf_document.flow_richtext``): durch die
+    Positivliste (``sanitize_richtext``: ein ``<style>``-Block, Kommentare und Attribute fallen weg), Tags entfernt,
+    Entitäten einmal aufgelöst."""
+    return html.unescape(_HTML_TAG.sub('', sanitize_richtext(richtext) or ''))
+
+
+def small_business_note(tax_rate, *richtexts) -> Optional[str]:
+    """Der Hinweis auf § 19 UStG, den das PDF eines Belegs ohne Umsatzsteuerausweis druckt – sonst ``None``.
+
+    Ohne Ausweis steht in ``Invoices.TaxRate`` der Platzhalter −1 (negativ; kein Satz gilt wie im PDF als 19 %,
+    0 % ist ein anderer Fall). ``richtexts`` sind die Freitexte des Belegs, die das PDF als Richtext setzt (Rechnung:
+    der Zahlungshinweis, Angebot: Einleitung und Schluss); die Positionstexte gehören nicht dazu. Zitiert einer
+    dieser Texte das Gesetz ausdrücklich (``_LAW_CITATION``, je Text einzeln, so wie das PDF ihn druckt), bleibt es
+    beim Text des Nutzers und es gibt keinen zweiten. Im Zweifel steht der Hinweis da – ein fehlender Pflichthinweis
+    wiegt schwerer als ein doppelter. Was kein Text ist, wird übergangen."""
+    if tax_rate is None or tax_rate >= 0:
+        return None
+    if any(isinstance(value, str) and _LAW_CITATION.search(_printed_text(value).casefold()) for value in richtexts):
+        return None
+    return EXEMPT_REASON_KLEINUNTERNEHMER
 
 
 _ILLEGAL_XML = re.compile('[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]')

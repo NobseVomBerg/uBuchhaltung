@@ -13,6 +13,11 @@ from .pages import Header1, Header2, Header3, Footer
 from .period import period_filter_widget
 
 
+def _esc(value):
+    """Wert aus Datenbank oder Anfrage für HTML-Text und -Attribute maskieren (NULL = leer)."""
+    return _html.escape(str(value if value is not None else ''), quote=True)
+
+
 def PageReceipts(db: Database, date_from=None, date_to=None):
     """Generate receipts page with upload functionality"""
     current_year = datetime.datetime.now().year
@@ -48,15 +53,17 @@ def PageReceipts(db: Database, date_from=None, date_to=None):
                 <tr><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Pfad</th><th>Info</th><th>Aktionen</th></tr>
         '''
     for row in rows:
-        n   = _html.escape(str(row[1] or ''))
+        rid = _esc(row[0])
+        n   = _esc(row[1])
         # In der Adresse innerhalb des onclick steht die Nummer prozentkodiert: Ein nur
         # HTML-maskiertes Hochkomma löst der Browser dort wieder auf (gespeichertes Skript).
         n_url = quote(str(row[1] or ''), safe='')
-        fn  = _html.escape(str(row[3] or ''))
-        pt  = _html.escape(str(row[4] or ''))
-        inf = _html.escape(str(row[5] or ''))
-        s += f'<tr class="receipt-row" data-date="{row[2]}" data-id="{row[0]}" data-number="{n}" data-filename="{fn}" data-path="{pt}" data-info="{inf}">'
-        s += f'<td>{n}</td><td>{row[2]}</td><td>{fn}</td><td>{pt}</td><td>{inf}</td>'
+        dt  = _esc(row[2])
+        fn  = _esc(row[3])
+        pt  = _esc(row[4])
+        inf = _esc(row[5])
+        s += f'<tr class="receipt-row" data-date="{dt}" data-id="{rid}" data-number="{n}" data-filename="{fn}" data-path="{pt}" data-info="{inf}">'
+        s += f'<td>{n}</td><td>{dt}</td><td>{fn}</td><td>{pt}</td><td>{inf}</td>'
         s += (f'<td>'
               f'<a href="#" class="action-icon" onclick="editReceiptFromRow(this); return false;" title="Bearbeiten">&#9998;</a>'
               f' <a href="javascript:void(0);" class="action-icon delete-icon" title="L\u00f6schen"'
@@ -87,7 +94,8 @@ def PageReceipts(db: Database, date_from=None, date_to=None):
                     <input type="hidden" name="id" id="editId" value="">
                     <table class="form-table">
     '''
-    s += f'<tr><td>Nummer:</td><td><input type="text" name="number" id="editNumber" value="{next_receipt_number}"></td></tr>'
+    # Der Vorschlag folgt der Formatvorlage des Nummernkreises (frei eintippbar): maskieren
+    s += f'<tr><td>Nummer:</td><td><input type="text" name="number" id="editNumber" value="{_esc(next_receipt_number)}"></td></tr>'
     s += '''
                         <tr><td>Datum:</td><td><input type="date" name="date" id="editDate"></td></tr>
                         <tr><td>Dateiname:</td><td><input type="text" name="filename" id="editFilename"
@@ -160,11 +168,21 @@ def PageReceipts(db: Database, date_from=None, date_to=None):
             uploadFiles(e.target.files);
         });
         
+        // Was der Server antwortet (Dateinamen, Fehlertexte), sind Daten und kein HTML:
+        // nur als Text einsetzen, nie als Markup.
+        function showUploadStatus(text, cssClass) {
+            const note = document.createElement('p');
+            if (cssClass) note.className = cssClass;
+            note.textContent = text;
+            uploadStatus.textContent = '';
+            uploadStatus.appendChild(note);
+        }
+
         function uploadFiles(files) {
             console.log('uploadFiles called with', files.length, 'files');
             if (files.length === 0) return;
             
-            uploadStatus.innerHTML = '<p>Uploading...</p>';
+            showUploadStatus('Uploading...');
             
             const formData = new FormData();
             for (let i = 0; i < files.length; i++) {
@@ -177,23 +195,15 @@ def PageReceipts(db: Database, date_from=None, date_to=None):
             })
             .then(response => response.text())
             .then(data => {
-                // Check if response contains confirmation link
-                if (data.includes('confirm_transactions')) {
-                    // Replace entire page with response
-                    document.open();
-                    document.write(data);
-                    document.close();
-                } else {
-                    // Show temporary success message
-                    uploadStatus.innerHTML = '<p class="successColor">' + data + '</p>';
-                    setTimeout(() => { 
-                        uploadStatus.innerHTML = ''; 
-                        location.reload();
-                    }, 3000);
-                }
+                // Show temporary success message
+                showUploadStatus(data, 'successColor');
+                setTimeout(() => {
+                    uploadStatus.textContent = '';
+                    location.reload();
+                }, 3000);
             })
             .catch(error => {
-                uploadStatus.innerHTML = '<p class="errorColor">Fehler beim Hochladen: ' + error + '</p>';
+                showUploadStatus('Fehler beim Hochladen: ' + error, 'errorColor');
             });
         }
     </script>
@@ -253,15 +263,17 @@ def PageReceiptEdit(db: Database, number):
     s+= Header2()
     s+= Header3()
     s+= "<h1>Beleg bearbeiten</h1>"
+    # Jeder Wert stammt aus der Datenbank: in HTML maskiert, in den Adressen des onclick
+    # prozentkodiert (ein nur HTML-maskiertes Hochkomma löst der Browser dort wieder auf).
     s+= f'''
         <form method="POST" action="/update_receipt">
-            <input type="hidden" name="id" value="{receipt[0]}">
+            <input type="hidden" name="id" value="{_esc(receipt[0])}">
             <table class="form-table">
-                <tr><td>Nummer:</td><td><input type="text" name="number" value="{receipt[1]}"></td></tr>
-                <tr><td>Datum:</td><td><input type="date" name="date" value="{receipt[2]}"></td></tr>
-                <tr><td>Dateiname:</td><td><input type="text" name="filename" value="{receipt[3]}"></td></tr>
-                <tr><td>Pfad:</td><td><input type="text" name="path" value="{receipt[4]}"></td></tr>
-                <tr><td>Info:</td><td><input type="text" name="info" value="{receipt[5]}"></td></tr>
+                <tr><td>Nummer:</td><td><input type="text" name="number" value="{_esc(receipt[1])}"></td></tr>
+                <tr><td>Datum:</td><td><input type="date" name="date" value="{_esc(receipt[2])}"></td></tr>
+                <tr><td>Dateiname:</td><td><input type="text" name="filename" value="{_esc(receipt[3])}"></td></tr>
+                <tr><td>Pfad:</td><td><input type="text" name="path" value="{_esc(receipt[4])}"></td></tr>
+                <tr><td>Info:</td><td><input type="text" name="info" value="{_esc(receipt[5])}"></td></tr>
                 <tr><td></td><td><input type="submit" value="Beleg aktualisieren"></td></tr>
             </table>
         </form>
@@ -283,14 +295,16 @@ def PageReceiptEdit(db: Database, number):
             relation_type = booking[-1]  # RelationType from JOIN
             
             amount_color = "green" if (amount or 0) > 0 else "red"
+            booking_url = quote(str(booking_id), safe='')
+            document_url = quote(str(document_id), safe='')
             s+= f"<tr>"
-            s+= f"<td>{booking_id}</td>"
-            s+= f"<td>{date_booking}</td>"
-            s+= f"<td>{recipient}</td>"
+            s+= f"<td>{_esc(booking_id)}</td>"
+            s+= f"<td>{_esc(date_booking)}</td>"
+            s+= f"<td>{_esc(recipient)}</td>"
             s+= f"<td style='color:{amount_color}'>{fmt_eur(amount, symbol=False)}</td>"
-            s+= f"<td>{relation_type or '-'}</td>"
-            s+= f"<td><a href='/transactions/edit?id={booking_id}'>Bearbeiten</a> | "
-            s+= f"<a href='javascript:void(0);' onclick=\"appPost('/documents/unlink?doc_id={document_id}&amp;booking_id={booking_id}')\">Entfernen</a></td>"
+            s+= f"<td>{_esc(relation_type or '-')}</td>"
+            s+= f"<td><a href='/transactions/edit?id={booking_url}'>Bearbeiten</a> | "
+            s+= f"<a href='javascript:void(0);' onclick=\"appPost('/documents/unlink?doc_id={document_url}&amp;booking_id={booking_url}')\">Entfernen</a></td>"
             s+= f"</tr>"
         s+= "</table>"
     else:
@@ -300,7 +314,7 @@ def PageReceiptEdit(db: Database, number):
     s+= "<h3>Buchung verknüpfen</h3>"
     s+= f'''
         <form method="POST" action="/documents/link">
-            <input type="hidden" name="document_id" value="{document_id}">
+            <input type="hidden" name="document_id" value="{_esc(document_id)}">
             <table class="form-table">
                 <tr><td>Buchungs-ID:</td><td><input type="number" name="booking_id" required></td></tr>
                 <tr><td>Typ:</td><td>

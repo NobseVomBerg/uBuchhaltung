@@ -242,6 +242,9 @@ def _wrap_description(desc, max_w, size):
 
 
 _TOTALS_HEIGHT = 70               # geschätzte Höhe des Summenblocks (Seitenumbruch)
+_NOTE_SIZE = 9                    # Hinweis unter dem Summenblock: Schriftgröße, Zeilenabstand und
+_NOTE_LEADING = 12                #   Abstand der ersten Zeile unter der Schlusslinie
+_NOTE_TOP = 14
 
 
 def _table_header(flow):
@@ -260,7 +263,7 @@ def _table_header(flow):
 
 
 def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross,
-                    currency='EUR', show_tax=True):
+                    currency='EUR', show_tax=True, tax_note=None):
     """Positionstabelle mit rechtsbündigen Geldspalten + Summenblock.
 
     Seitenfähig: passt eine Position nicht mehr auf die Seite, wird umgebrochen
@@ -270,6 +273,11 @@ def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross
     items: Liste von Dicts mit pos, quantity, unit, description, price, total.
     Bezeichnungen dürfen mehrzeilig sein (``;`` trennt Zeilen); die übrigen
     Spalten werden dann oben (top) ausgerichtet.
+
+    tax_note: optionaler Hinweis unter der Schlusslinie des Summenblocks (Kleinunternehmer:
+    § 19 UStG), ab dem linken Seitenrand (``LEFT``) auf die Breite bis ``RIGHT`` umbrochen – der
+    Standardsatz passt in eine Zeile. Er gehört zum Block: Passt er nicht mehr auf die Seite,
+    geht er mit dem Summenblock auf die nächste.
     """
     _table_header(flow)
 
@@ -295,8 +303,10 @@ def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross
             ly -= _ROW_LEADING
         flow.y -= row_h
 
-    # Summenblock zusammenhalten: passt er nicht mehr, neue Seite (ohne Header).
-    if flow.y - _TOTALS_HEIGHT < flow.bottom:
+    # Summenblock samt Hinweis zusammenhalten: passt er nicht mehr, neue Seite (ohne Header).
+    note_lines = _wrap_description(tax_note, RIGHT - LEFT, _NOTE_SIZE) if tax_note else []
+    note_drop = _NOTE_TOP + _NOTE_LEADING * (len(note_lines) - 1) if note_lines else 0
+    if flow.y - (_TOTALS_HEIGHT + note_drop) < flow.bottom:
         flow.new_page()
 
     ops = flow.ops
@@ -318,6 +328,9 @@ def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross
     text_right(ops, COL_TOTAL_R, y, f"{_fmt_money(sum_gross)} {currency}", font='/F2', size=10)
     y -= 6
     flow.line_ops.append(f"{COL_DESC} {y:.1f} m {RIGHT} {y:.1f} l S")
+    for number, line in enumerate(note_lines):
+        text(ops, LEFT, y - _NOTE_TOP - _NOTE_LEADING * number, line, size=_NOTE_SIZE)
+    y -= note_drop
     flow.y = y - 16
 
 

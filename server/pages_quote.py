@@ -16,7 +16,7 @@ from money import fmt_eur
 from export.einvoice_model import unit_display
 from export.invoice_files import stored_invoice_path
 from .pages import Header1, Header2, Header3, Footer, logo_url, script_json
-from .pages_invoice import _json_for_script, document_submenu
+from .pages_invoice import TAX_PREFILL_NOTE, _json_for_script, document_submenu
 from .richtext import sanitize_richtext
 
 
@@ -182,6 +182,7 @@ def _quote_form_html(db: Database, quote_id=None):
 
     existing = None
     existing_items = []
+    tax_prefill_note = ''
     if quote_id:
         # Nur Angebote: die ID einer Rechnung zeigt hier kein fremdes Dokument im falschen
         # Formular, sondern das leere Formular für ein neues Angebot
@@ -239,7 +240,10 @@ def _quote_form_html(db: Database, quote_id=None):
         intro_text = ''
         closing_text = ''
         tax_pct = 19
-        show_tax = True
+        # das Häkchen übernimmt den Stand der jüngsten gewöhnlichen Rechnung; startet es abgehakt, sagt die Maske es dazu
+        show_tax = db.last_document_shows_tax()
+        if not show_tax:
+            tax_prefill_note = TAX_PREFILL_NOTE
         page_title = "Neues Angebot erstellen"
         is_edit = False
 
@@ -390,7 +394,8 @@ def _quote_form_html(db: Database, quote_id=None):
                 <tr class="no-pdf">
                     <td colspan="7" style="text-align:right; border:none;">
                         <label><input type="checkbox" id="show_tax" __SHOW_TAX_CHECKED__ onchange="calculateTotals()"> Umsatzsteuer ausweisen</label>
-                        <small style="color:#888;">(aus = Kleinunternehmer §&nbsp;19 UStG; Hinweis ggf. unten im Text)</small>
+                        <small style="color:#888;">(aus = Kleinunternehmer §&nbsp;19 UStG; der Hinweis darauf wird automatisch gedruckt)</small>
+                        __TAX_PREFILL_NOTE__
                     </td>
                 </tr>
                 <tr class="totals-row" id="tax_row">
@@ -568,6 +573,9 @@ def _quote_form_html(db: Database, quote_id=None):
             row.querySelector('.item-total').textContent = fmtDe(q*p) + ' €';
         }
         function calculateTotals(){
+            // Der Hinweis „vorbelegt ohne Umsatzsteuer“ gilt nur, solange das Häkchen aus ist
+            const taxNote = document.getElementById('tax_prefill_note');
+            if (taxNote) taxNote.hidden = document.getElementById('show_tax').checked;
             let net = 0;
             document.querySelectorAll('.invoice-item-row').forEach(row=>{
                 calculateRowTotal(row);
@@ -679,4 +687,5 @@ def _quote_form_html(db: Database, quote_id=None):
     # Steuersatz-Feld + USt-Checkbox serverseitig vorbelegen (Platzhalter im Template)
     s = s.replace('__TAX_PCT__', f'{tax_pct:g}')
     s = s.replace('__SHOW_TAX_CHECKED__', 'checked' if show_tax else '')
+    s = s.replace('__TAX_PREFILL_NOTE__', tax_prefill_note)
     return s

@@ -12,7 +12,8 @@ import calendar
 import datetime
 import os
 from db import Database
-from .pdf_core import escape_pdf_string, load_image_xobject, build_single_page_pdf, logo_display_size
+from .pdf_core import (escape_pdf_string, load_image_xobject, build_single_page_pdf, logo_display_size,
+                       resolve_logo_path)
 from server.pages_worktime import compute_hours, KIND_LABELS, WEEKDAYS
 
 # Spaltenindizes WorkTimes-Row (siehe pages_worktime)
@@ -91,7 +92,7 @@ def generate_worktime_pdf(db: Database, person_id, date_from, date_to, with_note
     own_city = (own[7] if own else '') or ''
     if not person_city:
         person_city = own_city
-    image = load_image_xobject(own[13]) if (own and own[13]) else None
+    image = load_image_xobject(resolve_logo_path(own[13])) if (own and own[13]) else None
 
     d_from = datetime.date.fromisoformat(date_from)
     d_to = datetime.date.fromisoformat(date_to)

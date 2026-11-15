@@ -14,6 +14,11 @@ from money import fmt_eur
 from .pages import Header1, Header2, Header3, Footer
 
 
+def _esc(value):
+    """Wert aus der Datenbank für HTML-Text und -Attribute maskieren (NULL = leer)."""
+    return _html.escape(str(value if value is not None else ''), quote=True)
+
+
 def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
                   account_ids: list | None = None):
     """Generate dashboard with statistics and charts.
@@ -278,7 +283,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
     '''
     for nr, name, total in income_rows:
         color = 'green' if total >= 0 else 'red'
-        s += (f"<tr><td>{nr}</td><td>{name}</td>"
+        s += (f"<tr><td>{_esc(nr)}</td><td>{_esc(name)}</td>"
               f"<td style='text-align:right;color:{color};'>"
               f"{fmt_eur(total)}</td></tr>")
     s += f'''
@@ -296,7 +301,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
     '''
     for nr, name, total in expense_rows:
         color = 'green' if total >= 0 else 'red'
-        s += (f"<tr><td>{nr}</td><td>{name}</td>"
+        s += (f"<tr><td>{_esc(nr)}</td><td>{_esc(name)}</td>"
               f"<td style='text-align:right;color:{color};'>"
               f"{fmt_eur(total)}</td></tr>")
     euer_color = 'green' if euer_result >= 0 else 'red'
@@ -322,7 +327,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
     '''
     for nr, name, total in other_expense_rows:
         color = 'green' if total >= 0 else 'red'
-        s += (f"<tr><td>{nr}</td><td>{name}</td>"
+        s += (f"<tr><td>{_esc(nr)}</td><td>{_esc(name)}</td>"
               f"<td style='text-align:right;color:{color};'>"
               f"{fmt_eur(total)}</td></tr>")
     s += f'''
