@@ -1680,8 +1680,9 @@ def test_two_simultaneous_requests_for_the_same_pair_assign_it_once(world):
 # ── DATEV-Export und Dashboard ───────────────────────────────────────────────
 
 def _datev(db):
-    """Die Zeilen des Exports als Dicts mit den Feldern, die zählen; der Export darf nicht gesperrt sein."""
-    result = handle_datev_export(db, {'date_from': [RANGE[0]], 'date_to': [RANGE[1]]})
+    """Die Zeilen des Exports als Dicts mit den Feldern, die zählen; der Export darf nicht gesperrt sein. Ein Stapel gilt für ein
+    Kalenderjahr (2.3.4, ein Zeitraum über den Jahreswechsel wird abgelehnt): Alle Buchungen dieser Tests liegen im Jahr von ``RANGE``."""
+    result = handle_datev_export(db, {'date_from': [RANGE[0]], 'date_to': [f'{RANGE[0][:4]}-12-31']})
     assert isinstance(result[0], bytes), f'DATEV-Export gesperrt: {result}'
     lines = [ln for ln in result[0].decode('cp1252').split('\r\n') if ln]
     rows = [next(csv.reader([ln], delimiter=';', quotechar='"')) for ln in lines[2:]]

@@ -1,6 +1,6 @@
 # Datenbankmodell uBuchhaltung
 
-**Stand:** Version 2.3.3 (Schema 2003)
+**Stand:** Version 2.3.4 (Schema 2003)
 **DBMS:** SQLite 3
 **Datei:** `data/users/<Name>/buch.db`
 
@@ -1215,6 +1215,82 @@ Zeichen, Buchungstext ohne Zeilenumbrüche und andere Steuerzeichen (je Zeichen 
 Berater- und Mandantennummer der eigenen Firma (`CompanyDetails`, 1001–9999999 bzw. 1–99999 ohne führende Null, sonst Platzhalter). Die Rechnungsdaten (Leistungsdatum,
 Land) liest der Handler in einer Abfrage über alle Rechnungen (`get_datev_invoice_data`), die Wartekonten aus `OPEN_REVENUE_ACCOUNTS`
 (`get_waiting_account_numbers`).
+
+**Zeitraum und Vollständigkeit des Stapels (seit 2.3.4, `handle_datev_export`):** Der Stapel kennt vom Belegdatum nur Tag und Monat und beginnt sein
+Wirtschaftsjahr am 1. Januar des Jahres von „von“ – ein Zeitraum über den Jahreswechsel wird abgelehnt (je Kalenderjahr einzeln exportieren). Reihenfolge der
+Prüfungen: Datum fehlt, ungültig, „von“ nach „bis“, Jahreswechsel, unstimmige Splits, Hinweise, keine Buchungen. Gerechnet wird nicht mit Paaren, sondern mit
+Gruppen (`db.matching.settle_transfers`, reine Funktion; `Database.check_transfers` lädt den ganzen Bestand und ruft sie auf, höchstens O(n log n): Gruppen über
+Wörterbücher, je Gruppe einmal sortiert, das Umfeld über Halbierungssuche):
+
+- **Beine.** Eigene Konten sind die Bank-/Kassenkonten mit SKR-Nummer; tragen zwei Konten dieselbe Nummer, nimmt keins von beiden teil. Ein *Bein mit Spiegel*
+  ist eine Bankbewegung R auf einem eigenen Konto X mit einem Kind, das ein Spiegel (`is_mirror_row`) genau zwischen X und einem anderen eigenen Konto Y ist
+  (Betrag des Beins = Betrag des Spiegels, ein Teilspiegel im Split zählt mit seinem Betrag); ein *Bein ohne Satz* ist eine Bankbewegung ohne ein einziges Kind.
+  Die Richtung kommt allein aus dem Vorzeichen von R (R < 0: Ausgang X → Y, R > 0: Eingang), nie aus der Form des Satzes – ein `mirror_legacy` wird nicht
+  gedeutet. Ein *eigenständiger Spiegel* (ohne Bankbewegung) nimmt nur mit bekannter Lesart (`mirror_coa`/`mirror_counter`, Richtung über `bank_effect`) an den Gruppen teil;
+  mit `mirror_legacy` oder ohne Form legt er nichts zusammen und deckt nichts (`known=False`), kann aber im dritten Hinweis stehen. Eine Bankbewegung mit Kindern,
+  aber ohne Spiegel-Kind ist *anders kontiert* (`TransferOther`: Zahlung, Umbuchung in anderer Form): Sie bildet keine Gruppe und legt nichts zusammen, zählt in der Deckung
+  aber als verbraucht und lässt die Gegenseite im dritten Hinweis nennen. **Nur ein ISO-Datum und eine ganze Zahl nehmen teil:** das Datum genau `JJJJ-MM-TT` (ein
+  Kalendertag, Jahr 1900–2200 – dieselbe Regel wie `server.period.parse_iso_date`; `20260305`, `2026-W10-4`, ein Zeitanteil, `0001-01-03`, `9999-12-30`, NULL oder eine Zahl
+  nicht), der Betrag ein `int` (kein Text, keine Kommazahl, kein `bool`). Eine Bankbewegung damit nimmt gar nicht teil; ein Satz damit ist kein Bein und kein Spiegel,
+  seine Bankbewegung gilt als anders kontiert. So läuft das Umfeld (± Tage) nie über das Datumsende, und ein Satz, den ein Import mit anderer Schreibweise ablegte, legt
+  nichts zusammen, was der Stapel dann nicht trägt.
+- **Gruppen, Abschnitte, Umfeld.** Je Ausgangskonto, Eingangskonto und Betrag eine Gruppe (die Beine ohne Satz gehören zu jeder Gruppe ihres Kontos und Betrags,
+  die schon durch ein Bein mit Spiegel oder einen eigenständigen Spiegel besteht); je Gruppe nach Datum sortiert und bei einer Lücke von mehr als
+  `TRANSFER_DAY_WINDOW` (7) Tagen in Abschnitte zerlegt. Das *Umfeld* eines Abschnitts sind alle Elemente der Gruppe, die höchstens `TRANSFER_NEIGHBOUR_DAYS` (14)
+  Tage vor seinem ersten oder nach seinem letzten Element liegen (er selbst gehört dazu), dazu die anders kontierten Ausgänge auf X und Eingänge auf Y mit diesem Betrag.
+  Je Abschnitt: a_m/b_m Ausgänge/Eingänge mit Spiegel, a_c/b_c ohne Satz, s eigenständige Spiegel; im Umfeld A/B Ausgänge/Eingänge mit Spiegel, a_o/b_o anders kontierte.
+- **Zusammenlegen** (`Database.check_transfers`, `omitted`; `duplicate_transfer_rows`): Die Eingangs-Sätze eines Abschnitts fallen aus dem Stapel genau dann, wenn
+  a_m ≥ 1, b_m ≥ 1 und a_m ≥ b_m + b_c gilt und im Umfeld kein Ausgang ohne Satz und kein eigenständiger Spiegel liegt – jeder Eingang gehört dann zu einem Ausgang,
+  dessen Satz im Stapel steht, und kein Eingangs-Satz ist der einzige seines Übertrags (dessen Ausgang läge sonst, ohne Satz, im Umfeld); es fallen alle b_m weg oder keiner
+  (zugeordnet wird nicht). Anders kontierte Bewegungen ändern daran nichts. Die Regel gilt über den ganzen Bestand, nicht je Zeitraum; die weggelassenen Sätze bekommen kein
+  Steuerdatum. Ein Übertrag über 1460 (zwei echte Teilbuchungen) wird nie zusammengelegt.
+- **Möglicherweise doppelt** (dritter Hinweis): Ein Eingangs-Satz im Zeitraum, der bleibt, obwohl im Umfeld seines Abschnitts ein Ausgang mit Spiegel oder ein anders
+  kontierter Ausgang liegt, steht möglicherweise doppelt im Stapel; ebenso ein Ausgangs-Satz, in dessen Umfeld ein anders kontierter Eingang liegt (a_m ≥ 1 und b_o ≥ 1, auch
+  in einem zusammengelegten Abschnitt – dessen Eingangs-Satz fällt dann trotzdem weg); ebenso ein eigenständiger Spiegel im Zeitraum, in dessen Umfeld ein Bein mit Spiegel
+  liegt (ein Import-Spiegel und eine von Hand kontierte Bankbewegung), und ein eigenständiger Spiegel ohne bekannte Lesart (`mirror_legacy`, keine Form), neben dem im Umfeld
+  ein Bein mit Spiegel zwischen denselben beiden Konten und mit demselben Betrag liegt – genannt, nicht gedeutet und nie weggelassen. Ein weggelassener Satz steht nie in
+  dieser Liste. Die Meldung nennt dazu den **Auslöser im Umfeld** (` (Auslöser im Umfeld: Datum Betrag EUR)`, nur Datum und Betrag): die älteste Bewegung, die das Zusammenlegen
+  sperrt (Ausgang ohne Satz, eigenständiger Spiegel) oder den Hinweis auslöst (anders kontierte Bewegung) – bei einer langen Reihe zeigt er die Lücke, die sie ganz sperrt. Er fehlt,
+  wo nichts sperrt (zwei Abschnitte mit einem Ausgang mit Spiegel im Umfeld, eigenständiger Spiegel).
+- **Bankbewegungen ohne Buchungssatz** (`Database.find_unbooked_bank_movements`, erster Hinweis): Eine Bankzeile im Zeitraum mit Betrag ≠ 0 (eine Zahl) und ohne ein einziges Kind fehlt im Stapel
+  (er enthält nur Sätze). Gedeckt – und nicht gemeldet – ist sie, wenn in einem Abschnitt ihrer Gruppe die überschüssigen Spiegel der Gegenseite für alle
+  Bewegungen ohne Satz ihrer Seite reichen: Ausgänge ohne Satz a_c ≤ max(0, b_m − A − a_o) + s, Eingänge ohne Satz b_c ≤ max(0, a_m − B − b_o) + s, wobei A und B die Ausgänge und
+  Eingänge mit Spiegel und a_o, b_o die anders kontierten im UMFELD des Abschnitts sind (er selbst gehört dazu): Ein Eingangs-Satz, dessen Ausgang mit Satz oder anders kontiert in
+  der Nähe steht, ist dessen Gegenseite und deckt keinen anderen Ausgang. Ein eigenständiger Spiegel zählt als s nur, wenn im Umfeld kein Bein mit Spiegel liegt (sonst steht er im
+  dritten Hinweis); anders kontierte Bewegungen zehren s nicht auf. Reicht es nicht, ist keine dieser Seite im Abschnitt gedeckt (alles oder nichts, je Abschnitt). So wird ein ganz
+  unkontierter Übertrag zwischen kontierten gemeldet. Konten ohne SKR-Nummer oder mit doppelter Nummer sind nie gedeckt.
+- **Überträge über den Zeitraum hinaus** (zweiter Hinweis), **je Abschnitt gezählt, nicht je Satz** (`_boundary_entries`). Stehen im Zeitraum mehr weggelassene Eingangs-Sätze eines
+  Abschnitts als Ausgangs-Sätze dieses Abschnitts, fehlen die überzähligen in diesem Stapel – ihr Übertrag steht mit seiner Ausgangsseite im Stapel eines anderen Zeitraums; der Export
+  sagt es und nennt genau so viele Sätze, wie überzählig sind: „… steht mit seiner Ausgangsseite außerhalb des Zeitraums und deshalb nicht in diesem Stapel“. Eine Reihe gleichzeitig
+  gebuchter Überträge (ein Dauerauftrag über 100 Wochen, monatlich exportiert) braucht damit keinen Hinweis; nur Überträge, die eine Zeitraumgrenze wirklich überqueren, werden genannt.
+  Gemeint sind die Sätze am Rand, über den der Übertrag läuft: vom Anfang so viele, wie zu Beginn des Zeitraums unterwegs sind (Ausgänge vor dem Zeitraum, deren Eingang noch aussteht),
+  der Rest vom Ende. Umgekehrt (zweiter Satz derselben Meldung): Stehen im Zeitraum mehr Ausgangs-Sätze eines Abschnitts als weggelassene Eingangs-Sätze und fallen Eingangs-Sätze dieses
+  Abschnitts außerhalb weg, stehen die überzähligen Ausgangs-Sätze (höchstens so viele, wie außerhalb wegfallen) hier, ihre Eingangsseite in einem anderen Stapel – „wurde der andere
+  Zeitraum schon exportiert, bevor beide Seiten kontiert waren, steht er dort ebenfalls“. Beide Sätze stehen in einer Meldung, der erste zuerst.
+- **Bestätigung.** Gibt es Hinweise (null bis drei, in dieser Reihenfolge: Bewegungen ohne Satz mit Anzahl, Eingängen und Ausgängen getrennt und den ersten fünf; Überträge über den
+  Zeitraum hinaus; Überträge, die möglicherweise doppelt stehen, mit den ersten fünf und dem Auslöser), exportiert der Handler nur mit `confirm_export` = `1` und `confirmed_check` = der
+  Prüfsumme (SHA-256, 16 Zeichen) über den Zeitraum und **alle Einträge aller Hinweise** – je Hinweisart ID, Datum und Betrag in Minor Units, dazu der Auslöser –, **nicht über den
+  Wortlaut** (der nennt nur die ersten fünf: Wird eine Bewegung kontiert und kommt eine andere dazu, gilt die alte Bestätigung nicht mehr); sonst leitet er mit `datev_export=confirm` auf
+  *Sonstiges* zurück (Pflicht-Kästchen). Ändert sich Zeitraum oder Bestand, passt die Prüfsumme nicht mehr, und der Hinweis kommt neu. Die Meldungen nennen nie Text oder Empfänger. Die Seite
+  nennt die Regel für Überträge dauerhaft im DATEV-Abschnitt (der Export liefert eine Datei, die kein Skript der Seite sieht).
+- **Grenzen der Zählregel** (belegt durch `tests/test_datev_transfer_enumeration.py`, das alle kleinen Bestände durchspielt – vollständige Kontoauszüge vorausgesetzt). Bis zu 14 Tagen
+  Verzögerung zwischen den beiden Seiten eines Übertrags geht kein Übertrag verloren, und jede Doppelung zwischen Spiegel-Sätzen (auch neben einer anders kontierten Seite) wird genannt.
+  Darüber hinaus bleibt die Regel stehen: Ein Übertrag kann doppelt im Stapel stehen, ohne dass der Export es sagt, und – selten – in einem Zeitraum fehlen (meist meldet der erste Hinweis dann
+  die Bewegung ohne Satz). Die Deckung rechnet je Abschnitt: Liegen die beiden Seiten eines Übertrags weiter als das Fenster auseinander, meldet der erste Hinweis die satzlose Seite, obwohl
+  der Übertrag im Stapel steht (ein Falschalarm). Ungemeldet bleibt ein ganz unkontierter Übertrag zwischen zwei halb kontierten Überträgen gleichen Betrags, deren kontierte Seite
+  jenseits des Fensters von der satzlosen liegt (mit drei Überträgen gleicher Höhe in wenigen Wochen; deren satzlose Seiten werden dann gemeldet), und – eine Ecke der anders kontierten
+  Seiten – neben einem Übertrag, dessen beide Bankbewegungen anders kontiert sind und zu dem ein eigenständiger Spiegel steht (drei Erfassungen desselben Übertrags). Im Zweifel bleibt jede
+  Zeile stehen. Weitere bekannte Grenzen, jede mit einem benannten Test in `tests/test_datev_transfer_hints.py` (`test_known_limit_…`):
+  - *Sammelüberweisung mit anderer Stückelung*: A −200 mit einem Spiegel über 200, auf B zwei Gutschriften über je 100 mit je einem Spiegel (oder −100 gegen zweimal 50, dazu eine
+    Lieferantenzahlung über 50): Die Beträge unterscheiden sich, also sind es verschiedene Gruppen – der Stapel trägt die Buchung doppelt, und niemand sagt es.
+  - *Zwei eigene Konten mit derselben SKR-Nummer*: Keins von beiden nimmt teil; ein beidseitig kontierter Übertrag zwischen einem von ihnen und einem anderen Konto steht mit beiden Sätzen im
+    Stapel, ohne Hinweis. (Ein Paar zweier Spiegel-Kinder mit gleichem Betrag binnen sieben Tagen zu nennen wäre eine Paarbildung außerhalb der Zählregel.)
+  - *Eine weit entfernte Lücke sperrt eine ganze Reihe*: Fehlt in einem lückenlosen Dauerauftrag (alle Abstände höchstens sieben Tage) irgendwo, auch Monate davor, der Satz einer Seite, ist die
+    Reihe ein einziger Abschnitt, und der Ausgang ohne Satz sperrt ihn ganz – nichts fällt weg, die Eingangs-Sätze stehen doppelt und werden genannt (dritter Hinweis); der Auslöser im Umfeld
+    nennt die Lücke.
+  - *Ein eigenständiger Spiegel neben einer anders kontierten Bankbewegung* wird nicht genannt (nur neben einem Bein mit Spiegel).
+  - *Ein Text als Betrag auf einer Bankbewegung mit Sätzen im Zeitraum* lässt die Prüfung der Splits (`find_unbalanced_splits`, vor den Hinweisen) mit einer Fehlermeldung scheitern – dieser Weg
+    ist nicht Teil der Zählregel und nicht geändert.
 
 ---
 

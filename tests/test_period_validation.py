@@ -15,7 +15,7 @@ JavaScript, Set-Cookie-Headern, Weiterleitungen und Dateinamen. Deshalb gelten n
   kein roher Wert in der Ausgabe, der DOM-Aufbau hängt nicht vom Wert ab
 - über den echten Server: Seiten mit feindlicher Adresse/feindlichem Cookie, ``person=abc``,
   Header-Injektion in der Rohantwort, Weiterleitungen von ``/trips/add`` und ``/worktime/add``
-- ``handle_datev_export`` mit ungültigen Daten
+- ``handle_datev_export`` mit ungültigen Daten und mit einem Zeitraum über den Jahreswechsel (2.3.4)
 
 Alle Werte sind erfundene Testdaten.
 """
@@ -1039,11 +1039,66 @@ def test_datev_export_of_a_valid_period_names_the_file_and_sets_the_tax_date(boo
 @pytest.mark.parametrize('date_from, date_to, name', [
     ('2026-03-01', '2026-03-31', 'DATEV_Buchungsstapel_2026_20260301-20260331.csv'),
     ('2026-03-10', '2026-03-10', 'DATEV_Buchungsstapel_2026_20260310-20260310.csv'),
-    ('2025-12-01', '2026-03-31', 'DATEV_Buchungsstapel_2025_20251201-20260331.csv'),
 ])
 def test_datev_export_file_name_follows_the_validated_dates(booked, date_from, date_to, name):
     csv_bytes, filename = handlers.handle_datev_export(booked, datev_post(date_from, date_to))
     assert filename == name and isinstance(csv_bytes, bytes)
+
+
+# ── DATEV-Export: ein Kalenderjahr je Stapel (2.3.4) ─────────────────────────
+# Der Stapel kennt vom Belegdatum nur Tag und Monat und beginnt sein Wirtschaftsjahr am 1. Januar des Jahres von „von“.
+# Ein Zeitraum über den Jahreswechsel legte Buchungen des Folgejahres still auf das Jahr des Vorlaufs.
+
+ACROSS_THE_TURN_OF_THE_YEAR = [('2025-12-01', '2026-03-31'), ('2025-12-31', '2026-01-01'), ('2024-01-01', '2026-12-31')]
+
+
+@pytest.mark.parametrize('date_from, date_to', ACROSS_THE_TURN_OF_THE_YEAR)
+def test_datev_export_refuses_a_period_across_the_turn_of_the_year(booked_plain, monkeypatch, date_from, date_to):
+    from export import datev
+    called = []
+    monkeypatch.setattr(datev, 'export_to_datev', lambda *a, **k: called.append(a))
+    before = date_taxes(booked_plain)
+    result = handlers.handle_datev_export(booked_plain, datev_post(date_from, date_to))
+    assert result[0] == 303 and len(result) == 2
+    assert result[1].startswith('/miscellaneous?datev_export=error&msg='), result[1]
+    message = urllib.parse.parse_qs(urllib.parse.urlsplit(result[1]).query)['msg'][0]
+    assert 'Jahreswechsel' in message and message == handlers.DATEV_YEAR_REFUSED
+    assert called == [], 'trotz Zeitraum über den Jahreswechsel wurde exportiert'
+    assert date_taxes(booked_plain) == before, 'DateTax wurde verändert'
+
+
+@pytest.mark.parametrize('date_from, date_to', [('2026-01-01', '2026-12-31'), ('2026-12-31', '2026-12-31'),
+                                                ('2026-03-10', '2026-03-10'), ('2025-01-01', '2025-12-31')])
+def test_datev_export_of_one_calendar_year_is_not_refused(booked_plain, date_from, date_to):
+    result = handlers.handle_datev_export(booked_plain, datev_post(date_from, date_to))
+    assert result[0] != 303 or 'Jahreswechsel' not in urllib.parse.unquote(result[1])
+
+
+def test_datev_export_of_the_whole_year_still_exports_and_stamps_the_tax_date(booked):
+    csv_bytes, filename = handlers.handle_datev_export(booked, datev_post('2026-01-01', '2026-12-31'))
+    assert isinstance(csv_bytes, bytes) and filename == 'DATEV_Buchungsstapel_2026_20260101-20261231.csv'
+    assert {tax for _, tax in date_taxes(booked, ['D1', 'D2'])} == {datetime.now().date().isoformat()}
+
+
+def test_datev_export_error_message_from_an_exception_is_percent_encoded(booked_plain, monkeypatch):
+    """Früher stand die Meldung nur mit „+“ für Leerzeichen in der Adresse: ein „%“, „&“ oder „#“ darin brach sie ab oder
+    ließ die Seite beim Dekodieren scheitern."""
+    def boom(*args, **kwargs):
+        raise RuntimeError('100 % kaputt & mehr = Ärger #1 +x')
+    monkeypatch.setattr(booked_plain, 'find_unbalanced_splits', boom)
+    result = handlers.handle_datev_export(booked_plain, datev_post('2026-03-01', '2026-03-31'))
+    assert result[0] == 303
+    assert '&' not in result[1].split('msg=', 1)[1] and '#' not in result[1] and ' ' not in result[1]
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(result[1]).query)
+    assert query['datev_export'] == ['error'] and query['msg'] == ['100 % kaputt & mehr = Ärger #1 +x']
+
+
+def test_the_datev_message_on_the_page_is_decoded_only_once(booked_plain):
+    """``URLSearchParams`` dekodiert die Adresse schon; ein zweites ``decodeURIComponent`` wirft bei einem „%“ in der Meldung."""
+    from server.pages_miscellaneous import PageMiscellaneous
+    page = PageMiscellaneous(booked_plain)
+    block = page.split('<h2>DATEV Export</h2>')[1].split('<h2>Zahlungszuordnungen</h2>')[0]
+    assert block.count("p.get('msg')") == 2 and 'decodeURIComponent' not in block
 
 
 def test_datev_http_rejects_an_invalid_period_without_a_header_injection(server_port, auto_login):

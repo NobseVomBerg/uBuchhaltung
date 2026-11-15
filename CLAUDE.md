@@ -294,7 +294,30 @@ kein Subagent darauf:
   (`CompanyDetails.DatevConsultantNo`/`DatevClientNo`, ganze Zahlen aus ASCII-Ziffern ohne führende Null: Berater 1001–9999999, Mandant 1–99999;
   im Kontaktformular der eigenen Firma gepflegt, `Database.get_datev_numbers`), sonst Platzhalter und ein Hinweis auf *Sonstiges*. Jeder Wert, der in den Stapel geht, ist streng geprüft –
   ein per SQL-Konsole gesetzter anderer Wert gilt als nicht vorhanden, nie roh ausgegeben. Die Schlüssel sind nicht gegen einen echten Stapel
-  der Kanzlei geprüft (`docs/aufgaben.md`) – nicht als richtig voraussetzen
+  der Kanzlei geprüft (`docs/aufgaben.md`) – nicht als richtig voraussetzen. **Vollständigkeit (seit 2.3.4, `handle_datev_export`):** Ein
+  Zeitraum über den Jahreswechsel wird abgelehnt (`DATEV_YEAR_REFUSED`: der Stapel kennt nur Tag und Monat, Wirtschaftsjahr =
+  Kalenderjahr). **Überträge zwischen eigenen Konten werden gezählt, nicht gepaart** (`db/matching.py`: `transfer_legs` baut aus dem
+  ganzen Bestand Beine – Bankbewegung mit Spiegel-Kind oder ganz ohne Kind, Richtung allein nach dem Vorzeichen der **Bankzeile**,
+  `mirror_legacy` wird nie gedeutet –, eigenständige Spiegel mit bekannter Lesart und „anders kontierte“ Bankbewegungen (Kinder, aber
+  kein Spiegel-Kind); `settle_transfers` ist die reine Rechnung, `Database.check_transfers` der Aufruf, O(n log n). Nicht teil nehmen
+  Konten ohne oder mit doppelter SKR-Nummer und Zeilen, deren Datum nicht exakt `JJJJ-MM-TT` oder deren Betrag keine ganze Zahl ist).
+  Gruppe = (Ausgangskonto, Eingangskonto, Betrag); Abschnitt = Elemente mit höchstens `TRANSFER_DAY_WINDOW` = 7 Tagen Abstand; Umfeld =
+  Elemente der Gruppe bis `TRANSFER_NEIGHBOUR_DAYS` = 14 Tage vor und nach dem Abschnitt. **Die Eingangs-Sätze eines Abschnitts fallen
+  aus dem Stapel** (alle oder keiner, kein `DateTax`), wenn jede Ausgangsbewegung ihren Satz trägt und es mindestens so viele Ausgänge
+  wie Eingänge gibt (`a_m ≥ 1`, `b_m ≥ 1`, `a_m ≥ b_m + b_c`) und im Umfeld weder ein Ausgang ohne Satz noch ein eigenständiger Spiegel
+  liegt – sonst bleibt jede Zeile stehen. Eine Bankbewegung ohne Satz gilt nur als Gegenseite eines Übertrags, wenn die überschüssigen
+  Spiegel der Gegenseite im Umfeld – abzüglich der dort anders kontierten Bewegungen – für ALLE satzlosen ihrer Seite reichen.
+  **Hinweise** (nie mit Text oder Empfänger): (1) Bankbewegungen im Zeitraum ohne Buchungssatz, die kein Übertrag deckt; (2) Überträge
+  über die Zeitraumgrenze – weggelassene Eingangs-Sätze, deren Ausgangsseite außerhalb liegt, und umgekehrt Ausgangs-Sätze, deren
+  weggelassene Eingangsseite außerhalb liegt (je Abschnitt gezählt: eine Serie gleich hoher Überträge löst ihn nur an einer wirklich
+  überquerten Grenze aus); (3) Sätze, die einen Übertrag möglicherweise doppelt abbilden (nicht zusammengelegt, obwohl im Umfeld ein
+  Ausgangs-Satz, eine anders kontierte Gegenbewegung oder ein eigenständiger Spiegel steht; mit dem ältesten Auslöser). Mit Hinweisen
+  exportiert der Handler nur mit `confirm_export` = `1` und `confirmed_check` = Prüfsumme über Zeitraum und alle gemeldeten Einträge
+  (ändert sich der Bestand, kommt der Hinweis neu; Muster wie beim Import der WISO-Datenbank in einen nicht leeren Bestand). Maßstab,
+  per Aufzählung kleiner Bestände geprüft (`tests/test_datev_transfer_enumeration.py`, benannte Grenzen dort und in `DB_MODEL.md`): Bei
+  vollständigen Auszügen und höchstens 14 Tagen zwischen den beiden Seiten fällt nie ein Übertrag weg und steht keiner doppelt, ohne
+  genannt zu sein. Diese Regeln nicht lockern – lieber ein Hinweis zu viel. Bekannte Grenzen: mehr als 14 Tage Laufzeit, eine ferne
+  Lücke sperrt eine ganze Serie (genannt), Stückelung (eine Bewegung gegen mehrere kleinere), Konten mit gleicher SKR-Nummer
 - Zahlungskonten (`get_payment_coa_ids`): die SKR-Konten der eigenen Bank- und Kassenkonten –
   die Kasse der App (SKR04 1600) zählt wie ein Bankkonto über ihr eigenes Konto, nicht über
   einen Bereich – plus das Verrechnungskonto 1460 (`DEFAULT_LIQUID_ACCOUNTS`; Geldtransit: WISO

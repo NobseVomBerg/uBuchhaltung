@@ -35,6 +35,7 @@ from server.pages_contacts import PageContacts
 from server.pages_invoice import PageInvoice
 from server.pages_miscellaneous import PageMiscellaneous
 from server.pages_transactions import PageTransactions
+from tests.datev_helpers import confirmed_export
 from tests.document_helpers import make_books, post_json
 from tests.http_client import get, own_origin, post
 
@@ -137,17 +138,20 @@ def _balance(db, number):
     return Decimal(soll - haben) / 10000
 
 
-def _datev_fields(db):
-    """Alle Felder der exportierten Zeilen; der Export darf nicht gesperrt sein."""
-    result = handle_datev_export(db, {'date_from': [RANGE[0]], 'date_to': [RANGE[1]]})
+def _datev_fields(db, confirmed=False):
+    """Alle Felder der exportierten Zeilen; der Export darf nicht gesperrt sein. ``confirmed``: Das Szenario lässt Bankbewegungen
+    ohne Buchungssatz zurück – ohne die ausdrückliche Bestätigung (2.3.4, ``tests/datev_helpers.confirmed_export``) leitet der
+    Export mit einem Hinweis zurück."""
+    result = (confirmed_export(db, *RANGE) if confirmed
+              else handle_datev_export(db, {'date_from': [RANGE[0]], 'date_to': [RANGE[1]]}))
     assert isinstance(result[0], bytes), f'DATEV-Export gesperrt: {result}'
     lines = [ln for ln in result[0].decode('cp1252').split('\r\n') if ln]
     return [next(csv.reader([ln], delimiter=';', quotechar='"')) for ln in lines[2:]]
 
 
-def _datev(db):
+def _datev(db, confirmed=False):
     """Exportierte Zeilen als (Betrag, Konto, Gegenkonto); der Export darf nicht gesperrt sein."""
-    return [(f[0], f[6], f[7]) for f in _datev_fields(db)]
+    return [(f[0], f[6], f[7]) for f in _datev_fields(db, confirmed)]
 
 
 def _datev_amount(db, number):
@@ -1153,7 +1157,7 @@ def test_reassigning_to_another_movement_leaves_nothing_behind(db, acct):
 
     assert _children(db, b1) == [] and len(_children(db, b2)) == 2
     assert _euer(db) == {4400: 100.0, 3806: 19.0}
-    assert len(_datev(db)) == 3                                   # Forderung, Zahlung, Umbuchung
+    assert len(_datev(db, confirmed=True)) == 3                   # Forderung, Zahlung, Umbuchung (B1 bleibt ohne Satz)
     assert _balance(db, 10000) == 0 and _balance(db, 4405) == 0   # vorher: −119 im Haben
     assert db.find_unbalanced_splits(*RANGE) == []
     assert db.find_payment_inconsistencies() == []
@@ -1796,7 +1800,7 @@ def test_cancelling_and_removing_the_last_payment_end_in_the_same_state_in_every
             ((a, 'R-ORD-A'), (b, 'R-ORD-B'), (c, 'R-ORD-C'))] == [expected] * 3
     assert _balance(db, 10000) == 0 and _balance(db, 4405) == 0
     assert _euer(db) == {}
-    exported = handle_datev_export(db, {'date_from': [RANGE[0]], 'date_to': [RANGE[1]]})
+    exported = confirmed_export(db, *RANGE)                              # die Bewegungen A und B bleiben ohne Satz
     assert exported[0] == 303 and 'Keine+Buchungen' in exported[1]       # kein Satz mehr im Stapel
     assert db.find_payment_inconsistencies() == []
 
