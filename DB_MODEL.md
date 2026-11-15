@@ -1,14 +1,18 @@
 # Datenbankmodell uBuchhaltung
 
-**Status:** Aktuell (Stand: 7. Juli 2026)
+**Stand:** Version 2.3.2 (Schema 2003)
 **DBMS:** SQLite 3
 **Datei:** `data/users/<Name>/buch.db`
+
+> WISO, WISO Mein Büro und DATEV sind Marken ihrer jeweiligen Inhaber. uBuchhaltung ist ein
+> unabhängiges Projekt und steht in keiner Verbindung zu den Markeninhabern oder den Herstellern.
+> Die Namen dienen allein der Bezeichnung der unterstützten Import- und Exportformate.
 
 ---
 
 ## Übersicht
 
-uBuchhaltung verwaltet Buchführung für kleine/mittlere Unternehmen mit Fokus auf deutsche Buchhaltungsstandards (SKR03/SKR04). Es unterstützt XRechnung-konforme Rechnungserstellung, Anlagenverwaltung (AfA), automatische Bank↔Entry-Verknüpfung und Belegmanagement.
+uBuchhaltung verwaltet Buchführung für kleine/mittlere Unternehmen mit Fokus auf deutsche Buchhaltungsstandards (SKR03/SKR04). Es unterstützt die Erzeugung von XRechnung und ZUGFeRD (EN 16931), Anlagenverwaltung (AfA), automatische Bank↔Entry-Verknüpfung und Belegmanagement.
 
 ---
 
@@ -77,13 +81,13 @@ Beim Erstellen der Datenbank werden folgende Tabellen automatisch befüllt (nur 
 
 | Tabelle | Quelle | Einträge |
 |---------|--------|----------|
-| ChartOfAccounts | `seed_data/chart_of_accounts_skr04.json` + optional `seed_data/private/` | 56 Standard + eigene |
+| ChartOfAccounts | `seed_data/chart_of_accounts_skr04.json` + optional `seed_data/private/` | 82 Standard + eigene |
 | AssetCategories | `seed_data/asset_categories.json` | 30 BMF-Kategorien |
 | TaxKeys | `seed_data/tax_keys.json` | 53 DATEV-BU-Schlüssel |
 
 ### Testdaten (`seed_data/test/`)
 
-Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempotent (kein Doppel-Einfügen):
+Nur über `load_test_seed_data()` geladen (Schaltfläche „Testdaten nachladen“ unter *Sonstiges*, „Testdaten laden“ auf der Einrichtungsseite `/setup`, außerdem der Demo-Modus ohne die Rechnungen). Idempotent (kein Doppel-Einfügen):
 
 | Datei | Inhalt |
 |-------|--------|
@@ -151,7 +155,7 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 
 ---
 
-### 3. Contacts – normalisiertes Schema (4 Tabellen)
+### 3. Contacts – normalisiertes Schema (6 Tabellen)
 
 #### 3a. Contacts (Basis)
 
@@ -162,6 +166,7 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 | EntityType | TEXT | DEFAULT 'company' | 'company' oder 'person' |
 | DisplayName | TEXT | | Anzeigename |
 | CustomerNumber | TEXT | UNIQUE | Kundennummer |
+| Abbreviation | TEXT | UNIQUE | Kürzel (2–3 Buchstaben, wird aus dem Namen vorgeschlagen) |
 | Email | TEXT | | E-Mail |
 | Phone | TEXT | | Telefon |
 | Notes | TEXT | | Notizen |
@@ -206,6 +211,27 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 | DateOfBirth | TEXT | | ISO 8601 |
 | CompanyContactID | INTEGER | FK → Contacts | Zugehöriges Unternehmen |
 | CompanyName_Free | TEXT | | Freier Firmenname |
+| JobTitle | TEXT | | Position / Jobtitel |
+| Department | TEXT | | Abteilung |
+| IsPrimaryContact | INTEGER | DEFAULT 0 | 1 = Hauptansprechpartner der Firma |
+
+#### 3e. ContactTypeLinks (n:m)
+
+| Spalte | Typ | Constraints | Beschreibung |
+|--------|-----|-------------|--------------|
+| ContactID | INTEGER | NOT NULL, FK → Contacts ON DELETE CASCADE | |
+| TypeKey | TEXT | NOT NULL | Kontakttyp; mehrere je Kontakt möglich (`own` ist ein Systemtyp und steht nur in `Contacts.ContactType`) |
+
+**Indizes:** PRIMARY KEY (ContactID, TypeKey)
+
+#### 3f. PersonRoles (n:m)
+
+| Spalte | Typ | Constraints | Beschreibung |
+|--------|-----|-------------|--------------|
+| ContactID | INTEGER | NOT NULL, FK → Contacts ON DELETE CASCADE | |
+| RoleKey | TEXT | NOT NULL | Fachliche Rolle einer Person, z. B. `invoice_recipient`, `accounting` |
+
+**Indizes:** PRIMARY KEY (ContactID, RoleKey)
 
 ---
 
@@ -216,7 +242,7 @@ Nur über `load_test_seed_data()` geladen (z.B. bei `--test-data`-Flag). Idempot
 | ID | INTEGER | PRIMARY KEY | Auto-Increment |
 | Name | TEXT | NOT NULL | Artikelbezeichnung |
 | Unit | TEXT | DEFAULT 'Stk.' | Einheit |
-| UnitPrice | REAL | DEFAULT 0 | Netto-Einzelpreis |
+| UnitPrice | INTEGER | DEFAULT 0 | Netto-Einzelpreis in Minor Units |
 | TaxRate | REAL | DEFAULT 19 | Steuersatz in % |
 | Description | TEXT | | Beschreibung |
 | Active | INTEGER | DEFAULT 1 | 1=aktiv, 0=inaktiv |
@@ -267,6 +293,49 @@ berichtigt und ergänzt in bestehenden Datenbanken 100, 120, 121 („Verwendung 
 
 ---
 
+### 8. WorkTimes (Arbeitszeiten)
+
+| Spalte | Typ | Constraints | Beschreibung |
+|--------|-----|-------------|--------------|
+| ID | INTEGER | PRIMARY KEY | Auto-Increment |
+| PersonID | INTEGER | NOT NULL, FK → Contacts ON DELETE CASCADE | Person (Kontakt, z. B. Mitarbeiter oder eigene Daten) |
+| Date | DATE | NOT NULL | Datum |
+| Kind | TEXT | NOT NULL, DEFAULT 'work' | 'work', 'vacation', 'sick', 'holiday' |
+| CustomerID | INTEGER | FK → Contacts ON DELETE SET NULL | Kunde (optional) |
+| StartTime | TEXT | | 'HH:MM' |
+| EndTime | TEXT | | 'HH:MM' |
+| PauseMinutes | INTEGER | DEFAULT 0 | Pause in Minuten |
+| LocationMode | TEXT | DEFAULT 'customer' | 'own', 'customer', 'other' |
+| LocationCity | TEXT | | Aufgelöster Einsatzort (Momentaufnahme) |
+| Note | TEXT | | Notiz |
+| PauseText | TEXT | | Pausenzeiten als Text, z. B. '12:00-12:30' |
+
+**Indizes:** `idx_worktimes_person_date` auf (PersonID, Date)
+
+### 8a. Trips (Fahrtenbuch)
+
+| Spalte | Typ | Constraints | Beschreibung |
+|--------|-----|-------------|--------------|
+| ID | INTEGER | PRIMARY KEY | Auto-Increment |
+| DriverID | INTEGER | NOT NULL, FK → Contacts ON DELETE CASCADE | Fahrer |
+| StartDate | DATE | NOT NULL | Datum des Fahrtbeginns |
+| StartTime | TEXT | | optional, 'HH:MM' |
+| EndDate | DATE | | optional |
+| EndTime | TEXT | | optional, 'HH:MM' |
+| StartPoint | TEXT | | Startpunkt; leer = eigene Adresse / Firmensitz |
+| Destination | TEXT | NOT NULL | Ziel |
+| Vehicle | TEXT | | Fahrzeug (Freitext) |
+| Reason | TEXT | | Grund der Fahrt |
+| DistanceKm | INTEGER | | Gefahrene Kilometer (manuell oder berechnet) |
+| StartKm | INTEGER | | Tachostand Start (optional) |
+| EndKm | INTEGER | | Tachostand Ende (optional) |
+| DocumentID | INTEGER | FK → Documents ON DELETE SET NULL | Verknüpfter Beleg (optional) |
+| CreatedAt | DATETIME | DEFAULT NOW | |
+
+**Indizes:** `idx_trips_driver_date` auf (DriverID, StartDate)
+
+---
+
 ### 9. Bookings (Buchungssätze)
 
 **Zweck:** Zentrale Tabelle für Bank-Bewegungen und Buchungssätze. Über `BookingType` und `ParentBooking_ID` werden Bankbewegungen mit ihren Buchungssätzen verknüpft.
@@ -284,10 +353,10 @@ berichtigt und ergänzt in bestehenden Datenbanken 100, 120, 121 („Verwendung 
 | COA_ID | 8 | INTEGER | FK → ChartOfAccounts | SKR-Sollkonto |
 | CounterCOA_ID | 9 | INTEGER | FK → ChartOfAccounts | SKR-Gegenkonto (Doppik) |
 | Category_ID | 10 | INTEGER | FK → Categories | Kategorie |
-| Amount | 11 | REAL | NOT NULL | Betrag (+Haben, −Soll) |
+| Amount | 11 | INTEGER | NOT NULL | Betrag in Minor Units; bei Zahlungen die Richtung der Geldbewegung (Einnahme positiv), bei Umbuchungen positiv = `COA_ID` im Soll (siehe „Form eines Buchungssatzes“) |
 | Currency | 12 | TEXT | DEFAULT 'EUR' | Währung |
 | TaxRate | 13 | REAL | | Steuersatz (0.19 = 19%) |
-| TaxAmount | 14 | REAL | | Berechneter Steuerbetrag |
+| TaxAmount | 14 | INTEGER | | Berechneter Steuerbetrag in Minor Units |
 | Text | 15 | TEXT | | Verwendungszweck |
 | DocumentNumber | 16 | TEXT | | Belegnummer |
 | BookingType | 17 | TEXT | DEFAULT 'entry' | **'bank'** = Bankbewegung, **'entry'** = Buchungssatz |
@@ -447,8 +516,8 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   `|Betrag| − MAX(−Σ Zuordnungen, −Σ Wirkung der Sätze auf das Konto der Bewegung)` (`_outgoing_free_minor`, in
   Python: die Wirkung rechnet `db.matching.bank_effect` – wie die Split-Summe, ein Spiegel mit bekannter Lesart zählt nach
   seiner Position auf dem Konto der Bewegung; der Import-Spiegel „1810 an 1800“ mit +50 unter einem Ausgang über 50
-  verbraucht ihn, die Umbuchung ist keine Erstattung). Anders als `_free_minor_sql`, das einen Spiegel roh rechnet und
-  bleibt, wie es war. Die Kandidatenliste der Erstattung liest den freien Rest aller Ausgänge aus wenigen gesammelten
+  verbraucht ihn, die Umbuchung ist keine Erstattung). Anders als `_free_minor_sql` für Eingänge, das einen Spiegel roh
+  rechnet (bewusst unverändert). Die Kandidatenliste der Erstattung liest den freien Rest aller Ausgänge aus wenigen gesammelten
   Abfragen (Aufwand linear). *Sammelzahlung* = mehrere Zuordnungen derselben Bewegung, jede mit eigenen
   Sätzen; *Teilzahlung* = mehrere Bewegungen auf eine Rechnung; bei einer *Überzahlung* bleibt der Rest
   frei (Guthaben beim Kontakt; der DATEV-Export bleibt gesperrt, bis er kontiert ist).
@@ -481,7 +550,8 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   Summe der Zahlungssätze stimmt so mit der Steuer der Rechnung überein, auch wenn die Sätze einer
   Altzahlung eine andere oder keine Beleg-Nr. tragen.
 - **Gleichzeitigkeit:** Prüfung, Schreiben und Neuberechnung laufen in einer `BEGIN IMMEDIATE`-Transaktion;
-  zwei gleichzeitige Anfragen legen das Paar nicht doppelt an (es gibt keinen UNIQUE-Index). Konten,
+  zwei gleichzeitige Anfragen legen das Paar nicht doppelt an (zusätzlich fängt der UNIQUE-Index
+  `ux_invoicepayments_invoice_booking` es ab, Abschnitt 14). Konten,
   die dabei angelegt werden könnten (`resolve_revenue_coa`), löst die Funktion vorher in eigenen
   Verbindungen auf.
 - **Entfernen:** `unassign_invoice_payment` löscht die markierten Sätze des Paars (nie Sätze mit
@@ -539,7 +609,7 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   (4000 Bewegungen, 4000 Forderungen, 1000 Zuordnungen: unter einer Sekunde). Die Forderungen der App für die beiden
   Storno-Kategorien liest die Liste einmal für alle Paare und Alt-Stornos (`_app_receivable_amounts`), nicht je
   Rechnung nachgeschlagen – die Zahl der Anweisungen hängt nicht von der Zahl der Paare ab. Die Liste steht auf der
-  Seite *Verschiedenes* und läuft **nur auf Klick** („Zahlungszuordnungen prüfen“, `GET
+  Seite *Sonstiges* und läuft **nur auf Klick** („Zahlungszuordnungen prüfen“, `GET
   /miscellaneous?check_payments=1`), nicht bei jedem Laden der Seite; der Hinweis auf der Rechnungsseite
   prüft nur diese eine Rechnung.
 
@@ -665,7 +735,7 @@ ihn ab (nichts geändert).
 
 ### 12. Invoices (Ausgangsrechnungen)
 
-**Zweck:** XRechnung-konforme Rechnungsverwaltung mit Snapshot-Prinzip
+**Zweck:** Rechnungsverwaltung für XRechnung/ZUGFeRD mit Snapshot-Prinzip
 
 | Spalte | Idx | Typ | Constraints | Beschreibung |
 |--------|-----|-----|-------------|--------------|
@@ -711,12 +781,12 @@ ihn ab (nichts geändert).
 | **Summen** | | | | |
 | TaxCategory | 34 | TEXT | DEFAULT 'S' | |
 | TaxRate | 35 | REAL | NOT NULL | 0.19 = 19% |
-| SumNet | 36 | REAL | NOT NULL | |
-| TaxAmount | 37 | REAL | NOT NULL | |
-| SumGross | 38 | REAL | NOT NULL | |
-| AmountDue | 39 | REAL | NOT NULL | |
+| SumNet | 36 | INTEGER | NOT NULL | Minor Units |
+| TaxAmount | 37 | INTEGER | NOT NULL | Minor Units |
+| SumGross | 38 | INTEGER | NOT NULL | Minor Units |
+| AmountDue | 39 | INTEGER | NOT NULL | Minor Units; offener Betrag |
 | **Verwaltung** | | | | |
-| Status | 40 | TEXT | DEFAULT 'draft' | draft/finalized/sent/paid/cancelled |
+| Status | 40 | TEXT | DEFAULT 'draft' | draft / finalized / sent / overdue / partial_payment / paid / cancelled |
 | PDFPath | 41 | TEXT | | Ablage `<Datenordner>/invoices/<Jahr>/<RNr.> <Kunde>.pdf` |
 | XMLPath | 42 | TEXT | | XRechnung, gleicher Name mit `.xml` |
 | CreatedAt | 43 | DATETIME | DEFAULT NOW | |
@@ -740,7 +810,7 @@ Die Spalten 50–54 hängen an der Tabelle: frische und migrierte Datenbank habe
 **Fassungen und Berichtigen:** Eine versendete Rechnung hat gesperrte Finanzangaben (`db/invoice_lock.py`);
 Zahlungshinweis, Anschrift, Bestellnummer, Leitweg-ID und Leistungsdatum ändert nur eine **Berichtigung**
 (`Database.correct_invoice`, `db/invoice_versions.py`): Die Dateien der bisherigen Fassung wandern nach
-`invoices/<Jahr>/Fassungen/<ID>/` (Tabelle 13a), jedes geänderte Feld steht im Protokoll (13b), und
+`invoices/<Jahr>/Fassungen/<ID>/` (Tabelle 14a), jedes geänderte Feld steht im Protokoll (14b), und
 `DocumentVersion` zählt um eins hoch. Zurückholen auf Entwurf legt die Dateien ebenso ab (und zählt hoch, wenn
 eine Datei abgelegt wurde). Die berichtigte Fassung trägt einen Hinweis (PDF-Zeile, CII BT-22, UBL `cbc:Note`),
 der sich aus dem Stand dieser Tabellen ergibt (`Database.correction_notice`).
@@ -758,8 +828,8 @@ der sich aus dem Stand dieser Tabellen ergibt (`Database.correction_notice`).
 | Description | TEXT | NOT NULL | |
 | Quantity | REAL | NOT NULL | |
 | Unit | TEXT | DEFAULT 'C62' | UN/ECE Code |
-| PricePerUnit | REAL | NOT NULL | Netto |
-| TotalNet | REAL | NOT NULL | Quantity × PricePerUnit |
+| PricePerUnit | INTEGER | NOT NULL | Netto, Minor Units |
+| TotalNet | INTEGER | NOT NULL | Quantity × PricePerUnit, Minor Units |
 | TaxCategory | TEXT | DEFAULT 'S' | |
 | TaxRate | REAL | NOT NULL | |
 
@@ -833,7 +903,7 @@ derselben Transaktion; was die Zahlungslogik am Status ändert, steht nicht dari
 | ID | INTEGER | PRIMARY KEY | |
 | Name | TEXT | NOT NULL | Kategoriename |
 | UsefulLifeYears | INTEGER | NOT NULL | Nutzungsdauer |
-| DepreciationMethod | TEXT | DEFAULT 'linear' | 'linear', 'declining', 'both' |
+| DepreciationMethod | TEXT | DEFAULT 'linear' | 'linear', 'degressive', 'both' (beide zulässig) |
 | COA_ID | INTEGER | FK → ChartOfAccounts | Standard-SKR-Konto |
 | Notes | TEXT | | |
 
@@ -850,16 +920,16 @@ derselben Transaktion; was die Zahlungslogik am Status ändert, steht nicht dari
 | AssetCategory_ID | INTEGER | FK → AssetCategories | |
 | COA_ID | INTEGER | FK → ChartOfAccounts | |
 | PurchaseDate | DATE | NOT NULL | |
-| PurchasePrice | REAL | NOT NULL | Netto |
+| PurchasePrice | INTEGER | NOT NULL | Netto, Minor Units |
 | UsefulLifeYears | INTEGER | NOT NULL | |
-| DepreciationMethod | TEXT | DEFAULT 'linear' | |
+| DepreciationMethod | TEXT | DEFAULT 'linear' | 'linear', 'degressive' |
 | SerialNumber | TEXT | | |
 | Location | TEXT | | |
 | Supplier_ID | INTEGER | FK → Contacts | |
 | Document_ID | INTEGER | FK → Documents | |
 | Booking_ID | INTEGER | FK → Bookings | |
 | SaleDate | DATE | | |
-| SalePrice | REAL | | |
+| SalePrice | INTEGER | | Minor Units |
 | Status | TEXT | DEFAULT 'active' | 'active', 'sold', 'scrapped' |
 | Notes | TEXT | | |
 | Parent_ID | INTEGER | FK → Assets | Erweiterung (Unter-Anlage): Nachträgliche Anschaffungskosten der Hauptanlage; sie zählt zu ihr, solange sie keine eigene Zeile in `AssetDepreciations` hat und die Hauptanlage einen Plan haben kann (siehe „AfA-Plan der App“) |
@@ -874,8 +944,8 @@ derselben Transaktion; was die Zahlungslogik am Status ändert, steht nicht dari
 | ID | INTEGER | PRIMARY KEY | |
 | Asset_ID | INTEGER | NOT NULL, FK → Assets ON DELETE CASCADE | |
 | Year | INTEGER | NOT NULL | |
-| DepreciationAmount | REAL | NOT NULL | AfA-Betrag |
-| BookValue | REAL | NOT NULL | Restbuchwert |
+| DepreciationAmount | INTEGER | NOT NULL | AfA-Betrag in Minor Units |
+| BookValue | INTEGER | NOT NULL | Restbuchwert in Minor Units |
 | Booking_ID | INTEGER | FK → Bookings | AfA-Buchung (siehe „AfA-Buchung“ bei Bookings) |
 | Status | TEXT | DEFAULT 'planned' | 'planned' (geplant), 'posted' (vom Programm gebucht), 'booked' (WISO-Import: der AfA-Satz der WISO-Datenbank steht in den Büchern, ohne Booking_ID) |
 | BookedAt | DATETIME | | |
@@ -897,7 +967,7 @@ importiertes Jahr –, weil die Erweiterung in diesen Buchungen steckt; ohne ein
 
 **WISO-Datenbank-Import, neu angelegte Sätze und Bestand** (seit 2.3.2; `_insert_wiso_bookings`): Der Import ist für einen **leeren Bestand**
 und für **eine** WISO-Datenbank je Bestand gedacht; ist `Bookings` nicht leer (`Database.wiso_import_stock`: `bookings`, `wiso_rows`), zeigt das
-Formular auf *Verschiedenes* einen Hinweis und ein Pflicht-Kästchen, und `handle_wiso_fdb_import` importiert ohne Bestätigung
+Formular auf *Sonstiges* einen Hinweis und ein Pflicht-Kästchen, und `handle_wiso_fdb_import` importiert ohne Bestätigung
 (`confirm_existing` = `1`) nichts; die Datenbankmethode `import_wiso_fdb` selbst prüft das nicht. Ein weiterer Import erkennt einen Satz an
 seiner Quellgruppe wieder. Legt WISO Buchungen neu an (neue `ACCOUNTINGID`, sonst gleicher Inhalt), bekommt jeder Satz mit **unbekannter**
 Quellgruppe eine der **verwaisten** Zeilen (`entry` mit Quellgruppe, die in keinem Satz der Datei vorkommt – auch nicht in einem künftigen
@@ -910,7 +980,7 @@ Zeile `mirror_legacy` mit dem umgekehrten Betrag, sonst wie (1) bis (3), nicht w
 Treffer ist kein neuer Satz: Nur `SourceGroup` wird gesetzt (Replay-Log), jede andere Spalte bleibt (`regrouped_rows`, bei geändertem Text
 zusätzlich `regrouped_text_differs`); die Zeile gilt für den Rest des Laufs wie eine in ihrer bekannten Gruppe wiedererkannte (auch für den
 AfA-Plan). Was übrig bleibt – in WISO gelöscht oder mit anderem Inhalt neu angelegt –, meldet der Lauf (`orphaned_rows_count`, die ersten 50 in
-`orphaned_rows`) und die Seite *Verschiedenes*; es zählt in den Auswertungen weiter mit, gelöscht wird nichts. Eine Änderung innerhalb einer
+`orphaned_rows`) und die Seite *Sonstiges*; es zählt in den Auswertungen weiter mit, gelöscht wird nichts. Eine Änderung innerhalb einer
 weiter bestehenden Buchungsgruppe (anderer Betrag, entfallene Teilbuchung) bemerkt der Import nicht (Details und Grenzen: `PARSER_README.md`).
 
 **WISO-Datenbank-Import** (`import_wiso_fdb`, `_insert_wiso_bookings`, `_insert_wiso_assets`): WISO schreibt den
@@ -943,7 +1013,7 @@ seiner Gruppe genau, hat die Gruppe aber eine freie Zeile mit einem Datum im Pla
 steht in den Büchern, das Jahr gilt als gebucht, und es wird nichts angelegt (erst bekommt jeder Satz seine genaue Zeile,
 jede Zeile dient höchstens einem Satz). Hat die App ein Jahr schon selbst gebucht (`Booking_ID`
 zeigt auf eine vorhandene Buchung), bleibt die Planzeile unverändert, und der AfA-Satz der WISO-Datenbank für dieses
-Jahr wird nicht angelegt (`depreciation_conflicts`, Seite *Verschiedenes*). Zugeordnet wird die Anlage über
+Jahr wird nicht angelegt (`depreciation_conflicts`, Seite *Sonstiges*). Zugeordnet wird die Anlage über
 die Inventarnummer (`Assets.InventoryNumber` = `INVNO`), nur wenn sie in der WISO-Datenbank eindeutig ist; sonst
 steht eine Warnung in `asset_warnings`, und die AfA-Sätze der Anlage nehmen am Abgleich nicht teil. Der Buchungsschritt
 liest die Planjahre der App in seiner schreibenden Transaktion (`BEGIN IMMEDIATE`): Zwischen Lesen und Schreiben bucht
@@ -1157,8 +1227,8 @@ Land) liest der Handler in einer Abfrage über alle Rechnungen (`get_datev_invoi
 4. **Datum-Format:** ISO 8601 (YYYY-MM-DD)
 5. **Steuersätze:** Dezimal (0.19 = 19%)
 6. **Seeding:** `_seed_chart_of_accounts()`, `_seed_asset_categories()`, `_seed_tax_keys()` laden aus `seed_data/`-JSON
+7. **Geldbeträge:** ganze Zahlen (`INTEGER`) in Minor Units, 1 = 0,0001 € (`money.py`, kaufmännisch gerundet); Steuersätze, Mengen und Prozentwerte sind `REAL`
 
 ---
 
-**Dokumentversion:** 2.6
-**Letzte Aktualisierung:** 14. November 2026 (BU-Schlüssel am Buchungssatz, DATEV-Nummern der eigenen Firma; Schema 2003)
+**Letzte Aktualisierung:** 15. November 2026 (Schema 2003)

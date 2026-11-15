@@ -15,8 +15,9 @@ Was gesendet wird (und sonst nichts):
   INSERT, UPDATE, DELETE, WITH, PRAGMA, ATTACH und mehrere Anweisungen lehnt der Server
   ab, bevor etwas gesendet wird. ``pragma_<name>`` als Tabellenfunktion ist nur für die
   rein lesenden Namen in ``_READ_PRAGMAS`` erlaubt (``pragma_optimize`` würde schreiben).
-  Weil die Konsole kein Zeitlimit hat, sind WITH/RECURSIVE, zeroblob, randomblob und
-  Abfragen über 20 000 Zeichen gesperrt (Heuristik, keine vollständige Last-Sperre).
+  Weil die Konsole erst nach 60 s abbricht und eine lange Abfrage die Datenbank bis dahin
+  belastet, sind WITH/RECURSIVE, zeroblob, randomblob und Abfragen über 20 000 Zeichen
+  gesperrt (Heuristik, keine vollständige Last-Sperre).
 * Seiten: ``GET``, und nur aus ``_PAGE_ALLOWLIST`` (``check_page_path``), einer Liste
   geprüfter Anzeigeseiten mit den je Seite erlaubten Query-Parametern. Aktionen,
   PDF-Erzeugung, ``/login`` und ``/logout`` stehen nicht darin.
@@ -66,7 +67,7 @@ Einrichtung (Windows, PowerShell):
 
    oder einzeln, z. B. ``["mcp__ubuchhaltung__info", "mcp__ubuchhaltung__schema", "mcp__ubuchhaltung__db_check"]``.
 
-Ausführlich: DEPLOYMENT.md, Abschnitt „Diagnose mit Claude Code (MCP, nur lesend)“.
+Ausführlich: DEPLOYMENT.md, Abschnitt „Diagnose-Schnittstelle (MCP, nur lesend)“.
 """
 import http.client
 import ipaddress
@@ -104,7 +105,7 @@ _SESSION_REFUSED = "Die Instanz nimmt die Sitzung nicht an (Weiterleitung zur An
 _PLAIN_HTTP_REFUSED = (
     "Zugangsdaten werden über http nicht gesendet – HTTPS mit UBUCHHALTUNG_MCP_CAFILE nutzen "
     "oder bewusst UBUCHHALTUNG_MCP_ALLOW_HTTP=1 setzen")
-_NO_TIME_LIMIT = "aus Lastgründen gesperrt (die SQL-Konsole der Instanz hat kein Zeitlimit)"
+_LOAD_REASON = "aus Lastgründen gesperrt (die SQL-Konsole der Instanz bricht erst nach 60 s ab)"
 _URL_SAFE = "/?&=%+#:@!$'()*,;[]"
 _CSRF_RE = re.compile(r"""<meta\s+name=['"]csrf-token['"]\s+content=['"]([^'"]*)['"]""",
                       re.IGNORECASE)
@@ -139,10 +140,10 @@ _READ_PRAGMAS = frozenset({
     "journal_mode", "page_count", "page_size", "freelist_count", "compile_options", "database_list",
 })
 _PRAGMA_FUNCTION = re.compile(r"pragma_(\w+)", re.IGNORECASE)
-# Die Konsole hat kein Zeitlimit: Eine Endlosabfrage hielte die Datenbank für alle gesperrt. SQLite
-# rekursiert auch ohne das Wort RECURSIVE, und Funktionsnamen lassen sich per Kommentar oder
-# Anführungszeichen von der Klammer trennen – deshalb zählt schon das Wort. Das ist eine Heuristik:
-# Kreuzprodukte über große Tabellen fängt sie nicht.
+# Die Konsole bricht erst nach 60 s ab: Eine Endlosabfrage hielte die Datenbank bis dahin für alle
+# gesperrt. SQLite rekursiert auch ohne das Wort RECURSIVE, und Funktionsnamen lassen sich per
+# Kommentar oder Anführungszeichen von der Klammer trennen – deshalb zählt schon das Wort. Das ist
+# eine Heuristik: Kreuzprodukte über große Tabellen fängt sie nicht.
 _LOAD_WORD = re.compile(r"\b(?:with|recursive|zeroblob|randomblob)\b", re.IGNORECASE)
 
 
@@ -160,7 +161,7 @@ def check_select(query):
     if "\x00" in query:
         raise ReadOnlyViolation("Die Abfrage enthält ein Nullzeichen.")
     if len(query) > MAX_QUERY_CHARS:
-        raise ReadOnlyViolation(f"Abfragen über {MAX_QUERY_CHARS} Zeichen sind {_NO_TIME_LIMIT}.")
+        raise ReadOnlyViolation(f"Abfragen über {MAX_QUERY_CHARS} Zeichen sind {_LOAD_REASON}.")
     s = query.strip()
     if s.endswith(";"):
         s = s[:-1].rstrip()
@@ -187,7 +188,7 @@ def check_select(query):
             raise ReadOnlyViolation(f"PRAGMA-Funktion nicht freigegeben: pragma_{name.lower()}")
     word = _LOAD_WORD.search(query)
     if word:
-        raise ReadOnlyViolation(f"'{word.group(0).lower()}' ist {_NO_TIME_LIMIT}.")
+        raise ReadOnlyViolation(f"'{word.group(0).lower()}' ist {_LOAD_REASON}.")
     return s
 
 

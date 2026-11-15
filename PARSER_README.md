@@ -1,21 +1,24 @@
 # Kontoauszug-Import & WISO-CSV-Import
 
+> WISO, WISO Mein Büro, DATEV und die genannten Banken sind Marken ihrer jeweiligen Inhaber.
+> uBuchhaltung ist ein unabhängiges Projekt und steht in keiner Verbindung zu den
+> Markeninhabern oder den Herstellern. Die Namen dienen allein der Bezeichnung der
+> unterstützten Import- und Exportformate.
+
 ## 1. Kontoauszüge (PDF und CAMT.053)
 
 ### Installation
 
 ```bash
-pip install pdfplumber
+pip install -r requirements.txt
 ```
+
+Das installiert `pdfplumber` (Lesen von PDF-Kontoauszügen) und `fonttools` (PDF-Erzeugung);
+Pillow (Logos in PDF-Rechnungen) kommt mit `pdfplumber` mit.
 
 Optional für OCR (gescannte PDFs):
 ```bash
 pip install pytesseract pdf2image Pillow
-```
-
-Optional für PDF-Rechnungen mit Logo:
-```bash
-pip install Pillow
 ```
 
 ### Aufbau: Abstraktionsschicht + Bankmodule
@@ -72,7 +75,8 @@ Empfängers markiert.
    - IBAN zur Kontoidentifikation
    - Einzelne Transaktionen (Datum, Empfänger, Betrag, fremde IBAN)
    - Plausibilitätsprüfung markiert Auffälligkeiten
-3. **Organisation**: Dateien werden nach `./data/Belege/YYYY/Konten/<BANK>/` einsortiert
+3. **Organisation**: Dateien werden nach `<Datenordner des Benutzers>/Belege/YYYY/Konten/<BANK>/`
+   (`data/users/<Name>/…`) einsortiert
 4. **Bestätigung**: Erkannte Transaktionen auf `/confirm_transactions` prüfen
 5. **Import**: Nach Bestätigung als `BookingType='bank'` in Bookings-Tabelle
 
@@ -131,21 +135,8 @@ denselben Weg wie PDF: `BankStatement` → Vorschau → Bestätigung.
 
 ### Erweiterung für weitere Banken
 
-In `document_parser.py` eine neue Methode hinzufügen:
-
-```python
-def parse_bank_statement_sparkasse(self, filepath: str) -> Dict:
-    result = {'iban': None, 'document_date': None,
-              'transactions': [], 'bank_code': 'Sparkasse'}
-    # Parser-Logik
-    return result
-```
-
-Erkennung in `parse_document()`:
-```python
-elif 'sparkasse' in text.lower():
-    return self.parse_bank_statement_sparkasse(filepath)
-```
+Neue Banken: siehe „Neue Bank anbinden“ oben (Modul in `importers/` mit
+`StatementImporter`-Klasse, Eintrag in `IMPORTERS`).
 
 ---
 
@@ -210,7 +201,7 @@ einer Zeile keinen Treffer mit gleichem Betrag, aber einen Spiegel des Bestands 
 gleichem Beleg, Datum, Konto, Gegenkonto und dem Betrag −gross, den die Datei nicht selbst beansprucht
 (eine eigene Zeile mit diesem Betrag), ist die Zeile ein Duplikat: Kein zweiter Satz, der vorhandene
 bleibt, wie er ist. Der Import zählt solche Spiegel – mit gleichem wie mit umgekehrtem Vorzeichen –
-als `legacy_mirrors`; die Seite *Verschiedenes* nennt die Zahl („noch nach der alten Lesart
+als `legacy_mirrors`; die Seite *Sonstiges* nennt die Zahl („noch nach der alten Lesart
 gespeichert“).
 
 **Zeilen auf Konten 1000–1099 aus einer älteren Version:** Bis 2.0.x galten diese Konten als Kasse, die
@@ -221,7 +212,7 @@ zusätzlich mit dem Betrag der alten Regel: Gleiche Beleg-Nr. (auch leer), gleic
 Gegenkonto (ein im Kontenrahmen fehlendes Konto gilt auf beiden Seiten als gleich) – dann ist die Zeile
 ein Duplikat. Jede vorhandene Zeile zählt höchstens einmal, und nicht die, die eine andere Zeile der
 Datei mit ihrem eigenen Betrag beansprucht. Die Altzeile bleibt, wie sie ist (Form und Betrag); der
-Import zählt sie als `legacy_stock_rows`, und die Seite *Verschiedenes* nennt die Zahl.
+Import zählt sie als `legacy_stock_rows`, und die Seite *Sonstiges* nennt die Zahl.
 
 **Duplikat-Erkennung (zählbasiert):** REFERENZNUMMER + Datum + COA_ID + Betrag;
 ohne Referenznummer: Datum + COA_ID + Betrag (nur Entry-Buchungen, ohne Text —
@@ -271,14 +262,14 @@ Buchung als eine still falsch übernommene:
   wiedererkannt“) und listet die ersten 500 übernommenen Buchungen auf.
 - **Möglicherweise doppelt:** Hat der Import zu Datum, Betrag und Konto einen Satz neu angelegt,
   meldet er die dazu vorhandenen, nicht übernommenen Buchungen (Zähler und die ersten 500 auf der
-  Seite *Verschiedenes*, ohne Rücksicht auf Text und Beleg-Nr.). Stimmt es, ist von beiden eine
+  Seite *Sonstiges*, ohne Rücksicht auf Text und Beleg-Nr.). Stimmt es, ist von beiden eine
   zu löschen.
 
 **Re-Import der Datenbank:** Eine schon bekannte `SourceGroup` wird nicht mehr nur übersprungen: Der
 Satz wird mit der Zeile der Gruppe verglichen (Datum, Konto, Gegenkonto, |Betrag|). Ein
 `mirror_legacy`-Spiegel wird gezählt (`legacy_mirrors`) und bleibt, wie er ist. Weicht eine andere
 gespeicherte Form von der des frischen Imports ab (z. B. weil ein Konto inzwischen ein Geldkonto ist),
-wird das nur gemeldet (`form_conflicts`, die ersten 500 auf der Seite *Verschiedenes*) – nichts wird
+wird das nur gemeldet (`form_conflicts`, die ersten 500 auf der Seite *Sonstiges*) – nichts wird
 umgedeutet.
 
 **Neu angelegte Sätze (Datenbank-Import, seit 2.3.2):** Legt WISO die Buchungen eines Zeitraums neu an (nach einem
@@ -310,7 +301,7 @@ zwei werden umgehängt, eine bleibt verwaist).
   BU-Schlüssel kommt nur an die Zeile, wo er leer ist (`datev_keys_filled`; der Steuersatz gleicht hier immer). Gezählt wird
   `regrouped_rows`; die Zusammenfassung nach dem Import nennt sie und die verwaisten Zeilen.
 - Was nicht passt, wird neu angelegt wie bisher; die Zeile bleibt **verwaist**. Der Import meldet sie (`orphaned_rows_count`, die ersten
-  50 in `orphaned_rows` mit ID, Datum, Betrag in Euro, Konto- und Gegenkontonummer und Text), die Seite *Verschiedenes* nennt sie mit
+  50 in `orphaned_rows` mit ID, Datum, Betrag in Euro, Konto- und Gegenkontonummer und Text), die Seite *Sonstiges* nennt sie mit
   einem Link auf die Buchung: „… Buchungen aus einem früheren Import stehen nicht mehr in der WISO-Datenbank (dort gelöscht oder mit
   anderem Inhalt neu angelegt). Sie zählen in den Auswertungen weiter mit – bitte prüfen und löschen, was doppelt ist.“ **Gelöscht wird
   nichts.** Die Liste nennt Buchungen, deren Quelle (Quellgruppe) in der WISO-Datenbank nicht mehr steht. **Eine Änderung innerhalb einer
@@ -337,8 +328,7 @@ nichts (Tests, Demodaten und Skripte rufen es direkt auf).
 Grenze: Eine von Hand erfasste `entry` wird nur übernommen, wenn auch der Text stimmt. Eine
 CSV-Zeile, deren Text, Gegenkonto oder Betrag nachträglich geändert wurde, wird nicht
 wiedererkannt – es entsteht eine zweite Buchung, die unter „möglicherweise doppelt“ steht und
-sich in der Buchungsliste löschen lässt. Die WISO-Satz-Id als eigene Spalte würde das exakt
-machen (Schemaänderung, siehe `docs/aufgaben.md`).
+sich in der Buchungsliste löschen lässt.
 
 **Unterkonten (Datenbank-Import):** `BAS_FINACC_PLAN` führt nur alte Kontenpläne; später angelegte
 Konten (Unterkonten je Fahrzeug oder Projekt) fehlen dort. Die SKR04-Nummer jedes Kontos speichert WISO
@@ -361,7 +351,7 @@ Betrag und Form nicht. Der Leser liefert dazu je Satz die Nummern nach der alten
 (`WisoBooking.legacy_account`/`legacy_counter_account`, nur wo sie abweichen); passt zu einem Satz einer
 bekannten Gruppe keine Zeile mit den heutigen Konten, wohl aber eine mit den alten (Datum, |Betrag| und
 Text gleich), zählt der Import sie (`subaccount_rows`, nur Fälle, in denen die alte Nummer die eines Basiskontos
-war), und die Seite *Verschiedenes* nennt die Zahl. Grenze: Ein Satz ohne `ACCOUNTINGID` (leere Quellgruppe)
+war), und die Seite *Sonstiges* nennt die Zahl. Grenze: Ein Satz ohne `ACCOUNTINGID` (leere Quellgruppe)
 wird nur über die Übernahmesuche wiedererkannt, und die hängt am Konto – auf einem Unterkonto entstünde beim
 Re-Import über einen älteren Import ein zweiter Satz. Die Übernahme CSV → Datenbank bleibt in ihren Regeln
 unverändert: Die CSV trägt die eigenen Nummern, das Konto passt jetzt von selbst. Eine vorhandene Anlage
@@ -412,7 +402,7 @@ zählt ihn). Einzige Ausnahme ist ein Bestand aus einem Import bis 2.2.4, der de
 geschrieben hat: Ist seine Quellgruppe bekannt und gleicht ihm eine Zeile der Gruppe (Datum, Konten, |Betrag|, wie bei jedem
 Re-Import; auch auf dem Basiskonto eines Unterkontos) – oder liegt, vom Nutzer geändert, eine freie Zeile der Gruppe in
 seinem Planjahr (siehe *Geänderter AfA-Satz*) –, bleibt die Zeile unverändert, sie zählt als gebucht
-(`future_depreciations_kept`, auch in `skipped`), und die Seite *Verschiedenes* nennt die Zahl.
+(`future_depreciations_kept`, auch in `skipped`), und die Seite *Sonstiges* nennt die Zahl.
 
 **Der Status eines Planjahrs in `AssetDepreciations` folgt der Buchung, nicht dem Datum:** `booked`, wenn der AfA-Satz der
 Anlage für das Jahr in den Büchern steht (neu angelegt, aus dem CSV-Import übernommen oder als Zeile seiner bekannten Gruppe
@@ -500,14 +490,14 @@ Anlagen – ein neuer Lauf trägt sie nach. Bestand aus einem Import bis 2.2.4 (
 
 **Zweck:** Bankbewegungen mit Empfänger und Verwendungszweck importieren
 
-**CSV-Format (6 Spalten, Standard):**
-```
-Buchungsdatum;Empf./Auft.;Verwendungszweck;Kategorie;Beleg Nr./opt. Beleg Nr.;Betrag
-```
-
-**CSV-Format (7 Spalten, erweiterter Export mit IBAN):**
+**CSV-Format (7 Spalten, mit IBAN):**
 ```
 Buchungsdatum;Empf./Auft.;Konto-Nr. / IBAN;Verwendungszweck;Kategorie;Beleg Nr.;Betrag
+```
+
+**CSV-Format (6 Spalten, ältere Exporte ohne `Konto-Nr. / IBAN`):**
+```
+Buchungsdatum;Empf./Auft.;Verwendungszweck;Kategorie;Beleg Nr./opt. Beleg Nr.;Betrag
 ```
 
 Beide Varianten werden automatisch erkannt (Format-Erkennung über `Empf./Auft.` + `Verwendungszweck`).
@@ -578,7 +568,7 @@ danach kein gültiges UTF-8 ist, wird abgelehnt.
 `SCHLUESSEL` wird in einen Steuersatz übersetzt: zuerst über die Regeln des Exports (`db/datev_keys.py`: die Schlüssel 401, 402, 7, 6,
 101, 102, 5, 4, 121 und 122, im zweiten Halbjahr 2020 mit den vertauschten Sätzen), sonst über die Tabelle `TaxKeys`. Ein Schlüssel, den
 beide nicht kennen, wird nicht geraten: Die Zeile kommt ohne Steuersatz und zählt in `unknown_tax_keys` (Hinweis auf der Seite
-*Verschiedenes*). Ein Schlüssel von 1 bis 9999 wird am Satz gespeichert (`Bookings.DatevKey`); leer, 0 und alles andere bleibt ohne –
+*Sonstiges*). Ein Schlüssel von 1 bis 9999 wird am Satz gespeichert (`Bookings.DatevKey`); leer, 0 und alles andere bleibt ohne –
 der Export leitet ihn dann ab. Der Import legt nur neue Zeilen an: Ein Duplikat bleibt, wie es ist (auch ohne Schlüssel).
 
 Beim Import aus der WISO-Datenbank liest `importers/wiso_fdb` den Schlüssel aus `DATEVVATKEY` (optionale Spalte) und die Berater- und

@@ -10,7 +10,7 @@ Pragmatische Hinweise für KI-/Coding-Agenten in diesem Repository.
 
 ## Code-Schwerpunkte
 
-- `db/`: Datenmodell, Import, Matching, EÜR-Ableitung (Domänen-Mixins; Einstieg via db-navigate-Skill, Schema in `db/schema.py`)
+- `db/`: Datenmodell, Import, Matching, EÜR-Ableitung (Domänen-Mixins; Modulüberblick in `.claude/skills/db-navigate/SKILL.md`, Schema in `db/schema.py`)
 - `server/pages_dashboard.py`: Dashboard inkl. EÜR-Tabellen
 - `server/pages_transactions.py`: Transaktionssicht (bank + entry)
 - `server/pages_miscellaneous.py`: WISO-Import, SQL-Konsole
@@ -40,6 +40,9 @@ Bei Änderungen an Import, Matching oder Dashboard-EÜR immer mitpflegen:
 3. `DB_MODEL.md` (Datenfluss und fachliche Logik)
 
 Offene Aufgaben stehen in `docs/aufgaben.md` – Erledigtes dort löschen.
+
+Verbindliche Projektregeln (Versionierung, Commit-Format, Sicherheitsregeln) stehen in `CLAUDE.md`;
+Betriebs- und Konfigurationsänderungen in `DEPLOYMENT.md` mitpflegen.
 
 ## Nicht-Ziele
 
