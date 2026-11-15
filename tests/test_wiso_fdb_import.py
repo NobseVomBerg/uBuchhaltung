@@ -428,7 +428,7 @@ def test_handler_importiert_und_leitet_um(db_with_coa, anlagenverkauf_fdb,
     monkeypatch.setattr(handlers, 'Database', lambda *a, **k: db_with_coa)
 
     status, location = handlers.handle_wiso_fdb_import(
-        db_with_coa, {'fdb_path': [anlagenverkauf_fdb], 'with_assets': ['1']})
+        db_with_coa, {'fdb_path': [anlagenverkauf_fdb], 'with_assets': ['1'], 'confirm_existing': ['1']})
     assert status == 303
     assert 'wiso_fdb=ok' in location and 'imported=3' in location
 
@@ -451,6 +451,6 @@ def test_handler_meldet_unvertraeglichkeit_statt_zu_importieren(
     path = builder.write(str(tmp_path / 'fremd.fdb'))
 
     status, location = handlers.handle_wiso_fdb_import(
-        db_with_coa, {'fdb_path': [path]})
+        db_with_coa, {'fdb_path': [path], 'confirm_existing': ['1']})
     assert status == 303
     assert 'wiso_fdb=incompatible' in location

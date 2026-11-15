@@ -592,9 +592,47 @@ kein Subagent darauf:
   als `possible_duplicates` auf der Seite. Übernommen wird per UPDATE (im Replay-Log; `adopted_rows`); die
   Ersatzsuche ohne Konto nur bei gleichem Gegenkonto – und nicht, wenn sich zwei Sätze des Imports nur im Konto
   unterscheiden
+- **Neu angelegte Sätze (seit 2.3.2):** Legt WISO Buchungen neu an (nach einem DATEV-Export oder einer Korrektur), stehen sie mit
+  neuer `ACCOUNTINGID` und sonst gleichem Inhalt in der Datenbank – die alte Quellgruppe gibt es dort nicht mehr. **Verwaist** ist
+  eine `entry` mit Quellgruppe, die in keinem Satz der Datei vorkommt (auch nicht in einem künftigen AfA-Satz, dessen Gruppe die Datei
+  ja noch nennt); der Import liest immer die ganze Datenbank, es gibt keinen Zeitraumfilter – bekäme er einen, wäre jede Zeile
+  außerhalb verwaist, und die Logik gehörte dort abgeschaltet. Jeder Satz mit **unbekannter**, nicht leerer Quellgruppe bekommt – vor
+  der Übernahme aus dem CSV-Import und vor dem Neuanlegen – eine verwaiste Zeile, wenn eine passt. **Die Zuordnung steht fest, bevor die
+  Hauptschleife läuft** (Abbildung Satz → Zeile, die Schleife schlägt nur nach) und **hängt nicht von der Reihenfolge der Sätze in der
+  Datei ab**: Die Durchgänge (`_REGROUP_PASSES`) gehen über ALLE diese Sätze in fester Ordnung nach Inhalt, die Zeilen nach ID; jede
+  Zeile dient höchstens einem Satz, jeder Satz bekommt höchstens eine Zeile. **Immer nötig:** gleiches Datum, Konto, Gegenkonto (leer =
+  leer) und **gleicher Steuersatz** (`_same_rate`) – ein anderer Satz ist nie ein Treffer (der Satz wird neu angelegt, die alte Zeile
+  bleibt verwaist). Dann nacheinander: (1) gleicher Betrag mit Vorzeichen und gleiche, nicht leere Beleg-Nr. (Leerraum zählt nicht), der
+  Text darf abweichen (`regrouped_text_differs`; die Zeile mit gleichem Text geht vor); (2) gleicher Betrag, beide ohne Beleg-Nr.,
+  gleicher nicht leerer Text; (3) gleicher Betrag, Zeile ohne Beleg-Nr., Satz mit einer in WISO nachgetragenen, gleicher nicht leerer
+  Text (die Beleg-Nr. der Zeile bleibt leer); (4) nur Altbestand: Zeile der Form `mirror_legacy` mit dem umgekehrten Betrag, sonst wie
+  (1) bis (3) – und nur, wenn kein Satz der Datei auf demselben Schlüssel (Datum, Konten, Beleg-Nr.) den Betrag der Zeile selbst trägt
+  (dieselbe Sperre wie bei der CSV-Übernahme). **Kein Rückfall auf den Absolutbetrag** für jede andere Form; eine Zeile mit Beleg-Nr.
+  passt nie zu einem Satz ohne, zwei verschiedene Nummern nie. Ein Treffer ist **kein neuer Satz**: Nur `SourceGroup` wird gesetzt
+  (UPDATE im Replay-Log, „neu angelegten Satz wiedererkannt“), jede andere Spalte bleibt – Betrag, Form, Text, Beleg-Nr., Steuer,
+  `ParentBooking_ID`, Empfänger; der Grundsatz „Kein Import ändert die Form einer vorhandenen Zeile“ gilt unverändert. Die Zeile zählt
+  für den Rest des Laufs wie eine in ihrer bekannten Gruppe wiedererkannte (derselbe Rückgabeweg wie `recognize`: `skipped`, AfA-Plan,
+  `legacy_mirrors`/`form_conflicts`, BU-Schlüssel nur wo leer). Gezählt wird `regrouped_rows`, bei abweichendem Text zusätzlich
+  `regrouped_text_differs`; die Zusammenfassung nach dem Import nennt sie (`regrouped`, `orphans` in der Weiterleitung; angezeigt nur, wenn > 0).
+  **Verwaiste Zeilen ohne Treffer** meldet der Lauf (`orphaned_rows_count`, die ersten 50 in `orphaned_rows`: ID, Datum, Betrag,
+  Kontonummern, Text) und die Seite *Verschiedenes* mit Links auf die Buchungen: Die Liste nennt Buchungen, deren Quelle (Quellgruppe)
+  in der WISO-Datenbank nicht mehr steht – dort gelöscht oder mit anderem Inhalt neu angelegt. Sie zählen in den Auswertungen weiter mit,
+  **gelöscht wird nichts**. **Eine Änderung innerhalb einer weiter bestehenden Buchungsgruppe (anderer Betrag, entfallene Teilbuchung)
+  bemerkt der Import nicht: Die vorhandene Zeile bleibt, wie sie ist.** Grenzen: Die Suche braucht dieselben Konten (ein Bestand aus
+  einem Import bis 2.2.4 auf dem Basiskonto eines Unterkontos findet keinen Treffer: neu angelegt, die Altzeile gemeldet; ebenso eine Zeile
+  aus 2.0.x auf den Konten 1000–1099, die ihren Betrag nach der alten Kassenregel trägt – sie steht bis zum Bereinigen zweimal da). Der Import ist
+  für EINE WISO-Datenbank je Bestand gedacht: Zeilen eines anderen Mandanten gelten als nicht mehr vorhanden und können bei gleichem
+  Inhalt umgehängt werden – nicht unterstützt. Rechnet WISO den AfA-Plan eines schon importierten Jahres mit anderem Betrag unter neuer
+  Gruppe neu, steht die alte AfA-Buchung in der Liste der nicht mehr vorhandenen Buchungen und die neue zusätzlich in den Büchern – bis
+  zum Bereinigen zählt das Jahr doppelt. Die verwaisten Zeilen werden einmal gelesen und nach (Datum, Konto, Gegenkonto, Betrag) abgelegt (linear)
 - Bedienung über *Verschiedenes* → „Import aus der Datenbank"; die Prüfung
   (`WisoDatabase.check`) bricht vor dem Schreiben ab, wenn die WISO-Version
-  andere Tabellen/Spalten hat
+  andere Tabellen/Spalten hat. **Der Import ist für einen leeren Bestand gedacht:** Ist `Bookings` nicht leer
+  (`Database.wiso_import_stock`: `bookings` = alle Zeilen, `wiso_rows` = `entry` mit Quellgruppe), zeigt das Formular über dem
+  Absenden einen Hinweis (ohne bzw. mit Zeilen aus einem früheren Import der WISO-Datenbank) und ein Pflicht-Kästchen
+  (`confirm_existing`, Wert genau `1`); `handlers.handle_wiso_fdb_import` prüft das vor jedem Zugriff auf die Datei und importiert
+  ohne Bestätigung nichts („Der Bestand ist nicht leer – bitte den Import ausdrücklich bestätigen.“ über den Fehlerweg der Seite).
+  `Database.import_wiso_fdb` selbst prüft nichts (Tests, Demodaten und Skripte rufen es direkt auf)
 - **Anlagen:** Anschaffungswert und Verkaufserlös stehen beide **netto** in den
   Büchern. Der Erlös trägt in WISO keine `INVENTORYID` – gemeinsam ist ihm mit
   dem Anlagegut nur der Abgangstext; ist er nicht eindeutig, bleibt das Feld
@@ -1032,7 +1070,7 @@ kein Subagent darauf:
 ## Governance
 
 - **Owner:** NobseVomBerg
-- **Letzte Aktualisierung:** 2026-11-14
+- **Letzte Aktualisierung:** 2026-11-15
 - **Modell-Versionen:** Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5 (Stand November 2026);
   `settings.json` und Agents nutzen Aliase (`fable`, `opus` …), die der neuesten Version folgen
 - **Bei Modell-Updates:** Modell-Routing oben, `.claude/settings.json` (`modelSettings`

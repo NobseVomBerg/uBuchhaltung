@@ -163,6 +163,15 @@ direkt aus der Datenbankdatei oder aus den Textexporten:
   geändertem Text, Gegenkonto oder Betrag, oder eine von Hand erfasste Buchung –,
   legt er neu an und meldet ähnliche vorhandene Buchungen als „möglicherweise
   doppelt“: lieber eine sichtbare zweite Buchung als eine still falsch übernommene.
+- Der Datenbank-Import ist für einen **leeren Bestand** und **eine** WISO-Datenbank je Bestand
+  gedacht; ein weiterer Import ist möglich, verlangt aber eine ausdrückliche Bestätigung (ein
+  Hinweis auf *Verschiedenes* nennt, was schon im Bestand steht). Legt WISO Buchungen neu an (etwa
+  nach einem DATEV-Export), erkennt der Import sie an Datum, Konten, Steuersatz, Betrag und Beleg-Nr.
+  wieder, hängt die vorhandene Buchung an die neue Kennung um und legt sie nicht doppelt an.
+  Buchungen, die es in WISO nicht mehr gibt (gelöscht oder mit anderem Inhalt neu angelegt),
+  bleiben im Bestand stehen und stehen in einer Liste auf *Verschiedenes* – gelöscht wird nichts,
+  das bleibt Handarbeit. Eine nachträgliche Änderung innerhalb einer weiter bestehenden Buchung
+  (anderer Betrag, entfallene Teilbuchung) bemerkt der Import nicht.
 
 - Der **BU-Schlüssel** der Buchung (aus der Datenbank `DATEVVATKEY`, aus dem Textexport `SCHLUESSEL`) bleibt am Buchungssatz und geht
   unverändert in den DATEV-Stapel; ein erneuter Import der Datenbank trägt ihn an schon importierten Buchungen nach – nur dort, wo er fehlt
