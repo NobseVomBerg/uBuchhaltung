@@ -10,9 +10,11 @@ zusätzlichen Elemente, kein Ausbruch aus einem Attribut), und er steht vollstä
 Markup – an seiner Stelle.
 
 Geprüft werden die Kontaktseiten, Rechnungsformular und -liste samt Suche, Angebotsformular, Artikel
-(Seite, ``?error=`` und das Ablehnen von ``nan``/``inf`` beim Speichern), Nummernkreise und das Dashboard.
-Alle Werte sind erfundene Testdaten.
+(Seite, ``?error=`` und das Ablehnen von ``nan``/``inf`` beim Speichern), Nummernkreise und das Dashboard
+(Kontenbezeichnungen der EÜR), dazu die Belegseiten (Liste, „Beleg bearbeiten“, Upload-Skript) und die
+AfA-Kategorien samt Anlagenformular (Daten der Kategorien im Skript). Alle Werte sind erfundene Testdaten.
 """
+import datetime
 import html as html_lib
 import json
 import re
@@ -21,11 +23,13 @@ import urllib.parse
 
 import pytest
 
+from server.pages_assets import PageAssetCategories, PageAssets
 from server.pages_contacts import ENTITY_TYPES, PageContactEdit, PageContactNew, PageContacts, _entity_type
 from server.pages_dashboard import PageDashboard
 from server.pages_invoice import PageInvoice
 from server.pages_masterdata import PageArticles, PageNumberRanges
 from server.pages_quote import PageQuote
+from server.pages_receipts import PageReceiptEdit, PageReceipts
 from tests.document_helpers import add_contacts, add_document, table_rows
 from tests.dom_helpers import Dom, app_msg_arguments, assert_same_structure, data_block
 from tests.http_client import get, post
@@ -49,6 +53,14 @@ def sql(db, statement, *args):
     try:
         con.execute(statement, args)
         con.commit()
+    finally:
+        con.close()
+
+
+def sql_value(db, statement, *args):
+    con = sqlite3.connect(db.db_name)
+    try:
+        return con.execute(statement, args).fetchone()[0]
     finally:
         con.close()
 
@@ -498,3 +510,215 @@ def test_dashboard_account_label_shows_a_hostile_name_as_text(tmp_db):
     assert Dom(html).all('img') == []
     sql(tmp_db, "UPDATE Accounts SET Name = 'Girokonto' WHERE Name = ?", IMG)
     assert_same_structure(html, PageDashboard(tmp_db))
+
+
+# ── Belege, AfA-Kategorien und die Konten der EÜR im Dashboard ───────────────
+MIXED = "O'Brien & Söhne <b>fett</b>"          # Hochkomma, kaufmännisches Und und ein Tag in einem Wert
+
+
+def _receipt_id(db, number):
+    return db.get_receipt_by_number(number)[0]
+
+
+def test_receipt_edit_page_puts_hostile_values_complete_and_escaped_into_the_fields(tmp_db):
+    tmp_db.insert_receipt(BREAK, BREAK_SCRIPT, IMG, SCRIPT, MIXED)
+    receipt = _receipt_id(tmp_db, BREAK)
+    hostile = PageReceiptEdit(tmp_db, BREAK)
+    for raw in (IMG, SCRIPT, BREAK, BREAK_SCRIPT):
+        assert raw not in hostile, raw
+    assert [a['value'] for a in inputs(hostile, name='number')] == [BREAK]
+    assert [a['value'] for a in inputs(hostile, name='date')] == [BREAK_SCRIPT]
+    assert [a['value'] for a in inputs(hostile, name='filename')] == [IMG]
+    assert [a['value'] for a in inputs(hostile, name='path')] == [SCRIPT]
+    assert [a['value'] for a in inputs(hostile, name='info')] == [MIXED]
+    assert escaped(MIXED) in hostile                              # `'`, `&` und `<` stehen maskiert im Attribut
+    assert [a['value'] for a in inputs(hostile, name='id')] == [str(receipt)]
+    assert Dom(hostile).all('img') == []
+    tmp_db.update_receipt(receipt, '26-001', '2026-01-01', 'beleg.pdf', 'Belege/beleg.pdf', 'Info')
+    assert_same_structure(hostile, PageReceiptEdit(tmp_db, '26-001'))
+
+
+def test_receipt_edit_page_shows_a_stored_null_as_an_empty_field(tmp_db):
+    tmp_db.insert_receipt('26-001', '2026-01-01', 'beleg.pdf', None, None)
+    html = PageReceiptEdit(tmp_db, '26-001')
+    assert [a['value'] for a in inputs(html, name='path')] == [''] and [a['value'] for a in inputs(html, name='info')] == ['']
+
+
+def test_receipt_edit_page_shows_the_linked_bookings_as_text(tmp_db):
+    tmp_db.insert_receipt('26-001', '2026-01-01', 'beleg.pdf', 'Belege/beleg.pdf', 'Info')
+    receipt = _receipt_id(tmp_db, '26-001')
+    booking = tmp_db.insert_booking('2026-01-15', 100.0, recipient_client=IMG, booking_type='entry')
+    tmp_db.link_booking_to_document(booking, receipt, relation_type=BREAK)
+    sql(tmp_db, 'UPDATE Bookings SET DateBooking = ? WHERE ID = ?', SCRIPT, booking)
+    html = PageReceiptEdit(tmp_db, '26-001')
+    assert IMG not in html and SCRIPT not in html and BREAK not in html
+    row = next(r for r in table_rows(html) if IMG in r)
+    assert row[:5] == [str(booking), SCRIPT, IMG, '100,00', BREAK]       # Empfänger, Datum und Typ: als Text
+    assert Dom(html).all('img') == []
+    # Die Adressen tragen nur die IDs, prozentkodiert (hier Zahlen: unverändert)
+    assert f"appPost('/documents/unlink?doc_id={receipt}&booking_id={booking}')" in html_lib.unescape(html)
+    assert f"/transactions/edit?id={booking}'" in html
+
+
+def test_receipts_page_shows_hostile_values_as_text_and_in_the_data_attributes(tmp_db):
+    tmp_db.insert_receipt(BREAK, BREAK_SCRIPT, IMG, SCRIPT, MIXED)
+    hostile = PageReceipts(tmp_db)
+    for raw in (IMG, SCRIPT, BREAK, BREAK_SCRIPT):
+        assert raw not in hostile, raw
+    rows = [a for a in Dom(hostile).all('tr') if 'receipt-row' in a.get('class', '').split()]
+    assert len(rows) == 1
+    assert (rows[0]['data-number'], rows[0]['data-date'], rows[0]['data-filename'], rows[0]['data-path'],
+            rows[0]['data-info']) == (BREAK, BREAK_SCRIPT, IMG, SCRIPT, MIXED)
+    cells = next(r for r in table_rows(hostile) if IMG in r)
+    assert cells[:5] == [BREAK, BREAK_SCRIPT, IMG, SCRIPT, MIXED]
+    # Löschen: Die Nummer steht prozentkodiert in der Adresse innerhalb des onclick
+    delete = [a['onclick'] for a in Dom(hostile).all('a') if 'delete-icon' in a.get('class', '').split()]
+    assert delete == ["appConfirmPost('/receipts/delete?number=" + urllib.parse.quote(BREAK, safe='')
+                      + "', 'Beleg wirklich löschen?')"]
+    assert Dom(hostile).all('img') == []
+    sql(tmp_db, "UPDATE Documents SET Number = '26-001', Date = '2026-01-01', Filename = 'beleg.pdf', "
+                "Path = 'Belege', Info = 'Info'")
+    assert_same_structure(hostile, PageReceipts(tmp_db))
+
+
+def test_receipts_page_escapes_the_proposed_number(tmp_db):
+    # Der Vorschlag folgt dem Nummernkreis (Zusatz frei eintippbar) und steht als Attributwert im Formular
+    year = datetime.datetime.now().year
+    tmp_db.insert_number_range('receipt_company', year, 'B', prefix=BREAK, current_number=3)
+    html = PageReceipts(tmp_db)
+    proposal = [a['value'] for a in inputs(html, id='editNumber')]
+    assert len(proposal) == 1 and proposal[0].endswith(BREAK)
+    assert BREAK not in html and escaped(BREAK) in html
+
+
+def test_receipts_upload_script_shows_the_server_answer_as_text_only(tmp_db):
+    # Die Antwort enthält Dateinamen und Fehlertexte: nie per innerHTML/document.write in die Seite setzen
+    scripts = Dom(PageReceipts(tmp_db)).scripts
+    own = [s for s in scripts if 'uploadFiles' in s or 'editReceiptFromRow' in s]
+    assert len(own) == 2
+    for script in own:
+        assert 'innerHTML' not in script and 'document.write' not in script and 'outerHTML' not in script
+        assert "'<p" not in script and '"<p' not in script                   # kein HTML aus Zeichenketten
+    upload = next(s for s in own if 'uploadFiles' in s)
+    assert "document.createElement('p')" in upload and 'note.textContent = text' in upload
+    assert "showUploadStatus(data, 'successColor')" in upload
+    assert "showUploadStatus('Fehler beim Hochladen: ' + error, 'errorColor')" in upload
+
+
+def test_asset_category_page_shows_hostile_values_as_text_and_in_the_fields(tmp_db):
+    coa = tmp_db.fetch_chart_of_accounts()[0]
+    tmp_db.insert_asset_category(BREAK, 7, 'linear', coa[0], MIXED)
+    category = next(c[0] for c in tmp_db.fetch_asset_categories() if c[1] == BREAK)
+    sql(tmp_db, 'UPDATE ChartOfAccounts SET Name = ? WHERE ID = ?', IMG, coa[0])
+    listing = PageAssetCategories(tmp_db)
+    assert BREAK not in listing and IMG not in listing and MIXED not in listing
+    row = next(r for r in table_rows(listing) if BREAK in r)
+    assert row[1:3] == [BREAK, '7'] and row[4] == f'{coa[2]} {IMG}' and row[5] == MIXED
+    assert Dom(listing).all('img') == []
+    edit = PageAssetCategories(tmp_db, edit_category_id=category)
+    assert [a['value'] for a in inputs(edit, name='name')] == [BREAK]
+    assert [a['value'] for a in inputs(edit, name='notes')] == [MIXED]
+    assert [a['value'] for a in inputs(edit, name='useful_life_years')] == ['7']
+    assert [a['value'] for a in inputs(edit, name='category_id')] == [str(category)]
+    assert escaped(IMG) in edit and IMG not in edit and BREAK not in edit and MIXED not in edit
+    assert Dom(edit).all('img') == []
+    tmp_db.update_asset_category(category, 'Probe', 7, 'linear', coa[0], 'Text')
+    sql(tmp_db, 'UPDATE ChartOfAccounts SET Name = ? WHERE ID = ?', 'Konto', coa[0])
+    assert_same_structure(listing, PageAssetCategories(tmp_db))
+    assert_same_structure(edit, PageAssetCategories(tmp_db, edit_category_id=category))
+
+
+SCRIPT_BREAK = '</script><script>alert(1)</script>'          # beendete einen <script>-Block, stünde er roh darin
+
+
+def test_asset_form_hands_the_category_data_to_the_script_as_json_and_a_hostile_useful_life_stays_data(tmp_db):
+    categories = tmp_db.fetch_asset_categories()
+    hostile_id, normal_id, normal_years = categories[0][0], categories[1][0], categories[1][2]
+    sql(tmp_db, 'UPDATE AssetCategories SET UsefulLifeYears = ? WHERE ID = ?', SCRIPT_BREAK, hostile_id)
+    hostile = PageAssets(tmp_db)
+    assert SCRIPT_BREAK not in hostile and '<script>alert(1)' not in hostile
+    data = data_block(Dom(hostile), 'catData')                     # gültiges JSON, nicht mehr von Hand zusammengesetzt
+    assert data[str(hostile_id)]['years'] == SCRIPT_BREAK          # als Text in den Daten, nicht als Markup
+    assert data[str(normal_id)]['years'] == normal_years and isinstance(data[str(normal_id)]['years'], int)
+    assert data[str(normal_id)]['method'] in ('linear', 'degressive')
+    assert len(data) == len(categories) and all(set(v) == {'years', 'method'} for v in data.values())
+    assert f'({escaped(SCRIPT_BREAK)} J.,' in hostile              # die Beschriftung der Option ist maskiert
+    sql(tmp_db, 'UPDATE AssetCategories SET UsefulLifeYears = 5 WHERE ID = ?', hostile_id)
+    assert_same_structure(hostile, PageAssets(tmp_db))             # derselbe Aufbau wie mit einer Zahl
+
+
+def test_asset_form_keeps_numbers_as_numbers_in_the_category_data(tmp_db):
+    data = data_block(Dom(PageAssets(tmp_db)), 'catData')
+    categories = {str(c[0]): c for c in tmp_db.fetch_asset_categories()}
+    assert set(data) == set(categories)
+    for key, entry in data.items():
+        assert entry['years'] == categories[key][2] and isinstance(entry['years'], int), key
+        assert entry['method'] == ('degressive' if categories[key][3] in ('degressive', 'both') else 'linear'), key
+
+
+@pytest.mark.parametrize('value', [2.5, '7', 'sieben', SCRIPT_BREAK])
+def test_asset_form_category_data_stays_valid_json_for_any_stored_useful_life(tmp_db, value):
+    category = tmp_db.fetch_asset_categories()[0][0]
+    sql(tmp_db, 'UPDATE AssetCategories SET UsefulLifeYears = ? WHERE ID = ?', value, category)
+    html = PageAssets(tmp_db)
+    years = data_block(Dom(html), 'catData')[str(category)]['years']
+    assert years == (7 if value == '7' else value)                  # '7' liest SQLite (Spalte INTEGER) als Zahl 7
+    assert SCRIPT_BREAK not in html
+
+
+def test_asset_form_shows_a_hostile_parent_id_as_a_value_only(tmp_db):
+    tmp_db.insert_asset(name='Laptop', description='', purchase_date='2026-01-01', purchase_price=1000,
+                        useful_life_years=3, depreciation_method='linear', serial_number='', location='', notes='')
+    asset = sql_value(tmp_db, 'SELECT ID FROM Assets')
+    sql(tmp_db, 'UPDATE Assets SET Parent_ID = ? WHERE ID = ?', BREAK, asset)
+    html = PageAssets(tmp_db, edit_id=asset)
+    assert BREAK not in html and Dom(html).all('img') == []
+    assert [a['value'] for a in inputs(html, name='parent_id')] == [BREAK]
+    assert [a['value'] for a in inputs(html, name='asset_id')][0] == str(asset)        # das Formular ist das erste mit der ID
+
+
+def test_asset_category_page_shows_a_hostile_useful_life_as_text(tmp_db):
+    category = tmp_db.fetch_asset_categories()[0][0]
+    sql(tmp_db, 'UPDATE AssetCategories SET UsefulLifeYears = ? WHERE ID = ?', SCRIPT_BREAK, category)
+    listing = PageAssetCategories(tmp_db)
+    edit = PageAssetCategories(tmp_db, edit_category_id=category)
+    assert SCRIPT_BREAK not in listing and SCRIPT_BREAK not in edit
+    assert next(r for r in table_rows(listing) if r[0] == str(category))[2] == SCRIPT_BREAK
+    assert [a['value'] for a in inputs(edit, name='useful_life_years')] == [SCRIPT_BREAK]
+
+
+def test_asset_category_page_passes_the_id_in_the_addresses_percent_encoded(tmp_db):
+    tmp_db.insert_asset_category('Probe', 5, 'linear', None, '')
+    category = next(c[0] for c in tmp_db.fetch_asset_categories() if c[1] == 'Probe')
+    html = PageAssetCategories(tmp_db)
+    clicks = [a['onclick'] for a in Dom(html).all('a') if a.get('onclick')
+              and f'id={category}' in a['onclick']]
+    assert clicks == [f"openEditForm('/asset_categories/edit?id={category}')",
+                      f"appConfirmPost('/asset_categories/delete?id={category}', 'Kategorie wirklich löschen?')"]
+
+
+def test_dashboard_euer_shows_hostile_account_names_as_text(db_with_coa):
+    db = db_with_coa
+    bank = next(a[0] for a in db.fetch_accounts() if a[1] == 'Testbank')
+    coa = {c[2]: c[0] for c in db.fetch_chart_of_accounts()}          # Kontonummer -> ID
+    parent = db.insert_booking('2024-01-15', 119.0, account_id=bank, booking_type='bank')
+    db.insert_booking('2024-01-15', 119.0, coa_id=coa[1800], counter_coa_id=coa[4400], tax_rate=0.19,
+                      tax_amount=19.0, booking_type='entry', parent_booking_id=parent)
+    parent = db.insert_booking('2024-02-10', -119.0, account_id=bank, booking_type='bank')
+    db.insert_booking('2024-02-10', -119.0, coa_id=coa[6815], counter_coa_id=coa[1800], tax_rate=0.19,
+                      tax_amount=-19.0, booking_type='entry', parent_booking_id=parent)
+    parent = db.insert_booking('2024-03-10', -50.0, account_id=bank, booking_type='bank')
+    db.insert_booking('2024-03-10', -50.0, coa_id=coa[3740], counter_coa_id=coa[1800],
+                      booking_type='entry', parent_booking_id=parent)
+    numbers = (4400, 3806, 6815, 1406, 3740)              # Erlöse, virtuelle USt, Aufwand, virtuelle Vorsteuer, Sonstige
+    for number in numbers:
+        sql(db, 'UPDATE ChartOfAccounts SET Name = ? WHERE AccountNumber = ?', IMG, number)
+    hostile = PageDashboard(db, '2024-01-01', '2024-12-31')
+    assert IMG not in hostile and escaped(IMG) in hostile
+    rows = {r[0]: r for r in table_rows(hostile) if r and r[0].isdigit()}
+    for number in numbers:
+        assert rows[str(number)][1] == IMG, number                  # die Bezeichnung steht als Text in der Zelle
+    assert Dom(hostile).all('img') == []
+    for number in numbers:
+        sql(db, 'UPDATE ChartOfAccounts SET Name = ? WHERE AccountNumber = ?', 'Konto', number)
+    assert_same_structure(hostile, PageDashboard(db, '2024-01-01', '2024-12-31'))

@@ -1120,6 +1120,22 @@ def handle_datev_export(db: Database, post_data: dict):
         return 303, f'/miscellaneous?datev_export=error&msg={msg}'
 
 
+#: Größte Anfrage des Logo-Uploads in Bytes (die Datei samt Multipart-Rahmen); die Grenze gilt vor dem Lesen
+MAX_LOGO_BYTES = 5 * 1024 * 1024
+
+LOGO_TYPE_ERROR = 'Nur Bilddateien (PNG, JPG, GIF, WEBP) sind als Logo erlaubt.'
+LOGO_SIZE_ERROR = f'Das Logo ist zu groß (höchstens {MAX_LOGO_BYTES // (1024 * 1024)} MB).'
+
+
+def _logo_refusal(message, request_handler=None):
+    """Ablehnung des Logo-Uploads als JSON. Mit ``request_handler`` wurde der Body NICHT gelesen: Die
+    Verbindung wird nach der Antwort geschlossen, sonst läse der Server die ungelesenen Bytes als nächste
+    Anfrage (Keep-Alive)."""
+    if request_handler is not None:
+        request_handler.close_connection = True
+    return json.dumps({'success': False, 'error': message}).encode()
+
+
 def handle_logo_upload(request_handler):
     """Logo-/Bild-Datei eines Kontakts hochladen (Multipart, Feld 'logofile').
 
@@ -1127,35 +1143,48 @@ def handle_logo_upload(request_handler):
     die Datei tatsächlich nach data/logos/ gespeichert und der serverseitige Pfad
     zurückgegeben, den das Logo-Feld dann übernimmt.
 
+    Angenommen werden nur Bilddateien (Positivliste ``export.pdf_core.LOGO_CONTENT_TYPES``), deren
+    Anfang zur Endung passt, bis ``MAX_LOGO_BYTES``. Die Größe prüft ``Content-Length`` vor dem Lesen: Fehlt
+    sie, ist sie keine Zahl, 0 oder zu groß, wird abgelehnt, ohne den Body zu lesen.
+
     Returns: JSON-bytes {'success': bool, 'path'|'error': str}
     """
     import os
     import re as _re_logo
+    from export.pdf_core import logo_content_matches, logo_extension
     from .multipart import first_file
 
     content_type = request_handler.headers.get('Content-Type', '')
     if 'multipart/form-data' not in content_type:
-        return json.dumps({'success': False, 'error': 'Kein Multipart-Upload'}).encode()
-    length = int(request_handler.headers.get('Content-Length', 0))
+        return _logo_refusal('Kein Multipart-Upload', request_handler)
+    declared = (request_handler.headers.get('Content-Length') or '').strip()
+    if not (declared.isascii() and declared.isdigit()) or int(declared) == 0:
+        return _logo_refusal('Keine Datei empfangen', request_handler)
+    length = int(declared)
+    if length > MAX_LOGO_BYTES:
+        return _logo_refusal(LOGO_SIZE_ERROR, request_handler)
     raw = request_handler.rfile.read(length)
     part = first_file(content_type, raw)
     if not part or not part.content:
-        return json.dumps({'success': False, 'error': 'Keine Datei empfangen'}).encode()
+        return _logo_refusal('Keine Datei empfangen')
 
     base = os.path.basename(part.filename or 'logo')
     safe = _re_logo.sub(r'[^A-Za-z0-9._-]', '_', base) or 'logo'
-    if '.' not in safe:
-        safe += '.png'
+    extension = logo_extension(safe)
+    if not extension or not logo_content_matches(extension, part.content):
+        return _logo_refusal(LOGO_TYPE_ERROR)
     # Physisch im logos-Verzeichnis des aktuellen Nutzers ablegen; in der DB und
     # nach außen bleibt der logische Pfad 'data/logos/<datei>' (kein Username in
     # der URL – der Static-Handler löst ihn pro Nutzer auf).
     import userctx
-    physical = os.path.join(userctx.user_subdir('logos'), safe)
     try:
+        physical = os.path.join(userctx.user_subdir('logos'), safe)
         with open(physical, 'wb') as f:
             f.write(part.content)
-    except Exception as e:
-        return json.dumps({'success': False, 'error': f'Speichern fehlgeschlagen: {e}'}).encode()
+    except Exception:
+        import traceback
+        traceback.print_exc()                      # Einzelheiten (Pfade) nur ins Server-Log
+        return _logo_refusal('Speichern fehlgeschlagen.')
     logical = '/'.join(('data', 'logos', safe))
     return json.dumps({'success': True, 'path': logical}).encode()
 
@@ -2606,10 +2635,10 @@ def handle_send_invoice_email(post_body: bytes):
         else:
             return json.dumps({'success': False, 'error': error}).encode()
             
-    except Exception as e:
+    except Exception:
         import traceback
-        traceback.print_exc()
-        return json.dumps({'success': False, 'error': str(e)}).encode()
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
+        return json.dumps({'success': False, 'error': 'Fehler beim E-Mail-Versand.'}).encode()
 
 
 # ─── Asset-Handler ───────────────────────────────────────────────────────────

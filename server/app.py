@@ -12,6 +12,7 @@ import json
 import socket
 import unicodedata
 from db import Database, MigrationBackupError, SchemaTooNewError
+from export.pdf_core import LOGO_CONTENT_TYPES, logo_extension
 import os
 import auth
 import demo
@@ -247,6 +248,14 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         self.send_header('X-Frame-Options', 'DENY')
 
         super().end_headers()                                           # Call the Base
+
+    def send_error(self, code, message=None, explain=None):
+        # Kaputte Anfragezeile: Bis dahin gilt die Anfrage als HTTP/0.9, und je nach Patch-Stand
+        # der Standardbibliothek ginge die Fehlerantwort dann ohne Statuszeile und ohne Header
+        # hinaus – also auch ohne die Schutz-Header aus end_headers. Fehler bekommen immer beides.
+        if getattr(self, 'request_version', '') == 'HTTP/0.9':
+            self.request_version = ''
+        super().send_error(code, message, explain)
 
     def send_header(self, keyword, value):
         # Letzte Sicherung gegen Header-Injection, egal woher ein Wert stammt (Query,
@@ -1069,23 +1078,32 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 # Logos liegen im logos-Verzeichnis des angemeldeten Nutzers
                 # (data/users/<Name>/logos). Es wird nur der Dateiname genutzt,
                 # gegen das Nutzerverzeichnis aufgeloest → kein Cross-User-Zugriff,
-                # kein Path-Traversal.
+                # kein Path-Traversal. Ausgeliefert werden nur Bilddateien
+                # (Positivliste LOGO_CONTENT_TYPES): kein SVG/HTML aus dem Ursprung der App.
                 from urllib.parse import unquote
                 fname = os.path.basename(unquote(self.path.split('?', 1)[0]))
                 base = os.path.realpath(userctx.user_subdir('logos', create=False))
-                target = os.path.realpath(os.path.join(base, fname))
-                if (target == base or target.startswith(base + os.sep)) and os.path.isfile(target):
+                try:
+                    target = os.path.realpath(os.path.join(base, fname))
+                except ValueError:               # z. B. %00 im Namen: so eine Datei gibt es nicht (nicht: 500)
+                    target = ''
+                if (logo_extension(fname) and logo_extension(target)
+                        and (target == base or target.startswith(base + os.sep)) and os.path.isfile(target)):
                     self.serve_static_file(target, self.guess_content_type(target))
                 else:
                     self.respond(404, "Datei nicht gefunden.")
             elif self.path.startswith("/seed_data/private/"):
                 # Geteilte Privat-Seed-Logos (nur Eigentümer-Setup) – global,
-                # mit Path-Traversal-Schutz.
+                # mit Path-Traversal-Schutz und derselben Positivliste wie oben.
                 from urllib.parse import unquote
                 rel_path = unquote(self.path.split('?', 1)[0])[1:]
                 base = os.path.realpath("seed_data/private")
-                target = os.path.realpath(rel_path)
-                if (target == base or target.startswith(base + os.sep)) and os.path.isfile(target):
+                try:
+                    target = os.path.realpath(rel_path)
+                except ValueError:               # z. B. %00 im Pfad: so eine Datei gibt es nicht (nicht: 500)
+                    target = ''
+                if (logo_extension(rel_path) and logo_extension(target)
+                        and (target == base or target.startswith(base + os.sep)) and os.path.isfile(target)):
                     self.serve_static_file(target, self.guess_content_type(target))
                 else:
                     self.respond(404, "Datei nicht gefunden.")
@@ -1133,17 +1151,12 @@ class SimpleWebServer(BaseHTTPRequestHandler):
     
     def guess_content_type(self, filename):
         """Guess content type based on file extension"""
-        if filename.endswith('.png'):
-            return 'image/png'
-        elif filename.endswith('.jpg') or filename.endswith('.jpeg'):
-            return 'image/jpeg'
-        elif filename.endswith('.gif'):
-            return 'image/gif'
-        elif filename.endswith('.svg'):
-            return 'image/svg+xml'
-        elif filename.endswith('.css'):
+        extension = os.path.splitext(filename)[1].lower()
+        if extension in LOGO_CONTENT_TYPES:
+            return LOGO_CONTENT_TYPES[extension]
+        elif extension == '.css':
             return 'text/css'
-        elif filename.endswith('.js'):
+        elif extension == '.js':
             return 'application/javascript'
         else:
             return 'application/octet-stream'
@@ -1194,6 +1207,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.send_header("Content-Length", str(len(response_data)))
+            if self.close_connection:            # abgelehnt, ohne den Body zu lesen (handle_logo_upload)
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(response_data)
             return

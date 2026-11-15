@@ -6,6 +6,7 @@ Asset management pages (Anlagenverzeichnis)
 """
 import datetime
 import html as _html
+from urllib.parse import quote
 from db import Database
 from db.assets import METHOD_BOOKED
 from db.matching import ASSET_ACCOUNT_RANGE
@@ -14,6 +15,11 @@ from .pages import Header1, Header2, Header3, Footer, script_json
 
 
 # ─── Helper ──────────────────────────────────────────────────────────────────
+
+def _esc(value):
+    """Wert aus Datenbank oder Anfrage für HTML-Text und -Attribute maskieren (NULL = leer)."""
+    return _html.escape(str(value if value is not None else ''), quote=True)
+
 
 def _status_label(status):
     # ein unbekannter Wert kommt aus der Datenbank (SQL-Konsole, Sicherung) und wird maskiert
@@ -393,37 +399,39 @@ def _asset_form(db: Database, asset=None, parent_asset=None):
 
     s += f'<form method="POST" action="{action}">'
     if is_edit:
-        s += f'<input type="hidden" name="asset_id" value="{asset_id}">'
-    s += f'<input type="hidden" name="parent_id" value="{v["parent_id"]}">'
+        s += f'<input type="hidden" name="asset_id" value="{_esc(asset_id)}">'
+    s += f'<input type="hidden" name="parent_id" value="{_esc(v["parent_id"])}">'
 
-    # Category select – with JS prefill of useful_life and method
-    cat_json = '{'
+    # Category select – with JS prefill of useful_life and method. Die Nutzungsdauer ist eine Zahl; steht in der
+    # Datenbank etwas anderes (SQL-Konsole, Sicherung), geht es als Text durch script_json und bleibt Daten.
+    cat_data = {}
     for c in categories:
         method_val = 'degressive' if c[3] in ('degressive', 'both') else 'linear'
-        cat_json += f'"{c[0]}": {{"years": {c[2]}, "method": "{method_val}"}}, '
-    cat_json += '}'
+        years = c[2] if c[2] is None or isinstance(c[2], (int, float)) else str(c[2])
+        cat_data[str(c[0])] = {'years': years, 'method': method_val}
+    cat_json = script_json(cat_data)
 
     cat_options = '<option value="">-- keine Kategorie --</option>'
     for c in categories:
         sel = 'selected' if str(v['cat']) == str(c[0]) else ''
-        cat_options += f'<option value="{c[0]}" {sel}>{_html.escape(str(c[1] or ""))} ({c[2]} J., {_method_label(c[3])})</option>'
+        cat_options += f'<option value="{_esc(c[0])}" {sel}>{_esc(c[1])} ({_esc(c[2])} J., {_method_label(c[3])})</option>'
 
     coa_options = '<option value="">-- keines --</option>'
     for c in coa_rows:
         sel = 'selected' if str(v['coa']) == str(c[0]) else ''
         if not (c[7] if len(c) > 7 else 1) and not sel:
             continue
-        coa_options += f'<option value="{c[0]}" {sel}>{_html.escape(str(c[2] or ""))} {_html.escape(str(c[3] or ""))}</option>'
+        coa_options += f'<option value="{_esc(c[0])}" {sel}>{_esc(c[2])} {_esc(c[3])}</option>'
 
     supplier_options = '<option value="">-- keiner --</option>'
     for c in suppliers:
         sel = 'selected' if str(v['supplier']) == str(c[0]) else ''
-        supplier_options += f'<option value="{c[0]}" {sel}>{_html.escape(str(c[3] or c[4] or ""))} ({_html.escape(str(c[1] or ""))})</option>'
+        supplier_options += f'<option value="{_esc(c[0])}" {sel}>{_esc(c[3] or c[4])} ({_esc(c[1])})</option>'
 
     doc_options = '<option value="">-- kein Beleg --</option>'
     for d in documents:
         sel = 'selected' if str(v['document']) == str(d[0]) else ''
-        doc_options += f'<option value="{d[0]}" {sel}>{_html.escape(str(d[1] or ""))} – {_html.escape(str(d[2] or ""))}</option>'
+        doc_options += f'<option value="{_esc(d[0])}" {sel}>{_esc(d[1])} – {_esc(d[2])}</option>'
 
     method_lin = 'selected' if v['method'] == 'linear' else ''
     method_deg = 'selected' if v['method'] == 'degressive' else ''
@@ -608,7 +616,7 @@ def PageAssetCategories(db: Database, edit_category_id=None):
     """
     categories = db.fetch_asset_categories()
     coa_rows = db.fetch_chart_of_accounts()
-    coa_map = {str(c[0]): f"{c[2]} {c[3]}" for c in coa_rows}
+    coa_map = {str(c[0]): _esc(f"{c[2]} {c[3]}") for c in coa_rows}     # maskiert: steht so in der Tabelle
 
     # AssetCategories (SELECT *): [0]ID [1]Name [2]UsefulLifeYears
     #                             [3]DepreciationMethod [4]COA_ID [5]Notes
@@ -621,11 +629,12 @@ def PageAssetCategories(db: Database, edit_category_id=None):
 
     # Formular-Werte (Bearbeiten oder Neu)
     form_title = "Kategorie bearbeiten" if edit_cat else "Neue Kategorie"
-    ec_name   = edit_cat[1] if edit_cat else ''
-    ec_years  = edit_cat[2] if edit_cat else ''
+    # Name, Jahre und Notizen stammen aus der Datenbank und stehen als Attributwert im Formular
+    ec_name   = _esc(edit_cat[1]) if edit_cat else ''
+    ec_years  = _esc(edit_cat[2]) if edit_cat else ''
     ec_method = edit_cat[3] if edit_cat else 'linear'
     ec_coa    = edit_cat[4] if edit_cat else ''
-    ec_notes  = (edit_cat[5] or '') if edit_cat else ''
+    ec_notes  = _esc(edit_cat[5]) if edit_cat else ''
 
     method_opts = ''
     for val, label in [('linear', 'Linear'), ('degressive', 'Degressiv'), ('both', 'Linear oder Degressiv')]:
@@ -637,9 +646,9 @@ def PageAssetCategories(db: Database, edit_category_id=None):
         sel = 'selected' if ec_coa and str(ec_coa) == str(c[0]) else ''
         if not (c[7] if len(c) > 7 else 1) and not sel:
             continue
-        coa_options += f'<option value="{c[0]}" {sel}>{_html.escape(str(c[2] or ""))} {_html.escape(str(c[3] or ""))}</option>'
+        coa_options += f'<option value="{_esc(c[0])}" {sel}>{_esc(c[2])} {_esc(c[3])}</option>'
 
-    id_row = (f'<input type="hidden" name="category_id" value="{edit_cat[0]}">'
+    id_row = (f'<input type="hidden" name="category_id" value="{_esc(edit_cat[0])}">'
               if edit_cat else '')
 
     if edit_cat:
@@ -675,17 +684,20 @@ def PageAssetCategories(db: Database, edit_category_id=None):
     '''
     for c in categories:
         coa_label = coa_map.get(str(c[4]), '–') if c[4] else '–'
+        # In den Adressen innerhalb des onclick steht die ID prozentkodiert (ein nur
+        # HTML-maskiertes Hochkomma löst der Browser dort wieder auf)
+        cat_url = quote(str(c[0]), safe='')
         s += f'''<tr>
-            <td>{c[0]}</td>
-            <td>{c[1]}</td>
-            <td style="text-align:center;">{c[2]}</td>
+            <td>{_esc(c[0])}</td>
+            <td>{_esc(c[1])}</td>
+            <td style="text-align:center;">{_esc(c[2])}</td>
             <td>{_method_label(c[3])}</td>
             <td>{coa_label}</td>
-            <td class="muted">{c[5] or ''}</td>
+            <td class="muted">{_esc(c[5])}</td>
             <td>
-                <a href="javascript:void(0)" onclick="openEditForm('/asset_categories/edit?id={c[0]}')" class="action-icon" title="Bearbeiten">&#9998;</a>
+                <a href="javascript:void(0)" onclick="openEditForm('/asset_categories/edit?id={cat_url}')" class="action-icon" title="Bearbeiten">&#9998;</a>
                 <a href="javascript:void(0);" class="action-icon delete-icon" title="Löschen"
-                   onclick="appConfirmPost('/asset_categories/delete?id={c[0]}', 'Kategorie wirklich löschen?')">&#128465;</a>
+                   onclick="appConfirmPost('/asset_categories/delete?id={cat_url}', 'Kategorie wirklich löschen?')">&#128465;</a>
             </td>
         </tr>'''
 

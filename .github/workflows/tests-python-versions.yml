@@ -1,0 +1,51 @@
+# Lässt die pytest-Suite mit den Python-Versionen laufen, die neuer sind als die
+# des Docker-Images (dort und in tests.yml: 3.13). Die Suite braucht je Version
+# gut 20 Minuten – deshalb nicht bei jedem Push, sondern einmal in der Woche und
+# von Hand (Actions → „Tests (weitere Python-Versionen)“ → „Run workflow“,
+# z. B. vor einer größeren Veröffentlichung).
+#
+# Kommt eine neue Python-Version heraus, hier in der Liste ergänzen. Schlägt
+# eine Version fehl, laufen die anderen weiter (fail-fast: false).
+name: Tests (weitere Python-Versionen)
+
+on:
+  schedule:
+    # sonntags 03:17 UTC
+    - cron: '17 3 * * 0'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: tests-python-versions
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.14', '3.15']
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Abhängigkeiten installieren
+        run: pip install -r requirements-dev.txt
+
+      - name: pytest
+        run: python -m pytest -q -rs

@@ -1,6 +1,6 @@
 # Datenbankmodell uBuchhaltung
 
-**Stand:** Version 2.3.2 (Schema 2003)
+**Stand:** Version 2.3.3 (Schema 2003)
 **DBMS:** SQLite 3
 **Datei:** `data/users/<Name>/buch.db`
 

@@ -69,10 +69,19 @@ def test_resolve_logo_none_and_url():
 
 
 def test_resolve_logo_existing_path(tmp_path):
-    f = tmp_path / 'logo.png'
-    f.write_bytes(b'\x89PNG')
-    got = resolve_logo_path(str(f))
-    assert got and os.path.samefile(got, str(f))
+    """Ein Logo ist nur eine Datei im logos-Verzeichnis des Nutzers – gleich, wie der gespeicherte
+    Wert sie nennt. Ein absoluter Pfad woanders ist keines (weitere Fälle: test_logo_rules.py)."""
+    import userctx
+    inside = os.path.join(userctx.user_subdir('logos'), 'logo.png')
+    with open(inside, 'wb') as f:
+        f.write(b'\x89PNG')
+    elsewhere = tmp_path / 'woanders' / 'anderes.png'
+    elsewhere.parent.mkdir()
+    elsewhere.write_bytes(b'\x89PNG')
+    for value in (inside, 'data/logos/logo.png', 'logo.png'):
+        got = resolve_logo_path(value)
+        assert got and os.path.samefile(got, inside), value
+    assert resolve_logo_path(str(elsewhere)) is None
 
 
 def test_resolve_logo_logical_maps_to_user_logos(tmp_path, monkeypatch):

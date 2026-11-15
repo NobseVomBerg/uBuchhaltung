@@ -45,11 +45,21 @@ Version 2 automatisch um – siehe [Umzug auf Version 2](#umzug-auf-version-2).
 | `UBUCHHALTUNG_CERT` | *(keine)*   | Pfad zur TLS-Zertifikatsdatei (PEM) ⇒ HTTPS. |
 | `UBUCHHALTUNG_KEY`  | *(keine)*   | Pfad zum privaten TLS-Schlüssel (PEM). |
 | `UBUCHHALTUNG_ALLOWED_HOSTS` | *(leer)* | Zusätzliche Hostnamen (Kommaliste), unter denen die App erreichbar sein darf – siehe „Schutz vor fremden Webseiten“. |
-| `SMTP_HOST` / `SMTP_PORT` | `smtp.gmail.com` / `587` | Ausgangsserver für den E-Mail-Versand von Rechnungen. |
+| `SMTP_HOST` / `SMTP_PORT` | `smtp.gmail.com` / `587` | Ausgangsserver für den E-Mail-Versand von Rechnungen (Port 465: TLS von Anfang an, jeder andere: STARTTLS – siehe unten). |
 | `SMTP_USER` / `SMTP_PASSWORD` | *(leer)* | Zugangsdaten für den Versand; ohne sie lehnt die App den Versand mit einem Hinweis ab. |
 
 Sind `UBUCHHALTUNG_CERT` **und** `UBUCHHALTUNG_KEY` gesetzt, läuft der Server über HTTPS und
 setzt das `Secure`-Flag der Session-Cookies.
+
+**E-Mail-Versand:** Die App verschlüsselt die Verbindung zum Mailserver immer (Port 465 mit TLS von
+Anfang an, jeder andere Port per STARTTLS) und prüft dessen Zertifikat samt Hostnamen; jede Verbindung hat
+ein Zeitlimit von 30 Sekunden. Bietet der Server kein STARTTLS an, sendet die App nichts und meldet sich nie
+unverschlüsselt an. Die Prüfung lässt sich nicht abschalten – der Mailserver braucht ein gültiges
+Zertifikat. Stammt es von einer eigenen Zertifizierungsstelle (z. B. ein Mailserver im LAN), macht man diese
+dem Container über die Umgebungsvariable `SSL_CERT_FILE` bekannt: das CA-Zertifikat als PEM-Datei einbinden
+und ihren Pfad eintragen, z. B. `-v /opt/ubuchhaltung/ca.pem:/certs/ca.pem:ro -e SSL_CERT_FILE=/certs/ca.pem`
+(Compose: unter `volumes` und `environment`). Scheitert die Prüfung, meldet die App „Das Zertifikat des
+Mailservers konnte nicht geprüft werden.“; Einzelheiten stehen im Server-Log.
 
 ## Schutz vor fremden Webseiten
 
@@ -169,8 +179,11 @@ dieses eine Verzeichnis.
   root-eigene appdata-Verzeichnisse (Unraid) funktionieren so ohne Handarbeit.
 - Das Firmenlogo lädt man in den Stammdaten beim eigenen Kontakt über „Datei
   wählen“ hoch – der Dialog zeigt den eigenen Rechner, die Datei landet im
-  Daten-Volume (`users/<Name>/logos/`). Ein von Hand eingetippter Pfad vom eigenen PC
-  funktioniert im Container nicht; das Formular weist dann darauf hin.
+  Daten-Volume (`users/<Name>/logos/`). Erlaubt sind PNG, JPG, GIF und WEBP bis 5 MB;
+  SVG, HTML und alles andere lehnt die App ab. Als Logo (Seite und PDF) gilt nur eine
+  Datei in diesem Ordner (oder unter `seed_data/private/`), nur ihr Dateiname zählt: Ein von
+  Hand eingetippter Pfad – vom eigenen PC oder irgendwo auf dem Server – ergibt kein
+  Logo; das Formular weist dann darauf hin.
 - `seed_data/private/` (eigenes Logo/Briefpapier) ist bewusst **nicht** im
   Image; bei Bedarf als Read-only-Volume nach `/app/seed_data/private` mounten.
 - HTTPS: Zertifikate mounten und `UBUCHHALTUNG_CERT`/`UBUCHHALTUNG_KEY` setzen –

@@ -223,7 +223,7 @@ class SmtpRecorder:
         recorder = self
 
         class FakeSMTP:
-            def __init__(self, host, port):
+            def __init__(self, host, port, timeout=None):
                 recorder.connections.append((host, port))
 
             def __enter__(self):
@@ -232,7 +232,13 @@ class SmtpRecorder:
             def __exit__(self, *exc_info):
                 return False
 
-            def starttls(self):
+            def ehlo(self):
+                return 250, b'ok'
+
+            def has_extn(self, name):
+                return name.lower() == 'starttls'
+
+            def starttls(self, context=None):
                 pass
 
             def login(self, user, password):

@@ -55,12 +55,14 @@ def logo_on_server(logo):
 
     Gleiche Regeln wie der Static-Handler in ``server/app.py``: ``/data/logos/``
     löst den Dateinamen im logos-Verzeichnis des Nutzers auf, ``/seed_data/private/``
-    liegt global; alles andere (``/static/…``, ein Pfad vom eigenen PC) liefert
-    der Server nicht aus. Returns True/False, ``None`` bei http(s)-URLs – die
-    kommen von woanders und lassen sich hier nicht prüfen.
+    liegt global, und beide liefern nur Bilddateien der Positivliste
+    (``export.pdf_core.LOGO_CONTENT_TYPES``); alles andere (``/static/…``, ein Pfad vom
+    eigenen PC, eine SVG-Datei) liefert der Server nicht aus. Returns True/False,
+    ``None`` bei http(s)-URLs – die kommen von woanders und lassen sich hier nicht prüfen.
     """
     import os
     from urllib.parse import unquote
+    from export.pdf_core import logo_extension
     url = logo_url(logo)
     if not url:
         return False
@@ -70,14 +72,18 @@ def logo_on_server(logo):
     if path.startswith('/data/logos/'):
         import userctx
         name = os.path.basename(path)
-        return bool(name) and os.path.isfile(
-            os.path.join(userctx.user_subdir('logos', create=False), name))
+        return (bool(name) and logo_extension(name) is not None
+                and os.path.isfile(os.path.join(userctx.user_subdir('logos', create=False), name)))
     if path.startswith('/seed_data/private/'):
         # Wie der Static-Handler: nur Dateien, die wirklich unter seed_data/private
         # liegen – sonst verriete die Antwort, ob es beliebige Dateien gibt.
         base = os.path.realpath('seed_data/private')
-        target = os.path.realpath(path[1:])
-        return target.startswith(base + os.sep) and os.path.isfile(target)
+        try:
+            target = os.path.realpath(path[1:])
+        except ValueError:                                  # z. B. ein NUL im gespeicherten Wert: keine Datei
+            return False
+        return (target.startswith(base + os.sep) and logo_extension(path) is not None
+                and logo_extension(target) is not None and os.path.isfile(target))
     return False
 
 

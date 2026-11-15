@@ -105,7 +105,7 @@ Anmeldung). Vorher eine Datensicherung anlegen – Ablauf und Rückweg unter
 | **Buchen** | Bankbewegungen und Buchungssätze, Split-Buchungen, Kontierungs-Vorschlag aus der Historie, Belege verknüpfen |
 | **Kontenrahmen** | SKR04 vorbelegt, eigene Konten (auch weiterer Rahmen wie SKR03) anlegbar, DATEV-Steuerschlüssel |
 | **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR) |
-| **Rechnungen & Angebote** | PDF als hybride E-Rechnung (ZUGFeRD/Factur-X, EN 16931) und XRechnung, E-Mail-Versand, Nummernkreise, Stornorechnung als eigener Beleg (auf Wunsch mit Entwurf der neuen Rechnung), offene Posten, Mahnwesen, Kleinunternehmerregelung |
+| **Rechnungen & Angebote** | PDF als hybride E-Rechnung (ZUGFeRD/Factur-X, EN 16931) und XRechnung, E-Mail-Versand, Nummernkreise, Stornorechnung als eigener Beleg (auf Wunsch mit Entwurf der neuen Rechnung), offene Posten, Mahnwesen, Kleinunternehmerregelung (der Hinweis auf § 19 UStG steht automatisch im Dokument) |
 | **Anlagen** | Anlagenverzeichnis mit AfA (linear, degressiv, GWG) |
 | **Import & Export** | Kontoauszüge im Bankformat CAMT.053 (XML oder ZIP, jede Bank) oder als PDF (DKB, Volksbank Rottweil), [Datenübernahme aus WISO Mein Büro](#datenübernahme-aus-wiso-mein-büro), DATEV-Buchungsstapel |
 | **Außerdem** | Arbeitszeiten mit Stundenzettel, Fahrtenbuch, ein Benutzer ohne Anmeldung oder mehrere mit Login, Datensicherung, Dark Mode |
@@ -295,7 +295,7 @@ Normalisiertes 3NF-Schema (6 Tabellen):
 - **Entitätstypen**: Unternehmen und Personen mit separaten Formularen
 - **Kontakttypen**: Kunde, Lieferant, Eigene Daten, Versicherung, Sonstiges –
   Mehrfachzuordnung über ContactTypeLinks, Personen-Rollen über PersonRoles
-- **Logo-Verwaltung**: File-Picker mit Live-Vorschau
+- **Logo-Verwaltung**: File-Picker mit Live-Vorschau (PNG, JPG, GIF, WEBP bis 5 MB)
 - **Tabellen**: Contacts (Basis) + ContactAddresses (1:n) + CompanyDetails (1:1)
   + PersonDetails (1:1) + ContactTypeLinks (n:m) + PersonRoles (n:m)
 
@@ -305,7 +305,7 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 - **Snapshot-Prinzip**: Verkäufer- und Käuferdaten werden bei Erstellung als Kopie gespeichert
 - **Positionstabelle**: Beliebig viele Positionen, Artikelverzeichnis-Integration
 - **PDF-Generierung** (`export/pdf_invoice.py` auf Basis von `export/pdf_core.py`): A4-Layout, Logo, Umlaute, dreispaltiger Footer
-- **E-Mail-Versand**: SMTP, PDF-Anhang, Empfänger aus Kontakten
+- **E-Mail-Versand**: SMTP (nur verschlüsselt, mit Zertifikatsprüfung), PDF-Anhang, Empfänger aus Kontakten
 - **ZUGFeRD / Factur-X** (`export/cii_invoice.py`, `export/pdfa.py`): jede neu erzeugte Rechnungs-PDF ist PDF/A-3b mit eingebetteter `factur-x.xml` (Profil EN 16931)
 - **XRechnung XML-Export** (`export/xrechnung_invoice.py`, UBL): nach EN 16931 erzeugt; die Beispieldateien der CI werden mit Mustang (XSD, Schematron) geprüft, eine Zusicherung der Konformität gibt es nicht
 - **Rechnungsstatus**: Entwurf → Finalisiert → Versendet → Bezahlt (+ Teilzahlung, Überfällig, Storniert); storniert wird über „Stornieren“ (Stornodatum nicht in der Zukunft): Die **Stornorechnung** entsteht als eigener Beleg mit eigener Nummer (Gutschrift Typ 381, UBL `CreditNote`, PDF „Stornorechnung“), die Forderung bekommt eine Gegenbuchung statt gelöscht zu werden; eine Rechnung ohne positiven Betrag (Gutschrift, 0-€-Rechnung) bekommt keine Stornorechnung und wird über den Status storniert. „Stornieren und neu ausstellen“ legt dazu den Entwurf einer neuen Rechnung mit den Angaben der alten an (auch nachträglich über „Neu ausstellen“ an der stornierten Rechnung); beim Versenden gehen die Zahlungen der stornierten Rechnung auf sie über, was sich nicht eindeutig umschreiben lässt, bleibt dort, und ein Hinweis nennt es. Zahlungen, die an der stornierten Rechnung bleiben, zeigt die App als Guthaben des Kunden (Rechnungsliste, Belegseiten, offene Posten des Kontakts); eine ausgehende Bankbewegung lässt sich auf der Seite der Stornorechnung als Erstattung zuordnen und nimmt den Erlös am Tag der Erstattung zurück; eine Zahlung, die dafür gebraucht wird, lässt sich auf keinem Weg entfernen, solange die Erstattung steht, und auf die Ersatzrechnung zieht höchstens das verbleibende Guthaben um. Eine von Hand stornierte Rechnung bekommt ihre Stornorechnung nachträglich
@@ -439,7 +439,8 @@ liegen im gemounteten Datenverzeichnis. Zum Selbstbauen liegt eine
 `compose.yaml` im Repo (`docker compose up -d --build`).
 
 ### Voraussetzungen (ohne Docker)
-- Python 3.13 oder neuer (damit wird getestet, das Docker-Image nutzt dieselbe Version)
+- Python 3.13 oder neuer (mit 3.13 wird bei jeder Änderung getestet, das Docker-Image nutzt
+  dieselbe Version; neuere Versionen laufen einmal in der Woche durch die Tests)
 - Der Kern (Webserver, Datenbank) läuft mit der Standardbibliothek. Zusätzlich nötig
   sind `fonttools` (PDF-Erzeugung von Rechnungen und Angeboten) und `pdfplumber`
   (Lesen von PDF-Kontoauszügen). Beide installiert:
@@ -562,7 +563,8 @@ uBuchhaltung/
 ├── docker-entrypoint.sh       # Container-Start: Volume-Rechte übernehmen, dann unprivilegiert
 ├── unraid-template.xml        # Fertiges Docker-Template für Unraid
 ├── ca_profile.xml             # Profil für Unraid Community Applications
-├── .github/workflows/         # CI: Tests bei jedem Push; neue Version auf main → Release + :latest, sonst :edge;
+├── .github/workflows/         # CI: Tests bei jedem Push (wöchentlich mit neueren Python-Versionen);
+│                              #   neue Version auf main → Release + :latest, sonst :edge;
 │                              #   Prüfung der CLA-Zustimmung an Pull Requests
 ├── .github/FUNDING.yml        # Verweis auf GitHub Sponsors
 ├── LICENSE                    # AGPL-3.0 (kommerzielle Lizenz auf Anfrage, siehe unten)

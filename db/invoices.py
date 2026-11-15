@@ -130,6 +130,23 @@ class InvoicesMixin:
         den Beleg der anderen Art liest oder verändert."""
         row = self.get_invoice_by_id(doc_id)
         return row if row is not None and document_type(row) == doc_type else None
+    def last_document_shows_tax(self):
+        """Weist die jüngste gewöhnliche Rechnung die Umsatzsteuer aus?
+
+        Der Stand des Häkchens „Umsatzsteuer ausweisen“ für einen NEUEN Beleg ohne Quelle (Rechnung wie Angebot): Wer
+        zuletzt ohne Steuer abgerechnet hat (``TaxRate`` = Platzhalter −1, § 19 UStG), tut es auch beim nächsten.
+        Gewöhnlich heißt: eine Rechnung (kein Angebot), keine Stornorechnung und keine Ersatzrechnung – Belege, die
+        ihren Satz von einer anderen Rechnung erben, sagen nichts über die nächste. Ohne eine solche Rechnung, ohne Satz
+        und bei allem, was kein negativer Satz ist, gilt: ja. Rein lesend."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT TaxRate FROM Invoices WHERE (DocumentType = 'invoice' OR DocumentType IS NULL) "
+            "AND InvoiceKind IS NOT ? AND ReplacesInvoiceId IS NULL ORDER BY ID DESC LIMIT 1", (STORNO_KIND,))
+        row = cursor.fetchone()
+        conn.close()
+        rate = row[0] if row else None
+        return not (isinstance(rate, (int, float)) and rate < 0)
     def get_invoice_items(self, invoice_id):
         """Get all items for an invoice"""
         conn = self._get_connection()

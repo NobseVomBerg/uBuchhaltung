@@ -58,6 +58,12 @@ SENT_HINT = ('Diese Rechnung ist versendet. Änderbar sind Zahlungshinweis, Ansc
 CORRECT_QUESTION = ('Rechnung berichtigen? Die bisherige Fassung bleibt als Datei erhalten, die Änderung wird '
                     'protokolliert, und die neue Fassung muss dem Kunden erneut zugehen.')
 
+# Neue Rechnung oder neues Angebot ohne Quelle, dessen Häkchen „Umsatzsteuer ausweisen“ aus der Vorbelegung abgehakt startet
+# (Database.last_document_shows_tax): Ein Beleg ohne Steuer entsteht nicht unbemerkt. Feste Zeichenfolge – kein Wert aus der
+# Datenbank –, mit der vorhandenen Klasse für Warnhinweise
+TAX_PREFILL_NOTE = ('<p class="warnColor" id="tax_prefill_note">Vorbelegt wie die letzte Rechnung: ohne Umsatzsteuer '
+                    '(Kleinunternehmer, §&nbsp;19 UStG).</p>')
+
 
 # Stornieren (db/invoice_storno.py): Rückfrage mit Stornodatum; eine Stornorechnung lässt sich nicht kopieren
 STORNO_DATE_ERROR = 'Bitte ein Stornodatum angeben, das weder vor dem Rechnungsdatum noch in der Zukunft liegt.'
@@ -608,13 +614,20 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
     
     # Steuersatz der Quelle (Bearbeiten wie Kopieren): gespeichert als Dezimal
     # (0.19) bzw. 0; Sentinel -1 = kein USt-Ausweis (Kleinunternehmer).
-    tax_pct, show_tax = 19, True
+    tax_pct = 19
+    tax_prefill_note = ''
     if existing_invoice:
         _r = (existing_invoice[35] if len(existing_invoice) > 35
               and existing_invoice[35] is not None else None)
         show_tax = not (_r is not None and float(_r) < 0)
         if _r is not None and float(_r) >= 0:
             tax_pct = float(_r) * 100 if 0 <= float(_r) <= 1 else float(_r)
+    else:
+        # Neue Rechnung ohne Quelle: das Häkchen übernimmt den Stand der jüngsten gewöhnlichen Rechnung; startet es
+        # abgehakt, sagt die Maske es dazu
+        show_tax = db.last_document_shows_tax()
+        if not show_tax:
+            tax_prefill_note = TAX_PREFILL_NOTE
 
     # Determine invoice number and initial values
     number_hint = False
@@ -1006,7 +1019,8 @@ function copyInvoiceAsNew(invId) {{
                 <tr class="no-pdf">
                     <td colspan="7" style="text-align: right; border: none;">
                         <label><input type="checkbox" id="show_tax" __SHOW_TAX_CHECKED__''' + lock_attr + ''' onchange="calculateTotals()"> Umsatzsteuer ausweisen</label>
-                        <small style="color:#888;">(aus = Kleinunternehmer §&nbsp;19 UStG; Hinweis ggf. unten im Text)</small>
+                        <small style="color:#888;">(aus = Kleinunternehmer §&nbsp;19 UStG; der Hinweis darauf wird automatisch gedruckt)</small>
+                        __TAX_PREFILL_NOTE__
                     </td>
                 </tr>
                 <tr class="totals-row" id="tax_row">
@@ -1615,6 +1629,9 @@ function copyInvoiceAsNew(invId) {{
         
         // Calculate all totals
         function calculateTotals() {
+            // Der Hinweis „vorbelegt ohne Umsatzsteuer“ gilt nur, solange das Häkchen aus ist
+            const taxNote = document.getElementById('tax_prefill_note');
+            if (taxNote) taxNote.hidden = document.getElementById('show_tax').checked;
             // Calculate sum of all items
             let sumNet = 0;
             document.querySelectorAll('.invoice-item-row').forEach(row => {
@@ -2120,6 +2137,7 @@ function copyInvoiceAsNew(invId) {{
     # Steuersatz-Feld + USt-Checkbox serverseitig vorbelegen (Platzhalter im Template)
     s = s.replace('__TAX_PCT__', f'{tax_pct:g}')
     s = s.replace('__SHOW_TAX_CHECKED__', 'checked' if show_tax else '')
+    s = s.replace('__TAX_PREFILL_NOTE__', tax_prefill_note)
     # Der Kasten steht voller Daten aus der Datenbank: Er kommt erst nach den Ersetzungen dazu – ebenso das
     # Skript zum Stornieren, das die Rechnungsnummer in seiner Rückfrage trägt
     if is_edit_mode and invoice_id:
