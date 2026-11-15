@@ -562,7 +562,8 @@ uBuchhaltung/
 ├── docker-entrypoint.sh       # Container-Start: Volume-Rechte übernehmen, dann unprivilegiert
 ├── unraid-template.xml        # Fertiges Docker-Template für Unraid
 ├── ca_profile.xml             # Profil für Unraid Community Applications
-├── .github/workflows/         # CI: Tests bei jedem Push; neue Version auf main → Release + :latest, sonst :edge
+├── .github/workflows/         # CI: Tests bei jedem Push; neue Version auf main → Release + :latest, sonst :edge;
+│                              #   Prüfung der CLA-Zustimmung an Pull Requests
 ├── .github/FUNDING.yml        # Verweis auf GitHub Sponsors
 ├── LICENSE                    # AGPL-3.0 (kommerzielle Lizenz auf Anfrage, siehe unten)
 ├── CLA.md · CONTRIBUTING.md   # Beitragsregeln + Contributor License Agreement
@@ -597,7 +598,8 @@ uBuchhaltung/
 │                              #   Guard: tests/check_anonymized.py)
 ├── tools/                     # mcp_ubuchhaltung.py (Diagnose, nur lesend), make_einvoice_samples.py
 │                              #   (Beispiel-E-Rechnungen für die CI), make_srgb_icc.py (sRGB-Profil),
-│                              #   screenshots.mjs (erzeugt docs/screenshots/ im Demo-Modus, Playwright)
+│                              #   screenshots.mjs (erzeugt docs/screenshots/ im Demo-Modus, Playwright),
+│                              #   cla_check.py (prüft die Zustimmung zum CLA an Pull Requests)
 ├── docs/                      # Screenshots fürs README, Icon, offene Aufgaben (aufgaben.md)
 └── data/                      # Laufzeitdaten (in .gitignore)
     ├── config.json            # eingerichtet (mode), automatische Anmeldung (auto_login)
@@ -674,8 +676,9 @@ Wenn du sie veränderst und anderen über ein Netzwerk als Dienst bereitstellst
 (z. B. als gehostete Anwendung), musst du den vollständigen Quellcode deiner
 Version ebenfalls unter der AGPL verfügbar machen.
 
-Beiträge (Pull Requests) unterliegen dem Contributor License Agreement –
-siehe [`CONTRIBUTING.md`](CONTRIBUTING.md) und [`CLA.md`](CLA.md).
+Beiträge (Pull Requests) brauchen die Zustimmung zum Contributor License
+Agreement, je Pull Request per Kommentar – siehe
+[`CONTRIBUTING.md`](CONTRIBUTING.md) und [`CLA.md`](CLA.md).
 
 ### Kommerzielle Lizenz
 

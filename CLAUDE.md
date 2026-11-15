@@ -116,6 +116,18 @@ kein Subagent darauf:
 - Container-Standardport 2824; Betriebsdoku (Unraid/Proxmox) in `DEPLOYMENT.md`
 - Jeder Push (alle Branches) führt `.github/workflows/tests.yml` aus:
   Anonymisierungs-Guard + pytest
+- **CLA-Zustimmung** (`.github/workflows/cla.yml`, `tools/cla_check.py`, nur Standardbibliothek):
+  Zugestimmt wird je Pull Request mit einem Kommentar, der den Satz aus `CLA.md` samt Fassung in
+  einer eigenen Zeile trägt – vom Konto, das den Pull Request geöffnet hat, und von jedem weiteren
+  Commit-Autor. Das Skript setzt den Status „CLA-Zustimmung“ am letzten Commit und hält eine
+  gefundene Zustimmung in einem eigenen Kommentar fest; Inhaber und Bot-Konten sind ausgenommen.
+  Der Lauf hat Schreibrechte (`pull_request_target`, `issue_comment`) und läuft deshalb **nie mit
+  Code aus dem Pull Request**: ausgecheckt wird nur der Standard-Branch, Werte aus dem Pull Request
+  gehen nie in eine Shell-Zeile, und Text daraus (Kommentare, Titel, Branchnamen) nie in die Ausgabe,
+  den Status oder den Kommentar der Prüfung – nur Nummern und bereinigte Anmeldenamen (`safe_login`).
+  Nicht aufweichen. Ändert sich der Text von
+  `CLA.md`, bekommt er eine neue Fassungsnummer; der Satz in `CONTRIBUTING.md` und in der
+  Vorlage `.github/pull_request_template.md` zieht mit (`tests/test_cla_check.py` prüft es)
 
 ### Zugriffsschutz (HTTP)
 - Türsteher ist `_gate()` in `server/app.py`: schreibende Anfragen nur von eigenen

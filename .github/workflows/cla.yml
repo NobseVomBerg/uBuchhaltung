@@ -1,0 +1,48 @@
+# Prüft, ob für einen Pull Request die Zustimmung zum CLA (CLA.md) vorliegt, und
+# zeigt das Ergebnis als Status „CLA-Zustimmung“ am Pull Request an.
+#
+# Sicherheit: Der Lauf hat Schreibrechte (Status, Kommentar) und läuft deshalb
+# NIE mit Code aus dem Pull Request. Ausgecheckt wird nur der Standard-Branch,
+# und davon nur das Prüfskript und der CLA-Text. Werte aus dem Pull Request
+# (Titel, Kommentare, Branchnamen) gehen nie in eine Shell-Zeile – das Skript
+# liest sie als Daten aus der Ereignisdatei und über die GitHub-API.
+name: CLA
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+  issue_comment:
+    types: [created, edited, deleted]
+
+permissions: {}
+
+concurrency:
+  group: cla-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  zustimmung:
+    name: Zustimmung prüfen
+    # Kommentare an Issues, die keine Pull Requests sind, gehen den Lauf nichts an.
+    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+    steps:
+      - name: Prüfskript und CLA vom Standard-Branch holen
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            CLA.md
+            tools/cla_check.py
+          sparse-checkout-cone-mode: false
+
+      - name: Zustimmung prüfen
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 tools/cla_check.py
