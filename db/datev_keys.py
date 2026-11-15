@@ -9,9 +9,11 @@ Regeln dieses Moduls ab. Sie sind dem Stapel nachgebildet, den WISO Mein Büro s
 Datenbestand – keine Vorgabe von DATEV und keine Zusicherung, dass die Kanzlei ihn so annimmt.
 
 Der Schlüssel folgt der **Art des Zweckkontos**, nicht der Richtung der Geldbewegung: Eine Erstattung auf ein
-Aufwandskonto bleibt Vorsteuer, eine Erstattung auf ein Erlöskonto Umsatzsteuer. Die Schlüssel heißen bei
-WISO „Regelsatz“, „ermäßigt“ und „anderer Regelsatz/ermäßigter Satz“ – nicht „19 %“ und „7 %“: Im zweiten
-Halbjahr 2020 (befristete Sätze 16 % und 5 %) tauschen die Zuordnungen.
+Aufwandskonto bleibt Vorsteuer, eine Erstattung auf ein Erlöskonto Umsatzsteuer. Erlöskonten sind 4000–4999 und
+die „Erlöse aus Verkäufen … (bei Buchverlust)“ (SKR04 6884–6892, ``DISPOSAL_REVENUE_RANGE``): Sie tragen
+Umsatzsteuer, liegen aber im Aufwandsbereich. Die Schlüssel heißen bei WISO „Regelsatz“, „ermäßigt“ und „anderer
+Regelsatz/ermäßigter Satz“ – nicht „19 %“ und „7 %“: Im zweiten Halbjahr 2020 (befristete Sätze 16 % und 5 %)
+tauschen die Zuordnungen.
 """
 import datetime
 import math
@@ -52,6 +54,9 @@ BELEG_MAX = 36                        # Länge des Feldes „Belegfeld 1“
 
 DEBTOR_RANGE = (10000, 69999)         # Personenkonten
 EXPENSE_RANGE = (5000, 7999)          # Aufwand (SKR04, Klasse 5–7)
+#: SKR04 6884–6892, „Erlöse aus Verkäufen … (bei Buchverlust)“ (z. B. 6885 mit 19 % USt): Erlöskonten mit Umsatzsteuer,
+#: die im Aufwandsbereich (``EXPENSE_RANGE``) liegen
+DISPOSAL_REVENUE_RANGE = (6884, 6892)
 
 CONSULTANT_NO_RANGE = (1001, 9999999)  # ganze Zahl, nur ASCII-Ziffern ohne führende Null
 CLIENT_NO_RANGE = (1, 99999)
@@ -177,11 +182,12 @@ def _is_debtor(number) -> bool:
 
 
 def _is_revenue(number) -> bool:
-    return _within(number, REVENUE_ACCOUNT_RANGE)
+    return _within(number, REVENUE_ACCOUNT_RANGE) or _within(number, DISPOSAL_REVENUE_RANGE)
 
 
 def _is_expense_or_asset(number) -> bool:
-    return _within(number, EXPENSE_RANGE) or _within(number, ASSET_ACCOUNT_RANGE)
+    return ((_within(number, EXPENSE_RANGE) and not _within(number, DISPOSAL_REVENUE_RANGE))
+            or _within(number, ASSET_ACCOUNT_RANGE))
 
 
 def booking_kind(form, coa_number, counter_number, is_inflow, waiting_numbers=()) -> str:
@@ -194,13 +200,14 @@ def booking_kind(form, coa_number, counter_number, is_inflow, waiting_numbers=()
     * Spiegel (zwei Geldkonten): kein Schlüssel.
     * Umbuchung: Steht ein Debitor oder ein Wartekonto auf einer Seite, ist es die Rechnungskette (Forderung,
       „Wartekonto an Erlöskonto“, Gegenbuchung einer Stornorechnung): Schlüssel 0, aber eine Umsatzsteuer-Zeile.
-      Sonst: ein Erlöskonto (4000–4999) auf einer Seite – Umsatzsteuer, ein Aufwands- oder Anlagekonto
-      (5000–7999, 1–999) – Vorsteuer, alles andere – keiner. Auch die Umbuchung „Aufwand an Anlagekonto“ (die AfA)
-      ist von der Art Vorsteuer; einen Schlüssel trägt sie nur deshalb nicht, weil sie keinen Steuersatz hat
-      (``derive_key`` gibt ohne Satz 0).
-    * Zahlung (das Zweckkonto steht vorn, bei ``liquid_first`` hinten): Debitor – kein Schlüssel; Erlöskonto –
-      Umsatzsteuer, auch bei einer Erstattung (negativer Betrag); jedes andere Konto – Vorsteuer, auch bei einer
-      Erstattung. Fehlt das Zweckkonto, entscheidet die Geldrichtung: Einnahme Umsatzsteuer, Ausgabe Vorsteuer."""
+      Sonst: ein Erlöskonto (4000–4999 und 6884–6892, ``DISPOSAL_REVENUE_RANGE``) auf einer Seite – Umsatzsteuer,
+      ein Aufwands- oder Anlagekonto (5000–7999 ohne 6884–6892, 1–999) – Vorsteuer, alles andere – keiner. Auch die
+      Umbuchung „Aufwand an Anlagekonto“ (die AfA) ist von der Art Vorsteuer; einen Schlüssel trägt sie nur deshalb
+      nicht, weil sie keinen Steuersatz hat (``derive_key`` gibt ohne Satz 0).
+    * Zahlung (das Zweckkonto steht vorn, bei ``liquid_first`` hinten): Debitor – kein Schlüssel; Erlöskonto
+      (4000–4999 und 6884–6892) – Umsatzsteuer, auch bei einer Erstattung (negativer Betrag); jedes andere Konto –
+      Vorsteuer, auch bei einer Erstattung. Fehlt das Zweckkonto, entscheidet die Geldrichtung: Einnahme
+      Umsatzsteuer, Ausgabe Vorsteuer."""
     by_money = KIND_VAT if is_inflow else KIND_INPUT
     if form is None:
         return by_money

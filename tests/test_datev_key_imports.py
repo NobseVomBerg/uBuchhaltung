@@ -14,7 +14,8 @@
   Der Tabellen-Export, der ein leeres Konto füllt, lässt den Schlüssel fallen (``_datev_key_stale``).
 * **Berater- und Mandantennummer** stehen in ``SYS_FINACCSYSTEMS`` (Satz „Datev-Format“): Die App liest nur
   ``NAME``, ``CONSULTANT_NO`` und ``CLIENT_NO`` und trägt sie nur ein, wenn beide Felder der eigenen Firma leer sind –
-  erst nachdem die Buchungen geschrieben sind; ein Lesefehler der Tabelle bricht den Import nicht ab (Hinweis).
+  erst nachdem die Buchungen geschrieben sind; ein Lesefehler der Tabelle bricht den Import nicht ab (Hinweis). Gibt es
+  keine eigene Firma (als Unternehmen angelegt), nennt ein Hinweis, dass die Nummern nicht übernommen wurden.
 
 Alle Namen, Nummern und Beträge sind erfunden.
 """
@@ -634,6 +635,65 @@ def test_an_own_person_has_no_company_details_and_gets_nothing(db, tmp_path):
     db.insert_contact(contact_type='own', entity_type='person', display_name='Erika Probe', first_name='Erika',
                       last_name='Probe')
     assert _import(db, _wiso(tmp_path))['datev_numbers_set'] == 0 and db.get_datev_numbers() == (None, None)
+
+
+# ── Der Hinweis, wenn die Nummern nicht übernommen werden konnten ──
+
+NOT_TAKEN = ('Berater- und Mandantennummer stehen in der WISO-Datenbank, wurden aber nicht übernommen: Es gibt noch keine '
+             'eigene Firma (als Unternehmen angelegt). Bitte anlegen und den Import wiederholen oder die Nummern dort '
+             'eintragen.')
+
+
+def _not_taken(result):
+    return [hint for hint in result['hints'] if 'nicht übernommen' in hint]
+
+
+@pytest.mark.parametrize('contact', [None, 'customer', 'own person'])
+def test_without_an_own_company_the_import_says_the_numbers_were_not_taken(db, tmp_path, contact):
+    """Weder ein Kunde noch eine eigene Person (ohne ``CompanyDetails``) trägt die Nummern: Der Hinweis nennt es, ohne
+    die Nummern selbst."""
+    if contact == 'customer':
+        db.insert_contact(contact_type='customer', entity_type='company', display_name='Kunde Probe', company_name='Kunde')
+    elif contact == 'own person':
+        db.insert_contact(contact_type='own', entity_type='person', display_name='Erika Probe', first_name='Erika',
+                          last_name='Probe')
+
+    result = _import(db, _wiso(tmp_path))
+
+    assert result['datev_numbers_set'] == 0 and db.get_datev_numbers() == (None, None)
+    assert NOT_TAKEN in result['hints'] and '4711' not in ' '.join(result['hints'])
+
+
+def test_the_repeated_import_after_creating_the_own_company_takes_the_numbers_without_a_hint(db, tmp_path):
+    """So sagt es der Hinweis: Firma anlegen, Import wiederholen. Die Firma hat leere Felder – sie bekommt die Nummern."""
+    assert NOT_TAKEN in _import(db, _wiso(tmp_path))['hints']
+    _own(db)
+
+    again = _import(db, _wiso(tmp_path))
+
+    assert again['datev_numbers_set'] == 1 and db.get_datev_numbers() == ('4711', '12')
+    assert not _not_taken(again)
+
+
+@pytest.mark.parametrize('present', [{'datev_consultant_no': '9999', 'datev_client_no': '77'},
+                                     {'datev_consultant_no': '9999'}, {'datev_client_no': '77'}])
+def test_an_own_company_with_numbers_gets_no_hint_and_keeps_them(db, tmp_path, present):
+    """Die Firma gibt es, und was dort steht, bleibt: Es ist nichts „nicht übernommen“ aus Mangel an einer Firma."""
+    _own(db, **present)
+    before = query(db, 'SELECT DatevConsultantNo, DatevClientNo FROM CompanyDetails WHERE ContactID = 1')
+
+    result = _import(db, _wiso(tmp_path))
+
+    assert result['datev_numbers_set'] == 0 and not _not_taken(result)
+    assert query(db, 'SELECT DatevConsultantNo, DatevClientNo FROM CompanyDetails WHERE ContactID = 1') == before
+
+
+@pytest.mark.parametrize('systems', [None, [{'NAME': 'Datev-Format', 'CONSULTANT_NO': '123', 'CLIENT_NO': '12',
+                                             'USERPASSWORD': ''}]])
+def test_without_valid_numbers_in_the_wiso_database_there_is_nothing_to_report(db, tmp_path, systems):
+    """Keine Tabelle oder keine zwei gültigen Nummern: nichts, das nicht übernommen werden könnte."""
+    result = _import(db, _wiso(tmp_path, systems=systems))
+    assert result['datev_numbers_set'] == 0 and not _not_taken(result)
 
 
 def test_no_other_value_of_the_table_leaves_the_reader(db, tmp_path):

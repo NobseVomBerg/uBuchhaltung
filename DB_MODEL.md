@@ -1111,13 +1111,16 @@ Steuerbüro. Das Soll/Haben-Kennzeichen folgt der Form des Satzes. Der **BU-Schl
 ```
 1. Bookings.DatevKey gesetzt (Import, 1–9999)  → unverändert ausgeben (auch 490, 100, 121 ohne Satz)
 2. sonst ableiten nach Art des Zweckkontos und Satz:
-     Erlöskonto → Umsatzsteuer 101 (19 %) / 102 (7 %) / 5 (16 %) / 4 (5 %)
+     Erlöskonto (4000–4999 und 6884–6892) → Umsatzsteuer 101 (19 %) / 102 (7 %) / 5 (16 %) / 4 (5 %)
      anderes Zweckkonto → Vorsteuer 401 / 402 / 7 / 6, auch bei einer Erstattung
      Debitor, Spiegel, kein Satz, anderer Satz → 0   (auch die AfA „Aufwand an Anlagekonto“: Vorsteuer-Art, aber ohne Satz)
    vom 2020-07-01 bis 2020-12-31 tauschen die Plätze (16 %/5 % = Regelsatz/ermäßigt, 19 %/7 % = die anderen)
 3. Rechnungskette (Umbuchung mit Debitor oder Wartekonto: Forderung, Wartekonto an Erlöskonto, Stornogegenbuchung)
    → Schlüssel 0, aber der Satz in Spalte 40 (EU-Steuersatz, „19,00“)
 ```
+
+Die Konten 6884–6892 („Erlöse aus Verkäufen … (bei Buchverlust)“, z. B. 6885 mit 19 % USt) liegen im Aufwandsbereich, zählen für den Schlüssel
+aber als Erlöskonten (`DISPOSAL_REVENUE_RANGE`).
 
 Dazu: Leistungsdatum (114) nur an der Forderung, Land (119) an der Rechnungskette, Spalte 115 leer, Belegfeld 1 ohne Leerzeichen bis 36
 Zeichen, Buchungstext ohne Zeilenumbrüche und andere Steuerzeichen (je Zeichen ein Leerzeichen, vor dem Kürzen auf 60 Zeichen), im Vorlauf

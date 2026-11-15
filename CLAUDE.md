@@ -252,7 +252,8 @@ kein Subagent darauf:
   sofern der Aufrufer `datev_key` nicht selbst nennt, dazu der Tabellen-Export des Textimports, der ein leeres Konto aus der Kategorie füllt
   (dieselbe Stelle); ein unverändert zurückgeschickter Wert lässt ihn stehen (auch das Zuordnen im Editor, das ein leeres Gegenkonto füllt:
   dann fällt er). **Wo keiner gespeichert ist, leitet der Export ihn ab** (`db/datev_keys.py`, reine Funktionen) – nach
-  der **Art des Zweckkontos** statt der Geldrichtung (Erlöskonto 4000–4999: Umsatzsteuer, jedes andere Zweckkonto: Vorsteuer – auch bei einer
+  der **Art des Zweckkontos** statt der Geldrichtung (Erlöskonto 4000–4999 und 6884–6892 [„Erlöse aus Verkäufen … (bei Buchverlust)“ im
+  Aufwandsbereich, `DISPOSAL_REVENUE_RANGE`]: Umsatzsteuer, jedes andere Zweckkonto: Vorsteuer – auch bei einer
   Erstattung; Debitor und Spiegel: keiner; fehlt das Zweckkonto, zählt die Geldrichtung) und dem exakten Satz: Regelsatz 19 / ermäßigt 7 /
   „anderer Regelsatz“ 16 / „anderer ermäßigter“ 5 % → Vorsteuer 401/402/7/6, Umsatzsteuer 101/102/5/4, **vom 2020-07-01 bis 2020-12-31 tauschen
   die Plätze** (16/5/19/7 %); kein Satz, 0 % und jeder andere Satz → 0 (so auch die AfA, die Umbuchung „Aufwand an Anlagekonto“: Vorsteuer-Art,
@@ -574,7 +575,8 @@ kein Subagent darauf:
   bekommt der Satz zuerst die Zeile mit seinem Steuersatz: Ein Schlüssel hängt nie an der Zeile eines anderen Satzes. Berater- und Mandantennummer
   stehen in `SYS_FINACCSYSTEMS` (Satz `NAME` = „Datev-Format“; **nur** `NAME`, `CONSULTANT_NO`, `CLIENT_NO` – die Tabelle trägt auch Zugangsdaten
   anderer Schnittstellen; nichts davon wird geloggt) und gehen nur in die eigene Firma (Unternehmen), wenn deren beide Felder leer sind
-  (`datev_numbers_set`) – **erst nachdem die Buchungen geschrieben sind** (scheitert der Import, bleiben die Stammdaten, wie sie waren); fehlt Tabelle
+  (`datev_numbers_set`) – **erst nachdem die Buchungen geschrieben sind** (scheitert der Import, bleiben die Stammdaten, wie sie waren); gibt es
+  keine eigene Firma (als Unternehmen angelegt), nennt ein Hinweis, dass die Nummern nicht übernommen wurden (ohne sie zu nennen); fehlt Tabelle
   oder Spalte, passiert nichts (Hinweis, kein Blocker), und ein Lese- oder Dekodierfehler der Tabelle (`datev_numbers_unreadable`) gibt „keine
   Nummern“ und einen Hinweis ohne Fehlertext, nie einen Abbruch
 - **CSV und Datenbank nacheinander:** Der Datenbank-Import (`_insert_wiso_bookings`) übernimmt eine CSV-Buchung
