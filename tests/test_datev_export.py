@@ -33,9 +33,10 @@ _C_RATE, _C_LEISTUNG, _C_STEUERDATUM, _C_LAND = 40, 114, 115, 119
 PLACEHOLDERS = ('70000', '99999')
 
 #: COA-ID → Kontonummer der synthetischen Zeilen (wie ``db.get_coa_id_to_number_map``)
-NUMBERS = {1: 10000, 2: 4405, 3: 4400, 4: 6222, 5: 520, 6: 1800, 7: 6815, 8: 4300, 9: 1810, 10: 2100, 11: 4640}
+NUMBERS = {1: 10000, 2: 4405, 3: 4400, 4: 6222, 5: 520, 6: 1800, 7: 6815, 8: 4300, 9: 1810, 10: 2100, 11: 4640,
+           12: 6885}
 WAITING = (4405, 4345, 4340)
-DEBTOR, WAIT, REVENUE, DEPRECIATION, ASSET, BANK, EXPENSE, REVENUE_7, BANK_TWO, PRIVATE, USE = range(1, 12)
+DEBTOR, WAIT, REVENUE, DEPRECIATION, ASSET, BANK, EXPENSE, REVENUE_7, BANK_TWO, PRIVATE, USE, DISPOSAL = range(1, 13)
 
 
 def _row(number, coa_id, counter_coa_id, amount, rate, form=None, key=None, date='2026-07-01', doc=None):
@@ -159,6 +160,20 @@ def test_a_refund_on_an_expense_account_keeps_the_input_tax_key_and_turns_the_ma
     spent = _one(_row(1, EXPENSE, BANK, -119.0, 0.19, 'purpose_first'))
     refunded = _one(_row(2, EXPENSE, BANK, 119.0, 0.19, 'purpose_first'))
     assert (spent[_C_SH], spent[_C_BU]) == ('S', '401') and (refunded[_C_SH], refunded[_C_BU]) == ('H', '401')
+
+
+@pytest.mark.parametrize('number, key, eu_rate', [(6883, '401', ''), (6884, '101', '19,00'), (6885, '101', '19,00'),
+                                                  (6892, '101', '19,00'), (6893, '401', '')])
+@pytest.mark.parametrize('amount', [119.0, -119.0])
+@pytest.mark.parametrize('form, money_first', [('purpose_first', False), ('liquid_first', True)])
+def test_the_sale_accounts_at_a_loss_in_the_expense_range_have_the_vat_key_and_the_rate_in_column_40(
+        form, money_first, amount, number, key, eu_rate):
+    """„Erlöse aus Verkäufen … (bei Buchverlust)“ (SKR04 6884–6892, z. B. 6885 mit 19 % USt) liegen im Aufwandsbereich, sind
+    aber Erlöskonten: 101 und der Satz in Spalte 40, auch bei einer Erstattung – davor und danach (6883, 6893) bleibt es
+    Aufwand (401, ohne Spalte 40)."""
+    coa, counter = (BANK, DISPOSAL) if money_first else (DISPOSAL, BANK)
+    fields = _one(_row(1, coa, counter, amount, 0.19, form), numbers={**NUMBERS, DISPOSAL: number})
+    assert (fields[_C_BU], fields[_C_RATE]) == (key, eu_rate)
 
 
 @pytest.mark.parametrize('date, rate, expense_key, revenue_key', [
@@ -311,9 +326,10 @@ def test_a_transfer_with_a_debtor_or_a_waiting_account_is_the_chain_whatever_the
 
 
 @pytest.mark.parametrize('coa, counter, key', [(REVENUE, PRIVATE, '101'), (PRIVATE, USE, '101'), (EXPENSE, PRIVATE, '401'),
-                                               (DEPRECIATION, ASSET, '401'), (PRIVATE, ASSET, '401')])
+                                               (DEPRECIATION, ASSET, '401'), (PRIVATE, ASSET, '401'),
+                                               (DISPOSAL, PRIVATE, '101'), (ASSET, DISPOSAL, '101')])
 def test_another_transfer_follows_the_account_class_whatever_the_sign(coa, counter, key):
-    """Eine Umbuchung ohne Debitor und Wartekonto: ein Erlöskonto auf einer Seite – Umsatzsteuer (die
+    """Eine Umbuchung ohne Debitor und Wartekonto: ein Erlöskonto auf einer Seite (auch 6884–6892) – Umsatzsteuer (die
     Privatentnahme 2100 an 4640), ein Aufwands- oder Anlagekonto – Vorsteuer."""
     for amount in (119.0, -119.0):
         fields = _one(_row(1, coa, counter, amount, 0.19, 'transfer'))

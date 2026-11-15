@@ -218,6 +218,55 @@ def test_the_class_boundaries_of_a_transfer(number, kind, side):
     assert (_kind('transfer', number, other) if side == 'coa' else _kind('transfer', other, number)) == kind
 
 
+# ── „Erlöse aus Verkäufen … (bei Buchverlust)“ (SKR04 6884–6892) im Aufwandsbereich ─────────────
+
+#: Die Grenzen des Bereichs: 6883 und 6893 sind Aufwand (Vorsteuer), 6884 bis 6892 Erlöskonten (Umsatzsteuer)
+DISPOSAL_BOUNDS = [(6883, dk.KIND_INPUT), (6884, dk.KIND_VAT), (6885, dk.KIND_VAT), (6888, dk.KIND_VAT),
+                   (6892, dk.KIND_VAT), (6893, dk.KIND_INPUT)]
+
+
+def test_the_disposal_revenue_range_lies_inside_the_expense_range():
+    assert dk.DISPOSAL_REVENUE_RANGE == (6884, 6892)
+    assert dk.EXPENSE_RANGE[0] < dk.DISPOSAL_REVENUE_RANGE[0] and dk.DISPOSAL_REVENUE_RANGE[1] < dk.EXPENSE_RANGE[1]
+
+
+@pytest.mark.parametrize('number, kind', DISPOSAL_BOUNDS)
+@pytest.mark.parametrize('form, money', [('purpose_first', 1800), ('liquid_first', 1800), ('liquid_first', 1460)])
+@pytest.mark.parametrize('inflow', [True, False])
+def test_a_payment_on_an_account_for_sales_at_a_loss_is_vat_between_the_limits(number, kind, form, money, inflow):
+    """Das Zweckkonto im Aufwandsbereich ist hier ein Erlöskonto: Umsatzsteuer, auch bei einer Erstattung (negativer
+    Betrag). ``liquid_first`` mit 1460 vorn ist „1460 an 6885“."""
+    coa, counter = (number, money) if form == 'purpose_first' else (money, number)
+    assert _kind(form, coa, counter, inflow) == kind
+
+
+@pytest.mark.parametrize('number, kind', DISPOSAL_BOUNDS)
+@pytest.mark.parametrize('side', ['coa', 'counter'])
+@pytest.mark.parametrize('inflow', [True, False])
+def test_a_transfer_with_an_account_for_sales_at_a_loss_has_the_same_limits(number, kind, side, inflow):
+    other = 3740                                                            # ein Konto, das keine Klasse hat
+    coa, counter = (number, other) if side == 'coa' else (other, number)
+    assert _kind('transfer', coa, counter, inflow) == kind
+
+
+@pytest.mark.parametrize('coa, counter, kind', [
+    (6885, 520, dk.KIND_VAT), (520, 6885, dk.KIND_VAT), (6885, 6815, dk.KIND_VAT), (6815, 6892, dk.KIND_VAT),
+    (10000, 6885, dk.KIND_INVOICE_CHAIN), (6885, 10000, dk.KIND_INVOICE_CHAIN),
+    (4405, 6885, dk.KIND_INVOICE_CHAIN), (6884, 4340, dk.KIND_INVOICE_CHAIN)])
+def test_an_account_for_sales_at_a_loss_goes_before_asset_and_expense_not_before_the_chain(coa, counter, kind):
+    """Anlage- und Aufwandskonto auf der anderen Seite ändern nichts; ein Debitor oder Wartekonto macht die Umbuchung
+    wie bei jedem Erlöskonto zur Rechnungskette."""
+    assert _kind('transfer', coa, counter) == kind and _kind('transfer', coa, counter, inflow=False) == kind
+
+
+def test_a_sale_on_6885_with_19_percent_has_the_key_101_and_the_rate_in_column_40():
+    """Vorher galt das Konto als Aufwand: 401 und keine Spalte 40."""
+    for number, key, vat_row in ((6885, 101, True), (6883, 401, False), (6893, 401, False)):
+        kind = _kind('purpose_first', number, 1800)
+        derived = dk.derive_key(kind, 0.19, DAY_OUTSIDE)
+        assert (derived, dk.is_vat_row(derived, kind, 0.19)) == (key, vat_row)
+
+
 # ── Die Forderung ────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize('coa, counter, expected', [

@@ -240,7 +240,8 @@ class WisoFdbImportMixin:
             trägt): Sonst bleibt ``DatevKey`` leer – der Export leitet ihn aus dem Satz der App ab – und der Fall zählt in
             ``datev_key_rate_mismatches``. ``datev_numbers_set`` ist 1, wenn Berater- und Mandantennummer aus
             ``SYS_FINACCSYSTEMS`` in die Stammdaten der eigenen Firma kamen (nur, wenn beide Felder dort leer waren, und erst
-            nachdem die Buchungen geschrieben sind).
+            nachdem die Buchungen geschrieben sind). Hat die WISO-Datenbank gültige Nummern, es gibt aber keine eigene Firma
+            (als Unternehmen angelegt), steht in ``hints``, dass sie nicht übernommen wurden (ohne die Nummern selbst).
 
             Unterkonten: ``subaccount_rows`` zählt Sätze, die ein Import bis 2.2.4 schon auf das
             **Basiskonto** geschrieben hat (z. B. 6530), während der Leser dem Unterkonto heute seine
@@ -346,6 +347,11 @@ class WisoFdbImportMixin:
                 data.bookings, result, self._recipients_by_invoice(data), data.assets)
             # Die Stammdaten erst, wenn die Buchungen geschrieben sind: Scheitert der Import, bleiben sie, wie sie waren
             result['datev_numbers_set'] = self._fill_datev_numbers(data.datev_numbers)
+            if data.datev_numbers and not result['datev_numbers_set'] and not self._own_company_exists():
+                result['hints'].append(
+                    'Berater- und Mandantennummer stehen in der WISO-Datenbank, wurden aber nicht übernommen: '
+                    'Es gibt noch keine eigene Firma (als Unternehmen angelegt). Bitte anlegen und den Import '
+                    'wiederholen oder die Nummern dort eintragen.')
             if with_assets:
                 self._insert_wiso_assets(data.assets, result, booked_amounts)
             if with_invoices:
@@ -410,6 +416,17 @@ class WisoFdbImportMixin:
         if changed:
             self._log_sql(sql, tuple(numbers), 'WISO-Datenbank-Import: DATEV-Berater- und Mandantennummer übernommen')
         return 1 if changed else 0
+
+    def _own_company_exists(self):
+        """Gibt es eine eigene Firma mit ``CompanyDetails`` (Kontakt ``own``, als Unternehmen angelegt)? Nur dort stehen
+        Berater- und Mandantennummer (``_fill_datev_numbers``): Ohne sie bleiben die Nummern der WISO-Datenbank
+        ungenutzt, und der Import sagt es."""
+        conn = self._get_connection()
+        try:
+            return conn.execute("SELECT 1 FROM Contacts c JOIN CompanyDetails d ON d.ContactID = c.ID "
+                                "WHERE c.ContactType = 'own' LIMIT 1").fetchone() is not None
+        finally:
+            conn.close()
 
     def _stock_range_accounts(self, bookings):
         """Konten 1000–1099 (SKR04: Vorräte) in den Sätzen: ``[{'nummer', 'bezeichnung',

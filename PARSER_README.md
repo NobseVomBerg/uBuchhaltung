@@ -537,6 +537,20 @@ dem Satz der App ab, und `datev_key_rate_mismatches` zählt den Fall; das gilt e
 der Übernahme). Die Nummern der eigenen Firma trägt der Import ein, nachdem die Buchungen geschrieben sind, und nur wenn beide Felder dort
 leer sind. Der Tabellen-Export, der ein leeres Konto aus der Kategorie füllt, lässt den Schlüssel der Zeile fallen.
 
+### Bekannte Unterschiede zum Stapel, den WISO schreibt
+
+Der DATEV-Export (`export/datev.py`) bildet den Stapel nach, den WISO Mein Büro schreibt, gemessen an einem Datenbestand; eine Zusicherung,
+dass die Kanzlei ihn so annimmt, gibt es nicht. Bekannte Unterschiede (Spaltennummern wie in `export/datev.py`, ab 0 gezählt):
+
+- Der Vorlauf trägt die Versionsnummer 700, WISO schreibt 510.
+- Spalte 100 „Erlöskonto (Anzahlungen)“ bleibt leer, Spalte 105 „Skontosperre“ trägt „0“; WISO belegt die beiden umgekehrt.
+- Der AfA-Satz des Erinnerungswerts nach dem Abgang einer Anlage wird nicht importiert (`memo_rows_skipped`) und fehlt deshalb im Stapel.
+- Für ältere Jahre leitet WISO den BU-Schlüssel beim Export aus der heutigen Bedeutung des Buchungsschlüssels neu ab; die App gibt den an der
+  Buchung gespeicherten aus und leitet ihn nur ab, wo keiner gespeichert ist (z. B. schreibt WISO dann 490, wo an der Buchung kein Schlüssel
+  gespeichert ist – die App leitet dort aus Konto und Steuersatz ab, ohne Steuersatz also keinen).
+- Das Soll/Haben-Kennzeichen folgt der Form des Satzes (`Bookings.EntryForm`): Es bezieht sich auf das Feld „Konto“ und hängt daran, auf welcher
+  Seite dieses Konto bei positivem Betrag steht.
+
 ---
 
 ### Verwendung über Web-Interface
