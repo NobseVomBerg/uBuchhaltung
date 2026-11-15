@@ -281,6 +281,59 @@ gespeicherte Form von der des frischen Imports ab (z. B. weil ein Konto inzwisch
 wird das nur gemeldet (`form_conflicts`, die ersten 500 auf der Seite *Verschiedenes*) – nichts wird
 umgedeutet.
 
+**Neu angelegte Sätze (Datenbank-Import, seit 2.3.2):** Legt WISO die Buchungen eines Zeitraums neu an (nach einem
+DATEV-Export oder einer Korrektur), stehen sie mit **neuer** `ACCOUNTINGID` und sonst gleichem Inhalt in der Datenbank; die alte
+Quellgruppe gibt es dort nicht mehr, und der Import – der einen Satz nur an seiner Quellgruppe wiedererkannte – legte
+alles ein zweites Mal an. Jetzt gilt: **Verwaist** ist eine `entry` mit Quellgruppe, die in keinem Satz der Datei vorkommt (auch nicht in
+einem künftigen AfA-Satz; die Datei ist immer die ganze WISO-Datenbank, einen Zeitraumfilter gibt es nicht). Jeder Satz mit **unbekannter**
+Quellgruppe bekommt – vor der Übernahme aus dem CSV-Import und vor dem Neuanlegen – eine verwaiste Zeile, wenn eine passt. Die Zuordnung
+steht fest, bevor die Buchungen geschrieben werden, und **hängt nicht von der Reihenfolge der Sätze in der Datei ab**: Die Durchgänge gehen
+über alle diese Sätze in fester Ordnung nach ihrem Inhalt (Datum, Konten, Betrag, Beleg-Nr., Text, Steuersatz, BU-Schlüssel, Gruppe), die
+Zeilen nach ID; jede Zeile dient höchstens einem Satz, jeder Satz bekommt höchstens eine Zeile (drei alte Zeilen gegen zwei neue Sätze:
+zwei werden umgehängt, eine bleibt verwaist).
+- **Immer nötig:** gleiches Datum, gleiches Konto, gleiches Gegenkonto (leer = leer) und **gleicher Steuersatz** (Prozentzahl, kein Satz
+  gilt wie 0 %). Ein anderer Steuersatz ist nie ein Treffer: Der Satz wird neu angelegt (mit seinem Satz und Steuerbetrag), die alte Zeile
+  bleibt verwaist.
+- **Durchgänge**, in dieser Reihenfolge: (1) gleicher Betrag (mit Vorzeichen) und gleiche, **nicht leere** Beleg-Nr. (Leerraum zählt nicht) –
+  der Text darf abweichen (`regrouped_text_differs`), die Zeile mit gleichem Text geht vor (Groß-/Kleinschreibung und Leerraum egal);
+  (2) gleicher Betrag, **beide ohne** Beleg-Nr., gleicher, nicht leerer Text; (3) gleicher Betrag, die Zeile ohne Beleg-Nr., der Satz mit
+  einer in WISO nachgetragenen, gleicher, nicht leerer Text (die Beleg-Nr. der Zeile bleibt leer); (4) nur für den Altbestand: Die Zeile
+  trägt die Form `mirror_legacy` und den **umgekehrten** Betrag, sonst wie (1) bis (3) – und nur, wenn die Datei auf demselben Schlüssel
+  (Datum, Konten, Beleg-Nr.) nicht selbst einen Satz mit dem Betrag der Zeile hat (dieselbe Sperre wie bei der Übernahme aus dem
+  CSV-Import). Einen Rückfall auf den Absolutbetrag gibt es für jede andere Form nicht; eine Zeile mit Beleg-Nr. passt nie zu einem Satz ohne,
+  und zwei verschiedene Nummern passen nie.
+- Ein Treffer ist **kein neuer Satz**: Ein UPDATE (im Replay-Log, „neu angelegten Satz wiedererkannt“) setzt nur `SourceGroup`. Betrag,
+  Form, Text, Beleg-Nr., Steuer, Empfänger und die Verknüpfung zur Bankbewegung (`ParentBooking_ID`) bleiben; der Text der App bleibt auch
+  dann, wenn er in WISO anders lautet. Die Zeile gilt für den Rest des Laufs wie eine in ihrer bekannten Gruppe
+  wiedererkannte: Sie zählt in `skipped`, ein AfA-Satz setzt sein Planjahr auf gebucht (Betrag der Bücher, kein zweiter AfA-Satz, kein
+  Konflikt), ein Spiegel des Bestands wird in `legacy_mirrors` gezählt, eine abweichende Form nur in `form_conflicts` gemeldet, und der
+  BU-Schlüssel kommt nur an die Zeile, wo er leer ist (`datev_keys_filled`; der Steuersatz gleicht hier immer). Gezählt wird
+  `regrouped_rows`; die Zusammenfassung nach dem Import nennt sie und die verwaisten Zeilen.
+- Was nicht passt, wird neu angelegt wie bisher; die Zeile bleibt **verwaist**. Der Import meldet sie (`orphaned_rows_count`, die ersten
+  50 in `orphaned_rows` mit ID, Datum, Betrag in Euro, Konto- und Gegenkontonummer und Text), die Seite *Verschiedenes* nennt sie mit
+  einem Link auf die Buchung: „… Buchungen aus einem früheren Import stehen nicht mehr in der WISO-Datenbank (dort gelöscht oder mit
+  anderem Inhalt neu angelegt). Sie zählen in den Auswertungen weiter mit – bitte prüfen und löschen, was doppelt ist.“ **Gelöscht wird
+  nichts.** Die Liste nennt Buchungen, deren Quelle (Quellgruppe) in der WISO-Datenbank nicht mehr steht. **Eine Änderung innerhalb einer
+  weiter bestehenden Buchungsgruppe (anderer Betrag, entfallene Teilbuchung) bemerkt der Import nicht: Die vorhandene Zeile bleibt, wie sie
+  ist.**
+- Grenzen: Ein Satz einer **bekannten** Quellgruppe sucht nie unter den verwaisten Zeilen, und ein Satz ohne `ACCOUNTINGID` hat keine neue
+  Gruppe zu setzen. Die Suche braucht dieselben Konten: Ein Bestand aus einem Import bis 2.2.4 auf dem Basiskonto eines Unterkontos findet
+  keinen Treffer (der Satz wird neu angelegt, die Altzeile gemeldet); ebenso eine Zeile aus 2.0.x auf den Konten 1000–1099, die ihren
+  Betrag nach der alten Kassenregel trägt. Der Import ist für **eine** WISO-Datenbank je Bestand gedacht: Zeilen
+  eines anderen Mandanten gelten als nicht mehr vorhanden und können bei gleichem Inhalt umgehängt werden – nicht unterstützt. Rechnet WISO den
+  AfA-Plan eines schon importierten Jahres mit anderem Betrag unter neuer Gruppe neu, steht die alte AfA-Buchung in der Liste der nicht mehr
+  vorhandenen Buchungen und die neue zusätzlich in den Büchern – bis zum Bereinigen zählt das Jahr doppelt.
+
+**Import in einen vorhandenen Bestand:** Der Import aus der WISO-Datenbank ist für einen **leeren Bestand** gedacht; ein weiterer Import ist
+möglich, verlangt aber eine Bestätigung. Ist `Bookings` nicht leer (`Database.wiso_import_stock()`: `bookings` = alle Zeilen, `wiso_rows` =
+`entry`-Zeilen mit Quellgruppe), steht über dem Absenden des Formulars ein Hinweis – bei Buchungen ohne Import der WISO-Datenbank, dass schon
+Erfasstes (von Hand, aus Kontoauszügen oder einem Textimport) danach doppelt vorhanden sein kann, bei Zeilen aus einem früheren Import, dass der
+Import sie wiedererkennt, Buchungen, die es in WISO nicht mehr gibt, aber in einer Liste stehen und von Hand zu bereinigen sind und in WISO
+nachträglich geänderte Beträge nicht übernommen werden – und ein Pflicht-Kästchen
+(`confirm_existing`, Wert genau `1`). Ohne Bestätigung importiert `handle_wiso_fdb_import` nichts und meldet „Der Bestand ist nicht leer –
+bitte den Import ausdrücklich bestätigen.“; die Prüfung steht vor dem Zugriff auf die Datei. `Database.import_wiso_fdb` selbst prüft
+nichts (Tests, Demodaten und Skripte rufen es direkt auf).
+
 Grenze: Eine von Hand erfasste `entry` wird nur übernommen, wenn auch der Text stimmt. Eine
 CSV-Zeile, deren Text, Gegenkonto oder Betrag nachträglich geändert wurde, wird nicht
 wiedererkannt – es entsteht eine zweite Buchung, die unter „möglicherweise doppelt“ steht und

@@ -989,13 +989,18 @@ def test_ersatzsuche_gilt_je_belegnummer_nach_zusammenfassen_des_leerraums(db_wi
 # ── Was nie übernommen wird ──────────────────────────────────────────────────
 
 def test_buchung_mit_fremder_quellgruppe_wird_nicht_uebernommen(db_with_coa, tmp_path):
-    """Eine Buchung mit eigener Quellgruppe gehört schon zu einem anderen Satz."""
+    """Eine Buchung mit eigener Quellgruppe gehört schon zu einem anderen Satz. Seit 2.3.2 gilt das, solange die Gruppe in der
+    Datei steht (hier ein siebter Satz in der Gruppe 9001); steht sie dort nicht mehr, ist die Zeile verwaist und passt ein
+    Satz neuer Gruppe in allem anderen, hängt der Import sie um (``test_wiso_fdb_regroup.py``)."""
     foreign = _candidate(db_with_coa)
-    _execute(db_with_coa, "UPDATE Bookings SET SourceGroup = 'X1' WHERE ID = ?", (foreign,))
+    _execute(db_with_coa, "UPDATE Bookings SET SourceGroup = '9001' WHERE ID = ?", (foreign,))
     before = _row(db_with_coa, foreign)
+    records = _records() + [dict(ID=7, ACCOUNTINGID=9001, ACCOUNTING_DATE='2024-05-02 00:00:00', AMOUNTGROSS=77.0,
+                                 ACCOUNTNO=4930, CONTRA_ACCOUNTNO=1200, ACCOUNTING_TEXT='Probe Fremd',
+                                 REFERENCENO='PR-777')]
 
-    result = _fdb_import(db_with_coa, _fdb(tmp_path))
-    assert (result['imported'], result['adopted']) == (6, 0)
+    result = _fdb_import(db_with_coa, _fdb(tmp_path, records))
+    assert (result['imported'], result['adopted'], result['regrouped_rows']) == (6, 0, 0)
     assert _row(db_with_coa, foreign) == before
     assert len(_entries(db_with_coa)) == 7
 

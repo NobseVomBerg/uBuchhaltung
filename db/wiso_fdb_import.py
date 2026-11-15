@@ -19,6 +19,12 @@ derselbe Satz ist und das Gegenkonto nicht widerspricht – die Buchung bekommt 
 ``SourceGroup`` und wird nicht ein zweites Mal angelegt. Im Zweifel legt er neu an
 und meldet ähnliche vorhandene Buchungen als möglicherweise doppelt (Regeln:
 :meth:`WisoFdbImportMixin._insert_wiso_bookings`).
+
+Dasselbe gilt für Buchungen, die WISO selbst neu angelegt hat (neue ``ACCOUNTINGID`` bei sonst
+gleichem Inhalt): Der Import erkennt sie an Datum, Konten, Steuersatz, Betrag und Beleg-Nr. wieder,
+hängt die vorhandene Zeile auf die neue Quellgruppe um und meldet, was von früheren Importen übrig
+bleibt (verwaiste Zeilen). Er ist für einen leeren Bestand und für EINE WISO-Datenbank je Bestand
+gedacht (:meth:`WisoFdbImportMixin.wiso_import_stock`).
 """
 import datetime
 from collections import namedtuple
@@ -44,6 +50,22 @@ MAX_CONFLICT_ROWS = 100
 
 #: So viele Unterkonten von Zahlungskonten nennt das Ergebnis (``liquid_subaccounts``).
 MAX_LIQUID_SUBACCOUNTS = 50
+
+#: So viele verwaiste Zeilen (Sätze eines früheren Imports, deren Quelle nicht mehr in der WISO-Datenbank steht)
+#: nennt das Ergebnis einzeln (``orphaned_rows``); ``orphaned_rows_count`` zählt alle.
+MAX_ORPHANED_ROWS = 50
+
+#: Die Durchgänge, in denen ein Satz mit unbekannter Quellgruppe seine verwaiste Zeile sucht, in dieser Reihenfolge:
+#: ``(Beleg-Nr., Text, umgekehrter Betrag)``. **Immer** nötig sind gleiches Datum, Konto und Gegenkonto (leer = leer) und
+#: der gleiche Steuersatz (``_same_rate``) – ein anderer Satz ist nie ein Treffer. Beleg-Nr.: ``same`` gleich und nicht leer,
+#: ``none`` beide ohne, ``added`` die Zeile ohne und der Satz mit (in WISO nachgetragen). Text: ``same`` gleich (bei ``none``
+#: und ``added`` zusätzlich nicht leer), ``any`` egal – der gleiche Text geht in seinem eigenen Durchgang vor. Betrag: der
+#: gleiche mit Vorzeichen; erst danach, nur für den Altbestand, der umgekehrte (Zeile der Form ``mirror_legacy`` mit −Betrag,
+#: und nur, wo die Datei selbst keinen Satz mit dem Betrag der Zeile hat). Kein Rückfall auf den Absolutbetrag sonst.
+_REGROUP_PASSES = (
+    ('same', 'same', False), ('same', 'any', False), ('none', 'same', False), ('added', 'same', False),
+    ('same', 'same', True), ('same', 'any', True), ('none', 'same', True), ('added', 'same', True),
+)
 
 #: Die AfA eines Planjahrs ist in der App gebucht: Es gibt die Buchung, an die
 #: ``AssetDepreciations.Booking_ID`` zeigt (``Database.book_depreciation``). Der Import
@@ -178,6 +200,24 @@ def _row_on_base_account(pool, booking, coa_map, coa, counter_coa, amount, text)
 class WisoFdbImportMixin:
     """Buchungssätze und Anlagen aus einer ``.FDB``-Datei übernehmen."""
 
+    def wiso_import_stock(self) -> dict:
+        """Was der Import aus der WISO-Datenbank im Bestand vorfindet – rein lesend.
+
+        ``bookings`` zählt alle Zeilen in ``Bookings``, ``wiso_rows`` die ``entry``-Zeilen mit nicht leerer
+        ``SourceGroup`` (was ein früherer Import aus der WISO-Datenbank geschrieben hat). Der Import ist für einen leeren
+        Bestand gedacht: Das Formular auf *Verschiedenes* und ``server.handlers.handle_wiso_fdb_import`` fragen danach und
+        verlangen bei ``bookings`` > 0 eine ausdrückliche Bestätigung. :meth:`import_wiso_fdb` selbst prüft das nicht
+        (Tests, Demodaten und Skripte rufen es direkt auf).
+        """
+        conn = self._get_connection()
+        try:
+            bookings, wiso_rows = conn.execute(
+                "SELECT COUNT(*), COUNT(CASE WHEN BookingType = 'entry' AND COALESCE(SourceGroup, '') <> '' THEN 1 END) "
+                "FROM Bookings").fetchone()
+        finally:
+            conn.close()
+        return {'bookings': bookings, 'wiso_rows': wiso_rows}
+
     def import_wiso_fdb(self, path, standard_chart_path=None,
                         with_assets=True, with_invoices=True, today=None) -> dict:
         """WISO-Mandantendatenbank importieren.
@@ -231,6 +271,29 @@ class WisoFdbImportMixin:
             (schon importierte Sätze, deren gespeicherte Form von der des frischen Imports
             abweicht: nur gemeldet, die ersten 500 mit ``id``, ``date``, ``amount``, ``text``,
             ``stored`` und ``fresh``).
+
+            Neu angelegte Sätze (seit 2.3.2): Legt WISO die Buchungen eines Zeitraums neu an (nach einem
+            DATEV-Export oder einer Korrektur), stehen sie mit **neuer** ``ACCOUNTINGID`` und sonst gleichem Inhalt in
+            der Datenbank; die alte Quellgruppe gibt es dort nicht mehr. Der Import liest immer die **ganze** Datenbank:
+            Eine **verwaiste Zeile** ist eine ``entry`` mit Quellgruppe, die in keinem Satz dieser Datei vorkommt (auch
+            nicht in einem künftigen AfA-Satz). Jeder Satz mit **unbekannter** Quellgruppe bekommt – vor der Übernahme aus
+            dem CSV-Import und vor dem Neuanlegen – eine verwaiste Zeile, wenn eine passt. Die Zuordnung steht fest, bevor
+            die Buchungen geschrieben werden, und hängt nicht von der Reihenfolge der Sätze in der Datei ab (Durchgänge über
+            alle Sätze in fester Ordnung nach ihrem Inhalt, jede Zeile höchstens einmal). Immer nötig: gleiches Datum, Konto,
+            Gegenkonto (leer = leer) **und gleicher Steuersatz** – ein anderer Satz ist nie ein Treffer. Dann nacheinander:
+            (1) gleicher Betrag mit Vorzeichen und gleiche, nicht leere Beleg-Nr., der Text darf abweichen
+            (``regrouped_text_differs``; die Zeile mit gleichem Text geht vor); (2) gleicher Betrag, beide ohne Beleg-Nr.,
+            gleicher, nicht leerer Text; (3) gleicher Betrag, die Zeile ohne Beleg-Nr., der Satz mit einer in WISO
+            nachgetragenen, gleicher, nicht leerer Text (die Beleg-Nr. der Zeile bleibt leer); (4) nur Altbestand: eine Zeile
+            der Form ``mirror_legacy`` mit dem umgekehrten Betrag, sonst wie (1) bis (3) und nur, wo die Datei selbst keinen
+            Satz mit dem Betrag der Zeile hat. Einen Rückfall auf den Absolutbetrag gibt es sonst nicht. Ein Treffer ist
+            **kein neuer Satz**: die Zeile bekommt nur die neue ``SourceGroup`` (``regrouped_rows``) und gilt für alles
+            Weitere wie eine in ihrer bekannten Gruppe wiedererkannte Zeile. ``orphaned_rows_count`` zählt die verwaisten
+            Zeilen, die danach übrig sind – in WISO gelöscht oder mit anderem Inhalt neu angelegt –, ``orphaned_rows`` nennt
+            die ersten 50 (``id``, ``date``, ``amount`` in Euro, ``account``, ``counter_account`` als Kontonummern, ``text``;
+            nach Datum und ID). Die Zeilen zählen in den Auswertungen weiter mit; gelöscht wird nichts. Eine Änderung innerhalb
+            einer weiter bestehenden Buchungsgruppe (anderer Betrag, entfallene Teilbuchung) bemerkt der Import nicht: Die
+            vorhandene Zeile bleibt, wie sie ist.
 
             BU-Schlüssel (``Bookings.DatevKey``, aus ``DATEVVATKEY``): Ein neuer Satz bekommt ihn, die Übernahme einer
             CSV-Buchung füllt ihn nur, wo er fehlt, und der Re-Import trägt ihn an einer wiedererkannten Zeile einer
@@ -302,6 +365,8 @@ class WisoFdbImportMixin:
                   'negative_gross': 0, 'stock_range_accounts': [], 'legacy_mirrors': 0,
                   'legacy_stock_rows': 0, 'subaccount_rows': 0,
                   'form_conflicts_count': 0, 'form_conflicts': [],
+                  'regrouped_rows': 0, 'regrouped_text_differs': 0,
+                  'orphaned_rows_count': 0, 'orphaned_rows': [],
                   'liquid_subaccounts': [], 'datev_keys_filled': 0, 'datev_key_rate_mismatches': 0,
                   'datev_numbers_set': 0,
                   'assets': 0, 'depreciations': 0, 'depreciations_planned': 0,
@@ -639,6 +704,34 @@ class WisoFdbImportMixin:
           mit den alten (Datum, |Betrag| und Text gleich, die andere Seite gleich), zählt der Import
           sie (``subaccount_rows``). Die Zeile bleibt, wie sie ist: Konto, Betrag und Form ändern
           sich nicht, und es entsteht kein zweiter Satz.
+        * Neu angelegte Sätze (unbekannte Quellgruppe, seit 2.3.2): Legt WISO Buchungen neu an, tragen sie eine neue
+          ``ACCOUNTINGID`` bei sonst gleichem Inhalt. **Verwaist** ist eine ``entry`` mit Quellgruppe, die in keinem Satz
+          dieser Datei vorkommt (die Gruppen künftiger AfA-Sätze zählen mit – sie kommen nicht in die Bücher, ihre Gruppe
+          ist aber noch da); die Datei ist immer die ganze WISO-Datenbank. Jeder Satz mit nicht leerer, unbekannter Gruppe
+          bekommt – vor der Übernahme aus dem CSV-Import und vor dem Neuanlegen – eine verwaiste Zeile, wenn eine passt.
+          **Die Zuordnung steht fest, bevor die Hauptschleife läuft** (Abbildung Satz → Zeile, die Schleife schlägt nur noch
+          nach), und sie hängt nicht von der Reihenfolge der Sätze in der Datei ab: Die Durchgänge (``_REGROUP_PASSES``) gehen
+          über ALLE diese Sätze in einer festen Ordnung nach ihrem Inhalt (Datum, Konten, Betrag, Beleg-Nr., Text, Steuersatz,
+          BU-Schlüssel, Gruppe, Quell-Id), die Zeilen eines Schlüssels (Datum, Konto, Gegenkonto, Betrag) nach ID; eine Zeile dient
+          höchstens einem Satz, ein Satz bekommt höchstens eine Zeile. **Immer nötig:** gleiches Datum, Konto und Gegenkonto
+          (leer = leer) und gleicher Steuersatz (``_same_rate``) – ein anderer Satz ist nie ein Treffer (der Satz wird neu
+          angelegt, die alte Zeile bleibt verwaist). Durchgänge: (1) gleicher Betrag mit Vorzeichen und gleiche, nicht leere
+          Beleg-Nr. (Leerraum zusammengefasst) – der Text darf abweichen (``regrouped_text_differs``), zuerst die Zeilen mit
+          gleichem Text (``_comparable``); (2) gleicher Betrag, beide ohne Beleg-Nr., gleicher, nicht leerer Text; (3) gleicher
+          Betrag, die Zeile ohne Beleg-Nr., der Satz mit einer in WISO nachgetragenen, gleicher, nicht leerer Text (die
+          Beleg-Nr. der Zeile bleibt leer); (4) nur Altbestand: Die Zeile trägt die Form ``mirror_legacy`` und den umgekehrten
+          Betrag, sonst wie (1) bis (3) – und nur, wenn KEIN Satz der Datei auf demselben Schlüssel (Datum, Konten, Beleg-Nr.)
+          selbst den Betrag der Zeile trägt (dieselbe Sperre wie bei der Übernahme aus dem CSV-Import). Für jede andere Form
+          gibt es keinen Rückfall auf den Absolutbetrag. Ein Treffer ist kein neuer Satz: ein UPDATE setzt nur ``SourceGroup``
+          (im Replay-Log), jede andere Spalte – Betrag, Form, Text, Beleg-Nr., Steuer, ``ParentBooking_ID``, Empfänger –
+          bleibt. Die Zeile gilt für den Rest des Laufs wie eine in ihrer bekannten Gruppe wiedererkannte (derselbe
+          Rückgabeweg: ``skipped``, AfA-Plan, Spiegel, Form, BU-Schlüssel). Gezählt wird ``regrouped_rows``, bei abweichendem
+          Text zusätzlich ``regrouped_text_differs``. Was übrig bleibt – in WISO gelöscht oder mit anderem Inhalt neu
+          angelegt –, meldet der Lauf als ``orphaned_rows_count``/``orphaned_rows``; gelöscht wird nichts. Eine Änderung
+          innerhalb einer weiter bestehenden Gruppe (anderer Betrag, entfallene Teilbuchung) bemerkt der Import nicht. Die
+          Suche braucht dieselben Konten wie der Satz: Ein Bestand aus einem Import bis 2.2.4 auf dem Basiskonto eines
+          Unterkontos findet keinen Treffer (der Satz wird neu angelegt, die Altzeile gemeldet). Die verwaisten Zeilen werden
+          einmal gelesen und nach (Datum, Konto, Gegenkonto, Betrag) abgelegt – der Lauf bleibt linear.
         * AfA-Sätze (``WisoBooking.is_depreciation``, Planjahr ``depreciation_year``) und die Planjahre der
           App (aus :meth:`_link_assets`; Anlagen ohne eindeutige Inventarnummer nehmen an alldem nicht teil
           – für ihre Sätze gilt die Gruppenlogik ohne Anlagenbezug):
@@ -717,6 +810,8 @@ class WisoFdbImportMixin:
         # Eine wiedererkannte Zeile einer bekannten Quellgruppe bekommt – nur, wenn sie noch keinen hat – den BU-Schlüssel
         # der Datenbank; sonst bleibt sie, wie sie ist
         datev_key_sql = 'UPDATE Bookings SET DatevKey = ? WHERE ID = ? AND DatevKey IS NULL'
+        # Eine verwaiste Zeile, die WISO unter neuer Quellgruppe neu angelegt hat, bekommt die neue Gruppe – nur diese Spalte
+        regroup_sql = 'UPDATE Bookings SET SourceGroup = ? WHERE ID = ?'
         with self.transaction() as tx:
             tx.conn.execute('BEGIN IMMEDIATE')
             cursor = tx.conn.cursor()
@@ -780,6 +875,19 @@ class WisoFdbImportMixin:
             # zwei Sätze nur im Konto (z. B. zwei gleich hohe Löhne auf zwei
             # Personenkonten), ließe sich nicht sagen, welche Zeile zu welchem gehört.
             ambiguous_accounts = {key for key, seen in accounts.items() if len(seen) > 1}
+
+            # Verwaiste Zeilen: Sätze eines früheren Imports, deren Quellgruppe in keinem Satz dieser Datei mehr vorkommt –
+            # auch nicht als künftiger AfA-Satz (er kommt nicht in die Bücher, seine Gruppe steht aber in der Datei). Einmal
+            # gelesen, in Python gegen die Gruppen der Datei gefiltert und nach (Datum, Konto, Gegenkonto, Betrag) abgelegt
+            # (jeweils nach ID): Der Lauf bleibt linear, es gibt keine IN-Liste mit tausenden Werten.
+            file_groups = {entry[0].group for entry in prepared if entry[0].group}
+            orphans = {}
+            cursor.execute("SELECT ID, DateBooking, COA_ID, CounterCOA_ID, Amount, EntryForm, Text, TaxRate, DatevKey, "
+                           "DocumentNumber, SourceGroup FROM Bookings "
+                           "WHERE BookingType = 'entry' AND SourceGroup IS NOT NULL AND SourceGroup <> '' ORDER BY ID")
+            for row in cursor.fetchall():
+                if row[10] not in file_groups:
+                    orphans.setdefault((row[1], row[2], row[3], row[4]), []).append(row)
 
             group_pools = {}
 
@@ -845,6 +953,20 @@ class WisoFdbImportMixin:
                     result['datev_keys_filled'] += 1
                     tx.log.append((datev_key_sql, params, 'WISO-Datenbank-Import: BU-Schlüssel nachgetragen'))
 
+            def claim(booking, row):
+                """Die Zeile in den Büchern ist die des Satzes: Ein Spiegel des Bestands wird gezählt, eine abweichende
+                Form nur gemeldet, der BU-Schlüssel nachgetragen (``fill_datev_key``). Die Zeile selbst bleibt, wie sie ist.
+                Liefert sie als ``(Betrag, COA_ID, CounterCOA_ID, EntryForm)`` – der Rückgabeweg von ``recognize`` und der
+                Zuordnung neu angelegter Sätze (``exact``). ``row`` beginnt mit ``ID, DateBooking, COA_ID, CounterCOA_ID,
+                Amount, EntryForm, Text, TaxRate, DatevKey``; weitere Spalten werden nicht gelesen."""
+                row_id, _date, row_coa, row_counter, row_amount, stored, row_text, row_rate, row_key = row[:9]
+                if stored == FORM_MIRROR_LEGACY and booking.form == FORM_MIRROR_COA:
+                    result['legacy_mirrors'] += 1
+                elif stored and deviates(stored, booking.form):
+                    note_conflict(row_id, booking.date, row_amount, row_text, stored, booking.form)
+                fill_datev_key(booking, row_id, row_rate, row_key)
+                return row_amount or 0, row_coa, row_counter, stored
+
             def recognize(booking, coa, counter_coa, amount, text):
                 """Gleicht eine Zeile der bekannten Gruppe dem Satz genau (Datum, Konto, Gegenkonto, |Betrag|) –
                 oder, bei einem Unterkonto, dem Satz, den ein Import bis 2.2.4 auf das Basiskonto geschrieben hat?
@@ -861,13 +983,7 @@ class WisoFdbImportMixin:
                 row = next((r for r in signed if _same_rate(r[7], booking.tax_rate)), signed[0] if signed else None)
                 if row is not None:
                     pool.remove(row)
-                    row_id, _date, _coa, _counter, row_amount, stored, row_text, row_rate, row_key = row
-                    if stored == FORM_MIRROR_LEGACY and booking.form == FORM_MIRROR_COA:
-                        result['legacy_mirrors'] += 1
-                    elif stored and deviates(stored, booking.form):
-                        note_conflict(row_id, booking.date, row_amount, row_text, stored, booking.form)
-                    fill_datev_key(booking, row_id, row_rate, row_key)
-                    return row_amount or 0, row[2], row[3], stored
+                    return claim(booking, row)
                 if booking.legacy_account is not None or booking.legacy_counter_account is not None:
                     # Ein Import bis 2.2.4 hat den Satz auf das Basiskonto geschrieben statt auf das
                     # Unterkonto: Die Zeile bleibt, wie sie ist, und wird nur gezählt.
@@ -893,6 +1009,36 @@ class WisoFdbImportMixin:
                 pool.remove(row)
                 return row[4] or 0, row[2], row[3], row[5]
 
+            def row_has_text(row, text):
+                """Gleicht der Text der Zeile dem des Satzes (``text`` in der Vergleichsform)? Eine Zeile aus einem früheren
+                Import der Datenbank trägt den Text wie der Satz (latin-1: beide umsetzen), eine übernommene CSV-Zeile den
+                ihrer CSV (cp1252: nur der Satz wird umgesetzt)."""
+                return text in (_comparable(row[6]), _comparable(_as_csv_text(row[6])))
+
+            # Beträge der Datei je (Datum, Konto, Gegenkonto, Beleg-Nr.): Hat die Datei selbst einen Satz mit dem Betrag einer
+            # Zeile, gehört sie diesem – sie wird nicht mit umgekehrtem Vorzeichen einem anderen Satz zugeordnet
+            file_amounts = {(booking.date, coa, counter_coa, number, amount)
+                            for booking, coa, counter_coa, amount, number, _text, _key in prepared}
+
+            def fits(row, spec, booking, coa, counter_coa, amount, number, text):
+                """Passt die verwaiste Zeile in diesem Durchgang (``_REGROUP_PASSES``) zum Satz? Datum, Konto, Gegenkonto und
+                Betrag (im umgekehrten Durchgang der umgekehrte) stimmen schon – die Zeilen liegen unter diesem Schlüssel."""
+                doc_rule, text_rule, flipped = spec
+                if not _same_rate(row[7], booking.tax_rate):
+                    return False
+                row_number = _squash(row[9])
+                if flipped and (row[5] != FORM_MIRROR_LEGACY
+                                or any((booking.date, coa, counter_coa, key_number, row[4]) in file_amounts
+                                       for key_number in (number, row_number))):
+                    return False
+                if doc_rule == 'same':
+                    return bool(number) and row_number == number and (text_rule == 'any' or row_has_text(row, text))
+                if doc_rule == 'none':
+                    numbers_fit = not number and not row_number
+                else:                                         # 'added': in WISO nachgetragen
+                    numbers_fit = bool(number) and not row_number
+                return numbers_fit and bool(text) and row_has_text(row, text)
+
             # Re-Import: Erst werden die genauen Treffer ALLER Sätze aller bekannten Gruppen vergeben, erst danach
             # dienen die übrigen Zeilen als Nachweis für einen geänderten AfA-Satz (``year_row``). Sonst nähme der
             # Satz, dessen Zeile der Nutzer gelöscht hat, die Zeile eines anderen Satzes derselben Gruppe und
@@ -901,6 +1047,42 @@ class WisoFdbImportMixin:
             for index, (booking, coa, counter_coa, amount, _number, text, _key) in enumerate(prepared):
                 if booking.group and booking.group in known_groups:
                     exact[index] = recognize(booking, coa, counter_coa, amount, text)
+
+            # Neu angelegte Sätze: Jeder Satz mit unbekannter Quellgruppe (WISO hat die Buchung neu angelegt) bekommt – vor der
+            # Übernahme aus dem CSV-Import und vor dem Neuanlegen – seine verwaiste Zeile, wenn es eine gibt. Die Zuordnung steht
+            # fest, bevor die Hauptschleife läuft, und hängt nicht von der Reihenfolge der Sätze in der Datei ab: Die Durchgänge
+            # (``_REGROUP_PASSES``) gehen über ALLE diese Sätze in einer festen Ordnung nach ihrem Inhalt, die Zeilen eines
+            # Schlüssels nach ID; eine Zeile dient höchstens einem Satz, ein Satz bekommt höchstens eine Zeile. Ein Treffer zählt
+            # wie eine Zeile der bekannten Gruppe (``exact``); ein Satz ohne Treffer fehlt dort und geht den bisherigen Weg. Ein
+            # Satz ohne Quellgruppe hat keine neue Gruppe zu setzen und nimmt nicht teil.
+            def content_order(item):
+                booking, coa, counter_coa, amount, number, _text, _key = item[1]
+                return (booking.date or '', coa or 0, counter_coa or 0, amount, number, booking.text or '',
+                        booking.tax_rate or 0.0, booking.datev_key or 0, booking.group, booking.source_id or 0)
+
+            unknown = sorted(((index, entry) for index, entry in enumerate(prepared)
+                              if entry[0].group and entry[0].group not in known_groups), key=content_order)
+            taken = {}                                        # Index des Satzes -> seine verwaiste Zeile
+            for spec in (_REGROUP_PASSES if orphans else ()):
+                for index, (booking, coa, counter_coa, amount, number, text, _key) in unknown:
+                    pool = orphans.get((booking.date, coa, counter_coa, -amount if spec[2] else amount))
+                    if index in taken or not pool:
+                        continue
+                    row = next((r for r in pool if fits(r, spec, booking, coa, counter_coa, amount, number, text)), None)
+                    if row is not None:
+                        pool.remove(row)
+                        taken[index] = row
+            for index, (booking, coa, counter_coa, amount, number, text, _key) in unknown:
+                row = taken.get(index)
+                if row is None:
+                    continue
+                params = (booking.group, row[0])
+                cursor.execute(regroup_sql, params)
+                tx.log.append((regroup_sql, params, 'WISO-Datenbank-Import: neu angelegten Satz wiedererkannt'))
+                result['regrouped_rows'] += 1
+                if not row_has_text(row, text):
+                    result['regrouped_text_differs'] += 1
+                exact[index] = claim(booking, row)
 
             for index, (booking, coa, counter_coa, amount, number, text, key) in enumerate(prepared):
                 # AfA-Satz: sein Planjahr und – wenn die Anlage am Abgleich teilnimmt – die Anlage der App
@@ -1061,6 +1243,15 @@ class WisoFdbImportMixin:
                 result['possible_duplicates'].append(
                     {'id': row_id, 'date': date,
                      'amount': float(from_minor(amount)), 'text': row.shown})
+
+            # Verwaiste Zeilen, die kein Satz dieses Laufs übernommen hat: Sie stehen weiter in den Büchern und zählen in den
+            # Auswertungen mit – der Import meldet sie, gelöscht wird nichts
+            remaining = sorted((row for rows in orphans.values() for row in rows), key=lambda row: (row[1], row[0]))
+            result['orphaned_rows_count'] = len(remaining)
+            result['orphaned_rows'] = [
+                {'id': row[0], 'date': row[1], 'amount': float(from_minor(row[4])),
+                 'account': number_of.get(row[2]), 'counter_account': number_of.get(row[3]), 'text': row[6] or ''}
+                for row in remaining[:MAX_ORPHANED_ROWS]]
 
             result['depreciation_conflicts'] = len(depreciation_cases)
             result['depreciation_conflict_rows'] = sorted(

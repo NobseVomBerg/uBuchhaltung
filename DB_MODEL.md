@@ -294,7 +294,7 @@ berichtigt und ergänzt in bestehenden Datenbanken 100, 120, 121 („Verwendung 
 | ParentBooking_ID | 18 | INTEGER | FK → Bookings(ID) | Verknüpfung: Entry → Bank-Buchung |
 | Status | 19 | TEXT | | Frei definierbar; belegt sind `'resolved'` (Debitoren-Entry aufgelöst), `'posted'` (AfA-Buchung) und `'invoice_payment'` (Satz einer Rechnungszahlung, siehe 9a) |
 | AutoMirror | 20 | INTEGER | DEFAULT 0 | 1 = die App hat den Satz selbst als Spiegel der Bankbewegung angelegt (wird beim Bearbeiten der Bankzeile mitgezogen) |
-| SourceGroup | 21 | TEXT | | Klammer aus dem Quellsystem (WISO `ACCOUNTINGID`) |
+| SourceGroup | 21 | TEXT | | Klammer aus dem Quellsystem (WISO `ACCOUNTINGID`). Legt WISO die Buchungen neu an (neue `ACCOUNTINGID`, sonst gleicher Inhalt), hängt der Re-Import die vorhandene Zeile auf die neue Gruppe um – nur diese Spalte (seit 2.3.2, siehe *WISO-Datenbank-Import*) |
 | EntryForm | 22 | TEXT | | Form des Buchungssatzes (siehe unten): `purpose_first`, `liquid_first`, `transfer`, `mirror_coa`, `mirror_counter`, `mirror_legacy`. Bankzeilen haben keine (NULL). **Immer am Ende angefügt** – die Leser lesen `Bookings` positionsbasiert (`SELECT *`) |
 | DatevKey | 23 | INTEGER | | BU-Schlüssel, den die Quelle der Buchung mitgebracht hat (2.3.0, Schema 2003): ganze Zahl 1–9999, NULL = keiner (0 wird nie gespeichert) – der DATEV-Export gibt ihn unverändert aus, sonst leitet er ihn ab. Nur die Importe schreiben ihn – der WISO-Datenbank-Import an eine vorhandene Zeile nur, wenn sie denselben Steuersatz trägt wie der WISO-Satz (`datev_key_rate_mismatches`); er fällt (NULL), wenn sich Konto, Gegenkonto oder Steuersatz ändern (`update_booking_fields`, `update_booking`, der Tabellen-Export des Textimports, der ein leeres Konto füllt) |
 
@@ -894,6 +894,24 @@ oder Unteranlagen existieren; `booked`-Zeilen aus dem WISO-Import (ohne Buchung)
 Löschen nicht. Eine Erweiterung, die zur Hauptanlage zählt (siehe „AfA-Plan der App“), lehnt es außerdem ab, sobald die
 Hauptanlage seit dem Jahr der Erweiterung (nie vor ihrem Kaufjahr) ein gebuchtes Jahr hat – hier zählt auch ein als `booked`
 importiertes Jahr –, weil die Erweiterung in diesen Buchungen steckt; ohne ein solches Jahr lässt sie sich löschen.
+
+**WISO-Datenbank-Import, neu angelegte Sätze und Bestand** (seit 2.3.2; `_insert_wiso_bookings`): Der Import ist für einen **leeren Bestand**
+und für **eine** WISO-Datenbank je Bestand gedacht; ist `Bookings` nicht leer (`Database.wiso_import_stock`: `bookings`, `wiso_rows`), zeigt das
+Formular auf *Verschiedenes* einen Hinweis und ein Pflicht-Kästchen, und `handle_wiso_fdb_import` importiert ohne Bestätigung
+(`confirm_existing` = `1`) nichts; die Datenbankmethode `import_wiso_fdb` selbst prüft das nicht. Ein weiterer Import erkennt einen Satz an
+seiner Quellgruppe wieder. Legt WISO Buchungen neu an (neue `ACCOUNTINGID`, sonst gleicher Inhalt), bekommt jeder Satz mit **unbekannter**
+Quellgruppe eine der **verwaisten** Zeilen (`entry` mit Quellgruppe, die in keinem Satz der Datei vorkommt – auch nicht in einem künftigen
+AfA-Satz; die Datei ist immer die ganze WISO-Datenbank). Die Zuordnung steht vor dem Schreiben fest und hängt nicht von der Reihenfolge der
+Sätze in der Datei ab (Durchgänge über alle Sätze in fester Ordnung nach Inhalt, jede Zeile höchstens einmal). Immer nötig: gleiches Datum,
+Konto, Gegenkonto und **gleicher Steuersatz**; dann (1) gleicher Betrag und gleiche, nicht leere Beleg-Nr. (der Text darf abweichen, die
+Zeile mit gleichem Text geht vor), (2) gleicher Betrag, beide ohne Beleg-Nr., gleicher nicht leerer Text, (3) gleicher Betrag, die Zeile ohne
+Beleg-Nr. und der Satz mit einer in WISO nachgetragenen, gleicher nicht leerer Text (die Zeile behält ihre leere Beleg-Nr.), (4) nur Altbestand:
+Zeile `mirror_legacy` mit dem umgekehrten Betrag, sonst wie (1) bis (3), nicht wo die Datei selbst einen Satz mit dem Betrag der Zeile hat. Ein
+Treffer ist kein neuer Satz: Nur `SourceGroup` wird gesetzt (Replay-Log), jede andere Spalte bleibt (`regrouped_rows`, bei geändertem Text
+zusätzlich `regrouped_text_differs`); die Zeile gilt für den Rest des Laufs wie eine in ihrer bekannten Gruppe wiedererkannte (auch für den
+AfA-Plan). Was übrig bleibt – in WISO gelöscht oder mit anderem Inhalt neu angelegt –, meldet der Lauf (`orphaned_rows_count`, die ersten 50 in
+`orphaned_rows`) und die Seite *Verschiedenes*; es zählt in den Auswertungen weiter mit, gelöscht wird nichts. Eine Änderung innerhalb einer
+weiter bestehenden Buchungsgruppe (anderer Betrag, entfallene Teilbuchung) bemerkt der Import nicht (Details und Grenzen: `PARSER_README.md`).
 
 **WISO-Datenbank-Import** (`import_wiso_fdb`, `_insert_wiso_bookings`, `_insert_wiso_assets`): WISO schreibt den
 ganzen AfA-Plan sofort als Buchungssätze, auch für künftige Jahre. Der Import legt einen AfA-Satz mit einem Datum

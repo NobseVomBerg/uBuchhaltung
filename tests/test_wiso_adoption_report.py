@@ -198,7 +198,7 @@ def test_handler_meldet_einen_fehler_und_laesst_die_buchungen_unveraendert(db_wi
 
     with monkeypatch.context() as patch:
         patch.setattr(database, '_minor_opt', staticmethod(fail_on_the_third))
-        status, location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [path]})
+        status, location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [path], 'confirm_existing': ['1']})
 
     assert status == 303
     assert _query_of(location) == {'wiso_fdb': 'error', 'msg': 'Festplatte voll'}
@@ -218,7 +218,7 @@ def test_handler_meldet_uebernommene(db_with_coa, tmp_path):
     path = _fdb(tmp_path)
     _csv_import(db_with_coa)
 
-    status, location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [path]})
+    status, location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [path], 'confirm_existing': ['1']})
     assert status == 303 and location.startswith('/miscellaneous?')
     params = _query_of(location)
     assert (params['wiso_fdb'], params['imported'], params['skipped'], params['adopted'],
@@ -229,7 +229,7 @@ def test_handler_meldet_uebernommene(db_with_coa, tmp_path):
     assert stored['adopted'] == 5 and stored['imported'] == 1
     assert len(stored['adopted_rows']) == 5 and stored['possible_duplicates'] == []
 
-    status, location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [path]})
+    status, location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [path], 'confirm_existing': ['1']})
     params = _query_of(location)
     assert (params['imported'], params['skipped'], params['adopted']) == ('0', '6', '0')
     assert len(_entries(db_with_coa)) == 6
@@ -239,12 +239,12 @@ def test_seite_zeigt_detailzeile_nur_bei_uebernommenen(db_with_coa, tmp_path):
     os.makedirs(userctx.user_data_dir(), exist_ok=True)
     path = _fdb(tmp_path)
     _csv_import(db_with_coa)
-    handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [path]})
+    handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [path], 'confirm_existing': ['1']})
     page = PageMiscellaneous(db_with_coa)
     assert '5 Buchungssätze waren schon aus dem CSV-Import da' in page
     assert 'wurden aber nicht doppelt angelegt' in page
 
-    handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [path]})      # zweiter Lauf: 0
+    handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [path], 'confirm_existing': ['1']})      # zweiter Lauf: 0
     assert 'aus dem CSV-Import da' not in PageMiscellaneous(db_with_coa)
 
 
@@ -267,7 +267,7 @@ def test_seite_listet_die_uebernommenen_buchungen_maskiert_auf(db_with_coa, tmp_
     _csv_import(db_with_coa, [tuple(row) for row in rows])
     ids = {r['DocumentNumber'] + r['DateBooking']: r['ID'] for r in _entries(db_with_coa)
            if r['DocumentNumber'] in ('PR-001', 'PR-002')}
-    handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [_fdb(tmp_path, records)]})
+    handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [_fdb(tmp_path, records)], 'confirm_existing': ['1']})
 
     page = PageMiscellaneous(db_with_coa)
     rows, block = _details(page)
@@ -295,7 +295,7 @@ def test_seite_nennt_hoechstens_500_buchungen(db_with_coa, tmp_path):
                     ACCOUNTING_TEXT=f'Probe Massen {n:03d}', REFERENCENO=f'PR-M{n:03d}')
                for n in range(count)]
     status, location = handlers.handle_wiso_fdb_import(db_with_coa,
-                                                       {'fdb_path': [_fdb(tmp_path, records)]})
+                                                       {'fdb_path': [_fdb(tmp_path, records)], 'confirm_existing': ['1']})
     assert _query_of(location)['adopted'] == str(count)
     page = PageMiscellaneous(db_with_coa)
     rows, _block = _details(page)
@@ -321,7 +321,7 @@ def test_seite_listet_moegliche_dubletten_und_die_weiterleitung_nennt_sie(db_wit
     _execute(db_with_coa, "UPDATE Bookings SET Text = 'Büro <b>umbenannt</b>' WHERE Text = 'Probe Buero'")
     renamed = [r for r in _entries(db_with_coa) if r['Text'] == 'Büro <b>umbenannt</b>'][0]
 
-    status, location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [_fdb(tmp_path)]})
+    status, location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [_fdb(tmp_path)], 'confirm_existing': ['1']})
     params = _query_of(location)
     assert (params['imported'], params['adopted'], params['possible']) == ('2', '4', '1')
 
@@ -336,7 +336,7 @@ def test_seite_listet_moegliche_dubletten_und_die_weiterleitung_nennt_sie(db_wit
 def test_seite_ohne_moegliche_dubletten_zeigt_keine_zweite_liste(db_with_coa, tmp_path):
     os.makedirs(userctx.user_data_dir(), exist_ok=True)
     _csv_import(db_with_coa)
-    handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [_fdb(tmp_path)]})
+    handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [_fdb(tmp_path)], 'confirm_existing': ['1']})
     assert 'Möglicherweise doppelt' not in PageMiscellaneous(db_with_coa)
 
 
@@ -560,7 +560,7 @@ def test_csv_und_datenbank_ueber_den_server_nacheinander(server_port, auto_login
 
     answer = post(server_port, '/wiso/fdb-import', headers={'Origin': own_origin(server_port)},
                   csrf=auto_login.csrf,
-                  form={'fdb_path': path, 'with_assets': '1', 'with_invoices': '1'})
+                  form={'fdb_path': path, 'with_assets': '1', 'with_invoices': '1', 'confirm_existing': '1'})
     assert answer.status == 303
     params = _query_of(answer.headers['Location'])
     assert (params['wiso_fdb'], params['imported'], params['skipped'], params['adopted']) == (
@@ -576,7 +576,7 @@ def test_csv_und_datenbank_ueber_den_server_nacheinander(server_port, auto_login
 
     second = post(server_port, '/wiso/fdb-import', headers={'Origin': own_origin(server_port)},
                   csrf=auto_login.csrf,
-                  form={'fdb_path': path, 'with_assets': '1', 'with_invoices': '1'})
+                  form={'fdb_path': path, 'with_assets': '1', 'with_invoices': '1', 'confirm_existing': '1'})
     params = _query_of(second.headers['Location'])
     assert (params['imported'], params['skipped'], params['adopted']) == ('0', '6', '0')
     assert len(_entries(db)) == 6

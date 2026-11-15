@@ -1258,11 +1258,21 @@ def _wiso_fdb_paths(entered):
     return client, (standard if os.path.isfile(standard) else None), None
 
 
+#: Der Import aus der WISO-Datenbank ist für einen leeren Bestand gedacht: Ist ``Bookings`` nicht leer, läuft er nur mit
+#: ausdrücklicher Bestätigung (Pflicht-Kästchen ``confirm_existing`` im Formular, Wert genau ``1``).
+WISO_FDB_STOCK_REFUSED = 'Der Bestand ist nicht leer – bitte den Import ausdrücklich bestätigen.'
+
+
 def handle_wiso_fdb_import(db: Database, post_data):
     """Import direkt aus der WISO-Datenbank (Firebird-Datei).
 
     Kein Upload: die Mandantendatei ist dreistellig megabytegroß und liegt
     ohnehin auf demselben Rechner. Angegeben wird deshalb ihr Pfad.
+
+    Der Import ist für einen leeren Bestand gedacht: Ist ``Bookings`` nicht leer
+    (``Database.wiso_import_stock``) und ``confirm_existing`` nicht ``1``, wird
+    **vor** jedem Zugriff auf die Datei nichts importiert und die Seite meldet
+    :data:`WISO_FDB_STOCK_REFUSED`. ``Database.import_wiso_fdb`` selbst prüft das nicht.
 
     Returns:
         (303, location_str) – immer ein Redirect zu /miscellaneous
@@ -1271,6 +1281,9 @@ def handle_wiso_fdb_import(db: Database, post_data):
 
     def flag(name):
         return post_data.get(name, ['0'])[0] in ('1', 'on', 'true')
+
+    if db.wiso_import_stock()['bookings'] > 0 and post_data.get('confirm_existing', [''])[0] != '1':
+        return 303, f'/miscellaneous?wiso_fdb=error&msg={quote(WISO_FDB_STOCK_REFUSED)}'
 
     entered = post_data.get('fdb_path', [''])[0]
     with_assets = flag('with_assets')
@@ -1307,6 +1320,7 @@ def handle_wiso_fdb_import(db: Database, post_data):
             f'&imported={result["imported"]}&skipped={result["skipped"]}'
             f'&adopted={result.get("adopted", 0)}'
             f'&possible={result.get("possible_duplicates_count", 0)}'
+            f'&regrouped={result.get("regrouped_rows", 0)}&orphans={result.get("orphaned_rows_count", 0)}'
             f'&assets={result["assets"]}&afa={result["depreciations"]}'
             f'&customers={result["customers"]}&invoices={result["invoices"]}'
             f'&items={result["invoice_items"]}'

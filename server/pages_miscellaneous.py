@@ -60,6 +60,60 @@ def _result_count(value):
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
 
+def _orphaned_rows_table(rows):
+    """Die verwaisten Zeilen eines WISO-Imports (``orphaned_rows``: ``id``, ``date``, ``amount``, ``account``,
+    ``counter_account``, ``text``) als Tabelle; die Buchungs-ID führt zur Buchung. Alles maskiert: Die ID wird nur
+    dann ein Link, wenn sie eine ganze Zahl ist."""
+    s = ('<table><tr><th>Datum</th><th>Betrag</th><th>Konto</th><th>Gegenkonto</th><th>Text</th>'
+         '<th>Buchungs-ID</th></tr>')
+    for row in rows:
+        try:
+            amount = fmt_eur(row.get('amount'))
+        except Exception:                       # Ergebnisdatei von Hand verändert
+            amount = str(row.get('amount'))
+        row_id = row.get('id')
+        if isinstance(row_id, int) and not isinstance(row_id, bool):
+            id_cell = f'<a href="/transactions/edit?id={row_id}">{row_id}</a>'
+        else:
+            id_cell = _html.escape(str(row_id or ''))
+        s += (f'<tr><td>{_html.escape(str(row.get("date") or ""))}</td>'
+              f'<td>{_html.escape(amount)}</td>'
+              f'<td>{_html.escape(str(row.get("account") if row.get("account") is not None else ""))}</td>'
+              f'<td>{_html.escape(str(row.get("counter_account") if row.get("counter_account") is not None else ""))}</td>'
+              f'<td>{_html.escape(str(row.get("text") or ""))}</td>'
+              f'<td>{id_cell}</td></tr>')
+    return s + '</table>'
+
+
+#: Hinweise über dem Absenden des Imports aus der WISO-Datenbank, wenn der Bestand nicht leer ist (``{n}``: die Zahl der
+#: Buchungen bzw. der aus einem früheren Import stammenden), und die Beschriftung des Pflicht-Kästchens.
+STOCK_NOTICE_BOOKINGS = ('Es gibt bereits {n} Buchungen. Der Import ist für einen leeren Bestand gedacht: Buchungen, die '
+                         'schon erfasst sind (von Hand, aus Kontoauszügen oder einem Textimport), können danach doppelt '
+                         'vorhanden sein.')
+STOCK_NOTICE_WISO_ROWS = ('Es gibt bereits {n} Buchungen aus einem Import der WISO-Datenbank. Ein weiterer Import erkennt '
+                          'sie wieder – auch Sätze, die WISO inzwischen neu angelegt hat (etwa nach einem '
+                          'DATEV-Export). Buchungen, die es in WISO nicht mehr gibt, stehen danach in einer Liste und '
+                          'müssen von Hand bereinigt werden; in WISO nachträglich geänderte Beträge übernimmt der Import '
+                          'nicht.')
+STOCK_CONFIRM_LABEL = 'Trotzdem in den vorhandenen Bestand importieren'
+
+
+def _wiso_stock_confirmation(stock):
+    """Hinweis und Pflicht-Kästchen (``confirm_existing``) für das Formular „Import aus der Datenbank“, wenn der Bestand nicht
+    leer ist – ``stock`` ist ``Database.wiso_import_stock()``: ``bookings`` (alle Zeilen) und ``wiso_rows`` (aus einem Import der
+    WISO-Datenbank). Gibt es Zeilen aus einem solchen Import, nennt der Hinweis deren Zahl, sonst die aller Buchungen. Bei
+    leerem Bestand kommt nichts (leerer Text)."""
+    if not stock['bookings']:
+        return ''
+    if stock['wiso_rows']:
+        notice = STOCK_NOTICE_WISO_ROWS.format(n=stock['wiso_rows'])
+    else:
+        notice = STOCK_NOTICE_BOOKINGS.format(n=stock['bookings'])
+    return (f'<p class="warnColor">\u26a0\ufe0f {_html.escape(notice)}</p>'
+            '<div class="rowWithObjects"><label><input type="checkbox" name="confirm_existing" value="1" required>'
+            f'&nbsp;{_html.escape(STOCK_CONFIRM_LABEL)}</label></div>')
+
+
 def _import_notices(result):
     """Hinweise zu Vorzeichen, Konten 1000–1099, unbekannten Steuerschlüsseln, älteren
     Überträgen, Unterkonten und AfA aus dem Ergebnis eines WISO-Imports (Text- und Datenbank-Import
@@ -67,8 +121,10 @@ def _import_notices(result):
     ``legacy_mirrors``; ``unknown_tax_keys`` – eine Liste von ``{'schluessel', 'anzahl'}`` – kommt
     nur vom Textimport, vom Datenbank-Import kommen ``subaccount_rows``,
     ``future_depreciations_skipped`` (mit ``depreciations_planned``), ``future_depreciations_kept``,
-    ``depreciation_conflicts`` mit der Liste ``depreciation_conflict_rows`` aus ``{'anlage', 'jahr'}`` und die Liste
-    ``liquid_subaccounts`` aus ``{'nummer', 'basis', 'anzahl'}``) als HTML. Die Ergebnisdatei kann
+    ``depreciation_conflicts`` mit der Liste ``depreciation_conflict_rows`` aus ``{'anlage', 'jahr'}``, die Liste
+    ``liquid_subaccounts`` aus ``{'nummer', 'basis', 'anzahl'}``, ``regrouped_rows`` (mit ``regrouped_text_differs``) und
+    ``orphaned_rows_count`` mit der Liste ``orphaned_rows`` aus ``{'id', 'date', 'amount', 'account', 'counter_account',
+    'text'}``) als HTML. Die Ergebnisdatei kann
     von Hand verändert sein: Was nicht passt, gilt als leer bzw. 0, und jeder Wert aus ihr wird
     maskiert."""
     s = ''
@@ -133,6 +189,25 @@ def _import_notices(result):
             s += '</table>'
             if conflict_count > len(conflicts):
                 s += f'<p>Genannt werden die ersten {len(conflicts)}.</p>'
+    orphans = _fdb_result_rows(result.get('orphaned_rows'))
+    orphan_count = _result_count(result.get('orphaned_rows_count')) or len(orphans)
+    if orphan_count:
+        s += (f'<h3>\u26a0\ufe0f Nicht mehr in WISO vorhandene Buchungen &ndash; {orphan_count}</h3>'
+              f'<p>{orphan_count} Buchungen aus einem früheren Import stehen nicht mehr in der WISO-Datenbank '
+              '(dort gelöscht oder mit anderem Inhalt neu angelegt). Sie zählen in den Auswertungen weiter mit '
+              '&ndash; bitte prüfen und löschen, was doppelt ist.</p>')
+        if orphans:
+            s += _orphaned_rows_table(orphans)
+            if orphan_count > len(orphans):
+                s += f'<p>Genannt werden die ersten {len(orphans)}.</p>'
+    regrouped = _result_count(result.get('regrouped_rows'))
+    if regrouped:
+        s += (f'<p>\u2139\ufe0f {regrouped} neu angelegte WISO-Buchungen wurden wiedererkannt und nicht doppelt '
+              'angelegt')
+        regrouped_text = _result_count(result.get('regrouped_text_differs'))
+        if regrouped_text:
+            s += f', davon {regrouped_text} mit geändertem Text (der Text der App bleibt)'
+        s += '.</p>'
     stock_legacy = _result_count(result.get('legacy_stock_rows'))
     if stock_legacy:
         s += (f'<p>\u2139\ufe0f {stock_legacy} Buchungen auf Konten 1000&ndash;1099 stammen aus einer '
@@ -563,6 +638,10 @@ def PageMiscellaneous(db: Database, check_payments: bool = False):
                 <label><input type="checkbox" name="with_invoices" value="1" checked>
                 &nbsp;Kunden und Rechnungen mitnehmen (Kundennummern bleiben erhalten)</label>
             </div>
+        '''
+    # Der Import ist für einen leeren Bestand gedacht: Ist er nicht leer, steht über dem Absenden ein Hinweis mit Pflicht-Kästchen
+    s += _wiso_stock_confirmation(db.wiso_import_stock())
+    s += '''
             <br>
             <button type="submit" class="coloredButton bg-green">&#x1F5C4;&#xFE0F; Aus WISO-Datenbank importieren</button>
         </form>
@@ -593,8 +672,12 @@ def PageMiscellaneous(db: Database, check_payments: bool = False):
                 const zl = parseInt(p.get('payments') || '0');
                 const ad = parseInt(p.get('adopted') || '0');
                 const pd = parseInt(p.get('possible') || '0');
+                const rg = parseInt(p.get('regrouped') || '0');
+                const op = parseInt(p.get('orphans') || '0');
                 if (ad > 0) msg += ', ' + ad + ' aus dem CSV-Import wiedererkannt';
                 if (pd > 0) msg += ', ' + pd + ' vorhandene Buchungen m\\u00f6glicherweise doppelt \\u2013 siehe Liste unten';
+                if (rg > 0) msg += ', ' + rg + ' neu angelegte Buchungen wiedererkannt';
+                if (op > 0) msg += ', ' + op + ' Buchungen nicht mehr in WISO vorhanden \\u2013 siehe Liste unten';
                 if (rn > 0) msg += ', ' + rn + ' Rechnungen mit '
                     + p.get('items') + ' Positionen';
                 if (kd > 0) msg += ', ' + kd + ' Kunden';
@@ -602,8 +685,8 @@ def PageMiscellaneous(db: Database, check_payments: bool = False):
                 if (lk > 0) msg += ', ' + lk + ' Bankbewegungen verkn\\u00fcpft';
                 if (cc > 0) msg += ', ' + cc + ' SKR-Konten angelegt';
                 if (missing > 0) msg += ', ' + missing + ' Konten ohne Zuordnung';
-                div.style.background = (missing || hints) ? '#fff3cd' : '#d4edda';
-                div.style.color      = (missing || hints) ? '#856404' : '#155724';
+                div.style.background = (missing || hints || op) ? '#fff3cd' : '#d4edda';
+                div.style.color      = (missing || hints || op) ? '#856404' : '#155724';
             } else if (status === 'incompatible') {
                 div.style.background = '#fff3cd';
                 div.style.color = '#856404';
