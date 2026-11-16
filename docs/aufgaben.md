@@ -71,6 +71,7 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
 - Bankmaske übernimmt den Kontakt des ersten Satzes auf eine Bankbewegung ohne Kontakt
 - Ein eigenständiger Buchungssatz bekommt beim Speichern in der Maske das vorgewählte Bankkonto und gilt danach im Kontoauszug-Import als vorhandene Bankbewegung
 - Kontoauszug-Import erkennt Duplikate nur über Konto + Datum + Betrag (je Datei gezählt, über Dateien das Maximum): Bankreferenz (AcctSvcrRef/EndToEndId) speichern, gebündelt mit den CAMT-Zusatzfeldern (Schemaänderung). Bis dahin: CAMT-Sammelbuchung gegen PDF-Summenzeile wird doppelt angelegt; zwei verschiedene Auszüge desselben Tags mit je einem echten, gleichen Umsatz verlieren einen
+- WISO-Datenbank: Lesen der Satzversionen an einer großen echten Datei bestätigen (mehrere TIP-Seiten, Transaktionsnummern über 2³²) – geprüft ist es an zwei kleinen echten Firebird-3.0-Dateien
 - Saldoprüfung der PDF-Auszüge an echten Auszügen bestätigen: Die Suche nach „alter/neuer Kontostand“ ist nur an nachgebauten Texten geprüft; passt sie nicht, zeigt jeder Auszug „Saldo nicht gefunden“
 - CAMT-Sammelbuchungen, deren Einzelbeträge nur unter `AmtDtls/TxAmt` stehen, bleiben ein Umsatz mit dem Gesamtbetrag: aufteilen erst zusammen mit einer Duplikaterkennung Summe ↔ Einzelbeträge (sonst legt der erneute Import eines alten Auszugs die Einzelbeträge zusätzlich an)
 - DKB-PDF auf den Stand des Volksbank-Parsers bringen: ungültiges Datum wird dort noch zu „heute“, kein `unparsed`/`no_year`

@@ -100,13 +100,14 @@ def csv_export(*lines):
     return (CSV_HEADER + '\n'.join(rows) + '\n').encode('utf-8')
 
 
-def wiso_database(path, rows, extra_chart=(), key_column=False, systems=None):
+def wiso_database(path, rows, extra_chart=(), key_column=False, systems=None, open_rows=()):
     """Synthetische WISO-Datenbank: Kontenrahmen (SKR03 → SKR04) und Buchungssätze ``rows``.
 
     ``key_column``: Die Tabelle der Buchungen hat die Spalte ``DATEVVATKEY`` (BU-Schlüssel; ein Satz nennt ihn als
     ``DATEVVATKEY=401``). ``systems``: Sätze der Fibu-Schnittstellen (``SYS_FINACCSYSTEMS``: ``NAME``,
     ``CONSULTANT_NO``, ``CLIENT_NO``, dazu ``USERPASSWORD`` als Zugangsdaten, die der Leser nie anfasst); ohne die
-    Angabe gibt es die Tabelle nicht."""
+    Angabe gibt es die Tabelle nicht. ``open_rows``: Sätze, die nur eine nicht abgeschlossene Transaktion angelegt hat
+    (WISO war beim Kopieren der Datei geöffnet): Der Leser liefert sie nicht."""
     builder = FdbBuilder(page_size=16384)
     chart = builder.table('BAS_FINACC_PLAN', [
         Column('ID', LONG, 4), Column('SKR04', LONG, 4), Column('BOOKINGYEAR', SHORT, 2),
@@ -127,6 +128,11 @@ def wiso_database(path, rows, extra_chart=(), key_column=False, systems=None):
         group = row.pop('ACCOUNTINGID', 700 + number)
         date = row.pop('ACCOUNTING_DATE', '2026-01-02 00:00:00')
         bookings.add(ID=number, ACCOUNTINGID=group, ACCOUNTING_DATE=date, **row)
+    for number, row in enumerate(open_rows, start=len(rows) + 1):
+        row = dict(row)
+        group = row.pop('ACCOUNTINGID', 700 + number)
+        date = row.pop('ACCOUNTING_DATE', '2026-01-02 00:00:00')
+        bookings.add_open(ID=number, ACCOUNTINGID=group, ACCOUNTING_DATE=date, **row)
     if systems is not None:
         table = builder.table('SYS_FINACCSYSTEMS', [
             Column('ID', LONG, 4), Column('NAME', VARYING, 42), Column('CONSULTANT_NO', VARYING, 12),

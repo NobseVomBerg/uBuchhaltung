@@ -125,7 +125,10 @@ direkt aus der Datenbankdatei oder aus den Textexporten:
   uBuchhaltung in einem Container oder auf einem anderen Rechner läuft; nach dem
   Import löscht der Server sie wieder. Übernommen werden Buchungen aller
   Jahre einschließlich der Zusammengehörigkeit von Teilbuchungen, Anlagen,
-  Kunden sowie Rechnungen mit ihren Positionen.
+  Kunden sowie Rechnungen mit ihren Positionen. Gelesen wird je Datensatz der letzte abgeschlossene Stand:
+  War WISO beim Kopieren der Datei geöffnet oder wurde es nicht sauber beendet, übernimmt der Import keine
+  halbfertigen Änderungen und nennt nach dem Lauf, wie viele Sätze das betraf. Am sichersten bleibt eine Kopie
+  bei geschlossenem WISO.
 - Konten werden von SKR03 nach SKR04 umgeschlüsselt. Konten ohne eindeutige
   Zuordnung werden gemeldet, nicht geraten. Selbst angelegte Unterkonten (z. B. je
   Fahrzeug) behalten die SKR04-Nummer, die WISO zu ihnen speichert; nur wo WISO keine

@@ -95,6 +95,12 @@ class Catalog:
     def __exit__(self, *exc):
         self.close()
 
+    def version_stats(self):
+        """Was beim Lesen der Sätze an ihren Versionen auffiel: ``{'uncommitted', 'unreadable', 'unknown'}``, je die
+        Zahl der Sätze (:meth:`.ods.OdsFile.version_stats`). Sie entsteht erst beim Lesen – nach dem Lesen aller
+        benötigten Tabellen abfragen."""
+        return self.ods.version_stats()
+
     # ------------------------------------------------------------------
     def _load_formats(self):
         """``RDB$FORMATS``: Nullvektor 4, Relation 4, Format 6, Blob-Id 8."""

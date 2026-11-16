@@ -152,10 +152,30 @@ def _import_notices(result):
     ``depreciation_conflicts`` mit der Liste ``depreciation_conflict_rows`` aus ``{'anlage', 'jahr'}``, die Liste
     ``liquid_subaccounts`` aus ``{'nummer', 'basis', 'anzahl'}``, ``regrouped_rows`` (mit ``regrouped_text_differs``) und
     ``orphaned_rows_count`` mit der Liste ``orphaned_rows`` aus ``{'id', 'date', 'amount', 'account', 'counter_account',
-    'text'}``) als HTML. Die Ergebnisdatei kann
+    'text'}``; ebenfalls nur vom Datenbank-Import: ``uncommitted_records``, ``unreadable_versions`` und ``unknown_tx_state`` –
+    die Sätze der WISO-Datei, die nicht abgeschlossene Vorgänge betreffen) als HTML. Die Ergebnisdatei kann
     von Hand verändert sein: Was nicht passt, gilt als leer bzw. 0, und jeder Wert aus ihr wird
     maskiert."""
     s = ''
+    uncommitted = _result_count(result.get('uncommitted_records'))
+    if uncommitted:
+        records = ('1 Satz aus einem nicht abgeschlossenen Vorgang' if uncommitted == 1
+                   else f'{uncommitted} Sätze aus nicht abgeschlossenen Vorgängen')
+        s += (f'<p>\u2139\ufe0f Die WISO-Datenbank enthielt {records} (WISO war beim Kopieren geöffnet oder wurde nicht '
+              'sauber beendet). Übernommen wurde jeweils der letzte abgeschlossene Stand.</p>')
+    unreadable = _result_count(result.get('unreadable_versions'))
+    if unreadable:
+        records = ('1 Satz ließ sich nicht auf einen abgeschlossenen Stand zurückführen und fehlt' if unreadable == 1
+                   else f'{unreadable} Sätze ließen sich nicht auf einen abgeschlossenen Stand zurückführen und fehlen')
+        s += (f'<p class="warnColor">\u26a0\ufe0f {records} im Import – bitte WISO schließen, die Datei neu kopieren '
+              'und den Import wiederholen.</p>')
+    unknown = _result_count(result.get('unknown_tx_state'))
+    if unknown:
+        text = ('Bei 1 Satz ließ sich nicht feststellen, ob sein Vorgang abgeschlossen ist; er wurde übernommen, wie er '
+                'in der Datei steht.' if unknown == 1 else
+                f'Bei {unknown} Sätzen ließ sich nicht feststellen, ob ihr Vorgang abgeschlossen ist; sie wurden '
+                'übernommen, wie sie in der Datei stehen.')
+        s += f'<p class="warnColor">\u26a0\ufe0f {text}</p>'
     negative = _result_count(result.get('negative_gross'))
     if negative:
         s += (f'<h3>\u26a0\ufe0f Negative Bruttobeträge &ndash; {negative} Sätze</h3>'

@@ -7,9 +7,14 @@ Damit lässt sich :mod:`importers.wiso_fdb` vollständig prüfen, ohne eine
 echte WISO-Datenbank zu benötigen – und ohne echte Daten in den Tests.
 
 Erzeugt wird genau so viel Dateiformat, wie der Leser anfasst: Header-Page,
-Pointer-Pages, Data-Pages, RLE-komprimierte Sätze, Blobs und die drei
-Systemtabellen ``RDB$PAGES``, ``RDB$RELATIONS``, ``RDB$RELATION_FIELDS`` sowie
-``RDB$FORMATS``.
+Pointer-Pages, Data-Pages, RLE-komprimierte Sätze, Blobs, eine TIP-Seite (Zustand der
+Transaktionen) und die drei Systemtabellen ``RDB$PAGES``, ``RDB$RELATIONS``,
+``RDB$RELATION_FIELDS`` sowie ``RDB$FORMATS``.
+
+Alle Sätze tragen die Transaktion 1, die die TIP-Seite als abgeschlossen führt – wie in einer echten Datei, in der
+jeder Satz von einer Transaktion stammt, deren Zustand sich nachschlagen lässt. Ein Satz, den nur eine nicht abgeschlossene
+Transaktion angelegt hat (WISO war beim Kopieren der Datei geöffnet), kommt über ``Table.add_open``: Transaktion 2, in
+der TIP-Seite aktiv, ohne Vorversion – der Leser liefert ihn nicht.
 """
 import copy
 import datetime
@@ -27,6 +32,14 @@ _ALIGN = {TEXT: 1, VARYING: 2, SHORT: 2, LONG: 4, DOUBLE: 8,
 # Relations-Ids der Systemtabellen
 R_RELATION_FIELDS, R_RELATIONS, R_FORMATS = 5, 6, 8
 FIRST_USER_RELATION = 128
+
+# Seitentypen (RDB$PAGES.RDB$PAGE_TYPE)
+PAGE_TIP, PAGE_POINTER = 3, 4
+
+# Transaktionen: Jeder Satz stammt von einer, deren Zustand die TIP-Seite führt (2 Bit je Transaktion ab Byte 20).
+COMMITTED_TRANSACTION, OPEN_TRANSACTION = 1, 2
+TIP_HEAD = 20
+TRA_ACTIVE, TRA_COMMITTED = 0, 3
 
 # Feste Offsets, die der Leser für die Systemtabellen annimmt
 REL_ID_OFF, REL_FORMAT_OFF, REL_NAME_OFF = 32, 38, 42
@@ -54,6 +67,7 @@ class Table:
         self.old = Table(relation_id, name, [copy.copy(c) for c in old_columns]) if old_columns else None
         self.format_number = 1 if old_columns else 0
         self.old_rows = []
+        self.open_rows = []
         offset = _round_up((len(columns) + 7) // 8, 4)   # Nullvektor
         for column in columns:
             offset = _round_up(offset, _ALIGN[column.dtype])
@@ -68,6 +82,12 @@ class Table:
     def add_old(self, **values):
         """Ein Satz im älteren Format: nur dessen Spalten."""
         self.old_rows.append(values)
+        return self
+
+    def add_open(self, **values):
+        """Ein Satz, den nur eine nicht abgeschlossene Transaktion angelegt hat (WISO war beim Kopieren der Datei
+        geöffnet): Transaktion ``OPEN_TRANSACTION``, in der TIP-Seite aktiv, keine Vorversion. Der Leser liefert ihn nicht."""
+        self.open_rows.append(values)
         return self
 
 
@@ -86,16 +106,21 @@ def _compress(data):
     return bytes(out)
 
 
-def _record(data, flags=0, fmt=0):
+def _record(data, flags=0, fmt=0, transaction=COMMITTED_TRANSACTION):
     """Satzkopf ``rhd`` (13 Byte) plus komprimierte Nutzdaten."""
-    return struct.pack('<IIHHB', 1, 0, 0, flags, fmt) + _compress(data)
+    return struct.pack('<IIHHB', transaction, 0, 0, flags, fmt) + _compress(data)
 
 
 class FdbBuilder:
-    """Sammelt Tabellen und schreibt daraus eine gültige ``.FDB``."""
+    """Sammelt Tabellen und schreibt daraus eine gültige ``.FDB``.
 
-    def __init__(self, page_size=2048):
+    ``tip=False`` lässt die TIP-Seite weg (so schrieb der Builder sie bis 2.3.9): Der Zustand der Transaktionen
+    ist dann nicht nachzuschlagen, und der Leser liest jeden Satz, wie er in der Datei steht.
+    """
+
+    def __init__(self, page_size=2048, tip=True):
         self.page_size = page_size
+        self.tip = tip
         self.tables = []
         self._next_relation = FIRST_USER_RELATION
 
@@ -185,6 +210,9 @@ class FdbBuilder:
             if table.old:
                 table_records[table.relation_id] += [
                     _record(self._encode(table.old, row, blobs), fmt=0) for row in table.old_rows]
+            table_records[table.relation_id] += [
+                _record(self._encode(table, row, blobs), fmt=table.format_number, transaction=OPEN_TRANSACTION)
+                for row in table.open_rows]
             blob_records[table.relation_id] = blobs
 
         # RDB$FORMATS: je Tabelle ein Deskriptorblob
@@ -209,7 +237,7 @@ class FdbBuilder:
             numbers = list(range(first_data, first_data + len(built)))
             pages.append(_pointer_page(self.page_size, relation_id, numbers))
             pages.extend(built)
-            pages_rows.append((pointer_page, relation_id))
+            pages_rows.append((pointer_page, relation_id, PAGE_POINTER))
             return pointer_page
 
         # Reihenfolge egal – RDB$PAGES kommt zum Schluss und kennt alle.
@@ -223,12 +251,18 @@ class FdbBuilder:
                   blob_records.get(t.relation_id, [])) for t in self.tables]):
             layout.append(emit(relation_id, records, blobs))
 
+        # Zustand der Transaktionen: die TIP-Seite, in RDB$PAGES mit Seitentyp 3 und Sequenznummer 0 eingetragen
+        if self.tip:
+            pages_rows.append((len(pages), 0, PAGE_TIP))
+            pages.append(_tip_page(self.page_size,
+                                   {COMMITTED_TRANSACTION: TRA_COMMITTED, OPEN_TRANSACTION: TRA_ACTIVE}))
+
         # RDB$PAGES selbst (Relation 0)
         pages_pointer = len(pages)
         pages.append(_pointer_page(self.page_size, 0, [len(pages) + 1]))
-        pages_rows.append((pages_pointer, 0))
+        pages_rows.append((pages_pointer, 0, PAGE_POINTER))
         pages.extend(_data_pages(
-            self.page_size, 0, [_pages_record(p, r) for p, r in pages_rows]))
+            self.page_size, 0, [_pages_record(page, relation, page_type) for page, relation, page_type in pages_rows]))
 
         pages[0] = _header_page(self.page_size, pages_pointer)
         return b''.join(pages)
@@ -242,13 +276,13 @@ class FdbBuilder:
 # ----------------------------------------------------------------------
 # Sätze der Systemtabellen
 # ----------------------------------------------------------------------
-def _pages_record(page, relation):
+def _pages_record(page, relation, page_type=PAGE_POINTER):
     raw = bytearray(18)
     raw[0] = 0xF0                                   # Nullvektor: nichts NULL
     struct.pack_into('<I', raw, 4, page)
     struct.pack_into('<H', raw, 8, relation)
     struct.pack_into('<I', raw, 12, 0)              # Sequenz 0
-    struct.pack_into('<H', raw, 16, 4)              # Pointer-Page
+    struct.pack_into('<H', raw, 16, page_type)
     return _record(bytes(raw))
 
 
@@ -305,6 +339,16 @@ def _header_page(page_size, pages_pointer):
     struct.pack_into('<HH', page, 16, page_size, 0x800C)   # ODS 12
     struct.pack_into('<I', page, 20, pages_pointer)
     struct.pack_into('<H', page, 42, 0x12)        # Dialekt 3, nicht verschlüsselt
+    return bytes(page)
+
+
+def _tip_page(page_size, states):
+    """TIP-Seite: Seitenkopf (16 Byte) und ``tip_next`` (4), dann 2 Bit je Transaktion – Transaktion ``n`` liegt in Byte
+    ``20 + n // 4``, Bits ``2 * (n % 4)``. ``states``: Transaktionsnummer → Zustand; alle anderen sind 0 (aktiv)."""
+    page = bytearray(page_size)
+    page[0] = PAGE_TIP
+    for number, state in states.items():
+        page[TIP_HEAD + number // 4] |= state << (number % 4 * 2)
     return bytes(page)
 
 
