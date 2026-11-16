@@ -160,7 +160,12 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
   entfernt werden.
 - Die SQL-Konsole (*Sonstiges*) steht nur Administratoren zur Verfügung und
   arbeitet immer nur auf der eigenen Datenbank des angemeldeten Nutzers. Wer sie
-  braucht, bekommt in der Benutzerverwaltung das Administratorrecht.
+  braucht, bekommt in der Benutzerverwaltung das Administratorrecht. Sie läuft nur
+  lesend, solange „Schreiben erlauben“ nicht angekreuzt ist; mit Haken laufen alle
+  Befehle einer Anfrage in einer Transaktion (scheitert einer, wird nichts geändert)
+  und stehen danach im SQL-Protokoll. Vor Änderungen eine Datensicherung anlegen. Eine
+  schreibende Anfrage sperrt die Datenbank, solange sie läuft (höchstens 60 Sekunden) –
+  andere Schreibzugriffe warten so lange oder scheitern mit einer Meldung.
 
 ## Docker (Unraid, Proxmox, NAS)
 
@@ -295,6 +300,8 @@ mit `AS` unterscheiden. BLOB-Spalten lassen sich nur über `hex(x)` oder `length
 - **Sonst:** Außer der Anmeldung und der SQL-Konsole (`/execute_sql`) sendet er keine POSTs.
   Antworten der Instanz begrenzt er auf 16 MiB und auf die doppelte Zeitgrenze je Anfrage.
   Das Passwort steht nie in Ausgaben oder Logs.
+- **Lesemodus der Instanz:** Der Server schickt nie die Freigabe zum Schreiben; die SQL-Konsole der
+  Instanz (ab 2.3.11) lehnt dann selbst jeden ändernden Befehl ab.
 - **Restrisiko:** Die SQL-Konsole der Instanz bricht jede Anfrage nach 60 Sekunden ab. Die
   Sperren lassen die üblichen Endlosabfragen gar nicht erst durch, aber nicht jede aufwendige
   (etwa Kreuzprodukte großer Tabellen). Solche Abfragen belasten die Instanz und blockieren

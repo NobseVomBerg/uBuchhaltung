@@ -10,6 +10,9 @@ import math
 import hashlib
 import sqlite3
 import datetime
+import shutil
+import tempfile
+import threading
 import time
 from typing import NamedTuple
 from urllib.parse import quote
@@ -1527,6 +1530,13 @@ def _store_fdb_result(result):
 
 
 # ── SQL-Konsole ──────────────────────────────────────────────────────────────
+# Zwei Modi; das Formularfeld ``write`` mit genau dem Wert ``1`` schaltet den Schreibmodus ein, alles andere (auch
+# fehlend) bleibt im Lesemodus:
+#  * Lesemodus (Standard): PRAGMA query_only = ON und ein Authorizer, der nur Abfragen durchlässt. Jeder Befehl läuft für
+#    sich, ein Fehler stoppt die folgenden nicht. Der MCP-Server (tools/mcp_ubuchhaltung.py) schickt nie ``write``.
+#  * Schreibmodus: Fremdschlüssel an, ein Wachstumslimit für die Datei und EINE Transaktion (BEGIN IMMEDIATE durch den
+#    Handler) für alle Befehle: Der erste Fehler, ein Abbruch (Zeit, Platte) oder ein scheiterndes COMMIT nimmt alles
+#    zurück; erst danach gehen die schreibenden Befehle ins SQL-Protokoll.
 # PRAGMAs laufen in der Konsole nur per Positivliste, alles andere ist gesperrt:
 #  * _CONSOLE_PRAGMAS_WITH_ARG: auch mit Argument/Wert erlaubt (Abfragen, Prüfläufe,
 #    Verbindungseinstellungen),
@@ -1559,6 +1569,33 @@ _CONSOLE_MAX_VALUE_BYTES = 2_000_000    # größter einzelner Wert (SQLITE_LIMIT
 _CONSOLE_MAX_COLUMNS = 250              # Spalten je Ergebnis/Tabelle (SQLITE_LIMIT_COLUMN, ab Python 3.11)
 _CONSOLE_MAX_OUTPUT_ROWS = 200_000      # Zeilen der Ausgabe je Anfrage (Kopfzeilen mitgezählt)
 _CONSOLE_MAX_OUTPUT_BYTES = 20_000_000  # UTF-8-Bytes der Ausgabe je Anfrage
+# Seit 2.3.11: Grenzen der Eingabe (_console_statements prüft sie, bevor etwas läuft), der Fehlerliste und der Platte.
+_CONSOLE_MAX_SQL_BYTES = 10_000_000     # UTF-8-Bytes der Eingabe (die Anfrage selbst endet ohnehin bei MAX_FORM_BODY)
+_CONSOLE_MAX_STATEMENTS = 200_000       # Befehle je Anfrage
+_CONSOLE_MAX_SPLIT_TRIES = 2_000        # je Befehl geprüfte Semikolons: sonst würde ein Text voller Semikolons quadratisch
+_CONSOLE_MAX_SPLIT_SCAN = 500_000_000   # … und so viele Zeichen darf das Trennen insgesamt erneut lesen (Semikolons in Texten)
+_CONSOLE_MAX_ERRORS = 100               # Einträge in "errors"; weitere fasst eine Zeile „… n weitere Fehler“ zusammen
+_CONSOLE_MAX_GROWTH_BYTES = 1_000_000_000   # Schreibmodus: so viel darf die Datenbankdatei wachsen (PRAGMA max_page_count)
+_CONSOLE_MIN_FREE_BYTES = 256_000_000   # freier Platz im Datenordner und im Temp-Ordner: sinkt er darunter, bricht die Anfrage ab
+_CONSOLE_MAX_DISK_BYTES = 1_000_000_000  # … ebenso, wenn der freie Platz seit Beginn der Anfrage um mehr gesunken ist
+_CONSOLE_DISK_CHECK_EVERY = 100         # der Platz wird bei jedem n-ten Aufruf des Fortschrittshandlers geprüft (je 10000 Schritte)
+
+# Meldungen der Konsole. Sie stehen fest hier (nie Pfade oder Daten der Anfrage), Tests prüfen den Wortlaut.
+CONSOLE_READONLY = 'nicht erlaubt – die Konsole läuft nur lesend; zum Ändern „Schreiben erlauben“ ankreuzen'
+CONSOLE_DENIED = ('nicht erlaubt – ATTACH, DETACH, VACUUM sowie verändernde oder unbekannte PRAGMAs sind in der Konsole '
+                  'gesperrt, ebenso die Funktionen fts3_tokenizer und load_extension')
+CONSOLE_DENIED_WRITE = (CONSOLE_DENIED + '; im Schreibmodus außerdem BEGIN, COMMIT, ROLLBACK, SAVEPOINT, RELEASE und '
+                        'PRAGMA foreign_keys mit Wert (die Befehle laufen dort in einer eigenen Transaktion)')
+CONSOLE_NOTHING_CHANGED = ('Nichts wurde geändert – im Schreibmodus laufen alle Befehle einer Anfrage in einer '
+                           'Transaktion.')
+CONSOLE_BUSY = 'Es läuft bereits eine Anfrage der SQL-Konsole – bitte warten.'
+CONSOLE_LOCKED = ('Die Datenbank ist gerade gesperrt (ein anderer Vorgang schreibt) – nichts wurde ausgeführt. '
+                  'Bitte gleich noch einmal versuchen.')
+CONSOLE_LOG_WARNING = 'Die Änderungen sind gespeichert, ließen sich aber nicht ins SQL-Protokoll schreiben.'
+
+# Eine Anfrage der Konsole zur Zeit (je Prozess): Jede läuft bis zu 60 s, hält im Schreibmodus die Schreibsperre der
+# Datenbank und belegt eine Verbindung samt Speicher – mehrere übereinander könnten den Server lahmlegen.
+_console_lock = threading.Lock()
 
 
 # SQL-Funktionen, die aus der Datenbank hinausführen. fts3_tokenizer gibt in SQLite-Builds
@@ -1589,6 +1626,176 @@ def _console_authorizer(action, arg1, arg2, dbname, source):
     return sqlite3.SQLITE_OK
 
 
+# Was der Authorizer im Lesemodus durchlässt: Abfragen, Lesen, Funktionen, rekursive Abfragen und – nach den Positivlisten
+# von _console_authorizer – PRAGMAs. Jede andere Aktion (INSERT, UPDATE, DELETE, CREATE …, Transaktionen, Savepoints,
+# ANALYZE, REINDEX …) verlangt etwas Schreibendes.
+_CONSOLE_READ_ACTIONS = frozenset({
+    sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION, sqlite3.SQLITE_RECURSIVE,
+    sqlite3.SQLITE_PRAGMA,
+})
+
+
+class _ConsoleAuthorizer:
+    """Der Authorizer einer Anfrage der SQL-Konsole (``Connection.set_authorizer``).
+
+    Die Sperren von ``_console_authorizer`` gelten in beiden Modi. Im Lesemodus lässt er darüber hinaus nur
+    ``_CONSOLE_READ_ACTIONS`` durch. Im Schreibmodus sperrt er zusätzlich BEGIN, COMMIT, ROLLBACK, SAVEPOINT und
+    ``PRAGMA foreign_keys`` mit Wert: Alle Befehle laufen dort in der einen Transaktion des Handlers, und das PRAGMA wäre
+    in ihr wirkungslos. ``wrote`` merkt sich, ob der zuletzt geprüfte Befehl etwas Schreibendes verlangt hat – der Handler
+    setzt es vor jedem Befehl zurück und legt die Verbindung ohne Statement-Cache an, damit SQLite jeden Befehl neu prüft.
+    """
+
+    def __init__(self, write):
+        self.write = write
+        self.wrote = False
+
+    def __call__(self, action, arg1, arg2, dbname, source):
+        if _console_authorizer(action, arg1, arg2, dbname, source) != sqlite3.SQLITE_OK:
+            return sqlite3.SQLITE_DENY
+        if self.write:
+            if action in (sqlite3.SQLITE_TRANSACTION, sqlite3.SQLITE_SAVEPOINT):
+                return sqlite3.SQLITE_DENY
+            if action == sqlite3.SQLITE_PRAGMA and (arg1 or '').lower() == 'foreign_keys' and arg2 is not None:
+                return sqlite3.SQLITE_DENY
+        if action not in _CONSOLE_READ_ACTIONS:
+            if not self.write:
+                return sqlite3.SQLITE_DENY
+            self.wrote = True
+        return sqlite3.SQLITE_OK
+
+
+class _ConsoleRefused(Exception):
+    """Die Eingabe überschreitet eine Grenze der Konsole; ``str(…)`` ist der Text für den Nutzer."""
+
+
+def _console_statements(sql):
+    """Die Befehle einer Eingabe der SQL-Konsole als Liste.
+
+    Getrennt wird an einem ``;`` nur dort, wo ``sqlite3.complete_statement`` den Text seit dem letzten Befehl als vollständig
+    ansieht: Semikolons in Zeichenketten, Kommentaren und Rümpfen von Triggern (``BEGIN … END;``) trennen nichts. Der Rest
+    ohne abschließendes ``;`` ist der letzte Befehl; leere Befehle (nur Leerraum oder ``;``) entfallen. Die Grenzen
+    (_CONSOLE_MAX_SQL_BYTES, _CONSOLE_MAX_STATEMENTS, _CONSOLE_MAX_SPLIT_TRIES, _CONSOLE_MAX_SPLIT_SCAN) gelten vor jeder
+    Ausführung: Wer sie überschreitet, bekommt ``_ConsoleRefused`` mit Klartext, und nichts läuft.
+    """
+    if len(sql.encode('utf-8', 'replace')) > _CONSOLE_MAX_SQL_BYTES:
+        raise _ConsoleRefused(f'Die Eingabe ist zu groß (höchstens {_CONSOLE_MAX_SQL_BYTES} Bytes) – '
+                              'nichts wurde ausgeführt.')
+    if '\x00' in sql:
+        raise _ConsoleRefused('Die Eingabe enthält ein Nullzeichen – nichts wurde ausgeführt.')
+    too_many = (f'Die Eingabe enthält zu viele Befehle (höchstens {_CONSOLE_MAX_STATEMENTS}) – '
+                'nichts wurde ausgeführt.')
+    commands = []
+    start = tries = rescanned = 0
+    position = sql.find(';')
+    while position != -1:
+        piece = sql[start:position + 1]
+        try:
+            complete = sqlite3.complete_statement(piece)
+        except ValueError:                              # ein einzelnes Surrogat-Zeichen lässt sich nicht kodieren
+            raise _ConsoleRefused('Die Eingabe enthält ein ungültiges Zeichen – nichts wurde ausgeführt.') from None
+        if complete:
+            start, tries = position + 1, 0
+            if piece.replace(';', '').strip():
+                commands.append(piece.strip())
+                if len(commands) > _CONSOLE_MAX_STATEMENTS:
+                    raise _ConsoleRefused(too_many)
+        else:
+            tries += 1
+            rescanned += len(piece)
+            if tries > _CONSOLE_MAX_SPLIT_TRIES or rescanned > _CONSOLE_MAX_SPLIT_SCAN:
+                raise _ConsoleRefused(f'Befehl {len(commands) + 1}: zu viele Semikolons in einer Zeichenkette oder einem '
+                                      'Kommentar – nichts wurde ausgeführt.')
+        position = sql.find(';', position + 1)
+    rest = sql[start:].strip()
+    if rest:
+        commands.append(rest)
+        if len(commands) > _CONSOLE_MAX_STATEMENTS:
+            raise _ConsoleRefused(too_many)
+    return commands
+
+
+def _console_log_text(command):
+    """Der Befehl, wie ihn das SQL-Protokoll ablegt: ohne Kommentare und ohne das abschließende Semikolon.
+
+    ``DocumentParser.log_sql`` schreibt Befehle einzeilig ins Protokoll (sql_operations.sql); ein ``--``-Kommentar
+    verschluckte dabei den Rest des Befehls, und ein Nachspielen des Protokolls änderte mehr, als die Konsole geändert hat.
+    Zeichenketten und Bezeichner in Anführungszeichen bleiben unberührt."""
+    kept, closing, i = [], None, 0
+    while i < len(command):
+        char = command[i]
+        if closing:
+            kept.append(char)
+            if char == closing:
+                closing = None
+        elif char in '\'"`[':
+            kept.append(char)
+            closing = ']' if char == '[' else char
+        elif command.startswith('--', i):
+            end = command.find('\n', i)
+            i = len(command) if end == -1 else end
+            continue
+        elif command.startswith('/*', i):
+            end = command.find('*/', i + 2)
+            kept.append(' ')
+            i = len(command) if end == -1 else end + 2
+            continue
+        else:
+            kept.append(char)
+        i += 1
+    return ''.join(kept).strip().rstrip(';').rstrip()
+
+
+def _console_write_log(commands):
+    """Die schreibenden Befehle einer festgeschriebenen Anfrage ins SQL-Protokoll (``DocumentParser.log_sql``, wie überall,
+    Beschreibung ``SQL-Konsole (<Benutzer>)``). ``False``, wenn das Protokoll sich nicht schreiben ließ – die Änderung steht
+    dann trotzdem in der Datenbank; der Fehler selbst steht nur im Server-Log."""
+    user = userctx.get_user()
+    description = f'SQL-Konsole ({user})' if user else 'SQL-Konsole'
+    try:
+        parser = DocumentParser()
+        for command in commands:
+            parser.log_sql(_console_log_text(command), (), description)
+    except Exception as e:
+        print(f'WARNUNG: SQL-Konsole: Das SQL-Protokoll konnte nicht geschrieben werden: {e}')
+        return False
+    return True
+
+
+def _console_disk_folders(db):
+    """Die Ordner, deren freien Platz die Konsole im Auge behält: der der Datenbank (Journal, Wachstum) und der Temp-Ordner
+    (Zwischenergebnisse großer Abfragen)."""
+    folders = [os.path.dirname(os.path.abspath(db.db_name))]
+    try:
+        folders.append(tempfile.gettempdir())
+    except Exception:                                   # kein brauchbarer Temp-Ordner: ein Fehler beim Messen bricht nichts ab
+        pass
+    return folders
+
+
+def _console_free_space(folders):
+    """Freier Platz in Bytes je Ordner; ``None`` für einen Ordner, den sich nicht messen lässt."""
+    free = []
+    for folder in folders:
+        try:
+            free.append(shutil.disk_usage(folder).free)
+        except Exception:
+            free.append(None)
+    return free
+
+
+def _console_disk_exceeded(folders, free_at_start):
+    """Hat die Anfrage zu viel Platz belegt? Ja, wenn der freie Platz in einem der Ordner seit ihrem Beginn um mehr als
+    ``_CONSOLE_MAX_DISK_BYTES`` gesunken ist – oder gesunken ist und nun unter ``_CONSOLE_MIN_FREE_BYTES`` liegt. Ein von
+    vornherein kleiner Ordner (ein knapp bemessener Temp-Ordner), in dem sich nichts ändert, bricht nichts ab; ebenso wenig
+    ein Ordner, der sich nicht messen lässt."""
+    for now, before in zip(_console_free_space(folders), free_at_start):
+        if now is None or before is None or now >= before:
+            continue
+        if now < _CONSOLE_MIN_FREE_BYTES or before - now > _CONSOLE_MAX_DISK_BYTES:
+            return True
+    return False
+
+
 def _console_cell(value):
     """Ein Wert als Text für die Ausgabe. BLOBs erscheinen nur mit ihrer Größe – als Text
     wären sie ein Mehrfaches so groß und für niemanden lesbar."""
@@ -1611,51 +1818,111 @@ def _console_result_lines(cursor):
         yield ';'.join(_console_cell(v) for v in row)
 
 
-def handle_execute_sql(db: Database, post_data):
-    """Handle SQL command execution – returns JSON with results.
+def _console_result(success_count, total, errors, output, **extra):
+    """Die Antwort der Konsole als dict (``handle_execute_sql`` macht JSON daraus)."""
+    return {'success_count': success_count, 'total': total, 'errors': errors, 'output': output, **extra}
 
-    Je Anfrage gelten ein Zeitlimit (_CONSOLE_TIME_LIMIT_S) und Größengrenzen für Werte
-    und Ausgabe (_CONSOLE_MAX_*); wird das Zeitlimit überschritten, bricht die Anfrage
-    ab und wird zurückgerollt. Diese Grenzen nicht aufweichen.
-    """
-    import sqlite3, json
-    
-    sql_commands = post_data.get("sql_commands", [""])[0]
-    
-    if not sql_commands.strip():
-        return json.dumps({"success_count": 0, "total": 0, "errors": ["Keine SQL-Befehle eingegeben."], "output": ""})
-    
-    # Split commands by semicolon and filter out empty ones
-    commands = [cmd.strip() for cmd in sql_commands.split(';') if cmd.strip()]
-    
+
+def _console_undone(conn, write, total, errors):
+    """Antwort einer Anfrage, die nichts festschreibt: ``success_count`` 0, keine Ausgabe. Im Schreibmodus wird die
+    Transaktion zurückgerollt (``rolled_back`` ist wahr, der Satz „Nichts wurde geändert …“ steht hinter den Fehlern).
+    Authorizer und Fortschrittshandler fallen vorher weg: ROLLBACK ist dem Nutzer gesperrt, dem Handler nicht."""
+    if not write:
+        return _console_result(0, total, errors, '')
+    try:
+        conn.set_authorizer(None)
+        conn.set_progress_handler(None, 0)
+        conn.rollback()
+    except sqlite3.Error:                               # die Verbindung schließt gleich: Auch das nimmt alles zurück
+        pass
+    return _console_result(0, total, errors + [CONSOLE_NOTHING_CHANGED], '', rolled_back=True)
+
+
+def _console_error_text(error, write):
+    """Der Text zu einem Fehler eines Befehls: Was der Authorizer ablehnt, bekommt die feste Meldung des Modus."""
+    text = str(error)
+    if 'not authorized' in text or 'authorization denied' in text:
+        return CONSOLE_DENIED_WRITE if write else CONSOLE_READONLY
+    if not write and 'readonly database' in text:       # die zweite Schicht des Lesemodus: PRAGMA query_only
+        return CONSOLE_READONLY
+    return text
+
+
+def _run_console(db, commands, write):
+    """Führt die Befehle einer Anfrage aus; liefert ``(Antwort als dict, schreibende Befehle)``.
+
+    Lesemodus: jeder Befehl für sich, ein Fehler stoppt die folgenden nicht. Schreibmodus: alles in EINER Transaktion; der
+    erste Fehler, ein Abbruch durch Zeit- oder Plattengrenze und ein scheiterndes COMMIT nehmen alles zurück. Die
+    schreibenden Befehle (nach dem Urteil des Authorizers) gibt es nur bei festgeschriebener Transaktion zurück."""
+    total = len(commands)
+    authorizer = _ConsoleAuthorizer(write)
     output_lines = []
     output_bytes = 0
     output_truncated = False
     errors = []
+    error_count = 0
     success_count = 0
-    timed_out_at = None
+    written = []
+    aborted = None                       # ('time' oder 'disk', Nummer des Befehls)
+    failure = None                       # Schreibmodus: der Fehler, der die Anfrage beendet
 
-    conn = sqlite3.connect(db.db_name)
-    conn.set_authorizer(_console_authorizer)
-    if hasattr(conn, 'setlimit'):                   # ab Python 3.11
-        conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _CONSOLE_MAX_VALUE_BYTES)
-        # Python holt eine Ergebniszeile ganz, bevor die Ausgabegrenze prüfen kann: Erst
-        # Wertgröße × Spaltenzahl begrenzt, was eine einzelne Zeile an Speicher belegt.
-        conn.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, _CONSOLE_MAX_COLUMNS)
-    deadline = time.monotonic() + _CONSOLE_TIME_LIMIT_S
-    conn.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 10000)
-    cursor = conn.cursor()
-
+    # Ohne Statement-Cache: Sonst prüfte SQLite einen zweiten, gleich lautenden Befehl nicht mehr gegen den Authorizer,
+    # und ``wrote`` bliebe falsch.
+    conn = sqlite3.connect(db.db_name, isolation_level=None, cached_statements=0)
     try:
+        if hasattr(conn, 'setlimit'):                   # ab Python 3.11
+            conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _CONSOLE_MAX_VALUE_BYTES)
+            # Python holt eine Ergebniszeile ganz, bevor die Ausgabegrenze prüfen kann: Erst
+            # Wertgröße × Spaltenzahl begrenzt, was eine einzelne Zeile an Speicher belegt.
+            conn.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, _CONSOLE_MAX_COLUMNS)
+        if write:
+            # Vor dem Authorizer, der diese PRAGMAs und BEGIN dem Nutzer sperrt. foreign_keys wirkt nur außerhalb einer
+            # Transaktion, also vor BEGIN. PRAGMAs nehmen keine Parameter; der Wert ist eine selbst errechnete ganze Zahl.
+            try:
+                conn.execute('PRAGMA foreign_keys = ON')
+                pages = conn.execute('PRAGMA page_count').fetchall()[0][0]
+                page_size = conn.execute('PRAGMA page_size').fetchall()[0][0]
+                limit = pages + max(1, _CONSOLE_MAX_GROWTH_BYTES // page_size)
+                conn.execute(f'PRAGMA max_page_count = {int(limit)}').fetchall()
+                conn.execute('BEGIN IMMEDIATE')
+            except sqlite3.Error as e:
+                text = str(e).lower()
+                if 'locked' in text or 'busy' in text:
+                    return _console_result(0, total, [CONSOLE_LOCKED], ''), []
+                return _console_result(0, total, [f'Der Schreibmodus ließ sich nicht starten ({e}) – nichts wurde '
+                                                  'ausgeführt.'], ''), []
+        else:
+            conn.execute('PRAGMA query_only = ON')
+        conn.set_authorizer(authorizer)
+
+        deadline = time.monotonic() + _CONSOLE_TIME_LIMIT_S
+        folders = _console_disk_folders(db)
+        free_at_start = _console_free_space(folders)
+        state = {'calls': 0, 'abort': None}
+
+        def progress():
+            if time.monotonic() > deadline:
+                state['abort'] = 'time'
+                return 1
+            state['calls'] += 1
+            if state['calls'] % _CONSOLE_DISK_CHECK_EVERY == 0 and _console_disk_exceeded(folders, free_at_start):
+                state['abort'] = 'disk'
+                return 1
+            return 0
+
+        conn.set_progress_handler(progress, 10000)
+
         for i, command in enumerate(commands, 1):
             if time.monotonic() > deadline:
-                timed_out_at = i
+                aborted = ('time', i)
                 break
+            authorizer.wrote = False
+            cursor = conn.cursor()
             try:
                 cursor.execute(command)
-                success_count += 1
-                # SELECT-Ergebnis ausgeben – bis zu den Ausgabegrenzen, danach nur noch ausführen
-                if command.lstrip().upper().startswith('SELECT') and not output_truncated:
+                # Das Ergebnis jedes Befehls mit Spalten (SELECT, WITH, PRAGMA, EXPLAIN, RETURNING) ausgeben – bis zu den
+                # Ausgabegrenzen, danach nur noch ausführen
+                if cursor.description is not None and not output_truncated:
                     for line in _console_result_lines(cursor):
                         size = len(line.encode('utf-8')) + 1        # + Zeilenumbruch
                         if (len(output_lines) >= _CONSOLE_MAX_OUTPUT_ROWS
@@ -1664,37 +1931,42 @@ def handle_execute_sql(db: Database, post_data):
                             break
                         output_lines.append(line)
                         output_bytes += size
+                success_count += 1                  # erst nach dem Lesen: ein Fehler in einer späteren Zeile zählt nicht als Erfolg
             except sqlite3.Error as e:
-                msg = str(e)
-                if (isinstance(e, sqlite3.OperationalError) and 'interrupted' in msg
-                        and time.monotonic() > deadline):
-                    # Vom Fortschrittshandler abgebrochen. Die Frist mitprüfen: Der Text
-                    # allein träfe auch „no such table: interrupted“.
-                    timed_out_at = i
+                if state['abort'] and isinstance(e, sqlite3.OperationalError) and 'interrupted' in str(e):
+                    # Vom Fortschrittshandler abgebrochen. Dass er es war, steht in ``state``: Der Text allein träfe
+                    # auch „no such table: interrupted“.
+                    aborted = (state['abort'], i)
                     break
-                if 'not authorized' in msg or 'authorization denied' in msg:
-                    msg = ('nicht erlaubt – ATTACH, DETACH, VACUUM sowie verändernde oder '
-                           'unbekannte PRAGMAs sind in der Konsole gesperrt, ebenso die '
-                           'Funktionen fts3_tokenizer und load_extension')
-                errors.append(f"Befehl {i}: {msg}")
+                text = f'Befehl {i}: {_console_error_text(e, write)}'
+                if write:
+                    failure = text
+                    break
+                error_count += 1
+                if len(errors) < _CONSOLE_MAX_ERRORS:
+                    errors.append(text)
+                continue
+            finally:
+                cursor.close()                  # beendet auch ein halb gelesenes Ergebnis (RETURNING) vor dem COMMIT
+            if authorizer.wrote:
+                written.append(command)
 
-        if timed_out_at is not None:
-            conn.rollback()
-            return json.dumps({
-                "success_count": 0,
-                "total": len(commands),
-                # Ehrlich bleiben: rollback() nimmt nur die offene Transaktion zurück. Die
-                # beginnt Python erst vor dem ersten INSERT/UPDATE/DELETE – DDL davor und
-                # alles vor einem ausdrücklichen COMMIT steht schon.
-                "errors": [f"Befehl {timed_out_at}: abgebrochen – Zeitlimit von "
-                           f"{_CONSOLE_TIME_LIMIT_S} s überschritten. Nicht festgeschriebene "
-                           "Änderungen dieser Anfrage wurden zurückgenommen. Was schon "
-                           "festgeschrieben war, bleibt bestehen: Befehle vor einem COMMIT und "
-                           "Strukturbefehle (CREATE, ALTER, DROP) vor der ersten Datenänderung."],
-                "output": ""
-            }, ensure_ascii=False)
-
-        conn.commit()
+        if aborted:
+            reason, number = aborted
+            if reason == 'time':
+                text = f'Befehl {number}: abgebrochen – Zeitlimit von {_CONSOLE_TIME_LIMIT_S} s überschritten.'
+            else:
+                text = f'Befehl {number}: abgebrochen – die Anfrage belegte zu viel Plattenplatz.'
+            return _console_undone(conn, write, total, [text]), []
+        if failure:
+            return _console_undone(conn, write, total, [failure]), []
+        if write:
+            conn.set_authorizer(None)           # COMMIT ist dem Nutzer gesperrt, dem Handler nicht
+            conn.set_progress_handler(None, 0)
+            try:
+                conn.commit()
+            except sqlite3.Error as e:          # aufgeschobene Fremdschlüssel-Prüfung (PRAGMA defer_foreign_keys)
+                return _console_undone(conn, True, total, [f'Beim Festschreiben (COMMIT): {e}']), []
         if output_truncated:
             max_size = (f'{_CONSOLE_MAX_OUTPUT_BYTES // 1_000_000} MB'
                         if _CONSOLE_MAX_OUTPUT_BYTES % 1_000_000 == 0
@@ -1702,19 +1974,52 @@ def handle_execute_sql(db: Database, post_data):
             output_lines.append(
                 f'… Ausgabe gekürzt (mehr als {_CONSOLE_MAX_OUTPUT_ROWS} Zeilen bzw. {max_size}) '
                 f'– bitte mit WHERE oder LIMIT eingrenzen')
+        if error_count > len(errors):
+            errors.append(f'… {error_count - len(errors)} weitere Fehler')
 
-        return json.dumps({
-            "success_count": success_count,
-            "total": len(commands),
-            "errors": errors,
-            "output": '\n'.join(output_lines)
-        }, ensure_ascii=False)
-        
+        result = _console_result(success_count, total, errors, '\n'.join(output_lines))
+        if write:
+            result['rolled_back'] = False
+        return result, written
+
     except Exception as e:
-        conn.rollback()
-        return json.dumps({"success_count": 0, "total": len(commands), "errors": [str(e)], "output": ""}, ensure_ascii=False)
+        return _console_undone(conn, write, total, [str(e)]), []
     finally:
         conn.close()
+
+
+def handle_execute_sql(db: Database, post_data):
+    """Handle SQL command execution – returns JSON with results.
+
+    Lesemodus (Standard) oder Schreibmodus (``write`` = ``1``): siehe oben. Je Anfrage gelten ein Zeitlimit
+    (_CONSOLE_TIME_LIMIT_S), Größengrenzen für Eingabe, Werte und Ausgabe (_CONSOLE_MAX_*) und eine Grenze für den
+    belegten Plattenplatz; wird eine überschritten, bricht die Anfrage ab (im Schreibmodus mit Rollback). Es läuft
+    höchstens eine Anfrage zur Zeit je Prozess. Diese Grenzen nicht aufweichen.
+
+    Die Antwort trägt ``success_count``, ``total``, ``errors`` und ``output``; im Schreibmodus dazu ``rolled_back`` (nur,
+    wenn die Transaktion lief) und, wenn die Änderungen sich nicht ins SQL-Protokoll schreiben ließen, ``warnings``.
+    """
+    write = post_data.get('write', [''])[0] == '1'
+    sql = post_data.get('sql_commands', [''])[0]
+    if not sql.strip():
+        return json.dumps(_console_result(0, 0, ['Keine SQL-Befehle eingegeben.'], ''), ensure_ascii=False)
+    try:
+        commands = _console_statements(sql)
+    except _ConsoleRefused as refused:
+        return json.dumps(_console_result(0, 0, [str(refused)], ''), ensure_ascii=False)
+    if not commands:
+        return json.dumps(_console_result(0, 0, ['Keine SQL-Befehle eingegeben.'], ''), ensure_ascii=False)
+
+    if not _console_lock.acquire(blocking=False):
+        return json.dumps(_console_result(0, len(commands), [CONSOLE_BUSY], ''), ensure_ascii=False)
+    try:
+        result, written = _run_console(db, commands, write)
+        if written and not _console_write_log(written):
+            result['warnings'] = [CONSOLE_LOG_WARNING]
+    finally:
+        _console_lock.release()
+    return json.dumps(result, ensure_ascii=False)
+
 
 def _datev_number_args(post_data):
     """Berater- und Mandantennummer aus dem Formular einer Firma: ``(Beraternummer, Mandantennummer, Fehler)``.
