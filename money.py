@@ -17,6 +17,7 @@ Konvention:
 - Rechnen (tax_*, multiply, add/sub) findet in Minor Units statt.
 - format_*: Ausgabe (Anzeige, Export). Standard-Anzeige mit 2 Nachkommastellen.
 """
+import re
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 
 SCALE = 4
@@ -25,25 +26,40 @@ _Q = Decimal(1).scaleb(-SCALE)  # Decimal('0.0001')
 _ONE = Decimal(1)
 _HUNDRED = Decimal(100)
 
+# Betrag aus einer Datei: deutsch (Tausenderpunkte nur in Dreiergruppen, danach ein Komma mit Nachkommateil)
+# oder ohne Komma mit Punkt als Dezimalpunkt. ``[0-9]`` statt ``\d``: ``\d`` passt auch auf Ziffern anderer Schriften.
+_AMOUNT_DE = re.compile(r'[+-]?(?:[0-9]{1,3}(?:\.[0-9]{3})+|[0-9]+),[0-9]+')
+_AMOUNT_PLAIN = re.compile(r'[+-]?[0-9]+(?:\.[0-9]+)?')
+_AMOUNT_MAX_LENGTH = 30
+MAX_PARSED_AMOUNT = Decimal(10) ** 12      # ab hier ist ein Betrag aus einer Datei ein Fehler (wie importers.camt.MAX_AMOUNT)
+
 
 # ── Parsing (Euro-Welt -> Decimal) ────────────────────────────────────────────
+
+def _finite(value, original):
+    """``value`` (Decimal), wenn es eine endliche Zahl ist; NaN und Infinity sind kein Geldwert."""
+    if not value.is_finite():
+        raise ValueError(f"ungueltiger Geldwert: {original!r}")
+    return value
+
 
 def _to_decimal(value):
     """Robuste Umwandlung in Decimal.
 
     Akzeptiert Decimal, int, float und str. Strings duerfen deutsches
     (1.234,56) oder englisches (1234.56) Format haben. float wird ueber str
-    gewandelt, um Binaer-Artefakte zu vermeiden.
+    gewandelt, um Binaer-Artefakte zu vermeiden. NaN und Infinity (als Decimal,
+    float oder Text) sind kein Geldwert: ``ValueError``.
     """
     if isinstance(value, Decimal):
-        return value
+        return _finite(value, value)
     if isinstance(value, bool):
         # bool ist Subtyp von int -> hier bewusst ablehnen
         raise TypeError("bool ist kein gueltiger Geldwert")
     if isinstance(value, int):
         return Decimal(value)
     if isinstance(value, float):
-        return Decimal(str(value))
+        return _finite(Decimal(str(value)), value)
     if isinstance(value, str):
         s = value.strip()
         if not s:
@@ -54,10 +70,38 @@ def _to_decimal(value):
         elif ',' in s:
             s = s.replace(',', '.')
         try:
-            return Decimal(s)
+            return _finite(Decimal(s), value)
         except InvalidOperation:
             raise ValueError(f"ungueltiger Geldwert: {value!r}")
     raise TypeError(f"nicht unterstuetzter Typ fuer Geldwert: {type(value).__name__}")
+
+
+def parse_amount(text) -> Decimal:
+    """Betrag aus einer Datei (Textexport, Kontoauszug) streng als Decimal lesen.
+
+    Erlaubt sind nur ASCII-Ziffern mit einem Vorzeichen (``+``/``-``) vorn, und zwar entweder deutsch
+    (``1.234,56``, ``-41,25``, ``3,5``: Tausenderpunkte nur in Dreiergruppen, danach Komma und mindestens
+    eine Ziffer) oder ohne Komma (``1234.56``, ``12``: der Punkt ist der Dezimalpunkt, ``1.234`` ist also
+    1,234). Leerraum außen wird entfernt, innen ist er ein Fehler; höchstens 30 Zeichen und betragsmäßig unter
+    einer Billion (``MAX_PARSED_AMOUNT``). Alles andere –
+    ``nan``, ``inf``, ``1e5``, ``1_000``, Ziffern anderer Schriften – ist ein ``ValueError``: ``float()``
+    nähme es an.
+    """
+    if not isinstance(text, str):
+        raise ValueError(f"ungueltiger Betrag: kein Text ({type(text).__name__})")
+    s = text.strip()
+    if len(s) > _AMOUNT_MAX_LENGTH:
+        raise ValueError("ungueltiger Betrag: zu lang")
+    if _AMOUNT_DE.fullmatch(s):
+        value = Decimal(s.replace('.', '').replace(',', '.'))
+    elif _AMOUNT_PLAIN.fullmatch(s):
+        value = Decimal(s)
+    else:
+        raise ValueError(f"ungueltiger Betrag: {s!r}")
+    if abs(value) >= MAX_PARSED_AMOUNT:
+        # Ein so großer Wert liefe später in to_minor oder beim Speichern (64 Bit) in einen technischen Fehler
+        raise ValueError("ungueltiger Betrag: zu gross")
+    return value
 
 
 # ── Grenze Euro <-> Minor Units ───────────────────────────────────────────────

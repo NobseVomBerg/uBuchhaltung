@@ -5,16 +5,18 @@
 Stundenzettel-PDF (Arbeitszeiten je Person, typisch ein Monat).
 
 Nutzt die gemeinsamen Primitive aus :mod:`export.pdf_core`. Bei einem vollen Monat
-werden – wie auf der Seite – alle Tage gelistet, auch ohne Eintrag, sodass alles auf
-eine A4-Seite passt. Unter der Tabelle stehen zwei Unterschriftenblöcke.
+werden – wie auf der Seite – alle Tage gelistet, auch ohne Eintrag; das passt meist auf
+eine A4-Seite. Reicht der Platz nicht, läuft die Tabelle auf Folgeseiten weiter: Kopf, Logo
+und Tabellenkopf stehen auf jeder Seite, bei mehr als einer Seite auch „Seite n von m“. Unter
+der Tabelle stehen Summe und zwei Unterschriftenblöcke, zusammen auf der letzten Seite.
 """
-import calendar
 import datetime
 import os
 from db import Database
-from .pdf_core import (escape_pdf_string, load_image_xobject, build_single_page_pdf, logo_display_size,
+from .pdf_core import (escape_pdf_string, load_image_xobject, build_multi_page_pdf, logo_display_size,
                        resolve_logo_path)
-from server.pages_worktime import compute_hours, KIND_LABELS, WEEKDAYS
+from server.pages_worktime import (compute_hours, compute_minutes, crosses_midnight, format_hours,
+                                   workdays_label, KIND_LABELS, WEEKDAYS)
 
 # Spaltenindizes WorkTimes-Row (siehe pages_worktime)
 #   0 ID,1 PersonID,2 Date,3 Kind,4 CustomerID,5 StartTime,6 EndTime,
@@ -28,8 +30,8 @@ COL_X = {
     'wd':    40,
     'date':  70,
     'start': 112,
-    'end':   152,
-    'pause': 192,
+    'end':   152,    # bis 'pause' Platz für „02:00 (+1)“ (36,7 pt bei 8 pt Schrift)
+    'pause': 200,
     'hours': 238,   # rechtsbündig
     'info':  268,
 }
@@ -37,6 +39,34 @@ ROW_H = 13
 ROW_SIZE = 8
 TABLE_TOP = 738          # Y der ersten Datenzeile
 HEADER_Y = 751
+BOTTOM_Y = 60            # keine Datenzeile darunter; auch der Unterschriftenblock endet nicht tiefer
+PAGE_NUMBER_Y = 40       # „Seite n von m“
+PAGE_RIGHT_X = 555       # rechter Rand (A4 595 pt, links stehen die Spalten ab 40 pt)
+
+# Unter der letzten Datenzeile: Summenzeile, dann der Unterschriftenblock (Ort/Datum, Linie, Name, Firma)
+SUM_GAP = 3                    # Summenzeile unter dem Platz der nächsten Datenzeile
+SIGNATURE_GAP = 34             # Ort/Datum des Unterschriftenblocks unter der Summenzeile
+SIGNATURE_LINE_DROP = 38       # Unterschriftslinie unter Ort/Datum (Platz zum Unterschreiben)
+SIGNATURE_NAME_DROP = 12       # Name unter der Linie
+SIGNATURE_COMPANY_DROP = 24    # Firma unter der Linie: die tiefste Zeile des Blocks
+FOOTER_HEIGHT = SUM_GAP + SIGNATURE_GAP + SIGNATURE_LINE_DROP + SIGNATURE_COMPANY_DROP
+
+
+def page_layout(row_count):
+    """Datenzeilen je Seite → Liste mit der Zeilenzahl jeder Seite (mindestens eine Seite).
+
+    Keine Datenzeile steht unter ``BOTTOM_Y``. Summenzeile und Unterschriftenblock stehen
+    zusammen auf der letzten Seite; reicht der Platz unter der letzten Datenzeile dafür nicht,
+    folgt noch eine Seite ohne Datenzeilen."""
+    per_page = int((TABLE_TOP - BOTTOM_Y) // ROW_H) + 1
+    counts = []
+    while row_count > per_page:
+        counts.append(per_page)
+        row_count -= per_page
+    counts.append(row_count)
+    if TABLE_TOP - row_count * ROW_H - FOOTER_HEIGHT < BOTTOM_Y:
+        counts.append(0)
+    return counts
 
 
 def _fmt_hours(h):
@@ -63,12 +93,41 @@ def _signature_block(ops, line_ops, x, y_top, place_date, name, company, width=2
     """Unterschriftenblock: Ort+Datum oben, Unterschriftslinie, darunter Name + Firma."""
     if place_date:
         ops += _cell(x, y_top, place_date, size=8)
-    y_line = y_top - 38                            # Linie (darüber Platz zum Unterschreiben)
+    y_line = y_top - SIGNATURE_LINE_DROP           # Linie (darüber Platz zum Unterschreiben)
     line_ops.append(f"{x} {y_line:.1f} m {x + width} {y_line:.1f} l S")
     if name:
-        ops += _cell(x, y_line - 12, name, size=8)
+        ops += _cell(x, y_line - SIGNATURE_NAME_DROP, name, size=8)
     if company:
-        ops += _cell(x, y_line - 24, company, size=8)
+        ops += _cell(x, y_line - SIGNATURE_COMPANY_DROP, company, size=8)
+
+
+def _work_minutes(e):
+    """Arbeitsminuten eines Eintrags; 0 für Urlaub, Krank, Feiertag und einen Tag ohne Eintrag."""
+    if e is None or (e[3] or 'work') != 'work':
+        return 0
+    return compute_minutes(e[5], e[6], e[7])
+
+
+def _head_ops(image, person_name, own_name, period_label):
+    """Kopf einer Seite: Logo, Titel, Person, Zeitraum und Tabellenkopf."""
+    ops = []
+    if image:
+        dw, dh = logo_display_size(image, 150, 80)
+        ops.append(f"q {dw:.1f} 0 0 {dh:.1f} 430 770 cm /Logo Do Q")
+
+    ops += _cell(40, 805, "Stundenzettel", font='/F2', size=14)
+    person_line = f"Person: {person_name}" + (f", {own_name}" if own_name else "")
+    ops += _cell(40, 789, person_line, size=10)
+    ops += _cell(40, 777, f"Zeitraum: {period_label}", size=9)
+
+    header = [('wd', 'Tag'), ('date', 'Datum'), ('start', 'Start'), ('end', 'Ende'),
+              ('pause', 'Pause'), ('hours', 'Std.'), ('info', 'Info')]
+    for key, label in header:
+        if key == 'hours':
+            ops += _cell(0, HEADER_Y, label, font='/F2', size=8, right_x=COL_X['hours'] + 18)
+        else:
+            ops += _cell(COL_X[key], HEADER_Y, label, font='/F2', size=8)
+    return ops
 
 
 def generate_worktime_pdf(db: Database, person_id, date_from, date_to, with_notes=False,
@@ -112,29 +171,34 @@ def generate_worktime_pdf(db: Database, person_id, date_from, date_to, with_note
     else:
         period_label = f'{d_from.strftime("%d.%m.%Y")} - {d_to.strftime("%d.%m.%Y")}'
 
-    # ── Content-Stream (Text in BT/ET, Linien danach) ────────────────────────
-    ops = ["BT"]
-    line_ops = []
+    # ── Zeilen der Tabelle: (Tag, Eintrag); ein Tag ohne Eintrag hat None ────
+    rows = []
+    if single_month:
+        for day in range(d_from.day, d_to.day + 1):
+            d = datetime.date(d_from.year, d_from.month, day)
+            day_entries = by_date.get(d.isoformat(), [])
+            if day_entries:
+                rows += [(d, e) for e in day_entries]
+            else:
+                rows.append((d, None))
+    else:
+        rows = [(datetime.date.fromisoformat(str(e[2])), e) for e in entries]
 
-    if image:
-        dw, dh = logo_display_size(image, 150, 80)
-        ops.append(f"q {dw:.1f} 0 0 {dh:.1f} 430 770 cm /Logo Do Q")
+    # Summe aus Minuten (nie aus den gerundeten Stunden der Zeilen); Arbeitstage = Kalendertage
+    total_minutes = 0
+    workdays = set()
+    for d, e in rows:
+        minutes = _work_minutes(e)
+        if minutes > 0:
+            total_minutes += minutes
+            workdays.add(d)
 
-    ops += _cell(40, 805, "Stundenzettel", font='/F2', size=14)
-    person_line = f"Person: {person_name}" + (f", {own_name}" if own_name else "")
-    ops += _cell(40, 789, person_line, size=10)
-    ops += _cell(40, 777, f"Zeitraum: {period_label}", size=9)
-
-    # Tabellenkopf
-    header = [('wd', 'Tag'), ('date', 'Datum'), ('start', 'Start'), ('end', 'Ende'),
-              ('pause', 'Pause'), ('hours', 'Std.'), ('info', 'Info')]
-    for key, label in header:
-        if key == 'hours':
-            ops += _cell(0, HEADER_Y, label, font='/F2', size=8, right_x=COL_X['hours'] + 18)
-        else:
-            ops += _cell(COL_X[key], HEADER_Y, label, font='/F2', size=8)
-
-    def render_day(d, e, y):
+    def render_row(d, e, y):
+        row = []
+        row += _cell(COL_X['wd'], y, WEEKDAYS[d.weekday()])
+        row += _cell(COL_X['date'], y, d.strftime('%d.%m.'))
+        if e is None:
+            return row
         kind = e[3] or 'work'
         start = e[5] or ''
         end = e[6] or ''
@@ -152,69 +216,57 @@ def generate_worktime_pdf(db: Database, person_id, date_from, date_to, with_note
             parts.append(e[10])
         info = ' · '.join(parts)[:70]
 
-        row = []
-        row += _cell(COL_X['wd'], y, WEEKDAYS[d.weekday()])
-        row += _cell(COL_X['date'], y, d.strftime('%d.%m.'))
         row += _cell(COL_X['start'], y, start)
-        row += _cell(COL_X['end'], y, end)
+        row += _cell(COL_X['end'], y, f'{end} (+1)' if crosses_midnight(start, end) else end)
         row += _cell(COL_X['pause'], y, str(pause) if (kind == 'work' and pause) else '')
-        hours_txt = _fmt_hours(hours) if (kind == 'work' and hours > 0) else ''
+        hours_txt = _fmt_hours(hours) if _work_minutes(e) > 0 else ''
         row += _cell(0, y, hours_txt, right_x=COL_X['hours'] + 18)
         if info:
             row += _cell(COL_X['info'], y, info, gray=True)
-        return row, (hours if kind == 'work' else 0.0)
+        return row
 
-    total = 0.0
-    workdays = 0
-    y = TABLE_TOP
-    if single_month:
-        for day in range(d_from.day, d_to.day + 1):
-            d = datetime.date(d_from.year, d_from.month, day)
-            day_entries = by_date.get(d.isoformat(), [])
-            if day_entries:
-                for e in day_entries:
-                    row, h = render_day(d, e, y)
-                    ops += row
-                    if h > 0:
-                        total += h
-                        workdays += 1
-                    y -= ROW_H
-            else:
-                ops += _cell(COL_X['wd'], y, WEEKDAYS[d.weekday()])
-                ops += _cell(COL_X['date'], y, d.strftime('%d.%m.'))
-                y -= ROW_H
-    else:
-        for e in entries:
-            d = datetime.date.fromisoformat(str(e[2]))
-            row, h = render_day(d, e, y)
-            ops += row
-            if h > 0:
-                total += h
-                workdays += 1
-            y -= ROW_H
-
-    # Summenzeile: Label in der Tag-Spalte (ganz links), Summe rechtsbündig unter Std.
-    y -= 3
-    ops += _cell(COL_X['wd'], y, f"Summe ({workdays} Arbeitstage):", font='/F2', size=8)
-    ops += _cell(0, y, _fmt_hours(total), font='/F2', size=8, right_x=COL_X['hours'] + 18)
-
-    # ── Unterschriftenbereiche ───────────────────────────────────────────────
+    # ── Seiten (Content-Stream: Text in BT/ET, Linien danach) ────────────────
     today_str = datetime.date.today().strftime('%d.%m.%Y')
-    y_sig = y - 34
-    _signature_block(ops, line_ops, 40, y_sig,
-                     f"{person_city}, den {today_str}" if person_city else f"den {today_str}",
-                     person_name, own_name)
-    if single_customer:
-        c_city = single_customer[7] or ''
-        c_name = single_customer[3] or ''
-        _signature_block(ops, line_ops, 320, y_sig,
-                         f"{c_city}, den {today_str}" if c_city else f"den {today_str}",
-                         '', c_name)
+    counts = page_layout(len(rows))
+    pages = []
+    first = 0
+    for number, count in enumerate(counts, start=1):
+        ops = ["BT"] + _head_ops(image, person_name, own_name, period_label)
+        line_ops = []
 
-    ops.append("ET")
-    ops += line_ops               # Linien außerhalb des Textobjekts zeichnen
+        y = TABLE_TOP
+        for d, e in rows[first:first + count]:
+            ops += render_row(d, e, y)
+            y -= ROW_H
+        first += count
 
-    full_pdf = build_single_page_pdf(ops, image=image)
+        if number == len(counts):
+            # Summenzeile: Label in der Tag-Spalte (ganz links), Summe rechtsbündig unter Std.
+            y -= SUM_GAP
+            ops += _cell(COL_X['wd'], y, f"Summe ({workdays_label(len(workdays))}):", font='/F2', size=8)
+            ops += _cell(0, y, format_hours(total_minutes), font='/F2', size=8,
+                         right_x=COL_X['hours'] + 18)
+
+            # ── Unterschriftsbereiche ────────────────────────────────────────
+            y_sig = y - SIGNATURE_GAP
+            _signature_block(ops, line_ops, 40, y_sig,
+                             f"{person_city}, den {today_str}" if person_city else f"den {today_str}",
+                             person_name, own_name)
+            if single_customer:
+                c_city = single_customer[7] or ''
+                c_name = single_customer[3] or ''
+                _signature_block(ops, line_ops, 320, y_sig,
+                                 f"{c_city}, den {today_str}" if c_city else f"den {today_str}",
+                                 '', c_name)
+
+        if len(counts) > 1:
+            ops += _cell(0, PAGE_NUMBER_Y, f"Seite {number} von {len(counts)}", right_x=PAGE_RIGHT_X)
+
+        ops.append("ET")
+        ops += line_ops               # Linien außerhalb des Textobjekts zeichnen
+        pages.append(ops)
+
+    full_pdf = build_multi_page_pdf(pages, image=image)
 
     # ── Datei speichern (im Datenbereich des aktuellen Nutzers) ──────────────
     import userctx

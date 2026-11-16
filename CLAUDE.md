@@ -276,6 +276,34 @@ kein Subagent darauf:
   je Datenverzeichnis (`_exclusive`). Diese Reihenfolgen nie umdrehen. Nie gesichert, gelöscht oder überschrieben werden
   `backup/`, `users/`, `tests/` und `upload_tmp/` (`_EXCLUDED_DIRS`, eine Liste für alle drei Wege)
 
+### Arbeitszeiten und Fahrtenbuch (seit 2.3.12)
+- **Arbeitszeit rechnet in Minuten** (`server/pages_worktime.py`: `clock_minutes`, `compute_minutes`, `crosses_midnight`,
+  `format_hours`): Uhrzeiten gelten nur als `HH:MM` aus ASCII-Ziffern (0–23, 0–59), sonst zählt der Eintrag 0 Minuten und wird
+  beim Speichern abgelehnt („Bitte die Uhrzeit als HH:MM angeben.“). **Ende vor Beginn = Folgetag** (+ 24 h; Ende = Beginn sind
+  0 Minuten); der Eintrag zählt ganz zu seinem Datum und trägt in Liste und PDF „(+1)“. **Summen entstehen aus Minuten, nie aus
+  den gerundeten Stunden der Zeilen** (`compute_hours` ist nur die Zeilenanzeige); „Arbeitstage“ sind Kalendertage mit Arbeit
+  über 0 Minuten – auf der Seite und im Stundenzettel gleich. Die Überlappungsprüfung (`_wt_has_overlap`) rechnet auf der
+  Zeitachse des Eintragsdatums (ein Eintrag über Mitternacht reicht dort über 24:00 hinaus), die Nachbartage prüft sie nicht.
+  Die Vorschau im Formular (`wtUpdateHours`) rechnet dieselbe Regel und nennt „Ende am Folgetag“
+- **Fahrtenbuch bleibt locker** (Entscheidung des Owners): einzelne Fahrten, ohne Tachostand, in beliebiger Reihenfolge
+  nachgetragen – lückenlos muss es nur für die Fahrtenbuchmethode sein. **Beim Speichern wird nie ein Anschluss an die
+  Vorfahrt geprüft, weder als Fehler noch als Hinweis – nicht einführen.** Abgelehnt wird nur Unmögliches, an EINER Stelle
+  (`handlers._trip_fields`, reine Funktion für Anlegen und Ändern): Fahrer/Start-Datum/Ziel fehlen, Datum kein ISO-Datum,
+  Ende vor Start, Uhrzeit nicht `HH:MM`, Kilometer keine ganze Zahl von 0 bis 9 999 999, Tacho Ende unter Tacho Start,
+  ungültiger Beleg, Text über 500 Zeichen. Die Meldung geht als `?error=` auf die Seite (`script_json` + `appMsg`), nichts
+  wird gespeichert; das Formular prüft dasselbe vor dem Absenden (`trValidate`), der Server bleibt maßgeblich.
+  `insert_trip`/`update_trip` melden einen Fehlschlag (`None`/`False`) – kein verschluckter Fehler. **Lückenprüfung nur auf
+  Wunsch** (Kasten unter der Liste, GET `/trips?…&check_vehicle=&check_year=`, rein lesend): `db.trips.logbook_gaps`
+  (reine Funktion) über alle Fahrten eines Fahrzeugs im Kalenderjahr, alle Fahrer, Fahrzeug nach `strip()` + `casefold()`.
+  Lücke = Fahrt mit Tacho Start, deren nächster Vorgänger mit Tacho Ende einen anderen Stand hat; Fahrten ganz ohne
+  Tachostand dazwischen werden gezählt (`between`), nach einem Start ohne Ende ist der Stand unbekannt (kein Vorgänger –
+  dieselben Kilometer stehen nie in zwei Einträgen); höchstens 100 Einträge plus Zahl. Der Hinweistext zur
+  Fahrtenbuchmethode steht fest auf der Seite (keine Steuerberatung). Eine gespeicherte Einstellung je Fahrzeug gibt es
+  nicht – Fahrzeuge sind Freitext an der Fahrt, eine Stammliste wäre eine Schemaänderung
+- **Stundenzettel-PDF** (`export/pdf_worktime.py`): mehrseitig über `build_multi_page_pdf`; `page_layout(row_count)` verteilt die
+  Zeilen – keine Datenzeile unter `BOTTOM_Y`, Summe und Unterschriften zusammen auf der letzten Seite (notfalls eine eigene
+  Seite ohne Datenzeilen), „Seite n von m“ nur bei mehr als einer Seite. Passt alles auf eine Seite, ist das Layout das bisherige
+
 ### Stammdaten: Löschen, Standardkonten, Testdaten (seit 2.3.8)
 - **Gelöscht wird nur, worauf nichts verweist:** `delete_contact`, `delete_article`, `delete_account`, `delete_asset_category`
   und `delete_receipt` prüfen die Verweise und löschen in EINER Transaktion (`BEGIN IMMEDIATE`); gibt es welche, werfen sie
@@ -712,7 +740,15 @@ kein Subagent darauf:
   der Altzeile bleiben, die Übernahme füllt nichts; der Zähler heißt `legacy_stock_rows` (Hinweis auf
   *Sonstiges*)
 - **Textimport** (`import_wiso_csv`): Kodierung in der Reihenfolge BOM → strenges UTF-8 → cp1252 (cp1252 dekodiert fast alles
-  und darf deshalb nie zuerst stehen). Die Meldungen der Formaterkennung nennen **keine Feldwerte der Datei** (ein DATEV-Stapel trägt Berater- und
+  und darf deshalb nie zuerst stehen). **Beträge aus Dateien liest nur `money.parse_amount`** (seit 2.3.12; nie `float()`: das
+  nähme `nan`, `inf`, `1e5`, `1_000` und Ziffern anderer Schriften an): nur ASCII, deutsch `1.234,56` (Tausenderpunkte nur in
+  Dreiergruppen) oder ohne Komma mit Punkt als Dezimalpunkt (`1.234` bleibt 1,234 – die bisherige Lesart), höchstens
+  30 Zeichen und betragsmäßig unter einer Billion (`MAX_PARSED_AMOUNT`), sonst der Zeilenfehler „Ungültiger Betrag“. Der
+  Betrag bleibt `Decimal`; der Steuerbetrag kommt aus `_included_tax`: exakt auf dem Brutto der Datei, Brutto × Satz /
+  (1 + Satz), EINE kaufmännische Rundung auf den Cent – weder das Brutto noch ein Zwischenwert wird vorher gerundet (in
+  Minor Units gerechnet und danach gerundet wiche er bei rund 0,4 % der Beträge um einen Cent ab). Die PDF-Auszüge (`importers/vbr.py`, `document_parser.py`) lesen ebenso und
+  verlangen das Komma; ein nicht lesbarer Betrag ist dort `unparsed` bzw. „kein Betrag“. `money._to_decimal`/`to_minor`
+  lehnen NaN und Infinity mit `ValueError` ab. Die Meldungen der Formaterkennung nennen **keine Feldwerte der Datei** (ein DATEV-Stapel trägt Berater- und
   Mandantennummer im Vorlauf; er wird am ersten Feld `EXTF`/`DTVF` erkannt und mit Klartext abgelehnt). `SCHLUESSEL` (ganze Zahl 1–9999) steht am
   Satz (`DatevKey`); der Steuersatz kommt zuerst aus der Tabelle der Regeln (`datev_keys.key_rate`: 401/101/121 Regelsatz, 402/102/122 ermäßigt,
   7/6/5/4 die anderen Sätze – im zweiten Halbjahr 2020 mit 16/5/19/7 %), sonst aus `TaxKeys` (2.3.0: 100, 120, 121 „Verwendung von Gegenständen“, 122

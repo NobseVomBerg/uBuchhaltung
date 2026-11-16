@@ -420,11 +420,23 @@ Anlagenverwaltung mit AfA-Plan:
 ### 15. Arbeitszeiten (`/worktime`)
 - Zeiterfassung je Person (Arbeit/Urlaub/Krank/Feiertag) mit Pausen und Einsatzort
 - Überlappungsprüfung, Kundenzuordnung
-- **PDF-Stundenzettel** (`export/pdf_worktime.py`)
+- Liegt das Ende vor dem Beginn, endet der Eintrag am Folgetag (Schicht über Mitternacht); er zählt
+  ganz zu seinem Starttag und trägt in Liste und Stundenzettel ein „(+1)“ hinter der Endzeit
+- Summen werden aus Minuten gerechnet (3 × 20 Minuten sind 1,00 Stunden); „Arbeitstage“ zählt Kalendertage
+- **PDF-Stundenzettel** (`export/pdf_worktime.py`), bei vielen Einträgen mehrseitig mit „Seite n von m“;
+  Summe und Unterschriften stehen zusammen auf der letzten Seite
 
 ### 16. Fahrtenbuch (`/trips`)
 - Fahrten je Fahrer mit Start/Ziel, km-Ständen und Belegverknüpfung
 - km-Vorbelegung aus der letzten Fahrt
+- **Locker nutzbar:** einzelne Fahrten, ohne Tachostand, in beliebiger Reihenfolge nachgetragen – etwa bei pauschaler
+  Versteuerung, für die Abrechnung nach Kilometerpauschale oder als Gedächtnisstütze. Beim Speichern wird nur abgelehnt,
+  was unmöglich ist (Tacho Ende unter Tacho Start, Kilometer, die keine ganze Zahl ab 0 sind, Ende vor dem Start); ein
+  fehlender Anschluss an die Vorfahrt wird dabei nie geprüft
+- **Lückenprüfung auf Wunsch:** Unter der Liste lässt sich je Fahrzeug und Jahr prüfen, wo die Tachostände nicht
+  aneinander anschließen (fehlende Kilometer, Überschneidungen, Fahrten ohne Tachostand). Lückenlos muss ein
+  Fahrtenbuch nur für die Fahrtenbuchmethode sein – dann für das ganze Jahr. Die Prüfung ist ein Hilfsmittel, keine
+  Steuerberatung
 
 ### 17. Mehrbenutzer & Benutzerverwaltung (`/users`)
 - Jeder Benutzer hat ein isoliertes Datenverzeichnis `data/users/<user>/`. Die

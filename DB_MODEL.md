@@ -304,8 +304,8 @@ berichtigt und ergänzt in bestehenden Datenbanken 100, 120, 121 („Verwendung 
 | Date | DATE | NOT NULL | Datum |
 | Kind | TEXT | NOT NULL, DEFAULT 'work' | 'work', 'vacation', 'sick', 'holiday' |
 | CustomerID | INTEGER | FK → Contacts ON DELETE SET NULL | Kunde (optional) |
-| StartTime | TEXT | | 'HH:MM' |
-| EndTime | TEXT | | 'HH:MM' |
+| StartTime | TEXT | | 'HH:MM' (beim Speichern geprüft: Stunde 0–23, Minute 0–59) |
+| EndTime | TEXT | | 'HH:MM'; liegt sie vor der Startzeit, endet der Eintrag am Folgetag (zählt zum Datum des Eintrags) |
 | PauseMinutes | INTEGER | DEFAULT 0 | Pause in Minuten |
 | LocationMode | TEXT | DEFAULT 'customer' | 'own', 'customer', 'other' |
 | LocationCity | TEXT | | Aufgelöster Einsatzort (Momentaufnahme) |
@@ -335,6 +335,19 @@ berichtigt und ergänzt in bestehenden Datenbanken 100, 120, 121 („Verwendung 
 | CreatedAt | DATETIME | DEFAULT NOW | |
 
 **Indizes:** `idx_trips_driver_date` auf (DriverID, StartDate)
+
+**Prüfung beim Speichern** (`handlers._trip_fields`, seit 2.3.12): Fahrer, Start-Datum (ISO) und Ziel sind Pflicht; das
+End-Datum ist leer oder ein ISO-Datum nicht vor dem Start; Uhrzeiten leer oder `HH:MM`; `StartKm`, `EndKm`, `DistanceKm` leer
+oder ganze Zahlen von 0 bis 9 999 999; `EndKm` nie unter `StartKm` (sind beide gesetzt, ist `DistanceKm` die Differenz).
+Ein Anschluss an die Vorfahrt wird beim Speichern nie verlangt. `insert_trip` liefert bei einem Fehlschlag `None`,
+`update_trip` `False` – die Seite zeigt es. Bestehende Zeilen werden nicht nachträglich geprüft.
+
+**Lückenprüfung** (`db.trips.logbook_gaps`, `Database.trip_logbook_check(vehicle, year)`; rein lesend, nur auf Anfrage):
+alle Fahrten eines Fahrzeugs (Vergleich getrimmt und ohne Groß-/Kleinschreibung, über alle Fahrer) mit `StartDate` im
+Kalenderjahr, sortiert nach Datum, Uhrzeit, ID. Eine Lücke ist jede Fahrt mit `StartKm`, deren nächster Vorgänger mit
+`EndKm` einen anderen Stand hat (Differenz positiv: Kilometer fehlen, negativ: Überschneidung). Fahrten ganz ohne
+Tachostand dazwischen werden gezählt, nicht als Lücke gemeldet; nach einer Fahrt mit `StartKm`, aber ohne `EndKm`, ist
+der Stand unbekannt, die nächste Fahrt hat keinen Vorgänger. Gemeldet werden höchstens 100 Lücken und die wahre Zahl.
 
 ---
 

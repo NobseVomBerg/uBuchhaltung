@@ -61,6 +61,10 @@ Vorschau zeigt sie, entschieden wird vom Nutzer.
 | `boiler` | Inhalt ist vollständig Kopf-/Fußzeilentext ("Seite 2 von 5", "Übertrag auf Blatt 2", "Neuer Kontostand", Formularnummern) |
 | `huge` | Betrag über 1.000.000 – fast immer ein verrutschtes Trennzeichen |
 
+Beträge liest jeder Parser streng (`money.parse_amount`): nur ASCII-Ziffern, deutsch `1.234,56` (Tausenderpunkte nur in
+Dreiergruppen). Die PDF-Parser verlangen das Komma – „1.142“ ohne Komma wird nicht geraten. Ein Buchungskopf, dessen
+Betrag so nicht lesbar ist, ergibt `unparsed`; die übrigen Umsätze des Auszugs werden gelesen.
+
 Am Beleg selbst: `no_transactions`, `no_iban`, `parse_error`, dazu `balance` (Anfangssaldo + Umsätze ≠ Schlusssaldo),
 `no_balance` (Saldo nicht gefunden – die Vollständigkeit ist nicht geprüft), `unparsed` (eine Zeile sah wie ein
 Buchungskopf aus, hatte aber keinen lesbaren Betrag), `no_year` (Jahr des Auszugs nicht erkannt) und `foreign_currency`

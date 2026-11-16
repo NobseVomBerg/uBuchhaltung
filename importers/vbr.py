@@ -16,6 +16,7 @@ from typing import List, Optional
 
 import pdfplumber
 
+from money import parse_amount
 from . import pdftext
 from .base import BankStatement, StatementImporter, StatementTransaction
 from .plausibility import check_balance
@@ -116,13 +117,18 @@ def parse_text(text: str, year: Optional[int] = None, latest=None,
         bu_tag = match.group(1)             # z. B. "01.12."
         rest_of_line = match.group(2)       # alles nach dem zweiten Datum
         amount_match = _AMOUNT.search(rest_of_line)
-        if not amount_match:
+        try:
+            # Ein Auszug schreibt Beträge immer mit Komma; „1.142“ ohne Komma wird nicht geraten
+            amount = (float(parse_amount(amount_match.group(1)))
+                      if amount_match and ',' in amount_match.group(1) else None)
+        except ValueError:
+            amount = None                   # kein lesbarer Betrag (z. B. „1.2.3,4“): wie ein Kopf ohne Betrag
+        if amount is None:
             if problems is not None and 'unparsed' not in problems:
                 problems.append('unparsed')
             i += 1
             continue
 
-        amount = float(amount_match.group(1).replace('.', '').replace(',', '.'))
         if amount_match.group(2) == 'S':    # S = Soll = Belastung
             amount = -amount
         trans_type = rest_of_line[:amount_match.start()].strip()

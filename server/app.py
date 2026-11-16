@@ -121,6 +121,18 @@ def _id_param(qs, name='id'):
     return -1 if value is None else value
 
 
+def _trip_check_params(qs):
+    """Fahrzeug und Jahr der Lückenprüfung des Fahrtenbuchs (``?check_vehicle=…&check_year=…``) – beides oder nichts:
+    das Fahrzeug getrimmt, nicht leer und höchstens 500 Zeichen, das Jahr genau vier ASCII-Ziffern von 1900 bis 2999.
+    Was nicht passt, heißt ``(None, None)``: keine Prüfung, und kein Fehler."""
+    vehicle = qs.get('check_vehicle', [''])[0].strip()
+    year = qs.get('check_year', [''])[0]
+    if (vehicle and len(vehicle) <= 500 and len(year) == 4 and year.isascii() and year.isdigit()
+            and 1900 <= int(year) <= 2999):
+        return vehicle, int(year)
+    return None, None
+
+
 def forwarded_https(headers):
     """Hat ein Reverse-Proxy die Anfrage über HTTPS entgegengenommen? Der erste Wert von
     ``X-Forwarded-Proto`` (bei einer Kette der des Clients) muss ``https`` sein."""
@@ -1231,10 +1243,12 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
                 person_id = _int_param(qs, 'person')
                 error_msg = qs['error'][0] if qs.get('error') else None
+                check_vehicle, check_year = _trip_check_params(qs)
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
                 self.respond(200, PageTrips(db, person_id=person_id,
                                             date_from=date_from, date_to=date_to,
-                                            error_msg=error_msg), headers=hdrs)
+                                            error_msg=error_msg, check_vehicle=check_vehicle,
+                                            check_year=check_year), headers=hdrs)
             elif self.path.startswith("/trips/edit"):
                 qs = self._query()
                 edit_id = _id_param(qs)
