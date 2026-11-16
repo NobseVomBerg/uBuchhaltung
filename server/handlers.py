@@ -11,6 +11,7 @@ import hashlib
 import sqlite3
 import datetime
 import time
+from typing import NamedTuple
 from urllib.parse import quote
 import auth
 import userctx
@@ -3579,14 +3580,45 @@ def handle_setup_start(post_data):
     return True, username, with_login, None
 
 
-def handle_login(post_data):
-    """Anmeldedaten prüfen. Returns (ok, username, error_msg)."""
+class LoginOutcome(NamedTuple):
+    """Ergebnis von ``handle_login``. ``status`` ist der HTTP-Status der Antwort (200 bei falschen Angaben,
+    429 gesperrt, 503 ausgelastet), ``retry_after`` die Sekunden für den Kopf ``Retry-After`` (0: keiner)."""
+    ok: bool
+    username: str
+    error: str | None
+    status: int
+    retry_after: int
+
+
+def _wait_text(seconds):
+    """Wartezeit für den Nutzer: bis 59 Sekunden in Sekunden, darüber auf Minuten aufgerundet."""
+    if seconds < 60:
+        return f"{seconds} Sekunde" if seconds == 1 else f"{seconds} Sekunden"
+    minutes = math.ceil(seconds / 60)
+    return f"{minutes} Minute" if minutes == 1 else f"{minutes} Minuten"
+
+
+def handle_login(post_data, client=''):
+    """Anmeldedaten prüfen, gedrosselt (``auth.attempt_login``). ``client`` ist die Adresse des Aufrufers,
+    nur für die Zeile im Server-Log, wenn eine Sperre beginnt. Returns ``LoginOutcome``."""
     g = lambda k: post_data.get(k, [''])[0]
     username = g('username').strip()
     password = g('password')
-    if username and auth.authenticate(username, password):
-        return True, username, None
-    return False, username, "Benutzername oder Passwort falsch."
+
+    def log_block(seconds):
+        # Nie mit dem eingegebenen Namen: Dort steht gelegentlich ein Passwort.
+        print(f"Anmeldung gesperrt: {seconds} s nach zu vielen Fehlversuchen (Client {client or 'unbekannt'}).")
+
+    result, wait = auth.attempt_login(username, password, on_block=log_block)
+    if result == 'ok':
+        return LoginOutcome(True, username, None, 200, 0)
+    if result == 'blocked':
+        return LoginOutcome(False, username, 'Zu viele fehlgeschlagene Anmeldeversuche. '
+                            f'Bitte in {_wait_text(wait)} erneut versuchen.', 429, wait)
+    if result == 'busy':
+        return LoginOutcome(False, username, 'Der Server ist gerade ausgelastet. '
+                            'Bitte gleich noch einmal versuchen.', 503, 5)
+    return LoginOutcome(False, username, "Benutzername oder Passwort falsch.", 200, 0)
 
 
 def _users_redirect(info=None, err=None):
@@ -3608,7 +3640,15 @@ def handle_user_create(post_data):
         auth.create_user(username, password, is_admin=is_admin)
     except ValueError as e:
         return _users_redirect(err=str(e))
-    return _users_redirect(info=f'Benutzer „{username}" angelegt.')
+    info = f'Benutzer „{username}" angelegt.'
+    try:
+        has_data = bool(os.listdir(os.path.join(userctx.DATA_ROOT, userctx.USERS_DIR, username)))
+    except OSError:                    # kein Datenverzeichnis (oder nicht lesbar): nichts zu melden
+        has_data = False
+    if has_data:
+        info += (' Für diesen Namen gibt es bereits ein Datenverzeichnis – '
+                 'der Benutzer arbeitet mit diesen Daten weiter.')
+    return _users_redirect(info=info)
 
 
 def handle_user_delete(post_data):
@@ -3625,14 +3665,17 @@ def handle_user_delete(post_data):
     return _users_redirect(info=f'Benutzer „{username}" gelöscht (Daten bleiben erhalten).')
 
 
-def handle_user_reset_password(post_data):
+def handle_user_reset_password(post_data, session_token=None):
+    """Passwort eines Benutzers setzen; seine Sitzungen enden. Nur wer sein eigenes Passwort ändert, behält
+    die Sitzung ``session_token`` (die, mit der er gerade angemeldet ist)."""
     g = lambda k: post_data.get(k, [''])[0]
     username = g('username').strip()
     password = g('password')
     if not auth.user_exists(username):
         return _users_redirect(err='Benutzer existiert nicht.')
+    keep = session_token if username == userctx.get_user() else None
     try:
-        auth.set_password(username, password)
+        auth.set_password(username, password, keep_session=keep)
     except ValueError as e:
         return _users_redirect(err=str(e))
     return _users_redirect(info=f'Passwort für „{username}" gesetzt.')
@@ -3672,6 +3715,7 @@ def handle_user_auto_login(post_data, current_user):
         if not (current_user and auth.is_admin(current_user)):
             return _users_redirect(err='Nur ein Administrator kann sich automatisch anmelden lassen.'), None
         userctx.set_auto_login(current_user)
+        auth.delete_all_sessions()
         return _users_redirect(info=f'Automatische Anmeldung für „{current_user}" eingeschaltet.'), None
     if action == 'disable':
         if not active:
@@ -3684,6 +3728,7 @@ def handle_user_auto_login(post_data, current_user):
         except ValueError as e:
             return _users_redirect(err=str(e)), None
         userctx.set_auto_login(None)
+        auth.delete_all_sessions()      # die neue Sitzung von „active“ legt der Aufrufer erst danach an
         return _users_redirect(info=f'Automatische Anmeldung ausgeschaltet. „{active}" meldet sich ab jetzt mit Passwort an.'), active
     return _users_redirect(err='Unbekannte Aktion.'), None
 

@@ -17,7 +17,7 @@ import userctx
 from db import Database, _CoreMixin
 
 ADMIN = "admin"
-PASSWORD = "geheim123"        # erfundenes Test-Passwort (mindestens 6 Zeichen)
+PASSWORD = "geheim123"        # erfundenes Test-Passwort (mindestens 8 Zeichen)
 
 
 def forget_config_cache():

@@ -47,7 +47,7 @@ def handle_file_upload(request_handler, db):
     upload_dir = os.path.join(userctx.user_data_dir(), "Documents")
     os.makedirs(upload_dir, exist_ok=True)
 
-    content_type = request_handler.headers['Content-Type']
+    content_type = request_handler.headers.get('Content-Type') or ''
     if 'multipart/form-data' not in content_type:
         return 400, json.dumps({'error': 'Ungültiger Content-Type'})
 
