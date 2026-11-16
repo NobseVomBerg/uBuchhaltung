@@ -1109,7 +1109,10 @@ def test_asset_page_without_a_message_has_no_message_call(web):
 
 # ── Anlagenliste ─────────────────────────────────────────────────────────────
 
-THIS_YEAR = datetime.date.today().year
+def this_year():
+    """Das Jahr von jetzt – bei jedem Aufruf frisch, nie beim Import festgehalten: Die Suite läuft Minuten, und
+    über den Jahreswechsel rechnete die App sonst mit einem anderen Jahr als die Tests."""
+    return datetime.date.today().year
 
 
 def _list_row(html, name):
@@ -1120,15 +1123,15 @@ def test_list_counts_posted_and_booked_years_as_booked_and_planned_years_as_open
     """Der Status steht in der Spalte „Status“ der Planzeile (nicht in der Buchungs-Id): ``posted``
     (Buchung des Programms) und ``booked`` (WISO-Import) gelten als gebucht, ``planned`` nicht."""
     db = tmp_db
-    posted = db.insert_asset('Anlage Gebucht', f'{THIS_YEAR}-01-10', 1800.0, 3, coa_id=_coa(db, 520))
-    booked = db.insert_asset('Anlage Wiso', f'{THIS_YEAR}-01-10', 2400.0, 3, coa_id=_coa(db, 500))
-    db.insert_asset('Anlage Offen', f'{THIS_YEAR}-01-10', 3000.0, 3, coa_id=_coa(db, 500))
-    _book(db, posted, THIS_YEAR)
-    _wiso_booked(db, booked, THIS_YEAR)
+    posted = db.insert_asset('Anlage Gebucht', f'{this_year()}-01-10', 1800.0, 3, coa_id=_coa(db, 520))
+    booked = db.insert_asset('Anlage Wiso', f'{this_year()}-01-10', 2400.0, 3, coa_id=_coa(db, 500))
+    db.insert_asset('Anlage Offen', f'{this_year()}-01-10', 3000.0, 3, coa_id=_coa(db, 500))
+    _book(db, posted, this_year())
+    _wiso_booked(db, booked, this_year())
 
     html = PageAssets(db)
 
-    summary = re.search(rf'AfA {THIS_YEAR} gebucht: ([\d.,]+) € \| AfA {THIS_YEAR} geplant: ([\d.,]+) €',
+    summary = re.search(rf'AfA {this_year()} gebucht: ([\d.,]+) € \| AfA {this_year()} geplant: ([\d.,]+) €',
                         html)
     # 600 + 600 gebucht – das WISO-Jahr zählt mit seinem gebuchten Betrag (600), nicht mit dem Planbetrag der
     # Anlage (800); 1000 geplant
@@ -1141,15 +1144,15 @@ def test_list_counts_posted_and_booked_years_as_booked_and_planned_years_as_open
 
 def test_list_moves_the_year_back_to_open_after_the_booking_is_deleted(tmp_db):
     db = tmp_db
-    asset = db.insert_asset('Anlage Gebucht', f'{THIS_YEAR}-01-10', 1800.0, 3, coa_id=_coa(db, 520))
-    _book(db, asset, THIS_YEAR)
+    asset = db.insert_asset('Anlage Gebucht', f'{this_year()}-01-10', 1800.0, 3, coa_id=_coa(db, 520))
+    _book(db, asset, this_year())
     booking = _rows(db, 'SELECT Booking_ID FROM AssetDepreciations')[0]['Booking_ID']
-    assert f'AfA {THIS_YEAR} gebucht: 600,00 €' in PageAssets(db)
+    assert f'AfA {this_year()} gebucht: 600,00 €' in PageAssets(db)
 
     db.delete_transaction(booking)
 
     html = PageAssets(db)
-    assert f'AfA {THIS_YEAR} gebucht: 0,00 €' in html and f'AfA {THIS_YEAR} geplant: 600,00 €' in html
+    assert f'AfA {this_year()} gebucht: 0,00 €' in html and f'AfA {this_year()} geplant: 600,00 €' in html
     assert '● offen' in _list_row(html, 'Anlage Gebucht')
 
 
@@ -1171,7 +1174,7 @@ def plan_asset(tmp_db):
     """Anlage mit vier Jahren AfA, die vor zwei Jahren beginnen: zwei vergangene, das laufende und
     ein künftiges Jahr (600 EUR je Jahr)."""
     db = tmp_db
-    first = THIS_YEAR - 2
+    first = this_year() - 2
     asset = db.insert_asset('Plan Probe', f'{first}-01-10', 2400.0, 4, coa_id=_coa(db, 500))
     return SimpleNamespace(db=db, asset=asset, first=first)
 
@@ -1234,13 +1237,13 @@ def test_plan_offers_no_booking_for_years_after_the_disposal(plan_asset):
 @pytest.mark.parametrize('how', STALE)
 def test_plan_offers_booking_for_a_posted_year_without_an_existing_booking(tmp_db, how):
     db = tmp_db
-    asset = db.insert_asset('Plan Probe', f'{THIS_YEAR - 1}-01-10', 1800.0, 3, coa_id=_coa(db, 500))
+    asset = db.insert_asset('Plan Probe', f'{this_year() - 1}-01-10', 1800.0, 3, coa_id=_coa(db, 500))
     world = SimpleNamespace(asset=asset, expense=_coa(db, 6220), anlage=_coa(db, 500))
-    booking = _stale_posted_row(db, world, THIS_YEAR - 1, how)
+    booking = _stale_posted_row(db, world, this_year() - 1, how)
 
-    row = _plan_by_year(PageAssetView(db, asset))[THIS_YEAR - 1]
+    row = _plan_by_year(PageAssetView(db, asset))[this_year() - 1]
 
-    assert '⚠ Nicht gebucht' in row and _has_form(row, asset, THIS_YEAR - 1)
+    assert '⚠ Nicht gebucht' in row and _has_form(row, asset, this_year() - 1)
     assert '✓ Gebucht' not in row and 'Buchung ansehen' not in row
     if booking:
         assert f'/transactions/edit?id={booking}' not in row
@@ -1249,13 +1252,13 @@ def test_plan_offers_booking_for_a_posted_year_without_an_existing_booking(tmp_d
 @pytest.mark.parametrize('how', STALE)
 def test_list_counts_a_posted_year_without_an_existing_booking_as_open(tmp_db, how):
     db = tmp_db
-    asset = db.insert_asset('Anlage Gebucht', f'{THIS_YEAR}-01-10', 1800.0, 3, coa_id=_coa(db, 500))
+    asset = db.insert_asset('Anlage Gebucht', f'{this_year()}-01-10', 1800.0, 3, coa_id=_coa(db, 500))
     world = SimpleNamespace(asset=asset, expense=_coa(db, 6220), anlage=_coa(db, 500))
-    _stale_posted_row(db, world, THIS_YEAR, how)
+    _stale_posted_row(db, world, this_year(), how)
 
     html = PageAssets(db)
 
-    assert f'AfA {THIS_YEAR} gebucht: 0,00 €' in html and f'AfA {THIS_YEAR} geplant: 600,00 €' in html
+    assert f'AfA {this_year()} gebucht: 0,00 €' in html and f'AfA {this_year()} geplant: 600,00 €' in html
     assert '● offen' in _list_row(html, 'Anlage Gebucht')
 
 
@@ -1286,9 +1289,9 @@ def _selected(options):
 def test_form_preselects_asset_account_and_expense_account(tmp_db, name, price, years, anlage,
                                                            expected_expense):
     db = tmp_db
-    asset = db.insert_asset(name, f'{THIS_YEAR}-01-10', price, years, coa_id=_coa(db, anlage))
+    asset = db.insert_asset(name, f'{this_year()}-01-10', price, years, coa_id=_coa(db, anlage))
 
-    block, selects = _depreciation_form(PageAssetView(db, asset), asset, THIS_YEAR)
+    block, selects = _depreciation_form(PageAssetView(db, asset), asset, this_year())
 
     assert _selected(selects['asset_coa_id']) == [str(anlage)]
     assert _selected(selects['coa_id']) == [expected_expense]
@@ -1299,9 +1302,9 @@ def test_form_preselects_asset_account_and_expense_account(tmp_db, name, price, 
 
 def test_form_offers_only_asset_accounts_as_asset_account(tmp_db):
     db = tmp_db
-    asset = db.insert_asset('Laptop Probe', f'{THIS_YEAR}-01-10', 1800.0, 3, coa_id=_coa(db, 500))
+    asset = db.insert_asset('Laptop Probe', f'{this_year()}-01-10', 1800.0, 3, coa_id=_coa(db, 500))
 
-    _block, selects = _depreciation_form(PageAssetView(db, asset), asset, THIS_YEAR)
+    _block, selects = _depreciation_form(PageAssetView(db, asset), asset, this_year())
 
     numbers = [int(number) for number, _ in selects['asset_coa_id']]
     assert numbers and all(number < 1000 for number in numbers)
@@ -1311,9 +1314,9 @@ def test_form_offers_only_asset_accounts_as_asset_account(tmp_db):
 
 def test_form_without_an_asset_account_forces_a_choice(tmp_db):
     db = tmp_db
-    asset = db.insert_asset('Ohne Konto', f'{THIS_YEAR}-01-10', 1800.0, 3)
+    asset = db.insert_asset('Ohne Konto', f'{this_year()}-01-10', 1800.0, 3)
 
-    block, selects = _depreciation_form(PageAssetView(db, asset), asset, THIS_YEAR)
+    block, selects = _depreciation_form(PageAssetView(db, asset), asset, this_year())
 
     assert _selected(selects['asset_coa_id']) == []
     assert selects['asset_coa_id'][0] == ('', False)               # „– bitte wählen –“
@@ -1323,11 +1326,11 @@ def test_form_without_an_asset_account_forces_a_choice(tmp_db):
 
 def test_form_leaves_out_hidden_accounts_except_the_asset_account_itself(tmp_db):
     db = tmp_db
-    asset = db.insert_asset('Laptop Probe', f'{THIS_YEAR}-01-10', 1800.0, 3, coa_id=_coa(db, 520))
+    asset = db.insert_asset('Laptop Probe', f'{this_year()}-01-10', 1800.0, 3, coa_id=_coa(db, 520))
     for number in (520, 500, 6220):         # eigenes Anlagekonto, anderes Anlagekonto, Aufwandskonto
         assert db.toggle_coa_show_in_menu(_coa(db, number)) == 0          # jetzt ausgeblendet
 
-    _block, selects = _depreciation_form(PageAssetView(db, asset), asset, THIS_YEAR)
+    _block, selects = _depreciation_form(PageAssetView(db, asset), asset, this_year())
 
     asset_numbers = [number for number, _ in selects['asset_coa_id']]
     assert '520' in asset_numbers and '500' not in asset_numbers
@@ -1340,9 +1343,9 @@ def test_form_forces_a_choice_when_the_asset_account_is_not_in_the_list(tmp_db):
     """Steht ein Konto außerhalb der Anlagekonten (hier die Bank 1800) an der Anlage, darf die Auswahl
     nicht stillschweigend das erste Anlagekonto vorwählen: „– bitte wählen –“, nichts vorbelegt."""
     db = tmp_db
-    asset = db.insert_asset('Falsches Konto', f'{THIS_YEAR}-01-10', 1800.0, 3, coa_id=_coa(db, 1800))
+    asset = db.insert_asset('Falsches Konto', f'{this_year()}-01-10', 1800.0, 3, coa_id=_coa(db, 1800))
 
-    block, selects = _depreciation_form(PageAssetView(db, asset), asset, THIS_YEAR)
+    block, selects = _depreciation_form(PageAssetView(db, asset), asset, this_year())
 
     assert _selected(selects['asset_coa_id']) == []
     assert selects['asset_coa_id'][0] == ('', False) and '– bitte wählen –' in block

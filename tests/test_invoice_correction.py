@@ -51,9 +51,17 @@ from tests.invoice_world import (archived_versions, build_world, columns, docume
                                  make_invoice, make_payload, protocol, run_sql, save, save_open,
                                  save_raw, set_invoice_status, snapshot)
 
-TODAY = datetime.date.today()
-TODAY_DE = TODAY.strftime('%d.%m.%Y')
 USER = 'anna'
+
+
+def today():
+    """Der Tag von jetzt – bei jedem Aufruf frisch, nie beim Import festgehalten: Die Suite läuft Minuten, und über
+    Mitternacht trügen Dateinamen, Hinweis und Protokoll der App schon den nächsten Tag."""
+    return datetime.date.today()
+
+
+def today_de():
+    return today().strftime('%d.%m.%Y')
 
 
 @pytest.fixture
@@ -104,8 +112,8 @@ def pdf_text(path):
 NOTICE = 'Berichtigte Fassung vom {day} – ersetzt die Fassung vom {day} (geändert: {fields})'
 
 
-def notice(fields, day=TODAY_DE):
-    return NOTICE.format(day=day, fields=fields)
+def notice(fields, day=None):
+    return NOTICE.format(day=day or today_de(), fields=fields)
 
 
 # ── Je Feld eine Protokollzeile ──────────────────────────────────────────────
@@ -500,7 +508,8 @@ def test_the_sent_documents_move_byte_for_byte_with_their_hash_and_a_row(world):
 
     save_open(world, invoice_id, deliveryDate='2026-06-01')
 
-    names = [f'{stem} – versendet bis {TODAY.isoformat()}.pdf', f'{stem} – versendet bis {TODAY.isoformat()}.xml']
+    day = today().isoformat()
+    names = [f'{stem} – versendet bis {day}.pdf', f'{stem} – versendet bis {day}.xml']
     assert archived_files(invoice_id) == sorted(names)
     assert read_file(os.path.join(versions_dir(invoice_id), names[0])) == sent_pdf
     assert read_file(os.path.join(versions_dir(invoice_id), names[1])) == sent_xml
@@ -601,7 +610,7 @@ def test_a_taken_name_gets_a_counter_for_the_second_correction_of_the_day(world)
     save_open(world, invoice_id, orderNumber='B-2')
     save_open(world, invoice_id, orderNumber='B-3')
     stems = sorted(archived_files(invoice_id))
-    assert any(f'versendet bis {TODAY.isoformat()} (2).pdf' in name for name in stems)
+    assert any(f'versendet bis {today().isoformat()} (2).pdf' in name for name in stems)
     assert len(stems) == 4
 
 
@@ -617,7 +626,7 @@ def test_the_name_of_the_new_file_follows_the_address_and_the_old_one_is_kept_un
     assert os.path.basename(new_pdf) == '26R100 Malermeister Pinsel GmbH.pdf' and os.path.isfile(new_pdf)
     assert not os.path.exists(old_pdf)                                      # unter dem alten Namen liegt nichts mehr
     kept = [n for n in archived_files(invoice_id) if n.endswith('.pdf')]
-    assert kept == [f'26R100 Malermeister Pinsel – versendet bis {TODAY.isoformat()}.pdf']
+    assert kept == [f'26R100 Malermeister Pinsel – versendet bis {today().isoformat()}.pdf']
     assert read_file(os.path.join(versions_dir(invoice_id), kept[0])) == sent_pdf
     assert notice('Anschrift') in pdf_text(new_pdf).replace('\n', ' ')
 
@@ -800,7 +809,7 @@ def test_a_document_made_later_for_an_import_carries_the_notice_and_dates_by_the
     page = pdf_text(result['pdf_path']).replace('\n', ' ')
     assert 'Fassung: 2' in page
     # der Import hat keinen Versandzeitpunkt (SentAt NULL): Der Teil „ersetzt die Fassung vom …“ entfällt
-    assert f'Berichtigte Fassung vom {TODAY_DE} (geändert: Bestellnummer)' in page
+    assert f'Berichtigte Fassung vom {today_de()} (geändert: Bestellnummer)' in page
     assert 'ersetzt die Fassung' not in page
 
 
@@ -850,7 +859,8 @@ def test_a_correction_after_the_new_sending_dates_the_replaced_version_by_the_se
 
     notice_ = world.db.correction_notice(invoice_id)
     assert notice_.version == 4 and notice_.fields == ('Bestellnummer',)
-    assert notice_.corrected_on == TODAY and notice_.replaces_on == TODAY
+    day = today()
+    assert notice_.corrected_on == day and notice_.replaces_on == day
 
 
 # ── Der Hinweis ──────────────────────────────────────────────────────────────
@@ -867,7 +877,7 @@ def test_the_notice_names_the_changed_fields_in_the_agreed_order(world):
     assert ('(geändert: Leistungsdatum, Anschrift, Zahlungshinweis, Bestellnummer, Leitweg-ID)') in page
     from export.einvoice_model import correction_note_text
     assert correction_note_text(world.db.correction_notice(invoice_id)) == (
-        f'Berichtigte Fassung vom {TODAY_DE} (geändert: Leistungsdatum, Anschrift, Zahlungshinweis, '
+        f'Berichtigte Fassung vom {today_de()} (geändert: Leistungsdatum, Anschrift, Zahlungshinweis, '
         'Bestellnummer, Leitweg-ID)')
 
 
@@ -892,7 +902,7 @@ def test_the_replaced_version_is_dated_by_the_earlier_correction_else_by_the_sen
     run_sql(world.db, "UPDATE Invoices SET SentAt = NULL WHERE ID = ?", invoice_id)               # ohne alles entfällt es
     unknown = world.db.correction_notice(invoice_id)
     assert unknown.replaces_on is None
-    assert correction_note_text(unknown) == f'Berichtigte Fassung vom {TODAY_DE} (geändert: Bestellnummer)'
+    assert correction_note_text(unknown) == f'Berichtigte Fassung vom {today_de()} (geändert: Bestellnummer)'
 
 
 def _date_the_newest_row(world, invoice_id, stamp):
@@ -914,10 +924,12 @@ def test_after_sending_again_the_replaced_version_is_dated_by_that_sending_not_t
     assert save_open(world, invoice_id, orderNumber='B-99')['documentVersion'] == 3
 
     notice_ = world.db.correction_notice(invoice_id)
-    assert (notice_.version, notice_.corrected_on, notice_.replaces_on) == (3, TODAY, TODAY)
+    day = today()
+    day_de = day.strftime('%d.%m.%Y')
+    assert (notice_.version, notice_.corrected_on, notice_.replaces_on) == (3, day, day)
     assert correction_note_text(notice_) == (
-        f'Berichtigte Fassung vom {TODAY_DE} – ersetzt die Fassung vom {TODAY_DE} (geändert: Bestellnummer)')
-    assert notice('Bestellnummer') in pdf_text(columns(world.db, invoice_id)['PDFPath']).replace('\n', ' ')
+        f'Berichtigte Fassung vom {day_de} – ersetzt die Fassung vom {day_de} (geändert: Bestellnummer)')
+    assert notice('Bestellnummer', day_de) in pdf_text(columns(world.db, invoice_id)['PDFPath']).replace('\n', ' ')
 
 
 def test_after_a_correction_reopening_and_sending_the_replaced_version_is_dated_by_the_second_sending(world):
@@ -932,7 +944,7 @@ def test_after_a_correction_reopening_and_sending_the_replaced_version_is_dated_
     assert save_open(world, invoice_id, orderNumber='B-3')['documentVersion'] == 4
 
     notice_ = world.db.correction_notice(invoice_id)
-    assert (notice_.version, notice_.corrected_on) == (4, TODAY)
+    assert (notice_.version, notice_.corrected_on) == (4, today())
     assert notice_.replaces_on == datetime.date(2026, 3, 20)                         # nicht SentAt (heute) und nicht Januar
 
 
@@ -972,7 +984,7 @@ def test_an_import_without_a_sending_time_and_a_protocol_names_no_replaced_versi
 
     notice_ = world.db.correction_notice(invoice_id)
     assert notice_.replaces_on is None                                  # die eigene Berichtigung ersetzt nichts
-    assert correction_note_text(notice_) == f'Berichtigte Fassung vom {TODAY_DE} (geändert: Bestellnummer)'
+    assert correction_note_text(notice_) == f'Berichtigte Fassung vom {today_de()} (geändert: Bestellnummer)'
 
 
 @pytest.mark.skipif(not hasattr(time, 'tzset'), reason='Zeitzone lässt sich nur unter Unix umstellen')

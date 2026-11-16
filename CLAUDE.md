@@ -1118,6 +1118,14 @@ kein Subagent darauf:
 - **Tests schreiben nie ins echte `data/`:** `tests/conftest.py` gibt jedem Test eine
   eigene Datenwurzel (`userctx.DATA_ROOT` unter `tmp_path`); ein Session-Wächter
   (`tests/data_guard.py`) schlägt an, wenn doch etwas dort landet
+- **Tests hängen nicht an der Uhr des Imports:** Ein „heute“ steht nie in einer Modulkonstante, einer
+  `parametrize`-Liste, einem Standardwert oder einer Fixture mit größerem Scope als `function`, sondern als
+  Funktion, die im Test frisch liest (die Suite läuft 15–25 Minuten – ein Lauf über Mitternacht ließ den
+  Release-Lauf von 2.3.4 scheitern). Wo die App einen Haken kennt (`invoice_storno._today`, `today=`), ein
+  festes Datum nehmen; Erwartungen nie an ein festes Jahr oder eine Fälligkeit knüpfen, die die echte Uhr
+  überholt. `tests/test_clock_at_import.py` prüft die Import-Regel statisch
+- **Nach einem Merge mit Versionssprung den Release-Lauf nachsehen** (letztes Release bzw. der Lauf
+  „Docker-Image veröffentlichen“): Scheitern dort die Tests, gibt es weder Image noch Release
 - Alles rund um Testläufe liegt unter `data/tests/`: `tmp/` (Arbeitsdaten; nach dem
   Lauf bleiben nur die Verzeichnisse fehlgeschlagener Tests der letzten zwei Läufe)
   und `cache/` (pytest-Cache). Keine Punkt-Verzeichnisse im Projektordner anlegen.

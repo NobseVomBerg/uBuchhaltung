@@ -23,8 +23,15 @@ from tests.dom_helpers import Dom, app_msg_arguments
 from tests.http_client import get, own_origin, post
 from tests.invoice_world import build_world
 
-YEAR = datetime.date.today().year
-SHORT = str(YEAR)[2:]
+
+def this_year():
+    """Das Jahr von jetzt – bei jedem Aufruf frisch, nie beim Import festgehalten: Die Suite läuft Minuten, und über
+    den Jahreswechsel nummeriert die App die Rechnung sonst in einem anderen Kreis als dem, den die Tests anlegen."""
+    return datetime.date.today().year
+
+
+def short_year():
+    return str(this_year())[2:]
 
 
 def quote(db, number='26A001', status='accepted', **extra):
@@ -49,12 +56,12 @@ def status_of(db, doc_id):
 
 
 def counter(db):
-    return [r[5] for r in db.fetch_number_ranges('invoice') if r[2] == YEAR][0]
+    return [r[5] for r in db.fetch_number_ranges('invoice') if r[2] == this_year()][0]
 
 
 @pytest.fixture
 def numbered(tmp_db):
-    tmp_db.insert_number_range('invoice', YEAR, 'R', current_number=10)
+    tmp_db.insert_number_range('invoice', this_year(), 'R', current_number=10)
     return tmp_db
 
 
@@ -63,7 +70,7 @@ def test_a_quote_is_converted_once_from_every_convertible_status(numbered, statu
     quote_id = quote(numbered, status=status)
     new_id = numbered.convert_quote_to_invoice(quote_id)
     assert new_id and invoices_of(numbered, quote_id) == [new_id]
-    assert numbered.get_invoice_by_id(new_id)[1] == f'{SHORT}R011' and counter(numbered) == 11
+    assert numbered.get_invoice_by_id(new_id)[1] == f'{short_year()}R011' and counter(numbered) == 11
     assert status_of(numbered, quote_id) == 'converted' and status_of(numbered, new_id) == 'draft'
 
 
@@ -168,7 +175,7 @@ def books(auto_login):
 
 
 def test_over_http_the_second_click_lands_on_the_quote_with_a_message(server_port, books):
-    books.db.insert_number_range('invoice', YEAR, 'R', current_number=0)
+    books.db.insert_number_range('invoice', this_year(), 'R', current_number=0)
     quote_id = quote(books.db)
     headers = {'Origin': own_origin(server_port)}
     first = post(server_port, '/quote/convert', form={'quote_id': str(quote_id)}, csrf=books.csrf,

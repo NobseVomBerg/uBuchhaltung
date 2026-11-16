@@ -154,11 +154,12 @@ def test_mail_route_over_http(server_port, auto_login, monkeypatch):
 
 
 # ── Mahnwesen ────────────────────────────────────────────────────────────────
-TODAY = datetime.date.today()
-
 
 def day(offset):
-    return (TODAY + datetime.timedelta(days=offset)).isoformat()
+    """Der Tag von jetzt plus ``offset`` Tage (JJJJ-MM-TT) – bei jedem Aufruf frisch, nie beim Import festgehalten:
+    Die Suite läuft Minuten, und über Mitternacht stimmten Verzug und Fälligkeit der Seite nicht mehr mit den Tagen
+    der Tests überein."""
+    return (datetime.date.today() + datetime.timedelta(days=offset)).isoformat()
 
 
 @pytest.fixture

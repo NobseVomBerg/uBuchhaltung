@@ -573,7 +573,7 @@ def test_over_http_the_whole_way_from_the_payment_to_the_sent_replacement(server
     cancelled = json.loads(post_json(server_port, '/invoice/cancel', {
         'invoiceId': invoice_id, 'date': '2026-07-02', 'reissue': True}, books.csrf).text)
     draft = cancelled['replacement_id']
-    page = get(server_port, f'/invoice?id={invoice_id}').text
+    page = get(server_port, f'/invoice?id={invoice_id}&from=2026-01-01&to=2026-12-31').text
     assert 'Guthaben des Kunden: 50,00 €' in page and 'Erstattung offen: 50,00 €' in page   # Seite und Liste daneben
 
     resp = post_json(server_port, '/invoice/status', {'invoice_id': draft, 'status': 'sent'}, books.csrf)
@@ -583,7 +583,7 @@ def test_over_http_the_whole_way_from_the_payment_to_the_sent_replacement(server
     assert body['hint'] == 'Zahlungen der stornierten Rechnung T-100 über 50,00 € sind jetzt dieser Rechnung zugeordnet.'
     assert allocations(db, invoice_id) == [] and allocations(db, draft) == [(booking, 500000, '2026-07-01')]
     assert columns(db, draft)['Status'] == 'partial_payment' and db.find_payment_inconsistencies() == []
-    page = get(server_port, f'/invoice?id={invoice_id}').text
+    page = get(server_port, f'/invoice?id={invoice_id}&from=2026-01-01&to=2026-12-31').text
     assert 'Guthaben des Kunden' not in page and 'Erstattung offen' not in page
 
 
@@ -1911,6 +1911,7 @@ def test_the_write_lock_is_held_while_the_payments_move(world, monkeypatch):
 def test_after_the_move_the_replacement_stays_sent_and_a_removed_payment_does_not_go_back(world, monkeypatch):
     s = paid_scenario(world, monkeypatch)
     db = world.db
+    run_sql(db, "UPDATE Invoices SET PaymentDueDate = '2099-12-31' WHERE ID = ?", s.r2)
     assert set_invoice_status(s.r2, 'sent')[0] == 200
     r2_number = columns(db, s.r2)['InvoiceNumber']
 

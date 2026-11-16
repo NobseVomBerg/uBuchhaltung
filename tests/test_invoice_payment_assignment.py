@@ -39,12 +39,16 @@ from tests.datev_helpers import confirmed_export
 from tests.document_helpers import make_books, post_json
 from tests.http_client import get, own_origin, post
 
-TODAY = datetime.date.today()
-YESTERDAY = (TODAY - datetime.timedelta(days=1)).isoformat()
 RANGE = ('2026-01-01', '2026-12-31')
 
 
 # ── Hilfen ───────────────────────────────────────────────────────────────────
+
+def yesterday():
+    """Der Tag vor heute (JJJJ-MM-TT) – bei jedem Aufruf frisch, nie beim Import oder in einer ``parametrize``-Liste
+    festgehalten: Die Suite läuft Minuten, und über Mitternacht wäre „gestern“ sonst der Vorvortag."""
+    return (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+
 
 def _account(db, name='Zuordnungs-Bank', skr=1800):
     if not [a for a in db.fetch_accounts() if a[1] == name]:
@@ -1112,9 +1116,10 @@ def test_double_click_through_the_link_route_assigns_once(db, acct):
 
 # ── 7. Entfernen ─────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize('due, expected_status', [('2099-12-31', 'sent'), (YESTERDAY, 'overdue')])
-def test_removing_a_payment_removes_its_rows_and_reopens_the_invoice(db, acct, due, expected_status):
-    inv = _sent(db, 'R-RM', 119.00, due=due)
+@pytest.mark.parametrize('overdue, expected_status', [(False, 'sent'), (True, 'overdue')],
+                         ids=['nicht-faellig', 'ueberfaellig'])
+def test_removing_a_payment_removes_its_rows_and_reopens_the_invoice(db, acct, overdue, expected_status):
+    inv = _sent(db, 'R-RM', 119.00, due=yesterday() if overdue else '2099-12-31')
     bank = _bank(db, acct, 119.00)
     payment_id = _assign(db, inv, bank)
     receivable = db.get_receivable_booking(inv)
@@ -1263,7 +1268,7 @@ def test_deleting_the_bank_movement_keeps_an_adopted_receivable(db, acct):
 
 
 def test_deleting_the_bank_movement_removes_the_assignment_and_reopens_the_receivable(db, acct):
-    inv = _sent(db, 'R-DEL', 119.00, due=YESTERDAY)
+    inv = _sent(db, 'R-DEL', 119.00, due=yesterday())
     receivable = db.get_receivable_booking(inv)
     bank = _bank(db, acct, 119.00)
     _assign(db, inv, bank)

@@ -447,7 +447,8 @@ def test_a_storno_date_in_the_future_is_refused_and_creates_nothing(world):
     assert db.fetch_number_ranges('invoice') == circles and [r[2] for r in circles] == [2026]     # kein Kreis 2062
     assert query_rows(db, "SELECT * FROM Invoices WHERE InvoiceKind = 'storno'") == []
     assert columns(db, invoice_id)['Status'] == 'sent'
-    assert cancel(world, invoice_id, datetime.date.today().isoformat()).storno_number == '26R001'      # heute geht
+    today = datetime.date.today()
+    assert cancel(world, invoice_id, today.isoformat()).storno_number == f'{today:%y}R001'      # heute geht
 
 
 def test_the_storno_date_may_be_today_but_not_a_day_later(world, monkeypatch):
