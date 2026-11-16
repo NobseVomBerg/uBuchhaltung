@@ -14,7 +14,9 @@ import time
 from typing import NamedTuple
 from urllib.parse import quote
 import auth
+import demo
 import userctx
+from . import wiso_upload
 from .pages import Header1, Header2, Header3, Footer
 from .import_preview import match_account
 from .period import parse_iso_date, valid_period
@@ -1384,46 +1386,63 @@ def handle_wiso_import(request_handler, db: Database):
         return 303, f'/miscellaneous?wiso_import=error&msg={quote(str(e))}'
 
 
-#: Dateinamen, die WISO Mein Büro im DB-Verzeichnis anlegt.
-WISO_CLIENT_DB = 'DB1.FDB'
-WISO_STANDARD_DB = 'DB0.FDB'
-
-
-def _wiso_fdb_paths(entered):
-    """Eingabe auf (Mandantendatei, Standardkontenrahmen) auflösen.
-
-    Bequem gehalten: angegeben werden darf das DB-Verzeichnis von WISO oder
-    die Mandantendatei selbst. ``DB0.FDB`` wird daneben gesucht, ist aber
-    optional – ohne sie fehlen nur Konten, die der Mandant nie benutzt hat.
-    """
-    entered = (entered or '').strip().strip('"')
-    if not entered:
-        return None, None, 'Kein Pfad angegeben'
-    if os.path.isdir(entered):
-        client = os.path.join(entered, WISO_CLIENT_DB)
-    else:
-        client = entered
-    if not os.path.isfile(client):
-        return None, None, f'Nicht gefunden: {client}'
-    standard = os.path.join(os.path.dirname(client), WISO_STANDARD_DB)
-    return client, (standard if os.path.isfile(standard) else None), None
-
+#: Dateinamen, die WISO Mein Büro im DB-Verzeichnis anlegt (unter diesen Namen liegt der Upload, siehe ``wiso_upload``).
+WISO_CLIENT_DB = wiso_upload.WISO_CLIENT_DB
+WISO_STANDARD_DB = wiso_upload.WISO_STANDARD_DB
 
 #: Der Import aus der WISO-Datenbank ist für einen leeren Bestand gedacht: Ist ``Bookings`` nicht leer, läuft er nur mit
 #: ausdrücklicher Bestätigung (Pflicht-Kästchen ``confirm_existing`` im Formular, Wert genau ``1``).
 WISO_FDB_STOCK_REFUSED = 'Der Bestand ist nicht leer – bitte den Import ausdrücklich bestätigen.'
 
+#: Zur Kennung des Formulars gibt es keine hochgeladene Mandantendatei (mehr): Jeder Import löscht seinen Zwischenordner.
+WISO_FDB_UPLOAD_MISSING = 'Die hochgeladene Datei wurde nicht gefunden – bitte erneut hochladen.'
+
+#: Die hochgeladene Datei ist keine lesbare WISO-Datenbank: Es wurde nichts importiert.
+WISO_FDB_UNREADABLE = ('Die hochgeladene Datei ließ sich nicht als WISO-Datenbank lesen – bitte DB1.FDB (und DB0.FDB) '
+                       'aus dem DB-Verzeichnis von WISO wählen. Es wurde nichts importiert.')
+
+
+def _without_upload_path(value, token):
+    """``value`` – ein Text oder beliebig verschachtelte Listen, Tupel und Wörterbücher aus Texten – ohne den Pfad des
+    Zwischenordners zu ``token``, mit und ohne abschließenden Trenner und auch in der aufgelösten und der Schreibweise, in der
+    ein ``OSError`` Pfade nennt (Rückstriche doppelt). Fehlertexte der Importer nennen den Pfad der Datei; er gehört nicht in
+    die Antwort, die Weiterleitung und ``wiso_fdb_result.json`` – von ``<Ordner>/DB1.FDB`` bleibt ``DB1.FDB``."""
+    folder = wiso_upload.folder_path(token)
+    if folder is None:
+        return value
+    bases = {folder, os.path.abspath(folder), os.path.realpath(folder)}
+    bases |= {base.replace('\\', '\\\\') for base in bases}
+    variants = sorted({base + trailer for base in bases for trailer in ('', '/', '\\', '\\\\')}, key=len, reverse=True)
+
+    def clean(item):
+        if isinstance(item, str):
+            for variant in variants:
+                item = item.replace(variant, '')
+            return item
+        if isinstance(item, dict):
+            return {clean(key): clean(inner) for key, inner in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [clean(inner) for inner in item]
+        return item
+
+    return clean(value)
+
 
 def handle_wiso_fdb_import(db: Database, post_data):
     """Import direkt aus der WISO-Datenbank (Firebird-Datei).
 
-    Kein Upload: die Mandantendatei ist dreistellig megabytegroß und liegt
-    ohnehin auf demselben Rechner. Angegeben wird deshalb ihr Pfad.
+    Die Mandantendatei (``DB1.FDB``, dazu optional der Standard-Kontenrahmen ``DB0.FDB``) kommt als Upload: Der Browser hat sie
+    vorher über ``POST /wiso/fdb-upload`` in einen Zwischenordner des Benutzers gelegt (``server/wiso_upload.py``) und nennt
+    im Formular nur dessen Kennung (``upload``). Ein Pfad aus der Anfrage wird nie gelesen. **Der Zwischenordner wird in jedem
+    Fall gelöscht** – nach dem Import, bei einem Blocker, einem Fehler und jeder Ablehnung.
 
-    Der Import ist für einen leeren Bestand gedacht: Ist ``Bookings`` nicht leer
+    Im Demo-Modus wird nichts importiert. Der Import ist für einen leeren Bestand gedacht: Ist ``Bookings`` nicht leer
     (``Database.wiso_import_stock``) und ``confirm_existing`` nicht ``1``, wird
     **vor** jedem Zugriff auf die Datei nichts importiert und die Seite meldet
     :data:`WISO_FDB_STOCK_REFUSED`. ``Database.import_wiso_fdb`` selbst prüft das nicht.
+
+    Meldungen, Ergebnisdatei und Weiterleitung nennen nie den Pfad des Zwischenordners (``_without_upload_path``);
+    ``result['file']`` ist ``DB1.FDB``.
 
     Returns:
         (303, location_str) – immer ein Redirect zu /miscellaneous
@@ -1433,58 +1452,68 @@ def handle_wiso_fdb_import(db: Database, post_data):
     def flag(name):
         return post_data.get(name, ['0'])[0] in ('1', 'on', 'true')
 
-    if db.wiso_import_stock()['bookings'] > 0 and post_data.get('confirm_existing', [''])[0] != '1':
-        return 303, f'/miscellaneous?wiso_fdb=error&msg={quote(WISO_FDB_STOCK_REFUSED)}'
-
-    entered = post_data.get('fdb_path', [''])[0]
-    with_assets = flag('with_assets')
-    with_invoices = flag('with_invoices')
-    client, standard, problem = _wiso_fdb_paths(entered)
-    if problem:
-        return 303, f'/miscellaneous?wiso_fdb=error&msg={quote(problem)}'
-
+    token = post_data.get('upload', [''])[0]
     try:
-        result = db.import_wiso_fdb(client, standard, with_assets=with_assets,
-                                    with_invoices=with_invoices)
-        result['file'] = client
-        result['standard_chart'] = standard or ''
-        if result['blocker']:
+        if demo.is_active():
+            return 303, f'/miscellaneous?wiso_fdb=error&msg={quote(wiso_upload.DEMO_REFUSED)}'
+        if db.wiso_import_stock()['bookings'] > 0 and post_data.get('confirm_existing', [''])[0] != '1':
+            return 303, f'/miscellaneous?wiso_fdb=error&msg={quote(WISO_FDB_STOCK_REFUSED)}'
+
+        with_assets = flag('with_assets')
+        with_invoices = flag('with_invoices')
+        client, standard = wiso_upload.files(token)
+        if client is None:
+            return 303, f'/miscellaneous?wiso_fdb=error&msg={quote(WISO_FDB_UPLOAD_MISSING)}'
+        wiso_upload.mark_importing(token)
+
+        try:
+            result = _without_upload_path(
+                db.import_wiso_fdb(client, standard, with_assets=with_assets, with_invoices=with_invoices), token)
+            result['file'] = WISO_CLIENT_DB
+            result['standard_chart'] = WISO_STANDARD_DB if standard else ''
+            if result.get('unreadable'):
+                # Keine WISO-Datenbank (falsche Datei gewählt, Upload beschädigt): ein Fehler, kein „Import abgeschlossen“
+                _store_fdb_result(result)
+                return 303, f'/miscellaneous?wiso_fdb=error&msg={quote(WISO_FDB_UNREADABLE)}'
+            if result['blocker']:
+                _store_fdb_result(result)
+                return 303, ('/miscellaneous?wiso_fdb=incompatible'
+                             f'&msg={quote("; ".join(result["blocker"])[:300])}')
+
+            link_result = db.link_bank_to_entries()
+            result['linked'] = link_result.get('linked', 0)
+            result['resolved'] = link_result.get('resolved', 0)
+            if with_invoices:
+                # Erst jetzt: die Zahlung soll an der Bankbewegung hängen, und die
+                # steht erst nach dem Abgleich an den Buchungssätzen.
+                payments = _without_upload_path(db.link_wiso_invoice_payments(client, standard), token)
+                result['payments_linked'] = payments['payments_linked']
+                result['payment_warnings'] = payments['payment_warnings']
+                result['errors'] += payments['errors']
             _store_fdb_result(result)
-            return 303, ('/miscellaneous?wiso_fdb=incompatible'
-                         f'&msg={quote("; ".join(result["blocker"])[:300])}')
 
-        link_result = db.link_bank_to_entries()
-        result['linked'] = link_result.get('linked', 0)
-        result['resolved'] = link_result.get('resolved', 0)
-        if with_invoices:
-            # Erst jetzt: die Zahlung soll an der Bankbewegung hängen, und die
-            # steht erst nach dem Abgleich an den Buchungssätzen.
-            payments = db.link_wiso_invoice_payments(client, standard)
-            result['payments_linked'] = payments['payments_linked']
-            result['payment_warnings'] = payments['payment_warnings']
-            result['errors'] += payments['errors']
-        _store_fdb_result(result)
-
-        return 303, (
-            f'/miscellaneous?wiso_fdb=ok'
-            f'&file={quote(os.path.basename(client))}'
-            f'&imported={result["imported"]}&skipped={result["skipped"]}'
-            f'&adopted={result.get("adopted", 0)}'
-            f'&possible={result.get("possible_duplicates_count", 0)}'
-            f'&regrouped={result.get("regrouped_rows", 0)}&orphans={result.get("orphaned_rows_count", 0)}'
-            f'&assets={result["assets"]}&afa={result["depreciations"]}'
-            f'&customers={result["customers"]}&invoices={result["invoices"]}'
-            f'&items={result["invoice_items"]}'
-            f'&payments={result["payments_linked"]}'
-            f'&created_coa={len(result["created_coa"])}'
-            f'&missing_coa={len(result["missing_coa"])}'
-            f'&hints={len(result["hints"])}'
-            f'&linked={result["linked"]}&resolved={result["resolved"]}'
-        )
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return 303, f'/miscellaneous?wiso_fdb=error&msg={quote(str(e))}'
+            return 303, (
+                f'/miscellaneous?wiso_fdb=ok'
+                f'&file={quote(WISO_CLIENT_DB)}'
+                f'&imported={result["imported"]}&skipped={result["skipped"]}'
+                f'&adopted={result.get("adopted", 0)}'
+                f'&possible={result.get("possible_duplicates_count", 0)}'
+                f'&regrouped={result.get("regrouped_rows", 0)}&orphans={result.get("orphaned_rows_count", 0)}'
+                f'&assets={result["assets"]}&afa={result["depreciations"]}'
+                f'&customers={result["customers"]}&invoices={result["invoices"]}'
+                f'&items={result["invoice_items"]}'
+                f'&payments={result["payments_linked"]}'
+                f'&created_coa={len(result["created_coa"])}'
+                f'&missing_coa={len(result["missing_coa"])}'
+                f'&hints={len(result["hints"])}'
+                f'&linked={result["linked"]}&resolved={result["resolved"]}'
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return 303, f'/miscellaneous?wiso_fdb=error&msg={quote(_without_upload_path(str(e), token))}'
+    finally:
+        wiso_upload.discard(token)
 
 
 def _store_fdb_result(result):

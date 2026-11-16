@@ -48,6 +48,7 @@ from server.pages_miscellaneous import (
     STOCK_CONFIRM_LABEL, STOCK_NOTICE_BOOKINGS, STOCK_NOTICE_WISO_ROWS, PageMiscellaneous, _import_notices)
 from tests.entry_form_helpers import bank_account, csv_export, execute, query, wiso_database, wiso_row
 from tests.http_client import get, own_origin, post
+from tests.wiso_upload_helpers import upload_over_http, uploaded
 from tests.test_wiso_adoption_report import NODE, _fdb_script, _shown_messages
 from tests.test_wiso_fdb_subaccounts_afa import CAR, JUNE, _afa_bookings, _afa_records, _fdb, _plan, _statuses
 from tests.test_wiso_fdb_subaccounts_afa import run as run_with_assets
@@ -199,7 +200,7 @@ def test_the_page_names_the_orphaned_rows_with_a_link_and_masks_every_value(db, 
     _import(db, wiso_database(tmp_path / 'a.fdb', rows))
     path = wiso_database(tmp_path / 'b.fdb', _months(910, (25.0, 35.0), 'B'))
 
-    status, location = handlers.handle_wiso_fdb_import(db, {'fdb_path': [path], 'confirm_existing': ['1']})
+    status, location = handlers.handle_wiso_fdb_import(db, {**uploaded(path), 'confirm_existing': ['1']})
 
     assert status == 303 and _query_of(location)['wiso_fdb'] == 'ok'
     with open(os.path.join(userctx.user_data_dir(), 'wiso_fdb_result.json'), encoding='utf-8') as handle:
@@ -219,8 +220,8 @@ def test_the_page_names_the_orphaned_rows_with_a_link_and_masks_every_value(db, 
 def test_the_page_says_nothing_about_orphans_when_there_are_none(db, tmp_path):
     os.makedirs(userctx.user_data_dir(), exist_ok=True)
     path = wiso_database(tmp_path / 'a.fdb', _sample(801))
-    handlers.handle_wiso_fdb_import(db, {'fdb_path': [path]})
-    handlers.handle_wiso_fdb_import(db, {'fdb_path': [path], 'confirm_existing': ['1']})
+    handlers.handle_wiso_fdb_import(db, uploaded(path))
+    handlers.handle_wiso_fdb_import(db, {**uploaded(path), 'confirm_existing': ['1']})
 
     page = PageMiscellaneous(db)
 
@@ -584,7 +585,7 @@ def test_a_document_number_added_in_wiso_counts_like_any_regrouping_in_the_notic
     os.makedirs(userctx.user_data_dir(), exist_ok=True)
     _import(db, wiso_database(tmp_path / 'a.fdb', [_numbered(801, '')]))
 
-    handlers.handle_wiso_fdb_import(db, {'fdb_path': [wiso_database(tmp_path / 'b.fdb', [_numbered(901, 'R-77')])],
+    handlers.handle_wiso_fdb_import(db, {**uploaded(wiso_database(tmp_path / 'b.fdb', [_numbered(901, 'R-77')])),
                                          'confirm_existing': ['1']})
 
     page = PageMiscellaneous(db)
@@ -1153,7 +1154,7 @@ def test_the_stock_is_only_read_never_written(db, tmp_path):
 def test_the_form_has_no_hint_and_no_box_for_an_empty_stock(db):
     page = PageMiscellaneous(db)
     assert 'confirm_existing' not in page and STOCK_CONFIRM_LABEL not in page and 'Es gibt bereits' not in page
-    assert 'name="fdb_path"' in page and 'Aus WISO-Datenbank importieren' in page
+    assert 'fdb_path' not in page and 'name="upload"' in page and 'Aus WISO-Datenbank importieren' in page
 
 
 def test_the_form_names_the_number_of_bookings_and_asks_for_a_confirmation(db):
@@ -1194,7 +1195,10 @@ def test_the_hint_is_masked_and_uses_existing_classes_only(db):
 
 
 def _location(db, path, **post_data):
-    post_data = {'fdb_path': [str(path)], **{key: [value] for key, value in post_data.items()}}
+    """Der Import über das Formular: ``path`` wird wie ein Upload abgelegt; ``None`` steht für eine Kennung, zu der es
+    keinen Upload gibt."""
+    fields = {'upload': ['0' * 32]} if path is None else uploaded(path)
+    post_data = {**fields, **{key: [value] for key, value in post_data.items()}}
     status, location = handlers.handle_wiso_fdb_import(db, post_data)
     assert status == 303 and location.startswith('/miscellaneous?')
     return location
@@ -1238,10 +1242,11 @@ def test_only_the_value_1_confirms(db, tmp_path, value):
 
 
 def test_the_refusal_comes_before_any_look_at_the_file(db, tmp_path):
-    """Auch ein Pfad, den es nicht gibt, ändert nichts an der Meldung: Geprüft wird der Bestand, bevor die Datei gesucht wird."""
+    """Auch eine Kennung, zu der es keinen Upload gibt, ändert nichts an der Meldung: Geprüft wird der Bestand, bevor die
+    Datei gesucht wird."""
     db.import_wiso_csv(csv_export(('6850', '1800', '119,00', 'C-1', '')))
 
-    location = _location(db, tmp_path / 'weg.fdb')
+    location = _location(db, None)
 
     assert _query_of(location)['msg'] == handlers.WISO_FDB_STOCK_REFUSED
 
@@ -1278,22 +1283,25 @@ def test_over_http_the_import_needs_the_confirmation_once_the_stock_is_not_empty
     page = get(server_port, '/miscellaneous')
     assert page.status == 200 and 'confirm_existing' not in page.text
     path = wiso_database(tmp_path / 'a.fdb', _sample(801))
-    form = {'fdb_path': path, 'with_assets': '1', 'with_invoices': '1'}
+    form = {'with_assets': '1', 'with_invoices': '1'}
     headers = {'Origin': own_origin(server_port)}
 
-    first = post(server_port, '/wiso/fdb-import', headers=headers, csrf=auto_login.csrf, form=form)
+    def upload():
+        return {'upload': upload_over_http(server_port, auto_login.csrf, path)}     # jeder Import löscht seinen Zwischenordner
+
+    first = post(server_port, '/wiso/fdb-import', headers=headers, csrf=auto_login.csrf, form={**form, **upload()})
     assert first.status == 303 and _query_of(first.headers['Location'])['wiso_fdb'] == 'ok'     # leerer Bestand: ohne Bestätigung
     assert _count(db) == 5
 
     page = get(server_port, '/miscellaneous')
     assert 'name="confirm_existing"' in page.text and 'Es gibt bereits 5 Buchungen aus einem Import' in page.text
 
-    refused = post(server_port, '/wiso/fdb-import', headers=headers, csrf=auto_login.csrf, form=form)
+    refused = post(server_port, '/wiso/fdb-import', headers=headers, csrf=auto_login.csrf, form={**form, **upload()})
     assert refused.status == 303
     assert _query_of(refused.headers['Location']) == {'wiso_fdb': 'error', 'msg': handlers.WISO_FDB_STOCK_REFUSED}
     assert _count(db) == 5
 
     confirmed = post(server_port, '/wiso/fdb-import', headers=headers, csrf=auto_login.csrf,
-                     form={**form, 'confirm_existing': '1'})
+                     form={**form, **upload(), 'confirm_existing': '1'})
     params = _query_of(confirmed.headers['Location'])
     assert (params['wiso_fdb'], params['imported'], params['skipped']) == ('ok', '0', '5') and _count(db) == 5

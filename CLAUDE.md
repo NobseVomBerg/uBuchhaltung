@@ -145,7 +145,9 @@ kein Subagent darauf:
   Dokumenten (`_GENERATE_PATHS`, JSON, CSRF-Token als Header – im Frontend
   `fetch(url, {method: 'POST'})`, das Footer-JS hängt das Token an), Abmelden
   (`POST /logout` neben `/login` in `_auth_routes_*`) und das Stornieren und Neu-Ausstellen einer Rechnung
-  (`/invoice/cancel`, `/invoice/reissue`: JSON-Routen in `_JSON_PATHS`, dazu `_POST_ONLY_JSON_PATHS`); GET → jeweils 405
+  (`/invoice/cancel`, `/invoice/reissue`: JSON-Routen in `_JSON_PATHS`, dazu `_POST_ONLY_JSON_PATHS`) und der Upload der
+  WISO-Datenbank (`/wiso/fdb-upload` in `_UPLOAD_PATHS`: roher Body, JSON-Antwort, CSRF-Token als Header per
+  `XMLHttpRequest`); GET → jeweils 405
 - **Automatische Anmeldung** (`auto_login` in `config.json`, `auth.auto_login_user()`):
   ein Administrator wird ohne Passwort angemeldet, Anmeldeseite und andere Benutzer
   sind so lange abgeschaltet – das ist der Betrieb für eine Person. Es gibt dann
@@ -218,7 +220,9 @@ kein Subagent darauf:
   angemeldeten Benutzer (`MAX_PREAUTH_BODY`: `/login`, `/logout`, Ersteinrichtung), 10 MB Formulare und JSON (`MAX_FORM_BODY`),
   200 MB Uploads (`MAX_UPLOAD_BODY`: `/upload_receipts`, `/wiso/import`), Logos 5 MB; darüber 413, ungelesen, Verbindung zu
   (`_refuse_body`). Neue Routen lesen ihren Body über `_read_body(limit)` bzw. prüfen vorher mit `_check_body_size` – nie
-  `rfile.read(int(Content-Length))`. `_drain_body` liest höchstens 1 MB weg, sonst schließt es die Verbindung
+  `rfile.read(int(Content-Length))`. `_drain_body` liest höchstens 1 MB weg, sonst schließt es die Verbindung. Einzige größere
+  Grenze: die WISO-Datenbank mit 2 GB je Datei (`wiso_upload.MAX_WISO_DB_BODY`, `/wiso/fdb-upload`) – sie wird nie im Ganzen
+  gelesen, sondern in Stücken auf die Platte geschrieben, und nur, wenn danach noch 64 MB frei bleiben (sonst 507)
 - **Anmeldung (seit 2.3.6, `auth.attempt_login`):** Die Anmeldung im Browser geht nur darüber (`handlers.handle_login` →
   `LoginOutcome`), nie direkt über `authenticate`. Nach fünf Fehlversuchen in Folge ist der Name (ohne Groß-/Kleinschreibung)
   30 s gesperrt, je weiterem Fehlversuch doppelt, höchstens 900 s (429 mit `Retry-After`); während der Sperre wird nichts geprüft,
@@ -245,7 +249,8 @@ kein Subagent darauf:
   (`replaced_*` nie automatisch aufräumen). Über Dateisystemgrenzen wird kopiert statt
   umbenannt; beim Überschreiben kommt `buch.db` zuletzt; „vorher löschen“ mit einer
   Nur-Datenbank-Sicherung wird abgelehnt. Sicherung und Wiederherstellung sperren sich
-  je Datenverzeichnis (`_exclusive`). Diese Reihenfolgen nie umdrehen
+  je Datenverzeichnis (`_exclusive`). Diese Reihenfolgen nie umdrehen. Nie gesichert, gelöscht oder überschrieben werden
+  `backup/`, `users/`, `tests/` und `upload_tmp/` (`_EXCLUDED_DIRS`, eine Liste für alle drei Wege)
 
 ### Buchungssätze
 - Bankbewegung = Zeile `BookingType='bank'`; ihre Buchungssätze sind Kinder
@@ -545,7 +550,9 @@ kein Subagent darauf:
   Variable gesetzt ist, arbeitet jeder Besucher als `demo` (kein Administrator); `demo`
   ist wie `tests` ein reservierter Benutzername. Demodaten (`demo_seed.py`,
   `seed_data/test/demo_scenario.json`) entstehen über die App-eigenen Code-Pfade,
-  relativ zum Startdatum; pytest-Testdaten bleiben davon getrennt
+  relativ zum Startdatum; pytest-Testdaten bleiben davon getrennt. Der Import aus der WISO-Datenbank ist im Demo-Modus
+  abgeschaltet (Route 403, Handler und Seite mit demselben Satz, `wiso_upload.DEMO_REFUSED`): keine Dateien eines Besuchers
+  auf dem Server
 - README-Bilder neu erzeugen: `node tools/screenshots.mjs` → `docs/screenshots/`
   (hell + `*-dark.png`, README bindet beide per `<picture>` ein)
 
@@ -697,7 +704,19 @@ kein Subagent darauf:
   Inhalt umgehängt werden – nicht unterstützt. Rechnet WISO den AfA-Plan eines schon importierten Jahres mit anderem Betrag unter neuer
   Gruppe neu, steht die alte AfA-Buchung in der Liste der nicht mehr vorhandenen Buchungen und die neue zusätzlich in den Büchern – bis
   zum Bereinigen zählt das Jahr doppelt. Die verwaisten Zeilen werden einmal gelesen und nach (Datum, Konto, Gegenkonto, Betrag) abgelegt (linear)
-- Bedienung über *Sonstiges* → „Import aus der Datenbank"; die Prüfung
+- Bedienung über *Sonstiges* → „Import aus der Datenbank". **Die Dateien kommen als Upload (seit 2.3.7,
+  `server/wiso_upload.py`), einen Serverpfad nimmt der Import nicht mehr entgegen:** Der Browser legt `DB1.FDB` (Pflicht) und
+  optional `DB0.FDB` je als rohen Body über `POST /wiso/fdb-upload?slot=client|standard[&upload=<Kennung>]` ab, das Formular
+  nennt danach nur die Kennung (`upload`). Die Dateien liegen unter `<Datenordner>/upload_tmp/wiso_fdb/<Kennung>/` mit FESTEN
+  Namen (der Dateiname des Browsers wird nie verwendet); die Kennung (`secrets.token_hex(16)`, geprüft gegen
+  `[0-9a-f]{32}`, Ordner direkt unter der Wurzel und kein Link) ist die einzige Eingabe, die einen Pfad bestimmt. Vor dem
+  ersten gelesenen Byte stehen Token, Demo-Modus, Slot und Kennung, Länge und freier Platz; geschrieben wird in eine
+  `*.part`-Datei und erst nach der vollen Länge umbenannt. Je Benutzer wartet höchstens EIN Upload (`begin` räumt die
+  anderen weg, außer einem mit frischem Marker `.importing`). **`handle_wiso_fdb_import` löscht den Zwischenordner in jedem
+  Fall** (`finally: discard` – nach dem Import, bei Blocker, Fehler und jeder Ablehnung), und **kein Serverpfad geht in
+  Antwort, Weiterleitung oder `wiso_fdb_result.json`** (`_without_upload_path`; `result['file']` ist `DB1.FDB`) – beides
+  nicht aufweichen. Eine Datei, die sich nicht als WISO-Datenbank öffnen lässt (`result['unreadable']`), ist ein Fehler
+  der Seite, kein „Import abgeschlossen“. Die Prüfung
   (`WisoDatabase.check`) bricht vor dem Schreiben ab, wenn die WISO-Version
   andere Tabellen/Spalten hat. **Der Import ist für einen leeren Bestand gedacht:** Ist `Bookings` nicht leer
   (`Database.wiso_import_stock`: `bookings` = alle Zeilen, `wiso_rows` = `entry` mit Quellgruppe), zeigt das Formular über dem

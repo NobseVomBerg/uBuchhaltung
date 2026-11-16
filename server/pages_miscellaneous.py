@@ -6,9 +6,11 @@ Sonstiges page – database overview, SQL console, misc tools.
 """
 import html as _html
 import re
+import demo as _demo
 from db import Database
 from db.wiso_fdb_import import MAX_ADOPTED_ROWS, MAX_LIQUID_SUBACCOUNTS
 from money import fmt_eur
+from . import wiso_upload as _wiso_upload
 from .period import parse_iso_date
 
 
@@ -665,20 +667,32 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
         Kennung, <strong>welche Teilbuchungen zusammengehören</strong>, bringt das
         <strong>Anlagenverzeichnis samt AfA-Plan</strong> mit und umfasst alle Jahre.
         Gelesen wird nur &ndash; an der WISO-Datenbank ändert sich nichts.</p>
-        <p>Angeben lässt sich das <strong>DB-Verzeichnis</strong> von WISO Mein Büro
-        oder direkt die Mandantendatei <code>DB1.FDB</code>.
-        <code>DB0.FDB</code> (Standard-Kontenrahmen) wird daneben automatisch
-        gesucht. WISO sollte dabei geschlossen sein.<br>
+        <p>Beide Dateien liegen im <strong>DB-Verzeichnis</strong> von WISO Mein Büro: die
+        Mandantendatei <code>DB1.FDB</code> und, optional, der Standard-Kontenrahmen
+        <code>DB0.FDB</code>. Sie werden hochgeladen, gelesen und danach vom Server wieder
+        gelöscht. WISO sollte dabei geschlossen sein.<br>
         Voraussetzung wie beim CSV-Import: jedes Konto in der
         <strong>Kontenverwaltung</strong> braucht ein hinterlegtes
         <em>SKR-Gegenkonto</em>. Ein zweiter Lauf verdoppelt nichts. Buchungen, die schon
         über den CSV-Import kamen, ergänzt der Import, statt sie neu anzulegen;
         wiedererkannt wird ein Satz nur, wenn Beleg-Nr., Datum, Konto, Betrag und Text übereinstimmen (und das Gegenkonto nicht widerspricht); alles andere wird neu angelegt und, wo eine ähnliche Buchung schon da ist, als möglicherweise doppelt gemeldet.</p>
-        <form method="POST" action="/wiso/fdb-import">
-            <div class="rowWithObjects">Pfad:&nbsp;
-                <input type="text" name="fdb_path" style="min-width:34em"
-                       placeholder="C:\\\\ProgramData\\\\...\\\\DB  oder  ...\\\\DB\\\\DB1.FDB" required>
+        '''
+    from server.pages import script_json as _script_json
+    if _demo.is_active():
+        # Wie die Route: Im Demo-Modus gibt es den Import nicht (keine Dateien auf dem Server eines Besuchers)
+        s += f'<p class="hint">{_html.escape(_wiso_upload.DEMO_REFUSED)}</p>'
+    else:
+        s += '''
+        <form method="POST" action="/wiso/fdb-import" id="wisoFdbForm">
+            <div class="rowWithObjects">
+                <label>Mandantendatei (<code>DB1.FDB</code>):&nbsp;
+                <input type="file" id="wisoFdbClient" accept=".fdb" required></label>
             </div>
+            <div class="rowWithObjects">
+                <label>Standard-Kontenrahmen (<code>DB0.FDB</code>, optional):&nbsp;
+                <input type="file" id="wisoFdbStandard" accept=".fdb"></label>
+            </div>
+            <input type="hidden" name="upload" id="wisoFdbUpload" value="" autocomplete="off">
             <div class="rowWithObjects">
                 <label><input type="checkbox" name="with_assets" value="1" checked>
                 &nbsp;Anlagenverzeichnis und AfA-Plan mitnehmen</label>
@@ -688,12 +702,115 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
                 &nbsp;Kunden und Rechnungen mitnehmen (Kundennummern bleiben erhalten)</label>
             </div>
         '''
-    # Der Import ist für einen leeren Bestand gedacht: Ist er nicht leer, steht über dem Absenden ein Hinweis mit Pflicht-Kästchen
-    s += _wiso_stock_confirmation(db.wiso_import_stock())
-    s += '''
+        # Der Import ist für einen leeren Bestand gedacht: Ist er nicht leer, steht über dem Absenden ein Hinweis mit Pflicht-Kästchen
+        s += _wiso_stock_confirmation(db.wiso_import_stock())
+        s += '''
             <br>
-            <button type="submit" class="coloredButton bg-green">&#x1F5C4;&#xFE0F; Aus WISO-Datenbank importieren</button>
+            <button type="submit" id="wisoFdbButton" class="coloredButton bg-green">&#x1F5C4;&#xFE0F; Aus WISO-Datenbank importieren</button>
+            <p id="wisoFdbStatus" role="status" hidden></p>
         </form>
+        <script>
+        (function() {
+            // Erst die Dateien hochladen (roh, je eine Anfrage; die Antwort nennt die Kennung des Zwischenordners), dann
+            // das Formular mit dieser Kennung absenden. Der Dateiname des Browsers geht nie an den Server.
+            const MAX_BYTES = __MAX_BYTES__;
+            const form = document.getElementById('wisoFdbForm');
+            const client = document.getElementById('wisoFdbClient');
+            const standard = document.getElementById('wisoFdbStandard');
+            const hidden = document.getElementById('wisoFdbUpload');
+            const button = document.getElementById('wisoFdbButton');
+            const status = document.getElementById('wisoFdbStatus');
+            const meta = document.querySelector('meta[name="csrf-token"]');
+            let busy = false;        // ein Upload läuft
+            let sending = false;     // zweiter submit-Durchlauf: Das Formular geht jetzt wirklich ab
+
+            function show(text, isError) {
+                status.hidden = false;
+                status.className = isError ? 'errorColor' : 'hint';
+                status.textContent = text;
+            }
+            function fail(text) {
+                busy = false;
+                button.disabled = false;
+                show(text, true);
+            }
+            function upload(file, slot, token, onDone) {
+                const name = slot === 'client' ? 'DB1.FDB' : 'DB0.FDB';
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', '/wiso/fdb-upload?slot=' + slot + (token ? '&upload=' + encodeURIComponent(token) : ''));
+                xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+                if (meta && meta.content) xhr.setRequestHeader('X-CSRF-Token', meta.content);
+                xhr.upload.addEventListener('progress', function(event) {
+                    if (event.lengthComputable && event.total > 0) {
+                        show(name + ' wird hochgeladen … ' + Math.floor(100 * event.loaded / event.total) + ' %', false);
+                    }
+                });
+                function cancelled() {
+                    fail('Der Upload wurde abgebrochen. Ist die Datei größer, als ein vorgeschalteter Proxy erlaubt?');
+                }
+                xhr.addEventListener('error', cancelled);
+                xhr.addEventListener('abort', cancelled);
+                xhr.addEventListener('load', function() {
+                    let answer = null;
+                    try { answer = JSON.parse(xhr.responseText); } catch (e) { answer = null; }
+                    if (xhr.status === 200 && answer && answer.success === true && typeof answer.upload === 'string') {
+                        onDone(answer.upload);
+                    } else {
+                        fail(answer && typeof answer.error === 'string' && answer.error
+                             ? answer.error : 'Der Upload ist fehlgeschlagen (Status ' + xhr.status + ').');
+                    }
+                });
+                xhr.send(file);
+            }
+            function send(token) {
+                hidden.value = token;
+                show('Import läuft …', false);
+                if (meta && meta.content) {
+                    let field = form.querySelector('input[name="csrf"]');
+                    if (!field) {
+                        field = document.createElement('input');
+                        field.type = 'hidden';
+                        field.name = 'csrf';
+                        form.appendChild(field);
+                    }
+                    field.value = meta.content;
+                }
+                if (form.checkValidity && !form.checkValidity()) {
+                    // Während des Uploads geändert (z. B. das Pflicht-Kästchen): nichts absenden, neu versuchen lassen
+                    fail('Bitte die Angaben im Formular prüfen und erneut absenden.');
+                    if (form.reportValidity) form.reportValidity();
+                    return;
+                }
+                sending = true;
+                if (form.requestSubmit) form.requestSubmit(); else form.submit();
+            }
+            form.addEventListener('submit', function(event) {
+                if (sending) return;
+                event.preventDefault();
+                if (busy) return;
+                const first = client.files && client.files[0];
+                const second = standard.files && standard.files[0];
+                if (!first) {
+                    show('Bitte die Mandantendatei DB1.FDB wählen.', true);
+                    return;
+                }
+                const limit = Math.floor(MAX_BYTES / 1073741824) + ' GB';
+                if (first.size > MAX_BYTES || (second && second.size > MAX_BYTES)) {
+                    show((first.size > MAX_BYTES ? 'DB1.FDB' : 'DB0.FDB') + ' ist größer als ' + limit
+                         + ' und lässt sich nicht hochladen.', true);
+                    return;
+                }
+                busy = true;
+                button.disabled = true;
+                upload(first, 'client', '', function(token) {
+                    if (second) upload(second, 'standard', token, function() { send(token); });
+                    else send(token);
+                });
+            });
+        })();
+        </script>
+        '''.replace('__MAX_BYTES__', _script_json(_wiso_upload.MAX_WISO_DB_BODY))
+    s += '''
         <p class="hint">Der Import ist auf den Stand abgestimmt, den WISO Mein Büro
         derzeit schreibt (Firebird ODS&nbsp;12). Weicht Ihre Version davon ab, meldet
         die Prüfung vor dem Schreiben, welche Tabellen oder Spalten fehlen &ndash; es

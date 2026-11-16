@@ -21,6 +21,7 @@ import userctx
 from . import pages
 from . import handlers
 from . import upload_handler
+from . import wiso_upload
 from .pages_login import PageLogin
 from .pages_users import PageUsers
 from .period import resolve_period, period_cookie_header
@@ -136,6 +137,8 @@ MAX_DRAIN_BODY = 1024 * 1024              # was _drain_body höchstens wegliest 
 
 
 def _size_text(limit):
+    if limit >= 1024 ** 3 and limit % 1024 ** 3 == 0:
+        return f"{limit // 1024 ** 3} GB"
     return f"{limit // (1024 * 1024)} MB" if limit >= 1024 * 1024 else f"{limit // 1024} KB"
 
 
@@ -274,6 +277,12 @@ _JSON_PATHS = frozenset({
 _POST_ONLY_JSON_PATHS = frozenset({
     "/invoice/cancel",
     "/invoice/reissue",
+})
+
+# Dateien als roher Body (kein Formular, kein JSON): nur per POST (GET → 405), JSON-Antwort, CSRF-Token als Header
+# (XMLHttpRequest, das Footer-JS hängt es nur an fetch an), siehe `_post_wiso_fdb_upload`.
+_UPLOAD_PATHS = frozenset({
+    "/wiso/fdb-upload",
 })
 
 
@@ -823,6 +832,71 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         self.respond(status_code, json.dumps(payload), headers=headers,
                      content_type="application/json")
 
+    def _post_wiso_fdb_upload(self):
+        """POST /wiso/fdb-upload?slot=client|standard[&upload=<Kennung>]: die WISO-Datenbank (``DB1.FDB`` im Slot ``client``,
+        ``DB0.FDB`` im Slot ``standard``) als roher Body in den Zwischenordner des Benutzers legen
+        (``server/wiso_upload.py``). Antwort: JSON ``{"success": true, "upload": <Kennung>}``; der Import (``/wiso/fdb-import``)
+        nennt dann nur die Kennung.
+
+        Der Body ist die Datei selbst und wird in Stücken auf die Platte geschrieben, nie im Ganzen gelesen. Was sich ohne
+        ihn entscheiden lässt – Token, Demo-Modus, Slot und Kennung, Länge, freier Platz –, kommt vor dem ersten gelesenen
+        Byte; eine Ablehnung schließt die Verbindung (``_refuse_body``). ``client`` ohne Kennung legt einen neuen Ordner an
+        (und räumt dabei den eines älteren Uploads weg), mit gültiger Kennung ersetzt er die Datei in deren Ordner;
+        ``standard`` braucht eine gültige Kennung, in deren Ordner ``DB1.FDB`` schon liegt. Scheitert der Upload, bleibt kein
+        in dieser Anfrage angelegter Ordner zurück. Meldungen nennen nie einen Pfad (Einzelheiten stehen im Server-Log)."""
+        if not self._check_csrf():
+            return
+        if demo.is_active():
+            self._refuse_body(403, wiso_upload.DEMO_REFUSED, as_json=True)
+            return
+        qs = self._query()
+        slot = qs.get('slot', [''])[0]
+        token = qs.get('upload', [''])[0]
+        folder = wiso_upload.upload_dir(token)
+        if slot == 'client':
+            valid = not token or folder is not None
+        elif slot == 'standard':
+            valid = wiso_upload.files(token)[0] is not None
+        else:
+            valid = False
+        if not valid:
+            self._refuse_body(400, 'Ungültige Anfrage.', as_json=True)
+            return
+        if not self._check_body_size(wiso_upload.MAX_WISO_DB_BODY, as_json=True):
+            return
+        length = self._declared_length()
+        if length == 0:
+            self._refuse_body(400, 'Die Datei ist leer.', as_json=True)
+            return
+        if not wiso_upload.enough_space(length):
+            self._refuse_body(507, 'Nicht genug freier Speicherplatz für den Upload.', as_json=True)
+            return
+
+        created = folder is None
+        try:
+            if created:
+                token = wiso_upload.begin()
+            elif slot == 'client':
+                wiso_upload.sweep(keep=token)
+            wiso_upload.store(token, slot, self.rfile, length)
+        except wiso_upload.UploadIncomplete:
+            status_code, text = 400, 'Ungültige Anfrage.'
+        except wiso_upload.UploadFailed:
+            import traceback
+            traceback.print_exc()
+            status_code, text = 500, ('Die Datei konnte nicht gespeichert werden – '
+                                      'Einzelheiten stehen im Server-Log.')
+        except BaseException:
+            if created:
+                wiso_upload.discard(token)
+            raise
+        else:
+            self._respond_json(200, {'success': True, 'upload': token})
+            return
+        if created:
+            wiso_upload.discard(token)
+        self._refuse_body(status_code, text, as_json=True)
+
     def _post_json_route(self, path):
         """POST-Routen der Rechnungen und Angebote, die JSON lesen und JSON antworten (fetch).
 
@@ -878,7 +952,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             return
         try:
             route = self.path.split('?', 1)[0]
-            if route in _ACTION_PATHS or route in _GENERATE_PATHS or route in _POST_ONLY_JSON_PATHS:
+            if (route in _ACTION_PATHS or route in _GENERATE_PATHS or route in _POST_ONLY_JSON_PATHS
+                    or route in _UPLOAD_PATHS):
                 self._respond_post_only()
                 return
             if self.path == "/" or self.path == "/dashboard" or self.path.startswith("/dashboard?"):
@@ -1296,6 +1371,11 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             if not self._check_csrf():
                 return
             self._post_generate_document(db, route)
+            return
+
+        # WISO-Datenbank hochladen (roher Body): die Methode prüft Token und Größe selbst, bevor sie liest
+        if route in _UPLOAD_PATHS:
+            self._post_wiso_fdb_upload()
             return
 
         # Handle file upload separately (der Handler liest den Body selbst: Größe vorher prüfen)

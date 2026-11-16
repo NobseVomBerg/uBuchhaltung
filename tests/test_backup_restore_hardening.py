@@ -389,14 +389,14 @@ def test_wipe_with_a_database_only_archive_is_rejected_when_other_data_exists(
 def test_wipe_with_a_database_only_archive_is_accepted_when_nothing_else_is_there(
         user_dir, fmt, tmp_path, how):
     """Im Datenverzeichnis liegen nur buch.db, ihre Begleitdateien und die ausgenommenen
-    Ordner (backup/ mit dem Archiv, users/, tests/): Dann geht nichts verloren."""
+    Ordner (backup/ mit dem Archiv, users/, tests/, upload_tmp/): Dann geht nichts verloren."""
     name = _database_only_archive(how, user_dir, fmt, tmp_path)
     shutil.rmtree(os.path.join(user_dir, 'Belege'))
     os.remove(os.path.join(user_dir, 'notiz.txt'))
     for sidecar in SIDECARS:
         with open(os.path.join(user_dir, sidecar), 'wb') as f:
             f.write(b'\0' * 64)
-    for rel in ('users/u.txt', 'tests/t.txt'):
+    for rel in ('users/u.txt', 'tests/t.txt', 'upload_tmp/wiso_fdb/u.txt'):
         os.makedirs(os.path.join(user_dir, os.path.dirname(rel)), exist_ok=True)
         with open(os.path.join(user_dir, rel), 'w', encoding='utf-8') as f:
             f.write('vorhanden')
@@ -404,14 +404,14 @@ def test_wipe_with_a_database_only_archive_is_accepted_when_nothing_else_is_ther
     os.remove(database)
     write_db(database, value='geändert')                      # der Stand nach der Sicherung
     kept = {p: s for p, s in installation.tree(user_dir).items()
-            if p.split(os.sep)[0] in ('users', 'tests')}
+            if p.split(os.sep)[0] in ('users', 'tests', 'upload_tmp')}
 
     backup_mod.restore_backup(user_dir, name, wipe=True)
 
     assert top_level(user_dir) == ['buch.db']
     assert db_value(database) == ('original' if how == 'create_backup-db' else 'aus Sicherung')
     assert {p: s for p, s in installation.tree(user_dir).items()
-            if p.split(os.sep)[0] in ('users', 'tests')} == kept
+            if p.split(os.sep)[0] in ('users', 'tests', 'upload_tmp')} == kept
     assert leftovers(user_dir) == []
 
 

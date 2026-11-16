@@ -62,7 +62,11 @@ ausgeschaltet, enden die bestehenden Sitzungen.
 
 **Größe von Anfragen:** Der Server lehnt Anfragen ab, die größer sind als 64 KB (vor der Anmeldung),
 10 MB (Formulare) bzw. 200 MB (Uploads von Kontoauszügen, Belegen und WISO-Textexporten; Logos 5 MB).
-Ein Reverse-Proxy davor hat oft eine eigene, kleinere Grenze für Uploads (nginx: `client_max_body_size`).
+Die WISO-Datenbank (*Sonstiges → Import aus der Datenbank*) wird als Datei hochgeladen und darf je Datei
+bis 2 GB groß sein; der Server nimmt sie nur an, wenn im Datenverzeichnis danach noch 64 MB frei bleiben,
+und löscht sie nach dem Import wieder. Ein Reverse-Proxy davor hat oft eine eigene, kleinere Grenze für
+Uploads (nginx: `client_max_body_size`, Standard 1 MB) – für den Import der WISO-Datenbank muss sie
+mindestens so groß sein wie die Datei, sonst bricht der Upload ab.
 
 **E-Mail-Versand:** Die App verschlüsselt die Verbindung zum Mailserver immer (Port 465 mit TLS von
 Anfang an, jeder andere Port per STARTTLS) und prüft dessen Zertifikat samt Hostnamen; jede Verbindung hat
@@ -141,7 +145,8 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
 - `data/auth.db` – zentrale Benutzer-/Session-Verwaltung.
 - `data/users/<user>/` – pro Nutzer: `buch.db` sowie `Belege/`, `invoices/`,
   `quotes/`, `worktime/`, `logos/`, `backup/`, die SQL-Protokolle
-  (`sql_operations.log`/`.sql`) und, wenn angelegt, `db-export.sql`.
+  (`sql_operations.log`/`.sql`) und, wenn angelegt, `db-export.sql`. `upload_tmp/` gibt es nur während
+  eines Uploads der WISO-Datenbank; die Datensicherung der App lässt den Ordner aus.
 - Für ein Backup genügt es, das gesamte `data/`-Verzeichnis zu sichern.
 - Die Wiederherstellung in der App prüft das Archiv, bevor sie am Datenverzeichnis etwas
   ändert. Bleibt nach einem Absturz mitten im Wiederherstellen ein Ordner
