@@ -355,7 +355,7 @@ def test_the_delete_script_takes_the_protocol_and_the_versions_of_the_deleted_in
     script = _range_delete_script(db, '2025-01-01', '2025-12-31')              # nur 26R001 liegt im Zeitraum
     assert 'DELETE FROM InvoiceCorrections' in script and 'DELETE FROM InvoiceDocumentVersions' in script
 
-    answer = json.loads(handle_execute_sql(db, {'sql_commands': [script]}))
+    answer = json.loads(handle_execute_sql(db, {'sql_commands': [script], 'write': ['1']}))
 
     assert not answer['errors'] and answer['success_count'] == answer['total']
     with closing(sqlite3.connect(stock)) as con:

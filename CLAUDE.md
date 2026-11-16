@@ -183,7 +183,26 @@ kein Subagent darauf:
   übergebene Speicheradresse an – Absturz bzw. fremder Code) und `load_extension`.
   Je Anfrage gelten ein Zeitlimit (60 s für alle Befehle zusammen, danach Abbruch und
   Rollback) sowie Größengrenzen für einzelne Werte (2 MB), Spalten (250) und die
-  Ausgabe (200000 Zeilen bzw. 20 MB, danach gekürzt). Diese Sperren nicht aufweichen
+  Ausgabe (200000 Zeilen bzw. 20 MB, danach gekürzt). Diese Sperren nicht aufweichen.
+  **Zwei Modi (seit 2.3.11):** Ohne das Formularfeld `write` mit genau dem Wert `1` läuft die Konsole **nur lesend** – in zwei
+  Schichten: `PRAGMA query_only = ON` und ein Authorizer, der nur Abfragen durchlässt (`_CONSOLE_READ_ACTIONS`: SELECT, Lesen,
+  Funktionen, rekursive Abfragen, PRAGMAs der Positivlisten); jeder Befehl läuft für sich, ein Fehler stoppt die folgenden nicht.
+  **Schreibmodus** (`write=1`; die Seite schickt es nur mit dem Haken „Schreiben erlauben“ und nach einer Rückfrage, der Haken
+  fällt nach jeder Anfrage): Fremdschlüssel sind an, die Datei darf um höchstens 1 GB wachsen (`PRAGMA max_page_count`), und
+  **alle Befehle laufen in EINER Transaktion** (`BEGIN IMMEDIATE` durch den Handler): Der erste Fehler, ein Abbruch (Zeit,
+  Platte) oder ein scheiterndes COMMIT nimmt alles zurück (`rolled_back`, „Nichts wurde geändert …“). BEGIN, COMMIT, ROLLBACK,
+  SAVEPOINT, RELEASE und `PRAGMA foreign_keys` mit Wert sind dort gesperrt. Getrennt werden die Befehle mit
+  `sqlite3.complete_statement` (`_console_statements`: Semikolons in Texten, Kommentaren und Trigger-Rümpfen trennen nicht);
+  Grenzen der Eingabe vor jeder Ausführung: 10 MB, 200000 Befehle, je Befehl 2000 geprüfte Semikolons und ein Budget für das
+  erneute Lesen. Ausgabe bekommt jeder Befehl mit Spalten (auch WITH, PRAGMA, EXPLAIN, RETURNING). Die Verbindung hat keinen
+  Statement-Cache (sonst fragt SQLite einen gleich lautenden Befehl nicht erneut den Authorizer). Nach dem COMMIT gehen die
+  schreibenden Befehle ins SQL-Protokoll (`log_sql`, Beschreibung „SQL-Konsole (<Benutzer>)“, ohne Kommentare –
+  `_console_log_text`); scheitert das, trägt die Antwort `warnings`. Es läuft **eine Anfrage zur Zeit** je Prozess
+  (`_console_lock`, die zweite bekommt sofort eine Meldung), die Fehlerliste endet nach 100 Einträgen, und eine Anfrage bricht
+  ab, wenn der freie Platz im Daten- oder Temp-Ordner seit ihrem Beginn um mehr als 1 GB gesunken ist oder gesunken ist und
+  unter 256 MB liegt. Meldungen der Seite nur über `textContent` (`sqlStatus`). Die Vorlage „Zeitbereich löschen“ ist für den
+  Schreibmodus gebaut (kein eigenes BEGIN/COMMIT) und hängt Sätze außerhalb des Zeitraums unter einer Bankbewegung des
+  Zeitraums ab, wie `remove_split_row`. Der MCP-Server schickt nie `write`
 - **Zeitraum-Parameter** (`from`/`to` in der Query, Cookie `period`) gelten nur als
   ISO-Datum (`period.parse_iso_date`/`valid_period`); `resolve_period` verwirft alles
   andere, Weiterleitungen aus Formularen (`handlers._period_args`) lassen einen
@@ -559,7 +578,8 @@ kein Subagent darauf:
 ### Diagnose-MCP-Server
 - `tools/mcp_ubuchhaltung.py`: nur Standardbibliothek, stdio; Claude Code startet ihn lokal,
   er fragt eine laufende Instanz (z. B. den Docker-Container) per HTTP ab
-- Lesend per Konstruktion: genau ein SELECT ohne `;` über `/execute_sql`, nur lesende
+- Lesend per Konstruktion: genau ein SELECT ohne `;` über `/execute_sql` (ohne `write`, also im Lesemodus der Konsole – der
+  Wächter hier bleibt trotzdem die erste Schicht), nur lesende
   `pragma_`-Funktionen (`_READ_PRAGMAS`), kein WITH/RECURSIVE/zeroblob/randomblob; Seiten nur
   aus `_PAGE_ALLOWLIST` samt erlaubten Query-Schlüsseln – diesen Lesewächter (`check_select`,
   `check_page_path`) nicht aufweichen; neue Seiten und Schlüssel nur für GET-Handler, die

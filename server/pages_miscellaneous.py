@@ -334,6 +334,10 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
         <h2>SQL-Befehle ausführen</h2>
         Gib hier SQL-Befehle ein (mehrere Befehle durch Semikolon getrennt). Eine Anfrage läuft höchstens 60 Sekunden, sehr große Ausgaben werden gekürzt:<br>
         <textarea id="sql_input" rows="15" cols="100" class="textareaSql" placeholder="SELECT * FROM ChartOfAccounts WHERE AccountNumber = 6805;"></textarea>
+        <div class="rowWithObjects">
+            <label><input type="checkbox" id="sql_write" autocomplete="off">&nbsp;Schreiben erlauben</label>
+        </div>
+        <p class="hint">Ohne Haken läuft die Konsole nur lesend. Mit Haken laufen alle Befehle in einer Transaktion: Scheitert einer, wird nichts geändert.</p>
         <div>
             <button type="button" onclick="executeSql()" class="coloredButton bg-orange">SQL ausführen</button>
             <span style="color: red; margin-left: 20px;">⚠️ Achtung: SQL-Befehle werden direkt ausgeführt!</span>
@@ -341,7 +345,7 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
         <br><br>
         <h3>Zeitbereich löschen</h3>
             <div>Erzeugt ein Lösch-Skript für Belege, Buchungen, Rechnungen und Angebote im Zeitraum und fügt es oben ins SQL-Feld ein.
-                Ausführung erfolgt mit Klick auf obigen Button. Dateien im Dateisystem bleiben erhalten.</div>
+                Zum Ausführen „Schreiben erlauben“ ankreuzen und obigen Button klicken. Dateien im Dateisystem bleiben erhalten.</div>
         <div>
             <label>Von:&nbsp;<input type="date" id="range_del_from"></label>
             <label>Bis:&nbsp;<input type="date" id="range_del_to"></label>
@@ -351,9 +355,8 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
         function buildRangeDeleteSql() {
             const from = document.getElementById('range_del_from').value;
             const to   = document.getElementById('range_del_to').value;
-            const status = document.getElementById('sql_status');
-            if (!from || !to) { status.innerHTML = '<span class="errorColor">Bitte Von- und Bis-Datum angeben.</span>'; return; }
-            if (from > to)    { status.innerHTML = '<span class="errorColor">Von-Datum liegt nach dem Bis-Datum.</span>'; return; }
+            if (!from || !to) { sqlStatus([['errorColor', 'Bitte Von- und Bis-Datum angeben.']]); return; }
+            if (from > to)    { sqlStatus([['errorColor', 'Von-Datum liegt nach dem Bis-Datum.']]); return; }
             const b = "SELECT ID FROM Bookings  WHERE DateBooking BETWEEN '" + from + "' AND '" + to + "'";
             const d = "SELECT ID FROM Documents WHERE Date        BETWEEN '" + from + "' AND '" + to + "'";
             const i = "SELECT ID FROM Invoices  WHERE InvoiceDate BETWEEN '" + from + "' AND '" + to + "'";
@@ -373,32 +376,44 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
                 "UPDATE Assets SET Document_ID = NULL WHERE Document_ID IN (" + d + ");\\n" +
                 "UPDATE AssetDepreciations SET Booking_ID = NULL, Status = 'planned', BookedAt = NULL WHERE Booking_ID IN (" + b + ");\\n" +
                 "UPDATE Trips SET DocumentID = NULL WHERE DocumentID IN (" + d + ");\\n" +
+                "-- Sätze außerhalb des Zeitraums unter einer Bankbewegung des Zeitraums bleiben erhalten (abgehängt, wie im Buchungssatz-Editor).\\n" +
+                "UPDATE Bookings SET ParentBooking_ID = NULL, Status = CASE WHEN Status = 'resolved' THEN NULL ELSE Status END WHERE ParentBooking_ID IN (" + b + ") AND DateBooking NOT BETWEEN '" + from + "' AND '" + to + "';\\n" +
                 "DELETE FROM Bookings WHERE DateBooking BETWEEN '" + from + "' AND '" + to + "';\\n" +
                 "DELETE FROM Documents WHERE Date BETWEEN '" + from + "' AND '" + to + "';";
             document.getElementById('sql_input').value = sql;
-            status.innerHTML = 'Lösch-Skript eingefügt — bitte prüfen und dann „SQL ausführen" klicken.';
+            sqlStatus([['', 'Lösch-Skript eingefügt — bitte prüfen, „Schreiben erlauben“ ankreuzen und „SQL ausführen“ klicken.']]);
         }
         </script>
         <div id="sql_status" style="margin-top: 10px;"></div>
         <textarea id="sql_output" rows="20" cols="100" readonly class="textareaSql" style="display: none;"></textarea>
         <script>
-        async function executeSql() {
-            const input = document.getElementById('sql_input').value;
-            const output = document.getElementById('sql_output');
+        // Meldungen nur über textContent: Fehlertexte kommen aus der Datenbank bzw. dem Server
+        function sqlStatus(parts) {
             const status = document.getElementById('sql_status');
-            if (!input.trim()) { status.innerHTML = '<span class="errorColor">Keine SQL-Befehle eingegeben.</span>'; return; }
-            status.innerHTML = '⏳ Wird ausgeführt...';
+            status.textContent = '';
+            parts.forEach(function(part) {
+                const span = document.createElement('span');
+                if (part[0]) span.className = part[0];
+                span.textContent = part[1];
+                status.appendChild(span);
+                status.appendChild(document.createTextNode(' '));
+            });
+        }
+        async function sendSql(input, write) {
+            const output = document.getElementById('sql_output');
+            sqlStatus([['', '⏳ Wird ausgeführt...']]);
             try {
                 const resp = await fetch('/execute_sql', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: 'sql_commands=' + encodeURIComponent(input)
+                    body: 'sql_commands=' + encodeURIComponent(input) + (write ? '&write=1' : '')
                 });
                 const data = await resp.json();
-                let statusHtml = '';
-                if (data.success_count > 0) statusHtml += '<span class="successColor">' + data.success_count + ' von ' + data.total + ' Befehlen erfolgreich.</span> ';
-                if (data.errors && data.errors.length) statusHtml += '<span class="errorColor">' + data.errors.join('; ') + '</span>';
-                status.innerHTML = statusHtml;
+                const parts = [];
+                if (data.success_count > 0) parts.push(['successColor', data.success_count + ' von ' + data.total + ' Befehlen erfolgreich.']);
+                if (data.errors && data.errors.length) parts.push(['errorColor', data.errors.join('; ')]);
+                if (data.warnings && data.warnings.length) parts.push(['warnColor', data.warnings.join('; ')]);
+                sqlStatus(parts);
                 if (data.output) {
                     output.style.display = 'block';
                     output.value = data.output;
@@ -407,8 +422,17 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
                     output.value = '';
                 }
             } catch(e) {
-                status.innerHTML = '<span class="errorColor">Fehler: ' + e.message + '</span>';
+                sqlStatus([['errorColor', 'Fehler: ' + e.message]]);
+            } finally {
+                if (write) document.getElementById('sql_write').checked = false;
             }
+        }
+        function executeSql() {
+            const input = document.getElementById('sql_input').value;
+            if (!input.trim()) { sqlStatus([['errorColor', 'Keine SQL-Befehle eingegeben.']]); return; }
+            if (!document.getElementById('sql_write').checked) return sendSql(input, false);
+            appConfirm('Die Befehle können Daten ändern oder löschen. Vorher eine Datensicherung anlegen. Ausführen?',
+                       function() { return sendSql(input, true); });
         }
         </script>
         '''
@@ -429,7 +453,8 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
         <code>db-export.sql</code> im Datenverzeichnis.'''
     if _auth.sql_console_allowed():
         s += '''
-        Die Datei kann direkt im SQL-Konsolenbereich eingefügt werden.'''
+        Ein kleinerer Export lässt sich im SQL-Konsolenbereich einfügen (mit „Schreiben erlauben“);
+        für ganze Bestände gibt es die Datensicherung.'''
     s += '''</p>
         <form method="POST" action="/db_export">
             <button type="submit" class="coloredButton bg-blue">&#x1F4BE; DB-Export</button>

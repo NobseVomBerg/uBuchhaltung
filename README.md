@@ -397,10 +397,14 @@ Anlagenverwaltung mit AfA-Plan:
     Betrag und Rest abgelehnt. Umbuchungen (Wartekonto→Erlöskonto,
     Privatanteil) zählen dabei nicht mit, Bankbewegungen ohne Buchungssatz
     blockieren nicht
-- **SQL-Konsole**: Direkte SQL-Ausführung (Entwickler-Tool) inkl. **Zeitbereich löschen**
+- **SQL-Konsole**: Direkte SQL-Ausführung (Entwickler-Tool), auf die eigene Datenbank
+  beschränkt und nur für Administratoren. Ohne den Haken „Schreiben erlauben“ läuft sie
+  nur lesend. Mit Haken (und nach einer Rückfrage) laufen alle Befehle einer Anfrage in
+  einer Transaktion mit eingeschalteten Fremdschlüsseln: Scheitert einer, wird nichts
+  geändert; was geändert wurde, steht danach im SQL-Protokoll. Inkl. **Zeitbereich löschen**
   (generiert ein FK-sicheres Lösch-Skript für Belege/Buchungen/Rechnungen/Angebote
-  eines Zeitraums ins SQL-Feld; Ausführung erst nach manueller Bestätigung);
-  auf die eigene Datenbank beschränkt; nur für Administratoren
+  eines Zeitraums ins SQL-Feld; Buchungssätze außerhalb des Zeitraums, die unter einer
+  Bankbewegung des Zeitraums hängen, bleiben erhalten und werden abgehängt)
 - **Datensicherung**: Backup nach `<UserDir>/backup/JJJJMMTT_Backup.7zip`
   (7-Zip, ohne 7-Zip als `.zip`; wahlweise nur DB oder alle Daten; DB als
   konsistenter Snapshot) + **Wiederherstellung** (überschreiben oder vorher löschen);
@@ -685,8 +689,8 @@ ausschließlich erfunden bzw. anonymisiert.
 - **Ohne Anmeldung** (automatische Anmeldung für einen Benutzer) gibt es keine
   Passwortabfrage – nur auf `localhost` bzw. im eigenen, vertrauenswürdigen Netz betreiben
 - **Wichtig:** Konzipiert für lokalen bzw. LAN-Einsatz – **nicht für das offene Internet**
-  (kein Rate-Limiting, einfacher HTTP-Server, SQL-Konsole mit direktem Schreibzugriff
-  auf die eigene Datenbank)
+  (kein Rate-Limiting, einfacher HTTP-Server, SQL-Konsole, die Administratoren direkten
+  Schreibzugriff auf die eigene Datenbank gibt)
 
 ---
 

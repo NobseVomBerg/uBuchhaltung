@@ -105,9 +105,9 @@ def _chart(db, *numbers):
 
 
 def _console(db, *commands):
-    """SQL über die Konsole der Seite „Verschiedenes“ ausführen (``handle_execute_sql``): eigene
-    Verbindung ohne Fremdschlüsselprüfung, wie im Betrieb. Liefert die Antwort als Dict."""
-    answer = json.loads(handle_execute_sql(db, {'sql_commands': [';\n'.join(commands)]}))
+    """SQL über die Konsole der Seite „Verschiedenes“ ausführen (``handle_execute_sql``, Schreibmodus: Fremdschlüssel
+    an, alle Befehle in einer Transaktion). Liefert die Antwort als Dict."""
+    answer = json.loads(handle_execute_sql(db, {'sql_commands': [';\n'.join(commands)], 'write': ['1']}))
     assert not answer['errors'], answer
     return answer
 
@@ -416,15 +416,18 @@ STALE = ['null', 'dead']
 
 def _stale_posted_row(db, world, year, how):
     """Planzeile mit Status ``posted``, deren Buchung es nicht gibt: ``null`` – ohne Booking_ID (so ließ
-    ``delete_transaction`` sie bis 2.0.4 zurück), ``dead`` – die Booking_ID zeigt auf eine Buchung, die
-    über die SQL-Konsole (ohne Fremdschlüsselprüfung) gelöscht wurde."""
+    ``delete_transaction`` sie bis 2.0.4 zurück), ``dead`` – die Booking_ID zeigt auf eine Buchung, die über
+    eine Verbindung ohne Fremdschlüsselprüfung gelöscht wurde (so ließ es die SQL-Konsole bis 2.3.10 zu; seit 2.3.11
+    hat ihr Schreibmodus die Fremdschlüssel an und lehnt das Löschen einer noch verwiesenen Buchung ab)."""
     if how == 'null':
         _execute(db, "INSERT INTO AssetDepreciations (Asset_ID, Year, DepreciationAmount, BookValue, "
                      "Booking_ID, Status, BookedAt) VALUES (?, ?, 6000000, 12000000, NULL, 'posted', "
                      "CURRENT_TIMESTAMP)", (world.asset, year))
         return None
     booking = db.book_depreciation(world.asset, year, None, world.expense, world.anlage)
-    _console(db, f'DELETE FROM Bookings WHERE ID = {booking}')
+    with closing(sqlite3.connect(db.db_name)) as conn:
+        conn.execute('DELETE FROM Bookings WHERE ID = ?', (booking,))
+        conn.commit()
     assert (year, booking, 'posted') in _plan_rows(db, world.asset)              # tote Booking_ID
     return booking
 

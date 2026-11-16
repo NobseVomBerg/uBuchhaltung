@@ -8,14 +8,17 @@ Neustart; ein riesiger Wert oder eine riesige Ausgabe könnte den Prozess per Sp
 beenden. Deshalb gelten je Anfrage:
 
   1. ein Zeitlimit für alle Befehle zusammen, auch beim Lesen der Ergebnisse: Fortschrittshandler
-     alle 10000 Schritte plus Prüfung vor jedem Befehl. Bei Überschreitung wird zurückgerollt
-     (``success_count`` 0, genau ein Fehler, keine Ausgabe), danach hält nichts mehr eine Sperre.
-     Ein Fehlertext mit „interrupted“ gilt nur bei wirklich abgelaufener Frist als Abbruch,
+     alle 10000 Schritte plus Prüfung vor jedem Befehl. Bei Überschreitung ist die Anfrage beendet
+     (``success_count`` 0, ein Fehler, keine Ausgabe); im Schreibmodus ist alles zurückgerollt, auch
+     Strukturbefehle (``rolled_back``, dazu der Satz „Nichts wurde geändert …“), danach hält nichts
+     mehr eine Sperre. Ein Fehlertext mit „interrupted“ gilt nur bei wirklich abgelaufener Frist als Abbruch,
   2. Größengrenzen für einzelne Werte (``SQLITE_LIMIT_LENGTH``) und Spalten
      (``SQLITE_LIMIT_COLUMN``), beide nur mit ``Connection.setlimit`` (ab Python 3.11),
-  3. Ausgabegrenzen für Zeilen (Kopfzeilen zählen mit) und UTF-8-Bytes über alle SELECTs der Anfrage;
+  3. Ausgabegrenzen für Zeilen (Kopfzeilen zählen mit) und UTF-8-Bytes über alle Ergebnisse der Anfrage;
      danach wird nicht weiter gelesen und eine Hinweiszeile angehängt, die Befehle laufen und
      werden festgeschrieben.
+
+Befehle, die schreiben, laufen mit ``write=True`` (Schreibmodus); alles andere im Lesemodus, dem Standard.
 
 Die Grenzen sind Modulkonstanten, die ``handle_execute_sql`` bei jedem Aufruf liest – die Tests
 setzen sie klein. Zeitabläufe laufen über künstliche Uhren (``handlers.time`` wird durch ein
@@ -35,7 +38,8 @@ import pytest
 from server import handlers
 from server.pages_miscellaneous import PageMiscellaneous
 from tests.http_client import get
-from tests.test_sql_console import _post_sql, _query, _run, probe_db  # noqa: F401 (probe_db: Fixture)
+from tests.test_sql_console import (CONSOLE_DENIED, NOTHING_CHANGED, _post_sql, _query, _run,  # noqa: F401
+                                    denied, probe_db)                 # (probe_db: Fixture)
 
 NOTE_START = "… Ausgabe gekürzt (mehr als "
 requires_setlimit = pytest.mark.skipif(
@@ -58,13 +62,15 @@ MANY_ROWS = 5_000_000
 
 
 def _timeout_error(i, limit):
-    return (f"Befehl {i}: abgebrochen – Zeitlimit von {limit} s überschritten. "
-            "Nicht festgeschriebene Änderungen dieser Anfrage wurden zurückgenommen. "
-            "Was schon festgeschrieben war, bleibt bestehen: Befehle vor einem COMMIT und "
-            "Strukturbefehle (CREATE, ALTER, DROP) vor der ersten Datenänderung.")
+    return f"Befehl {i}: abgebrochen – Zeitlimit von {limit} s überschritten."
 
 
-def _timeout_result(i, total, limit):
+def _timeout_result(i, total, limit, write=False):
+    """Die Antwort auf eine Anfrage, die das Zeitlimit überschreitet: im Schreibmodus ist alles zurückgenommen –
+    ``rolled_back`` und der Satz „Nichts wurde geändert …“ hinter dem Fehler."""
+    if write:
+        return {"success_count": 0, "total": total, "output": "", "rolled_back": True,
+                "errors": [_timeout_error(i, limit), NOTHING_CHANGED]}
     return {"success_count": 0, "total": total, "errors": [_timeout_error(i, limit)], "output": ""}
 
 
@@ -139,16 +145,25 @@ def plain_db(tmp_path):
 def test_endless_cte_after_an_insert_is_aborted_in_time_and_rolled_back(probe_db, monkeypatch):
     monkeypatch.setattr(handlers, "_CONSOLE_TIME_LIMIT_S", 1)
     start = time.perf_counter()
-    result = _run(probe_db, f"INSERT INTO Probe VALUES ('z', 3); {ENDLESS_CTE}")
+    result = _run(probe_db, f"INSERT INTO Probe VALUES ('z', 3); {ENDLESS_CTE}", write=True)
     elapsed = time.perf_counter() - start
 
-    assert result == _timeout_result(2, 2, 1)
+    assert result == _timeout_result(2, 2, 1, write=True)
     assert elapsed < 3
     assert _probe(probe_db) == PROBE_ROWS                  # das INSERT ist nicht gespeichert
     with contextlib.closing(sqlite3.connect(probe_db.db_name, timeout=0.2)) as con:
         con.execute("INSERT INTO Probe VALUES ('n', 4)")   # eine zweite Verbindung schreibt sofort
         con.commit()
     assert _probe(probe_db) == PROBE_ROWS + [("n", 4)]
+
+
+def test_endless_cte_while_reading_is_aborted_in_time(probe_db, monkeypatch):
+    monkeypatch.setattr(handlers, "_CONSOLE_TIME_LIMIT_S", 1)
+    start = time.perf_counter()
+    result = _run(probe_db, f"SELECT 1; {ENDLESS_CTE}")
+    assert time.perf_counter() - start < 3
+    assert result == _timeout_result(2, 2, 1)              # lesend: nichts zurückzunehmen, nur der Abbruch
+    _assert_not_locked(probe_db)
 
 
 ENDLESS_STATEMENTS = {
@@ -161,6 +176,7 @@ ENDLESS_STATEMENTS = {
     "INSERT-SELECT": f"INSERT INTO Probe SELECT 'q', x FROM {_numbers(3_000_000)}",
     "Lesen-des-Ergebnisses": f"SELECT x FROM {_numbers(3_000_000)}",
 }
+READING_ONLY = ("CTE", "Unterabfrage", "Unterabfrage-in-WHERE", "Lesen-des-Ergebnisses")
 
 
 @pytest.mark.parametrize("endless", ENDLESS_STATEMENTS.values(), ids=ENDLESS_STATEMENTS.keys())
@@ -168,9 +184,17 @@ def test_endless_statement_is_aborted_by_the_time_limit(probe_db, monkeypatch, s
     # Ausgabegrenzen aus dem Weg: Hier kann nur das Zeitlimit die Anfrage beenden
     monkeypatch.setattr(handlers, "_CONSOLE_MAX_OUTPUT_ROWS", 10**9)
     monkeypatch.setattr(handlers, "_CONSOLE_MAX_OUTPUT_BYTES", 10**12)
-    result = _run(probe_db, f"INSERT INTO Probe VALUES ('z', 3); {endless}")
-    assert result == _timeout_result(2, 2, 20)
+    result = _run(probe_db, f"INSERT INTO Probe VALUES ('z', 3); {endless}", write=True)
+    assert result == _timeout_result(2, 2, 20, write=True)
     assert _probe(probe_db) == PROBE_ROWS
+    _assert_not_locked(probe_db)
+
+
+@pytest.mark.parametrize("name", READING_ONLY)
+def test_endless_reading_statement_is_aborted_by_the_time_limit(probe_db, monkeypatch, step_clock, name):
+    monkeypatch.setattr(handlers, "_CONSOLE_MAX_OUTPUT_ROWS", 10**9)
+    monkeypatch.setattr(handlers, "_CONSOLE_MAX_OUTPUT_BYTES", 10**12)
+    assert _run(probe_db, f"SELECT 1; {ENDLESS_STATEMENTS[name]}") == _timeout_result(2, 2, 20)
     _assert_not_locked(probe_db)
 
 
@@ -191,31 +215,36 @@ def test_deadline_passed_before_the_next_command_stops_before_running_it(probe_d
     # Uhr: Start, vor Befehl 1, vor Befehl 2 – dort ist die Frist (0 + 60) vorbei
     monkeypatch.setattr(handlers, "time", ScriptedClock(0, 0, 100))
     result = _run(probe_db, "CREATE TABLE Eins (X TEXT); CREATE TABLE Zwei (X TEXT); "
-                            "CREATE TABLE Drei (X TEXT)")
-    assert result == _timeout_result(2, 3, 60)
+                            "CREATE TABLE Drei (X TEXT)", write=True)
+    assert result == _timeout_result(2, 3, 60, write=True)
     names = _query(probe_db, "SELECT name FROM sqlite_master WHERE name IN ('Eins', 'Zwei', 'Drei')")
-    assert names == [("Eins",)]                # Strukturbefehl vor dem Abbruch steht; Befehl 2 lief nie
+    assert names == []                         # auch Befehl 1 ist zurückgenommen: eine Transaktion für alle
+
+
+def test_deadline_passed_before_the_next_reading_command_stops_before_running_it(probe_db, monkeypatch):
+    monkeypatch.setattr(handlers, "time", ScriptedClock(0, 0, 100))
+    assert _run(probe_db, "SELECT 1; SELECT 2; SELECT 3") == _timeout_result(2, 3, 60)
 
 
 def test_deadline_passed_between_two_commands_rolls_back_the_first(probe_db, monkeypatch):
     monkeypatch.setattr(handlers, "time", ScriptedClock(0, 0, 100))
-    result = _run(probe_db, "INSERT INTO Probe VALUES ('z', 3); INSERT INTO Probe VALUES ('q', 4)")
-    assert result == _timeout_result(2, 2, 60)
+    result = _run(probe_db, "INSERT INTO Probe VALUES ('z', 3); INSERT INTO Probe VALUES ('q', 4)", write=True)
+    assert result == _timeout_result(2, 2, 60, write=True)
     assert _probe(probe_db) == PROBE_ROWS
 
 
 def test_deadline_passed_before_the_first_command_runs_nothing(probe_db, monkeypatch):
     monkeypatch.setattr(handlers, "time", ScriptedClock(0, 100))
-    result = _run(probe_db, "CREATE TABLE Eins (X TEXT); INSERT INTO Probe VALUES ('z', 3)")
-    assert result == _timeout_result(1, 2, 60)
+    result = _run(probe_db, "CREATE TABLE Eins (X TEXT); INSERT INTO Probe VALUES ('z', 3)", write=True)
+    assert result == _timeout_result(1, 2, 60, write=True)
     assert _query(probe_db, "SELECT name FROM sqlite_master WHERE name = 'Eins'") == []
     assert _probe(probe_db) == PROBE_ROWS
 
 
 def test_reaching_the_deadline_exactly_is_not_exceeding_it(probe_db, monkeypatch):
     monkeypatch.setattr(handlers, "time", ScriptedClock(0, 0, 60))
-    result = _run(probe_db, "INSERT INTO Probe VALUES ('z', 3); INSERT INTO Probe VALUES ('q', 4)")
-    assert result == {"success_count": 2, "total": 2, "errors": [], "output": ""}
+    result = _run(probe_db, "INSERT INTO Probe VALUES ('z', 3); INSERT INTO Probe VALUES ('q', 4)", write=True)
+    assert result == {"success_count": 2, "total": 2, "errors": [], "output": "", "rolled_back": False}
     assert _probe(probe_db) == PROBE_ROWS + [("z", 3), ("q", 4)]
 
 
@@ -225,86 +254,105 @@ def test_the_message_names_the_limit_in_force(probe_db, monkeypatch):
     assert _run(probe_db, "SELECT 1")["errors"] == [_timeout_error(1, 7)]
 
 
-# Die Meldung verspricht nur, was stimmt: zurückgenommen wird die offene Transaktion – Python
-# beginnt sie erst vor dem ersten INSERT/UPDATE/DELETE. DDL davor und alles vor einem COMMIT steht schon.
-def test_structure_commands_before_the_first_data_change_stay(probe_db, step_clock):
-    result = _run(probe_db, f"CREATE TABLE Neu (X TEXT); {ENDLESS_CTE}")
-    assert result == _timeout_result(2, 2, 20)
-    assert _query(probe_db, "SELECT name FROM sqlite_master WHERE name = 'Neu'") == [("Neu",)]
+# Seit 2.3.11 liegt jeder Befehl des Schreibmodus in EINER Transaktion – auch Strukturbefehle (CREATE, ALTER, DROP).
+# Bis 2.3.10 blieb vor dem Abbruch stehen, was Python nicht in seiner Transaktion hielt (DDL vor der ersten
+# Datenänderung, Befehle vor einem COMMIT); die Meldung nannte das. Jetzt gibt es nichts mehr, was bleibt.
+def test_structure_commands_before_the_abort_are_rolled_back_too(probe_db, step_clock):
+    result = _run(probe_db, f"CREATE TABLE Neu (X TEXT); {ENDLESS_CTE}", write=True)
+    assert result == _timeout_result(2, 2, 20, write=True)
+    assert _query(probe_db, "SELECT name FROM sqlite_master WHERE name = 'Neu'") == []
 
 
 def test_structure_commands_after_a_data_change_are_rolled_back_with_it(probe_db, step_clock):
     result = _run(probe_db, "CREATE TABLE zz1 (x); INSERT INTO zz1 VALUES (1); CREATE TABLE zz2 (x); "
-                            f"{ENDLESS_CTE}")
-    assert result == _timeout_result(4, 4, 20)
-    assert _query(probe_db, "SELECT name FROM sqlite_master WHERE name IN ('zz1', 'zz2') ORDER BY name") \
-        == [("zz1",)]                                      # zz1 steht schon, zz2 war Teil der Transaktion
-    assert _query(probe_db, "SELECT COUNT(*) FROM zz1") == [(0,)]
+                            f"{ENDLESS_CTE}", write=True)
+    assert result == _timeout_result(4, 4, 20, write=True)
+    assert _query(probe_db, "SELECT name FROM sqlite_master WHERE name IN ('zz1', 'zz2')") == []
 
 
-def test_data_changes_before_a_commit_stay_and_the_ones_after_it_go(probe_db, step_clock):
-    result = _run(probe_db, "INSERT INTO Probe VALUES ('z', 3); COMMIT; "
-                            f"INSERT INTO Probe VALUES ('q', 4); {ENDLESS_CTE}")
-    assert result == _timeout_result(4, 4, 20)
-    assert _probe(probe_db) == PROBE_ROWS + [("z", 3)]
-
-
-def test_an_explicit_transaction_is_rolled_back_as_a_whole(probe_db, step_clock):
-    result = _run(probe_db, "BEGIN; INSERT INTO Probe VALUES ('z', 3); CREATE TABLE zz2 (x); "
-                            f"{ENDLESS_CTE}")
-    assert result == _timeout_result(4, 4, 20)
+@pytest.mark.parametrize("command", ["COMMIT", "BEGIN", "BEGIN IMMEDIATE", "SAVEPOINT a", "RELEASE a", "ROLLBACK"])
+def test_the_user_cannot_keep_changes_before_the_abort_with_transaction_commands(probe_db, step_clock, command):
+    """Bis 2.3.10 ließ ein COMMIT vor dem Abbruch die Änderungen davor stehen. Jetzt ist es gesperrt: Die Anfrage endet
+    dort, und nichts steht."""
+    result = _run(probe_db, f"INSERT INTO Probe VALUES ('z', 3); {command}; "
+                            f"INSERT INTO Probe VALUES ('q', 4); {ENDLESS_CTE}", write=True)
+    assert result == denied(True, number=2, total=4)
     assert _probe(probe_db) == PROBE_ROWS
-    assert _query(probe_db, "SELECT name FROM sqlite_master WHERE name = 'zz2'") == []
-    _assert_not_locked(probe_db)
-
-
-def test_a_transaction_opened_by_a_savepoint_is_rolled_back_too(probe_db, step_clock):
-    result = _run(probe_db, "SAVEPOINT a; INSERT INTO Probe VALUES ('z', 3); CREATE TABLE zz2 (x); "
-                            f"{ENDLESS_CTE}")
-    assert result == _timeout_result(4, 4, 20)
-    assert _probe(probe_db) == PROBE_ROWS
-    assert _query(probe_db, "SELECT name FROM sqlite_master WHERE name = 'zz2'") == []
     _assert_not_locked(probe_db)
 
 
 def test_commands_after_the_abort_do_not_run(probe_db, step_clock):
-    result = _run(probe_db, f"{ENDLESS_CTE}; CREATE TABLE Danach (X TEXT); INSERT INTO Probe VALUES ('z', 3)")
-    assert result == _timeout_result(1, 3, 20)
+    result = _run(probe_db, f"{ENDLESS_CTE}; CREATE TABLE Danach (X TEXT); INSERT INTO Probe VALUES ('z', 3)",
+                  write=True)
+    assert result == _timeout_result(1, 3, 20, write=True)
     assert _query(probe_db, "SELECT name FROM sqlite_master WHERE name = 'Danach'") == []
     assert _probe(probe_db) == PROBE_ROWS
 
 
 # ── Teil 1: ohne Überschreitung bleibt alles wie vorher ──────────────────────
-def test_without_overrun_commands_run_and_commit_and_errors_are_per_command(probe_db):
-    result = _run(probe_db, "INSERT INTO Probe VALUES ('z', 3); SELEKT 1; "
-                            "INSERT INTO Probe VALUES ('q', 4); SELECT A FROM Probe WHERE B > 2 ORDER BY B")
-    assert result == {"success_count": 3, "total": 4, "output": "A\nz\nq",
+def test_without_overrun_reading_commands_run_and_errors_are_per_command(probe_db):
+    result = _run(probe_db, "SELECT 1 AS a; SELEKT 1; SELECT A FROM Probe WHERE B > 1 ORDER BY B; SELECT 2 AS b")
+    assert result == {"success_count": 3, "total": 4, "output": "a\n1\nA\ny\nb\n2",
                       "errors": ['Befehl 2: near "SELEKT": syntax error']}
+
+
+def test_without_overrun_writing_commands_run_and_commit_and_an_error_undoes_them(probe_db):
+    done = _run(probe_db, "INSERT INTO Probe VALUES ('z', 3); INSERT INTO Probe VALUES ('q', 4); "
+                          "SELECT A FROM Probe WHERE B > 2 ORDER BY B", write=True)
+    assert done == {"success_count": 3, "total": 3, "output": "A\nz\nq", "errors": [], "rolled_back": False}
+    assert _probe(probe_db) == PROBE_ROWS + [("z", 3), ("q", 4)]
+
+    failed = _run(probe_db, "INSERT INTO Probe VALUES ('w', 5); SELEKT 1; INSERT INTO Probe VALUES ('v', 6)",
+                  write=True)
+    assert failed == {"success_count": 0, "total": 3, "output": "", "rolled_back": True,
+                      "errors": ['Befehl 2: near "SELEKT": syntax error', NOTHING_CHANGED]}
     assert _probe(probe_db) == PROBE_ROWS + [("z", 3), ("q", 4)]
 
 
 def test_an_error_raised_while_reading_a_row_is_a_normal_error_not_a_timeout(probe_db):
+    result = _run(probe_db, "SELECT 1 AS a; "
+                            "SELECT abs(x) FROM (SELECT 1 AS x UNION ALL SELECT -9223372036854775808); "
+                            "SELECT 2 AS b")
+    assert result["errors"] == ["Befehl 2: integer overflow"]
+    assert result["success_count"] == 2                     # der Befehl mit dem Lesefehler zählt nicht als Erfolg
+    assert result["output"].endswith("b\n2")
+
+
+def test_an_error_raised_while_reading_a_row_undoes_the_request_while_writing(probe_db):
     result = _run(probe_db, "INSERT INTO Probe VALUES ('z', 3); "
                             "SELECT abs(x) FROM (SELECT 1 AS x UNION ALL SELECT -9223372036854775808); "
-                            "INSERT INTO Probe VALUES ('q', 4)")
-    assert result["errors"] == ["Befehl 2: integer overflow"]
-    assert _probe(probe_db) == PROBE_ROWS + [("z", 3), ("q", 4)]
+                            "INSERT INTO Probe VALUES ('q', 4)", write=True)
+    assert result["errors"] == ["Befehl 2: integer overflow", NOTHING_CHANGED]
+    assert (result["success_count"], result["rolled_back"]) == (0, True)
+    assert _probe(probe_db) == PROBE_ROWS
 
 
-@pytest.mark.parametrize("failing", [
+FAILING_WITH_INTERRUPTED = [
     pytest.param("SELECT * FROM interrupted", id="Tabelle"),
     pytest.param("SELECT interrupted FROM Probe", id="Spalte"),
     pytest.param("SELECT interrupted(1)", id="Funktion"),
-])
+]
+
+
+@pytest.mark.parametrize("failing", FAILING_WITH_INTERRUPTED)
 def test_an_error_text_with_interrupted_is_no_timeout_while_the_deadline_has_not_passed(probe_db, failing):
-    result = _run(probe_db, f"CREATE TABLE zz3 (x); INSERT INTO zz3 VALUES (1); {failing}; SELECT 2")
+    result = _run(probe_db, f"SELECT 1; SELECT 3 AS c; {failing}; SELECT 2")
     assert result["success_count"] == 3
     assert result["total"] == 4
     assert len(result["errors"]) == 1
     assert result["errors"][0].startswith("Befehl 3: ")
     assert "interrupted" in result["errors"][0] and "Zeitlimit" not in result["errors"][0]
-    assert result["output"] == "2\n2"
-    assert _query(probe_db, "SELECT x FROM zz3") == [(1,)]            # nichts zurückgerollt
+    assert result["output"] == "1\n1\nc\n3\n2\n2"
+
+
+@pytest.mark.parametrize("failing", FAILING_WITH_INTERRUPTED)
+def test_an_error_text_with_interrupted_ends_the_request_while_writing_but_is_no_timeout(probe_db, failing):
+    result = _run(probe_db, f"CREATE TABLE zz3 (x); INSERT INTO zz3 VALUES (1); {failing}; SELECT 2", write=True)
+    assert (result["success_count"], result["total"], result["rolled_back"]) == (0, 4, True)
+    assert len(result["errors"]) == 2 and result["errors"][1] == NOTHING_CHANGED
+    assert result["errors"][0].startswith("Befehl 3: ")
+    assert "interrupted" in result["errors"][0] and "Zeitlimit" not in result["errors"][0]
+    assert _query(probe_db, "SELECT name FROM sqlite_master WHERE name = 'zz3'") == []        # alles zurückgenommen
 
 
 def test_the_table_called_interrupted_is_simply_missing(probe_db):
@@ -328,16 +376,18 @@ def test_http_endless_cte_returns_the_error_and_the_server_keeps_answering(serve
         con.commit()
 
     start = time.perf_counter()
-    resp = _post_sql(server_port, f"INSERT INTO Probe VALUES ('z', 3); {ENDLESS_CTE}", auto_login)
+    resp = _post_sql(server_port, f"INSERT INTO Probe VALUES ('z', 3); {ENDLESS_CTE}", auto_login, write=True)
     assert time.perf_counter() - start < 5
     assert resp.status == 200
     assert resp.headers["Content-Type"].startswith("application/json")
-    assert json.loads(resp.text) == _timeout_result(2, 2, 1)
+    assert json.loads(resp.text) == _timeout_result(2, 2, 1, write=True)
     assert _query(db, "SELECT COUNT(*) FROM Probe") == [(0,)]
 
-    resp = _post_sql(server_port, "INSERT INTO Probe VALUES ('n', 4); SELECT A FROM Probe", auto_login)
+    resp = _post_sql(server_port, "INSERT INTO Probe VALUES ('n', 4); SELECT A FROM Probe", auto_login,
+                     write=True)
     assert resp.status == 200                                # zweite Anfrage: keine Sperre, normale Antwort
-    assert json.loads(resp.text) == {"success_count": 2, "total": 2, "errors": [], "output": "A\nn"}
+    assert json.loads(resp.text) == {"success_count": 2, "total": 2, "errors": [], "output": "A\nn",
+                                     "rolled_back": False}
     assert get(server_port, "/miscellaneous").status == 200
 
 
@@ -350,7 +400,6 @@ def test_http_endless_cte_returns_the_error_and_the_server_keeps_answering(serve
     pytest.param("SELECT hex(randomblob(600))", id="hex-randomblob"),
     pytest.param("SELECT length(hex(zeroblob(600)))", id="hex-zeroblob"),
     pytest.param(f"SELECT group_concat(hex(zeroblob(300)), ',') FROM {_numbers(3)}", id="group_concat"),
-    pytest.param("INSERT INTO Probe VALUES (hex(randomblob(600)), 9)", id="INSERT"),
 ])
 def test_value_over_the_limit_is_an_error_for_that_command(plain_db, monkeypatch, sql):
     monkeypatch.setattr(handlers, "_CONSOLE_MAX_VALUE_BYTES", 1000)
@@ -361,6 +410,19 @@ def test_value_over_the_limit_is_an_error_for_that_command(plain_db, monkeypatch
 
     monkeypatch.setattr(handlers, "_CONSOLE_MAX_VALUE_BYTES", 100_000)  # Kontrolle: mit mehr Platz läuft es
     assert _run(plain_db, sql)["errors"] == []
+
+
+@requires_setlimit
+def test_insert_of_a_value_over_the_limit_ends_the_request_while_writing(plain_db, monkeypatch):
+    sql = "INSERT INTO Probe VALUES (hex(randomblob(600)), 9)"
+    monkeypatch.setattr(handlers, "_CONSOLE_MAX_VALUE_BYTES", 1000)
+    result = _run(plain_db, f"{sql}; SELECT 1", write=True)
+    assert result == {"success_count": 0, "total": 2, "output": "", "rolled_back": True,
+                      "errors": ["Befehl 1: string or blob too big", NOTHING_CHANGED]}
+    assert _probe(plain_db) == PROBE_ROWS
+
+    monkeypatch.setattr(handlers, "_CONSOLE_MAX_VALUE_BYTES", 100_000)  # Kontrolle: mit mehr Platz läuft es
+    assert _run(plain_db, sql, write=True)["errors"] == []
 
 
 @requires_setlimit
@@ -446,13 +508,12 @@ def test_table_with_more_columns_than_the_limit_cannot_be_created_or_extended(pl
         monkeypatch.setattr(handlers, "_CONSOLE_MAX_COLUMNS", limit)
     limit = handlers._CONSOLE_MAX_COLUMNS
 
-    result = _run(plain_db, f"{_create_table_columns('Breit', limit)}; "
-                            f"{_create_table_columns('Zubreit', limit + 1)}; "
-                            "ALTER TABLE Breit ADD COLUMN extra INTEGER")
-    assert result["success_count"] == 1
-    assert [e.split(":")[0] for e in result["errors"]] == ["Befehl 2", "Befehl 3"]
-    assert result["errors"][0] == "Befehl 2: too many columns on Zubreit"
-    assert result["errors"][1].startswith("Befehl 3: too many columns on ")
+    assert _run(plain_db, f"{_create_table_columns('Breit', limit)}", write=True)["errors"] == []
+    too_wide = _run(plain_db, f"{_create_table_columns('Zubreit', limit + 1)}", write=True)
+    assert too_wide["errors"] == ["Befehl 1: too many columns on Zubreit", NOTHING_CHANGED]
+    extended = _run(plain_db, "ALTER TABLE Breit ADD COLUMN extra INTEGER", write=True)
+    assert extended["errors"][0].startswith("Befehl 1: too many columns on ")
+    assert extended["errors"][1:] == [NOTHING_CHANGED]
     names = _query(plain_db, "SELECT name FROM sqlite_master WHERE name IN ('Breit', 'Zubreit')")
     assert names == [("Breit",)]
     assert len(_query(plain_db, "PRAGMA table_info(Breit)")) == limit
@@ -582,13 +643,21 @@ def test_the_note_comes_exactly_once_and_last(probe_db, monkeypatch):
 def test_commands_after_the_truncation_still_run_and_are_committed(probe_db, monkeypatch):
     monkeypatch.setattr(handlers, "_CONSOLE_MAX_OUTPUT_ROWS", 5)
     result = _run(probe_db, f"SELECT x FROM {_numbers(100)}; INSERT INTO Probe VALUES ('n', 9); "
-                            "SELECT 'spaet' AS s; SELEKT 1; DELETE FROM Probe WHERE A = 'x'")
-    assert result["success_count"] == 4
-    assert result["total"] == 5
-    assert result["errors"] == ['Befehl 4: near "SELEKT": syntax error']
+                            "SELECT 'spaet' AS s; DELETE FROM Probe WHERE A = 'x'", write=True)
+    assert (result["success_count"], result["total"], result["errors"]) == (4, 4, [])
+    assert result["rolled_back"] is False
     assert "spaet" not in result["output"]                          # später Ausgabe wird nicht mehr gelesen
     assert result["output"].split("\n")[-1].startswith(NOTE_START)
     assert _probe(probe_db) == [("y", 2), ("n", 9)]
+
+
+def test_reading_commands_after_the_truncation_still_run_and_errors_are_per_command(probe_db, monkeypatch):
+    monkeypatch.setattr(handlers, "_CONSOLE_MAX_OUTPUT_ROWS", 5)
+    result = _run(probe_db, f"SELECT x FROM {_numbers(100)}; SELECT 'spaet' AS s; SELEKT 1; "
+                            "SELECT COUNT(*) FROM Probe")
+    assert (result["success_count"], result["total"]) == (3, 4)
+    assert result["errors"] == ['Befehl 3: near "SELEKT": syntax error']
+    assert "spaet" not in result["output"] and result["output"].split("\n")[-1].startswith(NOTE_START)
 
 
 def test_a_later_select_that_would_still_fit_adds_nothing_after_the_cut(probe_db, monkeypatch):
@@ -602,7 +671,7 @@ def test_a_later_select_that_would_still_fit_adds_nothing_after_the_cut(probe_db
 
 def test_the_header_alone_is_cut_when_nothing_fits(probe_db, monkeypatch):
     monkeypatch.setattr(handlers, "_CONSOLE_MAX_OUTPUT_ROWS", 0)
-    result = _run(probe_db, "SELECT 1 AS a; INSERT INTO Probe VALUES ('n', 9)")
+    result = _run(probe_db, "SELECT 1 AS a; INSERT INTO Probe VALUES ('n', 9)", write=True)
     assert result["output"].startswith(NOTE_START) and "\n" not in result["output"]
     assert (result["success_count"], result["errors"]) == (2, [])
     assert ("n", 9) in _probe(probe_db)
@@ -622,7 +691,7 @@ def test_a_huge_select_is_ended_by_the_row_limit_without_a_timeout(probe_db, mon
 
 def test_a_huge_select_as_the_last_command_leaves_no_lock_and_commits(probe_db, monkeypatch):
     monkeypatch.setattr(handlers, "_CONSOLE_MAX_OUTPUT_ROWS", 10)
-    result = _run(probe_db, f"INSERT INTO Probe VALUES ('n', 9); SELECT x FROM {_numbers(MANY_ROWS)}")
+    result = _run(probe_db, f"INSERT INTO Probe VALUES ('n', 9); SELECT x FROM {_numbers(MANY_ROWS)}", write=True)
     assert (result["success_count"], result["errors"]) == (2, [])
     assert ("n", 9) in _probe(probe_db)
     _assert_not_locked(probe_db)

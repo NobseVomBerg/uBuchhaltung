@@ -21,7 +21,7 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 - Umsatzsteuer-Voranmeldung (ELSTER)
 - GoBD-Modus, je Datenverzeichnis einstellbar (Ersteinrichtung fragt: Steuerbüro oder selbst?); vor der Umsetzung ein Entwurf:
   - Festschreibung abgeschlossener Zeiträume, Korrektur nur per Storno/Gegenbuchung, kein Löschen
-  - Änderungsprotokoll (wer/wann/alt/neu), manipulationssicher; SQL-Konsole nur lesend oder aus
+  - Änderungsprotokoll (wer/wann/alt/neu), manipulationssicher; SQL-Konsole nur lesend oder aus (seit 2.3.11 läuft sie ohne „Schreiben erlauben“ nur lesend – im GoBD-Modus fiele der Schreibmodus weg)
   - Gilt auch für Kasse und Fahrtenbuch; Abschalten nur protokolliert
 
 ## Kontenrahmen (SKR03/04/07 …)
@@ -82,6 +82,7 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
 - Der Weg „erst CSV, dann Datenbank“ nach der Änderung der Unterkonten (2.2.5) an einem echten CSV-/Datenbank-Paar erneut gegenprüfen (Texte, Umschlüsselung von Unterkonten)
 - Der Datenbankweg liest Texte als latin-1 statt cp1252 (Anzeige von „€“ u. ä.; für den Vergleich mit der CSV umgesetzt, gespeichert wird der gelesene Text); „…“ (0x85) geht schon im Leser verloren (`_clean` fasst es als Leerraum zusammen) – solche Texte werden nicht wiedererkannt
 - Neu angelegte Buchungen der WISO-Importe stehen nicht im SQL-Protokoll (nur die Übernahmen per UPDATE)
+- SQL-Protokoll: `log_sql` schreibt jeden Befehl einzeilig und fasst dabei Leerraum auch innerhalb von Zeichenketten zusammen – ein Text mit Zeilenumbruch oder doppelten Leerzeichen steht im Protokoll anders als in der Datenbank (betrifft auch die Befehle der SQL-Konsole)
 - WISO-Datenbank-Import: Eine Änderung innerhalb einer weiter bestehenden Buchungsgruppe (anderer Betrag, entfallene Teilbuchung) bemerkt der Re-Import nicht – die vorhandene Zeile bleibt, wie sie ist
 - WISO-Datenbank-Import: Nicht mehr vorhandene und doppelt angelegte Buchungen (in WISO gelöscht oder neu angelegt, Altbestand bis 2.2.4 auf dem Basiskonto eines Unterkontos, Zeilen aus 2.0.x auf 1000–1099, neu gerechneter AfA-Plan unter neuer Gruppe) lassen sich nur von Hand bereinigen – ein Werkzeug mit Probelauf und Sicherung fehlt
 - Index auf `Bookings.SourceGroup` anlegen (Schemaänderung): Der Re-Import des WISO-Datenbankimports sucht darüber

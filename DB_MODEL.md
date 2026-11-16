@@ -1004,7 +1004,9 @@ Transaktion). „Gebucht“ heißt also: die Buchung gibt es. Eine Zeile `posted
 fehlt (z. B. per SQL-Konsole gelöscht), gilt als nicht gebucht – die Anlagenseite bietet das
 Buchen wieder an und `book_depreciation` überschreibt die Zeile. Wird die Buchung über die
 Anwendung gelöscht (`delete_transaction`, ebenso die SQL-Vorlage „Zeitbereich löschen“), geht
-die Zeile auf `planned` zurück. `delete_asset` lehnt ab, solange eine AfA-Buchung existiert
+die Zeile auf `planned` zurück. (Die Vorlage läuft im Schreibmodus der SQL-Konsole in einer Transaktion mit
+Fremdschlüsseln; Buchungssätze außerhalb des Zeitraums, die unter einer Bankbewegung des Zeitraums hängen, hängt sie ab –
+`ParentBooking_ID` leer, ein Status `resolved` zurückgesetzt –, statt sie zu löschen.) `delete_asset` lehnt ab, solange eine AfA-Buchung existiert
 oder Unteranlagen existieren; `booked`-Zeilen aus dem WISO-Import (ohne Buchung) hindern das
 Löschen nicht. Eine Erweiterung, die zur Hauptanlage zählt (siehe „AfA-Plan der App“), lehnt es außerdem ab, sobald die
 Hauptanlage seit dem Jahr der Erweiterung (nie vor ihrem Kaufjahr) ein gebuchtes Jahr hat – hier zählt auch ein als `booked`
