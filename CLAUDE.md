@@ -115,6 +115,10 @@ kein Subagent darauf:
   Doku-/CI-Änderungen ohne Versionssprung mergen, jede App-Änderung bekommt
   ihren PATCH-Sprung und wird mit dem Merge veröffentlicht
 - Container-Standardport 2824; Betriebsdoku (Unraid/Proxmox) in `DEPLOYMENT.md`
+- **Actions sind auf einen Commit festgelegt** (`uses: …@<40 Hex-Zeichen>  # vX.Y.Z`, in allen Workflows – auch in dem, der
+  Image und Release schreibt): Ein Tag wie `@v4` lässt sich vom Herausgeber umsetzen, ein Commit nicht. Aktualisieren heißt:
+  neuen Commit des Versions-Tags eintragen (`git ls-remote https://github.com/<action> refs/tags/vX.Y.Z`) und den Kommentar
+  mitziehen; je Action derselbe Commit in allen Workflows (`tests/test_workflow_pins.py`)
 - Jeder Push (alle Branches) führt `.github/workflows/tests.yml` aus:
   Anonymisierungs-Guard + pytest (Python 3.13, wie das Docker-Image – die Mindestversion)
 - Neuere Python-Versionen prüft `.github/workflows/tests-python-versions.yml` einmal in der Woche und
