@@ -7,6 +7,7 @@ import os
 import json
 from decimal import Decimal
 from money import to_minor, from_minor
+from .core import DeleteRefused, reference_texts
 
 
 class ArticlesMixin:
@@ -81,9 +82,27 @@ class ArticlesMixin:
         finally:
             conn.close()
     def delete_article(self, article_id):
-        """Delete article"""
+        """Artikel löschen – nicht, solange er in einer Position einer Rechnung oder eines Angebots steht
+        (``DeleteRefused`` mit Klartext, nichts gelöscht). Die Artikelmaske kennt „Aktiv“: Ist der Artikel noch aktiv
+        (die Spalte ``Active`` ist wahr; wie in der Maske zählt ein leerer Wert als inaktiv), nennt die Meldung, dass er
+        sich stattdessen auf inaktiv setzen lässt – bei einem schon inaktiven Artikel nicht. Prüfung, Lesen von ``Active``
+        und Löschen laufen in einer Transaktion."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM Articles WHERE ID = ?', (article_id,))
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            used = reference_texts(conn, [
+                ('SELECT COUNT(*) FROM InvoiceItems WHERE ArticleId = ?', (article_id,),
+                 'Position in Rechnungen oder Angeboten', 'Positionen in Rechnungen oder Angeboten'),
+            ])
+            if used:
+                row = conn.execute('SELECT Active FROM Articles WHERE ID = ?', (article_id,)).fetchone()
+                hint = ' Er lässt sich stattdessen auf inaktiv setzen.' if row and row[0] else ''
+                raise DeleteRefused('Der Artikel lässt sich nicht löschen, solange er in Belegen steht: '
+                                    + used[0] + '.' + hint)
+            conn.execute('DELETE FROM Articles WHERE ID = ?', (article_id,))
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()

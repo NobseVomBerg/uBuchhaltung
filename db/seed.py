@@ -16,6 +16,18 @@ from .matching import LEGACY_CASH_NUMBERS
 #: sich die Konstante der Importe später ändert.
 LEGACY_LIQUID_ACCOUNTS = frozenset({1460})
 
+#: Klartext, wenn „Testdaten laden“ an einem nicht leeren Bestand abgelehnt wird (``server.handlers.handle_load_testdata``
+#: und die Seite *Sonstiges* – dort als fester Satz, nie aus der Adresse)
+TESTDATA_REFUSED = 'Der Bestand ist nicht leer – Testdaten lassen sich nur in einen leeren Bestand laden.'
+
+#: Ein Konto der Seed-Dateien schreiben. Eine belegte ID oder ein belegtes Paar (Framework, AccountNumber) überspringt das
+#: ``OR IGNORE``: Das vorhandene Konto bleibt in jeder Spalte, wie es ist.
+_INSERT_CHART_ACCOUNT = '''
+    INSERT OR IGNORE INTO ChartOfAccounts
+        (ID, Framework, AccountNumber, Name, Description, IsStandard, PrivateSharePercent)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+'''
+
 
 class SeedMixin:
     def _load_seed_json(self, filename):
@@ -153,22 +165,15 @@ class SeedMixin:
         ''', rows)
         conn.commit()
         conn.close()
-    def _seed_chart_of_accounts(self):
-        """Seed der Standard-SKR-Konten aus seed_data/chart_of_accounts_skr04.json.
+    def _chart_seed(self):
+        """Die Konten der Seed-Dateien: ``(framework, rows, overrides)`` – nur gelesen, nichts geschrieben.
 
-        Falls seed_data/private/chart_of_accounts_custom.json existiert,
-        werden zusätzlich benutzerspezifische Konten geladen.
-        Ein optionaler ``overrides``-Block in der Custom-Datei erlaubt es,
-        Felder vorhandener Standard-Konten nachträglich zu ändern
-        (z. B. ``PrivateSharePercent``).
-        """
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT COUNT(*) FROM ChartOfAccounts')
-        if cursor.fetchone()[0] > 0:
-            conn.close()
-            return
-
+        ``seed_data/chart_of_accounts_skr04.json`` und, falls vorhanden, ``seed_data/private/chart_of_accounts_custom.json``
+        (sein ``framework`` gilt für seine Konten, ohne Angabe das der Standarddatei). ``rows`` sind Tupel ``(ID, Framework,
+        AccountNumber, Name, Description, IsStandard, PrivateSharePercent)``, erst die der Standarddatei, dann die der
+        privaten; ``overrides`` ist der ``overrides``-Block der privaten Datei (sonst leer). Beide Wege gehen darüber: das
+        Füllen einer leeren Tabelle (``_seed_chart_of_accounts``) und das Nennen und Anlegen fehlender Standardkonten
+        (``missing_standard_accounts``, ``add_missing_standard_accounts``)."""
         # Standard-Kontenrahmen
         data = self._load_seed_json('chart_of_accounts_skr04.json')
         framework = data['framework']
@@ -192,27 +197,97 @@ class SeedMixin:
                       e.get('private_share_percent', 0))
                      for e in pdata.get('accounts', [])]
             overrides = pdata.get('overrides', [])
+        return framework, rows, overrides
+    def _seed_chart_of_accounts(self):
+        """Seed der Standard-SKR-Konten aus seed_data/chart_of_accounts_skr04.json.
 
-        cursor.executemany('''
-            INSERT OR IGNORE INTO ChartOfAccounts
-                (ID, Framework, AccountNumber, Name, Description, IsStandard, PrivateSharePercent)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', rows)
+        Falls seed_data/private/chart_of_accounts_custom.json existiert,
+        werden zusätzlich benutzerspezifische Konten geladen.
+        Ein optionaler ``overrides``-Block in der Custom-Datei erlaubt es,
+        Felder vorhandener Standard-Konten nachträglich zu ändern
+        (z. B. ``PrivateSharePercent``).
 
-        # Overrides anwenden (z. B. Privatanteil für Standard-Konten setzen)
-        for ov in overrides:
-            acct_nr = ov.get('account_number')
-            if acct_nr is None:
+        Füllt NUR eine leere Tabelle: Der Kontenrahmen einer bestehenden Datenbank bleibt beim Öffnen, wie er ist – ein
+        Standardkonto lässt sich nach Entfernen des Hakens löschen und käme sonst bei jedem Start wieder. Was einem
+        Bestand gegenüber den Seed-Dateien fehlt, nennt ``missing_standard_accounts`` und legt
+        ``add_missing_standard_accounts`` an – nur auf ausdrücklichen Wunsch des Nutzers.
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM ChartOfAccounts')
+            if cursor.fetchone()[0] > 0:
+                return
+            framework, rows, overrides = self._chart_seed()
+
+            cursor.executemany(_INSERT_CHART_ACCOUNT, rows)
+
+            # Overrides anwenden (z. B. Privatanteil für Standard-Konten setzen)
+            for ov in overrides:
+                acct_nr = ov.get('account_number')
+                if acct_nr is None:
+                    continue
+                psp = ov.get('private_share_percent')
+                if psp is not None:
+                    cursor.execute('''
+                        UPDATE ChartOfAccounts SET PrivateSharePercent = ?
+                        WHERE AccountNumber = ? AND Framework = ?
+                    ''', (psp, acct_nr, ov.get('framework', framework)))
+
+            conn.commit()
+        finally:
+            conn.close()
+    @staticmethod
+    def _free_standard_rows(conn, rows):
+        """Aus den Zeilen der Seed-Dateien (``_chart_seed``) die Standardkonten, die ein ``INSERT OR IGNORE`` jetzt anlegen
+        würde: weder ihre ID noch ihr Paar (Framework, AccountNumber) ist in der Tabelle vergeben – und auch nicht von einer
+        Zeile davor in ``rows`` (nennt die private Datei ein Konto der Standarddatei noch einmal, entsteht das erste).
+        Konten ohne Standard-Haken zählen nie. Liest über ``conn``, in der Reihenfolge der Dateien."""
+        taken_ids = {row[0] for row in conn.execute('SELECT ID FROM ChartOfAccounts')}
+        taken_pairs = {(row[0], row[1]) for row in conn.execute('SELECT Framework, AccountNumber FROM ChartOfAccounts')}
+        free = []
+        for row in rows:
+            if row[5] != 1 or row[0] in taken_ids or (row[1], row[2]) in taken_pairs:
                 continue
-            psp = ov.get('private_share_percent')
-            if psp is not None:
-                cursor.execute('''
-                    UPDATE ChartOfAccounts SET PrivateSharePercent = ?
-                    WHERE AccountNumber = ? AND Framework = ?
-                ''', (psp, acct_nr, ov.get('framework', framework)))
+            free.append(row)
+            taken_ids.add(row[0])
+            taken_pairs.add((row[1], row[2]))
+        return free
+    def missing_standard_accounts(self):
+        """Die Standardkonten der Seed-Dateien, die dem Bestand fehlen: ``[(AccountNumber, Name)]``, aufsteigend nach
+        Nummer. „Fehlt“ heißt: weder die ID noch das Paar (Framework, AccountNumber) ist vergeben – genau die Zeilen, die
+        ``add_missing_standard_accounts`` anlegt. Nur Konten mit Standard-Haken in der Datei; ein Konto, das der Nutzer
+        geändert oder dessen Haken er entfernt hat, fehlt nicht (es ist da). Rein lesend: Die Seite der Kontenrahmen
+        ruft das bei jedem Ansehen auf."""
+        _, rows, _ = self._chart_seed()
+        conn = self._get_connection()
+        try:
+            free = self._free_standard_rows(conn, rows)
+        finally:
+            conn.close()
+        return [(row[2], row[3]) for row in sorted(free, key=lambda row: (row[2], row[1]))]
+    def add_missing_standard_accounts(self):
+        """Legt die Standardkonten an, die ``missing_standard_accounts`` nennt, und liefert ihre Zahl.
 
-        conn.commit()
-        conn.close()
+        In EINER Transaktion (``BEGIN IMMEDIATE``, der Bestand wird darin frisch gelesen) per ``INSERT OR IGNORE``: kein
+        UPDATE, keine ``overrides``, keine Konten der privaten Datei ohne Standard-Haken – ein vorhandenes Konto bleibt in
+        jeder Spalte, wie es ist. Der Start der Datenbank legt nie Konten nach (``_seed_chart_of_accounts``): Das geschieht
+        nur auf ausdrücklichen Wunsch (``POST /masterdata/skr/add_standard``)."""
+        _, rows, _ = self._chart_seed()
+        conn = self._get_connection()
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            free = self._free_standard_rows(conn, rows)
+            before = conn.total_changes
+            conn.executemany(_INSERT_CHART_ACCOUNT, free)
+            created = conn.total_changes - before
+            conn.commit()
+            return created
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
     def is_first_run(self) -> bool:
         """Prüft ob die App noch nicht eingerichtet wurde.
 
@@ -228,10 +303,22 @@ class SeedMixin:
         has_bank = cursor.fetchone()[0] > 0
         conn.close()
         return not has_own and not has_bank
+    def stock_is_empty(self) -> bool:
+        """True, wenn es keine Buchung, keine Rechnung oder kein Angebot (beide stehen in ``Invoices``) und keine
+        Anlage gibt – Stammdaten (Kontakte, Konten, Artikel …) zählen nicht. Nur in einen solchen Bestand lassen sich
+        über die Oberfläche Testdaten laden (``server.handlers.handle_load_testdata``). Rein lesend."""
+        conn = self._get_connection()
+        try:
+            return not conn.execute(
+                'SELECT EXISTS (SELECT 1 FROM Bookings) OR EXISTS (SELECT 1 FROM Invoices) '
+                'OR EXISTS (SELECT 1 FROM Assets)').fetchone()[0]
+        finally:
+            conn.close()
     def load_test_seed_data(self, include_invoices=True):
         """Lädt Testdaten aus seed_data/test/ (Kontakte, Bankkonten, Belege, Buchungen).
 
-        Idempotent: bereits vorhandene Einträge werden übersprungen.
+        Idempotent: bereits vorhandene Einträge werden übersprungen. Prüft nicht, ob der Bestand leer ist – das
+        tut die Oberfläche (``handle_load_testdata``, ``stock_is_empty``); Tests und Demodaten rufen es direkt auf.
         Dient sowohl dem Setup-Wizard ('Mit Testdaten starten') als auch
         dem pytest-Fixture db_with_coa.
         """

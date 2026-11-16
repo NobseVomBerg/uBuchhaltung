@@ -11,7 +11,7 @@ import ipaddress
 import json
 import socket
 import unicodedata
-from db import Database, MigrationBackupError, SchemaTooNewError
+from db import Database, DeleteRefused, MigrationBackupError, SchemaTooNewError
 from export.pdf_core import LOGO_CONTENT_TYPES, logo_extension
 import os
 import auth
@@ -230,12 +230,13 @@ def request_is_same_origin(headers):
 
 
 # Aktionen mit Seiteneffekt – nur per POST, siehe `_post_action_routes`; die
-# Parameter bleiben in der Query.
+# Parameter bleiben in der Query. `/masterdata/skr/add_standard` hat keinen.
 _ACTION_PATHS = frozenset({
     "/masterdata/articles/delete",
     "/masterdata/contacts/delete",
     "/masterdata/skr/delete",
     "/masterdata/skr/togglemenu",
+    "/masterdata/skr/add_standard",
     "/masterdata/bankaccounts/delete",
     "/receipts/delete",
     "/transactions/delete",
@@ -702,6 +703,17 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             return default
         return parts.path + ('?' + parts.query if parts.query else '')
 
+    def _respond_after_delete(self, delete, target, list_path, error_param):
+        """303 auf die Listenseite ``list_path`` nach ``delete(target)``. Lehnt das Löschen ab (``DeleteRefused``: andere
+        Daten verweisen auf den Datensatz), geht die Meldung als Query-Parameter ``error_param`` mit – die Seite zeigt
+        sie nur als JSON im Skriptblock über ``appMsg`` – und nichts ist gelöscht."""
+        location = list_path
+        try:
+            delete(target)
+        except DeleteRefused as exc:
+            location = f"{list_path}?{error_param}={quote(str(exc), safe='')}"
+        self.respond(303, "", headers={"Location": location})
+
     def _post_action_routes(self, db):
         """Aktionen mit Seiteneffekt (Löschen, Umschalten, Lösen). Parameter stehen
         in der Query, der Body trägt nur den CSRF-Token. Returns True, wenn die
@@ -719,29 +731,30 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             invalid = not number
         elif path == "/documents/unlink":
             invalid = doc_id is None or booking_id is None
+        elif path == "/masterdata/skr/add_standard":
+            invalid = False                         # die Aktion nennt keine ID
         else:
             invalid = item_id is None
         if invalid:
             self.respond(400, "Ungültige oder fehlende ID.", content_type="text/plain; charset=utf-8")
             return True
         if path == "/masterdata/articles/delete":
-            db.delete_article(item_id)
-            self.respond(303, "", headers={"Location": "/masterdata/articles"})
+            self._respond_after_delete(db.delete_article, item_id, "/masterdata/articles", "error")
         elif path == "/masterdata/contacts/delete":
-            db.delete_contact(item_id)
-            self.respond(303, "", headers={"Location": "/masterdata/contacts"})
+            self._respond_after_delete(db.delete_contact, item_id, "/masterdata/contacts", "error")
         elif path == "/masterdata/skr/delete":
             status_code, location = handlers.handle_delete_skr(db, item_id)
             self.respond(status_code, "", headers={"Location": location})
         elif path == "/masterdata/skr/togglemenu":
             status_code, location = handlers.handle_toggle_skr_menu(db, item_id)
             self.respond(status_code, "", headers={"Location": location})
+        elif path == "/masterdata/skr/add_standard":
+            added = db.add_missing_standard_accounts()
+            self.respond(303, "", headers={"Location": f"/masterdata/skr?added={added}"})
         elif path == "/masterdata/bankaccounts/delete":
-            db.delete_account(item_id)
-            self.respond(303, "", headers={"Location": "/masterdata/bankaccounts"})
+            self._respond_after_delete(db.delete_account, item_id, "/masterdata/bankaccounts", "error")
         elif path == "/receipts/delete":
-            db.delete_receipt(number)
-            self.respond(303, "", headers={"Location": "/receipts"})
+            self._respond_after_delete(db.delete_receipt, number, "/receipts", "err")
         elif path == "/transactions/delete":
             status_code, location = handlers.handle_delete_transaction(db, item_id)
             self.respond(status_code, "", headers={"Location": location})
@@ -759,8 +772,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 location = f"/assets/view?id={item_id}&err={quote(str(exc), safe='')}"
             self.respond(303, "", headers={"Location": location})
         elif path == "/asset_categories/delete":
-            db.delete_asset_category(item_id)
-            self.respond(303, "", headers={"Location": "/asset_categories"})
+            self._respond_after_delete(db.delete_asset_category, item_id, "/asset_categories", "err")
         elif path == "/worktime/delete":
             db.delete_worktime(item_id)
             person_id = qs['person'][0] if qs.get('person') else ''
@@ -1086,14 +1098,14 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
                 msg = qs.get('msg', [None])[0]
                 msg_type = qs.get('type', ['info'])[0]
-                self.respond(200, PageSkr(db, msg=msg, msg_type=msg_type))
+                self.respond(200, PageSkr(db, msg=msg, msg_type=msg_type, added=_int_param(qs, 'added')))
             elif self.path.startswith("/masterdata/skr/edit"):
                 self.respond(200, PageSkrEdit(db, _id_param(self._query())))
             elif self.path.startswith("/masterdata/skr/copy"):
                 self.respond(200, PageSkr(db, copy_from_id=_id_param(self._query())))
             # Bank Accounts
-            elif self.path == "/masterdata/bankaccounts":
-                self.respond(200, PageBankAccounts(db))
+            elif self.path == "/masterdata/bankaccounts" or self.path.startswith("/masterdata/bankaccounts?"):
+                self.respond(200, PageBankAccounts(db, error=self._query().get("error", [None])[0]))
             elif self.path.startswith("/masterdata/bankaccounts/edit"):
                 query_components = self._query()
                 account_id = _id_param(query_components)
@@ -1106,12 +1118,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     db, check_payments=qs.get("check_payments", [""])[0] == "1",
                     datev_confirm=qs.get("datev_export", [""])[0] == "confirm",
                     datev_from=qs.get("datev_from", [None])[0], datev_to=qs.get("datev_to", [None])[0],
-                    datev_check=qs.get("datev_check", [None])[0]))
+                    datev_check=qs.get("datev_check", [None])[0],
+                    testdata_refused=qs.get("testdata", [""])[0] == "refused"))
             elif self.path == "/receipts" or self.path.startswith("/receipts?"):
                 qs = self._query()
                 date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
-                self.respond(200, PageReceipts(db, date_from, date_to), headers=hdrs)
+                self.respond(200, PageReceipts(db, date_from, date_to, err=qs.get("err", [None])[0]), headers=hdrs)
             elif self.path.startswith("/receipts/edit"):
                 number = self._query().get("number", [""])[0]
                 self.respond(200, PageReceiptEdit(db, number))
@@ -1157,7 +1170,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 qc = self._query()
                 self.respond(200, PageAssetView(db, _id_param(qc), err=qc.get("err", [None])[0]))
             elif self.path == "/asset_categories" or self.path.startswith("/asset_categories?"):
-                self.respond(200, PageAssetCategories(db))
+                self.respond(200, PageAssetCategories(db, err=self._query().get("err", [None])[0]))
             elif self.path.startswith("/asset_categories/edit"):
                 self.respond(200, PageAssetCategoryEdit(db, _id_param(self._query())))
             # ── Zeiten / Arbeitszeiten ────────────────────────────────────

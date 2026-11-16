@@ -608,11 +608,13 @@ def _asset_form(db: Database, asset=None, parent_asset=None):
 
 # ─── PageAssetCategories ──────────────────────────────────────────────────────
 
-def PageAssetCategories(db: Database, edit_category_id=None):
+def PageAssetCategories(db: Database, edit_category_id=None, err=None):
     """AfA-Kategorien (Stammdaten): Übersicht links, Inline-Formular rechts.
 
     Bearbeiten lädt die Kategorie ins rechte Formular (wie PageArticles);
     ohne edit_category_id ist es ein leeres 'Neue Kategorie'-Formular.
+    ``err``: Klartext, warum eine Aktion abgelehnt wurde (z. B. eine Kategorie, die Anlagen verwenden, lässt sich nicht
+    löschen); er kommt aus der Adresse und erscheint nur als Meldung am Seitenrand (``appMsg``).
     """
     categories = db.fetch_asset_categories()
     coa_rows = db.fetch_chart_of_accounts()
@@ -726,6 +728,9 @@ def PageAssetCategories(db: Database, edit_category_id=None):
         }
     </script>
     '''
+    if err:
+        s += ('<script>document.addEventListener("DOMContentLoaded",function(){'
+              'appMsg(' + script_json(err) + ',"error");});</script>')
     s += Footer()
     return s
 

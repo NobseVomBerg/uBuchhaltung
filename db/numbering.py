@@ -144,10 +144,14 @@ class NumberRangeMixin:
     def delete_number_range(self, range_id):
         """Delete number range"""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM NumberRanges WHERE ID = ?', (range_id,))
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute('DELETE FROM NumberRanges WHERE ID = ?', (range_id,))
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
     def get_next_number(self, range_type, year, letter, prefix=''):
         """Get the next available number in a range and increment the counter
 

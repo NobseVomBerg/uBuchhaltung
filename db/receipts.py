@@ -7,6 +7,7 @@ import os
 import json
 from decimal import Decimal
 from money import to_minor, from_minor
+from .core import DeleteRefused, reference_texts
 
 
 class ReceiptsMixin:
@@ -55,9 +56,28 @@ class ReceiptsMixin:
         conn.close()
         return row
     def delete_receipt(self, number):
-        """Delete a receipt by number"""
+        """Beleg(e) mit dieser Nummer löschen – nicht, solange Buchungen, Anlagen oder Fahrten auf einen davon
+        verweisen (``DeleteRefused`` mit Klartext, nichts gelöscht). Prüfung und Löschen laufen in einer
+        Transaktion."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM Documents WHERE Number = ?', (number,))
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            used = reference_texts(conn, [
+                ('SELECT COUNT(DISTINCT Booking_ID) FROM BookingDocuments '
+                 'WHERE Document_ID IN (SELECT ID FROM Documents WHERE Number = ?)',
+                 (number,), 'Buchung', 'Buchungen'),
+                ('SELECT COUNT(*) FROM Assets WHERE Document_ID IN (SELECT ID FROM Documents WHERE Number = ?)',
+                 (number,), 'Anlage', 'Anlagen'),
+                ('SELECT COUNT(*) FROM Trips WHERE DocumentID IN (SELECT ID FROM Documents WHERE Number = ?)',
+                 (number,), 'Fahrt', 'Fahrten'),
+            ])
+            if used:
+                raise DeleteRefused('Der Beleg lässt sich nicht löschen, solange andere Daten auf ihn verweisen: '
+                                    + ', '.join(used) + '.')
+            conn.execute('DELETE FROM Documents WHERE Number = ?', (number,))
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()

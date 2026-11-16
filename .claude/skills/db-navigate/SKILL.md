@@ -21,7 +21,7 @@ Kontext bei moderatem Token-Einsatz. NIE alle Module gleichzeitig laden.
 |-------|--------|
 | `core.py` | `_CoreMixin`: Verbindung, Init-Guard, `_minor_opt`/`_euro_row` (Geld-Grenze), `_log_sql`, `get_table_statistics`, `export_to_sql`; freie Fn `coa_id`; Klassen-Attribute (`_initialized_dbs`, `_init_lock`, `_CONTACTS_QUERY`) |
 | `schema.py` | **alle CREATE TABLE** (`initialize_database`), `_create_extended_schema`, `ensure_kasse_exists` |
-| `seed.py` | Seed-/Testdaten, SKR-Konten, Steuerschlüssel, `load_test_seed_data`, `is_first_run` |
+| `seed.py` | Seed-/Testdaten, SKR-Konten, Steuerschlüssel, `load_test_seed_data`, `is_first_run`, `stock_is_empty`, `missing_standard_accounts`, `add_missing_standard_accounts` |
 | `bookings.py` | Buchungen, Buchungsgruppen, Booking↔Document, `fetch_bookings_grouped` |
 | `matching.py` | Bank↔Entry-Auto-Linking (`link_bank_to_entries`), `find_unlinked_*` |
 | `wiso_import.py` | WISO-CSV-Import (`import_wiso_csv`, `_import_wiso_*`) |

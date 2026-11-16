@@ -252,6 +252,32 @@ kein Subagent darauf:
   je Datenverzeichnis (`_exclusive`). Diese Reihenfolgen nie umdrehen. Nie gesichert, gelöscht oder überschrieben werden
   `backup/`, `users/`, `tests/` und `upload_tmp/` (`_EXCLUDED_DIRS`, eine Liste für alle drei Wege)
 
+### Stammdaten: Löschen, Testdaten, Standardkonten (seit 2.3.8)
+- **Gelöscht wird nur, worauf nichts verweist:** `delete_contact`, `delete_article`, `delete_account`, `delete_asset_category`
+  und `delete_receipt` prüfen die Verweise und löschen in EINER Transaktion (`BEGIN IMMEDIATE`); gibt es welche, werfen sie
+  `db.DeleteRefused` (Klartext mit Zählern, Baustein `db.core.reference_texts`), und nichts ist gelöscht. Das gilt auch für
+  Verweise, die das Schema per `ON DELETE CASCADE`/`SET NULL` mitnähme (Arbeitszeiten und Fahrten einer Person, der Beleg einer
+  Fahrt): Eine Person löscht nie still ihr Fahrtenbuch. Kontakt: Rechnungen/Angebote (Kunde oder eigene Firma), Buchungen,
+  Anlagen (Lieferant), zugeordnete Personen, Arbeitszeiten, Fahrten; Artikel: Positionen (mit dem Hinweis auf „inaktiv“, wenn er
+  aktiv ist); Bankkonto: Buchungen, Rechnungen, Angebote – die Kasse nie; AfA-Kategorie: Anlagen; Beleg: Buchungen, Anlagen,
+  Fahrten. Die Routen gehen über `_respond_after_delete` (`server/app.py`): 303 auf die Listenseite, die Meldung als
+  Query-Parameter (`error` bei Artikeln, Bankkonten, Kontakten; `err` bei AfA-Kategorien und Belegen), angezeigt nur über
+  `script_json` + `appMsg` – nie 500. Eine neue Verweisspalte auf eine dieser Tabellen gehört in die Prüfung ihrer
+  Löschmethode. Jede Löschmethode schließt ihre Verbindung auch im Fehlerfall (try/rollback/finally) – sonst bleibt die
+  Datenbank gesperrt
+- **Testdaten nur in einen leeren Bestand:** `handle_load_testdata` lädt nur, wenn `Database.stock_is_empty()` gilt (keine
+  Zeile in `Bookings`, `Invoices`, `Assets`; Stammdaten zählen nicht), sonst `/miscellaneous?testdata=refused` – aus der Adresse
+  kommt nur das Kennzeichen, der Satz steht fest im Code (`db.seed.TESTDATA_REFUSED`). Die Seite *Sonstiges* zeigt den Knopf
+  (mit Rückfrage, `appConfirmPost`) nur bei leerem Bestand. `load_test_seed_data` selbst prüft nichts (Ersteinrichtung, Tests,
+  Demodaten)
+- **Standardkonten ergänzt nur der Nutzer:** `_seed_chart_of_accounts` füllt allein eine leere Tabelle – der Kontenrahmen eines
+  bestehenden Bestands bleibt beim Öffnen, wie er ist (ein Standardkonto lässt sich nach Entfernen des Hakens löschen und käme
+  sonst bei jedem Start wieder). Was dem Bestand gegenüber den Seed-Dateien fehlt (nur Standardkonten; weder ID noch
+  Rahmen + Nummer vergeben), nennt `Database.missing_standard_accounts()` (rein lesend, Hinweis auf der Seite des
+  Kontenrahmens); angelegt wird es allein über `POST /masterdata/skr/add_standard` (`add_missing_standard_accounts`: eine
+  Transaktion, `INSERT OR IGNORE`, kein UPDATE, keine `overrides`, keine privaten Konten ohne Standard-Haken). `?added=` wird nur
+  als Zahl gelesen (0 bis `ADDED_MAX`), die Meldung ist fester Text
+
 ### Buchungssätze
 - Bankbewegung = Zeile `BookingType='bank'`; ihre Buchungssätze sind Kinder
   (`entry`, `ParentBooking_ID`) und tragen selbst kein `Account_ID`

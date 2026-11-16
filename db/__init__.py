@@ -6,7 +6,7 @@
 Die Database-Klasse wird aus Domaenen-Mixins komponiert; das oeffentliche
 Interface (from db import Database / coa_id) bleibt unveraendert.
 """
-from .core import _CoreMixin, coa_id
+from .core import _CoreMixin, DeleteRefused, coa_id
 from .schema import MigrationBackupError, SchemaMixin, SchemaTooNewError
 from .seed import SeedMixin
 from .receipts import ReceiptsMixin
@@ -34,4 +34,4 @@ class Database(SchemaMixin, SeedMixin, ReceiptsMixin, WorkTimesMixin, TripsMixin
     pass
 
 
-__all__ = ["Database", "MigrationBackupError", "SchemaTooNewError", "coa_id"]
+__all__ = ["Database", "DeleteRefused", "MigrationBackupError", "SchemaTooNewError", "coa_id"]

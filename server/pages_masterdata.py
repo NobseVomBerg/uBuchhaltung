@@ -316,7 +316,53 @@ from .pages_contacts import PageContacts, PageContactNew, PageContactEdit  # noq
 # SKR (Chart of Accounts)
 # ══════════════════════════════════════════════════════════════════════
 
-def PageSkr(db: Database, edit_id=None, copy_from_id=None, msg=None, msg_type='info'):
+#: Wie viele fehlende Standardkonten der Hinweis über der Liste der Kontenrahmen beim Namen nennt (der Rest als Zahl)
+MISSING_NAMES_SHOWN = 20
+
+#: Mehr Standardkonten bringen die Seed-Dateien nicht mit: Ein größerer Wert in ``?added=`` gilt als nicht angegeben
+ADDED_MAX = 1000
+
+
+def _missing_standard_box(missing):
+    """Hinweiskasten über der Liste der Kontenrahmen, wenn dem Bestand Standardkonten der Seed-Dateien fehlen
+    (``Database.missing_standard_accounts``: ``[(Nummer, Name)]``) – sonst ein leerer Text. Er nennt höchstens
+    ``MISSING_NAMES_SHOWN`` Konten, den Rest als Zahl, und bietet „Standardkonten ergänzen“ an (``POST
+    /masterdata/skr/add_standard``, mit Rückfrage). Alles ist maskiert; die Rückfrage trägt nur die Zahl."""
+    if not missing:
+        return ''
+    count = len(missing)
+    names = ', '.join(f'{_html.escape(str(number))} {_html.escape(str(name or ""))}'.rstrip()
+                      for number, name in missing[:MISSING_NAMES_SHOWN])
+    if count > MISSING_NAMES_SHOWN:
+        names += f' und {count - MISSING_NAMES_SHOWN} weitere'
+    if count == 1:
+        lead = 'Im Kontenrahmen dieses Bestands fehlt 1 Standardkonto der aktuellen Version: '
+        question = 'Das fehlende Standardkonto anlegen? Vorhandene Konten bleiben unverändert.'
+    else:
+        lead = f'Im Kontenrahmen dieses Bestands fehlen {count} Standardkonten der aktuellen Version: '
+        question = f'Die {count} fehlenden Standardkonten anlegen? Vorhandene Konten bleiben unverändert.'
+    return ('<div class="rectRounded">'
+            f'<p>{lead}{names}.</p>'
+            '<button type="button" class="coloredButton btn-sm bg-blue" '
+            f"onclick=\"appConfirmPost('/masterdata/skr/add_standard', '{_html.escape(question, quote=True)}')\">"
+            'Standardkonten ergänzen</button>'
+            '</div>')
+
+
+def _added_flash(added):
+    """Meldung zu ``?added=<n>`` (so leitet ``POST /masterdata/skr/add_standard`` zurück): ``(Text, Art)`` mit FESTEM Text –
+    aus der Adresse kommt nur die Zahl. ``added`` ist die als ganze Zahl gelesene Angabe (``None``: fehlt oder keine Zahl);
+    eine negative oder zu große Zahl gilt als nicht angegeben: ``(None, 'info')``."""
+    if type(added) is not int or not 0 <= added <= ADDED_MAX:
+        return None, 'info'
+    if added == 0:
+        return 'Es fehlte kein Standardkonto.', 'success'
+    if added == 1:
+        return '1 Standardkonto ergänzt.', 'success'
+    return f'{added} Standardkonten ergänzt.', 'success'
+
+
+def PageSkr(db: Database, edit_id=None, copy_from_id=None, msg=None, msg_type='info', added=None):
     """SKR-Kontenrahmen (Stammdaten): Übersicht links, Inline-Formular rechts.
 
     Modi: Bearbeiten (edit_id) lädt ein vorhandenes Konto – Rahmen/Nummer sind
@@ -324,8 +370,13 @@ def PageSkr(db: Database, edit_id=None, copy_from_id=None, msg=None, msg_type='i
     (copy_from_id) öffnet ein leeres Anlegen-Formular, vorbefüllt mit den Werten
     der Quelle und der nächsten freien Nummer. Ohne beides: leeres Neu-Formular.
     Standard-Konten sind bis auf Privatanteil und Menü-Sichtbarkeit schreibgeschützt.
+
+    Fehlen dem Bestand Standardkonten der Seed-Dateien (``Database.missing_standard_accounts``), steht über der Liste ein
+    Hinweis mit dem Knopf „Standardkonten ergänzen“; die Seite liest dafür nur. ``added``: die Zahl aus ``?added=`` nach
+    dem Ergänzen (nur als ganze Zahl gelesen), die Seite meldet sie mit festem Text.
     """
     rows = db.fetch_chart_of_accounts()
+    missing_box = _missing_standard_box(db.missing_standard_accounts())
 
     # ChartOfAccounts (SELECT *): [0]ID [1]Framework-Nr [2]Konto [3]Name
     #               [4]Gruppe [5]IsStandard [6]PrivateSharePercent [7]ShowInMenu
@@ -387,7 +438,9 @@ def PageSkr(db: Database, edit_id=None, copy_from_id=None, msg=None, msg_type='i
     s += Header2(submenu)
     s += Header3()
 
-    # Flash (z. B. Lösch-Hinweis) – erst nach DOMContentLoaded (appMsg kommt aus Footer)
+    # Flash (z. B. Lösch-Hinweis, Zahl der ergänzten Standardkonten) – erst nach DOMContentLoaded (appMsg kommt aus Footer)
+    if not msg:
+        msg, msg_type = _added_flash(added)
     if msg:
         from server.pages import script_json
         # msg kommt aus der Adresse: nur als JSON in den Skriptblock (script_json maskiert
@@ -434,6 +487,7 @@ def PageSkr(db: Database, edit_id=None, copy_from_id=None, msg=None, msg_type='i
         </div>
     </div>
     <div class="gridLeftCol" style="order:1">
+        {missing_box}
         <table>
             <tr><th>ID</th><th>SKR-Nr.</th><th>Konto</th><th>Name</th><th>Gruppe</th><th>Privatanteil %</th><th>Standard</th><th>Aktionen</th></tr>
     '''

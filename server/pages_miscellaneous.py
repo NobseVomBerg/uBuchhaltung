@@ -8,6 +8,7 @@ import html as _html
 import re
 import demo as _demo
 from db import Database
+from db.seed import TESTDATA_REFUSED
 from db.wiso_fdb_import import MAX_ADOPTED_ROWS, MAX_LIQUID_SUBACCOUNTS
 from money import fmt_eur
 from . import wiso_upload as _wiso_upload
@@ -100,6 +101,11 @@ STOCK_NOTICE_WISO_ROWS = ('Es gibt bereits {n} Buchungen aus einem Import der WI
                           'müssen von Hand bereinigt werden; in WISO nachträglich geänderte Beträge übernimmt der Import '
                           'nicht.')
 STOCK_CONFIRM_LABEL = 'Trotzdem in den vorhandenen Bestand importieren'
+
+#: Der Dauerhinweis im Kasten „Testdaten laden“, solange der Bestand nicht leer ist: der Satz der Ablehnung
+#: (``db.seed.TESTDATA_REFUSED``) samt Klammer, was ein leerer Bestand ist. Nach einer Ablehnung steht er in Rot.
+TESTDATA_NOTICE = ('Der Bestand ist nicht leer – Testdaten lassen sich nur in einen leeren Bestand laden '
+                   '(keine Buchungen, Rechnungen, Angebote und Anlagen).')
 
 
 def _wiso_stock_confirmation(stock):
@@ -278,12 +284,15 @@ def _import_notices(result):
 
 
 def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm: bool = False,
-                      datev_from=None, datev_to=None, datev_check=None):
+                      datev_from=None, datev_to=None, datev_check=None, testdata_refused: bool = False):
     """Generate Sonstiges page (database overview, SQL console, misc tools).
 
     ``check_payments``: die Prüfliste der Zahlungszuordnungen mit anzeigen. Sie läuft nur auf
     Klick (``?check_payments=1``), nicht bei jedem Laden der Seite – bei einem großen Bestand
     braucht sie einen Moment.
+
+    ``testdata_refused``: „Testdaten laden“ wurde abgelehnt, weil der Bestand nicht leer ist (``?testdata=refused``).
+    Die Seite nennt dann den festen Satz ``db.seed.TESTDATA_REFUSED`` – aus der Adresse kommt nur das Kennzeichen, nie Text.
 
     ``datev_confirm``, ``datev_from``, ``datev_to``, ``datev_check``: Der DATEV-Export hat Hinweise zum Stapel gemeldet
     (``?datev_export=confirm&datev_from=…&datev_to=…&datev_check=…``). Sind beide Daten ISO-Daten im selben Jahr und die
@@ -991,15 +1000,25 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
     s += '\t</div>'
 
     # ── Testdaten ─────────────────────────────────────────────────────────────
+    # Nur in einen leeren Bestand (``Database.stock_is_empty``), mit Rückfrage; die Route (``handle_load_testdata``)
+    # prüft es noch einmal. Die Sätze stehen fest im Code, nie aus der Adresse.
     s += '\t<div class="rectRounded">'
-    s += '''
-        <h2>🧪 Testdaten</h2>
-        <p>Lädt alle Testdaten aus <code>seed_data/test/</code> nach (Artikel, Kontakte, Anlagen, Rechnungen, ...).<br>
-        Der Vorgang ist <strong>idempotent</strong> – bereits vorhandene Einträge werden übersprungen.</p>
-        <form method="POST" action="/setup/load_testdata">
-            <button type="submit" class="coloredButton bg-orange">🧪 Testdaten nachladen</button>
-        </form>
+    s += '<h2>🧪 Testdaten laden</h2>'
+    if db.stock_is_empty():
+        if testdata_refused:
+            # Der Bestand wurde seit der Ablehnung geleert: Der Satz der Ablehnung steht trotzdem da
+            s += f'<p class="errorColor">{_html.escape(TESTDATA_REFUSED)}</p>'
+        s += '''
+        <p>Lädt Beispiel-Kontakte, -Artikel, -Rechnungen, -Buchungen und -Anlagen aus <code>seed_data/test/</code>
+        in diesen leeren Bestand.</p>
+        <button type="button" class="coloredButton bg-orange"
+                onclick="appConfirmPost('/setup/load_testdata', 'Testdaten laden? Es entstehen Beispiel-Kontakte, -Rechnungen, -Buchungen und -Anlagen in diesem Bestand.')">🧪 Testdaten laden</button>
         '''
+    else:
+        # EIN Satz: der Dauerhinweis, der den Satz der Ablehnung (``TESTDATA_REFUSED``) um die Klammer ergänzt; nach einer
+        # Ablehnung derselbe Absatz in Rot statt als Randbemerkung
+        s += (f'<p class="{"errorColor" if testdata_refused else "hint"}">'
+              f'{_html.escape(TESTDATA_NOTICE)}</p>')
     s += '\t</div>'
 
     # ── Datensicherung ────────────────────────────────────────────────────────

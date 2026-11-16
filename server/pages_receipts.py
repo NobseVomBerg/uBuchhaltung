@@ -9,7 +9,7 @@ import html as _html
 from urllib.parse import quote
 from db import Database
 from money import fmt_eur
-from .pages import Header1, Header2, Header3, Footer
+from .pages import Header1, Header2, Header3, Footer, script_json
 from .period import period_filter_widget
 
 
@@ -18,8 +18,11 @@ def _esc(value):
     return _html.escape(str(value if value is not None else ''), quote=True)
 
 
-def PageReceipts(db: Database, date_from=None, date_to=None):
-    """Generate receipts page with upload functionality"""
+def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
+    """Generate receipts page with upload functionality
+
+    ``err``: Klartext, warum eine Aktion abgelehnt wurde (z. B. ein Beleg, auf den Buchungen verweisen, lässt sich
+    nicht löschen); er kommt aus der Adresse und erscheint nur als Meldung am Seitenrand (``appMsg``)."""
     current_year = datetime.datetime.now().year
 
     rows = db.fetch_receipts()
@@ -248,6 +251,9 @@ def PageReceipts(db: Database, date_from=None, date_to=None):
         }
     </script>
     '''
+    if err:
+        s += ('<script>document.addEventListener("DOMContentLoaded",function(){'
+              'appMsg(' + script_json(err) + ',"error");});</script>')
     s+= Footer()
     return s
 
