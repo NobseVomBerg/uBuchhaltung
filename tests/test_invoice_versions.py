@@ -36,7 +36,11 @@ from tests.dom_helpers import Dom
 from tests.invoice_world import (build_world, columns, make_invoice, make_payload, run_sql, save,
                                  set_invoice_status, snapshot)
 
-TODAY = datetime.date.today().isoformat()
+
+def today():
+    """Der Tag von jetzt (JJJJ-MM-TT) – bei jedem Aufruf frisch, nie beim Import festgehalten: Die Suite läuft
+    Minuten, und über Mitternacht stünde in den Dateinamen der Fassungen schon der nächste Tag."""
+    return datetime.date.today().isoformat()
 
 
 @pytest.fixture
@@ -108,7 +112,8 @@ def test_reopening_moves_the_sent_documents_into_the_versions_folder(world):
     assert not os.path.exists(pdf) and not os.path.exists(xml)           # verschoben, nicht kopiert
 
     stem = os.path.splitext(os.path.basename(pdf))[0]
-    names = [f'{stem} – versendet bis {TODAY}.pdf', f'{stem} – versendet bis {TODAY}.xml']
+    day = today()
+    names = [f'{stem} – versendet bis {day}.pdf', f'{stem} – versendet bis {day}.xml']
     assert archived(invoice_id) == sorted(names)
     assert read_file(os.path.join(folder(invoice_id), names[0])) == sent_pdf     # byte-gleich
     assert read_file(os.path.join(folder(invoice_id), names[1])) == sent_xml
@@ -239,7 +244,7 @@ def test_reopening_twice_leaves_two_versions(world):
     assert len(names) == 4                                                              # PDF und XML, zweimal
     stem = os.path.splitext(os.path.basename(
         next(n for n in names if n.endswith('.pdf'))))[0]
-    assert f'{stem[:stem.index(" – versendet")]} – versendet bis {TODAY} (2).pdf' in names   # Zähler bei Kollision
+    assert f'{stem[:stem.index(" – versendet")]} – versendet bis {today()} (2).pdf' in names   # Zähler bei Kollision
 
 
 def test_a_taken_name_gets_a_counter_instead_of_being_overwritten(world):
@@ -248,10 +253,10 @@ def test_a_taken_name_gets_a_counter_instead_of_being_overwritten(world):
     send(invoice_id)
     pdf, _xml = stored(world, invoice_id)
     stem = os.path.splitext(os.path.basename(pdf))[0]
-    taken = write_file(os.path.join(folder(invoice_id), f'{stem} – versendet bis {TODAY}.pdf'), b'Vorgefunden')
+    taken = write_file(os.path.join(folder(invoice_id), f'{stem} – versendet bis {today()}.pdf'), b'Vorgefunden')
     assert reopen(invoice_id)[0] == 200
     assert read_file(taken) == b'Vorgefunden'
-    assert f'{stem} – versendet bis {TODAY} (2).pdf' in archived(invoice_id)
+    assert f'{stem} – versendet bis {today()} (2).pdf' in archived(invoice_id)
 
 
 # ── Pfade ausserhalb, Fehler beim Verschieben ─────────────────────────────────

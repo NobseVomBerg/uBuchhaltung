@@ -29,7 +29,6 @@ from server.pages_assets import EXTENSION_FORM_HINT, EXTENSION_HINT, PageAssetEd
 from tests.dom_helpers import Dom, app_msg_arguments
 from tests.http_client import get, own_origin, post
 
-THIS_YEAR = datetime.date.today().year
 OLD_KEYS = ('year', 'book_value_start', 'depreciation', 'book_value_end', 'method')
 REFUSED_BOOKING = 'Die AfA einer Erweiterung läuft über die Hauptanlage – bitte dort buchen.'
 NO_EXTENSION_OF_AN_EXTENSION = 'Eine Erweiterung kann keine eigene Erweiterung bekommen.'
@@ -40,6 +39,12 @@ EVIL_DATE = '2021-01-01"><img src=x onerror=1>'
 
 
 # ── Hilfen ───────────────────────────────────────────────────────────────────
+
+def this_year():
+    """Das Jahr von jetzt – bei jedem Aufruf frisch, nie beim Import festgehalten: Die Suite läuft Minuten, und
+    über den Jahreswechsel rechnete die App sonst mit einem anderen Jahr als die Tests."""
+    return datetime.date.today().year
+
 
 def _coa(db, number):
     return db.get_coa_id_by_account_number(number)
@@ -534,13 +539,13 @@ def test_the_acquisition_cost_counts_the_extensions_up_to_the_year(world):
 
 def test_the_acquisition_cost_of_an_extension_is_its_own_price_and_defaults_to_the_current_year(world):
     db = world.db
-    main = _asset(world, f'{THIS_YEAR - 1}-01-10', 1234.56, 5)
-    now = _extension(world, main, f'{THIS_YEAR}-02-01', 0.01)
-    _extension(world, main, f'{THIS_YEAR + 1}-02-01', 800.0)
+    main = _asset(world, f'{this_year() - 1}-01-10', 1234.56, 5)
+    now = _extension(world, main, f'{this_year()}-02-01', 0.01)
+    _extension(world, main, f'{this_year() + 1}-02-01', 800.0)
 
     assert db.acquisition_cost(now) == 0.01
     assert db.acquisition_cost(main) == 1234.57                       # ohne Angabe: bis zum laufenden Jahr
-    assert db.acquisition_cost(main, THIS_YEAR + 1) == 2034.57
+    assert db.acquisition_cost(main, this_year() + 1) == 2034.57
 
 
 # ── Löschen, Abgang und Status einer Erweiterung ─────────────────────────────
@@ -681,9 +686,9 @@ def test_the_handler_gives_the_refusal_of_a_disposal_back_to_the_page_of_the_ext
 
 def test_the_page_of_an_extension_has_no_form_for_the_disposal(world):
     db = world.db
-    main = _asset(world, f'{THIS_YEAR}-01-10', 6000.0, 6)
-    extension = _extension(world, main, f'{THIS_YEAR}-03-01', 1200.0)
-    own = _own_asset_under(world, main, f'{THIS_YEAR}-06-01', 600.0)
+    main = _asset(world, f'{this_year()}-01-10', 6000.0, 6)
+    extension = _extension(world, main, f'{this_year()}-03-01', 1200.0)
+    own = _own_asset_under(world, main, f'{this_year()}-06-01', 600.0)
 
     assert 'id="sell_form"' not in PageAssetView(db, extension) and 'Abgang buchen' not in PageAssetView(db, extension)
     assert 'id="sell_form"' in PageAssetView(db, main) and 'id="sell_form"' in PageAssetView(db, own)
@@ -927,9 +932,9 @@ def _children_box(html):
 
 def test_the_page_of_the_main_asset_shows_the_extension_without_a_book_value_and_the_hint(world):
     db = world.db
-    main = _asset(world, f'{THIS_YEAR - 1}-01-10', 6000.0, 6)
-    own = _own_asset_under(world, main, f'{THIS_YEAR - 1}-06-01', 1500.0)
-    _extension(world, main, f'{THIS_YEAR}-02-01', 1200.0)
+    main = _asset(world, f'{this_year() - 1}-01-10', 6000.0, 6)
+    own = _own_asset_under(world, main, f'{this_year() - 1}-06-01', 1500.0)
+    _extension(world, main, f'{this_year()}-02-01', 1200.0)
 
     box = _children_box(PageAssetView(db, main))
     rows = {name: next(row for row in box.split('<tr>') if f'<td>{name}</td>' in row)
@@ -945,8 +950,8 @@ def test_the_page_of_the_main_asset_shows_the_extension_without_a_book_value_and
 
 def test_the_page_of_an_extension_points_to_the_main_asset_and_offers_no_booking(world):
     db = world.db
-    main = _asset(world, f'{THIS_YEAR}-01-10', 6000.0, 6)
-    extension = _extension(world, main, f'{THIS_YEAR}-03-01', 1200.0)
+    main = _asset(world, f'{this_year()}-01-10', 6000.0, 6)
+    extension = _extension(world, main, f'{this_year()}-03-01', 1200.0)
 
     html = PageAssetView(db, extension)
 
@@ -960,8 +965,8 @@ def test_the_page_of_an_extension_points_to_the_main_asset_and_offers_no_booking
 
 def test_a_main_asset_offers_the_extension_link_and_an_extension_with_its_own_booked_year_does_not(world):
     db = world.db
-    main = _asset(world, f'{THIS_YEAR}-01-10', 6000.0, 6)
-    own = _own_asset_under(world, main, f'{THIS_YEAR}-06-01', 600.0)
+    main = _asset(world, f'{this_year()}-01-10', 6000.0, 6)
+    own = _own_asset_under(world, main, f'{this_year()}-06-01', 600.0)
 
     assert f'/assets/new?parent_id={main}' in PageAssetView(db, main)
     assert '+ Erweiterung hinzufügen' not in PageAssetView(db, own)   # auch der Bestand bekommt keine eigene Erweiterung
@@ -969,18 +974,18 @@ def test_a_main_asset_offers_the_extension_link_and_an_extension_with_its_own_bo
 
 def test_the_page_of_an_extension_with_its_own_booked_year_keeps_its_plan_table(world):
     db = world.db
-    main = _asset(world, f'{THIS_YEAR}-01-10', 6000.0, 6)
-    own = _own_asset_under(world, main, f'{THIS_YEAR}-06-01', 600.0)
+    main = _asset(world, f'{this_year()}-01-10', 6000.0, 6)
+    own = _own_asset_under(world, main, f'{this_year()}-06-01', 600.0)
 
     html = PageAssetView(db, own)
 
     assert 'Buchwert Anfang' in html and 'Die AfA dieser Erweiterung läuft über die Hauptanlage.' not in html
-    assert '✓ Gebucht' in _plan_by_year(html)[THIS_YEAR]
+    assert '✓ Gebucht' in _plan_by_year(html)[this_year()]
 
 
 def test_the_form_of_a_new_extension_names_the_main_asset_and_the_rule(world):
     db = world.db
-    main = _asset(world, f'{THIS_YEAR}-01-10', 6000.0, 6, name='Hauptanlage <b>Probe</b>')
+    main = _asset(world, f'{this_year()}-01-10', 6000.0, 6, name='Hauptanlage <b>Probe</b>')
 
     html = PageAssetEdit(db, parent_id=main)
 
@@ -992,16 +997,16 @@ def test_the_form_of_a_new_extension_names_the_main_asset_and_the_rule(world):
 
 def test_the_list_shows_the_acquisition_cost_with_the_extensions_of_the_year_and_the_matching_book_value(world):
     db = world.db
-    main = _asset(world, f'{THIS_YEAR}-01-10', 1800.0, 3)
-    _extension(world, main, f'{THIS_YEAR}-03-01', 600.0)
-    later = _asset(world, f'{THIS_YEAR}-01-10', 900.0, 3, name='Anlage Spaeter')
-    _extension(world, later, f'{THIS_YEAR + 1}-03-01', 300.0, 'Spaetere Erweiterung')   # kommt erst nächstes Jahr dazu
+    main = _asset(world, f'{this_year()}-01-10', 1800.0, 3)
+    _extension(world, main, f'{this_year()}-03-01', 600.0)
+    later = _asset(world, f'{this_year()}-01-10', 900.0, 3, name='Anlage Spaeter')
+    _extension(world, later, f'{this_year() + 1}-03-01', 300.0, 'Spaetere Erweiterung')   # kommt erst nächstes Jahr dazu
 
     html = PageAssets(db)
 
     # 1.800 + 600 (im Kaufjahr: ab dem Kaufmonat, 800 € im Jahr) und 900 (die Erweiterung zählt ab dem nächsten Jahr)
     assert 'Anschaffungskosten (aktiv): 3.300,00 €' in html
-    assert f'AfA {THIS_YEAR} gebucht: 0,00 € | AfA {THIS_YEAR} geplant: 1.100,00 €' in html     # 800 + 300
+    assert f'AfA {this_year()} gebucht: 0,00 € | AfA {this_year()} geplant: 1.100,00 €' in html     # 800 + 300
     assert 'Gesamtrestbuchwert: 2.200,00 €' in html                                            # 1.600 + 600
     row = next(row for row in html.split('<tr>') if '>Hauptanlage Probe<' in row)
     assert '2.400,00' in row and '1.600,00' in row

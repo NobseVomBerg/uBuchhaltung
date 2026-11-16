@@ -33,8 +33,8 @@ from export.pdf_invoice import generate_invoice_pdf
 from server.pages_invoice import PageInvoice
 from server.pages_quote import PageQuote
 from tests.document_helpers import (CUSTOMER, INVOICE_NUMBER, PDF, PDF_PATH, QUOTE_NUMBER, XML_PATH,
-                                    YEAR, add_contacts, add_document, fake_smtp, make_books, post_json,
-                                    read_file, row, set_column, write_file)
+                                    add_contacts, add_document, fake_smtp, make_books, post_json,
+                                    quote_year, read_file, row, set_column, write_file)
 from tests.dom_helpers import Dom
 from tests.http_client import get
 
@@ -143,7 +143,7 @@ def test_stored_path_outside_falls_back_to_the_file_at_the_naming_scheme(world, 
     doc = doc_of(world, kind)
     set_column(world.db, doc, 'PDFPath', world.foreign)
     folder = os.path.join(world.invoices if kind == 'invoice' else world.quotes,
-                          '2026' if kind == 'invoice' else YEAR)
+                          '2026' if kind == 'invoice' else quote_year())
     stored = write_file(os.path.join(folder, STEM[kind] + '.pdf'), PDF)
     assert stored_invoice_path(world.db, doc, 'pdf') == (stored, None)
     assert stored_invoice_document(world.db, doc, 'pdf')[0] == PDF            # nicht die fremde Datei
@@ -156,7 +156,7 @@ def test_paths_inside_the_documents_folder_are_accepted(world):
     assert path_in_documents(plain, invoice) is True
     assert path_in_documents(plain) is True                                    # ohne Beleg gilt der Rechnungsordner
     assert path_in_documents(os.path.join(world.invoices, '2026', '..', '2025', 'b.pdf'), invoice) is True
-    assert path_in_documents(write_file(os.path.join(world.quotes, YEAR, 'a.pdf')), quote) is True
+    assert path_in_documents(write_file(os.path.join(world.quotes, quote_year(), 'a.pdf')), quote) is True
     # ein Symlink im Ordner, der auf eine Datei im Ordner zeigt, bleibt im Ordner
     assert path_in_documents(symlink(plain, os.path.join(world.invoices, '2026', 'alias.pdf')), invoice) is True
 
@@ -208,7 +208,7 @@ def test_lists_and_forms_offer_a_document_inside_the_folder(world):
     set_column(world.db, world.invoice, 'XMLPath',
                write_file(os.path.join(world.invoices, '2026', f'{STEM["invoice"]}.xml'), b'<Invoice/>'))
     set_column(world.db, world.quote, 'PDFPath',
-               write_file(os.path.join(world.quotes, YEAR, f'{STEM["quote"]}.pdf'), PDF))
+               write_file(os.path.join(world.quotes, quote_year(), f'{STEM["quote"]}.pdf'), PDF))
     invoice_list, invoice_form, quote_list, quote_form = _offers(world)
     assert invoice_list == [(str(world.invoice), 'true', 'true')] and invoice_form == ('true', 'true')
     assert quote_list == [(str(world.quote), 'true')] and quote_form == 'true'
@@ -494,7 +494,7 @@ def test_a_symlink_at_the_naming_scheme_leading_out_of_the_folder_is_not_a_docum
 
 
 def test_a_symlink_at_the_naming_scheme_of_a_quote_is_not_a_document(world):
-    symlink(world.foreign, os.path.join(world.quotes, YEAR, f'{STEM["quote"]}.pdf'))
+    symlink(world.foreign, os.path.join(world.quotes, quote_year(), f'{STEM["quote"]}.pdf'))
     assert stored_invoice_path(world.db, world.quote, 'pdf') == (None, NOT_PRESENT['quote'])
 
 
@@ -508,7 +508,7 @@ def test_a_year_folder_that_is_a_symlink_out_of_the_quote_folder_is_skipped(worl
 
 def test_symlink_at_the_naming_scheme_is_404_over_http(server_port, books):
     symlink(books.foreign, os.path.join(books.invoices, '2026', f'{STEM["invoice"]}.pdf'))
-    symlink(books.foreign, os.path.join(books.quotes, YEAR, f'{STEM["quote"]}.pdf'))
+    symlink(books.foreign, os.path.join(books.quotes, quote_year(), f'{STEM["quote"]}.pdf'))
     invoice = get(server_port, DOWNLOAD['invoice'].format(books.invoice))
     quote = get(server_port, DOWNLOAD['quote'].format(books.quote))
     assert (invoice.status, invoice.text) == (404, NOT_PRESENT['invoice'])

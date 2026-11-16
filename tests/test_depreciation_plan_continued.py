@@ -33,11 +33,16 @@ from db.matching import depreciation_effect
 from money import to_minor
 from server.pages_assets import PageAssets, PageAssetView, _method_label
 
-THIS_YEAR = datetime.date.today().year
 OLD_KEYS = ('year', 'book_value_start', 'depreciation', 'book_value_end', 'method')
 
 
 # ── Hilfen ───────────────────────────────────────────────────────────────────
+
+def this_year():
+    """Das Jahr von jetzt – bei jedem Aufruf frisch, nie beim Import festgehalten: Die Suite läuft Minuten, und
+    über den Jahreswechsel rechnete die App sonst mit einem anderen Jahr als die Tests."""
+    return datetime.date.today().year
+
 
 def _coa(db, number):
     return db.get_coa_id_by_account_number(number)
@@ -923,7 +928,7 @@ def _plan_by_year(html):
 
 def _page_asset(world):
     """Zehn Jahre ab fünf Jahren vor heute, fünf Jahre je 1.000 € als importiert gebucht, Preis jetzt 15.000 €."""
-    first = THIS_YEAR - 5
+    first = this_year() - 5
     asset = _asset(world, f'{first}-01-10', 15000.0, 10, name='Anlage Seite')
     _import_years(world.db, asset, first, [1000.0] * 5, 10000.0)
     return asset, first
@@ -936,14 +941,14 @@ def test_the_asset_page_shows_the_booked_amount_for_booked_years_and_the_plan_fo
     plan = _plan_by_year(PageAssetView(db, asset))
 
     assert set(plan) == set(range(first, first + 10))
-    for year in range(first, THIS_YEAR):
+    for year in range(first, this_year()):
         assert '1.000,00' in plan[year] and '✓ Gebucht' in plan[year] and 'Wie gebucht' in plan[year], year
         assert 'AfA buchen' not in plan[year]
-    assert '2.000,00' in plan[THIS_YEAR] and 'Linear' in plan[THIS_YEAR]
-    assert '● Laufendes Jahr' in plan[THIS_YEAR] and f'id="depr_form_{asset}_{THIS_YEAR}"' in plan[THIS_YEAR]
-    assert '10.000,00' in plan[THIS_YEAR] and '8.000,00' in plan[THIS_YEAR]            # Buchwert Anfang und Ende
+    assert '2.000,00' in plan[this_year()] and 'Linear' in plan[this_year()]
+    assert '● Laufendes Jahr' in plan[this_year()] and f'id="depr_form_{asset}_{this_year()}"' in plan[this_year()]
+    assert '10.000,00' in plan[this_year()] and '8.000,00' in plan[this_year()]            # Buchwert Anfang und Ende
     assert '15.000,00' in plan[first] and '14.000,00' in plan[first]                   # gebuchtes Jahr: vom Preis
-    assert '○ Geplant' in plan[THIS_YEAR + 1] and '2.000,00' in plan[THIS_YEAR + 1]
+    assert '○ Geplant' in plan[this_year() + 1] and '2.000,00' in plan[this_year() + 1]
     assert '0,00' in plan[first + 9]
 
 
@@ -951,29 +956,29 @@ def test_the_asset_page_offers_the_booking_only_at_the_first_open_year_of_the_co
     """Mehrere offene Jahre liegen in der Vergangenheit bzw. laufen: Die Seite bietet den Knopf nur am ersten an,
     die übrigen zeigen ihren Status ohne Knopf (vergangene weiter „Nicht gebucht“)."""
     db = world.db
-    first = THIS_YEAR - 5
+    first = this_year() - 5
     asset = _asset(world, f'{first}-01-10', 15000.0, 10, name='Anlage Seite')
-    _import_years(db, asset, first, [1000.0] * 2, 10000.0)                          # offen: ab THIS_YEAR - 3
+    _import_years(db, asset, first, [1000.0] * 2, 10000.0)                          # offen: ab this_year() - 3
 
     html = PageAssetView(db, asset)
     plan = _plan_by_year(html)
 
     assert html.count('AfA buchen</button>') == 1
-    assert '⚠ Nicht gebucht' in plan[THIS_YEAR - 3] and f'id="depr_form_{asset}_{THIS_YEAR - 3}"' in plan[THIS_YEAR - 3]
-    for year in (THIS_YEAR - 2, THIS_YEAR - 1):
+    assert '⚠ Nicht gebucht' in plan[this_year() - 3] and f'id="depr_form_{asset}_{this_year() - 3}"' in plan[this_year() - 3]
+    for year in (this_year() - 2, this_year() - 1):
         assert '⚠ Nicht gebucht' in plan[year] and 'AfA buchen' not in plan[year], year
-    assert '● Laufendes Jahr' in plan[THIS_YEAR] and 'AfA buchen' not in plan[THIS_YEAR]
-    assert '○ Geplant' in plan[THIS_YEAR + 1]
-    _book(world, asset, THIS_YEAR - 3)                                              # nach dem Buchen: das nächste Jahr
+    assert '● Laufendes Jahr' in plan[this_year()] and 'AfA buchen' not in plan[this_year()]
+    assert '○ Geplant' in plan[this_year() + 1]
+    _book(world, asset, this_year() - 3)                                              # nach dem Buchen: das nächste Jahr
     html = PageAssetView(db, asset)
     assert html.count('AfA buchen</button>') == 1
-    assert f'id="depr_form_{asset}_{THIS_YEAR - 2}"' in _plan_by_year(html)[THIS_YEAR - 2]
+    assert f'id="depr_form_{asset}_{this_year() - 2}"' in _plan_by_year(html)[this_year() - 2]
 
 
 def test_the_asset_page_offers_every_open_year_of_an_asset_kept_only_in_the_app(world):
     """Eine nur in der App geführte Anlage bleibt, wie sie war: jedes vergangene und das laufende Jahr buchbar."""
     db = world.db
-    asset = _asset(world, f'{THIS_YEAR - 3}-01-10', 4000.0, 8, name='Anlage Nur App')
+    asset = _asset(world, f'{this_year() - 3}-01-10', 4000.0, 8, name='Anlage Nur App')
 
     html = PageAssetView(db, asset)
 
@@ -983,14 +988,14 @@ def test_the_asset_page_offers_every_open_year_of_an_asset_kept_only_in_the_app(
 def test_the_asset_page_offers_no_booking_after_the_disposal_in_the_continuation(world):
     db = world.db
     asset, first = _page_asset(world)
-    db.sell_asset(asset, f'{THIS_YEAR}-06-30', 3000.0)
+    db.sell_asset(asset, f'{this_year()}-06-30', 3000.0)
 
     html = PageAssetView(db, asset)
     plan = _plan_by_year(html)
 
-    assert 'AfA buchen' in plan[THIS_YEAR]
-    assert set(plan) == set(range(first, THIS_YEAR + 1))                   # der Plan endet mit dem Abgangsjahr
-    for year in range(THIS_YEAR + 1, first + 10):
+    assert 'AfA buchen' in plan[this_year()]
+    assert set(plan) == set(range(first, this_year() + 1))                   # der Plan endet mit dem Abgangsjahr
+    for year in range(this_year() + 1, first + 10):
         assert f'depr_form_{asset}_{year}' not in html, year
 
 
@@ -1001,7 +1006,7 @@ def test_the_list_counts_the_open_year_of_the_continuation_with_the_plan_amount(
     html = PageAssets(db)
 
     assert 'Anschaffungskosten (aktiv): 15.000,00 €' in html
-    assert f'AfA {THIS_YEAR} gebucht: 0,00 € | AfA {THIS_YEAR} geplant: 2.000,00 €' in html
+    assert f'AfA {this_year()} gebucht: 0,00 € | AfA {this_year()} geplant: 2.000,00 €' in html
     assert 'Gesamtrestbuchwert: 8.000,00 €' in html
     assert '● offen' in next(row for row in html.split('<tr>') if '>Anlage Seite<' in row)
 
@@ -1009,12 +1014,12 @@ def test_the_list_counts_the_open_year_of_the_continuation_with_the_plan_amount(
 def test_the_list_counts_a_booked_current_year_with_its_booked_amount(world):
     """Das laufende Jahr ist importiert gebucht (700 €, der Plan der App hätte 600 €): Es zählt mit 700 €."""
     db = world.db
-    asset = _asset(world, f'{THIS_YEAR}-01-10', 1800.0, 3)
-    _imported(db, asset, THIS_YEAR, 700.0, 1100.0)
+    asset = _asset(world, f'{this_year()}-01-10', 1800.0, 3)
+    _imported(db, asset, this_year(), 700.0, 1100.0)
 
     html = PageAssets(db)
 
-    assert f'AfA {THIS_YEAR} gebucht: 700,00 € | AfA {THIS_YEAR} geplant: 0,00 €' in html
+    assert f'AfA {this_year()} gebucht: 700,00 € | AfA {this_year()} geplant: 0,00 €' in html
 
 
 def test_the_method_label_of_a_booked_year_is_a_label_and_other_values_stay_as_they_were():

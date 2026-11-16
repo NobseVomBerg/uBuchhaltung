@@ -33,8 +33,11 @@ from tests.dom_helpers import Dom, data_block
 from tests.invoice_world import (archived_versions, build_world, columns, make_invoice, make_payload, run_sql,
                                  save, save_open, set_invoice_status)
 
-TODAY = datetime.date.today()
-TODAY_DE = TODAY.strftime('%d.%m.%Y')
+
+def today_de():
+    """Der Tag von jetzt (TT.MM.JJJJ) – bei jedem Aufruf frisch, nie beim Import festgehalten: Die Suite läuft
+    Minuten, und über Mitternacht zeigte der Kasten schon den nächsten Tag."""
+    return datetime.date.today().strftime('%d.%m.%Y')
 
 
 @pytest.fixture
@@ -119,7 +122,7 @@ def test_a_correction_shows_the_archived_version_with_downloads_and_the_protocol
     section = box(world, invoice_id)
 
     versions = rows_of(section, 'Abgelegte Fassungen')
-    assert versions == [['1', TODAY_DE, 'berichtigt', 'PDF XML']]
+    assert versions == [['1', today_de(), 'berichtigt', 'PDF XML']]
     stored = sorted(os.listdir(os.path.join(userctx.DATA_ROOT, 'invoices', '2026', 'Fassungen', str(invoice_id))))
     assert sorted(downloads(section)) == [(invoice_id, name) for name in stored]    # genau die abgelegten Dateien
 
@@ -165,7 +168,7 @@ def test_a_registered_version_whose_file_is_gone_shows_no_link(world):
 
     section = box(world, invoice_id)
 
-    assert rows_of(section, 'Abgelegte Fassungen') == [['1', TODAY_DE, 'berichtigt', 'PDF XML']]
+    assert rows_of(section, 'Abgelegte Fassungen') == [['1', today_de(), 'berichtigt', 'PDF XML']]
     assert [name.rsplit('.', 1)[1] for _id, name in downloads(section)] == ['pdf']          # nur die PDF ist ladbar
     assert 'Datei nicht mehr vorhanden' in section
 

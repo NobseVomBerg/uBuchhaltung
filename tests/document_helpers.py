@@ -22,11 +22,16 @@ from tests.http_client import send
 INVOICE_NUMBER = '26R001'
 QUOTE_NUMBER = '26A001'
 CUSTOMER = 'Malermeister Pinsel'
-YEAR = str(datetime.date.today().year)          # Ordnername unter quotes/ (Jahr der Erzeugung)
 PDF = b'%PDF-1.4 abgelegte Fassung'
 PDF_PATH = 41        # Spalte Invoices.PDFPath
 XML_PATH = 42        # Spalte Invoices.XMLPath
 STATUS = 40          # Spalte Invoices.Status
+
+
+def quote_year():
+    """Ordnername unter ``quotes/``: das Jahr der Erzeugung, also das Jahr von jetzt. Jedes Mal frisch, nie beim
+    Import festgehalten – die Suite läuft Minuten, über den Jahreswechsel gälte sonst das alte Jahr."""
+    return str(datetime.date.today().year)
 
 
 def add_contacts(db):
@@ -92,7 +97,7 @@ def store_pdf(books, kind, data=PDF):
         path = os.path.join(books.invoices, '2026', f'{INVOICE_NUMBER} {CUSTOMER}.pdf')
         books.db.update_invoice_pdf_path(books.invoice, path)
     else:
-        path = os.path.join(books.quotes, YEAR, f'{QUOTE_NUMBER} {CUSTOMER}.pdf')
+        path = os.path.join(books.quotes, quote_year(), f'{QUOTE_NUMBER} {CUSTOMER}.pdf')
         books.db.update_invoice_pdf_path(books.quote, path)
     return write_file(path, data)
 
