@@ -1,0 +1,222 @@
+{
+ "firebird3_open_tx_4k": {
+  "committed": [
+   {
+    "ID": 1,
+    "TXT": "eins unveraendert",
+    "AMOUNT": "1.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   },
+   {
+    "ID": 2,
+    "TXT": "zwei alt",
+    "AMOUNT": "2.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   },
+   {
+    "ID": 3,
+    "TXT": "drei wird geloescht",
+    "AMOUNT": "3.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   },
+   {
+    "ID": 4,
+    "TXT": "vier alt",
+    "AMOUNT": "4.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": "memo vier alt"
+   },
+   {
+    "ID": 5,
+    "TXT": "fuenf unveraendert",
+    "AMOUNT": "5.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   },
+   {
+    "ID": 7,
+    "TXT": "sieben breit alt",
+    "AMOUNT": "7.0",
+    "WIDE_LEN": 9000,
+    "WIDE_SHA256": "33284847cacd4f7fe31100e53a396a41c797a3cceb20c5c68a2d48a150c01a3e",
+    "MEMO": null
+   },
+   {
+    "ID": 8,
+    "TXT": "acht abgeschlossen geaendert",
+    "AMOUNT": "88.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   },
+   {
+    "ID": 9,
+    "TXT": "neun wird geloescht und war breit",
+    "AMOUNT": "9.0",
+    "WIDE_LEN": 5000,
+    "WIDE_SHA256": "c9ff489f842e224aaef3ba4d9d7611737346207d0937b6b0aaca80752851b6f6",
+    "MEMO": null
+   }
+  ],
+  "as_stored_today": [
+   {
+    "ID": 1,
+    "TXT": "eins unveraendert",
+    "AMOUNT": "1.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   },
+   {
+    "ID": 2,
+    "TXT": "zwei NEU (offen)",
+    "AMOUNT": "223.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   },
+   {
+    "ID": 4,
+    "TXT": "vier NEU (offen)",
+    "AMOUNT": "4.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": "memo vier NEU offen"
+   },
+   {
+    "ID": 5,
+    "TXT": "fuenf unveraendert",
+    "AMOUNT": "5.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   },
+   {
+    "ID": 6,
+    "TXT": "sechs neu (offen)",
+    "AMOUNT": "6.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": "memo sechs offen"
+   },
+   {
+    "ID": 7,
+    "TXT": "sieben breit NEU (offen)",
+    "AMOUNT": "7.0",
+    "WIDE_LEN": 9500,
+    "WIDE_SHA256": "340d36bd1665738e1d8198a5fa4aebc13f4fa7a1e41dc6db8ba28a288f4c8958",
+    "MEMO": null
+   },
+   {
+    "ID": 8,
+    "TXT": "acht NEU (offen)",
+    "AMOUNT": "88.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   },
+   {
+    "ID": 10,
+    "TXT": "zehn breit neu (offen)",
+    "AMOUNT": "10.0",
+    "WIDE_LEN": 6000,
+    "WIDE_SHA256": "af72094c492ee6297346c35e6e204fe691689df4c7b97d2b5546bea701216c9c",
+    "MEMO": null
+   }
+  ]
+ },
+ "firebird3_open_tx_8k": {
+  "committed": [
+   {
+    "ID": 1,
+    "TXT": "eins unveraendert",
+    "AMOUNT": "1.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   },
+   {
+    "ID": 2,
+    "TXT": "zwei alt",
+    "AMOUNT": "2.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   },
+   {
+    "ID": 3,
+    "TXT": "drei wird geloescht",
+    "AMOUNT": "3.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   },
+   {
+    "ID": 4,
+    "TXT": "vier alt",
+    "AMOUNT": "4.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   },
+   {
+    "ID": 5,
+    "TXT": "fuenf unveraendert",
+    "AMOUNT": "5.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   }
+  ],
+  "as_stored_today": [
+   {
+    "ID": 1,
+    "TXT": "eins unveraendert",
+    "AMOUNT": "1.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   },
+   {
+    "ID": 2,
+    "TXT": "zwei NEU (nicht abgeschlossen)",
+    "AMOUNT": "222.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   },
+   {
+    "ID": 4,
+    "TXT": "vier alt",
+    "AMOUNT": "4.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   },
+   {
+    "ID": 5,
+    "TXT": "fuenf unveraendert",
+    "AMOUNT": "5.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   },
+   {
+    "ID": 6,
+    "TXT": "sechs neu (nicht abgeschlossen)",
+    "AMOUNT": "6.0",
+    "WIDE_LEN": 0,
+    "WIDE_SHA256": null,
+    "MEMO": null
+   }
+  ]
+ }
+}

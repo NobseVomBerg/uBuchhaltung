@@ -1,0 +1,10 @@
+CREATE DATABASE '<Ordner>/t.fdb' PAGE_SIZE 8192;
+CREATE TABLE T (ID INTEGER NOT NULL, TXT VARCHAR(60), AMOUNT NUMERIC(15,2));
+COMMIT;
+INSERT INTO T VALUES (1, 'eins unveraendert', 1.00);
+INSERT INTO T VALUES (2, 'zwei alt', 2.00);
+INSERT INTO T VALUES (3, 'drei wird geloescht', 3.00);
+INSERT INTO T VALUES (4, 'vier alt', 4.00);
+INSERT INTO T VALUES (5, 'fuenf unveraendert', 5.00);
+COMMIT;
+SELECT * FROM T;

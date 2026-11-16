@@ -272,6 +272,15 @@ class WisoFdbImportMixin:
             abweicht: nur gemeldet, die ersten 500 mit ``id``, ``date``, ``amount``, ``text``,
             ``stored`` und ``fresh``).
 
+            Satzversionen (seit 2.3.10): Der Leser nimmt je Satz den letzten **abgeschlossenen** Stand
+            (``importers.wiso_fdb.ods``). War WISO beim Kopieren der Datei geöffnet oder wurde es nicht sauber
+            beendet, zählt ``uncommitted_records`` die Sätze, deren oberste Version zu einem nicht abgeschlossenen Vorgang
+            gehört (übernommen wurde ihr letzter abgeschlossener Stand, ein nie abgeschlossen angelegter Satz fehlt),
+            ``unreadable_versions`` die Sätze, die sich nicht auf einen abgeschlossenen Stand zurückführen ließen (sie
+            fehlen im Import – kein Blocker, der Import läuft weiter) und ``unknown_tx_state`` die Sätze, deren Vorgang sich
+            nicht nachschlagen ließ (gelesen, wie sie in der Datei stehen). Mandanten- und Standarddatei sind zusammengezählt;
+            die Zahlen stehen erst nach dem Lesen aller Tabellen fest.
+
             Neu angelegte Sätze (seit 2.3.2): Legt WISO die Buchungen eines Zeitraums neu an (nach einem
             DATEV-Export oder einer Korrektur), stehen sie mit **neuer** ``ACCOUNTINGID`` und sonst gleichem Inhalt in
             der Datenbank; die alte Quellgruppe gibt es dort nicht mehr. Der Import liest immer die **ganze** Datenbank:
@@ -379,7 +388,8 @@ class WisoFdbImportMixin:
                   'asset_warnings': [], 'customers': 0, 'invoices': 0,
                   'invoice_items': 0, 'invoices_skipped': 0,
                   'invoice_warnings': [], 'payments_linked': 0,
-                  'payment_warnings': [], 'errors': [], 'unreadable': False}
+                  'payment_warnings': [], 'errors': [], 'unreadable': False,
+                  'uncommitted_records': 0, 'unreadable_versions': 0, 'unknown_tx_state': 0}
         try:
             wiso = WisoDatabase(path, standard_chart_path)
         except Exception as exc:                       # defekte/fremde Datei
@@ -395,6 +405,11 @@ class WisoFdbImportMixin:
                 result['errors'] += blocker
                 return result
             data = wiso.read(self._liquid_skr_accounts(), today=today)
+            # Die Zahlen entstehen beim Lesen: erst jetzt, nachdem alle Tabellen gelesen sind
+            versions = wiso.version_stats()
+            result['uncommitted_records'] = versions['uncommitted']
+            result['unreadable_versions'] = versions['unreadable']
+            result['unknown_tx_state'] = versions['unknown']
             if data.datev_numbers_unreadable:
                 result['hints'].append('Berater- und Mandantennummer ließen sich nicht aus der WISO-Datenbank lesen '
                                        '(Tabelle SYS_FINACCSYSTEMS) – bitte in den Stammdaten der eigenen Firma eintragen.')

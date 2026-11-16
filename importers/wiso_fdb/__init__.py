@@ -512,6 +512,18 @@ class WisoDatabase:
     def __exit__(self, *exc):
         self.close()
 
+    def version_stats(self):
+        """Was beim Lesen der Sätze an ihren Versionen auffiel, Mandanten- und Standarddatei zusammengezählt:
+        ``{'uncommitted', 'unreadable', 'unknown'}`` (:meth:`.ods.OdsFile.version_stats`) – Sätze aus nicht
+        abgeschlossenen Vorgängen (WISO war beim Kopieren geöffnet), Sätze, die sich nicht auf einen abgeschlossenen
+        Stand zurückführen ließen, und Sätze, deren Vorgang sich nicht nachschlagen ließ. Die Zahlen entstehen erst beim
+        Lesen: nach :meth:`read` abfragen."""
+        total = dict(self.catalog.version_stats())
+        if self._standard:
+            for name, count in self._standard.version_stats().items():
+                total[name] += count
+        return total
+
     @property
     def tables(self):
         return self.catalog.table_names()

@@ -339,6 +339,15 @@ nachträglich geänderte Beträge nicht übernommen werden – und ein Pflicht-K
 bitte den Import ausdrücklich bestätigen.“; die Prüfung steht vor dem Zugriff auf die Datei. `Database.import_wiso_fdb` selbst prüft
 nichts (Tests, Demodaten und Skripte rufen es direkt auf).
 
+**Satzversionen** (seit 2.3.10, `importers/wiso_fdb/ods.py`): Firebird überschreibt einen Satz nie, sondern hängt bei jeder
+Änderung eine neue Version davor. Der Leser nimmt je Satz die jüngste Version, deren Transaktion abgeschlossen ist (Zustand aus
+den TIP-Seiten, die `RDB$PAGES` nennt; ältere Versionen sind teils nur als Differenz gespeichert – `apply_diff`). So kommen aus
+einer Datei, die bei geöffnetem WISO kopiert wurde, keine halbfertigen Änderungen in die Bücher. Das Ergebnis nennt
+`uncommitted_records` (oberste Version nicht abgeschlossen: letzter abgeschlossener Stand übernommen), `unreadable_versions`
+(Kette beschädigt: der Satz fehlt) und `unknown_tx_state` (Zustand nicht lesbar: gelesen, wie in der Datei); die Seite
+*Sonstiges* zeigt sie als Hinweise. Geprüft an zwei echten Firebird-3.0-Dateien (`tests/fixtures/firebird/`), nicht an einer
+großen WISO-Datei mit mehreren TIP-Seiten.
+
 **Die Dateien kommen als Upload** (seit 2.3.7, `server/wiso_upload.py`): `DB1.FDB` und optional `DB0.FDB` werden im Browser gewählt, je als
 eigene Anfrage hochgeladen (bis 2 GB je Datei) und liegen bis zum Import in einem Zwischenordner des Benutzers
 (`upload_tmp/wiso_fdb/<Kennung>/`, feste Dateinamen). `handle_wiso_fdb_import` bekommt nur die Kennung, löscht den Ordner in jedem Fall und

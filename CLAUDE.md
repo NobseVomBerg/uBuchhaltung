@@ -637,6 +637,18 @@ kein Subagent darauf:
 - Die Firebird-Dateien (`DB1.FDB` = Mandant, `DB0.FDB` = Standard-Kontenrahmen)
   sind unverschlüsselt und werden **ohne Firebird-Installation** gelesen –
   reines Python, kein Treiber, keine DLL
+- **Satzversionen (seit 2.3.10, `importers/wiso_fdb/ods.py`):** `OdsFile.rows` liefert je Satz den letzten **abgeschlossenen**
+  Stand, nicht die oberste Version – war WISO beim Kopieren geöffnet oder wurde es nicht sauber beendet, kämen sonst geänderte
+  Werte statt der gültigen, ein nur vorläufig gelöschter Satz fehlte, ein nie abgeschlossener neuer käme mit. Zustand einer
+  Transaktion aus den TIP-Seiten (Seitentyp 3, über `RDB$PAGES`; 2 Bit je Transaktion, 3 = abgeschlossen; Transaktion 0 gilt
+  als abgeschlossen – die Systemsätze tragen sie). Von der obersten Version über die Rückzeiger zurück bis zur ersten
+  abgeschlossenen; trägt die neuere Version `R_DELTA`, ist die Vorversion ein Differenzstrom (`apply_diff`, nach dem
+  RLE-Entpacken). Kein Rückzeiger oder abgeschlossen gelöscht: den Satz gibt es nicht. Gezählt wird, nichts verschwiegen
+  (`version_stats` → Ergebnis `uncommitted_records`, `unreadable_versions` [Kette beschädigt: der Satz fehlt, kein Blocker],
+  `unknown_tx_state` [TIP nicht lesbar: gelesen wie in der Datei]; feste Hinweise auf *Sonstiges*). Geprüft gegen echte
+  Firebird-3.0-Dateien mit offener Transaktion (`tests/fixtures/firebird/`, mit Firebird erzeugt – Fragmente, Blobs,
+  Differenzketten); ungeprüft: `rhd_long_tranum` und mehrere TIP-Seiten an einer echten Datei. `tests/fdb_builder.py` schreibt
+  eine TIP-Seite (Transaktion 1 abgeschlossen, 2 offen für `add_open`). Diese Regel nicht aufweichen
 - Der Datenbankweg ist genauer: `MOV_FINACC_ACCRECORDS.ACCOUNTINGID` nennt die
   Zusammengehörigkeit von Teilbuchungen ausdrücklich (→ `Bookings.SourceGroup`),
   liefert die Anlagenverwaltung mit und umfasst alle Jahre
