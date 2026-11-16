@@ -280,7 +280,8 @@ def test_declared_length(headers, expected):
 
 
 @pytest.mark.parametrize('limit, text', [(64 * 1024, '64 KB'), (1024, '1 KB'), (10 * 1024 * 1024, '10 MB'),
-                                         (1024 * 1024, '1 MB'), (200 * 1024 * 1024, '200 MB')])
+                                         (1024 * 1024, '1 MB'), (200 * 1024 * 1024, '200 MB'),
+                                         (2 * 1024 ** 3, '2 GB'), (1536 * 1024 * 1024, '1536 MB')])
 def test_size_text(limit, text):
     assert server_app._size_text(limit) == text
 

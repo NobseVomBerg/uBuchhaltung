@@ -379,11 +379,12 @@ class WisoFdbImportMixin:
                   'asset_warnings': [], 'customers': 0, 'invoices': 0,
                   'invoice_items': 0, 'invoices_skipped': 0,
                   'invoice_warnings': [], 'payments_linked': 0,
-                  'payment_warnings': [], 'errors': []}
+                  'payment_warnings': [], 'errors': [], 'unreadable': False}
         try:
             wiso = WisoDatabase(path, standard_chart_path)
         except Exception as exc:                       # defekte/fremde Datei
             result['errors'].append(f'{path}: {exc}')
+            result['unreadable'] = True                # nichts gelesen, nichts geschrieben
             return result
 
         with wiso:

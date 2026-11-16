@@ -308,7 +308,7 @@ def test_empty_zip_archive_contains_no_data(user_dir, zip_only, wipe):
 
 @WIPE
 def test_archive_with_only_excluded_entries_contains_no_data(user_dir, fmt, wipe):
-    files = {'backup/aelter.zip': 'x', 'users/u.txt': 'x', 'tests/t.txt': 'x',
+    files = {'backup/aelter.zip': 'x', 'users/u.txt': 'x', 'tests/t.txt': 'x', 'upload_tmp/wiso_fdb/DB1.FDB': 'x',
              'buch.db-journal': b'\0' * 64, 'buch.db-wal': b'\0' * 64, 'buch.db-shm': b'\0' * 64}
     name = fmt.build(user_dir, files)
     assert_rejected(user_dir, name, wipe, 'keine Daten')
@@ -317,9 +317,10 @@ def test_archive_with_only_excluded_entries_contains_no_data(user_dir, fmt, wipe
 @WIPE
 def test_excluded_top_level_entries_are_not_restored_but_nested_ones_are(user_dir, fmt,
                                                                           tmp_path, wipe):
-    """backup/, users/ und tests/ gelten nur direkt im Datenverzeichnis; gleichnamige Ordner
+    """backup/, users/, tests/ und upload_tmp/ gelten nur direkt im Datenverzeichnis; gleichnamige Ordner
     weiter unten (Belege/tests/) gehören zur Sicherung."""
-    for rel in ('users/vorhanden.txt', 'tests/vorhanden.txt', 'backup/Eigene Notiz.txt'):
+    for rel in ('users/vorhanden.txt', 'tests/vorhanden.txt', 'backup/Eigene Notiz.txt',
+                'upload_tmp/wiso_fdb/vorhanden.txt'):
         path = os.path.join(user_dir, rel)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:
@@ -327,18 +328,19 @@ def test_excluded_top_level_entries_are_not_restored_but_nested_ones_are(user_di
 
     def excluded():
         return {path: state for path, state in installation.tree(user_dir).items()
-                if path.split(os.sep)[0] in ('users', 'tests', 'backup')}
+                if path.split(os.sep)[0] in ('users', 'tests', 'backup', 'upload_tmp')}
 
     files = standard_files(tmp_path)
     files.update({'backup/aus_dem_archiv.txt': 'x', 'users/aus_dem_archiv.txt': 'x',
-                  'tests/aus_dem_archiv.txt': 'x', 'Belege/tests/tief.txt': 'tief tests',
-                  'Belege/users/tief.txt': 'tief users', 'Belege/backup/tief.txt': 'tief backup'})
+                  'tests/aus_dem_archiv.txt': 'x', 'upload_tmp/aus_dem_archiv.txt': 'x',
+                  'Belege/tests/tief.txt': 'tief tests', 'Belege/users/tief.txt': 'tief users',
+                  'Belege/backup/tief.txt': 'tief backup', 'Belege/upload_tmp/tief.txt': 'tief upload_tmp'})
     name = fmt.build(user_dir, files)
     before = excluded()
     backup_mod.restore_backup(user_dir, name, wipe=wipe)
 
-    assert excluded() == before, 'backup/, users/ und tests/ müssen unangetastet bleiben'
-    for folder in ('backup', 'users', 'tests'):
+    assert excluded() == before, 'backup/, users/, tests/ und upload_tmp/ müssen unangetastet bleiben'
+    for folder in ('backup', 'users', 'tests', 'upload_tmp'):
         assert not os.path.exists(os.path.join(user_dir, folder, 'aus_dem_archiv.txt'))
         assert read(os.path.join(user_dir, 'Belege', folder, 'tief.txt')) == 'tief ' + folder
     assert db_value(os.path.join(user_dir, 'buch.db')) == 'aus Sicherung'

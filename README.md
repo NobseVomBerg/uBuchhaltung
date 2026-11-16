@@ -119,7 +119,11 @@ direkt aus der Datenbankdatei oder aus den Textexporten:
 
 - **Import aus der Datenbank** (*Sonstiges → Import aus der Datenbank*):
   liest die Firebird-Dateien (`.FDB`) des Mandanten direkt in Python – ohne
-  Firebird-Installation, Treiber oder DLL. Übernommen werden Buchungen aller
+  Firebird-Installation, Treiber oder DLL. Die Dateien `DB1.FDB` (Mandant) und,
+  optional, `DB0.FDB` (Standard-Kontenrahmen) aus dem DB-Verzeichnis von WISO
+  werden im Browser ausgewählt und hochgeladen (bis 2 GB je Datei) – auch, wenn
+  uBuchhaltung in einem Container oder auf einem anderen Rechner läuft; nach dem
+  Import löscht der Server sie wieder. Übernommen werden Buchungen aller
   Jahre einschließlich der Zusammengehörigkeit von Teilbuchungen, Anlagen,
   Kunden sowie Rechnungen mit ihren Positionen.
 - Konten werden von SKR03 nach SKR04 umgeschlüsselt. Konten ohne eindeutige
@@ -390,7 +394,8 @@ Anlagenverwaltung mit AfA-Plan:
   auf die eigene Datenbank beschränkt; nur für Administratoren
 - **Datensicherung**: Backup nach `<UserDir>/backup/JJJJMMTT_Backup.7zip`
   (7-Zip, ohne 7-Zip als `.zip`; wahlweise nur DB oder alle Daten; DB als
-  konsistenter Snapshot) + **Wiederherstellung** (überschreiben oder vorher löschen)
+  konsistenter Snapshot) + **Wiederherstellung** (überschreiben oder vorher löschen);
+  der Zwischenordner für Uploads (`upload_tmp/`) gehört nicht zur Sicherung
 - **SQL-Audit-Logs**: `sql_operations.log/.sql` werden ab 5 MB automatisch
   rotiert und komprimiert archiviert (`JJJJMMTT-HHMMSS_sql_operations.*`)
 
@@ -596,6 +601,7 @@ uBuchhaltung/
 │   ├── pages_miscellaneous.py # DB-Export, SQL-Konsole, WISO-Import, Backup
 │   ├── handlers.py            # POST-Handler (Formulare, PDF, Import)
 │   ├── upload_handler.py      # File-Upload mit PDF-Parsing
+│   ├── wiso_upload.py         # Zwischenablage für den Upload der WISO-Datenbank
 │   ├── import_preview.py      # Kontoauszug-Import-Vorschau (Duplikat-Zähler)
 │   ├── multipart.py           # Multipart-Parser (E-Mail-Parser-basiert)
 │   ├── period.py              # Zeitraum-Auswahl (Cookie-basiert)
@@ -612,6 +618,7 @@ uBuchhaltung/
     ├── config.json            # eingerichtet (mode), automatische Anmeldung (auto_login)
     ├── auth.db                # Benutzer und Sitzungen
     └── users/<user>/          # je Nutzer: buch.db, invoices/, Belege/, logos/, backup/, Logs …
+                               #   (upload_tmp/ nur während eines Uploads der WISO-Datenbank)
 ```
 
 > Datenbankschema: siehe [DB_MODEL.md](DB_MODEL.md)
@@ -644,6 +651,7 @@ uBuchhaltung/
 | `server/pages_miscellaneous.py` | DB-Export, SQL-Konsole, WISO-Import, Backup |
 | `server/handlers.py` | POST-Handler |
 | `server/upload_handler.py` | File-Upload |
+| `server/wiso_upload.py` | Zwischenablage für den Upload der WISO-Datenbank |
 | `server/import_preview.py` | Kontoauszug-Import-Vorschau |
 | `server/backup.py` | Datensicherung/Wiederherstellung |
 

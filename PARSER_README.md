@@ -325,6 +325,12 @@ nachträglich geänderte Beträge nicht übernommen werden – und ein Pflicht-K
 bitte den Import ausdrücklich bestätigen.“; die Prüfung steht vor dem Zugriff auf die Datei. `Database.import_wiso_fdb` selbst prüft
 nichts (Tests, Demodaten und Skripte rufen es direkt auf).
 
+**Die Dateien kommen als Upload** (seit 2.3.7, `server/wiso_upload.py`): `DB1.FDB` und optional `DB0.FDB` werden im Browser gewählt, je als
+eigene Anfrage hochgeladen (bis 2 GB je Datei) und liegen bis zum Import in einem Zwischenordner des Benutzers
+(`upload_tmp/wiso_fdb/<Kennung>/`, feste Dateinamen). `handle_wiso_fdb_import` bekommt nur die Kennung, löscht den Ordner in jedem Fall und
+nennt in Meldungen und in `wiso_fdb_result.json` keinen Serverpfad. Lässt sich die Datei nicht als WISO-Datenbank öffnen, meldet die Seite
+einen Fehler und importiert nichts.
+
 Grenze: Eine von Hand erfasste `entry` wird nur übernommen, wenn auch der Text stimmt. Eine
 CSV-Zeile, deren Text, Gegenkonto oder Betrag nachträglich geändert wurde, wird nicht
 wiedererkannt – es entsteht eine zweite Buchung, die unter „möglicherweise doppelt“ steht und

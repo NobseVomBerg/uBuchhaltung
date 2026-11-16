@@ -29,7 +29,7 @@ from tests import installation
 
 STEM = '20260105_Backup'
 SIDECARS = ('buch.db-journal', 'buch.db-wal', 'buch.db-shm')
-EXCLUDED = ('backup', 'users', 'tests')
+EXCLUDED = ('backup', 'users', 'tests', 'upload_tmp')
 
 # Das echte subprocess.run: Tests ersetzen backup_mod.subprocess.run (derselbe Modulname),
 # die Helfer hier dürfen davon nie betroffen sein.

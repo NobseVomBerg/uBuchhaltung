@@ -12,6 +12,7 @@ Alle Daten sind synthetisch (siehe :mod:`tests.fdb_builder`).
 """
 import os
 import sys
+from urllib.parse import quote
 
 import pytest
 
@@ -19,6 +20,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fdb_builder import (FdbBuilder, INT64, LONG, SHORT, TEXT,  # noqa: E402
                          TIMESTAMP, Column)
+from server import wiso_upload  # noqa: E402
+from tests.wiso_upload_helpers import uploaded  # noqa: E402
 
 
 def _chart(builder):
@@ -383,40 +386,33 @@ def test_fremde_datenbank_wird_abgelehnt_ohne_zu_schreiben(db_with_coa, tmp_path
 
 
 # ----------------------------------------------------------------------
-# Oberfläche: Pfadauflösung und Handler
+# Oberfläche: Upload und Handler
 # ----------------------------------------------------------------------
-def test_pfad_darf_verzeichnis_oder_datei_sein(tmp_path):
-    from server.handlers import _wiso_fdb_paths
+def test_upload_darf_mit_und_ohne_standardkontenrahmen_kommen(tmp_path):
+    (tmp_path / 'a.fdb').write_bytes(b'x')
+    (tmp_path / 'b.fdb').write_bytes(b'y')
 
-    verzeichnis = tmp_path / 'DB'
-    verzeichnis.mkdir()
-    (verzeichnis / 'DB1.FDB').write_bytes(b'x')
-    (verzeichnis / 'DB0.FDB').write_bytes(b'x')
+    token = uploaded(tmp_path / 'a.fdb', tmp_path / 'b.fdb')['upload'][0]
+    client, standard = wiso_upload.files(token)
+    assert os.path.basename(client) == 'DB1.FDB' and os.path.basename(standard) == 'DB0.FDB'
+    with open(client, 'rb') as first, open(standard, 'rb') as second:
+        assert first.read() == b'x' and second.read() == b'y'
 
-    client, standard, problem = _wiso_fdb_paths(str(verzeichnis))
-    assert problem is None
-    assert client.endswith('DB1.FDB') and standard.endswith('DB0.FDB')
-
-    client2, standard2, problem2 = _wiso_fdb_paths(str(verzeichnis / 'DB1.FDB'))
-    assert (client2, standard2, problem2) == (client, standard, None)
-
-    # Anführungszeichen aus dem Windows-Explorer stören nicht
-    assert _wiso_fdb_paths(f'"{verzeichnis}"')[0] == client
+    # DB0.FDB ist optional – ohne sie fehlen nur Konten, die der Mandant nie benutzt hat
+    token = uploaded(tmp_path / 'a.fdb')['upload'][0]
+    client, standard = wiso_upload.files(token)
+    assert os.path.basename(client) == 'DB1.FDB' and standard is None
 
 
-def test_pfad_ohne_standardkontenrahmen_ist_erlaubt(tmp_path):
-    from server.handlers import _wiso_fdb_paths
+@pytest.mark.parametrize('post_data', [{}, {'upload': ['']}, {'upload': ['0' * 32]}, {'upload': ['../' + 'a' * 29]}],
+                         ids=['fehlt', 'leer', 'unbekannt', 'ungueltig'])
+def test_fehlender_upload_meldet_klartext(db_with_coa, post_data):
+    from server import handlers
 
-    (tmp_path / 'DB1.FDB').write_bytes(b'x')
-    client, standard, problem = _wiso_fdb_paths(str(tmp_path))
-    assert problem is None and client.endswith('DB1.FDB') and standard is None
-
-
-def test_fehlender_pfad_meldet_klartext(tmp_path):
-    from server.handlers import _wiso_fdb_paths
-
-    assert _wiso_fdb_paths('')[2] == 'Kein Pfad angegeben'
-    assert 'Nicht gefunden' in _wiso_fdb_paths(str(tmp_path / 'weg.fdb'))[2]
+    status, location = handlers.handle_wiso_fdb_import(db_with_coa, {**post_data, 'confirm_existing': ['1']})
+    assert status == 303 and 'wiso_fdb=error' in location
+    assert handlers.WISO_FDB_UPLOAD_MISSING == 'Die hochgeladene Datei wurde nicht gefunden – bitte erneut hochladen.'
+    assert quote(handlers.WISO_FDB_UPLOAD_MISSING) in location
 
 
 def test_handler_importiert_und_leitet_um(db_with_coa, anlagenverkauf_fdb,
@@ -428,9 +424,11 @@ def test_handler_importiert_und_leitet_um(db_with_coa, anlagenverkauf_fdb,
     monkeypatch.setattr(handlers, 'Database', lambda *a, **k: db_with_coa)
 
     status, location = handlers.handle_wiso_fdb_import(
-        db_with_coa, {'fdb_path': [anlagenverkauf_fdb], 'with_assets': ['1'], 'confirm_existing': ['1']})
+        db_with_coa, {**uploaded(anlagenverkauf_fdb), 'with_assets': ['1'], 'confirm_existing': ['1']})
     assert status == 303
     assert 'wiso_fdb=ok' in location and 'imported=3' in location
+    assert 'file=DB1.FDB' in location                      # nie ein Pfad des Servers
+    assert os.listdir(wiso_upload.upload_root()) == []     # der Zwischenordner ist weg
 
     conn = db_with_coa._get_connection()
     total = conn.execute('SELECT COUNT(*) FROM Bookings'
@@ -451,6 +449,7 @@ def test_handler_meldet_unvertraeglichkeit_statt_zu_importieren(
     path = builder.write(str(tmp_path / 'fremd.fdb'))
 
     status, location = handlers.handle_wiso_fdb_import(
-        db_with_coa, {'fdb_path': [path], 'confirm_existing': ['1']})
+        db_with_coa, {**uploaded(path), 'confirm_existing': ['1']})
     assert status == 303
     assert 'wiso_fdb=incompatible' in location
+    assert os.listdir(wiso_upload.upload_root()) == []     # auch nach einem Blocker ist der Zwischenordner weg

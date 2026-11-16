@@ -58,6 +58,7 @@ from server import handlers
 from server.pages_miscellaneous import PageMiscellaneous, _import_notices
 from tests.entry_form_helpers import csv_export, execute, query
 from tests.fdb_builder import DOUBLE, FdbBuilder, INT64, LONG, SHORT, TEXT, TIMESTAMP, Column
+from tests.wiso_upload_helpers import uploaded
 
 #: SKR03 → SKR04 wie in WISOs ``BAS_FINACC_PLAN``; 1200/1210 sind die Bankkonten der Testdaten
 #: (SKR04 1800/1810), 1360 das Verrechnungskonto. 6530, 6810 und 6850 kennt der Kontenrahmen der
@@ -482,7 +483,7 @@ def test_the_page_names_the_rows_that_stay_on_the_base_account(db_with_coa, tmp_
     run(db_with_coa, old)
     os.makedirs(userctx.user_data_dir(), exist_ok=True)
 
-    status, location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [str(new)], 'confirm_existing': ['1']})
+    status, location = handlers.handle_wiso_fdb_import(db_with_coa, {**uploaded(new), 'confirm_existing': ['1']})
 
     assert status == 303 and 'wiso_fdb=ok' in location
     with open(os.path.join(userctx.user_data_dir(), 'wiso_fdb_result.json'), encoding='utf-8') as handle:
@@ -676,7 +677,7 @@ def test_the_import_names_the_subaccount_of_a_payment_account_on_the_page(db_wit
     os.makedirs(userctx.user_data_dir(), exist_ok=True)
     path = _fdb(tmp_path / 'a.fdb', _bank_sub_records(), subaccounts=[BANK_SUB], extern=[(1201, 7, 82, '1801')])
 
-    status, location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [str(path)], 'confirm_existing': ['1']})
+    status, location = handlers.handle_wiso_fdb_import(db_with_coa, {**uploaded(path), 'confirm_existing': ['1']})
 
     assert status == 303 and 'wiso_fdb=ok' in location
     html = PageMiscellaneous(db_with_coa)
@@ -2179,7 +2180,7 @@ def test_the_page_masks_the_asset_name_in_the_warning(db_with_coa, tmp_path):
     asset = _asset(label='Wagen <script>alert(1)</script>', plan=DEGRESSIVE)
     path = _fdb(tmp_path / 'a.fdb', _afa_records(asset), assets=[asset])
 
-    status, _location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [str(path)], 'with_assets': ['1'], 'confirm_existing': ['1']})
+    status, _location = handlers.handle_wiso_fdb_import(db_with_coa, {**uploaded(path), 'with_assets': ['1'], 'confirm_existing': ['1']})
     html = PageMiscellaneous(db_with_coa)
 
     assert status == 303
@@ -2193,7 +2194,7 @@ def test_the_warnings_about_unmatched_assets_are_masked_too(db_with_coa, tmp_pat
     asset = _asset(number=None, id=9, label='Wagen <b>fett</b>')
     path = _fdb(tmp_path / 'a.fdb', _afa_records(asset), assets=[asset])
 
-    handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [str(path)], 'confirm_existing': ['1']})
+    handlers.handle_wiso_fdb_import(db_with_coa, {**uploaded(path), 'confirm_existing': ['1']})
     html = PageMiscellaneous(db_with_coa)
 
     assert '<li>Wagen &lt;b&gt;fett&lt;/b&gt;: hat keine Inventarnummer' in html and '<b>fett</b>' not in html
@@ -2619,7 +2620,7 @@ def test_the_page_masks_the_asset_name_in_the_composition_and_rest_hints(db_with
     asset = _asset(label='Wagen <script>alert(1)</script>', plan=PAST_PLAN, purchase='2020-03-15', stated=5999.99)
     path = _fdb(tmp_path / 'a.fdb', _afa_records(asset), assets=[asset])
 
-    status, _location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [str(path)], 'with_assets': ['1'], 'confirm_existing': ['1']})
+    status, _location = handlers.handle_wiso_fdb_import(db_with_coa, {**uploaded(path), 'with_assets': ['1'], 'confirm_existing': ['1']})
     html = PageMiscellaneous(db_with_coa)
 
     assert status == 303
@@ -2656,7 +2657,7 @@ def test_the_page_names_the_afa_that_was_not_booked_and_the_planned_years(db_wit
     path = _car_fdb(tmp_path, _asset(plan=far))
 
     status, location = handlers.handle_wiso_fdb_import(
-        db_with_coa, {'fdb_path': [str(path)], 'with_assets': ['1'], 'confirm_existing': ['1']})
+        db_with_coa, {**uploaded(path), 'with_assets': ['1'], 'confirm_existing': ['1']})
 
     assert status == 303 and 'wiso_fdb=ok' in location
     html = PageMiscellaneous(db_with_coa)
@@ -2670,7 +2671,7 @@ def test_the_page_says_nothing_about_planned_years_when_no_plan_was_written(db_w
     far = [('2020-12-31', 100.0, 100.0), ('2099-12-31', 100.0, 200.0)]
     path = _car_fdb(tmp_path, _asset(plan=far))
 
-    status, location = handlers.handle_wiso_fdb_import(db_with_coa, {'fdb_path': [str(path)], 'confirm_existing': ['1']})
+    status, location = handlers.handle_wiso_fdb_import(db_with_coa, {**uploaded(path), 'confirm_existing': ['1']})
 
     assert status == 303 and 'wiso_fdb=ok' in location
     html = PageMiscellaneous(db_with_coa)
@@ -2687,7 +2688,7 @@ def test_the_page_names_the_future_afa_that_stays_in_the_books(db_with_coa, tmp_
     run(db_with_coa, path, today='2100-01-01')                               # Bestand wie 2.2.4: beide Sätze, beide Jahre gebucht
 
     status, location = handlers.handle_wiso_fdb_import(
-        db_with_coa, {'fdb_path': [str(path)], 'with_assets': ['1'], 'confirm_existing': ['1']})
+        db_with_coa, {**uploaded(path), 'with_assets': ['1'], 'confirm_existing': ['1']})
 
     assert status == 303 and 'wiso_fdb=ok' in location
     html = PageMiscellaneous(db_with_coa)

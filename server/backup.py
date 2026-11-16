@@ -10,9 +10,11 @@ selben Tag wird eine laufende Nummer angehängt (JJJJMMTT_Backup_2.7zip).
 
 Die Datenbank wird nie roh kopiert, sondern über die SQLite-Backup-API
 konsistent gezogen (auch bei laufendem Server). Das backup/-Verzeichnis
-selbst und (defensiv) users/ sind von "alle Daten" ausgenommen; ebenso die
-Begleitdateien der Live-Datenbank (buch.db-journal/-wal/-shm): Ein Journal
-neben dem Schnappschuss würde ihn beim Öffnen verändern.
+selbst, (defensiv) users/ und upload_tmp/ (Zwischenordner des Uploads der
+WISO-Datenbank, siehe server/wiso_upload.py) sind von "alle Daten"
+ausgenommen; ebenso die Begleitdateien der Live-Datenbank
+(buch.db-journal/-wal/-shm): Ein Journal neben dem Schnappschuss würde ihn
+beim Öffnen verändern.
 
 Wiederherstellen prüft erst, dann ersetzt es: Ein 7-Zip-Archiv wird vor dem
 Entpacken aufgelistet (nur 7z-Format, keine Links, keine absoluten oder
@@ -47,9 +49,11 @@ from datetime import datetime
 import version
 from document_parser import _find_sevenzip
 
-# Verzeichnisse, die nie mitgesichert oder beim Wiederherstellen gelöscht werden.
-# 'tests' = Artefakte des letzten pytest-Laufs (data/tests/, siehe tests/conftest.py).
-_EXCLUDED_DIRS = ('backup', 'users', 'tests')
+# Verzeichnisse, die nie mitgesichert oder beim Wiederherstellen gelöscht oder überschrieben werden.
+# 'tests' = Artefakte des letzten pytest-Laufs (data/tests/, siehe tests/conftest.py);
+# 'upload_tmp' = Zwischenordner des Uploads der WISO-Datenbank (server/wiso_upload.py): hunderte MB, nur flüchtig.
+# Sicherung, „vorher löschen“ und Überschreiben lesen dieselbe Liste.
+_EXCLUDED_DIRS = ('backup', 'users', 'tests', 'upload_tmp')
 
 # Begleitdateien der Live-Datenbank: Sie gehören zu genau dieser Datei und würden eine
 # andere (Schnappschuss, zurückgespielte Datenbank) beim Öffnen verändern bzw. beschädigen.
@@ -148,7 +152,7 @@ def create_backup(user_dir, db_path, scope='all'):
 
             if sevenzip:
                 if scope == 'all':
-                    # Alles außer backup/, users/, tests/, der Live-DB (die kommt als Snapshot)
+                    # Alles außer backup/, users/, tests/, upload_tmp/, der Live-DB (die kommt als Snapshot)
                     # und deren Begleitdateien (-journal/-wal/-shm).
                     # -x! (ohne r) trifft nur die oberste Ebene – gleichnamige Unterordner
                     # weiter unten (z. B. Belege/tests/) gehören zur Sicherung.
@@ -418,7 +422,7 @@ def _check_staging(staging, user_dir, wipe):
 
 
 def _replace_all(staging, user_dir):
-    """Datenverzeichnis (außer backup/, users/, tests/) durch den Inhalt von ``staging`` ersetzen.
+    """Datenverzeichnis (außer backup/, users/, tests/, upload_tmp/) durch den Inhalt von ``staging`` ersetzen.
 
     Der vorherige Stand wird nach backup/replaced_* verschoben, nicht gelöscht: Erst wenn
     alles an seinem Platz ist, wird er entfernt; bei einem Fehler wird er zurückgelegt.
@@ -514,10 +518,10 @@ def restore_backup(user_dir, archive_name, wipe=False):
     Das Archiv wird zuerst in ein Zwischenverzeichnis backup/restore_* entpackt und
     dort geprüft (keine symbolischen Links, Datenbank lesbar und nicht neuer als das
     Programm). Scheitert das, wirft die Funktion RuntimeError und das Datenverzeichnis
-    ist unverändert. Nicht zurückgespielt werden backup/, users/ und tests/ sowie die
+    ist unverändert. Nicht zurückgespielt werden backup/, users/, tests/ und upload_tmp/ sowie die
     Begleitdateien der Datenbank (buch.db-journal/-wal/-shm).
 
-    wipe=True: vorhandene Daten (außer backup/, users/ und tests/) werden durch die
+    wipe=True: vorhandene Daten (außer backup/, users/, tests/ und upload_tmp/) werden durch die
     Sicherung ersetzt, die dafür eine Datenbank enthalten muss. Besteht sie nur aus der
     Datenbank, wird abgelehnt, solange im Datenverzeichnis noch anderes liegt (Belege
     usw. gingen sonst verloren). Der vorherige Stand wird verschoben und erst nach

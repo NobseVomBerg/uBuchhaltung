@@ -10,6 +10,8 @@ Tests für Datensicherung/Wiederherstellung (server/backup.py).
 - Pfad-Traversal-Schutz beim Archivnamen
 - tests/ (Artefakte des letzten pytest-Laufs, data/tests/) wird weder gesichert
   noch beim Wiederherstellen mit wipe gelöscht – im zip- und im 7-Zip-Weg
+- upload_tmp/ (Zwischenordner des Uploads der WISO-Datenbank, server/wiso_upload.py) ebenso: nicht in der
+  Sicherung, beim Wiederherstellen weder gelöscht noch überschrieben – mit und ohne „vorher löschen“
 
 Alle Inhalte sind synthetische Testdaten.
 """
@@ -167,11 +169,11 @@ def test_tests_folder_is_not_part_of_the_backup(user_dir, archive_format, tmp_pa
 
 
 def test_excluded_names_only_apply_at_top_level(user_dir, archive_format, tmp_path):
-    """Ausgenommen sind backup/, users/ und tests/ nur direkt im Datenverzeichnis –
+    """Ausgenommen sind backup/, users/, tests/ und upload_tmp/ nur direkt im Datenverzeichnis –
     gleichnamige Unterordner weiter unten gehören zur Sicherung (7-Zip schloss sie
     früher auf jeder Ebene aus und ließ sie damit still weg)."""
     nested = {os.path.join("Belege", name, "tief.txt"): f"Inhalt {name}"
-              for name in ("backup", "users", "tests")}
+              for name in ("backup", "users", "tests", "upload_tmp")}
     for rel, text in nested.items():
         path = os.path.join(user_dir, rel)
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -202,3 +204,48 @@ def test_tests_folder_survives_restore_with_wipe(user_dir, archive_format):
     for rel, text in artifacts.items():                                # … tests/ blieb unberührt
         assert _read_text(os.path.join(user_dir, rel)) == text
     assert backup_mod.list_backups(user_dir) == [os.path.basename(archive)]
+
+
+# ── upload_tmp/ gehört nicht zur Sicherung ───────────────────────────────────
+def _add_upload_artifacts(user_dir):
+    """upload_tmp/ wie während eines Uploads der WISO-Datenbank: ein Zwischenordner mit DB1.FDB und einer halben
+    Temporärdatei; liefert {Pfad: Inhalt}."""
+    folder = os.path.join("upload_tmp", "wiso_fdb", "ab" * 16)
+    files = {os.path.join(folder, "DB1.FDB"): "Mandantendatei (viel zu groß für eine Sicherung)",
+             os.path.join(folder, "tmpx1y2z3.part"): "halb"}
+    for rel, text in files.items():
+        path = os.path.join(user_dir, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+    return files
+
+
+def test_upload_tmp_is_not_part_of_the_backup(user_dir, archive_format, tmp_path):
+    _add_upload_artifacts(user_dir)
+    archive = _backup_all(user_dir, archive_format)
+
+    restored = str(tmp_path / "entpackt")
+    os.makedirs(os.path.join(restored, "backup"))
+    shutil.copy(archive, os.path.join(restored, "backup"))
+    backup_mod.restore_backup(restored, os.path.basename(archive))
+
+    assert sorted(os.listdir(restored)) == ["Belege", "backup", "buch.db", "notiz.txt"]
+
+
+@pytest.mark.parametrize("wipe", [True, False], ids=["vorher-loeschen", "ueberschreiben"])
+def test_upload_tmp_survives_a_restore_untouched(user_dir, archive_format, wipe):
+    archive = _backup_all(user_dir, archive_format)
+    # Ein Upload läuft (oder wartet), während zurückgespielt wird: Das Archiv kann upload_tmp/ nicht zurückbringen, und es
+    # darf weder gelöscht noch überschrieben werden
+    artifacts = _add_upload_artifacts(user_dir)
+    with open(os.path.join(user_dir, "neu.txt"), "w", encoding="utf-8") as f:
+        f.write("nach dem Backup entstanden")
+
+    backup_mod.restore_backup(user_dir, os.path.basename(archive), wipe=wipe)
+
+    assert os.path.exists(os.path.join(user_dir, "neu.txt")) is (not wipe)      # „vorher löschen“ hat gewirkt …
+    for rel, text in artifacts.items():                                          # … upload_tmp/ blieb unberührt
+        assert _read_text(os.path.join(user_dir, rel)) == text
+    assert backup_mod.list_backups(user_dir) == [os.path.basename(archive)]
+    assert not [name for name in os.listdir(os.path.join(user_dir, "backup")) if name.startswith(("restore_", "replaced_"))]
