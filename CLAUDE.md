@@ -756,6 +756,27 @@ kein Subagent darauf:
   wie sie sind. **Das Häkchen eines neuen Belegs** (ohne Quelle: kein Bearbeiten, Kopieren, Umwandeln, Neu-Ausstellen) folgt
   der jüngsten gewöhnlichen Rechnung (`Database.last_document_shows_tax`: keine Stornorechnung, keine Ersatzrechnung, kein
   Angebot; ohne eine solche ist es an); startet es abgehakt, sagt die Maske das sichtbar
+- **Pflichtangaben (seit 2.3.5, `export/einvoice_model.py`):** **Steuernummer und USt-IdNr.** der eigenen Firma werden an EINER Stelle
+  unterschieden (`tax_id_kind`: eine vorangestellte Bezeichnung wie „USt-IdNr.“ oder „St.-Nr.“ fällt weg; USt-IdNr. ist nur, was –
+  ohne Leerzeichen/Bindestriche/Punkte – mit einem bekannten Länderpräfix beginnt und dessen Format hat, z. B. DE + 9 Ziffern;
+  alles andere ist eine Steuernummer, auch „HRB 12345“ oder ein zu kurzes „DE12345678“) – für die Momentaufnahme der Rechnung wie für den Rückgriff auf den Kontakt, in CII (`VA`/`FC`), UBL (`VAT`/`TAX`) und im
+  PDF-Fuß („USt-IdNr.:“ bzw. „Steuer-Nr.:“; der Fuß liest die Momentaufnahme, den Kontakt nur, wenn sie leer ist – Rechnung und Angebot).
+  Hat der Verkäufer nur eine Steuernummer, steht sie zusätzlich als Verkäuferkennung (BT-29, `Party.identifier`) in CII und UBL –
+  ohne sie lehnt der Validator die E-Rechnung ab (BR-CO-26); mit USt-IdNr. gibt es kein BT-29.
+  Eine Käuferangabe, die keine USt-IdNr. ist, geht nicht in die E-Rechnung. **Skonto** (`Invoices.SkontoDays`/`SkontoPercent`,
+  `parse_skonto`: Tage 1–365, Prozent zwischen 0 und 100 mit höchstens zwei Nachkommastellen – geprüft am Text bzw. an der Zahl,
+  BEVOR etwas umgerechnet wird (ein Wert wie `1e9999999` darf den Server nicht beschäftigen); beim Speichern einer nicht eingefrorenen
+  Rechnung geprüft, nur bei positivem Brutto und gültigem Rechnungsdatum, die Frist darf nicht nach der Fälligkeit enden) steht im PDF als Absatz nach dem Zahlungshinweis (Frist ab
+  Rechnungsdatum, Abzug vom gedruckten Brutto in EINEM Schritt halb auf den Cent gerundet – `skonto_amount`) und in der E-Rechnung als
+  erste Zeile der Zahlungsbedingungen in der Schreibweise der XRechnung (`#SKONTO#TAGE=7#PROZENT=2.00#` + Zeilenumbruch, dann der
+  Freitext); die Stornorechnung trägt nie Skonto; eine Skonto-BUCHUNG gibt es nicht (`docs/aufgaben.md`). **Lückenprüfung**
+  (`einvoice_gaps`): Fehlen Angaben, die die XRechnung verlangt (Leitweg-ID/Käuferreferenz, IBAN, PLZ/Ort, Kontaktname, Telefon und
+  E-Mail der eigenen Firma, E-Mail des Kunden, ein Zahlungshinweis ohne „#“ – das Zeichen gehört in der XRechnung der Skonto-Angabe …), wird die UBL-Datei **nicht geschrieben** (ein abgelegtes XML eines Entwurfs wird
+  entfernt – am gespeicherten Pfad und am Namensschema, nur Dateien mit der Endung `.xml`, nie das PDF), das PDF mit CII entsteht immer; das Ergebnis trägt den Klartext („XRechnung (XML) nicht erstellt – es fehlt: …“), die
+  Rechnungsseite zeigt die Lücken bei Entwurf/abgeschlossen, und vor dem Versenden fragt sie nach. Die UBL-Datei entsteht nur bei
+  Leitweg-ID/Käuferreferenz (`wants_xrechnung`; eine Bestellnummer allein löst sie nicht aus). Der Kontoname (BT-85) wird nicht
+  geschrieben (den Kontoinhaber gibt es nicht als Momentaufnahme). `tools/make_einvoice_samples.py` bricht ab, wenn ein Beispiel Lücken
+  hat – Prüfung und Mustang müssen übereinstimmen
 - Versendete und stornierte Rechnungen (`db.invoice_lock.FROZEN_STATUSES`) werden von
   „PDF + E-Rechnung“ nicht neu erzeugt (`overwrite_sent` nur beim Eintritt aus Entwurf/abgeschlossen in
   „versendet“); liegt für sie noch keine Datei vor (Import, gescheiterte Erzeugung), darf sie erzeugt werden

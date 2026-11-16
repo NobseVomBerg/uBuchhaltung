@@ -64,8 +64,8 @@ def world(tmp_db, monkeypatch):
 
 
 def sent_invoice(w, number='26R100', **over):
-    """Eine Rechnung, versendet wie in der Oberfläche: PDF und XML (die Bestellnummer macht sie zur E-Rechnung)
-    der Fassung 1 liegen am Namensschema."""
+    """Eine Rechnung, versendet wie in der Oberfläche: PDF und XML (die Käuferreferenz/Leitweg-ID des Formulars löst das
+    UBL aus, eine Bestellnummer allein nicht) der Fassung 1 liegen am Namensschema."""
     invoice_id = make_invoice(w, 'draft', number=number, **over)
     code, body = set_invoice_status(invoice_id, 'sent')
     assert code == 200 and 'warning' not in body, body

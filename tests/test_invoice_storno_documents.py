@@ -311,7 +311,7 @@ def test_the_documents_of_the_credit_note_have_their_own_name_and_the_original_s
     assert (columns(world.db, invoice_id)['PDFPath'], columns(world.db, invoice_id)['XMLPath']) == row_before
     credit = columns(world.db, storno_id)
     assert os.path.basename(credit['PDFPath']) == '26R001 Malermeister Pinsel.pdf'
-    assert os.path.basename(credit['XMLPath']) == '26R001 Malermeister Pinsel.xml'     # die Bestellnummer: E-Rechnung
+    assert os.path.basename(credit['XMLPath']) == '26R001 Malermeister Pinsel.xml'     # die Leitweg-ID: UBL gewollt
     assert os.path.dirname(credit['PDFPath']).endswith(os.path.join('invoices', '2026'))
     new_files = set(stored_documents(userctx.DATA_ROOT)) - set(stored_before)
     assert {os.path.basename(p) for p in new_files} == {'26R001 Malermeister Pinsel.pdf',
@@ -322,7 +322,8 @@ def test_the_documents_of_the_credit_note_have_their_own_name_and_the_original_s
 
 def test_the_folder_is_the_year_of_the_storno_date(world, monkeypatch):
     monkeypatch.setattr(invoice_storno, '_today', lambda: datetime.date(2027, 1, 4))     # heute: Storno im Folgejahr
-    _invoice_id, storno_id = cancelled(world, day='2027-01-04', invoiceDate='2026-12-28', deliveryDate='2026-12-28')
+    _invoice_id, storno_id = cancelled(world, day='2027-01-04', invoiceDate='2026-12-28', deliveryDate='2026-12-28',
+                                       dueDate='2027-01-11')
     path = columns(world.db, storno_id)['PDFPath']
     assert os.path.dirname(path).endswith(os.path.join('invoices', '2027')) and os.path.isfile(path)
     assert os.path.basename(path) == '27R001 Malermeister Pinsel.pdf'

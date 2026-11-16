@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 from decimal import Decimal
 
 from money import format_plain
-from .einvoice_model import EInvoice, Party, build_einvoice
+from .einvoice_model import EInvoice, Party, build_einvoice, payment_terms_text
 
 NS = {
     'rsm': 'urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100',
@@ -76,6 +76,8 @@ def _tax_ids(party: Party):
 
 def _party(parent, tag, party: Party, seller: bool):
     p = _sub(parent, _RAM, tag)
+    if party.identifier:                                       # BT-29; im Schema vor dem Namen
+        _sub(p, _RAM, 'ID', party.identifier)
     _sub(p, _RAM, 'Name', party.name)
     if seller and (party.contact_name or party.phone or party.email):
         contact = _sub(p, _RAM, 'DefinedTradeContact')
@@ -159,9 +161,7 @@ def build_cii(inv: EInvoice) -> bytes:
         means = _sub(settle, _RAM, 'SpecifiedTradeSettlementPaymentMeans')
         _sub(means, _RAM, 'TypeCode', '58')                    # SEPA-Überweisung
         account = _sub(means, _RAM, 'PayeePartyCreditorFinancialAccount')
-        _sub(account, _RAM, 'IBANID', inv.iban)
-        if inv.bank_name:
-            _sub(account, _RAM, 'AccountName', inv.bank_name)
+        _sub(account, _RAM, 'IBANID', inv.iban)                # BT-85 (Kontoinhaber) fehlt bewusst: Der Bankname ist keiner
         if inv.bic:
             _sub(_sub(means, _RAM, 'PayeeSpecifiedCreditorFinancialInstitution'),
                  _RAM, 'BICID', inv.bic)
@@ -174,10 +174,11 @@ def build_cii(inv: EInvoice) -> bytes:
         _sub(tax, _RAM, 'BasisAmount', _amt(t.basis))
         _sub(tax, _RAM, 'CategoryCode', t.category)
         _sub(tax, _RAM, 'RateApplicablePercent', _rate(t.rate))
-    if inv.payment_terms or inv.due_date:
+    terms_text = payment_terms_text(inv)
+    if terms_text or inv.due_date:
         terms = _sub(settle, _RAM, 'SpecifiedTradePaymentTerms')
-        if inv.payment_terms:
-            _sub(terms, _RAM, 'Description', inv.payment_terms)
+        if terms_text:
+            _sub(terms, _RAM, 'Description', terms_text)
         if inv.due_date:
             _date(terms, 'DueDateDateTime', inv.due_date)
     t = inv.totals

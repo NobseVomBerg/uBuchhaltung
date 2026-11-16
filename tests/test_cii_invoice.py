@@ -102,3 +102,34 @@ def test_xml_declaration_and_encoding(tmp_db):
     iid = make_case(tmp_db, 'std7')
     raw = build_cii(build_einvoice(tmp_db, tmp_db.get_invoice_by_id(iid), tmp_db.get_invoice_items(iid)))
     assert raw.startswith(b"<?xml version='1.0' encoding='utf-8'?>")
+
+
+def test_the_bank_name_is_not_sent_as_the_account_name(tmp_db):
+    """BT-85 ist der Kontoinhaber, nicht die Bank: Der Bankname stand bis 2.3.4 darin und fehlt jetzt (BT-85 ist optional)."""
+    root = _root(tmp_db, 'std19')
+    account = root.find('.//ram:SpecifiedTradeSettlementPaymentMeans/ram:PayeePartyCreditorFinancialAccount', NS)
+    assert account.find('ram:IBANID', NS).text == 'DE89370400440532013000'
+    assert account.find('ram:AccountName', NS) is None
+    assert b'AccountName' not in generate_cii(tmp_db.get_invoice_by_id(1), tmp_db.get_invoice_items(1), db=tmp_db)
+    assert b'Testbank AG' not in generate_cii(tmp_db.get_invoice_by_id(1), tmp_db.get_invoice_items(1), db=tmp_db)
+
+
+def test_skonto_line_comes_first_in_the_payment_terms_and_keeps_its_linefeed(tmp_db):
+    root = _root(tmp_db, 'skonto')
+    terms = root.find('.//ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradePaymentTerms', NS)
+    assert terms.find('ram:Description', NS).text == '#SKONTO#TAGE=7#PROZENT=2.00#\nZahlbar innerhalb von 14 Tagen.'
+    assert terms.find('ram:DueDateDateTime/udt:DateTimeString', NS).text == '20260318'
+
+
+def test_skonto_line_stands_alone_without_a_free_text(tmp_db):
+    iid = make_case(tmp_db, 'skonto')
+    with tmp_db._get_connection() as c:
+        c.execute("UPDATE Invoices SET PaymentTerms = NULL WHERE ID = ?", (iid,))
+    root = ET.fromstring(generate_cii(tmp_db.get_invoice_by_id(iid), tmp_db.get_invoice_items(iid), db=tmp_db))
+    assert _t(root, './/ram:SpecifiedTradePaymentTerms/ram:Description') == '#SKONTO#TAGE=7#PROZENT=2.00#\n'
+
+
+def test_the_payment_terms_without_skonto_are_the_free_text_alone(tmp_db):
+    root = _root(tmp_db, 'std19')
+    assert _t(root, './/ram:SpecifiedTradePaymentTerms/ram:Description') == 'Zahlbar innerhalb von 14 Tagen.'
+    assert _t(root, './/ram:SpecifiedTradePaymentTerms/ram:Description').count('#') == 0

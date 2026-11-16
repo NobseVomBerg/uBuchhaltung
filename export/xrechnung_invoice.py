@@ -17,7 +17,7 @@ from decimal import Decimal
 from xml.dom import minidom
 
 from money import format_plain
-from .einvoice_model import EInvoice, Party, build_einvoice
+from .einvoice_model import EInvoice, Party, build_einvoice, payment_terms_text
 
 _NS = {
     '': 'urn:oasis:names:specification:ubl:schema:xsd:Invoice-2',
@@ -122,16 +122,15 @@ class XRechnungGenerator:
             pay = _sub(root, _CAC, 'PaymentMeans')
             _sub(pay, _CBC, 'PaymentMeansCode', '58')          # SEPA-Überweisung
             account = _sub(pay, _CAC, 'PayeeFinancialAccount')
-            _sub(account, _CBC, 'ID', inv.iban)
-            if inv.bank_name:
-                _sub(account, _CBC, 'Name', inv.bank_name)
+            _sub(account, _CBC, 'ID', inv.iban)                # BT-85 (Kontoinhaber) fehlt bewusst: Der Bankname ist keiner
             if inv.bic:
                 branch = _sub(account, _CAC, 'FinancialInstitutionBranch')
                 _sub(branch, _CBC, 'ID', inv.bic)
 
-        if inv.payment_terms:
+        terms_text = payment_terms_text(inv)
+        if terms_text:
             terms = _sub(root, _CAC, 'PaymentTerms')
-            _sub(terms, _CBC, 'Note', inv.payment_terms)
+            _sub(terms, _CBC, 'Note', terms_text)
 
         tax_total = _sub(root, _CAC, 'TaxTotal')
         _sub(tax_total, _CBC, 'TaxAmount', _amount(inv.totals.tax_total), currencyID=cur)
@@ -177,6 +176,8 @@ class XRechnungGenerator:
         p = _sub(wrapper, _CAC, 'Party')
         if party.email:
             _sub(p, _CBC, 'EndpointID', party.email, schemeID='EM')
+        if party.identifier:                                   # BT-29; im Schema zwischen EndpointID und PartyName
+            _sub(_sub(p, _CAC, 'PartyIdentification'), _CBC, 'ID', party.identifier)
         name = _sub(p, _CAC, 'PartyName')
         _sub(name, _CBC, 'Name', party.name)
         postal = _sub(p, _CAC, 'PostalAddress')

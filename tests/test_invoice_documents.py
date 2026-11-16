@@ -34,6 +34,16 @@ def inv_db(tmp_path, monkeypatch):
     return db
 
 
+def _customer(db, company):
+    """Der Kontakt des Kunden: Seine E-Mail braucht die XRechnung (BT-49), an der Rechnung steht sie nicht."""
+    name = company or 'Max Mustermann'
+    for contact in db.fetch_contacts(contact_type='customer'):
+        if contact[3] == name:
+            return contact[0]
+    return db.insert_contact(contact_type='customer', entity_type='company', display_name=name, company_name=name,
+                             email='kunde@example.com')
+
+
 def _make_invoice(db, number='26R001', buyer_company='Malermeister Pinsel',
                   route_id=None, invoice_date='2026-03-04'):
     invoice_id = db.insert_invoice({
@@ -44,6 +54,11 @@ def _make_invoice(db, number='26R001', buyer_company='Malermeister Pinsel',
         'seller_street': 'Musterstraße 1',
         'seller_postal_code': '12345',
         'seller_city': 'Musterstadt',
+        # Angaben, ohne die das UBL der XRechnung nicht entsteht und die E-Rechnung im PDF unvollständig ist (2.3.5)
+        'seller_email': 'info@example.com',
+        'seller_phone': '030 1234567',
+        'seller_vat_id': 'DE123456789',
+        'customer_id': _customer(db, buyer_company),
         'buyer_name': 'Max Mustermann',
         'buyer_company': buyer_company,
         'buyer_street': 'Kundenweg 5',

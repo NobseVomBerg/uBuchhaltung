@@ -170,7 +170,7 @@ CREDIT = [{'position': 1, 'quantity': 1, 'unit': 'C62', 'description': 'Gutschri
 
 def send_credit(w, number='G-100'):
     """Eine versendete Rechnung ohne positiven Betrag (Gutschrift): Sie lässt sich über den Status stornieren."""
-    return send(w, number=number, items=CREDIT)
+    return send(w, number=number, items=CREDIT, discountPercentage=None, discountDays=None)      # Skonto nur bei positivem Betrag
 
 
 def test_cancelling_an_invoice_without_a_positive_amount_by_hand_removes_the_app_receivable(world):
