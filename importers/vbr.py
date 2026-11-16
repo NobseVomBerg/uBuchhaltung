@@ -11,13 +11,14 @@ Das Modul kennt nur diese Eigenheiten; Datenmodell und Plausibilitätsprüfung
 kommen aus der Abstraktionsschicht (siehe ``importers.base``).
 """
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Optional
 
 import pdfplumber
 
 from . import pdftext
 from .base import BankStatement, StatementImporter, StatementTransaction
+from .plausibility import check_balance
 
 # Fußzeile, die VBR unter jede Seite setzt:
 #   0128 / 000 / K00009283 / (optional 5M) / "Bitte beachten Sie die Hinweise …"
@@ -57,14 +58,49 @@ _SEPA_FIELD = re.compile(
     re.IGNORECASE)
 
 
-def parse_text(text: str, year: Optional[int] = None) -> List[dict]:
+def _as_day(value) -> Optional[date]:
+    """``datetime`` oder ``date`` als Tag (alles andere: kein Tag)."""
+    if isinstance(value, datetime):
+        return value.date()
+    return value if isinstance(value, date) else None
+
+
+def _booking_date(day_month: str, year: int, latest: Optional[date]) -> Optional[date]:
+    """Datum einer Buchung aus „TT.MM.“ und dem Auszugsjahr; ``None``, wenn es das Datum nicht gibt.
+
+    Die Zeilen tragen nur Tag und Monat, das Jahr steht im Kopf: Ein Auszug über den Jahreswechsel („Nr. 1/2025“,
+    erstellt am 03.01.2025) hat Dezember-Zeilen, die ins Vorjahr gehören. Liegt das Datum mit dem Auszugsjahr nach
+    dem Erstellungsdatum *latest* (Tagesvergleich, ohne Toleranz), gilt das Vorjahr – sofern es dort gültig ist und
+    nicht ebenfalls danach liegt. Ohne *latest* gibt es keine Obergrenze und damit keine Korrektur."""
+    def make(y: int) -> Optional[date]:
+        try:
+            return date(y, int(day_month[3:5]), int(day_month[:2]))
+        except ValueError:
+            return None
+
+    candidate = make(year)
+    if latest is not None and (candidate is None or candidate > latest):
+        earlier = make(year - 1)
+        if earlier is not None and earlier <= latest:
+            return earlier
+    return candidate
+
+
+def parse_text(text: str, year: Optional[int] = None, latest=None,
+               problems: Optional[list] = None) -> List[dict]:
     """Bewegungen aus dem Seitentext eines VBR-Auszugs lesen.
 
     *year* ist das Auszugsjahr aus der Kopfzeile (z. B. 2024 aus
     ``Kontoauszug Nr. 1/2024``) – die Zeilen selbst tragen nur Tag und Monat.
+    *latest* ist das Erstellungsdatum des Auszugs (``datetime`` oder ``date``): Eine Buchung, die damit
+    nach ihm läge, gehört ins Vorjahr (siehe ``_booking_date``). Ein Datum, das es nicht gibt (29.02. im
+    falschen Jahr, 31.02.), ergibt ``'date': None`` – nie das heutige Datum.
+    *problems* (optional): Wird eine Zeile gelesen, die wie ein Buchungskopf aussieht, aber keinen Betrag am
+    Zeilenende trägt, steht danach ``'unparsed'`` darin (einmal) – sie fiele sonst still weg.
     """
     if year is None:
         year = datetime.now().year
+    latest_day = _as_day(latest)
     transactions: List[dict] = []
 
     text = _PAGE_FOOTER.sub('', text)
@@ -81,6 +117,8 @@ def parse_text(text: str, year: Optional[int] = None) -> List[dict]:
         rest_of_line = match.group(2)       # alles nach dem zweiten Datum
         amount_match = _AMOUNT.search(rest_of_line)
         if not amount_match:
+            if problems is not None and 'unparsed' not in problems:
+                problems.append('unparsed')
             i += 1
             continue
 
@@ -101,7 +139,8 @@ def parse_text(text: str, year: Optional[int] = None) -> List[dict]:
                     or 'Blatt' in next_line
                     or re.match(r'^\d{3,4}$', next_line)
                     or re.match(r'^K\d{5,}$', next_line)
-                    or next_line.startswith('Bitte beachten Sie')):
+                    or next_line.startswith('Bitte beachten Sie')
+                    or _squash(next_line).startswith(_BALANCE_LINE_KEYS)):
                 j += 1
                 continue
             detail_lines.append(next_line)
@@ -130,13 +169,10 @@ def parse_text(text: str, year: Optional[int] = None) -> List[dict]:
             recipient = cleaned_lines[0] if cleaned_lines else ''
             reference_lines = cleaned_lines[1:] if cleaned_lines else []
 
-        try:
-            transaction_date = datetime.strptime(bu_tag + str(year), '%d.%m.%Y')
-        except ValueError:
-            transaction_date = datetime.now()
+        booked = _booking_date(bu_tag, year, latest_day)
 
         transactions.append({
-            'date': transaction_date.strftime('%Y-%m-%d'),
+            'date': booked.isoformat() if booked else None,
             'recipient': recipient if recipient else trans_type,
             'reference': '\n'.join(reference_lines) if reference_lines else trans_type,
             'amount': amount,
@@ -151,6 +187,9 @@ def parse_text(text: str, year: Optional[int] = None) -> List[dict]:
 _TABLE_HEAD_KEY = 'bu-tagwertvorgang'
 _FOOTNOTE_KEY = 'bittebeachtensiediehinweise'
 _FORM_NUMBER = re.compile(r'^(?:\d{3,4}|K\d{5,})$')
+# Saldozeilen („alter/neuer Kontostand vom …“) gehören zu keiner Buchung – nach der letzten stünden sie sonst in ihrem
+# Verwendungszweck. Verglichen wird wie oben ohne Leerzeichen und klein.
+_BALANCE_LINE_KEYS = ('alterkontostand', 'neuerkontostand')
 
 
 def _squash(text: str) -> str:
@@ -186,12 +225,18 @@ def page_body(page_text: str) -> str:
     return '\n'.join(body[:cut])
 
 
-def statement_year(text: str) -> int:
-    """Auszugsjahr aus der Kopfzeile; Rückfall auf das laufende Jahr."""
+def header_year(text: str) -> Optional[int]:
+    """Auszugsjahr aus der Kopfzeile („Kontoauszug Nr. 1/2025“, sonst „erstellt am TT.MM.JJJJ“) oder ``None``."""
     m = re.search(r'Kontoauszug\s+Nr\.\s*\d+/(\d{4})', text)
     if not m:
         m = re.search(r'erstellt\s+am\s+\d{2}\.\d{2}\.(\d{4})', text)
-    return int(m.group(1)) if m else datetime.now().year
+    return int(m.group(1)) if m else None
+
+
+def statement_year(text: str) -> int:
+    """Auszugsjahr aus der Kopfzeile; Rückfall auf das laufende Jahr."""
+    year = header_year(text)
+    return year if year is not None else datetime.now().year
 
 
 class VbrImporter(StatementImporter):
@@ -213,7 +258,12 @@ class VbrImporter(StatementImporter):
             iban=pdftext.extract_iban(text),
             document_date=pdftext.extract_date(text),
         )
-        year = statement_year(text)
+        year = header_year(text)
+        if year is None:
+            # Ohne Jahr im Kopf bleibt nur das laufende – der Nutzer soll die Daten prüfen
+            year = datetime.now().year
+            statement.warnings.append('no_year')
+        problems: List[str] = []
         try:
             with pdfplumber.open(filepath) as pdf:
                 bodies = [page_body(page.extract_text() or '')
@@ -221,9 +271,15 @@ class VbrImporter(StatementImporter):
             # Die bereinigten Seitenrümpfe werden zu EINEM Text verkettet und
             # dann gelesen: nur so findet eine Buchung, die über den
             # Seitenumbruch läuft, ihre Detailzeilen wieder.
-            for raw in parse_text('\n'.join(b for b in bodies if b), year):
+            for raw in parse_text('\n'.join(b for b in bodies if b), year,
+                                  latest=statement.document_date, problems=problems):
                 statement.transactions.append(StatementTransaction.from_dict(raw))
         except Exception as e:
             print(f"Error parsing transactions from {filepath}: {e}")
             statement.warnings.append('parse_error')
+        for key in problems:
+            if key not in statement.warnings:
+                statement.warnings.append(key)
+        # Fehlt eine Buchung (nicht lesbare Zeile, Seite), stimmt die Saldenrechnung nicht
+        check_balance(statement, *pdftext.find_balances(text))
         return statement

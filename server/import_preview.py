@@ -71,12 +71,12 @@ def build_import_preview(db, import_data):
     """Pro Beleg eine Vorschau berechnen.
 
     import_data: { "files": [ {filename, bank_code, iban, document_date,
-                               transactions: [...]}, ... ] }
+                               currency, warnings, transactions: [...]}, ... ] }
 
     Returns { "files": [ {file_index, filename, bank_code, iban, document_date,
-                          account_id, account_name, total, new_count, dup_count,
+                          currency, account_id, account_name, total, new_count, dup_count,
                           dup_upload_count, dup_upload_differs_count, status,
-                          problems, transactions} ] }.
+                          warnings, problems, transactions} ] }.
 
     dup_count zählt alle möglichen Duplikate; dup_upload_count davon die, die
     nicht im Bestand stecken, sondern in einer anderen Datei desselben Uploads
@@ -206,6 +206,7 @@ def build_import_preview(db, import_data):
             "bank_code": f.get("bank_code"),
             "iban": iban,
             "document_date": f.get("document_date"),
+            "currency": f.get("currency"),
             "account_id": account_id,
             "account_name": account_name,
             "total": len(txns),

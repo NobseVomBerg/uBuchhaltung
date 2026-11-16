@@ -17,22 +17,46 @@ Befund-Schlüssel (stabil, die Oberfläche zeigt sie an):
 ============  ===============================================================
 ``amount``    Betrag fehlt oder ist 0
 ``date``      Datum fehlt oder ist unlesbar
-``daterange`` Datum liegt weit neben dem Belegdatum (Jahresdreher)
+``daterange`` Datum liegt weit neben dem Belegdatum (Jahresdreher): mehr als
+              400 Tage davor oder mehr als 31 Tage danach
 ``empty``     weder Empfänger noch Verwendungszweck
 ``boiler``    Inhalt sieht nach Kopf-/Fußzeile des PDFs aus
 ``huge``      Betrag unrealistisch groß
 ============  ===============================================================
+
+Befunde am ganzen Beleg (``BankStatement.warnings``), die diese Prüfung setzt:
+
+===================  ==========================================================
+``no_transactions``  keine Umsätze (nicht bei ``foreign_currency``: Dort fehlen
+                     sie mit Absicht)
+``no_iban``          keine IBAN erkannt
+``balance``          Anfangssaldo + Umsätze ≠ Schlusssaldo (``check_balance``)
+``no_balance``       Saldo oder ein Betrag fehlt, die Prüfung war nicht möglich
+===================  ==========================================================
+
+Die Importmodule setzen daneben eigene Befunde (CAMT: ``split_mismatch``,
+``skipped_status``, ``bad_entry``, ``foreign_currency``; Volksbank-PDF:
+``parse_error``, ``unparsed``, ``no_year``).
 """
 import re
 from datetime import datetime
+from decimal import ROUND_HALF_UP, Decimal
+
+from money import to_minor
 
 #: Beträge oberhalb dieser Grenze sind fast immer ein Parse-Fehler
 #: (verrutschtes Tausender-Trennzeichen, zusammengeklebte Spalten).
 IMPLAUSIBLE_AMOUNT = 1_000_000.0
 
-#: Wie weit ein Buchungsdatum vom Belegdatum abweichen darf (Tage).
+#: Wie weit ein Buchungsdatum vor dem Belegdatum liegen darf (Tage).
 #: Kontoauszüge decken Wochen ab; ein Jahresdreher fällt so auf.
 MAX_DATE_DISTANCE_DAYS = 400
+
+#: Wie weit ein Buchungsdatum nach dem Belegdatum liegen darf (Tage): Ein Auszug nennt nichts, was erst
+#: nach seiner Erstellung gebucht wird – ein Datum danach ist fast immer ein Jahresdreher (Dezember im Folgejahr).
+MAX_DAYS_AFTER_DOCUMENT = 31
+
+_CENT = Decimal('0.01')
 
 # Kopf-/Fußzeilen-Muster. Absichtlich auf das GANZE Feld verankert: "IBAN"
 # oder "Auszug" kommen auch in echten Verwendungszwecken vor – als komplettes
@@ -90,10 +114,10 @@ def check_transaction(transaction, document_date=None):
         found.append('date')
     elif document_date is not None:
         try:
-            distance = abs((booked - document_date).days)
+            days_after = (booked - document_date).days      # negativ = vor dem Belegdatum
         except TypeError:
-            distance = 0
-        if distance > MAX_DATE_DISTANCE_DAYS:
+            days_after = 0
+        if days_after > MAX_DAYS_AFTER_DOCUMENT or -days_after > MAX_DATE_DISTANCE_DAYS:
             found.append('daterange')
 
     recipient, reference = transaction.recipient, transaction.reference
@@ -120,8 +144,38 @@ def check_statement(statement):
     for transaction in statement.transactions:
         transaction.warnings = check_transaction(transaction, doc_date)
 
-    if not statement.transactions:
+    if not statement.transactions and 'foreign_currency' not in statement.warnings:
         statement.warnings.append('no_transactions')
     if not statement.iban:
         statement.warnings.append('no_iban')
+    return statement
+
+
+def _cents(value) -> int:
+    """Betrag auf den Cent gerundet (kaufmännisch) in Minor Units; ein float geht über seine Textform."""
+    return to_minor(Decimal(str(value)).quantize(_CENT, rounding=ROUND_HALF_UP))
+
+
+def check_balance(statement, opening, closing):
+    """Anfangssaldo + Umsätze = Schlusssaldo? Der Befund steht am Beleg (höchstens einmal) – er blockiert nichts.
+
+    :param opening: Anfangssaldo als ``Decimal`` (oder ``None``: nicht gefunden)
+    :param closing: Schlusssaldo als ``Decimal`` (oder ``None``)
+    :returns: ``statement``, um die Prüfung in eine Kette einzuhängen
+
+    ``balance`` = die Summe stimmt nicht; ``no_balance`` = ein Saldo fehlt oder ein Betrag einer Bewegung fehlt
+    bzw. ist keine Zahl – dann lässt sich nichts vergleichen. Gerechnet wird in ganzen Cent, nie mit float.
+    """
+    found = None
+    if opening is None or closing is None or any(t.amount is None for t in statement.transactions):
+        found = 'no_balance'
+    else:
+        try:
+            moved = sum(_cents(t.amount) for t in statement.transactions)
+            if _cents(opening) + moved != _cents(closing):
+                found = 'balance'
+        except (ArithmeticError, TypeError, ValueError):
+            found = 'no_balance'
+    if found and found not in statement.warnings:
+        statement.warnings.append(found)
     return statement

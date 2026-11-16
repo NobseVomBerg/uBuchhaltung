@@ -8,7 +8,8 @@ und nicht in einem der bankspezifischen Module. Reine Funktionen ohne Zustand.
 """
 import re
 from datetime import datetime
-from typing import Optional
+from decimal import Decimal
+from typing import Optional, Tuple
 
 try:
     import pdfplumber
@@ -18,6 +19,26 @@ except ImportError:
 
 #: Standardmuster für das Belegdatum ("erstellt am 31.01.2024")
 DOCUMENT_DATE_PATTERN = r'erstellt am (\d{2}\.\d{2}\.\d{4})'
+
+#: Salden ab dieser Größe gelten als nicht lesbar (verrutschtes Trennzeichen, zusammengeklebte Spalten)
+MAX_BALANCE = Decimal('1e12')
+
+# "alter Kontostand [vom TT.MM.JJJJ] 1.234,56 [S|H|-|+|EUR]": ohne Rücksicht auf Groß-/Kleinschreibung und
+# tolerant gegen fehlende Leerzeichen (die PDF-Extraktion zieht Wörter zusammen); der Betrag steht in
+# derselben Zeile und hat genau zwei Nachkommastellen. ``rest`` ist der Zeilenrest hinter dem Betrag.
+# Jede Leerraum-Folge hängt am Wort davor und steht nie neben einer zweiten: Sonst ließe sich eine lange Folge
+# (der Text kommt aus hochgeladenen PDFs) beim Zurücklaufen auf viele Weisen aufteilen – die Laufzeit würde quadratisch.
+_BALANCE = re.compile(r'''
+    (?P<kind>alter|neuer)  [^\S\n]*  kontostand  [^\S\n]*
+    (?: : [^\S\n]* )?
+    (?: vom [^\S\n]* \d{2}\.\d{2}\.\d{4} [^\S\n]* )?
+    (?P<amount> \d{1,3}(?:\.\d{3})*,\d{2} | \d+,\d{2} )  (?!\d)
+    (?P<rest> [^\n]* )
+''', re.IGNORECASE | re.VERBOSE)
+
+# Hinter dem Betrag: ``EUR`` und/oder das Vorzeichen (S/-: Soll = negativ, H/+: Haben = positiv) als ganzes Wort
+_BALANCE_TAIL = re.compile(r'[^\S\n]*(?:EUR(?![A-Za-z]))?[^\S\n]*(?:(?P<mark>[SH+-])(?![A-Za-z0-9]))?',
+                           re.IGNORECASE)
 
 
 def extract_text(filepath: str) -> str:
@@ -65,3 +86,33 @@ def extract_date(text: str, pattern: str = DOCUMENT_DATE_PATTERN) -> Optional[da
         except ValueError:
             pass
     return None
+
+
+def _balance_hits(text: str):
+    """Alle Salden des Textes als (``'alter'``/``'neuer'``, Betrag mit Vorzeichen oder None bei ≥ 10¹²).
+
+    Steht hinter dem Betrag statt S/H/+/-/EUR ein anderes Wort („Soll“, „Haben“ …), bleibt das Vorzeichen offen:
+    Die Stelle zählt nicht – nichts wird geraten."""
+    for match in _BALANCE.finditer(text or ''):
+        rest = match.group('rest')
+        tail = _BALANCE_TAIL.match(rest)
+        mark = (tail.group('mark') or '').upper()
+        if not mark and re.match(r'\s*[^\W\d_]', rest[tail.end():]):
+            continue
+        value = Decimal(match.group('amount').replace('.', '').replace(',', '.'))
+        if mark in ('S', '-'):
+            value = -value
+        yield match.group('kind').lower(), (None if abs(value) >= MAX_BALANCE else value)
+
+
+def find_balances(text: str) -> Tuple[Optional[Decimal], Optional[Decimal]]:
+    """Anfangs- und Schlusssaldo eines Auszugs aus seinem Text: (alter Kontostand, neuer Kontostand).
+
+    Anfangssaldo = der erste Treffer „alter Kontostand“, Schlusssaldo = der letzte Treffer „neuer Kontostand“
+    (ein mehrseitiger Auszug nennt sie nicht nur einmal); ein Treffer braucht den Betrag in derselben Zeile.
+    Gibt es keinen Treffer oder ist der Betrag ab 10¹², ist dieser Saldo ``None``. Gerechnet wird nur in
+    ``Decimal``."""
+    hits = list(_balance_hits(text))
+    opening = next((value for kind, value in hits if kind == 'alter'), None)
+    closing = next((value for kind, value in reversed(hits) if kind == 'neuer'), None)
+    return opening, closing

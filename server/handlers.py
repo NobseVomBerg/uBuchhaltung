@@ -3817,14 +3817,3 @@ def handle_setup_save(db: Database, post_data: dict):
             return 200, PageSetup(db, message=f'Kontaktdaten gespeichert, aber Fehler beim Bankkonto: {e}')
 
     return 303, '/'
-
-
-def handle_load_testdata(db: Database):
-    """Lädt Testdaten (Kontakte + Bankkonto) und leitet zum Dashboard weiter – nur in einen leeren Bestand
-    (``Database.stock_is_empty``: keine Buchungen, Rechnungen, Angebote und Anlagen). Sonst wird nichts geladen und die
-    Seite *Sonstiges* nennt den Grund (``?testdata=refused``, der Satz steht fest im Code: ``db.seed.TESTDATA_REFUSED``).
-    ``Database.load_test_seed_data`` selbst prüft das nicht (Tests und Demodaten rufen es direkt auf)."""
-    if not db.stock_is_empty():
-        return 303, '/miscellaneous?testdata=refused'
-    db.load_test_seed_data()
-    return 303, '/'

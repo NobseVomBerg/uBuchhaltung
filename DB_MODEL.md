@@ -89,7 +89,7 @@ Kontenrahmens an (`Database.add_missing_standard_accounts`) – nie der Start:
 
 ### Testdaten (`seed_data/test/`)
 
-Nur über `load_test_seed_data()` geladen („Testdaten laden“ unter *Sonstiges* – dort nur in einen leeren Bestand, `Database.stock_is_empty`: keine Buchungen, Rechnungen, Angebote und Anlagen –, „Testdaten laden“ auf der Einrichtungsseite `/setup`, außerdem der Demo-Modus ohne die Rechnungen). Die Funktion selbst ist idempotent (kein Doppel-Einfügen) und prüft den Bestand nicht:
+Nur über `load_test_seed_data()` geladen: vom Demo-Modus (ohne die Rechnungen) und von den Tests. Die Oberfläche bietet das Laden seit 2.3.9 nicht mehr an – Beispieldaten gibt es im Demo-Modus. Die Funktion ist idempotent (kein Doppel-Einfügen):
 
 | Datei | Inhalt |
 |-------|--------|

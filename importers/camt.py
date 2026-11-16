@@ -13,18 +13,23 @@ Dateien sind Nutzereingaben und werden entsprechend behandelt:
 * XML mit DTD bzw. Entity-Deklaration wird abgelehnt (CAMT enthält nie eine),
 * ZIP wird nur im Speicher gelesen, nie entpackt; Anzahl und Größe der
   Einträge sind begrenzt (Zip-Bomb), nur ``.xml``-Einträge zählen,
-* Beträge werden als ``Decimal`` aus dem XML-String gelesen, nie über float.
+* Beträge werden als ``Decimal`` aus dem XML-String gelesen, nie über float,
+* ein Auszug, der irgendwo eine andere Währung als Euro nennt, wird nicht gelesen
+  (die Bewegungen hätten keine Euro-Beträge).
 
 Befund-Schlüssel auf Beleg-Ebene (``BankStatement.warnings``):
 
-==================  =========================================================
-``balance``         Anfangssaldo + Umsätze ≠ Schlusssaldo
-``split_mismatch``  Einzelbeträge einer Sammelbuchung ≠ Gesamtbetrag
-``skipped_status``  nicht gebuchte Umsätze (nicht ``BOOK``) wurden übergangen
-``bad_entry``       ein Umsatz war nicht lesbar und wurde übergangen
-==================  =========================================================
+====================  =======================================================
+``balance``           Anfangssaldo + Umsätze ≠ Schlusssaldo
+``no_balance``        Anfangs- oder Schlusssaldo fehlt: nicht geprüft
+``split_mismatch``    Einzelbeträge einer Sammelbuchung ≠ Gesamtbetrag
+``skipped_status``    nicht gebuchte Umsätze (nicht ``BOOK``) wurden übergangen
+``bad_entry``         ein Umsatz war nicht lesbar und wurde übergangen
+``foreign_currency``  Auszug nicht in Euro: keine Umsätze übernommen
+====================  =======================================================
 """
 import io
+import re
 import zipfile
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -134,13 +139,65 @@ def _iso_date(el) -> Optional[str]:
         return None
 
 
+# ── Währung ──────────────────────────────────────────────────────────────────
+
+_CURRENCY_CODE = re.compile(r'[A-Z]{3}')
+
+
+def _currency(raw: Optional[str]) -> Optional[str]:
+    """Die Währung, die eine Angabe nennt: ``None`` = keine Angabe, ``''`` = eine Angabe, die kein
+    dreibuchstabiger Code ist, sonst der Code (getrimmt, groß geschrieben)."""
+    if raw is None:
+        return None
+    code = raw.strip().upper()
+    return code if _CURRENCY_CODE.fullmatch(code) else ''
+
+
+def _amount_currency(node) -> Optional[str]:
+    """Die Währung am Attribut ``Ccy`` eines ``Amt``-Elements (siehe ``_currency``)."""
+    return _currency(node.get('Ccy')) if node is not None else None
+
+
+def _not_euro(currency: Optional[str]) -> bool:
+    """Nennt die Angabe eine Währung, und ist es nicht Euro? Eine unlesbare Angabe (``''``) zählt dazu."""
+    return currency is not None and currency != 'EUR'
+
+
+def _is_booked(entry) -> bool:
+    status = _text(entry, 'Sts') or _text(entry, 'Sts', 'Cd')
+    return not status or status == 'BOOK'
+
+
+def _statement_currency(stmt) -> Tuple[bool, Optional[str]]:
+    """Lautet der Auszug auf Euro? Liefert (nicht Euro, Währungscode).
+
+    Gelesen werden die Währung des Kontos (``Acct/Ccy``), die der gebuchten Umsätze und die der verwendeten
+    Salden (``Amt/@Ccy``). Eine fehlende Angabe nennt keine Währung; nennt irgendeine Stelle eine andere als
+    Euro, ist es kein Euro-Auszug – der Code ist dann der erste abweichende (``None``, wenn dieser kein Code ist).
+    Sonst ``'EUR'``, wenn irgendwo Euro steht, und ``None``, wenn nirgends eine Währung steht."""
+    account = _path(stmt, 'Acct', 'Ccy')
+    mentions = [_currency(account.text or '') if account is not None else None]
+    mentions += [_amount_currency(_child(entry, 'Amt'))
+                 for entry in _children(stmt, 'Ntry') if _is_booked(entry)]
+    for codes in (('OPBD', 'PRCD'), ('CLBD',)):
+        bal = _balance_node(stmt, codes)
+        mentions.append(_amount_currency(_child(bal, 'Amt')) if bal is not None else None)
+    for mention in mentions:
+        if _not_euro(mention):
+            return True, mention or None
+    return False, 'EUR' if 'EUR' in mentions else None
+
+
 # ── Einzelne Umsätze ─────────────────────────────────────────────────────────
 
 def _tx_amount(tx):
-    """Eigener Betrag einer ``TxDtls`` (v.02/.04: AmtDtls, sonst Amt)."""
-    return (_path(tx, 'AmtDtls', 'TxAmt', 'Amt')
-            or _path(tx, 'AmtDtls', 'InstdAmt', 'Amt')
-            or _path(tx, 'Amt'))
+    """Eigener Betrag einer ``TxDtls``: ihr ``Amt``.
+
+    Die Beträge unter ``AmtDtls`` (``TxAmt``, ``InstdAmt``) teilen eine Sammelbuchung bewusst NICHT auf: So hat der
+    Import solche Einträge immer gelesen – als EINEN Umsatz mit dem Gesamtbetrag –, und die Duplikaterkennung läuft
+    über Datum und Betrag. Würden sie jetzt aufgeteilt, fände der erneute Import eines schon eingelesenen Auszugs
+    seine Summenzeile nicht wieder und legte die Einzelbeträge zusätzlich an."""
+    return _path(tx, 'Amt')
 
 
 def _reference(entry, tx) -> str:
@@ -182,7 +239,9 @@ def _entry_transactions(entry, amount: Decimal, indicator: str, date: str,
         parts = []
         for tx in txs:
             node = _tx_amount(tx)
-            if node is None:
+            # Ein Einzelbetrag in anderer Währung (etwa der beauftragte Betrag in Originalwährung) ist kein
+            # eigener Euro-Betrag: Dann bleibt es ein Umsatz mit dem Gesamtbetrag.
+            if node is None or _not_euro(_amount_currency(node)):
                 parts = None
                 break
             tx_ind = _text(tx, 'CdtDbtInd') or indicator
@@ -215,27 +274,33 @@ def _build(entry, tx, value: Decimal, indicator: str, date: str,
 
 # ── Statements ───────────────────────────────────────────────────────────────
 
-def _balance(stmt, codes) -> Optional[Decimal]:
+def _balance_node(stmt, codes):
+    """Das erste ``Bal`` mit einem dieser Saldo-Codes (oder None) – das, was die Prüfung verwendet."""
     for bal in _children(stmt, 'Bal'):
-        code = _text(bal, 'Tp', 'CdOrPrtry', 'Cd')
-        if code in codes:
-            return _signed(_parse_amount(_child(bal, 'Amt')),
-                           _text(bal, 'CdtDbtInd'))
+        if _text(bal, 'Tp', 'CdOrPrtry', 'Cd') in codes:
+            return bal
     return None
+
+
+def _balance(stmt, codes) -> Optional[Decimal]:
+    bal = _balance_node(stmt, codes)
+    if bal is None:
+        return None
+    return _signed(_parse_amount(_child(bal, 'Amt')), _text(bal, 'CdtDbtInd'))
 
 
 def _statement_from(stmt) -> BankStatement:
     iban = (_text(stmt, 'Acct', 'Id', 'IBAN') or _text(stmt, 'Acct', 'Id', 'Othr', 'Id'))
     result = BankStatement(bank_code=BANK_CODE,
                            iban=iban.replace(' ', '').upper() or None)
+    foreign, result.currency = _statement_currency(stmt)
     warnings: list = []
     total = Decimal(0)
     dates = []
     skipped_status = False
 
     for entry in _children(stmt, 'Ntry'):
-        status = _text(entry, 'Sts') or _text(entry, 'Sts', 'Cd')
-        if status and status != 'BOOK':
+        if not _is_booked(entry):
             skipped_status = True
             continue
         try:
@@ -263,6 +328,8 @@ def _statement_from(stmt) -> BankStatement:
     if opening is not None and closing is not None:
         if to_minor(opening + total) != to_minor(closing):
             warnings.append('balance')
+    elif 'balance' not in warnings:
+        warnings.append('no_balance')       # nichts zum Vergleichen: die Vollständigkeit ist ungeprüft
 
     raw = (_text(stmt, 'FrToDt', 'ToDtTm') or _text(stmt, 'CreDtTm')
            or (max(dates) if dates else ''))
@@ -270,6 +337,11 @@ def _statement_from(stmt) -> BankStatement:
         result.document_date = datetime.strptime(raw[:10], '%Y-%m-%d')
     except ValueError:
         result.document_date = None
+    if foreign:
+        # Beträge in Fremdwährung wären als Euro gebucht worden: nichts übernehmen, nur der eine Befund
+        result.transactions = []
+        result.warnings = ['foreign_currency']
+        return result
     # eindeutige Befunde, Reihenfolge erhalten
     result.warnings = list(dict.fromkeys(warnings))
     return result

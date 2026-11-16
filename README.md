@@ -251,7 +251,8 @@ Zentrale Verwaltung aller Buchungstransaktionen:
   - `bank` – echte Bankbewegung (Import aus Kontoauszug oder WISO-Tabellen-Export)
   - `entry` – Buchungssatz (aus WISO-Original-Export oder manuell)
 - **Kontoauszug-Import**: CAMT.053 (XML/ZIP, alle Banken) oder PDF (DKB, Volksbank Rottweil) –
-  Vorschau mit Duplikat-Erkennung und Saldo-Prüfung, erst dann übernehmen. Duplikate erkennt
+  Vorschau mit Duplikat-Erkennung und Saldo-Prüfung (auch für PDF, soweit der Auszug seine Salden nennt), erst dann
+  übernehmen. Ein CAMT-Auszug, der nicht auf Euro lautet, wird nicht übernommen. Duplikate erkennt
   der Import an Konto, Datum und Betrag – auch wenn derselbe Auszug mehrfach im Upload steckt;
   weicht der Text eines solchen Umsatzes ab, weist die Vorschau darauf hin. Umsätze ohne Datum
   oder Betrag legt der Import nicht an.
@@ -517,8 +518,7 @@ importieren (`/miscellaneous`); Bank↔Entry wird dabei automatisch verknüpft.
 - Standard-Daten in `seed_data/*.json` (wirken nur bei leerer Tabelle; fehlende Standardkonten eines bestehenden Bestands
   ergänzt die Seite des Kontenrahmens auf Knopfdruck)
 - Eigene SKR-Ergänzungen in `seed_data/private/` (in `.gitignore`, nicht im Repo)
-- Testdaten in `seed_data/test/` (werden nur bei `load_test_seed_data()` geladen – in der Oberfläche bei der
-  Ersteinrichtung und unter *Sonstiges*, dort nur in einen leeren Bestand ohne Buchungen, Rechnungen, Angebote und Anlagen)
+- Testdaten in `seed_data/test/` (nur für den Demo-Modus und die Tests; die Oberfläche lädt sie nicht)
 
 ---
 

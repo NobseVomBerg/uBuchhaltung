@@ -335,7 +335,7 @@ def test_before_setup_every_page_leads_to_the_setup(server_port, path):
 
 
 @pytest.mark.parametrize("path", ["/execute_sql", "/users/create", "/users/auto-login", "/login",
-                                  "/setup-admin", "/setup/mode", "/setup/save", "/setup/load_testdata",
+                                  "/setup-admin", "/setup/mode", "/setup/save",
                                   "/masterdata/articles/delete?id=1", "/upload_receipts"])
 def test_before_setup_every_post_leads_to_the_setup_too(server_port, path):
     resp = post(server_port, path, form={"x": "1", "username": "admin", "mode": "single"})

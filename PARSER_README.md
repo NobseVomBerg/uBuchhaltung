@@ -56,12 +56,20 @@ Vorschau zeigt sie, entschieden wird vom Nutzer.
 |---|---|
 | `amount` | Betrag fehlt oder ist 0 |
 | `date` | Datum fehlt oder ist unlesbar |
-| `daterange` | Datum liegt weit neben dem Belegdatum (Jahresdreher) |
+| `daterange` | Datum liegt weit neben dem Belegdatum (Jahresdreher): mehr als 400 Tage davor oder mehr als 31 Tage danach |
 | `empty` | weder Empfänger noch Verwendungszweck |
 | `boiler` | Inhalt ist vollständig Kopf-/Fußzeilentext ("Seite 2 von 5", "Übertrag auf Blatt 2", "Neuer Kontostand", Formularnummern) |
 | `huge` | Betrag über 1.000.000 – fast immer ein verrutschtes Trennzeichen |
 
-Am Beleg selbst: `no_transactions`, `no_iban`, `parse_error`.
+Am Beleg selbst: `no_transactions`, `no_iban`, `parse_error`, dazu `balance` (Anfangssaldo + Umsätze ≠ Schlusssaldo),
+`no_balance` (Saldo nicht gefunden – die Vollständigkeit ist nicht geprüft), `unparsed` (eine Zeile sah wie ein
+Buchungskopf aus, hatte aber keinen lesbaren Betrag), `no_year` (Jahr des Auszugs nicht erkannt) und `foreign_currency`
+(CAMT-Auszug nicht in Euro).
+
+**Saldoprüfung für PDF-Auszüge:** `pdftext.find_balances()` sucht im Text die Zeilen „alter Kontostand …“ und
+„neuer Kontostand …“ (Betrag in derselben Zeile, dahinter `S`/`H`, `+`/`-` oder `EUR`); `plausibility.check_balance()`
+rechnet in ganzen Cent nach. Die Suche ist an keinem echten Auszug jeder Bank geprüft – findet sie die Zeilen nicht,
+steht `no_balance` am Beleg, nichts wird geraten.
 
 Die `boiler`-Muster greifen nur auf das **ganze** Feld: "Kontoauszug-Gebühr
 Januar" oder "Blattwerk Gartenbau" bleiben unauffällig, "Blatt 3" nicht. Und
@@ -105,9 +113,12 @@ Grenzen (ohne Bankreferenz im Datenmodell nicht lösbar, siehe `docs/aufgaben.md
 - Zwei *verschiedene* Auszüge desselben Tags mit je einem echten, gleichen Umsatz:
   das Maximum behält nur einen davon. Die Vorschau markiert abweichende Texte, nachtragen
   geht nur von Hand – eine Option „trotzdem importieren“ fehlt (`docs/aufgaben.md`).
-- Das VBR-PDF nennt das Jahr nur im Kopf des Auszugs und gilt für alle Zeilen; bei
-  einem Auszug über den Jahreswechsel kann das Datum einzelner Zeilen abweichen, und
-  derselbe Umsatz aus CAMT wird dann nicht als Duplikat erkannt.
+- Das VBR-PDF nennt das Jahr nur im Kopf des Auszugs. Läge eine Buchung damit nach dem
+  Erstellungsdatum des Auszugs („erstellt am“), gilt für sie das Vorjahr (Dezember-Buchungen auf dem
+  ersten Auszug eines Jahres). Ohne Erstellungsdatum bleibt es beim Jahr des Kopfes. Wer einen solchen
+  Auszug schon mit dem falschen Jahr importiert hat, bekommt die Zeilen beim erneuten Import nicht als
+  Duplikat erkannt (das Datum hat sich geändert).
+- Der DKB-Parser kennt diese Korrektur und die Hinweise `unparsed`/`no_year` noch nicht.
 - Die Vorschau wird beim Hochladen berechnet und nach einem Einzelimport nicht neu
   geladen: Wer zuerst die *spätere* Datei einzeln importiert, sieht für die frühere
   Karte eine zu hohe „neu“-Zahl. Das Ergebnis des Imports stimmt trotzdem.
@@ -123,13 +134,16 @@ denselben Weg wie PDF: `BankStatement` → Vorschau → Bestätigung.
   „Konto nicht gefunden“ wie bei PDF.
 * Nur gebuchte Umsätze (`Sts` = `BOOK`); Vorzeichen aus `CdtDbtInd`. Storno
   (`RvslInd`) wird mit Präfix „Storno: “ im Verwendungszweck übernommen.
-* Sammelbuchung: mehrere `TxDtls` mit eigenem Betrag werden Einzelumsätze, sofern
-  die Summe stimmt (sonst ein Umsatz + Hinweis `split_mismatch`).
+* Sammelbuchung: mehrere `TxDtls` mit eigenem Betrag (`TxDtls/Amt`, in Euro) werden Einzelumsätze, sofern
+  die Summe stimmt (sonst ein Umsatz + Hinweis `split_mismatch`). Beträge unter `AmtDtls` teilen nicht auf,
+  ein Einzelbetrag in anderer Währung auch nicht: Dann bleibt es ein Umsatz mit dem Gesamtbetrag.
+* Währung: Nennt der Auszug irgendwo (Konto, Umsatz, Saldo) eine andere Währung als Euro, werden seine
+  Umsätze nicht übernommen (Hinweis `foreign_currency`) – sie wären sonst als Euro gebucht worden.
 * Gegenpartei: Dbtr bei Gutschrift, Cdtr bei Lastschrift; Zweck = alle `Ustrd`
   (Fallback `AddtlTxInf`, `AddtlNtryInf`). Valuta, EndToEndId, Mandats- und
   Gläubiger-ID hat das gemeinsame Datenmodell nicht.
 * Plausibilität: Anfangssaldo (OPBD/PRCD) + Umsätze = Schlusssaldo (CLBD), sonst
-  Hinweis `balance` in der Vorschau.
+  Hinweis `balance` in der Vorschau; fehlt ein Saldo, `no_balance`.
 * Sicherheit: DTD/Entities werden abgelehnt, ZIP nur im Speicher mit Grenzen
   für Anzahl/Größe/Kompressionsverhältnis. Beträge nur als `Decimal`.
 
