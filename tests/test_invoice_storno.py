@@ -217,7 +217,7 @@ def test_every_locked_status_can_be_cancelled(world, status):
 def test_the_number_comes_from_the_circle_of_the_year_of_the_storno_date(world, monkeypatch):
     at(monkeypatch, '2027-01-04')                                        # heute ist der 4.1.2027: Storno im Folgejahr
     db = world.db
-    invoice_id = sent(world, invoiceDate='2026-12-28', deliveryDate='2026-12-28')
+    invoice_id = sent(world, invoiceDate='2026-12-28', deliveryDate='2026-12-28', dueDate='2027-01-11')
     assert db.fetch_number_ranges('invoice')[0][2] == 2026 and len(db.fetch_number_ranges('invoice')) == 1
 
     storno = cancel(world, invoice_id, '2027-01-04')                     # Folgejahr: der Kreis fehlt, er entsteht
@@ -226,7 +226,7 @@ def test_the_number_comes_from_the_circle_of_the_year_of_the_storno_date(world, 
     assert sorted((r[2], r[3], r[5]) for r in db.fetch_number_ranges('invoice')) == [(2026, 'R', 0), (2027, 'R', 1)]
     assert columns(db, storno.storno_id)['InvoiceDate'] == '2027-01-04'
     assert [r[5] for r in bookings_of(db, '27R001')] == ['2027-01-04']   # die Gegenbuchung trägt das Stornodatum
-    second = sent(world, number='T-101', invoiceDate='2026-12-29', deliveryDate='2026-12-29')
+    second = sent(world, number='T-101', invoiceDate='2026-12-29', deliveryDate='2026-12-29', dueDate='2027-01-12')
     assert cancel(world, second, '2026-12-30').storno_number == '26R001'     # das alte Jahr zählt in seinem Kreis
 
 
@@ -820,12 +820,14 @@ CREDIT = [{'position': 1, 'quantity': 1, 'unit': 'C62', 'description': 'Gutschri
            'taxRate': 19}]                                                  # −100,00 netto, −119,00 brutto
 FREE = [{'position': 1, 'quantity': 1, 'unit': 'C62', 'description': 'Kulanz', 'unitPrice': 0.0, 'taxRate': 19}]
 NO_POSITIVE = [pytest.param(CREDIT, -1190000, id='Gutschrift'), pytest.param(FREE, 0, id='0-Euro-Rechnung')]
+# Skonto gibt es nur bei einem positiven Betrag (der Server lehnt es beim Speichern ab); das Formular des Tests trägt sonst 2 %
+NO_SKONTO = {'discountPercentage': None, 'discountDays': None}
 
 
 @pytest.mark.parametrize('items, gross', NO_POSITIVE)
 def test_such_an_invoice_is_cancelled_through_the_status_and_gets_no_credit_note(world, items, gross):
     db = world.db
-    invoice_id = sent(world, number='G-1', items=items)
+    invoice_id = sent(world, number='G-1', items=items, **NO_SKONTO)
     assert columns(db, invoice_id)['SumGross'] == gross
     circles = db.fetch_number_ranges('invoice')
 
@@ -842,7 +844,7 @@ def test_such_an_invoice_is_cancelled_through_the_status_and_gets_no_credit_note
 
 @pytest.mark.parametrize('status', ['sent', 'overdue', 'partial_payment', 'partial', 'paid'])
 def test_every_locked_status_of_such_an_invoice_can_be_cancelled_through_the_status(world, status):
-    invoice_id = sent(world, number='G-1', items=CREDIT)
+    invoice_id = sent(world, number='G-1', items=CREDIT, **NO_SKONTO)
     force_status(world.db, invoice_id, status)
     change = world.db.set_invoice_status(invoice_id, 'cancelled', USER)
     assert (change.ok, change.kind, change.old) == (True, 'cancel', 'partial_payment' if status == 'partial' else status)
@@ -851,7 +853,8 @@ def test_every_locked_status_of_such_an_invoice_can_be_cancelled_through_the_sta
 
 def test_cancelling_such_an_invoice_takes_the_receivable_of_the_app_along_unless_a_payment_hangs_on_it(world):
     db = world.db
-    lone, paid = sent(world, number='G-1', items=CREDIT), sent(world, number='G-2', items=CREDIT)
+    lone = sent(world, number='G-1', items=CREDIT, **NO_SKONTO)
+    paid = sent(world, number='G-2', items=CREDIT, **NO_SKONTO)
     add_payment(world, paid, -119.0)                                         # wie der WISO-Import sie zuordnet
     assert db.get_receivable_booking(lone) is not None and db.get_receivable_booking(paid) is not None
     receivable = db.get_receivable_booking(paid)
@@ -875,7 +878,7 @@ def test_the_status_still_refuses_to_cancel_a_positive_invoice_and_names_the_way
 def test_the_amount_is_read_from_the_stored_invoice_in_the_transaction(world):
     """Entschieden wird am gespeicherten Betrag, nicht an dem, was die Maske anzeigt: Ändert sich die Rechnung zwischen
     Anzeige und Klick (SQL-Konsole), gilt der Stand von jetzt."""
-    invoice_id = sent(world, number='G-1', items=CREDIT)
+    invoice_id = sent(world, number='G-1', items=CREDIT, **NO_SKONTO)
     page = PageInvoice(world.db, {}, invoice_id)
     assert 'cancelled' in _status_options(page)
     run_sql(world.db, 'UPDATE Invoices SET SumGross = 1190000 WHERE ID = ?', invoice_id)
@@ -887,7 +890,7 @@ def test_the_amount_is_read_from_the_stored_invoice_in_the_transaction(world):
 def test_a_cancelled_invoice_without_a_positive_amount_can_be_revived(world):
     """Wiederbeleben wie beim Altbestand: Die Forderung wird neu gebucht, die Rechnung ist wieder versendet."""
     db = world.db
-    invoice_id = sent(world, number='G-1', items=CREDIT)
+    invoice_id = sent(world, number='G-1', items=CREDIT, **NO_SKONTO)
     set_invoice_status(invoice_id, 'cancelled')
     assert db.get_receivable_booking(invoice_id) is None
     assert allowed_targets('cancelled', 0, False, -1190000) == ['sent', 'overdue']
@@ -897,7 +900,7 @@ def test_a_cancelled_invoice_without_a_positive_amount_can_be_revived(world):
 
 @pytest.mark.parametrize('items, gross', NO_POSITIVE)
 def test_the_page_of_such_an_invoice_offers_the_status_and_no_cancel_button(world, items, gross):
-    invoice_id = sent(world, number='G-1', items=items)
+    invoice_id = sent(world, number='G-1', items=items, **NO_SKONTO)
     html = PageInvoice(world.db, {}, invoice_id)
     assert 'cancelInvoice(' not in html and 'Stornieren &hellip;' not in html
     assert _status_options(html) == ['sent', 'draft', 'finalized', 'overdue', 'cancelled']

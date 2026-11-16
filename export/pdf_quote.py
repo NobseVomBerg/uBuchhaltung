@@ -17,7 +17,7 @@ from db import Database
 from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path,
                        safe_filename_component)
 from . import pdf_document as D
-from .einvoice_model import small_business_note, unit_display
+from .einvoice_model import small_business_note, tax_id_kind, unit_display
 
 
 def _pct(tax_rate):
@@ -51,7 +51,8 @@ def generate_quote_pdf(db: Database, quote_id: int):
     seller_city = quote[8] or ''
     seller_email = quote[11] or ''
     seller_phone = quote[12] or ''
-    seller_tax_id = ''
+    # USt-IdNr. oder Steuernummer aus der Momentaufnahme des Angebots; der Kontakt nur, wenn sie leer ist (Import)
+    tax_kind, tax_number = tax_id_kind(quote[10])
 
     buyer_name = quote[14] or ''
     buyer_company = quote[15] or ''
@@ -77,8 +78,8 @@ def generate_quote_pdf(db: Database, quote_id: int):
         own_contact = db.get_contact_by_id(own_company_id)
         if own_contact and len(own_contact) > 13 and own_contact[13]:
             image = load_image_xobject(resolve_logo_path(own_contact[13]))
-        if own_contact and len(own_contact) > 11:
-            seller_tax_id = own_contact[11] or ''
+        if own_contact and len(own_contact) > 11 and not tax_number:
+            tax_kind, tax_number = tax_id_kind(own_contact[11])
         if own_contact and len(own_contact) > 25:
             seller_addr_extra = own_contact[25] or ''
 
@@ -104,8 +105,8 @@ def generate_quote_pdf(db: Database, quote_id: int):
         col_contact.append(f"Tel: {seller_phone}")
     if seller_email:
         col_contact.append(f"E-Mail: {seller_email}")
-    if seller_tax_id:
-        col_contact.append(f"USt-IdNr: {seller_tax_id}")
+    if tax_number:
+        col_contact.append(f"{'USt-IdNr.' if tax_kind == 'vat' else 'Steuer-Nr.'}: {tax_number}")
 
     # ── Content-Stream (seitenfähig) ──────────────────────────────────────────
     flow = D.PageFlow([col_address, col_contact, []])

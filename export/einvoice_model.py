@@ -19,14 +19,15 @@ PDF); im Modell – und damit in CII und UBL – stehen die Beträge positiv, wi
 negiert Mengen, Zeilen-, Steuer- und Gesamtsummen genau einmal.
 """
 import html
+import math
 import re
 from dataclasses import dataclass, field
-from datetime import date
-from decimal import Decimal
-from typing import List, Optional
+from datetime import date, timedelta
+from decimal import ROUND_HALF_UP, Decimal
+from typing import List, Optional, Tuple
 
 from db.invoice_lock import STORNO_KIND
-from money import multiply, round_minor, tax_from_net, to_minor
+from money import SCALE, format_de, round_minor, tax_from_net, to_minor
 from richtext import sanitize_richtext
 
 # Spaltenindizes der Invoices-Zeile (``SELECT *``), siehe db/schema.py
@@ -37,7 +38,7 @@ _INV = dict(
     buyer_name=14, buyer_company=15, buyer_street=16, buyer_postal=17,
     buyer_city=18, buyer_country=19, buyer_vat_id=20, buyer_reference=21,
     buyer_route_id=22, order_number=23, currency=24, delivery_date=25,
-    payment_terms=26, payment_due_date=27, bank_name=31, bank_iban=32,
+    payment_terms=26, payment_due_date=27, skonto_days=28, skonto_percent=29, bank_name=31, bank_iban=32,
     bank_bic=33, tax_category=34, tax_rate=35, sum_net=36, tax_amount=37,
     sum_gross=38, amount_due=39, invoice_kind=50, cancels_invoice_id=51, replaces_invoice_id=52, document_version=54,
 )
@@ -185,6 +186,7 @@ class Party:
     country: str = 'DE'
     vat_id: str = ''          # USt-IdNr. (BT-31 / BT-48)
     tax_number: str = ''      # nationale Steuernummer (BT-32)
+    identifier: str = ''      # Kennung des Verkäufers (BT-29); ohne USt-IdNr. die Steuernummer (sonst verletzt BR-CO-26)
     email: str = ''
     phone: str = ''
     contact_name: str = ''
@@ -222,6 +224,14 @@ class Totals:
 
 
 @dataclass
+class Skonto:
+    """Das Skonto einer Rechnung: ``percent`` Prozent bei Zahlung bis zum Tag ``until``."""
+    days: int
+    percent: Decimal           # Prozent, auf zwei Nachkommastellen
+    until: date                # letzter Tag der Skontofrist: Rechnungsdatum plus ``days``
+
+
+@dataclass
 class EInvoice:
     number: str
     issue_date: date
@@ -244,6 +254,8 @@ class EInvoice:
     preceding_invoice_number: str = ''                 # BT-25: Nummer der Ursprungsrechnung (Stornorechnung)
     preceding_invoice_date: Optional[date] = None      # BT-26: deren Rechnungsdatum
     warnings: List[str] = field(default_factory=list)
+    skonto: Optional[Skonto] = None                    # nie bei einer Stornorechnung
+    skonto_unreadable: bool = False                    # gespeicherte Werte unbrauchbar: kein Skonto, dafür eine Lücke
 
     @property
     def is_exempt(self) -> bool:
@@ -252,6 +264,157 @@ class EInvoice:
 
 def _german_date(day) -> str:
     return day.strftime('%d.%m.%Y')
+
+
+# ── Skonto ───────────────────────────────────────────────────────────────────
+# Die Spalten sind ``SkontoDays INTEGER`` und ``SkontoPercent REAL``, das Formular schickt Zahlen – ein Client oder die
+# SQL-Konsole kann aber alles hineinlegen. Geprüft wird deshalb, BEVOR etwas in eine Zahl umgewandelt wird: Ein Text wie
+# ``1e9999999`` bliebe als ``Decimal`` harmlos, ``int()`` darauf aber rechnete minutenlang. Leer und 0 heißen beide
+# „kein Skonto“ (so schickt es das Formular).
+
+SKONTO_PAIR_MESSAGE = 'Skonto braucht Prozent und Tage.'
+SKONTO_PERCENT_MESSAGE = 'Skonto: Prozent größer 0 und kleiner 100, höchstens zwei Nachkommastellen.'
+SKONTO_DAYS_MESSAGE = 'Skonto: Tage als ganze Zahl von 1 bis 365.'
+SKONTO_AFTER_DUE_MESSAGE = 'Die Skontofrist endet nach der Fälligkeit.'
+SKONTO_DATE_MESSAGE = 'Skonto braucht ein gültiges Rechnungsdatum.'
+SKONTO_POSITIVE_MESSAGE = 'Skonto nur bei einem positiven Rechnungsbetrag.'
+MAX_SKONTO_DAYS = 365
+_CENT = Decimal('0.01')
+_PERCENT_TEXT = re.compile(r'[0-9]{1,2}(?:\.[0-9]{1,2})?')
+
+
+def _skonto_days(value) -> Optional[int]:
+    """Die Skonto-Tage: ``None``, wenn leer (nichts, Leerraum oder 0), sonst eine ganze Zahl von 1 bis 365 – sonst
+    ``ValueError``. Angenommen werden ein ``int`` (kein ``bool``), ein endlicher, ganzzahliger ``float`` und ein Text aus
+    1 bis 3 ASCII-Ziffern; alles andere (Exponent, Vorzeichen, Komma, länger, ein anderer Typ) ist ungültig."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if len(text) > 3 or not (text.isascii() and text.isdigit()):
+            raise ValueError(SKONTO_DAYS_MESSAGE)
+        number = int(text)
+    elif isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(SKONTO_DAYS_MESSAGE)
+    elif isinstance(value, float) and not (math.isfinite(value) and value.is_integer()):
+        raise ValueError(SKONTO_DAYS_MESSAGE)
+    else:
+        number = value
+    if number == 0:
+        return None
+    if not 1 <= number <= MAX_SKONTO_DAYS:
+        raise ValueError(SKONTO_DAYS_MESSAGE)
+    return int(number)
+
+
+def _skonto_percent(value) -> Optional[Decimal]:
+    """Das Skonto in Prozent: ``None``, wenn leer (nichts, Leerraum oder 0), sonst eine Zahl größer 0 und kleiner 100 –
+    sonst ``ValueError``. Angenommen werden eine endliche Zahl (``int`` ohne ``bool``, ``float`` – über ihre Textform gelesen,
+    2.5 ist 2,5 –, ``Decimal``) und ein Text der Form ``12`` oder ``2.5`` (höchstens zwei Stellen davor und danach); die
+    Anzahl der Nachkommastellen prüft :func:`parse_skonto`."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if not _PERCENT_TEXT.fullmatch(text):
+            raise ValueError(SKONTO_PERCENT_MESSAGE)
+        number = Decimal(text)
+    elif isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        raise ValueError(SKONTO_PERCENT_MESSAGE)
+    elif isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError(SKONTO_PERCENT_MESSAGE)
+        number = value
+    elif isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(SKONTO_PERCENT_MESSAGE)
+    else:
+        number = value
+    if number == 0:
+        return None
+    if not 0 < number < 100:
+        raise ValueError(SKONTO_PERCENT_MESSAGE)
+    return number if isinstance(number, Decimal) else Decimal(str(number))
+
+
+def parse_skonto(days, percent) -> Optional[Tuple[int, Decimal]]:
+    """Das Skonto aus den gespeicherten (oder im Formular angegebenen) Werten: ``None`` ohne Skonto (beide leer oder 0),
+    sonst ``(Tage, Prozent)``. Gültig sind Tage als ganze Zahl von 1 bis 365 und Prozent größer 0 und kleiner 100 mit
+    höchstens zwei Nachkommastellen; eine Angabe allein genügt nicht. Alles andere ist ein ``ValueError`` mit deutschem
+    Klartext – und kommt in Millisekunden zurück, gleich was geschickt wird (siehe oben)."""
+    n_days = _skonto_days(days)
+    n_percent = _skonto_percent(percent)
+    if n_days is None and n_percent is None:
+        return None
+    if n_days is None or n_percent is None:
+        raise ValueError(SKONTO_PAIR_MESSAGE)
+    if n_percent != n_percent.quantize(_CENT):
+        raise ValueError(SKONTO_PERCENT_MESSAGE)
+    return n_days, n_percent.quantize(_CENT)
+
+
+def skonto_until(issue_date, days) -> Optional[date]:
+    """Der letzte Tag der Skontofrist: Rechnungsdatum plus ``days``; ``None``, wenn das Datum nicht darstellbar ist."""
+    try:
+        return issue_date + timedelta(days=days)
+    except OverflowError:
+        return None
+
+
+def skonto_amount(gross_minor, percent) -> int:
+    """Der Skontobetrag in Minor Units: ``percent`` Prozent des Bruttos, in EINEM Schritt kaufmännisch auf den Cent
+    gerundet (nicht erst auf die Minor Unit und danach auf den Cent: 0,99 € × 0,5 % sind 0,00 €, nicht 0,01 €)."""
+    cent = 10 ** (SCALE - 2)
+    exact = Decimal(int(gross_minor)) * Decimal(str(percent)) / 100 / cent
+    return int(exact.quantize(Decimal(1), rounding=ROUND_HALF_UP)) * cent
+
+
+def skonto_terms_line(skonto: Skonto) -> str:
+    """Die Skonto-Zeile der Zahlungsbedingungen, wie BR-DE-18 der XRechnung sie verlangt:
+    ``#SKONTO#TAGE=7#PROZENT=2.00#`` (Prozent mit zwei Nachkommastellen und Punkt, ohne ``BASISBETRAG``)."""
+    return f'#SKONTO#TAGE={skonto.days}#PROZENT={skonto.percent:.2f}#'
+
+
+def payment_terms_text(inv: EInvoice) -> str:
+    """Die Zahlungsbedingungen (BT-20) für CII und UBL: die Skonto-Zeile, ein Zeilenumbruch und der Freitext der Rechnung.
+    Ohne Skonto steht der Freitext allein. Die Zeile steht vorn: BR-DE-18 prüft jede Zeile für sich."""
+    if inv.skonto is None:
+        return inv.payment_terms
+    return f'{skonto_terms_line(inv.skonto)}\n{inv.payment_terms}'
+
+
+def skonto_sentence(skonto: Skonto, gross_minor, due_date=None) -> str:
+    """Der Absatz im PDF: „Bei Zahlung bis zum 11.03.2026 (innerhalb von 7 Tagen ab Rechnungsdatum) gewähren wir 2 %
+    Skonto: abzüglich 3,56 EUR sind dann 174,35 EUR zu zahlen. Ohne Abzug zahlbar bis zum 18.03.2026.“ Grundlage ist das
+    gedruckte Brutto ``gross_minor``; der letzte Satz steht nur mit Fälligkeit – und nur, wenn die Skontofrist nicht nach ihr
+    endet (ein Altbestand kann das tragen; das Dokument widerspricht sich dann nicht)."""
+    amount = skonto_amount(gross_minor, skonto.percent)
+    days = f'{skonto.days} Tag' if skonto.days == 1 else f'{skonto.days} Tagen'
+    percent = f'{skonto.percent.normalize():f}'.replace('.', ',')
+    text = (f'Bei Zahlung bis zum {_german_date(skonto.until)} (innerhalb von {days} ab Rechnungsdatum) gewähren wir '
+            f'{percent} % Skonto: abzüglich {format_de(amount)} EUR sind dann {format_de(gross_minor - amount)} EUR '
+            'zu zahlen.')
+    if due_date and skonto.until <= due_date:
+        text += f' Ohne Abzug zahlbar bis zum {_german_date(due_date)}.'
+    return text
+
+
+def _read_skonto(days, percent, issue_date) -> Tuple[Optional[Skonto], bool]:
+    """``(Skonto, unlesbar)`` aus den gespeicherten Werten: Sind sie unbrauchbar (Altbestand, SQL-Konsole), gibt es kein
+    Skonto im Modell, aber ``unlesbar`` – der Verlust bleibt nicht still (:func:`einvoice_gaps`)."""
+    try:
+        parsed = parse_skonto(days, percent)
+    except ValueError:
+        return None, True
+    if parsed is None:
+        return None, False
+    until = skonto_until(issue_date, parsed[0])
+    if until is None:
+        return None, True
+    return Skonto(parsed[0], parsed[1], until), False
 
 
 def correction_note_text(notice) -> str:
@@ -312,15 +475,62 @@ def replacement_note(db, invoice):
 
 
 def _party(name, street, postal, city, country, vat_id='', email='', phone='',
-           contact='', tax_number=''):
+           contact='', tax_number='', identifier=''):
     return Party(name=_text(name), street=_text(street), postal_code=_text(postal),
                  city=_text(city), country=(_text(country) or 'DE').upper(),
                  vat_id=_text(vat_id).replace(' ', ''), tax_number=_text(tax_number),
-                 email=_text(email), phone=_text(phone), contact_name=_text(contact))
+                 identifier=_text(identifier), email=_text(email), phone=_text(phone), contact_name=_text(contact))
 
 
-def _is_vat_id(s: str) -> bool:
-    return bool(re.match(r'^[A-Za-z]{2}[A-Za-z0-9+*.]{2,12}$', s or ''))
+# Die USt-IdNr. je Land: das Länderkürzel der E-Rechnung (BR-CO-09: ISO 3166-1, Griechenland ``EL``, Nordirland ``XI``) und der Rest als
+# Muster (``fullmatch``, ASCII). Gesucht wird nach dem Entfernen von Leerzeichen, Bindestrichen und Punkten, in Großschreibung.
+# ``CHE`` (Schweiz) und ``NO`` (Norwegen) tragen ihr Suffix (MWST/TVA/IVA, MVA) hinten.
+_VAT_ID_RULES = {
+    'AT': r'U\d{8}', 'BE': r'\d{9,10}', 'BG': r'\d{9,10}', 'CY': r'\d{8}[A-Z]', 'CZ': r'\d{8,10}', 'DE': r'\d{9}',
+    'DK': r'\d{8}', 'EE': r'\d{9}', 'EL': r'\d{9}', 'ES': r'[A-Z0-9]\d{7}[A-Z0-9]', 'FI': r'\d{8}',
+    'FR': r'[A-HJ-NP-Z0-9]{2}\d{9}', 'HR': r'\d{11}', 'HU': r'\d{8}', 'IE': r'\d{7}[A-Z]{1,2}|\d[A-Z0-9+*]\d{5}[A-Z]',
+    'IT': r'\d{11}', 'LT': r'\d{9}|\d{12}', 'LU': r'\d{8}', 'LV': r'\d{11}', 'MT': r'\d{8}', 'NL': r'\d{9}B\d{2}',
+    'PL': r'\d{10}', 'PT': r'\d{9}', 'RO': r'\d{2,10}', 'SE': r'\d{12}', 'SI': r'\d{8}', 'SK': r'\d{10}',
+    'XI': r'\d{9}|\d{12}|GD\d{3}|HA\d{3}', 'GB': r'\d{9}|\d{12}|GD\d{3}|HA\d{3}',
+    'CHE': r'\d{9}(?:MWST|TVA|IVA)?', 'NO': r'\d{9}(?:MVA)?',
+}
+_VAT_ID_PATTERNS = {prefix: re.compile(rest, re.ASCII) for prefix, rest in _VAT_ID_RULES.items()}
+
+# Eine Bezeichnung vor der Nummer („USt-IdNr. DE123456789“, „St.-Nr.: 12/345/67890“): ohne Groß-/Kleinschreibung, mit oder ohne
+# Punkte und Bindestriche, gefolgt von Doppelpunkt und Leerraum. „VAT No“ gilt nur, wenn danach kein Buchstabe und keine Ziffer
+# folgt – sonst wäre das „NO“ von „NO123456789MVA“ (Norwegen) eine Bezeichnung.
+_LABEL_GAP = r'[\s.\-]*'
+_LABEL = re.compile(
+    r'^\s*(?:'
+    r'U\s*St' + _LABEL_GAP + r'Id(?:' + _LABEL_GAP + r'Nr)?'                       # USt-IdNr, USt-Id-Nr, USt-ID, UStID
+    r'|UID(?:' + _LABEL_GAP + r'Nr)?'                                               # UID
+    r'|VAT(?:' + _LABEL_GAP + r'(?:ID|Nr|Number|No(?![A-Za-z0-9])))?'               # VAT, VAT-ID, VAT No
+    r'|Umsatzsteuer' + _LABEL_GAP + r'(?:Identifikationsnummer|IdNr|ID)'            # Umsatzsteuer-ID, -Identifikationsnummer
+    r'|St(?:euer)?' + _LABEL_GAP + r'N(?:r|ummer)'                                  # St.-Nr, StNr, Steuer-Nr, Steuernummer, Steuernr
+    r')(?![A-Za-z])[\s.:\-]*', re.IGNORECASE)
+
+
+def tax_id_kind(text) -> Tuple[str, str]:
+    """Ist die Angabe eine USt-IdNr. (``'vat'``) oder eine Steuernummer (``'tax'``)? Liefert ``(Art, Wert)``; leer ergibt
+    ``('', '')``. Das Feld der Kontakte und die Momentaufnahme der Rechnung (``SellerVATID``) tragen beides in einer Spalte –
+    EN 16931 trennt die USt-IdNr. (BT-31, CII ``VA``, UBL ``VAT``) von der Steuernummer (BT-32, ``FC``, ``TAX``), und
+    eine Steuernummer als USt-IdNr. verletzt BR-CO-09.
+
+    Eine vorangestellte Bezeichnung („USt-IdNr.“, „VAT-ID“, „St.-Nr.“, „Steuernummer“ …) wird zuerst abgeschnitten. Eine
+    USt-IdNr. ist die Angabe nur, wenn sie – ohne Leerzeichen, Bindestriche und Punkte, in Großschreibung – mit dem Länderkürzel
+    eines Landes beginnt und der Rest zu den Nummern dieses Landes passt (``DE`` und neun Ziffern, ``ATU`` und acht …; die Tabelle
+    ``_VAT_ID_RULES``); ihr Wert ist genau dieser bereinigte Text (``DE-123 456 789`` ergibt ``DE123456789``). Alles andere ist
+    eine Steuernummer – auch ``BY 123 456 78901``, ``HRB 12345`` oder ein ``DE12345678`` mit zu wenigen Ziffern – und bleibt, wie
+    sie eingegeben wurde: ohne die Bezeichnung, außen getrimmt, Leerraum in der Mitte auf ein Leerzeichen."""
+    value = _LABEL.sub('', _text(text), count=1).strip()
+    if not value:
+        return '', ''
+    compact = re.sub(r'[\s.\-]', '', value).upper()
+    prefix = 'CHE' if compact.startswith('CHE') else compact[:2]
+    rule = _VAT_ID_PATTERNS.get(prefix)
+    if rule is not None and rule.fullmatch(compact[len(prefix):]):
+        return 'vat', compact
+    return 'tax', value
 
 
 def build_einvoice(db, invoice, items) -> EInvoice:
@@ -395,10 +605,11 @@ def build_einvoice(db, invoice, items) -> EInvoice:
         if stored is not None and to_minor(stored) * sign != derived:
             warnings.append(f'{label} gespeichert {stored} ≠ aus Positionen {derived}')
 
-    # Kontakt-Fallbacks (E-Mail/Steuernummer der Beteiligten)
+    # Kontakt-Fallbacks (E-Mail/Steuernummer der Beteiligten). Steuernummer und USt-IdNr. stehen in der Momentaufnahme
+    # wie im Kontakt in EINER Spalte; je Art kommen sie an ihre Stelle (BT-31 / BT-32). Der Kontakt springt nur ein,
+    # wenn die Momentaufnahme leer ist (Import)
     own_email = col('seller_email')
-    seller_tax = ''
-    seller_vat = _text(col('seller_vat_id')).replace(' ', '')
+    seller_kind, seller_number = tax_id_kind(col('seller_vat_id'))
     buyer_email = ''
     if db is not None:
         try:
@@ -406,12 +617,8 @@ def build_einvoice(db, invoice, items) -> EInvoice:
             own = db.get_contact_by_id(own_id) if own_id else None
             if own is not None:
                 own_email = own_email or own[9]
-                contact_tax = _text(own[11]).replace(' ', '')
-                if contact_tax and not seller_vat:
-                    if _is_vat_id(contact_tax) and contact_tax[:2].isalpha():
-                        seller_vat = contact_tax
-                    else:
-                        seller_tax = contact_tax
+                if not seller_number:
+                    seller_kind, seller_number = tax_id_kind(own[11])
             cust_id = col('customer_id')
             cust = db.get_contact_by_id(cust_id) if cust_id else None
             if cust is not None:
@@ -419,14 +626,19 @@ def build_einvoice(db, invoice, items) -> EInvoice:
         except Exception as e:                       # Fallbacks sind optional
             warnings.append(f'Kontaktdaten nicht lesbar: {e}')
 
+    # Ohne USt-IdNr. verlangt BR-CO-26 eine Kennung (BT-29) oder Registerkennung (BT-30): Die Steuernummer steht dann zusätzlich als
+    # Verkäuferkennung da (BT-29), neben BT-32; mit USt-IdNr. gibt es kein BT-29
     seller = _party(col('seller_company') or col('seller_name') or 'Verkäufer',
                     col('seller_street'), col('seller_postal'), col('seller_city'),
-                    col('seller_country'), vat_id=seller_vat, email=own_email,
+                    col('seller_country'), vat_id=seller_number if seller_kind == 'vat' else '', email=own_email,
                     phone=col('seller_phone'), contact=col('seller_name'),
-                    tax_number=seller_tax)
+                    tax_number=seller_number if seller_kind == 'tax' else '',
+                    identifier=seller_number if seller_kind == 'tax' else '')
+    # Der Käufer hat in EN 16931 nur ein Feld für die USt-IdNr. (BT-48), keines für eine Steuernummer: Sie fällt weg
+    buyer_kind, buyer_number = tax_id_kind(col('buyer_vat_id'))
     buyer = _party(col('buyer_company') or col('buyer_name') or 'Käufer',
                    col('buyer_street'), col('buyer_postal'), col('buyer_city'),
-                   col('buyer_country'), vat_id=col('buyer_vat_id') or '',
+                   col('buyer_country'), vat_id=buyer_number if buyer_kind == 'vat' else '',
                    email=buyer_email, contact=col('buyer_name'))
 
     preceding_number, preceding_date, notes = '', None, []
@@ -443,9 +655,14 @@ def build_einvoice(db, invoice, items) -> EInvoice:
         notice = correction_notice(db, invoice)
         notes = [note for note in (replacement_note(db, invoice), correction_note_text(notice) if notice else None)
                  if note]
+    issue_date = _iso_date(col('date')) or date.today()
+    # Eine Stornorechnung hat nie Skonto, auch nicht, wenn in ihrer Zeile ein Altwert steht – ebenso kein Beleg über höchstens
+    # 0 (Gutschrift, 0-€-Rechnung): Dort gibt es nichts abzuziehen, und das ist keine Lücke
+    skonto, skonto_unreadable = ((None, False) if storno or grand <= 0
+                                 else _read_skonto(col('skonto_days'), col('skonto_percent'), issue_date))
     return EInvoice(
         number=_text(col('number')) or 'DRAFT',
-        issue_date=_iso_date(col('date')) or date.today(),
+        issue_date=issue_date,
         type_code='381' if storno else '380',
         currency=_text(col('currency')) or 'EUR',
         seller=seller, buyer=buyer, lines=lines, tax_breakdown=breakdown,
@@ -459,4 +676,60 @@ def build_einvoice(db, invoice, items) -> EInvoice:
         iban=_text(col('bank_iban')).replace(' ', ''),
         bic=_text(col('bank_bic')).replace(' ', ''),
         notes=notes, preceding_invoice_number=preceding_number, preceding_invoice_date=preceding_date,
-        warnings=warnings)
+        warnings=warnings, skonto=skonto, skonto_unreadable=skonto_unreadable)
+
+
+# ── Pflichtangaben: Was fehlt, damit die E-Rechnung gültig ist? ──────────────
+# Gemessen an Mustang (XSD und Schematron: EN 16931, XRechnung 3.0). Jede Lücke ist an dem Fehler erkannt, den ihr Fehlen
+# dort auslöst; die Regel steht dabei.
+
+# Eine Zeile der Zahlungsbedingungen (BT-20), die mit ``#`` beginnt, gilt der XRechnung als Skonto-Angabe, und mit der Skonto-Zeile
+# der App (vorn) darf kein ``#…#`` im Freitext stehen (BR-DE-18). Verweigert wird jedes ``#``: leicht zu sagen, und Mustang
+# prüft den Fall mit Zeilenanfang oder mit Skonto-Zeile ohnehin als Fehler. Die CII im PDF bleibt davon unberührt.
+HASH_IN_PAYMENT_TERMS_GAP = ('Zahlungshinweis ohne ‚#‘ (das Zeichen ist in der XRechnung der Skonto-Angabe vorbehalten – '
+                             'Skonto bitte in die Skonto-Felder eintragen)')
+SCOPE_XRECHNUNG = 'xrechnung'     # nur das UBL der XRechnung ist betroffen (die Regeln BR-DE und PEPPOL)
+SCOPE_EN16931 = 'en16931'         # auch die CII im PDF (ZUGFeRD, Profil EN 16931) ist betroffen
+
+
+@dataclass
+class Gap:
+    """Eine fehlende Angabe der E-Rechnung: ``text`` nennt sie für den Nutzer, ``scope`` wen es betrifft."""
+    text: str
+    scope: str
+
+
+def einvoice_gaps(inv: EInvoice) -> List[Gap]:
+    """Die Angaben, die der E-Rechnung fehlen – in fester Reihenfolge, leer, wenn nichts fehlt.
+
+    Fehlt eine Angabe vom Bereich ``xrechnung``, wäre das UBL ungültig (das Portal des Empfängers wiese es ab); fehlt eine
+    vom Bereich ``en16931``, ist es auch die CII im PDF. Ein UBL entsteht nur ohne jede Lücke
+    (``export.invoice_files.generate_invoice_documents``)."""
+    gaps: List[Gap] = []
+
+    def need(value, text, scope=SCOPE_XRECHNUNG):
+        if not value:
+            gaps.append(Gap(text, scope))
+
+    seller, buyer = inv.seller, inv.buyer
+    need(inv.buyer_reference, 'Leitweg-ID (Käuferreferenz)')                        # BR-DE-15
+    need(inv.iban, 'Bankverbindung (IBAN)')                                         # BR-DE-1
+    need(seller.postal_code, 'PLZ der eigenen Firma')                               # BR-DE-4
+    need(seller.city, 'Ort der eigenen Firma')                                      # BR-DE-3
+    need(seller.contact_name, 'Ansprechpartner der eigenen Firma')                  # BR-DE-2, BR-DE-5
+    need(seller.phone, 'Telefon der eigenen Firma')                                 # BR-DE-6
+    need(seller.email, 'E-Mail der eigenen Firma')                                  # BR-DE-7, PEPPOL-EN16931-R020 (BT-34)
+    need(buyer.postal_code, 'PLZ des Kunden')                                       # BR-DE-9
+    need(buyer.city, 'Ort des Kunden')                                              # BR-DE-8
+    need(buyer.email, 'E-Mail des Kunden')                                          # PEPPOL-EN16931-R010 (BT-49)
+    need('#' not in inv.payment_terms, HASH_IN_PAYMENT_TERMS_GAP)                   # BR-DE-18
+    need(seller.vat_id or seller.tax_number,
+         'Steuernummer oder USt-IdNr. der eigenen Firma', SCOPE_EN16931)            # BR-S-02, BR-Z-02, BR-E-02
+    if inv.skonto_unreadable:
+        gaps.append(Gap('Skonto (die gespeicherten Werte sind nicht lesbar)', SCOPE_EN16931))
+    return gaps
+
+
+def gap_texts(gaps: List[Gap], scope: Optional[str] = None) -> List[str]:
+    """Die Texte der Lücken – mit ``scope`` nur die dieses Bereichs."""
+    return [gap.text for gap in gaps if scope is None or gap.scope == scope]

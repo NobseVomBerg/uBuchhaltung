@@ -191,7 +191,8 @@ def test_every_link_names_its_year_folder_and_loads_the_file_of_its_own_row(worl
     invoice_id = make_invoice(world, 'draft')                                       # Rechnungsdatum 2026-06-07
     assert set_invoice_status(invoice_id, 'sent')[0] == 200
     assert set_invoice_status(invoice_id, 'draft')[0] == 200                         # Fassung 1 → 2026/Fassungen/<ID>
-    assert save(make_payload(world, invoiceId=invoice_id, invoiceDate='2027-01-04'))['success'] is True
+    assert save(make_payload(world, invoiceId=invoice_id, invoiceDate='2027-01-04',
+                             dueDate='2027-01-18'))['success'] is True
     assert set_invoice_status(invoice_id, 'sent')[0] == 200
     assert save_open(world, invoice_id, orderNumber='B-99')['documentVersion'] == 3  # Fassung 2 → 2027/Fassungen/<ID>
     rows = archived_versions(world.db, invoice_id)

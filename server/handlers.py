@@ -2145,8 +2145,9 @@ def _generate_storno_documents(db, storno_id):
         return ('Die Stornorechnung ist gespeichert, aber das Dokument konnte nicht erstellt werden – '
                 'bitte „PDF + E-Rechnung“ ausführen.')
     if result.get('error'):
-        return (f"Die Stornorechnung ist gespeichert, aber: {result['error']} Bitte „PDF + E-Rechnung“ "
-                "ausführen.")
+        # Fehlen nur Angaben (``incomplete``), hilft ein erneutes „PDF + E-Rechnung“ nicht: Die Meldung nennt, was zu ergänzen ist
+        retry = '' if result.get('incomplete') else ' Bitte „PDF + E-Rechnung“ ausführen.'
+        return f"Die Stornorechnung ist gespeichert, aber: {result['error']}{retry}"
     return None
 
 
@@ -2433,6 +2434,36 @@ def _open_invoice_fields(data):
     return fields
 
 
+def _check_skonto(invoice_date, due_date, days, percent, gross):
+    """Die Skonto-Angaben des Formulars prüfen (``export.einvoice_model.parse_skonto``); sonst :class:`_SaveRefused` mit dem
+    Klartext. Skonto gibt es nur bei einem positiven Rechnungsbetrag (``gross``, Euro) und mit lesbarem Rechnungsdatum, dessen
+    Frist sich darstellen lässt (``skonto_until`` rechnet immer, auch ohne Fälligkeit); endet die Frist nach der Fälligkeit, ist
+    das ein Widerspruch."""
+    from export.einvoice_model import (SKONTO_AFTER_DUE_MESSAGE, SKONTO_DATE_MESSAGE, SKONTO_POSITIVE_MESSAGE,
+                                       parse_skonto, skonto_until)
+    try:
+        skonto = parse_skonto(days, percent)
+    except ValueError as invalid:
+        raise _SaveRefused(str(invalid)) from None
+    if skonto is None:
+        return
+    if not gross > 0:
+        raise _SaveRefused(SKONTO_POSITIVE_MESSAGE)
+    try:
+        start = datetime.date.fromisoformat(str(invoice_date or '')[:10])
+    except ValueError:
+        raise _SaveRefused(SKONTO_DATE_MESSAGE) from None
+    until = skonto_until(start, skonto[0])
+    if until is None:
+        raise _SaveRefused(SKONTO_DATE_MESSAGE)
+    try:
+        due = datetime.date.fromisoformat(str(due_date or '')[:10])
+    except ValueError:
+        return                                   # ohne lesbare Fälligkeit gibt es nichts zu vergleichen
+    if until > due:
+        raise _SaveRefused(SKONTO_AFTER_DUE_MESSAGE)
+
+
 def _invoice_fields(db, data, stored):
     """Kopf und Positionen aus dem Formular: ``(invoice_data, item_rows)``, Summen serverseitig
     exakt neu berechnet. Fehlt etwas, :class:`_SaveRefused`."""
@@ -2474,6 +2505,12 @@ def _invoice_fields(db, data, stored):
     # Kleinunternehmer (§19) wird ohne Steuer gerechnet (Brutto = Netto).
     net_amount, tax_amount, gross_amount, line_nets = recompute_invoice_totals(
         items, _rate_to_pct(tax_rate if show_tax else 0))
+
+    # Skonto: Prozent und Tage zusammen und brauchbar, nur bei positivem Betrag, die Frist nicht nach der Fälligkeit. Eine
+    # eingefrorene Rechnung wird nicht geprüft: Ihr Skonto ist gesperrt, und ein Altwert darf sie nicht an einer Berichtigung
+    # hindern.
+    if not frozen:
+        _check_skonto(invoice_date, due_date, discount_days, discount_percentage, gross_amount)
     # Sentinel -1 in TaxRate kennzeichnet "kein USt-Ausweis" (vs. echte 0%).
     stored_tax_rate = tax_rate if show_tax else -1
 
@@ -2658,8 +2695,8 @@ def _generate_corrected_documents(db, invoice_id):
         return ('Die Berichtigung ist gespeichert, aber das neue Dokument konnte nicht erstellt werden – '
                 'bitte „PDF + E-Rechnung“ ausführen.')
     if result.get('error'):
-        return (f"Die Berichtigung ist gespeichert, aber: {result['error']} Bitte „PDF + E-Rechnung“ "
-                "ausführen.")
+        retry = '' if result.get('incomplete') else ' Bitte „PDF + E-Rechnung“ ausführen.'
+        return f"Die Berichtigung ist gespeichert, aber: {result['error']}{retry}"
     return None
 
 

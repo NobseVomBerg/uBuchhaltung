@@ -36,6 +36,7 @@ import shutil
 
 from db.invoice_lock import FROZEN_STATUSES
 from db.invoices import document_type
+from .einvoice_model import SCOPE_EN16931, SCOPE_XRECHNUNG, build_einvoice, einvoice_gaps, gap_texts
 from .pdf_core import safe_filename_component
 
 # Spaltenindizes der Invoices-Zeile (``SELECT *``), siehe db/schema.py
@@ -43,8 +44,8 @@ _IDX_NUMBER = 1
 _IDX_DATE = 2
 _IDX_BUYER_NAME = 14
 _IDX_BUYER_COMPANY = 15
+_IDX_BUYER_REFERENCE = 21
 _IDX_ROUTE_ID = 22
-_IDX_ORDER_NUMBER = 23
 _IDX_PDF_PATH = 41
 _IDX_XML_PATH = 42
 
@@ -133,6 +134,10 @@ def drop_stale_file(old_path, new_path, db=None, invoice_id=None):
         return
     try:
         if os.path.abspath(old_path) == os.path.abspath(new_path):
+            return
+        # Ein Vorgänger ist eine Datei derselben Art: Ein gespeicherter Pfad, der per SQL auf die PDF (oder das XML) derselben
+        # Rechnung zeigt, darf sie nicht das Leben kosten, wenn die andere Datei neu geschrieben wird
+        if os.path.splitext(old_path)[1].lower() != os.path.splitext(new_path)[1].lower():
             return
     except (OSError, ValueError, TypeError):
         return
@@ -339,8 +344,10 @@ def restore_archived(moved):
 
 
 def wants_xrechnung(invoice) -> bool:
-    """True, wenn die Rechnung E-Rechnungsdaten trägt (Leitweg-ID/Bestellnr.)."""
-    return bool(_col(invoice, _IDX_ROUTE_ID) or _col(invoice, _IDX_ORDER_NUMBER))
+    """True, wenn die Rechnung eine Leitweg-ID oder Käuferreferenz trägt (BT-10): Nur dann ist ein UBL gewollt. Eine
+    Bestellnummer allein ergäbe ein UBL ohne Käuferreferenz (BR-DE-15), das das Portal des Empfängers abweist; sie steht
+    in der CII im PDF (BT-13)."""
+    return any(str(_col(invoice, idx) or '').strip() for idx in (_IDX_ROUTE_ID, _IDX_BUYER_REFERENCE))
 
 
 # Ab diesen Stati (``db.invoice_lock.FROZEN_STATUSES``: versendet … bezahlt, storniert) ist die
@@ -362,18 +369,25 @@ def generate_invoice_documents(db, invoice_id: int, with_xml=None,
     Args:
         db: Datenbank-Instanz.
         invoice_id: ID der Rechnung.
-        with_xml: ``None`` = automatisch (UBL-XML nur bei E-Rechnungsdaten),
-            ``True``/``False`` erzwingt bzw. unterdrückt das XML.
+        with_xml: ``None`` = automatisch (UBL-XML nur bei Leitweg-ID oder Käuferreferenz, siehe
+            :func:`wants_xrechnung`), ``True``/``False`` erzwingt bzw. unterdrückt das XML.
         overwrite_sent: auch eine eingefrorene Rechnung neu erzeugen.
 
+    Das UBL entsteht nur, wenn dem Modell nichts fehlt (:func:`export.einvoice_model.einvoice_gaps`): Ein UBL, das wie eine
+    XRechnung aussieht und vom Portal des Empfängers abgewiesen wird, ist schlechter als keines – und beim Versenden
+    friert die Rechnung ein. Das PDF mit der eingebetteten CII entsteht immer. Ein früher abgelegtes UBL, das nicht mehr
+    zum Dokument passt (Lücke oder kein Auslöser mehr), wird entfernt – nur bei einer Rechnung, die noch nicht eingefroren
+    ist oder neu erzeugt wird (``overwrite_sent``), nie ein UBL in „Fassungen“.
+
     Returns:
-        dict mit ``pdf_path``/``pdf_filename`` (bzw. ``None``),
-        ``xml_path``/``xml_filename`` und ``error`` (Text oder ``None``).
+        dict mit ``pdf_path``/``pdf_filename`` (bzw. ``None``), ``xml_path``/``xml_filename`` und ``error`` (Text oder
+        ``None``). Fehlende Angaben stehen auch in ``error`` (das PDF liegt dann trotzdem vor); dann ist ``incomplete``
+        wahr: Ein erneutes Erzeugen hilft erst, wenn die Angaben ergänzt sind – anders als bei einem Fehler beim Erzeugen.
     """
     from .pdf_invoice import generate_invoice_pdf
 
     result = {'pdf_path': None, 'pdf_filename': None,
-              'xml_path': None, 'xml_filename': None, 'error': None}
+              'xml_path': None, 'xml_filename': None, 'error': None, 'incomplete': False}
 
     # Nur Rechnungen: für ein Angebot (oder eine fehlende ID) wird nichts erzeugt und kein
     # abgelegter Pfad überschrieben.
@@ -399,22 +413,68 @@ def generate_invoice_documents(db, invoice_id: int, with_xml=None,
     invoice = db.get_invoice_by_id(invoice_id)
     if with_xml is None:
         with_xml = wants_xrechnung(invoice)
-    if with_xml:
-        xml_path = _write_xrechnung(db, invoice, invoice_id)
+    model = build_einvoice(db, invoice, db.get_invoice_items(invoice_id))
+    gaps = einvoice_gaps(model)
+    if with_xml and not gaps:
+        xml_path = _write_xrechnung(db, invoice, invoice_id, model)
         if xml_path:
             result['xml_path'] = xml_path
             result['xml_filename'] = os.path.basename(xml_path)
         else:
             result['error'] = 'XRechnung (XML) konnte nicht erstellt werden.'
+        return result
+
+    # Kein UBL (keines gewollt oder es fehlt etwas). Eine eingefrorene Rechnung behält ihres: Es ist das, was der Kunde bekam;
+    # hier wird nur ein fehlendes PDF ersetzt
+    if overwrite_sent or _col(current, _IDX_STATUS) not in FROZEN_STATUSES:
+        _drop_xrechnung(db, invoice, invoice_id)
+    # Der erste Satz nennt, was nur dem UBL fehlt – und nur, wenn eines entstehen sollte; der zweite, was auch die CII im PDF
+    # braucht. Keine Angabe steht in beiden
+    problems = []
+    for_xrechnung = gap_texts(gaps, SCOPE_XRECHNUNG) if with_xml else []
+    for_pdf = gap_texts(gaps, SCOPE_EN16931)
+    if for_xrechnung:
+        problems.append(f"XRechnung (XML) nicht erstellt – es fehlt: {', '.join(for_xrechnung)}.")
+    elif with_xml and for_pdf:
+        # Was der CII fehlt, fehlt auch dem UBL: Es entsteht nicht – das sagt die Meldung ausdrücklich
+        problems.append("XRechnung (XML) nicht erstellt.")
+    if for_pdf:
+        problems.append(f"Die E-Rechnung im PDF ist unvollständig – es fehlt: {', '.join(for_pdf)}.")
+    if problems:
+        result['error'] = ' '.join(problems)
+        result['incomplete'] = True
     return result
 
 
-def _write_xrechnung(db, invoice, invoice_id):
-    """XRechnung-XML neben das PDF legen; Pfad zurückgeben (oder ``None``)."""
+def _same_file(first, second) -> bool:
+    """Zeigen beide Pfade (nach Auflösen von Links) auf dieselbe Datei? Alles, was kein Pfad ist, nicht."""
+    try:
+        return (isinstance(first, str) and isinstance(second, str) and bool(first) and bool(second)
+                and os.path.realpath(first) == os.path.realpath(second))
+    except (OSError, ValueError):
+        return False
+
+
+def _drop_xrechnung(db, invoice, invoice_id):
+    """Das abgelegte UBL der Rechnung entfernen: den gespeicherten Pfad UND die Datei am Namensschema – der gespeicherte Pfad kann
+    veraltet sein, und ohne die zweite Datei fände der Download das alte UBL über den Rückfall am Namensschema weiter
+    (:func:`stored_invoice_path`). Entfernt wird nur eine Datei mit der Endung ``.xml`` und nie die PDF dieser Rechnung (``XMLPath``
+    lässt sich per SQL auf sie biegen); ``remove_document_file`` löscht nur im Dokumentordner, nie in „Fassungen“ und nie die Datei
+    eines anderen Belegs. Der gespeicherte Pfad wird in jedem Fall geleert."""
+    stored = _col(invoice, _IDX_XML_PATH)
+    pdf = _col(invoice, _IDX_PDF_PATH)
+    for path in (stored, _stored_by_name(invoice, 'xml', db)):
+        if isinstance(path, str) and os.path.splitext(path)[1].lower() == '.xml' and not _same_file(path, pdf):
+            remove_document_file(path, db, invoice_id)
+    if stored:
+        db.update_invoice_xml_path(invoice_id, None)
+
+
+def _write_xrechnung(db, invoice, invoice_id, model):
+    """XRechnung-XML aus dem Modell neben das PDF legen; Pfad zurückgeben (oder ``None``)."""
     from .xrechnung_invoice import XRechnungGenerator
     try:
-        items = db.get_invoice_items(invoice_id)
-        xml_content = XRechnungGenerator().generate_xml(invoice, items, db=db)
+        xml_content = XRechnungGenerator().generate_from_model(model)
         xml_path = invoice_file_path(invoice, 'xml', db)
         os.makedirs(os.path.dirname(xml_path), exist_ok=True)
         with open(xml_path, 'w', encoding='utf-8') as f:

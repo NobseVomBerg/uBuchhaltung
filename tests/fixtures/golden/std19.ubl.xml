@@ -63,7 +63,6 @@
     <cbc:PaymentMeansCode>58</cbc:PaymentMeansCode>
     <cac:PayeeFinancialAccount>
       <cbc:ID>DE89370400440532013000</cbc:ID>
-      <cbc:Name>Testbank AG</cbc:Name>
       <cac:FinancialInstitutionBranch>
         <cbc:ID>TESTDE1X</cbc:ID>
       </cac:FinancialInstitutionBranch>

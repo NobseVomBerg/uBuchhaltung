@@ -54,6 +54,10 @@ CASES = {
                  'amount_due': 100.00},
         items=[('Beratung', 1, 'Std.', 100.00, 100.00, 0.0)]),
 }
+# Wie std19, dazu Skonto: 2 % bei Zahlung in 7 Tagen (Rechnung 04.03., Skontofrist bis 11.03., fällig 18.03.)
+CASES['skonto'] = dict(
+    invoice={**CASES['std19']['invoice'], 'invoice_number': 'G26004', 'skonto_days': 7, 'skonto_percent': 2},
+    items=CASES['std19']['items'])
 
 
 def make_case(db, name):

@@ -16,11 +16,24 @@ Ergebnis im Ausgabeordner:
 * ``zugferd-ersatz.pdf``                 – Ersatzrechnung zu einer stornierten Rechnung (Rechnung versenden, stornieren,
                                          neu ausstellen, versenden): Typ 380 mit dem Hinweis „Ersetzt die stornierte
                                          Rechnung … (Stornorechnung …)“ als BT-22
+* ``zugferd-skonto.pdf``                – Rechnung mit Skonto: die Zeile ``#SKONTO#TAGE=…#PROZENT=…#`` und der Freitext
+                                         in den Zahlungsbedingungen (BT-20), der Absatz im PDF
+* ``zugferd-steuernummer.pdf``          – Verkäufer nur mit Steuernummer, ohne USt-IdNr.: BT-32 (``FC``) und – weil BR-CO-26
+                                         eine Verkäuferkennung verlangt – dieselbe Nummer als BT-29 (``ram:SellerTradeParty/ram:ID``)
+* ``zugferd-steuernummer-kleinunternehmer.pdf`` – dasselbe als Kleinunternehmer (§ 19 UStG, Kategorie E)
+* ``zugferd-zahlungshinweis-raute.pdf`` – ein ``#`` im Zahlungshinweis (neben dem Skonto): das UBL entsteht nicht (BR-DE-18, die
+                                         Lücke der App), die eingebettete CII bleibt gültig – deshalb nur das PDF, kein XML
 * ``xrechnung-normalfall.xml``          – UBL-XRechnung zur Normalfall-Rechnung
 * ``xrechnung-kleinunternehmer.xml``    – UBL-XRechnung zum Kleinunternehmer-Fall
 * ``xrechnung-berichtigt.xml``          – UBL-XRechnung zur berichtigten Fassung (``cbc:Note``)
 * ``xrechnung-storno.xml``              – UBL-``CreditNote`` zur Stornorechnung (``cac:BillingReference``)
 * ``xrechnung-ersatz.xml``              – UBL-XRechnung zur Ersatzrechnung (``cbc:Note``)
+* ``xrechnung-skonto.xml``              – UBL-XRechnung mit der Skonto-Zeile (BR-DE-18) und ihrem Zeilenumbruch
+* ``xrechnung-steuernummer.xml``        – UBL-XRechnung zum Fall „nur Steuernummer“ (``TAX`` und ``cac:PartyIdentification``)
+* ``xrechnung-steuernummer-kleinunternehmer.xml`` – dasselbe als Kleinunternehmer
+
+Jedem Beispiel mit UBL wird vor dem Schreiben nachgerechnet, dass ihm nichts fehlt (``einvoice_gaps``): Sonst bricht das
+Werkzeug ab – die Prüfung der App und Mustang sollen übereinstimmen.
 
 Alles entsteht in einem temporären Datenverzeichnis; echte Daten werden nie angefasst.
 """
@@ -48,13 +61,14 @@ def _setup_demo():
     return tmp
 
 
-def _clone_as_exempt(db, invoice_id):
-    """Kopie einer Demo-Rechnung als Kleinunternehmer-Rechnung (§ 19 UStG)."""
+def _clone_as_exempt(db, invoice_id, number='KU-DEMO-1', **over):
+    """Kopie einer Demo-Rechnung als Kleinunternehmer-Rechnung (§ 19 UStG); ``over`` überschreibt Felder von
+    ``insert_invoice`` (z. B. die Steuernummer des Verkäufers)."""
     inv = db.get_invoice_by_id(invoice_id)
     items = db.get_invoice_items(invoice_id)
     net = sum(float(it[8]) for it in items)
     data = {
-        'invoice_number': 'KU-DEMO-1', 'invoice_date': str(inv[2]),
+        'invoice_number': number, 'invoice_date': str(inv[2]),
         'own_company_id': inv[3], 'seller_name': inv[4], 'seller_company': inv[5],
         'seller_street': inv[6], 'seller_postal_code': inv[7], 'seller_city': inv[8],
         'seller_country': inv[9], 'seller_vat_id': inv[10], 'seller_email': inv[11],
@@ -66,6 +80,7 @@ def _clone_as_exempt(db, invoice_id):
         'tax_category': 'E', 'tax_rate': -1, 'sum_net': net, 'tax_amount': 0,
         'sum_gross': net, 'amount_due': net, 'status': 'finalized',
     }
+    data.update(over)
     new_id = db.insert_invoice(data)
     for it in items:
         db.insert_invoice_item({
@@ -75,8 +90,9 @@ def _clone_as_exempt(db, invoice_id):
     return new_id
 
 
-def _clone_for_correction(db, invoice_id, number='BE-DEMO-1'):
-    """Kopie einer Demo-Rechnung (19 % USt, Leitweg-ID) als Entwurf für den Berichtigen- und den Storno-Fall."""
+def _clone_for_correction(db, invoice_id, number='BE-DEMO-1', **over):
+    """Kopie einer Demo-Rechnung (19 % USt, Leitweg-ID) als Entwurf für den Berichtigen- und den Storno-Fall;
+    ``over`` überschreibt Felder von ``insert_invoice`` (z. B. das Skonto)."""
     inv = db.get_invoice_by_id(invoice_id)
     items = db.get_invoice_items(invoice_id)
     data = {
@@ -92,6 +108,7 @@ def _clone_for_correction(db, invoice_id, number='BE-DEMO-1'):
         'tax_category': inv[34], 'tax_rate': inv[35], 'sum_net': inv[36], 'tax_amount': inv[37],
         'sum_gross': inv[38], 'amount_due': inv[38], 'status': 'finalized',
     }
+    data.update(over)
     new_id = db.insert_invoice(data)
     for it in items:
         db.insert_invoice_item({
@@ -169,6 +186,34 @@ def _replacement_sample(db, invoice_id):
     return result, draft.invoice_id
 
 
+def _write_ubl(db, invoice_id, label, path):
+    """Das UBL der Rechnung nach ``path`` schreiben – nachdem sich gezeigt hat, dass ihm nichts fehlt. Dieselbe Prüfung
+    macht die App beim Erzeugen (``generate_invoice_documents``); fehlt etwas, brechen wir ab, statt eine Datei zu
+    schreiben, die Mustang abweist (oder, schlimmer, ein Beispiel, das die Prüfung der App nie ausgäbe)."""
+    from export.einvoice_model import build_einvoice, einvoice_gaps, gap_texts
+    from export.xrechnung_invoice import XRechnungGenerator
+    model = build_einvoice(db, db.get_invoice_by_id(invoice_id), db.get_invoice_items(invoice_id))
+    gaps = einvoice_gaps(model)
+    if gaps:
+        sys.exit(f'{label}: es fehlt: {", ".join(gap_texts(gaps))}')
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(XRechnungGenerator().generate_from_model(model))
+
+
+def _write_hash_sample(db, invoice_id, path):
+    """Nur das PDF einer Rechnung, deren Zahlungshinweis ein ``#`` trägt: Das UBL bliebe ungültig (BR-DE-18), die App legt es
+    deshalb nicht an – die CII im PDF ist es nicht. Fehlt der Rechnung etwas anderes, bricht das Werkzeug ab."""
+    from export.einvoice_model import HASH_IN_PAYMENT_TERMS_GAP, build_einvoice, einvoice_gaps, gap_texts
+    from export.invoice_files import generate_invoice_documents
+    model = build_einvoice(db, db.get_invoice_by_id(invoice_id), db.get_invoice_items(invoice_id))
+    if gap_texts(einvoice_gaps(model)) != [HASH_IN_PAYMENT_TERMS_GAP]:
+        sys.exit(f'zahlungshinweis-raute: erwartet allein die Lücke zum „#“, gefunden: {gap_texts(einvoice_gaps(model))}')
+    result = generate_invoice_documents(db, invoice_id, with_xml=False, overwrite_sent=True)
+    if result['error']:
+        sys.exit(f'zahlungshinweis-raute: {result["error"]}')
+    shutil.copyfile(result['pdf_path'], path)
+
+
 def _day_before(iso_date):
     import datetime
     return (datetime.date.fromisoformat(str(iso_date)[:10]) - datetime.timedelta(days=1)).isoformat()
@@ -176,8 +221,7 @@ def _day_before(iso_date):
 
 def main(outdir):
     from db import Database
-    from export.invoice_files import generate_invoice_documents, invoice_file_path
-    from export.xrechnung_invoice import XRechnungGenerator
+    from export.invoice_files import generate_invoice_documents
 
     outdir = os.path.abspath(outdir)          # _setup_demo wechselt das Arbeitsverzeichnis
     os.makedirs(outdir, exist_ok=True)
@@ -188,34 +232,40 @@ def main(outdir):
         c.execute("UPDATE Invoices SET Status='draft', BuyerRouteID=? WHERE ID=?",
                   (LEITWEG_ID, normal[0]))
     exempt_id = _clone_as_exempt(db, normal[0])
+    # Skonto: 2 % bei Zahlung in 7 Tagen; der Zahlungshinweis der Demodaten sagt „ohne Abzug“ und passt dazu nicht
+    skonto_id = _clone_for_correction(
+        db, normal[0], 'SK-DEMO-1', skonto_days=7, skonto_percent=2,
+        payment_terms='Bitte überweisen Sie den Betrag unter Angabe der Rechnungsnummer auf das unten angegebene Konto.')
 
-    for label, iid in (('normalfall', normal[0]), ('kleinunternehmer', exempt_id)):
+    # Nur eine Steuernummer, keine USt-IdNr. (die Momentaufnahme gilt vor dem Kontakt): BT-32 und, weil BR-CO-26 es verlangt,
+    # dieselbe Nummer als BT-29 – mit Umsatzsteuer und als Kleinunternehmer
+    tax_number = '12/345/67890'
+    tax_number_id = _clone_for_correction(db, normal[0], 'SN-DEMO-1', seller_vat_id=tax_number)
+    tax_number_exempt_id = _clone_as_exempt(db, normal[0], 'SK-DEMO-2', seller_vat_id=tax_number)
+
+    for label, iid in (('normalfall', normal[0]), ('kleinunternehmer', exempt_id), ('skonto', skonto_id),
+                       ('steuernummer', tax_number_id), ('steuernummer-kleinunternehmer', tax_number_exempt_id)):
         result = generate_invoice_documents(db, iid, with_xml=False, overwrite_sent=True)
         if result['error']:
             sys.exit(f'{label}: {result["error"]}')
         shutil.copyfile(result['pdf_path'], os.path.join(outdir, f'zugferd-{label}.pdf'))
-        inv, items = db.get_invoice_by_id(iid), db.get_invoice_items(iid)
-        xml = XRechnungGenerator().generate_xml(inv, items, db=db)
-        with open(os.path.join(outdir, f'xrechnung-{label}.xml'), 'w', encoding='utf-8') as f:
-            f.write(xml)
+        _write_ubl(db, iid, label, os.path.join(outdir, f'xrechnung-{label}.xml'))
+    # Ein „#“ im Zahlungshinweis (neben dem Skonto): kein UBL, aber die CII im PDF soll gültig bleiben – das prüft Mustang hier
+    hash_id = _clone_for_correction(
+        db, normal[0], 'RZ-DEMO-1', skonto_days=7, skonto_percent=2, payment_terms='Bitte Kunden-Nr. #4711# angeben.')
+    _write_hash_sample(db, hash_id, os.path.join(outdir, 'zugferd-zahlungshinweis-raute.pdf'))
     corrected_id = _clone_for_correction(db, normal[0])
     result = _correct_delivery_date(db, corrected_id)
     shutil.copyfile(result['pdf_path'], os.path.join(outdir, 'zugferd-berichtigt.pdf'))
-    inv, items = db.get_invoice_by_id(corrected_id), db.get_invoice_items(corrected_id)
-    with open(os.path.join(outdir, 'xrechnung-berichtigt.xml'), 'w', encoding='utf-8') as f:
-        f.write(XRechnungGenerator().generate_xml(inv, items, db=db))
+    _write_ubl(db, corrected_id, 'berichtigt', os.path.join(outdir, 'xrechnung-berichtigt.xml'))
     storno_source = _clone_for_correction(db, normal[0], 'ST-DEMO-1')
     result, storno_id = _cancel_sample(db, storno_source)
     shutil.copyfile(result['pdf_path'], os.path.join(outdir, 'zugferd-storno.pdf'))
-    inv, items = db.get_invoice_by_id(storno_id), db.get_invoice_items(storno_id)
-    with open(os.path.join(outdir, 'xrechnung-storno.xml'), 'w', encoding='utf-8') as f:
-        f.write(XRechnungGenerator().generate_xml(inv, items, db=db))
+    _write_ubl(db, storno_id, 'storno', os.path.join(outdir, 'xrechnung-storno.xml'))
     replace_source = _clone_for_correction(db, normal[0], 'ER-DEMO-1')
     result, replacement_id = _replacement_sample(db, replace_source)
     shutil.copyfile(result['pdf_path'], os.path.join(outdir, 'zugferd-ersatz.pdf'))
-    inv, items = db.get_invoice_by_id(replacement_id), db.get_invoice_items(replacement_id)
-    with open(os.path.join(outdir, 'xrechnung-ersatz.xml'), 'w', encoding='utf-8') as f:
-        f.write(XRechnungGenerator().generate_xml(inv, items, db=db))
+    _write_ubl(db, replacement_id, 'ersatz', os.path.join(outdir, 'xrechnung-ersatz.xml'))
     print('Beispiele in', outdir, sorted(os.listdir(outdir)))
 
 

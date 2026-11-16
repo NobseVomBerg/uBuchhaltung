@@ -50,7 +50,7 @@ def books(auto_login):
 
 
 def with_documents(w, invoice_id):
-    """PDF und XML des Entwurfs (die Bestellnummer macht es zur Rechnung mit E-Rechnungsdaten)."""
+    """PDF und XML des Entwurfs (die Käuferreferenz/Leitweg-ID des Formulars löst das UBL aus, eine Bestellnummer allein nicht)."""
     result = generate_invoice_documents(w.db, invoice_id)
     assert result['error'] is None and result['xml_path']
     return result['pdf_path'], result['xml_path']

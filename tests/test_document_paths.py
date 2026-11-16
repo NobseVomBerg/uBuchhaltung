@@ -12,7 +12,9 @@ Vorgängers (``drop_stale_file``) gehen alle über ``stored_invoice_path``/``pat
   gilt als nicht vorhanden – Fallback über das Namensschema, sonst 404 ohne den Pfad in der Antwort;
 * ``drop_stale_file`` löscht nie außerhalb des Dokumentordners und nie die Datei eines anderen
   Belegs (``Database.document_path_in_use``);
-* ein Symlink am Namensschema, der aus dem Dokumentordner hinausführt, zählt nicht als Dokument.
+* ein Symlink am Namensschema, der aus dem Dokumentordner hinausführt, zählt nicht als Dokument;
+* ein Vorgänger ist eine Datei DERSELBEN Art: ``XMLPath`` per SQL auf die PDF derselben Rechnung kostet sie weder beim
+  Neuschreiben des UBL (``drop_stale_file``) noch beim Entfernen eines UBL, dem etwas fehlt (``_drop_xrechnung``).
 
 Alle Namen, Pfade und Inhalte sind erfundene Testwerte.
 """
@@ -316,6 +318,25 @@ def test_drop_stale_file_keeps_a_file_whose_name_did_not_change(world):
     assert os.path.exists(path)
 
 
+def test_drop_stale_file_never_removes_a_file_of_another_kind(world):
+    """Ein gespeicherter Pfad, der per SQL auf die PDF (oder das XML) derselben Rechnung zeigt, darf sie nicht das Leben kosten,
+    wenn die andere Datei neu geschrieben wird."""
+    pdf = write_file(os.path.join(world.invoices, '2026', 'rechnung.pdf'))
+    xml = os.path.join(world.invoices, '2026', 'rechnung.xml')
+    drop_stale_file(pdf, xml)
+    drop_stale_file(pdf, xml, world.db, world.invoice)
+    assert os.path.exists(pdf)
+    drop_stale_file(write_file(xml), pdf, world.db, world.invoice)
+    assert os.path.exists(xml)
+
+
+def test_drop_stale_file_treats_the_extension_without_regard_to_case(world):
+    old = write_file(os.path.join(world.invoices, '2026', 'alt.PDF'))
+    new = write_file(os.path.join(world.invoices, '2026', 'neu.pdf'))
+    drop_stale_file(old, new)
+    assert not os.path.exists(old) and os.path.exists(new)
+
+
 @pytest.mark.parametrize('label', OUTSIDE)
 def test_regenerating_an_invoice_with_a_manipulated_pdf_path_keeps_the_foreign_file(world, label):
     old = outside_path(world, 'invoice', label)
@@ -328,7 +349,15 @@ def test_regenerating_an_invoice_with_a_manipulated_pdf_path_keeps_the_foreign_f
     assert read_file(world.foreign) == SECRET
 
 
+def xrechnung_ready(db, *invoice_ids):
+    """Leitweg-ID und IBAN setzen: Ohne sie entsteht kein UBL der XRechnung (``einvoice_gaps``, 2.3.5)."""
+    for invoice_id in invoice_ids:
+        set_column(db, invoice_id, 'BuyerRouteID', '991-12345-67')
+        set_column(db, invoice_id, 'BankIBAN', 'DE89370400440532013000')
+
+
 def test_regenerating_the_xml_with_a_manipulated_xml_path_keeps_the_foreign_file(world):
+    xrechnung_ready(world.db, world.invoice)
     set_column(world.db, world.invoice, 'XMLPath', world.foreign)
     result = generate_invoice_documents(world.db, world.invoice, with_xml=True)
     assert result['error'] is None and os.path.isfile(result['xml_path'])
@@ -366,12 +395,53 @@ def test_regenerating_an_invoice_whose_path_points_to_another_invoices_pdf_keeps
 
 def test_regenerating_the_xml_of_an_invoice_whose_path_points_to_another_invoices_xml_keeps_that_xml(
         world, second_invoice):
+    xrechnung_ready(world.db, world.invoice, second_invoice.id)
     a_xml = generate_invoice_documents(world.db, world.invoice, with_xml=True)['xml_path']
     b_xml = generate_invoice_documents(world.db, second_invoice.id, with_xml=True)['xml_path']
     a_bytes = read_file(a_xml)
     set_column(world.db, second_invoice.id, 'XMLPath', a_xml)
     assert generate_invoice_documents(world.db, second_invoice.id, with_xml=True)['xml_path'] == b_xml
     assert os.path.isfile(a_xml) and read_file(a_xml) == a_bytes
+
+
+def test_regenerating_the_xml_with_an_xml_path_that_points_at_the_own_pdf_keeps_the_pdf(world):
+    xrechnung_ready(world.db, world.invoice)
+    first = generate_invoice_documents(world.db, world.invoice, with_xml=True)
+    pdf_bytes = read_file(first['pdf_path'])
+    set_column(world.db, world.invoice, 'XMLPath', first['pdf_path'])        # per SQL auf die eigene PDF gebogen
+
+    again = generate_invoice_documents(world.db, world.invoice, with_xml=True)
+
+    assert again['error'] is None and os.path.isfile(again['xml_path']) and again['xml_path'].endswith('.xml')
+    assert os.path.isfile(again['pdf_path']) and read_file(again['pdf_path'])[:5] == pdf_bytes[:5]
+    assert row(world.db, world.invoice)[XML_PATH] == again['xml_path']
+
+
+def test_dropping_the_ubl_with_an_xml_path_that_points_at_the_own_pdf_keeps_the_pdf(world):
+    xrechnung_ready(world.db, world.invoice)
+    first = generate_invoice_documents(world.db, world.invoice, with_xml=True)
+    set_column(world.db, world.invoice, 'XMLPath', first['pdf_path'])
+    set_column(world.db, world.invoice, 'BankIBAN', '')                      # dem UBL fehlt jetzt etwas
+
+    result = generate_invoice_documents(world.db, world.invoice, with_xml=True)
+
+    assert result['xml_path'] is None and os.path.isfile(result['pdf_path'])   # das PDF bleibt (und entsteht neu)
+    assert not row(world.db, world.invoice)[XML_PATH]                          # der Zeiger ist geleert
+    assert not os.path.exists(first['xml_path'])                               # das UBL am Namensschema ist weg
+
+
+def test_dropping_the_ubl_keeps_the_xml_another_invoice_uses(world, second_invoice):
+    xrechnung_ready(world.db, world.invoice, second_invoice.id)
+    a_xml = generate_invoice_documents(world.db, world.invoice, with_xml=True)['xml_path']
+    b_xml = generate_invoice_documents(world.db, second_invoice.id, with_xml=True)['xml_path']
+    a_bytes = read_file(a_xml)
+    set_column(world.db, second_invoice.id, 'XMLPath', a_xml)                  # per SQL auf das UBL von A umgebogen
+    set_column(world.db, second_invoice.id, 'BankIBAN', '')
+
+    generate_invoice_documents(world.db, second_invoice.id, with_xml=True)
+
+    assert os.path.isfile(a_xml) and read_file(a_xml) == a_bytes               # A behält sein UBL
+    assert not os.path.exists(b_xml) and not row(world.db, second_invoice.id)[XML_PATH]
 
 
 def test_drop_stale_file_with_a_database_keeps_a_file_another_document_uses(world, second_invoice):
@@ -393,6 +463,7 @@ class TestDocumentPathInUse:
         assert db.document_path_in_use(os.path.join(world.invoices, 'nirgends.pdf'), None) is False
 
     def test_xml_path_counts_too(self, world, second_invoice):
+        xrechnung_ready(world.db, world.invoice)
         xml = generate_invoice_documents(world.db, world.invoice, with_xml=True)['xml_path']
         assert world.db.document_path_in_use(xml, second_invoice.id) is True
         assert world.db.document_path_in_use(xml, world.invoice) is False

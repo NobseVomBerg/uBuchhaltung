@@ -46,7 +46,7 @@ from tests.dom_helpers import Dom
 from tests.http_client import FOREIGN_ORIGIN, get
 from tests.invoice_world import (add_payment, columns, make_invoice, make_payload, protocol, query_rows, run_sql, save,
                                  save_open, set_invoice_status, snapshot)
-from tests.test_invoice_storno import (DEBTORS, NO_NODE, ONE_ITEM, USER, WAITING, _node, at, balance,  # noqa: F401
+from tests.test_invoice_storno import (DEBTORS, NO_NODE, NO_SKONTO, ONE_ITEM, USER, WAITING, _node, at, balance,  # noqa: F401
                                        bookings_of, books, cancel, euer, items_of, pay, sent, sent_over_http,
                                        tables, world)
 from tests.test_invoice_storno_documents import CII, UBL, embedded_xml, pdf_text, text_of
@@ -1712,7 +1712,7 @@ def test_a_collective_payment_moves_only_its_share(world, monkeypatch):
 def test_a_replacement_that_is_already_covered_takes_nothing(world, monkeypatch):
     """Hat die neue Rechnung keinen offenen Betrag (hier 0 €), bleibt alles an der stornierten."""
     s = paid_scenario(world, monkeypatch)
-    edit_draft(world, s.r2, [dict(ONE_ITEM[0], unitPrice=0.0)])
+    edit_draft(world, s.r2, [dict(ONE_ITEM[0], unitPrice=0.0)], **NO_SKONTO)          # Skonto gibt es bei 0 € nicht
     code, body = set_invoice_status(s.r2, 'sent')
     assert code == 200 and body['hint'].startswith('Es wurden keine Zahlungen der stornierten Rechnung T-100 übernommen.')
     assert 'bleiben als Guthaben des Kunden' in body['hint'] and allocations(world.db, s.r2) == []
@@ -2389,7 +2389,7 @@ def test_the_page_offers_the_late_credit_note_only_where_it_applies(world):
     html = PageInvoice(db, {}, alt)
     assert 'nachträglich' not in html and f'reissueInvoice({alt})' in _buttons(html)
     # eine Gutschrift (kein positiver Betrag) wird über den Status storniert
-    credit = sent(world, number='G-1', items=[dict(ONE_ITEM[0], unitPrice=-100.0)])
+    credit = sent(world, number='G-1', items=[dict(ONE_ITEM[0], unitPrice=-100.0)], **NO_SKONTO)
     set_invoice_status(credit, 'cancelled')
     html = PageInvoice(db, {}, credit)
     assert 'cancelInvoice(' not in html and 'reissueInvoice' not in html and 'nachträglich' not in html
@@ -2481,9 +2481,9 @@ def test_a_hand_cancelled_invoice_whose_receivable_still_stands_is_found_until_t
     imported = sent(world, number='T-202')
     run_sql(db, "UPDATE Bookings SET SourceGroup = 'WISO-TEST-1' WHERE DocumentNumber = 'T-202'")
     db.update_invoice_status(imported, 'cancelled')
-    credit = sent(world, number='G-1', items=[dict(ONE_ITEM[0], unitPrice=-100.0)])
+    credit = sent(world, number='G-1', items=[dict(ONE_ITEM[0], unitPrice=-100.0)], **NO_SKONTO)
     assert set_invoice_status(credit, 'cancelled')[0] == 200                     # die Forderung einer Gutschrift geht mit
-    paid_credit = sent(world, number='G-2', items=[dict(ONE_ITEM[0], unitPrice=-100.0)])
+    paid_credit = sent(world, number='G-2', items=[dict(ONE_ITEM[0], unitPrice=-100.0)], **NO_SKONTO)
     add_payment(world, paid_credit, -119.0)                                      # … außer eine Zahlung hängt dran
     assert set_invoice_status(paid_credit, 'cancelled')[0] == 200
     expected = [('legacy_cancelled_open', r1, 'T-100',

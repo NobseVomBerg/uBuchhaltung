@@ -234,6 +234,16 @@ class TestXRechnungXML:
         assert '19.00' in xml    # tax
         assert '119.00' in xml   # gross
 
+    def test_the_account_of_the_payee_carries_no_bank_name(self, tmp_db):
+        """BT-85 ist der Kontoinhaber, nicht die Bank: ``cac:PayeeFinancialAccount/cbc:Name`` fehlt (BT-85 ist optional)."""
+        iid = _make_invoice(tmp_db, suffix='BANK-1')
+        root = ET.fromstring(self._xml(tmp_db, iid))
+        account = root.find(f'.//{{{_CAC}}}PaymentMeans/{{{_CAC}}}PayeeFinancialAccount')
+        assert account.find(f'{{{_CBC}}}ID').text == 'DE89370400440532013000'
+        assert account.find(f'{{{_CBC}}}Name') is None
+        assert 'Testbank AG' not in self._xml(tmp_db, iid)
+        assert account.find(f'{{{_CAC}}}FinancialInstitutionBranch/{{{_CBC}}}ID').text == 'TESTDE1X'
+
     # ── special-character tests: values preserved correctly after parse ─────
 
     def test_xml_ampersand_in_seller_preserved(self, tmp_db):

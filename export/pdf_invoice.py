@@ -16,10 +16,11 @@ import html
 import os
 from db import Database
 from db.invoice_lock import STORNO_KIND
+from money import to_minor
 from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path)
-from .cii_invoice import generate_cii
-from .einvoice_model import (correction_note_text, correction_notice, replacement_note, small_business_note,
-                             unit_display)
+from .cii_invoice import build_cii
+from .einvoice_model import (build_einvoice, correction_note_text, correction_notice, replacement_note,
+                             skonto_sentence, small_business_note, unit_display)
 from .invoice_files import drop_stale_file, invoice_file_path
 from . import pdf_document as D
 
@@ -58,6 +59,10 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
         print(f"No items found for invoice {invoice_id}")
         return None, None
 
+    # Das Modell der E-Rechnung wird einmal gebaut: Die eingebettete CII, das Skonto und die Steuernummer im Fuß lesen es.
+    # Schlägt das fehl, bricht das PDF ab – kein stilles Nicht-Hybrid-PDF.
+    model = build_einvoice(db, invoice, invoice_items)
+
     invoice_number = invoice[1] or 'DRAFT'
     invoice_date = invoice[2] or datetime.datetime.now().strftime('%Y-%m-%d')
     # Stornorechnung: eigener Titel, „zu Rechnung Nr. … vom …“ unter dem Titel, die gespeicherten (negativen)
@@ -77,7 +82,6 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     seller_city = invoice[8] or ''
     seller_email = invoice[11] or ''
     seller_phone = invoice[12] or ''
-    seller_tax_id = ''
 
     buyer_name = invoice[14] or ''
     buyer_company = invoice[15] or ''
@@ -96,11 +100,14 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     tax_amount = invoice[37] or 0
     sum_gross = invoice[38] or 0
 
-    payment_terms = invoice[26] or ('Bitte überweisen Sie den Gesamtbetrag ohne jeden '
-        'Abzug unter Angabe der Rechnungsnummer innerhalb von 14 Tagen ab Rechnungsdatum '
-        'auf das unten angegebene Konto. Vielen Dank.')
+    # Der Standardtext sagt „ohne jeden Abzug“ – das widerspräche dem Skonto, das der Absatz darunter nennt
+    payment_terms = invoice[26] or (
+        'Bitte überweisen Sie den Betrag unter Angabe der Rechnungsnummer auf das unten angegebene Konto. '
+        'Vielen Dank.' if model.skonto else
+        'Bitte überweisen Sie den Gesamtbetrag ohne jeden Abzug unter Angabe der Rechnungsnummer innerhalb von 14 '
+        'Tagen ab Rechnungsdatum auf das unten angegebene Konto. Vielen Dank.')
 
-    # Logo, Steuernummer und Adress-Zusatzzeile der eigenen Firma laden
+    # Logo und Adress-Zusatzzeile der eigenen Firma laden (live, wie bisher; die Steuernummer steht in der Momentaufnahme)
     image = None
     seller_addr_extra = ''
     own_company_id = invoice[3]
@@ -108,8 +115,6 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
         own_contact = db.get_contact_by_id(own_company_id)
         if own_contact and len(own_contact) > 13 and own_contact[13]:
             image = load_image_xobject(resolve_logo_path(own_contact[13]))
-        if own_contact and len(own_contact) > 11:
-            seller_tax_id = own_contact[11] or ''
         if own_contact and len(own_contact) > 25:
             seller_addr_extra = own_contact[25] or ''
 
@@ -135,8 +140,11 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
         col_contact.append(f"Tel: {seller_phone}")
     if seller_email:
         col_contact.append(f"E-Mail: {seller_email}")
-    if seller_tax_id:
-        col_contact.append(f"USt-IdNr: {seller_tax_id}")
+    # USt-IdNr. oder Steuernummer aus der Momentaufnahme der Rechnung (der Kontakt nur, wenn sie leer ist: Import)
+    if model.seller.vat_id:
+        col_contact.append(f"USt-IdNr.: {model.seller.vat_id}")
+    elif model.seller.tax_number:
+        col_contact.append(f"Steuer-Nr.: {model.seller.tax_number}")
     col_bank = []
     if bank_name or bank_iban or bank_bic:
         col_bank.append("Bankverbindung")
@@ -189,12 +197,15 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
                       sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross,
                       show_tax=show_tax, tax_note=tax_note)
 
-    # Zahlungsbedingungen (Fließtext)
+    # Zahlungsbedingungen (Fließtext), danach das Skonto: Fristende, Abzug und Zahlbetrag auf Grundlage des gedruckten
+    # Bruttos; die Zeile für die E-Rechnung (BR-DE-18) steht in der CII und im UBL
     D.flow_richtext(flow, payment_terms, size=9, leading=12, gap_before=6)
+    if model.skonto:
+        sentence = skonto_sentence(model.skonto, to_minor(sum_gross), model.due_date)
+        D.flow_richtext(flow, html.escape(sentence, quote=False), size=9, leading=12, gap_before=4)
 
     # Eingebettete E-Rechnung (CII) aus demselben Modell wie die UBL-XRechnung.
-    # Schlägt die Erzeugung fehl, bricht das PDF ab – kein stilles Nicht-Hybrid-PDF.
-    facturx_xml = generate_cii(invoice, invoice_items, db=db)
+    facturx_xml = build_cii(model)
     full_pdf = build_multi_page_pdf(
         flow.finish(), image=image, title=f"{doc_title} {invoice_number}",
         author=seller_company or seller_name, subject=f"{doc_title} an {buyer_company or buyer_name}",

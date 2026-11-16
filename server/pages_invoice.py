@@ -16,8 +16,9 @@ from db.invoice_lock import (CLOSED, EDITABLE, LOCKED_STATUSES, NUMBER_KEPT_MESS
 from db.invoice_payments import MIXED_REVENUE_MESSAGE, PAYABLE_STATUSES
 from db.invoice_versions import DELIVERY_DATE_MESSAGE, PROTOCOL_LABELS, local_date, local_datetime
 from money import fmt_eur, format_plain, to_minor
-from export.einvoice_model import unit_display
-from export.invoice_files import stored_invoice_path, version_files
+from export.einvoice_model import (SCOPE_EN16931, SCOPE_XRECHNUNG, build_einvoice, einvoice_gaps, gap_texts,
+                                   unit_display)
+from export.invoice_files import stored_invoice_path, version_files, wants_xrechnung
 from .pages import (
     Header1, Header2, Header3, Footer, logo_url, script_json,
 )
@@ -555,6 +556,33 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
     s+= Footer()
     return s
 
+def _einvoice_notice(db, invoice, invoice_id):
+    """Was der E-Rechnung einer Rechnung fehlt, die sich noch ändern lässt: ``(Zeile, Rückfrage)``.
+
+    Die Zeile („Für die XRechnung fehlt: …“ – nur wenn ein UBL entstehen soll, und nur, was allein ihm fehlt – und/oder „Für
+    die E-Rechnung im PDF fehlt: …“) steht im Statuskasten und ist maskiert; sie ist leer, wenn nichts zu nennen ist. Die
+    Rückfrage – ein Text oder ``None`` – stellt „Versenden“ vorher: Das Versenden erzeugt das Dokument, danach ist die
+    Rechnung eingefroren. Die Prüfung ist dieselbe wie beim Erzeugen (``einvoice_gaps``) und die Aufteilung auch (keine Angabe
+    steht doppelt); scheitert sie, lebt die Seite ohne die Zeile weiter."""
+    try:
+        gaps = einvoice_gaps(build_einvoice(db, invoice, db.get_invoice_items(invoice_id)))
+    except Exception as e:
+        print(f"E-Rechnung {invoice_id}: Prüfung nicht möglich: {e}")
+        return '', None
+    for_xrechnung = gap_texts(gaps, SCOPE_XRECHNUNG) if wants_xrechnung(invoice) else []
+    for_pdf = gap_texts(gaps, SCOPE_EN16931)
+    row = ' '.join(part for part in (
+        f"Für die XRechnung fehlt: {', '.join(for_xrechnung)}." if for_xrechnung else '',
+        f"Für die E-Rechnung im PDF fehlt: {', '.join(for_pdf)}." if for_pdf else '') if part)
+    if not row:
+        return '', None
+    question = ' '.join(part for part in (
+        f"Die XRechnung wird nicht erstellt – es fehlt: {', '.join(for_xrechnung)}." if for_xrechnung else '',
+        f"Die E-Rechnung im PDF ist unvollständig – es fehlt: {', '.join(for_pdf)}." if for_pdf else '',
+        'Trotzdem versenden?') if part)
+    return f'<tr><td>E-Rechnung:</td><td>{_html.escape(row)}</td></tr>', question
+
+
 def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_error=None):
     """Generate invoice form HTML block (no page wrapper).
 
@@ -798,6 +826,10 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
                                if replaced_invoice[2] is not None else '')
             storno_row += ('<tr><td>Ersetzt:</td><td>stornierte Rechnung <a href="/invoice?id=%d">%s</a>%s</td></tr>'
                            % (int(replaced_invoice[0]), _html.escape(str(replaced_invoice[1])), replaced_storno))
+        # Was der E-Rechnung fehlt: eine Zeile im Kasten und die Rückfrage vor dem Versenden – nur, solange sich an der
+        # Rechnung etwas ändern lässt (Entwurf, abgeschlossen), also nie bei einer versendeten, stornierten oder Stornorechnung
+        einvoice_row, einvoice_question = (_einvoice_notice(db, existing_invoice, invoice_id)
+                                           if group == EDITABLE else ('', None))
         status_row = '' if is_storno else f'''
             <tr>
                 <td>Neuer Status:</td>
@@ -825,7 +857,7 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
             s += f' &nbsp; &nbsp; &#9888; {_html.escape(SENT_HINT)}</div>'
         s += f'''
                 </div></td>
-            </tr>{storno_row}{status_row}
+            </tr>{storno_row}{status_row}{einvoice_row}
             <tr>
                 <td>Rechnung:</td>
                 <td><div class="rowWithObjects">
@@ -841,18 +873,23 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
         </table>
     </div>
 <script>
+// Fehlt der E-Rechnung etwas (null: nichts, oder das Versenden erzeugt kein Dokument), fragt „Versenden“ vorher nach
+const einvoiceSendQuestion = {script_json(einvoice_question)};
 function setInvoiceStatus(invId) {{
   var ns = document.getElementById('statusChangeSelect').value;
-  fetch('/invoice/status', {{method: 'POST', headers: {{'Content-Type': 'application/json'}},
-    body: JSON.stringify({{invoice_id: invId, status: ns}})}}).then(r => r.json())
-  .then(data => {{
-    if (!data.success) {{ showMessage('Fehler: ' + (data.error || '?'), 'error'); return; }}
-    // "Versendet" erzeugt das PDF automatisch (todo #2) - Hinweis, falls das
-    // nicht geklappt hat; sonst direkt neu laden.
-    var note = [data.warning, data.hint].filter(Boolean).join(' ');
-    if (note) {{ showMessage(note, data.warning ? 'warn' : 'info'); setTimeout(function() {{ location.reload(); }}, 3500); }}
-    else {{ location.reload(); }}
-  }});
+  var change = function() {{
+    fetch('/invoice/status', {{method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{invoice_id: invId, status: ns}})}}).then(r => r.json())
+    .then(data => {{
+      if (!data.success) {{ showMessage('Fehler: ' + (data.error || '?'), 'error'); return; }}
+      // "Versendet" erzeugt das PDF automatisch (todo #2) - Hinweis, falls das
+      // nicht geklappt hat; sonst direkt neu laden.
+      var note = [data.warning, data.hint].filter(Boolean).join(' ');
+      if (note) {{ showMessage(note, data.warning ? 'warn' : 'info'); setTimeout(function() {{ location.reload(); }}, 3500); }}
+      else {{ location.reload(); }}
+    }});
+  }};
+  if (ns === 'sent' && einvoiceSendQuestion) appConfirm(einvoiceSendQuestion, change); else change();
 }}
 // Identische Rechnung als neue Rechnung oeffnen - frisches Datum, neue
 // Rechnungsnummer (todo #4)
@@ -1143,27 +1180,6 @@ function copyInvoiceAsNew(invId) {{
                     </td>
                 </tr>
                 <tr>
-                    <td style="padding: 8px; vertical-align: top;"><strong>Zahlungsart (Code):</strong></td>
-                    <td style="padding: 8px;">
-                        <select id="payment_means_code" style="width: 300px;">
-                            <option value="58" selected>58 - SEPA Überweisung</option>
-                            <option value="30">30 - Banküberweisung</option>
-                            <option value="48">48 - Debitkarte</option>
-                            <option value="54">54 - Kreditkarte</option>
-                            <option value="49">49 - Lastschrift</option>
-                            <option value="1">1 - Bargeld</option>
-                        </select>
-                        <br><small style="color: #666;">XRechnung Zahlungsart-Code (Standard: 58)</small>
-                    </td>
-                </tr>
-                <tr>
-                    <td style="padding: 8px; vertical-align: top;"><strong>Zahlungsart (Text):</strong></td>
-                    <td style="padding: 8px;">
-                        <input type="text" id="payment_means_text" value="SEPA Überweisung" style="width: 300px;">
-                        <br><small style="color: #666;">Beschreibung der Zahlungsart</small>
-                    </td>
-                </tr>
-                <tr>
                     <td style="padding: 8px; vertical-align: top;"><strong>Zahlungsziel (Tage):</strong></td>
                     <td style="padding: 8px;">
                         <input type="number" id="payment_term_days" value="'''
@@ -1203,6 +1219,7 @@ function copyInvoiceAsNew(invId) {{
     s += _html.escape(str(existing_invoice[28])) if existing_invoice and len(existing_invoice) > 28 and existing_invoice[28] else ''  # SkontoDays is now at index 28 (was 26)
     s += '"' + lock_attr + '''> Tagen
                         <br><small style="color: #666;">Skonto-Abzug bei frühzeitiger Zahlung (optional)</small>
+                        <br><small id="skonto_hint" class="warnColor" hidden></small>
                     </td>
                 </tr>
             </table>
@@ -1508,6 +1525,22 @@ function copyInvoiceAsNew(invId) {{
         
         // Initial due date calculation
         updatePaymentDueDate();
+
+        // Skonto gesetzt, der Zahlungshinweis sagt aber „ohne Abzug“: Hinweis unter dem Skonto-Feld (Text über textContent)
+        function updateSkontoHint() {
+            const terms = document.getElementById('payment_terms');
+            const text = terms.value.toLowerCase();
+            const set = parseFloat(document.getElementById('discount_percentage').value) > 0
+                        && parseInt(document.getElementById('discount_days').value) > 0;
+            const contradicts = set && !terms.disabled && (text.includes('ohne jeden abzug') || text.includes('ohne abzug'));
+            const hint = document.getElementById('skonto_hint');
+            hint.textContent = contradicts ? 'Der Zahlungshinweis sagt „ohne Abzug“ – bitte zum Skonto passend ändern.' : '';
+            hint.hidden = !contradicts;
+        }
+        ['discount_percentage', 'discount_days', 'payment_terms'].forEach(function(id) {
+            document.getElementById(id).addEventListener('input', updateSkontoHint);
+        });
+        updateSkontoHint();
         
         // Artikel-Combobox. Name und Einheit der Artikel stammen aus den Stammdaten: Sie kommen
         // als DOM-Knoten (textContent) in die Seite, nie als Markup.
@@ -1837,8 +1870,6 @@ function copyInvoiceAsNew(invId) {{
                 taxAmount: taxAmount,
                 grossAmount: grossAmount,
                 currency: 'EUR',
-                paymentMeansCode: document.getElementById('payment_means_code').value || '58',
-                paymentMeansText: document.getElementById('payment_means_text').value || 'SEPA Überweisung',
                 items: items,
                 // XRechnung optional fields
                 orderNumber: document.getElementById('order_number').value || null,

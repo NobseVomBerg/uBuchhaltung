@@ -1,6 +1,6 @@
 # Datenbankmodell uBuchhaltung
 
-**Stand:** Version 2.3.4 (Schema 2003)
+**Stand:** Version 2.3.5 (Schema 2003)
 **DBMS:** SQLite 3
 **Datei:** `data/users/<Name>/buch.db`
 
@@ -750,7 +750,7 @@ ihn ab (nichts geändert).
 | SellerPostalCode | 7 | TEXT | | |
 | SellerCity | 8 | TEXT | | |
 | SellerCountry | 9 | TEXT | DEFAULT 'DE' | |
-| SellerVATID | 10 | TEXT | | USt-ID |
+| SellerVATID | 10 | TEXT | | USt-IdNr. oder Steuernummer der eigenen Firma (eine Spalte für beides; `tax_id_kind` trennt sie) |
 | SellerEmail | 11 | TEXT | | |
 | SellerPhone | 12 | TEXT | | |
 | **Käufer (Snapshot)** | | | | |
@@ -761,7 +761,7 @@ ihn ab (nichts geändert).
 | BuyerPostalCode | 17 | TEXT | | |
 | BuyerCity | 18 | TEXT | | |
 | BuyerCountry | 19 | TEXT | DEFAULT 'DE' | |
-| BuyerVATID | 20 | TEXT | | |
+| BuyerVATID | 20 | TEXT | | USt-IdNr. des Käufers (eine Steuernummer fällt in der E-Rechnung weg: EN 16931 hat dafür kein Feld) |
 | BuyerReference | 21 | TEXT | | Kundenreferenz |
 | BuyerRouteID | 22 | TEXT | | Leitweg-ID (XRechnung) |
 | **Auftrag / XRechnung** | | | | |
@@ -771,8 +771,8 @@ ihn ab (nichts geändert).
 | **Zahlungsbedingungen** | | | | |
 | PaymentTerms | 26 | TEXT | | |
 | PaymentDueDate | 27 | DATE | | |
-| SkontoDays | 28 | INTEGER | | |
-| SkontoPercent | 29 | REAL | | |
+| SkontoDays | 28 | INTEGER | | Skontofrist in Tagen ab Rechnungsdatum, ganze Zahl von 1 bis 365 (mit `SkontoPercent`; beide leer oder 0 = kein Skonto) |
+| SkontoPercent | 29 | REAL | | Skonto in Prozent, größer 0 und kleiner 100, höchstens zwei Nachkommastellen |
 | **Bankverbindung (Snapshot)** | | | | |
 | BankAccountId | 30 | INTEGER | FK → Accounts | |
 | BankName | 31 | TEXT | | |
@@ -814,6 +814,49 @@ Zahlungshinweis, Anschrift, Bestellnummer, Leitweg-ID und Leistungsdatum ändert
 `DocumentVersion` zählt um eins hoch. Zurückholen auf Entwurf legt die Dateien ebenso ab (und zählt hoch, wenn
 eine Datei abgelegt wurde). Die berichtigte Fassung trägt einen Hinweis (PDF-Zeile, CII BT-22, UBL `cbc:Note`),
 der sich aus dem Stand dieser Tabellen ergibt (`Database.correction_notice`).
+
+**Skonto und Pflichtangaben der E-Rechnung (seit 2.3.5):** Beide Dokumente (PDF mit eingebetteter CII, UBL der XRechnung)
+entstehen aus demselben Modell (`export/einvoice_model.py`, `build_einvoice`):
+
+- **Skonto:** `parse_skonto` liest `SkontoDays`/`SkontoPercent` (Prozent über die Textform als Decimal, denn die Spalte ist REAL).
+  Das PDF druckt nach dem Zahlungshinweis einen Absatz (Fristende, Abzug, Zahlbetrag; der Abzug wird in einem Schritt auf den Cent
+  gerundet, Grundlage ist das gedruckte Brutto, `skonto_amount`); CII (`ram:SpecifiedTradePaymentTerms/ram:Description`) und UBL
+  (`cac:PaymentTerms/cbc:Note`) tragen als erste Zeile `#SKONTO#TAGE=7#PROZENT=2.00#` (BR-DE-18), dann einen Zeilenumbruch und den
+  Freitext. Eine Stornorechnung hat nie Skonto, ebenso kein Beleg über höchstens 0 (Gutschrift, 0-€-Rechnung: nichts abzuziehen, und
+  das ist keine Lücke). Beim Speichern einer noch nicht eingefrorenen Rechnung lehnt der Server unbrauchbare Angaben ab (eine Angabe
+  allein, Prozent außerhalb 0–100 oder mit mehr als zwei Stellen, Tage keine ganze Zahl von 1 bis 365, Skonto bei einem Betrag von
+  höchstens 0, ein Rechnungsdatum, aus dem sich keine Frist rechnen lässt, Frist nach der Fälligkeit). **Geprüft wird, bevor etwas in
+  eine Zahl umgewandelt wird:** Tage sind ein `int` (kein `bool`), ein endlicher ganzzahliger `float` oder ein Text aus 1 bis 3
+  ASCII-Ziffern, Prozent eine endliche Zahl oder ein Text der Form `12` bzw. `2.5` – ein Wert wie `1e9999999` kehrt in Millisekunden
+  zurück (`int()` darauf über `Decimal` rechnete minutenlang). Ein unlesbarer gespeicherter Wert (Altbestand, SQL-Konsole) ergibt kein
+  Skonto im Modell, dafür eine Lücke. Endet die Skontofrist eines Altbestands nach der Fälligkeit, entfällt im PDF der Satz „Ohne Abzug
+  zahlbar bis zum …“ (das Dokument widerspricht sich nicht).
+- **Pflichtangaben:** Ein UBL entsteht nur bei Leitweg-ID oder Käuferreferenz (BT-10; eine Bestellnummer allein löst keines aus) und
+  nur, wenn `einvoice_gaps` nichts findet: Leitweg-ID, IBAN, PLZ/Ort und Kontakt (Name, Telefon, E-Mail) der eigenen Firma, PLZ/Ort und
+  E-Mail des Kunden, Steuernummer oder USt-IdNr. der eigenen Firma, lesbares Skonto und ein Zahlungshinweis ohne `#` (das Zeichen ist
+  in der XRechnung der Skonto-Angabe vorbehalten, BR-DE-18; Bereich `xrechnung`: Mustang meldet die eingebettete CII mit `#` als
+  gültig, die XRechnung-CII-Regel BR-DE-18 nur als Hinweis; gemessen an den Regeln der XRechnung 3.0 und EN 16931). Das PDF mit der CII
+  entsteht immer; `generate_invoice_documents` nennt in `error`, was fehlt (zwei Sätze, keine Angabe
+  doppelt: „XRechnung (XML) nicht erstellt – es fehlt: …“ nennt, was allein dem UBL fehlt, und nur, wenn eines entstehen soll; „Die
+  E-Rechnung im PDF ist unvollständig – es fehlt: …“ nennt, was auch die CII braucht; `incomplete` kennzeichnet eine solche Meldung
+  gegen einen Fehler beim Erzeugen), und entfernt ein früher abgelegtes UBL eines Entwurfs (nie ein eingefrorenes oder eines in
+  „Fassungen“): den gespeicherten Pfad UND die Datei am Namensschema (sonst fände der Download das alte UBL über den Rückfall
+  weiter), nur Dateien mit der Endung `.xml` und nie die PDF der Rechnung (`XMLPath` lässt sich per SQL auf sie biegen; dieselbe Sicherung
+  steht in `drop_stale_file`). Die Rechnungsseite zeigt die Lücken in einer Zeile und fragt vor dem Versenden nach – beides nur, solange sich die
+  Rechnung noch ändern lässt (Entwurf, abgeschlossen).
+- **Steuernummer und USt-IdNr.** stehen in `SellerVATID` (und im Kontakt) in einer Spalte: `tax_id_kind` ordnet sie ein. Eine
+  vorangestellte Bezeichnung („USt-IdNr.“, „USt-ID“, „UID“, „VAT“, „VAT-ID“, „Umsatzsteuer-Identifikationsnummer“, „St.-Nr.“,
+  „Steuernummer“ …; ohne Rücksicht auf Groß-/Kleinschreibung, mit oder ohne Punkte, Bindestriche und Doppelpunkt) fällt weg. Es ist
+  eine USt-IdNr., wenn der Rest nach dem Entfernen von Leerzeichen, Bindestrichen und Punkten in Großschreibung mit einem bekannten
+  Länderkürzel beginnt UND der Rest zu den Nummern dieses Landes passt (Tabelle `_VAT_ID_RULES`: die EU-Länder – Griechenland als `EL` –
+  und `XI`, `GB`, `CHE`, `NO`; `DE` = 9 Ziffern; `DE-123 456 789` ergibt `DE123456789`). Alles andere ist eine Steuernummer – ein
+  Bundesland-Kürzel („BY 123 456 78901“), eine Registernummer („HRB 12345“), eine deutsche Nummer mit zu wenigen Ziffern – und bleibt,
+  wie eingegeben (ohne Bezeichnung, außen getrimmt, innerer Leerraum zusammengezogen). Die USt-IdNr. steht als BT-31 (CII `VA`, UBL `VAT`), die Steuernummer als BT-32 (`FC`, `TAX`); der
+  Kontakt springt nur bei leerer Momentaufnahme ein. Hat der Verkäufer **keine USt-IdNr., aber eine Steuernummer**, steht sie
+  zusätzlich als Verkäuferkennung BT-29 (CII `ram:SellerTradeParty/ram:ID`, UBL `cac:PartyIdentification/cbc:ID`), denn BR-CO-26
+  verlangt BT-29, BT-30 oder BT-31 – mit USt-IdNr. gibt es kein BT-29. Das PDF druckt die Nummer im Fuß aus der Momentaufnahme
+  („USt-IdNr.: …“, „Steuer-Nr.: …“). Eine Steuernummer des Käufers entfällt (kein Feld in EN 16931).
+- Der Kontoinhaber (BT-85) steht nicht in den Dokumenten; der Bankname bleibt im Fuß des PDF.
 
 ---
 
