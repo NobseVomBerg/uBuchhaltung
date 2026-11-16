@@ -22,6 +22,7 @@ except ImportError:
 from pathlib import Path
 
 from importers import pdftext
+from money import parse_amount
 
 # ── SQL-Log-Rotation ─────────────────────────────────────────────────────────
 # Audit-Logs (sql_operations.log/.sql) werden ab dieser Größe rotiert und
@@ -448,8 +449,14 @@ class DocumentParser:
             # Extract trailing amount – strict format: 1.234,56
             amount_match = re.search(
                 r'(\d{1,3}(?:\.\d{3})*,\d{2})\s*$', rest_of_line)
+            try:
+                # Ein Auszug schreibt Beträge immer mit Komma; „1.142“ ohne Komma wird nicht geraten
+                amount_val = (float(parse_amount(amount_match.group(1)))
+                              if amount_match and ',' in amount_match.group(1) else None)
+            except ValueError:
+                amount_val = None
 
-            if not amount_match:
+            if amount_val is None:
                 # No valid amount → continuation from previous page
                 if not first_real_tx_found:
                     continuation_lines.append(rest_of_line)
@@ -477,12 +484,7 @@ class DocumentParser:
                 i += 1
                 continue
 
-            amount_str = amount_match.group(1)
-
             first_real_tx_found = True
-
-            amount_val = float(
-                amount_str.replace('.', '').replace(',', '.'))
 
             # Transaction type (between second date and amount)
             trans_type = rest_of_line[:amount_match.start()].strip()

@@ -10,6 +10,8 @@ Personen-Filter (Mitarbeiter + eigene Person), Zeitraum-Filter (Monat/Jahr).
 import calendar
 import datetime
 import html as _html
+import re
+from decimal import Decimal, ROUND_HALF_UP
 from urllib.parse import quote
 from db import Database
 from .pages import Header1, Header2, Header3, Footer, script_json
@@ -48,19 +50,66 @@ def zeiten_submenu(active):
     ])
 
 
-def compute_hours(start, end, pause_min):
-    """Stunden = (Ende − Start) − Pause. Leere/ungültige Zeiten → 0.0."""
-    if not start or not end:
-        return 0.0
+DAY_MINUTES = 24 * 60
+
+# [0-9] statt \d: int() und \d ließen auch Ziffern anderer Schriften („٠٨:٠٠“) als Uhrzeit durch
+_CLOCK_TIME = re.compile(r'([0-9]{1,2}):([0-9]{2})')
+
+
+def clock_minutes(value):
+    """'HH:MM' (auch 'H:MM') → Minuten seit Mitternacht; ``None``, wenn es keine Uhrzeit ist
+    (Stunde 0–23, Minute 0–59, nur ASCII-Ziffern, kein Leerraum)."""
+    if not isinstance(value, str):
+        return None
+    found = _CLOCK_TIME.fullmatch(value)
+    if found is None:
+        return None
+    hours, minutes = int(found.group(1)), int(found.group(2))
+    if hours > 23 or minutes > 59:
+        return None
+    return hours * 60 + minutes
+
+
+def crosses_midnight(start, end):
+    """Beide Zeiten gültig und das Ende vor dem Beginn: Der Eintrag endet am Folgetag."""
+    start_min, end_min = clock_minutes(start), clock_minutes(end)
+    return start_min is not None and end_min is not None and end_min < start_min
+
+
+def compute_minutes(start, end, pause_min):
+    """Arbeitsminuten = Dauer − Pause, nie unter 0.
+
+    Liegt das Ende vor dem Beginn, endet der Eintrag am Folgetag (+ 24 h); Ende = Beginn sind
+    0 Minuten, kein 24-Stunden-Tag. Leere, fehlende oder ungültige Zeiten ergeben 0; eine
+    negative oder nicht lesbare Pause zählt als 0."""
+    start_min, end_min = clock_minutes(start), clock_minutes(end)
+    if start_min is None or end_min is None:
+        return 0
+    if end_min < start_min:
+        end_min += DAY_MINUTES
     try:
-        sh, sm = (int(x) for x in str(start).split(':'))
-        eh, em = (int(x) for x in str(end).split(':'))
-    except (ValueError, AttributeError):
-        return 0.0
-    minutes = (eh * 60 + em) - (sh * 60 + sm) - int(pause_min or 0)
-    if minutes < 0:
-        minutes = 0
-    return round(minutes / 60.0, 2)
+        pause = int(pause_min or 0)
+    except (TypeError, ValueError, OverflowError):
+        pause = 0
+    return max(0, end_min - start_min - max(pause, 0))
+
+
+def compute_hours(start, end, pause_min):
+    """Stunden einer Zeile für die Anzeige. Summen entstehen aus ``compute_minutes``, nie aus
+    diesen gerundeten Werten (3 × 20 min sind 1,00 h, nicht 0,99 h)."""
+    return round(compute_minutes(start, end, pause_min) / 60, 2)
+
+
+def workdays_label(count):
+    """'1 Arbeitstag' bzw. 'n Arbeitstage' für die Summenzeile von Seite und Stundenzettel."""
+    return f'{count} Arbeitstag' if count == 1 else f'{count} Arbeitstage'
+
+
+def format_hours(minutes):
+    """Minuten als Stunden mit zwei Nachkommastellen, kaufmännisch gerundet aus der ganzen
+    Zahl, deutsch mit Komma ('1,00')."""
+    hours = (Decimal(minutes) / 60).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    return f'{hours:.2f}'.replace('.', ',')
 
 
 # Externe Kontaktrollen – Personen mit (nur) solchen Rollen sind keine internen
@@ -92,7 +141,7 @@ def _persons(db: Database):
 
 
 def _hhmm(value):
-    return value or ''
+    return str(value or '')
 
 
 def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
@@ -155,24 +204,28 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
     for e in entries:
         by_date.setdefault(str(e[2]), []).append(e)
 
-    total_hours = 0.0
-    workday_count = 0
+    total_minutes = 0
+    workdays = set()          # Kalendertage mit mindestens einem Arbeitseintrag über 0 Minuten
 
     def date_label(d: datetime.date):
         return f'{d.day:02d}' if single_month else d.strftime('%d.%m')
 
     def entry_row(d: datetime.date, e):
-        nonlocal total_hours, workday_count
+        nonlocal total_minutes
         weekend = d.weekday() >= 5
         wd = WEEKDAYS[d.weekday()]
         kind = e[3] or 'work'
         start = _hhmm(e[5])
         end = _hhmm(e[6])
         pause = e[7] or 0
+        minutes = compute_minutes(start, end, pause) if kind == 'work' else 0
         hours = compute_hours(start, end, pause) if kind == 'work' else 0.0
-        if kind == 'work' and hours > 0:
-            total_hours += hours
-            workday_count += 1
+        if minutes > 0:
+            total_minutes += minutes
+            workdays.add(d)
+        start_html = _html.escape(start)
+        end_html = _html.escape(end)
+        end_cell = end_html + (' (+1)' if crosses_midnight(start, end) else '')
         info = '' if kind == 'work' else KIND_LABELS.get(kind, kind)
         if kind == 'work' and e[9]:
             info = _html.escape(e[9])           # Arbeitsort als Info bei Arbeit
@@ -180,7 +233,7 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
         row_cls = ' class="wt-weekend"' if weekend else ''
         pausetext = e[11] if len(e) > 11 else ''
         data = (f'data-id="{e[0]}" data-date="{e[2]}" data-kind="{kind}" '
-                f'data-customer="{e[4] or ""}" data-start="{start}" data-end="{end}" '
+                f'data-customer="{e[4] or ""}" data-start="{start_html}" data-end="{end_html}" '
                 f'data-pause="{pause}" data-locmode="{e[8] or "customer"}" '
                 f'data-loccity="{_html.escape(e[9] or "")}" '
                 f'data-note="{_html.escape(e[10] or "")}" '
@@ -189,7 +242,7 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
         return (
             f'<tr{row_cls} {data}>'
             f'<td>{wd}</td><td>{date_label(d)}</td>'
-            f'<td>{start}</td><td>{end}</td><td>{pause if start else ""}</td>'
+            f'<td>{start_html}</td><td>{end_cell}</td><td>{pause if start else ""}</td>'
             f'<td style="text-align:right;">{hours_txt}</td>'
             f'<td>{info}</td><td>{note}</td>'
             f'<td>'
@@ -230,9 +283,10 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
             d = datetime.date.fromisoformat(str(e[2]))
             rows_html += entry_row(d, e)
 
-    total_txt = f'{total_hours:.2f}'.replace('.', ',')
+    workday_count = len(workdays)
+    total_txt = format_hours(total_minutes)
     sum_row = (f'<tr class="wt-sum"><td colspan="5" style="text-align:right;">'
-               f'Summe ({workday_count} Arbeitstage):</td>'
+               f'Summe ({workdays_label(workday_count)}):</td>'
                f'<td style="text-align:right;">{total_txt}</td>'
                f'<td colspan="3"></td></tr>')
 
@@ -340,7 +394,7 @@ def _worktime_form(db, person_id, date_from, date_to, customers, edit_id, qstr):
             <tr><td>Endzeit:</td><td><input type="time" name="end_time" id="wtEnd" onchange="wtUpdateHours()"></td></tr>
             <tr><td>Pausen:</td><td><input type="text" name="pause_text" id="wtPauseText" placeholder="z.B. 12:00-12:30" onchange="wtOnPauseText()"></td></tr>
             <tr><td>Pause (min):</td><td><input type="number" name="pause_minutes" id="wtPause" min="0" value="0" onchange="wtUpdateHours()"></td></tr>
-            <tr><td>Stunden:</td><td><span id="wtHoursPreview" class="muted">0,00</span></td></tr>
+            <tr><td>Stunden:</td><td><span id="wtHoursPreview" class="muted">0,00</span> <span id="wtNextDayHint" class="muted"></span></td></tr>
             <tr><td>Arbeitsort:</td><td>
                 <label><input type="radio" name="location_mode" value="own" onchange="wtOnLocModeChange()"> eigener Ort</label><br>
                 <label><input type="radio" name="location_mode" value="customer" checked onchange="wtOnLocModeChange()"> Ort des Kunden</label><br>
@@ -380,19 +434,26 @@ function wtOnKindChange() {
     if (!work) document.getElementById('wtHoursPreview').textContent = '0,00';
     else wtUpdateHours();
 }
+function wtClockMinutes(value) {
+    // 'HH:MM' → Minuten seit Mitternacht, sonst null (wie compute_minutes auf dem Server)
+    const m = /^([0-9]{1,2}):([0-9]{2})$/.exec(value);
+    if (!m) return null;
+    const h = parseInt(m[1], 10), min = parseInt(m[2], 10);
+    return (h > 23 || min > 59) ? null : h * 60 + min;
+}
 function wtUpdateHours() {
-    const s = document.getElementById('wtStart').value;
-    const e = document.getElementById('wtEnd').value;
-    const p = parseInt(document.getElementById('wtPause').value || '0', 10);
-    let h = 0;
-    if (s && e) {
-        const [sh, sm] = s.split(':').map(Number);
-        const [eh, em] = e.split(':').map(Number);
-        let min = (eh*60+em) - (sh*60+sm) - p;
-        if (min < 0) min = 0;
-        h = min / 60;
+    const s = wtClockMinutes(document.getElementById('wtStart').value);
+    const e = wtClockMinutes(document.getElementById('wtEnd').value);
+    let p = parseInt(document.getElementById('wtPause').value || '0', 10);
+    if (!(p > 0)) p = 0;
+    let minutes = 0;
+    if (s !== null && e !== null) {
+        // Ende vor Beginn: Der Eintrag endet am Folgetag; Ende = Beginn sind 0 Minuten
+        minutes = Math.max(0, (e < s ? e + 1440 : e) - s - p);
     }
-    document.getElementById('wtHoursPreview').textContent = h.toFixed(2).replace('.', ',');
+    document.getElementById('wtHoursPreview').textContent = (minutes / 60).toFixed(2).replace('.', ',');
+    const hint = document.getElementById('wtNextDayHint');
+    if (hint) hint.textContent = (s !== null && e !== null && e < s) ? '(Ende am Folgetag)' : '';
 }
 function wtPauseMinutesFromText(txt) {
     // Summiert alle Zeitbereiche, z.B. "12:00-12:30" oder "10-10:15, 12:00-12:30"

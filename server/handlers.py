@@ -3659,6 +3659,7 @@ def _wt_resolve_city(db: Database, mode, customer_id, free_text):
 
 
 import re as _re
+from .pages_worktime import DAY_MINUTES, clock_minutes
 _WT_PAUSE_RE = _re.compile(r'(\d{1,2})(?::(\d{2}))?\s*(?:-|–|bis)\s*(\d{1,2})(?::(\d{2}))?')
 
 
@@ -3707,42 +3708,58 @@ def _wt_parse(db: Database, post_data):
 _WT_NO_LOCK_KINDS = {'vacation', 'holiday'}
 
 
-def _wt_minutes(t):
-    """'HH:MM' → Minuten seit Mitternacht, oder None."""
-    try:
-        h, m = t.split(':')
-        return int(h) * 60 + int(m)
-    except (ValueError, AttributeError):
+def _wt_span(start, end):
+    """(Beginn, Ende) in Minuten ab Mitternacht des Eintragsdatums, oder None ohne gültige Zeiten.
+    Ein Ende vor dem Beginn liegt am Folgetag (wie in ``compute_minutes``)."""
+    start_min, end_min = clock_minutes(start), clock_minutes(end)
+    if start_min is None or end_min is None:
         return None
+    return start_min, (end_min + DAY_MINUTES if end_min < start_min else end_min)
 
 
 def _wt_has_overlap(db: Database, person_id, fields, exclude_id=None):
     """True, wenn der Eintrag zeitlich mit einem bestehenden Arbeitseintrag desselben
     Tags/derselben Person kollidiert. Urlaub/Feiertag lösen keine Sperre aus und
-    kollidieren auch nicht mit anderen Einträgen.
+    kollidieren auch nicht mit anderen Einträgen. Verglichen wird auf der Zeitachse des
+    Eintragsdatums; Einträge der Nachbartage, in die ein Eintrag über Mitternacht hineinreicht,
+    prüft das nicht.
     """
     if fields['kind'] in _WT_NO_LOCK_KINDS:
         return False
-    ns, ne = _wt_minutes(fields['start_time']), _wt_minutes(fields['end_time'])
-    if ns is None or ne is None:
+    new = _wt_span(fields['start_time'], fields['end_time'])
+    if new is None:
         return False  # ohne Zeiten keine Überschneidung prüfbar
     for e in db.fetch_worktimes(person_id, fields['date'], fields['date']):
         if exclude_id and e[0] == exclude_id:
             continue
         if (e[3] or 'work') in _WT_NO_LOCK_KINDS:
             continue
-        es, ee = _wt_minutes(e[5]), _wt_minutes(e[6])
-        if es is None or ee is None:
+        other = _wt_span(e[5], e[6])
+        if other is None:
             continue
-        if ns < ee and es < ne:        # echte Zeitüberschneidung
+        if new[0] < other[1] and other[0] < new[1]:        # echte Zeitüberschneidung
             return True
     return False
 
 
-def _wt_overlap_redirect(person_id, date_from, date_to, date):
-    msg = quote(f"Überschneidung am {date}: in diesem Zeitraum existiert bereits ein Eintrag.")
+_WT_TIME_ERROR = 'Bitte die Uhrzeit als HH:MM angeben.'
+
+
+def _wt_times_valid(fields):
+    """Start- und Endzeit sind leer oder eine gültige Uhrzeit (``clock_minutes``)."""
+    return all(not fields[key] or clock_minutes(fields[key]) is not None
+               for key in ('start_time', 'end_time'))
+
+
+def _wt_error_redirect(person_id, date_from, date_to, text):
+    """Zurück zur Seite, die ``text`` über ``?error=`` als Meldung zeigt; nichts ist gespeichert."""
     return 303, (f"/worktime?person={quote(str(person_id), safe='')}"
-                 f"{_period_args(date_from, date_to)}&error={msg}")
+                 f"{_period_args(date_from, date_to)}&error={quote(text)}")
+
+
+def _wt_overlap_redirect(person_id, date_from, date_to, date):
+    return _wt_error_redirect(person_id, date_from, date_to,
+                              f"Überschneidung am {date}: in diesem Zeitraum existiert bereits ein Eintrag.")
 
 
 def handle_add_worktime(db: Database, post_data):
@@ -3753,6 +3770,8 @@ def handle_add_worktime(db: Database, post_data):
     date_to = g('to', '')
     fields = _wt_parse(db, post_data)
     if person_id and fields['date']:
+        if not _wt_times_valid(fields):
+            return _wt_error_redirect(person_id, date_from, date_to, _WT_TIME_ERROR)
         if _wt_has_overlap(db, person_id, fields):
             return _wt_overlap_redirect(person_id, date_from, date_to, fields['date'])
         db.insert_worktime(person_id=person_id, **fields)
@@ -3768,6 +3787,8 @@ def handle_update_worktime(db: Database, post_data):
     worktime_id = int(g('id', '0') or 0)
     fields = _wt_parse(db, post_data)
     if worktime_id and fields['date']:
+        if not _wt_times_valid(fields):
+            return _wt_error_redirect(person_id, date_from, date_to, _WT_TIME_ERROR)
         if _wt_has_overlap(db, person_id, fields, exclude_id=worktime_id):
             return _wt_overlap_redirect(person_id, date_from, date_to, fields['date'])
         db.update_worktime(worktime_id, **fields)
@@ -3795,72 +3816,117 @@ def handle_worktime_pdf(db: Database, person_id, date_from, date_to, with_notes=
 
 
 # ── Fahrten (Fahrtenbuch) ─────────────────────────────────────────────────────
-def _trip_redirect(person_id, date_from, date_to):
-    return f"/trips?person={quote(str(person_id), safe='')}{_period_args(date_from, date_to)}"
+# Das Fahrtenbuch bleibt locker (einzelne Fahrten, ohne Tachostand, in beliebiger Reihenfolge nachgetragen): Beim
+# Speichern wird nie ein fehlender Anschluss an die Vorfahrt geprüft – abgelehnt wird nur, was unmöglich ist.
+# Lückenlos muss es nur bei der Fahrtenbuchmethode sein; die Prüfung dafür gibt es auf Wunsch (``trip_logbook_check``).
+TRIP_TEXT_MAX = 500
+TRIP_KM_MAX = 9_999_999
+_TRIP_NOT_SAVED = 'Die Fahrt konnte nicht gespeichert werden (Fahrer oder Beleg gibt es nicht mehr).'
+_TRIP_GONE = 'Die Fahrt gibt es nicht mehr.'
 
 
-def _trip_int(value):
-    """Leeren/ungültigen Text → None, sonst Integer."""
-    value = (value or '').strip()
-    if value == '':
+def _trip_redirect(person_id, date_from, date_to, error=None):
+    """Zurück zur Fahrtenseite (Person und Zeitraum bleiben); ``error`` zeigt die Seite als Meldung."""
+    location = f"/trips?person={quote(str(person_id or 0), safe='')}{_period_args(date_from, date_to)}"
+    return location + f"&error={quote(error, safe='')}" if error else location
+
+
+def _trip_id(value):
+    """Eine ID aus dem Formular: positive ganze Zahl aus ASCII-Ziffern, die in 64 Bit passt. Alles andere – leer,
+    Text, 0, negativ, zu groß – gilt als fehlend (``None``)."""
+    text = (value or '').strip()
+    if not (text.isascii() and text.isdigit()) or len(text) > 19:
         return None
+    number = int(text)
+    return number if 1 <= number <= 2 ** 63 - 1 else None
+
+
+def _trip_km(text):
+    """Tachostand oder Kilometer: leer → ``None``, sonst eine ganze Zahl aus ASCII-Ziffern von 0 bis ``TRIP_KM_MAX``
+    (``ValueError`` bei allem anderen – auch negativ, Dezimalkomma, Text, zu groß)."""
+    if text == '':
+        return None
+    digits = text.lstrip('0')
+    # die Länge zuerst: Eine Ziffernfolge von tausenden Stellen soll nicht erst in eine Zahl umgerechnet werden
+    if not (text.isascii() and text.isdigit()) or len(digits) > len(str(TRIP_KM_MAX)):
+        raise ValueError(text)
+    number = int(digits or '0')
+    if number > TRIP_KM_MAX:
+        raise ValueError(text)
+    return number
+
+
+def _trip_time_ok(text):
+    """``HH:MM`` mit 00–23 und 00–59, nur ASCII-Ziffern."""
+    hours, colon, minutes = text[:2], text[2:3], text[3:]
+    return (len(text) == 5 and colon == ':' and (hours + minutes).isascii() and (hours + minutes).isdigit()
+            and int(hours) < 24 and int(minutes) < 60)
+
+
+def _trip_fields(post_data):
+    """Die Felder einer Fahrt aus dem POST-Body (ohne Fahrer und Zeitraum), geprüft: ``(fields, None)``, oder
+    ``(None, Klartext)`` beim ersten Verstoß – dann wird nichts gespeichert. Eine reine Funktion für Anlegen und Ändern.
+
+    Abgelehnt wird nur, was unmöglich ist (kein Datum, Ende vor Start, Tacho Ende unter Tacho Start, Kilometer, die
+    keine Zahl sind …). Sind beide Tachostände gesetzt, ist die Differenz die gefahrene Strecke – auch ohne
+    mitgesendeten Client-Wert."""
+    g = lambda k: post_data.get(k, [''])[0].strip()
+    if _trip_id(g('person_id')) is None or not g('start_date') or not g('destination'):
+        return None, 'Bitte Fahrer, Start-Datum und Ziel angeben.'
+    start_date, end_date = g('start_date'), g('end_date')
+    if parse_iso_date(start_date) is None:
+        return None, 'Bitte ein gültiges Start-Datum angeben.'
+    if end_date and parse_iso_date(end_date) is None:
+        return None, 'Bitte ein gültiges End-Datum angeben.'
+    start_time, end_time = g('start_time'), g('end_time')
+    if not all(t == '' or _trip_time_ok(t) for t in (start_time, end_time)):
+        return None, 'Bitte die Uhrzeit als HH:MM angeben.'
+    # ISO-Daten und HH:MM sortieren wie Zeitpunkte; ein leeres End-Datum heißt: derselbe Tag
+    if ((end_date and end_date < start_date)
+            or (end_date in ('', start_date) and start_time and end_time and end_time < start_time)):
+        return None, 'Das Ende der Fahrt liegt vor dem Start.'
     try:
-        return int(value)
+        start_km, end_km, distance_km = (_trip_km(g(name)) for name in ('start_km', 'end_km', 'distance_km'))
     except ValueError:
-        return None
-
-
-def _trip_parse(post_data):
-    """Fahrt-Felder aus dem POST-Body ziehen (ohne DriverID/Zeitraum).
-
-    Sind beide Tachostände (Start/Ende) gesetzt und plausibel, ist die Differenz
-    maßgeblich für die gefahrenen km – auch ohne mitgesendeten Client-Wert.
-    """
-    g = lambda k, d='': post_data.get(k, [d])[0]
-    start_km = _trip_int(g('start_km', ''))
-    end_km = _trip_int(g('end_km', ''))
-    distance_km = _trip_int(g('distance_km', ''))
-    if start_km is not None and end_km is not None and end_km >= start_km:
+        return None, 'Kilometer bitte als ganze Zahl ab 0 angeben.'
+    if start_km is not None and end_km is not None:
+        if end_km < start_km:
+            return None, 'Tacho Ende liegt unter Tacho Start.'
         distance_km = end_km - start_km
+    document_id = _trip_id(g('document_id'))
+    if g('document_id') and document_id is None:
+        return None, 'Der gewählte Beleg ist ungültig.'
+    texts = {name: g(name) for name in ('start_point', 'destination', 'vehicle', 'reason')}
+    if any(len(text) > TRIP_TEXT_MAX for text in texts.values()):
+        return None, f'Der Text ist zu lang (höchstens {TRIP_TEXT_MAX} Zeichen).'
     return {
-        'start_date': g('start_date', ''),
-        'start_time': g('start_time', ''),
-        'end_date': g('end_date', ''),
-        'end_time': g('end_time', ''),
-        'start_point': g('start_point', '').strip(),
-        'destination': g('destination', '').strip(),
-        'vehicle': g('vehicle', '').strip(),
-        'reason': g('reason', '').strip(),
-        'distance_km': distance_km,
-        'start_km': start_km,
-        'end_km': end_km,
-        'document_id': _trip_int(g('document_id', '')),
-    }
+        'start_date': start_date, 'start_time': start_time, 'end_date': end_date, 'end_time': end_time,
+        **texts, 'distance_km': distance_km, 'start_km': start_km, 'end_km': end_km, 'document_id': document_id,
+    }, None
 
 
 def handle_add_trip(db: Database, post_data):
-    """Neue Fahrt anlegen (benötigt Fahrer, Start-Datum und Ziel)."""
-    g = lambda k, d='': post_data.get(k, [d])[0]
-    person_id = int(g('person_id', '0') or 0)
-    date_from = g('from', '')
-    date_to = g('to', '')
-    fields = _trip_parse(post_data)
-    if person_id and fields['start_date'] and fields['destination']:
-        db.insert_trip(driver_id=person_id, **fields)
-    return 303, _trip_redirect(person_id, date_from, date_to)
+    """Neue Fahrt anlegen (benötigt Fahrer, Start-Datum und Ziel). Eine unmögliche Angabe oder ein Speicherfehler
+    kommt als Meldung (``error``) auf die Fahrtenseite; gespeichert wird dann nichts."""
+    g = lambda k: post_data.get(k, [''])[0]
+    person_id = _trip_id(g('person_id'))
+    fields, error = _trip_fields(post_data)
+    if error is None and db.insert_trip(driver_id=person_id, **fields) is None:
+        error = _TRIP_NOT_SAVED
+    return 303, _trip_redirect(person_id, g('from'), g('to'), error)
 
 
 def handle_update_trip(db: Database, post_data):
-    """Bestehende Fahrt aktualisieren."""
-    g = lambda k, d='': post_data.get(k, [d])[0]
-    person_id = int(g('person_id', '0') or 0)
-    date_from = g('from', '')
-    date_to = g('to', '')
-    trip_id = int(g('id', '0') or 0)
-    fields = _trip_parse(post_data)
-    if trip_id and fields['start_date'] and fields['destination']:
-        db.update_trip(trip_id, **fields)
-    return 303, _trip_redirect(person_id, date_from, date_to)
+    """Bestehende Fahrt aktualisieren; Meldungen wie bei ``handle_add_trip``."""
+    g = lambda k: post_data.get(k, [''])[0]
+    person_id, trip_id = _trip_id(g('person_id')), _trip_id(g('id'))
+    fields, error = _trip_fields(post_data)
+    if error is None:
+        if trip_id is None:
+            error = _TRIP_GONE
+        elif not db.update_trip(trip_id, **fields):
+            error = _TRIP_GONE if db.get_trip_by_id(trip_id) is None else _TRIP_NOT_SAVED
+    return 303, _trip_redirect(person_id, g('from'), g('to'), error)
 
 
 # ── Authentifizierung (TODO #4) ──────────────────────────────────────────────

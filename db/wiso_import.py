@@ -6,8 +6,8 @@ import sqlite3
 import os
 import json
 from collections import Counter
-from decimal import Decimal
-from money import to_minor, from_minor
+from decimal import Decimal, ROUND_HALF_UP
+from money import to_minor, from_minor, parse_amount
 from .datev_keys import key_rate, parse_key
 from .matching import (
     FORM_MIRROR_COA, FORM_MIRROR_LEGACY, LEGACY_CASH_NUMBERS, LEGACY_CASH_RANGE,
@@ -21,6 +21,22 @@ STOCK_RANGE = LEGACY_CASH_NUMBERS
 #: jeden höchstens so lang: Die Werte stammen aus der Datei und landen in der Ergebnisdatei und auf der Seite.
 MAX_UNKNOWN_TAX_KEYS = 50
 MAX_TAX_KEY_LENGTH = 20
+
+
+_CENT = Decimal('0.01')
+
+
+def _included_tax(amount, tax_rate):
+    """Der im Brutto ``amount`` (Euro, ``Decimal``) enthaltene Steueranteil, auf Cent gerundet, mit dem Vorzeichen des
+    Betrags. ``tax_rate`` ist der Satz als Bruch (0.19).
+
+    Gerechnet wird exakt auf dem Brutto, wie es in der Datei steht, und mit EINER Rundung (kaufmännisch auf den Cent):
+    Brutto × Satz / (1 + Satz). Weder das Brutto noch ein Zwischenwert wird vorher gerundet – in Minor Units gerechnet
+    und danach auf Cent gerundet läge die Steuer bei rund 0,4 % der Beträge einen Cent neben der Rechnung, die dieser
+    Import immer hatte, und ein vorab auf Cent gerundetes Brutto (drei oder vier Nachkommastellen) ebenso."""
+    rate = Decimal(str(tax_rate))
+    tax = (abs(amount) * rate / (1 + rate)).quantize(_CENT, rounding=ROUND_HALF_UP)
+    return -tax if amount < 0 else tax
 
 
 class WisoImportMixin:
@@ -190,10 +206,8 @@ class WisoImportMixin:
                     continue
 
                 amount_str = row.get('BRUTTOBETRAG', '').strip()
-                if ',' in amount_str:
-                    amount_str = amount_str.replace('.', '').replace(',', '.')
                 try:
-                    amount = float(amount_str)
+                    amount = parse_amount(amount_str)
                 except ValueError:
                     errors.append(f"Zeile {i}: Ungültiger Betrag '{amount_str}'")
                     continue
@@ -265,9 +279,7 @@ class WisoImportMixin:
                 # Steuerbetrag berechnen (Brutto → MwSt-Anteil)
                 tax_amount = None
                 if tax_rate is not None and tax_rate > 0 and amount != 0:
-                    tax_amount = round(abs(amount) - abs(amount) / (1 + tax_rate), 2)
-                    if amount < 0:
-                        tax_amount = -tax_amount
+                    tax_amount = _included_tax(amount, tax_rate)
                 text_val = row.get('TEXT', '').strip()
                 doc_number = row.get('REFERENZNUMMER', '').strip()
 
@@ -439,7 +451,7 @@ class WisoImportMixin:
                     skipped_rows.append({
                         'zeile': pr['zeile'], 'datum': booking_date,
                         'ref': doc_number, 'konto': pr['konto_str'],
-                        'betrag': amount, 'text': pr['text'][:60],
+                        'betrag': float(amount), 'text': pr['text'][:60],
                     })
                     continue
 
@@ -451,7 +463,7 @@ class WisoImportMixin:
                     skipped_rows.append({
                         'zeile': pr['zeile'], 'datum': booking_date,
                         'ref': doc_number, 'konto': pr['konto_str'],
-                        'betrag': amount, 'text': pr['text'][:60],
+                        'betrag': float(amount), 'text': pr['text'][:60],
                     })
                     continue
 
@@ -465,7 +477,7 @@ class WisoImportMixin:
                     skipped_rows.append({
                         'zeile': pr['zeile'], 'datum': booking_date,
                         'ref': doc_number, 'konto': pr['konto_str'],
-                        'betrag': amount, 'text': pr['text'][:60],
+                        'betrag': float(amount), 'text': pr['text'][:60],
                     })
                     continue
 
@@ -592,10 +604,8 @@ class WisoImportMixin:
                 
                 # Betrag parsen – deutsches Format z.B. -41,25 oder 1.234,56
                 amount_str = row.get('Betrag', '').strip()
-                if ',' in amount_str:
-                    amount_str = amount_str.replace('.', '').replace(',', '.')
                 try:
-                    amount = float(amount_str)
+                    amount = parse_amount(amount_str)
                 except ValueError:
                     errors.append(f"Zeile {i}: Ungültiger Betrag '{amount_str}'")
                     continue
@@ -754,7 +764,7 @@ class WisoImportMixin:
                         'zeile':  i,
                         'datum':  booking_date,
                         'beleg':  doc_number,
-                        'betrag': amount,
+                        'betrag': float(amount),
                         'text':   purpose[:60],
                     })
                     continue

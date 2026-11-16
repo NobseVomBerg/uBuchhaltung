@@ -6,7 +6,8 @@ Unit-Tests für die Arbeitszeiterfassung (WorkTimes).
 
 Testet:
 - DB-CRUD: insert/fetch/update/delete, Zeitraum-Filter, neuester Eintrag, CASCADE
-- compute_hours: Normalfall, Pause, leere/ungültige Zeiten
+- compute_hours: Normalfall, Pause, Ende vor Beginn (= Folgetag), leere/ungültige Zeiten
+  (Minuten, Summen und Mitternacht: tests/test_worktime_minutes.py)
 - Handler: add/update → 303 + korrekte Location; LocationCity-Auflösung (own/customer/other)
 """
 import pytest
@@ -129,8 +130,15 @@ class TestComputeHours:
         assert compute_hours('', '', 0) == 0.0
         assert compute_hours('08:00', '', 0) == 0.0
 
-    def test_negative_clamped(self):
-        assert compute_hours('17:00', '08:00', 0) == 0.0
+    def test_pause_longer_than_the_duration_is_clamped(self):
+        assert compute_hours('08:00', '09:00', 120) == 0.0
+
+    def test_end_before_start_ends_on_the_next_day(self):
+        assert compute_hours('17:00', '08:00', 0) == 15.0
+        assert compute_hours('22:00', '06:00', 30) == 7.5
+
+    def test_end_equal_to_start_is_no_day(self):
+        assert compute_hours('08:00', '08:00', 0) == 0.0
 
     def test_invalid(self):
         assert compute_hours('abc', '16:00', 0) == 0.0
