@@ -7,7 +7,7 @@ import os
 import json
 from decimal import Decimal
 from money import to_minor, from_minor
-from .core import coa_id
+from .core import DeleteRefused, coa_id, reference_texts
 
 # Sinnvolle DATEV-Standardkontenrahmen für die Auswahl in der SKR-Verwaltung
 # (Rahmen-Nr. → Anzeigename). Andere Werte werden beim Anlegen abgelehnt.
@@ -231,12 +231,33 @@ class AccountsMixin:
         finally:
             conn.close()
     def delete_account(self, account_id):
+        """Bankkonto löschen. Die Kasse lässt sich nie löschen, ein Konto nicht, solange Buchungen, Rechnungen oder
+        Angebote darauf verweisen (``DeleteRefused`` mit Klartext, nichts gelöscht). Eine unbekannte ID ist kein
+        Fehler. Prüfung und Löschen laufen in einer Transaktion."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        # Only allow deletion if it's not the Kasse account
-        cursor.execute('DELETE FROM Accounts WHERE ID = ? AND IsCash = 0', (account_id,))
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT IsCash FROM Accounts WHERE ID = ?', (account_id,)).fetchone()
+            if row is not None:
+                if row[0] == 1:
+                    raise DeleteRefused('Die Kasse lässt sich nicht löschen.')
+                used = reference_texts(conn, [
+                    ('SELECT COUNT(*) FROM Bookings WHERE Account_ID = ?', (account_id,), 'Buchung', 'Buchungen'),
+                    ("SELECT COUNT(*) FROM Invoices WHERE DocumentType = 'invoice' AND BankAccountId = ?",
+                     (account_id,), 'Rechnung', 'Rechnungen'),
+                    ("SELECT COUNT(*) FROM Invoices WHERE DocumentType = 'quote' AND BankAccountId = ?",
+                     (account_id,), 'Angebot', 'Angebote'),
+                ])
+                if used:
+                    raise DeleteRefused('Das Konto lässt sich nicht löschen, solange andere Daten auf es verweisen: '
+                                        + ', '.join(used) + '.')
+                conn.execute('DELETE FROM Accounts WHERE ID = ?', (account_id,))
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
     def fetch_bookings_range(self, date_from: str, date_to: str):
         """Buchungen eines Datumsbereichs für den DATEV-Export laden.
 

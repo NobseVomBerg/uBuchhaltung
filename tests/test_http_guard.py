@@ -294,6 +294,7 @@ _POST_LOCATION = {
     "/masterdata/bankaccounts/delete": r"/masterdata/bankaccounts",
     "/masterdata/contacts/delete": r"/masterdata/contacts",
     "/masterdata/numberranges/delete": r"/masterdata/numberranges",
+    "/masterdata/skr/add_standard": r"/masterdata/skr\?added=\d+",
     "/masterdata/skr/delete": r"/masterdata/skr\?msg=[^&]+&type=error",
     "/masterdata/skr/togglemenu": r"/masterdata/skr",
     "/quote/delete": r"/quote",

@@ -94,7 +94,11 @@ class WorkTimesMixin:
     def delete_worktime(self, worktime_id):
         """Arbeitszeit-Eintrag per ID löschen."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM WorkTimes WHERE ID = ?', (worktime_id,))
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute('DELETE FROM WorkTimes WHERE ID = ?', (worktime_id,))
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()

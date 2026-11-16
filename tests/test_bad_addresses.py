@@ -106,11 +106,15 @@ def test_the_not_found_messages_are_the_known_ones(server_port, books):
 
 
 # ── Löschaktionen (POST) ─────────────────────────────────────────────────────
+# Aktionen, die gar keine ID nennen (die ID-Prüfung gilt dort nicht; ``_post_action_routes``)
+ACTIONS_WITHOUT_ID = frozenset({'/masterdata/skr/add_standard'})
+
+
 def action(port, csrf, path_and_query):
     return post(port, path_and_query, headers={'Origin': own_origin(port)}, csrf=csrf)
 
 
-@pytest.mark.parametrize('path', sorted(_ACTION_PATHS))
+@pytest.mark.parametrize('path', sorted(_ACTION_PATHS - ACTIONS_WITHOUT_ID))
 def test_an_action_without_a_valid_id_is_400_and_changes_nothing(server_port, books, path):
     before = state(books.db, *TABLES)
     if path == '/receipts/delete':
@@ -125,6 +129,13 @@ def test_an_action_without_a_valid_id_is_400_and_changes_nothing(server_port, bo
         assert resp.text == 'Ungültige oder fehlende ID.', query
         assert resp.headers['Content-Type'] == 'text/plain; charset=utf-8'
     assert state(books.db, *TABLES) == before
+
+
+@pytest.mark.parametrize('path', sorted(ACTIONS_WITHOUT_ID))
+@pytest.mark.parametrize('query', ['', '?id=abc', '?id=', '?id=1.5', '?id=1'])
+def test_an_action_without_an_id_runs_whatever_the_id_parameter_says(server_port, books, path, query):
+    resp = action(server_port, books.csrf, path + query)
+    assert resp.status == 303 and resp.headers['Location'].startswith('/masterdata/skr?added=')
 
 
 def test_an_action_with_a_valid_id_still_runs(server_port, books):

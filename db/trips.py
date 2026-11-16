@@ -135,7 +135,11 @@ class TripsMixin:
     def delete_trip(self, trip_id):
         """Fahrt per ID löschen."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM Trips WHERE ID = ?', (trip_id,))
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute('DELETE FROM Trips WHERE ID = ?', (trip_id,))
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()

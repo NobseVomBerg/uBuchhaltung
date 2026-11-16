@@ -241,7 +241,7 @@ geführt und automatisch verknüpft.
 
 ### 1. Belege-Verwaltung (`/receipts`)
 - Übersicht aller Belege mit Nummer, Datum, Dateiname, Pfad und Zusatzinfos
-- Hinzufügen, Bearbeiten, Löschen
+- Hinzufügen, Bearbeiten, Löschen – gelöscht wird ein Beleg nur, solange keine Buchung, Anlage oder Fahrt auf ihn verweist
 - Many-to-Many-Verknüpfung mit Buchungen (BookingDocuments)
 - UNIQUE-Constraint in `BookingDocuments` auf `(Booking_ID, Document_ID)` verhindert doppelte Verknüpfungen
 
@@ -284,7 +284,7 @@ Zentrale Verwaltung aller Buchungstransaktionen:
 - Übersicht aller Bank-/Kassenkonten (Name, Inhaber, IBAN, BIC, BankName)
 - SKR-Kontozuordnung (`SKRAccount`) für automatische Doppik-Erkennung
 - Kasse als Sonderform (automatisch beim Start angelegt, nicht löschbar); eine neue Kasse führt das Kassenkonto 1600 (SKR04)
-- CRUD-Funktionalität
+- Anlegen, Bearbeiten, Löschen – ein Konto, auf das Buchungen, Rechnungen oder Angebote verweisen, lässt sich nicht löschen (die Seite nennt, was daran hängt)
 
 ### 4. Standardkontenrahmen (SKR) (`/masterdata/skr`)
 - Kontenrahmen-Auswahlliste beim Anlegen: SKR 03/04 (Deutschland), SKR 07 (Österreich),
@@ -292,6 +292,8 @@ Zentrale Verwaltung aller Buchungstransaktionen:
 - **Standard-Umschalter**: eigene Konten als Standard anlegbar; Standard-Konten werden
   nach Entfernen des Hakens editier- und löschbar (Referenz-Schutz bleibt)
 - **Automatisches Seeding**: Standard-SKR04-Konten beim DB-Erstellen aus `seed_data/`
+- **Standardkonten ergänzen**: Bringt eine neuere Version Standardkonten mit, die im Bestand fehlen, nennt die Seite sie und
+  legt sie auf Knopfdruck an – nie von selbst; vorhandene Konten bleiben unverändert
 - CRUD-Funktionalität, UNIQUE(Framework, AccountNumber), Menü-Sichtbarkeit je Konto
 
 ### 5. Kontakte (`/masterdata/contacts`)
@@ -302,6 +304,8 @@ Normalisiertes 3NF-Schema (6 Tabellen):
 - **Logo-Verwaltung**: File-Picker mit Live-Vorschau (PNG, JPG, GIF, WEBP bis 5 MB)
 - **Tabellen**: Contacts (Basis) + ContactAddresses (1:n) + CompanyDetails (1:1)
   + PersonDetails (1:1) + ContactTypeLinks (n:m) + PersonRoles (n:m)
+- **Löschen** nur, solange keine anderen Daten auf den Kontakt verweisen (Rechnungen, Angebote, Buchungen, Anlagen,
+  zugeordnete Personen, Arbeitszeiten, Fahrten) – die Seite nennt, was daran hängt
 
 ### 6. Rechnungserstellung (`/invoice`)
 Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
@@ -349,7 +353,8 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 
 ### 10. Artikelverzeichnis (`/masterdata/articles`)
 - Artikelstamm: Bezeichnung, Einheit, Nettopreis, Steuersatz
-- Active-Flag, direkte Integration in Rechnungen
+- Active-Flag, direkte Integration in Rechnungen; ein Artikel, der in Rechnungen oder Angeboten steht, lässt sich nicht
+  löschen, aber auf inaktiv setzen
 
 ### 11. Nummernkreise (`/masterdata/numberranges`)
 - Format: YY[Buchstabe][Präfix]### (z.B. 26R001)
@@ -358,7 +363,7 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 
 ### 12. Anlagenverzeichnis (`/assets`)
 Anlagenverwaltung mit AfA-Plan:
-- **BMF-Kategorien**: 30 vordefinierte Kategorien aus `seed_data/`
+- **BMF-Kategorien**: 30 vordefinierte Kategorien aus `seed_data/`; eine Kategorie, die Anlagen verwenden, lässt sich nicht löschen
 - **AfA-Methoden**: Linear (anteilig), Degressiv (25%), GWG (≤ 800 €)
 - **AfA-Plan mit Fortschreibung**: Gebuchte Jahre bleiben, wie sie gebucht sind (maßgeblich ist der Betrag der Buchung). Weicht ein gebuchtes Jahr vom Plan ab (Import, nachträglich geänderter Anschaffungswert oder Betrag einer Buchung), verteilt sich der Restbuchwert linear auf die Restnutzungsdauer (keine degressive Fortschreibung, keine GWG-Regel), und gebucht wird Jahr für Jahr der Reihe nach – die App rechnet so; ob das steuerlich passt, klärt das Steuerbüro
 - **Live-Vorschau**: JavaScript-basierte Echtzeit-AfA-Berechnung
@@ -509,9 +514,11 @@ Im Parallelbetrieb mit WISO Mein Büro lassen sich dessen Exporte wiederholt
 importieren (`/miscellaneous`); Bank↔Entry wird dabei automatisch verknüpft.
 
 ### Seed-Daten anpassen
-- Standard-Daten in `seed_data/*.json` (wirken nur bei leerer Tabelle)
+- Standard-Daten in `seed_data/*.json` (wirken nur bei leerer Tabelle; fehlende Standardkonten eines bestehenden Bestands
+  ergänzt die Seite des Kontenrahmens auf Knopfdruck)
 - Eigene SKR-Ergänzungen in `seed_data/private/` (in `.gitignore`, nicht im Repo)
-- Testdaten in `seed_data/test/` (werden nur bei `load_test_seed_data()` geladen)
+- Testdaten in `seed_data/test/` (werden nur bei `load_test_seed_data()` geladen – in der Oberfläche bei der
+  Ersteinrichtung und unter *Sonstiges*, dort nur in einen leeren Bestand ohne Buchungen, Rechnungen, Angebote und Anlagen)
 
 ---
 

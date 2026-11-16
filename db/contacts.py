@@ -8,6 +8,7 @@ import json
 from decimal import Decimal
 from money import to_minor, from_minor
 from . import datev_keys
+from .core import DeleteRefused, reference_texts
 
 
 class ContactsMixin:
@@ -295,9 +296,33 @@ class ContactsMixin:
         finally:
             conn.close()
     def delete_contact(self, contact_id):
-        """Delete contact (sub-tables are CASCADE deleted)."""
+        """Kontakt löschen – nur, wenn keine anderen Daten auf ihn verweisen (``DeleteRefused`` mit Klartext, nichts
+        gelöscht). Jeder Verweis sperrt, auch einer, den das Schema per CASCADE oder SET NULL mitnähme: Eine Person
+        löscht nie still ihre Arbeitszeiten und Fahrten. Prüfung und Löschen laufen in einer Transaktion. Die eigenen
+        Untertabellen des Kontakts (Adressen, Details, Typen, Rollen) gehen per CASCADE mit."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM Contacts WHERE ID = ?', (contact_id,))
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            used = reference_texts(conn, [
+                ("SELECT COUNT(*) FROM Invoices WHERE DocumentType = 'invoice' AND (CustomerId = ? OR OwnCompanyId = ?)",
+                 (contact_id, contact_id), 'Rechnung', 'Rechnungen'),
+                ("SELECT COUNT(*) FROM Invoices WHERE DocumentType = 'quote' AND (CustomerId = ? OR OwnCompanyId = ?)",
+                 (contact_id, contact_id), 'Angebot', 'Angebote'),
+                ('SELECT COUNT(*) FROM Bookings WHERE Contact_ID = ?', (contact_id,), 'Buchung', 'Buchungen'),
+                ('SELECT COUNT(*) FROM Assets WHERE Supplier_ID = ?', (contact_id,), 'Anlage', 'Anlagen'),
+                ('SELECT COUNT(*) FROM PersonDetails WHERE CompanyContactID = ? AND ContactID <> ?',
+                 (contact_id, contact_id), 'zugeordnete Person', 'zugeordnete Personen'),
+                ('SELECT COUNT(*) FROM WorkTimes WHERE PersonID = ? OR CustomerID = ?',
+                 (contact_id, contact_id), 'Arbeitszeit-Eintrag', 'Arbeitszeit-Einträge'),
+                ('SELECT COUNT(*) FROM Trips WHERE DriverID = ?', (contact_id,), 'Fahrt', 'Fahrten'),
+            ])
+            if used:
+                raise DeleteRefused('Der Kontakt lässt sich nicht löschen, solange andere Daten auf ihn verweisen: '
+                                    + ', '.join(used) + '.')
+            conn.execute('DELETE FROM Contacts WHERE ID = ?', (contact_id,))
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()

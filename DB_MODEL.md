@@ -77,7 +77,9 @@ uBuchhaltung verwaltet Buchführung für kleine/mittlere Unternehmen mit Fokus a
 
 ## Seed-Daten
 
-Beim Erstellen der Datenbank werden folgende Tabellen automatisch befüllt (nur wenn leer):
+Beim Erstellen der Datenbank werden folgende Tabellen automatisch befüllt (nur wenn leer). Standardkonten, die eine neuere
+Version mitbringt und die einem bestehenden Bestand fehlen, legt nur die Aktion „Standardkonten ergänzen“ auf der Seite des
+Kontenrahmens an (`Database.add_missing_standard_accounts`) – nie der Start:
 
 | Tabelle | Quelle | Einträge |
 |---------|--------|----------|
@@ -87,7 +89,7 @@ Beim Erstellen der Datenbank werden folgende Tabellen automatisch befüllt (nur 
 
 ### Testdaten (`seed_data/test/`)
 
-Nur über `load_test_seed_data()` geladen (Schaltfläche „Testdaten nachladen“ unter *Sonstiges*, „Testdaten laden“ auf der Einrichtungsseite `/setup`, außerdem der Demo-Modus ohne die Rechnungen). Idempotent (kein Doppel-Einfügen):
+Nur über `load_test_seed_data()` geladen („Testdaten laden“ unter *Sonstiges* – dort nur in einen leeren Bestand, `Database.stock_is_empty`: keine Buchungen, Rechnungen, Angebote und Anlagen –, „Testdaten laden“ auf der Einrichtungsseite `/setup`, außerdem der Demo-Modus ohne die Rechnungen). Die Funktion selbst ist idempotent (kein Doppel-Einfügen) und prüft den Bestand nicht:
 
 | Datei | Inhalt |
 |-------|--------|
@@ -1341,11 +1343,16 @@ Wörterbücher, je Gruppe einmal sortiert, das Umfeld über Halbierungssuche):
 
 1. **Foreign Keys:** `PRAGMA foreign_keys = ON`
 2. **ON DELETE CASCADE:** InvoiceItems, AssetDepreciations, ContactAddresses, CompanyDetails, PersonDetails
-   (nicht: `InvoiceCorrections`, `InvoiceDocumentVersions` – Protokoll und Fassungen überleben das Löschen eines Entwurfs)
+   (nicht: `InvoiceCorrections`, `InvoiceDocumentVersions` – Protokoll und Fassungen überleben das Löschen eines Entwurfs).
+   `WorkTimes.PersonID` und `Trips.DriverID` tragen im Schema ebenfalls CASCADE, `WorkTimes.CustomerID` und `Trips.DocumentID`
+   SET NULL – die App lässt es dazu nicht kommen: Kontakt, Artikel, Bankkonto, AfA-Kategorie und Beleg werden nur gelöscht,
+   solange nichts auf sie verweist (`db.DeleteRefused`, seit 2.3.8)
 3. **Snapshot-Prinzip:** Invoices kopieren Stammdaten bei Erstellung
 4. **Datum-Format:** ISO 8601 (YYYY-MM-DD)
 5. **Steuersätze:** Dezimal (0.19 = 19%)
 6. **Seeding:** `_seed_chart_of_accounts()`, `_seed_asset_categories()`, `_seed_tax_keys()` laden aus `seed_data/`-JSON
+   (nur in leere Tabellen; fehlende Standardkonten eines bestehenden Bestands: `missing_standard_accounts()` /
+   `add_missing_standard_accounts()`, nur auf Knopfdruck)
 7. **Geldbeträge:** ganze Zahlen (`INTEGER`) in Minor Units, 1 = 0,0001 € (`money.py`, kaufmännisch gerundet); Steuersätze, Mengen und Prozentwerte sind `REAL`
 
 ---

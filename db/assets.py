@@ -8,6 +8,7 @@ import os
 import json
 from decimal import Decimal
 from money import FACTOR, to_minor, from_minor, round_minor
+from .core import DeleteRefused, reference_texts
 from .matching import ASSET_ACCOUNT_RANGE, FORM_TRANSFER, PL_ACCOUNT_RANGE, depreciation_effect
 
 # Gebucht heißt: die Buchung gibt es – oder der WISO-Import hat das Jahr als gebucht
@@ -168,11 +169,24 @@ class AssetsMixin:
         conn.commit()
         conn.close()
     def delete_asset_category(self, category_id):
+        """AfA-Kategorie löschen – nicht, solange Anlagen sie verwenden (``DeleteRefused`` mit Klartext, nichts
+        gelöscht). Prüfung und Löschen laufen in einer Transaktion."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM AssetCategories WHERE ID = ?', (category_id,))
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            used = reference_texts(conn, [
+                ('SELECT COUNT(*) FROM Assets WHERE AssetCategory_ID = ?', (category_id,), 'Anlage', 'Anlagen'),
+            ])
+            if used:
+                raise DeleteRefused('Die Kategorie lässt sich nicht löschen, solange Anlagen sie verwenden: '
+                                    + used[0] + '.')
+            conn.execute('DELETE FROM AssetCategories WHERE ID = ?', (category_id,))
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
     def _generate_inventory_number(self, purchase_date, cursor):
         """Generate next inventory number INV-YY-### using the provided cursor.
 

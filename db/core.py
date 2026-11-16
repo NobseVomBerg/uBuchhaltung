@@ -29,6 +29,24 @@ class ForeignKeyError(sqlite3.IntegrityError):
     """
 
 
+class DeleteRefused(ValueError):
+    """Ein Datensatz lässt sich nicht löschen, weil andere Daten auf ihn verweisen. Die Meldung ist Klartext für den Nutzer."""
+
+
+def reference_texts(conn, checks):
+    """Die Verweise, die es gibt, als Texte („3 Rechnungen“, „1 Angebot“) – in der Reihenfolge von ``checks``.
+
+    ``checks`` ist eine Liste ``(sql, params, einzahl, mehrzahl)``: ``sql`` ein ``SELECT COUNT(*) …`` mit
+    Platzhaltern für ``params``. Ein Zähler von 0 ergibt keinen Text. Die Abfragen laufen auf ``conn``, also in
+    der Transaktion, in der danach gelöscht wird."""
+    texts = []
+    for sql, params, singular, plural in checks:
+        count = conn.execute(sql, params).fetchone()[0]
+        if count:
+            texts.append(f'{count} {singular if count == 1 else plural}')
+    return texts
+
+
 # Klartext-Namen der Verweise, die der Nutzer in Formularen auswählt (Schlüssel
 # klein geschrieben); alle übrigen erscheinen als Tabelle.Spalte.
 FK_LABELS = {
