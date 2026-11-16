@@ -666,8 +666,11 @@ kein Subagent darauf:
   Saldozeilen landen nicht im Verwendungszweck. `daterange` meldet auch ein Datum mehr als 31 Tage NACH dem Belegdatum
   (`MAX_DAYS_AFTER_DOCUMENT`). Die Belegwarnungen eines PDF gehen in die Vorschau (`upload_handler`), ein als Auszug
   erkanntes PDF ohne Umsätze wird als Warnung gemeldet statt als abgelegter Beleg. Die Texte stehen fest in
-  `FILE_WARN_LABELS` (`server/pages_transactions.py`). Die Saldosuche ist an echten Auszügen noch nicht bestätigt
-  (`docs/aufgaben.md`)
+  `FILE_WARN_LABELS` (`server/pages_transactions.py`). Die Saldosuche ist an 55 echten
+  Volksbank-Auszügen eines Kontos (2022–2026) bestätigt: beide Saldozeilen überall gefunden, die Rechnung geht auf den Cent
+  auf, kein Befund. Nicht gemessen: Soll-Saldo, einseitiger Auszug, Januar-Auszug mit Dezember-Buchungen (`docs/aufgaben.md`).
+  Reine Strichzeilen (Rahmenzeichen U+2500–U+257F, seit 2.3.13) gehören zu keiner Buchung – neuere Auszüge rahmen „neuer
+  Kontostand“ damit ein
 - Valuta, EndToEndId, Mandatsreferenz, Gläubiger-ID haben im Modell noch keinen Platz (Schemaänderung offen)
 - **Duplikate** = Konto + Buchungsdatum + Betrag, ohne Text (`check_booking_exists`: CAMT und PDF
   schreiben den Text verschieden, der WISO-Tabellenexport überschreibt ihn), zählbasiert **je Datei**:

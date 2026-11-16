@@ -72,8 +72,10 @@ Buchungskopf aus, hatte aber keinen lesbaren Betrag), `no_year` (Jahr des Auszug
 
 **Saldoprüfung für PDF-Auszüge:** `pdftext.find_balances()` sucht im Text die Zeilen „alter Kontostand …“ und
 „neuer Kontostand …“ (Betrag in derselben Zeile, dahinter `S`/`H`, `+`/`-` oder `EUR`); `plausibility.check_balance()`
-rechnet in ganzen Cent nach. Die Suche ist an keinem echten Auszug jeder Bank geprüft – findet sie die Zeilen nicht,
-steht `no_balance` am Beleg, nichts wird geraten.
+rechnet in ganzen Cent nach. Bestätigt ist die Suche an echten Volksbank-Auszügen eines Kontos (2022–2026); für andere
+Banken und Sonderfälle (Soll-Saldo, einseitiger Auszug) nicht – findet sie die Zeilen nicht, steht `no_balance` am Beleg,
+nichts wird geraten. Reine Strichzeilen (Rahmenzeichen), mit denen neuere Volksbank-Auszüge „neuer Kontostand“ einrahmen,
+gehören zu keiner Buchung.
 
 Die `boiler`-Muster greifen nur auf das **ganze** Feld: "Kontoauszug-Gebühr
 Januar" oder "Blattwerk Gartenbau" bleiben unauffällig, "Blatt 3" nicht. Und

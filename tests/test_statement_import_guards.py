@@ -456,6 +456,31 @@ def test_a_balance_line_between_the_details_is_skipped_and_the_rest_stays():
     assert transaction["reference"] == "Rechnung 4711"
 
 
+RULE = "\u2500" * 64
+
+
+def test_the_rule_lines_around_the_closing_balance_are_not_part_of_the_last_booking():
+    """Neuere Auszüge rahmen „neuer Kontostand“ mit zwei Strichzeilen ein – sie landeten im Verwendungszweck."""
+    text = ("30.01. 30.01. Lastschrift 10,00 S\nMuster AG\nRechnung 4711\n"
+            f"{RULE}\nneuer Kontostand vom 31.01.2025 1,00 H\n{RULE}\n")
+    (transaction,) = parse_text(text, 2025)
+    assert transaction["recipient"] == "Muster AG"
+    assert transaction["reference"] == "Rechnung 4711"
+
+
+@pytest.mark.parametrize("line", ["\u2500", "\u2501" * 10, "\u2500\u2550\u2500"])
+def test_a_line_of_box_drawing_characters_only_is_skipped(line):
+    (transaction,) = parse_text(f"30.01. 30.01. Lastschrift 10,00 S\nMuster AG\n{line}\nRechnung 4711\n", 2025)
+    assert transaction["reference"] == "Rechnung 4711"
+
+
+@pytest.mark.parametrize("line", ["-----", "\u2500 Rechnung \u2500", "_____", "====="])
+def test_other_lines_stay_in_the_reference(line):
+    """Nur reine Rahmenzeilen fallen weg – nichts, was ein Verwendungszweck sein könnte."""
+    (transaction,) = parse_text(f"30.01. 30.01. Lastschrift 10,00 S\nMuster AG\n{line}\nRechnung 4711\n", 2025)
+    assert line in transaction["reference"]
+
+
 def test_header_year_and_statement_year():
     assert header_year("Kontoauszug Nr. 3/2024 Blatt 1") == 2024
     assert header_year("erstellt am 05.01.2023") == 2023
