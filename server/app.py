@@ -1118,8 +1118,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     db, check_payments=qs.get("check_payments", [""])[0] == "1",
                     datev_confirm=qs.get("datev_export", [""])[0] == "confirm",
                     datev_from=qs.get("datev_from", [None])[0], datev_to=qs.get("datev_to", [None])[0],
-                    datev_check=qs.get("datev_check", [None])[0],
-                    testdata_refused=qs.get("testdata", [""])[0] == "refused"))
+                    datev_check=qs.get("datev_check", [None])[0]))
             elif self.path == "/receipts" or self.path.startswith("/receipts?"):
                 qs = self._query()
                 date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
@@ -1631,9 +1630,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     self.respond(status_code, "", headers={"Location": response})
                 else:
                     self.respond(status_code, response)
-            elif self.path == "/setup/load_testdata":
-                status_code, location = handlers.handle_load_testdata(db)
-                self.respond(status_code, "", headers={"Location": location})
             # ─────────────────────────────────────────────────────────────
             else:
                 self.respond(404, "Seite nicht gefunden.")

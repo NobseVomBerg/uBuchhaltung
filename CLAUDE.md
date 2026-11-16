@@ -75,6 +75,7 @@ kein Subagent darauf:
 
 ### Arbeitsregeln
 
+- Anrede: Der Owner wird geduzt („Du“), nie gesiezt – in jeder Antwort, auch in Zwischenständen und Rückfragen
 - Commits nur im Hauptthread, nicht in den Agents. Format
   `typ(bereich): deutsche Kurzbeschreibung`, z. B. `fix(einvoice): …`,
   `chore(version): 1.6.19 – …`
@@ -252,7 +253,7 @@ kein Subagent darauf:
   je Datenverzeichnis (`_exclusive`). Diese Reihenfolgen nie umdrehen. Nie gesichert, gelöscht oder überschrieben werden
   `backup/`, `users/`, `tests/` und `upload_tmp/` (`_EXCLUDED_DIRS`, eine Liste für alle drei Wege)
 
-### Stammdaten: Löschen, Testdaten, Standardkonten (seit 2.3.8)
+### Stammdaten: Löschen, Standardkonten, Testdaten (seit 2.3.8)
 - **Gelöscht wird nur, worauf nichts verweist:** `delete_contact`, `delete_article`, `delete_account`, `delete_asset_category`
   und `delete_receipt` prüfen die Verweise und löschen in EINER Transaktion (`BEGIN IMMEDIATE`); gibt es welche, werfen sie
   `db.DeleteRefused` (Klartext mit Zählern, Baustein `db.core.reference_texts`), und nichts ist gelöscht. Das gilt auch für
@@ -265,11 +266,9 @@ kein Subagent darauf:
   `script_json` + `appMsg` – nie 500. Eine neue Verweisspalte auf eine dieser Tabellen gehört in die Prüfung ihrer
   Löschmethode. Jede Löschmethode schließt ihre Verbindung auch im Fehlerfall (try/rollback/finally) – sonst bleibt die
   Datenbank gesperrt
-- **Testdaten nur in einen leeren Bestand:** `handle_load_testdata` lädt nur, wenn `Database.stock_is_empty()` gilt (keine
-  Zeile in `Bookings`, `Invoices`, `Assets`; Stammdaten zählen nicht), sonst `/miscellaneous?testdata=refused` – aus der Adresse
-  kommt nur das Kennzeichen, der Satz steht fest im Code (`db.seed.TESTDATA_REFUSED`). Die Seite *Sonstiges* zeigt den Knopf
-  (mit Rückfrage, `appConfirmPost`) nur bei leerem Bestand. `load_test_seed_data` selbst prüft nichts (Ersteinrichtung, Tests,
-  Demodaten)
+- **Testdaten lädt die Oberfläche nicht (seit 2.3.9):** Es gibt keinen Knopf und keine Route mehr (`POST /setup/load_testdata`
+  antwortet wie ein unbekannter Pfad), weder unter *Sonstiges* noch in der Ersteinrichtung – Beispieldaten gibt es im
+  Demo-Modus, der sie beim Start selbst lädt. `Database.load_test_seed_data` bleibt für Demo-Modus und Tests
 - **Standardkonten ergänzt nur der Nutzer:** `_seed_chart_of_accounts` füllt allein eine leere Tabelle – der Kontenrahmen eines
   bestehenden Bestands bleibt beim Öffnen, wie er ist (ein Standardkonto lässt sich nach Entfernen des Hakens löschen und käme
   sonst bei jedem Start wieder). Was dem Bestand gegenüber den Seed-Dateien fehlt (nur Standardkonten; weder ID noch
@@ -601,6 +600,22 @@ kein Subagent darauf:
 - CAMT (`importers/camt.py`): Storno-Richtung = `CdtDbtInd` (ISO 20022); Saldoprüfung exakt in
   Decimal/Minor Units, nie als float-Summe; DTD/Entities werden abgelehnt, ZIP nur im Speicher mit
   Grenzen, Beträge ≥ 10¹² sind Fehler – diese Schutzmaßnahmen nicht aufweichen
+- **Nichts still falsch oder unvollständig (seit 2.3.9):** Ein CAMT-Auszug, der irgendwo (Konto, gebuchter Umsatz, verwendeter
+  Saldo) eine andere Währung als Euro nennt, liefert keine Umsätze und nur den Befund `foreign_currency`
+  (`_statement_currency`, `BankStatement.currency`); ein Einzelbetrag einer Sammelbuchung in anderer Währung teilt nicht auf.
+  **Nur `TxDtls/Amt` teilt eine Sammelbuchung auf** (`_tx_amount`), die Beträge unter `AmtDtls` bewusst nicht: So las der
+  Import solche Auszüge immer, und ein erneuter Import fände seine Summenzeile sonst nicht wieder – nicht ändern, ohne die
+  Duplikaterkennung mitzuziehen. **Saldoprüfung für alle Formate:** `pdftext.find_balances` (Zeilen „alter/neuer
+  Kontostand“, lineare Laufzeit – der Text kommt aus hochgeladenen PDFs) und `plausibility.check_balance` (ganze Cent);
+  `balance` = stimmt nicht, `no_balance` = Saldo nicht gefunden (auch CAMT ohne OPBD/CLBD) – nichts wird geraten.
+  **Volksbank-PDF:** Das Jahr steht nur im Kopf (`header_year`, fehlt es: `no_year`); läge eine Buchung damit nach dem
+  Erstellungsdatum (`latest` = „erstellt am“), gilt das Vorjahr (`_booking_date`); ein Datum, das es nicht gibt, ist `None`
+  (Befund `date`, in der Vorschau `incomplete`) – nie das heutige. Ein Buchungskopf ohne lesbaren Betrag ergibt `unparsed`,
+  Saldozeilen landen nicht im Verwendungszweck. `daterange` meldet auch ein Datum mehr als 31 Tage NACH dem Belegdatum
+  (`MAX_DAYS_AFTER_DOCUMENT`). Die Belegwarnungen eines PDF gehen in die Vorschau (`upload_handler`), ein als Auszug
+  erkanntes PDF ohne Umsätze wird als Warnung gemeldet statt als abgelegter Beleg. Die Texte stehen fest in
+  `FILE_WARN_LABELS` (`server/pages_transactions.py`). Die Saldosuche ist an echten Auszügen noch nicht bestätigt
+  (`docs/aufgaben.md`)
 - Valuta, EndToEndId, Mandatsreferenz, Gläubiger-ID haben im Modell noch keinen Platz (Schemaänderung offen)
 - **Duplikate** = Konto + Buchungsdatum + Betrag, ohne Text (`check_booking_exists`: CAMT und PDF
   schreiben den Text verschieden, der WISO-Tabellenexport überschreibt ihn), zählbasiert **je Datei**:

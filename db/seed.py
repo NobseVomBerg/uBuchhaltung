@@ -16,10 +16,6 @@ from .matching import LEGACY_CASH_NUMBERS
 #: sich die Konstante der Importe später ändert.
 LEGACY_LIQUID_ACCOUNTS = frozenset({1460})
 
-#: Klartext, wenn „Testdaten laden“ an einem nicht leeren Bestand abgelehnt wird (``server.handlers.handle_load_testdata``
-#: und die Seite *Sonstiges* – dort als fester Satz, nie aus der Adresse)
-TESTDATA_REFUSED = 'Der Bestand ist nicht leer – Testdaten lassen sich nur in einen leeren Bestand laden.'
-
 #: Ein Konto der Seed-Dateien schreiben. Eine belegte ID oder ein belegtes Paar (Framework, AccountNumber) überspringt das
 #: ``OR IGNORE``: Das vorhandene Konto bleibt in jeder Spalte, wie es ist.
 _INSERT_CHART_ACCOUNT = '''
@@ -303,24 +299,12 @@ class SeedMixin:
         has_bank = cursor.fetchone()[0] > 0
         conn.close()
         return not has_own and not has_bank
-    def stock_is_empty(self) -> bool:
-        """True, wenn es keine Buchung, keine Rechnung oder kein Angebot (beide stehen in ``Invoices``) und keine
-        Anlage gibt – Stammdaten (Kontakte, Konten, Artikel …) zählen nicht. Nur in einen solchen Bestand lassen sich
-        über die Oberfläche Testdaten laden (``server.handlers.handle_load_testdata``). Rein lesend."""
-        conn = self._get_connection()
-        try:
-            return not conn.execute(
-                'SELECT EXISTS (SELECT 1 FROM Bookings) OR EXISTS (SELECT 1 FROM Invoices) '
-                'OR EXISTS (SELECT 1 FROM Assets)').fetchone()[0]
-        finally:
-            conn.close()
     def load_test_seed_data(self, include_invoices=True):
         """Lädt Testdaten aus seed_data/test/ (Kontakte, Bankkonten, Belege, Buchungen).
 
-        Idempotent: bereits vorhandene Einträge werden übersprungen. Prüft nicht, ob der Bestand leer ist – das
-        tut die Oberfläche (``handle_load_testdata``, ``stock_is_empty``); Tests und Demodaten rufen es direkt auf.
-        Dient sowohl dem Setup-Wizard ('Mit Testdaten starten') als auch
-        dem pytest-Fixture db_with_coa.
+        Idempotent: bereits vorhandene Einträge werden übersprungen. Prüft nicht, ob der Bestand leer ist. Die
+        Oberfläche bietet es nicht an; aufgerufen wird es vom Demo-Modus (``demo.py``, ``include_invoices=False``,
+        danach ``demo_seed``) und von den Tests (Fixture ``db_with_coa``).
         """
         seed_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'seed_data', 'test')
 

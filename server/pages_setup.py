@@ -67,12 +67,7 @@ def PageSetupStart(error_msg=None, username='admin') -> str:
 
 
 def PageSetup(db: Database, message: str = '') -> str:
-    """Einseitige Ersteinrichtungs-Seite.
-
-    Zwei Aktionen:
-    1. Manuelles Formular (Eigene Daten + Bankkonto) → POST /setup/save
-    2. Testdaten laden → POST /setup/load_testdata
-    """
+    """Einseitige Ersteinrichtungs-Seite: Formular für die eigenen Daten und das Bankkonto → POST /setup/save."""
     s = Header1()
     s+= Header2()
     s+= Header3()
@@ -175,15 +170,6 @@ def PageSetup(db: Database, message: str = '') -> str:
       <input type="submit" value="✅ Einrichtung abschließen" class="coloredButton bg-blue">
       &nbsp;&nbsp;
       <a href="/">Später einrichten →</a>
-    </form>
-  </div>
-
-  <div class="rectRounded">
-    <h3>🧪 Mit Testdaten starten</h3>
-    <p>Lädt eine Musterfirma und ein Testkonto vor – sinnvoll für Entwicklung und Tests.
-       Kann danach jederzeit in den Stammdaten angepasst werden.</p>
-    <form method="POST" action="/setup/load_testdata">
-      <input type="submit" value="🧪 Testdaten laden" class="coloredButton bg-orange">
     </form>
   </div>
 </div>

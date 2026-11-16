@@ -16,6 +16,7 @@ from typing import Optional
 
 from . import pdftext
 from .base import BankStatement, StatementImporter, StatementTransaction
+from .plausibility import check_balance
 
 
 class DkbImporter(StatementImporter):
@@ -40,4 +41,7 @@ class DkbImporter(StatementImporter):
         )
         for row in raw.get('transactions') or []:
             statement.transactions.append(StatementTransaction.from_dict(row))
+        if text is None:
+            text = pdftext.extract_text(filepath)
+        check_balance(statement, *pdftext.find_balances(text))
         return statement

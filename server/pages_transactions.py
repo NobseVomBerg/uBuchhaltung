@@ -844,7 +844,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             skipped_status: 'Nicht gebuchte Umsätze wurden übergangen.',
             bad_entry: 'Mindestens ein Umsatz war nicht lesbar und fehlt.',
             no_iban: 'Keine IBAN im Beleg erkannt.',
-            no_transactions: 'Keine Umsätze erkannt.'
+            no_transactions: 'Keine Umsätze erkannt.',
+            foreign_currency: 'Der Auszug lautet nicht auf Euro – seine Umsätze werden nicht importiert.',
+            no_balance: 'Anfangs- oder Schlusssaldo nicht gefunden – die Vollständigkeit des Auszugs ist nicht geprüft.',
+            unparsed: 'Mindestens eine Zeile des Auszugs ließ sich nicht lesen – Umsätze können fehlen.',
+            no_year: 'Das Jahr des Auszugs wurde nicht erkannt – bitte die Buchungsdaten prüfen.',
+            parse_error: 'Der Auszug ließ sich nicht vollständig lesen – Umsätze können fehlen.'
         };
 
         function statusBadge(status) {

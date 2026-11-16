@@ -93,7 +93,18 @@ def handle_file_upload(request_handler, db):
                         'bank_code': parsed_data.get('bank_code'),
                         'iban': parsed_data.get('iban'),
                         'document_date': parsed_data.get('document_date'),
+                        'currency': parsed_data.get('currency'),
+                        # Befunde zum ganzen Beleg (Saldo, nicht lesbare Zeile …): die Vorschau zeigt sie
+                        'warnings': list(parsed_data.get('warnings') or []),
                         'transactions': transactions,
+                    })
+                elif 'transactions' in parsed_data:
+                    # Als Kontoauszug erkannt, aber nichts gelesen: nicht wie ein abgelegter Beleg melden
+                    other_files.append({
+                        'filename': filename,
+                        'status': 'warning',
+                        'error': 'Kontoauszug erkannt, aber keine Umsätze gelesen.',
+                        'path': os.path.relpath(new_path, upload_dir),
                     })
                 else:
                     other_files.append({

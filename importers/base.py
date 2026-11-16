@@ -76,6 +76,8 @@ class BankStatement:
     transactions: List[StatementTransaction] = field(default_factory=list)
     #: Befunde, die den ganzen Beleg betreffen (keine Bewegungen, IBAN fehlt …)
     warnings: List[str] = field(default_factory=list)
+    #: ISO-4217-Code, den der Beleg selbst nennt (CAMT); ``None`` = keine Angabe oder keine lesbare
+    currency: Optional[str] = None
 
     def as_dict(self) -> dict:
         """Serialisieren im Format, das die Import-Vorschau erwartet."""
@@ -83,6 +85,7 @@ class BankStatement:
             'bank_code': self.bank_code,
             'iban': self.iban,
             'document_date': self.document_date,
+            'currency': self.currency,
             'transactions': [t.as_dict() for t in self.transactions],
             'warnings': list(self.warnings),
         }
