@@ -49,7 +49,20 @@ Version 2 automatisch um – siehe [Umzug auf Version 2](#umzug-auf-version-2).
 | `SMTP_USER` / `SMTP_PASSWORD` | *(leer)* | Zugangsdaten für den Versand; ohne sie lehnt die App den Versand mit einem Hinweis ab. |
 
 Sind `UBUCHHALTUNG_CERT` **und** `UBUCHHALTUNG_KEY` gesetzt, läuft der Server über HTTPS und
-setzt das `Secure`-Flag der Session-Cookies.
+setzt das `Secure`-Flag der Session-Cookies. Dasselbe gilt hinter einem Reverse-Proxy, der HTTPS
+entgegennimmt und das mit `X-Forwarded-Proto: https` meldet (nginx Proxy Manager, Caddy und Traefik
+tun das von sich aus; bei einem selbst geschriebenen nginx: `proxy_set_header X-Forwarded-Proto $scheme;`).
+
+**Anmeldung:** Nach fünf Fehlversuchen in Folge ist ein Benutzername 30 Sekunden gesperrt, mit jedem
+weiteren Fehlversuch doppelt so lange, höchstens 15 Minuten; eine gelungene Anmeldung setzt das zurück,
+ein Neustart des Servers ebenfalls. Die Sperre hängt am Namen, nicht an der Adresse des Aufrufers (hinter
+einem Proxy teilen sich alle dieselbe). Ein neues Passwort braucht mindestens 8 Zeichen; bestehende
+kürzere gelten weiter. Wird ein Passwort neu gesetzt oder die automatische Anmeldung ein- oder
+ausgeschaltet, enden die bestehenden Sitzungen.
+
+**Größe von Anfragen:** Der Server lehnt Anfragen ab, die größer sind als 64 KB (vor der Anmeldung),
+10 MB (Formulare) bzw. 200 MB (Uploads von Kontoauszügen, Belegen und WISO-Textexporten; Logos 5 MB).
+Ein Reverse-Proxy davor hat oft eine eigene, kleinere Grenze für Uploads (nginx: `client_max_body_size`).
 
 **E-Mail-Versand:** Die App verschlüsselt die Verbindung zum Mailserver immer (Port 465 mit TLS von
 Anfang an, jeder andere Port per STARTTLS) und prüft dessen Zertifikat samt Hostnamen; jede Verbindung hat

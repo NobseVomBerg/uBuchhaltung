@@ -213,6 +213,27 @@ kein Subagent darauf:
   Port 465 `SMTP_SSL`, sonst STARTTLS – ohne STARTTLS-Angebot wird nicht angemeldet). Es gibt keinen Schalter zum Abschalten; ein
   eigenes CA-Zertifikat kommt über `SSL_CERT_FILE` (`DEPLOYMENT.md`). Meldungen an den Nutzer nennen nie Exception-Text oder
   Serverpfade (der volle Fehler steht im Server-Log); Namen gehen über `formataddr` in den Kopf, CR/LF wird abgelehnt
+- **Anfragegrößen (seit 2.3.6, `server/app.py`):** Kein Body wird gelesen, bevor seine erklärte Länge geprüft ist
+  (`_declared_length`: genau EIN `Content-Length` aus ASCII-Ziffern, kein `Transfer-Encoding`; sonst 400). Grenzen: 64 KB ohne
+  angemeldeten Benutzer (`MAX_PREAUTH_BODY`: `/login`, `/logout`, Ersteinrichtung), 10 MB Formulare und JSON (`MAX_FORM_BODY`),
+  200 MB Uploads (`MAX_UPLOAD_BODY`: `/upload_receipts`, `/wiso/import`), Logos 5 MB; darüber 413, ungelesen, Verbindung zu
+  (`_refuse_body`). Neue Routen lesen ihren Body über `_read_body(limit)` bzw. prüfen vorher mit `_check_body_size` – nie
+  `rfile.read(int(Content-Length))`. `_drain_body` liest höchstens 1 MB weg, sonst schließt es die Verbindung
+- **Anmeldung (seit 2.3.6, `auth.attempt_login`):** Die Anmeldung im Browser geht nur darüber (`handlers.handle_login` →
+  `LoginOutcome`), nie direkt über `authenticate`. Nach fünf Fehlversuchen in Folge ist der Name (ohne Groß-/Kleinschreibung)
+  30 s gesperrt, je weiterem Fehlversuch doppelt, höchstens 900 s (429 mit `Retry-After`); während der Sperre wird nichts geprüft,
+  gezählt oder verlängert, auch nicht mit dem richtigen Passwort. Gezählt wird VOR dem Hash (parallele Versuche zählen mit).
+  Unbekannte Namen verhalten sich wie vorhandene (eigene, auf 10000 Einträge begrenzte Tabelle; Einträge vorhandener Benutzer
+  werden nie verdrängt). Höchstens zwei scrypt-Läufe gleichzeitig (`_HASH_SLOTS`; nach 10 s Warten 503). Alles im Speicher: Ein
+  Neustart hebt Sperren auf. Das Server-Log nennt bei einer Sperre die Adresse, nie den eingegebenen Namen (dort landet
+  gelegentlich ein Passwort). Mindestlänge beim Setzen eines Passworts: 8. `set_password` beendet die Sitzungen des Benutzers
+  (außer `keep_session`: wer sein eigenes ändert), das Ein- und Ausschalten der automatischen Anmeldung alle
+  (`delete_all_sessions`). Tests: `conftest` leert die Drosselung vor jedem Test (`reset_login_throttle`)
+- **`Secure`-Cookie:** bei eigenem TLS oder wenn ein Proxy `X-Forwarded-Proto: https` meldet (`forwarded_https`, erster Wert).
+  Der Kopf steuert nur das Cookie-Flag, sonst nichts
+- **IDs aus der Adresse** nur über `_int_param` (Filter: fehlt/ungültig = nicht angegeben), `_id_param` (Seite zu einem Objekt:
+  fehlt/ungültig = −1, also wie eine unbekannte ID) und `self._query()`; nie `int(qs[…][0])` oder `split('?')[1]`. Was nicht in
+  64 Bit passt, gilt als ungültig. Aktionen ohne gültige ID: 400 (`tests/test_bad_addresses.py` prüft `app.py` statisch)
 - **Fehlerantworten über `send_error`** (`server/app.py`): tragen immer Statuszeile und Schutz-Header, auch bei einer kaputten
   Anfragezeile – unabhängig vom Patch-Stand der Standardbibliothek (eine echte HTTP/0.9-Anfrage bekommt ihre normale Antwort
   weiter ohne Kopf)

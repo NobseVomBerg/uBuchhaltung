@@ -84,13 +84,59 @@ def _header_safe(value):
     return str(value).translate(_HEADER_UNSAFE).encode('latin-1', 'replace').decode('latin-1')
 
 
+# IDs sind Schlüssel in SQLite (64 Bit mit Vorzeichen): Was darüber hinausgeht, kann es nicht geben –
+# und ließe sich nicht einmal an eine Abfrage binden (OverflowError, also 500).
+_INT64_MIN, _INT64_MAX = -2 ** 63, 2 ** 63 - 1
+
+
 def _int_param(qs, name):
-    """Ganzzahliger Query-Parameter (``qs`` aus parse_qs) oder ``None``, wenn er fehlt
-    oder keine Ganzzahl ist."""
+    """Ganzzahliger Query-Parameter (``qs`` aus parse_qs) oder ``None``, wenn er fehlt,
+    keine Ganzzahl ist oder nicht in 64 Bit passt."""
     try:
-        return int(qs[name][0])
+        value = int(qs[name][0])
     except (KeyError, IndexError, ValueError):
         return None
+    return value if _INT64_MIN <= value <= _INT64_MAX else None
+
+
+def _int_params(qs, name):
+    """Alle ganzzahligen Werte eines Query-Parameters; was keine Ganzzahl ist, entfällt."""
+    values = []
+    for raw in qs.get(name, []):
+        try:
+            value = int(raw)
+        except ValueError:
+            continue
+        if _INT64_MIN <= value <= _INT64_MAX:
+            values.append(value)
+    return values
+
+
+def _id_param(qs, name='id'):
+    """ID einer Seite, die ein bestimmtes Objekt zeigt (bearbeiten, ansehen, herunterladen). Fehlt sie oder
+    ist sie keine Ganzzahl, gilt ``-1``: Das ist nie eine vorhandene ID, die Seite antwortet also wie auf
+    jede unbekannte ID (Meldung „nicht gefunden“ oder leere Maske), statt mit 500."""
+    value = _int_param(qs, name)
+    return -1 if value is None else value
+
+
+def forwarded_https(headers):
+    """Hat ein Reverse-Proxy die Anfrage über HTTPS entgegengenommen? Der erste Wert von
+    ``X-Forwarded-Proto`` (bei einer Kette der des Clients) muss ``https`` sein."""
+    return (headers.get('X-Forwarded-Proto') or '').split(',')[0].strip().lower() == 'https'
+
+
+# ── Obergrenzen für Anfragegrößen ────────────────────────────────────────────
+# Ohne Grenze liest jede Stelle so viele Bytes, wie Content-Length behauptet. Geprüft wird die erklärte
+# Länge, bevor etwas gelesen wird; was darüber liegt, wird mit 413 abgelehnt.
+MAX_PREAUTH_BODY = 64 * 1024              # ohne angemeldeten Benutzer: /login, /logout, /setup/start
+MAX_FORM_BODY = 10 * 1024 * 1024          # Formulare und JSON
+MAX_UPLOAD_BODY = 200 * 1024 * 1024       # /upload_receipts, /wiso/import
+MAX_DRAIN_BODY = 1024 * 1024              # was _drain_body höchstens wegliest (darüber: Verbindung schließen)
+
+
+def _size_text(limit):
+    return f"{limit // (1024 * 1024)} MB" if limit >= 1024 * 1024 else f"{limit // 1024} KB"
 
 
 # ── Schutz vor fremden Webseiten (CSRF, DNS-Rebinding) ───────────────────────
@@ -262,17 +308,89 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         # Cookie, Formular, Dateiname): CR/LF/NUL kommen nie in einen Header.
         super().send_header(_header_safe(keyword), _header_safe(value))
 
-    # ── Authentifizierung (TODO #4) ──────────────────────────────────────────
+    # ── Anfragekörper ────────────────────────────────────────────────────────
+    def _declared_length(self):
+        """Länge des Bodys laut ``Content-Length`` oder ``None``, wenn es keine gültige gibt: Der Header
+        fehlt, steht mehrfach da, ist nicht nur aus ASCII-Ziffern gebaut (kein Vorzeichen, kein Exponent, kein Leerraum
+        dazwischen) oder hat mehr als 15 Stellen – oder die Anfrage trägt ``Transfer-Encoding``
+        (``chunked`` kennt der Server nicht, die Länge stünde nirgends)."""
+        if self.headers.get('Transfer-Encoding') is not None:
+            return None
+        declared = self.headers.get_all('Content-Length') or []
+        if len(declared) != 1:        # fehlt – oder steht mehrfach da: Welche Länge gälte, wäre Auslegungssache
+            return None
+        raw = declared[0].strip()
+        if not (raw.isascii() and raw.isdigit()) or len(raw) > 15:
+            return None
+        return int(raw)
+
+    def _refuse_body(self, status, text, as_json=False):
+        """Eine Anfrage ablehnen, ohne ihren Body zu lesen. Die Verbindung wird danach geschlossen
+        (``Connection: close``): Sonst läse der Server die ungelesenen Bytes als nächste Anfrage."""
+        self.close_connection = True
+        if as_json:
+            self._respond_json(status, {'success': False, 'error': text},
+                               headers={"Connection": "close"})
+        else:
+            self.respond(status, f"<h1>{status}</h1><p>{text}</p>", headers={"Connection": "close"})
+
+    def _check_body_size(self, limit, as_json=False):
+        """Hat die Anfrage eine gültige Länge von höchstens ``limit`` Bytes? Sonst ist die Antwort schon
+        gesendet (400 bei fehlender oder ungültiger Länge, 413 bei zu großer) und der Rückgabewert
+        ``False``; der Body bleibt ungelesen."""
+        length = self._declared_length()
+        if length is None:
+            self._refuse_body(400, 'Ungültige Anfrage.', as_json)
+            return False
+        if length > limit:
+            self._refuse_body(413, f'Die Anfrage ist zu groß (höchstens {_size_text(limit)}).', as_json)
+            return False
+        return True
+
+    def _read_body(self, limit, as_json=False):
+        """Body der Anfrage als Bytes, höchstens ``limit`` Bytes lang. ``None``, wenn schon geantwortet
+        wurde (``_check_body_size``, oder es kamen weniger Bytes an, als die Länge versprach: 400)."""
+        if not self._check_body_size(limit, as_json):
+            return None
+        length = self._declared_length()
+        body = self.rfile.read(length)
+        if len(body) < length:
+            self._refuse_body(400, 'Ungültige Anfrage.', as_json)
+            return None
+        return body
+
+    def _decode_form(self, raw):
+        """Body eines Formulars als Text. Kein UTF-8: 400, Rückgabe ``None`` (der Body ist gelesen, die
+        Verbindung bleibt benutzbar)."""
+        try:
+            return raw.decode('utf-8')
+        except UnicodeDecodeError:
+            self.respond(400, "<h1>400</h1><p>Ungültige Anfrage.</p>")
+            return None
+
+    def _query(self):
+        """Query-String der Anfrage als ``{Name: [Werte]}`` – leer ohne ``?`` (und ohne ``#…``)."""
+        return parse_qs(urlsplit(self.path).query)
+
     def _drain_body(self):
         """Ungelesenen Request-Body verwerfen (verhindert Keep-Alive-Desync bei
-        POST-Redirects ohne vorherige Body-Verarbeitung)."""
+        POST-Redirects ohne vorherige Body-Verarbeitung). Was sich nicht sicher weglesen lässt – keine
+        gültige Länge, ``chunked`` oder mehr als ``MAX_DRAIN_BODY`` –, bleibt liegen, und die Verbindung
+        wird nach der Antwort geschlossen. Bei einer Anfrage ganz ohne Body (die meisten GET) gibt es
+        nichts zu tun."""
+        if self.headers.get('Content-Length') is None and self.headers.get('Transfer-Encoding') is None:
+            return
+        length = self._declared_length()
+        if length is None or length > MAX_DRAIN_BODY:
+            self.close_connection = True
+            return
         try:
-            length = int(self.headers.get('Content-Length', 0) or 0)
-            if length > 0:
+            if length:
                 self.rfile.read(length)
         except Exception:
             pass
 
+    # ── Authentifizierung (TODO #4) ──────────────────────────────────────────
     def _maybe_db(self):
         """Database() nur erzeugen, wenn sie auch genutzt werden darf: ``None``, solange
         die Installation nicht eingerichtet ist oder kein Benutzer gesetzt ist (kein
@@ -333,7 +451,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
 
     @staticmethod
     def _logout_cookie_header():
-        return "session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
+        parts = ["session=", "HttpOnly", "SameSite=Strict", "Path=/", "Max-Age=0"]
+        if userctx.tls_enabled():
+            parts.append("Secure")
+        return "; ".join(parts)
 
     def _require_admin(self):
         """True, wenn der angemeldete Nutzer Administrator ist; sonst wird bereits
@@ -379,7 +500,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         # Keep-Alive: derselbe Thread bedient mehrere Requests einer Verbindung –
         # daher den Kontext zu Beginn JEDES Requests leeren (kein User-Leak).
         userctx.clear()
-        userctx.set_tls(getattr(self.server, 'tls', False))
+        # HTTPS gilt, wenn der Server selbst TLS spricht oder ein Reverse-Proxy es meldet: Auch hinter einem
+        # TLS-Proxy soll das Sitzungs-Cookie Secure tragen.
+        userctx.set_tls(getattr(self.server, 'tls', False) or forwarded_https(self.headers))
         # Schreibende Anfragen nur von Seiten der App selbst – immer, zusätzlich zum
         # CSRF-Token.
         if self.command not in ('GET', 'HEAD') and not request_is_same_origin(self.headers):
@@ -485,8 +608,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         path = self.path.split('?', 1)[0]
         if path not in ('/login', '/logout'):
             return False
-        length = int(self.headers.get('Content-Length', 0) or 0)
-        post_data = parse_qs(self.rfile.read(length).decode('utf-8')) if length else {}
+        raw = self._read_body(MAX_PREAUTH_BODY)
+        if raw is None:
+            return True
+        post_body = self._decode_form(raw)
+        if post_body is None:
+            return True
+        post_data = parse_qs(post_body)
         if path == '/logout':
             # Mit gültiger Sitzung nur mit CSRF-Token. Ohne (abgelaufen, anderes Fenster) gibt
             # es nichts zu schützen und kein Token zu prüfen: nur zur Anmeldeseite.
@@ -496,13 +624,15 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             self.respond(303, "", headers={"Location": "/login",
                                             "Set-Cookie": self._logout_cookie_header()})
             return True
-        ok, username, err = handlers.handle_login(post_data)
-        if ok:
-            token = auth.create_session(username)
+        outcome = handlers.handle_login(post_data, client=self.client_address[0])
+        if outcome.ok:
+            token = auth.create_session(outcome.username)
             self.respond(303, "", headers={"Location": "/",
                          "Set-Cookie": self._session_cookie_header(token)})
         else:
-            self.respond(200, PageLogin(error_msg=err, username=username))
+            headers = {"Retry-After": str(outcome.retry_after)} if outcome.retry_after else None
+            self.respond(outcome.status, PageLogin(error_msg=outcome.error, username=outcome.username),
+                         headers=headers)
         return True
 
     def _send_invoice_document(self, invoice_id, kind, content_type,
@@ -570,72 +700,79 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         path = self.path.split('?', 1)[0]
         if path not in _ACTION_PATHS:
             return False
-        qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
+        qs = self._query()
+        # Pflichtparameter der Aktion: Fehlt einer oder ist er keine Ganzzahl (bei /receipts/delete: leer),
+        # kommt 400 – wie bei /invoice/delete, nicht KeyError/ValueError und damit 500.
+        item_id = _int_param(qs, "id")
+        doc_id, booking_id = _int_param(qs, "doc_id"), _int_param(qs, "booking_id")
+        number = qs.get("number", [""])[0]
+        if path == "/receipts/delete":
+            invalid = not number
+        elif path == "/documents/unlink":
+            invalid = doc_id is None or booking_id is None
+        else:
+            invalid = item_id is None
+        if invalid:
+            self.respond(400, "Ungültige oder fehlende ID.", content_type="text/plain; charset=utf-8")
+            return True
         if path == "/masterdata/articles/delete":
-            db.delete_article(int(qs["id"][0]))
+            db.delete_article(item_id)
             self.respond(303, "", headers={"Location": "/masterdata/articles"})
         elif path == "/masterdata/contacts/delete":
-            db.delete_contact(int(qs["id"][0]))
+            db.delete_contact(item_id)
             self.respond(303, "", headers={"Location": "/masterdata/contacts"})
         elif path == "/masterdata/skr/delete":
-            status_code, location = handlers.handle_delete_skr(db, int(qs["id"][0]))
+            status_code, location = handlers.handle_delete_skr(db, item_id)
             self.respond(status_code, "", headers={"Location": location})
         elif path == "/masterdata/skr/togglemenu":
-            status_code, location = handlers.handle_toggle_skr_menu(db, int(qs["id"][0]))
+            status_code, location = handlers.handle_toggle_skr_menu(db, item_id)
             self.respond(status_code, "", headers={"Location": location})
         elif path == "/masterdata/bankaccounts/delete":
-            db.delete_account(int(qs["id"][0]))
+            db.delete_account(item_id)
             self.respond(303, "", headers={"Location": "/masterdata/bankaccounts"})
         elif path == "/receipts/delete":
-            db.delete_receipt(qs["number"][0])
+            db.delete_receipt(number)
             self.respond(303, "", headers={"Location": "/receipts"})
         elif path == "/transactions/delete":
-            status_code, location = handlers.handle_delete_transaction(db, int(qs["id"][0]))
+            status_code, location = handlers.handle_delete_transaction(db, item_id)
             self.respond(status_code, "", headers={"Location": location})
         elif path == "/documents/unlink":
-            doc_id = int(qs["doc_id"][0])
-            booking_id = int(qs["booking_id"][0])
             db.unlink_booking_from_document(booking_id, doc_id)
             self.respond(303, "", headers={"Location": self._local_referer('/transactions')})
         elif path == "/masterdata/numberranges/delete":
-            db.delete_number_range(int(qs["id"][0]))
+            db.delete_number_range(item_id)
             self.respond(303, "", headers={"Location": "/masterdata/numberranges"})
         elif path == "/assets/delete":
-            asset_id = int(qs["id"][0])
             try:
-                db.delete_asset(asset_id)
+                db.delete_asset(item_id)
                 location = "/assets"
             except ValueError as exc:      # gebuchte AfA oder Unteranlagen: nicht löschen
-                location = f"/assets/view?id={asset_id}&err={quote(str(exc), safe='')}"
+                location = f"/assets/view?id={item_id}&err={quote(str(exc), safe='')}"
             self.respond(303, "", headers={"Location": location})
         elif path == "/asset_categories/delete":
-            db.delete_asset_category(int(qs["id"][0]))
+            db.delete_asset_category(item_id)
             self.respond(303, "", headers={"Location": "/asset_categories"})
         elif path == "/worktime/delete":
-            db.delete_worktime(int(qs["id"][0]))
+            db.delete_worktime(item_id)
             person_id = qs['person'][0] if qs.get('person') else ''
             date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
             self.respond(303, "", headers={"Location":
                 f"/worktime?person={quote(str(person_id), safe='')}&from={quote(date_from, safe='')}&to={quote(date_to, safe='')}"})
         elif path == "/trips/delete":
-            db.delete_trip(int(qs["id"][0]))
+            db.delete_trip(item_id)
             person_id = qs['person'][0] if qs.get('person') else ''
             date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
             self.respond(303, "", headers={"Location":
                 f"/trips?person={quote(str(person_id), safe='')}&from={quote(date_from, safe='')}&to={quote(date_to, safe='')}"})
         elif path == "/quote/delete":
-            db.delete_quote(int(qs["id"][0]))
+            db.delete_quote(item_id)
             self.respond(303, "", headers={"Location": "/quote"})
         elif path == "/invoice/delete":
-            invoice_id = _int_param(qs, "id")
-            if invoice_id is None:
-                self.respond(400, "Ungültige oder fehlende ID.", content_type="text/plain; charset=utf-8")
+            status_code, location = handlers.handle_delete_invoice(db, item_id)
+            if status_code == 404:
+                self.respond(404, location, content_type="text/plain; charset=utf-8")
             else:
-                status_code, location = handlers.handle_delete_invoice(db, invoice_id)
-                if status_code == 404:
-                    self.respond(404, location, content_type="text/plain; charset=utf-8")
-                else:
-                    self.respond(status_code, "", headers={"Location": location})
+                self.respond(status_code, "", headers={"Location": location})
         return True
 
     def _post_generate_document(self, db, route):
@@ -691,18 +828,11 @@ class SimpleWebServer(BaseHTTPRequestHandler):
 
         Ein unbrauchbarer Body – fehlende oder ungültige Content-Length, kein JSON-Objekt,
         fehlende Pflichtfelder (``handlers.InvalidRequest``) – wird mit 400 „Ungültige Anfrage.“
-        beantwortet, ein unerwarteter Fehler mit 500. Der Traceback bleibt im Server-Log; die
-        Verbindung bricht nie ohne Antwort ab."""
-        try:
-            length = int(self.headers['Content-Length'])
-            if length < 0:
-                raise ValueError('negative Länge')
-        except (TypeError, ValueError):
-            # Ein etwaiger Body bleibt ungelesen: Verbindung danach nicht weiterverwenden
-            self._respond_json(400, {'success': False, 'error': 'Ungültige Anfrage.'},
-                               headers={"Connection": "close"})
+        beantwortet, ein zu großer (mehr als ``MAX_FORM_BODY``) mit 413, ein unerwarteter Fehler mit
+        500. Der Traceback bleibt im Server-Log; die Verbindung bricht nie ohne Antwort ab."""
+        post_body = self._read_body(MAX_FORM_BODY, as_json=True)
+        if post_body is None:             # Antwort gesendet, ein etwaiger Body bleibt ungelesen
             return
-        post_body = self.rfile.read(length)
         try:
             if path in ("/invoice/save", "/invoice/send-email", "/quote/save"):
                 handler = {"/invoice/save": handlers.handle_invoice_save,
@@ -755,10 +885,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 if db.is_first_run():
                     self.respond(303, "", headers={"Location": "/setup"})
                     return
-                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                qs = self._query()
                 date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
-                acct_raw  = qs.get('acct', [])
-                account_ids = [int(a) for a in acct_raw] if acct_raw else None
+                account_ids = _int_params(qs, 'acct') or None
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
                 self.respond(200, PageDashboard(db, date_from, date_to, account_ids), headers=hdrs)
             elif self.path == "/setup":
@@ -772,37 +901,32 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(200, pages.PageAbout())
             elif self.path == "/invoice" or self.path.startswith("/invoice?"):
                 # Parse query parameters for filters
-                query_components = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
+                query_components = self._query()
                 # Zeitraum aus Query/Cookie/Default – gilt seitenübergreifend
                 date_from, date_to, set_cookie = resolve_period(query_components, self.headers.get('Cookie'))
                 filters = {'date_from': date_from, 'date_to': date_to}
-                invoice_id = None
                 if 'search' in query_components:
                     filters['search'] = query_components['search'][0]
                 if 'status' in query_components:
                     filters['status'] = query_components['status'][0]
-                if 'id' in query_components:
-                    invoice_id = int(query_components['id'][0])
+                invoice_id = _int_param(query_components, 'id')
                 # "Als neu kopieren": Formular mit den Daten der Quellrechnung,
                 # aber als neue Rechnung (todo #4)
-                copy_from = (int(query_components['copy_from'][0])
-                             if 'copy_from' in query_components else None)
+                copy_from = _int_param(query_components, 'copy_from')
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
                 self.respond(200, PageInvoice(db, filters, invoice_id, copy_from=copy_from,
                                               err=query_components.get('err', [None])[0]),
                              headers=hdrs)
             elif self.path.startswith("/invoice/view") or self.path.startswith("/invoice/edit"):
-                query_components = parse_qs(self.path.split('?')[1])
-                invoice_id = int(query_components["id"][0])
+                query_components = self._query()
+                invoice_id = _id_param(query_components)
                 self.respond(200, PageInvoice(
                     db, {}, invoice_id,
                     payment_error=query_components.get("payment_error", [None])[0]))
             elif self.path.startswith("/invoice/xml_download"):
                 # Abgelegte XRechnung ausliefern – nur herunterladen, nie frisch erzeugen
                 # (todo #3); eine Route, die das XML neu baute, gibt es nicht.
-                query_components = parse_qs(self.path.split('?')[1])
-                self._send_invoice_document(int(query_components["id"][0]), 'xml',
-                                            "application/xml")
+                self._send_invoice_document(_id_param(self._query()), 'xml', "application/xml")
                 return
             elif self.path.split('?', 1)[0] == "/invoice/version_download":
                 # Eine abgelegte Fassung (Ordner Fassungen/<ID>) ausliefern – rein lesend; der Dateiname
@@ -814,8 +938,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path.startswith("/invoice/pdf_download"):
                 # Abgelegtes Rechnungs-PDF ausliefern – nur herunterladen, nicht
                 # neu erzeugen (todo #3). inline=1 zeigt es im Browser an.
-                query_components = parse_qs(self.path.split('?')[1])
-                invoice_id = int(query_components["id"][0])
+                query_components = self._query()
+                invoice_id = _id_param(query_components)
                 disposition = 'inline' if query_components.get('inline') else 'attachment'
                 self._send_invoice_document(invoice_id, 'pdf', "application/pdf",
                                             disposition=disposition)
@@ -824,23 +948,22 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(200, pages.PageReminders(db))
             # ── Angebote (Quotes) ─────────────────────────────────────────
             elif self.path == "/quote" or self.path.startswith("/quote?"):
-                qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
+                qs = self._query()
                 filters = {}
                 if 'search' in qs:
                     filters['search'] = qs['search'][0]
                 if 'status' in qs:
                     filters['status'] = qs['status'][0]
-                quote_id = int(qs['id'][0]) if 'id' in qs else None
+                quote_id = _int_param(qs, 'id')
                 self.respond(200, PageQuote(db, filters, quote_id, err=qs.get('err', [None])[0]))
             elif self.path.startswith("/quote/edit"):
-                qs = parse_qs(self.path.split('?')[1])
-                self.respond(200, PageQuote(db, {}, int(qs["id"][0])))
+                self.respond(200, PageQuote(db, {}, _id_param(self._query())))
             elif self.path.startswith("/quote/pdf_download"):
                 # Abgelegte Angebots-PDF ausliefern – wie bei Rechnungen nie neu erzeugt.
                 # inline=1 zeigt sie im Browser an (Viewer-Tab nach dem Erzeugen).
-                qs = parse_qs(self.path.split('?')[1])
+                qs = self._query()
                 disposition = 'inline' if qs.get('inline') else 'attachment'
-                self._send_invoice_document(int(qs["id"][0]), 'pdf', "application/pdf",
+                self._send_invoice_document(_id_param(qs), 'pdf', "application/pdf",
                                             disposition=disposition, doc_type='quote')
                 return
             elif self.path == "/dashboard":
@@ -853,30 +976,28 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
                 self.respond(200, PageArticles(db, error=qs.get('error', [None])[0]))
             elif self.path.startswith("/masterdata/articles/edit"):
-                query_components = parse_qs(self.path.split('?')[1])
-                article_id = int(query_components["id"][0])
-                self.respond(200, PageArticleEdit(db, article_id))
+                self.respond(200, PageArticleEdit(db, _id_param(self._query())))
             # Contacts
             elif self.path == "/masterdata/contacts" or self.path.startswith("/masterdata/contacts?"):
-                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                qs = self._query()
                 c_type   = qs.get('type',   [None])[0]
                 c_entity = qs.get('entity', [None])[0]
                 c_error  = qs.get('error',  [None])[0]
                 self.respond(200, PageContacts(db, contact_type_filter=c_type,
                                                entity_type_filter=c_entity, error_msg=c_error))
             elif self.path.startswith("/masterdata/contacts/new"):
-                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                qs = self._query()
                 entity  = qs.get('entity', ['company'])[0]
                 c_error = qs.get('error',  [None])[0]
                 self.respond(200, PageContactNew(db, entity_type=entity, error_msg=c_error))
             elif self.path.startswith("/masterdata/contacts/edit"):
-                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
-                contact_id = int(qs["id"][0])
+                qs = self._query()
+                contact_id = _id_param(qs)
                 c_error    = qs.get('error', [None])[0]
                 self.respond(200, PageContactEdit(db, contact_id, error_msg=c_error))
             elif self.path.startswith("/masterdata/contacts/check-abbreviation"):
                 import json as _json
-                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                qs = self._query()
                 value = qs.get('value', [''])[0].strip().upper()
                 exclude_id = qs.get('exclude_id', [None])[0]
                 if not value:
@@ -892,19 +1013,15 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 msg_type = qs.get('type', ['info'])[0]
                 self.respond(200, PageSkr(db, msg=msg, msg_type=msg_type))
             elif self.path.startswith("/masterdata/skr/edit"):
-                query_components = parse_qs(self.path.split('?')[1])
-                id = int(query_components["id"][0])
-                self.respond(200, PageSkrEdit(db, id))
+                self.respond(200, PageSkrEdit(db, _id_param(self._query())))
             elif self.path.startswith("/masterdata/skr/copy"):
-                query_components = parse_qs(self.path.split('?')[1])
-                id = int(query_components["id"][0])
-                self.respond(200, PageSkr(db, copy_from_id=id))
+                self.respond(200, PageSkr(db, copy_from_id=_id_param(self._query())))
             # Bank Accounts
             elif self.path == "/masterdata/bankaccounts":
                 self.respond(200, PageBankAccounts(db))
             elif self.path.startswith("/masterdata/bankaccounts/edit"):
-                query_components = parse_qs(self.path.split('?')[1])
-                account_id = int(query_components["id"][0])
+                query_components = self._query()
+                account_id = _id_param(query_components)
                 self.respond(200, PageBankAccountEdit(
                     db, account_id, error=query_components.get("error", [None])[0]))
             # ──────────────────────────────────────────────────────────────
@@ -916,27 +1033,25 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     datev_from=qs.get("datev_from", [None])[0], datev_to=qs.get("datev_to", [None])[0],
                     datev_check=qs.get("datev_check", [None])[0]))
             elif self.path == "/receipts" or self.path.startswith("/receipts?"):
-                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                qs = self._query()
                 date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
                 self.respond(200, PageReceipts(db, date_from, date_to), headers=hdrs)
             elif self.path.startswith("/receipts/edit"):
-                query_components = parse_qs(self.path.split('?')[1])
-                number = query_components["number"][0]
+                number = self._query().get("number", [""])[0]
                 self.respond(200, PageReceiptEdit(db, number))
             elif self.path == "/transactions" or self.path.startswith("/transactions?"):
-                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                qs = self._query()
                 date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
-                from_invoice = int(qs["from_invoice"][0]) if qs.get("from_invoice") else None
                 self.respond(200, PageTransactions(db, date_from=date_from, date_to=date_to,
-                                                   from_invoice=from_invoice,
+                                                   from_invoice=_int_param(qs, "from_invoice"),
                                                    revenue_coa_id=_int_param(qs, "revenue_coa_id"),
                                                    err=qs.get("err", [None])[0]),
                              headers=hdrs)
             elif self.path.startswith("/transactions/edit"):
-                query_components = parse_qs(self.path.split('?')[1])
-                transaction_id = int(query_components["id"][0])
+                query_components = self._query()
+                transaction_id = _id_param(query_components)
                 date_from, date_to, _ = resolve_period(query_components, self.headers.get('Cookie'))
                 self.respond(200, PageTransactions(db, edit_transaction_id=transaction_id,
                                                    date_from=date_from, date_to=date_to))
@@ -948,8 +1063,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 qs = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
                 self.respond(200, PageNumberRanges(db, err=qs.get('err', [None])[0]))
             elif self.path.startswith("/masterdata/numberranges/edit"):
-                query_components = parse_qs(self.path.split('?')[1])
-                range_id = int(query_components["id"][0])
+                query_components = self._query()
+                range_id = _id_param(query_components)
                 self.respond(200, PageNumberRangesEdit(db, range_id, err=query_components.get('err', [None])[0]))
             # ── Assets / Anlagenverzeichnis ───────────────────────────────
             elif self.path == "/assets" or self.path.startswith("/assets?"):
@@ -959,29 +1074,20 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     status_filter = qc.get('status', [''])[0]
                 self.respond(200, PageAssets(db, status_filter=status_filter))
             elif self.path == "/assets/new" or self.path.startswith("/assets/new?"):
-                parent_id = None
-                if '?' in self.path:
-                    qc = parse_qs(self.path.split('?', 1)[1])
-                    pid = qc.get('parent_id', [None])[0]
-                    parent_id = int(pid) if pid else None
-                self.respond(200, PageAssetEdit(db, asset_id=None, parent_id=parent_id))
+                self.respond(200, PageAssetEdit(db, asset_id=None,
+                                                parent_id=_int_param(self._query(), 'parent_id')))
             elif self.path.startswith("/assets/edit"):
-                qc = parse_qs(self.path.split('?', 1)[1])
-                asset_id = int(qc["id"][0])
-                self.respond(200, PageAssetEdit(db, asset_id=asset_id))
+                self.respond(200, PageAssetEdit(db, asset_id=_id_param(self._query())))
             elif self.path.startswith("/assets/view"):
-                qc = parse_qs(self.path.split('?', 1)[1])
-                asset_id = int(qc["id"][0])
-                self.respond(200, PageAssetView(db, asset_id, err=qc.get("err", [None])[0]))
+                qc = self._query()
+                self.respond(200, PageAssetView(db, _id_param(qc), err=qc.get("err", [None])[0]))
             elif self.path == "/asset_categories" or self.path.startswith("/asset_categories?"):
                 self.respond(200, PageAssetCategories(db))
             elif self.path.startswith("/asset_categories/edit"):
-                qc = parse_qs(self.path.split('?', 1)[1])
-                cat_id = int(qc["id"][0])
-                self.respond(200, PageAssetCategoryEdit(db, cat_id))
+                self.respond(200, PageAssetCategoryEdit(db, _id_param(self._query())))
             # ── Zeiten / Arbeitszeiten ────────────────────────────────────
             elif self.path == "/worktime" or self.path.startswith("/worktime?"):
-                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                qs = self._query()
                 date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
                 person_id = _int_param(qs, 'person')
                 error_msg = qs['error'][0] if qs.get('error') else None
@@ -990,14 +1096,14 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                                                 date_from=date_from, date_to=date_to,
                                                 error_msg=error_msg), headers=hdrs)
             elif self.path.startswith("/worktime/edit"):
-                qs = parse_qs(self.path.split('?')[1])
-                edit_id = int(qs["id"][0])
+                qs = self._query()
+                edit_id = _id_param(qs)
                 person_id = _int_param(qs, 'person')
                 date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
                 self.respond(200, PageWorkTimes(db, person_id=person_id, date_from=date_from,
                                                 date_to=date_to, edit_id=edit_id))
             elif self.path.startswith("/worktime/pdf"):
-                qs = parse_qs(self.path.split('?')[1])
+                qs = self._query()
                 person_id = _int_param(qs, "person")
                 if person_id is None:
                     self.respond(400, "Ungültige oder fehlende Person.",
@@ -1025,7 +1131,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path == "/users" or self.path.startswith("/users?"):
                 if not self._require_admin():
                     return
-                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                qs = self._query()
                 info = qs['info'][0] if qs.get('info') else None
                 err = qs['err'][0] if qs.get('err') else None
                 csrf = auth.csrf_for(self._csrf_key())
@@ -1034,7 +1140,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                                             auto_login_user=auth.auto_login_user()))
             # ── Zeiten / Fahrten ──────────────────────────────────────────
             elif self.path == "/trips" or self.path.startswith("/trips?"):
-                qs = parse_qs(self.path.split('?')[1]) if '?' in self.path else {}
+                qs = self._query()
                 date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
                 person_id = _int_param(qs, 'person')
                 error_msg = qs['error'][0] if qs.get('error') else None
@@ -1043,8 +1149,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                                             date_from=date_from, date_to=date_to,
                                             error_msg=error_msg), headers=hdrs)
             elif self.path.startswith("/trips/edit"):
-                qs = parse_qs(self.path.split('?')[1])
-                edit_id = int(qs["id"][0])
+                qs = self._query()
+                edit_id = _id_param(qs)
                 person_id = _int_param(qs, 'person')
                 date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
                 self.respond(200, PageTrips(db, person_id=person_id, date_from=date_from,
@@ -1192,14 +1298,18 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             self._post_generate_document(db, route)
             return
 
-        # Handle file upload separately
+        # Handle file upload separately (der Handler liest den Body selbst: Größe vorher prüfen)
         if self.path == "/upload_receipts":
+            if not self._check_body_size(MAX_UPLOAD_BODY, as_json=True):
+                return
             status_code, response = upload_handler.handle_file_upload(self, db)
             self.respond(status_code, response, content_type="application/json")
             return
 
         # Handle WISO CSV import (multipart file upload)
         if self.path == "/wiso/import":
+            if not self._check_body_size(MAX_UPLOAD_BODY):
+                return
             status_code, location = handlers.handle_wiso_import(self, db)
             self.respond(status_code, "", headers={"Location": location})
             return
@@ -1221,9 +1331,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             self._post_json_route(self.path)
             return
 
-        # Parse regular form data
-        content_length = int(self.headers['Content-Length'])
-        post_body = self.rfile.read(content_length).decode('utf-8')
+        # Parse regular form data (vor der Ersteinrichtung gibt es noch niemanden, der angemeldet wäre)
+        raw = self._read_body(MAX_PREAUTH_BODY if getattr(self, '_needs_setup', False) else MAX_FORM_BODY)
+        if raw is None:
+            return
+        post_body = self._decode_form(raw)
+        if post_body is None:
+            return
         post_data = parse_form(post_body)
 
         # ── CSRF für alle Formular-Routen (Feld 'csrf' oder Header) ───────────
@@ -1251,7 +1365,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 handler = {
                     "/users/create": handlers.handle_user_create,
                     "/users/delete": handlers.handle_user_delete,
-                    "/users/reset-password": handlers.handle_user_reset_password,
+                    "/users/reset-password": lambda data: handlers.handle_user_reset_password(
+                        data, self._session_token()),
                     "/users/toggle-admin": handlers.handle_user_toggle_admin,
                 }[self.path]
                 location = handler(post_data)
@@ -1442,6 +1557,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if headers:
             for key, value in headers.items():
                 self.send_header(key, value)
+        # Wird die Verbindung nach dieser Antwort geschlossen (Body ungelesen, ``_drain_body``), sagt der
+        # Server es auch – sonst hielte der Client sie für offen.
+        if self.close_connection and not any(key.lower() == "connection" for key in (headers or {})):
+            self.send_header("Connection", "close")
         self.send_header("Content-type", content_type)
         encoded = content.encode("utf-8") if content else b""
         self.send_header("Content-Length", str(len(encoded)))

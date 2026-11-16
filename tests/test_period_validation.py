@@ -352,7 +352,10 @@ def test_send_header_filters_name_and_value(name, value, expected):
     pytest.param({'person': ['5', 'abc']}, 5, id='erster-Wert-zaehlt-gueltig'),
     pytest.param({'id': ['5']}, None, id='anderer-Name'),
     pytest.param({'person': [SCRIPT]}, None, id='Skript'),
-    pytest.param({'person': ['9' * 100]}, int('9' * 100), id='hundert-Ziffern'),
+    pytest.param({'person': ['9' * 100]}, None, id='hundert-Ziffern'),
+    pytest.param({'person': [str(2 ** 63 - 1)]}, 2 ** 63 - 1, id='groesste-ID'),
+    pytest.param({'person': [str(2 ** 63)]}, None, id='passt-nicht-in-64-Bit'),
+    pytest.param({'person': [str(-2 ** 63 - 1)]}, None, id='passt-nicht-in-64-Bit-negativ'),
 ])
 def test_int_param(qs, expected):
     assert _int_param(qs, 'person') == expected

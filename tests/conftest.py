@@ -85,6 +85,14 @@ def _neutral_app_mode(_isolated_data_root):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_login_throttle():
+    """Die Sperre nach Fehlversuchen (``auth.attempt_login``) lebt im Speicher des Prozesses: Ohne Rücksetzen
+    sperrten sich Tests, die denselben Benutzernamen mehrfach falsch anmelden, gegenseitig."""
+    auth.reset_login_throttle()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _neutral_environment(monkeypatch):
     """Umgebungsvariablen der App aus dem Aufruf heraushalten: Eine in der Shell des
     Entwicklers gesetzte Freigabeliste oder UBUCHHALTUNG_DEMO würde sonst Hostnamen-

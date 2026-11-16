@@ -100,12 +100,15 @@ def _subset_font(path, chars):
     opts.name_IDs = [1, 2, 3, 4, 6]
     opts.drop_tables += ['DSIG', 'GSUB', 'GPOS', 'GDEF', 'kern', 'LTSH', 'VDMX',
                          'hdmx', 'gasp', 'FFTM', 'meta', 'STAT', 'BASE', 'JSTF', 'MATH']
-    font = subset.load_font(path, opts)
-    sub = subset.Subsetter(opts)
-    sub.populate(unicodes=[ord(c) for c in chars])
-    sub.subset(font)
+    font = subset.load_font(path, opts)        # lazy: hält die Schriftdatei offen, bis sie geschlossen wird
     out = io.BytesIO()
-    subset.save_font(font, out, opts)
+    try:
+        sub = subset.Subsetter(opts)
+        sub.populate(unicodes=[ord(c) for c in chars])
+        sub.subset(font)
+        subset.save_font(font, out, opts)
+    finally:
+        font.close()
 
     head, hhea, post, os2 = full['head'], full['hhea'], full['post'], full['OS/2']
 

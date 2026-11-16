@@ -413,7 +413,8 @@ Anlagenverwaltung mit AfA-Plan:
   Ersteinrichtung legt den ersten Administrator an – **ohne Anmeldung**
   (automatische Anmeldung, für eine Person im eigenen Netz) oder **mit Passwort**
   (Login, weitere Benutzer in der Benutzerverwaltung); gespeichert in `data/config.json`
-- Sessions (HttpOnly, SameSite=Strict, Secure bei HTTPS), scrypt-Passwort-Hashes
+- Sessions (HttpOnly, SameSite=Strict, Secure bei HTTPS – auch hinter einem TLS-Proxy), scrypt-Passwort-Hashes;
+  nach fünf Fehlversuchen ist ein Benutzername vorübergehend gesperrt (30 Sekunden bis 15 Minuten)
 - CSRF-Schutz für alle schreibenden Requests (Token an die Session gebunden)
 - Admin-Funktionen: Nutzer anlegen/löschen, Passwort zurücksetzen, Admin-Flag
 - Details zu LAN/HTTPS-Betrieb: siehe [DEPLOYMENT.md](DEPLOYMENT.md)
