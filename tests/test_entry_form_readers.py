@@ -139,8 +139,10 @@ def test_the_same_expense_with_a_cash_account_without_a_number_is_a_transfer(db)
 
 def test_an_account_created_after_the_import_does_not_turn_the_marker_around(db):
     """6815 an 1800 wird importiert, bevor es das Bankkonto 1800 gibt: ``transfer``, +119, S 6815.
-    Wird das Konto später angelegt (und mit der Bankbewegung verknüpft), bleibt es bei **S 6815** –
-    früher kippte das Kennzeichen auf H, weil 1800 plötzlich ein Geldkonto war."""
+    Wird das Konto später angelegt, bleibt es bei **S 6815** – früher kippte das Kennzeichen auf H,
+    weil 1800 plötzlich ein Geldkonto war. Der Abgleich hängt den Satz nicht an die Bankbewegung (eine
+    Umbuchung hat keine Geldseite, ihre Richtung ließe sich nur vermuten); auch von Hand angehängt bleibt
+    das Kennzeichen."""
     execute(db, 'DELETE FROM Accounts WHERE ID = ?', (_bank_id(db),))
     assert coa(db, 1800) not in db.get_bank_coa_ids()
 
@@ -150,9 +152,11 @@ def test_an_account_created_after_the_import_does_not_turn_the_marker_around(db)
 
     new_bank = bank_account(db, 'Form-Bank-Eins', 1800)
     assert coa(db, 1800) in db.get_payment_coa_ids()
-    db.insert_booking('2026-01-02', Decimal('-119.00'), account_id=new_bank, booking_type='bank')
-    db.link_bank_to_entries()
+    bank = db.insert_booking('2026-01-02', Decimal('-119.00'), account_id=new_bank, booking_type='bank')
+    assert db.link_bank_to_entries()['linked'] == 0
+    assert datev_rows(db)['SP-1'][:4] == ('119,00', 'S', '6815', '1800')
 
+    execute(db, "UPDATE Bookings SET ParentBooking_ID = ? WHERE DocumentNumber = 'SP-1'", (bank,))
     assert datev_rows(db)['SP-1'][:4] == ('119,00', 'S', '6815', '1800')
 
 
@@ -187,8 +191,12 @@ def test_such_an_import_under_a_bank_movement_is_a_transfer_in_the_euer(db):
     ein Vorsteuerausweis gibt es nicht (kein Zweckkonto). Früher, als Zahlung gelesen, stand 6815 mit
     +8,40 und 1406 mit +1,60 darin – mit falschem Vorzeichen."""
     db.import_wiso_csv(csv_export(('6815', '1050', '10,00', 'A6-1', KEY19)))
-    db.insert_booking('2026-01-02', Decimal('-10.00'), account_id=_bank_id(db), booking_type='bank')
-    assert db.link_bank_to_entries()['linked'] == 1
+    bank = db.insert_booking('2026-01-02', Decimal('-10.00'), account_id=_bank_id(db), booking_type='bank')
+    # Der Abgleich nimmt den Satz nicht: Eine Umbuchung mit leerem Gegenkonto hat keine Geldseite (der
+    # Rohbetrag sagt „Konto im Soll“), ihre Richtung ließe sich nur vermuten. Für die EÜR-Aussage hängt der
+    # Test ihn von Hand an.
+    assert db.link_bank_to_entries()['linked'] == 0
+    execute(db, "UPDATE Bookings SET ParentBooking_ID = ? WHERE DocumentNumber = 'A6-1'", (bank,))
 
     assert euer(db) == {6815: Decimal('-8.40')}
 

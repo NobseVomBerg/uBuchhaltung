@@ -577,7 +577,13 @@ Automatisch anhand der Spaltenüberschriften:
 ### Bank↔Entry-Verknüpfung (link_bank_to_entries)
 
 Nach jedem WISO-Import wird `link_bank_to_entries()` aufgerufen:
-- Mehrstufiges Matching:
+- **Richtungsregel (seit 2.3.14, Stufen 1–6):** Verknüpft wird nur, wenn die Wirkung des Satzes auf das Konto der
+  Bankbewegung – mit Vorzeichen, gerechnet wie die Split-Summe (`matching.link_effect`) – dem Betrag der Bewegung
+  entspricht; bei einer Gruppe die Summe der Wirkungen. Eine Lastschrift wird nie mit einer Einnahme verknüpft, ein Satz
+  mit anderer Geldseite (Kasse, anderes eigenes Bankkonto, 1460) nie, ein Alt-Spiegel (`mirror_legacy`) nie automatisch;
+  Umbuchungen ohne Geldseite werden nie allein verknüpft. Der Text der Bankbewegung wird immer der Text des Satzes.
+  Bestehende Verknüpfungen fasst der Abgleich nie an
+- Mehrstufiges Matching (Reihenfolge im Lauf: 0 Quellklammer, 1, 2, 4, 3, 3b, 3c, 3d, 5, 6, 6b, 7):
     - Stufe 1: Datum + normalisierter Empfänger + Betrag
     - Stufe 2: Datum + Betrag (eindeutig nach Doppik-Filter)
     - Stufe 3: Split-Gruppen mit Summenabgleich (nur gleicher Tag)

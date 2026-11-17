@@ -18,7 +18,7 @@ from db.matching import (
     ENTRY_TRANSFER, FORM_LIQUID_FIRST, FORM_MIRROR_COA, FORM_MIRROR_COUNTER, FORM_MIRROR_LEGACY,
     FORM_PURPOSE_FIRST, FORM_TRANSFER, MIRROR_FORMS, SIDE_COA, SIDE_COUNTER, bank_effect,
     classify_entry, derive_entry_form, import_entry_form, is_asset_transfer, is_bank_effective,
-    is_mirror_row, purpose_in_counter, read_entry_form, reform, soll_side,
+    is_mirror_row, link_effect, purpose_in_counter, read_entry_form, reform, soll_side,
 )
 
 GELD, GELD2, ZWECK, ZWECK2 = 10, 11, 20, 30
@@ -270,6 +270,172 @@ def test_bank_effect_takes_the_parent_into_account_only_for_a_mirror():
 def test_bank_effect_treats_no_amount_as_zero():
     assert bank_effect(FORM_PURPOSE_FIRST, None, ZWECK, GELD, PARENT, BANK_IDS) == 0
     assert bank_effect(FORM_MIRROR_COA, None, GELD, GELD2, PARENT, BANK_IDS) == 0
+
+
+# ── link_effect ──────────────────────────────────────────────────────────────
+# Darf ein freier Satz Kind dieser Bankbewegung werden? ``None`` = nie, sonst ``bank_effect`` (0 = eine
+# Umbuchung ohne Geldseite). Das Konto der Bankbewegung ist GELD; GELD2 ein weiteres eigenes Konto
+# (Kasse, zweite Bank), VERRECHNUNG (1460) ein Zahlungskonto, das kein eigenes Konto ist. Betrag: 100.
+
+LINK_PAYMENT = BANK_IDS | {VERRECHNUNG}
+LINK_ROLES = {'bank': GELD, 'andere-bank': GELD2, 'verrechnung': VERRECHNUNG, 'zweck': ZWECK,
+              'zweck2': ZWECK2, 'leer': None}
+LINK_FORMS = [FORM_PURPOSE_FIRST, FORM_LIQUID_FIRST, FORM_TRANSFER, FORM_MIRROR_COA,
+              FORM_MIRROR_COUNTER, FORM_MIRROR_LEGACY, None]
+
+
+def _link(stored, coa, counter, parent=PARENT, amount=100):
+    return link_effect(stored, amount, coa, counter, parent, BANK_IDS, LINK_PAYMENT)
+
+
+OTHER_MONEY_SIDES = [
+    (ZWECK, GELD2),                 # die Geldseite ist ein anderes eigenes Konto (Kasse, zweite Bank)
+    (GELD2, ZWECK),
+    (None, GELD2),
+    (ZWECK, VERRECHNUNG),           # 1460: Geldtransit, nie zu einer Bankbewegung
+    (VERRECHNUNG, ZWECK),
+    (GELD, GELD2),                  # auch wenn die andere Seite das Konto der Bewegung ist
+    (GELD2, GELD),
+    (GELD, VERRECHNUNG),
+    (VERRECHNUNG, GELD),
+    (GELD2, VERRECHNUNG),
+]
+
+
+@pytest.mark.parametrize('stored', [FORM_PURPOSE_FIRST, FORM_LIQUID_FIRST, FORM_TRANSFER])
+@pytest.mark.parametrize('coa, counter', OTHER_MONEY_SIDES)
+def test_a_row_with_another_money_side_never_belongs_to_the_movement(stored, coa, counter):
+    assert _link(stored, coa, counter) is None
+
+
+@pytest.mark.parametrize('coa, counter, expected', [
+    (ZWECK, GELD, 100),             # Aufwand an Bank: die Geldseite (hinten) ist das Konto der Bewegung
+    (None, GELD, 100),
+    (ZWECK, None, 100),             # Geldseite leer: nicht ganz kontiert, zählt wie in der Split-Summe
+    (None, None, 100),
+    (GELD, ZWECK, None),            # das Konto der Bewegung steht VORN, auf der Zweckseite: Die Wirkung
+    (GELD, None, None),             # wäre das Gegenteil des Betrags – nie Kandidat
+    (None, ZWECK, None),            # hinten steht kein Geldkonto
+    (ZWECK, ZWECK2, None),
+])
+def test_purpose_first_acts_only_with_the_account_of_the_movement_on_its_money_side(coa, counter, expected):
+    assert _link(FORM_PURPOSE_FIRST, coa, counter) == expected
+
+
+@pytest.mark.parametrize('coa, counter, expected', [
+    (GELD, ZWECK, 100),             # Bank an Erlös: die Geldseite (vorn) ist das Konto der Bewegung
+    (GELD, None, 100),
+    (None, ZWECK, 100),             # Geldseite leer
+    (None, None, 100),
+    (ZWECK, GELD, None),            # das Konto der Bewegung steht HINTEN, nicht auf der Geldseite
+    (None, GELD, None),
+    (ZWECK, None, None),            # vorn steht kein Geldkonto
+    (ZWECK, ZWECK2, None),
+])
+def test_liquid_first_acts_only_with_the_account_of_the_movement_on_its_money_side(coa, counter, expected):
+    assert _link(FORM_LIQUID_FIRST, coa, counter) == expected
+
+
+@pytest.mark.parametrize('coa, counter, expected', [
+    (ZWECK, ZWECK2, 0),             # Umbuchung ohne Geldseite: gehört zum Beleg, bewegt kein Geld
+    (ZWECK2, ZWECK, 0),
+    (ZWECK, GELD, None),            # „6815 an 1800“ aus der Zeit, bevor 1800 Bankkonto war: Der Betrag sagt
+    (GELD, ZWECK, None),            # „Konto im Soll“, die Richtung des Geldes ließe sich nur vermuten
+    (GELD, None, None),
+    (None, GELD, None),
+    (ZWECK, None, None),            # Gegenkonto leer oder unbekannt: ebenso
+    (None, ZWECK, None),
+    (None, None, None),
+])
+def test_a_transfer_is_neutral_or_never_a_candidate(coa, counter, expected):
+    assert _link(FORM_TRANSFER, coa, counter) == expected
+
+
+@pytest.mark.parametrize('stored, coa, counter, expected', [
+    # mirror_coa: der Betrag steht auf dem Konto – steht das Konto der Bank vorn, ist es der Betrag
+    (FORM_MIRROR_COA, GELD, VERRECHNUNG, 100),
+    (FORM_MIRROR_COA, VERRECHNUNG, GELD, -100),
+    (FORM_MIRROR_COA, GELD, GELD2, 100),
+    (FORM_MIRROR_COA, GELD2, GELD, -100),
+    # mirror_counter: der Betrag steht auf dem Gegenkonto
+    (FORM_MIRROR_COUNTER, VERRECHNUNG, GELD, 100),
+    (FORM_MIRROR_COUNTER, GELD, VERRECHNUNG, -100),
+    (FORM_MIRROR_COUNTER, GELD2, GELD, 100),
+    (FORM_MIRROR_COUNTER, GELD, GELD2, -100),
+    # ein Spiegel, der das Konto der Bank nicht berührt, gehört nie zu dieser Bewegung
+    (FORM_MIRROR_COA, GELD2, VERRECHNUNG, None),
+    (FORM_MIRROR_COUNTER, VERRECHNUNG, GELD2, None),
+    (FORM_MIRROR_COA, ZWECK, ZWECK2, None),
+])
+def test_a_mirror_with_a_known_reading_acts_by_its_position_and_only_if_it_touches_the_account(
+        stored, coa, counter, expected):
+    assert _link(stored, coa, counter) == expected
+
+
+@pytest.mark.parametrize('parent', [PARENT, OTHER_PARENT, {GELD2}, set(), None])
+@pytest.mark.parametrize('coa, counter', sorted(set(product(LINK_ROLES.values(), repeat=2)), key=str))
+def test_a_legacy_mirror_never_belongs_to_a_movement_whatever_the_accounts(parent, coa, counter):
+    """Die Lesart seines Betrags ist unbekannt – der Abgleich deutet sie nie."""
+    assert _link(FORM_MIRROR_LEGACY, coa, counter, parent) is None
+
+
+@pytest.mark.parametrize('stored', [None, '', 'mirror', 0])
+@pytest.mark.parametrize('coa, counter, expected', [
+    (ZWECK, GELD, 100),             # ohne Form entscheidet die Einordnung von heute: Zahlung
+    (GELD, ZWECK, 100),
+    (ZWECK, ZWECK2, 0),             # Umbuchung
+    (None, None, 100),              # nichts kontiert: gilt als Zahlung
+    (GELD, GELD2, None),            # beide Seiten Geldkonten: ein Spiegel ohne Form, ``mirror_legacy``
+    (GELD2, VERRECHNUNG, None),
+    (GELD, VERRECHNUNG, None),
+    (ZWECK, GELD2, None),
+    (ZWECK, VERRECHNUNG, None),
+])
+def test_a_row_without_a_stored_form_is_read_with_the_payment_accounts_of_today(stored, coa, counter, expected):
+    assert _link(stored, coa, counter) == expected
+
+
+@pytest.mark.parametrize('parent', [None, set()])
+def test_a_bank_account_without_an_skr_number_takes_no_money_side_and_no_mirror(parent):
+    """Ohne SKR-Nummer hat die Bewegung kein COA-Konto: Ein Spiegel lässt sich nicht einordnen, und jeder
+    Satz mit einem Geldkonto auf einer Seite hat eine andere Geldseite."""
+    for stored in (FORM_MIRROR_COA, FORM_MIRROR_COUNTER, FORM_MIRROR_LEGACY):
+        assert _link(stored, GELD, GELD2, parent) is None
+        assert _link(stored, VERRECHNUNG, ZWECK, parent) is None
+    assert _link(FORM_PURPOSE_FIRST, ZWECK, GELD, parent) is None
+    assert _link(FORM_LIQUID_FIRST, GELD2, ZWECK, parent) is None
+    # was kein Geldkonto berührt, zählt wie sonst
+    assert _link(FORM_PURPOSE_FIRST, ZWECK, None, parent) == 100
+    assert _link(FORM_TRANSFER, ZWECK, ZWECK2, parent) == 0
+
+
+def test_link_effect_treats_no_amount_as_zero():
+    assert _link(FORM_PURPOSE_FIRST, ZWECK, GELD, amount=None) == 0
+    assert _link(FORM_MIRROR_COA, GELD, VERRECHNUNG, amount=None) == 0
+    assert _link(FORM_PURPOSE_FIRST, ZWECK, GELD2, amount=None) is None
+
+
+@pytest.mark.parametrize('parent', [PARENT, OTHER_PARENT, {GELD2}, {GELD, GELD2}, set(), None])
+@pytest.mark.parametrize('stored', LINK_FORMS)
+@pytest.mark.parametrize('coa, counter', sorted(set(product(LINK_ROLES.values(), repeat=2)), key=str))
+def test_link_effect_is_either_none_or_the_bank_effect_of_the_split_sum(stored, coa, counter, parent):
+    """Was der Abgleich verknüpft, rechnet die Split-Summe genauso (``bank_effect``): Es gibt keine dritte
+    Zahl. Nicht null ist es nur, wenn der Satz das Konto der Bewegung berührt oder nicht ganz kontiert ist."""
+    effect = _link(stored, coa, counter, parent)
+
+    form = read_entry_form(stored, coa, counter, LINK_PAYMENT)
+    assert effect is None or effect == bank_effect(form, 100, coa, counter, parent or set(), BANK_IDS)
+    if form == FORM_MIRROR_LEGACY:
+        assert effect is None
+    if effect not in (None, 0):
+        assert coa in (parent or set()) or counter in (parent or set()) or None in (coa, counter)
+    if None not in (coa, counter) and not ({coa, counter} & (LINK_PAYMENT | (parent or set()))):
+        # zwei Zweckkonten: neutral ist nur die Umbuchung – ein Spiegel oder ein Zahlungssatz, dessen
+        # Geldseite kein Konto der Bewegung (mehr) ist, gehört nie zu ihr
+        assert effect == (0 if form == FORM_TRANSFER else None)
+    if effect not in (None, 0):
+        # ... und nie mit dem Konto der Bewegung auf der Seite, die die Form nicht als Geldseite führt
+        assert form != FORM_TRANSFER
 
 
 # ── import_entry_form ────────────────────────────────────────────────────────

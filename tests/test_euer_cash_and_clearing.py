@@ -579,36 +579,40 @@ PAID = {1406: Decimal('-19'), 6815: Decimal('-100')}
 
 
 @pytest.mark.parametrize('kasse_skr, form', LINK_PARAMS)
-def test_standalone_entry_counts_once_before_and_after_the_matching_links_it(
+def test_standalone_entry_on_another_money_side_is_not_linked_by_the_matching_and_counts_once(
         tmp_path, kasse_skr, form):
-    """Ein eigenständiger Satz (Sektion 2/2b) wandert mit der Verknüpfung in Sektion 1 und zählt
-    vorher wie nachher genau einmal."""
+    """Ein eigenständiger Satz (Sektion 2/2b), dessen Geldseite die Kasse oder 1460 ist, gehört nicht zu einer
+    Bankbewegung des Girokontos – auch nicht bei gleichem Datum und Betrag: Der Abgleich verknüpft ihn nicht
+    (früher wanderte er mit der Verknüpfung in Sektion 1), und er zählt vorher wie nachher genau einmal."""
     db = _make_db(tmp_path, kasse_skr)
     giro, _kasse = _accounts(db)
-    STANDALONE_FORMS[form][0](db)
+    entry = STANDALONE_FORMS[form][0](db)
     bank = db.insert_booking('2026-03-05', Decimal('-119'), account_id=giro, booking_type='bank')
     assert _euer(db) == PAID                                   # vorher: nur der eigenständige Satz
 
     result = db.link_bank_to_entries()
 
-    assert result['linked'] == 1
-    assert _query(db, "SELECT COUNT(*) FROM Bookings WHERE ParentBooking_ID = ?", (bank,)) == [(1,)]
-    assert _euer(db) == PAID                                   # nachher: Kind der Bankbewegung
-    assert _euer(db, [giro]) == PAID
+    assert result['linked'] == 0
+    assert _query(db, "SELECT COUNT(*) FROM Bookings WHERE ParentBooking_ID = ?", (bank,)) == [(0,)]
+    assert _query(db, "SELECT ParentBooking_ID FROM Bookings WHERE ID = ?", (entry,)) == [(None,)]
+    assert _euer(db) == PAID                                   # nachher: unverändert, derselbe Satz
 
 
 @pytest.mark.parametrize('kasse_skr', [None, 1600], ids=['kasse-ohne-skr', 'kasse-1600'])
-def test_dashboard_counts_the_linked_clearing_booking_once(tmp_path, kasse_skr):
+def test_dashboard_counts_the_clearing_booking_once_linked_or_not(tmp_path, kasse_skr):
     """Die Bankzeile ist die Zahlung; der eigenständige 1460-Satz kommt im Dashboard nicht vor –
-    weder vor noch nach der Verknüpfung."""
+    weder frei noch als Kind der Bankbewegung. Der Abgleich hängt ihn nicht an (seine Geldseite ist
+    das Verrechnungskonto, nicht das Girokonto); von Hand angehängt ändert er das Dashboard auch nicht."""
     db = _make_db(tmp_path, kasse_skr)
     giro, _kasse = _accounts(db)
-    STANDALONE_FORMS['verrechnungskonto'][0](db)
-    db.insert_booking('2026-03-05', Decimal('-119'), account_id=giro, booking_type='bank')
-    before = _dash(db)
-    db.link_bank_to_entries()
-    assert before == _dash(db) == {'income': 0, 'private': 0, 'expense': Decimal('-119'),
-                                   'bank_count': 1}
+    entry = STANDALONE_FORMS['verrechnungskonto'][0](db)
+    bank = db.insert_booking('2026-03-05', Decimal('-119'), account_id=giro, booking_type='bank')
+    expected = {'income': 0, 'private': 0, 'expense': Decimal('-119'), 'bank_count': 1}
+    assert _dash(db) == expected
+    assert db.link_bank_to_entries()['linked'] == 0
+    assert _dash(db) == expected
+    _execute(db, 'UPDATE Bookings SET ParentBooking_ID = ? WHERE ID = ?', (bank, entry))
+    assert _dash(db) == expected
 
 
 @pytest.mark.parametrize('kasse_skr, form', LINK_PARAMS)

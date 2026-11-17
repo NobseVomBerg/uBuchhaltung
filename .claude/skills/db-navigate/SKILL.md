@@ -23,7 +23,7 @@ Kontext bei moderatem Token-Einsatz. NIE alle Module gleichzeitig laden.
 | `schema.py` | **alle CREATE TABLE** (`initialize_database`), `_create_extended_schema`, `ensure_kasse_exists` |
 | `seed.py` | Seed-/Testdaten, SKR-Konten, Steuerschlüssel, `load_test_seed_data`, `is_first_run`, `missing_standard_accounts`, `add_missing_standard_accounts` |
 | `bookings.py` | Buchungen, Buchungsgruppen, Booking↔Document, `fetch_bookings_grouped` |
-| `matching.py` | Bank↔Entry-Auto-Linking (`link_bank_to_entries`), `find_unlinked_*` |
+| `matching.py` | Bank↔Entry-Auto-Linking (`link_bank_to_entries`, Richtungsregel `link_effect`), `find_unlinked_*` |
 | `wiso_import.py` | WISO-CSV-Import (`import_wiso_csv`, `_import_wiso_*`) |
 | `accounts.py` | Bankkonten + Kontenrahmen/SKR (`*_chart_of_accounts`, `coa_id_*`) + DATEV-Helfer |
 | `assets.py` | Anlagen, Kategorien, AfA-Plan/-Buchung |
