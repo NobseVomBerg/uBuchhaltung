@@ -146,7 +146,8 @@ def parse_text(text: str, year: Optional[int] = None, latest=None,
                     or re.match(r'^\d{3,4}$', next_line)
                     or re.match(r'^K\d{5,}$', next_line)
                     or next_line.startswith('Bitte beachten Sie')
-                    or _squash(next_line).startswith(_BALANCE_LINE_KEYS)):
+                    or _squash(next_line).startswith(_BALANCE_LINE_KEYS)
+                    or _RULE_LINE.match(next_line)):
                 j += 1
                 continue
             detail_lines.append(next_line)
@@ -196,6 +197,9 @@ _FORM_NUMBER = re.compile(r'^(?:\d{3,4}|K\d{5,})$')
 # Saldozeilen („alter/neuer Kontostand vom …“) gehören zu keiner Buchung – nach der letzten stünden sie sonst in ihrem
 # Verwendungszweck. Verglichen wird wie oben ohne Leerzeichen und klein.
 _BALANCE_LINE_KEYS = ('alterkontostand', 'neuerkontostand')
+# Neuere Auszüge rahmen „neuer Kontostand“ mit zwei Strichzeilen ein (nur Rahmenzeichen, U+2500–U+257F): Auch sie
+# gehören zu keiner Buchung.
+_RULE_LINE = re.compile(r'^[\u2500-\u257F]+$')
 
 
 def _squash(text: str) -> str:
