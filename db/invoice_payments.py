@@ -42,6 +42,14 @@ ALREADY_REFUNDED_MESSAGE = ('Zu dieser Rechnung wurde bereits erstattet – erst
 MIXED_REVENUE_MESSAGE = ('Die Zahlungen dieser Rechnung liegen auf verschiedenen Erlöskonten – bitte das Erlöskonto für '
                          'die Erstattung wählen.')
 
+# Ändert der Nutzer Betrag, Bankkonto oder Datum einer Bankbewegung, der eine Zahlung oder Erstattung zugeordnet ist
+# (``_assigned_bank_change_blocker``): Die Zuordnung (Betrag, Rechnungsstatus, Sätze) bliebe stehen und stimmte nicht mehr. Die
+# Platzhalter: die Nummern der Belege, was geändert werden soll („den Betrag“, „das Bankkonto“, „das Datum“, mit „und“ verbunden)
+BANK_CHANGE_PAYMENT_MESSAGE = ('Dieser Bankbewegung ist eine Rechnungszahlung zugeordnet (Rechnung {numbers}). Bitte zuerst die '
+                               'Zuordnung an der Rechnung entfernen, dann {changes} ändern.')
+BANK_CHANGE_REFUND_MESSAGE = ('Dieser Bankbewegung ist eine Erstattung zugeordnet (Stornorechnung {numbers}). Bitte zuerst die '
+                              'Erstattung an der Stornorechnung entfernen, dann {changes} ändern.')
+
 # Auf diese Status lässt sich eine Zahlung zuordnen: ab „versendet“ ist die Rechnung ein
 # offener Posten. 'partial' ist der Alt-Wert von 'partial_payment'.
 PAYABLE_STATUSES = ('sent', 'overdue', 'partial_payment', 'partial')
@@ -184,6 +192,24 @@ class PaymentRemovalRefused(ValueError):
     als gezahlt); ``str(exc)`` ist der Klartext für die Oberfläche. Es betrifft jeden Weg, der eine Zahlung entfernt:
     ``unassign_invoice_payment``, ``remove_assignment_for_child`` und ``delete_transaction`` (Kindsatz wie Bankbewegung) –
     in der Transaktion geprüft, vor dem ersten Schreiben, nichts ist dann geändert."""
+
+
+def _id_or_none(value):
+    """Eine ID zum Vergleichen: leer ist ``None``, eine Zahl als Text dieselbe Zahl (``'3'`` = 3) – ein unverändert
+    zurückgeschicktes Konto darf nie als Änderung gelten, nur weil ein Aufrufer es als Text übergibt."""
+    if value is None or value == '':
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return value
+
+
+class BankChangeRefused(ValueError):
+    """Das Ändern von Betrag, Bankkonto oder Datum einer Bankbewegung wird abgelehnt, weil ihr eine Rechnungszahlung oder
+    Erstattung zugeordnet ist (``Database.save_bank_with_rows``, ``_assigned_bank_change_blocker``); ``str(exc)`` ist der Klartext
+    für die Oberfläche. Es wird nichts automatisch umgerechnet: Der Nutzer entfernt erst die Zuordnung. Die Transaktion ist
+    zurückgerollt, nichts ist geändert."""
 
 
 def payment_blocker(doc_type, status, gross, kind=None):
@@ -976,6 +1002,43 @@ class InvoicePaymentsMixin:
             self._unassign(conn, payment_id)
         if conn.execute('SELECT 1 FROM Bookings WHERE ID = ?', (child_id,)).fetchone():
             self._delete_booking_rows(conn, [child_id])
+
+    def _assigned_bank_change_blocker(self, conn, bank_id, stored, fields):
+        """Klartext, wenn ``fields`` – die Spalten, die der Aufrufer an der Bankbewegung ``bank_id`` schreibt (Namen und Euro-Werte
+        wie bei ``update_booking_fields``) – Betrag, Bankkonto oder Buchungsdatum ändern, obwohl ihr noch eine Zuordnung
+        (``InvoicePayments``: Zahlung oder Erstattung) gehört; sonst ``None``. Ihr ``InvoicePayments.Amount``, der Status der
+        Rechnung und die Buchungssätze der Zuordnung (Betrag, Datum, Bankkonto) stimmten danach nicht mehr mit der Bewegung
+        überein; die App rechnet das nicht um, der Nutzer entfernt erst die Zuordnung.
+
+        In der Transaktion von ``conn`` und NACH den Schreibschritten: Was der Nutzer im Editor derselben Anfrage an Zuordnungen
+        entfernt hat, zählt nicht mehr – so geht „✕ an allen Zeilen der Zahlung + neuer Betrag“ in einem Speichern. ``stored`` ist
+        der Stand der Bankbewegung vor dem ersten Schreiben: ``(Betrag in Minor Units, Account_ID, DateBooking)``. Ein unverändert
+        zurückgeschickter Wert ist keine Änderung (``'119'`` gegen gespeicherte 119,0000). Empfänger, Text, Währung und Steuerdatum
+        sind frei. Sind ALLE Zuordnungen Erstattungen (Stornorechnungen), sagt der Text das.
+
+        Zur Bewegung gehört auch eine Zuordnung, die an einem ihrer Buchungssätze hängt (``InvoicePayments.BookingID`` zeigt auf
+        ein Kind): So ordnet ein Import eine Zahlung einem eigenständigen Satz zu, der später unter die Bankbewegung kommt. Hängt
+        der Nutzer den Satz im selben Speichern ab, zählt sie nicht mehr."""
+        changes = []
+        if 'amount' in fields and to_minor(fields['amount'] or 0) != stored[0]:
+            changes.append('den Betrag')
+        if 'account_id' in fields and _id_or_none(fields['account_id']) != _id_or_none(stored[1]):
+            changes.append('das Bankkonto')
+        if 'date_booking' in fields and (fields['date_booking'] or '') != (stored[2] or ''):
+            changes.append('das Datum')
+        if not changes:
+            return None
+        assigned = conn.execute(
+            "SELECT COALESCE(NULLIF(i.InvoiceNumber, ''), CAST(i.ID AS TEXT)), i.InvoiceKind FROM InvoicePayments ip "
+            'JOIN Invoices i ON i.ID = ip.InvoiceID WHERE ip.BookingID = ? '
+            'OR ip.BookingID IN (SELECT ID FROM Bookings WHERE ParentBooking_ID = ?) ORDER BY ip.ID',
+            (bank_id, bank_id)).fetchall()
+        if not assigned:
+            return None
+        numbers = ', '.join(dict.fromkeys(number for number, _kind in assigned))
+        what = changes[0] if len(changes) == 1 else f"{', '.join(changes[:-1])} und {changes[-1]}"
+        refunds = all(kind == STORNO_KIND for _number, kind in assigned)
+        return (BANK_CHANGE_REFUND_MESSAGE if refunds else BANK_CHANGE_PAYMENT_MESSAGE).format(numbers=numbers, changes=what)
 
     def _debtor_coa_ids(self, conn):
         return {r[0] for r in conn.execute('SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?',

@@ -822,6 +822,8 @@ class TransferCheck(NamedTuple):
 
 
 #: Die Spalten eines Kandidaten des Auto-Abgleichs, in der Reihenfolge von ``_Cand``.
+_ID_CHUNK = 500      # so viele IDs je ``IN (…)``: unter der Parametergrenze jeder SQLite-Version
+
 _CAND_COLUMNS = 'ID, Text, COA_ID, CounterCOA_ID, DocumentNumber, RecipientClient, Amount, EntryForm, Account_ID'
 
 
@@ -938,6 +940,19 @@ class MatchingMixin:
         conn.close()
         return [self._euro_row(r, 4, 6) for r in rows]  # Amount, TaxAmount
 
+    def _unlinked_entry_sql(self, cursor):
+        """Die Bedingung (``sql`` ohne ``WHERE``, ``params``) dafür, dass ein Buchungssatz einer Bankbewegung im
+        Buchungssatz-Editor zugeordnet werden darf: ein ``entry`` ohne Bankbewegung (``ParentBooking_ID``), ohne eigenes Konto
+        (``Account_ID``), nicht vom Abgleich gelöst (``resolved``), kein markierter Satz einer Rechnungszahlung (``invoice_payment``
+        – frei gibt es ihn nur nach einem Eingriff an der App vorbei, und er gehörte zu einer Zuordnung, nicht in den Editor) und
+        keine Forderungsbuchung (``receivable_condition``). Die
+        EINE Definition für die Kandidaten des Zuordnen-Widgets (``get_unlinked_entry_bookings``) und die Prüfung beim Speichern
+        (``adoptable_entry_ids``) – die Abfrage muss auf ``Bookings`` ohne Alias laufen. ``cursor`` wie bei ``_receivable_sql``."""
+        receivable_sql, receivable_params = self._receivable_sql(cursor)
+        return ("BookingType = 'entry' AND ParentBooking_ID IS NULL AND Account_ID IS NULL "
+                f"AND (Status IS NULL OR Status NOT IN ('resolved', 'invoice_payment')) "
+                f"AND NOT {receivable_sql}"), receivable_params
+
     def get_unlinked_entry_bookings(self, around_date=None, limit=50):
         """Noch keiner Bankbewegung zugeordnete Buchungssätze.
 
@@ -958,24 +973,43 @@ class MatchingMixin:
         """
         conn = self._get_connection()
         cursor = conn.cursor()
-        receivable_sql, receivable_params = self._receivable_sql(cursor)
+        where, where_params = self._unlinked_entry_sql(cursor)
         order = ("ABS(JULIANDAY(DateBooking) - JULIANDAY(?)), DateBooking DESC"
                  if around_date else "DateBooking DESC")
-        params = receivable_params + ([around_date] if around_date else []) + [limit]
+        params = where_params + ([around_date] if around_date else []) + [limit]
         cursor.execute(f'''
             SELECT ID, DateBooking, Amount, DocumentNumber, Text,
                    RecipientClient, COA_ID, CounterCOA_ID, EntryForm, TaxRate, TaxAmount
             FROM Bookings
-            WHERE BookingType = 'entry' AND ParentBooking_ID IS NULL
-              AND Account_ID IS NULL
-              AND (Status IS NULL OR Status != 'resolved')
-              AND NOT {receivable_sql}
+            WHERE {where}
             ORDER BY {order}
             LIMIT ?
         ''', params)
         rows = cursor.fetchall()
         conn.close()
         return [self._euro_row(r, 2, 10) for r in rows]   # Amount, TaxAmount
+
+    def adoptable_entry_ids(self, ids):
+        """Welche dieser Buchungen darf der Buchungssatz-Editor einer Bankbewegung zuordnen? Returns die IDs als ``set``.
+
+        Dieselbe Bedingung wie die Kandidaten des Zuordnen-Widgets (``_unlinked_entry_sql``), aber ohne dessen Begrenzung auf
+        50 Zeilen: Ein freier Satz bleibt zuordenbar, auch wenn er nicht unter den angezeigten Kandidaten steht. Rein lesend.
+        Der Editor fragt damit jede ID, die ein Formular mitbringt und die kein Satz unter der Bankbewegung ist – die ID ist
+        eine Eingabe des Browsers, kein Beweis, dass der Nutzer die Buchung gesehen hat."""
+        ids = [int(booking_id) for booking_id in ids]
+        if not ids:
+            return set()
+        conn = self._get_connection()
+        try:
+            where, params = self._unlinked_entry_sql(conn.cursor())
+            found = set()
+            for start in range(0, len(ids), _ID_CHUNK):       # SQLite begrenzt die Zahl der Parameter je Abfrage
+                chunk = ids[start:start + _ID_CHUNK]
+                found.update(row[0] for row in conn.execute(
+                    f"SELECT ID FROM Bookings WHERE {where} AND ID IN ({','.join('?' * len(chunk))})", params + chunk))
+            return found
+        finally:
+            conn.close()
 
     def find_unbalanced_splits(self, date_from: str, date_to: str):
         """Bankbewegungen im Zeitraum, deren Buchungssätze nicht aufgehen.

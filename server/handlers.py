@@ -33,7 +33,7 @@ from db.invoice_lock import (DocumentNotFound, EDITABLE_STATUSES, InvoiceLocked,
                              buyer_snapshot, status_group)
 from db.invoice_storno import NO_COUNTER_BOOKING_HINT
 from db.invoice_versions import CorrectionInvalid
-from db.invoice_payments import RECEIVABLE_STATUSES, PaymentRemovalRefused
+from db.invoice_payments import RECEIVABLE_STATUSES, BankChangeRefused, PaymentRemovalRefused
 from db.numbering import NumberRangeError, number_format_error
 from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
 from db.accounts import DEFAULT_CASH_ACCOUNT
@@ -367,18 +367,77 @@ def _refuse_same_account(db, coa_id, counter_coa_id, where=''):
                        'so ein Satz bucht nichts. Bitte ein anderes Konto wählen.')
 
 
+# So viele Zeilen nimmt der Buchungssatz-Editor in einer Anfrage an. Geplant und geschrieben wird unter der Schreibsperre der
+# Datenbank (``Database.save_bank_with_rows``) – eine Anfrage mit Zehntausenden Zeilen hielte sie fest.
+MAX_SPLIT_ROWS = 500
+
+
+def _form_id(text):
+    """Eine ID aus einem Formularfeld: eine positive ganze Zahl aus ASCII-Ziffern, die in 64 Bit passt – alles andere (leer,
+    Text, 0, negativ, zu groß, Ziffern anderer Schriften) ist ``None``."""
+    text = (text or '').strip()
+    if not (text.isascii() and text.isdigit()) or len(text) > 19:
+        return None
+    number = int(text)
+    return number if 1 <= number <= 2 ** 63 - 1 else None
+
+
+def _split_row_bookings(db, bank_id, own_ids, lines):
+    """Die Buchung hinter jeder Zeile des Editors, die eine ``split_id`` mitbringt – geprüft, bevor irgendetwas geschrieben wird.
+
+    Die ID kommt aus dem Formular, also vom Browser: Sie beweist nicht, dass der Nutzer die Buchung im Zuordnen-Widget gesehen hat.
+    ``lines``: ``[(Zeilennummer, Text der split_id)]`` der Zeilen, die gespeichert werden; ``own_ids``: die Sätze, die schon unter
+    der Bankbewegung hängen – sie dürfen in einer Zeile stehen. Jede andere ID wird der Bankbewegung zugeordnet
+    (``ParentBooking_ID``) und muss deshalb ein Buchungssatz sein, den der Editor zuordnen darf (``Database.adoptable_entry_ids``,
+    dieselbe Bedingung wie die Kandidaten des Widgets, nur ohne deren Grenze von 50). Abgelehnt werden: eine ID, die keine ganze Zahl
+    ist oder die es nicht gibt; dieselbe ID in zwei Zeilen; eine Bankbewegung (auch die eigene); ein Satz, der schon zu einer
+    anderen Bankbewegung gehört (auch der markierte Satz einer fremden Zuordnung); eine Forderung, ein Satz mit eigenem Konto
+    (``Account_ID``) und einer, den der Abgleich gelöst hat (``resolved``).
+
+    Returns ``{Zeilennummer: (ID, Zeile der Buchung)}`` (die Zeile wie ``Database.get_booking_by_id``) in der Reihenfolge der
+    Zeilen; sonst ``_Refused`` mit dem Klartext der ersten abgelehnten Zeile."""
+    rows, first_seen = {}, set()
+    for number, text in lines:
+        rid = _form_id(text)
+        if rid is None:
+            raise _Refused(f'Zeile {number}: unbekannte Buchung.')
+        if rid in first_seen:
+            raise _Refused(f'Zeile {number}: Diese Buchung steht schon in einer anderen Zeile.')
+        first_seen.add(rid)
+        rows[number] = (rid, db.get_booking_by_id(rid))
+    adoptable = db.adoptable_entry_ids([rid for rid, _row in rows.values() if rid not in own_ids])
+    for number, (rid, row) in rows.items():
+        if rid in own_ids or rid in adoptable:
+            continue
+        if row is None:
+            raise _Refused(f'Zeile {number}: Diese Buchung gibt es nicht (mehr). Bitte die Seite neu laden.')
+        if row[17] != 'entry' or rid == bank_id:           # 17 = BookingType
+            raise _Refused(f'Zeile {number}: Das ist eine Bankbewegung und kein Buchungssatz.')
+        if row[18] is not None:                            # 18 = ParentBooking_ID
+            raise _Refused(f'Zeile {number}: Dieser Buchungssatz gehört schon zu einer anderen Bankbewegung. '
+                           'Bitte die Seite neu laden.')
+        raise _Refused(f'Zeile {number}: Dieser Buchungssatz lässt sich keiner Bankbewegung zuordnen.')
+    return rows
+
+
 def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
                      recipient, currency):
     """Buchungssätze einer Bankbewegung aus dem Editor lesen und prüfen (schreibt nichts).
 
-    Liefert die geplanten Zeilen für ``_write_split_rows``. ``bank_id`` ist ``None``,
-    wenn die Bankbewegung selbst erst noch angelegt wird.
+    Liefert die geplanten Zeilen für ``Database._write_split_rows_in``. ``bank_id`` ist
+    ``None``, wenn die Bankbewegung selbst erst noch angelegt wird.
 
     Die Zeilen kommen als gleichnamige Felder (split_id, split_amount, …); ein
     leeres split_id legt eine neue Teilbuchung an, weggelassene IDs werden
-    entfernt (``_write_split_rows``: gelöscht, ein importierter Satz oder eine
+    entfernt (``Database._write_split_rows_in``: gelöscht, ein importierter Satz oder eine
     AfA-Buchung nur abgehängt). Die Summe wird NICHT erzwungen – Teilerfassung
     ist erlaubt und an der dreistufigen Statusanzeige der Übersicht erkennbar.
+
+    Die IDs der Zeilen kommen aus dem Formular und werden geprüft, bevor eine Zeile
+    gelesen wird (``_split_row_bookings``): Eine ID, die kein Satz unter der
+    Bankbewegung ist, wird dieser zugeordnet – also nur, wenn der Editor die Buchung
+    zuordnen darf (``Database.adoptable_entry_ids``), und nie dieselbe ID in zwei
+    Zeilen. Das gilt auch für eine Bankbewegung, die erst angelegt wird.
 
     Neue Zeilen bekommen Datum, Steuerdatum, Empfänger und Währung der
     Bankbewegung; Konto, Steuer, Beleg-Nr. und Text gehören der Teilbuchung. Ein
@@ -403,6 +462,10 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
     Bestehende Zeilen bekommen nur die Felder des Editors geschrieben
     (``update_booking_fields``) – Kontakt, Kategorie, Konto und fremdes Konto der
     Teilbuchung führt der Editor nicht und bleiben deshalb erhalten.
+
+    Geplant wird in ``Database.save_bank_with_rows``, innerhalb der Schreibsperre und
+    vor dem ersten Schreiben: Die Prüfung dort ist die maßgebliche, der Stand ändert
+    sich bis zum Schreiben nicht mehr.
     """
     ids = post_data.get('split_id', [])
     amounts = post_data.get('split_amount', [])
@@ -428,15 +491,19 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
     # sich, ob ein Satz Datum, Steuerdatum oder Empfänger mit ihr geteilt hat.
     bank_row = db.get_booking_by_id(bank_id) if bank_id else None
 
-    # Schritt 1: alle Zeilen lesen und prüfen (Zahlen, Bestandsbuchungen) – noch
+    # Schritt 1: alle Zeilen lesen und prüfen (IDs, Zahlen, Bestandsbuchungen) – noch
     # ohne zu schreiben.
+    lines = [i for i in range(len(amounts))
+             if _at(amounts, i).strip() or _at(coas, i).strip()]      # komplett leere Zeilen entfallen
+    if len(lines) > MAX_SPLIT_ROWS:
+        raise _Refused(f'Zu viele Buchungssätze in einer Bankbewegung (höchstens {MAX_SPLIT_ROWS}).')
+    booking_rows = _split_row_bookings(db, bank_id, set(existing_by_id),
+                                       [(i + 1, _at(ids, i).strip()) for i in lines if _at(ids, i).strip()])
     planned = []
-    for i in range(len(amounts)):
+    for i in lines:
         raw_amount = _at(amounts, i).strip()
         raw_coa = _at(coas, i).strip()
-        if not raw_amount and not raw_coa:
-            continue                      # komplett leere Zeile ignorieren
-        row_id = _at(ids, i).strip()
+        rid, old_row = booking_rows.get(i + 1, (None, None))
         sent_rate = _at(rates, i, None)   # None: das Formular bringt das Feld gar nicht mit
         sent_tax = _at(tax_amounts, i, None)
         row_rate = (sent_rate or '').strip()
@@ -449,7 +516,6 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
         raw_counter = _at(counters, i).strip()
         if raw_counter and int(raw_counter) not in bank_coa_ids:
             new_counter = int(raw_counter)
-        old_row = db.get_booking_by_id(int(row_id)) if row_id else None
         old_coa = old_counter = None
         if old_row:
             old_coa, old_counter = old_row[8], old_row[9]
@@ -481,7 +547,6 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
                 new_counter = old_counter
         if not (old_row and (new_coa, new_counter) == (old_coa, old_counter)):
             _refuse_same_account(db, new_coa, new_counter, f'Zeile {i + 1}: ')
-        rid = int(row_id) if row_id else None
         # Zeilen können auch bestehende, bisher unverknüpfte Buchungen
         # sein ("vorhandene Buchung zuordnen"): dann wird die Verbindung
         # per ID hergestellt – Belegnummern spielen dabei keine Rolle.
@@ -530,55 +595,31 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
     if bank_id:
         # Schritt 2: Was der Nutzer entfernt hat, darf keine Zahlung mitnehmen, die das Guthaben einer stornierten Rechnung
         # deckt. Geprüft wird jetzt, vor dem ersten Schreiben – ein Speichern gelingt ganz oder gar nicht.
-        dropped = _dropped_split_rows(db, bank_id, {rid for rid, _fields, _adopt in planned if rid is not None})
+        dropped = db.dropped_split_rows(bank_id, {rid for rid, _fields, _adopt in planned if rid is not None})
         blocker = db.split_removal_blocker(dropped)
         if blocker:
             raise _Refused(blocker)
     return planned
 
 
-def _dropped_split_rows(db, bank_id, kept_ids):
-    """IDs der Sätze unter der Bankbewegung, deren Zeile der Nutzer entfernt hat: alle außer ``kept_ids`` und den
-    Doppik-Spiegeln (COA und Gegenkonto beide liquide) – die tauchen im Editor nicht auf und bleiben deshalb unberührt."""
-    bank_coa_ids = db.get_bank_coa_ids()
-    return [child[0] for child in db.get_child_bookings_for_bank(bank_id)
-            if child[0] not in kept_ids and not is_mirror_row(child[9], child[1], child[2], bank_coa_ids)]
-
-
 def _write_split_rows(db, bank_id, planned):
-    """Geplante Buchungssätze (aus ``_plan_split_rows``) schreiben; die Sätze der Zeilen, die der Nutzer
-    entfernt hat, übernimmt ``Database.remove_split_row``: gelöscht, ein Satz aber, der nicht im Editor
-    entstanden ist (Import, AfA-Buchung), nur von der Bankbewegung abgehängt."""
-    keep_ids = set()
-    for rid, fields, adopt in planned:
-        if rid is not None:
-            if adopt:
-                fields['parent_booking_id'] = bank_id
-            db.update_booking_fields(rid,
-                                     log_description=("Split row adopt" if adopt
-                                                      else "Split row update"),
-                                     **fields)
-            keep_ids.add(rid)
-        else:
-            new_id = db.insert_booking(booking_type='entry',
-                                       parent_booking_id=bank_id,
-                                       log_description="Split row insert",
-                                       **fields)
-            keep_ids.add(new_id)
-
-    # Vom Nutzer entfernte Zeilen – Doppik-Spiegel (COA und Gegenkonto beide
-    # liquide) tauchen im Editor nicht auf und bleiben deshalb unberührt.
-    for child_id in _dropped_split_rows(db, bank_id, keep_ids):
-        db.remove_split_row(child_id)
+    """Geplante Buchungssätze (aus ``_plan_split_rows``) in einer Transaktion schreiben – die Hülle um
+    ``Database._write_split_rows_in``, das die Sätze der Zeilen, die der Nutzer entfernt hat, über
+    ``_remove_split_row_in`` entfernt: gelöscht, ein Satz aber, der nicht im Editor entstanden ist (Import, AfA-Buchung), nur von
+    der Bankbewegung abgehängt. **Nur für Tests:** Die App ruft die Hülle nicht auf – sie schreibt einen vorab geplanten Stand,
+    ohne in der Sperre zu planen und ohne die Prüfung der zugeordneten Zahlung. Der Weg der Maske ist
+    ``Database.save_bank_with_rows`` (mit der Bankzeile und dem Planen in derselben Transaktion)."""
+    with db.transaction() as tx:
+        tx.conn.execute('BEGIN IMMEDIATE')
+        db._write_split_rows_in(tx, bank_id, planned)
 
 
 def _save_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
                      recipient, currency):
-    """Buchungssätze einer Bankbewegung aus dem Editor speichern: erst alles lesen und
-    prüfen (``_plan_split_rows``), dann schreiben (``_write_split_rows``)."""
-    planned = _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
-                               recipient, currency)
-    _write_split_rows(db, bank_id, planned)
+    """Buchungssätze einer Bankbewegung aus dem Editor speichern, die Bankzeile selbst nicht anfassend: in EINER
+    Transaktion erst alles lesen und prüfen (``_plan_split_rows``), dann schreiben (``Database.save_bank_with_rows``)."""
+    db.save_bank_with_rows(bank_id, None, plan=lambda: _plan_split_rows(
+        db, bank_id, post_data, account_coa_id, date, date_tax, recipient, currency))
 
 
 def _new_payment_problem(db, invoice_id, account_id, amount, revenue_coa_id=None):
@@ -596,8 +637,19 @@ def _new_payment_problem(db, invoice_id, account_id, amount, revenue_coa_id=None
 
 
 def handle_add_transaction(db: Database, post_data):
-    """Handle manual booking entry (insert or update)"""
-    transaction_id = int(post_data.get("transaction_id", ["0"])[0])
+    """Handle manual booking entry (insert or update)
+
+    Speichert die Maske einer Bankbewegung mit Editor, geschieht das in EINER Transaktion (``Database.save_bank_with_rows``): die
+    Bankzeile und alle Sätze – angelegt, geändert, zugeordnet, entfernt – gelingen gemeinsam oder gar nicht, und ins Replay-Log
+    kommt erst etwas, wenn sie festgeschrieben sind. Eine Bankbewegung, der eine Rechnungszahlung oder Erstattung zugeordnet ist,
+    behält Betrag, Bankkonto und Datum (``BankChangeRefused``): erst die Zuordnung an der Rechnung entfernen."""
+    raw_transaction_id = (post_data.get("transaction_id", ["0"])[0] or '').strip()
+    if raw_transaction_id in ('', '0'):
+        transaction_id = 0                                   # eine neue Buchung
+    else:
+        transaction_id = _form_id(raw_transaction_id)
+        if transaction_id is None:
+            return 400, 'Ungültige Buchung.'
     date = post_data.get("date", [""])[0]
     date_tax = post_data.get("date_tax", [""])[0] or None
     recipient = post_data.get("recipient", [""])[0]
@@ -652,7 +704,10 @@ def handle_add_transaction(db: Database, post_data):
         if transaction_id > 0:
             # Check if this is an unlinked bank booking being completed
             existing = db.get_booking_by_id(transaction_id)
-            is_bank = existing and existing[17] == 'bank'
+            if not existing:
+                # In einem anderen Fenster gelöscht: Sonst ginge die Eingabe kommentarlos verloren (303, nichts gespeichert)
+                return 400, 'Diese Buchung gibt es nicht (mehr). Bitte die Seite neu laden.'
+            is_bank = existing[17] == 'bank'
 
             if has_split_rows and existing:
                 # Kontierung und Steuer der Bankzeile stammen bei aktivem
@@ -710,25 +765,26 @@ def handle_add_transaction(db: Database, post_data):
                 _refuse_same_account(db, coa_id, _bank_counter_coa(
                     db, account_id or (existing[4] if existing else None)))
 
-            # Buchungssätze aus dem Editor der Bank-Maske erst lesen und prüfen, dann
-            # schreiben: Eine ungültige Zahl dort darf auch die Bankzeile nicht halb
-            # gespeichert zurücklassen.
-            planned_splits = None
             if is_bank and has_split_rows:
+                # Die Bankzeile und die Buchungssätze aus dem Editor in EINER Transaktion: Gelesen und
+                # geprüft wird in ihr, vor dem ersten Schreiben (Zahl, ID, Guthaben einer Stornorechnung),
+                # dann geschrieben; Betrag, Bankkonto und Datum einer Bankbewegung mit zugeordneter Zahlung
+                # bleiben (``BankChangeRefused``). Jeder Fehler nimmt alles zurück – auch die Bankzeile.
+                # Die Sätze werden im Editor direkt gepflegt – der AutoMirror-Abgleich unten entfällt.
                 eff_acct_id = account_id or (existing[4] if existing else None)
-                planned_splits = _plan_split_rows(db, transaction_id, post_data,
+                db.save_bank_with_rows(
+                    transaction_id, fields,
+                    plan=lambda: _plan_split_rows(db, transaction_id, post_data,
                                                   _bank_counter_coa(db, eff_acct_id),
-                                                  date, date_tax, recipient, currency)
-
-            db.update_booking_fields(transaction_id, log_description="Manual booking update",
-                                     **fields)
-
-            if planned_splits is not None:
-                # Die Sätze werden im Editor direkt gepflegt – der AutoMirror-Abgleich
-                # unten entfällt.
-                _write_split_rows(db, transaction_id, planned_splits)
-            elif is_bank:
-                # Gegenkonto (liquide Seite) aus dem SKR-Konto der Bank ableiten
+                                                  date, date_tax, recipient, currency))
+            elif not is_bank:
+                db.update_booking_fields(transaction_id, log_description="Manual booking update",
+                                         **fields)
+            else:
+                # Die Bankzeile in der Transaktion, die auch die Zuordnung prüft (``BankChangeRefused``) …
+                db.save_bank_with_rows(transaction_id, fields)
+                # … danach, wie bisher außerhalb, der Spiegel: Gegenkonto (liquide Seite) aus dem SKR-Konto
+                # der Bank ableiten
                 eff_acct_id = account_id or (existing[4] if existing else None)
                 account_coa_id = _bank_counter_coa(db, eff_acct_id)
 
@@ -792,15 +848,9 @@ def handle_add_transaction(db: Database, post_data):
             # If a bank account is provided the row is a bank movement;
             # otherwise it is a plain accounting entry.
             new_booking_type = 'bank' if account_id else 'entry'
-            planned_splits = None
             if new_booking_type == 'bank' and not has_split_rows and coa_id:
                 _refuse_same_account(db, coa_id, _bank_counter_coa(db, account_id))
-            if new_booking_type == 'bank' and has_split_rows:
-                # erst prüfen, dann anlegen (siehe oben)
-                planned_splits = _plan_split_rows(db, None, post_data,
-                                                  _bank_counter_coa(db, account_id),
-                                                  date, date_tax, recipient, currency)
-            transaction_id = db.insert_booking(
+            new_fields = dict(
                 date_booking=date,
                 date_tax=date_tax,
                 amount=float(amount),
@@ -815,17 +865,22 @@ def handle_add_transaction(db: Database, post_data):
                 text=text,
                 document_number=document_nr or None,
                 booking_type=new_booking_type,
-                log_description="Manual booking entry"
             )
-
-            if planned_splits is not None:
-                # Buchungssätze direkt aus dem Editor der Bank-Maske
-                _write_split_rows(db, transaction_id, planned_splits)
+            if new_booking_type == 'bank' and has_split_rows:
+                # Die Bankbewegung und ihre Buchungssätze aus dem Editor in EINER Transaktion: Wird
+                # eine Zeile abgelehnt oder scheitert sie, entsteht auch die Bankbewegung nicht.
+                transaction_id = db.save_bank_with_rows(
+                    None, new_fields,
+                    plan=lambda: _plan_split_rows(db, None, post_data,
+                                                  _bank_counter_coa(db, account_id),
+                                                  date, date_tax, recipient, currency))
+            else:
+                transaction_id = db.insert_booking(**new_fields, log_description="Manual booking entry")
             # When a bank booking is created with a COA already set,
             # immediately create the linked accounting entry child so the
             # green checkmark appears without requiring a second edit.
             # (Bei einer Rechnungszahlung legt die Zuordnung die Sätze an: coa_id ist dort None.)
-            elif new_booking_type == 'bank' and coa_id:
+            if new_booking_type == 'bank' and coa_id and not has_split_rows:
                 # Look up the account's SKR-COA to set as the liquid counter side
                 account_coa_id = _bank_counter_coa(db, account_id)
                 db.insert_booking(
@@ -873,11 +928,10 @@ def handle_add_transaction(db: Database, post_data):
             return 303, f"/invoice/edit?id={invoice_id}"
 
         return 303, "/transactions"
-    except (_Refused, PaymentRemovalRefused) as e:
-        # abgelehnt. ``_Refused`` kommt aus dem Planen: nichts ist gespeichert. ``PaymentRemovalRefused`` kommt erst beim
-        # Schreiben – nur, wenn sich der Bestand zwischen Planen und Schreiben geändert hat oder die Zeilen einzeln nicht in
-        # dieser Reihenfolge gehen (``_plan_split_rows`` prüft sie zusammen): Dann ist die Zahlung geschützt geblieben, was
-        # davor geschrieben wurde (Bankzeile, frühere Zeilen), steht aber schon – Klartext statt 500
+    except (_Refused, PaymentRemovalRefused, BankChangeRefused) as e:
+        # abgelehnt – in jedem Fall ist nichts gespeichert: ``save_bank_with_rows`` läuft in EINER Transaktion, die jede dieser
+        # Ablehnungen zurückrollt (Bankzeile und Sätze). ``_Refused`` kommt aus dem Planen (vor dem ersten Schreiben),
+        # ``PaymentRemovalRefused`` aus dem Entfernen einer Zeile, ``BankChangeRefused`` aus der Prüfung am Ende – Klartext statt 500
         return 400, str(e)
     except Exception as e:
         import traceback
