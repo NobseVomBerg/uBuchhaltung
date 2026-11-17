@@ -261,6 +261,61 @@ def bank_effect(stored, amount, coa_id, counter_coa_id, parent_coa_ids, bank_coa
     return amount if is_bank_effective(coa_id, counter_coa_id, bank_coa_ids) else 0
 
 
+def link_effect(stored, amount, coa_id, counter_coa_id, parent_coa_ids, bank_coa_ids, payment_coa_ids):
+    """Wirkung eines noch freien Buchungssatzes auf das Konto einer Bankbewegung – die Frage des
+    automatischen Abgleichs (``link_bank_to_entries``): Darf dieser Satz Kind dieser Bewegung werden?
+
+    Die Regel: Ein Satz wird nur verknüpft, wenn seine Wirkung auf das Konto der Bewegung – mit
+    Vorzeichen – deren Betrag entspricht, bei einer Gruppe die Summe der Wirkungen. Gerechnet wird mit
+    ``bank_effect``, also so wie die Split-Summe des Editors und ``find_unbalanced_splits``: Jede
+    automatische Verknüpfung ergibt damit eine ausgeglichene Split-Summe (im Rahmen der Toleranz,
+    mit der der Abgleich Beträge vergleicht).
+
+    Returns ``None``, wenn der Satz nie zu dieser Bewegung gehört:
+
+    * ``mirror_legacy`` – die Lesart seines Betrags ist unbekannt (``read_entry_form``), und der
+      Abgleich deutet sie nie, sonst würde er einen Satz nach einer Vermutung verknüpfen;
+    * ein Spiegel (``mirror_coa``/``mirror_counter``), der das Konto der Bewegung nicht berührt;
+    * jede andere Form, bei der eine Seite ein Zahlungskonto ist, das nicht das Konto der Bewegung
+      ist (Kasse, anderes eigenes Bankkonto, Verrechnungskonto 1460: ihre Geldseite ist eine andere);
+    * eine Umbuchung (``transfer``), die das Konto der Bewegung berührt oder nicht ganz kontiert ist,
+      und ein Zahlungssatz, bei dem das Konto der Bewegung nicht auf der Geldseite seiner Form steht
+      (``_MONEY_SIDES``): Die Wirkung wäre dort das Gegenteil des gespeicherten Betrags, ``bank_effect``
+      zählt ihn aber wie gespeichert – der Satz hinge an der Bewegung in der falschen Richtung;
+
+    sonst ``bank_effect`` – die Wirkung mit Vorzeichen, **0 bei einer Umbuchung ohne Geldseite**
+    (Wartekonto an Erlöskonto, Privatanteil): Sie gehört zum Beleg, bewegt aber kein Geld, und
+    verknüpft wird sie nur zusammen mit dem Satz, der das Geld bewegt.
+
+    ``parent_coa_ids``: die COA-IDs des Kontos der Bewegung (leer/``None``, wenn es keine SKR-Nummer
+    hat), ``bank_coa_ids``: die eigenen Bank-/Kassenkonten, ``payment_coa_ids``: alle Zahlungskonten
+    (``Database.get_payment_coa_ids``, dazu zählt das Verrechnungskonto 1460)."""
+    form = read_entry_form(stored, coa_id, counter_coa_id, payment_coa_ids)
+    if form == FORM_MIRROR_LEGACY:
+        return None
+    parent = parent_coa_ids or set()
+    touches = coa_id in parent or counter_coa_id in parent
+    if form in (FORM_MIRROR_COA, FORM_MIRROR_COUNTER):
+        return bank_effect(form, amount, coa_id, counter_coa_id, parent, bank_coa_ids) if touches else None
+    money = set(bank_coa_ids) | set(payment_coa_ids)
+    if any(side is not None and side in money and side not in parent
+           for side in (coa_id, counter_coa_id)):
+        return None
+    if form == FORM_TRANSFER:
+        # Eine Umbuchung hat keine Geldseite: Ihr Betrag sagt „Konto im Soll“, nicht die Richtung einer
+        # Geldbewegung. Berührt sie trotzdem das Konto der Bewegung (es wurde erst später Bankkonto) oder
+        # ist eine Seite leer, ließe sich die Richtung nur vermuten – nie Kandidat.
+        return None if touches or coa_id is None or counter_coa_id is None else 0
+    # Zahlungssatz: Der Betrag trägt die Richtung auf der Geldseite der Form. Steht das Konto der Bewegung
+    # auf der ANDEREN Seite, wäre die Wirkung das Gegenteil des Betrags – ``bank_effect`` zählte ihn trotzdem
+    # mit Vorzeichen wie gespeichert, der Satz hinge an der Bewegung in der falschen Richtung.
+    coa_is_money = _MONEY_SIDES.get(form, (False, True))[0]
+    money_side, other_side = (coa_id, counter_coa_id) if coa_is_money else (counter_coa_id, coa_id)
+    if money_side in parent or (money_side is None and other_side not in parent):
+        return bank_effect(form, amount, coa_id, counter_coa_id, parent, bank_coa_ids)
+    return None
+
+
 # SKR04-Konten 1000–1099 sind Vorräte. Bis 2.0.x galten sie als Kasse (der SKR03-Kassenbereich,
 # den die WISO-Importe fest als liquide behandelt haben); die Migration auf 2.1.0 schreibt
 # fest, wie der Bestand damals gelesen wurde. Seither sind sie kein Geldkonto mehr – Importe
@@ -766,6 +821,24 @@ class TransferCheck(NamedTuple):
     trigger: Optional[tuple]    # (Datum, Betrag€) der ältesten Bewegung, die einen dieser Sätze auslöst (Hinweis 3), sonst ``None``
 
 
+#: Die Spalten eines Kandidaten des Auto-Abgleichs, in der Reihenfolge von ``_Cand``.
+_CAND_COLUMNS = 'ID, Text, COA_ID, CounterCOA_ID, DocumentNumber, RecipientClient, Amount, EntryForm, Account_ID'
+
+
+class _Cand(NamedTuple):
+    """Ein freier Buchungssatz als Kandidat im Auto-Abgleich (``link_bank_to_entries``): Die Stufen greifen
+    auf Felder mit Namen zu, nie auf einen Index – so landet nie ein falsches Feld im Text der Bankzeile."""
+    id: int
+    text: Optional[str]
+    coa: Optional[int]
+    counter: Optional[int]
+    docnr: Optional[str]
+    recipient: Optional[str]
+    amount: Optional[int]       # Minor Units
+    form: Optional[str]         # ``Bookings.EntryForm``
+    account_id: Optional[int]
+
+
 class MatchingMixin:
     @staticmethod
     def _account_coa_sets(cursor):
@@ -1117,41 +1190,74 @@ class MatchingMixin:
         """Verknüpft Bank-Buchungen (BookingType='bank') mit passenden
         Entry-Buchungen (BookingType='entry') über ParentBooking_ID.
 
-        Matching-Strategien (in dieser Reihenfolge):
+        Angefasst werden nur Bankbewegungen ohne Kinder und Sätze ohne
+        ParentBooking_ID: Eine bestehende Verknüpfung (auch eine von Hand
+        gesetzte, falsch gerichtete) und der Text der Bankbewegung ändern
+        sich nie.
 
-        Stufe 1 – Datum + normalisierter Empfänger + ABS(Betrag):
-            Leerzeichen in RecipientClient werden komprimiert (REPLACE+LOWER).
-            Doppik-Entries (COA 1460-1940) werden rausgefiltert.
-            Mehrfach-Treffer (z.B. Fraenk) werden 1:1 zugeordnet.
+        Richtungsregel (Stufen 1–6): Ein Satz wird nur verknüpft, wenn seine
+        Wirkung auf das Konto der Bankbewegung – mit Vorzeichen, gerechnet wie
+        in der Split-Summe (``link_effect``, ``bank_effect``) – dem Betrag der
+        Bewegung entspricht; bei einer Gruppe die Summe der Wirkungen. Eine
+        Lastschrift (−) wird so nie mit einer Einnahme (+) verknüpft, ein Satz
+        auf einer anderen Geldseite (Kasse, anderes eigenes Bankkonto, 1460)
+        oder mit dem Account_ID eines anderen Kontos nie mit dieser Bewegung.
+        Ein Spiegel der Form ``mirror_legacy`` (Lesart unbekannt) wird nie
+        automatisch verknüpft. Umbuchungen ohne Geldseite (Wirkung 0, z.B.
+        Wartekonto an Erlöskonto, Privatanteil) zählen bei der Eindeutigkeit der
+        Einzelstufen mit, werden dort aber nie allein verknüpft – nur zusammen
+        mit dem Satz, der das Geld bewegt (Gruppen-Stufen). Die Beträge
+        vergleichen alle Stufen mit einer Toleranz von unter 50 Minor Units.
 
-        Stufe 2 – Datum + ABS(Betrag):
+        Matching-Strategien (in der Reihenfolge, in der sie laufen: 0, 1, 2,
+        4, 3, 3b, 3c, 3d, 5, 6, 6b, Nachlauf 6c, 7):
+
+        Stufe 0 – Quellklammer (SourceGroup, z.B. WISO-ACCOUNTINGID):
+            Wo der Import die Zusammengehörigkeit mitgeliefert hat, wird
+            nichts geraten; die Summe rechnet schon mit Vorzeichen.
+
+        Stufe 1 – Datum + normalisierter Empfänger + Wirkung:
+            Leerzeichen in RecipientClient werden komprimiert, Groß-/Klein-
+            schreibung ignoriert. Doppik-Entries (beide Seiten eigene
+            Bankkonten) werden rausgefiltert. Mehrfach-Treffer (z.B. Fraenk):
+            der Token-Treffer, sonst der erste, dessen Wirkung passt. Passt
+            keiner, geht es mit Stufe 2 weiter.
+
+        Stufe 2 – Datum + Wirkung:
             Ohne Empfänger-Bedingung, Doppik-Filter aktiv.
-            Eindeutiger Treffer wird verknüpft.
+            Ein eindeutiger Treffer wird verknüpft, wenn seine Wirkung passt.
 
-        Stufe 3 – Split-Gruppe: Datum + ABS(SUM der Gruppenmitglieder):
+        Stufe 4 – DocumentNumber als Tiebreaker (läuft vor Stufe 3):
+            Falls Stufe 2 mehrere Treffer liefert, wird versucht
+            ob genau einer die passende Belegnummer enthält (und passt).
+
+        Stufe 3 – Split-Gruppe: Datum + SUM der Wirkungen der Gruppenmitglieder:
             Für Bank-Buchungen die einer BookingGroup (Split) entsprechen.
+            Vorfilter: ABS der Summe der Beträge.
 
-        Stufe 3b – Rechnungs-Split: Datum + ABS(SUM/Anzahl):
+        Stufe 3b – Rechnungs-Split: Datum + SUM der Wirkungen:
             Für Ausgangsrechnungs-Zahlungen die als Doppelbuchung
             erfasst werden (z.B. Bank 1810 + Erlöse 4405).  Die Gruppe
             wird nur verknüpft, wenn mindestens ein Mitglied ein
-            Bank-COA hat.
+            Bank-COA hat. Vorfilter: ABS(SUM/Anzahl).
 
         Stufe 3c – Privatanteil-Split: Datum + SUM ohne Privatentnahme-Offset:
             Für Split-Gruppen deren Summe durch eine positive
             Privatentnahme-Gegenbuchung (COA 2100–2199) verfälscht wird.
             Die Gruppensumme abzüglich des positiven Privatanteils
-            muss dem Bankbetrag entsprechen.
+            muss dem Bankbetrag entsprechen; die Wirkungen müssen es auch.
 
         Stufe 3d – Sammelzahlung: Datum + mehrere Rechnungsnummern im Text:
             Für Bank-Buchungen mit komma-getrennten Rechnungsnummern im
             Text (z.B. "2025011,2025010").  Die Entries mehrerer
             BookingGroups werden zusammengefasst.  Summe der Bank-COA-
-            Entries über alle Gruppen muss dem Bankbetrag entsprechen.
+            Entries über alle Gruppen muss dem Bankbetrag entsprechen, und
+            die Summe der Wirkungen aller Entries ebenso.
 
-        Stufe 4 – DocumentNumber als Tiebreaker:
-            Falls Stufe 2 mehrere Treffer liefert, wird versucht
-            ob genau einer die passende Belegnummer enthält.
+        Gruppen (3, 3b, 3c, 3d) gelten nur als Treffer, wenn jedes Mitglied,
+        das verknüpft würde (unverknüpft, keine Forderung), eine Wirkung hat
+        (nicht ``None``), mindestens eines Geld bewegt (≠ 0) und die Summe der
+        Wirkungen den Bankbetrag trifft.
 
         Stufe 5 – Text-Token-Matching:
             Letzte Chance: Extrahiert lange Ziffernfolgen (>= 8 Stellen)
@@ -1165,7 +1271,11 @@ class MatchingMixin:
             Privatentnahmen ohne BelegNr), wird der Entry mit dem
             ähnlichsten Text gewählt (SequenceMatcher, normalisiert).
             Nur wenn der Beste eindeutig besser ist als der Zweitbeste
-            und die Ähnlichkeit > 50 % beträgt.
+            und die Ähnlichkeit > 50 % beträgt – und seine Wirkung passt.
+
+        Stufe 6b/6c – mehrere Quellgruppen zusammen (und der Nachlauf dazu):
+            WISO zerlegt manche Belege in mehrere Vorgänge; die Summe
+            rechnet mit Vorzeichen wie Stufe 0.
 
         Stufe 7 – Debitoren-Auflösung (nach der Hauptschleife):
             Debitoren-Entries (COA 10000) bei Rechnungserstellung haben
@@ -1204,6 +1314,9 @@ class MatchingMixin:
 
         # Doppik-COA-IDs — nur echte Bankkonten (aus Accounts-Tabelle)
         bank_coa_ids = self._get_bank_coa_ids(cursor)
+        # Alle Zahlungskonten (eigene Konten + 1460) für ``link_effect``: Ein Satz, dessen
+        # Geldseite ein anderes Zahlungskonto ist, gehört nie zu dieser Bankbewegung.
+        payment_coa_ids = self._get_payment_coa_ids(cursor)
 
         # Privatentnahmen-COA-IDs (SKR04 Konten 2100-2199)
         cursor.execute('''
@@ -1247,9 +1360,7 @@ class MatchingMixin:
             """Rein liquide Spiegelbuchungen rausfiltern (COA und Gegenkonto)."""
             filtered = []
             for e in entries:
-                coa_id = e[2]
-                counter_coa_id = e[3]
-                if coa_id in bank_coa_ids and counter_coa_id in bank_coa_ids:
+                if e.coa in bank_coa_ids and e.counter in bank_coa_ids:
                     continue
                 filtered.append(e)
             return filtered
@@ -1257,7 +1368,7 @@ class MatchingMixin:
         def _filter_already(entries):
             """Bereits in diesem Durchlauf verknüpfte Entries und Forderungen rausfiltern."""
             return [e for e in entries
-                    if e[0] not in already_linked_entry_ids and e[0] not in receivable_ids]
+                    if e.id not in already_linked_entry_ids and e.id not in receivable_ids]
 
         import re
         from difflib import SequenceMatcher
@@ -1286,7 +1397,7 @@ class MatchingMixin:
                        if any(c.isdigit() for c in t)}
             return tokens
 
-        def _token_tiebreak(bank_text, entries, text_idx=1):
+        def _token_tiebreak(bank_text, entries):
             """Unter mehreren Entries denjenigen finden, der einen
             gemeinsamen numerischen Token mit dem Banktext teilt.
 
@@ -1297,26 +1408,21 @@ class MatchingMixin:
 
             Args:
                 bank_text: Text der Bank-Buchung
-                entries:   Kandidaten-Liste (Tuples)
-                text_idx:  Index des Text-Feldes im Tuple. Alle Abfragen hier
-                           liefern (ID, Text, COA_ID, …) – der Text steht auf
-                           1. Der frühere Default 2 traf COA_ID und ließ die
-                           Stufe mit TypeError abstürzen, sobald sie überhaupt
-                           mehrere Kandidaten bekam.
+                entries:   Kandidaten-Liste (``_Cand``); verglichen wird ihr Text
 
             Returns:
-                Einzel-Entry-Tuple oder None.
+                Einzel-Kandidat (``_Cand``) oder None.
             """
             bank_tokens = _extract_tokens(bank_text)
             if not bank_tokens:
                 return None
             matches = [e for e in entries
-                       if _extract_tokens(e[text_idx]) & bank_tokens]
+                       if _extract_tokens(e.text) & bank_tokens]
             if len(matches) == 1:
                 return matches[0]
             if len(matches) >= 2:
                 # Score = Anzahl gemeinsamer Tokens; höchster gewinnt
-                scored = [(len(_extract_tokens(e[text_idx]) & bank_tokens), e)
+                scored = [(len(_extract_tokens(e.text) & bank_tokens), e)
                           for e in matches]
                 scored.sort(key=lambda x: x[0], reverse=True)
                 if scored[0][0] > scored[1][0]:
@@ -1347,6 +1453,18 @@ class MatchingMixin:
                   AND NOT {receivable_sql}
             ''', [docnr, bank_date] + receivable_params)
             return {r[0] for r in cursor.fetchall()}
+
+        def _docnr_members(docnr, bank_date):
+            """Die Sätze, die ``_link_docnr_group`` mit der Bank verknüpfen würde: alle
+            unverknüpften Buchungen eines Belegs an diesem Tag, ohne Forderungen (dieselbe
+            Bedingung wie dort). Als ``_Cand``."""
+            cursor.execute(f'''
+                SELECT {_CAND_COLUMNS} FROM Bookings
+                WHERE DocumentNumber = ? AND DateBooking = ?
+                  AND BookingType = 'entry' AND ParentBooking_ID IS NULL
+                  AND NOT {receivable_sql}
+            ''', [docnr, bank_date] + receivable_params)
+            return [_Cand(*row) for row in cursor.fetchall()]
 
         # COA des jeweils eigenen Zahlungskontos – nur damit lässt sich unter
         # mehreren gleichbetragigen Gruppen desselben Tages die richtige
@@ -1477,18 +1595,54 @@ class MatchingMixin:
                                    (member[4], bank_id))
                     break
 
-        def _do_link(bank_id, entry_id, entry_text):
-            """Einzelne Entry-Buchung mit der Bank-Buchung verknüpfen."""
+        def _do_link(bank_id, cand):
+            """Einzelnen Kandidaten (``_Cand``) mit der Bank-Buchung verknüpfen."""
             cursor.execute('''
                 UPDATE Bookings SET ParentBooking_ID = ?
                 WHERE ID = ?
-            ''', (bank_id, entry_id))
-            already_linked_entry_ids.add(entry_id)
+            ''', (bank_id, cand.id))
+            already_linked_entry_ids.add(cand.id)
             # WISO-Text auf die Bank-Buchung übernehmen (manuell kuratiert)
-            if entry_text:
+            if cand.text:
                 cursor.execute(
                     'UPDATE Bookings SET Text = ? WHERE ID = ?',
-                    (entry_text, bank_id))
+                    (cand.text, bank_id))
+
+        # Richtungsregel (siehe ``link_effect``). Die vier Helfer rechnen für die Bankbewegung, die die
+        # Schleife unten gerade prüft: ``bank_account_id`` und ``bank_amount`` sind deren Konto und Betrag.
+        def effect(c):
+            """Wirkung des Satzes auf das Konto der Bankbewegung, mit Vorzeichen (``link_effect``);
+            ``None`` = gehört nicht zu ihr. Ein Satz mit eigenem ``Account_ID`` (eigenständig auf
+            einer Kasse) gehört nur zu Bewegungen desselben Kontos."""
+            if c.account_id is not None and c.account_id != bank_account_id:
+                return None
+            if c.amount is not None and (isinstance(c.amount, bool) or not isinstance(c.amount, (int, float))):
+                return None             # Betrag als Text (Eingriff von Hand): nicht rechnen, nie Kandidat
+            return link_effect(c.form, c.amount, c.coa, c.counter,
+                               account_coas.get(bank_account_id), bank_coa_ids, payment_coa_ids)
+
+        def fits(c):
+            """Bewegt der Satz Geld, und zwar den Betrag der Bankbewegung (in deren Richtung)?
+            Eine Umbuchung (Wirkung 0) passt nie."""
+            e = effect(c)
+            return e is not None and e != 0 and abs(e - bank_amount) < 50
+
+        def _single_candidates(pool):
+            """Einzelkandidaten der Bankbewegung (Stufen 1, 2, 4, 5, 6): ohne Doppik-Spiegel, ohne
+            schon verknüpfte Sätze und Forderungen, ohne Sätze, die nie zu dieser Bewegung gehören
+            oder in die falsche Richtung bewegen. Umbuchungen (Wirkung 0) bleiben: Sie zählen bei
+            der Eindeutigkeit mit (sonst verknüpfte Stufe 2 bei „Bank an Debitoren“ + „Wartekonto an
+            Erlöskonto“ die Zahlung allein und ließe die Umbuchung frei), verknüpft wird nur, was ``fits``."""
+            return [c for c in _filter_already(_filter_doppik(pool))
+                    if fits(c) or effect(c) == 0]
+
+        def _group_fits(members):
+            """Trifft die Gruppe die Bankbewegung? Jedes Mitglied, das verknüpft würde, hat eine Wirkung,
+            mindestens eines bewegt Geld, und die Summe der Wirkungen entspricht dem Betrag."""
+            effects = [effect(c) for c in members]
+            if not effects or None in effects or not any(effects):
+                return False
+            return abs(sum(effects) - bank_amount) < 50
 
         for bank in bank_bookings:
             (bank_id, bank_date, bank_amount, bank_account_id,
@@ -1508,76 +1662,62 @@ class MatchingMixin:
                 linked += 1
                 continue
 
-            # ── Stufe 1: Datum + Empfänger (normalisiert) + ABS(Betrag) ──
-            if recip_norm:
-                cursor.execute('''
-                    SELECT ID, Text, COA_ID, CounterCOA_ID, RecipientClient FROM Bookings
-                    WHERE BookingType = 'entry'
-                      AND ParentBooking_ID IS NULL
-                      AND DateBooking = ?
-                      AND ABS(ABS(Amount) - ?) < 50
-                ''', (bank_date, abs_amount))
-                raw = cursor.fetchall()
-                entries = _filter_already(_filter_doppik(
-                    [e for e in raw if _norm(e[4]) == recip_norm
-                     or _norm(e[1]) != '' and recip_norm in _norm(e[1])]
-                ))
-                if not entries:
-                    # Fallback: direkter DB-Vergleich (REPLACE normalisiert)
-                    cursor.execute('''
-                        SELECT ID, Text, COA_ID, CounterCOA_ID FROM Bookings
-                        WHERE BookingType = 'entry'
-                          AND ParentBooking_ID IS NULL
-                          AND DateBooking = ?
-                          AND ABS(ABS(Amount) - ?) < 50
-                          AND LOWER(REPLACE(REPLACE(REPLACE(TRIM(
-                              COALESCE(RecipientClient,'')), '  ', ' '), '  ', ' '), '  ', ' '))
-                            = ?
-                    ''', (bank_date, abs_amount, recip_norm))
-                    entries = _filter_already(_filter_doppik(cursor.fetchall()))
-                if len(entries) == 1:
-                    _do_link(bank_id, entries[0][0], entries[0][1])
-                    linked += 1
-                    continue
-                if len(entries) >= 2:
-                    # Mehrere Treffer: Token-Tiebreak (z.B. Fraenk-Nummern)
-                    token_hit = _token_tiebreak(bank_text, entries)
-                    if token_hit:
-                        _do_link(bank_id, token_hit[0], token_hit[1])
-                        linked += 1
-                        continue
-                    # Fallback: ersten verfügbaren nehmen
-                    _do_link(bank_id, entries[0][0], entries[0][1])
-                    linked += 1
-                    continue
-
-            # ── Stufe 2: Datum + ABS(Betrag) ─────────────────────────────
-            cursor.execute('''
-                                SELECT ID, Text, COA_ID, CounterCOA_ID, DocumentNumber
-                FROM Bookings
+            # ── Kandidaten der Einzelstufen 1, 2, 4, 5, 6 ────────────────
+            # EINE Abfrage je Bankbewegung (nichts wird verknüpft, bevor eine Stufe
+            # ``continue`` sagt, der Bestand ist für alle Stufen derselbe): Betrag
+            # ohne Vorzeichen als Vorfilter, ID-Reihenfolge wie bisher. Die Richtung
+            # entscheidet erst ``_single_candidates`` (Wirkung mit Vorzeichen).
+            cursor.execute(f'''
+                SELECT {_CAND_COLUMNS} FROM Bookings
                 WHERE BookingType = 'entry'
                   AND ParentBooking_ID IS NULL
                   AND DateBooking = ?
                   AND ABS(ABS(Amount) - ?) < 50
+                ORDER BY ID
             ''', (bank_date, abs_amount))
-            entries = _filter_already(_filter_doppik(cursor.fetchall()))
-            if len(entries) == 1:
+            candidates = _single_candidates([_Cand(*row) for row in cursor.fetchall()])
+
+            # ── Stufe 1: Datum + Empfänger (normalisiert) + Wirkung ──────
+            if recip_norm:
+                entries = [c for c in candidates
+                           if _norm(c.recipient) == recip_norm
+                           or _norm(c.text) != '' and recip_norm in _norm(c.text)]
+                hit = None
+                if len(entries) == 1:
+                    hit = entries[0] if fits(entries[0]) else None
+                elif len(entries) >= 2:
+                    # Mehrere Treffer: Token-Tiebreak (z.B. Fraenk-Nummern)
+                    hit = _token_tiebreak(bank_text, entries)
+                    if hit is None:
+                        # Fallback: den ersten passenden nehmen
+                        hit = next((c for c in entries if fits(c)), None)
+                    elif not fits(hit):
+                        # Die Kennung zeigt auf eine Umbuchung: Ihr Beleg gehört als Gruppe zur Bewegung
+                        # (Stufe 3b) – hier keinen Satz eines anderen Belegs desselben Empfängers nehmen
+                        hit = None
+                if hit is not None:
+                    _do_link(bank_id, hit)
+                    linked += 1
+                    continue
+
+            # ── Stufe 2: Datum + Wirkung ─────────────────────────────────
+            if len(candidates) == 1 and fits(candidates[0]):
                 # Nur diesen Entry linken, NICHT die ganze Gruppe
-                _do_link(bank_id, entries[0][0], entries[0][1])
+                _do_link(bank_id, candidates[0])
                 linked += 1
                 continue
 
             # ── Stufe 4: DocumentNumber als Tiebreaker ───────────────────
-            if len(entries) > 1 and bank_docnr:
-                doc_match = [e for e in entries
-                             if e[4] and (bank_docnr in e[4] or e[4] in bank_docnr)]
-                if len(doc_match) == 1:
+            if len(candidates) > 1 and bank_docnr:
+                doc_match = [c for c in candidates
+                             if c.docnr and (bank_docnr in c.docnr or c.docnr in bank_docnr)]
+                if len(doc_match) == 1 and fits(doc_match[0]):
                     # Nur diesen Entry linken, NICHT die ganze Gruppe
-                    _do_link(bank_id, doc_match[0][0], doc_match[0][1])
+                    _do_link(bank_id, doc_match[0])
                     linked += 1
                     continue
 
-            # ── Stufe 3: Split-Gruppe — SUM(Betrag) passt ────────────────
+            # ── Stufe 3: Split-Gruppe — SUM(Betrag) und Wirkung passen ───
             cursor.execute('''
                 SELECT b.DocumentNumber, COUNT(*) AS cnt
                 FROM Bookings b
@@ -1590,7 +1730,8 @@ class MatchingMixin:
                    AND ABS(ABS(SUM(b.Amount)) - ?) < 50
             ''', (bank_date, abs_amount))
             groups = [g for g in cursor.fetchall()
-                      if not (_docnr_ids(g[0], bank_date) & already_linked_entry_ids)]
+                      if not (_docnr_ids(g[0], bank_date) & already_linked_entry_ids)
+                      and _group_fits(_docnr_members(g[0], bank_date))]
             if len(groups) == 1:
                 _link_docnr_group(bank_id, groups[0][0], bank_date)
                 linked += 1
@@ -1623,7 +1764,8 @@ class MatchingMixin:
                     " AND DateBooking = ? AND BookingType = 'entry'",
                     (docnr, bank_date))
                 coa_ids = {r[0] for r in cursor.fetchall()}
-                if coa_ids & bank_coa_ids:  # mindestens ein Bank-COA
+                if (coa_ids & bank_coa_ids  # mindestens ein Bank-COA
+                        and _group_fits(_docnr_members(docnr, bank_date))):
                     inv_matches.append(docnr)
             if len(inv_matches) == 1:
                 _link_docnr_group(bank_id, inv_matches[0], bank_date)
@@ -1653,7 +1795,8 @@ class MatchingMixin:
                    AND ABS(ABS(total - private_offset) - ?) < 50
             ''', (bank_date, abs_amount))
             priv_matches = [g[0] for g in cursor.fetchall()
-                            if not (_docnr_ids(g[0], bank_date) & already_linked_entry_ids)]
+                            if not (_docnr_ids(g[0], bank_date) & already_linked_entry_ids)
+                            and _group_fits(_docnr_members(g[0], bank_date))]
             if len(priv_matches) == 1:
                 _link_docnr_group(bank_id, priv_matches[0], bank_date)
                 linked += 1
@@ -1664,22 +1807,23 @@ class MatchingMixin:
             # getrennte Rechnungsnummern (z.B. "2025011,2025010").
             # Die zugehörigen Entries liegen in verschiedenen
             # BookingGroups.  Summe der Bank-COA-Entries über alle
-            # Gruppen muss dem Bankbetrag entsprechen.
+            # Gruppen muss dem Bankbetrag entsprechen – und die Summe der
+            # Wirkungen aller Entries auf das Konto der Bankbewegung ebenso
+            # (mit Vorzeichen).
             doc_nr_candidates = set(re.findall(r'\b\d{4,}\b',
                                                bank_text or ''))
             if len(doc_nr_candidates) >= 2:
                 ph = ','.join('?' * len(doc_nr_candidates))
                 cursor.execute(f'''
-                    SELECT ID, Text, COA_ID,
-                           CounterCOA_ID, DocumentNumber, Amount
+                    SELECT {_CAND_COLUMNS}
                     FROM Bookings
                     WHERE BookingType = 'entry'
                       AND ParentBooking_ID IS NULL
                       AND DateBooking = ?
                       AND DocumentNumber IN ({ph})
                 ''', (bank_date, *doc_nr_candidates))
-                sammel_entries = _filter_already(cursor.fetchall())
-                doc_nrs_found = {e[4] for e in sammel_entries}
+                sammel_entries = _filter_already([_Cand(*row) for row in cursor.fetchall()])
+                doc_nrs_found = {e.docnr for e in sammel_entries}
                 if len(doc_nrs_found) >= 2 and len(sammel_entries) >= 2:
                     # Zahlungseingänge sind als Doppelbuchung erfasst (COA =
                     # Bankkonto): dann zählt nur deren Bank-Seite. Ausgaben
@@ -1687,37 +1831,31 @@ class MatchingMixin:
                     # Zeile – dort ist die Summe aller Belege maßgeblich, sonst
                     # bliebe eine Sammelüberweisung an Lieferanten unverknüpft.
                     bank_coa_sum = sum(
-                        e[5] for e in sammel_entries
-                        if e[2] in bank_coa_ids)
+                        e.amount for e in sammel_entries
+                        if e.coa in bank_coa_ids)
                     if bank_coa_sum == 0:
-                        bank_coa_sum = sum(e[5] for e in sammel_entries)
-                    if abs(abs(bank_coa_sum) - abs_amount) < 50:
+                        bank_coa_sum = sum(e.amount for e in sammel_entries)
+                    if (abs(abs(bank_coa_sum) - abs_amount) < 50
+                            and _group_fits(sammel_entries)):
                         for e in sammel_entries:
                             cursor.execute(
                                 'UPDATE Bookings SET ParentBooking_ID = ?'
                                 ' WHERE ID = ?',
-                                (bank_id, e[0]))
-                            already_linked_entry_ids.add(e[0])
+                                (bank_id, e.id))
+                            already_linked_entry_ids.add(e.id)
                         linked += 1
                         continue
 
             # ── Stufe 5: Text-Token-Matching (letzte Chance) ───────────
             # Suche unter allen ungelinkten Entries desselben Datums+Betrags
-            # nach einem gemeinsamen numerischen Token (>= 6 Stellen) im
-            # Buchungstext.  Deckt z.B. fraenk-EREF-Nummern, SHBB-RNR-
-            # Nummern und andere Fälle mit Transaktions-IDs im Text ab.
-            cursor.execute('''
-                SELECT ID, Text, COA_ID, CounterCOA_ID
-                FROM Bookings
-                WHERE BookingType = 'entry'
-                  AND ParentBooking_ID IS NULL
-                  AND DateBooking = ?
-                  AND ABS(ABS(Amount) - ?) < 50
-            ''', (bank_date, abs_amount))
-            all_candidates = _filter_already(_filter_doppik(cursor.fetchall()))
-            token_hit = _token_tiebreak(bank_text, all_candidates)
-            if token_hit:
-                _do_link(bank_id, token_hit[0], token_hit[1])
+            # (die Kandidaten von oben) nach einem gemeinsamen numerischen
+            # Token (>= 6 Stellen) im Buchungstext.  Deckt z.B. fraenk-EREF-
+            # Nummern, SHBB-RNR-Nummern und andere Fälle mit Transaktions-IDs
+            # im Text ab.  Verknüpft wird der Token-Treffer nur, wenn seine
+            # Wirkung passt.
+            token_hit = _token_tiebreak(bank_text, candidates)
+            if token_hit is not None and fits(token_hit):
+                _do_link(bank_id, token_hit)
                 linked += 1
                 continue
 
@@ -1727,24 +1865,25 @@ class MatchingMixin:
             # nahmen ohne BelegNr), wird der Entry mit dem ähnlichsten
             # Text gewählt.  Normalisierung: Leerzeichen entfernen,
             # lowercase.  Eindeutig bester Score (> zweitbester und > 0.5)
-            # wird verknüpft.
-            if len(all_candidates) >= 2:
+            # wird verknüpft – wenn seine Wirkung passt.
+            if len(candidates) >= 2:
                 def _text_norm(s):
                     return ''.join((s or '').lower().split())
                 bank_norm = _text_norm(bank_text)
                 if bank_norm:
                     scored = [
                         (SequenceMatcher(None, bank_norm,
-                                         _text_norm(e[1])).ratio(), e)
-                        for e in all_candidates
+                                         _text_norm(c.text)).ratio(), c)
+                        for c in candidates
                     ]
                     scored.sort(key=lambda x: x[0], reverse=True)
                     if (scored[0][0] > scored[1][0]
                             and scored[0][0] > 0.5):
                         best = scored[0][1]
-                        _do_link(bank_id, best[0], best[2])
-                        linked += 1
-                        continue
+                        if fits(best):
+                            _do_link(bank_id, best)
+                            linked += 1
+                            continue
 
             # ── Stufe 6b: mehrere Quellgruppen zusammen ─────────────────
             # Letzte Stufe, damit alle genaueren zuerst greifen. Deckt den

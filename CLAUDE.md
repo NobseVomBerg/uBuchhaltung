@@ -439,6 +439,29 @@ kein Subagent darauf:
   (Schlüssel: ihre ID). Verknüpfung und Split-Summe rechnen mit den eigenen Bankkonten
   (`get_bank_coa_ids`); ein Spiegel mit bekannter Lesart wirkt in der Split-Summe nach seiner
   Position auf dem Konto der Bankbewegung (`bank_effect`), im Dashboard aus Sicht der Kasse
+- **Automatischer Abgleich** (`link_bank_to_entries`, läuft nach jedem Import; seit 2.3.14 mit Richtungsregel): Angefasst
+  werden nur Bankbewegungen ohne Kinder und Sätze ohne `ParentBooking_ID` – eine bestehende Verknüpfung und der Text der
+  Bankbewegung ändern sich nie. In den Stufen 1–6 (Reihenfolge im Lauf: 0, 1, 2, 4, 3, 3b, 3c, 3d, 5, 6, 6b, Nachlauf, 7) wird
+  ein Satz nur verknüpft, wenn seine **Wirkung auf das Konto der Bankbewegung mit Vorzeichen** dem Betrag entspricht
+  (`matching.link_effect` ∈ {`None`, `bank_effect`}; Toleranz unter 50 Minor Units = ein halber Cent), bei Gruppen die
+  Summe der Wirkungen – jede automatische Verknüpfung ergibt damit eine ausgeglichene Split-Summe. `None` (nie Kandidat):
+  `mirror_legacy` (Lesart unbekannt, wird nie gedeutet), ein Spiegel, der das Konto der Bewegung nicht berührt, jeder Satz
+  mit einem ANDEREN Zahlungskonto auf einer Seite (Kasse, zweites eigenes Bankkonto, 1460), jeder Satz mit dem
+  `Account_ID` eines anderen Kontos, ein Satz, dessen Betrag nicht als Zahl gespeichert ist – und **jeder Satz, bei dem das
+  Konto der Bewegung nicht auf der Geldseite seiner Form steht** (`_MONEY_SIDES`): eine Umbuchung (`transfer`), die das
+  Konto berührt oder nicht ganz kontiert ist, `purpose_first` mit dem Konto vorn, `liquid_first` mit dem Konto hinten. Dort
+  wäre die Wirkung das Gegenteil des gespeicherten Betrags, `bank_effect` zählt ihn aber wie gespeichert – der Satz hinge
+  an der Bewegung in der falschen Richtung, und die Split-Summe meldete nichts. Umbuchungen ohne Geldseite (Wirkung 0: „Wartekonto an Erlöskonto“, Privatanteil, AfA)
+  zählen bei der Eindeutigkeit der Einzelstufen mit, werden aber nie allein verknüpft – nur in einer Gruppe mit dem Satz,
+  der das Geld bewegt. Die Kandidaten sind `_Cand`-Tupel, Zugriff nur über Namen (`_do_link(bank_id, cand)` – so landet nie
+  wieder ein falsches Feld im Banktext). Stufe 0, 6b, der Nachlauf und Stufe 7 rechneten schon mit Vorzeichen und sind
+  unverändert. In Stufe 1 nimmt der Rückgriff „erster passender Satz des Empfängers“ nur, wenn keine Kennung trifft; zeigt
+  die Kennung auf eine Umbuchung, bleibt ihr Beleg der Gruppenstufe überlassen. Bewusst nicht mehr automatisch verknüpft
+  (die Richtung wäre nur vermutet): eine Umbuchung, deren Konto erst später Bankkonto wurde oder deren Gegenkonto
+  leer/unbekannt ist (WISO-Textimport mit unbekanntem Konto), Sätze gegen 1460 ohne Quellklammer, Sätze gegen eine
+  Kontonummer, die kein eigenes Konto ist (Bankkonto ohne SKR-Nummer). Sie bleiben frei – die Bankbewegung zeigt sich
+  als „ohne Buchungssatz“, der Satz fehlt in der EÜR, bis er im Editor von Hand zugeordnet ist. Diese Regel nicht
+  aufweichen – lieber eine Verknüpfung weniger als eine falsche (`tests/test_matching_direction.py`)
 - Kasse = SKR04-Konto 1600 als eigenes Konto: Eine neu angelegte Kasse
   (`ensure_kasse_exists`, `insert_account`) bekommt 1600, das Konto wird bei Bedarf
   nachgelegt (`ensure_cash_coa`). Vorhandene Kassen behalten ihre Nummer (leer oder 1460);
