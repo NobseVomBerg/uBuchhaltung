@@ -615,7 +615,24 @@ def test_dashboard_counts_the_clearing_booking_once_linked_or_not(tmp_path, kass
     assert _dash(db) == expected
 
 
-@pytest.mark.parametrize('kasse_skr, form', LINK_PARAMS)
+# Der Buchungssatz-Editor ordnet nur zu, was das Zuordnen-Widget anbietet (``Database.adoptable_entry_ids``): einen Satz ohne eigenes
+# Konto (``Account_ID``). Die Form „kasse-konto“ trägt es (Konto = die Kasse) und wird abgelehnt – siehe den Test danach.
+ADOPT_PARAMS = [param for param in LINK_PARAMS if param.values[1] != 'kasse-konto']
+OWN_ACCOUNT_PARAMS = [param for param in LINK_PARAMS if param.values[1] == 'kasse-konto']
+
+
+def _adopt_in_the_editor(db, bank, giro, entry):
+    """Der Buchungssatz-Editor der Bankmaske bekommt die ID der bestehenden Buchung („vorhandene Buchung zuordnen“):
+    ``(Statuscode, Antwort)`` von ``handle_add_transaction``."""
+    return handle_add_transaction(db, {
+        'transaction_id': [str(bank)], 'date': ['2026-03-05'], 'amount': ['-119.00'],
+        'account': [str(giro)], 'currency': ['EUR'],
+        'split_id': [str(entry)], 'split_amount': ['-119.00'], 'split_coa': [str(_coa(db, 6815))],
+        'split_tax_rate': ['19'], 'split_tax_amount': ['-19.00'], 'split_docnr': [''],
+        'split_text': ['']})
+
+
+@pytest.mark.parametrize('kasse_skr, form', ADOPT_PARAMS)
 def test_standalone_entry_counts_once_when_the_split_editor_adopts_it(tmp_path, kasse_skr, form):
     """Dasselbe über den anderen App-Weg: Der Buchungssatz-Editor der Bankmaske übernimmt die
     bestehende Buchung („vorhandene Buchung zuordnen“)."""
@@ -625,17 +642,32 @@ def test_standalone_entry_counts_once_when_the_split_editor_adopts_it(tmp_path, 
     bank = db.insert_booking('2026-03-05', Decimal('-119'), account_id=giro, booking_type='bank')
     assert _euer(db) == PAID
 
-    status, _location = handle_add_transaction(db, {
-        'transaction_id': [str(bank)], 'date': ['2026-03-05'], 'amount': ['-119.00'],
-        'account': [str(giro)], 'currency': ['EUR'],
-        'split_id': [str(entry)], 'split_amount': ['-119.00'], 'split_coa': [str(_coa(db, 6815))],
-        'split_tax_rate': ['19'], 'split_tax_amount': ['-19.00'], 'split_docnr': [''],
-        'split_text': ['']})
+    status, _location = _adopt_in_the_editor(db, bank, giro, entry)
 
     assert status == 303
     assert _query(db, "SELECT ParentBooking_ID FROM Bookings WHERE ID = ?", (entry,)) == [(bank,)]
     assert _euer(db) == PAID
     assert _euer(db, [giro]) == PAID
+
+
+@pytest.mark.parametrize('kasse_skr, form', OWN_ACCOUNT_PARAMS)
+def test_standalone_entry_with_its_own_account_is_refused_by_the_split_editor_and_counts_once(
+        tmp_path, kasse_skr, form):
+    """Ein Satz mit eigenem Konto (``Account_ID`` = die Kasse) bietet das Zuordnen-Widget nicht an, und der Editor ordnet
+    ihn auch nicht zu, wenn ein Formular seine ID mitbringt (400, ``Database.adoptable_entry_ids``): Er bleibt eigenständig auf
+    der Kasse und zählt weiter genau einmal – früher wanderte er mit der Zuordnung unter die Bankbewegung."""
+    db = _make_db(tmp_path, kasse_skr)
+    giro, _kasse = _accounts(db)
+    entry = STANDALONE_FORMS[form][0](db)
+    bank = db.insert_booking('2026-03-05', Decimal('-119'), account_id=giro, booking_type='bank')
+    assert _euer(db) == PAID
+
+    status, message = _adopt_in_the_editor(db, bank, giro, entry)
+
+    assert (status, message) == (400, 'Zeile 1: Dieser Buchungssatz lässt sich keiner Bankbewegung zuordnen.')
+    assert _query(db, "SELECT ParentBooking_ID FROM Bookings WHERE ID = ?", (entry,)) == [(None,)]
+    assert _query(db, "SELECT COUNT(*) FROM Bookings WHERE ParentBooking_ID = ?", (bank,)) == [(0,)]
+    assert _euer(db) == PAID
 
 
 # ── Satz auf der Kasse mit zwei kontierten Seiten (Sektion 2b) ───────────────

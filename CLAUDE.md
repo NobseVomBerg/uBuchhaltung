@@ -629,6 +629,33 @@ kein Subagent darauf:
   ganzen Zuordnung (nicht, wenn danach mehr erstattet als gezahlt wäre: Ablehnung vor dem ersten Schreiben, siehe
   *Stornobeleg*), und `delete_transaction` aus der Liste bleibt ein ausdrückliches Löschen
   (`tests/test_split_editor_removal.py`)
+- **Speichern im Bank-Editor (seit 2.3.15) ist EINE Transaktion** (`Database.save_bank_with_rows(bank_id, bank_fields, plan)`,
+  `db/bookings.py`): `BEGIN IMMEDIATE` → Stand der Bankzeile lesen → **planen** (`handlers._plan_split_rows`, liest über eigene
+  Verbindungen – unter der Sperre ist der Stand stabil; deshalb VOR dem ersten Schreiben, und im Plan nie etwas schreiben) →
+  Bankzeile → Sätze (`_write_split_rows_in`: neu, geändert, zugeordnet; entfernte Zeilen über `_remove_split_row_in` abhängen
+  oder löschen) → Prüfung der zugeordneten Zahlung → Commit; das Replay-Log (`tx.log`) wird erst danach geschrieben (Bankzeile,
+  Zeilen, Abhängen). Jeder Fehler und jede Ablehnung nimmt alles zurück. **Innerhalb der Transaktion nie eine öffentliche
+  Methode aufrufen, die selbst schreibt oder `BEGIN` ausführt** (`delete_transaction`, `remove_split_row`,
+  `unassign_invoice_payment`, `update_booking_fields` ohne `tx`) – sie hinge an der eigenen Sperre; dafür gibt es die Bausteine
+  mit `tx`/`conn` (`update_booking_fields(tx=…)`, `insert_booking(tx=…)`, `_delete_transaction_in`, `_remove_split_row_in`,
+  `_split_rows_dropped`). Außerhalb bleiben, wie bisher: `consume_number`, `link_booking_to_invoice_capped` und – beim Speichern
+  einer Bankzeile ohne Editor – Spiegel und automatisches Kind. **Zuordnen lässt sich nur, was die Auswahl anbietet**
+  (`Database.adoptable_entry_ids`: dieselbe Bedingung wie `get_unlinked_entry_bookings`, ohne `LIMIT` – freier `entry` ohne
+  `Account_ID`, nicht `resolved`, kein markierter Zahlungssatz, keine Forderung) plus die eigenen Kinder der Bewegung: Jede andere ID in `split_id` – Kind
+  einer anderen Bewegung, Bankzeile, die Bewegung selbst, Forderung, unbekannt, keine Ganzzahl, doppelt – ist 400 mit „Zeile n:
+  …“, auch bei einer neuen Bewegung, und nichts ist gespeichert (`tests/test_split_editor_adopt_guard.py`,
+  `test_split_editor_atomic.py`). `transaction_id` wird streng gelesen (leer/0 = neu, sonst positive Ganzzahl oder 400); der
+  Editor nimmt höchstens `MAX_SPLIT_ROWS` = 500 Zeilen je Anfrage an (geplant und geschrieben wird unter der Schreibsperre)
+- **Bankbewegung mit zugeordneter Zahlung (seit 2.3.15, Entscheidung des Owners: ablehnen, nichts umrechnen):** Solange einer
+  Bankbewegung nach dem Speichern noch eine Zuordnung gehört (`InvoicePayments.BookingID` zeigt auf sie oder auf einen ihrer
+  Buchungssätze – so ordnet ein Import zu –: Zahlung oder Erstattung), lassen
+  sich **Betrag, Bankkonto und Buchungsdatum** nicht ändern (`_assigned_bank_change_blocker`, `BankChangeRefused` → 400:
+  „Dieser Bankbewegung ist eine Rechnungszahlung zugeordnet (Rechnung …). Bitte zuerst die Zuordnung an der Rechnung entfernen,
+  dann … ändern.“, bei Erstattungen der Wortlaut mit der Stornorechnung) – mit und ohne Editor. Verglichen wird mit dem Stand
+  vom Beginn der Transaktion (Betrag in Minor Units); ein unverändert zurückgeschickter Wert ist kein Verstoß; Empfänger, Text,
+  Währung und Steuerdatum bleiben frei. Geprüft wird NACH den Schreibschritten: Wer im selben Speichern alle Zeilen der Zahlung
+  entfernt, darf den Betrag mit ändern (`tests/test_bank_change_assigned_payment.py`). Die Zeilen der Zahlungssätze selbst
+  lassen sich im Editor weiterhin ändern (`docs/aufgaben.md`)
 
 ### Diagnose-MCP-Server
 - `tools/mcp_ubuchhaltung.py`: nur Standardbibliothek, stdio; Claude Code startet ihn lokal,
@@ -1159,10 +1186,9 @@ kein Subagent darauf:
   Satzes der Zuordnung (`remove_assignment_for_child`), `delete_transaction` – Satz wie Bankbewegung – und die Liste
   (`/transactions/delete`). `_unassign` selbst prüft nichts (der Umzug braucht es so). Der Editor prüft **alle** entfernten
   Zeilen zusammen schon beim Planen (`_plan_split_rows` → `Database.split_removal_blocker`, rein lesend, ein nur abgehängter Satz
-  zählt nicht): abgelehnt wird vor dem ersten Schreiben (400 mit Klartext, nichts gespeichert). Das Schreiben selbst ist nicht EINE
-  Transaktion (Bankzeile, dann je Zeile): Ändert sich der Bestand zwischen Planen und Schreiben, oder gehen die Zeilen einzeln
-  nicht in ihrer Reihenfolge, bleibt die Prüfung in der Transaktion des Entfernens maßgeblich – die Zahlung ist geschützt, die
-  Antwort ein Klartext statt 500, was davor geschrieben wurde, steht aber schon; die Löschroute
+  zählt nicht): abgelehnt wird vor dem ersten Schreiben (400 mit Klartext, nichts gespeichert). Seit 2.3.15 läuft das ganze
+  Speichern des Editors in EINER Transaktion (`save_bank_with_rows`, siehe *Masken*): Geplant wird unter der Schreibsperre, die
+  Einzelprüfung beim Entfernen bleibt zusätzlich – lehnt sie ab oder scheitert eine Zeile, ist nichts gespeichert; die Löschroute
   leitet mit dem Grund auf die Liste (`/transactions?err=`, `appMsg`). Das Entfernen einer **Erstattung** bleibt auf allen Wegen
   frei. Die Prüfliste meldet `refund_exceeds_credit` weiter für Eingriffe an der App vorbei. Nach einer Erstattung zieht höchstens das
   verbleibende Guthaben auf die Ersatzrechnung um (*Statusübergänge*). Die Seite der Stornorechnung zeigt den Kasten „Erstattung“ (ausgehende Bewegungen mit

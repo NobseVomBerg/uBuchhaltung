@@ -637,23 +637,35 @@ def test_bank_mask_edit_changes_only_what_the_editor_leads(world):
     assert after[booking.second] == before[booking.second]
 
 
-def test_bank_mask_adopting_an_existing_entry_keeps_its_own_fields(world):
-    """„Vorhandene Buchung zuordnen“: Die zugeordnete Buchung behält Kontakt, Kategorie, Konto
-    und fremdes Konto; geschrieben werden nur die Verknüpfung und die Gegenseite."""
-    w = world
-    booking = _bank_with_two_children(w)
-    adoptee = w.db.insert_booking(
-        '2026-02-20', Decimal('-50.00'), account_id=w.cash, foreign_bank_account=IBAN_THREE,
-        recipient_client='Eigener Lieferant', contact_id=w.customer, coa_id=w.coa(6815),
-        category_id=w.category_one, tax_rate=0.19, tax_amount=Decimal('-7.98'),
+def _adoptable_entry(w, **kw):
+    """Eine eigenständige Buchung mit Kontakt, Kategorie und fremdem Konto, wie das Zuordnen-Widget sie anbietet:
+    ohne Bankbewegung und ohne eigenes ``Account_ID``."""
+    values = dict(
+        foreign_bank_account=IBAN_THREE, recipient_client='Eigener Lieferant', contact_id=w.customer,
+        coa_id=w.coa(6815), category_id=w.category_one, tax_rate=0.19, tax_amount=Decimal('-7.98'),
         text='Eigener Text', document_number='ER-ADOPT', booking_type='entry')
+    values.update(kw)
+    adoptee = w.db.insert_booking('2026-02-20', Decimal('-50.00'), **values)
     _mark(w.db, adoptee)
-    before = _row(w.db, adoptee)
-    post = _form_post(w.db, booking.bank)
-    # die Zeile, die „Zuordnen“ im Browser einfügt: vor der Vorlagenzeile, mit der ID der Buchung
+    return adoptee
+
+
+def _adopt_row(post, adoptee, w):
+    """Die Zeile, die „Zuordnen“ im Browser einfügt: vor der Vorlagenzeile, mit der ID der Buchung."""
     _add_editor_row(post, split_id=str(adoptee), split_text='Eigener Text', split_amount='-50.00',
                     split_coa=str(w.coa(6815)), split_tax_rate='19', split_tax_amount='-7.98',
                     split_docnr='ER-ADOPT')
+
+
+def test_bank_mask_adopting_an_existing_entry_keeps_its_own_fields(world):
+    """„Vorhandene Buchung zuordnen“: Die zugeordnete Buchung behält Kontakt, Kategorie und
+    fremdes Konto; geschrieben werden nur die Verknüpfung und die Gegenseite."""
+    w = world
+    booking = _bank_with_two_children(w)
+    adoptee = _adoptable_entry(w)
+    before = _row(w.db, adoptee)
+    post = _form_post(w.db, booking.bank)
+    _adopt_row(post, adoptee, w)
 
     assert handle_add_transaction(w.db, post)[0] == 303
 
@@ -664,6 +676,24 @@ def test_bank_mask_adopting_an_existing_entry_keeps_its_own_fields(world):
     for column in ('Contact_ID', 'Category_ID', 'Account_ID', 'ForeignBankAccount',
                    'DateBooking', 'RecipientClient'):
         assert after[column] == before[column], column
+
+
+def test_bank_mask_refuses_to_adopt_an_entry_with_its_own_account(world):
+    """Eine Buchung mit eigenem Konto (``Account_ID``, hier die Kasse) bietet das Zuordnen-Widget nicht an: Kommt ihre ID
+    trotzdem mit, lehnt der Editor die Zeile ab (400) – gespeichert ist nichts, auch nicht die geänderte Bankzeile."""
+    w = world
+    booking = _bank_with_two_children(w)
+    adoptee = _adoptable_entry(w, account_id=w.cash)
+    table_before = _table(w.db)
+    post = _form_post(w.db, booking.bank)
+    _edit_everything(post)
+    _adopt_row(post, adoptee, w)
+
+    status, message = handle_add_transaction(w.db, post)
+
+    assert status == 400
+    assert message == 'Zeile 3: Dieser Buchungssatz lässt sich keiner Bankbewegung zuordnen.'
+    assert _table(w.db) == table_before
 
 
 def _add_editor_row(post, **values):

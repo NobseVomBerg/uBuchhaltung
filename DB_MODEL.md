@@ -582,8 +582,8 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   Zuordnung. Eine Erstattung geht auf demselben Weg; eine Zahlung an einer stornierten Rechnung mit Stornorechnung
   lässt sich dagegen auf **keinem** Weg entfernen, wenn danach mehr erstattet als gezahlt wäre (`PaymentRemovalRefused`,
   `_refund_removal_blocker`, vor dem ersten Schreiben in der Transaktion): nicht auf der Rechnungsseite, nicht mit dem ✕
-  an einer Zeile der Zahlung im Bank-Editor (der Editor prüft alle entfernten Zeilen zusammen beim Planen, ein Speichern
-  gelingt ganz oder gar nicht), nicht mit dem Löschen eines Satzes oder der Bankbewegung (`delete_transaction`, Liste:
+  an einer Zeile der Zahlung im Bank-Editor (der Editor prüft alle entfernten Zeilen zusammen beim Planen; seit 2.3.15 läuft
+  sein Speichern in einer Transaktion – `save_bank_with_rows` –, bei einer Ablehnung oder einem Fehler ist nichts gespeichert), nicht mit dem Löschen eines Satzes oder der Bankbewegung (`delete_transaction`, Liste:
   Weiterleitung mit dem Grund). Das Entfernen einer Erstattung bleibt frei.
 - **Status der Rechnung** (`next_payment_status`, vorzeichenbewusst für die WISO-Gutschrift): Zahlung in
   Höhe der Rechnung (Rest unter einem Cent) → `paid`, sonst `partial_payment`; ohne Zahlung wieder

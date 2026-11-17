@@ -12,7 +12,7 @@ from db.matching import (
     ENTRY_FORMS, SIDE_COUNTER, derive_entry_form, is_bank_effective, is_mirror_row,
     purpose_in_counter, read_entry_form, reform,
 )
-from db.invoice_payments import PAYMENT_MARK, PaymentRemovalRefused
+from db.invoice_payments import PAYMENT_MARK, BankChangeRefused, PaymentRemovalRefused
 
 # Alle Verweise auf ``Bookings.ID`` im Schema als (Tabelle, Spalte) – das, was ``_delete_booking_rows`` mit einer Buchung
 # wegräumt (BookingDocuments, InvoicePayments), umbiegt (Assets, AssetDepreciations) oder woran es sonst scheiterte (eine
@@ -651,7 +651,7 @@ class BookingsMixin:
             tax_amount = -old[5]
         return form, (amount if negated else None), tax_amount
 
-    def update_booking_fields(self, booking_id, log_description=None, **fields):
+    def update_booking_fields(self, booking_id, log_description=None, tx=None, **fields):
         """Nur die genannten Felder einer Buchung ändern; alle anderen bleiben, wie sie sind.
 
         Für Masken, die nicht jede Spalte führen: Was das Formular nicht kennt
@@ -668,6 +668,9 @@ class BookingsMixin:
         Ändern sich Konto, Gegenkonto oder Steuersatz, fällt der mitgebrachte BU-Schlüssel
         (``datev_key``) weg, sofern der Aufrufer ihn nicht selbst nennt (``_datev_key_stale``).
         ``datev_key`` selbst ist ein Schlüssel von 1 bis 9999 oder ``None`` (sonst ``ValueError``).
+
+        ``tx``: optionale :class:`db.core.Transaction` – dann wird darin geschrieben, ohne Commit und ohne die Verbindung zu
+        schließen, und der Eintrag im Replay-Log folgt erst nach ihrem Commit (wie bei ``insert_booking``).
         """
         unknown = set(fields) - set(self._BOOKING_FIELD_COLUMNS)
         if unknown:
@@ -683,7 +686,7 @@ class BookingsMixin:
             values['tax_amount'] = self._minor_opt(values['tax_amount'])
         if 'datev_key' in values:
             values['datev_key'] = datev_keys.checked_key(values['datev_key'])
-        conn = self._get_connection()
+        conn = tx.conn if tx else self._get_connection()
         try:
             if self._datev_key_stale(conn, booking_id, values):
                 values['datev_key'] = None
@@ -698,11 +701,16 @@ class BookingsMixin:
             sql_template = f"UPDATE Bookings SET {assignments} WHERE ID=?"
             params = tuple(values.values()) + (booking_id,)
             conn.execute(sql_template, params)
-            conn.commit()
+            if not tx:
+                conn.commit()
         finally:
-            conn.close()
+            if not tx:
+                conn.close()
         if log_description:
-            self._log_sql(sql_template, params, log_description)
+            if tx:
+                tx.log.append((sql_template, params, log_description))
+            else:
+                self._log_sql(sql_template, params, log_description)
 
     def update_booking(self, booking_id, date_booking, amount, account_id=None,
                        foreign_bank_account="", recipient_client="", contact_id=None, 
@@ -812,40 +820,46 @@ class BookingsMixin:
         conn = self._get_connection()
         try:
             conn.execute('BEGIN IMMEDIATE')
-            row = conn.execute('SELECT Status, ParentBooking_ID FROM Bookings WHERE ID = ?',
-                               (booking_id,)).fetchone()
-            if row is None:
-                conn.commit()
-                return
-            if row[0] == PAYMENT_MARK and row[1] is not None:
-                self.remove_assignment_for_child(conn, booking_id)
-                conn.commit()
-                return
-
-            deleted_ids, kept_ids = self._delete_scope(conn, booking_id)
-            marks = ','.join('?' * len(deleted_ids))
-            payment_ids = [r[0] for r in conn.execute(
-                f'SELECT ID FROM InvoicePayments WHERE BookingID IN ({marks}) ORDER BY ID', deleted_ids)]
-            blocker = self._refund_removal_blocker(conn, payment_ids)
-            if blocker:
-                raise PaymentRemovalRefused(blocker)
-            affected_invoice_ids = [r[0] for r in conn.execute(
-                f'SELECT DISTINCT InvoiceID FROM InvoicePayments WHERE BookingID IN ({marks})',
-                deleted_ids)]
-
-            if kept_ids:
-                kept_marks = ','.join('?' * len(kept_ids))
-                conn.execute('UPDATE Bookings SET ParentBooking_ID = NULL, Status = NULL '
-                             f'WHERE ID IN ({kept_marks})', kept_ids)
-            self._delete_booking_rows(conn, deleted_ids)
-            for invoice_id in affected_invoice_ids:
-                self._after_payment_removed(conn, invoice_id)
+            self._delete_transaction_in(conn, booking_id)
             conn.commit()
         except Exception:
             conn.rollback()
             raise
         finally:
             conn.close()
+
+    def _delete_transaction_in(self, conn, booking_id):
+        """Der Körper von ``delete_transaction`` in der laufenden Transaktion von ``conn``, die der Aufrufer mit
+        ``BEGIN IMMEDIATE`` eröffnet hat: ohne Beginn, Commit und Rollback – das gehört dem Aufrufer. Wirft
+        :class:`PaymentRemovalRefused` vor dem ersten Schreiben. Wer ihn innerhalb einer Transaktion braucht (der Bank-Editor,
+        ``save_bank_with_rows``), darf ``delete_transaction`` nicht aufrufen: Sie öffnet eine eigene Verbindung und hängte an
+        der Schreibsperre der laufenden."""
+        row = conn.execute('SELECT Status, ParentBooking_ID FROM Bookings WHERE ID = ?',
+                           (booking_id,)).fetchone()
+        if row is None:
+            return
+        if row[0] == PAYMENT_MARK and row[1] is not None:
+            self.remove_assignment_for_child(conn, booking_id)
+            return
+
+        deleted_ids, kept_ids = self._delete_scope(conn, booking_id)
+        marks = ','.join('?' * len(deleted_ids))
+        payment_ids = [r[0] for r in conn.execute(
+            f'SELECT ID FROM InvoicePayments WHERE BookingID IN ({marks}) ORDER BY ID', deleted_ids)]
+        blocker = self._refund_removal_blocker(conn, payment_ids)
+        if blocker:
+            raise PaymentRemovalRefused(blocker)
+        affected_invoice_ids = [r[0] for r in conn.execute(
+            f'SELECT DISTINCT InvoiceID FROM InvoicePayments WHERE BookingID IN ({marks})',
+            deleted_ids)]
+
+        if kept_ids:
+            kept_marks = ','.join('?' * len(kept_ids))
+            conn.execute('UPDATE Bookings SET ParentBooking_ID = NULL, Status = NULL '
+                         f'WHERE ID IN ({kept_marks})', kept_ids)
+        self._delete_booking_rows(conn, deleted_ids)
+        for invoice_id in affected_invoice_ids:
+            self._after_payment_removed(conn, invoice_id)
 
     def _delete_scope(self, conn, booking_id):
         """Was ``delete_transaction`` mit dieser Buchung (keinem markierten Satz einer Zuordnung) tut: ``(gelöscht, abgehängt)``
@@ -907,19 +921,26 @@ class BookingsMixin:
         ids = [int(booking_id) for booking_id in booking_ids]
         if not ids:
             return set()
-        marks = ','.join('?' * len(ids))
         conn = self._get_connection()
         try:
-            receivable_sql, receivable_params = self._receivable_sql(conn.cursor(), alias='b')
-            rows = conn.execute(
-                f"SELECT b.ID FROM Bookings b WHERE b.ID IN ({marks}) AND b.BookingType = 'entry' "
-                "AND COALESCE(b.Status, '') != ? "
-                "AND (COALESCE(b.SourceGroup, '') != '' "
-                "     OR EXISTS (SELECT 1 FROM AssetDepreciations d WHERE d.Booking_ID = b.ID) "
-                f"     OR ({receivable_sql}))",
-                ids + [PAYMENT_MARK] + list(receivable_params)).fetchall()
+            return self._detachable_split_rows(conn, ids)
         finally:
             conn.close()
+
+    def _detachable_split_rows(self, conn, ids):
+        """``detachable_split_rows`` auf der Verbindung ``conn`` (in deren Transaktion, wenn sie eine führt); ``ids`` sind
+        ganze Zahlen."""
+        if not ids:
+            return set()
+        marks = ','.join('?' * len(ids))
+        receivable_sql, receivable_params = self._receivable_sql(conn.cursor(), alias='b')
+        rows = conn.execute(
+            f"SELECT b.ID FROM Bookings b WHERE b.ID IN ({marks}) AND b.BookingType = 'entry' "
+            "AND COALESCE(b.Status, '') != ? "
+            "AND (COALESCE(b.SourceGroup, '') != '' "
+            "     OR EXISTS (SELECT 1 FROM AssetDepreciations d WHERE d.Booking_ID = b.ID) "
+            f"     OR ({receivable_sql}))",
+            ids + [PAYMENT_MARK] + list(receivable_params)).fetchall()
         return {row[0] for row in rows}
 
     def remove_split_row(self, booking_id):
@@ -930,22 +951,112 @@ class BookingsMixin:
         ``resolved`` zurückgesetzt – wie beim Abhängen einer Forderung (``delete_transaction``) –,
         sonst bleibt jede Spalte, wie sie ist. Er ist danach wieder eine eigenständige Buchung (Liste,
         Zuordnen-Widget, EÜR wie vor dem Zuordnen), das AfA-Jahr bleibt gebucht und der nächste
-        Abgleich findet den Satz wieder. Jeder andere Satz wird gelöscht (``delete_transaction``,
-        markierte Zahlungssätze mit ihrer ganzen Zuordnung) – mit dessen Prüfung: Die Zahlung einer stornierten Rechnung, zu der
-        schon erstattet wurde, geht nicht (``PaymentRemovalRefused``; der Editor fragt das vorab, ``split_removal_blocker``).
-        ``delete_transaction`` selbst – eine Buchung ausdrücklich aus der Liste löschen – bleibt unverändert."""
-        if booking_id not in self.detachable_split_rows([booking_id]):
-            self.delete_transaction(booking_id)
+        Abgleich findet den Satz wieder. Jeder andere Satz wird gelöscht wie bei ``delete_transaction``
+        (``_delete_transaction_in``, markierte Zahlungssätze mit ihrer ganzen Zuordnung) – mit dessen Prüfung: Die Zahlung einer
+        stornierten Rechnung, zu der schon erstattet wurde, geht nicht (``PaymentRemovalRefused``; der Editor fragt das vorab,
+        ``split_removal_blocker``). ``delete_transaction`` selbst – eine Buchung ausdrücklich aus der Liste löschen – bleibt
+        unverändert.
+
+        Eine eigene Transaktion (``BEGIN IMMEDIATE``); der Editor schreibt über ``_remove_split_row_in`` in der seinen."""
+        with self.transaction() as tx:
+            tx.conn.execute('BEGIN IMMEDIATE')
+            self._remove_split_row_in(tx, booking_id)
+
+    def _remove_split_row_in(self, tx, booking_id):
+        """``remove_split_row`` in der laufenden Transaktion ``tx`` (mit ``BEGIN IMMEDIATE`` eröffnet): ein löschbarer Satz geht
+        über ``_delete_transaction_in``, ein abzuhängender wird gelöst, und sein Eintrag im Replay-Log folgt nach dem Commit."""
+        if booking_id not in self._detachable_split_rows(tx.conn, [int(booking_id)]):
+            self._delete_transaction_in(tx.conn, booking_id)
             return
         sql = ("UPDATE Bookings SET ParentBooking_ID = NULL, "
                "Status = CASE WHEN Status = 'resolved' THEN NULL ELSE Status END WHERE ID = ?")
+        tx.conn.execute(sql, (booking_id,))
+        tx.log.append((sql, (booking_id,), "Split row detach"))
+
+    def _split_rows_dropped(self, conn, bank_id, kept_ids):
+        """IDs der Sätze unter der Bankbewegung, deren Zeile der Nutzer im Editor entfernt hat: alle außer ``kept_ids`` und den
+        Doppik-Spiegeln (COA und Gegenkonto beide eigene Bank-/Kassenkonten) – die tauchen im Editor nicht auf und bleiben deshalb
+        unberührt. Rein lesend, auf ``conn`` (in deren Transaktion, wenn sie eine führt). Die EINE Stelle dieser Regel."""
+        bank_coa_ids = self._get_bank_coa_ids(conn.cursor())
+        rows = conn.execute('SELECT ID, COA_ID, CounterCOA_ID, EntryForm FROM Bookings WHERE ParentBooking_ID = ? ORDER BY ID',
+                            (bank_id,)).fetchall()
+        return [row[0] for row in rows
+                if row[0] not in kept_ids and not is_mirror_row(row[3], row[1], row[2], bank_coa_ids)]
+
+    def dropped_split_rows(self, bank_id, kept_ids):
+        """``_split_rows_dropped`` auf einer eigenen Verbindung – für das Planen des Editors (``server.handlers``), das den Stand
+        vor dem ersten Schreiben liest und prüft (``split_removal_blocker``)."""
         conn = self._get_connection()
         try:
-            conn.execute(sql, (booking_id,))
-            conn.commit()
+            return self._split_rows_dropped(conn, bank_id, kept_ids)
         finally:
             conn.close()
-        self._log_sql(sql, (booking_id,), "Split row detach")
+
+    def _write_split_rows_in(self, tx, bank_id, planned):
+        """Die geplanten Buchungssätze einer Bankbewegung in der laufenden Transaktion ``tx`` schreiben. ``planned``: die Zeilen
+        aus ``server.handlers._plan_split_rows`` – ``[(ID oder None, Felder, zuordnen)]``: eine neue Zeile (ID ``None``) wird
+        angelegt, eine vorhandene Buchung mit ``zuordnen`` der Bankbewegung zugeordnet (``ParentBooking_ID``), jede andere nur
+        mit den Feldern des Editors geändert (``update_booking_fields``).
+
+        Was der Nutzer entfernt hat (``_split_rows_dropped``), geht über ``_remove_split_row_in``: gelöscht, ein Satz aber, der
+        nicht im Editor entstanden ist (Import, AfA-Buchung), nur von der Bankbewegung abgehängt. Alles auf ``tx.conn`` – hier darf
+        keine Methode aufgerufen werden, die selbst schreibt oder ``BEGIN`` ausführt (``delete_transaction``,
+        ``remove_split_row``, ``unassign_invoice_payment``, ``update_booking_fields`` ohne ``tx``): Sie öffnete eine zweite
+        Verbindung und hinge an der Schreibsperre dieser (5 s, dann „database is locked“)."""
+        keep_ids = set()
+        for rid, fields, adopt in planned:
+            if rid is not None:
+                if adopt:
+                    fields = {**fields, 'parent_booking_id': bank_id}
+                self.update_booking_fields(rid, log_description="Split row adopt" if adopt else "Split row update",
+                                           tx=tx, **fields)
+                keep_ids.add(rid)
+            else:
+                new_id = self.insert_booking(booking_type='entry', parent_booking_id=bank_id,
+                                             log_description="Split row insert", tx=tx, **fields)
+                keep_ids.add(new_id)
+        for child_id in self._split_rows_dropped(tx.conn, bank_id, keep_ids):
+            self._remove_split_row_in(tx, child_id)
+
+    def save_bank_with_rows(self, bank_id, bank_fields=None, plan=None):
+        """Eine Bankbewegung und die Buchungssätze ihres Editors in EINER Transaktion speichern: ganz oder gar nicht, und ins
+        Replay-Log (``tx.log``) kommt erst etwas, wenn sie festgeschrieben ist – in der Reihenfolge Bankzeile, Zeilen, Abhängen.
+        Jeder Fehler, auch eine Ablehnung, nimmt alles zurück; die Ausnahme geht an den Aufrufer.
+
+        ``bank_id``: die Bankbewegung, ``None`` für eine neue. ``bank_fields``: bei einer vorhandenen die Spalten, die geändert
+        werden (wie ``update_booking_fields``), bei einer neuen die Argumente von ``insert_booking``; ``None`` fasst die Bankzeile
+        nicht an (nur die Sätze). ``plan``: Aufruf ohne Argumente, der die geplanten Zeilen liefert (``_write_split_rows_in``) –
+        oder ``None``, wenn es keinen Editor gibt.
+
+        Ablauf: Schreibsperre holen (``BEGIN IMMEDIATE``), dann **planen – vor dem ersten Schreiben**: ``plan`` liest über eigene
+        Verbindungen; unter der Sperre ändert kein anderer Schreiber den Stand, und solange diese Transaktion noch nichts
+        geschrieben hat, dürfen jene Verbindungen lesen. Eine Ablehnung des Plans kommt so vor dem ersten Schreiben. Dann die
+        Bankzeile, dann die Sätze (``_write_split_rows_in``: neue, geänderte, zugeordnete, entfernte).
+
+        Zuletzt prüft ``_assigned_bank_change_blocker``, ob bei einer vorhandenen Bankbewegung Betrag, Bankkonto oder Datum
+        geändert wurden, obwohl ihr eine Rechnungszahlung oder Erstattung zugeordnet ist (:class:`BankChangeRefused`): Es zählen die
+        Zuordnungen, die nach dem Schreiben noch übrig sind – wer im Editor derselben Anfrage alle Zeilen der Zahlung entfernt, darf
+        den Betrag mit ändern. Nichts wird umgerechnet: Die Änderung wird abgelehnt, bis der Nutzer die Zuordnung entfernt hat.
+
+        Returns die ID der Bankbewegung (bei einer neuen die neue)."""
+        with self.transaction() as tx:
+            tx.conn.execute('BEGIN IMMEDIATE')
+            stored = None
+            if bank_id is not None:
+                stored = tx.conn.execute('SELECT Amount, Account_ID, DateBooking FROM Bookings WHERE ID = ?',
+                                         (bank_id,)).fetchone()
+            planned = plan() if plan else None
+            if bank_id is None:
+                bank_id = self.insert_booking(**bank_fields, log_description="Manual booking entry", tx=tx)
+            elif bank_fields:
+                self.update_booking_fields(bank_id, log_description="Manual booking update", tx=tx, **bank_fields)
+            if planned is not None:
+                self._write_split_rows_in(tx, bank_id, planned)
+            if stored is not None and bank_fields:
+                blocker = self._assigned_bank_change_blocker(tx.conn, bank_id, stored, bank_fields)
+                if blocker:
+                    raise BankChangeRefused(blocker)
+        return bank_id
 
     def get_booking_by_id(self, booking_id):
         """Get a single booking by ID"""

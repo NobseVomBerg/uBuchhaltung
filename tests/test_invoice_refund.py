@@ -1377,11 +1377,22 @@ def test_a_row_the_editor_only_detaches_takes_no_assignment_with_it(world):
 
 def test_a_state_that_changed_between_planning_and_writing_is_a_refusal_and_not_a_500(world, monkeypatch):
     """Die Prüfung im Plan ist die Vorab-Prüfung; maßgeblich bleibt die in der Transaktion des Löschens. Ändert sich der Bestand
-    dazwischen (zwei Fenster), antwortet der Handler mit dem Klartext statt mit einem Fehler – und die Zahlung bleibt."""
+    dazwischen (zwei Fenster), antwortet der Handler mit dem Klartext statt mit einem Fehler – die Zahlung bleibt, und nichts ist
+    gespeichert, auch die geänderte Bankzeile nicht: Bankzeile und Zeilen laufen in EINER Transaktion, die die Ablehnung
+    zurückrollt."""
     db = world.db
     c = refunded_pair(world)
     monkeypatch.setattr(Database, 'split_removal_blocker', lambda self, ids: None)        # der Plan sah noch nichts
-    assert _editor(c, c.kids[1]) == ALREADY_REFUNDED_MESSAGE
+    before = comparable(db)
+    post_data, _options = open_form(db, c.bank)
+    post_data['recipient'] = ['Geändert & Söhne']                                         # die Bankzeile wird vor dem Entfernen geschrieben
+    post_data = drop_row(post_data, c.kids[1])
+
+    assert handle_add_transaction(db, post_data) == (400, ALREADY_REFUNDED_MESSAGE)
+
+    assert comparable(db) == before                                                       # Bookings, InvoicePayments, Invoices: wie vorher
+    assert query_rows(db, 'SELECT RecipientClient FROM Bookings WHERE ID = ?', c.bank) == [
+        {'RecipientClient': CUSTOMER_TEXT}]
     assert len(db.get_invoice_payments(c.r1)) == 1 and db.get_storno_credit(c.r1) == 30
 
 
