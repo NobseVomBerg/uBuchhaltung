@@ -117,9 +117,8 @@ def action(port, csrf, path_and_query):
 @pytest.mark.parametrize('path', sorted(_ACTION_PATHS - ACTIONS_WITHOUT_ID))
 def test_an_action_without_a_valid_id_is_400_and_changes_nothing(server_port, books, path):
     before = state(books.db, *TABLES)
-    if path == '/receipts/delete':
-        wrong = ['', '?number=']
-    elif path == '/documents/unlink':
+    # /receipts/delete nimmt seit 2.4.2 die ID des Belegs (vorher die Nummer, die nicht eindeutig ist): wie jede Löschaktion
+    if path == '/documents/unlink':
         wrong = ['', '?doc_id=1', '?booking_id=1', '?doc_id=abc&booking_id=1', '?doc_id=1&booking_id=abc']
     else:
         wrong = ['', '?id=abc', '?id=', '?id=1.5']

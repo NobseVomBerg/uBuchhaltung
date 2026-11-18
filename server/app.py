@@ -726,6 +726,17 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             location = f"{list_path}?{error_param}={quote(str(exc), safe='')}"
         self.respond(303, "", headers={"Location": location})
 
+    def _respond_form_result(self, result, location=None):
+        """Antwort auf das Ergebnis eines Formular-Handlers ``(Status, Text)``. Bei Erfolg und bei einer Meldung auf der Seite
+        (303) ist der Text die Adresse der Weiterleitung – ``location`` ersetzt sie, wo die Route sie festlegt. Eine Ablehnung
+        (ab 400: ungültige Anfrage, nichts gespeichert; 500: Fehler ohne Fehlertext) ist der Klartext im Body – sonst stünde
+        er im ``Location``-Kopf, und der Browser zeigte eine leere Seite."""
+        status_code, text = result
+        if status_code >= 400:
+            self.respond(status_code, text, content_type="text/plain; charset=utf-8")
+        else:
+            self.respond(status_code, "", headers={"Location": text if location is None else location})
+
     def _post_action_routes(self, db):
         """Aktionen mit Seiteneffekt (Löschen, Umschalten, Lösen). Parameter stehen
         in der Query, der Body trägt nur den CSRF-Token. Returns True, wenn die
@@ -734,14 +745,11 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if path not in _ACTION_PATHS:
             return False
         qs = self._query()
-        # Pflichtparameter der Aktion: Fehlt einer oder ist er keine Ganzzahl (bei /receipts/delete: leer),
+        # Pflichtparameter der Aktion: Fehlt einer oder ist er keine Ganzzahl,
         # kommt 400 – wie bei /invoice/delete, nicht KeyError/ValueError und damit 500.
         item_id = _int_param(qs, "id")
         doc_id, booking_id = _int_param(qs, "doc_id"), _int_param(qs, "booking_id")
-        number = qs.get("number", [""])[0]
-        if path == "/receipts/delete":
-            invalid = not number
-        elif path == "/documents/unlink":
+        if path == "/documents/unlink":
             invalid = doc_id is None or booking_id is None
         elif path == "/masterdata/skr/add_standard":
             invalid = False                         # die Aktion nennt keine ID
@@ -766,7 +774,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         elif path == "/masterdata/bankaccounts/delete":
             self._respond_after_delete(db.delete_account, item_id, "/masterdata/bankaccounts", "error")
         elif path == "/receipts/delete":
-            self._respond_after_delete(db.delete_receipt, number, "/receipts", "err")
+            self._respond_after_delete(db.delete_receipt, item_id, "/receipts", "err")
         elif path == "/transactions/delete":
             status_code, location = handlers.handle_delete_transaction(db, item_id)
             self.respond(status_code, "", headers={"Location": location})
@@ -1484,54 +1492,38 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 status_code, location = handlers.handle_add_receipt(db, post_data)
                 self.respond(status_code, "", headers={"Location": location})
             elif self.path == "/update_receipt":
-                status_code, location = handlers.handle_update_receipt(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_update_receipt(db, post_data))
             elif self.path == "/confirm_transactions":
                 status_code, response = handlers.handle_confirm_import(db, post_data)
                 self.respond(status_code, response, content_type="application/json")
             elif self.path == "/transactions/add":
-                status_code, location = handlers.handle_add_transaction(db, post_data)
-                if status_code == 400:           # abgelehnt, nichts gespeichert: Grund als Klartext
-                    self.respond(400, location, content_type="text/plain; charset=utf-8")
-                else:
-                    self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_add_transaction(db, post_data))
             elif self.path == "/documents/link":
-                status_code, location = handlers.handle_link_document(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_link_document(db, post_data))
             elif self.path == "/masterdata/bankaccounts/add":
-                status_code, location = handlers.handle_add_bankaccount(db, post_data)
-                self.respond(status_code, "", headers={"Location": "/masterdata/bankaccounts"})
+                self._respond_form_result(handlers.handle_add_bankaccount(db, post_data))
             elif self.path == "/masterdata/bankaccounts/update":
-                status_code, location = handlers.handle_update_bankaccount(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_update_bankaccount(db, post_data))
             elif self.path == "/masterdata/numberranges/add":
-                status_code, location = handlers.handle_add_number_range(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_add_number_range(db, post_data))
             elif self.path == "/masterdata/numberranges/update":
-                status_code, location = handlers.handle_update_number_range(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_update_number_range(db, post_data))
             # ── Master Data POST Routes ───────────────────────────────────
             # SKR
             elif self.path == "/masterdata/skr/add":
-                status_code, location = handlers.handle_add_skr(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_add_skr(db, post_data))
             elif self.path == "/masterdata/skr/update":
-                status_code, location = handlers.handle_update_skr(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_update_skr(db, post_data))
             # Contacts
             elif self.path == "/masterdata/contacts/add":
-                status_code, location = handlers.handle_add_contact(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_add_contact(db, post_data))
             elif self.path == "/masterdata/contacts/update":
-                status_code, location = handlers.handle_update_contact(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_update_contact(db, post_data))
             # Zeiten / Arbeitszeiten
             elif self.path == "/worktime/add":
-                status_code, location = handlers.handle_add_worktime(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_add_worktime(db, post_data))
             elif self.path == "/worktime/update":
-                status_code, location = handlers.handle_update_worktime(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_update_worktime(db, post_data))
             # Zeiten / Fahrten
             elif self.path == "/trips/add":
                 status_code, location = handlers.handle_add_trip(db, post_data)
@@ -1541,31 +1533,23 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(status_code, "", headers={"Location": location})
             # Articles
             elif self.path == "/masterdata/articles/add":
-                status_code, location = handlers.handle_add_article(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_add_article(db, post_data))
             elif self.path == "/masterdata/articles/update":
-                status_code, location = handlers.handle_update_article(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_update_article(db, post_data))
             # ──────────────────────────────────────────────────────────────
             # ── Assets ────────────────────────────────────────────────────
             elif self.path == "/assets/add":
-                status_code, location = handlers.handle_add_asset(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_add_asset(db, post_data))
             elif self.path == "/assets/update":
-                status_code, location = handlers.handle_update_asset(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_update_asset(db, post_data))
             elif self.path == "/assets/depreciate":
-                status_code, location = handlers.handle_book_depreciation(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_book_depreciation(db, post_data))
             elif self.path == "/assets/sell":
-                status_code, location = handlers.handle_asset_sale(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_asset_sale(db, post_data))
             elif self.path == "/asset_categories/add":
-                status_code, location = handlers.handle_add_asset_category(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_add_asset_category(db, post_data))
             elif self.path == "/asset_categories/update":
-                status_code, location = handlers.handle_update_asset_category(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_update_asset_category(db, post_data))
             # ── Datensicherung / Wiederherstellung ────────────────────────
             elif self.path == "/backup/create":
                 status_code, location = handlers.handle_backup_create(db, post_data)
@@ -1577,23 +1561,17 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             # ──────────────────────────────────────────────────────────────
             # ── Legacy POST Redirects (Compatibility) ─────────────────────
             elif self.path == "/add_skr":
-                status_code, location = handlers.handle_add_skr(db, post_data)
-                self.respond(status_code, "", headers={"Location": "/masterdata/skr"})
+                self._respond_form_result(handlers.handle_add_skr(db, post_data), "/masterdata/skr")
             elif self.path == "/update_skr":
-                status_code, location = handlers.handle_update_skr(db, post_data)
-                self.respond(status_code, "", headers={"Location": "/masterdata/skr"})
+                self._respond_form_result(handlers.handle_update_skr(db, post_data), "/masterdata/skr")
             elif self.path == "/add_contact":
-                status_code, location = handlers.handle_add_contact(db, post_data)
-                self.respond(status_code, "", headers={"Location": "/masterdata/contacts"})
+                self._respond_form_result(handlers.handle_add_contact(db, post_data), "/masterdata/contacts")
             elif self.path == "/update_contact":
-                status_code, location = handlers.handle_update_contact(db, post_data)
-                self.respond(status_code, "", headers={"Location": "/masterdata/contacts"})
+                self._respond_form_result(handlers.handle_update_contact(db, post_data), "/masterdata/contacts")
             elif self.path == "/articles/add":
-                status_code, location = handlers.handle_add_article(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_add_article(db, post_data))
             elif self.path == "/articles/update":
-                status_code, location = handlers.handle_update_article(db, post_data)
-                self.respond(status_code, "", headers={"Location": location})
+                self._respond_form_result(handlers.handle_update_article(db, post_data))
             # ──────────────────────────────────────────────────────────────
             elif self.path == "/execute_sql":
                 if not auth.sql_console_allowed():

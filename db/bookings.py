@@ -1073,6 +1073,10 @@ class BookingsMixin:
             booking_id: ID of the booking
             document_id: ID of the document
             relation_type: Type of relation (e.g., 'invoice', 'receipt', 'contract')
+
+        Raises:
+            ValueError: Die Buchung oder der Beleg gibt es nicht (Fremdschlüssel-Verstoß) – Klartext für den Nutzer, nichts
+                geschrieben. Dass es die Verknüpfung schon gibt (UNIQUE), ist kein Fehler und bleibt still.
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -1082,9 +1086,14 @@ class BookingsMixin:
                 VALUES (?, ?, ?)
             ''', (booking_id, document_id, relation_type))
             conn.commit()
-        except sqlite3.IntegrityError:
-            # Link already exists
+        except sqlite3.IntegrityError as error:
             conn.rollback()
+            detail = str(error)
+            if 'FOREIGN KEY' in detail:
+                raise ValueError('Buchung oder Beleg gibt es nicht (mehr).') from error
+            if 'UNIQUE' not in detail and 'PRIMARY KEY' not in detail:
+                raise
+            # Link already exists
         finally:
             conn.close()
     def get_documents_for_booking(self, booking_id):

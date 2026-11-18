@@ -262,6 +262,18 @@ kein Subagent darauf:
 - **IDs aus der Adresse** nur über `_int_param` (Filter: fehlt/ungültig = nicht angegeben), `_id_param` (Seite zu einem Objekt:
   fehlt/ungültig = −1, also wie eine unbekannte ID) und `self._query()`; nie `int(qs[…][0])` oder `split('?')[1]`. Was nicht in
   64 Bit passt, gilt als ungültig. Aktionen ohne gültige ID: 400 (`tests/test_bad_addresses.py` prüft `app.py` statisch)
+- **Formularwerte (seit 2.4.2, `server/handlers.py`):** IDs aus Formularen nur über `_form_id` (positive ASCII-Ganzzahl in 64 Bit; optionale
+  Felder über `_optional_form_ids`), Ganzzahlen nur über `_form_int(text, minimum, maximum, default)` (ASCII-Ziffern im Bereich: Jahr 1900–2999,
+  Prozent 0–100, Nutzungsdauer 1–100, Zählerstand 0–999 999 999), Kommazahlen nur über `_finite_number` – nie `int(post_data…)`/`float(post_data…)`.
+  Ungültig: die Meldung auf dem Fehlerweg der Seite (303 mit `err=`/`error=`/`msg=`, Klartext über `quote(…, safe='')`, angezeigt nur über
+  `script_json` + `appMsg`); bei einer ungültigen ID und auf Seiten ohne Fehlerweg 400 mit Klartext. Nichts wird gespeichert. Ein Handler gibt
+  `(Status, Text)` zurück, `server/app.py` antwortet über `_respond_form_result`: ab 400 steht der Text im Body (`text/plain`), nie im
+  `Location`-Kopf (sonst bliebe die Seite leer). **Nie Exception-Text in einer Antwort:** ein fester Satz, der volle Fehler nur ins Server-Log
+  (`traceback.print_exc()`); Klartext kommt nur aus eigenen Ablehnungsklassen (`_Refused`, `DeleteRefused`, `ContactRefused` …). Eine doppelte
+  Kunden-/Kontaktnummer oder ein doppeltes Kürzel wirft `ContactRefused` (Rollback, Meldung auf der Kontaktseite). `tests/test_form_error_paths.py`
+  prüft es und hält statisch fest, dass `handlers.py` weder `int(post_data…)`/`float(post_data…)` noch einen 5xx mit Ausnahmetext enthält. Noch
+  nicht auf feste Klartexte umgestellt (`docs/aufgaben.md`): die Meldungen nach Sicherung, Wiederherstellung, DATEV-Export und
+  WISO-Import (`msg=`)
 - **Fehlerantworten über `send_error`** (`server/app.py`): tragen immer Statuszeile und Schutz-Header, auch bei einer kaputten
   Anfragezeile – unabhängig vom Patch-Stand der Standardbibliothek (eine echte HTTP/0.9-Anfrage bekommt ihre normale Antwort
   weiter ohne Kopf)
@@ -312,7 +324,8 @@ kein Subagent darauf:
   Fahrt): Eine Person löscht nie still ihr Fahrtenbuch. Kontakt: Rechnungen/Angebote (Kunde oder eigene Firma), Buchungen,
   Anlagen (Lieferant), zugeordnete Personen, Arbeitszeiten, Fahrten; Artikel: Positionen (mit dem Hinweis auf „inaktiv“, wenn er
   aktiv ist); Bankkonto: Buchungen, Rechnungen, Angebote – die Kasse nie; AfA-Kategorie: Anlagen; Beleg: Buchungen, Anlagen,
-  Fahrten. Die Routen gehen über `_respond_after_delete` (`server/app.py`): 303 auf die Listenseite, die Meldung als
+  Fahrten (`delete_receipt(receipt_id)` löscht genau EINEN Beleg über seine ID – die Belegnummer ist nicht eindeutig; Route
+  `POST /receipts/delete?id=`). Die Routen gehen über `_respond_after_delete` (`server/app.py`): 303 auf die Listenseite, die Meldung als
   Query-Parameter (`error` bei Artikeln, Bankkonten, Kontakten; `err` bei AfA-Kategorien und Belegen), angezeigt nur über
   `script_json` + `appMsg` – nie 500. Eine neue Verweisspalte auf eine dieser Tabellen gehört in die Prüfung ihrer
   Löschmethode. Jede Löschmethode schließt ihre Verbindung auch im Fehlerfall (try/rollback/finally) – sonst bleibt die

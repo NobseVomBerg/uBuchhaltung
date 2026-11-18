@@ -449,32 +449,36 @@ def test_a_receipt_that_something_refers_to_is_not_deleted(tmp_db, build, phrase
         step(tmp_db, doc_id)
     tables = ('Documents', 'BookingDocuments', 'Bookings', 'Assets', 'Trips')
     before = snapshot(tmp_db, *tables)
-    assert refused(tmp_db.delete_receipt, 'B-100') == RECEIPT_LEAD + phrase + '.'
+    # seit 2.4.2 über die ID des Belegs (vorher über die Nummer, die nicht eindeutig ist)
+    assert refused(tmp_db.delete_receipt, doc_id) == RECEIPT_LEAD + phrase + '.'
     assert snapshot(tmp_db, *tables) == before
     assert_not_locked(tmp_db)
 
 
-def test_every_receipt_with_the_number_counts_and_one_booking_counts_once(tmp_db):
-    first, second = receipt(tmp_db), receipt(tmp_db)                   # zwei Belege mit derselben Nummer
+def test_only_the_references_of_this_receipt_count_not_those_of_another_one_with_the_same_number(tmp_db):
+    # seit 2.4.2: Zwei Belege mit derselben Nummer sind zwei Belege – gezählt wird, was auf DIESE ID verweist
+    first, second = receipt(tmp_db), receipt(tmp_db)
     booking = tmp_db.insert_booking(DAY, 10)
     tmp_db.link_booking_to_document(booking, first)
-    tmp_db.link_booking_to_document(booking, second)
-    assert refused(tmp_db.delete_receipt, 'B-100') == RECEIPT_LEAD + '1 Buchung.'
-    booked_on(tmp_db, second, '2026-03-05')
-    assert refused(tmp_db.delete_receipt, 'B-100') == RECEIPT_LEAD + '2 Buchungen.'
+    booked_on(tmp_db, first, '2026-03-05')
+    assert refused(tmp_db.delete_receipt, first) == RECEIPT_LEAD + '2 Buchungen.'
+    tmp_db.delete_receipt(second)                                      # auf den zweiten verweist nichts: er geht
+    assert scalar(tmp_db, 'SELECT COUNT(*) FROM Documents WHERE ID = ?', second) == 0
+    assert scalar(tmp_db, 'SELECT COUNT(*) FROM Documents WHERE ID = ?', first) == 1
 
 
-def test_a_receipt_without_references_is_deleted_and_another_number_stays(tmp_db):
-    receipt(tmp_db)
-    receipt(tmp_db)
-    receipt(tmp_db, 'B-200')
-    tmp_db.delete_receipt('B-100')
-    assert scalar(tmp_db, 'SELECT COUNT(*) FROM Documents WHERE Number = ?', 'B-100') == 0
-    assert scalar(tmp_db, 'SELECT COUNT(*) FROM Documents WHERE Number = ?', 'B-200') == 1
+def test_a_receipt_without_references_is_deleted_alone_and_every_other_one_stays(tmp_db):
+    # seit 2.4.2 genau EIN Beleg: Vorher nahm das Löschen alle Belege mit derselben Nummer mit
+    first, second = receipt(tmp_db), receipt(tmp_db)                   # zwei Belege mit derselben Nummer
+    other = receipt(tmp_db, 'B-200')
+    tmp_db.delete_receipt(first)
+    assert scalar(tmp_db, 'SELECT COUNT(*) FROM Documents WHERE ID = ?', first) == 0
+    assert scalar(tmp_db, 'SELECT COUNT(*) FROM Documents WHERE ID = ?', second) == 1
+    assert scalar(tmp_db, 'SELECT COUNT(*) FROM Documents WHERE ID = ?', other) == 1
 
 
 def test_an_unknown_receipt_is_no_error(tmp_db):
-    tmp_db.delete_receipt('gibt-es-nicht')
+    tmp_db.delete_receipt(99999)
 
 
 # ── die Verbindung wird immer geschlossen ────────────────────────────────────
@@ -519,9 +523,8 @@ def _trip(db):
     return db.insert_trip(person(db), DAY, destination='Ziel')
 
 
-def _receipt_number(db):
-    receipt(db)
-    return 'B-100'
+def _receipt_id(db):
+    return receipt(db)                                                 # seit 2.4.2 wird über die ID gelöscht
 
 
 CLOSING_CASES = [
@@ -529,7 +532,7 @@ CLOSING_CASES = [
     pytest.param('delete_article', article, id='Artikel'),
     pytest.param('delete_account', bank, id='Bankkonto'),
     pytest.param('delete_asset_category', category, id='AfA-Kategorie'),
-    pytest.param('delete_receipt', _receipt_number, id='Beleg'),
+    pytest.param('delete_receipt', _receipt_id, id='Beleg'),
     pytest.param('delete_number_range', _range, id='Nummernkreis'),
     pytest.param('delete_worktime', _worktime, id='Arbeitszeit'),
     pytest.param('delete_trip', _trip, id='Fahrt'),
@@ -634,25 +637,26 @@ def test_a_category_that_assets_use_is_refused_over_http(server_port, books):
 
 
 def test_a_receipt_with_references_is_refused_over_http(server_port, books):
-    booked_on(books.db, receipt(books.db))
-    assert_refused_over_http(server_port, books, '/receipts/delete?number=B-100', '/receipts', 'err',
+    doc_id = receipt(books.db)
+    booked_on(books.db, doc_id)
+    assert_refused_over_http(server_port, books, f'/receipts/delete?id={doc_id}', '/receipts', 'err',
                              RECEIPT_LEAD + '1 Buchung.')
-    assert scalar(books.db, 'SELECT COUNT(*) FROM Documents WHERE Number = ?', 'B-100') == 1
+    assert scalar(books.db, 'SELECT COUNT(*) FROM Documents WHERE ID = ?', doc_id) == 1
 
 
 def test_objects_without_references_are_still_deleted_over_http(server_port, books):
     free_article, free_account, free_category = article(books.db), bank(books.db), category(books.db)
-    receipt(books.db, 'B-300')
+    free_receipt = receipt(books.db, 'B-300')
     for path, target in [(f'/masterdata/articles/delete?id={free_article}', '/masterdata/articles'),
                          (f'/masterdata/bankaccounts/delete?id={free_account}', '/masterdata/bankaccounts'),
                          (f'/asset_categories/delete?id={free_category}', '/asset_categories'),
-                         ('/receipts/delete?number=B-300', '/receipts')]:
+                         (f'/receipts/delete?id={free_receipt}', '/receipts')]:
         resp = delete_over_http(server_port, books, path)
         assert resp.status == 303 and resp.headers['Location'] == target, path
     assert books.db.get_article_by_id(free_article) is None
     assert scalar(books.db, 'SELECT COUNT(*) FROM Accounts WHERE ID = ?', free_account) == 0
     assert scalar(books.db, 'SELECT COUNT(*) FROM AssetCategories WHERE ID = ?', free_category) == 0
-    assert scalar(books.db, 'SELECT COUNT(*) FROM Documents WHERE Number = ?', 'B-300') == 0
+    assert scalar(books.db, 'SELECT COUNT(*) FROM Documents WHERE ID = ?', free_receipt) == 0
 
 
 LIST_PAGES = [

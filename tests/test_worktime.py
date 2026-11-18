@@ -273,3 +273,53 @@ class TestWorkTimeOverlap:
         assert status == 303 and 'error=' in location
         e = tmp_db.get_worktime_by_id(wid2)
         assert e[5] == '13:00'                        # unverändert (Update abgelehnt)
+
+
+class TestWorkTimeHandlerIds:
+    """Person und Eintrag kommen aus dem Formular: Eine Angabe, die keine ID ist, wird abgelehnt (400 mit Klartext, nichts
+    gespeichert) – ein leeres Feld oder ``0`` heißt wie bisher „nichts gewählt“ (Weiterleitung, nichts gespeichert)."""
+
+    @pytest.mark.parametrize('bad', ['abc', '-1', '1.5', '1e3', '٣', '99999999999999999999'])
+    def test_add_refuses_a_person_that_is_no_id(self, tmp_db, bad):
+        from server.handlers import handle_add_worktime
+        assert handle_add_worktime(tmp_db, _post(bad)) == (400, 'Ungültige Anfrage.')
+
+        conn = tmp_db._get_connection()
+        try:
+            assert conn.execute('SELECT COUNT(*) FROM WorkTimes').fetchone()[0] == 0
+        finally:
+            conn.close()
+
+    @pytest.mark.parametrize('field', ['person_id', 'id'])
+    def test_update_refuses_an_id_that_is_no_id(self, tmp_db, field):
+        from server.handlers import handle_add_worktime, handle_update_worktime
+        pid = _person(tmp_db)
+        handle_add_worktime(tmp_db, _post(pid, location_mode='other', location_city='Musterstadt'))
+        conn = tmp_db._get_connection()
+        try:
+            before = conn.execute('SELECT * FROM WorkTimes').fetchall()
+        finally:
+            conn.close()
+        post = _post(pid, id=before[0][0], end_time='17:00', location_mode='other', location_city='Musterstadt')
+        post[field] = ['abc']
+
+        assert handle_update_worktime(tmp_db, post) == (400, 'Ungültige Anfrage.')
+
+        conn = tmp_db._get_connection()
+        try:
+            assert conn.execute('SELECT * FROM WorkTimes').fetchall() == before
+        finally:
+            conn.close()
+
+    @pytest.mark.parametrize('empty', ['', '0'])
+    def test_an_empty_person_still_redirects_without_saving(self, tmp_db, empty):
+        from server.handlers import handle_add_worktime
+
+        status, _location = handle_add_worktime(tmp_db, _post(empty))
+
+        assert status == 303
+        conn = tmp_db._get_connection()
+        try:
+            assert conn.execute('SELECT COUNT(*) FROM WorkTimes').fetchone()[0] == 0
+        finally:
+            conn.close()

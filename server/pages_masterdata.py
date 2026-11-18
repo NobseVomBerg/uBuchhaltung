@@ -154,7 +154,8 @@ def PageArticles(db: Database, edit_article_id=None, error=None):
     ea_name       = _html.escape(str(edit_article[1] or '')) if edit_article else ''
     ea_unit       = edit_article[2] if edit_article else 'Stk.'
     ea_unit_price = edit_article[3] if edit_article else 0.0
-    ea_tax_rate   = int(edit_article[4]) if edit_article else 19
+    # Der Steuersatz steht als Prozentzahl (REAL) im Artikel; ein leerer Wert zeigt wie in der Liste 19 %
+    ea_tax_rate   = (float(edit_article[4]) if edit_article[4] is not None else 19.0) if edit_article else 19.0
     ea_desc       = _html.escape(str(edit_article[5] or '')) if edit_article else ''
     ea_active     = edit_article[6] if edit_article and len(edit_article) > 6 else 1
 
@@ -164,13 +165,21 @@ def PageArticles(db: Database, edit_article_id=None, error=None):
         ('m', 'm (Meter)'), ('m²', 'm² (Quadratmeter)'),
         ('l', 'l (Liter)'), ('Psch.', 'Psch. (Pauschale)'),
     ]
+    tax_options = [(19, '19%'), (7, '7%'), (0, '0%')]
+    # Eine Einheit oder ein Steuersatz, den die feste Auswahl nicht kennt (Import, SQL-Konsole: „km“, 16 %), bleibt als
+    # vorgewählte Option stehen – sonst setzte „öffnen und unverändert speichern“ den Artikel still auf Stk. / 19 %
+    if ea_unit and ea_unit not in dict(unit_options):
+        unit_options.append((ea_unit, ea_unit))
+    if all(float(r) != ea_tax_rate for r, _label in tax_options):
+        tax_options.append((repr(ea_tax_rate), f'{ea_tax_rate:g}%'))
     unit_select = ''.join(
-        f'<option value="{u}" {"selected" if u == ea_unit else ""}>{label}</option>'
+        f'<option value="{_html.escape(str(u), quote=True)}" {"selected" if u == ea_unit else ""}>'
+        f'{_html.escape(label, quote=True)}</option>'
         for u, label in unit_options
     )
     tax_select = ''.join(
-        f'<option value="{r}" {"selected" if r == ea_tax_rate else ""}>{label}</option>'
-        for r, label in [(19, '19%'), (7, '7%'), (0, '0%')]
+        f'<option value="{_html.escape(str(r), quote=True)}" {"selected" if float(r) == ea_tax_rate else ""}>{label}</option>'
+        for r, label in tax_options
     )
     active_checked = 'checked' if ea_active else ''
     id_row = (f'<tr><td>ID:</td><td style="color:#666;">{edit_article[0]}'
