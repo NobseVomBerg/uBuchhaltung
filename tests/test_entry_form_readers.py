@@ -8,7 +8,8 @@ Die Form steht beim Schreiben fest. Was ein Leser aus ihr macht:
 * EÜR: Zweckkonto aus der Form (Geldkonto vorne → Gegenkonto, Zweckkonto vorne → Konto, Umbuchung →
   beide Seiten, Spiegel → nichts);
 * DATEV: Soll/Haben folgt der Seite, die bei positivem Betrag im Soll steht;
-* Dashboard: Ein Spiegel mit bekannter Lesart zählt aus Sicht der Kasse;
+* Dashboard: Ein eigenständiger Spiegel zwischen eigenen Konten ist ein Übertrag (seit 2.4.1: weder Einnahme noch
+  Ausgabe); mit bekannter Lesart zählt er aus Sicht der Kasse;
 * Split-Summe: Ein Spiegel wirkt nach seiner Position auf dem Konto der Bankbewegung.
 
 Dazu die Gegenprobe: Ändert sich die Liste der Geldkonten NACH dem Schreiben, lesen die Auswertungen
@@ -53,24 +54,27 @@ def _by_ref(db):
 # ── Vorher/Nachher (Tabelle 4): neuer Import in eine frische Datenbank, Bank 1800 ────────────────
 
 def test_withdrawal_from_the_bank_into_the_cash_account_is_a_debit_on_the_cash_account(db):
-    """1600 an 1800, 100: Betrag +100, ``mirror_coa``, DATEV **S** 1600 (früher H), Kasse +100."""
+    """1600 an 1800, 100: Betrag +100, ``mirror_coa``, DATEV **S** 1600 (früher H), Kasse +100 – im Dashboard
+    ein Übertrag, keine Einnahme."""
     db.import_wiso_csv(csv_export(('1600', '1800', '100,00', 'AB-1', '')))
 
     assert _by_ref(db)['AB-1'] == (minor('100.00'), FORM_MIRROR_COA)
     assert datev_rows(db)['AB-1'] == ('100,00', 'S', '1600', '1800', '0')
     totals = db.get_dashboard_totals(D1, D2)
-    assert (totals['income'], totals['expense']) == (100.0, 0)
+    # seit 2.4.1: ein Spiegel zwischen eigenen Konten ist ein Übertrag (Kassensicht +100), weder Einnahme noch Ausgabe
+    assert (totals['income'], totals['expense'], totals['transfers']) == (0, 0, 100.0)
 
 
 def test_deposit_from_the_cash_account_onto_the_bank_is_a_debit_on_the_bank(db):
     """1800 an 1600, 100: Betrag +100, ``mirror_coa``, DATEV **S** 1800 (früher H), Kasse **−100**
-    (früher +100 als Einnahme)."""
+    (früher +100 als Einnahme) – im Dashboard ein Übertrag, keine Ausgabe."""
     db.import_wiso_csv(csv_export(('1800', '1600', '100,00', 'EZ-1', '')))
 
     assert _by_ref(db)['EZ-1'] == (minor('100.00'), FORM_MIRROR_COA)
     assert datev_rows(db)['EZ-1'] == ('100,00', 'S', '1800', '1600', '0')
     totals = db.get_dashboard_totals(D1, D2)
-    assert (totals['income'], totals['expense']) == (0, -100.0)
+    # seit 2.4.1: Übertrag (Kassensicht −100) statt Ausgabe
+    assert (totals['income'], totals['expense'], totals['transfers']) == (0, 0, -100.0)
 
 
 def test_dashboard_months_follow_the_cash_perspective_too(db):
@@ -79,7 +83,8 @@ def test_dashboard_months_follow_the_cash_perspective_too(db):
 
     month = next(m for m in db.get_dashboard_monthly(D1, D2) if m['year_month'] == '2026-01')
 
-    assert (month['income'], month['expense']) == (100.0, -40.0)
+    # seit 2.4.1: beide sind Überträge – Einnahme und Ausgabe bleiben 0, die Kassensicht steht netto in „Überträge“ (+100 −40)
+    assert (month['income'], month['expense'], month['transfers']) == (0, 0, 60.0)
 
 
 def test_a_mirror_in_the_clearing_account_balances_against_its_bank_movement(db):
@@ -335,23 +340,25 @@ def test_a_stored_transfer_stays_a_transfer_when_a_counter_account_becomes_a_mon
         == FORM_TRANSFER
 
 
-# ── Dashboard: nur die Spiegel mit bekannter Lesart zählen aus Sicht der Kasse ─
+# ── Dashboard: ein Spiegel zwischen eigenen Konten ist ein Übertrag – mit bekannter Lesart aus Sicht der Kasse ─
 
-@pytest.mark.parametrize('form, coa_nr, counter_nr, amount, income, expense', [
+@pytest.mark.parametrize('form, coa_nr, counter_nr, amount, transfers', [
     # mirror_coa: Betrag auf dem Konto (positiv = Konto im Soll)
-    (FORM_MIRROR_COA, 1600, 1800, '100.00', 100.0, 0),            # Kasse im Soll: +100
-    (FORM_MIRROR_COA, 1800, 1600, '100.00', 0, -100.0),           # Kasse im Haben: −100
-    (FORM_MIRROR_COA, 1600, 1800, '-100.00', 0, -100.0),
+    (FORM_MIRROR_COA, 1600, 1800, '100.00', 100.0),            # Kasse im Soll: +100
+    (FORM_MIRROR_COA, 1800, 1600, '100.00', -100.0),           # Kasse im Haben: −100
+    (FORM_MIRROR_COA, 1600, 1800, '-100.00', -100.0),
     # mirror_counter: Betrag auf dem Gegenkonto (so schreibt ihn die Buchungsmaske)
-    (FORM_MIRROR_COUNTER, 1800, 1600, '100.00', 100.0, 0),
-    (FORM_MIRROR_COUNTER, 1600, 1800, '100.00', 0, -100.0),
+    (FORM_MIRROR_COUNTER, 1800, 1600, '100.00', 100.0),
+    (FORM_MIRROR_COUNTER, 1600, 1800, '100.00', -100.0),
     # Altbestand und alles andere: der Betrag, wie er ist
-    (FORM_MIRROR_LEGACY, 1600, 1800, '100.00', 100.0, 0),
-    (FORM_MIRROR_LEGACY, 1800, 1600, '100.00', 100.0, 0),
-    (None, 1800, 1600, '100.00', 100.0, 0),
+    (FORM_MIRROR_LEGACY, 1600, 1800, '100.00', 100.0),
+    (FORM_MIRROR_LEGACY, 1800, 1600, '100.00', 100.0),
+    (None, 1800, 1600, '100.00', 100.0),
 ])
-def test_a_standalone_mirror_counts_from_the_view_of_the_cash_account(
-        db, form, coa_nr, counter_nr, amount, income, expense):
+def test_a_standalone_mirror_is_a_transfer_from_the_view_of_the_cash_account(
+        db, form, coa_nr, counter_nr, amount, transfers):
+    """Bis 2.4.0 zählte die Kassensicht als Einnahme (+) bzw. Ausgabe (−); seit 2.4.1 steht sie – mit demselben Betrag –
+    unter „Überträge“, Einnahme und Ausgabe bleiben 0."""
     booking = db.insert_booking('2026-01-05', Decimal(amount), coa_id=coa(db, coa_nr),
                                 counter_coa_id=coa(db, counter_nr), booking_type='entry',
                                 entry_form=form or FORM_MIRROR_LEGACY)
@@ -360,14 +367,14 @@ def test_a_standalone_mirror_counts_from_the_view_of_the_cash_account(
 
     totals = db.get_dashboard_totals(D1, D2)
 
-    assert (totals['income'], totals['expense']) == (income, expense)
+    assert (totals['income'], totals['expense'], totals['transfers']) == (0, 0, transfers)
 
 
 def test_a_mirror_that_does_not_touch_the_cash_account_keeps_its_amount_in_the_dashboard(db):
     """Nur über die Kasse als Konto gefunden (``Account_ID``), ohne ihr Konto im Satz: Der Betrag
-    zählt, wie er ist."""
+    zählt, wie er ist – 1460 ist kein eigenes Konto, der Satz also kein Übertrag."""
     db.insert_booking('2026-01-05', Decimal('100.00'), coa_id=coa(db, 1460),
                       counter_coa_id=coa(db, 1800), account_id=cash_account_id(db),
                       booking_type='entry', entry_form=FORM_MIRROR_COA)
     totals = db.get_dashboard_totals(D1, D2)
-    assert (totals['income'], totals['expense']) == (100.0, 0)
+    assert (totals['income'], totals['expense'], totals['transfers']) == (100.0, 0, 0)

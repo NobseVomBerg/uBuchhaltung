@@ -4,7 +4,8 @@
 """Die Migration auf 2.1.0: Jeder Buchungssatz bekommt seine Form (``Bookings.EntryForm``).
 
 Die Migration darf nichts umdeuten. Der Bestand bekommt die Form, mit der 2.0.x ihn las; danach zeigen
-EÜR, DATEV-Zeilen (ohne die Spalte BU-Schlüssel, die seit 2.3.0 der Art des Zweckkontos folgt), Dashboard und
+EÜR, DATEV-Zeilen (ohne die Spalte BU-Schlüssel, die seit 2.3.0 der Art des Zweckkontos folgt), Dashboard (Saldo,
+Zahl der Bewegungen und Monatssummen – ohne die Aufteilung in Töpfe, die seit 2.4.1 anders rechnet) und
 die Prüfung auf unstimmige Splits **dieselben Werte wie vorher**. Als
 Maßstab dienen Werte, die der Stand 2.0.8 über dieselbe Datenbank gelesen hat
 (``fixtures/entry_form_golden_2_0_8.json``; Aufbau und Neuerzeugung: ``entry_form_world.py``) – für einen
@@ -19,6 +20,7 @@ import json
 import os
 import sqlite3
 from contextlib import closing
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -26,8 +28,8 @@ import pytest
 import version
 from db import Database, MigrationBackupError, SchemaTooNewError, _CoreMixin
 from db.matching import (
-    FORM_LIQUID_FIRST, FORM_MIRROR_COA, FORM_MIRROR_LEGACY, FORM_PURPOSE_FIRST, FORM_TRANSFER,
-    read_entry_form,
+    FORM_LIQUID_FIRST, FORM_MIRROR_COA, FORM_MIRROR_COUNTER, FORM_MIRROR_LEGACY, FORM_PURPOSE_FIRST,
+    FORM_TRANSFER, read_entry_form,
 )
 from tests import entry_form_world as world
 from tests import installation
@@ -91,10 +93,22 @@ def _roundtrip(value):
 def _comparable(section, value):
     """Eine Auswertung zum Vergleich mit dem Maßstab von 2.0.8. Im DATEV-Stapel fehlt die Spalte „BU-Schlüssel“: Sie
     kommt seit 2.3.0 nach der Art des Zweckkontos (``db/datev_keys.py``), 2.0.8 kannte nur die Geldrichtung – der
-    Schlüssel gehört nicht zu dem, was die Migration nicht ändern darf (Betrag, Kennzeichen, Konten, Belegfeld)."""
+    Schlüssel gehört nicht zu dem, was die Migration nicht ändern darf (Betrag, Kennzeichen, Konten, Belegfeld).
+
+    Beim Dashboard zählt nur, was die Aufteilung in Töpfe nicht ändert: der Saldo, die Zahl der Bewegungen und der offenen
+    sowie je Monat die Summe aller Töpfe. 2.0.8 kannte drei Töpfe und zählte einen Übertrag Bank ↔ Kasse als Einnahme bzw.
+    Ausgabe und einen Privatanteil ganz als privat; seit 2.4.1 sind es vier Töpfe (Einnahme, Ausgabe, privat, Übertrag), die
+    Summe je Monat – aus dem 4-Tupel des Maßstabs wie aus dem 5-Tupel von heute berechenbar – bleibt. Der Saldo hängt weiter an
+    der Form: Er enthält die Kassensicht der eigenständigen Spiegel."""
     value = _roundtrip(value)
     if section == 'datev':
         value = [row[:5] + row[6:] for row in value]
+    elif section.startswith('dashboard'):
+        totals = value['totals']
+        value = {'balance': totals['balance'], 'bank_count': totals['bank_count'],
+                 'unlinked_count': totals['unlinked_count'],
+                 'monthly': [[row[0], f'{sum(Decimal(amount) for amount in row[1:]):.2f}']
+                             for row in value['monthly']]}
     return value
 
 
@@ -115,8 +129,8 @@ def test_the_world_is_a_2_0_x_database_before_the_migration(old):
 def test_migration_leaves_euer_datev_dashboard_and_split_check_as_they_were(old):
     """EÜR (alle Konten, nur Kasse, ein Bankkonto), jede Zeile des DATEV-Stapels (Betrag, Soll/Haben,
     Konten, Belegfeld – der BU-Schlüssel folgt seit 2.3.0 der Art des Zweckkontos, ``_comparable``), Dashboard
-    (Summen und Monate, ebenso gefiltert) und die unstimmigen Splits: nach der Migration dieselben Werte, die
-    2.0.8 über die Datenbank las."""
+    (Saldo, Zahl der Bewegungen und Monatssummen, ebenso gefiltert – die Aufteilung in Töpfe seit 2.4.1 nicht,
+    ``_comparable``) und die unstimmigen Splits: nach der Migration dieselben Werte, die 2.0.8 über die Datenbank las."""
     path, cash = old
 
     after = world.evaluate(path)               # öffnet die Datenbank und migriert sie
@@ -210,6 +224,7 @@ def test_the_migration_does_not_touch_a_row_that_already_has_a_form(old_1600):
     ('CSV-KA', FORM_LIQUID_FIRST, 'datev'),           # Ausgabe als „Geldkonto vorne“: H statt S
     ('ALT-1', FORM_TRANSFER, 'datev'),                # Konto im Bereich 1000–1099 als Umbuchung
     ('CSV-VK', FORM_MIRROR_COA, 'unbalanced'),        # Spiegel mit Position: Split geht plötzlich auf
+    ('CSV-AB', FORM_MIRROR_COUNTER, 'dashboard_cash'),    # Kassensicht des Spiegels kippt: der Saldo der Kasse ändert sich
 ])
 def test_a_wrongly_filled_form_does_not_pass_the_comparison(old_1600, document, wrong, section):
     path = old_1600

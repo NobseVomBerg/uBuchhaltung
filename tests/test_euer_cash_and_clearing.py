@@ -23,7 +23,9 @@ Kasse ohne SKR-Nummer, mit 1600 und mit 1460 – das Ergebnis darf nicht von der
 Kasse abhängen –, der Kontofilter, die Doppelzählung (auch wenn der Abgleich einen Satz später
 mit einer Bankbewegung verknüpft, und für Sätze, die mehrere Sektionen finden), die Umbuchungen
 zwischen Anlage- und Erfolgskonto und das Dashboard (folgt den Kontobewegungen: 1460 und
-AfA zählen dort nicht). Der Test für die AfA-Buchung selbst steht in
+AfA zählen dort nicht). Seit 2.4.1 zerlegt es jede Bewegung in Einnahme, Ausgabe, privat und Übertrag; ein Spiegel
+zwischen eigenen Konten – auch „1460 an 1800“ unter einer Bankbewegung, wenn die Kasse das Verrechnungskonto führt
+(Fälle E4 und F) – steht unter „Überträge“. Der Test für die AfA-Buchung selbst steht in
 ``test_depreciation_booking.py``.
 
 Beträge werden exakt als Decimal verglichen. Alle Namen und Werte sind erfunden.
@@ -108,9 +110,11 @@ def _euer(db, account_ids=None, date_from=D1, date_to=D2):
 
 
 def _dash(db, account_ids=None, date_from=D1, date_to=D2):
+    """Die Töpfe des Dashboards; ``transfers`` (seit 2.4.1) ist in jedem Fall ohne Übertrag 0."""
     totals = db.get_dashboard_totals(date_from, date_to, account_ids)
     return {'income': Decimal(str(totals['income'])), 'private': Decimal(str(totals['private'])),
-            'expense': Decimal(str(totals['expense'])), 'bank_count': totals['bank_count']}
+            'expense': Decimal(str(totals['expense'])), 'transfers': Decimal(str(totals['transfers'])),
+            'bank_count': totals['bank_count']}
 
 
 def _monthly(db, account_ids=None):
@@ -122,7 +126,7 @@ def _monthly(db, account_ids=None):
 def _month_sums(db, account_ids=None):
     months = _monthly(db, account_ids)
     return {key: sum((Decimal(str(m[key])) for m in months), Decimal('0'))
-            for key in ('income', 'private', 'expense')}
+            for key in ('income', 'private', 'expense', 'transfers')}
 
 
 def _mask(db, account_id, coa_number, amount, rate, tax, date='2026-03-01'):
@@ -178,8 +182,10 @@ def _datev(db):
 # ── Fälle der Vorher/Nachher-Tabelle ─────────────────────────────────────────
 # Case: Kennung, Aufbau der Buchungen, erwartete EÜR (Kontonummer -> Betrag), erwartetes Dashboard
 # (Einnahmen, Ausgaben, Zahl der Zeilen); ``needs_skr``: der Fall braucht eine SKR-Nummer an der
-# Kasse; ``dash_1460``: abweichendes Dashboard, wenn die Kasse das Verrechnungskonto führt.
-Case = namedtuple('Case', 'id build euer dash needs_skr dash_1460', defaults=(False, None))
+# Kasse; ``dash_1460``: abweichendes Dashboard, wenn die Kasse das Verrechnungskonto führt;
+# ``transfers_1460``: der Topf „Überträge“ dann (sonst gilt 0 – kein Fall hat ohne 1460 einen Übertrag).
+Case = namedtuple('Case', 'id build euer dash needs_skr dash_1460 transfers_1460',
+                  defaults=(False, None, '0'))
 
 
 def _a(db):
@@ -268,9 +274,13 @@ CASES = [
     Case('E2-giro-kind-4400-an-1460', _e(4400, 1460, '-19'), {3806: '-19', 4400: '-100'},
          ('0', '-119', 1)),
     Case('E3-giro-kind-1460-vorne-leer', _e(1460, None, '-19'), {}, ('0', '-119', 1)),
-    Case('E4-giro-kind-1460-an-1800', _e(1460, 1800), {}, ('0', '-119', 1)),
+    # Führt die Kasse das Verrechnungskonto, ist „1460 an 1800“ ein Spiegel zwischen eigenen Konten: seit 2.4.1 ein
+    # Übertrag (−119) statt einer Ausgabe
+    Case('E4-giro-kind-1460-an-1800', _e(1460, 1800), {}, ('0', '-119', 1), False, ('0', '0', 1), '-119'),
+    # Beim Paar F steht der Aufwand „6815 an 1460“ als Kassenbewegung (Ausgabe −119), die Bankbewegung als Übertrag
+    # (−119): bis 2.4.0 zählte das Dashboard beide als Ausgabe (−238)
     Case('F-wiso-paar-getrennt', _f, {1406: '-19', 6815: '-100'}, ('0', '-119', 1), False,
-         ('0', '-238', 2)),
+         ('0', '-119', 2), '-119'),
     Case('G-wiso-paar-als-kinder', _g, {1406: '-19', 6815: '-100'}, ('0', '-119', 1)),
     Case('I-konto-kasse-6815-an-1460', _i, {1406: '-19', 6815: '-100'}, ('0', '-119', 1)),
     Case('wiso-afa-6222-an-0520', _wiso_depreciation, {6222: '-600'}, ('0', '0', 0)),
@@ -302,20 +312,43 @@ def test_euer_and_dashboard_of_every_form_do_not_depend_on_the_cash_account_numb
     assert (totals['income'], totals['expense'], totals['bank_count']) == \
            (Decimal(income), Decimal(expense), count)
     assert totals['private'] == 0
+    assert totals['transfers'] == Decimal(case.transfers_1460 if kasse_skr == 1460 else '0')
     # Die Monatswerte sind dieselbe Abfrage: ihre Summe ist die Summe der Karten
-    assert _month_sums(db) == {key: totals[key] for key in ('income', 'private', 'expense')}
+    assert _month_sums(db) == {key: totals[key] for key in ('income', 'private', 'expense', 'transfers')}
 
 
-def test_pair_f_is_counted_twice_on_the_dashboard_when_the_cash_account_is_1460(tmp_path):
-    """BEKANNTE EINSCHRÄNKUNG (docs/aufgaben.md): Führt die Kasse das Verrechnungskonto, zählt das
-    Dashboard den eigenständigen Teil „6815 an 1460“ als Kassenbewegung und dazu die Bankzeile.
-    Die EÜR stimmt trotzdem. Behoben wird es, indem die Kasse auf 1600 steht – hier nur
-    festgeschrieben, damit eine Änderung auffällt."""
+@pytest.mark.parametrize('kasse_skr, expense, transfers', [
+    pytest.param(None, '-119', '0', id='kasse-ohne-skr'),
+    pytest.param(1600, '-119', '0', id='kasse-1600'),
+    pytest.param(1460, '0', '-119', id='kasse-1460'),
+])
+def test_the_clearing_mirror_under_a_bank_movement_is_a_transfer_only_when_the_cash_account_is_1460(
+        tmp_path, kasse_skr, expense, transfers):
+    """E4: „1460 an 1800“ als Kind der Girobewegung (−119). Nur wenn die Kasse das Verrechnungskonto führt, sind beide
+    Seiten eigene Konten – dann ist es ein Übertrag; sonst ist 1460 ein fremdes Konto und die Bewegung eine Ausgabe. Der Saldo
+    ist in beiden Fällen −119."""
+    db = _make_db(tmp_path, kasse_skr)
+    _e(1460, 1800)(db)
+
+    totals = _dash(db)
+
+    assert (totals['expense'], totals['transfers'], totals['income'], totals['private']) == \
+           (Decimal(expense), Decimal(transfers), 0, 0)
+    assert db.get_dashboard_totals(D1, D2)['balance'] == -119.0
+
+
+def test_pair_f_counts_the_expense_once_and_the_bank_movement_as_a_transfer_when_the_cash_account_is_1460(tmp_path):
+    """Führt die Kasse das Verrechnungskonto, steht der eigenständige Teil „6815 an 1460“ als Kassenbewegung
+    (Ausgabe −119) und „1460 an 1800“ unter der Bankbewegung als Übertrag (−119). Bis 2.4.0 zählte das Dashboard beides als
+    Ausgabe (−238). Bekannte Grenze (docs/aufgaben.md): Die Kassenseite des Übertrags (+119) steht nur als Satz unter der
+    Bankbewegung und fehlt in der Kassensicht – der Saldo bleibt −238, der Übertrag zeigt die Differenz."""
     db = _make_db(tmp_path, 1460)
     _f(db)
     assert _euer(db) == {1406: Decimal('-19'), 6815: Decimal('-100')}
-    assert _dash(db)['expense'] == Decimal('-238')
-    assert _dash(db)['bank_count'] == 2
+    totals = _dash(db)
+    assert (totals['expense'], totals['transfers'], totals['bank_count']) == (Decimal('-119'), Decimal('-119'), 2)
+    assert totals['income'] == totals['private'] == 0
+    assert db.get_dashboard_totals(D1, D2)['balance'] == -238.0
 
 
 @pytest.mark.parametrize('kasse_skr', [None, 1600], ids=['kasse-ohne-skr', 'kasse-1600'])
@@ -371,8 +404,8 @@ def test_private_withdrawal_from_the_cash_account_is_private_and_not_an_expense(
     _mask(db, _accounts(db)[1], 2100, '-50.00', '', '')
 
     assert _euer(db) == {2100: Decimal('-50')}
-    assert _dash(db) == {'income': 0, 'private': Decimal('-50'), 'expense': 0, 'bank_count': 1}
-    assert _month_sums(db) == {'income': 0, 'private': Decimal('-50'), 'expense': 0}
+    assert _dash(db) == {'income': 0, 'private': Decimal('-50'), 'expense': 0, 'transfers': 0, 'bank_count': 1}
+    assert _month_sums(db) == {'income': 0, 'private': Decimal('-50'), 'expense': 0, 'transfers': 0}
 
 
 @pytest.mark.parametrize('kasse_skr', KASSEN_PARAMS)
@@ -397,7 +430,7 @@ def test_cash_booking_follows_editing_and_deleting_it(tmp_path, kasse_skr):
     db.delete_transaction(bank)
 
     assert _euer(db) == {}
-    assert _dash(db) == {'income': 0, 'private': 0, 'expense': 0, 'bank_count': 0}
+    assert _dash(db) == {'income': 0, 'private': 0, 'expense': 0, 'transfers': 0, 'bank_count': 0}
 
 
 @pytest.mark.parametrize('kasse_skr', KASSEN_PARAMS)
@@ -488,7 +521,7 @@ def test_selection_without_an_existing_account_shows_nothing(tmp_path, kasse_skr
     db = _make_db(tmp_path, kasse_skr)
     _filter_data(db)
     assert db.get_euer_data(D1, D2, [9999]) == []
-    assert _dash(db, [9999]) == {'income': 0, 'private': 0, 'expense': 0, 'bank_count': 0}
+    assert _dash(db, [9999]) == {'income': 0, 'private': 0, 'expense': 0, 'transfers': 0, 'bank_count': 0}
     assert db.get_dashboard_monthly(D1, D2, [9999]) == []
 
 
@@ -502,11 +535,11 @@ def test_dashboard_follows_the_account_filter(tmp_path, kasse_skr):
 
     clearing = Decimal('-50') if kasse_skr == 1460 else 0
     extra = 1 if kasse_skr == 1460 else 0
-    assert _dash(db, [giro]) == {'income': Decimal('119'), 'private': 0, 'expense': 0,
+    assert _dash(db, [giro]) == {'income': Decimal('119'), 'private': 0, 'expense': 0, 'transfers': 0,
                                  'bank_count': 1}
-    assert _dash(db, [kasse]) == {'income': 0, 'private': 0,
+    assert _dash(db, [kasse]) == {'income': 0, 'private': 0, 'transfers': 0,
                                   'expense': Decimal('-11.90') + clearing, 'bank_count': 1 + extra}
-    assert _dash(db) == {'income': Decimal('119'), 'private': 0,
+    assert _dash(db) == {'income': Decimal('119'), 'private': 0, 'transfers': 0,
                          'expense': Decimal('-11.90') + clearing, 'bank_count': 2 + extra}
     for ids in ([giro], [kasse], None):
         month = _month_sums(db, ids)
@@ -607,7 +640,7 @@ def test_dashboard_counts_the_clearing_booking_once_linked_or_not(tmp_path, kass
     giro, _kasse = _accounts(db)
     entry = STANDALONE_FORMS['verrechnungskonto'][0](db)
     bank = db.insert_booking('2026-03-05', Decimal('-119'), account_id=giro, booking_type='bank')
-    expected = {'income': 0, 'private': 0, 'expense': Decimal('-119'), 'bank_count': 1}
+    expected = {'income': 0, 'private': 0, 'expense': Decimal('-119'), 'transfers': 0, 'bank_count': 1}
     assert _dash(db) == expected
     assert db.link_bank_to_entries()['linked'] == 0
     assert _dash(db) == expected

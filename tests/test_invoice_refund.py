@@ -1744,10 +1744,13 @@ def test_the_dashboard_counts_the_refund_once_as_an_outgoing_movement_and_the_eu
     _r1, s1, _paid = paid_and_cancelled(world)
     refund(world, s1, outgoing(world, 50.0, '2026-07-10'))
 
+    # seit 2.4.1 trägt das Dashboard einen vierten Topf „Überträge“; Zahlung und Erstattung sind keine Überträge (0.0)
     assert db.get_dashboard_totals('2026-01-01', '2026-12-31') == {
-        'income': 50.0, 'private': 0.0, 'expense': -50.0, 'balance': 0.0, 'bank_count': 2, 'unlinked_count': 0}
+        'income': 50.0, 'private': 0.0, 'expense': -50.0, 'transfers': 0.0, 'balance': 0.0, 'bank_count': 2,
+        'unlinked_count': 0}
     assert [m for m in db.get_dashboard_monthly('2026-06-01', '2026-08-31') if m['income'] or m['expense']] == [
-        {'year_month': '2026-07', 'label': 'Jul', 'income': 50.0, 'private': 0.0, 'expense': -50.0}]
+        {'year_month': '2026-07', 'label': 'Jul', 'income': 50.0, 'private': 0.0, 'expense': -50.0,
+         'transfers': 0.0}]
     assert db.get_dashboard_totals('2026-07-10', '2026-07-10')['expense'] == -50.0
     assert db.get_dashboard_totals('2026-07-10', '2026-07-10')['income'] == 0
     assert euer_on(db, '2026-07-10') == {4400: -42.02, 3806: -7.98} and euer(db) == {}
