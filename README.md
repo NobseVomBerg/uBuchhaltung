@@ -219,13 +219,17 @@ Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen
   Rechnungen, ebenfalls eine Schemaänderung) legt vor der Umstellung genauso eine Sicherung an; ein Zurück auf
   2.1.x gibt es nur über diese Sicherung. Dasselbe gilt für das Update auf 2.3.0 (BU-Schlüssel am Buchungssatz und
   DATEV-Nummern der eigenen Firma): Zurück auf 2.2.x nur über die Sicherung. Anders als die früheren Umstellungen ändert 2.3.0 den
-  **DATEV-Export**: Er schreibt andere BU-Schlüssel (siehe unten).
+  **DATEV-Export**: Er schreibt andere BU-Schlüssel (siehe unten). Auch das Update auf 2.4.0 (Besteuerungsart an der
+  eigenen Firma, eine neue Spalte) legt die Sicherung an – zurück auf 2.3.x nur über sie; es ändert keine Buchung, keine
+  Auswertung und keinen Export.
   **Sicherung zurückspielen** (die Oberfläche bietet das nicht an): uBuchhaltung beenden, die Datei
   `backup/<Datum>_vor_<Version>_buch.db` im Datenordner des Nutzers (`data/users/<Name>/`, im Container
   das eingebundene Datenverzeichnis) über `buch.db` kopieren – liegen daneben Dateien `buch.db-journal`,
   `buch.db-wal` oder `buch.db-shm`, diese vorher löschen – und eine ältere Programmversion starten.
   Was nach der Umstellung eingegeben wurde, geht dabei verloren.
 - **Noch nicht enthalten:** Umsatzsteuer-Voranmeldung bzw. ELSTER-Übermittlung,
+  Soll-Versteuerung (Umsatzsteuer mit der Leistung) – die App führt Erlös und Umsatzsteuer nach dem
+  Zahlungseingang; die Besteuerungsart lässt sich an der eigenen Firma festhalten, ändert aber keine Buchung –,
   Bankanbindung per FinTS/PSD2 sowie Kontoauszüge im MT940-Format.
 - **Für den Betrieb im eigenen Netz gebaut**, nicht fürs offene Internet –
   siehe [Sicherheitshinweise](#sicherheitshinweise).

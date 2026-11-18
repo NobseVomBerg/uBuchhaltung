@@ -160,6 +160,10 @@ def test_existing_rows_stay_untouched_and_the_new_values_are_empty(stock):
     assert all(row[23] is None for row in after['Bookings'])
     assert [row[:5] for row in after['CompanyDetails']] == before['CompanyDetails']
     assert all(row[5:] == (None, None) for row in after['CompanyDetails'])
+    # Das Öffnen stellt bis auf den heutigen Stand um: Schema 2004 hängt ``Contacts.VatMethod`` an (leer),
+    # geprüft in ``test_vat_method_schema_2004.py``
+    assert all(row[-1] is None for row in after['Contacts'])
+    after['Contacts'] = [row[:-1] for row in after['Contacts']]
     for table, rows in before.items():
         if table not in ('Bookings', 'CompanyDetails'):
             assert after[table] == rows, table                                    # alle anderen Tabellen

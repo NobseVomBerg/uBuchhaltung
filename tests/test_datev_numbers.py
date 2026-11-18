@@ -103,11 +103,11 @@ def test_a_stored_value_is_masked_in_the_form(tmp_db):
 def test_the_contact_query_carries_the_numbers_at_the_end_without_moving_the_other_columns(tmp_db):
     own = _own(tmp_db, datev_consultant_no='4711', datev_client_no='12')
     row = tmp_db.get_contact_by_id(own)
-    assert len(row) == 34 and (row[32], row[33]) == ('4711', '12')
+    assert len(row) == 35 and (row[32], row[33]) == ('4711', '12')                     # Index 34: Besteuerungsart (2.4.0)
     assert (row['datev_consultant_no'], row['datev_client_no']) == ('4711', '12')
     assert row[3] == 'Eigene Probe GmbH' and row[26] is None and row[31] is None      # die alten Spalten an ihrem Platz
     customer = tmp_db.insert_contact(contact_type='customer', entity_type='company', display_name='K', company_name='K')
-    assert tuple(tmp_db.get_contact_by_id(customer))[32:] == (None, None)
+    assert tuple(tmp_db.get_contact_by_id(customer))[32:34] == (None, None)
 
 
 # ── Der Handler ──────────────────────────────────────────────────────────────

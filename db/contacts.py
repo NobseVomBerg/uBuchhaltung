@@ -10,6 +10,21 @@ from money import to_minor, from_minor
 from . import datev_keys
 from .core import DeleteRefused, reference_texts
 
+#: Besteuerungsart der Umsatzsteuer (``Contacts.VatMethod``, seit 2.4.0): Ist-Versteuerung (vereinnahmte Entgelte – die
+#: Umsatzsteuer entsteht mit der Zahlung) oder Soll-Versteuerung (vereinbarte Entgelte – sie entsteht mit der Leistung).
+#: Die Angabe wird nur gespeichert und angezeigt; keine Buchung, Auswertung und kein Export liest sie.
+VAT_METHODS = ('ist', 'soll')
+VAT_METHOD_LABELS = {'ist': 'Ist-Versteuerung (vereinnahmte Entgelte)',
+                     'soll': 'Soll-Versteuerung (vereinbarte Entgelte)'}
+VAT_METHOD_ERROR = 'Bitte Ist- oder Soll-Versteuerung wählen.'
+
+
+def vat_method(value):
+    """Die Besteuerungsart – genau ``'ist'`` oder ``'soll'`` (als Text), sonst ``None`` (nicht festgelegt). Ein per
+    SQL-Konsole gesetzter anderer Wert (``'IST'``, ``' ist'``, ``1``) gilt als nicht festgelegt und wird nie roh
+    ausgegeben."""
+    return value if isinstance(value, str) and value in VAT_METHODS else None
+
 
 class ContactsMixin:
     def fetch_contacts(self, contact_type=None, entity_type=None):
@@ -98,6 +113,37 @@ class ContactsMixin:
                 return consultant, client
         return None, None
 
+    def get_vat_method(self):
+        """Besteuerungsart der eigenen Firma (oder Person): ``'ist'``, ``'soll'`` oder ``None`` (nicht festgelegt). Gibt es
+        mehrere eigene Kontakte, gilt der erste (nach ID) mit einem gültigen Wert; ein per SQL-Konsole gesetzter anderer
+        Wert gilt als nicht festgelegt. Rein lesend – keine Buchung, Auswertung und kein Export rechnet damit."""
+        conn = self._get_connection()
+        try:
+            rows = conn.execute("SELECT VatMethod FROM Contacts WHERE ContactType = 'own' ORDER BY ID").fetchall()
+        finally:
+            conn.close()
+        for (stored,) in rows:
+            method = vat_method(stored)
+            if method:
+                return method
+        return None
+
+    @staticmethod
+    def _vat_method_for(contact_type, given, stored=None):
+        """Der Wert für ``Contacts.VatMethod``. Nur ein eigener Kontakt (``contact_type`` ``own``, Firma oder Person) trägt
+        die Besteuerungsart, jeder andere bekommt NULL. ``None`` heißt „unverändert“ (``stored``), ein leerer Text
+        „leeren“; alles andere muss genau ``'ist'`` oder ``'soll'`` sein, sonst ``ValueError`` mit Klartext – auch bei
+        einem Kontakt, der sie nicht trägt (der Aufrufer hat dann einen Fehler gemacht)."""
+        if given is None:
+            value = stored
+        elif given == '':
+            value = None
+        else:
+            value = vat_method(given)
+            if value is None:
+                raise ValueError(VAT_METHOD_ERROR)
+        return value if contact_type == 'own' else None
+
     @staticmethod
     def _datev_numbers_for(contact_type, entity_type, consultant_no, client_no, stored=(None, None)):
         """``(Beraternummer, Mandantennummer)``, wie ``CompanyDetails`` sie bekommt. Nur die eigene Firma
@@ -135,8 +181,13 @@ class ContactsMixin:
                        # multi-value
                        type_keys=None, role_keys=None,
                        # DATEV-Vorlauf (nur die eigene Firma, sonst ignoriert)
-                       datev_consultant_no=None, datev_client_no=None):
-        """Insert a new contact with sub-table records."""
+                       datev_consultant_no=None, datev_client_no=None,
+                       # Besteuerungsart (nur ein eigener Kontakt, Firma oder Person; sonst NULL)
+                       vat_method=None):
+        """Insert a new contact with sub-table records.
+
+        ``vat_method``: ``'ist'`` oder ``'soll'`` (nur ein eigener Kontakt trägt sie, jeder andere bekommt NULL);
+        ``None`` und ein leerer Text lassen sie leer, alles andere ist ein ``ValueError`` mit Klartext."""
         conn = self._get_connection()
         cursor = conn.cursor()
         if not customer_number or not str(customer_number).strip():
@@ -144,11 +195,13 @@ class ContactsMixin:
         try:
             datev_numbers = self._datev_numbers_for(contact_type, entity_type,
                                                     datev_consultant_no, datev_client_no)
+            vat = self._vat_method_for(contact_type, vat_method)
             cursor.execute(
-                'INSERT INTO Contacts (ContactType, EntityType, DisplayName, CustomerNumber, Abbreviation, Email, Phone, Notes, Logo) '
-                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                'INSERT INTO Contacts (ContactType, EntityType, DisplayName, CustomerNumber, Abbreviation, Email, Phone, Notes, Logo, '
+                'VatMethod) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 (contact_type, entity_type, display_name or None, customer_number,
-                 abbreviation or None, email, phone, notes, logo)
+                 abbreviation or None, email, phone, notes, logo, vat)
             )
             contact_id = cursor.lastrowid
 
@@ -216,12 +269,17 @@ class ContactsMixin:
                        date_of_birth='', company_contact_id=None, company_name_free='',
                        job_title='', department='', is_primary_contact=0,
                        type_keys=None, role_keys=None,
-                       datev_consultant_no=None, datev_client_no=None):
+                       datev_consultant_no=None, datev_client_no=None,
+                       vat_method=None):
         """Update an existing contact and all sub-table records.
 
         ``datev_consultant_no``/``datev_client_no`` (nur die eigene Firma trägt sie): ``None`` lässt die
         gespeicherte Nummer, wie sie ist (die Firmendaten werden gelöscht und neu geschrieben – sie dürfen dabei
-        nicht verloren gehen), ein leerer Text leert sie."""
+        nicht verloren gehen), ein leerer Text leert sie.
+
+        ``vat_method`` (nur ein eigener Kontakt, Firma oder Person, trägt die Besteuerungsart): ``None`` lässt die
+        gespeicherte Angabe, wie sie ist, ein leerer Text leert sie, ``'ist'``/``'soll'`` setzen sie, alles andere ist
+        ein ``ValueError`` mit Klartext. Wird ein eigener Kontakt zu einem anderen Typ, wird sie NULL."""
         conn = self._get_connection()
         cursor = conn.cursor()
         if not customer_number or not str(customer_number).strip():
@@ -231,11 +289,13 @@ class ContactsMixin:
                                     (contact_id,)).fetchone() or (None, None)
             datev_numbers = self._datev_numbers_for(contact_type, entity_type,
                                                     datev_consultant_no, datev_client_no, stored)
+            stored_vat = cursor.execute('SELECT VatMethod FROM Contacts WHERE ID=?', (contact_id,)).fetchone()
+            vat = self._vat_method_for(contact_type, vat_method, stored_vat[0] if stored_vat else None)
             cursor.execute(
                 'UPDATE Contacts SET ContactType=?, EntityType=?, DisplayName=?, CustomerNumber=?, Abbreviation=?, '
-                'Email=?, Phone=?, Notes=?, Logo=? WHERE ID=?',
+                'Email=?, Phone=?, Notes=?, Logo=?, VatMethod=? WHERE ID=?',
                 (contact_type, entity_type, display_name or None, customer_number,
-                 abbreviation or None, email, phone, notes, logo, contact_id)
+                 abbreviation or None, email, phone, notes, logo, vat, contact_id)
             )
             # Address: delete + re-insert
             cursor.execute('DELETE FROM ContactAddresses WHERE ContactID=? AND AddressType=\'main\'',

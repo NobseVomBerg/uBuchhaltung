@@ -127,6 +127,11 @@ DATEV_TRANSFER_NOTE = ('Überträge zwischen eigenen Konten, die auf beiden Bank
 DATEV_CONFIRM_NOTICE = 'Für den Zeitraum {von} bis {bis} gibt es Hinweise zum Stapel (Meldung unten).'
 DATEV_CONFIRM_LABEL = 'Trotzdem exportieren'
 
+#: Hinweis unter dem DATEV-Formular, solange an der eigenen Firma Soll-Versteuerung eingetragen ist (seit 2.4.0): Die Angabe
+#: wird nur gespeichert, der Stapel bleibt, wie er ist. Bei Ist-Versteuerung oder ohne Angabe steht dort nichts.
+DATEV_VAT_SOLL_NOTE = ('Für die eigene Firma ist Soll-Versteuerung eingetragen. Die App weist Erlös und Umsatzsteuer '
+                       'weiterhin mit dem Zahlungseingang aus – auch im DATEV-Stapel.')
+
 #: Die Prüfsumme des Hinweises (``handlers._datev_check``): 16 Kleinbuchstaben und Ziffern, sonst gilt sie nicht
 _DATEV_CHECK = re.compile(r'[0-9a-f]{16}')
 
@@ -492,6 +497,9 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
                                      'eintragen (Kontakt als Unternehmen angelegt). Der Stapel trägt bis dahin '
                                      'Platzhalter.', quote=True)
                       + '</p>')
+    vat_hint = ''
+    if db.get_vat_method() == 'soll':
+        vat_hint = f'<p class="hint warnColor">{_html.escape(DATEV_VAT_SOLL_NOTE, quote=True)}</p>'
     # Nach den Hinweisen zum Stapel trägt das Formular den Zeitraum, für den sie kamen, und verlangt die Bestätigung – nur bei
     # zwei ISO-Daten im selben Jahr und einer Prüfsumme in der erwarteten Form; alles andere (auch ein untergeschobener Wert)
     # bleibt unbeachtet.
@@ -517,6 +525,7 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
             <button type="submit" class="coloredButton bg-blue">&#x1F4E5; DATEV-CSV exportieren</button>
         </form>
         {datev_hint}
+        {vat_hint}
         <script>
         (function() {{
             const p = new URLSearchParams(window.location.search);

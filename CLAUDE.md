@@ -592,6 +592,23 @@ kein Subagent darauf:
   Beträgen; dieselbe Bedingung `receivable_condition` und dieselbe Einordnung `_is_app_receivable` wie
   `_app_receivable_ids`, das darauf aufsetzt) – je Rechnung nachzuschlagen wäre quadratisch, `DocumentNumber` hat keinen
   Index; nur der Filter auf eine Rechnung (`invoice_id`) liest gezielt. Eine Reparatur gibt es nicht
+- **Besteuerungsart (seit 2.4.0):** Kleine Variante – die Angabe wird nur gespeichert und angezeigt. `Contacts.VatMethod` (Schema 2004)
+  nennt, ob die Umsatzsteuer nach vereinnahmten (`'ist'`, Ist-Versteuerung: mit der Zahlung) oder vereinbarten Entgelten (`'soll'`,
+  Soll-Versteuerung: mit der Leistung) entsteht; NULL = nicht festgelegt. Es trägt sie nur ein eigener Kontakt (`ContactType='own'`, Firma
+  ODER Person – deshalb an `Contacts`, nicht an `CompanyDetails`); jeder andere bekommt NULL, und ein eigener Kontakt, der den Typ wechselt,
+  verliert sie. **Die Werte stehen an EINER Stelle** (`db/contacts.py`: `VAT_METHODS`, `VAT_METHOD_LABELS`, `VAT_METHOD_ERROR`) und werden
+  **streng gelesen** (`vat_method()`: genau `'ist'` oder `'soll'` als Text; alles andere – per SQL-Konsole `'IST'`, `' ist'`, `1` – gilt als
+  nicht festgelegt und erscheint nie roh). `Database.get_vat_method()` liefert die Angabe des ersten eigenen Kontakts (nach ID) mit
+  gültigem Wert, rein lesend. Geschrieben wird über `insert_contact`/`update_contact(vat_method=…)`: `None` lässt den gespeicherten Wert,
+  `''` leert, `'ist'`/`'soll'` setzen, alles andere ist `ValueError(VAT_METHOD_ERROR)`; die Handler lesen das Formularfeld `vat_method`
+  (fehlt es: unverändert; ein ungültiger Wert: 303 mit dem Klartext auf dem Fehlerweg der Kontaktseite, nichts gespeichert). **Sie ändert
+  nichts an Buchungen, EÜR, Dashboard und Export:** Die App bucht Erlös und Umsatzsteuer weiter mit dem Zahlungseingang (Wartekonto →
+  Erlöskonto, siehe *Rechnungszahlung*) – das Muster der Ist-Versteuerung, auch bei eingetragener Soll-Versteuerung
+  (`tests/test_vat_method_setting.py` hält EÜR, Dashboard und DATEV-Stapel mit `ist`, `soll` und ohne Angabe gleich). Angezeigt wird sie
+  im Formular eines eigenen Kontakts (Auswahl „Besteuerungsart (Umsatzsteuer)“ mit festem Hinweistext, `server/pages_contacts.py`; ein neu
+  angelegter Kontakt bekommt das Feld wie die DATEV-Nummern erst, wenn er als „Eigen“ gespeichert ist) und – nur bei `soll` – als fester
+  Hinweis unter dem DATEV-Formular auf *Sonstiges*. Keine Steuerberatung in den Texten. Die Umsetzung der Soll-Versteuerung
+  (Umsatzsteuer mit der Leistung) ist offen (`docs/aufgaben.md`) – die Einstellung nicht für Rechenlogik verwenden, bevor das entschieden ist.
 - Masken schreiben nur, was sie führen (`update_booking_fields`) – Gegenkonto,
   Kategorie und fremde Kontakte dürfen beim Speichern nicht verloren gehen. **Öffnen und unverändert
   speichern ändert nichts** (`tests/test_entry_form_roundtrip.py` prüft es für jede Bankbewegung, jeden
@@ -1343,7 +1360,7 @@ kein Subagent darauf:
   Versionsstelle und `PRAGMA user_version` ziehen automatisch mit; PATCH dabei auf 0.
   Der neue Migrationsschritt prüft gegen die neue Zahl (`if from_version < 2001:`)
 - In der Datenbank steht `SCHEMA_VERSION = MAJOR × 1000 + SCHEMA_STEP` (2.0.x → 2000,
-  2.1.x → 2001, 2.2.x → 2002, 2.3.x → 2003); Datenbanken aus 1.x tragen 0 bis 6. Eine Datenbank mit höherer Zahl
+  2.1.x → 2001, 2.2.x → 2002, 2.3.x → 2003, 2.4.x → 2004); Datenbanken aus 1.x tragen 0 bis 6. Eine Datenbank mit höherer Zahl
   als das Programm wird nicht geöffnet (`db.SchemaTooNewError`) – nie zurückstempeln
 - Sonstige Änderungen ohne DB-Bezug: nur `PATCH` +1; große Umbrüche: `MAJOR` +1,
   `SCHEMA_STEP` und `PATCH` auf 0
@@ -1360,6 +1377,9 @@ kein Subagent darauf:
   (`TAX_KEY_CORRECTIONS`: 100/120/121/122/490 – eine abweichende Zeile wird an ihrer Stelle überschrieben, eine fehlende angelegt, eine richtige
   bleibt unberührt; nur wenn die Tabelle Zeilen hat, die leere legt `_seed_tax_keys` vollständig an). Der Bestand behält überall NULL, nichts
   wird umgedeutet; frische und migrierte Datenbank haben dieselbe Spaltenreihenfolge
+- Migration auf 2.4.0 (`VAT_METHOD_SCHEMA`, Schema 2004): hängt `Contacts.VatMethod` (Text, NULL = nicht festgelegt) als letzte Spalte
+  an – nach der Sicherung und in EINER Transaktion. Der Bestand behält überall NULL, nichts wird umgedeutet; frische und migrierte
+  Datenbank haben dieselbe Spaltenreihenfolge. Die Kontakt-Abfrage (`_CONTACTS_QUERY`) führt sie als Index 34
 - Anzeige auf der About-Seite
 
 ---

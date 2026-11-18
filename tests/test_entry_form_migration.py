@@ -348,24 +348,27 @@ def test_a_backup_that_cannot_be_written_is_not_left_behind(old_1600, monkeypatc
 
 def test_every_migration_run_of_an_existing_database_is_backed_up_and_named_after_the_program(
         old_1600, monkeypatch):
-    """Nicht nur die Schritte bis 2.3.0: Fragt irgendein künftiger Schritt (hier ein erfundener 2.4.0 mit
-    der Schema-Zahl 2004) eine bestehende Datenbank um, entsteht vorher eine Sicherung – mit der Version
-    des Programms im Namen, das umstellt."""
+    """Nicht nur die Schritte bis zum heutigen Stand: Fragt irgendein künftiger Schritt (hier ein erfundener, der
+    um eins über dem heutigen liegt: 2.5.0 mit der Schema-Zahl 2005) eine bestehende Datenbank um, entsteht
+    vorher eine Sicherung – mit der Version des Programms im Namen, das umstellt."""
     path = old_1600
     current = version.APP_VERSION
     stamped = version.SCHEMA_VERSION
+    next_step = version.SCHEMA_STEP + 1                            # relativ: übersteht jede weitere Schemaänderung
+    next_schema = version.MAJOR * 1000 + next_step
+    next_app = f'{version.MAJOR}.{next_step}.0'
     _reopen(path)                                                  # der heutige Stand: erste Sicherung
     assert [b.name[9:] for b in _backups(path)] == [f'vor_{current}_buch.db']
-    monkeypatch.setattr(version, 'SCHEMA_STEP', 4)
-    monkeypatch.setattr(version, 'SCHEMA_VERSION', 2004)
-    monkeypatch.setattr(version, 'APP_VERSION', '2.4.0')
+    monkeypatch.setattr(version, 'SCHEMA_STEP', next_step)
+    monkeypatch.setattr(version, 'SCHEMA_VERSION', next_schema)
+    monkeypatch.setattr(version, 'APP_VERSION', next_app)
 
     _reopen(path)
 
-    assert installation.user_version(path) == 2004
+    assert installation.user_version(path) == next_schema
     names = sorted(b.name[9:] for b in _backups(path))
-    assert names == [f'vor_{current}_buch.db', 'vor_2.4.0_buch.db']
-    newest = next(b for b in _backups(path) if 'vor_2.4.0' in b.name)
+    assert names == sorted([f'vor_{current}_buch.db', f'vor_{next_app}_buch.db'])
+    newest = next(b for b in _backups(path) if f'vor_{next_app}' in b.name)
     assert installation.user_version(str(newest)) == stamped       # der Stand vor dem Lauf
 
 

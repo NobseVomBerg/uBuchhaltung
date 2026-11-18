@@ -837,8 +837,10 @@ class InvoicesMixin:
         return None
 
     # Wartekonten für offene Posten: die Rechnung wird beim Versenden hierhin
-    # gebucht, erst die Zahlung bucht auf das echte Erlöskonto um. Damit sieht
-    # das Steuerbüro im DATEV-Export die noch offenen Posten (Sollversteuerung).
+    # gebucht, erst die Zahlung bucht auf das echte Erlöskonto um. Erlös und
+    # Umsatzsteuer entstehen so erst mit der Zahlung (Ist-Versteuerung); bis
+    # dahin steht der offene Posten auf dem Wartekonto, so sieht ihn auch das
+    # Steuerbüro im DATEV-Export.
     OPEN_REVENUE_ACCOUNTS = {
         19: (4405, 'Erlöse 19% USt noch offen'),
         7:  (4345, 'Umsatzerlöse 7% noch offen'),
