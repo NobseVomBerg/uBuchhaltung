@@ -55,26 +55,23 @@ class ReceiptsMixin:
         row = cursor.fetchone()
         conn.close()
         return row
-    def delete_receipt(self, number):
-        """Beleg(e) mit dieser Nummer löschen – nicht, solange Buchungen, Anlagen oder Fahrten auf einen davon
-        verweisen (``DeleteRefused`` mit Klartext, nichts gelöscht). Prüfung und Löschen laufen in einer
-        Transaktion."""
+    def delete_receipt(self, receipt_id):
+        """Genau EINEN Beleg löschen (über seine ID – die Belegnummer ist nicht eindeutig, mehrere Belege können sie tragen).
+        Nicht, solange Buchungen, Anlagen oder Fahrten auf ihn verweisen (``DeleteRefused`` mit Klartext, nichts gelöscht); die
+        Belege mit derselben Nummer bleiben in jedem Fall. Prüfung und Löschen laufen in einer Transaktion."""
         conn = self._get_connection()
         try:
             conn.execute('BEGIN IMMEDIATE')
             used = reference_texts(conn, [
-                ('SELECT COUNT(DISTINCT Booking_ID) FROM BookingDocuments '
-                 'WHERE Document_ID IN (SELECT ID FROM Documents WHERE Number = ?)',
-                 (number,), 'Buchung', 'Buchungen'),
-                ('SELECT COUNT(*) FROM Assets WHERE Document_ID IN (SELECT ID FROM Documents WHERE Number = ?)',
-                 (number,), 'Anlage', 'Anlagen'),
-                ('SELECT COUNT(*) FROM Trips WHERE DocumentID IN (SELECT ID FROM Documents WHERE Number = ?)',
-                 (number,), 'Fahrt', 'Fahrten'),
+                ('SELECT COUNT(DISTINCT Booking_ID) FROM BookingDocuments WHERE Document_ID = ?',
+                 (receipt_id,), 'Buchung', 'Buchungen'),
+                ('SELECT COUNT(*) FROM Assets WHERE Document_ID = ?', (receipt_id,), 'Anlage', 'Anlagen'),
+                ('SELECT COUNT(*) FROM Trips WHERE DocumentID = ?', (receipt_id,), 'Fahrt', 'Fahrten'),
             ])
             if used:
                 raise DeleteRefused('Der Beleg lässt sich nicht löschen, solange andere Daten auf ihn verweisen: '
                                     + ', '.join(used) + '.')
-            conn.execute('DELETE FROM Documents WHERE Number = ?', (number,))
+            conn.execute('DELETE FROM Documents WHERE ID = ?', (receipt_id,))
             conn.commit()
         except BaseException:
             conn.rollback()

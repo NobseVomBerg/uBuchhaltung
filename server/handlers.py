@@ -26,7 +26,7 @@ from .period import parse_iso_date, valid_period
 from .richtext import sanitize_richtext as _sanitize_richtext
 from db import Database
 from db import datev_keys
-from db.contacts import VAT_METHOD_ERROR, vat_method
+from db.contacts import VAT_METHOD_ERROR, ContactRefused, vat_method
 from db.core import fk_explained, ForeignKeyError
 from db.invoices import (InvoiceCol, InvoiceNotDeletable, QUOTE_STAYS_CONVERTED_MESSAGE,
                          QUOTE_STAYS_CONVERTED_SQL, QuoteNotConvertible, QuoteStatusLocked, is_storno_row)
@@ -58,8 +58,10 @@ def handle_add_receipt(db, post_data):
     return 303, "/receipts"
 
 def handle_update_receipt(db, post_data):
-    """Handle updating receipt"""
-    receipt_id = int(post_data["id"][0])
+    """Handle updating receipt. Ohne gültige ID: 400, nichts geschrieben."""
+    receipt_id = _form_id(post_data.get("id", [""])[0])
+    if receipt_id is None:
+        return 400, INVALID_REQUEST
     number = post_data["number"][0]
     date = post_data["date"][0]
     filename = post_data["filename"][0]
@@ -285,10 +287,10 @@ def handle_confirm_import(db: Database, post_data):
             'all_done': all_done,
         })
 
-    except Exception as e:
+    except Exception:
         import traceback
-        traceback.print_exc()
-        return 500, json.dumps({'ok': False, 'error': f'Fehler beim Import: {str(e)}'})
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
+        return 500, json.dumps({'ok': False, 'error': 'Der Import ist fehlgeschlagen. Einzelheiten stehen im Server-Log.'})
 
 def handle_transaction_suggest(db: Database, qs: dict):
     """Kontierungs-Vorschlag für eine offene Buchung (todo #1).
@@ -381,6 +383,61 @@ def _form_id(text):
         return None
     number = int(text)
     return number if 1 <= number <= 2 ** 63 - 1 else None
+
+
+def _optional_form_ids(*texts):
+    """Optionale IDs aus Formularfeldern, je Feld: ``None`` (leer) oder die ID (``_form_id``). Ist ein Feld ausgefüllt, aber keine
+    gültige ID, ist das Ergebnis insgesamt ``None`` statt eines Tupels – der Handler antwortet dann mit 400 und schreibt nichts."""
+    ids = []
+    for text in texts:
+        if not (text or '').strip():
+            ids.append(None)
+            continue
+        number = _form_id(text)
+        if number is None:
+            return None
+        ids.append(number)
+    return tuple(ids)
+
+
+def _form_int(text, minimum, maximum, default=None):
+    """Eine ganze Zahl aus einem Formularfeld zwischen ``minimum`` und ``maximum`` (einschließlich): nur ASCII-Ziffern, ein
+    führendes ``-`` nur, wenn ``minimum`` unter 0 liegt. Ein leeres Feld ergibt ``default`` (der bisherige Vorgabewert des Feldes,
+    sonst ``None``). Alles andere – Text, ``nan``, ``1e9``, eine Dezimalzahl, Ziffern anderer Schriften, eine Zahl außerhalb des
+    Bereichs – ist ``None``: Der Handler zeigt dann die Meldung seiner Seite und schreibt nichts.
+
+    Die Bereiche der Felder: Jahr 1900–2999 (``_YEAR_RANGE``), Prozent 0–100, Nutzungsdauer 1–100 Jahre (``_USEFUL_LIFE_RANGE``),
+    Zählerstand eines Nummernkreises 0–999 999 999 (``_COUNTER_MAX``), SKR-Konto eines Bankkontos 1–99 999."""
+    text = str(text or '').strip()
+    if not text:
+        return default
+    digits = text[1:] if text[0] == '-' and minimum < 0 else text
+    # die Länge zuerst: Eine Ziffernfolge von tausenden Stellen soll nicht erst in eine Zahl umgerechnet werden
+    if not (digits.isascii() and digits.isdigit()) or len(digits) > 19:
+        return None
+    number = int(text)
+    return number if minimum <= number <= maximum else None
+
+
+INVALID_REQUEST = 'Ungültige Anfrage.'
+_YEAR_RANGE = (1900, 2999)
+_USEFUL_LIFE_RANGE = (1, 100)
+_COUNTER_MAX = 999_999_999
+YEAR_ERROR = 'Bitte ein gültiges Jahr angeben.'
+USEFUL_LIFE_ERROR = 'Bitte eine Nutzungsdauer von 1 bis 100 Jahren angeben.'
+AMOUNT_ERROR = 'Bitte einen gültigen Betrag angeben.'
+COUNTER_ERROR = 'Bitte einen gültigen Zählerstand angeben.'
+PERCENT_ERROR = 'Bitte einen Privatanteil von 0 bis 100 Prozent angeben.'
+SKR_ACCOUNT_ERROR = 'Bitte eine gültige SKR-Kontonummer angeben.'
+
+
+def _row_number(text, row, label):
+    """Eine Zahl aus einer Zeile des Buchungssatz-Editors (``_finite_number``; leer: ``None``) – ist das Feld ausgefüllt, aber keine
+    endliche Zahl, lehnt ``_Refused`` mit der Nummer der Zeile ab."""
+    number = _finite_number(text, None)
+    if number is None and (text or '').strip():
+        raise _Refused(f'Zeile {row}: {label} ist keine gültige Zahl.')
+    return number
 
 
 def _split_row_bookings(db, bank_id, own_ids, lines):
@@ -509,14 +566,19 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
         sent_tax = _at(tax_amounts, i, None)
         row_rate = (sent_rate or '').strip()
         row_tax = (sent_tax or '').strip()
-        purpose_coa = int(raw_coa) if raw_coa else None
+        purpose_coa = _form_id(raw_coa) if raw_coa else None
+        if raw_coa and purpose_coa is None:
+            raise _Refused(f'Zeile {i + 1}: Das Konto ist ungültig.')
         new_coa, new_counter = purpose_coa, account_coa_id
         # Mitgeliefertes Gegenkonto (Umbuchung): eine per Vorschlag kopierte
         # Zeile bringt es mit, sonst würde aus dem Privatanteil beim Speichern
         # eine Bankbewegung und die Split-Summe stimmte nicht mehr.
         raw_counter = _at(counters, i).strip()
-        if raw_counter and int(raw_counter) not in bank_coa_ids:
-            new_counter = int(raw_counter)
+        counter_coa = _form_id(raw_counter) if raw_counter else None
+        if raw_counter and counter_coa is None:
+            raise _Refused(f'Zeile {i + 1}: Das Gegenkonto ist ungültig.')
+        if counter_coa is not None and counter_coa not in bank_coa_ids:
+            new_counter = counter_coa
         old_coa = old_counter = None
         if old_row:
             old_coa, old_counter = old_row[8], old_row[9]
@@ -555,7 +617,7 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
         fields = dict(
             date_booking=date,
             date_tax=date_tax,
-            amount=float(raw_amount) if raw_amount else 0.0,
+            amount=_row_number(raw_amount, i + 1, 'Der Betrag') or 0.0,
             recipient_client=recipient,
             coa_id=new_coa,
             counter_coa_id=new_counter,
@@ -568,9 +630,10 @@ def _plan_split_rows(db, bank_id, post_data, account_coa_id, date, date_tax,
         # das die Steuer der Buchung nicht in die Zeile übernahm). Sonst gilt, was in der Zeile steht.
         adopted_without_tax = adopt and not row_rate and not row_tax
         if not (old_row and (sent_rate is None or adopted_without_tax)):
-            fields['tax_rate'] = float(row_rate) / 100 if row_rate else None
+            rate = _row_number(row_rate, i + 1, 'Der Steuersatz')
+            fields['tax_rate'] = rate / 100 if rate is not None else None
         if not (old_row and (sent_tax is None or adopted_without_tax)):
-            fields['tax_amount'] = float(row_tax) if row_tax else None
+            fields['tax_amount'] = _row_number(row_tax, i + 1, 'Der Steuerbetrag')
         if old_row and adopt:
             # Adoption einer bestehenden Buchung: ihre eigenen Stammdaten
             # (Datum, Steuerdatum, Empfänger, Währung) bleiben erhalten –
@@ -682,14 +745,17 @@ def handle_add_transaction(db: Database, post_data):
             return 400, 'Der Betrag ist keine gültige Zahl.'
 
         # Convert IDs to int or None
-        account_id = int(account_id) if account_id else None
-        contact_id = int(contact_id) if contact_id else None
-        coa_id = int(coa_id) if coa_id else None
-        invoice_id = int(invoice_id) if invoice_id else None
+        ids = _optional_form_ids(account_id, contact_id, coa_id, invoice_id)
+        if ids is None:
+            return 400, INVALID_REQUEST
+        account_id, contact_id, coa_id, invoice_id = ids
 
         # Convert tax_rate from percentage to decimal
-        tax_rate = float(tax_rate) / 100 if tax_rate else None
-        tax_amount = float(tax_amount) if tax_amount else None
+        rate_pct, tax_amount_value = _finite_number(tax_rate, None), _finite_number(tax_amount, None)
+        if (tax_rate.strip() and rate_pct is None) or (tax_amount.strip() and tax_amount_value is None):
+            return 400, 'Steuersatz und Steuerbetrag müssen Zahlen sein.'
+        tax_rate = rate_pct / 100 if rate_pct is not None else None
+        tax_amount = tax_amount_value
 
         # Eine neue Bankbewegung als Zahlung zu einer Rechnung: erst prüfen, dann anlegen –
         # sonst bliebe bei einer unzulässigen Zuordnung eine Bewegung ohne Zuordnung zurück.
@@ -934,10 +1000,10 @@ def handle_add_transaction(db: Database, post_data):
         # Ablehnungen zurückrollt (Bankzeile und Sätze). ``_Refused`` kommt aus dem Planen (vor dem ersten Schreiben),
         # ``PaymentRemovalRefused`` aus dem Entfernen einer Zeile, ``BankChangeRefused`` aus der Prüfung am Ende – Klartext statt 500
         return 400, str(e)
-    except Exception as e:
+    except Exception:
         import traceback
-        traceback.print_exc()
-        return 500, f"Fehler beim Speichern: {str(e)}"
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
+        return 500, 'Die Buchung konnte nicht gespeichert werden. Einzelheiten stehen im Server-Log.'
 
 def handle_delete_transaction(db: Database, booking_id):
     """Eine Buchung aus der Liste löschen (``POST /transactions/delete``) und zurück auf die Liste. Würde dabei die Zahlung
@@ -960,35 +1026,46 @@ def handle_add_bankaccount(db: Database, post_data):
     bic = post_data.get("bic", [""])[0]
     bank_name = post_data.get("bank_name", [""])[0]
     skr_raw = post_data.get("skr_account", [""])[0]
-    skr_account = int(skr_raw) if skr_raw.strip() else None
+    skr_account = _form_int(skr_raw, 1, 99999)
+    if skr_raw.strip() and skr_account is None:
+        return 303, f"/masterdata/bankaccounts?error={quote(SKR_ACCOUNT_ERROR, safe='')}"
     db.insert_account(name, holder, iban, bic, bank_name, skr_account=skr_account)
     return 303, "/masterdata/bankaccounts"
 
 def handle_link_document(db: Database, post_data):
-    """Handle linking a document to a booking"""
-    booking_id = int(post_data.get("booking_id", ["0"])[0])
-    document_id = int(post_data.get("document_id", ["0"])[0])
+    """Handle linking a document to a booking. Ohne gültige IDs oder wenn es die Buchung oder den Beleg nicht (mehr) gibt: 400
+    mit Klartext, nichts geschrieben."""
+    booking_id = _form_id(post_data.get("booking_id", [""])[0])
+    document_id = _form_id(post_data.get("document_id", [""])[0])
+    if booking_id is None or document_id is None:
+        return 400, INVALID_REQUEST
     relation_type = post_data.get("relation_type", ["receipt"])[0]
-    
+
     try:
         db.link_booking_to_document(booking_id, document_id, relation_type)
         # Redirect back to the booking edit page
         return 303, f"/transactions/edit?id={booking_id}"
-    except Exception as e:
+    except ValueError as refusal:                   # Buchung oder Beleg gibt es nicht: Klartext aus der DB-Schicht
+        return 400, str(refusal)
+    except Exception:
         import traceback
-        traceback.print_exc()
-        return 500, f"Fehler beim Verknüpfen: {str(e)}"
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
+        return 500, 'Die Verknüpfung konnte nicht gespeichert werden. Einzelheiten stehen im Server-Log.'
 
 def handle_update_bankaccount(db: Database, post_data):
     """Handle updating bank account"""
-    account_id = int(post_data["id"][0])
+    account_id = _form_id(post_data.get("id", [""])[0])
+    if account_id is None:
+        return 400, INVALID_REQUEST
     name = post_data["name"][0]
     holder = post_data.get("holder", [""])[0]
     iban = post_data.get("iban", [""])[0]
     bic = post_data.get("bic", [""])[0]
     bank_name = post_data.get("bank_name", [""])[0]
     skr_raw = post_data.get("skr_account", [""])[0]
-    skr_account = int(skr_raw) if skr_raw.strip() else None
+    skr_account = _form_int(skr_raw, 1, 99999)
+    if skr_raw.strip() and skr_account is None:
+        return 303, f"/masterdata/bankaccounts/edit?id={account_id}&error={quote(SKR_ACCOUNT_ERROR, safe='')}"
     current = db.get_account_by_id(account_id)
     old_skr = current[7] if current else None
     if skr_account != old_skr:
@@ -1021,13 +1098,14 @@ def handle_add_skr(db: Database, post_data):
     from db.accounts import SKR_FRAMEWORKS
     name = post_data["name"][0]
     group = post_data["group"][0]
-    psp = int(post_data.get("private_share_percent", [0])[0] or 0)
+    psp = _form_int(post_data.get("private_share_percent", ["0"])[0], 0, 100, default=0)
+    if psp is None:
+        return _skr_redirect(PERCENT_ERROR, "error")
     show = 1 if "show_in_menu" in post_data else 0
     is_standard = 1 if "is_standard" in post_data else 0
-    try:
-        framework_nr = int(post_data["framework_nr"][0])
-        account = int(post_data["account"][0])
-    except (ValueError, KeyError, TypeError):
+    framework_nr = _form_int(post_data.get("framework_nr", [""])[0], -999_999_999, 999_999_999)
+    account = _form_int(post_data.get("account", [""])[0], -999_999_999, 999_999_999)
+    if framework_nr is None or account is None:
         return _skr_redirect("Rahmen-Nr. und Konto müssen Zahlen sein.", "error")
     if framework_nr not in SKR_FRAMEWORKS:
         gueltig = ', '.join(str(n) for n in SKR_FRAMEWORKS)
@@ -1042,12 +1120,16 @@ def handle_add_skr(db: Database, post_data):
 
 def handle_update_skr(db: Database, post_data):
     """Handle updating SKR entry. Rahmen/Nummer (und ID) sind fix."""
-    id = int(post_data["id"][0])
+    id = _form_id(post_data.get("id", [""])[0])
+    if id is None:
+        return 400, INVALID_REQUEST
     framework_nr = post_data.get("framework_nr", [""])[0]
     account = post_data.get("account", [""])[0]
     name = post_data["name"][0]
     group = post_data["group"][0]
-    psp = int(post_data.get("private_share_percent", [0])[0] or 0)
+    psp = _form_int(post_data.get("private_share_percent", ["0"])[0], 0, 100, default=0)
+    if psp is None:
+        return _skr_redirect(PERCENT_ERROR, "error")
     show = 1 if "show_in_menu" in post_data else 0
     is_standard = 1 if "is_standard" in post_data else 0
     db.update_chart_of_accounts(id, framework_nr, account, name, group,
@@ -2117,6 +2199,11 @@ def handle_add_contact(db: Database, post_data):
     def _get(key, default=''):
         return post_data.get(key, [default])[0]
 
+    raw_company = _get('company_contact_id').strip()
+    company_contact_id = _form_id(raw_company)
+    if raw_company and company_contact_id is None:
+        return 400, INVALID_REQUEST
+
     # Validate abbreviation uniqueness before touching the DB
     abbr = _get('abbreviation').strip().upper() or None
     if abbr:
@@ -2167,7 +2254,7 @@ def handle_add_contact(db: Database, post_data):
             first_name        = _get('first_name'),
             last_name         = _get('last_name'),
             date_of_birth     = _get('date_of_birth'),
-            company_contact_id= _get('company_contact_id') or None,
+            company_contact_id= company_contact_id,
             company_name_free = _get('company_name_free'),
             job_title         = _get('job_title'),
             department        = _get('department'),
@@ -2179,10 +2266,12 @@ def handle_add_contact(db: Database, post_data):
             vat_method          = vat,
         )
         return 303, '/masterdata/contacts'
-    except Exception as e:
+    except ContactRefused as refusal:               # Kundennummer oder Kürzel schon vergeben: Klartext, nichts gespeichert
+        return 303, f'/masterdata/contacts?error={quote(str(refusal), safe="")}'
+    except Exception:
         import traceback
-        traceback.print_exc()
-        return 500, f'Fehler beim Hinzufügen des Kontakts: {str(e)}'
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
+        return 500, 'Der Kontakt konnte nicht gespeichert werden. Einzelheiten stehen im Server-Log.'
 
 
 def handle_update_contact(db: Database, post_data):
@@ -2192,7 +2281,13 @@ def handle_update_contact(db: Database, post_data):
     def _get(key, default=''):
         return post_data.get(key, [default])[0]
 
-    contact_id = int(_get('contact_id', 0))
+    contact_id = _form_id(_get('contact_id'))
+    if contact_id is None:
+        return 400, INVALID_REQUEST
+    raw_company = _get('company_contact_id').strip()
+    company_contact_id = _form_id(raw_company)
+    if raw_company and company_contact_id is None:
+        return 400, INVALID_REQUEST
 
     # Validate abbreviation uniqueness before touching the DB
     abbr = _get('abbreviation').strip().upper() or None
@@ -2243,7 +2338,7 @@ def handle_update_contact(db: Database, post_data):
             first_name        = _get('first_name'),
             last_name         = _get('last_name'),
             date_of_birth     = _get('date_of_birth'),
-            company_contact_id= _get('company_contact_id') or None,
+            company_contact_id= company_contact_id,
             company_name_free = _get('company_name_free'),
             job_title         = _get('job_title'),
             department        = _get('department'),
@@ -2255,10 +2350,12 @@ def handle_update_contact(db: Database, post_data):
             vat_method          = vat,
         )
         return 303, '/masterdata/contacts'
-    except Exception as e:
+    except ContactRefused as refusal:               # Kundennummer oder Kürzel schon vergeben: Klartext, nichts gespeichert
+        return 303, f'/masterdata/contacts/edit?id={contact_id}&error={quote(str(refusal), safe="")}'
+    except Exception:
         import traceback
-        traceback.print_exc()
-        return 500, f'Fehler beim Aktualisieren des Kontakts: {str(e)}'
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
+        return 500, 'Der Kontakt konnte nicht gespeichert werden. Einzelheiten stehen im Server-Log.'
 
 ARTICLE_NUMBER_ERROR = 'Preis und Steuersatz müssen endliche Zahlen sein.'
 
@@ -2303,8 +2400,10 @@ def handle_add_article(db: Database, post_data):
     return 303, "/masterdata/articles"
 
 def handle_update_article(db: Database, post_data):
-    """Handle updating an existing article"""
-    article_id = int(post_data.get('id', [0])[0])
+    """Handle updating an existing article. Ohne gültige ID: 400, nichts geschrieben."""
+    article_id = _form_id(post_data.get('id', [''])[0])
+    if article_id is None:
+        return 400, INVALID_REQUEST
     name = post_data.get('name', [''])[0]
     unit = post_data.get('unit', ['Stk.'])[0]
     unit_price = _finite_number(post_data.get('unit_price', ['0'])[0], 0.0)
@@ -2328,15 +2427,17 @@ def handle_update_article(db: Database, post_data):
 
 
 def handle_add_number_range(db: Database, post_data):
-    """Handle adding a new number range"""
+    """Handle adding a new number range. Eine ungültige Zahl (Jahr, Zählerstand) lehnt die Seite der Nummernkreise mit ihrer
+    Meldung ab (``?err=``), nichts wird geschrieben."""
     range_type = post_data.get('type', ['invoice'])[0]
-    year = int(post_data.get('year', ['2026'])[0])
+    year = _form_int(post_data.get('year', ['2026'])[0], *_YEAR_RANGE)
     letter = post_data.get('letter', ['R'])[0].upper()
     prefix = post_data.get('prefix', [''])[0].upper()
-    current_number = int(post_data.get('current_number', ['0'])[0] or 0)
+    current_number = _form_int(post_data.get('current_number', ['0'])[0], 0, _COUNTER_MAX, default=0)
     description = post_data.get('description', [''])[0]
     number_format = post_data.get('number_format', ['{yy}{l}{nnn}{s}'])[0].strip() or '{yy}{l}{nnn}{s}'
-    error = number_format_error(number_format)
+    error = (YEAR_ERROR if year is None else COUNTER_ERROR if current_number is None
+             else number_format_error(number_format))
     if error:
         return 303, f"/masterdata/numberranges?err={quote(error, safe='')}"
 
@@ -2354,15 +2455,19 @@ def handle_add_number_range(db: Database, post_data):
 
 
 def handle_update_number_range(db: Database, post_data):
-    """Handle updating an existing number range"""
-    range_id = int(post_data.get('id', [0])[0])
-    year = int(post_data.get('year', ['2026'])[0])
+    """Handle updating an existing number range. Ohne gültige ID: 400; eine ungültige Zahl (Jahr, Zählerstand) lehnt die Seite
+    mit ihrer Meldung ab (``?err=``). In beiden Fällen wird nichts geschrieben."""
+    range_id = _form_id(post_data.get('id', [''])[0])
+    if range_id is None:
+        return 400, INVALID_REQUEST
+    year = _form_int(post_data.get('year', ['2026'])[0], *_YEAR_RANGE)
     letter = post_data.get('letter', ['R'])[0].upper()
     prefix = post_data.get('prefix', [''])[0].upper()
-    current_number = int(post_data.get('current_number', ['0'])[0] or 0)
+    current_number = _form_int(post_data.get('current_number', ['0'])[0], 0, _COUNTER_MAX, default=0)
     description = post_data.get('description', [''])[0]
     number_format = post_data.get('number_format', ['{yy}{l}{nnn}{s}'])[0].strip() or '{yy}{l}{nnn}{s}'
-    error = number_format_error(number_format)
+    error = (YEAR_ERROR if year is None else COUNTER_ERROR if current_number is None
+             else number_format_error(number_format))
     if error:
         return 303, f"/masterdata/numberranges/edit?id={range_id}&err={quote(error, safe='')}"
 
@@ -3214,69 +3319,87 @@ def handle_send_invoice_email(post_body: bytes):
 # ─── Asset-Handler ───────────────────────────────────────────────────────────
 
 def handle_add_asset(db: Database, post_data: dict):
-    """Neue Anlage anlegen"""
+    """Neue Anlage anlegen. Eine ungültige ID oder Zahl lehnt die Anfrage mit 400 und Klartext ab (die Seite einer neuen Anlage
+    hat keinen Meldungsweg), nichts wird geschrieben."""
     name              = post_data.get('name', [''])[0].strip()
     description       = post_data.get('description', [''])[0].strip()
-    cat_id            = post_data.get('asset_category_id', [None])[0] or None
-    coa_id            = post_data.get('coa_id', [None])[0] or None
     purchase_date     = post_data.get('purchase_date', [''])[0].strip()
-    purchase_price    = float(post_data.get('purchase_price', ['0'])[0] or 0)
-    useful_life       = int(post_data.get('useful_life_years', ['1'])[0] or 1)
+    purchase_price    = _finite_number(post_data.get('purchase_price', ['0'])[0], 0.0)
+    useful_life       = _form_int(post_data.get('useful_life_years', ['1'])[0], *_USEFUL_LIFE_RANGE, default=1)
     method            = post_data.get('depreciation_method', ['linear'])[0]
     serial            = post_data.get('serial_number', [''])[0].strip()
     location          = post_data.get('location', [''])[0].strip()
-    supplier_id       = post_data.get('supplier_id', [None])[0] or None
-    document_id       = post_data.get('document_id', [None])[0] or None
     notes             = post_data.get('notes', [''])[0].strip()
-    parent_id         = post_data.get('parent_id', [None])[0] or None
+    ids = _optional_form_ids(*(post_data.get(key, [''])[0] for key in
+                               ('asset_category_id', 'coa_id', 'supplier_id', 'document_id', 'parent_id')))
+    if ids is None:
+        return 400, INVALID_REQUEST
+    cat_id, coa_id, supplier_id, document_id, parent_id = ids
+    if purchase_price is None:
+        return 400, AMOUNT_ERROR
+    if useful_life is None:
+        return 400, USEFUL_LIFE_ERROR
 
     if parent_id:
         # Eine Erweiterung gehört zu einer vorhandenen Hauptanlage, nicht zu einer anderen Erweiterung –
         # sonst fehlte ihr Betrag im Plan (``Database.counts_toward_parent``). Die Meldung geht wie bei jeder
         # abgelehnten Aktion der Anlagenseite als ``err`` an die Seite der Anlage (``/assets/view``)
-        parent = db.get_asset_by_id(int(parent_id))
+        parent = db.get_asset_by_id(parent_id)
         refusal = ('Die Hauptanlage gibt es nicht.' if parent is None
                    else 'Eine Erweiterung kann keine eigene Erweiterung bekommen.' if parent[19]  # Parent_ID
                    else None)
         if refusal:
-            return 303, f'/assets/view?id={int(parent_id)}&err={quote(refusal, safe="")}'
+            return 303, f'/assets/view?id={parent_id}&err={quote(refusal, safe="")}'
 
     db.insert_asset(
         name=name,
         description=description,
-        asset_category_id=int(cat_id) if cat_id else None,
-        coa_id=int(coa_id) if coa_id else None,
+        asset_category_id=cat_id,
+        coa_id=coa_id,
         purchase_date=purchase_date,
         purchase_price=purchase_price,
         useful_life_years=useful_life,
         depreciation_method=method,
         serial_number=serial,
         location=location,
-        supplier_id=int(supplier_id) if supplier_id else None,
-        document_id=int(document_id) if document_id else None,
+        supplier_id=supplier_id,
+        document_id=document_id,
         notes=notes,
-        parent_id=int(parent_id) if parent_id else None,
+        parent_id=parent_id,
     )
     return 303, '/assets'
 
 
+def _asset_error_location(asset_id, message):
+    """Zurück auf die Seite der Anlage, die ``message`` über ``?err=`` als Meldung zeigt; nichts ist gespeichert."""
+    return f'/assets/view?id={asset_id}&err={quote(message, safe="")}'
+
+
 def handle_update_asset(db: Database, post_data: dict):
-    """Bestehende Anlage aktualisieren"""
-    asset_id          = int(post_data.get('asset_id', ['0'])[0])
+    """Bestehende Anlage aktualisieren. Ohne gültige ID: 400; eine ungültige Zahl lehnt die Seite der Anlage mit ihrer Meldung
+    ab (``?err=``). In beiden Fällen wird nichts geschrieben."""
+    asset_id          = _form_id(post_data.get('asset_id', [''])[0])
+    if asset_id is None:
+        return 400, INVALID_REQUEST
     name              = post_data.get('name', [''])[0].strip()
     description       = post_data.get('description', [''])[0].strip()
-    cat_id            = post_data.get('asset_category_id', [None])[0] or None
-    coa_id            = post_data.get('coa_id', [None])[0] or None
     purchase_date     = post_data.get('purchase_date', [''])[0].strip()
-    purchase_price    = float(post_data.get('purchase_price', ['0'])[0] or 0)
-    useful_life       = int(post_data.get('useful_life_years', ['1'])[0] or 1)
+    purchase_price    = _finite_number(post_data.get('purchase_price', ['0'])[0], 0.0)
+    useful_life       = _form_int(post_data.get('useful_life_years', ['1'])[0], *_USEFUL_LIFE_RANGE, default=1)
     method            = post_data.get('depreciation_method', ['linear'])[0]
     serial            = post_data.get('serial_number', [''])[0].strip()
     location          = post_data.get('location', [''])[0].strip()
-    supplier_id       = post_data.get('supplier_id', [None])[0] or None
-    document_id       = post_data.get('document_id', [None])[0] or None
     notes             = post_data.get('notes', [''])[0].strip()
     status            = post_data.get('status', ['active'])[0]
+    ids = _optional_form_ids(*(post_data.get(key, [''])[0] for key in
+                               ('asset_category_id', 'coa_id', 'supplier_id', 'document_id')))
+    if ids is None:
+        return 400, INVALID_REQUEST
+    cat_id, coa_id, supplier_id, document_id = ids
+    if purchase_price is None:
+        return 303, _asset_error_location(asset_id, AMOUNT_ERROR)
+    if useful_life is None:
+        return 303, _asset_error_location(asset_id, USEFUL_LIFE_ERROR)
 
     if status != 'active' and db.counts_toward_parent(asset_id):
         # Eine Erweiterung hat keinen eigenen Abgang (``Database.sell_asset``) und damit auch keinen eigenen
@@ -3288,16 +3411,16 @@ def handle_update_asset(db: Database, post_data: dict):
         asset_id=asset_id,
         name=name,
         description=description,
-        asset_category_id=int(cat_id) if cat_id else None,
-        coa_id=int(coa_id) if coa_id else None,
+        asset_category_id=cat_id,
+        coa_id=coa_id,
         purchase_date=purchase_date,
         purchase_price=purchase_price,
         useful_life_years=useful_life,
         depreciation_method=method,
         serial_number=serial,
         location=location,
-        supplier_id=int(supplier_id) if supplier_id else None,
-        document_id=int(document_id) if document_id else None,
+        supplier_id=supplier_id,
+        document_id=document_id,
         notes=notes,
         status=status,
     )
@@ -3309,12 +3432,18 @@ def handle_book_depreciation(db: Database, post_data: dict):
 
     ``coa_id`` ist das Aufwandskonto, ``asset_coa_id`` (optional) das Anlagekonto – ohne
     Angabe gilt das der Anlage bzw. ihrer Kategorie. Lehnt die Datenbank ab (Jahr schon
-    gebucht, kein Anlagekonto), geht die Meldung als ``err`` an die Anlagenseite zurück."""
-    asset_id    = int(post_data.get('asset_id', ['0'])[0])
-    year        = int(post_data.get('year', ['0'])[0])
-    coa_id      = int(post_data.get('coa_id', ['0'])[0])
-    asset_coa   = post_data.get('asset_coa_id', [''])[0].strip()
-    asset_coa_id = int(asset_coa) if asset_coa else None
+    gebucht, kein Anlagekonto), geht die Meldung als ``err`` an die Anlagenseite zurück. Ohne gültige ID: 400; ein ungültiges Jahr
+    lehnt die Anlagenseite ebenfalls mit ihrer Meldung ab. In beiden Fällen wird nichts geschrieben."""
+    asset_id    = _form_id(post_data.get('asset_id', [''])[0])
+    # Fehlt das Aufwandskonto (leer, 0), lehnt die Datenbank-Schicht mit Klartext ab („Aufwandskonto fehlt“): Der Weg bleibt
+    coa_id      = _form_int(post_data.get('coa_id', ['0'])[0], 0, 2 ** 63 - 1, default=0)
+    ids = _optional_form_ids(post_data.get('asset_coa_id', [''])[0])
+    if asset_id is None or coa_id is None or ids is None:
+        return 400, INVALID_REQUEST
+    (asset_coa_id,) = ids
+    year        = _form_int(post_data.get('year', [''])[0], *_YEAR_RANGE)
+    if year is None:
+        return 303, _asset_error_location(asset_id, YEAR_ERROR)
     description = post_data.get('description', [''])[0].strip() or None
 
     try:
@@ -3331,13 +3460,18 @@ def handle_book_depreciation(db: Database, post_data: dict):
 
 
 def handle_asset_sale(db: Database, post_data: dict):
-    """Anlage verkaufen oder abgehen"""
-    asset_id   = int(post_data.get('asset_id', ['0'])[0])
+    """Anlage verkaufen oder abgehen. Ohne gültige ID: 400; ein ungültiges Datum oder ein ungültiger Erlös lehnt die Anlagenseite mit
+    ihrer Meldung ab (``?err=``). In beiden Fällen wird nichts geschrieben."""
+    asset_id   = _form_id(post_data.get('asset_id', [''])[0])
+    if asset_id is None:
+        return 400, INVALID_REQUEST
     sale_date  = post_data.get('sale_date', [''])[0].strip()
-    sale_price = float(post_data.get('sale_price', ['0'])[0] or 0)
+    sale_price = _finite_number(post_data.get('sale_price', ['0'])[0], 0.0)
     if parse_iso_date(sale_date) is None:
         # Das Datum steuert, bis wann AfA gebucht werden darf – nur ein ISO-Datum taugt dafür
         return 303, f'/assets/view?id={asset_id}&err=' + quote('Abgangsdatum fehlt oder ist ungültig (JJJJ-MM-TT).')
+    if sale_price is None:
+        return 303, _asset_error_location(asset_id, AMOUNT_ERROR)
 
     try:
         db.sell_asset(asset_id, sale_date, sale_price)
@@ -3347,38 +3481,50 @@ def handle_asset_sale(db: Database, post_data: dict):
 
 
 def handle_add_asset_category(db: Database, post_data: dict):
-    """Neue AfA-Kategorie anlegen"""
+    """Neue AfA-Kategorie anlegen. Eine ungültige ID lehnt die Anfrage mit 400 ab; eine ungültige Nutzungsdauer lehnt die Seite der
+    AfA-Kategorien mit ihrer Meldung ab (``?err=``). In beiden Fällen wird nichts geschrieben."""
     name        = post_data.get('name', [''])[0].strip()
-    years       = int(post_data.get('useful_life_years', ['1'])[0] or 1)
+    years       = _form_int(post_data.get('useful_life_years', ['1'])[0], *_USEFUL_LIFE_RANGE, default=1)
     method      = post_data.get('depreciation_method', ['linear'])[0]
-    coa_id      = post_data.get('coa_id', [None])[0] or None
+    ids         = _optional_form_ids(post_data.get('coa_id', [''])[0])
     notes       = post_data.get('notes', [''])[0].strip()
+    if ids is None:
+        return 400, INVALID_REQUEST
+    (coa_id,) = ids
+    if years is None:
+        return 303, f"/asset_categories?err={quote(USEFUL_LIFE_ERROR, safe='')}"
 
     db.insert_asset_category(
         name=name,
         useful_life_years=years,
         depreciation_method=method,
-        coa_id=int(coa_id) if coa_id else None,
+        coa_id=coa_id,
         notes=notes,
     )
     return 303, '/asset_categories'
 
 
 def handle_update_asset_category(db: Database, post_data: dict):
-    """Bestehende AfA-Kategorie aktualisieren"""
-    cat_id  = int(post_data.get('category_id', ['0'])[0])
+    """Bestehende AfA-Kategorie aktualisieren. Ohne gültige ID: 400; eine ungültige Nutzungsdauer lehnt die Seite der
+    AfA-Kategorien mit ihrer Meldung ab (``?err=``). In beiden Fällen wird nichts geschrieben."""
+    cat_id  = _form_id(post_data.get('category_id', [''])[0])
     name    = post_data.get('name', [''])[0].strip()
-    years   = int(post_data.get('useful_life_years', ['1'])[0] or 1)
+    years   = _form_int(post_data.get('useful_life_years', ['1'])[0], *_USEFUL_LIFE_RANGE, default=1)
     method  = post_data.get('depreciation_method', ['linear'])[0]
-    coa_id  = post_data.get('coa_id', [None])[0] or None
+    ids     = _optional_form_ids(post_data.get('coa_id', [''])[0])
     notes   = post_data.get('notes', [''])[0].strip()
+    if cat_id is None or ids is None:
+        return 400, INVALID_REQUEST
+    (coa_id,) = ids
+    if years is None:
+        return 303, f"/asset_categories?err={quote(USEFUL_LIFE_ERROR, safe='')}"
 
     db.update_asset_category(
         category_id=cat_id,
         name=name,
         useful_life_years=years,
         depreciation_method=method,
-        coa_id=int(coa_id) if coa_id else None,
+        coa_id=coa_id,
         notes=notes,
     )
     return 303, '/asset_categories'
@@ -3839,10 +3985,19 @@ def _wt_overlap_redirect(person_id, date_from, date_to, date):
                               f"Überschneidung am {date}: in diesem Zeitraum existiert bereits ein Eintrag.")
 
 
+def _wt_id(text):
+    """Person bzw. Eintrag aus dem Arbeitszeit-Formular: 0 für ein leeres Feld oder ``0`` (wie bisher: nichts gewählt, der
+    Handler speichert dann nichts), sonst die ID (``_form_id``) – ``None``, wenn das Feld keine gültige ID nennt."""
+    text = (text or '').strip()
+    return 0 if text in ('', '0') else _form_id(text)
+
+
 def handle_add_worktime(db: Database, post_data):
     """Neuen Arbeitszeit-Eintrag anlegen (mit Überschneidungssperre)."""
     g = lambda k, d='': post_data.get(k, [d])[0]
-    person_id = int(g('person_id', '0') or 0)
+    person_id = _wt_id(g('person_id', '0'))
+    if person_id is None:
+        return 400, INVALID_REQUEST
     date_from = g('from', '')
     date_to = g('to', '')
     fields = _wt_parse(db, post_data)
@@ -3858,10 +4013,12 @@ def handle_add_worktime(db: Database, post_data):
 def handle_update_worktime(db: Database, post_data):
     """Bestehenden Arbeitszeit-Eintrag aktualisieren (mit Überschneidungssperre)."""
     g = lambda k, d='': post_data.get(k, [d])[0]
-    person_id = int(g('person_id', '0') or 0)
+    person_id = _wt_id(g('person_id', '0'))
+    worktime_id = _wt_id(g('id', '0'))
+    if person_id is None or worktime_id is None:
+        return 400, INVALID_REQUEST
     date_from = g('from', '')
     date_to = g('to', '')
-    worktime_id = int(g('id', '0') or 0)
     fields = _wt_parse(db, post_data)
     if worktime_id and fields['date']:
         if not _wt_times_valid(fields):
@@ -4242,8 +4399,11 @@ def handle_setup_save(db: Database, post_data: dict):
             legal_form=g('legal_form').strip(),
             tax_id=g('tax_id').strip(),
         )
-    except Exception as e:
-        return 200, PageSetup(db, message=f'Fehler beim Speichern der Kontaktdaten: {e}')
+    except Exception:
+        import traceback
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
+        return 200, PageSetup(db, message='Die Kontaktdaten konnten nicht gespeichert werden. '
+                                          'Einzelheiten stehen im Server-Log.')
 
     # Optionales Bankkonto anlegen (nur wenn IBAN angegeben)
     iban = g('iban').replace(' ', '').strip()
@@ -4261,7 +4421,10 @@ def handle_setup_save(db: Database, post_data: dict):
                 is_cash=0,
                 skr_account=1200,
             )
-        except Exception as e:
-            return 200, PageSetup(db, message=f'Kontaktdaten gespeichert, aber Fehler beim Bankkonto: {e}')
+        except Exception:
+            import traceback
+            traceback.print_exc()                   # der volle Fehler nur ins Server-Log, nie in die Antwort
+            return 200, PageSetup(db, message='Die Kontaktdaten sind gespeichert, aber das Bankkonto konnte nicht angelegt '
+                                              'werden. Einzelheiten stehen im Server-Log.')
 
     return 303, '/'

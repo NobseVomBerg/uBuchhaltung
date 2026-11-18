@@ -7,14 +7,14 @@ Unit-Tests für Kontaktverwaltung (Abbreviation, ContactTypeLinks, PersonDetails
 Testet:
 - insert_contact speichert Kürzel korrekt
 - check_abbreviation_unique: frei, vergeben, Vorschlag, exclude_id
-- Duplikat-Insert / Duplikat-Update lösen IntegrityError aus
+- Duplikat-Insert / Duplikat-Update lösen ContactRefused aus (Klartext; seit 2.4.2, vorher IntegrityError)
 - handle_add_contact / handle_update_contact geben bei Duplikat
   303-Redirect mit error-Parameter zurück, statt die Exception weiterzugeben
 """
-import sqlite3
 import pytest
 
 from db import Database
+from db.contacts import ContactRefused
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -184,9 +184,11 @@ class TestCheckAbbreviationUnique:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestAbbreviationUniqueConstraint:
+    # geändert mit 2.4.2: Die DB-Schicht reicht den SQLite-Fehler nicht mehr durch, sondern wirft ``ContactRefused`` (ein
+    # ValueError) mit Klartext – vorher ein ``sqlite3.IntegrityError`` mit dem Text der SQLite-Meldung
     def test_insert_duplicate_abbreviation_raises(self, tmp_db):
         _add_company(tmp_db, 'DUP', cust_nr='K1')
-        with pytest.raises(sqlite3.IntegrityError):
+        with pytest.raises(ContactRefused, match='Das Kürzel ist schon vergeben.'):
             _add_company(tmp_db, 'DUP', cust_nr='K2')
 
     def test_update_to_duplicate_abbreviation_raises(self, tmp_db):
@@ -199,7 +201,7 @@ class TestAbbreviationUniqueConstraint:
         bbb_id = cur.fetchone()[0]
         conn.close()
 
-        with pytest.raises((sqlite3.IntegrityError, Exception)):
+        with pytest.raises(ContactRefused, match='Das Kürzel ist schon vergeben.'):
             tmp_db.update_contact(contact_id=bbb_id, entity_type='company',
                                   company_name='Firma BBB', abbreviation='AAA')
 

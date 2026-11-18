@@ -26,6 +26,22 @@ def vat_method(value):
     return value if isinstance(value, str) and value in VAT_METHODS else None
 
 
+class ContactRefused(ValueError):
+    """Ein Kontakt lässt sich nicht speichern, weil die Datenbank den Satz ablehnt (Kunden-/Kontaktnummer oder Kürzel schon
+    vergeben). Die Meldung ist Klartext für den Nutzer – nie der Text der SQLite-Meldung."""
+
+
+def _contact_refusal(error):
+    """Die ``ContactRefused`` zu einem ``sqlite3.IntegrityError`` beim Speichern eines Kontakts: Welche eindeutige Spalte
+    betroffen ist, steht im Text der SQLite-Meldung (``Contacts.CustomerNumber``, ``Contacts.Abbreviation``)."""
+    detail = str(error)
+    if 'UNIQUE' in detail and 'Contacts.CustomerNumber' in detail:
+        return ContactRefused('Die Kunden-/Kontaktnummer ist schon vergeben.')
+    if 'UNIQUE' in detail and 'Contacts.Abbreviation' in detail:
+        return ContactRefused('Das Kürzel ist schon vergeben.')
+    return ContactRefused('Der Kontakt konnte nicht gespeichert werden.')
+
+
 class ContactsMixin:
     def fetch_contacts(self, contact_type=None, entity_type=None):
         """Fetch contacts, optionally filtered by ContactType and/or EntityType.
@@ -254,6 +270,10 @@ class ContactsMixin:
 
             conn.commit()
             return contact_id          # Aufrufer braucht ihn für Verknüpfungen
+        except sqlite3.IntegrityError as e:
+            conn.rollback()
+            print(f'Error inserting contact: {e}')
+            raise _contact_refusal(e) from e
         except Exception as e:
             conn.rollback()
             print(f'Error inserting contact: {e}')
@@ -349,6 +369,10 @@ class ContactsMixin:
                             (contact_id, rk)
                         )
             conn.commit()
+        except sqlite3.IntegrityError as e:
+            conn.rollback()
+            print(f'Error updating contact: {e}')
+            raise _contact_refusal(e) from e
         except Exception as e:
             conn.rollback()
             print(f'Error updating contact: {e}')

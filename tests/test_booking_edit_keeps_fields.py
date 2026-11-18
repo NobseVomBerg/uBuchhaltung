@@ -733,13 +733,13 @@ def test_valid_edit_of_bank_row_and_first_split_is_saved(world):
     assert after[booking.second] == before[booking.second]
 
 
-@pytest.mark.parametrize('field, value', [
-    pytest.param('split_amount', 'abc', id='betrag'),
-    pytest.param('split_tax_rate', 'neunzehn', id='steuersatz'),
-    pytest.param('split_tax_amount', 'x', id='steuerbetrag'),
-    pytest.param('split_coa', 'abc', id='konto'),
+@pytest.mark.parametrize('field, value, reason', [
+    pytest.param('split_amount', 'abc', 'Der Betrag ist keine gültige Zahl.', id='betrag'),
+    pytest.param('split_tax_rate', 'neunzehn', 'Der Steuersatz ist keine gültige Zahl.', id='steuersatz'),
+    pytest.param('split_tax_amount', 'x', 'Der Steuerbetrag ist keine gültige Zahl.', id='steuerbetrag'),
+    pytest.param('split_coa', 'abc', 'Das Konto ist ungültig.', id='konto'),
 ])
-def test_invalid_number_in_last_editor_row_leaves_everything_unchanged(world, field, value):
+def test_invalid_number_in_last_editor_row_leaves_everything_unchanged(world, field, value, reason):
     w = world
     booking = _bank_with_two_children(w)
     table_before = _table(w.db)
@@ -749,7 +749,9 @@ def test_invalid_number_in_last_editor_row_leaves_everything_unchanged(world, fi
 
     status, message = handle_add_transaction(w.db, post)
 
-    assert status == 500 and message.startswith('Fehler beim Speichern')
+    # geändert mit 2.4.2: Eine ungültige Zahl im Editor ist eine Ablehnung (400) mit Klartext und der Zeile – vorher ein
+    # 500 mit dem Python-Fehlertext („Fehler beim Speichern: could not convert string to float …“)
+    assert (status, message) == (400, f'Zeile 2: {reason}')
     assert _table(w.db) == table_before                      # Bankzeile UND alle Teilbuchungen
 
 
@@ -762,9 +764,10 @@ def test_invalid_number_in_a_new_editor_row_leaves_everything_unchanged(world):
     _edit_everything(post)
     _add_editor_row(post, split_amount='-12,5', split_coa=str(w.coa(6850)))
 
-    status, _message = handle_add_transaction(w.db, post)
+    status, message = handle_add_transaction(w.db, post)
 
-    assert status == 500
+    # geändert mit 2.4.2: 400 mit Klartext und der Zeile statt 500 (neue Zeile = dritte Zeile des Editors)
+    assert (status, message) == (400, 'Zeile 3: Der Betrag ist keine gültige Zahl.')
     assert _table(w.db) == table_before
 
 
@@ -807,12 +810,12 @@ def test_new_bank_movement_with_valid_editor_rows_is_created(world):
     assert [row['ParentBooking_ID'][0] for row in table[-2:]] == [bank['ID'][0]] * 2
 
 
-@pytest.mark.parametrize('field, value', [
-    pytest.param('split_amount', 'abc', id='betrag'),
-    pytest.param('split_tax_rate', 'x', id='steuersatz'),
-    pytest.param('split_coa', 'abc', id='konto'),
+@pytest.mark.parametrize('field, value, reason', [
+    pytest.param('split_amount', 'abc', 'Der Betrag ist keine gültige Zahl.', id='betrag'),
+    pytest.param('split_tax_rate', 'x', 'Der Steuersatz ist keine gültige Zahl.', id='steuersatz'),
+    pytest.param('split_coa', 'abc', 'Das Konto ist ungültig.', id='konto'),
 ])
-def test_invalid_number_in_new_bank_movement_creates_nothing(world, field, value):
+def test_invalid_number_in_new_bank_movement_creates_nothing(world, field, value, reason):
     w = world
     table_before = _table(w.db)
     post = _new_movement_post(w, [
@@ -823,7 +826,8 @@ def test_invalid_number_in_new_bank_movement_creates_nothing(world, field, value
 
     status, message = handle_add_transaction(w.db, post)
 
-    assert status == 500 and message.startswith('Fehler beim Speichern')
+    # geändert mit 2.4.2: 400 mit Klartext und der Zeile statt 500 mit dem Python-Fehlertext
+    assert (status, message) == (400, f'Zeile 2: {reason}')
     assert _table(w.db) == table_before                      # keine Bankbewegung, keine Sätze
 
 

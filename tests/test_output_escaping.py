@@ -381,7 +381,10 @@ def test_articles_page_shows_hostile_texts_as_text_and_in_the_edit_fields(tmp_db
     edit = PageArticles(tmp_db, edit_article_id=article)
     assert [a['value'] for a in inputs(edit, name='name')] == [BREAK]
     assert f'>{escaped(SCRIPT)}</textarea>' in edit
-    tmp_db.update_article(article, name='Probe', unit='Stk.', unit_price=1, tax_rate=19, description='Text')
+    # geändert mit 2.4.2: Eine Einheit außerhalb der festen Auswahl erscheint als zusätzliche, vorgewählte Option (damit „öffnen
+    # und unverändert speichern“ sie behält) – der harmlose Vergleichsartikel braucht deshalb ebenfalls eine unbekannte Einheit,
+    # sonst fehlte ihm dieses eine Element; der feindliche Wert selbst ändert den Aufbau weiterhin nicht
+    tmp_db.update_article(article, name='Probe', unit='km', unit_price=1, tax_rate=19, description='Text')
     assert_same_structure(edit, PageArticles(tmp_db, edit_article_id=article))
     assert_same_structure(listing, PageArticles(tmp_db))
 
@@ -571,10 +574,11 @@ def test_receipts_page_shows_hostile_values_as_text_and_in_the_data_attributes(t
             rows[0]['data-info']) == (BREAK, BREAK_SCRIPT, IMG, SCRIPT, MIXED)
     cells = next(r for r in table_rows(hostile) if IMG in r)
     assert cells[:5] == [BREAK, BREAK_SCRIPT, IMG, SCRIPT, MIXED]
-    # Löschen: Die Nummer steht prozentkodiert in der Adresse innerhalb des onclick
+    # Löschen: Seit 2.4.2 trägt die Adresse im onclick nur die ID des Belegs (vorher die Nummer, die nicht eindeutig ist) –
+    # der feindliche Text der Nummer steht dort gar nicht mehr
+    receipt_id = tmp_db.fetch_receipts()[0][0]
     delete = [a['onclick'] for a in Dom(hostile).all('a') if 'delete-icon' in a.get('class', '').split()]
-    assert delete == ["appConfirmPost('/receipts/delete?number=" + urllib.parse.quote(BREAK, safe='')
-                      + "', 'Beleg wirklich löschen?')"]
+    assert delete == [f"appConfirmPost('/receipts/delete?id={receipt_id}', 'Beleg wirklich löschen?')"]
     assert Dom(hostile).all('img') == []
     sql(tmp_db, "UPDATE Documents SET Number = '26-001', Date = '2026-01-01', Filename = 'beleg.pdf', "
                 "Path = 'Belege', Info = 'Info'")

@@ -218,8 +218,10 @@ def test_skr_literal_payload_in_the_address(server_port, auto_login):
     assert app_msg_arguments(Dom(resp.text)) == [PAYLOAD, 'info']
 
 
-# ── Belegnummer im „Löschen“-Link ────────────────────────────────────────────
-DELETE_ONCLICK = re.compile(r'onclick="appConfirmPost\(\'/receipts/delete\?number=(.*?)\', '
+# ── „Löschen“-Link der Belegliste ────────────────────────────────────────────
+# Seit 2.4.2 trägt die Adresse nur noch die ID des Belegs (vorher die Nummer, die nicht eindeutig ist): Der Text der Nummer
+# steht in keiner Adresse mehr; die Tests prüfen, dass die Adresse nur die Zahl nennt und der Link genau diesen Beleg löscht.
+DELETE_ONCLICK = re.compile(r'onclick="appConfirmPost\(\'/receipts/delete\?id=(.*?)\', '
                             r'\'Beleg wirklich löschen\?\'\)"')
 HOSTILE_NUMBER = "X', alert(1), '"
 AWKWARD_NUMBERS = ["R 2026/004 & Co #1 +5% Ü", 'B"1"', 'a<b>c', 'x;y=z?w', "O'Brien-1", '\\1',
@@ -233,37 +235,39 @@ def receipt_page(db, *numbers):
     return PageReceipts(db, '2026-01-01', '2026-12-31')
 
 
-def test_receipt_number_is_percent_encoded_in_the_delete_address(tmp_db):
+def receipt_ids(db):
+    return [row[0] for row in db.fetch_receipts()]
+
+
+def test_the_delete_address_of_a_receipt_carries_only_its_id(tmp_db):
     html = receipt_page(tmp_db, HOSTILE_NUMBER)
     found = DELETE_ONCLICK.findall(html)
-    assert found == [urllib.parse.quote(HOSTILE_NUMBER, safe='')]
-    for form in ("'", '&#x27;', '&#39;', '&apos;', '"', '&quot;', ' ', ','):
-        assert form not in found[0], form
+    assert found == [str(receipt_ids(tmp_db)[0])]
     # Gelesen wie im Browser: genau zwei Zeichenketten-Argumente, nichts eingeschleust
     onclick = [a['onclick'] for t, a in Dom(html).tags if t == 'a' and 'delete-icon' in a.get('class', '')]
-    assert onclick == ["appConfirmPost('/receipts/delete?number=X%27%2C%20alert%281%29%2C%20%27', "
-                       "'Beleg wirklich löschen?')"]
+    assert onclick == [f"appConfirmPost('/receipts/delete?id={found[0]}', 'Beleg wirklich löschen?')"]
     assert re.fullmatch(r"appConfirmPost\('[^']*', '[^']*'\)", onclick[0])
+    assert 'alert' not in onclick[0] and HOSTILE_NUMBER not in html          # die Nummer steht nur maskiert in der Seite
 
 
 @pytest.mark.parametrize('number', AWKWARD_NUMBERS)
-def test_awkward_receipt_numbers_stay_inside_their_string_and_survive_the_round_trip(tmp_db, number):
+def test_awkward_receipt_numbers_never_reach_the_delete_address(tmp_db, number):
     html = receipt_page(tmp_db, number)
     onclick = [a['onclick'] for t, a in Dom(html).tags if t == 'a' and 'delete-icon' in a.get('class', '')]
     assert len(onclick) == 1
     found = re.fullmatch(r"appConfirmPost\('([^']*)', '([^']*)'\)", onclick[0])
     assert found, onclick[0]
     address = found.group(1)
-    assert address == '/receipts/delete?number=' + urllib.parse.quote(number, safe='')
-    assert urllib.parse.parse_qs(urllib.parse.urlsplit(address).query)['number'] == [number]
+    assert address == f'/receipts/delete?id={receipt_ids(tmp_db)[0]}'
+    assert urllib.parse.parse_qs(urllib.parse.urlsplit(address).query) == {'id': [str(receipt_ids(tmp_db)[0])]}
     for form in ("'", '&#x27;', '&#39;', '"', '<', '>', ' ', '\u2028'):
         assert form not in address, form
 
 
-def test_normal_receipt_numbers_keep_their_old_markup(tmp_db):
+def test_normal_receipt_numbers_have_the_same_delete_markup(tmp_db):
     html = receipt_page(tmp_db, 'B-2026-001', 'R26003', 'Beleg_7.final~1')
-    for number in ('B-2026-001', 'R26003', 'Beleg_7.final~1'):
-        assert (f"onclick=\"appConfirmPost('/receipts/delete?number={number}', "
+    for receipt_id in receipt_ids(tmp_db):
+        assert (f"onclick=\"appConfirmPost('/receipts/delete?id={receipt_id}', "
                 f"'Beleg wirklich löschen?')\">&#128465;</a>") in html
 
 
@@ -283,11 +287,11 @@ def test_receipt_with_an_awkward_number_can_be_deleted_through_its_link(server_p
     number = "R 2026/004 & Co #1 +5% Ü 'x'"
     auto_login.db.insert_receipt(number, '2026-03-01', 'beleg.pdf', 'data/beleg.pdf', 'Info')
     auto_login.db.insert_receipt('B-2026-001', '2026-03-02', 'zweiter.pdf', 'data/zweiter.pdf', 'Info')
+    awkward_id = next(row[0] for row in auto_login.db.fetch_receipts() if row[1] == number)
     page = get(server_port, '/receipts?from=2026-01-01&to=2026-12-31')
     assert page.status == 200
     addresses = [m for m in DELETE_ONCLICK.findall(page.text)]
-    assert urllib.parse.quote(number, safe='') in addresses
-    resp = post(server_port, '/receipts/delete?number=' + urllib.parse.quote(number, safe=''),
-                csrf=auto_login.csrf)
+    assert str(awkward_id) in addresses
+    resp = post(server_port, f'/receipts/delete?id={awkward_id}', csrf=auto_login.csrf)
     assert resp.status == 303
     assert [r[1] for r in auto_login.db.fetch_receipts()] == ['B-2026-001']

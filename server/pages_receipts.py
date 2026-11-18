@@ -58,9 +58,9 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
     for row in rows:
         rid = _esc(row[0])
         n   = _esc(row[1])
-        # In der Adresse innerhalb des onclick steht die Nummer prozentkodiert: Ein nur
-        # HTML-maskiertes Hochkomma löst der Browser dort wieder auf (gespeichertes Skript).
-        n_url = quote(str(row[1] or ''), safe='')
+        # Gelöscht wird über die ID des Belegs (die Nummer ist nicht eindeutig). In der Adresse innerhalb des onclick
+        # steht sie prozentkodiert: Ein nur HTML-maskiertes Hochkomma löst der Browser dort wieder auf (gespeichertes Skript).
+        id_url = quote(str(row[0]), safe='')
         dt  = _esc(row[2])
         fn  = _esc(row[3])
         pt  = _esc(row[4])
@@ -70,7 +70,7 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
         s += (f'<td>'
               f'<a href="#" class="action-icon" onclick="editReceiptFromRow(this); return false;" title="Bearbeiten">&#9998;</a>'
               f' <a href="javascript:void(0);" class="action-icon delete-icon" title="L\u00f6schen"'
-              f' onclick="appConfirmPost(\'/receipts/delete?number={n_url}\', \'Beleg wirklich löschen?\')">&#128465;</a>'
+              f' onclick="appConfirmPost(\'/receipts/delete?id={id_url}\', \'Beleg wirklich löschen?\')">&#128465;</a>'
               f'</td></tr>')
     s += '''
             </table>

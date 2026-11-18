@@ -29,6 +29,8 @@ from tests.entry_form_helpers import bank_account, coa, execute, query
 from tests.entry_form_roundtrip import add_row, differences, drop_row, open_form, snapshot
 
 STATE_TABLES = ('Bookings', 'InvoicePayments', 'Invoices')
+# der feste Satz, den ``handle_add_transaction`` bei einem unerwarteten Fehler zurückgibt (seit 2.4.2 ohne Fehlertext)
+FIXED_ERROR = 'Die Buchung konnte nicht gespeichert werden. Einzelheiten stehen im Server-Log.'
 
 
 @pytest.fixture
@@ -112,7 +114,8 @@ def test_a_failing_new_row_rolls_back_the_bank_row_and_the_rows_before_it(db, lo
 
     status, text = handle_add_transaction(db, post_data)
 
-    assert status == 500 and 'boom' in text
+    # geändert mit 2.4.2: Die Antwort nennt nie den Text der Ausnahme (‚boom‘ steht nur im Server-Log), sondern einen festen Satz
+    assert (status, text) == (500, FIXED_ERROR) and 'boom' not in text
     assert _everything(db) == before                    # Bankzeile, Zeile 1 und Zeile 2: wie vorher
     assert logged == []                                 # und nichts davon im Replay-Log
 
@@ -148,7 +151,8 @@ def test_a_new_row_with_an_account_that_does_not_exist_rolls_back_everything(db,
 
     status, text = handle_add_transaction(db, post_data)
 
-    assert status == 500 and 'FOREIGN KEY' in text
+    # geändert mit 2.4.2: ein fester Satz statt der SQLite-Meldung („FOREIGN KEY constraint failed“ steht nur im Server-Log)
+    assert (status, text) == (500, FIXED_ERROR) and 'FOREIGN KEY' not in text
     assert _everything(db) == before
     assert logged == []
 
