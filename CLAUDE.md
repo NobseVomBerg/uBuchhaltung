@@ -338,7 +338,8 @@ kein Subagent darauf:
   dem Konto), `transfer` (Umbuchung, beide Seiten kontiert, keine liquide; positiv = `COA` im
   Soll), `mirror_coa` / `mirror_counter` (Spiegel, beide Seiten Geldkonten; Betrag auf dem Konto
   bzw. dem Gegenkonto) und `mirror_legacy` (Spiegel des Bestands, Lesart unbekannt – gelesen wie
-  vor 2.1.0: Gegenkonto-Seite, im Dashboard roh, in der Split-Summe über `is_bank_effective`).
+  vor 2.1.0: Gegenkonto-Seite, im Dashboard – zwischen eigenen Konten – als Übertrag mit dem Rohbetrag (eigenständig)
+  bzw. ohne Lesung seines Betrags (Kind), in der Split-Summe über `is_bank_effective`).
   **Jeder Schreibweg setzt die Form** beim Schreiben, mit den Zahlungskonten von damals
   (`derive_entry_form`, `import_entry_form`; die App-Schreiber nennen sie ausdrücklich:
   Forderung und AfA `transfer`, Zahlungssätze `liquid_first`/`transfer`/`purpose_first`) und
@@ -438,7 +439,43 @@ kein Subagent darauf:
   nicht die Form und nicht die Kontenmenge; jede Buchung zählt dabei höchstens einmal
   (Schlüssel: ihre ID). Verknüpfung und Split-Summe rechnen mit den eigenen Bankkonten
   (`get_bank_coa_ids`); ein Spiegel mit bekannter Lesart wirkt in der Split-Summe nach seiner
-  Position auf dem Konto der Bankbewegung (`bank_effect`), im Dashboard aus Sicht der Kasse
+  Position auf dem Konto der Bankbewegung (`bank_effect`); im Dashboard ist ein Spiegel zwischen eigenen
+  Konten ein Übertrag (eigenständig mit dem Betrag aus Sicht der Kasse)
+- **Dashboard** (`Database.get_dashboard`, seit 2.4.1; `get_dashboard_totals`/`-monthly` sind dünne Hüllen darum): Es folgt den
+  Kontobewegungen und zerlegt **jede** gezählte Bewegung ohne Rest in vier Töpfe – Einnahme, Ausgabe, privat, Übertrag
+  (`reporting.split_bank_movement`/`split_cash_entry`, reine Funktionen in Minor Units); `balance` ist ihre Summe. Gezählt wird
+  wie vorher (`bank_count` und `unlinked_count` ändern sich nicht, der Saldo nur bei Werten, die allein die SQL-Konsole schreibt:
+  ein Kassensatz in Spiegel-Form mit einem Privatkonto, Beträge mit Bruchteil oder als Text): die Bankbewegungen der gewählten Konten und die
+  eigenständigen Sätze auf Kassenkonten (Konto der Kasse auf einer Seite, oder `Account_ID` = Kasse und kein AfA-Satz); 1460
+  (außer als Konto der Kasse) und die AfA zählen nicht. EÜR, DATEV-Export und gespeicherte Daten ändern sich nicht.
+  **Bankbewegung mit Kindern:** Die Wirkung eines Satzes ist `bank_effect` auf das Konto der Bewegung, wie in der Split-Summe.
+  *privat* = Summe über die Kinder mit 2100–2199 auf einer Seite: bei einer Umbuchung (`transfer`) −Betrag (im Konto) bzw.
+  +Betrag (im Gegenkonto), auf beiden Seiten 0 – auch nicht ganz kontiert –, bei jeder anderen Form außer den Spiegeln ihr
+  **Betrag**, nicht ihre Wirkung (er trägt die Richtung der Geldbewegung; „2100 an 1460“ unter der Bewegung – WISO-Paar mit
+  „1460 an Bank“, Kasse nicht auf 1460 – hat die Wirkung 0 und bliebe sonst Betriebsausgabe). *Übertrag* nur, wenn die Bewegung mindestens einen Spiegel zwischen eigenen Konten trägt (`is_mirror_row`, jede
+  Spiegel-Form): Betrag minus Summe der Wirkungen aller übrigen Kinder; der Betrag des Spiegels wird nie gelesen, auch nicht
+  bei `mirror_legacy`. Der Rest (Betrag − privat − Übertrag) geht nach dem Vorzeichen in Einnahme oder Ausgabe. Die Formel
+  „Betrag − privat − Wirkung der übrigen Kinder“ ist falsch – sie zöge einen privaten Umbuchungssatz doppelt ab (−50 mit
+  Spiegel −40, „6805 an Bank“ −10 und „2100 an 6805“ +10: Übertrag −40, privat −10, Ausgabe 0).
+  **Bankbewegung ohne Kind:** Deckt die Übertragsrechnung des DATEV-Exports sie (`settle_transfers(…).covered`, über den
+  ganzen Bestand; `db/matching.py` bleibt unberührt), ist sie ganz Übertrag, sonst nach dem Vorzeichen Einnahme oder
+  Ausgabe; „offen“ (`unlinked_count`) bleibt sie in beiden Fällen. Die Rechnung läuft nur, wenn eine solche Bewegung zu
+  zählen ist, und einmal je `get_dashboard` (die Seite ruft nur das auf). **Eigenständiger Satz auf der Kasse** (Betrag aus
+  Sicht der Kasse, `_cash_amount_sql`): ein Spiegel zwischen eigenen Konten (`is_mirror_row`, jede Form; `mirror_legacy` und
+  Zeilen ohne Form mit dem Rohbetrag) ist Übertrag, 2100–2199 auf einer Seite privat, alles andere nach dem Vorzeichen.
+  **Kontofilter:** Ein Übertrag auf ein nicht gewähltes eigenes Konto bleibt ein Übertrag und steht dann netto unter
+  „Überträge“. Die Kassenseite eines Spiegel-Kindes unter einer Bankbewegung zählt weiter nicht (sie stünde doppelt da,
+  sobald die Kasse die Bewegung selbst führt); ebenso bekannte Grenzen: der unkontierte Rest neben einem Spiegel steckt im
+  Übertrag (auch ein Satz über 1460 ohne Wirkung auf das Konto), Konten ohne oder mit doppelter SKR-Nummer nehmen an der
+  Deckung nicht teil, ein eigenständiger `mirror_legacy`-Spiegel auf der Kasse deckt die satzlose Bankseite nicht (er wird nie
+  gedeutet: Ausgabe und Übertrag statt zweimal Übertrag), und die Deckung setzt wie beim DATEV-Export vollständige Auszüge
+  voraus – fehlt die echte Gegenseite eines kontierten Übertrags im Bestand, kann eine gleich hohe Bewegung ohne Satz auf dem
+  Zielkonto binnen 14 Tagen als Übertrag zählen, bis sie kontiert ist (`docs/aufgaben.md`). Beträge aus der
+  Datenbank nur über `_minor_or_zero` (Text, NULL, Kommazahl ab 2^63: 0), ein Datum, das SQLite nicht liest, steht nur in den Summen – nie ein
+  Fehler. Seite: Die Zeile „Überträge zwischen eigenen Konten“ (`.dashTransfers`) steht in der Übersicht nur bei einem Wert
+  ≠ 0 (auf den Cent), im Monats-Tooltip nur bei ≠ 0, ohne Balken; Werte maskiert. `tests/test_dashboard_split.py` pinnt die
+  Zerlegung (Regeltabelle, Eigenschaftsprüfung, feste Werte der Testwelt); der Maßstab von 2.0.8
+  (`entry_form_golden_2_0_8.json`) gilt für das Dashboard nur über Saldo, Anzahl und Monatssummen
 - **Automatischer Abgleich** (`link_bank_to_entries`, läuft nach jedem Import; seit 2.3.14 mit Richtungsregel): Angefasst
   werden nur Bankbewegungen ohne Kinder und Sätze ohne `ParentBooking_ID` – eine bestehende Verknüpfung und der Text der
   Bankbewegung ändern sich nie. In den Stufen 1–6 (Reihenfolge im Lauf: 0, 1, 2, 4, 3, 3b, 3c, 3d, 5, 6, 6b, Nachlauf, 7) wird

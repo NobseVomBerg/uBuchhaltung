@@ -340,6 +340,7 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 - Finanz-Statistiken auf Basis von Bank- und Entry-Buchungen (inkl. Kasse)
 - Monatlicher Verlauf für Einnahmen, Betriebsausgaben und Privatentnahmen
 - Jahresübersicht mit Saldo, kontobasiert filterbar
+- Überträge zwischen eigenen Konten (Bank ↔ Bank, Bank ↔ Kasse) zählen weder als Einnahme noch als Ausgabe, sondern stehen als eigener Posten „Überträge“ da; ein Privatanteil an einer Zahlung zählt anteilig. Eine Bewegung ohne Buchungssatz gilt nur dann als Übertrag, wenn die kontierte Gegenseite sie deckt (dieselbe Rechnung wie im DATEV-Export), sonst als Einnahme bzw. Ausgabe
 - EÜR-Ansicht mit drei Blöcken:
   - Betriebseinnahmen
   - Betriebsausgaben (offizielle EÜR)

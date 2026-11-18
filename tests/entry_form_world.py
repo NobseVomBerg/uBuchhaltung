@@ -11,9 +11,12 @@ der heutige Code nicht mehr erzeugt (Konten im Bereich 1000–1099 als Geldkonto
 Auswertungen, die sich durch die Migration nicht ändern dürfen: EÜR, DATEV-Zeilen, Dashboard und die
 Prüfung auf unstimmige Splits.
 
-``evaluate`` benutzt nur, was es schon in 2.0.x gab. Die Sollwerte im Test stammen daher nicht aus dem
-Code dieser Version, sondern aus einem Lauf von ``evaluate`` mit dem Stand 2.0.8 über dieselbe Datenbank
-(als hätte 2.0.8 sie geschrieben: Spalte ``EntryForm`` entfernt, Stand 2000).
+``evaluate`` benutzt nur, was es schon in 2.0.x gab (den Topf „Überträge“ des Dashboards, seit 2.4.1, nimmt es nur
+mit, wo es ihn gibt). Die Sollwerte im Test stammen daher nicht aus dem Code dieser Version, sondern aus einem Lauf
+von ``evaluate`` mit dem Stand 2.0.8 über dieselbe Datenbank (als hätte 2.0.8 sie geschrieben: Spalte ``EntryForm``
+entfernt, Stand 2000). Das Dashboard vergleicht der Test nur über Saldo, Zahl der Bewegungen und Monatssummen
+(``_comparable`` in ``test_entry_form_migration.py``): Seit 2.4.1 zerlegt es eine Bewegung anders in Einnahme, Ausgabe,
+privat und Übertrag als 2.0.8, der Saldo bleibt. Die Aufteilung pinnt ``test_dashboard_split.py``.
 Alle Namen, Nummern und Beträge sind erfunden.
 """
 import datetime
@@ -361,7 +364,8 @@ def to_state_2000(db_path):
 def evaluate(db_path, date_from=D1, date_to=D2):
     """Die Auswertungen, die eine Migration nicht ändern darf – als JSON-fähiges Dict, nur mit
     Funktionen, die es schon in 2.0.x gab. Öffnet die Datenbank über ``Database`` (eine
-    Datenbank mit älterem Stand wird dabei migriert)."""
+    Datenbank mit älterem Stand wird dabei migriert). Je Monat des Dashboards: Jahr-Monat, Einnahme, privat,
+    Ausgabe und – seit 2.4.1 – als fünftes Element die Überträge."""
     from db import Database
     from export import datev
 
@@ -388,7 +392,7 @@ def evaluate(db_path, date_from=D1, date_to=D2):
     def dashboard(account_ids):
         totals = db.get_dashboard_totals(date_from, date_to, account_ids)
         monthly = [[m['year_month'], f"{m['income']:.2f}", f"{m['private']:.2f}",
-                    f"{m['expense']:.2f}"]
+                    f"{m['expense']:.2f}"] + ([f"{m['transfers']:.2f}"] if 'transfers' in m else [])
                    for m in db.get_dashboard_monthly(date_from, date_to, account_ids)]
         return {'totals': {key: str(value) for key, value in sorted(totals.items())},
                 'monthly': monthly}

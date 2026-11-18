@@ -10,7 +10,7 @@ so that imported WISO/DATEV data is always reflected.
 from datetime import datetime
 import html as _html
 from db import Database
-from money import fmt_eur
+from money import fmt_eur, round_minor, to_minor
 from .pages import Header1, Header2, Header3, Footer
 
 
@@ -50,8 +50,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
         range_label = f'{h_from} &ndash; {h_to}'
 
     # ── Data ──────────────────────────────────────────────────────────
-    totals  = db.get_dashboard_totals(date_from, date_to, account_ids)
-    monthly = db.get_dashboard_monthly(date_from, date_to, account_ids)
+    totals, monthly = db.get_dashboard(date_from, date_to, account_ids)
 
     income   = totals['income']
     private  = totals['private']
@@ -191,6 +190,8 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
         tip = (f"Einnahmen: {fmt_eur(d['income'], symbol=False)}\\n"
                f"Privat: {fmt_eur(d['private'], symbol=False)}\\n"
                f"Ausgaben: {fmt_eur(d['expense'], symbol=False)}")
+        if d['transfers']:
+            tip += f"\\nÜberträge: {_esc(fmt_eur(d['transfers'], symbol=False))}"
         s += f'''
         <div style="display:flex;flex-direction:column;align-items:center;flex:1;"
              title="{tip}">
@@ -212,7 +213,15 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
     total_inc  = sum(entry['income']  for entry in monthly)
     total_priv = sum(entry['private'] for entry in monthly)
     total_exp  = sum(entry['expense'] for entry in monthly)
-    total_bal  = total_inc + total_priv + total_exp
+    total_tr   = sum(entry['transfers'] for entry in monthly)
+    total_bal  = total_inc + total_priv + total_exp + total_tr
+
+    # Überträge zwischen eigenen Konten sind weder Einnahme noch Ausgabe: eigene Zeile nur, wenn netto etwas bleibt
+    # (auf den Cent – eine Summe von Kommazahlen ist selten genau 0)
+    transfers_row = ''
+    if round_minor(to_minor(total_tr), 2):       # ab einem Cent – sonst stünde dort „0,00 €“
+        transfers_row = ('<tr class="dashTransfers"><td class="hint">&Uuml;bertr&auml;ge zwischen eigenen Konten</td>'
+                         f'<td class="hint">{_esc(fmt_eur(total_tr))}</td></tr>')
 
     s += f'''
     <div class="rectRounded box2">
@@ -229,6 +238,7 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
             <tr><td>Privatentnahmen</td>
                 <td style="text-align:right;color:#ff6f00;">
                     {fmt_eur(total_priv)}</td></tr>
+            {transfers_row}
             <tr style="border-top:2px solid #666;">
                 <td><strong>Saldo</strong></td>
                 <td style="text-align:right;font-weight:bold;

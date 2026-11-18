@@ -5,12 +5,13 @@
 import sqlite3
 import os
 import json
+import math
 from decimal import Decimal
 from money import to_minor, from_minor
 from .matching import (
     FORM_MIRROR_COA, FORM_MIRROR_COUNTER, FORM_PURPOSE_FIRST, FORM_TRANSFER, MIRROR_FORMS,
     is_asset_transfer, read_entry_form, ASSET_ACCOUNT_RANGE, PL_ACCOUNT_RANGE,
-    REVENUE_ACCOUNT_RANGE,
+    REVENUE_ACCOUNT_RANGE, bank_effect, is_mirror_row,
 )
 
 # SKR04-Kontenklasse 4 = Betriebliche Erträge (Erlöse). Einzige Quelle für die
@@ -70,6 +71,119 @@ def _cash_amount_sql(cash_coa_ids, alias='b'):
     return sql, [FORM_MIRROR_COA, *cash, *cash, FORM_MIRROR_COUNTER, *cash, *cash]
 
 
+_MONTH_ABBR = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun',
+               'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez']
+
+
+#: Ab hier zählt eine Kommazahl aus der Datenbank nicht mehr als Betrag (``_minor_or_zero``): Eine Ganzzahl-Spalte fasst
+#: 64 Bit, alles darüber hat jemand an der App vorbei geschrieben – und ``from_minor`` könnte es nicht mehr darstellen.
+_MAX_MINOR = 2 ** 63
+
+
+def _minor_or_zero(value) -> int:
+    """Ein Betrag aus der Datenbank als ganze Minor Units: eine Ganzzahl (kein ``bool``) gilt, eine endliche
+    Kommazahl unter 2^63 wird abgeschnitten, alles andere – Text, NULL, NaN, eine größere Kommazahl – zählt 0. Das Dashboard rechnet nie mit einem
+    Betrag, den es nicht lesen kann, und wirft deshalb nie einen Fehler (per SQL-Konsole lässt sich jeder Wert
+    schreiben)."""
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value) and abs(value) < _MAX_MINOR:
+        return int(value)
+    return 0
+
+
+def _by_sign(rest):
+    """Ein Rest nach seinem Vorzeichen: ``(Einnahme, Ausgabe)`` – positiv ist eine Einnahme, alles andere eine Ausgabe."""
+    return (rest, 0) if rest > 0 else (0, rest)
+
+
+def split_bank_movement(amount, children, parent_coa_ids, bank_coa_ids, payment_coa_ids, private_coa_ids,
+                        covered=False):
+    """Eine Bankbewegung ohne Rest in ``(Einnahme, privat, Ausgabe, Übertrag)`` zerlegen (Minor Units, seit 2.4.1).
+
+    Die vier Teile ergeben immer ``amount``. ``children``: ``[(Amount, COA_ID, CounterCOA_ID, EntryForm)]`` der Sätze
+    unter der Bewegung; ``parent_coa_ids``: COA-IDs des Kontos der Bewegung (leer/``None`` ohne SKR-Nummer);
+    ``bank_coa_ids``, ``payment_coa_ids``, ``private_coa_ids``: eigene Bank-/Kassenkonten, alle Zahlungskonten, Konten
+    2100–2199.
+
+    Ohne Kind ist die Bewegung ganz Übertrag, wenn die Übertragsrechnung des DATEV-Exports sie deckt (``covered``,
+    ``settle_transfers``), sonst nach dem Vorzeichen Einnahme oder Ausgabe. Mit Kindern zählt die Wirkung jedes Satzes
+    auf das Konto der Bewegung (``bank_effect`` – wie in der Split-Summe):
+
+    * privat: bei einer Umbuchung (``transfer``) mit 2100–2199 auf EINER Seite −Betrag (im Konto) bzw. +Betrag (im
+      Gegenkonto), auf beiden Seiten 0 – auch wenn sie nicht ganz kontiert ist; bei jeder anderen Form außer den
+      Spiegeln ihr Betrag (bei einer Zahlung die Richtung der Geldbewegung – auch, wenn sie über das Verrechnungskonto
+      1460 läuft und auf das Konto der Bewegung selbst nicht wirkt);
+    * Übertrag: nur, wenn die Bewegung mindestens einen Spiegel zwischen eigenen Konten trägt (``is_mirror_row``): der
+      Betrag minus die Wirkung aller übrigen Sätze. Der Betrag des Spiegels selbst wird nie gelesen, auch nicht bei
+      ``mirror_legacy`` (Lesart unbekannt);
+    * der Rest geht nach seinem Vorzeichen in Einnahme oder Ausgabe."""
+    total = _minor_or_zero(amount)
+    if not children:
+        if covered:
+            return 0, 0, 0, total
+        income, expense = _by_sign(total)
+        return income, 0, expense, 0
+    private = other = 0
+    mirror = False
+    for child_amount, coa, counter, stored in children:
+        child_amount = _minor_or_zero(child_amount)
+        if is_mirror_row(stored, coa, counter, bank_coa_ids):
+            mirror = True
+            continue
+        form = read_entry_form(stored, coa, counter, payment_coa_ids)
+        effect = bank_effect(form, child_amount, coa, counter, parent_coa_ids or set(), bank_coa_ids)
+        other += effect
+        coa_private, counter_private = coa in private_coa_ids, counter in private_coa_ids
+        if form == FORM_TRANSFER:
+            if coa_private != counter_private:
+                private += -child_amount if coa_private else child_amount
+        elif form not in MIRROR_FORMS and (coa_private or counter_private):
+            # Der Betrag des Satzes, nicht seine Wirkung: Bei einer Zahlung trägt er die Richtung der Geldbewegung, und er
+            # weicht von der Wirkung nur ab, wenn keine Seite ein eigenes Konto ist – „2100 an 1460“ unter der Bankbewegung
+            # (WISO-Paar mit „1460 an Bank“, Kasse nicht auf 1460) hat die Wirkung 0 und bliebe sonst Betriebsausgabe.
+            private += child_amount
+    transfers = total - other if mirror else 0
+    income, expense = _by_sign(total - private - transfers)
+    return income, private, expense, transfers
+
+
+def split_cash_entry(cash_amount, coa, counter, stored, bank_coa_ids, private_coa_ids):
+    """Ein eigenständiger Satz auf einer Kasse als ``(Einnahme, privat, Ausgabe, Übertrag)`` – ganz in EINEM Teil.
+
+    ``cash_amount`` ist der Betrag aus Sicht der Kasse (``_cash_amount_sql``). Ein Spiegel zwischen eigenen Konten
+    (``is_mirror_row``, jede Spiegel-Form) ist ein Übertrag, ein Satz mit 2100–2199 auf einer Seite privat, alles andere
+    zählt nach dem Vorzeichen."""
+    total = _minor_or_zero(cash_amount)
+    if is_mirror_row(stored, coa, counter, bank_coa_ids):
+        return 0, 0, 0, total
+    if coa in private_coa_ids or counter in private_coa_ids:
+        return 0, total, 0, 0
+    income, expense = _by_sign(total)
+    return income, 0, expense, 0
+
+
+def _dashboard_month_list(date_from, date_to):
+    """``[(Jahr-Monat, Beschriftung)]`` je Kalendermonat von ``date_from`` bis ``date_to``, zeitlich geordnet; ``[]``,
+    wenn Anfang oder Ende kein Jahr und keinen Monat nennen oder der Monat des Anfangs nicht 1–12 ist."""
+    try:
+        year, month = int(date_from[:4]), int(date_from[5:7])
+        end = (int(date_to[:4]), int(date_to[5:7]))
+    except (TypeError, ValueError):
+        return []
+    if not 1 <= month <= 12:
+        return []
+    cross_year = date_from[:4] != date_to[:4]
+    months = []
+    while (year, month) <= end:
+        label = _MONTH_ABBR[month - 1] + (f" '{year % 100:02d}" if cross_year else '')
+        months.append((f'{year:04d}-{month:02d}', label))
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+    return months
+
+
 class ReportingMixin:
     def _get_neutral_coa_ids(self, cursor):
         """COA-IDs der auswertungsneutralen Bestandskonten.
@@ -97,377 +211,203 @@ class ReportingMixin:
             PL_ACCOUNT_RANGE)
         return {r[0] for r in cursor.fetchall()}
 
-    def get_dashboard_monthly(self, date_from: str, date_to: str,
-                              account_ids: list | None = None):
-        """Monthly 3-way split of bookings for the dashboard.
+    def _dashboard_scope(self, cursor, account_ids):
+        """Welche Konten das Dashboard zählt: ``(Konten-IDs, COA-IDs der Kassen, Konten-IDs der Kassen)`` der gewählten
+        Konten (leere Auswahl oder ``None`` = alle) – oder ``None``, wenn es kein Konto gibt und damit nichts zu zählen
+        ist."""
+        if account_ids:
+            ph = ','.join('?' * len(account_ids))
+            cursor.execute(
+                f"SELECT ID, SKRAccount, IsCash FROM Accounts WHERE ID IN ({ph})",
+                account_ids)
+        else:
+            cursor.execute("SELECT ID, SKRAccount, IsCash FROM Accounts")
+        accounts = cursor.fetchall()
+        acct_ids = [a[0] for a in accounts]
+        cash_acct_ids = [a[0] for a in accounts if a[2]]
+        cash_skr = [a[1] for a in accounts if a[2]]
+        cash_coa_ids = []
+        if cash_skr:
+            cursor.execute(
+                f"SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN "
+                f"({','.join('?' * len(cash_skr))})", cash_skr)
+            cash_coa_ids = [r[0] for r in cursor.fetchall()]
+        if not (acct_ids or cash_coa_ids or cash_acct_ids):
+            return None
+        return acct_ids, cash_coa_ids, cash_acct_ids
 
-        Enthält die Bankbewegungen (``bank``) aller gewählten Konten – auch der
-        Kasse, wenn sie über die Buchungsmaske gebucht wird – und eigenständige
-        Buchungssätze auf Kassenkonten. Das Dashboard folgt den Kontobewegungen:
-        Das Verrechnungskonto 1460 und die AfA (kein Geldfluss) zählen hier nicht.
+    def _dashboard_movements(self, cursor, date_from, date_to, scope):
+        """Die Bewegungen, die das Dashboard zählt – je Bewegung eine Zeile ``(Jahr-Monat, Einnahme, privat, Ausgabe,
+        Übertrag)`` in Minor Units (Jahr-Monat ``None``, wenn SQLite das Datum nicht liest). ``scope``:
+        ``_dashboard_scope``.
 
-        Categories:
-          - Einnahmen: bookings with Amount > 0, excluding private
-          - Privatentnahmen: all bookings (positive + negative) associated
-            with COA AccountNumber 2100-2199 (netted: Einlagen vs Entnahmen)
-          - Betriebsausgaben: negative bookings not associated with private COA
+        Gezählt werden (A) die Bankbewegungen der gewählten Konten – auch die der Kasse (Buchungsmaske, Konto = Kasse) –
+        und (C) eigenständige Sätze auf Kassenkonten; die Sätze unter einer Bankbewegung (B) zerlegt
+        ``split_bank_movement``. Die Übertragsrechnung des DATEV-Exports liest den ganzen Bestand und läuft nur, wenn
+        eine Bewegung ohne Satz dabei ist (``settle_transfers``)."""
+        acct_ids, cash_coa_ids, cash_acct_ids = scope
+        bank_coa_ids = self._get_bank_coa_ids(cursor)
+        payment_coa_ids = self._get_payment_coa_ids(cursor)
+        account_coas = self._account_coa_sets(cursor)
+        cursor.execute('SELECT ID FROM ChartOfAccounts WHERE AccountNumber >= 2100 AND AccountNumber < 2200')
+        private_coa_ids = {row[0] for row in cursor.fetchall()}
+
+        # A: Bankbewegungen
+        acct_marks = ','.join('?' * len(acct_ids))
+        cursor.execute(
+            f"SELECT b.ID, strftime('%Y-%m', b.DateBooking), b.Amount, b.Account_ID FROM Bookings b "
+            f"WHERE b.BookingType = 'bank' AND b.DateBooking BETWEEN ? AND ? AND b.Account_ID IN ({acct_marks})",
+            [date_from, date_to, *acct_ids])
+        banks = cursor.fetchall()
+
+        # B: ihre Buchungssätze, gesammelt je Bewegung
+        cursor.execute(
+            f"SELECT c.ParentBooking_ID, c.Amount, c.COA_ID, c.CounterCOA_ID, c.EntryForm FROM Bookings c "
+            f"JOIN Bookings b ON b.ID = c.ParentBooking_ID "
+            f"WHERE b.BookingType = 'bank' AND b.DateBooking BETWEEN ? AND ? AND b.Account_ID IN ({acct_marks})",
+            [date_from, date_to, *acct_ids])
+        children = {}
+        for parent_id, *child in cursor.fetchall():
+            children.setdefault(parent_id, []).append(tuple(child))
+
+        needs_cover = any(bank_id not in children and isinstance(amount, int) and not isinstance(amount, bool)
+                          and amount != 0 for bank_id, _month, amount, _account in banks)
+        covered = self._settle_stock(cursor).covered if needs_cover else frozenset()
+        rows = []
+        for bank_id, month, amount, account_id in banks:
+            rows.append((month, *split_bank_movement(
+                amount, children.get(bank_id, ()), account_coas.get(account_id), bank_coa_ids, payment_coa_ids,
+                private_coa_ids, bank_id in covered)))
+
+        # C: eigenständige Sätze auf Kassenkonten – mit dem Konto der Kasse auf einer Seite (Section 2) oder mit der
+        # Kasse als Account_ID (Section 2b: manuelle Einzelbuchungen, Kasse ohne SKRAccount)
+        branches, branch_params = [], []
+        if cash_coa_ids:
+            coa_marks = ','.join('?' * len(cash_coa_ids))
+            branches.append(f"(b.COA_ID IN ({coa_marks}) OR b.CounterCOA_ID IN ({coa_marks}))")
+            branch_params += cash_coa_ids * 2
+        if cash_acct_ids:
+            cash_marks = ','.join('?' * len(cash_acct_ids))
+            not_cash_coa = ''
+            if cash_coa_ids:
+                not_cash_coa = (f" AND NOT (COALESCE(b.COA_ID, -1) IN ({coa_marks})"
+                                f" OR COALESCE(b.CounterCOA_ID, -1) IN ({coa_marks}))")
+            # Eine AfA-Buchung alter Form (mit Account_ID) ist kein Geldfluss und zählt hier nicht.
+            branches.append(f"(b.Account_ID IN ({cash_marks}){not_cash_coa} AND NOT EXISTS ("
+                            f"SELECT 1 FROM AssetDepreciations d WHERE d.Booking_ID = b.ID))")
+            branch_params += cash_acct_ids
+            if cash_coa_ids:
+                branch_params += cash_coa_ids * 2
+        if branches:
+            cash_sql, cash_params = _cash_amount_sql(cash_coa_ids)
+            cursor.execute(
+                f"SELECT strftime('%Y-%m', b.DateBooking), {cash_sql}, b.COA_ID, b.CounterCOA_ID, b.EntryForm "
+                f"FROM Bookings b WHERE b.BookingType = 'entry' AND b.ParentBooking_ID IS NULL "
+                f"AND b.DateBooking BETWEEN ? AND ? AND ({' OR '.join(branches)})",
+                [*cash_params, date_from, date_to, *branch_params])
+            for month, cash_amount, coa, counter, stored in cursor.fetchall():
+                rows.append((month, *split_cash_entry(
+                    cash_amount, coa, counter, stored, bank_coa_ids, private_coa_ids)))
+        return rows
+
+    def get_dashboard(self, date_from: str, date_to: str, account_ids: list | None = None):
+        """Das Dashboard in EINEM Lauf über eine Verbindung: ``(totals, monthly)`` (seit 2.4.1).
+
+        Das Dashboard folgt den Kontobewegungen: den Bankbewegungen aller gewählten Konten – auch der Kasse, wenn sie
+        über die Buchungsmaske gebucht wird – und den eigenständigen Buchungssätzen auf Kassenkonten. Das
+        Verrechnungskonto 1460 und die AfA (kein Geldfluss) zählen hier nicht. Jede Bewegung wird ohne Rest in vier
+        Töpfe zerlegt (``split_bank_movement``, ``split_cash_entry``), ihre Summe ist der Saldo:
+
+          - Einnahmen: positiver Rest der Bewegung
+          - Betriebsausgaben: negativer Rest
+          - Privatentnahmen: der Anteil der Konten 2100-2199 (netto: Einlagen gegen Entnahmen)
+          - Überträge: Bewegungen zwischen eigenen Konten (Bank ↔ Bank, Bank ↔ Kasse) – weder Einnahme noch
+            Ausgabe. Ein Übertrag auf ein nicht gewähltes Konto bleibt ein Übertrag; er steht dann netto hier.
 
         Args:
             date_from:   Start date  (YYYY-MM-DD)
             date_to:     End date    (YYYY-MM-DD)
             account_ids: Optional list of Account IDs to include.
-                         None = all accounts.
+                         None (or empty) = all accounts.
 
         Returns:
-            list  ordered chronologically, one entry per calendar month in the
-            range.  Each entry: {'year_month': 'YYYY-MM', 'label': str,
-            'income': float, 'private': float, 'expense': float}.
-        """
+            ``totals``: income, private, expense, transfers, balance (= Summe der vier), bank_count (gezählte
+            Bewegungen), unlinked_count (Bankbewegungen ohne Buchungssatz) – Beträge als float in Euro.
+            ``monthly``: eine Liste, geordnet nach Monat, je Kalendermonat des Zeitraums ``{'year_month': 'YYYY-MM',
+            'label': str, 'income': float, 'private': float, 'expense': float, 'transfers': float}``; eine Bewegung
+            mit unlesbarem Datum steht nur in ``totals``. Ohne Konto ``([…alle 0…], [])``."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-
-        # ── Determine bank account IDs and cash COA IDs ───────────────
-        if account_ids:
-            ph = ','.join('?' * len(account_ids))
-            cursor.execute(
-                f"SELECT ID, SKRAccount, IsCash FROM Accounts WHERE ID IN ({ph})",
-                account_ids)
-        else:
-            cursor.execute("SELECT ID, SKRAccount, IsCash FROM Accounts")
-        accounts = cursor.fetchall()
-
-        # Bankbewegungen aller gewählten Konten – auch die der Kasse (Buchungsmaske, Konto = Kasse)
-        acct_ids = [a[0] for a in accounts]
-        cash_skr = [a[1] for a in accounts if a[2]]
-        cash_coa_ids = []
-        if cash_skr:
-            cursor.execute(
-                f"SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN "
-                f"({','.join('?' * len(cash_skr))})", cash_skr)
-            cash_coa_ids = [r[0] for r in cursor.fetchall()]
-
-        # ── Build booking-type filter ─────────────────────────────────
-        type_parts = []
-        type_params: list = []
-        if acct_ids:
-            ph = ','.join('?' * len(acct_ids))
-            type_parts.append(
-                f"(b.BookingType='bank' AND b.Account_ID IN ({ph}))")
-            type_params += acct_ids
-        if cash_coa_ids:
-            ph = ','.join('?' * len(cash_coa_ids))
-            type_parts.append(
-                f"(b.BookingType='entry' AND b.ParentBooking_ID IS NULL "
-                f"AND (b.COA_ID IN ({ph}) OR b.CounterCOA_ID IN ({ph})))")
-            type_params += cash_coa_ids * 2
-        # Kassen-Buchungen direkt via Account_ID (kein COA-Spiegel, z.B.
-        # manuelle Einzel-Buchungen oder Kasse ohne SKRAccount). Eine AfA-Buchung
-        # alter Form (mit Account_ID) ist kein Geldfluss und zählt hier nicht.
-        cash_acct_ids = [a[0] for a in accounts if a[2]]
-        if cash_acct_ids:
-            ph = ','.join('?' * len(cash_acct_ids))
-            if cash_coa_ids:
-                excl_ph = ','.join('?' * len(cash_coa_ids))
-                not_s2 = (
-                    f" AND NOT (COALESCE(b.COA_ID,-1) IN ({excl_ph})"
-                    f" OR COALESCE(b.CounterCOA_ID,-1) IN ({excl_ph}))")
-            else:
-                not_s2 = ""
-            type_parts.append(
-                f"(b.BookingType='entry' AND b.ParentBooking_ID IS NULL "
-                f"AND b.Account_ID IN ({ph}){not_s2} "
-                f"AND NOT EXISTS (SELECT 1 FROM AssetDepreciations d "
-                f"WHERE d.Booking_ID = b.ID))")
-            # Reihenfolge der Params muss der SQL-Reihenfolge entsprechen:
-            # erst IN ({ph}) = cash_acct_ids, dann NOT IN ({excl_ph}) = cash_coa_ids*2
-            type_params += cash_acct_ids
-            if cash_coa_ids:
-                type_params += cash_coa_ids * 2
-
-        if not type_parts:
+        try:
+            cursor = conn.cursor()
+            scope = self._dashboard_scope(cursor, account_ids)
+            if scope is None:
+                return ({'income': 0, 'private': 0, 'expense': 0, 'transfers': 0, 'balance': 0,
+                         'bank_count': 0, 'unlinked_count': 0}, [])
+            rows = self._dashboard_movements(cursor, date_from, date_to, scope)
+            acct_ids = scope[0]
+            # Unlinked = bank bookings without child entries
+            unlinked = cursor.execute(f'''
+                SELECT COUNT(*) FROM Bookings b
+                WHERE b.BookingType = 'bank'
+                  AND b.DateBooking BETWEEN ? AND ? AND b.Account_ID IN ({','.join('?' * len(acct_ids))})
+                  AND NOT EXISTS (
+                      SELECT 1 FROM Bookings e
+                      WHERE e.ParentBooking_ID = b.ID)
+            ''', [date_from, date_to, *acct_ids]).fetchone()[0]
+        finally:
             conn.close()
-            return []
 
-        acct_filter = ' AND (' + ' OR '.join(type_parts) + ')'
-
-        # ── Privatentnahmen condition ─────────────────────────────────
-        # Bank bookings: child entry has COA or CounterCOA 2100-2199
-        # Entry bookings: own COA or CounterCOA is 2100-2199
-        private_cond = '''
-            AND (
-                (b.BookingType='bank' AND EXISTS (
-                    SELECT 1 FROM Bookings e
-                    JOIN ChartOfAccounts c
-                      ON (c.ID = e.COA_ID OR c.ID = e.CounterCOA_ID)
-                    WHERE e.ParentBooking_ID = b.ID
-                      AND c.AccountNumber >= 2100
-                      AND c.AccountNumber < 2200))
-                OR
-                (b.BookingType='entry' AND EXISTS (
-                    SELECT 1 FROM ChartOfAccounts c
-                    WHERE (c.ID = b.COA_ID OR c.ID = b.CounterCOA_ID)
-                      AND c.AccountNumber >= 2100
-                      AND c.AccountNumber < 2200))
-            )'''
-        not_private_cond = '''
-            AND NOT (
-                (b.BookingType='bank' AND EXISTS (
-                    SELECT 1 FROM Bookings e
-                    JOIN ChartOfAccounts c
-                      ON (c.ID = e.COA_ID OR c.ID = e.CounterCOA_ID)
-                    WHERE e.ParentBooking_ID = b.ID
-                      AND c.AccountNumber >= 2100
-                      AND c.AccountNumber < 2200))
-                OR
-                (b.BookingType='entry' AND EXISTS (
-                    SELECT 1 FROM ChartOfAccounts c
-                    WHERE (c.ID = b.COA_ID OR c.ID = b.CounterCOA_ID)
-                      AND c.AccountNumber >= 2100
-                      AND c.AccountNumber < 2200))
-            )'''
-
-        p_base = [date_from, date_to] + type_params
-        amount_sql, amount_params = _cash_amount_sql(cash_coa_ids)
-
-        income_rows = cursor.execute(f'''
-            SELECT strftime('%Y-%m', b.DateBooking),
-                   COALESCE(SUM({amount_sql}), 0)
-            FROM Bookings b
-            WHERE b.DateBooking BETWEEN ? AND ?
-              AND {amount_sql} > 0
-              {acct_filter}
-              {not_private_cond}
-            GROUP BY strftime('%Y-%m', b.DateBooking)
-        ''', amount_params + [date_from, date_to] + amount_params + type_params).fetchall()
-
-        private_rows = cursor.execute(f'''
-            SELECT strftime('%Y-%m', b.DateBooking),
-                   COALESCE(SUM(b.Amount), 0)
-            FROM Bookings b
-            WHERE b.DateBooking BETWEEN ? AND ?
-              {acct_filter}
-              {private_cond}
-            GROUP BY strftime('%Y-%m', b.DateBooking)
-        ''', p_base).fetchall()
-
-        expense_rows = cursor.execute(f'''
-            SELECT strftime('%Y-%m', b.DateBooking),
-                   COALESCE(SUM({amount_sql}), 0)
-            FROM Bookings b
-            WHERE b.DateBooking BETWEEN ? AND ?
-              AND {amount_sql} < 0
-              {acct_filter}
-              {not_private_cond}
-            GROUP BY strftime('%Y-%m', b.DateBooking)
-        ''', amount_params + [date_from, date_to] + amount_params + type_params).fetchall()
-
-        income_map  = {row[0]: row[1] for row in income_rows}
-        private_map = {row[0]: row[1] for row in private_rows}
-        expense_map = {row[0]: row[1] for row in expense_rows}
-
-        # Build ordered month list for the full date range
-        _MONTH_ABBR = ['Jan', 'Feb', 'M\u00e4r', 'Apr', 'Mai', 'Jun',
-                       'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez']
-        cross_year = date_from[:4] != date_to[:4]
-        all_months: list[str] = []
-        cy, cm = int(date_from[:4]), int(date_from[5:7])
-        end_y, end_m = int(date_to[:4]), int(date_to[5:7])
-        while (cy, cm) <= (end_y, end_m):
-            all_months.append(f'{cy:04d}-{cm:02d}')
-            if cm == 12:
-                cy, cm = cy + 1, 1
-            else:
-                cm += 1
-
-        result = []
-        for ym in all_months:
-            month_num = int(ym[5:7])
-            label = _MONTH_ABBR[month_num - 1]
-            if cross_year:
-                label += f" '{int(ym[:4]) % 100:02d}"
-            result.append({
-                'year_month': ym,
+        income, private, expense, transfers = (sum(row[column] for row in rows) for column in range(1, 5))
+        by_month = {}
+        for month, *parts in rows:
+            if month is not None:
+                cell = by_month.setdefault(month, [0, 0, 0, 0])
+                for column, part in enumerate(parts):
+                    cell[column] += part
+        monthly = []
+        for month, label in _dashboard_month_list(date_from, date_to):
+            month_income, month_private, month_expense, month_transfers = by_month.get(month, (0, 0, 0, 0))
+            monthly.append({
+                'year_month': month,
                 'label': label,
-                'income':  float(from_minor(income_map.get(ym, 0))),
-                'private': float(from_minor(private_map.get(ym, 0))),
-                'expense': float(from_minor(expense_map.get(ym, 0))),
+                'income':    float(from_minor(month_income)),
+                'private':   float(from_minor(month_private)),
+                'expense':   float(from_minor(month_expense)),
+                'transfers': float(from_minor(month_transfers)),
             })
-
-        conn.close()
-        return result
-    def get_dashboard_totals(self, date_from: str, date_to: str,
-                             account_ids: list | None = None):
-        """Aggregate totals for the dashboard metric cards.
-
-        Enthält die Bankbewegungen (``bank``) aller gewählten Konten – auch der
-        Kasse, wenn sie über die Buchungsmaske gebucht wird – und eigenständige
-        Buchungssätze auf Kassenkonten. Das Dashboard folgt den Kontobewegungen:
-        Das Verrechnungskonto 1460 und die AfA (kein Geldfluss) zählen hier nicht.
-
-        Returns dict with:
-          income, private, expense, balance,
-          bank_count, unlinked_count
-        """
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
-        # ── Determine bank account IDs and cash COA IDs ───────────────
-        if account_ids:
-            ph = ','.join('?' * len(account_ids))
-            cursor.execute(
-                f"SELECT ID, SKRAccount, IsCash FROM Accounts WHERE ID IN ({ph})",
-                account_ids)
-        else:
-            cursor.execute("SELECT ID, SKRAccount, IsCash FROM Accounts")
-        accounts = cursor.fetchall()
-
-        # Bankbewegungen aller gewählten Konten – auch die der Kasse (Buchungsmaske, Konto = Kasse)
-        acct_ids = [a[0] for a in accounts]
-        cash_skr = [a[1] for a in accounts if a[2]]
-        cash_coa_ids = []
-        if cash_skr:
-            cursor.execute(
-                f"SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN "
-                f"({','.join('?' * len(cash_skr))})", cash_skr)
-            cash_coa_ids = [r[0] for r in cursor.fetchall()]
-
-        # ── Build booking-type filter ─────────────────────────────────
-        type_parts = []
-        type_params: list = []
-        if acct_ids:
-            ph = ','.join('?' * len(acct_ids))
-            type_parts.append(
-                f"(b.BookingType='bank' AND b.Account_ID IN ({ph}))")
-            type_params += acct_ids
-        if cash_coa_ids:
-            ph = ','.join('?' * len(cash_coa_ids))
-            type_parts.append(
-                f"(b.BookingType='entry' AND b.ParentBooking_ID IS NULL "
-                f"AND (b.COA_ID IN ({ph}) OR b.CounterCOA_ID IN ({ph})))")
-            type_params += cash_coa_ids * 2
-        # Kassen-Buchungen direkt via Account_ID (kein COA-Spiegel, z.B.
-        # manuelle Einzel-Buchungen oder Kasse ohne SKRAccount). Eine AfA-Buchung
-        # alter Form (mit Account_ID) ist kein Geldfluss und zählt hier nicht.
-        cash_acct_ids = [a[0] for a in accounts if a[2]]
-        if cash_acct_ids:
-            ph = ','.join('?' * len(cash_acct_ids))
-            if cash_coa_ids:
-                excl_ph = ','.join('?' * len(cash_coa_ids))
-                not_s2 = (
-                    f" AND NOT (COALESCE(b.COA_ID,-1) IN ({excl_ph})"
-                    f" OR COALESCE(b.CounterCOA_ID,-1) IN ({excl_ph}))")
-            else:
-                not_s2 = ""
-            type_parts.append(
-                f"(b.BookingType='entry' AND b.ParentBooking_ID IS NULL "
-                f"AND b.Account_ID IN ({ph}){not_s2} "
-                f"AND NOT EXISTS (SELECT 1 FROM AssetDepreciations d "
-                f"WHERE d.Booking_ID = b.ID))")
-            # Reihenfolge der Params muss der SQL-Reihenfolge entsprechen:
-            # erst IN ({ph}) = cash_acct_ids, dann NOT IN ({excl_ph}) = cash_coa_ids*2
-            type_params += cash_acct_ids
-            if cash_coa_ids:
-                type_params += cash_coa_ids * 2
-
-        if not type_parts:
-            conn.close()
-            return {'income': 0, 'private': 0, 'expense': 0,
-                    'balance': 0, 'bank_count': 0, 'unlinked_count': 0}
-
-        acct_filter = ' AND (' + ' OR '.join(type_parts) + ')'
-        params = [date_from, date_to] + type_params
-
-        # ── Privatentnahmen condition ─────────────────────────────────
-        private_cond = '''
-            AND (
-                (b.BookingType='bank' AND EXISTS (
-                    SELECT 1 FROM Bookings e
-                    JOIN ChartOfAccounts c
-                      ON (c.ID = e.COA_ID OR c.ID = e.CounterCOA_ID)
-                    WHERE e.ParentBooking_ID = b.ID
-                      AND c.AccountNumber >= 2100
-                      AND c.AccountNumber < 2200))
-                OR
-                (b.BookingType='entry' AND EXISTS (
-                    SELECT 1 FROM ChartOfAccounts c
-                    WHERE (c.ID = b.COA_ID OR c.ID = b.CounterCOA_ID)
-                      AND c.AccountNumber >= 2100
-                      AND c.AccountNumber < 2200))
-            )'''
-        not_private_cond = '''
-            AND NOT (
-                (b.BookingType='bank' AND EXISTS (
-                    SELECT 1 FROM Bookings e
-                    JOIN ChartOfAccounts c
-                      ON (c.ID = e.COA_ID OR c.ID = e.CounterCOA_ID)
-                    WHERE e.ParentBooking_ID = b.ID
-                      AND c.AccountNumber >= 2100
-                      AND c.AccountNumber < 2200))
-                OR
-                (b.BookingType='entry' AND EXISTS (
-                    SELECT 1 FROM ChartOfAccounts c
-                    WHERE (c.ID = b.COA_ID OR c.ID = b.CounterCOA_ID)
-                      AND c.AccountNumber >= 2100
-                      AND c.AccountNumber < 2200))
-            )'''
-
-        amount_sql, amount_params = _cash_amount_sql(cash_coa_ids)
-        amount_query_params = amount_params + params[:2] + amount_params + params[2:]
-
-        income = cursor.execute(f'''
-            SELECT COALESCE(SUM({amount_sql}), 0)
-            FROM Bookings b
-            WHERE b.DateBooking BETWEEN ? AND ?
-              AND {amount_sql} > 0 {acct_filter}
-              {not_private_cond}
-        ''', amount_query_params).fetchone()[0]
-
-        private = cursor.execute(f'''
-            SELECT COALESCE(SUM(b.Amount), 0)
-            FROM Bookings b
-            WHERE b.DateBooking BETWEEN ? AND ?
-              {acct_filter}
-              {private_cond}
-        ''', params).fetchone()[0]
-
-        expense = cursor.execute(f'''
-            SELECT COALESCE(SUM({amount_sql}), 0)
-            FROM Bookings b
-            WHERE b.DateBooking BETWEEN ? AND ?
-              AND {amount_sql} < 0 {acct_filter}
-              {not_private_cond}
-        ''', amount_query_params).fetchone()[0]
-
-        bank_count = cursor.execute(f'''
-            SELECT COUNT(*) FROM Bookings b
-            WHERE b.DateBooking BETWEEN ? AND ? {acct_filter}
-        ''', params).fetchone()[0]
-
-        # Unlinked = bank bookings without child entries
-        unlinked_params = [date_from, date_to]
-        unlinked_filter = ''
-        if acct_ids:
-            ph = ','.join('?' * len(acct_ids))
-            unlinked_filter = f' AND b.Account_ID IN ({ph})'
-            unlinked_params += acct_ids
-        unlinked = cursor.execute(f'''
-            SELECT COUNT(*) FROM Bookings b
-            WHERE b.BookingType = 'bank'
-              AND b.DateBooking BETWEEN ? AND ? {unlinked_filter}
-              AND NOT EXISTS (
-                  SELECT 1 FROM Bookings e
-                  WHERE e.ParentBooking_ID = b.ID)
-        ''', unlinked_params).fetchone()[0]
-
-        conn.close()
         return {
             'income':         float(from_minor(income)),
             'private':        float(from_minor(private)),
             'expense':        float(from_minor(expense)),
-            'balance':        float(from_minor(income + private + expense)),
-            'bank_count':     bank_count,
+            'transfers':      float(from_minor(transfers)),
+            'balance':        float(from_minor(income + private + expense + transfers)),
+            'bank_count':     len(rows),
             'unlinked_count': unlinked,
-        }
+        }, monthly
+
+    def get_dashboard_monthly(self, date_from: str, date_to: str,
+                              account_ids: list | None = None):
+        """Monthly 4-way split of bookings for the dashboard – der Monatsteil von ``get_dashboard``, dort
+        die Regel (Kontobewegungen, vier Töpfe).
+
+        Returns:
+            list  ordered chronologically, one entry per calendar month in the
+            range.  Each entry: {'year_month': 'YYYY-MM', 'label': str,
+            'income': float, 'private': float, 'expense': float, 'transfers': float}.
+        """
+        return self.get_dashboard(date_from, date_to, account_ids)[1]
+
+    def get_dashboard_totals(self, date_from: str, date_to: str,
+                             account_ids: list | None = None):
+        """Aggregate totals for the dashboard metric cards – der Summenteil von ``get_dashboard``, dort
+        die Regel (Kontobewegungen, vier Töpfe).
+
+        Returns dict with:
+          income, private, expense, transfers, balance (= Summe der vier),
+          bank_count, unlinked_count
+        """
+        return self.get_dashboard(date_from, date_to, account_ids)[0]
+
     def get_euer_data(self, date_from: str, date_to: str,
                       account_ids: list | None = None) -> list:
         """EÜR-Auswertung: Saldo pro SKR-Konto im Zeitraum.
