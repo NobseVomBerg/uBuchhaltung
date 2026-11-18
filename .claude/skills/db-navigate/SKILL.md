@@ -27,7 +27,7 @@ Kontext bei moderatem Token-Einsatz. NIE alle Module gleichzeitig laden.
 | `wiso_import.py` | WISO-CSV-Import (`import_wiso_csv`, `_import_wiso_*`) |
 | `accounts.py` | Bankkonten + Kontenrahmen/SKR (`*_chart_of_accounts`, `coa_id_*`) + DATEV-Helfer |
 | `assets.py` | Anlagen, Kategorien, AfA-Plan/-Buchung |
-| `contacts.py` | Kontakte (normalisiert), Adressen, Personen/Firmen |
+| `contacts.py` | Kontakte (normalisiert), Adressen, Personen/Firmen, Besteuerungsart der eigenen Firma (`vat_method`, `get_vat_method`, `VAT_METHODS`; nur gespeichert und angezeigt) |
 | `invoices.py` | Rechnungen, Positionen, Zahlungen, überfällig/fällig, Forderungsbuchung (`_book_receivable`, `_receivable_removal`), Entwurf löschen, Angebot → Rechnung |
 | `invoice_lock.py` | Sperre versendeter Rechnungen (`update_invoice_fields`, `check_changes`, `row_group`: die Stornorechnung ist ganz gesperrt) und Statusübergänge (`set_invoice_status`, `TRANSITIONS` – nach „storniert“ nur bei Brutto ≤ 0 (`NO_POSITIVE`), sonst `cancel_invoice`; Status, Forderung, Zahlungsumzug zur Ersatzrechnung (`_payment_move_context`) und Fassungen in einer Transaktion) |
 | `invoice_versions.py` | Berichtigen (`correct_invoice`), Fassungen (`InvoiceDocumentVersions`, `_archive_documents`) und Protokoll (`InvoiceCorrections`, `get_invoice_protocol`), `was_sent_before`, Hinweis der berichtigten Fassung (`correction_notice`), `is_iso_date` |

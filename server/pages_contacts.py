@@ -11,6 +11,7 @@ Option C – normalized structure:
 """
 import html as _html
 from db import Database
+from db.contacts import VAT_METHOD_LABELS, vat_method
 from money import fmt_eur
 
 
@@ -72,6 +73,12 @@ COUNTRIES = [
 
 ENTITY_TYPES = ('company', 'person')
 
+#: Fester Hinweis unter der Auswahl der Besteuerungsart (Formular eines eigenen Kontakts). Keine Steuerberatung: Er sagt nur,
+#: was die App tut und was nicht.
+VAT_METHOD_HINT = ('Die App bucht Erlös und Umsatzsteuer einer Rechnung mit dem Zahlungseingang – so, wie es der '
+                   'Ist-Versteuerung entspricht. Bei Soll-Versteuerung entsteht die Umsatzsteuer schon mit der Leistung; '
+                   'das bildet die App noch nicht ab. Die Angabe ändert keine Buchung.')
+
 
 def _entity_type(value, default='company'):
     """Art des Kontakts nur aus der Positivliste (``?entity=`` kommt aus der Adresse, ``EntityType``
@@ -111,6 +118,13 @@ def _legal_form_opts(current):
 def _sal_opts(current):
     return ''.join(f'<option value="{v}" {_sel(v,current)}>{v if v else "–"}</option>'
                    for v in ['', 'Herr', 'Frau', 'Divers'])
+
+def _vat_method_opts(current):
+    """Optionen der Besteuerungsart: nicht festgelegt, Ist-, Soll-Versteuerung. ``current`` ist der streng gelesene
+    gespeicherte Wert (``'ist'``, ``'soll'`` oder ``None``)."""
+    options = (('', 'nicht festgelegt'), *VAT_METHOD_LABELS.items())
+    return ''.join(f'<option value="{_html.escape(value, quote=True)}" {_sel(value, current or "")}>'
+                   f'{_html.escape(label, quote=True)}</option>' for value, label in options)
 
 
 # ── Helper: shared logo-picker JS ─────────────────────────────────────────────
@@ -184,7 +198,8 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
       17=legal_form, 18=salutation, 19=title, 20=first_name, 21=last_name,
       22=date_of_birth, 23=company_contact_id, 24=company_name_free, 25=address_line1,
       26=abbreviation, 27=type_keys, 28=job_title, 29=department,
-      30=is_primary_contact, 31=role_keys, 32=datev_consultant_no, 33=datev_client_no
+      30=is_primary_contact, 31=role_keys, 32=datev_consultant_no, 33=datev_client_no,
+      34=vat_method
     """
 
     entity_type = _entity_type(entity_type)
@@ -325,6 +340,15 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
             <td><input type="text" name="datev_client_no" value="{datev_client_no}" inputmode="numeric"
                        pattern="[1-9][0-9]{{0,4}}" maxlength="5" placeholder="1–99999"></td></tr>'''
 
+    # Besteuerungsart der Umsatzsteuer: im Formular jedes eigenen Kontakts (Firma wie Person), deshalb in beiden Sektionen
+    # der Entität eingehängt. Der gespeicherte Wert wird streng gelesen: alles außer 'ist'/'soll' zeigt „nicht festgelegt“.
+    vat_section = ''
+    if contact_type == 'own':
+        vat_section = f'''
+        <tr><td>Besteuerungsart (Umsatzsteuer):</td>
+            <td><select name="vat_method">{_vat_method_opts(vat_method(g(34, None)))}</select>
+                <small class="muted">{_esc(VAT_METHOD_HINT, quote=True)}</small></td></tr>'''
+
     # Nur die zur Entität passende Sektion rendern (Handler verträgt fehlende Felder)
     if entity_type == 'company':
         entity_section = f'''
@@ -339,6 +363,7 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
             <td><input type="text" name="buyer_route_id" value="{buyer_route_id}" placeholder="z.B. 991-ABCDE-12">
                 <small class="muted">Nur für öffentliche Auftraggeber (XRechnung B2G)</small></td></tr>
         {datev_section}
+        {vat_section}
         '''
     else:
         entity_section = f'''
@@ -365,6 +390,7 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
             <td><select name="company_contact_id">{company_opts}</select>
                 <small class="muted">Oder Freitext, falls Firma nicht in der DB:</small>
                 <input type="text" name="company_name_free" value="{company_name_free}" placeholder="Firmenname (Freitext)"></td></tr>
+        {vat_section}
         {roles_section}
         '''
 

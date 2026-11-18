@@ -1,6 +1,6 @@
 # Datenbankmodell uBuchhaltung
 
-**Stand:** Version 2.3.5 (Schema 2003)
+**Stand:** Version 2.4.0 (Schema 2004)
 **DBMS:** SQLite 3
 **Datei:** `data/users/<Name>/buch.db`
 
@@ -173,6 +173,7 @@ Nur über `load_test_seed_data()` geladen: vom Demo-Modus (ohne die Rechnungen) 
 | Phone | TEXT | | Telefon |
 | Notes | TEXT | | Notizen |
 | Logo | TEXT | | Pfad zum Firmenlogo |
+| VatMethod | TEXT | | Besteuerungsart der Umsatzsteuer (2.4.0, Schema 2004): `'ist'` (Ist-Versteuerung, vereinnahmte Entgelte) oder `'soll'` (Soll-Versteuerung, vereinbarte Entgelte); NULL = nicht festgelegt, jeder andere Wert gilt als nicht festgelegt (`db.contacts.vat_method`). Nur ein eigener Kontakt (`ContactType='own'`, Firma oder Person) trägt sie (`Database.get_vat_method`: der erste mit gültigem Wert). **Wird nur gespeichert und angezeigt** (Formular des eigenen Kontakts, Hinweis auf *Sonstiges*): Keine Buchung, EÜR, Dashboard und kein Export liest sie – Erlös und Umsatzsteuer entstehen weiter mit der Zahlung (Abschnitt 9a) |
 
 #### 3b. ContactAddresses (1:n)
 
@@ -463,9 +464,13 @@ der Stand unbekannt, die nächste Fahrt hat keinen Vorgänger. Gemeldet werden h
 ### 9a. Offene Posten (Rechnung → Zahlung)
 
 Eine Rechnung wird mit dem Status `sent` als offener Posten gebucht und erst
-bei Zahlung ertragswirksam – so sieht das Steuerbüro im DATEV-Export die noch
-offenen Posten (Sollversteuerung). Das entspricht dem Verfahren von WISO Mein
-Büro und damit auch der Struktur importierter Altdaten.
+bei Zahlung ertragswirksam: Erlös und Umsatzsteuer entstehen erst mit der
+Zahlung (Ist-Versteuerung); bis dahin steht der offene Posten auf dem
+Wartekonto, so sieht ihn auch das Steuerbüro im DATEV-Export. Das entspricht dem
+Verfahren von WISO Mein Büro und damit auch der Struktur importierter Altdaten.
+Die Besteuerungsart der eigenen Firma (`Contacts.VatMethod`, seit 2.4.0, siehe 3a)
+ändert daran nichts: Sie wird nur gespeichert und angezeigt, Soll-Versteuerung
+(Umsatzsteuer mit der Leistung) bildet die App noch nicht ab.
 
 | Zeitpunkt | Buchung | Soll → Haben |
 |---|---|---|
@@ -1379,4 +1384,4 @@ Wörterbücher, je Gruppe einmal sortiert, das Umfeld über Halbierungssuche):
 
 ---
 
-**Letzte Aktualisierung:** 15. November 2026 (Schema 2003)
+**Letzte Aktualisierung:** 18. November 2026 (Schema 2004)

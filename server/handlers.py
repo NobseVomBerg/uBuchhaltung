@@ -26,6 +26,7 @@ from .period import parse_iso_date, valid_period
 from .richtext import sanitize_richtext as _sanitize_richtext
 from db import Database
 from db import datev_keys
+from db.contacts import VAT_METHOD_ERROR, vat_method
 from db.core import fk_explained, ForeignKeyError
 from db.invoices import (InvoiceCol, InvoiceNotDeletable, QUOTE_STAYS_CONVERTED_MESSAGE,
                          QUOTE_STAYS_CONVERTED_SQL, QuoteNotConvertible, QuoteStatusLocked, is_storno_row)
@@ -2095,6 +2096,20 @@ def _datev_number_args(post_data):
     return numbers[0], numbers[1], None
 
 
+def _vat_method_arg(post_data):
+    """Besteuerungsart aus dem Formular eines eigenen Kontakts: ``(Wert, Fehler)``.
+
+    Nur das Formular eines eigenen Kontakts (Firma oder Person) führt das Feld ``vat_method``; fehlt es, ist der Wert
+    ``None`` – die Datenbank lässt die gespeicherte Angabe dann, wie sie ist. Ein leeres Feld leert sie. Sonst zählen nur
+    genau ``ist`` und ``soll``; alles andere ist ein Klartext als ``Fehler`` und nichts wird geschrieben."""
+    if 'vat_method' not in post_data:
+        return None, None
+    value = post_data['vat_method'][0]
+    if value != '' and vat_method(value) is None:
+        return None, VAT_METHOD_ERROR
+    return value, None
+
+
 def handle_add_contact(db: Database, post_data):
     """Handle adding a new contact (Option C schema)"""
     from urllib.parse import quote
@@ -2111,6 +2126,9 @@ def handle_add_contact(db: Database, post_data):
     consultant_no, client_no, number_error = _datev_number_args(post_data)
     if number_error:
         return 303, f'/masterdata/contacts?error={quote(number_error)}'
+    vat, vat_error = _vat_method_arg(post_data)
+    if vat_error:
+        return 303, f'/masterdata/contacts?error={quote(vat_error)}'
 
     # Multi-value fields (checkboxes). 'own' ist Systemtyp und mit anderen Typen
     # kombinierbar; ist es gewählt, wird es Primärtyp, die übrigen bleiben Links.
@@ -2158,6 +2176,7 @@ def handle_add_contact(db: Database, post_data):
             role_keys         = role_keys,
             datev_consultant_no = consultant_no,
             datev_client_no     = client_no,
+            vat_method          = vat,
         )
         return 303, '/masterdata/contacts'
     except Exception as e:
@@ -2184,6 +2203,9 @@ def handle_update_contact(db: Database, post_data):
     consultant_no, client_no, number_error = _datev_number_args(post_data)
     if number_error:
         return 303, f'/masterdata/contacts/edit?id={contact_id}&error={quote(number_error)}'
+    vat, vat_error = _vat_method_arg(post_data)
+    if vat_error:
+        return 303, f'/masterdata/contacts/edit?id={contact_id}&error={quote(vat_error)}'
 
     # Multi-value fields (checkboxes). 'own' ist Systemtyp (Spalte ContactType) und
     # darf mit anderen Typen kombiniert werden (z.B. eigene Firma als Kunde einer
@@ -2230,6 +2252,7 @@ def handle_update_contact(db: Database, post_data):
             role_keys         = role_keys,
             datev_consultant_no = consultant_no,
             datev_client_no     = client_no,
+            vat_method          = vat,
         )
         return 303, '/masterdata/contacts'
     except Exception as e:

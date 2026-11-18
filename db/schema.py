@@ -68,6 +68,11 @@ TAX_KEY_CORRECTIONS = (
     ('490', 'ohne Vorsteuerabzug', None, 'keine'),
 )
 
+#: Ab dieser Schema-Zahl (Version 2.4.0) trägt ein eigener Kontakt (Firma oder Person) die Besteuerungsart seiner
+#: Umsatzsteuer (``Contacts.VatMethod``: ``'ist'`` oder ``'soll'``, NULL = nicht festgelegt). Die Angabe wird nur
+#: gespeichert und angezeigt – keine Buchung, Auswertung und kein Export liest sie.
+VAT_METHOD_SCHEMA = 2004
+
 
 class SchemaMixin:
     def _column_exists(self, cursor, table, column):
@@ -167,6 +172,10 @@ class SchemaMixin:
             for column in _DATEV_NUMBER_COLUMNS:
                 self._add_column_if_missing(cursor, 'CompanyDetails', column, 'TEXT')
             self._correct_tax_keys(cursor)
+        if from_version < VAT_METHOD_SCHEMA:
+            # 2.4.0: Besteuerungsart der eigenen Firma (oder Person). Die Spalte kommt ans Ende, wie im CREATE TABLE
+            # der frischen Datenbank; der Bestand behält NULL (= nicht festgelegt) – nichts wird umgedeutet.
+            self._add_column_if_missing(cursor, 'Contacts', 'VatMethod', 'TEXT')
 
     def _correct_tax_keys(self, cursor):
         """Die Zeilen von ``TAX_KEY_CORRECTIONS`` in ``TaxKeys`` berichtigen (eine abweichende Zeile wird überschrieben,
@@ -374,6 +383,9 @@ class SchemaMixin:
                 Phone          TEXT,
                 Notes          TEXT,
                 Logo           TEXT,
+                -- Besteuerungsart der Umsatzsteuer der eigenen Firma/Person (2.4.0, Schema 2004; Reihenfolge wie das
+                -- ALTER TABLE der Migration): 'ist' oder 'soll'; NULL = nicht festgelegt
+                VatMethod      TEXT,
                 UNIQUE(CustomerNumber),
                 UNIQUE(Abbreviation)
             )

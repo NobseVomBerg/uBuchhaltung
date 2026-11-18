@@ -205,7 +205,8 @@ class _CoreMixin:
              WHERE pr.ContactID = c.ID
              ORDER BY pr.RoleKey)          AS role_keys,        -- 31
             cd.DatevConsultantNo           AS datev_consultant_no, -- 32 (2.3.0, nur die eigene Firma trägt sie)
-            cd.DatevClientNo               AS datev_client_no   -- 33
+            cd.DatevClientNo               AS datev_client_no,  -- 33
+            c.VatMethod                    AS vat_method        -- 34 (2.4.0, Rohwert: gelesen wird er mit contacts.vat_method)
         FROM Contacts c
         LEFT JOIN CompanyDetails    cd ON c.ID = cd.ContactID
         LEFT JOIN PersonDetails     pd ON c.ID = pd.ContactID
