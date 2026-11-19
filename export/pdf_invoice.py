@@ -158,11 +158,13 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     # ── Content-Stream aufbauen (seitenfähig) ────────────────────────────────
     flow = D.PageFlow([col_address, col_contact, col_bank])
 
-    meta_rows = [("Datum:", invoice_date), ("Rechnungs-Nr.:", invoice_number)]
-    if buyer_customer_number:
-        meta_rows.append(("Kunden-Nr.:", buyer_customer_number))
+    # Reihenfolge und Bezeichnungen wie im Eingabeformular (``pages_invoice``): die beiden Daten zusammen, dann die Nummern
+    meta_rows = [("Rechnungsdatum:", invoice_date)]
     if invoice[25]:
         meta_rows.append(("Leistungsdatum:", invoice[25]))
+    meta_rows.append(("Rechnungs-Nr.:", invoice_number))
+    if buyer_customer_number:
+        meta_rows.append(("Kunden-Nr.:", buyer_customer_number))
     # Eine berichtigte Fassung nennt ihre Nummer im Kopf und trägt den Hinweis vor der Positionstabelle
     # (derselbe Text steht als BT-22 in der eingebetteten E-Rechnung); er ergibt sich aus dem Stand der Datenbank
     notice = None if storno else correction_notice(db, invoice)

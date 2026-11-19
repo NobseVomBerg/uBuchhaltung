@@ -96,8 +96,9 @@ def text_right(ops, x_right, y, s, font='/F1', size=10):
 
 # ── Briefkopf (wie Eingabeformular: Logo links, Meta rechts, Titel darunter) ──
 
-# Meta-Block rechts: Label-Spalte / Wert-Spalte
-META_LABEL_X = 390
+# Meta-Block rechts: Label-Spalte / Wert-Spalte. Die Label-Spalte fasst die längste Bezeichnung („Rechnungsdatum:“, 81 pt
+# in 10 pt) mit Abstand zum Wert
+META_LABEL_X = 378
 META_VALUE_X = 470
 LOGO_TOP = 800            # Oberkante Logo / Meta-Block
 LOGO_BOX_W = 180          # Logo-Darstellung: max. Breite/Höhe in pt (Pixel >> pt

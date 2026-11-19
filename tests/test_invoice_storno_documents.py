@@ -33,6 +33,7 @@ from db.invoice_storno import STORNO_PAYMENT_TEXT
 from export.cii_invoice import NS, generate_cii
 from export.einvoice_model import build_einvoice, storno_note_text
 from export.invoice_files import generate_invoice_documents, stored_invoice_path
+from export.pdf_document import META_LABEL_X
 from export.xrechnung_invoice import XRechnungGenerator
 from tests.document_helpers import fake_smtp, read_file, stored_documents
 from tests.invoice_world import (archived_versions, build_world, columns, make_invoice, run_sql, save_open,
@@ -288,7 +289,9 @@ def test_the_reference_line_stays_inside_the_margin_even_for_a_long_number(world
     with pdfplumber.open(stored_invoice_path(world.db, storno_id, 'pdf')[0]) as pdf:
         page = pdf.pages[0]
         text = page.extract_text()
-        right_block = [w for w in page.extract_words() if 90 < w['top'] < 220 and w['x0'] >= 389]
+        # der Block beginnt an der Beschriftungsspalte – auch das erste Wort einer Zeile gehört in die Randprüfung
+        right_block = [w for w in page.extract_words() if 90 < w['top'] < 220 and w['x0'] >= META_LABEL_X - 1]
+    assert {w['text'] for w in right_block} >= {'Stornorechnung', 'zu', number}
     assert ('zu Rechnung Nr. %s vom 07.06.2026' % number in text) is one_line
     assert {'zu', 'Rechnung', 'Nr.', number, 'vom', '07.06.2026'} <= set(text.split())
     assert max(w['x1'] for w in right_block) <= 546                                     # der rechte Rand liegt bei 545 pt
