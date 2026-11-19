@@ -80,7 +80,7 @@ def PageQuote(db: Database, filters: dict = None, quote_id=None, err=None):
     open_sum = sum(x[38] for x in quotes if len(x) > 38 and x[38]
                    and len(x) > 40 and x[40] in ('draft', 'sent'))
 
-    s += '<div class="grid2Cols gridMain"><div class="gridLeftCol" style="order:1">'
+    s += '<div class="grid2Cols gridDocForm gridMain"><div class="gridLeftCol" style="order:1">'
     s += f'''
     <div class="rectRounded">
         <strong>Statistik:</strong>
@@ -93,14 +93,15 @@ def PageQuote(db: Database, filters: dict = None, quote_id=None, err=None):
     if not quotes:
         s += "<p><em>Keine Angebote gefunden.</em></p>"
     else:
-        s += "<table style='width: 100%;'>"
-        s += ("<tr><th>A-Nr.</th><th>Datum</th><th>Kunde</th><th>Netto</th>"
-              "<th>Brutto</th><th>Status</th><th>g&uuml;ltig bis</th><th>Aktionen</th></tr>")
+        s += '<table class="docList">'
+        s += ('<tr><th>A-Nr.</th><th>Datum</th><th>Kunde</th><th class="num docWide">Netto</th>'
+              '<th class="num">Brutto</th><th>Status</th><th class="docWide">g&uuml;ltig bis</th><th>Aktionen</th></tr>')
         for q in quotes:
             qid = q[0]
             q_number = _html.escape(str(q[1] or ''))
             q_date = _html.escape(str(q[2] or ''))
             buyer = _html.escape(str(q[14] or '')[:30])
+            buyer_title = _html.escape(str(q[14] or ''), quote=True)        # die Spalte kürzt, der Tooltip nennt den Namen
             sum_net = q[36]
             sum_gross = q[38]
             status = q[40]
@@ -110,11 +111,11 @@ def PageQuote(db: Database, filters: dict = None, quote_id=None, err=None):
             # dieselbe Frage wie beim Download: geprüfter Pfad mit Fallback auf das Namensschema
             pdf_exists = "true" if stored_invoice_path(db, qid, 'pdf', q)[0] else "false"
             s += "<tr>"
-            s += f"<td>{q_number}</td><td>{q_date}</td><td>{buyer}</td>"
-            s += f"<td style='text-align:right;'>{fmt_eur(sum_net)}</td>"
-            s += f"<td style='text-align:right;'><strong>{fmt_eur(sum_gross)}</strong></td>"
-            s += f"<td style='color:{color};'><strong>{label}</strong></td>"
-            s += f"<td>{valid_until or '–'}</td>"
+            s += f'<td>{q_number}</td><td>{q_date}</td><td class="docName" title="{buyer_title}">{buyer}</td>'
+            s += f'<td class="num docWide">{fmt_eur(sum_net)}</td>'
+            s += f'<td class="num"><strong>{fmt_eur(sum_gross)}</strong></td>'
+            s += f'<td class="docStatus" style="color:{color};"><strong>{label}</strong></td>'
+            s += f'<td class="docWide">{valid_until or "–"}</td>'
             s += "<td>"
             s += (f'<a href="javascript:void(0);" onclick="handleQuotePDF({qid}, {pdf_exists})" '
                   'class="action-icon" title="PDF">&#128196;</a> ')
@@ -166,7 +167,7 @@ def PageQuote(db: Database, filters: dict = None, quote_id=None, err=None):
     </script>
     '''
     s += '</div><!-- Ende gridLeftCol -->'
-    s += '<div class="gridRightCol" style="order:2; min-width:820px;">'
+    s += '<div class="gridRightCol" style="order:2">'
     s += _quote_form_html(db, quote_id)
     s += '</div><!-- Ende gridRightCol --></div><!-- Ende grid2Cols -->'
     if err:
