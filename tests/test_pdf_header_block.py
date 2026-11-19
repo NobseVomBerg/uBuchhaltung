@@ -5,12 +5,13 @@
 
 Das Formular nennt die beiden Daten zusammen und davor keine bloße „Datum“-Zeile: Rechnungsdatum, Leistungsdatum,
 Rechnungs-Nr., Kunden-Nr. Das PDF schrieb „Datum“, dann die Nummern und das Leistungsdatum am Ende. Beim Angebot stand
-„gültig bis“ hinter der Kundennummer statt davor.
+„gültig bis“ hinter der Kundennummer; in Maske und PDF steht es jetzt direkt unter dem Angebotsdatum.
 
 Gemessen wird am erzeugten PDF: die Zeilen von oben nach unten, und dass keine Bezeichnung in ihren Wert läuft
 („Rechnungsdatum:“ ist die längste und breiter als die frühere Spalte).
 """
 import io
+import re
 from types import SimpleNamespace
 
 import pdfplumber
@@ -77,7 +78,20 @@ def test_the_quote_block_follows_the_form(world):
     set_column(world.db, qid, 'ValidUntil', '2026-04-03')
     rows = header_rows(generate_quote_pdf(world.db, qid)[0])
     assert [(label, value) for label, value, _, _ in rows] == [
-        ('Datum:', '2026-03-04'), ('Angebots-Nr.:', '26A001'), ('gültig bis:', '2026-04-03'), ('Kunden-Nr.:', 'K-100')]
+        ('Datum:', '2026-03-04'), ('gültig bis:', '2026-04-03'), ('Angebots-Nr.:', '26A001'), ('Kunden-Nr.:', 'K-100')]
+
+
+def test_the_forms_name_the_rows_in_the_same_order_as_the_pdf(world):
+    """Die Maske ist der Maßstab: Wer dort eine Zeile umstellt, stellt sie auch im PDF um."""
+    from server.pages_invoice import PageInvoice
+    from server.pages_quote import PageQuote
+
+    def form_labels(html):
+        table = html.split('class="invoice-meta-table"')[1].split('</table>')[0]
+        return [label.replace('&uuml;', 'ü') for label in re.findall(r'<tr><td[^>]*>([^<]+)</td>', table)]
+
+    assert form_labels(PageInvoice(world.db)) == ['Rechnungsdatum:', 'Leistungsdatum:', 'Rechnungs-Nr.:', 'Kunden-Nr.:']
+    assert form_labels(PageQuote(world.db)) == ['Datum:', 'gültig bis:', 'Angebots-Nr.:', 'Kunden-Nr.:']
 
 
 def test_no_label_runs_into_its_value(world):

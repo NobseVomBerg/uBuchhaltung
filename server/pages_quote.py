@@ -304,8 +304,9 @@ def _quote_form_html(db: Database, quote_id=None):
             <div class="invoice-meta">
                 <table class="invoice-meta-table">'''
     s += f'<tr><td>Datum:</td><td><input type="date" id="quote_date" value="{_html.escape(str(quote_date))}" style="width:150px;"></td></tr>'
-    s += f'<tr><td>Angebots-Nr.:</td><td><input type="text" id="quote_number" value="{_html.escape(quote_number)}" style="width:150px;"></td></tr>'
+    # die beiden Daten zusammen, dann die Nummern – wie bei der Rechnung (das PDF folgt dieser Reihenfolge)
     s += f'<tr><td>g&uuml;ltig bis:</td><td><input type="date" id="valid_until" value="{_html.escape(str(valid_until or ""))}" style="width:150px;"></td></tr>'
+    s += f'<tr><td>Angebots-Nr.:</td><td><input type="text" id="quote_number" value="{_html.escape(quote_number)}" style="width:150px;"></td></tr>'
     s += '''
                     <tr><td>Kunden-Nr.:</td><td><input type="text" id="customer_number" readonly style="width:150px; background-color:#f0f0f0;"></td></tr>
                 </table>
