@@ -319,6 +319,13 @@ kein Subagent darauf:
   dieselben Kilometer stehen nie in zwei Einträgen); höchstens 100 Einträge plus Zahl. Der Hinweistext zur
   Fahrtenbuchmethode steht fest auf der Seite (keine Steuerberatung). Eine gespeicherte Einstellung je Fahrzeug gibt es
   nicht – Fahrzeuge sind Freitext an der Fahrt, eine Stammliste wäre eine Schemaänderung
+- **„Als neu kopieren“ (seit 2.5.3, Arbeitszeiten und Fahrten, wie bei der Rechnung):** Der Knopf steht nur an einem geladenen
+  Eintrag und **speichert nichts** (`type="button"`, `wtCopyAsNew`/`trCopyAsNew`): Er leert die ID im Formular, stellt es auf
+  „neu“ und setzt das Datum auf heute; angelegt wird erst mit „Speichern“ über `/worktime/add` bzw. `/trips/add` mit allen
+  Prüfungen. Arbeitszeit: alle Angaben bleiben, die Vorlage des letzten Eintrags füllt eine Kopie nicht auf (`wtIsCopy`).
+  Fahrt: Strecke, Fahrzeug, Grund, Uhrzeiten und Kilometer bleiben, eine mehrtägige behält ihre Dauer; Tachostände und Beleg
+  bleiben leer (sie gehören zu der einen Fahrt). Das frühere „Als neu speichern“ der Fahrten (legte sofort an) gibt es nicht
+  mehr. `tests/test_copy_as_new.py`
 - **Stundenzettel-PDF** (`export/pdf_worktime.py`): mehrseitig über `build_multi_page_pdf`; `page_layout(row_count)` verteilt die
   Zeilen – keine Datenzeile unter `BOTTOM_Y`, Summe und Unterschriften zusammen auf der letzten Seite (notfalls eine eigene
   Seite ohne Datenzeilen), „Seite n von m“ nur bei mehr als einer Seite. Passt alles auf eine Seite, ist das Layout das bisherige
