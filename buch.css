@@ -17,6 +17,9 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .gridLeftCol			{ overflow-y: auto; max-height: calc(100vh - 100px); }
 .gridRightCol			{ display: flex; flex-direction: column; position: sticky; }
 .grid2Cols				{ display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+/* Rechnungen und Angebote: Das Belegformular rechts bildet das Blatt nach und ist fest 820px breit, die Liste links bekommt
+   den Rest. Mit der Drittelteilung von .grid2Cols ragte das Formular über den rechten Rand (bei 1920px um 180px). */
+.gridDocForm			{ grid-template-columns: minmax(0, 1fr) 820px; }
 .grid3Cols				{ display: grid; grid-template-columns: 1fr 1fr 1fr; }
 .grid4Cols				{ display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; }
 .box2					{ grid-column: span 2; }
@@ -120,6 +123,22 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .row-open				{ background: #fff8e1; }
 
 /* Aktions-Icons in Tabellenspalten */
+/* Belegliste neben dem Formular: jede Spalte so schmal wie ihr Inhalt, der Kunde bekommt den Rest und wird gekürzt */
+.docList td, .docList th { padding-left: 5px; padding-right: 5px; white-space: nowrap; }
+.docList .num			{ text-align: right; }
+.docList td.docName		{ width: 100%; max-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.docList td.docStatus	{ white-space: normal; }
+.docList .action-icon	{ margin: 0 2px; }
+/* Bis 1700px Fensterbreite fehlt neben dem Formular der Platz für Netto (Brutto bleibt) und „gültig bis“ (.docWide). Bis 1440px
+   – ein kleiner Bildschirm, oder ein 1920er Laptop mit 150 % Skalierung: der Browser rechnet dann mit 1280px – steht das
+   Formular in seiner Breite unter der Liste statt daneben. Die Liste hat dort wieder Platz für alle Spalten und bleibt
+   niedrig (sie rollt in sich), damit das Formular ohne langes Rollen zu sehen ist. */
+@media (min-width: 1441px) and (max-width: 1700px) { .docList .docWide { display: none; } }
+@media (max-width: 1440px) {
+	.gridDocForm { grid-template-columns: minmax(0, 1fr); }
+	.gridDocForm .gridLeftCol { max-height: 38vh; }
+	.gridDocForm .gridRightCol { max-width: 820px; }
+}
 .action-icon			{ font-size: 1em; text-decoration: none; margin: 0 3px; opacity: 0.80; vertical-align: middle; }
 .action-icon:hover		{ opacity: 1; text-decoration: none; }
 .action-icon.delete-icon { color: #F44; }

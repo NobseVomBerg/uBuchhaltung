@@ -434,7 +434,7 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
     open_sum = sum(_due(inv) for inv in counted if inv[40] not in ('paid', 'cancelled'))
     storno_note = (f' | Stornorechnungen (nicht mitgezählt): {storno_count}' if storno_count else '')
 
-    s+= '<div class="grid2Cols gridMain"><div class="gridLeftCol" style="order:1">'
+    s+= '<div class="grid2Cols gridDocForm gridMain"><div class="gridLeftCol" style="order:1">'
     s+= f'''
     <div class="rectRounded">
         <strong>Statistik:</strong> 
@@ -447,8 +447,9 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
     if not invoices:
         s+= "<p><em>Keine Rechnungen gefunden.</em></p>"
     else:
-        s+= "<table style='width: 100%;'>"
-        s+= "<tr><th>RE-Nr.</th><th>Datum</th><th>Kunde</th><th>Netto</th><th>Brutto</th><th>Status</th><th>Aktionen</th></tr>"
+        s+= '<table class="docList">'
+        s+= ('<tr><th>RE-Nr.</th><th>Datum</th><th>Kunde</th><th class="num docWide">Netto</th><th class="num">Brutto</th>'
+             '<th>Status</th><th>Aktionen</th></tr>')
         storno_credits = db.get_storno_credits()        # eine Abfrage für die ganze Liste
 
         for invoice in invoices:
@@ -457,6 +458,7 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
             inv_number = _html.escape(str(invoice[1] or ''))
             inv_date = _html.escape(str(invoice[2] or ''))
             buyer_name = _html.escape(str(invoice[14] or '')[:30])  # BuyerName is now at index 14 (was 13)
+            buyer_title = _html.escape(str(invoice[14] or ''), quote=True)      # die Spalte kürzt, der Tooltip nennt den Namen
             sum_net = invoice[36]  # SumNet is at index 36 (was 34)
             sum_gross = invoice[38]  # SumGross is at index 38 (was 36)
             status = normalize_status(invoice[InvoiceCol.STATUS])
@@ -476,10 +478,10 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
             s+= f"<tr>"
             s+= f"<td>{inv_number}</td>"
             s+= f"<td>{inv_date}</td>"
-            s+= f"<td>{buyer_name}</td>"
-            s+= f"<td style='text-align: right;'>{fmt_eur(sum_net)}</td>"
-            s+= f"<td style='text-align: right;'><strong>{fmt_eur(sum_gross)}</strong></td>"
-            s+= f"<td style='color: {status_color};'><strong>{status_label}</strong></td>"
+            s+= f'<td class="docName" title="{buyer_title}">{buyer_name}</td>'
+            s+= f'<td class="num docWide">{fmt_eur(sum_net)}</td>'
+            s+= f'<td class="num"><strong>{fmt_eur(sum_gross)}</strong></td>'
+            s+= f'<td class="docStatus" style="color: {status_color};"><strong>{status_label}</strong></td>'
             action_icon  = '&#9998;'    if status == 'draft' else '&#128065;'
             action_title = 'Bearbeiten' if status == 'draft' else 'Ansehen'
             s+= f"<td>"
@@ -547,7 +549,7 @@ def PageInvoice(db: Database, filters: dict = None, invoice_id=None, copy_from=N
     '''.replace('__DELETE_QUESTION__', script_json(DELETE_DRAFT_QUESTION)
                 ).replace('__DELETE_SENT_BEFORE__', script_json(delete_question(True)))
     s+= '</div><!-- Ende gridLeftCol -->'
-    s+= '<div class="gridRightCol" style="order:2; min-width:820px;">'
+    s+= '<div class="gridRightCol" style="order:2">'
     s+= _invoice_form_html(db, invoice_id, copy_from, payment_error)
     s+= '</div><!-- Ende gridRightCol --></div><!-- Ende grid2Cols -->'
     if err:

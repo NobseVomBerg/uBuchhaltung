@@ -101,6 +101,13 @@ kein Subagent darauf:
   (immutable): **CSS-Änderungen erfordern einen Versions-Bump**, sonst
   bekommen Browser das alte Stylesheet
 - (Siehe Memory: `styling-css-guidelines.md`)
+- **Rechnungen und Angebote (seit 2.5.1):** Das Belegformular rechts ist fest 820px breit (es bildet das Blatt nach); das Raster
+  trägt diese Breite (`.gridDocForm` neben `.grid2Cols`: `minmax(0, 1fr) 820px`), nie ein Inline-`min-width` – in der
+  Drittelspalte von `.grid2Cols` ragte das Formular über den rechten Rand. Die Liste links (`.docList`) macht jede Spalte so
+  schmal wie ihren Inhalt, der Kunde bekommt den Rest (gekürzt, ganzer Name im Tooltip); von 1441 bis 1700px Fensterbreite
+  entfallen Netto und „gültig bis“ (`.docWide`), bis 1440px steht das Formular unter der niedrig gehaltenen Liste. Gerechnet
+  wird in CSS-Pixeln: Ein 1920er Bildschirm mit 150 % Skalierung zählt als 1280px – die Seite nie selbst gegen die
+  Skalierung verkleinern (`zoom`, `devicePixelRatio`). `tests/test_document_page_layout.py`
 
 ### Development-Server
 - Port 8080 kann jederzeit gekillt & neu gestartet werden
