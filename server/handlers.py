@@ -21,7 +21,7 @@ import demo
 import userctx
 from . import wiso_upload
 from .pages import Header1, Header2, Header3, Footer
-from .import_preview import match_account
+from .import_preview import file_transactions, match_account
 from .period import parse_iso_date, valid_period
 from .richtext import sanitize_richtext as _sanitize_richtext
 from db import Database
@@ -109,6 +109,55 @@ def backfill_import_text(db, trans_date, trans_amount, account_id, new_text):
     return True
 
 
+INVALID_SELECTION = 'Ungültige Auswahl'
+SELECTION_NEEDS_MIXED_ACCOUNT = ('Für ein reines Geschäftskonto wird der Auszug vollständig importiert. '
+                                 'Bitte die Vorschau verwerfen und die Datei erneut hochladen.')
+
+
+def _distinct_keys(pairs):
+    """``object_pairs_hook`` für ``json.loads``: Ein Schlüssel, der zweimal vorkommt, ist ein Fehler (statt dass der letzte gälte)."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('doppelter Schlüssel')
+        result[key] = value
+    return result
+
+
+def _import_selection(values, files):
+    """Das Formularfeld ``selection`` von ``/confirm_transactions`` lesen: ``{file_index: {Position, …}}`` – für jeden Beleg mit
+    Eintrag die Umsätze (Positionen in ``file_transactions``), die angelegt werden sollen. Fehlt das Feld oder ist es leer, ist das
+    Ergebnis ``{}`` (alle Belege werden ganz importiert).
+
+    ``None``, wenn die Auswahl ungültig ist – nichts davon wird dann benutzt: kein JSON-Objekt, ein Schlüssel, der kein
+    ``file_index`` eines Belegs dieses Imports ist (kanonische ASCII-Ganzzahl, auch nicht doppelt), ein Wert, der keine Liste ganzer
+    Zahlen (kein ``bool``, keine Kommazahl) im Bereich der Umsätze des Belegs ist, doppelte Positionen oder das Feld mehrfach."""
+    if len(values) > 1:
+        return None
+    raw = values[0] if values else ''
+    if raw == '':
+        return {}
+    try:
+        data = json.loads(raw, object_pairs_hook=_distinct_keys)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    selection = {}
+    for key, positions in data.items():
+        index = _form_int(key, 0, len(files) - 1)
+        if index is None or str(index) != key or not isinstance(positions, list):
+            return None
+        count = len(file_transactions(files[index]))
+        chosen = set()
+        for position in positions:
+            if type(position) is not int or not 0 <= position < count or position in chosen:
+                return None
+            chosen.add(position)
+        selection[index] = chosen
+    return selection
+
+
 def handle_confirm_import(db: Database, post_data):
     """Kontoauszug-Import bestätigen – einzelner Beleg oder alle.
 
@@ -117,10 +166,18 @@ def handle_confirm_import(db: Database, post_data):
     Das Konto wird pro Beleg über dessen IBAN aufgelöst, damit Auszüge
     verschiedener Konten korrekt zugeordnet werden.
 
+    Optional ``selection`` (JSON-Objekt ``{"<file_index>": [<index>, …]}``, seit 2.5.0): Für einen Beleg MIT Eintrag werden
+    nur die genannten Umsätze angelegt (``index`` = Position in ``file_transactions``, wie die Vorschau sie nennt), ein Beleg
+    OHNE Eintrag wird ganz importiert. Die Auswahl gilt nur für ein gemischt genutztes Bankkonto
+    (``Database.account_allows_selection``); sie wird vor dem ersten Schreiben geprüft – ungültig oder für ein reines Geschäftskonto
+    (oder einen Beleg ohne Konto) ist das 400, und nichts ist importiert. Jeder Umsatz wird wie bisher eingeordnet (die
+    Duplikat-Zählung rückt für jede Zeile vor, gewählt oder nicht): Duplikat → ``skipped``, ohne Datum oder Betrag →
+    ``skipped_invalid``, nicht gewählt → ``skipped_unselected``, sonst angelegt. Der Beleg gilt danach als importiert.
+
     Je Beleg nennt ``results`` ``inserted``, ``skipped`` (Duplikate) und davon
     ``skipped_upload`` (schon durch einen anderen Beleg desselben Laufs da) sowie
     ``skipped_invalid`` (Umsätze ohne Datum oder Betrag: nicht importiert, keine
-    Duplikate und nicht in ``skipped``). ``skipped_upload`` ist beim Einzelimport
+    Duplikate und nicht in ``skipped``) und ``skipped_unselected`` (nicht gewählt). ``skipped_upload`` ist beim Einzelimport
     immer 0: jeder Aufruf liest den Bestand neu.
 
     Returns (status_code, json_string).
@@ -145,6 +202,17 @@ def handle_confirm_import(db: Database, post_data):
             import_data = json.load(f)
 
         files = import_data.get('files', [])
+
+        # Die Auswahl wird geprüft, bevor irgendetwas geschrieben (oder die Datei des Imports entfernt) wird
+        selection = _import_selection(post_data.get('selection', []), files)
+        if selection is None:
+            return 400, json.dumps({'ok': False, 'error': INVALID_SELECTION})
+        accounts = db.fetch_accounts()
+        for index in selection:
+            selected_account, _name = match_account(accounts, files[index].get('iban'))
+            if selected_account is None or not db.account_allows_selection(selected_account):
+                return 400, json.dumps({'ok': False, 'error': SELECTION_NEEDS_MIXED_ACCOUNT})
+
         if not files:
             os.remove(import_file)
             return 200, json.dumps({'ok': True, 'results': [], 'all_done': True})
@@ -158,7 +226,6 @@ def handle_confirm_import(db: Database, post_data):
         else:
             target_indices = [i for i, fl in enumerate(files) if not fl.get('imported')]
 
-        accounts = db.fetch_accounts()
         results = []
         any_inserted = False
 
@@ -196,6 +263,8 @@ def handle_confirm_import(db: Database, post_data):
             skipped = 0
             skipped_upload = 0    # davon: schon durch eine andere Datei dieses Laufs da
             skipped_invalid = 0   # ohne Datum oder Betrag: nicht importierbar, kein Duplikat
+            skipped_unselected = 0  # nicht gewählt (nur bei einem Beleg mit Eintrag in ``selection``)
+            chosen = selection.get(i)   # None = der Beleg wird ganz importiert
             text_updated = 0
             dup_db_counts = {}
             dup_seen = {}
@@ -206,7 +275,7 @@ def handle_confirm_import(db: Database, post_data):
             # Buchung mehrfach bzw. mit dem falschen Text aktualisiert werden).
             backfill_texts = {}   # dup_key -> {normalisierte Texte}
             backfill_raw = {}     # dup_key -> (date, amount, account_id, text)
-            for trans in fl.get('transactions', []):
+            for position, trans in enumerate(file_transactions(fl)):
                 recipient = trans.get('recipient', '') or ''
                 text = trans.get('reference', '') or ''
                 foreign_iban = trans.get('foreign_iban', '') or ''
@@ -232,6 +301,9 @@ def handle_confirm_import(db: Database, post_data):
                     skipped += 1
                     if seen >= run_db_counts[dup_key]:
                         skipped_upload += 1
+                    continue
+                if chosen is not None and position not in chosen:
+                    skipped_unselected += 1
                     continue
 
                 db.insert_booking(
@@ -262,6 +334,7 @@ def handle_confirm_import(db: Database, post_data):
                             'inserted': inserted, 'skipped': skipped,
                             'skipped_upload': skipped_upload,
                             'skipped_invalid': skipped_invalid,
+                            'skipped_unselected': skipped_unselected,
                             'text_updated': text_updated,
                             'account_found': True, 'error': None})
 
@@ -1018,8 +1091,18 @@ def handle_delete_transaction(db: Database, booking_id):
     return 303, "/transactions"
 
 
+def _business_only_from_form(post_data):
+    """Das Kennzeichen „reines Geschäftskonto“ aus dem Bankkonto-Formular. ``None``, wenn das Formular es nicht führt (das
+    versteckte Feld ``business_only_field`` fehlt: Ein nicht angehaktes Kästchen schickt nichts, ohne dieses Feld ließe sich
+    „abgehakt“ nicht von „nicht gefragt“ unterscheiden) – der Wert bleibt dann, wie er ist; sonst ``True`` nur bei genau ``1``
+    im Feld ``business_only``."""
+    if 'business_only_field' not in post_data:
+        return None
+    return post_data.get('business_only', [''])[0] == '1'
+
+
 def handle_add_bankaccount(db: Database, post_data):
-    """Handle adding new bank account"""
+    """Handle adding new bank account. Ein neues Konto ist ein reines Geschäftskonto, solange das Formular nichts anderes sagt."""
     name = post_data["name"][0]
     holder = post_data.get("holder", [""])[0]
     iban = post_data.get("iban", [""])[0]
@@ -1029,7 +1112,9 @@ def handle_add_bankaccount(db: Database, post_data):
     skr_account = _form_int(skr_raw, 1, 99999)
     if skr_raw.strip() and skr_account is None:
         return 303, f"/masterdata/bankaccounts?error={quote(SKR_ACCOUNT_ERROR, safe='')}"
-    db.insert_account(name, holder, iban, bic, bank_name, skr_account=skr_account)
+    business_only = _business_only_from_form(post_data)
+    db.insert_account(name, holder, iban, bic, bank_name, skr_account=skr_account,
+                      business_only=True if business_only is None else business_only)
     return 303, "/masterdata/bankaccounts"
 
 def handle_link_document(db: Database, post_data):
@@ -1086,7 +1171,8 @@ def handle_update_bankaccount(db: Database, post_data):
         # Ältere Datenbanken kennen das Kassenkonto 1600 noch nicht – ohne das Konto im
         # Kontenrahmen bliebe die Umstellung einer Kasse auf 1600 wirkungslos.
         db.ensure_cash_coa()
-    db.update_account(account_id, name, holder, iban, bic, bank_name, skr_account=skr_account)
+    db.update_account(account_id, name, holder, iban, bic, bank_name, skr_account=skr_account,
+                      business_only=_business_only_from_form(post_data))
     return 303, "/masterdata/bankaccounts"
 
 def _skr_redirect(msg, type_='success'):

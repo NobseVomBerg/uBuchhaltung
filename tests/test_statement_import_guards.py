@@ -960,6 +960,10 @@ class FakeDb:
     def check_booking_exists(self, *args):
         return 0
 
+    def account_allows_selection(self, account_id):
+        # seit 2.5.0 fragt die Vorschau je Beleg, ob das Konto eine Auswahl einzelner Umsätze erlaubt (hier: nie)
+        return False
+
 
 def test_the_preview_passes_warnings_and_currency_on_and_stays_warn():
     giro_iban = {"iban": OWN_IBAN, "filename": "x.xml", "bank_code": "CAMT", "document_date": "2026-03-31"}

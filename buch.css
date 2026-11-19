@@ -138,6 +138,13 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 /* Dashboard, Übersicht: die Zeile „Überträge zwischen eigenen Konten“ (Text mit .hint gedämpft), Betrag rechtsbündig */
 .dashTransfers td + td	{ text-align: right; }
 
+/* Kontoauszug-Import, Vorschau: einzelne Umsätze auswählen (nur gemischt genutzte Konten) – Suchfeld, Zeilen mit Kästchen
+   (schmale erste Spalte, der Text bricht um statt gekürzt zu werden), vom Suchfeld ausgeblendete Zeilen */
+.selSearch				{ flex: 1 1 220px; min-width: 160px; }
+.selTable th.selCell, .selTable td.selCell	{ width: 1%; }
+.selTable td			{ overflow-wrap: anywhere; vertical-align: top; }
+.selHidden				{ display: none; }
+
 
 /* dark mode */
 @media (prefers-color-scheme: dark) {

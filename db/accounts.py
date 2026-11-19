@@ -25,6 +25,24 @@ SKR_FRAMEWORKS = {
 # 1460 ist Geldtransit (WISO bucht darüber), keine Kasse.
 DEFAULT_CASH_ACCOUNT = 1600
 
+BUSINESS_ONLY_ERROR = 'Das Kennzeichen „reines Geschäftskonto“ ist 0 oder 1.'
+
+
+def is_business_only(stored):
+    """Gilt ein gespeichertes ``Accounts.BusinessOnly`` als „reines Geschäftskonto“?
+
+    Streng gelesen: Nur die ganze Zahl 0 heißt „gemischt genutzt“. Jeder andere gespeicherte Wert – NULL, Text, 2, eine
+    Kommazahl, ein Wahrheitswert – gilt als reines Geschäftskonto: Im Zweifel wird ein Kontoauszug vollständig importiert."""
+    return not (type(stored) is int and stored == 0)
+
+
+def _business_only_value(value):
+    """Das Kennzeichen als 0 oder 1 zum Speichern – nur ``True``/``False`` und die ganzen Zahlen 0 und 1; alles andere
+    ist ``ValueError``."""
+    if isinstance(value, (bool, int)) and value in (0, 1):
+        return int(value)
+    raise ValueError(BUSINESS_ONLY_ERROR)
+
 
 class AccountsMixin:
     def fetch_chart_of_accounts(self):
@@ -168,6 +186,16 @@ class AccountsMixin:
         row = cursor.fetchone()
         conn.close()
         return row
+    def account_allows_selection(self, account_id):
+        """Dürfen beim Import eines Kontoauszugs einzelne Umsätze ausgewählt werden? Nur für ein vorhandenes Konto, das
+        keine Kasse ist und dessen ``BusinessOnly`` genau 0 trägt (gemischt genutzt); jeder andere Wert gilt als reines
+        Geschäftskonto (``is_business_only``). Rein lesend."""
+        conn = self._get_connection()
+        try:
+            row = conn.execute('SELECT IsCash, BusinessOnly FROM Accounts WHERE ID = ?', (account_id,)).fetchone()
+        finally:
+            conn.close()
+        return row is not None and not row[0] and not is_business_only(row[1])
     def count_entries_on_account_numbers(self, numbers):
         """Zahl der Buchungssätze, die eines der Konten (SKR-Nummern) als Konto oder
         Gegenkonto führen."""
@@ -191,7 +219,10 @@ class AccountsMixin:
         (Vorbild ``_ensure_tax_free_revenue_coa``). Nur aufrufen, wo eine Kasse mit
         1600 angelegt wird – nicht bei Seitenaufrufen."""
         return self._ensure_standard_coa(DEFAULT_CASH_ACCOUNT, 'Kasse', 'Umlaufvermögenskonten')
-    def insert_account(self, name, holder, number, bic, bank_name, is_cash=0, skr_account=None):
+    def insert_account(self, name, holder, number, bic, bank_name, is_cash=0, skr_account=None, business_only=True):
+        """Konto anlegen. ``business_only``: Kennzeichen „reines Geschäftskonto“ (Standard ``True``; ``False`` = gemischt
+        genutzt, beim Import lassen sich einzelne Umsätze auswählen) – nur ``True``/``False``/0/1, sonst ``ValueError``."""
+        business_only = _business_only_value(business_only)
         # Kassenkonten bekommen standardmäßig SKR 1600 (Kasse); das Konto wird bei Bedarf angelegt
         if is_cash and not skr_account:
             self.ensure_cash_coa()
@@ -199,9 +230,9 @@ class AccountsMixin:
         conn = self._get_connection()
         cursor = conn.cursor()
         sql_template = '''
-                INSERT INTO Accounts (Name, Owner, Number, BIC, BankName, IsCash, SKRAccount)
-                VALUES (?, ?, ?, ?, ?, ?, ?)'''
-        params = (name, holder, number, bic, bank_name, is_cash, skr_account)
+                INSERT INTO Accounts (Name, Owner, Number, BIC, BankName, IsCash, SKRAccount, BusinessOnly)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)'''
+        params = (name, holder, number, bic, bank_name, is_cash, skr_account, business_only)
         try:
             cursor.execute(sql_template, params)
             conn.commit()
@@ -212,14 +243,18 @@ class AccountsMixin:
             conn.rollback()
         finally:
             conn.close()
-    def update_account(self, account_id, name, holder, number, bic, bank_name, skr_account=None):
+    def update_account(self, account_id, name, holder, number, bic, bank_name, skr_account=None, business_only=None):
+        """Konto ändern. ``business_only``: ``None`` lässt das Kennzeichen „reines Geschäftskonto“ unverändert, sonst
+        ``True``/``False``/0/1 (alles andere ist ``ValueError``, nichts wird geschrieben)."""
+        business_only = None if business_only is None else _business_only_value(business_only)
         conn = self._get_connection()
         cursor = conn.cursor()
         sql_template = '''
                 UPDATE Accounts
-                SET Name = ?, Owner = ?, Number = ?, BIC = ?, BankName = ?, SKRAccount = ?
+                SET Name = ?, Owner = ?, Number = ?, BIC = ?, BankName = ?, SKRAccount = ?,
+                    BusinessOnly = COALESCE(?, BusinessOnly)
                 WHERE ID = ?'''
-        params = (name, holder, number, bic, bank_name, skr_account, account_id)
+        params = (name, holder, number, bic, bank_name, skr_account, business_only, account_id)
         try:
             cursor.execute(sql_template, params)
             conn.commit()

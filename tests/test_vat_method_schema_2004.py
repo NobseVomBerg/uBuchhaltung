@@ -156,6 +156,10 @@ def test_existing_rows_stay_untouched_and_the_new_value_is_empty(stock):
     after = _contents(stock)
     assert all(row[-1] is None for row in after['Contacts'])                      # überall NULL – nichts wird umgedeutet
     assert [row[:-1] for row in after['Contacts']] == before['Contacts']          # jede Spalte jeder Zeile
+    # Das Öffnen stellt bis auf den heutigen Stand um: Schema 2005 (2.5.0) hängt ``Accounts.BusinessOnly`` an (überall 1 =
+    # reines Geschäftskonto), geprüft in ``test_business_only_schema_2005.py``
+    assert all(row[-1] == 1 for row in after['Accounts'])
+    after['Accounts'] = [row[:-1] for row in after['Accounts']]
     for table, rows in before.items():
         if table != 'Contacts':
             assert after[table] == rows, table                                    # alle anderen Tabellen

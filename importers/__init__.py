@@ -8,7 +8,10 @@ Aufbau:
 * ``base``          – gemeinsames Datenmodell (BankStatement, Transaktion)
 * ``pdftext``       – Extraktions-Helfer für PDF-Belege
 * ``plausibility``  – zentrale Inhaltsprüfung
-* ``vbr``, ``dkb``  – je Bank ein eigenständiges Modul
+* ``vbr``, ``dkb``  – je Bank ein eigenständiges Modul (PDF)
+* ``camt``, ``dkb_csv`` – Dateiformate, die nicht über ``IMPORTERS`` laufen: Der Upload-Handler liest sie nur im Speicher
+  (``camt.parse_upload``, ``dkb_csv.parse_csv`` – Umsatzliste der DKB als CSV) und prüft das Ergebnis mit
+  ``check_statement``
 
 Eine neue Bank anzubinden heißt: ein Modul mit einer
 :class:`~importers.base.StatementImporter`-Klasse schreiben und sie unten in

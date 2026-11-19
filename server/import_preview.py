@@ -10,6 +10,13 @@ die die Transaktionsseite inline anzeigt.
 """
 
 
+def file_transactions(file_data):
+    """Die Umsätze eines Belegs in der Reihenfolge, in der Vorschau UND Import (``handlers.handle_confirm_import``) sie
+    durchlaufen. Die Position darin ist der ``index`` eines Umsatzes – damit nennt das Feld ``selection`` von
+    ``/confirm_transactions`` genau die Umsätze, die die Vorschau gezeigt hat. Die EINE Stelle, die diese Liste liest."""
+    return file_data.get("transactions") or []
+
+
 def _norm_iban(iban):
     """IBAN für den Vergleich normalisieren (Leerzeichen weg, Großschreibung)."""
     return (iban or "").replace(" ", "").upper()
@@ -74,9 +81,14 @@ def build_import_preview(db, import_data):
                                currency, warnings, transactions: [...]}, ... ] }
 
     Returns { "files": [ {file_index, filename, bank_code, iban, document_date,
-                          currency, account_id, account_name, total, new_count, dup_count,
-                          dup_upload_count, dup_upload_differs_count, status,
+                          currency, account_id, account_name, selectable, total, new_count,
+                          dup_count, dup_upload_count, dup_upload_differs_count, status,
                           warnings, problems, transactions} ] }.
+
+    Jeder Umsatz trägt seinen ``index`` (Position in ``file_transactions``) und ``importable``
+    (weder Duplikat noch unvollständig – nur ein solcher Umsatz lässt sich auswählen).
+    ``selectable``: Das Konto ist gefunden und lässt eine Auswahl einzelner Umsätze zu
+    (``Database.account_allows_selection``: gemischt genutztes Konto, keine Kasse).
 
     dup_count zählt alle möglichen Duplikate; dup_upload_count davon die, die
     nicht im Bestand stecken, sondern in einer anderen Datei desselben Uploads
@@ -111,7 +123,7 @@ def build_import_preview(db, import_data):
     for idx, f in enumerate(import_data.get("files", [])):
         iban = f.get("iban")
         account_id, account_name = match_account(accounts, iban)
-        txns = f.get("transactions", []) or []
+        txns = file_transactions(f)
 
         new_count = 0
         dup_count = 0
@@ -124,7 +136,7 @@ def build_import_preview(db, import_data):
         new_here = {}    # Schlüssel -> davon neu (landet nach der Datei in planned)
         file_texts = {}  # Schlüssel -> Verwendungszwecke dieser Datei (landen in prior_texts)
 
-        for t in txns:
+        for index, t in enumerate(txns):
             date = t.get("date")
             amount = t.get("amount")
             recipient = t.get("recipient") or ""
@@ -171,6 +183,8 @@ def build_import_preview(db, import_data):
                 new_count += 1
 
             row = {
+                "index": index,
+                "importable": not is_dup and not incomplete,
                 "date": date,
                 "recipient": recipient,
                 "reference": reference,
@@ -209,6 +223,7 @@ def build_import_preview(db, import_data):
             "currency": f.get("currency"),
             "account_id": account_id,
             "account_name": account_name,
+            "selectable": account_id is not None and db.account_allows_selection(account_id),
             "total": len(txns),
             "new_count": new_count,
             "dup_count": dup_count,

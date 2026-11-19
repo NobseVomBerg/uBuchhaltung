@@ -73,6 +73,12 @@ TAX_KEY_CORRECTIONS = (
 #: gespeichert und angezeigt – keine Buchung, Auswertung und kein Export liest sie.
 VAT_METHOD_SCHEMA = 2004
 
+#: Ab dieser Schema-Zahl (Version 2.5.0) trägt ein Bankkonto das Kennzeichen „reines Geschäftskonto“
+#: (``Accounts.BusinessOnly``: 1 = reines Geschäftskonto, 0 = gemischt genutzt). Nur auf einem gemischt genutzten
+#: Konto lassen sich beim Import eines Kontoauszugs einzelne Umsätze auswählen; auf einem reinen Geschäftskonto
+#: wird der Auszug vollständig importiert. Das Kennzeichen ändert keine Buchung und keine Auswertung.
+BUSINESS_ONLY_SCHEMA = 2005
+
 
 class SchemaMixin:
     def _column_exists(self, cursor, table, column):
@@ -176,6 +182,11 @@ class SchemaMixin:
             # 2.4.0: Besteuerungsart der eigenen Firma (oder Person). Die Spalte kommt ans Ende, wie im CREATE TABLE
             # der frischen Datenbank; der Bestand behält NULL (= nicht festgelegt) – nichts wird umgedeutet.
             self._add_column_if_missing(cursor, 'Contacts', 'VatMethod', 'TEXT')
+        if from_version < BUSINESS_ONLY_SCHEMA:
+            # 2.5.0: Kennzeichen „reines Geschäftskonto“ am Bankkonto. Die Spalte kommt ans Ende, wie im CREATE TABLE der
+            # frischen Datenbank; der Bestand bekommt überall 1 (= reines Geschäftskonto: die Importe laufen wie bisher) –
+            # nichts wird umgedeutet.
+            self._add_column_if_missing(cursor, 'Accounts', 'BusinessOnly', 'INTEGER NOT NULL DEFAULT 1')
 
     def _correct_tax_keys(self, cursor):
         """Die Zeilen von ``TAX_KEY_CORRECTIONS`` in ``TaxKeys`` berichtigen (eine abweichende Zeile wird überschrieben,
@@ -365,6 +376,10 @@ class SchemaMixin:
                 BankName TEXT,
                 IsCash INTEGER DEFAULT 0,
                 SKRAccount INTEGER,
+                -- Reines Geschäftskonto (2.5.0, Schema 2005; Reihenfolge wie das ALTER TABLE der Migration): 1 = reines
+                -- Geschäftskonto (Kontoauszüge werden vollständig importiert), 0 = gemischt genutzt (beim Import lassen
+                -- sich einzelne Umsätze auswählen)
+                BusinessOnly INTEGER NOT NULL DEFAULT 1,
                 UNIQUE(Name)
             )
         ''')

@@ -154,6 +154,9 @@ def test_the_column_positions_of_the_row_reader_match_the_schema(stock):
 _ADDED_BY_2003 = {'Bookings': 1, 'CompanyDetails': 2}
 _ADDED_BY_2004 = {'Contacts': 1}
 _ADDED_LATER = {**_ADDED_BY_2003, **_ADDED_BY_2004}
+#: Schema 2005 (2.5.0): ``Accounts`` bekommt ``BusinessOnly`` am Ende – beim Bestand überall 1 (= reines Geschäftskonto),
+#: nicht NULL – ``test_business_only_schema_2005.py``. Hier die Werte, die die Spalten tragen.
+_ADDED_BY_2005 = {'Accounts': (1,)}
 _CORRECTED_BY_2003 = ('100', '120', '121', '122', '490')
 
 
@@ -168,7 +171,11 @@ def test_existing_rows_stay_untouched_and_the_new_values_are_empty(stock):
     assert [row[:50] for row in after['Invoices']] == before_invoices           # jede Spalte jeder Zeile
     assert all(row[50:] == (None,) * 5 for row in after['Invoices'])
     for table, rows in before_rest.items():
-        if table in _ADDED_LATER:                                               # die Spalten ab 2.3.0 am Ende, leer
+        if table in _ADDED_BY_2005:                                             # Schema 2005: am Ende, überall 1
+            values = _ADDED_BY_2005[table]
+            assert all(row[-len(values):] == values for row in after[table]), table
+            after[table] = [row[:-len(values)] for row in after[table]]
+        elif table in _ADDED_LATER:                                             # die Spalten ab 2.3.0 am Ende, leer
             added = _ADDED_LATER[table]
             assert all(row[-added:] == (None,) * added for row in after[table]), table
             after[table] = [row[:-added] for row in after[table]]
