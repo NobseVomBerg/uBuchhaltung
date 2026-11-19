@@ -9,12 +9,20 @@ werden – wie auf der Seite – alle Tage gelistet, auch ohne Eintrag; das pass
 eine A4-Seite. Reicht der Platz nicht, läuft die Tabelle auf Folgeseiten weiter: Kopf, Logo
 und Tabellenkopf stehen auf jeder Seite, bei mehr als einer Seite auch „Seite n von m“. Unter
 der Tabelle stehen Summe und zwei Unterschriftenblöcke, zusammen auf der letzten Seite.
+
+Die Info-Spalte nennt die Art des Tages (Urlaub, Feiertag …), auf Wunsch den Arbeitsort
+(``with_location``), die Pausenzeiten und auf Wunsch die Notiz (``with_notes``). Was nicht in
+eine Zeile passt, bricht in der Spalte um (``info_lines``, gemessen mit den Breiten der
+eingebetteten Schrift) – die Zeile wird entsprechend höher, und die Seitenverteilung rechnet mit
+Textzeilen statt mit Tabellenzeilen.
 """
 import datetime
+import functools
 import os
+import re
 from db import Database
 from .pdf_core import (escape_pdf_string, load_image_xobject, build_multi_page_pdf, logo_display_size,
-                       resolve_logo_path)
+                       resolve_logo_path, to_winansi_bytes)
 from server.pages_worktime import (compute_hours, compute_minutes, crosses_midnight, format_hours,
                                    workdays_label, KIND_LABELS, WEEKDAYS)
 
@@ -52,21 +60,113 @@ SIGNATURE_COMPANY_DROP = 24    # Firma unter der Linie: die tiefste Zeile des Bl
 FOOTER_HEIGHT = SUM_GAP + SIGNATURE_GAP + SIGNATURE_LINE_DROP + SIGNATURE_COMPANY_DROP
 
 
-def page_layout(row_count):
+INFO_WIDTH = PAGE_RIGHT_X - COL_X['info']     # Breite der Info-Spalte bis zum rechten Rand
+MAX_INFO_LINES = 8                            # höchstens so viele Textzeilen je Eintrag; danach steht „…“
+LINES_PER_PAGE = int((TABLE_TOP - BOTTOM_Y) // ROW_H) + 1
+_WORD = re.compile(r'\S+')
+
+
+def page_layout(rows):
     """Datenzeilen je Seite → Liste mit der Zeilenzahl jeder Seite (mindestens eine Seite).
 
-    Keine Datenzeile steht unter ``BOTTOM_Y``. Summenzeile und Unterschriftenblock stehen
-    zusammen auf der letzten Seite; reicht der Platz unter der letzten Datenzeile dafür nicht,
-    folgt noch eine Seite ohne Datenzeilen."""
-    per_page = int((TABLE_TOP - BOTTOM_Y) // ROW_H) + 1
-    counts = []
-    while row_count > per_page:
-        counts.append(per_page)
-        row_count -= per_page
-    counts.append(row_count)
-    if TABLE_TOP - row_count * ROW_H - FOOTER_HEIGHT < BOTTOM_Y:
+    ``rows`` ist die Zahl der Datenzeilen (jede eine Textzeile hoch) oder die Liste ihrer Höhen in
+    Textzeilen (ein Eintrag mit umbrochener Info-Spalte ist mehrere hoch). Eine Datenzeile wird nie
+    über zwei Seiten geteilt, und keine Textzeile steht unter ``BOTTOM_Y``. Summenzeile und
+    Unterschriftenblock stehen zusammen auf der letzten Seite; reicht der Platz unter der letzten
+    Datenzeile dafür nicht, folgt noch eine Seite ohne Datenzeilen."""
+    heights = [1] * rows if isinstance(rows, int) else [max(1, min(int(h), LINES_PER_PAGE)) for h in rows]
+    counts, used, count = [], 0, 0
+    for height in heights:
+        if used + height > LINES_PER_PAGE:
+            counts.append(count)
+            used = count = 0
+        used += height
+        count += 1
+    counts.append(count)
+    if TABLE_TOP - used * ROW_H - FOOTER_HEIGHT < BOTTOM_Y:
         counts.append(0)
     return counts
+
+
+@functools.lru_cache(maxsize=1)
+def _glyph_widths():
+    """Breite jedes druckbaren Zeichens (cp1252) der eingebetteten Schrift in 1/1000 Geviert – aus der Schrift selbst
+    (``pdfa.FONT_FILES['/F1']``), nicht aus der Helvetica-Tabelle: Dort fehlen Zeichen (ein Geviertstrich ist fast doppelt so
+    breit wie der Ersatzwert), und einzelne weichen ab (``ß``, ``·``)."""
+    from fontTools.ttLib import TTFont
+    from . import pdfa
+    font = TTFont(os.path.join(os.path.dirname(os.path.abspath(pdfa.__file__)), 'fonts', pdfa.FONT_FILES['/F1'][0]))
+    units, cmap, metrics = font['head'].unitsPerEm, font.getBestCmap(), font['hmtx']
+    widths = {}
+    for code in range(32, 256):
+        try:
+            char = bytes([code]).decode('cp1252')
+        except UnicodeDecodeError:
+            continue
+        glyph = cmap.get(ord(char))
+        if glyph:
+            widths[char] = metrics[glyph][0] * 1000.0 / units
+    return widths
+
+
+def printed_text(text):
+    """Der Text, wie er im PDF steht: Zeichen außerhalb von WinAnsi ersetzt (``to_winansi_bytes``), ein unbekanntes
+    als ``?``. Umbrochen und gemessen wird dieser Text – sonst zählte ein Pfeil als ein Zeichen und stünde als drei da."""
+    return to_winansi_bytes(str(text or '')).decode('cp1252')
+
+
+def info_width(text, size=ROW_SIZE):
+    """Breite eines gedruckten Textes in pt (Zeichen ohne bekannte Breite zählen ein ganzes Geviert)."""
+    widths = _glyph_widths()
+    return sum(widths.get(char, 1000.0) for char in text) * size / 1000.0
+
+
+def info_lines(text, max_width=INFO_WIDTH, size=ROW_SIZE, max_lines=MAX_INFO_LINES):
+    """Den Text der Info-Spalte in Zeilen brechen: am Wortrand, ein Wort breiter als die Spalte mitten im Wort.
+    Leerraum und Zeilenumbrüche zählen als ein Leerzeichen. Nach ``max_lines`` Zeilen ist Schluss; die letzte endet
+    dann mit „…“ – nichts fällt weg, ohne dass man es sieht. Ein leerer Text hat keine Zeile.
+
+    Die Laufzeit hängt nur von den Zeilen ab, die gedruckt werden, nicht von der Länge des Textes: Jedes Zeichen wird
+    höchstens zweimal gemessen, und nach ``max_lines`` + 1 Zeilen hört das Lesen auf (die Notiz ist ein unbegrenztes
+    Textfeld – ein Megabyte ohne Leerzeichen darf den Server nicht beschäftigen)."""
+    widths = _glyph_widths()
+    scale = size / 1000.0
+    space = widths.get(' ', 1000.0) * scale
+    lines, current, current_width = [], '', 0.0
+    for match in _WORD.finditer(printed_text(text)):
+        word, position = match.group(), 0
+        while position < len(word) and len(lines) <= max_lines:
+            # so viel vom Rest des Worts, wie hinter dem bisherigen Inhalt der Zeile noch Platz hat
+            available = max_width - current_width - (space if current else 0.0)
+            used, stop = 0.0, position
+            while stop < len(word):
+                step = widths.get(word[stop], 1000.0) * scale
+                if used + step > available:
+                    break
+                used += step
+                stop += 1
+            if stop == len(word):                    # der Rest passt in die Zeile
+                piece = word[position:]
+                current_width += used + (space if current else 0.0)
+                current = f'{current} {piece}' if current else piece
+                position = stop
+            elif current:                            # passt nicht mehr: neue Zeile, derselbe Rest noch einmal
+                lines.append(current)
+                current, current_width = '', 0.0
+            else:                                    # allein breiter als die Spalte: mitten im Wort brechen
+                stop = max(stop, position + 1)
+                lines.append(word[position:stop])
+                position = stop
+        if len(lines) > max_lines:
+            break
+    if current:
+        lines.append(current)
+    if len(lines) > max_lines:
+        last = lines[max_lines - 1]
+        while last and info_width(last + ' …', size) > max_width:
+            last = last[:-1]
+        lines = lines[:max_lines - 1] + [last.rstrip() + ' …']
+    return lines
 
 
 def _fmt_hours(h):
@@ -131,8 +231,11 @@ def _head_ops(image, person_name, own_name, period_label):
 
 
 def generate_worktime_pdf(db: Database, person_id, date_from, date_to, with_notes=False,
-                          store=True):
+                          store=True, with_location=False):
     """Stundenzettel-PDF erzeugen. Returns (pdf_bytes, pdf_path) oder (None, None).
+
+    ``with_notes`` druckt die Notiz jedes Eintrags in die Info-Spalte, ``with_location`` den
+    Arbeitsort eines Arbeitstags (wie die Liste der Seite ihn unter „Info“ zeigt).
 
     ``store=False`` legt nichts auf der Platte ab (so liefert der Download unter ``/worktime/pdf``,
     ein GET, den Stundenzettel aus, ohne zu schreiben); ``pdf_path`` nennt dann nur, wo die Datei
@@ -193,7 +296,25 @@ def generate_worktime_pdf(db: Database, person_id, date_from, date_to, with_note
             total_minutes += minutes
             workdays.add(d)
 
-    def render_row(d, e, y):
+    def row_info(e):
+        """Die Textzeilen der Info-Spalte: Art (Urlaub/Feiertag), auf Wunsch der Arbeitsort,
+        Pausenzeiten, auf Wunsch die Notiz – umbrochen statt abgeschnitten."""
+        if e is None:
+            return []
+        kind = e[3] or 'work'
+        pause_text = e[11] if len(e) > 11 else ''
+        parts = []
+        if kind != 'work':
+            parts.append(KIND_LABELS.get(kind, kind))
+        if with_location and kind == 'work' and e[9]:
+            parts.append(str(e[9]))
+        if pause_text:
+            parts.append('Pause ' + str(pause_text))
+        if with_notes and e[10]:
+            parts.append(str(e[10]))
+        return info_lines(' · '.join(part.strip() for part in parts if part.strip()))
+
+    def render_row(d, e, y, info):
         row = []
         row += _cell(COL_X['wd'], y, WEEKDAYS[d.weekday()])
         row += _cell(COL_X['date'], y, d.strftime('%d.%m.'))
@@ -203,31 +324,23 @@ def generate_worktime_pdf(db: Database, person_id, date_from, date_to, with_note
         start = e[5] or ''
         end = e[6] or ''
         pause = e[7] or 0
-        pause_text = e[11] if len(e) > 11 else ''
         hours = compute_hours(start, end, pause) if kind == 'work' else 0.0
-
-        # Info-Spalte: Art (Urlaub/Feiertag) + Pausenzeiten + optional Notiz
-        parts = []
-        if kind != 'work':
-            parts.append(KIND_LABELS.get(kind, kind))
-        if pause_text:
-            parts.append('Pause ' + pause_text)
-        if with_notes and e[10]:
-            parts.append(e[10])
-        info = ' · '.join(parts)[:70]
 
         row += _cell(COL_X['start'], y, start)
         row += _cell(COL_X['end'], y, f'{end} (+1)' if crosses_midnight(start, end) else end)
         row += _cell(COL_X['pause'], y, str(pause) if (kind == 'work' and pause) else '')
         hours_txt = _fmt_hours(hours) if _work_minutes(e) > 0 else ''
         row += _cell(0, y, hours_txt, right_x=COL_X['hours'] + 18)
-        if info:
-            row += _cell(COL_X['info'], y, info, gray=True)
+        for number, line in enumerate(info):
+            row += _cell(COL_X['info'], y - number * ROW_H, line, gray=True)
         return row
 
     # ── Seiten (Content-Stream: Text in BT/ET, Linien danach) ────────────────
     today_str = datetime.date.today().strftime('%d.%m.%Y')
-    counts = page_layout(len(rows))
+    # nie höher als eine Seite – dieselbe Grenze, mit der ``page_layout`` rechnet
+    infos = [row_info(e)[:LINES_PER_PAGE] for _, e in rows]
+    heights = [max(1, len(info)) for info in infos]
+    counts = page_layout(heights)
     pages = []
     first = 0
     for number, count in enumerate(counts, start=1):
@@ -235,9 +348,10 @@ def generate_worktime_pdf(db: Database, person_id, date_from, date_to, with_note
         line_ops = []
 
         y = TABLE_TOP
-        for d, e in rows[first:first + count]:
-            ops += render_row(d, e, y)
-            y -= ROW_H
+        for index in range(first, first + count):
+            d, e = rows[index]
+            ops += render_row(d, e, y, infos[index])
+            y -= ROW_H * heights[index]
         first += count
 
         if number == len(counts):

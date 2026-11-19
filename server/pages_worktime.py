@@ -376,7 +376,8 @@ def _worktime_form(db, person_id, date_from, date_to, customers, edit_id, qstr):
         <input type="hidden" name="to" value="{_html.escape(date_to, quote=True)}">
         <div class="rowWithObjects">
             <button type="button" class="coloredButton btn-sm bg-indigo" onclick="wtOpenPdf()" title="Angezeigten Zeitraum als PDF">📄 PDF</button>
-            <label><input type="checkbox" id="wtPdfNotes"> Mit Notiz erstellen</label>
+            <label title="Die Notiz jedes Eintrags steht in der Info-Spalte des Stundenzettels"><input type="checkbox" id="wtPdfNotes" checked> Mit Notiz</label>
+            <label title="Der Arbeitsort jedes Arbeitstags steht in der Info-Spalte des Stundenzettels"><input type="checkbox" id="wtPdfLocation" checked> Mit Arbeitsort</label>
         </div>
         <div class="rowWithObjects" id="wtEditButtons" style="display:none;">
             <input type="submit" id="wtSubmit" value="💾 Speichern" class="coloredButton btn-sm bg-green">
@@ -477,7 +478,9 @@ function wtOnPauseText() {
 }
 function wtOpenPdf() {
     let url = WT_DATA.pdfBase;
-    if (document.getElementById('wtPdfNotes').checked) url += '&notes=1';
+    // beide Schalter sind beim Laden an; die Adresse nennt immer beide (der Server druckt nur, was sie verlangt)
+    url += '&notes=' + (document.getElementById('wtPdfNotes').checked ? '1' : '0');
+    url += '&location=' + (document.getElementById('wtPdfLocation').checked ? '1' : '0');
     // PDF inline in neuem Tab anzeigen (statt die Seite zu ersetzen)
     window.open(url + '&inline=1', '_blank');
 }

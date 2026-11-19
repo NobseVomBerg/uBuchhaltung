@@ -1218,9 +1218,11 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     return
                 date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
                 with_notes = qs.get('notes', ['0'])[0] in ('1', 'true', 'on')
+                with_location = qs.get('location', ['0'])[0] in ('1', 'true', 'on')
                 disposition = 'inline' if qs.get('inline') else 'attachment'
                 pdf_bytes, filename = handlers.handle_worktime_pdf(db, person_id, date_from, date_to,
-                                                                   with_notes=with_notes)
+                                                                   with_notes=with_notes,
+                                                                   with_location=with_location)
                 if pdf_bytes:
                     self.send_response(200)
                     self.send_header("Content-type", "application/pdf")

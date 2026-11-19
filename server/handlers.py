@@ -4115,7 +4115,7 @@ def handle_update_worktime(db: Database, post_data):
     return 303, _wt_redirect(person_id, date_from, date_to)
 
 
-def handle_worktime_pdf(db: Database, person_id, date_from, date_to, with_notes=False):
+def handle_worktime_pdf(db: Database, person_id, date_from, date_to, with_notes=False, with_location=False):
     """PDF-Stundenzettel für den Download erzeugen. Returns (pdf_bytes, filename) oder (None, None).
 
     Der Download ist ein GET: Er liefert den Stundenzettel aus, legt aber nichts auf der
@@ -4123,7 +4123,8 @@ def handle_worktime_pdf(db: Database, person_id, date_from, date_to, with_notes=
     from export.pdf_worktime import generate_worktime_pdf
     try:
         pdf_bytes, pdf_path = generate_worktime_pdf(db, int(person_id), date_from, date_to,
-                                                    with_notes=with_notes, store=False)
+                                                    with_notes=with_notes, store=False,
+                                                    with_location=with_location)
         if pdf_bytes is None:
             return None, None
         filename = os.path.basename(pdf_path) if pdf_path else f"Stundenzettel_{person_id}.pdf"
