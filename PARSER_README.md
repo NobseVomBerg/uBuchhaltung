@@ -5,7 +5,7 @@
 > Markeninhabern oder den Herstellern. Die Namen dienen allein der Bezeichnung der
 > unterstützten Import- und Exportformate.
 
-## 1. Kontoauszüge (PDF und CAMT.053)
+## 1. Kontoauszüge (PDF, CAMT.053 und CSV)
 
 ### Installation
 
@@ -33,6 +33,7 @@ die Bankeigenheiten stecken je in einem eigenen Modul unter `importers/`:
 | `importers/plausibility.py` | Zentrale Inhaltsprüfung (siehe unten) |
 | `importers/vbr.py` | Volksbank Rottweil (PDF) |
 | `importers/dkb.py` | DKB (PDF) |
+| `importers/dkb_csv.py` | DKB (CSV, Umsatzliste – neues und altes Format; nur im Speicher gelesen, nicht über `IMPORTERS`) |
 | `importers/__init__.py` | Registry `IMPORTERS`, `find_importer()`, `parse_statement()` |
 
 Die Spalten einer importierten Bewegung (`CANONICAL_FIELDS`) sind bewusst
@@ -84,7 +85,7 @@ Empfängers markiert.
 
 ### Funktionsweise
 
-1. **Upload**: PDF über Web-Oberfläche hochladen (Drag & Drop oder Dateiauswahl)
+1. **Upload**: PDF, CAMT.053 (XML/ZIP) oder CSV (Umsatzliste der DKB) über die Web-Oberfläche hochladen (Drag & Drop oder Dateiauswahl)
 2. **Automatische Analyse**: das zuständige Importmodul erkennt den Beleg selbst
    - IBAN zur Kontoidentifikation
    - Einzelne Transaktionen (Datum, Empfänger, Betrag, fremde IBAN)
@@ -112,6 +113,21 @@ Betrag am selben Tag; das ist nur ein Hinweis, der Import bleibt beim Maximum.
 Ein Umsatz **ohne Datum oder Betrag** legt der Import nie an: Die Vorschau zählt ihn
 weder als neu noch als Duplikat („ohne Datum/Betrag – wird nicht importiert“), die
 Meldung nach dem Import nennt die so übersprungenen Umsätze.
+
+**Einzelne Umsätze auswählen (seit 2.5.0, alle Formate):** Bei einem Konto, das nicht als „Reines Geschäftskonto“
+gekennzeichnet ist (Stammdaten → Bankkonten; `Accounts.BusinessOnly` genau 0, nie bei einer Kasse), zeigt die Vorschau je Zeile ein
+Kästchen – angehakt ist jede importierbare Zeile, Duplikate und unvollständige Zeilen sind deaktiviert –, dazu ein Suchfeld
+(Datum, Empfänger, Zweck, Betrag, ohne Rücksicht auf Groß-/Kleinschreibung), „Alle“ und „Keine“ (sie wirken auf die sichtbaren Zeilen)
+und den Zähler „n von m ausgewählt“; der Knopf heißt „Importieren (n ausgewählt)“. Auf einem reinen Geschäftskonto (der
+Standard, auch für jeden Bestand und jeden unlesbaren Wert) wird der Auszug vollständig importiert. `/confirm_transactions`
+nimmt das Formularfeld `selection` (JSON-Objekt `{"<file_index>": [<index>, …]}`, `index` = Position des Umsatzes in der Liste
+des Belegs, wie die Vorschau sie nennt): Für einen Beleg mit Eintrag werden nur diese Umsätze angelegt, ein Beleg ohne Eintrag wird
+ganz importiert. Die Auswahl wird vor dem ersten Schreiben streng geprüft (ungültig: 400 „Ungültige Auswahl“; Konto nicht
+gefunden oder ohne Auswahl: 400 „Für ein reines Geschäftskonto wird der Auszug vollständig importiert. Bitte die Vorschau
+verwerfen und die Datei erneut hochladen.“; nichts ist dann
+importiert). Die Duplikat-Zählung ändert sich nicht: Jede Zeile wird wie sonst eingeordnet – Duplikat → übersprungen,
+ohne Datum/Betrag → `skipped_invalid`, nicht gewählt → `skipped_unselected`, sonst angelegt. Der Beleg gilt danach als
+importiert; die nicht gewählten Umsätze sind verworfen.
 
 Grenzen (ohne Bankreferenz im Datenmodell nicht lösbar, siehe `docs/aufgaben.md`):
 - Eine CAMT-Sammelbuchung wird in Einzelumsätze zerlegt, die PDF zeigt eine
@@ -152,6 +168,46 @@ denselben Weg wie PDF: `BankStatement` → Vorschau → Bestätigung.
   Hinweis `balance` in der Vorschau; fehlt ein Saldo, `no_balance`.
 * Sicherheit: DTD/Entities werden abgelehnt, ZIP nur im Speicher mit Grenzen
   für Anzahl/Größe/Kompressionsverhältnis. Beträge nur als `Decimal`.
+
+### DKB-Umsatzliste (CSV)
+
+`importers/dkb_csv.py` liest die Umsatzliste der DKB als CSV – im neuen und im alten Format, erkannt an der Datei selbst, nie
+konfiguriert. Upload von `.csv` läuft wie bei CAMT nur im Speicher (nichts landet im Ablageordner); eine Datei, die keine
+DKB-Umsatzliste ist, wird nicht als Beleg abgelegt, sondern als Warnung gemeldet.
+
+* **Neu:** Vorspann `"Girokonto";"DE…"`, `"Zeitraum:"`, `"Kontostand vom …"`; Kopf `Buchungsdatum;Wertstellung;Status;
+  Zahlungspflichtige*r;Zahlungsempfänger*in;Verwendungszweck;Umsatztyp;IBAN;Betrag (€);…`; Datum `TT.MM.JJ`; UTF-8 mit BOM. Die
+  Gegenseite steht in zwei Spalten (bei einer Belastung der Zahlungsempfänger, sonst der Zahlungspflichtige).
+* **Alt:** Vorspann `"Kontonummer:";"DE…"`, `"Von:"`, `"Bis:"`, `"Kontostand vom …"`; Kopf `Buchungstag;Wertstellung;Buchungstext;
+  Auftraggeber / Begünstigter;Verwendungszweck;Kontonummer;BLZ;Betrag (EUR);…`; Datum `TT.MM.JJJJ`; oft Windows-1252; eine Variante mit
+  Komma statt Semikolon, eine mit schon beim Schreiben verlorenem Umlaut in „Begünstigter“. Die Gegenseite steht in einer Spalte.
+* **Erkennung nach Bedeutung:** Die Kopfzeile ist die erste Zeile, deren erste Zelle `Buchungsdatum` oder `Buchungstag` heißt;
+  ihr Trennzeichen wird an ihr abgelesen. Die Spalten werden an ihrer Bedeutung gefunden (Pflicht: Betrag, Verwendungszweck und
+  Gegenseite – beide Seiten oder eine einzelne Spalte, nie nur eine der beiden Seiten; IBAN der Gegenseite und Status, wo
+  vorhanden), nie am genauen Namen oder an einem Umlaut – eine umbenannte Spalte ergänzt in `MEANS` ein Wort. Fehlt eine
+  Pflichtspalte, nennt die Meldung ihre Bedeutung, und nichts wird importiert. Kodierung: BOM → striktes UTF-8 → Windows-1252.
+  Erkannt wird allein an der Kopfzeile: Die Liste einer anderen Bank mit derselben Kopfzeile wird genauso gelesen. Nennt der
+  Name der Betragsspalte eine andere Währung als Euro („Betrag (USD)“), wird nichts importiert.
+* **Beträge:** `money.parse_grouped_amount` – der Punkt ist **immer** ein Tausendertrenner (`-15.000` ist −15000: die DKB lässt bei
+  runden Beträgen die Nachkommastellen weg). Das ist bewusst anders als `money.parse_amount` (WISO-Textexport, PDF-Auszüge), das einen
+  Punkt ohne Komma als Dezimalpunkt liest (`1.500` ist dort 1,5). Leerraum gilt nur am Rand und vor einem angehängten `€`/`EUR`
+  (`12 34` ist kein Betrag). Nie `float()` auf Dateitext.
+* **Zeilen:** Datum zu ISO; ein Jahr vor 1990 oder ein Datum mehr als 31 Tage nach heute gilt als nicht lesbar. Still übergangen
+  wird nur eine Fußzeile (kein Datum und nichts in der Betragsspalte); fehlt einer Zeile das Datum oder der lesbare Betrag, wird
+  sie nicht importiert und ergibt `unparsed`. **Verrutschte Zeilen** – mehr Zellen als die Kopfzeile (ein Trennzeichen ohne
+  Anführung im Text, ein Betrag ohne Anführung in einer Komma-Datei) oder zu wenige für Betrag, Zweck und Gegenseite – ergeben
+  ebenfalls `unparsed`: In ihrer Betragsspalte steht etwas anderes (etwa eine Bankleitzahl), und das wird nie als Betrag
+  gelesen. Status „Vorgemerkt …“ (nur neues Format) wird übergangen
+  (`skipped_status`). Die IBAN des Kontos steht im Vorspann (fehlt sie: `no_iban`, die Vorschau zeigt „Konto nicht gefunden“);
+  die Datei nennt keinen Anfangssaldo – `no_balance` steht immer am Beleg.
+* **`document_date`** bleibt leer: Die Prüfung `daterange` misst ein Buchungsdatum am Belegdatum, eine Umsatzliste hat aber keines –
+  sie umfasst einen beliebigen Zeitraum und wird später exportiert –, und ein Jahresdreher kann bei einem Datum mit Jahr nicht
+  entstehen. Ohne Belegdatum entfällt die Prüfung, statt bei jedem Jahresexport Zeilen zu Unrecht zu melden.
+* **Grenzen** (die Datei kommt aus einem Upload): höchstens 20 MB, höchstens 100 000 Zeilen hinter der Kopfzeile, die Kopfzeile in den
+  ersten 100 Zeilen, höchstens 100 Spalten und höchstens 2000 Trennzeichen in einer Zeile der Datei; die Meldungen sind feste Sätze und nennen keinen Feldwert der Datei (Spaltennamen
+  der Kopfzeile stehen höchstens auf 40 Zeichen gekürzt darin).
+* Geprüft nur an erfundenen Beispielen beider Formate, nicht an einer echten Datei (`docs/aufgaben.md`). Weitere Banken als CSV
+  gibt es nicht.
 
 ### Erweiterung für weitere Banken
 

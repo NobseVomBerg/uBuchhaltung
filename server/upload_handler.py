@@ -35,6 +35,28 @@ def _collect_camt(name, content, statement_files, other_files):
         statement_files.append(data)
 
 
+def _collect_csv(name, content, statement_files, other_files):
+    """DKB-Umsatzliste (CSV) auswerten und wie einen PDF-Kontoauszug einreihen – nur im Speicher, nie auf der Platte.
+
+    Was keine DKB-Umsatzliste ist oder sich nicht lesen lässt, wird nicht als Beleg abgelegt, sondern als Warnung gemeldet:
+    mit dem festen Satz der Importschicht (``DkbCsvError``), nie mit dem Text einer anderen Ausnahme (der steht im Log)."""
+    from importers import check_statement
+    from importers.dkb_csv import UNREADABLE, DkbCsvError, parse_csv
+    try:
+        statement = parse_csv(content)
+    except DkbCsvError as e:
+        other_files.append({'filename': name, 'status': 'warning', 'error': str(e)})
+        return
+    except Exception:
+        import traceback
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
+        other_files.append({'filename': name, 'status': 'warning', 'error': UNREADABLE})
+        return
+    data = check_statement(statement).as_dict()
+    data['filename'] = name
+    statement_files.append(data)
+
+
 def handle_file_upload(request_handler, db):
     """Multipart-Upload von Belegen / Kontoauszügen verarbeiten.
 
@@ -74,6 +96,11 @@ def handle_file_upload(request_handler, db):
         # CAMT.053 (XML / ZIP): nur im Speicher lesen, nie auf Platte ablegen
         if lower_name.endswith(('.xml', '.zip')):
             _collect_camt(safe_name, content, statement_files, other_files)
+            continue
+
+        # DKB-Umsatzliste (CSV): ebenfalls nur im Speicher lesen, nie auf Platte ablegen
+        if lower_name.endswith('.csv'):
+            _collect_csv(safe_name, content, statement_files, other_files)
             continue
 
         # Datei temporär speichern

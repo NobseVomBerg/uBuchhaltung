@@ -1,6 +1,6 @@
 # Datenbankmodell uBuchhaltung
 
-**Stand:** Version 2.4.0 (Schema 2004)
+**Stand:** Version 2.5.0 (Schema 2005)
 **DBMS:** SQLite 3
 **Datei:** `data/users/<Name>/buch.db`
 
@@ -138,8 +138,12 @@ Nur über `load_test_seed_data()` geladen: vom Demo-Modus (ohne die Rechnungen) 
 | BankName | TEXT | | Name der Bank |
 | IsCash | INTEGER | DEFAULT 0 | 1=Kasse, 0=Bankkonto |
 | SKRAccount | INTEGER | | Zugeordnete SKR-Kontonummer (z.B. 1810) |
+| BusinessOnly | INTEGER | NOT NULL, DEFAULT 1 | Reines Geschäftskonto (2.5.0, Schema 2005, letzte Spalte): 1 = reines Geschäftskonto (Kontoauszüge werden vollständig importiert), 0 = gemischt genutzt (beim Import lassen sich einzelne Umsätze auswählen). Streng gelesen (`db.accounts.is_business_only`, `Database.account_allows_selection`): nur die ganze Zahl 0 heißt „gemischt“, jeder andere gespeicherte Wert gilt als reines Geschäftskonto, die Kasse nie als gemischt. Der Bestand bekam bei der Umstellung überall 1. **Ändert keine Buchung und keine Auswertung** |
 
 **Business Logic:**
+- Das Kennzeichen `BusinessOnly` steuert allein die Oberfläche des Kontoauszug-Imports: Nur bei einem gemischt genutzten Konto
+  zeigt die Vorschau Kästchen je Umsatz, und `/confirm_transactions` nimmt dann das Feld `selection` an (sonst 400); gepflegt wird
+  es im Formular Stammdaten → Bankkonten (Kästchen „Reines Geschäftskonto“, Standard angehakt; nicht bei der Kasse)
 - Konto "Kasse" wird automatisch beim Start erstellt, neu angelegt mit `SKRAccount` 1600
   (SKR04 „Kasse“, bei Bedarf in den Kontenrahmen nachgelegt). Eine vorhandene Kasse
   bleibt unverändert – mit oder ohne SKR-Nummer, auch mit 1460 (Verrechnungskonto)
@@ -1384,4 +1388,4 @@ Wörterbücher, je Gruppe einmal sortiert, das Umfeld über Halbierungssuche):
 
 ---
 
-**Letzte Aktualisierung:** 18. November 2026 (Schema 2004)
+**Letzte Aktualisierung:** 19. November 2026 (Schema 2005)

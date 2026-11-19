@@ -107,7 +107,7 @@ Anmeldung). Vorher eine Datensicherung anlegen – Ablauf und Rückweg unter
 | **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR) |
 | **Rechnungen & Angebote** | PDF als hybride E-Rechnung (ZUGFeRD/Factur-X, EN 16931) und XRechnung, E-Mail-Versand, Nummernkreise, Stornorechnung als eigener Beleg (auf Wunsch mit Entwurf der neuen Rechnung), offene Posten, Mahnwesen, Kleinunternehmerregelung (der Hinweis auf § 19 UStG steht automatisch im Dokument) |
 | **Anlagen** | Anlagenverzeichnis mit AfA (linear, degressiv, GWG) |
-| **Import & Export** | Kontoauszüge im Bankformat CAMT.053 (XML oder ZIP, jede Bank) oder als PDF (DKB, Volksbank Rottweil), [Datenübernahme aus WISO Mein Büro](#datenübernahme-aus-wiso-mein-büro), DATEV-Buchungsstapel |
+| **Import & Export** | Kontoauszüge im Bankformat CAMT.053 (XML oder ZIP, jede Bank), als PDF (DKB, Volksbank Rottweil) oder als CSV (Umsatzliste der DKB) – bei einem gemischt genutzten Konto lassen sich einzelne Umsätze auswählen, [Datenübernahme aus WISO Mein Büro](#datenübernahme-aus-wiso-mein-büro), DATEV-Buchungsstapel |
 | **Außerdem** | Arbeitszeiten mit Stundenzettel, Fahrtenbuch, ein Benutzer ohne Anmeldung oder mehrere mit Login, Datensicherung, Dark Mode |
 
 Alle Funktionen ausführlich: [Funktionen im Detail](#funktionen-im-detail).
@@ -198,7 +198,7 @@ direkt aus der Datenbankdatei oder aus den Textexporten:
 
 Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen.
 
-> WISO, MeinBüro und DATEV sind Marken ihrer jeweiligen Inhaber. uBuchhaltung ist ein
+> WISO, MeinBüro, DATEV und die genannten Banken sind Marken ihrer jeweiligen Inhaber. uBuchhaltung ist ein
 > unabhängiges Projekt und steht in keiner Verbindung zu den Markeninhabern oder
 > dem Hersteller. Die Namen dienen allein der Bezeichnung der unterstützten
 > Importformate.
@@ -221,7 +221,9 @@ Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen
   DATEV-Nummern der eigenen Firma): Zurück auf 2.2.x nur über die Sicherung. Anders als die früheren Umstellungen ändert 2.3.0 den
   **DATEV-Export**: Er schreibt andere BU-Schlüssel (siehe unten). Auch das Update auf 2.4.0 (Besteuerungsart an der
   eigenen Firma, eine neue Spalte) legt die Sicherung an – zurück auf 2.3.x nur über sie; es ändert keine Buchung, keine
-  Auswertung und keinen Export.
+  Auswertung und keinen Export. Dasselbe gilt für das Update auf 2.5.0 (Kennzeichen „Reines Geschäftskonto“ am
+  Bankkonto, eine neue Spalte; alle bestehenden Konten gelten danach als reine Geschäftskonten): Sicherung vor der Umstellung,
+  zurück auf 2.4.x nur über sie; es ändert keine Buchung und keine Auswertung.
   **Sicherung zurückspielen** (die Oberfläche bietet das nicht an): uBuchhaltung beenden, die Datei
   `backup/<Datum>_vor_<Version>_buch.db` im Datenordner des Nutzers (`data/users/<Name>/`, im Container
   das eingebundene Datenverzeichnis) über `buch.db` kopieren – liegen daneben Dateien `buch.db-journal`,
@@ -257,9 +259,13 @@ Zentrale Verwaltung aller Buchungstransaktionen:
 - **Zwei Buchungstypen**:
   - `bank` – echte Bankbewegung (Import aus Kontoauszug oder WISO-Tabellen-Export)
   - `entry` – Buchungssatz (aus WISO-Original-Export oder manuell)
-- **Kontoauszug-Import**: CAMT.053 (XML/ZIP, alle Banken) oder PDF (DKB, Volksbank Rottweil) –
-  Vorschau mit Duplikat-Erkennung und Saldo-Prüfung (auch für PDF, soweit der Auszug seine Salden nennt), erst dann
-  übernehmen. Ein CAMT-Auszug, der nicht auf Euro lautet, wird nicht übernommen. Duplikate erkennt
+- **Kontoauszug-Import**: CAMT.053 (XML/ZIP, alle Banken), PDF (DKB, Volksbank Rottweil) oder CSV (Umsatzliste der DKB) –
+  Vorschau mit Duplikat-Erkennung und Saldo-Prüfung (auch für PDF, soweit der Auszug seine Salden nennt; eine CSV nennt
+  keinen Anfangssaldo, das zeigt die Vorschau an), erst dann übernehmen. Bei einem **gemischt genutzten Konto** (in den
+  Stammdaten des Bankkontos den Haken „Reines Geschäftskonto“ entfernen) lassen sich in der Vorschau einzelne Umsätze
+  auswählen – mit Suchfeld sowie „Alle“ und „Keine“; auf einem reinen Geschäftskonto (der Standard) wird der Auszug
+  vollständig importiert, einzelne private Umsätze bucht man als Privatentnahme oder -einlage.
+  Ein CAMT-Auszug, der nicht auf Euro lautet, wird nicht übernommen. Duplikate erkennt
   der Import an Konto, Datum und Betrag – auch wenn derselbe Auszug mehrfach im Upload steckt;
   weicht der Text eines solchen Umsatzes ab, weist die Vorschau darauf hin. Umsätze ohne Datum
   oder Betrag legt der Import nicht an.
@@ -291,6 +297,9 @@ Zentrale Verwaltung aller Buchungstransaktionen:
 ### 3. Konten-Verwaltung (`/masterdata/bankaccounts`)
 - Übersicht aller Bank-/Kassenkonten (Name, Inhaber, IBAN, BIC, BankName)
 - SKR-Kontozuordnung (`SKRAccount`) für automatische Doppik-Erkennung
+- Kennzeichen „Reines Geschäftskonto“ (Standard: angehakt; nicht bei der Kasse): Auf einem reinen Geschäftskonto werden
+  Kontoauszüge vollständig importiert; ohne den Haken (gemischt genutztes Konto) lassen sich beim Import einzelne Umsätze
+  auswählen. Das Kennzeichen ändert keine Buchung und keine Auswertung
 - Kasse als Sonderform (automatisch beim Start angelegt, nicht löschbar); eine neue Kasse führt das Kassenkonto 1600 (SKR04)
 - Anlegen, Bearbeiten, Löschen – ein Konto, auf das Buchungen, Rechnungen oder Angebote verweisen, lässt sich nicht löschen (die Seite nennt, was daran hängt)
 
@@ -513,7 +522,7 @@ Standard für Host und Port: `smtp.gmail.com`, 587.
 
 ### Kontoauszug-Import
 
-CAMT.053 kommt ohne zusätzliche Pakete aus. Die PDF-Parser werden durch
+CAMT.053 und die CSV-Umsatzliste der DKB kommen ohne zusätzliche Pakete aus. Die PDF-Parser werden durch
 `pip install -r requirements.txt` (pdfplumber) automatisch aktiviert. Optionales OCR für gescannte PDFs: in `requirements.txt` die
 auskommentierten Zeilen (`pytesseract`, `pdf2image`) einkommentieren.
 
@@ -529,8 +538,9 @@ auskommentierten Zeilen (`pytesseract`, `pdf2image`) einkommentieren.
 5. Optional: Daten aus WISO Mein Büro übernehmen (`/miscellaneous`)
 
 ### Tägliche Nutzung
-1. Kontoauszüge hochladen unter `/transactions` – CAMT.053-Datei der Bank (XML/ZIP) oder
-   PDF (DKB, Volksbank Rottweil); Vorschau prüfen, dann bestätigen
+1. Kontoauszüge hochladen unter `/transactions` – CAMT.053-Datei der Bank (XML/ZIP),
+   PDF (DKB, Volksbank Rottweil) oder CSV (Umsatzliste der DKB); Vorschau prüfen (bei einem gemischt genutzten Konto
+   die gewünschten Umsätze auswählen), dann bestätigen
 2. Buchungen prüfen und kontieren unter `/transactions` (🪄 Vorschlag aus der Historie)
 3. Rechnungen erstellen, PDF und E-Rechnung erzeugen, versenden
 4. Regelmäßig sichern: `/miscellaneous` → Datensicherung
@@ -575,6 +585,7 @@ uBuchhaltung/
 │   ├── camt.py                #   CAMT.053 (XML/ZIP, alle Banken)
 │   ├── vbr.py                 #   Volksbank Rottweil (PDF)
 │   ├── dkb.py                 #   DKB (PDF)
+│   ├── dkb_csv.py             #   DKB (CSV, Umsatzliste – neues und altes Format)
 │   └── wiso_fdb/              #   Lesen der WISO-Datenbankdateien (Firebird, reines Python)
 ├── export/                    # Ausgabe-/Export-Generatoren (Package)
 │   ├── pdf_core.py            #   Gemeinsame PDF-Primitive (Builder, Logo, Escaping)

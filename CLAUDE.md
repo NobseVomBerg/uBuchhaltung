@@ -763,7 +763,7 @@ kein Subagent darauf:
   Sessions liegen dort in `uebergaben/`, nicht in `data/` (gitignored, für
   Cloud-Sessions unsichtbar). Fehlt es, nicht danach fragen
 
-### Kontoauszug-Import (CAMT.053 + PDF)
+### Kontoauszug-Import (CAMT.053 + PDF + CSV)
 - Ein Weg für alle Formate: Parser in `importers/` liefern `BankStatement` (`base.py`) →
   `server/upload_handler.py` → Vorschau `server/import_preview.py` (Duplikate, Warnungen) → bestätigen
 - CAMT (`importers/camt.py`): Storno-Richtung = `CdtDbtInd` (ISO 20022); Saldoprüfung exakt in
@@ -788,6 +788,48 @@ kein Subagent darauf:
   auf, kein Befund. Nicht gemessen: Soll-Saldo, einseitiger Auszug, Januar-Auszug mit Dezember-Buchungen (`docs/aufgaben.md`).
   Reine Strichzeilen (Rahmenzeichen U+2500–U+257F, seit 2.3.13) gehören zu keiner Buchung – neuere Auszüge rahmen „neuer
   Kontostand“ damit ein
+- **DKB-CSV (seit 2.5.0, `importers/dkb_csv.py`):** Die Umsatzliste der DKB, zwei Formate – neu (`Buchungsdatum`, Gegenseite in zwei
+  Spalten, Datum `TT.MM.JJ`, UTF-8 mit BOM) und alt (`Buchungstag`, eine Spalte, `TT.MM.JJJJ`, oft Windows-1252, auch mit Komma statt
+  Semikolon und mit verlorenem Umlaut) –, **erkannt an der Datei, nie konfiguriert**: Kopfzeile = erste Zeile, deren erste Zelle
+  `Buchungsdatum`/`Buchungstag` heißt (ihr Trennzeichen wird an ihr gezählt, nicht an den Beträgen); die Spalten werden **nach
+  Bedeutung** gefunden (`MEANS`), nie am genauen Namen oder an einem Umlaut – Pflicht sind Betrag, Verwendungszweck und Gegenseite
+  (beide Seiten oder eine einzelne Spalte, nie nur eine der beiden Seiten); die Liste einer anderen Bank mit derselben Kopfzeile
+  wird genauso gelesen, eine andere Währung als Euro im Namen der Betragsspalte abgelehnt. **Beträge nur über `money.parse_grouped_amount`:** der
+  Punkt ist IMMER ein Tausendertrenner (die DKB lässt bei runden Beträgen die Nachkommastellen weg: `-15.000` ist −15000) – bewusst
+  anders als `parse_amount` (`1.500` ist dort 1,5); Leerraum gilt nur am Rand und vor `€`/`EUR` (`12 34` ist kein Betrag); nicht
+  angleichen, nie `float()`. Befunde am Beleg: `no_balance` immer (kein
+  Anfangssaldo in der Datei), `skipped_status` (Status „Vorgemerkt …“ übergangen), `unparsed` (Datum oder Betrag nicht lesbar: nicht
+  importiert; still übergangen wird nur die Fußzeile – kein Datum UND nichts in der Betragsspalte), `no_iban` (setzt
+  `check_statement`; die IBAN steht im Vorspann). **Eine verrutschte Zeile wird nie gelesen** (`unparsed`): mehr Zellen als die
+  Kopfzeile – auch leere, ein Trennzeichen ohne Anführung schiebt sonst die Bankleitzahl in die Betragsspalte – oder zu wenige für
+  Betrag, Zweck und Gegenseite. Ein Datum vor 1990 (`MIN_YEAR`) oder mehr als 31 Tage nach heute gilt als nicht lesbar. Diese
+  Prüfungen nicht lockern – ein falscher Betrag wiegt schwerer als eine Zeile, die der Nutzer nachträgt.
+  `document_date` bleibt `None`: Ohne Belegdatum entfällt `daterange` – eine Umsatzliste hat keines, und jedes andere gäbe bei
+  einem Jahresexport Fehlalarme. Nur im Speicher gelesen (`upload_handler._collect_csv`, nie auf die Platte): höchstens 20 MB, 100 000
+  Zeilen hinter der Kopfzeile, Kopfzeile in den ersten 100 Zeilen, 100 Spalten, 2000 Trennzeichen je Zeile der Datei
+  (`_lines`: bricht ab, bevor das csv-Modul Millionen Zellen anlegt); `csv.field_size_limit` wird nie umgestellt. Was keine
+  DKB-Umsatzliste ist oder unlesbar bleibt, ist eine Warnung (`other_files`, `status: 'warning'`) und nie ein abgelegter Beleg; die
+  Meldungen (`DkbCsvError`) sind feste Sätze und nennen **keinen Feldwert der Datei** (Spaltennamen der Kopfzeile höchstens auf 40
+  Zeichen gekürzt). Nur an erfundenen Beispielen geprüft, nicht an einer echten Datei (`docs/aufgaben.md`)
+- **Einzelne Umsätze auswählen (seit 2.5.0, alle Formate, nur bei einem gemischt genutzten Konto):** Die Vorschau nennt je Umsatz `index`
+  (Position in `import_preview.file_transactions` – DIE eine Stelle, die die Liste liest; Vorschau und Import durchlaufen dieselbe
+  Liste in derselben Reihenfolge) und `importable` (weder Duplikat noch unvollständig), je Beleg `selectable`. **Gekoppelt an das
+  Kennzeichen am Bankkonto** (`Accounts.BusinessOnly`, Schema 2005): `selectable` = Konto gefunden UND
+  `Database.account_allows_selection` (streng gelesen: nur die ganze Zahl 0 = gemischt genutzt; **Standard und jeder andere
+  gespeicherte Wert – NULL, Text, 2 – ist „reines Geschäftskonto“, die Kasse nie**; `db.accounts.is_business_only`). Ohne Auswahl
+  (reines Geschäftskonto) sieht die Karte aus wie vorher; mit ihr: Kästchen je Zeile (Standard: jede importierbare angehakt, Duplikate und
+  unvollständige deaktiviert), Suchfeld, „Alle“/„Keine“ (nur auf sichtbare, auswählbare Zeilen), „Importieren (n ausgewählt)“, bei 0
+  gesperrt. `/confirm_transactions` nimmt das Feld `selection` (JSON-Objekt `{"<file_index>": [<index>, …]}`): ein Beleg MIT Eintrag
+  legt nur die genannten Umsätze an, einer OHNE wird ganz importiert. **Streng und vor dem ersten Schreiben geprüft** (`_import_selection`):
+  kein JSON-Objekt, doppelter Schlüssel, ein Schlüssel, der keine kanonische ASCII-Ganzzahl und kein `file_index` des Imports ist, ein Wert, der
+  keine Liste ganzer Zahlen (kein `bool`, keine Kommazahl) im Bereich der Umsätze ist, doppelte Positionen, das Feld mehrfach → `400`
+  „Ungültige Auswahl“; ein Eintrag für einen Beleg ohne gefundenes Konto oder ohne erlaubte Auswahl (auch für einen anderen Beleg
+  desselben Imports) → `400` „Für ein reines Geschäftskonto wird der Auszug vollständig importiert. Bitte die Vorschau verwerfen
+  und die Datei erneut hochladen.“. Nichts ist dann importiert. **Die
+  Duplikat-Zählung bleibt, wie sie war:** Jede Zeile wird eingeordnet (`dup_seen`/`dup_db_counts` rücken für jede Zeile vor, gewählt
+  oder nicht), danach Duplikat → `skipped`, unvollständig → `skipped_invalid`, nicht gewählt → `skipped_unselected`, sonst angelegt;
+  ein gewähltes Duplikat wird nie doppelt angelegt, der Text-Backfill bleibt. Der Beleg gilt danach als importiert (nicht gewählte
+  Umsätze sind verworfen). Der Client schickt `selection` nur für Karten mit Kästchen
 - Valuta, EndToEndId, Mandatsreferenz, Gläubiger-ID haben im Modell noch keinen Platz (Schemaänderung offen)
 - **Duplikate** = Konto + Buchungsdatum + Betrag, ohne Text (`check_booking_exists`: CAMT und PDF
   schreiben den Text verschieden, der WISO-Tabellenexport überschreibt ihn), zählbasiert **je Datei**:
@@ -861,7 +903,8 @@ kein Subagent darauf:
   *Sonstiges*)
 - **Textimport** (`import_wiso_csv`): Kodierung in der Reihenfolge BOM → strenges UTF-8 → cp1252 (cp1252 dekodiert fast alles
   und darf deshalb nie zuerst stehen). **Beträge aus Dateien liest nur `money.parse_amount`** (seit 2.3.12; nie `float()`: das
-  nähme `nan`, `inf`, `1e5`, `1_000` und Ziffern anderer Schriften an): nur ASCII, deutsch `1.234,56` (Tausenderpunkte nur in
+  nähme `nan`, `inf`, `1e5`, `1_000` und Ziffern anderer Schriften an; Ausnahme: die DKB-CSV liest `money.parse_grouped_amount`, in der
+  der Punkt immer ein Tausendertrenner ist – siehe *Kontoauszug-Import*): nur ASCII, deutsch `1.234,56` (Tausenderpunkte nur in
   Dreiergruppen) oder ohne Komma mit Punkt als Dezimalpunkt (`1.234` bleibt 1,234 – die bisherige Lesart), höchstens
   30 Zeichen und betragsmäßig unter einer Billion (`MAX_PARSED_AMOUNT`), sonst der Zeilenfehler „Ungültiger Betrag“. Der
   Betrag bleibt `Decimal`; der Steuerbetrag kommt aus `_included_tax`: exakt auf dem Brutto der Datei, Brutto × Satz /
@@ -1410,7 +1453,7 @@ kein Subagent darauf:
   Versionsstelle und `PRAGMA user_version` ziehen automatisch mit; PATCH dabei auf 0.
   Der neue Migrationsschritt prüft gegen die neue Zahl (`if from_version < 2001:`)
 - In der Datenbank steht `SCHEMA_VERSION = MAJOR × 1000 + SCHEMA_STEP` (2.0.x → 2000,
-  2.1.x → 2001, 2.2.x → 2002, 2.3.x → 2003, 2.4.x → 2004); Datenbanken aus 1.x tragen 0 bis 6. Eine Datenbank mit höherer Zahl
+  2.1.x → 2001, 2.2.x → 2002, 2.3.x → 2003, 2.4.x → 2004, 2.5.x → 2005); Datenbanken aus 1.x tragen 0 bis 6. Eine Datenbank mit höherer Zahl
   als das Programm wird nicht geöffnet (`db.SchemaTooNewError`) – nie zurückstempeln
 - Sonstige Änderungen ohne DB-Bezug: nur `PATCH` +1; große Umbrüche: `MAJOR` +1,
   `SCHEMA_STEP` und `PATCH` auf 0
@@ -1430,6 +1473,16 @@ kein Subagent darauf:
 - Migration auf 2.4.0 (`VAT_METHOD_SCHEMA`, Schema 2004): hängt `Contacts.VatMethod` (Text, NULL = nicht festgelegt) als letzte Spalte
   an – nach der Sicherung und in EINER Transaktion. Der Bestand behält überall NULL, nichts wird umgedeutet; frische und migrierte
   Datenbank haben dieselbe Spaltenreihenfolge. Die Kontakt-Abfrage (`_CONTACTS_QUERY`) führt sie als Index 34
+- Migration auf 2.5.0 (`BUSINESS_ONLY_SCHEMA`, Schema 2005): hängt `Accounts.BusinessOnly` (`INTEGER NOT NULL DEFAULT 1`: 1 = reines
+  Geschäftskonto, 0 = gemischt genutzt) als letzte Spalte an – nach der Sicherung und in EINER Transaktion. **Der Bestand bekommt überall 1**
+  (alle Konten gelten als reine Geschäftskonten, die Importe laufen wie bisher), nichts wird umgedeutet; frische und migrierte Datenbank
+  haben dieselbe Spaltenreihenfolge. `Accounts`-Zeilen werden überall positionsbasiert gelesen (`fetch_accounts`/`get_account_by_id`:
+  `IsCash` Index 6, `SKRAccount` Index 7) – die neue Spalte hängt hinten an (Index 8), nichts verschiebt sich. Geschrieben wird nur 0 oder
+  1 (`insert_account(business_only=True)`, `update_account(business_only=None)`: `None` = unverändert; sonst `ValueError`), gelesen
+  streng (`is_business_only`, `account_allows_selection`). Gepflegt im Formular Stammdaten → Bankkonten (Kästchen „Reines Geschäftskonto“,
+  Standard angehakt; bei der Kasse nicht): Ein nicht angehaktes Kästchen schickt nichts, deshalb sagt das versteckte Feld
+  `business_only_field=1`, dass das Formular das Kennzeichen führt – nur dann liest der Handler es (genau `1` = angehakt), sonst
+  bleibt der Wert. Es ändert keine Buchung, keine Auswertung und keinen Export, nur die Oberfläche des Kontoauszug-Imports
 - Anzeige auf der About-Seite
 
 ---
@@ -1437,7 +1490,7 @@ kein Subagent darauf:
 ## Governance
 
 - **Owner:** NobseVomBerg
-- **Letzte Aktualisierung:** 2026-11-15
+- **Letzte Aktualisierung:** 2026-11-19
 - **Modell-Versionen:** Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5 (Stand November 2026);
   `settings.json` und Agents nutzen Aliase (`fable`, `opus` …), die der neuesten Version folgen
 - **Bei Modell-Updates:** Modell-Routing oben, `.claude/settings.json` (`modelSettings`

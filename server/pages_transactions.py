@@ -757,8 +757,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         <div class="rectRounded" style="order:1">
             <h2>Kontoauszüge hochladen</h2>
             <div id="dropZone">
-                <p>Dateien hier ablegen (Drag & Drop) – PDF oder CAMT.053 (XML/ZIP)</p>
-                <input type="file" id="fileInput" multiple accept=".pdf,.xml,.zip,application/pdf,text/xml,application/zip">
+                <p>Dateien hier ablegen (Drag & Drop) – PDF, CAMT.053 (XML/ZIP) oder CSV (Umsatzliste der DKB)</p>
+                <input type="file" id="fileInput" multiple accept=".pdf,.xml,.zip,.csv,application/pdf,text/xml,application/zip,text/csv">
                 <button onclick="document.getElementById('fileInput').click()">Oder Dateien auswählen</button>
             </div>
             <div id="uploadStatus"></div>
@@ -800,6 +800,13 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             var n = Number(a);
             if (isNaN(n)) return esc(a);
             return n.toLocaleString('de-DE', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' €';
+        }
+        // Betrag als Suchtext der Auswahl: deutsch formatiert („1.234,56 €“) und als Zahl („1234.56“) – kein HTML
+        function amountSearchText(a) {
+            if (a === null || a === undefined || a === '') return '';
+            var n = Number(a);
+            if (isNaN(n)) return String(a);
+            return n.toLocaleString('de-DE', {minimumFractionDigits: 2, maximumFractionDigits: 2}) + ' € ' + String(n);
         }
 
         // Doppel-Uploads verhindern: während Upload/Analyse läuft, weitere
@@ -929,21 +936,45 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 h += '</table>';     // kein </div>: das schlösse die Karte, der Import-Knopf bliebe nach dem Import stehen
             }
 
+            // Einzelne Umsätze lassen sich nur bei einem gemischt genutzten Konto auswählen (f.selectable, vom Server);
+            // sonst sieht die Karte aus wie bisher. Indizes stehen nur als Zahl im HTML, jeder Datenwert geht durch esc().
+            const fileNo = Number(f.file_index);
+            const rows = f.transactions || [];
+            const chosenAtStart = rows.filter(t => t.importable).length;
             h += '<button type="button" class="coloredButton btn-sm bg-gray btnToggleDet" data-target="' + detId + '">Alle Einzelbuchungen</button>';
             h += '<div id="' + detId + '" style="display:none">';
-            h += '<table><tr><th>Datum</th><th>Empfänger</th><th>Zweck</th><th>Betrag</th></tr>';
-            (f.transactions || []).forEach(t => {
-                const cls = t.dup ? ' class="row-open"' : '';
-                h += '<tr' + cls + '><td>' + esc(clip(t.date,10)) + '</td><td>' + esc(clip(t.recipient,30)) +
-                     '</td><td>' + esc(clip(t.reference,40)) + '</td><td>' + fmtAmount(t.amount) + '</td></tr>';
+            if (f.selectable) {
+                h += '<div class="rowWithObjects"><input type="search" class="selSearch" data-idx="' + fileNo +
+                     '" placeholder="Suchen in Datum, Empfänger, Zweck, Betrag" aria-label="Umsätze durchsuchen">' +
+                     '<button type="button" class="coloredButton btn-sm bg-gray btnSelAll" data-idx="' + fileNo + '">Alle</button>' +
+                     '<button type="button" class="coloredButton btn-sm bg-gray btnSelNone" data-idx="' + fileNo + '">Keine</button>' +
+                     '<span class="muted" id="selcount-' + fileNo + '">' + chosenAtStart + ' von ' + chosenAtStart + ' ausgewählt</span></div>';
+            } else if (f.status !== 'error') {
+                h += '<div class="muted hint">Einzelne Umsätze auswählen: in den Stammdaten des Bankkontos den Haken „Reines Geschäftskonto“ entfernen.</div>';
+            }
+            h += '<table' + (f.selectable ? ' class="selTable"' : '') + '><tr>' + (f.selectable ? '<th class="selCell"></th>' : '') +
+                 '<th>Datum</th><th>Empfänger</th><th>Zweck</th><th>Betrag</th></tr>';
+            rows.forEach(t => {
+                if (f.selectable) {
+                    const hay = [t.date, t.recipient, t.reference, amountSearchText(t.amount)].join(' ').toLowerCase();
+                    h += '<tr class="selRow' + (t.importable ? '' : ' row-open') + '" data-hay="' + esc(hay) + '"><td class="selCell">' +
+                         '<input type="checkbox" class="selBox" data-idx="' + fileNo + '" data-i="' + Number(t.index) + '"' +
+                         (t.importable ? ' checked' : ' disabled') + '></td><td>' + esc(t.date) + '</td><td>' + esc(t.recipient) +
+                         '</td><td>' + esc(t.reference) + '</td><td>' + fmtAmount(t.amount) + '</td></tr>';
+                } else {
+                    const cls = t.dup ? ' class="row-open"' : '';
+                    h += '<tr' + cls + '><td>' + esc(clip(t.date,10)) + '</td><td>' + esc(clip(t.recipient,30)) +
+                         '</td><td>' + esc(clip(t.reference,40)) + '</td><td>' + fmtAmount(t.amount) + '</td></tr>';
+                }
             });
             h += '</table></div>';
 
             if (f.status === 'error') {
                 h += '<div class="errorColor">Import nicht möglich – Bankkonto zu dieser IBAN anlegen.</div>';
             } else {
-                h += '<div><button type="button" class="coloredButton btn-sm bg-green btnImportBeleg" data-idx="' +
-                     f.file_index + '">Importieren (' + f.new_count + ' neu)</button></div>';
+                h += '<div><button type="button" class="coloredButton btn-sm bg-green btnImportBeleg" id="btnimp-' + fileNo +
+                     '" data-idx="' + f.file_index + '">Importieren (' +
+                     (f.selectable ? chosenAtStart + ' ausgewählt' : f.new_count + ' neu') + ')</button></div>';
             }
             h += '</div>';
             return h;
@@ -956,7 +987,51 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             if (imp) { importBeleg(imp.dataset.idx); return; }
             if (e.target.closest('.btnImportAll')) { importAll(); return; }
             if (e.target.closest('.btnDismiss')) { dismissPreview(); return; }
+            const selAll = e.target.closest('.btnSelAll');
+            if (selAll) { setSelection(selAll.dataset.idx, true); return; }
+            const selNone = e.target.closest('.btnSelNone');
+            if (selNone) { setSelection(selNone.dataset.idx, false); return; }
         });
+        document.addEventListener('change', function(e) {
+            const box = e.target.closest ? e.target.closest('.selBox') : null;
+            if (box) updateSelection(box.dataset.idx);
+        });
+        document.addEventListener('input', function(e) {
+            const search = e.target.closest ? e.target.closest('.selSearch') : null;
+            if (search) filterRows(search.dataset.idx, search.value);
+        });
+
+        // Auswahl einzelner Umsätze (nur Karten mit Kästchen = gemischt genutztes Konto): Der Stand liegt in den Kästchen.
+        // Alle/Keine wirken auf die sichtbaren (nicht weggefilterten), auswählbaren Zeilen.
+        function selectionOf(idx) {
+            const boxes = document.querySelectorAll('#det-' + idx + ' .selBox');
+            if (!boxes.length) return null;       // Karte ohne Auswahl: der Beleg wird ganz importiert
+            const chosen = [];
+            boxes.forEach(b => { if (b.checked) chosen.push(Number(b.dataset.i)); });
+            return chosen;
+        }
+        function updateSelection(idx) {
+            const boxes = document.querySelectorAll('#det-' + idx + ' .selBox');
+            if (!boxes.length) return;
+            let n = 0, m = 0;
+            boxes.forEach(b => { if (!b.disabled) { m++; if (b.checked) n++; } });
+            const count = document.getElementById('selcount-' + idx);
+            if (count) count.textContent = n + ' von ' + m + ' ausgewählt';
+            const btn = document.getElementById('btnimp-' + idx);
+            if (btn) { btn.textContent = 'Importieren (' + n + ' ausgewählt)'; btn.disabled = importBusy || n === 0; }
+        }
+        function setSelection(idx, checked) {
+            document.querySelectorAll('#det-' + idx + ' .selRow:not(.selHidden) .selBox:not(:disabled)')
+                .forEach(b => { b.checked = checked; });
+            updateSelection(idx);
+        }
+        function filterRows(idx, query) {
+            const words = String(query).toLowerCase().split(' ').filter(w => w);
+            document.querySelectorAll('#det-' + idx + ' .selRow').forEach(r => {
+                const hay = r.dataset.hay || '';
+                r.classList.toggle('selHidden', !words.every(w => hay.includes(w)));
+            });
+        }
 
         // Während ein Import läuft, alle Import-/Verwerfen-Buttons sperren –
         // Doppelklicks lösen sonst parallele Requests und Fehlermeldungen aus.
@@ -965,19 +1040,22 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             importBusy = busy;
             document.querySelectorAll('.btnImportBeleg, .btnImportAll, .btnDismiss')
                 .forEach(b => { b.disabled = busy; });
+            if (!busy) document.querySelectorAll('.btnImportBeleg').forEach(b => updateSelection(b.dataset.idx));
         }
 
         function postImport(params) {
             const body = new URLSearchParams();
             body.append('import_id', currentImportId);
             if (params.file_index !== undefined) body.append('file_index', params.file_index);
+            if (params.selection && Object.keys(params.selection).length) body.append('selection', JSON.stringify(params.selection));
             return fetch('/confirm_transactions', { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body }).then(r => r.json());
         }
 
         function importBeleg(idx) {
             if (importBusy) return;
             setImportBusy(true);
-            postImport({ file_index: idx }).then(data => {
+            const chosen = selectionOf(idx);
+            postImport({ file_index: idx, selection: chosen === null ? null : { [idx]: chosen } }).then(data => {
                 if (!data.ok) { appMsg('Fehler: ' + (data.error || 'Import fehlgeschlagen'), 'error'); return; }
                 const res = (data.results || [])[0] || {};
                 if (res.account_found === false) { appMsg(res.error || 'Konto nicht gefunden', 'error'); return; }
@@ -985,7 +1063,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                        + (res.skipped ? ', ' + res.skipped + ' Duplikate übersprungen'
                             + (res.skipped_upload ? ' (davon ' + res.skipped_upload + ' aus anderer Datei dieses Uploads)' : '') : '')
                        + (res.text_updated ? ', ' + res.text_updated + ' Texte vervollständigt' : '')
-                       + (res.skipped_invalid ? ', ' + res.skipped_invalid + ' ohne Datum/Betrag nicht importiert' : ''), 'success');
+                       + (res.skipped_invalid ? ', ' + res.skipped_invalid + ' ohne Datum/Betrag nicht importiert' : '')
+                       + (res.skipped_unselected ? ', ' + res.skipped_unselected + ' nicht ausgewählt' : ''), 'success');
                 const card = document.getElementById('beleg-' + idx);
                 if (card) card.remove();
                 refreshTable();
@@ -996,14 +1075,20 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         function importAll() {
             if (importBusy) return;
             setImportBusy(true);
-            postImport({}).then(data => {
+            const selection = {};
+            document.querySelectorAll('.btnImportBeleg').forEach(b => {
+                const chosen = selectionOf(b.dataset.idx);
+                if (chosen !== null) selection[b.dataset.idx] = chosen;
+            });
+            postImport({ selection: selection }).then(data => {
                 if (!data.ok) { appMsg('Fehler: ' + (data.error || 'Import fehlgeschlagen'), 'error'); return; }
-                let ins = 0, skip = 0, skipUp = 0, invalid = 0, failed = 0, txtUpd = 0;
-                (data.results || []).forEach(r => { ins += r.inserted || 0; skip += r.skipped || 0; skipUp += r.skipped_upload || 0; invalid += r.skipped_invalid || 0; txtUpd += r.text_updated || 0; if (r.account_found === false) failed++; });
+                let ins = 0, skip = 0, skipUp = 0, invalid = 0, failed = 0, txtUpd = 0, unsel = 0;
+                (data.results || []).forEach(r => { ins += r.inserted || 0; skip += r.skipped || 0; skipUp += r.skipped_upload || 0; invalid += r.skipped_invalid || 0; unsel += r.skipped_unselected || 0; txtUpd += r.text_updated || 0; if (r.account_found === false) failed++; });
                 appMsg(ins + ' neu importiert' + (skip ? ', ' + skip + ' Duplikate'
                             + (skipUp ? ' (davon ' + skipUp + ' aus anderer Datei dieses Uploads)' : '') : '')
                        + (txtUpd ? ', ' + txtUpd + ' Texte vervollständigt' : '')
                        + (invalid ? ', ' + invalid + ' ohne Datum/Betrag nicht importiert' : '')
+                       + (unsel ? ', ' + unsel + ' nicht ausgewählt' : '')
                        + (failed ? ', ' + failed + ' ohne Konto' : ''), failed ? 'warn' : 'success');
                 dismissPreview();
                 refreshTable();

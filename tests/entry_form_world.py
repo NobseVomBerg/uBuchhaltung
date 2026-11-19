@@ -296,9 +296,21 @@ def add_roundtrip_rows(db):
                 conn.commit()
 
 
+def to_state_2004(db_path):
+    """Die Datenbank in den Stand zurückversetzen, den 2.4.x geschrieben hat: die Spalte ``BusinessOnly`` an
+    ``Accounts`` entfernt, ``PRAGMA user_version`` = 2004. Wiederholbar: Was schon fehlt, wird übersprungen."""
+    with closing(sqlite3.connect(db_path)) as conn:
+        if 'BusinessOnly' in {row[1] for row in conn.execute('PRAGMA table_info(Accounts)')}:
+            conn.execute('ALTER TABLE Accounts DROP COLUMN BusinessOnly')
+        conn.execute('PRAGMA user_version = 2004')
+        conn.commit()
+
+
 def to_state_2003(db_path):
-    """Die Datenbank in den Stand zurückversetzen, den 2.3.x geschrieben hat: die Spalte ``VatMethod`` an
-    ``Contacts`` entfernt, ``PRAGMA user_version`` = 2003. Wiederholbar: Was schon fehlt, wird übersprungen."""
+    """Die Datenbank in den Stand zurückversetzen, den 2.3.x geschrieben hat: zusätzlich zu 2.4.x
+    (``to_state_2004``) die Spalte ``VatMethod`` an ``Contacts`` entfernt, ``PRAGMA user_version`` = 2003.
+    Wiederholbar: Was schon fehlt, wird übersprungen."""
+    to_state_2004(db_path)
     with closing(sqlite3.connect(db_path)) as conn:
         if 'VatMethod' in {row[1] for row in conn.execute('PRAGMA table_info(Contacts)')}:
             conn.execute('ALTER TABLE Contacts DROP COLUMN VatMethod')

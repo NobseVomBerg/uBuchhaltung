@@ -8,7 +8,8 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 
 ## Funktionen
 - Sammelimport: Exportdateien und Kontoauszüge als Sammlung hineingeben, ohne auf Importreihenfolgen zu achten – Spalten frei gewählter Exporte erkennen und in einer Vorschau zuordnen, Quellsätze erst in eine Zwischenablage, ein gemeinsamer Abgleich mit sichtbaren Zweifelsfällen; braucht Schemaänderung und vorher einen Entwurf
-- Kontoauszüge im MT940-Format (CAMT.053 und PDF: DKB, Volksbank Rottweil sind da)
+- Kontoauszüge im MT940-Format (CAMT.053, PDF: DKB und Volksbank Rottweil und CSV: DKB sind da)
+- Kontoauszug als CSV anderer Banken (heute liest `importers/dkb_csv.py` nur die Umsatzliste der DKB)
 - CAMT-Zusatzfelder (Valuta, EndToEndId, Mandatsreferenz, Gläubiger-ID) übernehmen – braucht Schemaänderung
 - Rechnungen/Angebote mit gemischten Steuersätzen (7 % und 19 % je Position) – bisher ein Satz je Beleg
 - Leistungszeitraum (von–bis) als Alternative zum Leistungsdatum, z. B. für monatliche Leistungen – PDF-Kopf und E-Rechnung (CII BillingSpecifiedPeriod / UBL InvoicePeriod); braucht Schemaänderung
@@ -43,6 +44,7 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
 - SKR07 (Österreich) erst, wenn die Steuerlogik dafür ansteht (andere Voranmeldung und Gewinnermittlung) – bewusst später
 
 ## Fehler & Technik
+- DKB-CSV (`importers/dkb_csv.py`): nur an erfundenen Beispielen beider Formate geprüft, nicht an einer echten Datei – an echten Dateien (neues und altes Format) gegenprüfen: Spaltennamen, Kodierung, Beträge ohne Nachkommastellen, vorgemerkte Umsätze, Vorspann
 - DATEV-Export vor der ersten Weitergabe ans Steuerbüro gegen einen echten Buchungsstapel prüfen: Seit 2.3.0 bildet er den Stapel von WISO nach (dreistellige BU-Schlüssel, Rechnungskette ohne Schlüssel mit dem Satz nur in Spalte 40, Belegfeld 1 bis 36 Zeichen, Version 700), ob die Kanzlei ihn so annimmt, ist offen. Nicht nachgebildet: Neuableitung alter Jahre aus der heutigen Bedeutung der Schlüssel, Schlüssel für innergemeinschaftlichen Erwerb, § 13b und steuerfreie Umsätze in der Ableitung (Importe bringen sie mit), Steuerzeilen, Generalumkehr; die Buchungsmaske zeigt und ändert den Schlüssel nicht
 - Split-Summe (`is_bank_effective`, `find_unbalanced_splits`) kennt 1460 nur im Spiegel mit bekannter Lesart; bei einer Zahlung über 1460 und bei Spiegeln des Bestands (`mirror_legacy`) zählt sie nur die eigenen Bankkonten: „X an 1460“ als einziges Kind gilt bei Kasse ≠ 1460 als unausgeglichen (DATEV-Export gesperrt), bei Kasse = 1460 gilt „X an 1460“ plus „1460 an Bank“ als unausgeglichen – Regel je Zahlung neu fassen
 - Dashboard zählt eine Umbuchung Anlage ↔ Erfolgskonto, der die Maske eine Kasse als Konto eingetragen hat, als Kassenbewegung (EÜR stimmt)

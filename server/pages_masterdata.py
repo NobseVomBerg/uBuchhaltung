@@ -7,7 +7,12 @@ Contains: Articles, Contacts, Chart of Accounts (SKR)
 """
 import html as _html
 from db import Database
+from db.accounts import is_business_only
 from money import fmt_eur
+
+BUSINESS_ONLY_HINT = ('Auf einem reinen Geschäftskonto werden Kontoauszüge vollständig importiert; einzelne private Umsätze '
+                      'bucht man als Privatentnahme oder -einlage. Ohne den Haken (gemischt genutztes Konto) lassen sich '
+                      'beim Import einzelne Umsätze auswählen.')
 
 def Header1(active_page=None):
     from server.pages import Header1 as BaseHeader1
@@ -576,7 +581,7 @@ def PageBankAccounts(db: Database, edit_id=None, error=None):
     """
     rows = db.fetch_accounts()
     # Accounts (SELECT *): [0]ID [1]Name [2]Inhaber [3]IBAN [4]BIC [5]Bank
-    #                      [6]IsCash [7]SKR-Gegenkonto
+    #                      [6]IsCash [7]SKR-Gegenkonto [8]BusinessOnly (reines Geschäftskonto)
     edit_acc = db.get_account_by_id(edit_id) if edit_id is not None else None
     is_cash  = bool(edit_acc and edit_acc[6] == 1)
 
@@ -592,6 +597,8 @@ def PageBankAccounts(db: Database, edit_id=None, error=None):
     ea_bic    = _html.escape(str(edit_acc[4] or '')) if edit_acc else ''
     ea_bank   = _html.escape(str(edit_acc[5] or '')) if edit_acc else ''
     ea_skr    = (edit_acc[7] if edit_acc and len(edit_acc) > 7 and edit_acc[7] is not None else '') if edit_acc else ''
+    # „Reines Geschäftskonto“: ein neues Konto ist es, ein vorhandenes nach strenger Lesung des gespeicherten Werts
+    ea_business_only = is_business_only(edit_acc[8] if edit_acc and len(edit_acc) > 8 else 1)
 
     if edit_acc:
         form_title = "Kasse-Konto bearbeiten" if is_cash else "Bankkonto bearbeiten"
@@ -627,6 +634,12 @@ def PageBankAccounts(db: Database, edit_id=None, error=None):
             f'<tr><td>BIC:</td><td><input type="text" name="bic" value="{ea_bic}"></td></tr>'
             f'<tr><td>Bank:</td><td><input type="text" name="bank_name" value="{ea_bank}"></td></tr>'
             f'<tr><td>SKR-Gegenkonto:</td><td><input type="number" name="skr_account" value="{ea_skr}" placeholder="z.B. 1810"></td></tr>'
+            # Ein nicht angehaktes Kästchen schickt nichts: das versteckte Feld sagt dem Handler, dass das Formular das
+            # Kennzeichen führt (fehlt es, bleibt der gespeicherte Wert)
+            f'<tr><td><label for="business_only">Reines Geschäftskonto:</label></td><td>'
+            f'<input type="checkbox" id="business_only" name="business_only" value="1"{" checked" if ea_business_only else ""}>'
+            f'<input type="hidden" name="business_only_field" value="1">'
+            f'<small class="hint">{_html.escape(BUSINESS_ONLY_HINT)}</small></td></tr>'
         )
 
     s += f'''

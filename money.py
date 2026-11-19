@@ -30,6 +30,10 @@ _HUNDRED = Decimal(100)
 # oder ohne Komma mit Punkt als Dezimalpunkt. ``[0-9]`` statt ``\d``: ``\d`` passt auch auf Ziffern anderer Schriften.
 _AMOUNT_DE = re.compile(r'[+-]?(?:[0-9]{1,3}(?:\.[0-9]{3})+|[0-9]+),[0-9]+')
 _AMOUNT_PLAIN = re.compile(r'[+-]?[0-9]+(?:\.[0-9]+)?')
+# Betrag aus einer Datei, in der der Punkt IMMER ein Tausendertrenner ist (DKB-Umsatzliste): ganze Euro mit Tausenderpunkten in
+# Dreiergruppen oder ohne Punkt, danach höchstens zwei Nachkommastellen nach einem Komma.
+# Die erste Gruppe vor einem Tausenderpunkt beginnt nie mit 0 (``0.500`` ist kein Betrag)
+_AMOUNT_GROUPED = re.compile(r'[+-]?(?:[1-9][0-9]{0,2}(?:\.[0-9]{3})+|[0-9]+)(?:,[0-9]{1,2})?')
 _AMOUNT_MAX_LENGTH = 30
 MAX_PARSED_AMOUNT = Decimal(10) ** 12      # ab hier ist ein Betrag aus einer Datei ein Fehler (wie importers.camt.MAX_AMOUNT)
 
@@ -86,6 +90,9 @@ def parse_amount(text) -> Decimal:
     einer Billion (``MAX_PARSED_AMOUNT``). Alles andere –
     ``nan``, ``inf``, ``1e5``, ``1_000``, Ziffern anderer Schriften – ist ein ``ValueError``: ``float()``
     nähme es an.
+
+    Bewusst anders als ``parse_grouped_amount`` (DKB-Umsatzliste): Hier ist ein Punkt ohne Komma ein Dezimalpunkt
+    (``1.500`` ist 1,5), dort immer ein Tausendertrenner (``1.500`` ist 1500).
     """
     if not isinstance(text, str):
         raise ValueError(f"ungueltiger Betrag: kein Text ({type(text).__name__})")
@@ -102,6 +109,34 @@ def parse_amount(text) -> Decimal:
         # Ein so großer Wert liefe später in to_minor oder beim Speichern (64 Bit) in einen technischen Fehler
         raise ValueError("ungueltiger Betrag: zu gross")
     return value
+
+
+def parse_grouped_amount(text):
+    """Betrag aus einer Datei, in der der Punkt IMMER ein Tausendertrenner ist (DKB-Umsatzliste), streng als ``Decimal`` –
+    oder ``None``, wenn der Text keiner ist (nichts wird geraten, es gibt keinen Fehler).
+
+    Die DKB lässt bei runden Beträgen die Nachkommastellen weg: ``-15.000`` heißt minus fünfzehntausend Euro. Gelesen
+    wird deshalb nur deutsch: ohne Leerraum am Rand (auch U+00A0 und U+202F) und ohne ein angehängtes ``€`` oder ``EUR``
+    (mit oder ohne Leerraum davor) ein Vorzeichen vorn, ganze Euro ohne Punkt oder mit Tausenderpunkten in Dreiergruppen, danach höchstens zwei
+    Nachkommastellen nach einem Komma – nur ASCII-Ziffern, höchstens 30 Zeichen, betragsmäßig unter einer Billion
+    (``MAX_PARSED_AMOUNT``). ``1.500`` ist 1500, ``-15.000`` ist -15000, ``1.234,56`` ist 1234,56, ``-15`` ist -15;
+    ``12.5``, ``0.500``, ``1,234.56``, ``1e3``, ``nan``, Leerraum zwischen den Ziffern (``12 34`` ist nicht 1234), Ziffern
+    anderer Schriften und ein leerer Text sind ``None``. Kein ``float()``.
+
+    Bewusst anders als ``parse_amount`` (WISO-Textexport, PDF-Auszüge): Dort ist ein Punkt ohne Komma ein Dezimalpunkt
+    (``1.500`` ist 1,5).
+    """
+    if not isinstance(text, str):
+        return None
+    s = text.strip()
+    for suffix in ('€', 'EUR'):
+        if s.endswith(suffix):
+            s = s[:-len(suffix)].rstrip()
+            break
+    if len(s) > _AMOUNT_MAX_LENGTH or not _AMOUNT_GROUPED.fullmatch(s):
+        return None
+    value = Decimal(s.replace('.', '').replace(',', '.'))
+    return None if abs(value) >= MAX_PARSED_AMOUNT else value
 
 
 # ── Grenze Euro <-> Minor Units ───────────────────────────────────────────────

@@ -164,6 +164,10 @@ def test_existing_rows_stay_untouched_and_the_new_values_are_empty(stock):
     # geprüft in ``test_vat_method_schema_2004.py``
     assert all(row[-1] is None for row in after['Contacts'])
     after['Contacts'] = [row[:-1] for row in after['Contacts']]
+    # … und Schema 2005 (2.5.0) ``Accounts.BusinessOnly`` (überall 1 = reines Geschäftskonto), geprüft in
+    # ``test_business_only_schema_2005.py``
+    assert all(row[-1] == 1 for row in after['Accounts'])
+    after['Accounts'] = [row[:-1] for row in after['Accounts']]
     for table, rows in before.items():
         if table not in ('Bookings', 'CompanyDetails'):
             assert after[table] == rows, table                                    # alle anderen Tabellen
