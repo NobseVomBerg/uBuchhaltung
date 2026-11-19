@@ -111,11 +111,12 @@ def generate_quote_pdf(db: Database, quote_id: int):
     # ── Content-Stream (seitenfähig) ──────────────────────────────────────────
     flow = D.PageFlow([col_address, col_contact, []])
 
+    # Reihenfolge und Bezeichnungen wie im Eingabeformular (``pages_quote``)
     meta = [("Datum:", quote_date), ("Angebots-Nr.:", quote_number)]
-    if buyer_customer_number:
-        meta.append(("Kunden-Nr.:", buyer_customer_number))
     if valid_until:
         meta.append(("gültig bis:", valid_until))
+    if buyer_customer_number:
+        meta.append(("Kunden-Nr.:", buyer_customer_number))
     # Absenderzeile im Adressfeld OHNE Zusatzzeile (nur in der Fußzeile)
     sender_line = " · ".join(p for p in [
         seller_company or seller_name, seller_street,

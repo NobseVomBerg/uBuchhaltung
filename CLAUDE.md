@@ -1067,6 +1067,11 @@ kein Subagent darauf:
 - **Leistungsdatum ist Pflicht** (§ 14 UStG): Formular `required`, vorbelegt mit dem Rechnungsdatum,
   Server lehnt Speichern ohne ab (`handle_invoice_save`; nicht bei Angeboten, nicht bei bereits
   versendeten Rechnungen/Importen); steht im PDF-Kopfblock und in CII/UBL. Angebot → Rechnung setzt es auf das Rechnungsdatum
+- **Kopfblock im PDF wie im Eingabeformular (seit 2.5.2):** Reihenfolge und Bezeichnungen oben rechts folgen der Maske –
+  Rechnung: Rechnungsdatum, Leistungsdatum, Rechnungs-Nr., Kunden-Nr. (dann „Fassung“ bei einer berichtigten); Angebot: Datum,
+  Angebots-Nr., gültig bis, Kunden-Nr. Was fehlt, bekommt keine Zeile. Ändert sich die Maske, zieht das PDF mit
+  (`tests/test_pdf_header_block.py`; die Beschriftungsspalte `META_LABEL_X`…`META_VALUE_X` fasst die längste Bezeichnung).
+  Abgelegte Dokumente bleiben, wie sie sind
 - **Hinweis auf § 19 UStG (seit 2.3.3):** Ein Beleg ohne Steuerausweis (`Invoices.TaxRate` = Platzhalter −1, Häkchen
   „Umsatzsteuer ausweisen“ aus) trägt den Hinweis auf die Steuerbefreiung für Kleinunternehmer automatisch – Rechnung,
   Stornorechnung und Angebot. EIN Wortlaut an EINER Stelle (`export/einvoice_model.EXEMPT_REASON_KLEINUNTERNEHMER`) für PDF
