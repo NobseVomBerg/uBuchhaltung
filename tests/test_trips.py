@@ -144,10 +144,12 @@ def test_document_link_stored(tmp_db):
 
 
 def test_save_as_new_creates_copy(tmp_db):
-    """„Als neu speichern" postet auf /trips/add mit gesetzter id ⇒ neuer Eintrag."""
+    """/trips/add legt immer einen neuen Eintrag an – auch wenn das Formular eine id mitschickt. Seit 2.5.3 leert
+    „Als neu kopieren“ die id vorher im Formular (``tests/test_copy_as_new.py``); das frühere „Als neu speichern“,
+    das die geladene Fahrt sofort noch einmal anlegte, gibt es nicht mehr."""
     drv = _driver(tmp_db)
     orig = tmp_db.insert_trip(drv, "2026-06-04", destination="Hamburg", distance_km=290)
-    # Formular trägt beim Kopieren die id des Originals, Ziel /trips/add
+    # eine mitgeschickte id macht aus dem Anlegen kein Ändern
     handlers.handle_add_trip(tmp_db, _post(
         id=orig, person_id=drv, **{"from": "2026-06-01", "to": "2026-06-30"},
         start_date="2026-06-04", destination="Hamburg", distance_km=290))
@@ -157,4 +159,5 @@ def test_save_as_new_creates_copy(tmp_db):
     # Button im Formular vorhanden
     html = PageTrips(tmp_db, person_id=drv, date_from="2026-06-01",
                      date_to="2026-06-30", edit_id=orig)
-    assert 'formaction="/trips/add"' in html and "Als neu speichern" in html
+    assert 'onclick="trCopyAsNew()"' in html and "Als neu kopieren" in html
+    assert 'formaction' not in html and "Als neu speichern" not in html

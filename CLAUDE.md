@@ -319,9 +319,27 @@ kein Subagent darauf:
   dieselben Kilometer stehen nie in zwei Einträgen); höchstens 100 Einträge plus Zahl. Der Hinweistext zur
   Fahrtenbuchmethode steht fest auf der Seite (keine Steuerberatung). Eine gespeicherte Einstellung je Fahrzeug gibt es
   nicht – Fahrzeuge sind Freitext an der Fahrt, eine Stammliste wäre eine Schemaänderung
+- **„Als neu kopieren“ (seit 2.5.3, Arbeitszeiten und Fahrten, wie bei der Rechnung):** Der Knopf steht nur an einem geladenen
+  Eintrag und **speichert nichts** (`type="button"`, `wtCopyAsNew`/`trCopyAsNew`): Er leert die ID im Formular, stellt es auf
+  „neu“ und setzt das Datum auf heute; angelegt wird erst mit „Speichern“ über `/worktime/add` bzw. `/trips/add` mit allen
+  Prüfungen. Arbeitszeit: alle Angaben bleiben, die Vorlage des letzten Eintrags füllt eine Kopie nicht auf (`wtIsCopy`).
+  Fahrt: Strecke, Fahrzeug, Grund, Uhrzeiten und Kilometer bleiben, eine mehrtägige behält ihre Dauer; Tachostände und Beleg
+  bleiben leer (sie gehören zu der einen Fahrt). Das frühere „Als neu speichern“ der Fahrten (legte sofort an) gibt es nicht
+  mehr. `tests/test_copy_as_new.py`
 - **Stundenzettel-PDF** (`export/pdf_worktime.py`): mehrseitig über `build_multi_page_pdf`; `page_layout(row_count)` verteilt die
   Zeilen – keine Datenzeile unter `BOTTOM_Y`, Summe und Unterschriften zusammen auf der letzten Seite (notfalls eine eigene
-  Seite ohne Datenzeilen), „Seite n von m“ nur bei mehr als einer Seite. Passt alles auf eine Seite, ist das Layout das bisherige
+  Seite ohne Datenzeilen), „Seite n von m“ nur bei mehr als einer Seite. Passt alles auf eine Seite, ist das Layout das bisherige.
+  **Info-Spalte (seit 2.5.3):** Art des Tages, auf Wunsch der Arbeitsort eines Arbeitstags (`with_location`), Pausenzeiten, auf
+  Wunsch die Notiz (`with_notes`), mit „ · “ verbunden. Die Seite hat dafür zwei Häkchen neben dem PDF-Knopf („Mit Notiz“, „Mit
+  Arbeitsort“), **beide beim Laden an**; die Adresse nennt immer beide (`notes`, `location`: nur `1`/`true`/`on` schalten ein,
+  ohne Angabe druckt der Server keines von beiden). Der Text **bricht in der Spalte um** (`info_lines`: am Wortrand, ein
+  überbreites Wort mitten im Wort, Leerraum und Zeilenumbrüche als ein Leerzeichen) und endet nach `MAX_INFO_LINES` = 8 Zeilen
+  mit „…“ – nie still abgeschnitten. Gemessen wird der Text, **wie er gedruckt wird** (`printed_text`: WinAnsi-Ersetzungen),
+  mit den Breiten der eingebetteten Schrift (`info_width`, nicht die Helvetica-Tabelle – dort fehlen breite Zeichen), und
+  **die Laufzeit hängt nur von den gedruckten Zeilen ab**: Jedes Zeichen wird höchstens zweimal gemessen, nach neun Zeilen
+  hört das Lesen auf. Notiz, Pausentext und Art sind unbegrenzte Felder – nie wieder je Teilstück den ganzen Rest messen
+  (ein Wort mit 8000 Zeichen kostete so 49 s). `page_layout` nimmt die Höhen der Zeilen in Textzeilen (oder wie bisher eine Zahl): Kein
+  Eintrag wird über zwei Seiten geteilt, keine Textzeile steht unter `BOTTOM_Y` (`tests/test_worktime_pdf_info.py`)
 
 ### Stammdaten: Löschen, Standardkonten, Testdaten (seit 2.3.8)
 - **Gelöscht wird nur, worauf nichts verweist:** `delete_contact`, `delete_article`, `delete_account`, `delete_asset_category`

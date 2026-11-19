@@ -376,10 +376,12 @@ def _worktime_form(db, person_id, date_from, date_to, customers, edit_id, qstr):
         <input type="hidden" name="to" value="{_html.escape(date_to, quote=True)}">
         <div class="rowWithObjects">
             <button type="button" class="coloredButton btn-sm bg-indigo" onclick="wtOpenPdf()" title="Angezeigten Zeitraum als PDF">📄 PDF</button>
-            <label><input type="checkbox" id="wtPdfNotes"> Mit Notiz erstellen</label>
+            <label title="Die Notiz jedes Eintrags steht in der Info-Spalte des Stundenzettels"><input type="checkbox" id="wtPdfNotes" checked> Mit Notiz</label>
+            <label title="Der Arbeitsort jedes Arbeitstags steht in der Info-Spalte des Stundenzettels"><input type="checkbox" id="wtPdfLocation" checked> Mit Arbeitsort</label>
         </div>
         <div class="rowWithObjects" id="wtEditButtons" style="display:none;">
             <input type="submit" id="wtSubmit" value="💾 Speichern" class="coloredButton btn-sm bg-green">
+            <button type="button" id="wtCopyBtn" class="coloredButton btn-sm bg-gray" onclick="wtCopyAsNew()" style="display:none;" title="Diesen Eintrag als Vorlage für einen neuen nehmen – gespeichert wird erst mit „Speichern“">📋 Als neu kopieren</button>
             <button type="button" class="coloredButton btn-sm bg-gray" onclick="wtCancel()">✖ Abbrechen</button>
         </div>
     </div>
@@ -476,7 +478,9 @@ function wtOnPauseText() {
 }
 function wtOpenPdf() {
     let url = WT_DATA.pdfBase;
-    if (document.getElementById('wtPdfNotes').checked) url += '&notes=1';
+    // beide Schalter sind beim Laden an; die Adresse nennt immer beide (der Server druckt nur, was sie verlangt)
+    url += '&notes=' + (document.getElementById('wtPdfNotes').checked ? '1' : '0');
+    url += '&location=' + (document.getElementById('wtPdfLocation').checked ? '1' : '0');
     // PDF inline in neuem Tab anzeigen (statt die Seite zu ersetzen)
     window.open(url + '&inline=1', '_blank');
 }
@@ -513,6 +517,22 @@ function wtCheckDirty() {
     const editing = !!document.getElementById('wtId').value;
     const show = editing || (wtSnapshot() !== wtBaseline);
     document.getElementById('wtEditButtons').style.display = show ? '' : 'none';
+    // „Als neu kopieren“ gibt es nur für einen geladenen Eintrag
+    document.getElementById('wtCopyBtn').style.display = editing ? '' : 'none';
+}
+// Wie „Als neu kopieren“ der Rechnung: Der geladene Eintrag wird zur Vorlage eines neuen. Alle Angaben bleiben, das Datum
+// ist das von heute; gespeichert wird nichts, bevor der Nutzer „Speichern“ wählt. Der Ausgangseintrag bleibt, wie er ist.
+let wtIsCopy = false;
+function wtCopyAsNew() {
+    if (!document.getElementById('wtId').value) return;
+    document.getElementById('wtId').value = '';
+    document.getElementById('wtDate').value = WT_DATA.today;
+    wtResetFormChrome(true);
+    document.getElementById('wtFormTitle').textContent = 'Neuer Eintrag (Kopie)';
+    wtIsCopy = true;            // die Vorlage des letzten Eintrags füllt eine Kopie nicht auf (wtOnDateChange)
+    wtBaseline = '';            // gilt als geändert: „Speichern“ bleibt sichtbar
+    wtUpdateHours(); wtCheckDirty();
+    document.getElementById('wtDate').focus();
 }
 function wtCancel() {
     // Abbrechen → Formular leeren (zurück zum leeren Neu-Zustand)
@@ -520,6 +540,7 @@ function wtCancel() {
 }
 function wtClear() {
     // Formular vollständig leeren (neuer Eintrag, ohne Vorlage)
+    wtIsCopy = false;
     document.getElementById('wtId').value = '';
     document.getElementById('wtDate').value = '';
     document.getElementById('wtKind').value = 'work';
@@ -553,7 +574,8 @@ function wtApplyTemplate() {
 }
 function wtOnDateChange() {
     // Vorlage nur bei NEUEM Eintrag und erst nach Datumseingabe (Anforderung 1.1)
-    if (!document.getElementById('wtId').value && document.getElementById('wtDate').value) {
+    // … und nie bei einer Kopie: Sie trägt die Angaben ihres Ausgangseintrags, auch die leeren
+    if (!wtIsCopy && !document.getElementById('wtId').value && document.getElementById('wtDate').value) {
         wtApplyTemplate();
     }
     wtCheckDirty();
@@ -567,6 +589,7 @@ function wtNewForDay(dateStr) {
     document.getElementById('wtFormTitle').scrollIntoView({behavior:'smooth'});
 }
 function wtLoadEntry(d) {
+    wtIsCopy = false;
     document.getElementById('wtId').value = d.id;
     document.getElementById('wtDate').value = d.date;
     document.getElementById('wtKind').value = d.kind;

@@ -308,7 +308,7 @@ def _trips_form(db, person_id, date_from, date_to, own_address):
         <input type="hidden" name="to" value="{_html.escape(date_to, quote=True)}">
         <div class="rowWithObjects" id="trEditButtons" style="display:none;">
             <input type="submit" id="trSubmit" value="💾 Speichern" class="coloredButton btn-sm bg-green">
-            <input type="submit" id="trSaveAsNewBtn" value="💾 Als neu speichern" formaction="/trips/add" class="coloredButton btn-sm bg-blue" style="display:none;">
+            <button type="button" id="trCopyBtn" class="coloredButton btn-sm bg-gray" onclick="trCopyAsNew()" style="display:none;" title="Diese Fahrt als Vorlage für eine neue nehmen – gespeichert wird erst mit „Speichern“">📋 Als neu kopieren</button>
             <button type="button" class="coloredButton btn-sm bg-gray" onclick="trCancel()">✖ Abbrechen</button>
         </div>
     </div>
@@ -416,8 +416,38 @@ function trCheckDirty() {
     const editing = !!document.getElementById('trId').value;
     const show = editing || (trSnapshot() !== trBaseline);
     document.getElementById('trEditButtons').style.display = show ? '' : 'none';
-    // „Als neu speichern" nur sinnvoll, wenn ein bestehender Eintrag geladen ist
-    document.getElementById('trSaveAsNewBtn').style.display = editing ? '' : 'none';
+    // „Als neu kopieren“ gibt es nur für eine geladene Fahrt
+    document.getElementById('trCopyBtn').style.display = editing ? '' : 'none';
+}
+// ISO-Datum als Tageszahl (UTC, ohne Sommerzeit-Sprung) bzw. zurück; kein ISO-Datum: NaN bzw. ''
+function trDayNumber(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+    return m ? Math.round(Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000) : NaN;
+}
+function trDayIso(number) {
+    return isNaN(number) ? '' : new Date(number * 86400000).toISOString().slice(0, 10);
+}
+// Wie „Als neu kopieren“ der Rechnung: Die geladene Fahrt wird zur Vorlage einer neuen. Strecke, Fahrzeug, Grund, Uhrzeiten
+// und Kilometer bleiben, sie beginnt heute und dauert so viele Tage wie die Vorlage. Tachostände und Beleg gehören zu
+// der einen Fahrt und bleiben leer. Gespeichert wird nichts, bevor der Nutzer „Speichern“ wählt.
+function trCopyAsNew() {
+    if (!document.getElementById('trId').value) return;
+    const start = document.getElementById('trStartDate'), end = document.getElementById('trEndDate');
+    const days = trDayNumber(end.value) - trDayNumber(start.value);
+    const today = trDayNumber(TRIPS_DATA.today);
+    if (end.value) end.value = trDayIso(today + (days > 0 ? days : 0));
+    start.value = TRIPS_DATA.today;
+    document.getElementById('trId').value = '';
+    document.getElementById('trStartKm').value = '';
+    document.getElementById('trEndKm').value = '';
+    document.getElementById('trDocument').value = '';
+    document.getElementById('trDistance').readOnly = false;
+    trLastAutoKm = null;
+    trResetFormChrome(true);
+    document.getElementById('trFormTitle').textContent = 'Neue Fahrt (Kopie)';
+    trBaseline = '';            // gilt als geändert: „Speichern“ bleibt sichtbar
+    trCheckDirty();
+    start.focus();
 }
 function trCancel() { trClear(); }
 function trClear() {
