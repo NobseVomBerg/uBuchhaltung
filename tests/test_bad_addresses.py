@@ -40,7 +40,7 @@ SUBJECT_PAGES = [
     ('/invoice/pdf_download', 'id'), ('/quote/edit', 'id'), ('/quote/pdf_download', 'id'),
     ('/masterdata/articles/edit', 'id'), ('/masterdata/contacts/edit', 'id'),
     ('/masterdata/skr/edit', 'id'), ('/masterdata/skr/copy', 'id'),
-    ('/masterdata/bankaccounts/edit', 'id'), ('/receipts/edit', 'number'), ('/receipts/file', 'id'),
+    ('/masterdata/bankaccounts/edit', 'id'), ('/receipts/edit', 'id'), ('/receipts/file', 'id'),
     ('/transactions/edit', 'id'), ('/masterdata/numberranges/edit', 'id'), ('/assets/edit', 'id'),
     ('/assets/view', 'id'), ('/asset_categories/edit', 'id'), ('/worktime/edit', 'id'), ('/trips/edit', 'id'),
 ]
@@ -118,10 +118,7 @@ def action(port, csrf, path_and_query):
 def test_an_action_without_a_valid_id_is_400_and_changes_nothing(server_port, books, path):
     before = state(books.db, *TABLES)
     # /receipts/delete nimmt seit 2.4.2 die ID des Belegs (vorher die Nummer, die nicht eindeutig ist): wie jede Löschaktion
-    if path == '/documents/unlink':
-        wrong = ['', '?doc_id=1', '?booking_id=1', '?doc_id=abc&booking_id=1', '?doc_id=1&booking_id=abc']
-    else:
-        wrong = ['', '?id=abc', '?id=', '?id=1.5']
+    wrong = ['', '?id=abc', '?id=', '?id=1.5']
     for query in wrong:
         resp = action(server_port, books.csrf, path + query)
         assert resp.status == 400, query

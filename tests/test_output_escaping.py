@@ -30,6 +30,7 @@ from server.pages_invoice import PageInvoice
 from server.pages_masterdata import PageArticles, PageNumberRanges
 from server.pages_quote import PageQuote
 from server.pages_receipts import PageReceiptEdit, PageReceipts
+from server.pages_transactions import PageTransactions
 from tests.document_helpers import add_contacts, add_document, table_rows
 from tests.dom_helpers import Dom, app_msg_arguments, assert_same_structure, data_block
 from tests.http_client import get, post
@@ -526,7 +527,7 @@ def _receipt_id(db, number):
 def test_receipt_edit_page_puts_hostile_values_complete_and_escaped_into_the_fields(tmp_db):
     tmp_db.insert_receipt(BREAK, BREAK_SCRIPT, IMG, SCRIPT, MIXED)
     receipt = _receipt_id(tmp_db, BREAK)
-    hostile = PageReceiptEdit(tmp_db, BREAK)
+    hostile = PageReceiptEdit(tmp_db, receipt)
     for raw in (IMG, SCRIPT, BREAK, BREAK_SCRIPT):
         assert raw not in hostile, raw
     assert [a['value'] for a in inputs(hostile, name='number')] == [BREAK]
@@ -541,30 +542,60 @@ def test_receipt_edit_page_puts_hostile_values_complete_and_escaped_into_the_fie
     # ``update_receipt`` ändert den Pfad nicht (seit 2.5.11): der gutartige Vergleichswert kommt per SQL
     sql(tmp_db, 'UPDATE Documents SET Path = ? WHERE ID = ?', 'Belege/beleg.pdf', receipt)
     tmp_db.update_receipt(receipt, '26-001', '2026-01-01', 'beleg.pdf', 'Info')
-    assert_same_structure(hostile, PageReceiptEdit(tmp_db, '26-001'))
+    assert_same_structure(hostile, PageReceiptEdit(tmp_db, receipt))
 
 
 def test_receipt_edit_page_shows_a_stored_null_as_an_empty_field(tmp_db):
     tmp_db.insert_receipt('26-001', '2026-01-01', 'beleg.pdf', None, None)
-    html = PageReceiptEdit(tmp_db, '26-001')
+    html = PageReceiptEdit(tmp_db, _receipt_id(tmp_db, '26-001'))
     assert [a['value'] for a in inputs(html, name='info')] == [''] and inputs(html, name='path') == []
     assert 'keine Datei' in html                                  # NULL heißt: kein Pfad gespeichert
 
 
-def test_receipt_edit_page_shows_the_linked_bookings_as_text(tmp_db):
+def script_data(html, name):
+    """Die Daten ``var <name> = <JSON>;`` aus einem Skriptblock der Seite – so, wie JavaScript sie läse."""
+    for script in Dom(html).scripts:
+        marker = f'var {name} = '
+        if marker in script:
+            return json.JSONDecoder().raw_decode(script, script.index(marker) + len(marker))[0]
+    raise AssertionError(f'kein Datenblock {name}')
+
+
+def test_receipt_edit_page_shows_the_linked_bookings_as_data_not_as_markup(tmp_db):
+    """Seit 2.5.12 baut das Skript die Tabelle der verknüpften Buchungen aus JSON-Daten (``RECEIPT_LINKED``, nur über
+    ``textContent``): Empfänger, Datum und Art stehen unverändert in den Daten und roh nirgends im HTML."""
     tmp_db.insert_receipt('26-001', '2026-01-01', 'beleg.pdf', 'Belege/beleg.pdf', 'Info')
     receipt = _receipt_id(tmp_db, '26-001')
     booking = tmp_db.insert_booking('2026-01-15', 100.0, recipient_client=IMG, booking_type='entry')
     tmp_db.link_booking_to_document(booking, receipt, relation_type=BREAK)
     sql(tmp_db, 'UPDATE Bookings SET DateBooking = ? WHERE ID = ?', SCRIPT, booking)
-    html = PageReceiptEdit(tmp_db, '26-001')
+    html = PageReceiptEdit(tmp_db, receipt)
     assert IMG not in html and SCRIPT not in html and BREAK not in html
-    row = next(r for r in table_rows(html) if IMG in r)
-    assert row[:5] == [str(booking), SCRIPT, IMG, '100,00', BREAK]       # Empfänger, Datum und Typ: als Text
+    assert script_data(html, 'RECEIPT_LINKED') == [
+        {'id': booking, 'date': SCRIPT, 'amount': '100,00', 'currency': 'EUR', 'recipient': IMG, 'text': '', 'documentNumber': '',
+         'kind': 'entry', 'kindLabel': 'Buchungssatz', 'relation': BREAK, 'relationLabel': BREAK}]
+    assert script_data(html, 'RECEIPT_LINK_ID') == receipt
     assert Dom(html).all('img') == []
-    # Die Adressen tragen nur die IDs, prozentkodiert (hier Zahlen: unverändert)
-    assert f"appPost('/documents/unlink?doc_id={receipt}&booking_id={booking}')" in html_lib.unescape(html)
-    assert f"/transactions/edit?id={booking}'" in html
+    assert '\\u003cimg src=x onerror=alert(1)\\u003e' in html                 # in den Daten maskiert (script_json), nie als Tag
+    # Die Tabelle gibt es erst im Browser: Das HTML trägt nur den Platz dafür, nie Daten in einer Zelle
+    assert not [row for row in table_rows(html) if IMG in row or SCRIPT in row]
+
+
+def test_transaction_mask_shows_the_linked_receipts_as_data_not_as_markup(tmp_db):
+    """Dasselbe in der Buchungsmaske (``TX_RECEIPTS``): Nummer, Datum, Dateiname, Info und Art eines Belegs sind feindlich."""
+    tmp_db.insert_receipt(BREAK, BREAK_SCRIPT, IMG, 'Belege/beleg.pdf', MIXED)
+    receipt = tmp_db.fetch_receipts()[0][0]
+    booking = tmp_db.insert_booking('2026-01-15', 100.0, booking_type='entry')
+    tmp_db.link_booking_to_document(booking, receipt, relation_type=SCRIPT)
+    html = PageTransactions(tmp_db, edit_transaction_id=booking, date_from='2026-01-01', date_to='2026-12-31')
+    for raw in (IMG, SCRIPT, BREAK, BREAK_SCRIPT):
+        assert raw not in html, raw
+    assert script_data(html, 'TX_RECEIPTS') == [
+        {'id': receipt, 'number': BREAK, 'date': BREAK_SCRIPT, 'filename': IMG, 'info': MIXED, 'file': 'outside', 'inline': False,
+         'relation': SCRIPT, 'relationLabel': SCRIPT}]
+    assert script_data(html, 'TX_LINK_BOOKING_ID') == booking
+    assert Dom(html).all('img') == []
+    assert 'Belege/beleg.pdf' not in html                                   # der Pfad steht nirgends auf der Seite
 
 
 def test_receipts_page_shows_hostile_values_as_text_and_in_the_data_attributes(tmp_db):

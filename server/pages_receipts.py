@@ -9,8 +9,8 @@ import html as _html
 from urllib.parse import quote
 import demo
 from db import Database
-from money import fmt_eur
 from . import receipt_files
+from . import receipt_links
 from .pages import Header1, Header2, Header3, Footer, script_json
 from .period import period_filter_widget
 from .upload_handler import RECEIPTS_DEMO_REFUSED
@@ -23,22 +23,6 @@ DELETE_QUESTION = "'Beleg wirklich löschen?'"          # als Argument im onclic
 def _esc(value):
     """Wert aus Datenbank oder Anfrage für HTML-Text und -Attribute maskieren (NULL = leer)."""
     return _html.escape(str(value if value is not None else ''), quote=True)
-
-
-def _file_info(stored):
-    """Was die Seite zur Datei eines Belegs weiß: ``None`` (kein Pfad gespeichert), ``False`` (ein Pfad ist gespeichert, gilt aber
-    nicht oder die Datei fehlt) oder ``receipt_files.OpenedReceipt`` (schon geschlossen: es zählen Name, ``inline`` und ``removable``).
-    Der Pfad selbst erscheint nie auf der Seite."""
-    if stored is None or (isinstance(stored, str) and not stored.strip()):
-        return None
-    try:
-        opened = receipt_files.open_receipt(stored, log=False)
-    except OSError:
-        return False
-    if opened is None:
-        return False
-    opened.source.close()
-    return opened
 
 
 def _file_text(info):
@@ -83,7 +67,8 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
     # Serverseitiger Zeitraum-Filter (Belegmenge klein → Python-Filter genügt)
     if date_from and date_to:
         rows = [r for r in rows if r[2] and date_from <= r[2] <= date_to]
-    
+    counts = db.receipt_link_counts()
+
     # Nächste Belegnummer vorschlagen, ohne den Zähler zu verbrauchen.
     # peek_next_number berücksichtigt das eingestellte NumberFormat – die
     # frühere Handrechnung hier hängte den Prefix immer vor die Nummer.
@@ -109,7 +94,7 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
         <!-- LINKS: scrollbare Belegliste -->
         <div class="gridLeftCol">
             <table>
-                <tr><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Datei</th><th>Info</th><th>Aktionen</th></tr>
+                <tr><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Datei</th><th>Info</th><th>Buchungen</th><th>Aktionen</th></tr>
         '''
     for row in rows:
         rid = _esc(row[0])
@@ -120,10 +105,12 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
         dt  = _esc(row[2])
         fn  = _esc(row[3])
         inf = _esc(row[5])
-        info = _file_info(row[4])
+        info = receipt_files.file_info(row[4])
         s += (f'<tr class="receipt-row" data-date="{dt}" data-id="{rid}" data-number="{n}" data-filename="{fn}" '
               f'data-file="{_esc(_file_text(info))}" data-info="{inf}">')
         s += f'<td>{n}</td><td>{dt}</td><td>{fn}</td><td>{_file_cell(info, id_url)}</td><td>{inf}</td>'
+        s += (f'<td><a href="/receipts/edit?id={id_url}" title="Verknüpfte Buchungen ansehen und zuordnen">'
+              f'{counts.get(row[0], 0)}</a></td>')
         s += (f'<td>'
               f'<a href="#" class="action-icon" onclick="editReceiptFromRow(this); return false;" title="Bearbeiten">&#9998;</a>'
               f' <a href="javascript:void(0);" class="action-icon delete-icon" title="L\u00f6schen"'
@@ -173,6 +160,7 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
                             placeholder="JJJJMMTT Name (was gekauft wurde)"
                             title="Namenskonvention f&uuml;r eingehende Belege: JJJJMMTT Kunden-/Lieferantenname (kurze Liste der K&auml;ufe)"></td></tr>
                         <tr id="editFileRow" hidden><td>Datei:</td><td id="editFileText"></td></tr>
+                        <tr id="editLinksRow" hidden><td>Buchungen:</td><td><a id="editLinks" href="/receipts">Verknüpfungen ansehen und zuordnen</a></td></tr>
                         <tr><td>Info:</td><td><input type="text" name="info" id="editInfo"></td></tr>
                         <tr><td></td><td>
                             <div id="btnNew">
@@ -332,6 +320,8 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
             document.getElementById('editInfo').value     = row.dataset.info;
             document.getElementById('editFileText').textContent = row.dataset.file;
             document.getElementById('editFileRow').hidden = false;
+            document.getElementById('editLinks').href = '/receipts/edit?id=' + encodeURIComponent(row.dataset.id);
+            document.getElementById('editLinksRow').hidden = false;
             document.getElementById('receiptForm').action           = '/update_receipt';
             document.getElementById('receiptFormTitle').textContent = 'Beleg bearbeiten';
             document.getElementById('btnNew').style.display  = 'none';
@@ -368,17 +358,68 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
     return s
 
 
-def PageReceiptEdit(db: Database, number):
-    """Generate receipt edit page"""
-    receipt = db.get_receipt_by_number(number)
+# Das Skript der Seite eines Belegs für die verknüpften Buchungen (nach ``receipt_links.LINK_WIDGET_JS`` und den Daten
+# ``RECEIPT_LINK_ID``/``RECEIPT_LINKED``). Werte aus der Datenbank nur über textContent/createElement, nie als Markup.
+RECEIPT_LINK_JS = r'''function receiptLinkedIds() { return RECEIPT_LINKED.map(function (b) { return b.id; }); }
+function receiptLinksRender(bookings) {
+    RECEIPT_LINKED = bookings;
+    linkTable(document.getElementById('receiptLinks'),
+        ['Datum', 'Empfänger / Text', 'Betrag', 'Beleg-Nr.', 'Art', 'Verknüpfung', ''],
+        bookings.map(function (b) {
+            return linkRow([b.date, linkWho(b), b.amount + ' ' + b.currency, b.documentNumber, b.kindLabel, b.relationLabel,
+                linkActions([linkAnchor('Öffnen', '/transactions/edit?id=' + encodeURIComponent(String(b.id)), false),
+                             linkButton('Lösen', 'bg-gray', function () { receiptDetach(b.id); })])]);
+        }), 'Keine verknüpften Buchungen.');
+}
+function receiptBookingSearch() {
+    linkSearch('/transactions/search', document.getElementById('receiptBookingQuery').value,
+        document.getElementById('receiptBookingResults'), ['Datum', 'Empfänger / Text', 'Betrag', 'Beleg-Nr.', 'Art', ''],
+        function (b) {
+            return linkRow([b.date, linkWho(b), b.amount + ' ' + b.currency, b.documentNumber, b.kindLabel,
+                receiptLinkedIds().indexOf(b.id) >= 0 ? linkEl('span', 'zugeordnet', 'muted')
+                    : linkButton('Zuordnen', 'bg-green', function () { receiptAttach(b.id); })]);
+        });
+}
+function receiptAttach(bookingId) {
+    linkPost('/bookings/link-document', bookingId, RECEIPT_LINK_ID).then(function (data) {
+        if (linkStale(data)) return;
+        receiptLinksRender(data.bookings);
+        appMsg(linkDoneText(data), data.numberInUse ? 'info' : (data.created ? 'success' : 'info'));
+        receiptBookingSearch();
+    }).catch(linkFail);
+}
+function receiptDetach(bookingId) {
+    appConfirm('Verknüpfung lösen? Die Beleg-Nr. der Buchung bleibt.', function () {
+        linkPost('/bookings/unlink-document', bookingId, RECEIPT_LINK_ID).then(function (data) {
+            if (linkStale(data)) return;
+            receiptLinksRender(data.bookings);
+            appMsg(linkUndoneText(data), data.removed ? 'success' : 'info');
+        }).catch(linkFail);
+    });
+}
+receiptLinksRender(RECEIPT_LINKED);
+'''
+
+
+def PageReceiptEdit(db: Database, receipt_id):
+    """Generate receipt edit page. ``receipt_id``: die ID des Belegs (die Belegnummer ist nicht eindeutig); eine unbekannte ID
+    zeigt „Beleg nicht gefunden.“
+
+    Unter dem Formular stehen die verknüpften Buchungen und eine Suche nach Buchungen zum Zuordnen (``receipt_links``): Die Daten
+    kommen als JSON in den Skriptblock, das Skript baut die Tabellen nur über ``textContent``/``createElement``."""
+    receipt = db.get_receipt_by_id(receipt_id)
     if not receipt:
         return "Beleg nicht gefunden."
 
     # Documents: ID(0), Number(1), Date(2), Filename(3), Path(4), Info(5)
-    s = Header1()
+    s = Header1('receipts')
     s+= Header2()
     s+= Header3()
     s+= "<h1>Beleg bearbeiten</h1>"
+    info = receipt_files.file_info(receipt[4])
+    id_url = quote(str(receipt[0]), safe='')
+    # Ansehen und Herunterladen nur bei einer gültigen Datei (wie in der Liste); der Pfad steht nie auf der Seite
+    file_links = f'<tr><td></td><td>{_file_cell(info, id_url)}</td></tr>' if info else ''
     # Jeder Wert stammt aus der Datenbank: in HTML maskiert, in den Adressen des onclick
     # prozentkodiert (ein nur HTML-maskiertes Hochkomma löst der Browser dort wieder auf).
     s+= f'''
@@ -388,63 +429,30 @@ def PageReceiptEdit(db: Database, number):
                 <tr><td>Nummer:</td><td><input type="text" name="number" value="{_esc(receipt[1])}"></td></tr>
                 <tr><td>Datum:</td><td><input type="date" name="date" value="{_esc(receipt[2])}"></td></tr>
                 <tr><td>Dateiname:</td><td><input type="text" name="filename" value="{_esc(receipt[3])}"></td></tr>
-                <tr><td>Datei:</td><td>{_esc(_file_text(_file_info(receipt[4])))}</td></tr>
+                <tr><td>Datei:</td><td>{_esc(_file_text(info))}</td></tr>
+                {file_links}
                 <tr><td>Info:</td><td><input type="text" name="info" value="{_esc(receipt[5])}"></td></tr>
                 <tr><td></td><td><input type="submit" value="Beleg aktualisieren"></td></tr>
             </table>
         </form>
     '''
-    
-    # Show linked bookings
-    document_id = receipt[0]  # ID is at index 0
-    linked_bookings = db.get_bookings_for_document(document_id)
-    
-    s+= "<h2>Verknüpfte Buchungen</h2>"
-    if linked_bookings:
-        s+= "<table>"
-        s+= "<tr><th>ID</th><th>Datum</th><th>Empfänger</th><th>Betrag</th><th>Typ</th><th>Aktionen</th></tr>"
-        for booking in linked_bookings:
-            booking_id = booking[0]
-            date_booking = booking[1]
-            recipient = booking[6] or ""
-            amount = booking[11]
-            relation_type = booking[-1]  # RelationType from JOIN
-            
-            amount_color = "green" if (amount or 0) > 0 else "red"
-            booking_url = quote(str(booking_id), safe='')
-            document_url = quote(str(document_id), safe='')
-            s+= f"<tr>"
-            s+= f"<td>{_esc(booking_id)}</td>"
-            s+= f"<td>{_esc(date_booking)}</td>"
-            s+= f"<td>{_esc(recipient)}</td>"
-            s+= f"<td style='color:{amount_color}'>{fmt_eur(amount, symbol=False)}</td>"
-            s+= f"<td>{_esc(relation_type or '-')}</td>"
-            s+= f"<td><a href='/transactions/edit?id={booking_url}'>Bearbeiten</a> | "
-            s+= f"<a href='javascript:void(0);' onclick=\"appPost('/documents/unlink?doc_id={document_url}&amp;booking_id={booking_url}')\">Entfernen</a></td>"
-            s+= f"</tr>"
-        s+= "</table>"
-    else:
-        s+= "<p>Keine verknüpften Buchungen.</p>"
-    
-    # Form to link new booking
-    s+= "<h3>Buchung verknüpfen</h3>"
+
+    # Verknüpfte Buchungen und die Suche nach weiteren (Daten als JSON im Skriptblock, nur über ``script_json``)
     s+= f'''
-        <form method="POST" action="/documents/link">
-            <input type="hidden" name="document_id" value="{_esc(document_id)}">
-            <table class="form-table">
-                <tr><td>Buchungs-ID:</td><td><input type="number" name="booking_id" required></td></tr>
-                <tr><td>Typ:</td><td>
-                    <select name="relation_type">
-                        <option value="receipt">Beleg</option>
-                        <option value="invoice">Rechnung</option>
-                        <option value="contract">Vertrag</option>
-                        <option value="other">Sonstiges</option>
-                    </select>
-                </td></tr>
-                <tr><td></td><td><input type="submit" value="Verknüpfung hinzufügen"></td></tr>
-            </table>
-        </form>
+        <h2>Verknüpfte Buchungen</h2>
+        <div id="receiptLinks"></div>
+        <h3>Buchung suchen</h3>
+        <div class="rowWithObjects">
+            <input type="search" id="receiptBookingQuery" maxlength="{receipt_links.SEARCH_MAX_LENGTH}" placeholder="Empfänger, Text, Beleg-Nr., Betrag oder Datum"
+                   onkeydown="if (event.key === 'Enter') {{ event.preventDefault(); receiptBookingSearch(); }}">
+            <button type="button" class="coloredButton btn-sm bg-blue" onclick="receiptBookingSearch()">Buchung suchen</button>
+        </div>
+        <div id="receiptBookingResults"></div>
     '''
-    
+    s+= ('<script>' + receipt_links.LINK_WIDGET_JS
+         + f'var RECEIPT_LINK_ID = {int(receipt[0])};\n'
+         + f'var RECEIPT_LINKED = {script_json(receipt_links.linked_bookings(db, receipt[0]))};\n'
+         + RECEIPT_LINK_JS + '</script>')
+
     s+= Footer()
     return s

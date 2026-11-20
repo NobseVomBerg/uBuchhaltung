@@ -7,7 +7,7 @@
   ``/quote/pdf_generate``): GET ergibt 405 und ändert nichts, POST braucht Herkunft und Token.
 * Heruntergeladen wird nur, was abgelegt ist (``/quote/pdf_download``); ``/invoice/xml`` gibt es nicht
   mehr, ``/invoice/xml_download`` liefert die abgelegte Datei.
-* Die acht JSON-Routen (``app._JSON_PATHS``) antworten auf unbrauchbare Bodys mit 400
+* Die JSON-Routen (``app._JSON_PATHS``, seit 2.5.12 auch das Verknüpfen von Belegen) antworten auf unbrauchbare Bodys mit 400
   „Ungültige Anfrage.“ und danach weiter.
 * Jede Antwort trägt ``X-Content-Type-Options: nosniff`` und ``X-Frame-Options: DENY`` – auch die
   Fehlerantwort auf eine kaputte Anfragezeile.
@@ -290,18 +290,21 @@ HANDLER = {                     # Route -> Handler, den `_post_json_route` aufru
     '/invoice/reissue': 'handle_invoice_reissue',
     '/quote/save': 'handle_quote_save',
     '/quote/status': 'handle_update_quote_status',
+    '/bookings/link-document': 'handle_booking_link_document',
+    '/bookings/unlink-document': 'handle_booking_unlink_document',
 }
 # Feld, das die Beleg-/Zahlungs-ID trägt (die Speichern-Routen lesen invoiceId/quoteId optional)
 ID_FIELD = {'/invoice/send-email': 'invoice_id', '/invoice/link-payment': 'invoice_id',
             '/invoice/delete-payment': 'payment_id', '/invoice/status': 'invoice_id',
-            '/quote/status': 'quote_id'}
+            '/quote/status': 'quote_id',
+            '/bookings/link-document': 'bookingId', '/bookings/unlink-document': 'bookingId'}
 INVALID_REQUEST = {'success': False, 'error': 'Ungültige Anfrage.'}
 
 
 def test_json_route_expectations_cover_all_json_paths():
     # Kommt eine JSON-Route hinzu, braucht sie hier einen Handler und eine Erwartung
     assert set(HANDLER) == set(server_app._JSON_PATHS)
-    assert len(JSON_ROUTES) == 9
+    assert len(JSON_ROUTES) == 11
 
 
 UNUSABLE_BODIES = {
@@ -342,6 +345,8 @@ EMPTY_OBJECT = {
     '/invoice/link-payment': (400, 'Ungültige Parameter'),
     '/invoice/save': (200, 'Pflichtfelder fehlen'),
     '/quote/save': (200, 'Pflichtfelder fehlen'),
+    '/bookings/link-document': (400, 'Ungültige Anfrage.'),
+    '/bookings/unlink-document': (400, 'Ungültige Anfrage.'),
 }
 
 

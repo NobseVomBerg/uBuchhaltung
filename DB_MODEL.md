@@ -734,9 +734,17 @@ ihn ab (nichts geändert).
 | ID | INTEGER | PRIMARY KEY | Auto-Increment |
 | Booking_ID | INTEGER | NOT NULL, FK → Bookings | |
 | Document_ID | INTEGER | NOT NULL, FK → Documents | |
-| RelationType | TEXT | | Art der Beziehung |
+| RelationType | TEXT | | Art der Beziehung: `receipt` \| `invoice` \| `contract` \| `other` (Positivliste, Standard `receipt`) |
 
 **Indizes:** UNIQUE(Booking_ID, Document_ID)
+
+Verknüpfbar ist jede Zeile von `Bookings` (Bankbewegung, Satz einer Bankbewegung, eigenständiger Satz). Die App verknüpft über
+`Database.link_receipt_to_booking`: Trägt die Buchung keine Beleg-Nr. (`Bookings.DocumentNumber`) und ist die Verknüpfung von der Art
+`receipt`, übernimmt sie in derselben Transaktion die Nummer des Belegs – nur die verknüpfte Zeile, nie ein Zahlungssatz einer
+Rechnungszuordnung (`Status = 'invoice_payment'`) und nie eine Nummer, die eine Rechnung trägt (`Invoices.InvoiceNumber`). Ebenso nie
+eine Nummer, die eine andere Buchung trägt oder der sie ähnelt (die eine in der anderen enthalten; ausgenommen die eigene Familie: die
+Sätze der Buchung, ihre Bankbewegung und deren übrige Sätze), weil sie wie eine von Hand eingetragene Nummer auch auf den automatischen
+Abgleich wirkt (dieselbe Nummer am selben Tag gilt dort als ein Beleg). Lösen entfernt nur die Verknüpfung; die Nummer bleibt an der Buchung.
 
 ---
 

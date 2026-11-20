@@ -8,7 +8,7 @@ import json
 import traceback
 from decimal import Decimal
 from money import to_minor, from_minor
-from .core import DeleteRefused, reference_texts
+from .core import DeleteRefused, add_fold_function, fold_text, reference_texts, search_limit
 
 
 class ReceiptsMixin:
@@ -126,6 +126,38 @@ class ReceiptsMixin:
         conn = self._get_connection()
         try:
             return conn.execute('SELECT * FROM Documents WHERE ID = ?', (receipt_id,)).fetchone()
+        finally:
+            conn.close()
+    def search_receipts(self, text, date_prefix, limit):
+        """Belege für die Suche an der Buchung – rein lesend: Rohzeilen ``(ID, Number, Date, Filename, Path, Info)``, jüngste
+        zuerst, höchstens ``limit`` (begrenzt auf 1 bis ``SEARCH_LIMIT_MAX``).
+
+        Gefunden wird, was ``text`` in Nummer, Dateiname oder Info enthält – ohne Rücksicht auf die Schreibweise, auch bei Umlauten
+        und ß (``ub_fold`` + ``INSTR``: ``LIKE`` faltet in SQLite nur ASCII, und ``%`` und ``_`` sind hier gewöhnliche Zeichen) –,
+        dazu die Belege, deren Datum mit ``date_prefix`` beginnt (``JJJJ``, ``JJJJ-MM``, ``JJJJ-MM-TT``; ``None``, wenn die Eingabe
+        keines ist). Ohne ``text`` gibt es keine Bedingung: die jüngsten Belege."""
+        needle = fold_text(text or '')
+        select = 'SELECT ID, Number, Date, Filename, Path, Info FROM Documents'
+        order = ' ORDER BY Date DESC, ID DESC LIMIT :n'
+        if needle:
+            sql = (select + ' WHERE INSTR(ub_fold(Number), :t) > 0 OR INSTR(ub_fold(Filename), :t) > 0'
+                            ' OR INSTR(ub_fold(Info), :t) > 0'
+                            ' OR (:d IS NOT NULL AND SUBSTR(Date, 1, LENGTH(:d)) = :d)' + order)
+            params = {'t': needle, 'd': date_prefix, 'n': search_limit(limit)}
+        else:
+            sql, params = select + order, {'n': search_limit(limit)}
+        conn = self._get_connection()
+        try:
+            add_fold_function(conn)
+            return conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+    def receipt_link_counts(self):
+        """Je Beleg die Zahl seiner verknüpften Buchungen: ``{ID des Belegs: Zahl}`` – Belege ohne Verknüpfung fehlen."""
+        conn = self._get_connection()
+        try:
+            return {document_id: count for document_id, count in conn.execute(
+                'SELECT Document_ID, COUNT(*) FROM BookingDocuments GROUP BY Document_ID')}
         finally:
             conn.close()
     def delete_receipt(self, receipt_id):

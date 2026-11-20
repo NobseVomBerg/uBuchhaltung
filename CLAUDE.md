@@ -157,7 +157,8 @@ kein Subagent darauf:
   Dokumenten (`_GENERATE_PATHS`, JSON, CSRF-Token als Header – im Frontend
   `fetch(url, {method: 'POST'})`, das Footer-JS hängt das Token an), Abmelden
   (`POST /logout` neben `/login` in `_auth_routes_*`) und das Stornieren und Neu-Ausstellen einer Rechnung
-  (`/invoice/cancel`, `/invoice/reissue`: JSON-Routen in `_JSON_PATHS`, dazu `_POST_ONLY_JSON_PATHS`) und der Upload der
+  (`/invoice/cancel`, `/invoice/reissue`: JSON-Routen in `_JSON_PATHS`, dazu `_POST_ONLY_JSON_PATHS`), das Verknüpfen von Belegen
+  (`/bookings/link-document`, `/bookings/unlink-document`: ebenso) und der Upload der
   WISO-Datenbank (`/wiso/fdb-upload` in `_UPLOAD_PATHS`: roher Body, JSON-Antwort, CSRF-Token als Header per
   `XMLHttpRequest`); GET → jeweils 405
 - **Automatische Anmeldung** (`auto_login` in `config.json`, `auth.auto_login_user()`):
@@ -286,6 +287,41 @@ kein Subagent darauf:
   `Belege/<Jahr>/general/` ablegt, kein absoluter Pfad, kein `..`; dazu nur eine reguläre Datei, nur wenn kein anderer Beleg auf dieselbe
   aufgelöste Datei zeigt, nie nach einer Ablehnung (`remove_receipt_file`). Das Formular ändert den gespeicherten Pfad nie.
   `tests/test_receipt_upload.py`, `tests/test_receipt_file.py`, `tests/test_delete_refusals.py`, `tests/test_suggestion.py`
+- **Belege verknüpfen (seit 2.5.12, `server/receipt_links.py`, `Database.link_receipt_to_booking`):** An der Buchung (Maske, nach `</form>`, eigene
+  `fetch`-Aufrufe, kein Formularfeld) wird ein Beleg gesucht und zugeordnet, am Beleg (`/receipts/edit?id=<n>`, ID über `_id_param`) eine Buchung.
+  **Suchen:** `GET /receipts/search` und `GET /transactions/search` (`_SEARCH_PATHS`; `q` höchstens 100 Zeichen, sonst 400; `limit` 1–50, sonst 20, auch in
+  der Datenbankschicht auf 1–50 begrenzt; Herkunft geprüft; rein lesend; ohne Rücksicht auf die Schreibweise über `ub_fold` + `INSTR`, kein `LIKE`; ein
+  Datum oder dessen Anfang und ein Betrag finden ebenfalls; die Antwort nennt nie einen Pfad, nur `none`/`outside`/`ok`; `Cache-Control: no-store`, auch bei
+  einem Suchbegriff wie `.png`; ihre 503 während einer Wiederherstellung kommt als JSON; nicht in der Positivliste des Diagnose-MCP). **Schreiben:**
+  `POST /bookings/link-document` und `/bookings/unlink-document` (`_JSON_PATHS` + `_POST_ONLY_JSON_PATHS`, JSON `{bookingId, documentId[, relationType]}`,
+  IDs streng über `_json_positive_id`; `relationType` aus `RELATION_TYPES`, sonst `receipt`; unbekannte Buchung oder Beleg 404 mit Klartext). Verknüpfen ist
+  idempotent und läuft in EINER Transaktion: Prüfen, Zeile, Beleg-Nr. **Die übernommene Nummer wirkt wie eine von Hand eingetragene, auch auf den
+  automatischen Abgleich** (dieselbe Beleg-Nr. am selben Tag fasst eigenständige Sätze zu EINEM Beleg zusammen, Stufe 4 vergleicht die Nummer einer
+  Bankbewegung als Teilzeichenkette) – deshalb übernimmt die Buchung die Nummer des Belegs (`update_booking_fields(tx=…)`, Replay-Log erst nach dem Commit)
+  nur, wenn **alle** Bedingungen zutreffen, in dieser Reihenfolge: (1) sie trägt keine Beleg-Nr. (leer oder nur Leerraum); (2) der Beleg trägt eine Nummer;
+  (3) die Verknüpfung ist von der Art `receipt` – maßgeblich ist die Art, die nach dem Aufruf in `BookingDocuments` steht (eine bestehende Verknüpfung
+  behält ihre, auch bei erneutem Zuordnen; `invoice`, `contract` und `other` übernehmen nie); (4) kein Zahlungssatz (`invoice_payment`); (5) keine Rechnung
+  trägt die Nummer (`Invoices.InvoiceNumber`); (6) keine **andere** Buchung trägt diese oder eine ähnliche Nummer – ähnlich: die eine ist in der anderen
+  enthalten, in beiden Richtungen, ohne Leerraum am Rand und ohne Rücksicht auf die Schreibweise (`26B001` gegen `26B0010` und `26B001_A`;
+  `_NUMBER_IN_USE_SQL`, ein Wert aus einem Altbestand, der kein Text ist – Zahl, Blob –, gilt als sein Text). Die eigene Familie zählt dabei nicht (sie gehört
+  zum selben Vorgang, der Abgleich fasst sie nicht an): die Sätze der Buchung, ihre Bankbewegung und deren übrige Sätze; eine fremde Bankbewegung und deren
+  Sätze schon. **Diese Bedingungen nicht lockern** – lieber keine Nummer als eine, die der Abgleich als Beleg liest. Die Prüfung (6) liest die Tabelle einmal
+  (kein Index auf `DocumentNumber`; gemessen rund 50 ms bei 200 000 Buchungen, unter der Schreibsperre). Nur die verknüpfte Zeile (Kinder einer Bankbewegung
+  erben nichts, wie beim Speichern der Maske). Unterbleibt die Übernahme allein an (6), sagt es die Antwort (`numberInUse`) und die Seite („Die Beleg-Nr. wurde
+  nicht übernommen: …“, als Hinweis, nicht als Erfolg); `hasEntries` ist wahr bei einer Bankbewegung mit Buchungssätzen, die Meldung sagt dann, dass diese ihre
+  eigenen Nummern behalten. Lösen entfernt nur die Verknüpfung, die Nummer bleibt (sie bleibt auch beim Löschen des Belegs in Gebrauch). **Die Listen der Antwort**
+  (`documents`, `bookings`) liest `handlers._link_lists` NACH dem Commit: Scheitert das, bleibt die Antwort 200 mit leeren Listen und `stale: true` – nie 500, die
+  Verknüpfung ist gespeichert –, die Seite zeichnet dann nichts neu und bittet um Neuladen. **Eine Antwort gehört zur geöffneten Buchung:** `#txReceipts` trägt
+  `data-booking`; `txAttach`/`txDetach` halten die ID beim Aufruf fest und prüfen im Antwortzweig als Erstes `txStill(<ID>)` (die Maske wird beim Öffnen einer anderen
+  oder neuen Buchung ausgetauscht) – sonst fassen sie weder Liste noch Feld Beleg-Nr. noch Meldung an; die Treffer von `txReceiptSearch` werden ebenso nur dann
+  gezeichnet. Die Seiten bekommen die Daten als JSON im Skriptblock (`script_json`);
+  das Skript (`LINK_WIDGET_JS`, `RECEIPT_LINK_JS`, `TX_LINK_JS`) setzt sie nur über `textContent`/`createElement`/`.value`, nur `var` und `function`.
+  **Bekannte Grenzen der übernommenen Nummer:** Bekommt eine aus dem WISO-Textexport importierte Buchung ohne Beleg-Nr. so eine Nummer, erkennt ein erneuter
+  Import derselben Textdatei sie nicht wieder und legt sie ohne Meldung ein zweites Mal an; die Übernahme CSV → WISO-Datenbank nimmt sie nicht (neu angelegt,
+  als mögliches Duplikat gemeldet); ein Satz mit bekannter Quellgruppe wird beim erneuten Import der Datenbank weiter wiedererkannt; legt WISO ihn unter neuer
+  Quellgruppe neu an, findet die Neuzuordnung ihn nicht (neu angelegt, die alte Zeile gemeldet). Eine vor dem Zuordnen geöffnete Maske (zweites Fenster), die
+  danach gespeichert wird, schreibt ihr leeres Feld Beleg-Nr. zurück; eine schon exportierte Buchung trägt nach dem Zuordnen ein Belegfeld 1.
+  `/documents/link` und `/documents/unlink` gibt es nicht mehr. `tests/test_receipt_links.py`
 - **E-Mail-Versand** (`email_sender.py`, seit 2.3.3): immer verschlüsselt und mit Zertifikatsprüfung (`ssl.create_default_context()`;
   Port 465 `SMTP_SSL`, sonst STARTTLS – ohne STARTTLS-Angebot wird nicht angemeldet). Es gibt keinen Schalter zum Abschalten; ein
   eigenes CA-Zertifikat kommt über `SSL_CERT_FILE` (`DEPLOYMENT.md`). Meldungen an den Nutzer nennen nie Exception-Text oder
@@ -828,7 +864,8 @@ kein Subagent darauf:
   Hinweis unter dem DATEV-Formular auf *Sonstiges*. Keine Steuerberatung in den Texten. Die Umsetzung der Soll-Versteuerung
   (Umsatzsteuer mit der Leistung) ist offen (`docs/aufgaben.md`) – die Einstellung nicht für Rechenlogik verwenden, bevor das entschieden ist.
 - Masken schreiben nur, was sie führen (`update_booking_fields`) – Gegenkonto,
-  Kategorie und fremde Kontakte dürfen beim Speichern nicht verloren gehen. **Öffnen und unverändert
+  Kategorie und fremde Kontakte dürfen beim Speichern nicht verloren gehen. Der Block „Belege“ steht außerhalb des
+  Formulars, das Feld Beleg-Nr. füllt das Skript nur, wenn es leer ist (*Belege verknüpfen*). **Öffnen und unverändert
   speichern ändert nichts** (`tests/test_entry_form_roundtrip.py` prüft es für jede Bankbewegung, jeden
   Satz und das Zuordnen an einem migrierten und einem frischen Bestand, nach geänderter Kontenliste):
   Welches Konto der Editor als Zweckkonto zeigt, sagt `matching.purpose_in_counter` – `liquid_first`:
@@ -901,7 +938,8 @@ kein Subagent darauf:
   aus `_PAGE_ALLOWLIST` samt erlaubten Query-Schlüsseln – diesen Lesewächter (`check_select`,
   `check_page_path`) nicht aufweichen; neue Seiten und Schlüssel nur für GET-Handler, die
   nichts schreiben (Nachweis im Test). `/backup/download` steht bewusst nicht darin: Es liefert den ganzen Datenbestand
-  (Gigabyte-Größe)
+  (Gigabyte-Größe). `/receipts/search` und `/transactions/search` stehen bewusst nicht darin: JSON-Suchen der Seiten, keine
+  Anzeigeseiten; dasselbe liefert die SQL-Abfrage
 - Zugangsdaten aus der Windows-Anmeldeinformationsverwaltung, keyring oder Umgebung, nie im Repo; über `http://` gehen sie nur
   an den eigenen Rechner, sonst nur mit `UBUCHHALTUNG_MCP_ALLOW_HTTP`. Registrierung nur
   lokal (`claude mcp add --scope local`), Einrichtung in `DEPLOYMENT.md`

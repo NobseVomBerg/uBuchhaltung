@@ -14,6 +14,7 @@ from db.invoice_payments import PAYABLE_STATUSES
 from .pages import Header1, Header2, Header3, Footer, script_json
 from .pages_invoice import revenue_coa_choice
 from .period import period_filter_widget
+from .receipt_links import LINK_WIDGET_JS, SEARCH_MAX_LENGTH, linked_documents
 
 def _attr(s):
     """Für HTML-Attribute escapen – auch einfach-quotierte (data-*, title):
@@ -29,6 +30,86 @@ def _rate_text(rate):
 def _tax_text(tax):
     """Steuerbetrag, wie der Editor ihn zeigt (Spalte „St.-Betrag“): zwei Stellen, keiner → ``''``."""
     return '' if tax is None else f"{tax:.2f}"
+
+
+# Das Skript des Abschnitts „Belege“ der Maske (nach ``receipt_links.LINK_WIDGET_JS`` und den Daten ``TX_LINK_BOOKING_ID``/
+# ``TX_RECEIPTS``). Werte aus der Datenbank nur über textContent/createElement, nie als Markup. ``txTakeNumber`` setzt die Nummer des
+# Belegs in das Feld Beleg-Nr. der Maske – aber nur in ein leeres. **Eine Antwort gehört zur geöffneten Buchung:** Die Maske wird beim
+# Öffnen einer anderen (oder neuen) Buchung ausgetauscht, ``#txReceipts`` trägt ``data-booking``; ``txStill(<ID beim Aufruf>)`` fragt, ob
+# die Maske noch dieselbe ist – sonst fasst die Antwort weder die Liste noch das Feld Beleg-Nr. noch die Meldung an.
+TX_LINK_JS = r'''function txReceiptIds() { return TX_RECEIPTS.map(function (d) { return d.id; }); }
+function txStill(bookingId) {
+    var box = document.getElementById('txReceipts');
+    return !!box && box.dataset.booking === String(bookingId);
+}
+function txReceiptsRender(docs) {
+    TX_RECEIPTS = docs;
+    linkTable(document.getElementById('txReceipts'), ['Nr.', 'Datum', 'Dateiname', 'Verknüpfung', ''],
+        docs.map(function (d) {
+            return linkRow([d.number, d.date, d.filename, d.relationLabel, linkActions(linkFileActions(d).concat([
+                linkAnchor('Beleg', '/receipts/edit?id=' + encodeURIComponent(String(d.id)), true),
+                linkButton('Lösen', 'bg-gray', function () { txDetach(d.id); })]))]);
+        }), 'Keine verknüpften Belege.');
+}
+function txReceiptSearch() {
+    var bookingId = TX_LINK_BOOKING_ID;
+    linkSearch('/receipts/search', document.getElementById('txReceiptQuery').value,
+        document.getElementById('txReceiptResults'), ['Nr.', 'Datum', 'Dateiname', 'Info', ''],
+        function (d) {
+            return linkRow([d.number, d.date, d.filename, d.info, txReceiptIds().indexOf(d.id) >= 0
+                ? linkEl('span', 'zugeordnet', 'muted') : linkButton('Zuordnen', 'bg-green', function () { txAttach(d.id); })]);
+        }, function () { return txStill(bookingId); });
+}
+function txTakeNumber(number) {
+    /* Die Buchung trägt jetzt die Nummer des Belegs: Das leere Feld der Maske zieht mit – sonst leerte das nächste Speichern
+       sie wieder. Ein eingetipptes, noch nicht gespeichertes Feld bleibt, wie es ist. */
+    var form = document.querySelector('form[action="/transactions/add"]');
+    var field = form ? form.elements['document_nr'] : null;
+    if (field && !field.value.trim()) field.value = number;
+    if (typeof SPLIT_BANK_DOCNR !== 'undefined' && !SPLIT_BANK_DOCNR) SPLIT_BANK_DOCNR = number;
+}
+function txAttach(documentId) {
+    var bookingId = TX_LINK_BOOKING_ID;
+    linkPost('/bookings/link-document', bookingId, documentId).then(function (data) {
+        if (!txStill(bookingId)) return;
+        if (linkStale(data)) return;
+        txReceiptsRender(data.documents);
+        if (data.numberTaken) txTakeNumber(data.documentNumber);
+        appMsg(linkDoneText(data), data.numberInUse ? 'info' : (data.created ? 'success' : 'info'));
+        txReceiptSearch();
+    }).catch(linkFail);
+}
+function txDetach(documentId) {
+    var bookingId = TX_LINK_BOOKING_ID;
+    appConfirm('Verknüpfung lösen? Die Beleg-Nr. der Buchung bleibt.', function () {
+        linkPost('/bookings/unlink-document', bookingId, documentId).then(function (data) {
+            if (!txStill(bookingId)) return;
+            if (linkStale(data)) return;
+            txReceiptsRender(data.documents);
+            appMsg(linkUndoneText(data), data.removed ? 'success' : 'info');
+        }).catch(linkFail);
+    });
+}
+txReceiptsRender(TX_RECEIPTS);
+'''
+
+
+def _receipt_links_block(db, booking_id):
+    """Der Abschnitt „Belege“ der Maske einer vorhandenen Buchung: die verknüpften Belege (Ansehen, Herunterladen, Lösen), eine Suche
+    nach Belegen zum Zuordnen. Er steht NACH dem Formular – kein Feld darin hat einen Namen, das Speichern der Maske schreibt ihn
+    nie mit; die Daten kommen als JSON in den Skriptblock (``script_json``), das Skript baut die Tabellen nur über ``textContent``."""
+    return (
+        f'<h3>Belege</h3><div id="txReceipts" data-booking="{int(booking_id)}"></div>'
+        '<div class="rowWithObjects">'
+        f'<input type="search" id="txReceiptQuery" maxlength="{SEARCH_MAX_LENGTH}" placeholder="Nummer, Dateiname oder Info" '
+        'onkeydown="if (event.key === \'Enter\') { event.preventDefault(); txReceiptSearch(); }">'
+        '<button type="button" class="coloredButton btn-sm bg-blue" onclick="txReceiptSearch()">Beleg suchen</button>'
+        '</div>'
+        '<div id="txReceiptResults"></div>'
+        '<script>' + LINK_WIDGET_JS
+        + f'var TX_LINK_BOOKING_ID = {int(booking_id)};\n'
+        + f'var TX_RECEIPTS = {script_json(linked_documents(db, booking_id))};\n'
+        + TX_LINK_JS + '</script>')
 
 
 # Spaltenindizes in Bookings (SELECT *):
@@ -724,33 +805,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             </script>
     '''
 
-    # Show linked documents if editing
+    # Belege der Buchung (suchen, zuordnen, ansehen, herunterladen, lösen): nach dem Formular, kein Feld darin. Eine neue Buchung
+    # hat noch keine ID, der Hinweis ersetzt den Abschnitt.
     if edit_trans:
-        booking_id = edit_trans[0]
-        linked_documents = db.get_documents_for_booking(booking_id)
-
-        s+= "<br><h3>Verknüpfte Dokumente</h3>"
-        if linked_documents:
-            s+= "<table>"
-            s+= "<tr><th>ID</th><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Typ</th><th>Aktionen</th></tr>"
-            for doc in linked_documents:
-                doc_id        = doc[0]
-                doc_number    = _html.escape(str(doc[1] or ''))
-                doc_date      = _html.escape(str(doc[2] or ''))
-                doc_filename  = _html.escape(str(doc[3] or ''))
-                relation_type = _html.escape(str(doc[-1] or ''))  # RelationType from JOIN
-                s+= f"<tr>"
-                s+= f"<td>{doc_id}</td>"
-                s+= f"<td>{doc_number}</td>"
-                s+= f"<td>{doc_date}</td>"
-                s+= f"<td>{doc_filename}</td>"
-                s+= f"<td>{relation_type or '-'}</td>"
-                s+= f"<td><a href='/receipts/edit?number={doc_number}'>Ansehen</a> | "
-                s+= f"<a href='javascript:void(0);' onclick=\"appPost('/documents/unlink?doc_id={doc_id}&amp;booking_id={booking_id}')\">Entfernen</a></td>"
-                s+= f"</tr>"
-            s+= "</table>"
-        else:
-            s+= "<p>Keine verknüpften Dokumente.</p>"
+        s += _receipt_links_block(db, edit_trans[0])
+    else:
+        s += '<h3>Belege</h3><p class="muted">Belege lassen sich zuordnen, sobald die Buchung gespeichert ist.</p>'
 
     s+= '''
         </div><!-- Ende rectRounded Formular -->

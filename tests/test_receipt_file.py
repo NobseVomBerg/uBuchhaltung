@@ -589,12 +589,14 @@ def test_a_hostile_number_stays_data_in_the_question_with_a_file(server_port, au
 
 
 def test_the_page_of_a_receipt_names_its_file_as_text(server_port, auto_login):
-    add(auto_login.db, 'Belege/2026/26B001_rechnung.pdf', number='26B001')
+    with_file = add(auto_login.db, 'Belege/2026/26B001_rechnung.pdf', number='26B001')
     auto_login.db.insert_receipt('P-1', DAY, 'papier.pdf', '', '')
+    paper = auto_login.db.fetch_receipts()[-1][0]
     auto_login.db.insert_receipt('X-1', DAY, 'x.pdf', '/srv/alt/x.pdf', '')
-    assert '26B001_rechnung.pdf' in get(server_port, '/receipts/edit?number=26B001').text
-    assert 'keine Datei' in get(server_port, '/receipts/edit?number=P-1').text
-    stale = get(server_port, '/receipts/edit?number=X-1').text
+    outside = auto_login.db.fetch_receipts()[-1][0]
+    assert '26B001_rechnung.pdf' in get(server_port, f'/receipts/edit?id={with_file}').text
+    assert 'keine Datei' in get(server_port, f'/receipts/edit?id={paper}').text
+    stale = get(server_port, f'/receipts/edit?id={outside}').text
     assert 'Datei nicht im Belegordner' in stale and '/srv/alt' not in stale
 
 
@@ -630,7 +632,7 @@ out.edit = {id: field('editId').value, number: field('editNumber').value, date: 
             filename: field('editFilename').value, info: field('editInfo').value, fileText: field('editFileText').textContent,
             fileRowHidden: field('editFileRow').hidden, action: field('receiptForm').action,
             newHidden: field('btnNew').style.display, editShown: field('btnEdit').style.display,
-            hasPathField: 'editPath' in byId};
+            hasPathField: 'editPath' in byId, linksHref: field('editLinks').href, linksRowHidden: field('editLinksRow').hidden};
 out.search = {};
 for (const term of scenario.searches) {
   field('receiptSearch').value = term;
@@ -663,7 +665,8 @@ def test_the_edit_script_fills_the_form_names_the_file_as_text_and_the_search_co
     out = json.loads(done.stdout)
     assert out['edit'] == {'id': '1', 'number': '26B001', 'date': DAY, 'filename': 'Strom Januar.pdf', 'info': 'Abschlag',
                            'fileText': '26B001_Strom Januar.pdf', 'fileRowHidden': False, 'action': '/update_receipt',
-                           'newHidden': 'none', 'editShown': '', 'hasPathField': False}
+                           'newHidden': 'none', 'editShown': '', 'hasPathField': False,
+                           'linksHref': '/receipts/edit?id=1', 'linksRowHidden': False}      # 2.5.12: der Link zu den Buchungen des Belegs
     assert out['search'] == {'26b001': [True, False], 'strom': [True, False], 'Büromaterial': [False, True], 'ER-7': [False, True],
                              'geheimer': [False, False],                 # ein Pfad wird nicht durchsucht (er steht gar nicht mehr in der Zeile)
                              'nichts': [False, False], '': [True, True]}
