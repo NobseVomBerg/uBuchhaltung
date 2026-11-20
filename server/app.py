@@ -11,6 +11,7 @@ import contextlib
 import ipaddress
 import json
 import socket
+import ssl
 import sys
 import unicodedata
 from db import Database, DeleteRefused, MigrationBackupError, SchemaTooNewError
@@ -171,6 +172,8 @@ def _size_text(limit):
 CONNECTION_TIMEOUT = 120      # Sekunden ohne Fortschritt auf einer Verbindung (je Lese- bzw. Sendeschritt), dann wird sie geschlossen
 SEND_CHUNK = 256 * 1024       # Antworten gehen in Stücken dieser Größe hinaus – die Zeitgrenze gilt je Stück, nicht für die ganze Antwort
 DRAIN_TIMEOUT = 2             # Sekunden, die der Server nach der Antwort auf den ungelesenen Rest eines Bodys wartet (``_settle_body``)
+TLS_HANDSHAKE_TIMEOUT = 15    # Sekunden für den TLS-Handshake einer neuen Verbindung, dann wird sie geschlossen
+ACCEPT_QUEUE = 128            # Verbindungen, die das Betriebssystem annimmt, bevor der Server sie abholt (Standard der Bibliothek: 5)
 
 
 class _TimedReader:
@@ -401,8 +404,25 @@ class SimpleWebServer(BaseHTTPRequestHandler):
 
     def setup(self):
         super().setup()
+        # Bei eigenem TLS (``build_server``) ist die Verbindung hier noch nicht verhandelt: Der Handshake läuft in diesem Thread, nie in
+        # ``accept()`` – dort hielte ein Client, der nur verbindet und schweigt, die Annahme aller neuen Verbindungen auf.
+        self._tls_failed = False
+        if isinstance(self.connection, ssl.SSLSocket):
+            try:
+                self.connection.settimeout(TLS_HANDSHAKE_TIMEOUT)
+                self.connection.do_handshake()
+                self.connection.settimeout(self.timeout)
+            except OSError:            # auch ssl.SSLError, TimeoutError, ConnectionError: kein TLS, zu langsam, abgebrochen
+                self._tls_failed = True
         self.rfile = _TimedReader(self.rfile, self)
         self.wfile = _SteppedWriter(self.wfile, self)
+
+    def handle(self):
+        """Nach einem gescheiterten TLS-Handshake gibt es nichts zu bearbeiten: Die Verbindung wird still geschlossen (kein Eintrag im Log –
+        ein Client ohne TLS oder einer, der das Zertifikat ablehnt, ist kein Fehler des Servers)."""
+        if self._tls_failed:
+            return
+        super().handle()
 
     # Eine Keep-Alive-Verbindung, auf der bis zur Zeitgrenze keine weitere Anfrage kommt, ist der Normalfall (jeder Browser lässt
     # Verbindungen offen): Sie wird still geschlossen. Protokolliert wird eine Zeitüberschreitung nur, wenn eine Anfrage begonnen hatte.
@@ -1970,6 +1990,34 @@ def _ensure_directories():
         os.makedirs(os.path.join(root, "users"), exist_ok=True)
 
 
+def build_server(host, port, certfile=None, keyfile=None):
+    """Den HTTP-Server anlegen (``ThreadingHTTPServer`` mit ``SimpleWebServer``), mit Zertifikat und Schlüssel als HTTPS-Server.
+
+    Der lauschende Socket verhandelt kein TLS selbst (``do_handshake_on_connect=False``): ``accept()`` nimmt die Verbindung nur an, den
+    Handshake führt je Verbindung ``SimpleWebServer.setup()`` in ihrem eigenen Thread aus, mit der Zeitgrenze ``TLS_HANDSHAKE_TIMEOUT``.
+    ``httpd.tls`` sagt, ob der Server HTTPS spricht (aktiviert das Secure-Flag der Cookies). Die Funktion legt nur an – sie startet
+    nichts und gibt nichts aus.
+
+    Die Warteschlange angenommener Verbindungen ist ``ACCEPT_QUEUE`` lang: Mit dem Standard der Bibliothek (5) blieben bei mehreren
+    Browsern, die je einige Verbindungen zugleich öffnen, einzelne im Betriebssystem liegen, bis wieder Platz ist.
+    """
+    httpd = ThreadingHTTPServer((host, port), SimpleWebServer, bind_and_activate=False)
+    httpd.request_queue_size = ACCEPT_QUEUE
+    try:
+        httpd.server_bind()
+        httpd.server_activate()
+    except BaseException:
+        httpd.server_close()
+        raise
+    httpd.tls = False
+    if certfile and keyfile:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile, keyfile)
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True, do_handshake_on_connect=False)
+        httpd.tls = True
+    return httpd
+
+
 # Start web server
 def run_server(host=None, port=None, certfile=None, keyfile=None):
     """Web-Server starten.
@@ -2005,18 +2053,8 @@ def run_server(host=None, port=None, certfile=None, keyfile=None):
             print(f"  Unix:     kill $(lsof -ti:{port})")
             sys.exit(1)
 
-    server_address = (host, port)
-    httpd = ThreadingHTTPServer(server_address, SimpleWebServer)
-
-    scheme = "http"
-    httpd.tls = False
-    if certfile and keyfile:
-        import ssl
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(certfile, keyfile)
-        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
-        httpd.tls = True                         # aktiviert das Secure-Flag der Cookies
-        scheme = "https"
+    httpd = build_server(host, port, certfile, keyfile)
+    scheme = "https" if httpd.tls else "http"
 
     print(f"Starting server on {scheme}://{host}:{port} ...")
     try:

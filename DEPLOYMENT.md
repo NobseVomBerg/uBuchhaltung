@@ -72,7 +72,8 @@ mindestens so groß sein wie die Datei, sonst bricht der Upload ab.
 gesendete Anfrage, eine Antwort, die der Client nicht abholt, eine ungenutzte Keep-Alive-Verbindung), schließt der Server. Die Grenze
 gilt je Schritt, nicht für die ganze Anfrage: Ein Upload, der stetig sendet, läuft beliebig lange, und die Bearbeitung einer Anfrage hat
 keine Zeitgrenze. Ein Reverse-Proxy davor sollte ungenutzte Verbindungen zur App kürzer als 120 Sekunden offen halten (zum Beispiel
-60 Sekunden).
+60 Sekunden). Mit `UBUCHHALTUNG_CERT`/`UBUCHHALTUNG_KEY` wartet der Server je Verbindung höchstens 15 Sekunden auf den
+TLS-Handshake.
 
 **E-Mail-Versand:** Die App verschlüsselt die Verbindung zum Mailserver immer (Port 465 mit TLS von
 Anfang an, jeder andere Port per STARTTLS) und prüft dessen Zertifikat samt Hostnamen; jede Verbindung hat

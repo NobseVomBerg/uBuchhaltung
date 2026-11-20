@@ -269,7 +269,13 @@ kein Subagent darauf:
   (dann bleibt die Verbindung benutzbar), bei größerem Rest, `Transfer-Encoding`, ungültiger Länge oder ausbleibendem Rest geht sie zu.
   Ein neuer Zweig braucht dafür nichts zu tun – die Prüfung nicht umgehen (`tests/test_request_body_sync.py`). **Log:** Eine
   Verbindung im Leerlauf wird still geschlossen; ließ sich eine Antwort nicht zustellen (`wfile.failed`), reichen die breiten
-  `except`-Zweige den Fehler weiter (`if self.wfile.failed: raise`), statt eine 500 zu versuchen – es bleibt eine Zeile im Log
+  `except`-Zweige den Fehler weiter (`if self.wfile.failed: raise`), statt eine 500 zu versuchen – es bleibt eine Zeile im Log.
+  **TLS (seit 2.5.9):** Bei eigenem TLS (`build_server`) läuft der Handshake je Verbindung in ihrem Thread
+  (`SimpleWebServer.setup()`, Zeitgrenze `TLS_HANDSHAKE_TIMEOUT` = 15 s für den ganzen Handshake), nie in `accept()`
+  (`do_handshake_on_connect=False`): Die Annahme neuer Verbindungen wartet nie auf einen Handshake – nicht zurückdrehen. Ein
+  gescheiterter Handshake endet still (`handle()`: kein Log-Eintrag, keine Antwort; `tests/test_tls_handshake.py`). Die Warteschlange
+  angenommener Verbindungen ist `ACCEPT_QUEUE` = 128 lang (mit und ohne TLS; der Standard der Bibliothek, 5, ließ bei vielen
+  gleichzeitigen Verbindungen einzelne im Betriebssystem liegen)
 - **Anmeldung (seit 2.3.6, `auth.attempt_login`):** Die Anmeldung im Browser geht nur darüber (`handlers.handle_login` →
   `LoginOutcome`), nie direkt über `authenticate`. Nach fünf Fehlversuchen in Folge ist der Name (ohne Groß-/Kleinschreibung)
   30 s gesperrt, je weiterem Fehlversuch doppelt, höchstens 900 s (429 mit `Retry-After`); während der Sperre wird nichts geprüft,
@@ -343,8 +349,8 @@ kein Subagent darauf:
   dieselbe 404 ohne Pfad. Geöffnet wird mit `O_NOFOLLOW` und gegen `realpath` geprüft (`backup/` selbst darf ein Link sein),
   kurz unter `_exclusive` (das Öffnen wartet bis `DOWNLOAD_WAIT_SECONDS` = 5 s – zwei Downloads lehnen einander nicht ab –,
   läuft eine Sicherung oder Wiederherstellung länger: 409; Sicherung und Wiederherstellung selbst warten nie); geliefert wird
-  **ohne die Sperre in Stücken** (`copy_to`, 1 MiB) aus dem offenen Deskriptor, nie ganz im Speicher – eine Sicherung kann
-  Gigabyte groß sein. Je Stück gilt eine Zeitgrenze (`DOWNLOAD_SEND_TIMEOUT` = 120 s: Ein Client, der nicht mehr liest, hält
+  **ohne die Sperre in Stücken** (`copy_to` liest je 1 MiB, gesendet wird in Schritten von `SEND_CHUNK`) aus dem offenen
+  Deskriptor, nie ganz im Speicher – eine Sicherung kann Gigabyte groß sein. Je Stück gilt eine Zeitgrenze (`DOWNLOAD_SEND_TIMEOUT` = 120 s: Ein Client, der nicht mehr liest, hält
   Verbindung und Datei nicht unbegrenzt), und die Antwort trägt `Cache-Control: no-store`. Ein `Range`-Kopf wird überhört,
   `HEAD` gibt es nicht; ein Fehler nach den Köpfen schließt die Verbindung, statt eine zweite Antwort zu schreiben. Ein
   Dateiname, der sich nicht als UTF-8 schreiben lässt, wird weder gelistet noch geliefert. Die Route liest nur (kein CSRF-Token, wie die übrigen GET-Downloads), prüft aber die Herkunft

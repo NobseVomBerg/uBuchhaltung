@@ -722,13 +722,22 @@ def test_run_server_does_not_migrate_an_installation_that_needs_none(monkeypatch
 
 
 class _FakeHTTPD:
-    """Statt des echten Servers: serve_forever() kehrt wie nach Strg+C sofort zurück."""
+    """Statt des echten Servers: serve_forever() kehrt wie nach Strg+C sofort zurück. ``build_server`` legt den Server erst an und
+    bindet ihn danach selbst (``bind_and_activate=False``, dann ``server_bind`` und ``server_activate``) – der Ersatz hält fest, dass
+    beides geschah, ohne einen Port zu belegen."""
     instances = []
 
-    def __init__(self, address, handler):
+    def __init__(self, address, handler, bind_and_activate=True):
         self.address = address
         self.closed = False
+        self.bound = self.activated = bind_and_activate
         _FakeHTTPD.instances.append(self)
+
+    def server_bind(self):
+        self.bound = True
+
+    def server_activate(self):
+        self.activated = True
 
     def serve_forever(self):
         raise KeyboardInterrupt
@@ -748,6 +757,7 @@ def test_run_server_brings_a_legacy_install_up_to_date(style, fake_server):
     make_legacy()
     server_app.run_server(host="127.0.0.1", port=_free_port())
     assert len(fake_server.instances) == 1 and fake_server.instances[0].closed
+    assert fake_server.instances[0].bound and fake_server.instances[0].activated
     assert read_config() == {"mode": "multi", "auto_login": "admin"}
     assert auth.auto_login_user() == "admin"
     assert os.path.isfile(_new("buch.db"))
