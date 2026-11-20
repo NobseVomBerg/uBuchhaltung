@@ -340,6 +340,41 @@ kein Subagent darauf:
   hört das Lesen auf. Notiz, Pausentext und Art sind unbegrenzte Felder – nie wieder je Teilstück den ganzen Rest messen
   (ein Wort mit 8000 Zeichen kostete so 49 s). `page_layout` nimmt die Höhen der Zeilen in Textzeilen (oder wie bisher eine Zahl): Kein
   Eintrag wird über zwei Seiten geteilt, keine Textzeile steht unter `BOTTOM_Y` (`tests/test_worktime_pdf_info.py`)
+- **Kundenfilter und leere Tage (seit 2.5.4, Arbeitszeiten-Seite und Stundenzettel):** Wer je Kunde abrechnet, braucht einen
+  Zettel je Kunde; wer als Mitarbeiter seine Zeit nachweist, den Zettel über alles. **Die Regel steht an EINER Stelle**
+  (`server/pages_worktime.py`): `customer_filter` liest den Wert streng (`''` = alle, `'none'` = ohne Kunde, sonst eine positive
+  ASCII-Ganzzahl in 64 Bit, alles andere `None` – **auch Leerraum**: `customer=%20` ist kein leerer Wert), `entry_matches_customer` entscheidet je Eintrag, `customer_query` baut
+  `&customer=…` für Adressen – Seite und PDF nehmen dieselbe. Zum Zettel des Kunden gehören seine Einträge **und die Einträge
+  einer anderen Art als „Arbeit“ ohne Kunden** (Urlaub, Krank, Feiertag stehen auf jedem Kundenzettel – nur die Arten des
+  Formulars, `KIND_LABELS`; eine unbekannte Art aus Altbestand oder SQL-Konsole ist keine Abwesenheit); Arbeitseinträge anderer
+  Kunden und Arbeitseinträge ohne Kunde nie, der Urlaub eines anderen Kunden auch nicht. „ohne Kunde“ nimmt alle Einträge ohne
+  Kunden, kein Filter alles. **Ungültig heißt auf der Seite „nicht angegeben“** (`GET /worktime`, `/worktime/edit`, Weiterleitung
+  nach dem Löschen: der Filter fällt weg, nichts bricht), **beim PDF 400** „Ungültiger Kunde.“ (auch eine ID ohne Kontakt): Ein
+  Zettel für alle darf nie entstehen, weil ein Kundenwert unlesbar war. Die Seite hat die Auswahl „Kunde“ (Alle; die Kunden mit
+  Einträgen im Zeitraum bei dieser Person, alphabetisch ohne Rücksicht auf die Schreibweise, dazu der gewählte – eine unbekannte
+  ID bleibt als „Kunde n (unbekannt)“ gewählt, der Filter fällt nie still auf „Alle“ –; „ohne Kunde“). Liste und Summe zeigen nur
+  die passenden Einträge, die leeren Tage der Monatsansicht bleiben immer stehen. Der Filter bleibt über Speichern (verstecktes
+  Feld `customer` – nicht zu verwechseln mit `customer_id`, dem Kunden des Eintrags), Löschen, Zeitraumwahl und PDF (`pdfBase`)
+  erhalten; die Personenauswahl setzt ihn zurück; ein neuer Eintrag bekommt den gefilterten Kunden vorbelegt
+  (`WT_DATA.filterCustomer`, `wtClear`). **Der Stundenzettel** (`generate_worktime_pdf(…, customer, with_empty_days)`) filtert vor
+  allem anderen (Zeilen, Summe, Arbeitstage) und nennt den Kunden in einer vierten Kopfzeile bei y = 765 („Kunde: …“, bei „ohne
+  Kunde“ so; mit „…“ auf `CUSTOMER_LINE_WIDTH` = 380 pt gekürzt, damit sie nicht ins Logo läuft – `customer_line`, höchstens die
+  ersten 200 Zeichen), im rechten Unterschriftenblock (bei einem Kundenfilter dieser Kunde, auch ohne Arbeitseintrag im Zeitraum;
+  ohne Filter wie bisher der eine Kunde der Einträge; bei „ohne Kunde“ keiner) und im Dateinamen
+  (`Stundenzettel_<Person>_<Kunde>_<Zeitraum>.pdf`, „ohne Kunde“ = `ohne-Kunde`; je Name höchstens `FILE_PART_LENGTH` = 80
+  Zeichen – ein Kontaktname hat keine Längengrenze). **„Mit leeren Tagen“** (Häkchen, beim Laden an;
+  Adresse `empty`: nur `0`/`false`/`off` schalten aus, sonst an): Der Monatszettel listet dann auch die Tage ohne Eintrag, sonst
+  nur die Tage mit Einträgen; über mehrere Monate ändert sich nichts. Ohne Filter bleibt jeder Zettel, wie er war
+  (`tests/test_worktime_customer_filter.py`). **Die Notiz eines Eintrags hat höchstens `NOTE_MAX_LENGTH` = 300 Zeichen**
+  (Entscheidung des Owners): Das Formularfeld trägt `maxlength` aus der Konstante; der Server lehnt beim Anlegen und Ändern (EINE
+  Stelle: `handlers._wt_refusal`) eine längere Notiz ab – nichts gespeichert, 303 mit `?error=` und dem festen Satz „Die Notiz
+  ist zu lang (höchstens 300 Zeichen).“, nie still gekürzt, ohne Teile der Notiz. **Gemessen und gespeichert wird ohne Leerraum
+  am Rand** (`_wt_parse`: `strip()`) – sonst stünde hinter 300 Zeichen beliebig viel Leerraum in der Datenbank. Ebenso abgelehnt:
+  eine **Art, die das Formular nicht kennt** („Bitte eine gültige Art wählen.“; sie gälte überall als „keine Arbeit“). Das Feld
+  `customer_id` liest nur ASCII-Ziffern, alles andere heißt „kein Kunde“. Reihenfolge der Prüfungen: Uhrzeit, Art, Notiz,
+  Überschneidung. Die Art aus der Datenbank steht auf der Seite nur maskiert. **Der Bestand bleibt:** Längere Notizen in der Datenbank werden weder
+  gekürzt noch migriert (die Datenbankschicht begrenzt nichts), das PDF bricht sie wie bisher um und endet nach acht Zeilen mit
+  „…“; wird so ein Eintrag geändert, greift die Prüfung (`tests/test_worktime_note_limit.py`)
 
 ### Stammdaten: Löschen, Standardkonten, Testdaten (seit 2.3.8)
 - **Gelöscht wird nur, worauf nichts verweist:** `delete_contact`, `delete_article`, `delete_account`, `delete_asset_category`

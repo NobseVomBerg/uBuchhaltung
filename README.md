@@ -438,7 +438,8 @@ Anlagenverwaltung mit AfA-Plan:
   ganz zu seinem Starttag und trägt in Liste und Stundenzettel ein „(+1)“ hinter der Endzeit
 - Summen werden aus Minuten gerechnet (3 × 20 Minuten sind 1,00 Stunden); „Arbeitstage“ zählt Kalendertage
 - **PDF-Stundenzettel** (`export/pdf_worktime.py`), bei vielen Einträgen mehrseitig mit „Seite n von m“;
-  Summe und Unterschriften stehen zusammen auf der letzten Seite
+  Summe und Unterschriften stehen zusammen auf der letzten Seite; je Kunde filterbar (ein Zettel je Kunde,
+  Urlaub und Krank ohne Kunden stehen auf jedem), auf Wunsch ohne die Tage ohne Eintrag
 
 ### 16. Fahrtenbuch (`/trips`)
 - Fahrten je Fahrer mit Start/Ziel, km-Ständen und Belegverknüpfung

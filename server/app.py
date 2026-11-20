@@ -43,7 +43,7 @@ from .pages_receipts import PageReceipts, PageReceiptEdit
 from .pages_setup import PageSetup, PageSetupStart
 from .pages_invoice import PageInvoice
 from .pages_quote import PageQuote
-from .pages_worktime import PageWorkTimes
+from .pages_worktime import CUSTOMER_ALL, PageWorkTimes, customer_filter, customer_query
 from .pages_trips import PageTrips
 
 def parse_form(post_body: str) -> dict:
@@ -119,6 +119,13 @@ def _id_param(qs, name='id'):
     jede unbekannte ID (Meldung „nicht gefunden“ oder leere Maske), statt mit 500."""
     value = _int_param(qs, name)
     return -1 if value is None else value
+
+
+def _customer_param(qs):
+    """Kundenfilter der Arbeitszeiten aus der Adresse (``customer_filter``): ``''`` (fehlt oder alle), ``'none'`` oder eine
+    Kunden-ID; ``None``, wenn der Wert ungültig ist. Die Seiten lesen das wie einen Filter (ungültig = nicht angegeben,
+    ``or CUSTOMER_ALL``), der Stundenzettel lehnt es ab."""
+    return customer_filter(qs.get('customer', [''])[0])
 
 
 def _trip_check_params(qs):
@@ -797,8 +804,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             db.delete_worktime(item_id)
             person_id = qs['person'][0] if qs.get('person') else ''
             date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
+            customer = _customer_param(qs) or CUSTOMER_ALL      # ein gültiger Kundenfilter bleibt erhalten
             self.respond(303, "", headers={"Location":
-                f"/worktime?person={quote(str(person_id), safe='')}&from={quote(date_from, safe='')}&to={quote(date_to, safe='')}"})
+                f"/worktime?person={quote(str(person_id), safe='')}&from={quote(date_from, safe='')}&to={quote(date_to, safe='')}"
+                f"{customer_query(customer)}"})
         elif path == "/trips/delete":
             db.delete_trip(item_id)
             person_id = qs['person'][0] if qs.get('person') else ''
@@ -1201,14 +1210,16 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
                 self.respond(200, PageWorkTimes(db, person_id=person_id,
                                                 date_from=date_from, date_to=date_to,
-                                                error_msg=error_msg), headers=hdrs)
+                                                error_msg=error_msg,
+                                                customer=_customer_param(qs) or CUSTOMER_ALL), headers=hdrs)
             elif self.path.startswith("/worktime/edit"):
                 qs = self._query()
                 edit_id = _id_param(qs)
                 person_id = _int_param(qs, 'person')
                 date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
                 self.respond(200, PageWorkTimes(db, person_id=person_id, date_from=date_from,
-                                                date_to=date_to, edit_id=edit_id))
+                                                date_to=date_to, edit_id=edit_id,
+                                                customer=_customer_param(qs) or CUSTOMER_ALL))
             elif self.path.startswith("/worktime/pdf"):
                 qs = self._query()
                 person_id = _int_param(qs, "person")
@@ -1216,13 +1227,21 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     self.respond(400, "Ungültige oder fehlende Person.",
                                  content_type="text/plain; charset=utf-8")
                     return
+                # Ein Kundenwert, der sich nicht lesen lässt (oder keinen Kontakt trifft), ergibt keinen Zettel für alle
+                customer = _customer_param(qs)
+                if customer is None or (isinstance(customer, int) and db.get_contact_by_id(customer) is None):
+                    self.respond(400, "Ungültiger Kunde.", content_type="text/plain; charset=utf-8")
+                    return
                 date_from, date_to, _ = resolve_period(qs, self.headers.get('Cookie'))
                 with_notes = qs.get('notes', ['0'])[0] in ('1', 'true', 'on')
                 with_location = qs.get('location', ['0'])[0] in ('1', 'true', 'on')
+                with_empty_days = qs.get('empty', ['1'])[0] not in ('0', 'false', 'off')     # Standard: an
                 disposition = 'inline' if qs.get('inline') else 'attachment'
                 pdf_bytes, filename = handlers.handle_worktime_pdf(db, person_id, date_from, date_to,
                                                                    with_notes=with_notes,
-                                                                   with_location=with_location)
+                                                                   with_location=with_location,
+                                                                   customer=customer,
+                                                                   with_empty_days=with_empty_days)
                 if pdf_bytes:
                     self.send_response(200)
                     self.send_header("Content-type", "application/pdf")
