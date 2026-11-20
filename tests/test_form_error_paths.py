@@ -15,7 +15,10 @@ Text einer Ausnahme an den Nutzer zurück. Ergebnis: ein Serverfehler, eine wei�
 * Artikel: eine Einheit oder ein Steuersatz außerhalb der festen Auswahl bleibt beim Speichern erhalten.
 * Beleg löschen über die ID (die Belegnummer ist nicht eindeutig); ``link_booking_to_document`` unterscheidet eine vorhandene
   Verknüpfung (still) von einem Verweis ins Leere (Klartext).
-* Wächter (statisch): in ``server/handlers.py`` kein ``int(post_data…)``/``float(post_data…)`` und kein 5xx mit Ausnahmetext.
+* Wächter (statisch): in ``server/handlers.py`` kein ``int(post_data…)``/``float(post_data…)``, kein 5xx mit Ausnahmetext und (seit
+  2.5.5) keine Weiterleitung (3xx), die den Text einer Ausnahme aus einem breiten ``except`` nennt – die Meldungen nach Sicherung,
+  Wiederherstellung, DATEV-Export und WISO-Import (``/miscellaneous?…&msg=``) sind feste Sätze oder der Klartext einer eigenen
+  Ablehnungsklasse (``tests/test_misc_messages.py``).
 
 Alle Namen, Nummern und Beträge sind erfundene Testwerte.
 """
@@ -951,6 +954,36 @@ def exception_text_with_5xx(source):
     return found
 
 
+def _is_broad_except(node):
+    """Fängt dieser Typ (die Angabe hinter ``except``) jede Ausnahme? Ohne Typ, ``Exception`` oder ``BaseException`` – auch als Teil
+    eines Tupels."""
+    if node is None:
+        return True
+    if isinstance(node, ast.Name):
+        return node.id in ('Exception', 'BaseException')
+    if isinstance(node, ast.Tuple):
+        return any(_is_broad_except(item) for item in node.elts)
+    return False
+
+
+def exception_text_in_redirect(source):
+    """Zeilen, in denen ein breites ``except … as e`` (``Exception``/``BaseException``) eine Weiterleitung (3xx) zurückgibt, die die
+    Ausnahme ``e`` nennt (``str(e)``, ``{e}``): So gelangte ihr Text in die Adresse und damit auf die Seite (Pfade, Fehler von
+    SQLite oder 7-Zip). Eine Ablehnung mit eigener Klasse (``except _Refused as e``) ist gewollt und zählt nicht."""
+    tree = ast.parse(source)
+    found = []
+    for handler in (n for n in ast.walk(tree) if isinstance(n, ast.ExceptHandler) and n.name and _is_broad_except(n.type)):
+        for ret in (n for n in ast.walk(handler) if isinstance(n, ast.Return)):
+            value = ret.value
+            if not (isinstance(value, ast.Tuple) and value.elts and isinstance(value.elts[0], ast.Constant)
+                    and isinstance(value.elts[0].value, int) and 300 <= value.elts[0].value <= 399):
+                continue
+            if any(isinstance(inner, ast.Name) and inner.id == handler.name
+                   for part in value.elts[1:] for inner in ast.walk(part)):
+                found.append(ret.lineno)
+    return found
+
+
 def handlers_source():
     with open(handlers.__file__, encoding='utf-8') as f:
         return f.read()
@@ -962,6 +995,10 @@ def test_handlers_py_converts_no_form_value_without_the_helpers():
 
 def test_handlers_py_returns_no_exception_text_with_a_5xx_status():
     assert exception_text_with_5xx(handlers_source()) == []
+
+
+def test_handlers_py_puts_no_exception_text_into_a_redirect():
+    assert exception_text_in_redirect(handlers_source()) == []
 
 
 def test_the_guards_find_what_they_are_meant_to_find():
@@ -995,3 +1032,51 @@ def d():
 '''
     assert unprotected_conversions(bad) == [3, 4, 5]
     assert exception_text_with_5xx(bad) == [13, 19]
+
+
+def test_the_redirect_guard_finds_what_it_is_meant_to_find():
+    bad = '''
+def a():
+    try:
+        pass
+    except Exception as e:
+        return 303, f"/miscellaneous?msg={quote(str(e))}"
+
+def b():
+    try:
+        pass
+    except (ValueError, Exception) as exc:
+        return 303, "/x?msg=" + str(exc)
+
+def c():
+    try:
+        pass
+    except BaseException as e:
+        return 302, f"/x?err={e}"
+
+def d():
+    try:
+        pass
+    except _Refused as e:
+        return 303, f"/x?err={quote(str(e), safe='')}"
+
+def e():
+    try:
+        pass
+    except Exception:
+        return 303, "/x?err=fest"
+
+def f():
+    try:
+        pass
+    except Exception as e:
+        print(e)
+        return 303, "/x?err=fest"
+
+def g():
+    try:
+        pass
+    except Exception as e:
+        return 400, str(e)
+'''
+    assert exception_text_in_redirect(bad) == [6, 12, 18]

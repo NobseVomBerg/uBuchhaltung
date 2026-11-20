@@ -10,6 +10,7 @@ from http.cookies import SimpleCookie
 import ipaddress
 import json
 import socket
+import sys
 import unicodedata
 from db import Database, DeleteRefused, MigrationBackupError, SchemaTooNewError
 from export.pdf_core import LOGO_CONTENT_TYPES, logo_extension
@@ -18,6 +19,7 @@ import auth
 import demo
 import userctx
 
+from . import backup
 from . import pages
 from . import handlers
 from . import upload_handler
@@ -313,6 +315,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         path = getattr(self, 'path', '')           # fehlt bei einer kaputten Anfragezeile
         if path.endswith('.css') or path.endswith('.js') or path.endswith('.png'):
             self.send_header('Cache-Control', 'public, max-age=86400')  # Cache this File for 1d
+        elif path.split('?', 1)[0] == '/backup/download':
+            self.send_header('Cache-Control', 'no-store')               # der ganze Datenbestand: nirgends ablegen
         else:
             self.send_header('Cache-Control', 'no-cache')               # HTML etc no caching
         # Für ALLE Antworten: kein MIME-Sniffing und kein Einrahmen durch fremde Seiten
@@ -710,6 +714,63 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _send_backup_download(self):
+        """Eine Sicherung des angemeldeten Benutzers ausliefern (``GET /backup/download?file=<Name>``) – nur lesend.
+
+        Die Datei kann Gigabyte groß sein: Sie geht in Stücken aus dem offenen Deskriptor hinaus (``backup.copy_to``), nie ganz
+        durch den Speicher, mit ``Content-Disposition: attachment`` und ihrer Größe als ``Content-Length`` (ein ``Range``-Kopf wird
+        überhört: immer die ganze Datei). Welche Dateien es gibt, entscheidet allein ``backup.downloadable_backups``; ein unbekannter,
+        fremder oder ungültiger Name ist immer dieselbe Antwort (404, ohne Pfad). Die Route läuft vor dem Öffnen der Datenbank
+        (``do_GET``): Sicherungen lassen sich auch holen, wenn sich die Datenbank nicht öffnen lässt.
+
+        Nach den Köpfen darf nichts mehr in den allgemeinen 500-Zweig fallen – er schriebe eine zweite Antwort in den laufenden
+        Body: Ein Fehler beim Senden endet mit geschlossener Verbindung, der Client sieht eine unvollständige Antwort."""
+        plain = "text/plain; charset=utf-8"
+        if not request_is_same_origin(self.headers):
+            self.respond(403, backup.DOWNLOAD_FOREIGN, content_type=plain)
+            return
+        names = parse_qs(urlsplit(self.path).query, keep_blank_values=True).get('file', [])
+        try:
+            if userctx.get_user() is None or len(names) != 1:
+                raise backup.BackupNotFound(backup.DOWNLOAD_NOT_FOUND)
+            source, entry = backup.open_download(userctx.user_data_dir(), names[0])
+        except backup.BackupNotFound:
+            self.respond(404, backup.DOWNLOAD_NOT_FOUND, content_type=plain)
+            return
+        except backup.BackupRefused as refused:
+            self.respond(409, str(refused), content_type=plain)
+            return
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            self.respond(500, "Die Sicherung konnte nicht geöffnet werden – Einzelheiten stehen im Server-Log.",
+                         content_type=plain)
+            return
+        with source:
+            previous_timeout = self.connection.gettimeout()
+            try:
+                # je gesendetem Stück: Ein Client, der nicht mehr liest, hält Verbindung und Datei sonst unbegrenzt
+                self.connection.settimeout(backup.DOWNLOAD_SEND_TIMEOUT)
+                self.send_response(200)
+                self.send_header("Content-type", "application/octet-stream")
+                self.send_header("Content-Disposition", content_disposition("attachment", entry.name))
+                self.send_header("Content-Length", str(entry.size))
+                self.end_headers()
+                sent = backup.copy_to(source, entry.size, self.wfile.write)
+            except (ConnectionError, TimeoutError):
+                self.close_connection = True                    # der Client hat abgebrochen
+                print(f"Download abgebrochen: {entry.name!r}", file=sys.stderr)
+                return
+            except OSError:
+                import traceback
+                traceback.print_exc()
+                self.close_connection = True
+                return
+            self.connection.settimeout(previous_timeout)
+            if sent < entry.size:
+                self.close_connection = True                    # die Datei ist während des Sendens kürzer geworden
+                print(f"Download unvollständig ({sent} von {entry.size} Bytes): {entry.name!r}", file=sys.stderr)
+
     def _local_referer(self, default):
         """Pfad (+ Query) des Referer – nie eine fremde Adresse (kein offener Redirect)."""
         try:
@@ -985,6 +1046,14 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if self._auth_routes_get():
             userctx.clear()
             return
+        if self.path.split('?', 1)[0] == "/backup/download":
+            # Vor dem Öffnen der Datenbank (sie ist hier nicht nötig) und mit eigener Fehlerbehandlung: Nach den Köpfen
+            # darf keine zweite Antwort mehr folgen, siehe _send_backup_download
+            try:
+                self._send_backup_download()
+            finally:
+                userctx.clear()
+            return
         # Ohne angemeldeten Nutzer keine (globale) DB anlegen – hier sind nur
         # public/statische Routen erreichbar (z. B. /buch.css). Sonst entstünde
         # fälschlich ein data/buch.db.
@@ -1147,7 +1216,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     db, check_payments=qs.get("check_payments", [""])[0] == "1",
                     datev_confirm=qs.get("datev_export", [""])[0] == "confirm",
                     datev_from=qs.get("datev_from", [None])[0], datev_to=qs.get("datev_to", [None])[0],
-                    datev_check=qs.get("datev_check", [None])[0]))
+                    datev_check=qs.get("datev_check", [None])[0], msg=qs.get("msg", [None])[0]))
             elif self.path == "/receipts" or self.path.startswith("/receipts?"):
                 qs = self._query()
                 date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))

@@ -202,7 +202,7 @@ def test_handler_meldet_einen_fehler_und_laesst_die_buchungen_unveraendert(db_wi
         status, location = handlers.handle_wiso_fdb_import(db_with_coa, {**uploaded(path), 'confirm_existing': ['1']})
 
     assert status == 303
-    assert _query_of(location) == {'wiso_fdb': 'error', 'msg': 'Festplatte voll'}
+    assert _query_of(location) == {'wiso_fdb': 'error', 'msg': handlers.WISO_IMPORT_FAILED}      # nie der Text der Ausnahme
     assert _entries(db_with_coa) == before
 
 

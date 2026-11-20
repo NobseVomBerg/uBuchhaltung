@@ -31,14 +31,26 @@ umbenannt kopiert.
 
 Sicherung und Wiederherstellung sperren sich je Datenverzeichnis: Läuft eine,
 wird die zweite abgelehnt (nicht gewartet).
+
+Meldungen für den Nutzer kommen nur aus ``BackupRefused`` (und ihrer Unterklasse
+``BackupNotFound``): Klartext ohne Serverpfade, ohne Ausgabe von 7-Zip und ohne Text einer
+Systemausnahme – der volle Fehler steht im Server-Log (Verkettung ``from e``, ``print``).
+
+Herunterladen (``GET /backup/download``): ``downloadable_backups`` nennt die Dateien in backup/, die
+sich holen lassen (die Archive und die Kopien vor einer Programm-Umstellung – nie restore_*, replaced_*,
+Teildateien oder Links), ``open_download`` öffnet eine davon und ``copy_to`` liefert sie in Stücken
+aus (nie ganz im Speicher: eine Sicherung kann Gigabyte groß sein).
 """
+import collections
 import errno
 import os
 import pathlib
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import zipfile
@@ -70,6 +82,31 @@ _DRIVE_PATH = re.compile(r'[A-Za-z]:' if os.name == 'nt' else r'[A-Za-z]:([\\/]|
 _LINKS_REJECTED = ('Archiv enthält symbolische Links und wird aus '
                    'Sicherheitsgründen nicht zurückgespielt.')
 
+
+class BackupRefused(RuntimeError):
+    """Abgelehnt mit Klartext für den Nutzer – nie Serverpfade, nie Ausgabe von 7-Zip oder Text eines ``OSError``
+    (der volle Fehler steht über die Verkettung im Server-Log)."""
+
+
+class BackupNotFound(FileNotFoundError, BackupRefused):
+    """Die genannte Sicherung gibt es nicht (oder nicht als reguläre Datei in backup/)."""
+
+
+BUSY = ('Für dieses Datenverzeichnis läuft bereits eine Sicherung '
+        'oder Wiederherstellung – bitte deren Ergebnis abwarten.')
+NOT_FOUND = 'Die gewählte Sicherung wurde nicht gefunden.'
+UNSAFE_PATH = ('Unsicherer Pfad im Archiv (absolut, mit „..“ oder mit Zeilenumbruch) – '
+               'die Sicherung wird nicht zurückgespielt.')
+EXTRACT_FAILED = ('Das Archiv ließ sich nicht entpacken – es ist beschädigt, verschlüsselt oder unvollständig, oder im '
+                  'Ordner backup/ fehlen Platz oder Schreibrechte. Am Datenverzeichnis wurde nichts geändert. '
+                  'Einzelheiten stehen im Server-Log.')
+OVERLAY_DB_FAILED = ('Wiederherstellen abgebrochen: Die übrigen Dateien sind zurückgespielt, beim Ersetzen der Datenbank ist '
+                     'ein Fehler aufgetreten – sie ist vermutlich noch die bisherige. Bitte die Ursache beheben '
+                     '(Einzelheiten stehen im Server-Log) und erneut zurückspielen.')
+OVERLAY_SIDECARS_LEFT = ('Die Sicherung ist zurückgespielt, aber eine Begleitdatei der bisherigen Datenbank (buch.db-journal, '
+                         'buch.db-wal oder buch.db-shm) ließ sich nicht entfernen. Bitte uBuchhaltung beenden und diese Dateien '
+                         'im Datenordner löschen, bevor weitergearbeitet wird. Einzelheiten stehen im Server-Log.')
+
 # Sperre je Datenverzeichnis (Schlüssel: aufgelöster Pfad). Zwei gleichzeitige Läufe würden
 # einander die Zwischenordner wegräumen bzw. eine Sicherung ein halb ersetztes Verzeichnis lesen.
 _locks: dict[str, threading.Lock] = {}
@@ -77,15 +114,15 @@ _locks_guard = threading.Lock()
 
 
 @contextmanager
-def _exclusive(user_dir):
+def _exclusive(user_dir, wait=0):
     """Sicherung oder Wiederherstellung für ``user_dir`` allein ausführen. Läuft dort schon
-    eine, wird abgelehnt statt gewartet."""
+    eine, wird abgelehnt statt gewartet. ``wait`` (Sekunden) gilt nur dem kurzen Öffnen eines
+    Downloads: Zwei davon zur selben Zeit sollen einander nicht ablehnen."""
     key = os.path.realpath(user_dir)
     with _locks_guard:
         lock = _locks.setdefault(key, threading.Lock())
-    if not lock.acquire(blocking=False):
-        raise RuntimeError('Für dieses Datenverzeichnis läuft bereits eine Sicherung '
-                           'oder Wiederherstellung – bitte deren Ergebnis abwarten.')
+    if not (lock.acquire(timeout=wait) if wait > 0 else lock.acquire(blocking=False)):
+        raise BackupRefused(BUSY)
     try:
         yield
     finally:
@@ -98,13 +135,24 @@ def backup_dir(user_dir):
     return d
 
 
+def _encodable(name):
+    """Lässt sich der Dateiname als UTF-8 schreiben? Ein Name aus anderen Bytes (das Dateisystem liefert ihn mit
+    Ersatzzeichen) ließe sich weder auf der Seite zeigen noch in eine Adresse setzen – er wird nicht angeboten."""
+    try:
+        name.encode('utf-8')
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def list_backups(user_dir):
-    """Vorhandene Backup-Archive, neueste zuerst."""
+    """Vorhandene Backup-Archive (reguläre Dateien, keine Ordner oder Links), neueste zuerst."""
     d = os.path.join(user_dir, 'backup')
     if not os.path.isdir(d):
         return []
     return sorted((f for f in os.listdir(d)
-                   if f.endswith(('.7zip', '.7z', '.zip')) and 'Backup' in f),
+                   if f.endswith(('.7zip', '.7z', '.zip')) and 'Backup' in f and _encodable(f)
+                   and os.path.isfile(os.path.join(d, f)) and not os.path.islink(os.path.join(d, f))),
                   reverse=True)
 
 
@@ -146,41 +194,48 @@ def create_backup(user_dir, db_path, scope='all'):
         ext = '.7zip' if sevenzip else '.zip'
         archive = _next_archive_path(user_dir, ext)
 
-        with tempfile.TemporaryDirectory() as tmp:
-            db_copy = os.path.join(tmp, 'buch.db')
-            _snapshot_db(db_path, db_copy)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                db_copy = os.path.join(tmp, 'buch.db')
+                _snapshot_db(db_path, db_copy)
 
-            if sevenzip:
-                if scope == 'all':
-                    # Alles außer backup/, users/, tests/, upload_tmp/, der Live-DB (die kommt als Snapshot)
-                    # und deren Begleitdateien (-journal/-wal/-shm).
-                    # -x! (ohne r) trifft nur die oberste Ebene – gleichnamige Unterordner
-                    # weiter unten (z. B. Belege/tests/) gehören zur Sicherung.
-                    excludes = ([f'-x!{d}' for d in _EXCLUDED_DIRS]
-                                + [f'-x!{n}' for n in ('buch.db',) + _DB_SIDECARS])
-                    r = subprocess.run([sevenzip, 'a', '-bd', '-y', archive, '*'] + excludes,
-                                       cwd=user_dir, capture_output=True, timeout=600, stdin=subprocess.DEVNULL)
-                    if r.returncode not in (0, 1):   # 1 = Warnung (z.B. Datei gerade gesperrt)
-                        raise RuntimeError(f'7-Zip-Fehler: {r.stderr.decode(errors="replace")[:200]}')
-                r = subprocess.run([sevenzip, 'a', '-bd', '-y', archive, db_copy],
-                                   capture_output=True, timeout=600, stdin=subprocess.DEVNULL)
-                if r.returncode not in (0, 1):
-                    raise RuntimeError(f'7-Zip-Fehler: {r.stderr.decode(errors="replace")[:200]}')
-            else:
-                with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    zf.write(db_copy, 'buch.db')
+                if sevenzip:
                     if scope == 'all':
-                        for root, dirs, files in os.walk(user_dir):
-                            rel_root = os.path.relpath(root, user_dir)
-                            top = rel_root.split(os.sep)[0]
-                            if top in _EXCLUDED_DIRS:
-                                dirs[:] = []
-                                continue
-                            for f in files:
-                                rel = os.path.normpath(os.path.join(rel_root, f))
-                                if rel == 'buch.db' or rel in _DB_SIDECARS:
-                                    continue   # Live-DB: Snapshot ist schon drin, ihr Journal gehört nicht daneben
-                                zf.write(os.path.join(root, f), rel)
+                        # Alles außer backup/, users/, tests/, upload_tmp/, der Live-DB (die kommt als Snapshot)
+                        # und deren Begleitdateien (-journal/-wal/-shm).
+                        # -x! (ohne r) trifft nur die oberste Ebene – gleichnamige Unterordner
+                        # weiter unten (z. B. Belege/tests/) gehören zur Sicherung.
+                        excludes = ([f'-x!{d}' for d in _EXCLUDED_DIRS]
+                                    + [f'-x!{n}' for n in ('buch.db',) + _DB_SIDECARS])
+                        r = subprocess.run([sevenzip, 'a', '-bd', '-y', archive, '*'] + excludes,
+                                           cwd=user_dir, capture_output=True, timeout=600, stdin=subprocess.DEVNULL)
+                        if r.returncode not in (0, 1):   # 1 = Warnung (z.B. Datei gerade gesperrt)
+                            raise RuntimeError(f'7-Zip-Fehler: {r.stderr.decode(errors="replace")[:200]}')
+                    r = subprocess.run([sevenzip, 'a', '-bd', '-y', archive, db_copy],
+                                       capture_output=True, timeout=600, stdin=subprocess.DEVNULL)
+                    if r.returncode not in (0, 1):
+                        raise RuntimeError(f'7-Zip-Fehler: {r.stderr.decode(errors="replace")[:200]}')
+                else:
+                    with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as zf:
+                        zf.write(db_copy, 'buch.db')
+                        if scope == 'all':
+                            for root, dirs, files in os.walk(user_dir):
+                                rel_root = os.path.relpath(root, user_dir)
+                                top = rel_root.split(os.sep)[0]
+                                if top in _EXCLUDED_DIRS:
+                                    dirs[:] = []
+                                    continue
+                                for f in files:
+                                    rel = os.path.normpath(os.path.join(rel_root, f))
+                                    if rel == 'buch.db' or rel in _DB_SIDECARS:
+                                        continue   # Live-DB: Snapshot ist schon drin, ihr Journal gehört nicht daneben
+                                    zf.write(os.path.join(root, f), rel)
+        except BaseException:
+            # Ein halbes Archiv stünde sonst in der Liste zum Herunterladen. Der Name war frei (``_next_archive_path``):
+            # Die Datei, die hier liegen könnte, hat dieser Lauf angelegt.
+            with suppress(OSError):
+                os.remove(archive)
+            raise
 
         return archive, os.path.getsize(archive)
 
@@ -279,7 +334,7 @@ def _check_7z_listing(sevenzip, archive):
     r = subprocess.run([sevenzip, 'l', '-slt', '-t7z', '--', archive],
                        capture_output=True, timeout=600, stdin=subprocess.DEVNULL)
     if r.returncode != 0:
-        raise RuntimeError('Die Datei ist kein lesbares 7-Zip-Archiv.')
+        raise BackupRefused('Die Datei ist kein lesbares 7-Zip-Archiv.')
     in_entries = False
     # Nur an \n trennen: str.splitlines träfe auch Zeichen wie U+0085 oder U+2028, die in
     # Dateinamen vorkommen dürfen – die Sicherung wäre dann nicht mehr zurückspielbar.
@@ -295,18 +350,19 @@ def _check_7z_listing(sevenzip, archive):
         if not sep and not re.fullmatch(r'[A-Za-z][A-Za-z ]* =', line):
             # Jede Zeile eines Eintrags ist „Name = Wert“. Alles andere wäre die Fortsetzung
             # eines Dateinamens mit Zeilenumbruch – der Rest entginge der Pfadprüfung.
-            raise RuntimeError('Unsicherer Pfad im Archiv (Zeilenumbruch im Dateinamen).')
+            raise BackupRefused(UNSAFE_PATH)
         if key == 'Path':
             if (value.startswith(('/', '\\')) or _DRIVE_PATH.match(value)
                     or '..' in re.split(r'[/\\]', value)):
-                raise RuntimeError(f'Unsicherer Pfad im Archiv: {value}')
+                print(f'Sicherung abgelehnt, Pfad im Archiv: {value!r}', file=sys.stderr)
+                raise BackupRefused(UNSAFE_PATH)
         elif key == 'Attributes':
             if any(re.fullmatch(r'l[-rwxsStT]{9}', token) for token in value.split()):
-                raise RuntimeError(_LINKS_REJECTED)
+                raise BackupRefused(_LINKS_REJECTED)
         elif key in ('Symbolic Link', 'Hard Link') and value.strip():
-            raise RuntimeError(_LINKS_REJECTED)
+            raise BackupRefused(_LINKS_REJECTED)
     if not in_entries:
-        raise RuntimeError('Die Datei ist kein lesbares 7-Zip-Archiv.')
+        raise BackupRefused('Die Datei ist kein lesbares 7-Zip-Archiv.')
 
 
 def _extract(archive, dest):
@@ -317,7 +373,8 @@ def _extract(archive, dest):
         r = subprocess.run([sevenzip, 'x', '-bd', '-y', '-t7z', f'-o{dest}', archive],
                            capture_output=True, timeout=600, stdin=subprocess.DEVNULL)
         if r.returncode != 0:
-            raise RuntimeError(f'7-Zip-Fehler: {r.stderr.decode(errors="replace")[:200]}')
+            print(f'7-Zip-Fehler beim Entpacken: {r.stderr.decode(errors="replace")[:2000]}', file=sys.stderr)
+            raise BackupRefused(EXTRACT_FAILED)
     elif archive.endswith('.zip'):
         try:
             with zipfile.ZipFile(archive) as zf:
@@ -326,14 +383,15 @@ def _extract(archive, dest):
                     # Zip-Slip-Schutz: Ziel muss im Zielverzeichnis bleiben
                     target = os.path.realpath(os.path.join(dest, member))
                     if not (target == base or target.startswith(base + os.sep)):
-                        raise RuntimeError(f'Unsicherer Pfad im Archiv: {member}')
+                        print(f'Sicherung abgelehnt, Pfad im Archiv: {member!r}', file=sys.stderr)
+                        raise BackupRefused(UNSAFE_PATH)
                 zf.extractall(dest)
         except (zipfile.BadZipFile, zlib.error, EOFError):
             # BadZipFile: kein zip bzw. Prüfsumme falsch; zlib.error/EOFError: mitten im
             # Datenstrom beschädigt oder abgeschnitten
-            raise RuntimeError('Archiv ist beschädigt und lässt sich nicht entpacken.') from None
+            raise BackupRefused('Archiv ist beschädigt und lässt sich nicht entpacken.') from None
     else:
-        raise RuntimeError('Kein 7-Zip installiert – .7zip-Archiv kann nicht entpackt werden.')
+        raise BackupRefused('Kein 7-Zip installiert – .7zip-Archiv kann nicht entpackt werden.')
 
 
 def _drop_unwanted(staging):
@@ -357,15 +415,15 @@ def _check_database(db_file):
         finally:
             conn.close()
     except sqlite3.DatabaseError:
-        raise RuntimeError('Die Datenbank in der Sicherung ist beschädigt.') from None
+        raise BackupRefused('Die Datenbank in der Sicherung ist beschädigt.') from None
     if check != [('ok',)]:
-        raise RuntimeError('Die Datenbank in der Sicherung ist beschädigt.')
+        raise BackupRefused('Die Datenbank in der Sicherung ist beschädigt.')
     if not tables:
         # Eine leere Datei gilt SQLite als gültige, leere Datenbank – zurückgespielt
         # ersetzte sie die Buchhaltung durch nichts
-        raise RuntimeError('Die Datenbank in der Sicherung ist leer.')
+        raise BackupRefused('Die Datenbank in der Sicherung ist leer.')
     if user_version > version.SCHEMA_VERSION:
-        raise RuntimeError(
+        raise BackupRefused(
             f'Die Sicherung stammt aus einer neueren Programmversion '
             f'({version.describe_schema_version(user_version)}) und kann mit dieser Version '
             f'({version.describe_schema_version(version.SCHEMA_VERSION)}) nicht geöffnet werden.')
@@ -374,18 +432,18 @@ def _check_database(db_file):
 def _check_staging(staging, user_dir, wipe):
     """Entpacktes Archiv prüfen, bevor am Datenverzeichnis etwas geändert wird.
 
-    Nimmt heraus, was nie zurückgespielt wird, und wirft RuntimeError mit Klartext,
+    Nimmt heraus, was nie zurückgespielt wird, und wirft ``BackupRefused`` mit Klartext,
     wenn die Sicherung nicht brauchbar ist.
     """
     # Links könnten beim Zurückspielen aus dem Datenverzeichnis hinausführen
     for root, dirs, files in os.walk(staging, followlinks=False):
         for name in dirs + files:
             if os.path.islink(os.path.join(root, name)):
-                raise RuntimeError(_LINKS_REJECTED)
+                raise BackupRefused(_LINKS_REJECTED)
 
     _drop_unwanted(staging)
     if not os.listdir(staging):
-        raise RuntimeError('Archiv enthält keine Daten.')
+        raise BackupRefused('Archiv enthält keine Daten.')
 
     db_file = os.path.join(staging, 'buch.db')
     if os.path.isfile(db_file):
@@ -393,16 +451,16 @@ def _check_staging(staging, user_dir, wipe):
         # Das nur lesende Öffnen einer Datenbank im WAL-Modus legt -wal/-shm neu an
         _drop_unwanted(staging)
     elif wipe:
-        raise RuntimeError('Die Sicherung enthält keine Datenbank – ‚vorher löschen‘ '
-                           'würde alle Daten entfernen.')
+        raise BackupRefused('Die Sicherung enthält keine Datenbank – ‚vorher löschen‘ '
+                            'würde alle Daten entfernen.')
 
     if wipe and os.listdir(staging) == ['buch.db']:
         # Eine Sicherung „nur DB“ bringt keine Belege und übrigen Dateien mit zurück
         if any(name != 'buch.db' and name not in _DB_SIDECARS and name not in _EXCLUDED_DIRS
                for name in os.listdir(user_dir)):
-            raise RuntimeError('Die Sicherung enthält nur die Datenbank – ‚vorher löschen‘ '
-                               'würde alle Belege und übrigen Dateien entfernen. Bitte ohne '
-                               '‚vorher löschen‘ zurückspielen.')
+            raise BackupRefused('Die Sicherung enthält nur die Datenbank – ‚vorher löschen‘ '
+                                'würde alle Belege und übrigen Dateien entfernen. Bitte ohne '
+                                '‚vorher löschen‘ zurückspielen.')
 
     if not wipe:
         # Überschreiben kann keine Datei über ein Verzeichnis legen (und umgekehrt)
@@ -414,11 +472,11 @@ def _check_staging(staging, user_dir, wipe):
                 if not os.path.lexists(target):
                     continue
                 if name in dirs and not os.path.isdir(target):
-                    raise RuntimeError(f'Das Verzeichnis „{rel}“ aus der Sicherung lässt sich '
-                                       f'nicht über eine vorhandene Datei zurückspielen.')
+                    raise BackupRefused(f'Das Verzeichnis „{rel}“ aus der Sicherung lässt sich '
+                                        f'nicht über eine vorhandene Datei zurückspielen.')
                 if name not in dirs and os.path.isdir(target):
-                    raise RuntimeError(f'Die Datei „{rel}“ aus der Sicherung lässt sich '
-                                       f'nicht über ein vorhandenes Verzeichnis zurückspielen.')
+                    raise BackupRefused(f'Die Datei „{rel}“ aus der Sicherung lässt sich '
+                                        f'nicht über ein vorhandenes Verzeichnis zurückspielen.')
 
 
 def _replace_all(staging, user_dir):
@@ -467,13 +525,15 @@ def _replace_all(staging, user_dir):
                 stuck = True
         if stuck:
             # replaced_* bleibt bewusst liegen: Dort steht, was nicht zurückgelegt werden konnte
-            raise RuntimeError(
-                f'Wiederherstellen abgebrochen ({e}), und der vorherige Stand konnte nicht '
+            raise BackupRefused(
+                'Wiederherstellen abgebrochen, und der vorherige Stand konnte nicht '
                 f'vollständig zurückgelegt werden. Er liegt in backup/{os.path.basename(replaced)} '
-                f'– bitte von dort zurückkopieren und den Ordner erst danach löschen.') from e
+                '– bitte von dort zurückkopieren und den Ordner erst danach löschen. '
+                'Einzelheiten stehen im Server-Log.') from e
         shutil.rmtree(replaced, ignore_errors=True)
-        raise RuntimeError(
-            f'Wiederherstellen abgebrochen, der vorherige Stand ist unverändert: {e}') from e
+        raise BackupRefused(
+            'Wiederherstellen abgebrochen, der vorherige Stand ist unverändert. '
+            'Einzelheiten stehen im Server-Log.') from e
     shutil.rmtree(replaced, ignore_errors=True)
 
 
@@ -497,17 +557,26 @@ def _overlay(staging, user_dir):
                 _move_file(os.path.join(root, name), os.path.join(target_root, name))
     except OSError as e:
         # Überschreiben lässt sich nicht zurücknehmen – sagen, was der Stand ist
-        raise RuntimeError(
+        raise BackupRefused(
             'Wiederherstellen abgebrochen: Ein Teil der Dateien ist bereits zurückgespielt'
             + (', die Datenbank ist noch die bisherige' if replaces_db else '')
-            + f'. Bitte die Ursache beheben und erneut zurückspielen ({e}).') from e
+            + '. Bitte die Ursache beheben (Einzelheiten stehen im Server-Log) und erneut zurückspielen.') from e
     if replaces_db:
-        _move_file(db_src, os.path.join(user_dir, 'buch.db'))
+        try:
+            _move_file(db_src, os.path.join(user_dir, 'buch.db'))
+        except OSError as e:
+            raise BackupRefused(OVERLAY_DB_FAILED) from e
         # Journal/WAL gehören zur alten Datei und würden die zurückgespielte beschädigen
+        left = None
         for name in _DB_SIDECARS:
             path = os.path.join(user_dir, name)
-            if os.path.lexists(path):
-                os.remove(path)
+            try:
+                if os.path.lexists(path):
+                    os.remove(path)
+            except OSError as e:
+                left = e                                # die übrigen trotzdem entfernen
+        if left is not None:
+            raise BackupRefused(OVERLAY_SIDECARS_LEFT) from left
 
 
 def restore_backup(user_dir, archive_name, wipe=False):
@@ -517,8 +586,9 @@ def restore_backup(user_dir, archive_name, wipe=False):
 
     Das Archiv wird zuerst in ein Zwischenverzeichnis backup/restore_* entpackt und
     dort geprüft (keine symbolischen Links, Datenbank lesbar und nicht neuer als das
-    Programm). Scheitert das, wirft die Funktion RuntimeError und das Datenverzeichnis
-    ist unverändert. Nicht zurückgespielt werden backup/, users/, tests/ und upload_tmp/ sowie die
+    Programm). Scheitert das, wirft die Funktion ``BackupRefused`` (eine ``RuntimeError``) und das
+    Datenverzeichnis ist unverändert; ein unbekanntes Archiv oder ein Link als Archiv ist ``BackupNotFound``.
+    Nicht zurückgespielt werden backup/, users/, tests/ und upload_tmp/ sowie die
     Begleitdateien der Datenbank (buch.db-journal/-wal/-shm).
 
     wipe=True: vorhandene Daten (außer backup/, users/, tests/ und upload_tmp/) werden durch die
@@ -532,8 +602,8 @@ def restore_backup(user_dir, archive_name, wipe=False):
         # Kein Pfad-Traversal: nur Basename, muss im backup-Verzeichnis liegen
         archive_name = os.path.basename(archive_name)
         archive = os.path.join(user_dir, 'backup', archive_name)
-        if not os.path.isfile(archive):
-            raise FileNotFoundError(f'Backup {archive_name} nicht gefunden.')
+        if not os.path.isfile(archive) or os.path.islink(archive):
+            raise BackupNotFound(NOT_FOUND)
 
         bdir = backup_dir(user_dir)
         # Reste abgebrochener Läufe (Absturz): in restore_* liegt nur entpackter Archivinhalt.
@@ -554,3 +624,115 @@ def restore_backup(user_dir, archive_name, wipe=False):
                 _overlay(staging, user_dir)
         finally:
             shutil.rmtree(staging, ignore_errors=True)
+
+
+# ── Herunterladen ────────────────────────────────────────────────────────────
+DOWNLOAD_CHUNK = 1024 * 1024
+# So lange wartet das Öffnen eines Downloads auf die Sperre des Datenverzeichnisses (ein zweiter Download hält sie nur
+# für das Öffnen; eine laufende Sicherung oder Wiederherstellung dauert länger – dann wird abgelehnt)
+DOWNLOAD_WAIT_SECONDS = 5
+# Höchste Dauer für das Senden EINES Stücks (``DOWNLOAD_CHUNK``): Ein Client, der nicht mehr liest, hält sonst die
+# Verbindung und die offene Datei unbegrenzt
+DOWNLOAD_SEND_TIMEOUT = 120
+
+# Kopie der Datenbank vor einer Programm-Umstellung (db/schema.py ``_backup_before_migration``):
+# JJJJMMTT_vor_<Version>[_n]_<Datei>; die Datei des Benutzers heißt buch.db.
+_MIGRATION_NAME = re.compile(r'[0-9]{8}_vor_([0-9]+\.[0-9]+\.[0-9]+)(?:_[0-9]+)?_buch\.db')
+
+# kind: 'archive' (Archiv der Datensicherung) oder 'migration' (Kopie der Datenbank vor einer Umstellung, ``version`` nennt
+# die Programmversion, auf die umgestellt wurde)
+BackupEntry = collections.namedtuple('BackupEntry', 'name kind size mtime version')
+
+DOWNLOAD_NOT_FOUND = 'Diese Sicherung gibt es nicht.'
+DOWNLOAD_FOREIGN = 'Sicherungen lassen sich nur über die Seite „Sonstiges“ herunterladen.'
+
+
+def _plain_name(name):
+    """Ist ``name`` der Name einer Datei, die in backup/ liegen darf und sich herunterladen lässt? Nur ein reiner Dateiname
+    (kein Pfadanteil, kein Laufwerk, kein NUL), nichts Verstecktes, keine Zwischenordner (restore_*, replaced_*) und keine
+    Teildateien."""
+    if not isinstance(name, str) or not 1 <= len(name) <= 255 or not _encodable(name):
+        return False
+    if name != os.path.basename(name) or any(char in name for char in ('/', '\\', '\0', ':')):
+        return False
+    return not (name.startswith(('.', 'restore_', 'replaced_')) or name.endswith(('.part', '.tmp')))
+
+
+def downloadable_backups(user_dir):
+    """Was in backup/ zum Herunterladen angeboten wird, neueste zuerst: die Archive der Datensicherung (wie ``list_backups``)
+    und die Kopien der Datenbank vor einer Programm-Umstellung – nur reguläre Dateien, nie ein Ordner (restore_*, replaced_*)
+    oder ein Link. backup/ wird dabei nicht angelegt (fehlt der Ordner, ist die Liste leer)."""
+    try:
+        scan = os.scandir(os.path.join(user_dir, 'backup'))
+    except OSError:
+        return []
+    entries = []
+    with scan:
+        for entry in scan:
+            name = entry.name
+            if not _plain_name(name):
+                continue
+            try:
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if name.endswith(('.7zip', '.7z', '.zip')) and 'Backup' in name:
+                entries.append(BackupEntry(name, 'archive', info.st_size, info.st_mtime, None))
+                continue
+            migration = _MIGRATION_NAME.fullmatch(name)
+            if migration:
+                entries.append(BackupEntry(name, 'migration', info.st_size, info.st_mtime, migration.group(1)))
+    return sorted(entries, key=lambda item: (item.mtime, item.name), reverse=True)
+
+
+def open_download(user_dir, name):
+    """Eine Sicherung aus ``downloadable_backups`` zum Lesen öffnen: ``(Dateiobjekt, BackupEntry)``, wobei die Größe die der
+    geöffneten Datei ist. Der Name wird kurz unter ``_exclusive`` geprüft und geöffnet (läuft dort gerade eine Sicherung oder
+    Wiederherstellung, ``BackupRefused``); gelesen wird danach ohne die Sperre aus dem offenen Deskriptor – eine Datei, die
+    inzwischen verschwindet, liefert sich trotzdem zu Ende. Alles, was nicht in der Liste steht oder beim Öffnen keine reguläre
+    Datei direkt in backup/ ist (ein Link, ein anderer Ort), ist ``BackupNotFound``. Der Aufrufer schließt das Dateiobjekt."""
+    if not _plain_name(name):
+        raise BackupNotFound(DOWNLOAD_NOT_FOUND)
+    with _exclusive(user_dir, wait=DOWNLOAD_WAIT_SECONDS):
+        entry = next((item for item in downloadable_backups(user_dir) if item.name == name), None)
+        if entry is None:
+            raise BackupNotFound(DOWNLOAD_NOT_FOUND)
+        path = os.path.join(user_dir, 'backup', name)
+        # backup/ selbst darf ein Link sein (anderes Laufwerk), die Datei darin nicht
+        if os.path.dirname(os.path.realpath(path)) != os.path.realpath(os.path.join(user_dir, 'backup')):
+            raise BackupNotFound(DOWNLOAD_NOT_FOUND)
+        if not hasattr(os, 'O_NOFOLLOW') and os.path.islink(path):
+            raise BackupNotFound(DOWNLOAD_NOT_FOUND)
+        try:
+            # O_NOFOLLOW: Wird die Datei zwischen Liste und Öffnen durch einen Link ersetzt, scheitert das Öffnen.
+            # O_NONBLOCK: Wäre es inzwischen eine Pipe, wartete das Öffnen sonst auf einen Schreiber (unter der Sperre);
+            # an einer regulären Datei ändert es nichts, und alles andere lehnt die Prüfung darunter ab
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+                                 | getattr(os, 'O_BINARY', 0))
+        except OSError:
+            raise BackupNotFound(DOWNLOAD_NOT_FOUND) from None
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                raise BackupNotFound(DOWNLOAD_NOT_FOUND)
+            if hasattr(os, 'O_NONBLOCK'):
+                os.set_blocking(descriptor, True)       # gelesen wird wartend: Ein leeres Lesen gälte als Dateiende
+            return os.fdopen(descriptor, 'rb', buffering=0), entry._replace(size=info.st_size)
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+
+def copy_to(src, size, write, chunk=DOWNLOAD_CHUNK):
+    """Höchstens ``size`` Bytes von ``src`` in Stücken bis ``chunk`` an ``write`` geben und die Zahl der gesendeten Bytes
+    liefern. Ist die Datei kürzer geworden, als ``size`` es erwartet, endet die Schleife früher (die Zahl ist dann kleiner)."""
+    sent = 0
+    while sent < size:
+        block = src.read(min(chunk, size - sent))
+        if not block:
+            break
+        write(block)
+        sent += len(block)
+    return sent

@@ -224,7 +224,8 @@ Empfehlung: den Datenbank-Import mit einer Kopie der Datenbankdatei durchführen
   Auswertung und keinen Export. Dasselbe gilt für das Update auf 2.5.0 (Kennzeichen „Reines Geschäftskonto“ am
   Bankkonto, eine neue Spalte; alle bestehenden Konten gelten danach als reine Geschäftskonten): Sicherung vor der Umstellung,
   zurück auf 2.4.x nur über sie; es ändert keine Buchung und keine Auswertung.
-  **Sicherung zurückspielen** (die Oberfläche bietet das nicht an): uBuchhaltung beenden, die Datei
+  **Sicherung zurückspielen** (die Oberfläche bietet das für diese Kopien nicht an; herunterladen lassen sie sich auf der Seite
+  *Sonstiges* im Abschnitt Datensicherung, mit Datum und Größe): uBuchhaltung beenden, die Datei
   `backup/<Datum>_vor_<Version>_buch.db` im Datenordner des Nutzers (`data/users/<Name>/`, im Container
   das eingebundene Datenverzeichnis) über `buch.db` kopieren – liegen daneben Dateien `buch.db-journal`,
   `buch.db-wal` oder `buch.db-shm`, diese vorher löschen – und eine ältere Programmversion starten.
@@ -422,7 +423,9 @@ Anlagenverwaltung mit AfA-Plan:
 - **Datensicherung**: Backup nach `<UserDir>/backup/JJJJMMTT_Backup.7zip`
   (7-Zip, ohne 7-Zip als `.zip`; wahlweise nur DB oder alle Daten; DB als
   konsistenter Snapshot) + **Wiederherstellung** (überschreiben oder vorher löschen);
-  der Zwischenordner für Uploads (`upload_tmp/`) gehört nicht zur Sicherung
+  der Zwischenordner für Uploads (`upload_tmp/`) gehört nicht zur Sicherung. Vorhandene Sicherungen
+  (auch die Kopien der Datenbank vor einer Programm-Umstellung) listet die Seite mit Datum und Größe und
+  bietet sie zum **Herunterladen** an – große Dateien gehen in Stücken hinaus, nicht über den Speicher
 - **SQL-Audit-Logs**: `sql_operations.log/.sql` werden ab 5 MB automatisch
   rotiert und komprimiert archiviert (`JJJJMMTT-HHMMSS_sql_operations.*`)
 
@@ -544,7 +547,7 @@ auskommentierten Zeilen (`pytesseract`, `pdf2image`) einkommentieren.
    die gewünschten Umsätze auswählen), dann bestätigen
 2. Buchungen prüfen und kontieren unter `/transactions` (🪄 Vorschlag aus der Historie)
 3. Rechnungen erstellen, PDF und E-Rechnung erzeugen, versenden
-4. Regelmäßig sichern: `/miscellaneous` → Datensicherung
+4. Regelmäßig sichern: `/miscellaneous` → Datensicherung (die Archive lassen sich dort auch herunterladen)
 
 Im Parallelbetrieb mit WISO Mein Büro lassen sich dessen Exporte wiederholt
 importieren (`/miscellaneous`); Bank↔Entry wird dabei automatisch verknüpft.
@@ -649,7 +652,7 @@ uBuchhaltung/
 │   ├── multipart.py           # Multipart-Parser (E-Mail-Parser-basiert)
 │   ├── period.py              # Zeitraum-Auswahl (Cookie-basiert)
 │   ├── richtext.py            # Richtext-Filter der Seiten (Modul im Projektstamm)
-│   └── backup.py              # Datensicherung/Wiederherstellung
+│   └── backup.py              # Datensicherung/Wiederherstellung, Download der Sicherungen
 ├── tests/                     # pytest-Suite (nur anonymisierte Daten,
 │                              #   Guard: tests/check_anonymized.py)
 ├── tools/                     # mcp_ubuchhaltung.py (Diagnose, nur lesend), make_einvoice_samples.py
@@ -696,7 +699,7 @@ uBuchhaltung/
 | `server/upload_handler.py` | File-Upload |
 | `server/wiso_upload.py` | Zwischenablage für den Upload der WISO-Datenbank |
 | `server/import_preview.py` | Kontoauszug-Import-Vorschau |
-| `server/backup.py` | Datensicherung/Wiederherstellung |
+| `server/backup.py` | Datensicherung/Wiederherstellung, Download der Sicherungen |
 
 ### Tests
 

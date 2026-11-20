@@ -1083,25 +1083,30 @@ def test_datev_export_of_the_whole_year_still_exports_and_stamps_the_tax_date(bo
     assert {tax for _, tax in date_taxes(booked, ['D1', 'D2'])} == {datetime.now().date().isoformat()}
 
 
-def test_datev_export_error_message_from_an_exception_is_percent_encoded(booked_plain, monkeypatch):
-    """Früher stand die Meldung nur mit „+“ für Leerzeichen in der Adresse: ein „%“, „&“ oder „#“ darin brach sie ab oder
-    ließ die Seite beim Dekodieren scheitern."""
+def test_datev_export_error_message_from_an_exception_is_a_fixed_sentence(booked_plain, monkeypatch, capsys):
+    """Früher stand der Text der Ausnahme in der Adresse (und damit auf der Seite; mit „+“ statt prozentkodiert, ein „%“, „&“ oder
+    „#“ darin brach sie ab). Seit 2.5.5 steht dort ein fester, prozentkodierter Satz – der volle Fehler steht im Server-Log."""
+    secret = '100 % kaputt & mehr = Ärger #1 +x /geheim/pfad'
+
     def boom(*args, **kwargs):
-        raise RuntimeError('100 % kaputt & mehr = Ärger #1 +x')
+        raise RuntimeError(secret)
     monkeypatch.setattr(booked_plain, 'find_unbalanced_splits', boom)
     result = handlers.handle_datev_export(booked_plain, datev_post('2026-03-01', '2026-03-31'))
     assert result[0] == 303
     assert '&' not in result[1].split('msg=', 1)[1] and '#' not in result[1] and ' ' not in result[1]
     query = urllib.parse.parse_qs(urllib.parse.urlsplit(result[1]).query)
-    assert query['datev_export'] == ['error'] and query['msg'] == ['100 % kaputt & mehr = Ärger #1 +x']
+    assert query['datev_export'] == ['error'] and query['msg'] == [handlers.DATEV_FAILED]
+    assert 'kaputt' not in urllib.parse.unquote(result[1]) and 'geheim' not in urllib.parse.unquote(result[1])
+    assert secret in capsys.readouterr().err                        # der volle Fehler steht im Server-Log
 
 
 def test_the_datev_message_on_the_page_is_decoded_only_once(booked_plain):
-    """``URLSearchParams`` dekodiert die Adresse schon; ein zweites ``decodeURIComponent`` wirft bei einem „%“ in der Meldung."""
+    """Ein zweites ``decodeURIComponent`` wirft bei einem „%“ in der Meldung. Seit 2.5.5 liest die Seite ``msg`` gar nicht mehr im
+    Browser: Der Server dekodiert die Adresse einmal und gibt die Meldung als JSON im Skriptblock ``miscMsg`` mit."""
     from server.pages_miscellaneous import PageMiscellaneous
     page = PageMiscellaneous(booked_plain)
     block = page.split('<h2>DATEV Export</h2>')[1].split('<h2>Zahlungszuordnungen</h2>')[0]
-    assert block.count("p.get('msg')") == 2 and 'decodeURIComponent' not in block
+    assert block.count('miscMsg') == 2 and "p.get('msg')" not in block and 'decodeURIComponent' not in block
 
 
 def test_datev_http_rejects_an_invalid_period_without_a_header_injection(server_port, auto_login):
