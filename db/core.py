@@ -406,3 +406,22 @@ class _CoreMixin:
 
         conn.close()
         return tables_exported, rows_exported
+
+
+# So viele Treffer liefern die Suchen der Belege und Buchungen höchstens – auch bei einem direkten Aufruf der Datenbankschicht.
+SEARCH_LIMIT_MAX = 50
+
+
+def search_limit(limit):
+    """``limit`` einer Suche, auf 1 bis ``SEARCH_LIMIT_MAX`` begrenzt: SQLite liest ein ``LIMIT`` unter 0 als „ohne Grenze“."""
+    return max(1, min(int(limit), SEARCH_LIMIT_MAX))
+
+
+def fold_text(value):
+    """Text für die Suche ohne Rücksicht auf die Schreibweise (``str.casefold``, auch Umlaute und ß); NULL bleibt NULL."""
+    return None if value is None else str(value).casefold()
+
+
+def add_fold_function(conn):
+    """Die SQL-Funktion ``ub_fold(x)`` (= ``fold_text``) auf ``conn`` anmelden – nur für die Suchen der Belege und Buchungen."""
+    conn.create_function('ub_fold', 1, fold_text, deterministic=True)

@@ -6,8 +6,10 @@ import sqlite3
 import os
 import json
 from decimal import Decimal
+from typing import NamedTuple
 from money import to_minor, from_minor
 from db import datev_keys
+from db.core import add_fold_function, fold_text, search_limit
 from db.matching import (
     ENTRY_FORMS, SIDE_COUNTER, derive_entry_form, is_bank_effective, is_mirror_row,
     purpose_in_counter, read_entry_form, reform,
@@ -25,6 +27,40 @@ BOOKING_REFERENCES = (
     ('AssetDepreciations', 'Booking_ID'),
     ('Bookings', 'ParentBooking_ID'),
 )
+
+RELATION_TYPES = ('receipt', 'invoice', 'contract', 'other')        # Positivliste für BookingDocuments.RelationType
+RELATION_DEFAULT = 'receipt'
+RELATION_LABELS = {'receipt': 'Beleg', 'invoice': 'Rechnung', 'contract': 'Vertrag', 'other': 'Sonstiges'}
+BOOKING_GONE = 'Diese Buchung gibt es nicht (mehr). Bitte die Seite neu laden.'
+RECEIPT_GONE = 'Diesen Beleg gibt es nicht (mehr). Bitte die Seite neu laden.'
+
+
+class LinkRefused(ValueError):
+    """Verknüpfen abgelehnt (Buchung oder Beleg fehlt); der Text ist Klartext für den Nutzer, nichts ist geschrieben."""
+
+
+class LinkResult(NamedTuple):
+    created: bool            # eine neue Zeile in BookingDocuments (False: es gab sie schon)
+    number_taken: bool       # die Buchung hat die Nummer des Belegs übernommen
+    document_number: str     # die Beleg-Nr. der Buchung nach dem Verknüpfen ('' = keine)
+    number_in_use: bool      # nicht übernommen, weil eine andere Buchung diese oder eine ähnliche Nummer trägt
+    has_entries: bool        # die Buchung ist eine Bankbewegung mit Buchungssätzen (sie erben die Nummer nicht)
+
+
+# Bedingung 6 der Übernahme (``link_receipt_to_booking``): Trägt eine ANDERE Buchung diese oder eine ähnliche Nummer? Ähnlich heißt: die
+# eine ist in der anderen enthalten, in beiden Richtungen (``INSTR`` – ``26B001`` gegen ``26B0010`` und ``26B001_A``), ohne Leerraum am Rand und ohne
+# Rücksicht auf die Schreibweise. Die eigene Familie zählt nicht: die Sätze der Buchung, ihre Bankbewegung und deren übrige Sätze gehören
+# zum selben Vorgang, der Abgleich fasst sie nicht an. ``TRIM``, ``LOWER`` und ``INSTR`` lesen jeden Wert als Text (auch eine Zahl oder
+# einen Blob aus einem Altbestand); ``:n`` ist die Nummer des Belegs, ``:parent`` die Bankbewegung der Buchung oder NULL.
+_NUMBER_IN_USE_SQL = '''
+    SELECT 1 FROM Bookings
+    WHERE ID != :id
+      AND TRIM(COALESCE(DocumentNumber, '')) != ''
+      AND NOT (ParentBooking_ID IS NOT NULL AND ParentBooking_ID = :id)
+      AND NOT (:parent IS NOT NULL AND (ID = :parent OR (ParentBooking_ID IS NOT NULL AND ParentBooking_ID = :parent)))
+      AND (INSTR(LOWER(TRIM(DocumentNumber)), LOWER(:n)) > 0 OR INSTR(LOWER(:n), LOWER(TRIM(DocumentNumber))) > 0)
+    LIMIT 1
+'''
 
 
 class BookingsMixin:
@@ -1068,7 +1104,9 @@ class BookingsMixin:
         return self._euro_row(booking, 11, 14)  # Amount(11), TaxAmount(14)
     def link_booking_to_document(self, booking_id, document_id, relation_type="receipt"):
         """Create a link between a booking and a document
-        
+
+        Ohne Übernahme der Beleg-Nr. – die App verknüpft über ``link_receipt_to_booking``.
+
         Args:
             booking_id: ID of the booking
             document_id: ID of the document
@@ -1096,39 +1134,138 @@ class BookingsMixin:
             # Link already exists
         finally:
             conn.close()
+    def link_receipt_to_booking(self, booking_id, document_id, relation_type=RELATION_DEFAULT):
+        """Einen Beleg einer Buchung zuordnen – der Weg der Oberfläche (Maske und Seite des Belegs). Prüfen, Zeile und
+        Beleg-Nr. laufen in EINER Transaktion (``BEGIN IMMEDIATE``): ganz oder gar nicht. Gibt es die Buchung oder den Beleg nicht
+        (mehr), ist es eine :class:`LinkRefused` mit Klartext, und nichts ist geschrieben. Das Zuordnen ist idempotent: Gibt es die
+        Verknüpfung schon, bleibt sie – auch ihre Art – und es entsteht keine zweite Zeile.
+
+        Verknüpfbar ist jede Zeile von ``Bookings``: Bankbewegung, Satz einer Bankbewegung und eigenständiger Satz.
+        ``relation_type`` steht in ``RELATION_TYPES``, sonst gilt ``RELATION_DEFAULT``.
+
+        **Die Beleg-Nr.** Die übernommene Nummer ist eine Datenänderung an der Buchung und wirkt wie eine von Hand eingetragene –
+        auch auf den automatischen Abgleich (``link_bank_to_entries``: dieselbe Nummer am selben Tag fasst eigenständige Sätze zu EINEM
+        Beleg zusammen, Stufe 4 vergleicht die Nummer einer Bankbewegung als Teilzeichenkette). Deshalb übernimmt die Buchung die
+        Nummer des Belegs nur, wenn alle Bedingungen zutreffen (``update_booking_fields(tx=…)``, im Replay-Log erst nach dem Commit;
+        auch, wenn die Verknüpfung schon bestand):
+
+        1. Die Buchung trägt keine Beleg-Nr. (NULL, leer, nur Leerraum).
+        2. Der Beleg trägt eine Nummer (ohne Leerraum am Rand).
+        3. Die Verknüpfung ist von der Art ``receipt`` – maßgeblich ist die Art, die nach dem Aufruf in ``BookingDocuments`` steht
+           (bestand die Verknüpfung schon, ihre gespeicherte, sonst ``relation_type``); ``invoice``, ``contract`` und ``other`` übernehmen nie.
+        4. Die Buchung ist kein Zahlungssatz einer Rechnungszuordnung (``Status='invoice_payment'``: er trägt immer die Rechnungsnummer).
+        5. Keine Rechnung trägt die Nummer (``Invoices.InvoiceNumber``): Forderung und Zahlungssätze werden über die Rechnungsnummer
+           gefunden, das Zuordnen darf sie weder erzeugen noch stören.
+        6. Keine andere Buchung trägt diese oder eine ähnliche Nummer (``_NUMBER_IN_USE_SQL``; ausgenommen die eigene Familie: ihre
+           Sätze, ihre Bankbewegung, deren übrige Sätze). Trifft 1 bis 5 zu und 6 nicht, bleibt die Nummer leer: ``number_in_use``.
+
+        Nur die verknüpfte Zeile: Die Kinder einer Bankbewegung bleiben unberührt (wie beim Speichern der Maske, dort führt jedes
+        Kind seine eigene Nummer); ``has_entries`` sagt es der Meldung (die Buchung ist eine Bankbewegung mit Sätzen).
+
+        Innerhalb der Transaktion nur Bausteine mit ``tx`` – nie eine öffentliche Methode, die selbst ``BEGIN`` ausführt.
+
+        Returns :class:`LinkResult`."""
+        if relation_type not in RELATION_TYPES:
+            relation_type = RELATION_DEFAULT
+        with self.transaction() as tx:
+            tx.conn.execute('BEGIN IMMEDIATE')
+            # CAST: ein Altbestand kann in diesen Spalten eine Zahl oder einen Blob tragen – Python liest immer Text
+            booking = tx.conn.execute('SELECT CAST(DocumentNumber AS TEXT), Status, BookingType, ParentBooking_ID '
+                                      'FROM Bookings WHERE ID = ?', (booking_id,)).fetchone()
+            if booking is None:
+                raise LinkRefused(BOOKING_GONE)
+            receipt = tx.conn.execute('SELECT CAST(Number AS TEXT) FROM Documents WHERE ID = ?', (document_id,)).fetchone()
+            if receipt is None:
+                raise LinkRefused(RECEIPT_GONE)
+            stored = tx.conn.execute('SELECT RelationType FROM BookingDocuments WHERE Booking_ID = ? AND Document_ID = ?',
+                                     (booking_id, document_id)).fetchone()
+            if stored is None:
+                tx.conn.execute('INSERT INTO BookingDocuments (Booking_ID, Document_ID, RelationType) VALUES (?, ?, ?)',
+                                (booking_id, document_id, relation_type))
+            kind = relation_type if stored is None else stored[0]
+            number = (receipt[0] or '').strip()
+            current = (booking[0] or '').strip()
+            has_entries = booking[2] == 'bank' and tx.conn.execute(
+                'SELECT 1 FROM Bookings WHERE ParentBooking_ID = ? LIMIT 1', (booking_id,)).fetchone() is not None
+            take = (not current and bool(number) and kind == 'receipt' and booking[1] != PAYMENT_MARK
+                    and not tx.conn.execute('SELECT 1 FROM Invoices WHERE InvoiceNumber = ?', (number,)).fetchone())
+            in_use = take and tx.conn.execute(
+                _NUMBER_IN_USE_SQL, {'id': booking_id, 'parent': booking[3], 'n': number}).fetchone() is not None
+            take = take and not in_use
+            if take:
+                self.update_booking_fields(booking_id, log_description='Receipt link: document number', tx=tx,
+                                           document_number=number)
+            return LinkResult(stored is None, take, number if take else current, in_use, has_entries)
+    def unlink_receipt_from_booking(self, booking_id, document_id):
+        """Die Verknüpfung einer Buchung mit einem Beleg lösen. Returns ``True``, wenn es sie gab (``False``: es gab sie nicht –
+        das Lösen ist idempotent).
+
+        Die Beleg-Nr. der Buchung bleibt stehen: Woher eine Nummer stammt, ist nicht gespeichert – „nur löschen, wenn sie gleich der
+        Belegnummer ist“ nähme auch eine von Hand eingetragene, gleich lautende mit, und eine Nummer, die schon in einem
+        DATEV-Stapel stand, fehlte danach. Sie bleibt damit auch beim Löschen des Belegs in Gebrauch (``release_receipt_number``
+        gibt sie nicht frei)."""
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute('DELETE FROM BookingDocuments WHERE Booking_ID = ? AND Document_ID = ?',
+                                  (booking_id, document_id))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
     def get_documents_for_booking(self, booking_id):
-        """Get all documents linked to a booking"""
+        """Die Belege einer Buchung, jüngster zuerst: Rohzeilen ``(ID, Number, Date, Filename, Path, Info, RelationType)``."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT d.*, bd.RelationType 
-            FROM Documents d
-            JOIN BookingDocuments bd ON d.ID = bd.Document_ID
-            WHERE bd.Booking_ID = ?
-        ''', (booking_id,))
-        rows = cursor.fetchall()
-        conn.close()
-        return rows
+        try:
+            return conn.execute('''
+                SELECT d.ID, d.Number, d.Date, d.Filename, d.Path, d.Info, bd.RelationType
+                FROM BookingDocuments bd
+                JOIN Documents d ON d.ID = bd.Document_ID
+                WHERE bd.Booking_ID = ?
+                ORDER BY d.Date DESC, d.ID DESC
+            ''', (booking_id,)).fetchall()
+        finally:
+            conn.close()
     def get_bookings_for_document(self, document_id):
-        """Get all bookings linked to a document"""
+        """Die Buchungen eines Belegs, jüngste zuerst: Rohzeilen ``(ID, DateBooking, Amount, Currency, RecipientClient, Text,
+        DocumentNumber, BookingType, ParentBooking_ID, RelationType)`` – der Betrag bleibt in Minor Units."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT b.*, bd.RelationType 
-            FROM Bookings b
-            JOIN BookingDocuments bd ON b.ID = bd.Booking_ID
-            WHERE bd.Document_ID = ?
-        ''', (document_id,))
-        rows = cursor.fetchall()
-        conn.close()
-        return [self._euro_row(r, 11, 14) for r in rows]  # b.* -> Amount(11), TaxAmount(14)
-    def unlink_booking_from_document(self, booking_id, document_id):
-        """Remove link between booking and document"""
+        try:
+            return conn.execute('''
+                SELECT b.ID, b.DateBooking, b.Amount, b.Currency, b.RecipientClient, b.Text, b.DocumentNumber, b.BookingType,
+                       b.ParentBooking_ID, bd.RelationType
+                FROM BookingDocuments bd
+                JOIN Bookings b ON b.ID = bd.Booking_ID
+                WHERE bd.Document_ID = ?
+                ORDER BY b.DateBooking DESC, b.ID DESC
+            ''', (document_id,)).fetchall()
+        finally:
+            conn.close()
+    def search_bookings(self, text, date_prefix, amount_minor, limit):
+        """Buchungen für die Suche der Seite eines Belegs – rein lesend: Rohzeilen ``(ID, DateBooking, Amount, Currency,
+        RecipientClient, Text, DocumentNumber, BookingType, ParentBooking_ID)``, jüngste zuerst, höchstens ``limit`` (begrenzt
+        auf 1 bis ``SEARCH_LIMIT_MAX``).
+
+        Gefunden wird, was ``text`` in Empfänger, Verwendungszweck oder Beleg-Nr. enthält – ohne Rücksicht auf die Schreibweise,
+        auch bei Umlauten und ß (``ub_fold`` + ``INSTR``: ``LIKE`` faltet in SQLite nur ASCII, und ``%`` und ``_`` sind hier
+        gewöhnliche Zeichen) –, dazu die Buchungen, deren Datum mit ``date_prefix`` beginnt (``JJJJ``, ``JJJJ-MM``,
+        ``JJJJ-MM-TT``), und die, deren Betrag ohne Vorzeichen genau ``amount_minor`` ist (Minor Units). ``date_prefix`` und
+        ``amount_minor`` sind ``None``, wenn die Eingabe keines von beiden ist. Ohne ``text`` gibt es keine Bedingung: die
+        jüngsten Buchungen."""
+        needle = fold_text(text or '')
+        select = ('SELECT ID, DateBooking, Amount, Currency, RecipientClient, Text, DocumentNumber, BookingType, ParentBooking_ID '
+                  'FROM Bookings')
+        order = ' ORDER BY DateBooking DESC, ID DESC LIMIT :n'
+        if needle:
+            sql = (select + ' WHERE INSTR(ub_fold(RecipientClient), :t) > 0 OR INSTR(ub_fold(Text), :t) > 0'
+                            ' OR INSTR(ub_fold(DocumentNumber), :t) > 0'
+                            ' OR (:d IS NOT NULL AND SUBSTR(DateBooking, 1, LENGTH(:d)) = :d)'
+                            ' OR (:a IS NOT NULL AND ABS(Amount) = :a)' + order)
+            params = {'t': needle, 'd': date_prefix, 'a': amount_minor, 'n': search_limit(limit)}
+        else:
+            sql, params = select + order, {'n': search_limit(limit)}
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            DELETE FROM BookingDocuments 
-            WHERE Booking_ID = ? AND Document_ID = ?
-        ''', (booking_id, document_id))
-        conn.commit()
-        conn.close()
+        try:
+            add_fold_function(conn)
+            return conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()

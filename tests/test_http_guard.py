@@ -30,6 +30,7 @@ from server.pages_masterdata import PageArticles
 from server.pages_receipts import PageReceiptEdit
 from server.pages_transactions import PageTransactions
 from tests import installation
+from tests.dom_helpers import Dom
 from tests.http_client import FOREIGN_ORIGIN, get, own_origin, post, send
 
 
@@ -220,6 +221,7 @@ def test_post_without_origin_headers_is_accepted(server_port, auto_login, articl
 @pytest.mark.parametrize("path", [
     "/execute_sql", "/backup/create", "/backup/restore",
     "/users/create", "/wiso/fdb-import", "/wiso/fdb-upload?slot=client", "/upload_receipts", "/receipts/upload",
+    "/bookings/link-document", "/bookings/unlink-document",
 ])
 def test_every_post_route_is_behind_the_origin_check(server_port, auto_login, path):
     # Das Tor sitzt vor allen schreibenden Anfragen, auch vor denen, die ihren
@@ -282,14 +284,13 @@ def test_fetch_route_with_valid_token_reaches_the_handler(server_port, auto_logi
 
 
 # -- alle Aktionspfade ----------------------------------------------------------
-_ACTION_QUERY = ("id=99999&number=nr-99999&doc_id=99999&booking_id=99999"
+_ACTION_QUERY = ("id=99999&number=nr-99999"
                  "&person=1&from=2026-01-01&to=2026-12-31")
 
 # Redirect-Ziel je Aktionspfad bei einer Anfrage mit nicht vorhandenen IDs
 _POST_LOCATION = {
     "/asset_categories/delete": r"/asset_categories",
     "/assets/delete": r"/assets",
-    "/documents/unlink": r"/transactions",
     "/masterdata/articles/delete": r"/masterdata/articles",
     "/masterdata/bankaccounts/delete": r"/masterdata/bankaccounts",
     "/masterdata/contacts/delete": r"/masterdata/contacts",
@@ -358,29 +359,8 @@ def test_delete_redirect_encodes_person_parameter(server_port, auto_login, path,
                                         f"&from=2026-01-01&to=2026-12-31")
 
 
-# -- /documents/unlink: Redirect nur auf lokale Pfade ----------------------------
-@pytest.mark.parametrize("referer, expected", [
-    pytest.param("https://evil.example/x", "/x", id="fremde-Adresse-nur-Pfad"),
-    pytest.param("{own}/receipts/edit?number=7", "/receipts/edit?number=7",
-                 id="eigene-Seite-mit-Query"),
-    pytest.param(None, "/transactions", id="ohne-Referer"),
-    pytest.param("https://evil.example//attacker.example/x", "/transactions",
-                 id="Pfad-mit-doppeltem-Slash"),
-    pytest.param("https://evil.example/\\attacker.example", "/transactions",
-                 id="Backslash-im-Pfad"),
-    pytest.param("/\\attacker.example", "/transactions", id="relativ-mit-Backslash"),
-    pytest.param("https://evil.example", "/transactions", id="ohne-Pfad"),
-    pytest.param("javascript:alert(1)", "/transactions", id="javascript-Schema"),
-    pytest.param("http://[::1", "/transactions", id="kaputte-Adresse"),
-])
-def test_unlink_redirects_only_to_local_part_of_referer(server_port, auto_login, referer, expected):
-    headers = {} if referer is None else {"Referer": referer.replace("{own}", own_origin(server_port))}
-    resp = post(server_port, "/documents/unlink?doc_id=99999&booking_id=99999", headers=headers,
-                csrf=auto_login.csrf)
-    location = resp.headers["Location"]
-    assert resp.status == 303
-    assert location == expected
-    assert location.startswith("/") and not location.startswith("//")
+# -- Belege verknüpfen (seit 2.5.12): JSON-POST, nie ein Link -------------------------
+_LINK_ROUTES = ["/bookings/link-document", "/bookings/unlink-document"]
 
 
 def _booking_with_receipt(db):
@@ -399,21 +379,31 @@ def linked_booking(auto_login):
     return _booking_with_receipt(auto_login.db)
 
 
-def test_get_on_unlink_url_is_405_and_keeps_link(server_port, auto_login, linked_booking):
+@pytest.mark.parametrize("route", _LINK_ROUTES)
+def test_get_on_link_routes_is_405_and_keeps_link(server_port, auto_login, linked_booking, route):
     booking_id, doc_id = linked_booking
-    resp = get(server_port, f"/documents/unlink?doc_id={doc_id}&booking_id={booking_id}")
+    resp = get(server_port, f"{route}?bookingId={booking_id}&documentId={doc_id}")
     assert resp.status == 405
+    assert resp.headers["Allow"] == "POST"
     assert len(auto_login.db.get_documents_for_booking(booking_id)) == 1
 
 
-def test_post_on_unlink_url_removes_link(server_port, auto_login, linked_booking):
+def test_post_on_unlink_route_with_token_removes_link(server_port, auto_login, linked_booking):
     booking_id, doc_id = linked_booking
-    resp = post(server_port, f"/documents/unlink?doc_id={doc_id}&booking_id={booking_id}",
-                headers={"Referer": f"{own_origin(server_port)}/receipts/edit?number=R-1"},
-                csrf=auto_login.csrf)
-    assert resp.status == 303
-    assert resp.headers["Location"] == "/receipts/edit?number=R-1"
+    resp = _post_json(server_port, "/bookings/unlink-document",
+                      {"bookingId": booking_id, "documentId": doc_id}, token=auto_login.csrf)
+    assert resp.status == 200
+    assert json.loads(resp.text)["removed"] is True
     assert auto_login.db.get_documents_for_booking(booking_id) == []
+
+
+@pytest.mark.parametrize("route", _LINK_ROUTES)
+def test_link_route_without_token_is_403(server_port, auto_login, linked_booking, route):
+    booking_id, doc_id = linked_booking
+    resp = _post_json(server_port, route, {"bookingId": booking_id, "documentId": doc_id})
+    assert resp.status == 403
+    assert "Sicherheits-Token" in resp.text
+    assert len(auto_login.db.get_documents_for_booking(booking_id)) == 1
 
 
 # -- Hostname-Prüfung (DNS-Rebinding): überall, wo niemand ein Passwort eingibt -----------
@@ -611,17 +601,18 @@ def test_transaction_list_deletes_via_post(db_with_coa):
 
 
 @pytest.mark.parametrize("render", [
-    pytest.param(lambda db, booking_id: PageTransactions(
+    pytest.param(lambda db, booking_id, doc_id: PageTransactions(
         db, edit_transaction_id=booking_id, date_from="2026-01-01", date_to="2026-12-31"),
         id="Buchung-bearbeiten"),
-    pytest.param(lambda db, booking_id: PageReceiptEdit(db, "R-1"), id="Beleg-bearbeiten"),
+    pytest.param(lambda db, booking_id, doc_id: PageReceiptEdit(db, doc_id), id="Beleg-bearbeiten"),
 ])
 def test_unlink_is_a_post_action_not_a_link(db_with_coa, render):
     booking_id, doc_id = _booking_with_receipt(db_with_coa)
-    html = render(db_with_coa, booking_id)
-    assert re.search(r"""href=['"]/documents/unlink""", html) is None
-    assert re.search(r"appPost\(\s*['\"]/documents/unlink\?doc_id=%d&(?:amp;)?booking_id=%d['\"]"
-                     % (doc_id, booking_id), html)
+    html = render(db_with_coa, booking_id, doc_id)
+    assert re.search(r"""href=['"]/bookings/""", html) is None                  # kein Link löst oder verknüpft etwas
+    assert "/documents/" not in html                                            # die alten Routen /documents/link und /unlink gibt es nicht mehr
+    assert "/bookings/unlink-document" in "".join(Dom(html).scripts)            # das Lösen ist ein POST aus dem Skript (fetch) …
+    assert "/bookings/unlink-document" not in re.sub(r"<script>.*?</script>", "", html, flags=re.S)   # … und steht nirgends sonst
 
 
 def test_header_logs_out_with_a_post_action_not_with_a_link(multi_user_mode):

@@ -26,6 +26,7 @@ from . import dirlock
 from . import pages
 from . import handlers
 from . import receipt_files
+from . import receipt_links
 from . import upload_handler
 from . import wiso_upload
 from .pages_login import PageLogin
@@ -340,7 +341,6 @@ _ACTION_PATHS = frozenset({
     "/masterdata/bankaccounts/delete",
     "/receipts/delete",
     "/transactions/delete",
-    "/documents/unlink",
     "/masterdata/numberranges/delete",
     "/assets/delete",
     "/asset_categories/delete",
@@ -359,7 +359,8 @@ _GENERATE_PATHS = frozenset({
     "/quote/pdf_generate",
 })
 
-# Rechnungen und Angebote per fetch: JSON hinein, JSON hinaus, siehe `_post_json_route`.
+# Rechnungen und Angebote per fetch: JSON hinein, JSON hinaus, siehe `_post_json_route`. Dazu das Verknüpfen von Belegen
+# und Buchungen (2.5.12).
 _JSON_PATHS = frozenset({
     "/invoice/save",
     "/invoice/send-email",
@@ -370,14 +371,26 @@ _JSON_PATHS = frozenset({
     "/invoice/reissue",
     "/quote/save",
     "/quote/status",
+    "/bookings/link-document",
+    "/bookings/unlink-document",
 })
 
 # Aktionen mit Seiteneffekt unter den JSON-Routen: GET ergibt 405 (wie bei `_ACTION_PATHS`/`_GENERATE_PATHS`).
 # Stornieren und Neu ausstellen legen einen Beleg an, siehe `handlers.handle_invoice_cancel` und
-# `handlers.handle_invoice_reissue`.
+# `handlers.handle_invoice_reissue`. Belege verknüpfen (2.5.12): `handlers.handle_booking_link_document` und
+# `handlers.handle_booking_unlink_document`.
 _POST_ONLY_JSON_PATHS = frozenset({
     "/invoice/cancel",
     "/invoice/reissue",
+    "/bookings/link-document",
+    "/bookings/unlink-document",
+})
+
+# Die Suchen der Belege und Buchungen (2.5.12): GET, rein lesend, JSON-Antwort – kein Seiteneffekt, aber die Seiten lesen JSON,
+# also kommt auch die 503 während einer Wiederherstellung als JSON (`_JSON_ANSWER_ROUTES`).
+_SEARCH_PATHS = frozenset({
+    "/receipts/search",
+    "/transactions/search",
 })
 
 # Uploads mit eigener Prüfung vor dem ersten gelesenen Byte: nur per POST (GET → 405), JSON-Antwort, CSRF-Token als Header.
@@ -396,7 +409,7 @@ _LOCK_FREE_ROUTES = frozenset({"/backup/download", "/buch.css", "/favicon.ico"})
 
 # Routen, deren Seiten JSON erwarten (fetch/XMLHttpRequest): Die 503 während einer Wiederherstellung kommt dort als JSON, mit den
 # Schlüsseln, die die Seiten lesen (``success``/``error``; ``ok``/``error`` beim Import der Auszüge; ``errors`` der SQL-Konsole).
-_JSON_ANSWER_ROUTES = (_JSON_PATHS | _GENERATE_PATHS | _UPLOAD_PATHS
+_JSON_ANSWER_ROUTES = (_JSON_PATHS | _GENERATE_PATHS | _UPLOAD_PATHS | _SEARCH_PATHS
                        | frozenset({"/upload_receipts", "/masterdata/contacts/upload-logo",
                                     "/confirm_transactions", "/execute_sql"}))
 
@@ -496,9 +509,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
 
     def end_headers(self):
         path = getattr(self, 'path', '')           # fehlt bei einer kaputten Anfragezeile
-        # zuerst: Eine Endung am Ende der Adresse (``?x=.png``) darf einen Beleg nie zu „public“ machen
-        if path.split('?', 1)[0] in ('/backup/download', '/receipts/file'):
-            self.send_header('Cache-Control', 'no-store')               # der ganze Datenbestand bzw. ein Beleg: nirgends ablegen
+        # zuerst: Eine Endung am Ende der Adresse (``?x=.png``, bei den Suchen ``?q=.png``) darf einen Beleg nie zu „public“ machen
+        route = path.split('?', 1)[0]
+        if route in ('/backup/download', '/receipts/file') or route in _SEARCH_PATHS:
+            self.send_header('Cache-Control', 'no-store')               # der ganze Datenbestand, ein Beleg bzw. die Treffer einer Suche: nirgends ablegen
         elif path.endswith('.css') or path.endswith('.js') or path.endswith('.png'):
             self.send_header('Cache-Control', 'public, max-age=86400')  # Cache this File for 1d
         else:
@@ -1066,18 +1080,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.close_connection = True                    # die Datei ist während des Sendens kürzer geworden
                 print(f"Download unvollständig ({sent} von {opened.size} Bytes): Beleg {receipt_id}", file=sys.stderr)
 
-    def _local_referer(self, default):
-        """Pfad (+ Query) des Referer – nie eine fremde Adresse (kein offener Redirect)."""
-        try:
-            parts = urlsplit(self.headers.get('Referer') or '')
-        except ValueError:
-            return default
-        # Browser lesen "/\\host" wie "//host" – beides wäre eine fremde Adresse.
-        if (not parts.path.startswith('/') or parts.path.startswith('//')
-                or '\\' in parts.path):
-            return default
-        return parts.path + ('?' + parts.query if parts.query else '')
-
     def _respond_after_delete(self, delete, target, list_path, error_param):
         """303 auf die Listenseite ``list_path`` nach ``delete(target)``. Lehnt das Löschen ab (``DeleteRefused``: andere
         Daten verweisen auf den Datensatz), geht die Meldung als Query-Parameter ``error_param`` mit – die Seite zeigt
@@ -1111,10 +1113,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         # Pflichtparameter der Aktion: Fehlt einer oder ist er keine Ganzzahl,
         # kommt 400 – wie bei /invoice/delete, nicht KeyError/ValueError und damit 500.
         item_id = _int_param(qs, "id")
-        doc_id, booking_id = _int_param(qs, "doc_id"), _int_param(qs, "booking_id")
-        if path == "/documents/unlink":
-            invalid = doc_id is None or booking_id is None
-        elif path == "/masterdata/skr/add_standard":
+        if path == "/masterdata/skr/add_standard":
             invalid = False                         # die Aktion nennt keine ID
         else:
             invalid = item_id is None
@@ -1142,9 +1141,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         elif path == "/transactions/delete":
             status_code, location = handlers.handle_delete_transaction(db, item_id)
             self.respond(status_code, "", headers={"Location": location})
-        elif path == "/documents/unlink":
-            db.unlink_booking_from_document(booking_id, doc_id)
-            self.respond(303, "", headers={"Location": self._local_referer('/transactions')})
         elif path == "/masterdata/numberranges/delete":
             db.delete_number_range(item_id)
             self.respond(303, "", headers={"Location": "/masterdata/numberranges"})
@@ -1323,8 +1319,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             return
         self._respond_json(status_code, payload)
 
-    def _post_json_route(self, path):
-        """POST-Routen der Rechnungen und Angebote, die JSON lesen und JSON antworten (fetch).
+    def _post_json_route(self, path, db):
+        """POST-Routen der Rechnungen und Angebote und des Verknüpfens von Belegen, die JSON lesen und JSON antworten (fetch).
 
         Ein unbrauchbarer Body – fehlende oder ungültige Content-Length, kein JSON-Objekt,
         fehlende Pflichtfelder (``handlers.InvalidRequest``) – wird mit 400 „Ungültige Anfrage.“
@@ -1347,6 +1343,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 status_code, msg = handler(post_body)
                 response = json.dumps({'success': True} if status_code == 200
                                       else {'success': False, 'error': msg})
+            elif path in ("/bookings/link-document", "/bookings/unlink-document"):
+                handler = {"/bookings/link-document": handlers.handle_booking_link_document,
+                           "/bookings/unlink-document": handlers.handle_booking_unlink_document}[path]
+                status_code, response = handler(db, post_body)
             else:                  # /invoice/status, /invoice/cancel, /invoice/reissue, /quote/status
                 handler = {"/invoice/status": handlers.handle_update_invoice_status,
                            "/invoice/cancel": handlers.handle_invoice_cancel,
@@ -1554,9 +1554,16 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             elif self.path.split('?', 1)[0] == "/receipts/file":
                 self._send_receipt_file(db)
                 return
+            elif route in _SEARCH_PATHS:
+                # Rein lesend, aber mit Herkunftsprüfung wie die Datei eines Belegs: die Treffer sind Daten des Benutzers
+                if not request_is_same_origin(self.headers):
+                    self._respond_json(403, {'success': False, 'error': receipt_links.SEARCH_FOREIGN})
+                    return
+                search = handlers.handle_receipt_search if route == "/receipts/search" else handlers.handle_booking_search
+                status_code, body = search(db, self._query())
+                self.respond(status_code, body, content_type="application/json")
             elif self.path.startswith("/receipts/edit"):
-                number = self._query().get("number", [""])[0]
-                self.respond(200, PageReceiptEdit(db, number))
+                self.respond(200, PageReceiptEdit(db, _id_param(self._query())))
             elif self.path == "/transactions" or self.path.startswith("/transactions?"):
                 qs = self._query()
                 date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
@@ -1871,9 +1878,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             self.wfile.write(response_data)
             return
 
-        # Rechnungen und Angebote per fetch (JSON)
+        # Rechnungen und Angebote per fetch (JSON), dazu das Verknüpfen von Belegen
         if self.path in _JSON_PATHS:
-            self._post_json_route(self.path)
+            self._post_json_route(self.path, db)
             return
 
         # Parse regular form data (vor der Ersteinrichtung gibt es noch niemanden, der angemeldet wäre)
@@ -1929,8 +1936,6 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.respond(status_code, response, content_type="application/json")
             elif self.path == "/transactions/add":
                 self._respond_form_result(handlers.handle_add_transaction(db, post_data))
-            elif self.path == "/documents/link":
-                self._respond_form_result(handlers.handle_link_document(db, post_data))
             elif self.path == "/masterdata/bankaccounts/add":
                 self._respond_form_result(handlers.handle_add_bankaccount(db, post_data))
             elif self.path == "/masterdata/bankaccounts/update":

@@ -476,6 +476,19 @@ def test_a_post_of_a_page_that_reads_json_gets_a_json_503(server_port, auto_logi
     assert resp.will_close and resp.getheader('Connection') == 'close'
 
 
+@pytest.mark.parametrize('path', ['/receipts/search?q=a', '/transactions/search?q=a'])
+def test_a_search_of_a_page_gets_a_json_503_while_the_directory_is_restored(server_port, auto_login, path):
+    """Die Suchen der Belege und Buchungen (seit 2.5.12) sind GET, aber die Seiten lesen JSON (``success``/``error``): Auch die 503
+    trägt es – ein Klartext ergäbe dort „kein JSON“."""
+    with exclusive_held(admin_dir()):
+        resp = get(server_port, path)
+    assert resp.status == 503 and resp.headers['Content-Type'] == 'application/json'
+    assert json.loads(resp.text) == {'success': False, 'ok': False, 'error': dirlock.RESTORE_RUNNING,
+                                     'errors': [dirlock.RESTORE_RUNNING]}
+    assert resp.headers['Retry-After'] == '15'
+    assert get(server_port, path).status == 200                      # danach ist die Sperre frei, die Suche antwortet
+
+
 def test_the_static_files_and_the_download_of_a_backup_are_served_during_a_restore(server_port, auto_login):
     """Der Download liest nur aus backup/ (das eine Wiederherstellung nie anfasst) und kann lange dauern: Er darf sie nicht aufhalten."""
     content = os.urandom(20_000)

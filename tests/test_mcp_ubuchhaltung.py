@@ -215,7 +215,7 @@ SIDE_EFFECT_ROUTES = ("/quote/delete", "/invoice/pdf_generate", "/quote/pdf_gene
 
 @pytest.mark.parametrize("path", [
     "/", "/about", "/invoice?id=3", "/invoice/edit?id=3", "/masterdata/contacts?type=customer",
-    "/users?info=x", "/receipts/edit?number=B%C3%BCro-1", "/transactions?from=2024-01-01&to=2024-12-31",
+    "/users?info=x", "/receipts/edit?id=1", "/transactions?from=2024-01-01&to=2024-12-31",
     "/transactions", "/transactions?", "/dashboard?acct=1&acct=2&from=2024-01-01",
     "/invoice?search=M%C3%BCller&status=paid", "/assets?status",
 ])
@@ -327,6 +327,14 @@ def test_the_allowlist_leaves_out_the_pages_the_review_found_unsafe():
     assert "/receipts/file" not in mcp._PAGE_ALLOWLIST                         # die Datei eines Belegs (seit 2.5.11): ebenso ein Dokument
     assert "/receipts" in mcp._PAGE_ALLOWLIST and "/receipts/edit" in mcp._PAGE_ALLOWLIST     # die Anzeigeseiten bleiben
     assert not {"from_invoice", "copy_from"} & {key for keys in mcp._PAGE_ALLOWLIST.values() for key in keys}
+
+
+def test_the_searches_are_not_in_the_allowlist():
+    """Die JSON-Suchen der Belege und Buchungen (seit 2.5.12) sind keine Anzeigeseiten: Das Werkzeug liest dasselbe per SQL-Abfrage."""
+    for page in ("/receipts/search", "/transactions/search"):
+        assert page not in mcp._PAGE_ALLOWLIST
+        with pytest.raises(ValueError, match=r"Seite nicht freigegeben – .*_PAGE_ALLOWLIST in tools/mcp_ubuchhaltung\.py"):
+            mcp.check_page_path(f"{page}?q=a")
 
 
 def test_html_to_text_keeps_the_readable_part():
@@ -1349,7 +1357,7 @@ REQUIRED_QUERY = {                        # Seiten, die ohne diese Schlüssel ni
     "/masterdata/articles/edit": ("id",), "/masterdata/contacts/edit": ("id",),
     "/masterdata/skr/edit": ("id",), "/masterdata/skr/copy": ("id",),
     "/masterdata/bankaccounts/edit": ("id",), "/masterdata/numberranges/edit": ("id",),
-    "/receipts/edit": ("number",), "/transactions/edit": ("id",), "/assets/edit": ("id",),
+    "/receipts/edit": ("id",), "/transactions/edit": ("id",), "/assets/edit": ("id",),
     "/assets/view": ("id",), "/asset_categories/edit": ("id",), "/worktime/edit": ("id",),
     "/trips/edit": ("id",),
 }

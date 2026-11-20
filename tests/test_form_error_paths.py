@@ -149,10 +149,6 @@ def receipt_form(w):
     return form(id=w.receipt, number='B-200', date=DAY, filename='neu.pdf', path='pfad/neu.pdf', info='Neu')
 
 
-def link_form(w):
-    return form(booking_id=w.booking, document_id=w.receipt, relation_type='receipt')
-
-
 def account_add_form(w):
     return form(name='Zweites Konto', holder='Inhaber', iban=IBAN, bic='TESTDEFFXXX', bank_name='Probebank',
                 skr_account='1810')
@@ -260,7 +256,6 @@ def test_optional_ids_are_none_when_empty_the_id_when_valid_and_refused_as_a_who
 # ── IDs: ungültig → 400, nichts geschrieben ──────────────────────────────────
 REQUIRED_IDS = [
     pytest.param(handlers.handle_update_receipt, receipt_form, ['id'], id='Beleg ändern'),
-    pytest.param(handlers.handle_link_document, link_form, ['booking_id', 'document_id'], id='Beleg verknüpfen'),
     pytest.param(handlers.handle_update_bankaccount, account_update_form, ['id'], id='Bankkonto ändern'),
     pytest.param(handlers.handle_update_skr, skr_update_form, ['id'], id='Konto des Kontenrahmens ändern'),
     pytest.param(handlers.handle_update_contact, contact_update_form, ['contact_id'], id='Kontakt ändern'),
@@ -525,9 +520,6 @@ FIXED_SENTENCES = [
     pytest.param(handlers.handle_add_transaction, transaction_form, 'insert_booking', 500,
                  'Die Buchung konnte nicht gespeichert werden. Einzelheiten stehen im Server-Log.',
                  id='Buchung speichern'),
-    pytest.param(handlers.handle_link_document, link_form, 'link_booking_to_document', 500,
-                 'Die Verknüpfung konnte nicht gespeichert werden. Einzelheiten stehen im Server-Log.',
-                 id='Beleg verknüpfen'),
     pytest.param(handlers.handle_add_contact, contact_add_form, 'insert_contact', 500,
                  'Der Kontakt konnte nicht gespeichert werden. Einzelheiten stehen im Server-Log.', id='Kontakt anlegen'),
     pytest.param(handlers.handle_update_contact, contact_update_form, 'update_contact', 500,
@@ -809,26 +801,9 @@ def test_any_other_integrity_error_of_the_link_is_not_swallowed(world):
         world.db.link_booking_to_document(None, world.receipt, 'receipt')
 
 
-def test_the_link_handler_answers_400_with_the_message_and_a_repeated_link_with_the_redirect(world):
-    db = world.db
-    ok = handlers.handle_link_document(db, link_form(world))
-    again = handlers.handle_link_document(db, link_form(world))
-    assert ok == again == (303, f'/transactions/edit?id={world.booking}')
-    assert scalar(db, 'SELECT COUNT(*) FROM BookingDocuments') == 1
-    before = snapshot(db)
-    assert handlers.handle_link_document(db, {**link_form(world), 'booking_id': ['99999']}) \
-        == (400, 'Buchung oder Beleg gibt es nicht (mehr).')
-    assert handlers.handle_link_document(db, {**link_form(world), 'document_id': ['99999']}) \
-        == (400, 'Buchung oder Beleg gibt es nicht (mehr).')
-    assert snapshot(db) == before
-
-
 # ── über HTTP: Klartext im Body, nie im Location-Kopf ────────────────────────
 REFUSED_OVER_HTTP = [
     pytest.param('/update_receipt', dict(id='abc', number='B-1', date=DAY, filename='a', path='b', info='c'), INVALID),
-    pytest.param('/documents/link', dict(booking_id='abc', document_id='1'), INVALID),
-    pytest.param('/documents/link', dict(booking_id='99999', document_id='99999'),
-                 'Buchung oder Beleg gibt es nicht (mehr).', id='/documents/link ins Leere'),
     pytest.param('/masterdata/skr/update', dict(id='abc', name='X', group='G'), INVALID),
     pytest.param('/update_skr', dict(id='abc', name='X', group='G'), INVALID),
     pytest.param('/masterdata/contacts/update', dict(contact_id='abc'), INVALID),
@@ -912,8 +887,6 @@ UNEXPECTED_OVER_HTTP = [
                  'Die Buchung konnte nicht gespeichert werden. Einzelheiten stehen im Server-Log.', id='Buchung'),
     pytest.param('/masterdata/contacts/add', dict(company_name='X GmbH'), 'insert_contact',
                  'Der Kontakt konnte nicht gespeichert werden. Einzelheiten stehen im Server-Log.', id='Kontakt anlegen'),
-    pytest.param('/documents/link', dict(booking_id='1', document_id='1'), 'link_booking_to_document',
-                 'Die Verknüpfung konnte nicht gespeichert werden. Einzelheiten stehen im Server-Log.', id='Verknüpfung'),
 ]
 
 

@@ -358,6 +358,22 @@ def open_receipt(path, log=True):
     return OpenedReceipt(source, info.st_size, name, inline_type(name, head), _uploaded_shape(path) is not None)
 
 
+def file_info(stored):
+    """Was die Seite zur Datei eines Belegs weiß: ``None`` (kein Pfad gespeichert), ``False`` (ein Pfad ist gespeichert, gilt aber
+    nicht oder die Datei fehlt) oder ``OpenedReceipt`` (schon geschlossen: es zählen Name, ``inline`` und ``removable``).
+    Der Pfad selbst erscheint nie auf der Seite."""
+    if stored is None or (isinstance(stored, str) and not stored.strip()):
+        return None
+    try:
+        opened = open_receipt(stored, log=False)
+    except OSError:
+        return False
+    if opened is None:
+        return False
+    opened.source.close()
+    return opened
+
+
 # ── Löschen ──────────────────────────────────────────────────────────────────
 def _shared(db, real):
     """Zeigt ein (anderer) Beleg auf dieselbe aufgelöste Datei?"""

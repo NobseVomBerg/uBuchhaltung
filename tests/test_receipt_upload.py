@@ -707,8 +707,9 @@ def test_the_folder_belege_itself_may_be_a_link_and_the_upload_follows_it(server
     nas.mkdir()
     os.makedirs(admin_dir(), exist_ok=True)
     make_symlink(nas, belege())
-    (entry,) = created(upload(server_port, circle, ('rechnung.pdf', plain_pdf())))
-    assert entry['status'] == 'created' and read(nas / '2026' / '26B001_rechnung.pdf') == plain_pdf()
+    content = plain_pdf()                                               # einmal erzeugt: das PDF trägt seinen Erstellungszeitpunkt
+    (entry,) = created(upload(server_port, circle, ('rechnung.pdf', content)))
+    assert entry['status'] == 'created' and read(nas / '2026' / '26B001_rechnung.pdf') == content
 
 
 def test_the_database_method_is_all_or_nothing(tmp_db):
@@ -951,5 +952,5 @@ def test_the_receipt_form_has_no_path_field_and_names_the_file_as_text(server_po
     row = next(a for a in Dom(page).all('tr') if 'receipt-row' in a.get('class', '').split())
     assert row['data-file'] == '26B001_rechnung.pdf' and 'data-path' not in row
     assert 'Belege/2026' not in page and admin_dir() not in page             # der Pfad steht nirgends auf der Seite
-    edit = get(server_port, '/receipts/edit?number=26B001').text
+    edit = get(server_port, f"/receipts/edit?id={entry['id']}").text
     assert 'Datei:' in edit and '26B001_rechnung.pdf' in edit and not [a for a in Dom(edit).all('input') if a.get('name') == 'path']

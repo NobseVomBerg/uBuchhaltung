@@ -207,6 +207,8 @@ def _keys(*names, period=False):
 # Schlüssel nur mit Nachweis. /invoice/xml_download fehlt bewusst: Das Werkzeug liest nur Anzeigeseiten, keine
 # Dokumente. /backup/download fehlt bewusst: Es liefert den ganzen Datenbestand (eine Sicherung, Gigabyte groß) –
 # das Werkzeug liest nur Anzeigeseiten. /receipts/file fehlt aus demselben Grund: Es liefert die Datei eines Belegs.
+# /receipts/search und /transactions/search fehlen bewusst: JSON-Suchen der Seiten, keine Anzeigeseiten; dasselbe liefert die
+# SQL-Abfrage.
 _PAGE_ALLOWLIST = {
     "/": _keys("acct", period=True),
     "/dashboard": _keys("acct", period=True),
@@ -232,7 +234,7 @@ _PAGE_ALLOWLIST = {
     "/masterdata/numberranges/edit": _keys("id"),
     "/miscellaneous": _keys(),
     "/receipts": _keys(period=True),
-    "/receipts/edit": _keys("number"),
+    "/receipts/edit": _keys("id"),
     "/transactions": _keys(period=True),
     "/transactions/edit": _keys("id", period=True),
     "/assets": _keys("status"),

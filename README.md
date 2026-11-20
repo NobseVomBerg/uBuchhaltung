@@ -256,8 +256,9 @@ geführt und automatisch verknüpft.
   ein Beleg wie jede andere Datei – importiert wird er auf der Seite „Buchungen“
 - Hinzufügen, Bearbeiten, Löschen – gelöscht wird ein Beleg nur, solange keine Buchung, Anlage oder Fahrt auf ihn verweist; seine
   hochgeladene Datei geht mit, und die zuletzt vergebene Nummer wird wieder frei
-- Many-to-Many-Verknüpfung mit Buchungen (BookingDocuments)
-- UNIQUE-Constraint in `BookingDocuments` auf `(Booking_ID, Document_ID)` verhindert doppelte Verknüpfungen
+- Belege und Buchungen verknüpfen – am Beleg (Seite des Belegs) eine Buchung suchen und zuordnen, in der Buchungsmaske einen Beleg
+  suchen und zuordnen; die Liste zeigt je Beleg die Zahl der verknüpften Buchungen. Trägt die Buchung noch keine Beleg-Nr.,
+  übernimmt sie die Nummer des Belegs – sofern keine andere Buchung diese oder eine ähnliche Nummer trägt; Lösen lässt sie stehen.
 
 ### 2. Buchungen (`/transactions`)
 Zentrale Verwaltung aller Buchungstransaktionen:
@@ -297,6 +298,7 @@ Zentrale Verwaltung aller Buchungstransaktionen:
   Umbuchungen wie Privatanteilen); die Beträge passt man danach an. Gespeichert
   wird nichts – der Nutzer bleibt im Formular, und die Beleg-Nr. wird erst beim
   Speichern verbraucht
+- **Belege**: in der Maske suchen, zuordnen, ansehen, herunterladen und lösen (nach dem ersten Speichern)
 - **Erweiterte Filter**: Datum, Konto, Kunde, Währung, Betragsbereich – alle kombinierbar
 
 ### 3. Konten-Verwaltung (`/masterdata/bankaccounts`)

@@ -21,6 +21,7 @@ import demo
 import userctx
 from . import dirlock
 from . import receipt_files
+from . import receipt_links
 from . import wiso_upload
 from .pages import Header1, Header2, Header3, Footer
 from .import_preview import file_transactions, match_account
@@ -28,6 +29,7 @@ from .period import parse_iso_date, valid_period
 from .richtext import sanitize_richtext as _sanitize_richtext
 from db import Database
 from db import datev_keys
+from db.bookings import RELATION_DEFAULT, RELATION_TYPES, LinkRefused
 from db.contacts import VAT_METHOD_ERROR, ContactRefused, vat_method
 from db.core import fk_explained, ForeignKeyError
 from db.invoices import (InvoiceCol, InvoiceNotDeletable, QUOTE_STAYS_CONVERTED_MESSAGE,
@@ -1129,26 +1131,6 @@ def handle_add_bankaccount(db: Database, post_data):
     db.insert_account(name, holder, iban, bic, bank_name, skr_account=skr_account,
                       business_only=True if business_only is None else business_only)
     return 303, "/masterdata/bankaccounts"
-
-def handle_link_document(db: Database, post_data):
-    """Handle linking a document to a booking. Ohne gültige IDs oder wenn es die Buchung oder den Beleg nicht (mehr) gibt: 400
-    mit Klartext, nichts geschrieben."""
-    booking_id = _form_id(post_data.get("booking_id", [""])[0])
-    document_id = _form_id(post_data.get("document_id", [""])[0])
-    if booking_id is None or document_id is None:
-        return 400, INVALID_REQUEST
-    relation_type = post_data.get("relation_type", ["receipt"])[0]
-
-    try:
-        db.link_booking_to_document(booking_id, document_id, relation_type)
-        # Redirect back to the booking edit page
-        return 303, f"/transactions/edit?id={booking_id}"
-    except ValueError as refusal:                   # Buchung oder Beleg gibt es nicht: Klartext aus der DB-Schicht
-        return 400, str(refusal)
-    except Exception:
-        import traceback
-        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
-        return 500, 'Die Verknüpfung konnte nicht gespeichert werden. Einzelheiten stehen im Server-Log.'
 
 def handle_update_bankaccount(db: Database, post_data):
     """Handle updating bank account"""
@@ -2653,6 +2635,134 @@ def _json_id(data, key, missing=_REQUIRED):
         return int(value)
     except (TypeError, ValueError, OverflowError):
         raise InvalidRequest(f'{key} ist keine Zahl') from None
+
+
+def _json_positive_id(data, key):
+    """ID aus einem JSON-Objekt, streng: eine ganze Zahl (kein bool, kein Bruch) oder ein Text aus ASCII-Ziffern in Normalform,
+    1 bis 2**63-1. Alles andere – fehlt, null, "", 0, -1, 1.5, 1.0, "01", " 1", true, [1] – ist eine InvalidRequest."""
+    value = data.get(key)
+    if isinstance(value, str) and value.isascii() and value.isdigit() and len(value) <= 19 and str(int(value)) == value:
+        value = int(value)
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 2 ** 63 - 1:
+        raise InvalidRequest(f'{key} ist keine gültige ID')
+    return value
+
+
+def _relation_type(data):
+    """Art der Verknüpfung aus der Anfrage: ein Wert der Positivliste, sonst (fehlt, unbekannt, kein Text) der Standard."""
+    value = data.get('relationType')
+    return value if isinstance(value, str) and value in RELATION_TYPES else RELATION_DEFAULT
+
+
+def _link_lists(db, booking_id, document_id):
+    """Die beiden Listen der Antwort – ``documents`` der Buchung, ``bookings`` des Belegs –, gelesen NACH dem Commit. Scheitert das
+    Lesen, ist die Verknüpfung trotzdem gespeichert: Eine 500 wäre falsch. Die Antwort bleibt 200 mit den Ergebnisfeldern, die Listen
+    sind leer und ``stale`` ist wahr (die Seite zeichnet dann nichts neu und bittet um ein Neuladen); sonst ist ``stale`` falsch."""
+    try:
+        return {'documents': receipt_links.linked_documents(db, booking_id),
+                'bookings': receipt_links.linked_bookings(db, document_id), 'stale': False}
+    except Exception:
+        import traceback
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
+        return {'documents': [], 'bookings': [], 'stale': True}
+
+
+def handle_booking_link_document(db, post_body: bytes):
+    """Einen Beleg einer Buchung zuordnen (``POST /bookings/link-document``, JSON ``{"bookingId", "documentId"[, "relationType"]}``).
+
+    Die IDs liest die Route streng (``_json_positive_id``), ``relationType`` kommt aus ``RELATION_TYPES``, sonst gilt ``receipt``.
+    ``Database.link_receipt_to_booking`` prüft und schreibt in EINER Transaktion; die Buchung übernimmt die Beleg-Nr. des Belegs nur
+    unter den dort genannten Bedingungen (``numberTaken``, ``documentNumber``); unterbleibt es allein, weil eine andere Buchung diese
+    oder eine ähnliche Nummer trägt, sagt es ``numberInUse``, ``hasEntries`` ist wahr bei einer Bankbewegung mit Buchungssätzen.
+    Gibt es die Buchung oder den Beleg nicht (mehr): 404 mit Klartext, nichts geschrieben. Die Antwort nennt dazu beide Listen
+    (``documents`` der Buchung, ``bookings`` des Belegs), wie die Seiten sie zeigen – scheitert deren Lesen nach dem Commit, bleibt es
+    bei 200 mit leeren Listen und ``stale: true`` (``_link_lists``).
+
+    Returns tuple: (status_code, json_body)
+    """
+    data = _json_request(post_body)
+    booking_id = _json_positive_id(data, 'bookingId')
+    document_id = _json_positive_id(data, 'documentId')
+    try:
+        result = db.link_receipt_to_booking(booking_id, document_id, _relation_type(data))
+    except LinkRefused as refusal:
+        return 404, json.dumps({'success': False, 'error': str(refusal)})
+    except Exception:
+        import traceback
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
+        return 500, json.dumps({'success': False, 'error': receipt_links.LINK_FAILED})
+    return 200, json.dumps({'success': True, 'created': result.created, 'numberTaken': result.number_taken,
+                            'documentNumber': result.document_number, 'numberInUse': result.number_in_use,
+                            'hasEntries': result.has_entries, **_link_lists(db, booking_id, document_id)})
+
+
+def handle_booking_unlink_document(db, post_body: bytes):
+    """Die Verknüpfung einer Buchung mit einem Beleg lösen (``POST /bookings/unlink-document``, JSON ``{"bookingId",
+    "documentId"}``). Die Beleg-Nr. der Buchung bleibt (``Database.unlink_receipt_from_booking``). Das Lösen ist idempotent: Gibt
+    es die Verknüpfung nicht (auch bei unbekannten IDs), antwortet die Route mit 200 und ``removed: false``. Die Listen der Antwort
+    wie beim Verknüpfen (``_link_lists``: scheitert deren Lesen nach dem Commit, 200 mit ``stale: true``).
+
+    Returns tuple: (status_code, json_body)
+    """
+    data = _json_request(post_body)
+    booking_id = _json_positive_id(data, 'bookingId')
+    document_id = _json_positive_id(data, 'documentId')
+    try:
+        removed = db.unlink_receipt_from_booking(booking_id, document_id)
+    except Exception:
+        import traceback
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
+        return 500, json.dumps({'success': False, 'error': receipt_links.UNLINK_FAILED})
+    return 200, json.dumps({'success': True, 'removed': removed, **_link_lists(db, booking_id, document_id)})
+
+
+def _search_query(qs):
+    """Suchbegriff und Zahl der Treffer aus der Adresse einer Suche: ``(q, limit)``. ``q`` ohne Leerraum am Rand, höchstens
+    ``SEARCH_MAX_LENGTH`` Zeichen – ein längerer Begriff ergibt ``(None, None)``. ``limit`` von 1 bis ``SEARCH_LIMIT_MAX``; fehlt
+    er oder ist er ungültig, gilt ``SEARCH_LIMIT_DEFAULT`` (wie ein Filter: ungültig heißt „nicht angegeben“)."""
+    q = qs.get('q', [''])[0].strip()
+    if len(q) > receipt_links.SEARCH_MAX_LENGTH:
+        return None, None
+    limit = _form_int(qs.get('limit', [''])[0], 1, receipt_links.SEARCH_LIMIT_MAX) or receipt_links.SEARCH_LIMIT_DEFAULT
+    return q, limit
+
+
+def handle_receipt_search(db, qs):
+    """Belege suchen (``GET /receipts/search?q=…[&limit=…]``), rein lesend: Nummer, Dateiname, Info, Datum. Die Antwort nennt je
+    Beleg nie einen Pfad (``receipt_links.receipt_payload``). Ein zu langer Begriff: 400 mit Klartext.
+
+    Returns tuple: (status_code, json_body)
+    """
+    q, limit = _search_query(qs)
+    if q is None:
+        return 400, json.dumps({'success': False, 'error': receipt_links.SEARCH_TOO_LONG})
+    try:
+        text, date_prefix, _amount = receipt_links.search_terms(q)
+        rows = db.search_receipts(text, date_prefix, limit)
+        return 200, json.dumps({'success': True, 'results': [receipt_links.receipt_payload(row) for row in rows]})
+    except Exception:
+        import traceback
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
+        return 500, json.dumps({'success': False, 'error': receipt_links.SEARCH_FAILED})
+
+
+def handle_booking_search(db, qs):
+    """Buchungen suchen (``GET /transactions/search?q=…[&limit=…]``), rein lesend: Empfänger, Verwendungszweck, Beleg-Nr., Betrag,
+    Datum. Ein zu langer Begriff: 400 mit Klartext.
+
+    Returns tuple: (status_code, json_body)
+    """
+    q, limit = _search_query(qs)
+    if q is None:
+        return 400, json.dumps({'success': False, 'error': receipt_links.SEARCH_TOO_LONG})
+    try:
+        text, date_prefix, amount_minor = receipt_links.search_terms(q)
+        rows = db.search_bookings(text, date_prefix, amount_minor, limit)
+        return 200, json.dumps({'success': True, 'results': [receipt_links.booking_payload(row) for row in rows]})
+    except Exception:
+        import traceback
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
+        return 500, json.dumps({'success': False, 'error': receipt_links.SEARCH_FAILED})
 
 
 def handle_update_invoice_status(post_body: bytes):
