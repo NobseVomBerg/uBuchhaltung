@@ -254,6 +254,22 @@ kein Subagent darauf:
   `rfile.read(int(Content-Length))`. `_drain_body` liest höchstens 1 MB weg, sonst schließt es die Verbindung. Einzige größere
   Grenze: die WISO-Datenbank mit 2 GB je Datei (`wiso_upload.MAX_WISO_DB_BODY`, `/wiso/fdb-upload`) – sie wird nie im Ganzen
   gelesen, sondern in Stücken auf die Platte geschrieben, und nur, wenn danach noch 64 MB frei bleiben (sonst 507)
+- **Zeitgrenze je Verbindung (seit 2.5.8, `server/app.py`):** Auf einer Verbindung, auf der `CONNECTION_TIMEOUT` = 120 s lang nichts mehr
+  gelesen oder gesendet wird, gibt der Server auf (`SimpleWebServer.timeout`: je Lese- bzw. Sendeschritt, nicht für die ganze Anfrage).
+  Ein Client, der seinen Body nicht zu Ende schickt, die Antwort nicht abholt oder eine Keep-Alive-Verbindung offen lässt, hält damit
+  weder einen Thread noch die Lesesperre des Datenverzeichnisses (`_run_locked`) länger. Antworten gehen in Stücken von `SEND_CHUNK` =
+  256 KiB hinaus (`_SteppedWriter`; sonst gälte die Grenze für die ganze Antwort); nach einem Fehlschlag wirft jeder weitere Schreibzugriff
+  sofort, eine Fehlerantwort wartet nicht noch einmal die Frist ab. Ein Body, der nicht zu Ende kommt: 408 und Verbindung zu
+  (`_read_body`); wo ein Handler den Body selbst liest, schließt `_TimedReader` die Verbindung in jedem Fall. Die Bearbeitung selbst hat
+  keine Zeitgrenze (die SQL-Konsole hat ihre eigenen 60 s), und ein Upload, der stetig sendet, läuft beliebig lange. Nicht abschalten:
+  Die Lesesperre des Datenverzeichnisses hinge sonst an einer hängengebliebenen Verbindung (`tests/test_connection_timeout.py`).
+  **Jede Anfrage wird abgeschlossen** (`_settle_body`, nach der Antwort in `handle_one_request`): Was vom erklärten Body ungelesen
+  blieb – eine GET-Anfrage mit `Content-Length`, eine frühe Ablehnung –, darf nie als nächste Anfrage gelesen werden. `_TimedReader`
+  zählt die gelesenen Bytes (`count`, nach den Kopfzeilen 0); ein Rest bis `MAX_DRAIN_BODY` wird mit `DRAIN_TIMEOUT` = 2 s weggelesen
+  (dann bleibt die Verbindung benutzbar), bei größerem Rest, `Transfer-Encoding`, ungültiger Länge oder ausbleibendem Rest geht sie zu.
+  Ein neuer Zweig braucht dafür nichts zu tun – die Prüfung nicht umgehen (`tests/test_request_body_sync.py`). **Log:** Eine
+  Verbindung im Leerlauf wird still geschlossen; ließ sich eine Antwort nicht zustellen (`wfile.failed`), reichen die breiten
+  `except`-Zweige den Fehler weiter (`if self.wfile.failed: raise`), statt eine 500 zu versuchen – es bleibt eine Zeile im Log
 - **Anmeldung (seit 2.3.6, `auth.attempt_login`):** Die Anmeldung im Browser geht nur darüber (`handlers.handle_login` →
   `LoginOutcome`), nie direkt über `authenticate`. Nach fünf Fehlversuchen in Folge ist der Name (ohne Groß-/Kleinschreibung)
   30 s gesperrt, je weiterem Fehlversuch doppelt, höchstens 900 s (429 mit `Retry-After`); während der Sperre wird nichts geprüft,
