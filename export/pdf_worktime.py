@@ -5,10 +5,15 @@
 Stundenzettel-PDF (Arbeitszeiten je Person, typisch ein Monat).
 
 Nutzt die gemeinsamen Primitive aus :mod:`export.pdf_core`. Bei einem vollen Monat
-werden – wie auf der Seite – alle Tage gelistet, auch ohne Eintrag; das passt meist auf
+werden – wie auf der Seite – alle Tage gelistet, auch ohne Eintrag (``with_empty_days``, Standard;
+ohne stehen nur die Tage mit Einträgen da); das passt meist auf
 eine A4-Seite. Reicht der Platz nicht, läuft die Tabelle auf Folgeseiten weiter: Kopf, Logo
 und Tabellenkopf stehen auf jeder Seite, bei mehr als einer Seite auch „Seite n von m“. Unter
 der Tabelle stehen Summe und zwei Unterschriftenblöcke, zusammen auf der letzten Seite.
+
+Mit einem Kundenfilter (``customer``) kommen nur die Einträge auf den Zettel, die
+``entry_matches_customer`` – dieselbe Regel wie auf der Seite – dazu zählt; Kopf (``Kunde: …``), rechter
+Unterschriftenblock und Dateiname nennen den Kunden.
 
 Die Info-Spalte nennt die Art des Tages (Urlaub, Feiertag …), auf Wunsch den Arbeitsort
 (``with_location``), die Pausenzeiten und auf Wunsch die Notiz (``with_notes``). Was nicht in
@@ -23,8 +28,8 @@ import re
 from db import Database
 from .pdf_core import (escape_pdf_string, load_image_xobject, build_multi_page_pdf, logo_display_size,
                        resolve_logo_path, to_winansi_bytes)
-from server.pages_worktime import (compute_hours, compute_minutes, crosses_midnight, format_hours,
-                                   workdays_label, KIND_LABELS, WEEKDAYS)
+from server.pages_worktime import (compute_hours, compute_minutes, crosses_midnight, entry_matches_customer,
+                                   format_hours, workdays_label, CUSTOMER_ALL, CUSTOMER_NONE, KIND_LABELS, WEEKDAYS)
 
 # Spaltenindizes WorkTimes-Row (siehe pages_worktime)
 #   0 ID,1 PersonID,2 Date,3 Kind,4 CustomerID,5 StartTime,6 EndTime,
@@ -50,6 +55,10 @@ HEADER_Y = 751
 BOTTOM_Y = 60            # keine Datenzeile darunter; auch der Unterschriftenblock endet nicht tiefer
 PAGE_NUMBER_Y = 40       # „Seite n von m“
 PAGE_RIGHT_X = 555       # rechter Rand (A4 595 pt, links stehen die Spalten ab 40 pt)
+CUSTOMER_LINE_Y = 765    # „Kunde: …“ unter der Zeile „Zeitraum“ (nur mit Kundenfilter), vor dem Tabellenkopf bei HEADER_Y
+CUSTOMER_LINE_SIZE = 9
+CUSTOMER_LINE_WIDTH = 380      # ab x = 40 – das Logo beginnt bei x = 430
+CUSTOMER_LINE_CHARS = 200      # so viele Zeichen des Namens werden höchstens betrachtet
 
 # Unter der letzten Datenzeile: Summenzeile, dann der Unterschriftenblock (Ort/Datum, Linie, Name, Firma)
 SUM_GAP = 3                    # Summenzeile unter dem Platz der nächsten Datenzeile
@@ -169,8 +178,38 @@ def info_lines(text, max_width=INFO_WIDTH, size=ROW_SIZE, max_lines=MAX_INFO_LIN
     return lines
 
 
+def customer_line(name, size=CUSTOMER_LINE_SIZE, max_width=CUSTOMER_LINE_WIDTH):
+    """Die Kopfzeile „Kunde: <Name>“, auf ``max_width`` pt gekürzt (mit „…“), damit der Name nicht in das Logo läuft. Gemessen wird
+    der Text, wie er gedruckt wird (``printed_text``, ``info_width``: die Breiten der eingebetteten Schrift); Leerraum und
+    Zeilenumbrüche im Namen zählen als ein Leerzeichen. Die Laufzeit hängt nicht von der Länge des Namens ab: Betrachtet werden
+    höchstens die ersten ``CUSTOMER_LINE_CHARS`` Zeichen, jedes einmal."""
+    raw = str(name or '')
+    text = 'Kunde: ' + ' '.join(printed_text(raw[:CUSTOMER_LINE_CHARS]).split())
+    widths = _glyph_widths()
+    scale = size / 1000.0
+    ellipsis = widths.get('…', 1000.0) * scale
+    total, fit = 0.0, 0                       # fit: so viele Zeichen bleiben, wenn hinter ihnen noch das „…“ Platz hat
+    for count, char in enumerate(text, start=1):
+        total += widths.get(char, 1000.0) * scale
+        if total + ellipsis <= max_width:
+            fit = count
+    if total <= max_width and len(raw) <= CUSTOMER_LINE_CHARS:
+        return text
+    return text[:fit].rstrip() + '…'
+
+
 def _fmt_hours(h):
     return f'{h:.2f}'.replace('.', ',')
+
+
+FILE_PART_LENGTH = 80        # Zeichen eines Namens im Dateinamen (ein Kontaktname hat keine Längengrenze)
+
+
+def _file_part(name):
+    """Ein Name als Teil des Dateinamens: nur Buchstaben, Ziffern, Leerzeichen (zu ``_``), ``-`` und ``_`` bleiben, höchstens
+    ``FILE_PART_LENGTH`` Zeichen – ein überlanger Name ergäbe einen Antwort-Kopf, den der Browser ablehnt."""
+    kept = "".join(ch for ch in str(name)[:10 * FILE_PART_LENGTH] if ch.isalnum() or ch in (' ', '-', '_'))
+    return kept.strip()[:FILE_PART_LENGTH].strip().replace(' ', '_')
 
 
 def _cell(x, y, text, font='/F1', size=ROW_SIZE, right_x=None, gray=False):
@@ -208,8 +247,9 @@ def _work_minutes(e):
     return compute_minutes(e[5], e[6], e[7])
 
 
-def _head_ops(image, person_name, own_name, period_label):
-    """Kopf einer Seite: Logo, Titel, Person, Zeitraum und Tabellenkopf."""
+def _head_ops(image, person_name, own_name, period_label, customer_text=None):
+    """Kopf einer Seite: Logo, Titel, Person, Zeitraum, bei einem Kundenfilter der Kunde (``customer_text``, siehe
+    ``customer_line``) und Tabellenkopf."""
     ops = []
     if image:
         dw, dh = logo_display_size(image, 150, 80)
@@ -219,6 +259,8 @@ def _head_ops(image, person_name, own_name, period_label):
     person_line = f"Person: {person_name}" + (f", {own_name}" if own_name else "")
     ops += _cell(40, 789, person_line, size=10)
     ops += _cell(40, 777, f"Zeitraum: {period_label}", size=9)
+    if customer_text:
+        ops += _cell(40, CUSTOMER_LINE_Y, customer_text, size=CUSTOMER_LINE_SIZE)
 
     header = [('wd', 'Tag'), ('date', 'Datum'), ('start', 'Start'), ('end', 'Ende'),
               ('pause', 'Pause'), ('hours', 'Std.'), ('info', 'Info')]
@@ -231,11 +273,16 @@ def _head_ops(image, person_name, own_name, period_label):
 
 
 def generate_worktime_pdf(db: Database, person_id, date_from, date_to, with_notes=False,
-                          store=True, with_location=False):
+                          store=True, with_location=False, customer=CUSTOMER_ALL, with_empty_days=True):
     """Stundenzettel-PDF erzeugen. Returns (pdf_bytes, pdf_path) oder (None, None).
 
     ``with_notes`` druckt die Notiz jedes Eintrags in die Info-Spalte, ``with_location`` den
     Arbeitsort eines Arbeitstags (wie die Liste der Seite ihn unter „Info“ zeigt).
+
+    ``customer`` ist der Kundenfilter (``customer_filter``: ``''`` alle, ``'none'`` nur Einträge ohne Kunde, sonst die ID
+    eines Kunden; welche Einträge dazugehören, sagt ``entry_matches_customer``). Mit Filter nennen Kopf, rechter
+    Unterschriftenblock (bei einem Kunden, auch ohne Arbeitseintrag im Zeitraum) und Dateiname den Kunden.
+    ``with_empty_days=False`` lässt im Monatszettel die Tage ohne Eintrag weg.
 
     ``store=False`` legt nichts auf der Platte ab (so liefert der Download unter ``/worktime/pdf``,
     ein GET, den Stundenzettel aus, ohne zu schreiben); ``pdf_path`` nennt dann nur, wo die Datei
@@ -260,14 +307,28 @@ def generate_worktime_pdf(db: Database, person_id, date_from, date_to, with_note
     d_to = datetime.date.fromisoformat(date_to)
     single_month = (d_from.year == d_to.year and d_from.month == d_to.month)
 
-    entries = list(db.fetch_worktimes(person_id, date_from, date_to))
+    # der Kundenfilter wirkt vor allem anderen: Zeilen, Summe, Arbeitstage und Unterschrift rechnen mit den gefilterten
+    entries = [e for e in db.fetch_worktimes(person_id, date_from, date_to) if entry_matches_customer(e, customer)]
     by_date = {}
     for e in entries:
         by_date.setdefault(str(e[2]), []).append(e)
 
-    # Genau ein Kunde im Zeitraum? → rechter Unterschriftenblock
-    cust_ids = {e[4] for e in entries if e[4]}
-    single_customer = db.get_contact_by_id(next(iter(cust_ids))) if len(cust_ids) == 1 else None
+    # Rechter Unterschriftenblock: Mit Kundenfilter dieser Kunde (auch ohne Arbeitseintrag im Zeitraum), sonst der eine
+    # Kunde, den die Einträge nennen. „Ohne Kunde“ hat keinen: Die gefilterten Einträge nennen keinen.
+    if isinstance(customer, int):
+        single_customer = db.get_contact_by_id(customer)
+    else:
+        cust_ids = {e[4] for e in entries if e[4]}
+        single_customer = db.get_contact_by_id(next(iter(cust_ids))) if len(cust_ids) == 1 else None
+
+    # Name für Kopf und Dateiname; ``None`` ohne Filter
+    if customer == CUSTOMER_NONE:
+        customer_name = 'ohne Kunde'
+    elif isinstance(customer, int):
+        customer_name = (single_customer[3] if single_customer else '') or f'ID {customer}'
+    else:
+        customer_name = None
+    customer_text = customer_line(customer_name) if customer_name is not None else None
 
     if single_month:
         period_label = f'{MONTHS_DE[d_from.month - 1]} {d_from.year}'
@@ -282,7 +343,7 @@ def generate_worktime_pdf(db: Database, person_id, date_from, date_to, with_note
             day_entries = by_date.get(d.isoformat(), [])
             if day_entries:
                 rows += [(d, e) for e in day_entries]
-            else:
+            elif with_empty_days:
                 rows.append((d, None))
     else:
         rows = [(datetime.date.fromisoformat(str(e[2])), e) for e in entries]
@@ -344,7 +405,7 @@ def generate_worktime_pdf(db: Database, person_id, date_from, date_to, with_note
     pages = []
     first = 0
     for number, count in enumerate(counts, start=1):
-        ops = ["BT"] + _head_ops(image, person_name, own_name, period_label)
+        ops = ["BT"] + _head_ops(image, person_name, own_name, period_label, customer_text)
         line_ops = []
 
         y = TABLE_TOP
@@ -385,9 +446,13 @@ def generate_worktime_pdf(db: Database, person_id, date_from, date_to, with_note
     # ── Datei speichern (im Datenbereich des aktuellen Nutzers) ──────────────
     import userctx
     pdf_dir = os.path.join(userctx.user_data_dir(), "worktime", str(d_from.year))
-    safe_name = "".join(ch for ch in person_name if ch.isalnum() or ch in (' ', '-', '_')).strip().replace(' ', '_')
+    safe_name = _file_part(person_name)
     period_tag = f'{d_from.year}-{d_from.month:02d}' if single_month else f'{date_from}_{date_to}'
-    pdf_filename = f"Stundenzettel_{safe_name}_{period_tag}.pdf"
+    if customer_name is None:
+        pdf_filename = f"Stundenzettel_{safe_name}_{period_tag}.pdf"
+    else:
+        customer_part = 'ohne-Kunde' if customer == CUSTOMER_NONE else _file_part(customer_name)
+        pdf_filename = f"Stundenzettel_{safe_name}_{customer_part}_{period_tag}.pdf"
     pdf_path = os.path.join(pdf_dir, pdf_filename)
     if store:
         try:

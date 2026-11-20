@@ -3938,6 +3938,10 @@ def handle_quote_pdf_generate(quote_id: int):
 
 # ── Arbeitszeiten (WorkTimes) ─────────────────────────────────────────────────
 
+from .pages_worktime import (CUSTOMER_ALL, DAY_MINUTES, KIND_LABELS, NOTE_MAX_LENGTH, clock_minutes, customer_filter,
+                             customer_query)
+
+
 def _period_args(date_from, date_to):
     """``&from=…&to=…`` für eine Adresse, prozentkodiert. Der Zeitraum kommt aus dem Formular
     und muss ein gültiges ISO-Datumspaar sein; sonst fehlt er in der Adresse und die Zielseite
@@ -3948,9 +3952,11 @@ def _period_args(date_from, date_to):
     return f"&from={quote(period[0], safe='')}&to={quote(period[1], safe='')}"
 
 
-def _wt_redirect(person_id, date_from, date_to):
-    """Redirect-Ziel zurück zur Arbeitszeiten-Seite (Person + Zeitraum erhalten)."""
-    return f"/worktime?person={quote(str(person_id), safe='')}{_period_args(date_from, date_to)}"
+def _wt_redirect(person_id, date_from, date_to, customer=CUSTOMER_ALL):
+    """Redirect-Ziel zurück zur Arbeitszeiten-Seite (Person, Zeitraum und Kundenfilter erhalten). ``customer`` ist der
+    gelesene Filter (``customer_filter``; ``''`` = keiner, dann fehlt er in der Adresse)."""
+    return (f"/worktime?person={quote(str(person_id), safe='')}{_period_args(date_from, date_to)}"
+            f"{customer_query(customer)}")
 
 
 def _wt_resolve_city(db: Database, mode, customer_id, free_text):
@@ -3968,7 +3974,6 @@ def _wt_resolve_city(db: Database, mode, customer_id, free_text):
 
 
 import re as _re
-from .pages_worktime import DAY_MINUTES, clock_minutes
 _WT_PAUSE_RE = _re.compile(r'(\d{1,2})(?::(\d{2}))?\s*(?:-|–|bis)\s*(\d{1,2})(?::(\d{2}))?')
 
 
@@ -3986,8 +3991,9 @@ def _wt_pause_minutes_from_text(text):
 def _wt_parse(db: Database, post_data):
     """Gemeinsames Parsen der Arbeitszeit-Felder. Liefert ein dict für insert/update."""
     g = lambda k, d='': post_data.get(k, [d])[0]
-    customer_raw = g('customer_id', '')
-    customer_id = int(customer_raw) if customer_raw.strip().isdigit() else None
+    # nur ASCII-Ziffern: ``isdigit`` nähme auch „²“ an, und ``int`` scheiterte daran
+    customer_raw = g('customer_id', '').strip()
+    customer_id = int(customer_raw) if _re.fullmatch(r'[0-9]{1,18}', customer_raw) else None
     mode = g('location_mode', 'customer')
     pause_raw = g('pause_minutes', '0')
     try:
@@ -4008,7 +4014,8 @@ def _wt_parse(db: Database, post_data):
         'pause_minutes': pause,
         'location_mode': mode,
         'location_city': _wt_resolve_city(db, mode, customer_id, g('location_city', '')),
-        'note': g('note', ''),
+        # ohne Leerraum am Rand – so wird sie gemessen (``NOTE_MAX_LENGTH``) und gespeichert
+        'note': g('note', '').strip(),
         'pause_text': pause_text,
     }
 
@@ -4060,15 +4067,44 @@ def _wt_times_valid(fields):
                for key in ('start_time', 'end_time'))
 
 
-def _wt_error_redirect(person_id, date_from, date_to, text):
+_WT_NOTE_ERROR = f'Die Notiz ist zu lang (höchstens {NOTE_MAX_LENGTH} Zeichen).'
+_WT_KIND_ERROR = 'Bitte eine gültige Art wählen.'
+
+
+def _wt_kind_valid(fields):
+    """Die Art ist eine der Arten des Formulars (``KIND_LABELS``). Eine andere käme nur aus einer selbst gebauten Anfrage –
+    und gälte in jeder Auswertung als „keine Arbeit“."""
+    return fields['kind'] in KIND_LABELS
+
+
+def _wt_note_valid(fields):
+    """Die Notiz ist – ohne Leerraum am Rand – höchstens ``NOTE_MAX_LENGTH`` Zeichen lang (``len`` des Textes: ein Umlaut oder
+    Emoji zählt eins). Die EINE Stelle für Anlegen und Ändern; eine längere Notiz wird abgelehnt, nie still gekürzt. Eine längere
+    Notiz, die schon in der Datenbank steht, bleibt, bis der Eintrag geändert wird – dann greift diese Prüfung."""
+    return len(fields['note'].strip()) <= NOTE_MAX_LENGTH
+
+
+def _wt_refusal(fields):
+    """Der Satz, mit dem ein Eintrag abgelehnt wird, oder ``None`` – in fester Reihenfolge: Uhrzeit, Art, Notiz. Die EINE
+    Stelle für Anlegen und Ändern (die Überschneidung prüft der Handler danach, sie braucht die Datenbank)."""
+    if not _wt_times_valid(fields):
+        return _WT_TIME_ERROR
+    if not _wt_kind_valid(fields):
+        return _WT_KIND_ERROR
+    if not _wt_note_valid(fields):
+        return _WT_NOTE_ERROR
+    return None
+
+
+def _wt_error_redirect(person_id, date_from, date_to, text, customer=CUSTOMER_ALL):
     """Zurück zur Seite, die ``text`` über ``?error=`` als Meldung zeigt; nichts ist gespeichert."""
     return 303, (f"/worktime?person={quote(str(person_id), safe='')}"
-                 f"{_period_args(date_from, date_to)}&error={quote(text)}")
+                 f"{_period_args(date_from, date_to)}{customer_query(customer)}&error={quote(text)}")
 
 
-def _wt_overlap_redirect(person_id, date_from, date_to, date):
+def _wt_overlap_redirect(person_id, date_from, date_to, date, customer=CUSTOMER_ALL):
     return _wt_error_redirect(person_id, date_from, date_to,
-                              f"Überschneidung am {date}: in diesem Zeitraum existiert bereits ein Eintrag.")
+                              f"Überschneidung am {date}: in diesem Zeitraum existiert bereits ein Eintrag.", customer)
 
 
 def _wt_id(text):
@@ -4086,14 +4122,16 @@ def handle_add_worktime(db: Database, post_data):
         return 400, INVALID_REQUEST
     date_from = g('from', '')
     date_to = g('to', '')
+    customer = customer_filter(g('customer', '')) or CUSTOMER_ALL      # Kundenfilter der Seite; ungültig = keiner
     fields = _wt_parse(db, post_data)
     if person_id and fields['date']:
-        if not _wt_times_valid(fields):
-            return _wt_error_redirect(person_id, date_from, date_to, _WT_TIME_ERROR)
+        refusal = _wt_refusal(fields)
+        if refusal:
+            return _wt_error_redirect(person_id, date_from, date_to, refusal, customer)
         if _wt_has_overlap(db, person_id, fields):
-            return _wt_overlap_redirect(person_id, date_from, date_to, fields['date'])
+            return _wt_overlap_redirect(person_id, date_from, date_to, fields['date'], customer)
         db.insert_worktime(person_id=person_id, **fields)
-    return 303, _wt_redirect(person_id, date_from, date_to)
+    return 303, _wt_redirect(person_id, date_from, date_to, customer)
 
 
 def handle_update_worktime(db: Database, post_data):
@@ -4105,18 +4143,24 @@ def handle_update_worktime(db: Database, post_data):
         return 400, INVALID_REQUEST
     date_from = g('from', '')
     date_to = g('to', '')
+    customer = customer_filter(g('customer', '')) or CUSTOMER_ALL      # Kundenfilter der Seite; ungültig = keiner
     fields = _wt_parse(db, post_data)
     if worktime_id and fields['date']:
-        if not _wt_times_valid(fields):
-            return _wt_error_redirect(person_id, date_from, date_to, _WT_TIME_ERROR)
+        refusal = _wt_refusal(fields)
+        if refusal:
+            return _wt_error_redirect(person_id, date_from, date_to, refusal, customer)
         if _wt_has_overlap(db, person_id, fields, exclude_id=worktime_id):
-            return _wt_overlap_redirect(person_id, date_from, date_to, fields['date'])
+            return _wt_overlap_redirect(person_id, date_from, date_to, fields['date'], customer)
         db.update_worktime(worktime_id, **fields)
-    return 303, _wt_redirect(person_id, date_from, date_to)
+    return 303, _wt_redirect(person_id, date_from, date_to, customer)
 
 
-def handle_worktime_pdf(db: Database, person_id, date_from, date_to, with_notes=False, with_location=False):
+def handle_worktime_pdf(db: Database, person_id, date_from, date_to, with_notes=False, with_location=False,
+                        customer=CUSTOMER_ALL, with_empty_days=True):
     """PDF-Stundenzettel für den Download erzeugen. Returns (pdf_bytes, filename) oder (None, None).
+
+    ``customer`` ist der gelesene Kundenfilter (``customer_filter``, hier nie ungültig: ``app.py`` lehnt das vorher ab),
+    ``with_empty_days`` listet im Monatszettel auch die Tage ohne Eintrag.
 
     Der Download ist ein GET: Er liefert den Stundenzettel aus, legt aber nichts auf der
     Platte ab (``store=False``)."""
@@ -4124,7 +4168,8 @@ def handle_worktime_pdf(db: Database, person_id, date_from, date_to, with_notes=
     try:
         pdf_bytes, pdf_path = generate_worktime_pdf(db, int(person_id), date_from, date_to,
                                                     with_notes=with_notes, store=False,
-                                                    with_location=with_location)
+                                                    with_location=with_location, customer=customer,
+                                                    with_empty_days=with_empty_days)
         if pdf_bytes is None:
             return None, None
         filename = os.path.basename(pdf_path) if pdf_path else f"Stundenzettel_{person_id}.pdf"

@@ -5,7 +5,8 @@
 Arbeitszeiten-Seite (Zeiten/Arbeitszeiten).
 
 Layout analog pages_receipts.py: grid2Cols – links Monatstabelle, rechts Formular.
-Personen-Filter (Mitarbeiter + eigene Person), Zeitraum-Filter (Monat/Jahr).
+Personen-Filter (Mitarbeiter + eigene Person), Zeitraum-Filter (Monat/Jahr), Kunden-Filter
+(``customer_filter``/``entry_matches_customer``: dieselbe Regel für Seite und Stundenzettel).
 """
 import calendar
 import datetime
@@ -25,6 +26,10 @@ KINDS = [
     ('holiday',  'Feiertag'),
 ]
 KIND_LABELS = dict(KINDS)
+
+# So viele Zeichen (``len`` des Textes, ohne Leerraum am Rand) darf die Notiz eines neuen oder geänderten Eintrags haben: das
+# Formular begrenzt das Feld (``maxlength``), der Server lehnt Längeres ab (``handlers._wt_note_valid``). Bestand bleibt, wie er ist.
+NOTE_MAX_LENGTH = 300
 
 WEEKDAYS = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So']
 MONTHS = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun',
@@ -112,6 +117,55 @@ def format_hours(minutes):
     return f'{hours:.2f}'.replace('.', ',')
 
 
+CUSTOMER_ALL = ''          # kein Filter: jeder Eintrag
+CUSTOMER_NONE = 'none'     # nur Einträge ohne Kunde
+
+# Nur ASCII-Ziffern und keine führende Null: ``\d`` träfe in Python auch Ziffern anderer Schriften
+_CUSTOMER_ID = re.compile(r'[1-9][0-9]{0,18}')
+
+
+def customer_filter(value):
+    """Kundenfilter aus Adresse oder Formular streng lesen: ``''`` (alle), ``'none'`` (ohne Kunde) oder die ID eines Kunden als
+    ``int`` (positive Ganzzahl aus ASCII-Ziffern, in 64 Bit). Alles andere – auch ein Wert, der keine Zeichenkette ist – ergibt
+    ``None`` = ungültig. Die Seite liest das als „nicht angegeben“; der Stundenzettel lehnt es ab, denn ein Zettel für alle darf
+    nie entstehen, weil ein Kundenwert unlesbar war."""
+    if not isinstance(value, str):
+        return None
+    # ohne ``strip``: Leerraum ist kein leerer Wert – ``customer=%20`` gälte sonst als „alle“
+    if value in (CUSTOMER_ALL, CUSTOMER_NONE):
+        return value
+    if _CUSTOMER_ID.fullmatch(value) is None:
+        return None
+    number = int(value)
+    return number if number <= 2 ** 63 - 1 else None
+
+
+def entry_matches_customer(entry, selected):
+    """Gehört ``entry`` (Zeile aus ``fetch_worktimes``) zum Filter ``selected`` (Ergebnis von ``customer_filter``)? Die EINE Regel
+    für die Liste der Seite und den Stundenzettel.
+
+    ``''``: jeder Eintrag. ``'none'``: die Einträge ohne Kunde. Eine Kunden-ID: die Einträge dieses Kunden und die Einträge einer
+    anderen Art als „Arbeit“ (Urlaub, Krank, Feiertag …) ohne Kunden – die stehen auf jedem Kundenzettel. Arbeitseinträge anderer
+    Kunden und Arbeitseinträge ohne Kunde gehören nie dazu. Kein Kunde heißt ``None``, ``''`` oder ``0`` in Spalte 4."""
+    if selected == CUSTOMER_ALL:
+        return True
+    customer = entry[4] or None
+    if selected == CUSTOMER_NONE:
+        return customer is None
+    if customer is None:
+        # nur die Abwesenheiten des Formulars (Urlaub, Krank, Feiertag …): Eine unbekannte Art – nur über die SQL-Konsole
+        # oder aus Altbestand – steht auf keinem Kundenzettel, nur unter „Alle“ und „ohne Kunde“
+        kind = entry[3] or 'work'
+        return kind != 'work' and kind in KIND_LABELS
+    return customer == selected
+
+
+def customer_query(selected):
+    """``&customer=…`` für eine Adresse (prozentkodiert), wenn ein Filter gesetzt ist (``selected`` wie von ``customer_filter``
+    geliefert), sonst nichts."""
+    return '' if selected == CUSTOMER_ALL else f"&customer={quote(str(selected), safe='')}"
+
+
 # Externe Kontaktrollen – Personen mit (nur) solchen Rollen sind keine internen
 # Personen und tauchen nicht im Arbeitszeiten-Filter auf.
 _EXTERNAL_TYPE_KEYS = {
@@ -144,9 +198,44 @@ def _hhmm(value):
     return str(value or '')
 
 
+def _customer_filter_select(db: Database, customers, entries, selected, person_id, date_from, date_to):
+    """Auswahl „Kunde“ in der Kopfzeile: „Alle“, dann alphabetisch die Kunden, die im Zeitraum an einem der ``entries`` (alle
+    Einträge der Person, ungefiltert) stehen, dazu der gewählte – auch ohne Eintrag im Zeitraum –, zuletzt „ohne Kunde“. Ein
+    gewählter Kunde, den es nicht gibt, bleibt gewählt („Kunde n (unbekannt)“): Der Filter fällt nie still auf „Alle“ zurück."""
+    names = {c[0]: (c[3] or f'ID {c[0]}') for c in customers}
+    ids = {e[4] for e in entries if e[4]}
+    if isinstance(selected, int):
+        ids.add(selected)
+    options = []
+    for cid in ids:
+        if cid in names:
+            name = names[cid]
+        else:                                   # kein Kunde (mehr), aber ein Kontakt – oder gar nicht vorhanden
+            row = db.get_contact_by_id(cid)
+            if row is not None:
+                name = row[3] or f'ID {cid}'
+            else:
+                name = f'Kunde {cid} (unbekannt)' if cid == selected else f'ID {cid}'
+        options.append((cid, name))
+    options.sort(key=lambda option: (option[1].casefold(), str(option[0])))
+    options = [(CUSTOMER_ALL, 'Alle')] + options + [(CUSTOMER_NONE, 'ohne Kunde')]
+    html_options = ''.join(
+        f'<option value="{_html.escape(str(value), quote=True)}"{" selected" if value == selected else ""}>'
+        f'{_html.escape(name)}</option>' for value, name in options)
+    # Zeitraum prozentkodiert wie bei der Personenauswahl; der gewählte Wert kommt aus dem Feld selbst
+    return ('<label>Kunde:</label> '
+            f"<select id=\"wtCustomerFilter\" onchange=\"window.location.href='/worktime?person={person_id}"
+            f"&from={quote(date_from, safe='')}&to={quote(date_to, safe='')}"
+            f"&customer=' + encodeURIComponent(this.value)\">{html_options}</select>")
+
+
 def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
-                  edit_id=None, error_msg=None):
-    """Arbeitszeiten-Seite rendern."""
+                  edit_id=None, error_msg=None, customer=CUSTOMER_ALL):
+    """Arbeitszeiten-Seite rendern.
+
+    ``customer`` ist der schon gelesene Kundenfilter (``customer_filter``: ``''``, ``'none'`` oder eine Kunden-ID); für einen
+    ungültigen Wert übergibt der Aufrufer ``''``. Der Filter wirkt auf Liste und Summe, nicht auf die leeren Tage der
+    Monatsansicht."""
     persons = _persons(db)
 
     # Personenauswahl absichern: gültige ID oder erste Person
@@ -170,18 +259,24 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
     own_city = (own_rows[0][7] if own_rows else '') or ''
     customer_city = {str(c[0]): (c[7] or '') for c in customers}
 
+    # Kundenfilter: Liste und Summe zeigen nur die passenden Einträge; die Auswahl in der Kopfzeile nennt die Kunden aller
+    # Einträge des Zeitraums (``all_entries``). ``filter_text`` ist der Filter für Formular und Adressen ('' = keiner).
+    all_entries = list(db.fetch_worktimes(person_id, date_from, date_to)) if person_id else []
+    entries = [e for e in all_entries if entry_matches_customer(e, customer)]
+    filter_text = '' if customer == CUSTOMER_ALL else str(customer)
+
     # Der Zeitraum kommt aus Adresse oder Cookie: In Adressen (auch innerhalb von
     # JavaScript-Zeichenketten) steht er prozentkodiert, in HTML-Attributen maskiert.
     def qs(pid=None, df=None, dt=None):
         pid = person_id if pid is None else pid
         df = date_from if df is None else df
         dt = date_to if dt is None else dt
-        return f'?person={pid}&from={quote(df, safe="")}&to={quote(dt, safe="")}'
+        return f'?person={pid}&from={quote(df, safe="")}&to={quote(dt, safe="")}{customer_query(customer)}'
 
     # ── Kopfbereiche ─────────────────────────────────────────────────────────
     s = Header1('worktime')
 
-    # Header2: Personen-Filter
+    # Header2: Personen-Filter (setzt den Kundenfilter zurück) und Kunden-Filter
     person_opts = ''
     for p in persons:
         sel = 'selected' if p[0] == person_id else ''
@@ -191,15 +286,15 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
         f"<select onchange=\"window.location.href='/worktime?person=' + this.value "
         f"+ '&from={quote(date_from, safe='')}&to={quote(date_to, safe='')}'\">{person_opts}</select>"
     )
-    s += Header2(zeiten_submenu('worktime') + ' &nbsp; ' + person_select)
+    customer_select = _customer_filter_select(db, customers, all_entries, customer, person_id, date_from, date_to)
+    s += Header2(zeiten_submenu('worktime') + ' &nbsp; ' + person_select + ' &nbsp; ' + customer_select)
 
     # Header3: zentraler Zeitraum-Filter (Von/Bis + Jahr + Monat inkl. Monats-
-    # Toggle). Person wird als Zusatzparameter mitgeführt.
+    # Toggle). Person und – wenn gesetzt – Kundenfilter werden als Zusatzparameter mitgeführt.
     s += Header3(period_filter_widget(date_from, date_to, '/worktime',
-                                      extra_params={'person': person_id}))
+                                      extra_params={'person': person_id, 'customer': filter_text}))
 
     # ── Daten für die Tabelle aufbereiten ────────────────────────────────────
-    entries = list(db.fetch_worktimes(person_id, date_from, date_to)) if person_id else []
     by_date = {}
     for e in entries:
         by_date.setdefault(str(e[2]), []).append(e)
@@ -226,13 +321,13 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
         start_html = _html.escape(start)
         end_html = _html.escape(end)
         end_cell = end_html + (' (+1)' if crosses_midnight(start, end) else '')
-        info = '' if kind == 'work' else KIND_LABELS.get(kind, kind)
+        info = '' if kind == 'work' else _html.escape(str(KIND_LABELS.get(kind, kind)))
         if kind == 'work' and e[9]:
             info = _html.escape(e[9])           # Arbeitsort als Info bei Arbeit
         note = _html.escape(e[10] or '')
         row_cls = ' class="wt-weekend"' if weekend else ''
         pausetext = e[11] if len(e) > 11 else ''
-        data = (f'data-id="{e[0]}" data-date="{e[2]}" data-kind="{kind}" '
+        data = (f'data-id="{e[0]}" data-date="{e[2]}" data-kind="{_html.escape(str(kind), quote=True)}" '
                 f'data-customer="{e[4] or ""}" data-start="{start_html}" data-end="{end_html}" '
                 f'data-pause="{pause}" data-locmode="{e[8] or "customer"}" '
                 f'data-loccity="{_html.escape(e[9] or "")}" '
@@ -302,7 +397,7 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
     s += '</table></div>'
 
     # RECHTS: Formular
-    s += _worktime_form(db, person_id, date_from, date_to, customers, edit_id, qs())
+    s += _worktime_form(db, person_id, date_from, date_to, customers, edit_id, qs(), filter_text)
 
     s += '</div><!-- Ende grid2Cols -->'
 
@@ -324,7 +419,12 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
         'ownCity': own_city,
         'template': template,
         'today': today.isoformat(),
-        'pdfBase': f'/worktime/pdf?person={person_id}&from={quote(date_from, safe="")}&to={quote(date_to, safe="")}',
+        'pdfBase': (f'/worktime/pdf?person={person_id}&from={quote(date_from, safe="")}&to={quote(date_to, safe="")}'
+                    f'{customer_query(customer)}'),
+        # Kunde des Filters: Ein neuer Eintrag gehört dann zu ihm (wtClear); bei „ohne Kunde“ und ohne Filter leer
+        'filterCustomer': str(customer) if isinstance(customer, int) else '',
+        # Filter „ohne Kunde“: Die Vorlage des letzten Eintrags setzt dann keinen Kunden ein (wtApplyTemplate)
+        'filterNoCustomer': customer == CUSTOMER_NONE,
     }
     s += '<script>\nconst WT_DATA = ' + script_json(wt_data) + ';\n'
     s += _WORKTIME_JS + '</script>'
@@ -352,8 +452,9 @@ def PageWorkTimes(db: Database, person_id=None, date_from=None, date_to=None,
     return s
 
 
-def _worktime_form(db, person_id, date_from, date_to, customers, edit_id, qstr):
-    """Eingabeformular (rechte Spalte) mit Button-Leiste oben + PDF-Export."""
+def _worktime_form(db, person_id, date_from, date_to, customers, edit_id, qstr, filter_text=''):
+    """Eingabeformular (rechte Spalte) mit Button-Leiste oben + PDF-Export. ``filter_text`` ist der Kundenfilter der Seite
+    (leer = keiner); das versteckte Feld ``customer`` bringt ihn beim Speichern mit zurück."""
     customer_opts = '<option value="">– kein Kunde –</option>'
     for c in customers:
         customer_opts += f'<option value="{c[0]}">{_html.escape(c[3] or f"ID {c[0]}")}</option>'
@@ -374,10 +475,12 @@ def _worktime_form(db, person_id, date_from, date_to, customers, edit_id, qstr):
         <input type="hidden" name="person_id" value="{person_id}">
         <input type="hidden" name="from" value="{_html.escape(date_from, quote=True)}">
         <input type="hidden" name="to" value="{_html.escape(date_to, quote=True)}">
+        <input type="hidden" name="customer" value="{_html.escape(filter_text, quote=True)}">
         <div class="rowWithObjects">
             <button type="button" class="coloredButton btn-sm bg-indigo" onclick="wtOpenPdf()" title="Angezeigten Zeitraum als PDF">📄 PDF</button>
             <label title="Die Notiz jedes Eintrags steht in der Info-Spalte des Stundenzettels"><input type="checkbox" id="wtPdfNotes" checked> Mit Notiz</label>
             <label title="Der Arbeitsort jedes Arbeitstags steht in der Info-Spalte des Stundenzettels"><input type="checkbox" id="wtPdfLocation" checked> Mit Arbeitsort</label>
+            <label title="Im Monatszettel auch die Tage ohne Eintrag auflisten"><input type="checkbox" id="wtPdfEmptyDays" checked> Mit leeren Tagen</label>
         </div>
         <div class="rowWithObjects" id="wtEditButtons" style="display:none;">
             <input type="submit" id="wtSubmit" value="💾 Speichern" class="coloredButton btn-sm bg-green">
@@ -403,7 +506,7 @@ def _worktime_form(db, person_id, date_from, date_to, customers, edit_id, qstr):
                 <label><input type="radio" name="location_mode" value="other" onchange="wtOnLocModeChange()"> Sonstiger:</label>
                 <input type="text" name="location_city" id="wtLocCity" placeholder="Stadt/Dorf">
             </td></tr>
-            <tr><td>Notiz:</td><td><input type="text" name="note" id="wtNote" placeholder="Was wurde gemacht?"></td></tr>
+            <tr><td>Notiz:</td><td><input type="text" name="note" id="wtNote" maxlength="{NOTE_MAX_LENGTH}" placeholder="Was wurde gemacht?"></td></tr>
         </table>
     </form>
     </div>'''
@@ -477,10 +580,11 @@ function wtOnPauseText() {
     wtUpdateHours();
 }
 function wtOpenPdf() {
-    let url = WT_DATA.pdfBase;
-    // beide Schalter sind beim Laden an; die Adresse nennt immer beide (der Server druckt nur, was sie verlangt)
+    let url = WT_DATA.pdfBase;      // trägt Person, Zeitraum und – wenn gesetzt – den Kundenfilter
+    // alle Schalter sind beim Laden an; die Adresse nennt immer alle (der Server druckt nur, was sie verlangt)
     url += '&notes=' + (document.getElementById('wtPdfNotes').checked ? '1' : '0');
     url += '&location=' + (document.getElementById('wtPdfLocation').checked ? '1' : '0');
+    url += '&empty=' + (document.getElementById('wtPdfEmptyDays').checked ? '1' : '0');
     // PDF inline in neuem Tab anzeigen (statt die Seite zu ersetzen)
     window.open(url + '&inline=1', '_blank');
 }
@@ -544,7 +648,8 @@ function wtClear() {
     document.getElementById('wtId').value = '';
     document.getElementById('wtDate').value = '';
     document.getElementById('wtKind').value = 'work';
-    document.getElementById('wtCustomer').value = '';
+    // bei gesetztem Kundenfilter gehört ein neuer Eintrag zu diesem Kunden
+    document.getElementById('wtCustomer').value = WT_DATA.filterCustomer || '';
     document.getElementById('wtStart').value = '';
     document.getElementById('wtEnd').value = '';
     document.getElementById('wtPause').value = 0;
@@ -563,7 +668,8 @@ function wtApplyTemplate() {
     const st = document.getElementById('wtStart');
     const en = document.getElementById('wtEnd');
     const pa = document.getElementById('wtPause');
-    if (!cust.value) cust.value = t.customer || '';
+    // bei Filter „ohne Kunde“ bleibt der Kunde leer – der neue Eintrag verschwände sonst nach dem Speichern aus der Liste
+    if (!cust.value && !WT_DATA.filterNoCustomer) cust.value = t.customer || '';
     if (!st.value)   st.value   = t.start  || '';
     if (!en.value)   en.value   = t.end    || '';
     if (!pa.value || pa.value === '0') pa.value = t.pause || 0;
