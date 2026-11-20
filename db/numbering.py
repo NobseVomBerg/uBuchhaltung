@@ -19,6 +19,14 @@ _MAX_SKIPPED_NUMBERS = 10000
 
 NumberRange = namedtuple('NumberRange', 'id year letter suffix current fmt')
 _COUNTER_TOKENS = ('{nnn}', '{nn}', '{n}')
+# Größer wird die laufende Nummer einer Belegnummer nie gewertet: Eine eigene Nummer wie „26B“ + 25 Neunen hebt keinen Zähler, und
+# kein Zähler steht je so hoch, dass der nächste Schritt über die 64 Bit der Datenbank hinausginge
+MAX_RECEIPT_RUNNING = 999_999_999
+
+
+def _current_year():
+    """Das laufende Jahr – eine eigene Funktion, damit Tests es festlegen können."""
+    return datetime.date.today().year
 
 
 class NumberRangeError(ValueError):
@@ -211,8 +219,7 @@ class NumberRangeMixin:
         # Spalten: 0=ID, 2=Year, 3=Letter, 4=Prefix, 5=CurrentNumber, 7=NumberFormat
         fmt = chosen[7] if len(chosen) > 7 and chosen[7] else None
         if range_type == 'invoice':
-            rng = NumberRange(chosen[0], chosen[2], chosen[3] or '', chosen[4] or '',
-                              chosen[5] or 0, fmt or DEFAULT_NUMBER_FORMAT)
+            rng = self._number_range_of(chosen)
             conn = self._get_connection()
             try:
                 return self._next_free_number(conn, rng)[0], chosen[0]
@@ -238,6 +245,13 @@ class NumberRangeMixin:
             "WHERE Type = 'invoice' ORDER BY Year DESC, Letter, Prefix").fetchall()
         return [NumberRange(r[0], r[1], r[2] or '', r[3] or '', r[4] or 0,
                             r[5] or DEFAULT_NUMBER_FORMAT) for r in rows]
+
+    @staticmethod
+    def _number_range_of(row):
+        """Der Kreis aus einer Zeile von ``SELECT * FROM NumberRanges`` (Spalten: 0=ID, 2=Year, 3=Letter, 4=Prefix, 5=CurrentNumber,
+        7=NumberFormat)."""
+        fmt = row[7] if len(row) > 7 and row[7] else None
+        return NumberRange(row[0], row[2], row[3] or '', row[4] or '', row[5] or 0, fmt or DEFAULT_NUMBER_FORMAT)
 
     @staticmethod
     def _range_for_year(ranges, year):
@@ -370,33 +384,136 @@ class NumberRangeMixin:
                     'WHERE ID = ? AND CurrentNumber = ?', (rng.id, running)).rowcount > 0
         return released
 
-    def consume_number(self, range_id, number):
-        """Zähler nachziehen, wenn die gespeicherte Nummer der Vorschau entspricht.
+    # ── Belegnummern: der Kreis ``receipt_company`` ──────────────────────────
+    # Derselbe Kreis nummeriert die Beleg-Nr. der Buchungen (``peek_next_number``/``consume_number``): Belegnummern sind nicht
+    # eindeutig. Hat ein Bestand noch keinen Kreis, legt ``take_receipt_number`` einen für das laufende Jahr an – danach nie wieder
+    # von selbst, auch nicht zum Jahreswechsel.
 
-        Gegenstück zu peek_next_number: erst das Speichern verbraucht die
-        Nummer. Ein bereits weitergezählter Kreis (anderer Weg hat die Nummer
-        vergeben) bleibt unangetastet.
+    @staticmethod
+    def _receipt_ranges(conn):
+        """Die Nummernkreise der Belege, jüngstes Jahr zuerst (wie ``fetch_number_ranges``)."""
+        rows = conn.execute(
+            "SELECT ID, Year, Letter, Prefix, CurrentNumber, NumberFormat FROM NumberRanges "
+            "WHERE Type = 'receipt_company' ORDER BY Year DESC, Letter, Prefix").fetchall()
+        return [NumberRange(r[0], r[1], r[2] or '', r[3] or '', r[4] or 0,
+                            r[5] or DEFAULT_NUMBER_FORMAT) for r in rows]
+
+    def _receipt_running(self, rng, text):
+        """Die laufende Nummer von ``text`` im Kreis ``rng``, wenn es die einer Belegnummer sein kann: ``text`` passt zur Vorlage
+        (``_number_in_range``) und die Nummer liegt in ``1 … MAX_RECEIPT_RUNNING`` – sonst ``None``. Eine Nummer mit mehr
+        Ziffern, als Python in eine Zahl wandelt, ist ebenfalls keine: Sie löst keinen Fehler aus."""
+        try:
+            running = self._number_in_range(rng, text)
+        except ValueError:
+            return None
+        return running if running is not None and 0 < running <= MAX_RECEIPT_RUNNING else None
+
+    def take_receipt_number(self, conn, receipt_date, requested=None):
+        """Die Nummer eines neuen Belegs vergeben – in der Transaktion von ``conn``.
+
+        Genommen wird der Kreis des Jahres von ``receipt_date``, sonst der jüngste (wie ``peek_next_number``).
+
+        * ``requested`` fehlt, oder es ist der Vorschlag (die nächste Nummer dieses Kreises): Der Zähler rückt um eins vor,
+          die Nummer wird nach der Formatvorlage des Kreises gebildet. Gibt es noch gar keinen Kreis „Belegnummern Firma“, entsteht
+          einer für das LAUFENDE Jahr (Buchstabe ``B``, Standardvorlage) und die Nummer kommt aus ihm – nicht für das Jahr des
+          Belegdatums, das aus einer hochgeladenen Datei stammt. Gibt es irgendeinen Kreis, entsteht nie von selbst ein weiterer.
+        * ``requested`` ist eine eigene Nummer: Sie wird so übernommen, ohne dass ein Kreis entsteht. Passt sie zur Vorlage eines
+          Kreises, hebt sie dessen Zähler auf ihre laufende Nummer – nie nach unten und nur bis ``MAX_RECEIPT_RUNNING`` (eine
+          größere Nummer gilt als Text, der Zähler bleibt).
+
+        Returns die Nummer; ``''``, wenn die Vorlage des Kreises keinen Zähler liefert."""
+        if not conn.in_transaction:
+            conn.execute('BEGIN IMMEDIATE')
+        ranges = self._receipt_ranges(conn)
+        requested = (requested or '').strip()
+        if not ranges and not requested:
+            year = _current_year()
+            cursor = conn.execute(
+                "INSERT INTO NumberRanges (Type, Year, Letter, Prefix, CurrentNumber, Description, NumberFormat) "
+                "VALUES ('receipt_company', ?, 'B', '', 0, 'Belegnummern Firma', ?)", (year, DEFAULT_NUMBER_FORMAT))
+            ranges = [NumberRange(cursor.lastrowid, year, 'B', '', 0, DEFAULT_NUMBER_FORMAT)]
+        rng = self._range_for_year(ranges, self._year_of(receipt_date))
+        usable = rng is not None and not number_format_error(rng.fmt)
+        if requested and not (usable and requested == self._format_range_number(rng, rng.current + 1)):
+            for other in ranges:
+                number = self._receipt_running(other, requested)
+                if number is not None:
+                    conn.execute('UPDATE NumberRanges SET CurrentNumber = ? WHERE ID = ? '
+                                 'AND COALESCE(CurrentNumber, 0) < ?', (number, other.id, number))
+            return requested
+        if not usable:
+            return ''
+        conn.execute('UPDATE NumberRanges SET CurrentNumber = COALESCE(CurrentNumber, 0) + 1 WHERE ID = ?', (rng.id,))
+        number = conn.execute('SELECT CurrentNumber FROM NumberRanges WHERE ID = ?', (rng.id,)).fetchone()[0]
+        return self._format_range_number(rng, number)
+
+    @staticmethod
+    def _receipt_number_in_use(conn, number):
+        """Trägt ein Beleg oder eine Buchung (``Bookings.DocumentNumber``) diese Nummer? Verglichen wird ohne Leerraum am Rand und
+        ohne Rücksicht auf Groß-/Kleinschreibung („26b001“ ist „26B001“). Die Abfrage grenzt mit ``INSTR(LOWER(…), LOWER(?))`` vor,
+        der Vergleich selbst läuft in Python."""
+        wanted = number.strip()
+        for sql in ('SELECT Number FROM Documents WHERE INSTR(LOWER(Number), LOWER(?)) > 0',
+                    'SELECT DocumentNumber FROM Bookings WHERE INSTR(LOWER(DocumentNumber), LOWER(?)) > 0'):
+            if any((value or '').strip().casefold() == wanted.casefold() for (value,) in conn.execute(sql, (wanted,))):
+                return True
+        return False
+
+    def release_receipt_number(self, conn, number):
+        """Die Nummer eines gelöschten Belegs zurückgeben – in der Transaktion von ``conn``, NACH dem Löschen seiner Zeile.
+
+        Der Zähler des Kreises, zu dessen Vorlage die Nummer passt, geht um eins zurück – aber nur, wenn die Nummer genau die ist,
+        die der Kreis für ihre laufende Nummer vergibt („26B0001“ ist nicht „26B001“: die Nummer, die der Kreis vergäbe, ist
+        damit nicht frei), er genau auf dieser Nummer steht (es war die zuletzt vergebene) und kein anderer Beleg und keine
+        Buchung sie trägt (verglichen ohne Leerraum am Rand und ohne Rücksicht auf Groß-/Kleinschreibung: die Nummer ist nicht
+        eindeutig und noch in Gebrauch). Eine Nummer mitten im Kreis bleibt eine Lücke und wird nie neu vergeben; umnummeriert
+        wird nie, und es geht nie mehr als einen Schritt zurück. Returns ``True``, wenn ein Zähler zurückging."""
+        if not conn.in_transaction:
+            conn.execute('BEGIN IMMEDIATE')
+        text = (number or '').strip()
+        released = False
+        in_use = None
+        for rng in self._receipt_ranges(conn):
+            running = self._receipt_running(rng, text)
+            if running is None or text != self._format_range_number(rng, running):
+                continue
+            if in_use is None:
+                in_use = self._receipt_number_in_use(conn, text)
+            if in_use:
+                return False
+            released |= conn.execute(
+                'UPDATE NumberRanges SET CurrentNumber = CurrentNumber - 1 '
+                'WHERE ID = ? AND CurrentNumber = ?', (rng.id, running)).rowcount > 0
+        return released
+
+    def consume_number(self, range_id, number):
+        """Zähler nachziehen, wenn die gespeicherte Nummer über ihm liegt – er geht nie nach unten.
+
+        Gegenstück zu peek_next_number: erst das Speichern verbraucht die Nummer. Passt die Nummer zur Formatvorlage des Kreises
+        (Jahr, Buchstabe und Zusatz wie im Kreis) und liegt ihre laufende Nummer über dem Zähler (höchstens
+        ``MAX_RECEIPT_RUNNING``), steht der Zähler danach auf ihr. Das schließt den Vorschlag der Maske ein (die nächste Nummer),
+        aber auch eine höhere: Seit das Löschen eines Belegs den Zähler zurücknehmen kann, läge eine gespeicherte Nummer sonst
+        über dem Zähler, und der nächste Upload vergäbe sie noch einmal. Eine Nummer, die nicht zur Vorlage passt, nicht über
+        dem Zähler liegt (ein anderer Weg hat weitergezählt) oder zu groß ist, lässt den Zähler stehen.
 
         Returns: True, wenn der Zähler erhöht wurde.
         """
         row = self.get_number_range_by_id(range_id)
         if not row:
             return False
-        fmt = row[7] if len(row) > 7 and row[7] else None
-        expected = self._apply_number_format(
-            fmt or '{yy}{l}{nnn}{s}', row[2], row[3] or '',
-            (row[5] or 0) + 1, row[4] or '')
-        if expected != number:
+        running = self._receipt_running(self._number_range_of(row), (number or '').strip())
+        if running is None:
             return False
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            'UPDATE NumberRanges SET CurrentNumber = CurrentNumber + 1 '
-            'WHERE ID = ? AND CurrentNumber = ?', (range_id, row[5] or 0))
-        changed = cursor.rowcount > 0
-        conn.commit()
-        conn.close()
-        return changed
+        try:
+            cursor = conn.execute(
+                'UPDATE NumberRanges SET CurrentNumber = ? WHERE ID = ? AND COALESCE(CurrentNumber, 0) < ?',
+                (running, range_id, running))
+            changed = cursor.rowcount > 0
+            conn.commit()
+            return changed
+        finally:
+            conn.close()
 
     def format_number(self, year, letter, suffix, number, number_format=None):
         """Format a number using the given template (default: '{yy}{l}{nnn}{s}')"""

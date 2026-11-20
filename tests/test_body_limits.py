@@ -8,7 +8,7 @@ Vorher las jede Stelle so viele Bytes, wie ``Content-Length`` behauptete. Jetzt 
 * Die erklärte Länge muss aus ASCII-Ziffern bestehen (kein ``abc``, ``-1``, ``1e3``, ``+5``), und es darf kein
   ``Transfer-Encoding`` dastehen (``chunked`` kennt der Server nicht): sonst 400 „Ungültige Anfrage.“.
 * Ist sie größer als die Grenze der Route – 64 KB ohne angemeldeten Benutzer (``/login``, ``/logout``,
-  ``/setup/start``), 10 MB für Formulare und JSON, 200 MB für ``/upload_receipts`` und ``/wiso/import`` –,
+  ``/setup/start``), 10 MB für Formulare und JSON, 200 MB für ``/upload_receipts``, ``/receipts/upload`` und ``/wiso/import`` –,
   kommt 413, **ohne dass der Body gelesen wird** (die Tests schicken nur die Kopfzeilen: Läse der Server den
   Body, bliebe er bis zum Timeout hängen), und die Verbindung wird geschlossen.
 * ``_drain_body`` liest höchstens 1 MB weg; was darüber erklärt ist, bleibt liegen, und die Verbindung geht zu.
@@ -152,9 +152,9 @@ UPLOAD_ROUTE = '/upload_receipts'
 WISO_ROUTE = '/wiso/import'
 
 
-@pytest.fixture(params=['Formular', 'JSON', 'Upload', 'WISO-Import'])
+@pytest.fixture(params=['Formular', 'JSON', 'Upload', 'WISO-Import', 'Beleg-Upload'])
 def route(request, auto_login):
-    """Eine der vier Routen, die ihren Body über ``_read_body`` bzw. selbst lesen: Pfad, Kopfzeilen (mit dem
+    """Eine der fünf Routen, die ihren Body über ``_read_body`` bzw. selbst lesen: Pfad, Kopfzeilen (mit dem
     CSRF-Token, wo es vor dem Lesen geprüft wird), Grenze und ob die Antwort JSON oder HTML ist."""
     csrf = auto_login.csrf
     return {
@@ -165,6 +165,9 @@ def route(request, auto_login):
                                   limit=MAX_UPLOAD_BODY, as_json=True),
         'WISO-Import': SimpleNamespace(path=WISO_ROUTE, headers=MULTIPART,
                                        limit=MAX_UPLOAD_BODY, as_json=False),
+        # seit 2.5.11 die Dateien der Belege-Seite: Token, Demo-Modus und Größe stehen vor dem ersten gelesenen Byte
+        'Beleg-Upload': SimpleNamespace(path='/receipts/upload', headers={**MULTIPART, 'X-CSRF-Token': csrf},
+                                        limit=MAX_UPLOAD_BODY, as_json=True),
     }[request.param]
 
 

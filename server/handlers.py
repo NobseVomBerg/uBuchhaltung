@@ -20,6 +20,7 @@ import auth
 import demo
 import userctx
 from . import dirlock
+from . import receipt_files
 from . import wiso_upload
 from .pages import Header1, Header2, Header3, Footer
 from .import_preview import file_transactions, match_account
@@ -48,28 +49,39 @@ try:
 except ImportError:
     PARSER_AVAILABLE = False
 
+def _form_text(post_data, name):
+    """Ein Textfeld eines Formulars; fehlt es, ist es leer (kein ``KeyError``)."""
+    return post_data.get(name, [''])[0]
+
+
 def handle_add_receipt(db, post_data):
-    """Handle adding new receipt"""
-    number = post_data["number"][0]
-    date = post_data["date"][0]
-    filename = post_data["filename"][0]
-    path = post_data["path"][0]
-    info = post_data["info"][0]
-    db.insert_receipt(number, date, filename, path, info)
+    """Einen Beleg ohne Datei anlegen (Papierbeleg; die Dateien lädt die Belege-Seite über ``POST /receipts/upload`` hoch).
+
+    Die Nummer wird verbraucht (``Database.insert_receipt_entry``). Ist die Nummer des Formulars noch der Vorschlag, den es beim
+    Öffnen bekam (verstecktes Feld ``number_suggestion``), zählt sie nicht als eigene: Ein zweites Fenster kann ihn inzwischen
+    verbraucht haben, vergeben wird frisch. Einen Pfad nimmt der Handler nicht an – ein mitgeschicktes ``path`` wird überhört."""
+    number = _form_text(post_data, "number")
+    if number == _form_text(post_data, "number_suggestion"):
+        number = None
+    db.insert_receipt_entry(number, _form_text(post_data, "date"), _form_text(post_data, "filename"),
+                            _form_text(post_data, "info"))
     return 303, "/receipts"
 
 def handle_update_receipt(db, post_data):
-    """Handle updating receipt. Ohne gültige ID: 400, nichts geschrieben."""
+    """Handle updating receipt. Ohne gültige ID: 400, nichts geschrieben. Den gespeicherten Pfad ändert das Formular nie – ein
+    mitgeschicktes ``path`` wird überhört."""
     receipt_id = _form_id(post_data.get("id", [""])[0])
     if receipt_id is None:
         return 400, INVALID_REQUEST
-    number = post_data["number"][0]
-    date = post_data["date"][0]
-    filename = post_data["filename"][0]
-    path = post_data["path"][0]
-    info = post_data["info"][0]
-    db.update_receipt(receipt_id, number, date, filename, path, info)
+    db.update_receipt(receipt_id, _form_text(post_data, "number"), _form_text(post_data, "date"),
+                      _form_text(post_data, "filename"), _form_text(post_data, "info"))
     return 303, "/receipts"
+
+
+def delete_receipt_with_file(db, receipt_id):
+    """Einen Beleg löschen (``Database.delete_receipt``) und danach seine Datei (``receipt_files.remove_receipt_file``: nur in
+    ``Belege/``, nur wenn kein anderer Beleg auf sie zeigt). Lehnt das Löschen ab (``DeleteRefused``), bleibt auch die Datei."""
+    receipt_files.remove_receipt_file(db, db.delete_receipt(receipt_id))
 
 def _normalize_ws(s):
     return ' '.join((s or '').split())

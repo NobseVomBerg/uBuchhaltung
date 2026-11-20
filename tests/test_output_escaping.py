@@ -532,19 +532,23 @@ def test_receipt_edit_page_puts_hostile_values_complete_and_escaped_into_the_fie
     assert [a['value'] for a in inputs(hostile, name='number')] == [BREAK]
     assert [a['value'] for a in inputs(hostile, name='date')] == [BREAK_SCRIPT]
     assert [a['value'] for a in inputs(hostile, name='filename')] == [IMG]
-    assert [a['value'] for a in inputs(hostile, name='path')] == [SCRIPT]
+    assert inputs(hostile, name='path') == []                     # seit 2.5.11 gibt es kein Pfadfeld mehr: den Pfad setzt der Server
+    assert 'Datei nicht im Belegordner' in hostile                # der gespeicherte Wert gilt nicht – als Text, nie als Pfad
     assert [a['value'] for a in inputs(hostile, name='info')] == [MIXED]
     assert escaped(MIXED) in hostile                              # `'`, `&` und `<` stehen maskiert im Attribut
     assert [a['value'] for a in inputs(hostile, name='id')] == [str(receipt)]
     assert Dom(hostile).all('img') == []
-    tmp_db.update_receipt(receipt, '26-001', '2026-01-01', 'beleg.pdf', 'Belege/beleg.pdf', 'Info')
+    # ``update_receipt`` ändert den Pfad nicht (seit 2.5.11): der gutartige Vergleichswert kommt per SQL
+    sql(tmp_db, 'UPDATE Documents SET Path = ? WHERE ID = ?', 'Belege/beleg.pdf', receipt)
+    tmp_db.update_receipt(receipt, '26-001', '2026-01-01', 'beleg.pdf', 'Info')
     assert_same_structure(hostile, PageReceiptEdit(tmp_db, '26-001'))
 
 
 def test_receipt_edit_page_shows_a_stored_null_as_an_empty_field(tmp_db):
     tmp_db.insert_receipt('26-001', '2026-01-01', 'beleg.pdf', None, None)
     html = PageReceiptEdit(tmp_db, '26-001')
-    assert [a['value'] for a in inputs(html, name='path')] == [''] and [a['value'] for a in inputs(html, name='info')] == ['']
+    assert [a['value'] for a in inputs(html, name='info')] == [''] and inputs(html, name='path') == []
+    assert 'keine Datei' in html                                  # NULL heißt: kein Pfad gespeichert
 
 
 def test_receipt_edit_page_shows_the_linked_bookings_as_text(tmp_db):
@@ -570,10 +574,12 @@ def test_receipts_page_shows_hostile_values_as_text_and_in_the_data_attributes(t
         assert raw not in hostile, raw
     rows = [a for a in Dom(hostile).all('tr') if 'receipt-row' in a.get('class', '').split()]
     assert len(rows) == 1
-    assert (rows[0]['data-number'], rows[0]['data-date'], rows[0]['data-filename'], rows[0]['data-path'],
-            rows[0]['data-info']) == (BREAK, BREAK_SCRIPT, IMG, SCRIPT, MIXED)
+    # Der gespeicherte Pfad (hier ein feindlicher Text) gilt nicht: Die Seite sagt es als Text und nennt ihn nirgends
+    assert (rows[0]['data-number'], rows[0]['data-date'], rows[0]['data-filename'], rows[0]['data-file'],
+            rows[0]['data-info']) == (BREAK, BREAK_SCRIPT, IMG, 'Datei nicht im Belegordner', MIXED)
+    assert 'data-path' not in rows[0]
     cells = next(r for r in table_rows(hostile) if IMG in r)
-    assert cells[:5] == [BREAK, BREAK_SCRIPT, IMG, SCRIPT, MIXED]
+    assert cells[:5] == [BREAK, BREAK_SCRIPT, IMG, 'Datei nicht im Belegordner', MIXED]
     # Löschen: Seit 2.4.2 trägt die Adresse im onclick nur die ID des Belegs (vorher die Nummer, die nicht eindeutig ist) –
     # der feindliche Text der Nummer steht dort gar nicht mehr
     receipt_id = tmp_db.fetch_receipts()[0][0]

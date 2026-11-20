@@ -14,22 +14,36 @@ locked“); eine Person zu löschen nahm per ``ON DELETE CASCADE`` still ihre Ar
 * Die fünf Routen antworten mit 303 auf ihre Listenseite samt Meldung (nie 500); die Seite zeigt sie nur als JSON im
   Skriptblock (``appMsg``), nie als Markup.
 
+Seit 2.5.11 hängt an einem Beleg oft eine Datei (``Belege/<Jahr>/<Nummer>_<Name>``): ``POST /receipts/delete`` entfernt sie mit dem
+Eintrag – nur in der Form, in der der Upload ablegt (``Belege/<JJJJ>/<Name>``, kein Link; der Bestand des früheren Uploads in ``Documents/``
+und alles, was der Kontoauszug-Import unter ``Belege/<Jahr>/Konten/`` oder ``…/general/`` ablegt, bleibt), nur eine reguläre Datei, nur wenn
+kein anderer Beleg auf dieselbe Datei zeigt, und nie nach einer Ablehnung. Und: Trug der gelöschte Beleg die zuletzt vergebene Nummer seines
+Kreises „Belegnummern Firma“, geht der Zähler um eins zurück (``release_receipt_number``) – sonst bleibt die Lücke; eine Nummer mitten im
+Kreis bleibt eine Lücke, eine Nummer, die noch ein anderer Beleg oder eine Buchung trägt (ohne Rücksicht auf Groß-/Kleinschreibung), wird nie
+wieder frei, und es geht nur die Nummer zurück, die der Kreis selbst vergibt („26B0001“ ist nicht „26B001“).
+
 Alle Namen, Nummern und Beträge sind erfundene Testwerte.
 """
 import contextlib
+import html
 import json
+import os
 import re
 import sqlite3
 import urllib.parse
 
 import pytest
 
+import userctx
 from db import DeleteRefused
 from db.core import reference_texts
+from server import receipt_files
 from server.pages_masterdata import PageArticles
 from tests.document_helpers import add_contacts, add_document, make_books
 from tests.dom_helpers import Dom, assert_same_structure
 from tests.http_client import get, own_origin, post
+from tests.test_backup_download import make_symlink
+from tests.test_receipt_file import list_rows
 
 SCRIPT = '<script>alert(1)</script>'
 IMG = '<img src=x onerror=alert(1)>'
@@ -695,3 +709,452 @@ def test_the_contact_list_keeps_its_filters_next_to_the_message(server_port, aut
     assert resp.status == 200
     assert 'Nur Kunde' in resp.text and 'Nur Lieferant' not in resp.text      # der Filter gilt weiter
     assert shown_message(resp.text) == ['Meldung', 'error']
+
+
+# ── Beleg mit Datei (2.5.11): die Datei geht mit, nur wo sie dem Beleg gehört ─
+def receipt_file(db, name='beleg.pdf', content=b'%PDF-1.4 Inhalt', number='B-1'):
+    """Eine Datei in ``Belege/2026/`` und der Beleg dazu; liefert (ID, Pfad der Datei)."""
+    folder = os.path.join(userctx.DATA_ROOT, 'Belege', '2026')
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, name)
+    with open(path, 'wb') as handle:
+        handle.write(content)
+    db.insert_receipt(number, DAY, name, f'Belege/2026/{name}', '')
+    return db.fetch_receipts()[-1][0], path
+
+
+def delete_with_file(db, receipt_id):
+    from server import handlers
+    handlers.delete_receipt_with_file(db, receipt_id)
+
+
+def test_deleting_a_receipt_removes_its_file_in_belege(tmp_db):
+    receipt_id, path = receipt_file(tmp_db)
+    assert tmp_db.delete_receipt(receipt_id) == 'Belege/2026/beleg.pdf'            # der Pfad geht an den Aufrufer
+    assert os.path.exists(path)                                                    # die Datenbank löscht nur den Eintrag
+    receipt_id, path = receipt_file(tmp_db, 'zweite.pdf')
+    delete_with_file(tmp_db, receipt_id)
+    assert not os.path.exists(path) and scalar(tmp_db, 'SELECT COUNT(*) FROM Documents WHERE ID = ?', receipt_id) == 0
+    assert os.path.isdir(os.path.dirname(path))                                    # der Ordner bleibt
+
+
+def test_the_route_removes_the_file_with_the_entry_and_leads_back_to_the_list(server_port, auto_login):
+    folder = os.path.join(userctx.DATA_ROOT, 'users', 'admin', 'Belege', '2026')
+    os.makedirs(folder)
+    for name in ('a.pdf', 'b.pdf'):
+        with open(os.path.join(folder, name), 'wb') as handle:
+            handle.write(b'%PDF-1.4 ' + name.encode())
+        auto_login.db.insert_receipt(name, DAY, name, f'Belege/2026/{name}', '')
+    first = auto_login.db.fetch_receipts()[0][0]
+    resp = post(server_port, f'/receipts/delete?id={first}', headers={'Origin': own_origin(server_port)}, csrf=auto_login.csrf)
+    assert resp.status == 303 and resp.headers['Location'] == '/receipts'
+    assert os.listdir(folder) == ['b.pdf'] and [r[1] for r in auto_login.db.fetch_receipts()] == ['b.pdf']
+
+
+def test_a_file_that_two_entries_share_stays_until_the_last_of_them_goes(tmp_db):
+    first, path = receipt_file(tmp_db)
+    tmp_db.insert_receipt('B-2', DAY, 'beleg.pdf', 'Belege/2026/beleg.pdf', '')             # derselbe Pfad
+    second = tmp_db.fetch_receipts()[-1][0]
+    delete_with_file(tmp_db, first)
+    assert os.path.exists(path)                                                    # der zweite zeigt noch darauf
+    delete_with_file(tmp_db, second)
+    assert not os.path.exists(path)
+
+
+def test_an_entry_that_spells_the_path_another_way_keeps_the_file_alive_but_never_deletes_it(tmp_db):
+    """Derselbe aufgelöste Pfad, anders geschrieben (``…/Belege/2026/../2026/beleg.pdf``, absolut): Der Beleg zeigt auf die Datei, also bleibt sie,
+    solange er da ist. Gelöscht wird sie über ihn nie – er hat nicht die Form des Uploads (``Belege/<JJJJ>/<Name>``), auch nicht als letzter."""
+    first, path = receipt_file(tmp_db)
+    tmp_db.insert_receipt('B-2', DAY, 'beleg.pdf', 'Belege/2026/beleg.pdf', '')
+    second = tmp_db.fetch_receipts()[-1][0]
+    other_spelling = os.path.join(userctx.DATA_ROOT, 'Belege', '2026', os.pardir, '2026', 'beleg.pdf')
+    tmp_db.insert_receipt('B-3', DAY, 'beleg.pdf', other_spelling, '')
+    third = tmp_db.fetch_receipts()[-1][0]
+    delete_with_file(tmp_db, first)
+    delete_with_file(tmp_db, second)
+    assert os.path.exists(path)                                                    # der dritte zeigt noch darauf
+    delete_with_file(tmp_db, third)
+    assert os.path.exists(path) and tmp_db.fetch_receipts() == []                  # sein Eintrag ist weg, die Datei bleibt
+
+
+def test_a_file_in_the_old_folder_documents_stays(tmp_db):
+    folder = os.path.join(userctx.DATA_ROOT, 'Documents')
+    os.makedirs(folder)
+    path = os.path.join(folder, 'alt.pdf')
+    with open(path, 'wb') as handle:
+        handle.write(b'%PDF-1.4 alt')
+    tmp_db.insert_receipt('ALT-1', DAY, 'alt.pdf', 'Documents/alt.pdf', '')
+    delete_with_file(tmp_db, tmp_db.fetch_receipts()[-1][0])
+    assert os.path.exists(path) and tmp_db.fetch_receipts() == []                  # nur der Eintrag ist weg
+
+
+def test_a_refused_deletion_keeps_the_file_and_the_entry(tmp_db):
+    receipt_id, path = receipt_file(tmp_db)
+    booked_on(tmp_db, receipt_id)
+    with pytest.raises(DeleteRefused):
+        delete_with_file(tmp_db, receipt_id)
+    assert os.path.exists(path) and scalar(tmp_db, 'SELECT COUNT(*) FROM Documents WHERE ID = ?', receipt_id) == 1
+
+
+def test_a_stored_path_outside_belege_or_a_link_never_deletes_anything(tmp_db, tmp_path):
+    outside = tmp_path / 'draussen.pdf'
+    outside.write_bytes(b'%PDF-1.4 draussen')
+    target, target_path = receipt_file(tmp_db, 'ziel.pdf')                         # eine echte Datei in Belege/ …
+    folder = os.path.dirname(target_path)
+    link = os.path.join(folder, 'link.pdf')
+    try:
+        os.symlink(target_path, link)                                              # … und ein Link darauf
+        os.symlink(outside, os.path.join(folder, 'aussen.pdf'))                    # ein Link nach draußen
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f'das Dateisystem kann keine symbolischen Links anlegen ({exc})')
+    for number, stored in (('L-1', 'Belege/2026/link.pdf'), ('L-2', 'Belege/2026/aussen.pdf'), ('A-1', str(outside)),
+                           ('A-2', os.path.join(os.pardir, 'draussen.pdf')), ('A-3', 'buch.db'), ('A-4', 'Belege/2026')):
+        tmp_db.insert_receipt(number, DAY, 'x.pdf', stored, '')
+        delete_with_file(tmp_db, tmp_db.fetch_receipts()[-1][0])
+    assert os.path.exists(target_path) and os.path.islink(link) and outside.exists()      # nichts davon wurde angefasst
+    assert os.path.isdir(folder)
+
+
+# Unter ``Belege/`` legt auch der Kontoauszug-Import ab (``<Jahr>/Konten/<Bank>/``, ``<Jahr>/general/``), und ein Eintrag aus dem Bestand kann dorthin
+# oder auf eine andere Schreibweise zeigen: Gelöscht wird nur die Form des Uploads, ``Belege/<JJJJ>/<Name>``. (Gespeicherter Wert, Ort der Datei.)
+NOT_THE_UPLOAD_SHAPE = [
+    pytest.param('Belege/2025/Konten/Bank/Auszug.pdf', 'Belege/2025/Konten/Bank/Auszug.pdf', id='Kontoauszug-Import'),
+    pytest.param('Belege/2025/general/x.pdf', 'Belege/2025/general/x.pdf', id='general'),
+    pytest.param('Belege/2025/unterordner/x.pdf', 'Belege/2025/unterordner/x.pdf', id='Unterordner'),
+    pytest.param('ABSOLUT', 'Belege/2025/x.pdf', id='absoluter-Pfad'),
+    pytest.param('Belege/2025/../2025/x.pdf', 'Belege/2025/x.pdf', id='Punkt-Punkt'),
+    pytest.param('Belege/abcd/x.pdf', 'Belege/abcd/x.pdf', id='Jahr-ohne-Ziffern'),
+    pytest.param('Belege/20250/x.pdf', 'Belege/20250/x.pdf', id='Jahr-mit-fuenf-Ziffern'),
+    pytest.param('Belege/202/x.pdf', 'Belege/202/x.pdf', id='Jahr-mit-drei-Ziffern'),
+    pytest.param('Belege/٢٠٢٥/x.pdf', 'Belege/٢٠٢٥/x.pdf', id='Jahr-mit-arabischen-Ziffern'),
+    pytest.param('Belege/x.pdf', 'Belege/x.pdf', id='ohne-Jahresordner'),
+]
+
+
+@pytest.mark.parametrize('stored, physical', NOT_THE_UPLOAD_SHAPE)
+def test_a_file_the_upload_did_not_lay_down_stays_when_its_entry_goes_and_the_question_does_not_name_it(server_port, auto_login, stored, physical):
+    path = os.path.join(userctx.DATA_ROOT, 'users', 'admin', *physical.split('/'))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'wb') as handle:
+        handle.write(b'%PDF-1.4 Inhalt')
+    auto_login.db.insert_receipt('X-1', DAY, 'x.pdf', path if stored == 'ABSOLUT' else stored, '')
+    receipt_id = auto_login.db.fetch_receipts()[-1][0]
+    page = get(server_port, '/receipts?from=2026-01-01&to=2026-12-31').text
+    assert list_rows(page)[receipt_id].delete == f"appConfirmPost('/receipts/delete?id={receipt_id}', 'Beleg wirklich löschen?')"    # ohne „und seine Datei“
+    resp = post(server_port, f'/receipts/delete?id={receipt_id}', headers={'Origin': own_origin(server_port)}, csrf=auto_login.csrf)
+    assert resp.status == 303 and resp.headers['Location'] == '/receipts'
+    assert auto_login.db.fetch_receipts() == []                                    # der Eintrag ist weg
+    with open(path, 'rb') as handle:
+        assert handle.read() == b'%PDF-1.4 Inhalt'                                 # die Datei bleibt
+
+
+def test_a_link_in_the_year_folder_to_a_file_without_a_receipt_of_its_own_leaves_link_and_target(tmp_db):
+    """``Belege/2026/link.pdf`` zeigt auf eine Datei, die der Kontoauszug-Import ablegte (kein Beleg verweist auf sie): Das Löschen des Belegs lässt
+    Link und Ziel stehen – schon der Pfad hat die Form des Uploads nicht, und selbst ihre aufgelöste Lage weicht vom Namen ab."""
+    target = os.path.join(userctx.DATA_ROOT, 'Belege', '2026', 'Konten', 'Bank', 'a.pdf')
+    os.makedirs(os.path.dirname(target))
+    with open(target, 'wb') as handle:
+        handle.write(b'%PDF-1.4 Auszug')
+    link = os.path.join(userctx.DATA_ROOT, 'Belege', '2026', 'link.pdf')
+    make_symlink(target, link)
+    tmp_db.insert_receipt('L-1', DAY, 'link.pdf', 'Belege/2026/link.pdf', '')
+    assert receipt_files._uploaded_shape('Belege/2026/link.pdf') is None
+    delete_with_file(tmp_db, tmp_db.fetch_receipts()[-1][0])
+    assert os.path.islink(link) and os.path.exists(target) and tmp_db.fetch_receipts() == []
+
+
+def test_a_link_that_points_to_itself_is_not_removed_either(tmp_db):
+    """Ein Link auf sich selbst löst ``realpath`` auf seinen eigenen Namen auf und hat damit die Form des Uploads – allein die Prüfung „reguläre Datei“
+    hält das Löschen auf."""
+    folder = os.path.join(userctx.DATA_ROOT, 'Belege', '2026')
+    os.makedirs(folder)
+    link = os.path.join(folder, 'schleife.pdf')
+    make_symlink('schleife.pdf', link)
+    tmp_db.insert_receipt('L-1', DAY, 'schleife.pdf', 'Belege/2026/schleife.pdf', '')
+    assert receipt_files._uploaded_shape('Belege/2026/schleife.pdf') is not None          # die Voraussetzung dieser Probe
+    delete_with_file(tmp_db, tmp_db.fetch_receipts()[-1][0])
+    assert os.path.islink(link)
+
+
+def test_a_file_in_a_year_folder_that_is_a_link_inside_belege_is_not_removed(tmp_db):
+    """Der Jahresordner ist ein Link (der Upload legt dorthin nie ab): Die Datei dahinter hat nicht den Platz, den der Pfad nennt."""
+    real = os.path.join(userctx.DATA_ROOT, 'Belege', '2025')
+    os.makedirs(real)
+    path = os.path.join(real, 'x.pdf')
+    with open(path, 'wb') as handle:
+        handle.write(b'%PDF-1.4 x')
+    make_symlink(real, os.path.join(userctx.DATA_ROOT, 'Belege', '2026'))
+    tmp_db.insert_receipt('Y-1', DAY, 'x.pdf', 'Belege/2026/x.pdf', '')
+    delete_with_file(tmp_db, tmp_db.fetch_receipts()[-1][0])
+    assert os.path.exists(path) and tmp_db.fetch_receipts() == []
+
+
+def test_the_folder_belege_may_be_a_link_and_the_files_in_it_are_still_removed(tmp_db, tmp_path):
+    """Belege auf einem NAS: ``Belege/`` ist ein Link, die Jahresordner darin sind echte Ordner – die Datei geht mit dem Beleg."""
+    elsewhere = tmp_path / 'nas'
+    (elsewhere / '2026').mkdir(parents=True)
+    path = elsewhere / '2026' / 'a.pdf'
+    path.write_bytes(b'%PDF-1.4 a')
+    os.makedirs(userctx.DATA_ROOT, exist_ok=True)
+    make_symlink(elsewhere, os.path.join(userctx.DATA_ROOT, 'Belege'))
+    tmp_db.insert_receipt('N-1', DAY, 'a.pdf', 'Belege/2026/a.pdf', '')
+    delete_with_file(tmp_db, tmp_db.fetch_receipts()[-1][0])
+    assert not path.exists() and tmp_db.fetch_receipts() == []
+
+
+def test_a_file_the_upload_laid_down_goes_with_its_entry_and_the_page_asks_so(server_port, auto_login):
+    auto_login.db.insert_number_range('receipt_company', 2026, 'B', current_number=0)
+    userctx.set_user('admin')                                                      # die Datei kommt in den Ordner des Administrators, wie beim Upload
+    try:
+        receipt_id, number, relative = auto_login.db.insert_receipt_with_file(DAY, 'rechnung.pdf', '', b'%PDF-1.4 Inhalt')
+    finally:
+        userctx.clear()
+    path = os.path.join(userctx.DATA_ROOT, 'users', 'admin', *relative.split('/'))
+    assert (number, relative) == ('26B001', 'Belege/2026/26B001_rechnung.pdf') and os.path.isfile(path)
+    page = get(server_port, '/receipts?from=2026-01-01&to=2026-12-31').text
+    assert html.unescape(list_rows(page)[receipt_id].delete) == (
+        f"appConfirmPost('/receipts/delete?id={receipt_id}', \"Beleg 26B001 und seine Datei wirklich löschen?\")")
+    resp = post(server_port, f'/receipts/delete?id={receipt_id}', headers={'Origin': own_origin(server_port)}, csrf=auto_login.csrf)
+    assert resp.status == 303 and not os.path.exists(path) and auto_login.db.fetch_receipts() == []
+
+
+def test_a_file_that_is_already_gone_is_no_error(tmp_db, capsys):
+    tmp_db.insert_receipt('B-1', DAY, 'weg.pdf', 'Belege/2026/weg.pdf', '')
+    delete_with_file(tmp_db, tmp_db.fetch_receipts()[-1][0])
+    assert tmp_db.fetch_receipts() == [] and 'Traceback' not in capsys.readouterr().err
+
+
+def test_a_file_that_cannot_be_removed_is_only_logged(tmp_db, monkeypatch, capsys):
+    receipt_id, path = receipt_file(tmp_db)
+    real = os.remove
+
+    def refuse(target, *args, **kwargs):
+        if str(target) == os.path.realpath(path):
+            raise PermissionError(13, 'Permission denied (Test)', str(target))
+        return real(target, *args, **kwargs)
+    monkeypatch.setattr(receipt_files.os, 'remove', refuse)
+    delete_with_file(tmp_db, receipt_id)                                           # keine Ausnahme: der Eintrag ist gelöscht
+    assert tmp_db.fetch_receipts() == [] and 'Permission denied (Test)' in capsys.readouterr().err
+    monkeypatch.setattr(receipt_files.os, 'remove', real)
+    assert os.path.exists(path)
+
+
+# ── Die Nummer des zuletzt vergebenen Belegs wird beim Löschen wieder frei ───
+def number_circle(db):
+    db.insert_number_range('receipt_company', 2026, 'B', current_number=0)
+
+
+def counter(db):
+    return scalar(db, "SELECT CurrentNumber FROM NumberRanges WHERE Type = 'receipt_company'")
+
+
+def uploaded(db, name='beleg.pdf'):
+    """Wie der Upload der Belege-Seite: Nummer aus dem Kreis, Datei, Eintrag; liefert (ID, Nummer)."""
+    receipt_id, number, _path = db.insert_receipt_with_file(DAY, name, '', b'%PDF-1.4 Inhalt')
+    return receipt_id, number
+
+
+def test_the_receipt_with_the_last_number_gives_it_back_the_next_upload_gets_it_again(tmp_db):
+    number_circle(tmp_db)
+    _first, number_1 = uploaded(tmp_db)
+    last, number_2 = uploaded(tmp_db)
+    assert (number_1, number_2, counter(tmp_db)) == ('26B001', '26B002', 2)
+    tmp_db.delete_receipt(last)
+    assert counter(tmp_db) == 1
+    assert uploaded(tmp_db)[1] == '26B002' and counter(tmp_db) == 2
+
+
+def test_a_number_in_the_middle_stays_a_gap_and_is_never_issued_again(tmp_db):
+    number_circle(tmp_db)
+    middle, number_1 = uploaded(tmp_db)
+    uploaded(tmp_db)
+    tmp_db.delete_receipt(middle)
+    assert number_1 == '26B001' and counter(tmp_db) == 2                           # der Zähler bleibt
+    assert uploaded(tmp_db)[1] == '26B003'                                         # die nächste höhere Nummer; 26B001 kommt nie wieder
+    assert [row[1] for row in tmp_db.fetch_receipts()] == ['26B002', '26B003']
+
+
+def test_deleting_the_last_two_one_after_the_other_goes_back_exactly_one_step(tmp_db):
+    number_circle(tmp_db)
+    second_to_last, _ = uploaded(tmp_db)
+    last, _ = uploaded(tmp_db)
+    tmp_db.delete_receipt(second_to_last)                                          # mitten im Kreis: nichts geht zurück
+    assert counter(tmp_db) == 2
+    tmp_db.delete_receipt(last)                                                    # jetzt die zuletzt vergebene: ein Schritt
+    assert counter(tmp_db) == 1                                                    # nicht auf 0: die Lücke der Nummer 1 bleibt
+    assert uploaded(tmp_db)[1] == '26B002'
+
+
+def test_a_booking_that_carries_the_number_keeps_it_taken(tmp_db):
+    number_circle(tmp_db)
+    last, number = uploaded(tmp_db)
+    tmp_db.insert_booking(DAY, 10, document_number=number)                         # Beleg-Nr. der Buchung, ohne Verknüpfung zum Beleg
+    assert scalar(tmp_db, "SELECT COUNT(*) FROM Bookings WHERE DocumentNumber = '26B001'") == 1
+    tmp_db.delete_receipt(last)
+    assert counter(tmp_db) == 1 and uploaded(tmp_db)[1] == '26B002'                # die 26B001 bleibt vergeben
+
+
+def test_a_booking_with_blanks_around_the_number_counts_too(tmp_db):
+    number_circle(tmp_db)
+    last, _ = uploaded(tmp_db)
+    tmp_db.insert_booking(DAY, 10, document_number='  26B001\t')
+    tmp_db.delete_receipt(last)
+    assert counter(tmp_db) == 1
+
+
+def test_a_second_receipt_with_the_same_number_keeps_it_taken(tmp_db):
+    number_circle(tmp_db)
+    last, number = uploaded(tmp_db)
+    tmp_db.insert_receipt(number, DAY, 'von-hand.pdf', '', 'von Hand eingetragen')   # die Nummer ist nicht eindeutig
+    tmp_db.delete_receipt(last)
+    assert counter(tmp_db) == 1 and [row[3] for row in tmp_db.fetch_receipts()] == ['von-hand.pdf']
+    assert uploaded(tmp_db)[1] == '26B002'
+
+
+def test_a_second_receipt_with_blanks_around_the_number_counts_too(tmp_db):
+    number_circle(tmp_db)
+    last, _ = uploaded(tmp_db)
+    tmp_db.insert_receipt(' 26B001 ', DAY, 'von-hand.pdf', '', '')
+    tmp_db.delete_receipt(last)
+    assert counter(tmp_db) == 1
+
+
+def test_a_number_that_fits_no_circle_changes_no_counter_and_is_no_error(tmp_db):
+    number_circle(tmp_db)
+    uploaded(tmp_db)
+    uploaded(tmp_db)
+    tmp_db.insert_receipt('ER-7', DAY, 'von-hand.pdf', '', '')
+    tmp_db.insert_receipt('', DAY, 'ohne-nummer.pdf', '', '')
+    tmp_db.insert_receipt(None, DAY, 'null.pdf', '', '')
+    for receipt in tmp_db.fetch_receipts()[2:]:
+        tmp_db.delete_receipt(receipt[0])
+    assert counter(tmp_db) == 2 and len(tmp_db.fetch_receipts()) == 2
+
+
+def test_a_number_above_the_counter_changes_nothing(tmp_db):
+    number_circle(tmp_db)
+    uploaded(tmp_db)
+    tmp_db.insert_receipt('26B099', DAY, 'von-hand.pdf', '', '')
+    tmp_db.delete_receipt(tmp_db.fetch_receipts()[-1][0])
+    assert counter(tmp_db) == 1
+
+
+def test_a_longer_spelling_of_a_number_gives_nothing_back_and_the_number_is_not_issued_twice(tmp_db):
+    """„26B0001“ liest sich als laufende Nummer 1, ist aber nicht „26B001“: Das Löschen des Papierbelegs gab den Zähler zurück, obwohl der Upload noch
+    „26B001“ trug – der nächste Upload vergab sie ein zweites Mal."""
+    number_circle(tmp_db)
+    _first, number = uploaded(tmp_db)
+    paper, own = tmp_db.insert_receipt_entry('26B0001', DAY, 'papier.pdf', '')
+    assert (number, own, counter(tmp_db)) == ('26B001', '26B0001', 1)
+    tmp_db.delete_receipt(paper)
+    assert counter(tmp_db) == 1                                                    # „26B001“ ist vergeben: der Zähler bleibt
+    assert uploaded(tmp_db)[1] == '26B002'
+
+
+def test_the_same_with_a_template_with_an_unpadded_counter(tmp_db):
+    tmp_db.insert_number_range('receipt_company', 2026, 'B', current_number=0, number_format='{yy}{l}{n}')
+    _first, number = uploaded(tmp_db)
+    paper, own = tmp_db.insert_receipt_entry('26B01', DAY, 'papier.pdf', '')
+    assert (number, own, counter(tmp_db)) == ('26B1', '26B01', 1)
+    tmp_db.delete_receipt(paper)
+    assert counter(tmp_db) == 1 and uploaded(tmp_db)[1] == '26B2'
+
+
+def test_the_number_that_the_circle_itself_issues_still_goes_back_with_its_own_spelling(tmp_db):
+    number_circle(tmp_db)
+    last, number = uploaded(tmp_db)
+    assert number == '26B001'
+    tmp_db.delete_receipt(last)
+    assert counter(tmp_db) == 0 and uploaded(tmp_db)[1] == '26B001'
+
+
+def test_a_booking_with_the_number_in_another_case_keeps_it_taken(tmp_db):
+    number_circle(tmp_db)
+    last, _ = uploaded(tmp_db)
+    tmp_db.insert_booking(DAY, 10, document_number='26b001')
+    tmp_db.delete_receipt(last)
+    assert counter(tmp_db) == 1 and uploaded(tmp_db)[1] == '26B002'
+
+
+def test_a_second_receipt_with_the_number_in_another_case_keeps_it_taken(tmp_db):
+    number_circle(tmp_db)
+    last, _ = uploaded(tmp_db)
+    tmp_db.insert_receipt(' 26b001 ', DAY, 'von-hand.pdf', '', '')
+    tmp_db.delete_receipt(last)
+    assert counter(tmp_db) == 1
+
+
+def test_a_number_that_only_contains_the_number_does_not_keep_it_taken(tmp_db):
+    number_circle(tmp_db)
+    last, _ = uploaded(tmp_db)
+    tmp_db.insert_booking(DAY, 10, document_number='26B0010')                      # die Abfrage grenzt mit „enthält“ vor, verglichen wird genau
+    tmp_db.insert_booking(DAY, 10, document_number='X26B001')
+    tmp_db.delete_receipt(last)
+    assert counter(tmp_db) == 0
+
+
+def test_a_counter_above_the_maximum_never_goes_back_and_a_huge_number_is_no_error(tmp_db):
+    number_circle(tmp_db)
+    tmp_db.update_number_range(tmp_db.fetch_number_ranges('receipt_company')[0][0], 2026, 'B', current_number=1_000_000_000)
+    tmp_db.insert_receipt('26B1000000000', DAY, 'a.pdf', '', '')
+    tmp_db.delete_receipt(tmp_db.fetch_receipts()[-1][0])
+    assert counter(tmp_db) == 1_000_000_000                                        # über ``MAX_RECEIPT_RUNNING`` zählt keine Nummer
+    tmp_db.insert_receipt('26B' + '9' * 5000, DAY, 'b.pdf', '', '')                 # mehr Ziffern, als Python in eine Zahl wandelt
+    tmp_db.delete_receipt(tmp_db.fetch_receipts()[-1][0])
+    assert counter(tmp_db) == 1_000_000_000
+
+
+def test_a_refused_deletion_leaves_the_counter_alone(tmp_db):
+    number_circle(tmp_db)
+    last, _ = uploaded(tmp_db)
+    booked_on(tmp_db, last)                                                        # ein Verweis: das Löschen wird abgelehnt
+    before = snapshot(tmp_db, 'Documents', 'NumberRanges')
+    assert refused(tmp_db.delete_receipt, last).startswith(RECEIPT_LEAD)
+    assert snapshot(tmp_db, 'Documents', 'NumberRanges') == before and counter(tmp_db) == 1
+    assert_not_locked(tmp_db)
+
+
+def test_an_unknown_receipt_changes_no_counter(tmp_db):
+    number_circle(tmp_db)
+    uploaded(tmp_db)
+    assert tmp_db.delete_receipt(99999) is None and counter(tmp_db) == 1
+
+
+def test_only_the_circle_the_number_belongs_to_goes_back(tmp_db):
+    tmp_db.insert_number_range('receipt_company', 2025, 'B', current_number=5)
+    tmp_db.insert_number_range('receipt_company', 2026, 'B', current_number=5)
+    tmp_db.insert_receipt('25B005', DAY, 'a.pdf', '', '')
+    tmp_db.delete_receipt(tmp_db.fetch_receipts()[-1][0])
+    counters = {row[2]: row[5] for row in tmp_db.fetch_number_ranges('receipt_company')}
+    assert counters == {2025: 4, 2026: 5}
+    tmp_db.insert_receipt('26B005', DAY, 'b.pdf', '', '')
+    tmp_db.delete_receipt(tmp_db.fetch_receipts()[-1][0])
+    assert {row[2]: row[5] for row in tmp_db.fetch_number_ranges('receipt_company')} == {2025: 4, 2026: 4}
+
+
+def test_a_failing_release_rolls_the_deletion_back(tmp_db, monkeypatch):
+    number_circle(tmp_db)
+    last, _ = uploaded(tmp_db)
+
+    def failing(self, conn, number):
+        raise sqlite3.OperationalError('simulierter Fehler beim Zurückgeben')
+    monkeypatch.setattr(type(tmp_db), 'release_receipt_number', failing)
+    with pytest.raises(sqlite3.OperationalError, match='simulierter Fehler'):
+        tmp_db.delete_receipt(last)
+    assert scalar(tmp_db, 'SELECT COUNT(*) FROM Documents WHERE ID = ?', last) == 1 and counter(tmp_db) == 1
+    assert_not_locked(tmp_db)
+
+
+def test_the_route_gives_the_number_back_and_removes_the_file(server_port, auto_login):
+    number_circle(auto_login.db)
+    folder = os.path.join(userctx.DATA_ROOT, 'users', 'admin', 'Belege', '2026')
+    os.makedirs(folder)
+    path = os.path.join(folder, '26B001_beleg.pdf')
+    with open(path, 'wb') as handle:
+        handle.write(b'%PDF-1.4 Inhalt')
+    auto_login.db.insert_receipt('26B001', DAY, 'beleg.pdf', 'Belege/2026/26B001_beleg.pdf', '')
+    auto_login.db.update_number_range(auto_login.db.fetch_number_ranges('receipt_company')[0][0], 2026, 'B', current_number=1)
+    receipt_id = auto_login.db.fetch_receipts()[0][0]
+    resp = post(server_port, f'/receipts/delete?id={receipt_id}', headers={'Origin': own_origin(server_port)}, csrf=auto_login.csrf)
+    assert resp.status == 303 and resp.headers['Location'] == '/receipts'
+    assert counter(auto_login.db) == 0 and auto_login.db.fetch_receipts() == [] and not os.path.exists(path)

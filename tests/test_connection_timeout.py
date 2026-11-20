@@ -204,7 +204,7 @@ def test_a_keep_alive_connection_is_closed_once_it_stays_unused_past_the_limit(s
 
 
 # ── Ein Body, der nicht zu Ende kommt ────────────────────────────────────────
-@pytest.fixture(params=['Formular', 'JSON'])
+@pytest.fixture(params=['Formular', 'JSON', 'Beleg-Upload'])
 def body_route(request, auto_login):
     """Eine Route, die ihren Body über ``_read_body`` liest: Pfad, Kopfzeilen (mit dem CSRF-Token, wo es vor dem Lesen geprüft wird)
     und der Anfang eines Bodys, der nie zu Ende kommt."""
@@ -212,6 +212,10 @@ def body_route(request, auto_login):
         'Formular': SimpleNamespace(path=FORM_ROUTE, headers=FORM, as_json=False, start=b'name=Teilbeitrag&unit=St'),
         'JSON': SimpleNamespace(path=JSON_ROUTE, headers={**JSON, 'X-CSRF-Token': auto_login.csrf}, as_json=True,
                                 start=b'{"invoiceId": 1, "status": '),
+        # seit 2.5.11 die Dateien der Belege-Seite: der Body wird mit ``_read_body`` im Ganzen gelesen (höchstens 200 MB)
+        'Beleg-Upload': SimpleNamespace(path='/receipts/upload', headers={**MULTIPART, 'X-CSRF-Token': auto_login.csrf},
+                                        as_json=True, start=b'--GRENZE\r\nContent-Disposition: form-data; name="files"; '
+                                                            b'filename="teil.pdf"\r\n\r\n%PDF-1.4 Anfang'),
     }[request.param]
 
 
@@ -252,6 +256,20 @@ def test_a_body_that_never_arrives_is_never_saved(server_port, auto_login, short
         wire.request('POST', FORM_ROUTE, FORM, full)
         assert wire.response().status == 303
     assert [row[1] for row in auto_login.db.fetch_articles()] == ['Teilbeitrag']
+
+
+def test_a_receipts_upload_whose_body_never_arrives_creates_no_receipt_no_file_and_uses_no_number(server_port, auto_login, short_limit):
+    """Der Anfang des Bodys ist eine vollständige Datei, nur das Ende des Multiparts fehlt – ohne den ganzen Body entsteht nichts:
+    kein Beleg, keine Datei, und der Zähler des Kreises ist nicht verbraucht."""
+    auto_login.db.insert_number_range('receipt_company', 2026, 'B', current_number=0)
+    start = b'--GRENZE\r\nContent-Disposition: form-data; name="files"; filename="teil.txt"\r\n\r\nAnfang der Datei'
+    with Wire(server_port) as wire:
+        wire.request('POST', '/receipts/upload', {**MULTIPART, 'X-CSRF-Token': auto_login.csrf}, start, declared=len(start) + 500)
+        answer = wire.response()
+        assert answer.status == 408 and answer.headers['connection'] == 'close' and wire.closed()
+    assert auto_login.db.fetch_receipts() == [] and auto_login.db.fetch_number_ranges('receipt_company')[0][5] == 0
+    assert not os.path.exists(os.path.join(admin_dir(), 'Belege'))
+    assert get(server_port, '/about').status == 200
 
 
 # Routen, die den Body selbst lesen (der Handler bzw. ``wiso_upload.store``), und was der Server dort auf eine Zeitüberschreitung

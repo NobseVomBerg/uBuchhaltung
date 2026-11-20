@@ -7,8 +7,12 @@ Der Vorschlag liest die Historie desselben Empfängers, füllt SKR-Konto und
 Steuersatz und schlägt die nächste Beleg-Nr. vor – ohne zu speichern. War die
 Vorlage ein Split, kommen alle Teilbuchungen mit.
 """
+import contextlib
 import json
+import sqlite3
 from decimal import Decimal
+
+import pytest
 
 from server.handlers import handle_add_transaction, handle_transaction_suggest
 from server.pages_transactions import PageTransactions
@@ -47,6 +51,56 @@ def test_consume_ignores_a_different_number(tmp_db):
     _, range_id = tmp_db.peek_next_number('receipt_company', 2026)
     assert tmp_db.consume_number(range_id, 'EIGENE-NR') is False
     assert tmp_db.peek_next_number('receipt_company', 2026)[0] == '26F004'
+
+
+def test_consume_lifts_the_counter_to_a_higher_number_of_the_template_but_never_lowers_it(tmp_db):
+    """Seit das Löschen eines Belegs den Zähler zurücknehmen kann, kann eine gespeicherte Nummer über dem Zähler stehen: Das Speichern hebt ihn dann
+    auf sie (sonst vergäbe der nächste Upload sie noch einmal) – nie nach unten."""
+    tmp_db.insert_number_range('receipt_company', 2026, 'F', '', 7, 'Firma')
+    _, range_id = tmp_db.peek_next_number('receipt_company', 2026)
+    assert tmp_db.consume_number(range_id, '26F010') is True                       # eine höhere als die nächste
+    assert tmp_db.peek_next_number('receipt_company', 2026)[0] == '26F011'
+    assert tmp_db.consume_number(range_id, '26F010') is False                      # gleich dem Zähler
+    assert tmp_db.consume_number(range_id, '26F003') is False                      # darunter
+    assert tmp_db.peek_next_number('receipt_company', 2026)[0] == '26F011'
+
+
+@pytest.mark.parametrize('number', ['EIGENE-NR', '25F020', '26G020', '26F020_X', '26F2', '26F', '', None, ' ', '26F-20', 'x26F020'])
+def test_consume_leaves_the_counter_for_a_number_that_does_not_fit_the_template(tmp_db, number):
+    """Jahr, Buchstabe, Zusatz und eine Zahl mit mindestens drei Stellen müssen zur Vorlage ``{yy}{l}{nnn}{s}`` des Kreises passen."""
+    tmp_db.insert_number_range('receipt_company', 2026, 'F', '', 7, 'Firma')
+    _, range_id = tmp_db.peek_next_number('receipt_company', 2026)
+    assert tmp_db.consume_number(range_id, number) is False
+    assert tmp_db.peek_next_number('receipt_company', 2026)[0] == '26F008'
+
+
+def test_consume_never_takes_a_number_above_the_maximum(tmp_db):
+    """Größer als ``MAX_RECEIPT_RUNNING`` wird eine laufende Nummer nie gewertet – auch keine, die kein 64-Bit-Zähler fasste, und keine mit mehr
+    Ziffern, als Python in eine Zahl wandelt; der Zähler bleibt, und es gibt keinen Fehler."""
+    tmp_db.insert_number_range('receipt_company', 2026, 'F', '', 7, 'Firma')
+    _, range_id = tmp_db.peek_next_number('receipt_company', 2026)
+    for number in ('26F1000000000', '26F9223372036854775807', '26F' + '9' * 25, '26F' + '9' * 5000):
+        assert tmp_db.consume_number(range_id, number) is False
+    assert tmp_db.peek_next_number('receipt_company', 2026)[0] == '26F008'
+    assert tmp_db.consume_number(range_id, '26F999999999') is True                 # genau die Grenze zählt noch
+    assert tmp_db.peek_next_number('receipt_company', 2026)[0] == '26F1000000000'
+
+
+def test_consume_ignores_a_template_without_a_counter_and_an_unknown_range(tmp_db):
+    tmp_db.insert_number_range('receipt_company', 2026, 'F', '', 7, 'Firma', number_format='{yy}{l}')
+    range_id = tmp_db.fetch_number_ranges('receipt_company')[0][0]
+    assert tmp_db.consume_number(range_id, '26F') is False
+    assert tmp_db.consume_number(99999, '26F020') is False
+
+
+def test_consume_counts_from_zero_when_the_counter_is_empty(tmp_db):
+    tmp_db.insert_number_range('receipt_company', 2026, 'F', '', 0, 'Firma')
+    range_id = tmp_db.fetch_number_ranges('receipt_company')[0][0]
+    with contextlib.closing(sqlite3.connect(tmp_db.db_name)) as con:
+        con.execute('UPDATE NumberRanges SET CurrentNumber = NULL')
+        con.commit()
+    assert tmp_db.consume_number(range_id, '26F002') is True
+    assert tmp_db.peek_next_number('receipt_company', 2026)[0] == '26F003'
 
 
 def test_peek_honours_number_format(tmp_db):
@@ -276,6 +330,29 @@ def test_saving_an_edited_number_leaves_the_range_alone(tmp_db):
     })
 
     assert tmp_db.peek_next_number('receipt_company', 2026)[0] == '26F012'
+
+
+def test_a_number_saved_after_a_deletion_lifts_the_counter_so_the_next_upload_does_not_issue_it_again(tmp_db):
+    """Der Vorschlag „26B002“ wird geholt (Zähler 1), dann löscht der Nutzer den Beleg „26B001“ (der Zähler geht auf 0 zurück), dann speichert er die
+    Buchung mit „26B002“: Der Zähler steht danach auf 2 – vorher blieb er auf 0, und die Nummer wurde ein zweites Mal vergeben."""
+    tmp_db.insert_number_range('receipt_company', 2026, 'B', '', 0)
+    receipt_id, first, _path = tmp_db.insert_receipt_with_file('2026-03-04', 'a.pdf', '', b'Inhalt')
+    assert first == '26B001'
+    booking = tmp_db.insert_booking('2026-03-05', -10.00, recipient_client='Partner', booking_type='entry')
+    suggestion = _suggest(tmp_db, booking)
+    assert suggestion['document_nr'] == '26B002'
+    tmp_db.delete_receipt(receipt_id)
+    assert tmp_db.fetch_number_ranges('receipt_company')[0][5] == 0
+
+    coa = tmp_db.get_coa_id_by_account_number(6815)
+    handle_add_transaction(tmp_db, {
+        'transaction_id': [str(booking)], 'date': ['2026-03-05'], 'amount': ['-10.00'], 'currency': ['EUR'], 'coa_id': [str(coa)],
+        'document_nr': [suggestion['document_nr']], 'suggest_range_id': [str(suggestion['range_id'])],
+    })
+
+    assert tmp_db.get_booking_by_id(booking)[16] == '26B002'
+    assert tmp_db.fetch_number_ranges('receipt_company')[0][5] == 2
+    assert tmp_db.insert_receipt_with_file('2026-03-06', 'b.pdf', '', b'Inhalt')[1] == '26B003'      # nicht „26B002“: Die trägt die Buchung
 
 
 # ── Maske ────────────────────────────────────────────────────────────────────

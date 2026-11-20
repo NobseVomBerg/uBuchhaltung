@@ -250,8 +250,12 @@ Buchungssätze (`BookingType='entry'`) werden in einer gemeinsamen Tabelle
 geführt und automatisch verknüpft.
 
 ### 1. Belege-Verwaltung (`/receipts`)
-- Übersicht aller Belege mit Nummer, Datum, Dateiname, Pfad und Zusatzinfos
-- Hinzufügen, Bearbeiten, Löschen – gelöscht wird ein Beleg nur, solange keine Buchung, Anlage oder Fahrt auf ihn verweist
+- Übersicht aller Belege mit Nummer, Datum, Dateiname, Datei und Zusatzinfos
+- Dateien hochladen (auch mehrere auf einmal): Jede Datei wird sofort ein Beleg mit Nummer aus dem Kreis *Belegnummern Firma*, Datum und
+  Dateiname, liegt unter `Belege/<Jahr>/` und lässt sich in der Liste ansehen (PDF und Bilder) und herunterladen; ein Kontoauszug ist dort
+  ein Beleg wie jede andere Datei – importiert wird er auf der Seite „Buchungen“
+- Hinzufügen, Bearbeiten, Löschen – gelöscht wird ein Beleg nur, solange keine Buchung, Anlage oder Fahrt auf ihn verweist; seine
+  hochgeladene Datei geht mit, und die zuletzt vergebene Nummer wird wieder frei
 - Many-to-Many-Verknüpfung mit Buchungen (BookingDocuments)
 - UNIQUE-Constraint in `BookingDocuments` auf `(Booking_ID, Document_ID)` verhindert doppelte Verknüpfungen
 

@@ -206,7 +206,7 @@ def _keys(*names, period=False):
 # (Beispiel: /transactions?from_invoice=… legt über die Erlöskonto-Auflösung ein Konto an). Neue
 # Schlüssel nur mit Nachweis. /invoice/xml_download fehlt bewusst: Das Werkzeug liest nur Anzeigeseiten, keine
 # Dokumente. /backup/download fehlt bewusst: Es liefert den ganzen Datenbestand (eine Sicherung, Gigabyte groß) –
-# das Werkzeug liest nur Anzeigeseiten.
+# das Werkzeug liest nur Anzeigeseiten. /receipts/file fehlt aus demselben Grund: Es liefert die Datei eines Belegs.
 _PAGE_ALLOWLIST = {
     "/": _keys("acct", period=True),
     "/dashboard": _keys("acct", period=True),
