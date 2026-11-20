@@ -14,10 +14,14 @@ from .import_preview import build_import_preview
 from .multipart import parse_multipart
 
 try:
-    from document_parser import DocumentParser
+    from document_parser import DocumentExists, DocumentParser
     PARSER_AVAILABLE = True
 except ImportError:
     PARSER_AVAILABLE = False
+
+# Was die Antwort je Datei sagt, wenn das Ablegen scheitert: ein fester Satz. Der Text einer Systemausnahme nennt Serverpfade –
+# er steht nur im Server-Log. Klartext tragen allein eigene Klassen (``CamtError``, ``DkbCsvError``, ``DocumentExists``).
+UPLOAD_FAILED = 'Die Datei konnte nicht verarbeitet werden – Einzelheiten stehen im Server-Log.'
 
 
 def _collect_camt(name, content, statement_files, other_files):
@@ -139,15 +143,15 @@ def handle_file_upload(request_handler, db):
                         'status': 'organized',
                         'path': os.path.relpath(new_path, upload_dir),
                     })
-            except FileExistsError as e:
+            except DocumentExists as e:
                 other_files.append({
                     'filename': filename, 'status': 'warning', 'error': str(e)
                 })
-            except Exception as e:
+            except Exception:
                 import traceback
-                traceback.print_exc()
+                traceback.print_exc()                   # der volle Fehler nur ins Server-Log, nie in die Antwort
                 other_files.append({
-                    'filename': filename, 'status': 'error', 'error': str(e)
+                    'filename': filename, 'status': 'error', 'error': UPLOAD_FAILED
                 })
         else:
             other_files.append({'filename': filename, 'status': 'uploaded'})

@@ -803,7 +803,10 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
     <script>
         function openEditForm(url) {
             fetch(url)
-                .then(r => r.text())
+                .then(r => {
+                    if (!r.ok) throw new Error('status ' + r.status);
+                    return r.text();
+                })
                 .then(html => {
                     const doc = new DOMParser().parseFromString(html, 'text/html');
                     const newForm = doc.querySelector('.gridRightCol');
@@ -816,6 +819,8 @@ def PageContacts(db: Database, contact_type_filter=None, entity_type_filter=None
                             s.replaceWith(ns);
                         });
                         history.pushState({}, '', url);
+                    } else {
+                        window.location.href = url;
                     }
                 })
                 .catch(() => { window.location.href = url; });

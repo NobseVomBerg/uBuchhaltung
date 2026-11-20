@@ -1112,7 +1112,10 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
 
         function openEditForm(id) {
             fetch('/transactions/edit?id=' + id)
-                .then(r => r.text())
+                .then(r => {
+                    if (!r.ok) throw new Error('status ' + r.status);
+                    return r.text();
+                })
                 .then(html => {
                     const doc = new DOMParser().parseFromString(html, 'text/html');
                     const newForm = doc.querySelector('.gridRightCol');
@@ -1125,6 +1128,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                             s.replaceWith(ns);
                         });
                         history.pushState({}, '', '/transactions/edit?id=' + id);
+                    } else {
+                        window.location.href = '/transactions/edit?id=' + id;
                     }
                 })
                 .catch(() => { window.location.href = '/transactions/edit?id=' + id; });
