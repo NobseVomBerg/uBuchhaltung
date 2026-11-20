@@ -605,7 +605,7 @@ def test_receipts_upload_script_shows_the_server_answer_as_text_only(tmp_db):
         assert "'<p" not in script and '"<p' not in script                   # kein HTML aus Zeichenketten
     upload = next(s for s in own if 'uploadFiles' in s)
     assert "document.createElement('p')" in upload and 'note.textContent = text' in upload
-    assert "showUploadStatus(data, 'successColor')" in upload
+    assert "showUploadStatus(data, 'successColor')" not in upload                  # nicht mehr die rohe JSON-Antwort (2.5.7)
     assert "showUploadStatus('Fehler beim Hochladen: ' + error, 'errorColor')" in upload
 
 

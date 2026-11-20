@@ -157,7 +157,10 @@ def PageAssets(db: Database, status_filter='', edit_id=None, new_parent_id=None,
     <script>
         function openEditForm(url) {
             fetch(url)
-                .then(r => r.text())
+                .then(r => {
+                    if (!r.ok) throw new Error('status ' + r.status);
+                    return r.text();
+                })
                 .then(html => {
                     const doc = new DOMParser().parseFromString(html, 'text/html');
                     const newForm = doc.querySelector('.gridRightCol');
@@ -170,6 +173,8 @@ def PageAssets(db: Database, status_filter='', edit_id=None, new_parent_id=None,
                             s.replaceWith(ns);
                         });
                         history.pushState({}, '', url);
+                    } else {
+                        window.location.href = url;
                     }
                 })
                 .catch(() => { window.location.href = url; });
@@ -709,7 +714,10 @@ def PageAssetCategories(db: Database, edit_category_id=None, err=None):
     <script>
         function openEditForm(url) {
             fetch(url)
-                .then(r => r.text())
+                .then(r => {
+                    if (!r.ok) throw new Error('status ' + r.status);
+                    return r.text();
+                })
                 .then(html => {
                     const doc = new DOMParser().parseFromString(html, 'text/html');
                     const newForm = doc.querySelector('.gridRightCol');
@@ -722,6 +730,8 @@ def PageAssetCategories(db: Database, edit_category_id=None, err=None):
                             s.replaceWith(ns);
                         });
                         history.pushState({}, '', url);
+                    } else {
+                        window.location.href = url;
                     }
                 })
                 .catch(() => { window.location.href = url; });

@@ -157,13 +157,16 @@ def list_backups(user_dir):
 
 
 def _next_archive_path(user_dir, ext):
-    """Freien Archivnamen bestimmen: JJJJMMTT_Backup[_n].<ext>."""
+    """Freien Archivnamen bestimmen: JJJJMMTT_Backup[_n].<ext>.
+
+    Verglichen wird ohne Groß-/Kleinschreibung: Auf einem Dateisystem, das sie nicht unterscheidet, träfe der neue Name sonst
+    eine vorhandene Datei (``20261120_BACKUP.ZIP``), und das Aufräumen eines Teilarchivs in ``create_backup`` löschte sie."""
     d = backup_dir(user_dir)
     stamp = datetime.now().strftime('%Y%m%d')
     base = f'{stamp}_Backup'
-    existing = {os.path.splitext(f)[0] for f in os.listdir(d)}
+    existing = {os.path.splitext(f)[0].casefold() for f in os.listdir(d)}
     name, n = base, 1
-    while name in existing:
+    while name.casefold() in existing:
         n += 1
         name = f'{base}_{n}'
     return os.path.join(d, name + ext)

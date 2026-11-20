@@ -173,12 +173,53 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
         
         // Was der Server antwortet (Dateinamen, Fehlertexte), sind Daten und kein HTML:
         // nur als Text einsetzen, nie als Markup.
-        function showUploadStatus(text, cssClass) {
+        function addUploadNote(text, cssClass) {
             const note = document.createElement('p');
             if (cssClass) note.className = cssClass;
             note.textContent = text;
-            uploadStatus.textContent = '';
             uploadStatus.appendChild(note);
+        }
+
+        function showUploadStatus(text, cssClass) {
+            uploadStatus.textContent = '';
+            addUploadNote(text, cssClass);
+        }
+
+        // Das Ergebnis steht je Datei als Text da. Die Liste lädt nur neu, wenn es keine Warnung, keinen Fehler und
+        // keinen erkannten Kontoauszug gab – sonst verschwände die Meldung, bevor jemand sie liest; dann holt ein Knopf die Liste.
+        function showUploadResult(response, data) {
+            if (!response.ok || data === null || data.error || data.success === false) {
+                showUploadStatus('Fehler beim Hochladen: ' + (data && data.error ? data.error
+                    : 'Der Server hat die Anfrage abgelehnt (Status ' + response.status + ').'), 'errorColor');
+                return;
+            }
+            uploadStatus.textContent = '';
+            let problem = false;
+            (data.other_files || []).forEach(entry => {
+                if (entry.status === 'organized') {
+                    addUploadNote('✓ ' + entry.filename + ' abgelegt');
+                } else if (entry.status === 'uploaded') {
+                    addUploadNote('✓ ' + entry.filename + ' hochgeladen');
+                } else {
+                    problem = true;
+                    addUploadNote((entry.status === 'warning' ? '⚠ ' : '✗ ') + entry.filename + ': ' + entry.error, 'errorColor');
+                }
+            });
+            const statements = (data.files || []).length;
+            if (statements > 0) {
+                problem = true;
+                addUploadNote(statements + ' Kontoauszug/-auszüge erkannt – importiert wird auf der Seite „Buchungen“ (dort erneut hochladen).', 'errorColor');
+            }
+            if (problem) {
+                const refresh = document.createElement('button');
+                refresh.type = 'button';
+                refresh.className = 'coloredButton btn-sm bg-gray';
+                refresh.textContent = 'Liste aktualisieren';
+                refresh.addEventListener('click', () => location.reload());
+                uploadStatus.appendChild(refresh);
+            } else {
+                setTimeout(() => location.reload(), 3000);
+            }
         }
 
         function uploadFiles(files) {
@@ -196,15 +237,16 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
                 method: 'POST',
                 body: formData
             })
-            .then(response => response.text())
-            .then(data => {
-                // Show temporary success message
-                showUploadStatus(data, 'successColor');
-                setTimeout(() => {
-                    uploadStatus.textContent = '';
-                    location.reload();
-                }, 3000);
-            })
+            .then(response => response.text().then(text => {
+                let data = null;
+                try {
+                    const parsed = JSON.parse(text);
+                    if (parsed && typeof parsed === 'object') data = parsed;
+                } catch (e) {
+                    data = null;
+                }
+                showUploadResult(response, data);
+            }))
             .catch(error => {
                 showUploadStatus('Fehler beim Hochladen: ' + error, 'errorColor');
             });

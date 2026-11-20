@@ -285,7 +285,9 @@ kein Subagent darauf:
   weiter, sonst einen festen Satz (`BACKUP_FAILED`, `RESTORE_FAILED`, `DATEV_FAILED`, `WISO_IMPORT_FAILED`); der volle Fehler
   steht im Server-Log. Die Seite liest `msg` nicht im Browser, sondern bekommt es vom Server als JSON im Skriptblock `miscMsg`
   (`script_json`, höchstens `MSG_MAX_LENGTH` = 2000 Zeichen – die längste Meldung des DATEV-Exports hat gut 1500) und zeigt es
-  nur über `textContent`/`appMsg` (`tests/test_misc_messages.py`)
+  nur über `textContent`/`appMsg` (`tests/test_misc_messages.py`). Der Beleg-Upload (`server/upload_handler.py`) nennt je Datei nur
+  den Klartext eigener Klassen (`CamtError`, `DkbCsvError`, `document_parser.DocumentExists`), sonst `UPLOAD_FAILED`; die Belege-Seite
+  zeigt das Ergebnis je Datei als Text und lädt nur ohne Warnung neu (`tests/test_upload_feedback.py`)
 - **Fehlerantworten über `send_error`** (`server/app.py`): tragen immer Statuszeile und Schutz-Header, auch bei einer kaputten
   Anfragezeile – unabhängig vom Patch-Stand der Standardbibliothek (eine echte HTTP/0.9-Anfrage bekommt ihre normale Antwort
   weiter ohne Kopf)
@@ -302,7 +304,8 @@ kein Subagent darauf:
   Ablehnung des Moduls ist `BackupRefused` (eine `RuntimeError`; ein unbekanntes Archiv oder ein Link als Archiv
   `BackupNotFound`, zugleich `FileNotFoundError`) mit Klartext – nie ein Serverpfad, nie die Ausgabe von 7-Zip, nie der Text
   einer Systemausnahme: Die stehen im Server-Log (`from e`, `print`). Scheitert `create_backup`, wird das Teilarchiv entfernt
-  (der Name war frei, es ist nie eine fremde Datei); `list_backups` nennt nur reguläre Dateien, keine Ordner oder Links.
+  (der Name war frei, es ist nie eine fremde Datei); `list_backups` nennt nur reguläre Dateien, keine Ordner oder Links;
+  `_next_archive_path` vergleicht ohne Groß-/Kleinschreibung.
   Scheitert beim Überschreiben erst der Schritt der Datenbank, sagt die Meldung den Stand (`OVERLAY_DB_FAILED`; bleibt eine
   Begleitdatei der alten Datenbank liegen: `OVERLAY_SIDECARS_LEFT` – die übrigen werden trotzdem entfernt). **Wiederherstellen läuft
   allein (seit 2.5.6, `server/dirlock.py`):** Jede Anfrage eines angemeldeten Benutzers läuft unter der Lesesperre seines

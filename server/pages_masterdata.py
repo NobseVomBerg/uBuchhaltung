@@ -283,7 +283,10 @@ def PageArticles(db: Database, edit_article_id=None, error=None):
 
         function openEditForm(url) {
             fetch(url)
-                .then(r => r.text())
+                .then(r => {
+                    if (!r.ok) throw new Error('status ' + r.status);
+                    return r.text();
+                })
                 .then(html => {
                     const doc = new DOMParser().parseFromString(html, 'text/html');
                     const newForm = doc.querySelector('.gridRightCol');
@@ -296,6 +299,8 @@ def PageArticles(db: Database, edit_article_id=None, error=None):
                             s.replaceWith(ns);
                         });
                         history.pushState({}, '', url);
+                    } else {
+                        window.location.href = url;
                     }
                 })
                 .catch(() => { window.location.href = url; });
@@ -529,7 +534,10 @@ def PageSkr(db: Database, edit_id=None, copy_from_id=None, msg=None, msg_type='i
     <script>
         function openEditForm(url) {
             fetch(url)
-                .then(r => r.text())
+                .then(r => {
+                    if (!r.ok) throw new Error('status ' + r.status);
+                    return r.text();
+                })
                 .then(html => {
                     const doc = new DOMParser().parseFromString(html, 'text/html');
                     const newForm = doc.querySelector('.gridRightCol');
@@ -542,6 +550,8 @@ def PageSkr(db: Database, edit_id=None, copy_from_id=None, msg=None, msg_type='i
                             s.replaceWith(ns);
                         });
                         history.pushState({}, '', url);
+                    } else {
+                        window.location.href = url;
                     }
                 })
                 .catch(() => { window.location.href = url; });
@@ -678,7 +688,10 @@ def PageBankAccounts(db: Database, edit_id=None, error=None):
     <script>
         function openEditForm(url) {
             fetch(url)
-                .then(r => r.text())
+                .then(r => {
+                    if (!r.ok) throw new Error('status ' + r.status);
+                    return r.text();
+                })
                 .then(html => {
                     const doc = new DOMParser().parseFromString(html, 'text/html');
                     const newForm = doc.querySelector('.gridRightCol');
@@ -691,6 +704,8 @@ def PageBankAccounts(db: Database, edit_id=None, error=None):
                             s.replaceWith(ns);
                         });
                         history.pushState({}, '', url);
+                    } else {
+                        window.location.href = url;
                     }
                 })
                 .catch(() => { window.location.href = url; });
@@ -843,7 +858,10 @@ def PageNumberRanges(db: Database, edit_id=None, err=None):
     <script>
         function openEditForm(url) {
             fetch(url)
-                .then(r => r.text())
+                .then(r => {
+                    if (!r.ok) throw new Error('status ' + r.status);
+                    return r.text();
+                })
                 .then(html => {
                     const doc = new DOMParser().parseFromString(html, 'text/html');
                     const newForm = doc.querySelector('.gridRightCol');
@@ -856,6 +874,8 @@ def PageNumberRanges(db: Database, edit_id=None, err=None):
                             s.replaceWith(ns);
                         });
                         history.pushState({}, '', url);
+                    } else {
+                        window.location.href = url;
                     }
                 })
                 .catch(() => { window.location.href = url; });

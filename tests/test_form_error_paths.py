@@ -18,7 +18,9 @@ Text einer Ausnahme an den Nutzer zurück. Ergebnis: ein Serverfehler, eine wei�
 * Wächter (statisch): in ``server/handlers.py`` kein ``int(post_data…)``/``float(post_data…)``, kein 5xx mit Ausnahmetext und (seit
   2.5.5) keine Weiterleitung (3xx), die den Text einer Ausnahme aus einem breiten ``except`` nennt – die Meldungen nach Sicherung,
   Wiederherstellung, DATEV-Export und WISO-Import (``/miscellaneous?…&msg=``) sind feste Sätze oder der Klartext einer eigenen
-  Ablehnungsklasse (``tests/test_misc_messages.py``).
+  Ablehnungsklasse (``tests/test_misc_messages.py``). Seit 2.5.7 ebenso in ``server/upload_handler.py``: Kein breites
+  ``except … as e`` benutzt seine Ausnahme (außer in ``raise … from e`` und im Server-Log) – je Datei steht in der Antwort der
+  Klartext einer eigenen Klasse oder ein fester Satz (``tests/test_upload_feedback.py``).
 
 Alle Namen, Nummern und Beträge sind erfundene Testwerte.
 """
@@ -38,7 +40,7 @@ import pytest
 import userctx
 from db import Database
 from db.contacts import ContactRefused
-from server import handlers
+from server import handlers, upload_handler
 from server.pages_masterdata import PageArticleEdit, PageArticles
 from tests.document_helpers import make_books
 from tests.dom_helpers import Dom
@@ -984,8 +986,41 @@ def exception_text_in_redirect(source):
     return found
 
 
+def _is_log_call(func):
+    """``print(…)`` oder ``traceback.<Name>(…)``: Was dort steht, geht ins Server-Log und in keine Antwort."""
+    if isinstance(func, ast.Name):
+        return func.id == 'print'
+    return isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id == 'traceback'
+
+
+def exception_name_used_in_broad_except(source):
+    """Zeilen, in denen ein breites ``except … as e`` (``Exception``/``BaseException``) seine Ausnahme ``e`` benutzt – außer in
+    ``raise … from e`` (die Ursache hängt an der Kette, nicht im Text) und als Argument von ``print(…)``/``traceback.…`` (das
+    Server-Log). Alles andere (``str(e)``, ``{e}``, ``e.args``, ``wert = e``) kann den Text einer Systemausnahme – mit
+    Serverpfaden – in eine Antwort tragen; dort steht ein fester Satz oder der Klartext einer eigenen Klasse
+    (``except CamtError as e`` ist kein breiter Fang und zählt nicht)."""
+    tree = ast.parse(source)
+    found = []
+    for handler in (n for n in ast.walk(tree) if isinstance(n, ast.ExceptHandler) and n.name and _is_broad_except(n.type)):
+        allowed = set()
+        for node in ast.walk(handler):
+            if isinstance(node, ast.Raise) and node.cause is not None:
+                allowed.update(id(inner) for inner in ast.walk(node.cause))
+            elif isinstance(node, ast.Call) and _is_log_call(node.func):
+                arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
+                allowed.update(id(inner) for argument in arguments for inner in ast.walk(argument))
+        found += [n.lineno for n in ast.walk(handler)
+                  if isinstance(n, ast.Name) and n.id == handler.name and id(n) not in allowed]
+    return sorted(found)
+
+
 def handlers_source():
     with open(handlers.__file__, encoding='utf-8') as f:
+        return f.read()
+
+
+def upload_handler_source():
+    with open(upload_handler.__file__, encoding='utf-8') as f:
         return f.read()
 
 
@@ -999,6 +1034,12 @@ def test_handlers_py_returns_no_exception_text_with_a_5xx_status():
 
 def test_handlers_py_puts_no_exception_text_into_a_redirect():
     assert exception_text_in_redirect(handlers_source()) == []
+
+
+def test_upload_handler_py_uses_no_exception_in_a_broad_except():
+    """Die Antwort des Beleg-Uploads nennt je Datei den Klartext einer eigenen Klasse oder einen festen Satz – nie ``str(e)``
+    einer Systemausnahme (ihr Text trägt Serverpfade)."""
+    assert exception_name_used_in_broad_except(upload_handler_source()) == []
 
 
 def test_the_guards_find_what_they_are_meant_to_find():
@@ -1080,3 +1121,67 @@ def g():
         return 400, str(e)
 '''
     assert exception_text_in_redirect(bad) == [6, 12, 18]
+
+
+def test_the_exception_name_guard_finds_what_it_is_meant_to_find():
+    bad = '''
+def a():
+    try:
+        pass
+    except Exception as e:
+        return {"error": str(e)}
+
+def b():
+    try:
+        pass
+    except (ValueError, Exception) as exc:
+        items.append({"error": f"{exc}"})
+
+def c():
+    try:
+        pass
+    except BaseException as e:
+        raise RuntimeError("fest") from e
+
+def d():
+    try:
+        pass
+    except Exception as e:
+        traceback.print_exc()
+        print(e)
+        print(f"Fehler: {e}", file=sys.stderr)
+        log.append(traceback.format_exception(e))
+        return {"error": FIXED}
+
+def e():
+    try:
+        pass
+    except ValueError as e:
+        return {"error": str(e)}
+
+def f():
+    try:
+        pass
+    except Exception:
+        return {"error": FIXED}
+
+def g():
+    try:
+        pass
+    except Exception as e:
+        result = e
+
+def h():
+    try:
+        pass
+    except Exception as e:
+        raise RuntimeError(str(e)) from e
+
+def i():
+    try:
+        pass
+    except Exception as e:
+        return {"error": e.args}
+'''
+    assert exception_name_used_in_broad_except(bad) == [6, 12, 46, 52, 58]
+    assert exception_name_used_in_broad_except('def j():\n    return 1\n') == []

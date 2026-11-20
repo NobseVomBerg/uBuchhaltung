@@ -104,6 +104,13 @@ def _rotate_if_needed(path):
     threading.Thread(target=compress_rotated_log, args=(rotated,), daemon=True).start()
 
 
+class DocumentExists(FileExistsError):
+    """Ein Beleg gleichen Namens mit anderem Inhalt liegt schon in der Ablage.
+
+    Der Text ist Klartext für den Nutzer: Er nennt nur den Dateinamen des Uploads, nie einen Serverpfad – anders als die
+    ``FileExistsError`` des Betriebssystems, deren Text einen Pfad trägt. Nur diesen Text gibt der Upload weiter."""
+
+
 class DocumentParser:
     def __init__(self, data_dir=None, log_dir=None):
         # Ohne explizite Pfade richtet sich die Ablage nach dem aktuellen Nutzer:
@@ -195,7 +202,7 @@ class DocumentParser:
                 return target_path
             else:
                 # Files have same name but different content - ERROR
-                raise FileExistsError(
+                raise DocumentExists(
                     f"Datei '{filename}' existiert bereits mit unterschiedlichem Inhalt. "
                     f"Bitte umbenennen oder vorhandene Datei prüfen."
                 )
