@@ -20,6 +20,7 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 - Zurückholen einer versendeten Rechnung entfernt die Forderung auch nach einem DATEV-Export: Hinweis oder Sperre ab dem Export (braucht ein Merkmal „exportiert“ je Buchung; Schemaänderung)
 - Löschen des Entwurfs einer Rechnung aus einem Angebot setzt das Angebot auf „angenommen“, nicht auf den Status davor: den früheren Status am Angebot merken (Schemaänderung)
 - Umsatzsteuer-Voranmeldung (ELSTER)
+- Betriebswirtschaftliche Auswertung (BWA) je Zeitraum, wahlweise mit Summen- und Saldenliste (je Konto: Anfangssaldo, Soll- und Haben-Umsatz, Endsaldo) – vorher zu klären: Gliederung, Grundlage (Abgrenzung wie die EÜR oder alle Buchungssätze), Ausgabe (Seite, PDF, CSV), Anfangssalden
 - Soll-Versteuerung: Umsatzsteuer mit dem Leistungsdatum buchen und im DATEV-Stapel ausweisen (die Besteuerungsart ist seit 2.4.0 an der eigenen Firma gespeichert, wirkt aber noch nirgends)
 - GoBD-Modus, je Datenverzeichnis einstellbar (Ersteinrichtung fragt: Steuerbüro oder selbst?); vor der Umsetzung ein Entwurf:
   - Festschreibung abgeschlossener Zeiträume, Korrektur nur per Storno/Gegenbuchung, kein Löschen
