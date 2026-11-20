@@ -207,11 +207,17 @@ def _write_sevenzip_variant(kind, user_dir, tmp_path):
     return name
 
 
-@pytest.mark.parametrize('kind', ['zufallsbytes', 'null-bytes', 'abgeschnitten', 'verfaelscht'])
+# Ein Archiv, das sich schon nicht auflisten lässt, ist „kein lesbares 7-Zip-Archiv“; eines mit verfälschtem Inhalt scheitert erst
+# beim Entpacken – dort steht nur ein fester Satz in der Meldung (die Ausgabe von 7-Zip steht im Server-Log)
+DEFECTIVE_SEVENZIP_MESSAGE = {'zufallsbytes': 'kein lesbares 7-Zip-Archiv', 'null-bytes': 'kein lesbares 7-Zip-Archiv',
+                              'abgeschnitten': 'kein lesbares 7-Zip-Archiv', 'verfaelscht': 'ließ sich nicht entpacken'}
+
+
+@pytest.mark.parametrize('kind', list(DEFECTIVE_SEVENZIP_MESSAGE))
 @WIPE
 def test_defective_sevenzip_archive_is_rejected_and_nothing_changes(user_dir, tmp_path, kind, wipe):
     name = _write_sevenzip_variant(kind, user_dir, tmp_path)
-    assert_rejected(user_dir, name, wipe, '7-Zip')
+    assert_rejected(user_dir, name, wipe, DEFECTIVE_SEVENZIP_MESSAGE[kind])
 
 
 # ── Die Datenbank im Archiv ──────────────────────────────────────────────────

@@ -276,11 +276,16 @@ kein Subagent darauf:
   `script_json` + `appMsg`); bei einer ungültigen ID und auf Seiten ohne Fehlerweg 400 mit Klartext. Nichts wird gespeichert. Ein Handler gibt
   `(Status, Text)` zurück, `server/app.py` antwortet über `_respond_form_result`: ab 400 steht der Text im Body (`text/plain`), nie im
   `Location`-Kopf (sonst bliebe die Seite leer). **Nie Exception-Text in einer Antwort:** ein fester Satz, der volle Fehler nur ins Server-Log
-  (`traceback.print_exc()`); Klartext kommt nur aus eigenen Ablehnungsklassen (`_Refused`, `DeleteRefused`, `ContactRefused` …). Eine doppelte
-  Kunden-/Kontaktnummer oder ein doppeltes Kürzel wirft `ContactRefused` (Rollback, Meldung auf der Kontaktseite). `tests/test_form_error_paths.py`
-  prüft es und hält statisch fest, dass `handlers.py` weder `int(post_data…)`/`float(post_data…)` noch einen 5xx mit Ausnahmetext enthält. Noch
-  nicht auf feste Klartexte umgestellt (`docs/aufgaben.md`): die Meldungen nach Sicherung, Wiederherstellung, DATEV-Export und
-  WISO-Import (`msg=`)
+  (`traceback.print_exc()`); Klartext kommt nur aus eigenen Ablehnungsklassen (`_Refused`, `DeleteRefused`, `ContactRefused`,
+  `BackupRefused` …). Eine doppelte Kunden-/Kontaktnummer oder ein doppeltes Kürzel wirft `ContactRefused` (Rollback, Meldung
+  auf der Kontaktseite). `tests/test_form_error_paths.py` prüft es und hält statisch fest, dass `handlers.py` weder
+  `int(post_data…)`/`float(post_data…)` noch einen 5xx mit Ausnahmetext noch eine Weiterleitung (3xx) mit dem Text einer
+  Ausnahme aus einem breiten `except` enthält. **Die Meldungen auf *Sonstiges* (seit 2.5.5, `msg=`):** Sicherung,
+  Wiederherstellung, DATEV-Export und WISO-Import (Textexport wie Datenbank) geben nur den Klartext einer `BackupRefused`
+  weiter, sonst einen festen Satz (`BACKUP_FAILED`, `RESTORE_FAILED`, `DATEV_FAILED`, `WISO_IMPORT_FAILED`); der volle Fehler
+  steht im Server-Log. Die Seite liest `msg` nicht im Browser, sondern bekommt es vom Server als JSON im Skriptblock `miscMsg`
+  (`script_json`, höchstens `MSG_MAX_LENGTH` = 2000 Zeichen – die längste Meldung des DATEV-Exports hat gut 1500) und zeigt es
+  nur über `textContent`/`appMsg` (`tests/test_misc_messages.py`)
 - **Fehlerantworten über `send_error`** (`server/app.py`): tragen immer Statuszeile und Schutz-Header, auch bei einer kaputten
   Anfragezeile – unabhängig vom Patch-Stand der Standardbibliothek (eine echte HTTP/0.9-Anfrage bekommt ihre normale Antwort
   weiter ohne Kopf)
@@ -293,7 +298,29 @@ kein Subagent darauf:
   umbenannt; beim Überschreiben kommt `buch.db` zuletzt; „vorher löschen“ mit einer
   Nur-Datenbank-Sicherung wird abgelehnt. Sicherung und Wiederherstellung sperren sich
   je Datenverzeichnis (`_exclusive`). Diese Reihenfolgen nie umdrehen. Nie gesichert, gelöscht oder überschrieben werden
-  `backup/`, `users/`, `tests/` und `upload_tmp/` (`_EXCLUDED_DIRS`, eine Liste für alle drei Wege)
+  `backup/`, `users/`, `tests/` und `upload_tmp/` (`_EXCLUDED_DIRS`, eine Liste für alle drei Wege). **Meldungen:** Eine
+  Ablehnung des Moduls ist `BackupRefused` (eine `RuntimeError`; ein unbekanntes Archiv oder ein Link als Archiv
+  `BackupNotFound`, zugleich `FileNotFoundError`) mit Klartext – nie ein Serverpfad, nie die Ausgabe von 7-Zip, nie der Text
+  einer Systemausnahme: Die stehen im Server-Log (`from e`, `print`). Scheitert `create_backup`, wird das Teilarchiv entfernt
+  (der Name war frei, es ist nie eine fremde Datei); `list_backups` nennt nur reguläre Dateien, keine Ordner oder Links.
+  Scheitert beim Überschreiben erst der Schritt der Datenbank, sagt die Meldung den Stand (`OVERLAY_DB_FAILED`; bleibt eine
+  Begleitdatei der alten Datenbank liegen: `OVERLAY_SIDECARS_LEFT` – die übrigen werden trotzdem entfernt)
+- **Sicherungen herunterladen (seit 2.5.5, `GET /backup/download?file=<Name>`):** Die Seite *Sonstiges* listet die Sicherungen
+  des angemeldeten Benutzers (Name, Art, Datum, Größe) mit einem Link. Angeboten wird allein, was `backup.downloadable_backups`
+  nennt – eine Positivliste: die Archive und die Kopien vor einer Programm-Umstellung (`<Datum>_vor_<Version>[_n]_buch.db`, nur
+  herunterladbar, nicht im Formular der Wiederherstellung), nur reguläre Dateien direkt in `backup/`, nie
+  `restore_*`/`replaced_*`, `.part`/`.tmp`, Verstecktes, Ordner, Links oder Namen mit Pfadanteil; jede andere Anfrage ist
+  dieselbe 404 ohne Pfad. Geöffnet wird mit `O_NOFOLLOW` und gegen `realpath` geprüft (`backup/` selbst darf ein Link sein),
+  kurz unter `_exclusive` (das Öffnen wartet bis `DOWNLOAD_WAIT_SECONDS` = 5 s – zwei Downloads lehnen einander nicht ab –,
+  läuft eine Sicherung oder Wiederherstellung länger: 409; Sicherung und Wiederherstellung selbst warten nie); geliefert wird
+  **ohne die Sperre in Stücken** (`copy_to`, 1 MiB) aus dem offenen Deskriptor, nie ganz im Speicher – eine Sicherung kann
+  Gigabyte groß sein. Je Stück gilt eine Zeitgrenze (`DOWNLOAD_SEND_TIMEOUT` = 120 s: Ein Client, der nicht mehr liest, hält
+  Verbindung und Datei nicht unbegrenzt), und die Antwort trägt `Cache-Control: no-store`. Ein `Range`-Kopf wird überhört,
+  `HEAD` gibt es nicht; ein Fehler nach den Köpfen schließt die Verbindung, statt eine zweite Antwort zu schreiben. Ein
+  Dateiname, der sich nicht als UTF-8 schreiben lässt, wird weder gelistet noch geliefert. Die Route liest nur (kein CSRF-Token, wie die übrigen GET-Downloads), prüft aber die Herkunft
+  (`request_is_same_origin`: eine fremde `Sec-Fetch-Site` ergibt 403) und steht **vor `_open_db()`**: Sicherungen lassen sich
+  auch holen, wenn sich die Datenbank nicht öffnen lässt. Jeder angemeldete Benutzer, nur aus dem eigenen Ordner; im Demo-Modus
+  wie Sichern und Wiederherstellen. Nicht aufweichen (`tests/test_backup_download.py`)
 
 ### Arbeitszeiten und Fahrtenbuch (seit 2.3.12)
 - **Arbeitszeit rechnet in Minuten** (`server/pages_worktime.py`: `clock_minutes`, `compute_minutes`, `crosses_midnight`,
@@ -792,7 +819,8 @@ kein Subagent darauf:
   `pragma_`-Funktionen (`_READ_PRAGMAS`), kein WITH/RECURSIVE/zeroblob/randomblob; Seiten nur
   aus `_PAGE_ALLOWLIST` samt erlaubten Query-Schlüsseln – diesen Lesewächter (`check_select`,
   `check_page_path`) nicht aufweichen; neue Seiten und Schlüssel nur für GET-Handler, die
-  nichts schreiben (Nachweis im Test)
+  nichts schreiben (Nachweis im Test). `/backup/download` steht bewusst nicht darin: Es liefert den ganzen Datenbestand
+  (Gigabyte-Größe)
 - Zugangsdaten aus der Windows-Anmeldeinformationsverwaltung, keyring oder Umgebung, nie im Repo; über `http://` gehen sie nur
   an den eigenen Rechner, sonst nur mit `UBUCHHALTUNG_MCP_ALLOW_HTTP`. Registrierung nur
   lokal (`claude mcp add --scope local`), Einrichtung in `DEPLOYMENT.md`
@@ -1489,7 +1517,9 @@ kein Subagent darauf:
 - Im Browser läuft der Download über `appDownload()` (`server/pages.py`): Datei
   als Blob holen und per `<a download>` speichern. Kein Tab mit Server-URI –
   der wäre ohne laufenden Server wertlos. Der Dateiname kommt prozentkodiert
-  im Header `X-Filename` (Umlaute!)
+  im Header `X-Filename` (Umlaute!). **Ausnahme Sicherungen** (*Sicherungen herunterladen*): ein gewöhnlicher Link auf
+  `/backup/download` (die Antwort trägt `attachment`), ohne `appDownload()` – ein Blob läge bei Gigabyte-Größe ganz im Speicher
+  des Browsers
 
 ### Testing
 - Vor PR: lokal starten (`python main.py`), Feature testen
@@ -1555,7 +1585,7 @@ kein Subagent darauf:
 ## Governance
 
 - **Owner:** NobseVomBerg
-- **Letzte Aktualisierung:** 2026-11-19
+- **Letzte Aktualisierung:** 2026-11-20
 - **Modell-Versionen:** Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5 (Stand November 2026);
   `settings.json` und Agents nutzen Aliase (`fable`, `opus` …), die der neuesten Version folgen
 - **Bei Modell-Updates:** Modell-Routing oben, `.claude/settings.json` (`modelSettings`

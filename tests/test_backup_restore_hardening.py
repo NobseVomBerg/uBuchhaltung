@@ -627,7 +627,7 @@ def restore_in_a_child_with_open_stdin(user_dir, name, wipe, cwd, timeout=40):
 
 ENCRYPTED = {
     'kopf-verschluesselt': (['-mhe=on'], 'kein lesbares 7-Zip-Archiv'),     # schon das Auflisten fragt
-    'inhalt-verschluesselt': ([], '7-Zip-Fehler'),                          # erst das Entpacken fragt
+    'inhalt-verschluesselt': ([], 'ließ sich nicht entpacken'),             # erst das Entpacken fragt
 }
 
 

@@ -6,6 +6,8 @@ Sonstiges page – database overview, SQL console, misc tools.
 """
 import html as _html
 import re
+from datetime import datetime as _datetime
+from urllib.parse import quote as _quote
 import demo as _demo
 from db import Database
 from db.wiso_fdb_import import MAX_ADOPTED_ROWS, MAX_LIQUID_SUBACCOUNTS
@@ -29,6 +31,29 @@ def Header3(content=""):
 def Footer():
     from server.pages import Footer as _F
     return _F()
+
+
+#: Längste Meldung (``?msg=``), die die Seite anzeigt – die längste Meldung des Programms (der Hinweis des DATEV-Exports mit allen
+#: drei Hinweisen) hat gut 1500 Zeichen; was darüber liegt, kann nur eine von Hand gebaute Adresse sein.
+MSG_MAX_LENGTH = 2000
+
+
+def _size_label(size):
+    """Dateigröße für die Liste der Sicherungen: KB, MB oder GB mit Dezimalkomma (unter 1 MB mindestens 1 KB)."""
+    if size < 1024 ** 2:
+        return f'{max(1, round(size / 1024))} KB'
+    if size < 1024 ** 3:
+        return f'{size / 1024 ** 2:.1f} MB'.replace('.', ',')
+    return f'{size / 1024 ** 3:.1f} GB'.replace('.', ',')
+
+
+def _date_label(timestamp):
+    """Zeitpunkt einer Datei als ``TT.MM.JJJJ HH:MM`` in Ortszeit; ``–``, wo sich der Zeitstempel nicht darstellen lässt
+    (eine Datei mit absurdem Datum darf die Seite nicht kosten)."""
+    try:
+        return _datetime.fromtimestamp(timestamp).strftime('%d.%m.%Y %H:%M')
+    except (OverflowError, OSError, ValueError):
+        return '–'
 
 
 def _fdb_result_rows(rows):
@@ -303,7 +328,7 @@ def _import_notices(result):
 
 
 def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm: bool = False,
-                      datev_from=None, datev_to=None, datev_check=None):
+                      datev_from=None, datev_to=None, datev_check=None, msg=None):
     """Generate Sonstiges page (database overview, SQL console, misc tools).
 
     ``check_payments``: die Prüfliste der Zahlungszuordnungen mit anzeigen. Sie läuft nur auf
@@ -313,12 +338,18 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
     ``datev_confirm``, ``datev_from``, ``datev_to``, ``datev_check``: Der DATEV-Export hat Hinweise zum Stapel gemeldet
     (``?datev_export=confirm&datev_from=…&datev_to=…&datev_check=…``). Sind beide Daten ISO-Daten im selben Jahr und die
     Prüfsumme 16 Kleinbuchstaben oder Ziffern, trägt das Formular den Zeitraum und verlangt die ausdrückliche Bestätigung
-    (Pflicht-Kästchen); sonst bleibt es bei der Vorgabe des laufenden Jahres und ohne Kästchen. Die Seite schreibt dabei nichts."""
+    (Pflicht-Kästchen); sonst bleibt es bei der Vorgabe des laufenden Jahres und ohne Kästchen. Die Seite schreibt dabei nichts.
+
+    ``msg``: die Meldung einer Weiterleitung (``?msg=``, vom Server schon einmal dekodiert; höchstens ``MSG_MAX_LENGTH`` Zeichen).
+    Sie steht nur als JSON im Skriptblock ``miscMsg`` (``script_json``), die Skripte der Kästen zeigen sie über ``textContent``
+    bzw. ``appMsg`` – nie als HTML."""
     import urllib.parse
     from urllib.parse import parse_qs, urlparse
+    from server.pages import script_json as _script_json
     s = Header1('miscellaneous')
     s += Header2()
     s += Header3()
+    s += '<script>var miscMsg = ' + _script_json(msg[:MSG_MAX_LENGTH] if isinstance(msg, str) else '') + ';</script>'
 
     s += '<div class="grid3Cols gridMain">'
     # ── Database statistics ───────────────────────────────────────────────────
@@ -479,7 +510,7 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
             } else if (status === 'error') {
                 const div = document.createElement('div');
                 div.style = 'margin-top:10px; padding:8px 14px; background:#f8d7da; color:#721c24; border-radius:4px; display:inline-block;';
-                div.textContent = '❌ Fehler beim Export: ' + p.get('msg');
+                div.textContent = '❌ Fehler beim Export: ' + miscMsg;
                 document.currentScript.parentNode.insertBefore(div, document.currentScript);
             }
         })();
@@ -533,12 +564,12 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
             if (status === 'error') {{
                 const div = document.createElement('div');
                 div.style = 'margin-top:10px; padding:8px 14px; background:#f8d7da; color:#721c24; border-radius:4px; display:inline-block;';
-                div.textContent = '❌ DATEV-Export Fehler: ' + (p.get('msg') || '');
+                div.textContent = '❌ DATEV-Export Fehler: ' + miscMsg;
                 document.currentScript.parentNode.insertBefore(div, document.currentScript);
             }} else if (status === 'confirm') {{
                 const div = document.createElement('div');
                 div.style = 'margin-top:10px; padding:8px 14px; background:#fff3cd; color:#856404; border-radius:4px; display:inline-block;';
-                div.textContent = '⚠️ DATEV-Export: ' + (p.get('msg') || '');
+                div.textContent = '⚠️ DATEV-Export: ' + miscMsg;
                 document.currentScript.parentNode.insertBefore(div, document.currentScript);
             }}
         }})();
@@ -639,7 +670,7 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
             } else {
                 div.style.background = '#f8d7da';
                 div.style.color = '#721c24';
-                msg = '\u274c Fehler: ' + decodeURIComponent(p.get('msg') || '');
+                msg = '\u274c Fehler: ' + miscMsg;
             }
             // Dateiname als erste Zeile in derselben Box (append = Textknoten, kein HTML)
             if (file) {
@@ -731,7 +762,6 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
         über den CSV-Import kamen, ergänzt der Import, statt sie neu anzulegen;
         wiedererkannt wird ein Satz nur, wenn Beleg-Nr., Datum, Konto, Betrag und Text übereinstimmen (und das Gegenkonto nicht widerspricht); alles andere wird neu angelegt und, wo eine ähnliche Buchung schon da ist, als möglicherweise doppelt gemeldet.</p>
         '''
-    from server.pages import script_json as _script_json
     if _demo.is_active():
         # Wie die Route: Im Demo-Modus gibt es den Import nicht (keine Dateien auf dem Server eines Besuchers)
         s += f'<p class="hint">{_html.escape(_wiso_upload.DEMO_REFUSED)}</p>'
@@ -911,12 +941,12 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
                 div.style.background = '#fff3cd';
                 div.style.color = '#856404';
                 msg = '\\u26a0\\ufe0f Diese WISO-Datenbank passt nicht zum Importmodul: '
-                    + decodeURIComponent(p.get('msg') || '')
+                    + miscMsg
                     + '. Es wurde nichts importiert.';
             } else {
                 div.style.background = '#f8d7da';
                 div.style.color = '#721c24';
-                msg = '\\u274c Fehler: ' + decodeURIComponent(p.get('msg') || '');
+                msg = '\\u274c Fehler: ' + miscMsg;
             }
             div.append(msg);
             document.currentScript.parentNode.insertBefore(div, document.currentScript);
@@ -1045,15 +1075,15 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
     s += '\t</div>'
 
     # ── Datensicherung ────────────────────────────────────────────────────────
-    from server.backup import list_backups as _list_backups
+    from server.backup import downloadable_backups as _downloadable_backups, list_backups as _list_backups
     _backups = _list_backups(_userctx.user_data_dir())
 
     s += '\t<div class="rectRounded">'
     s += '''
         <h2>&#x1F4BE; Datensicherung</h2>
-        <p>Sichert die Daten des angemeldeten Benutzers als Archiv nach
-        <code>backup/JJJJMMTT_Backup.7zip</code> (ohne installiertes 7-Zip als <code>.zip</code>).
-        Die Datenbank wird dabei als konsistenter Snapshot gesichert.</p>
+        <p>Sichert die Daten des angemeldeten Benutzers als Archiv in den Ordner <code>backup/</code> des Datenordners
+        (7-Zip, ohne 7-Zip als <code>.zip</code>). Die Datenbank wird dabei als konsistenter Snapshot gesichert.
+        Vorhandene Sicherungen lassen sich unten herunterladen.</p>
         <form method="POST" action="/backup/create">
             <div class="rowWithObjects">
                 <label><input type="radio" name="scope" value="db"> nur DB</label>
@@ -1061,6 +1091,27 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
                 <button type="submit" class="coloredButton bg-blue">&#x1F4BE; Backup erstellen</button>
             </div>
         </form>
+        '''
+    # Vorhandene Sicherungen zum Herunterladen: Archive und Kopien vor einer Programm-Umstellung (Positivliste in
+    # ``backup.downloadable_backups``). Jeder Wert aus dem Dateisystem wird maskiert; der Link trägt den Namen prozentkodiert.
+    _entries = _downloadable_backups(_userctx.user_data_dir())
+    if _entries:
+        s += ('<h3>Vorhandene Sicherungen</h3><table class="backupTable"><tr><th>Datei</th><th>Art</th><th>Angelegt</th>'
+              '<th class="num">Größe</th><th></th></tr>')
+        for _entry in _entries:
+            _kind = 'Sicherung' if _entry.kind == 'archive' else f'vor Umstellung auf {_entry.version} (nur Datenbank)'
+            _link = _html.escape('/backup/download?file=' + _quote(_entry.name, safe=''), quote=True)
+            s += (f'<tr><td>{_html.escape(_entry.name)}</td><td>{_html.escape(_kind)}</td>'
+                  f'<td>{_html.escape(_date_label(_entry.mtime))}</td>'
+                  f'<td class="num">{_html.escape(_size_label(_entry.size))}</td>'
+                  f'<td><a href="{_link}">Herunterladen</a></td></tr>')
+        s += '</table>'
+        if any(_entry.kind == 'migration' for _entry in _entries):
+            s += ('<p class="hint">Sicherungen vor einer Programm-Umstellung lassen sich nur herunterladen; '
+                  'zurückspielen wie im README beschrieben.</p>')
+    else:
+        s += '<p class="muted">Noch keine Sicherungen vorhanden.</p>'
+    s += '''
         <script>
         (function() {
             const p = new URLSearchParams(window.location.search);
@@ -1071,7 +1122,7 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
                 const kb = Math.round(parseInt(p.get('size') || '0') / 1024);
                 text = 'Backup erstellt: ' + p.get('file') + ' (' + kb + ' KB)'; type = 'success';
             } else {
-                text = 'Backup fehlgeschlagen: ' + decodeURIComponent(p.get('msg') || ''); type = 'error';
+                text = 'Backup fehlgeschlagen: ' + miscMsg; type = 'error';
             }
             document.addEventListener('DOMContentLoaded', () => appMsg(text, type));
         })();
@@ -1110,7 +1161,7 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
             if (status === 'ok') {
                 text = 'Backup wiederhergestellt: ' + p.get('file'); type = 'success';
             } else {
-                text = 'Wiederherstellung fehlgeschlagen: ' + decodeURIComponent(p.get('msg') || ''); type = 'error';
+                text = 'Wiederherstellung fehlgeschlagen: ' + miscMsg; type = 'error';
             }
             document.addEventListener('DOMContentLoaded', () => appMsg(text, type));
         })();

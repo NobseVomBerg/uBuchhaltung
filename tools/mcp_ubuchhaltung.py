@@ -205,7 +205,8 @@ def _keys(*names, period=False):
 # Auch die Query-Schlüssel gehören zur Prüfung, weil manche Seiten je nach Parameter schreiben
 # (Beispiel: /transactions?from_invoice=… legt über die Erlöskonto-Auflösung ein Konto an). Neue
 # Schlüssel nur mit Nachweis. /invoice/xml_download fehlt bewusst: Es liest jeden Pfad, der in
-# Invoices.XMLPath steht, ohne ihn zu prüfen.
+# Invoices.XMLPath steht, ohne ihn zu prüfen. /backup/download fehlt bewusst: Es liefert den ganzen
+# Datenbestand (eine Sicherung, Gigabyte groß) – das Werkzeug liest nur Anzeigeseiten.
 _PAGE_ALLOWLIST = {
     "/": _keys("acct", period=True),
     "/dashboard": _keys("acct", period=True),

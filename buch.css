@@ -154,6 +154,12 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .refundTable th.num, .refundTable td.num	{ text-align: right; }
 .refundTable input[type=number]	{ width: 90px; text-align: right; }
 
+/* Seite Sonstiges: vorhandene Sicherungen – lange Namen brechen um, Größe rechtsbündig, der Link bleibt in einer Zeile */
+.backupTable td			{ vertical-align: top; }
+.backupTable td:first-child	{ overflow-wrap: anywhere; }
+.backupTable th.num, .backupTable td.num	{ text-align: right; white-space: nowrap; }
+.backupTable td:last-child	{ white-space: nowrap; }
+
 /* Dashboard, Übersicht: die Zeile „Überträge zwischen eigenen Konten“ (Text mit .hint gedämpft), Betrag rechtsbündig */
 .dashTransfers td + td	{ text-align: right; }
 

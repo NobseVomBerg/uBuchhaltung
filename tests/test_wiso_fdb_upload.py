@@ -781,7 +781,7 @@ def test_an_exception_in_the_import_deletes_the_folder_and_hides_the_path(db, tm
 
     message = query_of(location)['msg']
     assert status == 303 and query_of(location)['wiso_fdb'] == 'error'
-    assert message == 'Platte voll bei DB1.FDB und '
+    assert message == handlers.WISO_IMPORT_FAILED                   # nie der Text der Ausnahme, nicht einmal ohne Pfad
     assert folder not in location and 'upload_tmp' not in location and not os.path.exists(folder)
 
 

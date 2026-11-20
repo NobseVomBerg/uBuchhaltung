@@ -148,6 +148,9 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
   (`sql_operations.log`/`.sql`) und, wenn angelegt, `db-export.sql`. `upload_tmp/` gibt es nur während
   eines Uploads der WISO-Datenbank; die Datensicherung der App lässt den Ordner aus.
 - Für ein Backup genügt es, das gesamte `data/`-Verzeichnis zu sichern.
+- Die Sicherungen eines Benutzers (die Archive der App und die Kopien der Datenbank vor einer Programm-Umstellung) lassen sich über
+  die Oberfläche herunterladen: *Sonstiges → Datensicherung*. Eine große Datei liefert der Server direkt aus, in Stücken und nicht
+  über den Speicher; ein Reverse-Proxy davor darf die Antwort nicht nach kurzer Zeit abbrechen (nginx: `proxy_read_timeout`).
 - Die Wiederherstellung in der App prüft das Archiv, bevor sie am Datenverzeichnis etwas
   ändert. Bleibt nach einem Absturz mitten im Wiederherstellen ein Ordner
   `backup/replaced_…` zurück, enthält er den Stand von davor – von dort zurückkopieren

@@ -1236,8 +1236,17 @@ def handle_toggle_skr_menu(db: Database, coa_id_val):
     db.toggle_coa_show_in_menu(coa_id_val)
     return 303, "/masterdata/skr"
 
+#: Feste Sätze für Sicherung und Wiederherstellung (Seite *Sonstiges*, ``msg=``): Klartext der Meldung kommt nur aus
+#: ``backup.BackupRefused``, jeder andere Fehler wird zu diesem Satz, der volle Fehler steht im Server-Log.
+BACKUP_FAILED = 'Die Sicherung ist fehlgeschlagen – Einzelheiten stehen im Server-Log.'
+RESTORE_FAILED = 'Die Wiederherstellung ist fehlgeschlagen – Einzelheiten stehen im Server-Log.'
+RESTORE_NO_ARCHIVE = 'Kein Archiv ausgewählt.'
+
+
 def handle_backup_create(db: Database, post_data):
-    """Backup des Benutzer-Datenverzeichnisses erstellen ('db' oder 'all')."""
+    """Backup des Benutzer-Datenverzeichnisses erstellen ('db' oder 'all'). Eine Ablehnung des Moduls
+    (``BackupRefused``) nennt ihren Klartext, jeder andere Fehler ``BACKUP_FAILED`` – nie den Text der Ausnahme."""
+    import traceback
     from . import backup as backup_mod
     scope = post_data.get('scope', ['all'])[0]
     if scope not in ('db', 'all'):
@@ -1246,26 +1255,33 @@ def handle_backup_create(db: Database, post_data):
         archive, size = backup_mod.create_backup(userctx.user_data_dir(), db.db_name, scope)
         return 303, (f'/miscellaneous?backup=ok'
                      f'&file={quote(os.path.basename(archive))}&size={size}')
-    except Exception as e:
-        import traceback
+    except backup_mod.BackupRefused as refused:
+        if refused.__cause__ is not None:
+            traceback.print_exc()                   # worauf die Meldung („Einzelheiten stehen im Server-Log“) verweist
+        return 303, f"/miscellaneous?backup=error&msg={quote(str(refused), safe='')}"
+    except Exception:
         traceback.print_exc()
-        return 303, f'/miscellaneous?backup=error&msg={quote(str(e))}'
+        return 303, f"/miscellaneous?backup=error&msg={quote(BACKUP_FAILED, safe='')}"
 
 
 def handle_backup_restore(db: Database, post_data):
-    """Backup wiederherstellen (mode: 'overwrite' Default oder 'wipe')."""
+    """Backup wiederherstellen (mode: 'overwrite' Default oder 'wipe'). Meldungen wie bei ``handle_backup_create``."""
+    import traceback
     from . import backup as backup_mod
     archive = post_data.get('archive', [''])[0]
     mode = post_data.get('mode', ['overwrite'])[0]
     if not archive:
-        return 303, '/miscellaneous?restore=error&msg=Kein+Archiv+ausgew%C3%A4hlt'
+        return 303, f"/miscellaneous?restore=error&msg={quote(RESTORE_NO_ARCHIVE, safe='')}"
     try:
         backup_mod.restore_backup(userctx.user_data_dir(), archive, wipe=(mode == 'wipe'))
         return 303, f'/miscellaneous?restore=ok&file={quote(os.path.basename(archive))}'
-    except Exception as e:
-        import traceback
+    except backup_mod.BackupRefused as refused:
+        if refused.__cause__ is not None:
+            traceback.print_exc()                   # worauf die Meldung („Einzelheiten stehen im Server-Log“) verweist
+        return 303, f"/miscellaneous?restore=error&msg={quote(str(refused), safe='')}"
+    except Exception:
         traceback.print_exc()
-        return 303, f'/miscellaneous?restore=error&msg={quote(str(e))}'
+        return 303, f"/miscellaneous?restore=error&msg={quote(RESTORE_FAILED, safe='')}"
 
 
 def handle_db_export(db: Database):
@@ -1285,6 +1301,9 @@ def handle_db_export(db: Database):
 #: Jahreswechsel würde Buchungen des Folgejahres still auf das Jahr des Vorlaufs legen.
 DATEV_YEAR_REFUSED = ('Der Zeitraum geht über den Jahreswechsel – der Stapel kennt nur Tag und Monat. '
                       'Bitte je Kalenderjahr einzeln exportieren.')
+
+#: Jeder unerwartete Fehler des DATEV-Exports: ein fester Satz, der volle Fehler steht im Server-Log (nie der Text der Ausnahme).
+DATEV_FAILED = 'Der DATEV-Export ist fehlgeschlagen – Einzelheiten stehen im Server-Log.'
 
 
 def _datev_entries(rows, limit=5):
@@ -1465,9 +1484,9 @@ def handle_datev_export(db: Database, post_data: dict):
         filename = f"DATEV_Buchungsstapel_{year}_{date_from.replace('-','')}-{date_to.replace('-','')}.csv"
         return csv_bytes, filename
 
-    except Exception as e:
+    except Exception:
         traceback.print_exc()
-        return 303, f'/miscellaneous?datev_export=error&msg={quote(str(e))}'
+        return 303, f"/miscellaneous?datev_export=error&msg={quote(DATEV_FAILED, safe='')}"
 
 
 #: Größte Anfrage des Logo-Uploads in Bytes (die Datei samt Multipart-Rahmen); die Grenze gilt vor dem Lesen
@@ -1539,6 +1558,11 @@ def handle_logo_upload(request_handler):
     return json.dumps({'success': True, 'path': logical}).encode()
 
 
+#: Jeder unerwartete Fehler der WISO-Importe (Textexport und Datenbank): ein fester Satz, der volle Fehler steht im Server-Log
+#: (nie der Text der Ausnahme – Fehlertexte der Importer können Pfade der Datei nennen).
+WISO_IMPORT_FAILED = 'Der Import ist fehlgeschlagen – Einzelheiten stehen im Server-Log.'
+
+
 def handle_wiso_import(request_handler, db: Database):
     """WISO Mein Büro CSV-Datei importieren (Multipart-Upload).
 
@@ -1606,10 +1630,10 @@ def handle_wiso_import(request_handler, db: Database):
             f'&linked={linked_count}'
             f'&resolved={resolved_count}'
         )
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
-        return 303, f'/miscellaneous?wiso_import=error&msg={quote(str(e))}'
+        return 303, f"/miscellaneous?wiso_import=error&msg={quote(WISO_IMPORT_FAILED, safe='')}"
 
 
 #: Dateinamen, die WISO Mein Büro im DB-Verzeichnis anlegt (unter diesen Namen liegt der Upload, siehe ``wiso_upload``).
@@ -1668,7 +1692,8 @@ def handle_wiso_fdb_import(db: Database, post_data):
     :data:`WISO_FDB_STOCK_REFUSED`. ``Database.import_wiso_fdb`` selbst prüft das nicht.
 
     Meldungen, Ergebnisdatei und Weiterleitung nennen nie den Pfad des Zwischenordners (``_without_upload_path``);
-    ``result['file']`` ist ``DB1.FDB``.
+    ``result['file']`` ist ``DB1.FDB``. Ein unerwarteter Fehler wird zu ``WISO_IMPORT_FAILED`` (der volle Fehler steht im
+    Server-Log, nicht in der Weiterleitung).
 
     Returns:
         (303, location_str) – immer ein Redirect zu /miscellaneous
@@ -1734,10 +1759,10 @@ def handle_wiso_fdb_import(db: Database, post_data):
                 f'&hints={len(result["hints"])}'
                 f'&linked={result["linked"]}&resolved={result["resolved"]}'
             )
-        except Exception as e:
+        except Exception:
             import traceback
             traceback.print_exc()
-            return 303, f'/miscellaneous?wiso_fdb=error&msg={quote(_without_upload_path(str(e), token))}'
+            return 303, f"/miscellaneous?wiso_fdb=error&msg={quote(WISO_IMPORT_FAILED, safe='')}"
     finally:
         wiso_upload.discard(token)
 

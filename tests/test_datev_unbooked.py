@@ -1056,12 +1056,14 @@ def test_the_hint_comes_before_the_remark_that_there_are_no_bookings(world):
     assert second[0] == 303 and 'Keine+Buchungen+im+Zeitraum' in second[1]
 
 
-def test_the_message_of_an_unexpected_error_is_percent_encoded(world, monkeypatch):
+def test_the_message_of_an_unexpected_error_is_a_fixed_sentence(world, monkeypatch, capsys):
+    """Nie der Text der Ausnahme in der Adresse (seit 2.5.5): ein fester Satz, der volle Fehler steht im Server-Log."""
     def boom(*args, **kwargs):
         raise RuntimeError('100 % kaputt & mehr = Ärger #1 +x')
     monkeypatch.setattr(world.db, 'check_transfers', boom)
     result = handlers.handle_datev_export(world.db, _post())
-    assert result[0] == 303 and query_of(result[1])['msg'] == ['100 % kaputt & mehr = Ärger #1 +x']
+    assert result[0] == 303 and query_of(result[1])['msg'] == [handlers.DATEV_FAILED]
+    assert 'kaputt' not in result[1] and 'kaputt' in capsys.readouterr().err
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1186,7 +1188,7 @@ def test_the_script_shows_the_hint_as_text_in_the_notice_style(world):
     page = PageMiscellaneous(world.db)
     block = page.split('<h2>DATEV Export</h2>')[1].split('<h2>Zahlungszuordnungen</h2>')[0]
     branch = block.split("status === 'confirm'")[1]
-    assert "div.textContent = '\u26a0\ufe0f DATEV-Export: ' + (p.get('msg') || '');" in branch
+    assert "div.textContent = '\u26a0\ufe0f DATEV-Export: ' + miscMsg;" in branch
     assert 'innerHTML' not in block and 'background:#fff3cd' in branch.split('}')[0]
 
 
