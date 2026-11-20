@@ -68,6 +68,12 @@ und löscht sie nach dem Import wieder. Ein Reverse-Proxy davor hat oft eine eig
 Uploads (nginx: `client_max_body_size`, Standard 1 MB) – für den Import der WISO-Datenbank muss sie
 mindestens so groß sein wie die Datei, sonst bricht der Upload ab.
 
+**Zeitgrenze je Verbindung:** Eine Verbindung, auf der 120 Sekunden lang nichts gelesen oder gesendet wird (eine nicht zu Ende
+gesendete Anfrage, eine Antwort, die der Client nicht abholt, eine ungenutzte Keep-Alive-Verbindung), schließt der Server. Die Grenze
+gilt je Schritt, nicht für die ganze Anfrage: Ein Upload, der stetig sendet, läuft beliebig lange, und die Bearbeitung einer Anfrage hat
+keine Zeitgrenze. Ein Reverse-Proxy davor sollte ungenutzte Verbindungen zur App kürzer als 120 Sekunden offen halten (zum Beispiel
+60 Sekunden).
+
 **E-Mail-Versand:** Die App verschlüsselt die Verbindung zum Mailserver immer (Port 465 mit TLS von
 Anfang an, jeder andere Port per STARTTLS) und prüft dessen Zertifikat samt Hostnamen; jede Verbindung hat
 ein Zeitlimit von 30 Sekunden. Bietet der Server kein STARTTLS an, sendet die App nichts und meldet sich nie

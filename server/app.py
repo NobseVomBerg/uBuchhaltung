@@ -165,6 +165,79 @@ def _size_text(limit):
     return f"{limit // (1024 * 1024)} MB" if limit >= 1024 * 1024 else f"{limit // 1024} KB"
 
 
+# ── Zeitgrenze je Verbindung ─────────────────────────────────────────────────
+# Ohne Zeitgrenze hält ein Client, der seinen Body nicht zu Ende schickt, die Antwort nicht abholt oder eine Keep-Alive-Verbindung
+# offen lässt, einen Thread des Servers und – ab dem Betreten von ``_run_locked`` – die Lesesperre des Datenverzeichnisses beliebig lange.
+CONNECTION_TIMEOUT = 120      # Sekunden ohne Fortschritt auf einer Verbindung (je Lese- bzw. Sendeschritt), dann wird sie geschlossen
+SEND_CHUNK = 256 * 1024       # Antworten gehen in Stücken dieser Größe hinaus – die Zeitgrenze gilt je Stück, nicht für die ganze Antwort
+DRAIN_TIMEOUT = 2             # Sekunden, die der Server nach der Antwort auf den ungelesenen Rest eines Bodys wartet (``_settle_body``)
+
+
+class _TimedReader:
+    """Der lesende Strom einer Verbindung (``rfile``) mit einer Zusatzregel: Eine Zeitüberschreitung beim Lesen (``TimeoutError``) beendet
+    die Verbindung nach der laufenden Anfrage (``close_connection``). Danach ist der Leser ohnehin unbrauchbar (jedes weitere Lesen
+    scheitert), und ein halb gelesener Body darf nie als nächste Anfrage gelesen werden – auch dort nicht, wo ein Handler den Body selbst
+    liest und die Ausnahme fängt. Dazu zählt er die gelesenen Bytes (``count``; der Handler setzt es nach den Kopfzeilen auf 0): So
+    weiß der Server nach der Antwort, ob der erklärte Body der Anfrage ganz gelesen ist (``_settle_body``). Alles andere reicht der
+    Wrapper unverändert an den Strom durch."""
+
+    _READS = frozenset({'read', 'readline', 'readlines', 'readinto', 'readinto1', 'read1', 'peek'})
+
+    def __init__(self, raw, handler):
+        self._raw = raw
+        self._handler = handler
+        self.count = 0
+
+    def __getattr__(self, name):
+        attribute = getattr(self._raw, name)
+        if name not in self._READS:
+            return attribute
+
+        def read_or_close(*args, **kwargs):
+            try:
+                result = attribute(*args, **kwargs)
+            except TimeoutError:
+                self._handler.close_connection = True
+                raise
+            if name == 'readlines':
+                self.count += sum(len(line) for line in result)
+            elif name != 'peek':                    # peek verbraucht nichts
+                self.count += result if isinstance(result, int) else len(result or b'')
+            return result
+        return read_or_close
+
+
+class _SteppedWriter:
+    """Der schreibende Strom einer Verbindung (``wfile``): Eine Antwort geht in Stücken von ``SEND_CHUNK`` hinaus. Die Zeitgrenze des
+    Sockets gilt für ``sendall`` sonst für die GANZE Antwort – eine große Datei bräche auf einer langsamen Leitung ab, obwohl der Client
+    stetig liest. So gilt sie je Stück: Wer nichts mehr abholt, scheitert nach der Zeitgrenze, wer liest, bekommt alles. Scheitert ein
+    Stück, ist die Verbindung am Ende (``close_connection``, ``failed``), und jeder weitere ``write`` wirft sofort
+    ``ConnectionAbortedError``, ohne sie noch einmal anzufassen – eine Fehlerantwort wartete sonst erneut die volle Zeitgrenze. Alles
+    andere (``flush``, ``close``, ``closed``) reicht der Wrapper unverändert an den Strom durch. Der Rohstrom schreibt mit ``sendall``
+    (``wbufsize = 0``): Ein ``write`` kehrt erst zurück, wenn das ganze Stück draußen ist – sein Rückgabewert wird nicht gebraucht."""
+
+    def __init__(self, raw, handler):
+        self._raw = raw
+        self._handler = handler
+        self.failed = False
+
+    def write(self, data):
+        if self.failed:
+            raise ConnectionAbortedError('Die Verbindung ist nach einem Sendefehler beendet.')
+        view = memoryview(data).cast('B')
+        try:
+            for start in range(0, view.nbytes, SEND_CHUNK):
+                self._raw.write(view[start:start + SEND_CHUNK])
+        except OSError:                      # auch TimeoutError und ConnectionError
+            self.failed = True
+            self._handler.close_connection = True
+            raise
+        return view.nbytes
+
+    def __getattr__(self, name):
+        return getattr(self._raw, name)
+
+
 # ── Schutz vor fremden Webseiten (CSRF, DNS-Rebinding) ───────────────────────
 # Hostnamen, die nur im eigenen Netz auflösbar sind – ein Angreifer kann sie
 # nicht per öffentlichem DNS auf diesen Rechner umbiegen.
@@ -324,6 +397,79 @@ _JSON_ANSWER_ROUTES = (_JSON_PATHS | _GENERATE_PATHS | _UPLOAD_PATHS
 
 class SimpleWebServer(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
+    timeout = CONNECTION_TIMEOUT      # ``StreamRequestHandler.setup`` legt es als Zeitgrenze auf jede Verbindung (je Lese-/Sendeschritt)
+
+    def setup(self):
+        super().setup()
+        self.rfile = _TimedReader(self.rfile, self)
+        self.wfile = _SteppedWriter(self.wfile, self)
+
+    # Eine Keep-Alive-Verbindung, auf der bis zur Zeitgrenze keine weitere Anfrage kommt, ist der Normalfall (jeder Browser lässt
+    # Verbindungen offen): Sie wird still geschlossen. Protokolliert wird eine Zeitüberschreitung nur, wenn eine Anfrage begonnen hatte.
+    #
+    # Ließ sich die Antwort nicht zustellen (der Client ist weg oder holt sie nicht ab), gibt es nichts mehr zu senden: Die breiten
+    # ``except``-Zweige reichen den Fehler dann weiter, statt eine 500 zu versuchen (``if self.wfile.failed: raise``), und hier endet er
+    # mit EINER Logzeile – bei einer Zeitüberschreitung schreibt sie die Standardbibliothek.
+    def handle_one_request(self):
+        self._request_begun = False
+        self._request_parsed = False
+        try:
+            super().handle_one_request()
+        except ConnectionError as exc:
+            if not self.wfile.failed:
+                raise
+            self.close_connection = True
+            self.log_error("Antwort nicht zugestellt (%s)", type(exc).__name__)
+            return
+        if self._request_parsed and not self.close_connection:
+            self._settle_body()
+
+    def parse_request(self):
+        self._request_begun = True
+        parsed = super().parse_request()
+        if parsed:
+            self._request_parsed = True
+            self.rfile.count = 0                    # ab hier zählt der Body
+        return parsed
+
+    def _settle_body(self):
+        """Nach der Antwort: Was vom erklärten Body der Anfrage ungelesen blieb, darf auf einer Keep-Alive-Verbindung nie als nächste
+        Anfrage gelesen werden – gleich, welcher Zweig geantwortet hat (eine Anfrage mit Body, wo keiner erwartet wird; eine frühe
+        Ablehnung). Ein Rest bis ``MAX_DRAIN_BODY`` wird weggelesen, mit kurzer Frist (``DRAIN_TIMEOUT``): Kommt er ganz, bleibt die
+        Verbindung benutzbar. In jedem anderen Fall – größerer Rest, ``Transfer-Encoding``, keine gültige Länge, der Rest kommt
+        nicht – wird sie geschlossen."""
+        if self.headers.get('Transfer-Encoding') is not None:
+            self.close_connection = True
+            return
+        if self.headers.get('Content-Length') is None:
+            return
+        length = self._declared_length()
+        if length is None:
+            self.close_connection = True
+            return
+        rest = length - self.rfile.count
+        if rest <= 0:
+            return
+        if rest > MAX_DRAIN_BODY:
+            self.close_connection = True
+            return
+        drained = False
+        try:
+            previous = self.connection.gettimeout()
+            self.connection.settimeout(DRAIN_TIMEOUT)
+            try:
+                drained = len(self.rfile.read(rest)) == rest
+            finally:
+                self.connection.settimeout(previous)
+        except OSError:                             # auch TimeoutError: der Rest kam nicht
+            drained = False
+        if not drained:
+            self.close_connection = True
+
+    def log_error(self, format, *args):
+        if format.startswith('Request timed out') and not getattr(self, '_request_begun', True):
+            return
+        super().log_error(format, *args)
 
     def end_headers(self):
         path = getattr(self, 'path', '')           # fehlt bei einer kaputten Anfragezeile
@@ -395,12 +541,17 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         return True
 
     def _read_body(self, limit, as_json=False):
-        """Body der Anfrage als Bytes, höchstens ``limit`` Bytes lang. ``None``, wenn schon geantwortet
-        wurde (``_check_body_size``, oder es kamen weniger Bytes an, als die Länge versprach: 400)."""
+        """Body der Anfrage als Bytes, höchstens ``limit`` Bytes lang. ``None``, wenn schon geantwortet wurde: ``_check_body_size``
+        (400/413), es kamen weniger Bytes an, als die Länge versprach (400), oder der Client schickt den Rest nicht mehr und die
+        Zeitgrenze der Verbindung läuft ab (408; die Verbindung wird danach geschlossen)."""
         if not self._check_body_size(limit, as_json):
             return None
         length = self._declared_length()
-        body = self.rfile.read(length)
+        try:
+            body = self.rfile.read(length)
+        except TimeoutError:
+            self._refuse_body(408, 'Die Anfrage wurde nicht vollständig gesendet.', as_json)
+            return None
         if len(body) < length:
             self._refuse_body(400, 'Ungültige Anfrage.', as_json)
             return None
@@ -435,7 +586,7 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             if length:
                 self.rfile.read(length)
         except Exception:
-            pass
+            self.close_connection = True          # halb weggelesen: der Rest darf nie als nächste Anfrage gelten
 
     # ── Authentifizierung (TODO #4) ──────────────────────────────────────────
     def _maybe_db(self):
@@ -1084,6 +1235,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             self._respond_json(400, {'success': False, 'error': 'Ungültige Anfrage.'})
             return
         except Exception:
+            if self.wfile.failed:
+                raise                               # die Antwort ließ sich nicht zustellen: nichts mehr senden
             import traceback
             traceback.print_exc()
             self._respond_json(500, {'success': False, 'error':
@@ -1472,6 +1625,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             else:
                 self.respond(404, "Seite nicht gefunden.")
         except Exception:
+            if self.wfile.failed:
+                raise                               # die Antwort ließ sich nicht zustellen: nichts mehr senden
             # Vollen Traceback nur ins Server-Log, nie an den Client
             # (Information Disclosure). Client erhaelt eine generische Seite.
             import traceback
@@ -1773,6 +1928,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             else:
                 self.respond(404, "Seite nicht gefunden.")
         except Exception:
+            if self.wfile.failed:
+                raise                               # die Antwort ließ sich nicht zustellen: nichts mehr senden
             # Vollen Traceback nur ins Server-Log, nie an den Client.
             import traceback
             traceback.print_exc()
