@@ -579,6 +579,13 @@ def _overlay(staging, user_dir):
             raise BackupRefused(OVERLAY_SIDECARS_LEFT) from left
 
 
+def has_archive(user_dir, archive_name):
+    """Gibt es in backup/ eine reguläre Datei dieses Namens (kein Link)? Dieselbe Frage, die ``restore_backup`` als Erstes
+    stellt – für Aufrufer, die sie beantwortet haben wollen, bevor sie etwas sperren."""
+    archive = os.path.join(user_dir, 'backup', os.path.basename(archive_name))
+    return os.path.isfile(archive) and not os.path.islink(archive)
+
+
 def restore_backup(user_dir, archive_name, wipe=False):
     """Backup wiederherstellen – erst prüfen, dann ersetzen.
 

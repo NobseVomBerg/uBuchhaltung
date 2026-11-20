@@ -19,6 +19,7 @@ from urllib.parse import quote
 import auth
 import demo
 import userctx
+from . import dirlock
 from . import wiso_upload
 from .pages import Header1, Header2, Header3, Footer
 from .import_preview import file_transactions, match_account
@@ -1265,17 +1266,29 @@ def handle_backup_create(db: Database, post_data):
 
 
 def handle_backup_restore(db: Database, post_data):
-    """Backup wiederherstellen (mode: 'overwrite' Default oder 'wipe'). Meldungen wie bei ``handle_backup_create``."""
+    """Backup wiederherstellen (mode: 'overwrite' Default oder 'wipe'). Meldungen wie bei ``handle_backup_create``.
+
+    Das Wiederherstellen läuft allein (``dirlock.exclusive``, ``dirlock`` außen und ``backup._exclusive`` innen): Es beginnt erst, wenn
+    keine andere Anfrage dieses Benutzers mehr läuft; ist das nach ``RESTORE_WAIT_SECONDS`` nicht der Fall, wird mit dem Klartext der
+    Sperre abgelehnt (``DirBusy``, wie eine ``BackupRefused``) und am Datenverzeichnis nichts geändert. Ein unbekanntes Archiv wird
+    vor der Sperre abgelehnt; im Demo-Modus gelten die kürzere Wartezeit und die Abkühlzeit aus ``dirlock``."""
     import traceback
     from . import backup as backup_mod
     archive = post_data.get('archive', [''])[0]
     mode = post_data.get('mode', ['overwrite'])[0]
     if not archive:
         return 303, f"/miscellaneous?restore=error&msg={quote(RESTORE_NO_ARCHIVE, safe='')}"
+    user_dir = userctx.user_data_dir()
+    if not backup_mod.has_archive(user_dir, archive):
+        # Vor der Sperre: Ein Versuch, der nie beginnen kann, hält keine andere Anfrage auf
+        return 303, f"/miscellaneous?restore=error&msg={quote(backup_mod.NOT_FOUND, safe='')}"
+    # Im Demo-Modus teilen sich alle Besucher das Verzeichnis: kurz warten, nach einer Ablehnung ruhen
+    timeout, cooldown = ((dirlock.DEMO_WAIT_SECONDS, dirlock.DEMO_COOLDOWN_SECONDS) if demo.is_active() else (None, 0))
     try:
-        backup_mod.restore_backup(userctx.user_data_dir(), archive, wipe=(mode == 'wipe'))
+        with dirlock.exclusive(user_dir, timeout=timeout, cooldown=cooldown):
+            backup_mod.restore_backup(user_dir, archive, wipe=(mode == 'wipe'))
         return 303, f'/miscellaneous?restore=ok&file={quote(os.path.basename(archive))}'
-    except backup_mod.BackupRefused as refused:
+    except (backup_mod.BackupRefused, dirlock.DirBusy) as refused:
         if refused.__cause__ is not None:
             traceback.print_exc()                   # worauf die Meldung („Einzelheiten stehen im Server-Log“) verweist
         return 303, f"/miscellaneous?restore=error&msg={quote(str(refused), safe='')}"

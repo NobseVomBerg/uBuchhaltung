@@ -152,7 +152,9 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
   die Oberfläche herunterladen: *Sonstiges → Datensicherung*. Eine große Datei liefert der Server direkt aus, in Stücken und nicht
   über den Speicher; ein Reverse-Proxy davor darf die Antwort nicht nach kurzer Zeit abbrechen (nginx: `proxy_read_timeout`).
 - Die Wiederherstellung in der App prüft das Archiv, bevor sie am Datenverzeichnis etwas
-  ändert. Bleibt nach einem Absturz mitten im Wiederherstellen ein Ordner
+  ändert. Während sie läuft, beantwortet der Server andere Anfragen desselben Benutzers mit einem
+  Hinweis (503), und sie beginnt erst, wenn keine andere mehr läuft. Das gilt je Serverprozess: Auf einen
+  Datenordner gehört nur ein Serverprozess. Bleibt nach einem Absturz mitten im Wiederherstellen ein Ordner
   `backup/replaced_…` zurück, enthält er den Stand von davor – von dort zurückkopieren
   und den Ordner erst danach löschen.
 - Ist ein Ordner im Datenverzeichnis nur ein Link auf einen anderen Ort (z. B. Belege auf
