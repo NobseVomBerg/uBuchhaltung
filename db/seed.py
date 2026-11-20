@@ -299,12 +299,16 @@ class SeedMixin:
         has_bank = cursor.fetchone()[0] > 0
         conn.close()
         return not has_own and not has_bank
-    def load_test_seed_data(self, include_invoices=True):
+    def load_test_seed_data(self, include_invoices=True, include_dated=True):
         """Lädt Testdaten aus seed_data/test/ (Kontakte, Bankkonten, Belege, Buchungen).
 
         Idempotent: bereits vorhandene Einträge werden übersprungen. Prüft nicht, ob der Bestand leer ist. Die
         Oberfläche bietet es nicht an; aufgerufen wird es vom Demo-Modus (``demo.py``, ``include_invoices=False``,
-        danach ``demo_seed``) und von den Tests (Fixture ``db_with_coa``).
+        ``include_dated=False``, danach ``demo_seed``) und von den Tests (Fixture ``db_with_coa``).
+
+        ``include_dated=False`` lässt die fest datierten Buchungen (``test_bookings.json``), Anlagen (``test_assets.json``),
+        Angebote (``test_quotes.json``) und Arbeitszeiten (``test_worktimes.json``) weg – die Demodaten erzeugen ihre eigenen, relativ zum Startdatum
+        (``demo_history``); alles andere bleibt, wie es ist.
         """
         seed_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'seed_data', 'test')
 
@@ -392,7 +396,7 @@ class SeedMixin:
 
         # ── Buchungen ─────────────────────────────────────────────────────────
         bookings_file = os.path.join(seed_dir, 'test_bookings.json')
-        if os.path.exists(bookings_file):
+        if include_dated and os.path.exists(bookings_file):
             with open(bookings_file, 'r', encoding='utf-8') as f:
                 bookings_data = json.load(f)
 
@@ -499,7 +503,7 @@ class SeedMixin:
 
         # ── Anlagegüter ───────────────────────────────────────────────────────
         assets_file = os.path.join(seed_dir, 'test_assets.json')
-        if os.path.exists(assets_file):
+        if include_dated and os.path.exists(assets_file):
             with open(assets_file, 'r', encoding='utf-8') as f:
                 assets_data = json.load(f)
             conn = self._get_connection()
@@ -537,7 +541,7 @@ class SeedMixin:
 
         # ── Angebote (Quotes) ─────────────────────────────────────────────────
         quotes_file = os.path.join(seed_dir, 'test_quotes.json')
-        if os.path.exists(quotes_file):
+        if include_dated and os.path.exists(quotes_file):
             with open(quotes_file, 'r', encoding='utf-8') as f:
                 quotes_data = json.load(f)
 
@@ -625,7 +629,7 @@ class SeedMixin:
 
         # ── Arbeitszeiten ─────────────────────────────────────────────────────
         worktimes_file = os.path.join(seed_dir, 'test_worktimes.json')
-        if os.path.exists(worktimes_file):
+        if include_dated and os.path.exists(worktimes_file):
             with open(worktimes_file, 'r', encoding='utf-8') as f:
                 worktimes_data = json.load(f)
 

@@ -89,7 +89,7 @@ Kontenrahmens an (`Database.add_missing_standard_accounts`) – nie der Start:
 
 ### Testdaten (`seed_data/test/`)
 
-Nur über `load_test_seed_data()` geladen: vom Demo-Modus (ohne die Rechnungen) und von den Tests. Die Oberfläche bietet das Laden seit 2.3.9 nicht mehr an – Beispieldaten gibt es im Demo-Modus. Die Funktion ist idempotent (kein Doppel-Einfügen):
+Nur über `load_test_seed_data()` geladen: vom Demo-Modus (ohne die Rechnungen und, mit `include_dated=False`, ohne die fest datierten Buchungen, Anlagen, Angebote und Arbeitszeiten – die erzeugt `demo_history.py` relativ zum Startdatum) und von den Tests. Die Oberfläche bietet das Laden seit 2.3.9 nicht mehr an – Beispieldaten gibt es im Demo-Modus. Die Funktion ist idempotent (kein Doppel-Einfügen):
 
 | Datei | Inhalt |
 |-------|--------|

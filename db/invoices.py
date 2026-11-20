@@ -412,7 +412,7 @@ class InvoicesMixin:
             raise
         finally:
             conn.close()
-    def convert_quote_to_invoice(self, quote_id):
+    def convert_quote_to_invoice(self, quote_id, *, today=None):
         """Ein Angebot in eine neue Rechnung kopieren – einmal je Angebot, in EINER Transaktion.
 
         Kopiert Kopf, Texte und Positionen in eine neue Rechnung (DocumentType 'invoice', Status
@@ -422,13 +422,16 @@ class InvoicesMixin:
         Statuswechsel des Angebots ist ein ``UPDATE … WHERE Status IN (…)`` – zwei gleichzeitige
         Anfragen legen nie zwei Rechnungen an.
 
+        ``today`` (``datetime.date``): der Tag, der als Rechnungsdatum, Leistungsdatum und für den Nummernkreis
+        gilt; ohne Angabe der heutige Tag des Servers. Nur die Demodaten geben ihn an.
+
         Returns:
             new_invoice_id oder None (falls Angebot fehlt / kein Angebot ist).
         Raises:
             QuoteNotConvertible: das Angebot ist schon umgewandelt oder abgelehnt.
         """
         import datetime
-        today = datetime.date.today().isoformat()
+        today = (today or datetime.date.today()).isoformat()
         with self.transaction() as tx:
             conn = tx.conn
             conn.execute('BEGIN IMMEDIATE')

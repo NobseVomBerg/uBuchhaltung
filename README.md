@@ -569,6 +569,7 @@ importieren (`/miscellaneous`); Bank↔Entry wird dabei automatisch verknüpft.
 uBuchhaltung/
 ├── main.py                    # Entry Point – Webserver starten
 ├── demo.py · demo_seed.py     # Demo-Modus (UBUCHHALTUNG_DEMO=1) und seine Beispieldaten
+├── demo_history.py            #   Erzeuger der mehrjährigen Demodaten (Tabellen: seed_data/test/demo_history.json)
 ├── version.py                 # Single Source of Truth für die Versionsnummer
 ├── money.py                   # Geld als Festkomma-Integer (Minor Units, SCALE=4)
 ├── richtext.py                # Bereinigung des Angebots-Fließtexts (Positivliste)

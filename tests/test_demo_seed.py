@@ -64,8 +64,9 @@ def test_demo_scenario_is_consistent(tmp_path, today):
 
 
 def test_demo_prepare_fills_euer_current_year(tmp_path, monkeypatch):
-    """Über den echten Startpfad: EÜR des laufenden Jahres nicht leer,
-    Einnahmen > Betriebsausgaben, DATEV-Export fehlerfrei."""
+    """Über den echten Startpfad (Profil „full“: drei volle Vorjahre und das laufende Jahr): EÜR des laufenden Jahres nicht leer,
+    Einnahmen > Betriebsausgaben. Der DATEV-Export des Vorjahres liefert die Datei ohne Hinweis; der des laufenden Jahres
+    verlangt die Bestätigung – drei Bankbewegungen des laufenden Monats sind absichtlich noch nicht gebucht."""
     monkeypatch.setenv(demo.ENV_VAR, "1")
     assert demo.prepare(log=lambda m: None) == demo.SEEDED
     db = installation.open_db(demo.USERNAME)             # data/users/demo/buch.db
@@ -78,8 +79,10 @@ def test_demo_prepare_fills_euer_current_year(tmp_path, monkeypatch):
     if datetime.date.today() >= datetime.date(year, 3, 1):
         assert revenue > expenses > 0
     from server.handlers import handle_datev_export
-    result, _ = handle_datev_export(db, {"date_from": [d_from], "date_to": [d_to]})
+    result, _ = handle_datev_export(db, {"date_from": [f"{year - 1}-01-01"], "date_to": [f"{year - 1}-12-31"]})
     assert isinstance(result, (bytes, bytearray))
+    status, location = handle_datev_export(db, {"date_from": [d_from], "date_to": [d_to]})
+    assert status == 303 and "datev_export=confirm" in location
 
 
 def test_demo_has_open_overdue_and_partial_invoices(tmp_path):

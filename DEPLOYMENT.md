@@ -449,9 +449,12 @@ Ersteinrichtung:
   eines setzen oder ihn löschen (sein Verzeichnis `data/users/demo/` bleibt dabei
   liegen). Enthält `data/` nur die Demo und noch keinen Administrator, zeigt der Start
   ohne Variable die Ersteinrichtung.
-- Inhalt: Musterfirma mit gut zwei Jahren erfundener Buchhaltung (Rechnungen mit Zahlungen,
-  offene und überfällige Posten, Ausgaben, Splits, Anlagen, Fahrtenbuch, Arbeitszeiten);
-  alle Daten sind relativ zum Startdatum datiert (`demo_seed.py`).
+- Inhalt: Musterfirma mit gut drei Jahren erfundener Buchhaltung (rund 300 Rechnungen mit
+  Zahlungen, Angebote, Storno und Ersatzrechnung, offene und überfällige Posten, Ausgaben,
+  Splits, Kasse und Tagesgeld, Anlagen mit AfA, Fahrtenbuch, Arbeitszeiten; das erste Jahr als
+  Kleinunternehmerjahr); alle Daten sind relativ zum Startdatum datiert (`demo_seed.py`,
+  `demo_history.py`). Das erste Laden dauert einige Sekunden; PDF und E-Rechnung gibt es nur für
+  die Rechnungen der letzten 30 Tage („PDF + E-Rechnung“ erzeugt sie für ältere).
 - Ein Neustart mit demselben Verzeichnis befüllt nicht erneut (Marker
   `data/users/demo/.demo`).
 - Auf jeder Seite erscheint der Hinweis „Demo-Modus – Beispieldaten, nicht für die

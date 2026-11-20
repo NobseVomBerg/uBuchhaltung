@@ -7,9 +7,9 @@ leer ist und es keinen Benutzer ``demo`` gibt; andere Daten bleiben unberührt. 
 Demo-Anmeldung gibt es nur mit Variable UND Marker.
 
 Das Verhalten im Server (Besucher ist ``demo``, keine Verwaltung, keine SQL-Konsole) prüft
-test_demo_http.py. Das Demo-Szenario selbst (rund zwei Sekunden) laden nur
-``test_seeds_the_demo_scenario`` und test_demo_seed.py; die übrigen Tests ersetzen es durch
-``light_scenario``, denn sie prüfen nur, WO und WANN geschrieben wird.
+test_demo_http.py. Das Demo-Szenario selbst laden nur ``test_seeds_the_demo_scenario`` (Profil ``test``: ein Vorjahr statt
+drei), test_demo_seed.py (dort über den Startweg mit dem Profil ``full``) und test_demo_history.py; die übrigen Tests ersetzen
+es durch ``light_scenario``, denn sie prüfen nur, WO und WANN geschrieben wird.
 """
 import os
 import sqlite3
@@ -110,7 +110,11 @@ def test_disabled_without_env_leaves_existing_data_alone(data_root):
 
 
 # ── prepare(): Befüllen ──────────────────────────────────────────────────────
-def test_seeds_the_demo_scenario(data_root, demo_on):
+def test_seeds_the_demo_scenario(data_root, demo_on, monkeypatch):
+    # Der Startweg lädt das Szenario mit dem großen Bestand des Erzeugers; hier im Profil „test“ (ein Vorjahr statt drei) –
+    # das Profil „full“ prüft test_demo_seed.py. ``demo._seed`` ruft weiter ``load_demo_scenario(db)``.
+    full = demo_seed.load_demo_scenario
+    monkeypatch.setattr(demo_seed, "load_demo_scenario", lambda db: full(db, profile="test"))
     assert demo.prepare(log=lambda m: None) == demo.SEEDED
     assert userctx.get_mode() == "multi"           # Ersteinrichtung übersprungen
     assert (_demo_dir(data_root) / demo.MARKER_FILE).is_file()
