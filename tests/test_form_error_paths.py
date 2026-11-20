@@ -40,7 +40,7 @@ import pytest
 import userctx
 from db import Database
 from db.contacts import ContactRefused
-from server import handlers, upload_handler
+from server import handlers, receipt_files, upload_handler
 from server.pages_masterdata import PageArticleEdit, PageArticles
 from tests.document_helpers import make_books
 from tests.dom_helpers import Dom
@@ -1040,6 +1040,21 @@ def test_upload_handler_py_uses_no_exception_in_a_broad_except():
     """Die Antwort des Beleg-Uploads nennt je Datei den Klartext einer eigenen Klasse oder einen festen Satz – nie ``str(e)``
     einer Systemausnahme (ihr Text trägt Serverpfade)."""
     assert exception_name_used_in_broad_except(upload_handler_source()) == []
+
+
+def test_the_guard_covers_the_receipt_upload_of_the_receipts_page():
+    """Seit 2.5.11 legt ``handle_receipt_upload`` (``POST /receipts/upload``) jede Datei als Beleg ab: Der Wächter oben liest dieselbe
+    Datei – steht der Beleg-Upload dort nicht mehr, deckt er ihn nicht mehr."""
+    tree = ast.parse(upload_handler_source())
+    defined = {node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+    assert {'handle_file_upload', 'handle_receipt_upload', '_store_receipt'} <= defined
+
+
+def test_receipt_files_py_uses_no_exception_in_a_broad_except():
+    """``server/receipt_files.py`` (Ablage, Datum, Pfadprüfung, Löschen der Belegdateien): Ein breites ``except … as e`` nennt seine
+    Ausnahme höchstens im Server-Log – nie in einem Rückgabewert, der in eine Antwort geht (der Text trägt Serverpfade)."""
+    with open(receipt_files.__file__, encoding='utf-8') as f:
+        assert exception_name_used_in_broad_except(f.read()) == []
 
 
 def test_the_guards_find_what_they_are_meant_to_find():

@@ -242,6 +242,50 @@ kein Subagent darauf:
   Einbettung ins PDF (`resolve_logo_path`) und Hinweis im Kontaktformular (`logo_on_server`). `resolve_logo_path` nimmt vom
   gespeicherten Wert nur den Dateinamen und sucht ihn im `logos`-Verzeichnis des Benutzers (mit `realpath` geprüft; daneben nur
   `seed_data/private`): Ein frei eingetragener Serverpfad ergibt kein Logo – nicht aufweichen
+- **Belegdateien (seit 2.5.11, `server/receipt_files.py`):** Jede Datei, die die Seite *Belege* hochlädt, wird sofort ein Beleg (Nummer aus
+  dem Kreis „Belegnummern Firma“, Datum, Dateiname) und liegt unter `<Datenordner>/Belege/<Jahr des Belegdatums>/<Nummer>_<Name>`
+  (`Database.insert_receipt_with_file`; `Documents.Path` relativ zum Datenordner, mit `/`). Den Pfad setzt der Server, nie der Client.
+  Ein Kontoauszug ist dort ein Beleg wie jede andere Datei (`receipt_date` liest ihn nur für das Datum und den Hinweis auf den Import der
+  Seite *Buchungen*): kein Import, nichts in `pending_imports/`; `POST /upload_receipts` bleibt der Import dieser Seite.
+  **Upload** `POST /receipts/upload` (`_UPLOAD_PATHS`, JSON, GET → 405): vor dem ersten gelesenen Byte CSRF-Token (Header), Demo-Modus
+  (403 mit `RECEIPTS_DEMO_REFUSED`, Verbindung zu; die Seite zeigt den Satz statt der Ablage) und Größe (`_read_body(MAX_UPLOAD_BODY)`),
+  höchstens 100 Dateien je Upload. **Je Datei gehören Nummer, Datei und Eintrag zusammen:** Der Inhalt wird VOR der Transaktion als Teildatei
+  (`<32 Hex-Zeichen>.part`, `O_CREAT|O_EXCL|O_NOFOLLOW`) in den Jahresordner geschrieben – das Schreiben von bis zu 200 MB hält keine
+  Schreibsperre; der Jahresordner darf kein Link sein (`year_folder`, sonst scheitert die Datei und nichts ist angelegt; `Belege/` selbst darf einer
+  sein). In EINER Transaktion (`BEGIN IMMEDIATE`) folgen Nummer, Name (`reserve_name` legt den Platz als leere Datei mit
+  `O_CREAT|O_EXCL|O_NOFOLLOW` an: nie wird eine vorhandene überschrieben, ein belegter Name bekommt `_2`, `_3` …), `os.replace` der Teildatei auf
+  diesen Platz und der Eintrag. Scheitert ein Schritt, auch das COMMIT, ist der Zähler nicht verbraucht (und kein Kreis angelegt), es gibt keinen
+  Eintrag, und weder Datei noch Teildatei bleibt liegen (erst werden die Dateien entfernt, dann wird zurückgerollt; ein scheiterndes Zurückrollen
+  verdeckt die Ausnahme nicht); die Antwort nennt je Datei nur feste Sätze (`RECEIPT_UPLOAD_FAILED` …), nie Ausnahmetext oder Pfad. Der Name wird
+  bereinigt (`safe_receipt_name`: nur der Name, `[A-Za-z0-9ÄÖÜäöüß ._()-]`, höchstens 120 Zeichen, kein Windows-Gerätename); der abgelegte Name
+  (`stored_file_name`: `<Nummer>_<Name>`) hat höchstens 200 Bytes in UTF-8 (die Nummer höchstens 60; gekürzt wird der Stamm, die Endung bleibt)
+  und heißt nie `Konten` oder `general` – so heißen die Ordner des Kontoauszug-Imports im Jahresordner (ein Unterstrich davor). Der angezeigte Name
+  (`display_name`) trägt weder Steuerzeichen noch unsichtbare Formatzeichen (Unicode-Kategorien `Cc` und `Cf`, auch U+202E).
+  **Die Nummer** (`take_receipt_number`): der Kreis des Jahres des Belegdatums, sonst der jüngste – wie `peek_next_number`; gibt es noch gar keinen
+  Kreis „Belegnummern Firma“, entsteht einer für das **laufende** Jahr (Buchstabe `B`, Standardvorlage, in der Transaktion des Belegs) – sonst nie von
+  selbst, auch nicht zum Jahreswechsel, und eine eigene Nummer ohne Kreis bildet keinen; liefert die Vorlage eines Kreises keinen Zähler, hat der
+  Beleg keine Nummer, die Antwort einen Hinweis. Keine Prüfung auf belegte Nummern (nicht eindeutig, derselbe Kreis nummeriert die Beleg-Nr. der
+  Buchungen). Eine eigene Nummer hebt den Zähler eines Kreises nur, wenn sie zu dessen Vorlage passt und ihre laufende Nummer in 1 bis
+  `MAX_RECEIPT_RUNNING` (999 999 999) liegt; eine größere gilt als Text, ohne Fehler. `consume_number` (die Buchungsmaske) hebt den Zähler auf die
+  gespeicherte Nummer, wenn sie über ihm liegt – nie nach unten: Hat das Löschen eines Belegs den Zähler zurückgenommen, wird eine Nummer, die
+  eine Buchung trägt, nicht noch einmal vergeben. Das Formular „Beleg hinzufügen“ (ohne Datei) verbraucht die Nummer ebenso (`number_suggestion`:
+  eine unveränderte Nummer wird frisch vergeben) und nimmt nie einen Pfad. Beim Löschen des Belegs mit der zuletzt vergebenen Nummer geht der
+  Zähler um eins zurück, wenn die Nummer genau die ist, die der Kreis für ihre laufende Nummer vergibt („26B0001“ ist nicht „26B001“), und kein
+  anderer Beleg und keine Buchung sie trägt (ohne Rücksicht auf Groß-/Kleinschreibung; `release_receipt_number`, in der Transaktion des Löschens);
+  eine Nummer mitten im Kreis bleibt eine Lücke und wird nie neu vergeben, umnummeriert wird nie. **Ansehen und Herunterladen**
+  (`GET /receipts/file?id=<n>[&inline=1]`, rein lesend, ID über `_id_param`, Herkunft wie
+  bei `/backup/download`): Ein gespeicherter Pfad wird nur über `receipt_files.stored_receipt_path` geöffnet oder gelöscht und gilt nur
+  innerhalb von `Belege/` und `Documents/` (Bestand des früheren Uploads) des angemeldeten Benutzers – mit `realpath` aufgelöst, mit
+  `commonpath` geprüft, höchstens `STORED_PATH_LIMIT` = 1024 Zeichen lang; alles andere ist 404 mit festem Satz, der Pfad steht nur im Server-Log. Geöffnet wird mit `O_NOFOLLOW`/`O_NONBLOCK`
+  und `fstat` (nur reguläre Dateien), gesendet in Stücken (`backup.copy_to`, Zeitgrenze je Stück) mit `no-store`. Angezeigt wird nur mit
+  `inline=1` UND wenn Endung und Kennbytes zur Positivliste passen (`inline_type`: PDF und die Rasterbilder der Logos); alles andere – auch
+  SVG, HTML, XML – ist `attachment` mit `application/octet-stream`. Die Route steht nicht in der Positivliste des Diagnose-MCP.
+  **Löschen** (`POST /receipts/delete`): Die Datei geht mit – nur, was der Upload selbst ablegt: der gespeicherte Wert `Belege/<JJJJ>/<Name>`
+  (relativ, vier Ziffern, weder Jahresordner noch Datei ein Link; `receipt_files._uploaded_shape` – dieselbe Stelle entscheidet, ob die Rückfrage
+  „und seine Datei“ lautet). Nicht der Bestand in `Documents/`, nicht, was der Kontoauszug-Import unter `Belege/<Jahr>/Konten/` oder
+  `Belege/<Jahr>/general/` ablegt, kein absoluter Pfad, kein `..`; dazu nur eine reguläre Datei, nur wenn kein anderer Beleg auf dieselbe
+  aufgelöste Datei zeigt, nie nach einer Ablehnung (`remove_receipt_file`). Das Formular ändert den gespeicherten Pfad nie.
+  `tests/test_receipt_upload.py`, `tests/test_receipt_file.py`, `tests/test_delete_refusals.py`, `tests/test_suggestion.py`
 - **E-Mail-Versand** (`email_sender.py`, seit 2.3.3): immer verschlüsselt und mit Zertifikatsprüfung (`ssl.create_default_context()`;
   Port 465 `SMTP_SSL`, sonst STARTTLS – ohne STARTTLS-Angebot wird nicht angemeldet). Es gibt keinen Schalter zum Abschalten; ein
   eigenes CA-Zertifikat kommt über `SSL_CERT_FILE` (`DEPLOYMENT.md`). Meldungen an den Nutzer nennen nie Exception-Text oder
@@ -249,8 +293,8 @@ kein Subagent darauf:
 - **Anfragegrößen (seit 2.3.6, `server/app.py`):** Kein Body wird gelesen, bevor seine erklärte Länge geprüft ist
   (`_declared_length`: genau EIN `Content-Length` aus ASCII-Ziffern, kein `Transfer-Encoding`; sonst 400). Grenzen: 64 KB ohne
   angemeldeten Benutzer (`MAX_PREAUTH_BODY`: `/login`, `/logout`, Ersteinrichtung), 10 MB Formulare und JSON (`MAX_FORM_BODY`),
-  200 MB Uploads (`MAX_UPLOAD_BODY`: `/upload_receipts`, `/wiso/import`), Logos 5 MB; darüber 413, ungelesen, Verbindung zu
-  (`_refuse_body`). Neue Routen lesen ihren Body über `_read_body(limit)` bzw. prüfen vorher mit `_check_body_size` – nie
+  200 MB Uploads (`MAX_UPLOAD_BODY`: `/upload_receipts`, `/receipts/upload`, `/wiso/import`), Logos 5 MB; darüber 413,
+  ungelesen, Verbindung zu (`_refuse_body`). Neue Routen lesen ihren Body über `_read_body(limit)` bzw. prüfen vorher mit `_check_body_size` – nie
   `rfile.read(int(Content-Length))`. `_drain_body` liest höchstens 1 MB weg, sonst schließt es die Verbindung. Einzige größere
   Grenze: die WISO-Datenbank mit 2 GB je Datei (`wiso_upload.MAX_WISO_DB_BODY`, `/wiso/fdb-upload`) – sie wird nie im Ganzen
   gelesen, sondern in Stücken auf die Platte geschrieben, und nur, wenn danach noch 64 MB frei bleiben (sonst 507)
@@ -448,7 +492,8 @@ kein Subagent darauf:
   Anlagen (Lieferant), zugeordnete Personen, Arbeitszeiten, Fahrten; Artikel: Positionen (mit dem Hinweis auf „inaktiv“, wenn er
   aktiv ist); Bankkonto: Buchungen, Rechnungen, Angebote – die Kasse nie; AfA-Kategorie: Anlagen; Beleg: Buchungen, Anlagen,
   Fahrten (`delete_receipt(receipt_id)` löscht genau EINEN Beleg über seine ID – die Belegnummer ist nicht eindeutig; Route
-  `POST /receipts/delete?id=`). Die Routen gehen über `_respond_after_delete` (`server/app.py`): 303 auf die Listenseite, die Meldung als
+  `POST /receipts/delete?id=`, seine hochgeladene Datei geht mit, siehe *Belegdateien*). Die Routen gehen über
+  `_respond_after_delete` (`server/app.py`): 303 auf die Listenseite, die Meldung als
   Query-Parameter (`error` bei Artikeln, Bankkonten, Kontakten; `err` bei AfA-Kategorien und Belegen), angezeigt nur über
   `script_json` + `appMsg` – nie 500. Eine neue Verweisspalte auf eine dieser Tabellen gehört in die Prüfung ihrer
   Löschmethode. Jede Löschmethode schließt ihre Verbindung auch im Fehlerfall (try/rollback/finally) – sonst bleibt die
@@ -870,7 +915,8 @@ kein Subagent darauf:
   `seed_data/test/demo_scenario.json`) entstehen über die App-eigenen Code-Pfade,
   relativ zum Startdatum; pytest-Testdaten bleiben davon getrennt. Der Import aus der WISO-Datenbank ist im Demo-Modus
   abgeschaltet (Route 403, Handler und Seite mit demselben Satz, `wiso_upload.DEMO_REFUSED`): keine Dateien eines Besuchers
-  auf dem Server
+  auf dem Server. Ebenso das Hochladen von Belegen auf der Seite *Belege* (`POST /receipts/upload`: 403 vor dem Lesen,
+  `upload_handler.RECEIPTS_DEMO_REFUSED`; die Seite zeigt den Satz statt der Ablage)
 - **Der große Bestand (seit 2.5.10):** Neben dem von Hand gepflegten Szenario (`demo_scenario.json`, bleibt unverändert) erzeugt
   `demo_history.build_history(today, profile)` mehrere Jahre – rein, ohne Datenbank, Zufall und Uhr (Auswahl je Monat über
   `zlib.crc32`, Tabellen in `seed_data/test/demo_history.json`, Kunden und Artikel aus den Test-Seeddaten). Profil `full` =

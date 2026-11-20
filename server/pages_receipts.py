@@ -7,15 +7,69 @@ Receipts page (Belege: Upload, Anzeige und Bearbeitung)
 import datetime
 import html as _html
 from urllib.parse import quote
+import demo
 from db import Database
 from money import fmt_eur
+from . import receipt_files
 from .pages import Header1, Header2, Header3, Footer, script_json
 from .period import period_filter_widget
+from .upload_handler import RECEIPTS_DEMO_REFUSED
+
+NO_FILE_TEXT = 'keine Datei'
+FILE_OUTSIDE_TEXT = 'Datei nicht im Belegordner'
+DELETE_QUESTION = "'Beleg wirklich löschen?'"          # als Argument im onclick (Anführungszeichen gehören dazu)
 
 
 def _esc(value):
     """Wert aus Datenbank oder Anfrage für HTML-Text und -Attribute maskieren (NULL = leer)."""
     return _html.escape(str(value if value is not None else ''), quote=True)
+
+
+def _file_info(stored):
+    """Was die Seite zur Datei eines Belegs weiß: ``None`` (kein Pfad gespeichert), ``False`` (ein Pfad ist gespeichert, gilt aber
+    nicht oder die Datei fehlt) oder ``receipt_files.OpenedReceipt`` (schon geschlossen: es zählen Name, ``inline`` und ``removable``).
+    Der Pfad selbst erscheint nie auf der Seite."""
+    if stored is None or (isinstance(stored, str) and not stored.strip()):
+        return None
+    try:
+        opened = receipt_files.open_receipt(stored, log=False)
+    except OSError:
+        return False
+    if opened is None:
+        return False
+    opened.source.close()
+    return opened
+
+
+def _file_text(info):
+    """Der Text zur Datei eines Belegs (Formular und Seite zum Bearbeiten): ihr Name, ``keine Datei`` oder der Hinweis, dass ein
+    gespeicherter Pfad nicht gilt."""
+    if info is None:
+        return NO_FILE_TEXT
+    return FILE_OUTSIDE_TEXT if info is False else info.name
+
+
+def _file_cell(info, id_url):
+    """Die Zelle „Datei“ der Liste: ``–`` ohne Datei, der Hinweis bei einem Pfad, der nicht gilt, sonst „Ansehen“ (nur, wenn die Datei
+    im Browser angezeigt werden darf: ``inline_type``) und „Herunterladen“. ``id_url`` ist die prozentkodierte ID des Belegs."""
+    if info is None:
+        return '–'
+    if info is False:
+        return f'<span class="muted">{FILE_OUTSIDE_TEXT}</span>'
+    links = []
+    if info.inline:
+        links.append(f'<a href="/receipts/file?id={id_url}&amp;inline=1" target="_blank" rel="noopener">Ansehen</a>')
+    links.append(f'<a href="javascript:void(0);" onclick="appDownload(\'/receipts/file?id={id_url}\')">Herunterladen</a>')
+    return ' | '.join(links)
+
+
+def _delete_question(number, info):
+    """Das zweite Argument des ``appConfirmPost`` zum Löschen. Wird die Datei mitgelöscht (sie liegt in ``Belege/``), sagt die
+    Rückfrage es und nennt die Nummer; die Nummer ist ein Wert aus der Datenbank: als JSON-Zeichenkette, im Attribut maskiert."""
+    if not info or not info.removable:
+        return DELETE_QUESTION
+    label = f"Beleg {str(number or '').strip()}".strip()
+    return _esc(script_json(f'{label} und seine Datei wirklich löschen?'))
 
 
 def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
@@ -34,6 +88,8 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
     # peek_next_number berücksichtigt das eingestellte NumberFormat – die
     # frühere Handrechnung hier hängte den Prefix immer vor die Nummer.
     next_receipt_number = db.peek_next_number('receipt_company', current_year)[0] or ''
+    # Im Demo-Modus legt der Server keine Dateien eines Besuchers ab: statt der Ablage steht dort der Satz (und kein Skript)
+    upload_allowed = not demo.is_active()
 
     s = Header1('receipts')
     # Suche nach Header2; Zeitraum (Von/Bis + Jahr + Monat) zentral in Header3.
@@ -41,7 +97,7 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
         '<div class="rowWithObjects"><div>'
         '<label>🔍 Suche:</label> '
         '<input type="text" id="receiptSearch" oninput="filterReceipts()" '
-        'placeholder="Dateiname / Pfad / Info" style="width: 200px;">'
+        'placeholder="Nummer / Dateiname / Info" style="width: 200px;">'
         '</div></div>'
     )
     s += Header3(period_filter_widget(date_from, date_to, '/receipts'))
@@ -53,7 +109,7 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
         <!-- LINKS: scrollbare Belegliste -->
         <div class="gridLeftCol">
             <table>
-                <tr><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Pfad</th><th>Info</th><th>Aktionen</th></tr>
+                <tr><th>Nr.</th><th>Datum</th><th>Dateiname</th><th>Datei</th><th>Info</th><th>Aktionen</th></tr>
         '''
     for row in rows:
         rid = _esc(row[0])
@@ -63,14 +119,15 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
         id_url = quote(str(row[0]), safe='')
         dt  = _esc(row[2])
         fn  = _esc(row[3])
-        pt  = _esc(row[4])
         inf = _esc(row[5])
-        s += f'<tr class="receipt-row" data-date="{dt}" data-id="{rid}" data-number="{n}" data-filename="{fn}" data-path="{pt}" data-info="{inf}">'
-        s += f'<td>{n}</td><td>{dt}</td><td>{fn}</td><td>{pt}</td><td>{inf}</td>'
+        info = _file_info(row[4])
+        s += (f'<tr class="receipt-row" data-date="{dt}" data-id="{rid}" data-number="{n}" data-filename="{fn}" '
+              f'data-file="{_esc(_file_text(info))}" data-info="{inf}">')
+        s += f'<td>{n}</td><td>{dt}</td><td>{fn}</td><td>{_file_cell(info, id_url)}</td><td>{inf}</td>'
         s += (f'<td>'
               f'<a href="#" class="action-icon" onclick="editReceiptFromRow(this); return false;" title="Bearbeiten">&#9998;</a>'
               f' <a href="javascript:void(0);" class="action-icon delete-icon" title="L\u00f6schen"'
-              f' onclick="appConfirmPost(\'/receipts/delete?id={id_url}\', \'Beleg wirklich löschen?\')">&#128465;</a>'
+              f' onclick="appConfirmPost(\'/receipts/delete?id={id_url}\', {_delete_question(row[1], info)})">&#128465;</a>'
               f'</td></tr>')
     s += '''
             </table>
@@ -82,12 +139,19 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
             <!-- Drag & Drop -->
             <div class="rectRounded">
                 <h2>Belege hochladen</h2>
+    '''
+    if upload_allowed:
+        s += '''
                 <div id="dropZone">
                     <p>Dateien hier ablegen (Drag &amp; Drop)</p>
-                    <input type="file" id="fileInput" multiple accept=".pdf,application/pdf">
+                    <input type="file" id="fileInput" multiple>
                     <button onclick="document.getElementById('fileInput').click()">Oder Dateien ausw&auml;hlen</button>
                 </div>
                 <div id="uploadStatus"></div>
+        '''
+    else:
+        s += f'<p>{_esc(RECEIPTS_DEMO_REFUSED)}</p>'
+    s += '''
             </div>
 
             <!-- Neuer Beleg / Beleg bearbeiten -->
@@ -95,16 +159,20 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
                 <h2 id="receiptFormTitle">Neuer Beleg</h2>
                 <form method="POST" action="/add_receipt" id="receiptForm">
                     <input type="hidden" name="id" id="editId" value="">
+    '''
+    # Der Vorschlag folgt der Formatvorlage des Nummernkreises (frei eintippbar): maskieren. Das versteckte Feld hält ihn fest:
+    # Ist die Nummer beim Absenden noch der Vorschlag, vergibt der Server frisch (ein zweites Fenster kann ihn verbraucht haben).
+    s += f'<input type="hidden" name="number_suggestion" value="{_esc(next_receipt_number)}">'
+    s += '''
                     <table class="form-table">
     '''
-    # Der Vorschlag folgt der Formatvorlage des Nummernkreises (frei eintippbar): maskieren
     s += f'<tr><td>Nummer:</td><td><input type="text" name="number" id="editNumber" value="{_esc(next_receipt_number)}"></td></tr>'
     s += '''
                         <tr><td>Datum:</td><td><input type="date" name="date" id="editDate"></td></tr>
                         <tr><td>Dateiname:</td><td><input type="text" name="filename" id="editFilename"
                             placeholder="JJJJMMTT Name (was gekauft wurde)"
                             title="Namenskonvention f&uuml;r eingehende Belege: JJJJMMTT Kunden-/Lieferantenname (kurze Liste der K&auml;ufe)"></td></tr>
-                        <tr><td>Pfad:</td><td><input type="text" name="path" id="editPath"></td></tr>
+                        <tr id="editFileRow" hidden><td>Datei:</td><td id="editFileText"></td></tr>
                         <tr><td>Info:</td><td><input type="text" name="info" id="editInfo"></td></tr>
                         <tr><td></td><td>
                             <div id="btnNew">
@@ -122,7 +190,8 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
         </div><!-- Ende rechte Spalte -->
     </div><!-- Ende Zwei-Spalten-Layout -->
     '''
-    s += '''<script>
+    if upload_allowed:
+        s += '''<script>
         // Prevent default browser behavior for drag and drop on entire page
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
             document.body.addEventListener(eventName, (e) => {
@@ -185,8 +254,9 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
             addUploadNote(text, cssClass);
         }
 
-        // Das Ergebnis steht je Datei als Text da. Die Liste lädt nur neu, wenn es keine Warnung, keinen Fehler und
-        // keinen erkannten Kontoauszug gab – sonst verschwände die Meldung, bevor jemand sie liest; dann holt ein Knopf die Liste.
+        // Das Ergebnis steht je Datei als Text da (Beleg angelegt, darunter ein Hinweis – oder der Fehler). Die Liste lädt nur neu,
+        // wenn es keinen Fehler und keinen Hinweis gab – sonst verschwände die Meldung, bevor jemand sie liest; dann holt ein Knopf
+        // die Liste.
         function showUploadResult(response, data) {
             if (!response.ok || data === null || data.error || data.success === false) {
                 showUploadStatus('Fehler beim Hochladen: ' + (data && data.error ? data.error
@@ -195,21 +265,18 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
             }
             uploadStatus.textContent = '';
             let problem = false;
-            (data.other_files || []).forEach(entry => {
-                if (entry.status === 'organized') {
-                    addUploadNote('✓ ' + entry.filename + ' abgelegt');
-                } else if (entry.status === 'uploaded') {
-                    addUploadNote('✓ ' + entry.filename + ' hochgeladen');
+            (data.files || []).forEach(entry => {
+                if (entry.status === 'created') {
+                    addUploadNote('✓ ' + entry.filename + ' – Beleg ' + (entry.number ? entry.number + ' ' : '') + 'angelegt');
+                    if (entry.hint) {
+                        problem = true;
+                        addUploadNote(entry.hint, 'warnColor');
+                    }
                 } else {
                     problem = true;
-                    addUploadNote((entry.status === 'warning' ? '⚠ ' : '✗ ') + entry.filename + ': ' + entry.error, 'errorColor');
+                    addUploadNote('✗ ' + entry.filename + ': ' + entry.error, 'errorColor');
                 }
             });
-            const statements = (data.files || []).length;
-            if (statements > 0) {
-                problem = true;
-                addUploadNote(statements + ' Kontoauszug/-auszüge erkannt – importiert wird auf der Seite „Buchungen“ (dort erneut hochladen).', 'errorColor');
-            }
             if (problem) {
                 const refresh = document.createElement('button');
                 refresh.type = 'button';
@@ -233,7 +300,7 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
                 formData.append('files', files[i]);
             }
             
-            fetch('/upload_receipts', {
+            fetch('/receipts/upload', {
                 method: 'POST',
                 body: formData
             })
@@ -262,8 +329,9 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
             document.getElementById('editNumber').value   = row.dataset.number;
             document.getElementById('editDate').value     = row.dataset.date;
             document.getElementById('editFilename').value = row.dataset.filename;
-            document.getElementById('editPath').value     = row.dataset.path;
             document.getElementById('editInfo').value     = row.dataset.info;
+            document.getElementById('editFileText').textContent = row.dataset.file;
+            document.getElementById('editFileRow').hidden = false;
             document.getElementById('receiptForm').action           = '/update_receipt';
             document.getElementById('receiptFormTitle').textContent = 'Beleg bearbeiten';
             document.getElementById('btnNew').style.display  = 'none';
@@ -280,8 +348,8 @@ def PageReceipts(db: Database, date_from=None, date_to=None, err=None):
 
             document.querySelectorAll('.receipt-row').forEach(row => {
                 const rowText = (
+                    (row.getAttribute('data-number') || '') + ' ' +
                     (row.getAttribute('data-filename') || '') + ' ' +
-                    (row.getAttribute('data-path') || '') + ' ' +
                     (row.getAttribute('data-info') || '')
                 ).toLowerCase();
 
@@ -320,7 +388,7 @@ def PageReceiptEdit(db: Database, number):
                 <tr><td>Nummer:</td><td><input type="text" name="number" value="{_esc(receipt[1])}"></td></tr>
                 <tr><td>Datum:</td><td><input type="date" name="date" value="{_esc(receipt[2])}"></td></tr>
                 <tr><td>Dateiname:</td><td><input type="text" name="filename" value="{_esc(receipt[3])}"></td></tr>
-                <tr><td>Pfad:</td><td><input type="text" name="path" value="{_esc(receipt[4])}"></td></tr>
+                <tr><td>Datei:</td><td>{_esc(_file_text(_file_info(receipt[4])))}</td></tr>
                 <tr><td>Info:</td><td><input type="text" name="info" value="{_esc(receipt[5])}"></td></tr>
                 <tr><td></td><td><input type="submit" value="Beleg aktualisieren"></td></tr>
             </table>

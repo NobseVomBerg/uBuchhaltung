@@ -19,6 +19,10 @@ einem Fehler: Eine Warnung war nie zu lesen, ein Fehler sah aus wie ein Erfolg.
   öffnet die Adresse, statt still nichts zu tun.
 * ``server/backup.py``: ``_next_archive_path`` vergleicht Archivnamen ohne Groß-/Kleinschreibung.
 
+Seit 2.5.11 postet die Belege-Seite an ``/receipts/upload`` (jede Datei wird ein Beleg, Antwort ``{"success", "files": [{"filename",
+"status": "created"|"error", "id", "number", "date", "hint", "error"}]}``); die Tests zum Skript der Seite lesen diese Antwort. Die
+ersten vier Tests prüfen weiter ``/upload_receipts`` – den Import der Seite „Buchungen“ (``handle_file_upload``), der unverändert bleibt.
+
 Alle Namen und Inhalte sind erfundene Testwerte.
 """
 import json
@@ -33,7 +37,7 @@ import pytest
 
 from document_parser import DocumentExists, DocumentParser
 from server import backup as backup_mod
-from server.upload_handler import UPLOAD_FAILED
+from server.upload_handler import RECEIPT_UPLOAD_FAILED, RECEIPTS_DEMO_REFUSED, UPLOAD_FAILED
 from tests.dom_helpers import Dom
 from tests.http_client import get, own_origin, send
 from tests.test_statement_import_guards import CLOSING_LINE, OPENING_LINE, make_pdf, one_page
@@ -140,8 +144,8 @@ def test_the_receipts_page_reads_the_status_and_shows_one_text_line_per_file(ser
     for forbidden in ('innerHTML', 'outerHTML', 'document.write'):
         assert forbidden not in script, forbidden                                # nur Text, nie Markup
     assert 'Liste aktualisieren' in script
-    assert ('Kontoauszug/-auszüge erkannt – importiert wird auf der Seite „Buchungen“ (dort erneut hochladen).'
-            in script)
+    assert "fetch('/receipts/upload'" in script and '/upload_receipts' not in script   # seit 2.5.11: jede Datei wird ein Beleg
+    assert 'importiert wird auf der Seite' not in script                         # der Hinweis auf den Import kommt vom Server
     assert re.search(r'if \(problem\) \{.*?\} else \{\s*setTimeout\(\(\) => location\.reload\(\), 3000\);', script, re.S)
 
 
@@ -198,40 +202,51 @@ vm.runInContext(fs.readFileSync(sourceFile, 'utf8'), sandbox);
 })();
 """
 
-FILED = {'filename': '<b>beleg-1</b>.pdf', 'status': 'organized', 'path': '../Belege/2026/general/beleg-1.pdf'}
-SENT = {'filename': 'liste.xlsx', 'status': 'uploaded'}
-DOUBLE = {'filename': 'doppelt.pdf', 'status': 'warning', 'error': "Datei 'doppelt.pdf' existiert bereits."}
-BROKEN = {'filename': 'kaputt.pdf', 'status': 'error', 'error': UPLOAD_FAILED}
-STATEMENTS = 'Kontoauszug/-auszüge erkannt – importiert wird auf der Seite „Buchungen“ (dort erneut hochladen).'
+STATEMENT_HINT = ('Kontoauszug erkannt und als Beleg abgelegt – Umsätze werden auf der Seite „Buchungen“ importiert.')
+NO_NUMBER_HINT = 'Kein brauchbarer Nummernkreis „Belegnummern Firma“ – der Beleg hat keine Nummer.'
+CREATED = {'filename': '<b>beleg-1</b>.pdf', 'status': 'created', 'id': 7, 'number': '26B001', 'date': '2026-03-04'}
+CREATED_2 = {'filename': 'liste.xlsx', 'status': 'created', 'id': 8, 'number': '26B002', 'date': '2026-03-04'}
+WITHOUT_NUMBER = {'filename': 'ohne.pdf', 'status': 'created', 'id': 9, 'number': '', 'date': '2026-03-04',
+                  'hint': NO_NUMBER_HINT}
+STATEMENT = {'filename': 'auszug.pdf', 'status': 'created', 'id': 10, 'number': '26B003', 'date': '2026-01-03',
+             'hint': STATEMENT_HINT}
+BROKEN = {'filename': 'kaputt.pdf', 'status': 'error', 'error': RECEIPT_UPLOAD_FAILED}
+EMPTY = {'filename': 'leer.pdf', 'status': 'error', 'error': 'Die Datei ist leer.'}
 REFUSED = 'Fehler beim Hochladen: Der Server hat die Anfrage abgelehnt (Status {}).'
 REFRESH = {'tag': 'button', 'text': 'Liste aktualisieren', 'className': 'coloredButton btn-sm bg-gray', 'type': 'button'}
 
 
-def answer(files=(), others=()):
-    return json.dumps({'import_id': 'x' if files else None, 'files': list(files), 'other_files': list(others)})
+def answer(*files):
+    return json.dumps({'success': True, 'files': list(files)})
 
 
 # (ok, Status, Antwort, erwartete Zeilen (Text, Klasse), danach: 'reload' = lädt nach 3 s neu, 'button' = Knopf, None = nichts)
 UPLOAD_CASES = [
-    pytest.param(True, 200, answer(others=[FILED, SENT]),
-                 [('✓ <b>beleg-1</b>.pdf abgelegt', ''), ('✓ liste.xlsx hochgeladen', '')], 'reload', id='glatt'),
-    pytest.param(True, 200, answer(others=[]), [], 'reload', id='nichts-zu-melden'),
-    pytest.param(True, 200, answer(others=[FILED, DOUBLE]),
-                 [('✓ <b>beleg-1</b>.pdf abgelegt', ''), ("⚠ doppelt.pdf: Datei 'doppelt.pdf' existiert bereits.", 'errorColor')],
-                 'button', id='Warnung'),
-    pytest.param(True, 200, answer(others=[BROKEN]), [('✗ kaputt.pdf: ' + UPLOAD_FAILED, 'errorColor')], 'button',
-                 id='Fehler-je-Datei'),
-    pytest.param(True, 200, answer(files=[{}, {}]), [('2 ' + STATEMENTS, 'errorColor')], 'button', id='Kontoauszug-erkannt'),
+    pytest.param(True, 200, answer(CREATED, CREATED_2),
+                 [('✓ <b>beleg-1</b>.pdf – Beleg 26B001 angelegt', ''), ('✓ liste.xlsx – Beleg 26B002 angelegt', '')],
+                 'reload', id='glatt'),
+    pytest.param(True, 200, answer(), [], 'reload', id='nichts-zu-melden'),
+    pytest.param(True, 200, answer(CREATED, STATEMENT),
+                 [('✓ <b>beleg-1</b>.pdf – Beleg 26B001 angelegt', ''), ('✓ auszug.pdf – Beleg 26B003 angelegt', ''),
+                  (STATEMENT_HINT, 'warnColor')], 'button', id='Kontoauszug-erkannt-Hinweis'),
+    pytest.param(True, 200, answer(WITHOUT_NUMBER),
+                 [('✓ ohne.pdf – Beleg angelegt', ''), (NO_NUMBER_HINT, 'warnColor')], 'button', id='ohne-Nummer-Hinweis'),
+    pytest.param(True, 200, answer(CREATED, BROKEN),
+                 [('✓ <b>beleg-1</b>.pdf – Beleg 26B001 angelegt', ''), ('✗ kaputt.pdf: ' + RECEIPT_UPLOAD_FAILED, 'errorColor')],
+                 'button', id='Fehler-je-Datei'),
+    pytest.param(True, 200, answer(EMPTY), [('✗ leer.pdf: Die Datei ist leer.', 'errorColor')], 'button', id='leere-Datei'),
     pytest.param(False, 413, json.dumps({'success': False, 'error': 'Die Anfrage ist zu groß (höchstens 200 MB).'}),
                  [('Fehler beim Hochladen: Die Anfrage ist zu groß (höchstens 200 MB).', 'errorColor')], None,
                  id='Fehlerstatus-mit-Text'),
+    pytest.param(False, 403, json.dumps({'success': False, 'error': RECEIPTS_DEMO_REFUSED}),
+                 [('Fehler beim Hochladen: ' + RECEIPTS_DEMO_REFUSED, 'errorColor')], None, id='Demo-Modus-abgelehnt'),
     pytest.param(False, 403, '<h1>403</h1>', [(REFUSED.format(403), 'errorColor')], None, id='Fehlerstatus-ohne-JSON'),
     pytest.param(True, 200, 'keine Antwort', [(REFUSED.format(200), 'errorColor')], None, id='Antwort-ist-kein-JSON'),
     pytest.param(True, 200, 'null', [(REFUSED.format(200), 'errorColor')], None, id='Antwort-ist-JSON-null'),
     pytest.param(True, 200, json.dumps({'success': False}), [(REFUSED.format(200), 'errorColor')], None,
                  id='success-false-ohne-Text'),
-    pytest.param(True, 200, json.dumps({'error': 'Ungültiger Content-Type'}),
-                 [('Fehler beim Hochladen: Ungültiger Content-Type', 'errorColor')], None, id='Fehler-im-JSON'),
+    pytest.param(True, 200, json.dumps({'error': 'Ungültige Anfrage.'}),
+                 [('Fehler beim Hochladen: Ungültige Anfrage.', 'errorColor')], None, id='Fehler-im-JSON'),
 ]
 
 

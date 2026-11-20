@@ -292,10 +292,10 @@ berichtigt und ergänzt in bestehenden Datenbanken 100, 120, 121 („Verwendung 
 | Spalte | Typ | Constraints | Beschreibung |
 |--------|-----|-------------|--------------|
 | ID | INTEGER | PRIMARY KEY | Auto-Increment |
-| Number | TEXT | | Belegnummer |
+| Number | TEXT | | Belegnummer (nicht eindeutig; Nummernkreis `receipt_company`) |
 | Date | DATE | | Belegdatum |
 | Filename | TEXT | | Dateiname |
-| Path | TEXT | | Dateipfad |
+| Path | TEXT | | Pfad der Datei relativ zum Datenordner des Benutzers (`Belege/<Jahr>/<Nummer>_<Name>`, vom Server gesetzt); gilt nur innerhalb von `Belege/` und `Documents/` (Bestand des früheren Uploads) |
 | Info | TEXT | | Zusatzinformationen |
 
 ---

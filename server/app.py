@@ -25,6 +25,7 @@ from . import backup
 from . import dirlock
 from . import pages
 from . import handlers
+from . import receipt_files
 from . import upload_handler
 from . import wiso_upload
 from .pages_login import PageLogin
@@ -156,7 +157,7 @@ def forwarded_https(headers):
 # Länge, bevor etwas gelesen wird; was darüber liegt, wird mit 413 abgelehnt.
 MAX_PREAUTH_BODY = 64 * 1024              # ohne angemeldeten Benutzer: /login, /logout, /setup/start
 MAX_FORM_BODY = 10 * 1024 * 1024          # Formulare und JSON
-MAX_UPLOAD_BODY = 200 * 1024 * 1024       # /upload_receipts, /wiso/import
+MAX_UPLOAD_BODY = 200 * 1024 * 1024       # /upload_receipts, /receipts/upload, /wiso/import
 MAX_DRAIN_BODY = 1024 * 1024              # was _drain_body höchstens wegliest (darüber: Verbindung schließen)
 
 
@@ -379,10 +380,12 @@ _POST_ONLY_JSON_PATHS = frozenset({
     "/invoice/reissue",
 })
 
-# Dateien als roher Body (kein Formular, kein JSON): nur per POST (GET → 405), JSON-Antwort, CSRF-Token als Header
-# (XMLHttpRequest, das Footer-JS hängt es nur an fetch an), siehe `_post_wiso_fdb_upload`.
+# Uploads mit eigener Prüfung vor dem ersten gelesenen Byte: nur per POST (GET → 405), JSON-Antwort, CSRF-Token als Header.
+# /wiso/fdb-upload: die WISO-Datenbank als roher Body (XMLHttpRequest, das Footer-JS hängt das Token nur an fetch an), siehe
+# `_post_wiso_fdb_upload`; /receipts/upload: die Dateien der Belege-Seite als Multipart (fetch), siehe `_post_receipts_upload`.
 _UPLOAD_PATHS = frozenset({
     "/wiso/fdb-upload",
+    "/receipts/upload",
 })
 
 # Jede Anfrage eines angemeldeten Benutzers läuft unter der Lesesperre seines Datenverzeichnisses (``dirlock``, siehe
@@ -493,10 +496,11 @@ class SimpleWebServer(BaseHTTPRequestHandler):
 
     def end_headers(self):
         path = getattr(self, 'path', '')           # fehlt bei einer kaputten Anfragezeile
-        if path.endswith('.css') or path.endswith('.js') or path.endswith('.png'):
+        # zuerst: Eine Endung am Ende der Adresse (``?x=.png``) darf einen Beleg nie zu „public“ machen
+        if path.split('?', 1)[0] in ('/backup/download', '/receipts/file'):
+            self.send_header('Cache-Control', 'no-store')               # der ganze Datenbestand bzw. ein Beleg: nirgends ablegen
+        elif path.endswith('.css') or path.endswith('.js') or path.endswith('.png'):
             self.send_header('Cache-Control', 'public, max-age=86400')  # Cache this File for 1d
-        elif path.split('?', 1)[0] == '/backup/download':
-            self.send_header('Cache-Control', 'no-store')               # der ganze Datenbestand: nirgends ablegen
         else:
             self.send_header('Cache-Control', 'no-cache')               # HTML etc no caching
         # Für ALLE Antworten: kein MIME-Sniffing und kein Einrahmen durch fremde Seiten
@@ -993,6 +997,75 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self.close_connection = True                    # die Datei ist während des Sendens kürzer geworden
                 print(f"Download unvollständig ({sent} von {entry.size} Bytes): {entry.name!r}", file=sys.stderr)
 
+    def _send_receipt_file(self, db):
+        """Die Datei eines Belegs ausliefern (``GET /receipts/file?id=<n>[&inline=1]``) – nur lesend.
+
+        Welche Datei es gibt, entscheidet allein ``receipt_files.open_receipt`` (``stored_receipt_path``: nur innerhalb von
+        ``Belege/`` und ``Documents/`` des angemeldeten Benutzers; ein Link, ein Ordner oder eine Pipe ist keine Datei). Ein
+        unbekannter, ungültiger oder fremder Beleg und ein Pfad außerhalb sind je dieselbe Antwort: 404 mit festem Satz, nie mit
+        einem Pfad (der abgelehnte Pfad steht nur im Server-Log). Die Herkunft prüft die Route wie ``/backup/download``
+        (``request_is_same_origin``: eine fremde ``Sec-Fetch-Site`` ergibt 403).
+
+        Die Datei geht in Stücken aus dem offenen Deskriptor hinaus (``backup.copy_to``, mit der Zeitgrenze je Stück wie bei der
+        Sicherung), nie ganz durch den Speicher. Angezeigt wird sie nur mit ``inline=1`` UND wenn Endung und Anfangsbytes zur
+        Positivliste passen (``receipt_files.inline_type``: PDF und Rasterbilder) – dann ``Content-Disposition: inline`` mit dem
+        Typ der Positivliste; alles andere ist immer ``attachment`` mit ``application/octet-stream`` (ein HTML oder SVG liefe
+        sonst als Skript im Ursprung der App).
+
+        Nach den Köpfen darf nichts mehr in den allgemeinen 500-Zweig fallen – er schriebe eine zweite Antwort in den laufenden
+        Body: Ein Fehler beim Senden endet mit geschlossener Verbindung."""
+        plain = "text/plain; charset=utf-8"
+        if not request_is_same_origin(self.headers):
+            self.respond(403, receipt_files.FOREIGN, content_type=plain)
+            return
+        qs = self._query()
+        receipt_id = _id_param(qs)
+        row = db.get_receipt_by_id(receipt_id)
+        if row is None:
+            self.respond(404, receipt_files.NOT_FOUND, content_type=plain)
+            return
+        try:
+            opened = receipt_files.open_receipt(row[4])
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            self.respond(500, receipt_files.OPEN_FAILED, content_type=plain)
+            return
+        if opened is None:
+            self.respond(404, receipt_files.NO_FILE, content_type=plain)
+            return
+        if qs.get('inline', [''])[0] == '1' and opened.inline:
+            content_type, disposition = opened.inline, 'inline'
+        else:
+            content_type, disposition = 'application/octet-stream', 'attachment'
+        with opened.source as source:
+            name = str(row[3] or '').strip() or opened.name
+            disposition_header, filename_header = content_disposition(disposition, name), quote(name, safe='')
+            previous_timeout = self.connection.gettimeout()
+            try:
+                # je gesendetem Stück: Ein Client, der nicht mehr liest, hält Verbindung und Datei sonst unbegrenzt
+                self.connection.settimeout(backup.DOWNLOAD_SEND_TIMEOUT)
+                self.send_response(200)
+                self.send_header("Content-type", content_type)
+                self.send_header("Content-Disposition", disposition_header)
+                self.send_header("X-Filename", filename_header)
+                self.send_header("Content-Length", str(opened.size))
+                self.end_headers()
+                sent = backup.copy_to(source, opened.size, self.wfile.write)
+            except (ConnectionError, TimeoutError):
+                self.close_connection = True                    # der Client hat abgebrochen
+                print(f"Download abgebrochen: Beleg {receipt_id}", file=sys.stderr)
+                return
+            except OSError:
+                import traceback
+                traceback.print_exc()
+                self.close_connection = True
+                return
+            self.connection.settimeout(previous_timeout)
+            if sent < opened.size:
+                self.close_connection = True                    # die Datei ist während des Sendens kürzer geworden
+                print(f"Download unvollständig ({sent} von {opened.size} Bytes): Beleg {receipt_id}", file=sys.stderr)
+
     def _local_referer(self, default):
         """Pfad (+ Query) des Referer – nie eine fremde Adresse (kein offener Redirect)."""
         try:
@@ -1064,7 +1137,8 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         elif path == "/masterdata/bankaccounts/delete":
             self._respond_after_delete(db.delete_account, item_id, "/masterdata/bankaccounts", "error")
         elif path == "/receipts/delete":
-            self._respond_after_delete(db.delete_receipt, item_id, "/receipts", "err")
+            self._respond_after_delete(lambda receipt: handlers.delete_receipt_with_file(db, receipt),
+                                       item_id, "/receipts", "err")
         elif path == "/transactions/delete":
             status_code, location = handlers.handle_delete_transaction(db, item_id)
             self.respond(status_code, "", headers={"Location": location})
@@ -1220,6 +1294,34 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         if created:
             wiso_upload.discard(token)
         self._refuse_body(status_code, text, as_json=True)
+
+    def _post_receipts_upload(self, db):
+        """POST /receipts/upload: die Dateien der Belege-Seite (Multipart, Feld ``files``) als Belege ablegen
+        (``upload_handler.handle_receipt_upload``: Nummer, Datum, Dateiname, Datei unter ``Belege/<Jahr>/``). Antwort: JSON
+        ``{"success": true, "files": [...]}`` mit einem Eintrag je Datei.
+
+        Vor dem ersten gelesenen Byte stehen das CSRF-Token (Header), der Demo-Modus (die Besucher teilen ein Verzeichnis: 403, die
+        Verbindung geht zu) und die Größe (``_read_body``: 400/413, höchstens ``MAX_UPLOAD_BODY``). Meldungen nennen nie einen Pfad
+        oder den Text einer Ausnahme (Einzelheiten stehen im Server-Log). ``POST /upload_receipts`` bleibt der Import der Seite
+        „Buchungen“."""
+        if not self._check_csrf():
+            return
+        if demo.is_active():
+            self._refuse_body(403, upload_handler.RECEIPTS_DEMO_REFUSED, as_json=True)
+            return
+        body = self._read_body(MAX_UPLOAD_BODY, as_json=True)
+        if body is None:
+            return
+        try:
+            status_code, payload = upload_handler.handle_receipt_upload(db, self.headers.get('Content-Type') or '', body)
+        except Exception:
+            if self.wfile.failed:
+                raise                               # die Antwort ließ sich nicht zustellen: nichts mehr senden
+            import traceback
+            traceback.print_exc()
+            self._respond_json(500, {'success': False, 'error': 'Interner Fehler – Einzelheiten stehen im Server-Log.'})
+            return
+        self._respond_json(status_code, payload)
 
     def _post_json_route(self, path):
         """POST-Routen der Rechnungen und Angebote, die JSON lesen und JSON antworten (fetch).
@@ -1449,6 +1551,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
                 self.respond(200, PageReceipts(db, date_from, date_to, err=qs.get("err", [None])[0]), headers=hdrs)
+            elif self.path.split('?', 1)[0] == "/receipts/file":
+                self._send_receipt_file(db)
+                return
             elif self.path.startswith("/receipts/edit"):
                 number = self._query().get("number", [""])[0]
                 self.respond(200, PageReceiptEdit(db, number))
@@ -1729,9 +1834,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             self._post_generate_document(db, route)
             return
 
-        # WISO-Datenbank hochladen (roher Body): die Methode prüft Token und Größe selbst, bevor sie liest
+        # Uploads mit eigener Prüfung (WISO-Datenbank als roher Body, Dateien der Belege-Seite als Multipart): die Methode prüft
+        # Token, Demo-Modus und Größe selbst, bevor sie liest
         if route in _UPLOAD_PATHS:
-            self._post_wiso_fdb_upload()
+            if route == "/receipts/upload":
+                self._post_receipts_upload(db)
+            else:
+                self._post_wiso_fdb_upload()
             return
 
         # Handle file upload separately (der Handler liest den Body selbst: Größe vorher prüfen)

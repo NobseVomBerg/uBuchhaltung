@@ -40,7 +40,7 @@ SUBJECT_PAGES = [
     ('/invoice/pdf_download', 'id'), ('/quote/edit', 'id'), ('/quote/pdf_download', 'id'),
     ('/masterdata/articles/edit', 'id'), ('/masterdata/contacts/edit', 'id'),
     ('/masterdata/skr/edit', 'id'), ('/masterdata/skr/copy', 'id'),
-    ('/masterdata/bankaccounts/edit', 'id'), ('/receipts/edit', 'number'),
+    ('/masterdata/bankaccounts/edit', 'id'), ('/receipts/edit', 'number'), ('/receipts/file', 'id'),
     ('/transactions/edit', 'id'), ('/masterdata/numberranges/edit', 'id'), ('/assets/edit', 'id'),
     ('/assets/view', 'id'), ('/asset_categories/edit', 'id'), ('/worktime/edit', 'id'), ('/trips/edit', 'id'),
 ]

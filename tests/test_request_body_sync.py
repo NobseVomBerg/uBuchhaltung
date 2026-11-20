@@ -96,7 +96,7 @@ def test_the_body_of_a_get_request_is_not_served_as_the_next_request(server_port
     assert never_served(log_lines)
 
 
-@pytest.mark.parametrize('path, status', [('/upload_receipts', 400), ('/wiso/import', 303)])
+@pytest.mark.parametrize('path, status', [('/upload_receipts', 400), ('/wiso/import', 303), ('/receipts/upload', 400)])
 def test_an_early_refusal_that_leaves_the_body_unread_does_not_serve_it(server_port, auto_login, log_lines, path, status):
     inner = hidden_request(server_port)
     raw = head(server_port, 'POST', path, ['Content-Type: text/plain', f'X-CSRF-Token: {auto_login.csrf}',

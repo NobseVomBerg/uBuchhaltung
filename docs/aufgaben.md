@@ -19,6 +19,9 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 - Zahlungsart der Rechnung speichern: Die E-Rechnung sagt fest „58, SEPA-Überweisung“ und nur mit IBAN; die Felder dafür im Rechnungsformular entfielen mit 2.3.5, weil der Server sie nie las – braucht eine Spalte (Schemaänderung)
 - Zurückholen einer versendeten Rechnung entfernt die Forderung auch nach einem DATEV-Export: Hinweis oder Sperre ab dem Export (braucht ein Merkmal „exportiert“ je Buchung; Schemaänderung)
 - Löschen des Entwurfs einer Rechnung aus einem Angebot setzt das Angebot auf „angenommen“, nicht auf den Status davor: den früheren Status am Angebot merken (Schemaänderung)
+- Belege und Buchungen von beiden Seiten mit einer Suche verknüpfen (an der Buchung den Beleg suchen und zuordnen, am Beleg die Buchung)
+- Datei zu einem bestehenden Beleg nachreichen (der Upload der Seite „Belege“ legt je Datei einen neuen Beleg an)
+- Den Upload der Seite „Buchungen“ im Demo-Modus abschalten, wie den der Seite „Belege“
 - Umsatzsteuer-Voranmeldung (ELSTER)
 - Betriebswirtschaftliche Auswertung (BWA) je Zeitraum, wahlweise mit Summen- und Saldenliste (je Konto: Anfangssaldo, Soll- und Haben-Umsatz, Endsaldo) – vorher zu klären: Gliederung, Grundlage (Abgrenzung wie die EÜR oder alle Buchungssätze), Ausgabe (Seite, PDF, CSV), Anfangssalden
 - Soll-Versteuerung: Umsatzsteuer mit dem Leistungsdatum buchen und im DATEV-Stapel ausweisen (die Besteuerungsart ist seit 2.4.0 an der eigenen Firma gespeichert, wirkt aber noch nirgends)

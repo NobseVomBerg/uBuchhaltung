@@ -246,6 +246,10 @@ def test_check_page_path_allows_listed_display_pages(path):
     pytest.param("/invoice/edit/", id="angehaengter-Schraegstrich"),
     pytest.param("/about;x=1", id="Pfadparameter"),
     pytest.param("/invoice/xml_download?id=1", id="Dokument-statt-Anzeigeseite"),
+    pytest.param("/receipts/file?id=1", id="Datei-eines-Belegs"),
+    pytest.param("/receipts/file?id=1&inline=1", id="Datei-eines-Belegs-angezeigt"),
+    pytest.param("/receipts/upload", id="Beleg-Upload"),
+    pytest.param("/backup/download?file=x", id="Sicherung-laden"),
 ])
 def test_check_page_path_refuses_everything_off_the_list(path):
     with pytest.raises(ValueError, match=r"Seite nicht freigegeben – .*_PAGE_ALLOWLIST in tools/mcp_ubuchhaltung\.py"):
@@ -320,6 +324,8 @@ def test_the_allowlist_holds_plain_paths_and_no_side_effect_route():
 
 def test_the_allowlist_leaves_out_the_pages_the_review_found_unsafe():
     assert "/invoice/xml_download" not in mcp._PAGE_ALLOWLIST                  # ein Dokument, keine Anzeigeseite
+    assert "/receipts/file" not in mcp._PAGE_ALLOWLIST                         # die Datei eines Belegs (seit 2.5.11): ebenso ein Dokument
+    assert "/receipts" in mcp._PAGE_ALLOWLIST and "/receipts/edit" in mcp._PAGE_ALLOWLIST     # die Anzeigeseiten bleiben
     assert not {"from_invoice", "copy_from"} & {key for keys in mcp._PAGE_ALLOWLIST.values() for key in keys}
 
 

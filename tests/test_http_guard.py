@@ -219,7 +219,7 @@ def test_post_without_origin_headers_is_accepted(server_port, auto_login, articl
 
 @pytest.mark.parametrize("path", [
     "/execute_sql", "/backup/create", "/backup/restore",
-    "/users/create", "/wiso/fdb-import", "/wiso/fdb-upload?slot=client", "/upload_receipts",
+    "/users/create", "/wiso/fdb-import", "/wiso/fdb-upload?slot=client", "/upload_receipts", "/receipts/upload",
 ])
 def test_every_post_route_is_behind_the_origin_check(server_port, auto_login, path):
     # Das Tor sitzt vor allen schreibenden Anfragen, auch vor denen, die ihren

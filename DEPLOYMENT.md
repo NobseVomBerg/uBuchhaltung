@@ -152,8 +152,9 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
 - `data/auth.db` – zentrale Benutzer-/Session-Verwaltung.
 - `data/users/<user>/` – pro Nutzer: `buch.db` sowie `Belege/`, `invoices/`,
   `quotes/`, `worktime/`, `logos/`, `backup/`, die SQL-Protokolle
-  (`sql_operations.log`/`.sql`) und, wenn angelegt, `db-export.sql`. `upload_tmp/` gibt es nur während
-  eines Uploads der WISO-Datenbank; die Datensicherung der App lässt den Ordner aus.
+  (`sql_operations.log`/`.sql`) und, wenn angelegt, `db-export.sql`. `upload_tmp/` hält nur Zwischendateien (den Upload der
+  WISO-Datenbank, das Lesen eines hochgeladenen PDF auf der Seite *Belege*); die Datensicherung der App lässt den Ordner aus.
+  Die Dateien der Seite *Belege* liegen unter `Belege/<Jahr>/` und gehören zur Datensicherung.
 - Für ein Backup genügt es, das gesamte `data/`-Verzeichnis zu sichern.
 - Die Sicherungen eines Benutzers (die Archive der App und die Kopien der Datenbank vor einer Programm-Umstellung) lassen sich über
   die Oberfläche herunterladen: *Sonstiges → Datensicherung*. Eine große Datei liefert der Server direkt aus, in Stücken und nicht

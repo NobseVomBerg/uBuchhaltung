@@ -5,11 +5,17 @@
 File upload handler for receipts and bank statements.
 
 Liefert eine JSON-Antwort mit einer Import-Vorschau pro Beleg, damit die
-Transaktionsseite den Import inline (ohne Seitenwechsel) anzeigen kann.
+Transaktionsseite den Import inline (ohne Seitenwechsel) anzeigen kann
+(``handle_file_upload``, ``POST /upload_receipts``).
+
+Die Belege-Seite hat ihren eigenen Weg (``handle_receipt_upload``, ``POST /receipts/upload``): Jede Datei wird ein Beleg –
+auch ein Kontoauszug –, ohne Import-Vorschau.
 """
 import os
 import json
+import traceback
 
+from . import receipt_files
 from .import_preview import build_import_preview
 from .multipart import parse_multipart
 
@@ -22,6 +28,17 @@ except ImportError:
 # Was die Antwort je Datei sagt, wenn das Ablegen scheitert: ein fester Satz. Der Text einer Systemausnahme nennt Serverpfade –
 # er steht nur im Server-Log. Klartext tragen allein eigene Klassen (``CamtError``, ``DkbCsvError``, ``DocumentExists``).
 UPLOAD_FAILED = 'Die Datei konnte nicht verarbeitet werden – Einzelheiten stehen im Server-Log.'
+
+# Beleg-Upload der Belege-Seite: Die Antwort nennt je Datei nur diese festen Sätze (nie den Text einer Ausnahme, nie einen Pfad)
+RECEIPTS_DEMO_REFUSED = 'Im Demo-Modus ist das Hochladen von Belegen abgeschaltet.'
+RECEIPT_UPLOAD_FAILED = 'Die Datei konnte nicht als Beleg gespeichert werden – Einzelheiten stehen im Server-Log.'
+RECEIPT_EMPTY_FILE = 'Die Datei ist leer.'
+RECEIPT_INVALID_REQUEST = 'Ungültige Anfrage.'
+RECEIPT_TOO_MANY_FILES = 'Höchstens 100 Dateien je Upload.'
+RECEIPT_STATEMENT_HINT = ('Kontoauszug erkannt und als Beleg abgelegt – '
+                          'Umsätze werden auf der Seite „Buchungen“ importiert.')
+RECEIPT_NO_NUMBER_HINT = 'Kein brauchbarer Nummernkreis „Belegnummern Firma“ – der Beleg hat keine Nummer.'
+MAX_RECEIPT_FILES = 100             # so viele Dateien nimmt EIN Upload der Belege-Seite höchstens an
 
 
 def _collect_camt(name, content, statement_files, other_files):
@@ -171,3 +188,41 @@ def handle_file_upload(request_handler, db):
         'files': preview_files,
         'other_files': other_files,
     }, default=str)
+
+
+def _store_receipt(db, filename, content):
+    """Eine hochgeladene Datei als Beleg ablegen; liefert den Eintrag der Antwort (``status`` ``created`` oder ``error``).
+    Jede unerwartete Ausnahme steht nur im Server-Log, die Antwort nennt den festen Satz ``RECEIPT_UPLOAD_FAILED``."""
+    shown = receipt_files.display_name(filename)
+    if not content:
+        return {'filename': shown, 'status': 'error', 'error': RECEIPT_EMPTY_FILE}
+    try:
+        day, statement = receipt_files.receipt_date(shown, content)
+        receipt_id, number, _path = db.insert_receipt_with_file(day, filename, '', content)
+    except Exception:
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
+        return {'filename': shown, 'status': 'error', 'error': RECEIPT_UPLOAD_FAILED}
+    entry = {'filename': shown, 'status': 'created', 'id': receipt_id, 'number': number, 'date': day}
+    hints = [hint for hint, applies in ((RECEIPT_STATEMENT_HINT, statement), (RECEIPT_NO_NUMBER_HINT, not number)) if applies]
+    if hints:
+        entry['hint'] = ' '.join(hints)
+    return entry
+
+
+def handle_receipt_upload(db, content_type, body):
+    """Dateien der Belege-Seite (``POST /receipts/upload``, Multipart) als Belege ablegen: je Datei ein Eintrag mit Nummer aus
+    dem Kreis „Belegnummern Firma“, Datum und Dateiname, die Datei unter ``Belege/<Jahr>/`` (``Database.insert_receipt_with_file``).
+    Ein Kontoauszug ist dabei ein Beleg wie jede andere Datei (``receipt_files.receipt_date`` liest ihn nur für das Datum und den
+    Hinweis): kein Import, nichts in ``pending_imports/``.
+
+    ``body`` ist der schon gelesene Body (der Server prüft Token, Demo-Modus und Größe, bevor er liest). Returns
+    ``(Status, Antwort als dict)``: ``{"success": true, "files": [{"filename", "status": "created"|"error", "id", "number", "date",
+    "hint", "error"}, …]}`` (je Datei nur die zutreffenden Schlüssel). Kein Multipart und keine Datei: 400; mehr als
+    ``MAX_RECEIPT_FILES`` Dateien: 400, nichts angelegt. Eine Datei, die sich nicht ablegen lässt, ist ein Fehler ihrer Zeile –
+    die übrigen werden trotzdem angelegt."""
+    parts = [part for part in parse_multipart(content_type, body) if part.filename]
+    if not parts:
+        return 400, {'success': False, 'error': RECEIPT_INVALID_REQUEST}
+    if len(parts) > MAX_RECEIPT_FILES:
+        return 400, {'success': False, 'error': RECEIPT_TOO_MANY_FILES}
+    return 200, {'success': True, 'files': [_store_receipt(db, part.filename, part.content) for part in parts]}
