@@ -871,6 +871,21 @@ kein Subagent darauf:
   relativ zum Startdatum; pytest-Testdaten bleiben davon getrennt. Der Import aus der WISO-Datenbank ist im Demo-Modus
   abgeschaltet (Route 403, Handler und Seite mit demselben Satz, `wiso_upload.DEMO_REFUSED`): keine Dateien eines Besuchers
   auf dem Server
+- **Der große Bestand (seit 2.5.10):** Neben dem von Hand gepflegten Szenario (`demo_scenario.json`, bleibt unverändert) erzeugt
+  `demo_history.build_history(today, profile)` mehrere Jahre – rein, ohne Datenbank, Zufall und Uhr (Auswahl je Monat über
+  `zlib.crc32`, Tabellen in `seed_data/test/demo_history.json`, Kunden und Artikel aus den Test-Seeddaten). Profil `full` =
+  drei volle Vorjahre und das laufende Jahr (≈ 300 Rechnungen; `demo._seed` → `load_demo_scenario(db)`), `test` = ein Vorjahr.
+  `DemoScenario(db, today, extra=…, documents_days=…)` hängt die Vorgaben an die Listen des Szenarios an (ohne `extra` entsteht
+  genau das Szenario) und lädt alle Rechnungsereignisse über EINE Warteschlange nach Datum (Anlegen, Zahlung, Storno,
+  Ersatzrechnung, Erstattung, Angebot umwandeln): Die Nummern entstehen je Jahr in Datumsfolge, die Rechnungen des Erzeugers
+  über den Weg der Maske (`handlers._invoice_fields`, `allocate_invoice_number`, `set_invoice_status`). PDF/E-Rechnung gibt es
+  nur für die letzten 30 Tage (`documents_days`), und **in den letzten 14 Tagen legt der Erzeuger keine Rechnung an** – das
+  E-Rechnungs-Beispiel (`tools/make_einvoice_samples.py`) bleibt die jüngste 19-%-Rechnung des Szenarios. Das erste Jahr ist ein
+  Kleinunternehmerjahr; drei Bankbewegungen im laufenden Monat bleiben absichtlich offen (der DATEV-Export des laufenden Jahres
+  fragt deshalb nach, abgeschlossene Jahre gehen ohne Hinweis durch). Für abgeschlossene Jahre bleiben Prüfliste, Splits,
+  Übertragsprüfung und DATEV-Export ohne Befund – ändert sich der Erzeuger, die DATEN anpassen, nie die Prüfregeln
+  (`tests/test_demo_history.py`). `load_test_seed_data(include_dated=False)` lässt die fest datierten Buchungen, Anlagen, Angebote und
+  Arbeitszeiten weg (der Demo-Start nutzt es), `convert_quote_to_invoice(quote_id, today=…)` nimmt den Tag der Demodaten
 - README-Bilder neu erzeugen: `node tools/screenshots.mjs` → `docs/screenshots/`
   (hell + `*-dark.png`, README bindet beide per `<picture>` ein)
 

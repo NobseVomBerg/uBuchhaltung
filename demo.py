@@ -131,7 +131,7 @@ def _seed():
     userctx.set_user(USERNAME)            # Database() und Dateiablage zeigen auf data/users/demo/
     try:
         db = Database()
-        db.load_test_seed_data(include_invoices=False)
+        db.load_test_seed_data(include_invoices=False, include_dated=False)
         from demo_seed import load_demo_scenario
         load_demo_scenario(db)
         # Marker zuletzt: bricht das Laden ab, bleibt das Verzeichnis „belegt“ und
