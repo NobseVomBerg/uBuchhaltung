@@ -422,7 +422,8 @@ Anlagenverwaltung mit AfA-Plan:
   Bankbewegung des Zeitraums hängen, bleiben erhalten und werden abgehängt)
 - **Datensicherung**: Backup nach `<UserDir>/backup/JJJJMMTT_Backup.7zip`
   (7-Zip, ohne 7-Zip als `.zip`; wahlweise nur DB oder alle Daten; DB als
-  konsistenter Snapshot) + **Wiederherstellung** (überschreiben oder vorher löschen);
+  konsistenter Snapshot) + **Wiederherstellung** (überschreiben oder vorher löschen; während sie läuft,
+  beantwortet der Server andere Anfragen dieses Benutzers mit einem Hinweis, bis sie fertig ist);
   der Zwischenordner für Uploads (`upload_tmp/`) gehört nicht zur Sicherung. Vorhandene Sicherungen
   (auch die Kopien der Datenbank vor einer Programm-Umstellung) listet die Seite mit Datum und Größe und
   bietet sie zum **Herunterladen** an – große Dateien gehen in Stücken hinaus, nicht über den Speicher
@@ -652,7 +653,8 @@ uBuchhaltung/
 │   ├── multipart.py           # Multipart-Parser (E-Mail-Parser-basiert)
 │   ├── period.py              # Zeitraum-Auswahl (Cookie-basiert)
 │   ├── richtext.py            # Richtext-Filter der Seiten (Modul im Projektstamm)
-│   └── backup.py              # Datensicherung/Wiederherstellung, Download der Sicherungen
+│   ├── backup.py              # Datensicherung/Wiederherstellung, Download der Sicherungen
+│   └── dirlock.py             # Sperre je Datenverzeichnis: Das Wiederherstellen läuft allein
 ├── tests/                     # pytest-Suite (nur anonymisierte Daten,
 │                              #   Guard: tests/check_anonymized.py)
 ├── tools/                     # mcp_ubuchhaltung.py (Diagnose, nur lesend), make_einvoice_samples.py
@@ -700,6 +702,7 @@ uBuchhaltung/
 | `server/wiso_upload.py` | Zwischenablage für den Upload der WISO-Datenbank |
 | `server/import_preview.py` | Kontoauszug-Import-Vorschau |
 | `server/backup.py` | Datensicherung/Wiederherstellung, Download der Sicherungen |
+| `server/dirlock.py` | Sperre je Datenverzeichnis: Das Wiederherstellen läuft allein |
 
 ### Tests
 

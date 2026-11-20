@@ -7,6 +7,7 @@ Main HTTP server class with routing
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, quote, urlsplit
 from http.cookies import SimpleCookie
+import contextlib
 import ipaddress
 import json
 import socket
@@ -20,6 +21,7 @@ import demo
 import userctx
 
 from . import backup
+from . import dirlock
 from . import pages
 from . import handlers
 from . import upload_handler
@@ -306,6 +308,18 @@ _POST_ONLY_JSON_PATHS = frozenset({
 _UPLOAD_PATHS = frozenset({
     "/wiso/fdb-upload",
 })
+
+# Jede Anfrage eines angemeldeten Benutzers läuft unter der Lesesperre seines Datenverzeichnisses (``dirlock``, siehe
+# ``_run_locked``); während einer Wiederherstellung antwortet der Server mit 503. Ausgenommen sind diese Adressen (nur GET): Der
+# Download einer Sicherung liest nur aus backup/ – das eine Wiederherstellung nie anfasst – und kann lange dauern, er darf sie nicht
+# aufhalten; die statischen Dateien gehören zu keinem Datenverzeichnis. Logos (``/data/logos/``) liegen im Datenordner: gesperrt.
+_LOCK_FREE_ROUTES = frozenset({"/backup/download", "/buch.css", "/favicon.ico"})
+
+# Routen, deren Seiten JSON erwarten (fetch/XMLHttpRequest): Die 503 während einer Wiederherstellung kommt dort als JSON, mit den
+# Schlüsseln, die die Seiten lesen (``success``/``error``; ``ok``/``error`` beim Import der Auszüge; ``errors`` der SQL-Konsole).
+_JSON_ANSWER_ROUTES = (_JSON_PATHS | _GENERATE_PATHS | _UPLOAD_PATHS
+                       | frozenset({"/upload_receipts", "/masterdata/contacts/upload-logo",
+                                    "/confirm_transactions", "/execute_sql"}))
 
 
 class SimpleWebServer(BaseHTTPRequestHandler):
@@ -611,6 +625,43 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         self._drain_body()
         self.respond(303, "", headers={"Location": "/login"})
         return False
+
+    def _run_locked(self, dispatch):
+        """Die Anfrage unter der Lesesperre des Datenverzeichnisses bearbeiten (``dirlock``): Während eine Wiederherstellung läuft,
+        antwortet der Server für diesen Benutzer mit 503 statt aus halb ersetzten Dateien. Ohne angemeldeten Benutzer gibt es kein
+        Datenverzeichnis (Anmeldung, Ersteinrichtung, statische Dateien); ``_LOCK_FREE_ROUTES`` gelten nur für GET – eine POST-Anfrage
+        an so eine Adresse öffnet die Datenbank des Benutzers und gehört unter die Sperre.
+
+        ``_gate()`` läuft davor: Es bestimmt den Benutzer und braucht das Datenverzeichnis nicht. Die 503 entsteht nur beim Betreten
+        der Sperre, nie aus einer ``DirBusy``, die ``dispatch`` selbst wirft."""
+        route = self.path.split('?', 1)[0]
+        if userctx.get_user() is None or (self.command == 'GET' and route in _LOCK_FREE_ROUTES):
+            dispatch()
+            return
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(dirlock.shared(userctx.user_data_dir()))
+            except dirlock.DirBusy:
+                self._refuse_restoring(route)
+                return
+            dispatch()
+
+    def _refuse_restoring(self, route):
+        """503 während einer Wiederherstellung: kurzer Hinweis mit ``Retry-After`` – als JSON, wo die Seite JSON erwartet
+        (``_JSON_ANSWER_ROUTES``), sonst als Klartext. Der Body einer POST-Anfrage bleibt ungelesen, die Verbindung wird danach
+        geschlossen (wie bei ``_refuse_body``); danach ist der Kontext der Anfrage geleert."""
+        headers = {"Retry-After": str(dirlock.RETRY_AFTER_SECONDS)}
+        if self.command == 'POST':
+            self.close_connection = True
+            headers["Connection"] = "close"
+        else:
+            self._drain_body()
+        if route in _JSON_ANSWER_ROUTES:
+            text = dirlock.RESTORE_RUNNING
+            self._respond_json(503, {'success': False, 'ok': False, 'error': text, 'errors': [text]}, headers=headers)
+        else:
+            self.respond(503, dirlock.RESTORE_RUNNING, headers=headers, content_type="text/plain; charset=utf-8")
+        userctx.clear()
 
     def _respond_post_only(self):
         """405 für eine Aktion, die es nur per POST gibt."""
@@ -1043,6 +1094,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._gate():
             return
+        self._run_locked(self._dispatch_get)
+
+    def _dispatch_get(self):
         if self._auth_routes_get():
             userctx.clear()
             return
@@ -1472,6 +1526,9 @@ class SimpleWebServer(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._gate():
             return
+        self._run_locked(self._dispatch_post)
+
+    def _dispatch_post(self):
         if self._auth_routes_post():
             userctx.clear()
             return

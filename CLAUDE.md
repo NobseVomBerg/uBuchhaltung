@@ -304,7 +304,18 @@ kein Subagent darauf:
   einer Systemausnahme: Die stehen im Server-Log (`from e`, `print`). Scheitert `create_backup`, wird das Teilarchiv entfernt
   (der Name war frei, es ist nie eine fremde Datei); `list_backups` nennt nur reguläre Dateien, keine Ordner oder Links.
   Scheitert beim Überschreiben erst der Schritt der Datenbank, sagt die Meldung den Stand (`OVERLAY_DB_FAILED`; bleibt eine
-  Begleitdatei der alten Datenbank liegen: `OVERLAY_SIDECARS_LEFT` – die übrigen werden trotzdem entfernt)
+  Begleitdatei der alten Datenbank liegen: `OVERLAY_SIDECARS_LEFT` – die übrigen werden trotzdem entfernt). **Wiederherstellen läuft
+  allein (seit 2.5.6, `server/dirlock.py`):** Jede Anfrage eines angemeldeten Benutzers läuft unter der Lesesperre seines
+  Datenverzeichnisses (`SimpleWebServer._run_locked`; `do_GET`/`do_POST` bestehen nur aus `_gate()` und `_run_locked` – keinen Zweig
+  daran vorbei bauen; ausgenommen `_LOCK_FREE_ROUTES`: `/backup/download`, `/buch.css`, `/favicon.ico`, nur GET), `handle_backup_restore`
+  nimmt die ausschließliche: Neue Anfragen bekommen sofort 503 mit `Retry-After` (als JSON auf den Routen, die ihre Seiten als JSON
+  lesen: `_JSON_ANSWER_ROUTES`), auf laufende wartet es höchstens `RESTORE_WAIT_SECONDS` = 30 s, sonst wird abgelehnt und nichts
+  geändert. Ob es das Archiv gibt, prüft der Handler VOR der ausschließlichen Sperre (`backup.has_archive`): Ein Versuch, der nie
+  beginnen kann, hält keine Anfrage auf. Im Demo-Modus (alle Besucher teilen ein Verzeichnis) wartet das Wiederherstellen nur
+  `DEMO_WAIT_SECONDS` = 2 s und ruht nach einer Ablehnung `DEMO_COOLDOWN_SECONDS` = 60 s (neue Versuche werden sofort abgelehnt, ohne
+  Anfragen aufzuhalten) – nicht verlängern bzw. streichen. Reihenfolge der Sperren: `dirlock` außen, `_exclusive` innen – nie umdrehen. Die Sperre gilt in einem Prozess; nicht
+  erfasst sind ein zweiter Serverprozess auf demselben Datenordner, Zugriffe von Hand und der Umzug beim Start
+  (`tests/test_dirlock.py`)
 - **Sicherungen herunterladen (seit 2.5.5, `GET /backup/download?file=<Name>`):** Die Seite *Sonstiges* listet die Sicherungen
   des angemeldeten Benutzers (Name, Art, Datum, Größe) mit einem Link. Angeboten wird allein, was `backup.downloadable_backups`
   nennt – eine Positivliste: die Archive und die Kopien vor einer Programm-Umstellung (`<Datum>_vor_<Version>[_n]_buch.db`, nur
