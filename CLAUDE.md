@@ -108,6 +108,22 @@ kein Subagent darauf:
   entfallen Netto und „gültig bis“ (`.docWide`), bis 1440px steht das Formular unter der niedrig gehaltenen Liste. Gerechnet
   wird in CSS-Pixeln: Ein 1920er Bildschirm mit 150 % Skalierung zählt als 1280px – die Seite nie selbst gegen die
   Skalierung verkleinern (`zoom`, `devicePixelRatio`). `tests/test_document_page_layout.py`
+- **Dritte Menüzeile (Zeitraum, seit 2.6.5):** Sie entsteht auf jeder Seite mit Zeitraum (Dashboard, Buchungen, Rechnungen, Belege, Arbeitszeiten,
+  Fahrten und die vier Auswertungen) allein aus `period.period_filter_widget` – Von/Bis, fünf Jahresknöpfe in einem eigenen Block, Monatsknöpfe –
+  und **nie als eigenes Formular einer Seite**: Auswahlfelder und farbige Knöpfe sind höher als die Knöpfe der Zeile, die Querlinie unter den drei
+  Menüzeilen spränge von Seite zu Seite (gemessen: 113 statt 109px, solange BWA, EÜR, Summen- und Saldenliste und Liquidität ein eigenes Formular
+  hatten). Je Seite hält ein Test fest, dass der Inhalt von `.header3` genau das ist, was die Hilfsfunktion liefert (`tests/test_period_menu_row.py`).
+  Die Knöpfe der Zeile sind etwas schmaler als der Browser-Standard (`.header3 button` in `buch.css`): So bleiben fünf Jahres- und zwölf Monatsknöpfe bis
+  hinunter zu rund 1040px Fensterbreite in einer Zeile (gemessen: die Linie liegt von 1500 bis 1040px auf allen Seiten bei 109px; darunter bricht der
+  Monatsblock um). Der aktive Jahres- und Monatsknopf ist in beiden Farbschemata hervorgehoben (`button.active`).
+  Es gibt drei Arten von Monatsknöpfen (`months=`): `toggle` (Standard: ein Klick auf den aktiven Monat schaltet aufs ganze Jahr), `always`
+  (Monatsauswertungen: immer genau ein Monat ist aktiv, sein Knopf führt auf ihn selbst) und `none` (Dashboard: kein Monatsblock, die Jahresknöpfe
+  wählen immer das ganze Jahr). Zusatzparameter einer Seite stehen in `extra_params` (eine Liste wiederholt den Schlüssel: `acct=1&acct=2`).
+  **Die Auswertungen nehmen den gemeinsamen Zeitraum** (Adresse > Cookie > laufendes Jahr, `resolve_period`, das Cookie wie überall); die
+  Monatsauswertungen (BWA, Summen- und Saldenliste, Liquidität) leiten ihren Monat daraus ab (`period.period_month`): Ein Zeitraum, der genau ein
+  Kalendermonat ist, zeigt diesen Monat, jeder andere den Monat des Bis-Datums – ein ganzes Jahr also seinen Dezember –, im laufenden Jahr höchstens
+  den laufenden Monat. Eine Zusatzauswahl einer Seite (die „Darstellung“ von BWA und Liquidität: ein kleines GET-Formular mit den versteckten Feldern
+  `from`/`to`) steht im Inhalt, in der Zeile mit dem PDF-Knopf – nie in der Menüzeile
 
 ### Development-Server
 - Port 8080 kann jederzeit gekillt & neu gestartet werden
@@ -833,11 +849,15 @@ kein Subagent darauf:
   bei der Anzeige: Trägt ein Bestand Beträge mit Bruchteilen eines Cents, kann eine gedruckte Summe um wenige Cent von der Summe der gedruckten
   Zeilen abweichen (wie in der EÜR) – nicht glätten, die Gleichheit mit der EÜR geht vor. Zwei Konten gleicher Nummer (verschiedene
   Kontenrahmen) stehen im Kontennachweis als eine Zeile unter dem zuerst gefundenen Namen. **Zeitraum und Darstellung:** der Monat und
-  aufgelaufen ab 1. Januar, streng gelesen (`parse_year`, `parse_month`, `parse_variant`; ein doppelter Schlüssel ist ungültig) – die Seite nimmt
-  bei fehlendem Zeitraum den Vormonat, bei ungültigem ebenfalls (mit Hinweis), das PDF antwortet 400; die Darstellung ist der Vergleich mit dem
-  Vorjahr (Standard, auf der Seite auch bei ungültiger Angabe) oder `variant=jahr` (Monat und Jahr mit Anteilen). Das PDF ist A4 quer, mehrseitig
+  aufgelaufen ab 1. Januar. Die Seite nimmt den gemeinsamen Zeitraum der Seiten (`from`/`to` in der Adresse, sonst das Cookie, sonst das laufende
+  Jahr – `resolve_period`; das Cookie setzt die Route wie bei jeder Seite mit Zeitraum) und leitet ihren Monat daraus ab (`period.period_month`, siehe
+  *Dritte Menüzeile*); `year` und `month` liest sie nicht mehr (eine Adresse der alten Form ist eine Adresse ohne Zeitraum), einen Hinweis „ungültig“
+  gibt es nicht – ein ungültiger Zeitraum wird wie überall verworfen. Das PDF liest `year`, `month` und `variant` streng (`parse_year`, `parse_month`,
+  `parse_variant`; ein doppelter Schlüssel ist ungültig, 400 bei einem Fehler) und setzt kein Cookie; die Darstellung ist der Vergleich mit dem
+  Vorjahr (Standard, auf der Seite auch bei ungültiger Angabe) oder `variant=jahr` (Monat und Jahr mit Anteilen), ihre Auswahl steht im Inhalt (kleines
+  GET-Formular mit den Feldern `from`/`to`, kein „Anzeigen“-Knopf). Das PDF ist A4 quer, mehrseitig
   und landet nie auf der Platte (Download über `appDownload`; Dateiname `BWA_JJJJ-MM.pdf`, mit Anteilen `…_Anteile.pdf`). `/bwa` steht in der
-  Positivliste des Diagnose-MCP (es schreibt nichts, Nachweis im Test), `/bwa/pdf` nicht. Fester Hinweis: keine Steuerberatung.
+  Positivliste des Diagnose-MCP (es schreibt nichts in den Bestand, Nachweis im Test), `/bwa/pdf` nicht. Fester Hinweis: keine Steuerberatung.
   `tests/test_bwa.py`, `tests/test_bwa_pdf.py`
 - **EÜR-Ansicht (seit 2.5.16, `db/euer.py`, `server/pages_euer.py`, `export/pdf_euer.py`; `GET /euer`, `GET /euer/pdf`):** EINE Aufbereitung für den
   Kasten der EÜR im Dashboard und die Seite (`db.euer.euer_statement`: die Zeilen von `get_euer_data` nach `reporting.euer_section` in Einnahmen,
@@ -848,15 +868,17 @@ kein Subagent darauf:
   von 2.5.14: Ein Ergebnis von genau 0 ist grün (der Kasten rechnete die Summen als `float`; ein Rest von −5,55e-17 färbte das „0,00 €“ rot), und
   bei Summen ab rund 6·10¹¹ € kann der letzte Cent anders – nämlich richtig – gerundet sein (die `float`-Summe verlor dort Stellen); die Zeilen
   selbst sind immer gleich. Ein leerer Wert in der Adresse (`from=`) gilt als nicht angegeben (`parse_qs` lässt ihn fallen, wie bei `/bwa`). Die Seite
-  hat **keinen Kontofilter** (mit Filter fielen das Verrechnungskonto 1460 und die AfA weg, es wäre keine EÜR mehr). Der Zeitraum (`from`, `to`) wird
-  streng gelesen (`period.parse_iso_date`): beide sind nötig, `from` liegt nicht nach `to` – **kein stiller Tausch**, anders als bei `valid_period` –, ein
-  doppelter Schlüssel ist ungültig; die Seite zeigt dann das laufende Jahr mit Hinweis, das PDF antwortet 400 „Ungültiger Zeitraum.“. Kein Cookie wird
-  gelesen oder gesetzt; die fünf Jahreslinks rechnen aus dem `today`, das die Route übergibt. Das PDF ist A4 hoch, mehrseitig und landet nie auf der Platte
+  hat **keinen Kontofilter** (mit Filter fielen das Verrechnungskonto 1460 und die AfA weg, es wäre keine EÜR mehr). Die Seite nimmt den gemeinsamen
+  Zeitraum der Seiten (`from`, `to` in der Adresse, sonst das Cookie, sonst das laufende Jahr – `resolve_period`): Ein ungültiger Wert wird wie überall
+  verworfen, ohne Hinweis, ein Paar mit `from` nach `to` getauscht (`valid_period`), das Cookie setzt die Route wie bei jeder Seite mit Zeitraum; ihre
+  Menüzeile ist `period_filter_widget` (die fünf Jahresknöpfe rechnen aus dem `today`, das die Route übergibt). Das PDF liest den Zeitraum weiter streng
+  (`period.parse_iso_date`): beide sind nötig, `from` liegt nicht nach `to` – **kein stiller Tausch** –, ein doppelter Schlüssel ist ungültig, 400
+  „Ungültiger Zeitraum.“, kein Cookie. Das PDF ist A4 hoch, mehrseitig und landet nie auf der Platte
   (Download über `appDownload`; Dateiname `EUER_JJJJ.pdf` für ein volles Kalenderjahr, sonst `EUER_von_bis.pdf`); seine Bausteine (Text bereinigen,
   kürzen, umbrechen, Zelle, Linie, Seitenverteilung) stehen in `export/pdf_table.py` und gelten auch für `pdf_bwa`, dessen Ausgabe dabei dieselbe blieb
   (Schnappschuss in `tests/test_pdf_table.py`). Fester Hinweis: kein amtliches Formular, keine Steuerberatung. **Untermenü der Auswertungen:** `REPORT_PAGES`
   und `reports_submenu` in `server/pages_bwa.py` (seit 2.6.3 mit der Liquidität als viertem Eintrag); jede Seite darunter ruft `Header1('bwa')` auf (der Menüpunkt bleibt markiert). `/euer` steht in der
-  Positivliste des Diagnose-MCP (es schreibt nichts, Nachweis im Test), `/euer/pdf` nicht. `tests/test_euer_view.py`, `tests/test_pdf_table.py`
+  Positivliste des Diagnose-MCP (es schreibt nichts in den Bestand, Nachweis im Test), `/euer/pdf` nicht. `tests/test_euer_view.py`, `tests/test_pdf_table.py`
 - **Summen- und Saldenliste (seit 2.5.17, `db/susa.py`, `Database.get_susa`, `server/pages_susa.py`, `export/pdf_susa.py`; `GET /susa`, `GET /susa/pdf`):** je Konto
   Anfangssaldo, Soll und Haben im Monat und aufgelaufen seit dem 1. Januar, Endsaldo (`1.234,56 S`/`H`). **Sie liest dieselben Zeilen wie der Export für das Steuerbüro und
   hat keine eigene Lesart:** `accounts.LEDGER_ROWS_WHERE` ist das `WHERE` von `fetch_bookings_range` (alle Sätze außer den Bankbewegungen bis Monatsende, die Vorjahre bilden den
@@ -890,9 +912,11 @@ kein Subagent darauf:
   Haben − Soll der Liste, die Umsatzsteuer der EÜR = 3801 plus 3806) – es geht auf, wo jeder Satz einer Bankbewegung oder der Kasse zugeordnet ist; Sätze ohne Bankbewegung, Umbuchungen ohne Zahlung und Status `resolved`
   zählt die Liste nach ihrem Datum, die EÜR nicht. **Laufzeit:** Die Sätze werden in SQL nach dem gruppiert, was ihre Lesart bestimmt (Form, Konten, Richtung des Betrags und der Steuer, Satz, Zeitraum, Konto der Bankbewegung), und je Gruppe
   einmal gebucht (`book_group`, die Regel ist linear) – nie wieder eine Zeile je Satz in Python; reicht eine Summe über 2^63 Minor Units hinaus (SQLite wirft `integer overflow`), rechnet `reporting._sum_groups` dieselbe Abfrage in Python (jeder andere
-  Datenbankfehler geht weiter), und ein Name, der kein Text ist (Blob, NULL), wird als Text gelesen (`_name_text`). Die Seite liest die Adresse streng (`year`, `month` über `parse_year`/`parse_month`, ein doppelter Schlüssel ist ungültig: Vormonat mit Hinweis, das PDF
-  antwortet 400), setzt kein Cookie und schreibt nichts; das PDF (A4 quer, mehrseitig, `Summen_und_Salden_JJJJ-MM.pdf`) landet nie auf der Platte. Texte ohne Marken- und Produktnamen; fester Hinweis: keine Steuerberatung, ohne Zusicherung der
-  Richtigkeit. **Diese Regeln nicht still ändern.** `/susa` steht in der Positivliste des Diagnose-MCP (es schreibt nichts, Nachweis im Test), `/susa/pdf` nicht. `tests/test_susa.py`, `tests/test_susa_pdf.py`
+  Datenbankfehler geht weiter), und ein Name, der kein Text ist (Blob, NULL), wird als Text gelesen (`_name_text`). Die Seite nimmt den gemeinsamen Zeitraum (`from`/`to` in der Adresse, sonst das Cookie, sonst das laufende Jahr – `resolve_period`; das Cookie
+  setzt die Route wie bei jeder Seite mit Zeitraum) und leitet ihren Monat daraus ab (`period.period_month`); `year` und `month` liest sie nicht mehr, einen
+  Hinweis „ungültig“ gibt es nicht. Sie schreibt nichts in den Bestand; das PDF liest `year` und `month` streng (`parse_year`/`parse_month`, ein doppelter
+  Schlüssel ist ungültig, 400) und setzt kein Cookie (A4 quer, mehrseitig, `Summen_und_Salden_JJJJ-MM.pdf`, landet nie auf der Platte). Texte ohne Marken- und Produktnamen; fester Hinweis: keine Steuerberatung, ohne Zusicherung der
+  Richtigkeit. **Diese Regeln nicht still ändern.** `/susa` steht in der Positivliste des Diagnose-MCP (es schreibt nichts in den Bestand, Nachweis im Test), `/susa/pdf` nicht. `tests/test_susa.py`, `tests/test_susa_pdf.py`
 - **Liquiditätsrechnung (seit 2.6.3, `db/liquidity.py`, `Database.get_liquidity`, `server/pages_liquidity.py`, `export/pdf_liquidity.py`; `GET /liquiditaet`, `GET /liquiditaet/pdf`):** vom Ergebnis der
   BWA zur Veränderung der flüssigen Mittel – ein Monat und aufgelaufen seit dem 1. Januar, im Vorjahresvergleich (Standard, acht Wertspalten) oder als „Monat und Jahr“ (`variant=jahr`, zwei
   Spalten, **keine Anteile**: ein Anteil an Erlösen ergäbe bei Liquidität keinen Sinn). **Sie hat keine eigene Lesart der Buchungen:** Gerechnet wird nur mit den Zeilen von `get_euer_data` (ohne Kontofilter,
@@ -929,11 +953,12 @@ kein Subagent darauf:
   Aufwand und Anlagenzugang heben sich auf) und die Umbuchung unter einer Bankbewegung (der Restbuchwert im Split des Verkaufs, „0670 an Bank“ mit „6260 an 0670“ in einem Beleg, eine im Editor zugeordnete AfA; trägt die Bewegung NUR
   die Umbuchung, bleibt ihr Betrag als unstimmiger Split in „Nicht zugeordnet“). Dazu prüft ein Test die Zerlegung von `get_euer_data(…, only_asset_transfers=True)`: Saldo(alle) − Saldo(nur Umbuchungen) = Saldo eines Bestands, aus dem genau diese Sätze gelöscht
   sind. **Diese Erwartungen nicht lockern** – ändert
-  sich ein Wert, ist die Ursache zu klären. **Seite:** Untermenü der Auswertungen (`REPORT_PAGES`, vierter Eintrag „Liquidität“), `Header1('bwa')`; die Adresse (`year`, `month`, `variant`) liest dieselbe strenge Regel wie die BWA
-  (`pages_bwa.read_page_query`/`read_pdf_query`: ungültiger Zeitraum → Seite zeigt den Vormonat mit Hinweis, das PDF antwortet 400; unbekannte Darstellung → Seite Standard, PDF 400); kein Cookie, nichts wird geschrieben; die Seite nutzt nur
+  sich ein Wert, ist die Ursache zu klären. **Seite:** Untermenü der Auswertungen (`REPORT_PAGES`, vierter Eintrag „Liquidität“), `Header1('bwa')`; Zeitraum und Darstellung wie bei der BWA: Die Seite nimmt den gemeinsamen Zeitraum (`resolve_period`,
+  das Cookie wie überall; ihr Monat folgt aus `period.period_month`) und liest aus der Adresse nur `variant` (`pages_bwa.read_variant`: unbekannt oder doppelt → Standard, ohne Hinweis); das PDF liest `year`, `month` und `variant`
+  streng (`pages_bwa.read_pdf_query`: 400 bei einem Fehler) und setzt kein Cookie; nichts wird in den Bestand geschrieben; die Seite nutzt nur
   vorhandene Klassen (`bwaTable` …), ihr Skript nur `var` und `function` mit dem Präfix `liq`; unter den Zeilen mit Konten lassen sich diese aufklappen. Fester Hinweis: „Aus den Buchungen dieser App gerechnet. Keine Steuerberatung; ersetzt
   nicht die Auswertung eines Steuerbüros.“ – ohne Marken- und Produktnamen. **PDF:** A4 quer, mehrseitig, nie auf der Platte (Download über `appDownload`; `Liquiditaet_JJJJ-MM.pdf`, in der Darstellung „Monat und Jahr“ `…_Monat_Jahr.pdf`), auf Wunsch mit
-  Kontennachweis, hinter der Tabelle ein Textblock mit dem Satz zur Abstimmung; seine Bausteine stehen in `export/pdf_table.py`. `/liquiditaet` steht in der Positivliste des Diagnose-MCP (es schreibt nichts, Nachweis im Test), `/liquiditaet/pdf` nicht;
+  Kontennachweis, hinter der Tabelle ein Textblock mit dem Satz zur Abstimmung; seine Bausteine stehen in `export/pdf_table.py`. `/liquiditaet` steht in der Positivliste des Diagnose-MCP (es schreibt nichts in den Bestand, Nachweis im Test), `/liquiditaet/pdf` nicht;
   die Routen stehen in keiner der Mengen `_ACTION_PATHS`, `_JSON_PATHS` und `_LOCK_FREE_ROUTES`. **Laufzeit** (gemessen an einem Bestand mit 200 000 Buchungssätzen): rund 2,5 s im Vorjahresvergleich (vier Spannen), rund 1,4 s als „Monat und Jahr“,
   im Demobestand `full` rund 10 bis 20 ms; je Spanne zwei Aufrufe von `get_euer_data` (alle Zeilen und nur die Umbuchungen, je rund 0,1 s); den größten Teil macht die Übertragsrechnung (`_settle_stock`, liest den ganzen Bestand,
   je Aufruf rund 0,3 s) aus – `_dashboard_movements` ruft sie je Spanne, die Liquiditätsrechnung selbst nur einmal je Aufruf.

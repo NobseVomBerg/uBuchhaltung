@@ -6,23 +6,29 @@ Betriebswirtschaftliche Auswertung (``GET /bwa``, ``GET /bwa/pdf``).
 
 Die Seite zeigt einen Monat und – aufgelaufen – die Zeit seit dem 1. Januar, wahlweise mit Anteilen oder im Vergleich mit dem
 Vorjahr; unter jeder Zeile lassen sich ihre Konten aufklappen. Gerechnet wird in ``db.bwa`` (eine Umgruppierung der EÜR), hier
-steht nur das Lesen der Adresse und das HTML. Die Seite schreibt nichts: kein Cookie, keine Einstellung, keine Datei.
+steht nur das Lesen der Adresse und das HTML. Die Seite schreibt nichts in den Bestand: keine Einstellung, keine Datei (das Cookie
+des gemeinsamen Zeitraums setzt die Route wie bei jeder Seite mit Zeitraum).
 
 Jeder Wert aus Datenbank oder Adresse steht maskiert im HTML (``html.escape``); die Daten des Skripts gehen über ``script_json``.
-Gelesen wird die Adresse streng (``parse_year``, ``parse_month``, ``parse_variant``): ein Schlüssel, der mehrfach vorkommt, ist ungültig.
+Die Seite nimmt den gemeinsamen Zeitraum (``from``/``to`` in der Adresse, sonst das Cookie, sonst das laufende Jahr – ``period.resolve_period``)
+und leitet ihren Monat daraus ab (``period.period_month``); ihre Menüzeile ist ``period_filter_widget`` mit Monatsknöpfen der Art
+``always``. Nur die Darstellung (``variant``) liest ``read_variant`` aus der Adresse. Das PDF liest ``year``, ``month`` und ``variant`` streng
+(``parse_year``, ``parse_month``, ``parse_variant``, ``read_pdf_query``): ein Schlüssel, der mehrfach vorkommt, ist ungültig.
 
 Das Untermenü der Auswertungen (``REPORT_PAGES``, ``reports_submenu``) steht hier und gilt für jede Seite darunter (BWA, EÜR, Summen- und
-Saldenliste, Liquidität): Sie rufen alle ``Header1('bwa')`` auf, damit der Menüpunkt „Auswertungen“ markiert bleibt. Die Adresse (``year``, ``month``,
-``variant``) liest ``read_page_query`` bzw. ``read_pdf_query`` auch für die Liquiditätsrechnung (``pages_liquidity``).
+Saldenliste, Liquidität): Sie rufen alle ``Header1('bwa')`` auf, damit der Menüpunkt „Auswertungen“ markiert bleibt. Hier stehen auch die
+Bausteine der drei Monatsauswertungen (``report_period``, ``reports_period_row``, ``variant_form``); die Seite der Liquiditätsrechnung
+(``pages_liquidity``) und die Summen- und Saldenliste (``pages_susa``) nutzen sie ebenso.
 """
+import calendar
 import html as _html
 from dataclasses import dataclass
 
 from db import Database
-from db.bwa import (DEFAULT_VARIANT, HINT_TEXT, INVALID_PERIOD_TEXT, MONTH_NAMES, OUTSIDE_HEADING, PERCENT_TEXT, SIGN_TEXT, TITLE,
-                    UNASSIGNED_TEXT, VARIANT_LABELS, VARIANTS, BwaLine, BwaReport, block_headers, cells, column_labels,
-                    default_month, month_label, visible, visible_accounts)
+from db.bwa import (DEFAULT_VARIANT, HINT_TEXT, OUTSIDE_HEADING, PERCENT_TEXT, SIGN_TEXT, TITLE, UNASSIGNED_TEXT, VARIANT_LABELS,
+                    VARIANTS, BwaLine, BwaReport, block_headers, cells, column_labels, month_label, visible, visible_accounts)
 from .pages import Footer, Header1, Header2, Header3, script_json
+from .period import MONTHS_ALWAYS, period_filter_widget
 
 MIN_YEAR, MAX_YEAR = 1900, 2999
 INVALID_PERIOD_ERROR = 'Ungültiger Zeitraum.'
@@ -36,12 +42,11 @@ REPORT_PAGES = (('bwa', '/bwa', 'BWA'), ('euer', '/euer', 'EÜR'), ('susa', '/su
 
 @dataclass(frozen=True)
 class BwaQuery:
-    """Was die Adresse verlangt: Jahr, Monat und Darstellung; ``invalid``: Der angegebene Zeitraum ließ sich nicht lesen, es gilt der
-    Vormonat (die Seite sagt es)."""
+    """Was angezeigt wird: Jahr, Monat und Darstellung (die Seite leitet Jahr und Monat vom gemeinsamen Zeitraum ab, das PDF liest sie aus
+    der Adresse)."""
     year: int
     month: int
     variant: str
-    invalid: bool = False
 
 
 def parse_year(text) -> int | None:
@@ -76,19 +81,11 @@ def _single(qs: dict, name: str) -> tuple[bool, str | None]:
     return True, values[0] if len(values) == 1 else None
 
 
-def read_page_query(qs: dict, today) -> BwaQuery:
-    """Die Adresse der Seite lesen. Ohne Jahr und Monat gilt der Vormonat; ist einer von beiden ungültig oder fehlt nur einer,
-    ebenfalls – dann mit ``invalid`` (Hinweis auf der Seite). Eine fehlende oder ungültige Darstellung ist der Vorjahresvergleich,
-    ohne Hinweis."""
-    year_given, year_text = _single(qs, 'year')
-    month_given, month_text = _single(qs, 'month')
-    _, variant_text = _single(qs, 'variant')
-    variant = parse_variant(variant_text) or DEFAULT_VARIANT
-    year, month = parse_year(year_text), parse_month(month_text)
-    if year is not None and month is not None:
-        return BwaQuery(year, month, variant)
-    default_year, default_month_number = default_month(today)
-    return BwaQuery(default_year, default_month_number, variant, invalid=year_given or month_given)
+def read_variant(qs: dict) -> str:
+    """Die Darstellung, die die Seite zeigt (BWA und Liquidität): ``jahr`` oder ``vorjahr``. Fehlt sie, kommt sie mehrfach vor oder ist sie
+    unbekannt, gilt der Vorjahresvergleich – ohne Hinweis."""
+    _, text = _single(qs, 'variant')
+    return parse_variant(text) or DEFAULT_VARIANT
 
 
 def read_pdf_query(qs: dict) -> tuple[BwaQuery | None, str | None]:
@@ -118,6 +115,33 @@ def reports_submenu(active: str) -> str:
     (``active`` ist ihr Schlüssel) steht als Text, wie in den Stammdaten."""
     return ' | '.join(f'<span id="ActivePage">{_esc(label)}</span>' if key == active else f'<a href="{_esc(path)}">{_esc(label)}</a>'
                       for key, path, label in REPORT_PAGES)
+
+
+def report_period(year: int, month: int, date_from: str | None, date_to: str | None) -> tuple[str, str]:
+    """Der Zeitraum, den eine Monatsauswertung in ihrer Menüzeile führt: der gemeinsame Zeitraum der Seiten – ohne ihn (die Seite direkt
+    aufgerufen) der Monat der Abfrage, vom 1. bis zum letzten Tag."""
+    if date_from is not None and date_to is not None:
+        return date_from, date_to
+    last = calendar.monthrange(year, month)[1]
+    return f'{year}-{month:02d}-01', f'{year}-{month:02d}-{last:02d}'
+
+
+def reports_period_row(path: str, date_from: str, date_to: str, today, variant: str | None = None) -> str:
+    """Die dritte Menüzeile einer Monatsauswertung (für ``Header3``): ``period_filter_widget`` mit Monatsknöpfen der Art ``always`` – immer
+    ist genau ein Monat aktiv, den die Seite nach ``period_month`` zeigt. Die Darstellung steht in den Adressen der Knöpfe, solange sie nicht
+    der Standard ist: Ein Zeitraumwechsel behält sie."""
+    extra = {'variant': None if variant == DEFAULT_VARIANT else variant}
+    return period_filter_widget(date_from, date_to, path, extra_params=extra, months=MONTHS_ALWAYS, today=today)
+
+
+def variant_form(path: str, date_from: str, date_to: str, variant: str, labels: dict) -> str:
+    """Die Auswahl „Darstellung“ (BWA und Liquidität) als kleines GET-Formular für die Zeile mit dem PDF-Knopf im Inhalt – nicht in der
+    Menüzeile: Ein Auswahlfeld ist höher, die Querlinie unter den Menüzeilen spränge. Der Zeitraum geht in versteckten Feldern mit, ein
+    Wechsel lädt sofort neu (kein „Anzeigen“-Knopf)."""
+    options = ''.join(f'<option value="{_esc(key)}"{" selected" if key == variant else ""}>{_esc(labels[key])}</option>' for key in VARIANTS)
+    return (f'<form method="get" action="{_esc(path)}" class="rowWithObjects">'
+            f'<input type="hidden" name="from" value="{_esc(date_from)}"><input type="hidden" name="to" value="{_esc(date_to)}">'
+            f'<label>Darstellung <select name="variant" onchange="this.form.submit()">{options}</select></label></form>')
 
 
 # Aufklappen der Konten unter einer Zeile: Die Konten sind Zeilen mit data-bwa-parent, das Symbol hat die ID bwa-icon-<Schlüssel>.
@@ -188,35 +212,24 @@ def _table(report: BwaReport) -> str:
     return s + '</tbody></table>'
 
 
-def _form(query: BwaQuery) -> str:
-    months = ''.join(f'<option value="{number}"{" selected" if number == query.month else ""}>{_esc(name)}</option>'
-                     for number, name in enumerate(MONTH_NAMES, start=1))
-    variants = ''.join(f'<option value="{_esc(key)}"{" selected" if key == query.variant else ""}>'
-                       f'{_esc(VARIANT_LABELS[key])}</option>' for key in VARIANTS)
-    return ('<form method="get" action="/bwa" class="rowWithObjects">'
-            f'<label>Monat <select name="month">{months}</select></label>'
-            f'<label>Jahr <input type="number" name="year" min="{MIN_YEAR}" max="{MAX_YEAR}" value="{_esc(query.year)}" required></label>'
-            f'<label>Darstellung <select name="variant">{variants}</select></label>'
-            '<button type="submit" class="coloredButton bg-blue btn-sm">Anzeigen</button></form>')
-
-
-def PageBwa(db: Database, query: BwaQuery) -> str:
-    """Die Seite zu einer geprüften Abfrage (``read_page_query``)."""
+def PageBwa(db: Database, query: BwaQuery, date_from: str | None = None, date_to: str | None = None, today=None) -> str:
+    """Die Seite zu einem Monat und einer Darstellung (``query``); ``date_from``/``date_to`` ist der gemeinsame Zeitraum der Menüzeile
+    (ohne ihn der Monat der Abfrage), ``today`` bestimmt dort das laufende Jahr."""
+    date_from, date_to = report_period(query.year, query.month, date_from, date_to)
     report = db.get_bwa(query.year, query.month, query.variant)
     s = Header1('bwa')
     s += Header2(reports_submenu('bwa'))
-    s += Header3(_form(query))
+    s += Header3(reports_period_row('/bwa', date_from, date_to, today, query.variant))
     s += '<div class="rectRounded">'
     s += f'<h3>{_esc(TITLE)} – {_esc(month_label(query.year, query.month))}</h3>'
     s += f'<p class="hint">{_esc(HINT_TEXT)} {_esc(SIGN_TEXT)} {_esc(PERCENT_TEXT)}</p>'
-    if query.invalid:
-        s += f'<p class="warnColor">{_esc(INVALID_PERIOD_TEXT)}</p>'
     if visible(report, report.line('unassigned_income')) or visible(report, report.line('unassigned_expense')):
         s += f'<p class="hint">{_esc(UNASSIGNED_TEXT)}</p>'
     s += ('<div class="rowWithObjects">'
           '<button type="button" class="coloredButton bg-blue btn-sm" onclick="bwaPdf()">PDF</button>'
           '<label><input type="checkbox" id="bwaAccounts" checked> mit Kontennachweis</label>'
           '<button type="button" class="coloredButton bg-gray btn-sm" onclick="bwaToggleAll()">Alle Konten auf-/zuklappen</button>'
+          + variant_form('/bwa', date_from, date_to, query.variant, VARIANT_LABELS) +
           '</div>')
     s += f'<div class="splitScroll">{_table(report)}</div>'          # in einem schmalen Fenster rollt die Tabelle in sich
     s += '</div>'

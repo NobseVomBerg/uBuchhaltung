@@ -317,7 +317,7 @@ def test_without_a_filter_no_address_of_the_page_names_a_customer(tmp_db):
     assert 'customer=' not in data_block(dom, 'WT_DATA')['pdfBase']
     assert not [a for t, a in dom.tags if t == 'a' and 'customer=' in (a.get('onclick') or '')]
     buttons = [a['onclick'] for t, a in dom.tags if t == 'button' and '/worktime?from=' in (a.get('onclick') or '')]
-    assert len(buttons) == 16 and not [onclick for onclick in buttons if 'customer' in onclick]     # 4 Jahre, 12 Monate
+    assert len(buttons) == 17 and not [onclick for onclick in buttons if 'customer' in onclick]     # 5 Jahre, 12 Monate
     [script] = [script for script in dom.scripts if 'function gotoPeriod()' in script]
     assert 'customer' not in script
 
@@ -326,7 +326,7 @@ def test_the_period_filter_and_the_selection_keep_the_filter_the_person_selectio
     s = _scenario(tmp_db)
     dom = Dom(_page(tmp_db, s, s.x))
     buttons = [a['onclick'] for t, a in dom.tags if t == 'button' and '/worktime?from=' in (a.get('onclick') or '')]
-    assert len(buttons) == 16
+    assert len(buttons) == 17                                                                        # 5 Jahre, 12 Monate
     assert all(onclick.endswith(f"&person={s.person}&customer={s.x}'") for onclick in buttons)
     [script] = [script for script in dom.scripts if 'function gotoPeriod()' in script]          # die Von/Bis-Felder
     assert f"+ t + '&person={s.person}&customer={s.x}';" in script

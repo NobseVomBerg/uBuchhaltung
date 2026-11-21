@@ -32,7 +32,7 @@ from . import upload_handler
 from . import wiso_upload
 from .pages_login import PageLogin
 from .pages_users import PageUsers
-from .period import resolve_period, period_cookie_header
+from .period import period_cookie_header, period_month, resolve_period
 from .pages_assets import (
     PageAssets, PageAssetView, PageAssetEdit,
     PageAssetCategories, PageAssetCategoryEdit,
@@ -47,9 +47,9 @@ from .pages_contacts import PageContacts, PageContactNew, PageContactEdit
 from .pages_miscellaneous import PageMiscellaneous
 from .pages_transactions import PageTransactions
 from .pages_dashboard import PageDashboard
-from .pages_bwa import PDF_FAILED_TEXT, PageBwa, read_page_query, read_pdf_query
-from .pages_euer import EUER_PDF_FAILED_TEXT, PageEuer, read_euer_page_query, read_euer_pdf_query
-from .pages_susa import SUSA_PDF_FAILED_TEXT, PageSusa, read_susa_page_query, read_susa_pdf_query
+from .pages_bwa import PDF_FAILED_TEXT, BwaQuery, PageBwa, read_pdf_query, read_variant
+from .pages_euer import EUER_PDF_FAILED_TEXT, EuerQuery, PageEuer, read_euer_pdf_query
+from .pages_susa import SUSA_PDF_FAILED_TEXT, PageSusa, SusaQuery, read_susa_pdf_query
 from .pages_liquidity import LIQUIDITY_PDF_FAILED_TEXT, PageLiquidity
 from .pages_receipts import PageReceipts, PageReceiptEdit
 from .pages_setup import PageSetup, PageSetupStart
@@ -1430,8 +1430,14 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
                 self.respond(200, PageDashboard(db, date_from, date_to, account_ids), headers=hdrs)
             elif route == "/bwa":
-                # Betriebswirtschaftliche Auswertung: rein lesend, kein Cookie; Jahr, Monat und Darstellung werden streng gelesen
-                self.respond(200, PageBwa(db, read_page_query(self._query(), datetime.date.today())))
+                # Betriebswirtschaftliche Auswertung: schreibt nichts in den Bestand. Der Zeitraum ist der gemeinsame der Seiten (Adresse >
+                # Cookie > laufendes Jahr, das Cookie wie überall), der Monat folgt daraus; nur die Darstellung kommt aus der Adresse
+                qs = self._query()
+                today = datetime.date.today()
+                date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
+                year, month = period_month(date_from, date_to, today)
+                hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
+                self.respond(200, PageBwa(db, BwaQuery(year, month, read_variant(qs)), date_from, date_to, today), headers=hdrs)
             elif route == "/bwa/pdf":
                 qs = self._query()
                 query, error = read_pdf_query(qs)
@@ -1445,10 +1451,11 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     else:
                         self._send_document(pdf_bytes, filename, None, 'application/pdf', 'attachment')
             elif route == "/euer":
-                # Einnahmenüberschussrechnung: rein lesend, kein Cookie; von und bis werden streng gelesen. Das heutige Datum
-                # bestimmt nur das Jahr ohne Angabe und die Jahreslinks
-                today = datetime.date.today()
-                self.respond(200, PageEuer(db, read_euer_page_query(self._query(), today), today))
+                # Einnahmenüberschussrechnung: schreibt nichts in den Bestand. Der Zeitraum ist der gemeinsame der Seiten (Adresse >
+                # Cookie > laufendes Jahr, das Cookie wie überall); das heutige Datum bestimmt nur die Jahresknöpfe
+                date_from, date_to, set_cookie = resolve_period(self._query(), self.headers.get('Cookie'))
+                hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
+                self.respond(200, PageEuer(db, EuerQuery(date_from, date_to), datetime.date.today()), headers=hdrs)
             elif route == "/euer/pdf":
                 query, error = read_euer_pdf_query(self._query())
                 if error:
@@ -1460,8 +1467,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     else:
                         self._send_document(pdf_bytes, filename, None, 'application/pdf', 'attachment')
             elif route == "/susa":
-                # Summen- und Saldenliste: rein lesend (kein Steuerdatum, kein Cookie); Jahr und Monat werden streng gelesen
-                self.respond(200, PageSusa(db, read_susa_page_query(self._query(), datetime.date.today())))
+                # Summen- und Saldenliste: schreibt nichts in den Bestand (kein Steuerdatum). Der Zeitraum ist der gemeinsame der Seiten
+                # (Adresse > Cookie > laufendes Jahr, das Cookie wie überall), der Monat folgt daraus
+                today = datetime.date.today()
+                date_from, date_to, set_cookie = resolve_period(self._query(), self.headers.get('Cookie'))
+                year, month = period_month(date_from, date_to, today)
+                hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
+                self.respond(200, PageSusa(db, SusaQuery(year, month), date_from, date_to, today), headers=hdrs)
             elif route == "/susa/pdf":
                 query, error = read_susa_pdf_query(self._query())
                 if error:
@@ -1473,8 +1485,13 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     else:
                         self._send_document(pdf_bytes, filename, None, 'application/pdf', 'attachment')
             elif route == "/liquiditaet":
-                # Liquiditätsrechnung: rein lesend, kein Cookie; Jahr, Monat und Darstellung liest dieselbe strenge Regel wie die BWA
-                self.respond(200, PageLiquidity(db, read_page_query(self._query(), datetime.date.today())))
+                # Liquiditätsrechnung: wie die BWA – gemeinsamer Zeitraum samt Cookie, der Monat folgt daraus, die Darstellung kommt aus der Adresse
+                qs = self._query()
+                today = datetime.date.today()
+                date_from, date_to, set_cookie = resolve_period(qs, self.headers.get('Cookie'))
+                year, month = period_month(date_from, date_to, today)
+                hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
+                self.respond(200, PageLiquidity(db, BwaQuery(year, month, read_variant(qs)), date_from, date_to, today), headers=hdrs)
             elif route == "/liquiditaet/pdf":
                 qs = self._query()
                 query, error = read_pdf_query(qs)

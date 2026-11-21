@@ -211,14 +211,15 @@ def _keys(*names, period=False):
 # SQL-Abfrage. Aus demselben Grund fehlt die JSON-Route der Vorschläge zu einem Beleg (seit 2.6.0), und die POST-Route, die die
 # Datei eines Belegs liest und die Lesung speichert, ist keine Anzeigeseite (CLAUDE.md, Abschnitt „Belegerkennung“).
 # /bwa/pdf, /euer/pdf, /susa/pdf und /liquiditaet/pdf fehlen bewusst: Sie liefern Dokumente, keine Anzeigeseiten (die Seiten /bwa, /euer,
-# /susa und /liquiditaet schreiben nichts, Tests in tests/test_bwa.py, tests/test_euer_view.py, tests/test_susa.py und tests/test_liquidity.py).
+# /susa und /liquiditaet schreiben nichts in den Bestand – das Cookie des Zeitraums setzen sie wie jede Seite mit period=True –, Tests in
+# tests/test_bwa.py, tests/test_euer_view.py, tests/test_susa.py und tests/test_liquidity.py).
 _PAGE_ALLOWLIST = {
     "/": _keys("acct", period=True),
     "/dashboard": _keys("acct", period=True),
-    "/bwa": _keys("year", "month", "variant"),
-    "/euer": _keys("from", "to"),
-    "/susa": _keys("year", "month"),
-    "/liquiditaet": _keys("year", "month", "variant"),
+    "/bwa": _keys("variant", period=True),
+    "/euer": _keys(period=True),
+    "/susa": _keys(period=True),
+    "/liquiditaet": _keys("variant", period=True),
     "/about": _keys(),
     "/invoice": _keys("search", "status", "id", period=True),
     "/invoice/view": _keys("id"),

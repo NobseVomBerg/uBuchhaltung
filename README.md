@@ -401,11 +401,12 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 
 ### 7a. Auswertungen (`/bwa`, `/euer`, `/susa`, `/liquiditaet`)
 Unter dem Menüpunkt „Auswertungen“ stehen vier Seiten (Untermenü), jede auch als PDF. Die ersten beiden rechnen nach Zahlungsdatum wie die EÜR im Dashboard, die Summen- und Saldenliste nach dem Datum der Buchungssätze, die Liquiditätsrechnung geht vom Ergebnis der betriebswirtschaftlichen Auswertung aus.
+Alle vier nehmen den Zeitraum, den auch die anderen Seiten benutzen, und wählen ihn in der dritten Menüzeile (Von/Bis, die letzten fünf Jahre, die Monate). Die Monatsauswertungen (BWA, Summen- und Saldenliste, Liquidität) zeigen darin einen Monat: bei einem einzelnen Monat diesen, sonst den Monat des Bis-Datums – bei einem ganzen Jahr also den Dezember, im laufenden Jahr den laufenden Monat.
 - **Betriebswirtschaftliche Auswertung** (`/bwa`): Ein Monat und – aufgelaufen – die Zeit seit dem 1. Januar, im Vergleich mit dem Vorjahr (Standard) oder
   mit Anteilen an Erlösen, Kosten und Betriebseinnahmen; unter jeder Zeile lassen sich die Konten aufklappen; als PDF (A4 quer, auf Wunsch mit
   Kontennachweis). Übernimmt die Zahlen der EÜR unverändert und ordnet die Konten nach ihren SKR04-Nummern in Gruppen; ein Konto ohne Gruppe steht
   unter „Nicht zugeordnet“
-- **Einnahmenüberschussrechnung** (`/euer`): ein frei gewählter Zeitraum (von – bis, dazu die letzten Jahre als Links); dieselben Zahlen wie der Kasten im
+- **Einnahmenüberschussrechnung** (`/euer`): ein frei gewählter Zeitraum (von – bis, auch über mehrere Monate); dieselben Zahlen wie der Kasten im
   Dashboard – Betriebseinnahmen, Betriebsausgaben, Ergebnis und „Sonstige Ausgaben“, die angezeigt werden, aber nicht im Ergebnis zählen –, aber ohne
   Kontofilter; als PDF (A4 hoch, mehrseitig). Kein amtliches Formular
 - **Summen- und Saldenliste** (`/susa`): je Konto Anfangssaldo, Soll und Haben im Monat und aufgelaufen seit dem 1. Januar und Endsaldo (Salden mit S oder H),
@@ -727,7 +728,7 @@ uBuchhaltung/
 │   ├── wiso_upload.py         # Zwischenablage für den Upload der WISO-Datenbank
 │   ├── import_preview.py      # Kontoauszug-Import-Vorschau (Duplikat-Zähler)
 │   ├── multipart.py           # Multipart-Parser (E-Mail-Parser-basiert)
-│   ├── period.py              # Zeitraum-Auswahl (Cookie-basiert)
+│   ├── period.py              # Zeitraum-Auswahl (Cookie-basiert), dritte Menüzeile (Von/Bis, Jahre, Monate)
 │   ├── project_stats.py       # liest project_stats.json streng (Zahlen der About-Seite)
 │   ├── richtext.py            # Richtext-Filter der Seiten (Modul im Projektstamm)
 │   ├── backup.py              # Datensicherung/Wiederherstellung, Download der Sicherungen

@@ -13,8 +13,9 @@ JavaScript, Set-Cookie-Headern, Weiterleitungen und Dateinamen. Deshalb gelten n
 - ``_header_safe``/``send_header`` (CR/LF/NUL und Zeichen außerhalb von Latin-1) und ``_int_param``
 - ``period_filter_widget`` und die Seiten Trips, Arbeitszeiten, Dashboard mit feindlichen Werten:
   kein roher Wert in der Ausgabe, der DOM-Aufbau hängt nicht vom Wert ab
-- über den echten Server: Seiten mit feindlicher Adresse/feindlichem Cookie, ``person=abc``,
-  Header-Injektion in der Rohantwort, Weiterleitungen von ``/trips/add`` und ``/worktime/add``
+- über den echten Server: Seiten mit feindlicher Adresse/feindlichem Cookie (auch die vier
+  Auswertungen), ``person=abc``, Header-Injektion in der Rohantwort, Weiterleitungen von
+  ``/trips/add`` und ``/worktime/add``
 - ``handle_datev_export`` mit ungültigen Daten und mit einem Zeitraum über den Jahreswechsel (2.3.4)
 
 Alle Werte sind erfundene Testdaten.
@@ -411,7 +412,7 @@ def test_widget_encodes_a_hostile_base_path(base):
     assert len(dom.scripts) == 1
     assert f"window.location.href = '{encoded}?from=' + f + '&to=' + t + '';" in dom.scripts[0]
     clicks = [a['onclick'] for a in dom.all('button')]
-    assert len(clicks) == 16
+    assert len(clicks) == 5 + 12                                             # fünf Jahres- und zwölf Monatsknöpfe
     for click in clicks:
         assert re.fullmatch(r"window\.location\.href='[^'\"<>\\ ]*'", click), click
         assert click.startswith(f"window.location.href='{encoded}?from=")
@@ -581,7 +582,8 @@ def test_dashboard_keeps_valid_dates_in_their_old_form(tmp_db):
 
 
 # ── Über den echten Server ───────────────────────────────────────────────────
-PAGES = ['/trips', '/worktime', '/dashboard', '/transactions', '/receipts']
+# Seiten mit dem gemeinsamen Zeitraum – auch die vier Auswertungen (sie nehmen ihn seit 2.6.5 wie jede andere Seite)
+PAGES = ['/trips', '/worktime', '/dashboard', '/transactions', '/receipts', '/bwa', '/euer', '/susa', '/liquiditaet']
 
 
 @pytest.fixture

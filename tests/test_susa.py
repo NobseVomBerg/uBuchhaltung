@@ -51,7 +51,7 @@ from export import datev
 from money import from_minor, to_minor
 from server.pages import Header1
 from server.pages_bwa import reports_submenu
-from server.pages_susa import INVALID_PERIOD_ERROR, SUSA_PDF_FAILED_TEXT, PageSusa, SusaQuery, read_susa_page_query, read_susa_pdf_query
+from server.pages_susa import INVALID_PERIOD_ERROR, SUSA_PDF_FAILED_TEXT, PageSusa, SusaQuery, read_susa_pdf_query
 from tests import susa_helpers as helpers
 from tests.dom_helpers import Dom, assert_same_structure
 from tests.http_client import get
@@ -1400,7 +1400,7 @@ def test_the_page_and_the_pdf_answer_with_a_stock_beyond_64_bits(server_port, au
     auto_login.db.insert_account('Probe-Giro', 'Ich', 'DE02', 'BIC', 'Bank', is_cash=0, skr_account=1800)
     for case in OVERFLOW_CASES:
         overflow_stock(auto_login.db, case)
-    page, pdf = get(server_port, '/susa?year=2026&month=3'), get(server_port, '/susa/pdf?year=2026&month=3')
+    page, pdf = get(server_port, '/susa?from=2026-03-01&to=2026-03-31'), get(server_port, '/susa/pdf?year=2026&month=3')
     assert page.status == 200 and 'Summen- und Saldenliste – März 2026' in page.text
     assert pdf.status == 200 and pdf.body.startswith(b'%PDF-')
 
@@ -1748,8 +1748,9 @@ def _qs(**values):
     (_qs(year='2026', month='3'), SusaQuery(2026, 3)), (_qs(year='2026', month='03'), SusaQuery(2026, 3)), (_qs(year='1900', month='12'), SusaQuery(1900, 12)),
     (_qs(year='2999', month='1'), SusaQuery(2999, 1)), (_qs(year='2026', month='3', variant='jahr', x='1'), SusaQuery(2026, 3)),
 ])
-def test_a_valid_address_is_read(qs, expected):
-    assert read_susa_page_query(qs, datetime.date(2026, 11, 21)) == expected
+def test_a_valid_pdf_address_is_read(qs, expected):
+    """Das PDF liest Jahr und Monat aus der Adresse (streng); die Seite nimmt den gemeinsamen Zeitraum und leitet ihren Monat daraus ab
+    (``period_month``, ``test_report_period_menu.py``)."""
     assert read_susa_pdf_query(qs) == (expected, None)
 
 
@@ -1760,21 +1761,17 @@ INVALID = [_qs(year='2026'), _qs(month='3'), _qs(year='26', month='3'), _qs(year
 
 
 @pytest.mark.parametrize('qs', INVALID)
-def test_an_invalid_address_gives_the_previous_month_with_a_note_and_the_pdf_a_refusal(qs):
-    given = bool(qs)
-    assert read_susa_page_query(qs, datetime.date(2026, 11, 21)) == SusaQuery(2026, 10, invalid=given)
+def test_an_invalid_pdf_address_is_refused(qs):
     assert read_susa_pdf_query(qs) == (None, 'Ungültiger Zeitraum.') and INVALID_PERIOD_ERROR == 'Ungültiger Zeitraum.'
 
 
-def test_without_a_period_the_page_shows_the_previous_month_without_a_note_and_the_pdf_refuses():
-    assert read_susa_page_query({}, datetime.date(2026, 11, 21)) == SusaQuery(2026, 10)
-    assert read_susa_page_query({}, datetime.date(2026, 1, 5)) == SusaQuery(2025, 12)
+def test_without_a_period_the_pdf_refuses():
     assert read_susa_pdf_query({}) == (None, 'Ungültiger Zeitraum.')
 
 
 # ═══ Seite ════════════════════════════════════════════════════════════════════
-def page_of(db, year=2026, month=12, invalid=False):
-    return PageSusa(db, SusaQuery(year, month, invalid))
+def page_of(db, year=2026, month=12):
+    return PageSusa(db, SusaQuery(year, month))
 
 
 def table_rows(page, index=0):
@@ -1787,15 +1784,14 @@ def table_rows(page, index=0):
     return rows
 
 
-def test_the_page_shows_the_submenu_the_form_the_title_and_the_two_header_rows(susa_world):
+def test_the_page_shows_the_submenu_the_menu_row_the_title_and_the_two_header_rows(susa_world):
     page = page_of(susa_world.db, 2026, 3)
     assert reports_submenu('susa') in page and '<span id="ActivePage">Auswertungen</span>' in Header1('bwa')
     dom = Dom(page)
-    assert dom.one('form', action='/susa')['method'] == 'get'
-    months = [attrs for tag, attrs in dom.tags if tag == 'option']
-    assert [attrs['value'] for attrs in months] == [str(number) for number in range(1, 13)] and [attrs for attrs in months if 'selected' in attrs] == [months[2]]
-    year = dom.one('input', name='year')
-    assert (year['type'], year['min'], year['max'], year['value']) == ('number', '1900', '2999', '2026') and 'required' in year
+    assert not dom.all('form') and not dom.all('select') and not dom.all('option')                    # die Menüzeile ist die der anderen Seiten
+    assert dom.one('input', id='dateFrom')['value'] == '2026-03-01' and dom.one('input', id='dateTo')['value'] == '2026-03-31'
+    assert re.findall(r"<button class='active' type=\"button\" onclick=\"window\.location\.href='([^']*)'\">(\D[^<]*)</button>", page) == [
+        ('/susa?from=2026-03-01&to=2026-03-31', 'Mär')]                                               # der aktive Monat führt auf sich selbst
     assert f'{susa.TITLE} – März 2026</h3>' in page and susa.SUSA_HINT_TEXT in page and susa.SALDO_TEXT in page and 'warnColor' not in page
     assert 'onclick="susaPdf()"' in page
     rows = table_rows(page)
@@ -1887,17 +1883,19 @@ def test_banks_without_a_check_are_named(raw_db):
     assert page.count('<table class="reportTable">') == 1                                        # keine Zeile, keine Tabelle des Abgleichs
 
 
-def test_the_invalid_period_note_stands_only_for_an_invalid_period(tmp_db):
-    assert f'<p class="warnColor">{INVALID_PERIOD_TEXT}</p>' in page_of(tmp_db, invalid=True)
-    assert 'warnColor' not in page_of(tmp_db)
+def test_the_page_has_no_note_about_an_invalid_period(tmp_db):
+    """Ein ungültiger Zeitraum der Adresse wird wie auf jeder Seite verworfen (``resolve_period``); die Seite hat dafür keinen Hinweis mehr."""
+    page = page_of(tmp_db)
+    assert 'warnColor' not in page and INVALID_PERIOD_TEXT not in page and 'ungültig' not in page
 
 
 def test_the_page_uses_no_inline_style_and_only_var_and_function(susa_world):
     page = page_of(susa_world.db, 2026, 8)
     own = page[page.index("<div class='header2'>"):page.index('<div id="app_confirm"')]
     assert ' style=' not in own and 'innerHTML' not in own
-    script = Dom(page).scripts[0]
-    assert script.startswith('\nvar SUSA_DATA = ')
+    scripts = Dom(page).scripts
+    script = scripts[1]                                                     # hinter dem Skript der Menüzeile (gotoPeriod)
+    assert 'gotoPeriod' in scripts[0] and script.startswith('\nvar SUSA_DATA = ')
     for forbidden in ('const ', 'let ', '=>', 'innerHTML', 'eval('):
         assert forbidden not in script, forbidden
 
@@ -1905,7 +1903,7 @@ def test_the_page_uses_no_inline_style_and_only_var_and_function(susa_world):
 def test_the_pdf_address_stands_only_in_the_script_block(susa_world):
     page = page_of(susa_world.db, 2026, 3)
     assert '/susa/pdf' not in re.sub(r'<script>.*?</script>', '', page, flags=re.S)
-    data = re.search(r'var SUSA_DATA = (.*?);\n', Dom(page).scripts[0], re.S).group(1)
+    data = re.search(r'var SUSA_DATA = (.*?);\n', Dom(page).scripts[1], re.S).group(1)
     assert json.loads(data) == {'pdf': '/susa/pdf?year=2026&month=3'}
 
 
@@ -1949,14 +1947,23 @@ def test_the_page_of_every_month_of_the_demo_is_built(demo_db):
 
 
 # ═══ Routen ═══════════════════════════════════════════════════════════════════
-def test_the_page_and_the_pdf_are_get_routes_that_write_nothing(server_port, auto_login):
-    """Der Nachweis für die Positivliste des Diagnose-MCP (``/susa``): Datenbank und Datenordner sind nach jedem Aufruf unverändert, es gibt kein Cookie
-    und kein Steuerdatum. ``/susa/pdf`` steht nicht in der Liste (ein Dokument), schreibt aber auch nichts."""
+PERIOD_COOKIE = 'period=2026-03-01..2026-03-31; Path=/; Max-Age=31536000; SameSite=Lax'
+
+
+def test_the_page_and_the_pdf_are_get_routes_that_write_nothing_into_the_books(server_port, auto_login):
+    """Der Nachweis für die Positivliste des Diagnose-MCP (``/susa``): Datenbank und Datenordner sind nach jedem Aufruf unverändert, es gibt kein
+    Steuerdatum. Die Seite setzt – wie jede Seite mit Zeitraum – das Cookie des gemeinsamen Zeitraums, wenn der aus der Adresse kam; ``/susa/pdf``
+    setzt nie eines (es steht nicht in der Liste, ein Dokument, schreibt aber auch nichts)."""
     helpers.build_susa_world(auto_login.db)
     before_db, before_tree = dump(auto_login.db.db_name), tree(userctx.DATA_ROOT)
-    for path in ('/susa', '/susa?year=2026&month=3', '/susa?year=2026&month=12', '/susa?year=2025&month=12', '/susa?year=x&month=3',
-                 '/susa?year=2026', '/susa?month=3', '/susa?year=2026&year=2025&month=3', '/susa?year=&month=', '/susa?acct=1&variant=jahr',
-                 '/susa/pdf?year=2026&month=3', '/susa/pdf?year=2026&month=12', '/susa/pdf', '/susa/pdf?year=2026', '/susa/pdf?year=bad&month=3'):
+    for path, cookies in (('/susa', []), ('/susa?from=2026-03-01&to=2026-03-31', [PERIOD_COOKIE]), ('/susa?from=2026-03-31&to=2026-03-01', [PERIOD_COOKIE]),
+                          ('/susa?from=2026-01-01&to=2026-12-31', ['period=2026-01-01..2026-12-31; Path=/; Max-Age=31536000; SameSite=Lax']),
+                          ('/susa?from=x', []), ('/susa?year=2026&month=3', []), ('/susa?year=x&month=3', []), ('/susa?acct=1&variant=jahr', [])):
+        response = get(server_port, path)
+        assert response.status == 200, path
+        assert (response.headers.get_all('Set-Cookie') or []) == cookies, path
+    for path in ('/susa/pdf?year=2026&month=3', '/susa/pdf?year=2026&month=12', '/susa/pdf', '/susa/pdf?year=2026', '/susa/pdf?year=bad&month=3',
+                 '/susa/pdf?from=2026-03-01&to=2026-03-31'):
         response = get(server_port, path)
         assert response.headers.get('Set-Cookie') is None, path
         assert response.status in (200, 400), path
@@ -1964,16 +1971,16 @@ def test_the_page_and_the_pdf_are_get_routes_that_write_nothing(server_port, aut
     assert tree(userctx.DATA_ROOT) == before_tree
 
 
-def test_the_page_answers_for_the_month_in_the_address(server_port, auto_login):
+def test_the_page_answers_for_the_month_of_the_period_in_the_address(server_port, auto_login):
     helpers.build_susa_world(auto_login.db)
-    response = get(server_port, '/susa?year=2026&month=8')
+    response = get(server_port, '/susa?from=2026-08-01&to=2026-08-31')
     assert response.status == 200 and response.headers['Content-Type'].startswith('text/html')
     assert 'Summen- und Saldenliste – August 2026' in response.text and 'warnColor' not in response.text
     assert reports_submenu('susa') in response.text and 'Hinweise zu den Buchungen bis zum 31.08.2026' in response.text
     assert any(row.startswith('Gesamtsumme | ') for row in table_rows(response.text))
     bare = get(server_port, '/susa')
-    assert bare.status == 200 and 'warnColor' not in bare.text and MONTH_NAMES[0] in bare.text
-    assert 'warnColor' in get(server_port, '/susa?year=2026').text and 'warnColor' in get(server_port, '/susa?year=2026&month=13').text
+    assert bare.status == 200 and 'warnColor' not in bare.text and 'Summen- und Saldenliste – ' in bare.text
+    assert 'Der gewählte Zeitraum' not in get(server_port, '/susa?from=2026-13-01&to=2026-03-31').text       # ungültig: wie überall verworfen, ohne Hinweis
 
 
 def test_the_pdf_route_answers_with_a_download(server_port, auto_login):
@@ -2010,9 +2017,11 @@ def test_a_failing_pdf_is_a_fixed_sentence_never_the_text_of_the_error(server_po
 # ═══ Menü und Diagnose-MCP ════════════════════════════════════════════════════
 def test_the_susa_page_is_a_get_route_of_the_diagnosis_tool_and_its_pdf_is_not():
     import tools.mcp_ubuchhaltung as mcp
-    assert mcp._PAGE_ALLOWLIST['/susa'] == frozenset({'year', 'month'})
-    assert mcp.check_page_path('/susa?year=2026&month=10') == '/susa?year=2026&month=10'
+    assert mcp._PAGE_ALLOWLIST['/susa'] == frozenset({'from', 'to', 'date_from', 'date_to'})          # der gemeinsame Zeitraum, wie bei jeder Seite mit Zeitraum
+    assert mcp.check_page_path('/susa?from=2026-10-01&to=2026-10-31') == '/susa?from=2026-10-01&to=2026-10-31'
     with pytest.raises(ValueError, match='Seite nicht freigegeben'):
         mcp.check_page_path('/susa/pdf?year=2026&month=10')
     with pytest.raises(ValueError, match='Query-Parameter nicht freigegeben'):
-        mcp.check_page_path('/susa?year=2026&month=10&write=1')
+        mcp.check_page_path('/susa?from=2026-10-01&to=2026-10-31&write=1')
+    with pytest.raises(ValueError, match='Query-Parameter nicht freigegeben'):
+        mcp.check_page_path('/susa?year=2026&month=10')                                                 # Jahr und Monat liest die Seite nicht mehr
