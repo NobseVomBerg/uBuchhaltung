@@ -21,6 +21,12 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 - Zurückholen einer versendeten Rechnung entfernt die Forderung auch nach einem DATEV-Export: Hinweis oder Sperre ab dem Export (braucht ein Merkmal „exportiert“ je Buchung; Schemaänderung)
 - Löschen des Entwurfs einer Rechnung aus einem Angebot setzt das Angebot auf „angenommen“, nicht auf den Status davor: den früheren Status am Angebot merken (Schemaänderung)
 - Datei zu einem bestehenden Beleg nachreichen (der Upload der Seite „Belege“ legt je Datei einen neuen Beleg an)
+- Belegerkennung: Texterkennung (OCR) für gescannte PDFs und Fotos – bisher ist eine Datei ohne Textebene „nicht lesbar (kein Text)“
+- Belegerkennung: ein lokales Sprachmodell als optionaler Nachleser für Belege, die die Textregeln nicht eindeutig lesen (standardmäßig aus; die Lesung bliebe ein Vorschlag mit Herkunft)
+- Belegerkennung: den gelesenen Absender (Name, USt-IdNr.) einem Kontakt zuordnen – als Vorschlag, übernommen wird erst auf Klick
+- Belegerkennung: aus einer Lesung einen Buchungssatz vorschlagen (Konto, Steuersatz, Betrag), gespeichert erst im Editor
+- Belegerkennung: Vorschläge auch in der Gegenrichtung – an einer Buchung die passenden gelesenen Belege nennen (heute steht die Liste nur am Beleg)
+- Belegerkennung, Vorschläge: die Abweichung zwischen Zahlbetrag und Brutto berücksichtigen (Skonto, Valuta) – heute zählt nur der gleiche Betrag auf den Cent
 - Den Upload der Seite „Buchungen“ im Demo-Modus abschalten, wie den der Seite „Belege“
 - Umsatzsteuer-Voranmeldung (ELSTER)
 - Betriebswirtschaftliche Auswertung (BWA) je Zeitraum, wahlweise mit Summen- und Saldenliste (je Konto: Anfangssaldo, Soll- und Haben-Umsatz, Endsaldo) – vorher zu klären: Gliederung, Grundlage (Abgrenzung wie die EÜR oder alle Buchungssätze), Ausgabe (Seite, PDF, CSV), Anfangssalden
@@ -110,7 +116,7 @@ anderer Rahmen beim Anlegen eines Kontos ist bisher nur formal. Reihenfolge der 
 - Logo: Die Dateiauswahl im Kontaktformular lässt auch SVG/BMP wählen, der Server lehnt sie ab → Auswahl auf die erlaubten Formate begrenzen; WEBP braucht eine Pillow-Version mit WEBP-Unterstützung
 - DATEV-Export, Überträge zwischen eigenen Konten: Die Erkennung beim Export zählt und rät im Zweifel nicht (Grenzen in `DB_MODEL.md`: Laufzeit über 14 Tage, Serien mit einer Lücke, Stückelung, Konten mit gleicher SKR-Nummer) – sauberer wäre, die beiden Bankbewegungen eines Übertrags ausdrücklich zu verknüpfen
 - DATEV-Export: Ein Betrag, der in der Datenbank als Text steht (nur über die SQL-Konsole möglich), lässt die Split-Prüfung mit einer technischen Meldung scheitern
-- `pdfplumber` ist derzeit Pflicht: Die PDF-Parser importieren es beim Start, ohne das Paket startet die App nicht – Import verzögern, damit CAMT-Import und alles andere ohne es laufen
+- `pdfplumber` ist derzeit Pflicht: Die PDF-Parser (seit 2.6.0 auch `receipt_reading/pdf_text.py`) importieren es beim Start, ohne das Paket startet die App nicht – Import verzögern, damit CAMT-Import und alles andere ohne es laufen
 - Hinweisdateien für Entwicklungswerkzeuge (`CLAUDE.md`, `AGENTS.md`) auf Doppelungen prüfen und kürzen
 - Einheiten auf Artikel-Listen/-Stammdaten prüfen (lesbar statt UN/ECE-Code)
 - Rechnung speichern scheiterte einmal im Docker-Mehrbenutzerbetrieb mit „FOREIGN KEY constraint failed“ (DB danach sauber, gleicher Request lokal ok, nicht mehr reproduzierbar) – ab 2.0.1 nennt die Meldung den Verweis; bei Wiederauftreten Meldung und `docker logs` auswerten

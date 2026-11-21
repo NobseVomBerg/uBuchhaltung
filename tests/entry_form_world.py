@@ -296,9 +296,21 @@ def add_roundtrip_rows(db):
                 conn.commit()
 
 
+def to_state_2005(db_path):
+    """Die Datenbank in den Stand zurückversetzen, den 2.5.x geschrieben hat: die Tabelle ``DocumentReadings`` samt Index
+    entfernt, ``PRAGMA user_version`` = 2005. Wiederholbar: Was schon fehlt, wird übersprungen."""
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute('DROP INDEX IF EXISTS idx_documentreadings_gross')
+        conn.execute('DROP TABLE IF EXISTS DocumentReadings')
+        conn.execute('PRAGMA user_version = 2005')
+        conn.commit()
+
+
 def to_state_2004(db_path):
-    """Die Datenbank in den Stand zurückversetzen, den 2.4.x geschrieben hat: die Spalte ``BusinessOnly`` an
-    ``Accounts`` entfernt, ``PRAGMA user_version`` = 2004. Wiederholbar: Was schon fehlt, wird übersprungen."""
+    """Die Datenbank in den Stand zurückversetzen, den 2.4.x geschrieben hat: zusätzlich zu 2.5.x
+    (``to_state_2005``) die Spalte ``BusinessOnly`` an ``Accounts`` entfernt, ``PRAGMA user_version`` = 2004.
+    Wiederholbar: Was schon fehlt, wird übersprungen."""
+    to_state_2005(db_path)
     with closing(sqlite3.connect(db_path)) as conn:
         if 'BusinessOnly' in {row[1] for row in conn.execute('PRAGMA table_info(Accounts)')}:
             conn.execute('ALTER TABLE Accounts DROP COLUMN BusinessOnly')

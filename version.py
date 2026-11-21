@@ -15,7 +15,7 @@ Versionsschema MAJOR.MINOR.PATCH (z. B. 2.0.0):
 
 ``SCHEMA_VERSION`` ist die Zahl, die beim DB-Aufbau als ``PRAGMA user_version`` in
 jede Datenbank geschrieben wird (siehe ``db/schema.py``): ``MAJOR × 1000 +
-SCHEMA_STEP``, z. B. 2000 für 2.0.x, 2001 für 2.1.x, 2002 für 2.2.x, 2003 für 2.3.x, 2004 für 2.4.x und 2005 für 2.5.x. Sie steigt mit jeder
+SCHEMA_STEP``, z. B. 2000 für 2.0.x, 2001 für 2.1.x, 2002 für 2.2.x, 2003 für 2.3.x, 2004 für 2.4.x, 2005 für 2.5.x und 2006 für 2.6.x. Sie steigt mit jeder
 Schemaänderung und mit jedem MAJOR-Sprung; daran erkennt die Migration den Stand
 einer Datenbank. Datenbanken aus Version 1.x tragen die Zahlen 0 bis 6. Eine
 Datenbank mit einer höheren Zahl als das Programm stammt von einer neueren
@@ -23,8 +23,8 @@ Version und wird nicht geöffnet (``db.SchemaTooNewError``).
 """
 
 MAJOR = 2
-SCHEMA_STEP = 5      # +1 bei jeder DB-Schema-Änderung (= mittlere Versionsstelle); höchstens 999
-PATCH = 13           # +1 bei sonstigen Änderungen ohne DB-Bezug
+SCHEMA_STEP = 6      # +1 bei jeder DB-Schema-Änderung (= mittlere Versionsstelle); höchstens 999
+PATCH = 0            # +1 bei sonstigen Änderungen ohne DB-Bezug
 
 SCHEMA_VERSION = MAJOR * 1000 + SCHEMA_STEP   # steht als PRAGMA user_version in der Datenbank
 APP_VERSION = f"{MAJOR}.{SCHEMA_STEP}.{PATCH}"

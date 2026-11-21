@@ -1,6 +1,6 @@
 # Datenbankmodell uBuchhaltung
 
-**Stand:** Version 2.5.0 (Schema 2005)
+**Stand:** Version 2.6.0 (Schema 2006)
 **DBMS:** SQLite 3
 **Datei:** `data/users/<Name>/buch.db`
 
@@ -41,6 +41,7 @@ uBuchhaltung verwaltet Buchführung für kleine/mittlere Unternehmen mit Fokus a
 ├─────────────────────┤
 │ • Bookings          │ Buchungssätze (bank + entry)
 │ • Documents         │ Belege/Dokumente
+│ • DocumentReadings  │ Lesung eines Belegs (aus der Datei gelesene Felder)
 │ • BookingDocuments  │ n:m Verknüpfung Buchungen↔Belege
 └─────────────────────┘
 
@@ -297,6 +298,48 @@ berichtigt und ergänzt in bestehenden Datenbanken 100, 120, 121 („Verwendung 
 | Filename | TEXT | | Dateiname |
 | Path | TEXT | | Pfad der Datei relativ zum Datenordner des Benutzers (`Belege/<Jahr>/<Nummer>_<Name>`, vom Server gesetzt); gilt nur innerhalb von `Belege/` und `Documents/` (Bestand des früheren Uploads) |
 | Info | TEXT | | Zusatzinformationen |
+
+### 7a. DocumentReadings (Lesung eines Belegs, seit 2.6.0)
+
+**Zweck:** Die aus der Datei eines Belegs gelesenen Felder (`receipt_reading/`, `server/receipt_reader.py`), getrennt von dem, was der Nutzer am
+Beleg pflegt (`Documents`). Eine Lesung ist eine Lesung der Datei, nicht der Inhalt des Belegs: abgeleitete Daten, die sich jederzeit neu lesen
+lassen. Kein Wert geht von hier in `Documents`, `Bookings` oder anderswohin – die Seite zeigt sie mit ihrer Herkunft, übernommen wird nichts ohne Klick.
+
+| Spalte | Typ | Constraints | Beschreibung |
+|--------|-----|-------------|--------------|
+| ID | INTEGER | PRIMARY KEY AUTOINCREMENT | |
+| Document_ID | INTEGER | NOT NULL, UNIQUE, FK → Documents ON DELETE CASCADE | der Beleg; je Beleg höchstens eine Lesung (eine neue ersetzt die vorige) |
+| Status | TEXT | NOT NULL | `ok` (mindestens ein Feld gelesen) \| `empty` (lesbares Dokument ohne lesbares Feld) \| `no_text` (Bild oder Scan: kein Text, keine Texterkennung) \| `unsupported` (anderer Dateityp, keine unterstützte E-Rechnung, Kontoauszug, PDF mit Passwort) \| `too_large` (zu groß oder Zeitlimit) \| `failed` (nicht lesbar, keine brauchbare Ausgabe des Lesers, Beleg ohne Datei) |
+| Source | TEXT | | Herkunft der Felder: `einvoice_cii` \| `einvoice_ubl` (E-Rechnung) \| `text` (Textregeln); NULL, wo nichts gelesen wurde |
+| ReaderVersion | INTEGER | NOT NULL | Stand der Leseregeln (`receipt_reading.READER_VERSION`); eine Lesung mit älterem Stand gilt als ungelesen |
+| ReadAt | DATETIME | NOT NULL | Zeitpunkt der Lesung, UTC (`JJJJ-MM-TT HH:MM:SS`) |
+| DocDate | DATE | | gelesenes Belegdatum (ISO) – nicht `Documents.Date` |
+| GrossMinor | INTEGER | | gelesener Bruttobetrag in Minor Units (1 = 0,0001 EUR, `money.SCALE`), wie das Dokument ihn nennt (eine Gutschrift trägt positive Beträge) |
+| NetMinor | INTEGER | | gelesener Nettobetrag, Minor Units |
+| TaxMinor | INTEGER | | gelesene Steuer, Minor Units |
+| TaxRate | REAL | | gelesener Steuersatz als Anteil (0.19, wie in `Bookings`) – nur, wenn der Beleg genau einen nennt |
+| Currency | TEXT | | gelesene Währung (drei Großbuchstaben); die Textregeln lesen nur `EUR` |
+| SenderName | TEXT | | Absender (höchstens 200 Zeichen) |
+| SenderVatId | TEXT | | USt-IdNr. des Absenders (höchstens 20 Zeichen) |
+| InvoiceNumber | TEXT | | Rechnungsnummer des Belegs (höchstens 100 Zeichen) |
+| Kind | TEXT | | `invoice` \| `credit_note` |
+| Raw | TEXT | | JSON, höchstens 64 KB: `fields` (je gelesenem Feld `value`, `source` = `einvoice`, `rule` oder `default`, dazu bei der E-Rechnung der BT-Bezeichner `ref`, bei den Textregeln die Zeile `quote` und die Seite `page`), `checks` (Summenprobe `sum`, Satzprobe `rate`: `ok` \| `mismatch` \| `incomplete`), `tax_breakdown` (die Steueraufschlüsselung) und `notes` (die Befunde als feste Schlüssel, siehe Kopf von `receipt_reading/__init__.py`) |
+| Text | TEXT | | der aus der Datei gelesene Text (PDF; höchstens 20 000 Zeichen, bei längerem nur der Anfang) – Eingabe für die Namenswörter der Vorschläge, auf keiner Seite angezeigt |
+
+**Indizes:** `idx_documentreadings_gross` auf `GrossMinor`; `Document_ID` ist UNIQUE. Es gibt keine CHECK-Regeln: Was ein Leser nicht erkennt,
+bleibt NULL, und was nicht streng passt (Datum, Betrag, Währung), wird nie geraten.
+
+**Schreiben und Lesen:** Geschrieben wird allein über `Database.save_document_reading(document_id, expected_path, row)` (`db/document_readings.py`):
+Prüfung und Schreiben in EINER `BEGIN IMMEDIATE`-Transaktion – gespeichert wird nur, wenn der Beleg noch da ist und `Documents.Path` noch der Pfad ist,
+den der Leser gelesen hat; die vorhandene Lesung wird ersetzt. Das Lesen der Datei selbst läuft davor außerhalb jeder Transaktion in einem Kindprozess.
+Die Liste der Belege liest je Beleg nur Status, Brutto, Währung, Absender und Version (`document_reading_summaries`, nie `Text` oder `Raw`).
+
+**Löschen:** Die Lesung hängt mit `ON DELETE CASCADE` am Beleg und geht mit ihm; `delete_receipt` löscht sie in derselben Transaktion. Sie zählt
+nicht als Verweis (`DeleteRefused` nennt sie nie), nach einer Ablehnung bleibt sie stehen. Ihre Schreibwege gehen nicht ins SQL-Protokoll
+(`_log_sql`): abgeleitete Daten. Die Vorlage „Zeitbereich löschen“ der SQL-Konsole löscht die Lesungen der Belege des Zeitraums mit.
+
+**Bestand:** Die Migration auf 2.6.0 legt die Tabelle leer an und ändert keine vorhandene – ein Beleg mit Datei gilt als ungelesen, bis er gelesen
+wird. Zum Datenfluss der Vorschläge siehe „Beleg lesen und Buchung vorschlagen“ unten.
 
 ---
 
@@ -1239,6 +1282,30 @@ und der Plan der Hauptanlage rechnet wieder ohne sie.
 5. Doppik-Entries (COA_ID = Bankkonto-SKR) werden ausgeblendet
 ```
 
+### Beleg lesen und Buchung vorschlagen (seit 2.6.0)
+
+```
+1. Upload (/receipts/upload) legt den Beleg an (Documents, Datei unter Belege/<Jahr>/) – der Upload liest nicht
+2. Die Seite fragt je Beleg POST /receipts/read: receipt_reader.read_receipt öffnet die Datei (receipt_files.open_receipt), liest die Bytes
+   und gibt sie an einen Kindprozess (receipt_reading.worker) – außerhalb jeder Transaktion. Zuerst die E-Rechnung (XML oder das XML in
+   einer PDF), dann die Textregeln einer gewöhnlichen PDF; Scans und Bilder werden nicht gelesen (kein OCR)
+3. Database.save_document_reading → DocumentReadings (eine Zeile je Beleg, nur wenn Beleg und Pfad unverändert sind); Documents bleibt unberührt
+4. Seite des Belegs und GET /receipts/suggestions?id= → Database.suggest_bookings_for_receipt (rein lesend):
+   - Voraussetzung: Lesung `ok`, Währung leer oder EUR, GrossMinor ≠ 0; maßgebliches Datum: DocDate, sonst Documents.Date
+   - hängt der Beleg an irgendeiner Buchung (eine Zeile in BookingDocuments, gleich welcher Art), ist die Liste leer – geprüft vor den Kandidaten;
+     nach dem Lösen der letzten Verknüpfung kommen die Vorschläge wieder
+   - receipt_match_candidates: Bankbewegungen und eigenständige Sätze mit |Amount| = |GrossMinor|, Buchungsdatum von 7 Tagen vor bis 90 Tage
+     nach dem Datum – ohne Kinder einer Bankbewegung, Zahlungssätze (invoice_payment), Spiegel, Forderungen einer eigenen Rechnung und
+     Buchungen, an denen dieser Beleg schon hängt (auch über ein Kind); höchstens 200, älteste zuerst
+   - receipt_matching.rank_candidates (rein): Punkte für die Rechnungsnummer im Text, in der Beleg-Nr. oder im Empfänger (100), gemeinsame
+     Namenswörter (30, ab zwei 40) und ein Buchungsdatum nahe dem Belegdatum (bis 20); die Zahlungsrichtung nach der Belegart (Rechnung: Betrag < 0,
+     Gutschrift: Betrag > 0) – eine unpassende steht hinter den passenden, mit eigener Begründung, ausgeschlossen wird sie nie; Buchungen, die schon
+     einen Beleg tragen, zuletzt (Sortierung: verknüpft, Richtung unpassend, −Punkte, Abstand, ID); höchstens 5, je mit festen Begründungen (der
+     Betrag zuerst)
+5. „Zuordnen“ → POST /bookings/link-document (BookingDocuments; die Buchung übernimmt unter den Bedingungen aus Abschnitt 10 die Beleg-Nr.) –
+   der einzige Schritt, der etwas verknüpft
+```
+
 ### EÜR-Ableitung (Dashboard)
 
 Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
@@ -1402,11 +1469,12 @@ Wörterbücher, je Gruppe einmal sortiert, das Umfeld über Halbierungssuche):
 ## Besonderheiten
 
 1. **Foreign Keys:** `PRAGMA foreign_keys = ON`
-2. **ON DELETE CASCADE:** InvoiceItems, AssetDepreciations, ContactAddresses, CompanyDetails, PersonDetails
+2. **ON DELETE CASCADE:** InvoiceItems, AssetDepreciations, ContactAddresses, CompanyDetails, PersonDetails, DocumentReadings
    (nicht: `InvoiceCorrections`, `InvoiceDocumentVersions` – Protokoll und Fassungen überleben das Löschen eines Entwurfs).
    `WorkTimes.PersonID` und `Trips.DriverID` tragen im Schema ebenfalls CASCADE, `WorkTimes.CustomerID` und `Trips.DocumentID`
    SET NULL – die App lässt es dazu nicht kommen: Kontakt, Artikel, Bankkonto, AfA-Kategorie und Beleg werden nur gelöscht,
-   solange nichts auf sie verweist (`db.DeleteRefused`, seit 2.3.8)
+   solange nichts auf sie verweist (`db.DeleteRefused`, seit 2.3.8); die Lesung eines Belegs (`DocumentReadings`, abgeleitete Daten) ist kein
+   solcher Verweis – sie geht mit dem Beleg
 3. **Snapshot-Prinzip:** Invoices kopieren Stammdaten bei Erstellung
 4. **Datum-Format:** ISO 8601 (YYYY-MM-DD)
 5. **Steuersätze:** Dezimal (0.19 = 19%)
@@ -1417,4 +1485,4 @@ Wörterbücher, je Gruppe einmal sortiert, das Umfeld über Halbierungssuche):
 
 ---
 
-**Letzte Aktualisierung:** 19. November 2026 (Schema 2005)
+**Letzte Aktualisierung:** 21. November 2026 (Schema 2006)

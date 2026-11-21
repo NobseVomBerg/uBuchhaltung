@@ -22,8 +22,10 @@ import userctx
 from . import dirlock
 from . import receipt_files
 from . import receipt_links
+from . import receipt_reader
 from . import wiso_upload
 from .pages import Header1, Header2, Header3, Footer
+from .pages_receipts import suggestions_empty_text
 from .import_preview import file_transactions, match_account
 from .period import parse_iso_date, valid_period
 from .richtext import sanitize_richtext as _sanitize_richtext
@@ -2717,6 +2719,25 @@ def handle_booking_unlink_document(db, post_body: bytes):
     return 200, json.dumps({'success': True, 'removed': removed, **_link_lists(db, booking_id, document_id)})
 
 
+def handle_receipt_read(db, post_body: bytes):
+    """Die Datei EINES Belegs lesen (``POST /receipts/read``, JSON ``{"documentId"}``) und die Lesung in ``DocumentReadings`` ablegen
+    (``receipt_reader.read_receipt``); am Beleg selbst ändert sich nichts. Die ID liest die Route streng (``_json_positive_id``):
+    fehlt sie oder ist sie ungültig, ist es eine ungültige Anfrage (400), bevor etwas geschieht.
+
+    Die Antwort trägt ``success`` und – bei einer Ablehnung (403 Demo-Modus, 404, 409, 500) – den festen Satz ``error``; ``busy: true``
+    heißt: Es läuft schon ein Lesen, die Seite fragt gleich noch einmal. Bei Erfolg steht die gespeicherte Lesung als ``reading``
+    da (``receipt_reader.reading_payload``) – auch eine, die nichts fand oder scheiterte: Ihr Status sagt es. Nie ein Pfad, der
+    Name der Datei auf der Platte, der ganze Text der Datei (``Text``) oder ein Ausnahmetext; die Zitate der gelesenen Zeilen (je
+    höchstens 200 Zeichen) gehören zur Antwort.
+
+    Returns tuple: (status_code, json_body)
+    """
+    data = _json_request(post_body)
+    document_id = _json_positive_id(data, 'documentId')
+    status_code, payload = receipt_reader.read_receipt(db, document_id)
+    return status_code, json.dumps(payload)
+
+
 # „Zuordnung neu aufbauen“ (``POST /invoice/rebuild-payments``): der feste Satz für jeden unerwarteten Fehler – nie ein Ausnahmetext
 REBUILD_FAILED = ('Die Zuordnung ließ sich nicht prüfen oder neu aufbauen – Einzelheiten stehen im Server-Log. '
                   'Es wurde nichts geändert.')
@@ -2849,6 +2870,31 @@ def handle_booking_search(db, qs):
         import traceback
         traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
         return 500, json.dumps({'success': False, 'error': receipt_links.SEARCH_FAILED})
+
+
+def handle_receipt_suggestions(db, document_id):
+    """Die vorgeschlagenen Buchungen zu einem Beleg (``GET /receipts/suggestions?id=<n>``), rein lesend – verknüpft wird nichts
+    (``Database.suggest_bookings_for_receipt``). ``document_id``: die ID des Belegs aus der Adresse (``_id_param``: fehlt sie oder ist
+    sie ungültig, gilt ``-1``, also wie jede unbekannte ID).
+
+    Ein Beleg, den es nicht gibt: 404 mit festem Satz. Sonst 200 ``{"success": true, "suggestions": […], "empty": "…"}``
+    (``receipt_links.suggestions_payload``; leer, wenn es nichts zu nennen gibt – auch ohne Lesung, ohne brauchbaren Betrag oder wenn
+    der Beleg schon an einer Buchung hängt). ``empty`` ist der Satz für die leere Liste (``pages_receipts.suggestions_empty_text``, derselbe
+    wie auf der Seite des Belegs): zugeordnet, ohne gelesenen Betrag oder keine passende Buchung. Nie ein Pfad, ein Text des Belegs oder ein
+    Ausnahmetext in der Antwort: ein unerwarteter Fehler ist 500 mit festem Satz, der Text steht nur im Server-Log.
+
+    Returns tuple: (status_code, json_body)
+    """
+    try:
+        if db.get_receipt_by_id(document_id) is None:
+            return 404, json.dumps({'success': False, 'error': receipt_files.NOT_FOUND})
+        found = db.suggest_bookings_for_receipt(document_id)
+        empty = suggestions_empty_text(db.receipt_is_linked(document_id), db.get_document_reading(document_id))
+        return 200, json.dumps({'success': True, 'suggestions': receipt_links.suggestions_payload(found), 'empty': empty})
+    except Exception:
+        import traceback
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
+        return 500, json.dumps({'success': False, 'error': receipt_links.SUGGEST_FAILED})
 
 
 def handle_update_invoice_status(post_body: bytes):

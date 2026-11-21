@@ -12,6 +12,8 @@ Aufbau:
 * ``camt``, ``dkb_csv`` – Dateiformate, die nicht über ``IMPORTERS`` laufen: Der Upload-Handler liest sie nur im Speicher
   (``camt.parse_upload``, ``dkb_csv.parse_csv`` – Umsatzliste der DKB als CSV) und prüft das Ergebnis mit
   ``check_statement``
+* ``safe_xml``      – XML aus hochgeladenen Dateien sicher lesen (keine DTD, keine Entity-Deklaration): ``camt`` und die
+  Belegerkennung (``receipt_reading``) lesen darüber
 
 Eine neue Bank anzubinden heißt: ein Modul mit einer
 :class:`~importers.base.StatementImporter`-Klasse schreiben und sie unten in

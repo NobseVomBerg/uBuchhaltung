@@ -476,10 +476,12 @@ def test_a_post_of_a_page_that_reads_json_gets_a_json_503(server_port, auto_logi
     assert resp.will_close and resp.getheader('Connection') == 'close'
 
 
-@pytest.mark.parametrize('path', ['/receipts/search?q=a', '/transactions/search?q=a'])
+@pytest.mark.parametrize('path', ['/receipts/search?q=a', '/transactions/search?q=a', '/receipts/suggestions?id={receipt}'])
 def test_a_search_of_a_page_gets_a_json_503_while_the_directory_is_restored(server_port, auto_login, path):
-    """Die Suchen der Belege und Buchungen (seit 2.5.12) sind GET, aber die Seiten lesen JSON (``success``/``error``): Auch die 503
-    trägt es – ein Klartext ergäbe dort „kein JSON“."""
+    """Die Suchen der Belege und Buchungen (seit 2.5.12) und die Vorschläge zu einem Beleg (seit 2.6.0) sind GET, aber die Seiten lesen JSON
+    (``success``/``error``): Auch die 503 trägt es – ein Klartext ergäbe dort „kein JSON“."""
+    auto_login.db.insert_receipt('26B001', '2026-03-04', 'beleg.pdf', '', '')        # damit die Vorschläge nach der Sperre mit 200 antworten
+    path = path.format(receipt=auto_login.db.fetch_receipts()[-1][0])
     with exclusive_held(admin_dir()):
         resp = get(server_port, path)
     assert resp.status == 503 and resp.headers['Content-Type'] == 'application/json'

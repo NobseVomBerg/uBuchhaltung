@@ -412,6 +412,7 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
                 "UPDATE Assets SET Document_ID = NULL WHERE Document_ID IN (" + d + ");\\n" +
                 "UPDATE AssetDepreciations SET Booking_ID = NULL, Status = 'planned', BookedAt = NULL WHERE Booking_ID IN (" + b + ");\\n" +
                 "UPDATE Trips SET DocumentID = NULL WHERE DocumentID IN (" + d + ");\\n" +
+                "DELETE FROM DocumentReadings WHERE Document_ID IN (" + d + ");\\n" +
                 "-- Sätze außerhalb des Zeitraums unter einer Bankbewegung des Zeitraums bleiben erhalten (abgehängt, wie im Buchungssatz-Editor).\\n" +
                 "UPDATE Bookings SET ParentBooking_ID = NULL, Status = CASE WHEN Status = 'resolved' THEN NULL ELSE Status END WHERE ParentBooking_ID IN (" + b + ") AND DateBooking NOT BETWEEN '" + from + "' AND '" + to + "';\\n" +
                 "DELETE FROM Bookings WHERE DateBooking BETWEEN '" + from + "' AND '" + to + "';\\n" +

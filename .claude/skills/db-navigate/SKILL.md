@@ -36,6 +36,8 @@ Kontext bei moderatem Token-Einsatz. NIE alle Module gleichzeitig laden.
 | `numbering.py` | Nummernkreise (Rechnungsnummern etc.; `allocate_invoice_number`, `release_invoice_number`, `number_format_error`) |
 | `articles.py` | Artikel-Stammdaten |
 | `receipts.py` / `worktimes.py` | Belege bzw. Arbeitszeiten |
+| `document_readings.py` | Lesung eines Belegs (`DocumentReadings`: aus der Datei gelesene Felder, abgeleitet, nicht im Replay-Log): `save_document_reading`, `get_document_reading`, `document_reading_summaries`, `unread_receipt_ids`/`count_unread_receipts`, `own_identity`; Vorschläge Beleg → Buchung, rein lesend: `receipt_match_candidates` (eine Abfrage mit allen Ausschlüssen, Forderung über `_receivable_sql`), `suggest_bookings_for_receipt` (Abfrage + Rangfolge; leer, solange der Beleg an einer Buchung hängt: `receipt_is_linked`) |
+| `receipt_matching.py` | Rangfolge der Buchungsvorschläge zu einem gelesenen Beleg, rein (kein DB-Zugriff, keine Uhr): `candidate_window`, `rank_candidates` → `Suggestion`, `usable_gross`, `normalize_number`, `name_words`; Punkte, Schwellen und Begründungen als Modulkonstanten |
 | `reporting.py` | Dashboard-Kennzahlen + EÜR |
 
 ## Gezielt navigieren

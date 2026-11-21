@@ -1011,9 +1011,9 @@ def test_the_list_of_receipts_shows_the_number_of_linked_bookings_and_a_link_to_
     counts = {}
     for chunk in re.findall(r'<tr class="receipt-row"(.*?)</tr>', page, re.S):
         receipt_id = int(re.search(r'data-id="(\d+)"', chunk).group(1))
-        cells = re.findall(r'<td>(.*?)</td>', chunk, re.S)
-        assert len(cells) == 7 and cells[3] == '–'                                          # Index 3 bleibt „Datei“
-        counts[receipt_id] = cells[5]
+        cells = re.findall(r'<td(?: [^>]*)?>(.*?)</td>', chunk, re.S)
+        assert len(cells) == 8 and cells[3] == '–' and cells[4] == '–'                      # Index 3 „Datei“, 4 „Gelesen“ (2.6.0): beide ohne Datei
+        counts[receipt_id] = cells[6]
     assert counts == {one: f'<a href="/receipts/edit?id={one}" title="Verknüpfte Buchungen ansehen und zuordnen">1</a>',
                       three: f'<a href="/receipts/edit?id={three}" title="Verknüpfte Buchungen ansehen und zuordnen">3</a>',
                       none: f'<a href="/receipts/edit?id={none}" title="Verknüpfte Buchungen ansehen und zuordnen">0</a>'}

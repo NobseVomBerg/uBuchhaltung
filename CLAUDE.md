@@ -293,7 +293,8 @@ kein Subagent darauf:
   **Suchen:** `GET /receipts/search` und `GET /transactions/search` (`_SEARCH_PATHS`; `q` höchstens 100 Zeichen, sonst 400; `limit` 1–50, sonst 20, auch in
   der Datenbankschicht auf 1–50 begrenzt; Herkunft geprüft; rein lesend; ohne Rücksicht auf die Schreibweise über `ub_fold` + `INSTR`, kein `LIKE`; ein
   Datum oder dessen Anfang und ein Betrag finden ebenfalls; die Antwort nennt nie einen Pfad, nur `none`/`outside`/`ok`; `Cache-Control: no-store`, auch bei
-  einem Suchbegriff wie `.png`; ihre 503 während einer Wiederherstellung kommt als JSON; nicht in der Positivliste des Diagnose-MCP). **Schreiben:**
+  einem Suchbegriff wie `.png`; ihre 503 während einer Wiederherstellung kommt als JSON; nicht in der Positivliste des Diagnose-MCP; seit 2.6.0 steht eine dritte Route
+  unter denselben Regeln in `_SEARCH_PATHS`: `GET /receipts/suggestions`, siehe *Belegerkennung*). **Schreiben:**
   `POST /bookings/link-document` und `/bookings/unlink-document` (`_JSON_PATHS` + `_POST_ONLY_JSON_PATHS`, JSON `{bookingId, documentId[, relationType]}`,
   IDs streng über `_json_positive_id`; `relationType` aus `RELATION_TYPES`, sonst `receipt`; unbekannte Buchung oder Beleg 404 mit Klartext). Verknüpfen ist
   idempotent und läuft in EINER Transaktion: Prüfen, Zeile, Beleg-Nr. **Die übernommene Nummer wirkt wie eine von Hand eingetragene, auch auf den
@@ -439,6 +440,127 @@ kein Subagent darauf:
   auch holen, wenn sich die Datenbank nicht öffnen lässt. Jeder angemeldete Benutzer, nur aus dem eigenen Ordner; im Demo-Modus
   wie Sichern und Wiederherstellen. Nicht aufweichen (`tests/test_backup_download.py`)
 
+### Belegerkennung (seit 2.6.0)
+- **Grundsatz:** Ein gelesener Wert ist eine Lesung der Datei, nicht der Inhalt des Belegs. Die Lesung steht in `DocumentReadings` (eine Zeile je
+  Beleg, `db/document_readings.py`), getrennt von dem, was der Nutzer am Beleg pflegt (`Documents`: Nummer, Datum, Dateiname, Info). **Nichts wird
+  ohne Klick verknüpft, gebucht oder am Beleg geändert – nicht einführen.** Umfang heute: Felder lesen und mit ihrer Herkunft zeigen, eine
+  Bankbewegung vorschlagen. Kein OCR (ein Scan oder Bild ist `no_text`), kein Sprachmodell. Beträge stehen in Minor Units (`money.SCALE` = 4, also
+  nicht Cent), der Steuersatz als Anteil (0,19)
+- **Das Paket `receipt_reading/` ist rein:** Es bekommt Bytes, schreibt nichts, öffnet keine Dateien und kennt weder `server/` noch `db/`;
+  `read_document` wirft nie (jede Ausnahme ist eine Lesung `failed` mit Befund `read_error`, ohne Ausnahmetext). **Erkannt wird nach Endung UND
+  Kennbytes** (`detect.kind`: `.pdf` mit `%PDF-`, `.xml` mit `<` nach BOM und Leerraum, Bild = Positivliste der Logos), nie nach nur einem von beiden.
+  **Reihenfolge:** zuerst die E-Rechnung (`einvoice.py`: hochgeladenes XML – UBL `Invoice`/`CreditNote`, CII –, bei einer PDF das eingebettete
+  `factur-x.xml`/`zugferd-invoice.xml`/`xrechnung.xml`, `pdf_embedded.py`); liefert sie kein lesbares Feld (`einvoice_empty`), kommen die Textregeln
+  (`pdf_text.py`, `text_rules.py`). Gelesen werden BT-1 Nummer, BT-2 Datum, BT-5 Währung, BT-27 Verkäufer (UBL ersatzweise BT-28), BT-31 USt-IdNr.,
+  BT-109 Netto, BT-110 Steuer, BT-112 Brutto, der Satz aus BG-23 (nur, wenn die Aufschlüsselung genau einen nennt) und die Art (BT-3 bzw. Wurzel:
+  `invoice`/`credit_note`; eine Gutschrift trägt positive Beträge); BT-115 steht nur in `raw`
+- **Strenge Werte, Befunde, Version, Grenzen:** Nur ASCII-Ziffern, ein Betrag mit höchstens zwei Nachkommastellen und zwölf Stellen davor, ein
+  Kalenderdatum der Jahre 1900–2200, die Währung als drei Großbuchstaben, ein Betrag, dessen `currencyID` von BT-5 abweicht, gilt nicht – **was nicht
+  streng passt, bleibt leer und bekommt den Befund `bad_<Feld>`, nie geraten**. Abgeleitet wird genau ein Wert: die Steuer 0, wenn der Gesamtbetrag
+  der Steuer fehlt und die Aufschlüsselung nur Nullen nennt (Beleg ohne Steuerausweis). **Status** (`STATUSES`): `ok`, `empty` (lesbares Dokument ohne
+  lesbares Feld), `no_text`, `unsupported`, `too_large`, `failed`; **Quelle** (`SOURCES`): `einvoice_cii`, `einvoice_ubl`, `text`. Die Befund-Codes
+  stehen als Tabelle im Kopf von `receipt_reading/__init__.py`. **`READER_VERSION` steigt um 1, sobald sich die Leseregeln ändern:** Ältere Lesungen
+  gelten dann als ungelesen (`unread_receipt_ids`) und zeigen „(ältere Regeln)“; neu gelesen wird nie still. **Grenzen** (Konstanten, bei jedem Aufruf
+  gelesen – die Tests verkleinern sie): `MAX_READ_BYTES` 30 MB (darüber `too_large`, ohne Prozess), `MAX_XML_BYTES` 20 MB (auch entpackt),
+  `MAX_EXTRACT_CHARS` 200 000 Zeichen aus einer PDF – gelesen werden nur die ersten 5 und die letzten 3 Seiten (`pdf_text.HEAD_PAGES`/`TAIL_PAGES`;
+  unter 20 sichtbaren Zeichen: `no_text`) –, gespeichert höchstens `MAX_TEXT_CHARS` 20 000 Zeichen Text; `Reading.to_row` kappt Absender (200
+  Zeichen), USt-IdNr. (20), Nummer (100) und `Raw` samt Befunden (`MAX_RAW_BYTES` 64 KB: erst fallen Zitate und Aufschlüsselung weg, Befund
+  `raw_truncated`)
+- **Schutz (die Datei kommt aus einem Upload) – nicht aufweichen:** XML nur über `importers.safe_xml.parse_untrusted_xml` (Größe vorab, jede DTD und
+  Entity-Deklaration abgelehnt, `UnsafeXml`; `importers/camt.py` nutzt dieselbe Stelle). Der Anhang einer PDF wird nur begrenzt entpackt
+  (`pdf_embedded._bounded_inflate`: nur ein Flate-Filter ohne Predictor, höchstens `MAX_XML_BYTES` + 1 Bytes, nie `PDFStream.get_data()`;
+  höchstens `MAX_ATTEMPTS` = 3 Anhänge mit dem Namen einer E-Rechnung werden entpackt – dieselbe Datei über `AF` und den Namensbaum, gleiches
+  Stromobjekt, zählt einmal –, danach endet die Suche mit dem bisherigen Befund `attachment_unreadable`). **Gelesen
+  wird im Kindprozess:** `receipt_reading.isolated.read_isolated` startet `python -m receipt_reading.worker` (derselbe Interpreter, Datei und Angaben
+  der eigenen Firma über stdin) mit hartem Zeitlimit `READ_TIMEOUT` (15 s; Überschreitung: `too_large` mit Befund `time`), unter POSIX mit `RLIMIT_AS`
+  und `RLIMIT_CPU`; die Ausgabe (höchstens 1 MB) wird streng über `Reading.from_dict` gegengeprüft, alles andere ist `failed` mit
+  `reader_output`/`reader_crashed`. `read_isolated` wirft nie und nennt nie den Text des Kindprozesses (stderr steht höchstens gekürzt im Server-Log);
+  der Server ruft `read_document` nie selbst auf
+- **Textregeln (`text_rules.py`) – lieber leer als geraten:** Gearbeitet wird auf Zeilen (höchstens `MAX_LINES` zu je `MAX_LINE_CHARS` Zeichen,
+  Leerraum zusammengefasst), jeder reguläre Ausdruck läuft in linearer Zeit. Ein Betrag ist nur `1.234,56`/`119,00` (Komma und genau zwei Stellen,
+  Tausenderpunkte in Dreiergruppen) und kommt allein aus `money.parse_amount`; `19,00 %`, ein Betrag mit nicht eindeutigem **Vorzeichen** und der
+  Rest einer Gruppierung (`1 234,56`) sind keiner. Nicht eindeutig ist das Vorzeichen, wenn davor ein Minus, Gedankenstrich oder eine öffnende Klammer
+  steht (`- € 119,00`, `-EUR 119,00`, `(119,00)`) oder dahinter ein Minus oder ein Soll-/Haben-Zeichen (`119,00 -`, `119,00 €-`, `119,00 CR`/`DR`/`S`/`H`),
+  dazwischen nur Leerraum und ein Währungszeichen (`_SIGN_BEFORE`/`_SIGN_AFTER`, EINE Stelle in `_scan_amounts`); `-119,00` unmittelbar davor ist ein
+  negativer Betrag, ein Minus vor einem Buchstaben (`EUR-Konto`) oder mit Leerraum davor und einer Ziffer dahinter (`119,00 -5,00`) kein Vorzeichen
+  dieses Betrags. **Steuer:** Zeilen mit Steuerwort (nicht die der USt-IdNr./Steuernummer, nicht die, in denen eine Brutto- oder Nettobezeichnung den
+  Betrag beansprucht); der Betrag steht HINTER dem Steuerwort. Steht dort genau einer, ist er die Steuer – außer „auf“/„von“/„aus“ steht als Wort
+  dazwischen (`19 % MwSt auf 100,00`: die Basis; die Zeile liefert keine Steuer). Stehen dort mehrere und nennt die Zeile genau einen Satz
+  (`USt 19% 100,00 19,00 119,00`), ist es der Betrag, der als EINZIGER (gleiche Werte zählen einmal) die Satzprobe gegen einen ANDEREN Betrag der Zeile
+  besteht (Basis × Satz auf den Cent – dieselbe Funktion wie die Satzprobe `_matches_net` – oder im Brutto enthalten); kein oder mehr als ein solcher
+  Betrag, kein oder mehr als ein Satz oder mehr als `MAX_LINE_AMOUNTS` = 8 Beträge in der Zeile (eine Tabellenzeile; die Probe ist paarweise): keine
+  Steuer, auch kein Befund. Bezeichnungen zählen als ganze Wörter und haben **Ränge** (Brutto: Rechnungsbetrag, Gesamtbetrag … vor
+  Zahlbetrag vor „brutto“/„total“; Netto und Datum ebenso, eine Zeile mit Leistungs-, Liefer-, Fälligkeits- oder Bestellbezeichnung liefert kein
+  Belegdatum): Nur der beste Rang, der überhaupt einen Treffer hat, zählt, der Betrag ist der erste HINTER der Bezeichnung derselben Zeile (steht die
+  Gegenbezeichnung dazwischen, zählt das Paar nicht). **Mehrere verschiedene Werte für ein Feld: leer mit Befund `conflict_<Feld>`** – bei Brutto,
+  Netto und Steuer nur dann nicht, wenn GENAU EINE Kombination die Summenprobe besteht (`by_checksum`). Der Absender ist nur ein Abschnitt der ersten
+  Zeilen der ersten Seite, der wie ein Firmenname aussieht (Rechtsform als ganzes Wort); bei mehreren entscheidet der Fuß der letzten Seite, sonst
+  `conflict_sender_name`. Die Proben stehen in `raw['checks']` (`sum`: Netto + Steuer = Brutto; `rate`: Netto × Satz = Steuer auf den Cent, nur bei
+  genau einem Satz; je `ok`/`mismatch`/`incomplete`), **jedes gelesene Feld nennt Zeile und Seite**
+  (`raw['fields'][<Feld>] = {value, source: 'rule', quote, page}`). **Ein Kontoauszug ist kein Beleg:** Erkennt ihn ein Importmodul
+  (`importers.find_importer`) UND steht eine Saldozeile (`find_balances`) da, ist die Lesung `unsupported` mit Befund `statement` (der Text bleibt
+  gespeichert). **Die eigene Firma** (`Database.own_identity`: Namen und USt-IdNrn. aller Kontakte mit `ContactType = 'own'`) ist nie der Absender und
+  nie die USt-IdNr. des Belegs. **Die Währung gilt am Betrag** (`_currency_at`): Maßgeblich ist, was unmittelbar am gelesenen Betrag steht (davor oder
+  dahinter, nur Leerraum dazwischen) – `€`/`EUR` ist Euro, `$`, `£`, `USD`, `CHF`, `GBP` machen den Betrag fremd –, am übernommenen Brutto, ohne Brutto
+  an Netto und Steuer: Ein fremdes Zeichen dort lässt Beträge, Satz und Aufschlüsselung leer (`foreign_currency`), ein Euro-Zeichen setzt `EUR`
+  (Zitat: die Zeile dieses Betrags). Steht am Betrag nichts, gilt der ganze Text wie bisher (Euro, wenn er Euro nennt) – aber ein fremdes Kürzel an
+  einer Zahl und Euro nirgends an einer Zahl (nur „EUR-Konto“, „Preise in EUR“) macht die Beträge ebenfalls fremd. Lockern nur mit Tests für das,
+  was NICHT gelesen wird
+- **Gelesen wird nur auf Anfrage der Seite, nie im Upload selbst** (`server/receipt_reader.py`): `POST /receipts/read` (JSON `{documentId}`, ID streng
+  über `_json_positive_id`; `_JSON_PATHS` + `_POST_ONLY_JSON_PATHS`: GET 405, CSRF-Token und Herkunft wie jede JSON-Route) liest die Datei EINES
+  Belegs; im Demo-Modus 403 (kein Knopf, nichts geschieht). **Es läuft höchstens ein Lesen je Prozess** (`_read_lock`), ein zweites bekommt sofort 409
+  (`busy: true`). Ablauf von `read_receipt`: Beleg lesen (unbekannt: 404) → die Datei NUR über `receipt_files.open_receipt` (`Belege/`/`Documents/`,
+  `O_NOFOLLOW`, reguläre Datei; ohne eine solche: Lesung `failed` mit Befund `no_file`) → Größe prüfen, Bytes in Stücken lesen, Datei schließen →
+  `read_isolated` – **alles außerhalb einer Transaktion der Datenbank** – → `Database.save_document_reading(document_id, expected_path, row)`: Prüfung
+  und Schreiben in EINER `BEGIN IMMEDIATE`-Transaktion, geschrieben wird nur, wenn der Beleg noch da ist und denselben Pfad trägt wie beim Lesen
+  (sonst 409, nichts gespeichert); die vorhandene Lesung wird ersetzt. **Die Antwort nennt nie einen Pfad, den Namen der Datei auf der Platte, ihren
+  ganzen Text (`Text`) oder einen Ausnahmetext:** feste Sätze, der volle Fehler nur im Server-Log (500); bei Erfolg 200 mit `reading`
+  (`reading_payload`; dazu gehören die Zitate der gelesenen Zeilen, je höchstens 200 Zeichen) – auch für `failed`/`no_text`: Der Status sagt, was geschah. Am Beleg selbst ändert sich nichts. Die Seite *Belege* liest nach einem Upload die angelegten
+  Belege nacheinander (`readReceipts`: je Beleg EINE Anfrage, bei `busy` nach 2 s noch einmal), dazu ein Kasten über der Liste mit einem Knopf für
+  ungelesene (`count_unread_receipts`, höchstens `READ_BATCH` = 100 je Klick) und auf der Seite eines Belegs „Lesen“/„Neu lesen“. **Die Lesung ist
+  abgeleitet:** ihre Schreibwege gehen nicht ins SQL-Protokoll (`_log_sql`), und sie geht beim Löschen des Belegs in dessen Transaktion mit
+  (`delete_receipt`, ebenso die Vorlage „Zeitbereich löschen“ der SQL-Konsole) – sie zählt nie als Verweis im Sinn von `DeleteRefused`
+- **Anzeige:** Spalte „Gelesen“ der Belegliste aus EINER Abfrage (`document_reading_summaries`, liest nie `Text` oder `Raw`; `summary_text`: Betrag ·
+  Absender, sonst das Wort zum Status, mit „(ältere Regeln)“, `–` ohne Datei, `ungelesen` ohne Lesung; Kopf- und Datenzelle tragen die Klasse
+  `readCell`, eine Mindestbreite in `buch.css`, damit der Text in schmalen Fenstern nicht auf viele Zeilen umbricht). Der Kasten „Gelesen“ auf der Seite eines
+  Belegs (`pages_receipts._reading_box`, serverseitig, jeder Wert maskiert) nennt Status, Herkunft und Zeitpunkt (gespeichert UTC, gezeigt Ortszeit),
+  die Felder mit ihrer Herkunft (bei den Textregeln das Zitat der Zeile, bei der E-Rechnung der BT-Bezeichner), die Proben (eine, die nicht stimmt, in
+  Warnfarbe) und die Befunde – **nur als feste Sätze aus `receipt_reader.NOTE_TEXTS`:** ein unbekannter Schlüssel erscheint nie, und ein neuer
+  Befund-Code im Kopf von `receipt_reading` braucht dort einen Satz (`test_every_note_code_of_the_reading_package_has_a_sentence`). `Raw` wird streng
+  gelesen (kaputtes JSON ist leer), dazu steht immer der feste Hinweis `READING_HINT` („bitte prüfen“). **„Gelesenes Datum übernehmen“ setzt nur den
+  Wert des Datumsfelds** (`receiptTakeDate`): gespeichert wird erst mit „Beleg aktualisieren“
+- **Vorschläge Beleg → Buchung** (`db/receipt_matching.py` rein, `Database.suggest_bookings_for_receipt`, rein lesend): Es wird nur vorgeschlagen, nie
+  verknüpft. Voraussetzung ist eine Lesung mit Status `ok`, Währung leer oder `EUR` und einem Brutto ungleich 0 (`usable_gross`) sowie ein Datum – das
+  gelesene (`DocDate`), sonst das Belegdatum. **Nur, solange der Beleg an keiner Buchung hängt:** Hat er eine Zeile in `BookingDocuments` (gleich welcher
+  Art der Verknüpfung, auch an einem Kind), liefert `suggest_bookings_for_receipt` `[]` – geprüft auf der Verbindung, die den Beleg liest, vor den
+  Kandidaten (`Database.receipt_is_linked` stellt dieselbe Frage allein); nach dem Lösen der letzten Buchung kommen die Vorschläge wieder. **Kandidaten** (`receipt_match_candidates`: EINE Abfrage, alle Werte als Parameter, höchstens
+  `MAX_CANDIDATES` = 200, älteste zuerst): Bankbewegungen und eigenständige Sätze, deren Betrag ohne Vorzeichen genau das Brutto ist (−119,00 passt zu
+  119,00), mit Buchungsdatum von 7 Tagen vor bis 90 Tage nach dem Datum (`candidate_window`). **Ausgeschlossen:** das Kind einer Bankbewegung (sein
+  Betrag ist ein Teil), der Zahlungssatz einer Rechnungszuordnung (`PAYMENT_MARK`), ein Spiegel (`AutoMirror` oder eine der `MIRROR_FORMS`; eine Zeile
+  ohne Form gilt nicht als Spiegel), die Forderungsbuchung einer eigenen Rechnung (`_receivable_sql`, dieselbe Bedingung wie im Editor) und eine
+  Buchung, an der – oder an einem ihrer Kinder – dieser Beleg schon hängt, gleich welcher Art. **Punkte** (`rank_candidates`, je Signal ein fester
+  Satz als Begründung, der Betrag zuerst): Rechnungsnummer des Belegs im Text, in der Beleg-Nr. oder im Empfänger der Buchung (`POINTS_NUMBER` = 100;
+  normalisiert mindestens 4 Zeichen mit einer Ziffer, rein numerisch erst ab 5), gemeinsame Namenswörter (30, ab zwei 40; mindestens 4 Zeichen, ohne
+  `STOP_WORDS`), ein Buchungsdatum nahe dem Belegdatum (bis 20, je 3 Tage Abstand einer weniger). **Zahlungsrichtung** (`direction_fits`, nach `Kind` der
+  Lesung): Eine Rechnung (oder ein Beleg ohne Art) erwartet einen Ausgang (Betrag der Buchung < 0), eine Gutschrift einen Eingang (> 0); passt die Richtung
+  nicht, trägt der Vorschlag die Begründung `REASON_DIRECTION` und steht hinter denen mit passender Richtung – ausgeschlossen wird er nie (eine unbekannte
+  Art oder ein Betrag, der keine Zahl ist, „passt“). Reihenfolge nach `(linked, mismatch, −Punkte, Abstand, ID)`: eine Buchung, die schon einen Beleg der
+  Art `receipt` trägt (`linked`), immer zuletzt, innerhalb davon die mit unpassender Richtung hinter denen mit passender; **höchstens 5**
+  (`MAX_SUGGESTIONS`) nach dieser Sortierung (`Suggestion.mismatch` dient nur der Reihenfolge, nicht der JSON-Form).
+  `GET /receipts/suggestions?id=<n>` (`_SEARCH_PATHS`: rein lesend, Herkunft geprüft, `no-store`, ID über `_id_param`, unbekannter Beleg 404, ein
+  unerwarteter Fehler 500 mit festem Satz) liefert `{suggestions: [{booking, reasons, linked}], empty}` in der Form eines Suchtreffers
+  (`receipt_links.suggestions_payload`); `empty` ist der Satz für die leere Liste – EINE Funktion für Route und Seite
+  (`pages_receipts.suggestions_empty_text`: verknüpft → `LINKED_TEXT`, kein Brutto oder keine Lesung → `NO_AMOUNT_TEXT`, sonst `NO_SUGGESTIONS_TEXT`), das
+  Skript übernimmt ihn vor dem Zeichnen (`RECEIPT_SUGGEST.empty`). Dieselben Daten stehen im Skriptblock der Seite des Belegs (`RECEIPT_SUGGEST`, nur über `script_json`). Den
+  Bereich „Vorschläge“ gibt es nur zu einer Lesung `ok` (`pages_receipts._suggestions_area`); scheitert die Abfrage dort, bleibt die Seite stehen
+  (leere Liste, der Fehler im Server-Log). **„Zuordnen“ ist der bestehende Weg `POST /bookings/link-document` (*Belege verknüpfen*) – die Regeln der
+  Beleg-Nr. gelten unverändert;** danach und nach dem Lösen holt das Skript die Vorschläge neu. Bekannte Grenzen: gesucht wird nur der Betrag auf den
+  Cent (Skonto, Teilzahlung und Sammelüberweisung finden sich nicht) und nur in Euro (`docs/aufgaben.md`)
+- **Tests** (nur mit erfundenen Belegen, Namen und Beträgen): `tests/test_receipt_reading_einvoice.py` (E-Rechnung, Grenzen der Eingabe, `Reading`),
+  `tests/test_receipt_reading_text.py` (Textregeln, `pdf_text`, Kindprozess), `tests/test_document_readings_schema_2006.py` (Migration und
+  DB-Schicht), `tests/test_receipt_read_route.py` (Route, Spalte, Kasten), `tests/test_receipt_matching.py` (Rangfolge, Kandidaten),
+  `tests/test_receipt_suggestions_route.py` (Route und Bereich „Vorschläge“)
+
 ### Arbeitszeiten und Fahrtenbuch (seit 2.3.12)
 - **Arbeitszeit rechnet in Minuten** (`server/pages_worktime.py`: `clock_minutes`, `compute_minutes`, `crosses_midnight`,
   `format_hours`): Uhrzeiten gelten nur als `HH:MM` aus ASCII-Ziffern (0–23, 0–59), sonst zählt der Eintrag 0 Minuten und wird
@@ -529,7 +651,8 @@ kein Subagent darauf:
   Anlagen (Lieferant), zugeordnete Personen, Arbeitszeiten, Fahrten; Artikel: Positionen (mit dem Hinweis auf „inaktiv“, wenn er
   aktiv ist); Bankkonto: Buchungen, Rechnungen, Angebote – die Kasse nie; AfA-Kategorie: Anlagen; Beleg: Buchungen, Anlagen,
   Fahrten (`delete_receipt(receipt_id)` löscht genau EINEN Beleg über seine ID – die Belegnummer ist nicht eindeutig; Route
-  `POST /receipts/delete?id=`, seine hochgeladene Datei geht mit, siehe *Belegdateien*). Die Routen gehen über
+  `POST /receipts/delete?id=`, seine hochgeladene Datei geht mit, siehe *Belegdateien*; die Lesung der Datei, `DocumentReadings`, geht in derselben
+  Transaktion mit und zählt nicht als Verweis, siehe *Belegerkennung*). Die Routen gehen über
   `_respond_after_delete` (`server/app.py`): 303 auf die Listenseite, die Meldung als
   Query-Parameter (`error` bei Artikeln, Bankkonten, Kontakten; `err` bei AfA-Kategorien und Belegen), angezeigt nur über
   `script_json` + `appMsg` – nie 500. Eine neue Verweisspalte auf eine dieser Tabellen gehört in die Prüfung ihrer
@@ -997,7 +1120,8 @@ kein Subagent darauf:
   `check_page_path`) nicht aufweichen; neue Seiten und Schlüssel nur für GET-Handler, die
   nichts schreiben (Nachweis im Test). `/backup/download` steht bewusst nicht darin: Es liefert den ganzen Datenbestand
   (Gigabyte-Größe). `/receipts/search` und `/transactions/search` stehen bewusst nicht darin: JSON-Suchen der Seiten, keine
-  Anzeigeseiten; dasselbe liefert die SQL-Abfrage
+  Anzeigeseiten; dasselbe liefert die SQL-Abfrage. Ebenso nicht: `/receipts/suggestions` (JSON-Vorschläge der Seite eines Belegs) und
+  `/receipts/read` (ein POST: liest die Datei eines Belegs und schreibt die Lesung)
 - Zugangsdaten aus der Windows-Anmeldeinformationsverwaltung, keyring oder Umgebung, nie im Repo; über `http://` gehen sie nur
   an den eigenen Rechner, sonst nur mit `UBUCHHALTUNG_MCP_ALLOW_HTTP`. Registrierung nur
   lokal (`claude mcp add --scope local`), Einrichtung in `DEPLOYMENT.md`
@@ -1048,7 +1172,8 @@ kein Subagent darauf:
 - Ein Weg für alle Formate: Parser in `importers/` liefern `BankStatement` (`base.py`) →
   `server/upload_handler.py` → Vorschau `server/import_preview.py` (Duplikate, Warnungen) → bestätigen
 - CAMT (`importers/camt.py`): Storno-Richtung = `CdtDbtInd` (ISO 20022); Saldoprüfung exakt in
-  Decimal/Minor Units, nie als float-Summe; DTD/Entities werden abgelehnt, ZIP nur im Speicher mit
+  Decimal/Minor Units, nie als float-Summe; DTD/Entities werden abgelehnt (der XML-Wächter liegt seit 2.6.0 in
+  `importers/safe_xml.py`, `parse_untrusted_xml`; die Belegerkennung nutzt dieselbe Stelle), ZIP nur im Speicher mit
   Grenzen, Beträge ≥ 10¹² sind Fehler – diese Schutzmaßnahmen nicht aufweichen
 - **Nichts still falsch oder unvollständig (seit 2.3.9):** Ein CAMT-Auszug, der irgendwo (Konto, gebuchter Umsatz, verwendeter
   Saldo) eine andere Währung als Euro nennt, liefert keine Umsätze und nur den Befund `foreign_currency`
@@ -1741,7 +1866,7 @@ kein Subagent darauf:
   Versionsstelle und `PRAGMA user_version` ziehen automatisch mit; PATCH dabei auf 0.
   Der neue Migrationsschritt prüft gegen die neue Zahl (`if from_version < 2001:`)
 - In der Datenbank steht `SCHEMA_VERSION = MAJOR × 1000 + SCHEMA_STEP` (2.0.x → 2000,
-  2.1.x → 2001, 2.2.x → 2002, 2.3.x → 2003, 2.4.x → 2004, 2.5.x → 2005); Datenbanken aus 1.x tragen 0 bis 6. Eine Datenbank mit höherer Zahl
+  2.1.x → 2001, 2.2.x → 2002, 2.3.x → 2003, 2.4.x → 2004, 2.5.x → 2005, 2.6.x → 2006); Datenbanken aus 1.x tragen 0 bis 6. Eine Datenbank mit höherer Zahl
   als das Programm wird nicht geöffnet (`db.SchemaTooNewError`) – nie zurückstempeln
 - Sonstige Änderungen ohne DB-Bezug: nur `PATCH` +1; große Umbrüche: `MAJOR` +1,
   `SCHEMA_STEP` und `PATCH` auf 0
@@ -1771,6 +1896,10 @@ kein Subagent darauf:
   Standard angehakt; bei der Kasse nicht): Ein nicht angehaktes Kästchen schickt nichts, deshalb sagt das versteckte Feld
   `business_only_field=1`, dass das Formular das Kennzeichen führt – nur dann liest der Handler es (genau `1` = angehakt), sonst
   bleibt der Wert. Es ändert keine Buchung, keine Auswertung und keinen Export, nur die Oberfläche des Kontoauszug-Imports
+- Migration auf 2.6.0 (`DOCUMENT_READINGS_SCHEMA`, Schema 2006): legt nur die Tabelle `DocumentReadings` (siehe *Belegerkennung*) und den Index
+  `idx_documentreadings_gross` auf `GrossMinor` an – nach der Sicherung und in der Transaktion der Umstellung (`_ensure_document_readings_schema`, ohne
+  eigenen Schritt in `_run_migrations`; eine frische Datenbank legt sie beim Anlegen an). Keine vorhandene Tabelle ändert sich, der Bestand bekommt keine
+  Lesungen und nichts wird umgedeutet: Ein Beleg mit Datei gilt als ungelesen, bis er gelesen wird
 - Anzeige auf der About-Seite
 
 ---
@@ -1778,7 +1907,7 @@ kein Subagent darauf:
 ## Governance
 
 - **Owner:** NobseVomBerg
-- **Letzte Aktualisierung:** 2026-11-20
+- **Letzte Aktualisierung:** 2026-11-21
 - **Modell-Versionen:** Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5 (Stand November 2026);
   `settings.json` und Agents nutzen Aliase (`fable`, `opus` …), die der neuesten Version folgen
 - **Bei Modell-Updates:** Modell-Routing oben, `.claude/settings.json` (`modelSettings`

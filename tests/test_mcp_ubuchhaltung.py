@@ -330,8 +330,9 @@ def test_the_allowlist_leaves_out_the_pages_the_review_found_unsafe():
 
 
 def test_the_searches_are_not_in_the_allowlist():
-    """Die JSON-Suchen der Belege und Buchungen (seit 2.5.12) sind keine Anzeigeseiten: Das Werkzeug liest dasselbe per SQL-Abfrage."""
-    for page in ("/receipts/search", "/transactions/search"):
+    """Die JSON-Suchen der Belege und Buchungen (seit 2.5.12) und die Vorschläge zu einem Beleg (seit 2.6.0) sind keine Anzeigeseiten: Das
+    Werkzeug liest dasselbe per SQL-Abfrage."""
+    for page in ("/receipts/search", "/receipts/suggestions", "/transactions/search"):
         assert page not in mcp._PAGE_ALLOWLIST
         with pytest.raises(ValueError, match=r"Seite nicht freigegeben – .*_PAGE_ALLOWLIST in tools/mcp_ubuchhaltung\.py"):
             mcp.check_page_path(f"{page}?q=a")

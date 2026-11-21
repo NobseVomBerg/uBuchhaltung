@@ -263,7 +263,7 @@ def test_the_delete_script_has_no_transaction_commands_and_no_foreign_key_pragma
     for word in ("BEGIN", "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE", "PRAGMA", "foreign_keys"):
         assert not re.search(rf"\b{word}\b", code, re.I), word                   # END als Befehl schließt die Prüfung unten aus
     assert "foreign_keys" not in script.lower()                                          # auch nicht in den Kommentaren
-    assert len(_commands(tmp_db)) == 16
+    assert len(_commands(tmp_db)) == 17
     assert all(re.match(r"(DELETE FROM|UPDATE) ", handlers._console_log_text(command)) for command in _commands(tmp_db))
 
 
