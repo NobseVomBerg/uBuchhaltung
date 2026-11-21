@@ -32,6 +32,12 @@ def _tax_text(tax):
     return '' if tax is None else f"{tax:.2f}"
 
 
+# Hinweistext am Abzeichen „Forderung“ in der Liste: Die Forderung bucht die App beim Versenden einer Rechnung selbst – ein grüner Haken
+# „Buchung vollständig gebucht“ und ein grün gefärbter Betrag läsen sich wie ein Geldeingang. Fester Text, wird beim Ausgeben maskiert.
+RECEIVABLE_HINT = ('Forderung an einen Kunden: kein Geldeingang und noch keine Einnahme. Bei einer Rechnung entsteht sie mit dem Versenden; '
+                   'der Zahlungseingang wird später an der Rechnung zugeordnet.')
+
+
 # Das Skript des Abschnitts „Belege“ der Maske (nach ``receipt_links.LINK_WIDGET_JS`` und den Daten ``TX_LINK_BOOKING_ID``/
 # ``TX_RECEIPTS``). Werte aus der Datenbank nur über textContent/createElement, nie als Markup. ``txTakeNumber`` setzt die Nummer des
 # Belegs in das Feld Beleg-Nr. der Maske – aber nur in ein leeres. **Eine Antwort gehört zur geöffneten Buchung:** Die Maske wird beim
@@ -1213,6 +1219,9 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
          "<th>SKR</th><th>Beleg-Nr.</th><th>Aktionen</th></tr>")
 
     bookings = db.fetch_bookings_grouped(date_from, date_to)
+    # Welche Einzelzeilen sind die Forderung einer Rechnung? EINE Abfrage für die ganze Liste, nicht je Zeile.
+    receivable_ids = db.receivable_entry_ids(
+        item['booking'][0] for item in bookings if item['type'] == 'normal')
 
     # ROHE Namen: escaped wird erst bei der Ausgabe (die Zellen escapen selbst;
     # doppeltes Escaping machte aus '&' sichtbares '&amp;')
@@ -1532,7 +1541,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             if (coa_id and coa_id in private_coa_ids) or (counter_coa_id and counter_coa_id in private_coa_ids):
                 doc_number = 'privat'
             amount_color = 'green' if (amount or 0) > 0 else 'red'
-            if coa_id:
+            amount_style = f" style='color:{amount_color}'"
+            if booking_id in receivable_ids:
+                # Die Forderung entsteht mit dem Versenden der Rechnung: weder gebucht noch Geld – kein Haken, kein Grün/Rot am Betrag
+                status_badge = f"<span class='badge bg-gray' title='{_attr(RECEIVABLE_HINT)}'>Forderung</span>"
+                amount_style = ''
+            elif coa_id:
                 status_badge = "<span class='badge bg-green' title='Buchung vollst\u00e4ndig gebucht'>\u2713</span>"
             else:
                 status_badge = ""
@@ -1547,7 +1561,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             s+= f"<td>{date_booking}</td>"
             s+= f"<td title='{recipient}'>{recipient}</td>"
             s+= f"<td title='{text}'>{text}</td>"
-            s+= f"<td style='color:{amount_color}'>{fmt_eur(amount or 0, symbol=False)}</td>"
+            s+= f"<td{amount_style}>{fmt_eur(amount or 0, symbol=False)}</td>"
             s+= f"<td>{currency}</td>"
             s+= f"<td>{_fmt_rate(booking[13])}</td>"
             s+= f"<td title='{_attr(account_name)}'>{_html.escape(str(account_name))}</td>"
