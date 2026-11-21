@@ -12,7 +12,8 @@ Jeder Wert aus Datenbank oder Adresse steht maskiert im HTML (``html.escape``); 
 Gelesen wird die Adresse streng (``parse_year``, ``parse_month``, ``parse_variant``): ein Schlüssel, der mehrfach vorkommt, ist ungültig.
 
 Das Untermenü der Auswertungen (``REPORT_PAGES``, ``reports_submenu``) steht hier und gilt für jede Seite darunter (BWA, EÜR, Summen- und
-Saldenliste): Sie rufen alle ``Header1('bwa')`` auf, damit der Menüpunkt „Auswertungen“ markiert bleibt.
+Saldenliste, Liquidität): Sie rufen alle ``Header1('bwa')`` auf, damit der Menüpunkt „Auswertungen“ markiert bleibt. Die Adresse (``year``, ``month``,
+``variant``) liest ``read_page_query`` bzw. ``read_pdf_query`` auch für die Liquiditätsrechnung (``pages_liquidity``).
 """
 import html as _html
 from dataclasses import dataclass
@@ -29,7 +30,8 @@ INVALID_VARIANT_ERROR = 'Ungültige Darstellung.'
 PDF_FAILED_TEXT = 'Die Auswertung ließ sich nicht als PDF erstellen.'
 
 # Die Seiten unter „Auswertungen“ (Schlüssel, Adresse, Bezeichnung im Untermenü); jede ruft Header1('bwa') auf, damit der Menüpunkt markiert bleibt
-REPORT_PAGES = (('bwa', '/bwa', 'BWA'), ('euer', '/euer', 'EÜR'), ('susa', '/susa', 'Summen- und Saldenliste'))
+REPORT_PAGES = (('bwa', '/bwa', 'BWA'), ('euer', '/euer', 'EÜR'), ('susa', '/susa', 'Summen- und Saldenliste'),
+                ('liquiditaet', '/liquiditaet', 'Liquidität'))
 
 
 @dataclass(frozen=True)

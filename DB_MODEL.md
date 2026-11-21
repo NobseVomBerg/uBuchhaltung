@@ -1408,6 +1408,48 @@ DATEV-Export und mit derselben Lesart** – eine eigene Deutung von Form, Soll u
   Gruppe einmal gebucht – die Regel ist linear (`db.susa.book_group`); eine Zeile je Satz in Python wäre bei 200 000 Buchungen deutlich langsamer. Die Übertragsrechnung
   (`_settle_stock`) liest den ganzen Bestand wie bei der Dashboard-Karte.
 
+### Liquiditätsrechnung (seit 2.6.3, `db/liquidity.py`, `Database.get_liquidity`)
+
+Vom Ergebnis der betriebswirtschaftlichen Auswertung zur Veränderung der flüssigen Mittel – ein Monat und aufgelaufen seit dem 1. Januar, im Vorjahresvergleich oder als „Monat und Jahr“ (Seite
+`/liquiditaet`, auch als PDF). Sie hat **keine eigene Lesart der Buchungen** und liest nur drei Quellen: die Zeilen von `get_euer_data` (ohne Kontofilter, eingeordnet von `reporting.euer_section`), den
+Bericht der BWA (`bwa.build_report`) über dieselben Zeilen und die Töpfe des Dashboards (`_dashboard_movements`: Einnahme, privat, Ausgabe, Übertrag – je Spanne ein Aufruf, so geht die Summe auf den Minor-Wert der Karte
+`get_dashboard(…)['balance']` derselben Spanne auf). Neu ist nur die Abfrage `_liquidity_unbooked`; vorhandene Funktionen sind unverändert. Rein lesend, nichts wird geschrieben.
+
+- **Zeilen** (Minor Units, jeder Wert mit seiner Wirkung auf die flüssigen Mittel – Zufluss +; `R` ist der Saldo einer EÜR-Zeile, zwei Zeilen gleicher Nummer – die echte und die virtuelle 3806, zwei Konten
+  gleicher Nummer – sind je Zeitraum addiert; die Bereiche stehen als Daten in `db/liquidity.py`):
+
+  | # | Zeile | Wert |
+  |---|---|---|
+  | 1 | Ergebnis (wie BWA) | das Ergebnis der BWA (`result`) |
+  | 2 | Abschreibungen | BWA-Gruppe `depreciation` (6200–6299), positiv |
+  | 3 | Anlagenabgänge zum Restbuchwert | −Σ R der Konten 4855–4858 und 6895–6898, die im Ergebnis stehen (`DISPOSAL_RANGES`) |
+  | 4 | Darlehen und Verbindlichkeiten im Ergebnis | BWA-Gruppe `liabilities` (3000–3799 außer 3160, 3720, 3740), herausgerechnet |
+  | 5 | Ergebnis vor Abschreibungen und Darlehen | 1 + 2 + 3 + 4 |
+  | 6 | Anlagenzugänge | Σ R der Konten unter 1000 außerhalb des Ergebnisses (`ASSET_LIMIT`) |
+  | 7 | Darlehen und Verbindlichkeiten | Σ R aller Konten 3000–3799 (`FINANCING_RANGE`; Aufnahme +, Tilgung −) |
+  | 8 / 9 | Privatentnahmen / Privateinlagen | Σ R der Konten 2100–2179 / 2180–2199 |
+  | 10 | Übrige Konten außerhalb des Ergebnisses | der Rest der Zeilen außerhalb des Ergebnisses (erwartet 0; steht nur bei einem Wert) |
+  | 11 | Veränderung laut Überleitung | 5 bis 10 |
+  | 12 | Bankbewegungen ohne Buchungssatz | `_liquidity_unbooked` (mit Anzahl) |
+  | 13 | **Nicht zugeordnet** | 14 − (11 + 12), steht immer da |
+  | 14 | Veränderung der flüssigen Mittel | Einnahme + privat + Ausgabe der Töpfe des Dashboards, alle Konten, **ohne den Topf Übertrag** |
+
+  Jede EÜR-Zeile steht an genau einer Stelle: im Ergebnis (Zeile 1; die Zeilen 2 bis 4 heben nur ihren Anteil heraus) oder, nach Nummer, in einer der Zeilen 6 bis 10. Die Zeilen 4 und 7 heben sich bis auf 3160,
+  3720 und 3740 auf – die Konten 3000–3799 stehen schon im Ergebnis der BWA und kommen als Finanzierung zurück.
+- **Ist ohne Überträge:** Geld zwischen eigenen Konten ändert die flüssigen Mittel nicht. Der Topf „Übertrag“ steht nur nachrichtlich da (Zeile „Überträge zwischen eigenen Konten“ und „Veränderung laut
+  Kontobewegungen“ = Ist + Überträge = `balance` der Karte), und nur, wenn Überträge dastehen.
+- **Bankbewegungen ohne Buchungssatz (`_liquidity_unbooked`):** Bankbewegungen der Konten mit Datum im Zeitraum und ohne einen einzigen Satz – dieselbe Auswahl wie die Zählung `unlinked` des Dashboards –, ohne die, die die
+  Übertragsrechnung des Exports deckt (`_settle_stock(…).covered`; sie läuft nur, wenn eine Bewegung ohne Satz einen ganzzahligen Betrag ≠ 0 hat, und einmal je Aufruf). Beträge über `_minor_or_zero`.
+- **Nicht zugeordnet:** per Definition die Differenz – keine dritte Lesart. Was die Überleitung aus den Buchungen nicht erklärt (die EÜR führt eine Zahlung in einem anderen Monat oder mit einem anderen Betrag als das Konto),
+  bleibt dort sichtbar. „Geht auf“ heißt exakt 0 Minor Units; ein Rest unter einem halben Cent steht als 0,00 da und wird als Rundungsrest genannt. Grenze der Ist-Seite (die des Dashboards): Neben einem Spiegel zwischen
+  eigenen Konten steckt der Teil einer Bankbewegung, den kein Satz erklärt, im Übertrag – ein unstimmiger Split dort steht nur nachrichtlich unter den Überträgen.
+- **Abstimmung** (Tests, auf den Minor-Wert): Im Demobestand und in Beständen aus Zufall über Wege der App ist „Nicht zugeordnet“ in jedem Monat und aufgelaufen 0; in der SuSa-Welt und der Testwelt stehen feste Werte
+  (`tests/test_liquidity.py`), und für die benannten Fälle (ein Satz über 1460 in einem anderen Monat als seine Bankseite, ein Satz mit anderem Datum als seine Bankbewegung über eine Monatsgrenze, ein unstimmiger Split, ein
+  Steuersatz außer 5, 7, 16 und 19 %, die Sofortabschreibung gegen die Bank, der Status `resolved`, eine Zahlung auf ein Bestandskonto ohne Gegenumbuchung, eine Umbuchung Anlage ↔ Erfolgskonto mit der Kasse als `Account_ID`
+  oder auf einem Konto, das weder Abschreibung noch Restbuchwert ist, ein Spiegel alter Art mit 1460, ein Rundungsrest) ist festgehalten, was dort landet.
+- **Laufzeit:** Je Spanne einmal `get_euer_data` und `_dashboard_movements` (die Übertragsrechnung `_settle_stock` liest den ganzen Bestand), dazu `_liquidity_unbooked`. Gemessen an einem Bestand mit 200 000 Buchungssätzen: rund 2,3 s im
+  Vorjahresvergleich (vier Spannen), rund 1,4 s als „Monat und Jahr“; im Demobestand `full` rund 10 ms.
+
 ### Rechnungserstellung
 
 ```

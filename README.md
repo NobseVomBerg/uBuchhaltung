@@ -38,6 +38,13 @@ documentation are in German.
   <img alt="Summen- und Saldenliste" src="docs/screenshots/susa.png">
 </picture>
 
+**Liquiditätsrechnung** – vom Ergebnis zur Veränderung der flüssigen Mittel, auch als PDF
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/liquiditaet-dark.png">
+  <img alt="Liquiditätsrechnung" src="docs/screenshots/liquiditaet.png">
+</picture>
+
 **Buchungen** – Bankbewegungen mit Kontierung, Split-Buchungen und Rechnungszahlungen
 
 <picture>
@@ -119,7 +126,7 @@ Anmeldung). Vorher eine Datensicherung anlegen – Ablauf und Rückweg unter
 | **Buchen** | Bankbewegungen und Buchungssätze, Split-Buchungen, Kontierungs-Vorschlag aus der Historie, Belege verknüpfen |
 | **Belege** | Dateien hochladen, ansehen und mit Buchungen verknüpfen. Die App liest Belege aus (nach dem Hochladen gleich, vorhandene auf Knopfdruck): E-Rechnungen (XRechnung, ZUGFeRD) strukturiert, PDFs mit Textebene über feste Regeln. Die gelesenen Werte stehen mit ihrer Herkunft am Beleg, dazu Vorschläge für die passende Bankbewegung – verknüpft wird erst auf Klick. Keine Texterkennung für Scans und Fotos; die Regeln lesen nicht jede Rechnung, gelesene Werte sind zu prüfen |
 | **Kontenrahmen** | SKR04 vorbelegt, eigene Konten (auch weiterer Rahmen wie SKR03) anlegbar, DATEV-Steuerschlüssel |
-| **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR, auch als eigene Seite und PDF), monatliche betriebswirtschaftliche Auswertung und Summen- und Saldenliste (je Seite und PDF) |
+| **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR, auch als eigene Seite und PDF), monatliche betriebswirtschaftliche Auswertung, Summen- und Saldenliste und Liquiditätsrechnung (je Seite und PDF) |
 | **Rechnungen & Angebote** | PDF als hybride E-Rechnung (ZUGFeRD/Factur-X, EN 16931) und XRechnung, E-Mail-Versand, Nummernkreise, Stornorechnung als eigener Beleg (auf Wunsch mit Entwurf der neuen Rechnung), offene Posten, Mahnwesen, Kleinunternehmerregelung (der Hinweis auf § 19 UStG steht automatisch im Dokument) |
 | **Anlagen** | Anlagenverzeichnis mit AfA (linear, degressiv, GWG) |
 | **Import & Export** | Kontoauszüge im Bankformat CAMT.053 (XML oder ZIP, jede Bank), als PDF (DKB, Volksbank Rottweil) oder als CSV (Umsatzliste der DKB) – bei einem gemischt genutzten Konto lassen sich einzelne Umsätze auswählen, [Datenübernahme aus WISO Mein Büro](#datenübernahme-aus-wiso-mein-büro), DATEV-Buchungsstapel |
@@ -392,8 +399,8 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
 - **Kasse-Buchungen**: Buchungen über die Buchungsmaske mit Konto = Kasse zählen in EÜR und Dashboard wie Bankbewegungen. Eigenständige Sätze auf der Kasse – auch direkte Entry-Buchungen ohne COA-Spiegel (`CounterCOA=NULL`) – fließen ebenfalls ein. Die EÜR liest zusätzlich eigenständige Sätze über das Verrechnungskonto 1460 (WISO: „Aufwand an Verrechnung“ gilt mit dem Datum des Satzes als abgeflossen), solange kein Kontofilter gesetzt ist; das Dashboard folgt den Kontobewegungen
 - **Abschreibungen (AfA)** erscheinen in der EÜR (Betriebsausgabe auf dem Aufwandskonto), nicht in den Zahlungskarten des Dashboards – sie sind kein Geldfluss
 
-### 7a. Auswertungen (`/bwa`, `/euer`, `/susa`)
-Unter dem Menüpunkt „Auswertungen“ stehen drei Seiten (Untermenü), jede auch als PDF. Die ersten beiden rechnen nach Zahlungsdatum wie die EÜR im Dashboard, die Summen- und Saldenliste nach dem Datum der Buchungssätze.
+### 7a. Auswertungen (`/bwa`, `/euer`, `/susa`, `/liquiditaet`)
+Unter dem Menüpunkt „Auswertungen“ stehen vier Seiten (Untermenü), jede auch als PDF. Die ersten beiden rechnen nach Zahlungsdatum wie die EÜR im Dashboard, die Summen- und Saldenliste nach dem Datum der Buchungssätze, die Liquiditätsrechnung geht vom Ergebnis der betriebswirtschaftlichen Auswertung aus.
 - **Betriebswirtschaftliche Auswertung** (`/bwa`): Ein Monat und – aufgelaufen – die Zeit seit dem 1. Januar, im Vergleich mit dem Vorjahr (Standard) oder
   mit Anteilen an Erlösen, Kosten und Betriebseinnahmen; unter jeder Zeile lassen sich die Konten aufklappen; als PDF (A4 quer, auf Wunsch mit
   Kontennachweis). Übernimmt die Zahlen der EÜR unverändert und ordnet die Konten nach ihren SKR04-Nummern in Gruppen; ein Konto ohne Gruppe steht
@@ -408,6 +415,12 @@ Unter dem Menüpunkt „Auswertungen“ stehen drei Seiten (Untermenü), jede au
   von Bankbewegungen ohne Buchungssatz und von Sätzen ohne Konto auf, so geht die Liste auf. Die Seite gleicht jedes Bankkonto mit seinen Bankbewegungen ab und
   nennt, was sich nicht buchen oder lesen ließ. Grenzen: Eine Eröffnungsbilanz gibt es nicht – ein Konto ohne Buchungen vor dem ersten Kontoauszug beginnt bei
   null –, ebenso keinen Jahresabschluss und keine Verrechnung von Umsatzsteuer und Vorsteuer; Privat- und Steuerkonten tragen ihre Summe vor. Kein amtliches Formular
+- **Liquiditätsrechnung** (`/liquiditaet`): Ein Monat und – aufgelaufen – die Zeit seit dem 1. Januar, im Vergleich mit dem Vorjahr (Standard) oder nur Monat und Jahr;
+  vom Ergebnis der betriebswirtschaftlichen Auswertung zur Veränderung der flüssigen Mittel: Abschreibungen und Anlagenabgänge zum Restbuchwert zurück, Darlehen
+  und Verbindlichkeiten, Anlagenzugänge, Privatentnahmen und Privateinlagen dazu. Daneben steht die Veränderung laut den Kontobewegungen von Bank und Kasse (ohne
+  Überträge zwischen eigenen Konten), dazu die Bankbewegungen ohne Buchungssatz und – als offener Rest – „Nicht zugeordnet“: Eine Zahlung steht in der Einnahmenüberschussrechnung
+  in einem anderen Monat oder mit einem anderen Betrag als auf dem Konto. Unter den Zeilen lassen sich die Konten aufklappen;
+  als PDF (A4 quer, auf Wunsch mit Kontennachweis). Rechnet mit den Zahlen der EÜR, der betriebswirtschaftlichen Auswertung und des Dashboards – ohne eigene Lesart der Buchungen
 - Keine Steuerberatung, ersetzt nicht die Auswertung eines Steuerbüros
 
 ### 8. Mahnwesen (`/invoice/reminders`)
@@ -652,6 +665,7 @@ uBuchhaltung/
 │   ├── pdf_bwa.py             #   PDF der betriebswirtschaftlichen Auswertung (A4 quer)
 │   ├── pdf_euer.py            #   PDF der Einnahmenüberschussrechnung (A4 hoch)
 │   ├── pdf_susa.py            #   PDF der Summen- und Saldenliste (A4 quer)
+│   ├── pdf_liquidity.py       #   PDF der Liquiditätsrechnung (A4 quer)
 │   ├── pdf_table.py           #   gemeinsame Bausteine der Tabellen-PDFs (Zelle, Linie, Kürzen, Umbruch, Seitenverteilung)
 │   ├── invoice_files.py       #   Ablage und Dateinamen der Rechnungs- und Angebotsdokumente
 │   ├── einvoice_model.py      #   neutrales E-Rechnungsmodell (EN 16931)
@@ -696,6 +710,7 @@ uBuchhaltung/
 │   ├── pages_bwa.py           # Betriebswirtschaftliche Auswertung (Seite, Adresse streng gelesen)
 │   ├── pages_euer.py          # Einnahmenüberschussrechnung (Seite, Adresse streng gelesen)
 │   ├── pages_susa.py          # Summen- und Saldenliste (Seite, Adresse streng gelesen)
+│   ├── pages_liquidity.py     # Liquiditätsrechnung (Seite; die Adresse liest dieselbe strenge Regel wie die BWA)
 │   ├── pages_invoice.py       # Rechnungen · pages_quote.py – Angebote
 │   ├── pages_transactions.py  # Buchungen (Bank+Entry merged Display)
 │   ├── pages_contacts.py      # Kontaktverwaltung (6-Tabellen-Schema)
@@ -753,6 +768,7 @@ uBuchhaltung/
 | `server/pages_bwa.py` | Betriebswirtschaftliche Auswertung (Seite; Gruppen und Berechnung in `db/bwa.py`, PDF in `export/pdf_bwa.py`) |
 | `server/pages_euer.py` | Einnahmenüberschussrechnung (Seite; Aufbereitung in `db/euer.py`, auch für den Kasten im Dashboard; PDF in `export/pdf_euer.py`) |
 | `server/pages_susa.py` | Summen- und Saldenliste (Seite; Regeln in `db/susa.py`, Berechnung in `Database.get_susa`; PDF in `export/pdf_susa.py`) |
+| `server/pages_liquidity.py` | Liquiditätsrechnung (Seite; Aufbau in `db/liquidity.py`, Berechnung in `Database.get_liquidity`; PDF in `export/pdf_liquidity.py`) |
 | `server/pages_invoice.py` / `pages_quote.py` | Rechnungen / Angebote |
 | `server/pages_transactions.py` | Buchungen (Bank+Entry merged) |
 | `server/pages_contacts.py` | Kontakte |

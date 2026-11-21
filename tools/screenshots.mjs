@@ -40,6 +40,7 @@ const SHOTS = [
   { file: 'dashboard',    path: '/dashboard' },
   { file: 'bwa',          path: '/bwa' },
   { file: 'susa',         path: '/susa' },
+  { file: 'liquiditaet',  path: '/liquiditaet' },
   { file: 'transactions', path: '/transactions' },
   { file: 'invoice-list', path: '/invoice' },
   { file: 'assets',       path: '/assets' },

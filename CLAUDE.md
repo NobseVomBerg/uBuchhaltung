@@ -855,7 +855,7 @@ kein Subagent darauf:
   (Download über `appDownload`; Dateiname `EUER_JJJJ.pdf` für ein volles Kalenderjahr, sonst `EUER_von_bis.pdf`); seine Bausteine (Text bereinigen,
   kürzen, umbrechen, Zelle, Linie, Seitenverteilung) stehen in `export/pdf_table.py` und gelten auch für `pdf_bwa`, dessen Ausgabe dabei dieselbe blieb
   (Schnappschuss in `tests/test_pdf_table.py`). Fester Hinweis: kein amtliches Formular, keine Steuerberatung. **Untermenü der Auswertungen:** `REPORT_PAGES`
-  und `reports_submenu` in `server/pages_bwa.py`; jede Seite darunter ruft `Header1('bwa')` auf (der Menüpunkt bleibt markiert). `/euer` steht in der
+  und `reports_submenu` in `server/pages_bwa.py` (seit 2.6.3 mit der Liquidität als viertem Eintrag); jede Seite darunter ruft `Header1('bwa')` auf (der Menüpunkt bleibt markiert). `/euer` steht in der
   Positivliste des Diagnose-MCP (es schreibt nichts, Nachweis im Test), `/euer/pdf` nicht. `tests/test_euer_view.py`, `tests/test_pdf_table.py`
 - **Summen- und Saldenliste (seit 2.5.17, `db/susa.py`, `Database.get_susa`, `server/pages_susa.py`, `export/pdf_susa.py`; `GET /susa`, `GET /susa/pdf`):** je Konto
   Anfangssaldo, Soll und Haben im Monat und aufgelaufen seit dem 1. Januar, Endsaldo (`1.234,56 S`/`H`). **Sie liest dieselben Zeilen wie der Export für das Steuerbüro und
@@ -893,6 +893,37 @@ kein Subagent darauf:
   Datenbankfehler geht weiter), und ein Name, der kein Text ist (Blob, NULL), wird als Text gelesen (`_name_text`). Die Seite liest die Adresse streng (`year`, `month` über `parse_year`/`parse_month`, ein doppelter Schlüssel ist ungültig: Vormonat mit Hinweis, das PDF
   antwortet 400), setzt kein Cookie und schreibt nichts; das PDF (A4 quer, mehrseitig, `Summen_und_Salden_JJJJ-MM.pdf`) landet nie auf der Platte. Texte ohne Marken- und Produktnamen; fester Hinweis: keine Steuerberatung, ohne Zusicherung der
   Richtigkeit. **Diese Regeln nicht still ändern.** `/susa` steht in der Positivliste des Diagnose-MCP (es schreibt nichts, Nachweis im Test), `/susa/pdf` nicht. `tests/test_susa.py`, `tests/test_susa_pdf.py`
+- **Liquiditätsrechnung (seit 2.6.3, `db/liquidity.py`, `Database.get_liquidity`, `server/pages_liquidity.py`, `export/pdf_liquidity.py`; `GET /liquiditaet`, `GET /liquiditaet/pdf`):** vom Ergebnis der
+  BWA zur Veränderung der flüssigen Mittel – ein Monat und aufgelaufen seit dem 1. Januar, im Vorjahresvergleich (Standard, acht Wertspalten) oder als „Monat und Jahr“ (`variant=jahr`, zwei
+  Spalten, **keine Anteile**: ein Anteil an Erlösen ergäbe bei Liquidität keinen Sinn). **Sie hat keine eigene Lesart der Buchungen:** Gerechnet wird nur mit den Zeilen von `get_euer_data` (ohne Kontofilter,
+  eingeordnet von `euer_section`), dem Bericht der BWA (`build_report`) über dieselben Zeilen und den Töpfen des Dashboards (`_dashboard_movements`: Einnahme, privat, Ausgabe, Übertrag – je Spanne EIN Aufruf,
+  nie ein Lauf über das Jahr, der nach Monat aufgeteilt wird; so ist Einnahme + privat + Ausgabe + Übertrag auf den Minor-Wert gleich der Karte `get_dashboard(…)['balance']` derselben Spanne). Die einzige neue Abfrage
+  ist `_liquidity_unbooked` (Bankbewegungen ohne Buchungssatz, die kein Übertrag deckt – dieselbe Auswahl wie der Zweig „ohne Kind“ des Dashboards, Beträge über `_minor_or_zero`, die Übertragsrechnung
+  `_settle_stock` nur, wenn eine solche Bewegung einen ganzzahligen Betrag ≠ 0 hat, und höchstens einmal je Aufruf). Vorhandene Funktionen wurden nicht umgebaut; die Schnappschüsse (BWA-PDF, EÜR-Kasten, Export der
+  Summen- und Saldenliste) bleiben unverändert. **Zeilen** (Minor Units, jeder Wert mit seiner Wirkung auf die flüssigen Mittel, Zufluss +; `R` = Saldo der EÜR-Zeile je Konto): (1) Ergebnis = das der BWA; (2) Abschreibungen = BWA-Gruppe
+  `depreciation`; (3) Anlagenabgänge zum Restbuchwert = −Σ R der Konten 4855–4858 und 6895–6898 im Ergebnis; (4) Darlehen und Verbindlichkeiten im Ergebnis = BWA-Gruppe `liabilities` (3000–3799 außer 3160, 3720, 3740),
+  herausgerechnet; (5) Zwischensumme „Ergebnis vor Abschreibungen und Darlehen“; (6) Anlagenzugänge = Σ R der Konten unter 1000 außerhalb des Ergebnisses; (7) Darlehen und Verbindlichkeiten = Σ R aller Konten 3000–3799
+  (Aufnahme +, Tilgung −; die Zeilen 4 und 7 heben sich bis auf 3160, 3720 und 3740 auf); (8) Privatentnahmen 2100–2179; (9) Privateinlagen 2180–2199; (10) übrige Konten außerhalb des Ergebnisses (erwartet 0, steht nur bei einem Wert);
+  (11) Veränderung laut Überleitung = 5 bis 10; (12) Bankbewegungen ohne Buchungssatz (die Bezeichnung nennt ihre Zahl im Monat und aufgelaufen); (13) **Nicht zugeordnet** = Ist − (11 + 12), steht immer da, auch bei 0,00;
+  (14) Veränderung der flüssigen Mittel („Ist“) = Einnahme + privat + Ausgabe aller Bank- und Kassenkonten **ohne Überträge zwischen eigenen Konten** (Geld zwischen eigenen Konten ändert die flüssigen Mittel nicht); die Überträge
+  und die Veränderung laut Kontobewegungen stehen nur nachrichtlich und nur, wenn Überträge dastehen. Die Bereiche stehen als Daten an EINER Stelle (`DISPOSAL_RANGES`, `FINANCING_RANGE`, `WITHDRAWAL_RANGE`, `DEPOSIT_RANGE`,
+  `ASSET_LIMIT`) und gelten nur für ganzzahlige Kontonummern (eine Kommazahl aus der SQL-Konsole hat wie in `bwa.group_of` keinen Bereich); **jede EÜR-Zeile steht an genau einer Stelle** (ein Test je Grenze der Bereiche), zwei Zeilen gleicher Nummer werden je Zeitraum addiert und stehen als EINE Zeile unter dem zuerst gefundenen Namen.
+  **Abstimmung:** „Nicht zugeordnet“ ist per Definition die Differenz und keine dritte Lesart – was die Überleitung aus den Buchungen nicht erklärt, bleibt dort sichtbar und wird in der Überleitung nie einer anderen Zeile zugeschlagen. **Grenze der Ist-Seite** (sie ist die des Dashboards): Trägt eine
+  Bankbewegung einen Spiegel zwischen eigenen Konten, steckt der Teil ihres Betrags, den kein Satz erklärt, im Übertrag – ein unstimmiger Split neben einem Übertrag steht deshalb nur nachrichtlich unter den Überträgen,
+  nicht in „Nicht zugeordnet“ (Test mit festen Werten; die Prüfung der Splits nennt die Bewegung). „Geht auf“
+  heißt exakt 0 Minor Units; ein Rest unter einem halben Cent steht als 0,00 da und wird auf der Seite als Rundungsrest genannt, nie geglättet. Pflicht-Tests (`tests/test_liquidity.py`): Im Demobestand und in Beständen aus Zufall über
+  Wege der App (`tests/liquidity_helpers.random_books`) ist sie in jedem Monat und aufgelaufen 0; in der SuSa-Welt (März +20,00, ab März aufgelaufen) und der Testwelt (April −70,00, Mai −55,00, Juni −1,00) stehen feste Werte als Maßstab –
+  an ihnen darf sich nichts verschieben; für jeden benannten Fall ist festgehalten, was dort landet: ein Satz über das Verrechnungskonto 1460 in einem anderen Monat als seine Bankseite, ein Satz mit anderem Datum als seine Bankbewegung über eine
+  Monatsgrenze, ein unstimmiger Split, ein Steuersatz außer 5, 7, 16 und 19 %, die Sofortabschreibung „6260 an Bank“ (Zeile 2 nimmt die ganze Gruppe zurück – der feste Erklärsatz der Seite nennt den Fall), der Status `resolved`, eine Zahlung auf ein Bestandskonto ohne Gegenumbuchung,
+  eine Umbuchung Anlage ↔ Erfolgskonto mit der Kasse als `Account_ID` oder auf einem Konto, das weder Abschreibung noch Restbuchwert ist, ein Spiegel alter Art mit 1460 und ein Rundungsrest. **Diese Erwartungen nicht lockern** – ändert
+  sich ein Wert, ist die Ursache zu klären. **Seite:** Untermenü der Auswertungen (`REPORT_PAGES`, vierter Eintrag „Liquidität“), `Header1('bwa')`; die Adresse (`year`, `month`, `variant`) liest dieselbe strenge Regel wie die BWA
+  (`pages_bwa.read_page_query`/`read_pdf_query`: ungültiger Zeitraum → Seite zeigt den Vormonat mit Hinweis, das PDF antwortet 400; unbekannte Darstellung → Seite Standard, PDF 400); kein Cookie, nichts wird geschrieben; die Seite nutzt nur
+  vorhandene Klassen (`bwaTable` …), ihr Skript nur `var` und `function` mit dem Präfix `liq`; unter den Zeilen mit Konten lassen sich diese aufklappen. Fester Hinweis: „Aus den Buchungen dieser App gerechnet. Keine Steuerberatung; ersetzt
+  nicht die Auswertung eines Steuerbüros.“ – ohne Marken- und Produktnamen. **PDF:** A4 quer, mehrseitig, nie auf der Platte (Download über `appDownload`; `Liquiditaet_JJJJ-MM.pdf`, in der Darstellung „Monat und Jahr“ `…_Monat_Jahr.pdf`), auf Wunsch mit
+  Kontennachweis, hinter der Tabelle ein Textblock mit dem Satz zur Abstimmung; seine Bausteine stehen in `export/pdf_table.py`. `/liquiditaet` steht in der Positivliste des Diagnose-MCP (es schreibt nichts, Nachweis im Test), `/liquiditaet/pdf` nicht;
+  die Routen stehen in keiner der Mengen `_ACTION_PATHS`, `_JSON_PATHS` und `_LOCK_FREE_ROUTES`. **Laufzeit** (gemessen an einem Bestand mit 200 000 Buchungssätzen): rund 2,3 s im Vorjahresvergleich (vier Spannen), rund 1,4 s als „Monat und Jahr“,
+  im Demobestand `full` rund 10 ms; den größten Teil macht die Übertragsrechnung (`_settle_stock`, liest den ganzen Bestand, je Aufruf rund 0,3 s) aus – `_dashboard_movements` ruft sie je Spanne, die Liquiditätsrechnung selbst nur einmal je Aufruf.
+  `tests/test_liquidity.py`, `tests/test_liquidity_pdf.py`, Hilfen `tests/liquidity_helpers.py`
 - **Automatischer Abgleich** (`link_bank_to_entries`, läuft nach jedem Import; seit 2.3.14 mit Richtungsregel): Angefasst
   werden nur Bankbewegungen ohne Kinder und Sätze ohne `ParentBooking_ID` – eine bestehende Verknüpfung und der Text der
   Bankbewegung ändern sich nie. In den Stufen 1–6 (Reihenfolge im Lauf: 0, 1, 2, 4, 3, 3b, 3c, 3d, 5, 6, 6b, Nachlauf, 7) wird
@@ -1196,7 +1227,7 @@ kein Subagent darauf:
   `check_page_path`) nicht aufweichen; neue Seiten und Schlüssel nur für GET-Handler, die
   nichts schreiben (Nachweis im Test). `/backup/download` steht bewusst nicht darin: Es liefert den ganzen Datenbestand
   (Gigabyte-Größe). `/receipts/search` und `/transactions/search` stehen bewusst nicht darin: JSON-Suchen der Seiten, keine
-  Anzeigeseiten; dasselbe liefert die SQL-Abfrage. `/bwa/pdf`, `/euer/pdf` und `/susa/pdf` stehen nicht darin (Dokumente).
+  Anzeigeseiten; dasselbe liefert die SQL-Abfrage. `/bwa/pdf`, `/euer/pdf`, `/susa/pdf` und `/liquiditaet/pdf` stehen nicht darin (Dokumente).
   Ebenso nicht: `/receipts/suggestions` (JSON-Vorschläge der Seite eines Belegs) und
   `/receipts/read` (ein POST: liest die Datei eines Belegs und schreibt die Lesung)
 - Zugangsdaten aus der Windows-Anmeldeinformationsverwaltung, keyring oder Umgebung, nie im Repo; über `http://` gehen sie nur

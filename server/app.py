@@ -50,6 +50,7 @@ from .pages_dashboard import PageDashboard
 from .pages_bwa import PDF_FAILED_TEXT, PageBwa, read_page_query, read_pdf_query
 from .pages_euer import EUER_PDF_FAILED_TEXT, PageEuer, read_euer_page_query, read_euer_pdf_query
 from .pages_susa import SUSA_PDF_FAILED_TEXT, PageSusa, read_susa_page_query, read_susa_pdf_query
+from .pages_liquidity import LIQUIDITY_PDF_FAILED_TEXT, PageLiquidity
 from .pages_receipts import PageReceipts, PageReceiptEdit
 from .pages_setup import PageSetup, PageSetupStart
 from .pages_invoice import PageInvoice
@@ -1469,6 +1470,21 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     pdf_bytes, filename = handlers.handle_susa_pdf(db, query, datetime.date.today())
                     if pdf_bytes is None:
                         self.respond(500, SUSA_PDF_FAILED_TEXT, content_type="text/plain; charset=utf-8")
+                    else:
+                        self._send_document(pdf_bytes, filename, None, 'application/pdf', 'attachment')
+            elif route == "/liquiditaet":
+                # Liquiditätsrechnung: rein lesend, kein Cookie; Jahr, Monat und Darstellung liest dieselbe strenge Regel wie die BWA
+                self.respond(200, PageLiquidity(db, read_page_query(self._query(), datetime.date.today())))
+            elif route == "/liquiditaet/pdf":
+                qs = self._query()
+                query, error = read_pdf_query(qs)
+                if error:
+                    self.respond(400, error, content_type="text/plain; charset=utf-8")
+                else:
+                    with_accounts = qs.get('accounts', ['0'])[0] in ('1', 'true', 'on')
+                    pdf_bytes, filename = handlers.handle_liquidity_pdf(db, query, with_accounts, datetime.date.today())
+                    if pdf_bytes is None:
+                        self.respond(500, LIQUIDITY_PDF_FAILED_TEXT, content_type="text/plain; charset=utf-8")
                     else:
                         self._send_document(pdf_bytes, filename, None, 'application/pdf', 'attachment')
             elif self.path == "/setup":

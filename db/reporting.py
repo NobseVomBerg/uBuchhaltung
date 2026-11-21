@@ -831,6 +831,76 @@ class ReportingMixin:
             rows[key] = by_span[span]
         return build_report(year, month, variant, periods, rows, bank_skr_numbers(self.fetch_accounts()))
 
+    def _liquidity_unbooked(self, cursor, date_from: str, date_to: str, acct_ids, covered=None):
+        """Die Bankbewegungen ohne Buchungssatz im Zeitraum, die kein Übertrag deckt: ``(Summe in Minor Units, Zahl)``. Dieselbe Auswahl wie der Zweig
+        „ohne Kind“ des Dashboards (``_dashboard_movements``, ``split_bank_movement``): Bankbewegungen der Konten ``acct_ids`` mit Datum im Zeitraum und
+        ohne einen einzigen Satz (wie die Zählung ``unlinked`` in ``get_dashboard``); die Übertragsrechnung des DATEV-Exports (``_settle_stock``) läuft nur,
+        wenn eine davon einen ganzzahligen Betrag ≠ 0 hat, und eine gedeckte Bewegung ist ein Übertrag und zählt hier nicht. Beträge über ``_minor_or_zero``
+        (ein Wert, den das Dashboard nicht lesen kann, zählt 0 – die Bewegung zählt trotzdem mit). ``covered``: eine Funktion ohne Argument, die die
+        gedeckten IDs liefert – so rechnet ein Aufruf über mehrere Zeiträume die Übertragsrechnung (sie liest den ganzen Bestand) nur einmal."""
+        marks = ','.join('?' * len(acct_ids))
+        cursor.execute(
+            f"SELECT b.ID, b.Amount FROM Bookings b WHERE b.BookingType = 'bank' AND b.DateBooking BETWEEN ? AND ? "
+            f"AND b.Account_ID IN ({marks}) AND NOT EXISTS (SELECT 1 FROM Bookings e WHERE e.ParentBooking_ID = b.ID)",
+            [date_from, date_to, *acct_ids])
+        movements = cursor.fetchall()
+        needs_cover = any(isinstance(amount, int) and not isinstance(amount, bool) and amount != 0 for _bank_id, amount in movements)
+        covered_ids = (covered() if covered else self._settle_stock(cursor).covered) if needs_cover else frozenset()
+        open_amounts = [_minor_or_zero(amount) for bank_id, amount in movements if bank_id not in covered_ids]
+        return sum(open_amounts), len(open_amounts)
+
+    def get_liquidity(self, year: int, month: int, variant: str):
+        """Liquiditätsrechnung für einen Monat (``db.liquidity.LiquidityReport``): vom Ergebnis der betriebswirtschaftlichen Auswertung zur Veränderung der
+        flüssigen Mittel – ohne eigene Lesart der Buchungen. Gelesen wird je Zeitraum der Darstellung (``db.bwa.periods_for``; dieselbe Spanne nur einmal, im
+        Januar sind Monat und aufgelaufen gleich): die Zeilen von ``get_euer_data`` (ohne Kontofilter; daraus auch der Bericht der betriebswirtschaftlichen
+        Auswertung) und die Töpfe des Dashboards (``_dashboard_movements``, alle Konten) – je Spanne ein Aufruf, damit Einnahme + privat + Ausgabe + Übertrag
+        auf den Minor-Wert der Karte ``get_dashboard(…)['balance']`` derselben Spanne gleich sind. Dazu die Bankbewegungen ohne Buchungssatz
+        (``_liquidity_unbooked``). Rein lesend.
+
+        ``ValueError`` bei einem Monat außerhalb von 1 bis 12, einem Jahr außerhalb von 1 bis 9999 oder einer unbekannten Darstellung."""
+        from .bwa import bwa_periods, build_report, periods_for
+        from .liquidity import CashFigures, build_liquidity
+        if not (isinstance(year, int) and isinstance(month, int) and 1 <= month <= 12 and 1 <= year <= 9999):
+            raise ValueError(f'Ungültiger Zeitraum: Jahr {year!r}, Monat {month!r}')
+        spans = bwa_periods(year, month)
+        periods = {key: spans[key] for key in periods_for(variant)}
+        rows: dict[str, list] = {}
+        by_span: dict[tuple, list] = {}
+        for key, span in periods.items():
+            if span not in by_span:
+                by_span[span] = self.get_euer_data(*span)
+            rows[key] = by_span[span]
+
+        cash: dict[str, CashFigures] = {}
+        figures: dict[tuple, CashFigures] = {}
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            scope = self._dashboard_scope(cursor, None)
+            covered_ids: list = []
+
+            def covered():
+                if not covered_ids:
+                    covered_ids.append(self._settle_stock(cursor).covered)
+                return covered_ids[0]
+
+            for key, span in periods.items():
+                if span not in figures:
+                    if scope is None:
+                        figures[span] = CashFigures(0, 0, 0, 0)
+                    else:
+                        movements = self._dashboard_movements(cursor, span[0], span[1], scope)
+                        income, private, expense, transfers = (sum(row[column] for row in movements) for column in range(1, 5))
+                        unbooked, count = self._liquidity_unbooked(cursor, span[0], span[1], scope[0], covered)
+                        figures[span] = CashFigures(income + private + expense, transfers, unbooked, count)
+                cash[key] = figures[span]
+        finally:
+            conn.close()
+
+        banks = bank_skr_numbers(self.fetch_accounts())
+        bwa_report = build_report(year, month, variant, periods, rows, banks)
+        return build_liquidity(year, month, variant, periods, rows, bwa_report, banks, cash)
+
     def _susa_unbalanced(self, cursor, end: str, bound: int):
         """Die Bankbewegungen bis ``end``, deren Buchungssätze nicht ihren Betrag ergeben – dieselbe Regel und dieselbe Auswahl wie
         ``find_unbalanced_splits('0000-01-01', end)`` (Wirkung ``matching.bank_effect``), nur mit lesbaren Beträgen: ``find_unbalanced_splits`` bricht
