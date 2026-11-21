@@ -4473,6 +4473,68 @@ def handle_worktime_pdf(db: Database, person_id, date_from, date_to, with_notes=
         return None, None
 
 
+def handle_bwa_pdf(db: Database, query, with_accounts: bool, today: datetime.date):
+    """PDF der betriebswirtschaftlichen Auswertung für den Download erzeugen. Returns (pdf_bytes, filename) oder (None, None).
+
+    ``query`` ist die geprüfte Abfrage (``pages_bwa.read_pdf_query``: ``year``, ``month``, ``variant``), ``with_accounts`` druckt die Konten
+    unter jeder Zeile, ``today`` steht als „Erstellt am“ im Kopf. Der Download ist ein GET: Er liest nur und legt nichts auf der Platte ab.
+    Der Firmenname im Kopf ist der des ersten eigenen Kontakts, sonst bleibt er weg. Ein Fehler steht nur im Server-Log."""
+    from db.bwa import bwa_filename
+    from export.pdf_bwa import generate_bwa_pdf
+    try:
+        report = db.get_bwa(query.year, query.month, query.variant)
+        own = list(db.fetch_contacts(contact_type='own'))
+        company = (own[0][3] if own else '') or ''
+        pdf_bytes = generate_bwa_pdf(report, with_accounts, company, today)
+        return pdf_bytes, bwa_filename(query.year, query.month, query.variant)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None, None
+
+
+def handle_euer_pdf(db: Database, query, today: datetime.date):
+    """PDF der Einnahmenüberschussrechnung für den Download erzeugen. Returns (pdf_bytes, filename) oder (None, None).
+
+    ``query`` ist die geprüfte Abfrage (``pages_euer.read_euer_pdf_query``: ``date_from``, ``date_to``), ``today`` steht als „Erstellt am“
+    im Kopf. Die Zahlen sind die der Seite und des Kastens im Dashboard (``db.euer.euer_statement``), ohne Kontofilter. Der Download ist
+    ein GET: Er liest nur und legt nichts auf der Platte ab. Der Firmenname im Kopf ist der des ersten eigenen Kontakts, sonst bleibt er
+    weg. Ein Fehler steht nur im Server-Log."""
+    from db.euer import euer_filename, euer_statement
+    from db.reporting import bank_skr_numbers
+    from export.pdf_euer import generate_euer_pdf
+    try:
+        statement = euer_statement(db.get_euer_data(query.date_from, query.date_to), bank_skr_numbers(db.fetch_accounts()))
+        own = list(db.fetch_contacts(contact_type='own'))
+        company = (own[0][3] if own else '') or ''
+        pdf_bytes = generate_euer_pdf(statement, query.date_from, query.date_to, company, today)
+        return pdf_bytes, euer_filename(query.date_from, query.date_to)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None, None
+
+
+def handle_susa_pdf(db: Database, query, today: datetime.date):
+    """PDF der Summen- und Saldenliste für den Download erzeugen. Returns (pdf_bytes, filename) oder (None, None).
+
+    ``query`` ist die geprüfte Abfrage (``pages_susa.read_susa_pdf_query``: ``year``, ``month``), ``today`` steht als „Erstellt am“ im Kopf. Die
+    Zahlen sind die der Seite (``Database.get_susa``). Der Download ist ein GET: Er liest nur – kein Steuerdatum, keine Datei auf der Platte. Der
+    Firmenname im Kopf ist der des ersten eigenen Kontakts, sonst bleibt er weg. Ein Fehler steht nur im Server-Log."""
+    from db.susa import susa_filename
+    from export.pdf_susa import generate_susa_pdf
+    try:
+        report = db.get_susa(query.year, query.month)
+        own = list(db.fetch_contacts(contact_type='own'))
+        company = (own[0][3] if own else '') or ''
+        pdf_bytes = generate_susa_pdf(report, company, today)
+        return pdf_bytes, susa_filename(query.year, query.month)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None, None
+
+
 # ── Fahrten (Fahrtenbuch) ─────────────────────────────────────────────────────
 # Das Fahrtenbuch bleibt locker (einzelne Fahrten, ohne Tachostand, in beliebiger Reihenfolge nachgetragen): Beim
 # Speichern wird nie ein fehlender Anschluss an die Vorfahrt geprüft – abgelehnt wird nur, was unmöglich ist.

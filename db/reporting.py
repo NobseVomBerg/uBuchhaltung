@@ -2,16 +2,18 @@
 # SPDX-FileCopyrightText: 2026 unsix IT Engineering
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Database-Mixin: reporting."""
+import datetime
 import sqlite3
 import os
 import json
 import math
+from collections import Counter
 from decimal import Decimal
 from money import to_minor, from_minor
 from .matching import (
     FORM_MIRROR_COA, FORM_MIRROR_COUNTER, FORM_PURPOSE_FIRST, FORM_TRANSFER, MIRROR_FORMS,
     is_asset_transfer, read_entry_form, ASSET_ACCOUNT_RANGE, PL_ACCOUNT_RANGE,
-    REVENUE_ACCOUNT_RANGE, bank_effect, is_mirror_row,
+    REVENUE_ACCOUNT_RANGE, bank_effect, is_mirror_row, _ID_CHUNK,
 )
 
 # SKR04-Kontenklasse 4 = Betriebliche Erträge (Erlöse). Einzige Quelle für die
@@ -46,6 +48,40 @@ def is_income_account(account_number) -> bool:
     return INCOME_ACCOUNT_RANGE[0] <= nr <= INCOME_ACCOUNT_RANGE[1]
 
 
+# „Sonstige Ausgaben“ der EÜR-Seite: Die Konten werden angezeigt, zählen aber nicht im Ergebnis.
+OTHER_EXPENSE_ACCOUNTS = frozenset({3160, 3720, 3740})
+
+
+def bank_skr_numbers(accounts) -> set:
+    """Die SKR-Nummern der eigenen Bank- und Kassenkonten (Zeilen von ``fetch_accounts``, Index 7). Als Zweckkonto
+    zeigt die EÜR sie nie: Sie sind Geldkonten, kein Ertrag und kein Aufwand."""
+    return {account[7] for account in accounts if account[7]}
+
+
+def euer_section(account_number, bank_numbers) -> str | None:
+    """Wo eine Zeile von ``get_euer_data`` in der EÜR steht – EINE Regel für die Seite des Dashboards und die
+    betriebswirtschaftliche Auswertung (``db.bwa``):
+
+    * ``'other'``   – „Sonstige Ausgaben“ (``OTHER_EXPENSE_ACCOUNTS``): angezeigt, aber nicht im Ergebnis
+    * ``'income'``  – Betriebseinnahme: ein Erlöskonto (``is_income_account``) und die virtuelle Zeile 3806, auf der
+      ``get_euer_data`` die Umsatzsteuer aus Einnahmen ausweist
+    * ``'expense'`` – Betriebsausgabe: jedes andere Konto ab 1000
+    * ``None``      – steht nicht in der EÜR: die Bestandskonten des Offene-Posten-Verfahrens
+      (``NEUTRAL_ACCOUNT_NUMBERS``, auch als zweite Sicherung – ``get_euer_data`` liefert sie ohnehin nie, ein neues
+      Wartekonto soll aber nicht durchrutschen), die Geldkonten (``bank_numbers``), Privatkonten (2100–2199) und alles
+      unter 1000 (Anlagekonten)
+
+    Die Konten von ``OTHER_EXPENSE_ACCOUNTS`` stehen ohne weitere Prüfung unter „Sonstige Ausgaben“, wie bisher auf der Seite."""
+    if account_number in OTHER_EXPENSE_ACCOUNTS:
+        return 'other'
+    excluded = account_number in NEUTRAL_ACCOUNT_NUMBERS or account_number in bank_numbers
+    if is_income_account(account_number) or account_number == 3806:
+        return None if excluded else 'income'
+    if excluded or 2100 <= account_number < 2200 or account_number < 1000:
+        return None
+    return 'expense'
+
+
 def _cash_amount_sql(cash_coa_ids, alias='b'):
     """SQL-Ausdruck (und Parameter) für den Betrag einer Zeile aus Sicht der Kasse.
 
@@ -69,6 +105,64 @@ def _cash_amount_sql(cash_coa_ids, alias='b'):
            f"ELSE {alias}.Amount END)")
     cash = list(cash_coa_ids)
     return sql, [FORM_MIRROR_COA, *cash, *cash, FORM_MIRROR_COUNTER, *cash, *cash]
+
+
+#: Die größte Zahl Minor Units, die die Summen- und Saldenliste als Betrag eines Satzes liest (10^15 = 100 Milliarden Euro): ein größerer
+#: Wert – und jeder, der keine ganze Zahl ist – steht nur im Hinweis (``Database.get_susa``)
+_SUSA_MAX_MINOR = 10 ** 15
+#: Ein Datum, das die Summen- und Saldenliste liest: ein Kalendertag als Text ``JJJJ-MM-TT``. SQLite rückt ein unmögliches Datum auf einen echten
+#: Tag (``date('2026-02-30')`` ist ``'2026-03-02'``), kennt ``date('Dezember')`` nicht und liest eine Zahl nicht als Text – in jedem dieser Fälle
+#: ist das Ergebnis ungleich dem gespeicherten Wert. Das Muster davor hält die Form fest, gleich welche SQLite-Version rechnet (ein Jahr mit
+#: Vorzeichen gibt ``date()`` je nach Version als sich selbst zurück), und das Jahr 0000 kennt der Kalender nicht (geprüft an den ersten vier Zeichen: Die Spalte hat numerische Affinität, ein Vergleich mit ``'0001'`` vergliche mit der Zahl 1). ``{a}`` ist der Tabellenalias
+#: mit Punkt (``'e.'``) oder leer, wie bei ``LEDGER_ROWS_WHERE``.
+_SUSA_DATE_OK = ("(typeof({a}DateBooking) = 'text' AND {a}DateBooking GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' "
+                 "AND substr({a}DateBooking, 1, 4) <> '0000' AND {a}DateBooking IS date({a}DateBooking))")
+
+
+def _sum_groups_in_sql(cursor, keys, values, tail, params):
+    """``SELECT <keys>, COUNT(*), SUM(<values>) <tail> GROUP BY <keys>``: je Gruppe ``(*Schlüssel, Zahl, *Summen)``, ohne Schlüssel genau eine Zeile.
+    ``keys`` und ``values`` sind SQL-Ausdrücke, ``tail`` das ``FROM … WHERE …``; jeder Wert steht in ``params`` (Reihenfolge der ``?``: erst die in
+    ``keys`` und ``values``, dann die in ``tail``)."""
+    select = ''.join(f'{key}, ' for key in keys)
+    sums = ', '.join(f'COALESCE(SUM({value}), 0)' for value in values)
+    group = f" GROUP BY {', '.join(str(index) for index in range(1, len(keys) + 1))}" if keys else ''
+    return cursor.execute(f'SELECT {select}COUNT(*), {sums} {tail}{group}', params).fetchall()
+
+
+def _sum_groups_in_python(cursor, keys, values, tail, params):
+    """Dieselben Gruppen und Summen wie ``_sum_groups_in_sql``, aber die Zeilen kommen einzeln und Python summiert mit ganzen Zahlen ohne Grenze."""
+    select = ''.join(f'{key}, ' for key in keys)
+    found: dict = {}
+    for row in cursor.execute(f"SELECT {select}{', '.join(values)} {tail}", params):
+        sums = found.setdefault(row[:len(keys)], [0] * (len(values) + 1))
+        sums[0] += 1
+        for index, value in enumerate(row[len(keys):], start=1):
+            sums[index] += value or 0
+    if not keys and not found:
+        found[()] = [0] * (len(values) + 1)
+    return [(*key, *sums) for key, sums in found.items()]
+
+
+def _sum_groups(cursor, keys, values, tail, params):
+    """Eine Abfrage mit Summen, die auch bei einem Bestand ohne Obergrenze gelingt: SQLite summiert in 64 Bit und wirft ab 2^63 ``integer
+    overflow`` (Beträge bis 10^15 Minor Units, rund 9000 Sätze genügen); dann liest ``_sum_groups_in_python`` dieselben Zeilen und Python
+    summiert. Beide Wege liefern dasselbe. Jeder andere ``sqlite3.OperationalError`` wird weitergereicht."""
+    try:
+        return _sum_groups_in_sql(cursor, keys, values, tail, params)
+    except sqlite3.OperationalError as error:
+        if 'integer overflow' not in str(error):
+            raise
+    return _sum_groups_in_python(cursor, keys, values, tail, params)
+
+
+def _name_text(value) -> str:
+    """Ein Name aus der Datenbank als Text: NULL ist leer, ein Blob wird als UTF-8 gelesen (was keines ist, als Ersatzzeichen), alles andere gilt als
+    sein Text – die Spalte kann per SQL-Konsole jeden Wert tragen, und die Liste sortiert und verbindet Namen."""
+    if value is None:
+        return ''
+    if isinstance(value, bytes):
+        return value.decode('utf-8', 'replace')
+    return str(value)
 
 
 _MONTH_ABBR = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun',
@@ -721,3 +815,205 @@ class ReportingMixin:
         conn.close()
         result.sort(key=lambda x: x[0])
         return result
+
+    def get_bwa(self, year: int, month: int, variant: str):
+        """Betriebswirtschaftliche Auswertung für einen Monat (``db.bwa.BwaReport``): eine reine Umgruppierung von
+        ``get_euer_data`` ohne Kontofilter – keine eigene Lesart der Buchungen. Gelesen wird je Zeitraum der Darstellung
+        (``db.bwa.periods_for``); dieselbe Spanne nur einmal (im Januar sind Monat und aufgelaufen gleich). Rein lesend."""
+        from .bwa import bwa_periods, build_report, periods_for
+        spans = bwa_periods(year, month)
+        periods = {key: spans[key] for key in periods_for(variant)}
+        rows: dict[str, list] = {}
+        by_span: dict[tuple, list] = {}
+        for key, span in periods.items():
+            if span not in by_span:
+                by_span[span] = self.get_euer_data(*span)
+            rows[key] = by_span[span]
+        return build_report(year, month, variant, periods, rows, bank_skr_numbers(self.fetch_accounts()))
+
+    def _susa_unbalanced(self, cursor, end: str, bound: int):
+        """Die Bankbewegungen bis ``end``, deren Buchungssätze nicht ihren Betrag ergeben – dieselbe Regel und dieselbe Auswahl wie
+        ``find_unbalanced_splits('0000-01-01', end)`` (Wirkung ``matching.bank_effect``), nur mit lesbaren Beträgen: ``find_unbalanced_splits`` bricht
+        mit einem Fehler ab, sobald ein Betrag unter einer Bankbewegung Text ist (per SQL-Konsole schreibbar); die Liste soll an so einem Bestand nicht
+        scheitern, der Betrag steht unter „nicht lesbar“. Returns ``(Zahl, Summe der Reste ohne Vorzeichen in Minor Units)``."""
+        bank_coa_ids = self._get_bank_coa_ids(cursor)
+        account_coas = self._account_coa_sets(cursor)
+        cursor.execute('''
+            SELECT p.ID, p.Amount, p.Account_ID, e.Amount, e.COA_ID, e.CounterCOA_ID, e.EntryForm
+            FROM Bookings p
+            JOIN Bookings e ON e.ParentBooking_ID = p.ID
+            WHERE p.BookingType = 'bank'
+              AND p.ID IN (
+                  SELECT b.ID FROM Bookings b WHERE b.BookingType = 'bank' AND b.DateBooking BETWEEN '0000-01-01' AND ?
+                  UNION
+                  SELECT c.ParentBooking_ID FROM Bookings c WHERE c.ParentBooking_ID IS NOT NULL AND c.DateBooking BETWEEN '0000-01-01' AND ?
+              )
+              AND typeof(p.Amount) = 'integer' AND p.Amount BETWEEN ? AND ?
+              AND typeof(e.Amount) = 'integer' AND e.Amount BETWEEN ? AND ?
+        ''', [end, end, -bound, bound, -bound, bound])
+        amounts, sums = {}, {}
+        for bank_id, amount, account_id, child_amount, coa, counter, form in cursor.fetchall():
+            amounts[bank_id] = amount
+            sums[bank_id] = sums.get(bank_id, 0) + bank_effect(form, child_amount, coa, counter, account_coas.get(account_id), bank_coa_ids)
+        rests = [abs(amount - sums[bank_id]) for bank_id, amount in amounts.items() if amount != sums[bank_id]]
+        return len(rests), sum(rests)
+
+    def get_susa(self, year: int, month: int):
+        """Summen- und Saldenliste bis zum Ende eines Monats (``db.susa.SusaReport``). Rein lesend: Sie stempelt nichts (kein ``DateTax``) und
+        schreibt nichts.
+
+        Gelesen werden dieselben Zeilen wie im Export des Buchungsstapels (``accounts.LEDGER_ROWS_WHERE``: alle Sätze außer den Bankbewegungen
+        bis zum Monatsende, auch die der Vorjahre – sie bilden den Anfangssaldo), ohne die Eingangs-Sätze gepaarter Überträge, die der Export
+        weglässt (``matching.settle_transfers``): Der Ausgangs-Satz bucht beide Bankseiten. Form, Soll und Haben und die Art liest
+        ``db.susa.book_group`` mit denselben Funktionen wie der Export. Dazu kommen die Bankbewegungen ohne Buchungssatz, die kein Übertrag deckt:
+        Das Bankkonto steht gegen „Nicht kontiert“, sonst stimmte es nicht mit dem Kontoauszug.
+
+        Die Sätze werden in SQL nach dem gruppiert, was ihre Lesart bestimmt (Form, Konten, Richtung des Betrags und der Steuer, Steuersatz,
+        Zeitraum, Konto der Bankbewegung), und je Gruppe einmal gebucht – die Regel ist linear, die Summen sind die der einzelnen Sätze. Eine
+        Zeile je Satz in Python wäre bei 200 000 Buchungen deutlich langsamer; reicht eine Summe über die 64 Bit von SQLite hinaus, rechnet
+        ``_sum_groups`` sie in Python. Nichts fällt still weg: Was sich nicht buchen lässt – ein Betrag, der keine ganze Zahl bis 10^15 Minor
+        Units ist, ein Datum, das kein Kalendertag als Text ``JJJJ-MM-TT`` ist (``_SUSA_DATE_OK``; es fehlt in jedem Monat), eine Zeile ohne
+        Buchungsart, ein Satz mit Betrag 0 und einem Steuerbetrag – wird gezählt (Hinweise); dazu die Sätze, die gebucht sind, aber den Abgleich
+        der Bankkonten verschieben (ein anderes Datum als die Bankbewegung über das Monatsende, ein anderes eigenes Konto als das der Bewegung).
+        Eine Zeile mit einer anderen Buchungsart als ``entry`` und ``bank`` liest der Export wie einen Satz, und so bucht sie die Liste.
+
+        ``ValueError`` bei einem Monat außerhalb von 1 bis 12 oder einem Jahr außerhalb von 1 bis 9999."""
+        from . import datev_keys
+        from .accounts import LEDGER_ROWS_WHERE
+        from .bwa import bwa_periods
+        from .susa import (BAD_DATE, CHILD_OTHER_PERIOD, DOUBTFUL, NOT_POSTED, NOT_READABLE, UNBALANCED, UNBOOKED, UNBOOKED_NO_NUMBER,
+                           UNKNOWN_TYPE, ZERO_AMOUNT_TAX, BankCheck, GroupRow, Posting, SusaContext, Tally, book_group, build_susa)
+        if not (isinstance(year, int) and isinstance(month, int) and 1 <= month <= 12 and 1 <= year <= 9999):
+            raise ValueError(f'Ungültiger Zeitraum: Jahr {year!r}, Monat {month!r}')
+        month_start, end = bwa_periods(year, month)['month']
+        year_start = f'{year:04d}-01-01'
+        bound = _SUSA_MAX_MINOR
+        window = LEDGER_ROWS_WHERE.format(a='e.')
+        entry_date, parent_date, bank_date = (_SUSA_DATE_OK.format(a=alias) for alias in ('e.', 'p.', 'b.'))
+        amount_ok = ("typeof(e.Amount) = 'integer' AND e.Amount BETWEEN ? AND ? "
+                     "AND (e.TaxAmount IS NULL OR (typeof(e.TaxAmount) = 'integer' AND e.TaxAmount BETWEEN ? AND ?))")
+        bounds = [-bound, bound, -bound, bound]
+        readable_amount = "CASE WHEN typeof(Amount) = 'integer' AND Amount BETWEEN ? AND ? THEN ABS(Amount) ELSE 0 END"
+        waiting = tuple(self.get_waiting_account_numbers())
+        tally = Tally()
+
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            liquid = frozenset(self._get_payment_coa_ids(cursor))
+            coa_numbers, names = {}, {}
+            for coa_id, number, name in cursor.execute('SELECT ID, AccountNumber, Name FROM ChartOfAccounts ORDER BY ID').fetchall():
+                number = datev_keys.account_number(number)
+                coa_numbers[coa_id] = number
+                if number is not None:
+                    names.setdefault(number, (_name_text(name), False))
+            accounts = [(account_id, _name_text(name), is_cash, datev_keys.account_number(skr))
+                        for account_id, name, is_cash, skr in cursor.execute('SELECT ID, Name, IsCash, SKRAccount FROM Accounts').fetchall()]
+            account_numbers = {account_id: number for account_id, _name, _cash, number in accounts}
+            for _id, name, _cash, number in accounts:
+                if number is not None:
+                    names.setdefault(number, (name, True))                  # ein Bankkonto ohne Zeile im Kontenrahmen
+            context = SusaContext(liquid, coa_numbers, account_numbers, waiting)
+            settlement = self._settle_stock(cursor)
+
+            def read_groups(extra='', extra_params=()):
+                """Die Sätze bis zum Monatsende, gruppiert nach dem, was ihre Lesart bestimmt (Eingabe von ``book_group``)."""
+                keys = ('e.EntryForm', 'e.COA_ID', 'e.CounterCOA_ID', 'e.Amount > 0', 'e.TaxRate',
+                        "CASE WHEN e.DateBooking < ? THEN 'prior' WHEN e.DateBooking < ? THEN 'year' ELSE 'month' END",
+                        'p.Account_ID',
+                        'CASE WHEN COALESCE(e.TaxAmount, 0) > 0 THEN 1 WHEN COALESCE(e.TaxAmount, 0) < 0 THEN -1 ELSE 0 END')
+                tail = (f"FROM Bookings e LEFT JOIN Bookings p ON p.ID = e.ParentBooking_ID AND p.BookingType = 'bank' "
+                        f"WHERE {window} AND {entry_date} AND e.Amount <> 0 AND {amount_ok} {extra}")
+                found = _sum_groups(cursor, keys, ('e.Amount', 'COALESCE(e.TaxAmount, 0)'), tail,
+                                    [year_start, month_start, '', end, *bounds, *extra_params])
+                return [GroupRow(form, coa_id, counter_id, bool(inflow), rate, bucket, parent, count, amount, tax)
+                        for form, coa_id, counter_id, inflow, rate, bucket, parent, _tax_side, count, amount, tax in found]
+
+            for row in read_groups():
+                book_group(tally, context, row)
+            # Die Eingangs-Sätze gepaarter Überträge: mitgelesen, also wieder abziehen (dieselbe Gruppierung, nur diese Sätze)
+            omitted = sorted(settlement.omitted)
+            for start in range(0, len(omitted), _ID_CHUNK):
+                chunk = omitted[start:start + _ID_CHUNK]
+                for row in read_groups(f"AND e.ID IN ({','.join('?' * len(chunk))})", chunk):
+                    book_group(tally, context, row, sign=-1)
+
+            # ── Was sich nicht buchen lässt, wird gezählt ────────────────────────
+            # Nicht lesbar: ein Betrag oder Steuerbetrag, der keine ganze Zahl bis 10^15 ist (Zeilen mit gültigem Datum bis zum Monatsende)
+            unreadable = cursor.execute(
+                f'SELECT COUNT(*) FROM Bookings e WHERE {window} AND {entry_date} AND NOT ({amount_ok})', ['', end, *bounds]).fetchone()[0]
+            unreadable += cursor.execute(
+                f"SELECT COUNT(*) FROM Bookings b WHERE b.BookingType = 'bank' AND b.DateBooking >= '' AND b.DateBooking <= ? AND {bank_date} "
+                "AND NOT (typeof(b.Amount) = 'integer' AND b.Amount BETWEEN ? AND ?)", [end, -bound, bound]).fetchone()[0]
+            tally.notice(NOT_READABLE, unreadable)
+            # Kein Kalendertag als Datum: in keinem Monat zu finden, also ohne Fenster – jede Buchungsart, auch die Bankbewegungen (eine Zeile
+            # ohne Buchungsart steht nur unter ``unknown_type``, jede Zeile in genau einem Hinweis)
+            ((count, amount),) = _sum_groups(cursor, (), (readable_amount,),
+                                             f"FROM Bookings WHERE BookingType IS NOT NULL AND NOT {_SUSA_DATE_OK.format(a='')}", [-bound, bound])
+            tally.notice(BAD_DATE, count, amount)
+            # Ohne Buchungsart: kein Satz und keine Bankbewegung – ``BookingType != 'bank'`` trifft NULL nicht, der Export liest die Zeile nie
+            ((count, amount),) = _sum_groups(cursor, (), (readable_amount,), 'FROM Bookings WHERE BookingType IS NULL', [-bound, bound])
+            tally.notice(UNKNOWN_TYPE, count, amount)
+            # Betrag 0 mit Steuerbetrag: ohne Betrag gibt es keine Seite zu buchen, die Einnahmenüberschussrechnung zählt die Steuer
+            ((count, amount),) = _sum_groups(
+                cursor, (), ('ABS(e.TaxAmount)',),
+                f'FROM Bookings e WHERE {window} AND {entry_date} AND e.Amount = 0 AND {amount_ok} AND COALESCE(e.TaxAmount, 0) <> 0',
+                ['', end, *bounds])
+            tally.notice(ZERO_AMOUNT_TAX, count, amount)
+
+            # ── Bankbewegungen ohne Buchungssatz: das Bankkonto gegen „Nicht kontiert“ ──
+            unbooked = incoming = outgoing = 0
+            for bank_id, date, amount, account_id in cursor.execute(
+                    "SELECT b.ID, b.DateBooking, b.Amount, b.Account_ID FROM Bookings b "
+                    f"WHERE b.BookingType = 'bank' AND b.DateBooking >= '' AND b.DateBooking <= ? AND {bank_date} AND b.Amount <> 0 "
+                    "AND NOT EXISTS (SELECT 1 FROM Bookings c WHERE c.ParentBooking_ID = b.ID)", (end,)).fetchall():
+                if bank_id in settlement.covered:
+                    continue                                                  # die Gegenseite eines Übertrags bucht sie schon
+                if isinstance(amount, bool) or not isinstance(amount, int) or not -bound <= amount <= bound:
+                    continue                                                  # als nicht lesbar schon gezählt
+                number = account_numbers.get(account_id)
+                if number is None:
+                    tally.notice(UNBOOKED_NO_NUMBER, 1, abs(amount))
+                    continue
+                period = 'prior' if date < year_start else 'year' if date < month_start else 'month'
+                tally.post(period, Posting(number, max(amount, 0), max(-amount, 0)))
+                tally.post(period, Posting(NOT_POSTED, max(-amount, 0), max(amount, 0)))
+                unbooked += 1
+                incoming += max(amount, 0)
+                outgoing += max(-amount, 0)
+            tally.notice(UNBOOKED, unbooked, 0, incoming, outgoing)
+
+            first_day, last_day = datetime.date(year, 1, 1), datetime.date.fromisoformat(end)
+            tally.notice(DOUBTFUL, sum(1 for entry in settlement.doubtful.values() if first_day <= entry.day <= last_day))
+            # Die Summe aller Bankbewegungen bis zum Monatsende, wie sie der Kontoauszug zeigt: Auch eine Bewegung, deren Datum als Text vor dem
+            # Monatsende sortiert, ohne ein Kalendertag zu sein, zählt mit – fehlt sie in der Liste (``bad_date``), steht die Abweichung hier
+            movements = {account: total for account, _count, total in _sum_groups(
+                cursor, ('Account_ID',), ('Amount',),
+                "FROM Bookings WHERE BookingType = 'bank' AND DateBooking >= '' AND DateBooking <= ? "
+                "AND typeof(Amount) = 'integer' AND Amount BETWEEN ? AND ?", [end, -bound, bound])}
+            tally.notice(UNBALANCED, *self._susa_unbalanced(cursor, end, bound))
+            # Sätze, die gebucht sind und den Abgleich der Bankkonten trotzdem verschieben: Satz und Bankbewegung auf verschiedenen Seiten des
+            # Monatsendes (nur einer von beiden zählt bis dahin) – das andere eigene Konto meldet ``db.susa.book_group``
+            ((count, amount),) = _sum_groups(
+                cursor, (), ('ABS(e.Amount)',),
+                "FROM Bookings e JOIN Bookings p ON p.ID = e.ParentBooking_ID AND p.BookingType = 'bank' "
+                "WHERE e.BookingType != 'bank' AND ((e.DateBooking <= ?) <> (p.DateBooking <= ?)) "
+                f"AND e.Amount <> 0 AND {amount_ok} AND {entry_date} AND {parent_date}", [end, end, *bounds])
+            tally.notice(CHILD_OTHER_PERIOD, count, amount)
+        finally:
+            conn.close()
+
+        report = build_susa(year, month, tally.postings(), names, tally.notices(), [], [])
+
+        # Der Abgleich mit den Bankbewegungen: je eigenem Bankkonto (keine Kasse) mit eigener SKR-Nummer der Endsaldo der Liste gegen die Summe
+        # aller Bankbewegungen bis zum Monatsende
+        closing = {account.number: account.closing for group in report.groups for account in group.accounts if account.number is not None}
+        holders = Counter(number for _id, _name, _cash, number in accounts if number is not None)
+        for account_id, name, is_cash, number in sorted(accounts, key=lambda item: (item[3] is None, item[3] or 0, item[1])):
+            if is_cash == 1:
+                continue
+            if number is None or holders[number] > 1:
+                report.bank_skipped.append(name)
+            else:
+                report.bank_checks.append(BankCheck(name, number, closing.get(number, 0), movements.get(account_id, 0)))
+        return report

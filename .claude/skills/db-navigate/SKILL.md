@@ -23,9 +23,9 @@ Kontext bei moderatem Token-Einsatz. NIE alle Module gleichzeitig laden.
 | `schema.py` | **alle CREATE TABLE** (`initialize_database`), `_create_extended_schema`, `ensure_kasse_exists` |
 | `seed.py` | Seed-/Testdaten, SKR-Konten, Steuerschlüssel, `load_test_seed_data`, `is_first_run`, `missing_standard_accounts`, `add_missing_standard_accounts` |
 | `bookings.py` | Buchungen, Buchungsgruppen, Booking↔Document, `fetch_bookings_grouped`, Speichern des Bank-Editors in einer Transaktion (`save_bank_with_rows`) |
-| `matching.py` | Bank↔Entry-Auto-Linking (`link_bank_to_entries`, Richtungsregel `link_effect`), `find_unlinked_*` |
+| `matching.py` | Bank↔Entry-Auto-Linking (`link_bank_to_entries`, Richtungsregel `link_effect`), `find_unlinked_*`; Lesart einer Buchungszeile für Export und Summen- und Saldenliste (`ledger_form`, `coa_in_soll`, `soll_side`), Übertragsrechnung (`settle_transfers`, `_settle_stock`) |
 | `wiso_import.py` | WISO-CSV-Import (`import_wiso_csv`, `_import_wiso_*`) |
-| `accounts.py` | Bankkonten + Kontenrahmen/SKR (`*_chart_of_accounts`, `coa_id_*`) + DATEV-Helfer |
+| `accounts.py` | Bankkonten + Kontenrahmen/SKR (`*_chart_of_accounts`, `coa_id_*`) + DATEV-Helfer (`fetch_bookings_range`, `LEDGER_ROWS_WHERE`: das `WHERE` der Zeilen von Export und Summen- und Saldenliste) |
 | `assets.py` | Anlagen, Kategorien, AfA-Plan/-Buchung |
 | `contacts.py` | Kontakte (normalisiert), Adressen, Personen/Firmen, Besteuerungsart der eigenen Firma (`vat_method`, `get_vat_method`, `VAT_METHODS`; nur gespeichert und angezeigt) |
 | `invoices.py` | Rechnungen, Positionen, Zahlungen, überfällig/fällig, Forderungsbuchung (`_book_receivable`, `_receivable_removal`), Entwurf löschen, Angebot → Rechnung |
@@ -38,7 +38,10 @@ Kontext bei moderatem Token-Einsatz. NIE alle Module gleichzeitig laden.
 | `receipts.py` / `worktimes.py` | Belege bzw. Arbeitszeiten |
 | `document_readings.py` | Lesung eines Belegs (`DocumentReadings`: aus der Datei gelesene Felder, abgeleitet, nicht im Replay-Log): `save_document_reading`, `get_document_reading`, `document_reading_summaries`, `unread_receipt_ids`/`count_unread_receipts`, `own_identity`; Vorschläge Beleg → Buchung, rein lesend: `receipt_match_candidates` (eine Abfrage mit allen Ausschlüssen, Forderung über `_receivable_sql`), `suggest_bookings_for_receipt` (Abfrage + Rangfolge; leer, solange der Beleg an einer Buchung hängt: `receipt_is_linked`) |
 | `receipt_matching.py` | Rangfolge der Buchungsvorschläge zu einem gelesenen Beleg, rein (kein DB-Zugriff, keine Uhr): `candidate_window`, `rank_candidates` → `Suggestion`, `usable_gross`, `normalize_number`, `name_words`; Punkte, Schwellen und Begründungen als Modulkonstanten |
-| `reporting.py` | Dashboard-Kennzahlen + EÜR |
+| `reporting.py` | Dashboard-Kennzahlen + EÜR (`get_euer_data`; `euer_section`: Einnahme, Ausgabe oder „nicht im Ergebnis“ – eine Regel für die EÜR-Seite und die BWA; `get_bwa`; `get_susa`: Summen- und Saldenliste, SQL-gruppiert, rein lesend) |
+| `bwa.py` | Betriebswirtschaftliche Auswertung: Gruppentabelle (`RANGES`, `EXCEPTIONS`, `group_of`), Zeiträume, Zeilenaufbau aus `get_euer_data`, Prozent- und Formatregeln (rein, ohne Datenbank) |
+| `euer.py` | EÜR-Aufbereitung für den Kasten des Dashboards und die Seite `/euer` (`euer_statement`: Abschnitte nach `euer_section`, Summen in Minor Units; `range_label`, `euer_filename`, Texte; rein, ohne Datenbank) |
+| `susa.py` | Summen- und Saldenliste: Kontenklassen und Vortrag (`GROUPS`, `group_key`, `is_carried`), Buchungsregel je Satz mit Steuer (`entry_postings`, `tax_side`, `TAX_ACCOUNTS`), Gruppe buchen (`book_group`, `Tally`), Bericht (`build_susa`), Anzeige und Texte (rein, ohne Datenbank) |
 
 ## Gezielt navigieren
 

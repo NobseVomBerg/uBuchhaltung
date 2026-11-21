@@ -190,6 +190,23 @@ def _is_expense_or_asset(number) -> bool:
             or _within(number, ASSET_ACCOUNT_RANGE))
 
 
+# Die Einordnung der Konten gehört dem Schlüssel des Exports – die Summen- und Saldenliste (``db.susa``) liest sie über diese Hüllen, nie mit
+# eigenen Bereichen. ``number`` ist eine Kontonummer als ``int`` (``account_number``) oder ``None``.
+def is_debtor_number(number) -> bool:
+    """Ein Personenkonto (``DEBTOR_RANGE``, 10000–69999)?"""
+    return _is_debtor(number)
+
+
+def is_revenue_number(number) -> bool:
+    """Ein Erlöskonto: 4000–4999 und die „Erlöse aus Verkäufen … (bei Buchverlust)“ 6884–6892 (``DISPOSAL_REVENUE_RANGE``)?"""
+    return _is_revenue(number)
+
+
+def is_expense_or_asset_number(number) -> bool:
+    """Ein Aufwands- (5000–7999 ohne 6884–6892) oder Anlagekonto (1–999)?"""
+    return _is_expense_or_asset(number)
+
+
 def booking_kind(form, coa_number, counter_number, is_inflow, waiting_numbers=()) -> str:
     """Die Art einer Buchung, die keinen gespeicherten Schlüssel trägt – nach der Art ihres Zweckkontos.
 

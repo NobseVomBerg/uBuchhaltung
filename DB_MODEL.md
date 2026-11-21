@@ -1318,6 +1318,12 @@ Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
 - Virtuelles USt-Konto 3806 enthält nur Steueranteile aus Einnahmekonten
 - Virtuelle Vorsteuerkonten 1401/1406 enthalten Steueranteile aus Ausgabenkonten
 - Konten 3160, 3720, 3740 werden im Dashboard separat als "Sonstige Ausgaben" gezeigt
+- Einnahme, Ausgabe, „Sonstige Ausgabe“ oder gar nicht: Das entscheidet je Konto `db.reporting.euer_section` – für die EÜR im
+  Dashboard und für die betriebswirtschaftliche Auswertung (`db/bwa.py`, seit 2.5.14, Seite `/bwa`), die dieselben Zahlen von
+  `get_euer_data` (ohne Kontofilter) nur nach Gruppen zusammenfasst (`RANGES`, `EXCEPTIONS`; ein Konto ohne Gruppe steht unter
+  „Nicht zugeordnet“) und nichts aus `Bookings` selbst liest
+- Der Kasten der EÜR im Dashboard und die Seite `/euer` (seit 2.5.16, auch als PDF) kommen aus EINER Aufbereitung, `db.euer.euer_statement`
+  (die Zeilen von `get_euer_data` nach `euer_section`; Summen aus Minor Units). Die Seite hat keinen Kontofilter; der Kasten folgt dem Filter des Dashboards
 - **Liquide Konten** (`get_payment_coa_ids`): eigene Bank-/Kassenkonten (die Standard-Kasse trägt 1600) und das Verrechnungskonto 1460 – nur noch für Zeilen ohne gespeicherte Form (Roh-SQL), die die EÜR damit einordnet. Ob ein Satz zählt, entscheidet die Sektion in `get_euer_data()`. Jeder Satz zählt in genau einer Sektion: Die Sammlung ist über die Buchungs-ID eindeutig, die erste Sektion, die einen Satz findet, gewinnt (Reihenfolge 1, 2, 2b, 3); außerdem sind die Sektionen so geschnitten, dass sich die üblichen Fälle gar nicht erst überschneiden:
   - **Section 1:** Buchungssätze (Kinder) unter einer Bankbewegung der gewählten Konten – auch der Kasse (Buchungsmaske mit Konto = Kasse; die Bankzeile trägt `Account_ID` der Kasse)
   - **Section 2:** eigenständige Sätze (ohne `ParentBooking_ID`), die ein Kassenkonto berühren, und – nur ohne Kontofilter – das Verrechnungskonto 1460 (WISO: „Aufwand an Verrechnung“ gilt mit dem Datum des Satzes als abgeflossen; die spätere Übertragung „Verrechnung an Bank“ ist ein Geldkonten-Spiegel und zählt nicht noch einmal)
@@ -1325,6 +1331,81 @@ Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
   - **Section 3 (nicht zahlungswirksam, nur ohne Kontofilter):** eigenständige Umbuchungen zwischen Anlagekonto (SKR04 1–999) und Erfolgskonto (4000–7999) – AfA „Aufwand an Anlagekonto“, Restbuchwert beim Abgang (`is_asset_transfer`) – und die Sätze, auf die `AssetDepreciations.Booking_ID` zeigt (auch alte AfA-Sätze). Das Anlagekonto selbst wird bei Umbuchungen nicht bebucht. Solche Sätze tragen keine Zahlung: `TaxAmount`/`TaxRate` bleiben unberücksichtigt (keine Vorsteuer auf 1401/1406). Der Anlagenkauf mit Vorsteuer als Kind einer Bankbewegung (Section 1) ist davon nicht berührt.
   - Das **Dashboard** (Zahlungskarten, `Database.get_dashboard`) folgt den Kontobewegungen: Bankbewegungen aller gewählten Konten inkl. Kasse sowie eigenständige Sätze auf Kassenkonten (Section 2/2b); das Verrechnungskonto 1460 (außer als Konto der Kasse) und die AfA zählen dort nicht. Seit 2.4.1 wird **jede gezählte Bewegung ohne Rest in vier Töpfe zerlegt** – Einnahme, Ausgabe, privat (Konten 2100–2199) und Übertrag (zwischen eigenen Konten, Bank ↔ Bank und Bank ↔ Kasse); ihre Summe ist der Saldo (`balance`), der sich dabei nicht ändert. *Bankbewegung mit Kindern:* Die Wirkung jedes Satzes ist `bank_effect` auf das Konto der Bewegung (wie in der Split-Summe). Privat ist der Betrag der Sätze mit 2100–2199 – nicht ihre Wirkung: „2100 an 1460“ wirkt auf das Konto der Bewegung nicht und bleibt trotzdem privat (eine Umbuchung `transfer`: −Betrag, wenn 2100–2199 im Konto steht, +Betrag im Gegenkonto, 0 auf beiden Seiten). Trägt die Bewegung einen Spiegel zwischen eigenen Konten (`is_mirror_row`), ist der Übertrag der Betrag minus die Wirkung aller übrigen Sätze – der Betrag des Spiegels wird nie gelesen, auch nicht bei `mirror_legacy`; der Rest (Betrag − privat − Übertrag) zählt nach dem Vorzeichen als Einnahme oder Ausgabe. *Bankbewegung ohne Satz:* ganz Übertrag, wenn die Übertragsrechnung des DATEV-Exports sie deckt (`settle_transfers`, über den ganzen Bestand), sonst Einnahme oder Ausgabe; sie zählt in beiden Fällen weiter als „offen“. *Eigenständiger Satz auf der Kasse:* Betrag aus Sicht der Kasse – ein Spiegel mit bekannter Lesart (`mirror_coa`, `mirror_counter`) zählt aus ihrer Sicht (Abhebung +, Bareinzahlung −), jede andere Zeile mit ihrem Betrag; ein Spiegel zwischen eigenen Konten (auch `mirror_legacy`, mit dem Rohbetrag) ist ein Übertrag, 2100–2199 auf einer Seite privat, alles andere nach dem Vorzeichen. Ein Übertrag auf ein nicht gewähltes Konto bleibt ein Übertrag und steht dann netto unter „Überträge“. Bekannte Grenzen (`docs/aufgaben.md`): Die Kassenseite eines Übertrags, die nur als Kind unter der Bankbewegung steht, zählt nicht; ein unkontierter Rest neben einem Spiegel steckt im Übertrag (auch ein Satz über 1460 ohne Wirkung auf das Konto); Konten ohne oder mit doppelter SKR-Nummer nehmen an der Deckung nicht teil; ein eigenständiger Spiegel des Altbestands (`mirror_legacy`) auf der Kasse deckt die Bankbewegung ohne Satz nicht; die Deckung setzt wie beim DATEV-Export vollständige Auszüge voraus.
 - **Bestandskonten** (`NEUTRAL_ACCOUNT_NUMBERS`: 10000 Debitoren, Wartekonten 4340/4345/4405) bleiben komplett draußen – weder Saldo noch USt. Die Einnahme entsteht mit der Umbuchung vom Warte- auf das Erlöskonto bei Zahlung (siehe Abschnitt 9a).
+
+### Summen- und Saldenliste (seit 2.5.17, `db/susa.py`, `Database.get_susa`)
+
+Je Konto Anfangssaldo, Soll und Haben im Monat und aufgelaufen seit dem 1. Januar und Endsaldo (Seite `/susa`, auch als PDF). Sie liest **dieselben Zeilen wie der
+DATEV-Export und mit derselben Lesart** – eine eigene Deutung von Form, Soll und Haben gibt es nicht. Rein lesend: kein `DateTax`-Stempel, nichts wird geschrieben.
+
+- **Zeilen:** alle Sätze außer den Bankbewegungen mit Datum bis zum Monatsende (`accounts.LEDGER_ROWS_WHERE`, dasselbe `WHERE` wie `fetch_bookings_range`; die
+  Sätze der Vorjahre bilden den Anfangssaldo), **ohne die Eingangs-Sätze gepaarter Überträge**, die der Export weglässt (`settle_transfers(…).omitted`, über den
+  ganzen Bestand gezählt): Der Ausgangs-Satz („Bank B an Bank A“) bucht beide Bankseiten, mit dem Eingangs-Satz stünde der Übertrag doppelt da. Liegen die beiden
+  Seiten in verschiedenen Monaten, verschiebt sich das nur zwischen den Monaten. Form und Soll-Seite liest `matching.ledger_form`/`matching.coa_in_soll` (der Export ruft
+  dieselben Funktionen), die Art `datev_keys.booking_kind`.
+- **Soll und Haben** (wie Spalte 1 des Exports; der Betrag ohne Vorzeichen):
+
+  | Form | Betrag ≥ 0 | Betrag < 0 |
+  |---|---|---|
+  | `purpose_first` | Soll Gegenkonto, Haben Konto | Soll Konto, Haben Gegenkonto |
+  | `liquid_first`, `transfer`, `mirror_coa` | Soll Konto, Haben Gegenkonto | umgekehrt |
+  | `mirror_counter` | Soll Gegenkonto, Haben Konto | umgekehrt |
+  | `mirror_legacy` | nicht gebucht (die Lesart ist unbekannt, sie wird nie gedeutet), Hinweis | – |
+
+  Ein Satz mit Betrag 0 bucht nichts. Eine Seite ohne Konto (oder mit einem Konto ohne Nummer) steht auf dem virtuellen Konto „Nicht kontiert“. Ein Satz unter einer
+  Bankbewegung, dem die Geldseite fehlt (`purpose_first` ohne Gegenkonto, `liquid_first` ohne Konto), ist das Konto der Bankbewegung (so zählen ihn EÜR und Split-Summe auch;
+  hat die Bewegung keine SKR-Nummer: „Nicht kontiert“). Eine Zeile ohne gespeicherte Form wird mit den Zahlungskonten von heute gelesen wie im Export (Hinweis).
+- **Steuer:** Der gespeicherte `TaxAmount` gilt, nichts wird nachgerechnet; mit dem Vorzeichen des Betrags wird er aus der Seite des Zweckkontos herausgerechnet (die Seite
+  bekommt Betrag − Steuer, das Steuerkonto die Steuer auf derselben Seite). Welche Seite, entscheidet die Art (`booking_kind`): Zahlung am Zweckkonto (`purpose_first`: Konto,
+  `liquid_first`: Gegenkonto), Umbuchung am Gegenkonto, wenn es ein Erlös- (Umsatzsteuer) bzw. Aufwands- oder Anlagekonto (Vorsteuer) ist, sonst am Konto; „Wartekonto an Erlöskonto“ an
+  der Erlösseite, die kein Wartekonto ist. Die Forderung „Debitoren an Wartekonto“ (und die Gegenbuchung einer Stornorechnung) wird nie zerlegt – das Wartekonto hält den
+  Bruttobetrag bis zur Zahlung –, ohne Hinweis. Ohne Seite (Spiegel, Debitor als Zweckkonto, Umbuchung ohne Erlös-, Aufwands- oder Anlagekonto, kein Konto auf der Seite) steht der Satz
+  brutto, Hinweis `tax_not_split`. Steuerkonto je Art und Satz (`datev_keys.percent`):
+
+  | Steuerart | 19 % | 16 % | 7 % | 5 % | anderer oder kein Satz |
+  |---|---|---|---|---|---|
+  | Vorsteuer | 1406 | 1406 | 1401 | 1401 | „Steuer ohne Steuerkonto“ (virtuell, Hinweis `tax_unassigned`) |
+  | Umsatzsteuer | 3806 | 3806 | 3801 | 3801 | ebenso |
+
+  16 % und 5 % liegen auf den Konten von 19 % und 7 %; 3801 steht nicht im Standard-Kontenrahmen und trägt dann den Namen aus `TAX_ACCOUNT_NAMES` mit dem Zusatz „(nicht im
+  Kontenrahmen)“. Umsatzsteuer und Vorsteuer werden nicht verrechnet, einen Abschluss gibt es nicht.
+- **Kontenklassen und Vortrag** (EINE Stelle: `GROUPS`, `group_key`, `is_carried`):
+
+  | Gruppe | Bereich | trägt vor |
+  |---|---|---|
+  | Anlagevermögen | 0–999 | ja |
+  | Umlaufvermögen und Finanzkonten | 1000–1999 | ja |
+  | Eigenkapital und Privat | 2000–2999, dazu „Ergebnis der Vorjahre (rechnerisch)“ | ja |
+  | Rückstellungen, Verbindlichkeiten und Steuern | 3000–3999, dazu „Steuer ohne Steuerkonto“ | ja |
+  | Erlöse und Erträge | 4000–4999 ohne die Wartekonten | **nein** |
+  | Offene Posten (Wartekonten) | 4340, 4345, 4405 | ja |
+  | Aufwand und übrige Erfolgskonten | 5000–7999 | **nein** |
+  | Vortrags- und statistische Konten | 8000–9999 | ja |
+  | Personenkonten | ab 10000 | ja |
+  | Nicht kontiert | virtuell | ja |
+
+  Anfangssaldo: Bestandskonten tragen die Summe (Soll − Haben) aller Sätze vor dem 1. Januar vor; Erfolgskonten beginnen bei 0, ihre Summe aus den Vorjahren steht auf dem
+  virtuellen Konto „Ergebnis der Vorjahre (rechnerisch)“ beim Eigenkapital – so ist die Summe aller Anfangssalden 0. Privat- und Steuerkonten werden mangels Abschluss vorgetragen. Eine
+  Eröffnungsbilanz gibt es nicht: Ein Konto ohne Buchungen vor dem ersten Kontoauszug beginnt bei 0. Gleiche Nummern aus verschiedenen Kontenrahmen sind eine Zeile (Name des ersten nach
+  `ChartOfAccounts.ID`; für eine Bankkontonummer ohne Zeile im Kontenrahmen der Name des Kontos).
+- **Ausgleich:** Jede Buchung schreibt gleich viel ins Soll wie ins Haben, was ihr fehlt, steht auf „Nicht kontiert“: In jeder Spalte ist Summe Soll = Summe Haben, die Summe der Anfangs-
+  und der Endsalden 0. **Bankbewegungen ohne Buchungssatz**, die kein Übertrag deckt (`settle_transfers(…).covered`), stehen mit dem Bankkonto gegen „Nicht kontiert“ (Betrag > 0: Bank im
+  Soll), sonst stimmte der Bankstand nicht mit dem Kontoauszug; auf einem Konto ohne SKR-Nummer werden sie nur gezählt. Was sich nicht buchen lässt, steht nur in den Hinweisen – jede Zeile in genau einem:
+  `unknown_type` (keine Buchungsart, `BookingType` NULL – der Export liest die Zeile nie), `bad_date` (das Datum ist kein Kalendertag als Text `JJJJ-MM-TT` ab dem Jahr 0001: `typeof = 'text'`, das Muster und `x IS date(x)`; die Zeile fehlt in jedem Monat, jede
+  Buchungsart, ohne Fenster), `not_readable` (Betrag oder Steuerbetrag keine ganze Zahl bis 10^15 Minor Units, Datum gültig und bis Monatsende), `zero_amount_tax` (Betrag 0 mit Steuerbetrag – ohne Betrag keine Seite, die
+  Einnahmenüberschussrechnung zählt die Steuer), `legacy_mirror` (`mirror_legacy`). Eine andere Buchungsart als `entry` und `bank` liest der Export wie einen Satz, und so bucht sie die Liste. Eine Summe über 2^63 Minor Units
+  rechnet `_sum_groups` in Python.
+- **Abgleich mit den Bankbewegungen:** Für jedes eigene Bankkonto (keine Kasse) mit eigener SKR-Nummer soll der Endsaldo der Liste die Summe aller Bankbewegungen bis Monatsende sein
+  (`BankCheck`; die Summe liest das Datum als Text – eine Bewegung mit ungültigem Datum, das vor dem Monatsende sortiert, zählt mit und fehlt in der Liste); Konten ohne oder mit doppelter Nummer stehen in `bank_skipped`. Eine Abweichung entsteht durch Bankbewegungen, deren Sätze nicht
+  ihren Betrag ergeben (`unbalanced`), Sätze auf dem Bankkonto ohne Bankbewegung, Überträge mit verschiedenen Daten beider Seiten, Sätze, die ein anderes Datum als ihre Bankbewegung tragen, wenn das Monatsende dazwischen liegt
+  (`child_other_period`), Sätze unter einer Bankbewegung, die auf ein anderes eigenes Bank- oder Kassenkonto buchen (`child_other_account`; ein Spiegel zwischen eigenen Konten zählt nicht), oder nicht lesbare Werte;
+  die beiden Hinweise zählen nur, an der Buchung ändert sich nichts.
+- **Abstimmungsproben** (Tests, auf den Minor-Wert): (a) Summe Soll = Summe Haben, Anfangs- und Endsalden zusammen 0 – in jedem Bestand; (b) Bankkonto gegen Bankbewegungen – wo jede
+  Bewegung kontiert ist, jeder Übertrag beide Seiten am selben Tag trägt, jeder Satz mit seiner Bewegung auf derselben Seite des Monatsendes liegt und auf deren Konto bucht und alle Beträge lesbar sind; (c) Erfolgskonten gegen die EÜR (für jede Zeile eines EÜR-Abschnitts außer 3806: der
+  Saldo der EÜR = Haben − Soll der Liste; die Umsatzsteuer der EÜR = 3801 plus 3806) – wo jeder Satz einer Bankbewegung oder der Kasse zugeordnet ist (Sätze ohne Bankbewegung, Umbuchungen ohne
+  Zahlung und Status `resolved` zählt die Liste nach ihrem Datum, die EÜR nicht).
+- **Laufzeit:** Die Sätze werden in SQL nach dem gruppiert, was ihre Lesart bestimmt (Form, Konten, Richtung des Betrags und der Steuer, Steuersatz, Zeitraum, Konto der Bankbewegung), und je
+  Gruppe einmal gebucht – die Regel ist linear (`db.susa.book_group`); eine Zeile je Satz in Python wäre bei 200 000 Buchungen deutlich langsamer. Die Übertragsrechnung
+  (`_settle_stock`) liest den ganzen Bestand wie bei der Dashboard-Karte.
 
 ### Rechnungserstellung
 

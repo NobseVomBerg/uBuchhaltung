@@ -210,9 +210,14 @@ def _keys(*names, period=False):
 # /receipts/search und /transactions/search fehlen bewusst: JSON-Suchen der Seiten, keine Anzeigeseiten; dasselbe liefert die
 # SQL-Abfrage. Aus demselben Grund fehlt die JSON-Route der Vorschläge zu einem Beleg (seit 2.6.0), und die POST-Route, die die
 # Datei eines Belegs liest und die Lesung speichert, ist keine Anzeigeseite (CLAUDE.md, Abschnitt „Belegerkennung“).
+# /bwa/pdf, /euer/pdf und /susa/pdf fehlen bewusst: Sie liefern Dokumente, keine Anzeigeseiten (die Seiten /bwa, /euer und /susa
+# schreiben nichts, Tests in tests/test_bwa.py, tests/test_euer_view.py und tests/test_susa.py).
 _PAGE_ALLOWLIST = {
     "/": _keys("acct", period=True),
     "/dashboard": _keys("acct", period=True),
+    "/bwa": _keys("year", "month", "variant"),
+    "/euer": _keys("from", "to"),
+    "/susa": _keys("year", "month"),
     "/about": _keys(),
     "/invoice": _keys("search", "status", "id", period=True),
     "/invoice/view": _keys("id"),

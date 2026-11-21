@@ -8,6 +8,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, quote, urlsplit
 from http.cookies import SimpleCookie
 import contextlib
+import datetime
 import ipaddress
 import json
 import socket
@@ -46,6 +47,9 @@ from .pages_contacts import PageContacts, PageContactNew, PageContactEdit
 from .pages_miscellaneous import PageMiscellaneous
 from .pages_transactions import PageTransactions
 from .pages_dashboard import PageDashboard
+from .pages_bwa import PDF_FAILED_TEXT, PageBwa, read_page_query, read_pdf_query
+from .pages_euer import EUER_PDF_FAILED_TEXT, PageEuer, read_euer_page_query, read_euer_pdf_query
+from .pages_susa import SUSA_PDF_FAILED_TEXT, PageSusa, read_susa_page_query, read_susa_pdf_query
 from .pages_receipts import PageReceipts, PageReceiptEdit
 from .pages_setup import PageSetup, PageSetupStart
 from .pages_invoice import PageInvoice
@@ -517,23 +521,27 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         super().log_error(format, *args)
 
     def end_headers(self):
-        path = getattr(self, 'path', '')           # fehlt bei einer kaputten Anfragezeile
-        # zuerst: Eine Endung am Ende der Adresse (``?x=.png``, bei den Suchen ``?q=.png``) darf einen Beleg nie zu „public“ machen
-        route = path.split('?', 1)[0]
-        if route in ('/backup/download', '/receipts/file') or route in _SEARCH_PATHS:
-            self.send_header('Cache-Control', 'no-store')               # der ganze Datenbestand, ein Beleg bzw. die Treffer einer Suche: nirgends ablegen
-        elif path.endswith('.css') or path.endswith('.js') or path.endswith('.png'):
-            self.send_header('Cache-Control', 'public, max-age=86400')  # Cache this File for 1d
-        else:
-            self.send_header('Cache-Control', 'no-cache')               # HTML etc no caching
-        # Für ALLE Antworten: kein MIME-Sniffing und kein Einrahmen durch fremde Seiten
-        # (Clickjacking, etwa auf „Status setzen“ bei automatischer Anmeldung). Die App rahmt
-        # sich nicht selbst ein – PDFs öffnen sich als eigene Seite in einem neuen Tab –, daher
-        # DENY statt SAMEORIGIN.
-        self.send_header('X-Content-Type-Options', 'nosniff')
-        self.send_header('X-Frame-Options', 'DENY')
+        # Jede Antwort trägt genau EINEN Cache-Control, entschieden an der Route (die Adresse ohne Query), nie an einer Endung: Hat der Handler
+        # selbst einen geschrieben (``serve_static_file``, ``respond(…, headers=…)``), bleibt es dabei; sonst gilt ``no-store`` für die
+        # Sicherungen, die Dateien der Belege und die Suchen, für alles andere ``no-cache``.
+        try:
+            if not getattr(self, '_cache_control_sent', False):
+                route = getattr(self, 'path', '').split('?', 1)[0]      # ``path`` fehlt bei einer kaputten Anfragezeile
+                if route in ('/backup/download', '/receipts/file') or route in _SEARCH_PATHS:
+                    self.send_header('Cache-Control', 'no-store')       # der ganze Datenbestand, ein Beleg bzw. die Treffer einer Suche: nirgends ablegen
+                else:
+                    self.send_header('Cache-Control', 'no-cache')       # Seiten und Dokumente: ablegen erlaubt, aber vor jeder Nutzung nachfragen
+            # Für ALLE Antworten: kein MIME-Sniffing und kein Einrahmen durch fremde Seiten
+            # (Clickjacking, etwa auf „Status setzen“ bei automatischer Anmeldung). Die App rahmt
+            # sich nicht selbst ein – PDFs öffnen sich als eigene Seite in einem neuen Tab –, daher
+            # DENY statt SAMEORIGIN.
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.send_header('X-Frame-Options', 'DENY')
 
-        super().end_headers()                                           # Call the Base
+            super().end_headers()                                       # Call the Base
+        finally:
+            # Eine Keep-Alive-Verbindung beantwortet viele Anfragen mit dieser Instanz: Das Merkmal gilt nur für die laufende Antwort
+            self._cache_control_sent = False
 
     def send_error(self, code, message=None, explain=None):
         # Kaputte Anfragezeile: Bis dahin gilt die Anfrage als HTTP/0.9, und je nach Patch-Stand
@@ -546,7 +554,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
     def send_header(self, keyword, value):
         # Letzte Sicherung gegen Header-Injection, egal woher ein Wert stammt (Query,
         # Cookie, Formular, Dateiname): CR/LF/NUL kommen nie in einen Header.
-        super().send_header(_header_safe(keyword), _header_safe(value))
+        keyword, value = _header_safe(keyword), _header_safe(value)
+        super().send_header(keyword, value)
+        if keyword.lower() == 'cache-control':
+            self._cache_control_sent = True                             # ``end_headers`` schreibt dann keinen zweiten dazu
 
     # ── Anfragekörper ────────────────────────────────────────────────────────
     def _declared_length(self):
@@ -1417,6 +1428,49 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 account_ids = _int_params(qs, 'acct') or None
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
                 self.respond(200, PageDashboard(db, date_from, date_to, account_ids), headers=hdrs)
+            elif route == "/bwa":
+                # Betriebswirtschaftliche Auswertung: rein lesend, kein Cookie; Jahr, Monat und Darstellung werden streng gelesen
+                self.respond(200, PageBwa(db, read_page_query(self._query(), datetime.date.today())))
+            elif route == "/bwa/pdf":
+                qs = self._query()
+                query, error = read_pdf_query(qs)
+                if error:
+                    self.respond(400, error, content_type="text/plain; charset=utf-8")
+                else:
+                    with_accounts = qs.get('accounts', ['0'])[0] in ('1', 'true', 'on')
+                    pdf_bytes, filename = handlers.handle_bwa_pdf(db, query, with_accounts, datetime.date.today())
+                    if pdf_bytes is None:
+                        self.respond(500, PDF_FAILED_TEXT, content_type="text/plain; charset=utf-8")
+                    else:
+                        self._send_document(pdf_bytes, filename, None, 'application/pdf', 'attachment')
+            elif route == "/euer":
+                # Einnahmenüberschussrechnung: rein lesend, kein Cookie; von und bis werden streng gelesen. Das heutige Datum
+                # bestimmt nur das Jahr ohne Angabe und die Jahreslinks
+                today = datetime.date.today()
+                self.respond(200, PageEuer(db, read_euer_page_query(self._query(), today), today))
+            elif route == "/euer/pdf":
+                query, error = read_euer_pdf_query(self._query())
+                if error:
+                    self.respond(400, error, content_type="text/plain; charset=utf-8")
+                else:
+                    pdf_bytes, filename = handlers.handle_euer_pdf(db, query, datetime.date.today())
+                    if pdf_bytes is None:
+                        self.respond(500, EUER_PDF_FAILED_TEXT, content_type="text/plain; charset=utf-8")
+                    else:
+                        self._send_document(pdf_bytes, filename, None, 'application/pdf', 'attachment')
+            elif route == "/susa":
+                # Summen- und Saldenliste: rein lesend (kein Steuerdatum, kein Cookie); Jahr und Monat werden streng gelesen
+                self.respond(200, PageSusa(db, read_susa_page_query(self._query(), datetime.date.today())))
+            elif route == "/susa/pdf":
+                query, error = read_susa_pdf_query(self._query())
+                if error:
+                    self.respond(400, error, content_type="text/plain; charset=utf-8")
+                else:
+                    pdf_bytes, filename = handlers.handle_susa_pdf(db, query, datetime.date.today())
+                    if pdf_bytes is None:
+                        self.respond(500, SUSA_PDF_FAILED_TEXT, content_type="text/plain; charset=utf-8")
+                    else:
+                        self._send_document(pdf_bytes, filename, None, 'application/pdf', 'attachment')
             elif self.path == "/setup":
                 # Erststart: solange noch kein Administrator angelegt ist, die
                 # Ersteinrichtung zeigen; danach das gewohnte Kontaktformular.
