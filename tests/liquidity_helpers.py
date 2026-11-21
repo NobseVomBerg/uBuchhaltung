@@ -18,17 +18,24 @@ from tests.susa_helpers import account_id, coa, mask, paid_invoice
 ZERO = CashFigures(0, 0, 0, 0)
 
 
-def reports_from(month_rows, ytd_rows=None, variant='jahr', banks=(), year=2026, month=3, prev_month_rows=(), prev_ytd_rows=(), cash=None):
+def reports_from(month_rows, ytd_rows=None, variant='jahr', banks=(), year=2026, month=3, prev_month_rows=(), prev_ytd_rows=(), cash=None,
+                 month_transfers=(), ytd_transfers=None, prev_month_transfers=(), prev_ytd_transfers=()):
     """``(Bericht der betriebswirtschaftlichen Auswertung, Liquiditätsrechnung)`` aus erfundenen EÜR-Zeilen ``(Nummer, Name, Saldo in Euro)``; ohne
-    ``ytd_rows`` gilt für den aufgelaufenen Zeitraum dieselbe Liste wie für den Monat. ``cash``: ``{Zeitraum: CashFigures}`` (fehlende: alles 0)."""
+    ``ytd_rows`` gilt für den aufgelaufenen Zeitraum dieselbe Liste wie für den Monat. ``cash``: ``{Zeitraum: CashFigures}`` (fehlende: alles 0).
+
+    ``month_transfers`` und die übrigen ``…_transfers`` sind die Zeilen der Umbuchungen zwischen Anlage- und Erfolgskonto – das, was
+    ``get_euer_data(…, only_asset_transfers=True)`` liefert; ohne ``ytd_transfers`` gilt für den aufgelaufenen Zeitraum dieselbe Liste wie für den Monat,
+    ohne Angabe gibt es keine. Eine EÜR-Zeile allein wird nie zurückgerechnet: Was als Umbuchung gemeint ist, steht in beiden Listen."""
     rows = {'month': list(month_rows), 'ytd': list(month_rows if ytd_rows is None else ytd_rows),
             'prev_month': list(prev_month_rows), 'prev_ytd': list(prev_ytd_rows)}
+    transfers = {'month': list(month_transfers), 'ytd': list(month_transfers if ytd_transfers is None else ytd_transfers),
+                 'prev_month': list(prev_month_transfers), 'prev_ytd': list(prev_ytd_transfers)}
     spans = bwa_periods(year, month)
     periods = {key: spans[key] for key in periods_for(variant)}
     banks = set(banks)
     bwa_report = build_report(year, month, variant, periods, rows, banks)
     figures = {key: (cash or {}).get(key, ZERO) for key in periods}
-    return bwa_report, build_liquidity(year, month, variant, periods, rows, bwa_report, banks, figures)
+    return bwa_report, build_liquidity(year, month, variant, periods, rows, transfers, bwa_report, banks, figures)
 
 
 def liquidity_from(*args, **kwargs):
@@ -65,27 +72,31 @@ def where_is(report, number, period='month'):
 
 # ── Die Zeilen aus den Quellen, unabhängig vom Aufbau in ``db.liquidity`` ───────
 
-def rows_by_number(db, span):
-    """``{Kontonummer: Minor Units}`` aus ``get_euer_data`` (die zwei Zeilen 3806 addiert) – ``to_minor`` je Zeile."""
+def rows_by_number(db, span, **options):
+    """``{Kontonummer: Minor Units}`` aus ``get_euer_data`` (die zwei Zeilen 3806 addiert) – ``to_minor`` je Zeile; ``options`` gehen an ``get_euer_data``
+    (``only_asset_transfers=True``: nur die Umbuchungen zwischen Anlage- und Erfolgskonto)."""
     rows = {}
-    for number, _name, total in db.get_euer_data(*span):
+    for number, _name, total in db.get_euer_data(*span, **options):
         rows[number] = rows.get(number, 0) + to_minor(total)
     return rows
 
 
 def expected_lines(db, span):
-    """Die Werte der Zeilen für eine Spanne, noch einmal gerechnet aus den Zeilen der EÜR und den Bereichen – so, wie die Rechenregel sie nennt (nicht
-    mit dem Code von ``build_liquidity``): Ergebnis, Abschreibungen, Restbuchwert, Darlehen im Ergebnis, Anlagen, Darlehen, Privat, Übrige."""
+    """Die Werte der Zeilen für eine Spanne, noch einmal gerechnet aus den Zeilen der EÜR, den Umbuchungen ohne Geldfluss (``get_euer_data(…,
+    only_asset_transfers=True)``) und den Bereichen – so, wie die Rechenregel sie nennt (nicht mit dem Code von ``build_liquidity``): Ergebnis,
+    Abschreibungen, Restbuchwert und übrige Umbuchungen (nur aus den Umbuchungen, mit −Saldo), Darlehen im Ergebnis, Anlagen, Darlehen, Privat, Übrige."""
     banks = bank_skr_numbers(db.fetch_accounts())
     rows = rows_by_number(db, span)
+    transfers = rows_by_number(db, span, only_asset_transfers=True)
     section = {number: euer_section(number, banks) for number in rows}
     in_result = lambda number: section[number] in ('income', 'expense')
     disposal = lambda number: 4855 <= number <= 4858 or 6895 <= number <= 6898
     private = lambda number: 2100 <= number <= 2199
     expected = {
         'result': sum(value for number, value in rows.items() if in_result(number)),
-        'depreciation': -sum(value for number, value in rows.items() if in_result(number) and group_of(number) == 'depreciation'),
-        'disposals': -sum(value for number, value in rows.items() if in_result(number) and disposal(number)),
+        'depreciation': -sum(value for number, value in transfers.items() if not disposal(number) and group_of(number) == 'depreciation'),
+        'disposals': -sum(value for number, value in transfers.items() if disposal(number)),
+        'noncash_other': -sum(value for number, value in transfers.items() if not disposal(number) and group_of(number) != 'depreciation'),
         'financing_in_result': -sum(value for number, value in rows.items() if in_result(number) and group_of(number) == 'liabilities'),
         'assets': sum(value for number, value in rows.items() if section[number] is None and number < 1000),
         'financing': sum(value for number, value in rows.items() if 3000 <= number <= 3799 and section[number] in ('expense', 'other')),
@@ -100,18 +111,24 @@ def expected_lines(db, span):
 
 
 def check_against_sources(db, report, where=''):
-    """Gegen die Quellen, je Zeitraum und auf den Minor-Wert: Die Zeilen gleich ``expected_lines``; Ergebnis, Abschreibungen und Darlehen im Ergebnis gleich
-    der BWA; Einnahme + privat + Ausgabe + Übertrag gleich der Karte ``get_dashboard`` derselben Spanne; die Bankbewegungen ohne Buchungssatz nie mehr als
-    ``unlinked_count`` der Karte. Die Summen und ``unassigned`` sind aus ihren Bestandteilen gerechnet."""
+    """Gegen die Quellen, je Zeitraum und auf den Minor-Wert: Die Zeilen gleich ``expected_lines``; Ergebnis und Darlehen im Ergebnis gleich der BWA;
+    Abschreibungen, Restbuchwert und übrige Umbuchungen nur aus den Umbuchungen (``get_euer_data(…, only_asset_transfers=True)``), jede davon auf einem Konto
+    im Ergebnis, und kein Konto rechnet mehr zurück, als seine EÜR-Zeile hat, wo beide dasselbe Vorzeichen tragen (ein Konto mit gemischten Vorzeichen –
+    Umbuchung und Zahlung – prüft ``test_the_euer_rows_split_into_the_transfers_and_the_rest``); Einnahme + privat + Ausgabe + Übertrag gleich der Karte ``get_dashboard``
+    derselben Spanne; die Bankbewegungen ohne Buchungssatz nie mehr als ``unlinked_count`` der Karte. Die Summen und ``unassigned`` sind aus ihren
+    Bestandteilen gerechnet."""
     bwa = db.get_bwa(report.year, report.month, report.variant)
     for period, span in report.periods.items():
         for key, value in expected_lines(db, span).items():
             assert report.line(key).values[period] == value, (where, period, span, key)
         assert report.line('result').values[period] == bwa.line('result').values[period], (where, period)
-        assert report.line('depreciation').values[period] == bwa.line('depreciation').values[period], (where, period)
         assert report.line('financing_in_result').values[period] == bwa.line('liabilities').values[period], (where, period)
+        banks = bank_skr_numbers(db.fetch_accounts())
+        for number in rows_by_number(db, span, only_asset_transfers=True):
+            assert euer_section(number, banks) in ('income', 'expense'), (where, period, span, number)        # die Umbuchung steckt im Ergebnis, das sie zurückrechnet
         values = lambda key: report.line(key).values[period]
-        assert values('operating') == values('result') + values('depreciation') + values('disposals') + values('financing_in_result')
+        assert values('operating') == (values('result') + values('depreciation') + values('disposals') + values('noncash_other')
+                                       + values('financing_in_result'))
         assert values('computed') == (values('operating') + values('assets') + values('financing') + values('withdrawals')
                                       + values('deposits') + values('outside_other')), (where, period)
         assert values('computed') + values('unbooked') + values('unassigned') == values('actual'), (where, period)
@@ -144,7 +161,7 @@ def random_books(db, seed, size=60):
     auf beiden Bewegungen am selben Tag, mit satzloser Gegenseite), Kassensätze mit und ohne Bankbewegung, Rechnungen mit Forderung und Zahlung (im
     selben und im Folgemonat), Bargeldabhebung (der Übertrag steht nur auf der Bankseite), Abschreibung einer Anlage und Bankbewegungen ohne
     Buchungssatz. Nichts davon ist ein Fall, den die Rechenregel nicht kennt
-    (kein Satz über 1460, keine Sofortabschreibung gegen die Bank, kein Steuersatz außer 7 und 19 %, kein unstimmiger Split, kein Satz ``resolved``)."""
+    (kein Satz über 1460, kein Steuersatz außer 7 und 19 %, kein unstimmiger Split, kein Satz ``resolved``)."""
     rng = random.Random(seed)
     giro, zweit = two_banks(db)
     bank = lambda: rng.choice(['Probe-Giro', 'Probe-Giro', 'Probe-Zweit'])

@@ -76,12 +76,14 @@ def _rows(number, count, first=1, prefix='Konto'):
 
 
 def _wide_report(variant='vorjahr'):
-    """Sieben Zeilen mit je zwölf Konten: Jeder Block (eine Zeile und zwölf Konten) ist 13 Zeilen hoch und passt auf eine Seite."""
-    rows = (_rows(6200, 12)                              # Abschreibungen
-            + _rows(6895, 3) + _rows(4855, 3)              # Restbuchwert (zwei Bereiche)
+    """Sieben Zeilen mit je zwölf Konten: Jeder Block (eine Zeile und zwölf Konten) ist 13 Zeilen hoch und passt auf eine Seite. Abschreibungen und Restbuchwert
+    stehen nur da, wenn sie Umbuchungen ohne Geldfluss sind: Die Konten sind EÜR-Zeilen und zugleich Umbuchungen."""
+    moved = _rows(6200, 12) + _rows(6895, 3) + _rows(4855, 3)      # Abschreibungen, Restbuchwert (zwei Bereiche)
+    rows = (moved
             + _rows(3000, 12)                              # Darlehen im Ergebnis und Darlehen (je zwölf Konten)
             + _rows(500, 12) + _rows(2100, 12) + _rows(2180, 12))
-    return liquidity_from(rows, variant=variant, prev_month_rows=rows[:20], prev_ytd_rows=rows[:20])
+    return liquidity_from(rows, variant=variant, prev_month_rows=rows[:20], prev_ytd_rows=rows[:20], month_transfers=moved, prev_month_transfers=moved,
+                          prev_ytd_transfers=moved)
 
 
 # ── Geometrie ─────────────────────────────────────────────────────────────────
@@ -147,7 +149,7 @@ def _label_rows(pdf):
 
 
 def test_without_the_account_list_only_the_lines_are_printed():
-    report = liquidity_from(ROWS, cash=CASH)
+    report = liquidity_from(ROWS, cash=CASH, month_transfers=[(6220, 'Abschreibung', -250.0)])               # die Abschreibung ist eine Umbuchung ohne Geldfluss
     with_accounts = generate_liquidity_pdf(report, True, '', CREATED)
     without = generate_liquidity_pdf(report, False, '', CREATED)
     assert len(_streams(with_accounts)) == len(_streams(without)) == 1
@@ -167,6 +169,22 @@ def test_the_optional_lines_stand_only_with_a_value_and_the_unbooked_line_names_
     labels = _label_rows(generate_liquidity_pdf(liquidity_from([(1800, 'Bank', -5.0)], banks={1800}, cash=cash), True, '', CREATED))
     assert 'Bankbewegungen ohne Buchungssatz (3 im Monat, 12 aufgelaufen)' in labels and 'Übrige Konten außerhalb des Ergebnisses' in labels
     assert 'Nachrichtlich: Überträge zwischen eigenen Konten' in labels and 'Nachrichtlich: Veränderung laut Kontobewegungen' in labels
+
+
+def test_the_line_of_the_other_transfers_without_cash_is_printed_only_with_a_value_and_with_its_accounts():
+    """„Übrige Umbuchungen ohne Geldfluss“ steht im PDF nur, wenn sie in einem angezeigten Zeitraum einen Wert ≠ 0 hat – mit ihrem Konto direkt dahinter, ohne Kontennachweis nur
+    die Zeile, mit ihrem Betrag in beiden Wertspalten. Eine Abschreibung als Umbuchung (Zeile „Abschreibungen“) ruft sie nicht hervor."""
+    label = 'Übrige Umbuchungen ohne Geldfluss'
+    quiet = _label_rows(generate_liquidity_pdf(liquidity_from(ROWS, cash=CASH, month_transfers=[(6220, 'Abschreibung', -250.0)]), True, '', CREATED))
+    assert label not in quiet and '6220 Abschreibung' in quiet
+    report = liquidity_from(ROWS, cash=CASH, month_transfers=[(6815, 'Bürobedarf', -100.0)])
+    with_accounts = _label_rows(generate_liquidity_pdf(report, True, '', CREATED))
+    assert with_accounts[with_accounts.index(label) + 1] == '6815 Bürobedarf'
+    without = _label_rows(generate_liquidity_pdf(report, False, '', CREATED))
+    assert label in without and '6815 Bürobedarf' not in without
+    cells = _cells(_streams(generate_liquidity_pdf(report, False, '', CREATED))[0])
+    [row_y] = [y for x, y, text in cells if x == LEFT_X and text == label]
+    assert [text for x, y, text in cells if y == row_y and x > LEFT_X] == ['100,00', '100,00']
 
 
 def test_the_text_block_after_the_table_names_the_reconciliation():

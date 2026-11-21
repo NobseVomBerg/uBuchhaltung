@@ -7,17 +7,20 @@ Die Rechnung hat keine eigene Lesart der Buchungen. Sie nimmt drei Quellen und s
 
 * die Zeilen von ``Database.get_euer_data`` (Saldo je SKR-Konto und Zeitraum, netto, nach Zahlungsdatum; das Vorzeichen ist das der
   Geldbewegung: Zufluss +), eingeordnet von ``reporting.euer_section`` – derselben Funktion wie auf der EÜR-Seite und in der
-  betriebswirtschaftlichen Auswertung;
+  betriebswirtschaftlichen Auswertung. Dazu dieselbe Funktion mit ``only_asset_transfers=True``: nur die Zeilen aus den Umbuchungen zwischen
+  Anlage- und Erfolgskonto (AfA, Restbuchwert beim Abgang), die kein Geld bewegen – die Sätze, die Sektion 3 der EÜR beisteuert, und die
+  Umbuchungen dieser Art unter einer Bankbewegung (dieselben Abfragen, dasselbe Aufsummieren, keine neue Lesart). Nur sie werden zurückgerechnet;
 * den Bericht der betriebswirtschaftlichen Auswertung (``db.bwa.build_report``) über dieselben Zeilen: sein Ergebnis steht in der ersten Zeile,
-  seine Gruppen „Abschreibungen“ und „Tilgungen und Verbindlichkeiten“ in der zweiten und vierten;
+  seine Gruppe „Tilgungen und Verbindlichkeiten“ in der vierten;
 * die Töpfe des Dashboards (``Database._dashboard_movements``: Einnahme, privat, Ausgabe, Übertrag), die ``CashFigures`` hier in Minor Units
   mitbringen, dazu die Bankbewegungen ohne Buchungssatz.
 
 Überleitung (alle Werte mit ihrer Wirkung auf die flüssigen Mittel, Zufluss positiv):
 
     Ergebnis (wie BWA)
-  + Abschreibungen                                  kein Geldabfluss: BWA-Gruppe ``depreciation``
-  + Anlagenabgänge zum Restbuchwert                 kein Geldzufluss: die Konten von ``DISPOSAL_RANGES``
+  + Abschreibungen                                  kein Geldabfluss: Umbuchungen Anlage ↔ Erfolgskonto auf den Konten der BWA-Gruppe ``depreciation``
+  + Anlagenabgänge zum Restbuchwert                 kein Geldzufluss: dieselben Umbuchungen auf den Konten von ``DISPOSAL_RANGES``
+  + Übrige Umbuchungen ohne Geldfluss               dieselben Umbuchungen auf jedem anderen Konto; steht nur bei einem Wert
   + Darlehen und Verbindlichkeiten im Ergebnis      herausgerechnet: BWA-Gruppe ``liabilities`` (3000–3799 außer 3160, 3720, 3740)
   = Ergebnis vor Abschreibungen und Darlehen
   + Anlagenzugänge                                  Zahlungen auf Anlagekonten (unter 1000), nicht im Ergebnis
@@ -29,9 +32,10 @@ Die Rechnung hat keine eigene Lesart der Buchungen. Sie nimmt drei Quellen und s
     Nicht zugeordnet                                Ist − (Überleitung + Bankbewegungen ohne Buchungssatz); steht immer da, auch bei 0,00
   = Veränderung der flüssigen Mittel (Bank und Kasse, ohne Überträge zwischen eigenen Konten) – das „Ist“
 
-„Nicht zugeordnet“ ist per Definition die Differenz, also keine dritte Lesart: Was die Überleitung aus den Buchungen nicht erklärt (eine
-Zahlung steht in der EÜR in einem anderen Monat oder mit einem anderen Betrag als auf dem Konto), bleibt dort sichtbar und wird nie einer
-anderen Zeile zugeschlagen. „Geht auf“ heißt exakt 0 Minor Units.
+Zurückgerechnet wird nur, was die EÜR als Umbuchung zwischen Anlage- und Erfolgskonto liest: Ein Aufwand auf einem Abschreibungskonto, den die
+Bank bezahlt hat („6260 an Bank“), bewegt Geld, steht im Ergebnis und bleibt dort. „Nicht zugeordnet“ ist per Definition die Differenz, also keine
+dritte Lesart: Was die Überleitung aus den Buchungen nicht erklärt (eine Zahlung steht in der EÜR in einem anderen Monat oder mit einem anderen
+Betrag als auf dem Konto), bleibt dort sichtbar und wird nie einer anderen Zeile zugeschlagen. „Geht auf“ heißt exakt 0 Minor Units.
 
 Gerechnet wird in Minor Units (``int``, ``money``), gerundet erst bei der Anzeige (``cells``). Die Formate (``format_amount``,
 ``format_percent``, ``change_percent``) und die Zeiträume gehören der betriebswirtschaftlichen Auswertung (``db.bwa``).
@@ -39,7 +43,7 @@ Gerechnet wird in Minor Units (``int``, ``money``), gerundet erst bei der Anzeig
 from dataclasses import dataclass, field
 
 from money import to_minor
-from .bwa import (VARIANT_PREVIOUS, VARIANT_YEAR, Column, PREVIOUS_OF, change_percent, format_amount, format_percent, periods_for)
+from .bwa import (VARIANT_PREVIOUS, VARIANT_YEAR, Column, PREVIOUS_OF, change_percent, format_amount, format_percent, group_of, periods_for)
 from .reporting import euer_section
 
 # ── Bereiche als Daten ────────────────────────────────────────────────────────
@@ -66,13 +70,14 @@ def _whole(number) -> bool:
 TITLE = 'Liquiditätsrechnung'
 HINT_TEXT = 'Aus den Buchungen dieser App gerechnet. Keine Steuerberatung; ersetzt nicht die Auswertung eines Steuerbüros.'
 SIGN_TEXT = 'Jeder Wert steht mit seiner Wirkung auf die flüssigen Mittel (Bank und Kasse): ein Zufluss positiv, ein Abfluss negativ.'
-METHOD_TEXT = ('Ausgangspunkt ist das Ergebnis der betriebswirtschaftlichen Auswertung. Abschreibungen und Anlagenabgänge zum Restbuchwert '
-               'bewegen kein Geld und werden zurückgerechnet; Darlehen und Verbindlichkeiten, die schon im Ergebnis stehen, werden herausgenommen '
+METHOD_TEXT = ('Ausgangspunkt ist das Ergebnis der betriebswirtschaftlichen Auswertung. Abschreibungen und Anlagenabgänge zum Restbuchwert, '
+               'die als Umbuchung zwischen Anlage- und Erfolgskonto gebucht sind, bewegen kein Geld und werden zurückgerechnet – eine direkt '
+               'bezahlte Abschreibung bleibt im Ergebnis; Darlehen und Verbindlichkeiten, die schon im Ergebnis stehen, werden herausgenommen '
                'und als eigene Zeile gezeigt. Dazu kommen Anlagenzugänge, Privatentnahmen und Privateinlagen. Die Veränderung der flüssigen Mittel '
                'selbst entsteht aus den Bewegungen auf den Bank- und Kassenkonten, ohne Überträge zwischen eigenen Konten.')
 UNASSIGNED_TEXT = ('Diesen Betrag erklärt die Überleitung nicht: Eine Zahlung steht in der Einnahmenüberschussrechnung in einem anderen Monat oder '
-                   'mit einem anderen Betrag als auf dem Konto – etwa bei Buchungssätzen mit einem anderen Datum als ihre Bankbewegung, über ein '
-                   'Verrechnungskonto oder bei einer Sofortabschreibung, die direkt bezahlt wurde.')
+                   'mit einem anderen Betrag als auf dem Konto – etwa bei Buchungssätzen mit einem anderen Datum als ihre Bankbewegung oder über '
+                   'ein Verrechnungskonto.')
 BALANCED_TEXT = 'Die Überleitung geht auf.'
 UNBALANCED_TEXT = 'Die Überleitung geht nicht auf: Die Zeile „Nicht zugeordnet“ nennt den Unterschied zur Veränderung laut Kontobewegungen.'
 ROUNDING_TEXT = 'Ein Rest unter einem halben Cent ist ein Rundungsrest; er steht als 0,00 da.'
@@ -103,9 +108,10 @@ LAYOUT: tuple[LineSpec, ...] = (
     LineSpec('result', LINE, 'Ergebnis (wie BWA)'),
     LineSpec('depreciation', LINE, 'Abschreibungen'),
     LineSpec('disposals', LINE, 'Anlagenabgänge zum Restbuchwert'),
+    LineSpec('noncash_other', LINE, 'Übrige Umbuchungen ohne Geldfluss', optional=True),
     LineSpec('financing_in_result', LINE, 'Darlehen und Verbindlichkeiten im Ergebnis (herausgerechnet)'),
     LineSpec('operating', SUM, 'Ergebnis vor Abschreibungen und Darlehen',
-             plus=('result', 'depreciation', 'disposals', 'financing_in_result')),
+             plus=('result', 'depreciation', 'disposals', 'noncash_other', 'financing_in_result')),
     LineSpec('assets', LINE, 'Anlagenzugänge (Zahlungen auf Anlagekonten)'),
     LineSpec('financing', LINE, 'Darlehen und Verbindlichkeiten (Aufnahme +, Tilgung −)'),
     LineSpec('withdrawals', LINE, 'Privatentnahmen'),
@@ -120,11 +126,11 @@ LAYOUT: tuple[LineSpec, ...] = (
     LineSpec('memo_balance', MEMO, 'Nachrichtlich: Veränderung laut Kontobewegungen', optional=True),
 )
 
-# Die Zeilen, unter denen sich die Konten aufklappen lassen (die Konten von ``depreciation`` und ``financing_in_result`` kommen aus der BWA)
-ACCOUNT_KEYS = ('depreciation', 'disposals', 'financing_in_result', 'assets', 'financing', 'withdrawals', 'deposits', 'outside_other')
+# Die Zeilen, unter denen sich die Konten aufklappen lassen (die Konten von ``financing_in_result`` kommen aus der BWA)
+ACCOUNT_KEYS = ('depreciation', 'disposals', 'noncash_other', 'financing_in_result', 'assets', 'financing', 'withdrawals', 'deposits', 'outside_other')
 
 # Die Zeilen, die ihre Werte aus dem Bericht der betriebswirtschaftlichen Auswertung nehmen: Schlüssel hier → Zeile dort
-BWA_LINES = {'result': 'result', 'depreciation': 'depreciation', 'financing_in_result': 'liabilities'}
+BWA_LINES = {'result': 'result', 'financing_in_result': 'liabilities'}
 
 
 @dataclass(frozen=True)
@@ -174,19 +180,38 @@ class LiquidityReport:
         return self._by_key[key]
 
 
-def build_liquidity(year: int, month: int, variant: str, periods: dict, euer_rows: dict, bwa_report, bank_numbers,
+def _noncash_line(number) -> str:
+    """Die Zeile, in der eine Umbuchung ohne Geldfluss (eine Zeile von ``get_euer_data(…, only_asset_transfers=True)``) zurückgerechnet wird: erst
+    ``DISPOSAL_RANGES`` (Restbuchwert beim Abgang), dann die Konten der BWA-Gruppe ``depreciation`` (Abschreibungen), sonst „Übrige Umbuchungen ohne
+    Geldfluss“. Die Bereiche überschneiden sich nicht; die Reihenfolge der Prüfung steht trotzdem fest. Nur eine ganze Zahl hat einen Bereich
+    (``_within``): Eine Kommazahl steht unter „Übrige“."""
+    if any(_within(number, bounds) for bounds in DISPOSAL_RANGES):
+        return 'disposals'
+    if group_of(number) == 'depreciation':
+        return 'depreciation'
+    return 'noncash_other'
+
+
+def build_liquidity(year: int, month: int, variant: str, periods: dict, euer_rows: dict, transfer_rows: dict, bwa_report, bank_numbers,
                     cash: dict) -> LiquidityReport:
     """Den Bericht bauen. ``euer_rows`` je Zeitraum (``periods_for(variant)``) die Liste ``(Kontonummer, Name, Saldo in Euro)`` von
-    ``get_euer_data``, ``bwa_report`` der Bericht der betriebswirtschaftlichen Auswertung über dieselben Zeilen (``build_report``),
-    ``bank_numbers`` die SKR-Nummern der Geldkonten (``reporting.bank_skr_numbers``), ``cash`` je Zeitraum die ``CashFigures``.
+    ``get_euer_data``, ``transfer_rows`` je Zeitraum dieselbe Liste von ``get_euer_data(…, only_asset_transfers=True)`` – nur die Umbuchungen zwischen
+    Anlage- und Erfolgskonto, die kein Geld bewegen –, ``bwa_report`` der Bericht der betriebswirtschaftlichen Auswertung über die Zeilen von
+    ``euer_rows`` (``build_report``), ``bank_numbers`` die SKR-Nummern der Geldkonten (``reporting.bank_skr_numbers``), ``cash`` je Zeitraum die
+    ``CashFigures``.
 
     Jede Zeile von ``get_euer_data`` steht an genau einer Stelle: Eine Zeile im Ergebnis (``euer_section`` ``income``/``expense``) steckt in der
-    ersten Zeile; ``depreciation`` und ``financing_in_result`` heben nur ihren Anteil aus der BWA heraus, ``disposals`` den Restbuchwert
-    (``DISPOSAL_RANGES``). Eine Zeile außerhalb des Ergebnisses steht nach ihrer Nummer unter Anlagenzugängen (unter ``ASSET_LIMIT``),
-    Privatentnahmen, Privateinlagen oder – wenn sie in keinen dieser Bereiche passt – unter „Übrige Konten außerhalb des Ergebnisses“; die Konten
-    3000–3799 (auch 3160, 3720, 3740, die nicht im Ergebnis stehen) stehen unter ``financing``. Zwei Zeilen mit derselben Nummer (die echte und die
-    virtuelle 3806, zwei Konten gleicher Nummer aus verschiedenen Kontenrahmen) werden je Zeitraum addiert und stehen im Kontennachweis als EINE Zeile
-    unter dem zuerst gefundenen Namen."""
+    ersten Zeile; ``financing_in_result`` hebt nur ihren Anteil aus der BWA heraus. Eine Zeile außerhalb des Ergebnisses steht nach ihrer Nummer unter
+    Anlagenzugängen (unter ``ASSET_LIMIT``), Privatentnahmen, Privateinlagen oder – wenn sie in keinen dieser Bereiche passt – unter „Übrige Konten
+    außerhalb des Ergebnisses“; die Konten 3000–3799 (auch 3160, 3720, 3740, die nicht im Ergebnis stehen) stehen unter ``financing``.
+
+    Zurückgerechnet werden nur die Zeilen von ``transfer_rows`` (Vorzeichen −Saldo: ein Aufwand ohne Geldfluss kommt positiv zurück), und nur aus
+    ihnen entstehen ``depreciation`` (Konten der BWA-Gruppe ``depreciation``), ``disposals`` (``DISPOSAL_RANGES``) und ``noncash_other`` (jedes andere
+    Konto, ``_noncash_line``). Eine Zahlung auf dasselbe Konto („6260 an Bank“) steht nur in ``euer_rows``, also im Ergebnis, und wird nicht
+    zurückgerechnet; im Kontennachweis steht der Betrag der Umbuchungen, mit dem Namen aus ``transfer_rows`` (sonst dem aus ``euer_rows``).
+
+    Zwei Zeilen mit derselben Nummer (die echte und die virtuelle 3806, zwei Konten gleicher Nummer aus verschiedenen Kontenrahmen) werden je Zeitraum
+    addiert und stehen im Kontennachweis als EINE Zeile unter dem zuerst gefundenen Namen."""
     shown = periods_for(variant)
     sections: dict[int, str | None] = {}
     names: dict[int, str] = {}
@@ -197,35 +222,41 @@ def build_liquidity(year: int, month: int, variant: str, periods: dict, euer_row
                 sections[number] = euer_section(number, bank_numbers)
             names.setdefault(number, name)
             totals[period][number] = totals[period].get(number, 0) + to_minor(total)
+    transfer_names: dict[int, str] = {}
+    transfer_totals: dict[str, dict[int, int]] = {period: {} for period in shown}
+    for period in shown:
+        for number, name, total in transfer_rows.get(period, ()):
+            transfer_names.setdefault(number, name)
+            transfer_totals[period][number] = transfer_totals[period].get(number, 0) + to_minor(total)
 
     lines = {spec.key: LiquidityLine(spec.key, spec.label, spec.kind, spec.optional, dict.fromkeys(shown, 0)) for spec in LAYOUT}
     accounts: dict[str, dict[int, LiquidityAccount]] = {key: {} for key in lines}
 
-    def place(key: str, number: int, period: str, amount: int):
+    def place(key: str, number: int, period: str, amount: int, name):
         lines[key].values[period] += amount
-        account = accounts[key].setdefault(number, LiquidityAccount(number, names[number]))
+        account = accounts[key].setdefault(number, LiquidityAccount(number, name))
         account.values[period] = amount
 
     for period in shown:
         for number, minor in totals[period].items():
             section = sections[number]
-            if section in ('income', 'expense'):                 # im Ergebnis: die erste Zeile; hier nur die Teile, die ein anderes Gesicht haben
-                if any(_within(number, bounds) for bounds in DISPOSAL_RANGES):
-                    place('disposals', number, period, -minor)
-                elif section == 'expense' and _within(number, FINANCING_RANGE):
-                    place('financing', number, period, minor)
+            if section in ('income', 'expense'):                 # im Ergebnis: die erste Zeile; hier nur der Teil, der ein anderes Gesicht hat
+                if section == 'expense' and _within(number, FINANCING_RANGE):
+                    place('financing', number, period, minor, names[number])
             elif section == 'other' and _within(number, FINANCING_RANGE):
-                place('financing', number, period, minor)
+                place('financing', number, period, minor, names[number])
             elif section is None and _whole(number) and number < ASSET_LIMIT:
-                place('assets', number, period, minor)
+                place('assets', number, period, minor, names[number])
             elif section is None and _within(number, WITHDRAWAL_RANGE):
-                place('withdrawals', number, period, minor)
+                place('withdrawals', number, period, minor, names[number])
             elif section is None and _within(number, DEPOSIT_RANGE):
-                place('deposits', number, period, minor)
+                place('deposits', number, period, minor, names[number])
             else:
-                place('outside_other', number, period, minor)
+                place('outside_other', number, period, minor, names[number])
+        for number, minor in transfer_totals[period].items():    # was kein Geld bewegt, kommt aus dem Ergebnis zurück: nur diese Zeilen, mit −Saldo
+            place(_noncash_line(number), number, period, -minor, transfer_names.get(number) or names.get(number))
 
-    # Ergebnis, Abschreibungen und Darlehen im Ergebnis: die Werte und Konten der betriebswirtschaftlichen Auswertung, unverändert
+    # Ergebnis und Darlehen im Ergebnis: die Werte und Konten der betriebswirtschaftlichen Auswertung, unverändert
     for key, bwa_key in BWA_LINES.items():
         source = bwa_report.line(bwa_key)
         for period in shown:

@@ -503,7 +503,8 @@ class ReportingMixin:
         return self.get_dashboard(date_from, date_to, account_ids)[0]
 
     def get_euer_data(self, date_from: str, date_to: str,
-                      account_ids: list | None = None) -> list:
+                      account_ids: list | None = None, *,
+                      only_asset_transfers: bool = False) -> list:
         """EÜR-Auswertung: Saldo pro SKR-Konto im Zeitraum.
 
         Für jede Entry-Buchung wird das „Zweck-Konto" ermittelt – nach der Form, die der Satz
@@ -538,6 +539,17 @@ class ReportingMixin:
         ein Satz zählt deshalb nur einmal, auch wenn der Abgleich ihn später verknüpft.
         Darüber hinaus bleibt jede Buchung über ihre ID eindeutig: Die erste Sektion, die
         sie findet, gewinnt.
+
+        ``only_asset_transfers=True`` liefert nur die Zeilen aus den Sätzen, die kein Geld
+        bewegen: die Umbuchungen zwischen Anlage- und Erfolgskonto (AfA, Restbuchwert beim
+        Abgang) – die Sätze, die Sektion 3 beisteuert, und die Umbuchungen dieser Art unter
+        einer Bankbewegung (Sektion 1, ``is_asset_transfer``: ihre Wirkung auf das Konto der
+        Bewegung ist 0). Es sind dieselben Abfragen und dasselbe Aufsummieren – jeder Satz
+        mit dem, was er im vollen Lauf beisteuert (ein Kind einer Bankbewegung also mit
+        seiner Steuer) –, nur ohne die übrigen Sätze; für die Liquiditätsrechnung
+        (``db.liquidity``). Ein Satz, den Sektion 2 oder 2b findet, gehört nicht dazu.
+        Mit Kontofilter läuft Sektion 3 nicht; es bleiben dann nur die Umbuchungen unter den
+        Bankbewegungen der gewählten Konten.
 
         Returns:
             list of (AccountNumber, Name, total_amount)
@@ -589,6 +601,7 @@ class ReportingMixin:
         # Anlage- und Erfolgskonten: Umbuchungen zwischen beiden (AfA) gehören in Sektion 3
         asset_coa_ids = self._get_asset_coa_ids(cursor)
         pl_coa_ids = self._get_pl_coa_ids(cursor)
+        asset_transfer_ids: set[int] = set()            # nur für ``only_asset_transfers``
 
         # ── 1. Entry-Kinder von Bank-Buchungen ───────────────────────
         if acct_ids:
@@ -603,7 +616,16 @@ class ReportingMixin:
                   AND e.DateBooking BETWEEN ? AND ?
                   AND (e.Status IS NULL OR e.Status != 'resolved')
             """, acct_ids + [date_from, date_to])
-            _collect(cursor.fetchall())
+            children = cursor.fetchall()
+            _collect(children)
+            if only_asset_transfers:
+                # Eine Umbuchung zwischen Anlage- und Erfolgskonto UNTER einer Bankbewegung (der Restbuchwert
+                # im Split des Verkaufs, eine dort zugeordnete AfA) bewegt so wenig Geld wie eine eigenständige:
+                # Ihre Wirkung auf das Konto der Bewegung ist 0. Sie zählt mit, was sie hier beisteuert.
+                asset_transfer_ids.update(
+                    row[0] for row in children
+                    if is_asset_transfer(row[2], row[3], liquid_coa_ids, asset_coa_ids, pl_coa_ids,
+                                         form=read_entry_form(row[6], row[2], row[3], liquid_coa_ids)))
 
         # ── 2. Standalone-Sätze auf Kassenkonten (und dem Verrechnungskonto) ──
         # Das Verrechnungskonto hängt an keinem Konto: Es zählt nur ohne Kontofilter.
@@ -702,8 +724,12 @@ class ReportingMixin:
                         coa_id, counter_coa_id, liquid_coa_ids, asset_coa_ids, pl_coa_ids,
                         form=read_entry_form(stored_form, coa_id, counter_coa_id,
                                              liquid_coa_ids)):
+                    if booking_id not in entries:          # nur ein Satz, den Sektion 3 als erste findet
+                        asset_transfer_ids.add(booking_id)
                     entries.setdefault(booking_id,
                                        (amount, coa_id, counter_coa_id, 0, 0, stored_form))
+        if only_asset_transfers:
+            entries = {booking_id: entries[booking_id] for booking_id in asset_transfer_ids}
 
         # ── Einnahmen-COA-IDs ermitteln (für USt-Zuordnung auf 3806) ──
         # Die Wartekonten liegen zwar in der Erlösklasse, sind aber noch keine
@@ -855,7 +881,8 @@ class ReportingMixin:
         Januar sind Monat und aufgelaufen gleich): die Zeilen von ``get_euer_data`` (ohne Kontofilter; daraus auch der Bericht der betriebswirtschaftlichen
         Auswertung) und die Töpfe des Dashboards (``_dashboard_movements``, alle Konten) – je Spanne ein Aufruf, damit Einnahme + privat + Ausgabe + Übertrag
         auf den Minor-Wert der Karte ``get_dashboard(…)['balance']`` derselben Spanne gleich sind. Dazu die Bankbewegungen ohne Buchungssatz
-        (``_liquidity_unbooked``). Rein lesend.
+        (``_liquidity_unbooked``) und je Spanne die Zeilen der Umbuchungen zwischen Anlage- und Erfolgskonto (``get_euer_data(…, only_asset_transfers=True)``:
+        dieselbe Abfrage, nur die Sätze, die Sektion 3 beisteuert) – nur sie rechnet die Überleitung als Abschreibung ohne Geldfluss zurück. Rein lesend.
 
         ``ValueError`` bei einem Monat außerhalb von 1 bis 12, einem Jahr außerhalb von 1 bis 9999 oder einer unbekannten Darstellung."""
         from .bwa import bwa_periods, build_report, periods_for
@@ -866,10 +893,14 @@ class ReportingMixin:
         periods = {key: spans[key] for key in periods_for(variant)}
         rows: dict[str, list] = {}
         by_span: dict[tuple, list] = {}
+        transfer_rows: dict[str, list] = {}
+        transfers_by_span: dict[tuple, list] = {}
         for key, span in periods.items():
             if span not in by_span:
                 by_span[span] = self.get_euer_data(*span)
+                transfers_by_span[span] = self.get_euer_data(*span, only_asset_transfers=True)
             rows[key] = by_span[span]
+            transfer_rows[key] = transfers_by_span[span]
 
         cash: dict[str, CashFigures] = {}
         figures: dict[tuple, CashFigures] = {}
@@ -899,7 +930,7 @@ class ReportingMixin:
 
         banks = bank_skr_numbers(self.fetch_accounts())
         bwa_report = build_report(year, month, variant, periods, rows, banks)
-        return build_liquidity(year, month, variant, periods, rows, bwa_report, banks, cash)
+        return build_liquidity(year, month, variant, periods, rows, transfer_rows, bwa_report, banks, cash)
 
     def _susa_unbalanced(self, cursor, end: str, bound: int):
         """Die Bankbewegungen bis ``end``, deren Buchungssätze nicht ihren Betrag ergeben – dieselbe Regel und dieselbe Auswahl wie

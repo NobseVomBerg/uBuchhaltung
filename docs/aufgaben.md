@@ -29,7 +29,6 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 - Belegerkennung, Vorschläge: die Abweichung zwischen Zahlbetrag und Brutto berücksichtigen (Skonto, Valuta) – heute zählt nur der gleiche Betrag auf den Cent
 - Den Upload der Seite „Buchungen“ im Demo-Modus abschalten, wie den der Seite „Belege“
 - Umsatzsteuer-Voranmeldung (ELSTER)
-- Liquiditätsrechnung: eine direkt bezahlte Sofortabschreibung (Konten 6200–6299 gegen die Bank) von den Abschreibungen ohne Geldfluss trennen – heute steht sie unter „Nicht zugeordnet“
 - Liquiditätsrechnung: einen unstimmigen Split neben einem Übertrag kenntlich machen – heute steht sein Rest nur nachrichtlich unter den Überträgen
 - BWA: vom Nutzer pflegbare Gruppen (braucht Schemaänderung)
 - BWA als CSV
