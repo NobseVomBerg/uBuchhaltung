@@ -1411,20 +1411,23 @@ DATEV-Export und mit derselben Lesart** – eine eigene Deutung von Form, Soll u
 ### Liquiditätsrechnung (seit 2.6.3, `db/liquidity.py`, `Database.get_liquidity`)
 
 Vom Ergebnis der betriebswirtschaftlichen Auswertung zur Veränderung der flüssigen Mittel – ein Monat und aufgelaufen seit dem 1. Januar, im Vorjahresvergleich oder als „Monat und Jahr“ (Seite
-`/liquiditaet`, auch als PDF). Sie hat **keine eigene Lesart der Buchungen** und liest nur drei Quellen: die Zeilen von `get_euer_data` (ohne Kontofilter, eingeordnet von `reporting.euer_section`), den
-Bericht der BWA (`bwa.build_report`) über dieselben Zeilen und die Töpfe des Dashboards (`_dashboard_movements`: Einnahme, privat, Ausgabe, Übertrag – je Spanne ein Aufruf, so geht die Summe auf den Minor-Wert der Karte
-`get_dashboard(…)['balance']` derselben Spanne auf). Neu ist nur die Abfrage `_liquidity_unbooked`; vorhandene Funktionen sind unverändert. Rein lesend, nichts wird geschrieben.
+`/liquiditaet`, auch als PDF). Sie hat **keine eigene Lesart der Buchungen** und liest nur drei Quellen: die Zeilen von `get_euer_data` (ohne Kontofilter, eingeordnet von `reporting.euer_section`; je Spanne einmal alle
+Zeilen und – seit 2.6.4 – einmal mit `only_asset_transfers=True`: nur die Zeilen aus den Umbuchungen zwischen Anlage- und Erfolgskonto, die kein Geld bewegen – die Sätze, die Sektion 3 beisteuert, und die Umbuchungen dieser Art unter einer Bankbewegung (Sektion 1, ihre Wirkung auf das Konto der Bewegung ist 0); dieselbe Abfrage, dasselbe
+Aufsummieren), den Bericht der BWA (`bwa.build_report`) über die vollen Zeilen und die Töpfe des Dashboards (`_dashboard_movements`: Einnahme, privat, Ausgabe, Übertrag – je Spanne ein Aufruf, so geht die Summe auf den
+Minor-Wert der Karte `get_dashboard(…)['balance']` derselben Spanne auf). Neu ist nur die Abfrage `_liquidity_unbooked`; vorhandene Funktionen sind unverändert (`get_euer_data` bekam nur den Schalter, der Standard bleibt gleich).
+Rein lesend, nichts wird geschrieben.
 
-- **Zeilen** (Minor Units, jeder Wert mit seiner Wirkung auf die flüssigen Mittel – Zufluss +; `R` ist der Saldo einer EÜR-Zeile, zwei Zeilen gleicher Nummer – die echte und die virtuelle 3806, zwei Konten
-  gleicher Nummer – sind je Zeitraum addiert; die Bereiche stehen als Daten in `db/liquidity.py`):
+- **Zeilen** (Minor Units, jeder Wert mit seiner Wirkung auf die flüssigen Mittel – Zufluss +; `R` ist der Saldo einer EÜR-Zeile, `U` der Saldo des Kontos in den Umbuchungen zwischen Anlage- und Erfolgskonto
+  (`get_euer_data(…, only_asset_transfers=True)`); zwei Zeilen gleicher Nummer – die echte und die virtuelle 3806, zwei Konten gleicher Nummer – sind je Zeitraum addiert; die Bereiche stehen als Daten in `db/liquidity.py`):
 
   | # | Zeile | Wert |
   |---|---|---|
   | 1 | Ergebnis (wie BWA) | das Ergebnis der BWA (`result`) |
-  | 2 | Abschreibungen | BWA-Gruppe `depreciation` (6200–6299), positiv |
-  | 3 | Anlagenabgänge zum Restbuchwert | −Σ R der Konten 4855–4858 und 6895–6898, die im Ergebnis stehen (`DISPOSAL_RANGES`) |
+  | 2 | Abschreibungen | −Σ U der Konten der BWA-Gruppe `depreciation` (6200–6299), positiv |
+  | 3 | Anlagenabgänge zum Restbuchwert | −Σ U der Konten 4855–4858 und 6895–6898 (`DISPOSAL_RANGES`) |
+  | 3a | Übrige Umbuchungen ohne Geldfluss | −Σ U jedes anderen Kontos (steht nur bei einem Wert) |
   | 4 | Darlehen und Verbindlichkeiten im Ergebnis | BWA-Gruppe `liabilities` (3000–3799 außer 3160, 3720, 3740), herausgerechnet |
-  | 5 | Ergebnis vor Abschreibungen und Darlehen | 1 + 2 + 3 + 4 |
+  | 5 | Ergebnis vor Abschreibungen und Darlehen | 1 + 2 + 3 + 3a + 4 |
   | 6 | Anlagenzugänge | Σ R der Konten unter 1000 außerhalb des Ergebnisses (`ASSET_LIMIT`) |
   | 7 | Darlehen und Verbindlichkeiten | Σ R aller Konten 3000–3799 (`FINANCING_RANGE`; Aufnahme +, Tilgung −) |
   | 8 / 9 | Privatentnahmen / Privateinlagen | Σ R der Konten 2100–2179 / 2180–2199 |
@@ -1434,8 +1437,10 @@ Bericht der BWA (`bwa.build_report`) über dieselben Zeilen und die Töpfe des D
   | 13 | **Nicht zugeordnet** | 14 − (11 + 12), steht immer da |
   | 14 | Veränderung der flüssigen Mittel | Einnahme + privat + Ausgabe der Töpfe des Dashboards, alle Konten, **ohne den Topf Übertrag** |
 
-  Jede EÜR-Zeile steht an genau einer Stelle: im Ergebnis (Zeile 1; die Zeilen 2 bis 4 heben nur ihren Anteil heraus) oder, nach Nummer, in einer der Zeilen 6 bis 10. Die Zeilen 4 und 7 heben sich bis auf 3160,
-  3720 und 3740 auf – die Konten 3000–3799 stehen schon im Ergebnis der BWA und kommen als Finanzierung zurück.
+  Jede EÜR-Zeile steht an genau einer Stelle: im Ergebnis (Zeile 1; Zeile 4 hebt nur ihren Anteil heraus) oder, nach Nummer, in einer der Zeilen 6 bis 10. Die Zeilen 2, 3 und 3a rechnen nur zurück, was die EÜR als Umbuchung
+  zwischen Anlage- und Erfolgskonto liest (AfA, Restbuchwert beim Abgang): Sie nehmen ihre Werte allein aus den Umbuchungen (Prüfung erst `DISPOSAL_RANGES`, dann die Gruppe `depreciation`, sonst 3a), nie aus einer
+  EÜR-Zeile allein. Eine direkt bezahlte Abschreibung („6260 an Bank“) bewegt Geld, bleibt im Ergebnis und steht in keiner dieser Zeilen; im Kontennachweis steht der Betrag der Umbuchungen, nicht der ganze Saldo des Kontos.
+  Die Zeilen 4 und 7 heben sich bis auf 3160, 3720 und 3740 auf – die Konten 3000–3799 stehen schon im Ergebnis der BWA und kommen als Finanzierung zurück.
 - **Ist ohne Überträge:** Geld zwischen eigenen Konten ändert die flüssigen Mittel nicht. Der Topf „Übertrag“ steht nur nachrichtlich da (Zeile „Überträge zwischen eigenen Konten“ und „Veränderung laut
   Kontobewegungen“ = Ist + Überträge = `balance` der Karte), und nur, wenn Überträge dastehen.
 - **Bankbewegungen ohne Buchungssatz (`_liquidity_unbooked`):** Bankbewegungen der Konten mit Datum im Zeitraum und ohne einen einzigen Satz – dieselbe Auswahl wie die Zählung `unlinked` des Dashboards –, ohne die, die die
@@ -1445,10 +1450,11 @@ Bericht der BWA (`bwa.build_report`) über dieselben Zeilen und die Töpfe des D
   eigenen Konten steckt der Teil einer Bankbewegung, den kein Satz erklärt, im Übertrag – ein unstimmiger Split dort steht nur nachrichtlich unter den Überträgen.
 - **Abstimmung** (Tests, auf den Minor-Wert): Im Demobestand und in Beständen aus Zufall über Wege der App ist „Nicht zugeordnet“ in jedem Monat und aufgelaufen 0; in der SuSa-Welt und der Testwelt stehen feste Werte
   (`tests/test_liquidity.py`), und für die benannten Fälle (ein Satz über 1460 in einem anderen Monat als seine Bankseite, ein Satz mit anderem Datum als seine Bankbewegung über eine Monatsgrenze, ein unstimmiger Split, ein
-  Steuersatz außer 5, 7, 16 und 19 %, die Sofortabschreibung gegen die Bank, der Status `resolved`, eine Zahlung auf ein Bestandskonto ohne Gegenumbuchung, eine Umbuchung Anlage ↔ Erfolgskonto mit der Kasse als `Account_ID`
-  oder auf einem Konto, das weder Abschreibung noch Restbuchwert ist, ein Spiegel alter Art mit 1460, ein Rundungsrest) ist festgehalten, was dort landet.
-- **Laufzeit:** Je Spanne einmal `get_euer_data` und `_dashboard_movements` (die Übertragsrechnung `_settle_stock` liest den ganzen Bestand), dazu `_liquidity_unbooked`. Gemessen an einem Bestand mit 200 000 Buchungssätzen: rund 2,3 s im
-  Vorjahresvergleich (vier Spannen), rund 1,4 s als „Monat und Jahr“; im Demobestand `full` rund 10 ms.
+  Steuersatz außer 5, 7, 16 und 19 %, der Status `resolved`, eine Zahlung auf ein Bestandskonto ohne Gegenumbuchung, eine Umbuchung Anlage ↔ Erfolgskonto mit der Kasse als `Account_ID`, ein Spiegel alter Art mit 1460,
+  ein Rundungsrest) ist festgehalten, was dort landet. Es gehen auf: die direkt bezahlte Sofortabschreibung gegen die Bank, die Umbuchung „6815 an 0520“ (Zeile 3a) und ein Abgang über das Verrechnungskonto. Ein Test prüft die
+  Zerlegung von `get_euer_data(…, only_asset_transfers=True)`: Saldo(alle) − Saldo(nur Umbuchungen) = Saldo eines Bestands, aus dem genau diese Sätze gelöscht sind.
+- **Laufzeit:** Je Spanne zweimal `get_euer_data` (alle Zeilen und nur die Umbuchungen) und einmal `_dashboard_movements` (die Übertragsrechnung `_settle_stock` liest den ganzen Bestand), dazu `_liquidity_unbooked`. Gemessen an
+  einem Bestand mit 200 000 Buchungssätzen: rund 2,5 s im Vorjahresvergleich (vier Spannen), rund 1,4 s als „Monat und Jahr“; im Demobestand `full` rund 10 bis 20 ms.
 
 ### Rechnungserstellung
 

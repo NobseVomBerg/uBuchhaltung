@@ -12,6 +12,11 @@ aufgelaufen exakt 0 Minor Units; in der SuSa-Welt und der Testwelt stehen feste 
 benannten Fall ist festgehalten, was in „Nicht zugeordnet“ landet und warum. Der dritte Teil prüft Seite und Adresse (strenges Lesen, Maskieren, nichts
 schreiben, Menü, Diagnose-MCP), der PDF-Teil steht in ``test_liquidity_pdf.py``.
 
+Seit 2.6.4 rechnet die Überleitung nur zurück, was die EÜR als Umbuchung zwischen Anlage- und Erfolgskonto liest (``get_euer_data(…, only_asset_transfers=True)``,
+die Sätze von Sektion 3): Eine Abschreibung, die die Bank bezahlt hat („6260 an Bank“), bleibt im Ergebnis. Der reine Teil bekommt dafür die Zeilen der
+Umbuchungen (``transfer_rows``) zusätzlich zu den EÜR-Zeilen – eine EÜR-Zeile allein füllt weder „Abschreibungen“ noch „Anlagenabgänge“ –, und ein eigener Teil
+prüft ``get_euer_data`` mit diesem Schalter.
+
 Alle Namen, Nummern und Beträge sind erfundene Testwerte; ein „heute“ steht nie als Konstante da (die Adresse bekommt es als Argument oder der Test liest es frisch).
 """
 import datetime
@@ -48,7 +53,8 @@ from tests.bwa_helpers import book
 from tests.dom_helpers import Dom, assert_same_structure
 from tests.http_client import get
 from tests.installation import dump, tree
-from tests.liquidity_helpers import (account_numbers, check_against_sources, liquidity_from, reports_from, two_banks, unassigned_of, values_of, where_is)
+from tests.liquidity_helpers import (account_numbers, check_against_sources, liquidity_from, reports_from, rows_by_number, two_banks, unassigned_of, values_of,
+                                    where_is)
 from tests.susa_helpers import account_id, build_susa_world, coa, mask, raw, raw_entry
 
 DEMO_TODAY = datetime.date(2026, 11, 3)         # ein fester Tag, nie die Uhr (tests/test_clock_at_import.py)
@@ -71,12 +77,12 @@ def test_the_layout_names_each_line_once_and_a_sum_only_reads_lines_above_it():
         assert (spec.kind == SUM) == bool(spec.plus), spec.key
         seen.append(spec.key)
     assert all(re.fullmatch(r'[a-z_]+', key) for key in seen)             # die Schlüssel stehen in Adressen und Skript
-    assert seen == ['result', 'depreciation', 'disposals', 'financing_in_result', 'operating', 'assets', 'financing', 'withdrawals', 'deposits',
-                    'outside_other', 'computed', 'unbooked', 'unassigned', 'actual', 'memo_transfers', 'memo_balance']
+    assert seen == ['result', 'depreciation', 'disposals', 'noncash_other', 'financing_in_result', 'operating', 'assets', 'financing', 'withdrawals',
+                    'deposits', 'outside_other', 'computed', 'unbooked', 'unassigned', 'actual', 'memo_transfers', 'memo_balance']
     assert set(ACCOUNT_KEYS) <= set(seen) and not {'result', 'operating', 'computed', 'unbooked', 'unassigned', 'actual'} & set(ACCOUNT_KEYS)
-    assert {spec.key for spec in LAYOUT if spec.optional} == {'outside_other', 'memo_transfers', 'memo_balance'}
-    assert BWA_LINES == {'result': 'result', 'depreciation': 'depreciation', 'financing_in_result': 'liabilities'}
-    assert dict(operating=('result', 'depreciation', 'disposals', 'financing_in_result'),
+    assert {spec.key for spec in LAYOUT if spec.optional} == {'noncash_other', 'outside_other', 'memo_transfers', 'memo_balance'}
+    assert BWA_LINES == {'result': 'result', 'financing_in_result': 'liabilities'}         # Abschreibungen kommen nicht mehr aus der BWA
+    assert dict(operating=('result', 'depreciation', 'disposals', 'noncash_other', 'financing_in_result'),
                 computed=('operating', 'assets', 'financing', 'withdrawals', 'deposits', 'outside_other')) == {
         spec.key: spec.plus for spec in LAYOUT if spec.kind == SUM}
 
@@ -90,7 +96,9 @@ def test_the_ranges_are_data_in_one_place():
 
 
 # Jede Zeile von ``get_euer_data`` steht an genau einer Stelle: (Nummer, Saldo, im Ergebnis?, {Zeile: Wert in Euro}) – die Zeilen ohne das Ergebnis, das die
-# BWA liefert. ``depreciation`` und ``financing_in_result`` heben ihren Anteil aus dem Ergebnis heraus (die BWA-Gruppen), ``disposals`` den Restbuchwert.
+# BWA liefert. ``financing_in_result`` hebt seinen Anteil aus dem Ergebnis heraus (die BWA-Gruppe). ``depreciation``, ``disposals`` und ``noncash_other`` füllt eine
+# EÜR-Zeile allein nie, nur eine Umbuchung zwischen Anlage- und Erfolgskonto (``TRANSFER_PLACEMENT``): Die Konten 4855–4858, 6200–6299 und 6895–6898 stehen hier im Ergebnis
+# und in keiner anderen Zeile.
 PLACEMENT = [
     (999, -10.0, False, {'assets': -10}), (1000, -10.0, True, {}), (2099, -10.0, True, {}),
     (2100, -10.0, False, {'withdrawals': -10}), (2179, -10.0, False, {'withdrawals': -10}),
@@ -101,10 +109,19 @@ PLACEMENT = [
     (3720, -10.0, False, {'financing': -10}), (3739, 10.0, True, {'financing': 10, 'financing_in_result': -10}),
     (3740, -10.0, False, {'financing': -10}), (3799, 10.0, True, {'financing': 10, 'financing_in_result': -10}), (3800, -10.0, True, {}),
     (4400, 10.0, True, {}), (3806, 10.0, True, {}),
-    (4854, 10.0, True, {}), (4855, 10.0, True, {'disposals': -10}), (4858, 10.0, True, {'disposals': -10}), (4859, 10.0, True, {}),
-    (6199, -10.0, True, {}), (6200, -10.0, True, {'depreciation': 10}), (6299, -10.0, True, {'depreciation': 10}), (6300, -10.0, True, {}),
-    (6894, -10.0, True, {}), (6895, -10.0, True, {'disposals': 10}), (6898, -10.0, True, {'disposals': 10}), (6899, -10.0, True, {}),
+    (4854, 10.0, True, {}), (4855, 10.0, True, {}), (4858, 10.0, True, {}), (4859, 10.0, True, {}),
+    (6199, -10.0, True, {}), (6200, -10.0, True, {}), (6299, -10.0, True, {}), (6300, -10.0, True, {}),
+    (6894, -10.0, True, {}), (6895, -10.0, True, {}), (6898, -10.0, True, {}), (6899, -10.0, True, {}),
     (1401, -10.0, True, {}), (520, -10.0, False, {'assets': -10}),
+]
+
+# Eine Umbuchung zwischen Anlage- und Erfolgskonto steht in ``euer_rows`` UND in ``transfer_rows`` (sie ist Teil des Saldos der EÜR): (Nummer, Saldo, Zeile, in der sie
+# mit −Saldo zurückkommt). Die Prüfung geht erst nach ``DISPOSAL_RANGES``, dann nach der BWA-Gruppe ``depreciation``, sonst steht sie unter „Übrige Umbuchungen“.
+TRANSFER_PLACEMENT = [
+    (4854, 10.0, 'noncash_other'), (4855, 10.0, 'disposals'), (4858, 10.0, 'disposals'), (4859, 10.0, 'noncash_other'),
+    (6199, -10.0, 'noncash_other'), (6200, -10.0, 'depreciation'), (6299, -10.0, 'depreciation'), (6300, -10.0, 'noncash_other'),
+    (6894, -10.0, 'noncash_other'), (6895, -10.0, 'disposals'), (6898, -10.0, 'disposals'), (6899, -10.0, 'noncash_other'),
+    (6815, -10.0, 'noncash_other'), (4400, 10.0, 'noncash_other'),
 ]
 
 
@@ -119,6 +136,21 @@ def test_every_euer_row_lands_in_exactly_one_place(number, amount, in_result, ex
     assert values_of(report, 'result') == (eur(str(amount * flip)) if in_result else 0) == values_of(bwa_report, 'result')
     others = {line.key: line.values['month'] for line in report.lines if line.kind == 'line' and line.key not in ('result', 'unbooked', 'unassigned')}
     assert all(value == 0 for key, value in others.items() if key not in expected), others
+
+
+@pytest.mark.parametrize('flip', [1, -1], ids=['wie_gebucht', 'umgekehrt'])
+@pytest.mark.parametrize('number, amount, line', TRANSFER_PLACEMENT, ids=[str(case[0]) for case in TRANSFER_PLACEMENT])
+def test_every_transfer_row_lands_in_exactly_one_of_the_three_lines(number, amount, line, flip):
+    """Eine Umbuchung ohne Geldfluss an jeder Grenze der Bereiche (4854/4855, 4858/4859, 6199/6200, 6299/6300, 6894/6895, 6898/6899) und auf einem anderen Konto: Sie steht
+    im Ergebnis (die EÜR-Zeile) und kommt in genau EINER der Zeilen Abschreibungen, Anlagenabgänge und „Übrige Umbuchungen“ mit −Saldo zurück – auch mit umgekehrtem
+    Vorzeichen des Saldos; die Zwischensumme vor Abschreibungen und Darlehen ist dann 0."""
+    row = [(number, f'Konto {number}', amount * flip)]
+    bwa_report, report = reports_from(row, month_transfers=row)
+    assert where_is(report, number) == {line: eur(str(-amount * flip))}
+    assert values_of(report, 'result') == eur(str(amount * flip)) == values_of(bwa_report, 'result')
+    assert values_of(report, 'operating') == 0 and values_of(report, 'computed') == 0
+    others = {other.key: other.values['month'] for other in report.lines if other.kind == 'line' and other.key not in ('result', 'unbooked', 'unassigned')}
+    assert all(value == 0 for key, value in others.items() if key != line), others
 
 
 def test_a_row_of_a_money_account_or_a_waiting_account_stands_under_the_other_accounts():
@@ -143,7 +175,10 @@ def test_a_row_of_the_other_expenses_outside_the_financing_range_stands_under_th
 def test_results_depreciation_and_loans_in_the_result_are_the_lines_of_the_bwa():
     rows = [(4400, 'Erlöse', 1000.0), (3806, 'Umsatzsteuer', 190.0), (6815, 'Bürobedarf', -100.0), (6220, 'AfA', -250.0), (6260, 'GWG', -40.0),
             (3150, 'Darlehen', 900.0), (3160, 'Darlehen 2', -30.0), (4855, 'Restbuchwert', 20.0), (6895, 'Restbuchwert 2', -15.0), (500, 'Anlage', -300.0)]
-    bwa_report, report = reports_from(rows, ytd_rows=rows + [(6230, 'AfA 2', -5.0)], variant='vorjahr', prev_month_rows=rows[:4], prev_ytd_rows=rows[2:6])
+    moved = lambda part: [row for row in part if row[0] in (6220, 6230, 6260, 4855, 6895)]           # hier ist jedes Abschreibungs- und Restbuchwertkonto eine Umbuchung
+    bwa_report, report = reports_from(rows, ytd_rows=rows + [(6230, 'AfA 2', -5.0)], variant='vorjahr', prev_month_rows=rows[:4], prev_ytd_rows=rows[2:6],
+                                      month_transfers=moved(rows), ytd_transfers=moved(rows + [(6230, 'AfA 2', -5.0)]), prev_month_transfers=moved(rows[:4]),
+                                      prev_ytd_transfers=moved(rows[2:6]))
     for period in report.periods:
         assert report.line('result').values[period] == bwa_report.line('result').values[period]
         assert report.line('depreciation').values[period] == bwa_report.line('depreciation').values[period]
@@ -172,6 +207,11 @@ def test_a_number_that_is_no_whole_number_has_no_line_of_its_own():
         assert values_of(report, key) == 0 and account_numbers(report, key) == [], key
     assert values_of(report, 'outside_other') == eur('-250') and account_numbers(report, 'outside_other') == [500.5, 2100.5]
     assert values_of(report, 'computed') == eur('6750')
+    # dieselbe Kommazahl 4855,5 auch als Umbuchung ohne Geldfluss: kein Bereich, also unter „Übrige Umbuchungen“ – nie unter dem Restbuchwert
+    _bwa_report, moved = reports_from(rows, month_transfers=[(4855.5, 'Restbuchwert?', -3000.0)])
+    assert values_of(moved, 'disposals') == 0 and account_numbers(moved, 'disposals') == [] and values_of(moved, 'depreciation') == 0
+    assert values_of(moved, 'noncash_other') == eur('3000') and account_numbers(moved, 'noncash_other') == [4855.5]
+    assert values_of(moved, 'computed') == eur('9750') and values_of(moved, 'operating') == eur('10000')
 
 
 def test_two_rows_of_one_number_are_added_per_period_and_the_first_name_stays():
@@ -199,10 +239,11 @@ def test_the_overview_is_the_sum_of_its_parts_and_not_assigned_is_the_difference
     cash = {'month': CashFigures(eur('1234.56'), eur('-200'), eur('50'), 2), 'ytd': CashFigures(eur('-80'), 0, eur('-10'), 1)}
     rows = [(4400, 'Erlöse', 100.0), (6220, 'AfA', -30.0), (3150, 'Darlehen', 500.0), (500, 'Anlage', -250.0), (2100, 'Entnahme', -40.0),
             (2180, 'Einlage', 15.0), (4855, 'Restbuchwert', 8.0), (1800, 'Bank', 1.0)]
-    report = liquidity_from(rows, banks={1800}, cash=cash)
+    report = liquidity_from(rows, banks={1800}, cash=cash, month_transfers=[(6220, 'AfA', -30.0), (4855, 'Restbuchwert', 8.0)])      # AfA und Restbuchwert als Umbuchung
     for period in ('month', 'ytd'):
         values = lambda key: report.line(key).values[period]
-        assert values('operating') == values('result') + values('depreciation') + values('disposals') + values('financing_in_result')
+        assert values('operating') == (values('result') + values('depreciation') + values('disposals') + values('noncash_other')
+                                       + values('financing_in_result'))
         assert values('computed') == (values('operating') + values('assets') + values('financing') + values('withdrawals') + values('deposits')
                                       + values('outside_other'))
         assert values('unassigned') == values('actual') - values('computed') - values('unbooked')
@@ -221,35 +262,53 @@ def test_the_overview_is_the_sum_of_its_parts_and_not_assigned_is_the_difference
 
 def test_the_overview_holds_for_any_rows_and_figures():
     """Eigenschaftsprüfung mit festem Seed über Zeilen aus allen Bereichen (auch Geldkonten und Zeilen ohne Gruppe), positive und negative Salden und zufällige
-    Kontobewegungen: Zwischensummen und „Nicht zugeordnet“ sind aus ihren Bestandteilen gerechnet, Ergebnis, Abschreibungen und Darlehen im Ergebnis sind
-    die der BWA, und jede Zeile steht in genau einer Zeile außer dem Ergebnis (oder gar nicht, wenn sie nur im Ergebnis zählt)."""
+    Kontobewegungen, dazu zufällige Umbuchungen ohne Geldfluss (ein Teil des Saldos einer gezogenen Zeile, auch auf einem Konto, das keine EÜR-Zeile hat):
+    Zwischensummen und „Nicht zugeordnet“ sind aus ihren Bestandteilen gerechnet, Ergebnis und Darlehen im Ergebnis sind die der BWA, Abschreibungen,
+    Anlagenabgänge und übrige Umbuchungen sind −Saldo der Umbuchungen nach ihren Bereichen (nie aus einer EÜR-Zeile allein), und jede andere Zeile steht in genau
+    einer Zeile außer dem Ergebnis (oder gar nicht, wenn sie nur im Ergebnis zählt)."""
     rng = random.Random(262)
     banks = {1800, 1600}
     pool = [4400, 4300, 3806, 6815, 6850, 6220, 6260, 1406, 1401, 3820, 3841, 1050, 520, 500, 2100, 2150, 2180, 2199, 3150, 3160, 3720, 3740, 3000, 3799, 4855,
             4858, 6895, 6898, 1800, 1600, 10000, 4405, 8000]
+    transfer_pool = [6220, 6222, 6260, 4855, 4858, 6895, 6898, 6815, 6850, 4400, 6199, 6300]
 
     def draw():
         return [(number, f'Konto {number}', round(rng.choice([-1, 1]) * rng.randint(1, 900_000) / 100, 2)) for number in rng.sample(pool, rng.randint(0, 14))]
 
+    def draw_transfers(rows):
+        """Ein Teil der gezogenen Zeilen (der ganze Saldo oder ein Teil) als Umbuchung; dazu ein Konto, das in diesem Zeitraum keine EÜR-Zeile hat."""
+        moved = [(number, name, round(total * rng.choice([1, 1, 0.5, 0.25]), 2)) for number, name, total in rows if number in transfer_pool and rng.random() < 0.6]
+        if rng.random() < 0.3:
+            moved.append((rng.choice(transfer_pool), 'Konto ohne EÜR-Zeile', rng.choice([-1, 1]) * rng.randint(1, 90_000) / 100))
+        return moved
+
+    expected_line = lambda number: ('disposals' if 4855 <= number <= 4858 or 6895 <= number <= 6898
+                                    else 'depreciation' if 6200 <= number <= 6299 else 'noncash_other')
     for _round in range(200):
         rows = {'month': draw(), 'ytd': draw(), 'prev_month': draw(), 'prev_ytd': draw()}
+        transfers = {key: draw_transfers(rows[key]) for key in rows}
         cash = {key: CashFigures(rng.randint(-10 ** 7, 10 ** 7), rng.randint(-10 ** 6, 10 ** 6), rng.randint(-10 ** 6, 10 ** 6), rng.randint(0, 9))
                 for key in rows}
         bwa_report, report = reports_from(rows['month'], rows['ytd'], 'vorjahr', banks=banks, prev_month_rows=rows['prev_month'],
-                                          prev_ytd_rows=rows['prev_ytd'], cash=cash)
+                                          prev_ytd_rows=rows['prev_ytd'], cash=cash, month_transfers=transfers['month'], ytd_transfers=transfers['ytd'],
+                                          prev_month_transfers=transfers['prev_month'], prev_ytd_transfers=transfers['prev_ytd'])
         for period in report.periods:
             values = lambda key: report.line(key).values[period]
             assert values('result') == bwa_report.line('result').values[period]
-            assert values('depreciation') == bwa_report.line('depreciation').values[period]
             assert values('financing_in_result') == bwa_report.line('liabilities').values[period]
-            assert values('operating') == values('result') + values('depreciation') + values('disposals') + values('financing_in_result')
+            moved = dict.fromkeys(('depreciation', 'disposals', 'noncash_other'), 0)
+            for number, _name, total in transfers[period]:
+                moved[expected_line(number)] -= to_minor(total)
+            assert {key: values(key) for key in moved} == moved, (period, transfers[period])
+            assert values('operating') == (values('result') + values('depreciation') + values('disposals') + values('noncash_other')
+                                           + values('financing_in_result'))
             assert values('computed') == (values('operating') + values('assets') + values('financing') + values('withdrawals') + values('deposits')
                                           + values('outside_other'))
             assert values('unassigned') == cash[period].actual - values('computed') - cash[period].unbooked
             assert values('computed') + values('unbooked') + values('unassigned') == values('actual') == cash[period].actual
             assert values('memo_balance') == cash[period].actual + cash[period].transfers
             # Jede Zeile steht an einer Stelle: Was im Ergebnis zählt, ist das Ergebnis; alles andere steht in genau einer der Zeilen darunter (die
-            # Darlehen im Ergebnis, die Zeile 4 herausnimmt und Zeile 7 zurückbringt, heben sich auf)
+            # Darlehen im Ergebnis, die Zeile 4 herausnimmt und Zeile 7 zurückbringt, heben sich auf); die Umbuchungen sind nur ein Rückrechnen des Ergebnisses
             sums = {'result': 0, 'outside': 0}
             for number, _name, total in rows[period]:
                 sums['result' if euer_section(number, banks) in ('income', 'expense') else 'outside'] += to_minor(total)
@@ -316,14 +375,30 @@ def test_unassigned_and_unbooked_always_stand_there_and_the_optional_lines_only_
     quiet = liquidity_from([(4400, 'Erlöse', 100.0)])
     shown = {line.key: visible(quiet, line) for line in quiet.lines}
     assert shown['unassigned'] and shown['unbooked'] and shown['result'] and shown['computed'] and shown['actual']        # auch mit 0,00
-    assert not shown['outside_other'] and not shown['memo_transfers'] and not shown['memo_balance']
-    assert sum(shown.values()) == len(LAYOUT) - 3
+    assert not shown['noncash_other'] and not shown['outside_other'] and not shown['memo_transfers'] and not shown['memo_balance']
+    assert sum(shown.values()) == len(LAYOUT) - 4
     rest = liquidity_from([(1800, 'Bank', -5.0)], banks={1800})
     assert visible(rest, rest.line('outside_other'))
     only_ytd = liquidity_from([], ytd_rows=[(1800, 'Bank', -5.0)], banks={1800})
     assert only_ytd.line('outside_other').values == {'month': 0, 'ytd': eur('-5')} and visible(only_ytd, only_ytd.line('outside_other'))
     cancelled = liquidity_from([(1800, 'Bank', -5.0), (1800, 'Bank', 5.0)], banks={1800})
     assert not visible(cancelled, cancelled.line('outside_other'))                              # nur bei einem Wert ≠ 0, auch wenn es Konten gibt
+
+
+def test_the_line_of_the_other_transfers_without_cash_stands_only_with_a_value():
+    """„Übrige Umbuchungen ohne Geldfluss“ ist optional wie „Übrige Konten“: Ohne eine solche Umbuchung steht die Zeile nicht da (auch nicht, wenn Abschreibung und
+    Restbuchwert Werte haben); mit einem Wert in einem der angezeigten Zeiträume steht sie da, auch nur im aufgelaufenen, mit ihrem Konto – und hebt sich in
+    einem Zeitraum, in dem Umbuchung und Gegenbuchung sich aufheben, wieder auf."""
+    plain = liquidity_from([(6815, 'Bürobedarf', -300.0), (6220, 'AfA', -40.0), (6895, 'Restbuchwert', -5.0)],
+                           month_transfers=[(6220, 'AfA', -40.0), (6895, 'Restbuchwert', -5.0)])
+    assert not visible(plain, plain.line('noncash_other')) and visible(plain, plain.line('depreciation')) and visible(plain, plain.line('disposals'))
+    month = liquidity_from([(6815, 'Bürobedarf', -300.0)], month_transfers=[(6815, 'Bürobedarf', -300.0)])
+    assert visible(month, month.line('noncash_other')) and account_numbers(month, 'noncash_other') == [6815]
+    assert [account_label(account) for account in visible_accounts(month, month.line('noncash_other'))] == ['6815 Bürobedarf']
+    only_ytd = liquidity_from([], ytd_rows=[(6815, 'Bürobedarf', -300.0)], ytd_transfers=[(6815, 'Bürobedarf', -300.0)])
+    assert only_ytd.line('noncash_other').values == {'month': 0, 'ytd': eur('300')} and visible(only_ytd, only_ytd.line('noncash_other'))
+    netted = liquidity_from([(6815, 'Bürobedarf', -300.0)], month_transfers=[(6815, 'Bürobedarf', -300.0), (6815, 'Bürobedarf', 300.0)])
+    assert not visible(netted, netted.line('noncash_other')) and visible_accounts(netted, netted.line('noncash_other')) == []
 
 
 def test_the_transfers_and_the_balance_of_the_movements_stand_only_beside_each_other():
@@ -390,9 +465,11 @@ def test_the_filename_names_the_month_and_the_variant():
 def test_the_texts_keep_the_decided_wording_and_name_no_brand():
     assert HINT_TEXT == 'Aus den Buchungen dieser App gerechnet. Keine Steuerberatung; ersetzt nicht die Auswertung eines Steuerbüros.'
     assert UNASSIGNED_TEXT == ('Diesen Betrag erklärt die Überleitung nicht: Eine Zahlung steht in der Einnahmenüberschussrechnung in einem anderen Monat oder '
-                               'mit einem anderen Betrag als auf dem Konto – etwa bei Buchungssätzen mit einem anderen Datum als ihre Bankbewegung, über ein '
-                               'Verrechnungskonto oder bei einer Sofortabschreibung, die direkt bezahlt wurde.')
+                               'mit einem anderen Betrag als auf dem Konto – etwa bei Buchungssätzen mit einem anderen Datum als ihre Bankbewegung oder über '
+                               'ein Verrechnungskonto.')
     assert 'gleicht sich' not in UNASSIGNED_TEXT                                                  # keine Zusage, dass der Rest wieder verschwindet
+    assert 'Sofortabschreibung' not in UNASSIGNED_TEXT                                            # eine direkt bezahlte Abschreibung geht auf, sie bleibt im Ergebnis
+    assert 'Umbuchung zwischen Anlage- und Erfolgskonto' in METHOD_TEXT and 'direkt bezahlte Abschreibung bleibt im Ergebnis' in METHOD_TEXT
     assert BALANCED_TEXT == 'Die Überleitung geht auf.' and liq.TITLE == 'Liquiditätsrechnung'
     texts = [HINT_TEXT, SIGN_TEXT, METHOD_TEXT, UNASSIGNED_TEXT, BALANCED_TEXT, UNBALANCED_TEXT, ROUNDING_TEXT, TRANSFER_TEXT, *(spec.label for spec in LAYOUT),
              *VARIANT_LABELS.values()]
@@ -402,8 +479,8 @@ def test_the_texts_keep_the_decided_wording_and_name_no_brand():
 
 # ═══ Lesen: get_liquidity ═════════════════════════════════════════════════════
 #: Die Zeilen, die ein Fall zeigt (ohne die Zwischensumme ``operating``, die dem Ergebnis folgt)
-SHOWN = ('result', 'depreciation', 'disposals', 'financing_in_result', 'assets', 'financing', 'withdrawals', 'deposits', 'outside_other', 'computed',
-         'unbooked', 'unassigned', 'actual', 'memo_transfers')
+SHOWN = ('result', 'depreciation', 'disposals', 'noncash_other', 'financing_in_result', 'assets', 'financing', 'withdrawals', 'deposits', 'outside_other',
+         'computed', 'unbooked', 'unassigned', 'actual', 'memo_transfers')
 
 
 def shown(report, period='month'):
@@ -424,15 +501,20 @@ def test_get_liquidity_refuses_an_unknown_variant_and_an_invalid_period(tmp_db, 
 
 @pytest.mark.parametrize('month, variant, reads', [(3, 'jahr', 2), (3, 'vorjahr', 4), (1, 'jahr', 1), (1, 'vorjahr', 2)])
 def test_get_liquidity_reads_each_span_once(tmp_db, monkeypatch, month, variant, reads):
-    """Im Januar sind Monat und aufgelaufen dieselbe Spanne: Sie wird nur einmal gelesen – die Zeilen der EÜR und die Töpfe des Dashboards je Spanne."""
-    euer, dashboard = [], []
+    """Im Januar sind Monat und aufgelaufen dieselbe Spanne: Sie wird nur einmal gelesen – die Zeilen der EÜR (voll und, für die Umbuchungen ohne Geldfluss,
+    mit ``only_asset_transfers=True``) und die Töpfe des Dashboards je Spanne."""
+    euer, moved, dashboard = [], [], []
     real_euer, real_dashboard = tmp_db.get_euer_data, tmp_db._dashboard_movements
-    monkeypatch.setattr(tmp_db, 'get_euer_data', lambda *args, **kwargs: euer.append(args) or real_euer(*args, **kwargs))
+
+    def counting_euer(*args, **kwargs):
+        (moved if kwargs.get('only_asset_transfers') else euer).append(args)
+        return real_euer(*args, **kwargs)
+    monkeypatch.setattr(tmp_db, 'get_euer_data', counting_euer)
     monkeypatch.setattr(tmp_db, '_dashboard_movements',
                         lambda cursor, date_from, date_to, scope: dashboard.append((date_from, date_to)) or real_dashboard(cursor, date_from, date_to, scope))
     report = at(tmp_db, 2026, month, variant)
-    assert len(euer) == len(set(euer)) == reads and len(dashboard) == len(set(dashboard)) == reads
-    assert set(euer) == set(dashboard) == set(report.periods.values())
+    assert len(euer) == len(set(euer)) == len(moved) == len(set(moved)) == reads and len(dashboard) == len(set(dashboard)) == reads
+    assert set(euer) == set(moved) == set(dashboard) == set(report.periods.values())
     assert set(report.periods) == set(periods_for(variant)) and set(report.line('result').values) == set(report.periods)
 
 
@@ -651,8 +733,8 @@ def test_not_assigned_is_zero_in_every_month_of_a_random_stock_made_with_the_way
 
 
 def test_the_random_stocks_use_nearly_every_kind_of_line(tmp_path):
-    """Die Zufallsbestände decken zusammen die Zeilen ab, die ein Weg der App erreicht (nicht jede in jedem Bestand); „Übrige“ und der Restbuchwert bleiben
-    leer – kein Weg der App erreicht sie hier."""
+    """Die Zufallsbestände decken zusammen die Zeilen ab, die ein Weg der App erreicht (nicht jede in jedem Bestand); „Übrige“, die übrigen Umbuchungen und der
+    Restbuchwert bleiben leer – kein Weg der App erreicht sie hier."""
     seen = set()
     for seed in (1, 2, 3):
         db = Database(str(tmp_path / f'random{seed}.db'))
@@ -661,7 +743,7 @@ def test_the_random_stocks_use_nearly_every_kind_of_line(tmp_path):
             report = at(db, year, month, 'jahr')
             seen |= {key for key in SHOWN if report.line(key).values['month'] or report.line(key).values['ytd']}
     assert {'depreciation', 'assets', 'financing', 'financing_in_result', 'withdrawals', 'deposits', 'unbooked', 'memo_transfers'} <= seen
-    assert 'outside_other' not in seen and 'disposals' not in seen
+    assert 'outside_other' not in seen and 'disposals' not in seen and 'noncash_other' not in seen
 
 
 # ═══ „Nicht zugeordnet“ und die eigenen Zeilen: je ein kleiner Bestand ═════════
@@ -751,13 +833,14 @@ def test_a_tax_rate_the_euer_does_not_know_leaves_its_tax_in_not_assigned(tmp_db
     check_against_sources(tmp_db, report)
 
 
-def test_a_direct_depreciation_against_the_bank_is_taken_back_although_money_flowed(tmp_db):
-    """„6260 an Bank“ (Sofortabschreibung, in einem Zug bezahlt und abgeschrieben): Die Zeile Abschreibungen rechnet die ganze Gruppe 6200–6299 zurück – die
-    festgehaltene Grenze dieser Zeile; das Geld ist geflossen, der Betrag steht in „Nicht zugeordnet“ (−400)."""
+def test_a_direct_depreciation_against_the_bank_stays_in_the_result(tmp_db):
+    """„6260 an Bank“ (Sofortabschreibung, in einem Zug bezahlt und abgeschrieben): Das Geld ist geflossen. Die EÜR liest den Satz als Zahlung, nicht als Umbuchung zwischen
+    Anlage- und Erfolgskonto – die Zeile Abschreibungen rechnet nichts zurück, der Betrag bleibt im Ergebnis und steht im Ist, „Nicht zugeordnet“ ist 0."""
     two_banks(tmp_db)
     mask(tmp_db, 'Probe-Giro', 6260, '-400.00', '2026-03-05')
     report = at(tmp_db, 2026, 3)
-    assert shown(report) == {'result': eur('-400'), 'depreciation': eur('400'), 'unassigned': eur('-400'), 'actual': eur('-400')}
+    assert shown(report) == {'result': eur('-400'), 'computed': eur('-400'), 'actual': eur('-400')} and balanced(report)
+    assert account_numbers(report, 'depreciation') == [] and values_of(report, 'depreciation', 'ytd') == 0
     check_against_sources(tmp_db, report)
 
 
@@ -888,13 +971,15 @@ def test_a_rest_below_one_cent_is_not_zero_and_stands_there_as_a_rounding_rest(t
     check_against_sources(tmp_db, report)
 
 
-def test_a_transfer_between_an_asset_account_and_another_expense_account_stands_in_not_assigned(tmp_db):
-    """„6815 an 0520“ (Umbuchung ohne Geldfluss auf einem Konto, das keine Abschreibung und kein Restbuchwert ist): Die EÜR zählt sie als Aufwand, im Ist steht
-    nichts – +300."""
+def test_a_transfer_between_an_asset_account_and_another_expense_account_goes_back_as_another_transfer(tmp_db):
+    """„6815 an 0520“ (Umbuchung ohne Geldfluss auf einem Konto, das keine Abschreibung und kein Restbuchwert ist): Die EÜR zählt sie als Aufwand, im Ist steht nichts – die
+    Zeile „Übrige Umbuchungen ohne Geldfluss“ rechnet sie zurück, „Nicht zugeordnet“ ist 0."""
     two_banks(tmp_db)
     standalone(tmp_db, '2026-03-31', 6815, 520, '300.00', 'transfer')
     report = at(tmp_db, 2026, 3)
-    assert shown(report) == {'result': eur('-300'), 'computed': eur('-300'), 'unassigned': eur('300')}
+    assert shown(report) == {'result': eur('-300'), 'noncash_other': eur('300')} and balanced(report)        # computed und actual sind 0
+    assert [(a.number, a.values['month']) for a in report.line('noncash_other').accounts] == [(6815, eur('300'))]
+    assert values_of(report, 'depreciation') == 0 and values_of(report, 'disposals') == 0 and visible(report, report.line('noncash_other'))
     check_against_sources(tmp_db, report)
 
 
@@ -908,6 +993,252 @@ def test_payments_the_euer_counts_as_expense_are_not_a_rest(tmp_db):
     report = at(tmp_db, 2026, 3)
     assert shown(report) == {'result': eur('-250') - eur('80') + eur('595'), 'computed': eur('265'), 'actual': eur('265')} and balanced(report)
     check_against_sources(tmp_db, report)
+
+
+# ═══ Umbuchungen ohne Geldfluss: get_euer_data(only_asset_transfers=True) und die Zeilen der Überleitung ═══
+def old_form_depreciation(db, date, number, amount, account=None):
+    """Eine AfA-Buchung alter Form (bis 2.0.4): Aufwandskonto ohne Gegenkonto, von der Planzeile einer Anlage referenziert (``Booking_ID`` zeigt auf sie); ``Buchung`` als ID."""
+    asset = db.insert_asset('Altlaptop', f'{date[:4]}-01-10', 1800.0, 3, coa_id=coa(db, 520))
+    booking = db.insert_booking(date, Decimal(amount), account_id=account, coa_id=coa(db, number), booking_type='entry')
+    raw(db, "UPDATE Bookings SET Status = 'posted' WHERE ID = ?", booking)
+    raw(db, "INSERT INTO AssetDepreciations (Asset_ID, Year, DepreciationAmount, BookValue, Booking_ID, Status, BookedAt) "
+            "VALUES (?, ?, 6000000, 12000000, ?, 'posted', CURRENT_TIMESTAMP)", asset, int(date[:4]), booking)
+    return booking
+
+
+def mixed_books(db):
+    """Ein kleiner Bestand von Hand, in dem der Test die Umbuchungen selbst anlegt und ihre IDs kennt – daneben Zahlungen auf dieselben Konten.
+
+    Umbuchungen zwischen Anlage- und Erfolgskonto (ihre IDs stehen im Ergebnis): die AfA der App „6220 an 0520“ (31.12., 400,00), der Restbuchwert „6895 an 0520“ (300,00),
+    „6815 an 0520“ (120,00) und eine AfA alter Form auf 6222 (Aufwandskonto ohne Gegenkonto, von einer Planzeile referenziert, −600,00). Zahlungen, die NICHT dazugehören:
+    „6260 an Bank“ (−400,00), „6220 an Bank“ (−150,00) und „6220 an Kasse“ (−80,00, ein Kassensatz ohne Bankbewegung)."""
+    two_banks(db)
+    asset = db.insert_asset('Rechner', '2026-01-02', 1200.0, 3)
+    ids = {'afa': db.book_depreciation(asset, 2026, coa_id_expense=coa(db, 6220), coa_id_asset=coa(db, 520)),
+           'book_value': standalone(db, '2026-03-31', 6895, 520, '300.00', 'transfer'),
+           'other': standalone(db, '2026-04-30', 6815, 520, '120.00', 'transfer'),
+           'old_form': old_form_depreciation(db, '2026-06-30', 6222, '-600.00')}
+    mask(db, 'Probe-Giro', 6260, '-400.00', '2026-03-05')
+    mask(db, 'Probe-Giro', 6220, '-150.00', '2026-03-08')
+    db.insert_booking('2026-03-06', Decimal('-80.00'), coa_id=coa(db, 6220), counter_coa_id=coa(db, 1600), booking_type='entry', document_number='KS-1')
+    return ids
+
+
+def copy_without(db, path, booking_ids):
+    """Eine Kopie der Datenbank (SQLite-Sicherung), in der genau die Buchungen ``booking_ids`` gelöscht sind – so liest ``get_euer_data`` den Bestand ohne sie."""
+    booking_ids = list(booking_ids)
+    with closing(sqlite3.connect(db.db_name)) as source, closing(sqlite3.connect(str(path))) as target:
+        source.backup(target)
+    with closing(sqlite3.connect(str(path))) as con:
+        con.execute(f"DELETE FROM Bookings WHERE ID IN ({','.join('?' * len(booking_ids))})", booking_ids)
+        con.commit()
+    return Database(str(path))
+
+
+def test_the_default_of_get_euer_data_is_the_same_with_the_switch_off(susa_db, world_db, demo_db):
+    """Der Schalter ändert den Standard nicht: ohne ihn und mit ``only_asset_transfers=False`` sind es dieselben Zeilen – in jedem Monat, aufgelaufen und im Vorjahr der
+    SuSa-Welt, der Testwelt und des Demobestands, auch mit einem Kontofilter (die Schnappschüsse von EÜR-Kasten, BWA-PDF und Export prüfen ``test_euer_view.py``,
+    ``test_bwa_pdf.py`` und ``test_susa.py``)."""
+    for name, db in (('susa', susa_db), ('test', world_db), ('demo', demo_db)):
+        accounts = [[account[0]] for account in db.fetch_accounts()][:2]
+        for year, month in months_of(2025, 2026):
+            for span in bwa.bwa_periods(year, month).values():
+                assert db.get_euer_data(*span) == db.get_euer_data(*span, only_asset_transfers=False), (name, span)
+                for chosen in accounts:
+                    assert db.get_euer_data(*span, chosen) == db.get_euer_data(*span, chosen, only_asset_transfers=False), (name, span, chosen)
+
+
+def test_the_euer_rows_split_into_the_transfers_and_the_rest(tmp_db, tmp_path):
+    """Die Zerlegung, auf den Minor-Wert und je Konto: Saldo(alle Zeilen) − Saldo(nur Umbuchungen) = Saldo eines Bestands, in dem genau die Umbuchungen gelöscht sind
+    (eine Kopie der Datenbank ohne ihre IDs). Im Bestand von Hand stehen die AfA der App, der Restbuchwert „6895 an 0520“, „6815 an 0520“ und eine AfA alter Form
+    neben „6260 an Bank“, „6220 an Bank“ und „6220 an Kasse“ – die Zahlungen gehören nicht zu den Umbuchungen, auch nicht auf demselben Konto 6220."""
+    ids = mixed_books(tmp_db)
+    rest = copy_without(tmp_db, tmp_path / 'ohne_umbuchungen.db', ids.values())
+    year = ('2026-01-01', '2026-12-31')
+    assert rows_by_number(rest, year) == {6220: eur('-230'), 6260: eur('-400')}                                    # was übrig bleibt: nur die Zahlungen
+    assert rows_by_number(tmp_db, year, only_asset_transfers=True) == {6220: eur('-400'), 6222: eur('-600'), 6895: eur('-300'), 6815: eur('-120')}
+    assert rows_by_number(tmp_db, year) == {6220: eur('-630'), 6222: eur('-600'), 6260: eur('-400'), 6895: eur('-300'), 6815: eur('-120')}
+    months = {month: bwa.bwa_periods(2026, month)['month'] for month in range(1, 13)}
+    for span in [year, ('2025-01-01', '2025-12-31'), *months.values()]:
+        whole, moved, others = rows_by_number(tmp_db, span), rows_by_number(tmp_db, span, only_asset_transfers=True), rows_by_number(rest, span)
+        for number in set(whole) | set(moved) | set(others):
+            assert whole.get(number, 0) - moved.get(number, 0) == others.get(number, 0), (span, number)
+    by_month = {month: rows_by_number(tmp_db, span, only_asset_transfers=True) for month, span in months.items()}
+    assert {month: rows for month, rows in by_month.items() if rows} == {3: {6895: eur('-300')}, 4: {6815: eur('-120')}, 6: {6222: eur('-600')},
+                                                                         12: {6220: eur('-400')}}                       # und in keinem anderen Monat eine Zeile
+
+
+def test_the_transfers_are_empty_with_an_account_filter_and_not_with_all_accounts(tmp_db):
+    """Mit Kontofilter läuft Sektion 3 nicht (die eigenständigen Umbuchungen hängen an keinem Konto): In diesem Bestand – keine Umbuchung steht unter einer Bankbewegung –
+    ist das Ergebnis leer, auch wenn der Filter nur Konten nennt, deren Sätze die EÜR zählt. Sind alle Konten gewählt, gilt der Filter nicht: dieselben Zeilen wie ohne."""
+    mixed_books(tmp_db)
+    giro = account_id(tmp_db, 'Probe-Giro')
+    year = ('2026-01-01', '2026-12-31')
+    assert tmp_db.get_euer_data(*year, [giro]) and tmp_db.get_euer_data(*year, [giro], only_asset_transfers=True) == []
+    every = [account[0] for account in tmp_db.fetch_accounts()]
+    assert tmp_db.get_euer_data(*year, every, only_asset_transfers=True) == tmp_db.get_euer_data(*year, only_asset_transfers=True) != []
+    assert tmp_db.get_euer_data(*year, every) == tmp_db.get_euer_data(*year)
+
+
+def child(db, bank, date, amount, number, counter, form, **extra):
+    """Ein weiterer Satz ``number`` an ``counter`` unter der Bankbewegung ``bank`` (Kontonummern; ``amount`` Euro als Text)."""
+    return db.insert_booking(date, Decimal(amount), coa_id=coa(db, number), counter_coa_id=coa(db, counter), booking_type='entry',
+                             parent_booking_id=bank, entry_form=form, **extra)
+
+
+def test_a_transfer_under_a_bank_movement_moves_no_money_either(tmp_db):
+    """Ein Satz „6220 an 0520“ unter einer Bankbewegung (``ParentBooking_ID`` gesetzt) findet die EÜR in Sektion 1 – er bleibt eine Umbuchung zwischen Anlage- und
+    Erfolgskonto, seine Wirkung auf das Konto der Bewegung ist 0, und er gehört zu den Umbuchungen ohne Geldfluss. Trägt die Bewegung (−300) NUR diesen Satz, ist ihr
+    Betrag unerklärt: ein unstimmiger Split, dessen Rest in „Nicht zugeordnet“ steht (die Prüfung der Splits nennt die Bewegung) – er hebt sich nicht still mit der
+    Abschreibung auf."""
+    two_banks(tmp_db)
+    bank_with_child(tmp_db, '2026-03-10', '-300.00', '2026-03-10', '300.00', 6220, 520, form='transfer')
+    span = ('2026-03-01', '2026-03-31')
+    assert rows_by_number(tmp_db, span) == rows_by_number(tmp_db, span, only_asset_transfers=True) == {6220: eur('-300')}
+    report = at(tmp_db, 2026, 3)
+    assert shown(report) == {'result': eur('-300'), 'depreciation': eur('300'), 'unassigned': eur('-300'), 'actual': eur('-300')}
+    assert not balanced(report) and len(tmp_db.find_unbalanced_splits(*span)) == 1
+    check_against_sources(tmp_db, report)
+
+
+def test_with_an_account_filter_only_the_transfers_under_its_bank_movements_remain(tmp_db):
+    """Mit Kontofilter bleiben nur die Umbuchungen unter den Bankbewegungen der gewählten Konten (Sektion 1); die eigenständigen (Sektion 3) hängen an keinem Konto."""
+    giro, zweit = two_banks(tmp_db)
+    bank, _cost = bank_with_child(tmp_db, '2026-03-10', '-50.00', '2026-03-10', '-50.00', 6855)
+    child(tmp_db, bank, '2026-03-10', '500.00', 6895, 520, 'transfer')
+    standalone(tmp_db, '2026-03-31', 6220, 520, '400.00', 'transfer')
+    span = ('2026-03-01', '2026-03-31')
+    assert rows_by_number(tmp_db, span, only_asset_transfers=True) == {6220: eur('-400'), 6895: eur('-500')}
+    assert {number: to_minor(total) for number, _name, total in tmp_db.get_euer_data(*span, [giro], only_asset_transfers=True)} == {6895: eur('-500')}
+    assert tmp_db.get_euer_data(*span, [zweit], only_asset_transfers=True) == []
+
+
+def test_the_book_value_in_the_split_of_a_sale_goes_back(tmp_db):
+    """Der Verkauf einer Anlage in EINEM Beleg: Die Bank bekommt 1.190,00, darunter der Erlös „6885 an Bank“ (19 %) und – als Umbuchung ohne Geldfluss im selben Split –
+    der Restbuchwert „6895 an 0520“ über 500,00. Der Split ist stimmig; der Restbuchwert steht im Ergebnis und kommt in der Zeile Anlagenabgänge zurück, die Überleitung
+    geht auf."""
+    two_banks(tmp_db)
+    bank, _sale = bank_with_child(tmp_db, '2026-03-10', '1190.00', '2026-03-10', '1190.00', 6885, tax_rate=0.19, tax_amount=Decimal('190.00'))
+    child(tmp_db, bank, '2026-03-10', '500.00', 6895, 520, 'transfer')
+    span = ('2026-03-01', '2026-03-31')
+    assert tmp_db.find_unbalanced_splits(*span) == []
+    assert rows_by_number(tmp_db, span, only_asset_transfers=True) == {6895: eur('-500')}
+    report = at(tmp_db, 2026, 3)
+    assert shown(report) == {'result': eur('690'), 'disposals': eur('500'), 'computed': eur('1190'), 'actual': eur('1190')} and balanced(report)
+    check_against_sources(tmp_db, report)
+
+
+def test_a_small_asset_bought_and_written_off_in_one_split_goes_back(tmp_db):
+    """Ein geringwertiges Wirtschaftsgut in einem Beleg: Die Bank zahlt 800,00 auf das Anlagekonto („0670 an Bank“), und im selben Split steht die Sofortabschreibung als
+    Umbuchung „6260 an 0670“. Geld ist nur einmal geflossen – als Anlagenzugang; die Abschreibung bewegt keines und kommt zurück."""
+    two_banks(tmp_db)
+    bank, _asset = bank_with_child(tmp_db, '2026-03-10', '-800.00', '2026-03-10', '-800.00', 670)
+    child(tmp_db, bank, '2026-03-10', '800.00', 6260, 670, 'transfer')
+    span = ('2026-03-01', '2026-03-31')
+    assert tmp_db.find_unbalanced_splits(*span) == []
+    assert rows_by_number(tmp_db, span, only_asset_transfers=True) == {6260: eur('-800')}
+    report = at(tmp_db, 2026, 3)
+    assert shown(report) == {'result': eur('-800'), 'depreciation': eur('800'), 'assets': eur('-800'), 'computed': eur('-800'), 'actual': eur('-800')}
+    assert balanced(report)
+    check_against_sources(tmp_db, report)
+
+
+def test_a_depreciation_assigned_to_a_bank_movement_still_goes_back(tmp_db):
+    """Eine eigenständige Abschreibung „6220 an 0520“ (400,00), im Bank-Editor unter eine Bewegung gehängt, die ihr eigener Satz „6855 an Bank“ (−50,00) schon ganz erklärt:
+    Sie zählt nicht in die Summe der Bewegung und bewegt weiter kein Geld – vor und nach dem Zuordnen dieselbe Überleitung."""
+    two_banks(tmp_db)
+    bank, _cost = bank_with_child(tmp_db, '2026-03-10', '-50.00', '2026-03-10', '-50.00', 6855)
+    depreciation = standalone(tmp_db, '2026-03-31', 6220, 520, '400.00', 'transfer')
+    expected = {'result': eur('-450'), 'depreciation': eur('400'), 'computed': eur('-50'), 'actual': eur('-50')}
+    report = at(tmp_db, 2026, 3)
+    assert shown(report) == expected and balanced(report)
+    raw(tmp_db, 'UPDATE Bookings SET ParentBooking_ID = ? WHERE ID = ?', bank, depreciation)
+    assert tmp_db.find_unbalanced_splits('2026-03-01', '2026-03-31') == []
+    report = at(tmp_db, 2026, 3)
+    assert shown(report) == expected and balanced(report)
+    check_against_sources(tmp_db, report)
+
+
+def test_a_resolved_transfer_is_in_no_section(tmp_db):
+    """Ein Satz mit dem Status ``resolved`` steht in keiner Sektion – auch nicht in den Umbuchungen."""
+    two_banks(tmp_db)
+    standalone(tmp_db, '2026-03-31', 6220, 520, '300.00', 'transfer')
+    span = ('2026-03-01', '2026-03-31')
+    assert rows_by_number(tmp_db, span, only_asset_transfers=True) == {6220: eur('-300')}
+    raw(tmp_db, "UPDATE Bookings SET Status = 'resolved' WHERE BookingType = 'entry'")
+    assert rows_by_number(tmp_db, span) == {} and rows_by_number(tmp_db, span, only_asset_transfers=True) == {}
+    report = at(tmp_db, 2026, 3)
+    assert shown(report) == {} and balanced(report)
+
+
+def test_a_transfer_that_an_earlier_section_finds_first_is_not_included(tmp_db):
+    """Jede Buchung zählt höchstens einmal, die erste Sektion gewinnt: Eine AfA-Buchung alter Form über das Verrechnungskonto („6220 an 1460“, von einer Planzeile
+    referenziert) findet Sektion 2 über das Konto, bevor Sektion 3 sie über die Planzeile findet – die EÜR zählt sie einmal, zu den Umbuchungen ohne Geldfluss gehört sie
+    nicht (das Geld verlässt das Konto erst mit der Bankbewegung „Verrechnung an Bank“)."""
+    two_banks(tmp_db)
+    asset = tmp_db.insert_asset('Altlaptop', '2026-01-10', 1800.0, 3, coa_id=coa(tmp_db, 520))
+    booking = standalone(tmp_db, '2026-12-31', 6220, 1460, '-600.00', 'purpose_first')
+    raw(tmp_db, "INSERT INTO AssetDepreciations (Asset_ID, Year, DepreciationAmount, BookValue, Booking_ID, Status, BookedAt) "
+                "VALUES (?, 2026, 6000000, 12000000, ?, 'posted', CURRENT_TIMESTAMP)", asset, booking)
+    year = ('2026-01-01', '2026-12-31')
+    assert rows_by_number(tmp_db, year) == {6220: eur('-600')} and rows_by_number(tmp_db, year, only_asset_transfers=True) == {}
+
+
+def test_a_direct_depreciation_and_one_of_the_app_in_the_same_month_only_the_second_goes_back(tmp_db):
+    """Im Dezember die AfA der App (eine Umbuchung ohne Geldfluss) und „6260 an Bank“ (−400): Die Zeile Abschreibungen rechnet nur die AfA zurück, die Zahlung bleibt im
+    Ergebnis und im Ist – „Nicht zugeordnet“ ist 0, und im Kontennachweis steht nur das Konto der AfA."""
+    two_banks(tmp_db)
+    asset = tmp_db.insert_asset('Rechner', '2026-01-02', 1200.0, 3)
+    tmp_db.book_depreciation(asset, 2026, coa_id_expense=coa(tmp_db, 6220), coa_id_asset=coa(tmp_db, 520))
+    mask(tmp_db, 'Probe-Giro', 6260, '-400.00', '2026-12-05')
+    report = at(tmp_db, 2026, 12)
+    assert shown(report) == {'result': eur('-800'), 'depreciation': eur('400'), 'computed': eur('-400'), 'actual': eur('-400')} and balanced(report)
+    assert [(a.number, a.values['month']) for a in report.line('depreciation').accounts] == [(6220, eur('400'))]
+    check_against_sources(tmp_db, report)
+
+
+def test_the_account_list_of_a_line_shows_only_the_transfer_part_of_an_account(tmp_db):
+    """„6220 an Bank“ (direkt bezahlt, −150) und dieselbe Kontonummer mit einer Umbuchung (die AfA der App, 400): Der Saldo der EÜR-Zeile 6220 ist −550, der Kontennachweis der
+    Zeile Abschreibungen nennt nur den Umbuchungsbetrag (400) – die 150 bleiben im Ergebnis, die Überleitung geht auf."""
+    two_banks(tmp_db)
+    asset = tmp_db.insert_asset('Rechner', '2026-01-02', 1200.0, 3)
+    tmp_db.book_depreciation(asset, 2026, coa_id_expense=coa(tmp_db, 6220), coa_id_asset=coa(tmp_db, 520))
+    mask(tmp_db, 'Probe-Giro', 6220, '-150.00', '2026-12-05')
+    report = at(tmp_db, 2026, 12)
+    assert rows_by_number(tmp_db, ('2026-12-01', '2026-12-31')) == {6220: eur('-550')}
+    assert shown(report) == {'result': eur('-550'), 'depreciation': eur('400'), 'computed': eur('-150'), 'actual': eur('-150')} and balanced(report)
+    assert [(a.number, a.name, a.values['month']) for a in report.line('depreciation').accounts] == [
+        (6220, 'Abschreibungen auf Sachanlagen (ohne AfA auf Fahrzeuge und Gebäude)', eur('400'))]
+    check_against_sources(tmp_db, report)
+
+
+def test_a_disposal_through_the_clearing_account_is_no_transfer_without_cash(tmp_db):
+    """Zwei eigenständige Sätze am selben Tag: „6895 an 1460“ (−300, ``purpose_first``: der Restbuchwert als Aufwand über das Verrechnungskonto) und „1460 an 0520“ (+300,
+    ``liquid_first``: der Anlagenabgang gegen das Anlagekonto). Keiner ist eine Umbuchung zwischen Anlage- und Erfolgskonto – die EÜR zählt den Aufwand im Ergebnis und die
+    Gegenseite auf dem Anlagekonto, die Zeile Anlagenabgänge rechnet nichts zurück: Der Aufwand (−300) und die Anlagenzugänge (+300) heben sich auf, das Ist ist 0 und die
+    Überleitung geht auf."""
+    two_banks(tmp_db)
+    standalone(tmp_db, '2026-03-31', 6895, 1460, '-300.00', 'purpose_first')
+    standalone(tmp_db, '2026-03-31', 1460, 520, '300.00', 'liquid_first')
+    report = at(tmp_db, 2026, 3)
+    assert rows_by_number(tmp_db, ('2026-03-01', '2026-03-31'), only_asset_transfers=True) == {}
+    assert shown(report) == {'result': eur('-300'), 'assets': eur('300')} and balanced(report)
+    assert values_of(report, 'disposals') == 0 and account_numbers(report, 'disposals') == []
+    check_against_sources(tmp_db, report)
+
+
+def test_the_mixed_books_balance_in_every_month(tmp_db):
+    """Der Bestand von Hand (Umbuchungen und Zahlungen auf denselben Konten) geht in jedem Monat und aufgelaufen auf; die Zeilen gleich ihrer Gegenrechnung aus den
+    Quellen – die AfA der App und die alter Form stehen unter Abschreibungen, der Restbuchwert unter den Anlagenabgängen, „6815 an 0520“ unter den übrigen Umbuchungen."""
+    mixed_books(tmp_db)
+    for month in range(1, 13):
+        report = at(tmp_db, 2026, month, 'vorjahr')
+        assert unassigned_of(report) == dict.fromkeys(report.periods, 0), month
+        check_against_sources(tmp_db, report, month)
+    december = at(tmp_db, 2026, 12)
+    assert [(a.number, a.values['ytd']) for a in december.line('depreciation').accounts] == [(6220, eur('400')), (6222, eur('600'))]
+    assert [(a.number, a.values['ytd']) for a in december.line('disposals').accounts] == [(6895, eur('300'))]
+    assert [(a.number, a.values['ytd']) for a in december.line('noncash_other').accounts] == [(6815, eur('120'))]
 
 
 # ═══ Nur lesend ═══════════════════════════════════════════════════════════════
@@ -989,6 +1320,26 @@ def test_the_page_names_a_rounding_rest_and_not_a_real_one(tmp_db):
     assert ROUNDING_TEXT not in PageLiquidity(tmp_db, BwaQuery(2026, 3, 'jahr')) and UNBALANCED_TEXT in PageLiquidity(tmp_db, BwaQuery(2026, 3, 'jahr'))
 
 
+def test_the_row_of_the_other_transfers_without_cash_stands_on_the_page_only_with_a_value(tmp_db):
+    """„Übrige Umbuchungen ohne Geldfluss“ steht auf der Seite nur mit einem Wert ≠ 0 – mit ihrem Konto zum Aufklappen (``noncash_other``) –, sonst fehlt die Zeile; eine
+    Abschreibung als Umbuchung (Zeile „Abschreibungen“) ruft sie nicht hervor."""
+    two_banks(tmp_db)
+    label = 'Übrige Umbuchungen ohne Geldfluss'
+    quiet = PageLiquidity(tmp_db, BwaQuery(2026, 3, 'jahr'))
+    assert label not in quiet and 'noncash_other' not in quiet
+    asset = tmp_db.insert_asset('Rechner', '2026-01-02', 1200.0, 3)
+    tmp_db.book_depreciation(asset, 2026, coa_id_expense=coa(tmp_db, 6220), coa_id_asset=coa(tmp_db, 520))
+    standalone(tmp_db, '2026-12-31', 6815, 520, '300.00', 'transfer')
+    depreciation_only = PageLiquidity(tmp_db, BwaQuery(2026, 11, 'jahr'))
+    assert label not in depreciation_only
+    page = PageLiquidity(tmp_db, BwaQuery(2026, 12, 'jahr'))
+    rows = table_text(page)
+    assert rows.index(f'▶ {label} | 300,00 | 300,00') == rows.index('▶ Anlagenabgänge zum Restbuchwert | 0,00 | 0,00') + 1          # direkt hinter den Anlagenabgängen
+    assert rows[rows.index(f'▶ {label} | 300,00 | 300,00') + 1] == '6815 Bürobedarf | 300,00 | 300,00'
+    assert 'data-liq-parent="noncash_other"' in page and "liqToggle('noncash_other')" in page and BALANCED_TEXT in page
+    assert 'Abschreibungen | 400,00 | 400,00' in ' '.join(rows)
+
+
 def test_the_page_shows_the_form_with_the_chosen_values(tmp_db):
     page = PageLiquidity(tmp_db, BwaQuery(2026, 3, 'jahr'))
     dom = Dom(page)
@@ -1022,7 +1373,7 @@ def test_the_invalid_period_note_stands_only_for_an_invalid_period(tmp_db):
 def test_the_page_of_an_empty_book_shows_every_line_with_zero(tmp_db):
     page = PageLiquidity(tmp_db, BwaQuery(2026, 10, 'jahr'))
     rows = table_text(page)
-    assert len(rows) == 2 + len(LAYOUT) - 3                                         # alle Zeilen, ohne „Übrige“ und die nachrichtlichen
+    assert len(rows) == 2 + len(LAYOUT) - 4                                         # alle Zeilen, ohne die „Übrigen“ (Umbuchungen, Konten) und die nachrichtlichen
     assert all(row.endswith('| 0,00 | 0,00') for row in rows[2:]) and BALANCED_TEXT in page and 'warnColor' not in page
 
 
