@@ -1255,6 +1255,8 @@ Die EÜR-Werte werden aus `Bookings` abgeleitet (nicht aus Rechnungen):
   Dashboard und für die betriebswirtschaftliche Auswertung (`db/bwa.py`, seit 2.5.14, Seite `/bwa`), die dieselben Zahlen von
   `get_euer_data` (ohne Kontofilter) nur nach Gruppen zusammenfasst (`RANGES`, `EXCEPTIONS`; ein Konto ohne Gruppe steht unter
   „Nicht zugeordnet“) und nichts aus `Bookings` selbst liest
+- Der Kasten der EÜR im Dashboard und die Seite `/euer` (seit 2.5.16, auch als PDF) kommen aus EINER Aufbereitung, `db.euer.euer_statement`
+  (die Zeilen von `get_euer_data` nach `euer_section`; Summen aus Minor Units). Die Seite hat keinen Kontofilter; der Kasten folgt dem Filter des Dashboards
 - **Liquide Konten** (`get_payment_coa_ids`): eigene Bank-/Kassenkonten (die Standard-Kasse trägt 1600) und das Verrechnungskonto 1460 – nur noch für Zeilen ohne gespeicherte Form (Roh-SQL), die die EÜR damit einordnet. Ob ein Satz zählt, entscheidet die Sektion in `get_euer_data()`. Jeder Satz zählt in genau einer Sektion: Die Sammlung ist über die Buchungs-ID eindeutig, die erste Sektion, die einen Satz findet, gewinnt (Reihenfolge 1, 2, 2b, 3); außerdem sind die Sektionen so geschnitten, dass sich die üblichen Fälle gar nicht erst überschneiden:
   - **Section 1:** Buchungssätze (Kinder) unter einer Bankbewegung der gewählten Konten – auch der Kasse (Buchungsmaske mit Konto = Kasse; die Bankzeile trägt `Account_ID` der Kasse)
   - **Section 2:** eigenständige Sätze (ohne `ParentBooking_ID`), die ein Kassenkonto berühren, und – nur ohne Kontofilter – das Verrechnungskonto 1460 (WISO: „Aufwand an Verrechnung“ gilt mit dem Datum des Satzes als abgeflossen; die spätere Übertragung „Verrechnung an Bank“ ist ein Geldkonten-Spiegel und zählt nicht noch einmal)

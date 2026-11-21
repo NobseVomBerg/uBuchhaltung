@@ -38,6 +38,7 @@ Kontext bei moderatem Token-Einsatz. NIE alle Module gleichzeitig laden.
 | `receipts.py` / `worktimes.py` | Belege bzw. Arbeitszeiten |
 | `reporting.py` | Dashboard-Kennzahlen + EÜR (`get_euer_data`; `euer_section`: Einnahme, Ausgabe oder „nicht im Ergebnis“ – eine Regel für die EÜR-Seite und die BWA; `get_bwa`) |
 | `bwa.py` | Betriebswirtschaftliche Auswertung: Gruppentabelle (`RANGES`, `EXCEPTIONS`, `group_of`), Zeiträume, Zeilenaufbau aus `get_euer_data`, Prozent- und Formatregeln (rein, ohne Datenbank) |
+| `euer.py` | EÜR-Aufbereitung für den Kasten des Dashboards und die Seite `/euer` (`euer_statement`: Abschnitte nach `euer_section`, Summen in Minor Units; `range_label`, `euer_filename`, Texte; rein, ohne Datenbank) |
 
 ## Gezielt navigieren
 

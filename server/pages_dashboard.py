@@ -10,8 +10,9 @@ so that imported WISO/DATEV data is always reflected.
 from datetime import datetime
 import html as _html
 from db import Database
-from db.reporting import bank_skr_numbers, euer_section
-from money import fmt_eur, round_minor, to_minor
+from db.euer import EUER_FILTER_SUFFIX, EUER_LINK_TEXT, euer_statement
+from db.reporting import bank_skr_numbers
+from money import fmt_eur, from_minor, round_minor, to_minor
 from .pages import Header1, Header2, Header3, Footer
 
 
@@ -250,40 +251,35 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
     '''
 
     # ── EÜR-Auswertung (ersetzt Schnellzugriff) ─────────────────────
-    euer_data = db.get_euer_data(date_from, date_to, account_ids)
-
-    # Einnahme, Ausgabe oder „Sonstige Ausgabe“ entscheidet db.reporting.euer_section – dieselbe Regel wie in der
-    # betriebswirtschaftlichen Auswertung (Einnahmen = SKR04-Ertragsklasse plus virtuelles USt-Konto 3806;
-    # Aufzählungen einzelner Erlöskonten hatten z. B. 4185 (§19) und 4300 (7%) übersehen).
-    bank_numbers = bank_skr_numbers(accounts)
-    income_rows = [row for row in euer_data if euer_section(row[0], bank_numbers) == 'income']
-    expense_rows = [row for row in euer_data if euer_section(row[0], bank_numbers) == 'expense']
-    other_expense_rows = [row for row in euer_data if euer_section(row[0], bank_numbers) == 'other']
-
-    income_sum = sum(t for _, _, t in income_rows)
-    expense_sum = sum(t for _, _, t in expense_rows)
-    other_expense_sum = sum(t for _, _, t in other_expense_rows)
-    euer_result = income_sum + expense_sum
+    # Aufbereitet in db.euer – dieselbe Aufbereitung zeigt die Seite /euer. Einnahme, Ausgabe oder „Sonstige Ausgabe“ entscheidet
+    # db.reporting.euer_section, dieselbe Regel wie in der betriebswirtschaftlichen Auswertung (Einnahmen = SKR04-Ertragsklasse plus
+    # virtuelles USt-Konto 3806; Aufzählungen einzelner Erlöskonten hatten z. B. 4185 (§19) und 4300 (7%) übersehen). Gerechnet wird in
+    # Minor Units: Die Summen entstehen aus ganzen Zahlen, nicht aus einer Summe von float.
+    statement = euer_statement(db.get_euer_data(date_from, date_to, account_ids), bank_skr_numbers(accounts))
+    euer_color = 'green' if statement.result >= 0 else 'red'
+    # Die Seite /euer hat keinen Kontofilter: Der Link sagt es, wenn hier einer gewählt ist
+    euer_link_suffix = _esc(EUER_FILTER_SUFFIX) if account_ids else ''
 
     s += f'''
     <div class="rectRounded box2">
         <h3>Einnahmen&uuml;berschussrechnung {range_label}</h3>
+        <p class="hint"><a href="/euer?from={h_from}&amp;to={h_to}">{_esc(EUER_LINK_TEXT)}</a>{euer_link_suffix}</p>
         <h4 style="margin-bottom:6px;">Einnahmen</h4>
         <table style="width:100%;border-collapse:collapse;">
             <tr><th style="text-align:left;">SKR-Konto</th>
                 <th style="text-align:left;">Bezeichnung</th>
                 <th style="text-align:right;">Saldo</th></tr>
     '''
-    for nr, name, total in income_rows:
-        color = 'green' if total >= 0 else 'red'
-        s += (f"<tr><td>{_esc(nr)}</td><td>{_esc(name)}</td>"
+    for line in statement.income:
+        color = 'green' if line.minor >= 0 else 'red'
+        s += (f"<tr><td>{_esc(line.number)}</td><td>{_esc(line.name)}</td>"
               f"<td style='text-align:right;color:{color};'>"
-              f"{fmt_eur(total)}</td></tr>")
+              f"{fmt_eur(from_minor(line.minor))}</td></tr>")
     s += f'''
             <tr style="border-top:2px solid #666;">
                 <td colspan="2"><strong>Summe Betriebseinnahmen</strong></td>
                 <td style="text-align:right;font-weight:bold;color:green;">
-                    {fmt_eur(income_sum)}</td></tr>
+                    {fmt_eur(from_minor(statement.income_sum))}</td></tr>
         </table>
 
         <h4 style="margin-bottom:6px;margin-top:18px;">Ausgaben</h4>
@@ -292,24 +288,23 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
                 <th style="text-align:left;">Bezeichnung</th>
                 <th style="text-align:right;">Saldo</th></tr>
     '''
-    for nr, name, total in expense_rows:
-        color = 'green' if total >= 0 else 'red'
-        s += (f"<tr><td>{_esc(nr)}</td><td>{_esc(name)}</td>"
+    for line in statement.expense:
+        color = 'green' if line.minor >= 0 else 'red'
+        s += (f"<tr><td>{_esc(line.number)}</td><td>{_esc(line.name)}</td>"
               f"<td style='text-align:right;color:{color};'>"
-              f"{fmt_eur(total)}</td></tr>")
-    euer_color = 'green' if euer_result >= 0 else 'red'
+              f"{fmt_eur(from_minor(line.minor))}</td></tr>")
     s += f'''
             <tr style="border-top:2px solid #666;">
                 <td colspan="2"><strong>Summe Betriebsausgaben</strong></td>
                 <td style="text-align:right;font-weight:bold;color:red;">
-                    {fmt_eur(expense_sum)}</td></tr>
+                    {fmt_eur(from_minor(statement.expense_sum))}</td></tr>
         </table>
 
         <table style="width:100%;border-collapse:collapse;">
             <tr><td><strong>Ergebnis EÜR</strong></td>
                 <td style="text-align:right;font-weight:bold;font-size:18px;
                     color:{euer_color};">
-                    {fmt_eur(euer_result)}</td></tr>
+                    {fmt_eur(from_minor(statement.result))}</td></tr>
         </table>
 
         <h4 style="margin-bottom:6px;margin-top:18px;">Sonstige Ausgaben</h4>
@@ -318,16 +313,16 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
                 <th style="text-align:left;">Bezeichnung</th>
                 <th style="text-align:right;">Saldo</th></tr>
     '''
-    for nr, name, total in other_expense_rows:
-        color = 'green' if total >= 0 else 'red'
-        s += (f"<tr><td>{_esc(nr)}</td><td>{_esc(name)}</td>"
+    for line in statement.other:
+        color = 'green' if line.minor >= 0 else 'red'
+        s += (f"<tr><td>{_esc(line.number)}</td><td>{_esc(line.name)}</td>"
               f"<td style='text-align:right;color:{color};'>"
-              f"{fmt_eur(total)}</td></tr>")
+              f"{fmt_eur(from_minor(line.minor))}</td></tr>")
     s += f'''
             <tr style="border-top:2px solid #666;">
                 <td colspan="2"><strong>Summe Sonstige Ausgaben</strong></td>
                 <td style="text-align:right;font-weight:bold;color:red;">
-                    {fmt_eur(other_expense_sum)}</td></tr>
+                    {fmt_eur(from_minor(statement.other_sum))}</td></tr>
         </table>
     </div>
     '''

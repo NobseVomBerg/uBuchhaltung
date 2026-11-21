@@ -815,3 +815,10 @@ def test_the_navigation_names_the_page():
     assert '<a href="/bwa">Auswertungen</a>' in Header1('dashboard') and '<span id="ActivePage">Dashboard</span>' in Header1('dashboard')
     assert Header1('bwa').index('Dashboard</a>') < Header1('bwa').index('Auswertungen</span>') < Header1('bwa').index('>Rechnung<')
     assert '<a href="/bwa">Auswertungen</a>' in Header1('invoice') and 'ActivePage">Auswertungen' not in Header1('invoice')
+
+
+def test_the_page_shows_the_submenu_of_the_reports_with_the_bwa_active(tmp_db):
+    """Seit 2.5.16 steht unter dem Menüpunkt „Auswertungen“ ein Untermenü (BWA, EÜR); die Seite der BWA ist darin die aktive."""
+    page = PageBwa(tmp_db, BwaQuery(2026, 3, 'jahr'))
+    assert "<div class='header2'><span id=\"ActivePage\">BWA</span> | <a href=\"/euer\">EÜR</a></div>" in page
+    assert page.index('Auswertungen</span>') < page.index('<span id="ActivePage">BWA</span>') < page.index("<div class='header3'>")

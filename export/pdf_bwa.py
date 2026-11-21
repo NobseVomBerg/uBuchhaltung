@@ -13,16 +13,17 @@ Zeile und ihre Konten bilden einen Block; ein Block wird nicht geteilt, solange 
 nichts auf die Platte geschrieben: ``generate_bwa_pdf`` liefert die Bytes, wie der Stundenzettel mit ``store=False``.
 
 Text steht immer als ``1 0 0 1 x y Tm (…) Tj``, gemessen mit den Breiten der eingebetteten Schrift (``info_width``, fetter Text
-mit denen der Helvetica-Bold-Tabelle) – nur so liegen die Beträge rechtsbündig auf einer Kante.
+mit denen der Helvetica-Bold-Tabelle) – nur so liegen die Beträge rechtsbündig auf einer Kante. Die Bausteine dafür (Text bereinigen,
+kürzen, Zelle, Linie, Seitenverteilung) stehen in ``pdf_table`` und gelten für alle Tabellen-PDFs; die Funktionen mit Unterstrich
+hier sind dünne Hüllen darum mit der Geometrie dieser Seite.
 """
 import datetime
 from typing import NamedTuple
 
 from db.bwa import (HINT_TEXT, OUTSIDE_HEADING, TITLE, BwaReport, block_headers, cells, column_labels, period_line,
                     visible, visible_accounts)
-from .pdf_core import build_multi_page_pdf, escape_pdf_string
-from .pdf_document import text_width
-from .pdf_worktime import info_width, printed_text
+from . import pdf_table
+from .pdf_core import build_multi_page_pdf
 
 PAGE_SIZE = (842, 595)             # A4 quer
 LEFT_X = 36
@@ -62,67 +63,26 @@ def page_layout(block_heights) -> list[list[int]]:
     (mindestens eine Seite). Ein Block wird nicht geteilt, solange er auf eine Seite passt; passt er auf die Restseite nicht
     mehr, beginnt er auf der nächsten. Ein Block, der länger ist als eine Seite, beginnt auf einer neuen Seite und läuft dann
     über so viele, wie er braucht. Keine Zeile steht unter ``BOTTOM_Y``."""
-    pages: list[list[int]] = [[]]
-    used = 0
-    for height in block_heights:
-        height = max(1, int(height))
-        if height <= LINES_PER_PAGE:
-            if used + height > LINES_PER_PAGE:
-                pages.append([])
-                used = 0
-            pages[-1].append(height)
-            used += height
-            continue
-        if used:
-            pages.append([])
-        while height > LINES_PER_PAGE:
-            pages[-1].append(LINES_PER_PAGE)
-            pages.append([])
-            height -= LINES_PER_PAGE
-        pages[-1].append(height)
-        used = height
-    return pages
+    return pdf_table.page_layout(block_heights, LINES_PER_PAGE)
 
 
 def _clean(text) -> str:
-    """Ein Text, wie er im PDF steht (``printed_text``), ohne Zeilenumbrüche, Tabulatoren und andere Steuerzeichen – sie ergäben
-    mitten im Text eine neue Zeile des Content-Streams."""
-    printed = printed_text(text)
-    return ' '.join(''.join(' ' if ord(ch) < 32 or ord(ch) == 127 else ch for ch in printed).split())
+    """Ein Text, wie er im PDF steht, ohne Zeilenumbrüche, Tabulatoren und andere Steuerzeichen (``pdf_table.clean``)."""
+    return pdf_table.clean(text)
 
 
 def _width(text: str, size: float, font: str) -> float:
-    return text_width(text, size, '/F2') if font == '/F2' else info_width(text, size)
+    return pdf_table.width(text, size, font)
 
 
 def _fit(text, max_width: float, size: float) -> str:
-    """Der Text auf ``max_width`` pt gekürzt (mit „…“), ohne Steuerzeichen. Die Laufzeit hängt nicht von der Länge des Namens ab:
-    betrachtet werden höchstens ``MAX_LABEL_CHARS`` Zeichen."""
-    raw = str(text if text is not None else '')
-    cleaned = _clean(raw[:MAX_LABEL_CHARS])
-    if len(raw) <= MAX_LABEL_CHARS and info_width(cleaned, size) <= max_width:
-        return cleaned
-    reserve = info_width('…', size)
-    kept, used = 0, 0.0
-    for index, char in enumerate(cleaned):
-        used += info_width(char, size)
-        if used + reserve > max_width:
-            break
-        kept = index + 1
-    return cleaned[:kept].rstrip() + '…'
+    """Der Text auf ``max_width`` pt gekürzt (mit „…“); betrachtet werden höchstens ``MAX_LABEL_CHARS`` Zeichen (``pdf_table.fit``)."""
+    return pdf_table.fit(text, max_width, size, MAX_LABEL_CHARS)
 
 
 def _cell(x: float, y: float, text, font: str = '/F1', size: float = ROW_SIZE, right: bool = False, gray: bool = False) -> list[str]:
-    """Eine Textzelle an absoluter Position; ``right``: ``x`` ist die rechte Kante des Textes."""
-    printed = _clean(text)
-    if right:
-        x -= _width(printed, size, font)
-    ops = ['0.5 g'] if gray else []
-    ops.append(f'{font} {size:g} Tf')
-    ops.append(f'1 0 0 1 {x:.1f} {y:.1f} Tm ({escape_pdf_string(printed)}) Tj')
-    if gray:
-        ops.append('0 g')
-    return ops
+    """Eine Textzelle an absoluter Position; ``right``: ``x`` ist die rechte Kante des Textes (``pdf_table.cell``)."""
+    return pdf_table.cell(x, y, text, font, size, right, gray)
 
 
 def _column_edge(index: int) -> float:
@@ -132,7 +92,7 @@ def _column_edge(index: int) -> float:
 
 def _line(y: float) -> str:
     """Eine dünne Linie über die ganze Breite – wird nach dem Textobjekt gezeichnet."""
-    return f'q 0.5 w {LEFT_X:.1f} {y:.1f} m {RIGHT_X:.1f} {y:.1f} l S Q'
+    return pdf_table.hline(y, LEFT_X, RIGHT_X)
 
 
 def _rows(report: BwaReport, with_accounts: bool) -> list[list[Row]]:
