@@ -775,17 +775,119 @@ def test_the_bank_check_lists_the_banks_with_their_own_number_and_not_the_cash_r
     assert report.bank_checks[0].movements == report.bank_checks[0].closing
 
 
+#: Die Umsatzsteuerkonten, die der Standard-Kontenrahmen seit 2.6.1 zusätzlich führt (``seed_data/chart_of_accounts_skr04.json``): Ein Bestand von vorher
+#: hat sie nicht. 3801 ist das Konto der Umsatzsteuer zu 7 % und 5 %, auf dem die Liste die Steuer bucht.
+SALES_TAX_ACCOUNTS = [(3800, 'Umsatzsteuer'), (3801, 'Umsatzsteuer 7%'), (3802, 'Umsatzsteuer aus innergemeinschaftlichem Erwerb'),
+                      (3804, 'Umsatzsteuer aus innergemeinschaftlichem Erwerb 19%'), (3830, 'Umsatzsteuer-Vorauszahlungen 1/11'),
+                      (3841, 'Umsatzsteuer Vorjahr')]
+
+
+def chart_rows(db, *numbers):
+    """Die Zeilen ``(Nummer, Name, Gruppe, Standard)`` dieser Konten im Kontenrahmen 4 der Datenbank, nach Nummer."""
+    marks = ', '.join('?' * len(numbers))
+    with closing(sqlite3.connect(db.db_name)) as con:
+        return con.execute(f'SELECT AccountNumber, Name, Description, IsStandard FROM ChartOfAccounts '
+                           f'WHERE Framework = 4 AND AccountNumber IN ({marks}) ORDER BY AccountNumber', numbers).fetchall()
+
+
+def without_accounts(source, path, *numbers):
+    """Eine Kopie der Datenbank ``source`` (über die Sicherungsschnittstelle von SQLite), deren Kontenrahmen die Konten ``numbers`` nicht führt – so sieht ein
+    Bestand von vor 2.6.1 aus. Es bucht kein Satz auf diese Konten; geöffnet wird die Kopie wie jede Datenbank (der Start legt nie Konten nach)."""
+    path = str(path)
+    with closing(sqlite3.connect(source.db_name)) as origin, closing(sqlite3.connect(path)) as copy:
+        origin.backup(copy)
+    marks = ', '.join('?' * len(numbers))
+    helpers.raw(Database(path), f'DELETE FROM ChartOfAccounts WHERE Framework = 4 AND AccountNumber IN ({marks})', *numbers)
+    db = Database(path)
+    assert chart_rows(db, *numbers) == []
+    return db
+
+
+def assert_3801_follows_the_chart(db, year, month):
+    """3801 steht im Bericht und auf der Seite mit dem Namen des Kontenrahmens, mit Werten und ohne den Zusatz – und kein Konto der Liste trägt ihn."""
+    accounts = helpers.accounts_of(db.get_susa(year, month))
+    assert accounts[3801].ytd_haben > 0                                                           # die Umsatzsteuer zu 7 % ist gebucht
+    assert (accounts[3801].name, accounts[3801].outside_chart) == ('Umsatzsteuer 7%', False)
+    assert not any(account.outside_chart for account in accounts.values())
+    rows = table_rows(page_of(db, year, month))
+    assert [row.startswith('3801 | Umsatzsteuer 7% | ') for row in rows if row.startswith('3801 | ')] == [True]
+    assert not any(susa.NOT_IN_CHART_SUFFIX in row for row in rows)
+
+
 def test_the_tax_is_booked_on_the_tax_accounts_by_rate_in_the_susa_world(susa_world):
     accounts = helpers.accounts_of(susa_world.db.get_susa(2026, 12))
     assert accounts[3806].ytd_haben > 0 and accounts[3801].ytd_haben > 0 and accounts[1406].ytd_soll > 0 and accounts[1401].ytd_soll > 0
     assert susa.TAX_UNASSIGNED not in accounts or not susa.visible(accounts[susa.TAX_UNASSIGNED])
-    assert accounts[3801].outside_chart and accounts[3801].name == 'Umsatzsteuer 7 % (nicht im Kontenrahmen)'   # 3801 steht nicht im Kontenrahmen
-    assert not accounts[3806].outside_chart and not accounts[1406].outside_chart
+    assert not any(accounts[number].outside_chart for number in (1401, 1406, 3801, 3806))        # der Standard-Kontenrahmen führt alle vier
 
 
-def test_a_tax_account_of_the_chart_keeps_its_name(tmp_path):
+def test_a_fresh_book_names_3801_after_the_chart_and_shows_no_suffix(susa_world):
+    """Der Standard-Kontenrahmen führt 3801 „Umsatzsteuer 7%“ seit 2.6.1. Ein frischer Bestand zeigt das Konto im Bericht (``get_susa``) und auf der Seite
+    (``/susa``) mit diesem Namen und ohne den Zusatz „(nicht im Kontenrahmen)“, der nur noch dort steht, wo der Kontenrahmen das Konto nicht führt."""
+    assert_3801_follows_the_chart(susa_world.db, 2026, 12)
+
+
+def test_the_demo_stock_names_3801_after_the_chart_and_shows_no_suffix(demo_db):
+    """Dasselbe im Demobestand: Seine Umsatzsteuer zu 7 % (Kaffee, Tee) steht auf 3801 „Umsatzsteuer 7%“, ohne Zusatz."""
+    assert_3801_follows_the_chart(demo_db, 2026, 10)
+
+
+def test_a_book_whose_chart_lacks_3801_names_it_after_the_table_and_shows_the_suffix(susa_world, tmp_path):
+    """Ein Bestand von vor 2.6.1 – oder einer, dessen Nutzer das Konto gelöscht hat – führt 3801 nicht, und es bucht kein Satz darauf: Die Liste nennt das
+    Konto weiter mit dem Namen aus ``TAX_ACCOUNT_NAMES`` und dem Zusatz „(nicht im Kontenrahmen)“, im Bericht und auf der Seite. Die übrigen Steuerkonten
+    und der Betrag bleiben unberührt."""
+    db = without_accounts(susa_world.db, tmp_path / 'ohne3801.db', 3801)
+    accounts = helpers.accounts_of(db.get_susa(2026, 12))
+    assert accounts[3801].name == 'Umsatzsteuer 7 % (nicht im Kontenrahmen)' and accounts[3801].outside_chart
+    assert not any(accounts[number].outside_chart for number in (1401, 1406, 3806))
+    assert accounts[3801].ytd_haben == helpers.accounts_of(susa_world.db.get_susa(2026, 12))[3801].ytd_haben > 0
+    rows = table_rows(page_of(db, 2026, 12))
+    assert any(row.startswith('3801 | Umsatzsteuer 7 % (nicht im Kontenrahmen) | ') for row in rows)
+    assert len([row for row in rows if susa.NOT_IN_CHART_SUFFIX in row]) == 1
+
+
+def test_a_book_from_before_2_6_1_gets_the_sales_tax_accounts_through_the_missing_standard_accounts(susa_world, tmp_path):
+    """Der Kontenrahmen eines bestehenden Bestands bleibt beim Öffnen, wie er ist: Einem Bestand von vor 2.6.1 fehlen die sechs Umsatzsteuerkonten des Standard-
+    Kontenrahmens (3800, 3801, 3802, 3804, 3830, 3841). ``missing_standard_accounts`` nennt sie mit dem Namen der Seed-Datei, ``add_missing_standard_accounts``
+    legt sie an – danach zeigt die Liste 3801 mit dem Namen des Kontenrahmens und ohne Zusatz."""
+    numbers = [number for number, _name in SALES_TAX_ACCOUNTS]
+    expected = [(number, name, 'Fremdkapitalkonten', 1) for number, name in SALES_TAX_ACCOUNTS]
+    assert chart_rows(susa_world.db, *numbers) == expected                                         # ein frischer Bestand führt alle sechs
+    db = without_accounts(susa_world.db, tmp_path / 'alt.db', *numbers)
+    assert helpers.accounts_of(db.get_susa(2026, 12))[3801].outside_chart                          # vorher: mit Zusatz
+    assert db.missing_standard_accounts() == SALES_TAX_ACCOUNTS
+    assert db.add_missing_standard_accounts() == len(SALES_TAX_ACCOUNTS)
+    assert db.missing_standard_accounts() == []
+    assert chart_rows(db, *numbers) == expected
+    assert_3801_follows_the_chart(db, 2026, 12)
+
+
+def assert_the_sales_tax_accounts_change_no_number(db, tmp_path, monkeypatch, spans):
+    """Derselbe Bestand mit und ohne die sechs Umsatzsteuerkonten im Kontenrahmen: EÜR (``get_euer_data``), BWA, Dashboard und der Stapel für das Steuerbüro
+    (Byte für Byte) sind gleich. Spannen: ``(von, bis, Jahr, Monat)`` – ``von`` und ``bis`` für EÜR, Dashboard und Stapel, Jahr und Monat für die BWA."""
+    older = without_accounts(db, tmp_path / 'ohne.db', *(number for number, _name in SALES_TAX_ACCOUNTS))
+    for date_from, date_to, year, month in spans:
+        where = (date_from, date_to)
+        assert older.get_euer_data(date_from, date_to) == db.get_euer_data(date_from, date_to) != [], where
+        assert older.get_bwa(year, month, 'vorjahr') == db.get_bwa(year, month, 'vorjahr'), where
+        assert older.get_dashboard(date_from, date_to) == db.get_dashboard(date_from, date_to), where
+        assert export_of(older, date_from, date_to, monkeypatch)[0] == export_of(db, date_from, date_to, monkeypatch)[0], where
+
+
+def test_the_sales_tax_accounts_in_the_chart_change_no_number_of_the_susa_world(susa_world, tmp_path, monkeypatch):
+    """Das bloße Vorhandensein der Konten im Kontenrahmen ändert keine Zahl: Die Umsatzsteuer der Einnahmen steht in der EÜR auf der virtuellen Zeile 3806,
+    gesucht werden nur feste Nummern und die Bereiche der Anlage-, Erfolgs- und Erlöskonten – und es bucht kein Satz auf die neuen Konten."""
+    assert_the_sales_tax_accounts_change_no_number(susa_world.db, tmp_path, monkeypatch, [('2026-01-01', '2026-12-31', 2026, 12)])
+
+
+def test_the_sales_tax_accounts_in_the_chart_change_no_number_of_the_demo_stock(demo_db, tmp_path, monkeypatch):
+    assert_the_sales_tax_accounts_change_no_number(demo_db, tmp_path, monkeypatch, [('2025-01-01', '2025-12-31', 2025, 12), ('2026-01-01', '2026-10-31', 2026, 10)])
+
+
+def test_a_tax_account_of_the_chart_keeps_its_own_name(tmp_path):
+    """Ein Konto des Kontenrahmens trägt seinen eigenen Namen – auch ein umbenanntes –, nie den aus ``TAX_ACCOUNT_NAMES``."""
     db = Database(str(tmp_path / 't.db'))
-    assert db.insert_chart_of_accounts(4, 3801, 'Umsatzsteuer 7 % (Kontenrahmen)', 'Test')
+    helpers.raw(db, 'UPDATE ChartOfAccounts SET Name = ? WHERE Framework = 4 AND AccountNumber = 3801', 'Umsatzsteuer 7 % (Kontenrahmen)')
     db.insert_account('Probe-Giro', 'Ich', 'DE02', 'BIC', 'Bank', is_cash=0, skr_account=1800)
     helpers.mask(db, 'Probe-Giro', 4300, '107.00', '2026-03-10', '7', '7.00')
     account = helpers.accounts_of(db.get_susa(2026, 3))[3801]
@@ -1712,7 +1814,7 @@ def test_the_page_lists_the_groups_with_their_accounts_and_sums_in_the_order_of_
         'fixed_assets', 'current_assets', 'equity', 'liabilities', 'revenue', 'open_items', 'expenses', 'personal', 'not_posted')]
     sums = [row.split(' | ')[0] for row in rows if row.startswith('Summe ')]
     assert sums == ['Summe ' + heading for heading in headings]
-    assert any(row.startswith('1800 | ') for row in rows) and any(row.startswith('3801 | Umsatzsteuer 7 % (nicht im Kontenrahmen)') for row in rows)
+    assert any(row.startswith('1800 | ') for row in rows) and any(row.startswith('3801 | Umsatzsteuer 7% | ') for row in rows)      # 3801 führt der Kontenrahmen
     assert len([row for row in rows if row.startswith(' | Nicht kontiert (Gegenseite fehlt) | ')]) == 1          # ohne Nummer, gedämpft
     assert len([row for row in rows if row.startswith(' | Ergebnis der Vorjahre (rechnerisch) | ')]) == 1
     assert '<td></td><td class="hint">Nicht kontiert (Gegenseite fehlt)</td>' in page

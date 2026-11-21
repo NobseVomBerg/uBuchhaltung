@@ -867,7 +867,8 @@ kein Subagent darauf:
   Exports (Konto, Gegenkonto, S/H, Betrag). **Buchungsregel** (`entry_postings`, rein, in Minor Units): Betrag ohne Vorzeichen, Soll/Haben nach der Form (`purpose_first`: positiv Gegenkonto im Soll,
   `liquid_first`/`transfer`/`mirror_coa`: positiv Konto im Soll, `mirror_counter`: positiv Gegenkonto im Soll); `mirror_legacy` bucht nie (Lesart unbekannt – wie beim Abgleich nie gedeutet, Hinweis); der
   **gespeicherte** Steuerbetrag wird aus der Seite des Zweckkontos herausgerechnet (nichts nachgerechnet) und steht auf 1401/1406 (Vorsteuer) bzw. 3801/3806 (Umsatzsteuer; 16 % und 5 % auf den Konten von 19 % und 7 %,
-  `TAX_ACCOUNTS`; ein anderer Satz auf „Steuer ohne Steuerkonto“; ein Steuerkonto, das der Kontenrahmen nicht führt, mit dem Zusatz „(nicht im Kontenrahmen)“), die Seite bestimmt `tax_side` nach der Art; die
+  `TAX_ACCOUNTS`; ein anderer Satz auf „Steuer ohne Steuerkonto“; ein Steuerkonto, das der Kontenrahmen nicht führt, mit dem Zusatz „(nicht im Kontenrahmen)“ – der Standard-Kontenrahmen führt 3801 seit 2.6.1,
+  ein älterer Bestand bekommt es über „fehlende Standardkonten“ und trägt bis dahin den Zusatz), die Seite bestimmt `tax_side` nach der Art; die
   Forderung einer Rechnung und die Gegenbuchung der Stornorechnung (Debitor auf einer Seite) werden nie zerlegt. **Kontenklassen und Vortrag stehen an EINER Stelle** (`GROUPS`, `group_key`, `is_carried`):
   Bestandskonten und die Wartekonten 4340/4345/4405 (eigene Gruppe „Offene Posten“) tragen vor, Erfolgskonten 4000–7999 beginnen bei 0 – ihre Summe der Vorjahre steht auf dem virtuellen Konto „Ergebnis der
   Vorjahre (rechnerisch)“ beim Eigenkapital; Privat- und Steuerkonten werden mangels Abschluss vorgetragen, eine Eröffnungsbilanz gibt es nicht (ein Konto ohne Buchungen vor dem ersten Kontoauszug beginnt bei 0).

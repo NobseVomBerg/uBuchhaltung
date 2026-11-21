@@ -84,7 +84,7 @@ Kontenrahmens an (`Database.add_missing_standard_accounts`) – nie der Start:
 
 | Tabelle | Quelle | Einträge |
 |---------|--------|----------|
-| ChartOfAccounts | `seed_data/chart_of_accounts_skr04.json` + optional `seed_data/private/` | 82 Standard + eigene |
+| ChartOfAccounts | `seed_data/chart_of_accounts_skr04.json` + optional `seed_data/private/` | 88 Standard + eigene |
 | AssetCategories | `seed_data/asset_categories.json` | 30 BMF-Kategorien |
 | TaxKeys | `seed_data/tax_keys.json` | 53 DATEV-BU-Schlüssel |
 
@@ -1366,8 +1366,9 @@ DATEV-Export und mit derselben Lesart** – eine eigene Deutung von Form, Soll u
   | Vorsteuer | 1406 | 1406 | 1401 | 1401 | „Steuer ohne Steuerkonto“ (virtuell, Hinweis `tax_unassigned`) |
   | Umsatzsteuer | 3806 | 3806 | 3801 | 3801 | ebenso |
 
-  16 % und 5 % liegen auf den Konten von 19 % und 7 %; 3801 steht nicht im Standard-Kontenrahmen und trägt dann den Namen aus `TAX_ACCOUNT_NAMES` mit dem Zusatz „(nicht im
-  Kontenrahmen)“. Umsatzsteuer und Vorsteuer werden nicht verrechnet, einen Abschluss gibt es nicht.
+  16 % und 5 % liegen auf den Konten von 19 % und 7 %. Der Name kommt aus dem Kontenrahmen; wo er das Konto nicht führt, trägt es den Namen aus `TAX_ACCOUNT_NAMES` mit dem Zusatz „(nicht im
+  Kontenrahmen)“. Der Standard-Kontenrahmen führt 3801 seit 2.6.1; ein älterer Bestand bekommt es über „Standardkonten ergänzen“ (`missing_standard_accounts`) und trägt bis dahin den Zusatz.
+  Umsatzsteuer und Vorsteuer werden nicht verrechnet, einen Abschluss gibt es nicht.
 - **Kontenklassen und Vortrag** (EINE Stelle: `GROUPS`, `group_key`, `is_carried`):
 
   | Gruppe | Bereich | trägt vor |
