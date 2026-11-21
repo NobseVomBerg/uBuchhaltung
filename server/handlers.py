@@ -39,6 +39,7 @@ from db.invoice_lock import (DocumentNotFound, EDITABLE_STATUSES, InvoiceLocked,
 from db.invoice_storno import NO_COUNTER_BOOKING_HINT
 from db.invoice_versions import CorrectionInvalid
 from db.invoice_payments import RECEIVABLE_STATUSES, BankChangeRefused, PaymentRemovalRefused
+from db.invoice_repair import REBUILD_WARNING
 from db.numbering import NumberRangeError, number_format_error
 from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
 from db.accounts import DEFAULT_CASH_ACCOUNT
@@ -2714,6 +2715,91 @@ def handle_booking_unlink_document(db, post_body: bytes):
         traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
         return 500, json.dumps({'success': False, 'error': receipt_links.UNLINK_FAILED})
     return 200, json.dumps({'success': True, 'removed': removed, **_link_lists(db, booking_id, document_id)})
+
+
+# „Zuordnung neu aufbauen“ (``POST /invoice/rebuild-payments``): der feste Satz für jeden unerwarteten Fehler – nie ein Ausnahmetext
+REBUILD_FAILED = ('Die Zuordnung ließ sich nicht prüfen oder neu aufbauen – Einzelheiten stehen im Server-Log. '
+                  'Es wurde nichts geändert.')
+
+
+def _is_rebuild_check(value):
+    """Die Prüfsumme eines Probelaufs (``RebuildPlan.check``): ein Text aus genau 64 Hexziffern in Kleinschreibung."""
+    return isinstance(value, str) and len(value) == 64 and all(char in '0123456789abcdef' for char in value)
+
+
+def rebuild_plan_payload(plan):
+    """Der Plan einer Neubuchung (``db.invoice_repair.RebuildPlan``) für die Seite: nur Werte zum Anzeigen, Beträge als fertiger Text
+    (``fmt_eur``), Status mit seiner Bezeichnung – die Seite setzt alles als Text ein (``textContent``). ``check`` ist die Prüfsumme,
+    die die Ausführung zurückschickt. Der Text der Aktion ``recalc`` entsteht hier aus den Feldern des Plans: Die Datenbankschicht
+    nennt den Status mit seinem Schlüssel (``sent``), die Bezeichnung („Versendet“) kennt die Oberfläche."""
+    def euro(minor):
+        return fmt_eur(from_minor(minor or 0))
+
+    def label(status):
+        return STATUS_LABELS.get(status, status or '–')
+
+    def account(number):
+        return '–' if number is None else str(number)
+
+    actions = []
+    for action in plan.actions:
+        text = action.text
+        if action.kind == 'recalc':
+            text = f'Offener Betrag {euro(plan.due_before)} → {euro(plan.due_after)}'
+            if plan.status_after != plan.status_before:
+                text += f'; Status {label(plan.status_before)} → {label(plan.status_after)}'
+        actions.append({'kind': action.kind, 'text': text})
+    return {
+        'invoiceNumber': plan.invoice_number, 'nothingToDo': not plan.actions, 'check': plan.check, 'actions': actions,
+        'rows': [{'date': row.date, 'account': account(row.account), 'counterAccount': account(row.counter_account),
+                  'amount': euro(row.amount), 'tax': '–' if row.tax is None else euro(row.tax), 'text': row.text or '',
+                  'euer': row.euer_account is not None} for row in plan.rows],
+        'euer': [{'date': effect.date, 'account': account(effect.account), 'net': euro(effect.net), 'tax': euro(effect.tax)}
+                 for effect in plan.euer],
+        'invoice': {'statusBefore': label(plan.status_before), 'statusAfter': label(plan.status_after),
+                    'dueBefore': euro(plan.due_before), 'dueAfter': euro(plan.due_after)},
+        'skipped': list(plan.skipped), 'remaining': [text for _category, text in plan.findings_after],
+        'warning': REBUILD_WARNING}
+
+
+def handle_invoice_rebuild_payments(db, post_body: bytes):
+    """Die Zahlungszuordnung einer Rechnung neu aufbauen (``POST /invoice/rebuild-payments``, JSON ``{"invoiceId"[, "execute",
+    "check", "revenueCoaId"]}``): ``Database.rebuild_invoice_payments`` – ohne ``execute`` (Standard) ein Probelauf, der nichts
+    schreibt und den Plan samt Prüfsumme (``plan.check``) nennt, mit ``execute: true`` die Ausführung, die genau diese Prüfsumme als
+    ``check`` mitbringt (``check`` ohne ``execute`` ist eine ungültige Anfrage). ``revenueCoaId``: das Erlöskonto, das der Nutzer
+    wählt, wenn für den Steuersatz keines hinterlegt ist. Auch der Probelauf ist ein POST: Er nimmt kurz die Schreibsperre.
+
+    Die IDs liest die Route streng (``_json_positive_id``), ``execute`` ist ein Wahrheitswert, ``check`` eine SHA-256-Prüfsumme (64
+    Hexziffern) – alles andere ist eine ungültige Anfrage (400), bevor etwas geschieht. Die Antwort trägt ``success``, ``executed``,
+    ``needsRevenueCoa`` und – bei einer Ablehnung (404, 400, 409) – den Klartext ``error``, bei einer Ausführung ``message``; mit
+    ``plan`` (``rebuild_plan_payload``), wo es einen gibt: Hat sich der Bestand seit dem Probelauf geändert (409), steht der frische
+    Plan darin. Ein unerwarteter Fehler: 500 mit ``REBUILD_FAILED``, der Ausnahmetext nur im Server-Log; nichts ist dann geändert.
+
+    Returns tuple: (status_code, json_body)
+    """
+    data = _json_request(post_body)
+    invoice_id = _json_positive_id(data, 'invoiceId')
+    execute = data.get('execute', False)
+    if not isinstance(execute, bool):
+        raise InvalidRequest('execute ist kein Wahrheitswert')
+    check = data.get('check')
+    if execute and not _is_rebuild_check(check):
+        raise InvalidRequest('check fehlt oder ist keine Prüfsumme')
+    if not execute and check is not None:
+        raise InvalidRequest('check gehört nur zur Ausführung')
+    revenue_coa_id = None if data.get('revenueCoaId') in (None, '') else _json_positive_id(data, 'revenueCoaId')
+    try:
+        result = db.rebuild_invoice_payments(invoice_id, dry_run=not execute, confirmed_check=check, revenue_coa_id=revenue_coa_id)
+    except Exception:
+        import traceback
+        traceback.print_exc()                       # der volle Fehler nur ins Server-Log, nie in die Antwort
+        return 500, json.dumps({'success': False, 'error': REBUILD_FAILED})
+    body = {'success': result.ok, 'executed': result.executed, 'needsRevenueCoa': result.needs_revenue_coa}
+    if result.message:
+        body['message' if result.ok else 'error'] = result.message
+    if result.plan is not None:
+        body['plan'] = rebuild_plan_payload(result.plan)
+    return result.code, json.dumps(body)
 
 
 def _search_query(qs):

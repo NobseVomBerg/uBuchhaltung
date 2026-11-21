@@ -158,7 +158,8 @@ kein Subagent darauf:
   `fetch(url, {method: 'POST'})`, das Footer-JS hängt das Token an), Abmelden
   (`POST /logout` neben `/login` in `_auth_routes_*`) und das Stornieren und Neu-Ausstellen einer Rechnung
   (`/invoice/cancel`, `/invoice/reissue`: JSON-Routen in `_JSON_PATHS`, dazu `_POST_ONLY_JSON_PATHS`), das Verknüpfen von Belegen
-  (`/bookings/link-document`, `/bookings/unlink-document`: ebenso) und der Upload der
+  (`/bookings/link-document`, `/bookings/unlink-document`: ebenso), der Neuaufbau einer Zahlungszuordnung
+  (`/invoice/rebuild-payments`: ebenso – auch der Probelauf ist ein POST, er nimmt kurz die Schreibsperre) und der Upload der
   WISO-Datenbank (`/wiso/fdb-upload` in `_UPLOAD_PATHS`: roher Body, JSON-Antwort, CSRF-Token als Header per
   `XMLHttpRequest`); GET → jeweils 405
 - **Automatische Anmeldung** (`auto_login` in `config.json`, `auth.auto_login_user()`):
@@ -845,7 +846,64 @@ kein Subagent darauf:
   **Diese Forderungen liest die Prüfliste einmal für alle Paare und Alt-Stornos** (`_app_receivable_amounts`, mit
   Beträgen; dieselbe Bedingung `receivable_condition` und dieselbe Einordnung `_is_app_receivable` wie
   `_app_receivable_ids`, das darauf aufsetzt) – je Rechnung nachzuschlagen wäre quadratisch, `DocumentNumber` hat keinen
-  Index; nur der Filter auf eine Rechnung (`invoice_id`) liest gezielt. Eine Reparatur gibt es nicht
+  Index; nur der Filter auf eine Rechnung (`invoice_id`) liest gezielt. Die Reparatur je Rechnung ist *Zuordnung neu
+  aufbauen* (nächster Punkt)
+- **Zuordnung neu aufbauen (seit 2.5.13, `db/invoice_repair.py`, `Database.rebuild_invoice_payments`; `POST /invoice/rebuild-payments`,
+  JSON `{invoiceId[, execute, check, revenueCoaId]}`):** Die Reparatur der Zahlungszuordnung **einer** Rechnung (es gibt keine
+  Sammelreparatur), nur nach einem Probelauf und mit Bestätigung. Sie macht vier Dinge, in dieser Reihenfolge: (A) doppelte Zuordnungen
+  desselben Paares (Rechnung, Bewegung) mit gleichem Betrag zusammenfassen – die kleinste ID bleibt, verschiedene Beträge nur melden –,
+  (B) die als Kind an einer Bankbewegung hängende Forderung der App (genau eine, `_is_app_receivable`) lösen (`ParentBooking_ID` leer, ein
+  Status `resolved` zurück – wie `remove_split_row`), (C) jede Zuordnung ohne eigene Sätze mit den heutigen Bausteinen neu schreiben
+  (`_unassign` + `_assign_in_tx`, **in zwei Phasen in EINEM Savepoint:** erst alle Kandidatinnen entfernen, dann in der Reihenfolge der
+  Bankbewegungen (ihr Datum, dann die ID der Zuordnung) neu buchen – so verteilt sich die Steuer wie beim Zuordnen nacheinander: die späteren
+  zählen noch nicht als bezahlt, die letzte, die die Rechnung schließt, bekommt den Rest, und nicht angefasste Zuordnungen zählen als schon
+  bezahlt (das bisherige Zahlungsdatum einer Zuordnung bestimmt die Reihenfolge nicht). Geht eine
+  nicht mit genau ihrem Betrag, nimmt der Savepoint den ganzen Durchgang zurück (Zuordnungen, Sätze, Rechnung und die Einträge fürs Replay-Log),
+  sie bleibt samt ID liegen und wird als `not_free` gemeldet, und die übrigen laufen ohne sie noch einmal – höchstens so viele Durchgänge, wie
+  es Kandidatinnen gibt. Eine Notiz der alten Zuordnung bleibt; das Zahlungsdatum der neuen ist das Datum der Bankbewegung, und weicht das
+  bisherige ab, nennt es der Text der Aktion – mit dem alten Wert nur, wenn der ein ISO-Datum ist), (D) den offenen Betrag neu rechnen – **der Status bleibt** (eine von Hand auf
+  „bezahlt“ gesetzte Rechnung bleibt es), nur nach A rechnet `next_payment_status` ihn mit dem Tag `today` neu. **Es wird kein Buchungssatz
+  gelöscht oder geändert** (B ist die eine Ausnahme: nur `ParentBooking_ID`/`Status` der Forderung); neue Sätze kommen nur dazu, mit Datum und
+  Steuerdatum der Bankbewegung und der Marke. `_booking_snapshot_unchanged` prüft es mechanisch: Die vorhandenen Sätze der Rechnung, ihrer
+  Bewegungen und deren Kinder müssen nach dem Schreiben Spalte für Spalte gleich sein (die gelöste Forderung ausgenommen) – sonst nimmt die
+  Reparatur alles zurück und meldet es (409, `REBUILD_UNSAFE_MESSAGE`). **Ein zweites Netz** liest die Prüfliste nach dem Schreiben noch einmal:
+  Nennt sie eine Kategorie, die sie vorher nicht nannte (etwa `transfer_mismatch`, wenn ein Erlös doppelt gebucht würde), geht ebenso alles
+  zurück (409, `REBUILD_UNSAFE_MESSAGE`); die Kategorien stehen nur im Server-Log, nie in der Antwort. Storno-Paare (die Rechnung hat eine Stornorechnung oder ist eine),
+  Rechnungen außerhalb von versendet/überfällig/Teilzahlung/bezahlt und ohne positiven Betrag bekommen nur den neu gerechneten offenen Betrag.
+  **Bedingungen für C („R1“), alle zugleich:** die Zuordnung hängt an einer Bankbewegung mit Zahlungseingang; unter der Bewegung steht kein Satz
+  mit `SourceGroup` (Import: still übergangen) und keiner mit der Nummer dieser Rechnung (außer der in B gelösten Forderung); jeder andere
+  Satz trägt die Nummer einer anderen Rechnung, die selbst der Bewegung zugeordnet ist; die Forderung der Rechnung ist genau eine und von der
+  App; das Bankkonto hat eine SKR-Nummer; der Betrag hat keinen Bruchteil eines Cents; für den Steuersatz ist ein Erlöskonto hinterlegt oder
+  gewählt (`resolve_revenue_coa(…, create=False)` – **die Reparatur legt nie ein Konto an**, auch der Probelauf nicht; fehlt es, kommt
+  `needs_revenue_coa` vor dem ersten Schreiben). **Dazu gilt für die ganze Rechnung „nichts an anderer Stelle“** (`_rows_elsewhere`, gelesen vor
+  jeder Kandidatin; Grund `elsewhere`, einmal je Rechnung; A, B und D laufen weiter): Es gibt keinen Buchungssatz, der keine Bankzeile ist, die
+  Nummer der Rechnung trägt (ohne Leerraum am Rand – alles, was `str.strip()` entfernt, auch Tabulator, Zeilenumbruch und geschütztes
+  Leerzeichen: `_EDGE_WHITESPACE` – und ohne Rücksicht auf die Schreibweise: `LOWER(TRIM(…, _EDGE_WHITESPACE))`), nicht ihre Forderung ist und nicht
+  unter einer Bankbewegung steht, der diese Rechnung zugeordnet ist – also keinen eigenständigen Satz (auch nicht auf der Kasse), keinen unter
+  einer fremden Bewegung und keinen mit `SourceGroup` –, und die Prüfliste nennt für die Rechnung keinen Befund `orphan_payment_rows`; sonst
+  stünde der Erlös nach dem Neuaufbau zweimal in den Büchern. Der Grund steht nur im Plan, wenn dadurch eine Zuordnung nicht aufgebaut wird.
+  **Und die vorhandenen Sätze buchen nicht mehr Erlös, als die übrigen Zuordnungen erklären** (Erlös = Betrag der Sätze, die auf einer Seite ein
+  Erlöskonto führen, ohne Wartekonten: „Wartekonto an Erlöskonto“ und „Erlöskonto an Bank“ je einmal, „Bank an Debitoren“ nie; ein Betrag, der keine
+  ganze Zahl ist, sperrt): **je Rechnung** (`_overbooked`, Grund `overbooked`, einmal je Rechnung; A, B und D laufen weiter) liegt der Erlös aller Sätze
+  mit ihrer Nummer (außer der Forderung) nicht über der Summe ihrer Zuordnungen, die bleiben – nicht zusammengefasst, nicht neu gebaut –, **je Bewegung**
+  (`_overbooked_movement`, Grund `overbooked_movement`) der Erlös der Sätze unter ihr (sie gehören alle anderen zugeordneten Rechnungen) nicht über der
+  Summe von deren Zuordnungen dort; sonst stünde der Erlös nach dem Neuaufbau zweimal in den Büchern.
+  **Diese Bedingungen nicht lockern – lieber melden als falsch reparieren.** **Grenze:** Einen Satz ohne die Rechnungsnummer, der denselben Erlös
+  schon bucht, erkennt die Funktion nicht – deshalb zeigt der Probelauf die Wirkung auf die EÜR, und der Hinweis im Plan bittet um die Prüfung.
+  Was nicht angefasst wird, steht mit festem Grund in `skipped` (`REBUILD_SKIP_REASONS`). **Probelauf und Ausführung sind derselbe Code** (`_rebuild_in`,
+  EINE `BEGIN IMMEDIATE`-Transaktion): Der Probelauf endet mit ROLLBACK und hinterlässt nichts – keine Zeile, keinen Zähler (`sqlite_sequence`),
+  keinen Eintrag im Replay-Log (der folgt wie sonst erst dem Commit); die Ausführung schreibt nur mit `confirmed_check` = `RebuildPlan.check`,
+  der SHA-256-Prüfsumme über Aktionen, neue Sätze (alle Spalten, nie ihre IDs), Wirkung auf die EÜR, Status, offenen Betrag, Befunde vorher
+  und nachher, Gründe, Erlöskonto und – nur wenn Dubletten zusammengefasst werden, denn nur dann hängt der Status vom Tag ab – den Tag; nie an
+  `UpdatedAt`. Hat sich der Bestand seither geändert (oder fehlt die Bestätigung), kommt
+  409 mit dem frischen Plan, und nichts ist geschrieben. Der Plan nennt die Wirkung auf die EÜR je Datum und Erlöskonto (netto, Umsatzsteuer)
+  und fest den Hinweis, dass ein schon gemeldeter Zeitraum dort nachzutragen ist, und die Bitte, vorher zu prüfen, dass Zahlung und Erlös nicht
+  schon an anderer Stelle gebucht sind (keine Steuerberatung); die Seite zeigt ihn nur, wenn der Plan neue Buchungssätze enthält (der Knopf
+  „Neu aufbauen“ steht bei jeder Aktion). Die Route (`_JSON_PATHS` +
+  `_POST_ONLY_JSON_PATHS`, GET → 405) liest die ID über `_json_positive_id`, `execute` als Wahrheitswert, `check` als 64 Hexziffern (nur mit
+  `execute`) und `revenueCoaId` streng; ein unerwarteter Fehler ist 500 mit `REBUILD_FAILED`, nie ein Ausnahmetext. Die Seite der Rechnung
+  zeigt Knopf und Plan unter der Befundliste (nur mit Befund, nicht an einer Stornorechnung; das Skript setzt Werte nur über `textContent`);
+  *Sonstiges* verweist darauf. `tests/test_invoice_payment_repair.py`
 - **Besteuerungsart (seit 2.4.0):** Kleine Variante – die Angabe wird nur gespeichert und angezeigt. `Contacts.VatMethod` (Schema 2004)
   nennt, ob die Umsatzsteuer nach vereinnahmten (`'ist'`, Ist-Versteuerung: mit der Zahlung) oder vereinbarten Entgelten (`'soll'`,
   Soll-Versteuerung: mit der Leistung) entsteht; NULL = nicht festgelegt. Es trägt sie nur ein eigener Kontakt (`ContactType='own'`, Firma
