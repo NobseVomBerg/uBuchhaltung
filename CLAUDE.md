@@ -694,6 +694,25 @@ kein Subagent darauf:
   ≠ 0 (auf den Cent), im Monats-Tooltip nur bei ≠ 0, ohne Balken; Werte maskiert. `tests/test_dashboard_split.py` pinnt die
   Zerlegung (Regeltabelle, Eigenschaftsprüfung, feste Werte der Testwelt); der Maßstab von 2.0.8
   (`entry_form_golden_2_0_8.json`) gilt für das Dashboard nur über Saldo, Anzahl und Monatssummen
+- **Betriebswirtschaftliche Auswertung (seit 2.5.14, `db/bwa.py`, `server/pages_bwa.py`, `export/pdf_bwa.py`; `GET /bwa`, `GET /bwa/pdf`):** eine
+  reine Umgruppierung von `get_euer_data` ohne Kontofilter – sie übernimmt die Zahlen der EÜR unverändert und hat keine eigene Lesart der
+  Buchungen. Einnahme, Ausgabe und „nicht im Ergebnis“ entscheidet EINE Funktion, `reporting.euer_section`, die auch die EÜR-Seite des
+  Dashboards nutzt (`tests/test_bwa.py` hält die frühere Regel dieser Seite für alle Kontonummern fest). Die Gruppen stehen als Daten in
+  `db/bwa.py` (`RANGES`, `EXCEPTIONS`, `group_of`); vom Nutzer pflegbare Gruppen gibt es nicht (das wäre eine Schemaänderung). Ein Konto ohne
+  Gruppe steht unter „Nicht zugeordnet“ und zählt im Ergebnis wie in der EÜR – nie still in einer anderen Gruppe. Die Konten 3800–3849 außer 3806
+  gehen je Konto und Zeitraum nach dem Vorzeichen ihres Saldos zu Erstattungen (> 0, unter den Betriebseinnahmen) bzw. Zahlungen. Invarianten
+  (Test, auf den Minor-Wert, Testwelt und Demobestand): Ergebnis = EÜR-Ergebnis; Betriebseinnahmen − Erstattungen = Summe der EÜR-Einnahmen;
+  Betriebsausgaben − Erstattungen = −Summe der EÜR-Ausgaben. Gerechnet wird nur in Minor Units, Prozente entstehen erst bei der Ausgabe: Ein
+  Anteil bleibt leer bei einer Bezugsgröße ≤ 0, die Veränderung in % bei einem Vorjahreswert von 0 (und bei einem Quotienten, der den Decimal-Kontext sprengt). Gerundet wird erst
+  bei der Anzeige: Trägt ein Bestand Beträge mit Bruchteilen eines Cents, kann eine gedruckte Summe um wenige Cent von der Summe der gedruckten
+  Zeilen abweichen (wie in der EÜR) – nicht glätten, die Gleichheit mit der EÜR geht vor. Zwei Konten gleicher Nummer (verschiedene
+  Kontenrahmen) stehen im Kontennachweis als eine Zeile unter dem zuerst gefundenen Namen. **Zeitraum und Darstellung:** der Monat und
+  aufgelaufen ab 1. Januar, streng gelesen (`parse_year`, `parse_month`, `parse_variant`; ein doppelter Schlüssel ist ungültig) – die Seite nimmt
+  bei fehlendem Zeitraum den Vormonat, bei ungültigem ebenfalls (mit Hinweis), das PDF antwortet 400; die Darstellung ist der Vergleich mit dem
+  Vorjahr (Standard, auf der Seite auch bei ungültiger Angabe) oder `variant=jahr` (Monat und Jahr mit Anteilen). Das PDF ist A4 quer, mehrseitig
+  und landet nie auf der Platte (Download über `appDownload`; Dateiname `BWA_JJJJ-MM.pdf`, mit Anteilen `…_Anteile.pdf`). `/bwa` steht in der
+  Positivliste des Diagnose-MCP (es schreibt nichts, Nachweis im Test), `/bwa/pdf` nicht. Fester Hinweis: keine Steuerberatung.
+  `tests/test_bwa.py`, `tests/test_bwa_pdf.py`
 - **Automatischer Abgleich** (`link_bank_to_entries`, läuft nach jedem Import; seit 2.3.14 mit Richtungsregel): Angefasst
   werden nur Bankbewegungen ohne Kinder und Sätze ohne `ParentBooking_ID` – eine bestehende Verknüpfung und der Text der
   Bankbewegung ändern sich nie. In den Stufen 1–6 (Reihenfolge im Lauf: 0, 1, 2, 4, 3, 3b, 3c, 3d, 5, 6, 6b, Nachlauf, 7) wird
@@ -997,7 +1016,7 @@ kein Subagent darauf:
   `check_page_path`) nicht aufweichen; neue Seiten und Schlüssel nur für GET-Handler, die
   nichts schreiben (Nachweis im Test). `/backup/download` steht bewusst nicht darin: Es liefert den ganzen Datenbestand
   (Gigabyte-Größe). `/receipts/search` und `/transactions/search` stehen bewusst nicht darin: JSON-Suchen der Seiten, keine
-  Anzeigeseiten; dasselbe liefert die SQL-Abfrage
+  Anzeigeseiten; dasselbe liefert die SQL-Abfrage. `/bwa/pdf` steht nicht darin (Dokument)
 - Zugangsdaten aus der Windows-Anmeldeinformationsverwaltung, keyring oder Umgebung, nie im Repo; über `http://` gehen sie nur
   an den eigenen Rechner, sonst nur mit `UBUCHHALTUNG_MCP_ALLOW_HTTP`. Registrierung nur
   lokal (`claude mcp add --scope local`), Einrichtung in `DEPLOYMENT.md`

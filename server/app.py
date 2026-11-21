@@ -8,6 +8,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, quote, urlsplit
 from http.cookies import SimpleCookie
 import contextlib
+import datetime
 import ipaddress
 import json
 import socket
@@ -46,6 +47,7 @@ from .pages_contacts import PageContacts, PageContactNew, PageContactEdit
 from .pages_miscellaneous import PageMiscellaneous
 from .pages_transactions import PageTransactions
 from .pages_dashboard import PageDashboard
+from .pages_bwa import PDF_FAILED_TEXT, PageBwa, read_page_query, read_pdf_query
 from .pages_receipts import PageReceipts, PageReceiptEdit
 from .pages_setup import PageSetup, PageSetupStart
 from .pages_invoice import PageInvoice
@@ -1409,6 +1411,21 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 account_ids = _int_params(qs, 'acct') or None
                 hdrs = {"Set-Cookie": period_cookie_header(date_from, date_to)} if set_cookie else None
                 self.respond(200, PageDashboard(db, date_from, date_to, account_ids), headers=hdrs)
+            elif route == "/bwa":
+                # Betriebswirtschaftliche Auswertung: rein lesend, kein Cookie; Jahr, Monat und Darstellung werden streng gelesen
+                self.respond(200, PageBwa(db, read_page_query(self._query(), datetime.date.today())))
+            elif route == "/bwa/pdf":
+                qs = self._query()
+                query, error = read_pdf_query(qs)
+                if error:
+                    self.respond(400, error, content_type="text/plain; charset=utf-8")
+                else:
+                    with_accounts = qs.get('accounts', ['0'])[0] in ('1', 'true', 'on')
+                    pdf_bytes, filename = handlers.handle_bwa_pdf(db, query, with_accounts, datetime.date.today())
+                    if pdf_bytes is None:
+                        self.respond(500, PDF_FAILED_TEXT, content_type="text/plain; charset=utf-8")
+                    else:
+                        self._send_document(pdf_bytes, filename, None, 'application/pdf', 'attachment')
             elif self.path == "/setup":
                 # Erststart: solange noch kein Administrator angelegt ist, die
                 # Ersteinrichtung zeigen; danach das gewohnte Kontaktformular.

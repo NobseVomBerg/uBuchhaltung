@@ -304,15 +304,13 @@ def test_depreciation_is_booked_for_every_closed_year_and_the_sale_is_recorded(l
 
 def test_the_purchase_of_an_asset_is_no_expense_in_the_euer(loaded):
     """Der Kauf des PKW (Anlagenjahr) steht auf dem Anlagekonto, nicht unter den Betriebsausgaben – wie die Seite der EÜR sie zählt
-    (Konten ab 1000 ohne Erlöse, Privat, Bank und Wartekonten)."""
-    from db.reporting import NEUTRAL_ACCOUNT_NUMBERS, is_income_account
+    (``euer_section``: Konten ab 1000 ohne Erlöse, Privat, Bank und Wartekonten)."""
+    from db.reporting import bank_skr_numbers, euer_section
     data = loaded.db.get_euer_data(f"{CURRENT_YEAR}-01-01", f"{CURRENT_YEAR}-12-31")
     euer = {number: total for number, _name, total in data}
     assert euer[520] == pytest.approx(-23800.0)
-    banks = {a[7] for a in loaded.db.fetch_accounts() if a[7]}
-    expenses = {number: total for number, total in euer.items()
-                if number >= 1000 and not (is_income_account(number) or number == 3806) and not 2100 <= number < 2200
-                and number not in banks and number not in NEUTRAL_ACCOUNT_NUMBERS}
+    banks = bank_skr_numbers(loaded.db.fetch_accounts())
+    expenses = {number: total for number, total in euer.items() if euer_section(number, banks) == "expense"}
     assert expenses and all(abs(total) < 23800 for total in expenses.values())
     assert 6222 not in euer                                            # die AfA des laufenden Jahres ist erst geplant
 

@@ -46,6 +46,40 @@ def is_income_account(account_number) -> bool:
     return INCOME_ACCOUNT_RANGE[0] <= nr <= INCOME_ACCOUNT_RANGE[1]
 
 
+# „Sonstige Ausgaben“ der EÜR-Seite: Die Konten werden angezeigt, zählen aber nicht im Ergebnis.
+OTHER_EXPENSE_ACCOUNTS = frozenset({3160, 3720, 3740})
+
+
+def bank_skr_numbers(accounts) -> set:
+    """Die SKR-Nummern der eigenen Bank- und Kassenkonten (Zeilen von ``fetch_accounts``, Index 7). Als Zweckkonto
+    zeigt die EÜR sie nie: Sie sind Geldkonten, kein Ertrag und kein Aufwand."""
+    return {account[7] for account in accounts if account[7]}
+
+
+def euer_section(account_number, bank_numbers) -> str | None:
+    """Wo eine Zeile von ``get_euer_data`` in der EÜR steht – EINE Regel für die Seite des Dashboards und die
+    betriebswirtschaftliche Auswertung (``db.bwa``):
+
+    * ``'other'``   – „Sonstige Ausgaben“ (``OTHER_EXPENSE_ACCOUNTS``): angezeigt, aber nicht im Ergebnis
+    * ``'income'``  – Betriebseinnahme: ein Erlöskonto (``is_income_account``) und die virtuelle Zeile 3806, auf der
+      ``get_euer_data`` die Umsatzsteuer aus Einnahmen ausweist
+    * ``'expense'`` – Betriebsausgabe: jedes andere Konto ab 1000
+    * ``None``      – steht nicht in der EÜR: die Bestandskonten des Offene-Posten-Verfahrens
+      (``NEUTRAL_ACCOUNT_NUMBERS``, auch als zweite Sicherung – ``get_euer_data`` liefert sie ohnehin nie, ein neues
+      Wartekonto soll aber nicht durchrutschen), die Geldkonten (``bank_numbers``), Privatkonten (2100–2199) und alles
+      unter 1000 (Anlagekonten)
+
+    Die Konten von ``OTHER_EXPENSE_ACCOUNTS`` stehen ohne weitere Prüfung unter „Sonstige Ausgaben“, wie bisher auf der Seite."""
+    if account_number in OTHER_EXPENSE_ACCOUNTS:
+        return 'other'
+    excluded = account_number in NEUTRAL_ACCOUNT_NUMBERS or account_number in bank_numbers
+    if is_income_account(account_number) or account_number == 3806:
+        return None if excluded else 'income'
+    if excluded or 2100 <= account_number < 2200 or account_number < 1000:
+        return None
+    return 'expense'
+
+
 def _cash_amount_sql(cash_coa_ids, alias='b'):
     """SQL-Ausdruck (und Parameter) für den Betrag einer Zeile aus Sicht der Kasse.
 
@@ -721,3 +755,18 @@ class ReportingMixin:
         conn.close()
         result.sort(key=lambda x: x[0])
         return result
+
+    def get_bwa(self, year: int, month: int, variant: str):
+        """Betriebswirtschaftliche Auswertung für einen Monat (``db.bwa.BwaReport``): eine reine Umgruppierung von
+        ``get_euer_data`` ohne Kontofilter – keine eigene Lesart der Buchungen. Gelesen wird je Zeitraum der Darstellung
+        (``db.bwa.periods_for``); dieselbe Spanne nur einmal (im Januar sind Monat und aufgelaufen gleich). Rein lesend."""
+        from .bwa import bwa_periods, build_report, periods_for
+        spans = bwa_periods(year, month)
+        periods = {key: spans[key] for key in periods_for(variant)}
+        rows: dict[str, list] = {}
+        by_span: dict[tuple, list] = {}
+        for key, span in periods.items():
+            if span not in by_span:
+                by_span[span] = self.get_euer_data(*span)
+            rows[key] = by_span[span]
+        return build_report(year, month, variant, periods, rows, bank_skr_numbers(self.fetch_accounts()))

@@ -208,10 +208,12 @@ def _keys(*names, period=False):
 # Dokumente. /backup/download fehlt bewusst: Es liefert den ganzen Datenbestand (eine Sicherung, Gigabyte groß) –
 # das Werkzeug liest nur Anzeigeseiten. /receipts/file fehlt aus demselben Grund: Es liefert die Datei eines Belegs.
 # /receipts/search und /transactions/search fehlen bewusst: JSON-Suchen der Seiten, keine Anzeigeseiten; dasselbe liefert die
-# SQL-Abfrage.
+# SQL-Abfrage. /bwa/pdf fehlt bewusst: Es liefert ein Dokument, keine Anzeigeseite (die Seite /bwa schreibt nichts, Test in
+# tests/test_bwa.py).
 _PAGE_ALLOWLIST = {
     "/": _keys("acct", period=True),
     "/dashboard": _keys("acct", period=True),
+    "/bwa": _keys("year", "month", "variant"),
     "/about": _keys(),
     "/invoice": _keys("search", "status", "id", period=True),
     "/invoice/view": _keys("id"),
