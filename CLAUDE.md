@@ -734,6 +734,41 @@ kein Subagent darauf:
   (Schnappschuss in `tests/test_pdf_table.py`). Fester Hinweis: kein amtliches Formular, keine Steuerberatung. **Untermenü der Auswertungen:** `REPORT_PAGES`
   und `reports_submenu` in `server/pages_bwa.py`; jede Seite darunter ruft `Header1('bwa')` auf (der Menüpunkt bleibt markiert). `/euer` steht in der
   Positivliste des Diagnose-MCP (es schreibt nichts, Nachweis im Test), `/euer/pdf` nicht. `tests/test_euer_view.py`, `tests/test_pdf_table.py`
+- **Summen- und Saldenliste (seit 2.5.17, `db/susa.py`, `Database.get_susa`, `server/pages_susa.py`, `export/pdf_susa.py`; `GET /susa`, `GET /susa/pdf`):** je Konto
+  Anfangssaldo, Soll und Haben im Monat und aufgelaufen seit dem 1. Januar, Endsaldo (`1.234,56 S`/`H`). **Sie liest dieselben Zeilen wie der Export für das Steuerbüro und
+  hat keine eigene Lesart:** `accounts.LEDGER_ROWS_WHERE` ist das `WHERE` von `fetch_bookings_range` (alle Sätze außer den Bankbewegungen bis Monatsende, die Vorjahre bilden den
+  Anfangssaldo), Form und Soll-Seite kommen aus `matching.ledger_form`/`coa_in_soll` – dieselben Funktionen, die `export_to_datev` ruft; die Auslagerung ließ den Export **Byte für Byte**
+  gleich (SHA-256-Schnappschüsse in `tests/test_susa.py`, am Stand 2.5.16 vor der Auslagerung genommen: ändert sich ein Byte, ist der Code zu ändern, nie der Schnappschuss) –,
+  die Art aus `datev_keys.booking_kind`, die Wartekonten aus `get_waiting_account_numbers`; dazu fehlen die Eingangs-Sätze gepaarter Überträge (`settle_transfers(…).omitted`: der Ausgangs-Satz bucht
+  beide Bankseiten) und die gedeckten Bankbewegungen ohne Satz (`.covered`). Ein Test hält für JEDE Zeile der Testwelt und des Demobestands fest, dass die Liste dieselbe Seite bucht wie die Zeile des
+  Exports (Konto, Gegenkonto, S/H, Betrag). **Buchungsregel** (`entry_postings`, rein, in Minor Units): Betrag ohne Vorzeichen, Soll/Haben nach der Form (`purpose_first`: positiv Gegenkonto im Soll,
+  `liquid_first`/`transfer`/`mirror_coa`: positiv Konto im Soll, `mirror_counter`: positiv Gegenkonto im Soll); `mirror_legacy` bucht nie (Lesart unbekannt – wie beim Abgleich nie gedeutet, Hinweis); der
+  **gespeicherte** Steuerbetrag wird aus der Seite des Zweckkontos herausgerechnet (nichts nachgerechnet) und steht auf 1401/1406 (Vorsteuer) bzw. 3801/3806 (Umsatzsteuer; 16 % und 5 % auf den Konten von 19 % und 7 %,
+  `TAX_ACCOUNTS`; ein anderer Satz auf „Steuer ohne Steuerkonto“; ein Steuerkonto, das der Kontenrahmen nicht führt, mit dem Zusatz „(nicht im Kontenrahmen)“), die Seite bestimmt `tax_side` nach der Art; die
+  Forderung einer Rechnung und die Gegenbuchung der Stornorechnung (Debitor auf einer Seite) werden nie zerlegt. **Kontenklassen und Vortrag stehen an EINER Stelle** (`GROUPS`, `group_key`, `is_carried`):
+  Bestandskonten und die Wartekonten 4340/4345/4405 (eigene Gruppe „Offene Posten“) tragen vor, Erfolgskonten 4000–7999 beginnen bei 0 – ihre Summe der Vorjahre steht auf dem virtuellen Konto „Ergebnis der
+  Vorjahre (rechnerisch)“ beim Eigenkapital; Privat- und Steuerkonten werden mangels Abschluss vorgetragen, eine Eröffnungsbilanz gibt es nicht (ein Konto ohne Buchungen vor dem ersten Kontoauszug beginnt bei 0).
+  **Ausgleich:** Jede Buchung schreibt gleich viel ins Soll wie ins Haben, was fehlt, steht auf dem virtuellen Konto „Nicht kontiert“ (eine Seite ohne Konto oder Nummer, die Gegenseite einer Bankbewegung ohne Satz, die
+  kein Übertrag deckt): Summe Soll = Summe Haben je Spalte, Summe der Anfangs- und der Endsalden 0. Ein Satz unter einer Bankbewegung ohne Geldseite (`purpose_first` ohne Gegenkonto, `liquid_first` ohne Konto)
+  zählt für das Konto der Bankbewegung (Hinweis; ohne Nummer: „Nicht kontiert“), eine Zeile ohne Form wird wie im Export mit den Zahlungskonten von heute gelesen (Hinweis). Was sich nicht buchen lässt
+  (`mirror_legacy`, ein Betrag, der keine ganze Zahl bis 10^15 Minor Units ist, ein Datum, das kein Kalendertag ist, eine Zeile ohne Buchungsart, ein Satz mit Betrag 0 und Steuerbetrag), steht nur in den **Hinweisen** (`NOTICE_TEXTS`, Einzahl und Mehrzahl) – nie ein Fehler, nie still; auch die
+  Bankbewegungen mit unstimmigen Sätzen (`unbalanced`) rechnet `get_susa` mit den lesbaren Beträgen selbst (`_susa_unbalanced`, dieselbe Regel `bank_effect` und Auswahl wie `find_unbalanced_splits`, das bei einem Betrag,
+  der Text ist, mit einem Fehler abbricht). **Gültiges Datum** ist ein Kalendertag als Text `JJJJ-MM-TT` ab dem Jahr 0001 (`_SUSA_DATE_OK`: `typeof = 'text'`, das Muster und `x IS date(x)` – das Muster hält die Form unabhängig von der SQLite-Version fest; SQLite rückt `2026-02-30` auf einen echten Tag, kennt `Dezember` nicht und liest die Zahl
+  `20260305` nicht als Text): EINE Bedingung für die gebuchten Sätze und die Bankbewegungen ohne Satz. `bad_date` zählt jede Zeile mit Buchungsart und ungültigem Datum, auch eine Bankbewegung, **ohne Fenster** (sie fehlt in jedem Monat, auch im
+  Vortrag), `unknown_type` die Zeilen ohne Buchungsart (`BookingType` NULL: die Bedingung `!= 'bank'` des Exports trifft sie nie, er liest sie so wenig wie die Liste), `not_readable` nur Zeilen mit gültigem Datum bis zum Monatsende – jede Zeile steht in
+  genau einem dieser Hinweise (Reihenfolge: Buchungsart, Datum, Betrag); eine andere Buchungsart als `entry` und `bank` liest der Export wie einen Satz, und so bucht sie die Liste. Ein Satz mit **Betrag 0 und Steuerbetrag** (der Bank-Editor lässt ihn zu)
+  bucht nichts – ohne Betrag gibt es keine Seite –, `zero_amount_tax` nennt ihn mit der Summe der Steuer. **Abstimmungsproben** (Pflicht-Tests, auf den Minor-Wert): (a) Summe Soll = Summe Haben, Anfangs- und Endsalden zusammen 0 – in jedem Bestand und jedem Monat, auch in
+  Beständen aus Zufall (fester Seed); (b) jedes eigene Bankkonto (keine Kasse, eigene SKR-Nummer) hat als Endsaldo die Summe aller Bankbewegungen bis Monatsende (nach dem Datum als Text: Eine Bewegung, deren ungültiges Datum vor dem Monatsende sortiert, zählt mit,
+  fehlt in der Liste und steht unter `bad_date`) – steht als „Abgleich mit den Bankbewegungen“ auf der Seite;
+  es geht auf, wo jede Bewegung kontiert ist, jeder Übertrag beide Seiten am selben Tag trägt, alle Beträge lesbar sind, jeder Satz mit seiner Bankbewegung auf derselben Seite des Monatsendes liegt (sonst `child_other_period`: um den Satz kann der Abgleich abweichen – gezählt wird jeder solche Satz, auch einer ohne Wirkung auf das Bankkonto) und
+  jeder Satz unter einer Bewegung auf das Konto der Bewegung bucht (sonst `child_other_account`: ein gebuchter Satz, dessen Konto oder Gegenkonto ein anderes eigenes Bank- oder Kassenkonto ist – ein Spiegel zwischen eigenen Konten zählt nicht, er
+  berührt das andere Konto absichtlich; beide Hinweise nur gezählt, an der Buchung ändert sich nichts); (c) die Erfolgskonten gegen die EÜR (für jede Zeile eines EÜR-Abschnitts außer 3806 der Saldo der EÜR =
+  Haben − Soll der Liste, die Umsatzsteuer der EÜR = 3801 plus 3806) – es geht auf, wo jeder Satz einer Bankbewegung oder der Kasse zugeordnet ist; Sätze ohne Bankbewegung, Umbuchungen ohne Zahlung und Status `resolved`
+  zählt die Liste nach ihrem Datum, die EÜR nicht. **Laufzeit:** Die Sätze werden in SQL nach dem gruppiert, was ihre Lesart bestimmt (Form, Konten, Richtung des Betrags und der Steuer, Satz, Zeitraum, Konto der Bankbewegung), und je Gruppe
+  einmal gebucht (`book_group`, die Regel ist linear) – nie wieder eine Zeile je Satz in Python; reicht eine Summe über 2^63 Minor Units hinaus (SQLite wirft `integer overflow`), rechnet `reporting._sum_groups` dieselbe Abfrage in Python (jeder andere
+  Datenbankfehler geht weiter), und ein Name, der kein Text ist (Blob, NULL), wird als Text gelesen (`_name_text`). Die Seite liest die Adresse streng (`year`, `month` über `parse_year`/`parse_month`, ein doppelter Schlüssel ist ungültig: Vormonat mit Hinweis, das PDF
+  antwortet 400), setzt kein Cookie und schreibt nichts; das PDF (A4 quer, mehrseitig, `Summen_und_Salden_JJJJ-MM.pdf`) landet nie auf der Platte. Texte ohne Marken- und Produktnamen; fester Hinweis: keine Steuerberatung, ohne Zusicherung der
+  Richtigkeit. **Diese Regeln nicht still ändern.** `/susa` steht in der Positivliste des Diagnose-MCP (es schreibt nichts, Nachweis im Test), `/susa/pdf` nicht. `tests/test_susa.py`, `tests/test_susa_pdf.py`
 - **Automatischer Abgleich** (`link_bank_to_entries`, läuft nach jedem Import; seit 2.3.14 mit Richtungsregel): Angefasst
   werden nur Bankbewegungen ohne Kinder und Sätze ohne `ParentBooking_ID` – eine bestehende Verknüpfung und der Text der
   Bankbewegung ändern sich nie. In den Stufen 1–6 (Reihenfolge im Lauf: 0, 1, 2, 4, 3, 3b, 3c, 3d, 5, 6, 6b, Nachlauf, 7) wird
@@ -1037,7 +1072,7 @@ kein Subagent darauf:
   `check_page_path`) nicht aufweichen; neue Seiten und Schlüssel nur für GET-Handler, die
   nichts schreiben (Nachweis im Test). `/backup/download` steht bewusst nicht darin: Es liefert den ganzen Datenbestand
   (Gigabyte-Größe). `/receipts/search` und `/transactions/search` stehen bewusst nicht darin: JSON-Suchen der Seiten, keine
-  Anzeigeseiten; dasselbe liefert die SQL-Abfrage. `/bwa/pdf` und `/euer/pdf` stehen nicht darin (Dokumente)
+  Anzeigeseiten; dasselbe liefert die SQL-Abfrage. `/bwa/pdf`, `/euer/pdf` und `/susa/pdf` stehen nicht darin (Dokumente)
 - Zugangsdaten aus der Windows-Anmeldeinformationsverwaltung, keyring oder Umgebung, nie im Repo; über `http://` gehen sie nur
   an den eigenen Rechner, sonst nur mit `UBUCHHALTUNG_MCP_ALLOW_HTTP`. Registrierung nur
   lokal (`claude mcp add --scope local`), Einrichtung in `DEPLOYMENT.md`

@@ -11,8 +11,8 @@ steht nur das Lesen der Adresse und das HTML. Die Seite schreibt nichts: kein Co
 Jeder Wert aus Datenbank oder Adresse steht maskiert im HTML (``html.escape``); die Daten des Skripts gehen über ``script_json``.
 Gelesen wird die Adresse streng (``parse_year``, ``parse_month``, ``parse_variant``): ein Schlüssel, der mehrfach vorkommt, ist ungültig.
 
-Das Untermenü der Auswertungen (``REPORT_PAGES``, ``reports_submenu``) steht hier und gilt für jede Seite darunter (BWA, EÜR): Sie rufen alle
-``Header1('bwa')`` auf, damit der Menüpunkt „Auswertungen“ markiert bleibt.
+Das Untermenü der Auswertungen (``REPORT_PAGES``, ``reports_submenu``) steht hier und gilt für jede Seite darunter (BWA, EÜR, Summen- und
+Saldenliste): Sie rufen alle ``Header1('bwa')`` auf, damit der Menüpunkt „Auswertungen“ markiert bleibt.
 """
 import html as _html
 from dataclasses import dataclass
@@ -29,7 +29,7 @@ INVALID_VARIANT_ERROR = 'Ungültige Darstellung.'
 PDF_FAILED_TEXT = 'Die Auswertung ließ sich nicht als PDF erstellen.'
 
 # Die Seiten unter „Auswertungen“ (Schlüssel, Adresse, Bezeichnung im Untermenü); jede ruft Header1('bwa') auf, damit der Menüpunkt markiert bleibt
-REPORT_PAGES = (('bwa', '/bwa', 'BWA'), ('euer', '/euer', 'EÜR'))
+REPORT_PAGES = (('bwa', '/bwa', 'BWA'), ('euer', '/euer', 'EÜR'), ('susa', '/susa', 'Summen- und Saldenliste'))
 
 
 @dataclass(frozen=True)

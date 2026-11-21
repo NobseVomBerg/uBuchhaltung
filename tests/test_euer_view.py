@@ -401,10 +401,11 @@ def test_the_pdf_address_reads_a_valid_period():
 
 # ═══ Menü ═════════════════════════════════════════════════════════════════════
 def test_the_submenu_lists_the_pages_and_marks_the_active_one():
-    assert [key for key, _path, _label in REPORT_PAGES] == ['bwa', 'euer']
-    assert reports_submenu('euer') == '<a href="/bwa">BWA</a> | <span id="ActivePage">EÜR</span>'
-    assert reports_submenu('bwa') == '<span id="ActivePage">BWA</span> | <a href="/euer">EÜR</a>'
-    assert reports_submenu('susa') == '<a href="/bwa">BWA</a> | <a href="/euer">EÜR</a>'          # eine unbekannte Seite markiert keine
+    assert [key for key, _path, _label in REPORT_PAGES] == ['bwa', 'euer', 'susa']
+    assert reports_submenu('euer') == '<a href="/bwa">BWA</a> | <span id="ActivePage">EÜR</span> | <a href="/susa">Summen- und Saldenliste</a>'
+    assert reports_submenu('bwa') == '<span id="ActivePage">BWA</span> | <a href="/euer">EÜR</a> | <a href="/susa">Summen- und Saldenliste</a>'
+    assert reports_submenu('susa') == '<a href="/bwa">BWA</a> | <a href="/euer">EÜR</a> | <span id="ActivePage">Summen- und Saldenliste</span>'
+    assert reports_submenu('unbekannt') == '<a href="/bwa">BWA</a> | <a href="/euer">EÜR</a> | <a href="/susa">Summen- und Saldenliste</a>'          # eine unbekannte Seite markiert keine
 
 
 # ═══ Seite ════════════════════════════════════════════════════════════════════
