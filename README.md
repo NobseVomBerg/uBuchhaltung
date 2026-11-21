@@ -22,7 +22,21 @@ documentation are in German.
 </picture>
 
 <details>
-<summary><b>Weitere Screenshots</b> (Buchungen, Rechnungen, Anlagen, Fahrtenbuch, Arbeitszeiten)</summary>
+<summary><b>Weitere Screenshots</b> (Auswertungen, Buchungen, Rechnungen, Anlagen, Fahrtenbuch, Arbeitszeiten)</summary>
+
+**Betriebswirtschaftliche Auswertung** – ein Monat und das laufende Jahr im Vergleich mit dem Vorjahr, auch als PDF
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/bwa-dark.png">
+  <img alt="Betriebswirtschaftliche Auswertung" src="docs/screenshots/bwa.png">
+</picture>
+
+**Summen- und Saldenliste** – je Konto Anfangssaldo, Soll, Haben und Endsaldo, auch als PDF
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/susa-dark.png">
+  <img alt="Summen- und Saldenliste" src="docs/screenshots/susa.png">
+</picture>
 
 **Buchungen** – Bankbewegungen mit Kontierung, Split-Buchungen und Rechnungszahlungen
 
