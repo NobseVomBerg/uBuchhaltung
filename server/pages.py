@@ -359,6 +359,36 @@ function appDownload(url, notify) {
 </body></html>'''
     return s
 
+def _about_stats():
+    """Der Abschnitt „Projekt in Zahlen“ der About-Seite aus ``project_stats.json`` (``server/project_stats.py``): streng gelesen, zur
+    Laufzeit wird nichts gezählt. Fehlt die Datei oder ist sie ungültig, fehlt der Abschnitt – die Seite braucht ihn nicht. Jeder Wert
+    aus der Datei steht maskiert im HTML."""
+    from version import APP_VERSION
+    from . import project_stats
+    stats = project_stats.load_stats()
+    if stats is None:
+        return ''
+
+    def count(number):
+        return _html.escape(project_stats.format_count(number), quote=True)
+
+    code, tests, data = stats['code'], stats['tests'], stats['data']
+    rows = (
+        ('Programmcode', f'{count(code["files"])} Dateien &middot; {count(code["lines"])} Zeilen &middot; '
+                         f'davon {count(code["code_lines"])} ohne Leerzeilen und Kommentare'),
+        ('Tests', f'{count(tests["files"])} Dateien &middot; {count(tests["lines"])} Zeilen &middot; '
+                  f'davon {count(tests["code_lines"])} ohne Leerzeilen und Kommentare'),
+        ('Tests (Anzahl)', f'{count(tests["functions"])} Testfunktionen &middot; {count(tests["cases"])} Testfälle'),
+        ('Seed- und Beispieldaten', f'{count(data["files"])} Dateien &middot; {count(data["lines"])} Zeilen'),
+    )
+    version = _html.escape(stats['version'], quote=True)
+    origin = f'Stand: Version {version}.' if stats['version'] == APP_VERSION else f'Die Zahlen stammen aus Version {version}.'
+    s = '<br><br><div class="grid1Col700"><h2>Projekt in Zahlen</h2><table class="reportTable">'
+    s += ''.join(f'<tr><td>{label}</td><td>{value}</td></tr>' for label, value in rows)
+    s += f'</table><p class="hint">{origin} Gezählt mit tools/project_stats.py; Docstrings zählen als Kommentar.</p></div>'
+    return s
+
+
 def PageAbout():
     """Generate about page"""
     from version import APP_VERSION
@@ -389,6 +419,7 @@ Kommerzielle Lizenz ohne AGPL-Pflichten: <span id="licenseContact"><noscript>E-M
   el.appendChild(a);
 }());
 </script>'''
+    s+= _about_stats()
     s+= Footer()
     return s
 
