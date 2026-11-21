@@ -592,8 +592,9 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
         else:
             shown = findings[:50]
             s += ('<p>Bei diesen Rechnungen passen Zuordnung, Buchungssätze oder offener Rest '
-                  'nicht zusammen. Die Liste ändert nichts &ndash; die Rechnung öffnen und die '
-                  'Buchungen prüfen.</p><table><tr><th>Rechnung</th><th>Befund</th></tr>')
+                  'nicht zusammen. Die Liste ändert nichts &ndash; auf der Seite der Rechnung lässt sich die '
+                  'Zuordnung prüfen und, wo das sicher geht, nach einem Probelauf neu aufbauen.</p>'
+                  '<table><tr><th>Rechnung</th><th>Befund</th></tr>')
             for finding in shown:
                 number = _html.escape(finding['invoice_number'] or '–')
                 if finding['invoice_id'] is not None:

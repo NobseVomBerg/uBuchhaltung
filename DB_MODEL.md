@@ -636,6 +636,27 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   Seite *Sonstiges* und läuft **nur auf Klick** („Zahlungszuordnungen prüfen“, `GET
   /miscellaneous?check_payments=1`), nicht bei jedem Laden der Seite; der Hinweis auf der Rechnungsseite
   prüft nur diese eine Rechnung.
+- **Neu aufbauen (seit 2.5.13, `rebuild_invoice_payments`, `db/invoice_repair.py`):** Auf der Seite einer Rechnung lässt sich ihre
+  Zuordnung nach einem Probelauf neu aufbauen – je Rechnung, nie für den ganzen Bestand. Sie baut nur auf, was die Prüfliste meldet,
+  und **löscht und ändert keinen Buchungssatz**: Doppelte Zuordnungen desselben Paares mit gleichem Betrag werden
+  zusammengefasst (die kleinste ID bleibt), die als Kind an einer Bankbewegung hängende Forderung der App wird gelöst
+  (`ParentBooking_ID` und Status), eine Zuordnung ohne eigene Sätze bekommt „Bank an Debitoren“ und „Wartekonto an Erlöskonto“
+  (mit Datum der Bankbewegung, Marke und der Steuer wie bei jeder Zuordnung), und der offene Betrag wird neu gerechnet; der Status
+  bleibt, außer nach dem Zusammenfassen von Doppelten. Neu aufgebaut wird nur, wenn alle Bedingungen zutreffen: Zahlungseingang auf einer
+  Bankbewegung mit SKR-Nummer, keine Sätze mit Quellklammer und keine mit der Nummer dieser Rechnung unter der Bewegung, alle übrigen Sätze
+  gehören einer anderen zugeordneten Rechnung, genau eine Forderung der App, ein Betrag in ganzen Cent, ein hinterlegtes oder gewähltes
+  Erlöskonto (angelegt wird nie eines). Dazu darf die Rechnung nirgends sonst Buchungssätze haben: Trägt ein Satz außerhalb ihrer
+  zugeordneten Bewegungen ihre Nummer (eigenständig, auf der Kasse, unter einer fremden Bewegung, mit oder ohne Quellklammer), steht ihr Erlös
+  schon in den Büchern, und es wird nichts aufgebaut, damit er nicht zweimal gebucht wird – ebenso, wenn die Sätze unter den zugeordneten
+  Bewegungen mehr Erlös buchen, als die übrigen Zuordnungen erklären (je Rechnung, und je Bewegung gegen die Zuordnungen der anderen
+  Rechnungen dort); einen Satz ohne ihre Nummer erkennt die Funktion nicht, deshalb zeigt der Probelauf die Wirkung auf die EÜR.
+  Mehrere Zuordnungen einer Rechnung werden in zeitlicher Folge neu gebucht –
+  die Steuer verteilt sich wie beim Zuordnen nacheinander, die letzte Zuordnung bekommt den Rest. Storno-Paare, Rechnungen außerhalb von
+  versendet bis bezahlt und alles, was nicht eindeutig ist, bleiben ein Hinweis mit Grund. Der Probelauf ist derselbe Code wie die
+  Ausführung und endet mit Rollback (kein Zähler, kein
+  Replay-Log); er zeigt die neuen Sätze, die Wirkung auf die EÜR je Datum und Erlöskonto und den Rest der Prüfliste. Ausgeführt wird nur mit
+  der Prüfsumme des Probelaufs – hat sich der Bestand geändert, kommt der neue Plan und nichts ist geschrieben. Die Wirkung auf die EÜR
+  entsteht am Datum der Bankbewegung: Ist der Zeitraum schon gemeldet, ist die Änderung dort nachzutragen.
 
 ---
 

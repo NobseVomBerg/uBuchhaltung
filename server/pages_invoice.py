@@ -155,11 +155,12 @@ def normalize_status(status):
     return 'partial_payment' if status == 'partial' else status
 
 
-def _revenue_coa_select(db, tax_rate, selected=None):
+def _revenue_coa_select(db, tax_rate, selected=None, field_id='revenueCoa'):
     """Das Auswahlfeld „Erlöskonto“ (``revenue_coa_id``, Pflichtfeld) mit den wählbaren Erlöskonten
     (``Database.get_revenue_coas``). Vorgewählt ist ``selected`` (wenn es ein wählbares Erlöskonto ist), sonst der
     Vorschlag ``Database.suggest_revenue_coa`` – eine Vorauswahl, keine Entscheidung; ohne beides steht „bitte wählen“
-    da. Alle Werte sind maskiert."""
+    da. Alle Werte sind maskiert. ``field_id``: das ``id`` des Felds – eine Seite trägt mehrere Auswahlen (Zahlung, Neuaufbau
+    der Zuordnung), jede mit eigener ID."""
     accounts = db.get_revenue_coas()
     if selected not in {coa_id for coa_id, _number, _name in accounts}:
         selected = db.suggest_revenue_coa(tax_rate) if tax_rate is not None else None
@@ -168,7 +169,7 @@ def _revenue_coa_select(db, tax_rate, selected=None):
         mark = ' selected' if coa_id == selected else ''
         label = _html.escape(f'{number} {name}')
         options += f'<option value="{int(coa_id)}"{mark}>{label}</option>'
-    return f'<select name="revenue_coa_id" id="revenueCoa" required>{options}</select>'
+    return f'<select name="revenue_coa_id" id="{_html.escape(field_id, quote=True)}" required>{options}</select>'
 
 
 def revenue_coa_choice(db, tax_rate, selected=None, teaches=True):
@@ -320,6 +321,115 @@ def _refund_box_html(db, invoice_id, invoice, refunds, credit):
     h += '    </div>\n'
     return h + _REFUND_SCRIPT.replace('__INVOICE_ID__', str(int(invoice_id))).replace(
         '__CONFIRM__', script_json(REFUND_CONFIRM_QUESTION))
+
+
+# Zuordnung neu aufbauen (Database.rebuild_invoice_payments, POST /invoice/rebuild-payments): Probelauf, Plan ansehen, bestätigen.
+# Die Rückfrage ist fest; das Skript bekommt sie über script_json (Platzhalter __CONFIRM__).
+REBUILD_CONFIRM_QUESTION = ('Zuordnung jetzt neu aufbauen? Es geschieht genau das, was der Probelauf zeigt; hat sich der Bestand '
+                            'inzwischen geändert, wird abgelehnt.')
+
+# Nur var und function, nie innerHTML: Jeder Wert der Antwort (Texte der Sätze, Befunde) wird als Text eingesetzt (textContent) –
+# ein Verwendungszweck mit Markup bleibt Text. Die Prüfsumme des gezeichneten Plans steht am Kasten (data-check) und geht mit der
+# Ausführung zurück; jede Zeichnung ersetzt sie, ein Plan ohne Aktionen bekommt keinen Knopf zum Ausführen. Der Hinweis zu EÜR und
+# Umsatzsteuer (plan.warning) steht nur, wenn der Plan neue Buchungssätze enthält; der Knopf immer, wenn es Aktionen gibt.
+_REBUILD_SCRIPT = """// Zuordnung neu aufbauen: Probelauf (ändert nichts), Plan ansehen, dann bestätigen
+function rebuildElement(tag, text, className) {
+  var node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined && text !== null) node.textContent = text;
+  return node;
+}
+function rebuildList(texts) {
+  var list = rebuildElement('ul');
+  texts.forEach(function(text) { list.appendChild(rebuildElement('li', text)); });
+  return list;
+}
+function rebuildTable(titles, lines, numeric) {
+  var table = rebuildElement('table', null, 'refundTable');
+  var head = rebuildElement('tr');
+  titles.forEach(function(title, column) { head.appendChild(rebuildElement('th', title, numeric.indexOf(column) >= 0 ? 'num' : '')); });
+  table.appendChild(head);
+  lines.forEach(function(cells) {
+    var line = rebuildElement('tr');
+    cells.forEach(function(cell, column) { line.appendChild(rebuildElement('td', cell, numeric.indexOf(column) >= 0 ? 'num' : '')); });
+    table.appendChild(line);
+  });
+  return table;
+}
+function renderRebuild(plan, invId) {
+  var box = document.getElementById('rebuildPreview');
+  box.textContent = '';
+  box.setAttribute('data-check', plan.check);
+  box.appendChild(rebuildElement('h4', 'Probelauf \\u2013 es wurde nichts ge\\u00e4ndert'));
+  if (plan.nothingToDo) box.appendChild(rebuildElement('p', 'Es gibt nichts, was sich automatisch neu aufbauen l\\u00e4sst.'));
+  else box.appendChild(rebuildList(plan.actions.map(function(action) { return action.text; })));
+  if (plan.rows.length) {
+    box.appendChild(rebuildElement('h4', 'Neue Buchungss\\u00e4tze'));
+    box.appendChild(rebuildTable(['Datum', 'Konto', 'Gegenkonto', 'Betrag', 'Steuer', 'Text', 'in der E\\u00dcR'],
+      plan.rows.map(function(row) { return [row.date, row.account, row.counterAccount, row.amount, row.tax, row.text, row.euer ? 'ja' : '\\u2013']; }), [3, 4]));
+  }
+  if (plan.euer.length) {
+    box.appendChild(rebuildElement('h4', 'Wirkung auf die E\\u00dcR'));
+    box.appendChild(rebuildTable(['Datum', 'Erl\\u00f6skonto', 'netto', 'Umsatzsteuer'],
+      plan.euer.map(function(effect) { return [effect.date, effect.account, effect.net, effect.tax]; }), [2, 3]));
+  }
+  var invoice = plan.invoice;
+  box.appendChild(rebuildElement('p', 'Offen: ' + invoice.dueBefore + ' \\u2192 ' + invoice.dueAfter + ', Status: ' + invoice.statusBefore
+    + (invoice.statusAfter !== invoice.statusBefore ? ' \\u2192 ' + invoice.statusAfter : '')));
+  if (plan.skipped.length) {
+    box.appendChild(rebuildElement('h4', 'Nicht automatisch'));
+    box.appendChild(rebuildList(plan.skipped));
+  }
+  if (plan.remaining.length) {
+    box.appendChild(rebuildElement('h4', 'Danach meldet die Pr\\u00fcfung weiterhin'));
+    box.appendChild(rebuildList(plan.remaining));
+  }
+  if (!plan.nothingToDo) {
+    if (plan.rows.length) box.appendChild(rebuildElement('p', plan.warning, 'warnColor'));
+    var button = rebuildElement('button', 'Neu aufbauen', 'coloredButton btn-sm bg-green');
+    button.setAttribute('type', 'button');
+    button.addEventListener('click', function() { appConfirm(__CONFIRM__, function() { rebuildPayments(invId, true); }); });
+    box.appendChild(button);
+  }
+}
+function rebuildPayments(invId, execute) {
+  var box = document.getElementById('rebuildPreview');
+  var request = {invoiceId: invId, execute: !!execute};
+  var coa = document.getElementById('rebuildRevenueCoa');
+  if (coa && coa.value) request.revenueCoaId = Number(coa.value);
+  if (execute) request.check = box.getAttribute('data-check');
+  fetch('/invoice/rebuild-payments', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(request)})
+    .then(function(response) { return response.json().then(function(data) { return {status: response.status, data: data}; }); })
+    .then(function(answer) {
+      var data = answer.data;
+      if (data.executed) {
+        showMessage(data.message, 'info');
+        setTimeout(function() { location.reload(); }, 1500);
+        return;
+      }
+      if (data.plan) renderRebuild(data.plan, invId);
+      if (data.success) return;
+      if (data.needsRevenueCoa) showMessage(data.error, 'error');
+      else if (answer.status === 409) showMessage(data.error, 'warn');
+      else showMessage('Fehler: ' + (data.error || '?'), 'error');
+    })
+    .catch(function(err) { showMessage('Fehler: ' + err.message, 'error'); });
+}
+"""
+
+
+def _rebuild_box_html(db, invoice_id, tax_rate):
+    """Der Neuaufbau der Zuordnung unter der Befundliste einer Rechnung (``Database.rebuild_invoice_payments``): der Knopf für den
+    Probelauf, der Kasten für den Plan (ihn zeichnet das Skript) und – nur wenn für den Steuersatz kein Erlöskonto hinterlegt ist
+    (die Reparatur legt nie eines an) – die Auswahl des Erlöskontos. Das Feld hat eine eigene ID (``rebuildRevenueCoa``): Die
+    Zahlung („Verknüpfen“) trägt ihre eigene Auswahl. Die ID der Rechnung steht als Ganzzahl, sonst kein Wert aus der Datenbank."""
+    h = ''
+    if db.resolve_revenue_coa(tax_rate, create=False) is None:
+        h += ('        <p class="hint">Für den Neuaufbau ist kein Erlöskonto hinterlegt – bitte wählen.</p>\n'
+              f'        <p><label>Erlöskonto: {_revenue_coa_select(db, tax_rate, field_id="rebuildRevenueCoa")}</label></p>\n')
+    return h + ('        <p><button type="button" class="coloredButton btn-sm bg-blue" '
+                f'onclick="rebuildPayments({int(invoice_id)}, false)">Zuordnung prüfen und neu aufbauen &hellip;</button></p>\n'
+                '        <div id="rebuildPreview" class="no-pdf"></div>\n')
 
 
 def document_submenu(active):
@@ -598,6 +708,7 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
     today_iso = datetime.date.today().isoformat()
 
     cancel_script = ''           # nur eine versendete Rechnung kann storniert werden (Skript steht hinter dem Formular)
+    rebuild_script = ''          # das Skript zum Neuaufbau der Zuordnung: nur mit Befund (steht ebenfalls hinter dem Formular)
     # Load existing invoice if invoice_id is provided
     existing_invoice = None
     existing_items = []
@@ -2008,6 +2119,8 @@ function copyInvoiceAsNew(invId) {{
                   + ''.join(f'            <li>{_html.escape(f["text"])}</li>\n' for f in findings)
                   + '        </ul>Alle Rechnungen mit Unstimmigkeiten zeigt die Prüfung unter '
                   '<a href="/miscellaneous?check_payments=1">Sonstiges</a>.</div>\n')
+            s += _rebuild_box_html(db, invoice_id, existing_invoice[35])
+            rebuild_script = _REBUILD_SCRIPT.replace('__CONFIRM__', script_json(REBUILD_CONFIRM_QUESTION))
         if existing_payments:
             total_paid = sum(p[3] for p in existing_payments)
             s += '''        <table style="width:100%; border-collapse:collapse;">
@@ -2177,6 +2290,8 @@ function copyInvoiceAsNew(invId) {{
         s += _versions_box_html(db, invoice_id)
         if cancel_script:
             s += '<script>\n' + cancel_script + '</script>\n'
+        if rebuild_script:
+            s += '<script>\n' + rebuild_script + '</script>\n'
     return s
 
 
