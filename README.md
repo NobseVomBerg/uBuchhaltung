@@ -664,6 +664,7 @@ uBuchhaltung/
 ├── receipt_reading/           # Belegerkennung: E-Rechnung (XML) und PDF-Text lesen – rein, läuft im Kindprozess (worker.py)
 ├── email_sender.py            # E-Mail-Versand (SMTP)
 ├── buch.css                   # Stylesheet (inkl. Dark Mode; versioniert via ?v=)
+├── project_stats.json         # Zahlen für „Projekt in Zahlen“ auf der About-Seite (erzeugt von tools/project_stats.py)
 ├── README.md                  # Diese Datei
 ├── DB_MODEL.md                # Detailliertes Datenbankmodell
 ├── PARSER_README.md           # Dokumentation Parser & CSV-Import
@@ -712,6 +713,7 @@ uBuchhaltung/
 │   ├── import_preview.py      # Kontoauszug-Import-Vorschau (Duplikat-Zähler)
 │   ├── multipart.py           # Multipart-Parser (E-Mail-Parser-basiert)
 │   ├── period.py              # Zeitraum-Auswahl (Cookie-basiert)
+│   ├── project_stats.py       # liest project_stats.json streng (Zahlen der About-Seite)
 │   ├── richtext.py            # Richtext-Filter der Seiten (Modul im Projektstamm)
 │   ├── backup.py              # Datensicherung/Wiederherstellung, Download der Sicherungen
 │   └── dirlock.py             # Sperre je Datenverzeichnis: Das Wiederherstellen läuft allein
@@ -720,7 +722,8 @@ uBuchhaltung/
 ├── tools/                     # mcp_ubuchhaltung.py (Diagnose, nur lesend), make_einvoice_samples.py
 │                              #   (Beispiel-E-Rechnungen für die CI), make_srgb_icc.py (sRGB-Profil),
 │                              #   screenshots.mjs (erzeugt docs/screenshots/ im Demo-Modus, Playwright),
-│                              #   cla_check.py (prüft die Zustimmung zum CLA an Pull Requests)
+│                              #   cla_check.py (prüft die Zustimmung zum CLA an Pull Requests),
+│                              #   project_stats.py (zählt das Projekt für die About-Seite, schreibt project_stats.json)
 ├── docs/                      # Screenshots fürs README, Icon, offene Aufgaben (aufgaben.md)
 └── data/                      # Laufzeitdaten (in .gitignore)
     ├── config.json            # eingerichtet (mode), automatische Anmeldung (auto_login)

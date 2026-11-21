@@ -1947,6 +1947,16 @@ kein Subagent darauf:
   als das Programm wird nicht geöffnet (`db.SchemaTooNewError`) – nie zurückstempeln
 - Sonstige Änderungen ohne DB-Bezug: nur `PATCH` +1; große Umbrüche: `MAJOR` +1,
   `SCHEMA_STEP` und `PATCH` auf 0
+- **Bei jedem Versionssprung `python tools/project_stats.py` ausführen und `project_stats.json` mit committen:** Die Datei trägt die Zahlen
+  von „Projekt in Zahlen“ auf der About-Seite (Dateien, Zeilen und Zeilen ohne Leerzeilen und Kommentare für Programm, Tests und
+  Beispieldaten, dazu Testfunktionen und Testfälle) und die Version, aus der sie stammen; `tests/test_project_stats.py` verlangt, dass
+  sie zu `APP_VERSION` gehört (`python tools/project_stats.py --check` prüft nur das). Das Werkzeug zählt im Projektordner (`os.walk`, nur
+  Standardbibliothek, ohne `git`; Auswahl und Ausschlüsse stehen als Daten oben im Skript), sammelt die Testfälle mit
+  `pytest --collect-only` ein – scheitert das, schreibt es nichts – und schreibt weder Datum noch Pfade: Die Datei ändert sich nur, wenn sich
+  das Projekt ändert. Docstrings zählen als Kommentar. Die About-Seite liest nur diese Datei (`server/project_stats.py`, streng: höchstens
+  64 KB, ganze Zahlen von 0 bis 10⁹, die Version aus `[0-9A-Za-z.+-]`; jede Abweichung ergibt `None` für die ganze Datei, und der Abschnitt
+  fehlt), zur Laufzeit wird nichts gezählt – im Docker-Image fehlt `tests/`. Gehört die Datei nicht zur Version des Programms, sagt die Seite es
+  („Die Zahlen stammen aus Version …“)
 - Migration auf 2.2.0 (`INVOICE_VERSIONS_SCHEMA`, Schema 2002): hängt `Invoices` fünf Spalten an (`InvoiceKind`,
   `CancelsInvoiceId`, `ReplacesInvoiceId`, `SentAt`, `DocumentVersion`; die ersten drei sind für den Stornobeleg
   angelegt – `InvoiceKind` und `CancelsInvoiceId` nutzt er seit 2.2.1, `ReplacesInvoiceId` die Ersatzrechnung seit 2.2.2,

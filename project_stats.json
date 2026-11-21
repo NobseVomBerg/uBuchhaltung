@@ -1,0 +1,20 @@
+{
+  "code": {
+    "code_lines": 39573,
+    "files": 118,
+    "lines": 57908
+  },
+  "data": {
+    "files": 14,
+    "lines": 2250,
+    "non_blank_lines": 2250
+  },
+  "tests": {
+    "cases": 19364,
+    "code_lines": 81701,
+    "files": 225,
+    "functions": 7010,
+    "lines": 117700
+  },
+  "version": "2.6.2"
+}
