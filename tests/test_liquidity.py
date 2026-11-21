@@ -1340,14 +1340,16 @@ def test_the_row_of_the_other_transfers_without_cash_stands_on_the_page_only_wit
     assert 'Abschreibungen | 400,00 | 400,00' in ' '.join(rows)
 
 
-def test_the_page_shows_the_form_with_the_chosen_values(tmp_db):
+def test_the_page_shows_the_variant_form_with_the_chosen_value(tmp_db):
     page = PageLiquidity(tmp_db, BwaQuery(2026, 3, 'jahr'))
     dom = Dom(page)
     assert dom.one('form', action='/liquiditaet')['method'] == 'get'
-    assert dom.one('select', name='month') == {'name': 'month'} and dom.one('input', name='year')['value'] == '2026'
+    assert [attrs['name'] for attrs in dom.all('select')] == ['variant'] and dom.one('select', name='variant')['onchange'] == 'this.form.submit()'
+    assert dom.one('input', type='hidden', name='from')['value'] == '2026-03-01' and dom.one('input', type='hidden', name='to')['value'] == '2026-03-31'
+    assert not [attrs for attrs in dom.all('input') if attrs.get('name') == 'year'] and 'Anzeigen' not in page          # kein Monat, kein Jahr, kein Knopf
     options = [attrs for tag, attrs in dom.tags if tag == 'option']
-    assert [attrs['value'] for attrs in options] == [str(n) for n in range(1, 13)] + ['vorjahr', 'jahr']
-    assert [attrs.get('value') for attrs in options if 'selected' in attrs] == ['3', 'jahr']
+    assert [attrs['value'] for attrs in options] == ['vorjahr', 'jahr']
+    assert [attrs.get('value') for attrs in options if 'selected' in attrs] == ['jahr']
     assert 'Monat und Jahr</option>' in page and 'Vergleich mit dem Vorjahr</option>' in page and 'Anteilen' not in page
 
 
@@ -1364,10 +1366,10 @@ def test_the_accounts_are_closed_at_first_and_belong_to_their_line(demo_db):
     assert not [attrs for tag, attrs in dom.tags if tag == 'tr' and 'bwa-parent' in str(attrs)]          # nichts vom Skript der BWA
 
 
-def test_the_invalid_period_note_stands_only_for_an_invalid_period(tmp_db):
-    page = PageLiquidity(tmp_db, BwaQuery(2026, 10, 'vorjahr', invalid=True))
-    assert '<p class="warnColor">Der gewählte Zeitraum ist ungültig – angezeigt wird der Vormonat.</p>' in page
-    assert 'Der gewählte Zeitraum' not in PageLiquidity(tmp_db, BwaQuery(2026, 10, 'vorjahr'))
+def test_the_page_has_no_note_about_an_invalid_period(tmp_db):
+    """Ein ungültiger Zeitraum der Adresse wird wie auf jeder Seite verworfen (``resolve_period``); die Seite hat dafür keinen Hinweis mehr."""
+    page = PageLiquidity(tmp_db, BwaQuery(2026, 10, 'vorjahr'))
+    assert 'Der gewählte Zeitraum' not in page and 'ungültig' not in page
 
 
 def test_the_page_of_an_empty_book_shows_every_line_with_zero(tmp_db):
@@ -1381,8 +1383,9 @@ def test_the_page_uses_no_inline_style_and_only_var_and_function(demo_db):
     page = PageLiquidity(demo_db, BwaQuery(2026, 3, 'vorjahr'))
     own = page[page.index('<div class="rectRounded">'):page.index('<div id="app_confirm"')]
     assert ' style=' not in own and 'innerHTML' not in own
-    script = Dom(page).scripts[0]
-    assert script.startswith('\nvar LIQUIDITY_DATA = ')
+    scripts = Dom(page).scripts
+    script = scripts[1]                                                     # hinter dem Skript der Menüzeile (gotoPeriod)
+    assert 'gotoPeriod' in scripts[0] and script.startswith('\nvar LIQUIDITY_DATA = ')
     for forbidden in ('const ', 'let ', '=>', 'innerHTML', 'eval('):
         assert forbidden not in script, forbidden
     assert 'BWA_DATA' not in page and LIQUIDITY_JS in script
@@ -1391,7 +1394,7 @@ def test_the_page_uses_no_inline_style_and_only_var_and_function(demo_db):
 def test_the_pdf_address_stands_only_in_the_script_block(demo_db):
     page = PageLiquidity(demo_db, BwaQuery(2026, 3, 'jahr'))
     assert '/liquiditaet/pdf' not in re.sub(r'<script>.*?</script>', '', page, flags=re.S)
-    data = re.search(r'var LIQUIDITY_DATA = (.*?);\n', Dom(page).scripts[0], re.S).group(1)
+    data = re.search(r'var LIQUIDITY_DATA = (.*?);\n', Dom(page).scripts[1], re.S).group(1)
     assert json.loads(data) == {'pdf': '/liquiditaet/pdf?year=2026&month=3&variant=jahr'}
 
 
@@ -1437,21 +1440,31 @@ INVALID_ADDRESSES = [
 ]
 
 
-@pytest.mark.parametrize('query', INVALID_ADDRESSES)
-def test_an_invalid_period_gives_the_previous_month_with_a_note_and_the_pdf_refuses_it(server_port, auto_login, query):
-    """Dieselbe strenge Lesart wie die BWA (``pages_bwa.read_page_query``/``read_pdf_query``): Die Seite zeigt den Vormonat mit Hinweis, das PDF antwortet 400.
-    Der Vormonat hängt vom heutigen Datum ab – der Test liest es frisch."""
-    year, month = default_month(datetime.date.today())
+OLD_FORM_ADDRESSES = ['year=2026&month=3', 'year=2026&month=03&variant=jahr']
+
+
+@pytest.mark.parametrize('query', INVALID_ADDRESSES + OLD_FORM_ADDRESSES)
+def test_year_and_month_in_the_address_of_the_page_are_not_read(server_port, auto_login, query):
+    """Die Seite nimmt den gemeinsamen Zeitraum (``from``/``to``, sonst Cookie, sonst das laufende Jahr – ``period.resolve_period``); ``year`` und ``month``
+    liest sie nicht mehr: Eine Adresse der alten Form ist eine Adresse ohne Zeitraum und zeigt den laufenden Monat (nicht mehr den Vormonat, ``default_month``),
+    ohne Hinweis und ohne Cookie. Der heutige Tag hängt von der Uhr ab – der Test liest ihn frisch."""
+    today = datetime.date.today()
     page = get(server_port, f'/liquiditaet?{query}')
-    assert page.status == 200 and 'Der gewählte Zeitraum ist ungültig' in page.text
-    assert f'Liquiditätsrechnung – {bwa.month_label(year, month)}' in page.text
+    assert page.status == 200 and page.headers.get('Set-Cookie') is None and 'Der gewählte Zeitraum' not in page.text
+    assert f'Liquiditätsrechnung – {bwa.month_label(today.year, today.month)}' in page.text
+    assert f'Liquiditätsrechnung – {bwa.month_label(*default_month(today))}' not in page.text
+
+
+@pytest.mark.parametrize('query', INVALID_ADDRESSES)
+def test_the_pdf_still_refuses_an_invalid_period(server_port, auto_login, query):
+    """Das PDF liest ``year`` und ``month`` weiter streng (``pages_bwa.read_pdf_query``): 400 mit festem Satz."""
     pdf = get(server_port, f'/liquiditaet/pdf?{query}')
     assert pdf.status == 400 and pdf.text == 'Ungültiger Zeitraum.' and pdf.headers['Content-Type'] == 'text/plain; charset=utf-8'
 
 
 def test_an_unknown_variant_gives_the_default_on_the_page_and_400_on_the_pdf(server_port, auto_login):
     some_books(auto_login.db)
-    page = get(server_port, '/liquiditaet?year=2026&month=3&variant=unbekannt')
+    page = get(server_port, '/liquiditaet?from=2026-03-01&to=2026-03-31&variant=unbekannt')
     assert page.status == 200 and 'Der gewählte Zeitraum' not in page.text and 'Veränderung %' in page.text         # der Standard, still
     for variant in ('x', 'JAHR', '%20jahr', 'jahr&variant=jahr', 'jahr&variant=vorjahr'):
         response = get(server_port, f'/liquiditaet/pdf?year=2026&month=3&variant={variant}')
@@ -1470,26 +1483,33 @@ def some_books(db):
     book(db, 4400, '119.00', '2025-03-10', tax_rate='19', tax_amount='19.00')
 
 
-def test_the_page_answers_with_the_comparison_by_default_and_never_sets_a_cookie(server_port, auto_login):
+def test_the_page_answers_with_the_comparison_by_default_and_sets_only_the_cookie_of_the_period(server_port, auto_login):
     some_books(auto_login.db)
-    response = get(server_port, '/liquiditaet?year=2026&month=3')
-    assert response.status == 200 and response.headers['Content-Type'].startswith('text/html') and response.headers.get('Set-Cookie') is None
+    response = get(server_port, '/liquiditaet?from=2026-03-01&to=2026-03-31')
+    assert response.status == 200 and response.headers['Content-Type'].startswith('text/html')
+    assert response.headers.get_all('Set-Cookie') == ['period=2026-03-01..2026-03-31; Path=/; Max-Age=31536000; SameSite=Lax']
     assert response.headers.get_all('Cache-Control') == ['no-cache']
     text = response.text
     assert 'Liquiditätsrechnung – März 2026' in text and 'Veränderung %' in text and 'Betrag €' not in text
-    assert 'Betrag €' in get(server_port, '/liquiditaet?year=2026&month=3&variant=jahr').text
+    assert 'Betrag €' in get(server_port, '/liquiditaet?from=2026-03-01&to=2026-03-31&variant=jahr').text
     bare = get(server_port, '/liquiditaet')
-    assert bare.status == 200 and 'Liquiditätsrechnung – ' in bare.text and 'Der gewählte Zeitraum' not in bare.text
+    assert bare.status == 200 and bare.headers.get('Set-Cookie') is None and 'Liquiditätsrechnung – ' in bare.text and 'Der gewählte Zeitraum' not in bare.text
 
 
-def test_the_page_and_the_pdf_write_nothing(server_port, auto_login):
-    """Die Seite und das PDF sind GET-Routen, die nur lesen: Datenbank und Datenordner sind danach unverändert, es gibt kein Cookie. Das ist der Nachweis für die
-    Positivliste des Diagnose-MCP (``/liquiditaet``)."""
+def test_the_page_and_the_pdf_write_nothing_into_the_books(server_port, auto_login):
+    """Die Seite und das PDF sind GET-Routen, die nur lesen: Datenbank und Datenordner sind danach unverändert. Die Seite setzt – wie jede Seite mit Zeitraum – das
+    Cookie des gemeinsamen Zeitraums, wenn der aus der Adresse kam; das PDF setzt nie eines. Das ist der Nachweis für die Positivliste des Diagnose-MCP
+    (``/liquiditaet``)."""
     some_books(auto_login.db)
     before_db, before_tree = dump(auto_login.db.db_name), tree(userctx.DATA_ROOT)
-    for path in ('/liquiditaet', '/liquiditaet?year=2026&month=3', '/liquiditaet?year=2026&month=3&variant=jahr', '/liquiditaet?year=x',
-                 '/liquiditaet?year=2026&month=1', '/liquiditaet/pdf?year=2026&month=3', '/liquiditaet/pdf?year=2026&month=3&variant=jahr&accounts=1',
-                 '/liquiditaet/pdf?year=bad', '/liquiditaet/pdf?year=2026&month=3&variant=x'):
+    for path, cookies in (('/liquiditaet', []), ('/liquiditaet?from=2026-03-01&to=2026-03-31', ['period=2026-03-01..2026-03-31; Path=/; Max-Age=31536000; SameSite=Lax']),
+                          ('/liquiditaet?from=2026-03-01&to=2026-03-31&variant=jahr', ['period=2026-03-01..2026-03-31; Path=/; Max-Age=31536000; SameSite=Lax']),
+                          ('/liquiditaet?year=x', []), ('/liquiditaet?year=2026&month=1', []), ('/liquiditaet?from=x&to=y', [])):
+        response = get(server_port, path)
+        assert response.status == 200, path
+        assert (response.headers.get_all('Set-Cookie') or []) == cookies, path
+    for path in ('/liquiditaet/pdf?year=2026&month=3', '/liquiditaet/pdf?year=2026&month=3&variant=jahr&accounts=1', '/liquiditaet/pdf?year=bad',
+                 '/liquiditaet/pdf?year=2026&month=3&variant=x', '/liquiditaet/pdf?from=2026-03-01&to=2026-03-31'):
         response = get(server_port, path)
         assert response.headers.get('Set-Cookie') is None, path
         assert response.status in (200, 400), path
@@ -1516,12 +1536,13 @@ def _mcp():
 def test_the_mcp_may_read_the_page_but_never_the_pdf():
     """Die Seite schreibt nichts (Nachweis: ``test_the_page_and_the_pdf_write_nothing``), das PDF ist ein Dokument: nur die Seite steht in der Positivliste."""
     mcp = _mcp()
-    for path in ('/liquiditaet', '/liquiditaet?year=2026&month=10&variant=jahr', '/liquiditaet?year=2026&month=10&variant=vorjahr'):
+    for path in ('/liquiditaet', '/liquiditaet?from=2026-10-01&to=2026-10-31&variant=jahr', '/liquiditaet?from=2026-10-01&to=2026-10-31&variant=vorjahr'):
         assert mcp.check_page_path(path) == path
-    assert mcp._PAGE_ALLOWLIST['/liquiditaet'] == frozenset({'year', 'month', 'variant'}) and '/liquiditaet/pdf' not in mcp._PAGE_ALLOWLIST
+    assert mcp._PAGE_ALLOWLIST['/liquiditaet'] == frozenset({'variant', 'from', 'to', 'date_from', 'date_to'}) and '/liquiditaet/pdf' not in mcp._PAGE_ALLOWLIST
     for path in ('/liquiditaet/pdf?year=2026&month=10', '/liquiditaet/pdf', '/Liquiditaet', '/liquiditaet/'):
         with pytest.raises(ValueError, match='Seite nicht freigegeben'):
             mcp.check_page_path(path)
-    for path, key in (('/liquiditaet?from=2026-01-01', 'from'), ('/liquiditaet?accounts=1', 'accounts'), ('/liquiditaet?year=2026&acct=1', 'acct')):
+    for path, key in (('/liquiditaet?year=2026', 'year'), ('/liquiditaet?month=3', 'month'), ('/liquiditaet?accounts=1', 'accounts'),
+                      ('/liquiditaet?from=2026-01-01&acct=1', 'acct')):
         with pytest.raises(ValueError, match=f'Query-Parameter nicht freigegeben: {key}'):
             mcp.check_page_path(path)

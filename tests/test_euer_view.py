@@ -14,8 +14,9 @@ Fünf Teile.
   eine Abschrift der früheren Rechnung). Die Abweichung im geprüften Bereich: Ein Ergebnis von genau 0 war rot, wenn die float-Summe einen Rest von −5,55e-17
   ließ (0,3 gegen −0,1 und −0,2); jetzt ist es grün (``test_a_result_of_exactly_zero_is_green_…``).
   Außerhalb des Geprüften: Bei Summen ab rund 6·10¹¹ € kann der letzte Cent anders – richtig – gerundet sein, weil die float-Summe dort Stellen verlor.
-* Die Adresse (``from``, ``to``) wird streng gelesen, ohne stillen Tausch und ohne Cookie.
-* Die Seite: Untermenü, Formular, Tabelle gleich dem Kasten, Maskierung, kein Inline-Style, kein Markenname.
+* Die Adresse des PDF (``from``, ``to``) wird streng gelesen, ohne stillen Tausch und ohne Cookie. Die Seite nimmt den gemeinsamen Zeitraum wie jede Seite
+  mit Zeitraum (``period.resolve_period``: Adresse > Cookie > laufendes Jahr, Tausch von „von“ und „bis“, Cookie wie überall; ``test_period_validation.py``).
+* Die Seite: Untermenü, Menüzeile (``period_filter_widget``), Tabelle gleich dem Kasten, Maskierung, kein Inline-Style, kein Markenname.
 * Das PDF und die Routen: hochkant, mehrseitig, Beträge an der Spaltenkante, nichts auf der Platte, Anhang mit Dateiname.
 
 Alle Namen, Nummern und Beträge sind erfundene Testwerte; ein „heute“ steht nie als Konstante da (die Seite bekommt es als Argument).
@@ -48,8 +49,8 @@ from money import fmt_eur, from_minor, to_minor
 from server.pages import Header1
 from server.pages_bwa import REPORT_PAGES, reports_submenu
 from server.pages_dashboard import PageDashboard
-from server.pages_euer import (EUER_PDF_FAILED_TEXT, INVALID_PERIOD_ERROR, YEAR_LINKS, EuerQuery, PageEuer, read_euer_page_query,
-                               read_euer_pdf_query)
+from server.pages_euer import EUER_PDF_FAILED_TEXT, INVALID_PERIOD_ERROR, EuerQuery, PageEuer, read_euer_pdf_query
+from server.period import resolve_period
 from tests.bwa_helpers import book, some_books
 from tests.dom_helpers import Dom, assert_same_structure
 from tests.http_client import get
@@ -349,7 +350,7 @@ def test_the_box_links_to_the_page_for_its_period_and_names_the_missing_account_
     assert EUER_FILTER_SUFFIX == ' (dort ohne Kontofilter)'
     href = html_lib.unescape(links[0][0])                                                    # die Adresse des Links liest die Seite wieder
     query = dict(part.split('=') for part in href.split('?')[1].split('&'))
-    assert read_euer_page_query({key: [value] for key, value in query.items()}, created()) == EuerQuery('2026-03-01', '2026-03-31')
+    assert resolve_period({key: [value] for key, value in query.items()}, None) == ('2026-03-01', '2026-03-31', True)
 
 
 # ═══ Adresse ══════════════════════════════════════════════════════════════════
@@ -357,19 +358,7 @@ def _qs(**values):
     return {key: value if isinstance(value, list) else [value] for key, value in values.items()}
 
 
-def test_the_page_without_an_address_shows_the_current_year_without_a_note():
-    assert read_euer_page_query({}, datetime.date(2026, 11, 21)) == EuerQuery('2026-01-01', '2026-12-31', invalid=False)
-    assert read_euer_page_query({}, datetime.date(2025, 1, 1)) == EuerQuery('2025-01-01', '2025-12-31')
-    assert read_euer_page_query({'unbekannt': ['x']}, datetime.date(2026, 11, 21)) == EuerQuery('2026-01-01', '2026-12-31')
-
-
-def test_the_page_reads_a_valid_period():
-    today = datetime.date(2026, 11, 21)
-    assert read_euer_page_query(_qs(**{'from': '2025-03-01', 'to': '2025-03-31'}), today) == EuerQuery('2025-03-01', '2025-03-31')
-    assert read_euer_page_query(_qs(**{'from': '2026-05-05', 'to': '2026-05-05'}), today) == EuerQuery('2026-05-05', '2026-05-05')
-    assert read_euer_page_query(_qs(**{'from': '1900-01-01', 'to': '2200-12-31'}), today) == EuerQuery('1900-01-01', '2200-12-31')
-
-
+SWAPPED = {'from': ['2026-12-31'], 'to': ['2026-01-01']}
 INVALID_PERIODS = [
     {'from': ['2026-02-30'], 'to': ['2026-12-31']},                       # ein Tag, den es nicht gibt
     {'from': [' 2026-01-01'], 'to': ['2026-12-31']}, {'from': ['2026-01-01'], 'to': ['2026-12-31 ']},   # Leerraum wird nicht getrimmt
@@ -380,13 +369,20 @@ INVALID_PERIODS = [
     {'from': [''], 'to': ['2026-12-31']}, {'from': ['2026-01-01'], 'to': ['']},
     {'from': ['2026-01-01', '2026-02-01'], 'to': ['2026-12-31']},          # doppelt: ungültig, kein erster Wert
     {'from': ['2026-01-01'], 'to': ['2026-12-31', '2026-12-30']},
-    {'from': ['2026-12-31'], 'to': ['2026-01-01']},                        # von nach bis: kein stiller Tausch
+    SWAPPED,                                                               # von nach bis: für das PDF kein stiller Tausch
 ]
 
 
 @pytest.mark.parametrize('qs', INVALID_PERIODS)
-def test_an_invalid_period_gives_the_current_year_with_a_note(qs):
-    assert read_euer_page_query(qs, datetime.date(2026, 11, 21)) == EuerQuery('2026-01-01', '2026-12-31', invalid=True)
+def test_the_page_reads_the_period_like_every_page_with_one(qs):
+    """Die Seite zählt, was ``resolve_period`` als Zeitraum liest: ein gültiges Paar (``from`` nach ``to`` wird getauscht), sonst Cookie, sonst das laufende
+    Jahr – ohne Hinweis. Das PDF bleibt streng (``test_the_pdf_address_needs_a_valid_period``). Das Jahr liest der Test frisch von der Uhr."""
+    date_from, date_to, set_cookie = resolve_period(qs, None)
+    if qs is SWAPPED or any(len(values) > 1 for values in qs.values()):       # getauscht; ein doppelter Schlüssel: der erste Wert zählt wie überall
+        assert (date_from, date_to, set_cookie) == ('2026-01-01', '2026-12-31', True)
+    else:
+        year = datetime.date.today().year
+        assert (date_from, date_to, set_cookie) == (f'{year}-01-01', f'{year}-12-31', False)
 
 
 @pytest.mark.parametrize('qs', [{}, *INVALID_PERIODS])
@@ -429,18 +425,17 @@ def table_rows(page):
     return rows
 
 
-def test_the_page_shows_the_submenu_the_form_and_the_table(tmp_db):
+def test_the_page_shows_the_submenu_the_menu_row_and_the_table(tmp_db):
     some_books(tmp_db)
     book(tmp_db, 3806, '40.00', '2026-03-12')
     page = _page(tmp_db)
     assert reports_submenu('euer') in page and '<span id="ActivePage">Auswertungen</span>' in Header1('bwa')
     dom = Dom(page)
-    assert dom.one('form', action='/euer')['method'] == 'get'
-    assert dom.one('input', name='from')['value'] == '2026-01-01' and 'required' in dom.one('input', name='from')
-    assert dom.one('input', name='to')['value'] == '2026-12-31' and 'required' in dom.one('input', name='to')
-    assert [attrs['type'] for tag, attrs in dom.tags if tag == 'input' and attrs.get('name') in ('from', 'to')] == ['date', 'date']
-    links = [attrs['href'] for tag, attrs in dom.tags if tag == 'a' and attrs.get('href', '').startswith('/euer?')]
-    assert links == [f'/euer?from={year}-01-01&to={year}-12-31' for year in (2026, 2025, 2024, 2023, 2022)] and YEAR_LINKS == 5
+    assert not dom.all('form') and not dom.all('select')                      # kein eigenes Formular: die Menüzeile ist die der anderen Seiten
+    assert dom.one('input', id='dateFrom')['value'] == '2026-01-01' and dom.one('input', id='dateFrom')['type'] == 'date'
+    assert dom.one('input', id='dateTo')['value'] == '2026-12-31' and dom.one('input', id='dateTo')['type'] == 'date'
+    years = re.findall(r"onclick=\"window\.location\.href='(/euer\?[^']*)'\">(\d{4})</button>", page)
+    assert years == [(f'/euer?from={year}-01-01&to={year}-12-31', str(year)) for year in (2026, 2025, 2024, 2023, 2022)]
     assert f'{EUER_TITLE} – 2026</h3>' in page and EUER_HINT_TEXT in page and EUER_OTHER_TEXT in page and 'warnColor' not in page
     assert 'onclick="euerPdf()"' in page
     rows = table_rows(page)
@@ -456,15 +451,16 @@ def test_the_page_names_a_month_by_its_days_and_counts_only_that_month(tmp_db):
     some_books(tmp_db)
     page = _page(tmp_db, EuerQuery('2026-03-01', '2026-03-31'))
     assert f'{EUER_TITLE} – 01.03.2026 – 31.03.2026</h3>' in page
-    assert Dom(page).one('input', name='from')['value'] == '2026-03-01'
+    assert Dom(page).one('input', id='dateFrom')['value'] == '2026-03-01'
     rows = table_rows(page)
     assert 'Summe Betriebseinnahmen | 119,00' in rows and 'Ergebnis | 4,50' in rows          # die Erstattung vom April steht nicht darin
     assert not any(row.startswith('3841 ') for row in rows)
 
 
-def test_the_invalid_period_note_stands_only_for_an_invalid_period(tmp_db):
-    assert f'<p class="warnColor">{EUER_INVALID_TEXT}</p>' in _page(tmp_db, EuerQuery('2026-01-01', '2026-12-31', invalid=True))
-    assert 'warnColor' not in _page(tmp_db)
+def test_the_page_has_no_note_about_an_invalid_period(tmp_db):
+    """Ein ungültiger Zeitraum der Adresse wird wie auf jeder Seite verworfen (``resolve_period``); die Seite hat dafür keinen Hinweis mehr."""
+    page = _page(tmp_db)
+    assert 'warnColor' not in page and EUER_INVALID_TEXT not in page and 'ungültig' not in page
 
 
 def test_the_page_of_an_empty_book_shows_every_section_with_zero(tmp_db):
@@ -473,10 +469,10 @@ def test_the_page_of_an_empty_book_shows_every_section_with_zero(tmp_db):
         'Ergebnis | 0,00', OTHER_HEADING, 'Summe Sonstige Ausgaben | 0,00']
 
 
-def test_the_year_links_count_from_the_day_the_route_passes_in(tmp_db):
-    dom = Dom(_page(tmp_db, today=datetime.date(2031, 6, 30)))
-    links = [attrs['href'] for tag, attrs in dom.tags if tag == 'a' and attrs.get('href', '').startswith('/euer?')]
-    assert [link.split('=')[1][:4] for link in links] == ['2031', '2030', '2029', '2028', '2027']
+def test_the_year_buttons_count_from_the_day_the_route_passes_in(tmp_db):
+    page = _page(tmp_db, EuerQuery('2031-01-01', '2031-12-31'), today=datetime.date(2031, 6, 30))
+    assert re.findall(r"'\">(\d{4})</button>", page) == ['2031', '2030', '2029', '2028', '2027']
+    assert re.findall(r"<button class='active'[^>]*>(\d{4})</button>", page) == ['2031']
 
 
 def _dashboard_lines(box):
@@ -510,10 +506,11 @@ def test_the_page_shows_what_the_dashboard_box_shows(case, request):
 def test_the_page_uses_no_inline_style_and_only_var_and_function(tmp_db):
     some_books(tmp_db)
     page = _page(tmp_db)
-    own = page[page.index("<div class='header2'>"):page.index('<div id="app_confirm"')]          # Untermenü, Formular und Karte
+    own = page[page.index("<div class='header2'>"):page.index('<div id="app_confirm"')]          # Untermenü, Menüzeile und Karte
     assert ' style=' not in own and 'innerHTML' not in own
-    script = Dom(page).scripts[0]
-    assert script.startswith('\nvar EUER_DATA = ')
+    scripts = Dom(page).scripts
+    script = scripts[1]                                                     # hinter dem Skript der Menüzeile (gotoPeriod)
+    assert 'gotoPeriod' in scripts[0] and script.startswith('\nvar EUER_DATA = ')
     for forbidden in ('const ', 'let ', '=>', 'innerHTML', 'eval('):
         assert forbidden not in script, forbidden
 
@@ -522,7 +519,7 @@ def test_the_pdf_address_stands_only_in_the_script_block(tmp_db):
     some_books(tmp_db)
     page = _page(tmp_db, EuerQuery('2026-03-01', '2026-03-31'))
     assert '/euer/pdf' not in re.sub(r'<script>.*?</script>', '', page, flags=re.S)
-    data = re.search(r'var EUER_DATA = (.*?);\n', Dom(page).scripts[0], re.S).group(1)
+    data = re.search(r'var EUER_DATA = (.*?);\n', Dom(page).scripts[1], re.S).group(1)
     assert json.loads(data) == {'pdf': '/euer/pdf?from=2026-03-01&to=2026-03-31'}
 
 
@@ -738,15 +735,24 @@ def test_the_numbers_of_the_pdf_are_those_of_the_page(fixture, date_from, date_t
 
 
 # ═══ Routen ═══════════════════════════════════════════════════════════════════
-def test_the_page_and_the_pdf_are_get_routes_that_write_nothing(server_port, auto_login):
-    """Der Nachweis für die Positivliste des Diagnose-MCP (``/euer``): Datenbank und Datenordner sind nach jedem Aufruf unverändert, es gibt kein
-    Cookie. ``/euer/pdf`` steht nicht in der Liste (ein Dokument), schreibt aber auch nichts."""
+COOKIE_PATTERN = 'period={}..{}; Path=/; Max-Age=31536000; SameSite=Lax'
+YEAR_COOKIE = COOKIE_PATTERN.format('2026-01-01', '2026-12-31')
+MARCH_COOKIE = COOKIE_PATTERN.format('2026-03-01', '2026-03-31')
+
+
+def test_the_page_and_the_pdf_are_get_routes_that_write_nothing_into_the_books(server_port, auto_login):
+    """Der Nachweis für die Positivliste des Diagnose-MCP (``/euer``): Datenbank und Datenordner sind nach jedem Aufruf unverändert. Die Seite setzt –
+    wie jede Seite mit Zeitraum – das Cookie des gemeinsamen Zeitraums, wenn der aus der Adresse kam; ``/euer/pdf`` setzt nie eines (es steht nicht in
+    der Liste, ein Dokument, schreibt aber auch nichts)."""
     some_books(auto_login.db)
     before_db, before_tree = dump(auto_login.db.db_name), tree(userctx.DATA_ROOT)
-    for path in ('/euer', '/euer?from=2026-01-01&to=2026-12-31', '/euer?from=2026-03-01&to=2026-03-31', '/euer?from=x',
-                 '/euer?from=2026-12-31&to=2026-01-01', '/euer?from=2026-01-01', '/euer?to=2026-12-31',
-                 '/euer?from=2026-01-01&from=2026-02-01&to=2026-12-31', '/euer?from=&to=', '/euer?acct=1',
-                 '/euer/pdf?from=2026-01-01&to=2026-12-31', '/euer/pdf?from=2026-03-01&to=2026-03-31', '/euer/pdf', '/euer/pdf?from=bad'):
+    for path, cookies in (('/euer', []), ('/euer?from=2026-01-01&to=2026-12-31', [YEAR_COOKIE]), ('/euer?from=2026-03-01&to=2026-03-31', [MARCH_COOKIE]),
+                          ('/euer?from=x', []), ('/euer?from=2026-12-31&to=2026-01-01', [YEAR_COOKIE]), ('/euer?from=2026-01-01', []),
+                          ('/euer?to=2026-12-31', []), ('/euer?from=&to=', []), ('/euer?acct=1', [])):
+        response = get(server_port, path)
+        assert response.status == 200, path
+        assert (response.headers.get_all('Set-Cookie') or []) == cookies, path
+    for path in ('/euer/pdf?from=2026-01-01&to=2026-12-31', '/euer/pdf?from=2026-03-01&to=2026-03-31', '/euer/pdf', '/euer/pdf?from=bad'):
         response = get(server_port, path)
         assert response.headers.get('Set-Cookie') is None, path
         assert response.status in (200, 400), path
@@ -765,9 +771,21 @@ def test_the_page_answers_for_the_period_in_the_address(server_port, auto_login)
     bare = get(server_port, '/euer')
     year = re.search(r'Einnahmenüberschussrechnung – (\d{4})</h3>', bare.text).group(1)         # das laufende Jahr, ohne Hinweis
     assert bare.status == 200 and 'warnColor' not in bare.text
-    assert Dom(bare.text).one('input', name='from')['value'] == f'{year}-01-01' and Dom(bare.text).one('input', name='to')['value'] == f'{year}-12-31'
-    assert 'warnColor' in get(server_port, '/euer?from=2026-12-31&to=2026-01-01').text           # kein stiller Tausch
-    assert 'warnColor' in get(server_port, '/euer?from=2026-01-01').text
+    assert Dom(bare.text).one('input', id='dateFrom')['value'] == f'{year}-01-01' and Dom(bare.text).one('input', id='dateTo')['value'] == f'{year}-12-31'
+    swapped = get(server_port, '/euer?from=2026-12-31&to=2026-01-01')                                 # getauscht wie überall (das PDF lehnt es ab)
+    assert 'Einnahmenüberschussrechnung – 2026</h3>' in swapped.text and 'warnColor' not in swapped.text
+    partial = get(server_port, '/euer?from=2026-03-01')                                               # nur einer von beiden: nicht angegeben, ohne Hinweis
+    assert Dom(partial.text).one('input', id='dateFrom')['value'] == f'{year}-01-01' and 'warnColor' not in partial.text
+
+
+def test_the_page_takes_its_period_from_the_cookie_like_every_page_and_the_address_beats_it(server_port, auto_login):
+    some_books(auto_login.db)
+    march = get(server_port, '/euer', headers={'Cookie': 'period=2026-03-01..2026-03-31'})
+    assert march.status == 200 and march.headers.get('Set-Cookie') is None
+    assert 'Einnahmenüberschussrechnung – 01.03.2026 – 31.03.2026' in march.text and Dom(march.text).one('input', id='dateFrom')['value'] == '2026-03-01'
+    assert 'Summe Betriebseinnahmen | 119,00' in table_rows(march.text)
+    full = get(server_port, '/euer?from=2026-01-01&to=2026-12-31', headers={'Cookie': 'period=2026-03-01..2026-03-31'})
+    assert 'Einnahmenüberschussrechnung – 2026</h3>' in full.text and full.headers.get_all('Set-Cookie') == [YEAR_COOKIE]
 
 
 def test_the_pdf_route_answers_with_a_download(server_port, auto_login):

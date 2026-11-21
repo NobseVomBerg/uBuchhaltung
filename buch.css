@@ -9,6 +9,8 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 .demoBanner				{ text-align: center; font-size: 0.85em; padding: 3px 8px; margin: 0 0 6px 0; border-radius: 4px; background-color: #FFF3CD; color: #664D03; }
 .header2				{ min-height: 1.5em; padding: 5px 0 0 0; margin: 0; }
 .header3				{ min-height: 1.5em; padding: 0 0px 0 0; border-bottom: 1px solid #ccc; }
+.header3 button			{ padding: 1px 4px; }	/* Zeitraum-Zeile: fünf Jahres- und zwölf Monatsknöpfe bleiben auch in schmaleren Fenstern in einer Zeile */
+button.active			{ background-color: #4facfe; color: #FFF; }	/* aktiver Jahres-/Monatsknopf – auch im hellen Modus sichtbar */
 .gridMain				{ gap: 10px; padding-bottom: 10px; margin-top: 10px; }
 .gridMiddle				{ gap: 10px; }
 .grid1RowPrefered		{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }

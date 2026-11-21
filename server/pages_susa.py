@@ -6,47 +6,36 @@ Summen- und Saldenliste (``GET /susa``, ``GET /susa/pdf``).
 
 Die Seite zeigt je Konto den Anfangssaldo, Soll und Haben im Monat und aufgelaufen seit dem 1. Januar und den Endsaldo, nach Kontenklassen
 gruppiert, darunter den Abgleich der Bankkonten mit den Bankbewegungen und die Hinweise zu den Buchungen. Gerechnet wird in ``db.susa`` und
-``Database.get_susa`` (dieselben Zeilen und dieselbe Lesart wie der Export für das Steuerbüro), hier steht nur das Lesen der Adresse und das HTML.
-Die Seite schreibt nichts: kein Cookie, keine Einstellung, keine Datei, kein Steuerdatum.
+``Database.get_susa`` (dieselben Zeilen und dieselbe Lesart wie der Export für das Steuerbüro), hier steht nur das HTML und das Lesen der Adresse des PDF.
+Die Seite schreibt nichts in den Bestand: keine Einstellung, keine Datei, kein Steuerdatum (das Cookie des gemeinsamen Zeitraums setzt die Route
+wie bei jeder Seite mit Zeitraum).
 
-Jeder Wert aus Datenbank oder Adresse steht maskiert im HTML (``html.escape``); die Daten des Skripts gehen über ``script_json``. Gelesen wird
-die Adresse streng (``parse_year``, ``parse_month``): ein Schlüssel, der mehrfach vorkommt, ist ungültig.
+Jeder Wert aus Datenbank oder Adresse steht maskiert im HTML (``html.escape``); die Daten des Skripts gehen über ``script_json``. Die Seite nimmt
+den gemeinsamen Zeitraum (``from``/``to`` in der Adresse, sonst das Cookie, sonst das laufende Jahr – ``period.resolve_period``) und leitet ihren
+Monat daraus ab (``period.period_month``); ihre Menüzeile ist ``period_filter_widget`` mit Monatsknöpfen der Art ``always``. Das PDF liest ``year``
+und ``month`` streng (``parse_year``, ``parse_month``): ein Schlüssel, der mehrfach vorkommt, ist ungültig.
 """
 import html as _html
 from dataclasses import dataclass
 
 from db import Database
-from db.bwa import INVALID_PERIOD_TEXT, MONTH_NAMES, default_month, month_label
+from db.bwa import month_label
 from db.euer import german_date
 from db.susa import (BANK_CHECK_TEXT, BANK_COLUMNS, BANK_DIFF_TEXT, BANK_HEADING, BANK_SKIPPED_TEXT, COLUMN_ACCOUNT, COLUMN_LABELS,
                      COLUMN_NAME, EUER_DIFF_TEXT, NOT_POSTED_TEXT, NOTICES_HEADING, OPENING_TEXT, SALDO_TEXT, SUM_LABEL, SUSA_HINT_TEXT,
                      TAX_TEXT, TITLE, TOTAL_GROUP, TRANSFER_TEXT, SusaAccount, SusaGroupTotal, SusaReport, block_headers, cells,
                      format_balance, notice_text, visible_accounts, visible_groups)
 from .pages import Footer, Header1, Header2, Header3, script_json
-from .pages_bwa import INVALID_PERIOD_ERROR, MAX_YEAR, MIN_YEAR, _single, parse_month, parse_year, reports_submenu
+from .pages_bwa import INVALID_PERIOD_ERROR, _single, parse_month, parse_year, report_period, reports_period_row, reports_submenu
 
 SUSA_PDF_FAILED_TEXT = 'Die Summen- und Saldenliste ließ sich nicht als PDF erstellen.'
 
 
 @dataclass(frozen=True)
 class SusaQuery:
-    """Was die Adresse verlangt: Jahr und Monat; ``invalid``: Der angegebene Zeitraum ließ sich nicht lesen, es gilt der Vormonat (die Seite
-    sagt es)."""
+    """Der Monat, den die Seite zeigt (sie leitet ihn vom gemeinsamen Zeitraum ab) und das PDF druckt (es liest Jahr und Monat aus der Adresse)."""
     year: int
     month: int
-    invalid: bool = False
-
-
-def read_susa_page_query(qs: dict, today) -> SusaQuery:
-    """Die Adresse der Seite lesen. Ohne Jahr und Monat gilt der Vormonat; ist einer von beiden ungültig oder fehlt nur einer, ebenfalls –
-    dann mit ``invalid`` (Hinweis auf der Seite)."""
-    year_given, year_text = _single(qs, 'year')
-    month_given, month_text = _single(qs, 'month')
-    year, month = parse_year(year_text), parse_month(month_text)
-    if year is not None and month is not None:
-        return SusaQuery(year, month)
-    default_year, default_month_number = default_month(today)
-    return SusaQuery(default_year, default_month_number, invalid=year_given or month_given)
 
 
 def read_susa_pdf_query(qs: dict) -> tuple[SusaQuery | None, str | None]:
@@ -136,26 +125,17 @@ def _notices_block(report: SusaReport) -> str:
             + ''.join(f'<li>{_esc(notice_text(notice))}</li>' for notice in report.notices) + '</ul>')
 
 
-def _form(query: SusaQuery) -> str:
-    months = ''.join(f'<option value="{number}"{" selected" if number == query.month else ""}>{_esc(name)}</option>'
-                     for number, name in enumerate(MONTH_NAMES, start=1))
-    return ('<form method="get" action="/susa" class="rowWithObjects">'
-            f'<label>Monat <select name="month">{months}</select></label>'
-            f'<label>Jahr <input type="number" name="year" min="{MIN_YEAR}" max="{MAX_YEAR}" value="{_esc(query.year)}" required></label>'
-            '<button type="submit" class="coloredButton bg-blue btn-sm">Anzeigen</button></form>')
-
-
-def PageSusa(db: Database, query: SusaQuery) -> str:
-    """Die Seite zu einer geprüften Abfrage (``read_susa_page_query``)."""
+def PageSusa(db: Database, query: SusaQuery, date_from: str | None = None, date_to: str | None = None, today=None) -> str:
+    """Die Seite zu einem Monat (``query``); ``date_from``/``date_to`` ist der gemeinsame Zeitraum der Menüzeile (ohne ihn der Monat der
+    Abfrage), ``today`` bestimmt dort das laufende Jahr."""
+    date_from, date_to = report_period(query.year, query.month, date_from, date_to)
     report = db.get_susa(query.year, query.month)
     s = Header1('bwa')
     s += Header2(reports_submenu('susa'))
-    s += Header3(_form(query))
+    s += Header3(reports_period_row('/susa', date_from, date_to, today))
     s += '<div class="rectRounded">'
     s += f'<h3>{_esc(TITLE)} – {_esc(month_label(query.year, query.month))}</h3>'
     s += f'<p class="hint">{_esc(SUSA_HINT_TEXT)} {_esc(SALDO_TEXT)}</p>'
-    if query.invalid:
-        s += f'<p class="warnColor">{_esc(INVALID_PERIOD_TEXT)}</p>'
     s += ('<div class="rowWithObjects">'
           '<button type="button" class="coloredButton bg-blue btn-sm" onclick="susaPdf()">PDF</button>'
           '</div>')

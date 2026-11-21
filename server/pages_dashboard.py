@@ -14,6 +14,7 @@ from db.euer import EUER_FILTER_SUFFIX, EUER_LINK_TEXT, euer_statement
 from db.reporting import bank_skr_numbers
 from money import fmt_eur, from_minor, round_minor, to_minor
 from .pages import Header1, Header2, Header3, Footer
+from .period import MONTHS_NONE, period_filter_widget
 
 
 def _esc(value):
@@ -84,31 +85,12 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
             f'<label for="dacct_{aid}">{_html.escape(str(name))}</label> &nbsp; '
         )
 
-    # ── Year buttons ──────────────────────────────────────────────────
-    year_buttons = ''
-    for y in range(current_year, current_year - 5, -1):
-        active_cls = " class='active'" if range_label == str(y) else ''
-        year_buttons += (
-            f'<button{active_cls} onclick="setDashYear({y})">{y}</button> ')
-
-    header3_content = f'''
-        <div style="display:flex;gap:15px;align-items:center;flex-wrap:wrap;">
-            <div>
-                <label>Von:</label>
-                <input type="date" id="dateFrom" value="{h_from}"
-                       onchange="applyDashFilter()">
-                <label>Bis:</label>
-                <input type="date" id="dateTo" value="{h_to}"
-                       onchange="applyDashFilter()">
-                {year_buttons}
-            </div>
-        </div>
-    '''
-
     # ── Build page ────────────────────────────────────────────────────
+    # Dritte Menüzeile wie auf jeder Seite mit Zeitraum (ohne Monatsknöpfe); die gewählten Konten bleiben in den Adressen
     s = Header1('dashboard')
     s += Header2(header2_content)
-    s += Header3(header3_content)
+    s += Header3(period_filter_widget(date_from, date_to, '/dashboard',
+                                      extra_params={'acct': account_ids or []}, months=MONTHS_NONE))
 
     # ── Key metric cards ──────────────────────────────────────────────
     s += f'''
@@ -341,16 +323,6 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
                 ).forEach(cb => { url += '&acct=' + cb.value; });
             }
             return url;
-        }
-        function setDashYear(year) {
-            document.getElementById('dateFrom').value = year + '-01-01';
-            document.getElementById('dateTo').value   = year + '-12-31';
-            window.location.href = _buildDashURL();
-        }
-        function applyDashFilter() {
-            const f = document.getElementById('dateFrom').value;
-            const t = document.getElementById('dateTo').value;
-            if (f && t) window.location.href = _buildDashURL();
         }
         function toggleAllDashAccounts() {
             const allCb = document.getElementById('account_all');

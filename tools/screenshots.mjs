@@ -35,7 +35,7 @@ const PORT = process.env.UBUCHHALTUNG_SCREENSHOT_PORT || '8097';
 const BASE = `http://127.0.0.1:${PORT}`;
 
 // Seiten: Dateiname, Pfad. Ohne ?from=&to= zeigt die App das laufende Jahr
-// (Demodaten sind relativ zum Startdatum datiert); die Auswertungen zeigen den Vormonat.
+// (Demodaten sind relativ zum Startdatum datiert); die Monatsauswertungen zeigen ohne gewählten Zeitraum den laufenden Monat.
 const SHOTS = [
   { file: 'dashboard',    path: '/dashboard' },
   { file: 'bwa',          path: '/bwa' },

@@ -36,7 +36,7 @@ from db.reporting import (NEUTRAL_ACCOUNT_NUMBERS, OTHER_EXPENSE_ACCOUNTS, bank_
 from money import from_minor, to_minor
 from server.pages import Header1
 from server.pages_bwa import (INVALID_VARIANT_ERROR, BwaQuery, PageBwa, parse_month, parse_variant, parse_year,
-                              read_page_query, read_pdf_query)
+                              read_pdf_query, read_variant)
 from server.pages_dashboard import PageDashboard
 from tests import entry_form_world
 from tests.bwa_helpers import account_numbers, book, report_from, some_books, values_of
@@ -632,32 +632,15 @@ def test_valid_years_months_and_variants_are_read():
     assert parse_year(None) is None and parse_month(None) is None and parse_year(2026) is None
 
 
-def test_the_page_without_an_address_shows_the_previous_month_in_the_comparison_without_a_note():
-    assert read_page_query({}, datetime.date(2026, 11, 21)) == BwaQuery(2026, 10, 'vorjahr', invalid=False)
-    assert read_page_query({}, datetime.date(2026, 1, 5)) == BwaQuery(2025, 12, 'vorjahr', invalid=False)
-    assert read_page_query({'variant': ['jahr']}, datetime.date(2026, 11, 21)) == BwaQuery(2026, 10, 'jahr')
-
-
-def test_the_page_reads_a_valid_address_and_ignores_an_unknown_variant_without_a_note():
-    today = datetime.date(2026, 11, 21)
-    assert read_page_query({'year': ['2024'], 'month': ['2'], 'variant': ['jahr']}, today) == BwaQuery(2024, 2, 'jahr')
-    assert read_page_query({'year': ['2024'], 'month': ['02']}, today) == BwaQuery(2024, 2, 'vorjahr')
-    assert read_page_query({'year': ['2024'], 'month': ['2'], 'variant': ['x']}, today) == BwaQuery(2024, 2, 'vorjahr', invalid=False)
-    assert read_page_query({'year': ['2024'], 'month': ['2'], 'variant': ['x', 'jahr']}, today) == BwaQuery(2024, 2, 'vorjahr')
-
-
-@pytest.mark.parametrize('qs', [
-    {'year': ['02026'], 'month': ['3']}, {'year': ['26'], 'month': ['3']}, {'year': ['２０２６'], 'month': ['3']},
-    {'year': [' 2026'], 'month': ['3']}, {'year': ['+2026'], 'month': ['3']}, {'year': ['1899'], 'month': ['3']},
-    {'year': ['3000'], 'month': ['3']}, {'year': [''], 'month': ['3']},
-    {'year': ['2026'], 'month': ['0']}, {'year': ['2026'], 'month': ['13']}, {'year': ['2026'], 'month': ['001']},
-    {'year': ['2026'], 'month': ['1.0']}, {'year': ['2026'], 'month': ['-1']}, {'year': ['2026'], 'month': ['٣']},
-    {'year': ['2026', '2025'], 'month': ['3']}, {'year': ['2026'], 'month': ['3', '4']},
-    {'year': ['2026']}, {'month': ['3']},                                    # nur einer von beiden
-])
-def test_an_invalid_period_gives_the_previous_month_with_a_note(qs):
-    assert read_page_query(qs, datetime.date(2026, 11, 21)) == BwaQuery(2026, 10, 'vorjahr', invalid=True)
-    assert read_page_query({**qs, 'variant': ['jahr']}, datetime.date(2026, 11, 21)) == BwaQuery(2026, 10, 'jahr', invalid=True)
+def test_the_page_reads_only_the_variant_from_its_address_and_an_unknown_one_is_the_comparison_without_a_note():
+    """Jahr und Monat der Seite folgen dem gemeinsamen Zeitraum (``period_month``, ``test_report_period_menu.py``) – aus der Adresse liest die
+    Seite nur noch die Darstellung."""
+    assert read_variant({}) == 'vorjahr'
+    assert read_variant({'variant': ['jahr']}) == 'jahr' and read_variant({'variant': ['vorjahr']}) == 'vorjahr'
+    for qs in ({'variant': ['x']}, {'variant': ['JAHR']}, {'variant': [' jahr']}, {'variant': ['']}, {'variant': ['x', 'jahr']},
+               {'variant': ['jahr', 'jahr']}, {'variant': ['jahr', 'vorjahr']}, {'year': ['2024'], 'month': ['2']}):
+        assert read_variant(qs) == 'vorjahr', qs
+    assert read_variant({'year': ['2024'], 'month': ['2'], 'variant': ['jahr']}) == 'jahr'
 
 
 def test_the_pdf_address_needs_a_valid_period_and_refuses_an_invalid_variant():
@@ -683,15 +666,17 @@ def table_text(page):
     return rows
 
 
-def test_the_page_shows_the_form_the_lines_and_the_accounts(tmp_db):
+def test_the_page_shows_the_variant_form_the_lines_and_the_accounts(tmp_db):
     some_books(tmp_db)
     page = PageBwa(tmp_db, BwaQuery(2026, 3, 'jahr'))
     dom = Dom(page)
     assert dom.one('form', action='/bwa')['method'] == 'get'
-    assert dom.one('select', name='month') == {'name': 'month'} and dom.one('input', name='year')['value'] == '2026'
+    assert [attrs['name'] for attrs in dom.all('select')] == ['variant'] and dom.one('select', name='variant')['onchange'] == 'this.form.submit()'
+    assert dom.one('input', type='hidden', name='from')['value'] == '2026-03-01' and dom.one('input', type='hidden', name='to')['value'] == '2026-03-31'
+    assert not [attrs for attrs in dom.all('input') if attrs.get('name') == 'year'] and 'Anzeigen' not in page         # kein Monat, kein Jahr, kein Knopf
     options = [attrs for tag, attrs in dom.tags if tag == 'option']
-    assert [attrs['value'] for attrs in options] == [str(n) for n in range(1, 13)] + ['vorjahr', 'jahr']
-    assert [attrs.get('value') for attrs in options if 'selected' in attrs] == ['3', 'jahr']
+    assert [attrs['value'] for attrs in options] == ['vorjahr', 'jahr']
+    assert [attrs.get('value') for attrs in options if 'selected' in attrs] == ['jahr']
     rows = table_text(page)
     assert rows[0] == ' | März 2026 | Januar bis März 2026'
     assert rows[1].startswith('Position | Betrag € | % der Erlöse | % der Kosten | % der Betriebseinnahmen | Betrag €')
@@ -703,7 +688,7 @@ def test_the_page_shows_the_form_the_lines_and_the_accounts(tmp_db):
     assert 'Betriebswirtschaftliche Auswertung – März 2026' in page
     for text in (SIGN_TEXT, PERCENT_TEXT, bwa.HINT_TEXT, UNASSIGNED_TEXT):
         assert text in page
-    assert 'warnColor' not in page                                                 # gültiger Zeitraum: kein Hinweis
+    assert 'warnColor' not in page
 
 
 def test_the_accounts_are_closed_at_first_and_belong_to_their_line(tmp_db):
@@ -718,10 +703,23 @@ def test_the_accounts_are_closed_at_first_and_belong_to_their_line(tmp_db):
     assert icons == {f'bwa-icon-{key}' for key in parents}
 
 
-def test_the_invalid_period_note_stands_only_for_an_invalid_period(tmp_db):
-    page = PageBwa(tmp_db, BwaQuery(2026, 10, 'vorjahr', invalid=True))
-    assert '<p class="warnColor">Der gewählte Zeitraum ist ungültig – angezeigt wird der Vormonat.</p>' in page
-    assert 'warnColor' not in PageBwa(tmp_db, BwaQuery(2026, 10, 'vorjahr'))
+def test_the_variant_stays_in_the_row_of_the_pdf_button_and_not_in_the_menu_row(tmp_db):
+    """Das Auswahlfeld „Darstellung“ steht im Inhalt, in der Zeile mit dem PDF-Knopf – in der Menüzeile (``header3``) ist es höher als die
+    Knöpfe und ließe die Querlinie springen."""
+    page = PageBwa(tmp_db, BwaQuery(2026, 3, 'jahr'), '2026-01-01', '2026-12-31', datetime.date(2026, 11, 21))
+    menu_row = page[page.index("<div class='header3'>"):page.index('<div class="rectRounded">')]
+    assert '<select' not in menu_row and '<form' not in menu_row and 'coloredButton' not in menu_row
+    row = page[page.index('<div class="rowWithObjects"><button type="button" class="coloredButton bg-blue btn-sm" onclick="bwaPdf()">'):
+               page.index('<div class="splitScroll">')]
+    assert row.count('<form') == 1 and row.count('<select') == 1 and row.index('bwaPdf()') < row.index('<form')
+    dom = Dom(row)
+    assert dom.one('input', type='hidden', name='from')['value'] == '2026-01-01' and dom.one('input', type='hidden', name='to')['value'] == '2026-12-31'
+
+
+def test_the_page_has_no_note_about_an_invalid_period(tmp_db):
+    """Ein ungültiger Zeitraum der Adresse wird wie auf jeder Seite verworfen (``resolve_period``); die Seite hat dafür keinen Hinweis mehr."""
+    page = PageBwa(tmp_db, BwaQuery(2026, 10, 'vorjahr'))
+    assert 'warnColor' not in page and bwa.INVALID_PERIOD_TEXT not in page and 'ungültig' not in page
 
 
 def test_the_page_of_an_empty_book_shows_every_line_with_zero_and_no_note_about_unassigned_accounts(tmp_db):
@@ -738,8 +736,9 @@ def test_the_page_uses_no_inline_style_and_only_var_and_function(tmp_db):
     page = PageBwa(tmp_db, BwaQuery(2026, 3, 'vorjahr'))
     own = page[page.index('<div class="rectRounded">'):page.index('<div id="app_confirm"')]
     assert ' style=' not in own and 'innerHTML' not in own
-    script = Dom(page).scripts[0]
-    assert script.startswith('\nvar BWA_DATA = ')
+    scripts = Dom(page).scripts
+    script = scripts[1]                                                    # hinter dem Skript der Menüzeile (gotoPeriod)
+    assert 'gotoPeriod' in scripts[0] and script.startswith('\nvar BWA_DATA = ')
     for forbidden in ('const ', 'let ', '=>', 'innerHTML', 'eval('):
         assert forbidden not in script, forbidden
 
@@ -748,7 +747,7 @@ def test_the_pdf_address_stands_only_in_the_script_block(tmp_db):
     some_books(tmp_db)
     page = PageBwa(tmp_db, BwaQuery(2026, 3, 'jahr'))
     assert '/bwa/pdf' not in re.sub(r'<script>.*?</script>', '', page, flags=re.S)
-    data = re.search(r'var BWA_DATA = (.*?);\n', Dom(page).scripts[0], re.S).group(1)
+    data = re.search(r'var BWA_DATA = (.*?);\n', Dom(page).scripts[1], re.S).group(1)
     assert json.loads(data) == {'pdf': '/bwa/pdf?year=2026&month=3&variant=jahr'}
 
 
@@ -770,14 +769,23 @@ def test_names_with_markup_are_escaped(tmp_db, tmp_path):
 
 
 # ═══ Route: schreibt nichts ═══════════════════════════════════════════════════
-def test_the_page_writes_nothing(server_port, auto_login):
-    """Die Seite und das PDF sind GET-Routen, die nur lesen: Datenbank und Datenordner sind danach unverändert, es gibt kein Cookie.
-    Das ist der Nachweis für die Positivliste des Diagnose-MCP (``/bwa``)."""
+PERIOD_COOKIE = 'period=2026-03-01..2026-03-31; Path=/; Max-Age=31536000; SameSite=Lax'
+
+
+def test_the_page_writes_nothing_into_the_books_and_sets_only_the_cookie_of_the_period(server_port, auto_login):
+    """Die Seite und das PDF sind GET-Routen, die nur lesen: Datenbank und Datenordner sind danach unverändert. Die Seite setzt – wie jede Seite
+    mit Zeitraum – das Cookie des gemeinsamen Zeitraums, wenn der aus der Adresse kam; das PDF setzt nie eines. Das ist der Nachweis für die
+    Positivliste des Diagnose-MCP (``/bwa``)."""
     some_books(auto_login.db)
     before_db, before_tree = dump(auto_login.db.db_name), tree(userctx.DATA_ROOT)
-    for path in ('/bwa', '/bwa?year=2026&month=3', '/bwa?year=2026&month=3&variant=jahr', '/bwa?year=x', '/bwa?year=2026&month=1',
-                 '/bwa/pdf?year=2026&month=3', '/bwa/pdf?year=2026&month=3&variant=jahr&accounts=1', '/bwa/pdf?year=bad',
-                 '/bwa/pdf?year=2026&month=3&variant=x'):
+    for path, cookies in (('/bwa', []), ('/bwa?from=2026-03-01&to=2026-03-31', [PERIOD_COOKIE]),
+                          ('/bwa?from=2026-03-31&to=2026-03-01&variant=jahr', [PERIOD_COOKIE]), ('/bwa?from=x', []), ('/bwa?year=2026&month=1', []),
+                          ('/bwa?variant=jahr&acct=1', [])):
+        response = get(server_port, path)
+        assert response.status == 200, path
+        assert (response.headers.get_all('Set-Cookie') or []) == cookies, path
+    for path in ('/bwa/pdf?year=2026&month=3', '/bwa/pdf?year=2026&month=3&variant=jahr&accounts=1', '/bwa/pdf?year=bad',
+                 '/bwa/pdf?year=2026&month=3&variant=x', '/bwa/pdf?from=2026-03-01&to=2026-03-31'):
         response = get(server_port, path)
         assert response.headers.get('Set-Cookie') is None, path
         assert response.status in (200, 400), path
@@ -787,16 +795,15 @@ def test_the_page_writes_nothing(server_port, auto_login):
 
 def test_the_page_answers_with_the_comparison_by_default(server_port, auto_login):
     some_books(auto_login.db)
-    response = get(server_port, '/bwa?year=2026&month=3')
+    response = get(server_port, '/bwa?from=2026-03-01&to=2026-03-31')
     assert response.status == 200 and response.headers['Content-Type'].startswith('text/html')
     text = response.text
     assert 'Betriebswirtschaftliche Auswertung – März 2026' in text and 'Veränderung %' in text and '% der Erlöse' not in text
-    assert '% der Erlöse' in get(server_port, '/bwa?year=2026&month=3&variant=jahr').text
-    assert '% der Erlöse' not in get(server_port, '/bwa?year=2026&month=3&variant=unbekannt').text      # ungültig: der Standard, still
+    assert '% der Erlöse' in get(server_port, '/bwa?from=2026-03-01&to=2026-03-31&variant=jahr').text
+    assert '% der Erlöse' not in get(server_port, '/bwa?from=2026-03-01&to=2026-03-31&variant=unbekannt').text      # ungültig: der Standard, still
     bare = get(server_port, '/bwa')
     assert bare.status == 200 and 'Betriebswirtschaftliche Auswertung' in bare.text and 'warnColor' not in bare.text
-    assert 'warnColor' in get(server_port, '/bwa?year=2026').text                                        # nur Jahr: Vormonat und Hinweis
-    assert 'warnColor' in get(server_port, '/bwa?year=abc&month=3').text
+    assert 'Der gewählte Zeitraum' not in get(server_port, '/bwa?from=2026-13-01&to=2026-03-31').text             # ungültig: wie überall verworfen, ohne Hinweis
 
 
 def test_the_pdf_route_refuses_what_it_cannot_read(server_port, auto_login):

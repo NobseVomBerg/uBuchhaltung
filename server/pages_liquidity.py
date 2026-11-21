@@ -8,22 +8,24 @@ Die Seite zeigt, wie aus dem Ergebnis eines Monats – und aufgelaufen der Zeit 
 Abschreibungen und Restbuchwerte zurück, Darlehen und Verbindlichkeiten, Anlagenzugänge und Privatentnahmen dazu, am Ende die Veränderung laut
 Kontobewegungen und der Rest, den die Überleitung nicht erklärt („Nicht zugeordnet“). Wahlweise im Vergleich mit dem Vorjahr oder nur Monat und Jahr;
 unter den Zeilen mit Konten lassen sich diese aufklappen. Gerechnet wird in ``db.liquidity`` und ``Database.get_liquidity`` (aus den Zeilen der EÜR,
-dem Bericht der betriebswirtschaftlichen Auswertung und den Töpfen des Dashboards), hier steht nur das Lesen der Adresse und das HTML. Die Seite schreibt
-nichts: kein Cookie, keine Einstellung, keine Datei.
+dem Bericht der betriebswirtschaftlichen Auswertung und den Töpfen des Dashboards), hier steht nur das HTML. Die Seite schreibt nichts in den Bestand:
+keine Einstellung, keine Datei (das Cookie des gemeinsamen Zeitraums setzt die Route wie bei jeder Seite mit Zeitraum).
 
-Die Adresse (``year``, ``month``, ``variant``) liest dieselbe strenge Regel wie die betriebswirtschaftliche Auswertung (``pages_bwa.read_page_query``,
-``read_pdf_query``); ein Schlüssel, der mehrfach vorkommt, ist ungültig. Jeder Wert aus Datenbank oder Adresse steht maskiert im HTML (``html.escape``);
-die Daten des Skripts gehen über ``script_json``.
+Die Seite nimmt den gemeinsamen Zeitraum (``from``/``to`` in der Adresse, sonst das Cookie, sonst das laufende Jahr – ``period.resolve_period``) und
+leitet ihren Monat daraus ab (``period.period_month``) – wie die betriebswirtschaftliche Auswertung (``pages_bwa``), deren Bausteine sie nutzt; ihre
+Menüzeile ist ``period_filter_widget`` mit Monatsknöpfen der Art ``always``. Nur die Darstellung (``variant``) liest ``pages_bwa.read_variant`` aus der
+Adresse, das PDF liest ``year``, ``month`` und ``variant`` streng (``pages_bwa.read_pdf_query``): ein Schlüssel, der mehrfach vorkommt, ist ungültig.
+Jeder Wert aus Datenbank oder Adresse steht maskiert im HTML (``html.escape``); die Daten des Skripts gehen über ``script_json``.
 """
 import html as _html
 
 from db import Database
-from db.bwa import INVALID_PERIOD_TEXT, MONTH_NAMES, VARIANTS, block_headers, month_label
+from db.bwa import block_headers, month_label
 from db.liquidity import (BALANCED_TEXT, HINT_TEXT, MEMO, METHOD_TEXT, RESULT, ROUNDING_TEXT, SIGN_TEXT, SUM, TITLE, TRANSFER_TEXT, UNASSIGNED_TEXT,
                           UNBALANCED_TEXT, VARIANT_LABELS, LiquidityLine, LiquidityReport, account_label, balanced, block_size, cells, column_labels,
                           line_label, rounding_remainder, visible, visible_accounts)
 from .pages import Footer, Header1, Header2, Header3, script_json
-from .pages_bwa import MAX_YEAR, MIN_YEAR, BwaQuery, reports_submenu
+from .pages_bwa import BwaQuery, report_period, reports_period_row, reports_submenu, variant_form
 
 LIQUIDITY_PDF_FAILED_TEXT = 'Die Liquiditätsrechnung ließ sich nicht als PDF erstellen.'
 
@@ -103,18 +105,6 @@ def _table(report: LiquidityReport) -> str:
     return s + '</tbody></table>'
 
 
-def _form(query: BwaQuery) -> str:
-    months = ''.join(f'<option value="{number}"{" selected" if number == query.month else ""}>{_esc(name)}</option>'
-                     for number, name in enumerate(MONTH_NAMES, start=1))
-    variants = ''.join(f'<option value="{_esc(key)}"{" selected" if key == query.variant else ""}>'
-                       f'{_esc(VARIANT_LABELS[key])}</option>' for key in VARIANTS)
-    return ('<form method="get" action="/liquiditaet" class="rowWithObjects">'
-            f'<label>Monat <select name="month">{months}</select></label>'
-            f'<label>Jahr <input type="number" name="year" min="{MIN_YEAR}" max="{MAX_YEAR}" value="{_esc(query.year)}" required></label>'
-            f'<label>Darstellung <select name="variant">{variants}</select></label>'
-            '<button type="submit" class="coloredButton bg-blue btn-sm">Anzeigen</button></form>')
-
-
 def _reconciliation(report: LiquidityReport) -> str:
     """Der Satz zur Abstimmung unter der Tabelle: Die Überleitung geht auf – oder die Warnung, was „Nicht zugeordnet“ ist (und, wenn nötig, dass ein Rest
     unter einem halben Cent ein Rundungsrest ist). Dazu, wenn Überträge dastehen, der Satz, warum sie nicht enthalten sind."""
@@ -130,22 +120,23 @@ def _reconciliation(report: LiquidityReport) -> str:
     return s
 
 
-def PageLiquidity(db: Database, query: BwaQuery) -> str:
-    """Die Seite zu einer geprüften Abfrage (``pages_bwa.read_page_query``)."""
+def PageLiquidity(db: Database, query: BwaQuery, date_from: str | None = None, date_to: str | None = None, today=None) -> str:
+    """Die Seite zu einem Monat und einer Darstellung (``query``); ``date_from``/``date_to`` ist der gemeinsame Zeitraum der Menüzeile
+    (ohne ihn der Monat der Abfrage), ``today`` bestimmt dort das laufende Jahr."""
+    date_from, date_to = report_period(query.year, query.month, date_from, date_to)
     report = db.get_liquidity(query.year, query.month, query.variant)
     s = Header1('bwa')
     s += Header2(reports_submenu('liquiditaet'))
-    s += Header3(_form(query))
+    s += Header3(reports_period_row('/liquiditaet', date_from, date_to, today, query.variant))
     s += '<div class="rectRounded">'
     s += f'<h3>{_esc(TITLE)} – {_esc(month_label(query.year, query.month))}</h3>'
     s += f'<p class="hint">{_esc(HINT_TEXT)} {_esc(SIGN_TEXT)}</p>'
     s += f'<p class="hint">{_esc(METHOD_TEXT)}</p>'
-    if query.invalid:
-        s += f'<p class="warnColor">{_esc(INVALID_PERIOD_TEXT)}</p>'
     s += ('<div class="rowWithObjects">'
           '<button type="button" class="coloredButton bg-blue btn-sm" onclick="liqPdf()">PDF</button>'
           '<label><input type="checkbox" id="liqAccounts" checked> mit Kontennachweis</label>'
           '<button type="button" class="coloredButton bg-gray btn-sm" onclick="liqToggleAll()">Alle Konten auf-/zuklappen</button>'
+          + variant_form('/liquiditaet', date_from, date_to, query.variant, VARIANT_LABELS) +
           '</div>')
     s += f'<div class="splitScroll">{_table(report)}</div>'          # in einem schmalen Fenster rollt die Tabelle in sich
     s += _reconciliation(report)
