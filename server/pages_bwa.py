@@ -10,6 +10,9 @@ steht nur das Lesen der Adresse und das HTML. Die Seite schreibt nichts: kein Co
 
 Jeder Wert aus Datenbank oder Adresse steht maskiert im HTML (``html.escape``); die Daten des Skripts gehen über ``script_json``.
 Gelesen wird die Adresse streng (``parse_year``, ``parse_month``, ``parse_variant``): ein Schlüssel, der mehrfach vorkommt, ist ungültig.
+
+Das Untermenü der Auswertungen (``REPORT_PAGES``, ``reports_submenu``) steht hier und gilt für jede Seite darunter (BWA, EÜR): Sie rufen alle
+``Header1('bwa')`` auf, damit der Menüpunkt „Auswertungen“ markiert bleibt.
 """
 import html as _html
 from dataclasses import dataclass
@@ -24,6 +27,9 @@ MIN_YEAR, MAX_YEAR = 1900, 2999
 INVALID_PERIOD_ERROR = 'Ungültiger Zeitraum.'
 INVALID_VARIANT_ERROR = 'Ungültige Darstellung.'
 PDF_FAILED_TEXT = 'Die Auswertung ließ sich nicht als PDF erstellen.'
+
+# Die Seiten unter „Auswertungen“ (Schlüssel, Adresse, Bezeichnung im Untermenü); jede ruft Header1('bwa') auf, damit der Menüpunkt markiert bleibt
+REPORT_PAGES = (('bwa', '/bwa', 'BWA'), ('euer', '/euer', 'EÜR'))
 
 
 @dataclass(frozen=True)
@@ -103,6 +109,13 @@ def read_pdf_query(qs: dict) -> tuple[BwaQuery | None, str | None]:
 def _esc(value) -> str:
     """Wert aus Datenbank oder Adresse für HTML-Text und -Attribute maskieren (NULL = leer)."""
     return _html.escape(str(value if value is not None else ''), quote=True)
+
+
+def reports_submenu(active: str) -> str:
+    """Das Untermenü der Auswertungen für ``Header2``: ein Link je Seite von ``REPORT_PAGES``, mit „ | “ getrennt; die aktive Seite
+    (``active`` ist ihr Schlüssel) steht als Text, wie in den Stammdaten."""
+    return ' | '.join(f'<span id="ActivePage">{_esc(label)}</span>' if key == active else f'<a href="{_esc(path)}">{_esc(label)}</a>'
+                      for key, path, label in REPORT_PAGES)
 
 
 # Aufklappen der Konten unter einer Zeile: Die Konten sind Zeilen mit data-bwa-parent, das Symbol hat die ID bwa-icon-<Schlüssel>.
@@ -189,7 +202,7 @@ def PageBwa(db: Database, query: BwaQuery) -> str:
     """Die Seite zu einer geprüften Abfrage (``read_page_query``)."""
     report = db.get_bwa(query.year, query.month, query.variant)
     s = Header1('bwa')
-    s += Header2('')
+    s += Header2(reports_submenu('bwa'))
     s += Header3(_form(query))
     s += '<div class="rectRounded">'
     s += f'<h3>{_esc(TITLE)} – {_esc(month_label(query.year, query.month))}</h3>'

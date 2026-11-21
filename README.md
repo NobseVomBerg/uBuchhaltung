@@ -104,7 +104,7 @@ Anmeldung). Vorher eine Datensicherung anlegen – Ablauf und Rückweg unter
 |---|---|
 | **Buchen** | Bankbewegungen und Buchungssätze, Split-Buchungen, Kontierungs-Vorschlag aus der Historie, Belege verknüpfen |
 | **Kontenrahmen** | SKR04 vorbelegt, eigene Konten (auch weiterer Rahmen wie SKR03) anlegbar, DATEV-Steuerschlüssel |
-| **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR), monatliche betriebswirtschaftliche Auswertung (Seite und PDF) |
+| **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR, auch als eigene Seite und PDF), monatliche betriebswirtschaftliche Auswertung (Seite und PDF) |
 | **Rechnungen & Angebote** | PDF als hybride E-Rechnung (ZUGFeRD/Factur-X, EN 16931) und XRechnung, E-Mail-Versand, Nummernkreise, Stornorechnung als eigener Beleg (auf Wunsch mit Entwurf der neuen Rechnung), offene Posten, Mahnwesen, Kleinunternehmerregelung (der Hinweis auf § 19 UStG steht automatisch im Dokument) |
 | **Anlagen** | Anlagenverzeichnis mit AfA (linear, degressiv, GWG) |
 | **Import & Export** | Kontoauszüge im Bankformat CAMT.053 (XML oder ZIP, jede Bank), als PDF (DKB, Volksbank Rottweil) oder als CSV (Umsatzliste der DKB) – bei einem gemischt genutzten Konto lassen sich einzelne Umsätze auswählen, [Datenübernahme aus WISO Mein Büro](#datenübernahme-aus-wiso-mein-büro), DATEV-Buchungsstapel |
@@ -361,17 +361,22 @@ Professionelle Rechnungserstellung mit PDF, E-Mail-Versand und XRechnung:
   - Betriebseinnahmen
   - Betriebsausgaben (offizielle EÜR)
   - Sonstige Ausgaben (separat ausgewiesen)
+  - Der Link „zur Auswertung“ öffnet dieselben Zahlen als eigene Seite mit PDF (`/euer`, siehe 7a; dort ohne Kontofilter)
 - Steueranteile in der EÜR:
   - Virtuelles 3806 nur aus USt-Anteilen der Einnahmen
   - Virtuelle Vorsteuerkonten 1401/1406 für Ausgaben
 - **Kasse-Buchungen**: Buchungen über die Buchungsmaske mit Konto = Kasse zählen in EÜR und Dashboard wie Bankbewegungen. Eigenständige Sätze auf der Kasse – auch direkte Entry-Buchungen ohne COA-Spiegel (`CounterCOA=NULL`) – fließen ebenfalls ein. Die EÜR liest zusätzlich eigenständige Sätze über das Verrechnungskonto 1460 (WISO: „Aufwand an Verrechnung“ gilt mit dem Datum des Satzes als abgeflossen), solange kein Kontofilter gesetzt ist; das Dashboard folgt den Kontobewegungen
 - **Abschreibungen (AfA)** erscheinen in der EÜR (Betriebsausgabe auf dem Aufwandskonto), nicht in den Zahlungskarten des Dashboards – sie sind kein Geldfluss
 
-### 7a. Betriebswirtschaftliche Auswertung (`/bwa`)
-- Ein Monat und – aufgelaufen – die Zeit seit dem 1. Januar, im Vergleich mit dem Vorjahr (Standard) oder mit Anteilen an Erlösen, Kosten und
-  Betriebseinnahmen; unter jeder Zeile lassen sich die Konten aufklappen; als PDF (A4 quer, auf Wunsch mit Kontennachweis)
-- Übernimmt die Zahlen der EÜR unverändert (nach Zahlungsdatum) und ordnet die Konten nach ihren SKR04-Nummern in Gruppen; ein Konto ohne Gruppe steht
+### 7a. Auswertungen (`/bwa`, `/euer`)
+Unter dem Menüpunkt „Auswertungen“ stehen zwei Seiten (Untermenü), jede auch als PDF. Beide rechnen nach Zahlungsdatum wie die EÜR im Dashboard.
+- **Betriebswirtschaftliche Auswertung** (`/bwa`): Ein Monat und – aufgelaufen – die Zeit seit dem 1. Januar, im Vergleich mit dem Vorjahr (Standard) oder
+  mit Anteilen an Erlösen, Kosten und Betriebseinnahmen; unter jeder Zeile lassen sich die Konten aufklappen; als PDF (A4 quer, auf Wunsch mit
+  Kontennachweis). Übernimmt die Zahlen der EÜR unverändert und ordnet die Konten nach ihren SKR04-Nummern in Gruppen; ein Konto ohne Gruppe steht
   unter „Nicht zugeordnet“
+- **Einnahmenüberschussrechnung** (`/euer`): ein frei gewählter Zeitraum (von – bis, dazu die letzten Jahre als Links); dieselben Zahlen wie der Kasten im
+  Dashboard – Betriebseinnahmen, Betriebsausgaben, Ergebnis und „Sonstige Ausgaben“, die angezeigt werden, aber nicht im Ergebnis zählen –, aber ohne
+  Kontofilter; als PDF (A4 hoch, mehrseitig). Kein amtliches Formular
 - Keine Steuerberatung, ersetzt nicht die Auswertung eines Steuerbüros
 
 ### 8. Mahnwesen (`/invoice/reminders`)
@@ -613,6 +618,8 @@ uBuchhaltung/
 │   ├── pdf_quote.py           #   PDF-Angebotsgenerierung
 │   ├── pdf_worktime.py        #   PDF-Stundenzettel (Arbeitszeiten)
 │   ├── pdf_bwa.py             #   PDF der betriebswirtschaftlichen Auswertung (A4 quer)
+│   ├── pdf_euer.py            #   PDF der Einnahmenüberschussrechnung (A4 hoch)
+│   ├── pdf_table.py           #   gemeinsame Bausteine der Tabellen-PDFs (Zelle, Linie, Kürzen, Umbruch, Seitenverteilung)
 │   ├── invoice_files.py       #   Ablage und Dateinamen der Rechnungs- und Angebotsdokumente
 │   ├── einvoice_model.py      #   neutrales E-Rechnungsmodell (EN 16931)
 │   ├── xrechnung_invoice.py   #   XRechnung XML (UBL)
@@ -652,6 +659,7 @@ uBuchhaltung/
 │   ├── pages.py               # Gemeinsame HTML (Header, Footer, Nav, CSRF-JS)
 │   ├── pages_dashboard.py     # Dashboard + EÜR
 │   ├── pages_bwa.py           # Betriebswirtschaftliche Auswertung (Seite, Adresse streng gelesen)
+│   ├── pages_euer.py          # Einnahmenüberschussrechnung (Seite, Adresse streng gelesen)
 │   ├── pages_invoice.py       # Rechnungen · pages_quote.py – Angebote
 │   ├── pages_transactions.py  # Buchungen (Bank+Entry merged Display)
 │   ├── pages_contacts.py      # Kontaktverwaltung (6-Tabellen-Schema)
@@ -704,6 +712,7 @@ uBuchhaltung/
 | `server/pages.py` | Gemeinsame HTML (Header, Nav, Footer, CSRF-JS) |
 | `server/pages_dashboard.py` | Dashboard + EÜR |
 | `server/pages_bwa.py` | Betriebswirtschaftliche Auswertung (Seite; Gruppen und Berechnung in `db/bwa.py`, PDF in `export/pdf_bwa.py`) |
+| `server/pages_euer.py` | Einnahmenüberschussrechnung (Seite; Aufbereitung in `db/euer.py`, auch für den Kasten im Dashboard; PDF in `export/pdf_euer.py`) |
 | `server/pages_invoice.py` / `pages_quote.py` | Rechnungen / Angebote |
 | `server/pages_transactions.py` | Buchungen (Bank+Entry merged) |
 | `server/pages_contacts.py` | Kontakte |

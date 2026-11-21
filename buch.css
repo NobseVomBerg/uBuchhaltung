@@ -163,12 +163,14 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 /* Dashboard, Übersicht: die Zeile „Überträge zwischen eigenen Konten“ (Text mit .hint gedämpft), Betrag rechtsbündig */
 .dashTransfers td + td	{ text-align: right; }
 
-/* Betriebswirtschaftliche Auswertung: Beträge und Anteile rechtsbündig, Konten eingerückt (ihr Aufklapp-Symbol wie in der Buchungsliste
-   .group-row/.child-row/.split-toggle-icon; ohne Konten bleibt es unsichtbar, damit alle Bezeichnungen gleich beginnen), Summen mit
-   Linie (.bwaSum, oben bei den Arbeitszeiten), das Ergebnis dazu mit Doppellinie darunter */
-.bwaTable				{ border-collapse: collapse; }
-.bwaTable th.num, .bwaTable td.num	{ text-align: right; white-space: nowrap; }
-.bwaTable th.bwaBlock		{ text-align: center; }	 /* Überschrift eines Blocks (Monat, aufgelaufen) mittig über seinen vier Spalten */
+/* Auswertungen (.bwaTable: betriebswirtschaftliche Auswertung, .reportTable: Einnahmenüberschussrechnung und weitere Listen): Beträge
+   und Anteile rechtsbündig, Konten eingerückt (ihr Aufklapp-Symbol wie in der Buchungsliste .group-row/.child-row/.split-toggle-icon;
+   ohne Konten bleibt es unsichtbar, damit alle Bezeichnungen gleich beginnen), Summen mit Linie (.bwaSum, oben bei den Arbeitszeiten),
+   das Ergebnis dazu mit Doppellinie darunter; .reportTable: eine Gruppenüberschrift (th im tbody) steht linksbündig mit etwas Abstand darüber */
+.bwaTable, .reportTable	{ border-collapse: collapse; }
+.bwaTable th.num, .bwaTable td.num, .reportTable th.num, .reportTable td.num	{ text-align: right; white-space: nowrap; }
+.bwaTable th.bwaBlock, .reportTable th.bwaBlock	{ text-align: center; }	 /* Überschrift eines Blocks (Monat, aufgelaufen) mittig über seinen Spalten */
+.reportTable tbody th	{ text-align: left; padding-top: 8px; }
 .bwaTable .child-row td:first-child	{ padding-left: 24px; overflow-wrap: anywhere; }
 .bwaTable .bwaNoIcon	{ visibility: hidden; }
 .bwaResult td			{ border-bottom: 3px double #888; }

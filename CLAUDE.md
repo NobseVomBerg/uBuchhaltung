@@ -716,6 +716,24 @@ kein Subagent darauf:
   und landet nie auf der Platte (Download über `appDownload`; Dateiname `BWA_JJJJ-MM.pdf`, mit Anteilen `…_Anteile.pdf`). `/bwa` steht in der
   Positivliste des Diagnose-MCP (es schreibt nichts, Nachweis im Test), `/bwa/pdf` nicht. Fester Hinweis: keine Steuerberatung.
   `tests/test_bwa.py`, `tests/test_bwa_pdf.py`
+- **EÜR-Ansicht (seit 2.5.16, `db/euer.py`, `server/pages_euer.py`, `export/pdf_euer.py`; `GET /euer`, `GET /euer/pdf`):** EINE Aufbereitung für den
+  Kasten der EÜR im Dashboard und die Seite (`db.euer.euer_statement`: die Zeilen von `get_euer_data` nach `reporting.euer_section` in Einnahmen,
+  Ausgaben und „Sonstige Ausgaben“; Summen aus Minor Units, nie als Summe von `float`; die echte und die virtuelle 3806 bleiben zwei Zeilen;
+  Ergebnis = Einnahmen + Ausgaben, die „Sonstigen Ausgaben“ zählen nicht mit). Der Kasten im Dashboard bleibt **zeichengleich** – bis auf die eine
+  Zeile mit dem Link „zur Auswertung“ unter der Überschrift (mit dem Zusatz „(dort ohne Kontofilter)“, wenn dort Konten gewählt sind): SHA-256-Schnappschüsse
+  am Stand 2.5.14 (`tests/test_euer_view.py`); ändert sich ein Zeichen, ist der Code zu ändern, nie der Schnappschuss. Die bekannten Abweichungen
+  von 2.5.14: Ein Ergebnis von genau 0 ist grün (der Kasten rechnete die Summen als `float`; ein Rest von −5,55e-17 färbte das „0,00 €“ rot), und
+  bei Summen ab rund 6·10¹¹ € kann der letzte Cent anders – nämlich richtig – gerundet sein (die `float`-Summe verlor dort Stellen); die Zeilen
+  selbst sind immer gleich. Ein leerer Wert in der Adresse (`from=`) gilt als nicht angegeben (`parse_qs` lässt ihn fallen, wie bei `/bwa`). Die Seite
+  hat **keinen Kontofilter** (mit Filter fielen das Verrechnungskonto 1460 und die AfA weg, es wäre keine EÜR mehr). Der Zeitraum (`from`, `to`) wird
+  streng gelesen (`period.parse_iso_date`): beide sind nötig, `from` liegt nicht nach `to` – **kein stiller Tausch**, anders als bei `valid_period` –, ein
+  doppelter Schlüssel ist ungültig; die Seite zeigt dann das laufende Jahr mit Hinweis, das PDF antwortet 400 „Ungültiger Zeitraum.“. Kein Cookie wird
+  gelesen oder gesetzt; die fünf Jahreslinks rechnen aus dem `today`, das die Route übergibt. Das PDF ist A4 hoch, mehrseitig und landet nie auf der Platte
+  (Download über `appDownload`; Dateiname `EUER_JJJJ.pdf` für ein volles Kalenderjahr, sonst `EUER_von_bis.pdf`); seine Bausteine (Text bereinigen,
+  kürzen, umbrechen, Zelle, Linie, Seitenverteilung) stehen in `export/pdf_table.py` und gelten auch für `pdf_bwa`, dessen Ausgabe dabei dieselbe blieb
+  (Schnappschuss in `tests/test_pdf_table.py`). Fester Hinweis: kein amtliches Formular, keine Steuerberatung. **Untermenü der Auswertungen:** `REPORT_PAGES`
+  und `reports_submenu` in `server/pages_bwa.py`; jede Seite darunter ruft `Header1('bwa')` auf (der Menüpunkt bleibt markiert). `/euer` steht in der
+  Positivliste des Diagnose-MCP (es schreibt nichts, Nachweis im Test), `/euer/pdf` nicht. `tests/test_euer_view.py`, `tests/test_pdf_table.py`
 - **Automatischer Abgleich** (`link_bank_to_entries`, läuft nach jedem Import; seit 2.3.14 mit Richtungsregel): Angefasst
   werden nur Bankbewegungen ohne Kinder und Sätze ohne `ParentBooking_ID` – eine bestehende Verknüpfung und der Text der
   Bankbewegung ändern sich nie. In den Stufen 1–6 (Reihenfolge im Lauf: 0, 1, 2, 4, 3, 3b, 3c, 3d, 5, 6, 6b, Nachlauf, 7) wird
@@ -1019,7 +1037,7 @@ kein Subagent darauf:
   `check_page_path`) nicht aufweichen; neue Seiten und Schlüssel nur für GET-Handler, die
   nichts schreiben (Nachweis im Test). `/backup/download` steht bewusst nicht darin: Es liefert den ganzen Datenbestand
   (Gigabyte-Größe). `/receipts/search` und `/transactions/search` stehen bewusst nicht darin: JSON-Suchen der Seiten, keine
-  Anzeigeseiten; dasselbe liefert die SQL-Abfrage. `/bwa/pdf` steht nicht darin (Dokument)
+  Anzeigeseiten; dasselbe liefert die SQL-Abfrage. `/bwa/pdf` und `/euer/pdf` stehen nicht darin (Dokumente)
 - Zugangsdaten aus der Windows-Anmeldeinformationsverwaltung, keyring oder Umgebung, nie im Repo; über `http://` gehen sie nur
   an den eigenen Rechner, sonst nur mit `UBUCHHALTUNG_MCP_ALLOW_HTTP`. Registrierung nur
   lokal (`claude mcp add --scope local`), Einrichtung in `DEPLOYMENT.md`
