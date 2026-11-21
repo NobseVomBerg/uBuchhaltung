@@ -105,7 +105,9 @@ TAX_ACCOUNTS = {
     TAX_VAT: {19.0: 3806, 16.0: 3806, 7.0: 3801, 5.0: 3801},
 }
 
-#: Die Namen der Steuerkonten, wenn der Kontenrahmen sie nicht führt (3801 steht nicht in den Seed-Dateien)
+#: Die Namen der Steuerkonten für einen Bestand, dessen Kontenrahmen sie nicht führt: ein Bestand von vor 2.6.1 (der Standard-Kontenrahmen führt
+#: 3801 erst seitdem; ein älterer Bestand bekommt es über „fehlende Standardkonten“) oder ein gelöschtes Konto. Wo der Kontenrahmen das Konto führt,
+#: gilt sein Name.
 TAX_ACCOUNT_NAMES = {1401: 'Abziehbare Vorsteuer 7 %', 1406: 'Abziehbare Vorsteuer 19 %',
                      3801: 'Umsatzsteuer 7 %', 3806: 'Umsatzsteuer 19 %'}
 NOT_IN_CHART_SUFFIX = ' (nicht im Kontenrahmen)'
