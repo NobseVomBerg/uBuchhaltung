@@ -818,7 +818,9 @@ def test_the_navigation_names_the_page():
 
 
 def test_the_page_shows_the_submenu_of_the_reports_with_the_bwa_active(tmp_db):
-    """Seit 2.5.16 steht unter dem Menüpunkt „Auswertungen“ ein Untermenü (BWA, EÜR); die Seite der BWA ist darin die aktive."""
+    """Seit 2.5.16 steht unter dem Menüpunkt „Auswertungen“ ein Untermenü (BWA, EÜR, seit 2.5.17 die Summen- und Saldenliste); die Seite der BWA
+    ist darin die aktive."""
     page = PageBwa(tmp_db, BwaQuery(2026, 3, 'jahr'))
-    assert "<div class='header2'><span id=\"ActivePage\">BWA</span> | <a href=\"/euer\">EÜR</a></div>" in page
+    assert ("<div class='header2'><span id=\"ActivePage\">BWA</span> | <a href=\"/euer\">EÜR</a> | "
+            "<a href=\"/susa\">Summen- und Saldenliste</a></div>") in page
     assert page.index('Auswertungen</span>') < page.index('<span id="ActivePage">BWA</span>') < page.index("<div class='header3'>")

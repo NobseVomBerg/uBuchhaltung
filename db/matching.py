@@ -112,6 +112,27 @@ def soll_side(form) -> str:
     return _SOLL_SIDE[form]
 
 
+def ledger_form(stored, coa_id, counter_coa_id, liquid_coa_ids):
+    """Form und Soll-Seite einer Buchungszeile, so wie der Export des Buchungsstapels sie liest – EINE Stelle für den Export und die
+    Summen- und Saldenliste (``db.susa``), damit beide nie eine verschiedene Lesart haben.
+
+    Eine Zeile mit gespeicherter Form (``Bookings.EntryForm``) oder mit den Zahlungskonten (``liquid_coa_ids``) bekommt ihre Form
+    (``read_entry_form``) und daraus ihre Soll-Seite (``soll_side``). Ohne beides – keine Form, keine Geldkonten – gibt es keine Form,
+    und allein das Vorzeichen zählt: die Gegenkonto-Seite. Returns ``(Form oder None, 'coa' | 'counter')``."""
+    if stored in ENTRY_FORMS or liquid_coa_ids is not None:
+        form = read_entry_form(stored, coa_id, counter_coa_id, liquid_coa_ids)
+        return form, soll_side(form)
+    return None, SIDE_COUNTER
+
+
+def coa_in_soll(is_inflow: bool, side: str) -> bool:
+    """Steht das Feld „Konto“ einer Buchungszeile im Soll? ``is_inflow``: der Betrag ist nicht negativ, ``side``: die Soll-Seite der
+    Zeile (``ledger_form``). Bei positivem Betrag steht das Konto im Soll, wenn die Soll-Seite das Feld „Konto“ ist (Geldkonto vorne,
+    Umbuchung, Spiegel mit dem Betrag auf dem Konto), sonst im Haben; bei negativem Betrag ist es umgekehrt. Das Soll/Haben-Kennzeichen
+    des Exports ist ``S``, wenn das zutrifft."""
+    return is_inflow == (side == SIDE_COA)
+
+
 def derive_entry_form(coa_id, counter_coa_id, money_ids, sign_side) -> str:
     """Form für einen Satz, der JETZT geschrieben wird – aus den Konten und der Menge der
     Geldkonten (``Database.get_payment_coa_ids``) zu diesem Zeitpunkt.

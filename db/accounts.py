@@ -27,6 +27,11 @@ DEFAULT_CASH_ACCOUNT = 1600
 
 BUSINESS_ONLY_ERROR = 'Das Kennzeichen „reines Geschäftskonto“ ist 0 oder 1.'
 
+#: Welche Zeilen von ``Bookings`` der Export des Buchungsstapels für einen Zeitraum liest – und mit ihm die Summen- und Saldenliste
+#: (``Database.get_susa``): alle Zeilen außer den Bankbewegungen, deren Datum als Text zwischen den beiden Grenzen liegt (beide gehören
+#: dazu). ``{a}`` ist der Tabellenalias mit Punkt (``'e.'``) oder leer. Zwei Parameter: von, bis.
+LEDGER_ROWS_WHERE = "{a}DateBooking >= ? AND {a}DateBooking <= ? AND {a}BookingType != 'bank'"
+
 
 def is_business_only(stored):
     """Gilt ein gespeichertes ``Accounts.BusinessOnly`` als „reines Geschäftskonto“?
@@ -306,9 +311,7 @@ class AccountsMixin:
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute(
-            'SELECT * FROM Bookings WHERE DateBooking >= ? AND DateBooking <= ? '
-            "AND BookingType != 'bank' "
-            'ORDER BY DateBooking ASC',
+            'SELECT * FROM Bookings WHERE ' + LEDGER_ROWS_WHERE.format(a='') + ' ORDER BY DateBooking ASC',
             (date_from, date_to),
         )
         rows = cursor.fetchall()

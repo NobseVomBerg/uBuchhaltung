@@ -49,6 +49,7 @@ from .pages_transactions import PageTransactions
 from .pages_dashboard import PageDashboard
 from .pages_bwa import PDF_FAILED_TEXT, PageBwa, read_page_query, read_pdf_query
 from .pages_euer import EUER_PDF_FAILED_TEXT, PageEuer, read_euer_page_query, read_euer_pdf_query
+from .pages_susa import SUSA_PDF_FAILED_TEXT, PageSusa, read_susa_page_query, read_susa_pdf_query
 from .pages_receipts import PageReceipts, PageReceiptEdit
 from .pages_setup import PageSetup, PageSetupStart
 from .pages_invoice import PageInvoice
@@ -1447,6 +1448,19 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                     pdf_bytes, filename = handlers.handle_euer_pdf(db, query, datetime.date.today())
                     if pdf_bytes is None:
                         self.respond(500, EUER_PDF_FAILED_TEXT, content_type="text/plain; charset=utf-8")
+                    else:
+                        self._send_document(pdf_bytes, filename, None, 'application/pdf', 'attachment')
+            elif route == "/susa":
+                # Summen- und Saldenliste: rein lesend (kein Steuerdatum, kein Cookie); Jahr und Monat werden streng gelesen
+                self.respond(200, PageSusa(db, read_susa_page_query(self._query(), datetime.date.today())))
+            elif route == "/susa/pdf":
+                query, error = read_susa_pdf_query(self._query())
+                if error:
+                    self.respond(400, error, content_type="text/plain; charset=utf-8")
+                else:
+                    pdf_bytes, filename = handlers.handle_susa_pdf(db, query, datetime.date.today())
+                    if pdf_bytes is None:
+                        self.respond(500, SUSA_PDF_FAILED_TEXT, content_type="text/plain; charset=utf-8")
                     else:
                         self._send_document(pdf_bytes, filename, None, 'application/pdf', 'attachment')
             elif self.path == "/setup":

@@ -4469,6 +4469,26 @@ def handle_euer_pdf(db: Database, query, today: datetime.date):
         return None, None
 
 
+def handle_susa_pdf(db: Database, query, today: datetime.date):
+    """PDF der Summen- und Saldenliste für den Download erzeugen. Returns (pdf_bytes, filename) oder (None, None).
+
+    ``query`` ist die geprüfte Abfrage (``pages_susa.read_susa_pdf_query``: ``year``, ``month``), ``today`` steht als „Erstellt am“ im Kopf. Die
+    Zahlen sind die der Seite (``Database.get_susa``). Der Download ist ein GET: Er liest nur – kein Steuerdatum, keine Datei auf der Platte. Der
+    Firmenname im Kopf ist der des ersten eigenen Kontakts, sonst bleibt er weg. Ein Fehler steht nur im Server-Log."""
+    from db.susa import susa_filename
+    from export.pdf_susa import generate_susa_pdf
+    try:
+        report = db.get_susa(query.year, query.month)
+        own = list(db.fetch_contacts(contact_type='own'))
+        company = (own[0][3] if own else '') or ''
+        pdf_bytes = generate_susa_pdf(report, company, today)
+        return pdf_bytes, susa_filename(query.year, query.month)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None, None
+
+
 # ── Fahrten (Fahrtenbuch) ─────────────────────────────────────────────────────
 # Das Fahrtenbuch bleibt locker (einzelne Fahrten, ohne Tachostand, in beliebiger Reihenfolge nachgetragen): Beim
 # Speichern wird nie ein fehlender Anschluss an die Vorfahrt geprüft – abgelehnt wird nur, was unmöglich ist.

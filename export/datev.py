@@ -39,10 +39,10 @@ Spaltenbelegung (0-basiert, 124 Spalten gesamt):
 
 Soll/Haben (Spalte 1) bezieht sich auf das Feld „Konto“ und folgt der Form des
 Buchungssatzes, die er beim Schreiben bekommen hat (``Bookings.EntryForm``, Spalte 22 von
-``SELECT * FROM Bookings``; ``db.matching.soll_side``): Steht bei positivem Betrag das Feld
-„Konto“ im Soll, ist das Kennzeichen S bei positivem Betrag, sonst H. Nur eine Zeile ohne Form
-(per Roh-SQL angelegt) wird mit den Zahlungskonten ``liquid_coa_ids`` eingeordnet; ohne sie
-gilt allein das Vorzeichen.
+``SELECT * FROM Bookings``; ``db.matching.ledger_form``, dieselbe Lesart wie die Summen- und
+Saldenliste): Steht bei positivem Betrag das Feld „Konto“ im Soll, ist das Kennzeichen S bei
+positivem Betrag, sonst H. Nur eine Zeile ohne Form (per Roh-SQL angelegt) wird mit den
+Zahlungskonten ``liquid_coa_ids`` eingeordnet; ohne sie gilt allein das Vorzeichen.
 
 Der BU-Schlüssel (Spalte 8) steht als Daten am Satz (``Bookings.DatevKey``, Spalte 23), wenn die Quelle der Buchung
 ihn mitgebracht hat (Import); der Export gibt ihn unverändert aus. Sonst leitet ``db.datev_keys`` ihn ab: nach der
@@ -56,7 +56,7 @@ import datetime
 import unicodedata
 
 from db import datev_keys
-from db.matching import ENTRY_FORMS, SIDE_COA, SIDE_COUNTER, read_entry_form, soll_side
+from db.matching import coa_in_soll, ledger_form
 
 # ─── Spaltenindizes ───────────────────────────────────────────────────────────
 _C_AMOUNT      = 0
@@ -307,16 +307,13 @@ def export_to_datev(bookings, coa_id_to_number: dict,
         amount_f = float(amount)
         is_inflow = amount_f >= 0
         stored_form = row[_ROW_ENTRY_FORM] if len(row) > _ROW_ENTRY_FORM else None
-        if stored_form in ENTRY_FORMS or liquid_coa_ids is not None:
-            form = read_entry_form(stored_form, coa_id, counter_coa_id, liquid_coa_ids)
-            side = soll_side(form)
-        else:
-            form = None                          # keine Form, keine Geldkonten: allein das Vorzeichen
-            side = SIDE_COUNTER
+        # Form und Soll-Seite liest ``ledger_form`` – dieselbe Stelle wie die Summen- und Saldenliste. Keine Form und keine
+        # Geldkonten: allein das Vorzeichen.
+        form, side = ledger_form(stored_form, coa_id, counter_coa_id, liquid_coa_ids)
         # S/H-Kennzeichen gehört zum Feld „Konto“ und hängt daran, ob dieses Konto bei positivem
         # Betrag im Soll steht (Geldkonto vorne, Umbuchung, Spiegel mit Betrag auf dem Konto) oder
         # im Haben (Zweckkonto vorne: Einnahme = Konto im Haben, Ausgabe = Konto im Soll).
-        sh = 'S' if is_inflow == (side == SIDE_COA) else 'H'
+        sh = 'S' if coa_in_soll(is_inflow, side) else 'H'
         konto_number    = coa_id_to_number.get(coa_id) if coa_id else None
         gegen_number    = coa_id_to_number.get(counter_coa_id) if counter_coa_id else None
         konto      = str(coa_id_to_number.get(coa_id, '')) if coa_id else ''
