@@ -4427,6 +4427,26 @@ def handle_worktime_pdf(db: Database, person_id, date_from, date_to, with_notes=
         return None, None
 
 
+def handle_bwa_pdf(db: Database, query, with_accounts: bool, today: datetime.date):
+    """PDF der betriebswirtschaftlichen Auswertung für den Download erzeugen. Returns (pdf_bytes, filename) oder (None, None).
+
+    ``query`` ist die geprüfte Abfrage (``pages_bwa.read_pdf_query``: ``year``, ``month``, ``variant``), ``with_accounts`` druckt die Konten
+    unter jeder Zeile, ``today`` steht als „Erstellt am“ im Kopf. Der Download ist ein GET: Er liest nur und legt nichts auf der Platte ab.
+    Der Firmenname im Kopf ist der des ersten eigenen Kontakts, sonst bleibt er weg. Ein Fehler steht nur im Server-Log."""
+    from db.bwa import bwa_filename
+    from export.pdf_bwa import generate_bwa_pdf
+    try:
+        report = db.get_bwa(query.year, query.month, query.variant)
+        own = list(db.fetch_contacts(contact_type='own'))
+        company = (own[0][3] if own else '') or ''
+        pdf_bytes = generate_bwa_pdf(report, with_accounts, company, today)
+        return pdf_bytes, bwa_filename(query.year, query.month, query.variant)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None, None
+
+
 # ── Fahrten (Fahrtenbuch) ─────────────────────────────────────────────────────
 # Das Fahrtenbuch bleibt locker (einzelne Fahrten, ohne Tachostand, in beliebiger Reihenfolge nachgetragen): Beim
 # Speichern wird nie ein fehlender Anschluss an die Vorfahrt geprüft – abgelehnt wird nur, was unmöglich ist.

@@ -23,7 +23,11 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 - Datei zu einem bestehenden Beleg nachreichen (der Upload der Seite „Belege“ legt je Datei einen neuen Beleg an)
 - Den Upload der Seite „Buchungen“ im Demo-Modus abschalten, wie den der Seite „Belege“
 - Umsatzsteuer-Voranmeldung (ELSTER)
-- Betriebswirtschaftliche Auswertung (BWA) je Zeitraum, wahlweise mit Summen- und Saldenliste (je Konto: Anfangssaldo, Soll- und Haben-Umsatz, Endsaldo) – vorher zu klären: Gliederung, Grundlage (Abgrenzung wie die EÜR oder alle Buchungssätze), Ausgabe (Seite, PDF, CSV), Anfangssalden
+- BWA, Schritt 2: Summen- und Saldenliste (je Konto Anfangssaldo, Soll, Haben, Endsaldo) – Grundlage und Anfangssalden vorher klären
+- Liquiditätsrechnung
+- BWA: vom Nutzer pflegbare Gruppen (braucht Schemaänderung)
+- BWA als CSV
+- EÜR: Zuordnung der Steuer- und Verbindlichkeitskonten überprüfen
 - Soll-Versteuerung: Umsatzsteuer mit dem Leistungsdatum buchen und im DATEV-Stapel ausweisen (die Besteuerungsart ist seit 2.4.0 an der eigenen Firma gespeichert, wirkt aber noch nirgends)
 - GoBD-Modus, je Datenverzeichnis einstellbar (Ersteinrichtung fragt: Steuerbüro oder selbst?); vor der Umsetzung ein Entwurf:
   - Festschreibung abgeschlossener Zeiträume, Korrektur nur per Storno/Gegenbuchung, kein Löschen

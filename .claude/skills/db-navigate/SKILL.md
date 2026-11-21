@@ -36,7 +36,8 @@ Kontext bei moderatem Token-Einsatz. NIE alle Module gleichzeitig laden.
 | `numbering.py` | Nummernkreise (Rechnungsnummern etc.; `allocate_invoice_number`, `release_invoice_number`, `number_format_error`) |
 | `articles.py` | Artikel-Stammdaten |
 | `receipts.py` / `worktimes.py` | Belege bzw. Arbeitszeiten |
-| `reporting.py` | Dashboard-Kennzahlen + EÜR |
+| `reporting.py` | Dashboard-Kennzahlen + EÜR (`get_euer_data`; `euer_section`: Einnahme, Ausgabe oder „nicht im Ergebnis“ – eine Regel für die EÜR-Seite und die BWA; `get_bwa`) |
+| `bwa.py` | Betriebswirtschaftliche Auswertung: Gruppentabelle (`RANGES`, `EXCEPTIONS`, `group_of`), Zeiträume, Zeilenaufbau aus `get_euer_data`, Prozent- und Formatregeln (rein, ohne Datenbank) |
 
 ## Gezielt navigieren
 

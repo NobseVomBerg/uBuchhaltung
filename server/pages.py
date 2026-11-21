@@ -91,7 +91,7 @@ def Header1(active_page=None):
     """Generate main header with navigation
     
     Args:
-        active_page: Name of active page ('dashboard', 'receipts', 'transactions', 'skr', 'miscellaneous', 'about')
+        active_page: Name of active page ('dashboard', 'bwa', 'receipts', 'transactions', 'skr', 'miscellaneous', 'about')
                      Active page will be highlighted without link
     """
     from version import APP_VERSION
@@ -118,6 +118,12 @@ def Header1(active_page=None):
         nav_items.append('<span id="ActivePage">Dashboard</span>')
     else:
         nav_items.append('<a href="/">Dashboard</a>')
+
+    # Betriebswirtschaftliche Auswertung
+    if active_page == 'bwa':
+        nav_items.append('<span id="ActivePage">Auswertungen</span>')
+    else:
+        nav_items.append('<a href="/bwa">Auswertungen</a>')
     
     # Rechnung
     if active_page == 'invoice':

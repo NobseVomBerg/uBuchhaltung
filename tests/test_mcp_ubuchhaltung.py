@@ -218,6 +218,7 @@ SIDE_EFFECT_ROUTES = ("/quote/delete", "/invoice/pdf_generate", "/quote/pdf_gene
     "/users?info=x", "/receipts/edit?id=1", "/transactions?from=2024-01-01&to=2024-12-31",
     "/transactions", "/transactions?", "/dashboard?acct=1&acct=2&from=2024-01-01",
     "/invoice?search=M%C3%BCller&status=paid", "/assets?status",
+    "/bwa", "/bwa?year=2026&month=10&variant=vorjahr",
 ])
 def test_check_page_path_allows_listed_display_pages(path):
     assert mcp.check_page_path(path) == path
@@ -250,6 +251,7 @@ def test_check_page_path_allows_listed_display_pages(path):
     pytest.param("/receipts/file?id=1&inline=1", id="Datei-eines-Belegs-angezeigt"),
     pytest.param("/receipts/upload", id="Beleg-Upload"),
     pytest.param("/backup/download?file=x", id="Sicherung-laden"),
+    pytest.param("/bwa/pdf?year=2026&month=10", id="Auswertung-als-PDF"),
 ])
 def test_check_page_path_refuses_everything_off_the_list(path):
     with pytest.raises(ValueError, match=r"Seite nicht freigegeben – .*_PAGE_ALLOWLIST in tools/mcp_ubuchhaltung\.py"):
@@ -1366,6 +1368,7 @@ SAMPLE_VALUES = {
     "from": "2024-01-01", "to": "2024-12-31", "date_from": "2024-01-01", "date_to": "2024-12-31",
     "search": "R", "status": "paid", "type": "customer", "entity": "company",
     "error": "Fehlertext", "msg": "Hinweis", "info": "Hinweis", "err": "Fehler",
+    "year": "2026", "month": "10", "variant": "vorjahr",
 }
 TOLERATED_SERVER_ERRORS = {"/invoice/reminders"}      # PageReminders scheitert mit den Seed-Daten in der App selbst
 NOT_ROUTED_WITH_QUERY = {"/"}                         # do_GET kennt das Dashboard unter "/" nur ohne Query (sonst /dashboard)

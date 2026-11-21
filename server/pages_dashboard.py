@@ -10,6 +10,7 @@ so that imported WISO/DATEV data is always reflected.
 from datetime import datetime
 import html as _html
 from db import Database
+from db.reporting import bank_skr_numbers, euer_section
 from money import fmt_eur, round_minor, to_minor
 from .pages import Header1, Header2, Header3, Footer
 
@@ -251,31 +252,13 @@ def PageDashboard(db: Database, date_from: str = '', date_to: str = '',
     # ── EÜR-Auswertung (ersetzt Schnellzugriff) ─────────────────────
     euer_data = db.get_euer_data(date_from, date_to, account_ids)
 
-    # Einnahmen = SKR04-Ertragsklasse (4000-4999, zentral in db.reporting)
-    # plus virtuelles USt-Konto 3806; Aufzählungen einzelner Erlöskonten
-    # hatten z. B. 4185 (§19) und 4300 (7%) übersehen.
-    from db.reporting import is_income_account, NEUTRAL_ACCOUNT_NUMBERS
-    OTHER_EXPENSE_ACCOUNTS = {3160, 3720, 3740}
-    # Ausschluss-Konten (nicht anzeigen). Die Bestandskonten des
-    # Offene-Posten-Verfahrens (Forderungen, Wartekonten) liefert get_euer_data
-    # ohnehin nicht mehr aus – die Liste bleibt als zweite Sicherung und zieht
-    # dieselbe Quelle, damit ein neues Wartekonto nicht durchrutscht.
-    bank_skr_numbers = {a[7] for a in accounts if a[7]}
-    EXCLUDE_NUMBERS = set(NEUTRAL_ACCOUNT_NUMBERS) | bank_skr_numbers
-
-    def _is_income_row(nr):
-        return is_income_account(nr) or nr == 3806
-
-    income_rows = [(nr, name, total) for nr, name, total in euer_data
-                   if _is_income_row(nr) and nr not in EXCLUDE_NUMBERS]
-    expense_rows = [(nr, name, total) for nr, name, total in euer_data
-                    if not _is_income_row(nr)
-                    and nr not in OTHER_EXPENSE_ACCOUNTS
-                    and nr not in EXCLUDE_NUMBERS
-                    and not (2100 <= nr < 2200)
-                    and nr >= 1000]
-    other_expense_rows = [(nr, name, total) for nr, name, total in euer_data
-                          if nr in OTHER_EXPENSE_ACCOUNTS]
+    # Einnahme, Ausgabe oder „Sonstige Ausgabe“ entscheidet db.reporting.euer_section – dieselbe Regel wie in der
+    # betriebswirtschaftlichen Auswertung (Einnahmen = SKR04-Ertragsklasse plus virtuelles USt-Konto 3806;
+    # Aufzählungen einzelner Erlöskonten hatten z. B. 4185 (§19) und 4300 (7%) übersehen).
+    bank_numbers = bank_skr_numbers(accounts)
+    income_rows = [row for row in euer_data if euer_section(row[0], bank_numbers) == 'income']
+    expense_rows = [row for row in euer_data if euer_section(row[0], bank_numbers) == 'expense']
+    other_expense_rows = [row for row in euer_data if euer_section(row[0], bank_numbers) == 'other']
 
     income_sum = sum(t for _, _, t in income_rows)
     expense_sum = sum(t for _, _, t in expense_rows)
