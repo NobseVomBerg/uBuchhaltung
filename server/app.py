@@ -513,23 +513,27 @@ class SimpleWebServer(BaseHTTPRequestHandler):
         super().log_error(format, *args)
 
     def end_headers(self):
-        path = getattr(self, 'path', '')           # fehlt bei einer kaputten Anfragezeile
-        # zuerst: Eine Endung am Ende der Adresse (``?x=.png``, bei den Suchen ``?q=.png``) darf einen Beleg nie zu „public“ machen
-        route = path.split('?', 1)[0]
-        if route in ('/backup/download', '/receipts/file') or route in _SEARCH_PATHS:
-            self.send_header('Cache-Control', 'no-store')               # der ganze Datenbestand, ein Beleg bzw. die Treffer einer Suche: nirgends ablegen
-        elif path.endswith('.css') or path.endswith('.js') or path.endswith('.png'):
-            self.send_header('Cache-Control', 'public, max-age=86400')  # Cache this File for 1d
-        else:
-            self.send_header('Cache-Control', 'no-cache')               # HTML etc no caching
-        # Für ALLE Antworten: kein MIME-Sniffing und kein Einrahmen durch fremde Seiten
-        # (Clickjacking, etwa auf „Status setzen“ bei automatischer Anmeldung). Die App rahmt
-        # sich nicht selbst ein – PDFs öffnen sich als eigene Seite in einem neuen Tab –, daher
-        # DENY statt SAMEORIGIN.
-        self.send_header('X-Content-Type-Options', 'nosniff')
-        self.send_header('X-Frame-Options', 'DENY')
+        # Jede Antwort trägt genau EINEN Cache-Control, entschieden an der Route (die Adresse ohne Query), nie an einer Endung: Hat der Handler
+        # selbst einen geschrieben (``serve_static_file``, ``respond(…, headers=…)``), bleibt es dabei; sonst gilt ``no-store`` für die
+        # Sicherungen, die Dateien der Belege und die Suchen, für alles andere ``no-cache``.
+        try:
+            if not getattr(self, '_cache_control_sent', False):
+                route = getattr(self, 'path', '').split('?', 1)[0]      # ``path`` fehlt bei einer kaputten Anfragezeile
+                if route in ('/backup/download', '/receipts/file') or route in _SEARCH_PATHS:
+                    self.send_header('Cache-Control', 'no-store')       # der ganze Datenbestand, ein Beleg bzw. die Treffer einer Suche: nirgends ablegen
+                else:
+                    self.send_header('Cache-Control', 'no-cache')       # Seiten und Dokumente: ablegen erlaubt, aber vor jeder Nutzung nachfragen
+            # Für ALLE Antworten: kein MIME-Sniffing und kein Einrahmen durch fremde Seiten
+            # (Clickjacking, etwa auf „Status setzen“ bei automatischer Anmeldung). Die App rahmt
+            # sich nicht selbst ein – PDFs öffnen sich als eigene Seite in einem neuen Tab –, daher
+            # DENY statt SAMEORIGIN.
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.send_header('X-Frame-Options', 'DENY')
 
-        super().end_headers()                                           # Call the Base
+            super().end_headers()                                       # Call the Base
+        finally:
+            # Eine Keep-Alive-Verbindung beantwortet viele Anfragen mit dieser Instanz: Das Merkmal gilt nur für die laufende Antwort
+            self._cache_control_sent = False
 
     def send_error(self, code, message=None, explain=None):
         # Kaputte Anfragezeile: Bis dahin gilt die Anfrage als HTTP/0.9, und je nach Patch-Stand
@@ -542,7 +546,10 @@ class SimpleWebServer(BaseHTTPRequestHandler):
     def send_header(self, keyword, value):
         # Letzte Sicherung gegen Header-Injection, egal woher ein Wert stammt (Query,
         # Cookie, Formular, Dateiname): CR/LF/NUL kommen nie in einen Header.
-        super().send_header(_header_safe(keyword), _header_safe(value))
+        keyword, value = _header_safe(keyword), _header_safe(value)
+        super().send_header(keyword, value)
+        if keyword.lower() == 'cache-control':
+            self._cache_control_sent = True                             # ``end_headers`` schreibt dann keinen zweiten dazu
 
     # ── Anfragekörper ────────────────────────────────────────────────────────
     def _declared_length(self):

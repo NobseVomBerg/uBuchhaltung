@@ -237,7 +237,10 @@ kein Subagent darauf:
   Attribute, höchstens 50 Ebenen tief): beim Speichern UND bei jeder Ausgabe – Formular wie
   PDF-Satz –, auch für Altbestand. Jede Antwort trägt
   `X-Content-Type-Options: nosniff` und `X-Frame-Options: DENY` (`end_headers`); die App
-  rahmt sich nicht selbst ein (PDFs öffnen als eigene Seite in einem neuen Tab)
+  rahmt sich nicht selbst ein (PDFs öffnen als eigene Seite in einem neuen Tab). Jede Antwort trägt
+  genau einen `Cache-Control` (seit 2.5.15) – den des Handlers (`serve_static_file`), sonst `no-store` für
+  `/backup/download`, `/receipts/file` und die Suchen und `no-cache` für alles andere; entschieden wird an der
+  Route, nie an der Query, eine Endungs-Regel gibt es nicht (`tests/test_cache_headers.py`)
 - **Logos** (seit 2.3.3): Als Logo gelten nur Bilddateien der Positivliste `export/pdf_core.LOGO_CONTENT_TYPES` (PNG, JPG, GIF,
   WEBP – kein SVG). Sie gilt an allen vier Stellen: Upload (`handle_logo_upload`: Endung UND Kennbytes müssen passen, Anfrage
   höchstens 5 MB, geprüft an `Content-Length` vor dem Lesen), Auslieferung (`/data/logos/`, `/seed_data/private/`: alles andere 404),
