@@ -7,7 +7,7 @@
   ``/quote/pdf_generate``): GET ergibt 405 und ändert nichts, POST braucht Herkunft und Token.
 * Heruntergeladen wird nur, was abgelegt ist (``/quote/pdf_download``); ``/invoice/xml`` gibt es nicht
   mehr, ``/invoice/xml_download`` liefert die abgelegte Datei.
-* Die JSON-Routen (``app._JSON_PATHS``, seit 2.5.12 auch das Verknüpfen von Belegen, seit 2.5.13 der Neuaufbau einer Zuordnung) antworten auf unbrauchbare Bodys mit 400
+* Die JSON-Routen (``app._JSON_PATHS``, seit 2.5.12 auch das Verknüpfen von Belegen, seit 2.5.13 der Neuaufbau einer Zuordnung, seit 2.6.0 das Lesen eines Belegs) antworten auf unbrauchbare Bodys mit 400
   „Ungültige Anfrage.“ und danach weiter.
 * Jede Antwort trägt ``X-Content-Type-Options: nosniff`` und ``X-Frame-Options: DENY`` – auch die
   Fehlerantwort auf eine kaputte Anfragezeile.
@@ -41,7 +41,7 @@ from tests.document_helpers import (CUSTOMER, INVOICE_NUMBER, PDF, PDF_PATH, QUO
 from tests.http_client import FOREIGN_ORIGIN, TIMEOUT, KeepAlive, get, own_origin, post, send
 
 XML = b'<?xml version="1.0"?><Invoice>abgelegt</Invoice>'
-WRITE_TABLES = ('Invoices', 'InvoiceItems', 'InvoicePayments', 'Bookings')
+WRITE_TABLES = ('Invoices', 'InvoiceItems', 'InvoicePayments', 'Bookings', 'DocumentReadings')
 
 
 @pytest.fixture
@@ -293,19 +293,21 @@ HANDLER = {                     # Route -> Handler, den `_post_json_route` aufru
     '/quote/status': 'handle_update_quote_status',
     '/bookings/link-document': 'handle_booking_link_document',
     '/bookings/unlink-document': 'handle_booking_unlink_document',
+    '/receipts/read': 'handle_receipt_read',
 }
 # Feld, das die Beleg-/Zahlungs-ID trägt (die Speichern-Routen lesen invoiceId/quoteId optional)
 ID_FIELD = {'/invoice/send-email': 'invoice_id', '/invoice/link-payment': 'invoice_id',
             '/invoice/delete-payment': 'payment_id', '/invoice/status': 'invoice_id',
             '/quote/status': 'quote_id', '/invoice/rebuild-payments': 'invoiceId',
-            '/bookings/link-document': 'bookingId', '/bookings/unlink-document': 'bookingId'}
+            '/bookings/link-document': 'bookingId', '/bookings/unlink-document': 'bookingId',
+            '/receipts/read': 'documentId'}
 INVALID_REQUEST = {'success': False, 'error': 'Ungültige Anfrage.'}
 
 
 def test_json_route_expectations_cover_all_json_paths():
     # Kommt eine JSON-Route hinzu, braucht sie hier einen Handler und eine Erwartung
     assert set(HANDLER) == set(server_app._JSON_PATHS)
-    assert len(JSON_ROUTES) == 12
+    assert len(JSON_ROUTES) == 13
 
 
 UNUSABLE_BODIES = {
@@ -349,6 +351,7 @@ EMPTY_OBJECT = {
     '/quote/save': (200, 'Pflichtfelder fehlen'),
     '/bookings/link-document': (400, 'Ungültige Anfrage.'),
     '/bookings/unlink-document': (400, 'Ungültige Anfrage.'),
+    '/receipts/read': (400, 'Ungültige Anfrage.'),
 }
 
 

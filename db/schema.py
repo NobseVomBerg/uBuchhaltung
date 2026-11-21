@@ -79,6 +79,12 @@ VAT_METHOD_SCHEMA = 2004
 #: wird der Auszug vollständig importiert. Das Kennzeichen ändert keine Buchung und keine Auswertung.
 BUSINESS_ONLY_SCHEMA = 2005
 
+#: Ab dieser Schema-Zahl (Version 2.6.0) gibt es die Lesung eines Belegs (``DocumentReadings``): die aus der Datei gelesenen
+#: Felder, getrennt von dem, was der Nutzer am Beleg pflegt (``Documents``). Die Tabelle entsteht in
+#: ``_ensure_document_readings_schema`` (in der Transaktion der Umstellung, ohne eigenen Schritt in ``_run_migrations``: es
+#: ändert sich keine vorhandene Tabelle); der Bestand bekommt keine Zeilen – nichts wird umgedeutet.
+DOCUMENT_READINGS_SCHEMA = 2006
+
 
 class SchemaMixin:
     def _column_exists(self, cursor, table, column):
@@ -871,6 +877,7 @@ class SchemaMixin:
 
             self._ensure_invoice_version_schema(cursor)
             self._ensure_invoice_payment_index(cursor)
+            self._ensure_document_readings_schema(cursor)
 
             # Schema-Version in der DB hinterlegen (MAJOR × 1000 + SCHEMA_STEP, siehe
             # version.py). Bei jeder Schema-Änderung SCHEMA_STEP dort erhöhen.
@@ -944,6 +951,37 @@ class SchemaMixin:
         cursor.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_invoicepayments_invoice_booking "
             "ON InvoicePayments(InvoiceID, BookingID)")
+
+    def _ensure_document_readings_schema(self, cursor):
+        """Die Lesung eines Belegs (2.6.0, Schema 2006): ``DocumentReadings`` mit einer Zeile je Beleg, dazu ein Index auf dem
+        Bruttobetrag. Läuft bei der Umstellung in deren Transaktion (nach den Schritten davor), bei einer frischen Datenbank
+        gleich beim Anlegen.
+
+        Die Lesung sind abgeleitete Daten, getrennt von dem, was der Nutzer am Beleg pflegt: Sie hängt mit
+        ``ON DELETE CASCADE`` am Beleg und geht mit ihm. Es gibt keine CHECK-Regeln – was ein Leser nicht erkennt, bleibt NULL."""
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS DocumentReadings (
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                Document_ID INTEGER NOT NULL UNIQUE REFERENCES Documents(ID) ON DELETE CASCADE,
+                Status TEXT NOT NULL,
+                Source TEXT,
+                ReaderVersion INTEGER NOT NULL,                -- Stand des Lesers: eine ältere Lesung gilt als ungelesen
+                ReadAt DATETIME NOT NULL,
+                DocDate DATE,
+                GrossMinor INTEGER,                            -- Beträge in den Minor Units der App (money.SCALE)
+                NetMinor INTEGER,
+                TaxMinor INTEGER,
+                TaxRate REAL,                                  -- als Anteil wie in Bookings (0.19)
+                Currency TEXT,
+                SenderName TEXT,
+                SenderVatId TEXT,
+                InvoiceNumber TEXT,
+                Kind TEXT,
+                Raw TEXT,                                      -- JSON mit der Herkunft je Feld
+                Text TEXT                                      -- der aus der Datei gelesene Text (gekappt)
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_documentreadings_gross ON DocumentReadings(GrossMinor)")
 
     def ensure_kasse_exists(self):
         """Ensure the default 'Kasse' account exists and cannot be deleted.

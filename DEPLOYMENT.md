@@ -274,6 +274,14 @@ gleichzeitig auf demselben `data/` betreiben** (SQLite-Locking).
   Volume einbinden, `UBUCHHALTUNG_HOST=0.0.0.0` setzen, Port veröffentlichen –
   für Docker siehe den Abschnitt **Docker** oben.
 
+## Belegerkennung (gelesene Belege)
+
+Die Seite *Belege* liest hochgeladene Belege aus: E-Rechnungen (XRechnung, ZUGFeRD) und PDFs mit Textebene; für Scans und Fotos gibt es keine
+Texterkennung. Dafür startet die App **je Beleg einen kurzlebigen Python-Kindprozess** (derselbe Interpreter und dieselben Pakete – es ist kein
+weiteres Programm und keine zusätzliche Installation nötig). Er hat ein hartes Zeitlimit von 15 Sekunden; unter Linux, also auch im Container, gilt
+zusätzlich eine Speichergrenze von 768 MB. Je Serverprozess läuft höchstens ein Lesen zurzeit, Dateien über 30 MB werden nicht gelesen. Die Lesungen
+stehen in der Datenbank (Tabelle `DocumentReadings`) und gehören damit zur Datensicherung. Im Demo-Modus ist das Lesen abgeschaltet.
+
 ## Diagnose-Schnittstelle (MCP, nur lesend)
 
 Mit `tools/mcp_ubuchhaltung.py` lässt sich eine laufende Instanz (z. B. der

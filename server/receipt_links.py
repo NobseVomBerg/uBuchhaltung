@@ -2,7 +2,8 @@
 # SPDX-FileCopyrightText: 2026 unsix IT Engineering
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Belege und Buchungen verknüpfen (seit 2.5.12): Suchbegriffe lesen, Treffer und verknüpfte Listen als JSON-Daten, das gemeinsame
-Skript der Seite eines Belegs und der Buchungsmaske. Die Routen stehen in ``server/handlers.py``."""
+Skript der Seite eines Belegs und der Buchungsmaske – seit 2.6.0 dazu die Vorschläge zu einem gelesenen Beleg als JSON-Daten
+(``suggestions_payload``). Die Routen stehen in ``server/handlers.py``."""
 import re
 from money import fmt_eur, from_minor, parse_amount, to_minor
 from db.bookings import RELATION_LABELS
@@ -15,6 +16,8 @@ TEXT_PREVIEW = 120
 SEARCH_TOO_LONG = f'Der Suchbegriff ist zu lang (höchstens {SEARCH_MAX_LENGTH} Zeichen).'
 SEARCH_FAILED = 'Die Suche ist fehlgeschlagen – Einzelheiten stehen im Server-Log.'
 SEARCH_FOREIGN = 'Die Suche ist nur über die Seiten der App erreichbar.'
+SUGGEST_FAILED = 'Die Vorschläge konnten nicht gelesen werden – Einzelheiten stehen im Server-Log.'
+SUGGEST_FOREIGN = 'Die Vorschläge sind nur über die Seiten der App erreichbar.'
 LINK_FAILED = 'Die Verknüpfung konnte nicht gespeichert werden. Einzelheiten stehen im Server-Log.'
 UNLINK_FAILED = 'Die Verknüpfung konnte nicht gelöst werden. Einzelheiten stehen im Server-Log.'
 KIND_LABELS = {'bank': 'Bankbewegung', 'child': 'Satz einer Bankbewegung', 'entry': 'Buchungssatz'}
@@ -86,6 +89,15 @@ def booking_payload(row):
         payload['relation'] = _text(row[9])
         payload['relationLabel'] = RELATION_LABELS.get(row[9]) or _text(row[9]) or '–'
     return payload
+
+
+def suggestions_payload(found):
+    """Die Vorschläge zu einem Beleg als JSON-Daten, in der Rangfolge. ``found``: ``Database.suggest_bookings_for_receipt`` – ``[(Suggestion,
+    Kandidat), …]``. Je Vorschlag ``booking`` (``booking_payload`` der Zeile des Kandidaten, also dieselbe Form wie ein Suchtreffer),
+    ``reasons`` (die festen Sätze der Rangfolge, der Betrag zuerst) und ``linked`` (die Buchung trägt schon einen Beleg). Weder ein Pfad
+    noch Text des Belegs steht darin. Dieselbe Form liefern die Route und die Seite des Belegs."""
+    return [{'booking': booking_payload(candidate['row']), 'reasons': list(suggestion.reasons), 'linked': suggestion.linked}
+            for suggestion, candidate in found]
 
 
 def linked_documents(db, booking_id):

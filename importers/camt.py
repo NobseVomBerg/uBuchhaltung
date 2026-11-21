@@ -35,11 +35,11 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import List, Optional, Tuple
 from xml.etree import ElementTree as ET
-from xml.parsers import expat
 
 from money import to_minor
 
 from .base import BankStatement, StatementTransaction
+from .safe_xml import UnsafeXml, parse_untrusted_xml
 
 BANK_CODE = 'CAMT'
 
@@ -57,26 +57,18 @@ class CamtError(ValueError):
 
 # ── XML sicher lesen ─────────────────────────────────────────────────────────
 
-def _forbid(*_args):
-    raise CamtError('XML mit DTD/Entity-Deklaration wird aus Sicherheitsgründen '
-                    'nicht gelesen (CAMT enthält keine).')
-
-
 def _parse_xml(data: bytes) -> ET.Element:
-    if len(data) > MAX_XML_BYTES:
-        raise CamtError('XML-Datei ist zu groß.')
-    # Erst ein Expat-Durchlauf, der jede DTD/Entity-Deklaration abbricht (egal
-    # in welcher Kodierung); erst danach baut ElementTree den Baum.
-    guard = expat.ParserCreate()
-    guard.StartDoctypeDeclHandler = _forbid
-    guard.EntityDeclHandler = _forbid
+    # Der Wächter (Größe, keine DTD/Entity-Deklaration, wohlgeformt) liegt in importers/safe_xml.py; hier bleiben die
+    # Meldungen für den Nutzer. Die Grenze wird bei jedem Aufruf gelesen (die Tests verkleinern sie).
     try:
-        guard.Parse(data, True)
-        return ET.fromstring(data)
-    except CamtError:
-        raise
-    except (ET.ParseError, expat.ExpatError) as e:
-        raise CamtError(f'Kein gültiges XML: {e}')
+        return parse_untrusted_xml(data, MAX_XML_BYTES)
+    except UnsafeXml as e:
+        if e.reason == 'too_large':
+            raise CamtError('XML-Datei ist zu groß.') from None
+        if e.reason == 'dtd':
+            raise CamtError('XML mit DTD/Entity-Deklaration wird aus Sicherheitsgründen '
+                            'nicht gelesen (CAMT enthält keine).') from None
+        raise CamtError(f'Kein gültiges XML: {e.detail}') from None
 
 
 def _local(tag) -> str:

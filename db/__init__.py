@@ -10,6 +10,7 @@ from .core import _CoreMixin, DeleteRefused, coa_id
 from .schema import MigrationBackupError, SchemaMixin, SchemaTooNewError
 from .seed import SeedMixin
 from .receipts import ReceiptsMixin
+from .document_readings import DocumentReadingsMixin
 from .worktimes import WorkTimesMixin
 from .trips import TripsMixin
 from .bookings import BookingsMixin
@@ -30,7 +31,7 @@ from .invoice_repair import InvoiceRepairMixin
 from .reporting import ReportingMixin
 
 
-class Database(SchemaMixin, SeedMixin, ReceiptsMixin, WorkTimesMixin, TripsMixin, BookingsMixin, MatchingMixin, AccountsMixin, AssetsMixin, WisoImportMixin, WisoFdbImportMixin, ContactsMixin, ArticlesMixin, NumberRangeMixin, InvoicePaymentsMixin, InvoicesMixin, InvoiceLockMixin, InvoiceVersionsMixin, InvoiceStornoMixin, InvoiceRepairMixin, ReportingMixin, _CoreMixin):
+class Database(SchemaMixin, SeedMixin, ReceiptsMixin, DocumentReadingsMixin, WorkTimesMixin, TripsMixin, BookingsMixin, MatchingMixin, AccountsMixin, AssetsMixin, WisoImportMixin, WisoFdbImportMixin, ContactsMixin, ArticlesMixin, NumberRangeMixin, InvoicePaymentsMixin, InvoicesMixin, InvoiceLockMixin, InvoiceVersionsMixin, InvoiceStornoMixin, InvoiceRepairMixin, ReportingMixin, _CoreMixin):
     """Komposition aller Domaenen-Mixins. Siehe db/<domaene>.py."""
     pass
 

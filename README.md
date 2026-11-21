@@ -117,6 +117,7 @@ Anmeldung). Vorher eine Datensicherung anlegen – Ablauf und Rückweg unter
 | Bereich | Was drin ist |
 |---|---|
 | **Buchen** | Bankbewegungen und Buchungssätze, Split-Buchungen, Kontierungs-Vorschlag aus der Historie, Belege verknüpfen |
+| **Belege** | Dateien hochladen, ansehen und mit Buchungen verknüpfen. Die App liest Belege aus (nach dem Hochladen gleich, vorhandene auf Knopfdruck): E-Rechnungen (XRechnung, ZUGFeRD) strukturiert, PDFs mit Textebene über feste Regeln. Die gelesenen Werte stehen mit ihrer Herkunft am Beleg, dazu Vorschläge für die passende Bankbewegung – verknüpft wird erst auf Klick. Keine Texterkennung für Scans und Fotos; die Regeln lesen nicht jede Rechnung, gelesene Werte sind zu prüfen |
 | **Kontenrahmen** | SKR04 vorbelegt, eigene Konten (auch weiterer Rahmen wie SKR03) anlegbar, DATEV-Steuerschlüssel |
 | **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR, auch als eigene Seite und PDF), monatliche betriebswirtschaftliche Auswertung und Summen- und Saldenliste (je Seite und PDF) |
 | **Rechnungen & Angebote** | PDF als hybride E-Rechnung (ZUGFeRD/Factur-X, EN 16931) und XRechnung, E-Mail-Versand, Nummernkreise, Stornorechnung als eigener Beleg (auf Wunsch mit Entwurf der neuen Rechnung), offene Posten, Mahnwesen, Kleinunternehmerregelung (der Hinweis auf § 19 UStG steht automatisch im Dokument) |
@@ -273,6 +274,15 @@ geführt und automatisch verknüpft.
 - Belege und Buchungen verknüpfen – am Beleg (Seite des Belegs) eine Buchung suchen und zuordnen, in der Buchungsmaske einen Beleg
   suchen und zuordnen; die Liste zeigt je Beleg die Zahl der verknüpften Buchungen. Trägt die Buchung noch keine Beleg-Nr.,
   übernimmt sie die Nummer des Belegs – sofern keine andere Buchung diese oder eine ähnliche Nummer trägt; Lösen lässt sie stehen.
+- Belege lesen – nach dem Hochladen liest die Seite die neuen Dateien nacheinander, vorhandene Belege lassen sich mit einem Knopf über der
+  Liste (alle ungelesenen) oder auf der Seite des Belegs („Lesen“/„Neu lesen“) nachlesen; die Spalte „Gelesen“ zeigt je Beleg Betrag und Absender.
+  **E-Rechnungen** (XRechnung als XML, ZUGFeRD/Factur-X als PDF mit eingebettetem XML) werden aus ihren Feldern gelesen, **gewöhnliche PDFs mit
+  Textebene** über feste Regeln: Belegdatum, Rechnungsnummer, Absender, USt-IdNr., Brutto, Netto, Steuer, Steuersatz, Währung. Jeder gelesene Wert
+  nennt seine Herkunft (die Zeile im Beleg bzw. das Feld der E-Rechnung); ist ein Wert nicht eindeutig, bleibt das Feld leer, und die Seite nennt den
+  Grund. Zu einem gelesenen Beleg schlägt die Seite passende Bankbewegungen vor (derselbe Betrag, dazu Rechnungsnummer, Name und Datum) –
+  **verknüpft, gebucht oder am Beleg geändert wird nichts ohne Klick**; „Gelesenes Datum übernehmen“ setzt nur das Datumsfeld des Formulars.
+  Grenzen: Für gescannte PDFs und Fotos gibt es keine Texterkennung, die Regeln lesen nicht jede Rechnung, und ein gelesener Wert ist eine
+  Lesung der Datei, kein geprüfter Inhalt – bitte prüfen. Im Demo-Modus ist das Lesen abgeschaltet.
 
 ### 2. Buchungen (`/transactions`)
 Zentrale Verwaltung aller Buchungstransaktionen:
@@ -567,8 +577,7 @@ Standard für Host und Port: `smtp.gmail.com`, 587.
 ### Kontoauszug-Import
 
 CAMT.053 und die CSV-Umsatzliste der DKB kommen ohne zusätzliche Pakete aus. Die PDF-Parser werden durch
-`pip install -r requirements.txt` (pdfplumber) automatisch aktiviert. Optionales OCR für gescannte PDFs: in `requirements.txt` die
-auskommentierten Zeilen (`pytesseract`, `pdf2image`) einkommentieren.
+`pip install -r requirements.txt` (pdfplumber) automatisch aktiviert. Eine Texterkennung (OCR) für gescannte PDFs gibt es nicht.
 
 ---
 
@@ -621,13 +630,15 @@ uBuchhaltung/
 │   ├── schema.py              #   alle CREATE TABLE / Schema-Setup
 │   ├── bookings.py · matching.py · invoices.py · contacts.py · …
 │   └── (weitere Domänen-Mixins: assets, accounts, wiso_import, reporting,
-│        worktimes, seed, numbering, articles, receipts …)
+│        worktimes, seed, numbering, articles, receipts, document_readings,
+│        receipt_matching …)
 ├── document_parser.py         # Belegablage, SQL-Audit-Log/-Rotation, DKB-PDF-Parser
 ├── importers/                 # Datenimport: Abstraktionsschicht + Bankmodule
 │   ├── base.py                #   Gemeinsames Datenmodell (BankStatement, Transaktion)
 │   ├── pdftext.py             #   Extraktions-Helfer (Text, IBAN, Belegdatum)
 │   ├── plausibility.py        #   Inhaltsprüfung (Kopf-/Fußzeilen, Beträge, Daten)
 │   ├── camt.py                #   CAMT.053 (XML/ZIP, alle Banken)
+│   ├── safe_xml.py            #   XML aus Uploads sicher lesen (ohne DTD/Entities; CAMT und E-Rechnung)
 │   ├── vbr.py                 #   Volksbank Rottweil (PDF)
 │   ├── dkb.py                 #   DKB (PDF)
 │   ├── dkb_csv.py             #   DKB (CSV, Umsatzliste – neues und altes Format)
@@ -650,6 +661,7 @@ uBuchhaltung/
 │   ├── datev.py               #   DATEV-Buchungsstapel-Export (CSV)
 │   ├── fonts/                 #   Liberation Sans (OFL), als Untermenge eingebettet
 │   └── icc/                   #   sRGB-Profil für den PDF/A-OutputIntent
+├── receipt_reading/           # Belegerkennung: E-Rechnung (XML) und PDF-Text lesen – rein, läuft im Kindprozess (worker.py)
 ├── email_sender.py            # E-Mail-Versand (SMTP)
 ├── buch.css                   # Stylesheet (inkl. Dark Mode; versioniert via ?v=)
 ├── README.md                  # Diese Datei
@@ -691,7 +703,8 @@ uBuchhaltung/
 │   ├── pages_worktime.py      # Arbeitszeiten · pages_trips.py – Fahrtenbuch
 │   ├── pages_setup.py         # Ersteinrichtung · pages_login.py – Login
 │   ├── pages_users.py         # Benutzerverwaltung (Admin)
-│   ├── pages_receipts.py      # Belege (Upload, Bearbeiten)
+│   ├── pages_receipts.py      # Belege (Upload, Bearbeiten, gelesene Werte, Vorschläge)
+│   ├── receipt_reader.py      # Belege lesen: Kindprozess starten, Lesung speichern und anzeigen
 │   ├── pages_miscellaneous.py # DB-Export, SQL-Konsole, WISO-Import, Backup
 │   ├── handlers.py            # POST-Handler (Formulare, PDF, Import)
 │   ├── upload_handler.py      # File-Upload mit PDF-Parsing
@@ -745,7 +758,8 @@ uBuchhaltung/
 | `server/pages_worktime.py` / `pages_trips.py` | Arbeitszeiten / Fahrtenbuch |
 | `server/pages_setup.py` / `pages_login.py` | Ersteinrichtung / Login |
 | `server/pages_users.py` | Benutzerverwaltung (Admin) |
-| `server/pages_receipts.py` | Belege (Upload, Bearbeiten) |
+| `server/pages_receipts.py` | Belege (Upload, Bearbeiten, gelesene Werte, Vorschläge) |
+| `server/receipt_reader.py` | Belege lesen: Kindprozess starten, Lesung speichern und anzeigen |
 | `server/pages_miscellaneous.py` | DB-Export, SQL-Konsole, WISO-Import, Backup |
 | `server/handlers.py` | POST-Handler |
 | `server/upload_handler.py` | File-Upload |

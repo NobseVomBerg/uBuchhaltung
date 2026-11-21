@@ -13,13 +13,10 @@
 pip install -r requirements.txt
 ```
 
-Das installiert `pdfplumber` (Lesen von PDF-Kontoauszügen) und `fonttools` (PDF-Erzeugung);
+Das installiert `pdfplumber` (Lesen von PDF-Kontoauszügen und des Texts gelesener Belege) und `fonttools` (PDF-Erzeugung);
 Pillow (Logos in PDF-Rechnungen) kommt mit `pdfplumber` mit.
 
-Optional für OCR (gescannte PDFs):
-```bash
-pip install pytesseract pdf2image Pillow
-```
+Eine Texterkennung (OCR) für gescannte PDFs gibt es nicht.
 
 ### Aufbau: Abstraktionsschicht + Bankmodule
 
@@ -34,6 +31,7 @@ die Bankeigenheiten stecken je in einem eigenen Modul unter `importers/`:
 | `importers/vbr.py` | Volksbank Rottweil (PDF) |
 | `importers/dkb.py` | DKB (PDF) |
 | `importers/dkb_csv.py` | DKB (CSV, Umsatzliste – neues und altes Format; nur im Speicher gelesen, nicht über `IMPORTERS`) |
+| `importers/safe_xml.py` | XML aus hochgeladenen Dateien sicher lesen (keine DTD, keine Entity-Deklaration); gemeinsam für CAMT und die Belegerkennung |
 | `importers/__init__.py` | Registry `IMPORTERS`, `find_importer()`, `parse_statement()` |
 
 Die Spalten einer importierten Bewegung (`CANONICAL_FIELDS`) sind bewusst
@@ -166,8 +164,8 @@ denselben Weg wie PDF: `BankStatement` → Vorschau → Bestätigung.
   Gläubiger-ID hat das gemeinsame Datenmodell nicht.
 * Plausibilität: Anfangssaldo (OPBD/PRCD) + Umsätze = Schlusssaldo (CLBD), sonst
   Hinweis `balance` in der Vorschau; fehlt ein Saldo, `no_balance`.
-* Sicherheit: DTD/Entities werden abgelehnt, ZIP nur im Speicher mit Grenzen
-  für Anzahl/Größe/Kompressionsverhältnis. Beträge nur als `Decimal`.
+* Sicherheit: DTD/Entities werden abgelehnt (der Wächter liegt in `importers/safe_xml.py`, `parse_untrusted_xml`, und gilt ebenso für die
+  Belegerkennung), ZIP nur im Speicher mit Grenzen für Anzahl/Größe/Kompressionsverhältnis. Beträge nur als `Decimal`.
 
 ### DKB-Umsatzliste (CSV)
 
@@ -727,3 +725,59 @@ print(f"Verknüpft: {linked}")
 3. **WISO Tabellen-Export** importieren → Bank-Buchungen mit Empfänger + Verwendungszweck
 4. Automatische Verknüpfung wird nach jedem Import durchgeführt
 5. Ergebnis unter `/transactions` prüfen (verknüpfte vs. offene Bankbuchungen)
+
+---
+
+## 3. Belegerkennung (E-Rechnung und gewöhnliche PDFs)
+
+`receipt_reading/` liest die Felder einer hochgeladenen Belegdatei. Das Paket ist rein: Es bekommt Bytes, schreibt nichts und kennt weder `db/` noch
+`server/`. Die Seite *Belege* stößt das Lesen an (`POST /receipts/read`: nach einem Upload gleich, sonst auf Knopfdruck, je Beleg einmal); gelesen wird
+in einem kurzlebigen Kindprozess (`python -m receipt_reading.worker`) mit hartem Zeitlimit. Das Ergebnis ist eine **Lesung** (`Reading`): ein Vorschlag
+mit Herkunft, kein geprüfter Inhalt. Sie steht in `DocumentReadings` (siehe `DB_MODEL.md`); am Beleg selbst ändert sich nichts, und verknüpft wird
+nichts ohne Klick.
+
+| Datei | Aufgabe |
+|---|---|
+| `receipt_reading/__init__.py` | `Reading`, `read_document()`, Grenzen und die Tabelle der Befund-Codes (im Kopf der Datei) |
+| `receipt_reading/detect.py` | Art der Datei: Endung UND Kennbytes müssen zusammenpassen (PDF, XML, Bild) |
+| `receipt_reading/einvoice.py` | E-Rechnung: UBL (`Invoice`, `CreditNote`) und CII, Felder nach EN 16931 |
+| `receipt_reading/pdf_embedded.py` | das eingebettete XML einer ZUGFeRD-/Factur-X-PDF finden, nur begrenzt entpackt |
+| `receipt_reading/pdf_text.py` | Text einer gewöhnlichen PDF (die ersten fünf und die letzten drei Seiten) |
+| `receipt_reading/text_rules.py` | Textregeln: Datum, Rechnungsnummer, Absender, USt-IdNr., Brutto, Netto, Steuer, Währung, Art |
+| `receipt_reading/isolated.py`, `worker.py` | Lesen im Kindprozess: Zeitlimit, Speichergrenze (POSIX), Ausgabe streng geprüft |
+| `importers/safe_xml.py` | XML aus Uploads sicher lesen: keine DTD, keine Entity-Deklaration (gemeinsam mit CAMT) |
+
+* **Reihenfolge:** Zuerst die E-Rechnung – ein hochgeladenes XML oder das eingebettete `factur-x.xml`, `zugferd-invoice.xml` bzw. `xrechnung.xml` einer
+  PDF –, danach die Textregeln einer gewöhnlichen PDF. Erkannt wird die Datei an Endung und Kennbytes zusammen. Ein Bild oder eine PDF ohne Textebene
+  ist `no_text`: Es gibt keine Texterkennung und kein Sprachmodell.
+* **E-Rechnung:** gelesen werden BT-1 Rechnungsnummer, BT-2 Datum, BT-5 Währung, BT-27 Verkäufer, BT-31 USt-IdNr., BT-109 Netto, BT-110 Steuer, BT-112
+  Brutto, der Steuersatz aus BG-23 (nur, wenn die Aufschlüsselung genau einen nennt) und die Art (Rechnung oder Gutschrift; eine Gutschrift trägt positive
+  Beträge). Was nicht streng passt – ein Betrag mit mehr als zwei Nachkommastellen, ein Datum, das es nicht gibt, eine Währung, die keine drei
+  Großbuchstaben hat –, bleibt leer und ergibt den Befund `bad_<Feld>`. Geraten wird nichts; die Steuer 0 gilt nur, wenn der Gesamtbetrag der Steuer
+  fehlt und die Aufschlüsselung ausschließlich Nullen nennt (Beleg ohne Steuerausweis).
+* **Textregeln:** lieber leer als geraten. Ein Betrag steht als `1.234,56` oder `119,00` (Komma, genau zwei Nachkommastellen) in derselben Zeile HINTER
+  seiner Bezeichnung (Rechnungsbetrag, Gesamtbetrag, Zahlbetrag, brutto, netto, Zwischensumme …; die Bezeichnungen haben eine Rangfolge, es zählt der beste
+  Rang mit einem Treffer); `19,00 %`, ein Betrag mit nicht eindeutigem Vorzeichen (`- € 119,00`, `(119,00)`, `119,00 -`, `119,00 CR`) oder mit Leerzeichen
+  als Tausendertrenner wird nicht gelesen. Die Steuer steht HINTER ihrem Steuerwort: Stehen dort mehrere Beträge (`USt 19% 100,00 19,00 119,00`), gilt der,
+  der als einziger zum Satz der Zeile passt (Basis × Satz oder im Brutto enthalten); ein Betrag hinter „auf“, „von“ oder „aus“ ist die Basis, nicht die
+  Steuer. Die Währung gilt am Betrag (`€`/`EUR` vor oder hinter ihm ist Euro, `$`, `£`, `USD`, `CHF`, `GBP` machen ihn fremd). Nennt ein
+  Beleg mehrere verschiedene Werte für ein Feld, bleibt es leer (`conflict_<Feld>`) – nur bei Brutto, Netto und Steuer entscheidet die Summenprobe,
+  wenn genau eine Kombination aufgeht (`by_checksum`). Jedes gelesene Feld nennt die Zeile und die Seite, aus der es stammt; die Proben (Netto + Steuer
+  = Brutto, Netto × Satz = Steuer) stehen in `Raw`. Die eigene Firma ist nie der Absender und ihre USt-IdNr. nie die des Belegs. Ein Kontoauszug (ein
+  Importmodul erkennt ihn und seine Salden stehen im Text) ist kein Beleg: Befund `statement`. Beträge in anderer Währung als Euro bleiben leer
+  (`foreign_currency`).
+* **Grenzen:** Dateien über 30 MB werden nicht gelesen; ein XML höchstens 20 MB (auch als entpackter Anhang); aus einer PDF höchstens 200 000 Zeichen
+  Text (gespeichert werden 20 000); das Zeitlimit des Kindprozesses beträgt 15 Sekunden. Erreicht das Lesen einer PDF die Zeit- oder Zeichengrenze,
+  steht der Befund `text_truncated` da (gelesen ist dann nur der Anfang); überschreitet es das Zeitlimit des Kindprozesses, ist der Status `too_large`
+  mit dem Befund `time`.
+* **Grenzen der Erkennung:** Die Regeln lesen nicht jede Rechnung – steht ein Betrag nicht in derselben Zeile wie seine Bezeichnung, ist er für die Regeln
+  nicht da, und ein ungewöhnlicher Aufbau lässt Felder leer. Gelesene Werte sind eine Lesung der Datei und zu prüfen.
+* **Anzeige:** die Spalte „Gelesen“ der Belegliste und der Kasten „Gelesen“ auf der Seite eines Belegs (Werte mit Herkunft, Proben, Befunde). Die
+  Befunde erscheinen nur als feste Sätze; ein neuer Befund-Code braucht dort einen Satz (`receipt_reader.NOTE_TEXTS`). Ändern sich die Leseregeln,
+  steigt `READER_VERSION`: Ältere Lesungen gelten als ungelesen und zeigen „(ältere Regeln)“.
+* **Vorschläge:** Zu einer gelesenen Datei (Status `ok`, Euro), die an keiner Buchung hängt, schlägt die Seite des Belegs Bankbewegungen und eigenständige
+  Buchungen vor, deren Betrag ohne Vorzeichen dem gelesenen Brutto entspricht und die zwischen sieben Tagen vor und 90 Tagen nach dem Belegdatum liegen;
+  Punkte gibt es für die Rechnungsnummer, gemeinsame Namenswörter und die Nähe zum Belegdatum (höchstens fünf Vorschläge, mit Begründung). Eine Rechnung
+  erwartet einen Zahlungsausgang, eine Gutschrift einen Eingang: Passt die Richtung nicht, steht der Vorschlag mit einem Hinweis hinter denen, die passen.
+  Hängt der Beleg schon an einer Buchung, gibt es keine Vorschläge; nach dem Lösen der letzten Verknüpfung kommen sie wieder. Zuordnen ist der bestehende
+  Weg „Belege verknüpfen“ – die Vorschläge verknüpfen nichts.

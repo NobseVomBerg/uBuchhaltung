@@ -610,7 +610,7 @@ def test_receipts_page_shows_hostile_values_as_text_and_in_the_data_attributes(t
             rows[0]['data-info']) == (BREAK, BREAK_SCRIPT, IMG, 'Datei nicht im Belegordner', MIXED)
     assert 'data-path' not in rows[0]
     cells = next(r for r in table_rows(hostile) if IMG in r)
-    assert cells[:5] == [BREAK, BREAK_SCRIPT, IMG, 'Datei nicht im Belegordner', MIXED]
+    assert cells[:6] == [BREAK, BREAK_SCRIPT, IMG, 'Datei nicht im Belegordner', 'ungelesen', MIXED]      # „Gelesen“ seit 2.6.0
     # Löschen: Seit 2.4.2 trägt die Adresse im onclick nur die ID des Belegs (vorher die Nummer, die nicht eindeutig ist) –
     # der feindliche Text der Nummer steht dort gar nicht mehr
     receipt_id = tmp_db.fetch_receipts()[0][0]

@@ -14,13 +14,16 @@ Pragmatische Hinweise für KI-/Coding-Agenten in diesem Repository.
 - `server/pages_dashboard.py`: Dashboard inkl. EÜR-Tabellen
 - `server/pages_transactions.py`: Transaktionssicht (bank + entry)
 - `server/pages_miscellaneous.py`: WISO-Import, SQL-Konsole
-- `importers/`: Kontoauszug-Import – CAMT.053 (`camt.py`) und Bank-PDFs (`vbr.py`, `dkb.py`), gemeinsames Modell in `base.py`
+- `importers/`: Kontoauszug-Import – CAMT.053 (`camt.py`) und Bank-PDFs (`vbr.py`, `dkb.py`), gemeinsames Modell in `base.py`; `safe_xml.py` liest XML aus Uploads sicher (CAMT und Belegerkennung)
+- `receipt_reading/`: Belegerkennung – E-Rechnung (XML) und PDF-Text lesen; reines Paket (kein `db/`, kein `server/`), gelesen wird je Beleg im Kindprozess (`worker.py`)
+- `server/receipt_reader.py`, `server/pages_receipts.py`: Lesen auslösen, Lesung anzeigen, Vorschläge am Beleg; `db/document_readings.py`, `db/receipt_matching.py`: Lesung (`DocumentReadings`) und Vorschläge Beleg → Buchung
 - `document_parser.py`: Belegablage, SQL-Audit-Log
 
 ## Wichtige Domänenregeln
 
 - Bookings unterscheiden `BookingType='bank'` und `BookingType='entry'`
 - Verknüpfung Bank↔Entry über `ParentBooking_ID`
+- Belegerkennung: Eine Lesung (`DocumentReadings`) ist eine Lesung der Datei, kein Inhalt des Belegs – nichts wird ohne Klick verknüpft, gebucht oder am Beleg geändert
 - Bei WISO-Original-Import gilt:
   - `TaxRate` aus dem BU-Schlüssel: zuerst `datev_keys.key_rate` (datumsabhängig), sonst `TaxKeys`; der Schlüssel steht als `Bookings.DatevKey` am Satz
   - `TaxAmount` aus Brutto abgeleitet

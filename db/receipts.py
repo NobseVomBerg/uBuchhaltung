@@ -165,6 +165,9 @@ class ReceiptsMixin:
         Nicht, solange Buchungen, Anlagen oder Fahrten auf ihn verweisen (``DeleteRefused`` mit Klartext, nichts gelöscht); die
         Belege mit derselben Nummer bleiben in jedem Fall. Prüfung und Löschen laufen in einer Transaktion.
 
+        Die Lesung des Belegs (``DocumentReadings``, abgeleitete Daten) zählt nicht als Verweis: Sie geht mit dem Beleg, nach einer
+        Ablehnung bleibt sie stehen.
+
         Trug der Beleg die zuletzt vergebene Nummer seines Kreises, geht der Zähler um eins zurück (``release_receipt_number``,
         in derselben Transaktion: abgelehnt oder gescheitert ändert sich auch der Zähler nicht).
 
@@ -183,6 +186,7 @@ class ReceiptsMixin:
                 raise DeleteRefused('Der Beleg lässt sich nicht löschen, solange andere Daten auf ihn verweisen: '
                                     + ', '.join(used) + '.')
             row = conn.execute('SELECT Number, Path FROM Documents WHERE ID = ?', (receipt_id,)).fetchone()
+            conn.execute('DELETE FROM DocumentReadings WHERE Document_ID = ?', (receipt_id,))
             conn.execute('DELETE FROM Documents WHERE ID = ?', (receipt_id,))
             if row is not None:
                 self.release_receipt_number(conn, row[0])

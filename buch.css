@@ -163,6 +163,14 @@ a:hover, a:focus		{ color: #84F; text-decoration: none; }
 /* Dashboard, Übersicht: die Zeile „Überträge zwischen eigenen Konten“ (Text mit .hint gedämpft), Betrag rechtsbündig */
 .dashTransfers td + td	{ text-align: right; }
 
+/* Belege lesen: der Kasten über der Belegliste (Knopf, Fortschritt), die Spalte „Gelesen“ der Liste (Mindestbreite: der Text
+   bricht in einem schmalen Fenster sonst auf viele Zeilen um), der Kasten „Gelesen“ auf der Seite eines Belegs und dort
+   das Zitat bzw. der BT-Bezeichner klein unter einem gelesenen Wert (mit .muted gedämpft) */
+#readBox				{ margin-bottom: 10px; }
+.readCell				{ min-width: 14em; }
+#receiptReading			{ margin: 10px 0; }
+.readingQuote			{ display: block; font-size: 0.85em; overflow-wrap: anywhere; }
+
 /* Auswertungen (.bwaTable: betriebswirtschaftliche Auswertung, .reportTable: Einnahmenüberschussrechnung und weitere Listen): Beträge
    und Anteile rechtsbündig, Konten eingerückt (ihr Aufklapp-Symbol wie in der Buchungsliste .group-row/.child-row/.split-toggle-icon;
    ohne Konten bleibt es unsichtbar, damit alle Bezeichnungen gleich beginnen), Summen mit Linie (.bwaSum, oben bei den Arbeitszeiten),
