@@ -1032,6 +1032,29 @@ class MatchingMixin:
         finally:
             conn.close()
 
+    def receivable_entry_ids(self, ids):
+        """Welche dieser Buchungen sind eine Forderungsbuchung? Returns die IDs als ``set``.
+
+        Ein eigenständiger Satz (``BookingType = 'entry'``), auf den ``receivable_condition`` zutrifft (``_receivable_sql``: Debitoren
+        10000 im Soll, auf keiner Seite ein Zahlungskonto) – die Forderung, die das Versenden einer Rechnung bucht, und die
+        Gegenbuchung einer Stornorechnung. Keine eigene Lesart, dieselbe Bedingung wie überall. Rein lesend. Die Liste der Buchungen
+        fragt damit EINMAL für alle ihre Einzelzeilen: Eine Forderung ist weder gebucht noch ein Geldeingang."""
+        ids = [int(booking_id) for booking_id in ids]
+        if not ids:
+            return set()
+        conn = self._get_connection()
+        try:
+            receivable_sql, params = self._receivable_sql(conn.cursor())
+            found = set()
+            for start in range(0, len(ids), _ID_CHUNK):       # SQLite begrenzt die Zahl der Parameter je Abfrage
+                chunk = ids[start:start + _ID_CHUNK]
+                found.update(row[0] for row in conn.execute(
+                    f"SELECT ID FROM Bookings WHERE BookingType = 'entry' AND {receivable_sql} "
+                    f"AND ID IN ({','.join('?' * len(chunk))})", params + chunk))
+            return found
+        finally:
+            conn.close()
+
     def find_unbalanced_splits(self, date_from: str, date_to: str):
         """Bankbewegungen im Zeitraum, deren Buchungssätze nicht aufgehen.
 

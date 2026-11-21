@@ -89,7 +89,7 @@ button.active			{ background-color: #4facfe; color: #FFF; }	/* aktiver Jahres-/M
 #transactionsTable .colAcct      { width: 86px; }
 #transactionsTable .colSkr       { width: 64px; }
 #transactionsTable .colDocnr     { width: 78px; }
-#transactionsTable .colActions   { width: 110px; }
+#transactionsTable .colActions   { width: 136px; }	/* Platz für das Abzeichen „Forderung“ neben Bearbeiten und Löschen */
 
 /* Buchungssatz-Editor der Bankmaske: eigene Datentabelle, nicht form-table –
    deren 700px-Deckel und breite Zellen ließen für sieben Spalten zu wenig

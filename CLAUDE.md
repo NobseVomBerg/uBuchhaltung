@@ -1089,7 +1089,10 @@ kein Subagent darauf:
   `delete_transaction` hängt sie ab statt sie zu löschen. Was 10000 im Haben führt (Erlösminderung,
   Skonto, Forderungsverlust „… an 10000“), ist keine Forderung und geht mit seiner Bewegung. Alle
   Stellen suchen die Forderung über diese Bedingung (auch `assign_invoice_payment`,
-  `get_receivable_booking`). Stufe 7 des
+  `get_receivable_booking`). In der Buchungsliste trägt die Forderung (eigenständige Zeile) seit 2.6.6 das graue Abzeichen „Forderung“
+  statt des Hakens „Buchung vollständig gebucht“ und einen ungefärbten Betrag – sie ist kein Geldeingang und noch keine Einnahme
+  (`Database.receivable_entry_ids`, EINE Abfrage je Seite; Gruppen- und Kindzeilen bleiben, wie sie waren,
+  `tests/test_receivable_row.py`). Stufe 7 des
   Auto-Abgleichs setzt sie erst auf `resolved`, wenn die Summe der Sätze „… an 10000“ mit gleicher
   Beleg-Nr. den Forderungsbetrag erreicht; `unassign` setzt das zurück. Die Forderung geht mit der
   letzten Zahlung, wenn der Status der Rechnung kein Forderungsstatus ist (`RECEIVABLE_STATUSES`, z. B.
