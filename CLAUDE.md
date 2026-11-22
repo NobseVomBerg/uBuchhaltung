@@ -144,6 +144,12 @@ kein Subagent darauf:
   mitziehen; je Action derselbe Commit in allen Workflows (`tests/test_workflow_pins.py`)
 - Jeder Push (alle Branches) führt `.github/workflows/tests.yml` aus:
   Anonymisierungs-Guard + pytest (Python 3.13, wie das Docker-Image – die Mindestversion)
+- **Die Arbeitsdaten der Tests liegen in der CI im Arbeitsspeicher:** Jeder Test legt eine eigene SQLite-Datenbank an, und auf der Platte
+  wartet jedes Speichern – das macht den größten Teil der Laufzeit aus (gemessen: die ganze Suite in rund 12 statt rund 40 Minuten). Die drei
+  Workflows mit pytest (`tests.yml`, `docker-publish.yml`, `tests-python-versions.yml`) legen deshalb vor pytest `data/tests` als Verweis nach
+  `/dev/shm` – ein Verweis statt `--basetemp`, damit `tests/conftest.py` zuständig bleibt und der Test der Ablage (`tests/test_test_isolation.py`)
+  nicht übersprungen wird. Die Schritte sind in den drei Workflows kopiert; `tests/test_workflow_test_steps.py` hält sie gleich. Lokal geht
+  dasselbe von Hand (`data/tests` als Verweis in den Arbeitsspeicher), nötig ist es nicht
 - Neuere Python-Versionen prüft `.github/workflows/tests-python-versions.yml` einmal in der Woche und
   von Hand (`workflow_dispatch`), nicht bei jedem Push: Die Suite braucht je Version gut 20 Minuten.
   Eine neue Python-Version dort in der Liste ergänzen
