@@ -82,6 +82,17 @@ class MixedNotBookable(ValueError):
     (``_Refusal``, ``_refused``, ein ``ValueError`` an die Route …)."""
 
 
+#: Die Spalten einer Position (``InvoiceItems``), die die Momentaufnahme eines Steuersatzes aus den Stammdaten tragen (Schema 2008), mit ihren
+#: Schlüsseln in ``item_data`` (``insert_invoice_item``). ``TaxCategory`` gab es schon (``'S'``, mit der Momentaufnahme eines steuerfreien Eintrags
+#: ``'E'``); die anderen drei hängen hinten an der Tabelle an (Index 11 bis 13). NULL – bei ``TaxCategory`` ``'S'`` – heißt „keine Momentaufnahme“:
+#: Der Satz steht allein in ``TaxRate``, wie beim ganzen Bestand. Jeder Weg, der eine Position kopiert (Stornorechnung, Ersatzrechnung, Angebot →
+#: Rechnung), nimmt alle vier mit. Die Konstanten stehen hier, im untersten der Rechnungsmodule (``db.invoices`` reicht sie weiter), damit auch
+#: ``invoice_lock`` und ``invoice_versions`` sie ohne Zyklus lesen können.
+ITEM_SNAPSHOT_KEYS = {'TaxCategory': 'tax_category', 'TaxRateBp': 'tax_rate_bp', 'TaxExemptReason': 'tax_exempt_reason',
+                      'RevenueCoaId': 'revenue_coa_id'}
+ITEM_SNAPSHOT_COLUMNS = tuple(ITEM_SNAPSHOT_KEYS)
+
+
 def has_mixed_rates(value):
     """Trägt der Beleg einen Steuersatz je Position? ``value`` ist ``Invoices.MixedTaxRates`` – die EINE Stelle, die ihn liest, jede andere
     fragt sie. Streng: Nur die ganze Zahl 1 gilt; NULL, 0, Text, ``True``, 1.0 und jede andere Zahl (die Spalte lässt sich per SQL-Konsole oder

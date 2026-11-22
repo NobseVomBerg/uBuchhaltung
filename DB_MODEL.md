@@ -1,6 +1,6 @@
 # Datenbankmodell uBuchhaltung
 
-**Stand:** Version 2.7.0 (Schema 2007)
+**Stand:** Version 2.8.0 (Schema 2008)
 **DBMS:** SQLite 3
 **Datei:** `data/users/<Name>/buch.db`
 
@@ -34,6 +34,7 @@ uBuchhaltung verwaltet Buchführung für kleine/mittlere Unternehmen mit Fokus a
 │ • Categories        │ Kategorien für Privatbelege
 │ • AssetCategories   │ AfA-Kategorien nach BMF
 │ • TaxKeys           │ DATEV-Steuerschlüssel (BU-Codes)
+│ • TaxRates          │ Steuersätze der Rechnungen (19 %, 7 %, steuerfrei …)
 └─────────────────────┘
 
 ┌─────────────────────┐
@@ -87,6 +88,10 @@ Kontenrahmens an (`Database.add_missing_standard_accounts`) – nie der Start:
 | ChartOfAccounts | `seed_data/chart_of_accounts_skr04.json` + optional `seed_data/private/` | 88 Standard + eigene |
 | AssetCategories | `seed_data/asset_categories.json` | 30 BMF-Kategorien |
 | TaxKeys | `seed_data/tax_keys.json` | 53 DATEV-BU-Schlüssel |
+
+Anders als diese Seeds füllt sich **`TaxRates`** (Schema 2008) nicht wieder, wenn sie leer ist: Die Vorbelegung – je Satz aus `tax_groups.MIXED_TAX_RATES`
+(19 % und 7 %) ein Eintrag – entsteht genau einmal, beim Anlegen der Tabelle (`SchemaMixin._ensure_tax_rates_schema`, frisch wie bei der Umstellung).
+Wer alle Einträge löscht, bekommt beim nächsten Öffnen keinen zurück.
 
 ### Testdaten (`seed_data/test/`)
 
@@ -285,6 +290,36 @@ berichtigt und ergänzt in bestehenden Datenbanken 100, 120, 121 („Verwendung 
 - WISO-Original-Import: SCHLUESSEL → zuerst die Regeln von `db/datev_keys.py` (`key_rate`: 401/101/121 Regelsatz, 402/102/122 ermäßigt,
   7/6/5/4 die anderen Sätze, im zweiten Halbjahr 2020 mit 16/5/19/7 %), sonst `TaxKeys` → TaxRate
 - TaxAmount-Berechnung: `|Brutto| - |Brutto| / (1 + Rate)`
+
+---
+
+### 6a. TaxRates (Steuersätze der Stammdaten, Schema 2008, seit 2.8.0)
+
+**Zweck:** Die Steuersätze, aus denen eine Rechnung oder ein Angebot die Sätze ihrer Positionen wählt: je Eintrag Bezeichnung, Satz, Art (Steuersatz
+oder steuerfrei), Grund der Steuerbefreiung und Erlöskonto. Ein Beleg verweist nicht auf einen Eintrag: Seine Positionen tragen den gewählten Eintrag
+als Momentaufnahme (Tabelle 13, `TaxRateBp`, `TaxExemptReason`, `RevenueCoaId`).
+
+| Spalte | Typ | Constraints | Beschreibung |
+|--------|-----|-------------|--------------|
+| ID | INTEGER | PRIMARY KEY AUTOINCREMENT | |
+| Label | TEXT | NOT NULL | Bezeichnung in der Auswahl und in der Liste (`19 %`, `7 %`) |
+| RateBp | INTEGER | NOT NULL | Satz in Hundertstel Prozent als ganze Zahl: 1900 = 19 %, 550 = 5,5 %, 0 = 0 % |
+| Kind | TEXT | NOT NULL, DEFAULT 'standard' | `standard` (Steuersatz, auch mit Satz 0) \| `exempt` (steuerfrei) |
+| ExemptReason | TEXT | | Grund der Steuerbefreiung, nur bei `exempt` |
+| RevenueCoaId | INTEGER | FK → ChartOfAccounts | Erlöskonto des Eintrags; NULL = das Standardkonto des Satzes (4400 bei 19 %, 4300 bei 7 %) |
+| VatCoaId | INTEGER | FK → ChartOfAccounts | Umsatzsteuerkonto des Satzes (freiwillig; NULL = keines hinterlegt) |
+| InputTaxCoaId | INTEGER | FK → ChartOfAccounts | Vorsteuerkonto des Satzes (freiwillig; NULL = keines hinterlegt) |
+| Active | INTEGER | NOT NULL, DEFAULT 1 | 1 = wählbar, 0 = inaktiv |
+| SortOrder | INTEGER | NOT NULL, DEFAULT 0 | Reihenfolge in der Auswahl (dann ID) |
+| CreatedAt | DATETIME | DEFAULT CURRENT_TIMESTAMP | UTC |
+
+**Vorbelegung:** genau einmal beim Anlegen der Tabelle – je Satz aus `tax_groups.MIXED_TAX_RATES` (19 % und 7 %) ein Eintrag der Art `standard` ohne
+Erlöskonto (`SortOrder` 10, 20 …), in einer frischen Datenbank wie bei der Umstellung (brach der erste Versuch nach dem Anlegen der Tabelle ab, beim
+nächsten). Eine Tabelle, deren Einträge der Nutzer gelöscht hat, bleibt leer
+(siehe „Seed-Daten“). Es gibt keine CHECK-Regeln im Schema.
+
+**Konto und Löschen:** Ein Konto des Kontenrahmens, das hier als Erlös-, Umsatzsteuer- oder Vorsteuerkonto (oder an `InvoiceItems.RevenueCoaId`) steht, lässt sich nicht löschen
+(`Database.coa_is_referenced`, Meldung auf der Seite des Kontenrahmens: „… in Buchungen, Anlagen, Steuersätzen oder Rechnungen verwendet …“).
 
 ---
 
@@ -992,8 +1027,19 @@ entstehen aus demselben Modell (`export/einvoice_model.py`, `build_einvoice`):
 | Unit | TEXT | DEFAULT 'C62' | UN/ECE Code |
 | PricePerUnit | INTEGER | NOT NULL | Netto, Minor Units |
 | TotalNet | INTEGER | NOT NULL | Quantity × PricePerUnit, Minor Units |
-| TaxCategory | TEXT | DEFAULT 'S' | |
-| TaxRate | REAL | NOT NULL | |
+| TaxCategory | TEXT | DEFAULT 'S' | Art des Satzes: `'S'` (Standard – so schreiben es die Wege der App); `'E'` = steuerfrei, gesetzt mit der Momentaufnahme eines steuerfreien Eintrags (Schema 2008) |
+| TaxRate | REAL | NOT NULL | Satz der Position, wie der Schreiber ihn liefert: Prozentzahl (19) oder Bruch (0,19) – gelesen über `tax_groups.rate_pct` |
+| **Momentaufnahme eines Steuersatzes aus den Stammdaten (Schema 2008, seit 2.8.0)** | | | |
+| TaxRateBp | INTEGER | | Index 11: Satz in Hundertstel Prozent (1900 = 19 %, 550 = 5,5 %, 0); NULL = keine Momentaufnahme – der Satz steht allein in `TaxRate` (der ganze Bestand) |
+| TaxExemptReason | TEXT | | Index 12: Grund der Steuerbefreiung (nur bei `TaxCategory` `'E'`); NULL = keiner |
+| RevenueCoaId | INTEGER | | Index 13: Erlöskonto des Eintrags (ID im Kontenrahmen); NULL = das Konto nach der bisherigen Regel. Ohne Fremdschlüssel – frisch wie migriert –, das Löschen eines Kontos prüft `coa_is_referenced` |
+
+Die Spalten 11–13 hängen an der Tabelle (Index 0–10 bleiben, wo sie waren – die Positionen werden per `SELECT *` positionsbasiert gelesen): frische und
+migrierte Datenbank haben dieselbe Reihenfolge, der Bestand behält, was er hatte (NULL in den neuen Spalten, `TaxCategory` unverändert) – nichts wird umgedeutet. Die Momentaufnahme steht an der
+Position, nicht am Kopf: Ein Beleg verweist nicht auf einen Eintrag der Stammdaten (Tabelle 6a), eine spätere Änderung des Eintrags ändert keinen Beleg. Wege, die
+Positionen kopieren (Stornorechnung – Menge und Positionssumme negiert, die Momentaufnahme gleich –, Ersatzrechnung, Angebot → Rechnung), nehmen sie
+unverändert mit (`db.invoice_payments.ITEM_SNAPSHOT_COLUMNS`, von `db.invoices` weitergereicht: `TaxCategory`, `TaxRateBp`, `TaxExemptReason`, `RevenueCoaId`; Schlüssel in `item_data`: `tax_category`,
+`tax_rate_bp`, `tax_exempt_reason`, `revenue_coa_id`). **Index:** `idx_invoiceitems_invoice` auf `InvoiceId` (neu mit Schema 2008).
 
 ---
 
@@ -1639,4 +1685,4 @@ Wörterbücher, je Gruppe einmal sortiert, das Umfeld über Halbierungssuche):
 
 ---
 
-**Letzte Aktualisierung:** 22. November 2026 (Schema 2007)
+**Letzte Aktualisierung:** 22. November 2026 (Schema 2008)

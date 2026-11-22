@@ -1231,7 +1231,7 @@ def handle_update_skr(db: Database, post_data):
 def handle_delete_skr(db: Database, coa_id_val):
     """SKR-Konto löschen (nur Nicht-Standard, nur wenn nicht referenziert)."""
     if db.coa_is_referenced(coa_id_val):
-        return _skr_redirect("Konto wird in Buchungen/Anlagen verwendet und kann nicht gelöscht werden.", "error")
+        return _skr_redirect("Konto wird in Buchungen, Anlagen, Steuersätzen oder Rechnungen verwendet und kann nicht gelöscht werden.", "error")
     if db.delete_chart_of_accounts(coa_id_val):
         return _skr_redirect("Konto gelöscht.")
     return _skr_redirect("Konto konnte nicht gelöscht werden (Standard-Konto?).", "error")

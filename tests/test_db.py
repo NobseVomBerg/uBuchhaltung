@@ -80,7 +80,7 @@ class TestSchema:
             'Categories', 'ChartOfAccounts', 'CompanyDetails', 'ContactAddresses',
             'ContactTypeLinks', 'Contacts', 'Documents', 'InvoiceItems', 'InvoicePayments',
             'Invoices', 'NumberRanges', 'PersonDetails', 'PersonRoles', 'TaxKeys',
-            'WorkTimes',
+            'TaxRates', 'WorkTimes',
         }
         assert expected.issubset(tables)
 

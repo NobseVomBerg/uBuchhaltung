@@ -133,7 +133,8 @@ class AccountsMixin:
         finally:
             conn.close()
     def coa_is_referenced(self, id):
-        """True, wenn das Konto in Buchungen oder Anlagen referenziert wird."""
+        """True, wenn das Konto in Buchungen, Anlagen, Steuersätzen (``TaxRates``: Erlös-, Umsatzsteuer- oder Vorsteuerkonto) oder
+        Rechnungspositionen (``InvoiceItems.RevenueCoaId``) referenziert wird."""
         conn = self._get_connection()
         cursor = conn.cursor()
         try:
@@ -145,6 +146,12 @@ class AccountsMixin:
             if cursor.fetchone():
                 return True
             cursor.execute('SELECT 1 FROM Assets WHERE COA_ID = ? LIMIT 1', (id,))
+            if cursor.fetchone():
+                return True
+            cursor.execute('SELECT 1 FROM TaxRates WHERE RevenueCoaId = ? OR VatCoaId = ? OR InputTaxCoaId = ? LIMIT 1', (id, id, id))
+            if cursor.fetchone():
+                return True
+            cursor.execute('SELECT 1 FROM InvoiceItems WHERE RevenueCoaId = ? LIMIT 1', (id,))
             return cursor.fetchone() is not None
         finally:
             conn.close()

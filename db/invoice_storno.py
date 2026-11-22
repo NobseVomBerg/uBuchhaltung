@@ -370,17 +370,21 @@ class InvoiceStornoMixin:
     def _copy_items(self, conn, tx, source_id, target_id, negate=False):
         """Die Positionen des Belegs ``source_id`` in derselben Reihenfolge als Positionen von ``target_id``. Mit
         ``negate`` (Stornorechnung) sind Menge und Positionssumme negiert, Einzelpreis und alles andere unverändert; ohne
-        (Ersatzrechnung) bleibt alles, wie es ist."""
+        (Ersatzrechnung) bleibt alles, wie es ist. Die Momentaufnahme eines Steuersatzes aus den Stammdaten
+        (``db.invoices.ITEM_SNAPSHOT_COLUMNS``) geht in beiden Fällen unverändert mit."""
         rows = conn.execute(
-            'SELECT Position, ArticleId, Description, Quantity, Unit, PricePerUnit, TotalNet, TaxCategory, TaxRate '
+            'SELECT Position, ArticleId, Description, Quantity, Unit, PricePerUnit, TotalNet, TaxCategory, TaxRate, '
+            'TaxRateBp, TaxExemptReason, RevenueCoaId '
             'FROM InvoiceItems WHERE InvoiceId = ? ORDER BY Position, ID', (source_id,)).fetchall()
-        for position, article, description, quantity, unit, price, total, category, rate in rows:
+        for (position, article, description, quantity, unit, price, total, category, rate,
+             rate_bp, exempt_reason, revenue_coa) in rows:
             self.insert_invoice_item({
                 'invoice_id': target_id, 'position': position, 'article_id': article,
                 'description': description, 'quantity': _negated(quantity) if negate else quantity, 'unit': unit,
                 'price_per_unit': from_minor(price or 0),
                 'total_net': from_minor(_negated(total or 0) if negate else (total or 0)),
-                'tax_category': category, 'tax_rate': rate}, tx=tx)
+                'tax_category': category, 'tax_rate': rate,
+                'tax_rate_bp': rate_bp, 'tax_exempt_reason': exempt_reason, 'revenue_coa_id': revenue_coa}, tx=tx)
 
     def find_storno_invoice(self, invoice_id):
         """Die Stornorechnung zu dieser Rechnung als ``(ID, Nummer, Datum)`` – ``None``, wenn es keine gibt."""

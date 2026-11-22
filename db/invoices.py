@@ -14,7 +14,8 @@ from .invoice_lock import (CHANGED_MESSAGE, DocumentNotFound, has_storno, invoic
 # Was ``db.invoice_payments`` für die Buchungen eines Belegs mit Steuersatz je Position festlegt, reicht dieses Modul weiter
 from .invoice_payments import (MIXED_ALLOCATION_UNREADABLE, MIXED_GROUP_NOT_POSITIVE, MIXED_GROUPS_MISMATCH,  # noqa: F401
                                MIXED_LINK_NOT_BOOKABLE, MIXED_NO_REVENUE_COA, MIXED_RECEIVABLE_MISMATCH, PAYABLE_STATUSES,
-                               PAYMENT_MARK, STORNO_KIND, STORNO_PAYMENT_MESSAGE, MixedNotBookable, has_mixed_rates)
+                               PAYMENT_MARK, STORNO_KIND, STORNO_PAYMENT_MESSAGE, ITEM_SNAPSHOT_COLUMNS, ITEM_SNAPSHOT_KEYS, MixedNotBookable,
+                               has_mixed_rates)
 from .matching import FORM_TRANSFER
 from .reporting import is_income_account
 
@@ -275,7 +276,10 @@ class InvoicesMixin:
         """Insert an invoice item
 
         Args:
-            item_data: Dictionary with item fields
+            item_data: Dictionary with item fields. Die Momentaufnahme eines Steuersatzes aus den Stammdaten
+                (``ITEM_SNAPSHOT_KEYS``: ``tax_category``, ``tax_rate_bp``, ``tax_exempt_reason``, ``revenue_coa_id``) schreibt
+                diese Methode, wie sie kommt; fehlt ein Schlüssel, bleibt der Wert NULL (``tax_category``: ``'S'``) – keine
+                Momentaufnahme, der Satz steht allein in ``tax_rate``. Geprüft wird hier nichts (das tut, wer sie setzt).
             tx: optionale :class:`db.core.Transaction` (siehe insert_invoice)
         """
         conn = tx.conn if tx else self._get_connection()
@@ -283,8 +287,9 @@ class InvoicesMixin:
         
         sql_template = '''
             INSERT INTO InvoiceItems (
-                InvoiceId, Position, ArticleId, Description, Quantity, Unit, PricePerUnit, TotalNet, TaxCategory, TaxRate
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                InvoiceId, Position, ArticleId, Description, Quantity, Unit, PricePerUnit, TotalNet, TaxCategory, TaxRate,
+                TaxRateBp, TaxExemptReason, RevenueCoaId
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         '''
         
         params = (
@@ -297,7 +302,10 @@ class InvoicesMixin:
             to_minor(item_data.get('price_per_unit') or 0),
             to_minor(item_data.get('total_net') or 0),
             item_data.get('tax_category', 'S'),
-            item_data.get('tax_rate')
+            item_data.get('tax_rate'),
+            item_data.get('tax_rate_bp'),
+            item_data.get('tax_exempt_reason'),
+            item_data.get('revenue_coa_id')
         )
         
         refs = {'InvoiceId': item_data.get('invoice_id'),
@@ -495,7 +503,8 @@ class InvoicesMixin:
             }
             new_invoice_id = self.insert_invoice(invoice_data, tx=tx)
 
-            # Positionen kopieren (Euro-Decimals werden in insert_invoice_item zu Minor)
+            # Positionen kopieren (Euro-Decimals werden in insert_invoice_item zu Minor); die Momentaufnahme eines Steuersatzes
+            # (ITEM_SNAPSHOT_COLUMNS: Index 9 und 11 bis 13) geht unverändert mit
             for row in conn.execute('SELECT * FROM InvoiceItems WHERE InvoiceId = ? ORDER BY Position',
                                     (quote_id,)).fetchall():
                 it = self._euro_row(row, 7, 8)
@@ -505,6 +514,7 @@ class InvoicesMixin:
                     'description': it[4], 'quantity': it[5], 'unit': it[6] or 'C62',
                     'price_per_unit': it[7] or 0, 'total_net': it[8] or 0,
                     'tax_category': it[9] or 'S', 'tax_rate': it[10],
+                    'tax_rate_bp': it[11], 'tax_exempt_reason': it[12], 'revenue_coa_id': it[13],
                 }, tx=tx)
         return new_invoice_id
     def link_invoice_to_transaction(self, invoice_id, transaction_id, amount_paid):

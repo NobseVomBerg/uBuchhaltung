@@ -171,6 +171,8 @@ def test_existing_rows_stay_untouched_and_the_new_value_is_null(stock):
     after = _contents(stock)
     assert all(row[-1] is None for row in after['Invoices'])                       # überall NULL – nichts wird umgedeutet
     assert [row[:-1] for row in after['Invoices']] == before['Invoices']            # jede Spalte jeder Zeile
+    assert all(row[-3:] == (None, None, None) for row in after['InvoiceItems'])    # seit 2.8.0 drei Spalten am Ende, leer (test_tax_rates_schema_2008.py)
+    after['InvoiceItems'] = [row[:-3] for row in after['InvoiceItems']]
     for table, rows in before.items():
         if table != 'Invoices':
             assert after[table] == rows, table                                     # alle anderen Tabellen

@@ -296,11 +296,28 @@ def add_roundtrip_rows(db):
                 conn.commit()
 
 
+def to_state_2007(db_path):
+    """Die Datenbank in den Stand zurückversetzen, den 2.7.x geschrieben hat: die Tabelle ``TaxRates`` und der Index
+    ``idx_invoiceitems_invoice`` weg, die Spalten ``TaxRateBp``, ``TaxExemptReason`` und ``RevenueCoaId`` an ``InvoiceItems``
+    entfernt, ``PRAGMA user_version`` = 2007. Wiederholbar: Was schon fehlt, wird übersprungen."""
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute('DROP INDEX IF EXISTS idx_invoiceitems_invoice')
+        conn.execute('DROP TABLE IF EXISTS TaxRates')
+        present = {row[1] for row in conn.execute('PRAGMA table_info(InvoiceItems)')}
+        for column in ('RevenueCoaId', 'TaxExemptReason', 'TaxRateBp'):
+            if column in present:
+                conn.execute(f'ALTER TABLE InvoiceItems DROP COLUMN {column}')
+        conn.execute('PRAGMA user_version = 2007')
+        conn.commit()
+
+
 def to_state_2006(db_path):
-    """Die Datenbank in den Stand zurückversetzen, den 2.6.x geschrieben hat: die Spalte ``MixedTaxRates`` an ``Invoices``
-    entfernt, ``PRAGMA user_version`` = 2006. Wiederholbar: Was schon fehlt, wird übersprungen. (Sie muss vor jedem älteren Stand
-    fehlen: ``to_state_2001`` entfernt Spalten, die davor stehen – blieben ``MixedTaxRates`` stehen, wanderte sie bei der Umstellung
-    in die Mitte der Tabelle.)"""
+    """Die Datenbank in den Stand zurückversetzen, den 2.6.x geschrieben hat: zusätzlich zu 2.7.x (``to_state_2007``) die Spalte
+    ``MixedTaxRates`` an ``Invoices`` entfernt, ``PRAGMA user_version`` = 2006. Wiederholbar: Was schon fehlt, wird übersprungen. (Sie
+    muss vor jedem älteren Stand fehlen: ``to_state_2001`` entfernt Spalten, die davor stehen – blieben ``MixedTaxRates`` stehen, wanderte
+    sie bei der Umstellung in die Mitte der Tabelle. Dasselbe gilt für ``to_state_2007``: Jeder ältere Stand beginnt mit ihm, damit er
+    weder die Tabelle ``TaxRates`` noch die Spalten der Momentaufnahme an ``InvoiceItems`` trägt.)"""
+    to_state_2007(db_path)
     with closing(sqlite3.connect(db_path)) as conn:
         if 'MixedTaxRates' in {row[1] for row in conn.execute('PRAGMA table_info(Invoices)')}:
             conn.execute('ALTER TABLE Invoices DROP COLUMN MixedTaxRates')
