@@ -162,20 +162,28 @@ def test_the_notice_names_the_tax_without_an_account_from_the_month_of_the_first
     assert april == [(susa.TAX_UNASSIGNED_NOTICE, 1, minor('3.33'))]                                  # die Steuer des Teils von April: 3,33
 
 
-def test_the_plain_probe_of_the_susa_misses_exactly_the_tax_without_an_account(db):
-    """Die Probe (c) der Liste (``helpers.check_erfolgskonten_against_euer``) rechnet die Umsatzsteuer als 3801 + 3806. Mit einem bezahlten Satz außerhalb der vier weicht sie genau um die Steuer
-    auf „Steuer ohne Steuerkonto“ ab – so steht es im Kopf von ``tests/test_susa.py`` (deshalb zeigt der Demobestand 5,5 % nur versendet, nicht bezahlt)."""
+def test_the_plain_equation_of_the_susa_misses_exactly_the_tax_without_an_account_and_the_probe_counts_it(db):
+    """Die einfache Gleichung der Probe (c) – die Umsatzsteuer der EÜR gleich (H − S) von 3801 plus 3806 – weicht mit einem bezahlten Satz außerhalb der vier genau um die Steuer auf
+    „Steuer ohne Steuerkonto“ ab (deshalb zeigt der Demobestand 5,5 % nur versendet, nicht bezahlt). Die Probe selbst (``helpers.check_erfolgskonten_against_euer``) rechnet diese Steuer
+    seit 2.8.0 mit – sie war hier die einzige Abweichung – und geht in dieser Welt auf; die Gleichung der Welt (``deviations_with_the_unassigned_tax``) ist dieselbe."""
     entry_world(db)
     for month in (4, 5, 6):
         report = db.get_susa(2025, month)
         accounts = helpers.accounts_of(report)
-        plain_deviations = helpers.check_erfolgskonten_against_euer(db, report, month)
+
+        def net(number, period):
+            line = accounts.get(number)
+            if line is None:
+                return 0
+            return line.month_haben - line.month_soll if period == 'month' else line.ytd_haben - line.ytd_soll
+        plain_deviations = [(period, helpers.euer_values(db, span).get(3806, 0) - net(3801, period) - net(3806, period))
+                            for period, span in (('month', report.periods['month']), ('ytd', report.periods['ytd']))
+                            if helpers.euer_values(db, span).get(3806, 0) != net(3801, period) + net(3806, period)]
 
         assert plain_deviations, month
-        for _where, period, number, expected, got in plain_deviations:
-            line = accounts[susa.TAX_UNASSIGNED]
-            unassigned = line.month_haben - line.month_soll if period == 'month' else line.ytd_haben - line.ytd_soll
-            assert number == 3806 and expected - got == unassigned, (month, period)
+        for period, missing in plain_deviations:
+            assert missing == net(susa.TAX_UNASSIGNED, period) != 0, (month, period)
+        assert helpers.check_erfolgskonten_against_euer(db, report, month) == [] == deviations_with_the_unassigned_tax(db, report, month), month
 
 
 def test_without_a_paid_5_5_percent_rate_the_plain_probe_holds(db):

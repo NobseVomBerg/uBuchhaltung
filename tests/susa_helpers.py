@@ -6,7 +6,8 @@ entsteht – und Hilfen, um Bestände von Hand zu schreiben und die Liste mit de
 
 Die „SuSa-Welt“ (``build_susa_world``) ist so gebaut, dass die Abstimmungsproben darin **exakt** aufgehen: Es gibt keinen Satz, der keiner Bankbewegung
 zugeordnet ist (eine Kasse und das Verrechnungskonto ausgenommen), keinen Satz außerhalb der vier Steuersätze, keine Umbuchung ohne Zahlung. Was die
-Liste und die EÜR trennt (Sätze ohne Bankbewegung, ``resolved``, Sätze auf 6884–6892, Steuersätze außer 5, 7, 16 und 19 %), baut jeder Test selbst auf.
+Liste und die EÜR trennt (Sätze ohne Bankbewegung, ``resolved``, Sätze auf 6884–6892), baut jeder Test selbst auf. Ein Steuersatz außer 5, 7, 16 und 19 % trennt sie
+seit 2.8.0 nicht mehr: Probe (c) (``check_erfolgskonten_against_euer``) rechnet die Steuer jedes Satzes gemeinsam.
 
 Alle Namen, Nummern und Beträge sind erfundene Testwerte; ein „heute“ steht nie da (Stichtage sind feste Tage).
 """
@@ -18,7 +19,7 @@ from types import SimpleNamespace
 
 from db import susa
 from db.bwa import bwa_periods
-from db.reporting import bank_skr_numbers, euer_section
+from db.reporting import EUER_INPUT_TAX_UNASSIGNED, EUER_INPUT_TAX_UNASSIGNED_NAME, bank_skr_numbers, euer_section
 from money import to_minor
 from server.handlers import handle_add_transaction, link_booking_to_invoice_capped
 
@@ -175,11 +176,40 @@ def euer_values(db, span):
     return result
 
 
+def euer_sections(db, span):
+    """Die Zeilen der EÜR, die in einem Abschnitt stehen, wie ``euer_values`` – aber die virtuelle Zeile „Vorsteuer ohne Steuerkonto“ (``reporting.EUER_INPUT_TAX_UNASSIGNED``, erkannt
+    an ihrem festen Namen: ein echtes Konto mit derselben Nummer bleibt eine gewöhnliche Zeile) getrennt: ``({Kontonummer: Minor Units}, Minor Units der virtuellen Zeile)``."""
+    banks = bank_skr_numbers(db.fetch_accounts())
+    values, virtual = {}, 0
+    for number, name, total in db.get_euer_data(*span):
+        if euer_section(number, banks) is None:
+            continue
+        if number == EUER_INPUT_TAX_UNASSIGNED and name == EUER_INPUT_TAX_UNASSIGNED_NAME:
+            virtual += to_minor(total)
+        else:
+            values[number] = values.get(number, 0) + to_minor(total)
+    return values, virtual
+
+
+def tax_account_numbers(db):
+    """Die Kontonummern der Steuerkonten der Stammdaten (``Database._report_tax_accounts``): ``(Umsatzsteuerkonten, Vorsteuerkonten)`` als Mengen."""
+    with closing(sqlite3.connect(db.db_name)) as con:
+        directory = db._report_tax_accounts(con.cursor())
+        numbers = dict(con.execute('SELECT ID, AccountNumber FROM ChartOfAccounts'))
+    return {numbers[coa] for coa in directory.vat.values()}, {numbers[coa] for coa in directory.input.values()}
+
+
 def check_erfolgskonten_against_euer(db, report, where=''):
-    """Probe (c): Für jede EÜR-Zeile eines Abschnitts außer 3806 ist ``to_minor`` der EÜR gleich (Haben − Soll) der Liste im selben Zeitraum;
-    die Umsatzsteuer der EÜR (3806, die echte und die virtuelle Zeile) ist (H − S) von 3801 plus 3806. Und umgekehrt: Kein Erfolgskonto der Liste
-    hat einen Wert, den die EÜR nicht kennt. Returns die Abweichungen als Liste (leer = alles stimmt)."""
+    """Probe (c): Für jede EÜR-Zeile eines Abschnitts außer der Steuer ist ``to_minor`` der EÜR gleich (Haben − Soll) der Liste im selben Zeitraum – auch ein Vorsteuerkonto der Stammdaten.
+    Die Steuer wird **gemeinsam** geprüft: Die Umsatzsteuer der EÜR (3806, die echte und die virtuelle Zeile) und die Vorsteuer ohne Vorsteuerkonto (die virtuelle Zeile 1409) sind zusammen
+    (H − S) von 3801, 3806, den Umsatzsteuerkonten der Stammdaten und „Steuer ohne Steuerkonto“ (dort stehen die Steuer jedes Satzes ohne Konto, Umsatz- und Vorsteuer, und die Vorsteuer
+    eines Kontos, das der Kontenrahmen nicht führt: dann steht sie in der EÜR auf der virtuellen Zeile und in der Liste auf 1401/1406, mit dem Zusatz „nicht im Kontenrahmen“).
+    Ohne einen Satz außerhalb der vier und ohne Konten der Stammdaten ist das die Gleichung von früher: (H − S) von 3801 plus 3806 gleich der Umsatzsteuer der EÜR. Und umgekehrt: Kein
+    Erfolgskonto der Liste hat einen Wert, den die EÜR nicht kennt. Returns die Abweichungen als Liste (leer = alles stimmt)."""
     accounts = accounts_of(report)
+    vat_numbers, _input_numbers = tax_account_numbers(db)
+    missing_fixed = {number for number in (1401, 1406) if db.get_coa_id_by_account_number(number) is None}
+    sales_tax_numbers = {3801, 3806} | vat_numbers | missing_fixed
     deviations = []
     for period, span in (('month', report.periods['month']), ('ytd', report.periods['ytd'])):
         def net(number):
@@ -187,11 +217,16 @@ def check_erfolgskonten_against_euer(db, report, where=''):
             if found is None:
                 return 0
             return found.month_haben - found.month_soll if period == 'month' else found.ytd_haben - found.ytd_soll
-        expected = euer_values(db, span)
+        expected, virtual_input_tax = euer_sections(db, span)
+        sales_tax = expected.pop(3806, None)
+        if sales_tax is not None or virtual_input_tax:
+            want = (sales_tax or 0) + virtual_input_tax
+            got = sum(net(number) for number in sales_tax_numbers) + net(susa.TAX_UNASSIGNED)
+            if got != want:
+                deviations.append((where, period, 3806, want, got))
         for number, value in expected.items():
-            got = net(3801) + net(3806) if number == 3806 else net(number)
-            if got != value:
-                deviations.append((where, period, number, value, got))
+            if net(number) != value:
+                deviations.append((where, period, number, value, net(number)))
         for number, found in accounts.items():
             if isinstance(number, int) and 4000 <= number <= 7999 and number not in susa.OPEN_ITEM_NUMBERS and net(number) and number not in expected:
                 deviations.append((where, period, number, 0, net(number)))

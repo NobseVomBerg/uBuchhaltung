@@ -18,12 +18,18 @@ nehmen alles zurück, die Verbindung wird in jedem Fall geschlossen. Jeder Schre
 frei ändern und löschen, denn kein Beleg verweist auf ihn: Eine Position trägt eine Momentaufnahme (``entry_snapshot``), nie die ID. Nur der letzte
 wählbare Eintrag bleibt, löschen und abschalten sind dort abgelehnt (``TAX_ENTRY_LAST_ACTIVE``).
 
-Die Funktionen ``legacy_expressible`` und ``entry_snapshot`` sind rein: Sie lesen nur den Eintrag, den man ihnen gibt.
+**Die Steuerkonten in den Auswertungen** (``select_report_tax_accounts``, ``Database._report_tax_accounts``): Die EÜR (Vorsteuerkonto) und die Summen- und Saldenliste
+(Umsatzsteuer- und Vorsteuerkonto) lesen den Stand von heute – je Art und Satz zählt der erste Eintrag mit einem solchen Konto nach (Reihenfolge, ID), aktiv oder nicht. Für die
+Sätze mit festen Steuerkonten gilt dort allein die feste Tabelle; ein Satz ohne Konto steht in der Liste auf „Steuer ohne Steuerkonto“, in der EÜR auf der Zeile „Vorsteuer ohne
+Steuerkonto“.
+
+Die Funktionen ``legacy_expressible``, ``entry_snapshot`` und ``select_report_tax_accounts`` sind rein: Sie lesen nur, was man ihnen gibt.
 """
 from collections import namedtuple
+from typing import Mapping, NamedTuple
 
-from tax_groups import EXEMPT, MIXED_TAX_RATES, STANDARD, TAX_ENTRY_LAST_ACTIVE, bp_pct, check_tax_entry
-from . import susa
+from tax_groups import EXEMPT, MAX_RATE_BP, MIXED_TAX_RATES, STANDARD, TAX_ENTRY_LAST_ACTIVE, bp_pct, check_tax_entry
+from . import datev_keys, susa
 from .bwa import group_of
 from .core import DeleteRefused
 
@@ -84,6 +90,41 @@ def entry_snapshot(entry):
     exempt = entry.kind == EXEMPT
     return {'tax_category': 'E' if exempt else 'S', 'tax_rate_bp': entry.bp, 'tax_exempt_reason': entry.reason if exempt else None,
             'revenue_coa_id': entry.revenue_coa_id}
+
+
+class ReportTaxAccounts(NamedTuple):
+    """Die Steuerkonten der Stammdaten für die Auswertungen, je Art ``{Prozentzahl: COA-ID}``: ``vat`` das Umsatzsteuer-, ``input`` das Vorsteuerkonto eines Satzes. Die
+    Prozentzahl ist die Normierung der Buchungen (``datev_keys.percent``: 0,055 und 5,5 sind beide 5,5) – so findet eine Buchung den Satz, zu dem sie gehört."""
+    vat: Mapping[float, int]
+    input: Mapping[float, int]
+
+
+def _account_in_groups(account_numbers, coa_id, groups):
+    """Ist ``coa_id`` ein Konto, das es gibt, mit ganzzahliger Nummer, die HEUTE in einer der BWA-``groups`` liegt? Die Nummer kann sich nach dem Speichern des Eintrags
+    geändert haben (der Kontenrahmen ist frei zu pflegen): Maßgeblich ist der Stand von jetzt."""
+    number = account_numbers.get(coa_id) if type(coa_id) is int else None
+    return type(number) is int and group_of(number) in groups
+
+
+def select_report_tax_accounts(rows, account_numbers) -> ReportTaxAccounts:
+    """Aus den Einträgen der Steuersätze die Steuerkonten, die EÜR und Summen- und Saldenliste für Sätze außerhalb von 19, 16, 7 und 5 Prozent nehmen – rein.
+
+    ``rows``: ``(ID, RateBp, Kind, SortOrder, VatCoaId, InputTaxCoaId)`` in beliebiger Reihenfolge, so, wie die Datenbank sie liefert; ``account_numbers``:
+    ``{COA-ID: Kontonummer oder None}``. Je Art und Satz zählt der ERSTE Eintrag nach ``(SortOrder, ID)``, der ein Konto dieser Art trägt – aktiv oder nicht (das
+    Abschalten nimmt einem Satz sein Konto in den Auswertungen nicht: die Buchungen mit diesem Satz bleiben), und ein Eintrag ohne Konto davor versperrt keinem späteren
+    mit Konto etwas. Übergangen werden: eine Zeile, die kein Eintrag ist (ein Satz, der keine ganze Zahl von 1 bis 10000 ist, eine andere Art als ``standard`` – auch
+    die steuerfreie, ihr Satz ist 0), die Sätze mit festen Steuerkonten (``FIXED_TAX_BPS``: die Tabelle der Liste gilt zuerst, ein per SQL gesetztes Konto wirkt nicht)
+    und ein Konto, das es nicht mehr gibt oder dessen Nummer heute nicht in ``VAT_GROUPS`` bzw. ``INPUT_TAX_GROUPS`` liegt."""
+    vat, input_tax = {}, {}
+    for _entry_id, bp, kind, _sort_order, vat_coa_id, input_tax_coa_id in sorted(
+            rows, key=lambda row: (row[3] if type(row[3]) is int else 0, row[0])):
+        if type(bp) is not int or not 1 <= bp <= MAX_RATE_BP or kind != STANDARD or bp in FIXED_TAX_BPS:
+            continue
+        pct = datev_keys.percent(bp / 10000)
+        for found, coa_id, groups in ((vat, vat_coa_id, VAT_GROUPS), (input_tax, input_tax_coa_id, INPUT_TAX_GROUPS)):
+            if pct not in found and _account_in_groups(account_numbers, coa_id, groups):
+                found[pct] = coa_id
+    return ReportTaxAccounts(vat, input_tax)
 
 
 def _tax_account_choices(rows):
@@ -175,6 +216,15 @@ class TaxRatesMixin:
             return _tax_account_choices(conn.execute('SELECT ID, AccountNumber, Name FROM ChartOfAccounts ORDER BY AccountNumber, ID').fetchall())
         finally:
             conn.close()
+
+    def _report_tax_accounts(self, cursor) -> ReportTaxAccounts:
+        """Die Steuerkonten der Stammdaten für die Auswertungen (``select_report_tax_accounts``), gelesen im Cursor des Aufrufers: ``get_euer_data`` und ``get_susa`` rufen es
+        einmal je Aufruf, in ihrer eigenen Verbindung und ohne Transaktion – rein lesend. Ohne ein Konto in einem Eintrag (der Normalfall) bleibt es bei der einen Abfrage der
+        Einträge; sonst kommt die Liste der Konten des Kontenrahmens dazu (nur ID und Nummer, ohne Obergrenze der Parameter)."""
+        rows = cursor.execute('SELECT ID, RateBp, Kind, SortOrder, VatCoaId, InputTaxCoaId FROM TaxRates').fetchall()
+        if not any(type(coa_id) is int for row in rows for coa_id in row[4:]):
+            return ReportTaxAccounts({}, {})
+        return select_report_tax_accounts(rows, dict(cursor.execute('SELECT ID, AccountNumber FROM ChartOfAccounts').fetchall()))
 
     def tax_rate_waiting_account(self, bp):
         """Das Wartekonto, auf dem eine Rechnung zu GENAU diesem Satz (in Hundertstel Prozent) bis zur Zahlung steht, als ``(Kontonummer, Name)`` – oder ``None``:
