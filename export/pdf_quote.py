@@ -17,7 +17,8 @@ from db import Database
 from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path,
                        safe_filename_component)
 from . import pdf_document as D
-from .einvoice_model import exemption_note, log_unflagged_rates, per_item_rates, small_business_note, tax_id_kind, unit_display
+from .einvoice_model import (exemption_note, log_snapshot_findings, log_unflagged_rates, per_item_rates, small_business_note,
+                             snapshot_rate_text, tax_id_kind, unit_display)
 
 
 def _pct(tax_rate):
@@ -142,11 +143,15 @@ def generate_quote_pdf(db: Database, quote_id: int):
             item['rate'] = rate
     else:
         log_unflagged_rates(quote, items_rows, tax_rate)             # nur das Log; gedruckt wird wie immer
+    log_snapshot_findings(quote, items_rows, tax_rate)               # ebenso: nur das Log
     # Ohne Umsatzsteuerausweis (§ 19 UStG) steht der Hinweis unter den Summen – es sei denn, Einleitung oder Schluss
     # (Richtext) zitieren das Gesetz schon; Positionstexte zählen nicht. Mit Steuerausweis steht dort, wenn die steuerfreien
-    # Positionen die Momentaufnahme eines Steuersatzes der Stammdaten tragen, deren Befreiungsgrund (``exemption_note``)
-    tax_note = small_business_note(tax_rate, intro_text, closing_text) or (exemption_note(items_rows) if show_tax else None)
-    D.draw_item_table(flow, items, tax_rate_pct=_pct(tax_rate),
+    # Positionen die Momentaufnahme eines Steuersatzes der Stammdaten tragen, deren Befreiungsgrund (``exemption_note``; ein Angebot baut
+    # kein Modell der E-Rechnung, deshalb schreibt es die Zeile zu verschiedenen Gründen selbst: mit der Belegnummer)
+    tax_note = small_business_note(tax_rate, intro_text, closing_text) or (exemption_note(items_rows, quote_number) if show_tax else None)
+    # Beleg mit EINEM Satz und Momentaufnahme: der Satz in der Steuerzeile mit Dezimalkomma wie in jeder Satzgruppe; sonst wie immer
+    rate_text = snapshot_rate_text(items_rows, tax_rate)
+    D.draw_item_table(flow, items, tax_rate_pct=_pct(tax_rate) if rate_text is None else rate_text,
                       sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross,
                       show_tax=show_tax, tax_note=tax_note,
                       tax_groups=None if per_item is None else per_item.groups,

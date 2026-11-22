@@ -251,18 +251,15 @@ def _split_wide_word(word, max_w, size):
     return pieces
 
 
-def _wrap_description(desc, max_w, size, break_words=False, semicolons=True):
+def _wrap_description(desc, max_w, size, break_words=False):
     """Bezeichnung in Zeilen zerlegen: ``;`` → Zeilenumbruch, lange Zeilen am
     Wortrand umbrechen. Liefert immer mindestens eine (ggf. leere) Zeile.
 
     ``break_words``: Ein Wort, das allein breiter ist als ``max_w``, steht auf einer eigenen Zeile und bricht dort mitten im Wort um
-    (``_split_wide_word``) – sonst läuft es über die Spalte hinaus. Der Druck mit Steuersatz je Position setzt es (dort stünde das Wort
-    über der Spalte „USt“), ebenso der Hinweis unter dem Summenblock; der übrige Druck bricht, wie er immer brach.
-
-    ``semicolons`` falsch: Das ``;`` ist dann ein Zeichen des Textes und trennt keine Zeile – so druckt der Hinweis unter dem Summenblock seinen Text, wie er
-    gespeichert ist (der Befreiungsgrund eines Steuersatzes darf ein Semikolon tragen, und in der E-Rechnung steht er mit ihm)."""
+    (``_split_wide_word``) – sonst läuft es über die Spalte hinaus. Nur der Druck mit Steuersatz je Position setzt es (dort stünde das Wort
+    über der Spalte „USt“); der übrige Druck bricht, wie er immer brach."""
     lines = []
-    for segment in (str(desc or '').split(';') if semicolons else [str(desc or '')]):
+    for segment in str(desc or '').split(';'):
         seg = segment.strip()
         if not seg:
             continue
@@ -290,6 +287,22 @@ _TAX_ROW = 14                     # Zeilenabstand der Steuerzeilen im Summenbloc
 _NOTE_SIZE = 9                    # Hinweis unter dem Summenblock: Schriftgröße, Zeilenabstand und
 _NOTE_LEADING = 12                #   Abstand der ersten Zeile unter der Schlusslinie
 _NOTE_TOP = 14
+# Zeilen, auf die der Hinweis höchstens kommt: Ein Befreiungsgrund hat höchstens ``tax_groups.MAX_REASON_LENGTH`` + 1 Zeichen (``einvoice_model._reason_text``), jedes
+# höchstens 1,015 Geviert breit (das „@“; bei 9 pt gut 9 pt): zusammen höchstens 2 750 pt. Zwei aufeinanderfolgende Zeilen sind zusammen breiter als eine (495 pt) – sonst hätte
+# das erste Wort der zweiten noch auf die erste gepasst –, also braucht der Text höchstens 1 + 2 × 2 750 / 492 = 12 Zeilen (gemessen an Wörtern aus 27 „@“: 10); ein längeres
+# Wort bricht mitten im Wort und füllt die Zeilen. Zwölf Zeilen sind so die Grenze, die ein Grund nie überschreitet; jeder längere Text endet mit „…“ statt unter dem Seitenrand
+_NOTE_MAX_LINES = 12
+
+
+def _note_lines(note, max_w, size):
+    """Der Hinweis unter dem Summenblock in Zeilen – gemessen, wie er gedruckt wird: nach den WinAnsi-Ersetzungen (ein Pfeil steht als „->“ da, nicht als ein Zeichen) und mit den
+    Breiten der eingebetteten Schrift (``pdf_worktime.info_lines``, dieselben Bausteine wie die Info-Spalte des Stundenzettels). Die Helvetica-Tabelle ``_W_REG`` kennt weder
+    „Œ“ noch „—“, „‰“ oder „™“ (sie zählt 556 statt 1000): Ein Grund mit solchen Zeichen liefe über den rechten Rand. Am Wortrand umbrochen, ein Wort, das allein breiter ist als
+    die Zeile, mitten im Wort; Leerraum zählt als ein Leerzeichen, ein ``;`` trennt keine Zeile. Höchstens ``_NOTE_MAX_LINES``, die letzte endet dann mit „…“ – nichts fällt weg,
+    ohne dass man es sieht. Die Laufzeit hängt nur von den gedruckten Zeilen ab."""
+    # erst zur Laufzeit: ``pdf_worktime`` zieht ``server.pages_worktime`` und damit das Serverpaket herein (gut 0,4 s Importzeit) – das Rechnungs-PDF braucht es nur hierfür
+    from .pdf_worktime import info_lines
+    return info_lines(note, max_w, size, _NOTE_MAX_LINES)
 
 
 def _table_header(flow, rate_right=None):
@@ -344,11 +357,15 @@ def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross
     Bezeichnungen dürfen mehrzeilig sein (``;`` trennt Zeilen); die übrigen
     Spalten werden dann oben (top) ausgerichtet.
 
+    tax_rate_pct: der Satz im Kopf für die Steuerzeile eines Belegs mit EINEM Satz – eine Zahl (``:g``, mit Punkt: ``5.5``) oder ein fertiger Text, den die Aufrufer
+    für einen Beleg mit Momentaufnahme eines Steuersatzes übergeben (mit Komma: ``5,5``, ``einvoice_model.snapshot_rate_text``).
+
     tax_note: optionaler Hinweis unter der Schlusslinie des Summenblocks (Kleinunternehmer:
     § 19 UStG; ein Beleg mit einem steuerfreien Steuersatz der Stammdaten: dessen Befreiungsgrund), ab dem linken
     Seitenrand (``LEFT``) auf die Breite bis ``RIGHT`` umbrochen – der Standardsatz passt in eine Zeile, ein Grund
-    mit bis zu 300 Zeichen braucht ein paar. Der Text steht, wie er ist: Ein Semikolon trennt keine Zeile, ein Wort, das
-    breiter ist als die Zeile, bricht mitten im Wort um – nichts läuft über den Rand, nichts fällt weg. Er gehört zum Block:
+    mit bis zu 300 Zeichen braucht ein paar (``_note_lines``: gemessen, wie der Text gedruckt wird, mit den Breiten der eingebetteten
+    Schrift; höchstens ``_NOTE_MAX_LINES``, dann endet er mit „…“). Der Text steht, wie er ist: Ein Semikolon trennt keine Zeile, ein Wort, das
+    breiter ist als die Zeile, bricht mitten im Wort um – nichts läuft über den Rand, nichts fällt weg, ohne dass man es sieht. Er gehört zum Block:
     Passt er nicht mehr auf die Seite, geht er mit dem Summenblock auf die nächste.
 
     tax_groups: nur für einen Beleg mit Steuersatz je Position (``Invoices.MixedTaxRates``; die Aufrufer übergeben sie nur dann,
@@ -407,7 +424,7 @@ def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross
         flow.y -= row_h
 
     # Summenblock samt Hinweis zusammenhalten: passt er nicht mehr, neue Seite (ohne Header).
-    note_lines = _wrap_description(tax_note, RIGHT - LEFT, _NOTE_SIZE, break_words=True, semicolons=False) if tax_note else []
+    note_lines = _note_lines(tax_note, RIGHT - LEFT, _NOTE_SIZE) if tax_note else []
     note_drop = _NOTE_TOP + _NOTE_LEADING * (len(note_lines) - 1) if note_lines else 0
     extra_tax_rows = max(len(tax_groups) - 1, 0) if per_item else 0
     if flow.y - (_TOTALS_HEIGHT + _TAX_ROW * extra_tax_rows + note_drop) < flow.bottom:

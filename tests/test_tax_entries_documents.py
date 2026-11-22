@@ -17,6 +17,11 @@ Byte für Byte dieselben Dokumente aus wie vorher; das halten die gepinnten Hash
 ``tests/test_mixed_tax_documents.py``, ``tests/test_golden_invoice_outputs.py``) – hier steht, was die Momentaufnahme ändert, und die Gegenprobe, dass sie
 ohne Momentaufnahme nichts ändert.
 
+Nacharbeiten an der Etappe (Prüfung der Dokumente): Der Befreiungsgrund kommt aus EINER Funktion (``exempt_reason``) in E-Rechnung und PDF – der erste nicht leere Grund der
+Positionen mit steuerfreier Momentaufnahme, bereinigt und auf ``MAX_REASON_LENGTH`` Zeichen gekürzt –, der Hinweis im PDF wird gemessen, wie er gedruckt wird (WinAnsi-Ersetzungen,
+Breiten der eingebetteten Schrift), ``item_bp`` liest streng (0 und 1 bis 100 Prozent), die Steuerzeile eines Belegs mit EINEM Satz und Momentaufnahme setzt den Satz mit Dezimalkomma,
+und zwei Befunde (Momentaufnahme weicht vom ``TaxRate`` ab, steuerfreie Position mit unlesbarer Momentaufnahme) stehen mit einer Zeile im Server-Log.
+
 Alle Namen, Adressen, Gründe und Beträge sind erfundene Testwerte.
 """
 import contextlib
@@ -33,14 +38,16 @@ import pytest
 import userctx
 from export import pdf_document as D
 from export.cii_invoice import build_cii
-from export.einvoice_model import (EXEMPT_REASON_KLEINUNTERNEHMER, Gap, TaxBreakdown, build_einvoice, einvoice_gaps, exemption_note, item_bp,
-                                   per_item_rates)
+from export.einvoice_model import (DIFFERENT_REASONS_MESSAGE, EXEMPT_REASON_KLEINUNTERNEHMER, SNAPSHOT_FINDING_MESSAGE, ExemptReason, Gap, TaxBreakdown,
+                                   build_einvoice, einvoice_gaps, exempt_reason, exemption_note, item_bp, log_snapshot_findings, log_unflagged_rates,
+                                   per_item_rates, snapshot_rate_text)
 from export.invoice_files import generate_invoice_documents
 from export.pdf_invoice import generate_invoice_pdf
 from export.pdf_quote import generate_quote_pdf
+from export.pdf_worktime import info_width, printed_text
 from export.xrechnung_invoice import XRechnungGenerator
 from money import format_de, from_minor, to_minor
-from tax_groups import bp_pct, group_tax, item_groups
+from tax_groups import MAX_REASON_LENGTH, bp_pct, group_tax, item_groups, mixed_groups
 from tests.invoice_world import build_world, columns, query_rows, run_sql
 from tests.single_rate_helpers import embedded_xml
 
@@ -79,6 +86,12 @@ def standard(number, description, price, bp, quantity=1):
 def exempt(number, description, price, reason=REASON, quantity=1):
     """Eine Position mit der Momentaufnahme eines steuerfreien Eintrags: Art ``E``, Satz 0 und der Grund (``None``: ohne Grund)."""
     return _position(number, description, price, quantity, tax_category='E', tax_rate=0, tax_rate_bp=0, tax_exempt_reason=reason)
+
+
+def snapshot_over_rate(number, description, price, bp, rate, quantity=1):
+    """Eine Position, deren ``TaxRate`` vom Satz der Momentaufnahme abweicht: ``bp`` in Hundertstel Prozent, ``rate`` die Prozentzahl in ``TaxRate``. Die App schreibt so etwas nicht
+    (``standard`` setzt beides gleich), die SQL-Konsole schon – dann gilt die Momentaufnahme."""
+    return _position(number, description, price, quantity, tax_category='S', tax_rate=rate, tax_rate_bp=bp)
 
 
 def make_document(world, positions, number, *, head_rate=None, mixed=None, quote=False, **over):
@@ -491,12 +504,36 @@ def test_a_single_rate_exempt_document_prints_the_old_block_with_0_percent_and_t
         REASON]
 
 
-def test_a_single_rate_document_of_5_5_percent_with_a_snapshot_has_the_old_block_and_no_note(world):
+def test_a_single_rate_document_of_5_5_percent_with_a_snapshot_prints_the_rate_with_a_decimal_comma_and_no_note(world):
+    """Die Steuerzeile eines Belegs mit EINEM Satz und Momentaufnahme nennt den Satz wie jede Satzgruppe mit Dezimalkomma („5,5%“ statt „5.5%“, ``tax_groups.pct_text``)."""
     pdf = invoice_pdf(world, make_document(world, [standard(1, 'Kleinteil', '20.00', 550)], '26R331'))
 
     lines = page_lines(pdf)
-    assert lines_after(lines, 'Summe netto:', 3) == ['Summe netto: 20,00 EUR', 'zzgl. 5.5% MwSt.: 1,10 EUR', 'Gesamtbetrag: 21,10 EUR']
+    assert lines_after(lines, 'Summe netto:', 3) == ['Summe netto: 20,00 EUR', 'zzgl. 5,5% MwSt.: 1,10 EUR', 'Gesamtbetrag: 21,10 EUR']
     assert note_rows(pdf) == []
+
+
+def test_the_same_document_without_a_snapshot_keeps_the_point_in_the_rate_character_for_character(world):
+    """Die Gegenprobe: Ein Beleg ohne Momentaufnahme – auch ein Bestandsbeleg mit 5,5 im Kopf – druckt die Zeile wie bisher, mit Punkt."""
+    pdf = invoice_pdf(world, make_document(world, [plain(1, 'Kleinteil', '20.00', 5.5)], '26R338', head_rate=0.055))
+
+    assert lines_after(page_lines(pdf), 'Summe netto:', 3) == ['Summe netto: 20,00 EUR', 'zzgl. 5.5% MwSt.: 1,10 EUR', 'Gesamtbetrag: 21,10 EUR']
+
+
+@pytest.mark.parametrize('bp, expected', [(1900, '19'), (700, '7'), (1000, '10'), (1070, '10,7'), (1925, '19,25'), (100, '1'), (0, '0')])
+def test_the_rate_of_the_single_rate_row_is_printed_with_a_comma_and_without_superfluous_zeros(world, bp, expected):
+    """Auch bei Sätzen, die ``:g`` mit Punkt (oder, bei 10, als Zehnerpotenz) schriebe: ganze Prozent ohne Komma, sonst mit Komma und ohne Nullen am Ende."""
+    pdf = invoice_pdf(world, make_document(world, [standard(1, 'Position', '20.00', bp)], f'26R34{bp}'))
+
+    assert any(line.startswith(f'zzgl. {expected}% MwSt.:') for line in page_lines(pdf))
+
+
+def test_the_quote_prints_the_rate_of_the_single_rate_row_with_a_decimal_comma_only_with_a_snapshot(world):
+    snapshot = quote_pdf(world, make_document(world, [standard(1, 'Kleinteil', '20.00', 550)], '26A310', quote=True))
+    without = quote_pdf(world, make_document(world, [plain(1, 'Kleinteil', '20.00', 5.5)], '26A311', quote=True, head_rate=0.055))
+
+    assert lines_after(page_lines(snapshot), 'Summe netto:', 3)[1] == 'zzgl. 5,5% MwSt.: 1,10 EUR'
+    assert lines_after(page_lines(without), 'Summe netto:', 3)[1] == 'zzgl. 5.5% MwSt.: 1,10 EUR'
 
 
 def test_a_document_without_a_snapshot_prints_no_note_and_the_reason_is_none(world):
@@ -559,6 +596,114 @@ def test_a_reason_of_300_characters_is_the_same_text_in_cii_and_ubl(world):
     assert dict(ubl_taxes(ubl_of(world, document))[0][0][2])['TaxExemptionReason'] == LONG_REASON
 
 
+def _inside_the_margins(rows):
+    """Jede Zeile liegt zwischen dem linken und dem rechten Rand (gemessen an der Schrift des fertigen PDF)."""
+    for _text, words in rows:
+        assert words[0]['x0'] >= D.LEFT - 0.5 and words[-1]['x1'] <= D.RIGHT + 0.5, (words[0]['x0'], words[-1]['x1'])
+
+
+def _nothing_below_the_bottom(pdf):
+    """Keine Textstelle des Inhalts unter dem unteren Rand (``PageFlow.bottom``, 120 pt von unten) – ohne die Fußzeile."""
+    with pdfplumber.open(io.BytesIO(pdf)) as document:
+        for page in document.pages:
+            body = [word for word in page.extract_words() if word['top'] < 740]
+            assert all(word['bottom'] <= 842 - 120 + 3 for word in body)
+
+
+@pytest.mark.parametrize('length', [301, 5000, 100000])
+def test_a_reason_over_300_characters_ends_with_an_ellipsis_after_the_first_300_in_model_xml_and_pdf(world, length):
+    """``check_tax_entry`` lässt höchstens 300 Zeichen zu, die SQL-Konsole mehr: Das PDF druckt die ersten 300 Zeichen (nach der Bereinigung) und ein „…“ – ein paar Zeilen, nie eine unter
+    dem unteren Rand, nie still abgeschnitten –, und das XML trägt denselben gekürzten Text (EINE Stelle kürzt)."""
+    reason = (LONG_REASON + 'y' + ' Weitere Hinweise zur steuerfreien Leistung' * 4000)[:length]
+    expected = LONG_REASON + '…'
+    assert len(reason) == length and len(expected) == MAX_REASON_LENGTH + 1
+    document = mixed_with_exempt(world, '26R470', reason=reason)
+
+    model = model_of(world, document)
+    pdf = invoice_pdf(world, document)
+
+    assert model.tax_breakdown[0].exemption_reason == expected and einvoice_gaps(model) == [] and model.warnings == []
+    assert dict(cii_taxes(cii_of(world, document))[0][0])['ExemptionReason'] == expected
+    assert dict(ubl_taxes(ubl_of(world, document))[0][0][2])['TaxExemptionReason'] == expected
+    assert exemption_note(world.db.get_invoice_items(document)) == expected
+    rows = note_rows(pdf)
+    assert 3 <= len(rows) <= D._NOTE_MAX_LINES and ' '.join(text for text, _words in rows) == expected and rows[-1][0].endswith('…')
+    _inside_the_margins(rows)
+    _nothing_below_the_bottom(pdf)
+    assert page_count(pdf) == 1
+
+
+def test_a_reason_of_100000_characters_without_a_blank_is_cut_after_300_and_breaks_inside_the_word(world):
+    document = mixed_with_exempt(world, '26R471', reason='x' * 100000)
+
+    pdf = invoice_pdf(world, document)
+
+    rows = note_rows(pdf)
+    assert ''.join(text for text, _words in rows) == 'x' * MAX_REASON_LENGTH + '…'
+    _inside_the_margins(rows)
+    _nothing_below_the_bottom(pdf)
+    assert dict(cii_taxes(cii_of(world, document))[0][0])['ExemptionReason'] == 'x' * MAX_REASON_LENGTH + '…'
+
+
+WIDE_REASONS = {
+    'Pfeile': ' → '.join(f'Schritt {number} der Prüfung' for number in range(1, 15))[:300],
+    'Œ × 300': 'Œ' * 300,
+    'Geviertstriche': ' — '.join(['Beispielleistung ohne Umsatzsteuer'] * 8)[:300],
+    'Promille': ' '.join(['Anteil 12‰ vom Entgelt'] * 14)[:300],
+    'Marke': ' '.join(['Produkt™ Beispiel'] * 20)[:300],
+    'gemischt': ('Steuerfrei gemäß Testgesetz — Œuvre™ → Prüfung 5‰ ' * 6)[:300],
+}
+
+
+@pytest.mark.parametrize('name', list(WIDE_REASONS))
+def test_a_reason_with_characters_the_helvetica_table_misjudges_stays_inside_the_margins_and_nothing_is_lost(world, name):
+    """Gemessen an der Schrift des fertigen PDF: Der Pfeil steht als „->“ da (zwei Zeichen statt eines), „Œ“, „—“, „‰“ und „™“ sind ein ganzes Geviert breit (die Tabelle ``_W_REG`` zählt sie
+    556) – früher lief ein solcher Grund bis zu 7,7 pt (Pfeile) und mehr als die Zeilenbreite („Œ“) über den rechten Rand. Jetzt liegt jede Zeile zwischen den Rändern, und kein Zeichen geht
+    verloren."""
+    reason = WIDE_REASONS[name]
+    assert 0 < len(reason) <= MAX_REASON_LENGTH
+    pdf = invoice_pdf(world, mixed_with_exempt(world, '26R472', reason=reason))
+
+    rows = note_rows(pdf)
+
+    _inside_the_margins(rows)
+    assert ''.join(text.replace(' ', '') for text, _words in rows) == printed_text(reason).replace(' ', '')
+    assert len(rows) <= D._NOTE_MAX_LINES and not rows[-1][0].endswith('…')
+    _nothing_below_the_bottom(pdf)
+
+
+def test_the_note_lines_measure_the_printed_text_with_the_widths_of_the_embedded_font():
+    width = D.RIGHT - D.LEFT
+    wide = D._note_lines('Œ' * 300, width, 9)
+    arrows = D._note_lines('→ ' * 120, width, 9)                                        # steht als „-> “ da
+
+    assert ''.join(wide) == 'Œ' * 300 and len(wide) == 6 and all(info_width(line, 9) <= width + 1e-6 for line in wide)
+    assert ' '.join(arrows) == '-> ' * 119 + '->' and all(info_width(line, 9) <= width + 1e-6 for line in arrows)
+    assert wide != D._wrap_description('Œ' * 300, width, 9, break_words=True)           # die Helvetica-Tabelle (556 statt 1000) hätte mehr Zeichen je Zeile angenommen
+
+
+def test_the_longest_allowed_reason_made_of_the_widest_characters_never_reaches_the_limit_of_lines():
+    """Ein Grund hat höchstens ``MAX_REASON_LENGTH`` + 1 Zeichen; aus Wörtern der breitesten Zeichen (kaum mehr als ein Geviert: das „@“) braucht er im ungünstigsten Fall zehn bis elf
+    Zeilen – ein Wort aus 27 solcher Zeichen passt nur einmal in eine Zeile. Die Grenze von ``_NOTE_MAX_LINES`` (aus dem Verhältnis der Zeilenbreite zur Gesamtbreite: 12) schneidet
+    daher nie einen zugelassenen Grund ab."""
+    chance = random.Random(2811)
+    width, widest, most = D.RIGHT - D.LEFT, 'Œ—‰™@WM…', 0
+    for _ in range(400):
+        pieces = [''.join(chance.choice(widest) for _ in range(chance.randint(18, 33))) for _ in range(20)]
+        text = ' '.join(pieces)[:MAX_REASON_LENGTH].strip() + '…'
+        lines = D._note_lines(text, width, 9)
+        most = max(most, len(lines))
+        assert ' '.join(lines) == printed_text(text) and all(info_width(line, 9) <= width + 1e-6 for line in lines)
+    assert 9 <= most < D._NOTE_MAX_LINES
+
+
+def test_a_note_longer_than_the_limit_of_lines_ends_with_an_ellipsis_in_the_last_line():
+    lines = D._note_lines('Wort ' * 1000, D.RIGHT - D.LEFT, 9)
+
+    assert len(lines) == D._NOTE_MAX_LINES and lines[-1].endswith('…') and not any(line.endswith('…') for line in lines[:-1])
+    assert info_width(lines[-1], 9) <= D.RIGHT - D.LEFT + 1e-6
+
+
 def _draw_with_note(count, note, start=586):
     """Die Tabelle mit ``count`` Positionen und dem Hinweis ``note`` auf einem ``PageFlow`` ohne Fußzeile; Rückgabe: ``(Seiten, PageFlow)``."""
     flow = D.PageFlow([[], [], []])
@@ -616,7 +761,7 @@ def test_a_semicolon_in_the_reason_stays_a_semicolon_while_a_description_still_b
 
     assert note in [text for _x, _y, text in _texts(pages[0])]
     assert D._wrap_description('Beratung; zwei Stunden', 400, 9) == ['Beratung', 'zwei Stunden']                  # die Bezeichnung einer Position: wie immer
-    assert D._wrap_description(note, 400, 9, semicolons=False) == [note]
+    assert D._note_lines(note, 400, 9) == [note]                                                                    # der Hinweis: das Semikolon bleibt ein Zeichen des Textes
 
 
 def test_the_reason_is_printed_like_any_text_of_the_document_winansi_replacements_included(world):
@@ -759,22 +904,39 @@ def test_the_gap_belongs_to_the_group_without_a_reason_not_to_a_document_after_p
 
 # ── Zwei Gründe in einer Gruppe, fehlerhafte Werte ───────────────────────────────────────────────────────────────────────────────────
 
-def test_positions_of_one_exempt_group_with_different_reasons_give_the_first_and_a_warning(world, capsys):
-    """Die App speichert höchstens einen Grund je Gruppe; steht trotzdem ein zweiter da (SQL-Konsole), gilt der der ersten Position – und das Log sagt es."""
+def reason_lines(out):
+    """Die Zeilen des Server-Logs zu verschiedenen Befreiungsgründen."""
+    return [line for line in out.splitlines() if DIFFERENT_REASONS_MESSAGE in line]
+
+
+def test_positions_of_one_exempt_group_with_different_reasons_give_the_first_in_xml_and_pdf_and_one_line_in_the_log(world, capsys):
+    """Die App speichert höchstens einen Grund je Gruppe; steht trotzdem ein zweiter da (SQL-Konsole), gilt der erste – in der E-Rechnung wie im PDF, derselbe Text –, und das Log
+    sagt es mit EINER Zeile (bereinigte Belegnummer, fester Text): bei der Rechnung steht sie dort, wo das Modell gebaut wird, beim Angebot ohne Modell im PDF."""
     document = make_document(world, [exempt(1, 'Nachhilfestunde', '80.00', REASON), exempt(2, 'Lernmaterial', '20.00', OTHER_REASON)], '26R370')
+    capsys.readouterr()
 
     model = model_of(world, document)
 
     assert model.tax_breakdown[0].exemption_reason == REASON and einvoice_gaps(model) == []
-    assert any('verschiedene Befreiungsgründe' in warning for warning in model.warnings)
-    assert 'verschiedene Befreiungsgründe' in capsys.readouterr().out
-    assert exemption_note(world.db.get_invoice_items(document)) is None                    # das PDF druckt keinen Grund, der nicht für alle gilt
+    assert model.warnings == [DIFFERENT_REASONS_MESSAGE]
+    assert reason_lines(capsys.readouterr().out) == [f'E-Rechnung 26R370: {DIFFERENT_REASONS_MESSAGE}']
+    assert exemption_note(world.db.get_invoice_items(document)) == REASON                  # dieselbe Funktion: das PDF druckt den Grund, den auch das XML trägt
+    assert reason_lines(capsys.readouterr().out) == []                                      # ohne Belegnummer schreibt sie nichts
+    pdf = invoice_pdf(world, document)
+    assert [text for text, _words in note_rows(pdf)] == [REASON]
+    assert cii_taxes(embedded_xml(pdf))[0][0][2] == ('ExemptionReason', REASON)
+    assert len(reason_lines(capsys.readouterr().out)) == 1                                  # die Rechnung: eine Zeile je Bau des Modells, vom PDF kommt keine zweite
+    quote = make_document(world, [exempt(1, 'Nachhilfestunde', '80.00', REASON), exempt(2, 'Lernmaterial', '20.00', OTHER_REASON)], '26A370', quote=True)
+    assert [text for text, _words in note_rows(quote_pdf(world, quote))] == [REASON]
+    assert reason_lines(capsys.readouterr().out) == [f'PDF 26A370: {DIFFERENT_REASONS_MESSAGE}']
 
 
-@pytest.mark.parametrize('garbage', ['abc', 550.5, -1, 10001, ''], ids=['Text', 'Kommazahl', 'negativ', 'über 100 %', 'leerer Text'])
+@pytest.mark.parametrize('garbage', ['abc', 550.5, -1, 10001, '', 1, 50, 99],
+                         ids=['Text', 'Kommazahl', 'negativ', 'über 100 %', 'leerer Text', '0,01 %', '0,5 %', '0,99 %'])
 def test_a_stored_value_that_is_no_valid_snapshot_counts_as_no_snapshot(world, garbage):
-    """Die Spalte lässt sich per SQL-Konsole beschreiben: Nur eine ganze Zahl von 0 bis 10000 ist eine Momentaufnahme, alles andere rechnet die Position aus ihrem
-    ``TaxRate`` wie jede ohne – ohne Absturz und ohne dass ein Grund gedruckt würde."""
+    """Die Spalte lässt sich per SQL-Konsole beschreiben: Nur eine ganze Zahl, die 0 ist oder von 100 (1 %) bis 10000 reicht, ist eine Momentaufnahme – ein Satz zwischen 0 und
+    1 % lässt ``check_tax_entry`` nicht zu, ``rate_pct`` läse ihn als Bruch –, alles andere rechnet die Position aus ihrem ``TaxRate`` wie jede ohne, ohne Absturz und ohne dass
+    ein Grund gedruckt würde."""
     document = make_document(world, [plain(1, 'Beratung', '100.00', 19)], '26R371')
     run_sql(world.db, 'UPDATE InvoiceItems SET TaxRateBp = ?, TaxExemptReason = ? WHERE InvoiceId = ?', garbage, REASON, document)
 
@@ -791,9 +953,11 @@ def _row(rate_bp=None, category='S', reason=None, rate=0, total='10.00', columns
     return row[:columns]
 
 
-@pytest.mark.parametrize('value, expected', [(None, None), (0, 0), (1900, 1900), (10000, 10000), (10001, None), (-1, None), ('1900', None), (550.0, None),
-                                             (True, None), (False, None)])
-def test_item_bp_reads_only_a_whole_number_from_0_to_10000(value, expected):
+@pytest.mark.parametrize('value, expected', [(None, None), (0, 0), (100, 100), (1900, 1900), (10000, 10000), (10001, None), (-1, None), ('1900', None), (550.0, None),
+                                             (True, None), (False, None), (1, None), (50, None), (99, None)])
+def test_item_bp_reads_only_a_whole_number_that_is_0_or_from_100_to_10000(value, expected):
+    """0 und 1 bis 100 Prozent (``MIN_RATE_BP`` bis ``MAX_RATE_BP``): so lässt ``check_tax_entry`` einen Satz zu. Ein Wert von 1 bis 99 – ein Satz unter 1 % – gilt wie jeder
+    unlesbare als „keine Momentaufnahme“."""
     assert item_bp(_row(value)) == expected
 
 
@@ -809,18 +973,144 @@ def test_item_bp_of_a_short_row_is_none():
     ([_row(0, 'E', REASON)], REASON),
     ([_row(0, 'E', REASON), _row(0, 'E', REASON, total='3.00')], REASON),                                              # alle Positionen mit Satz 0, derselbe Grund
     ([_row(1900, 'S', rate=19), _row(0, 'E', REASON)], REASON),                                                       # die Position zu 19 % zählt nicht mit
-    ([_row(0, 'E', REASON), _row(0, 'E', OTHER_REASON)], None),                                                       # verschiedene Gründe
-    ([_row(0, 'E', REASON), _row(None, 'S', rate=0)], None),                                                          # eine Position mit Satz 0 ohne die Momentaufnahme
+    ([_row(0, 'E', REASON), _row(0, 'E', OTHER_REASON)], REASON),                                                     # verschiedene Gründe: der erste gilt
+    ([_row(0, 'E', OTHER_REASON), _row(0, 'E', REASON)], OTHER_REASON),                                               # …in der Reihenfolge der Positionen
+    ([_row(0, 'E', REASON), _row(None, 'S', rate=0)], REASON),                                                        # daneben eine Position mit Satz 0 ohne die Momentaufnahme: derselbe Grund wie im XML
+    ([_row(0, 'E', REASON), _row(None, 'E', 'Anderer Text', rate=0)], REASON),                                        # eine Position 'E' ohne Momentaufnahme trägt keinen Grund bei
     ([_row(0, 'E', REASON), _row(None, 'S', rate=None)], REASON),                                                     # ohne Satz: unbekannt, zählt nicht
     ([_row(0, 'E', REASON), _row(None, 'S', rate='kein Satz')], REASON),                                              # unlesbar: ebenso, ohne Absturz
     ([_row(0, 'E', None)], None), ([_row(0, 'E', '  ')], None),                                                       # ohne Grund
+    ([_row(0, 'E', None), _row(0, 'E', REASON)], REASON),                                                             # die erste ohne Grund, die zweite mit: der erste NICHT LEERE
+    ([_row(0, 'E', '  '), _row(0, 'E', REASON), _row(0, 'E', OTHER_REASON)], REASON),
     ([_row(0, 'S', REASON)], None),                                                                                   # Nullsatz der Art „Standard“ (Kategorie Z)
-    ([_row(0, 'E', REASON), _row(0, 'S', None)], None),                                                               # …neben einem steuerfreien Eintrag
+    ([_row(0, 'E', REASON), _row(0, 'S', None)], REASON),                                                             # …neben einem steuerfreien Eintrag: der Grund des steuerfreien
+    ([_row(0, 'S', OTHER_REASON), _row(0, 'E', REASON)], REASON),                                                     # …auch davor: ein Nullsatz der Art „Standard“ liefert nie einen Grund
     ([_row(1900, 'S', rate=19), _row(550, 'S', rate=5.5)], None),                                                     # Momentaufnahmen, aber keine mit Satz 0
     ([_row(0, 'E', ' Grund\tmit  Leerraum ')], 'Grund mit Leerraum'),                                                  # bereinigt wie in der E-Rechnung
+    ([_row(0, 'E', b'Grund'), _row(0, 'E', 12345)], None),                                                            # kein Text: kein Grund (nie ``b'…'``)
+    ([_row(50, 'E', REASON)], None),                                                                                  # 0,5 %: keine Momentaufnahme
 ])
-def test_exemption_note_is_the_reason_only_if_all_positions_with_rate_0_carry_that_exempt_snapshot(items, expected):
+def test_exemption_note_is_the_first_non_empty_reason_of_the_positions_with_an_exempt_snapshot(items, expected):
+    """Der Grund, den das PDF druckt, ist der erste nicht leere der Positionen mit der Momentaufnahme eines steuerfreien Eintrags (Art ``E``, Satz 0) – was daneben mit dem Satz 0
+    steht (ein Nullsatz der Art „Standard“, eine Position ohne Momentaufnahme), ändert ihn nicht. Es ist derselbe wie in der E-Rechnung (``exempt_reason``)."""
     assert exemption_note(items) == expected
+
+
+@pytest.mark.parametrize('stored, expected', [
+    ('Grund', 'Grund'),
+    ('  Grund\t mit\nUmbruch\r\n ', 'Grund mit Umbruch'),
+    ('Grund‮umgekehrt', 'Grundumgekehrt'),                          # U+202E (Kategorie Cf) fällt weg
+    ('Grund​ohne﻿Lücke⁦', 'GrundohneLücke'),             # Nullbreite, Byte-Order-Mark, Isolierung (Cf)
+    ('a\x0bb\x85c d\xa0e', 'a b c d e'),                           # Zeilenumbrüche und Leerzeichen jeder Art: ein Leerzeichen
+    ('x\x00y\x07z\x1b[31m\x7f', 'xyz[31m'),                             # Steuerzeichen (Kategorie Cc) fallen weg
+    ('Zeile￾￿', 'Zeile'),                                      # die in XML 1.0 verbotenen Nichtzeichen auch
+    ('Straße — „Zitat“ → Œ ™', 'Straße — „Zitat“ → Œ ™'),              # Text bleibt, wie er ist (das PDF ersetzt beim Drucken)
+    ('‮​ \t', ''),
+    ('', ''), (None, ''), (b'Grund', ''), (12345, ''), (1.5, ''), (True, ''), (Decimal('1.5'), ''), (['Grund'], ''),
+])
+def test_the_reason_is_cleaned_in_one_place_only_text_counts_and_control_and_format_characters_go(stored, expected):
+    found = exempt_reason([_row(0, 'E', stored)])
+
+    assert found == ExemptReason(text=expected, differing=False)
+
+
+def test_a_reason_over_the_limit_ends_with_an_ellipsis_after_the_first_300_characters_of_the_cleaned_text():
+    """Gekürzt wird nach der Bereinigung (``MAX_REASON_LENGTH`` Zeichen vom bereinigten Text), nie in der Mitte eines Leerraums: Ein Leerzeichen vor dem „…“ fiele weg."""
+    assert MAX_REASON_LENGTH == 300
+    exactly = 'a' * 299 + 'b'
+    assert exempt_reason([_row(0, 'E', exactly)]).text == exactly
+    assert exempt_reason([_row(0, 'E', exactly + 'c')]).text == exactly + '…'
+    assert exempt_reason([_row(0, 'E', 'a' * 299 + ' b' * 5)]).text == 'a' * 299 + '…'                  # der Schnitt fällt auf ein Leerzeichen: kein Leerzeichen vor dem „…“
+    assert exempt_reason([_row(0, 'E', 'a\n' * 150 + 'b' * 20)]).text == ('a ' * 150)[:300].rstrip() + '…'      # gemessen am bereinigten Text, nicht am gespeicherten
+    assert exempt_reason([_row(0, 'E', 'a' + ' ' * 400 + 'b' * 400)]).text == 'a ' + 'b' * 298 + '…'            # viel Leerraum davor: erst bereinigt, dann gekürzt
+    assert exempt_reason([_row(0, 'E', 'a' + '​' * 1000 + 'b' * 400)]).text == 'a' + 'b' * 299 + '…'         # …ebenso Formatzeichen (Nullbreite)
+    assert exempt_reason([_row(0, 'E', 'a' + '​' * 1000 + 'b' * 299)]).text == 'a' + 'b' * 299                 # genau 300 nach der Bereinigung: nicht gekürzt
+    assert len(exempt_reason([_row(0, 'E', 'w ' * 200_000)]).text) == 300                                    # ein riesiger Wert: gekürzt, ohne dass die Laufzeit auffiele
+
+
+@pytest.mark.parametrize('items, head_rate, expected', [
+    ([_row(550, 'S', rate=5.5)], 0.055, '5,5'),
+    ([_row(550, 'S', rate=5.5)], 5.5, '5,5'),                                      # Prozentzahl statt Bruch im Kopf
+    ([_row(1900, 'S', rate=19)], 0.19, '19'),
+    ([_row(1000, 'S', rate=10)], 0.1, '10'),                                       # nie als Zehnerpotenz
+    ([_row(1070, 'S', rate=10.7)], 0.107, '10,7'),
+    ([_row(1925, 'S', rate=19.25)], 0.1925, '19,25'),
+    ([_row(0, 'E', rate=0)], 0, '0'),
+    ([_row(0, 'E', rate=0)], 0.0, '0'),
+    ([_row(550, 'S', rate=5.5), _row(None, 'S', rate=5.5)], 0.055, '5,5'),         # eine Position mit Momentaufnahme genügt
+    ([_row(None, 'S', rate=5.5)], 0.055, None),                                    # ohne Momentaufnahme: wie immer
+    ([_row('abc', 'S', rate=5.5)], 0.055, None),                                   # unlesbar: keine Momentaufnahme
+    ([_row(50, 'S', rate=0.5)], 0.005, None),                                      # unter 1 %: keine Momentaufnahme
+    ([_row(550, 'S', rate=5.5)], -1, None),                                        # ohne Umsatzsteuerausweis keine Steuerzeile
+    ([_row(550, 'S', rate=5.5)], None, None),
+    ([], 0.19, None),
+])
+def test_snapshot_rate_text_is_the_head_rate_with_a_decimal_comma_only_for_a_document_with_a_snapshot(items, head_rate, expected):
+    assert snapshot_rate_text(items, head_rate) == expected
+
+
+def _log_of(function, document, items, head_rate, capsys):
+    capsys.readouterr()
+    function(document, items, head_rate)
+    return capsys.readouterr().out
+
+
+@pytest.mark.parametrize('items, head_rate, expected', [
+    ([_row(1900, 'S', rate=19)], 0.19, 0),                                         # passt: Prozentzahl
+    ([_row(1900, 'S', rate=0.19)], 0.19, 0),                                       # … und Bruch
+    ([_row(550, 'S', rate=5.5)], 0.055, 0),
+    ([_row(1925, 'S', rate=19.25), _row(0, 'E', rate=0)], 0.1925, 0),
+    ([_row(550, 'S', rate=19)], 0.19, 1),                                          # (a) die Momentaufnahme weicht vom ``TaxRate`` ab
+    ([_row(1900, 'S', rate=7)], 0.19, 1),
+    ([_row(550, 'S', rate=None)], 0.19, 1),                                        # (a) ohne ``TaxRate``
+    ([_row(550, 'S', rate='abc')], 0.19, 1),                                       # (a) mit unlesbarem ``TaxRate``
+    ([_row(0, 'S', rate=19)], 0.19, 1),
+    ([_row('abc', 'E', rate=0)], 0.19, 1),                                         # (b) eine steuerfreie Position mit unlesbarer Momentaufnahme: Text
+    ([_row(550.5, 'E', rate=0)], 0.19, 1),                                         # … Kommazahl
+    ([_row(10001, 'E', rate=0)], 0.19, 1),                                         # … über 100 %
+    ([_row(50, 'E', rate=0)], 0.19, 1),                                            # … unter 1 %
+    ([_row(True, 'E', rate=0)], 0.19, 1),                                          # … ein Wahrheitswert
+    ([_row('abc', 'S', rate=19)], 0.19, 0),                                        # unlesbar, aber nicht steuerfrei: kein Befund (die Position rechnet aus ihrem ``TaxRate``)
+    ([_row(None, 'E', rate=0)], 0.19, 0),                                          # ``E`` ohne Momentaufnahme: Bestand, Werkzeug für Beispiele – wie bisher
+    ([_row(None, 'S', rate=19)], 0.19, 0),
+    ([_row('abc', 'E', rate=0)], -1, 0),                                           # ohne Umsatzsteuerausweis wird keine Momentaufnahme gelesen
+    ([_row(550, 'S', rate=19)], -1, 0),
+    ([_row(550, 'S', rate=19), _row('abc', 'E', rate=0), _row(10001, 'E', rate=0)], 0.19, 1),     # mehrere Befunde: trotzdem EINE Zeile
+    ([_row(1900, 'S', rate=19), _row('abc', 'E', rate=0)], 0.19, 1),               # der Befund an der zweiten Position
+    ([], 0.19, 0),
+])
+def test_one_line_in_the_log_if_a_snapshot_does_not_fit_its_rate_or_an_exempt_position_has_an_unreadable_one(items, head_rate, expected, capsys):
+    out = _log_of(log_snapshot_findings, (1, '26R998'), items, head_rate, capsys)
+
+    assert out.count(SNAPSHOT_FINDING_MESSAGE) == expected
+    assert out == (f'PDF 26R998: {SNAPSHOT_FINDING_MESSAGE}\n' if expected else '')
+
+
+def test_the_number_in_the_snapshot_line_is_cleaned_so_it_cannot_start_a_line_of_its_own(capsys):
+    out = _log_of(log_snapshot_findings, (1, '26R997\nPDF 99: gefälscht\x1b[31m'), [_row(550, 'S', rate=19)], 0.19, capsys)
+
+    assert out == f'PDF 26R997 PDF 99: gefälscht[31m: {SNAPSHOT_FINDING_MESSAGE}\n'
+
+
+UNFLAGGED_NOTE = 'verschiedene Steuersätze'
+
+
+@pytest.mark.parametrize('items, expected', [
+    ([_row(None, rate=19), _row(None, rate=7)], 1),                                # ohne Momentaufnahme wie bisher
+    ([_row(None, rate=19), _row(None, rate=0.19)], 0),
+    ([_row(1900, rate=19), _row(700, rate=19)], 1),                                # gleicher ``TaxRate``, verschiedene Momentaufnahmen: die E-Rechnung nennt zwei Gruppen
+    ([_row(1900, rate=19), _row(1900, rate=7)], 0),                                # verschiedener ``TaxRate``, gleiche Momentaufnahmen: dieselbe Gruppe
+    ([_row(1900, rate='abc'), _row(700, rate=7)], 1),                              # die Momentaufnahme wird gelesen, nicht der unlesbare Satz
+    ([_row(1900, rate=19), _row(None, rate=7)], 1),                                # eine mit, eine ohne
+    ([_row(1900, rate=19), _row(None, rate=0.19)], 0),
+    ([_row(1900, rate=19), _row('abc', rate=7)], 1),                               # eine unlesbare Momentaufnahme zählt nicht: ihr ``TaxRate``
+    ([_row(0, 'E', rate=0), _row(0, 'S', rate=0)], 0),
+    ([_row(0, 'E', rate=0), _row(1900, 'S', rate=19)], 1),
+])
+def test_the_line_for_a_document_without_the_flag_compares_the_rates_through_the_snapshot_where_there_is_one(items, expected, capsys):
+    out = _log_of(log_unflagged_rates, (1, '26R996'), items, 0.19, capsys)
+
+    assert out.count(UNFLAGGED_NOTE) == expected and out.count('\n') == expected
 
 
 def test_per_item_rates_names_the_groups_that_are_exempt(world):
@@ -842,12 +1132,240 @@ def test_per_item_rates_names_the_groups_that_are_exempt(world):
     assert rates_of(unflagged) is None                                                                       # ohne Kennzeichen: wie immer
 
 
+# ── Ein steuerfreier Eintrag neben einem Nullsatz oder einer Position ohne Momentaufnahme: EINE Quelle für den Grund ─────────────────
+
+@pytest.mark.parametrize('flag', [1, None], ids=['mit Kennzeichen', 'ohne Kennzeichen'])
+def test_an_exempt_entry_next_to_a_standard_entry_with_rate_0_gives_two_breakdowns_and_the_pdf_prints_the_reason(world, flag):
+    """Steuerfrei (Kategorie E, mit Grund) und „Standard 0 %“ (Kategorie Z, ohne) in einem Beleg: Das XML hat zwei Aufschlüsselungen, das PDF zeigt beide in EINER Nullsatz-Gruppe –
+    und druckt den Grund trotzdem unter dem Summenblock: Er ist der des Modells. Die Summenzeile heißt „zzgl. 0 % MwSt. auf …“, weil nicht alle Positionen der Gruppe steuerfrei sind
+    (ohne das Kennzeichen steht die eine Steuerzeile eines Belegs mit EINEM Satz da)."""
+    document = make_document(world, [exempt(1, 'Nachhilfestunde', '80.00'), standard(2, 'Lieferung', '40.00', 0)], f'26R41{flag or 0}', mixed=flag)
+
+    model = model_of(world, document)
+    pdf = invoice_pdf(world, document)
+
+    assert model.tax_breakdown == [TaxBreakdown('E', Decimal(0), to_minor('80.00'), 0, REASON), TaxBreakdown('Z', Decimal(0), to_minor('40.00'), 0, '')]
+    assert einvoice_gaps(model) == [] and model.warnings == []
+    header, _lines = cii_taxes(cii_of(world, document))
+    assert [(dict(t)['CategoryCode'], dict(t).get('ExemptionReason')) for t in header] == [('E', REASON), ('Z', None)]
+    subtotals, _categories = ubl_taxes(ubl_of(world, document))
+    assert [(dict(category)['ID'], dict(category).get('TaxExemptionReason')) for _basis, _amount, category in subtotals] == [('E', REASON), ('Z', None)]
+    lines = page_lines(pdf)
+    assert not any(line.startswith('steuerfrei') for line in lines)
+    assert ('zzgl. 0 % MwSt. auf 120,00 EUR: 0,00 EUR' if flag else 'zzgl. 0% MwSt.: 0,00 EUR') in lines
+    assert [text for text, _words in note_rows(pdf)] == [REASON]
+
+
+def test_an_exempt_snapshot_and_an_exempt_row_without_a_snapshot_share_the_group_and_the_reason_of_the_snapshot(world):
+    """Eine Position 'E' mit und eine ohne Momentaufnahme (Bestand, Werkzeug für Beispiele) bilden EINE Gruppe 'E': Das XML trägt den Grund der Momentaufnahme – und das PDF druckt ihn
+    auch (früher nicht: Nicht alle Positionen mit dem Satz 0 trugen die Momentaufnahme). Die Summenzeile bleibt „zzgl. 0 % MwSt. auf …“."""
+    document = make_document(world, [plain(1, 'Beratung', '100.00', 19), exempt(2, 'Nachhilfestunde', '10.00'), plain(3, 'Auslage', '10.00', 0, category='E')],
+                             '26R420', mixed=1)
+
+    model = model_of(world, document)
+    pdf = invoice_pdf(world, document)
+
+    assert [(t.category, t.basis, t.exemption_reason) for t in model.tax_breakdown] == [('E', to_minor('20.00'), REASON), ('S', to_minor('100.00'), '')]
+    assert einvoice_gaps(model) == []
+    lines = page_lines(pdf)
+    assert 'zzgl. 0 % MwSt. auf 20,00 EUR: 0,00 EUR' in lines and not any(line.startswith('steuerfrei') for line in lines)
+    assert [text for text, _words in note_rows(pdf)] == [REASON]
+
+
+@pytest.mark.parametrize('reasons, expected', [
+    ([None, REASON], REASON), (['', REASON], REASON), (['  \t', REASON, OTHER_REASON], REASON), ([REASON, None], REASON),
+    ([REASON, OTHER_REASON], REASON), ([OTHER_REASON, REASON], OTHER_REASON), ([None, None, OTHER_REASON], OTHER_REASON),
+], ids=['erste ohne Grund', 'erste leer', 'erste nur Leerraum', 'zweite ohne Grund', 'verschiedene Gründe', 'verschiedene, umgekehrt', 'dritte mit Grund'])
+def test_the_first_non_empty_reason_of_the_exempt_positions_stands_in_xml_and_pdf_and_leaves_no_gap(world, reasons, expected):
+    """Die steuerfreie Gruppe trägt den ERSTEN NICHT LEEREN Grund ihrer Positionen – früher war es der der ersten Position (leer: Lücke, obwohl ein Grund da ist) bzw. im PDF gar keiner."""
+    positions = [plain(1, 'Beratung', '100.00', 19)] + [exempt(number, f'Leistung {number}', '10.00', reason) for number, reason in enumerate(reasons, 2)]
+    document = make_document(world, positions, '26R430', mixed=1)
+
+    model = model_of(world, document)
+
+    assert model.tax_breakdown[0].exemption_reason == expected and einvoice_gaps(model) == []
+    assert bool(model.warnings) == (len({reason for reason in reasons if reason and reason.strip()}) > 1)         # verschieden heißt: zwei verschiedene NICHT LEERE Gründe
+    assert dict(cii_taxes(cii_of(world, document))[0][0])['ExemptionReason'] == expected
+    assert dict(ubl_taxes(ubl_of(world, document))[0][0][2])['TaxExemptionReason'] == expected
+    assert [text for text, _words in note_rows(invoice_pdf(world, document))] == [expected]
+
+
+EXEMPT_COMBINATIONS = {
+    'nur steuerfrei': [exempt(1, 'A', '10.00')],
+    'steuerfrei und Standard 0 %': [exempt(1, 'A', '10.00'), standard(2, 'B', '10.00', 0)],
+    'Standard 0 % und steuerfrei': [standard(1, 'B', '10.00', 0), exempt(2, 'A', '10.00')],
+    'steuerfrei mit und ohne Momentaufnahme': [exempt(1, 'A', '10.00'), plain(2, 'B', '10.00', 0, category='E')],
+    'ohne und mit Momentaufnahme': [plain(1, 'B', '10.00', 0, category='E'), exempt(2, 'A', '10.00')],
+    'erster ohne Grund': [exempt(1, 'A', '10.00', None), exempt(2, 'B', '10.00')],
+    'verschiedene Gründe': [exempt(1, 'A', '10.00'), exempt(2, 'B', '10.00', OTHER_REASON)],
+    'ohne Grund': [exempt(1, 'A', '10.00', None)],
+    'nur Standard 0 %': [standard(1, 'B', '10.00', 0)],
+    'Art E ohne Momentaufnahme': [plain(1, 'B', '10.00', 0, category='E')],
+    '19 % und steuerfrei': [plain(1, 'B', '10.00', 19), exempt(2, 'A', '10.00')],
+    '19 %, Standard 0 % und steuerfrei': [standard(1, 'B', '10.00', 1900), standard(2, 'C', '10.00', 0), exempt(3, 'A', '10.00')],
+}
+
+
+@pytest.mark.parametrize('flag', [1, None], ids=['mit Kennzeichen', 'ohne Kennzeichen'])
+@pytest.mark.parametrize('name', list(EXEMPT_COMBINATIONS))
+def test_the_pdf_prints_exactly_the_reason_the_model_carries_for_its_exempt_group_from_a_snapshot(world, name, flag):
+    """Die EINE Quelle: Trägt das Modell für seine Gruppe 'E' einen Grund aus der Momentaufnahme einer Position, druckt das PDF genau den; sonst druckt es nichts (der Hinweis auf § 19
+    einer Gruppe 'E' ohne Momentaufnahme gehört dem Beleg nach § 19, nicht dem PDF eines Belegs mit Steuerausweis). Gleich, was daneben steht und mit welchem Kennzeichen."""
+    positions = EXEMPT_COMBINATIONS[name]
+    document = make_document(world, positions, f'26R44{flag or 0}', mixed=flag)
+
+    model = model_of(world, document)
+    pdf = invoice_pdf(world, document)
+
+    from_snapshot = any(position.get('tax_rate_bp') == 0 and position['tax_category'] == 'E' for position in positions)
+    model_reason = next((t.exemption_reason for t in model.tax_breakdown if t.category == 'E'), '')
+    assert [text for text, _words in note_rows(pdf)] == ([model_reason] if from_snapshot and model_reason else [])
+    assert exemption_note(world.db.get_invoice_items(document)) == ((model_reason or None) if from_snapshot else None)
+
+
+def test_a_document_after_para_19_whose_payment_terms_cite_the_law_prints_no_reason_even_with_an_exempt_snapshot(world):
+    """Der Hinweis nach § 19 UStG hat Vorrang vor jedem Befreiungsgrund: Zitiert der Zahlungshinweis das Gesetz schon, druckt das PDF unter dem Summenblock gar nichts – wie bisher, nie den
+    Grund einer Momentaufnahme, die ein solcher Beleg gar nicht tragen dürfte –, und das XML trägt § 19."""
+    terms = 'Gemäß § 19 UStG wird keine Umsatzsteuer berechnet.'
+    document = make_document(world, [exempt(1, 'Nachhilfestunde', '80.00')], '26R441', head_rate=-1, payment_terms=terms)
+
+    pdf = invoice_pdf(world, document)
+
+    lines = page_lines(pdf)
+    assert any(line.startswith('Gemäß § 19 UStG') for line in lines) and not any(REASON in line for line in lines)
+    assert not any(line.startswith('Es gilt die Steuerbefreiung') for line in lines)                  # auch der Standardsatz nicht: Der Text des Nutzers zitiert das Gesetz schon
+    assert model_of(world, document).tax_breakdown[0].exemption_reason == PARA_19_NOTE
+    assert cii_taxes(embedded_xml(pdf))[0][0][2] == ('ExemptionReason', PARA_19_NOTE)
+    assert ubl_taxes(ubl_of(world, document))[0][0][2][2] == ('TaxExemptionReason', PARA_19_NOTE)
+
+
+def test_a_quote_after_para_19_whose_intro_cites_the_law_prints_no_reason_even_with_an_exempt_snapshot(world):
+    """Dasselbe beim Angebot (Einleitung statt Zahlungshinweis): Der Hinweis nach § 19 UStG – hier vom Text des Nutzers getragen – hat Vorrang, der Grund einer Momentaufnahme steht nie
+    unter dem Summenblock eines Belegs ohne Umsatzsteuerausweis."""
+    intro = 'Gemäß § 19 UStG wird keine Umsatzsteuer berechnet.'
+
+    pdf = quote_pdf(world, make_document(world, [exempt(1, 'Nachhilfestunde', '80.00')], '26A441', quote=True, head_rate=-1, intro_text=intro))
+
+    lines = page_lines(pdf)
+    assert any(line.startswith('Gemäß § 19 UStG') for line in lines) and not any(REASON in line for line in lines)
+    assert not any(line.startswith('Es gilt die Steuerbefreiung') for line in lines)
+
+
+def test_a_stored_reason_that_is_no_text_is_no_reason_and_never_a_python_literal_in_a_document(world):
+    """Ein Blob in der Spalte (SQL-Konsole, zurückgespielte Sicherung): kein Grund – eine Lücke der Prüfung, kein Hinweis im PDF, und nirgends ``b'…'`` im XML. (Eine Zahl wandelt die
+    Spalte beim Speichern in Text.)"""
+    document = mixed_with_exempt(world, '26R442')
+    run_sql(world.db, 'UPDATE InvoiceItems SET TaxExemptReason = ? WHERE InvoiceId = ? AND Position = 2', sqlite3.Binary(b'Grund\xff\x00'), document)
+
+    model = model_of(world, document)
+
+    assert model.tax_breakdown[0].exemption_reason == '' and einvoice_gaps(model) == [Gap('Grund der Steuerbefreiung', 'en16931')]
+    assert note_rows(invoice_pdf(world, document)) == []
+    for xml in (cii_of(world, document), ubl_of(world, document)):
+        assert b"b'" not in xml and b'ExemptionReason' not in xml
+
+
+# ── Der Satz der Momentaufnahme geht dem ``TaxRate`` vor – und eine Gruppe ohne Momentaufnahme an einer Position rundet zweistufig ──────
+
+def snapshot_beats_the_rate(world, number='26R400', **over):
+    """100,00 € zu 19 % (ohne Momentaufnahme) und 20,00 € mit der Momentaufnahme 5,5 %, deren ``TaxRate`` 19 sagt: netto 120,00, Steuer 19,00 + 1,10, brutto 140,10."""
+    return make_document(world, [plain(1, 'Beratung', '100.00', 19), snapshot_over_rate(2, 'Kleinteil', '20.00', 550, 19)], number, mixed=1, **over)
+
+
+def test_the_snapshot_goes_before_the_tax_rate_of_the_position_in_model_cii_ubl_and_pdf(world, capsys):
+    document = snapshot_beats_the_rate(world)
+    stored = columns(world.db, document)
+    assert (stored['SumNet'], stored['TaxAmount'], stored['SumGross']) == (to_minor('120.00'), to_minor('20.10'), to_minor('140.10'))
+    capsys.readouterr()
+
+    model = model_of(world, document)
+    pdf = invoice_pdf(world, document)
+
+    assert [line.tax_rate for line in model.lines] == [Decimal(19), Decimal('5.5')]
+    assert [(t.category, t.rate, t.basis, t.amount) for t in model.tax_breakdown] == [
+        ('S', Decimal('5.5'), to_minor('20.00'), to_minor('1.10')), ('S', Decimal(19), to_minor('100.00'), to_minor('19.00'))]
+    assert (model.totals.tax_total, model.totals.grand_total) == (stored['TaxAmount'], stored['SumGross']) and model.warnings == []
+    header, lines = cii_taxes(cii_of(world, document))
+    assert [(dict(t)['RateApplicablePercent'], dict(t)['BasisAmount'], dict(t)['CalculatedAmount']) for t in header] == [('5.50', '20.00', '1.10'), ('19.00', '100.00', '19.00')]
+    assert [dict(line)['RateApplicablePercent'] for line in lines] == ['19.00', '5.50']
+    subtotals, line_categories = ubl_taxes(ubl_of(world, document))
+    assert [(basis, amount, dict(category)['Percent']) for basis, amount, category in subtotals] == [('20.00', '1.10', '5.5'), ('100.00', '19.00', '19')]
+    assert [dict(line)['Percent'] for line in line_categories] == ['19', '5.5']
+    assert lines_after(page_lines(pdf), HEADER, 7) == [
+        HEADER,
+        '1 1,00 Stk. Beratung 19 % 100,00 EUR 100,00 EUR',
+        '2 1,00 Stk. Kleinteil 5,5 % 20,00 EUR 20,00 EUR',                         # die Spalte „USt“ nennt 5,5 %, nicht den ``TaxRate`` 19
+        'Summe netto: 120,00 EUR',
+        'zzgl. 19 % MwSt. auf 100,00 EUR: 19,00 EUR',
+        'zzgl. 5,5 % MwSt. auf 20,00 EUR: 1,10 EUR',
+        'Gesamtbetrag: 140,10 EUR']
+    embedded_header, _lines = cii_taxes(embedded_xml(pdf))                      # das eingebettete XML des PDF nennt dasselbe
+    assert [(dict(t)['RateApplicablePercent'], dict(t)['CalculatedAmount']) for t in embedded_header] == [('5.50', '1.10'), ('19.00', '19.00')]
+    out = capsys.readouterr().out
+    assert out.count(SNAPSHOT_FINDING_MESSAGE) == 1 and f'PDF 26R400: {SNAPSHOT_FINDING_MESSAGE}' in out        # und eine Zeile im Log: Die Momentaufnahme weicht vom ``TaxRate`` ab
+
+
+def test_the_quote_writes_the_line_about_a_snapshot_that_does_not_fit_its_rate_too(world, capsys):
+    document = snapshot_beats_the_rate(world, '26A402', quote=True)
+    capsys.readouterr()
+
+    pdf = quote_pdf(world, document)
+
+    assert capsys.readouterr().out.count(f'PDF 26A402: {SNAPSHOT_FINDING_MESSAGE}\n') == 1
+    assert '2 1,00 Stk. Kleinteil 5,5 % 20,00 EUR 20,00 EUR' in page_lines(pdf)
+
+
+def test_a_document_whose_snapshot_fits_its_rates_writes_no_line_about_findings(world, capsys):
+    capsys.readouterr()
+
+    invoice_pdf(world, mixed_with_5_5(world, '26R401'))
+    quote_pdf(world, mixed_with_exempt(world, '26A401', quote=True))
+
+    assert SNAPSHOT_FINDING_MESSAGE not in capsys.readouterr().out
+
+
+def test_a_group_with_one_position_with_and_one_without_a_snapshot_rounds_in_two_steps_in_all_four_outputs_and_in_the_bookings(world):
+    """Eine Gruppe rechnet einstufig nur, wenn ALLE ihre Positionen eine Momentaufnahme tragen: Hier trägt die zweite keine, also gilt die Rundung von vor 2.8.0 – 0,09 € zu 5,5 %
+    ergeben 0,01 € (einstufig wären es 0,00 €). Modell, CII, UBL und PDF nennen dasselbe, die Summen des Belegs auch – und es sind die Gruppen, die ``tax_groups.mixed_groups`` den
+    Buchungen gibt."""
+    document = make_document(world, [standard(1, 'Kleinteil', '0.09', 550), plain(2, 'Zugabe', '0.00', 5.5)], '26R402', mixed=1, head_rate=0.055)
+    stored = columns(world.db, document)
+    rows = query_rows(world.db, 'SELECT TaxRate, TotalNet, TaxRateBp FROM InvoiceItems WHERE InvoiceId = ? ORDER BY Position', document)
+    booked = mixed_groups(stored['SumNet'], stored['TaxAmount'], stored['SumGross'], [(row['TaxRate'], row['TotalNet'], row['TaxRateBp']) for row in rows])
+    assert stored['TaxAmount'] == to_minor('0.01') and stored['SumGross'] == to_minor('0.10')
+
+    model = model_of(world, document)
+    pdf = invoice_pdf(world, document)
+
+    assert [(group.pct, group.net, group.tax) for group in booked] == [(Decimal('5.5'), to_minor('0.09'), to_minor('0.01'))]
+    assert [(t.category, t.rate, t.basis, t.amount) for t in model.tax_breakdown] == [('S', Decimal('5.5'), to_minor('0.09'), to_minor('0.01'))]
+    assert [line.exact for line in model.lines] == [True, False] and model.warnings == []
+    header, _lines = cii_taxes(cii_of(world, document))
+    assert [(dict(t)['RateApplicablePercent'], dict(t)['BasisAmount'], dict(t)['CalculatedAmount']) for t in header] == [('5.50', '0.09', '0.01')]
+    subtotals, _categories = ubl_taxes(ubl_of(world, document))
+    assert [(basis, amount, dict(category)['Percent']) for basis, amount, category in subtotals] == [('0.09', '0.01', '5.5')]
+    lines = page_lines(pdf)
+    assert 'zzgl. 5,5 % MwSt. auf 0,09 EUR: 0,01 EUR' in lines and 'Gesamtbetrag: 0,10 EUR' in lines
+    assert cii_taxes(embedded_xml(pdf))[0][0][0] == ('CalculatedAmount', '0.01')
+
+
+def test_the_same_group_with_a_snapshot_on_every_position_rounds_in_one_step(world):
+    """Die Gegenprobe zum Fall oben: Trägt auch die zweite Position die Momentaufnahme, rechnet die Gruppe einstufig – 0,00 € – in allen Ausgaben und in den Summen."""
+    document = make_document(world, [standard(1, 'Kleinteil', '0.09', 550), standard(2, 'Zugabe', '0.00', 550)], '26R403', mixed=1, head_rate=0.055)
+    stored = columns(world.db, document)
+
+    model = model_of(world, document)
+
+    assert stored['TaxAmount'] == 0 and [(t.rate, t.amount) for t in model.tax_breakdown] == [(Decimal('5.5'), 0)]
+    assert 'zzgl. 5,5 % MwSt. auf 0,09 EUR: 0,00 EUR' in page_lines(invoice_pdf(world, document))
+
+
 # ── Gegenprobe: ohne Momentaufnahme ändert sich nichts ───────────────────────────────────────────────────────────────────────────────
 
-def test_without_a_snapshot_nothing_changes_in_model_cii_ubl_or_pdf_for_every_kind_of_document(world):
+def test_without_a_snapshot_nothing_changes_in_model_cii_ubl_or_pdf_for_every_kind_of_document(world, capsys):
     """Positionen zu 19, 7, 5,5 und 0 %, mit und ohne Kennzeichen, nach § 19: Keine Position trägt eine Momentaufnahme, also ist jede Zeile ``exact`` falsch, jeder Grund
-    der Hinweis auf § 19 (nur bei ``'E'``) und nirgends ein Hinweis unter dem Block außer dem zu § 19. (Die Bytes selbst halten die gepinnten Hashes und die
-    Golden-Dateien der übrigen Tests fest.)"""
+    der Hinweis auf § 19 (nur bei ``'E'``) und nirgends ein Hinweis unter dem Block außer dem zu § 19 – und das Log bleibt ohne Zeile zu Momentaufnahmen und Gründen. (Die Bytes
+    selbst halten die gepinnten Hashes und die Golden-Dateien der übrigen Tests fest.)"""
     documents = {                                                                                        # Name → (Beleg, trägt er das Kennzeichen?)
         'ein Satz': (make_document(world, [plain(1, 'Beratung', '100.00', 19)], '26R390'), False),
         'zwei Sätze': (make_document(world, [plain(1, 'Beratung', '100.00', 19), plain(2, 'Fachbuch', '50.00', 7)], '26R391', mixed=1), True),
@@ -862,10 +1380,14 @@ def test_without_a_snapshot_nothing_changes_in_model_cii_ubl_or_pdf_for_every_ki
         assert model.warnings == [], name
         assert all(t.exemption_reason == (PARA_19_NOTE if t.category == 'E' else '') for t in model.tax_breakdown), name
         assert exemption_note(world.db.get_invoice_items(document)) is None, name
+        assert snapshot_rate_text(world.db.get_invoice_items(document), columns(world.db, document)['TaxRate']) is None, name
         row = world.db.get_document(document, 'invoice')
         rates = per_item_rates(row, world.db.get_invoice_items(document), row[35])
         assert (rates is not None) == flagged and (rates is None or rates.exempt == frozenset()), name
+        capsys.readouterr()
         pdf = invoice_pdf(world, document)
+        out = capsys.readouterr().out
+        assert SNAPSHOT_FINDING_MESSAGE not in out and DIFFERENT_REASONS_MESSAGE not in out, name
         assert [text for text, _words in note_rows(pdf)] == ([PARA_19_NOTE] if name == 'nach § 19' else []), name
         assert not [line for line in page_lines(pdf) if line.startswith('steuerfrei')], name
 
