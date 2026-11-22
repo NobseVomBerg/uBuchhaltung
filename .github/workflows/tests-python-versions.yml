@@ -46,5 +46,13 @@ jobs:
       - name: Abhängigkeiten installieren
         run: pip install -r requirements-dev.txt
 
+      # Jeder Test legt eine eigene SQLite-Datenbank an, und jedes Speichern wartet auf die Platte – das macht den
+      # größten Teil der Laufzeit aus. Die Arbeitsdaten der Tests (data/tests/, siehe tests/conftest.py) liegen deshalb
+      # im Arbeitsspeicher des Runners; bestandene Tests räumen ihre Daten sofort wieder ab.
+      - name: Arbeitsdaten der Tests in den Arbeitsspeicher legen
+        run: |
+          mkdir -p /dev/shm/ubuchhaltung-tests data
+          ln -s /dev/shm/ubuchhaltung-tests data/tests
+
       - name: pytest
         run: python -m pytest -q -rs

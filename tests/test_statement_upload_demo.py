@@ -6,7 +6,8 @@
 Im Demo-Modus teilen sich alle Besucher ein Datenverzeichnis. ``POST /upload_receipts`` – der Upload der Seite „Buchungen“, der Dateien
 unter ``Documents/`` und Importe unter ``pending_imports/`` ablegt – ist dort 403, bevor ein Byte des Bodys gelesen wird: erst das CSRF-
 Token (wie überall), dann der Demo-Modus, dann die Größe. Die Seite zeigt den Satz statt der Ablage, und ihr Skript wirft ohne die Ablage
-keinen Fehler (sonst bräche es vor den Hörern der Vorschau ab). ``POST /confirm_transactions`` ist im Demo-Modus ebenfalls 403: Ein Import
+keinen Fehler (sonst bräche es vor den Hörern der Vorschau ab; die Hörer der Ablage hängen am ``body``, siehe
+``test_statement_upload_listeners.py``). ``POST /confirm_transactions`` ist im Demo-Modus ebenfalls 403: Ein Import
 aus der Zeit vor der Sperre, der noch in ``pending_imports/`` liegt, lässt sich dort nicht mehr bestätigen – gelöscht wird nichts.
 Außerhalb des Demo-Modus bleibt alles, wie es war.
 
@@ -211,14 +212,14 @@ def page_script(page):
     return script
 
 
-def test_the_page_script_hangs_no_listener_unguarded_on_a_drop_zone_that_may_be_missing(demo_site):
-    """Ohne ``#dropZone`` ist ``dropZone`` ``null``: Ein Hörer ohne Prüfung bräche das ganze Skript ab. Die echte Prüfung ist der Lauf in
-    Node (unten); dieser Text-Wächter gilt auch ohne Node."""
+def test_the_page_script_hangs_its_drop_listeners_on_the_body_not_on_elements_that_may_be_missing(demo_site):
+    """Ohne ``#dropZone`` wäre ein gemerktes Element ``null`` und ein Hörer ohne Prüfung bräche das ganze Skript ab; und nach dem Öffnen einer
+    Buchung (``openEditForm`` tauscht den Bereich mit der Ablage aus) hinge ein Hörer an einem abgehängten Element. Darum hängen alle Hörer vor
+    der Vorschau am ``body`` und suchen die Ablage bei jedem Ereignis neu. Die echte Prüfung sind die Läufe in Node (unten und in
+    ``test_statement_upload_listeners.py``); dieser Text-Wächter gilt auch ohne Node."""
     script = page_script(PageTransactions(demo_site.db, date_from='2026-01-01', date_to='2026-12-31'))
-    guarded = script[script.index('if (dropZone)'):script.index('if (fileInput)')]
-    assert script.count('dropZone.addEventListener') == guarded.count('dropZone.addEventListener') != 0    # keiner davor oder danach
-    assert script.count('fileInput.addEventListener') == 1
-    assert script.index('if (fileInput)') < script.index('fileInput.addEventListener')
+    attached = re.findall(r'([\w.]+)\.addEventListener\(', script[:script.index('let currentImportId')])    # der Teil mit der Ablage
+    assert attached and set(attached) == {'document.body'}                      # keiner an ``dropZone``, ``fileInput`` oder einem anderen Element
 
 
 HARNESS = r"""
@@ -245,7 +246,8 @@ console.log(JSON.stringify({
 """
 
 DOCUMENT_LISTENERS = ['click', 'change', 'input']                          # die der Vorschau: stehen hinter dem Block mit der Ablage
-DRAG_EVENTS = ['dragenter', 'dragover', 'dragleave', 'drop']
+DRAG_EVENTS = ['dragenter', 'dragover', 'dragleave', 'drop']               # die Schleife: der Browser soll eine abgelegte Datei nie selbst öffnen
+BODY_LISTENERS = DRAG_EVENTS + ['dragenter', 'dragleave', 'drop', 'change']   # dazu die der Ablage: am body, nie an ihren Elementen
 
 
 def run_script(tmp_path, page, variant):
@@ -260,13 +262,14 @@ def run_script(tmp_path, page, variant):
 @NO_NODE
 def test_in_demo_mode_the_page_script_runs_to_the_end_without_the_drop_zone(tmp_path, demo_site):
     out = run_script(tmp_path, PageTransactions(demo_site.db, date_from='2026-01-01', date_to='2026-12-31'), 'without')
-    assert out['listeners'] == {'document': DOCUMENT_LISTENERS, 'body': DRAG_EVENTS, 'dropZone': [], 'fileInput': []}
+    assert out['listeners'] == {'document': DOCUMENT_LISTENERS, 'body': BODY_LISTENERS, 'dropZone': [], 'fileInput': []}
     assert out['importBusy'] is False
     assert out['functions'] == ['function'] * 5                            # Vorschau, Import und Bearbeiten der Seite bleiben
 
 
 @NO_NODE
-def test_outside_the_demo_the_page_script_still_hangs_its_listeners_on_the_drop_zone(tmp_path, tmp_db):
+def test_outside_the_demo_the_page_script_hangs_its_listeners_on_the_body_and_none_on_the_drop_zone(tmp_path, tmp_db):
+    """Die Elemente der Ablage gibt es hier schon beim Laden – trotzdem hängt an ihnen kein Hörer (er ginge beim Öffnen einer Buchung verloren)."""
     out = run_script(tmp_path, PageTransactions(tmp_db, date_from='2026-01-01', date_to='2026-12-31'), 'with')
-    assert out['listeners'] == {'document': DOCUMENT_LISTENERS, 'body': DRAG_EVENTS, 'dropZone': DRAG_EVENTS, 'fileInput': ['change']}
+    assert out['listeners'] == {'document': DOCUMENT_LISTENERS, 'body': BODY_LISTENERS, 'dropZone': [], 'fileInput': []}
     assert out['importBusy'] is False and out['functions'] == ['function'] * 5
