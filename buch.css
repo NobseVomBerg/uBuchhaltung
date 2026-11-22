@@ -270,6 +270,11 @@ button.active			{ background-color: #4facfe; color: #FFF; }	/* aktiver Jahres-/M
 .invoice-items tfoot td { padding: 5px; border: none; }
 .invoice-items input 	{ border: 1px solid #ccc; padding: 2px; }
 .item-total 			{ text-align: right; font-weight: bold; }
+/* Steuersatz je Position (Rechnung, Angebot): Die Spalte „USt“ steht nur mit dem Häkchen da – die Klasse mixedTaxOn am Tabellenelement schaltet sie ein */
+.invoice-items .mixedTaxCol 			{ display: none; }
+.invoice-items.mixedTaxOn .mixedTaxCol 	{ display: table-cell; }
+.invoice-items th.mixedTaxCol 			{ width: 56px; }
+.invoice-items .item-tax 				{ width: 100%; }
 .invoice-payment-terms 	{ margin: 20px 0; font-size: 0.9em; }
 /* Angebots-Fließtext (contenteditable) – passt sich in die .invoice-* Familie ein */
 .invoice-richtext-toolbar 	{ margin: 10px 0 2px 0; }

@@ -444,6 +444,31 @@ def receivable_condition(debtor_coa_ids, payment_coa_ids, alias=''):
     return sql, params
 
 
+def receivables_covered(receivable_amounts, settled_amounts):
+    """Gleichen die Zahlungen die Forderungen einer Beleg-Nr. aus? – ``True``/``False`` nach ``money.is_covered`` über die SUMMEN, ``None``, wenn
+    sich das nicht entscheiden lässt. Die EINE Rechnung für Stufe 7 des Auto-Abgleichs und das Entfernen einer Zuordnung
+    (``Database._after_payment_removed``).
+
+    ``receivable_amounts``: die Beträge der eigenständigen Forderungszeilen der Nummer, ``settled_amounts``: die Beträge der Sätze „… an Debitoren“
+    unter einer Bankbewegung – je Satz einzeln, **roh wie gelesen** (Minor Units). Eine ganze Zahl zählt, eine Kommazahl, die eine ganze Zahl ist
+    (``1190000.0``), auch, ``None`` ist 0 (wie ein fehlender Betrag bisher). Alles andere – Text, Blob, ein Bruchteil von Minor Units, ein Wahrheitswert –
+    ist kein Betrag, den die App geschrieben hat: Dann gibt es keine Antwort (``None``, kein Statuswechsel, kein Fehler). Gerechnet wird in Python
+    (die Ganzzahlen laufen nie über) – eine SQL-Summe bräche bei mehr als 2^63 mit „integer overflow“ ab und mit ihr der ganze Abgleich."""
+    sums = []
+    for amounts in (receivable_amounts, settled_amounts):
+        total = 0
+        for value in amounts:
+            if type(value) is float and value.is_integer():
+                value = int(value)
+            if value is None:
+                continue
+            if type(value) is not int:
+                return None
+            total += value
+        sums.append(total)
+    return is_covered(sums[0], sums[1])
+
+
 #: Wie viele Tage zwischen zwei Elementen eines Übertrags zwischen eigenen Konten höchstens liegen, damit sie zu einem
 #: Abschnitt gehören (die Wertstellung auf beiden Konten liegt meist 0–3 Tage, über Feiertage bis zu einer Woche
 #: auseinander). Gilt für ``settle_transfers``.
@@ -895,31 +920,41 @@ class MatchingMixin:
                                     alias)
 
     @staticmethod
-    def _debtor_settled_minor(cursor, number, debtor_coa_ids):
-        """Summe der Sätze „… an Debitoren“ (Zahlungen, Skonti, Gutschriften) mit dieser Beleg-Nr.,
-        die an einer Bankbewegung hängen, in Minor Units. Ob sie die Forderung ausgleicht, sagt
-        ``money.is_covered`` – Stufe 7 des Auto-Abgleichs und das Entfernen einer Zuordnung
-        fragen beide danach."""
+    def _debtor_settled_amounts(cursor, number, debtor_coa_ids):
+        """Die Beträge der Sätze „… an Debitoren“ (Zahlungen, Skonti, Gutschriften) mit dieser Beleg-Nr., die an einer Bankbewegung
+        hängen, **einzeln und roh wie gelesen** (``[Betrag]``, Minor Units) – nicht als SQL-Summe: ``SUM`` bräche bei mehr als 2^63 mit
+        „integer overflow“ ab. Ob sie die Forderung ausgleichen, sagt ``receivables_covered`` (``money.is_covered`` über die Summen) – Stufe 7
+        des Auto-Abgleichs und das Entfernen einer Zuordnung fragen beide danach."""
         marks = ','.join('?' * len(debtor_coa_ids))
         cursor.execute(
-            f"SELECT COALESCE(SUM(Amount), 0) FROM Bookings WHERE BookingType = 'entry' "
+            f"SELECT Amount FROM Bookings WHERE BookingType = 'entry' "
             f"AND ParentBooking_ID IS NOT NULL AND DocumentNumber = ? "
             f"AND CounterCOA_ID IN ({marks})", [number, *debtor_coa_ids])
-        return cursor.fetchone()[0]
+        return [row[0] for row in cursor.fetchall()]
 
-    @staticmethod
-    def _standalone_receivable_rows(cursor, number, debtor_coa_ids):
+    def _standalone_receivable_rows(self, cursor, number):
         """Die eigenständigen Forderungszeilen einer Beleg-Nr. – Debitoren als ``COA``, an keiner Bankbewegung – als
-        ``[(ID, Betrag in Minor Units, Status)]``: alle, auch die schon ``resolved``. Eine Beleg-Nr. kann mehrere tragen (eine
-        Rechnung mit mehreren Steuersätzen bucht je Satz eine). Ob die Zahlungen (``_debtor_settled_minor``) sie ausgleichen
-        (``money.is_covered``), entscheidet ihre SUMME – nie eine Zeile für sich: Stufe 7 des Auto-Abgleichs löst alle noch offenen
-        gemeinsam auf, das Entfernen einer Zahlung (``_after_payment_removed``) nimmt alle aufgelösten gemeinsam zurück. Nicht
-        dasselbe wie ``_receivable_rows`` (``receivable_condition``, auch die als Kind angehängte Forderung)."""
+        ``[(ID, Betrag, Status)]``: alle, auch die schon ``resolved``, der Betrag roh wie gelesen. Eine Beleg-Nr. kann mehrere tragen
+        (eine Rechnung mit mehreren Steuersätzen bucht je Satz eine). Ob die Zahlungen (``_debtor_settled_amounts``) sie ausgleichen
+        (``receivables_covered``), entscheidet ihre SUMME – nie eine Zeile für sich: Stufe 7 des Auto-Abgleichs löst alle noch offenen
+        gemeinsam auf, das Entfernen einer Zahlung (``_after_payment_removed``) nimmt alle aufgelösten gemeinsam zurück.
+
+        Ausgewählt wird die **Schnittmenge** aus „Debitoren als ``COA``“ und der einen Definition der Forderung
+        (``receivable_condition``, ``_receivable_sql``): Ein Satz „10000 an Kasse“ (eine Seite ist ein Zahlungskonto) oder „10000 an X“ mit
+        negativem Betrag ohne Gutschrift-Rechnung (10000 steht dort im Haben) ist keine Forderung und zählt nicht mit, ebenso wenig wie
+        ``receivable_condition`` allein, die auch „… an 10000“ mit negativem Betrag nähme. Eine Gutschrift und die Gegenbuchung einer
+        Stornorechnung bleiben drin. Nicht dasselbe wie ``_receivable_rows`` (``receivable_condition``, auch die als Kind angehängte
+        Forderung)."""
+        cursor.execute('SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?', (self.DEBTOR_ACCOUNT_NUMBER,))
+        debtor_coa_ids = [row[0] for row in cursor.fetchall()]
+        if not debtor_coa_ids:
+            return []
+        receivable_sql, receivable_params = self._receivable_sql(cursor)
         marks = ','.join('?' * len(debtor_coa_ids))
         cursor.execute(
             f"SELECT ID, Amount, Status FROM Bookings WHERE BookingType = 'entry' "
-            f"AND ParentBooking_ID IS NULL AND DocumentNumber = ? AND COA_ID IN ({marks}) ORDER BY ID",
-            [number, *debtor_coa_ids])
+            f"AND ParentBooking_ID IS NULL AND DocumentNumber = ? AND COA_ID IN ({marks}) AND {receivable_sql} ORDER BY ID",
+            [number, *debtor_coa_ids, *receivable_params])
         return cursor.fetchall()
 
     def get_linked_entry_for_bank(self, bank_booking_id: int):
@@ -1380,7 +1415,14 @@ class MatchingMixin:
             nach der ersten Teilzahlung (``money.is_covered``).  Trägt eine
             DocumentNumber mehrere Debitoren-Entries, zählt ihre Summe (auch
             der schon aufgelösten) und alle noch offenen werden gemeinsam
-            aufgelöst (``_standalone_receivable_rows``).
+            aufgelöst (``_standalone_receivable_rows``).  Eine Forderung ist
+            dabei nur, was ``receivable_condition`` so nennt UND Debitoren als
+            ``COA`` führt (nicht „10000 an Kasse“, nicht „10000 an X“ mit
+            negativem Betrag ohne Gutschrift), und Debitoren sind ALLE Konten mit
+            der Nummer 10000 (zwei Kontenrahmen können eines führen).  Die Beträge
+            werden roh gelesen und in Python summiert (``receivables_covered``):
+            Ein Betrag, der keine Zahl ist, entscheidet nichts, und eine Summe
+            über 2^63 Minor Units lässt den Abgleich nicht abbrechen.
 
         Nach dem Linken wird der Text der Bank-Buchung durch den Text der
         Entry-Buchung ersetzt (WISO-kuratierter Text hat Vorrang).
@@ -1389,13 +1431,27 @@ class MatchingMixin:
         noch als Teil einer Beleg-Gruppe: Sie gehören zur Rechnung, nicht zur Bankbewegung.
         Die Stufe 0 (Quellklammer) bleibt davon unberührt.
 
+        Die Verbindung schließt sich auch bei einem Fehler (``_link_bank_to_entries_in`` läuft
+        in dieser Hülle: Commit am Ende, bei jeder Ausnahme Rollback).
+
         Returns:
             dict mit { 'linked': int, 'skipped': int, 'repaired': int,
                         'resolved': int, 'errors': list[str] }
         """
         conn = self._get_connection()
-        cursor = conn.cursor()
+        try:
+            result = self._link_bank_to_entries_in(conn, conn.cursor())
+            conn.commit()
+            return result
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
+    def _link_bank_to_entries_in(self, conn, cursor) -> dict:
+        """Der Lauf von ``link_bank_to_entries`` (alle Stufen) auf der Verbindung ``conn`` mit ihrem Cursor; die Hülle
+        schreibt den Rest fest und schließt die Verbindung. Der Commit nach der Altdaten-Reparatur mitten im Lauf bleibt."""
         # ── Schritt 0: Altdaten-Reparatur ─────────────────────────────────
         cursor.execute('''
             UPDATE Bookings SET BookingType = 'bank', EntryForm = NULL
@@ -2035,47 +2091,53 @@ class MatchingMixin:
         # Nummer (auch der schon aufgelösten), aufgelöst werden dann alle noch
         # offenen gemeinsam – nie eine für sich, sonst gälte die kleinere nach einer
         # Teilzahlung zu früh als ausgeglichen.
+        # Debitoren sind ALLE Konten mit der Nummer 10000 (wie ``_receivable_sql`` und ``_after_payment_removed``: zwei Kontenrahmen können
+        # eines führen, und eine Forderung auf dem zweiten bliebe sonst für immer offen)
         cursor.execute('''
             SELECT ID FROM ChartOfAccounts
-            WHERE AccountNumber = 10000
-        ''')
-        debitoren_row = cursor.fetchone()
+            WHERE AccountNumber = ?
+        ''', (self.DEBTOR_ACCOUNT_NUMBER,))
+        debitoren_coa_ids = [row[0] for row in cursor.fetchall()]
         resolved_count = 0
-        if debitoren_row:
-            debitoren_coa_id = debitoren_row[0]
+        if debitoren_coa_ids:
+            marks = ','.join('?' * len(debitoren_coa_ids))
             # Alle eigenständigen Forderungszeilen und alle Zahlungen auf den Debitor je einmal lesen und nach Beleg-Nr. ordnen
             # (kein Index auf DocumentNumber: je Nummer nachzuschlagen wäre quadratisch). Dieselbe Auswahl wie
-            # ``_standalone_receivable_rows`` und ``_debtor_settled_minor``.
-            cursor.execute('''
-                SELECT DocumentNumber, ID, Amount, Status
+            # ``_standalone_receivable_rows`` (Debitoren als COA UND ``receivable_condition``) und ``_debtor_settled_amounts``. Die Nummer wird
+            # als BLOB gelesen (ein Wert, der kein gültiges UTF-8 ist, lässt das Lesen nicht abbrechen) und nach ihren Bytes gruppiert; die
+            # Beträge einzeln und roh – die Summe bildet ``receivables_covered`` in Python (``SUM`` bräche bei mehr als 2^63 ab).
+            cursor.execute(f'''
+                SELECT CAST(DocumentNumber AS BLOB), ID, Amount, Status
                 FROM Bookings
                 WHERE BookingType = 'entry'
                   AND ParentBooking_ID IS NULL
-                  AND COA_ID = ?
+                  AND COA_ID IN ({marks})
+                  AND {receivable_sql}
                 ORDER BY ID
-            ''', (debitoren_coa_id,))
+            ''', [*debitoren_coa_ids, *receivable_params])
             entries_by_number = {}
             for doc_nr, deb_id, amount, status in cursor.fetchall():
                 if doc_nr:
                     entries_by_number.setdefault(doc_nr, []).append((deb_id, amount, status))
-            cursor.execute('''
-                SELECT DocumentNumber, COALESCE(SUM(Amount), 0)
+            cursor.execute(f'''
+                SELECT CAST(DocumentNumber AS BLOB), Amount
                 FROM Bookings
                 WHERE BookingType = 'entry'
                   AND ParentBooking_ID IS NOT NULL
-                  AND CounterCOA_ID = ?
-                GROUP BY DocumentNumber
-            ''', (debitoren_coa_id,))
-            settled_by_number = dict(cursor.fetchall())
+                  AND CounterCOA_ID IN ({marks})
+            ''', debitoren_coa_ids)
+            settled_by_number = {}
+            for doc_nr, amount in cursor.fetchall():
+                if doc_nr:
+                    settled_by_number.setdefault(doc_nr, []).append(amount)
 
             for doc_nr, debitoren_entries in entries_by_number.items():
                 if all(status == 'resolved' for _id, _amount, status in debitoren_entries):
                     continue                    # nichts mehr offen
-                deb_amount = sum(amount or 0 for _id, amount, _status in debitoren_entries)
-                # Summe der verknüpften Zahlung-Entries mit gleicher DocNr
-                # und CounterCOA = Debitoren (d.h. Zahlungen auf den Debitor)
-                settled = settled_by_number.get(doc_nr, 0)
-                if not is_covered(deb_amount, settled):
+                # Summe der verknüpften Zahlung-Entries mit gleicher DocNr und CounterCOA = Debitoren (d.h. Zahlungen auf den
+                # Debitor) gegen die Summe der Forderungszeilen; ``None`` (ein Betrag, der keine Zahl ist) entscheidet nichts
+                if not receivables_covered([amount for _id, amount, _status in debitoren_entries],
+                                           settled_by_number.get(doc_nr, [])):
                     continue
                 for deb_id, _amount, status in debitoren_entries:
                     if status != 'resolved':
@@ -2085,7 +2147,5 @@ class MatchingMixin:
                             (deb_id,))
                         resolved_count += 1
 
-        conn.commit()
-        conn.close()
         return {'linked': linked, 'skipped': skipped, 'repaired': repaired,
                 'resolved': resolved_count, 'errors': errors}

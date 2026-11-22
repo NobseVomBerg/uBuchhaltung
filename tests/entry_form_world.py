@@ -296,9 +296,23 @@ def add_roundtrip_rows(db):
                 conn.commit()
 
 
+def to_state_2006(db_path):
+    """Die Datenbank in den Stand zurückversetzen, den 2.6.x geschrieben hat: die Spalte ``MixedTaxRates`` an ``Invoices``
+    entfernt, ``PRAGMA user_version`` = 2006. Wiederholbar: Was schon fehlt, wird übersprungen. (Sie muss vor jedem älteren Stand
+    fehlen: ``to_state_2001`` entfernt Spalten, die davor stehen – blieben ``MixedTaxRates`` stehen, wanderte sie bei der Umstellung
+    in die Mitte der Tabelle.)"""
+    with closing(sqlite3.connect(db_path)) as conn:
+        if 'MixedTaxRates' in {row[1] for row in conn.execute('PRAGMA table_info(Invoices)')}:
+            conn.execute('ALTER TABLE Invoices DROP COLUMN MixedTaxRates')
+        conn.execute('PRAGMA user_version = 2006')
+        conn.commit()
+
+
 def to_state_2005(db_path):
-    """Die Datenbank in den Stand zurückversetzen, den 2.5.x geschrieben hat: die Tabelle ``DocumentReadings`` samt Index
-    entfernt, ``PRAGMA user_version`` = 2005. Wiederholbar: Was schon fehlt, wird übersprungen."""
+    """Die Datenbank in den Stand zurückversetzen, den 2.5.x geschrieben hat: zusätzlich zu 2.6.x
+    (``to_state_2006``) die Tabelle ``DocumentReadings`` samt Index entfernt, ``PRAGMA user_version`` = 2005.
+    Wiederholbar: Was schon fehlt, wird übersprungen."""
+    to_state_2006(db_path)
     with closing(sqlite3.connect(db_path)) as conn:
         conn.execute('DROP INDEX IF EXISTS idx_documentreadings_gross')
         conn.execute('DROP TABLE IF EXISTS DocumentReadings')

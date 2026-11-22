@@ -33,7 +33,7 @@ from decimal import Decimal, InvalidOperation
 
 from money import to_minor
 from .core import fk_explained
-from .invoice_payments import PAYMENT_MARK, STORNO_KIND, PaymentMoveFailed
+from .invoice_payments import MixedNotBookable, PAYMENT_MARK, STORNO_KIND, PaymentMoveFailed, has_mixed_rates
 
 EDITABLE_STATUSES = frozenset({'draft', 'finalized'})
 LOCKED_STATUSES = frozenset({'sent', 'overdue', 'partial_payment', 'partial', 'paid'})
@@ -108,6 +108,7 @@ FIELDS = (
     ('bank_iban', 'BankIBAN', LOCKED_DERIVED, None),
     ('bank_bic', 'BankBIC', LOCKED_DERIVED, None),
     ('tax_category', 'TaxCategory', LOCKED_DERIVED, None),
+    ('mixed_tax_rates', 'MixedTaxRates', LOCKED_DERIVED, None),      # folgt aus den Positionen (deren Sätze sind gesperrt)
     ('sum_net', 'SumNet', LOCKED_DERIVED, None),
     ('tax_amount', 'TaxAmount', LOCKED_DERIVED, None),
     ('sum_gross', 'SumGross', LOCKED_DERIVED, None),
@@ -597,12 +598,18 @@ class InvoiceLockMixin:
         (``StatusChange.kind``):
 
         * ``send`` / ``revive``: die Forderung wird gebucht („Debitoren an Wartekonto“, nur zu einem
-          Steuersatz mit Wartekonto); ``send`` setzt außerdem ``SentAt``, den Zeitpunkt des ersten
+          Steuersatz mit Wartekonto); ein Beleg mit Steuersatz je Position (``MixedTaxRates``) bucht je
+          Satzgruppe eine Forderungszeile (``_book_mixed_receivable``) – lässt er sich nicht buchen (Positionen
+          passen nicht zu den Summen, ein Satz mit Brutto unter 0 …), lehnt der feste Klartext ab (409, vor dem ersten
+          Schreiben, kein Konto angelegt), haben sich die Gruppen seit der Vorbereitung geändert, ``CHANGED_MESSAGE``;
+          ``send`` setzt außerdem ``SentAt``, den Zeitpunkt des ersten
           Versands (ein späteres Versenden ändert ihn nicht). Ersetzt die versendete Rechnung eine stornierte
           (``Invoices.ReplacesInvoiceId``), ziehen die Zahlungen der stornierten Rechnung auf sie um
           (``_move_replaced_payments``, ``StatusChange.moved``/``payment_hint``); eine Zuordnung, die sich nicht neu
           buchen lässt, bleibt an der stornierten Rechnung (der Hinweis nennt den Grund), nur ein Datenbankfehler mitten im
-          Umzug lehnt den Versand ab (409, nichts geändert);
+          Umzug lehnt den Versand ab (409, nichts geändert); trägt eine der beiden Rechnungen einen Steuersatz je Position,
+          zieht nichts um, und der Hinweis ist ``MOVE_MIXED_HINT`` (nach einer Erstattung dazu, was erstattet ist; ist alles erstattet, sagt es der Hinweis
+          wie bei einem Beleg mit einem Satz);
         * ``reopen``: die Forderung wird entfernt – aber nur eine, die die App selbst gebucht hat und
           die an nichts hängt, sonst wird das Zurückholen mit Klartext abgelehnt (nichts geändert).
           PDF und XML wandern nach ``invoices/<Jahr>/Fassungen/<ID>/`` (``archive_sent_documents``) und
@@ -656,8 +663,18 @@ class InvoiceLockMixin:
                     blocker = self._reopen_blocker(conn, row)
                     if blocker:
                         raise _Refusal(blocker, 409)
-                if kind in ('send', 'revive') and accounts_key != self._tax_rate_key(row['TaxRate']):
-                    raise _Refusal(CHANGED_MESSAGE, 409)      # der Steuersatz hat sich inzwischen geändert
+                if kind in ('send', 'revive'):
+                    if has_mixed_rates(row.get('MixedTaxRates')):
+                        # Ein Beleg mit Steuersatz je Position: Die Konten gelten für seine Satzgruppen. Lassen sie sich nicht buchen, lehnt der
+                        # Klartext ab (nichts geschrieben, kein Konto angelegt); haben sie sich seit der Vorbereitung geändert, ebenso
+                        try:
+                            groups = self._checked_mixed_groups(conn, invoice_id)
+                        except MixedNotBookable as exc:
+                            raise _Refusal(str(exc), 409) from None
+                        if accounts_key != ('mixed', tuple(groups)):
+                            raise _Refusal(CHANGED_MESSAGE, 409)
+                    elif accounts_key != self._tax_rate_key(row['TaxRate']):
+                        raise _Refusal(CHANGED_MESSAGE, 409)      # der Steuersatz hat sich inzwischen geändert
                 cursor = conn.execute(
                     "UPDATE Invoices SET Status = ?, UpdatedAt = CURRENT_TIMESTAMP "
                     "WHERE ID = ? AND COALESCE(Status, 'draft') = ?",
@@ -710,7 +727,8 @@ class InvoiceLockMixin:
         der Wechsel ist ein Versand (``send``), und die Rechnung ersetzt eine stornierte (``Invoices.ReplacesInvoiceId``).
         Wie bei der Forderung werden Konten, die das Auflösen anlegen könnte, in eigenen Verbindungen aufgelöst – nie in
         der Transaktion. Der Schlüssel ``revenue_coa`` ist das Erlöskonto der neuen Rechnung (``resolve_revenue_coa``;
-        ``None``: für ihren Steuersatz ist keines hinterlegt, dann zieht nichts um), ``bank_coas`` das SKR-Konto
+        ``None``: für ihren Steuersatz ist keines hinterlegt, dann zieht nichts um – und bei einem Steuersatz je Position
+        (``MixedTaxRates``) immer, dort wird der Kopfsatz nie aufgelöst), ``bank_coas`` das SKR-Konto
         {Account_ID: COA-ID} jedes Bankkontos, über das die stornierte Rechnung bezahlt wurde (nur mit SKR-Nummer)."""
         if new != 'sent':
             return None
@@ -731,8 +749,11 @@ class InvoiceLockMixin:
             coa = self.get_coa_id_by_account_number(account[7]) if account and account[7] else None
             if coa is not None:
                 bank_coas[account_id] = coa
+        # Eine neue Rechnung mit Steuersatz je Position hat kein EINES Erlöskonto, und ihr Kopfsatz ist nur ein Platzhalter: Er wird nie aufgelöst
+        # (das legte ein Konto für einen Satz an, den die Rechnung so nicht bucht) – ``_move_replaced_payments`` zieht für sie nichts um
+        mixed = has_mixed_rates(row.get('MixedTaxRates'))
         return {'replaced_id': replaced_id, 'tax_rate': row['TaxRate'],
-                'revenue_coa': self.resolve_revenue_coa(row['TaxRate']), 'bank_coas': bank_coas,
+                'revenue_coa': None if mixed else self.resolve_revenue_coa(row['TaxRate']), 'bank_coas': bank_coas,
                 'bank_coa_ids': self.get_bank_coa_ids()}
 
     def _receivable_accounts_for(self, invoice_id, new):
@@ -744,6 +765,18 @@ class InvoiceLockMixin:
         invoice = self.get_document(invoice_id, 'invoice')
         if invoice is None or check_transition(invoice[40], new, 0).kind not in ('send', 'revive'):
             return None, None
+        if has_mixed_rates(invoice[55] if len(invoice) > 55 else None):      # Spalte 55 = MixedTaxRates
+            # Ein Beleg mit Steuersatz je Position hat kein EINES Wartekonto: Die Konten gelten für seine Satzgruppen, der Schlüssel hält sie
+            # fest (``set_invoice_status`` liest sie in der Transaktion noch einmal). Lässt er sich nicht buchen, werden keine Konten
+            # angelegt – die Transaktion lehnt dann mit dem Klartext ab.
+            conn = self._get_connection()
+            try:
+                groups = self._checked_mixed_groups(conn, invoice_id)
+            except MixedNotBookable:
+                return None, None
+            finally:
+                conn.close()
+            return self._mixed_receivable_accounts(groups), ('mixed', tuple(groups))
         return self._receivable_accounts(invoice[35]), self._tax_rate_key(invoice[35])
 
     def _reopen_blocker(self, conn, row):

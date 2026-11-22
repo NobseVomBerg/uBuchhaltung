@@ -1,6 +1,6 @@
 # Datenbankmodell uBuchhaltung
 
-**Stand:** Version 2.6.0 (Schema 2006)
+**Stand:** Version 2.7.0 (Schema 2007)
 **DBMS:** SQLite 3
 **Datei:** `data/users/<Name>/buch.db`
 
@@ -656,7 +656,10 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   WISO-Storno „10000 an 1810“ träfe). Stufe 7 des Auto-Abgleichs setzt die Forderung erst auf
   `resolved`, wenn die Summe der Sätze „… an 10000“ mit gleicher Beleg-Nr. den Forderungsbetrag erreicht
   (`money.is_covered`) – nicht schon nach der ersten Teilzahlung. Trägt die Beleg-Nr. mehrere eigenständige
-  Forderungszeilen, zählt die Summe aller; sie werden gemeinsam aufgelöst und gemeinsam zurückgesetzt (seit 2.6.8).
+  Forderungszeilen, zählt die Summe aller; sie werden gemeinsam aufgelöst und gemeinsam zurückgesetzt (seit 2.6.8). Als Forderung zählt dabei nur, was
+  `receivable_condition` so nennt UND Debitoren als `COA` führt (nicht „10000 an Kasse“, nicht „10000 an X“ mit negativem Betrag ohne Gutschrift),
+  Debitoren sind alle Konten mit der Nummer 10000, die Beträge werden einzeln gelesen und in Python summiert (`matching.receivables_covered`: ein Betrag, der keine
+  Zahl ist, entscheidet nichts), die Beleg-Nr. als BLOB gelesen.
 - **Prüfung:** `find_payment_inconsistencies(invoice_id=None)` meldet, rein lesend, Zuordnungen ohne Satz
   „Bank an Debitoren“, Sätze „Bank an Debitoren“ ohne Forderung (10000 im Haben-Überhang), an einer
   Bankbewegung hängende Forderungen, Zahlungssätze ohne Zuordnung (die markierten Sätze der App und
@@ -670,7 +673,10 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   Stornorechnung, deren Forderung noch in den Büchern steht (Abhilfe: „Stornorechnung nachträglich erstellen“). Dazu
   `refund_exceeds_credit`: Zur Stornorechnung ist mehr erstattet als zur stornierten Rechnung gezahlt wurde (Σ Zuordnungen
   beider Belege < 0) – die App lässt es nicht mehr entstehen, die Kategorie meldet Eingriffe an ihr vorbei. Ein intaktes Paar, auch mit Guthaben aus Zahlungen auf die stornierte Rechnung oder mit Erstattung,
-  ergibt keinen Befund. Zuordnungen, deren Buchung keine Bankbewegung ist oder deren Sätze
+  ergibt keinen Befund. Drei Kategorien gelten den Sätzen eines Belegs (seit 2.7.0): `rate_split_mismatch` – ein Beleg mit Steuersatz je Position (Rechnung wie Stornorechnung), dessen Positionen nicht zu seinen
+  Summen passen, dessen Forderungszeilen der App nicht genau die Satzgruppen der Rechnung buchen (Satz, Betrag, Steuer) oder der ganz bezahlt ist, ohne dass je Satz sein Betrag und seine Steuer auf die Erlöskonten
+  umgebucht wären; `rate_refund_mismatch` – ein Storno-Paar mit Steuersatz je Position, bei dem je Satz mehr erstattet ist als gezahlt (oder Betrag und Steuer nicht aufgehen), auch wenn die Summe aufgeht – die App lässt
+  es nicht entstehen (das Entfernen einer Zahlung prüft dasselbe je Satz), die Kategorie meldet Eingriffe an ihr vorbei – und `unflagged_rate_mix` – ein Beleg OHNE das Kennzeichen, dessen Positionen verschiedene Sätze tragen (Bestand aus einer Version vor 2.7.0; er wird nur genannt, nie umgedeutet). Zuordnungen, deren Buchung keine Bankbewegung ist oder deren Sätze
   eine `SourceGroup` tragen (WISO liefert seine Sätze selbst, z. B. Barzahlungen ohne Bankbewegung),
   lösen weder „Zuordnung ohne Ausgleichssatz“ noch „Zuordnung ≠ Umbuchung“ aus. Die Abfragen gehen von
   den Zuordnungen aus bzw. fassen je Rechnung vorab zusammen: Der Aufwand wächst linear mit dem Bestand
@@ -900,9 +906,25 @@ Abgleich wirkt (dieselbe Nummer am selben Tag gilt dort als ein Beleg). Lösen e
 | ReplacesInvoiceId | 52 | INTEGER | | Ersatzrechnung: die ersetzte, stornierte Rechnung (seit 2.2.2, ohne Index; höchstens eine Ersatzrechnung je stornierter Rechnung, in der Transaktion geprüft) |
 | SentAt | 53 | DATETIME | | erstmals versendet (UTC, gesetzt beim Übergang `send`); Import und Altbestand: NULL |
 | DocumentVersion | 54 | INTEGER | | Nummer der aktuellen Fassung; NULL = Fassung 1 |
+| **Steuersatz je Position (Schema 2007, seit 2.7.0)** | | | | |
+| MixedTaxRates | 55 | INTEGER | | NULL = ein Satz für den ganzen Beleg (`TaxRate`; der ganze Bestand), `1` = Satz je Position – die Positionen (Tabelle 13) tragen ihre Sätze, `TaxRate` im Kopf ist dann nur ein Platzhalter: der höchste Satz als Bruch (0.19). Geschrieben wird nur NULL oder 1 (`insert_invoice`), gelesen streng (`db.invoices.has_mixed_rates`: nur die ganze Zahl 1) |
 
-Die Spalten 50–54 hängen an der Tabelle: frische und migrierte Datenbank haben dieselbe Reihenfolge
+Die Spalten 50–55 hängen an der Tabelle: frische und migrierte Datenbank haben dieselbe Reihenfolge
 (`db.invoices.InvoiceCol`). Der Bestand behält überall NULL.
+
+**Mehrere Steuersätze je Beleg (seit 2.7.0):** Rechnung und Angebot können Positionen mit verschiedenen Steuersätzen tragen (zunächst
+19 % und 7 %, `tax_groups.MIXED_TAX_RATES`; nicht mit einem Beleg ohne Steuerausweis nach § 19 UStG). Das Kennzeichen `MixedTaxRates`
+steht nur an einem Beleg mit mindestens zwei verschiedenen Sätzen; tragen alle Positionen denselben Satz, ist es ein gewöhnlicher Beleg
+(NULL, Satz im Kopf). Der Bestand wird nicht umgedeutet: Ohne das Kennzeichen gilt allein `TaxRate` im Kopf. Die Steuer rechnet
+`tax_groups.rate_groups` je Satz aus der Summe der Nettobeträge der Gruppe (EN 16931, BR-CO-17); die Prüfung der Steuerangaben beim
+Speichern ist `handlers._tax_fields`. **Buchen (seit Etappe 2a und 2b):** Versenden und Wiederbeleben buchen je Satzgruppe eine Forderungszeile
+(„10000 an Wartekonto des Satzes“, Satz als Bruch und Steuer der Gruppe an der Zeile), eine Zahlung bucht „Bank an Debitoren“ über den ganzen Betrag und je Satz
+„Wartekonto an Erlöskonto“ (ohne Forderung je Satz „Erlöskonto an Bank“) – wie sich der Betrag einer Teilzahlung auf die Sätze verteilt, legt die reine Funktion
+`tax_groups.split_payment` fest (Anteil am Brutto, Cent-Rest an die größere Gruppe, der Rest der Steuer an die schließende Zahlung). Das Erlöskonto je Satz wählt der Nutzer
+nicht (`resolve_revenue_coa` über den Satz des Buchungssatzes). Auswertungen und Export lesen diese Sätze unverändert. Das Stornieren bucht die Gegenbuchung der Forderung je Satz (die Stornorechnung
+trägt das Kennzeichen und die negierten Positionen und Summen), und die Erstattung verteilt sich nach derselben Regel wie eine Zahlung, gerechnet an dem, was die Zahlungen je Satz getragen haben, auf das Erlöskonto, auf dem
+sie liegen. Der Neuaufbau der Zuordnung rechnet für so einen Beleg nur den offenen Betrag neu, und die Zahlungen ziehen beim Versenden einer Ersatzrechnung nicht auf sie um (der Hinweis nennt den Grund). Allein
+`link_invoice_to_transaction` (der WISO-Import: eine Zuordnung ohne Buchungssätze) lehnt so einen Beleg mit einem festen Satz ab (`db.invoices.MIXED_LINK_NOT_BOOKABLE`), bevor etwas geschrieben wird.
 
 **Fassungen und Berichtigen:** Eine versendete Rechnung hat gesperrte Finanzangaben (`db/invoice_lock.py`);
 Zahlungshinweis, Anschrift, Bestellnummer, Leitweg-ID und Leistungsdatum ändert nur eine **Berichtigung**
@@ -1275,7 +1297,8 @@ und der Plan der Hauptanlage rechnet wieder ohne sie.
    - Stufe 5: Text-Token-Matching (lange Ziffernfolgen >= 8 Stellen)
    - Stufe 6: Text-Similarity ohne Belegnummer (SequenceMatcher)
    - Stufe 7: Debitoren-Auflösung (Status='resolved' für Debitoren-Entries
-     deren Zahlung bereits verknüpft ist, datumsunabhängig)
+     deren Zahlung bereits verknüpft ist, datumsunabhängig; Summe aller Forderungszeilen
+     der Beleg-Nr. gegen die Summe der Zahlungen, robust gelesen – siehe Abschnitt 9a)
    Forderungsbuchungen (Debitoren 10000 ohne Zahlungskonto) werden in keiner Stufe
    verknüpft (außer über die Quellklammer, Stufe 0) – sie gehören zur Rechnung
    (siehe 9a, `receivable_condition`)
@@ -1616,4 +1639,4 @@ Wörterbücher, je Gruppe einmal sortiert, das Umfeld über Halbierungssuche):
 
 ---
 
-**Letzte Aktualisierung:** 21. November 2026 (Schema 2006)
+**Letzte Aktualisierung:** 22. November 2026 (Schema 2007)

@@ -7,7 +7,9 @@ Zwei Teile. Der Erzeuger ist eine reine Funktion – ohne Datenbank, ohne Zufall
 keine Rechnung in den letzten 14 Tagen, zwei Stornos je Jahr, Ersatzrechnung erst ab dem 3. Quartal …) prüfen die ersten Tests
 für mehrere Stichtage. Der zweite Teil lädt den Bestand EINMAL (Profil ``test``, fester Stichtag) und prüft, dass er in sich
 stimmt: lückenlose Nummern in Datumsfolge, leere Prüfliste, ein DATEV-Export ohne Hinweis für jedes abgeschlossene Jahr, ausgeglichene
-Splits, Anlagen mit AfA, ein Fahrtenbuch ohne Lücken. Alle Namen, Orte und Beträge sind erfundene Testwerte.
+Splits, Anlagen mit AfA, ein Fahrtenbuch ohne Lücken. Ein dritter Teil am Ende gilt der einen Rechnung mit Steuersatz je Position, die nur das
+Profil ``full`` hat (``profiles.full.mixed_example``): ihre Regeln für mehrere Stichtage und, an einem eigenen Bestand dieses Profils, ihre Buchung je Satz
+und die Proben (Summen- und Saldenliste, Liquidität, Prüfliste). Alle Namen, Orte und Beträge sind erfundene Testwerte.
 """
 import contextlib
 import datetime
@@ -431,3 +433,89 @@ def test_a_quote_converts_on_the_day_it_is_given(tmp_db):
     other = tmp_db.fetch_quotes()[1]
     later = tmp_db.convert_quote_to_invoice(other[0])                    # ohne Angabe: der heutige Tag wie bisher
     assert tmp_db.get_invoice_by_id(later)[2] == datetime.date.today().isoformat()
+
+
+# ── die eine Rechnung mit Steuersatz je Position (nur das Profil full) ───────
+FULL = "full"
+
+
+def _mixed_specs(history):
+    return [spec for spec in history["invoices"] if spec.get("tax_mode") == "mixed"]
+
+
+def test_only_the_full_profile_has_the_one_invoice_with_a_rate_per_position():
+    """Das Profil ``test`` und das handgepflegte Szenario bleiben ohne sie: Auf diesem Bestand stehen fest gepinnte Werte (EÜR, Summen- und
+    Saldenliste, Liquidität)."""
+    assert len(_mixed_specs(demo_history.build_history(TODAY, FULL))) == 1
+    assert _mixed_specs(demo_history.build_history(TODAY, PROFILE)) == []
+    assert not any(spec.get("tax_mode") for spec in _seed_json("demo_scenario.json")["invoices"])
+
+
+@pytest.mark.parametrize("today", CUT_OFFS)
+def test_the_example_with_a_rate_per_position_follows_the_rules_of_the_generator(today):
+    """Ein Werktag, nie in den letzten 14 Tagen, nie im Kleinunternehmerjahr, mit Steuerausweis; zwei Raten, die zweite schließt – und was nach dem
+    Stichtag läge, entfällt (hier liegt keine)."""
+    specs = _mixed_specs(demo_history.build_history(today, FULL))
+
+    assert len(specs) == 1
+    spec = specs[0]
+    day = _iso(spec["date"])
+    assert day.weekday() < 5 and day <= today - datetime.timedelta(days=14) and day.year > today.year - 3
+    assert spec["show_tax"] is True and spec["customer_number"] == "K010" and spec["key"] == f"{day.year}-mixed"
+    assert sorted(item["tax_rate"] for item in spec["items"]) == [7, 19]
+    first, second = spec["payments"]
+    assert (first["percent"], second["percent"], second["closing"]) == (40, 60, True) and "closing" not in first
+    assert day < day + datetime.timedelta(days=first["after_days"]) < day + datetime.timedelta(days=second["after_days"]) <= today
+
+
+@pytest.fixture(scope="module")
+def loaded_full(tmp_path_factory):
+    """Der Bestand des Profils ``full`` (drei volle Vorjahre), einmal geladen – wie ``loaded``, mit der einen Beispielrechnung mit Steuersatz je Position."""
+    root = tmp_path_factory.mktemp("demo_history_full")
+    path = str(root / "loaded_full.db")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(userctx, "DATA_ROOT", str(root / "data"))
+        patch.setattr(auth, "AUTH_DB", str(root / "data" / "auth.db"))
+        userctx._mode_cache.clear()
+        db = Database(path)
+        db.load_test_seed_data(include_invoices=False, include_dated=False)
+        demo_seed.load_demo_scenario(db, today=TODAY, profile=FULL)
+    userctx._mode_cache.clear()
+    return SimpleNamespace(db=db, path=path, root=root, history=demo_history.build_history(TODAY, FULL))
+
+
+def test_the_example_is_one_invoice_with_a_forderung_per_rate_and_two_payments_that_split_by_rate(loaded_full):
+    """7 % × 100,00 (4 Fachbücher zu 25,00) und 19 % × 100,00: netto 200,00, Steuer 7,00 + 19,00, brutto 226,00. Die erste Rate (40 %: 90,40) verteilt sich auf
+    47,60 (Steuer 7,60) und 42,80 (2,80), die zweite (60 %: 135,60) auf 71,40 (11,40) und 64,20 (4,20) – je Satz zusammen genau das Brutto und die
+    Steuer der Gruppe."""
+    spec = _mixed_specs(loaded_full.history)[0]
+    (invoice,) = _rows(loaded_full, "SELECT ID, InvoiceNumber, InvoiceDate, Status, SumNet, TaxAmount, SumGross, AmountDue, TaxRate, PDFPath, XMLPath "
+                                    "FROM Invoices WHERE MixedTaxRates IS NOT NULL")
+    invoice_id, number, day, status, net, tax, gross, due, head, pdf, xml = invoice
+    assert (day, status, net, tax, gross, due, head) == (spec["date"], "paid", 2000000, 260000, 2260000, 0, 0.19)
+    assert (pdf, xml) == (None, None)                                                  # älter als 30 Tage: Dokumente erzeugt „PDF + E-Rechnung“ später
+    chain = _rows(loaded_full, "SELECT c.AccountNumber, g.AccountNumber, b.Amount, b.TaxRate, b.TaxAmount FROM Bookings b "
+                               "JOIN ChartOfAccounts c ON c.ID = b.COA_ID JOIN ChartOfAccounts g ON g.ID = b.CounterCOA_ID "
+                               "WHERE b.DocumentNumber = ? AND b.BookingType = 'entry' AND b.ParentBooking_ID IS NULL ORDER BY b.ID", number)
+    assert chain == [(10000, 4405, 1190000, 0.19, 190000), (10000, 4345, 1070000, 0.07, 70000)]
+    assert _rows(loaded_full, "SELECT Amount FROM InvoicePayments WHERE InvoiceID = ? ORDER BY ID", invoice_id) == [(904000,), (1356000,)]
+    transfers = _rows(loaded_full, "SELECT b.Amount, b.TaxAmount, c.AccountNumber, g.AccountNumber FROM Bookings b JOIN ChartOfAccounts c ON c.ID = b.COA_ID "
+                                   "JOIN ChartOfAccounts g ON g.ID = b.CounterCOA_ID WHERE b.DocumentNumber = ? AND b.Status = 'invoice_payment' "
+                                   "AND b.EntryForm = 'transfer' ORDER BY b.ID", number)
+    assert transfers == [(476000, 76000, 4405, 4400), (428000, 28000, 4345, 4300), (714000, 114000, 4405, 4400), (642000, 42000, 4345, 4300)]
+    assert [(waiting, sum(row[0] for row in transfers if row[2] == waiting), sum(row[1] for row in transfers if row[2] == waiting))
+            for waiting in (4405, 4345)] == [(4405, 1190000, 190000), (4345, 1070000, 70000)]
+
+
+def test_the_books_with_the_example_pass_every_probe(loaded_full):
+    """Prüfliste leer, Splits ausgeglichen, Summen- und Saldenliste im Gleichgewicht, Liquidität ohne „Nicht zugeordnet“ – in den Monaten der Rechnung
+    und ihrer Raten."""
+    from tests import liquidity_helpers as liq
+    from tests import susa_helpers
+    db = loaded_full.db
+    assert db.find_payment_inconsistencies() == []
+    assert db.find_unbalanced_splits("2023-01-01", f"{CURRENT_YEAR}-12-31") == []
+    for month in (9, 10, 11):
+        susa_helpers.assert_balanced(db.get_susa(CURRENT_YEAR, month), month)
+        for variant in ("vorjahr", "jahr"):
+            assert set(liq.unassigned_of(db.get_liquidity(CURRENT_YEAR, month, variant)).values()) == {0}, (month, variant)

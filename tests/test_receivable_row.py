@@ -8,12 +8,20 @@ sie wie eine vollständig gebuchte Zahlung – grüner Haken „Buchung vollstä
 obwohl niemand etwas gebucht hat und kein Geld eingegangen ist. Jetzt trägt sie das graue Abzeichen „Forderung“ (``RECEIVABLE_HINT`` als
 Hinweistext) und einen ungefärbten Betrag; jede andere Zeile bleibt, wie sie war.
 
+Eine Rechnung mit Steuersatz je Position (seit 2.7.0) bucht je Satz eine Forderungszeile – gleiche Beleg-Nr., gleicher Tag. Die Liste fasst solche
+Sätze zu EINER aufklappbaren Gruppe zusammen („Split 2×“), und auch sie stand mit Haken und grünem Betrag da. Jetzt tragen die Gruppe, deren Sätze alle
+Forderungen sind, und jede ihrer Kindzeilen das Abzeichen statt des Hakens und einen ungefärbten Betrag. Besteht eine Gruppe nur zum Teil aus Forderungen,
+bleibt ihre Kopfzeile, wie sie war, und nur die Kindzeilen der Forderungen tragen das Abzeichen. Was unter einer Bankbewegung steht, bleibt unverändert: Eine
+Forderung ist nie ihr Kind.
+
 ``Database.receivable_entry_ids`` sagt, welche Buchungen eine Forderung sind: dieselbe Bedingung wie überall (``receivable_condition``),
-keine eigene Lesart. Die Liste fragt damit EINMAL für alle ihre Einzelzeilen.
+keine eigene Lesart. Die Liste fragt damit EINMAL für alle ihre eigenständigen Sätze (die Einzelzeilen und die Mitglieder der Gruppen).
 
 Alle Namen, Nummern und Beträge sind erfundene Testwerte; ein „heute“ steht nie da (Stichtage sind feste Tage).
 """
 import datetime
+import hashlib
+import re
 from decimal import Decimal
 from html.parser import HTMLParser
 from types import SimpleNamespace
@@ -26,6 +34,9 @@ from server import pages_transactions
 from server.handlers import link_booking_to_invoice_capped
 from server.pages_transactions import RECEIVABLE_HINT, PageTransactions
 from tests.dom_helpers import Dom, assert_same_structure
+from tests.invoice_world import query_rows
+from tests.test_invoice_storno import USER, world   # noqa: F401  (``world`` ist die Fixture)
+from tests.test_mixed_tax_locks import mixed_draft
 
 FIRST_DAY, LAST_DAY = '2026-01-01', '2026-12-31'          # der Zeitraum der Liste
 CHECKED_TITLE = 'Buchung vollständig gebucht'
@@ -216,7 +227,29 @@ def _badges(row):
     return [badge.key() for badge in row.cells[ACTIONS].badges]
 
 
+def _groups(table):
+    """Die Kopfzeilen der Gruppen aus eigenständigen Sätzen (Belege ohne Bankbewegung mit mehreren Sätzen), in der Reihenfolge der Seite."""
+    return [row for row in table.data_rows() if 'group-row' in row.classes]
+
+
+def _members(table, header):
+    """Die Kindzeilen einer Gruppe oder einer Bankbewegung (``header``: ihre Kopfzeile)."""
+    return [row for row in table.data_rows() if row.attrs.get('data-parent-group') == header.attrs['data-group-id']]
+
+
+def _table_html(page):
+    """Die Buchungstabelle im Wortlaut der Seite."""
+    start = page.index("<table id='transactionsTable'>")
+    return page[start:page.index('</table>', start) + len('</table>')]
+
+
+def _row_html(page):
+    """Die Datenzeilen der Buchungstabelle im Wortlaut (ohne Kopfzeile), in der Reihenfolge der Seite."""
+    return re.findall(r'<tr.*?</tr>', _table_html(page), re.S)[1:]
+
+
 CHECKED = ('badge bg-green', CHECKED_TITLE, CHECK_MARK)
+RECEIVABLE_BADGE = ('badge bg-gray', RECEIVABLE_HINT, 'Forderung')
 
 
 # ── Database.receivable_entry_ids ───────────────────────────────────────────────────────────────────────────────────
@@ -436,8 +469,9 @@ def test_storno_counter_booking_row_is_a_receivable_too(tmp_db):
     assert counter.cells[AMOUNT].text == '-59,50'
 
 
-def test_list_asks_once_for_all_single_rows(tmp_db, monkeypatch):
-    """EINE Abfrage je Seite, nicht je Zeile – mit den IDs der Einzelzeilen: weder die Bankbewegung und ihre Sätze noch die Gruppe."""
+def test_list_asks_once_for_all_standalone_rows(tmp_db, monkeypatch):
+    """EINE Abfrage je Seite, nicht je Zeile – mit den IDs der eigenständigen Sätze: der Einzelzeilen und der Mitglieder einer Gruppe, nie der
+    Bankbewegung und ihrer Sätze (eine Forderung ist nie ihr Kind)."""
     world = _world(tmp_db)
     calls = []
     original = Database.receivable_entry_ids
@@ -452,7 +486,7 @@ def test_list_asks_once_for_all_single_rows(tmp_db, monkeypatch):
     _page(tmp_db)
 
     assert len(calls) == 1
-    assert sorted(calls[0]) == sorted([world.open_receivable, world.paid_receivable, world.expense, world.income, world.loose])
+    assert sorted(calls[0]) == sorted([world.open_receivable, world.paid_receivable, world.expense, world.income, world.loose, *world.group])
 
 
 def test_list_without_receivables_is_unchanged(tmp_db):
@@ -472,3 +506,255 @@ def test_list_without_receivables_is_unchanged(tmp_db):
         assert 'style' in row.cells[AMOUNT].attrs
     assert [badge.title for badge in table.row_of_group(f'b{stock.bank}').cells[ACTIONS].badges] == ['Bank + Buchungssätze vollständig']
     assert _badges(table.row('Ohne Konto')) == []
+
+
+# ── Was dieser Auftrag nicht anfasst: Einzelzeilen und alles unter einer Bankbewegung, Zeichen für Zeichen ────────────
+
+# Die Tabelle von ``_world`` (Forderungen mit einem Satz, eine davon bezahlt, Einzelzeilen, eine Gruppe aus zwei Aufwandssätzen), am Stand 2.7.0 VOR dem
+# Abzeichen für Gruppen aufgenommen: je Zeile als SHA-256, in der Reihenfolge der Seite. Ändert sich ein Zeichen, ist der Code zu ändern, nie diese Aufnahme.
+WORLD_ROW_DIGESTS = [
+    '6cba28e7402e0e2588b6f23325a817fb1bb851e07229258c45a2ae37cbe19362',    # die Bankbewegung der bezahlten Rechnung, „Split 2×“
+    '15e3db3c2452e4fe88f82cb628979624fd8a5ea323e7a987eee2d55fe530f868',    #   ihr Satz „Bank an Debitoren“
+    '5e7ecb0eb424d31b424b3a891ef63a2e3fd2bbb6a01bd19559d2e795de7bca8e',    #   ihr Satz „Wartekonto an Erlöskonto“
+    '2d6baf29f267009f92fe459b180e7eca5fa17fe00de0b243eb933c349a7ec6a3',    # die Gruppe aus zwei Aufwandssätzen, „Split 2×“
+    'ce8426f43a89db4c2d9e2894bd7649646cccb2cf81d76cc188cc6b3ea87702fd',    #   ihre beiden Sätze
+    '4b299d0c628172abce291de1f42ae97a1ac12b57211ca2b33cc72aa8627c19dd',
+    'ffa0b81ad66c1f1c0737c4594f1acc912d83b6d4d5b1e9d0bd0180927cac2f54',    # ein Satz ohne Konto
+    'aeaf0cfbc0cf7713f1efb2b231a7b6cbb0b00cf30f96f1a38f05d2856bc85127',    # die Einnahme
+    '298b4c4c59481d6cc6d86b5858e23b2659c50532e1be03d4a37cfd7780348d6d',    # der Aufwand
+    '4daf39c8cea52ab20c6f34b02222da72113006947ffa148ea3476fae8517c19f',    # die Forderung der bezahlten Rechnung
+    '3f289a0952711ce7aa63f6e6fd00328a422bd09b629f6aa7176030ccefa2026f',    # die Forderung der offenen Rechnung (unten, im Wortlaut)
+]
+
+# Die Zeile der offenen Forderung R26-0001 im Wortlaut – die Einzelzeile, die dem Abzeichen der Gruppe am nächsten liegt.
+OPEN_RECEIVABLE_ROW = (
+    "<tr class='transaction-row' data-account-id='' data-date='2026-03-02' data-contact-id='' data-currency='EUR' "
+    "data-amount='119.0000' data-recipient='Käufer AG' data-text='Rechnung R26-0001 Käufer AG'>"
+    "<td>2026-03-02</td><td title='Käufer AG'>Käufer AG</td>"
+    "<td title='Rechnung R26-0001 Käufer AG'>Rechnung R26-0001 Käufer AG</td><td>119,00</td><td>EUR</td><td>19%</td>"
+    "<td title=''></td><td>10000</td><td>R26-0001</td>"
+    f"<td><span class='badge bg-gray' title='{RECEIVABLE_HINT}'>Forderung</span> "
+    "<a href='javascript:void(0)' onclick='openEditForm(1)' class='action-icon' title='Bearbeiten'>&#9998;</a> "
+    "<a href='javascript:void(0);' class='action-icon delete-icon' title='Löschen' "
+    "onclick='appConfirmPost(\"/transactions/delete?id=1\", \"Buchung #1 wirklich löschen?\")'>&#128465;</a></td></tr>")
+
+
+def test_rows_of_a_world_with_one_rate_are_character_for_character_what_they_were(tmp_db):
+    """Forderungen mit EINEM Satz, die Bankbewegung der bezahlten Rechnung mit ihren Sätzen, gewöhnliche Einzelzeilen und eine Gruppe aus Aufwand: Jede Zeile
+    der Liste ist dieselbe wie vor dem Abzeichen für Gruppen – die Einzelzeile der Forderung im Wortlaut, die übrigen als SHA-256."""
+    _world(tmp_db)
+
+    rows = _row_html(_page(tmp_db))
+
+    assert len(rows) == len(WORLD_ROW_DIGESTS)
+    assert rows[-1] == OPEN_RECEIVABLE_ROW
+    for number, (row, digest) in enumerate(zip(rows, WORLD_ROW_DIGESTS)):
+        assert hashlib.sha256(row.encode('utf-8')).hexdigest() == digest, f'Zeile {number}: {row}'
+
+
+def test_receivable_shaped_child_of_a_bank_movement_is_left_as_it_was(tmp_db):
+    """Eine Forderung ist nie Kind einer Bankbewegung. Steht dort trotzdem ein Satz mit den Konten einer Forderung (so schreibt ihn nur ein Eingriff von Hand),
+    bleibt seine Zeile, wie sie war – Haken und Farbe –, auch wenn ``receivable_entry_ids`` ihn nach der Bedingung nennte."""
+    account = _bank_account(tmp_db)
+    _sent_invoice(tmp_db, 'R26-0001')                                      # eine echte Forderung, daneben
+    bank = tmp_db.insert_booking('2026-03-20', Decimal('119.00'), account_id=account, booking_type='bank', recipient_client='Käufer AG')
+    child = tmp_db.insert_booking('2026-03-20', Decimal('119.00'), coa_id=_coa(tmp_db, 10000), counter_coa_id=_coa(tmp_db, 4405),
+                                  booking_type='entry', parent_booking_id=bank, document_number='R26-0001', text='Von Hand an die Bewegung gehängt')
+    assert tmp_db.receivable_entry_ids([child]) == {child}                  # nach der Bedingung allein wäre er eine Forderung
+
+    table = _table(tmp_db)
+
+    (row,) = [row for row in table.data_rows() if row.attrs.get('data-parent-group') == f'b{bank}']
+    assert row.cells[TEXT].text == 'Von Hand an die Bewegung gehängt'
+    assert _badges(row) == [CHECKED]
+    assert row.cells[AMOUNT].attrs == {'style': 'color:green'}
+    assert [badge.text for other in table.data_rows() for badge in other.cells[ACTIONS].badges].count('Forderung') == 1       # nur die echte Forderung
+
+
+# ── Rechnung mit Steuersatz je Position: die Gruppe der Forderungen ───────────────────────────────────────────────────
+
+MIXED_NUMBER = 'M-100'                  # 19 % × 100,00 und 7 % × 50,00: Forderungen über 119,00 und 53,50, zusammen 172,50
+MIXED_DAY = '2026-06-07'                # das Rechnungsdatum der Testwelt
+MIXED_TEXT = 'Rechnung M-100 Malermeister Pinsel'
+
+
+def _mixed_sent(w, number=MIXED_NUMBER):
+    """Eine Rechnung mit zwei Steuersätzen, über den Statuswechsel der App versendet: Er bucht je Satz eine Forderungszeile (gleiche Beleg-Nr., gleicher Tag),
+    die Liste fasst sie zu einer Gruppe zusammen. Returns die ID der Rechnung."""
+    invoice_id = mixed_draft(w, number)
+    change = w.db.set_invoice_status(invoice_id, 'sent', USER)
+    assert change.ok, change.message
+    return invoice_id
+
+
+def test_group_of_receivables_shows_badge_and_plain_amount(world):
+    """Die Forderungen einer Rechnung mit zwei Sätzen stehen als EINE Gruppe „Split 2×“ da – wie die einzelne Forderung ohne Haken „Buchung vollständig
+    gebucht“, ohne gefärbten Betrag und ohne den grünen Hintergrund einer vollständig gebuchten Zeile; aufklappbar bleibt sie, die Summe bleibt. Jede
+    Kindzeile trägt ebenso das Abzeichen statt des Hakens und einen ungefärbten Betrag, Bearbeiten und Löschen bleiben."""
+    _mixed_sent(world)
+    page = _page(world.db)
+    table = Table(page)
+
+    (group,) = _groups(table)
+    assert _badges(group) == [RECEIVABLE_BADGE]
+    assert CHECK_MARK not in group.cells[ACTIONS].text
+    assert group.cells[AMOUNT].attrs == {}                                 # kein style: nicht grün, nicht rot
+    assert group.cells[AMOUNT].text == '172,50'                            # die Summe bleibt
+    assert group.cells[SKR].badges[0].text == 'Split 2×'
+    assert group.classes == ['transaction-row', 'group-row']               # kein ``row-ok``: Das grüne Hinterlegen hieße „vollständig gebucht“
+    assert group.attrs['onclick'] == f'toggleGroup("{group.attrs["data-group-id"]}")'          # aufklappbar bleibt sie
+    assert '▶' in group.cells[ACTIONS].text
+    assert [group.cells[column].text for column in (DATE, RECIPIENT, TEXT, CURRENCY, DOCNR)] == \
+        [MIXED_DAY, 'Malermeister Pinsel', MIXED_TEXT, 'EUR', MIXED_NUMBER]
+    members = _members(table, group)
+    assert sorted(member.cells[AMOUNT].text for member in members) == ['119,00', '53,50']
+    for member in members:
+        assert member.classes == ['child-row']
+        assert _badges(member) == [RECEIVABLE_BADGE]
+        assert CHECK_MARK not in member.cells[ACTIONS].text
+        assert member.cells[AMOUNT].attrs == {}
+        assert member.cells[ACTIONS].anchors == ['Bearbeiten', 'Löschen']
+    html = _table_html(page)
+    assert 'bg-green' not in html and CHECK_MARK not in html               # nirgends in der Tabelle ein Haken
+    assert html.count(f"<span class='badge bg-gray' title='{RECEIVABLE_HINT}'>Forderung</span>") == 3       # die Gruppe und ihre beiden Sätze
+
+
+def test_receivable_rows_in_a_group_carry_the_same_badge_as_a_single_row(world):
+    """Die Kindzeile einer Forderung in der Gruppe und die Einzelzeile einer Forderung tragen dasselbe Abzeichen, denselben Betrag-Stil und dieselben
+    Aktionen: dasselbe Element, derselbe Hinweistext – auch an der Kopfzeile der Gruppe."""
+    _mixed_sent(world)
+    _single_invoice, _single_receivable = _sent_invoice(world.db, 'R26-0001')
+    table = _table(world.db)
+
+    single = table.row('Rechnung R26-0001 Käufer AG')
+    (group,) = _groups(table)
+    for member in _members(table, group):
+        assert _badges(member) == _badges(single) == [RECEIVABLE_BADGE]
+        assert member.cells[AMOUNT].attrs == single.cells[AMOUNT].attrs == {}
+        assert member.cells[ACTIONS].anchors == single.cells[ACTIONS].anchors
+    assert _badges(group) == _badges(single)
+
+
+def test_group_of_receivables_stays_a_receivable_group_after_payment_until_the_match_resolves_it(world):
+    """Nach der vollen Zahlung bleibt die Gruppe der Forderungen eine Forderungsgruppe; die Zahlung steht unter ihrer Bankbewegung, dort Haken und Farbe wie
+    bisher. Löst der Abgleich die Forderungen auf (``resolved``), stehen sie wie die einzelne Forderung gar nicht mehr in der Liste."""
+    invoice_id = _mixed_sent(world)
+    bank = _paid(world.db, invoice_id, world.bank, '172.50', day='2026-07-01')
+    page = _page(world.db)
+    table = Table(page)
+
+    (group,) = _groups(table)
+    assert _badges(group) == [RECEIVABLE_BADGE]
+    assert group.cells[AMOUNT].attrs == {}
+    assert [_badges(member) for member in _members(table, group)] == [[RECEIVABLE_BADGE]] * 2
+    movement = table.row_of_group(f'b{bank}')                              # die Bankbewegung, mit ihren drei Sätzen zusammengefasst
+    assert movement.cells[SKR].badges[0].text == 'Split 3×'
+    assert _badges(movement) == [('badge bg-green', 'Bank + Buchungssätze vollständig', CHECK_MARK)]
+    assert movement.cells[AMOUNT].attrs == {'style': 'color:green'}
+    paid = _members(table, movement)
+    assert len(paid) == 3
+    for row in paid:                                                       # die Sätze der Zahlung: ✓ und Farbe wie bisher
+        assert _badges(row) == [CHECKED]
+        assert row.cells[AMOUNT].attrs == {'style': 'color:green'}
+    before = _row_html(page)
+    assert len(before) == 7                                                # die Bankbewegung und ihre drei Sätze, die Gruppe und ihre zwei Sätze
+
+    assert world.db.link_bank_to_entries()['resolved'] == 2                # beide Forderungszeilen, gemeinsam
+    after = _row_html(_page(world.db))
+
+    assert after == before[:4]                      # es bleibt allein die Bankbewegung mit ihren drei Sätzen, Zeichen für Zeichen wie vorher
+    assert 'Forderung' not in _table_html(_page(world.db))
+
+
+@pytest.mark.parametrize('booked', [True, False], ids=['all booked', 'one without account'])
+def test_group_with_a_member_that_is_no_receivable_keeps_its_header(tmp_db, booked):
+    """Eine Forderung und ein anderer eigenständiger Satz mit derselben Beleg-Nr. am selben Tag (von Hand gebucht) ergeben eine gemischte Gruppe: Ihre Kopfzeile
+    bleibt, wie sie war – Haken und grüner Hintergrund nur, wenn alle Sätze kontiert sind, der Betrag nach seinem Vorzeichen gefärbt. Nur die Kindzeile der
+    Forderung trägt das Abzeichen statt des Hakens und einen ungefärbten Betrag."""
+    _sent_invoice(tmp_db, 'R26-0001')                                      # die Forderung: 2026-03-02, Beleg-Nr. R26-0001
+    if booked:
+        _expense(tmp_db, day='2026-03-02', amount='-35.70', number='R26-0001', text='Von Hand zum selben Beleg')
+    else:
+        tmp_db.insert_booking('2026-03-02', Decimal('-5.00'), booking_type='entry', document_number='R26-0001', recipient_client='Unbekannt',
+                              text='Von Hand ohne Konto')
+
+    table = _table(tmp_db)
+
+    (group,) = _groups(table)
+    assert group.cells[SKR].badges[0].text == 'Split 2×'
+    assert _badges(group) == ([CHECKED] if booked else [])
+    assert group.classes == (['transaction-row', 'group-row', 'row-ok'] if booked else ['transaction-row', 'group-row'])
+    assert group.cells[AMOUNT].attrs == {'style': 'color:green'}           # 119,00 − 35,70 bzw. − 5,00: positiv
+    members = _members(table, group)
+    assert len(members) == 2
+    receivable = next(member for member in members if member.cells[SKR].text == '10000')
+    other = next(member for member in members if member is not receivable)
+    assert _badges(receivable) == [RECEIVABLE_BADGE]
+    assert receivable.cells[AMOUNT].attrs == {} and receivable.cells[AMOUNT].text == '119,00'
+    assert receivable.cells[ACTIONS].anchors == ['Bearbeiten', 'Löschen']
+    assert _badges(other) == ([CHECKED] if booked else [])
+    assert other.cells[AMOUNT].attrs == {'style': 'color:red'}
+
+
+def test_counter_bookings_of_a_storno_invoice_with_two_rates_are_a_group_of_receivables_too(world):
+    """Die Gegenbuchungen der Stornorechnung (je Satz eine, negativ) sind ebenfalls Forderungen: Auch sie stehen als Gruppe mit dem Abzeichen da, und die der
+    stornierten Rechnung bleiben, was sie sind."""
+    invoice_id = _mixed_sent(world)
+    storno = world.db.cancel_invoice(invoice_id, '2026-07-01', USER, today=storno_today())
+    assert storno.ok and storno.counter_booked, storno.message
+
+    table = _table(world.db)
+
+    groups = _groups(table)
+    assert [group.cells[DOCNR].text for group in groups] == [storno.storno_number, MIXED_NUMBER]            # nach Datum, die jüngste zuerst
+    assert [group.cells[AMOUNT].text for group in groups] == ['-172,50', '172,50']
+    for group in groups:
+        assert _badges(group) == [RECEIVABLE_BADGE]
+        assert group.cells[AMOUNT].attrs == {}
+        assert group.cells[SKR].badges[0].text == 'Split 2×'
+        assert [_badges(member) for member in _members(table, group)] == [[RECEIVABLE_BADGE]] * 2
+        assert all(member.cells[AMOUNT].attrs == {} for member in _members(table, group))
+
+
+def test_hint_is_masked_on_group_and_child_rows(world, monkeypatch):
+    """Der Hinweistext des Abzeichens wird auch an der Gruppe und an ihren Kindzeilen maskiert ausgegeben."""
+    _mixed_sent(world)
+    benign = _page(world.db)
+    hostile = "x' onmouseover='alert(1)' data-x=\"y\" <b>&amp;"
+    monkeypatch.setattr(pages_transactions, 'RECEIVABLE_HINT', hostile)
+
+    page = _page(world.db)
+
+    assert hostile not in page
+    assert_same_structure(page, benign)
+    badges = [attrs for tag, attrs in Dom(page).tags if tag == 'span' and attrs.get('class') == 'badge bg-gray']
+    assert [attrs['title'] for attrs in badges] == [hostile] * 3             # die Gruppe und ihre beiden Sätze
+    assert all(set(attrs) == {'class', 'title'} for attrs in badges)
+
+
+def test_list_asks_the_connection_once_for_all_standalone_rows(world, monkeypatch):
+    """Mit einem Hook an der Verbindung gezählt (``set_trace_callback``, nicht an einer Methode): EINE Abfrage nach den Forderungen je Seite – mit den IDs der
+    Einzelzeile und der beiden Mitglieder der Gruppe, nie mit der Bankbewegung der Zahlung und ihren drei Sätzen."""
+    invoice_id = _mixed_sent(world)
+    bank = _paid(world.db, invoice_id, world.bank, '172.50', day='2026-07-01')
+    expense = _expense(world.db)
+    members = [row['ID'] for row in query_rows(
+        world.db, "SELECT ID FROM Bookings WHERE DocumentNumber = ? AND BookingType = 'entry' AND ParentBooking_ID IS NULL ORDER BY ID", MIXED_NUMBER)]
+    under_the_bank = [row['ID'] for row in query_rows(world.db, 'SELECT ID FROM Bookings WHERE ParentBooking_ID = ? ORDER BY ID', bank)]
+    assert len(members) == 2 and len(under_the_bank) == 3
+    statements = []
+    real_connection = Database._get_connection
+
+    def traced(self):
+        conn = real_connection(self)
+        conn.set_trace_callback(statements.append)                           # jede Anweisung, die SQLite ausführt, mit den eingesetzten Werten
+        return conn
+
+    monkeypatch.setattr(Database, '_get_connection', traced)
+
+    _page(world.db)
+
+    asks = [sql for sql in statements if 'credit_note.SumGross' in sql and re.search(r'AND ID IN \([\d,]+\)\s*$', sql)]
+    assert len(asks) == 1
+    asked = [int(booking_id) for booking_id in re.search(r'AND ID IN \(([\d,]+)\)\s*$', asks[0]).group(1).split(',')]
+    assert sorted(asked) == sorted([*members, expense])

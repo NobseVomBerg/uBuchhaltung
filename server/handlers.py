@@ -41,13 +41,13 @@ from db.invoice_lock import (DocumentNotFound, EDITABLE_STATUSES, InvoiceLocked,
                              buyer_snapshot, status_group)
 from db.invoice_storno import NO_COUNTER_BOOKING_HINT
 from db.invoice_versions import CorrectionInvalid
-from db.invoice_payments import RECEIVABLE_STATUSES, BankChangeRefused, PaymentRemovalRefused
+from db.invoice_payments import RECEIVABLE_STATUSES, BankChangeRefused, PaymentRemovalRefused, has_mixed_rates
 from db.invoice_repair import REBUILD_WARNING
 from db.numbering import NumberRangeError, number_format_error
 from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
 from db.accounts import DEFAULT_CASH_ACCOUNT
 from money import to_minor, from_minor, multiply, tax_from_gross, round_minor, fmt_eur
-from tax_groups import rate_groups
+from tax_groups import MIXED_TAX_RATES, rate_groups
 from decimal import Decimal
 
 try:
@@ -3126,9 +3126,16 @@ def _backfill_booking_skr(db, booking_id, invoice, revenue_coa_id):
     Erlöskonto je Steuersatz lernt ``resolve_revenue_coa`` allein aus den Buchungssätzen der
     Zuordnung. Die Buchungssätze der Zahlung legt ``Database.assign_invoice_payment`` an, nicht
     diese Funktion.
+
+    Bei einer Rechnung mit Steuersatz je Position (``MixedTaxRates``) gibt es kein EINES Erlöskonto und keinen
+    Satz für die ganze Bewegung (der Kopfsatz ist nur ein Platzhalter): Die Bankzeile bekommt nur Kunde und
+    Beleg-Nr. – Konto, Satz und Steuer bleiben leer; sie stehen an den Sätzen der Zuordnung.
     """
     booking = db.get_booking_by_id(booking_id)
     if not booking:
+        return
+    if has_mixed_rates(invoice[InvoiceCol.MIXED_TAX_RATES]):
+        db.backfill_booking_fields(booking_id, contact_id=invoice[13], document_number=invoice[1])
         return
     rate = invoice[35]
     rate_pct = 0 if not rate or rate < 0 else (rate * 100 if rate <= 1 else rate)
@@ -3311,6 +3318,105 @@ class _SaveRefused(Exception):
         self.status = status
 
 
+# Die Ablehnungen von ``_tax_fields``; ``{n}``: die Nummer der Position (ab 1), ``{rate}``: der Satz in Prozent
+TAX_MODE_INVALID = 'Ungültige Angabe zum Steuersatz.'
+TAX_RATE_INVALID = 'Ungültiger Steuersatz – bitte 0 oder einen Satz von 1 bis 100 Prozent angeben.'
+TAX_PER_ITEM_WITHOUT_TAX = 'Ohne Umsatzsteuerausweis gibt es keinen Steuersatz je Position.'
+TAX_ITEM_DIFFERS = 'Position {n}: Der Steuersatz weicht vom Steuersatz des Belegs ab.'
+TAX_ITEM_MISSING = 'Position {n}: Bitte einen Steuersatz wählen.'
+TAX_ITEM_INVALID = 'Position {n}: Ungültiger Steuersatz.'
+TAX_ITEM_NOT_ALLOWED = 'Position {n}: Der Steuersatz {rate} % ist in einem Beleg mit Steuersatz je Position nicht wählbar.'
+
+# So weit darf der Satz im Kopf (die Maske schickt ihn als Bruch, im Browser durch 100 geteilt) von dem der Positionen abweichen:
+# das Rauschen einer Kommazahl, nie ein anderer Satz
+_HEAD_RATE_NOISE = Decimal('0.000001')
+
+
+def _exact_rate(value):
+    """Der Satz, wie ``recompute_invoice_totals`` ihn rechnet (``_rate_to_pct``: die Zahl, wie sie dasteht, ungerundet) – oder
+    ``None``, wenn der Wert keine endliche Zahl ist (Liste, Wahrheitswert, Text ohne Zahl, NaN, Infinity). Verglichen wird mit
+    DIESEM Wert, nie mit einem gerundeten: Sonst gälte 19,004 als 19, gerechnet würde aber mit 19,004."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        rate = _rate_to_pct(value, None)
+    except ArithmeticError:
+        return None
+    return rate if rate is not None and rate.is_finite() else None
+
+
+def _head_rate(value):
+    """Der Satz im Kopf als Prozentzahl, so wie die Buchungen ihn lesen (``_tax_rate_key``: bis 1 ein Bruch – die Maske schickt
+    100 % als 1), oder ``None``, wenn er keine endliche Zahl von 0 bis 100 ist."""
+    rate = _exact_rate(value)
+    if rate is not None and Decimal(str(value)) == 1:
+        rate = Decimal(100)
+    return rate if rate is not None and 0 <= rate <= 100 else None
+
+
+def _tax_fields(data, items):
+    """Die Steuerangaben des Formulars einer Rechnung oder eines Angebots prüfen – die EINE Stelle für beide Speicherwege
+    (``_invoice_fields``, ``handle_quote_save``). Returns ``(Satz im Kopf, Kennzeichen, Sätze der Positionen)``: was
+    ``Invoices.TaxRate`` bekommt (−1: ohne Steuerausweis), was ``Invoices.MixedTaxRates`` bekommt (``None`` oder ``1``) und je
+    Position der Wert für ``InvoiceItems.TaxRate`` – so, wie das Formular ihn schickt (nie ein normalisierter ``Decimal``:
+    ``normalize`` schreibt 10 als ``1E+1``). **Verglichen wird der Satz, mit dem gerechnet wird** (``_exact_rate``, ungerundet;
+    0,19 und 19 sind derselbe Satz) – ein Beleg, dessen Summen nicht zu dem Satz passen, unter dem er geführt wird, entsteht so
+    nicht. Abgelehnt wird mit Klartext (:class:`_SaveRefused`), bevor etwas geschrieben ist. ``taxMode`` fehlt oder ist leer (die
+    Maske ohne Häkchen „Steuersatz je Position“) oder ``'mixed'``; jeder andere Wert ist ungültig. Die Regeln, in dieser
+    Reihenfolge:
+
+    1. Ohne Steuerausweis (``showTax`` falsch): mit ``taxMode`` ``'mixed'`` abgelehnt; sonst Kopf −1, jede Position bekommt den
+       Satz 0 (der Server nimmt keinen Satz einer Position an, wo es keine Steuer gibt), Kennzeichen ``None``.
+    2. Mit Steuerausweis, ohne ``taxMode``: Der Satz im Kopf ist eine Zahl von 0 bis 100 Prozent (kein negativer – −1 ist der
+       Platzhalter von Regel 1 und kommt nie vom Formular). Jede Position trägt ihren ``taxRate`` (fehlt er: den Satz des Kopfs);
+       alle Positionen tragen GENAU denselben Satz, und er ist der des Kopfs (bis auf das Rauschen der Kommazahl). Ein Satz
+       zwischen 0 und 1 Prozent lässt sich nicht eindeutig lesen (die Position hieße 50 %, der Kopf 0,5 %) und wird abgelehnt.
+       Kennzeichen ``None``.
+    3. ``taxMode`` ``'mixed'``: jede Position braucht einen eigenen Satz, GENAU einen aus ``tax_groups.MIXED_TAX_RATES``. Tragen
+       alle denselben, ist es ein gewöhnlicher Beleg: Kopf = dieser Satz als Bruch, Kennzeichen ``None``. Bei mindestens zwei
+       verschiedenen Sätzen ist der Kopf der HÖCHSTE als Bruch – ein Platzhalter, nie negativ; maßgeblich sind die Satzgruppen –
+       und das Kennzeichen ``1``.
+
+    Die Summen rechnet ``recompute_invoice_totals`` aus den hier gelieferten Sätzen."""
+    mode = data.get('taxMode')
+    if mode not in (None, '', 'mixed'):
+        raise _SaveRefused(TAX_MODE_INVALID)
+    per_item = mode == 'mixed'
+    if not data.get('showTax', True):
+        if per_item:
+            raise _SaveRefused(TAX_PER_ITEM_WITHOUT_TAX)
+        return -1, None, [0] * len(items)
+    if not per_item:
+        head = data.get('taxRate')
+        head_rate = _head_rate(head)
+        if head_rate is None:
+            raise _SaveRefused(TAX_RATE_INVALID)
+        rates = [item.get('taxRate', head) for item in items]
+        exact = [_exact_rate(rate) for rate in rates]
+        for number, rate in enumerate(exact, 1):
+            if rate is None:
+                raise _SaveRefused(TAX_ITEM_INVALID.format(n=number))
+            if rate != exact[0]:
+                raise _SaveRefused(TAX_ITEM_DIFFERS.format(n=number))
+        if exact and abs(exact[0] - head_rate) > _HEAD_RATE_NOISE:
+            # alle Positionen gleich, aber nicht der Satz des Kopfs: ein anderer Satz – oder einer zwischen 0 und 1 Prozent
+            raise _SaveRefused(TAX_RATE_INVALID if 0 < head_rate < 1 else TAX_ITEM_DIFFERS.format(n=1))
+        return head, None, rates
+    percents = []
+    for number, item in enumerate(items, 1):
+        rate = item.get('taxRate')
+        if rate is None or rate == '':
+            raise _SaveRefused(TAX_ITEM_MISSING.format(n=number))
+        percent = _exact_rate(rate)
+        if percent is None:
+            raise _SaveRefused(TAX_ITEM_INVALID.format(n=number))
+        if percent not in MIXED_TAX_RATES:
+            shown = format(percent.normalize(), 'f').replace('.', ',')        # 'f': nie die Schreibweise 1E+1; Komma wie auf der Seite
+            raise _SaveRefused(TAX_ITEM_NOT_ALLOWED.format(n=number, rate=shown))
+        percents.append(percent)
+    return float(max(percents) / 100), (1 if len(set(percents)) > 1 else None), [item['taxRate'] for item in items]
+
+
 def handle_invoice_save(post_body: bytes):
     """Save or update invoice to database
 
@@ -3417,16 +3523,17 @@ def _invoice_fields(db, data, stored):
     # Phase 2: Summen serverseitig exakt neu berechnen – den vom Client
     # gelieferten net/tax/gross-Werten wird bewusst nicht vertraut. Bei
     # Kleinunternehmer (§19) wird ohne Steuer gerechnet (Brutto = Netto).
+    # Die Sätze der Positionen prüft ``_tax_fields`` (auch der Kopfsatz und das Kennzeichen „Steuersatz je Position“ kommen von dort).
+    stored_tax_rate, mixed, item_rates = _tax_fields(data, items)
     net_amount, tax_amount, gross_amount, line_nets = recompute_invoice_totals(
-        items, _rate_to_pct(tax_rate if show_tax else 0))
+        [{**item, 'taxRate': rate} for item, rate in zip(items, item_rates)],
+        Decimal(0))                           # jede Position trägt ihren Satz aus ``_tax_fields``: Die Vorgabe wird nie gebraucht
 
     # Skonto: Prozent und Tage zusammen und brauchbar, nur bei positivem Betrag, die Frist nicht nach der Fälligkeit. Eine
     # eingefrorene Rechnung wird nicht geprüft: Ihr Skonto ist gesperrt, und ein Altwert darf sie nicht an einer Berichtigung
     # hindern.
     if not frozen:
         _check_skonto(invoice_date, due_date, discount_days, discount_percentage, gross_amount)
-    # Sentinel -1 in TaxRate kennzeichnet "kein USt-Ausweis" (vs. echte 0%).
-    stored_tax_rate = tax_rate if show_tax else -1
 
     # Get customer data for invoice
     customer = db.get_contact_by_id(customer_id)
@@ -3478,7 +3585,8 @@ def _invoice_fields(db, data, stored):
         'bank_iban': iban or '',
         'bank_bic': bic or '',
         'tax_category': 'S',  # Standard tax
-        'tax_rate': stored_tax_rate,
+        'tax_rate': stored_tax_rate,      # Sentinel -1 in TaxRate kennzeichnet "kein USt-Ausweis" (vs. echte 0%)
+        'mixed_tax_rates': mixed,
         'sum_net': net_amount,
         'tax_amount': tax_amount,
         'sum_gross': gross_amount,
@@ -3494,7 +3602,7 @@ def _invoice_fields(db, data, stored):
         'price_per_unit': item.get('unitPrice'),
         'total_net': line_nets[idx],
         'tax_category': 'S',
-        'tax_rate': item.get('taxRate', tax_rate),
+        'tax_rate': item_rates[idx],
     } for idx, item in enumerate(items)]
     return invoice_data, item_rows
 
@@ -4044,11 +4152,11 @@ def handle_quote_save(post_body: bytes):
         if not items:
             return json.dumps({'success': False, 'error': 'Mindestens eine Position erforderlich'}).encode()
 
-        # Summen serverseitig exakt (bei §19 ohne Steuer: Brutto = Netto)
+        # Summen serverseitig exakt (bei §19 ohne Steuer: Brutto = Netto); die Sätze prüft ``_tax_fields``, wie bei der Rechnung
+        stored_tax_rate, mixed, item_rates = _tax_fields(data, items)
         net_amount, tax_amount, gross_amount, line_nets = recompute_invoice_totals(
-            items, _rate_to_pct(tax_rate if show_tax else 0))
-        # Sentinel -1 in TaxRate kennzeichnet "kein USt-Ausweis" (vs. echte 0%).
-        stored_tax_rate = tax_rate if show_tax else -1
+            [{**item, 'taxRate': rate} for item, rate in zip(items, item_rates)],
+            Decimal(0))                           # jede Position trägt ihren Satz aus ``_tax_fields``: Die Vorgabe wird nie gebraucht
 
         db = Database()
         customer = db.get_contact_by_id(customer_id)
@@ -4081,7 +4189,8 @@ def handle_quote_save(post_body: bytes):
             'buyer_vat_id': customer[11] or '',
             'currency': 'EUR',
             'tax_category': 'S',
-            'tax_rate': stored_tax_rate,
+            'tax_rate': stored_tax_rate,         # Sentinel -1 in TaxRate kennzeichnet "kein USt-Ausweis" (vs. echte 0%)
+            'mixed_tax_rates': mixed,
             'sum_net': net_amount,
             'tax_amount': tax_amount,
             'sum_gross': gross_amount,
@@ -4111,12 +4220,14 @@ def handle_quote_save(post_body: bytes):
                         'price_per_unit': item.get('unitPrice'),
                         'total_net': line_nets[idx],
                         'tax_category': 'S',
-                        'tax_rate': item.get('taxRate', tax_rate),
+                        'tax_rate': item_rates[idx],
                     }, tx=tx)
         except (DocumentNotFound, QuoteStatusLocked) as e:
             return json.dumps({'success': False, 'error': str(e)}).encode()
 
         return json.dumps({'success': True, 'quote_id': quote_id}).encode()
+    except _SaveRefused as refusal:
+        return json.dumps({'success': False, 'error': refusal.text}).encode()
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -4138,7 +4249,7 @@ def _save_quote_update(tx, quote_id, doc):
                 SellerVATID=?, SellerEmail=?, SellerPhone=?,
                 CustomerId=?, BuyerName=?, BuyerCompany=?, BuyerStreet=?, BuyerPostalCode=?, BuyerCity=?, BuyerCountry=?, BuyerVATID=?,
                 Currency=?, TaxCategory=?, TaxRate=?, SumNet=?, TaxAmount=?, SumGross=?, AmountDue=?,
-                Status=?, ValidUntil=?, IntroText=?, ClosingText=?
+                Status=?, ValidUntil=?, IntroText=?, ClosingText=?, MixedTaxRates=?
             WHERE ID=? AND DocumentType='quote' AND ''' + QUOTE_STAYS_CONVERTED_SQL + ''' 
         ''', (
             doc['invoice_number'], doc['invoice_date'], doc['own_company_id'],
@@ -4148,7 +4259,7 @@ def _save_quote_update(tx, quote_id, doc):
             doc['currency'], doc['tax_category'], doc['tax_rate'],
             to_minor(doc['sum_net'] or 0), to_minor(doc['tax_amount'] or 0),
             to_minor(doc['sum_gross'] or 0), to_minor(doc['amount_due'] or 0),
-            doc['status'], doc['valid_until'], doc['intro_text'], doc['closing_text'],
+            doc['status'], doc['valid_until'], doc['intro_text'], doc['closing_text'], doc['mixed_tax_rates'],
             quote_id, doc['status'],
         ))
     if cursor.rowcount == 0:

@@ -23,6 +23,9 @@ Ergebnis im Ausgabeordner:
 * ``zugferd-steuernummer-kleinunternehmer.pdf`` – dasselbe als Kleinunternehmer (§ 19 UStG, Kategorie E)
 * ``zugferd-zahlungshinweis-raute.pdf`` – ein ``#`` im Zahlungshinweis (neben dem Skonto): das UBL entsteht nicht (BR-DE-18, die
                                          Lücke der App), die eingebettete CII bleibt gültig – deshalb nur das PDF, kein XML
+* ``zugferd-mischsatz.pdf``              – Rechnung mit Steuersatz je Position (19 % und 7 %), angelegt über den Weg der Maske
+                                         (``taxMode: 'mixed'``): zwei Steueraufschlüsselungen (BG-23, die Steuer je Satz aus der
+                                         Summe der Nettobeträge der Gruppe, BR-CO-17), im PDF die Spalte „USt“ und eine Steuerzeile je Satz
 * ``xrechnung-normalfall.xml``          – UBL-XRechnung zur Normalfall-Rechnung
 * ``xrechnung-kleinunternehmer.xml``    – UBL-XRechnung zum Kleinunternehmer-Fall
 * ``xrechnung-berichtigt.xml``          – UBL-XRechnung zur berichtigten Fassung (``cbc:Note``)
@@ -31,6 +34,7 @@ Ergebnis im Ausgabeordner:
 * ``xrechnung-skonto.xml``              – UBL-XRechnung mit der Skonto-Zeile (BR-DE-18) und ihrem Zeilenumbruch
 * ``xrechnung-steuernummer.xml``        – UBL-XRechnung zum Fall „nur Steuernummer“ (``TAX`` und ``cac:PartyIdentification``)
 * ``xrechnung-steuernummer-kleinunternehmer.xml`` – dasselbe als Kleinunternehmer
+* ``xrechnung-mischsatz.xml``           – UBL-XRechnung zur Rechnung mit Steuersatz je Position (zwei ``cac:TaxSubtotal``)
 
 Jedem Beispiel mit UBL wird vor dem Schreiben nachgerechnet, dass ihm nichts fehlt (``einvoice_gaps``): Sonst bricht das
 Werkzeug ab – die Prüfung der App und Mustang sollen übereinstimmen.
@@ -92,7 +96,9 @@ def _clone_as_exempt(db, invoice_id, number='KU-DEMO-1', **over):
 
 def _clone_for_correction(db, invoice_id, number='BE-DEMO-1', **over):
     """Kopie einer Demo-Rechnung (19 % USt, Leitweg-ID) als Entwurf für den Berichtigen- und den Storno-Fall;
-    ``over`` überschreibt Felder von ``insert_invoice`` (z. B. das Skonto)."""
+    ``over`` überschreibt Felder von ``insert_invoice`` (z. B. das Skonto). Das Kennzeichen „Steuersatz je Position“ geht
+    mit den Sätzen der Positionen mit (nur ``None`` oder ``1``): Sonst entstünde ein Beleg mit zwei Sätzen ohne Kennzeichen."""
+    from db.invoices import InvoiceCol, has_mixed_rates
     inv = db.get_invoice_by_id(invoice_id)
     items = db.get_invoice_items(invoice_id)
     data = {
@@ -107,6 +113,7 @@ def _clone_for_correction(db, invoice_id, number='BE-DEMO-1', **over):
         'payment_due_date': inv[27], 'bank_name': inv[31], 'bank_iban': inv[32], 'bank_bic': inv[33],
         'tax_category': inv[34], 'tax_rate': inv[35], 'sum_net': inv[36], 'tax_amount': inv[37],
         'sum_gross': inv[38], 'amount_due': inv[38], 'status': 'finalized',
+        'mixed_tax_rates': 1 if has_mixed_rates(inv[InvoiceCol.MIXED_TAX_RATES]) else None,
     }
     data.update(over)
     new_id = db.insert_invoice(data)
@@ -116,6 +123,38 @@ def _clone_for_correction(db, invoice_id, number='BE-DEMO-1', **over):
             'unit': it[6], 'price_per_unit': it[7], 'total_net': it[8],
             'tax_category': it[9], 'tax_rate': it[10]})
     return new_id
+
+
+# Positionen des Beispiels mit Steuersatz je Position: (Bezeichnung, Menge, Einheit, Einzelpreis netto, Steuersatz in Prozent) – netto
+# 359,80 €: 310,00 € zu 19 % (Steuer 58,90 €) und 49,80 € zu 7 % (Steuer 3,49 €), brutto 422,19 €
+MIXED_ITEMS = (
+    ('Beratung Buchhaltung', 2, 'HUR', 95.0, 19),
+    ('Fachbuch Einkommensteuer', 1, 'C62', 39.9, 7),
+    ('Schulungsunterlagen', 3, 'C62', 3.3, 7),
+    ('Reisekosten', 1, 'LS', 120.0, 19),
+)
+
+
+def _mixed_rates_draft(db, invoice_id, number='MS-DEMO-1'):
+    """Ein Entwurf mit Positionen zu 19 % und 7 % (``MIXED_ITEMS``) – angelegt über den Weg der Maske: ``handlers.handle_invoice_save`` mit
+    ``taxMode: 'mixed'``, so, wie das Formular mit dem Häkchen „Steuersatz je Position“ es schickt. Kunde, eigene Firma, Bankkonto und
+    Fristen übernimmt er von der Demo-Rechnung ``invoice_id``, dazu die Leitweg-ID der anderen Beispiele. Liefert die ID."""
+    import json
+    from server import handlers
+    inv = db.get_invoice_by_id(invoice_id)
+    payload = {
+        'invoiceNumber': number, 'invoiceDate': str(inv[2]), 'deliveryDate': str(inv[25] or inv[2]),
+        'customerId': inv[13], 'ownCompanyId': inv[3],
+        'bankAccountId': next((a[0] for a in db.fetch_accounts() if a[3] == inv[32]), None),
+        'taxRate': 0.19, 'taxMode': 'mixed', 'dueDate': inv[27], 'paymentTerms': inv[26], 'buyerReference': LEITWEG_ID,
+        'items': [{'position': position, 'description': description, 'quantity': quantity, 'unit': unit, 'unitPrice': price,
+                   'taxRate': rate}
+                  for position, (description, quantity, unit, price, rate) in enumerate(MIXED_ITEMS, 1)],
+    }
+    answer = json.loads(handlers.handle_invoice_save(json.dumps(payload).encode()))
+    if not answer.get('success'):
+        sys.exit(f'mischsatz: {answer.get("error")}')
+    return answer['invoice_id']
 
 
 def _correct_delivery_date(db, invoice_id):
@@ -219,6 +258,14 @@ def _day_before(iso_date):
     return (datetime.date.fromisoformat(str(iso_date)[:10]) - datetime.timedelta(days=1)).isoformat()
 
 
+def _normal_invoice(db):
+    """Die Rechnung, aus der die Beispiele entstehen: die jüngste mit 19 % im Kopf – keine Stornorechnung und nie ein Beleg mit Steuersatz
+    je Position (``Invoices.MixedTaxRates``): Bei ihm ist der Satz im Kopf nur ein Platzhalter (der höchste Satz der Positionen)."""
+    from db.invoices import InvoiceCol, has_mixed_rates
+    return next(i for i in db.fetch_invoices()
+                if float(i[35] or 0) in (19, 0.19) and i[50] != 'storno' and not has_mixed_rates(i[InvoiceCol.MIXED_TAX_RATES]))
+
+
 def main(outdir):
     from db import Database
     from export.invoice_files import generate_invoice_documents
@@ -227,7 +274,7 @@ def main(outdir):
     os.makedirs(outdir, exist_ok=True)
     _setup_demo()
     db = Database()
-    normal = next(i for i in db.fetch_invoices() if float(i[35] or 0) in (19, 0.19) and i[50] != 'storno')
+    normal = _normal_invoice(db)
     with db._get_connection() as c:                      # nur in der temporären DB
         c.execute("UPDATE Invoices SET Status='draft', BuyerRouteID=? WHERE ID=?",
                   (LEITWEG_ID, normal[0]))
@@ -243,8 +290,12 @@ def main(outdir):
     tax_number_id = _clone_for_correction(db, normal[0], 'SN-DEMO-1', seller_vat_id=tax_number)
     tax_number_exempt_id = _clone_as_exempt(db, normal[0], 'SK-DEMO-2', seller_vat_id=tax_number)
 
+    # Steuersatz je Position: Positionen zu 19 % und 7 % – zwei Steueraufschlüsselungen, die Steuer je Satz aus der Nettosumme der Gruppe
+    mixed_id = _mixed_rates_draft(db, normal[0])
+
     for label, iid in (('normalfall', normal[0]), ('kleinunternehmer', exempt_id), ('skonto', skonto_id),
-                       ('steuernummer', tax_number_id), ('steuernummer-kleinunternehmer', tax_number_exempt_id)):
+                       ('steuernummer', tax_number_id), ('steuernummer-kleinunternehmer', tax_number_exempt_id),
+                       ('mischsatz', mixed_id)):
         result = generate_invoice_documents(db, iid, with_xml=False, overwrite_sent=True)
         if result['error']:
             sys.exit(f'{label}: {result["error"]}')

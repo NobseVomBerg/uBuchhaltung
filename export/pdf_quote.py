@@ -17,7 +17,7 @@ from db import Database
 from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path,
                        safe_filename_component)
 from . import pdf_document as D
-from .einvoice_model import small_business_note, tax_id_kind, unit_display
+from .einvoice_model import log_unflagged_rates, per_item_rates, small_business_note, tax_id_kind, unit_display
 
 
 def _pct(tax_rate):
@@ -134,12 +134,22 @@ def generate_quote_pdf(db: Database, quote_id: int):
 
     items = [{'pos': it[2], 'quantity': it[5], 'unit': unit_display(it[6]),
               'description': it[4], 'price': it[7], 'total': it[8]} for it in items_rows]
+    # Steuersatz je Position (``Invoices.MixedTaxRates``): je Position ihr Satz, im Summenblock eine Zeile je Satzgruppe – nur mit dem
+    # Kennzeichen, nie nach den Sätzen der Positionen. ``tax_rate`` ist bei so einem Beleg nur ein Platzhalter und wird nicht gedruckt
+    per_item = per_item_rates(quote, items_rows, tax_rate)
+    if per_item is not None:
+        for item, rate in zip(items, per_item.item_rates):
+            item['rate'] = rate
+    else:
+        log_unflagged_rates(quote, items_rows, tax_rate)             # nur das Log; gedruckt wird wie immer
     # Ohne Umsatzsteuerausweis (§ 19 UStG) steht der Hinweis unter den Summen – es sei denn, Einleitung oder Schluss
     # (Richtext) zitieren das Gesetz schon; Positionstexte zählen nicht
     tax_note = small_business_note(tax_rate, intro_text, closing_text)
     D.draw_item_table(flow, items, tax_rate_pct=_pct(tax_rate),
                       sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross,
-                      show_tax=show_tax, tax_note=tax_note)
+                      show_tax=show_tax, tax_note=tax_note,
+                      tax_groups=None if per_item is None else per_item.groups,
+                      document_number='' if per_item is None else per_item.number)
 
     # Schlusstext: eine Zeile tiefer beginnen, dann seitenweise fließen lassen
     D.flow_richtext(flow, closing_text, size=10, leading=14, gap_before=20)

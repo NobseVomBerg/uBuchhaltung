@@ -1,7 +1,20 @@
 {
   "_comment": "Tabellen des Erzeugers demo_history.py (nur Demo-Modus, UBUCHHALTUNG_DEMO=1). Alle Namen, Texte und Beträge sind erfunden; Kunden (customer_number) und Artikel stammen aus den Test-Seeddaten. Auswahl je Monat über zlib.crc32 – kein Zufall. Geladen mit Decimal für Dezimalzahlen: Beträge in Euro.",
   "profiles": {
-    "full": {"years_back": 3},
+    "full": {
+      "years_back": 3,
+      "mixed_example": {
+        "days_ago": 45,
+        "customer_number": "K010",
+        "due_days": 14,
+        "items": [
+          {"description": "Fachbücher", "quantity": 4, "unit": "C62", "price": 25.00, "tax_rate": 7},
+          {"description": "Lieferung und Montage", "quantity": 1, "unit": "C62", "price": 100.00, "tax_rate": 19}
+        ],
+        "first_percent": 40,
+        "second_after_days": 21
+      }
+    },
     "test": {"years_back": 1}
   },
   "recent_days": 14,

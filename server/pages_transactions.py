@@ -11,7 +11,7 @@ from db import Database
 from money import fmt_eur
 from db.matching import bank_effect, is_bank_effective, is_mirror_row, purpose_in_counter
 from db.invoices import InvoiceCol
-from db.invoice_payments import PAYABLE_STATUSES
+from db.invoice_payments import PAYABLE_STATUSES, has_mixed_rates
 from .pages import Header1, Header2, Header3, Footer, script_json
 from .pages_invoice import revenue_coa_choice
 from .period import period_filter_widget
@@ -38,6 +38,11 @@ def _tax_text(tax):
 # „Buchung vollständig gebucht“ und ein grün gefärbter Betrag läsen sich wie ein Geldeingang. Fester Text, wird beim Ausgeben maskiert.
 RECEIVABLE_HINT = ('Forderung an einen Kunden: kein Geldeingang und noch keine Einnahme. Bei einer Rechnung entsteht sie mit dem Versenden; '
                    'der Zahlungseingang wird später an der Rechnung zugeordnet.')
+
+
+def _receivable_badge():
+    """Das graue Abzeichen „Forderung“ – für die Einzelzeile, die Gruppe von Forderungen und ihre Kindzeilen EIN Element mit EINEM Hinweistext (maskiert)."""
+    return f"<span class='badge bg-gray' title='{_attr(RECEIVABLE_HINT)}'>Forderung</span>"
 
 
 # Das Skript des Abschnitts „Belege“ der Maske (nach ``receipt_links.LINK_WIDGET_JS`` und den Daten ``TX_LINK_BOOKING_ID``/
@@ -231,7 +236,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     'account_id': inv[30],          # BankAccountId
                     'document_nr': inv[1] or '',
                     'text': f"Zahlung Rechnung {inv[1] or ''}".strip(),
-                    'revenue_choice': revenue_coa_choice(db, inv[35], selected=revenue_coa_id),
+                    'revenue_choice': revenue_coa_choice(db, inv[35], selected=revenue_coa_id,
+                                                         mixed=has_mixed_rates(inv[InvoiceCol.MIXED_TAX_RATES])),
                 }
                 edit_recipient = _html.escape(prefill['recipient'])
                 edit_text = _html.escape(prefill['text'])
@@ -1246,9 +1252,12 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
          "<th>SKR</th><th>Beleg-Nr.</th><th>Aktionen</th></tr>")
 
     bookings = db.fetch_bookings_grouped(date_from, date_to)
-    # Welche Einzelzeilen sind die Forderung einer Rechnung? EINE Abfrage für die ganze Liste, nicht je Zeile.
-    receivable_ids = db.receivable_entry_ids(
-        item['booking'][0] for item in bookings if item['type'] == 'normal')
+    # Welche eigenständigen Sätze sind die Forderung einer Rechnung – die Einzelzeilen und die Mitglieder einer Gruppe (Beleg ohne Bankbewegung, etwa die
+    # Forderungen einer Rechnung mit mehreren Steuersätzen)? EINE Abfrage für die ganze Liste, nicht je Zeile. Die Sätze unter einer Bankbewegung gehören
+    # nicht dazu: Eine Forderung ist nie ihr Kind.
+    standalone = [item['booking'] for item in bookings if item['type'] == 'normal']
+    standalone += [member['booking'] for item in bookings if item['type'] == 'group' for member in item.get('children', [])]
+    receivable_ids = db.receivable_entry_ids(booking[0] for booking in standalone)
 
     # ROHE Namen: escaped wird erst bei der Ausgabe (die Zellen escapen selbst;
     # doppeltes Escaping machte aus '&' sichtbares '&amp;')
@@ -1309,6 +1318,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             # Entspricht dem gleichen Check wie bei Einzelbuchungen (booking[8] = COA_ID).
             children     = item.get('children', [])
             all_booked   = bool(children) and all(ch['booking'][8] is not None for ch in children)
+            all_receivables = bool(children) and all(ch['booking'][0] in receivable_ids for ch in children)
             # Suche über ALLE Kinder (nicht nur das erste): aggregierte
             # data-Attribute, damit Begriffe aus Kind 2+ die Gruppe finden
             search_recip = _attr(' '.join(ch['booking'][6] or ''
@@ -1318,6 +1328,13 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             status_badge = ("<span class='badge bg-green' title='Buchung vollständig gebucht'>✓</span>"
                             if all_booked else "")
             row_class    = 'transaction-row group-row row-ok' if all_booked else 'transaction-row group-row'
+            amount_style = f" style='color:{amount_color}'"
+            if all_receivables:
+                # Lauter Forderungen (eine Rechnung mit mehreren Steuersätzen bucht je Satz eine): wie die einzelne Forderung weder gebucht noch Geld –
+                # kein Haken, kein grüner Hintergrund, kein Grün/Rot am Betrag. Eine gemischte Gruppe bleibt, wie sie ist.
+                status_badge = _receivable_badge()
+                row_class    = 'transaction-row group-row'
+                amount_style = ''
             s+= (f"<tr class='{row_class}' "
                  f"data-group-id='{gid}' "
                  f"data-account-id='{account_id or ''}' "
@@ -1332,7 +1349,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             s+= f"<td>{date_booking}</td>"
             s+= f"<td title='{first_recip}'>{first_recip}</td>"
             s+= f"<td title='{first_text}'>{first_text}</td>"
-            s+= f"<td style='color:{amount_color}'>{fmt_eur(amount, symbol=False)}</td>"
+            s+= f"<td{amount_style}>{fmt_eur(amount, symbol=False)}</td>"
             s+= f"<td>{currency}</td>"
             s+= f"<td></td>"
             s+= f"<td title='{_attr(account_name)}'>{_html.escape(str(account_name))}</td>"
@@ -1529,13 +1546,21 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             if (coa_id and coa_id in private_coa_ids) or (counter_coa_id and counter_coa_id in private_coa_ids):
                 doc_number = 'privat'
             amount_color = 'green' if (amount or 0) > 0 else 'red'
-            status_badge = ("<span class='badge bg-green' title='Buchung vollst\u00e4ndig gebucht'>\u2713</span>"
-                            if coa_id else "")
+            amount_style = f" style='color:{amount_color}'"
+            if booking_id in receivable_ids:
+                # Die Forderung einer Rechnung als Mitglied einer Gruppe (je Steuersatz eine): wie die Einzelzeile – kein Haken, kein Grün/Rot am
+                # Betrag. Die Sätze unter einer Bankbewegung stehen nie in ``receivable_ids`` (nach ihnen fragt die Liste nicht): Sie bleiben, wie sie sind.
+                status_badge = _receivable_badge()
+                amount_style = ''
+            elif coa_id:
+                status_badge = "<span class='badge bg-green' title='Buchung vollst\u00e4ndig gebucht'>\u2713</span>"
+            else:
+                status_badge = ""
             s+= (f"<tr class='child-row' data-parent-group='{gid}' style='display:none'>")
             s+= f"<td class='child-indent'>{date_booking}</td>"
             s+= f"<td title='{recipient}'>{recipient}</td>"
             s+= f"<td title='{text}'>{text}</td>"
-            s+= f"<td style='color:{amount_color}'>{fmt_eur(amount or 0, symbol=False)}</td>"
+            s+= f"<td{amount_style}>{fmt_eur(amount or 0, symbol=False)}</td>"
             s+= f"<td>{currency}</td>"
             s+= f"<td>{_fmt_rate(booking[13])}</td>"
             s+= f"<td title='{_attr(account_name)}'>{_html.escape(str(account_name))}</td>"
@@ -1571,7 +1596,7 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             amount_style = f" style='color:{amount_color}'"
             if booking_id in receivable_ids:
                 # Die Forderung entsteht mit dem Versenden der Rechnung: weder gebucht noch Geld – kein Haken, kein Grün/Rot am Betrag
-                status_badge = f"<span class='badge bg-gray' title='{_attr(RECEIVABLE_HINT)}'>Forderung</span>"
+                status_badge = _receivable_badge()
                 amount_style = ''
             elif coa_id:
                 status_badge = "<span class='badge bg-green' title='Buchung vollst\u00e4ndig gebucht'>\u2713</span>"
