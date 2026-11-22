@@ -46,7 +46,8 @@ from db.invoice_repair import REBUILD_WARNING
 from db.numbering import NumberRangeError, number_format_error
 from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
 from db.accounts import DEFAULT_CASH_ACCOUNT
-from money import to_minor, from_minor, multiply, tax_from_net, tax_from_gross, round_minor, fmt_eur
+from money import to_minor, from_minor, multiply, tax_from_gross, round_minor, fmt_eur
+from tax_groups import rate_groups
 from decimal import Decimal
 
 try:
@@ -3259,7 +3260,7 @@ def recompute_invoice_totals(items, default_rate_pct):
     Den vom Client gelieferten Summen wird NICHT vertraut – sie werden hier aus
     Menge x Einzelpreis je Position neu berechnet (kaufmaennische Rundung auf
     Cent, exakte Integer-Addition in Minor Units). Die Steuer wird je
-    Steuersatz-Gruppe gerundet.
+    Steuersatz-Gruppe gerundet (``tax_groups.rate_groups``).
 
     Args:
         items: Liste der Positions-Dicts (quantity, unitPrice, taxRate).
@@ -3272,19 +3273,17 @@ def recompute_invoice_totals(items, default_rate_pct):
         (gleiche Reihenfolge wie items).
     """
     line_net_minors = []
-    net_by_rate = {}                      # Decimal(rate_pct) -> Netto-Summe (Minor)
+    taxed_lines = []                      # je Position: (Satz in Prozent, Netto in Minor)
     for item in items:
         qty = item.get('quantity')
         qty = 1 if qty in (None, '') else qty
         price_minor = to_minor(item.get('unitPrice') or 0)
         line_net = round_minor(multiply(price_minor, qty), 2)
         line_net_minors.append(line_net)
-        rate = _rate_to_pct(item.get('taxRate'), default_rate_pct)
-        net_by_rate[rate] = net_by_rate.get(rate, 0) + line_net
+        taxed_lines.append((_rate_to_pct(item.get('taxRate'), default_rate_pct), line_net))
 
     sum_net_minor = sum(line_net_minors)
-    tax_minor = sum(round_minor(tax_from_net(net, rate), 2)
-                    for rate, net in net_by_rate.items())
+    tax_minor = sum(group.tax for group in rate_groups(taxed_lines))
     gross_minor = sum_net_minor + tax_minor
 
     return (from_minor(sum_net_minor), from_minor(tax_minor),

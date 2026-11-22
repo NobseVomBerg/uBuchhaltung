@@ -1102,7 +1102,12 @@ kein Subagent darauf:
   (`Database.receivable_entry_ids`, EINE Abfrage je Seite; Gruppen- und Kindzeilen bleiben, wie sie waren,
   `tests/test_receivable_row.py`). Stufe 7 des
   Auto-Abgleichs setzt sie erst auf `resolved`, wenn die Summe der Sätze „… an 10000“ mit gleicher
-  Beleg-Nr. den Forderungsbetrag erreicht; `unassign` setzt das zurück. Die Forderung geht mit der
+  Beleg-Nr. den Forderungsbetrag erreicht – seit 2.6.8 ist das die Summe ALLER eigenständigen Forderungszeilen der Beleg-Nr.
+  (`COA` = Debitoren, ohne Bankbewegung, auch die schon `resolved`; heute genau eine je Rechnung, eine Rechnung mit mehreren
+  Steuersätzen bekommt je Satz eine; dieselbe Auswahl an beiden Stellen – `_after_payment_removed` über `_standalone_receivable_rows`, Stufe 7 liest sie für alle Nummern in EINER Abfrage, weil `DocumentNumber` keinen Index hat): Sie werden gemeinsam
+  `resolved` (der Zähler `resolved` des Abgleichs zählt die geänderten Zeilen), nie eine für sich – die kleinere gälte nach einer
+  Teilzahlung sonst zu früh als ausgeglichen –, und `unassign` (`_after_payment_removed`) setzt sie gemeinsam zurück, sobald die
+  Summe nicht mehr gedeckt ist; bei genau einer Zeile ist alles wie vorher (`tests/test_receivable_resolution.py`). Die Forderung geht mit der
   letzten Zahlung, wenn der Status der Rechnung kein Forderungsstatus ist (`RECEIVABLE_STATUSES`, z. B.
   eine von Hand stornierte Rechnung: Altbestand oder ohne positiven Betrag) – gleicher Endzustand, egal ob erst storniert oder erst
   entfernt wird; **entfernt wird nur die Forderung, die die App selbst gebucht hat** (`_receivable_removal`:
@@ -1620,6 +1625,16 @@ kein Subagent darauf:
   `cii_invoice.py` (eingebettet) und `xrechnung_invoice.py` (UBL, Download).
   Der PDF/A-Aufbau liegt in `export/pdfa.py` und gilt für **alle** PDFs
   (Angebot, Stundenzettel …); nur Rechnungen bekommen das XML
+- **Steuer je Satzgruppe (`tax_groups.py`, seit 2.6.8):** `rate_groups` ist die EINE Stelle, die die Steuer eines Belegs je Satz rechnet (rein:
+  nur `money`, keine Datenbank, keine Uhr; für beliebig viele und beliebige Sätze – nie „19 und 7“ fest): Steuer je Satz aus der Summe der
+  Nettobeträge der Gruppe, kaufmännisch auf den Cent gerundet (EN 16931, BR-CO-17), Belegsteuer = Summe der Gruppen, Satz absteigend.
+  `handlers.recompute_invoice_totals` (Summen beim Speichern) und `einvoice_model.build_einvoice` (die Steuer je Gruppe der Aufschlüsselung; die
+  Gruppe des Dokuments bleibt (Kategorie, Satz)) rechnen darüber. `rate_pct` ist die Regel von `einvoice_model.rate_to_pct` ohne Vorgabewert;
+  `handlers._rate_to_pct` ist davon bewusst nicht abgeleitet (sie rundet nicht auf zwei Stellen) – jede Stelle behält ihre Zahlen.
+  `tests/test_single_rate_snapshots.py` hält am Stand 2.6.6 fest, was ein Beleg mit einem Satz bucht und ausgibt – ändert sich ein
+  Schnappschuss, ist der Code zu ändern, nie die Datei (`tests/single_rate_golden_2_6_6.json`); `tests/test_tax_rate_readers.py` führt die
+  Lesestellen des Belegsteuersatzes (eine neue schlägt an: prüfen, ob sie mit einem Beleg mit mehreren Sätzen richtig umgeht);
+  `tests/test_tax_groups.py`
 - **Schriften:** Liberation Sans (2.x, OFL 1.1) aus `export/fonts/` – metrisch
   = Helvetica, daher Layout unverändert; als Untermenge per `fontTools`
   eingebettet, Content-Streams bleiben WinAnsi. sRGB-ICC für den OutputIntent

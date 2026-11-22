@@ -27,8 +27,9 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import List, Optional, Tuple
 
 from db.invoice_lock import STORNO_KIND
-from money import SCALE, format_de, round_minor, tax_from_net, to_minor
+from money import SCALE, format_de, to_minor
 from richtext import sanitize_richtext
+from tax_groups import rate_groups
 
 # Spaltenindizes der Invoices-Zeile (``SELECT *``), siehe db/schema.py
 _INV = dict(
@@ -579,14 +580,16 @@ def build_einvoice(db, invoice, items) -> EInvoice:
         warnings.append(msg)
         print(f"E-Rechnung {_text(col('number'))}: {msg}")
 
-    # Steueraufschlüsselung je (Kategorie, Satz); Steuer je Gruppe auf Cent gerundet
+    # Steueraufschlüsselung je (Kategorie, Satz); Steuer je Gruppe auf Cent gerundet. Die Gruppe des Dokuments bleibt
+    # (Kategorie, Satz) – rate_groups gruppiert nur nach dem Satz –, die Steuer einer Gruppe rechnet dieselbe Regel wie die
+    # Summen der Rechnung (tax_groups.rate_groups: Steuer aus der Nettosumme der Gruppe)
     groups = {}
     for ln in lines:
         groups[(ln.tax_category, ln.tax_rate)] = groups.get(
             (ln.tax_category, ln.tax_rate), 0) + ln.net
     breakdown = []
     for (category, rate), basis in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1])):
-        amount = 0 if category in ('E', 'Z') else round_minor(tax_from_net(basis, rate), 2)
+        amount = 0 if category in ('E', 'Z') else rate_groups([(rate, basis)])[0].tax
         breakdown.append(TaxBreakdown(
             category=category, rate=rate, basis=basis, amount=amount,
             exemption_reason=EXEMPT_REASON_KLEINUNTERNEHMER if category == 'E' else ''))

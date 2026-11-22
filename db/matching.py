@@ -907,6 +907,21 @@ class MatchingMixin:
             f"AND CounterCOA_ID IN ({marks})", [number, *debtor_coa_ids])
         return cursor.fetchone()[0]
 
+    @staticmethod
+    def _standalone_receivable_rows(cursor, number, debtor_coa_ids):
+        """Die eigenständigen Forderungszeilen einer Beleg-Nr. – Debitoren als ``COA``, an keiner Bankbewegung – als
+        ``[(ID, Betrag in Minor Units, Status)]``: alle, auch die schon ``resolved``. Eine Beleg-Nr. kann mehrere tragen (eine
+        Rechnung mit mehreren Steuersätzen bucht je Satz eine). Ob die Zahlungen (``_debtor_settled_minor``) sie ausgleichen
+        (``money.is_covered``), entscheidet ihre SUMME – nie eine Zeile für sich: Stufe 7 des Auto-Abgleichs löst alle noch offenen
+        gemeinsam auf, das Entfernen einer Zahlung (``_after_payment_removed``) nimmt alle aufgelösten gemeinsam zurück. Nicht
+        dasselbe wie ``_receivable_rows`` (``receivable_condition``, auch die als Kind angehängte Forderung)."""
+        marks = ','.join('?' * len(debtor_coa_ids))
+        cursor.execute(
+            f"SELECT ID, Amount, Status FROM Bookings WHERE BookingType = 'entry' "
+            f"AND ParentBooking_ID IS NULL AND DocumentNumber = ? AND COA_ID IN ({marks}) ORDER BY ID",
+            [number, *debtor_coa_ids])
+        return cursor.fetchall()
+
     def get_linked_entry_for_bank(self, bank_booking_id: int):
         """Hole die wichtigsten Felder des ersten verknüpften Entry-Bookings.
 
@@ -1360,9 +1375,12 @@ class MatchingMixin:
             ein früheres Datum als die spätere Zahlung und können daher
             nie per Datum matchen.  Erreicht die Summe der bereits
             verknüpften Sätze „… an Debitoren“ (gleiche DocumentNumber,
-            CounterCOA=Debitoren) den Betrag des Debitoren-Entry, wird er
-            als Status='resolved' markiert – nicht schon nach der ersten
-            Teilzahlung (``money.is_covered``).
+            CounterCOA=Debitoren) den Betrag der Debitoren-Entries der
+            Nummer, werden sie als Status='resolved' markiert – nicht schon
+            nach der ersten Teilzahlung (``money.is_covered``).  Trägt eine
+            DocumentNumber mehrere Debitoren-Entries, zählt ihre Summe (auch
+            der schon aufgelösten) und alle noch offenen werden gemeinsam
+            aufgelöst (``_standalone_receivable_rows``).
 
         Nach dem Linken wird der Text der Bank-Buchung durch den Text der
         Entry-Buchung ersetzt (WISO-kuratierter Text hat Vorrang).
@@ -2009,9 +2027,14 @@ class MatchingMixin:
         # und haben ein früheres Datum als Bank- und Zahlungsbuchungen.
         # Sie können nie per Datum-Match verknüpft werden.
         # Lösung: Gleichen die bereits verknüpften Zahlung-Entries (CounterCOA =
-        # Debitoren) mit gleicher DocumentNumber zusammen den Betrag des
-        # Debitoren-Entry aus, setze Status = 'resolved' auf ihm – bei einer
-        # Teilzahlung bleibt er offen.
+        # Debitoren) mit gleicher DocumentNumber zusammen den Betrag der
+        # Debitoren-Entries aus, setze Status = 'resolved' auf ihnen – bei einer
+        # Teilzahlung bleiben sie offen. Eine DocumentNumber kann MEHRERE
+        # Debitoren-Entries tragen (eine Rechnung mit mehreren Steuersätzen bucht
+        # je Satz eine): Verglichen wird die Summe ALLER eigenständigen Zeilen der
+        # Nummer (auch der schon aufgelösten), aufgelöst werden dann alle noch
+        # offenen gemeinsam – nie eine für sich, sonst gälte die kleinere nach einer
+        # Teilzahlung zu früh als ausgeglichen.
         cursor.execute('''
             SELECT ID FROM ChartOfAccounts
             WHERE AccountNumber = 10000
@@ -2020,28 +2043,47 @@ class MatchingMixin:
         resolved_count = 0
         if debitoren_row:
             debitoren_coa_id = debitoren_row[0]
+            # Alle eigenständigen Forderungszeilen und alle Zahlungen auf den Debitor je einmal lesen und nach Beleg-Nr. ordnen
+            # (kein Index auf DocumentNumber: je Nummer nachzuschlagen wäre quadratisch). Dieselbe Auswahl wie
+            # ``_standalone_receivable_rows`` und ``_debtor_settled_minor``.
             cursor.execute('''
-                SELECT ID, DocumentNumber, Amount
+                SELECT DocumentNumber, ID, Amount, Status
                 FROM Bookings
                 WHERE BookingType = 'entry'
                   AND ParentBooking_ID IS NULL
                   AND COA_ID = ?
-                  AND (Status IS NULL OR Status != 'resolved')
+                ORDER BY ID
             ''', (debitoren_coa_id,))
-            debitoren_entries = cursor.fetchall()
+            entries_by_number = {}
+            for doc_nr, deb_id, amount, status in cursor.fetchall():
+                if doc_nr:
+                    entries_by_number.setdefault(doc_nr, []).append((deb_id, amount, status))
+            cursor.execute('''
+                SELECT DocumentNumber, COALESCE(SUM(Amount), 0)
+                FROM Bookings
+                WHERE BookingType = 'entry'
+                  AND ParentBooking_ID IS NOT NULL
+                  AND CounterCOA_ID = ?
+                GROUP BY DocumentNumber
+            ''', (debitoren_coa_id,))
+            settled_by_number = dict(cursor.fetchall())
 
-            for deb_id, doc_nr, deb_amount in debitoren_entries:
-                if not doc_nr:
-                    continue
+            for doc_nr, debitoren_entries in entries_by_number.items():
+                if all(status == 'resolved' for _id, _amount, status in debitoren_entries):
+                    continue                    # nichts mehr offen
+                deb_amount = sum(amount or 0 for _id, amount, _status in debitoren_entries)
                 # Summe der verknüpften Zahlung-Entries mit gleicher DocNr
                 # und CounterCOA = Debitoren (d.h. Zahlungen auf den Debitor)
-                settled = self._debtor_settled_minor(cursor, doc_nr, [debitoren_coa_id])
-                if is_covered(deb_amount or 0, settled):
-                    cursor.execute(
-                        "UPDATE Bookings SET Status = 'resolved'"
-                        " WHERE ID = ?",
-                        (deb_id,))
-                    resolved_count += 1
+                settled = settled_by_number.get(doc_nr, 0)
+                if not is_covered(deb_amount, settled):
+                    continue
+                for deb_id, _amount, status in debitoren_entries:
+                    if status != 'resolved':
+                        cursor.execute(
+                            "UPDATE Bookings SET Status = 'resolved'"
+                            " WHERE ID = ?",
+                            (deb_id,))
+                        resolved_count += 1
 
         conn.commit()
         conn.close()

@@ -873,7 +873,8 @@ class InvoicePaymentsMixin:
 
         * Die Forderung gilt wieder als offen, wenn die übrigen Sätze „… an Debitoren“ sie nicht
           mehr ausgleichen (Stufe 7 des Auto-Abgleichs hatte sie auf 'resolved' gesetzt, siehe
-          ``money.is_covered``).
+          ``money.is_covered``). Trägt die Rechnungsnummer mehrere Forderungszeilen, zählt ihre
+          Summe, und alle aufgelösten gehen gemeinsam zurück (``_standalone_receivable_rows``).
         * AmountDue und Status der Rechnung werden neu gerechnet.
         * Ist keine Zahlung mehr übrig und der Status der Rechnung kein Forderungsstatus
           (storniert, Entwurf, abgeschlossen), geht auch die Forderungsbuchung – so wie beim
@@ -890,15 +891,12 @@ class InvoicePaymentsMixin:
         debtor_ids = [r[0] for r in conn.execute(
             'SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?', (self.DEBTOR_ACCOUNT_NUMBER,))]
         if debtor_ids:
-            marks = ','.join('?' * len(debtor_ids))
-            standalone = conn.execute(
-                f"SELECT ID, Amount, Status FROM Bookings WHERE BookingType = 'entry' "
-                f"AND ParentBooking_ID IS NULL AND DocumentNumber = ? AND COA_ID IN ({marks})",
-                [number] + debtor_ids).fetchall()
-            for booking_id, amount, status in standalone:
-                if status == 'resolved' and not is_covered(
-                        amount or 0, self._debtor_settled_minor(conn.cursor(), number, debtor_ids)):
-                    conn.execute('UPDATE Bookings SET Status = NULL WHERE ID = ?', (booking_id,))
+            standalone = self._standalone_receivable_rows(conn.cursor(), number, debtor_ids)
+            receivable = sum(amount or 0 for _id, amount, _status in standalone)
+            if not is_covered(receivable, self._debtor_settled_minor(conn.cursor(), number, debtor_ids)):
+                for booking_id, _amount, status in standalone:
+                    if status == 'resolved':
+                        conn.execute('UPDATE Bookings SET Status = NULL WHERE ID = ?', (booking_id,))
         self._recalc_invoice(conn, invoice_id)
 
         status = conn.execute('SELECT Status FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()[0]
