@@ -847,23 +847,25 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             }, false);
         });
 
-        // Im Demo-Modus fehlen Ablage und Dateiauswahl: ohne Element kein Hörer (sonst bräche das Skript hier ab)
-        const dropZone = document.getElementById('dropZone');
-        const fileInput = document.getElementById('fileInput');
-        const uploadStatus = document.getElementById('uploadStatus');
-
-        if (dropZone) {
-            dropZone.addEventListener('dragenter', (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.add('hover'); });
-            dropZone.addEventListener('dragover',  (e) => { e.preventDefault(); e.stopPropagation(); });
-            dropZone.addEventListener('dragleave', (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.remove('hover'); });
-            dropZone.addEventListener('drop', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                dropZone.classList.remove('hover');
-                uploadFiles(e.dataTransfer.files);
-            });
-        }
-        if (fileInput) { fileInput.addEventListener('change', (e) => { uploadFiles(e.target.files); }); }
+        // Die Ablage (#dropZone, #fileInput, #uploadStatus) steht im rechten Bereich, den openEditForm per innerHTML austauscht – danach sind es
+        // neue Elemente. Darum hängen die Hörer am body (nicht an document: die Schleife oben stoppt die Ereignisse dort) und suchen die Ablage
+        // bei jedem Ereignis neu; ein Hörer an einem Element ginge mit dem Austausch verloren. Im Demo-Modus fehlen Ablage und Dateiauswahl:
+        // Die Hörer finden dann nichts und tun nichts.
+        const dropZoneOf = (e) => {
+            const target = e.target && e.target.nodeType === 3 ? e.target.parentElement : e.target;   // ein Textknoten als Ziel: sein Element
+            return target && target.closest ? target.closest('#dropZone') : null;
+        };
+        document.body.addEventListener('dragenter', (e) => { const zone = dropZoneOf(e); if (zone) zone.classList.add('hover'); });
+        document.body.addEventListener('dragleave', (e) => { const zone = dropZoneOf(e); if (zone) zone.classList.remove('hover'); });
+        document.body.addEventListener('drop', (e) => {
+            const zone = dropZoneOf(e);
+            if (!zone) return;
+            zone.classList.remove('hover');
+            uploadFiles(e.dataTransfer.files);
+        });
+        document.body.addEventListener('change', (e) => {
+            if (e.target && e.target.id === 'fileInput') uploadFiles(e.target.files);
+        });
 
         let currentImportId = null;
 
@@ -889,27 +891,41 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         // Doppel-Uploads verhindern: während Upload/Analyse läuft, weitere
         // Datei-Auswahl bzw. Drops ignorieren und den Auswahl-Button sperren.
         let uploadBusy = false;
+        // Knopf, Statusbereich und Dateifeld der Ablage werden bei jedem Gebrauch neu gesucht (siehe oben): Die Maske kann auch während des
+        // Hochladens wechseln. Fehlt ein Element (Demo-Modus, Maske gerade getauscht), entfällt der Schritt.
+        function dropZoneButton() {
+            const zone = document.getElementById('dropZone');
+            return zone ? zone.querySelector('button') : null;
+        }
+        function clearUploadStatus() {
+            const box = document.getElementById('uploadStatus');
+            if (box) box.innerHTML = '';
+        }
         function uploadFiles(files) {
             if (files.length === 0) return;
             if (uploadBusy) { appMsg('Upload läuft bereits – bitte warten.', 'warn'); return; }
             uploadBusy = true;
-            dropZone.querySelector('button').disabled = true;
-            uploadStatus.innerHTML = '<p>Lade hoch & analysiere ...</p>';
+            const startButton = dropZoneButton();
+            if (startButton) startButton.disabled = true;
+            const waitBox = document.getElementById('uploadStatus');
+            if (waitBox) waitBox.innerHTML = '<p>Lade hoch & analysiere ...</p>';
             const formData = new FormData();
             for (let i = 0; i < files.length; i++) { formData.append('files', files[i]); }
             fetch('/upload_receipts', { method: 'POST', body: formData })
                 .then(r => r.json())
                 .then(data => {
-                    uploadStatus.innerHTML = '';
+                    clearUploadStatus();
                     if (data.error) { appMsg('Fehler: ' + data.error, 'error'); return; }
                     currentImportId = data.import_id;
                     renderPreview(data);
                 })
-                .catch(err => { uploadStatus.innerHTML = ''; appMsg('Fehler beim Hochladen: ' + err, 'error'); })
+                .catch(err => { clearUploadStatus(); appMsg('Fehler beim Hochladen: ' + err, 'error'); })
                 .finally(() => {
                     uploadBusy = false;
-                    dropZone.querySelector('button').disabled = false;
-                    fileInput.value = '';   // gleiche Datei erneut wählbar
+                    const endButton = dropZoneButton();
+                    if (endButton) endButton.disabled = false;
+                    const picker = document.getElementById('fileInput');
+                    if (picker) picker.value = '';   // gleiche Datei erneut wählbar
                 });
         }
 

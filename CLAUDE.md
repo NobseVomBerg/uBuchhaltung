@@ -1347,6 +1347,10 @@ kein Subagent darauf:
 ### Kontoauszug-Import (CAMT.053 + PDF + CSV)
 - Ein Weg für alle Formate: Parser in `importers/` liefern `BankStatement` (`base.py`) →
   `server/upload_handler.py` → Vorschau `server/import_preview.py` (Duplikate, Warnungen) → bestätigen
+- **Die Ablage der Seite *Buchungen* (seit 2.6.9):** `#dropZone`, `#fileInput` und `#uploadStatus` stehen in dem Bereich, den `openEditForm`
+  austauscht – nach dem Öffnen einer Buchung sind es neue Elemente. Ihre Hörer hängen deshalb an `document.body` (nicht an `document`: die
+  Schleife der Zieh-Ereignisse hält sie dort an) und suchen die Elemente bei jedem Ereignis neu; nie eine Konstante oder ein Hörer an diesen
+  Elementen (`tests/test_statement_upload_listeners.py`)
 - CAMT (`importers/camt.py`): Storno-Richtung = `CdtDbtInd` (ISO 20022); Saldoprüfung exakt in
   Decimal/Minor Units, nie als float-Summe; DTD/Entities werden abgelehnt (der XML-Wächter liegt seit 2.6.0 in
   `importers/safe_xml.py`, `parse_untrusted_xml`; die Belegerkennung nutzt dieselbe Stelle), ZIP nur im Speicher mit
