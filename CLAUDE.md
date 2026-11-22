@@ -1105,8 +1105,12 @@ kein Subagent darauf:
   Stellen suchen die Forderung über diese Bedingung (auch `assign_invoice_payment`,
   `get_receivable_booking`). In der Buchungsliste trägt die Forderung (eigenständige Zeile) seit 2.6.6 das graue Abzeichen „Forderung“
   statt des Hakens „Buchung vollständig gebucht“ und einen ungefärbten Betrag – sie ist kein Geldeingang und noch keine Einnahme
-  (`Database.receivable_entry_ids`, EINE Abfrage je Seite; Gruppen- und Kindzeilen bleiben, wie sie waren,
-  `tests/test_receivable_row.py`). Stufe 7 des
+  (`Database.receivable_entry_ids`, EINE Abfrage je Seite für alle eigenständigen Sätze: die Einzelzeilen und die Mitglieder der Gruppen, nie die
+  Sätze unter einer Bankbewegung). Seit 2.7.0 gilt das auch für die Gruppe „Split n×“ – eine Rechnung mit mehreren Steuersätzen bucht je Satz eine
+  Forderung, die Liste fasst sie zusammen: Sind ALLE Mitglieder Forderungen, trägt die Kopfzeile das Abzeichen statt des Hakens, keinen grünen
+  Hintergrund (`row-ok`) und einen ungefärbten Betrag, und jede Kindzeile einer Forderung trägt das Abzeichen. Eine gemischte Gruppe behält ihre
+  Kopfzeile, nur ihre Forderungs-Kindzeilen tragen das Abzeichen; was unter einer Bankbewegung steht, bleibt, wie es war
+  (`tests/test_receivable_row.py`). Stufe 7 des
   Auto-Abgleichs setzt sie erst auf `resolved`, wenn die Summe der Sätze „… an 10000“ mit gleicher
   Beleg-Nr. den Forderungsbetrag erreicht – seit 2.6.8 ist das die Summe ALLER eigenständigen Forderungszeilen der Beleg-Nr.
   (`COA` = Debitoren, ohne Bankbewegung, auch die schon `resolved`; eine Rechnung mit mehreren
