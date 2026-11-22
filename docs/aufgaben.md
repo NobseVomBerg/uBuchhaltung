@@ -27,7 +27,6 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 - Belegerkennung: aus einer Lesung einen Buchungssatz vorschlagen (Konto, Steuersatz, Betrag), gespeichert erst im Editor
 - Belegerkennung: Vorschläge auch in der Gegenrichtung – an einer Buchung die passenden gelesenen Belege nennen (heute steht die Liste nur am Beleg)
 - Belegerkennung, Vorschläge: die Abweichung zwischen Zahlbetrag und Brutto berücksichtigen (Skonto, Valuta) – heute zählt nur der gleiche Betrag auf den Cent
-- Den Upload der Seite „Buchungen“ im Demo-Modus abschalten, wie den der Seite „Belege“
 - Umsatzsteuer-Voranmeldung (ELSTER)
 - Liquiditätsrechnung: einen unstimmigen Split neben einem Übertrag kenntlich machen – heute steht sein Rest nur nachrichtlich unter den Überträgen
 - BWA: vom Nutzer pflegbare Gruppen (braucht Schemaänderung)

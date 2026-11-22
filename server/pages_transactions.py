@@ -6,6 +6,7 @@ Transactions page (Buchungen: Bankbewegungen + Buchungssätze)
 """
 import html as _html
 from decimal import Decimal
+import demo
 from db import Database
 from money import fmt_eur
 from db.matching import bank_effect, is_bank_effective, is_mirror_row, purpose_in_counter
@@ -15,6 +16,7 @@ from .pages import Header1, Header2, Header3, Footer, script_json
 from .pages_invoice import revenue_coa_choice
 from .period import period_filter_widget
 from .receipt_links import LINK_WIDGET_JS, SEARCH_MAX_LENGTH, linked_documents
+from .upload_handler import STATEMENTS_DEMO_REFUSED
 
 def _attr(s):
     """Für HTML-Attribute escapen – auch einfach-quotierte (data-*, title):
@@ -822,12 +824,18 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         </div><!-- Ende rectRounded Formular -->
         <div class="rectRounded" style="order:1">
             <h2>Kontoauszüge hochladen</h2>
-            <div id="dropZone">
+'''
+    if demo.is_active():
+        # Im Demo-Modus legt der Server keine Dateien eines Besuchers ab (``POST /upload_receipts`` ist 403): statt der Ablage steht dort der Satz
+        s+= f'            <p>{_html.escape(STATEMENTS_DEMO_REFUSED)}</p>\n'
+    else:
+        s+= '''            <div id="dropZone">
                 <p>Dateien hier ablegen (Drag & Drop) – PDF, CAMT.053 (XML/ZIP) oder CSV (Umsatzliste der DKB)</p>
                 <input type="file" id="fileInput" multiple accept=".pdf,.xml,.zip,.csv,application/pdf,text/xml,application/zip,text/csv">
                 <button onclick="document.getElementById('fileInput').click()">Oder Dateien auswählen</button>
             </div>
-            <div id="uploadStatus"></div>
+'''
+    s+= '''            <div id="uploadStatus"></div>
         </div><!-- Ende rectRounded Upload -->
     </div><!-- Ende gridRightCol -->
 
@@ -839,20 +847,23 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
             }, false);
         });
 
+        // Im Demo-Modus fehlen Ablage und Dateiauswahl: ohne Element kein Hörer (sonst bräche das Skript hier ab)
         const dropZone = document.getElementById('dropZone');
         const fileInput = document.getElementById('fileInput');
         const uploadStatus = document.getElementById('uploadStatus');
 
-        dropZone.addEventListener('dragenter', (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.add('hover'); });
-        dropZone.addEventListener('dragover',  (e) => { e.preventDefault(); e.stopPropagation(); });
-        dropZone.addEventListener('dragleave', (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.remove('hover'); });
-        dropZone.addEventListener('drop', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            dropZone.classList.remove('hover');
-            uploadFiles(e.dataTransfer.files);
-        });
-        fileInput.addEventListener('change', (e) => { uploadFiles(e.target.files); });
+        if (dropZone) {
+            dropZone.addEventListener('dragenter', (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.add('hover'); });
+            dropZone.addEventListener('dragover',  (e) => { e.preventDefault(); e.stopPropagation(); });
+            dropZone.addEventListener('dragleave', (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.remove('hover'); });
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                dropZone.classList.remove('hover');
+                uploadFiles(e.dataTransfer.files);
+            });
+        }
+        if (fileInput) { fileInput.addEventListener('change', (e) => { uploadFiles(e.target.files); }); }
 
         let currentImportId = null;
 
