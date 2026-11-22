@@ -892,11 +892,14 @@ class InvoicePaymentsMixin:
             'SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?', (self.DEBTOR_ACCOUNT_NUMBER,))]
         if debtor_ids:
             standalone = self._standalone_receivable_rows(conn.cursor(), number, debtor_ids)
-            receivable = sum(amount or 0 for _id, amount, _status in standalone)
-            if not is_covered(receivable, self._debtor_settled_minor(conn.cursor(), number, debtor_ids)):
-                for booking_id, _amount, status in standalone:
-                    if status == 'resolved':
-                        conn.execute('UPDATE Bookings SET Status = NULL WHERE ID = ?', (booking_id,))
+            # Ohne aufgelöste Zeile gibt es nichts zurückzunehmen: dann wird auch kein Betrag gelesen (wie bisher – ein Betrag,
+            # der keine Zahl ist, darf das Entfernen einer Zahlung nicht scheitern lassen)
+            if any(status == 'resolved' for _id, _amount, status in standalone):
+                receivable = sum(amount or 0 for _id, amount, _status in standalone)
+                if not is_covered(receivable, self._debtor_settled_minor(conn.cursor(), number, debtor_ids)):
+                    for booking_id, _amount, status in standalone:
+                        if status == 'resolved':
+                            conn.execute('UPDATE Bookings SET Status = NULL WHERE ID = ?', (booking_id,))
         self._recalc_invoice(conn, invoice_id)
 
         status = conn.execute('SELECT Status FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()[0]

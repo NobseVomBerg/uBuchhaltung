@@ -206,3 +206,23 @@ def test_a_single_row_stays_resolved_while_the_rest_still_covers_it(db, acct):
     db.unassign_invoice_payment(other)
 
     assert _status(db, row) == 'resolved'
+
+
+def test_removing_a_payment_does_not_read_the_amount_of_an_open_row(db, acct):
+    """Ohne aufgelöste Zeile gibt es nichts zurückzunehmen – dann wird auch kein Betrag gelesen: Ein Betrag, der keine Zahl ist (so schreibt ihn
+    nur die SQL-Konsole), lässt das Entfernen einer Zahlung nicht scheitern. So war es vor der Summenregel, und so bleibt es."""
+    invoice = _invoice(db, NUMBER, 119.00)
+    row = _receivable(db, NUMBER, 119.00)
+    payment = _pay(db, invoice, acct, 50.00)                               # Teilzahlung: die Forderung bleibt offen
+    assert _status(db, row) is None
+    con = sqlite3.connect(db.db_name)
+    try:
+        con.execute("UPDATE Bookings SET Amount = 'kein Betrag' WHERE ID = ?", (row,))
+        con.commit()
+    finally:
+        con.close()
+
+    assert db.unassign_invoice_payment(payment)                            # wirft nicht, die Zuordnung ist weg
+
+    assert _raw(db, 'SELECT COUNT(*) FROM InvoicePayments WHERE InvoiceID = ?', invoice) == [(0,)]
+    assert _status(db, row) is None
