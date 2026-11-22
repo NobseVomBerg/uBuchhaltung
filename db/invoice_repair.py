@@ -37,8 +37,9 @@ D. Den **offenen Betrag** neu rechnen. Der Status bleibt, wie er ist (eine von H
 **Kein Buchungssatz wird gelöscht oder geändert.** Neue Sätze kommen dazu (C); B löst eine Forderung vom Elternsatz und sonst
 nichts. Storno-Paare (die Rechnung hat eine Stornorechnung oder ist eine) und Rechnungen außerhalb von versendet bis bezahlt
 bekommen nur den neu gerechneten offenen Betrag (D); alles andere wird gemeldet (``skipped``), nicht angefasst. Ein Beleg mit
-Steuersatz je Position (``MixedTaxRates``) wird in dieser Version gar nicht angefasst: Probelauf und Ausführung lehnen mit
-``MIXED_NOT_BOOKABLE`` ab (409), bevor etwas geschieht.
+Steuersatz je Position (``MixedTaxRates``) gehört dazu (Grund ``mixed``): Zuordnungen und Sätze baut diese Version für ihn nicht neu auf – R1
+verlangt EIN Erlöskonto und genau EINE Forderung der App; je Satz zu verallgemeinern wäre eine neue Regel, und die Bedingungen von C werden
+nicht gelockert –, nur sein offener Betrag wird aus den Zuordnungen neu gerechnet (Probelauf und Ausführung, wie bei jedem Beleg).
 ``_booking_snapshot_unchanged`` prüft das mechanisch: Hat ein Baustein trotzdem einen vorhandenen Satz der Rechnung oder ihrer
 Bewegungen verändert (etwa den Status einer aufgelösten Forderung), wird alles zurückgenommen und nur gemeldet. Ein zweites Netz
 liest die Prüfliste nach dem Schreiben noch einmal: Nennt sie eine Kategorie, die sie vorher nicht nannte (etwa
@@ -57,8 +58,8 @@ import json
 from collections import defaultdict, namedtuple
 
 from money import fmt_eur, from_minor
-from .invoice_payments import (MIXED_NOT_BOOKABLE, NO_REVENUE_COA, PAYMENT_ROW_COLUMNS, RECEIVABLE_STATUSES, STORNO_KIND,
-                               has_mixed_rates, next_payment_status)
+from .invoice_payments import (NO_REVENUE_COA, PAYMENT_ROW_COLUMNS, RECEIVABLE_STATUSES, STORNO_KIND, has_mixed_rates,
+                               next_payment_status)
 from .invoice_versions import is_iso_date
 from .reporting import is_income_account
 
@@ -101,6 +102,8 @@ REBUILD_WARNING = ('Die neuen Buchungssätze tragen das Datum der jeweiligen Ban
                    'Buchungssatz ohne Rechnungsnummer).')
 # Warum etwas nicht angefasst wird: Schlüssel → Klartext. Platzhalter: {payment} (Zuordnung), {booking} (Bankbewegung)
 REBUILD_SKIP_REASONS = {
+    'mixed': ('Die Rechnung trägt mehrere Steuersätze – ihre Zuordnungen werden in dieser Version nicht automatisch neu aufgebaut; '
+              'nur der offene Betrag wird neu gerechnet.'),
     'storno_pair': 'Die Rechnung gehört zu einem Storno-Paar – Zahlungen und Erstattungen werden nicht automatisch neu aufgebaut.',
     'status': 'Bei diesem Status der Rechnung wird nichts neu aufgebaut (nur versendet, überfällig, teilweise oder ganz bezahlt).',
     'amount': 'Die Rechnung hat keinen positiven Betrag – es wird nichts neu aufgebaut.',
@@ -187,17 +190,23 @@ class InvoiceRepairMixin:
     # ── Vorbereitung (eigene Verbindungen, nichts wird geschrieben) ──────────
     def _rebuild_prerequisites(self, invoice_id, revenue_coa_id):
         """Was die Transaktion von außen braucht, gelesen in eigenen Verbindungen und ohne zu schreiben: das Erlöskonto der
-        Rechnung (``None``, wenn keines hinterlegt ist und der Nutzer keines gewählt hat – nie wird eines angelegt), das SKR-Konto
+        Rechnung (``None``, wenn keines hinterlegt ist und der Nutzer keines gewählt hat – nie wird eines angelegt; bei einem Beleg mit Steuersatz je
+        Position immer ``None``), das SKR-Konto
         jedes Bankkontos ihrer Zuordnungen und die eigenen Bankkonten. Returns ein Kontext-dict oder ein :class:`RebuildResult`
         (Rechnung unbekannt, gewähltes Konto kein Erlöskonto)."""
         invoice = self.get_document(invoice_id, 'invoice')
         if invoice is None:
             return RebuildResult(False, 404, REBUILD_NOT_FOUND, None, False, False)
-        revenue_coa = self.resolve_revenue_coa(invoice[35], create=False)        # Spalte 35: TaxRate
-        if revenue_coa is None and revenue_coa_id not in (None, ''):
-            revenue_coa, error = self._chosen_revenue_coa(revenue_coa_id)
-            if error:
-                return RebuildResult(False, 400, error, None, False, False)
+        if has_mixed_rates(invoice[55] if len(invoice) > 55 else None):          # Spalte 55: MixedTaxRates
+            # Beleg mit Steuersatz je Position: Der Satz im Kopf ist nur ein Platzhalter und die Reparatur baut nichts neu (nur D) – kein Erlöskonto
+            # zu suchen, keines zu wählen (``revenueCoaId`` gilt nie)
+            revenue_coa = None
+        else:
+            revenue_coa = self.resolve_revenue_coa(invoice[35], create=False)    # Spalte 35: TaxRate
+            if revenue_coa is None and revenue_coa_id not in (None, ''):
+                revenue_coa, error = self._chosen_revenue_coa(revenue_coa_id)
+                if error:
+                    return RebuildResult(False, 400, error, None, False, False)
         conn = self._get_connection()
         try:
             account_ids = [row[0] for row in conn.execute(
@@ -228,8 +237,6 @@ class InvoiceRepairMixin:
         if invoice is None:
             return RebuildResult(False, 404, REBUILD_NOT_FOUND, None, False, False)
         number, status, gross, rate, kind, due_date, due, mixed = invoice
-        if has_mixed_rates(mixed):
-            return RebuildResult(False, 409, MIXED_NOT_BOOKABLE, None, False, False)
         gross = gross or 0
         findings_before = [(f['category'], f['text']) for f in self._payment_findings(conn, invoice_id)]
         max_id = conn.execute('SELECT COALESCE(MAX(ID), 0) FROM Bookings').fetchone()[0]
@@ -246,7 +253,11 @@ class InvoiceRepairMixin:
         # ── Einordnen (nur lesend) ───────────────────────────────────────────
         removals, locked, detach, candidates = [], set(), None, []
         paired = self._in_storno_pair(conn, invoice_id)
-        if paired:
+        if has_mixed_rates(mixed):
+            # Ein Beleg mit Steuersatz je Position: A–C bräuchten die Sätze je Zuordnung (R1 verlangt EIN Erlöskonto und genau EINE Forderung der App) –
+            # das gibt es in dieser Version nicht; D rechnet nur den offenen Betrag aus den Zuordnungen neu und schreibt keinen Satz
+            skip('mixed')
+        elif paired:
             skip('storno_pair')
         elif status not in REBUILD_STATUSES:
             skip('status')

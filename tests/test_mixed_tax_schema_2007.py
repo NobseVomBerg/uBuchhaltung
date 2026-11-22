@@ -27,7 +27,8 @@ import pytest
 
 import version
 from db import Database, MigrationBackupError, SchemaTooNewError, _CoreMixin
-from db.invoices import InvoiceCol, MIXED_NOT_BOOKABLE, has_mixed_rates
+from db import invoices as db_invoices
+from db.invoices import InvoiceCol, MIXED_LINK_NOT_BOOKABLE, has_mixed_rates
 from db.schema import MIXED_TAX_SCHEMA
 from tests import installation
 from tests.document_helpers import add_contacts, add_document
@@ -267,9 +268,12 @@ def test_only_the_whole_number_one_means_a_rate_per_item():
 
 
 def test_the_database_layer_names_the_reader_and_the_sentence_in_db_invoices():
-    """Die Lesefunktion und der Satz der Sperren stehen für jede Stelle im Modul der Rechnungen (``db.invoices``)."""
+    """Die Lesefunktion und der Satz des einen Wegs, der so einen Beleg noch ablehnt (``link_invoice_to_transaction``), stehen für jede Stelle im Modul
+    der Rechnungen (``db.invoices``). Den allgemeinen Satz „lässt sich in dieser Version noch nicht buchen“ gibt es nicht mehr: Alle anderen Wege buchen
+    je Satz (oder rechnen, wie der Neuaufbau, nur den offenen Betrag)."""
     assert InvoiceCol.MIXED_TAX_RATES == 55
-    assert MIXED_NOT_BOOKABLE == 'Belege mit mehreren Steuersätzen lassen sich in dieser Version noch nicht buchen.'
+    assert MIXED_LINK_NOT_BOOKABLE == 'Einer Rechnung mit mehreren Steuersätzen lässt sich eine Zahlung nur mit ihren Buchungssätzen zuordnen.'
+    assert not hasattr(db_invoices, 'MIXED_NOT_BOOKABLE')
 
 
 # ── Geschrieben wird nur NULL oder 1 ─────────────────────────────────────────

@@ -139,8 +139,8 @@ def _insert_row(db, table, row):
 
 def make_credit_note(db, original_id, number='26S200'):
     """Die Stornorechnung zu ``original_id`` in der Datenbankschicht, so, wie ``cancel_invoice`` sie schreibt: Kopf kopiert, Summen exakt negiert,
-    Positionen mit negativer Menge und positivem Einzelpreis. Der Weg der App lehnt das Stornieren eines Belegs mit Steuersatz je Position in dieser
-    Version ab (``MIXED_NOT_BOOKABLE``: die Gegenbuchung der Forderung gibt es noch nicht) – deshalb von Hand."""
+    Positionen mit negativer Menge und positivem Einzelpreis. Von Hand gebaut, damit diese Tests nur das Dokument prüfen und nicht an den
+    Buchungen des Stornierens hängen (die prüft ``tests/test_mixed_tax_storno.py`` über den Weg der App)."""
     stored = columns(db, original_id)
     head = {**stored, 'InvoiceNumber': number, 'InvoiceKind': 'storno', 'CancelsInvoiceId': original_id, 'Status': 'sent',
             'SumNet': -stored['SumNet'], 'TaxAmount': -stored['TaxAmount'], 'SumGross': -stored['SumGross'], 'AmountDue': -stored['SumGross'],

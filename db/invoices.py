@@ -13,7 +13,7 @@ from .invoice_lock import (CHANGED_MESSAGE, DocumentNotFound, has_storno, invoic
                            REOPEN_FOREIGN_MESSAGE, REOPEN_IMPORTED_MESSAGE)
 # Was ``db.invoice_payments`` für die Buchungen eines Belegs mit Steuersatz je Position festlegt, reicht dieses Modul weiter
 from .invoice_payments import (MIXED_ALLOCATION_UNREADABLE, MIXED_GROUP_NOT_POSITIVE, MIXED_GROUPS_MISMATCH,  # noqa: F401
-                               MIXED_NO_REVENUE_COA, MIXED_NOT_BOOKABLE, MIXED_RECEIVABLE_MISMATCH, PAYABLE_STATUSES,
+                               MIXED_LINK_NOT_BOOKABLE, MIXED_NO_REVENUE_COA, MIXED_RECEIVABLE_MISMATCH, PAYABLE_STATUSES,
                                PAYMENT_MARK, STORNO_KIND, STORNO_PAYMENT_MESSAGE, MixedNotBookable, has_mixed_rates)
 from .matching import FORM_TRANSFER
 from .reporting import is_income_account
@@ -515,9 +515,11 @@ class InvoicesMixin:
         oder Buchungsart; die Oberfläche ordnet über ``assign_invoice_payment`` zu. Die
         Dublettenprüfung läuft in derselben Transaktion wie das Einfügen. Einer Stornorechnung
         (``cancel_invoice``) lässt sich nie eine Zahlung zuordnen (``ValueError``), ebenso wenig einem Beleg mit
-        Steuersatz je Position (``MIXED_NOT_BOOKABLE``): Dieser Weg schreibt eine Zuordnung ohne Buchungssätze, und eine spätere Zahlung,
+        Steuersatz je Position (``MIXED_LINK_NOT_BOOKABLE``): Dieser Weg schreibt eine Zuordnung ohne Buchungssätze, und eine spätere Zahlung,
         Erstattung oder Prüfung könnte deren Anteil je Satz nicht kennen (``_mixed_booked`` lehnt eine solche Zuordnung ab) – jede weitere
-        Buchung an der Rechnung wäre gesperrt. Seine Aufrufer legen nur Belege ohne das Kennzeichen an (der WISO-Import)."""
+        Buchung an der Rechnung wäre gesperrt. Seine Aufrufer legen nur Belege ohne das Kennzeichen an (der WISO-Import). Das ist der einzige
+        Weg, der so einen Beleg ablehnt; die anderen buchen je Satz (``assign_invoice_payment``, ``assign_storno_refund``, ``cancel_invoice``)
+        oder lassen ihn aus (Umzug der Zahlungen, Neuaufbau der Zuordnung)."""
         conn = self._get_connection()
         try:
             conn.execute('BEGIN IMMEDIATE')
@@ -527,7 +529,7 @@ class InvoicesMixin:
             if invoice[0] == STORNO_KIND:
                 raise ValueError(STORNO_PAYMENT_MESSAGE)
             if has_mixed_rates(invoice[1]):
-                raise ValueError(MIXED_NOT_BOOKABLE)
+                raise ValueError(MIXED_LINK_NOT_BOOKABLE)
 
             # Get payment date from booking
             booking = conn.execute('SELECT DateBooking FROM Bookings WHERE ID = ?',

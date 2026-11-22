@@ -673,7 +673,9 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   Stornorechnung, deren Forderung noch in den Büchern steht (Abhilfe: „Stornorechnung nachträglich erstellen“). Dazu
   `refund_exceeds_credit`: Zur Stornorechnung ist mehr erstattet als zur stornierten Rechnung gezahlt wurde (Σ Zuordnungen
   beider Belege < 0) – die App lässt es nicht mehr entstehen, die Kategorie meldet Eingriffe an ihr vorbei. Ein intaktes Paar, auch mit Guthaben aus Zahlungen auf die stornierte Rechnung oder mit Erstattung,
-  ergibt keinen Befund. Zuordnungen, deren Buchung keine Bankbewegung ist oder deren Sätze
+  ergibt keinen Befund. Zwei Kategorien gelten den Sätzen eines Belegs (seit 2.7.0): `rate_split_mismatch` – ein Beleg mit Steuersatz je Position (Rechnung wie Stornorechnung), dessen Positionen nicht zu seinen
+  Summen passen, dessen Forderungszeilen der App nicht genau die Satzgruppen der Rechnung buchen (Satz, Betrag, Steuer) oder der ganz bezahlt ist, ohne dass je Satz sein Betrag und seine Steuer auf die Erlöskonten
+  umgebucht wären – und `unflagged_rate_mix` – ein Beleg OHNE das Kennzeichen, dessen Positionen verschiedene Sätze tragen (Bestand aus einer Version vor 2.7.0; er wird nur genannt, nie umgedeutet). Zuordnungen, deren Buchung keine Bankbewegung ist oder deren Sätze
   eine `SourceGroup` tragen (WISO liefert seine Sätze selbst, z. B. Barzahlungen ohne Bankbewegung),
   lösen weder „Zuordnung ohne Ausgleichssatz“ noch „Zuordnung ≠ Umbuchung“ aus. Die Abfragen gehen von
   den Zuordnungen aus bzw. fassen je Rechnung vorab zusammen: Der Aufwand wächst linear mit dem Bestand
@@ -914,13 +916,14 @@ Die Spalten 50–55 hängen an der Tabelle: frische und migrierte Datenbank habe
 steht nur an einem Beleg mit mindestens zwei verschiedenen Sätzen; tragen alle Positionen denselben Satz, ist es ein gewöhnlicher Beleg
 (NULL, Satz im Kopf). Der Bestand wird nicht umgedeutet: Ohne das Kennzeichen gilt allein `TaxRate` im Kopf. Die Steuer rechnet
 `tax_groups.rate_groups` je Satz aus der Summe der Nettobeträge der Gruppe (EN 16931, BR-CO-17); die Prüfung der Steuerangaben beim
-Speichern ist `handlers._tax_fields`. **Buchen (seit Etappe 2a):** Versenden und Wiederbeleben buchen je Satzgruppe eine Forderungszeile
+Speichern ist `handlers._tax_fields`. **Buchen (seit Etappe 2a und 2b):** Versenden und Wiederbeleben buchen je Satzgruppe eine Forderungszeile
 („10000 an Wartekonto des Satzes“, Satz als Bruch und Steuer der Gruppe an der Zeile), eine Zahlung bucht „Bank an Debitoren“ über den ganzen Betrag und je Satz
 „Wartekonto an Erlöskonto“ (ohne Forderung je Satz „Erlöskonto an Bank“) – wie sich der Betrag einer Teilzahlung auf die Sätze verteilt, legt die reine Funktion
 `tax_groups.split_payment` fest (Anteil am Brutto, Cent-Rest an die größere Gruppe, der Rest der Steuer an die schließende Zahlung). Das Erlöskonto je Satz wählt der Nutzer
-nicht (`resolve_revenue_coa` über den Satz des Buchungssatzes). Auswertungen und Export lesen diese Sätze unverändert. Erstattung, Stornieren, Zuordnung neu aufbauen,
-der Umzug der Zahlungen beim Versenden einer Ersatzrechnung und `link_invoice_to_transaction` lehnen so einen Beleg noch mit einem festen Satz ab
-(`db.invoices.MIXED_NOT_BOOKABLE`), bevor etwas geschrieben wird.
+nicht (`resolve_revenue_coa` über den Satz des Buchungssatzes). Auswertungen und Export lesen diese Sätze unverändert. Das Stornieren bucht die Gegenbuchung der Forderung je Satz (die Stornorechnung
+trägt das Kennzeichen und die negierten Positionen und Summen), und die Erstattung verteilt sich nach derselben Regel wie eine Zahlung, gerechnet an dem, was die Zahlungen je Satz getragen haben, auf das Erlöskonto, auf dem
+sie liegen. Der Neuaufbau der Zuordnung rechnet für so einen Beleg nur den offenen Betrag neu, und die Zahlungen ziehen beim Versenden einer Ersatzrechnung nicht auf sie um (der Hinweis nennt den Grund). Allein
+`link_invoice_to_transaction` (der WISO-Import: eine Zuordnung ohne Buchungssätze) lehnt so einen Beleg mit einem festen Satz ab (`db.invoices.MIXED_LINK_NOT_BOOKABLE`), bevor etwas geschrieben wird.
 
 **Fassungen und Berichtigen:** Eine versendete Rechnung hat gesperrte Finanzangaben (`db/invoice_lock.py`);
 Zahlungshinweis, Anschrift, Bestellnummer, Leitweg-ID und Leistungsdatum ändert nur eine **Berichtigung**

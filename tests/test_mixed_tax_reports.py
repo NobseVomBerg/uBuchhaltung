@@ -382,3 +382,207 @@ def test_every_fully_paid_invoice_has_its_gross_and_tax_per_rate_moved_to_the_re
         checked += 1
 
     assert checked >= 1                                                              # mit diesen Seeds ist mindestens eine Rechnung ganz bezahlt
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Etappe 2b: Stornorechnung und Erstattung je Satz
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# M wird mit 100,00 (April) bezahlt, im Mai storniert, im Juni mit 40,00 und im Juli mit dem Rest 60,00 erstattet. Die Erstattung verteilt sich nach derselben
+# Regel wie eine Zahlung, gerechnet an dem, was die Zahlungen je Satz getragen haben: Juni 27,60 (Steuer 4,41) und 12,40 (0,81), Juli 41,39 (6,61) und 18,61
+# (1,22). Die EÜR nimmt den Erlös am Tag der Erstattung zurück; über das Jahr heben sich Erlös, Steuer und die Konten der Kette auf.
+
+STORNO_MAY, REFUND_JUNE, REFUND_JULY = '2025-05-06', '2025-06-03', '2025-07-01'
+CLOCK = datetime.date(2025, 12, 31)                  # der Tag, den der Server für „heute“ hält (``today=`` von ``cancel_invoice``)
+
+
+def cancel_on(db, invoice_id, day):
+    """Die Rechnung stornieren (Stornorechnung und Gegenbuchung je Satz); liefert das Ergebnis, das ``ok`` ist."""
+    storno = db.cancel_invoice(invoice_id, day, 'probe', today=CLOCK)
+    assert storno.ok, storno.message
+    return storno
+
+
+def refund_on(db, storno_id, amount, day, account='Probe-Giro'):
+    """Eine ausgehende Bankbewegung über ``amount`` € am Tag ``day`` und ihre Zuordnung als Erstattung, wie die Oberfläche es tut; liefert die Bewegung."""
+    bank = db.insert_booking(day, -D(str(amount)), account_id=account_id(db, account), booking_type='bank', recipient_client='Käufer AG')
+    result = db.assign_storno_refund(storno_id, bank)
+    assert result.ok, result.message
+    return bank
+
+
+def refund_world(db, stop_after=2):
+    """M mit Forderung (März), der Zahlung 100,00 (April), der Stornorechnung (Mai) und – je nach ``stop_after`` (0, 1 oder 2) – den Erstattungen 40,00 (Juni)
+    und 60,00 (Juli). Liefert ``(ID der Rechnung, Ergebnis der Stornierung)``."""
+    invoice_id = invoice_of(db, NUMBER, ITEMS, INVOICE_DAY)
+    pay(db, invoice_id, '100.00', APRIL)
+    storno = cancel_on(db, invoice_id, STORNO_MAY)
+    for amount, day in [('40.00', REFUND_JUNE), ('60.00', REFUND_JULY)][:stop_after]:
+        refund_on(db, storno.storno_id, amount, day)
+    return invoice_id, storno
+
+
+def single_rate_refund_world(db):
+    """Dieselben Beträge als zwei Rechnungen mit einem Satz (19 % × 100,00 und 7 % × 50,00): bezahlt mit den Teilen je Satz (68,99 und 31,01), beide storniert,
+    erstattet mit den Teilen je Satz (27,60 + 12,40, dann 41,39 + 18,61) – je eine Bankbewegung, zwei Zuordnungen."""
+    r19 = invoice_of(db, 'E-19', [(19, '100.00')], INVOICE_DAY, rate=0.19)
+    r7 = invoice_of(db, 'E-07', [(7, '50.00')], INVOICE_DAY, rate=0.07)
+    bank = db.insert_booking(APRIL, D('100.00'), account_id=account_id(db, 'Probe-Giro'), booking_type='bank', recipient_client='Käufer AG')
+    for invoice_id, amount in ((r19, '68.99'), (r7, '31.01')):
+        ok, error = link_booking_to_invoice_capped(db, invoice_id, bank, D(amount))
+        assert ok, error
+    credit_notes = [cancel_on(db, r19, STORNO_MAY).storno_id, cancel_on(db, r7, STORNO_MAY).storno_id]
+    for first, second, day in (('27.60', '12.40', REFUND_JUNE), ('41.39', '18.61', REFUND_JULY)):
+        bank = db.insert_booking(day, -(D(first) + D(second)), account_id=account_id(db, 'Probe-Giro'), booking_type='bank', recipient_client='Käufer AG')
+        for storno_id, amount in zip(credit_notes, (first, second)):
+            result = db.assign_storno_refund(storno_id, bank, amount=D(amount))
+            assert result.ok, result.message
+
+
+def test_the_euer_takes_the_revenue_and_the_tax_back_on_the_day_of_the_refund(db):
+    refund_world(db)
+
+    assert helpers.euer_values(db, ('2025-04-01', '2025-04-30')) == {4400: minor('57.97'), 4300: minor('28.98'), 3806: minor('13.05')}
+    assert helpers.euer_values(db, ('2025-05-01', '2025-05-31')) == {}                  # Stornieren allein ändert die EÜR nicht: Erlös gibt es erst mit der Zahlung
+    assert helpers.euer_values(db, ('2025-06-01', '2025-06-30')) == {4400: -minor('23.19'), 4300: -minor('11.59'), 3806: -minor('5.22')}
+    assert helpers.euer_values(db, ('2025-07-01', '2025-07-31')) == {4400: -minor('34.78'), 4300: -minor('17.39'), 3806: -minor('7.83')}
+    year = helpers.euer_values(db, ('2025-01-01', '2025-12-31'))
+    assert {number: value for number, value in year.items() if value} == {}              # über das Jahr bleibt nichts: alles erstattet
+
+
+def test_the_credit_note_alone_changes_no_balance_of_the_revenue_and_leaves_the_credit_on_the_debtor_account(db):
+    refund_world(db, stop_after=0)
+    report = db.get_susa(2025, 5)
+
+    helpers.assert_balanced(report, 'Mai')
+    assert ending(report, 10000) == -minor('100.00')                                    # H: das Guthaben des Kunden (was gezahlt ist, ist nicht mehr zu fordern)
+    assert ending(report, 4405) == minor('68.99') and ending(report, 4345) == minor('31.01')       # S: umgebucht, aber die Forderung ist zurückgenommen
+    assert ending(report, 4400) == -minor('57.97') and ending(report, 4300) == -minor('28.98')
+    assert ending(report, 3806) == -minor('11.02') and ending(report, 3801) == -minor('2.03')
+    assert ending(report, 1800) == minor('100.00')
+    assert helpers.check_bank_accounts(db, report, 'Mai') == [] and helpers.check_erfolgskonten_against_euer(db, report, 'Mai') == []
+
+
+def test_after_the_part_refund_the_remaining_credit_is_what_the_rest_will_take_back_per_rate(db):
+    refund_world(db, stop_after=1)
+    report = db.get_susa(2025, 6)
+
+    helpers.assert_balanced(report, 'Juni')
+    assert ending(report, 10000) == -minor('60.00') and ending(report, 1800) == minor('60.00')
+    # was an den Konten stehen bleibt, ist genau das, was die schließende Erstattung je Satz nimmt (41,39 / 6,61 und 18,61 / 1,22)
+    assert ending(report, 4405) == minor('41.39') and ending(report, 4345) == minor('18.61')
+    assert ending(report, 4400) == -minor('34.78') and ending(report, 4300) == -minor('17.39')
+    assert ending(report, 3806) == -minor('6.61') and ending(report, 3801) == -minor('1.22')
+    assert helpers.check_bank_accounts(db, report, 'Juni') == [] and helpers.check_erfolgskonten_against_euer(db, report, 'Juni') == []
+
+
+def test_after_the_last_refund_every_account_of_the_chain_stands_at_zero(db):
+    refund_world(db)
+    report = db.get_susa(2025, 7)
+
+    helpers.assert_balanced(report, 'Juli')
+    assert [ending(report, number) for number in (10000, 4405, 4345, 4400, 4300, 3806, 3801, 1800)] == [0] * 8
+    assert helpers.check_bank_accounts(db, report, 'Juli') == [] and helpers.check_erfolgskonten_against_euer(db, report, 'Juli') == []
+
+
+@pytest.mark.parametrize('month', (3, 4, 5, 6, 7, 8))
+def test_every_probe_holds_in_every_month_of_the_refund_world(db, month):
+    refund_world(db)
+    report = db.get_susa(2025, month)
+
+    helpers.assert_balanced(report, month)
+    assert helpers.check_bank_accounts(db, report, month) == []
+    assert helpers.check_erfolgskonten_against_euer(db, report, month) == []
+    for variant in ('vorjahr', 'jahr'):
+        liquidity = db.get_liquidity(2025, month, variant)
+        assert set(liq.unassigned_of(liquidity).values()) == {0}, (month, variant)
+        liq.check_against_sources(db, liquidity, (month, variant))
+
+
+@pytest.mark.parametrize('month', (3, 4, 5, 6, 7, 8))
+def test_the_balances_and_the_euer_equal_those_of_the_same_amounts_on_two_credit_notes_with_one_rate(db, tmp_path, month):
+    """Additivität auch für das Storno-Paar: Eine Stornorechnung mit zwei Sätzen ist je Konto die Summe zweier Stornorechnungen mit einem Satz."""
+    other = second_db(tmp_path)
+    refund_world(db)
+    single_rate_refund_world(other)
+
+    assert balances(db.get_susa(2025, month)) == balances(other.get_susa(2025, month))
+    for span in (('2025-%02d-01' % month, '2025-%02d-28' % month), ('2025-01-01', '2025-12-31')):
+        assert helpers.euer_values(db, span) == helpers.euer_values(other, span)
+
+
+def test_the_datev_rows_of_the_mixed_credit_note_equal_those_of_two_credit_notes_with_one_rate(db, tmp_path):
+    """Die Gegenbuchung und die Erstattungen der Kette sind je Zeile die Summe zweier Belege mit einem Satz (Konten, S/H, Umsatz, Datum, Spalten 40 und 114) – bis
+    auf „Bank an Debitoren“, das der Beleg mit einem Satz je Stornorechnung bucht."""
+    other = second_db(tmp_path)
+    _invoice_id, storno = refund_world(db)
+    single_rate_refund_world(other)
+    with closing_connection(other) as con:
+        numbers = [row[0] for row in con.execute("SELECT InvoiceNumber FROM Invoices WHERE InvoiceKind = 'storno' ORDER BY ID")]
+    assert len(numbers) == 2
+    mixed_rows, single_rows = datev_rows(db, storno.storno_number), datev_rows(other, *numbers)
+
+    assert sorted(shown([row for row in mixed_rows if not is_settlement(row)])) == sorted(shown([row for row in single_rows if not is_settlement(row)]))
+    receivables = [row for row in mixed_rows if not is_settlement(row) and row[114]]
+    assert sorted((row[40], row[0]) for row in receivables) == [('19,00', '119,00'), ('7,00', '53,50')]       # die Gegenbuchung je Satz mit dem Satz in Spalte 40
+
+
+def credit_note_stock(db, seed):
+    """Ein Zufallsbestand (``random_stock``) mit Stornorechnungen: Die ersten drei Rechnungen mit Zahlung werden storniert (am Tag der letzten Zahlung plus ein
+    paar Tage) und – ein Teil – mit einer Bewegung zurückgegeben, bei der ersten zusätzlich der Rest. Liefert die Stornierungen."""
+    rng = random.Random(seed * 7919)
+    stock = random_stock(db, seed)
+    credit_notes = []
+    for invoice_id, name, _groups in stock:
+        paid, last = _paid_and_last_day(db, invoice_id)
+        if paid <= 0 or len(credit_notes) >= 3:
+            continue
+        day = last + datetime.timedelta(days=rng.randint(1, 9))
+        storno = cancel_on(db, invoice_id, day.isoformat())
+        credit_notes.append((invoice_id, storno))
+        part = rng.randint(1, max(paid // 100 - 1, 1)) * 100 if paid > 100 else paid
+        later = day + datetime.timedelta(days=rng.randint(1, 20))
+        refund_on(db, storno.storno_id, from_minor(part), later.isoformat(), account=rng.choice(['Probe-Giro', 'Probe-Zweit']))
+        if len(credit_notes) == 1 and paid > part:
+            refund_on(db, storno.storno_id, from_minor(paid - part), (later + datetime.timedelta(days=rng.randint(1, 20))).isoformat())
+    return credit_notes
+
+
+def _paid_and_last_day(db, invoice_id):
+    with closing_connection(db) as con:
+        paid, last = con.execute('SELECT COALESCE(SUM(Amount), 0), MAX(PaymentDate) FROM InvoicePayments WHERE InvoiceID = ?', (invoice_id,)).fetchone()
+    return paid, (datetime.date.fromisoformat(last) if last else None)
+
+
+@pytest.mark.parametrize('seed', [11, 12, 13])
+def test_a_random_stock_with_credit_notes_balances_in_every_month_and_the_probes_hold(db, seed):
+    credit_notes = credit_note_stock(db, seed)
+    assert credit_notes                                                                  # mit diesen Seeds wird mindestens eine Rechnung storniert
+
+    for month in range(3, 13):
+        report = db.get_susa(2025, month)
+        helpers.assert_balanced(report, (seed, month))
+        assert helpers.check_bank_accounts(db, report, (seed, month)) == []
+        assert helpers.check_erfolgskonten_against_euer(db, report, (seed, month)) == []
+        for variant in ('vorjahr', 'jahr'):
+            liquidity = db.get_liquidity(2025, month, variant)
+            assert set(liq.unassigned_of(liquidity).values()) == {0}, (seed, month, variant)
+            liq.check_against_sources(db, liquidity, (seed, month, variant))
+    assert db.find_payment_inconsistencies() == []
+
+
+@pytest.mark.parametrize('seed', [11, 12, 13])
+def test_a_credit_note_of_the_random_stock_takes_back_exactly_what_was_paid_per_rate_when_the_credit_is_gone(db, seed):
+    """Wo das Guthaben ganz erstattet ist, hat die Stornorechnung je Satz genau Betrag und Steuer der Zahlungen zurückgenommen."""
+    credit_notes = credit_note_stock(db, seed)
+    checked = 0
+
+    for invoice_id, storno in credit_notes:
+        if db.get_storno_credit(invoice_id) != 0:
+            continue
+        paid = moved_per_waiting_account(db, db.get_invoice_by_id(invoice_id)[1])
+        taken_back = moved_per_waiting_account(db, storno.storno_number)
+        assert {coa: (-amount, -tax) for coa, (amount, tax) in taken_back.items()} == paid, (seed, invoice_id)
+        checked += 1
+
+    assert checked >= 1

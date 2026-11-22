@@ -11,7 +11,9 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 - Kontoauszüge im MT940-Format (CAMT.053, PDF: DKB und Volksbank Rottweil und CSV: DKB sind da)
 - Kontoauszug als CSV anderer Banken (heute liest `importers/dkb_csv.py` nur die Umsatzliste der DKB)
 - CAMT-Zusatzfelder (Valuta, EndToEndId, Mandatsreferenz, Gläubiger-ID) übernehmen – braucht Schemaänderung
-- Rechnungen/Angebote mit gemischten Steuersätzen (7 % und 19 % je Position) – bisher ein Satz je Beleg
+- Rechnungen mit mehreren Steuersätzen: Der Umzug der Zahlungen auf eine Ersatzrechnung (nur ein Hinweis, sie bleiben an der stornierten Rechnung) und „Zuordnung neu aufbauen“ (Grund `mixed`: nur der offene Betrag wird neu gerechnet) lassen solche Rechnungen aus – je Satz neu zu buchen, mit denselben Bedingungen wie bei einem Satz, nicht gelockert
+- Steuersätze je Position: erlaubt sind nur 19 und 7 % (`tax_groups.MIXED_TAX_RATES`); vor 0 % und weiteren Sätzen (z. B. 5,5 %) entscheiden: Wartekonto und Erlöskonto je Satz (fehlt eines, muss schon das Versenden ablehnen), die Rundung der Steuer bei Sätzen mit Nachkommastellen, Steuerkonto der Summen- und Saldenliste (`TAX_ACCOUNTS` kennt 5,5 % nicht), bei 0 % Befreiungsgrund und -code der E-Rechnung – ein Erlöskonto für 0 % gibt es im gemischten Fall bewusst nicht (nie 4185 raten)
+- WISO-Datenbank-Import: Rechnungen mit mehreren Steuersätzen je Position übernehmen (Kennzeichen setzen, Summen und Buchungen je Satz) – bisher trägt die importierte Rechnung einen Satz im Kopf, und die Prüfliste nennt sie bei verschiedenen Sätzen der Positionen als `unflagged_rate_mix`
 - Leistungszeitraum (von–bis) als Alternative zum Leistungsdatum, z. B. für monatliche Leistungen – PDF-Kopf und E-Rechnung (CII BillingSpecifiedPeriod / UBL InvoicePeriod); braucht Schemaänderung
 - Zahlungssätze einer Zuordnung (Marke `invoice_payment`) im Buchungssatz-Editor schreibgeschützt zeigen – bisher lassen sie sich dort ändern, und das Löschen einer Zeile entfernt die ganze Zuordnung
 - Skonto bei der Zahlungszuordnung (Abzug als eigener Satz, Steuerkorrektur)

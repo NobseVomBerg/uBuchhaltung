@@ -13,7 +13,11 @@ Die Forderung der Ursprungsrechnung („Debitoren an Wartekonto“) wird dabei n
 bucht die Stornierung die **Gegenbuchung** dazu: „Debitoren an Wartekonto“ mit negativem Betrag und negativer Steuer
 zur Nummer und zum Datum der Stornorechnung (die Forderung einer Gutschrift, ``db.matching.receivable_condition``).
 Hat die Ursprungsrechnung keine Forderung der App (Import, Steuersatz ohne Wartekonto, importierte oder von Hand
-gebuchte Forderung), gibt es keine Gegenbuchung. Zahlungen bleiben an der stornierten Rechnung; ihr Betrag ist das
+gebuchte Forderung), gibt es keine Gegenbuchung. **Ein Beleg mit Steuersatz je Position** (``Invoices.MixedTaxRates``) bekommt die Stornorechnung
+mit demselben Kennzeichen und den negierten Positionen, und seine Gegenbuchung bucht je Satzgruppe eine Zeile (``_book_mixed_receivable``: Betrag,
+Satz und Steuer der Gruppe, negiert – die Gruppen der Stornorechnung sind auf den Cent die negierten der Ursprungsrechnung). Lässt er sich nicht
+buchen (Positionen passen nicht zu den Summen, ein Satz mit Brutto unter 0), lehnt ein fester Klartext ab (409, vor dem ersten Schreiben).
+Zahlungen bleiben an der stornierten Rechnung; ihr Betrag ist das
 **Guthaben** des Kunden (``get_storno_credits``), und beim Versenden der Ersatzrechnung gehen sie auf diese über
 (``InvoicePaymentsMixin._move_replaced_payments``) oder werden erstattet (``InvoicePaymentsMixin.assign_storno_refund``,
 seit 2.2.3: eine ausgehende Bankbewegung, zugeordnet an der Stornorechnung). Der Stornorechnung lässt sich sonst keine Zahlung
@@ -41,11 +45,12 @@ import sqlite3
 from collections import namedtuple
 
 from money import from_minor
+from tax_groups import RateGroupsMismatch
 from .core import ForeignKeyError
 from .invoice_lock import (
     CHANGED_MESSAGE, EDITABLE_STATUSES, LOCKED_STATUSES, STORNO_KIND, _Refusal, canonical_status,
     document_version, invoice_row, is_storno)
-from .invoice_payments import MIXED_NOT_BOOKABLE, has_mixed_rates
+from .invoice_payments import MIXED_GROUPS_MISMATCH, MixedNotBookable, has_mixed_rates
 from .invoice_versions import is_iso_date
 from .numbering import NumberRangeError
 
@@ -113,8 +118,9 @@ class InvoiceStornoMixin:
         ein Stornodatum, das kein ISO-Datum ist oder nach heute liegt (400); eine unbekannte ID oder die ID eines
         Angebots (404); eine Stornorechnung, ein Entwurf, eine abgeschlossene oder eine schon mit Stornorechnung
         stornierte Rechnung, ein unbekannter Status, eine Rechnung ohne positiven Betrag (sie wird über den Status
-        storniert), eine Rechnung mit Stornorechnung (409); ein Beleg mit Steuersatz je Position
-        (``MIXED_NOT_BOOKABLE``, 409: seine Gegenbuchung gibt es in dieser Version noch nicht); ein Stornodatum vor dem
+        storniert), eine Rechnung mit Stornorechnung (409); ein Beleg mit Steuersatz je Position, dessen Positionen nicht zu seinen
+        Summen passen oder dessen Satz ein Brutto unter 0 trägt (``MixedNotBookable``: ``MIXED_GROUPS_MISMATCH`` bzw.
+        ``MIXED_GROUP_NOT_POSITIVE``, 409); ein Stornodatum vor dem
         Rechnungsdatum (400); ein Nummernkreis ohne brauchbare Nummer (409); ein Fehler beim Speichern (409) – zeigt dabei ein
         Verweis der Rechnung ins Leere (``ForeignKeyError``), steht er im Klartext in der Meldung.
 
@@ -123,23 +129,35 @@ class InvoiceStornoMixin:
         App ihre Forderung gebucht hat und sie noch in den Büchern steht.
 
         Die Konten der Forderung werden vor der Transaktion aufgelöst (sie legt bei Bedarf Konten an – in eigenen
-        Verbindungen, nie darin); eine abgelehnte Stornierung legt auch keines an. Das Dokument der Stornorechnung
-        erzeugt der Aufrufer nach dem Commit. Returns :class:`Storno`."""
+        Verbindungen, nie darin); eine abgelehnte Stornierung legt auch keines an. Bei einem Beleg mit Steuersatz je Position gelten sie für seine
+        Satzgruppen (``_mixed_receivable_accounts``), der Schlüssel ``('mixed', Gruppen)`` hält sie fest, und die Transaktion vergleicht den
+        frisch gelesenen Stand mit ihm (``CHANGED_MESSAGE``, wenn Kennzeichen oder Gruppen sich inzwischen geändert haben). Das Dokument der
+        Stornorechnung erzeugt der Aufrufer nach dem Commit. Returns :class:`Storno`."""
         if not is_iso_date(storno_date):
             return Storno(False, STORNO_DATE_MESSAGE, 400)
         if storno_date > (today or _today()).isoformat():
             return Storno(False, STORNO_DATE_FUTURE_MESSAGE, 400)
         # Vorprüfung ohne Schreibsperre: Abgelehnt wird vor dem Auflösen der Konten; die Prüfung in der Transaktion
         # (derselbe Aufruf) entscheidet endgültig
+        groups = None
         conn = self._get_connection()
         try:
             row = invoice_row(conn, invoice_id)
             blocked = self._storno_blocker(conn, row, storno_date)
+            if not blocked and has_mixed_rates(row.get('MixedTaxRates')):
+                try:
+                    groups = self._checked_mixed_groups(conn, invoice_id)
+                except MixedNotBookable as exc:
+                    blocked = (str(exc), 409)
         finally:
             conn.close()
         if blocked:
             return Storno(False, *blocked)
-        accounts, accounts_key = self._receivable_accounts(row['TaxRate']), self._tax_rate_key(row['TaxRate'])
+        if groups is not None:
+            # ein Beleg mit Steuersatz je Position: Die Konten gelten für seine Satzgruppen, nie für den Platzhalter im Kopf
+            accounts, accounts_key = self._mixed_receivable_accounts(groups), ('mixed', tuple(groups))
+        else:
+            accounts, accounts_key = self._receivable_accounts(row['TaxRate']), self._tax_rate_key(row['TaxRate'])
 
         try:
             with self.transaction() as tx:
@@ -149,8 +167,15 @@ class InvoiceStornoMixin:
                 blocked = self._storno_blocker(conn, row, storno_date)
                 if blocked:
                     raise _Refusal(*blocked)
-                if accounts_key != self._tax_rate_key(row['TaxRate']):
-                    raise _Refusal(CHANGED_MESSAGE, 409)          # der Steuersatz hat sich inzwischen geändert
+                if has_mixed_rates(row.get('MixedTaxRates')):
+                    try:
+                        current_key = ('mixed', tuple(self._checked_mixed_groups(conn, invoice_id)))
+                    except MixedNotBookable as exc:
+                        raise _Refusal(str(exc), 409) from None
+                else:
+                    current_key = self._tax_rate_key(row['TaxRate'])
+                if accounts_key != current_key:
+                    raise _Refusal(CHANGED_MESSAGE, 409)          # der Steuersatz (bzw. beim Beleg mit Satz je Position die Satzgruppen) hat sich inzwischen geändert
                 try:
                     number = self.allocate_invoice_number(conn, storno_date)
                 except NumberRangeError as exc:
@@ -180,7 +205,13 @@ class InvoiceStornoMixin:
                 # Ursprungsrechnung bleibt in jedem Fall stehen
                 counter_booked = False
                 if self._app_receivable_ids(conn, row['InvoiceNumber']):
-                    counter_booked = self._book_receivable(tx, invoice_row(conn, storno_id), accounts) is not None
+                    try:
+                        counter_booked = self._book_receivable(tx, invoice_row(conn, storno_id), accounts) is not None
+                    except RateGroupsMismatch as exc:
+                        # Beleg mit Steuersatz je Position: Die Positionen der Stornorechnung (die negierten der Rechnung) ergeben nicht ihre
+                        # Summen – nur nach einem Eingriff an der App vorbei. Nichts bleibt stehen: kein Beleg, keine Nummer verbraucht.
+                        print(f'Stornierung der Rechnung {invoice_id}: {exc}')
+                        raise _Refusal(MIXED_GROUPS_MISMATCH, 409) from None
 
                 self._recalc_invoice(conn, invoice_id, adjust_status=False)
                 self._recalc_invoice(conn, storno_id, adjust_status=False)
@@ -290,8 +321,6 @@ class InvoiceStornoMixin:
         elif status not in LOCKED_STATUSES:
             # status_group() hielte einen unbekannten Status für gesperrt – storniert wird nur ein bekannter
             return f'Der Status „{status}“ ist unbekannt – die Rechnung lässt sich nicht stornieren.', 409
-        if has_mixed_rates(row.get('MixedTaxRates')):
-            return MIXED_NOT_BOOKABLE, 409
         if (row['SumGross'] or 0) <= 0:
             return NO_POSITIVE_AMOUNT_MESSAGE, 409
         existing = conn.execute('SELECT ID, InvoiceNumber, InvoiceDate FROM Invoices WHERE CancelsInvoiceId = ?',

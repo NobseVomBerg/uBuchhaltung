@@ -371,13 +371,16 @@ class DemoScenario:
         form_items = [{"position": index + 1, "description": item["description"], "quantity": item["quantity"],
                        "unit": item["unit"], "unitPrice": item["price_per_unit"],
                        "taxRate": item["tax_rate"] if show_tax else 0} for index, item in enumerate(items)]
-        return {
+        data = {
             "invoiceNumber": number, "invoiceDate": day.isoformat(), "customerId": customer[0],
             "ownCompanyId": self._contacts().own[0], "paymentTerms": spec["payment_terms"], "dueDate": due,
             "bankAccountId": bank_account_id or self.account_id, "taxRate": rate / 100 if show_tax else 0,
             "showTax": show_tax, "currency": "EUR", "items": form_items, "deliveryDate": delivery or day.isoformat(),
             "discountPercentage": skonto["percent"] if skonto else None,
             "discountDays": skonto["days"] if skonto else None}
+        if spec.get("tax_mode") == "mixed":
+            data["taxMode"] = "mixed"      # Steuersatz je Position (das Häkchen der Maske); jede Position trägt ihren Satz schon
+        return data
 
     def _create_form_invoice(self, plan):
         """Eine Rechnung des Erzeugers über den Formularweg (``handle_invoice_save``) in EINER Transaktion, danach

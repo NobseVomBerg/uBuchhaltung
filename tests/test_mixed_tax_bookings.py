@@ -14,7 +14,8 @@ Gruppe 7: 50,00 / 3,50 / 53,50, zusammen 150,00 / 22,50 / 172,50. Beträge in de
   „Wartekonto an Erlöskonto“ (ohne Forderung je Satz „Erlöskonto an Bank“); die Teilzahlung verteilt ``tax_groups.split_payment``. Es gibt keine
   Wahl des Erlöskontos. Entfernen nimmt die ganze Zuordnung mit, auch über den Bank-Editor.
 * **Lernen:** Das Erlöskonto je Satz lernt ``resolve_revenue_coa`` aus dem Satz des Buchungssatzes, nie aus dem Platzhalter im Kopf.
-* Wege, die in dieser Version noch sperren (Stornieren, Erstattung, Neuaufbau, Umzug, ``link_invoice_to_transaction``): ``test_mixed_tax_locks.py``.
+* Stornieren, Erstattung, Neuaufbau und der Umzug der Zahlungen beim Versenden einer Ersatzrechnung (Etappe 2b): ``test_mixed_tax_storno.py``; der eine Weg,
+  der so einen Beleg noch ablehnt (``link_invoice_to_transaction``), und die Ein-Satz-Gegenstücke der Wege: ``test_mixed_tax_locks.py``.
 
 Alle Namen, Adressen und Nummern sind erfundene Testwerte.
 """
@@ -26,7 +27,7 @@ import pytest
 import server.handlers as handlers
 from db.invoice_lock import CHANGED_MESSAGE, REOPEN_PAYMENT_MESSAGE
 from db.invoice_payments import (MIXED_ALLOCATION_UNREADABLE, MIXED_GROUP_NOT_POSITIVE, MIXED_GROUPS_MISMATCH, MIXED_NO_REVENUE_COA,
-                                 MIXED_NOT_BOOKABLE, MIXED_RECEIVABLE_MISMATCH, PAYMENT_CHANGED_MESSAGE, PaymentAssignment)
+                                 MIXED_RECEIVABLE_MISMATCH, MOVE_MIXED_HINT, PAYMENT_CHANGED_MESSAGE, PaymentAssignment)
 from server.pages_invoice import PageInvoice
 from server.pages_transactions import PageTransactions
 from tests.entry_form_roundtrip import drop_row, open_form, submit
@@ -837,7 +838,7 @@ def test_the_payment_box_and_the_mask_offer_no_choice_of_the_revenue_account_eve
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Zahlungen des Storno-Paares und Umzug: noch gesperrt, aber die Ersatzrechnung lässt sich versenden
+# Die Ersatzrechnung einer gemischten Rechnung lässt sich versenden: Forderung je Satz, die Zahlungen bleiben an der stornierten Rechnung
 # ═════════════════════════════════════════════════════════════════════════════
 
 def test_a_mixed_replacement_is_sent_with_one_receivable_per_rate_and_the_payments_stay_where_they_are(world, monkeypatch):
@@ -849,7 +850,7 @@ def test_a_mixed_replacement_is_sent_with_one_receivable_per_rate_and_the_paymen
     change = world.db.set_invoice_status(s.r2, 'sent', USER)
 
     assert change.ok and change.moved == 0
-    assert change.payment_hint == f'Die Zahlungen der stornierten Rechnung T-100 (50,00 €) bleiben dort: {MIXED_NOT_BOOKABLE}'
+    assert change.payment_hint == MOVE_MIXED_HINT.format(number='T-100', amount='50,00 €')
     assert [row[:6] for row in receivables(world.db, number)] == [(10000, 4405, 11900, 0.19, 1900, 'transfer'),
                                                                   (10000, 4345, 5350, 0.07, 350, 'transfer')]
     assert allocation_ids(world.db, s.r2) == [] and len(allocation_ids(world.db, s.r1)) == 1        # die Zahlung bleibt an der stornierten Rechnung

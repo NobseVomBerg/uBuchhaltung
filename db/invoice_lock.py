@@ -607,7 +607,8 @@ class InvoiceLockMixin:
           (``Invoices.ReplacesInvoiceId``), ziehen die Zahlungen der stornierten Rechnung auf sie um
           (``_move_replaced_payments``, ``StatusChange.moved``/``payment_hint``); eine Zuordnung, die sich nicht neu
           buchen lässt, bleibt an der stornierten Rechnung (der Hinweis nennt den Grund), nur ein Datenbankfehler mitten im
-          Umzug lehnt den Versand ab (409, nichts geändert);
+          Umzug lehnt den Versand ab (409, nichts geändert); trägt eine der beiden Rechnungen einen Steuersatz je Position,
+          zieht nichts um, und der Hinweis ist ``MOVE_MIXED_HINT``;
         * ``reopen``: die Forderung wird entfernt – aber nur eine, die die App selbst gebucht hat und
           die an nichts hängt, sonst wird das Zurückholen mit Klartext abgelehnt (nichts geändert).
           PDF und XML wandern nach ``invoices/<Jahr>/Fassungen/<ID>/`` (``archive_sent_documents``) und
@@ -725,7 +726,8 @@ class InvoiceLockMixin:
         der Wechsel ist ein Versand (``send``), und die Rechnung ersetzt eine stornierte (``Invoices.ReplacesInvoiceId``).
         Wie bei der Forderung werden Konten, die das Auflösen anlegen könnte, in eigenen Verbindungen aufgelöst – nie in
         der Transaktion. Der Schlüssel ``revenue_coa`` ist das Erlöskonto der neuen Rechnung (``resolve_revenue_coa``;
-        ``None``: für ihren Steuersatz ist keines hinterlegt, dann zieht nichts um), ``bank_coas`` das SKR-Konto
+        ``None``: für ihren Steuersatz ist keines hinterlegt, dann zieht nichts um – und bei einem Steuersatz je Position
+        (``MixedTaxRates``) immer, dort wird der Kopfsatz nie aufgelöst), ``bank_coas`` das SKR-Konto
         {Account_ID: COA-ID} jedes Bankkontos, über das die stornierte Rechnung bezahlt wurde (nur mit SKR-Nummer)."""
         if new != 'sent':
             return None
@@ -746,8 +748,11 @@ class InvoiceLockMixin:
             coa = self.get_coa_id_by_account_number(account[7]) if account and account[7] else None
             if coa is not None:
                 bank_coas[account_id] = coa
+        # Eine neue Rechnung mit Steuersatz je Position hat kein EINES Erlöskonto, und ihr Kopfsatz ist nur ein Platzhalter: Er wird nie aufgelöst
+        # (das legte ein Konto für einen Satz an, den die Rechnung so nicht bucht) – ``_move_replaced_payments`` zieht für sie nichts um
+        mixed = has_mixed_rates(row.get('MixedTaxRates'))
         return {'replaced_id': replaced_id, 'tax_rate': row['TaxRate'],
-                'revenue_coa': self.resolve_revenue_coa(row['TaxRate']), 'bank_coas': bank_coas,
+                'revenue_coa': None if mixed else self.resolve_revenue_coa(row['TaxRate']), 'bank_coas': bank_coas,
                 'bank_coa_ids': self.get_bank_coa_ids()}
 
     def _receivable_accounts_for(self, invoice_id, new):

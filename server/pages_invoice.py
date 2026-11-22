@@ -567,8 +567,10 @@ def _refund_box_html(db, invoice_id, invoice, refunds, credit):
               '<a href="/miscellaneous?check_payments=1">Sonstiges</a>.</div>\n')
     if credit > 0:
         # Erlöskonto zu wählen: für den Steuersatz ist keines hinterlegt (die Wahl lehrt nichts), oder die Zahlungen liegen auf
-        # verschiedenen Erlöskonten – dann sagt der Satz, warum
-        choice = revenue_coa_choice(db, invoice[35], teaches=False)
+        # verschiedenen Erlöskonten – dann sagt der Satz, warum. Bei einem Steuersatz je Position (Kennzeichen der Stornorechnung)
+        # gibt es nie eine Wahl: Das Erlöskonto je Satz ist das der Zahlungen (``refund_revenue_coas_differ`` ist dort immer falsch)
+        choice = revenue_coa_choice(db, invoice[35], teaches=False,
+                                    mixed=has_mixed_rates(invoice[InvoiceCol.MIXED_TAX_RATES]))
         if db.refund_revenue_coas_differ(invoice_id):
             choice = (_revenue_coa_select(db, invoice[35]), _html.escape(MIXED_REVENUE_MESSAGE))
         if choice:
@@ -708,13 +710,16 @@ function rebuildPayments(invId, execute) {
 """
 
 
-def _rebuild_box_html(db, invoice_id, tax_rate):
+def _rebuild_box_html(db, invoice_id, tax_rate, mixed=False):
     """Der Neuaufbau der Zuordnung unter der Befundliste einer Rechnung (``Database.rebuild_invoice_payments``): der Knopf für den
     Probelauf, der Kasten für den Plan (ihn zeichnet das Skript) und – nur wenn für den Steuersatz kein Erlöskonto hinterlegt ist
     (die Reparatur legt nie eines an) – die Auswahl des Erlöskontos. Das Feld hat eine eigene ID (``rebuildRevenueCoa``): Die
-    Zahlung („Verknüpfen“) trägt ihre eigene Auswahl. Die ID der Rechnung steht als Ganzzahl, sonst kein Wert aus der Datenbank."""
+    Zahlung („Verknüpfen“) trägt ihre eigene Auswahl. Die ID der Rechnung steht als Ganzzahl, sonst kein Wert aus der Datenbank.
+
+    ``mixed``: Die Rechnung trägt einen Steuersatz je Position (``Invoices.MixedTaxRates``). Dann gibt es nie eine Auswahl: Ihr Kopfsatz ist nur
+    ein Platzhalter, und der Neuaufbau rechnet für sie nur den offenen Betrag neu – er braucht kein Erlöskonto."""
     h = ''
-    if db.resolve_revenue_coa(tax_rate, create=False) is None:
+    if not mixed and db.resolve_revenue_coa(tax_rate, create=False) is None:
         h += ('        <p class="hint">Für den Neuaufbau ist kein Erlöskonto hinterlegt – bitte wählen.</p>\n'
               f'        <p><label>Erlöskonto: {_revenue_coa_select(db, tax_rate, field_id="rebuildRevenueCoa")}</label></p>\n')
     return h + ('        <p><button type="button" class="coloredButton btn-sm bg-blue" '
@@ -2431,7 +2436,8 @@ function copyInvoiceAsNew(invId) {{
                   + ''.join(f'            <li>{_html.escape(f["text"])}</li>\n' for f in findings)
                   + '        </ul>Alle Rechnungen mit Unstimmigkeiten zeigt die Prüfung unter '
                   '<a href="/miscellaneous?check_payments=1">Sonstiges</a>.</div>\n')
-            s += _rebuild_box_html(db, invoice_id, existing_invoice[35])
+            s += _rebuild_box_html(db, invoice_id, existing_invoice[35],
+                                   mixed=has_mixed_rates(existing_invoice[InvoiceCol.MIXED_TAX_RATES]))
             rebuild_script = _REBUILD_SCRIPT.replace('__CONFIRM__', script_json(REBUILD_CONFIRM_QUESTION))
         if existing_payments:
             total_paid = sum(p[3] for p in existing_payments)

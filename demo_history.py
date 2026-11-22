@@ -24,6 +24,9 @@ Regeln, die den Aufbau tragen:
   E-Rechnungs-Beispiel (``tools/make_einvoice_samples.py``) bleibt die jüngste 19-%-Rechnung des Szenarios.
 * Je Jahr zwei Stornos: eines unbezahlt, eines bezahlt, dann storniert, mit niedrigerer Ersatzrechnung (erst ab dem
   3. Quartal) und Erstattung des Rests. Abgeschlossene Jahre sind bezahlt bis auf EINE überfällige Rechnung des Vorjahres.
+* **Genau eine Rechnung mit Steuersatz je Position** (7 % und 19 % auf einem Beleg, in zwei Raten bezahlt), **nur im Profil ``full``**
+  (``profiles.full.mixed_example``, ``_mixed_invoice``): Das Profil ``test`` – der Bestand mit fest gepinnten Werten – und das handgepflegte Szenario
+  bleiben ohne sie. Sie geht den Weg der Maske (``taxMode: mixed``) wie jede Rechnung des Erzeugers.
 """
 import datetime
 import functools
@@ -118,6 +121,8 @@ class _Ctx:
         self.sc = _scenario()
         self.today = today
         self.first_year = today.year - self.t["profiles"][profile]["years_back"]
+        # die eine Beispielrechnung mit Steuersatz je Position – nur Profile, die sie in der Tabelle nennen (``full``), sonst ``None``
+        self.mixed_example = self.t["profiles"][profile].get("mixed_example")
         # jüngster erlaubter Tag einer Rechnung: Der Erzeuger legt in den letzten Tagen keine an
         self.recent_limit = today - datetime.timedelta(days=self.t["recent_days"])
 
@@ -288,6 +293,32 @@ def _chain_invoices(ctx, year):
     return specs
 
 
+def _mixed_invoice(ctx):
+    """Die eine Beispielrechnung mit Steuersatz je Position (``taxMode: mixed`` im Formular: 7 % und 19 % auf einem Beleg), bezahlt in zwei Raten –
+    nur das Profil ``full`` hat sie (``profiles.full.mixed_example`` der Tabelle), das Profil ``test`` und das Szenario nie: Auf diesem Bestand
+    stehen fest gepinnte Werte. Der Tag liegt ``days_ago`` Tage vor dem Stichtag (auf einem Werktag, nie in den letzten 14 Tagen und nie im ersten Jahr
+    des Profils, dem Kleinunternehmerjahr), die Raten zählen vom Rechnungstag an (erste nach der Zahlungsfrist, zweite nach ``second_after_days``
+    Tagen) – was nach dem Stichtag läge, entfällt wie bei jeder Rechnung des Erzeugers. ``None``, wenn das Profil keine Beispielrechnung hat oder
+    kein Tag passt."""
+    example = ctx.mixed_example
+    if example is None:
+        return None
+    day = _workday(ctx.today - datetime.timedelta(days=example["days_ago"]), ctx.recent_limit)
+    if day is None or ctx.is_first_year(day.year):
+        return None
+    items = [_item(item["description"], item["quantity"], item["unit"], item["price"], item["tax_rate"]) for item in example["items"]]
+    due_days = example["due_days"]
+    payments = []
+    first = _workday(day + datetime.timedelta(days=due_days), ctx.today)
+    if first is not None:
+        percent = example["first_percent"]
+        payments.append({"after_days": (first - day).days, "percent": percent})
+        second = _workday(first + datetime.timedelta(days=example["second_after_days"]), ctx.today)
+        if second is not None:
+            payments.append({"after_days": (second - day).days, "percent": 100 - percent, "closing": True})
+    return _invoice(ctx, f"{day.year}-mixed", day, example["customer_number"], due_days, items, False, payments, tax_mode="mixed")
+
+
 def _invoices(ctx):
     specs = _regular_invoices(ctx)
     overdue = ctx.t["chains"]["overdue"]
@@ -298,6 +329,9 @@ def _invoices(ctx):
             spec["payments"] = []          # die eine überfällige Rechnung des Vorjahres
     for year in range(ctx.first_year, ctx.today.year + 1):
         specs.extend(_chain_invoices(ctx, year))
+    mixed = _mixed_invoice(ctx)
+    if mixed is not None:
+        specs.append(mixed)
 
     f = ctx.t["finalized"]
     day = _workday(ctx.today - datetime.timedelta(days=f["days_ago"]), ctx.recent_limit)

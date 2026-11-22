@@ -1141,6 +1141,13 @@ kein Subagent darauf:
   Oberfläche lässt es entstehen; die Kategorie meldet, was daran vorbei geschieht: SQL-Konsole, Sicherung, Bestand älterer
   Versionen und ein Import, der nach einer Erstattung eine negative Zuordnung an die stornierte Rechnung hängt
   (`link_invoice_to_transaction` prüft das nicht); je Rechnung vorab zusammengefasst).
+  **Zwei Kategorien gelten den Sätzen eines Belegs** (seit 2.7.0, `_rate_findings`, nur lesend, je Art eine Abfrage für alle Belege): `rate_split_mismatch` – ein Beleg
+  mit Steuersatz je Position (Rechnung wie Stornorechnung, jeder Status), dessen Positionen nicht zu seinen Summen passen (`tax_groups.mixed_groups`; dann lässt sich nichts weiter prüfen),
+  dessen Forderungszeilen der App (Satz, Betrag, Steuer; bei der Stornorechnung die negierten Gruppen) nicht genau die Satzgruppen buchen, oder der ganz bezahlt ist (Σ Zuordnungen = Brutto ≠ 0),
+  ohne dass je Satz sein Betrag und seine Steuer auf die Erlöskonten umgebucht wären (die markierten Umbuchungen, dieselben Sätze, die `_mixed_booked` zählt); und `unflagged_rate_mix` – ein
+  Beleg OHNE das Kennzeichen, dessen Positionen verschiedene Sätze tragen (verglichen nach `rate_pct`: 0,19 ist 19; eine Position ohne Satz zählt nicht, ein Kopf unter 0, der Platzhalter für „ohne Steuerausweis“,
+  nie, ein Angebot nie): Er wird mit EINEM Satz geführt, und seine Buchungen rechnen mit dem Satz im Kopf – ein Bestand aus einer Version vor 2.7.0 kann so etwas tragen; es wird genannt, nie umgedeutet.
+  Ein Beleg mit einem Satz ist von keiner der beiden betroffen (`tests/test_single_rate_snapshots.py` hält es fest); ein Betrag, der keine ganze Zahl ist, zählt nicht mit (der Befund nennt, was lesbar ist).
   **Diese Forderungen liest die Prüfliste einmal für alle Paare und Alt-Stornos** (`_app_receivable_amounts`, mit
   Beträgen; dieselbe Bedingung `receivable_condition` und dieselbe Einordnung `_is_app_receivable` wie
   `_app_receivable_ids`, das darauf aufsetzt) – je Rechnung nachzuschlagen wäre quadratisch, `DocumentNumber` hat keinen
@@ -1168,6 +1175,9 @@ kein Subagent darauf:
   Nennt sie eine Kategorie, die sie vorher nicht nannte (etwa `transfer_mismatch`, wenn ein Erlös doppelt gebucht würde), geht ebenso alles
   zurück (409, `REBUILD_UNSAFE_MESSAGE`); die Kategorien stehen nur im Server-Log, nie in der Antwort. Storno-Paare (die Rechnung hat eine Stornorechnung oder ist eine),
   Rechnungen außerhalb von versendet/überfällig/Teilzahlung/bezahlt und ohne positiven Betrag bekommen nur den neu gerechneten offenen Betrag.
+  **Ein Beleg mit Steuersatz je Position** (`MixedTaxRates`, seit 2.7.0) gehört dazu (Grund `mixed`, vor `storno_pair`): A bis C laufen für ihn nicht – R1 verlangt EIN Erlöskonto und genau EINE Forderung der App,
+  und je Satz zu verallgemeinern wäre eine neue Regel (Etappe 3, `docs/aufgaben.md`; die Bedingungen von C werden nicht gelockert) –, D rechnet nur den offenen Betrag aus den Zuordnungen neu (Probelauf wie
+  Ausführung, kein Satz wird geschrieben); die Reparatur sucht und wählt für ihn nie ein Erlöskonto (`revenueCoaId` gilt dort nie, `needs_revenue_coa` kommt nie), und die Seite zeigt keine Auswahl.
   **Bedingungen für C („R1“), alle zugleich:** die Zuordnung hängt an einer Bankbewegung mit Zahlungseingang; unter der Bewegung steht kein Satz
   mit `SourceGroup` (Import: still übergangen) und keiner mit der Nummer dieser Rechnung (außer der in B gelösten Forderung); jeder andere
   Satz trägt die Nummer einer anderen Rechnung, die selbst der Bewegung zugeordnet ist; die Forderung der Rechnung ist genau eine und von der
@@ -1329,7 +1339,11 @@ kein Subagent darauf:
   Ersatzrechnung, Erstattung, Angebot umwandeln): Die Nummern entstehen je Jahr in Datumsfolge, die Rechnungen des Erzeugers
   über den Weg der Maske (`handlers._invoice_fields`, `allocate_invoice_number`, `set_invoice_status`). PDF/E-Rechnung gibt es
   nur für die letzten 30 Tage (`documents_days`), und **in den letzten 14 Tagen legt der Erzeuger keine Rechnung an** – das
-  E-Rechnungs-Beispiel (`tools/make_einvoice_samples.py`) bleibt die jüngste 19-%-Rechnung des Szenarios. Das erste Jahr ist ein
+  E-Rechnungs-Beispiel (`tools/make_einvoice_samples.py`) bleibt die jüngste 19-%-Rechnung des Szenarios – nie ein Beleg mit Steuersatz
+  je Position. **Genau eine solche Rechnung** (7 % und 19 % auf einem Beleg, in zwei Raten bezahlt, `taxMode: mixed` im Formular) gibt es
+  **nur im Profil `full`** (`profiles.full.mixed_example` der Tabelle, `demo_history._mixed_invoice`): 45 Tage vor dem Stichtag auf einem Werktag, nie
+  im ersten Jahr, ohne Dokumente (älter als 30 Tage); das Profil `test` – der Bestand der fest gepinnten Werte (EÜR-Schnappschüsse, Summen- und
+  Saldenliste, Liquidität) – und das handgepflegte Szenario bleiben ohne sie. Das erste Jahr ist ein
   Kleinunternehmerjahr; drei Bankbewegungen im laufenden Monat bleiben absichtlich offen (der DATEV-Export des laufenden Jahres
   fragt deshalb nach, abgeschlossene Jahre gehen ohne Hinweis durch). Für abgeschlossene Jahre bleiben Prüfliste, Splits,
   Übertragsprüfung und DATEV-Export ohne Befund – ändert sich der Erzeuger, die DATEN anpassen, nie die Prüfregeln
@@ -1667,7 +1681,7 @@ kein Subagent darauf:
   fest an): alle gleich ist ein gewöhnlicher Beleg (Kopf = dieser Satz, Kennzeichen NULL), sonst ist der Kopf der höchste Satz und das Kennzeichen 1. Jede Ablehnung hat einen festen Klartext
   (`TAX_*` in `handlers.py`) und kommt vor dem ersten Schreiben (nichts gespeichert, keine Nummer verbraucht). Eine versendete Rechnung schickt keine Positionen; der Satz einer Position
   ist gesperrt (`_items_differ`), das Kennzeichen ein abgeleitetes, nie für sich verglichenes Feld (`invoice_lock.FIELDS`). Angebot → Rechnung (`convert_quote_to_invoice`),
-  Stornorechnung und Ersatzrechnung (`_copied_head`) übernehmen das Kennzeichen zu den Sätzen der Positionen. **Buchen (seit Etappe 2a): Forderung und Zahlung je Satz, der Rest ist noch gesperrt.**
+  Stornorechnung und Ersatzrechnung (`_copied_head`) übernehmen das Kennzeichen zu den Sätzen der Positionen. **Buchen (seit Etappe 2a und 2b): Forderung, Zahlung, Stornieren und Erstattung je Satz; der Neuaufbau rechnet nur den offenen Betrag, der Umzug der Zahlungen unterbleibt, ein Weg lehnt ab.**
   Die Gruppen eines Belegs liest `Database._mixed_groups` (`tax_groups.mixed_groups`: aus Positionen und gespeicherten Summen, auf den Cent gleich den Summen – sonst `MIXED_GROUPS_MISMATCH`; der
   Platzhalter −1, jeder negative, unlesbare oder über 100 liegende Satz und ein Nettobetrag, der keine ganze Zahl ist, gelten nicht), zum Buchen geprüft von `_checked_mixed_groups` (jede Gruppe mit positivem Brutto,
   sonst `MIXED_GROUP_NOT_POSITIVE` mit Satz und Betrag; `MixedNotBookable` ist ein `ValueError` mit dem festen Klartext – die Gründe im Detail nur im Server-Log). Der Satz einer Gruppe steht in
@@ -1676,7 +1690,8 @@ kein Subagent darauf:
   `_group_waiting_entry` – nie über `_tax_rate_key`, der auf ganze Prozent rundet; fehlt einer Gruppe das Wartekonto, wird gar keine Forderung gebucht, und jede Zahlung bucht je Satz „Erlöskonto an Bank“),
   die Konten löst `_mixed_receivable_accounts` vor der Transaktion auf (erst wenn jede Gruppe buchbar ist) und die Transaktion vergleicht den Stand der Gruppen mit der Vorbereitung (Schlüssel
   `('mixed', Gruppen)`, sonst `CHANGED_MESSAGE`, 409; auch `ensure_receivable_booking`). **Zahlung zuordnen** (`_assign_in_tx` → `_assign_mixed`, nur über das Kennzeichen; Kennzeichen und
-  Kontext (`mixed`) müssen zusammenpassen, sonst der „geändert“-Satz – so lehnen Neuaufbau und Umzug, deren Kontext kein `mixed` trägt, so einen Beleg weiter ab): „Bank an Debitoren“ über den ganzen
+  Kontext (`mixed`) müssen zusammenpassen, sonst der „geändert“-Satz – das Netz für Neuaufbau und Umzug, deren Kontext kein `mixed` trägt: Sie buchen für so einen Beleg nie je Satz und kommen nicht bis hierher, ein Fehler an
+  ihnen vorbei lehnt hier ab): „Bank an Debitoren“ über den ganzen
   Betrag und je Satz „Wartekonto an Erlöskonto“ mit Satz und Steuer des Anteils (`payment_rows(parts=…)`), ohne Forderung je Satz „Erlöskonto an Bank“. Den Anteil je Satz rechnet die reine Funktion
   `tax_groups.split_payment`: **Betrag** – die schließende Zahlung schließt jede Gruppe mit ihrem Rest, jede andere zielt je Satz auf den Anteil am Brutto, den die Summe der Zahlungen danach erreicht (auf
   den Cent, **bei genau einem halben Cent nach unten**), und nimmt davon, was der Satz noch braucht; der Cent-Rest geht an die Gruppe mit dem größten offenen Betrag (bei Gleichstand der höhere Satz),
@@ -1687,11 +1702,29 @@ kein Subagent darauf:
   (`revenue_coa_choice(mixed=…)` liefert nichts, `MIXED_NO_REVENUE_COA` lehnt ab, Zahlungskasten und Buchungsmaske zeigen keine Wahl), und `resolve_revenue_coa` lernt es aus dem Satz des Buchungssatzes
   (`_learned_revenue_coa`: bei dem Kennzeichen `Bookings.TaxRate`, nie der Kopf – sonst lernte 19 % das Konto der 7 %). Die Bankzeile bekommt nach der Zuordnung nur Kunde und Beleg-Nr.
   (`_backfill_booking_skr`). Entfernen nimmt die ganze Zuordnung mit (auch das ✕ im Bank-Editor), Stufe 7 des Abgleichs löst die Forderungszeilen gemeinsam auf (*Rechnungszahlung*). Die Auswertungen (EÜR,
-  Summen- und Saldenliste, DATEV-Stapel, Dashboard, Liquidität, Prüfliste) bleiben **ohne Änderung** und gehen auf den Minor-Wert auf (`tests/test_mixed_tax_reports.py`). **Noch gesperrt, mit EINEM Satz**
-  (`MIXED_NOT_BOOKABLE`, VOR dem ersten Schreiben, am frisch in der Transaktion gelesenen Beleg; nichts geändert, kein Konto angelegt, keine Nummer verbraucht): Erstattung (`assign_storno_refund`), Stornieren
-  (`cancel_invoice`), Zuordnung neu aufbauen (`rebuild_invoice_payments`, Probelauf wie Ausführung, 409), der Umzug der Zahlungen beim Versenden einer Ersatzrechnung (es zieht nichts um, der Hinweis nennt den
-  Grund) und `link_invoice_to_transaction` (der WISO-Import: schreibt eine Zuordnung ohne Sätze, deren Anteil je Satz keine spätere Buchung kennen könnte – bleibt gesperrt). `create_replacement_draft` bucht
-  nichts und bleibt erlaubt; `update_invoice_status` (der ungeprüfte Baustein für Seed und Tests) bleibt, wie er ist. Eine Sperre fällt erst, wenn ihr Weg je Satz bucht – nie lockern, ohne dass er es tut.
+  Summen- und Saldenliste, DATEV-Stapel, Dashboard, Liquidität, Prüfliste) bleiben **ohne Änderung** und gehen auf den Minor-Wert auf (`tests/test_mixed_tax_reports.py`). **Stornieren** (`cancel_invoice`, Etappe 2b):
+  Die Vorprüfung liest die Gruppen (`_checked_mixed_groups`; ein Beleg, der sich nicht buchen lässt, lehnt mit `MIXED_GROUPS_MISMATCH` bzw. `MIXED_GROUP_NOT_POSITIVE` ab – 409, vor dem Auflösen der Konten,
+  nichts angelegt), die Konten gelten für seine Satzgruppen (`_mixed_receivable_accounts`, Schlüssel `('mixed', Gruppen)`), und die Transaktion vergleicht den frisch gelesenen Stand mit ihm (`CHANGED_MESSAGE`).
+  Die Stornorechnung trägt das Kennzeichen und die negierten Positionen und Summen; ihre Gruppen sind auf den Cent die negierten der Rechnung (`round_minor` rundet halb von der Null weg, also symmetrisch).
+  Die Gegenbuchung – nur, wenn die Forderungen der App stehen, wie bei einem Beleg mit einem Satz – bucht je Gruppe eine Zeile „10000 an Wartekonto“ mit negativem Betrag, negativer Steuer und dem Satz der Gruppe
+  (Nummer und Datum der Stornorechnung); ergeben die Positionen der Stornorechnung nicht ihre Summen (nur nach einem Eingriff an der App vorbei), lehnt `MIXED_GROUPS_MISMATCH` ab und nimmt alles zurück, keine Nummer
+  ist verbraucht. **Erstattung** (`assign_storno_refund`, `_refund_plan` → `_mixed_refund_parts`; trägt nur EINER der beiden Belege das Kennzeichen, lehnt `MIXED_GROUPS_MISMATCH` ab): Den Betrag verteilt
+  `tax_groups.split_payment` – der Topf ist je Satz das, was die Zahlungen der stornierten Rechnung getragen haben (`_mixed_booked`), nicht das Brutto der Gruppe (eine Teilzahlung hat es noch nicht gefüllt), die
+  früheren Erstattungen (die Zuordnungen der Stornorechnung, Vorzeichen gedreht) zählen als gebucht, und die Erstattung, die das Guthaben ganz ausgleicht, nimmt von jedem Satz den ganzen Rest samt Steuer zurück;
+  gebucht wird „Bank an Debitoren“ über den ganzen Betrag und je Satz „Wartekonto an Erlöskonto“ (alles negativ, ohne Gegenbuchung je Satz „Erlöskonto an Bank“; die Wartekonten sind die der Gegenbuchung, `MIXED_RECEIVABLE_MISMATCH`,
+  wenn sie nicht genau die Sätze des Belegs trägt). Das Erlöskonto je Satz ist das, auf dem die Zahlungen dieses Satzes liegen (`_refund_revenue_coas_by_rate`); liegen sie auf mehr als einem oder ist es kein Erlöskonto,
+  lehnt `MIXED_REFUND_REVENUE_AMBIGUOUS` mit dem Satz ab – der Nutzer wählt keines (`revenue_coa_id` gilt nie, `refund_revenue_coas_differ` ist für so eine Stornorechnung immer falsch, die Seite zeigt keine Auswahl).
+  Geht die Aufteilung nicht auf (ein Satz hat mehr erstattet, als die Zahlungen hergeben – eine Zahlung wurde nach einer Erstattung entfernt oder von Hand geändert), lehnt `MIXED_REFUND_SPLIT` ab, eine Zuordnung ohne die Sätze
+  der App `MIXED_ALLOCATION_UNREADABLE`: die App rät nicht. In der Transaktion wird neu geplant und mit der Vorprüfung verglichen (Teile je Satz samt Erlöskonten, Bankkonto der Bewegung; sonst „geändert“).
+  Das Entfernen einer Zahlung schützt dasselbe Guthaben wie bei einem Satz (`_refund_removal_blocker`, über alle Sätze). **Neu ausstellen und Umzug:** `create_replacement_draft` kopiert das Kennzeichen; die Zahlungen der
+  stornierten Rechnung ziehen nicht auf die Ersatzrechnung um, wenn die stornierte ODER die neue Rechnung einen Steuersatz je Position trägt (`_move_replaced_payments`: Der Umzug vergleicht die Sätze der App mit
+  `payment_rows` EINES Satzes und bucht mit EINEM Erlöskonto neu – je Satz zu verallgemeinern ist Etappe 3 und rührte an einer Regel, die nicht gelockert wird); der Hinweis ist `MOVE_MIXED_HINT` mit der Nummer
+  der stornierten Rechnung und ihrem Guthaben, die Zahlungen bleiben dort und lassen sich erstatten oder – entfernt – an der Ersatzrechnung neu zuordnen (`_payment_move_context` löst für den Platzhalter im Kopf
+  nie ein Erlöskonto auf). **Zuordnung neu aufbauen:** nur der offene Betrag (Grund `mixed`, siehe dort). **Prüfliste:** `rate_split_mismatch` und `unflagged_rate_mix` (siehe *Rechnungszahlung*). **Ein Weg lehnt noch ab,
+  mit EINEM Satz** (`MIXED_LINK_NOT_BOOKABLE`, VOR dem ersten Schreiben, am frisch in der Transaktion gelesenen Beleg; nichts geändert): `link_invoice_to_transaction` (der WISO-Import: schreibt eine Zuordnung ohne Sätze,
+  deren Anteil je Satz keine spätere Zahlung, Erstattung oder Prüfung kennen könnte – seine Aufrufer legen nur Belege ohne das Kennzeichen an). Es gibt keinen allgemeinen Satz „lässt sich noch nicht buchen“ mehr.
+  `create_replacement_draft` bucht nichts; `update_invoice_status` (der ungeprüfte Baustein für Seed und Tests) bleibt, wie er ist. Ein Weg, der einen Beleg mit Steuersatz je Position buchen soll, bucht je Satz oder lehnt
+  ab – nie mit dem Kopfsatz. Tests: `tests/test_mixed_tax_storno.py`, `tests/test_mixed_tax_locks.py` (die eine Sperre und die Ein-Satz-Gegenstücke).
   **PDF (Rechnung, Stornorechnung, Angebot):** Nur mit dem Kennzeichen – nie nach den Sätzen der
   Positionen; ein Beleg ohne das Kennzeichen druckt Zeichen für Zeichen wie vorher (trägt er Positionen zu verschiedenen Sätzen, steht eine Zeile im Server-Log: `einvoice_model.log_unflagged_rates`) –
   hat die Tabelle zwischen Bezeichnung und Einzelpreis die Spalte „USt“ (`pdf_document.COL_RATE_R`; sie rückt nach links, wenn ein Einzelpreis mehr Platz braucht – `_rate_layout`, einmal je Beleg –, die
@@ -1853,7 +1886,8 @@ kein Subagent darauf:
   (`_payment_move_context` löst das Erlöskonto vorher in eigenen Verbindungen auf, `_move_replaced_payments` schreibt;
   `update_invoice_status`, der ungeprüfte Baustein für Seed und Tests, zieht nie um). Voraussetzung: gleicher Kunde und
   gleiche Währung und ein hinterlegtes Erlöskonto für den Steuersatz der neuen Rechnung – sonst bleibt alles, und der
-  Hinweis sagt es. **Nach einer Erstattung zieht höchstens das verbleibende Guthaben um:** `movable_left` = alle Zuordnungen der
+  Hinweis sagt es. **Trägt die stornierte oder die neue Rechnung einen Steuersatz je Position, zieht nichts um** (`MOVE_MIXED_HINT`,
+  *Mehrere Steuersätze je Beleg*). **Nach einer Erstattung zieht höchstens das verbleibende Guthaben um:** `movable_left` = alle Zuordnungen der
   stornierten Rechnung (auch eine negative des WISO-Imports: Sie zieht nie um, mindert aber das Guthaben) minus die
   Erstattungen an der Stornorechnung, vor dem Umzug; je umziehbarer Zuordnung ist der Teil `min(Betrag, Rest der neuen
   Rechnung, movable_left)`, bei `<= 0` endet der Umzug, nach einem gelungenen Umzug sinkt `movable_left` um den Teil, der Rest
@@ -1922,7 +1956,9 @@ kein Subagent darauf:
   wie in `_receivable_removal`, nur dass es nicht zählt, ob sie an einer Bankbewegung hängt), bucht die Stornierung die
   **Gegenbuchung** („Debitoren an Wartekonto“ über `_book_receivable`, Form `transfer`, negativer Betrag und negative Steuer,
   Datum und Beleg-Nr. der Stornorechnung – für `receivable_condition` die Forderung einer Gutschrift); sonst (Import,
-  Steuersatz ohne Wartekonto, importierte oder von Hand gebuchte Forderung) keine, und die Antwort trägt einen `hint`. Zahlungen
+  Steuersatz ohne Wartekonto, importierte oder von Hand gebuchte Forderung) keine, und die Antwort trägt einen `hint`. **Ein Beleg mit
+  Steuersatz je Position** bucht die Gegenbuchung je Satzgruppe, die Stornorechnung trägt Kennzeichen und negierte Positionen
+  (*Mehrere Steuersätze je Beleg*). Zahlungen
   bleiben an der stornierten Rechnung (der Umzug auf die Ersatzrechnung: *Statusübergänge*; die Erstattung: unten).
   Ihr Betrag ist das **Guthaben des Kunden: Σ `InvoicePayments.Amount` über beide Belege des Paares** (Rechnung und
   Stornorechnung; `get_storno_credits`, `get_storno_credit`, `get_storno_credits_for_contact` – rein lesend, ein Statuswechsel
@@ -1938,6 +1974,8 @@ kein Subagent darauf:
   schreibt `payment_rows` (wie bei der Zahlung) mit Datum, Steuerdatum, Empfänger und Währung der Bewegung, der **Nummer der
   Stornorechnung** als Beleg-Nr. und der Marke `invoice_payment`, alle negativ: Hat die Stornorechnung eine Gegenbuchung
   (`_receivable_sides`), „Bank an Debitoren“ und „Wartekonto an Erlöskonto“, sonst der Einzelsatz „Erlöskonto an Bank“.
+  **Bei einem Beleg mit Steuersatz je Position** (Etappe 2b) erstattet sie je Satz: Betrag, Steuer und Erlöskonto je Satz stehen in *Mehrere Steuersätze je Beleg* –
+  die folgenden Regeln zu Steuer und Erlöskonto gelten für den Beleg mit EINEM Satz.
   **Steuer:** Sie nimmt zurück, was die Zahlungen an der stornierten Rechnung gebucht haben (`_allocations_tax`); gleicht die
   Erstattung das Guthaben ganz aus, ist es der Rest (Steuer der Zahlungen minus die früherer Erstattungen), sonst anteilig (Cent,
   halb auf, nie mehr als der Rest) – die Summe aller Erstattungen ist die Steuer der Zahlungen, **solange sich die Zahlungen der
