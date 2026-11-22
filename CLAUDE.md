@@ -1286,7 +1286,10 @@ kein Subagent darauf:
   relativ zum Startdatum; pytest-Testdaten bleiben davon getrennt. Der Import aus der WISO-Datenbank ist im Demo-Modus
   abgeschaltet (Route 403, Handler und Seite mit demselben Satz, `wiso_upload.DEMO_REFUSED`): keine Dateien eines Besuchers
   auf dem Server. Ebenso das Hochladen von Belegen auf der Seite *Belege* (`POST /receipts/upload`: 403 vor dem Lesen,
-  `upload_handler.RECEIPTS_DEMO_REFUSED`; die Seite zeigt den Satz statt der Ablage)
+  `upload_handler.RECEIPTS_DEMO_REFUSED`; die Seite zeigt den Satz statt der Ablage) und – seit 2.6.7 – das Hochladen von
+  Kontoauszügen auf der Seite *Buchungen* (`POST /upload_receipts`: 403 vor dem Lesen, `upload_handler.STATEMENTS_DEMO_REFUSED`; die
+  Seite zeigt den Satz statt der Ablage, `POST /confirm_transactions` antwortet dort ebenfalls 403 – ein Import aus der Zeit davor lässt
+  sich im Demo-Modus nicht mehr bestätigen, gelöscht wird nichts; `tests/test_statement_upload_demo.py`)
 - **Der große Bestand (seit 2.5.10):** Neben dem von Hand gepflegten Szenario (`demo_scenario.json`, bleibt unverändert) erzeugt
   `demo_history.build_history(today, profile)` mehrere Jahre – rein, ohne Datenbank, Zufall und Uhr (Auswahl je Monat über
   `zlib.crc32`, Tabellen in `seed_data/test/demo_history.json`, Kunden und Artikel aus den Test-Seeddaten). Profil `full` =

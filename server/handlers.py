@@ -29,6 +29,7 @@ from .pages_receipts import suggestions_empty_text
 from .import_preview import file_transactions, match_account
 from .period import parse_iso_date, valid_period
 from .richtext import sanitize_richtext as _sanitize_richtext
+from .upload_handler import STATEMENTS_DEMO_REFUSED
 from db import Database
 from db import datev_keys
 from db.bookings import RELATION_DEFAULT, RELATION_TYPES, LinkRefused
@@ -198,8 +199,13 @@ def handle_confirm_import(db: Database, post_data):
     Duplikate und nicht in ``skipped``) und ``skipped_unselected`` (nicht gewählt). ``skipped_upload`` ist beim Einzelimport
     immer 0: jeder Aufruf liest den Bestand neu.
 
+    Im Demo-Modus gilt vor allem anderen 403 (``STATEMENTS_DEMO_REFUSED``): Ein Import aus der Zeit vor der Sperre des Uploads, der
+    noch in ``pending_imports/`` liegt, lässt sich dort nicht mehr bestätigen – gelöscht wird nichts.
+
     Returns (status_code, json_string).
     """
+    if demo.is_active():
+        return 403, json.dumps({'ok': False, 'error': STATEMENTS_DEMO_REFUSED})
     import_id = post_data.get("import_id", [""])[0]
     file_index_raw = post_data.get("file_index", [""])[0]
 

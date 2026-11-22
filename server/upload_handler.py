@@ -29,6 +29,10 @@ except ImportError:
 # er steht nur im Server-Log. Klartext tragen allein eigene Klassen (``CamtError``, ``DkbCsvError``, ``DocumentExists``).
 UPLOAD_FAILED = 'Die Datei konnte nicht verarbeitet werden – Einzelheiten stehen im Server-Log.'
 
+# Kontoauszug-Upload der Buchungen-Seite (``POST /upload_receipts``) und Bestätigung des Imports (``POST /confirm_transactions``):
+# im Demo-Modus abgeschaltet – die Besucher teilen ein Verzeichnis, keine Datei eines Besuchers kommt auf den Server
+STATEMENTS_DEMO_REFUSED = 'Im Demo-Modus ist das Hochladen von Kontoauszügen abgeschaltet.'
+
 # Beleg-Upload der Belege-Seite: Die Antwort nennt je Datei nur diese festen Sätze (nie den Text einer Ausnahme, nie einen Pfad)
 RECEIPTS_DEMO_REFUSED = 'Im Demo-Modus ist das Hochladen von Belegen abgeschaltet.'
 RECEIPT_UPLOAD_FAILED = 'Die Datei konnte nicht als Beleg gespeichert werden – Einzelheiten stehen im Server-Log.'

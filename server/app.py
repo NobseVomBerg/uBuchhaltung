@@ -1955,8 +1955,12 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                 self._post_wiso_fdb_upload()
             return
 
-        # Handle file upload separately (der Handler liest den Body selbst: Größe vorher prüfen)
+        # Handle file upload separately (der Handler liest den Body selbst: Demo-Modus und Größe vorher prüfen, das Token steht oben)
         if self.path == "/upload_receipts":
+            if demo.is_active():
+                # Demo-Modus: die Besucher teilen ein Verzeichnis – keine Dateien eines Besuchers auf dem Server (wie /receipts/upload)
+                self._refuse_body(403, upload_handler.STATEMENTS_DEMO_REFUSED, as_json=True)
+                return
             if not self._check_body_size(MAX_UPLOAD_BODY, as_json=True):
                 return
             status_code, response = upload_handler.handle_file_upload(self, db)
