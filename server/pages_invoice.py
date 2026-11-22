@@ -568,7 +568,7 @@ MIXED_TAX_JS = r'''
             var name = document.createElement('td');
             name.setAttribute('colspan', '6');
             name.setAttribute('data-span', '5');
-            name.textContent = 'Mehrwertsteuer ' + group.label + ' auf ' + fmtDe(group.net / 100) + ' € netto:';
+            name.textContent = (group.label === 'steuerfrei' ? 'Steuerfrei' : 'Mehrwertsteuer ' + group.label) + ' auf ' + fmtDe(group.net / 100) + ' € netto:';
             var amount = document.createElement('td');
             var strong = document.createElement('strong');
             strong.textContent = fmtDe(group.tax / 100) + ' €';

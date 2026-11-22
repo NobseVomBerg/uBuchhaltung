@@ -1708,7 +1708,7 @@ kein Subagent darauf:
   (2) mit Steuerausweis ohne `taxMode` ist der Kopf eine Zahl von 0 bis 100 Prozent (nie negativ: −1 ist der Platzhalter von Regel 1), alle Positionen tragen GENAU denselben Satz, und er ist
   der des Kopfs (bis auf das Rauschen der Kommazahl – die Maske schickt den Kopf als Bruch, 100 % als 1); ein Satz zwischen 0 und 1 Prozent lässt sich nicht eindeutig lesen und wird abgelehnt
   (2.6.x rechnete dort still mit dem Hundertfachen) – für jeden anderen Satz des Formulars von heute ändert sich in der Datenbank nichts;
-  (3) mit `'mixed'` braucht jede Position GENAU einen Satz aus `tax_groups.MIXED_TAX_RATES` (19 und 7 % – die EINE Stelle der erlaubten Sätze; kein Code nimmt „zwei Sätze“ oder „19 und 7“
+  (3) mit `'mixed'` braucht jede Position GENAU einen Satz aus `tax_groups.MIXED_TAX_RATES` (19 und 7 % – die Sätze, die ohne Eintrag der Stammdaten gelten; seit 2.8.0 daneben jeder wählbare Eintrag der Stammdaten über `taxRateId`, siehe *Steuersätze aus den Stammdaten*; kein Code nimmt „zwei Sätze“ oder „19 und 7“
   fest an): alle gleich ist ein gewöhnlicher Beleg (Kopf = dieser Satz, Kennzeichen NULL), sonst ist der Kopf der höchste Satz und das Kennzeichen 1. Jede Ablehnung hat einen festen Klartext
   (`TAX_*` in `handlers.py`) und kommt vor dem ersten Schreiben (nichts gespeichert, keine Nummer verbraucht). Eine versendete Rechnung schickt keine Positionen; der Satz einer Position
   ist gesperrt (`_items_differ`), das Kennzeichen ein abgeleitetes, nie für sich verglichenes Feld (`invoice_lock.FIELDS`). Angebot → Rechnung (`convert_quote_to_invoice`),
@@ -1768,7 +1768,7 @@ kein Subagent darauf:
   `xrechnung-mischsatz.xml` (`tools/make_einvoice_samples.py`; sein Normalfall ist nie ein Beleg mit dem Kennzeichen, seine Kopien nehmen es mit). **Maske (Rechnung und Angebot):** Das Häkchen
   „Steuersatz je Position“ (`#mixed_tax`, unter „Umsatzsteuer ausweisen“; nur mit Steuerausweis, in einer gesperrten Rechnung gesperrt, vorbelegt aus `has_mixed_rates`) schaltet die Spalte „USt“
   ein (Klasse `mixedTaxOn` an der Positionstabelle, `buch.css`) und im Summenblock eine Zeile je Satz (nur Anzeige, in ganzen Cent und zweistufig gerundet wie `money`; maßgeblich bleibt der Server).
-  Die Sätze der Auswahl kommen vom Server aus `tax_groups.MIXED_TAX_RATES` (über `script_json`), im Skript steht kein Satz. Ohne Häkchen schickt das Speichern genau den bisherigen Payload, mit Häkchen
+  Die Auswahl kommt vom Server (über `script_json`), seit 2.8.0 aus den Einträgen der Stammdaten (`entry_choices(db)`; ohne Liste aus `tax_groups.MIXED_TAX_RATES`), im Skript steht kein Satz. Ohne Häkchen schickt das Speichern genau den bisherigen Payload, mit Häkchen
   zusätzlich `taxMode: 'mixed'` und je Position den Satz ihrer Auswahl. Ein gespeicherter Satz außerhalb der Liste erscheint als eigene, gewählte Option (nichts wird still umgedeutet, der Server lehnt
   beim Speichern ab); die Zeilen eines als gemischt geladenen Belegs behalten ihre Sätze, wenn das Häkchen aus- und wieder eingeschaltet wird. EIN Skriptblock für beide Masken (`MIXED_TAX_JS` in
   `server/pages_invoice.py`, nur `var`/`function`, Präfix `mix`).
@@ -1797,6 +1797,18 @@ kein Subagent darauf:
   gemischter Rundung; Dokumente und Buchen verlassen sich darauf – nicht lockern. Ein Payload ohne `taxRateId` wird gespeichert wie vor 2.8.0 (auch der freie Kopfsatz; ein Entwurf
   verliert dabei seine Momentaufnahmen). „Position n“ in den `TAX_*`-Meldungen ist `item['position']`. Die Sperre versendeter Rechnungen vergleicht die vier Spalten mit
   (`invoice_lock.stored_items`, `_items_differ`).
+  **Maske (Rechnung und Angebot):** Im Kopf wählt `#tax_choice` (Klasse `taxChoice`) den Eintrag, mit dem Häkchen „Steuersatz je Position“ die Spalte „USt“ je Zeile; `#tax_rate` bleibt als
+  verstecktes Feld mit der Prozentzahl (bei einer gesperrten Rechnung `disabled`), `#tax_choice` schreibt bei `change` den Satz hinein und ruft `calculateTotals()`. Die Liste ist
+  `entry_choices(db)` (wählbare Einträge in der Reihenfolge der Stammdaten, als `MIX_RATES` über `script_json`; im Skript steht kein Satz, keine ID, keine Bezeichnung). Ein Eintrag, den
+  der bisherige Payload trägt (`legacy_expressible`: Standard, ohne Erlöskonto, ganzzahliger Satz – die Vorbelegung), hat als Optionswert seinen Satz und schickt keine ID: **der Payload
+  für 19 % und 7 % bleibt Zeichen für Zeichen der von 2.7.0** (`tests/test_mixed_tax_mask.py`); jeder andere hat den Wert `e<ID>` und schickt `taxRateId` als letzten Schlüssel des Kopfs
+  bzw. der Position. **Ein geladener Beleg wählt den Eintrag nach seiner Momentaufnahme** (`entry_snapshot` gleich Art, Satz, Grund, Erlöskonto – auch bei „Als neu kopieren“, Angebot →
+  Rechnung und Ersatzrechnung; nur ein umbenannter Eintrag bleibt derselbe); gibt es ihn nicht mehr, steht die gewählte Option `e0` „… – gespeichert, in den Stammdaten nicht mehr
+  vorhanden“ da (`taxRateId: 0`, der Server lehnt ab, bis neu gewählt ist). Ohne Momentaufnahme gilt die Vorbelegung nach Satz, sonst der Satz als eigene Option ohne ID. Die Anzeige
+  rechnet eine Gruppe, deren Zeilen alle einen Eintrag mit ID tragen, einstufig (maßgeblich bleibt der Server), eine steuerfreie Gruppe heißt „Steuerfrei auf … netto“, und der
+  Befreiungsgrund des gewählten Eintrags steht als Text unter den Häkchen (`#tax_note`, `textContent`). Zwei Skriptkonstanten in EINEM Block (`MIXED_ENTRY_JS` vor `MIXED_TAX_JS`; die
+  Funktionsinventur des alten Tests gilt `MIXED_TAX_JS`). `buch.css`: `.invoice-items .item-tax` wächst mit der längsten Bezeichnung (höchstens 130px), `.taxChoice` höchstens 260px.
+  `tests/test_tax_entries_mask.py`
   **Rundung – zwei Regeln, eine Stelle** (`tax_groups.group_tax(net, pct, exact)`): Eine Satzgruppe, deren Positionen ALLE eine Momentaufnahme tragen, rechnet einstufig (Netto × Satz,
   EINMAL auf den Cent, halb weg von null – EN 16931, BR-CO-17); jede andere zweistufig wie vor 2.8.0, Bit für Bit. Beide sind gleich bei ganzzahligem Satz und Netto in ganzen Cent
   (bewiesen und aufgezählt in `tests/test_tax_entries_pure.py`); 5,5 % weicht an jedem Betrag mit Cent ≡ 9 (mod 200) ab (0,09 € → 0,00 statt 0,01 €). `rate_groups`, `item_groups`

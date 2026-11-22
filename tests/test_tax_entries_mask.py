@@ -984,7 +984,7 @@ def test_the_summary_names_a_tax_free_group_steuerfrei_instead_of_0_percent_and_
     state = state_of(tmp_path, kind, page_of(kind, world, doc_id))
 
     assert state['rateRows'] == [['Mehrwertsteuer 19 % auf 100,00 € netto:', '19,00 €'], ['Mehrwertsteuer 5,5 % auf 10,00 € netto:', '0,55 €'],
-                                 ['Mehrwertsteuer steuerfrei auf 80,00 € netto:', '0,00 €']]
+                                 ['Steuerfrei auf 80,00 € netto:', '0,00 €']]
     assert (state['sumNet'], state['taxAmount'], state['sumGross']) == ('190,00 €', '19,55 €', '209,55 €')
     stored = columns(world.db, doc_id)
     assert (stored['SumNet'], stored['TaxAmount'], stored['SumGross']) == (1900000, 195500, 2095500)        # der Server sagt dasselbe
