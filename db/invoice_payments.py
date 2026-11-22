@@ -23,7 +23,7 @@ from collections import defaultdict, namedtuple
 from decimal import Decimal
 
 from money import to_minor, from_minor, prorate, round_minor, fmt_eur, is_covered
-from tax_groups import RateGroup, RateGroupsMismatch, booking_rate, mixed_groups, pct_text, rate_pct, split_payment
+from tax_groups import RateGroupsMismatch, booked_fault, booking_rate, mixed_groups, pct_text, rate_pct, refund_pool, split_payment
 from .matching import FORM_LIQUID_FIRST, FORM_PURPOSE_FIRST, FORM_TRANSFER, REVENUE_ACCOUNT_RANGE, bank_effect, receivables_covered
 from .reporting import is_income_account
 
@@ -60,9 +60,19 @@ MIXED_REFUND_REVENUE_AMBIGUOUS = ('Die Zahlungen dieser Rechnung liegen für {ra
                                   'Buchungssätze der Zahlungen prüfen.')
 MIXED_REFUND_SPLIT = ('Die Erstattung lässt sich nicht nach Steuersätzen aufteilen: Die Zahlungen dieser Rechnung haben sich nach '
                       'einer früheren Erstattung geändert. Bitte die Erstattungen prüfen.')
+# Das Entfernen einer Zahlung, nach der zu so einem Beleg erstattet wurde (``_refund_removal_blocker``): Die Summe ginge noch auf, aber je Satz wäre mehr
+# erstattet als gezahlt (oder Betrag und Steuer gingen nicht auf). Gebaut wie ``ALREADY_REFUNDED_MESSAGE`` (die Summenprüfung), dazu der Satz und die Nummer
+# der Stornorechnung, an der die Erstattung entfernt wird. ``{rate}``: der Satz (``pct_text``), ``{number}``: die Nummer der Stornorechnung
+MIXED_REMOVAL_REFUSED = ('Zu dieser Rechnung wurde bereits erstattet – für {rate} % wäre danach mehr erstattet als gezahlt (oder Betrag und Steuer '
+                         'gingen nicht auf). Erst die Erstattung an der Stornorechnung {number} entfernen.')
+# Der Hinweis beim Versenden einer Ersatzrechnung (``_move_replaced_payments``): Bei einem Beleg mit Steuersatz je Position zieht nichts um. ``{number}``: die
+# Nummer der stornierten Rechnung, ``{amount}``: ein Betrag (``fmt_eur``). ``MOVE_NONE_HINT`` und ``MOVE_REFUNDED_HINT`` sind dieselben Sätze wie beim Beleg
+# mit einem Satz – dort wie hier wortgleich
 MOVE_MIXED_HINT = ('Die Zahlungen der stornierten Rechnung {number} ({amount}) bleiben dort als Guthaben des Kunden: Eine der beiden '
                    'Rechnungen trägt mehrere Steuersätze, die Zahlungen ziehen in dieser Version nicht automatisch um. Sie lassen '
                    'sich dort erstatten oder entfernen und hier neu zuordnen.')
+MOVE_NONE_HINT = 'Es wurden keine Zahlungen der stornierten Rechnung {number} übernommen.'
+MOVE_REFUNDED_HINT = '{amount} sind bereits erstattet und bleiben an der stornierten Rechnung.'
 PAYMENT_CHANGED_MESSAGE = 'Rechnung oder Bankbewegung wurde inzwischen geändert – bitte erneut versuchen.'
 
 
@@ -265,7 +275,8 @@ class PaymentMoveFailed(ValueError):
 
 class PaymentRemovalRefused(ValueError):
     """Das Entfernen einer Zahlung wird abgelehnt, weil das Guthaben eines Storno-Paares sonst negativ würde (mehr erstattet
-    als gezahlt); ``str(exc)`` ist der Klartext für die Oberfläche. Es betrifft jeden Weg, der eine Zahlung entfernt:
+    als gezahlt – bei einem Paar mit Steuersatz je Position auch je Satz, ``MIXED_REMOVAL_REFUSED``); ``str(exc)`` ist der Klartext für die Oberfläche.
+    Es betrifft jeden Weg, der eine Zahlung entfernt:
     ``unassign_invoice_payment``, ``remove_assignment_for_child`` und ``delete_transaction`` (Kindsatz wie Bankbewegung) –
     in der Transaktion geprüft, vor dem ersten Schreiben, nichts ist dann geändert."""
 
@@ -306,6 +317,45 @@ def payment_blocker(doc_type, status, gross, kind=None):
         return ('Nur Rechnungen mit positivem Bruttobetrag lassen sich durch eine Zahlung '
                 'ausgleichen.')
     return None
+
+
+def booked_by_rate(allocations, rows_of, pcts, waiting_ids):
+    """Was die Zuordnungen eines Belegs mit Steuersatz je Position je Satz tragen: ``{Satz: (Betrag, Steuer)}`` in Minor Units, mit Vorzeichen (eine
+    Erstattung ist negativ) – der reine Kern von ``InvoicePaymentsMixin._mixed_booked``, der ihn für EINEN Beleg aus seinen Abfragen füttert; die Prüfliste
+    füttert ihn für alle Paare aus je einer Abfrage (dieselbe Lesart, keine Abfrage je Beleg).
+
+    ``allocations``: ``[(Bankbewegung, Summe der Zuordnungen des Belegs an dieser Bewegung)]``. ``rows_of``: ``{Bankbewegung: [(Form, COA, Betrag, Satz, Steuer)]}``
+    – die markierten Sätze der App (``_payment_children``: Marke, Nummer des Belegs, keine Quellklammer) unter dieser Bewegung, in ID-Reihenfolge, die
+    Werte wie gespeichert. Gezählt werden die Umbuchungen „Wartekonto an Erlöskonto“ (``transfer`` mit einem Wartekonto aus ``waiting_ids`` als ``COA``)
+    und die Einzelsätze „Erlöskonto an Bank“ (``purpose_first``) – „Bank an Debitoren“ trägt keine Steuer und zählt nicht –, der Satz ist ``rate_pct`` ihres
+    ``TaxRate`` (NULL heißt 0 %). ``pcts``: die Sätze des Belegs.
+
+    ``MixedNotBookable`` mit ``MIXED_ALLOCATION_UNREADABLE``, wenn sich eine Zuordnung nicht so aufteilen lässt: keine markierten Sätze (Import, Altbestand,
+    von Hand), ein Satz, den der Beleg nicht trägt, ein Betrag oder eine Steuer, die keine ganze Zahl ist, oder die gezählten Beträge ergeben nicht den
+    Betrag der Zuordnung. Eine Zuordnung, die sich nicht aufteilen lässt, bräuchte eine Annahme – die App rät nicht."""
+    booked = {}
+    for bank_id, allocated in allocations:
+        rows = rows_of.get(bank_id)
+        if not rows or type(allocated) is not int:
+            raise MixedNotBookable(MIXED_ALLOCATION_UNREADABLE)
+        counted = 0
+        for form, coa, amount, rate, tax in rows:
+            if not ((form == FORM_TRANSFER and coa in waiting_ids) or form == FORM_PURPOSE_FIRST):
+                continue
+            try:
+                pct = rate_pct(rate)
+            except (ArithmeticError, ValueError):
+                raise MixedNotBookable(MIXED_ALLOCATION_UNREADABLE) from None
+            pct = Decimal(0) if pct is None else pct
+            tax = 0 if tax is None else tax
+            if pct not in pcts or type(amount) is not int or type(tax) is not int:
+                raise MixedNotBookable(MIXED_ALLOCATION_UNREADABLE)
+            counted += amount
+            done_amount, done_tax = booked.get(pct, (0, 0))
+            booked[pct] = (done_amount + amount, done_tax + tax)
+        if counted != allocated:
+            raise MixedNotBookable(MIXED_ALLOCATION_UNREADABLE)
+    return booked
 
 
 class InvoicePaymentsMixin:
@@ -480,10 +530,12 @@ class InvoicePaymentsMixin:
         return None
 
     # ── Beleg mit Steuersatz je Position (``Invoices.MixedTaxRates``): Gruppen, Forderung und Zahlungen je Satz ──────
-    def _mixed_groups(self, conn, invoice_id):
+    @staticmethod
+    def _mixed_groups(conn, invoice_id):
         """Die Satzgruppen eines Belegs mit Steuersatz je Position (``tax_groups.mixed_groups``: nach Satz absteigend), gelesen aus seinen
         Summen und Positionen in der Verbindung oder Transaktion von ``conn`` (kein ``BEGIN``). ``RateGroupsMismatch``, wenn die Positionen
-        nicht zu den Summen passen – auch, wenn es den Beleg nicht gibt."""
+        nicht zu den Summen passen – auch, wenn es den Beleg nicht gibt. Statisch: Der Schutz beim Entfernen einer Zahlung
+        (``_refund_removal_blocker``) liest sie ohne Instanz."""
         head = conn.execute('SELECT SumNet, TaxAmount, SumGross FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()
         if head is None:
             raise RateGroupsMismatch('Den Beleg gibt es nicht.')
@@ -533,46 +585,31 @@ class InvoicePaymentsMixin:
             debtor, waiting[pct] = row_debtor, row_waiting
         return debtor, waiting
 
-    def _mixed_booked(self, conn, invoice_id, number, pcts, except_booking=None):
+    @classmethod
+    def _mixed_booked(cls, conn, invoice_id, number, pcts, except_booking=None, except_payments=()):
         """Was die Zuordnungen einer Rechnung mit Steuersatz je Position je Satz tragen: ``{Satz: (Betrag, Steuer)}`` in Minor Units, mit Vorzeichen
-        (eine Erstattung ist negativ). Gelesen werden die markierten Sätze jeder Zuordnung (``_payment_children``): die Umbuchungen „Wartekonto an
-        Erlöskonto“ (``transfer`` mit einem Wartekonto als ``COA``) und die Einzelsätze „Erlöskonto an Bank“ (``purpose_first``) – „Bank an
-        Debitoren“ trägt keine Steuer und zählt nicht –, der Satz ist ``rate_pct`` ihres ``TaxRate`` (NULL heißt 0 %). Wie ``_allocations_tax``
-        (``except_booking``: eine Bankbewegung, deren Zuordnung nicht mitzählt), nur je Satz. ``pcts``: die Sätze des Belegs.
+        (eine Erstattung ist negativ). Gelesen werden die markierten Sätze jeder Zuordnung (``_payment_children``) und mit ``booked_by_rate`` gezählt – die
+        EINE Lesart, auch die der Prüfliste. Wie ``_allocations_tax`` (``except_booking``: eine Bankbewegung, deren Zuordnung nicht mitzählt), nur je Satz.
+        ``pcts``: die Sätze des Belegs. ``except_payments``: Zuordnungen (``InvoicePayments.ID``), die nicht mitzählen – so fragt der Schutz beim Entfernen
+        einer Zahlung, wie der Stand danach wäre (``_refund_removal_blocker``). Eine Klassenmethode, aus demselben Grund.
 
-        ``MixedNotBookable`` mit ``MIXED_ALLOCATION_UNREADABLE``, wenn sich eine Zuordnung nicht so aufteilen lässt: keine markierten Sätze (Import,
-        Altbestand, von Hand), ein Satz, den der Beleg nicht trägt, ein Betrag oder eine Steuer, die keine ganze Zahl ist, oder die gezählten Beträge
-        ergeben nicht den Betrag der Zuordnung. Eine Zuordnung, die sich nicht aufteilen lässt, bräuchte eine Annahme – die App rät nicht."""
-        skip, params = ((' AND BookingID <> ?', (invoice_id, except_booking)) if except_booking is not None
-                        else ('', (invoice_id,)))
-        waiting_ids = self._waiting_coa_ids(conn)
-        booked = {}
-        for bank_id, allocated in conn.execute(
-                f'SELECT BookingID, SUM(Amount) FROM InvoicePayments WHERE InvoiceID = ?{skip} GROUP BY BookingID',
-                params).fetchall():
-            marked = self._payment_children(conn, bank_id, number)
-            if not marked or type(allocated) is not int:
-                raise MixedNotBookable(MIXED_ALLOCATION_UNREADABLE)
-            counted = 0
-            for form, coa, amount, rate, tax in conn.execute(
-                    f"SELECT EntryForm, COA_ID, Amount, TaxRate, TaxAmount FROM Bookings WHERE ID IN ({','.join('?' * len(marked))}) "
-                    "ORDER BY ID", marked).fetchall():
-                if not ((form == FORM_TRANSFER and coa in waiting_ids) or form == FORM_PURPOSE_FIRST):
-                    continue
-                try:
-                    pct = rate_pct(rate)
-                except (ArithmeticError, ValueError):
-                    raise MixedNotBookable(MIXED_ALLOCATION_UNREADABLE) from None
-                pct = Decimal(0) if pct is None else pct
-                tax = 0 if tax is None else tax
-                if pct not in pcts or type(amount) is not int or type(tax) is not int:
-                    raise MixedNotBookable(MIXED_ALLOCATION_UNREADABLE)
-                counted += amount
-                done_amount, done_tax = booked.get(pct, (0, 0))
-                booked[pct] = (done_amount + amount, done_tax + tax)
-            if counted != allocated:
-                raise MixedNotBookable(MIXED_ALLOCATION_UNREADABLE)
-        return booked
+        ``MixedNotBookable`` mit ``MIXED_ALLOCATION_UNREADABLE``, wenn sich eine Zuordnung nicht so aufteilen lässt (siehe ``booked_by_rate``). Eine Zuordnung,
+        die sich nicht aufteilen lässt, bräuchte eine Annahme – die App rät nicht."""
+        skip, params = '', [invoice_id]
+        if except_booking is not None:
+            skip, params = ' AND BookingID <> ?', [invoice_id, except_booking]
+        if except_payments:
+            skip += f" AND ID NOT IN ({','.join('?' * len(except_payments))})"
+            params = [*params, *except_payments]
+        allocations = conn.execute(
+            f'SELECT BookingID, SUM(Amount) FROM InvoicePayments WHERE InvoiceID = ?{skip} GROUP BY BookingID', params).fetchall()
+        rows_of = {}
+        for bank_id, _allocated in allocations:
+            marked = cls._payment_children(conn, bank_id, number)
+            rows_of[bank_id] = conn.execute(
+                f"SELECT EntryForm, COA_ID, Amount, TaxRate, TaxAmount FROM Bookings WHERE ID IN ({','.join('?' * len(marked))}) ORDER BY ID",
+                marked).fetchall() if marked else []
+        return booked_by_rate(allocations, rows_of, pcts, cls._waiting_coa_ids(conn))
 
     def _bank_coa_of(self, account_id, what='Zahlung'):
         """Das SKR-Konto (COA-ID) des Bankkontos einer Bewegung: ``(Fehlertext, None)`` oder ``(None, COA-ID)``. Ohne
@@ -1109,9 +1146,8 @@ class InvoicePaymentsMixin:
         _debtor, waiting = self._receivable_sides_by_rate(conn, number)
         if waiting and set(waiting) != pcts:
             raise MixedNotBookable(MIXED_RECEIVABLE_MISMATCH)
-        pool = [RateGroup(pct, 0, paid[pct][1], paid[pct][0]) for pct in sorted(paid, reverse=True) if paid[pct][0] > 0]
         try:
-            split = split_payment(pool, refunded, refund)
+            split = split_payment(refund_pool(paid), refunded, refund)
         except ValueError:
             raise MixedNotBookable(MIXED_REFUND_SPLIT) from None
         revenue = self._refund_revenue_coas_by_rate(conn, original_id, original_number)
@@ -1336,7 +1372,8 @@ class InvoicePaymentsMixin:
 
         Die Erstattung einer Stornorechnung (``assign_storno_refund``) geht auf demselben Weg: Zuordnung und markierte Sätze
         gehen, Forderung und Gegenbuchung des Paares bleiben, das Guthaben ist danach wieder da. Eine **Zahlung** an einer
-        stornierten Rechnung mit Stornorechnung lässt sich dagegen nicht entfernen, wenn danach mehr erstattet als gezahlt wäre
+        stornierten Rechnung mit Stornorechnung lässt sich dagegen nicht entfernen, wenn danach mehr erstattet als gezahlt wäre – bei einem Paar
+        mit Steuersatz je Position auch nicht, wenn es nur für einen Satz so wäre
         (:class:`PaymentRemovalRefused`, in der Transaktion geprüft) – erst die Erstattung entfernen. Dasselbe gilt für jeden
         anderen Weg, der eine Zahlung entfernt (``remove_assignment_for_child``, ``delete_transaction``).
 
@@ -1352,28 +1389,64 @@ class InvoicePaymentsMixin:
             raise ValueError(f"InvoicePayment {payment_id} not found")
         return invoice_id
 
-    @staticmethod
-    def _refund_removal_blocker(conn, payment_ids):
+    @classmethod
+    def _refund_removal_blocker(cls, conn, payment_ids):
         """Klartext, wenn das Entfernen dieser Zuordnungen (``InvoicePayments.ID``, alle zusammen) das Guthaben eines
         Storno-Paares negativ machte, sonst ``None``. Betroffen ist jedes Paar, dessen stornierte Rechnung eine Zahlung
         (Betrag > 0) unter ihnen hat: Bleibt von den Zuordnungen beider Belege nach dem Entfernen weniger als 0 (Zahlungen
-        minus Erstattungen), wird abgelehnt. Eine Erstattung (Betrag < 0) zu entfernen löst nie etwas aus. In der Transaktion
-        von ``conn``; die EINE Prüfung, die jeder Weg vor dem Entfernen einer Zahlung fragt."""
+        minus Erstattungen), wird abgelehnt (``ALREADY_REFUNDED_MESSAGE``).
+
+        **Ein Paar mit Steuersatz je Position** (die stornierte Rechnung ODER ihre Stornorechnung trägt ``MixedTaxRates``) bekommt, wenn die Summe nicht
+        schon ablehnt, dieselbe Prüfung je Satz (``_unbalanced_rate_after_removal``): Die Summe kann aufgehen, und doch wäre für einen Satz mehr erstattet als
+        gezahlt – dann lehnt ``MIXED_REMOVAL_REFUSED`` ab, mit dem ersten solchen Satz und der Nummer der Stornorechnung. Ein Paar, dessen Stand je Satz sich
+        nicht lesen lässt (``MixedNotBookable``: eine Zuordnung ohne die Sätze der App, von Hand geänderte Sätze), bleibt bei der Summe: Das Entfernen ist dort
+        der Weg, den Zustand zu bereinigen, und wird nie gesperrt. Ein Paar mit einem Satz bleibt, wie es war.
+
+        Eine Erstattung (Betrag < 0) zu entfernen löst nie etwas aus. In der Transaktion von ``conn``; die EINE Prüfung, die jeder Weg vor dem Entfernen
+        einer Zahlung fragt (``unassign_invoice_payment``, ``remove_assignment_for_child``, ``delete_transaction``, ``split_removal_blocker``). Eine
+        Klassenmethode: Sie läuft auch mit einer rohen Verbindung ohne Instanz."""
         ids = sorted(set(payment_ids))
         if not ids:
             return None
         marks = ','.join('?' * len(ids))
         pairs = conn.execute(
-            'SELECT DISTINCT s.CancelsInvoiceId, s.ID FROM InvoicePayments ip '
-            'JOIN Invoices s ON s.CancelsInvoiceId = ip.InvoiceID AND s.InvoiceKind = ? '
-            f'WHERE ip.ID IN ({marks}) AND ip.Amount > 0', [STORNO_KIND, *ids]).fetchall()
-        for original_id, storno_id in pairs:
+            'SELECT DISTINCT s.CancelsInvoiceId, s.ID, o.InvoiceNumber, s.InvoiceNumber, o.MixedTaxRates, s.MixedTaxRates FROM InvoicePayments ip '
+            'JOIN Invoices s ON s.CancelsInvoiceId = ip.InvoiceID AND s.InvoiceKind = ? LEFT JOIN Invoices o ON o.ID = s.CancelsInvoiceId '
+            f'WHERE ip.ID IN ({marks}) AND ip.Amount > 0 ORDER BY s.CancelsInvoiceId, s.ID', [STORNO_KIND, *ids]).fetchall()
+        for pair in pairs:
             left = conn.execute(
                 f'SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID IN (?, ?) AND ID NOT IN ({marks})',
-                [original_id, storno_id, *ids]).fetchone()[0]
+                [pair[0], pair[1], *ids]).fetchone()[0]
             if left < 0:
                 return ALREADY_REFUNDED_MESSAGE
+        for original_id, storno_id, original_number, storno_number, original_flag, storno_flag in pairs:
+            if has_mixed_rates(original_flag) or has_mixed_rates(storno_flag):
+                pct = cls._unbalanced_rate_after_removal(conn, original_id, original_number, storno_id, storno_number, ids)
+                if pct is not None:
+                    return MIXED_REMOVAL_REFUSED.format(rate=pct_text(pct), number=storno_number)
         return None
+
+    @classmethod
+    def _unbalanced_rate_after_removal(cls, conn, original_id, original_number, storno_id, storno_number, removed):
+        """Der erste Satz (Prozentzahl), bei dem nach dem Entfernen der Zuordnungen ``removed`` (``InvoicePayments.ID``) mehr erstattet wäre als gezahlt – oder
+        Betrag und Steuer nicht aufgingen –, sonst ``None``; ``None`` auch, wenn sich der Stand je Satz nicht lesen lässt. Nur lesend, in der Verbindung oder
+        Transaktion von ``conn``.
+
+        Der Stand danach: ``paid`` = was die verbleibenden Zahlungen der stornierten Rechnung je Satz tragen, ``refunded`` = was die verbleibenden Erstattungen
+        an der Stornorechnung je Satz zurückgenommen haben (``_mixed_booked``, mit den entfernten Zuordnungen ausgenommen – eine Erstattung, die im selben
+        Zug geht, zählt nicht mehr), dieselben Bausteine wie ``_mixed_refund_parts``. Gefragt wird ``tax_groups.booked_fault`` an dem Topf der Zahlungen
+        (``refund_pool``): Es ist genau der Stand, in dem ``split_payment`` die nächste Erstattung ablehnen würde, oder ein Rest von Cent zwischen den Sätzen
+        stehen bliebe (ein Satz hat mehr Betrag oder mehr Steuer erstattet, als die Zahlungen trugen; ein Satz ist ganz erstattet, aber nicht mit der ganzen
+        Steuer; ein Satz hat erstattet, ohne dass eine Zahlung ihn trägt). Aus einem solchen Stand käme das Guthaben nicht mehr heraus."""
+        try:
+            pcts = {group.pct for group in cls._mixed_groups(conn, original_id)}
+            paid = cls._mixed_booked(conn, original_id, original_number, pcts, except_payments=removed)
+            refunded = {pct: (-amount, -tax) for pct, (amount, tax) in
+                        cls._mixed_booked(conn, storno_id, storno_number, pcts, except_payments=removed).items()}
+        except (MixedNotBookable, RateGroupsMismatch):
+            return None
+        fault = booked_fault(refund_pool(paid), refunded)
+        return fault[0] if fault else None
 
     @staticmethod
     def _assignment_ids(conn, bank_id, invoice_number):
@@ -1620,7 +1693,10 @@ class InvoicePaymentsMixin:
         Stand VOR dem ersten Umzug: Der Steuer-Rest des schließenden Teils hängt von den anderen Zuordnungen ab, die sich mit
         jedem Umzug ändern. Nichts zieht um, wenn Kunde oder Währung abweichen oder für den Steuersatz der neuen Rechnung kein
         Erlöskonto hinterlegt ist – und nie, wenn die stornierte oder die neue Rechnung einen Steuersatz je Position trägt
-        (``MixedTaxRates``): Die Zahlungen bleiben als Guthaben an der stornierten Rechnung, der Hinweis ist ``MOVE_MIXED_HINT``.
+        (``MixedTaxRates``): Die Zahlungen bleiben als Guthaben an der stornierten Rechnung. Der Hinweis ist ``MOVE_MIXED_HINT`` mit dem verbleibenden
+        Guthaben, bei einer Teilerstattung dazu ``MOVE_REFUNDED_HINT``; ist alles erstattet, sind es dieselben Sätze wie beim Beleg mit einem Satz
+        (``MOVE_NONE_HINT``, ``MOVE_REFUNDED_HINT``) – ohne den Halbsatz zum Erstatten und Neu-Zuordnen, denn es gibt nichts mehr –, und ohne Zahlung
+        gibt es gar keinen Hinweis.
         Wurde zur stornierten Rechnung schon erstattet (``assign_storno_refund``; Σ Zuordnungen der
         Stornorechnung < 0), zieht höchstens das verbleibende Guthaben um – die Zahlungen der stornierten Rechnung (ihre positiven
         Zuordnungen; eine negative des WISO-Imports bleibt, wie sonst, unberührt, mindert aber das Guthaben) minus die Erstattungen vor
@@ -1658,8 +1734,17 @@ class InvoicePaymentsMixin:
 
         if has_mixed_rates(old_mixed) or has_mixed_rates(row.get('MixedTaxRates')):
             # Der Umzug vergleicht die Sätze der App mit ``payment_rows`` EINES Satzes (``_revenue_coa_if_as_written``, ``_same_payment_row``) und
-            # bucht sie mit EINEM Erlöskonto neu – je Satz zu verallgemeinern (Etappe 3) rührte an einer Regel, die nicht gelockert wird
-            return 0, MOVE_MIXED_HINT.format(number=old_number, amount=euro(max(total - refunded, 0)))
+            # bucht sie mit EINEM Erlöskonto neu – je Satz zu verallgemeinern (Etappe 3) rührte an einer Regel, die nicht gelockert wird. Der Hinweis
+            # sagt, was bleibt – mit denselben Sätzen wie beim Beleg mit einem Satz (``MOVE_NONE_HINT``, ``MOVE_REFUNDED_HINT``): Ist das Guthaben
+            # erstattet, gibt es nichts mehr zu erstatten oder neu zuzuordnen (``total`` > 0: Dann ist ``refunded`` > 0); sonst bleibt es an der
+            # stornierten Rechnung, und eine Teilerstattung wird genannt
+            credit = max(total - refunded, 0)
+            if not credit:
+                return 0, ' '.join([MOVE_NONE_HINT.format(number=old_number), MOVE_REFUNDED_HINT.format(amount=euro(refunded))])
+            notes = [MOVE_MIXED_HINT.format(number=old_number, amount=euro(credit))]
+            if refunded:
+                notes.append(MOVE_REFUNDED_HINT.format(amount=euro(refunded)))
+            return 0, ' '.join(notes)
         if row['CustomerId'] != old_customer or (row['Currency'] or 'EUR') != (old_currency or 'EUR'):
             return 0, (f'Die Zahlungen der stornierten Rechnung {old_number} ({euro(total)}) bleiben dort: '
                        'Kunde oder Währung dieser Rechnung weichen ab.')
@@ -1750,9 +1835,9 @@ class InvoicePaymentsMixin:
             notes.append(f'Zahlungen der stornierten Rechnung {old_number} über {euro(moved)} sind jetzt dieser '
                          'Rechnung zugeordnet.')
         else:
-            notes.append(f'Es wurden keine Zahlungen der stornierten Rechnung {old_number} übernommen.')
+            notes.append(MOVE_NONE_HINT.format(number=old_number))
         if refunded:
-            notes.append(f'{euro(refunded)} sind bereits erstattet und bleiben an der stornierten Rechnung.')
+            notes.append(MOVE_REFUNDED_HINT.format(amount=euro(refunded)))
         if kept > 0:
             notes.append(f'{euro(kept)} bleiben als Guthaben des Kunden an der stornierten Rechnung.')
         if moved and self._tax_rate_key(old_rate) != self._tax_rate_key(row['TaxRate']):
@@ -1803,6 +1888,12 @@ class InvoicePaymentsMixin:
                                  Forderungszeilen der App nicht genau die Satzgruppen der Rechnung buchen, oder der ganz
                                  bezahlt ist, ohne dass je Steuersatz sein Betrag und seine Steuer auf die Erlöskonten umgebucht
                                  wären (``_rate_findings``);
+        * ``rate_refund_mismatch`` ein Storno-Paar mit Steuersatz je Position (die stornierte Rechnung oder die Stornorechnung trägt das
+                                 Kennzeichen), dessen Stand je Satz sich lesen lässt und bei dem je Satz mehr erstattet ist als gezahlt –
+                                 oder Betrag und Steuer nicht aufgehen: Die Summe kann aufgehen (``refund_exceeds_credit`` schweigt),
+                                 und doch hat ein Satz mehr zurückbekommen, als er getragen hat. Die App lässt es auf keinem Weg entstehen
+                                 (``_refund_removal_blocker`` prüft dasselbe je Satz); die Kategorie meldet Eingriffe an ihr vorbei, an der
+                                 stornierten Rechnung (gemessen mit ``tax_groups.booked_fault``). Ein Paar ohne das Kennzeichen ist nie betroffen;
         * ``unflagged_rate_mix`` ein Beleg OHNE dieses Kennzeichen, dessen Positionen verschiedene Steuersätze tragen (Positionen
                                  ohne Satz zählen nicht, ein Beleg ohne Steuerausweis ist nie betroffen): Er wird mit EINEM Satz
                                  geführt, und seine Buchungen rechnen mit dem Satz im Kopf. Ein Bestand aus einer Version vor
@@ -2057,16 +2148,22 @@ class InvoicePaymentsMixin:
         return findings
 
     def _rate_findings(self, conn, invoice_id):
-        """Die Befunde zu den Steuersätzen der Belege (``rate_split_mismatch``, ``unflagged_rate_mix``) in der Form von ``find_payment_inconsistencies`` –
-        nur lesend, in der Verbindung oder Transaktion ``conn``, linear im Bestand: Für alle Belege mit dem Kennzeichen (``invoice_id`` grenzt ein) je eine
-        Abfrage über die Köpfe, die Positionen, die Zuordnungen, die Forderungszeilen der App und die markierten Umbuchungen, für alle ohne das Kennzeichen
-        eine über die Sätze ihrer Positionen – die Zahl der Anweisungen wächst nicht mit der Zahl der Belege. Ein Beleg mit einem Satz ist nie betroffen.
+        """Die Befunde zu den Steuersätzen der Belege (``rate_split_mismatch``, ``rate_refund_mismatch``, ``unflagged_rate_mix``) in der Form von
+        ``find_payment_inconsistencies`` – nur lesend, in der Verbindung oder Transaktion ``conn``, linear im Bestand: Für alle Belege mit dem Kennzeichen
+        (``invoice_id`` grenzt ein) je eine Abfrage über die Köpfe, die Positionen, die Zuordnungen, die Forderungszeilen der App und die markierten
+        Umbuchungen, für alle Storno-Paare mit dem Kennzeichen je eine über die Köpfe samt Positionen der stornierten Rechnungen, die Zuordnungen je
+        Bankbewegung und die markierten Sätze, für alle ohne das Kennzeichen eine über die Sätze ihrer Positionen – die Zahl der Anweisungen wächst nicht
+        mit der Zahl der Belege. Ein Beleg mit einem Satz ist nie betroffen.
 
         ``rate_split_mismatch`` (Rechnung wie Stornorechnung, jeder Status): (1) die Positionen passen nicht zu den Summen (``tax_groups.mixed_groups``) –
         dann lässt sich nichts weiter prüfen; (2) es gibt Forderungszeilen der App, und ihre Menge aus Satz, Betrag und Steuer ist nicht die der Satzgruppen
         (eine fehlt, eine ist zu viel, eine trägt einen anderen Betrag); (3) die Zuordnungen ergeben genau das Brutto (≠ 0), aber die markierten
         Umbuchungen auf die Erlöskonten tragen je Satz nicht dessen Betrag und Steuer. Gerechnet wird in Minor Units und mit dem Satz nach ``rate_pct``
-        (0,19 und 19 sind derselbe); ein Betrag, der keine ganze Zahl ist, zählt nicht mit (der Befund nennt dann, was lesbar ist). ``unflagged_rate_mix``:
+        (0,19 und 19 sind derselbe); ein Betrag, der keine ganze Zahl ist, zählt nicht mit (der Befund nennt dann, was lesbar ist). ``rate_refund_mismatch`` (an
+        der stornierten Rechnung, ein Befund je Paar): Der Stand je Satz – was die Zahlungen der stornierten Rechnung und die Erstattungen an der Stornorechnung
+        je Satz tragen – wird wie beim Schutz vor dem Entfernen einer Zahlung gelesen (``booked_by_rate``: ``_mixed_booked`` für alle Paare auf einmal) und
+        mit ``tax_groups.booked_fault`` am Topf der Zahlungen (``refund_pool``) gemessen; lässt er sich nicht lesen (eine Zuordnung ohne die Sätze der App,
+        von Hand geänderte Sätze, Positionen, die nicht zu den Summen passen), gibt es diesen Befund nicht. ``unflagged_rate_mix``:
         die Positionen eines Belegs ohne das Kennzeichen tragen mehr als einen Satz (nach ``rate_pct``; ohne Satz zählt nicht; Kopf unter 0, der
         Platzhalter für „ohne Steuerausweis“, nie)."""
         flagged = "typeof(i.MixedTaxRates) = 'integer' AND i.MixedTaxRates = 1"
@@ -2156,6 +2253,48 @@ class InvoicePaymentsMixin:
                         add('rate_split_mismatch', inv, number,
                             'Die Rechnung ist ganz bezahlt, aber auf die Erlöskonten ist je Steuersatz nicht ihr Betrag umgebucht: '
                             f'erwartet {shown(wanted)}, umgebucht {shown([(pct, amount, tax) for pct, (amount, tax) in done.items()])}.')
+
+        # Mehr erstattet als gezahlt, je Satz: die Storno-Paare, von denen die stornierte Rechnung oder die Stornorechnung das Kennzeichen trägt. Dieselben
+        # Bausteine wie der Schutz beim Entfernen einer Zahlung (``booked_by_rate``, ``refund_pool``, ``booked_fault``), nur je Art EINE Abfrage für alle Paare:
+        # die Köpfe und Positionen der stornierten Rechnungen, die Zuordnungen beider Belege je Bankbewegung, die markierten Sätze zu ihren Nummern
+        pair_args = [STORNO_KIND] + ([invoice_id, invoice_id] if invoice_id is not None else [])
+        pair_from = ('FROM Invoices s JOIN Invoices o ON o.ID = s.CancelsInvoiceId WHERE s.InvoiceKind = ? '
+                     "AND ((typeof(o.MixedTaxRates) = 'integer' AND o.MixedTaxRates = 1) OR (typeof(s.MixedTaxRates) = 'integer' AND s.MixedTaxRates = 1))"
+                     f"{' AND (o.ID = ? OR s.ID = ?)' if invoice_id is not None else ''}")
+        refund_pairs = conn.execute('SELECT o.ID, o.InvoiceNumber, o.SumNet, o.TaxAmount, o.SumGross, s.ID, s.InvoiceNumber '
+                                    f'{pair_from} ORDER BY o.InvoiceNumber, s.ID', pair_args).fetchall()
+        if refund_pairs:
+            original_items = {}
+            for inv, rate, net in conn.execute(
+                    f'SELECT p.InvoiceId, p.TaxRate, p.TotalNet FROM InvoiceItems p WHERE p.InvoiceId IN (SELECT o.ID {pair_from}) '
+                    'ORDER BY p.InvoiceId, p.Position, p.ID', pair_args):
+                original_items.setdefault(inv, []).append((rate, net))
+            allocations = {}
+            for inv, bank_id, total in conn.execute(
+                    'SELECT ip.InvoiceID, ip.BookingID, SUM(ip.Amount) FROM InvoicePayments ip WHERE ip.InvoiceID IN '
+                    f'(SELECT o.ID {pair_from} UNION SELECT s.ID {pair_from}) GROUP BY ip.InvoiceID, ip.BookingID ORDER BY ip.InvoiceID, ip.BookingID',
+                    pair_args * 2):
+                allocations.setdefault(inv, []).append((bank_id, total))
+            marked_rows = {}
+            for number, bank_id, form, coa, amount, rate, tax in conn.execute(
+                    'SELECT k.DocumentNumber, k.ParentBooking_ID, k.EntryForm, k.COA_ID, k.Amount, k.TaxRate, k.TaxAmount FROM Bookings k '
+                    "WHERE k.Status = ? AND k.ParentBooking_ID IS NOT NULL AND (k.SourceGroup IS NULL OR k.SourceGroup = '') AND k.DocumentNumber IN "
+                    f'(SELECT o.InvoiceNumber {pair_from} UNION SELECT s.InvoiceNumber {pair_from}) ORDER BY k.ID', [PAYMENT_MARK, *pair_args * 2]):
+                marked_rows.setdefault(number, {}).setdefault(bank_id, []).append((form, coa, amount, rate, tax))
+            waiting_ids = self._waiting_coa_ids(conn)
+            for original_id, original_number, sum_net, tax_amount, sum_gross, storno_id, storno_number in refund_pairs:
+                try:
+                    pcts = {group.pct for group in mixed_groups(sum_net, tax_amount, sum_gross, original_items.get(original_id, []))}
+                    paid = booked_by_rate(allocations.get(original_id, []), marked_rows.get(original_number, {}), pcts, waiting_ids)
+                    refunded = {pct: (-amount, -tax) for pct, (amount, tax) in
+                                booked_by_rate(allocations.get(storno_id, []), marked_rows.get(storno_number, {}), pcts, waiting_ids).items()}
+                except (MixedNotBookable, RateGroupsMismatch):
+                    continue                                    # der Stand je Satz lässt sich nicht lesen: Die Summe prüfen die anderen Kategorien
+                if booked_fault(refund_pool(paid), refunded):
+                    add('rate_refund_mismatch', original_id, original_number,
+                        'Je Steuersatz ist mehr erstattet als gezahlt (oder Betrag und Steuer gehen nicht auf): '
+                        f'gezahlt {shown([(pct, amount, tax) for pct, (amount, tax) in paid.items()])} – '
+                        f'erstattet {shown([(pct, amount, tax) for pct, (amount, tax) in refunded.items()])}.')
 
         # Ein Beleg ohne das Kennzeichen, dessen Positionen verschiedene Sätze tragen: Er wird mit dem Satz im Kopf gebucht
         rates = {}

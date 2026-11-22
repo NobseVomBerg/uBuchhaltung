@@ -1120,9 +1120,11 @@ class InvoicesMixin:
             f"WHERE DocumentNumber = ? AND BookingType = 'entry' AND {receivable_sql} ORDER BY ID",
             [number, *receivable_params]).fetchall()
 
-    def _waiting_coa_ids(self, conn):
-        """Die COA-IDs der Wartekonten (``OPEN_REVENUE_ACCOUNTS``) in der Transaktion von ``conn``."""
-        waiting = tuple(n for n, _name in self.OPEN_REVENUE_ACCOUNTS.values())
+    @classmethod
+    def _waiting_coa_ids(cls, conn):
+        """Die COA-IDs der Wartekonten (``OPEN_REVENUE_ACCOUNTS``) in der Transaktion von ``conn``. Eine Klassenmethode: Der Schutz beim Entfernen einer
+        Zahlung (``_refund_removal_blocker``) ist eine und braucht sie ohne Instanz."""
+        waiting = tuple(n for n, _name in cls.OPEN_REVENUE_ACCOUNTS.values())
         return {r[0] for r in conn.execute(
             f"SELECT ID FROM ChartOfAccounts WHERE AccountNumber IN ({','.join('?' * len(waiting))})", waiting)}
 

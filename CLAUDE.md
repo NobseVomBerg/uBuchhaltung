@@ -1145,13 +1145,17 @@ kein Subagent darauf:
   Oberfläche lässt es entstehen; die Kategorie meldet, was daran vorbei geschieht: SQL-Konsole, Sicherung, Bestand älterer
   Versionen und ein Import, der nach einer Erstattung eine negative Zuordnung an die stornierte Rechnung hängt
   (`link_invoice_to_transaction` prüft das nicht); je Rechnung vorab zusammengefasst).
-  **Zwei Kategorien gelten den Sätzen eines Belegs** (seit 2.7.0, `_rate_findings`, nur lesend, je Art eine Abfrage für alle Belege): `rate_split_mismatch` – ein Beleg
+  **Drei Kategorien gelten den Sätzen eines Belegs** (seit 2.7.0, `_rate_findings`, nur lesend, je Art eine Abfrage für alle Belege): `rate_split_mismatch` – ein Beleg
   mit Steuersatz je Position (Rechnung wie Stornorechnung, jeder Status), dessen Positionen nicht zu seinen Summen passen (`tax_groups.mixed_groups`; dann lässt sich nichts weiter prüfen),
   dessen Forderungszeilen der App (Satz, Betrag, Steuer; bei der Stornorechnung die negierten Gruppen) nicht genau die Satzgruppen buchen, oder der ganz bezahlt ist (Σ Zuordnungen = Brutto ≠ 0),
-  ohne dass je Satz sein Betrag und seine Steuer auf die Erlöskonten umgebucht wären (die markierten Umbuchungen, dieselben Sätze, die `_mixed_booked` zählt); und `unflagged_rate_mix` – ein
+  ohne dass je Satz sein Betrag und seine Steuer auf die Erlöskonten umgebucht wären (die markierten Umbuchungen, dieselben Sätze, die `_mixed_booked` zählt); `rate_refund_mismatch` – ein Storno-Paar, bei dem
+  die stornierte Rechnung oder die Stornorechnung das Kennzeichen trägt, dessen Stand je Satz sich lesen lässt (`booked_by_rate`: derselbe Kern wie `_mixed_booked`, für alle Paare aus je einer Abfrage; ein
+  unlesbarer Stand, auch Positionen, die nicht zu den Summen passen, ergibt keinen solchen Befund) und bei dem je Satz mehr erstattet ist als gezahlt oder Betrag und Steuer nicht aufgehen (`tax_groups.booked_fault` am
+  Topf der Zahlungen, `refund_pool` – derselbe Stand, den der Schutz beim Entfernen einer Zahlung verhindert): Die Summe kann aufgehen, `refund_exceeds_credit` schweigt dann; ein Befund je Paar, an der
+  stornierten Rechnung, mit den Werten je Satz (gezahlt – erstattet); und `unflagged_rate_mix` – ein
   Beleg OHNE das Kennzeichen, dessen Positionen verschiedene Sätze tragen (verglichen nach `rate_pct`: 0,19 ist 19; eine Position ohne Satz zählt nicht, ein Kopf unter 0, der Platzhalter für „ohne Steuerausweis“,
   nie, ein Angebot nie): Er wird mit EINEM Satz geführt, und seine Buchungen rechnen mit dem Satz im Kopf – ein Bestand aus einer Version vor 2.7.0 kann so etwas tragen; es wird genannt, nie umgedeutet.
-  Ein Beleg mit einem Satz ist von keiner der beiden betroffen (`tests/test_single_rate_snapshots.py` hält es fest); ein Betrag, der keine ganze Zahl ist, zählt nicht mit (der Befund nennt, was lesbar ist).
+  Ein Beleg mit einem Satz ist von keiner der drei betroffen (`tests/test_single_rate_snapshots.py` hält es fest); ein Betrag, der keine ganze Zahl ist, zählt nicht mit (der Befund nennt, was lesbar ist).
   **Diese Forderungen liest die Prüfliste einmal für alle Paare und Alt-Stornos** (`_app_receivable_amounts`, mit
   Beträgen; dieselbe Bedingung `receivable_condition` und dieselbe Einordnung `_is_app_receivable` wie
   `_app_receivable_ids`, das darauf aufsetzt) – je Rechnung nachzuschlagen wäre quadratisch, `DocumentNumber` hat keinen
@@ -1720,11 +1724,13 @@ kein Subagent darauf:
   lehnt `MIXED_REFUND_REVENUE_AMBIGUOUS` mit dem Satz ab – der Nutzer wählt keines (`revenue_coa_id` gilt nie, `refund_revenue_coas_differ` ist für so eine Stornorechnung immer falsch, die Seite zeigt keine Auswahl).
   Geht die Aufteilung nicht auf (ein Satz hat mehr erstattet, als die Zahlungen hergeben – eine Zahlung wurde nach einer Erstattung entfernt oder von Hand geändert), lehnt `MIXED_REFUND_SPLIT` ab, eine Zuordnung ohne die Sätze
   der App `MIXED_ALLOCATION_UNREADABLE`: die App rät nicht. In der Transaktion wird neu geplant und mit der Vorprüfung verglichen (Teile je Satz samt Erlöskonten, Bankkonto der Bewegung; sonst „geändert“).
-  Das Entfernen einer Zahlung schützt dasselbe Guthaben wie bei einem Satz (`_refund_removal_blocker`, über alle Sätze). **Neu ausstellen und Umzug:** `create_replacement_draft` kopiert das Kennzeichen; die Zahlungen der
+  Das Entfernen einer Zahlung schützt dasselbe Guthaben wie bei einem Satz (`_refund_removal_blocker`) – über alle Sätze und zusätzlich je Satz (`MIXED_REMOVAL_REFUSED`, siehe *Stornobeleg*). **Neu ausstellen und Umzug:** `create_replacement_draft` kopiert das Kennzeichen; die Zahlungen der
   stornierten Rechnung ziehen nicht auf die Ersatzrechnung um, wenn die stornierte ODER die neue Rechnung einen Steuersatz je Position trägt (`_move_replaced_payments`: Der Umzug vergleicht die Sätze der App mit
   `payment_rows` EINES Satzes und bucht mit EINEM Erlöskonto neu – je Satz zu verallgemeinern ist Etappe 3 und rührte an einer Regel, die nicht gelockert wird); der Hinweis ist `MOVE_MIXED_HINT` mit der Nummer
-  der stornierten Rechnung und ihrem Guthaben, die Zahlungen bleiben dort und lassen sich erstatten oder – entfernt – an der Ersatzrechnung neu zuordnen (`_payment_move_context` löst für den Platzhalter im Kopf
-  nie ein Erlöskonto auf). **Zuordnung neu aufbauen:** nur der offene Betrag (Grund `mixed`, siehe dort). **Prüfliste:** `rate_split_mismatch` und `unflagged_rate_mix` (siehe *Rechnungszahlung*). **Ein Weg lehnt noch ab,
+  der stornierten Rechnung und ihrem Guthaben, die Zahlungen bleiben dort und lassen sich erstatten oder – entfernt – an der Ersatzrechnung neu zuordnen (nach einer Teilerstattung dazu „… sind bereits erstattet …“, `MOVE_REFUNDED_HINT`;
+  ist alles erstattet, sind es dieselben Sätze wie beim Beleg mit einem Satz, `MOVE_NONE_HINT` und `MOVE_REFUNDED_HINT`, ohne den Halbsatz zum Erstatten und Neu-Zuordnen; ohne Zahlung gibt es keinen Hinweis;
+  `_payment_move_context` löst für den Platzhalter im Kopf nie ein Erlöskonto auf). **Zuordnung neu aufbauen:** nur der offene Betrag (Grund `mixed`, siehe dort). **Prüfliste:** `rate_split_mismatch`, `rate_refund_mismatch` und
+  `unflagged_rate_mix` (siehe *Rechnungszahlung*). **Ein Weg lehnt noch ab,
   mit EINEM Satz** (`MIXED_LINK_NOT_BOOKABLE`, VOR dem ersten Schreiben, am frisch in der Transaktion gelesenen Beleg; nichts geändert): `link_invoice_to_transaction` (der WISO-Import: schreibt eine Zuordnung ohne Sätze,
   deren Anteil je Satz keine spätere Zahlung, Erstattung oder Prüfung kennen könnte – seine Aufrufer legen nur Belege ohne das Kennzeichen an). Es gibt keinen allgemeinen Satz „lässt sich noch nicht buchen“ mehr.
   `create_replacement_draft` bucht nichts; `update_invoice_status` (der ungeprüfte Baustein für Seed und Tests) bleibt, wie er ist. Ein Weg, der einen Beleg mit Steuersatz je Position buchen soll, bucht je Satz oder lehnt
@@ -1890,7 +1896,7 @@ kein Subagent darauf:
   (`_payment_move_context` löst das Erlöskonto vorher in eigenen Verbindungen auf, `_move_replaced_payments` schreibt;
   `update_invoice_status`, der ungeprüfte Baustein für Seed und Tests, zieht nie um). Voraussetzung: gleicher Kunde und
   gleiche Währung und ein hinterlegtes Erlöskonto für den Steuersatz der neuen Rechnung – sonst bleibt alles, und der
-  Hinweis sagt es. **Trägt die stornierte oder die neue Rechnung einen Steuersatz je Position, zieht nichts um** (`MOVE_MIXED_HINT`,
+  Hinweis sagt es. **Trägt die stornierte oder die neue Rechnung einen Steuersatz je Position, zieht nichts um** (`MOVE_MIXED_HINT`, nach einer Erstattung mit dem Satz dazu,
   *Mehrere Steuersätze je Beleg*). **Nach einer Erstattung zieht höchstens das verbleibende Guthaben um:** `movable_left` = alle Zuordnungen der
   stornierten Rechnung (auch eine negative des WISO-Imports: Sie zieht nie um, mindert aber das Guthaben) minus die
   Erstattungen an der Stornorechnung, vor dem Umzug; je umziehbarer Zuordnung ist der Teil `min(Betrag, Rest der neuen
@@ -1997,7 +2003,13 @@ kein Subagent darauf:
   ersten Speichern ein. **Entfernen** wie jede Zuordnung: Forderung und Gegenbuchung bleiben, das Guthaben ist wieder da. **Das
   Guthaben wird auf keinem Weg der Oberfläche negativ:** Jeder Weg, der eine **Zahlung** an einer stornierten Rechnung mit
   Stornorechnung entfernt, fragt vor dem ersten Schreiben in seiner Transaktion dieselbe Prüfung (`_refund_removal_blocker`:
-  bliebe von den Zuordnungen beider Belege weniger als 0, lehnt `PaymentRemovalRefused` ab, nichts ist geändert): die
+  bliebe von den Zuordnungen beider Belege weniger als 0, lehnt `PaymentRemovalRefused` ab, nichts ist geändert; **bei einem Paar mit Steuersatz je Position gilt
+  dazu die Prüfung je Satz** – wäre danach für einen Satz mehr Betrag oder Steuer erstattet, als die Zahlungen trugen, oder ein Satz ganz erstattet, aber nicht mit
+  seiner ganzen Steuer, oder hätte ein Satz ohne Zahlung erstattet, lehnt `MIXED_REMOVAL_REFUSED` ab, mit Satz und Nummer der Stornorechnung („… für 7 % wäre danach
+  mehr erstattet als gezahlt … Erst die Erstattung an der Stornorechnung 26R001 entfernen.“); das ist genau der Stand, in dem `split_payment` die nächste Erstattung
+  ablehnte (`tax_groups.booked_fault`, am Topf der Zahlungen `refund_pool`), mit denselben Bausteinen gelesen wie die Erstattung (`_mixed_booked`, ohne die entfernten Zuordnungen:
+  `_unbalanced_rate_after_removal`); gilt, wenn die stornierte Rechnung ODER ihre Stornorechnung das Kennzeichen trägt, und nach der Summe; lässt sich der Stand je Satz nicht
+  lesen (`MixedNotBookable`), bleibt es bei der Summe – das Entfernen ist dort der Weg, den Zustand zu bereinigen; ein Paar mit einem Satz bleibt, wie es war): die
   Rechnungsseite (`unassign_invoice_payment`, 409), das ✕ an einer Zeile der Zahlung im Bank-Editor und das Löschen eines
   Satzes der Zuordnung (`remove_assignment_for_child`), `delete_transaction` – Satz wie Bankbewegung – und die Liste
   (`/transactions/delete`). `_unassign` selbst prüft nichts (der Umzug braucht es so). Der Editor prüft **alle** entfernten
@@ -2006,7 +2018,7 @@ kein Subagent darauf:
   Speichern des Editors in EINER Transaktion (`save_bank_with_rows`, siehe *Masken*): Geplant wird unter der Schreibsperre, die
   Einzelprüfung beim Entfernen bleibt zusätzlich – lehnt sie ab oder scheitert eine Zeile, ist nichts gespeichert; die Löschroute
   leitet mit dem Grund auf die Liste (`/transactions?err=`, `appMsg`). Das Entfernen einer **Erstattung** bleibt auf allen Wegen
-  frei. Die Prüfliste meldet `refund_exceeds_credit` weiter für Eingriffe an der App vorbei. Nach einer Erstattung zieht höchstens das
+  frei. Die Prüfliste meldet `refund_exceeds_credit` weiter für Eingriffe an der App vorbei (bei einem Paar mit Steuersatz je Position dazu `rate_refund_mismatch`). Nach einer Erstattung zieht höchstens das
   verbleibende Guthaben auf die Ersatzrechnung um (*Statusübergänge*). Die Seite der Stornorechnung zeigt den Kasten „Erstattung“ (ausgehende Bewegungen mit
   freiem Rest, Betrag vorbelegt; die Erstattungen mit „Entfernen“); die EÜR nimmt den Erlös am Tag der Erstattung zurück, das
   Dashboard zählt die Bankbewegung als Ausgabe.

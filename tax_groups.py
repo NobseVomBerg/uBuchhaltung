@@ -13,7 +13,9 @@ vorgegeben. Beträge sind Minor Units (``money``, ganzzahlig), ein Satz ist eine
 
 Für die Buchungen eines Belegs mit Steuersatz je Position (``Invoices.MixedTaxRates`` = 1) kommen dazu: ``mixed_groups`` (die Gruppen eines
 Belegs, geprüft gegen seine gespeicherten Summen), ``split_payment`` (wie sich eine Zahlung auf die Gruppen verteilt – Betrag und Steuer je
-Satz), ``booking_rate`` (die EINE Form, in der der Satz einer Gruppe in ``Bookings.TaxRate`` steht) und ``pct_text`` (der Satz für Texte).
+Satz), ``booking_rate`` (die EINE Form, in der der Satz einer Gruppe in ``Bookings.TaxRate`` steht) und ``pct_text`` (der Satz für Texte). Für die Erstattung
+und den Schutz beim Entfernen einer Zahlung: ``refund_pool`` (die Gruppen, aus denen erstattet wird) und ``booked_fault`` (ob der gebuchte Stand je Satz
+zu ihnen passt – die Eingangsprüfung von ``split_payment``, von hier aus auch vorab zu fragen).
 """
 from dataclasses import dataclass
 from decimal import Decimal
@@ -161,6 +163,34 @@ def _whole(value):
     return type(value) is int
 
 
+def refund_pool(paid):
+    """Die Gruppen, aus denen eine Erstattung nimmt (Eingabe von ``split_payment``): je Satz, dessen Zahlungen etwas getragen haben, eine Gruppe mit genau
+    dem als Brutto und der Steuer darin – nach Satz absteigend, wie ``mixed_groups``. ``paid``: ``{Satz: (Betrag, Steuer)}``, was die Zahlungen der
+    stornierten Rechnung je Satz gebucht haben (Minor Units). Der Topf ist nicht das Brutto der Rechnung: Eine Teilzahlung hat es noch nicht gefüllt. Ein
+    Satz ohne Zahlung hat keine Gruppe – wer dort erstattet hat, hat mehr erstattet als gezahlt (``booked_fault``). Die EINE Stelle für die Erstattung, die
+    Prüfung beim Entfernen einer Zahlung und die Prüfliste."""
+    return [RateGroup(pct, 0, paid[pct][1], paid[pct][0]) for pct in sorted(paid, reverse=True) if paid[pct][0] > 0]
+
+
+def booked_fault(groups, booked):
+    """Der erste Satz, dessen gebuchter Stand ``booked`` nicht zu seiner Gruppe passt – als ``(Satz, Grund)`` (der Grund ist ein Satz für das Server-Log) –,
+    sonst ``None``. ``groups``: die Gruppen (``mixed_groups`` bzw. ``refund_pool``), ``booked``: ``{Satz: (Betrag, Steuer)}`` (Minor Units).
+
+    Es passt nicht, wenn ein Satz mehr gebucht hat als das Brutto seiner Gruppe oder mehr Steuer als deren Steuer (auch unter 0 oder keine ganze Zahl), wenn
+    er ganz bezahlt ist, ohne dass seine Steuer ganz gebucht wäre, oder wenn ein Satz gebucht ist, den die Gruppen nicht tragen (zuletzt, nach den Gruppen in
+    ihrer Reihenfolge, absteigend). **Das ist genau die Eingangsprüfung von ``split_payment``**: Sie lehnt in diesen Fällen ab. Wer den Stand vor der nächsten
+    Zahlung oder Erstattung prüfen will – etwa ob nach dem Entfernen einer Zahlung je Satz noch erstattet werden kann –, fragt diese Funktion, statt die
+    Bedingungen nachzubauen. Die Gruppen selbst prüft sie nicht (``split_payment`` tut es vorher)."""
+    for group in groups:
+        done_amount, done_tax = booked.get(group.pct, (0, 0))
+        if not (_whole(done_amount) and _whole(done_tax) and 0 <= done_amount <= group.gross and 0 <= done_tax <= group.tax):
+            return group.pct, f'Gebucht ist mehr, als der Satz {group.pct} hergibt.'
+        if done_amount == group.gross and done_tax != group.tax:
+            return group.pct, f'Der Satz {group.pct} ist ganz bezahlt, seine Steuer aber nicht ganz gebucht.'
+    unknown = sorted(set(booked) - {group.pct for group in groups}, reverse=True)
+    return (unknown[0], 'Es ist ein Satz gebucht, den der Beleg nicht trägt.') if unknown else None
+
+
 def split_payment(groups, booked, amount):
     """Wie sich der Betrag ``amount`` einer Zahlung auf die Satzgruppen eines Belegs verteilt – je Satz Betrag und Steuer, alles Minor Units.
 
@@ -170,8 +200,9 @@ def split_payment(groups, booked, amount):
     Gruppen, auch einer mit Betrag 0 – für ihn schreibt der Aufrufer keine Zeile (und er trägt nie eine Steuer).
 
     ``ValueError``, wenn der Betrag nicht über 0 liegt oder über dem liegt, was noch offen ist, ein Satz mehr gebucht hat als sein Brutto oder
-    mehr Steuer als seine Steuer, ein Satz ganz bezahlt ist, ohne dass seine Steuer ganz gebucht wäre (der Bestand ist dann nicht stimmig), oder
-    die Gruppen nicht verschieden und positiv sind – der Aufrufer lehnt dann mit Klartext ab.
+    mehr Steuer als seine Steuer, ein Satz ganz bezahlt ist, ohne dass seine Steuer ganz gebucht wäre (der Bestand ist dann nicht stimmig; das
+    prüft ``booked_fault``, die auch fragen kann, wer den Stand vorab prüfen will), oder die Gruppen nicht verschieden und positiv sind – der Aufrufer
+    lehnt dann mit Klartext ab.
 
     **Betrag:** Die schließende Zahlung (sie deckt alles Offene) schließt jede Gruppe mit ihrem Rest. Jede andere Zahlung zielt je Satz auf den
     Anteil am Brutto, den die Summe der Zahlungen nach ihr erreicht (``Brutto der Gruppe × gezahlt / Brutto des Belegs``, auf den Cent gerundet,
@@ -188,15 +219,12 @@ def split_payment(groups, booked, amount):
         raise ValueError('Der Betrag muss eine ganze Zahl über 0 sein.')
     if not groups or len({group.pct for group in groups}) != len(groups) or any(group.gross <= 0 for group in groups):
         raise ValueError('Die Gruppen müssen verschiedene Sätze und je ein positives Brutto haben.')
-    if set(booked) - {group.pct for group in groups}:
-        raise ValueError('Es ist ein Satz gebucht, den der Beleg nicht trägt.')
+    fault = booked_fault(groups, booked)
+    if fault:
+        raise ValueError(fault[1])
     done, taxed, still_open = [], [], []
     for group in groups:
         done_amount, done_tax = booked.get(group.pct, (0, 0))
-        if not (_whole(done_amount) and _whole(done_tax) and 0 <= done_amount <= group.gross and 0 <= done_tax <= group.tax):
-            raise ValueError(f'Gebucht ist mehr, als der Satz {group.pct} hergibt.')
-        if done_amount == group.gross and done_tax != group.tax:
-            raise ValueError(f'Der Satz {group.pct} ist ganz bezahlt, seine Steuer aber nicht ganz gebucht.')
         done.append(done_amount)
         taxed.append(done_tax)
         still_open.append(group.gross - done_amount)

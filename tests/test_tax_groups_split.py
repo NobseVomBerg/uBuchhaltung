@@ -3,7 +3,8 @@
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Die reinen Funktionen für die Buchungen eines Belegs mit Steuersatz je Position (``tax_groups``, 2.7.0): ``split_payment`` (wie sich eine
 Zahlung auf die Satzgruppen verteilt – Betrag und Steuer je Satz), ``mixed_groups`` (die Gruppen eines Belegs, geprüft gegen seine Summen),
-``booking_rate`` (die Form, in der der Satz in ``Bookings.TaxRate`` steht) und ``pct_text``.
+``booking_rate`` (die Form, in der der Satz in ``Bookings.TaxRate`` steht), ``pct_text`` und – für die Erstattung und den Schutz beim Entfernen einer Zahlung – ``refund_pool``
+(die Gruppen, aus denen erstattet wird) und ``booked_fault`` (ob der gebuchte Stand je Satz zu ihnen passt: die Eingangsprüfung von ``split_payment``).
 
 Die feste Rechnung ist **M**: 19 % × 100,00 und 7 % × 50,00 – Gruppe 19: netto 100,00 / Steuer 19,00 / brutto 119,00, Gruppe 7: 50,00 / 3,50 /
 53,50, zusammen 150,00 / 22,50 / 172,50. Beträge stehen in Minor Units (1 Cent = 100); ``eur`` schreibt sie als Cent-Betrag hin.
@@ -16,7 +17,8 @@ from decimal import Decimal
 import pytest
 
 from money import prorate, round_minor
-from tax_groups import (RateGroup, RateGroupsMismatch, SplitPart, booking_rate, mixed_groups, pct_text, rate_groups, split_payment)
+from tax_groups import (RateGroup, RateGroupsMismatch, SplitPart, booked_fault, booking_rate, mixed_groups, pct_text, rate_groups, refund_pool,
+                        split_payment)
 
 D = Decimal
 
@@ -316,6 +318,82 @@ def test_the_groups_are_the_ones_of_the_pdf_and_the_e_invoice():
     total = (sum(group.net for group in groups), sum(group.tax for group in groups), sum(group.gross for group in groups))
 
     assert mixed_groups(*total, pairs) == groups
+
+
+# ── refund_pool und booked_fault: der Stand je Satz vor der nächsten Erstattung ──────────────────────────────
+
+def test_the_pool_of_a_refund_is_what_the_payments_carried_per_rate_highest_rate_first():
+    paid = {D(7): (eur(3100), eur(200)), D(19): (eur(6900), eur(1100))}
+
+    assert refund_pool(paid) == [RateGroup(D(19), 0, eur(1100), eur(6900)), RateGroup(D(7), 0, eur(200), eur(3100))]
+    assert refund_pool({}) == [] and refund_pool({D(19): (0, 0), D(7): (eur(100), eur(10))}) == [RateGroup(D(7), 0, eur(10), eur(100))]   # ein Satz ohne Zahlung hat keine Gruppe
+
+
+@pytest.mark.parametrize('booked', [
+    {},
+    {D(19): (eur(100), eur(15))},
+    {D(19): (eur(11900), eur(1900)), D(7): (eur(5350), eur(350))},       # alles bezahlt, jede Steuer ganz gebucht
+    {D(19): (eur(11900), eur(1900)), D(7): (0, 0)},
+])
+def test_a_stock_that_fits_its_groups_has_no_fault(booked):
+    assert booked_fault(M, booked) is None
+
+
+@pytest.mark.parametrize('booked, rate', [
+    ({D(19): (eur(11901), 0)}, D(19)),                                  # mehr gebucht als das Brutto der Gruppe
+    ({D(19): (-1, 0)}, D(19)),                                          # negativ
+    ({D(7): (0, eur(351))}, D(7)),                                      # mehr Steuer, als die Gruppe hat
+    ({D(7): (eur(5350), eur(349))}, D(7)),                              # ganz bezahlt, Steuer aber nicht ganz gebucht: ein Rest von Cent bliebe
+    ({D(19): (100.0, 0)}, D(19)),                                       # keine ganze Zahl
+    ({D(19): (True, 0)}, D(19)),                                        # ein Wahrheitswert ist keine Zahl
+    ({D(5): (100, 0)}, D(5)),                                           # ein Satz, den die Gruppen nicht tragen
+])
+def test_every_way_a_stock_can_miss_its_groups_names_the_rate(booked, rate):
+    fault = booked_fault(M, booked)
+
+    assert fault is not None and fault[0] == rate and fault[1]          # der Satz und ein Satz für das Server-Log
+
+
+def test_the_first_rate_in_the_order_of_the_groups_is_named_and_an_unknown_rate_comes_last():
+    assert booked_fault(M, {D(7): (eur(5351), 0), D(19): (eur(11901), 0)})[0] == D(19)
+    assert booked_fault(M, {D(5): (100, 0), D(7): (eur(5351), 0)})[0] == D(7)
+    assert booked_fault(M, {D(5): (100, 0), D(3): (100, 0)})[0] == D(5)
+
+
+def test_the_refusal_of_split_payment_is_exactly_the_fault_of_the_stock():
+    """``split_payment`` benutzt ``booked_fault`` als Eingangsprüfung: Hat ein Stand einen Fehler, lehnt es ab, und passt er, nimmt es einen Betrag, der noch offen
+    ist. Zufallsstände (fester Seed) aus gültigen Zahlungsfolgen, dazu der Stand mit je einem Wert verschoben."""
+    rng = random.Random(77)
+    checked = faulty = 0
+    for _ in range(300):
+        groups = random_groups(rng)
+        booked = {}
+        for amount in random_payments(rng, sum(group.gross for group in groups)):
+            if rng.random() < 0.3:
+                break
+            booked = booked_of(split_payment(groups, booked, amount), booked)
+        victim = rng.choice(groups).pct
+        for change in (None, (rng.choice([-100, 100, eur(100)]), 0), (0, rng.choice([-100, 100])), ('rate', 0)):
+            state = dict(booked)
+            if change == ('rate', 0):
+                state[D(rng.choice([3, 11]))] = (100, 0)                 # ein Satz, den der Beleg nicht trägt
+            elif change is not None:
+                done_amount, done_tax = state.get(victim, (0, 0))
+                state[victim] = (done_amount + change[0], done_tax + change[1])
+            fault = booked_fault(groups, state)
+            open_total = sum(group.gross - state.get(group.pct, (0, 0))[0] for group in groups)
+            try:
+                split_payment(groups, state, 1)
+                raised = False
+            except ValueError:
+                raised = True
+            if fault is not None:
+                assert raised, (groups, state)
+                faulty += 1
+            elif open_total >= 1:
+                assert not raised, (groups, state)
+            checked += 1
+    assert checked == 1200 and faulty > 100                                  # der Test prüft beide Seiten
 
 
 # ── booking_rate und pct_text ────────────────────────────────────────────────

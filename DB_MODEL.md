@@ -673,9 +673,10 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   Stornorechnung, deren Forderung noch in den Büchern steht (Abhilfe: „Stornorechnung nachträglich erstellen“). Dazu
   `refund_exceeds_credit`: Zur Stornorechnung ist mehr erstattet als zur stornierten Rechnung gezahlt wurde (Σ Zuordnungen
   beider Belege < 0) – die App lässt es nicht mehr entstehen, die Kategorie meldet Eingriffe an ihr vorbei. Ein intaktes Paar, auch mit Guthaben aus Zahlungen auf die stornierte Rechnung oder mit Erstattung,
-  ergibt keinen Befund. Zwei Kategorien gelten den Sätzen eines Belegs (seit 2.7.0): `rate_split_mismatch` – ein Beleg mit Steuersatz je Position (Rechnung wie Stornorechnung), dessen Positionen nicht zu seinen
+  ergibt keinen Befund. Drei Kategorien gelten den Sätzen eines Belegs (seit 2.7.0): `rate_split_mismatch` – ein Beleg mit Steuersatz je Position (Rechnung wie Stornorechnung), dessen Positionen nicht zu seinen
   Summen passen, dessen Forderungszeilen der App nicht genau die Satzgruppen der Rechnung buchen (Satz, Betrag, Steuer) oder der ganz bezahlt ist, ohne dass je Satz sein Betrag und seine Steuer auf die Erlöskonten
-  umgebucht wären – und `unflagged_rate_mix` – ein Beleg OHNE das Kennzeichen, dessen Positionen verschiedene Sätze tragen (Bestand aus einer Version vor 2.7.0; er wird nur genannt, nie umgedeutet). Zuordnungen, deren Buchung keine Bankbewegung ist oder deren Sätze
+  umgebucht wären; `rate_refund_mismatch` – ein Storno-Paar mit Steuersatz je Position, bei dem je Satz mehr erstattet ist als gezahlt (oder Betrag und Steuer nicht aufgehen), auch wenn die Summe aufgeht – die App lässt
+  es nicht entstehen (das Entfernen einer Zahlung prüft dasselbe je Satz), die Kategorie meldet Eingriffe an ihr vorbei – und `unflagged_rate_mix` – ein Beleg OHNE das Kennzeichen, dessen Positionen verschiedene Sätze tragen (Bestand aus einer Version vor 2.7.0; er wird nur genannt, nie umgedeutet). Zuordnungen, deren Buchung keine Bankbewegung ist oder deren Sätze
   eine `SourceGroup` tragen (WISO liefert seine Sätze selbst, z. B. Barzahlungen ohne Bankbewegung),
   lösen weder „Zuordnung ohne Ausgleichssatz“ noch „Zuordnung ≠ Umbuchung“ aus. Die Abfragen gehen von
   den Zuordnungen aus bzw. fassen je Rechnung vorab zusammen: Der Aufwand wächst linear mit dem Bestand

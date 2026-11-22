@@ -608,7 +608,8 @@ class InvoiceLockMixin:
           (``_move_replaced_payments``, ``StatusChange.moved``/``payment_hint``); eine Zuordnung, die sich nicht neu
           buchen lässt, bleibt an der stornierten Rechnung (der Hinweis nennt den Grund), nur ein Datenbankfehler mitten im
           Umzug lehnt den Versand ab (409, nichts geändert); trägt eine der beiden Rechnungen einen Steuersatz je Position,
-          zieht nichts um, und der Hinweis ist ``MOVE_MIXED_HINT``;
+          zieht nichts um, und der Hinweis ist ``MOVE_MIXED_HINT`` (nach einer Erstattung dazu, was erstattet ist; ist alles erstattet, sagt es der Hinweis
+          wie bei einem Beleg mit einem Satz);
         * ``reopen``: die Forderung wird entfernt – aber nur eine, die die App selbst gebucht hat und
           die an nichts hängt, sonst wird das Zurückholen mit Klartext abgelehnt (nichts geändert).
           PDF und XML wandern nach ``invoices/<Jahr>/Fassungen/<ID>/`` (``archive_sent_documents``) und
