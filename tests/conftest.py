@@ -37,7 +37,14 @@ def pytest_configure(config):
     nummeriert die Läufe selbst und räumt ältere mit Sperrdateien auf – gleichzeitige Läufe
     (zwei Agents, IDE und Terminal) stören sich daher nicht. Daneben (data/tests/) liegt der
     pytest-Cache. Eine ausdrücklich übergebene --basetemp oder eine schon gesetzte
-    PYTEST_DEBUG_TEMPROOT gewinnt."""
+    PYTEST_DEBUG_TEMPROOT gewinnt.
+
+    Unter pytest-xdist (``-n 4``, so läuft die CI) legt der Hauptprozess den Lauf an (pytest-N/),
+    und jeder Worker bekommt von xdist ein eigenes --basetemp darunter (pytest-N/popen-gwK/): Der
+    Worker kehrt oben zurück und erbt PYTEST_DEBUG_TEMPROOT vom Hauptprozess. Ein Worker räumt
+    nur die Verzeichnisse seiner eigenen Tests (bestandene sofort); den ganzen Lauf räumt der
+    Hauptprozess am Ende ab, wenn alles grün war – kein Worker nimmt einem anderen Daten weg.
+    ``tests/test_test_isolation.py`` prüft die Ablage auch in einem Worker."""
     if config.option.basetemp or os.environ.get('PYTEST_DEBUG_TEMPROOT'):
         return
     root = os.path.join(TESTS_DIR, 'tmp')
@@ -106,7 +113,12 @@ def _neutral_environment(monkeypatch):
 def _real_data_untouched():
     """Wächter über das echte <Projekt>/data (ohne data/tests/, siehe tests/data_guard.py):
     vergleicht dessen Zustand vor und nach dem ganzen Lauf. Hat sich etwas geändert, ist das
-    ein Fehler beim Abbau des letzten Tests, mit den betroffenen Pfaden in der Meldung."""
+    ein Fehler beim Abbau des letzten Tests, mit den betroffenen Pfaden in der Meldung.
+
+    Unter pytest-xdist ist jeder Worker eine eigene Sitzung, der Wächter läuft also je Worker: Was
+    ein Test ins echte data/ schreibt, meldet der Worker, der ihn ausgeführt hat (sein Schnappschuss
+    lag davor) – und jeder andere, dessen Sitzung vorher begann. Dieselbe Datei steht dann mehrfach
+    da, beim letzten Test des jeweiligen Workers; der Lauf endet in jedem Fall mit Fehler."""
     before = data_guard.snapshot(REAL_DATA)
     yield
     changes = data_guard.diff(before, data_guard.snapshot(REAL_DATA))

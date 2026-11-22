@@ -59,4 +59,6 @@ Ich stimme dem Contributor License Agreement (CLA.md), Version 1.0, für diesen 
   Check (`tests/check_anonymized.py`) erzwingt das.
 - Vor dem Pull Request `python -m pytest -q` (Voraussetzung:
   `pip install -r requirements-dev.txt`) und `python tests/check_anonymized.py`
-  ausführen; beides läuft auch in der CI.
+  ausführen; beides läuft auch in der CI. Die Tests lassen sich auf mehrere
+  Prozesse verteilen (`python -m pytest -q -n 4`, so läuft die CI); jeder Test
+  arbeitet dafür in einem eigenen Verzeichnis (`tmp_path`).

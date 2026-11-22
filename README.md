@@ -566,7 +566,7 @@ liegen im gemounteten Datenverzeichnis. Zum Selbstbauen liegt eine
 pip install -r requirements.txt
 ```
 
-Für Tests zusätzlich `pip install -r requirements-dev.txt` (pytest).
+Für Tests zusätzlich `pip install -r requirements-dev.txt` (pytest, pytest-xdist).
 
 ### Server starten
 
@@ -689,7 +689,7 @@ uBuchhaltung/
 ├── DEPLOYMENT.md              # LAN-/HTTPS-/Mehrbenutzer-Betrieb
 ├── AGENTS.md                  # Hinweise zur Codebasis für Entwicklungswerkzeuge
 ├── requirements.txt           # Laufzeit-Abhängigkeiten (fonttools, pdfplumber)
-├── requirements-dev.txt       # zusätzlich Test-Dependencies (pytest)
+├── requirements-dev.txt       # zusätzlich Test-Dependencies (pytest, pytest-xdist)
 ├── run_https.ps1              # HTTPS-Schnellstart (selbstsigniertes Zertifikat)
 ├── Dockerfile · compose.yaml  # Container-Betrieb (Standardport 2824)
 ├── docker-entrypoint.sh       # Container-Start: Volume-Rechte übernehmen, dann unprivilegiert
@@ -795,11 +795,12 @@ uBuchhaltung/
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest -q
+python -m pytest -q          # ein Prozess
+python -m pytest -q -n 4     # parallel auf vier Prozessen (pytest-xdist)
 ```
 
-Die Suite läuft bei jedem Push automatisch (GitHub Actions). Testdaten sind
-ausschließlich erfunden bzw. anonymisiert.
+Die Suite läuft bei jedem Push automatisch (GitHub Actions, auf vier Prozessen).
+Testdaten sind ausschließlich erfunden bzw. anonymisiert.
 
 ---
 

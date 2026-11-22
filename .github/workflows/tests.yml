@@ -45,7 +45,7 @@ jobs:
           ln -s /dev/shm/ubuchhaltung-tests data/tests
 
       - name: pytest
-        run: python -m pytest -q -rs
+        run: python -m pytest -q -rs -n 4
 
   # E-Rechnung: ZUGFeRD-PDFs (PDF/A-3 + CII) und UBL-XRechnung aus den Demodaten
   # erzeugen und mit Mustang prüfen (XSD + Schematron; PDF per veraPDF). Die

@@ -76,7 +76,7 @@ jobs:
           ln -s /dev/shm/ubuchhaltung-tests data/tests
 
       - name: pytest
-        run: python -m pytest -q -rs
+        run: python -m pytest -q -rs -n 4
 
   build-and-push:
     needs: tests
