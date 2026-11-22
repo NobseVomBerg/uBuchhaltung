@@ -4,3 +4,4 @@
 -r requirements.txt
 
 pytest>=8.0
+pytest-xdist>=3.8     # die CI lässt die Suite auf vier Prozessen laufen (-n 4); lokal nur für parallele Läufe nötig

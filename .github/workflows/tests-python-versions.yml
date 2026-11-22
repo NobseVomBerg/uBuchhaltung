@@ -1,6 +1,6 @@
 # Lässt die pytest-Suite mit den Python-Versionen laufen, die neuer sind als die
-# des Docker-Images (dort und in tests.yml: 3.13). Die Suite braucht je Version
-# gut 20 Minuten – deshalb nicht bei jedem Push, sondern einmal in der Woche und
+# des Docker-Images (dort und in tests.yml: 3.13). Je Version läuft die ganze
+# Suite noch einmal – deshalb nicht bei jedem Push, sondern einmal in der Woche und
 # von Hand (Actions → „Tests (weitere Python-Versionen)“ → „Run workflow“,
 # z. B. vor einer größeren Veröffentlichung).
 #
@@ -55,4 +55,4 @@ jobs:
           ln -s /dev/shm/ubuchhaltung-tests data/tests
 
       - name: pytest
-        run: python -m pytest -q -rs
+        run: python -m pytest -q -rs -n 4

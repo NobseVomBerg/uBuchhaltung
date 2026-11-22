@@ -149,9 +149,18 @@ kein Subagent darauf:
   Workflows mit pytest (`tests.yml`, `docker-publish.yml`, `tests-python-versions.yml`) legen deshalb vor pytest `data/tests` als Verweis nach
   `/dev/shm` – ein Verweis statt `--basetemp`, damit `tests/conftest.py` zuständig bleibt und der Test der Ablage (`tests/test_test_isolation.py`)
   nicht übersprungen wird. Die Schritte sind in den drei Workflows kopiert; `tests/test_workflow_test_steps.py` hält sie gleich. Lokal geht
-  dasselbe von Hand (`data/tests` als Verweis in den Arbeitsspeicher), nötig ist es nicht
+  dasselbe von Hand (`data/tests` als Verweis in den Arbeitsspeicher), nötig ist es nicht. **Die Suite läuft dort auf vier Prozessen**
+  (`pytest-xdist` in `requirements-dev.txt`, Aufruf `python -m pytest -q -rs -n 4`; gemessen auf vier Kernen mit Arbeitsdaten im Arbeitsspeicher:
+  knapp 4 Minuten statt knapp 13 auf einem Prozess). Das `-n` steht nur im Aufruf der drei Workflows, nie in `pytest.ini`: Lokal bleibt
+  `python -m pytest` ein Prozess und läuft auch ohne das Plugin, und `tools/project_stats.py` zählt mit `pytest --collect-only` ohne Worker.
+  Welcher Test auf welchem Worker läuft, ist Zufall – ein Test hält sich deshalb an: eigene Datenwurzel je Test (`tmp_path`;
+  `_isolated_data_root` sorgt von selbst dafür), Server nur auf Port 0, keine festen Dateinamen außerhalb von `tmp_path`, kein Zustand, den
+  ein Test dem nächsten hinterlässt, und Test-IDs, die in jedem Prozess gleich entstehen (nie Uhr oder Zufall in `parametrize`, sonst bricht
+  xdist ab). Jeder Worker hat von xdist ein eigenes `--basetemp` unter dem des Hauptprozesses (`pytest-N/popen-gwK/`) und räumt nur seine
+  eigenen Tests; der Wächter über das echte `data/` (`tests/conftest.py`) läuft je Worker, und der Test der Ablage
+  (`tests/test_test_isolation.py`) läuft auch dort, ohne Skip
 - Neuere Python-Versionen prüft `.github/workflows/tests-python-versions.yml` einmal in der Woche und
-  von Hand (`workflow_dispatch`), nicht bei jedem Push: Die Suite braucht je Version gut 20 Minuten.
+  von Hand (`workflow_dispatch`), nicht bei jedem Push: Je Version läuft die ganze Suite noch einmal.
   Eine neue Python-Version dort in der Liste ergänzen
 - **CLA-Zustimmung** (`.github/workflows/cla.yml`, `tools/cla_check.py`, nur Standardbibliothek):
   Zugestimmt wird je Pull Request mit einem Kommentar, der den Satz aus `CLA.md` samt Fassung in
@@ -1748,7 +1757,7 @@ kein Subagent darauf:
   Die Sätze der Auswahl kommen vom Server aus `tax_groups.MIXED_TAX_RATES` (über `script_json`), im Skript steht kein Satz. Ohne Häkchen schickt das Speichern genau den bisherigen Payload, mit Häkchen
   zusätzlich `taxMode: 'mixed'` und je Position den Satz ihrer Auswahl. Ein gespeicherter Satz außerhalb der Liste erscheint als eigene, gewählte Option (nichts wird still umgedeutet, der Server lehnt
   beim Speichern ab); die Zeilen eines als gemischt geladenen Belegs behalten ihre Sätze, wenn das Häkchen aus- und wieder eingeschaltet wird. EIN Skriptblock für beide Masken (`MIXED_TAX_JS` in
-  `server/pages_invoice.py`, nur `var`/`function`, Präfix `mix`). Der Rest der Buchungen (Stornieren, Erstattung, Neuaufbau, Umzug) folgt.
+  `server/pages_invoice.py`, nur `var`/`function`, Präfix `mix`).
   `tests/test_mixed_tax_save.py`, `tests/test_mixed_tax_locks.py`, `tests/test_mixed_tax_bookings.py`, `tests/test_mixed_tax_reports.py`, `tests/test_tax_groups_split.py`,
   `tests/test_mixed_tax_documents.py`, `tests/test_mixed_tax_mask.py`
 - **Schriften:** Liberation Sans (2.x, OFL 1.1) aus `export/fonts/` – metrisch
@@ -2155,10 +2164,11 @@ kein Subagent darauf:
   (`tests/data_guard.py`) schlägt an, wenn doch etwas dort landet
 - **Tests hängen nicht an der Uhr des Imports:** Ein „heute“ steht nie in einer Modulkonstante, einer
   `parametrize`-Liste, einem Standardwert oder einer Fixture mit größerem Scope als `function`, sondern als
-  Funktion, die im Test frisch liest (die Suite läuft 15–25 Minuten – ein Lauf über Mitternacht ließ den
-  Release-Lauf von 2.3.4 scheitern). Wo die App einen Haken kennt (`invoice_storno._today`, `today=`), ein
-  festes Datum nehmen; Erwartungen nie an ein festes Jahr oder eine Fälligkeit knüpfen, die die echte Uhr
-  überholt. `tests/test_clock_at_import.py` prüft die Import-Regel statisch
+  Funktion, die im Test frisch liest (die Suite läuft knapp 4 Minuten auf vier Prozessen, knapp 13 auf einem –
+  ein Lauf über Mitternacht ließ den Release-Lauf von 2.3.4 scheitern, als sie noch 15–25 Minuten brauchte).
+  Wo die App einen Haken kennt (`invoice_storno._today`, `today=`), ein festes Datum nehmen; Erwartungen nie
+  an ein festes Jahr oder eine Fälligkeit knüpfen, die die echte Uhr überholt.
+  `tests/test_clock_at_import.py` prüft die Import-Regel statisch
 - **Nach einem Merge mit Versionssprung den Release-Lauf nachsehen** (letztes Release bzw. der Lauf
   „Docker-Image veröffentlichen“): Scheitern dort die Tests, gibt es weder Image noch Release
 - Alles rund um Testläufe liegt unter `data/tests/`: `tmp/` (Arbeitsdaten; nach dem

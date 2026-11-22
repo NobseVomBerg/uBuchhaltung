@@ -122,12 +122,23 @@ def test_logged_write_creates_sql_log_below_tmp_path_not_in_project_data(db_with
 
 
 # ── Ablage der Testläufe unter data/tests/ ───────────────────────────────────
+def _location_given_from_outside(config):
+    """Hat jemand die Ablage der Testläufe vorgegeben (``--basetemp``, ``PYTEST_DEBUG_TEMPROOT``), oder war der Projektordner nicht
+    beschreibbar? Dann hat ``pytest_configure`` (conftest.py) nichts gesetzt, und es gilt nicht, was der Test prüft.
+
+    Unter pytest-xdist (``-n 4``, so läuft die CI) hat jeder Worker ein ``--basetemp``, das xdist selbst setzt
+    (``<Ordner des Hauptprozesses>/popen-gwN``) – das ist nicht von außen vorgegeben, sonst liefe der Test in der CI nie. Gibt jemand dem
+    Hauptprozess ein ``--basetemp`` mit, setzt ``pytest_configure`` dort nichts, und die Umgebungsvariable fehlt auch im Worker."""
+    if os.environ.get("PYTEST_DEBUG_TEMPROOT") != os.path.join(REAL_DATA, "tests", "tmp"):
+        return True
+    return bool(config.option.basetemp) and not hasattr(config, "workerinput")
+
+
 def test_tmp_path_lies_below_data_tests_tmp(tmp_path, request):
-    expected = os.path.join(REAL_DATA, "tests", "tmp")
-    if request.config.option.basetemp or os.environ.get("PYTEST_DEBUG_TEMPROOT") != expected:
+    if _location_given_from_outside(request.config):
         pytest.skip("--basetemp oder PYTEST_DEBUG_TEMPROOT von außen vorgegeben "
                     "(oder der Projektordner ist schreibgeschützt)")
-    assert _is_below(tmp_path, expected)
+    assert _is_below(tmp_path, os.path.join(REAL_DATA, "tests", "tmp"))
 
 
 def test_pytest_cache_lies_below_data_tests_cache(request):
