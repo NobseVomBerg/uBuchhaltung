@@ -1748,7 +1748,7 @@ kein Subagent darauf:
   Die Sätze der Auswahl kommen vom Server aus `tax_groups.MIXED_TAX_RATES` (über `script_json`), im Skript steht kein Satz. Ohne Häkchen schickt das Speichern genau den bisherigen Payload, mit Häkchen
   zusätzlich `taxMode: 'mixed'` und je Position den Satz ihrer Auswahl. Ein gespeicherter Satz außerhalb der Liste erscheint als eigene, gewählte Option (nichts wird still umgedeutet, der Server lehnt
   beim Speichern ab); die Zeilen eines als gemischt geladenen Belegs behalten ihre Sätze, wenn das Häkchen aus- und wieder eingeschaltet wird. EIN Skriptblock für beide Masken (`MIXED_TAX_JS` in
-  `server/pages_invoice.py`, nur `var`/`function`, Präfix `mix`). Der Rest der Buchungen (Stornieren, Erstattung, Neuaufbau, Umzug) folgt.
+  `server/pages_invoice.py`, nur `var`/`function`, Präfix `mix`).
   `tests/test_mixed_tax_save.py`, `tests/test_mixed_tax_locks.py`, `tests/test_mixed_tax_bookings.py`, `tests/test_mixed_tax_reports.py`, `tests/test_tax_groups_split.py`,
   `tests/test_mixed_tax_documents.py`, `tests/test_mixed_tax_mask.py`
 - **Schriften:** Liberation Sans (2.x, OFL 1.1) aus `export/fonts/` – metrisch
