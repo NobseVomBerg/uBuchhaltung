@@ -46,8 +46,9 @@ from db.invoice_repair import REBUILD_WARNING
 from db.numbering import NumberRangeError, number_format_error
 from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
 from db.accounts import DEFAULT_CASH_ACCOUNT
+from db.tax_rates import entry_snapshot
 from money import to_minor, from_minor, multiply, tax_from_gross, round_minor, fmt_eur
-from tax_groups import MIXED_TAX_RATES, rate_groups
+from tax_groups import MIXED_TAX_RATES, bp_pct, group_label, rate_groups
 from decimal import Decimal
 
 try:
@@ -3261,7 +3262,7 @@ def _rate_to_pct(value, default=Decimal('19')):
     return r
 
 
-def recompute_invoice_totals(items, default_rate_pct):
+def recompute_invoice_totals(items, default_rate_pct, snapshots=None):
     """Berechnet Rechnungs- und Positionssummen serverseitig exakt.
 
     Den vom Client gelieferten Summen wird NICHT vertraut – sie werden hier aus
@@ -3273,6 +3274,11 @@ def recompute_invoice_totals(items, default_rate_pct):
         items: Liste der Positions-Dicts (quantity, unitPrice, taxRate).
         default_rate_pct: Steuersatz (Prozent) als Fallback fuer Positionen
             ohne eigenen taxRate.
+        snapshots: je Position die Momentaufnahme eines Steuersatzes aus den Stammdaten (``_tax_fields``: ein Dict mit
+            ``tax_rate_bp`` oder ``None``; gleiche Reihenfolge wie items). Eine Position mit Momentaufnahme rechnet mit
+            ihrem Satz in Hundertstel Prozent (``tax_groups.bp_pct``) und ihre Gruppe die Steuer EINMAL gerundet
+            (EN 16931, BR-CO-17); jede andere – auch ohne diese Angabe – genau wie bisher. Die Momentaufnahme kommt nur
+            von hier, nie aus den Positionen des Formulars.
 
     Returns:
         (sum_net, tax_amount, sum_gross, line_nets) – alle Geldwerte als
@@ -3280,14 +3286,18 @@ def recompute_invoice_totals(items, default_rate_pct):
         (gleiche Reihenfolge wie items).
     """
     line_net_minors = []
-    taxed_lines = []                      # je Position: (Satz in Prozent, Netto in Minor)
-    for item in items:
+    taxed_lines = []                      # je Position: (Satz in Prozent, Netto in Minor) oder mit Momentaufnahme (Satz, Netto, True)
+    for number, item in enumerate(items):
         qty = item.get('quantity')
         qty = 1 if qty in (None, '') else qty
         price_minor = to_minor(item.get('unitPrice') or 0)
         line_net = round_minor(multiply(price_minor, qty), 2)
         line_net_minors.append(line_net)
-        taxed_lines.append((_rate_to_pct(item.get('taxRate'), default_rate_pct), line_net))
+        snapshot = snapshots[number] if snapshots else None
+        if snapshot is None or snapshot.get('tax_rate_bp') is None:
+            taxed_lines.append((_rate_to_pct(item.get('taxRate'), default_rate_pct), line_net))
+        else:
+            taxed_lines.append((bp_pct(snapshot['tax_rate_bp']), line_net, True))
 
     sum_net_minor = sum(line_net_minors)
     tax_minor = sum(group.tax for group in rate_groups(taxed_lines))
@@ -3318,7 +3328,8 @@ class _SaveRefused(Exception):
         self.status = status
 
 
-# Die Ablehnungen von ``_tax_fields``; ``{n}``: die Nummer der Position (ab 1), ``{rate}``: der Satz in Prozent
+# Die Ablehnungen von ``_tax_fields``; ``{n}``: die Nummer der Position (``_position_number``: die Zeile der Maske, sonst die laufende Nummer), ``{rate}``: der Satz in
+# Prozent bzw. – ``TAX_SAME_RATE_TWICE`` – seine Bezeichnung (``tax_groups.group_label``: ``19 %``, ``5,5 %``, ``steuerfrei``)
 TAX_MODE_INVALID = 'Ungültige Angabe zum Steuersatz.'
 TAX_RATE_INVALID = 'Ungültiger Steuersatz – bitte 0 oder einen Satz von 1 bis 100 Prozent angeben.'
 TAX_PER_ITEM_WITHOUT_TAX = 'Ohne Umsatzsteuerausweis gibt es keinen Steuersatz je Position.'
@@ -3326,6 +3337,13 @@ TAX_ITEM_DIFFERS = 'Position {n}: Der Steuersatz weicht vom Steuersatz des Beleg
 TAX_ITEM_MISSING = 'Position {n}: Bitte einen Steuersatz wählen.'
 TAX_ITEM_INVALID = 'Position {n}: Ungültiger Steuersatz.'
 TAX_ITEM_NOT_ALLOWED = 'Position {n}: Der Steuersatz {rate} % ist in einem Beleg mit Steuersatz je Position nicht wählbar.'
+# Ein Steuersatz aus den Stammdaten (``taxRateId``, seit 2.8.0). Die Sätze ``tax_groups.TAX_ENTRY_*`` gehören den Stammdaten selbst (Pflege eines Eintrags), diese dem Speichern.
+TAX_CHOICE_WITHOUT_TAX = 'Ohne Umsatzsteuerausweis lässt sich kein Steuersatz aus den Stammdaten wählen.'
+TAX_CHOICE_HEAD_GONE = 'Der gewählte Steuersatz ist in den Stammdaten nicht mehr wählbar – bitte neu wählen.'
+TAX_CHOICE_GONE = 'Position {n}: Der gewählte Steuersatz ist in den Stammdaten nicht mehr wählbar – bitte neu wählen.'
+TAX_CHOICE_RATE_DIFFERS = 'Position {n}: Der Steuersatz passt nicht zum gewählten Eintrag der Stammdaten – bitte die Seite neu laden.'
+TAX_SAME_RATE_TWICE = ('Position {n}: Ein Beleg kann je Steuersatz nur einen Eintrag der Stammdaten tragen ({rate}) – '
+                       'zum Beispiel nur einen Befreiungsgrund.')
 
 # So weit darf der Satz im Kopf (die Maske schickt ihn als Bruch, im Browser durch 100 geteilt) von dem der Positionen abweichen:
 # das Rauschen einer Kommazahl, nie ein anderer Satz
@@ -3354,67 +3372,151 @@ def _head_rate(value):
     return rate if rate is not None and 0 <= rate <= 100 else None
 
 
-def _tax_fields(data, items):
+def _position_number(item, number):
+    """Die Nummer einer Position in den Meldungen von ``_tax_fields``: die Zeile, die die Maske schickt (``item['position']``, eine ganze Zahl von 1 bis 9999 –
+    ein Wahrheitswert, eine Kommazahl und ein Text zählen nicht), sonst ihre laufende Nummer (``number``, ab 1). So nennt die Meldung die Zeile, die der
+    Nutzer sieht."""
+    position = item.get('position')
+    return position if type(position) is int and 1 <= position <= 9999 else number
+
+
+def _choice_id(value):
+    """Die ID eines Eintrags der Steuersätze aus ``taxRateId``, streng wie ``_json_positive_id``: eine ganze Zahl (kein Wahrheitswert, keine Kommazahl) oder ein
+    Text aus ASCII-Ziffern in Normalform, 1 bis 2**63-1. Alles andere – ``0`` (der Wert „gespeicherter Stand, Eintrag nicht mehr vorhanden“), eine negative Zahl,
+    ``1.0``, ``"01"``, ``" 1"``, ``true``, eine Liste – ergibt 0, und 0 ist nie die ID eines Eintrags: Der Aufrufer lehnt dann mit festem Satz ab."""
+    if isinstance(value, str) and value.isascii() and value.isdigit() and len(value) <= 19 and str(int(value)) == value:
+        value = int(value)
+    return value if type(value) is int and 1 <= value <= 2 ** 63 - 1 else 0
+
+
+def _tax_fields(db, data, items):
     """Die Steuerangaben des Formulars einer Rechnung oder eines Angebots prüfen – die EINE Stelle für beide Speicherwege
-    (``_invoice_fields``, ``handle_quote_save``). Returns ``(Satz im Kopf, Kennzeichen, Sätze der Positionen)``: was
-    ``Invoices.TaxRate`` bekommt (−1: ohne Steuerausweis), was ``Invoices.MixedTaxRates`` bekommt (``None`` oder ``1``) und je
+    (``_invoice_fields``, ``handle_quote_save``). Returns ``(Satz im Kopf, Kennzeichen, Sätze der Positionen, Momentaufnahmen)``: was
+    ``Invoices.TaxRate`` bekommt (−1: ohne Steuerausweis), was ``Invoices.MixedTaxRates`` bekommt (``None`` oder ``1``), je
     Position der Wert für ``InvoiceItems.TaxRate`` – so, wie das Formular ihn schickt (nie ein normalisierter ``Decimal``:
-    ``normalize`` schreibt 10 als ``1E+1``). **Verglichen wird der Satz, mit dem gerechnet wird** (``_exact_rate``, ungerundet;
-    0,19 und 19 sind derselbe Satz) – ein Beleg, dessen Summen nicht zu dem Satz passen, unter dem er geführt wird, entsteht so
-    nicht. Abgelehnt wird mit Klartext (:class:`_SaveRefused`), bevor etwas geschrieben ist. ``taxMode`` fehlt oder ist leer (die
-    Maske ohne Häkchen „Steuersatz je Position“) oder ``'mixed'``; jeder andere Wert ist ungültig. Die Regeln, in dieser
-    Reihenfolge:
+    ``normalize`` schreibt 10 als ``1E+1``) – und je Position ihre Momentaufnahme eines Steuersatzes aus den Stammdaten
+    (``db.tax_rates.entry_snapshot``: die Schlüssel ``tax_category``, ``tax_rate_bp``, ``tax_exempt_reason``, ``revenue_coa_id`` für
+    ``insert_invoice_item``) oder ``None`` – eine Position wie bisher, ohne die vier neuen Werte. **Verglichen wird der Satz, mit dem gerechnet
+    wird** (``_exact_rate``, ungerundet; 0,19 und 19 sind derselbe Satz) – ein Beleg, dessen Summen nicht zu dem Satz passen, unter dem er geführt
+    wird, entsteht so nicht. Abgelehnt wird mit Klartext (:class:`_SaveRefused`), bevor etwas geschrieben ist.
 
-    1. Ohne Steuerausweis (``showTax`` falsch): mit ``taxMode`` ``'mixed'`` abgelehnt; sonst Kopf −1, jede Position bekommt den
-       Satz 0 (der Server nimmt keinen Satz einer Position an, wo es keine Steuer gibt), Kennzeichen ``None``.
-    2. Mit Steuerausweis, ohne ``taxMode``: Der Satz im Kopf ist eine Zahl von 0 bis 100 Prozent (kein negativer – −1 ist der
-       Platzhalter von Regel 1 und kommt nie vom Formular). Jede Position trägt ihren ``taxRate`` (fehlt er: den Satz des Kopfs);
-       alle Positionen tragen GENAU denselben Satz, und er ist der des Kopfs (bis auf das Rauschen der Kommazahl). Ein Satz
-       zwischen 0 und 1 Prozent lässt sich nicht eindeutig lesen (die Position hieße 50 %, der Kopf 0,5 %) und wird abgelehnt.
-       Kennzeichen ``None``.
-    3. ``taxMode`` ``'mixed'``: jede Position braucht einen eigenen Satz, GENAU einen aus ``tax_groups.MIXED_TAX_RATES``. Tragen
-       alle denselben, ist es ein gewöhnlicher Beleg: Kopf = dieser Satz als Bruch, Kennzeichen ``None``. Bei mindestens zwei
-       verschiedenen Sätzen ist der Kopf der HÖCHSTE als Bruch – ein Platzhalter, nie negativ; maßgeblich sind die Satzgruppen –
-       und das Kennzeichen ``1``.
+    Ein Steuersatz aus den Stammdaten kommt als ``taxRateId`` (eine ID wie bei ``_choice_id``; fehlt der Schlüssel oder ist er ``null``, gibt es keinen):
+    im Kopf – für alle Positionen, nur ohne ``taxMode`` – oder je Position, nur mit ``taxMode`` ``'mixed'``. Der Eintrag gilt, wenn er jetzt, im
+    Moment des Speicherns, wählbar ist (``TaxEntry.selectable``: gültig und aktiv); sonst – auch bei einer ID, die keine ist, und bei 0, dem Wert der
+    Maske für „gespeicherter Stand, Eintrag nicht mehr vorhanden“ – wird abgelehnt, nie still als „ohne Eintrag“ gelesen. Der Satz des Eintrags muss der
+    des Formulars sein (so fängt der Server auch einen Eintrag ab, dessen Satz sich zwischen Laden und Speichern geändert hat). Die Position trägt dann
+    eine Momentaufnahme des Eintrags, nie seine ID: Was später in den Stammdaten geschieht, ändert den Beleg nicht. Die Regeln, in dieser Reihenfolge:
 
-    Die Summen rechnet ``recompute_invoice_totals`` aus den hier gelieferten Sätzen."""
+    0. ``taxMode`` fehlt oder ist leer (die Maske ohne Häkchen „Steuersatz je Position“) oder ``'mixed'``; jeder andere Wert ist ungültig, ebenso eine
+       ``taxRateId`` im Kopf zusammen mit ``'mixed'``.
+    1. Ohne Steuerausweis (``showTax`` falsch): mit ``taxMode`` ``'mixed'`` abgelehnt, mit einer ``taxRateId`` (Kopf oder Position) ebenso; sonst Kopf −1, jede
+       Position bekommt den Satz 0 (der Server nimmt keinen Satz einer Position an, wo es keine Steuer gibt), keine Momentaufnahme, Kennzeichen ``None``.
+    2. Mit Steuerausweis, ohne ``taxMode``: Eine ``taxRateId`` an einer Position gibt es hier nicht (ungültig). Der Satz im Kopf ist eine Zahl von 0 bis
+       100 Prozent (kein negativer – −1 ist der Platzhalter von Regel 1 und kommt nie vom Formular). Jede Position trägt ihren ``taxRate`` (fehlt er: den
+       Satz des Kopfs); alle Positionen tragen GENAU denselben Satz, und er ist der des Kopfs (bis auf das Rauschen der Kommazahl). Ein Satz zwischen 0 und
+       1 Prozent lässt sich nicht eindeutig lesen (die Position hieße 50 %, der Kopf 0,5 %) und wird abgelehnt. Kennzeichen ``None``, keine Momentaufnahme –
+       auch dann, wenn der Entwurf bisher welche trug: Der Nutzer hat die Vorbelegung gewählt, die Momentaufnahme entfällt mit der Wahl.
+       2a. Mit ``taxRateId`` im Kopf: Kopf und jede Position tragen den Satz des Eintrags (``TAX_CHOICE_RATE_DIFFERS``); jede Position bekommt die
+           Momentaufnahme des Eintrags, Kennzeichen ``None``.
+    3. ``taxMode`` ``'mixed'``: jede Position braucht einen eigenen Satz. Ohne ``taxRateId`` GENAU einen aus ``tax_groups.MIXED_TAX_RATES``, mit ihr den des
+       Eintrags (Momentaufnahme). **Je Satz höchstens eine Momentaufnahme** (``TAX_SAME_RATE_TWICE``): zwei Positionen mit gleichem Satz tragen dieselbe –
+       auch „ohne“ gegen „mit“ ist verschieden. Sonst gäbe es in einem Beleg zwei 0-%-Arten, zwei Befreiungsgründe oder eine Satzgruppe mit gemischter
+       Rundung, und die Dokumente und das Buchen (``group_snapshots``) könnten sie nicht lesen. Tragen alle denselben Satz, ist es ein gewöhnlicher
+       Beleg: Kopf = dieser Satz als Bruch, Kennzeichen ``None``. Bei mindestens zwei verschiedenen Sätzen ist der Kopf der HÖCHSTE als Bruch – ein
+       Platzhalter, nie negativ; maßgeblich sind die Satzgruppen – und das Kennzeichen ``1``.
+
+    ``{n}`` in den Meldungen ist die Zeile der Maske (``_position_number``). Die Summen rechnet ``recompute_invoice_totals`` aus den hier gelieferten Sätzen und
+    Momentaufnahmen; die Stammdaten liest ``db`` nur, wenn eine ``taxRateId`` da ist."""
     mode = data.get('taxMode')
     if mode not in (None, '', 'mixed'):
         raise _SaveRefused(TAX_MODE_INVALID)
     per_item = mode == 'mixed'
+    head_choice = data.get('taxRateId') is not None
+    if per_item and head_choice:
+        raise _SaveRefused(TAX_MODE_INVALID)
+    item_choice = any(item.get('taxRateId') is not None for item in items)
     if not data.get('showTax', True):
         if per_item:
             raise _SaveRefused(TAX_PER_ITEM_WITHOUT_TAX)
-        return -1, None, [0] * len(items)
+        if head_choice or item_choice:
+            raise _SaveRefused(TAX_CHOICE_WITHOUT_TAX)
+        return -1, None, [0] * len(items), [None] * len(items)
+
+    entries = {}
+
+    def entry_of(raw):
+        """Der Eintrag der Steuersätze zu einer ``taxRateId``, wenn er jetzt wählbar ist, sonst ``None``; jede ID wird einmal gelesen."""
+        entry_id = _choice_id(raw)
+        if not entry_id:
+            return None
+        if entry_id not in entries:
+            entry = db.get_tax_rate(entry_id)
+            entries[entry_id] = entry if entry is not None and entry.selectable else None
+        return entries[entry_id]
+
     if not per_item:
+        if item_choice:
+            raise _SaveRefused(TAX_MODE_INVALID)               # ein Steuersatz je Position gibt es nur mit dem Häkchen
         head = data.get('taxRate')
         head_rate = _head_rate(head)
         if head_rate is None:
             raise _SaveRefused(TAX_RATE_INVALID)
         rates = [item.get('taxRate', head) for item in items]
         exact = [_exact_rate(rate) for rate in rates]
+        if head_choice:
+            entry = entry_of(data['taxRateId'])
+            if entry is None:
+                raise _SaveRefused(TAX_CHOICE_HEAD_GONE)
+            chosen = bp_pct(entry.bp)
+            for number, rate in enumerate(exact, 1):
+                position = _position_number(items[number - 1], number)
+                if rate is None:
+                    raise _SaveRefused(TAX_ITEM_INVALID.format(n=position))
+                if rate != chosen:
+                    raise _SaveRefused(TAX_CHOICE_RATE_DIFFERS.format(n=position))
+            if exact and abs(chosen - head_rate) > _HEAD_RATE_NOISE:
+                raise _SaveRefused(TAX_CHOICE_RATE_DIFFERS.format(n=_position_number(items[0], 1)))
+            return head, None, rates, [entry_snapshot(entry) for _ in items]
         for number, rate in enumerate(exact, 1):
+            position = _position_number(items[number - 1], number)
             if rate is None:
-                raise _SaveRefused(TAX_ITEM_INVALID.format(n=number))
+                raise _SaveRefused(TAX_ITEM_INVALID.format(n=position))
             if rate != exact[0]:
-                raise _SaveRefused(TAX_ITEM_DIFFERS.format(n=number))
+                raise _SaveRefused(TAX_ITEM_DIFFERS.format(n=position))
         if exact and abs(exact[0] - head_rate) > _HEAD_RATE_NOISE:
             # alle Positionen gleich, aber nicht der Satz des Kopfs: ein anderer Satz – oder einer zwischen 0 und 1 Prozent
-            raise _SaveRefused(TAX_RATE_INVALID if 0 < head_rate < 1 else TAX_ITEM_DIFFERS.format(n=1))
-        return head, None, rates
-    percents = []
+            raise _SaveRefused(TAX_RATE_INVALID if 0 < head_rate < 1 else TAX_ITEM_DIFFERS.format(n=_position_number(items[0], 1)))
+        return head, None, rates, [None] * len(items)
+    percents, snapshots, seen = [], [], {}
     for number, item in enumerate(items, 1):
+        position = _position_number(item, number)
         rate = item.get('taxRate')
         if rate is None or rate == '':
-            raise _SaveRefused(TAX_ITEM_MISSING.format(n=number))
+            raise _SaveRefused(TAX_ITEM_MISSING.format(n=position))
         percent = _exact_rate(rate)
         if percent is None:
-            raise _SaveRefused(TAX_ITEM_INVALID.format(n=number))
-        if percent not in MIXED_TAX_RATES:
-            shown = format(percent.normalize(), 'f').replace('.', ',')        # 'f': nie die Schreibweise 1E+1; Komma wie auf der Seite
-            raise _SaveRefused(TAX_ITEM_NOT_ALLOWED.format(n=number, rate=shown))
+            raise _SaveRefused(TAX_ITEM_INVALID.format(n=position))
+        snapshot = None
+        if item.get('taxRateId') is None:
+            if percent not in MIXED_TAX_RATES:
+                shown = format(percent.normalize(), 'f').replace('.', ',')        # 'f': nie die Schreibweise 1E+1; Komma wie auf der Seite
+                raise _SaveRefused(TAX_ITEM_NOT_ALLOWED.format(n=position, rate=shown))
+        else:
+            entry = entry_of(item['taxRateId'])
+            if entry is None:
+                raise _SaveRefused(TAX_CHOICE_GONE.format(n=position))
+            if percent != bp_pct(entry.bp):
+                raise _SaveRefused(TAX_CHOICE_RATE_DIFFERS.format(n=position))
+            snapshot = entry_snapshot(entry)
+        # Je Satz höchstens eine Momentaufnahme: Die erste Position eines Satzes legt sie fest (auch „keine“), jede weitere muss dieselbe tragen
+        identity = None if snapshot is None else tuple(snapshot.values())
+        exempt = snapshot is not None and snapshot['tax_category'] == 'E'
+        first_identity, first_exempt = seen.setdefault(percent, (identity, exempt))
+        if identity != first_identity:
+            raise _SaveRefused(TAX_SAME_RATE_TWICE.format(n=position, rate=group_label(percent.normalize(), exempt or first_exempt)))
         percents.append(percent)
-    return float(max(percents) / 100), (1 if len(set(percents)) > 1 else None), [item['taxRate'] for item in items]
+        snapshots.append(snapshot)
+    return float(max(percents) / 100), (1 if len(set(percents)) > 1 else None), [item['taxRate'] for item in items], snapshots
 
 
 def handle_invoice_save(post_body: bytes):
@@ -3523,11 +3625,13 @@ def _invoice_fields(db, data, stored):
     # Phase 2: Summen serverseitig exakt neu berechnen – den vom Client
     # gelieferten net/tax/gross-Werten wird bewusst nicht vertraut. Bei
     # Kleinunternehmer (§19) wird ohne Steuer gerechnet (Brutto = Netto).
-    # Die Sätze der Positionen prüft ``_tax_fields`` (auch der Kopfsatz und das Kennzeichen „Steuersatz je Position“ kommen von dort).
-    stored_tax_rate, mixed, item_rates = _tax_fields(data, items)
+    # Die Sätze der Positionen prüft ``_tax_fields`` (auch der Kopfsatz, das Kennzeichen „Steuersatz je Position“ und die Momentaufnahmen eines
+    # Steuersatzes aus den Stammdaten kommen von dort).
+    stored_tax_rate, mixed, item_rates, snapshots = _tax_fields(db, data, items)
     net_amount, tax_amount, gross_amount, line_nets = recompute_invoice_totals(
         [{**item, 'taxRate': rate} for item, rate in zip(items, item_rates)],
-        Decimal(0))                           # jede Position trägt ihren Satz aus ``_tax_fields``: Die Vorgabe wird nie gebraucht
+        Decimal(0),                           # jede Position trägt ihren Satz aus ``_tax_fields``: Die Vorgabe wird nie gebraucht
+        snapshots)
 
     # Skonto: Prozent und Tage zusammen und brauchbar, nur bei positivem Betrag, die Frist nicht nach der Fälligkeit. Eine
     # eingefrorene Rechnung wird nicht geprüft: Ihr Skonto ist gesperrt, und ein Altwert darf sie nicht an einer Berichtigung
@@ -3603,6 +3707,7 @@ def _invoice_fields(db, data, stored):
         'total_net': line_nets[idx],
         'tax_category': 'S',
         'tax_rate': item_rates[idx],
+        **(snapshots[idx] or {}),             # die Momentaufnahme eines Steuersatzes aus den Stammdaten (überschreibt ``tax_category``); ohne sie nichts
     } for idx, item in enumerate(items)]
     return invoice_data, item_rows
 
@@ -4152,13 +4257,15 @@ def handle_quote_save(post_body: bytes):
         if not items:
             return json.dumps({'success': False, 'error': 'Mindestens eine Position erforderlich'}).encode()
 
-        # Summen serverseitig exakt (bei §19 ohne Steuer: Brutto = Netto); die Sätze prüft ``_tax_fields``, wie bei der Rechnung
-        stored_tax_rate, mixed, item_rates = _tax_fields(data, items)
+        # Summen serverseitig exakt (bei §19 ohne Steuer: Brutto = Netto); die Sätze – und die Momentaufnahmen eines Steuersatzes aus den Stammdaten – prüft
+        # ``_tax_fields``, wie bei der Rechnung (es liest die Stammdaten nur, wenn eine ``taxRateId`` da ist)
+        db = Database()
+        stored_tax_rate, mixed, item_rates, snapshots = _tax_fields(db, data, items)
         net_amount, tax_amount, gross_amount, line_nets = recompute_invoice_totals(
             [{**item, 'taxRate': rate} for item, rate in zip(items, item_rates)],
-            Decimal(0))                           # jede Position trägt ihren Satz aus ``_tax_fields``: Die Vorgabe wird nie gebraucht
+            Decimal(0),                           # jede Position trägt ihren Satz aus ``_tax_fields``: Die Vorgabe wird nie gebraucht
+            snapshots)
 
-        db = Database()
         customer = db.get_contact_by_id(customer_id)
         if not customer:
             return json.dumps({'success': False, 'error': 'Kunde nicht gefunden'}).encode()
@@ -4221,6 +4328,7 @@ def handle_quote_save(post_body: bytes):
                         'total_net': line_nets[idx],
                         'tax_category': 'S',
                         'tax_rate': item_rates[idx],
+                        **(snapshots[idx] or {}),     # die Momentaufnahme eines Steuersatzes aus den Stammdaten (überschreibt ``tax_category``); ohne sie nichts
                     }, tx=tx)
         except (DocumentNotFound, QuoteStatusLocked) as e:
             return json.dumps({'success': False, 'error': str(e)}).encode()

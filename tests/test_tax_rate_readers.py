@@ -84,7 +84,9 @@ READERS = {
                                                '„Steuersatz je Position“, MixedTaxRates)'),
     ('db/invoice_storno.py', 'cancel_invoice'): ('Stornieren: Wartekonto und Schlüssel des Satzes für die Gegenbuchung der Forderung; ein Beleg mit '
                                                  'Steuersatz je Position (MixedTaxRates) nimmt die Konten und den Schlüssel seiner Satzgruppen '
-                                                 '(_mixed_receivable_accounts), nie den Kopfsatz'),
+                                                 '(_mixed_receivable_accounts), nie den Kopfsatz; ein Beleg mit einem Satz und Momentaufnahme der Stammdaten '
+                                                 'bekommt – wie beim Versenden (_send_key, _entry_receivable_accounts) – das Wartekonto genau seines Satzes '
+                                                 '(nicht _tax_rate_key, der auf ganze Prozent rundet)'),
     ('db/invoices.py', '_book_receivable'): ('Forderung buchen: Satz und Steuer der Forderungszeile; ein Beleg mit Steuersatz je Position (MixedTaxRates) '
                                              'geht über _book_mixed_receivable (je Satzgruppe eine Zeile), nie mit dem Kopfsatz'),
     ('db/invoices.py', '_learned_revenue_coa'): ('Erlöskonto lernen: Der Satz der Rechnung bestimmt den Schlüssel; bei einem Beleg mit Steuersatz je '

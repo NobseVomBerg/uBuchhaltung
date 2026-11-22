@@ -34,7 +34,8 @@ from decimal import Decimal, InvalidOperation
 from money import to_minor
 from tax_groups import booking_rate, group_label
 from .core import fk_explained
-from .invoice_payments import MixedNotBookable, PAYMENT_MARK, STORNO_KIND, PaymentMoveFailed, has_mixed_rates, rate_sentence
+from .invoice_payments import (ITEM_SNAPSHOT_COLUMNS, ITEM_SNAPSHOT_KEYS, MixedNotBookable, PAYMENT_MARK, STORNO_KIND,
+                               PaymentMoveFailed, has_mixed_rates, rate_sentence)
 
 EDITABLE_STATUSES = frozenset({'draft', 'finalized'})
 LOCKED_STATUSES = frozenset({'sent', 'overdue', 'partial_payment', 'partial', 'paid'})
@@ -302,22 +303,52 @@ def _quantity(value):
         return str(value)
 
 
-def _item_key(description, quantity, unit, price_minor, rate):
-    return (_text(description), _quantity(quantity), _unit(unit), price_minor, _rate(rate))
+#: Die Spalten einer gespeicherten Position, die ``_items_differ`` vergleicht, in dieser Reihenfolge: Bezeichnung, Menge, Einheit, Einzelpreis, Satz und die
+#: vier der Momentaufnahme eines Steuersatzes aus den Stammdaten (``ITEM_SNAPSHOT_COLUMNS``). Die EINE Abfrage dafür – ``update_invoice_fields`` und
+#: ``correct_invoice`` lesen darüber (``stored_items``).
+STORED_ITEMS_SQL = ('SELECT Description, Quantity, Unit, PricePerUnit, TaxRate, ' + ', '.join(ITEM_SNAPSHOT_COLUMNS)
+                    + ' FROM InvoiceItems WHERE InvoiceId = ? ORDER BY Position, ID')
+
+
+def stored_items(conn, invoice_id):
+    """Die gespeicherten Positionen einer Rechnung für ``check_changes``/``_items_differ``: je Position ``(Description, Quantity, Unit, PricePerUnit, TaxRate,
+    TaxCategory, TaxRateBp, TaxExemptReason, RevenueCoaId)`` in der Reihenfolge der Positionen, gelesen in der Verbindung oder Transaktion von ``conn``."""
+    return conn.execute(STORED_ITEMS_SQL, (invoice_id,)).fetchall()
+
+
+def _snapshot_key(values):
+    """Die Momentaufnahme eines Steuersatzes aus den Stammdaten, wie ``_items_differ`` sie vergleicht – ``None`` ohne eine. ``values``: die vier Werte in der Reihenfolge von
+    ``ITEM_SNAPSHOT_COLUMNS`` (gelesen wird nach dem Namen der Spalte, nie nach der Stelle). **Das Merkmal ist der Satz in Hundertstel Prozent** (``TaxRateBp`` nicht
+    NULL), nicht die Art: ``TaxCategory`` ``'E'`` allein ist keine Momentaufnahme (das Beispiel eines Belegs nach § 19 trägt sie, ohne dass ein Eintrag dahintersteht).
+    Verglichen werden Satz, Art, Grund der Befreiung und Erlöskonto."""
+    snapshot = dict(zip(ITEM_SNAPSHOT_COLUMNS, values))
+    if snapshot['TaxRateBp'] is None:
+        return None
+    return (_id(snapshot['TaxRateBp']), _text(snapshot['TaxCategory']) or 'S', _text(snapshot['TaxExemptReason']), _id(snapshot['RevenueCoaId']))
+
+
+def _item_key(description, quantity, unit, price_minor, rate, snapshot=None):
+    return (_text(description), _quantity(quantity), _unit(unit), price_minor, _rate(rate), snapshot)
 
 
 def _items_differ(stored_rows, items):
     """Unterscheiden sich die Positionen (Bezeichnung, Menge, Einheit, Einzelpreis in Minor Units,
-    Steuersatz) – in dieser Reihenfolge? ``stored_rows``: ``(Description, Quantity, Unit,
-    PricePerUnit, TaxRate)`` aus der Datenbank; ``items``: die Positionen wie bei
-    ``insert_invoice_item``. Die Positionssumme ist abgeleitet und zählt nicht."""
+    Steuersatz, dazu die Momentaufnahme eines Steuersatzes aus den Stammdaten: Satz in Hundertstel Prozent, Art,
+    Grund der Befreiung, Erlöskonto) – in dieser Reihenfolge? ``stored_rows``: ``(Description, Quantity, Unit,
+    PricePerUnit, TaxRate, TaxCategory, TaxRateBp, TaxExemptReason, RevenueCoaId)`` aus der Datenbank (``stored_items``; eine Zeile
+    mit nur den ersten fünf Werten gilt als eine ohne Momentaufnahme); ``items``: die Positionen wie bei
+    ``insert_invoice_item``. Die Positionssumme ist abgeleitet und zählt nicht. Eine Position mit und eine ohne Momentaufnahme
+    sind verschieden, zwei ohne sind es nie – so ändert sich für jeden Beleg ohne Momentaufnahme nichts."""
     try:
         new = [_item_key(item.get('description'), item.get('quantity'), item.get('unit', 'C62'),
-                         to_minor(item.get('price_per_unit') or 0), item.get('tax_rate'))
+                         to_minor(item.get('price_per_unit') or 0), item.get('tax_rate'),
+                         _snapshot_key([item.get(ITEM_SNAPSHOT_KEYS[column]) for column in ITEM_SNAPSHOT_COLUMNS]))
                for item in items]
     except (TypeError, ValueError):
         return True
-    old = [_item_key(row[0], row[1], row[2], row[3], row[4]) for row in stored_rows]
+    width = len(ITEM_SNAPSHOT_COLUMNS)
+    old = [_item_key(row[0], row[1], row[2], row[3], row[4], _snapshot_key((tuple(row[5:]) + (None,) * width)[:width]))
+           for row in stored_rows]
     return old != new
 
 
@@ -556,12 +587,8 @@ class InvoiceLockMixin:
                 for item in items:
                     self.insert_invoice_item({**item, 'invoice_id': invoice_id}, tx=tx)
             return 'edited'
-        stored_items = None
-        if items is not None:
-            stored_items = conn.execute(
-                'SELECT Description, Quantity, Unit, PricePerUnit, TaxRate FROM InvoiceItems '
-                'WHERE InvoiceId = ? ORDER BY Position, ID', (invoice_id,)).fetchall()
-        problems = check_changes(row, invoice_data, stored_items, items)
+        stored_rows = stored_items(conn, invoice_id) if items is not None else None
+        problems = check_changes(row, invoice_data, stored_rows, items)
         if problems:
             payments = conn.execute('SELECT COUNT(*) FROM InvoicePayments WHERE InvoiceID = ?',
                                     (invoice_id,)).fetchone()[0]

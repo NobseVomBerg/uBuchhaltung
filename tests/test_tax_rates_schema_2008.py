@@ -493,7 +493,7 @@ def _document(books, number, kind, status):
     Version. Die Werte sind in jeder Spalte verschieden, damit eine Kopie, die eine Spalte vergisst, auffällt."""
     assert set(FIRST_SNAPSHOT) == set(SECOND_SNAPSHOT) == set(ITEM_SNAPSHOT_KEYS.values())
     document_id = add_document(books.db, number, kind, books.own, books.customer, status=status, sum_net=150.0, tax_amount=19.0,
-                               sum_gross=169.0, amount_due=169.0)
+                               sum_gross=169.0, amount_due=169.0, mixed_tax_rates=1)      # zwei Sätze: ein Beleg mit Steuersatz je Position
     with closing(sqlite3.connect(books.db.db_name)) as con:
         con.execute('DELETE FROM InvoiceItems WHERE InvoiceId = ?', (document_id,))
         con.commit()
