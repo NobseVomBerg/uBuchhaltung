@@ -1693,10 +1693,12 @@ kein Subagent darauf:
   Grund) und `link_invoice_to_transaction` (der WISO-Import: schreibt eine Zuordnung ohne Sätze, deren Anteil je Satz keine spätere Buchung kennen könnte – bleibt gesperrt). `create_replacement_draft` bucht
   nichts und bleibt erlaubt; `update_invoice_status` (der ungeprüfte Baustein für Seed und Tests) bleibt, wie er ist. Eine Sperre fällt erst, wenn ihr Weg je Satz bucht – nie lockern, ohne dass er es tut.
   **PDF (Rechnung, Stornorechnung, Angebot):** Nur mit dem Kennzeichen – nie nach den Sätzen der
-  Positionen; ein Beleg mit einem Satz druckt Zeichen für Zeichen wie vorher – hat die Tabelle zwischen Bezeichnung und Einzelpreis die Spalte „USt“ (`pdf_document.COL_RATE_R`; die Bezeichnung bricht
-  früher um), und der Summenblock nennt unter „Summe netto“ je Satzgruppe eine Zeile „zzgl. 7 % MwSt. auf 50,00 EUR:“ (je Gruppe um eine Zeile höher: Seitenumbruch). Der Satz im Kopf wird dort nie
-  gedruckt (so ein Beleg ist nie § 19). Die Gruppen kommen aus `tax_groups.item_groups` (die EINE Stelle; die Buchungen nehmen dieselbe) über `einvoice_model.per_item_rates` und sind auf den Cent die
-  der E-Rechnung und, summiert, die gespeicherten Summen des Belegs – weicht eine ab, druckt das PDF trotzdem, und das Server-Log nennt es. Beispiele für Mustang: `zugferd-mischsatz.pdf` und
+  Positionen; ein Beleg ohne das Kennzeichen druckt Zeichen für Zeichen wie vorher (trägt er Positionen zu verschiedenen Sätzen, steht eine Zeile im Server-Log: `einvoice_model.log_unflagged_rates`) –
+  hat die Tabelle zwischen Bezeichnung und Einzelpreis die Spalte „USt“ (`pdf_document.COL_RATE_R`; sie rückt nach links, wenn ein Einzelpreis mehr Platz braucht – `_rate_layout`, einmal je Beleg –, die
+  Bezeichnung bricht früher um, ein Wort ohne Leerzeichen, das breiter ist als sie, mitten im Wort), und der Summenblock nennt unter „Summe netto“ je Satzgruppe eine Zeile „zzgl. 7 % MwSt. auf 50,00
+  EUR:“ (je Gruppe um eine Zeile höher: Seitenumbruch; ab 46 Gruppen passt er auch auf eine eigene Seite nicht, dann brechen die Zeilen auf die Folgeseite um, der Gesamtbetrag nie allein). Der Satz im
+  Kopf wird dort nie gedruckt (so ein Beleg ist nie § 19). Die Gruppen kommen aus `tax_groups.item_groups` (die EINE Stelle; die Buchungen nehmen dieselbe) über `einvoice_model.per_item_rates` und sind
+  auf den Cent die der E-Rechnung und, summiert, die gespeicherten Summen des Belegs – weicht eine ab, druckt das PDF trotzdem, und das Server-Log nennt es. Beispiele für Mustang: `zugferd-mischsatz.pdf` und
   `xrechnung-mischsatz.xml` (`tools/make_einvoice_samples.py`; sein Normalfall ist nie ein Beleg mit dem Kennzeichen, seine Kopien nehmen es mit). **Maske (Rechnung und Angebot):** Das Häkchen
   „Steuersatz je Position“ (`#mixed_tax`, unter „Umsatzsteuer ausweisen“; nur mit Steuerausweis, in einer gesperrten Rechnung gesperrt, vorbelegt aus `has_mixed_rates`) schaltet die Spalte „USt“
   ein (Klasse `mixedTaxOn` an der Positionstabelle, `buch.css`) und im Summenblock eine Zeile je Satz (nur Anzeige, in ganzen Cent und zweistufig gerundet wie `money`; maßgeblich bleibt der Server).

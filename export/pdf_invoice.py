@@ -19,8 +19,8 @@ from db.invoice_lock import STORNO_KIND
 from money import to_minor
 from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path)
 from .cii_invoice import build_cii
-from .einvoice_model import (build_einvoice, correction_note_text, correction_notice, per_item_rates, replacement_note,
-                             skonto_sentence, small_business_note, unit_display)
+from .einvoice_model import (build_einvoice, correction_note_text, correction_notice, log_unflagged_rates, per_item_rates,
+                             replacement_note, skonto_sentence, small_business_note, unit_display)
 from .invoice_files import drop_stale_file, invoice_file_path
 from . import pdf_document as D
 
@@ -197,6 +197,8 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     if per_item is not None:
         for item, rate in zip(items, per_item.item_rates):
             item['rate'] = rate
+    else:
+        log_unflagged_rates(invoice, invoice_items, tax_rate)        # nur das Log; gedruckt wird wie immer
     # Ohne Umsatzsteuerausweis (§ 19 UStG) steht der Hinweis unter den Summen – es sei denn, der Zahlungshinweis (ein
     # Richtext, samt Standardtext) zitiert das Gesetz schon; Positionstexte zählen nicht. Derselbe Wortlaut steht als
     # BT-120 in der E-Rechnung
@@ -204,7 +206,8 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
     D.draw_item_table(flow, items, tax_rate_pct=_pct(tax_rate),
                       sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross,
                       show_tax=show_tax, tax_note=tax_note,
-                      tax_groups=None if per_item is None else per_item.groups)
+                      tax_groups=None if per_item is None else per_item.groups,
+                      document_number='' if per_item is None else per_item.number)
 
     # Zahlungsbedingungen (Fließtext), danach das Skonto: Fristende, Abzug und Zahlbetrag auf Grundlage des gedruckten
     # Bruttos; die Zeile für die E-Rechnung (BR-DE-18) steht in der CII und im UBL

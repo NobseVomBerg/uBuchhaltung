@@ -37,10 +37,14 @@ COL_DESC = 165                    # Bezeichnung linksbündig
 COL_PRICE_R = 470                 # Einzelpreis rechtsbündig
 COL_TOTAL_R = RIGHT               # Gesamt      rechtsbündig
 # Nur bei einem Beleg mit Steuersatz je Position (``draw_item_table(…, tax_groups=…)``): die Spalte „USt“, rechtsbündig wie die Geldspalten,
-# so weit rechts, wie die Bezeichnung sonst reicht (``COL_PRICE_R - 65``: so breit darf ein Einzelpreis werden). Die Bezeichnung endet
-# ``_RATE_COL_W`` links davon – die Breite fasst den längsten Satz („99,99 %“, 33 pt in 9 pt) mit Abstand
-COL_RATE_R = COL_PRICE_R - 65
+# so weit rechts, wie die Bezeichnung sonst reicht (``COL_PRICE_R - _PRICE_ROOM``: so breit darf ein Einzelpreis werden). Die Bezeichnung endet
+# ``_RATE_COL_W`` links davon – die Breite fasst den längsten Satz („99,99 %“, 33 pt in 9 pt) mit Abstand. Das ist die Lage für gewöhnliche
+# Preise; braucht ein Einzelpreis des Belegs mehr Platz, rückt die Spalte nach links (``_rate_layout``)
+_PRICE_ROOM = 65
+COL_RATE_R = COL_PRICE_R - _PRICE_ROOM
 _RATE_COL_W = 40
+_RATE_PRICE_GAP = 3.2             # Abstand, den der Satz zum Einzelpreis einer Zeile mindestens behält: 3 pt, dazu die Rundung der Textlage auf 0,1 pt
+_MIN_DESC_W = 120                 # so schmal macht ein breiter Einzelpreis die Bezeichnung höchstens
 
 # Helvetica-Zeichenbreiten (AFM, Einheiten/1000 em). Echte Metriken statt
 # Schätzung – nur damit liegen rechtsbündige Spalten exakt auf einer Kante.
@@ -232,9 +236,27 @@ def _fmt_rate(pct):
 _ROW_LEADING = 13                 # Zeilenabstand innerhalb einer Position
 
 
-def _wrap_description(desc, max_w, size):
+def _split_wide_word(word, max_w, size):
+    """Ein Wort ohne Leerzeichen in Stücke zerlegen, von denen keines breiter ist als ``max_w`` (``text_width``: dieselbe Rechnung, in ganzen
+    Einheiten der Schrift summiert). Jedes Zeichen wird genau einmal gemessen – die Bezeichnung eines Belegs ist ein Freitext ohne Längengrenze."""
+    pieces, start, units = [], 0, 0
+    for index, char in enumerate(word):
+        width = _W_REG.get(char, 556)
+        if index > start and (units + width) / 1000.0 * size > max_w:
+            pieces.append(word[start:index])
+            start, units = index, 0
+        units += width
+    pieces.append(word[start:])
+    return pieces
+
+
+def _wrap_description(desc, max_w, size, break_words=False):
     """Bezeichnung in Zeilen zerlegen: ``;`` → Zeilenumbruch, lange Zeilen am
-    Wortrand umbrechen. Liefert immer mindestens eine (ggf. leere) Zeile."""
+    Wortrand umbrechen. Liefert immer mindestens eine (ggf. leere) Zeile.
+
+    ``break_words``: Ein Wort, das allein breiter ist als ``max_w``, steht auf einer eigenen Zeile und bricht dort mitten im Wort um
+    (``_split_wide_word``) – sonst läuft es über die Spalte hinaus. Nur der Druck mit Steuersatz je Position setzt es (dort stünde das Wort
+    über der Spalte „USt“); der übrige Druck bricht, wie er immer brach."""
     lines = []
     for segment in str(desc or '').split(';'):
         seg = segment.strip()
@@ -242,6 +264,12 @@ def _wrap_description(desc, max_w, size):
             continue
         cur = ''
         for word in seg.split(' '):
+            if break_words and text_width(word, size) > max_w:
+                if cur:
+                    lines.append(cur)
+                *whole, cur = _split_wide_word(word, max_w, size)
+                lines.extend(whole)
+                continue
             trial = (cur + ' ' + word).strip()
             if cur and text_width(trial, size) > max_w:
                 lines.append(cur)
@@ -260,16 +288,17 @@ _NOTE_LEADING = 12                #   Abstand der ersten Zeile unter der Schluss
 _NOTE_TOP = 14
 
 
-def _table_header(flow, rate_col=False):
-    """Tabellen-Kopfzeile an flow.y setzen (Unterstrich-Linie in flow.line_ops). ``rate_col``: mit der Spalte „USt“."""
+def _table_header(flow, rate_right=None):
+    """Tabellen-Kopfzeile an flow.y setzen (Unterstrich-Linie in flow.line_ops). ``rate_right``: der rechte Rand der Spalte „USt“ (``None``: ohne
+    die Spalte)."""
     ops = flow.ops
     y = flow.y - 14
     text(ops, COL_POS, y, "Pos.", font='/F2', size=10)
     text(ops, COL_QTY, y, "Menge", font='/F2', size=10)
     text(ops, COL_UNIT, y, "Einheit", font='/F2', size=10)
     text(ops, COL_DESC, y, "Bezeichnung", font='/F2', size=10)
-    if rate_col:
-        text_right(ops, COL_RATE_R, y, "USt", font='/F2', size=10)
+    if rate_right is not None:
+        text_right(ops, rate_right, y, "USt", font='/F2', size=10)
     text_right(ops, COL_PRICE_R, y, "Einzelpreis", font='/F2', size=10)
     text_right(ops, COL_TOTAL_R, y, "Gesamt", font='/F2', size=10)
     y -= 4
@@ -277,8 +306,30 @@ def _table_header(flow, rate_col=False):
     flow.y = y - 13
 
 
+def _price_text(it, currency):
+    """Der Einzelpreis einer Position, wie die Tabelle ihn druckt."""
+    return f"{_fmt_money(it.get('price') or 0)} {currency}"
+
+
+def _rate_layout(items, currency):
+    """Die Lage der Spalte „USt“ und die Breite der Bezeichnung eines Belegs mit Steuersatz je Position – einmal je Beleg bestimmt, auf jeder Seite
+    dieselbe.
+
+    Gemessen wird der breiteste Einzelpreis des Belegs, wie die Tabelle ihn druckt (Schrift und Größe der Zeilen). Passt er samt Abstand in die
+    Preisspalte (``_PRICE_ROOM``), bleibt alles, wo es war: die Spalte bei ``COL_RATE_R``. Ist er breiter, rückt die Spalte um das Fehlende nach
+    links, und die Bezeichnung wird um dasselbe schmaler – nie unter ``_MIN_DESC_W``: Reicht auch das nicht, bleibt es bei dieser Breite, und die
+    Spalte berührt den Einzelpreis.
+
+    Liefert ``(rechter Rand der Spalte, größte Breite der Bezeichnung, ob der Einzelpreis auch so nicht Platz hat)``."""
+    widest = max((text_width(_price_text(it, currency), 9) for it in items), default=0.0)
+    missing = max(0.0, widest + _RATE_PRICE_GAP - _PRICE_ROOM)
+    desc_w = COL_RATE_R - _RATE_COL_W - COL_DESC
+    shift = min(missing, desc_w - _MIN_DESC_W)
+    return COL_RATE_R - shift, desc_w - shift, missing > shift
+
+
 def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross,
-                    currency='EUR', show_tax=True, tax_note=None, tax_groups=None):
+                    currency='EUR', show_tax=True, tax_note=None, tax_groups=None, document_number=''):
     """Positionstabelle mit rechtsbündigen Geldspalten + Summenblock.
 
     Seitenfähig: passt eine Position nicht mehr auf die Seite, wird umgebrochen
@@ -298,23 +349,36 @@ def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross
     auch wenn es dann nur eine Gruppe ist) – ``tax_groups.RateGroup``, Satz absteigend. ``None`` (jeder andere Beleg): der Druck mit
     EINEM Satz, ``tax_rate_pct`` und die einzelne Steuerzeile, Zeichen für Zeichen wie immer. Mit Gruppen steht in der Tabelle
     zwischen Bezeichnung und Einzelpreis die Spalte „USt“ (je Position ``it['rate']``, die Prozentzahl; die Bezeichnung bricht
-    entsprechend früher um), und der Summenblock nennt unter „Summe netto“ je Gruppe eine Zeile „zzgl. 7 % MwSt. auf 50,00 EUR:“ mit
-    der Steuer der Gruppe (Minor Units, wie sie sind – bei einer Stornorechnung negativ), dann den Gesamtbetrag; jede Gruppe über die
-    erste macht den Block um eine Zeile höher (Seitenumbruch). ``tax_rate_pct`` druckt dann nichts: Der Satz im Kopf ist bei so einem
+    entsprechend früher um, ein Wort, das breiter ist als die Spalte, mitten im Wort), und der Summenblock nennt unter „Summe netto“
+    je Gruppe eine Zeile „zzgl. 7 % MwSt. auf 50,00 EUR:“ mit der Steuer der Gruppe (Minor Units, wie sie sind – bei einer
+    Stornorechnung negativ), dann den Gesamtbetrag; jede Gruppe über die erste macht den Block um eine Zeile höher (Seitenumbruch).
+    Passt der Block auch auf eine eigene Seite nicht (ab 46 Gruppen), brechen die Gruppenzeilen auf die Folgeseite um: Auf einer Seite
+    stehen so viele, wie passen, und der Gesamtbetrag nie allein. ``tax_rate_pct`` druckt dann nichts: Der Satz im Kopf ist bei so einem
     Beleg nur ein Platzhalter. Ohne Steuerausweis (``show_tax`` falsch; § 19 UStG – nie bei einem Beleg mit Steuersatz je Position)
     gelten die Gruppen nicht.
+
+    Die Spalte „USt“ steht rechts der Bezeichnung dort, wo ein gewöhnlicher Einzelpreis noch Platz hat (``COL_RATE_R``); ein breiterer
+    Einzelpreis des Belegs rückt sie nach links (``_rate_layout``), auf allen Seiten gleich. ``document_number``: die Belegnummer, bereits
+    bereinigt, für die eine Zeile im Server-Log, wenn auch das nicht reicht.
     """
     per_item = tax_groups is not None and show_tax
-    _table_header(flow, per_item)
-
     # Bezeichnung darf nicht in die Einzelpreis-Spalte laufen (mit Steuersatz je Position nicht in die Spalte „USt“).
-    desc_max_w = ((COL_RATE_R - _RATE_COL_W) if per_item else (COL_PRICE_R - 65)) - COL_DESC
+    if per_item:
+        rate_right, desc_max_w, too_wide = _rate_layout(items, currency)
+        if too_wide:
+            print(f"PDF {document_number}: Ein Einzelpreis ist so breit, dass die Bezeichnung nicht noch schmaler werden kann – "
+                  f"die Spalte „USt“ berührt den Einzelpreis")
+    else:
+        rate_right = None
+        desc_max_w = (COL_PRICE_R - _PRICE_ROOM) - COL_DESC
+    _table_header(flow, rate_right)
+
     for it in items:
-        desc_lines = _wrap_description(it.get('description'), desc_max_w, 9)
+        desc_lines = _wrap_description(it.get('description'), desc_max_w, 9, break_words=per_item)
         row_h = _ROW_LEADING * len(desc_lines)
         if flow.y - row_h < flow.bottom:
             flow.new_page()
-            _table_header(flow, per_item)
+            _table_header(flow, rate_right)
         ops = flow.ops
         top_y = flow.y
         # Pos/Menge/Einheit linksbündig, Geldspalten rechtsbündig – oben (top) ausgerichtet
@@ -322,8 +386,8 @@ def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross
         text(ops, COL_QTY, top_y, f"{(it.get('quantity') or 0):.2f}".replace('.', ','), size=9)
         text(ops, COL_UNIT, top_y, str(it.get('unit') or ''), size=9)
         if per_item:
-            text_right(ops, COL_RATE_R, top_y, _fmt_rate(it['rate']), size=9)
-        text_right(ops, COL_PRICE_R, top_y, f"{_fmt_money(it.get('price') or 0)} {currency}", size=9)
+            text_right(ops, rate_right, top_y, _fmt_rate(it['rate']), size=9)
+        text_right(ops, COL_PRICE_R, top_y, _price_text(it, currency), size=9)
         text_right(ops, COL_TOTAL_R, top_y, f"{_fmt_money(it.get('total') or 0)} {currency}", size=9)
         ly = top_y
         for ln in desc_lines:
@@ -349,8 +413,15 @@ def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross
         text_right(ops, COL_TOTAL_R, y, f"{_fmt_money(sum_net)} {currency}", font='/F2', size=10)
         y -= 14
         if per_item:
-            # Je Satzgruppe eine Zeile; der Abstand zum Gesamtbetrag bleibt der heutige (14 + 2 = 16)
-            for group in tax_groups:
+            # Je Satzgruppe eine Zeile; der Abstand zum Gesamtbetrag bleibt der heutige (14 + 2 = 16). Passt der Block nicht auf eine Seite,
+            # geht es auf der nächsten mit der Zeile weiter, die nicht mehr passt; mit der letzten Gruppenzeile müssen der Gesamtbetrag
+            # (+ 2), die Schlusslinie (+ 6) und der Hinweis noch auf die Seite – so steht der Gesamtbetrag nie allein
+            for index, group in enumerate(tax_groups):
+                below = _TAX_ROW + 8 + note_drop if index == len(tax_groups) - 1 else 0
+                if y - below < flow.bottom:
+                    flow.new_page()
+                    ops = flow.ops
+                    y = flow.y - 15
                 text(ops, COL_DESC, y, f"zzgl. {_fmt_rate(group.pct)} MwSt. auf {format_de(group.net)} {currency}:", size=10)
                 text_right(ops, COL_TOTAL_R, y, f"{format_de(group.tax)} {currency}", font='/F2', size=10)
                 y -= _TAX_ROW
