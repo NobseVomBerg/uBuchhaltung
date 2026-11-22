@@ -42,7 +42,8 @@ def PageMasterData(db: Database):
     s = Header1('masterdata')
     submenu = ("<a href='/masterdata/articles'>📦 Artikel</a> | <a href='/masterdata/contacts'>👥 Kontakte</a> | "
                "<a href='/masterdata/skr'>📊 SKR</a> | <a href='/masterdata/bankaccounts'>🏦 Bankkonten</a> | "
-               "<a href='/masterdata/numberranges'>🔢 Nummernkreise</a> | <a href='/asset_categories'>📂 AfA-Kategorien</a>")
+               "<a href='/masterdata/numberranges'>🔢 Nummernkreise</a> | <a href='/asset_categories'>📂 AfA-Kategorien</a> | "
+               "<a href='/masterdata/taxrates'>🧾 Steuersätze</a>")
     if _show_users:
         submenu += " | <a href='/users'>🔑 Benutzer</a>"
     s += Header2(submenu)
@@ -92,6 +93,12 @@ def PageMasterData(db: Database):
                 <h3>📂 AfA-Kategorien</h3>
                 <p>Abschreibungskategorien für das Anlagenverzeichnis</p>
                 <p><a href="/asset_categories" style="font-weight: bold;">→ Zu den AfA-Kategorien</a></p>
+            </div>
+
+            <div class="rectRounded">
+                <h3>🧾 Steuersätze</h3>
+                <p>Steuersätze und Befreiungsgründe für Rechnungen und Angebote</p>
+                <p><a href="/masterdata/taxrates"><strong>→ Zu den Steuersätzen</strong></a></p>
             </div>
             {users_card}
         </div>

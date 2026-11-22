@@ -397,6 +397,11 @@ TAX_ENTRY_REASON = f'Bitte den Grund der Steuerbefreiung angeben – er steht au
 TAX_ENTRY_REVENUE_REQUIRED = 'Bitte ein Erlöskonto wählen – für diesen Steuersatz gibt es kein Standardkonto.'
 TAX_ENTRY_REVENUE_NOT_INCOME = 'Das gewählte Konto ist kein Erlöskonto.'
 TAX_ENTRY_LAST_ACTIVE = 'Der letzte wählbare Steuersatz lässt sich nicht löschen oder abschalten.'
+# Die Steuerkonten eines Eintrags (freiwillig, für die Auswertungen): Regeln 7 bis 10 von ``check_tax_entry``
+TAX_ENTRY_TAX_ACCOUNT_ZERO = 'Ein Steuersatz von 0 % trägt kein Umsatzsteuer- und kein Vorsteuerkonto.'
+TAX_ENTRY_TAX_ACCOUNT_FIXED = 'Für diesen Steuersatz stehen die Steuerkonten fest – bitte kein Umsatzsteuer- oder Vorsteuerkonto wählen.'
+TAX_ENTRY_VAT_ACCOUNT = 'Das gewählte Konto ist kein Umsatzsteuerkonto.'
+TAX_ENTRY_INPUT_TAX_ACCOUNT = 'Das gewählte Konto ist kein Vorsteuerkonto.'
 
 
 def _plain_text(text, limit):
@@ -406,7 +411,9 @@ def _plain_text(text, limit):
             and not any(unicodedata.category(char) in ('Cc', 'Cf') for char in text))
 
 
-def check_tax_entry(label, bp, kind, reason, revenue_coa_id, has_default_revenue, revenue_is_income=True):
+def check_tax_entry(label, bp, kind, reason, revenue_coa_id, has_default_revenue, revenue_is_income=True, *,
+                    vat_coa_id=None, input_tax_coa_id=None, has_fixed_tax_accounts=False,
+                    vat_is_vat_account=True, input_is_input_account=True):
     """Die Regeln eines Eintrags der Stammdaten – die EINE Stelle dafür, rein (keine Datenbank): der feste Ablehnungssatz der ersten Regel, die verletzt ist
     (``TAX_ENTRY_*``), sonst ``None``. Die Regeln, in dieser Reihenfolge:
 
@@ -422,7 +429,18 @@ def check_tax_entry(label, bp, kind, reason, revenue_coa_id, has_default_revenue
        Aufrufer: für 19 und 7 Prozent ja, für jeden anderen Satz und für jede steuerfreie Leistung nein), sonst ``TAX_ENTRY_REVENUE_REQUIRED``. Mit
        Konto muss es eines der Erlöse sein (``revenue_is_income``, vom Aufrufer, der die Konten kennt), sonst ``TAX_ENTRY_REVENUE_NOT_INCOME``.
 
-    Nicht hier: ob das Konto vorhanden ist und ob der letzte wählbare Eintrag bleibt (``TAX_ENTRY_LAST_ACTIVE``) – beides kennt nur die Datenbankschicht."""
+    Die Steuerkonten sind freiwillig und wirken nur in den Auswertungen: ein Umsatzsteuerkonto (``vat_coa_id``) und ein Vorsteuerkonto
+    (``input_tax_coa_id``), je die ID eines Kontos oder ``None``. Die Regeln 7 bis 10 gelten nur, wenn mindestens eines gesetzt ist – ohne sie (und ohne
+    die Schlüsselwort-Parameter) ist jedes Ergebnis das von vor ihrer Einführung:
+
+    7. Der Satz ist nicht 0 (jede steuerfreie Leistung und jede Art ``STANDARD`` mit 0 trägt kein Steuerkonto), sonst ``TAX_ENTRY_TAX_ACCOUNT_ZERO``.
+    8. Der Satz hat keine festen Steuerkonten (``has_fixed_tax_accounts``, vom Aufrufer: 19, 16, 7 und 5 Prozent – für sie stehen die Konten fest, ein
+       gewähltes würde still übergangen), sonst ``TAX_ENTRY_TAX_ACCOUNT_FIXED``.
+    9. Ein gesetztes ``vat_coa_id`` ist ein Umsatzsteuerkonto (``vat_is_vat_account``, vom Aufrufer, der die Konten kennt), sonst ``TAX_ENTRY_VAT_ACCOUNT``.
+    10. Ein gesetztes ``input_tax_coa_id`` ist ein Vorsteuerkonto (``input_is_input_account``, vom Aufrufer), sonst ``TAX_ENTRY_INPUT_TAX_ACCOUNT``.
+
+    Nicht hier: ob ein Konto vorhanden ist und welcher Art es ist (das sagen die Schlüsselwort-Parameter, die der Aufrufer aus seinen Konten bildet) und ob
+    der letzte wählbare Eintrag bleibt (``TAX_ENTRY_LAST_ACTIVE``) – beides kennt nur die Datenbankschicht."""
     if not _plain_text(label, MAX_LABEL_LENGTH):
         return TAX_ENTRY_LABEL
     if type(bp) is not int or not (bp == 0 or MIN_RATE_BP <= bp <= MAX_RATE_BP):
@@ -435,5 +453,18 @@ def check_tax_entry(label, bp, kind, reason, revenue_coa_id, has_default_revenue
         if not _plain_text(reason, MAX_REASON_LENGTH):
             return TAX_ENTRY_REASON
     if revenue_coa_id is None:
-        return None if has_default_revenue else TAX_ENTRY_REVENUE_REQUIRED
-    return None if revenue_is_income else TAX_ENTRY_REVENUE_NOT_INCOME
+        if not has_default_revenue:
+            return TAX_ENTRY_REVENUE_REQUIRED
+    elif not revenue_is_income:
+        return TAX_ENTRY_REVENUE_NOT_INCOME
+    if vat_coa_id is None and input_tax_coa_id is None:
+        return None
+    if bp == 0:
+        return TAX_ENTRY_TAX_ACCOUNT_ZERO
+    if has_fixed_tax_accounts:
+        return TAX_ENTRY_TAX_ACCOUNT_FIXED
+    if vat_coa_id is not None and not vat_is_vat_account:
+        return TAX_ENTRY_VAT_ACCOUNT
+    if input_tax_coa_id is not None and not input_is_input_account:
+        return TAX_ENTRY_INPUT_TAX_ACCOUNT
+    return None

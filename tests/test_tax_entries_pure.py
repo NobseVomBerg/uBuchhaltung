@@ -530,9 +530,13 @@ def check(**changes):
 
 
 def test_the_signature_has_no_exemption_code_and_the_module_does_not_know_one():
-    """Der Befreiungsgrund ist nur Text (BT-120); einen Code (BT-121) gibt es in 2.8.0 nicht."""
-    assert list(inspect.signature(check_tax_entry).parameters) == ['label', 'bp', 'kind', 'reason', 'revenue_coa_id', 'has_default_revenue', 'revenue_is_income']
-    assert inspect.signature(check_tax_entry).parameters['revenue_is_income'].default is True
+    """Der Befreiungsgrund ist nur Text (BT-120); einen Code (BT-121) gibt es in 2.8.0 nicht. Die ersten sieben Parameter sind die von E0; die Steuerkonten
+    (E2) kommen als Schlüsselwort-Parameter mit Vorgaben dazu – ein Parameter für einen Befreiungscode ist keiner davon."""
+    parameters = inspect.signature(check_tax_entry).parameters
+    positional = [name for name, parameter in parameters.items() if parameter.kind is not inspect.Parameter.KEYWORD_ONLY]
+    assert positional == ['label', 'bp', 'kind', 'reason', 'revenue_coa_id', 'has_default_revenue', 'revenue_is_income']
+    assert not [name for name in parameters if 'code' in name.lower()]
+    assert parameters['revenue_is_income'].default is True
     assert 'VATEX' not in inspect.getsource(tax_groups)
     assert not [name for name in dir(tax_groups) if 'EXEMPT' in name.upper() and 'CODE' in name.upper()]
 
@@ -658,3 +662,155 @@ def test_the_module_stays_pure_it_imports_only_the_standard_library_and_money():
             imported.add((node.module or '').split('.')[0])
 
     assert imported <= {'dataclasses', 'decimal', 'money', 're', 'unicodedata'}, imported
+
+
+# ── Die Steuerkonten eines Eintrags (E2): Regeln 7 bis 10 von check_tax_entry ─────────────────────────────────────────────────────
+
+from tax_groups import TAX_ENTRY_INPUT_TAX_ACCOUNT, TAX_ENTRY_TAX_ACCOUNT_FIXED, TAX_ENTRY_TAX_ACCOUNT_ZERO, TAX_ENTRY_VAT_ACCOUNT
+
+
+def check_before_the_tax_accounts(label, bp, kind, reason, revenue_coa_id, has_default_revenue, revenue_is_income=True):
+    """``check_tax_entry`` am Stand von E0 (vor den Steuerkonten), aus dem Code von damals kopiert."""
+    if not tax_groups._plain_text(label, MAX_LABEL_LENGTH):
+        return TAX_ENTRY_LABEL
+    if type(bp) is not int or not (bp == 0 or tax_groups.MIN_RATE_BP <= bp <= MAX_RATE_BP):
+        return TAX_ENTRY_RATE
+    if kind not in (STANDARD, EXEMPT):
+        return TAX_ENTRY_KIND
+    if kind == EXEMPT:
+        if bp != 0:
+            return TAX_ENTRY_EXEMPT_RATE
+        if not tax_groups._plain_text(reason, MAX_REASON_LENGTH):
+            return TAX_ENTRY_REASON
+    if revenue_coa_id is None:
+        return None if has_default_revenue else TAX_ENTRY_REVENUE_REQUIRED
+    return None if revenue_is_income else TAX_ENTRY_REVENUE_NOT_INCOME
+
+
+def with_accounts(**changes):
+    """Ein gültiger Eintrag über 5,5 % mit Erlöskonto – ``changes`` ändert einzelne Argumente (auch die Steuerkonten)."""
+    return check(**{**dict(label='Ermäßigt (erfunden)', bp=550, has_default_revenue=False, revenue_coa_id=17), **changes})
+
+
+def test_the_sentences_of_the_tax_accounts_are_the_fixed_ones_of_the_plan():
+    assert TAX_ENTRY_TAX_ACCOUNT_ZERO == 'Ein Steuersatz von 0 % trägt kein Umsatzsteuer- und kein Vorsteuerkonto.'
+    assert TAX_ENTRY_TAX_ACCOUNT_FIXED == 'Für diesen Steuersatz stehen die Steuerkonten fest – bitte kein Umsatzsteuer- oder Vorsteuerkonto wählen.'
+    assert TAX_ENTRY_VAT_ACCOUNT == 'Das gewählte Konto ist kein Umsatzsteuerkonto.'
+    assert TAX_ENTRY_INPUT_TAX_ACCOUNT == 'Das gewählte Konto ist kein Vorsteuerkonto.'
+
+
+def test_the_tax_accounts_are_keyword_only_parameters_with_defaults_that_change_nothing():
+    parameters = inspect.signature(check_tax_entry).parameters
+    keyword_only = {name: parameter.default for name, parameter in parameters.items() if parameter.kind is inspect.Parameter.KEYWORD_ONLY}
+
+    assert keyword_only == dict(vat_coa_id=None, input_tax_coa_id=None, has_fixed_tax_accounts=False, vat_is_vat_account=True, input_is_input_account=True)
+
+
+def test_without_a_tax_account_every_result_is_the_one_of_before_whatever_the_other_new_arguments_say():
+    """Eigenschaft über ein Gitter aus Bezeichnungen, Sätzen, Arten, Gründen und Erlöskonten (3 888 Aufrufe): Ohne Steuerkonto ist jedes Ergebnis das
+    der Fassung von E0 – auch wenn die Kennzeichen der Steuerkonten gesetzt sind (sie zählen erst, wenn ein Konto gesetzt ist)."""
+    grid = [(label, bp, kind, reason, coa, default, income)
+            for label in ('Satz', '', 'x' * (MAX_LABEL_LENGTH + 1))
+            for bp in (None, -1, 0, 1, 99, 100, 550, 700, 1900, MAX_RATE_BP, MAX_RATE_BP + 1, '1900')
+            for kind in (STANDARD, EXEMPT, '?')
+            for reason in ('Grund', '', None)
+            for coa in (None, 4)
+            for default in (False, True)
+            for income in (False, True)]
+
+    assert len(grid) == 3 * 12 * 3 * 3 * 2 * 2 * 2
+    for label, bp, kind, reason, coa, default, income in grid:
+        before = check_before_the_tax_accounts(label, bp, kind, reason, coa, default, income)
+        assert check_tax_entry(label, bp, kind, reason, coa, default, income) == before
+        assert check_tax_entry(label, bp, kind, reason, coa, default, income, vat_coa_id=None, input_tax_coa_id=None, has_fixed_tax_accounts=False,
+                               vat_is_vat_account=True, input_is_input_account=True) == before
+        assert check_tax_entry(label, bp, kind, reason, coa, default, income, has_fixed_tax_accounts=True, vat_is_vat_account=False,
+                               input_is_input_account=False) == before, (label, bp, kind, reason, coa, default, income)
+
+
+def test_an_entry_with_valid_tax_accounts_passes():
+    assert with_accounts() is None
+    assert with_accounts(vat_coa_id=30) is None
+    assert with_accounts(input_tax_coa_id=31) is None
+    assert with_accounts(vat_coa_id=30, input_tax_coa_id=31) is None
+    assert with_accounts(bp=1000, vat_coa_id=30, input_tax_coa_id=31) is None
+
+
+def test_rule_7_a_rate_of_0_carries_no_tax_account_neither_a_tax_free_nor_a_standard_entry():
+    exempt = dict(label='Steuerfrei (erfunden)', bp=0, kind=EXEMPT, reason='Beispielhafter Befreiungsgrund', has_default_revenue=False, revenue_coa_id=3)
+
+    for accounts in (dict(vat_coa_id=30), dict(input_tax_coa_id=31), dict(vat_coa_id=30, input_tax_coa_id=31)):
+        assert check(**exempt, **accounts) == TAX_ENTRY_TAX_ACCOUNT_ZERO, accounts
+        assert with_accounts(bp=0, **accounts) == TAX_ENTRY_TAX_ACCOUNT_ZERO, accounts                       # Art „Standard“ mit Satz 0
+    assert check(**exempt) is None and with_accounts(bp=0) is None
+    assert with_accounts(bp=0, vat_coa_id=30, has_fixed_tax_accounts=True) == TAX_ENTRY_TAX_ACCOUNT_ZERO     # 7 vor 8
+
+
+@pytest.mark.parametrize('bp', [1900, 1600, 700, 500])
+def test_rule_8_a_rate_with_fixed_tax_accounts_takes_none_of_its_own(bp):
+    for accounts in (dict(vat_coa_id=30), dict(input_tax_coa_id=31), dict(vat_coa_id=30, input_tax_coa_id=31)):
+        assert with_accounts(bp=bp, has_fixed_tax_accounts=True, **accounts) == TAX_ENTRY_TAX_ACCOUNT_FIXED, accounts
+    assert with_accounts(bp=bp, has_fixed_tax_accounts=True) is None                                            # ohne Konto bleibt sie, wie sie war
+
+
+def test_the_flag_of_the_fixed_tax_accounts_is_the_callers_not_a_list_in_the_function():
+    """Die Funktion kennt keinen Satz: Welche Sätze feste Steuerkonten haben, sagt allein der Aufrufer (die Datenbankschicht, aus der Tabelle der Summen- und
+    Saldenliste)."""
+    assert with_accounts(bp=1900, vat_coa_id=30) is None
+    assert with_accounts(bp=550, vat_coa_id=30, has_fixed_tax_accounts=True) == TAX_ENTRY_TAX_ACCOUNT_FIXED
+
+
+def test_rule_9_a_chosen_vat_account_is_a_vat_account():
+    assert with_accounts(vat_coa_id=30, vat_is_vat_account=False) == TAX_ENTRY_VAT_ACCOUNT
+    assert with_accounts(vat_coa_id=30, input_tax_coa_id=31, vat_is_vat_account=False) == TAX_ENTRY_VAT_ACCOUNT
+    assert with_accounts(vat_coa_id=30, vat_is_vat_account=True) is None
+    assert with_accounts(input_tax_coa_id=31, vat_is_vat_account=False) is None            # ohne Umsatzsteuerkonto gibt es nichts zu prüfen
+
+
+def test_rule_10_a_chosen_input_tax_account_is_an_input_tax_account():
+    assert with_accounts(input_tax_coa_id=31, input_is_input_account=False) == TAX_ENTRY_INPUT_TAX_ACCOUNT
+    assert with_accounts(vat_coa_id=30, input_tax_coa_id=31, input_is_input_account=False) == TAX_ENTRY_INPUT_TAX_ACCOUNT
+    assert with_accounts(input_tax_coa_id=31, input_is_input_account=True) is None
+    assert with_accounts(vat_coa_id=30, input_is_input_account=False) is None              # ohne Vorsteuerkonto gibt es nichts zu prüfen
+
+
+def test_the_rules_of_the_tax_accounts_come_after_the_six_of_before_and_in_their_own_order():
+    broken = dict(label='', bp=None, kind='?', reason='', revenue_coa_id=5, has_default_revenue=False, revenue_is_income=False,
+                  vat_coa_id=30, input_tax_coa_id=31, has_fixed_tax_accounts=True, vat_is_vat_account=False, input_is_input_account=False)
+
+    assert check_tax_entry(**broken) == TAX_ENTRY_LABEL
+    broken['label'] = 'Satz'
+    assert check_tax_entry(**broken) == TAX_ENTRY_RATE
+    broken['bp'] = 0
+    assert check_tax_entry(**broken) == TAX_ENTRY_KIND
+    broken['kind'] = EXEMPT
+    assert check_tax_entry(**broken) == TAX_ENTRY_REASON
+    broken['reason'] = 'Grund'
+    assert check_tax_entry(**broken) == TAX_ENTRY_REVENUE_NOT_INCOME                         # 6 vor 7
+    broken['revenue_is_income'] = True
+    assert check_tax_entry(**broken) == TAX_ENTRY_TAX_ACCOUNT_ZERO                           # 7
+    broken.update(bp=550, kind=STANDARD)
+    assert check_tax_entry(**broken) == TAX_ENTRY_TAX_ACCOUNT_FIXED                          # 8 vor 9 und 10
+    broken['has_fixed_tax_accounts'] = False
+    assert check_tax_entry(**broken) == TAX_ENTRY_VAT_ACCOUNT                                # 9 vor 10
+    broken['vat_is_vat_account'] = True
+    assert check_tax_entry(**broken) == TAX_ENTRY_INPUT_TAX_ACCOUNT                          # 10
+    broken['input_is_input_account'] = True
+    assert check_tax_entry(**broken) is None
+
+
+def test_a_standard_entry_of_the_rate_0_without_an_account_is_refused_for_the_missing_revenue_account_before_its_tax_account():
+    assert check(label='Nullsatz', bp=0, has_default_revenue=False, vat_coa_id=30) == TAX_ENTRY_REVENUE_REQUIRED
+
+
+def test_every_sentence_the_check_can_return_is_one_of_the_fixed_ones():
+    sentences = {check_tax_entry(label, bp, kind, reason, coa, default, income, vat_coa_id=vat, input_tax_coa_id=input_tax, has_fixed_tax_accounts=fixed,
+                                 vat_is_vat_account=is_vat, input_is_input_account=is_input)
+                 for label in ('Satz', '') for bp in (0, 550, 1900, None) for kind in (STANDARD, EXEMPT, '?') for reason in ('Grund', '')
+                 for coa in (None, 4) for default in (False, True) for income in (False, True) for vat in (None, 30) for input_tax in (None, 31)
+                 for fixed in (False, True) for is_vat in (False, True) for is_input in (False, True)}
+
+    assert sentences == {None, TAX_ENTRY_LABEL, TAX_ENTRY_RATE, TAX_ENTRY_KIND, TAX_ENTRY_EXEMPT_RATE, TAX_ENTRY_REASON, TAX_ENTRY_REVENUE_REQUIRED,
+                         TAX_ENTRY_REVENUE_NOT_INCOME, TAX_ENTRY_TAX_ACCOUNT_ZERO, TAX_ENTRY_TAX_ACCOUNT_FIXED, TAX_ENTRY_VAT_ACCOUNT,
+                         TAX_ENTRY_INPUT_TAX_ACCOUNT}
+    assert TAX_ENTRY_LAST_ACTIVE not in sentences

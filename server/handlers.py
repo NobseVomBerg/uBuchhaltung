@@ -5099,3 +5099,87 @@ def handle_setup_save(db: Database, post_data: dict):
                                               'werden. Einzelheiten stehen im Server-Log.')
 
     return 303, '/'
+
+
+# ─── Steuersätze der Stammdaten (2.8.0) ───────────────────────────────────────────────────────────────────────────────────────────
+# Die Seite ``/masterdata/taxrates`` (``pages_tax_rates.PageTaxRates``) pflegt die Einträge von ``TaxRates``. Ob Bezeichnung, Satz, Art, Grund und Konten zulässig sind, prüft
+# allein die Datenbankschicht (``tax_groups.check_tax_entry``, in der Transaktion des Speicherns); der Handler entfernt den Leerraum am Rand, liest den Satz streng
+# (``tax_groups.parse_rate_bp``: Text, nie ``float``) und die IDs und die Reihenfolge über die Hilfen oben. Eine Ablehnung (``TaxRateRefused``, nur feste Sätze) kommt als
+# Meldung auf die Seite (``?err=``), nichts ist gespeichert; eine ungültige ID ist 400.
+from db.tax_rates import TAX_RATE_NOT_FOUND, TaxRateRefused
+from tax_groups import parse_rate_bp
+
+TAX_RATES_PATH = '/masterdata/taxrates'
+_TAX_RATE_ORDER_RANGE = (0, 9999)
+TAX_RATE_ORDER_ERROR = 'Bitte eine Reihenfolge von 0 bis 9999 angeben.'
+
+
+def _tax_rate_err(path, message):
+    """Die Weiterleitung auf eine Seite der Steuersätze mit der Meldung als Klartext (``quote(…, safe='')``)."""
+    return 303, f"{path}{'&' if '?' in path else '?'}err={quote(message, safe='')}"
+
+
+def _tax_rate_form(post_data):
+    """Die Felder eines Formulars der Steuersätze als Argumente für ``insert_tax_rate``/``update_tax_rate`` – ``(Felder, None)`` – oder ``(None, Antwort)``: ``(400, …)`` bei einer
+    ungültigen ID (Erlöskonto, Umsatzsteuer- oder Vorsteuerkonto), ``(303, Meldung)`` bei einer ungültigen Reihenfolge. ``sort_order`` ist ``None``, wenn das Feld leer ist
+    (der Eintrag kommt ans Ende), ``active`` nur dann nicht ``None``, wenn das Formular das Kennzeichen führt (verstecktes Feld ``active_field`` = ``1``: ein nicht angehaktes
+    Kästchen schickt nichts, ein angehaktes genau ``1``)."""
+    ids = _optional_form_ids(_form_text(post_data, 'revenue_coa_id'), _form_text(post_data, 'vat_coa_id'), _form_text(post_data, 'input_tax_coa_id'))
+    if ids is None:
+        return None, (400, INVALID_REQUEST)
+    order_text = _form_text(post_data, 'sort_order').strip()
+    sort_order = _form_int(order_text, *_TAX_RATE_ORDER_RANGE) if order_text else None
+    if order_text and sort_order is None:
+        return None, (303, TAX_RATE_ORDER_ERROR)
+    revenue_coa_id, vat_coa_id, input_tax_coa_id = ids
+    return dict(label=_form_text(post_data, 'label').strip(), bp=parse_rate_bp(_form_text(post_data, 'rate').strip()), kind=_form_text(post_data, 'kind'),
+                reason=_form_text(post_data, 'reason').strip(), revenue_coa_id=revenue_coa_id, vat_coa_id=vat_coa_id, input_tax_coa_id=input_tax_coa_id,
+                sort_order=sort_order,
+                active=(_form_text(post_data, 'active') == '1') if _form_text(post_data, 'active_field') == '1' else None), None
+
+
+def handle_add_tax_rate(db: Database, post_data):
+    """Einen Steuersatz anlegen (``POST /masterdata/taxrates/add``). Eine ungültige ID lehnt die Anfrage mit 400 ab; eine ungültige Reihenfolge und jede Regel eines Eintrags
+    lehnen die Seite mit ihrer Meldung ab (``?err=``). In allen Fällen wird nichts geschrieben. Ohne das Kennzeichen des Formulars ist der neue Eintrag wählbar."""
+    fields, refusal = _tax_rate_form(post_data)
+    if fields is None:
+        status, text = refusal
+        return (status, text) if status == 400 else _tax_rate_err(TAX_RATES_PATH, text)
+    if fields['active'] is None:
+        fields['active'] = True
+    try:
+        db.insert_tax_rate(**fields)
+    except TaxRateRefused as refused:
+        return _tax_rate_err(TAX_RATES_PATH, str(refused))
+    return 303, TAX_RATES_PATH
+
+
+def handle_update_tax_rate(db: Database, post_data):
+    """Einen Steuersatz ändern (``POST /masterdata/taxrates/update``). Ohne gültige ID: 400; eine ungültige Reihenfolge und jede Regel eines Eintrags lehnen das Formular mit
+    seiner Meldung ab (``?err=``, die Seite bleibt beim Eintrag). Auch das Abschalten des letzten wählbaren Eintrags. In allen Fällen wird nichts geschrieben."""
+    entry_id = _form_id(_form_text(post_data, 'id'))
+    if entry_id is None:
+        return 400, INVALID_REQUEST
+    fields, refusal = _tax_rate_form(post_data)
+    edit_path = f'{TAX_RATES_PATH}/edit?id={entry_id}'
+    if fields is None:
+        status, text = refusal
+        return (status, text) if status == 400 else _tax_rate_err(edit_path, text)
+    try:
+        db.update_tax_rate(entry_id, **fields)
+    except TaxRateRefused as refused:
+        return _tax_rate_err(edit_path, str(refused))
+    return 303, TAX_RATES_PATH
+
+
+def handle_toggle_tax_rate(db: Database, entry_id):
+    """Einen Steuersatz wählbar machen oder abschalten (``POST /masterdata/taxrates/toggle?id=``): dreht den Stand um. Den letzten wählbaren Eintrag lässt es nicht abschalten,
+    einen unbekannten nicht anfassen – die Meldung geht als ``?err=`` auf die Liste, nichts ist geändert."""
+    entry = db.get_tax_rate(entry_id)
+    if entry is None:
+        return _tax_rate_err(TAX_RATES_PATH, TAX_RATE_NOT_FOUND)
+    try:
+        db.set_tax_rate_active(entry_id, not entry.active)
+    except TaxRateRefused as refused:
+        return _tax_rate_err(TAX_RATES_PATH, str(refused))
+    return 303, TAX_RATES_PATH
