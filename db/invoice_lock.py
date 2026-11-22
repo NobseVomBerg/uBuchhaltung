@@ -33,7 +33,7 @@ from decimal import Decimal, InvalidOperation
 
 from money import to_minor
 from .core import fk_explained
-from .invoice_payments import MIXED_NOT_BOOKABLE, PAYMENT_MARK, STORNO_KIND, PaymentMoveFailed, has_mixed_rates
+from .invoice_payments import MixedNotBookable, PAYMENT_MARK, STORNO_KIND, PaymentMoveFailed, has_mixed_rates
 
 EDITABLE_STATUSES = frozenset({'draft', 'finalized'})
 LOCKED_STATUSES = frozenset({'sent', 'overdue', 'partial_payment', 'partial', 'paid'})
@@ -598,8 +598,10 @@ class InvoiceLockMixin:
         (``StatusChange.kind``):
 
         * ``send`` / ``revive``: die Forderung wird gebucht („Debitoren an Wartekonto“, nur zu einem
-          Steuersatz mit Wartekonto); ein Beleg mit Steuersatz je Position (``MixedTaxRates``) wird abgelehnt
-          (409, ``MIXED_NOT_BOOKABLE``, vor dem ersten Schreiben), solange die Buchungen dafür fehlen;
+          Steuersatz mit Wartekonto); ein Beleg mit Steuersatz je Position (``MixedTaxRates``) bucht je
+          Satzgruppe eine Forderungszeile (``_book_mixed_receivable``) – lässt er sich nicht buchen (Positionen
+          passen nicht zu den Summen, ein Satz mit Brutto unter 0 …), lehnt der feste Klartext ab (409, vor dem ersten
+          Schreiben, kein Konto angelegt), haben sich die Gruppen seit der Vorbereitung geändert, ``CHANGED_MESSAGE``;
           ``send`` setzt außerdem ``SentAt``, den Zeitpunkt des ersten
           Versands (ein späteres Versenden ändert ihn nicht). Ersetzt die versendete Rechnung eine stornierte
           (``Invoices.ReplacesInvoiceId``), ziehen die Zahlungen der stornierten Rechnung auf sie um
@@ -659,10 +661,18 @@ class InvoiceLockMixin:
                     blocker = self._reopen_blocker(conn, row)
                     if blocker:
                         raise _Refusal(blocker, 409)
-                if kind in ('send', 'revive') and has_mixed_rates(row.get('MixedTaxRates')):
-                    raise _Refusal(MIXED_NOT_BOOKABLE, 409)   # vor dem Schlüssel des Satzes: Für so einen Beleg gibt es keine Konten
-                if kind in ('send', 'revive') and accounts_key != self._tax_rate_key(row['TaxRate']):
-                    raise _Refusal(CHANGED_MESSAGE, 409)      # der Steuersatz hat sich inzwischen geändert
+                if kind in ('send', 'revive'):
+                    if has_mixed_rates(row.get('MixedTaxRates')):
+                        # Ein Beleg mit Steuersatz je Position: Die Konten gelten für seine Satzgruppen. Lassen sie sich nicht buchen, lehnt der
+                        # Klartext ab (nichts geschrieben, kein Konto angelegt); haben sie sich seit der Vorbereitung geändert, ebenso
+                        try:
+                            groups = self._checked_mixed_groups(conn, invoice_id)
+                        except MixedNotBookable as exc:
+                            raise _Refusal(str(exc), 409) from None
+                        if accounts_key != ('mixed', tuple(groups)):
+                            raise _Refusal(CHANGED_MESSAGE, 409)
+                    elif accounts_key != self._tax_rate_key(row['TaxRate']):
+                        raise _Refusal(CHANGED_MESSAGE, 409)      # der Steuersatz hat sich inzwischen geändert
                 cursor = conn.execute(
                     "UPDATE Invoices SET Status = ?, UpdatedAt = CURRENT_TIMESTAMP "
                     "WHERE ID = ? AND COALESCE(Status, 'draft') = ?",
@@ -749,8 +759,18 @@ class InvoiceLockMixin:
         invoice = self.get_document(invoice_id, 'invoice')
         if invoice is None or check_transition(invoice[40], new, 0).kind not in ('send', 'revive'):
             return None, None
-        if has_mixed_rates(invoice[55] if len(invoice) > 55 else None):
-            return None, None                       # Spalte 55 = MixedTaxRates: keine Konten für einen Beleg, der sich nicht buchen lässt
+        if has_mixed_rates(invoice[55] if len(invoice) > 55 else None):      # Spalte 55 = MixedTaxRates
+            # Ein Beleg mit Steuersatz je Position hat kein EINES Wartekonto: Die Konten gelten für seine Satzgruppen, der Schlüssel hält sie
+            # fest (``set_invoice_status`` liest sie in der Transaktion noch einmal). Lässt er sich nicht buchen, werden keine Konten
+            # angelegt – die Transaktion lehnt dann mit dem Klartext ab.
+            conn = self._get_connection()
+            try:
+                groups = self._checked_mixed_groups(conn, invoice_id)
+            except MixedNotBookable:
+                return None, None
+            finally:
+                conn.close()
+            return self._mixed_receivable_accounts(groups), ('mixed', tuple(groups))
         return self._receivable_accounts(invoice[35]), self._tax_rate_key(invoice[35])
 
     def _reopen_blocker(self, conn, row):

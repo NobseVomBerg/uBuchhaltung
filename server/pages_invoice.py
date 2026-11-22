@@ -458,15 +458,19 @@ def _revenue_coa_select(db, tax_rate, selected=None, field_id='revenueCoa'):
     return f'<select name="revenue_coa_id" id="{_html.escape(field_id, quote=True)}" required>{options}</select>'
 
 
-def revenue_coa_choice(db, tax_rate, selected=None, teaches=True):
+def revenue_coa_choice(db, tax_rate, selected=None, teaches=True, mixed=False):
     """Pflichtfeld „Erlöskonto“ für eine Rechnungszahlung – nur, wenn für den Steuersatz der
     Rechnung kein Erlöskonto hinterlegt ist (``Database.revenue_coa_choice_needed``, z. B. 5 %
     oder 16 %), sonst ``None``: Dann ergibt sich die Kontierung aus der Rechnung.
 
     Returns ``(select_html, hint_html)`` (Auswahl: ``_revenue_coa_select``). ``teaches``: Die Wahl einer Zahlung gilt
     künftig als Vorgabe für diesen Steuersatz (so lernt ``resolve_revenue_coa``) – der Hinweis sagt es; die Wahl einer
-    Erstattung lehrt nichts (``teaches=False``, die Sätze einer Erstattung zählen nicht). Alle Werte sind maskiert."""
-    if tax_rate is None or not db.revenue_coa_choice_needed(tax_rate):
+    Erstattung lehrt nichts (``teaches=False``, die Sätze einer Erstattung zählen nicht). Alle Werte sind maskiert.
+
+    ``mixed``: Die Rechnung trägt einen Steuersatz je Position (``Invoices.MixedTaxRates``). Dann gibt es nie eine Auswahl (immer ``None``): Ihr
+    Kopfsatz ist nur ein Platzhalter, und jeder Satz hat sein Erlöskonto – fehlt eines, lehnt die Zahlung mit einem festen Satz ab
+    (``MIXED_NO_REVENUE_COA``), ein Konto wählen lässt sich nicht."""
+    if mixed or tax_rate is None or not db.revenue_coa_choice_needed(tax_rate):
         return None
     percent = tax_rate * 100 if tax_rate <= 1 else tax_rate
     percent_text = f'{percent:g}'.replace('.', ',')
@@ -2483,7 +2487,8 @@ function copyInvoiceAsNew(invId) {{
                         else (existing_invoice[38] or 0))
             # Ist für den Steuersatz kein Erlöskonto hinterlegt (z. B. 5 %, 16 %), wählt der
             # Nutzer es hier – für „Verknüpfen“ und, per Adresse mitgegeben, für die Maske
-            choice = revenue_coa_choice(db, existing_invoice[35])
+            choice = revenue_coa_choice(db, existing_invoice[35],
+                                        mixed=has_mixed_rates(existing_invoice[InvoiceCol.MIXED_TAX_RATES]))
             if choice:
                 s += (f'        <p class="hint">{choice[1]}</p>\n'
                       f'        <p><label>Erlöskonto: {choice[0]}</label></p>\n')

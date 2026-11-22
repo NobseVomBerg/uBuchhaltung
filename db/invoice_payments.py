@@ -20,9 +20,11 @@ Stand – zwei gleichzeitige Anfragen legen das Paar (Rechnung, Bankbewegung) ni
 import datetime
 import sqlite3
 from collections import defaultdict, namedtuple
+from decimal import Decimal
 
 from money import to_minor, from_minor, prorate, round_minor, fmt_eur, is_covered
-from .matching import FORM_LIQUID_FIRST, FORM_PURPOSE_FIRST, FORM_TRANSFER, REVENUE_ACCOUNT_RANGE, bank_effect
+from tax_groups import RateGroupsMismatch, booking_rate, mixed_groups, pct_text, rate_pct, split_payment
+from .matching import FORM_LIQUID_FIRST, FORM_PURPOSE_FIRST, FORM_TRANSFER, REVENUE_ACCOUNT_RANGE, bank_effect, receivables_covered
 from .reporting import is_income_account
 
 PAYMENT_MARK = 'invoice_payment'
@@ -32,11 +34,32 @@ PAYMENT_MARK = 'invoice_payment'
 STORNO_KIND = 'storno'
 STORNO_PAYMENT_MESSAGE = 'Einer Stornorechnung lässt sich keine Zahlung zuordnen.'
 
-# Ein Beleg mit Steuersatz je Position (``Invoices.MixedTaxRates`` = 1, seit 2.7.0) lässt sich in dieser Version noch nicht buchen: Sein Satz im
-# Kopf ist nur ein Platzhalter (der höchste Satz der Positionen), und jede Buchung, die ihn nähme, buchte falsch. EIN Wortlaut für jede Stelle, die
-# bucht (Versenden, Zahlung, Erstattung, Stornieren, Neuaufbau, Umzug); jede lehnt VOR dem ersten Schreiben ab. Wie ``STORNO_KIND`` hier definiert,
-# weil dieses Modul das unterste der Rechnungsmodule ist; ``db.invoices`` reicht die Namen weiter.
+# Ein Beleg mit Steuersatz je Position (``Invoices.MixedTaxRates`` = 1, seit 2.7.0): Sein Satz im Kopf ist nur ein Platzhalter (der höchste Satz der
+# Positionen), und jede Buchung, die ihn nähme, buchte falsch – maßgeblich sind die Satzgruppen (``tax_groups.mixed_groups``). Versenden, Wiederbeleben
+# und Zahlung zuordnen buchen je Satz (Forderung je Satz, ``tax_groups.split_payment`` verteilt eine Zahlung). Was in dieser Version noch NICHT bucht,
+# lehnt VOR dem ersten Schreiben mit diesem EINEN Wortlaut ab: Erstattung, Stornieren, Neuaufbau der Zuordnung, der Umzug der Zahlungen beim Versenden
+# einer Ersatzrechnung (dort steht er im Hinweis) und ``link_invoice_to_transaction`` (der WISO-Import). Wie ``STORNO_KIND`` hier definiert, weil dieses
+# Modul das unterste der Rechnungsmodule ist; ``db.invoices`` reicht die Namen weiter.
 MIXED_NOT_BOOKABLE = 'Belege mit mehreren Steuersätzen lassen sich in dieser Version noch nicht buchen.'
+
+# Die Ablehnungen der Buchungen eines Belegs mit Steuersatz je Position. ``{rate}``: der Satz (``pct_text``), ``{amount}``: ein Betrag (``fmt_eur``)
+MIXED_GROUPS_MISMATCH = ('Die Positionen dieser Rechnung passen nicht zu ihren Summen – eine Rechnung mit mehreren Steuersätzen '
+                         'lässt sich so nicht buchen. Bitte die Rechnung prüfen.')
+MIXED_GROUP_NOT_POSITIVE = ('Eine Rechnung mit mehreren Steuersätzen lässt sich nur buchen, wenn die Positionen jedes Steuersatzes '
+                            'zusammen einen positiven Betrag ergeben ({rate} %: {amount}).')
+MIXED_NO_REVENUE_COA = ('Für {rate} % ist kein Erlöskonto hinterlegt – bei einer Rechnung mit mehreren Steuersätzen lässt es sich '
+                        'nicht wählen. Bitte das Erlöskonto für {rate} % im Kontenrahmen anlegen.')
+MIXED_RECEIVABLE_MISMATCH = ('Die Forderungsbuchungen dieser Rechnung passen nicht zu ihren Steuersätzen – bitte die Forderung prüfen '
+                             '(Prüfung unter Sonstiges).')
+MIXED_ALLOCATION_UNREADABLE = ('Die bisherigen Zahlungen dieser Rechnung lassen sich nicht nach Steuersätzen aufteilen (eine Zuordnung '
+                               'ohne die Buchungssätze der App, oder sie wurden von Hand geändert) – bitte die Zuordnungen prüfen.')
+PAYMENT_CHANGED_MESSAGE = 'Rechnung oder Bankbewegung wurde inzwischen geändert – bitte erneut versuchen.'
+
+
+class MixedNotBookable(ValueError):
+    """Ein Beleg mit Steuersatz je Position lässt sich nicht buchen; ``str(exc)`` ist der feste Klartext für den Nutzer (``MIXED_*``). Wo ein
+    Abbruch über mehrere Ebenen nötig ist, ohne dass jede einen Rückgabewert prüft: Jeder Aufrufer setzt sie auf seinen Ablehnungsweg um
+    (``_Refusal``, ``_refused``, ein ``ValueError`` an die Route …)."""
 
 
 def has_mixed_rates(value):
@@ -96,9 +119,14 @@ _PAYMENT_ROW_INSERT = ('INSERT INTO Bookings (DateBooking, DateTax, RecipientCli
 # Ein Satz einer Zuordnung: ``values`` {Spalte: Wert} für ``PAYMENT_ROW_COLUMNS``, ``description`` für das Replay-Log
 PaymentRow = namedtuple('PaymentRow', 'values description')
 
+# Der Teil einer Zahlung, der auf einen Satz entfällt (Beleg mit Steuersatz je Position, ``payment_rows(parts=…)``): das Wartekonto des Satzes
+# (COA-ID, ``None`` ohne Forderung), sein Erlöskonto, der Betrag (Minor Units), der Satz als Bruch (``tax_groups.booking_rate``, ``None`` bei 0 %) und
+# die Steuer (Minor Units, ``None`` ohne Satz)
+PaymentPart = namedtuple('PaymentPart', 'waiting revenue amount rate tax')
+
 
 def payment_rows(*, number, customer_id, bank_id, bank_date, bank_tax_date, recipient, currency, amount, tax_rate,
-                 tax_value, bank_coa, revenue_coa, debtor_side=None, waiting_side=None):
+                 tax_value, bank_coa, revenue_coa, debtor_side=None, waiting_side=None, parts=None):
     """Die Buchungssätze, die die App für eine Zuordnung schreibt – die EINE Stelle, die ihre Werte festlegt: ``_assign_in_tx``
     schreibt sie, der Umzug der Zahlungen vergleicht den Bestand damit.
 
@@ -110,17 +138,36 @@ def payment_rows(*, number, customer_id, bank_id, bank_date, bank_tax_date, reci
     Konto der Bank und Erlöskonto (COA-IDs). Mit Forderung (``debtor_side`` und ``waiting_side`` gegeben) sind es „Bank an
     Debitoren“ (``liquid_first``, ohne Steuer) und „Wartekonto an Erlöskonto“ (``transfer``, mit Steuer), ohne Forderung
     der Einzelsatz „Erlöskonto an Bank“ (``purpose_first``, mit Steuer). Die Formen stehen fest, nicht aus der Kontenliste
-    abgeleitet."""
-    def row(coa_id, counter_coa_id, form, text, taxed, description):
+    abgeleitet.
+
+    ``parts``: nur für einen Beleg mit Steuersatz je Position (``Invoices.MixedTaxRates``; sonst ``None`` – die Ausgabe ist dann
+    Zeichen für Zeichen die von immer): je Satz ein :class:`PaymentPart` mit seinem Betrag (nie 0) und seiner Steuer; ihre Beträge ergeben
+    ``amount`` (sonst ``ValueError``). Dann gibt es mit Forderung (``debtor_side``, jeder Teil mit seinem Wartekonto) „Bank an Debitoren“ über
+    ``amount`` und je Teil „Wartekonto an Erlöskonto“, ohne Forderung je Teil „Erlöskonto an Bank“ – Konten, Betrag, Satz und Steuer je Teil.
+    ``tax_rate``, ``tax_value``, ``revenue_coa`` und ``waiting_side`` gelten dann nicht."""
+    def row(coa_id, counter_coa_id, form, text, taxed, description, row_amount=amount, row_rate=tax_rate, row_tax=tax_value):
         return PaymentRow({
             'DateBooking': bank_date, 'DateTax': bank_tax_date, 'RecipientClient': recipient or '',
-            'Contact_ID': customer_id, 'COA_ID': coa_id, 'CounterCOA_ID': counter_coa_id, 'Amount': amount,
-            'Currency': currency or 'EUR', 'TaxRate': tax_rate if taxed else None,
-            'TaxAmount': tax_value if taxed else None, 'Text': text, 'DocumentNumber': number,
+            'Contact_ID': customer_id, 'COA_ID': coa_id, 'CounterCOA_ID': counter_coa_id, 'Amount': row_amount,
+            'Currency': currency or 'EUR', 'TaxRate': row_rate if taxed else None,
+            'TaxAmount': row_tax if taxed else None, 'Text': text, 'DocumentNumber': number,
             'ParentBooking_ID': bank_id, 'Status': PAYMENT_MARK, 'EntryForm': form}, description)
 
     # Eine Zahlung ist positiv, eine Erstattung negativ – der Text nennt, was es ist (die Zahlungssätze bleiben wortgleich)
     paid, moved = ('Zahlung', 'Umb.') if amount >= 0 else ('Erstattung', 'Umb. Erstattung')
+    if parts is not None:
+        parts = list(parts)
+        if not parts or any(part.amount == 0 for part in parts) or sum(part.amount for part in parts) != amount:
+            raise ValueError('Die Teile einer Zahlung haben je einen Betrag und ergeben zusammen ihren Betrag.')
+        if debtor_side:
+            if any(part.waiting is None for part in parts):
+                raise ValueError('Mit Forderung braucht jeder Teil ein Wartekonto.')
+            return [row(bank_coa, debtor_side, FORM_LIQUID_FIRST, f'{paid} zu Re. {number}', False,
+                        'Payment child (bank to debtor)')] + [
+                row(part.waiting, part.revenue, FORM_TRANSFER, f'{moved} zu Re. {number}', True,
+                    'Payment child (open item to revenue)', part.amount, part.rate, part.tax) for part in parts]
+        return [row(part.revenue, bank_coa, FORM_PURPOSE_FIRST, f'{paid} zu Re. {number}', True,
+                    'Payment child (revenue to bank)', part.amount, part.rate, part.tax) for part in parts]
     if debtor_side and waiting_side:
         return [row(bank_coa, debtor_side, FORM_LIQUID_FIRST, f'{paid} zu Re. {number}', False,
                     'Payment child (bank to debtor)'),
@@ -417,6 +464,101 @@ class InvoicePaymentsMixin:
                 return coa
         return None
 
+    # ── Beleg mit Steuersatz je Position (``Invoices.MixedTaxRates``): Gruppen, Forderung und Zahlungen je Satz ──────
+    def _mixed_groups(self, conn, invoice_id):
+        """Die Satzgruppen eines Belegs mit Steuersatz je Position (``tax_groups.mixed_groups``: nach Satz absteigend), gelesen aus seinen
+        Summen und Positionen in der Verbindung oder Transaktion von ``conn`` (kein ``BEGIN``). ``RateGroupsMismatch``, wenn die Positionen
+        nicht zu den Summen passen – auch, wenn es den Beleg nicht gibt."""
+        head = conn.execute('SELECT SumNet, TaxAmount, SumGross FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()
+        if head is None:
+            raise RateGroupsMismatch('Den Beleg gibt es nicht.')
+        pairs = conn.execute('SELECT TaxRate, TotalNet FROM InvoiceItems WHERE InvoiceId = ? ORDER BY Position, ID',
+                             (invoice_id,)).fetchall()
+        return mixed_groups(*head, pairs)
+
+    def _checked_mixed_groups(self, conn, invoice_id):
+        """Die Satzgruppen (``_mixed_groups``), zum Buchen geprüft: Jede Gruppe hat einen positiven Betrag – eine Forderungszeile auf 10000 mit
+        Betrag 0 oder darunter wäre nach ``receivable_condition`` keine Forderung. ``MixedNotBookable`` mit dem festen Klartext
+        (``MIXED_GROUPS_MISMATCH`` bzw. ``MIXED_GROUP_NOT_POSITIVE`` mit dem ersten Satz, dessen Positionen zusammen nicht positiv sind), der
+        Grund im Detail steht im Server-Log."""
+        try:
+            groups = self._mixed_groups(conn, invoice_id)
+        except RateGroupsMismatch as exc:
+            print(f'Rechnung {invoice_id}: {exc}')
+            raise MixedNotBookable(MIXED_GROUPS_MISMATCH) from None
+        for group in groups:
+            if group.gross <= 0:
+                raise MixedNotBookable(MIXED_GROUP_NOT_POSITIVE.format(
+                    rate=pct_text(group.pct), amount=fmt_eur(from_minor(group.gross))))
+        return groups
+
+    def _receivable_sides_by_rate(self, conn, number):
+        """``(Debitorenkonto, {Satz: Wartekonto})`` der Forderungen zu dieser Rechnungsnummer – die Konten, auf die die Teile einer Zuordnung
+        „Bank an Debitoren“ und je Satz „Wartekonto an Erlöskonto“ buchen –, ``(None, {})`` ohne Forderung (dann ist es je Satz der Einzelsatz
+        „Erlöskonto an Bank“). Wie ``_receivable_sides`` (``receivable_condition``), nur alle Zeilen der Nummer: Ein Beleg mit Steuersatz je Position
+        bucht je Satz eine. Der Satz einer Zeile ist ``rate_pct`` ihres ``TaxRate`` (NULL heißt 0 %). ``MixedNotBookable`` mit
+        ``MIXED_RECEIVABLE_MISMATCH``, wenn zwei Zeilen denselben Satz oder verschiedene Debitorenkonten tragen (oder ein Satz sich nicht lesen
+        lässt)."""
+        receivable_sql, receivable_params = self._receivable_sql(conn.cursor())
+        rows = conn.execute(
+            f"SELECT COA_ID, CounterCOA_ID, TaxRate FROM Bookings WHERE DocumentNumber = ? "
+            f"AND BookingType = 'entry' AND {receivable_sql} ORDER BY ID", [number] + receivable_params).fetchall()
+        debtors = self._debtor_coa_ids(conn)
+        debtor, waiting = None, {}
+        for coa, counter, rate in rows:
+            # Normalfall „10000 an Wartekonto“; negativ gebucht steht 10000 als Gegenkonto
+            row_debtor, row_waiting = (coa, counter) if coa in debtors else (counter, coa)
+            try:
+                pct = rate_pct(rate)
+            except (ArithmeticError, ValueError):
+                raise MixedNotBookable(MIXED_RECEIVABLE_MISMATCH) from None
+            pct = Decimal(0) if pct is None else pct
+            if (debtor is not None and row_debtor != debtor) or pct in waiting:
+                raise MixedNotBookable(MIXED_RECEIVABLE_MISMATCH)
+            debtor, waiting[pct] = row_debtor, row_waiting
+        return debtor, waiting
+
+    def _mixed_booked(self, conn, invoice_id, number, pcts, except_booking=None):
+        """Was die Zuordnungen einer Rechnung mit Steuersatz je Position je Satz tragen: ``{Satz: (Betrag, Steuer)}`` in Minor Units, mit Vorzeichen
+        (eine Erstattung ist negativ). Gelesen werden die markierten Sätze jeder Zuordnung (``_payment_children``): die Umbuchungen „Wartekonto an
+        Erlöskonto“ (``transfer`` mit einem Wartekonto als ``COA``) und die Einzelsätze „Erlöskonto an Bank“ (``purpose_first``) – „Bank an
+        Debitoren“ trägt keine Steuer und zählt nicht –, der Satz ist ``rate_pct`` ihres ``TaxRate`` (NULL heißt 0 %). Wie ``_allocations_tax``
+        (``except_booking``: eine Bankbewegung, deren Zuordnung nicht mitzählt), nur je Satz. ``pcts``: die Sätze des Belegs.
+
+        ``MixedNotBookable`` mit ``MIXED_ALLOCATION_UNREADABLE``, wenn sich eine Zuordnung nicht so aufteilen lässt: keine markierten Sätze (Import,
+        Altbestand, von Hand), ein Satz, den der Beleg nicht trägt, ein Betrag oder eine Steuer, die keine ganze Zahl ist, oder die gezählten Beträge
+        ergeben nicht den Betrag der Zuordnung. Eine Zuordnung, die sich nicht aufteilen lässt, bräuchte eine Annahme – die App rät nicht."""
+        skip, params = ((' AND BookingID <> ?', (invoice_id, except_booking)) if except_booking is not None
+                        else ('', (invoice_id,)))
+        waiting_ids = self._waiting_coa_ids(conn)
+        booked = {}
+        for bank_id, allocated in conn.execute(
+                f'SELECT BookingID, SUM(Amount) FROM InvoicePayments WHERE InvoiceID = ?{skip} GROUP BY BookingID',
+                params).fetchall():
+            marked = self._payment_children(conn, bank_id, number)
+            if not marked or type(allocated) is not int:
+                raise MixedNotBookable(MIXED_ALLOCATION_UNREADABLE)
+            counted = 0
+            for form, coa, amount, rate, tax in conn.execute(
+                    f"SELECT EntryForm, COA_ID, Amount, TaxRate, TaxAmount FROM Bookings WHERE ID IN ({','.join('?' * len(marked))}) "
+                    "ORDER BY ID", marked).fetchall():
+                if not ((form == FORM_TRANSFER and coa in waiting_ids) or form == FORM_PURPOSE_FIRST):
+                    continue
+                try:
+                    pct = rate_pct(rate)
+                except (ArithmeticError, ValueError):
+                    raise MixedNotBookable(MIXED_ALLOCATION_UNREADABLE) from None
+                pct = Decimal(0) if pct is None else pct
+                tax = 0 if tax is None else tax
+                if pct not in pcts or type(amount) is not int or type(tax) is not int:
+                    raise MixedNotBookable(MIXED_ALLOCATION_UNREADABLE)
+                counted += amount
+                done_amount, done_tax = booked.get(pct, (0, 0))
+                booked[pct] = (done_amount + amount, done_tax + tax)
+            if counted != allocated:
+                raise MixedNotBookable(MIXED_ALLOCATION_UNREADABLE)
+        return booked
+
     def _bank_coa_of(self, account_id, what='Zahlung'):
         """Das SKR-Konto (COA-ID) des Bankkontos einer Bewegung: ``(Fehlertext, None)`` oder ``(None, COA-ID)``. Ohne
         SKR-Nummer lässt sich nichts kontieren. ``what``: das Wort in der Meldung ('Zahlung' oder 'Erstattung')."""
@@ -439,6 +581,12 @@ class InvoicePaymentsMixin:
         Das Erlöskonto ergibt sich aus der Rechnung (``resolve_revenue_coa``); ``revenue_coa_id``
         zählt nur, wenn dafür keines hinterlegt ist, und muss dann ein Erlöskonto sein.
 
+        **Ein Beleg mit Steuersatz je Position** (``Invoices.MixedTaxRates``) hat kein EINES Erlöskonto, und der Nutzer wählt keines: Seine
+        Satzgruppen (``_checked_mixed_groups``) werden gelesen – ``MixedNotBookable`` (ein fester Satz) lehnt ab, wenn sie sich nicht buchen
+        lassen –, und je Gruppe das Erlöskonto ihres Satzes (``_group_revenue_coa``); fehlt eines, lehnt ``MIXED_NO_REVENUE_COA`` ab (``revenue_coa_id``
+        gilt dort nie). Der Kontext trägt dann ``mixed`` = ``{'groups': (RateGroup, …), 'revenue': {Satz: COA-ID}}`` und ``revenue_coa`` ``None``;
+        ``_assign_in_tx`` bucht nur mit diesem Schlüssel je Satz (ein Kontext ohne ihn – Neuaufbau, Umzug – lehnt einen solchen Beleg ab).
+
         Returns ``(Fehlertext, None)`` oder ``(None, Kontext)``."""
         invoice = self.get_document(invoice_id, 'invoice')
         if invoice is None:
@@ -448,11 +596,30 @@ class InvoicePaymentsMixin:
                                   invoice[50] if len(invoice) > 50 else None)
         if blocked:
             return blocked, None
-        if has_mixed_rates(invoice[55] if len(invoice) > 55 else None):
-            return MIXED_NOT_BOOKABLE, None            # vor dem Auflösen des Erlöskontos: Es wird nichts angelegt
+        mixed = has_mixed_rates(invoice[55] if len(invoice) > 55 else None)
+        groups = None
+        if mixed:
+            conn = self._get_connection()
+            try:
+                groups = self._checked_mixed_groups(conn, invoice_id)
+            except MixedNotBookable as exc:
+                return str(exc), None
+            finally:
+                conn.close()
         error, bank_coa = self._bank_coa_of(account_id)
         if error:
             return error, None
+        if mixed:
+            revenue = {}
+            for group in groups:
+                coa = self._group_revenue_coa(group.pct)
+                if coa is None:
+                    return MIXED_NO_REVENUE_COA.format(rate=pct_text(group.pct)), None
+                revenue[group.pct] = coa
+            return None, {
+                'tax_rate': invoice[35], 'account_id': account_id, 'bank_coa': bank_coa, 'revenue_coa': None,
+                'bank_coa_ids': self.get_bank_coa_ids(), 'mixed': {'groups': tuple(groups), 'revenue': revenue},
+            }
         revenue_coa = self.resolve_revenue_coa(invoice[35])
         if revenue_coa is None:
             revenue_coa, error = self._chosen_revenue_coa(revenue_coa_id)
@@ -613,8 +780,14 @@ class InvoicePaymentsMixin:
 
         ``requested``: der gewünschte Betrag in Minor Units, schon auf Cent gerundet, oder ``None`` („so viel
         wie möglich“). ``ctx``: die Schlüssel ``tax_rate, account_id, bank_coa, revenue_coa, bank_coa_ids``
-        (``_payment_prerequisites``). ``allow_cancelled``: Auch eine stornierte Rechnung (mit positivem Betrag, keine
+        (``_payment_prerequisites``), bei einem Beleg mit Steuersatz je Position dazu ``mixed`` (``_assign_mixed``).
+        ``allow_cancelled``: Auch eine stornierte Rechnung (mit positivem Betrag, keine
         Stornorechnung) nimmt die Zuordnung an – nur für den Rest, der beim Umzug an der stornierten Rechnung bleibt.
+
+        **Das Kennzeichen des Belegs und der Kontext müssen zusammenpassen:** Trägt der Beleg ``MixedTaxRates`` = 1, braucht der Kontext
+        ``mixed`` – sonst (ein Kontext von Neuaufbau oder Umzug, die so einen Beleg nicht je Satz buchen, oder ein Beleg, der inzwischen gekennzeichnet
+        wurde) lehnt der Baustein mit dem „geändert“-Satz ab, nichts geschrieben; ebenso ein Kontext mit ``mixed`` für einen Beleg ohne das
+        Kennzeichen.
 
         Jede Ablehnung kommt vor dem ersten Schreiben (auch der ``IntegrityError`` beim Einfügen): Eine
         abgelehnte Zuordnung hinterlässt nichts. Returns :class:`PaymentAssignment`."""
@@ -641,12 +814,11 @@ class InvoicePaymentsMixin:
                    and (gross or 0) > 0 else payment_blocker(doc_type, status, gross, kind))
         if blocked:
             return _refused(blocked)
-        if has_mixed_rates(mixed):
-            return _refused(MIXED_NOT_BOOKABLE)
+        if has_mixed_rates(mixed) != bool(ctx.get('mixed')):
+            return _refused(PAYMENT_CHANGED_MESSAGE)
         _, bank_amount, account_id, bank_date, bank_tax_date, recipient, currency = bank
         if rate != ctx['tax_rate'] or account_id != ctx['account_id']:
-            return _refused('Rechnung oder Bankbewegung wurde inzwischen geändert – bitte '
-                            'erneut versuchen.')
+            return _refused(PAYMENT_CHANGED_MESSAGE)
         if (bank_amount or 0) <= 0:
             return _refused('Nur Zahlungseingänge lassen sich einer Rechnung zuordnen.')
 
@@ -658,6 +830,8 @@ class InvoicePaymentsMixin:
         if alloc <= 0:
             return _refused('Kein offener Betrag zuordenbar (Rechnung oder Buchung '
                             'ausgeschöpft)')
+        if ctx.get('mixed'):
+            return self._assign_mixed(tx, invoice_id, booking_id, number, customer_id, bank, alloc, ctx)
 
         tax_total = tax_total or 0
         # Der schließende Teil bekommt den Rest der Rechnungssteuer, jeder andere den anteiligen Betrag
@@ -670,30 +844,82 @@ class InvoicePaymentsMixin:
 
         debtor_side, waiting_side = self._receivable_sides(conn, number)
 
+        # Die Formen stehen fest, nicht aus der Kontenliste abgeleitet: „Bank an Debitoren“ hat das Geldkonto vorne,
+        # „Wartekonto an Erlöskonto“ ist eine Umbuchung, „Erlöskonto an Bank“ das Zweckkonto vorne (``payment_rows``).
+        rows = payment_rows(number=number, customer_id=customer_id, bank_id=booking_id, bank_date=bank_date,
+                            bank_tax_date=bank_tax_date, recipient=recipient, currency=currency, amount=alloc,
+                            tax_rate=tax_rate, tax_value=tax_value, bank_coa=ctx['bank_coa'],
+                            revenue_coa=ctx['revenue_coa'], debtor_side=debtor_side, waiting_side=waiting_side)
+        payment_id = self._write_assignment(tx, invoice_id, booking_id, alloc, bank_date, rows)
+        if payment_id is None:
+            return _refused('Buchung ist bereits mit dieser Rechnung verknüpft')
+        return PaymentAssignment(True, None, payment_id, ctx['revenue_coa'])
+
+    def _assign_mixed(self, tx, invoice_id, booking_id, number, customer_id, bank, alloc, ctx):
+        """Der Teil von ``_assign_in_tx`` für einen Beleg mit Steuersatz je Position: den Betrag ``alloc`` (Minor Units, schon auf Rest der Rechnung
+        und freien Rest der Bewegung gekappt) auf die Sätze verteilen (``tax_groups.split_payment``) und die Zuordnung schreiben – „Bank an
+        Debitoren“ über den ganzen Betrag und je Satz „Wartekonto an Erlöskonto“ (ohne Forderung je Satz „Erlöskonto an Bank“), jeden Satz mit seinem
+        Betrag, seinem Satz (``tax_groups.booking_rate``) und seiner Steuer; ein Satz ohne Anteil bekommt keine Zeile. ``bank``: die Bankbewegung
+        (die Zeile, wie ``_assign_in_tx`` sie liest), ``ctx`` mit ``mixed`` (``_payment_prerequisites``). Es gibt KEINE Wahl des Erlöskontos: Das
+        Ergebnis trägt keines (``revenue_coa_id`` ``None``).
+
+        Geprüft wird in der Transaktion am frisch gelesenen Stand, alles vor dem ersten Schreiben (jede Ablehnung ist ein fester Satz): die
+        Gruppen sind noch die der Vorprüfung („geändert“-Satz), jede Gruppe ist buchbar (``_checked_mixed_groups``), die Forderungen tragen genau
+        die Sätze des Belegs (``MIXED_RECEIVABLE_MISMATCH``; ganz ohne Forderung ist es der Einzelsatz je Satz), und die bisherigen Zuordnungen
+        lassen sich je Satz lesen (``_mixed_booked``, ``MIXED_ALLOCATION_UNREADABLE``) – nur dann ist bekannt, wie viel jeder Satz noch offen hat."""
+        _type, _amount, _account, bank_date, bank_tax_date, recipient, currency = bank
+        conn = tx.conn
+        try:
+            groups = self._checked_mixed_groups(conn, invoice_id)
+            if tuple(groups) != ctx['mixed']['groups']:
+                return _refused(PAYMENT_CHANGED_MESSAGE)
+            pcts = {group.pct for group in groups}
+            debtor_side, waiting = self._receivable_sides_by_rate(conn, number)
+            if waiting and set(waiting) != pcts:
+                return _refused(MIXED_RECEIVABLE_MISMATCH)
+            booked = self._mixed_booked(conn, invoice_id, number, pcts)
+        except MixedNotBookable as exc:
+            return _refused(str(exc))
+        try:
+            split = split_payment(groups, booked, alloc)
+        except ValueError:
+            return _refused(MIXED_ALLOCATION_UNREADABLE)
+
+        revenue = ctx['mixed']['revenue']
+        rows = payment_rows(
+            number=number, customer_id=customer_id, bank_id=booking_id, bank_date=bank_date, bank_tax_date=bank_tax_date,
+            recipient=recipient, currency=currency, amount=alloc, tax_rate=None, tax_value=None, bank_coa=ctx['bank_coa'],
+            revenue_coa=None, debtor_side=debtor_side,
+            parts=[PaymentPart(waiting.get(part.pct), revenue[part.pct], part.amount, booking_rate(part.pct),
+                               part.tax if booking_rate(part.pct) else None) for part in split if part.amount])
+        payment_id = self._write_assignment(tx, invoice_id, booking_id, alloc, bank_date, rows)
+        if payment_id is None:
+            return _refused('Buchung ist bereits mit dieser Rechnung verknüpft')
+        return PaymentAssignment(True, None, payment_id, None)
+
+    def _write_assignment(self, tx, invoice_id, booking_id, alloc, bank_date, rows):
+        """Eine Zuordnung in der Transaktion ``tx`` schreiben: die ``InvoicePayments``-Zeile über ``alloc`` und die Buchungssätze ``rows``
+        (``payment_rows``), dann die Rechnung neu rechnen – die EINE Schreibstelle für den Beleg mit einem Satz und den mit Steuersatz je Position.
+        Die Einträge fürs Replay-Log kommen in ``tx.log`` (geschrieben erst nach dem Commit). Returns die ID der Zuordnung, ``None``, wenn es das Paar
+        (Rechnung, Bewegung) schon gibt (der eindeutige Index) – dann ist nichts geschrieben."""
+        conn = tx.conn
         try:
             cursor = conn.execute(
                 'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) '
                 'VALUES (?, ?, ?, ?)', (invoice_id, booking_id, alloc, bank_date))
         except sqlite3.IntegrityError:
-            # der eindeutige Index auf (Rechnung, Bewegung) – dasselbe wie die Prüfung oben
-            return _refused('Buchung ist bereits mit dieser Rechnung verknüpft')
+            # der eindeutige Index auf (Rechnung, Bewegung) – dasselbe wie die Prüfung am Anfang von ``_assign_in_tx``
+            return None
         payment_id = cursor.lastrowid
         tx.log.append(('INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, '
                        'PaymentDate) VALUES (?, ?, ?, ?)',
                        (invoice_id, booking_id, alloc, bank_date), 'Link invoice to booking'))
-
-        # Die Formen stehen fest, nicht aus der Kontenliste abgeleitet: „Bank an Debitoren“ hat das Geldkonto vorne,
-        # „Wartekonto an Erlöskonto“ ist eine Umbuchung, „Erlöskonto an Bank“ das Zweckkonto vorne (``payment_rows``).
-        for row in payment_rows(number=number, customer_id=customer_id, bank_id=booking_id, bank_date=bank_date,
-                                bank_tax_date=bank_tax_date, recipient=recipient, currency=currency, amount=alloc,
-                                tax_rate=tax_rate, tax_value=tax_value, bank_coa=ctx['bank_coa'],
-                                revenue_coa=ctx['revenue_coa'], debtor_side=debtor_side, waiting_side=waiting_side):
+        for row in rows:
             params = tuple(row.values[column] for column in PAYMENT_ROW_COLUMNS)
             conn.execute(_PAYMENT_ROW_INSERT, params)
             tx.log.append((_PAYMENT_ROW_INSERT, params, row.description))
-
         self._recalc_invoice(conn, invoice_id)
-        return PaymentAssignment(True, None, payment_id, ctx['revenue_coa'])
+        return payment_id
 
     # ── Erstattung einer Stornorechnung ──────────────────────────────────────
     def assign_storno_refund(self, storno_id, booking_id, amount=None, revenue_coa_id=None):
@@ -894,7 +1120,10 @@ class InvoicePaymentsMixin:
         * Die Forderung gilt wieder als offen, wenn die übrigen Sätze „… an Debitoren“ sie nicht
           mehr ausgleichen (Stufe 7 des Auto-Abgleichs hatte sie auf 'resolved' gesetzt, siehe
           ``money.is_covered``). Trägt die Rechnungsnummer mehrere Forderungszeilen, zählt ihre
-          Summe, und alle aufgelösten gehen gemeinsam zurück (``_standalone_receivable_rows``).
+          Summe, und alle aufgelösten gehen gemeinsam zurück (``_standalone_receivable_rows``: nur, was
+          ``receivable_condition`` eine Forderung nennt, mit allen Debitorenkonten). Gerechnet wird wie in
+          Stufe 7 (``matching.receivables_covered``): Ein Betrag, der keine Zahl ist, entscheidet nichts –
+          die Zeilen bleiben, wie sie sind, und das Entfernen scheitert nicht.
         * AmountDue und Status der Rechnung werden neu gerechnet.
         * Ist keine Zahlung mehr übrig und der Status der Rechnung kein Forderungsstatus
           (storniert, Entwurf, abgeschlossen), geht auch die Forderungsbuchung – so wie beim
@@ -908,15 +1137,15 @@ class InvoicePaymentsMixin:
         if row is None:
             return
         number = row[0]
-        debtor_ids = [r[0] for r in conn.execute(
-            'SELECT ID FROM ChartOfAccounts WHERE AccountNumber = ?', (self.DEBTOR_ACCOUNT_NUMBER,))]
+        debtor_ids = sorted(self._debtor_coa_ids(conn))
         if debtor_ids:
-            standalone = self._standalone_receivable_rows(conn.cursor(), number, debtor_ids)
+            standalone = self._standalone_receivable_rows(conn.cursor(), number)
             # Ohne aufgelöste Zeile gibt es nichts zurückzunehmen: dann wird auch kein Betrag gelesen (wie bisher – ein Betrag,
             # der keine Zahl ist, darf das Entfernen einer Zahlung nicht scheitern lassen)
             if any(status == 'resolved' for _id, _amount, status in standalone):
-                receivable = sum(amount or 0 for _id, amount, _status in standalone)
-                if not is_covered(receivable, self._debtor_settled_minor(conn.cursor(), number, debtor_ids)):
+                covered = receivables_covered([amount for _id, amount, _status in standalone],
+                                              self._debtor_settled_amounts(conn.cursor(), number, debtor_ids))
+                if covered is False:                 # None: nicht entscheidbar – dann bleibt alles, wie es ist
                     for booking_id, _amount, status in standalone:
                         if status == 'resolved':
                             conn.execute('UPDATE Bookings SET Status = NULL WHERE ID = ?', (booking_id,))

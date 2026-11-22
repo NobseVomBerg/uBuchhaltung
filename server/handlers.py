@@ -41,7 +41,7 @@ from db.invoice_lock import (DocumentNotFound, EDITABLE_STATUSES, InvoiceLocked,
                              buyer_snapshot, status_group)
 from db.invoice_storno import NO_COUNTER_BOOKING_HINT
 from db.invoice_versions import CorrectionInvalid
-from db.invoice_payments import RECEIVABLE_STATUSES, BankChangeRefused, PaymentRemovalRefused
+from db.invoice_payments import RECEIVABLE_STATUSES, BankChangeRefused, PaymentRemovalRefused, has_mixed_rates
 from db.invoice_repair import REBUILD_WARNING
 from db.numbering import NumberRangeError, number_format_error
 from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
@@ -3126,9 +3126,16 @@ def _backfill_booking_skr(db, booking_id, invoice, revenue_coa_id):
     Erlöskonto je Steuersatz lernt ``resolve_revenue_coa`` allein aus den Buchungssätzen der
     Zuordnung. Die Buchungssätze der Zahlung legt ``Database.assign_invoice_payment`` an, nicht
     diese Funktion.
+
+    Bei einer Rechnung mit Steuersatz je Position (``MixedTaxRates``) gibt es kein EINES Erlöskonto und keinen
+    Satz für die ganze Bewegung (der Kopfsatz ist nur ein Platzhalter): Die Bankzeile bekommt nur Kunde und
+    Beleg-Nr. – Konto, Satz und Steuer bleiben leer; sie stehen an den Sätzen der Zuordnung.
     """
     booking = db.get_booking_by_id(booking_id)
     if not booking:
+        return
+    if has_mixed_rates(invoice[InvoiceCol.MIXED_TAX_RATES]):
+        db.backfill_booking_fields(booking_id, contact_id=invoice[13], document_number=invoice[1])
         return
     rate = invoice[35]
     rate_pct = 0 if not rate or rate < 0 else (rate * 100 if rate <= 1 else rate)

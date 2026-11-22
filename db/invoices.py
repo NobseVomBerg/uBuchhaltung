@@ -7,11 +7,14 @@ import os
 import json
 from decimal import Decimal
 from money import to_minor, from_minor
+from tax_groups import booking_rate
 from .core import fk_explained
-from .invoice_lock import (DocumentNotFound, has_storno, invoice_row, REOPEN_ATTACHED_MESSAGE,
+from .invoice_lock import (CHANGED_MESSAGE, DocumentNotFound, has_storno, invoice_row, REOPEN_ATTACHED_MESSAGE,
                            REOPEN_FOREIGN_MESSAGE, REOPEN_IMPORTED_MESSAGE)
-from .invoice_payments import (MIXED_NOT_BOOKABLE, PAYABLE_STATUSES, PAYMENT_MARK, STORNO_KIND, STORNO_PAYMENT_MESSAGE,
-                               has_mixed_rates)
+# Was ``db.invoice_payments`` für die Buchungen eines Belegs mit Steuersatz je Position festlegt, reicht dieses Modul weiter
+from .invoice_payments import (MIXED_ALLOCATION_UNREADABLE, MIXED_GROUP_NOT_POSITIVE, MIXED_GROUPS_MISMATCH,  # noqa: F401
+                               MIXED_NO_REVENUE_COA, MIXED_NOT_BOOKABLE, MIXED_RECEIVABLE_MISMATCH, PAYABLE_STATUSES,
+                               PAYMENT_MARK, STORNO_KIND, STORNO_PAYMENT_MESSAGE, MixedNotBookable, has_mixed_rates)
 from .matching import FORM_TRANSFER
 from .reporting import is_income_account
 
@@ -512,7 +515,9 @@ class InvoicesMixin:
         oder Buchungsart; die Oberfläche ordnet über ``assign_invoice_payment`` zu. Die
         Dublettenprüfung läuft in derselben Transaktion wie das Einfügen. Einer Stornorechnung
         (``cancel_invoice``) lässt sich nie eine Zahlung zuordnen (``ValueError``), ebenso wenig einem Beleg mit
-        Steuersatz je Position (``MIXED_NOT_BOOKABLE``, solange die Buchungen dafür fehlen)."""
+        Steuersatz je Position (``MIXED_NOT_BOOKABLE``): Dieser Weg schreibt eine Zuordnung ohne Buchungssätze, und eine spätere Zahlung,
+        Erstattung oder Prüfung könnte deren Anteil je Satz nicht kennen (``_mixed_booked`` lehnt eine solche Zuordnung ab) – jede weitere
+        Buchung an der Rechnung wäre gesperrt. Seine Aufrufer legen nur Belege ohne das Kennzeichen an (der WISO-Import)."""
         conn = self._get_connection()
         try:
             conn.execute('BEGIN IMMEDIATE')
@@ -793,7 +798,13 @@ class InvoicesMixin:
         Zahlungen. Der jüngste passende Satz gewinnt. Das Konto der Bankzeile oder der Sätze eines Imports
         sagt nichts über das Erlöskonto (es kann ein Bankkonto, ein Aufwandskonto oder das
         Wartekonto sein) und zählt nicht. Das Ergebnis gilt nur, wenn es ein Erlöskonto ist
-        (``is_income_account``: 4000–4999 ohne Wartekonten)."""
+        (``is_income_account``: 4000–4999 ohne Wartekonten).
+
+        **Der Schlüssel eines Satzes kommt bei einer Rechnung mit Steuersatz je Position (``MixedTaxRates`` = 1) aus dem Satz des Buchungssatzes**
+        (``Bookings.TaxRate``, ``tax_groups.booking_rate`` – je Satz einer Zahlung ein Satz „4345 an 4300“), nie aus dem Kopf der Rechnung: Der
+        ist dort nur ein Platzhalter (der höchste Satz), und 19 % lernte sonst das Konto der 7 %, wenn deren Zeile die neueste ist. Für jede
+        andere Rechnung ist es der Satz im Kopf wie immer. Gelesen wird das Kennzeichen streng, wie ``has_mixed_rates`` (``typeof`` = ``'integer'``
+        und 1). Ein Satz von 0 % trägt ``TaxRate`` NULL (Schlüssel −999) und lehrt deshalb kein Konto für 0 %."""
         waiting = tuple(number for number, _name in self.OPEN_REVENUE_ACCOUNTS.values())
         waiting_marks = ','.join('?' * len(waiting))
         conn = self._get_connection()
@@ -812,7 +823,9 @@ class InvoicesMixin:
                   AND (i.DocumentType = 'invoice' OR i.DocumentType IS NULL)
                   AND (own.AccountNumber IN ({waiting_marks})
                        OR k.CounterCOA_ID IN ({payment_marks}))
-                  AND {self._revenue_rate_key_sql('i.TaxRate')} = ?
+                  AND (CASE WHEN typeof(i.MixedTaxRates) = 'integer' AND i.MixedTaxRates = 1
+                            THEN {self._revenue_rate_key_sql('k.TaxRate')}
+                            ELSE {self._revenue_rate_key_sql('i.TaxRate')} END) = ?
                 ORDER BY k.ID DESC LIMIT 1
             ''', (*waiting, PAYMENT_MARK, *waiting, *payment_ids, key)).fetchone()
         finally:
@@ -908,7 +921,8 @@ class InvoicesMixin:
         return self.get_coa_id_by_account_number(number)
 
     def get_receivable_booking(self, invoice_id):
-        """Forderungsbuchung einer Rechnung oder None.
+        """Forderungsbuchung einer Rechnung oder None – die ERSTE: Eine Rechnung mit Steuersatz je Position
+        (``MixedTaxRates``) hat je Satz eine Forderungszeile (``_book_mixed_receivable``).
 
         Erkannt über Beleg-Nr. + ``db.matching.receivable_condition`` (Debitoren 10000 im Soll,
         kein Zahlungskonto) – dieselbe Bedingung wie überall, damit ein WISO-Storno
@@ -943,6 +957,40 @@ class InvoicesMixin:
             'Vortrags-, Kapital-, Korrektur- u. statistische Konten')
         return open_coa, debtor_coa
 
+    @classmethod
+    def _group_waiting_entry(cls, pct):
+        """``(Kontonummer, Name)`` des Wartekontos für den Satz einer Gruppe (``tax_groups.RateGroup.pct``) – die EINE Zuordnung Satz →
+        Wartekonto für Belege mit Steuersatz je Position – oder ``None``: Nur ein Satz, der GENAU in ``OPEN_REVENUE_ACCOUNTS`` steht, hat eines.
+        Nicht ``_tax_rate_key``: Der rundet auf ganze Prozent (5,5 → 6, 7,4 → 7) und nähme für einen anderen Satz das Wartekonto eines
+        benachbarten."""
+        try:
+            key = int(pct)
+        except (ArithmeticError, ValueError):
+            return None
+        return cls.OPEN_REVENUE_ACCOUNTS.get(key) if Decimal(key) == pct else None
+
+    def _group_revenue_coa(self, pct, create=True):
+        """Das Erlöskonto (COA-ID) für den Satz einer Gruppe (``resolve_revenue_coa`` über ``tax_groups.booking_rate``: die Form, in der der Satz in
+        ``Bookings.TaxRate`` steht) – oder ``None``. Ein Satz von 0 % hat bewusst KEIN Erlöskonto, nie 4185: Das ist das Konto der Kleinunternehmer
+        (§ 19 UStG), und ob ein steuerfreier Satz in einem Beleg mit mehreren Sätzen dorthin gehört, ist nicht entschieden. ``create`` wie bei
+        ``resolve_revenue_coa``."""
+        rate = booking_rate(pct)
+        return None if rate is None else self.resolve_revenue_coa(rate, create)
+
+    def _mixed_receivable_accounts(self, groups):
+        """Die Konten für die Forderungen eines Belegs mit Steuersatz je Position – ``{'debtor': COA-ID, 'waiting': {Satz: COA-ID}}`` für seine
+        Satzgruppen (``_checked_mixed_groups``) – oder ``None``, wenn auch nur einer Gruppe das Wartekonto fehlt (``_group_waiting_entry``): Dann
+        wird gar keine Forderung gebucht, und jede Zahlung schreibt je Satz „Erlöskonto an Bank“. Legt fehlende Konten in eigenen Verbindungen
+        an – also vor einer Transaktion, nie darin; die Prüfung, ob jede Gruppe ein Wartekonto hat, kommt vor dem ersten angelegten Konto."""
+        entries = [self._group_waiting_entry(group.pct) for group in groups]
+        if any(entry is None for entry in entries):
+            return None
+        waiting = {group.pct: self._ensure_standard_coa(*entry) for group, entry in zip(groups, entries)}
+        debtor = self._ensure_standard_coa(
+            self.DEBTOR_ACCOUNT_NUMBER, 'Debitoren',
+            'Vortrags-, Kapital-, Korrektur- u. statistische Konten')
+        return {'debtor': debtor, 'waiting': waiting}
+
     def ensure_receivable_booking(self, invoice_id):
         """Offenen Posten einer Rechnung buchen: Debitoren an Wartekonto.
 
@@ -951,24 +999,36 @@ class InvoicesMixin:
         Der Statuswechsel bucht sie selbst in seiner Transaktion
         (``Database.set_invoice_status``); dieser Weg ist für alles andere (Demodaten, Tests).
 
-        Ein Beleg mit Steuersatz je Position (``MixedTaxRates``) lässt sich in dieser Version nicht buchen: ``ValueError``
-        mit ``MIXED_NOT_BOOKABLE`` – vor dem Auflösen der Konten (es wird keines angelegt) und, mit dem frisch gelesenen Beleg,
-        vor dem ersten Schreiben.
+        Ein Beleg mit Steuersatz je Position (``MixedTaxRates``) bucht je Satz eine Forderung (``_book_mixed_receivable``). Lässt er sich nicht
+        buchen (Positionen und Summen passen nicht zusammen, ein Satz mit Brutto unter 0 …), wirft das ``MixedNotBookable`` (ein ``ValueError``
+        mit dem festen Klartext) – vor dem Auflösen der Konten (es wird keines angelegt). Ändern sich Kennzeichen oder Satzgruppen zwischen
+        dieser Vorprüfung und der Transaktion, lehnt ``ValueError(CHANGED_MESSAGE)`` ab, bevor etwas geschrieben ist.
 
-        Returns: Booking-ID oder None.
+        Returns: Booking-ID (bei mehreren Forderungszeilen die erste) oder None.
         """
         invoice = self.get_invoice_by_id(invoice_id)
         if not invoice or (len(invoice) > 45 and invoice[45] == 'quote'):
             return None
-        if has_mixed_rates(invoice[InvoiceCol.MIXED_TAX_RATES]):
-            raise ValueError(MIXED_NOT_BOOKABLE)
-        accounts = self._receivable_accounts(invoice[35])
+        mixed = has_mixed_rates(invoice[InvoiceCol.MIXED_TAX_RATES])
+        if mixed:
+            conn = self._get_connection()
+            try:
+                groups = self._checked_mixed_groups(conn, invoice_id)
+            finally:
+                conn.close()
+            accounts = self._mixed_receivable_accounts(groups)
+        else:
+            accounts = self._receivable_accounts(invoice[35])
         with self.transaction() as tx:
             tx.conn.execute('BEGIN IMMEDIATE')
             row = invoice_row(tx.conn, invoice_id)
-            if row is not None and has_mixed_rates(row.get('MixedTaxRates')):
-                raise ValueError(MIXED_NOT_BOOKABLE)
-            return self._book_receivable(tx, row, accounts) if row else None
+            if row is None:
+                return None
+            if has_mixed_rates(row.get('MixedTaxRates')) != mixed:
+                raise ValueError(CHANGED_MESSAGE)
+            if mixed and tuple(self._checked_mixed_groups(tx.conn, invoice_id)) != tuple(groups):
+                raise ValueError(CHANGED_MESSAGE)
+            return self._book_receivable(tx, row, accounts)
 
     def _book_receivable(self, tx, row, accounts):
         """Die Forderung einer Rechnung („Debitoren an Wartekonto“) in der Transaktion ``tx`` buchen,
@@ -977,7 +1037,12 @@ class InvoicesMixin:
 
         Bei einer Stornorechnung (``cancel_invoice``) ist es ihre Gegenbuchung: Betrag und Steuer stehen mit
         dem negativen Vorzeichen der Stornorechnung da – die Forderung einer Gutschrift
-        (``db.matching.receivable_condition``)."""
+        (``db.matching.receivable_condition``).
+
+        Ein Beleg mit Steuersatz je Position (``MixedTaxRates``) geht nie diesen Weg mit seinem Kopfsatz, sondern
+        über ``_book_mixed_receivable`` (``accounts`` ist dann ``_mixed_receivable_accounts``)."""
+        if has_mixed_rates(row.get('MixedTaxRates')):
+            return self._book_mixed_receivable(tx, row, accounts)
         if accounts is None or (row.get('DocumentType') or 'invoice') != 'invoice':
             return None
         number = row['InvoiceNumber']
@@ -1005,6 +1070,43 @@ class InvoicesMixin:
             entry_form=FORM_TRANSFER,
             log_description="Offener Posten zur Rechnung",
             tx=tx)
+
+    def _book_mixed_receivable(self, tx, row, accounts):
+        """Die Forderungen einer Rechnung mit Steuersatz je Position in der Transaktion ``tx`` buchen: je Satzgruppe eine Zeile „Debitoren an
+        Wartekonto des Satzes“ über das Brutto der Gruppe, mit ihrem Satz (``tax_groups.booking_rate``) und ihrer Steuer, in der Reihenfolge der
+        Gruppen (Satz absteigend). Sonst wie ``_book_receivable``: Datum, Kunde, Text und Beleg-Nr. der Rechnung, Form ``transfer``. Es gibt sie
+        schon, wenn die Beleg-Nr. eine Forderungszeile trägt – dann bleibt alles, wie es ist (idempotent). ``row``: die Rechnung (Spalte → Wert),
+        ``accounts``: ``_mixed_receivable_accounts`` (``None``: eine Gruppe ohne Wartekonto, es wird nichts gebucht). Die Gruppen liest sie in der
+        Transaktion (``_mixed_groups``): Sie sind die, für die ``accounts`` gilt – das haben Statuswechsel und ``ensure_receivable_booking`` vorher
+        am selben Stand verglichen. Returns die ID der ersten Zeile oder ``None`` (Angebot, kein Wartekonto)."""
+        if accounts is None or (row.get('DocumentType') or 'invoice') != 'invoice':
+            return None
+        number = row['InvoiceNumber']
+        existing = [r[0] for r in self._receivable_rows(tx.conn, number)]
+        if existing:
+            return existing[0]
+        customer = row['BuyerCompany'] or row['BuyerName'] or ''
+        label = 'Stornorechnung' if row.get('InvoiceKind') == STORNO_KIND else 'Rechnung'
+        first = None
+        for group in self._mixed_groups(tx.conn, row['ID']):
+            booking_id = self.insert_booking(
+                date_booking=row['InvoiceDate'],
+                amount=from_minor(group.gross),
+                recipient_client=customer,
+                contact_id=row['CustomerId'],
+                coa_id=accounts['debtor'],
+                counter_coa_id=accounts['waiting'][group.pct],
+                currency=row['Currency'] or 'EUR',
+                tax_rate=booking_rate(group.pct),
+                tax_amount=from_minor(group.tax) if group.tax else None,
+                text=f"{label} {number} {customer}".strip(),
+                document_number=number,
+                booking_type='entry',
+                entry_form=FORM_TRANSFER,
+                log_description="Offener Posten zur Rechnung",
+                tx=tx)
+            first = booking_id if first is None else first
+        return first
 
     def _receivable_rows(self, conn, number):
         """Die Forderungsbuchungen zu einer Rechnungsnummer (``db.matching.receivable_condition``)

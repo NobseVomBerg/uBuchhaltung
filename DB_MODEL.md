@@ -656,7 +656,10 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   WISO-Storno „10000 an 1810“ träfe). Stufe 7 des Auto-Abgleichs setzt die Forderung erst auf
   `resolved`, wenn die Summe der Sätze „… an 10000“ mit gleicher Beleg-Nr. den Forderungsbetrag erreicht
   (`money.is_covered`) – nicht schon nach der ersten Teilzahlung. Trägt die Beleg-Nr. mehrere eigenständige
-  Forderungszeilen, zählt die Summe aller; sie werden gemeinsam aufgelöst und gemeinsam zurückgesetzt (seit 2.6.8).
+  Forderungszeilen, zählt die Summe aller; sie werden gemeinsam aufgelöst und gemeinsam zurückgesetzt (seit 2.6.8). Als Forderung zählt dabei nur, was
+  `receivable_condition` so nennt UND Debitoren als `COA` führt (nicht „10000 an Kasse“, nicht „10000 an X“ mit negativem Betrag ohne Gutschrift),
+  Debitoren sind alle Konten mit der Nummer 10000, die Beträge werden einzeln gelesen und in Python summiert (`matching.receivables_covered`: ein Betrag, der keine
+  Zahl ist, entscheidet nichts), die Beleg-Nr. als BLOB gelesen.
 - **Prüfung:** `find_payment_inconsistencies(invoice_id=None)` meldet, rein lesend, Zuordnungen ohne Satz
   „Bank an Debitoren“, Sätze „Bank an Debitoren“ ohne Forderung (10000 im Haben-Überhang), an einer
   Bankbewegung hängende Forderungen, Zahlungssätze ohne Zuordnung (die markierten Sätze der App und
@@ -911,8 +914,12 @@ Die Spalten 50–55 hängen an der Tabelle: frische und migrierte Datenbank habe
 steht nur an einem Beleg mit mindestens zwei verschiedenen Sätzen; tragen alle Positionen denselben Satz, ist es ein gewöhnlicher Beleg
 (NULL, Satz im Kopf). Der Bestand wird nicht umgedeutet: Ohne das Kennzeichen gilt allein `TaxRate` im Kopf. Die Steuer rechnet
 `tax_groups.rate_groups` je Satz aus der Summe der Nettobeträge der Gruppe (EN 16931, BR-CO-17); die Prüfung der Steuerangaben beim
-Speichern ist `handlers._tax_fields`. **Buchen lässt sich ein solcher Beleg in dieser Version noch nicht:** Versenden, Zahlung zuordnen,
-Erstattung, Stornieren, Zuordnung neu aufbauen und der Umzug der Zahlungen lehnen ihn mit einem festen Satz ab
+Speichern ist `handlers._tax_fields`. **Buchen (seit Etappe 2a):** Versenden und Wiederbeleben buchen je Satzgruppe eine Forderungszeile
+(„10000 an Wartekonto des Satzes“, Satz als Bruch und Steuer der Gruppe an der Zeile), eine Zahlung bucht „Bank an Debitoren“ über den ganzen Betrag und je Satz
+„Wartekonto an Erlöskonto“ (ohne Forderung je Satz „Erlöskonto an Bank“) – wie sich der Betrag einer Teilzahlung auf die Sätze verteilt, legt die reine Funktion
+`tax_groups.split_payment` fest (Anteil am Brutto, Cent-Rest an die größere Gruppe, der Rest der Steuer an die schließende Zahlung). Das Erlöskonto je Satz wählt der Nutzer
+nicht (`resolve_revenue_coa` über den Satz des Buchungssatzes). Auswertungen und Export lesen diese Sätze unverändert. Erstattung, Stornieren, Zuordnung neu aufbauen,
+der Umzug der Zahlungen beim Versenden einer Ersatzrechnung und `link_invoice_to_transaction` lehnen so einen Beleg noch mit einem festen Satz ab
 (`db.invoices.MIXED_NOT_BOOKABLE`), bevor etwas geschrieben wird.
 
 **Fassungen und Berichtigen:** Eine versendete Rechnung hat gesperrte Finanzangaben (`db/invoice_lock.py`);
@@ -1286,7 +1293,8 @@ und der Plan der Hauptanlage rechnet wieder ohne sie.
    - Stufe 5: Text-Token-Matching (lange Ziffernfolgen >= 8 Stellen)
    - Stufe 6: Text-Similarity ohne Belegnummer (SequenceMatcher)
    - Stufe 7: Debitoren-Auflösung (Status='resolved' für Debitoren-Entries
-     deren Zahlung bereits verknüpft ist, datumsunabhängig)
+     deren Zahlung bereits verknüpft ist, datumsunabhängig; Summe aller Forderungszeilen
+     der Beleg-Nr. gegen die Summe der Zahlungen, robust gelesen – siehe Abschnitt 9a)
    Forderungsbuchungen (Debitoren 10000 ohne Zahlungskonto) werden in keiner Stufe
    verknüpft (außer über die Quellklammer, Stufe 0) – sie gehören zur Rechnung
    (siehe 9a, `receivable_condition`)

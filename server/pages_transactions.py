@@ -11,7 +11,7 @@ from db import Database
 from money import fmt_eur
 from db.matching import bank_effect, is_bank_effective, is_mirror_row, purpose_in_counter
 from db.invoices import InvoiceCol
-from db.invoice_payments import PAYABLE_STATUSES
+from db.invoice_payments import PAYABLE_STATUSES, has_mixed_rates
 from .pages import Header1, Header2, Header3, Footer, script_json
 from .pages_invoice import revenue_coa_choice
 from .period import period_filter_widget
@@ -231,7 +231,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     'account_id': inv[30],          # BankAccountId
                     'document_nr': inv[1] or '',
                     'text': f"Zahlung Rechnung {inv[1] or ''}".strip(),
-                    'revenue_choice': revenue_coa_choice(db, inv[35], selected=revenue_coa_id),
+                    'revenue_choice': revenue_coa_choice(db, inv[35], selected=revenue_coa_id,
+                                                         mixed=has_mixed_rates(inv[InvoiceCol.MIXED_TAX_RATES])),
                 }
                 edit_recipient = _html.escape(prefill['recipient'])
                 edit_text = _html.escape(prefill['text'])
