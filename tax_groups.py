@@ -16,6 +16,12 @@ from decimal import Decimal
 
 from money import round_minor, tax_from_net
 
+# Die Sätze, aus denen ein Beleg mit Steuersatz je Position (``Invoices.MixedTaxRates`` = 1) seine Positionen wählen darf, als Prozentzahlen
+# in der Form von ``rate_pct`` – die EINE Stelle dafür: ``server.handlers._tax_fields`` lehnt jeden anderen Satz ab. Später kommen Sätze dazu
+# (steuerfreie Positionen, 5,5 % …); kein Code nimmt „zwei Sätze“ oder „19 und 7“ fest an, Gruppen, Prüfungen und Schleifen arbeiten für beliebig
+# viele.
+MIXED_TAX_RATES = (Decimal('19'), Decimal('7'))
+
 
 def rate_pct(value):
     """Der Steuersatz als Prozentzahl, oder ``None`` ohne Angabe (``None`` und ``''``; die Vorgabe wählt der Aufrufer).

@@ -38,6 +38,9 @@ from tests.document_helpers import add_contacts, add_document
 from tests.entry_form_world import to_state_2000, to_state_2001
 
 NEW_COLUMNS = ['InvoiceKind', 'CancelsInvoiceId', 'ReplacesInvoiceId', 'SentAt', 'DocumentVersion']
+#: Wo die Spalten stehen: Index 50 bis 54. Seit Schema 2007 (2.7.0) hängt ``Invoices`` dahinter noch ``MixedTaxRates`` an (Index 55,
+#: ``test_mixed_tax_schema_2007.py``) – so steht der Bestand nach der Umstellung auf das heutige Programm da.
+NEW_AT = slice(50, 55)
 NEW_TABLES = ['InvoiceCorrections', 'InvoiceDocumentVersions']
 
 
@@ -123,7 +126,7 @@ def test_a_fresh_and_a_migrated_database_have_the_same_columns_tables_and_indexe
     Database(db_name=fresh)
     _reopen(stock)
 
-    assert _names(stock)[-5:] == NEW_COLUMNS and len(_names(stock)) == 55
+    assert _names(stock)[NEW_AT] == NEW_COLUMNS and len(_names(stock)) == 56
     for table in ['Invoices', *NEW_TABLES]:
         assert _info(stock, table) == _info(fresh, table), table                # Name, Typ, NOT NULL, Vorgabe, PK
     assert _tables(stock) == _tables(fresh)
@@ -169,7 +172,7 @@ def test_existing_rows_stay_untouched_and_the_new_values_are_empty(stock):
 
     after = _contents(stock)
     assert [row[:50] for row in after['Invoices']] == before_invoices           # jede Spalte jeder Zeile
-    assert all(row[50:] == (None,) * 5 for row in after['Invoices'])
+    assert all(row[50:] == (None,) * 6 for row in after['Invoices'])            # die fünf neuen Spalten und, seit 2.7.0, MixedTaxRates
     for table, rows in before_rest.items():
         if table in _ADDED_BY_2005:                                             # Schema 2005: am Ende, überall 1
             values = _ADDED_BY_2005[table]
@@ -243,7 +246,7 @@ def test_an_aborted_migration_rolls_everything_back_including_the_new_tables(sto
     assert installation.dump(stock) == before                                   # Spalten, Tabellen, Zeilen wie vorher
 
     _reopen(stock)                                                              # und beim nächsten Start klappt es
-    assert installation.user_version(stock) == version.SCHEMA_VERSION and _names(stock)[-5:] == NEW_COLUMNS
+    assert installation.user_version(stock) == version.SCHEMA_VERSION and _names(stock)[NEW_AT] == NEW_COLUMNS
 
 
 def test_a_second_start_changes_nothing_and_makes_no_second_backup(stock):
@@ -263,7 +266,7 @@ def test_a_2_0_x_stock_goes_through_both_steps_in_one_backed_up_run(stock):
     _reopen(stock)
 
     assert installation.user_version(stock) == version.SCHEMA_VERSION
-    assert _names(stock)[-5:] == NEW_COLUMNS and 'EntryForm' in _names(stock, 'Bookings')
+    assert _names(stock)[NEW_AT] == NEW_COLUMNS and 'EntryForm' in _names(stock, 'Bookings')
     (backup,) = _backups(stock)
     assert installation.user_version(str(backup)) == 2000
 
@@ -271,7 +274,7 @@ def test_a_2_0_x_stock_goes_through_both_steps_in_one_backed_up_run(stock):
 def test_a_1_x_stock_gets_the_new_columns_as_well(stock):
     installation.stamp_user_version(stock, 4)
     _reopen(stock)
-    assert installation.user_version(stock) == version.SCHEMA_VERSION and _names(stock)[-5:] == NEW_COLUMNS
+    assert installation.user_version(stock) == version.SCHEMA_VERSION and _names(stock)[NEW_AT] == NEW_COLUMNS
 
 
 # ── Index und Fremdschlüssel ─────────────────────────────────────────────────

@@ -1575,7 +1575,7 @@ def test_an_orphaned_marked_posting_under_the_movement_keeps_every_assignment_of
 def test_a_payment_without_tax_moves_too(world, monkeypatch):
     """§ 19 / 0 %: Die Sätze der Zuordnung tragen weder Steuersatz noch Steuerbetrag, der Vergleich erwartet dort keinen."""
     items = [dict(ONE_ITEM[0], taxRate=0)]
-    s = paid_scenario(world, monkeypatch, items=items, taxRate=-1)             # § 19: Wartekonto 4340, keine Steuer
+    s = paid_scenario(world, monkeypatch, items=items, taxRate=0, showTax=False)     # § 19: Wartekonto 4340, keine Steuer
     db = world.db
     assert [(r[0], r[1], r[3]) for r in payment_rows(db, 'T-100')] == [(1800, DEBTORS, None), (4340, 4185, None)]
     euer_before = euer(db)

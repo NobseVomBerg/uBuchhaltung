@@ -36,7 +36,9 @@ D. Den **offenen Betrag** neu rechnen. Der Status bleibt, wie er ist (eine von H
 
 **Kein Buchungssatz wird gelöscht oder geändert.** Neue Sätze kommen dazu (C); B löst eine Forderung vom Elternsatz und sonst
 nichts. Storno-Paare (die Rechnung hat eine Stornorechnung oder ist eine) und Rechnungen außerhalb von versendet bis bezahlt
-bekommen nur den neu gerechneten offenen Betrag (D); alles andere wird gemeldet (``skipped``), nicht angefasst.
+bekommen nur den neu gerechneten offenen Betrag (D); alles andere wird gemeldet (``skipped``), nicht angefasst. Ein Beleg mit
+Steuersatz je Position (``MixedTaxRates``) wird in dieser Version gar nicht angefasst: Probelauf und Ausführung lehnen mit
+``MIXED_NOT_BOOKABLE`` ab (409), bevor etwas geschieht.
 ``_booking_snapshot_unchanged`` prüft das mechanisch: Hat ein Baustein trotzdem einen vorhandenen Satz der Rechnung oder ihrer
 Bewegungen verändert (etwa den Status einer aufgelösten Forderung), wird alles zurückgenommen und nur gemeldet. Ein zweites Netz
 liest die Prüfliste nach dem Schreiben noch einmal: Nennt sie eine Kategorie, die sie vorher nicht nannte (etwa
@@ -55,8 +57,8 @@ import json
 from collections import defaultdict, namedtuple
 
 from money import fmt_eur, from_minor
-from .invoice_payments import (NO_REVENUE_COA, PAYMENT_ROW_COLUMNS, RECEIVABLE_STATUSES, STORNO_KIND,
-                               next_payment_status)
+from .invoice_payments import (MIXED_NOT_BOOKABLE, NO_REVENUE_COA, PAYMENT_ROW_COLUMNS, RECEIVABLE_STATUSES, STORNO_KIND,
+                               has_mixed_rates, next_payment_status)
 from .invoice_versions import is_iso_date
 from .reporting import is_income_account
 
@@ -221,11 +223,13 @@ class InvoiceRepairMixin:
         :class:`RebuildResult` (Rechnung weg, Erlöskonto fehlt, vorhandener Satz verändert, neuer Befund)."""
         conn = tx.conn
         invoice = conn.execute(
-            'SELECT InvoiceNumber, Status, SumGross, TaxRate, InvoiceKind, PaymentDueDate, AmountDue FROM Invoices '
+            'SELECT InvoiceNumber, Status, SumGross, TaxRate, InvoiceKind, PaymentDueDate, AmountDue, MixedTaxRates FROM Invoices '
             "WHERE ID = ? AND (DocumentType = 'invoice' OR DocumentType IS NULL)", (invoice_id,)).fetchone()
         if invoice is None:
             return RebuildResult(False, 404, REBUILD_NOT_FOUND, None, False, False)
-        number, status, gross, rate, kind, due_date, due = invoice
+        number, status, gross, rate, kind, due_date, due, mixed = invoice
+        if has_mixed_rates(mixed):
+            return RebuildResult(False, 409, MIXED_NOT_BOOKABLE, None, False, False)
         gross = gross or 0
         findings_before = [(f['category'], f['text']) for f in self._payment_findings(conn, invoice_id)]
         max_id = conn.execute('SELECT COALESCE(MAX(ID), 0) FROM Bookings').fetchone()[0]

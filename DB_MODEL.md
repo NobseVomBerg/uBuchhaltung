@@ -1,6 +1,6 @@
 # Datenbankmodell uBuchhaltung
 
-**Stand:** Version 2.6.0 (Schema 2006)
+**Stand:** Version 2.7.0 (Schema 2007)
 **DBMS:** SQLite 3
 **Datei:** `data/users/<Name>/buch.db`
 
@@ -900,9 +900,20 @@ Abgleich wirkt (dieselbe Nummer am selben Tag gilt dort als ein Beleg). Lösen e
 | ReplacesInvoiceId | 52 | INTEGER | | Ersatzrechnung: die ersetzte, stornierte Rechnung (seit 2.2.2, ohne Index; höchstens eine Ersatzrechnung je stornierter Rechnung, in der Transaktion geprüft) |
 | SentAt | 53 | DATETIME | | erstmals versendet (UTC, gesetzt beim Übergang `send`); Import und Altbestand: NULL |
 | DocumentVersion | 54 | INTEGER | | Nummer der aktuellen Fassung; NULL = Fassung 1 |
+| **Steuersatz je Position (Schema 2007, seit 2.7.0)** | | | | |
+| MixedTaxRates | 55 | INTEGER | | NULL = ein Satz für den ganzen Beleg (`TaxRate`; der ganze Bestand), `1` = Satz je Position – die Positionen (Tabelle 13) tragen ihre Sätze, `TaxRate` im Kopf ist dann nur ein Platzhalter: der höchste Satz als Bruch (0.19). Geschrieben wird nur NULL oder 1 (`insert_invoice`), gelesen streng (`db.invoices.has_mixed_rates`: nur die ganze Zahl 1) |
 
-Die Spalten 50–54 hängen an der Tabelle: frische und migrierte Datenbank haben dieselbe Reihenfolge
+Die Spalten 50–55 hängen an der Tabelle: frische und migrierte Datenbank haben dieselbe Reihenfolge
 (`db.invoices.InvoiceCol`). Der Bestand behält überall NULL.
+
+**Mehrere Steuersätze je Beleg (seit 2.7.0):** Rechnung und Angebot können Positionen mit verschiedenen Steuersätzen tragen (zunächst
+19 % und 7 %, `tax_groups.MIXED_TAX_RATES`; nicht mit einem Beleg ohne Steuerausweis nach § 19 UStG). Das Kennzeichen `MixedTaxRates`
+steht nur an einem Beleg mit mindestens zwei verschiedenen Sätzen; tragen alle Positionen denselben Satz, ist es ein gewöhnlicher Beleg
+(NULL, Satz im Kopf). Der Bestand wird nicht umgedeutet: Ohne das Kennzeichen gilt allein `TaxRate` im Kopf. Die Steuer rechnet
+`tax_groups.rate_groups` je Satz aus der Summe der Nettobeträge der Gruppe (EN 16931, BR-CO-17); die Prüfung der Steuerangaben beim
+Speichern ist `handlers._tax_fields`. **Buchen lässt sich ein solcher Beleg in dieser Version noch nicht:** Versenden, Zahlung zuordnen,
+Erstattung, Stornieren, Zuordnung neu aufbauen und der Umzug der Zahlungen lehnen ihn mit einem festen Satz ab
+(`db.invoices.MIXED_NOT_BOOKABLE`), bevor etwas geschrieben wird.
 
 **Fassungen und Berichtigen:** Eine versendete Rechnung hat gesperrte Finanzangaben (`db/invoice_lock.py`);
 Zahlungshinweis, Anschrift, Bestellnummer, Leitweg-ID und Leistungsdatum ändert nur eine **Berichtigung**
@@ -1616,4 +1627,4 @@ Wörterbücher, je Gruppe einmal sortiert, das Umfeld über Halbierungssuche):
 
 ---
 
-**Letzte Aktualisierung:** 21. November 2026 (Schema 2006)
+**Letzte Aktualisierung:** 22. November 2026 (Schema 2007)

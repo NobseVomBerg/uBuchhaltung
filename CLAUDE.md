@@ -1645,6 +1645,27 @@ kein Subagent darauf:
   Schnappschuss, ist der Code zu ändern, nie die Datei (`tests/single_rate_golden_2_6_6.json`); `tests/test_tax_rate_readers.py` führt die
   Lesestellen des Belegsteuersatzes (eine neue schlägt an: prüfen, ob sie mit einem Beleg mit mehreren Sätzen richtig umgeht);
   `tests/test_tax_groups.py`
+- **Mehrere Steuersätze je Beleg (seit 2.7.0, Rechnung wie Angebot):** Das Kennzeichen `Invoices.MixedTaxRates` (NULL = ein Satz für den ganzen Beleg – der
+  ganze Bestand –, `1` = Satz je Position) liest EINE Funktion streng: `db.invoices.has_mixed_rates` (nur die ganze Zahl 1 ist wahr; sie steht in
+  `db/invoice_payments.py`, dem untersten der Rechnungsmodule, `db.invoices` reicht sie weiter). Geschrieben wird nur NULL oder 1 (`insert_invoice`, sonst
+  `ValueError`). **Der Satz im Kopf (`Invoices.TaxRate`) ist bei `MixedTaxRates = 1` nur ein Platzhalter: der höchste Satz der Positionen als Bruch (0,19)** – nie
+  negativ, die Prüfungen auf § 19 (`TaxRate` < 0) bleiben richtig; was rechnet oder bucht, nimmt die Satzgruppen (`tax_groups.rate_groups`), nie den Kopfsatz für den
+  ganzen Beleg. **Speichern prüft EINE Funktion für beide Wege** (`handlers._tax_fields`; die Sätze werden nur zum Vergleichen normalisiert – `tax_groups.rate_pct` – und
+  gespeichert, wie das Formular sie schickt): `taxMode` fehlt oder ist leer (das Formular ohne Häkchen „Steuersatz je Position“) oder ist `'mixed'`, jeder andere Wert ist
+  ungültig; dann drei Regeln in dieser Reihenfolge – (1) ohne Steuerausweis (`showTax` falsch) wird `'mixed'` abgelehnt, sonst ist der Kopf −1 und jede Position bekommt den Satz 0;
+  (2) mit Steuerausweis ohne `taxMode` wird abgelehnt, wenn der Satz einer Position vom Kopf abweicht – für das Formular von heute ändert sich in der Datenbank nichts;
+  (3) mit `'mixed'` braucht jede Position einen Satz aus `tax_groups.MIXED_TAX_RATES` (19 und 7 % – die EINE Stelle der erlaubten Sätze; kein Code nimmt „zwei Sätze“ oder „19 und 7“
+  fest an): alle gleich ist ein gewöhnlicher Beleg (Kopf = dieser Satz, Kennzeichen NULL), sonst ist der Kopf der höchste Satz und das Kennzeichen 1. Jede Ablehnung hat einen festen Klartext
+  (`TAX_*` in `handlers.py`) und kommt vor dem ersten Schreiben (nichts gespeichert, keine Nummer verbraucht). Eine versendete Rechnung schickt keine Positionen; der Satz einer Position
+  ist gesperrt (`_items_differ`), das Kennzeichen ein abgeleitetes, nie für sich verglichenes Feld (`invoice_lock.FIELDS`). Angebot → Rechnung (`convert_quote_to_invoice`),
+  Stornorechnung und Ersatzrechnung (`_copied_head`) übernehmen das Kennzeichen zu den Sätzen der Positionen. **Buchen lässt sich so ein Beleg in dieser Version noch nicht:** Jeder Weg,
+  der bucht, lehnt ihn VOR dem ersten Schreiben mit EINEM Satz ab (`MIXED_NOT_BOOKABLE`, am frisch in der Transaktion gelesenen Beleg; nichts geändert, kein Konto angelegt, keine Nummer
+  verbraucht) – Versenden und Wiederbeleben (`set_invoice_status`, 409), die Forderung außerhalb des Statuswechsels (`ensure_receivable_booking`, `ValueError`), Zahlung zuordnen
+  (`assign_invoice_payment` samt Vorprüfung `payment_precheck` und `_assign_in_tx`; `link_invoice_to_transaction`), Erstattung (`assign_storno_refund`), Stornieren (`cancel_invoice`),
+  Zuordnung neu aufbauen (`rebuild_invoice_payments`, Probelauf wie Ausführung, 409) und der Umzug der Zahlungen beim Versenden einer Ersatzrechnung (es zieht nichts um, der Hinweis nennt
+  den Grund). `create_replacement_draft` bucht nichts und bleibt erlaubt; `update_invoice_status` (der ungeprüfte Baustein für Seed und Tests) bleibt, wie er ist. Die Sperre fällt erst, wenn
+  die Buchungen für mehrere Sätze da sind – nie lockern, ohne dass jeder dieser Wege sie ersetzt. Das Formular, das PDF und die Buchungen folgen (`docs/aufgaben.md`); bis dahin legt nur ein
+  eigener Request einen solchen Entwurf an. `tests/test_mixed_tax_save.py`, `tests/test_mixed_tax_locks.py`
 - **Schriften:** Liberation Sans (2.x, OFL 1.1) aus `export/fonts/` – metrisch
   = Helvetica, daher Layout unverändert; als Untermenge per `fontTools`
   eingebettet, Content-Streams bleiben WinAnsi. sRGB-ICC für den OutputIntent
@@ -2056,7 +2077,7 @@ kein Subagent darauf:
   Versionsstelle und `PRAGMA user_version` ziehen automatisch mit; PATCH dabei auf 0.
   Der neue Migrationsschritt prüft gegen die neue Zahl (`if from_version < 2001:`)
 - In der Datenbank steht `SCHEMA_VERSION = MAJOR × 1000 + SCHEMA_STEP` (2.0.x → 2000,
-  2.1.x → 2001, 2.2.x → 2002, 2.3.x → 2003, 2.4.x → 2004, 2.5.x → 2005, 2.6.x → 2006); Datenbanken aus 1.x tragen 0 bis 6. Eine Datenbank mit höherer Zahl
+  2.1.x → 2001, 2.2.x → 2002, 2.3.x → 2003, 2.4.x → 2004, 2.5.x → 2005, 2.6.x → 2006, 2.7.x → 2007); Datenbanken aus 1.x tragen 0 bis 6. Eine Datenbank mit höherer Zahl
   als das Programm wird nicht geöffnet (`db.SchemaTooNewError`) – nie zurückstempeln
 - Sonstige Änderungen ohne DB-Bezug: nur `PATCH` +1; große Umbrüche: `MAJOR` +1,
   `SCHEMA_STEP` und `PATCH` auf 0
@@ -2100,6 +2121,11 @@ kein Subagent darauf:
   `idx_documentreadings_gross` auf `GrossMinor` an – nach der Sicherung und in der Transaktion der Umstellung (`_ensure_document_readings_schema`, ohne
   eigenen Schritt in `_run_migrations`; eine frische Datenbank legt sie beim Anlegen an). Keine vorhandene Tabelle ändert sich, der Bestand bekommt keine
   Lesungen und nichts wird umgedeutet: Ein Beleg mit Datei gilt als ungelesen, bis er gelesen wird
+- Migration auf 2.7.0 (`MIXED_TAX_SCHEMA`, Schema 2007): hängt `Invoices.MixedTaxRates` (ganze Zahl; NULL = ein Satz für den ganzen Beleg, 1 = Satz je
+  Position – siehe *Mehrere Steuersätze je Beleg*) als letzte Spalte an (`InvoiceCol.MIXED_TAX_RATES`, Index 55) – nach der Sicherung und in EINER
+  Transaktion. **Der Bestand behält überall NULL** und wird weiter allein nach `Invoices.TaxRate` gelesen, nichts wird umgedeutet (ob alte Belege
+  Positionssätze tragen, die vom Kopf abweichen, ist unbekannt – eine Ableitung aus den Positionen buchte sie plötzlich als gemischt); frische und
+  migrierte Datenbank haben dieselbe Spaltenreihenfolge. `tests/test_mixed_tax_schema_2007.py`
 - Anzeige auf der About-Seite
 
 ---
@@ -2107,7 +2133,7 @@ kein Subagent darauf:
 ## Governance
 
 - **Owner:** NobseVomBerg
-- **Letzte Aktualisierung:** 2026-11-21
+- **Letzte Aktualisierung:** 2026-11-22
 - **Modell-Versionen:** Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5 (Stand November 2026);
   `settings.json` und Agents nutzen Aliase (`fable`, `opus` …), die der neuesten Version folgen
 - **Bei Modell-Updates:** Modell-Routing oben, `.claude/settings.json` (`modelSettings`

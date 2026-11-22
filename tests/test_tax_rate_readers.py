@@ -40,30 +40,42 @@ SCANNED_FILES = ('demo.py', 'demo_seed.py', 'demo_history.py', 'tax_groups.py')
 
 # Stellen, die den Steuersatz eines BELEGS lesen (oder, wo es dabeisteht, schreiben): (Datei, Funktion) → was dort damit geschieht
 READERS = {
-    ('db/invoice_lock.py', '<module>'): 'Sperre: Feldtabelle FIELDS (der Satz ist eine gesperrte Eingabe der versendeten Rechnung)',
+    ('db/invoice_lock.py', '<module>'): ('Sperre: Feldtabelle FIELDS (der Satz ist eine gesperrte Eingabe der versendeten Rechnung; dazu das Kennzeichen '
+                                         '„Steuersatz je Position“, MixedTaxRates, als abgeleitetes, gesperrtes Feld)'),
     ('db/invoice_lock.py', '_payment_move_context'): 'Umzug der Zahlungen auf die Ersatzrechnung: Satz und Erlöskonto der neuen Rechnung',
-    ('db/invoice_lock.py', '_receivable_accounts_for'): 'Forderung buchen: Wartekonto und Schlüssel des Satzes (Statuswechsel)',
-    ('db/invoice_lock.py', 'set_invoice_status'): 'Statuswechsel: Satz unverändert seit der Vorprüfung, Umzug der Zahlungen nur bei gleichem Erlöskonto',
-    ('db/invoice_payments.py', '_assign_in_tx'): 'Zahlung zuordnen: Satz und Steuer der Rechnung für die Buchungssätze der Zahlung',
-    ('db/invoice_payments.py', '_move_replaced_payments'): 'Umzug der Zahlungen: Satz der stornierten Rechnung gegen den der neuen, Neubuchung',
-    ('db/invoice_payments.py', '_payment_prerequisites'): 'Zahlung zuordnen: Erlöskonto des Satzes und Satz im Kontext',
-    ('db/invoice_payments.py', '_refund_plan'): 'Erstattung einer Stornorechnung: Satz und Steuer der stornierten Rechnung',
-    ('db/invoice_repair.py', '_rebuild_in'): 'Zuordnung neu aufbauen: Satz der Rechnung für die neuen Sätze',
+    ('db/invoice_lock.py', '_receivable_accounts_for'): ('Forderung buchen: Wartekonto und Schlüssel des Satzes (Statuswechsel); für einen Beleg mit '
+                                                         'Steuersatz je Position (MixedTaxRates) keine Konten'),
+    ('db/invoice_lock.py', 'set_invoice_status'): ('Statuswechsel: Satz unverändert seit der Vorprüfung, Umzug der Zahlungen nur bei gleichem Erlöskonto; '
+                                                   'Versenden und Wiederbeleben eines Belegs mit Steuersatz je Position (MixedTaxRates) abgelehnt'),
+    ('db/invoice_payments.py', '_assign_in_tx'): ('Zahlung zuordnen: Satz und Steuer der Rechnung für die Buchungssätze der Zahlung; ein Beleg mit '
+                                                  'Steuersatz je Position (MixedTaxRates) wird abgelehnt'),
+    ('db/invoice_payments.py', '_move_replaced_payments'): ('Umzug der Zahlungen: Satz der stornierten Rechnung gegen den der neuen, Neubuchung; mit '
+                                                            'Steuersatz je Position (MixedTaxRates) an einer der beiden zieht nichts um'),
+    ('db/invoice_payments.py', '_payment_prerequisites'): ('Zahlung zuordnen: Erlöskonto des Satzes und Satz im Kontext; ein Beleg mit Steuersatz je '
+                                                           'Position (MixedTaxRates) wird vor dem Auflösen des Erlöskontos abgelehnt'),
+    ('db/invoice_payments.py', '_refund_plan'): ('Erstattung einer Stornorechnung: Satz und Steuer der stornierten Rechnung; mit Steuersatz je Position '
+                                                 '(MixedTaxRates) an Stornorechnung oder stornierter Rechnung abgelehnt'),
+    ('db/invoice_repair.py', '_rebuild_in'): ('Zuordnung neu aufbauen: Satz der Rechnung für die neuen Sätze; ein Beleg mit Steuersatz je Position '
+                                              '(MixedTaxRates) wird abgelehnt'),
     ('db/invoice_repair.py', '_rebuild_prerequisites'): 'Zuordnung neu aufbauen: Erlöskonto des Satzes',
-    ('db/invoice_storno.py', '_copied_head'): 'Ersatzrechnung: Kopf der stornierten Rechnung kopieren (Satz und Kategorie)',
-    ('db/invoice_storno.py', 'cancel_invoice'): 'Stornieren: Wartekonto und Schlüssel des Satzes für die Gegenbuchung der Forderung',
+    ('db/invoice_storno.py', '_copied_head'): ('Stornorechnung und Ersatzrechnung: Kopf der Ursprungsrechnung kopieren (Satz, Kategorie und das Kennzeichen '
+                                               '„Steuersatz je Position“, MixedTaxRates)'),
+    ('db/invoice_storno.py', 'cancel_invoice'): ('Stornieren: Wartekonto und Schlüssel des Satzes für die Gegenbuchung der Forderung; ein Beleg mit '
+                                                 'Steuersatz je Position (MixedTaxRates) wird in _storno_blocker abgelehnt, vor dem Auflösen der Konten'),
     ('db/invoices.py', '_book_receivable'): 'Forderung buchen: Satz und Steuer der Forderungszeile',
     ('db/invoices.py', '_learned_revenue_coa'): 'Erlöskonto lernen: Der Satz der Rechnung bestimmt den Schlüssel',
-    ('db/invoices.py', 'convert_quote_to_invoice'): 'Angebot in eine Rechnung umwandeln: Kopfsatz des Angebots kopieren',
-    ('db/invoices.py', 'ensure_receivable_booking'): 'Forderung buchen (Demodaten, Tests): Wartekonto des Satzes',
-    ('db/invoices.py', 'insert_invoice'): 'Beleg anlegen: schreibt den Satz im Kopf',
+    ('db/invoices.py', 'convert_quote_to_invoice'): ('Angebot in eine Rechnung umwandeln: Kopfsatz des Angebots kopieren, dazu das Kennzeichen '
+                                                     '„Steuersatz je Position“ (MixedTaxRates)'),
+    ('db/invoices.py', 'ensure_receivable_booking'): ('Forderung buchen (Demodaten, Tests): Wartekonto des Satzes; ein Beleg mit Steuersatz je Position '
+                                                      '(MixedTaxRates) wird vor dem Auflösen der Konten und in der Transaktion abgelehnt'),
+    ('db/invoices.py', 'insert_invoice'): 'Beleg anlegen: schreibt den Satz im Kopf und das Kennzeichen „Steuersatz je Position“ (MixedTaxRates: nur NULL oder 1)',
     ('db/invoices.py', 'last_document_shows_tax'): '§ 19-Prüfung: Häkchen „Umsatzsteuer ausweisen“ eines neuen Belegs',
     ('db/schema.py', 'initialize_database'): 'Schema: legt die Spalte Invoices.TaxRate (und den Satz je Position) an, liest nichts',
     ('export/einvoice_model.py', 'build_einvoice'): 'E-Rechnung: Standardsatz der Positionen ohne eigenen Satz, § 19 (Kategorie E)',
     ('export/pdf_invoice.py', 'generate_invoice_pdf'): 'PDF der Rechnung: Summenblock mit EINEM Satz, § 19-Hinweis',
     ('export/pdf_quote.py', 'generate_quote_pdf'): 'PDF des Angebots: Summenblock mit EINEM Satz, § 19-Hinweis',
     ('server/handlers.py', '_backfill_booking_skr'): 'Bankbewegung nach dem Zuordnen: Anzeige von Satz und Steuer',
-    ('server/handlers.py', '_save_quote_update'): 'Angebot ändern: schreibt den Satz im Kopf',
+    ('server/handlers.py', '_save_quote_update'): 'Angebot ändern: schreibt den Satz im Kopf und das Kennzeichen „Steuersatz je Position“ (MixedTaxRates)',
     ('server/pages_invoice.py', '_invoice_form_html'): 'Rechnungsmaske: Satz und Häkchen „Umsatzsteuer ausweisen“, Erlöskonto-Wahl, Zuordnung neu aufbauen',
     ('server/pages_invoice.py', '_refund_box_html'): 'Kasten Erstattung: Erlöskonto-Wahl',
     ('server/pages_quote.py', '_quote_form_html'): 'Angebotsmaske: Satz und Häkchen „Umsatzsteuer ausweisen“',

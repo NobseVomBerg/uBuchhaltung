@@ -85,6 +85,12 @@ BUSINESS_ONLY_SCHEMA = 2005
 #: ändert sich keine vorhandene Tabelle); der Bestand bekommt keine Zeilen – nichts wird umgedeutet.
 DOCUMENT_READINGS_SCHEMA = 2006
 
+#: Ab dieser Schema-Zahl (Version 2.7.0) trägt ein Beleg das Kennzeichen „Steuersatz je Position“
+#: (``Invoices.MixedTaxRates``: NULL = ein Satz für den ganzen Beleg – der ganze Bestand –, 1 = Satz je Position). Der Satz im
+#: Kopf (``Invoices.TaxRate``) ist dann nur ein Platzhalter: der höchste Satz der Positionen. Der Bestand behält überall NULL
+#: und wird weiter allein nach ``Invoices.TaxRate`` gelesen – nichts wird umgedeutet.
+MIXED_TAX_SCHEMA = 2007
+
 
 class SchemaMixin:
     def _column_exists(self, cursor, table, column):
@@ -193,6 +199,11 @@ class SchemaMixin:
             # frischen Datenbank; der Bestand bekommt überall 1 (= reines Geschäftskonto: die Importe laufen wie bisher) –
             # nichts wird umgedeutet.
             self._add_column_if_missing(cursor, 'Accounts', 'BusinessOnly', 'INTEGER NOT NULL DEFAULT 1')
+        if from_version < MIXED_TAX_SCHEMA:
+            # 2.7.0: Kennzeichen „Steuersatz je Position“ am Beleg. Die Spalte kommt ans Ende, wie im CREATE TABLE der frischen
+            # Datenbank; der Bestand behält überall NULL (= ein Satz für den ganzen Beleg, ``Invoices.TaxRate`` gilt wie bisher) –
+            # nichts wird umgedeutet.
+            self._add_column_if_missing(cursor, 'Invoices', 'MixedTaxRates', 'INTEGER')
 
     def _correct_tax_keys(self, cursor):
         """Die Zeilen von ``TAX_KEY_CORRECTIONS`` in ``TaxKeys`` berichtigen (eine abweichende Zeile wird überschrieben,
@@ -720,6 +731,9 @@ class SchemaMixin:
                 ReplacesInvoiceId INTEGER,                     -- neue Rechnung: die ersetzte, stornierte (seit 2.2.2)
                 SentAt DATETIME,                               -- erstmals versendet (UTC); Import und Altbestand: NULL
                 DocumentVersion INTEGER,                       -- Nummer der aktuellen Fassung; NULL = Fassung 1
+
+                -- Mehrere Steuersätze je Beleg (Schema 2007, Index 55; Reihenfolge wie die ALTER TABLE der Migration)
+                MixedTaxRates INTEGER,                         -- NULL = ein Satz für den ganzen Beleg (Bestand), 1 = Satz je Position (seit 2.7.0)
 
                 FOREIGN KEY (OwnCompanyId) REFERENCES Contacts(ID),
                 FOREIGN KEY (CustomerId) REFERENCES Contacts(ID),

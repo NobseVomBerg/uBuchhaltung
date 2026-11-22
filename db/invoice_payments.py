@@ -32,6 +32,20 @@ PAYMENT_MARK = 'invoice_payment'
 STORNO_KIND = 'storno'
 STORNO_PAYMENT_MESSAGE = 'Einer Stornorechnung lässt sich keine Zahlung zuordnen.'
 
+# Ein Beleg mit Steuersatz je Position (``Invoices.MixedTaxRates`` = 1, seit 2.7.0) lässt sich in dieser Version noch nicht buchen: Sein Satz im
+# Kopf ist nur ein Platzhalter (der höchste Satz der Positionen), und jede Buchung, die ihn nähme, buchte falsch. EIN Wortlaut für jede Stelle, die
+# bucht (Versenden, Zahlung, Erstattung, Stornieren, Neuaufbau, Umzug); jede lehnt VOR dem ersten Schreiben ab. Wie ``STORNO_KIND`` hier definiert,
+# weil dieses Modul das unterste der Rechnungsmodule ist; ``db.invoices`` reicht die Namen weiter.
+MIXED_NOT_BOOKABLE = 'Belege mit mehreren Steuersätzen lassen sich in dieser Version noch nicht buchen.'
+
+
+def has_mixed_rates(value):
+    """Trägt der Beleg einen Steuersatz je Position? ``value`` ist ``Invoices.MixedTaxRates`` – die EINE Stelle, die ihn liest, jede andere
+    fragt sie. Streng: Nur die ganze Zahl 1 gilt; NULL, 0, Text, ``True``, 1.0 und jede andere Zahl (die Spalte lässt sich per SQL-Konsole oder
+    zurückgespielter Sicherung beschreiben) heißen „ein Satz für den ganzen Beleg“ – wie ``db.accounts.is_business_only`` liest sie streng."""
+    return type(value) is int and value == 1
+
+
 # Die Erstattung einer Stornorechnung (``assign_storno_refund``) und der Schutz des Guthabens
 REFUND_ONLY_STORNO_MESSAGE = 'Erstatten lässt sich nur auf eine Stornorechnung.'
 REFUND_ONLY_OUTGOING_MESSAGE = 'Nur Zahlungsausgänge lassen sich als Erstattung zuordnen.'
@@ -429,11 +443,13 @@ class InvoicePaymentsMixin:
         invoice = self.get_document(invoice_id, 'invoice')
         if invoice is None:
             return 'Rechnung nicht gefunden', None
-        # Spalten der Rechnungszeile: 38 = SumGross, 40 = Status, 45 = DocumentType, 50 = InvoiceKind
+        # Spalten der Rechnungszeile: 38 = SumGross, 40 = Status, 45 = DocumentType, 50 = InvoiceKind, 55 = MixedTaxRates
         blocked = payment_blocker(invoice[45], invoice[40], invoice[38],
                                   invoice[50] if len(invoice) > 50 else None)
         if blocked:
             return blocked, None
+        if has_mixed_rates(invoice[55] if len(invoice) > 55 else None):
+            return MIXED_NOT_BOOKABLE, None            # vor dem Auflösen des Erlöskontos: Es wird nichts angelegt
         error, bank_coa = self._bank_coa_of(account_id)
         if error:
             return error, None
@@ -605,10 +621,10 @@ class InvoicePaymentsMixin:
         conn = tx.conn
         invoice = conn.execute(
             'SELECT InvoiceNumber, DocumentType, Status, SumGross, TaxAmount, TaxRate, '
-            'CustomerId, InvoiceKind FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()
+            'CustomerId, InvoiceKind, MixedTaxRates FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()
         if invoice is None:
             return _refused('Rechnung nicht gefunden')
-        number, doc_type, status, gross, tax_total, rate, customer_id, kind = invoice
+        number, doc_type, status, gross, tax_total, rate, customer_id, kind, mixed = invoice
         if (doc_type or 'invoice') != 'invoice':
             return _refused('Rechnung nicht gefunden')
         bank = conn.execute(
@@ -625,6 +641,8 @@ class InvoicePaymentsMixin:
                    and (gross or 0) > 0 else payment_blocker(doc_type, status, gross, kind))
         if blocked:
             return _refused(blocked)
+        if has_mixed_rates(mixed):
+            return _refused(MIXED_NOT_BOOKABLE)
         _, bank_amount, account_id, bank_date, bank_tax_date, recipient, currency = bank
         if rate != ctx['tax_rate'] or account_id != ctx['account_id']:
             return _refused('Rechnung oder Bankbewegung wurde inzwischen geändert – bitte '
@@ -788,17 +806,19 @@ class InvoicePaymentsMixin:
         Bewegung (``bank_coa_ids``: die eigenen Bankkonten) und der gewünschte Betrag ``requested`` (Minor Units, auf Cent
         gerundet, oder ``None``). Returns ``(Klartext, None)`` bei einer Ablehnung, sonst ``(None, _Refund)``."""
         storno = conn.execute(
-            'SELECT InvoiceNumber, DocumentType, InvoiceKind, CancelsInvoiceId, CustomerId, SumGross, TaxAmount '
+            'SELECT InvoiceNumber, DocumentType, InvoiceKind, CancelsInvoiceId, CustomerId, SumGross, TaxAmount, MixedTaxRates '
             'FROM Invoices WHERE ID = ?', (storno_id,)).fetchone()
         if storno is None or (storno[1] or 'invoice') != 'invoice':
             return 'Rechnung nicht gefunden', None
-        number, _type, kind, original_id, customer_id, gross, tax_total = storno
+        number, _type, kind, original_id, customer_id, gross, tax_total, storno_mixed = storno
         original = None
         if kind == STORNO_KIND and original_id is not None:
-            original = conn.execute('SELECT InvoiceNumber, SumGross, TaxAmount, TaxRate FROM Invoices WHERE ID = ?',
+            original = conn.execute('SELECT InvoiceNumber, SumGross, TaxAmount, TaxRate, MixedTaxRates FROM Invoices WHERE ID = ?',
                                     (original_id,)).fetchone()
         if original is None:
             return REFUND_ONLY_STORNO_MESSAGE, None
+        if has_mixed_rates(storno_mixed) or has_mixed_rates(original[4]):
+            return MIXED_NOT_BOOKABLE, None
         bank = conn.execute(
             'SELECT BookingType, Amount, Account_ID, DateBooking, DateTax, RecipientClient, Currency '
             'FROM Bookings WHERE ID = ?', (booking_id,)).fetchone()
@@ -809,7 +829,7 @@ class InvoicePaymentsMixin:
         if conn.execute('SELECT 1 FROM InvoicePayments WHERE InvoiceID = ? AND BookingID = ?',
                         (storno_id, booking_id)).fetchone():
             return 'Buchung ist bereits mit dieser Rechnung verknüpft', None
-        original_number, original_gross, original_tax, rate = original
+        original_number, original_gross, original_tax, rate, _original_mixed = original
 
         paid = conn.execute('SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
                             (original_id,)).fetchone()[0]
@@ -1237,12 +1257,12 @@ class InvoicePaymentsMixin:
         Returns ``(Betrag in Minor Units, der umgezogen ist, Hinweis für den Nutzer oder None)``."""
         conn = tx.conn
         new_id, old_id = row['ID'], move['replaced_id']
-        old = conn.execute('SELECT InvoiceNumber, DocumentType, Status, TaxRate, CustomerId, Currency, SumGross, TaxAmount '
-                           'FROM Invoices WHERE ID = ?', (old_id,)).fetchone()
+        old = conn.execute('SELECT InvoiceNumber, DocumentType, Status, TaxRate, CustomerId, Currency, SumGross, TaxAmount, '
+                           'MixedTaxRates FROM Invoices WHERE ID = ?', (old_id,)).fetchone()
         if (old is None or (old[1] or 'invoice') != 'invoice' or old[2] != 'cancelled'
                 or not conn.execute('SELECT 1 FROM Invoices WHERE CancelsInvoiceId = ?', (old_id,)).fetchone()):
             return 0, None
-        old_number, _type, _status, old_rate, old_customer, old_currency, old_gross, old_tax = old
+        old_number, _type, _status, old_rate, old_customer, old_currency, old_gross, old_tax, old_mixed = old
         replaced = _Replaced(old_id, old_number, old_gross or 0, old_tax or 0, old_rate, old_customer)
         total = conn.execute('SELECT COALESCE(SUM(Amount), 0) FROM InvoicePayments WHERE InvoiceID = ?',
                              (old_id,)).fetchone()[0]
@@ -1255,6 +1275,8 @@ class InvoicePaymentsMixin:
         def euro(minor):
             return fmt_eur(from_minor(minor))
 
+        if has_mixed_rates(old_mixed) or has_mixed_rates(row.get('MixedTaxRates')):
+            return 0, f'Die Zahlungen der stornierten Rechnung {old_number} ({euro(total)}) bleiben dort: {MIXED_NOT_BOOKABLE}'
         if row['CustomerId'] != old_customer or (row['Currency'] or 'EUR') != (old_currency or 'EUR'):
             return 0, (f'Die Zahlungen der stornierten Rechnung {old_number} ({euro(total)}) bleiben dort: '
                        'Kunde oder Währung dieser Rechnung weichen ab.')

@@ -10,7 +10,8 @@ from money import to_minor, from_minor
 from .core import fk_explained
 from .invoice_lock import (DocumentNotFound, has_storno, invoice_row, REOPEN_ATTACHED_MESSAGE,
                            REOPEN_FOREIGN_MESSAGE, REOPEN_IMPORTED_MESSAGE)
-from .invoice_payments import PAYABLE_STATUSES, PAYMENT_MARK, STORNO_KIND, STORNO_PAYMENT_MESSAGE
+from .invoice_payments import (MIXED_NOT_BOOKABLE, PAYABLE_STATUSES, PAYMENT_MARK, STORNO_KIND, STORNO_PAYMENT_MESSAGE,
+                               has_mixed_rates)
 from .matching import FORM_TRANSFER
 from .reporting import is_income_account
 
@@ -34,6 +35,7 @@ class InvoiceCol:
     REPLACES_INVOICE_ID = 52  # Ersatzrechnung: die stornierte Rechnung, die sie ersetzt (seit 2.2.2)
     SENT_AT = 53         # erstmals versendet (UTC, CURRENT_TIMESTAMP); Import: NULL
     DOCUMENT_VERSION = 54    # Nummer der aktuellen Fassung; NULL = Fassung 1
+    MIXED_TAX_RATES = 55     # NULL = ein Satz für den ganzen Beleg (Bestand), 1 = Satz je Position (seit 2.7.0); gelesen über ``has_mixed_rates``
 
 
 # Aus diesen Status wird ein Angebot in eine Rechnung umgewandelt – einmal: danach ist es „converted“.
@@ -160,13 +162,18 @@ class InvoicesMixin:
         """Insert a new invoice with all fields
 
         Args:
-            invoice_data: Dictionary with all invoice fields
+            invoice_data: Dictionary with all invoice fields. ``mixed_tax_rates`` (Standard ``None``) ist das Kennzeichen
+                „Steuersatz je Position“: geschrieben wird nur ``None`` (ein Satz für den ganzen Beleg) oder ``1``, alles
+                andere ist ein ``ValueError`` (vor jedem Schreiben).
             tx: optionale :class:`db.core.Transaction` – dann wird darin
                 geschrieben und erst mit ihr committet
 
         Returns:
             invoice_id: The ID of the newly created invoice
         """
+        mixed = invoice_data.get('mixed_tax_rates')
+        if mixed is not None and not has_mixed_rates(mixed):
+            raise ValueError('mixed_tax_rates darf nur None oder 1 sein')
         conn = tx.conn if tx else self._get_connection()
         cursor = conn.cursor()
         
@@ -180,10 +187,10 @@ class InvoicesMixin:
                 BankAccountId, BankName, BankIBAN, BankBIC,
                 TaxCategory, TaxRate, SumNet, TaxAmount, SumGross, AmountDue,
                 Status, PDFPath, XMLPath,
-                DocumentType, ValidUntil, IntroText, ClosingText, SourceQuoteId
+                DocumentType, ValidUntil, IntroText, ClosingText, SourceQuoteId, MixedTaxRates
             ) VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?
             )
         '''
 
@@ -235,6 +242,7 @@ class InvoicesMixin:
             invoice_data.get('intro_text'),
             invoice_data.get('closing_text'),
             invoice_data.get('source_quote_id'),
+            mixed,
         )
         
         refs = {'OwnCompanyId': invoice_data.get('own_company_id'),
@@ -479,6 +487,8 @@ class InvoicesMixin:
                 'intro_text': quote[47] if len(quote) > 47 else None,
                 'closing_text': quote[48] if len(quote) > 48 else None,
                 'source_quote_id': quote_id,
+                # die Positionen kommen mit ihren Sätzen (unten): Das Kennzeichen „Steuersatz je Position“ geht mit
+                'mixed_tax_rates': 1 if has_mixed_rates(quote[InvoiceCol.MIXED_TAX_RATES]) else None,
             }
             new_invoice_id = self.insert_invoice(invoice_data, tx=tx)
 
@@ -501,15 +511,18 @@ class InvoicesMixin:
         Buchungssätze an – WISO liefert sie mit. Deshalb keine Prüfung von Status, Vorzeichen
         oder Buchungsart; die Oberfläche ordnet über ``assign_invoice_payment`` zu. Die
         Dublettenprüfung läuft in derselben Transaktion wie das Einfügen. Einer Stornorechnung
-        (``cancel_invoice``) lässt sich nie eine Zahlung zuordnen (``ValueError``)."""
+        (``cancel_invoice``) lässt sich nie eine Zahlung zuordnen (``ValueError``), ebenso wenig einem Beleg mit
+        Steuersatz je Position (``MIXED_NOT_BOOKABLE``, solange die Buchungen dafür fehlen)."""
         conn = self._get_connection()
         try:
             conn.execute('BEGIN IMMEDIATE')
-            invoice = conn.execute('SELECT InvoiceKind FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()
+            invoice = conn.execute('SELECT InvoiceKind, MixedTaxRates FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()
             if not invoice:
                 raise ValueError(f"Invoice {invoice_id} not found")
             if invoice[0] == STORNO_KIND:
                 raise ValueError(STORNO_PAYMENT_MESSAGE)
+            if has_mixed_rates(invoice[1]):
+                raise ValueError(MIXED_NOT_BOOKABLE)
 
             # Get payment date from booking
             booking = conn.execute('SELECT DateBooking FROM Bookings WHERE ID = ?',
@@ -938,15 +951,23 @@ class InvoicesMixin:
         Der Statuswechsel bucht sie selbst in seiner Transaktion
         (``Database.set_invoice_status``); dieser Weg ist für alles andere (Demodaten, Tests).
 
+        Ein Beleg mit Steuersatz je Position (``MixedTaxRates``) lässt sich in dieser Version nicht buchen: ``ValueError``
+        mit ``MIXED_NOT_BOOKABLE`` – vor dem Auflösen der Konten (es wird keines angelegt) und, mit dem frisch gelesenen Beleg,
+        vor dem ersten Schreiben.
+
         Returns: Booking-ID oder None.
         """
         invoice = self.get_invoice_by_id(invoice_id)
         if not invoice or (len(invoice) > 45 and invoice[45] == 'quote'):
             return None
+        if has_mixed_rates(invoice[InvoiceCol.MIXED_TAX_RATES]):
+            raise ValueError(MIXED_NOT_BOOKABLE)
         accounts = self._receivable_accounts(invoice[35])
         with self.transaction() as tx:
             tx.conn.execute('BEGIN IMMEDIATE')
             row = invoice_row(tx.conn, invoice_id)
+            if row is not None and has_mixed_rates(row.get('MixedTaxRates')):
+                raise ValueError(MIXED_NOT_BOOKABLE)
             return self._book_receivable(tx, row, accounts) if row else None
 
     def _book_receivable(self, tx, row, accounts):

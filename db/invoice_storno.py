@@ -45,6 +45,7 @@ from .core import ForeignKeyError
 from .invoice_lock import (
     CHANGED_MESSAGE, EDITABLE_STATUSES, LOCKED_STATUSES, STORNO_KIND, _Refusal, canonical_status,
     document_version, invoice_row, is_storno)
+from .invoice_payments import MIXED_NOT_BOOKABLE, has_mixed_rates
 from .invoice_versions import is_iso_date
 from .numbering import NumberRangeError
 
@@ -112,9 +113,10 @@ class InvoiceStornoMixin:
         ein Stornodatum, das kein ISO-Datum ist oder nach heute liegt (400); eine unbekannte ID oder die ID eines
         Angebots (404); eine Stornorechnung, ein Entwurf, eine abgeschlossene oder eine schon mit Stornorechnung
         stornierte Rechnung, ein unbekannter Status, eine Rechnung ohne positiven Betrag (sie wird über den Status
-        storniert), eine Rechnung mit Stornorechnung (409); ein Stornodatum vor dem Rechnungsdatum (400); ein
-        Nummernkreis ohne brauchbare Nummer (409); ein Fehler beim Speichern (409) – zeigt dabei ein Verweis der
-        Rechnung ins Leere (``ForeignKeyError``), steht er im Klartext in der Meldung.
+        storniert), eine Rechnung mit Stornorechnung (409); ein Beleg mit Steuersatz je Position
+        (``MIXED_NOT_BOOKABLE``, 409: seine Gegenbuchung gibt es in dieser Version noch nicht); ein Stornodatum vor dem
+        Rechnungsdatum (400); ein Nummernkreis ohne brauchbare Nummer (409); ein Fehler beim Speichern (409) – zeigt dabei ein
+        Verweis der Rechnung ins Leere (``ForeignKeyError``), steht er im Klartext in der Meldung.
 
         Eine Rechnung, die schon „storniert“ ist, aber keine Stornorechnung hat (von Hand storniert, Altbestand), bekommt
         sie nachträglich: Status und Protokoll der Rechnung bleiben, wie sie sind; die Gegenbuchung gibt es nur, wenn die
@@ -288,6 +290,8 @@ class InvoiceStornoMixin:
         elif status not in LOCKED_STATUSES:
             # status_group() hielte einen unbekannten Status für gesperrt – storniert wird nur ein bekannter
             return f'Der Status „{status}“ ist unbekannt – die Rechnung lässt sich nicht stornieren.', 409
+        if has_mixed_rates(row.get('MixedTaxRates')):
+            return MIXED_NOT_BOOKABLE, 409
         if (row['SumGross'] or 0) <= 0:
             return NO_POSITIVE_AMOUNT_MESSAGE, 409
         existing = conn.execute('SELECT ID, InvoiceNumber, InvoiceDate FROM Invoices WHERE CancelsInvoiceId = ?',
@@ -448,8 +452,8 @@ def _replacement_exists_message(number):
 def _copied_head(row):
     """Was Stornorechnung und Ersatzrechnung vom Kopf der Ursprungsrechnung ``row`` (Spalte → Wert) übernehmen: der
     Absender mit seiner Firma, der Kunde samt Anschrift-Momentaufnahme, Käufer-USt-IdNr., Leitweg-ID, Bestellnummer,
-    Bankverbindung, Währung, Steuersatz und -kategorie und das Leistungsdatum – ohne Nummer, Datum, Zahlungsbedingungen,
-    Summen, Status und Dokumente."""
+    Bankverbindung, Währung, Steuersatz und -kategorie, das Kennzeichen „Steuersatz je Position“ (die Positionen tragen
+    ihre Sätze mit) und das Leistungsdatum – ohne Nummer, Datum, Zahlungsbedingungen, Summen, Status und Dokumente."""
     return {
         'own_company_id': row['OwnCompanyId'],
         'seller_name': row['SellerName'], 'seller_company': row['SellerCompany'],
@@ -468,6 +472,7 @@ def _copied_head(row):
         'bank_account_id': row['BankAccountId'], 'bank_name': row['BankName'],
         'bank_iban': row['BankIBAN'], 'bank_bic': row['BankBIC'],
         'tax_category': row['TaxCategory'], 'tax_rate': row['TaxRate'],
+        'mixed_tax_rates': 1 if has_mixed_rates(row['MixedTaxRates']) else None,
         'pdf_path': None, 'xml_path': None, 'document_type': 'invoice',
     }
 

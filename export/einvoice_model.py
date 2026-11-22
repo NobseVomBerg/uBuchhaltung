@@ -42,6 +42,7 @@ _INV = dict(
     payment_terms=26, payment_due_date=27, skonto_days=28, skonto_percent=29, bank_name=31, bank_iban=32,
     bank_bic=33, tax_category=34, tax_rate=35, sum_net=36, tax_amount=37,
     sum_gross=38, amount_due=39, invoice_kind=50, cancels_invoice_id=51, replaces_invoice_id=52, document_version=54,
+    mixed_tax_rates=55,
 )
 # Spaltenindizes der InvoiceItems-Zeile
 _ITM = dict(position=2, description=4, quantity=5, unit=6, price=7, total_net=8,

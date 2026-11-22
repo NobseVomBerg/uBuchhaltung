@@ -300,6 +300,7 @@ COLUMN_OF = {
     'REPLACES_INVOICE_ID': 'ReplacesInvoiceId',
     'SENT_AT': 'SentAt',
     'DOCUMENT_VERSION': 'DocumentVersion',
+    'MIXED_TAX_RATES': 'MixedTaxRates',            # ab 2.7.0 (Schema 2007), Index 55
 }
 
 
