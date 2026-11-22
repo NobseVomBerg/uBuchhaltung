@@ -453,6 +453,7 @@ Ersteinrichtung:
   `demo` ist **kein Administrator**: keine Benutzerverwaltung, keine SQL-Konsole.
   Andere Benutzer können sich so lange nicht anmelden (auch ein Administrator mit
   automatischer Anmeldung nicht).
+- Im Demo-Modus nimmt die App keine Dateien an (Belege, Kontoauszüge, Logos, Importe).
 - Ohne die Variable läuft die Instanz normal. `demo` ist dann ein gewöhnlicher
   Benutzer ohne bekanntes Passwort: Ein Administrator kann ihm in der Benutzerverwaltung
   eines setzen oder ihn löschen (sein Verzeichnis `data/users/demo/` bleibt dabei

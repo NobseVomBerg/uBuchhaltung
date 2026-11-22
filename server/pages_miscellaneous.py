@@ -13,6 +13,7 @@ from db import Database
 from db.wiso_fdb_import import MAX_ADOPTED_ROWS, MAX_LIQUID_SUBACCOUNTS
 from money import fmt_eur
 from . import wiso_upload as _wiso_upload
+from .handlers import WISO_TEXT_DEMO_REFUSED
 from .period import parse_iso_date
 
 
@@ -634,12 +635,18 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
         das Verrechnungskonto 1460 gilt als Geldtransit).<br>
         Duplikate (gleiche Referenznummer + Datum + Konto + Betrag) werden übersprungen &ndash;
         auch, wenn die Buchungen schon aus dem Datenbank-Import stammen.</p>
-        <form method="POST" action="/wiso/import" enctype="multipart/form-data">
+'''
+    if _demo.is_active():
+        # Wie die Route (``POST /wiso/import`` ist 403): Im Demo-Modus gibt es den Import nicht (keine Dateien eines Besuchers auf dem Server)
+        s += f'        <p class="hint">{_html.escape(WISO_TEXT_DEMO_REFUSED)}</p>\n'
+    else:
+        s += '''        <form method="POST" action="/wiso/import" enctype="multipart/form-data">
             <div class="rowWithObjects">CSV-Datei:&nbsp;<input type="file" name="csvfile" accept=".txt,.csv" required></div>
             <br>
             <button type="submit" class="coloredButton bg-green">&#x1F4C2; WISO Import starten</button>
         </form>
-        <script>
+'''
+    s += '''        <script>
         (function() {
             const p = new URLSearchParams(window.location.search);
             const status = p.get('wiso_import');

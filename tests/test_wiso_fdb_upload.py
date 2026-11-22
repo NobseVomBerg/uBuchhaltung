@@ -683,7 +683,7 @@ def test_in_demo_mode_the_import_is_refused_and_the_page_shows_a_hint_instead_of
     assert wiso_upload.DEMO_REFUSED in page
     assert 'action="/wiso/fdb-import"' not in page and 'wisoFdbForm' not in page       # kein Formular, kein Skript
     assert 'name="upload"' not in page and 'wisoFdbClient' not in page and '/wiso/fdb-upload' not in page
-    assert 'name="csvfile"' in page                                  # der Textimport bleibt
+    assert 'name="csvfile"' not in page                              # auch der Textimport ist dort abgeschaltet (tests/test_demo_uploads_closed.py)
 
 
 def test_in_demo_mode_the_handler_refuses_before_the_stock_check(tmp_db, tmp_path, monkeypatch):

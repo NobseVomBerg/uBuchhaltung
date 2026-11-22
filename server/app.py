@@ -1990,16 +1990,24 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             self.respond(status_code, response, content_type="application/json")
             return
 
-        # Handle WISO CSV import (multipart file upload)
+        # Handle WISO CSV import (multipart file upload; das Token steckt im Body und wird erst im Handler geprüft)
         if self.path == "/wiso/import":
+            if demo.is_active():
+                # Demo-Modus: keine Dateien eines Besuchers auf dem Server – abgelehnt vor dem Lesen des Bodys, also auch vor dem Token
+                self._refuse_body(403, handlers.WISO_TEXT_DEMO_REFUSED)
+                return
             if not self._check_body_size(MAX_UPLOAD_BODY):
                 return
             status_code, location = handlers.handle_wiso_import(self, db)
             self.respond(status_code, "", headers={"Location": location})
             return
 
-        # Handle contact logo upload (multipart file upload)
+        # Handle contact logo upload (multipart file upload; das Token ist oben geprüft)
         if self.path == "/masterdata/contacts/upload-logo":
+            if demo.is_active():
+                # Demo-Modus: keine Dateien eines Besuchers auf dem Server – der Body bleibt ungelesen, die Verbindung geht zu
+                self._refuse_body(403, handlers.LOGO_DEMO_REFUSED, as_json=True)
+                return
             response_data = handlers.handle_logo_upload(self)
             self.send_response(200)
             self.send_header("Content-type", "application/json")

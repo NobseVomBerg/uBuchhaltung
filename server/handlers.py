@@ -1511,6 +1511,10 @@ MAX_LOGO_BYTES = 5 * 1024 * 1024
 LOGO_TYPE_ERROR = 'Nur Bilddateien (PNG, JPG, GIF, WEBP) sind als Logo erlaubt.'
 LOGO_SIZE_ERROR = f'Das Logo ist zu groß (höchstens {MAX_LOGO_BYTES // (1024 * 1024)} MB).'
 
+#: Im Demo-Modus nimmt die App keine Datei eines Besuchers an (alle teilen ein Verzeichnis): ``POST /masterdata/contacts/upload-logo``
+#: ist dort 403, bevor der Body gelesen wird; das Kontaktformular zeigt den Satz statt der Dateiauswahl
+LOGO_DEMO_REFUSED = 'Im Demo-Modus ist das Hochladen von Logos abgeschaltet.'
+
 
 def _logo_refusal(message, request_handler=None):
     """Ablehnung des Logo-Uploads als JSON. Mit ``request_handler`` wurde der Body NICHT gelesen: Die
@@ -1578,17 +1582,27 @@ def handle_logo_upload(request_handler):
 #: (nie der Text der Ausnahme – Fehlertexte der Importer können Pfade der Datei nennen).
 WISO_IMPORT_FAILED = 'Der Import ist fehlgeschlagen – Einzelheiten stehen im Server-Log.'
 
+#: Im Demo-Modus gibt es den Import der Textexporte nicht (wie den der WISO-Datenbank: keine Datei eines Besuchers auf dem Server):
+#: ``POST /wiso/import`` ist dort 403, bevor der Body gelesen wird; *Sonstiges* zeigt den Satz statt des Formulars
+WISO_TEXT_DEMO_REFUSED = 'Im Demo-Modus ist der Import aus Textexporten abgeschaltet.'
+
 
 def handle_wiso_import(request_handler, db: Database):
     """WISO Mein Büro CSV-Datei importieren (Multipart-Upload).
 
     Erwartet eine Datei im Formularfeld „csvfile" (enctype=multipart/form-data).
 
+    Im Demo-Modus wird vor allem anderen nichts gelesen und nichts importiert (``WISO_TEXT_DEMO_REFUSED``); die Route lehnt dort
+    schon vor diesem Aufruf mit 403 ab – das hier ist die zweite Schicht.
+
     Returns:
         (303, location_str) – immer ein Redirect zu /miscellaneous
     """
     from urllib.parse import quote
     from .multipart import parse_multipart
+
+    if demo.is_active():
+        return 303, '/miscellaneous?wiso_import=error&msg=' + quote(WISO_TEXT_DEMO_REFUSED, safe='')
 
     content_type = request_handler.headers.get('Content-Type', '')
     if 'multipart/form-data' not in content_type:
