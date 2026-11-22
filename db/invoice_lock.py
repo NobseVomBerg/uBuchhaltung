@@ -34,7 +34,7 @@ from decimal import Decimal, InvalidOperation
 from money import to_minor
 from tax_groups import booking_rate, group_label
 from .core import fk_explained
-from .invoice_payments import MixedNotBookable, PAYMENT_MARK, STORNO_KIND, PaymentMoveFailed, has_mixed_rates
+from .invoice_payments import MixedNotBookable, PAYMENT_MARK, STORNO_KIND, PaymentMoveFailed, has_mixed_rates, rate_sentence
 
 EDITABLE_STATUSES = frozenset({'draft', 'finalized'})
 LOCKED_STATUSES = frozenset({'sent', 'overdue', 'partial_payment', 'partial', 'paid'})
@@ -144,7 +144,8 @@ HAS_STORNO_MESSAGE = 'Zu dieser Rechnung gibt es eine Stornorechnung – sie ble
 CHANGED_MESSAGE = 'Die Rechnung wurde inzwischen geändert – bitte die Seite neu laden.'
 # Versenden einer Rechnung mit einem Steuersatz aus den Stammdaten (2.8.0, die Momentaufnahme an den Positionen): Jede Satzgruppe, die eine trägt, braucht ein
 # gültiges Erlöskonto – sonst lehnt das Versenden ab, vor dem ersten Schreiben (nichts geändert, 409). Ein Eintrag der Stammdaten, der es später verliert, ließe
-# die Zahlung scheitern, nachdem das Versenden sie zugesichert hat. ``{rate}``: der Satz der Gruppe (``tax_groups.group_label``: „19 %“, „5,5 %“, „steuerfrei“)
+# die Zahlung scheitern, nachdem das Versenden sie zugesichert hat. ``{rate}``: der Satz der Gruppe, mit ``invoice_payments.rate_sentence`` eingesetzt („19 %“, „5,5 %“,
+# „steuerfreie Leistungen“)
 TAX_SEND_NO_REVENUE = ('Für {rate} hat die Rechnung kein gültiges Erlöskonto – bitte im Steuersatz der Stammdaten eines eintragen und die Rechnung danach '
                        'neu speichern.')
 # Der Hinweis in der Antwort des Versendens, wenn eine Satzgruppe mit einem Steuersatz aus den Stammdaten kein Wartekonto hat (nur 19 → 4405, 7 → 4345 und 0 →
@@ -611,7 +612,9 @@ class InvoiceLockMixin:
           Steuersatz mit Wartekonto); ein Beleg mit Steuersatz je Position (``MixedTaxRates``) bucht je
           Satzgruppe eine Forderungszeile (``_book_mixed_receivable``) – lässt er sich nicht buchen (Positionen
           passen nicht zu den Summen, ein Satz mit Brutto unter 0 …), lehnt der feste Klartext ab (409, vor dem ersten
-          Schreiben, kein Konto angelegt), haben sich die Gruppen seit der Vorbereitung geändert, ``CHANGED_MESSAGE``;
+          Schreiben, kein Konto angelegt), haben sich die Gruppen seit der Vorbereitung geändert, ``CHANGED_MESSAGE``. Ebenso lehnt jeder Beleg ab, dessen
+          Momentaufnahmen eines Steuersatzes aus den Stammdaten sich widersprechen (``TAX_ENTRY_CONTRADICTION``, auch mit EINEM Satz), und einer, dem ein Erlöskonto der
+          Stammdaten fehlt (``TAX_SEND_NO_REVENUE``): nichts geschrieben und kein Konto angelegt – auch nicht das Erlöskonto des Umzugs der Zahlungen;
           ``send`` setzt außerdem ``SentAt``, den Zeitpunkt des ersten
           Versands (ein späteres Versenden ändert ihn nicht). Ersetzt die versendete Rechnung eine stornierte
           (``Invoices.ReplacesInvoiceId``), ziehen die Zahlungen der stornierten Rechnung auf sie um
@@ -644,10 +647,11 @@ class InvoiceLockMixin:
         new = canonical_status(new_status)
         # Konten, die der Wechsel braucht, werden bei Bedarf angelegt – in eigenen Verbindungen, nie
         # innerhalb der Transaktion (ein zweiter Schreiber sperrte sich selbst). Fehlt einer Satzgruppe mit einem Steuersatz aus den Stammdaten das Erlöskonto,
-        # lehnt das Versenden ab (``_entry_revenue_blocker``) – dann entsteht auch kein Konto
+        # lehnt das Versenden ab (``_entry_revenue_blocker``) – dann entsteht auch kein Konto: weder das Wartekonto der Forderung noch das Erlöskonto des Umzugs der
+        # Zahlungen (``_payment_move_context`` löst es auf und legt dabei 4185 an, wo es fehlt), der Umzugskontext folgt dem Blocker und läuft nur ohne Ablehnung
         entry_blocker = self._entry_revenue_blocker(invoice_id, new)
         accounts, accounts_key = (None, None) if entry_blocker else self._receivable_accounts_for(invoice_id, new)
-        move = self._payment_move_context(invoice_id, new)
+        move = None if entry_blocker else self._payment_move_context(invoice_id, new)
         old = kind = payment_hint = waiting_hint = None
         moved = 0
         archived = []
@@ -757,6 +761,10 @@ class InvoiceLockMixin:
                 'SELECT DISTINCT b.Account_ID FROM InvoicePayments ip JOIN Bookings b ON b.ID = ip.BookingID '
                 'WHERE ip.InvoiceID = ? AND b.Account_ID IS NOT NULL', (replaced_id,))]
             entry = self._entry_accounts(conn, replaced_id) or self._entry_accounts(conn, invoice_id)
+            try:
+                self._send_key(conn, invoice_id, row['TaxRate'], has_mixed_rates(row.get('MixedTaxRates')))
+            except MixedNotBookable:
+                return None     # der Beleg lässt sich nicht buchen, das Versenden lehnt in der Transaktion ab: kein Konto auflösen oder anlegen
         finally:
             conn.close()
         bank_coas = {}
@@ -827,10 +835,10 @@ class InvoiceLockMixin:
         eines Steuersatzes aus den Stammdaten trägt (``group_snapshots``), braucht ein gültiges Erlöskonto. Hat die Momentaufnahme eines eingetragen
         (``InvoiceItems.RevenueCoaId``), muss es heute eines sein (``_income_coas``: 4000–4999 ohne Wartekonten); hat sie keines – die 19 und 7 % der
         Vorbelegung, nur per Schnittstelle mit einer ID gespeichert –, muss ``resolve_revenue_coa(…, create=False)`` eines finden; ein Satz von 0 % ohne eigenes
-        Erlöskonto hat nie eines (nie 4185). Sonst ``TAX_SEND_NO_REVENUE`` mit dem ersten Satz (absteigend), dem es fehlt – eine Zahlung ließe sich später nicht
-        kontieren, und das Versenden hat sie zugesichert. Ein Beleg ohne Momentaufnahme (der ganze Bestand) wird nicht geprüft: Er bucht ohne Erlöskonto und
-        fragt bei der Zahlung. Läuft vor der Transaktion in eigenen Verbindungen und legt nie ein Konto an; lässt sich der Beleg nicht buchen
-        (``MixedNotBookable``), ist es ``None`` – die Transaktion lehnt dann mit dem Klartext ab."""
+        Erlöskonto hat nie eines (nie 4185). Sonst ``TAX_SEND_NO_REVENUE`` mit dem ersten Satz (absteigend), dem es fehlt – eine steuerfreie Gruppe heißt dort „steuerfreie
+        Leistungen“ (``rate_sentence``) –: Eine Zahlung ließe sich später nicht kontieren, und das Versenden hat sie zugesichert. Ein Beleg ohne Momentaufnahme (der ganze
+        Bestand) wird nicht geprüft: Er bucht ohne Erlöskonto und fragt bei der Zahlung. Läuft vor der Transaktion in eigenen Verbindungen und legt nie ein Konto an; lässt
+        sich der Beleg nicht buchen (``MixedNotBookable``), ist es ``None`` – die Transaktion lehnt dann mit dem Klartext ab."""
         if new not in ('sent', 'overdue'):
             return None
         invoice = self.get_document(invoice_id, 'invoice')
@@ -852,7 +860,7 @@ class InvoiceLockMixin:
                 rate = booking_rate(pct)
                 valid = rate is not None and self.resolve_revenue_coa(rate, create=False) is not None
             if not valid:
-                return TAX_SEND_NO_REVENUE.format(rate=group_label(pct, snapshot.exempt))
+                return rate_sentence(TAX_SEND_NO_REVENUE, pct, snapshot.exempt)
         return None
 
     def _waiting_hint(self, accounts, key, detail):

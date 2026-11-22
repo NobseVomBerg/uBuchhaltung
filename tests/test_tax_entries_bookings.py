@@ -23,6 +23,11 @@ Die festen Belege (Beträge in Cent in den Vergleichen):
   trägt die Momentaufnahmen mit.
 * **Umzug** auf die Ersatzrechnung unterbleibt (``MOVE_ENTRY_HINT``), **Neuaufbau** rechnet nur den offenen Betrag (Grund ``tax_entry``).
 * **Prüfliste:** ``tax_entry_mismatch`` für widersprüchliche Momentaufnahmen; ein sauberer Beleg ergibt keinen Befund.
+* **Die Momentaufnahme wird streng und überall gleich gelesen** (``InvoicePaymentsMixin._read_snapshots``): Der Satz in Hundertstel Prozent ist 0 oder 100 bis 10000 und der Satz der
+  Position, auch bei einem Beleg mit EINEM Satz; Angaben ohne den Satz dazu (die halbe Momentaufnahme) sind ein Widerspruch. **Jeder Widerspruch hat einen eigenen festen Satz**
+  (``TAX_ENTRY_CONTRADICTION``), ``MIXED_GROUPS_MISMATCH`` bleibt für „Positionen passen nicht zu den Summen“. Die **Erstattung prüft die Momentaufnahme nicht** (sie folgt den Zahlungen),
+  ein abgelehntes **Versenden legt kein Konto an**, die Art „steuerfrei“ allein (das Beispiel eines Belegs nach § 19) ist **kein Befund**, und eine steuerfreie Gruppe heißt in
+  Sätzen „steuerfreie Leistungen“.
 
 Alle Namen, Nummern und Beträge sind erfundene Testwerte; ein „heute“ steht nie da (``CLOCK`` ist der festgesetzte Tag des Servers).
 """
@@ -33,9 +38,9 @@ from decimal import Decimal
 import pytest
 
 from db.invoice_lock import CHANGED_MESSAGE, NO_WAITING_HINT, TAX_SEND_NO_REVENUE
-from db.invoice_payments import (MIXED_GROUPS_MISMATCH, MIXED_GROUP_NOT_POSITIVE, MIXED_NO_REVENUE_COA, MIXED_REFUND_REVENUE_AMBIGUOUS, MIXED_REMOVAL_REFUSED,
+from db.invoice_payments import (EXEMPT_SENTENCE_LABEL, MIXED_GROUPS_MISMATCH, MIXED_GROUP_NOT_POSITIVE, MIXED_REFUND_REVENUE_AMBIGUOUS, MIXED_REMOVAL_REFUSED,
                                  MOVE_ENTRY_HINT, MOVE_MIXED_HINT, MOVE_NONE_HINT, MOVE_REFUNDED_HINT, NO_REVENUE_COA, PaymentAssignment, PaymentRemovalRefused,
-                                 TAX_ENTRY_FINDINGS, TAX_PAYMENT_NO_REVENUE, MixedNotBookable, Snapshot, rate_sentence)
+                                 TAX_ENTRY_CONTRADICTION, TAX_ENTRY_FINDINGS, TAX_PAYMENT_NO_REVENUE, MixedNotBookable, Snapshot, rate_sentence, valid_rate_bp)
 from db.invoice_repair import REBUILD_SKIP_REASONS
 from db.invoices import DEFAULT_REVENUE_ACCOUNT_NUMBERS
 from money import from_minor, to_minor
@@ -341,15 +346,16 @@ def test_a_partial_refund_splits_like_a_payment_and_the_rest_closes_both_groups(
     assert world.db.get_storno_credit(invoice_id) == D('0.00') and findings(world.db) == []
 
 
-def test_the_text_of_a_refusal_names_a_tax_free_group_as_tax_free(world):
-    """Eine steuerfreie Gruppe heißt in den Meldungen „steuerfrei“, nicht „0 %“ (``rate_sentence``, ``tax_groups.group_label``)."""
+def test_the_text_of_a_refusal_names_a_tax_free_group_as_tax_free_services(world):
+    """Eine steuerfreie Gruppe heißt in den Sätzen der Meldungen „steuerfreie Leistungen“, nicht „0 %“ und nicht „steuerfrei“ (``rate_sentence``; ``tax_groups.group_label`` für
+    Listen und PDF bleibt „steuerfrei“)."""
     items = [plain(19, '100.00'), free('80.00', account(world.db, FREE)), free('-90.00', account(world.db, FREE))]
     invoice_id = entry_invoice(world, 'G-300', items)                                  # die steuerfreie Gruppe ergibt zusammen −10,00
 
     change = world.db.set_invoice_status(invoice_id, 'sent', USER)
 
     assert (change.ok, change.code) == (False, 409)
-    assert change.message == rate_sentence(MIXED_GROUP_NOT_POSITIVE, D(0), True, amount='-10,00 €') and 'steuerfrei: -10,00 €' in change.message
+    assert change.message == rate_sentence(MIXED_GROUP_NOT_POSITIVE, D(0), True, amount='-10,00 €') and '(steuerfreie Leistungen: -10,00 €)' in change.message
     assert columns(world.db, invoice_id)['Status'] == 'draft' and receivables(world.db, 'G-300') == []
 
 
@@ -530,8 +536,9 @@ def refused_with(world, invoice_id, before, message):
 def test_a_tax_free_invoice_whose_revenue_account_is_gone_is_refused_with_the_fixed_sentence(world):
     invoice_id, before = unsendable(world, lambda coa: entry_invoice(world, 'F-100', [free('100.00', coa)]))
 
-    refused_with(world, invoice_id, before, 'Für steuerfrei hat die Rechnung kein gültiges Erlöskonto – bitte im Steuersatz der Stammdaten eines eintragen und die Rechnung danach neu speichern.')
-    assert TAX_SEND_NO_REVENUE.format(rate='steuerfrei') == world.db.set_invoice_status(invoice_id, 'sent', USER).message
+    refused_with(world, invoice_id, before, 'Für steuerfreie Leistungen hat die Rechnung kein gültiges Erlöskonto – bitte im Steuersatz der Stammdaten eines eintragen und die Rechnung danach '
+                                            'neu speichern.')
+    assert TAX_SEND_NO_REVENUE.format(rate='steuerfreie Leistungen') == world.db.set_invoice_status(invoice_id, 'sent', USER).message
 
 
 def test_a_mixed_invoice_names_the_rate_whose_account_is_missing(world):
@@ -547,7 +554,7 @@ def test_an_account_that_is_no_revenue_account_any_more_is_refused_too(world):
     run_sql(world.db, 'UPDATE ChartOfAccounts SET AccountNumber = 6120 WHERE ID = ?', coa)
     before = tables(world.db)
 
-    refused_with(world, invoice_id, before, TAX_SEND_NO_REVENUE.format(rate='steuerfrei'))
+    refused_with(world, invoice_id, before, TAX_SEND_NO_REVENUE.format(rate='steuerfreie Leistungen'))
 
 
 def test_a_waiting_account_is_no_revenue_account_either(world):
@@ -555,7 +562,7 @@ def test_a_waiting_account_is_no_revenue_account_either(world):
     invoice_id = entry_invoice(world, 'F-100', [free('100.00', world.db.get_coa_id_by_account_number(4340))])
     before = tables(world.db)
 
-    refused_with(world, invoice_id, before, TAX_SEND_NO_REVENUE.format(rate='steuerfrei'))
+    refused_with(world, invoice_id, before, TAX_SEND_NO_REVENUE.format(rate='steuerfreie Leistungen'))
 
 
 def test_the_check_runs_for_reviving_a_cancelled_invoice_too(world):
@@ -567,7 +574,7 @@ def test_the_check_runs_for_reviving_a_cancelled_invoice_too(world):
 
     change = world.db.set_invoice_status(invoice_id, 'sent', USER)
 
-    assert (change.ok, change.code, change.message) == (False, 409, TAX_SEND_NO_REVENUE.format(rate='steuerfrei')) and tables(world.db) == before
+    assert (change.ok, change.code, change.message) == (False, 409, TAX_SEND_NO_REVENUE.format(rate='steuerfreie Leistungen')) and tables(world.db) == before
 
 
 def test_the_route_answers_409_with_the_sentence_and_changes_nothing(world):
@@ -579,7 +586,7 @@ def test_the_route_answers_409_with_the_sentence_and_changes_nothing(world):
 
     code, body = set_invoice_status(invoice_id, 'sent')
 
-    assert code == 409 and body == {'success': False, 'error': TAX_SEND_NO_REVENUE.format(rate='steuerfrei')} and tables(world.db) == before
+    assert code == 409 and body == {'success': False, 'error': TAX_SEND_NO_REVENUE.format(rate='steuerfreie Leistungen')} and tables(world.db) == before
 
 
 def test_a_snapshot_without_an_account_needs_a_default_account_for_its_rate(world):
@@ -615,12 +622,94 @@ def test_the_blocker_is_found_without_creating_an_account(world):
     drop_accounts(world.db, 10000, 4340)
     chart = query_rows(world.db, 'SELECT * FROM ChartOfAccounts ORDER BY ID')
 
-    assert world.db._entry_revenue_blocker(invoice_id, 'sent') == TAX_SEND_NO_REVENUE.format(rate='steuerfrei')
+    assert world.db._entry_revenue_blocker(invoice_id, 'sent') == TAX_SEND_NO_REVENUE.format(rate='steuerfreie Leistungen')
     assert world.db._entry_revenue_blocker(invoice_id, 'finalized') is None and world.db._entry_revenue_blocker(invoice_id, 'draft') is None   # nur das Versenden fragt
     assert world.db._entry_revenue_blocker(invoice_id, 'overdue') is None                    # ein Entwurf wird nicht überfällig: kein Versenden, nichts zu prüfen
     run_sql(world.db, "UPDATE Invoices SET Status = 'cancelled' WHERE ID = ?", invoice_id)
-    assert world.db._entry_revenue_blocker(invoice_id, 'overdue') == TAX_SEND_NO_REVENUE.format(rate='steuerfrei')       # das Wiederbeleben ist ein Versenden
+    assert world.db._entry_revenue_blocker(invoice_id, 'overdue') == TAX_SEND_NO_REVENUE.format(rate='steuerfreie Leistungen')       # das Wiederbeleben ist ein Versenden
     assert query_rows(world.db, 'SELECT * FROM ChartOfAccounts ORDER BY ID') == chart
+
+
+def full_dump(db):
+    """Der Stand ALLER Tabellen der Datenbank, auch ``sqlite_sequence`` (die Zähler), die Nummernkreise und der Kontenrahmen – ``tables`` kennt nur die der Rechnungen."""
+    import sqlite3
+    from contextlib import closing
+    with closing(sqlite3.connect(db.db_name)) as con:
+        names = [row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]
+        return {name: con.execute(f'SELECT * FROM "{name}" ORDER BY 1').fetchall() for name in names}
+
+
+def test_a_refused_send_of_a_replacement_invoice_creates_no_account_not_even_4185(world, monkeypatch):
+    """„Standard 0 %“ mit Konto versenden, stornieren, neu ausstellen, an beiden Belegen das Erlöskonto streichen und 4185 löschen: Das Versenden der Ersatzrechnung lehnt mit
+    ``TAX_SEND_NO_REVENUE`` ab. Früher hatte der Umzugskontext (``_payment_move_context``: ``resolve_revenue_coa``) vorher 4185 angelegt – der Kontenrahmen hatte danach eine Zeile
+    mehr. Jetzt läuft erst der Blocker, und der Umzugskontext nur ohne Ablehnung: Alle Tabellen sind danach, wie sie vorher waren."""
+    original = entry_invoice(world, 'Z-100', [entry(0, '100.00', account(world.db, 4170))])
+    send(world, original)
+    cancelled(world, original)
+    replacement = reissue(world.db, original, monkeypatch)
+    run_sql(world.db, 'UPDATE InvoiceItems SET RevenueCoaId = NULL WHERE InvoiceId IN (?, ?)', original, replacement)
+    run_sql(world.db, 'DELETE FROM ChartOfAccounts WHERE AccountNumber = 4185')
+    before = full_dump(world.db)
+    assert world.db.get_coa_id_by_account_number(4185) is None
+
+    change = world.db.set_invoice_status(replacement, 'sent', USER)
+
+    assert (change.ok, change.code, change.message) == (False, 409, TAX_SEND_NO_REVENUE.format(rate='0 %'))
+    assert full_dump(world.db) == before and world.db.get_coa_id_by_account_number(4185) is None
+
+
+def test_a_send_refused_for_a_contradiction_creates_no_account_either(world, monkeypatch):
+    """Dieselbe Lage, aber das Versenden scheitert nicht am Erlöskonto, sondern an einem Widerspruch der Momentaufnahme (eine Position trägt einen Grund, die andere nicht):
+    Der Umzugskontext löst dann kein Erlöskonto auf – auch hier entsteht kein 4185, alle Tabellen bleiben, wie sie waren."""
+    coa = account(world.db, 4170)
+    original = entry_invoice(world, 'Z-150', [entry(0, '60.00', coa), entry(0, '40.00', coa)])
+    send(world, original)
+    cancelled(world, original)
+    replacement = reissue(world.db, original, monkeypatch)
+    run_sql(world.db, 'UPDATE InvoiceItems SET RevenueCoaId = NULL WHERE InvoiceId IN (?, ?)', original, replacement)
+    run_sql(world.db, "UPDATE InvoiceItems SET TaxExemptReason = 'Erfundener Grund' WHERE InvoiceId = ? AND Position = 2", replacement)
+    run_sql(world.db, 'DELETE FROM ChartOfAccounts WHERE AccountNumber = 4185')
+    before = full_dump(world.db)
+
+    change = world.db.set_invoice_status(replacement, 'sent', USER)
+
+    assert (change.ok, change.code, change.message) == (False, 409, TAX_ENTRY_CONTRADICTION)
+    assert full_dump(world.db) == before and world.db.get_coa_id_by_account_number(4185) is None
+
+
+def test_the_move_context_is_not_built_when_the_blocker_refuses_but_it_is_when_the_send_goes_through(world, monkeypatch):
+    """Die Reihenfolge, auf die es ankommt: erst ``_entry_revenue_blocker``, dann – nur ohne Ablehnung – ``_payment_move_context`` (er löst das Erlöskonto auf und legt 4185 an)."""
+    original = entry_invoice(world, 'Z-200', [entry(0, '100.00', account(world.db, 4170))])
+    send(world, original)
+    cancelled(world, original)
+    replacement = reissue(world.db, original, monkeypatch)
+    calls = []
+    real = type(world.db)._payment_move_context
+    monkeypatch.setattr(type(world.db), '_payment_move_context', lambda self, invoice_id, new: calls.append(invoice_id) or real(self, invoice_id, new))
+    run_sql(world.db, 'UPDATE InvoiceItems SET RevenueCoaId = NULL WHERE InvoiceId = ?', replacement)
+
+    refused = world.db.set_invoice_status(replacement, 'sent', USER)
+
+    assert refused.ok is False and calls == []
+    run_sql(world.db, 'UPDATE InvoiceItems SET RevenueCoaId = ? WHERE InvoiceId = ?', account(world.db, 4170), replacement)
+
+    assert world.db.set_invoice_status(replacement, 'sent', USER).ok is True and calls == [replacement]
+
+
+@pytest.mark.parametrize('what', ['revive', 'plain_draft'])
+def test_a_refused_send_of_any_other_kind_leaves_every_table_as_it_was_too(world, what):
+    """Auch ohne Ersatzrechnung: Das abgelehnte Versenden (und Wiederbeleben) eines Belegs ohne Erlöskonto der Stammdaten schreibt nichts – kein Konto, keinen Zähler."""
+    coa = account(world.db, FREE)
+    invoice_id = entry_invoice(world, 'F-800', [free('100.00', coa)])
+    if what == 'revive':
+        run_sql(world.db, "UPDATE Invoices SET Status = 'cancelled' WHERE ID = ?", invoice_id)
+    run_sql(world.db, 'DELETE FROM ChartOfAccounts WHERE ID = ?', coa)
+    drop_accounts(world.db, 10000, 4340, 4185)
+    before = full_dump(world.db)
+
+    change = world.db.set_invoice_status(invoice_id, 'sent', USER)
+
+    assert (change.ok, change.code) == (False, 409) and full_dump(world.db) == before
 
 
 def test_the_key_of_the_preparation_carries_the_snapshots_so_a_changed_snapshot_is_caught_in_the_transaction(world, monkeypatch):
@@ -696,7 +785,7 @@ def test_an_invoice_with_contradictory_snapshots_is_refused_with_the_fixed_sente
 
     change = world.db.set_invoice_status(invoice_id, 'sent', USER)
 
-    assert (change.ok, change.code, change.message) == (False, 409, MIXED_GROUPS_MISMATCH) and tables(world.db) == before
+    assert (change.ok, change.code, change.message) == (False, 409, TAX_ENTRY_CONTRADICTION) and tables(world.db) == before
 
 
 def test_a_mixed_invoice_with_contradictory_snapshots_is_refused_by_the_building_block_for_seeds_too(world):
@@ -708,20 +797,33 @@ def test_a_mixed_invoice_with_contradictory_snapshots_is_refused_by_the_building
     with pytest.raises(ValueError) as refused:
         world.db.ensure_receivable_booking(invoice_id)
 
-    assert str(refused.value) == MIXED_GROUPS_MISMATCH and tables(world.db) == before
+    assert str(refused.value) == TAX_ENTRY_CONTRADICTION and tables(world.db) == before
 
 
-@pytest.mark.parametrize('tamper', [
+CONTRADICTIONS = [
     "UPDATE InvoiceItems SET RevenueCoaId = NULL WHERE InvoiceId = ? AND Position = 2",                        # eine Position mit, eine ohne Erlöskonto
-    "UPDATE InvoiceItems SET TaxRateBp = NULL WHERE InvoiceId = ? AND Position = 2",                           # eine Position mit, eine ohne Momentaufnahme
+    "UPDATE InvoiceItems SET TaxRateBp = NULL WHERE InvoiceId = ? AND Position = 2",                           # eine Position mit, eine ohne Momentaufnahme (und mit Konto: die halbe)
     "UPDATE InvoiceItems SET TaxExemptReason = 'abweichend' WHERE InvoiceId = ? AND Position = 2",
     "UPDATE InvoiceItems SET TaxCategory = 'E' WHERE InvoiceId = ? AND Position = 2",                          # steuerfrei, aber mit Satz 5,5
     "UPDATE InvoiceItems SET TaxRateBp = 12345 WHERE InvoiceId = ? AND Position = 2",                          # kein Satz
     "UPDATE InvoiceItems SET TaxRateBp = 'x' WHERE InvoiceId = ? AND Position = 2",
-])
+    "UPDATE InvoiceItems SET TaxRateBp = -550 WHERE InvoiceId = ? AND Position = 2",                           # kein Satz: negativ
+    "UPDATE InvoiceItems SET TaxRateBp = 550.5 WHERE InvoiceId = ? AND Position = 2",                          # kein Satz: keine ganze Zahl
+    "UPDATE InvoiceItems SET TaxRateBp = 50, TaxRate = 0.005 WHERE InvoiceId = ? AND Position = 2",            # 0,5 %: ein Satz unter 1 % – passt zum Satz der Position und ist doch keiner
+    "UPDATE InvoiceItems SET TaxRateBp = 1, TaxRate = 0.0001 WHERE InvoiceId = ? AND Position = 2",            # 0,01 %
+    "UPDATE InvoiceItems SET TaxRate = 7 WHERE InvoiceId = ? AND Position = 2",                                # der Satz der Momentaufnahme (5,5 %) ist nicht der der Position
+    "UPDATE InvoiceItems SET TaxRate = 'x' WHERE InvoiceId = ? AND Position = 2",                              # der Satz der Position ist keine Zahl
+    "UPDATE InvoiceItems SET TaxRateBp = NULL, RevenueCoaId = NULL, TaxExemptReason = 'Grund' WHERE InvoiceId = ? AND Position = 2",     # die halbe Momentaufnahme: nur ein Grund
+    "UPDATE InvoiceItems SET TaxRateBp = NULL, TaxExemptReason = 'Grund', RevenueCoaId = NULL, TaxRate = 7 WHERE InvoiceId = ? AND Position = 2",
+]
+
+
+@pytest.mark.parametrize('tamper', CONTRADICTIONS)
 def test_every_contradiction_of_the_snapshots_makes_the_invoice_unbookable(world, tamper):
+    """Jeder Widerspruch der Momentaufnahme hat EINEN Satz (``TAX_ENTRY_CONTRADICTION``) – der Baustein und das Versenden nennen ihn gleich, vor dem ersten Schreiben."""
     invoice_id = entry_invoice(world, 'H-500', [entry('5.5', '100.00', account(world.db, REDUCED)), entry('5.5', '50.00', account(world.db, REDUCED))])
     run_sql(world.db, tamper, invoice_id)
+    before = tables(world.db)
     conn = world.db._get_connection()
 
     try:
@@ -730,8 +832,124 @@ def test_every_contradiction_of_the_snapshots_makes_the_invoice_unbookable(world
     finally:
         conn.close()
 
-    assert str(refused.value) == MIXED_GROUPS_MISMATCH
-    assert world.db.set_invoice_status(invoice_id, 'sent', USER).message in (MIXED_GROUPS_MISMATCH, MIXED_NO_REVENUE_COA.format(rate='5,5'))
+    assert str(refused.value) == TAX_ENTRY_CONTRADICTION
+    change = world.db.set_invoice_status(invoice_id, 'sent', USER)
+    assert (change.ok, change.code, change.message) == (False, 409, TAX_ENTRY_CONTRADICTION)
+    assert tables(world.db) == before and columns(world.db, invoice_id)['Status'] == 'draft'
+    assert findings(world.db, invoice_id, 'tax_entry_mismatch') != []                                  # die Prüfliste nennt es auch
+
+
+def test_the_fixed_sentence_of_a_contradiction_is_not_the_one_of_the_sums():
+    assert TAX_ENTRY_CONTRADICTION == ('Die Angaben aus den Stammdaten an den Positionen dieser Rechnung widersprechen sich – sie lässt sich so nicht buchen (Prüfung unter Sonstiges).')
+    assert TAX_ENTRY_CONTRADICTION != MIXED_GROUPS_MISMATCH and 'Summen' not in TAX_ENTRY_CONTRADICTION
+
+
+@pytest.mark.parametrize('way', ['send', 'pay', 'send_replacement'])
+def test_two_positions_of_one_rate_whose_rate_was_changed_cannot_be_sent_paid_or_sent_again_as_a_replacement(world, monkeypatch, way):
+    """Zwei Positionen à 5,5 % mit Momentaufnahme, dann bekommt eine den Steuersatz 7 (``UPDATE InvoiceItems SET TaxRate = 7 WHERE Position = 2``): Das Versenden, die Zahlung
+    und das Versenden der Ersatzrechnung gelangen früher alle – jetzt lehnt jeder Weg mit dem Satz des Widerspruchs ab, vor dem ersten Schreiben (nichts geändert)."""
+    coa = account(world.db, REDUCED)
+    tamper = 'UPDATE InvoiceItems SET TaxRate = 7 WHERE InvoiceId = ? AND Position = 2'
+    invoice_id = entry_invoice(world, 'H-600', [entry('5.5', '100.00', coa), entry('5.5', '50.00', coa)])
+    if way == 'send':
+        run_sql(world.db, tamper, invoice_id)
+        before = tables(world.db)
+
+        change = world.db.set_invoice_status(invoice_id, 'sent', USER)
+
+        assert (change.ok, change.code, change.message) == (False, 409, TAX_ENTRY_CONTRADICTION)
+    elif way == 'pay':
+        send(world, invoice_id)
+        booking = incoming(world, 100.0)
+        run_sql(world.db, tamper, invoice_id)
+        before = tables(world.db)
+
+        assignment = world.db.assign_invoice_payment(invoice_id, booking)
+
+        assert assignment == PaymentAssignment(False, TAX_ENTRY_CONTRADICTION, None, None)
+        assert world.db.payment_precheck(invoice_id, world.bank) == TAX_ENTRY_CONTRADICTION
+    else:
+        send(world, invoice_id)
+        pay_on(world, invoice_id, 100.0)
+        cancelled(world, invoice_id)
+        replacement = reissue(world.db, invoice_id, monkeypatch)
+        run_sql(world.db, tamper, replacement)
+        before = tables(world.db)
+
+        change = world.db.set_invoice_status(replacement, 'sent', USER)
+
+        assert (change.ok, change.code, change.message) == (False, 409, TAX_ENTRY_CONTRADICTION)
+    assert tables(world.db) == before
+
+
+@pytest.mark.parametrize('value', [1, 50, 99, -1, -550, 10001, 20000, 'x', 550.5])
+def test_a_snapshot_rate_that_is_no_rate_is_a_contradiction_not_no_snapshot(world, value):
+    """Im Dokument gilt so ein Wert als „keine Momentaufnahme“ (``export.einvoice_model.item_bp``); beim Buchen ist er ein Widerspruch – ein Beleg wird nie mit einem Satz
+    gebucht, den die Positionen nicht tragen, und nie stillschweigend mit dem Satz aus ``TaxRate``."""
+    invoice_id = entry_invoice(world, 'H-700', [entry('5.5', '100.00', account(world.db, REDUCED))])
+    run_sql(world.db, 'UPDATE InvoiceItems SET TaxRateBp = ? WHERE InvoiceId = ?', value, invoice_id)
+    before = tables(world.db)
+
+    change = world.db.set_invoice_status(invoice_id, 'sent', USER)
+
+    assert (change.ok, change.message) == (False, TAX_ENTRY_CONTRADICTION) and tables(world.db) == before
+
+
+def test_the_smallest_snapshot_rate_of_1_percent_books_like_any_other(world):
+    """Die Grenze der Regel: 100 Hundertstel Prozent (1 %) ist ein Satz – er lässt sich versenden und bezahlen (kein Wartekonto, kein Erlöskonto geraten: das der Momentaufnahme)."""
+    invoice_id = entry_invoice(world, 'U-100', [entry('1', '100.00', account(world.db, REDUCED))])
+
+    change = send(world, invoice_id)
+    pay_on(world, invoice_id, 101.0)
+
+    assert change.payment_hint == NO_WAITING_HINT.format(rate='1 %')
+    assert marked(world.db, 'U-100') == [(REDUCED, 1800, 10100, 100, 0.01, 'purpose_first')]
+    assert standing(world.db, invoice_id) == ('paid', 0) and findings(world.db) == []
+
+
+@pytest.mark.parametrize('value', [None, 0, 1, 50, 99, 100, 550, 1900, 10000, 10001, -1, -100, 20000, '1900', '', 'x', 550.0, 550.5, True, False, 1e30, b'550'])
+def test_the_rule_for_a_snapshot_rate_of_the_bookings_equals_the_reading_of_the_document(value):
+    """Dieselbe Regel steht in ``db.invoice_payments.valid_rate_bp`` und in ``export.einvoice_model.item_bp`` – ein Import in die andere Richtung gäbe einen Zyklus (``export``
+    importiert ``db``). Hier werden beide gegeneinander gehalten: Was ``item_bp`` als Momentaufnahme liest, gilt auch beim Buchen, und umgekehrt."""
+    from export.einvoice_model import _ITM, item_bp
+    row = [None] * (max(_ITM.values()) + 1)
+    row[_ITM['tax_rate_bp']] = value
+
+    assert (item_bp(tuple(row)) is not None) is valid_rate_bp(value)
+    assert item_bp(tuple(row)) == (value if valid_rate_bp(value) else None)
+
+
+def test_valid_rate_bp_takes_0_and_1_to_100_percent_only():
+    assert [valid_rate_bp(bp) for bp in (0, 1, 99, 100, 10000, 10001)] == [True, False, False, True, True, False]
+    assert valid_rate_bp(True) is False and valid_rate_bp(False) is False and valid_rate_bp(None) is False and valid_rate_bp(100.0) is False
+
+
+def test_the_sums_and_the_snapshots_have_their_own_sentences_on_a_flagged_invoice(world):
+    """Ein Beleg mit Steuersatz je Position: Passt der Satz der Momentaufnahme nicht zu dem der Position, ist es ein Widerspruch der Momentaufnahme (``mixed_groups`` hätte
+    es als „Positionen passen nicht zu den Summen“ gemeldet); passen die Positionen nicht zu den Summen, bleibt ``MIXED_GROUPS_MISMATCH`` – dann ist die Momentaufnahme in Ordnung."""
+    changed = reduced_invoice(world, 'H-800')
+    run_sql(world.db, 'UPDATE InvoiceItems SET TaxRate = 7 WHERE InvoiceId = ? AND Position = 2', changed)
+    sums = reduced_invoice(world, 'H-801')
+    run_sql(world.db, 'UPDATE Invoices SET SumGross = SumGross + 10000 WHERE ID = ?', sums)
+    before = tables(world.db)
+
+    contradiction = world.db.set_invoice_status(changed, 'sent', USER)
+    mismatch = world.db.set_invoice_status(sums, 'sent', USER)
+
+    assert (contradiction.ok, contradiction.code, contradiction.message) == (False, 409, TAX_ENTRY_CONTRADICTION)
+    assert (mismatch.ok, mismatch.code, mismatch.message) == (False, 409, MIXED_GROUPS_MISMATCH)
+    assert tables(world.db) == before
+
+
+def test_a_flagged_invoice_without_a_snapshot_keeps_the_sentence_about_the_sums(world):
+    """Ohne Momentaufnahme ändert sich nichts: Positionen, die nicht zu den Summen passen, heißen wie immer ``MIXED_GROUPS_MISMATCH``."""
+    invoice_id = entry_invoice(world, 'T-500', [plain(19, '100.00'), plain(7, '50.00')])
+    run_sql(world.db, 'UPDATE InvoiceItems SET TaxRate = 19 WHERE InvoiceId = ? AND Position = 2', invoice_id)
+    before = tables(world.db)
+
+    change = world.db.set_invoice_status(invoice_id, 'sent', USER)
+
+    assert (change.ok, change.code, change.message) == (False, 409, MIXED_GROUPS_MISMATCH) and tables(world.db) == before
 
 
 def test_group_snapshots_reads_nothing_into_an_invoice_without_a_snapshot_and_keys_the_groups_by_rate(world):
@@ -770,9 +988,9 @@ def test_a_payment_on_an_invoice_whose_snapshot_account_is_no_revenue_account_is
 
     assignment = world.db.assign_invoice_payment(invoice_id, booking, revenue_coa_id=other)         # auch mit einer Wahl: Das Konto der Momentaufnahme gilt, immer
 
-    assert assignment == PaymentAssignment(False, TAX_PAYMENT_NO_REVENUE.format(rate='steuerfrei'), None, None)
-    assert 'Erlöskonto, das diese Rechnung für steuerfrei trägt, ist kein Erlöskonto (mehr)' in assignment.message
-    assert world.db.payment_precheck(invoice_id, world.bank) == TAX_PAYMENT_NO_REVENUE.format(rate='steuerfrei')
+    assert assignment == PaymentAssignment(False, TAX_PAYMENT_NO_REVENUE.format(rate='steuerfreie Leistungen'), None, None)
+    assert 'Erlöskonto, das diese Rechnung für steuerfreie Leistungen trägt, ist kein Erlöskonto (mehr)' in assignment.message
+    assert world.db.payment_precheck(invoice_id, world.bank) == TAX_PAYMENT_NO_REVENUE.format(rate='steuerfreie Leistungen')
     assert tables(world.db) == before
     assert [f['category'] for f in findings(world.db, invoice_id)] == ['tax_entry_mismatch']          # und die Prüfliste nennt es
 
@@ -824,7 +1042,7 @@ def test_the_revenue_account_of_a_document_with_contradictory_snapshots_is_an_er
 
     with pytest.raises(MixedNotBookable):
         world.db.document_revenue_coa(invoice_id, 0.055)
-    assert world.db._document_revenue(invoice_id, 0.055) == (None, MIXED_GROUPS_MISMATCH)
+    assert world.db._document_revenue(invoice_id, 0.055) == (None, TAX_ENTRY_CONTRADICTION)
 
 
 def test_a_single_rate_whose_head_does_not_carry_the_rate_of_the_snapshot_is_unbookable(world):
@@ -833,7 +1051,7 @@ def test_a_single_rate_whose_head_does_not_carry_the_rate_of_the_snapshot_is_unb
 
     change = world.db.set_invoice_status(invoice_id, 'sent', USER)
 
-    assert (change.ok, change.code, change.message) == (False, 409, MIXED_GROUPS_MISMATCH) and receivables(world.db, 'R-1') == []
+    assert (change.ok, change.code, change.message) == (False, 409, TAX_ENTRY_CONTRADICTION) and receivables(world.db, 'R-1') == []
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -867,6 +1085,23 @@ def test_the_same_refund_without_a_snapshot_still_asks_for_the_account(world):
     assert world.db.assign_storno_refund(storno.storno_id, booking, revenue_coa_id=account(world.db, REDUCED)).ok
 
 
+def test_the_one_exception_a_refund_of_imported_payments_needs_the_account_of_the_snapshot_and_a_contradiction_refuses_it(world):
+    """Die Erstattung folgt den Zahlungssätzen und prüft die Momentaufnahme nicht – außer dort, wo es keine Zahlungssätze gibt (Import ohne markierte Sätze): Das Konto kommt dann aus der
+    Momentaufnahme (``_document_revenue``), und die darf sich dann nicht widersprechen. Abgelehnt wird mit ``TAX_ENTRY_CONTRADICTION``, nichts wird geschrieben."""
+    coa = account(world.db, REDUCED)
+    invoice_id = entry_invoice(world, 'R-720', [entry('5.5', '60.00', coa), entry('5.5', '40.00', coa)])
+    send(world, invoice_id)
+    add_payment(world, invoice_id, 105.5)                                                              # wie der Import zuordnet: ohne Buchungssätze
+    storno = cancelled(world, invoice_id)
+    run_sql(world.db, "UPDATE InvoiceItems SET TaxExemptReason = 'anderer Grund' WHERE InvoiceId = ? AND Position = 2", invoice_id)
+    booking = outgoing(world, -105.5, '2026-07-10')
+    before = tables(world.db)
+
+    assignment = world.db.assign_storno_refund(storno.storno_id, booking)
+
+    assert assignment == PaymentAssignment(False, TAX_ENTRY_CONTRADICTION, None, None) and tables(world.db) == before
+
+
 def test_the_refund_names_a_tax_free_group_whose_payments_lie_on_two_accounts(world):
     invoice_id = mixed_free_invoice(world)
     send(world, invoice_id)
@@ -877,8 +1112,93 @@ def test_the_refund_names_a_tax_free_group_whose_payments_lie_on_two_accounts(wo
 
     assignment = refund_of(world, storno.storno_id, 50.0)
 
-    assert assignment.ok is False and 'für steuerfrei auf verschiedenen Erlöskonten' in assignment.message
+    assert assignment.ok is False and 'für steuerfreie Leistungen auf verschiedenen Erlöskonten' in assignment.message
     assert assignment.message == rate_sentence(MIXED_REFUND_REVENUE_AMBIGUOUS, D(0), True)
+
+
+REFUND_TAMPERS = {
+    'reason': "UPDATE InvoiceItems SET TaxExemptReason = 'anderer Grund' WHERE InvoiceId = ? AND Position = {last}",                      # verschiedene Befreiungsgründe in einer Gruppe
+    'account': "UPDATE InvoiceItems SET RevenueCoaId = (SELECT ID FROM ChartOfAccounts WHERE AccountNumber = 4130) WHERE InvoiceId = ? AND Position = {last}",   # ein anderes Erlöskonto
+    'half': "UPDATE InvoiceItems SET TaxRateBp = NULL WHERE InvoiceId = ? AND Position = {last}",                                       # eine Position ohne Satz, aber mit Konto: die halbe Momentaufnahme
+}
+
+
+@pytest.mark.parametrize('tamper', list(REFUND_TAMPERS))
+@pytest.mark.parametrize('kind', ['single', 'flagged'])
+def test_the_refund_does_not_check_the_snapshot_it_follows_the_payments_even_from_a_contradictory_stand(world, kind, tamper):
+    """Die Erstattung prüft die Momentaufnahme nicht (``group_snapshots``: Versenden, Zahlung, Stornieren und der Umzug prüfen): Ein Guthaben muss sich auch aus einem
+    widersprüchlichen Stand erstatten lassen. Betrag, Steuer und Konten folgen den Sätzen der Zahlungen – auch das Erlöskonto, das die Momentaufnahme jetzt nennt, ändert daran
+    nichts. Die Prüfliste nennt den Widerspruch trotzdem."""
+    account(world.db, 4130)
+    coa = account(world.db, FREE)
+    parts, last = (([free('60.00', coa), free('40.00', coa)], 2) if kind == 'single' else ([plain(19, '100.00'), free('50.00', coa), free('30.00', coa)], 3))
+    invoice_id = entry_invoice(world, 'F-700', parts)
+    send(world, invoice_id)
+    pay_on(world, invoice_id, 100.0)
+    storno = cancelled(world, invoice_id)
+    run_sql(world.db, REFUND_TAMPERS[tamper].format(last=last), invoice_id)
+    assert findings(world.db, invoice_id, 'tax_entry_mismatch') != []                                    # der Widerspruch steht da – und wird genannt
+    before_rows = marked(world.db, 'F-700')
+
+    assignment = refund_of(world, storno.storno_id, 100.0)
+
+    assert assignment.ok, assignment.message
+    expected = ([(1800, 10000, -10000, None, None, 'liquid_first'), (4340, FREE, -10000, None, None, 'transfer')] if kind == 'single' else
+                [(1800, 10000, -10000, None, None, 'liquid_first'), (4405, 4400, -5980, -955, 0.19, 'transfer'), (4340, FREE, -4020, None, None, 'transfer')])
+    assert marked(world.db, storno.storno_number) == expected                                              # je Satz das, was die Zahlungen trugen, auf dem Konto der Zahlungen (4120)
+    assert marked(world.db, 'F-700') == before_rows and world.db.get_storno_credit(invoice_id) == D('0.00')
+    assert findings(world.db, invoice_id, 'tax_entry_mismatch') != []                                    # auch nach der Erstattung
+
+
+def test_the_refund_of_a_flagged_invoice_whose_payment_account_is_no_revenue_account_names_the_account_of_the_invoice_when_it_carries_a_snapshot(world):
+    """Die Zahlungen eines Satzes liegen auf EINEM Konto, das kein Erlöskonto (mehr) ist: Trägt der Beleg eine Momentaufnahme, nennt die Erstattung das Konto der Rechnung für den Satz
+    (``TAX_PAYMENT_NO_REVENUE``) – „auf verschiedenen Erlöskonten“ (``MIXED_REFUND_REVENUE_AMBIGUOUS``) wäre dort falsch."""
+    coa = account(world.db, FREE)
+    invoice_id = mixed_free_invoice(world)
+    send(world, invoice_id)
+    pay_on(world, invoice_id, 100.0)
+    storno = cancelled(world, invoice_id)
+    spoil(world, coa)
+    booking = outgoing(world, -50.0, '2026-07-10')
+    before = tables(world.db)
+
+    assignment = world.db.assign_storno_refund(storno.storno_id, booking)
+
+    assert assignment == PaymentAssignment(False, rate_sentence(TAX_PAYMENT_NO_REVENUE, D(0), True), None, None)
+    assert assignment.message.startswith('Das Erlöskonto, das diese Rechnung für steuerfreie Leistungen trägt, ist kein Erlöskonto (mehr)')
+    assert 'verschiedenen' not in assignment.message                                                      # nicht der Satz zu mehreren Konten
+    assert tables(world.db) == before
+
+
+def test_the_same_refund_for_a_rate_with_a_snapshot_names_the_rate_of_the_group(world):
+    coa = account(world.db, REDUCED)
+    invoice_id = reduced_invoice(world)
+    send(world, invoice_id)
+    pay_on(world, invoice_id, 330.0)
+    storno = cancelled(world, invoice_id)
+    spoil(world, coa)
+    booking = outgoing(world, -50.0, '2026-07-10')
+    before = tables(world.db)
+
+    assignment = world.db.assign_storno_refund(storno.storno_id, booking)
+
+    assert assignment == PaymentAssignment(False, TAX_PAYMENT_NO_REVENUE.format(rate='5,5 %'), None, None) and tables(world.db) == before
+
+
+def test_the_refund_of_a_flagged_invoice_without_a_snapshot_keeps_the_sentence_about_different_accounts(world):
+    """Ohne Momentaufnahme bleibt die Meldung, wie sie ist (``MIXED_REFUND_REVENUE_AMBIGUOUS``)."""
+    invoice_id = entry_invoice(world, 'T-710', [plain(19, '100.00'), plain(7, '50.00')])
+    send(world, invoice_id)
+    pay_on(world, invoice_id, 100.0)
+    storno = cancelled(world, invoice_id)
+    run_sql(world.db, 'UPDATE ChartOfAccounts SET AccountNumber = 6120 WHERE AccountNumber = 4400')       # das Konto der 19-%-Zahlungen ist kein Erlöskonto mehr
+    booking = outgoing(world, -50.0, '2026-07-10')
+    before = tables(world.db)
+
+    assignment = world.db.assign_storno_refund(storno.storno_id, booking)
+
+    assert assignment == PaymentAssignment(False, rate_sentence(MIXED_REFUND_REVENUE_AMBIGUOUS, D(19), False), None, None) and tables(world.db) == before
+    assert 'für 19 % auf verschiedenen Erlöskonten' in assignment.message
 
 
 @pytest.mark.parametrize('first, second, removed, rate, tax_free', [
@@ -887,7 +1207,7 @@ def test_the_refund_names_a_tax_free_group_whose_payments_lie_on_two_accounts(wo
 ])
 def test_removing_a_payment_after_a_refund_names_the_group_that_would_be_over_refunded(world, first, second, removed, rate, tax_free):
     """Die Summe geht auf (0,31 gezahlt, 0,31 erstattet), und doch hätte eine Gruppe nach dem Entfernen mehr zurückbekommen, als sie trug (``MIXED_REMOVAL_REFUSED``, je Satz):
-    Eine steuerfreie Gruppe heißt dort „steuerfrei“, nicht „0 %“ (``rate_sentence``, ``_exempt_pcts``)."""
+    Eine steuerfreie Gruppe heißt dort „steuerfreie Leistungen“, nicht „0 %“ (``rate_sentence``, ``_exempt_pcts``)."""
     invoice_id = mixed_free_invoice(world)
     send(world, invoice_id)
     pay_on(world, invoice_id, D(first), '2026-07-01')
@@ -901,7 +1221,8 @@ def test_removing_a_payment_after_a_refund_names_the_group_that_would_be_over_re
         world.db.unassign_invoice_payment(payment_ids[removed])
 
     assert str(refused.value) == rate_sentence(MIXED_REMOVAL_REFUSED, rate, tax_free, number=storno.storno_number)
-    assert ('steuerfrei' in str(refused.value)) is tax_free and ('0 %' in str(refused.value)) is False
+    assert (EXEMPT_SENTENCE_LABEL in str(refused.value)) is tax_free and ('0 %' in str(refused.value)) is False
+    assert (f'für {EXEMPT_SENTENCE_LABEL} wäre danach mehr erstattet als gezahlt' in str(refused.value)) is tax_free
     assert tables(world.db) == before                                                                    # vor dem ersten Schreiben
 
 
@@ -938,7 +1259,7 @@ def test_it_is_enough_that_one_of_the_two_invoices_carries_the_account(world, mo
     """Die stornierte Rechnung ohne Erlöskonto der Stammdaten, die Ersatzrechnung mit – und umgekehrt: Beide Male zieht nichts um."""
     for number, make, edit in (
             ('T-100', lambda w, n: entry_invoice(w, n, [plain(19, '100.00')]),
-             "UPDATE InvoiceItems SET RevenueCoaId = {coa} WHERE InvoiceId = ?"),                      # nur die neue Rechnung trägt eines
+             "UPDATE InvoiceItems SET TaxRateBp = 1900, RevenueCoaId = {coa} WHERE InvoiceId = ?"),    # nur die neue Rechnung trägt eines (eine ganze Momentaufnahme, keine halbe)
             ('F-100', free_invoice,
              "UPDATE InvoiceItems SET TaxRateBp = NULL, TaxCategory = 'S', TaxExemptReason = NULL, RevenueCoaId = NULL WHERE InvoiceId = ?")):   # nur die alte
         original, _storno = paid_and_cancelled(world, make, number, 50.0 if number == 'T-100' else 100.0)
@@ -1096,24 +1417,66 @@ def test_the_choice_function_gets_the_flag_for_an_account_of_the_masterdata(worl
 # Die festen Sätze: rate_sentence und group_label
 # ═════════════════════════════════════════════════════════════════════════════
 
-@pytest.mark.parametrize('pct', ['19', '7', '5.5', '0', '7.4'])
-def test_rate_sentence_is_character_for_character_the_old_sentence_for_every_rate_but_tax_free(pct):
+def sentence_templates():
+    """Jede Vorlage, in die ``rate_sentence`` den Satz einer Gruppe einsetzt – mit den übrigen Platzhaltern, die sie braucht (Name, Vorlage, Platzhalter)."""
     from db.invoice_payments import (MIXED_GROUP_NOT_POSITIVE as NOT_POSITIVE, MIXED_NO_REVENUE_COA as NO_COA, MIXED_REFUND_REVENUE_AMBIGUOUS as AMBIGUOUS,
                                      MIXED_REMOVAL_REFUSED as REMOVAL)
+    return [('MIXED_GROUP_NOT_POSITIVE', NOT_POSITIVE, {'amount': '-10,70 €'}), ('MIXED_NO_REVENUE_COA', NO_COA, {}), ('MIXED_REFUND_REVENUE_AMBIGUOUS', AMBIGUOUS, {}),
+            ('MIXED_REMOVAL_REFUSED', REMOVAL, {'number': '26R001'}), ('TAX_PAYMENT_NO_REVENUE', TAX_PAYMENT_NO_REVENUE, {}), ('TAX_SEND_NO_REVENUE', TAX_SEND_NO_REVENUE, {}),
+            ('differs', TAX_ENTRY_FINDINGS['differs'], {}), ('rate', TAX_ENTRY_FINDINGS['rate'], {'position': '7 %'}), ('exempt_rate', TAX_ENTRY_FINDINGS['exempt_rate'], {}),
+            ('exempt_reason', TAX_ENTRY_FINDINGS['exempt_reason'], {}), ('revenue', TAX_ENTRY_FINDINGS['revenue'], {}),
+            ('head', TAX_ENTRY_FINDINGS['head'], {'head': '19 %'}), ('half', TAX_ENTRY_FINDINGS['half'], {})]
+
+
+@pytest.mark.parametrize('pct', ['19', '7', '5.5', '7.4', '0'])
+def test_rate_sentence_is_character_for_character_the_old_sentence_for_every_rate_that_is_not_tax_free(pct):
+    """Für 19, 7 und 5,5 % (und jeden anderen Satz, auch 0 % ohne die Art „steuerfrei“) bleibt jeder Satz Zeichen für Zeichen, wie er war: der Satz, ein Leerzeichen, das Prozentzeichen."""
     from tax_groups import pct_text
     rate = D(pct)
 
-    for template, names in ((NOT_POSITIVE, {'amount': '-10,70 €'}), (NO_COA, {}), (AMBIGUOUS, {}), (REMOVAL, {'number': '26R001'})):
-        assert rate_sentence(template, rate, False, **names) == template.format(rate=pct_text(rate), **names), template
-    assert rate_sentence(NO_COA, D(0), True) == ('Für steuerfrei ist kein Erlöskonto hinterlegt – bei einer Rechnung mit mehreren Steuersätzen lässt es sich nicht wählen. '
-                                                'Bitte das Erlöskonto für steuerfrei im Kontenrahmen anlegen.')
-    assert rate_sentence(REMOVAL, D(0), True, number='26R001').startswith('Zu dieser Rechnung wurde bereits erstattet – für steuerfrei wäre danach ')
-    assert '%' not in rate_sentence(NOT_POSITIVE, D(0), True, amount='-1,00 €') and rate_sentence(NOT_POSITIVE, D(0), True, amount='-1,00 €').endswith('(steuerfrei: -1,00 €).')
+    for name, template, names in sentence_templates():
+        assert rate_sentence(template, rate, False, **names) == template.replace('{rate} %', '{rate}').format(rate=f'{pct_text(rate)} %', **names), name
+    assert rate_sentence(TAX_SEND_NO_REVENUE, rate, False) == f'Für {pct_text(rate)} % hat die Rechnung kein gültiges Erlöskonto – bitte im Steuersatz der Stammdaten eines eintragen und die Rechnung danach neu speichern.'
 
 
-@pytest.mark.parametrize('text', [TAX_PAYMENT_NO_REVENUE, TAX_SEND_NO_REVENUE])
-def test_the_sentences_with_a_bare_placeholder_take_the_group_label(text):
-    assert rate_sentence(text, D('5.5'), False) == text.format(rate='5,5 %') and rate_sentence(text, D(0), True) == text.format(rate='steuerfrei')
+# Die fertigen Sätze mit einer steuerfreien Gruppe, wie sie ein Nutzer liest: „steuerfreie Leistungen“ – „für steuerfrei“ las sich holprig
+TAX_FREE_SENTENCES = {
+    'MIXED_GROUP_NOT_POSITIVE': ('Eine Rechnung mit mehreren Steuersätzen lässt sich nur buchen, wenn die Positionen jedes Steuersatzes zusammen einen positiven Betrag ergeben '
+                                 '(steuerfreie Leistungen: -10,70 €).'),
+    'MIXED_NO_REVENUE_COA': ('Für steuerfreie Leistungen ist kein Erlöskonto hinterlegt – bei einer Rechnung mit mehreren Steuersätzen lässt es sich nicht wählen. '
+                             'Bitte das Erlöskonto für steuerfreie Leistungen im Kontenrahmen anlegen.'),
+    'MIXED_REFUND_REVENUE_AMBIGUOUS': ('Die Zahlungen dieser Rechnung liegen für steuerfreie Leistungen auf verschiedenen Erlöskonten – bei einer Rechnung mit mehreren '
+                                       'Steuersätzen lässt sich das Erlöskonto der Erstattung nicht wählen. Bitte die Buchungssätze der Zahlungen prüfen.'),
+    'MIXED_REMOVAL_REFUSED': ('Zu dieser Rechnung wurde bereits erstattet – für steuerfreie Leistungen wäre danach mehr erstattet als gezahlt (oder Betrag und Steuer gingen '
+                              'nicht auf). Erst die Erstattung an der Stornorechnung 26R001 entfernen.'),
+    'TAX_PAYMENT_NO_REVENUE': ('Das Erlöskonto, das diese Rechnung für steuerfreie Leistungen trägt, ist kein Erlöskonto (mehr) – die Zahlung lässt sich nicht kontieren. '
+                               'Bitte das Konto im Kontenrahmen prüfen (Prüfung unter Sonstiges).'),
+    'TAX_SEND_NO_REVENUE': ('Für steuerfreie Leistungen hat die Rechnung kein gültiges Erlöskonto – bitte im Steuersatz der Stammdaten eines eintragen und die Rechnung danach '
+                            'neu speichern.'),
+    'differs': ('Für steuerfreie Leistungen tragen die Positionen der Rechnung verschiedene Angaben aus den Stammdaten (Art, Befreiungsgrund oder Erlöskonto) oder teils keine – '
+                'die Rechnung lässt sich so nicht buchen.'),
+    'rate': 'Für steuerfreie Leistungen passt der Satz aus den Stammdaten nicht zum Steuersatz einer Position (7 %) – die Rechnung lässt sich so nicht buchen.',
+    'revenue': 'Für steuerfreie Leistungen ist das Erlöskonto der Rechnung kein Erlöskonto (mehr) – die Zahlung lässt sich nicht kontieren.',
+    'head': ('Der Steuersatz im Kopf der Rechnung (19 %) passt nicht zum Satz aus den Stammdaten (steuerfreie Leistungen) – die Rechnung lässt sich so nicht '
+             'buchen.'),
+}
+
+
+@pytest.mark.parametrize('name, template, names', [entry_ for entry_ in sentence_templates() if entry_[0] in TAX_FREE_SENTENCES], ids=list(TAX_FREE_SENTENCES))
+def test_every_sentence_with_a_tax_free_group_reads_as_german_with_tax_free_services(name, template, names):
+    assert rate_sentence(template, D(0), True, **names) == TAX_FREE_SENTENCES[name]
+    assert EXEMPT_SENTENCE_LABEL == 'steuerfreie Leistungen' and 'steuerfrei ' not in TAX_FREE_SENTENCES[name].replace('steuerfreie Leistungen', '')    # nirgends mehr das bloße „für steuerfrei“
+
+
+def test_the_sentences_that_name_no_group_rate_do_not_change_with_the_flag():
+    """„exempt_reason“ und „half“ haben keinen Platzhalter; „exempt_rate“ nennt den Satz der Position (nie „steuerfrei“, die Prüfliste ruft ihn mit ``exempt`` falsch auf)."""
+    for kind in ('exempt_reason', 'half'):
+        assert rate_sentence(TAX_ENTRY_FINDINGS[kind], D(0), True) == TAX_ENTRY_FINDINGS[kind] == rate_sentence(TAX_ENTRY_FINDINGS[kind], D(19), False)
+    assert rate_sentence(TAX_ENTRY_FINDINGS['exempt_rate'], D('5.5'), False) == 'Eine Position der Art „steuerfrei“ trägt den Satz 5,5 % – eine steuerfreie Leistung hat den Satz 0.'
+
+
+def test_the_group_label_of_the_lists_and_the_pdf_stays_tax_free():
+    """Nur ``rate_sentence`` ändert sich: Die Listen der Prüfliste (``shown``) und das PDF nennen die Gruppe weiter „steuerfrei“ (``tax_groups.group_label``)."""
     assert group_label(D(19), False) == '19 %' and group_label(D(0), True) == 'steuerfrei' and group_label(D(0), False) == '0 %'
 
 
@@ -1144,9 +1507,10 @@ def test_the_fixed_sentences_of_the_findings_name_the_rate_and_no_amount():
         'exempt_reason': 'Die steuerfreien Positionen der Rechnung tragen keinen Grund der Steuerbefreiung.',
         'revenue': 'Für {rate} % ist das Erlöskonto der Rechnung kein Erlöskonto (mehr) – die Zahlung lässt sich nicht kontieren.',
         'head': ('Der Steuersatz im Kopf der Rechnung ({head}) passt nicht zum Satz aus den Stammdaten ({rate} %) – die Rechnung lässt sich so nicht '
-                 'buchen.')}
-    assert sentence('differs', 0, True) == ('Für steuerfrei tragen die Positionen der Rechnung verschiedene Angaben aus den Stammdaten (Art, Befreiungsgrund oder Erlöskonto) oder teils '
-                                            'keine – die Rechnung lässt sich so nicht buchen.')
+                 'buchen.'),
+        'half': 'Eine Position trägt Angaben aus den Stammdaten ohne den Satz dazu – die Rechnung lässt sich so nicht buchen.'}
+    assert sentence('differs', 0, True) == ('Für steuerfreie Leistungen tragen die Positionen der Rechnung verschiedene Angaben aus den Stammdaten (Art, Befreiungsgrund oder Erlöskonto) oder '
+                                            'teils keine – die Rechnung lässt sich so nicht buchen.')
     assert sentence('rate', '5.5', False, position='7 %') == 'Für 5,5 % passt der Satz aus den Stammdaten nicht zum Steuersatz einer Position (7 %) – die Rechnung lässt sich so nicht buchen.'
 
 
@@ -1252,13 +1616,73 @@ def test_the_rate_of_a_position_with_a_snapshot_is_the_one_of_the_snapshot_for_t
     assert 'unflagged_rate_mix' in [f['category'] for f in findings(world.db, invoice_id)]
 
 
-def test_the_half_written_snapshot_of_the_section_19_sample_is_named(world):
-    """Die Art ``'E'`` ohne Momentaufnahme steht nur im Beispiel eines Belegs nach § 19 (``tools/make_einvoice_samples.py``) – eine Datenbank der App trägt sie nie. Wäre sie da, nennt die
-    Prüfliste, dass der Grund der Befreiung fehlt."""
+def test_the_section_19_sample_with_the_kind_tax_free_alone_is_no_finding(world):
+    """Die Art ``'E'`` ohne Satz in Hundertstel Prozent, Grund und Konto steht im Beispiel eines Belegs nach § 19 (``tools/make_einvoice_samples.py``, Kopf −1): Das Merkmal einer
+    Momentaufnahme ist ``TaxRateBp`` – ohne den ist der Beleg einer ohne, und die Prüfliste schweigt. Er lässt sich versenden und bezahlen wie immer."""
     invoice_id = entry_invoice(world, 'K-100', [plain(0, '100.00')], tax_rate=-1)
     run_sql(world.db, "UPDATE InvoiceItems SET TaxCategory = 'E' WHERE InvoiceId = ?", invoice_id)
 
-    assert [f['text'] for f in findings(world.db, invoice_id, 'tax_entry_mismatch')] == [sentence('exempt_reason', 0, True)]
+    assert findings(world.db, invoice_id) == [] and findings(world.db) == []
+    send(world, invoice_id)
+    pay_on(world, invoice_id, 100.0)
+    assert findings(world.db) == [] and standing(world.db, invoice_id) == ('paid', 0)
+
+
+def test_tax_free_alone_is_no_finding_whatever_the_rate_of_the_position(world):
+    """Auch eine Position der Art ``'E'`` ohne den Rest trägt keinen Befund wegen ihres Satzes oder eines fehlenden Grundes: Sie ist keine Momentaufnahme, und das Dokument
+    liest sie nicht als solche (``export.einvoice_model._exempt_item`` verlangt den Satz 0 in Hundertstel Prozent)."""
+    invoice_id = entry_invoice(world, 'K-101', [plain(19, '100.00')])
+    run_sql(world.db, "UPDATE InvoiceItems SET TaxCategory = 'E' WHERE InvoiceId = ?", invoice_id)
+
+    assert findings(world.db, invoice_id) == []
+
+
+@pytest.mark.parametrize('tamper', [
+    "UPDATE InvoiceItems SET TaxExemptReason = 'Ein Grund' WHERE InvoiceId = ?",                                  # nur ein Grund
+    "UPDATE InvoiceItems SET TaxCategory = 'E', TaxExemptReason = 'Ein Grund' WHERE InvoiceId = ?",              # steuerfrei mit Grund, aber ohne Satz
+    "UPDATE InvoiceItems SET RevenueCoaId = (SELECT ID FROM ChartOfAccounts WHERE AccountNumber = 4400) WHERE InvoiceId = ?",       # nur ein Erlöskonto
+    "UPDATE InvoiceItems SET TaxCategory = 'E', TaxExemptReason = 'Ein Grund', RevenueCoaId = (SELECT ID FROM ChartOfAccounts WHERE AccountNumber = 4400) WHERE InvoiceId = ?",
+])
+def test_the_half_written_snapshot_is_named_with_its_own_fixed_sentence_and_makes_the_invoice_unbookable(world, tamper):
+    """Angaben aus den Stammdaten an einer Position OHNE den Satz dazu (``TaxRateBp`` NULL, aber Befreiungsgrund oder Erlöskonto): Die Prüfliste nennt es – ein Befund je Beleg –,
+    und beim Buchen ist es ein Widerspruch (``TAX_ENTRY_CONTRADICTION``)."""
+    invoice_id = entry_invoice(world, 'K-200', [plain(19, '100.00')])
+    assert findings(world.db, invoice_id) == []                                                        # vorher sauber
+    run_sql(world.db, tamper, invoice_id)
+    half = 'Eine Position trägt Angaben aus den Stammdaten ohne den Satz dazu – die Rechnung lässt sich so nicht buchen.'
+
+    found = findings(world.db, invoice_id, 'tax_entry_mismatch')
+
+    assert [f['text'] for f in found] == [half] == [sentence('half', 0)]
+    assert [(f['category'], f['invoice_id'], f['invoice_number']) for f in found] == [('tax_entry_mismatch', invoice_id, 'K-200')]
+    assert [f for f in world.db.find_payment_inconsistencies() if f['category'] == 'tax_entry_mismatch'] == found
+    before = tables(world.db)
+    change = world.db.set_invoice_status(invoice_id, 'sent', USER)
+    assert (change.ok, change.code, change.message) == (False, 409, TAX_ENTRY_CONTRADICTION) and tables(world.db) == before
+
+
+def test_two_half_snapshots_in_one_invoice_are_one_finding(world):
+    invoice_id = entry_invoice(world, 'K-300', [plain(19, '100.00'), plain(7, '50.00')])
+    run_sql(world.db, "UPDATE InvoiceItems SET TaxExemptReason = 'Ein Grund' WHERE InvoiceId = ?", invoice_id)
+
+    assert [f['text'] for f in findings(world.db, invoice_id, 'tax_entry_mismatch')] == [sentence('half', 0)]
+
+
+def test_a_half_snapshot_next_to_a_whole_one_of_the_same_rate_is_named_twice_with_each_own_sentence(world):
+    """Eine Position ohne Satz, aber mit Konto, neben einer mit Momentaufnahme desselben Satzes: Beides stimmt – die Angaben ohne Satz und die Mischung aus mit und ohne."""
+    invoice_id = entry_invoice(world, 'K-400', [entry('5.5', '100.00', account(world.db, REDUCED)), entry('5.5', '50.00', account(world.db, REDUCED))])
+    run_sql(world.db, 'UPDATE InvoiceItems SET TaxRateBp = NULL WHERE InvoiceId = ? AND Position = 2', invoice_id)
+
+    assert [f['text'] for f in findings(world.db, invoice_id, 'tax_entry_mismatch')] == [sentence('half', 0), sentence('differs', '5.5')]
+
+
+def test_a_snapshot_rate_below_1_percent_is_a_finding_even_when_it_fits_the_rate_of_the_position(world):
+    """Ein Satz von 1 bis 99 Hundertstel Prozent ist beim Buchen ein Widerspruch – die Prüfliste nennt ihn ebenso, auch wenn er zum Satz der Position passt (0,005 = 0,5 %)."""
+    invoice_id = entry_invoice(world, 'K-500', [entry('5.5', '100.00', account(world.db, REDUCED))])
+    run_sql(world.db, 'UPDATE InvoiceItems SET TaxRateBp = 50, TaxRate = 0.005 WHERE InvoiceId = ?', invoice_id)
+    run_sql(world.db, 'UPDATE Invoices SET TaxRate = 0.005 WHERE ID = ?', invoice_id)             # der Kopf trägt denselben Satz: kein zweiter Befund
+
+    assert [f['text'] for f in findings(world.db, invoice_id, 'tax_entry_mismatch')] == [sentence('rate', '0.5', False, position='0,5 %')]
 
 
 def test_the_check_reads_one_statement_for_all_invoices_with_a_snapshot(world, monkeypatch):
