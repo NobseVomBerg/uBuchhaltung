@@ -27,9 +27,10 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import List, Optional, Tuple
 
 from db.invoice_lock import STORNO_KIND
+from db.invoices import has_mixed_rates
 from money import SCALE, format_de, to_minor
 from richtext import sanitize_richtext
-from tax_groups import rate_groups
+from tax_groups import RateGroup, item_groups, item_rate, rate_groups, rate_pct
 
 # Spaltenindizes der Invoices-Zeile (``SELECT *``), siehe db/schema.py
 _INV = dict(
@@ -681,6 +682,41 @@ def build_einvoice(db, invoice, items) -> EInvoice:
         bic=_text(col('bank_bic')).replace(' ', ''),
         notes=notes, preceding_invoice_number=preceding_number, preceding_invoice_date=preceding_date,
         warnings=warnings, skonto=skonto, skonto_unreadable=skonto_unreadable)
+
+
+@dataclass
+class PerItemRates:
+    """Was das PDF eines Belegs mit Steuersatz je Position (``Invoices.MixedTaxRates`` = 1) mehr druckt als das eines Belegs mit einem Satz
+    (``export.pdf_document.draw_item_table``): je Position ihren Satz (``item_rates``: Prozentzahlen, in der Reihenfolge der Positionen) und im
+    Summenblock eine Zeile je Satzgruppe (``groups``: Satz absteigend)."""
+    item_rates: List[Decimal]
+    groups: List[RateGroup]
+
+
+def per_item_rates(document, items, head_rate) -> Optional[PerItemRates]:
+    """Die Sätze und Satzgruppen, die das PDF eines Belegs mit Steuersatz je Position druckt – ``None`` für jeden anderen Beleg: Er druckt mit
+    EINEM Satz, wie immer. Das Kennzeichen entscheidet (``db.invoices.has_mixed_rates``), nie die Sätze der Positionen.
+
+    ``document``: die Zeile des Belegs (``db.get_document``), ``items``: seine Positionen (``db.get_invoice_items``), ``head_rate``: der Satz im
+    Kopf (``Invoices.TaxRate``) – bei so einem Beleg nur ein Platzhalter, hier allein der Ersatz für eine Position ohne eigenen Satz, wie in
+    ``build_einvoice``. Die Gruppen sind ``tax_groups.item_groups`` über den Nettobetrag der Positionen, so wie ``build_einvoice`` ihn liest:
+    die der E-Rechnung und, summiert, die gespeicherten Summen des Belegs. Weicht eine Summe ab (ein Eingriff an der App vorbei), druckt das
+    PDF die Gruppen trotzdem; eine Zeile im Server-Log nennt es – nie ein Fehler. Eine Stornorechnung trägt ihre Beträge negativ, wie
+    gespeichert (nichts wird negiert), die Gruppen damit auch."""
+    flag = _INV['mixed_tax_rates']
+    if not has_mixed_rates(document[flag] if len(document) > flag else None):
+        return None
+    default = rate_pct(head_rate)
+    rates = [it[_ITM['tax_rate']] if len(it) > _ITM['tax_rate'] else None for it in items]
+    nets = [to_minor(it[_ITM['total_net']] or 0) for it in items]
+    groups = item_groups(zip(rates, nets), default)
+    stored = tuple(to_minor(document[_INV[name]] or 0) for name in ('sum_net', 'tax_amount', 'sum_gross'))
+    printed = (sum(g.net for g in groups), sum(g.tax for g in groups), sum(g.gross for g in groups))
+    if stored != printed:
+        print(f"PDF {_text(document[_INV['number']])}: Die Steuergruppen der Positionen (netto {format_de(printed[0])}, Steuer "
+              f"{format_de(printed[1])}, brutto {format_de(printed[2])}) weichen von den gespeicherten Summen (netto {format_de(stored[0])}, "
+              f"Steuer {format_de(stored[1])}, brutto {format_de(stored[2])}) ab – gedruckt werden die Gruppen")
+    return PerItemRates(item_rates=[item_rate(rate, default) for rate in rates], groups=groups)
 
 
 # ── Pflichtangaben: Was fehlt, damit die E-Rechnung gültig ist? ──────────────

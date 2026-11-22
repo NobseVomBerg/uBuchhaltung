@@ -69,3 +69,21 @@ def rate_groups(lines):
         tax = round_minor(tax_from_net(net, pct), 2)
         groups.append(RateGroup(pct=pct, net=net, tax=tax, gross=net + tax))
     return groups
+
+
+def item_rate(value, default=None):
+    """Der Steuersatz einer Position als Prozentzahl (``rate_pct``); fehlt die Angabe (``None``, ``''``), gilt ``default`` – eine
+    Prozentzahl, wie in ``export.einvoice_model.build_einvoice`` der Satz im Kopf des Belegs."""
+    pct = rate_pct(value)
+    return default if pct is None else pct
+
+
+def item_groups(pairs, default=None):
+    """Die Satzgruppen eines Belegs aus seinen Positionen – die EINE Stelle für das PDF (Rechnung, Stornorechnung, Angebot); die Buchungen
+    nehmen dieselbe.
+
+    ``pairs``: je Position ``(Satz, Nettobetrag in Minor Units)``. Der Satz steht so da, wie die Datenbank ihn führt (Bruch oder Prozentzahl,
+    ``InvoiceItems.TaxRate``) und wird über ``item_rate`` normalisiert (fehlt er, gilt ``default``); der Nettobetrag ist ``InvoiceItems.TotalNet``
+    in Minor Units – so liest ihn ``export.einvoice_model.build_einvoice`` (``to_minor``). Gruppiert und gerundet wird wie in ``rate_groups``:
+    Damit sind die Gruppen die der E-Rechnung und, summiert, die gespeicherten Summen des Belegs."""
+    return rate_groups([(item_rate(rate, default), net) for rate, net in pairs])

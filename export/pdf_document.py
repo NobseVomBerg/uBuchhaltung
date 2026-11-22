@@ -18,8 +18,9 @@ Ein optionales Logo ist als /Logo zeichenbar.
 """
 import re
 import html as _htmlmod
+from decimal import Decimal
 from .pdf_core import escape_pdf_string, logo_display_size
-from money import fmt_eur
+from money import fmt_eur, format_de
 
 # A4 hochkant, Seitenränder
 PAGE_W, PAGE_H = 595, 842
@@ -35,6 +36,11 @@ COL_UNIT = 120                    # Einheit    linksbündig
 COL_DESC = 165                    # Bezeichnung linksbündig
 COL_PRICE_R = 470                 # Einzelpreis rechtsbündig
 COL_TOTAL_R = RIGHT               # Gesamt      rechtsbündig
+# Nur bei einem Beleg mit Steuersatz je Position (``draw_item_table(…, tax_groups=…)``): die Spalte „USt“, rechtsbündig wie die Geldspalten,
+# so weit rechts, wie die Bezeichnung sonst reicht (``COL_PRICE_R - 65``: so breit darf ein Einzelpreis werden). Die Bezeichnung endet
+# ``_RATE_COL_W`` links davon – die Breite fasst den längsten Satz („99,99 %“, 33 pt in 9 pt) mit Abstand
+COL_RATE_R = COL_PRICE_R - 65
+_RATE_COL_W = 40
 
 # Helvetica-Zeichenbreiten (AFM, Einheiten/1000 em). Echte Metriken statt
 # Schätzung – nur damit liegen rechtsbündige Spalten exakt auf einer Kante.
@@ -218,6 +224,11 @@ def _fmt_money(value):
     return fmt_eur(value, symbol=False)
 
 
+def _fmt_rate(pct):
+    """Ein Steuersatz (Prozentzahl) mit Komma und ohne überflüssige Nullen: ``19 %``, ``5,5 %``."""
+    return format(Decimal(str(pct)).normalize(), 'f').replace('.', ',') + ' %'
+
+
 _ROW_LEADING = 13                 # Zeilenabstand innerhalb einer Position
 
 
@@ -243,19 +254,22 @@ def _wrap_description(desc, max_w, size):
 
 
 _TOTALS_HEIGHT = 70               # geschätzte Höhe des Summenblocks (Seitenumbruch)
+_TAX_ROW = 14                     # Zeilenabstand der Steuerzeilen im Summenblock; jede Satzgruppe über die erste macht ihn um eine höher
 _NOTE_SIZE = 9                    # Hinweis unter dem Summenblock: Schriftgröße, Zeilenabstand und
 _NOTE_LEADING = 12                #   Abstand der ersten Zeile unter der Schlusslinie
 _NOTE_TOP = 14
 
 
-def _table_header(flow):
-    """Tabellen-Kopfzeile an flow.y setzen (Unterstrich-Linie in flow.line_ops)."""
+def _table_header(flow, rate_col=False):
+    """Tabellen-Kopfzeile an flow.y setzen (Unterstrich-Linie in flow.line_ops). ``rate_col``: mit der Spalte „USt“."""
     ops = flow.ops
     y = flow.y - 14
     text(ops, COL_POS, y, "Pos.", font='/F2', size=10)
     text(ops, COL_QTY, y, "Menge", font='/F2', size=10)
     text(ops, COL_UNIT, y, "Einheit", font='/F2', size=10)
     text(ops, COL_DESC, y, "Bezeichnung", font='/F2', size=10)
+    if rate_col:
+        text_right(ops, COL_RATE_R, y, "USt", font='/F2', size=10)
     text_right(ops, COL_PRICE_R, y, "Einzelpreis", font='/F2', size=10)
     text_right(ops, COL_TOTAL_R, y, "Gesamt", font='/F2', size=10)
     y -= 4
@@ -264,7 +278,7 @@ def _table_header(flow):
 
 
 def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross,
-                    currency='EUR', show_tax=True, tax_note=None):
+                    currency='EUR', show_tax=True, tax_note=None, tax_groups=None):
     """Positionstabelle mit rechtsbündigen Geldspalten + Summenblock.
 
     Seitenfähig: passt eine Position nicht mehr auf die Seite, wird umgebrochen
@@ -279,23 +293,36 @@ def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross
     § 19 UStG), ab dem linken Seitenrand (``LEFT``) auf die Breite bis ``RIGHT`` umbrochen – der
     Standardsatz passt in eine Zeile. Er gehört zum Block: Passt er nicht mehr auf die Seite,
     geht er mit dem Summenblock auf die nächste.
-    """
-    _table_header(flow)
 
-    # Bezeichnung darf nicht in die Einzelpreis-Spalte laufen.
-    desc_max_w = (COL_PRICE_R - 65) - COL_DESC
+    tax_groups: nur für einen Beleg mit Steuersatz je Position (``Invoices.MixedTaxRates``; die Aufrufer übergeben sie nur dann,
+    auch wenn es dann nur eine Gruppe ist) – ``tax_groups.RateGroup``, Satz absteigend. ``None`` (jeder andere Beleg): der Druck mit
+    EINEM Satz, ``tax_rate_pct`` und die einzelne Steuerzeile, Zeichen für Zeichen wie immer. Mit Gruppen steht in der Tabelle
+    zwischen Bezeichnung und Einzelpreis die Spalte „USt“ (je Position ``it['rate']``, die Prozentzahl; die Bezeichnung bricht
+    entsprechend früher um), und der Summenblock nennt unter „Summe netto“ je Gruppe eine Zeile „zzgl. 7 % MwSt. auf 50,00 EUR:“ mit
+    der Steuer der Gruppe (Minor Units, wie sie sind – bei einer Stornorechnung negativ), dann den Gesamtbetrag; jede Gruppe über die
+    erste macht den Block um eine Zeile höher (Seitenumbruch). ``tax_rate_pct`` druckt dann nichts: Der Satz im Kopf ist bei so einem
+    Beleg nur ein Platzhalter. Ohne Steuerausweis (``show_tax`` falsch; § 19 UStG – nie bei einem Beleg mit Steuersatz je Position)
+    gelten die Gruppen nicht.
+    """
+    per_item = tax_groups is not None and show_tax
+    _table_header(flow, per_item)
+
+    # Bezeichnung darf nicht in die Einzelpreis-Spalte laufen (mit Steuersatz je Position nicht in die Spalte „USt“).
+    desc_max_w = ((COL_RATE_R - _RATE_COL_W) if per_item else (COL_PRICE_R - 65)) - COL_DESC
     for it in items:
         desc_lines = _wrap_description(it.get('description'), desc_max_w, 9)
         row_h = _ROW_LEADING * len(desc_lines)
         if flow.y - row_h < flow.bottom:
             flow.new_page()
-            _table_header(flow)
+            _table_header(flow, per_item)
         ops = flow.ops
         top_y = flow.y
         # Pos/Menge/Einheit linksbündig, Geldspalten rechtsbündig – oben (top) ausgerichtet
         text(ops, COL_POS, top_y, str(it.get('pos') or ''), size=9)
         text(ops, COL_QTY, top_y, f"{(it.get('quantity') or 0):.2f}".replace('.', ','), size=9)
         text(ops, COL_UNIT, top_y, str(it.get('unit') or ''), size=9)
+        if per_item:
+            text_right(ops, COL_RATE_R, top_y, _fmt_rate(it['rate']), size=9)
         text_right(ops, COL_PRICE_R, top_y, f"{_fmt_money(it.get('price') or 0)} {currency}", size=9)
         text_right(ops, COL_TOTAL_R, top_y, f"{_fmt_money(it.get('total') or 0)} {currency}", size=9)
         ly = top_y
@@ -307,7 +334,8 @@ def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross
     # Summenblock samt Hinweis zusammenhalten: passt er nicht mehr, neue Seite (ohne Header).
     note_lines = _wrap_description(tax_note, RIGHT - LEFT, _NOTE_SIZE) if tax_note else []
     note_drop = _NOTE_TOP + _NOTE_LEADING * (len(note_lines) - 1) if note_lines else 0
-    if flow.y - (_TOTALS_HEIGHT + note_drop) < flow.bottom:
+    extra_tax_rows = max(len(tax_groups) - 1, 0) if per_item else 0
+    if flow.y - (_TOTALS_HEIGHT + _TAX_ROW * extra_tax_rows + note_drop) < flow.bottom:
         flow.new_page()
 
     ops = flow.ops
@@ -320,10 +348,18 @@ def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross
         text(ops, COL_DESC, y, "Summe netto:", size=10)
         text_right(ops, COL_TOTAL_R, y, f"{_fmt_money(sum_net)} {currency}", font='/F2', size=10)
         y -= 14
-        tax_pct = (f"{tax_rate_pct:g}" if isinstance(tax_rate_pct, float) else str(tax_rate_pct))
-        text(ops, COL_DESC, y, f"zzgl. {tax_pct}% MwSt.:", size=10)
-        text_right(ops, COL_TOTAL_R, y, f"{_fmt_money(tax_amount)} {currency}", font='/F2', size=10)
-        y -= 16
+        if per_item:
+            # Je Satzgruppe eine Zeile; der Abstand zum Gesamtbetrag bleibt der heutige (14 + 2 = 16)
+            for group in tax_groups:
+                text(ops, COL_DESC, y, f"zzgl. {_fmt_rate(group.pct)} MwSt. auf {format_de(group.net)} {currency}:", size=10)
+                text_right(ops, COL_TOTAL_R, y, f"{format_de(group.tax)} {currency}", font='/F2', size=10)
+                y -= _TAX_ROW
+            y -= 2
+        else:
+            tax_pct = (f"{tax_rate_pct:g}" if isinstance(tax_rate_pct, float) else str(tax_rate_pct))
+            text(ops, COL_DESC, y, f"zzgl. {tax_pct}% MwSt.:", size=10)
+            text_right(ops, COL_TOTAL_R, y, f"{_fmt_money(tax_amount)} {currency}", font='/F2', size=10)
+            y -= 16
     text(ops, COL_DESC, y, "Gesamtbetrag:", font='/F2', size=11)
     # Wert in size 10 wie netto/MwSt darüber, damit die Kommas exakt untereinander stehen
     text_right(ops, COL_TOTAL_R, y, f"{_fmt_money(sum_gross)} {currency}", font='/F2', size=10)

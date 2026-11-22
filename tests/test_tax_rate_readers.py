@@ -72,16 +72,20 @@ READERS = {
     ('db/invoices.py', 'last_document_shows_tax'): '§ 19-Prüfung: Häkchen „Umsatzsteuer ausweisen“ eines neuen Belegs',
     ('db/schema.py', 'initialize_database'): 'Schema: legt die Spalte Invoices.TaxRate (und den Satz je Position) an, liest nichts',
     ('export/einvoice_model.py', 'build_einvoice'): 'E-Rechnung: Standardsatz der Positionen ohne eigenen Satz, § 19 (Kategorie E)',
-    ('export/pdf_invoice.py', 'generate_invoice_pdf'): 'PDF der Rechnung: Summenblock mit EINEM Satz, § 19-Hinweis',
-    ('export/pdf_quote.py', 'generate_quote_pdf'): 'PDF des Angebots: Summenblock mit EINEM Satz, § 19-Hinweis',
+    ('export/pdf_invoice.py', 'generate_invoice_pdf'): ('PDF der Rechnung: Summenblock mit EINEM Satz, § 19-Hinweis; mit Steuersatz je Position '
+                                                        '(MixedTaxRates, per_item_rates) Spalte „USt“ und eine Zeile je Satzgruppe – der Kopfsatz wird dann nicht gedruckt'),
+    ('export/pdf_quote.py', 'generate_quote_pdf'): ('PDF des Angebots: Summenblock mit EINEM Satz, § 19-Hinweis; mit Steuersatz je Position '
+                                                    '(MixedTaxRates, per_item_rates) Spalte „USt“ und eine Zeile je Satzgruppe – der Kopfsatz wird dann nicht gedruckt'),
     ('server/handlers.py', '_backfill_booking_skr'): 'Bankbewegung nach dem Zuordnen: Anzeige von Satz und Steuer',
     ('server/handlers.py', '_save_quote_update'): 'Angebot ändern: schreibt den Satz im Kopf und das Kennzeichen „Steuersatz je Position“ (MixedTaxRates)',
     ('server/pages_invoice.py', '_invoice_form_html'): 'Rechnungsmaske: Satz und Häkchen „Umsatzsteuer ausweisen“, Erlöskonto-Wahl, Zuordnung neu aufbauen',
     ('server/pages_invoice.py', '_refund_box_html'): 'Kasten Erstattung: Erlöskonto-Wahl',
     ('server/pages_quote.py', '_quote_form_html'): 'Angebotsmaske: Satz und Häkchen „Umsatzsteuer ausweisen“',
     ('server/pages_transactions.py', 'PageTransactions'): 'Zahlung verbuchen: Erlöskonto-Wahl der Rechnung',
-    ('tools/make_einvoice_samples.py', '_clone_for_correction'): 'Beispieldokumente: Kopf einer Rechnung kopieren',
-    ('tools/make_einvoice_samples.py', 'main'): 'Beispieldokumente: wählt die jüngste Rechnung mit 19 %',
+    ('tools/make_einvoice_samples.py', '_clone_for_correction'): ('Beispieldokumente: Kopf einer Rechnung kopieren, samt dem Kennzeichen '
+                                                                  '„Steuersatz je Position“ (MixedTaxRates: nur NULL oder 1)'),
+    ('tools/make_einvoice_samples.py', '_normal_invoice'): ('Beispieldokumente: wählt die jüngste Rechnung mit 19 % im Kopf – nie einen Beleg mit '
+                                                            'Steuersatz je Position (MixedTaxRates), dessen Kopfsatz nur ein Platzhalter ist'),
 }
 
 # Treffer, die nicht den Satz eines Belegs meinen: (Datei, Funktion) → warum nicht

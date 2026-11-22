@@ -1666,8 +1666,13 @@ kein Subagent darauf:
   (`assign_invoice_payment` samt Vorprüfung `payment_precheck` und `_assign_in_tx`; `link_invoice_to_transaction`), Erstattung (`assign_storno_refund`), Stornieren (`cancel_invoice`),
   Zuordnung neu aufbauen (`rebuild_invoice_payments`, Probelauf wie Ausführung, 409) und der Umzug der Zahlungen beim Versenden einer Ersatzrechnung (es zieht nichts um, der Hinweis nennt
   den Grund). `create_replacement_draft` bucht nichts und bleibt erlaubt; `update_invoice_status` (der ungeprüfte Baustein für Seed und Tests) bleibt, wie er ist. Die Sperre fällt erst, wenn
-  die Buchungen für mehrere Sätze da sind – nie lockern, ohne dass jeder dieser Wege sie ersetzt. Das Formular, das PDF und die Buchungen folgen (`docs/aufgaben.md`); bis dahin legt nur ein
-  eigener Request einen solchen Entwurf an. `tests/test_mixed_tax_save.py`, `tests/test_mixed_tax_locks.py`
+  die Buchungen für mehrere Sätze da sind – nie lockern, ohne dass jeder dieser Wege sie ersetzt. **PDF (Rechnung, Stornorechnung, Angebot):** Nur mit dem Kennzeichen – nie nach den Sätzen der
+  Positionen; ein Beleg mit einem Satz druckt Zeichen für Zeichen wie vorher – hat die Tabelle zwischen Bezeichnung und Einzelpreis die Spalte „USt“ (`pdf_document.COL_RATE_R`; die Bezeichnung bricht
+  früher um), und der Summenblock nennt unter „Summe netto“ je Satzgruppe eine Zeile „zzgl. 7 % MwSt. auf 50,00 EUR:“ (je Gruppe um eine Zeile höher: Seitenumbruch). Der Satz im Kopf wird dort nie
+  gedruckt (so ein Beleg ist nie § 19). Die Gruppen kommen aus `tax_groups.item_groups` (die EINE Stelle; die Buchungen nehmen dieselbe) über `einvoice_model.per_item_rates` und sind auf den Cent die
+  der E-Rechnung und, summiert, die gespeicherten Summen des Belegs – weicht eine ab, druckt das PDF trotzdem, und das Server-Log nennt es. Beispiele für Mustang: `zugferd-mischsatz.pdf` und
+  `xrechnung-mischsatz.xml` (`tools/make_einvoice_samples.py`; sein Normalfall ist nie ein Beleg mit dem Kennzeichen, seine Kopien nehmen es mit). Das Formular und die Buchungen folgen
+  (`docs/aufgaben.md`); bis dahin legt nur ein eigener Request einen solchen Entwurf an. `tests/test_mixed_tax_save.py`, `tests/test_mixed_tax_locks.py`, `tests/test_mixed_tax_documents.py`
 - **Schriften:** Liberation Sans (2.x, OFL 1.1) aus `export/fonts/` – metrisch
   = Helvetica, daher Layout unverändert; als Untermenge per `fontTools`
   eingebettet, Content-Streams bleiben WinAnsi. sRGB-ICC für den OutputIntent
