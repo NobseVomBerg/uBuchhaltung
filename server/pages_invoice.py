@@ -13,9 +13,11 @@ from db.invoices import InvoiceCol, is_storno_row
 from db.invoice_lock import (CLOSED, EDITABLE, LOCKED_STATUSES, NUMBER_KEPT_MESSAGE, STATUS_LABELS,
                              STORNO_LABEL, STORNO_LOCKED_MESSAGE, allowed_targets, as_document_version,
                              buyer_snapshot, canonical_status, status_group)
-from db.invoice_payments import MIXED_REVENUE_MESSAGE, PAYABLE_STATUSES
+from db.invoice_payments import MIXED_REVENUE_MESSAGE, PAYABLE_STATUSES, has_mixed_rates
 from db.invoice_versions import DELIVERY_DATE_MESSAGE, PROTOCOL_LABELS, local_date, local_datetime
 from money import fmt_eur, format_plain, to_minor
+import tax_groups
+from tax_groups import rate_pct
 from export.einvoice_model import (SCOPE_EN16931, SCOPE_XRECHNUNG, build_einvoice, einvoice_gaps, gap_texts,
                                    unit_display)
 from export.invoice_files import stored_invoice_path, version_files, wants_xrechnung
@@ -64,6 +66,290 @@ CORRECT_QUESTION = ('Rechnung berichtigen? Die bisherige Fassung bleibt als Date
 # Datenbank –, mit der vorhandenen Klasse für Warnhinweise
 TAX_PREFILL_NOTE = ('<p class="warnColor" id="tax_prefill_note">Vorbelegt wie die letzte Rechnung: ohne Umsatzsteuer '
                     '(Kleinunternehmer, §&nbsp;19 UStG).</p>')
+
+
+# ── Steuersatz je Position (seit 2.7.0) ──────────────────────────────────────
+# Das Häkchen „Steuersatz je Position“ und die Spalte „USt“ der Positionstabelle – für Rechnung UND Angebot (``pages_quote`` nimmt dieselben Bausteine).
+# Die wählbaren Sätze stehen nur in ``tax_groups.MIXED_TAX_RATES``: Die Auswahlfelder der Zeilen, die der Server schreibt, und die der neuen Zeilen,
+# die der Browser anlegt (die Liste als JSON im Skriptblock, ``MIXED_TAX_JS``), lesen beide diese eine Liste. Kein Satz und keine Zahl von Sätzen steht
+# im Quelltext der Maske.
+
+MIXED_RATE_UNSET = '– wählen –'        # die Auswahl einer Zeile, deren gespeicherter Satz sich nicht lesen lässt: nichts wird still umgedeutet
+
+
+def rate_key(value):
+    """Ein Steuersatz als Wert eines Auswahlfelds: die Prozentzahl als Text ('19', '7', '5.5'), oder ``None``, wenn er sich nicht lesen lässt. Gespeichert ist
+    er teils als Bruch (0,19), teils als Prozentzahl (19), auch als Text: ``tax_groups.rate_pct`` bringt alles auf dieselbe Form; ``'f'`` schreibt nie ``1E+1``."""
+    try:
+        percent = rate_pct(value)
+    except (ArithmeticError, ValueError, TypeError):
+        return None
+    return format(percent, 'f') if percent is not None and percent.is_finite() else None
+
+
+def rate_label(key):
+    """Die Beschriftung eines Satzes in Auswahl und Summenzeile, mit Dezimalkomma: '19 %', '5,5 %'."""
+    return key.replace('.', ',') + ' %'
+
+
+def mixed_rate_choices():
+    """Die wählbaren Sätze als ``(Wert, Beschriftung)`` in der Reihenfolge von ``tax_groups.MIXED_TAX_RATES`` – bei jedem Aufruf frisch aus dem Modul gelesen."""
+    keys = (rate_key(rate) for rate in tax_groups.MIXED_TAX_RATES)
+    return [(key, rate_label(key)) for key in keys if key is not None]
+
+
+def mixed_default_key(head):
+    """Der Satz, den eine neue Zeile bekommt: der Satz des Belegs (``head``, in jeder Schreibweise), wenn die Liste ihn kennt, sonst der erste der Liste."""
+    choices = mixed_rate_choices()
+    key = rate_key(head)
+    if any(key == value for value, _label in choices):
+        return key
+    return choices[0][0] if choices else ''
+
+
+def mixed_select_html(selected, disabled=''):
+    """Das Auswahlfeld „USt“ einer Zeile: die wählbaren Sätze, davon ``selected`` (der gespeicherte Satz der Position, in jeder Schreibweise) gewählt. Steht er
+    nicht in der Liste, kommt er als eigene, gewählte Option dazu – nichts wird still umgedeutet, der Server lehnt beim Speichern ab und sagt es; ein Satz, der
+    sich nicht lesen lässt, steht als leere Auswahl da. ``disabled``: ``' disabled'`` (gesperrte Rechnung) oder leer."""
+    choices = mixed_rate_choices()
+    key = rate_key(selected)
+    if key is None:
+        choices.insert(0, ('', MIXED_RATE_UNSET))
+        key = ''
+    elif not any(key == value for value, _label in choices):
+        choices.append((key, rate_label(key)))
+    options = ''.join(f'<option value="{_html.escape(value, quote=True)}"{" selected" if value == key else ""}>'
+                      f'{_html.escape(label)}</option>' for value, label in choices)
+    return f'<select class="item-tax"{disabled}>{options}</select>'
+
+
+MIXED_HEAD_CELL = '<th class="mixedTaxCol">USt</th>'
+
+
+def mixed_cell_html(selected, disabled=''):
+    """Die Zelle „USt“ einer Zeile der Positionstabelle (sichtbar nur mit dem Häkchen: ``buch.css``, Klasse ``mixedTaxOn`` an der Tabelle)."""
+    return f'<td class="mixedTaxCol">{mixed_select_html(selected, disabled)}</td>'
+
+
+def mixed_checkbox_html(checked, disabled):
+    """Das Häkchen „Steuersatz je Position“ unter „Umsatzsteuer ausweisen“ – in derselben Zelle, die Zeile ist ``no-pdf``. ``disabled``: ``' disabled'`` oder leer."""
+    return ('<br><label><input type="checkbox" id="mixed_tax"' + (' checked' if checked else '') + disabled
+            + ' onchange="mixToggle()"> Steuersatz je Position</label>')
+
+
+# Die Bausteine im Browser: Auswahl je Zeile, Häkchen, Summenzeilen je Satz. Nur var und function, Werte nur über .value, .textContent und createElement (nie als
+# HTML-Text). Der Block steht VOR dem Skript der Seite und ruft dessen Funktionen (calculateTotals, fmtDe, parseDe) erst beim Aufruf. ``__MIX_RATES__`` ist die
+# Liste der wählbaren Sätze als JSON (``script_json``).
+MIXED_TAX_JS = r'''
+        // Steuersatz je Position: Bausteine für die Masken von Rechnung und Angebot. Die wählbaren Sätze kommen vom Server
+        // (tax_groups.MIXED_TAX_RATES), hier steht kein Satz im Quelltext: [{value: '<Satz>', label: '<Satz> %'}, …]
+        var MIX_RATES = __MIX_RATES__;
+
+        // Ist „Steuersatz je Position“ eingeschaltet? Das Häkchen gilt nur zusammen mit „Umsatzsteuer ausweisen“.
+        function mixOn() {
+            var box = document.getElementById('mixed_tax');
+            var tax = document.getElementById('show_tax');
+            return !!(box && tax && box.checked && tax.checked);
+        }
+
+        // Ein Satz als Auswahlwert (die Prozentzahl als Text): dieselbe Regel wie tax_groups.rate_pct (ein Wert zwischen 0 und 1 gilt als Bruch);
+        // ohne lesbare Zahl ''.
+        function mixKey(value) {
+            var number = parseFloat(value);
+            if (isNaN(number)) return '';
+            if (number > 0 && number < 1) number = number * 100;
+            return String(Math.round(number * 100) / 100);
+        }
+
+        function mixKnown(key) {
+            for (var i = 0; i < MIX_RATES.length; i++) {
+                if (MIX_RATES[i].value === key) return true;
+            }
+            return false;
+        }
+
+        // Der Satz, den eine neue Zeile bekommt: der des Felds „Mehrwertsteuer“, wenn die Liste ihn kennt, sonst der erste der Liste.
+        function mixDefaultRate() {
+            var field = document.getElementById('tax_rate');
+            var key = field ? mixKey(field.value) : '';
+            if (mixKnown(key)) return key;
+            return MIX_RATES.length ? MIX_RATES[0].value : '';
+        }
+
+        // Der Satz einer Artikelzeile: der des Artikels (vom Server als Auswahlwert geliefert), wenn die Liste ihn kennt, sonst wie eine neue Zeile.
+        function mixArticleRate(article) {
+            var key = article.mixRate;
+            return (key && mixKnown(key)) ? key : mixDefaultRate();
+        }
+
+        function mixAddCell(row, key) {
+            var select = document.createElement('select');
+            select.className = 'item-tax';
+            for (var i = 0; i < MIX_RATES.length; i++) {
+                var option = document.createElement('option');
+                option.value = MIX_RATES[i].value;
+                option.textContent = MIX_RATES[i].label;
+                select.appendChild(option);
+            }
+            select.value = key;
+            var cell = document.createElement('td');
+            cell.className = 'mixedTaxCol';
+            cell.appendChild(select);
+            row.insertBefore(cell, row.querySelector('.item-price').parentNode);
+        }
+
+        // Wählt der Nutzer in einer Zeile einen Satz, hält die Zeile ihn fest (auch wenn das Häkchen später neu gesetzt wird), und die Summen ziehen nach.
+        function mixAttach(row) {
+            var select = row.querySelector('.item-tax');
+            if (!select) return;
+            select.addEventListener('change', function () {
+                row.setAttribute('data-mix-pinned', '1');
+                calculateTotals();
+            });
+        }
+
+        // Das Häkchen wurde gesetzt oder entfernt. Beim Einschalten bekommt jede Zeile, deren Satz der Nutzer nicht selbst gewählt hat, den Vorgabesatz.
+        function mixToggle() {
+            var box = document.getElementById('mixed_tax');
+            if (box && box.checked) {
+                var key = mixDefaultRate();
+                var rows = document.querySelectorAll('.invoice-item-row');
+                for (var i = 0; i < rows.length; i++) {
+                    var select = rows[i].querySelector('.item-tax');
+                    if (select && key && !rows[i].hasAttribute('data-mix-pinned')) select.value = key;
+                }
+            }
+            calculateTotals();
+        }
+
+        // Hält die Maske in Ordnung: Das Häkchen gibt es nur mit „Umsatzsteuer ausweisen“ (ohne dieses ist es aus und gesperrt, in einer gesperrten Rechnung
+        // bleibt es gesperrt), die Spalte „USt“ steht nur mit dem Häkchen da (Klasse an der Tabelle), und die Summenzeilen der Tabelle werden um die Spalte breiter.
+        function mixSync() {
+            var box = document.getElementById('mixed_tax');
+            var tax = document.getElementById('show_tax');
+            var table = document.querySelector('.invoice-items');
+            if (!box || !tax || !table) return;
+            if (!tax.checked) box.checked = false;
+            box.disabled = !!(tax.disabled || !tax.checked);
+            var on = mixOn();
+            if (on) table.classList.add('mixedTaxOn'); else table.classList.remove('mixedTaxOn');
+            var cells = table.querySelectorAll('tfoot td[colspan]');
+            for (var i = 0; i < cells.length; i++) {
+                if (!cells[i].hasAttribute('data-span')) cells[i].setAttribute('data-span', cells[i].getAttribute('colspan'));
+                cells[i].setAttribute('colspan', String(Number(cells[i].getAttribute('data-span')) + (on ? 1 : 0)));
+            }
+        }
+
+        // ``value`` durch ``divisor`` (ganze Zahlen, nicht negativ), kaufmännisch gerundet (ab der Hälfte auf) – ohne Fließkomma-Division.
+        function mixRoundDiv(value, divisor) {
+            var rest = value % divisor;
+            var quotient = (value - rest) / divisor;
+            return rest * 2 >= divisor ? quotient + 1 : quotient;
+        }
+
+        // Die Steuer einer Satzgruppe in Cent: Nettosumme (Cent) mal Satz, kaufmännisch gerundet (halb weg von null) – so, wie der Server es tut, in zwei
+        // Schritten (money.tax_from_net rundet auf Minor Units, round_minor danach auf den Cent), und nur mit ganzen Zahlen, nie mit Zwischenwerten als Kommazahl.
+        function mixTax(net, percent) {
+            if (isNaN(percent)) return 0;
+            var minor = mixRoundDiv(Math.abs(net) * Math.round(percent * 100), 100);
+            var cents = mixRoundDiv(minor, 100);
+            return net < 0 ? -cents : cents;
+        }
+
+        function mixLabel(select) {
+            var option = select.options[select.selectedIndex];
+            return option ? option.textContent : '';
+        }
+
+        // Die Satzgruppen, nach Satz absteigend; Beträge in Cent (ganze Zahlen). Das Netto einer Position ist die Zahl, die ihre Zeile zeigt.
+        function mixGroups() {
+            var rows = document.querySelectorAll('.invoice-item-row');
+            var byKey = {};
+            var groups = [];
+            for (var i = 0; i < rows.length; i++) {
+                var select = rows[i].querySelector('.item-tax');
+                if (!select) continue;
+                var key = select.value;
+                if (!Object.prototype.hasOwnProperty.call(byKey, key)) {
+                    byKey[key] = {key: key, percent: parseFloat(key), label: mixLabel(select), net: 0, tax: 0};
+                    groups.push(byKey[key]);
+                }
+                byKey[key].net += Math.round((parseDe(rows[i].querySelector('.item-total').textContent) || 0) * 100);
+            }
+            groups.sort(function (a, b) {
+                return (isNaN(b.percent) ? -1e9 : b.percent) - (isNaN(a.percent) ? -1e9 : a.percent);
+            });
+            for (var j = 0; j < groups.length; j++) groups[j].tax = mixTax(groups[j].net, groups[j].percent);
+            return groups;
+        }
+
+        function mixRateRow(group) {
+            var row = document.createElement('tr');
+            row.className = 'totals-row mixRateRow';
+            var name = document.createElement('td');
+            name.setAttribute('colspan', '6');
+            name.setAttribute('data-span', '5');
+            name.textContent = 'Mehrwertsteuer ' + group.label + ' auf ' + fmtDe(group.net / 100) + ' € netto:';
+            var amount = document.createElement('td');
+            var strong = document.createElement('strong');
+            strong.textContent = fmtDe(group.tax / 100) + ' €';
+            amount.appendChild(strong);
+            var spare = document.createElement('td');
+            spare.className = 'no-pdf';
+            row.appendChild(name);
+            row.appendChild(amount);
+            row.appendChild(spare);
+            return row;
+        }
+
+        // Der Summenblock, den calculateTotals am Ende ruft: Mit dem Häkchen steht an der Stelle der einen Steuerzeile je Satz eine Zeile; Netto, Steuer und
+        // Gesamtbetrag kommen aus den Gruppen (die Steuer je Gruppe auf den Cent gerundet, nie je Position). Das ist nur die Anzeige: Maßgeblich rechnet der Server.
+        function mixTotals() {
+            mixSync();
+            var table = document.querySelector('.invoice-items');
+            if (!table) return;
+            var old = table.querySelectorAll('.mixRateRow');
+            for (var i = 0; i < old.length; i++) old[i].parentNode.removeChild(old[i]);
+            var anchor = document.getElementById('tax_row');
+            if (!mixOn() || !anchor) return;
+            anchor.style.display = 'none';
+            var groups = mixGroups();
+            var net = 0;
+            var tax = 0;
+            for (var j = 0; j < groups.length; j++) {
+                net += groups[j].net;
+                tax += groups[j].tax;
+                anchor.parentNode.insertBefore(mixRateRow(groups[j]), anchor);
+            }
+            document.getElementById('sum_net').textContent = fmtDe(net / 100) + ' €';
+            document.getElementById('tax_base').textContent = fmtDe(net / 100);
+            document.getElementById('tax_amount').textContent = fmtDe(tax / 100) + ' €';
+            var gross = document.getElementById('sum_gross');
+            gross.textContent = '';
+            var strong = document.createElement('strong');
+            strong.textContent = fmtDe((net + tax) / 100) + ' €';
+            gross.appendChild(strong);
+        }
+
+        // Der Satz einer Zeile als Zahl (Prozent), so, wie das Formular ihn schickt – ohne Wahl NaN (im JSON null: der Server fragt dann nach).
+        function mixRowRate(row) {
+            return parseFloat(row.querySelector('.item-tax').value);
+        }
+
+        // Beim Laden: Eine Rechnung mit Steuersatz je Position behält die Sätze ihrer Zeilen, auch wenn das Häkchen aus- und wieder eingeschaltet wird.
+        function mixInit() {
+            if (!mixOn()) return;
+            var rows = document.querySelectorAll('.invoice-item-row');
+            for (var i = 0; i < rows.length; i++) rows[i].setAttribute('data-mix-pinned', '1');
+        }
+        mixInit();
+'''
+
+
+def mixed_tax_script():
+    """Der Skriptblock mit den Bausteinen für „Steuersatz je Position“ (``MIXED_TAX_JS``) und der Liste der wählbaren Sätze, vor dem Skript der Maske."""
+    rates = script_json([{'value': value, 'label': label} for value, label in mixed_rate_choices()])
+    return '<script>' + MIXED_TAX_JS.replace('__MIX_RATES__', rates) + '    </script>\n'
 
 
 # Stornieren (db/invoice_storno.py): Rückfrage mit Stornodatum; eine Stornorechnung lässt sich nicht kopieren
@@ -770,6 +1056,11 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
         if not show_tax:
             tax_prefill_note = TAX_PREFILL_NOTE
 
+    # Steuersatz je Position: Trägt der Beleg, den die Maske lädt (Bearbeiten, Kopie, Entwurf einer Ersatzrechnung, versendete Rechnung), das Kennzeichen, steht
+    # das Häkchen da und jede Zeile zeigt ihren Satz. Ohne Steuerausweis gibt es das Häkchen nie.
+    mixed_on = bool(existing_invoice) and show_tax and has_mixed_rates(
+        existing_invoice[InvoiceCol.MIXED_TAX_RATES] if len(existing_invoice) > InvoiceCol.MIXED_TAX_RATES else None)
+
     # Determine invoice number and initial values
     number_hint = False
     if existing_invoice and not is_copy:
@@ -816,6 +1107,7 @@ def _invoice_form_html(db: Database, invoice_id=None, copy_from=None, payment_er
     closed = group == CLOSED
     lock_attr = ' disabled' if locked else ''
     closed_attr = ' disabled' if closed else ''
+    mixed_attr = lock_attr if show_tax else ' disabled'      # das Häkchen „Steuersatz je Position“: ohne Steuerausweis gesperrt, in einer gesperrten Rechnung auch
     # Eine Rechnung, die schon einmal versendet war, behält ihre Nummer auch als Entwurf (der Kunde kennt sie)
     number_kept = is_edit_mode and group == EDITABLE and db.was_sent_before(invoice_id)
     number_attr = lock_attr or (' readonly' if number_kept else '')
@@ -1110,13 +1402,14 @@ function copyInvoiceAsNew(invId) {{
         
         <h1 class="invoice-title">''' + doc_title + '''</h1>
         
-        <table class="invoice-items" id="invoice_table">
+        <table class="invoice-items''' + (' mixedTaxOn' if mixed_on else '') + '''" id="invoice_table">
             <thead>
                 <tr>
                     <th style="width: 40px;">Pos.</th>
                     <th style="width: 70px;">Menge</th>
                     <th style="width: 70px;">Einheit</th>
                     <th>Bezeichnung</th>
+                    ''' + MIXED_HEAD_CELL + '''
                     <th style="width: 100px;">Einzelpreis</th>
                     <th style="width: 100px;">Gesamt</th>
                     <th style="width: 30px;" class="no-pdf"></th>
@@ -1141,6 +1434,7 @@ function copyInvoiceAsNew(invId) {{
                     <td><input type="number" class="item-quantity" value="{quantity}" min="0" step="0.01" style="width: 60px;"{lock_attr}></td>
                     <td><input type="text" class="item-unit" value="{unit}" style="width: 60px;"{lock_attr}></td>
                     <td><input type="text" class="item-description" value="{description}" style="width: 100%;"{lock_attr}></td>
+                    {mixed_cell_html(item[10], lock_attr)}
                     <td><input type="number" class="item-price" value="{price}" min="0" step="0.01" style="width: 80px;"{lock_attr}> €</td>
                     <td class="item-total" style="text-align: right;">{fmt_eur(total)}</td>
                     <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color: red;"{lock_attr}>✕</button></td>
@@ -1152,6 +1446,7 @@ function copyInvoiceAsNew(invId) {{
                     <td><input type="number" class="item-quantity" value="1" min="0" step="0.01" style="width: 60px;"></td>
                     <td><input type="text" class="item-unit" value="Stk." style="width: 60px;"></td>
                     <td><input type="text" class="item-description" style="width: 100%;"></td>
+                    ''' + mixed_cell_html(mixed_default_key(tax_pct)) + '''
                     <td><input type="number" class="item-price" value="0" min="0" step="0.01" style="width: 80px;"> €</td>
                     <td class="item-total" style="text-align: right;">0,00 €</td>
                     <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color: red;">✕</button></td>
@@ -1170,6 +1465,7 @@ function copyInvoiceAsNew(invId) {{
                     <td colspan="7" style="text-align: right; border: none;">
                         <label><input type="checkbox" id="show_tax" __SHOW_TAX_CHECKED__''' + lock_attr + ''' onchange="calculateTotals()"> Umsatzsteuer ausweisen</label>
                         <small style="color:#888;">(aus = Kleinunternehmer §&nbsp;19 UStG; der Hinweis darauf wird automatisch gedruckt)</small>
+                        ''' + mixed_checkbox_html(mixed_on, mixed_attr) + '''
                         __TAX_PREFILL_NOTE__
                     </td>
                 </tr>
@@ -1338,7 +1634,7 @@ function copyInvoiceAsNew(invId) {{
             </table>
         </div>
     </div>
-    
+    ''' + mixed_tax_script() + '''
     <script>
         // Own company data from server
         const ownCompaniesData = '''
@@ -1416,6 +1712,7 @@ function copyInvoiceAsNew(invId) {{
             'unit': unit_display(article[2]),
             'price': float(article[3]) if article[3] is not None else 0,  # Decimal -> JSON-fähig
             'taxRate': article[4] if article[4] is not None else 19,  # 0% nicht zu 19% verfälschen
+            'mixRate': rate_key(article[4]),  # Auswahlwert für „Steuersatz je Position“ (None: nicht lesbar)
             'description': article[5] or ''
         }
     
@@ -1704,6 +2001,7 @@ function copyInvoiceAsNew(invId) {{
                 <td class="item-total" style="text-align: right;">0,00 €</td>
                 <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color: red;">✕</button></td>
             `;
+            mixAddCell(newRow, mixDefaultRate());
             tbody.appendChild(newRow);
             attachCalculationListeners(newRow);
             calculateTotals();
@@ -1736,6 +2034,7 @@ function copyInvoiceAsNew(invId) {{
             newRow.querySelector('.item-description').value =
                 article.description ? article.name + ' - ' + article.description : article.name;
             newRow.querySelector('.item-price').value = article.price;
+            mixAddCell(newRow, mixArticleRate(article));
             tbody.appendChild(newRow);
             attachCalculationListeners(newRow);
             calculateTotals();
@@ -1804,12 +2103,16 @@ function copyInvoiceAsNew(invId) {{
             // Calculate gross sum
             const sumGross = sumNet + taxAmount;
             document.getElementById('sum_gross').innerHTML = '<strong>' + fmtDe(sumGross) + ' €</strong>';
+
+            // Steuersatz je Position: eine Steuerzeile je Satz (ohne das Häkchen räumt der Aufruf nur auf)
+            mixTotals();
         }
         
         // Attach listeners to row inputs
         function attachCalculationListeners(row) {
             row.querySelector('.item-quantity').addEventListener('input', calculateTotals);
             row.querySelector('.item-price').addEventListener('input', calculateTotals);
+            mixAttach(row);
         }
         
         // Attach listeners to tax rate
@@ -1920,6 +2223,9 @@ function copyInvoiceAsNew(invId) {{
             const _tr = parseFloat(document.getElementById('tax_rate').value);
             const taxRate = showTax ? (isNaN(_tr) ? 19 : _tr) : 0;
 
+            // Steuersatz je Position: Jede Position schickt den Satz ihrer Auswahl, dazu kommt taxMode; ohne das Häkchen bleibt alles, wie es war
+            const mixed = mixOn();
+
             // Collect items
             const items = [];
             document.querySelectorAll('.invoice-item-row').forEach((row, index) => {
@@ -1932,7 +2238,7 @@ function copyInvoiceAsNew(invId) {{
                         description: description,
                         unitPrice: parseFloat(row.querySelector('.item-price').value) || 0,
                         totalPrice: parseDe(row.querySelector('.item-total').textContent) || 0,
-                        taxRate: taxRate
+                        taxRate: mixed ? mixRowRate(row) : taxRate
                     });
                 }
             });
@@ -1991,6 +2297,8 @@ function copyInvoiceAsNew(invId) {{
                 discountDays: parseInt(document.getElementById('discount_days').value) || null
             };
             
+            if (mixed) invoiceData.taxMode = 'mixed';
+
             // Add invoice ID if editing
             if (isEdit) {
                 invoiceData.invoiceId = parseInt(invoiceId);

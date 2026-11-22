@@ -12,11 +12,14 @@ Phase-1-Umsetzung: Fließtext vor/nach den Positionen mit einfacher Formatierung
 import datetime
 import html as _html
 from db import Database
+from db.invoice_payments import has_mixed_rates
+from db.invoices import InvoiceCol
 from money import fmt_eur
 from export.einvoice_model import unit_display
 from export.invoice_files import stored_invoice_path
 from .pages import Header1, Header2, Header3, Footer, logo_url, script_json
-from .pages_invoice import TAX_PREFILL_NOTE, _json_for_script, document_submenu
+from .pages_invoice import (MIXED_HEAD_CELL, TAX_PREFILL_NOTE, _json_for_script, document_submenu, mixed_cell_html,
+                            mixed_checkbox_html, mixed_default_key, mixed_tax_script, rate_key)
 from .richtext import sanitize_richtext
 
 
@@ -214,6 +217,9 @@ def _quote_form_html(db: Database, quote_id=None):
             tax_pct = 19
         else:
             tax_pct = float(_r) * 100 if 0 <= float(_r) <= 1 else float(_r)
+        # Steuersatz je Position: Trägt das Angebot das Kennzeichen, steht das Häkchen da und jede Zeile zeigt ihren Satz
+        mixed_on = show_tax and has_mixed_rates(
+            existing[InvoiceCol.MIXED_TAX_RATES] if len(existing) > InvoiceCol.MIXED_TAX_RATES else None)
         page_title = f"Angebot {_html.escape(quote_number)} bearbeiten"
         is_edit = True
     else:
@@ -241,6 +247,7 @@ def _quote_form_html(db: Database, quote_id=None):
         intro_text = ''
         closing_text = ''
         tax_pct = 19
+        mixed_on = False
         # das Häkchen übernimmt den Stand der jüngsten gewöhnlichen Rechnung; startet es abgehakt, sagt die Maske es dazu
         show_tax = db.last_document_shows_tax()
         if not show_tax:
@@ -249,6 +256,7 @@ def _quote_form_html(db: Database, quote_id=None):
         is_edit = False
 
     pdf_file_exists = bool(is_edit and stored_invoice_path(db, quote_id, 'pdf', existing)[0])
+    mixed_attr = '' if show_tax else ' disabled'        # das Häkchen „Steuersatz je Position“ gibt es nur mit Steuerausweis
 
     # Die ID gehört nur in den Bearbeiten-Modus (ein fremder oder unbekannter Beleg ergibt das
     # leere Formular, das beim Speichern ein neues Angebot anlegt)
@@ -346,13 +354,14 @@ def _quote_form_html(db: Database, quote_id=None):
         </div>'''
     s += f'<div class="invoice-richtext" id="intro_text_editor" contenteditable="true">{intro_text or ""}</div>'
     s += '''
-        <table class="invoice-items" id="quote_table">
+        <table class="invoice-items''' + (' mixedTaxOn' if mixed_on else '') + '''" id="quote_table">
             <thead>
                 <tr>
                     <th style="width:40px;">Pos.</th>
                     <th style="width:70px;">Menge</th>
                     <th style="width:70px;">Einheit</th>
                     <th>Bezeichnung</th>
+                    ''' + MIXED_HEAD_CELL + '''
                     <th style="width:100px;">Einzelpreis</th>
                     <th style="width:100px;">Gesamt</th>
                     <th style="width:30px;" class="no-pdf"></th>
@@ -369,6 +378,7 @@ def _quote_form_html(db: Database, quote_id=None):
                     <td><input type="number" class="item-quantity" value="{quantity}" min="0" step="0.01" style="width:60px;"></td>
                     <td><input type="text" class="item-unit" value="{unit}" style="width:60px;"></td>
                     <td><input type="text" class="item-description" value="{description}" style="width:100%;"></td>
+                    {mixed_cell_html(item[10])}
                     <td><input type="number" class="item-price" value="{price}" min="0" step="0.01" style="width:80px;"> €</td>
                     <td class="item-total" style="text-align:right;">{fmt_eur(total)}</td>
                     <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color:red;">✕</button></td>
@@ -380,6 +390,7 @@ def _quote_form_html(db: Database, quote_id=None):
                     <td><input type="number" class="item-quantity" value="1" min="0" step="0.01" style="width:60px;"></td>
                     <td><input type="text" class="item-unit" value="Stk." style="width:60px;"></td>
                     <td><input type="text" class="item-description" style="width:100%;"></td>
+                    ''' + mixed_cell_html(mixed_default_key(tax_pct)) + '''
                     <td><input type="number" class="item-price" value="0" min="0" step="0.01" style="width:80px;"> €</td>
                     <td class="item-total" style="text-align:right;">0,00 €</td>
                     <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color:red;">✕</button></td>
@@ -397,6 +408,7 @@ def _quote_form_html(db: Database, quote_id=None):
                     <td colspan="7" style="text-align:right; border:none;">
                         <label><input type="checkbox" id="show_tax" __SHOW_TAX_CHECKED__ onchange="calculateTotals()"> Umsatzsteuer ausweisen</label>
                         <small style="color:#888;">(aus = Kleinunternehmer §&nbsp;19 UStG; der Hinweis darauf wird automatisch gedruckt)</small>
+                        ''' + mixed_checkbox_html(mixed_on, mixed_attr) + '''
                         __TAX_PREFILL_NOTE__
                     </td>
                 </tr>
@@ -452,8 +464,10 @@ def _quote_form_html(db: Database, quote_id=None):
         'name': a[1] or '', 'unit': unit_display(a[2]),
         'price': float(a[3]) if a[3] is not None else 0,
         'taxRate': a[4] if a[4] is not None else 19,  # 0% nicht zu 19% verfälschen
+        'mixRate': rate_key(a[4]),  # Auswahlwert für „Steuersatz je Position“ (None: nicht lesbar)
         'description': a[5] or ''} for a in articles}
 
+    s += mixed_tax_script()
     s += '<script>\n'
     s += 'const ownCompaniesData = ' + _json_for_script(own_dict) + ';\n'
     s += 'const customersData = ' + _json_for_script(cust_dict) + ';\n'
@@ -535,6 +549,7 @@ def _quote_form_html(db: Database, quote_id=None):
                 <td><input type="number" class="item-price" value="0" min="0" step="0.01" style="width:80px;"> €</td>
                 <td class="item-total" style="text-align:right;">0,00 €</td>
                 <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color:red;">✕</button></td>`;
+            mixAddCell(r, mixDefaultRate());
             tb.appendChild(r); attachCalculationListeners(r); calculateTotals();
         }
         function addArticleRow(articleId) {
@@ -556,6 +571,7 @@ def _quote_form_html(db: Database, quote_id=None):
             r.querySelector('.item-unit').value = a.unit;
             r.querySelector('.item-description').value = a.description ? a.name + ' - ' + a.description : a.name;
             r.querySelector('.item-price').value = a.price;
+            mixAddCell(r, mixArticleRate(a));
             tb.appendChild(r); attachCalculationListeners(r); calculateTotals();
         }
         function removeRow(b){ b.closest('tr').remove(); renumberRows(); calculateTotals(); }
@@ -592,10 +608,13 @@ def _quote_form_html(db: Database, quote_id=None):
             const tax = net*(tr/100);
             document.getElementById('tax_amount').textContent = fmtDe(tax) + ' €';
             document.getElementById('sum_gross').innerHTML = '<strong>' + fmtDe(net+tax) + ' €</strong>';
+            // Steuersatz je Position: eine Steuerzeile je Satz (ohne das Häkchen räumt der Aufruf nur auf)
+            mixTotals();
         }
         function attachCalculationListeners(row){
             row.querySelector('.item-quantity').addEventListener('input', calculateTotals);
             row.querySelector('.item-price').addEventListener('input', calculateTotals);
+            mixAttach(row);
         }
         document.getElementById('tax_rate').addEventListener('input', calculateTotals);
         document.querySelectorAll('.invoice-item-row').forEach(attachCalculationListeners);
@@ -631,6 +650,8 @@ def _quote_form_html(db: Database, quote_id=None):
             const showTax = document.getElementById('show_tax').checked;
             const _tr = parseFloat(document.getElementById('tax_rate').value);
             const taxRate = showTax ? (isNaN(_tr) ? 19 : _tr) : 0;
+            // Steuersatz je Position: Jede Position schickt den Satz ihrer Auswahl, dazu kommt taxMode; ohne das Häkchen bleibt alles, wie es war
+            const mixed = mixOn();
             const items = [];
             document.querySelectorAll('.invoice-item-row').forEach((row,i)=>{
                 const desc = row.querySelector('.item-description').value;
@@ -640,7 +661,7 @@ def _quote_form_html(db: Database, quote_id=None):
                     unit: row.querySelector('.item-unit').value,
                     description: desc,
                     unitPrice: parseFloat(row.querySelector('.item-price').value)||0,
-                    taxRate: taxRate
+                    taxRate: mixed ? mixRowRate(row) : taxRate
                 });
             });
             if (!items.length) { showMessage('Bitte mindestens eine Position hinzufügen.', 'error'); return; }
@@ -652,6 +673,7 @@ def _quote_form_html(db: Database, quote_id=None):
                 closingText: document.getElementById('closing_text_editor').innerHTML || null,
                 taxRate: taxRate/100, showTax: showTax, status: status, items: items
             };
+            if (mixed) data.taxMode = 'mixed';
             if (isEdit) data.quoteId = parseInt(quoteId);
             fetch('/quote/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)})
                 .then(r=>r.json())
