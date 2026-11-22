@@ -27,6 +27,11 @@ Regeln, die den Aufbau tragen:
 * **Genau eine Rechnung mit Steuersatz je Position** (7 % und 19 % auf einem Beleg, in zwei Raten bezahlt), **nur im Profil ``full``**
   (``profiles.full.mixed_example``, ``_mixed_invoice``): Das Profil ``test`` – der Bestand mit fest gepinnten Werten – und das handgepflegte Szenario
   bleiben ohne sie. Sie geht den Weg der Maske (``taxMode: mixed``) wie jede Rechnung des Erzeugers.
+* **Ein zweites Beispiel mit Steuersätzen aus den Stammdaten** (seit 2.8.0: 19 % und steuerfrei auf einem Beleg, in zwei Raten bezahlt), ebenfalls **nur im
+  Profil ``full``** (``profiles.full.tax_entry_example``, ``_tax_entry_invoice``): Dazu legt der Erzeuger zwei Einträge der Stammdaten an (``tax_entries``:
+  steuerfrei mit erfundenem Grund und dem Erlöskonto 4100, 5,5 % mit dem Erlöskonto 4180 – zu 5,5 % gibt es keine Rechnung). ``demo_seed.DemoScenario`` schreibt
+  sie vor den Rechnungen; die steuerfreie Position nennt ihren Eintrag (``tax_entry``) und schickt seine ID wie die Maske (``taxRateId``). Profil ``test`` und
+  Szenario bleiben auch hier ohne sie – ihre Ausgabe ist dieselbe wie vorher.
 """
 import datetime
 import functools
@@ -37,6 +42,7 @@ from decimal import Decimal
 
 import money
 from demo_seed import _clip_day, _month_start
+from tax_groups import parse_rate_bp
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 HISTORY_FILE = os.path.join(_ROOT, "seed_data", "test", "demo_history.json")
@@ -123,6 +129,8 @@ class _Ctx:
         self.first_year = today.year - self.t["profiles"][profile]["years_back"]
         # die eine Beispielrechnung mit Steuersatz je Position – nur Profile, die sie in der Tabelle nennen (``full``), sonst ``None``
         self.mixed_example = self.t["profiles"][profile].get("mixed_example")
+        # die Einträge der Stammdaten und die eine Beispielrechnung mit steuerfreier Position – ebenso nur ``full``
+        self.tax_entry_example = self.t["profiles"][profile].get("tax_entry_example")
         # jüngster erlaubter Tag einer Rechnung: Der Erzeuger legt in den letzten Tagen keine an
         self.recent_limit = today - datetime.timedelta(days=self.t["recent_days"])
 
@@ -141,9 +149,13 @@ class _Ctx:
 
 # ── Rechnungen ───────────────────────────────────────────────────────────────
 
-def _item(description, quantity, unit, price, tax_rate):
-    return {"description": description, "quantity": quantity, "unit": unit,
+def _item(description, quantity, unit, price, tax_rate, tax_entry=None):
+    """Eine Position der Vorgaben; ``tax_entry`` nennt den Eintrag der Stammdaten (``tax_entries``), den sie wählt – ohne ihn fehlt der Schlüssel."""
+    item = {"description": description, "quantity": quantity, "unit": unit,
             "price_per_unit": Decimal(price), "tax_rate": tax_rate}
+    if tax_entry is not None:
+        item["tax_entry"] = tax_entry
+    return item
 
 
 def _consulting_items(ctx, year, month, index, small, travel=True):
@@ -293,30 +305,76 @@ def _chain_invoices(ctx, year):
     return specs
 
 
-def _mixed_invoice(ctx):
-    """Die eine Beispielrechnung mit Steuersatz je Position (``taxMode: mixed`` im Formular: 7 % und 19 % auf einem Beleg), bezahlt in zwei Raten –
-    nur das Profil ``full`` hat sie (``profiles.full.mixed_example`` der Tabelle), das Profil ``test`` und das Szenario nie: Auf diesem Bestand
-    stehen fest gepinnte Werte. Der Tag liegt ``days_ago`` Tage vor dem Stichtag (auf einem Werktag, nie in den letzten 14 Tagen und nie im ersten Jahr
-    des Profils, dem Kleinunternehmerjahr), die Raten zählen vom Rechnungstag an (erste nach der Zahlungsfrist, zweite nach ``second_after_days``
-    Tagen) – was nach dem Stichtag läge, entfällt wie bei jeder Rechnung des Erzeugers. ``None``, wenn das Profil keine Beispielrechnung hat oder
-    kein Tag passt."""
-    example = ctx.mixed_example
-    if example is None:
-        return None
+def _example_day(ctx, example):
+    """Der Tag einer Beispielrechnung: ``days_ago`` Tage vor dem Stichtag, auf einem Werktag, nie in den letzten 14 Tagen und nie im ersten Jahr des Profils (dem
+    Kleinunternehmerjahr) – ``None``, wenn keiner passt."""
     day = _workday(ctx.today - datetime.timedelta(days=example["days_ago"]), ctx.recent_limit)
-    if day is None or ctx.is_first_year(day.year):
-        return None
-    items = [_item(item["description"], item["quantity"], item["unit"], item["price"], item["tax_rate"]) for item in example["items"]]
-    due_days = example["due_days"]
+    return None if day is None or ctx.is_first_year(day.year) else day
+
+
+def _example_payments(ctx, day, example):
+    """Die Raten einer Beispielrechnung: Sie zählen vom Rechnungstag an (die erste nach der Zahlungsfrist ``due_days``, die zweite – sie schließt – ``second_after_days``
+    Tage danach); was nach dem Stichtag läge, entfällt wie bei jeder Rechnung des Erzeugers."""
     payments = []
-    first = _workday(day + datetime.timedelta(days=due_days), ctx.today)
+    first = _workday(day + datetime.timedelta(days=example["due_days"]), ctx.today)
     if first is not None:
         percent = example["first_percent"]
         payments.append({"after_days": (first - day).days, "percent": percent})
         second = _workday(first + datetime.timedelta(days=example["second_after_days"]), ctx.today)
         if second is not None:
             payments.append({"after_days": (second - day).days, "percent": 100 - percent, "closing": True})
-    return _invoice(ctx, f"{day.year}-mixed", day, example["customer_number"], due_days, items, False, payments, tax_mode="mixed")
+    return payments
+
+
+def _mixed_invoice(ctx):
+    """Die eine Beispielrechnung mit Steuersatz je Position (``taxMode: mixed`` im Formular: 7 % und 19 % auf einem Beleg), bezahlt in zwei Raten –
+    nur das Profil ``full`` hat sie (``profiles.full.mixed_example`` der Tabelle), das Profil ``test`` und das Szenario nie: Auf diesem Bestand
+    stehen fest gepinnte Werte. Der Tag und die Raten: ``_example_day``, ``_example_payments``. ``None``, wenn das Profil keine Beispielrechnung hat oder
+    kein Tag passt."""
+    example = ctx.mixed_example
+    if example is None:
+        return None
+    day = _example_day(ctx, example)
+    if day is None:
+        return None
+    items = [_item(item["description"], item["quantity"], item["unit"], item["price"], item["tax_rate"]) for item in example["items"]]
+    return _invoice(ctx, f"{day.year}-mixed", day, example["customer_number"], example["due_days"], items, False,
+                    _example_payments(ctx, day, example), tax_mode="mixed")
+
+
+def _tax_entry_invoice(ctx):
+    """Die eine Beispielrechnung mit Steuersätzen aus den Stammdaten (seit 2.8.0: 19 % und steuerfrei auf einem Beleg, ``taxMode: mixed`` im Formular, die steuerfreie
+    Position mit ihrer ``taxRateId``), bezahlt in zwei Raten – nur das Profil ``full`` hat sie (``profiles.full.tax_entry_example``), ein anderer Tag als der des
+    Beispiels mit 7 % und 19 %. Ihre steuerfreie Position nennt den Eintrag, den ``_tax_entries`` anlegt (``tax_entry``). Zu 5,5 % gibt es keine Rechnung.
+    ``None``, wenn das Profil keine Beispielrechnung hat oder kein Tag passt."""
+    example = ctx.tax_entry_example
+    if example is None:
+        return None
+    day = _example_day(ctx, example)
+    if day is None:
+        return None
+    items = [_item(item["description"], item["quantity"], item["unit"], item["price"], item["tax_rate"], item.get("tax_entry"))
+             for item in example["items"]]
+    return _invoice(ctx, f"{day.year}-tax-entry", day, example["customer_number"], example["due_days"], items, False,
+                    _example_payments(ctx, day, example), tax_mode="mixed")
+
+
+def _tax_entries(ctx):
+    """Die Einträge der Steuersätze, die das Profil ``full`` in den Stammdaten anlegt (``profiles.full.tax_entry_example.entries``): ``[{key, label, kind, bp,
+    reason, revenue_account}]``, ``bp`` der Satz in Hundertstel Prozent, ``revenue_account`` die Nummer eines Erlöskontos des Standard-Kontenrahmens. Leer ohne
+    das Beispiel (Profil ``test``). Den Satz liest ``tax_groups.parse_rate_bp`` – die eine Stelle dafür; einen Text, den sie nicht liest, ist ein Fehler der Tabelle
+    und bricht ab."""
+    example = ctx.tax_entry_example
+    if example is None:
+        return []
+    entries = []
+    for entry in example["entries"]:
+        bp = parse_rate_bp(entry["rate"])
+        if bp is None:
+            raise ValueError(f"Demodaten: Der Steuersatz {entry['rate']!r} des Eintrags {entry['key']!r} ist keiner")
+        entries.append({"key": entry["key"], "label": entry["label"], "kind": entry["kind"], "bp": bp,
+                        "reason": entry.get("reason"), "revenue_account": entry["revenue_account"]})
+    return entries
 
 
 def _invoices(ctx):
@@ -329,9 +387,9 @@ def _invoices(ctx):
             spec["payments"] = []          # die eine überfällige Rechnung des Vorjahres
     for year in range(ctx.first_year, ctx.today.year + 1):
         specs.extend(_chain_invoices(ctx, year))
-    mixed = _mixed_invoice(ctx)
-    if mixed is not None:
-        specs.append(mixed)
+    for example in (_mixed_invoice(ctx), _tax_entry_invoice(ctx)):
+        if example is not None:
+            specs.append(example)
 
     f = ctx.t["finalized"]
     day = _workday(ctx.today - datetime.timedelta(days=f["days_ago"]), ctx.recent_limit)
@@ -629,9 +687,13 @@ def build_history(today, profile="full"):
     ctx = _Ctx(today, profile)
     one_off = _extended_scenario_items(ctx) + _one_offs(ctx) + _cash_items(ctx)
     one_off.sort(key=lambda item: (item["date"], item["text"]))
-    return {
+    history = {
         "profile": profile, "first_year": ctx.first_year, "accounts": dict(ctx.t["accounts"]),
         "invoices": _invoices(ctx), "quotes": _quotes(ctx), "one_off": one_off, "splits": _splits(ctx),
         "trips": _trips(ctx), "assets": _assets(ctx), "transfers": _transfers(ctx), "worktimes": _worktimes(ctx),
         "open_bank": _open_bank(ctx),
     }
+    entries = _tax_entries(ctx)
+    if entries:                       # nur das Profil ``full``: Die Ausgabe des Profils ``test`` bleibt, wie sie war
+        history["tax_entries"] = entries
+    return history

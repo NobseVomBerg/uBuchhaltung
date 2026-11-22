@@ -10,6 +10,7 @@ from datetime import datetime as _datetime
 from urllib.parse import quote as _quote
 import demo as _demo
 from db import Database
+from db.tax_rates import FIXED_TAX_BPS
 from db.wiso_fdb_import import MAX_ADOPTED_ROWS, MAX_LIQUID_SUBACCOUNTS
 from money import fmt_eur
 from . import wiso_upload as _wiso_upload
@@ -155,6 +156,12 @@ DATEV_CONFIRM_LABEL = 'Trotzdem exportieren'
 
 #: Hinweis unter dem DATEV-Formular, solange an der eigenen Firma Soll-Versteuerung eingetragen ist (seit 2.4.0): Die Angabe
 #: wird nur gespeichert, der Stapel bleibt, wie er ist. Bei Ist-Versteuerung oder ohne Angabe steht dort nichts.
+#: Der Hinweis unter dem DATEV-Formular, sobald die Stammdaten einen Steuersatz führen, für den der Export keinen BU-Schlüssel ableitet (jeder Satz über 0
+#: außerhalb der Sätze mit festen Steuerkonten, ``db.tax_rates.FIXED_TAX_BPS``): fest, ohne Zahlen des Bestands. Wie viele Buchungssätze eines Stapels es
+#: betrifft, zählt der Export (``handlers.DatevStack.hint``)
+DATEV_RATE_NOTE = ('Die Stammdaten führen einen Steuersatz, für den der Export keinen BU-Schlüssel ableitet: Buchungssätze mit einem solchen Satz '
+                   'tragen ihn nur in der Spalte ‚EU-Steuersatz‘ bzw. gar nicht im Stapel. Bitte mit dem Steuerbüro klären.')
+
 DATEV_VAT_SOLL_NOTE = ('Für die eigene Firma ist Soll-Versteuerung eingetragen. Die App weist Erlös und Umsatzsteuer '
                        'weiterhin mit dem Zahlungseingang aus – auch im DATEV-Stapel.')
 
@@ -533,6 +540,9 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
     vat_hint = ''
     if db.get_vat_method() == 'soll':
         vat_hint = f'<p class="hint warnColor">{_html.escape(DATEV_VAT_SOLL_NOTE, quote=True)}</p>'
+    rate_hint = ''
+    if any(entry.valid and entry.bp and entry.bp not in FIXED_TAX_BPS for entry in db.fetch_tax_rates()):
+        rate_hint = f'<p class="hint warnColor">{_html.escape(DATEV_RATE_NOTE, quote=True)}</p>'
     # Nach den Hinweisen zum Stapel trägt das Formular den Zeitraum, für den sie kamen, und verlangt die Bestätigung – nur bei
     # zwei ISO-Daten im selben Jahr und einer Prüfsumme in der erwarteten Form; alles andere (auch ein untergeschobener Wert)
     # bleibt unbeachtet.
@@ -559,6 +569,7 @@ def PageMiscellaneous(db: Database, check_payments: bool = False, datev_confirm:
         </form>
         {datev_hint}
         {vat_hint}
+        {rate_hint}
         <script>
         (function() {{
             const p = new URLSearchParams(window.location.search);

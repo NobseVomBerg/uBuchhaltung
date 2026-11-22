@@ -1323,6 +1323,32 @@ DATEV_YEAR_REFUSED = ('Der Zeitraum geht über den Jahreswechsel – der Stapel 
 #: Jeder unerwartete Fehler des DATEV-Exports: ein fester Satz, der volle Fehler steht im Server-Log (nie der Text der Ausnahme).
 DATEV_FAILED = 'Der DATEV-Export ist fehlgeschlagen – Einzelheiten stehen im Server-Log.'
 
+#: Hinweis zum Stapel, der KEINE Rückfrage auslöst und den Stapel nicht ändert (anders als die Hinweise von ``Database.check_transfers``): Buchungssätze mit einem
+#: Steuersatz über 0, für den der Export keinen BU-Schlüssel ableitet (``export_to_datev(rates_without_key=…)``: 5,5 % etwa). Nur die Zahl – nie Text oder Empfänger.
+DATEV_UNKEYED_RATES_HINT = ('{n} Buchungssätze tragen einen Steuersatz ohne BU-Schlüssel – der Satz steht nur in der Spalte ‚EU-Steuersatz‘ bzw. gar nicht im Stapel; '
+                            'bitte mit dem Steuerbüro klären.')
+DATEV_UNKEYED_RATES_HINT_ONE = ('1 Buchungssatz trägt einen Steuersatz ohne BU-Schlüssel – der Satz steht nur in der Spalte ‚EU-Steuersatz‘ bzw. gar nicht im Stapel; '
+                                'bitte mit dem Steuerbüro klären.')
+
+
+def _datev_unkeyed_hint(count):
+    """Der Hinweis zu ``count`` Buchungssätzen mit einem Steuersatz ohne BU-Schlüssel (``DATEV_UNKEYED_RATES_HINT``, Einzahl bei 1) – leer bei 0."""
+    if not count:
+        return ''
+    return DATEV_UNKEYED_RATES_HINT_ONE if count == 1 else DATEV_UNKEYED_RATES_HINT.format(n=count)
+
+
+class DatevStack(bytes):
+    """Der Buchungsstapel (CP1252), den ``handle_datev_export`` bei Erfolg liefert: die Bytes der Datei wie immer – sie sind Byte für Byte die, die ``export_to_datev``
+    schreibt –, dazu ``hint``, der Hinweis zum Stapel, der keine Rückfrage auslöst (``DATEV_UNKEYED_RATES_HINT``; ``''``, wenn es keinen gibt). Der Hinweis ist nicht
+    Teil der Datei; ``server/app.py`` sendet die Bytes (``isinstance(result[0], bytes)``) und gibt ihn heute nicht weiter."""
+    hint = ''
+
+    def __new__(cls, data, hint=''):
+        stack = super().__new__(cls, data)
+        stack.hint = hint
+        return stack
+
 
 def _datev_entries(rows, limit=5):
     """„Datum Betrag EUR; …; und k weitere“ für die ersten ``limit`` von ``rows`` ``[(Datum, Betrag€)]`` – nie Text oder Empfänger."""
@@ -1421,8 +1447,12 @@ def handle_datev_export(db: Database, post_data: dict):
     beiden Bankbewegungen kontiert sind, stehen nur einmal im Stapel (``Database.check_transfers``: die Eingangsseite fällt
     weg, wo es sicher zu erkennen ist); die weggelassenen Sätze bekommen kein Steuerdatum.
 
+    Dazu gibt es einen Hinweis, der nie eine Rückfrage auslöst und den Stapel nicht ändert (seit 2.8.0): Wie viele der exportierten Buchungssätze einen Steuersatz über 0 tragen,
+    für den der Export keinen BU-Schlüssel ableitet (5,5 % etwa; ``DATEV_UNKEYED_RATES_HINT``). Gezählt wird dort, wo die Zeilen entstehen
+    (``export_to_datev(rates_without_key=…)``); er steht am gelieferten Stapel (``DatevStack.hint``).
+
     Returns:
-        (csv_bytes, filename)  – für einen Datei-Download, oder
+        (DatevStack, filename) – für einen Datei-Download (der Stapel ist ``bytes``, mit dem Hinweis als ``hint``), oder
         (303, location_str)    – bei Fehler oder fehlender Bestätigung (Redirect)
     """
     import datetime
@@ -1486,12 +1516,14 @@ def handle_datev_export(db: Database, post_data: dict):
 
         coa_map = db.get_coa_id_to_number_map()
         consultant_no, client_no = db.get_datev_numbers()
+        unkeyed = []
         csv_bytes, exported_ids = datev_module.export_to_datev(
             bookings, coa_map, date_from, date_to,
             liquid_coa_ids=db.get_payment_coa_ids(),
             waiting_numbers=db.get_waiting_account_numbers(),
             invoices=db.get_datev_invoice_data(),
-            consultant_no=consultant_no, client_no=client_no
+            consultant_no=consultant_no, client_no=client_no,
+            rates_without_key=unkeyed
         )
 
         # Steuerdatum der exportierten Buchungen auf heute setzen
@@ -1500,7 +1532,7 @@ def handle_datev_export(db: Database, post_data: dict):
 
         year = date_from[:4]
         filename = f"DATEV_Buchungsstapel_{year}_{date_from.replace('-','')}-{date_to.replace('-','')}.csv"
-        return csv_bytes, filename
+        return DatevStack(csv_bytes, _datev_unkeyed_hint(len(unkeyed))), filename
 
     except Exception:
         traceback.print_exc()

@@ -29,6 +29,7 @@ import demo_seed
 import userctx
 from db import Database
 from server.handlers import handle_datev_export
+from tests.datev_helpers import confirmed_export
 
 # Ein fester Tag, nie die Uhr: Die Suite läuft Minuten (tests/test_clock_at_import.py)
 TODAY = datetime.date(2026, 11, 3)
@@ -143,7 +144,8 @@ def test_the_first_year_is_a_small_business_year_and_later_years_show_tax():
     for spec in history["invoices"]:
         first = spec["date"][:4] == "2023"
         assert spec["show_tax"] is not first, spec["key"]
-        assert all((item["tax_rate"] == 0) is first for item in spec["items"]), spec["key"]
+        # Die steuerfreie Position der Beispielrechnung mit einem Eintrag der Stammdaten (``tax_entry``) hat den Satz 0 mit Steuerausweis – kein Kleinunternehmerjahr
+        assert all((item["tax_rate"] == 0) is first for item in spec["items"] if "tax_entry" not in item), spec["key"]
     for item in history["one_off"]:
         if item["date"][:4] == "2023":
             assert item["tax_rate"] is None and item["tax_amount"] is None, item["date"]
@@ -440,7 +442,9 @@ FULL = "full"
 
 
 def _mixed_specs(history):
-    return [spec for spec in history["invoices"] if spec.get("tax_mode") == "mixed"]
+    """Die Rechnung mit 7 % und 19 % (``mixed_example``): die mit Steuersatz je Position, deren Positionen keinen Eintrag der Stammdaten wählen. Die zweite –
+    19 % und steuerfrei, mit ihrem Eintrag (``tax_entry_example``) – steht weiter unten."""
+    return [spec for spec in history["invoices"] if spec.get("tax_mode") == "mixed" and not any("tax_entry" in item for item in spec["items"])]
 
 
 def test_only_the_full_profile_has_the_one_invoice_with_a_rate_per_position():
@@ -489,8 +493,9 @@ def test_the_example_is_one_invoice_with_a_forderung_per_rate_and_two_payments_t
     47,60 (Steuer 7,60) und 42,80 (2,80), die zweite (60 %: 135,60) auf 71,40 (11,40) und 64,20 (4,20) – je Satz zusammen genau das Brutto und die
     Steuer der Gruppe."""
     spec = _mixed_specs(loaded_full.history)[0]
+    # den Tag der Rechnung nennt die Abfrage mit: Die Beispielrechnung mit steuerfreier Position (unten) trägt das Kennzeichen „Steuersatz je Position“ ebenfalls
     (invoice,) = _rows(loaded_full, "SELECT ID, InvoiceNumber, InvoiceDate, Status, SumNet, TaxAmount, SumGross, AmountDue, TaxRate, PDFPath, XMLPath "
-                                    "FROM Invoices WHERE MixedTaxRates IS NOT NULL")
+                                    "FROM Invoices WHERE MixedTaxRates IS NOT NULL AND InvoiceDate = ?", spec["date"])
     invoice_id, number, day, status, net, tax, gross, due, head, pdf, xml = invoice
     assert (day, status, net, tax, gross, due, head) == (spec["date"], "paid", 2000000, 260000, 2260000, 0, 0.19)
     assert (pdf, xml) == (None, None)                                                  # älter als 30 Tage: Dokumente erzeugt „PDF + E-Rechnung“ später
@@ -519,3 +524,152 @@ def test_the_books_with_the_example_pass_every_probe(loaded_full):
         susa_helpers.assert_balanced(db.get_susa(CURRENT_YEAR, month), month)
         for variant in ("vorjahr", "jahr"):
             assert set(liq.unassigned_of(db.get_liquidity(CURRENT_YEAR, month, variant)).values()) == {0}, (month, variant)
+
+
+# ── die zweite Rechnung: Steuersätze aus den Stammdaten (nur das Profil full, seit 2.8.0) ───────────────────
+def _entry_specs(history):
+    """Die Rechnungen der Vorgaben, deren Positionen einen Eintrag der Stammdaten wählen (``tax_entry``)."""
+    return [spec for spec in history["invoices"] if any("tax_entry" in item for item in spec["items"])]
+
+
+def _entry_invoice(stock):
+    """``(ID, Nummer)`` der Rechnung im Bestand, deren Position die Momentaufnahme eines Steuersatzes der Stammdaten trägt – es ist die einzige: Der Tag allein
+    bestimmt sie nicht (an einem Tag können mehrere Rechnungen liegen)."""
+    (found,) = _rows(stock, "SELECT ID, InvoiceNumber FROM Invoices WHERE ID IN (SELECT InvoiceId FROM InvoiceItems WHERE TaxRateBp IS NOT NULL)")
+    return found
+
+
+def test_only_the_full_profile_has_the_two_entries_of_the_master_data_and_the_invoice_with_the_free_position():
+    """Zwei Einträge in den Stammdaten (steuerfrei mit erfundenem Grund und dem Erlöskonto 4100, 5,5 % mit 4180 – zu 5,5 % gibt es keine Rechnung) und EINE
+    Rechnung mit steuerfreier Position: nur im Profil ``full``. Das Profil ``test`` und das Szenario bleiben ohne sie – wie bei der Rechnung mit 7 % und 19 %."""
+    full = demo_history.build_history(TODAY, FULL)
+
+    assert [(entry["key"], entry["label"], entry["kind"], entry["bp"], entry["revenue_account"]) for entry in full["tax_entries"]] == [
+        ("exempt", "Steuerfrei (Beispiel)", "exempt", 0, 4100), ("reduced", "5,5 % (Beispiel)", "standard", 550, 4180)]
+    exempt, reduced = full["tax_entries"]
+    assert exempt["reason"] == "Steuerfreie Beispielleistung (Demodaten)" and reduced["reason"] is None
+    assert not any(sign in exempt["reason"] for sign in ("§", "UStG", "Paragraf"))             # erfunden: keine Vorschrift, die es gibt
+    assert len(_entry_specs(full)) == 1
+    assert not any(item.get("tax_entry") == "reduced" for spec in full["invoices"] for item in spec["items"])           # keine Rechnung zu 5,5 %
+    test = demo_history.build_history(TODAY, PROFILE)
+    assert "tax_entries" not in test and _entry_specs(test) == []
+    assert not any("tax_entry" in item for spec in _seed_json("demo_scenario.json")["invoices"] for item in spec["items"])
+
+
+@pytest.mark.parametrize("today", CUT_OFFS)
+def test_the_example_with_the_free_position_follows_the_rules_of_the_generator(today):
+    """Wie die Rechnung mit 7 % und 19 %: ein Werktag, nie in den letzten 14 Tagen, nie im Kleinunternehmerjahr, mit Steuerausweis, zwei Raten, die zweite
+    schließt – an einem anderen Tag als jene. Die steuerfreie Position (Satz 0) wählt den Eintrag ``exempt``, die zu 19 % keinen."""
+    history = demo_history.build_history(today, FULL)
+    (spec,) = _entry_specs(history)
+    (mixed,) = _mixed_specs(history)
+
+    day = _iso(spec["date"])
+    assert day.weekday() < 5 and day <= today - datetime.timedelta(days=14) and day.year > today.year - 3 and spec["date"] != mixed["date"]
+    assert spec["tax_mode"] == "mixed" and spec["show_tax"] is True and spec["customer_number"] == "K003" and spec["key"] == f"{day.year}-tax-entry"
+    assert [(item["tax_rate"], item.get("tax_entry")) for item in spec["items"]] == [(19, None), (0, "exempt")]
+    first, second = spec["payments"]
+    assert (first["percent"], second["percent"], second["closing"]) == (40, 60, True) and "closing" not in first
+    assert day < day + datetime.timedelta(days=first["after_days"]) < day + datetime.timedelta(days=second["after_days"]) <= today
+
+
+def test_the_profile_test_keeps_only_the_two_preset_rates_in_the_master_data(loaded):
+    assert [(entry.label, entry.bp) for entry in loaded.db.fetch_tax_rates()] == [("19 %", 1900), ("7 %", 700)]
+
+
+def test_the_example_with_the_free_position_is_booked_per_rate_and_both_entries_stand_in_the_master_data(loaded_full):
+    """19 % × 100,00 (2 Stunden zu 50,00) und steuerfrei × 80,00: netto 180,00, Steuer 19,00, brutto 199,00. Die erste Rate (40 %: 79,60) verteilt sich auf 47,60
+    (Steuer 7,60) und 32,00, die zweite (60 %: 119,40) auf 71,40 (11,40) und 48,00 – je Satz zusammen genau das Brutto der Gruppe. Das Erlöskonto der steuerfreien
+    Position ist das des Eintrags (4100); die Position zu 19 % trägt keine Momentaufnahme."""
+    db = loaded_full.db
+    coa = dict(_rows(loaded_full, "SELECT AccountNumber, ID FROM ChartOfAccounts WHERE AccountNumber IN (4100, 4180)"))
+    assert [(e.label, e.bp, e.kind, e.reason, e.revenue_coa_id, e.active, e.valid) for e in db.fetch_tax_rates()] == [
+        ("19 %", 1900, "standard", None, None, True, True), ("7 %", 700, "standard", None, None, True, True),
+        ("Steuerfrei (Beispiel)", 0, "exempt", "Steuerfreie Beispielleistung (Demodaten)", coa[4100], True, True),
+        ("5,5 % (Beispiel)", 550, "standard", None, coa[4180], True, True)]
+
+    invoice_id, number = _entry_invoice(loaded_full)
+    (invoice,) = _rows(loaded_full, "SELECT InvoiceDate, Status, SumNet, TaxAmount, SumGross, AmountDue, TaxRate, MixedTaxRates, PDFPath, XMLPath FROM Invoices WHERE ID = ?",
+                       invoice_id)
+    assert invoice == (_entry_specs(loaded_full.history)[0]["date"], "paid", 1800000, 190000, 1990000, 0, 0.19, 1, None, None)
+    assert _rows(loaded_full, "SELECT TaxCategory, TaxRate, TaxRateBp, TaxExemptReason, RevenueCoaId FROM InvoiceItems WHERE InvoiceId = ? ORDER BY Position",
+                 invoice_id) == [("S", 19.0, None, None, None), ("E", 0.0, 0, "Steuerfreie Beispielleistung (Demodaten)", coa[4100])]
+    chain = _rows(loaded_full, "SELECT c.AccountNumber, g.AccountNumber, b.Amount, b.TaxRate, b.TaxAmount FROM Bookings b "
+                               "JOIN ChartOfAccounts c ON c.ID = b.COA_ID JOIN ChartOfAccounts g ON g.ID = b.CounterCOA_ID "
+                               "WHERE b.DocumentNumber = ? AND b.BookingType = 'entry' AND b.ParentBooking_ID IS NULL ORDER BY b.ID", number)
+    assert chain == [(10000, 4405, 1190000, 0.19, 190000), (10000, 4340, 800000, None, None)]
+    assert _rows(loaded_full, "SELECT Amount FROM InvoicePayments WHERE InvoiceID = ? ORDER BY ID", invoice_id) == [(796000,), (1194000,)]
+    transfers = _rows(loaded_full, "SELECT b.Amount, b.TaxAmount, c.AccountNumber, g.AccountNumber FROM Bookings b JOIN ChartOfAccounts c ON c.ID = b.COA_ID "
+                                   "JOIN ChartOfAccounts g ON g.ID = b.CounterCOA_ID WHERE b.DocumentNumber = ? AND b.Status = 'invoice_payment' "
+                                   "AND b.EntryForm = 'transfer' ORDER BY b.ID", number)
+    assert transfers == [(476000, 76000, 4405, 4400), (320000, None, 4340, 4100), (714000, 114000, 4405, 4400), (480000, None, 4340, 4100)]
+    assert [(waiting, sum(row[0] for row in transfers if row[2] == waiting), sum(row[1] or 0 for row in transfers if row[2] == waiting))
+            for waiting in (4405, 4340)] == [(4405, 1190000, 190000), (4340, 800000, 0)]
+
+
+# ── abgeschlossene Jahre des Profils full: auch mit den Beispielen ohne Befund ──────────────────────────────
+NEXT_TODAY = datetime.date(2027, 2, 12)               # die Rechnung mit steuerfreier Position liegt dann im Dezember 2026, ihre zweite Rate im Januar 2027
+CLOSED_YEARS = [2024, 2025, 2026]                     # die Historie des Profils beginnt drei Jahre vor dem Stichtag (``years_back``)
+
+
+@pytest.fixture(scope="module")
+def loaded_next_year(tmp_path_factory):
+    """Der Bestand des Profils ``full`` zu einem Stichtag im Februar 2027: Die Jahre 2024 bis 2026 sind abgeschlossen, die Beispielrechnung mit steuerfreier Position
+    (und die mit 7 % und 19 %) liegen in 2026."""
+    root = tmp_path_factory.mktemp("demo_history_next")
+    path = str(root / "loaded_next.db")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(userctx, "DATA_ROOT", str(root / "data"))
+        patch.setattr(auth, "AUTH_DB", str(root / "data" / "auth.db"))
+        userctx._mode_cache.clear()
+        db = Database(path)
+        db.load_test_seed_data(include_invoices=False, include_dated=False)
+        demo_seed.load_demo_scenario(db, today=NEXT_TODAY, profile=FULL)
+    userctx._mode_cache.clear()
+    return SimpleNamespace(db=db, path=path, root=root, history=demo_history.build_history(NEXT_TODAY, FULL))
+
+
+def _copy_of(stock, tmp_path):
+    """Eine Kopie als Datenbank: Der DATEV-Export stempelt das Steuerdatum, das gemeinsame Exemplar bleibt unberührt."""
+    path = str(tmp_path / "copy.db")
+    shutil.copyfile(stock.path, path)
+    return Database(path)
+
+
+def test_the_example_with_the_free_position_lies_in_the_closed_year_and_the_books_are_clean(loaded_next_year):
+    (spec,) = _entry_specs(loaded_next_year.history)
+    invoice_id, _number = _entry_invoice(loaded_next_year)
+    assert spec["date"] == "2026-12-14" == _rows(loaded_next_year, "SELECT InvoiceDate FROM Invoices WHERE ID = ?", invoice_id)[0][0]
+    assert [day for day, in _rows(loaded_next_year, "SELECT PaymentDate FROM InvoicePayments WHERE InvoiceID = ? ORDER BY ID", invoice_id)] == ["2026-12-28", "2027-01-18"]
+    assert loaded_next_year.db.find_payment_inconsistencies() == []
+
+
+@pytest.mark.parametrize("year", CLOSED_YEARS)
+def test_every_closed_year_of_the_full_stock_has_no_finding_and_exports_to_datev_without_a_hint(loaded_next_year, tmp_path, year):
+    """Splits, Übertragsprüfung und DATEV-Export (die Prüfliste steht oben): Auch mit den beiden Beispielrechnungen kein Befund und kein Hinweis – der Export liefert
+    die Datei ohne Bestätigung."""
+    copy = _copy_of(loaded_next_year, tmp_path)
+    first, last = f"{year}-01-01", f"{year}-12-31"
+    assert copy.find_unbalanced_splits(first, last) == []
+    check = copy.check_transfers(first, last)
+    assert (check.unbooked, check.elsewhere, check.elsewhere_out, check.doubtful) == ([], [], [], [])
+    result, name = handle_datev_export(copy, {"date_from": [first], "date_to": [last]})
+    assert isinstance(result, (bytes, bytearray)) and len(result) > 1000 and name.endswith(".csv")
+
+
+def test_the_stack_of_the_closed_year_carries_the_free_group_without_a_key_and_without_a_rate(loaded_next_year, tmp_path):
+    """Im Stapel von 2026: die Forderung und die erste Zahlung der Rechnung mit steuerfreier Position – die Gruppe zu 19 % in der Kette ohne Schlüssel mit dem Satz in
+    Spalte 40, die steuerfreie ohne Schlüssel und ohne Satz (es gibt dort keinen Satz). Die zweite Rate liegt im Stapel von 2027."""
+    import csv
+    import io
+    _invoice_id, number = _entry_invoice(loaded_next_year)
+    copy = _copy_of(loaded_next_year, tmp_path)
+
+    def stack_rows(year):
+        result, _name = confirmed_export(copy, f"{year}-01-01", f"{year}-12-31")        # 2027: drei Bankbewegungen des laufenden Monats sind noch nicht gebucht
+        rows = csv.reader(io.StringIO(result.decode("cp1252")), delimiter=";")
+        return [(row[6], row[7], row[8], row[40]) for row in rows if len(row) > 40 and row[10] == number]
+
+    assert stack_rows(2026) == [("10000", "4405", "0", "19,00"), ("10000", "4340", "0", ""),
+                                ("1800", "10000", "0", ""), ("4405", "4400", "0", "19,00"), ("4340", "4100", "0", "")]
+    assert stack_rows(2027) == [("1800", "10000", "0", ""), ("4405", "4400", "0", "19,00"), ("4340", "4100", "0", "")]
