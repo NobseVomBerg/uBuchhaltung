@@ -17,7 +17,7 @@ from db import Database
 from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path,
                        safe_filename_component)
 from . import pdf_document as D
-from .einvoice_model import log_unflagged_rates, per_item_rates, small_business_note, tax_id_kind, unit_display
+from .einvoice_model import exemption_note, log_unflagged_rates, per_item_rates, small_business_note, tax_id_kind, unit_display
 
 
 def _pct(tax_rate):
@@ -143,12 +143,14 @@ def generate_quote_pdf(db: Database, quote_id: int):
     else:
         log_unflagged_rates(quote, items_rows, tax_rate)             # nur das Log; gedruckt wird wie immer
     # Ohne Umsatzsteuerausweis (§ 19 UStG) steht der Hinweis unter den Summen – es sei denn, Einleitung oder Schluss
-    # (Richtext) zitieren das Gesetz schon; Positionstexte zählen nicht
-    tax_note = small_business_note(tax_rate, intro_text, closing_text)
+    # (Richtext) zitieren das Gesetz schon; Positionstexte zählen nicht. Mit Steuerausweis steht dort, wenn die steuerfreien
+    # Positionen die Momentaufnahme eines Steuersatzes der Stammdaten tragen, deren Befreiungsgrund (``exemption_note``)
+    tax_note = small_business_note(tax_rate, intro_text, closing_text) or (exemption_note(items_rows) if show_tax else None)
     D.draw_item_table(flow, items, tax_rate_pct=_pct(tax_rate),
                       sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross,
                       show_tax=show_tax, tax_note=tax_note,
                       tax_groups=None if per_item is None else per_item.groups,
+                      exempt_rates=frozenset() if per_item is None else per_item.exempt,
                       document_number='' if per_item is None else per_item.number)
 
     # Schlusstext: eine Zeile tiefer beginnen, dann seitenweise fließen lassen

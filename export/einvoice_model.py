@@ -17,6 +17,10 @@ Eine Stornorechnung (``Invoices.InvoiceKind = 'storno'``) ist eine Gutschrift (T
 Ursprungsrechnung (BT-25/BT-26). Die Datenbank führt sie mit negativer Menge und negativen Summen (so zeigt sie das
 PDF); im Modell – und damit in CII und UBL – stehen die Beträge positiv, wie EN 16931 es für 381 verlangt: Das Modell
 negiert Mengen, Zeilen-, Steuer- und Gesamtsummen genau einmal.
+
+Eine Position kann die Momentaufnahme eines Steuersatzes aus den Stammdaten tragen (``InvoiceItems.TaxRateBp``, ``item_bp``): Ihr Satz in Hundertstel Prozent
+geht ihrem ``TaxRate`` vor, ihre Gruppe rechnet die Steuer einstufig (BR-CO-17), und ein steuerfreier Eintrag (Kategorie E) trägt seinen Befreiungsgrund als
+BT-120 – nie den Hinweis auf § 19 UStG, der allein dem Beleg ohne Umsatzsteuerausweis gehört. Ohne Momentaufnahme ist jede Ausgabe, wie sie immer war.
 """
 import html
 import math
@@ -30,7 +34,7 @@ from db.invoice_lock import STORNO_KIND
 from db.invoices import has_mixed_rates
 from money import SCALE, format_de, to_minor
 from richtext import sanitize_richtext
-from tax_groups import RateGroup, item_groups, item_rate, rate_groups, rate_pct
+from tax_groups import MAX_RATE_BP, RateGroup, bp_pct, item_groups, item_rate_of, rate_groups, rate_pct
 
 # Spaltenindizes der Invoices-Zeile (``SELECT *``), siehe db/schema.py
 _INV = dict(
@@ -45,9 +49,9 @@ _INV = dict(
     sum_gross=38, amount_due=39, invoice_kind=50, cancels_invoice_id=51, replaces_invoice_id=52, document_version=54,
     mixed_tax_rates=55,
 )
-# Spaltenindizes der InvoiceItems-Zeile
+# Spaltenindizes der InvoiceItems-Zeile (11 und 12: die Momentaufnahme eines Steuersatzes aus den Stammdaten, Schema 2008)
 _ITM = dict(position=2, description=4, quantity=5, unit=6, price=7, total_net=8,
-            tax_category=9, tax_rate=10)
+            tax_category=9, tax_rate=10, tax_rate_bp=11, tax_exempt_reason=12)
 
 # Ein Wortlaut für alle Ausgaben: BT-120 (CII), ``cbc:TaxExemptionReason`` (UBL) und der Hinweis im PDF
 EXEMPT_REASON_KLEINUNTERNEHMER = (
@@ -180,6 +184,66 @@ def _iso_date(value) -> Optional[date]:
         return None
 
 
+# ── Die Momentaufnahme eines Steuersatzes aus den Stammdaten an der Position (2.8.0) ─────────────────────────────────────────────
+# Eine Position mit Momentaufnahme trägt ihren Satz in Hundertstel Prozent (``InvoiceItems.TaxRateBp``): Er geht ihrem ``TaxRate`` vor, und ihre
+# Gruppe rechnet die Steuer einstufig (EN 16931, BR-CO-17: ``tax_groups.group_tax`` mit ``exact``). Ein steuerfreier Eintrag steht als ``TaxCategory``
+# ``'E'`` mit dem Satz 0 und dem Grund der Befreiung (``TaxExemptReason``, BT-120). Ohne Momentaufnahme (NULL – der ganze Bestand) bleibt jede Zeile,
+# jede Gruppe, jeder Text und jede Rundung, wie sie war.
+
+def _item_col(it, name):
+    """Die Spalte ``name`` (``_ITM``) einer Position; ``None``, wenn die Zeile kürzer ist (so baut das Werkzeug der Beispiele sie)."""
+    index = _ITM[name]
+    return it[index] if len(it) > index else None
+
+
+def item_bp(it) -> Optional[int]:
+    """Der Satz in Hundertstel Prozent, den die Position als Momentaufnahme trägt (``InvoiceItems.TaxRateBp``) – sonst ``None``. Das ist das Merkmal
+    „Position mit Momentaufnahme“: nicht die Art ``'E'`` allein, das Werkzeug für Beispiele schreibt sie auch an die Positionen eines Belegs nach § 19 UStG,
+    der keine Momentaufnahme trägt.
+
+    Gelesen wird streng (die Spalte lässt sich per SQL-Konsole beschreiben): Nur eine ganze Zahl von 0 bis 100 Prozent (``MAX_RATE_BP``), kein
+    Wahrheitswert, gilt. Alles andere – Text, Kommazahl, eine Zahl außerhalb – heißt „keine Momentaufnahme“: Die Position rechnet dann aus ihrem
+    ``TaxRate`` wie jede ohne."""
+    bp = _item_col(it, 'tax_rate_bp')
+    return bp if type(bp) is int and 0 <= bp <= MAX_RATE_BP else None
+
+
+def _exempt_item(it) -> bool:
+    """Trägt die Position die Momentaufnahme eines steuerfreien Eintrags: den Satz 0 und die Art ``'E'``?"""
+    return item_bp(it) == 0 and _item_col(it, 'tax_category') == 'E'
+
+
+def _has_rate_0(it) -> bool:
+    """Hat die Position den Satz 0? Mit Momentaufnahme entscheidet sie, sonst ihr ``TaxRate``; ein fehlender oder unlesbarer Satz zählt nicht (die Position
+    nähme den Satz im Kopf, den diese Funktion nicht kennt)."""
+    bp = item_bp(it)
+    if bp is not None:
+        return bp == 0
+    try:
+        return rate_pct(_item_col(it, 'tax_rate')) == 0
+    except (ArithmeticError, ValueError, TypeError):
+        return False
+
+
+def exemption_note(items) -> Optional[str]:
+    """Der Befreiungsgrund, den das PDF eines Belegs unter dem Summenblock druckt – sonst ``None``. Die EINE Stelle dafür (Rechnung, Stornorechnung und
+    Angebot nehmen sie); die E-Rechnung führt denselben Grund in ihrer Aufschlüsselung (``build_einvoice``, BT-120).
+
+    Es ist der Grund aus ``TaxExemptReason`` – bereinigt wie in der E-Rechnung (``_text``) –, wenn ALLE Positionen mit dem Satz 0 die Momentaufnahme eines
+    steuerfreien Eintrags tragen (Art ``'E'``, ``TaxRateBp`` 0) und es derselbe Grund ist. Sonst ``None``: ohne Grund, bei verschiedenen Gründen, bei einer
+    Position mit dem Satz 0 ohne diese Momentaufnahme und für jeden Beleg ohne Momentaufnahme (dort wird nichts gelesen). ``items``: die Positionen
+    (``db.get_invoice_items``). Der Hinweis nach § 19 UStG (``small_business_note``) hat Vorrang und schließt jeden Befreiungsgrund aus: Wer ihn
+    wählt, fragt diese Funktion nur bei einem Beleg mit Steuerausweis."""
+    items = list(items)
+    if not any(item_bp(it) is not None for it in items):
+        return None
+    zero = [it for it in items if _has_rate_0(it)]
+    if not zero or not all(_exempt_item(it) for it in zero):
+        return None
+    reasons = {_text(_item_col(it, 'tax_exempt_reason')) for it in zero}
+    return reasons.pop() or None if len(reasons) == 1 else None
+
+
 @dataclass
 class Party:
     name: str
@@ -205,6 +269,7 @@ class Line:
     net: int                   # Minor Units, Positions-Nettosumme
     tax_category: str          # S, Z, E …
     tax_rate: Decimal          # Prozent
+    exact: bool = False        # Position mit Momentaufnahme: Ihre Gruppe rechnet die Steuer einstufig (``tax_groups.group_tax``); CII und UBL lesen es nicht
 
 
 @dataclass
@@ -559,23 +624,30 @@ def build_einvoice(db, invoice, items) -> EInvoice:
 
     lines: List[Line] = []
     unknown_units: List[str] = []
+    snapshot_reasons = {}        # (Kategorie, Satz) → die Befreiungsgründe der Positionen mit Momentaufnahme, in der Reihenfolge der Positionen
     for it in items:
         qty = Decimal(str(it[_ITM['quantity']] if it[_ITM['quantity']] is not None else 1)) * sign
         price = to_minor(it[_ITM['price']] or 0)
         net = to_minor(it[_ITM['total_net']] or 0) * sign
+        bp = item_bp(it)
         if exempt:
             category, rate = 'E', Decimal('0')
         else:
-            item_rate = it[_ITM['tax_rate']] if len(it) > _ITM['tax_rate'] else None
-            rate = rate_to_pct(item_rate, default_rate)
+            if bp is None:
+                item_rate = it[_ITM['tax_rate']] if len(it) > _ITM['tax_rate'] else None
+                rate = rate_to_pct(item_rate, default_rate)
+            else:
+                rate = bp_pct(bp)                    # die Momentaufnahme geht dem TaxRate der Position vor
             category = 'S' if rate > 0 else (it[_ITM['tax_category']] or 'Z')
             if rate == 0 and category == 'S':
                 category = 'Z'
+            if bp is not None and category == 'E':
+                snapshot_reasons.setdefault((category, rate), []).append(_text(_item_col(it, 'tax_exempt_reason')))
         lines.append(Line(
             position=int(it[_ITM['position']]), name=_text(it[_ITM['description']]) or 'Position',
             quantity=qty.normalize() if qty == qty.to_integral() else qty,
             unit_code=unit_code(it[_ITM['unit']], unknown_units), unit_price=price, net=net,
-            tax_category=category, tax_rate=rate))
+            tax_category=category, tax_rate=rate, exact=bp is not None))
 
     for u in sorted(set(unknown_units)):
         msg = f"Unbekannte Einheit '{u}' – als C62 (Stück) ausgegeben"
@@ -584,17 +656,30 @@ def build_einvoice(db, invoice, items) -> EInvoice:
 
     # Steueraufschlüsselung je (Kategorie, Satz); Steuer je Gruppe auf Cent gerundet. Die Gruppe des Dokuments bleibt
     # (Kategorie, Satz) – rate_groups gruppiert nur nach dem Satz –, die Steuer einer Gruppe rechnet dieselbe Regel wie die
-    # Summen der Rechnung (tax_groups.rate_groups: Steuer aus der Nettosumme der Gruppe)
+    # Summen der Rechnung (tax_groups.rate_groups: Steuer aus der Nettosumme der Gruppe, einstufig, wenn ALLE Positionen der Gruppe
+    # eine Momentaufnahme tragen, sonst zweistufig wie bisher)
     groups = {}
     for ln in lines:
-        groups[(ln.tax_category, ln.tax_rate)] = groups.get(
-            (ln.tax_category, ln.tax_rate), 0) + ln.net
+        basis, exact = groups.get((ln.tax_category, ln.tax_rate), (0, True))
+        groups[(ln.tax_category, ln.tax_rate)] = (basis + ln.net, exact and ln.exact)
     breakdown = []
-    for (category, rate), basis in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1])):
-        amount = 0 if category in ('E', 'Z') else rate_groups([(rate, basis)])[0].tax
-        breakdown.append(TaxBreakdown(
-            category=category, rate=rate, basis=basis, amount=amount,
-            exemption_reason=EXEMPT_REASON_KLEINUNTERNEHMER if category == 'E' else ''))
+    for (category, rate), (basis, exact) in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+        amount = 0 if category in ('E', 'Z') else rate_groups([(rate, basis, exact)])[0].tax
+        reason = ''
+        if category == 'E':
+            reasons = snapshot_reasons.get((category, rate))
+            if reasons is None:
+                # nach § 19 UStG (Kopf −1) und eine Gruppe 'E' ohne Momentaufnahme: der Hinweis auf § 19, wie bisher
+                reason = EXEMPT_REASON_KLEINUNTERNEHMER
+            else:
+                # der Grund der Momentaufnahme – nie der Text zu § 19; fehlt er, bleibt der Text leer (``einvoice_gaps`` nennt es). Die Positionen
+                # einer Gruppe tragen alle denselben (so speichert die App); tun sie es nicht, gilt der der ersten, und das Log sagt es
+                reason = reasons[0]
+                if len(set(reasons)) > 1:
+                    msg = 'Die Positionen der steuerfreien Gruppe tragen verschiedene Befreiungsgründe – ausgegeben wird der der ersten'
+                    warnings.append(msg)
+                    print(f"E-Rechnung {_text(col('number'))}: {msg}")
+        breakdown.append(TaxBreakdown(category=category, rate=rate, basis=basis, amount=amount, exemption_reason=reason))
 
     line_total = sum(ln.net for ln in lines)
     tax_total = sum(t.amount for t in breakdown)
@@ -688,11 +773,13 @@ def build_einvoice(db, invoice, items) -> EInvoice:
 class PerItemRates:
     """Was das PDF eines Belegs mit Steuersatz je Position (``Invoices.MixedTaxRates`` = 1) mehr druckt als das eines Belegs mit einem Satz
     (``export.pdf_document.draw_item_table``): je Position ihren Satz (``item_rates``: Prozentzahlen, in der Reihenfolge der Positionen) und im
-    Summenblock eine Zeile je Satzgruppe (``groups``: Satz absteigend). ``number``: die Belegnummer, bereinigt (``_text``), für Zeilen im
-    Server-Log."""
+    Summenblock eine Zeile je Satzgruppe (``groups``: Satz absteigend). ``exempt``: die Sätze (``RateGroup.pct``) der Gruppen, deren Positionen ALLE die
+    Momentaufnahme eines steuerfreien Eintrags tragen – ihre Summenzeile heißt „steuerfrei auf …“ statt „zzgl. 0 % MwSt. auf …“. ``number``: die
+    Belegnummer, bereinigt (``_text``), für Zeilen im Server-Log."""
     item_rates: List[Decimal]
     groups: List[RateGroup]
     number: str = ''
+    exempt: frozenset = frozenset()
 
 
 def per_item_rates(document, items, head_rate) -> Optional[PerItemRates]:
@@ -702,16 +789,18 @@ def per_item_rates(document, items, head_rate) -> Optional[PerItemRates]:
     ``document``: die Zeile des Belegs (``db.get_document``), ``items``: seine Positionen (``db.get_invoice_items``), ``head_rate``: der Satz im
     Kopf (``Invoices.TaxRate``) – bei so einem Beleg nur ein Platzhalter, hier allein der Ersatz für eine Position ohne eigenen Satz, wie in
     ``build_einvoice``. Die Gruppen sind ``tax_groups.item_groups`` über den Nettobetrag der Positionen, so wie ``build_einvoice`` ihn liest:
-    die der E-Rechnung und, summiert, die gespeicherten Summen des Belegs. Weicht eine Summe ab (ein Eingriff an der App vorbei), druckt das
-    PDF die Gruppen trotzdem; eine Zeile im Server-Log nennt es – nie ein Fehler. Eine Stornorechnung trägt ihre Beträge negativ, wie
-    gespeichert (nichts wird negiert), die Gruppen damit auch."""
+    die der E-Rechnung und, summiert, die gespeicherten Summen des Belegs. Eine Position mit Momentaufnahme (``item_bp``) bringt ihren Satz
+    mit und lässt ihre Gruppe einstufig rechnen – dieselbe Regel wie in ``build_einvoice`` und beim Speichern. Weicht eine Summe ab (ein Eingriff an der
+    App vorbei), druckt das PDF die Gruppen trotzdem; eine Zeile im Server-Log nennt es – nie ein Fehler. Eine Stornorechnung trägt ihre Beträge
+    negativ, wie gespeichert (nichts wird negiert), die Gruppen damit auch."""
     flag = _INV['mixed_tax_rates']
     if not has_mixed_rates(document[flag] if len(document) > flag else None):
         return None
     default = rate_pct(head_rate)
     rates = [it[_ITM['tax_rate']] if len(it) > _ITM['tax_rate'] else None for it in items]
+    bps = [item_bp(it) for it in items]
     nets = [to_minor(it[_ITM['total_net']] or 0) for it in items]
-    groups = item_groups(zip(rates, nets), default)
+    groups = item_groups(zip(rates, nets, bps), default)
     stored = tuple(to_minor(document[_INV[name]] or 0) for name in ('sum_net', 'tax_amount', 'sum_gross'))
     printed = (sum(g.net for g in groups), sum(g.tax for g in groups), sum(g.gross for g in groups))
     number = _text(document[_INV['number']])
@@ -719,7 +808,10 @@ def per_item_rates(document, items, head_rate) -> Optional[PerItemRates]:
         print(f"PDF {number}: Die Steuergruppen der Positionen (netto {format_de(printed[0])}, Steuer "
               f"{format_de(printed[1])}, brutto {format_de(printed[2])}) weichen von den gespeicherten Summen (netto {format_de(stored[0])}, "
               f"Steuer {format_de(stored[1])}, brutto {format_de(stored[2])}) ab – gedruckt werden die Gruppen")
-    return PerItemRates(item_rates=[item_rate(rate, default) for rate in rates], groups=groups, number=number)
+    item_rates = [item_rate_of(rate, bp, default) for rate, bp in zip(rates, bps)]
+    exempt = frozenset(pct for pct in set(item_rates)
+                       if all(_exempt_item(it) for it, rate in zip(items, item_rates) if rate == pct))
+    return PerItemRates(item_rates=item_rates, groups=groups, number=number, exempt=exempt)
 
 
 def log_unflagged_rates(document, items, head_rate) -> None:
@@ -795,6 +887,10 @@ def einvoice_gaps(inv: EInvoice) -> List[Gap]:
     need('#' not in inv.payment_terms, HASH_IN_PAYMENT_TERMS_GAP)                   # BR-DE-18
     need(seller.vat_id or seller.tax_number,
          'Steuernummer oder USt-IdNr. der eigenen Firma', SCOPE_EN16931)            # BR-S-02, BR-Z-02, BR-E-02
+    # Eine steuerfreie Gruppe braucht einen Grund (BT-120; ein Code wird nicht geführt). Der Beleg nach § 19 UStG und jede 'E'-Gruppe ohne
+    # Momentaufnahme tragen den Hinweis auf § 19 – es fehlt allein der Grund einer Momentaufnahme, die ihn nicht trägt
+    need(all(t.exemption_reason for t in inv.tax_breakdown if t.category == 'E'),
+         'Grund der Steuerbefreiung', SCOPE_EN16931)                                # BR-E-10
     if inv.skonto_unreadable:
         gaps.append(Gap('Skonto (die gespeicherten Werte sind nicht lesbar)', SCOPE_EN16931))
     return gaps

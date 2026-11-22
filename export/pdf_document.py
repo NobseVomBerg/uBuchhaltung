@@ -21,6 +21,7 @@ import html as _htmlmod
 from decimal import Decimal
 from .pdf_core import escape_pdf_string, logo_display_size
 from money import fmt_eur, format_de
+from tax_groups import group_label
 
 # A4 hochkant, Seitenränder
 PAGE_W, PAGE_H = 595, 842
@@ -250,15 +251,18 @@ def _split_wide_word(word, max_w, size):
     return pieces
 
 
-def _wrap_description(desc, max_w, size, break_words=False):
+def _wrap_description(desc, max_w, size, break_words=False, semicolons=True):
     """Bezeichnung in Zeilen zerlegen: ``;`` → Zeilenumbruch, lange Zeilen am
     Wortrand umbrechen. Liefert immer mindestens eine (ggf. leere) Zeile.
 
     ``break_words``: Ein Wort, das allein breiter ist als ``max_w``, steht auf einer eigenen Zeile und bricht dort mitten im Wort um
-    (``_split_wide_word``) – sonst läuft es über die Spalte hinaus. Nur der Druck mit Steuersatz je Position setzt es (dort stünde das Wort
-    über der Spalte „USt“); der übrige Druck bricht, wie er immer brach."""
+    (``_split_wide_word``) – sonst läuft es über die Spalte hinaus. Der Druck mit Steuersatz je Position setzt es (dort stünde das Wort
+    über der Spalte „USt“), ebenso der Hinweis unter dem Summenblock; der übrige Druck bricht, wie er immer brach.
+
+    ``semicolons`` falsch: Das ``;`` ist dann ein Zeichen des Textes und trennt keine Zeile – so druckt der Hinweis unter dem Summenblock seinen Text, wie er
+    gespeichert ist (der Befreiungsgrund eines Steuersatzes darf ein Semikolon tragen, und in der E-Rechnung steht er mit ihm)."""
     lines = []
-    for segment in str(desc or '').split(';'):
+    for segment in (str(desc or '').split(';') if semicolons else [str(desc or '')]):
         seg = segment.strip()
         if not seg:
             continue
@@ -329,7 +333,7 @@ def _rate_layout(items, currency):
 
 
 def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross,
-                    currency='EUR', show_tax=True, tax_note=None, tax_groups=None, document_number=''):
+                    currency='EUR', show_tax=True, tax_note=None, tax_groups=None, exempt_rates=frozenset(), document_number=''):
     """Positionstabelle mit rechtsbündigen Geldspalten + Summenblock.
 
     Seitenfähig: passt eine Position nicht mehr auf die Seite, wird umgebrochen
@@ -341,9 +345,11 @@ def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross
     Spalten werden dann oben (top) ausgerichtet.
 
     tax_note: optionaler Hinweis unter der Schlusslinie des Summenblocks (Kleinunternehmer:
-    § 19 UStG), ab dem linken Seitenrand (``LEFT``) auf die Breite bis ``RIGHT`` umbrochen – der
-    Standardsatz passt in eine Zeile. Er gehört zum Block: Passt er nicht mehr auf die Seite,
-    geht er mit dem Summenblock auf die nächste.
+    § 19 UStG; ein Beleg mit einem steuerfreien Steuersatz der Stammdaten: dessen Befreiungsgrund), ab dem linken
+    Seitenrand (``LEFT``) auf die Breite bis ``RIGHT`` umbrochen – der Standardsatz passt in eine Zeile, ein Grund
+    mit bis zu 300 Zeichen braucht ein paar. Der Text steht, wie er ist: Ein Semikolon trennt keine Zeile, ein Wort, das
+    breiter ist als die Zeile, bricht mitten im Wort um – nichts läuft über den Rand, nichts fällt weg. Er gehört zum Block:
+    Passt er nicht mehr auf die Seite, geht er mit dem Summenblock auf die nächste.
 
     tax_groups: nur für einen Beleg mit Steuersatz je Position (``Invoices.MixedTaxRates``; die Aufrufer übergeben sie nur dann,
     auch wenn es dann nur eine Gruppe ist) – ``tax_groups.RateGroup``, Satz absteigend. ``None`` (jeder andere Beleg): der Druck mit
@@ -356,6 +362,11 @@ def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross
     stehen so viele, wie passen, und der Gesamtbetrag nie allein. ``tax_rate_pct`` druckt dann nichts: Der Satz im Kopf ist bei so einem
     Beleg nur ein Platzhalter. Ohne Steuerausweis (``show_tax`` falsch; § 19 UStG – nie bei einem Beleg mit Steuersatz je Position)
     gelten die Gruppen nicht.
+
+    exempt_rates: die Sätze (``RateGroup.pct``) der Gruppen, die steuerfrei sind (die Momentaufnahme eines steuerfreien Steuersatzes der
+    Stammdaten, ``einvoice_model.PerItemRates.exempt``): Ihre Zeile heißt „steuerfrei auf 80,00 EUR:“ statt „zzgl. 0 % MwSt. auf 80,00 EUR:“
+    (``tax_groups.group_label``); die Spalte „USt“ nennt für ihre Positionen weiter „0 %“. Ohne Gruppen gilt es nicht – ein Beleg mit EINEM Satz druckt
+    auch als steuerfreier „zzgl. 0% MwSt.:“ wie jeder Beleg mit 0 %.
 
     Die Spalte „USt“ steht rechts der Bezeichnung dort, wo ein gewöhnlicher Einzelpreis noch Platz hat (``COL_RATE_R``); ein breiterer
     Einzelpreis des Belegs rückt sie nach links (``_rate_layout``), auf allen Seiten gleich. ``document_number``: die Belegnummer, bereits
@@ -396,7 +407,7 @@ def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross
         flow.y -= row_h
 
     # Summenblock samt Hinweis zusammenhalten: passt er nicht mehr, neue Seite (ohne Header).
-    note_lines = _wrap_description(tax_note, RIGHT - LEFT, _NOTE_SIZE) if tax_note else []
+    note_lines = _wrap_description(tax_note, RIGHT - LEFT, _NOTE_SIZE, break_words=True, semicolons=False) if tax_note else []
     note_drop = _NOTE_TOP + _NOTE_LEADING * (len(note_lines) - 1) if note_lines else 0
     extra_tax_rows = max(len(tax_groups) - 1, 0) if per_item else 0
     if flow.y - (_TOTALS_HEIGHT + _TAX_ROW * extra_tax_rows + note_drop) < flow.bottom:
@@ -422,7 +433,11 @@ def draw_item_table(flow, items, *, tax_rate_pct, sum_net, tax_amount, sum_gross
                     flow.new_page()
                     ops = flow.ops
                     y = flow.y - 15
-                text(ops, COL_DESC, y, f"zzgl. {_fmt_rate(group.pct)} MwSt. auf {format_de(group.net)} {currency}:", size=10)
+                if group.pct in exempt_rates:
+                    caption = f"{group_label(group.pct, True)} auf {format_de(group.net)} {currency}:"
+                else:
+                    caption = f"zzgl. {_fmt_rate(group.pct)} MwSt. auf {format_de(group.net)} {currency}:"
+                text(ops, COL_DESC, y, caption, size=10)
                 text_right(ops, COL_TOTAL_R, y, f"{format_de(group.tax)} {currency}", font='/F2', size=10)
                 y -= _TAX_ROW
             y -= 2

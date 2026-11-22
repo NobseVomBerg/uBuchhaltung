@@ -19,8 +19,8 @@ from db.invoice_lock import STORNO_KIND
 from money import to_minor
 from .pdf_core import (load_image_xobject, build_multi_page_pdf, resolve_logo_path)
 from .cii_invoice import build_cii
-from .einvoice_model import (build_einvoice, correction_note_text, correction_notice, log_unflagged_rates, per_item_rates,
-                             replacement_note, skonto_sentence, small_business_note, unit_display)
+from .einvoice_model import (build_einvoice, correction_note_text, correction_notice, exemption_note, log_unflagged_rates,
+                             per_item_rates, replacement_note, skonto_sentence, small_business_note, unit_display)
 from .invoice_files import drop_stale_file, invoice_file_path
 from . import pdf_document as D
 
@@ -201,12 +201,14 @@ def generate_invoice_pdf(db: Database, invoice_id: int):
         log_unflagged_rates(invoice, invoice_items, tax_rate)        # nur das Log; gedruckt wird wie immer
     # Ohne Umsatzsteuerausweis (§ 19 UStG) steht der Hinweis unter den Summen – es sei denn, der Zahlungshinweis (ein
     # Richtext, samt Standardtext) zitiert das Gesetz schon; Positionstexte zählen nicht. Derselbe Wortlaut steht als
-    # BT-120 in der E-Rechnung
-    tax_note = small_business_note(tax_rate, payment_terms)
+    # BT-120 in der E-Rechnung. Mit Steuerausweis steht dort, wenn die steuerfreien Positionen die Momentaufnahme eines Steuersatzes
+    # der Stammdaten tragen, deren Befreiungsgrund (``exemption_note``, ebenso BT-120); der Hinweis nach § 19 hat Vorrang
+    tax_note = small_business_note(tax_rate, payment_terms) or (exemption_note(invoice_items) if show_tax else None)
     D.draw_item_table(flow, items, tax_rate_pct=_pct(tax_rate),
                       sum_net=sum_net, tax_amount=tax_amount, sum_gross=sum_gross,
                       show_tax=show_tax, tax_note=tax_note,
                       tax_groups=None if per_item is None else per_item.groups,
+                      exempt_rates=frozenset() if per_item is None else per_item.exempt,
                       document_number='' if per_item is None else per_item.number)
 
     # Zahlungsbedingungen (Fließtext), danach das Skonto: Fristende, Abzug und Zahlbetrag auf Grundlage des gedruckten
