@@ -237,7 +237,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                     'document_nr': inv[1] or '',
                     'text': f"Zahlung Rechnung {inv[1] or ''}".strip(),
                     'revenue_choice': revenue_coa_choice(db, inv[35], selected=revenue_coa_id,
-                                                         mixed=has_mixed_rates(inv[InvoiceCol.MIXED_TAX_RATES])),
+                                                         mixed=has_mixed_rates(inv[InvoiceCol.MIXED_TAX_RATES]),
+                                                         entry=db.invoice_entry_accounts(inv[0])),
                 }
                 edit_recipient = _html.escape(prefill['recipient'])
                 edit_text = _html.escape(prefill['text'])

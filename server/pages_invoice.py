@@ -458,7 +458,7 @@ def _revenue_coa_select(db, tax_rate, selected=None, field_id='revenueCoa'):
     return f'<select name="revenue_coa_id" id="{_html.escape(field_id, quote=True)}" required>{options}</select>'
 
 
-def revenue_coa_choice(db, tax_rate, selected=None, teaches=True, mixed=False):
+def revenue_coa_choice(db, tax_rate, selected=None, teaches=True, mixed=False, entry=False):
     """Pflichtfeld „Erlöskonto“ für eine Rechnungszahlung – nur, wenn für den Steuersatz der
     Rechnung kein Erlöskonto hinterlegt ist (``Database.revenue_coa_choice_needed``, z. B. 5 %
     oder 16 %), sonst ``None``: Dann ergibt sich die Kontierung aus der Rechnung.
@@ -469,8 +469,11 @@ def revenue_coa_choice(db, tax_rate, selected=None, teaches=True, mixed=False):
 
     ``mixed``: Die Rechnung trägt einen Steuersatz je Position (``Invoices.MixedTaxRates``). Dann gibt es nie eine Auswahl (immer ``None``): Ihr
     Kopfsatz ist nur ein Platzhalter, und jeder Satz hat sein Erlöskonto – fehlt eines, lehnt die Zahlung mit einem festen Satz ab
-    (``MIXED_NO_REVENUE_COA``), ein Konto wählen lässt sich nicht."""
-    if mixed or tax_rate is None or not db.revenue_coa_choice_needed(tax_rate):
+    (``MIXED_NO_REVENUE_COA``), ein Konto wählen lässt sich nicht.
+
+    ``entry``: Die Rechnung trägt ein Erlöskonto aus den Stammdaten (``Database.invoice_entry_accounts``, die Momentaufnahme eines Steuersatzes, 2.8.0). Dann
+    gilt dieses Konto, und es gibt nie eine Auswahl (immer ``None``): Eine Wahl widerspräche dem Konto, das die Rechnung beim Versenden zugesichert hat."""
+    if mixed or entry or tax_rate is None or not db.revenue_coa_choice_needed(tax_rate):
         return None
     percent = tax_rate * 100 if tax_rate <= 1 else tax_rate
     percent_text = f'{percent:g}'.replace('.', ',')
@@ -570,7 +573,8 @@ def _refund_box_html(db, invoice_id, invoice, refunds, credit):
         # verschiedenen Erlöskonten – dann sagt der Satz, warum. Bei einem Steuersatz je Position (Kennzeichen der Stornorechnung)
         # gibt es nie eine Wahl: Das Erlöskonto je Satz ist das der Zahlungen (``refund_revenue_coas_differ`` ist dort immer falsch)
         choice = revenue_coa_choice(db, invoice[35], teaches=False,
-                                    mixed=has_mixed_rates(invoice[InvoiceCol.MIXED_TAX_RATES]))
+                                    mixed=has_mixed_rates(invoice[InvoiceCol.MIXED_TAX_RATES]),
+                                    entry=db.invoice_entry_accounts(invoice_id))
         if db.refund_revenue_coas_differ(invoice_id):
             choice = (_revenue_coa_select(db, invoice[35]), _html.escape(MIXED_REVENUE_MESSAGE))
         if choice:
@@ -710,16 +714,17 @@ function rebuildPayments(invId, execute) {
 """
 
 
-def _rebuild_box_html(db, invoice_id, tax_rate, mixed=False):
+def _rebuild_box_html(db, invoice_id, tax_rate, mixed=False, entry=False):
     """Der Neuaufbau der Zuordnung unter der Befundliste einer Rechnung (``Database.rebuild_invoice_payments``): der Knopf für den
     Probelauf, der Kasten für den Plan (ihn zeichnet das Skript) und – nur wenn für den Steuersatz kein Erlöskonto hinterlegt ist
     (die Reparatur legt nie eines an) – die Auswahl des Erlöskontos. Das Feld hat eine eigene ID (``rebuildRevenueCoa``): Die
     Zahlung („Verknüpfen“) trägt ihre eigene Auswahl. Die ID der Rechnung steht als Ganzzahl, sonst kein Wert aus der Datenbank.
 
     ``mixed``: Die Rechnung trägt einen Steuersatz je Position (``Invoices.MixedTaxRates``). Dann gibt es nie eine Auswahl: Ihr Kopfsatz ist nur
-    ein Platzhalter, und der Neuaufbau rechnet für sie nur den offenen Betrag neu – er braucht kein Erlöskonto."""
+    ein Platzhalter, und der Neuaufbau rechnet für sie nur den offenen Betrag neu – er braucht kein Erlöskonto. ``entry``: Die Rechnung trägt ein
+    Erlöskonto aus den Stammdaten (``Database.invoice_entry_accounts``): ebenso – der Neuaufbau rechnet nur den offenen Betrag neu (Grund ``tax_entry``)."""
     h = ''
-    if not mixed and db.resolve_revenue_coa(tax_rate, create=False) is None:
+    if not mixed and not entry and db.resolve_revenue_coa(tax_rate, create=False) is None:
         h += ('        <p class="hint">Für den Neuaufbau ist kein Erlöskonto hinterlegt – bitte wählen.</p>\n'
               f'        <p><label>Erlöskonto: {_revenue_coa_select(db, tax_rate, field_id="rebuildRevenueCoa")}</label></p>\n')
     return h + ('        <p><button type="button" class="coloredButton btn-sm bg-blue" '
@@ -2437,7 +2442,8 @@ function copyInvoiceAsNew(invId) {{
                   + '        </ul>Alle Rechnungen mit Unstimmigkeiten zeigt die Prüfung unter '
                   '<a href="/miscellaneous?check_payments=1">Sonstiges</a>.</div>\n')
             s += _rebuild_box_html(db, invoice_id, existing_invoice[35],
-                                   mixed=has_mixed_rates(existing_invoice[InvoiceCol.MIXED_TAX_RATES]))
+                                   mixed=has_mixed_rates(existing_invoice[InvoiceCol.MIXED_TAX_RATES]),
+                                   entry=db.invoice_entry_accounts(invoice_id))
             rebuild_script = _REBUILD_SCRIPT.replace('__CONFIRM__', script_json(REBUILD_CONFIRM_QUESTION))
         if existing_payments:
             total_paid = sum(p[3] for p in existing_payments)
@@ -2494,7 +2500,8 @@ function copyInvoiceAsNew(invId) {{
             # Ist für den Steuersatz kein Erlöskonto hinterlegt (z. B. 5 %, 16 %), wählt der
             # Nutzer es hier – für „Verknüpfen“ und, per Adresse mitgegeben, für die Maske
             choice = revenue_coa_choice(db, existing_invoice[35],
-                                        mixed=has_mixed_rates(existing_invoice[InvoiceCol.MIXED_TAX_RATES]))
+                                        mixed=has_mixed_rates(existing_invoice[InvoiceCol.MIXED_TAX_RATES]),
+                                        entry=db.invoice_entry_accounts(invoice_id))
             if choice:
                 s += (f'        <p class="hint">{choice[1]}</p>\n'
                       f'        <p><label>Erlöskonto: {choice[0]}</label></p>\n')

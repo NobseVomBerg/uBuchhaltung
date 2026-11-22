@@ -23,7 +23,8 @@ from collections import defaultdict, namedtuple
 from decimal import Decimal
 
 from money import to_minor, from_minor, prorate, round_minor, fmt_eur, is_covered
-from tax_groups import RateGroupsMismatch, booked_fault, booking_rate, mixed_groups, pct_text, rate_pct, refund_pool, split_payment
+from tax_groups import (MAX_RATE_BP, RateGroupsMismatch, booked_fault, booking_rate, bp_pct, group_label, item_rate_of, mixed_groups, rate_pct,
+                        refund_pool, split_payment)
 from .matching import FORM_LIQUID_FIRST, FORM_PURPOSE_FIRST, FORM_TRANSFER, REVENUE_ACCOUNT_RANGE, bank_effect, receivables_covered
 from .reporting import is_income_account
 
@@ -43,7 +44,8 @@ STORNO_PAYMENT_MESSAGE = 'Einer Stornorechnung lässt sich keine Zahlung zuordne
 # kennen könnte. Wie ``STORNO_KIND`` hier definiert, weil dieses Modul das unterste der Rechnungsmodule ist; ``db.invoices`` reicht die Namen weiter.
 MIXED_LINK_NOT_BOOKABLE = 'Einer Rechnung mit mehreren Steuersätzen lässt sich eine Zahlung nur mit ihren Buchungssätzen zuordnen.'
 
-# Die Ablehnungen der Buchungen eines Belegs mit Steuersatz je Position. ``{rate}``: der Satz (``pct_text``), ``{amount}``: ein Betrag (``fmt_eur``)
+# Die Ablehnungen der Buchungen eines Belegs mit Steuersatz je Position. ``{rate} %``: der Satz (``rate_sentence``: „19 %“, „5,5 %“, bei einer steuerfreien
+# Gruppe „steuerfrei“), ``{amount}``: ein Betrag (``fmt_eur``)
 MIXED_GROUPS_MISMATCH = ('Die Positionen dieser Rechnung passen nicht zu ihren Summen – eine Rechnung mit mehreren Steuersätzen '
                          'lässt sich so nicht buchen. Bitte die Rechnung prüfen.')
 MIXED_GROUP_NOT_POSITIVE = ('Eine Rechnung mit mehreren Steuersätzen lässt sich nur buchen, wenn die Positionen jedes Steuersatzes '
@@ -62,7 +64,7 @@ MIXED_REFUND_SPLIT = ('Die Erstattung lässt sich nicht nach Steuersätzen aufte
                       'einer früheren Erstattung geändert. Bitte die Erstattungen prüfen.')
 # Das Entfernen einer Zahlung, nach der zu so einem Beleg erstattet wurde (``_refund_removal_blocker``): Die Summe ginge noch auf, aber je Satz wäre mehr
 # erstattet als gezahlt (oder Betrag und Steuer gingen nicht auf). Gebaut wie ``ALREADY_REFUNDED_MESSAGE`` (die Summenprüfung), dazu der Satz und die Nummer
-# der Stornorechnung, an der die Erstattung entfernt wird. ``{rate}``: der Satz (``pct_text``), ``{number}``: die Nummer der Stornorechnung
+# der Stornorechnung, an der die Erstattung entfernt wird. ``{rate} %``: der Satz (``rate_sentence``), ``{number}``: die Nummer der Stornorechnung
 MIXED_REMOVAL_REFUSED = ('Zu dieser Rechnung wurde bereits erstattet – für {rate} % wäre danach mehr erstattet als gezahlt (oder Betrag und Steuer '
                          'gingen nicht auf). Erst die Erstattung an der Stornorechnung {number} entfernen.')
 # Der Hinweis beim Versenden einer Ersatzrechnung (``_move_replaced_payments``): Bei einem Beleg mit Steuersatz je Position zieht nichts um. ``{number}``: die
@@ -75,11 +77,55 @@ MOVE_NONE_HINT = 'Es wurden keine Zahlungen der stornierten Rechnung {number} ü
 MOVE_REFUNDED_HINT = '{amount} sind bereits erstattet und bleiben an der stornierten Rechnung.'
 PAYMENT_CHANGED_MESSAGE = 'Rechnung oder Bankbewegung wurde inzwischen geändert – bitte erneut versuchen.'
 
+# Ein Beleg mit einem Steuersatz aus den Stammdaten (2.8.0), dessen Positionen ein eigenes Erlöskonto tragen (``InvoiceItems.RevenueCoaId``,
+# ``invoice_entry_accounts``): Der Umzug der Zahlungen auf die Ersatzrechnung unterbleibt wie bei ``MOVE_MIXED_HINT`` – er bucht mit dem Erlöskonto neu, das heute
+# für den Satz hinterlegt ist, und je Momentaufnahme zu verallgemeinern ist Etappe 3 von ``docs/aufgaben.md``, deren Bedingungen sich nicht lockern. Dieselben
+# Platzhalter wie ``MOVE_MIXED_HINT``; nach einer Erstattung folgen ``MOVE_NONE_HINT`` und ``MOVE_REFUNDED_HINT``.
+MOVE_ENTRY_HINT = ('Die Zahlungen der stornierten Rechnung {number} ({amount}) bleiben dort als Guthaben des Kunden: Eine der beiden '
+                   'Rechnungen trägt einen Steuersatz mit eigenem Erlöskonto aus den Stammdaten, die Zahlungen ziehen in dieser Version nicht '
+                   'automatisch um. Sie lassen sich dort erstatten oder entfernen und hier neu zuordnen.')
+# Die Zahlung auf einen Beleg, dessen Momentaufnahme ein Erlöskonto trägt, das keines (mehr) ist (``InvoiceItems.RevenueCoaId`` zeigt auf ein Konto außerhalb
+# 4000–4999 oder ins Leere – nur nach einem Eingriff an der App vorbei, die Prüfliste nennt es): Das Konto der Momentaufnahme gilt immer, eine Wahl gibt es nicht.
+# ``{rate}``: der Satz der Gruppe (``tax_groups.group_label``: „19 %“, „5,5 %“, „steuerfrei“)
+TAX_PAYMENT_NO_REVENUE = ('Das Erlöskonto, das diese Rechnung für {rate} trägt, ist kein Erlöskonto (mehr) – die Zahlung lässt sich nicht kontieren. '
+                          'Bitte das Konto im Kontenrahmen prüfen (Prüfung unter Sonstiges).')
+# Die Befunde der Kategorie ``tax_entry_mismatch`` der Prüfliste (``_tax_entry_findings``), nach Art: feste Sätze ohne Beträge. ``{rate} %`` wird mit
+# ``rate_sentence`` zum Satz der Gruppe („19 %“, „5,5 %“, „steuerfrei“), ``{position}`` und ``{head}`` sind Sätze, wie sie dastehen
+TAX_ENTRY_FINDINGS = {
+    'differs': ('Für {rate} % tragen die Positionen der Rechnung verschiedene Angaben aus den Stammdaten (Art, Befreiungsgrund oder Erlöskonto) oder teils '
+                'keine – die Rechnung lässt sich so nicht buchen.'),
+    'rate': 'Für {rate} % passt der Satz aus den Stammdaten nicht zum Steuersatz einer Position ({position}) – die Rechnung lässt sich so nicht buchen.',
+    'exempt_rate': 'Eine Position der Art „steuerfrei“ trägt den Satz {rate} % – eine steuerfreie Leistung hat den Satz 0.',
+    'exempt_reason': 'Die steuerfreien Positionen der Rechnung tragen keinen Grund der Steuerbefreiung.',
+    'revenue': 'Für {rate} % ist das Erlöskonto der Rechnung kein Erlöskonto (mehr) – die Zahlung lässt sich nicht kontieren.',
+    'head': ('Der Steuersatz im Kopf der Rechnung ({head}) passt nicht zum Satz aus den Stammdaten ({rate} %) – die Rechnung lässt sich so nicht '
+             'buchen.'),
+}
+
+
+def rate_sentence(template, pct, exempt=False, **names):
+    """Ein fester Satz mit dem Satz einer Gruppe: ``{rate} %`` der Vorlage wird zu ``tax_groups.group_label(pct, exempt)`` („19 %“, „5,5 %“, bei einer
+    steuerfreien Gruppe „steuerfrei“); ``names``: die übrigen Platzhalter. Für jeden Satz außer „steuerfrei“ ist das Ergebnis Zeichen für Zeichen das von
+    ``template.format(rate=pct_text(pct), …)`` – die ``MIXED_*``-Sätze (und ihre Tests) bleiben, wie sie waren; nur eine steuerfreie Gruppe heißt „steuerfrei“
+    statt „0 %“."""
+    return template.replace('{rate} %', '{rate}').format(rate=group_label(pct, exempt), **names)
+
 
 class MixedNotBookable(ValueError):
     """Ein Beleg mit Steuersatz je Position lässt sich nicht buchen; ``str(exc)`` ist der feste Klartext für den Nutzer (``MIXED_*``). Wo ein
     Abbruch über mehrere Ebenen nötig ist, ohne dass jede einen Rückgabewert prüft: Jeder Aufrufer setzt sie auf seinen Ablehnungsweg um
     (``_Refusal``, ``_refused``, ein ``ValueError`` an die Route …)."""
+
+
+#: Die Momentaufnahme eines Steuersatzes aus den Stammdaten, wie sie die Positionen EINER Satzgruppe tragen (``InvoicePaymentsMixin.group_snapshots``):
+#: ``exempt`` – die Art ist „steuerfrei“ (``TaxCategory`` ``'E'``), ``reason`` – der Grund der Befreiung (``TaxExemptReason``), ``revenue_coa_id`` – das Erlöskonto des
+#: Eintrags (``RevenueCoaId``; ``None``: keines, der Satz bucht nach den bisherigen Regeln). Hashbar und vergleichbar: Sie gehört in den Schlüssel, den eine
+#: Transaktion mit ihrer Vorbereitung vergleicht.
+Snapshot = namedtuple('Snapshot', 'exempt reason revenue_coa_id')
+
+
+class _SnapshotConflict(Exception):
+    """Die Momentaufnahmen der Positionen eines Belegs widersprechen sich (``InvoicePaymentsMixin._read_snapshots``); ``str(exc)`` ist nur für das Server-Log."""
 
 
 #: Die Spalten einer Position (``InvoiceItems``), die die Momentaufnahme eines Steuersatzes aus den Stammdaten tragen (Schema 2008), mit ihren
@@ -550,25 +596,136 @@ class InvoicePaymentsMixin:
         head = conn.execute('SELECT SumNet, TaxAmount, SumGross FROM Invoices WHERE ID = ?', (invoice_id,)).fetchone()
         if head is None:
             raise RateGroupsMismatch('Den Beleg gibt es nicht.')
-        pairs = conn.execute('SELECT TaxRate, TotalNet FROM InvoiceItems WHERE InvoiceId = ? ORDER BY Position, ID',
+        # Der Satz in Hundertstel Prozent (``TaxRateBp``, die Momentaufnahme eines Eintrags der Stammdaten; sonst NULL) geht mit: Er bestimmt den Satz der Position
+        # und lässt ihre Gruppe einstufig runden (``tax_groups.group_tax``) – sonst rechnete eine 5,5-%-Gruppe zweistufig und passte nicht zu den Summen
+        pairs = conn.execute('SELECT TaxRate, TotalNet, TaxRateBp FROM InvoiceItems WHERE InvoiceId = ? ORDER BY Position, ID',
                              (invoice_id,)).fetchall()
         return mixed_groups(*head, pairs)
 
     def _checked_mixed_groups(self, conn, invoice_id):
         """Die Satzgruppen (``_mixed_groups``), zum Buchen geprüft: Jede Gruppe hat einen positiven Betrag – eine Forderungszeile auf 10000 mit
-        Betrag 0 oder darunter wäre nach ``receivable_condition`` keine Forderung. ``MixedNotBookable`` mit dem festen Klartext
-        (``MIXED_GROUPS_MISMATCH`` bzw. ``MIXED_GROUP_NOT_POSITIVE`` mit dem ersten Satz, dessen Positionen zusammen nicht positiv sind), der
-        Grund im Detail steht im Server-Log."""
+        Betrag 0 oder darunter wäre nach ``receivable_condition`` keine Forderung – und die Momentaufnahmen der Positionen widersprechen sich nicht
+        (``group_snapshots``). ``MixedNotBookable`` mit dem festen Klartext (``MIXED_GROUPS_MISMATCH`` bzw. ``MIXED_GROUP_NOT_POSITIVE`` mit dem ersten
+        Satz, dessen Positionen zusammen nicht positiv sind – eine steuerfreie Gruppe heißt „steuerfrei“, ``rate_sentence``), der Grund im Detail steht im
+        Server-Log."""
         try:
             groups = self._mixed_groups(conn, invoice_id)
         except RateGroupsMismatch as exc:
             print(f'Rechnung {invoice_id}: {exc}')
             raise MixedNotBookable(MIXED_GROUPS_MISMATCH) from None
+        snapshots = self.group_snapshots(conn, invoice_id)
         for group in groups:
             if group.gross <= 0:
-                raise MixedNotBookable(MIXED_GROUP_NOT_POSITIVE.format(
-                    rate=pct_text(group.pct), amount=fmt_eur(from_minor(group.gross))))
+                snapshot = snapshots.get(group.pct)
+                raise MixedNotBookable(rate_sentence(MIXED_GROUP_NOT_POSITIVE, group.pct, bool(snapshot and snapshot.exempt),
+                                                     amount=fmt_eur(from_minor(group.gross))))
         return groups
+
+    # ── Momentaufnahme eines Steuersatzes aus den Stammdaten (2.8.0): je Satzgruppe, und für den Beleg mit EINEM Satz ────────
+    @staticmethod
+    def _read_snapshots(conn, invoice_id):
+        """Die Momentaufnahmen der Satzgruppen eines Belegs aus seinen Positionen: ``{Satz: Snapshot}`` – der Satz als Prozentzahl (``tax_groups.bp_pct``, wie
+        ``RateGroup.pct``), nach Satz absteigend –, nur für Gruppen, deren Positionen eine tragen (``InvoiceItems.TaxRateBp`` nicht NULL; **das** ist das
+        Merkmal: Die Art ``'E'`` allein ist keines – das Beispiel eines Belegs nach § 19 trägt sie ohne Satz in Hundertstel Prozent). Ein Beleg ohne
+        eine solche Position liefert ``{}`` (nichts wird gelesen, nichts geprüft), und eine Gruppe ohne Momentaufnahme fehlt im Ergebnis: Für sie gelten die
+        bisherigen Regeln.
+
+        ``_SnapshotConflict`` (mit einem Satz für das Server-Log), wenn sich die Angaben widersprechen: der Satz in Hundertstel Prozent keine ganze Zahl von 0
+        bis ``MAX_RATE_BP``, eine steuerfreie Position mit einem Satz über 0, Positionen EINER Gruppe mit verschiedenen Momentaufnahmen (Art, Befreiungsgrund,
+        Erlöskonto) oder teils mit, teils ohne eine. Das kann kein Weg der App schreiben (``handlers._tax_fields``: je Satz höchstens ein Eintrag der
+        Stammdaten) – es heißt, dass jemand an der App vorbei etwas geändert hat. Statisch: Der Schutz beim Entfernen einer Zahlung und die Texte der Prüfliste
+        lesen sie ohne Instanz."""
+        rows = conn.execute(
+            'SELECT TaxRate, TaxCategory, TaxRateBp, TaxExemptReason, RevenueCoaId FROM InvoiceItems WHERE InvoiceId = ? ORDER BY Position, ID',
+            (invoice_id,)).fetchall()
+        if all(row[2] is None for row in rows):
+            return {}
+        found, plain = {}, set()
+        for number, (rate, category, bp, reason, coa) in enumerate(rows, 1):
+            if bp is None:
+                try:
+                    pct = rate_pct(rate)
+                except (ArithmeticError, ValueError):
+                    pct = None
+                if pct is not None:
+                    plain.add(pct)
+                continue
+            if type(bp) is not int or not 0 <= bp <= MAX_RATE_BP:
+                raise _SnapshotConflict(f'Position {number}: Der Satz in Hundertstel Prozent ist keine ganze Zahl von 0 bis {MAX_RATE_BP}.')
+            if category == 'E' and bp != 0:
+                raise _SnapshotConflict(f'Position {number}: Eine steuerfreie Position hat den Satz 0, hier {bp} Hundertstel Prozent.')
+            found.setdefault(bp_pct(bp), set()).add(Snapshot(category == 'E', reason, coa))
+        for pct, shots in found.items():
+            if len(shots) > 1:
+                raise _SnapshotConflict(f'Die Positionen mit {group_label(pct, False)} tragen verschiedene Angaben aus den Stammdaten.')
+            if pct in plain:
+                raise _SnapshotConflict(f'Die Positionen mit {group_label(pct, False)} tragen teils eine Momentaufnahme der Stammdaten, teils keine.')
+        return {pct: next(iter(found[pct])) for pct in sorted(found, reverse=True)}
+
+    @staticmethod
+    def group_snapshots(conn, invoice_id):
+        """Die Momentaufnahme je Satzgruppe eines Belegs (``_read_snapshots``: ``{Satz: Snapshot}``, ``{}`` ohne Momentaufnahme), gelesen in der Verbindung
+        oder Transaktion von ``conn`` (kein ``BEGIN``). ``MixedNotBookable`` mit ``MIXED_GROUPS_MISMATCH``, wenn sich die Angaben widersprechen – der Grund
+        steht im Server-Log. Jeder Weg, der bucht, geht darüber (``_checked_mixed_groups`` für den Beleg mit Steuersatz je Position, ``document_entry`` für den
+        mit einem Satz): Ein Beleg mit widersprüchlichen Angaben lässt sich nicht buchen, vor dem ersten Schreiben."""
+        try:
+            return InvoicePaymentsMixin._read_snapshots(conn, invoice_id)
+        except _SnapshotConflict as exc:
+            print(f'Rechnung {invoice_id}: {exc}')
+            raise MixedNotBookable(MIXED_GROUPS_MISMATCH) from None
+
+    @staticmethod
+    def _exempt_pcts(conn, invoice_id):
+        """Die Sätze (Prozentzahlen) der steuerfreien Gruppen eines Belegs – für die Texte der Meldungen („steuerfrei“ statt „0 %“, ``rate_sentence``). Leer ohne
+        Momentaufnahme und, still, wenn sich die Angaben widersprechen (der Text einer Meldung darf nicht an etwas scheitern, das sie erklärt)."""
+        try:
+            return {pct for pct, snapshot in InvoicePaymentsMixin._read_snapshots(conn, invoice_id).items() if snapshot.exempt}
+        except _SnapshotConflict:
+            return set()
+
+    @staticmethod
+    def _single_snapshot(conn, invoice_id, head_rate):
+        """Die Momentaufnahme eines Belegs mit EINEM Satz (``Invoices.MixedTaxRates`` nicht gesetzt) als ``(Satz, Snapshot)`` – ``None`` ohne eine
+        (der ganze Bestand: Es gelten die bisherigen Regeln). Der Beleg hat nur eine Satzgruppe, und sie trägt den Satz im Kopf (``head_rate``: ``Invoices.TaxRate``);
+        alles andere – mehr als eine Gruppe mit Momentaufnahme, ein Kopfsatz, der nicht der Satz der Momentaufnahme ist (auch der Platzhalter −1 für „kein
+        Steuerausweis“) – ist ein Widerspruch: ``MixedNotBookable`` mit ``MIXED_GROUPS_MISMATCH``, der Grund im Server-Log."""
+        snapshots = InvoicePaymentsMixin.group_snapshots(conn, invoice_id)
+        if not snapshots:
+            return None
+        try:
+            head = rate_pct(head_rate)
+        except (ArithmeticError, ValueError):
+            head = None
+        if len(snapshots) != 1 or head not in snapshots:
+            print(f'Rechnung {invoice_id}: Der Satz im Kopf passt nicht zum Satz der Momentaufnahme der Stammdaten.')
+            raise MixedNotBookable(MIXED_GROUPS_MISMATCH)
+        (pct, snapshot), = snapshots.items()
+        return pct, snapshot
+
+    def document_entry(self, invoice_id, head_rate):
+        """Die Momentaufnahme eines Belegs mit EINEM Satz (``_single_snapshot``) in einer eigenen Verbindung: ``(Satz, Snapshot)`` oder ``None``.
+        ``head_rate``: ``Invoices.TaxRate`` des Belegs. ``MixedNotBookable`` bei einem Widerspruch."""
+        conn = self._get_connection()
+        try:
+            return self._single_snapshot(conn, invoice_id, head_rate)
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _entry_accounts(conn, invoice_id):
+        """Trägt eine Position des Belegs ein Erlöskonto aus den Stammdaten (``InvoiceItems.RevenueCoaId`` nicht NULL), in der Verbindung oder Transaktion von
+        ``conn``? Das ist die Bedingung, an der der Umzug der Zahlungen, der Neuaufbau der Zuordnung, das Lernen des Erlöskontos und die Wahl des Erlöskontos in den
+        Masken hängen: Das Konto gilt, ohne Wahl und ohne Umzug."""
+        return conn.execute('SELECT 1 FROM InvoiceItems WHERE InvoiceId = ? AND RevenueCoaId IS NOT NULL LIMIT 1', (invoice_id,)).fetchone() is not None
+
+    def invoice_entry_accounts(self, invoice_id):
+        """Trägt der Beleg ein Erlöskonto aus den Stammdaten (``_entry_accounts``)? In einer eigenen Verbindung, rein lesend – für die Masken: Dann gibt es dort
+        keine Wahl des Erlöskontos."""
+        conn = self._get_connection()
+        try:
+            return self._entry_accounts(conn, invoice_id)
+        finally:
+            conn.close()
 
     def _receivable_sides_by_rate(self, conn, number):
         """``(Debitorenkonto, {Satz: Wartekonto})`` der Forderungen zu dieser Rechnungsnummer – die Konten, auf die die Teile einer Zuordnung
@@ -650,6 +807,11 @@ class InvoicePaymentsMixin:
         gilt dort nie). Der Kontext trägt dann ``mixed`` = ``{'groups': (RateGroup, …), 'revenue': {Satz: COA-ID}}`` und ``revenue_coa`` ``None``;
         ``_assign_in_tx`` bucht nur mit diesem Schlüssel je Satz (ein Kontext ohne ihn – Neuaufbau, Umzug – lehnt einen solchen Beleg ab).
 
+        **Ein Steuersatz aus den Stammdaten** (2.8.0, die Momentaufnahme an den Positionen): Trägt die Satzgruppe – bei einem Beleg mit einem Satz der Beleg – ein
+        Erlöskonto (``InvoiceItems.RevenueCoaId``), gilt dieses Konto, immer (``_group_revenue_coa``, ``_document_revenue``); ist es keines (mehr), lehnt
+        ``TAX_PAYMENT_NO_REVENUE`` ab, eine Wahl gibt es nicht. Ohne Momentaufnahme – und mit einer ohne Erlöskonto, den 19 und 7 % der Vorbelegung – bleibt jede Regel
+        von heute.
+
         Returns ``(Fehlertext, None)`` oder ``(None, Kontext)``."""
         invoice = self.get_document(invoice_id, 'invoice')
         if invoice is None:
@@ -660,11 +822,12 @@ class InvoicePaymentsMixin:
         if blocked:
             return blocked, None
         mixed = has_mixed_rates(invoice[55] if len(invoice) > 55 else None)
-        groups = None
+        groups = snapshots = None
         if mixed:
             conn = self._get_connection()
             try:
                 groups = self._checked_mixed_groups(conn, invoice_id)
+                snapshots = self.group_snapshots(conn, invoice_id)
             except MixedNotBookable as exc:
                 return str(exc), None
             finally:
@@ -675,19 +838,20 @@ class InvoicePaymentsMixin:
         if mixed:
             revenue = {}
             for group in groups:
-                coa = self._group_revenue_coa(group.pct)
+                snapshot = snapshots.get(group.pct)
+                coa = self._group_revenue_coa(group.pct, snapshot)
                 if coa is None:
-                    return MIXED_NO_REVENUE_COA.format(rate=pct_text(group.pct)), None
+                    if snapshot is not None and snapshot.revenue_coa_id is not None:
+                        return rate_sentence(TAX_PAYMENT_NO_REVENUE, group.pct, snapshot.exempt), None
+                    return rate_sentence(MIXED_NO_REVENUE_COA, group.pct, bool(snapshot and snapshot.exempt)), None
                 revenue[group.pct] = coa
             return None, {
                 'tax_rate': invoice[35], 'account_id': account_id, 'bank_coa': bank_coa, 'revenue_coa': None,
                 'bank_coa_ids': self.get_bank_coa_ids(), 'mixed': {'groups': tuple(groups), 'revenue': revenue},
             }
-        revenue_coa = self.resolve_revenue_coa(invoice[35])
-        if revenue_coa is None:
-            revenue_coa, error = self._chosen_revenue_coa(revenue_coa_id)
-            if error:
-                return error, None
+        revenue_coa, error = self._document_revenue(invoice_id, invoice[35], revenue_coa_id)
+        if error:
+            return error, None
         return None, {
             'tax_rate': invoice[35], 'account_id': account_id, 'bank_coa': bank_coa,
             'revenue_coa': revenue_coa,
@@ -735,6 +899,26 @@ class InvoicePaymentsMixin:
         if chosen not in {row[0] for row in self.get_revenue_coas()}:
             return None, NOT_A_REVENUE_COA
         return chosen, None
+
+    def _document_revenue(self, invoice_id, tax_rate, revenue_coa_id=None):
+        """Das Erlöskonto eines Belegs mit EINEM Satz für eine Zahlung oder Erstattung: ``(COA-ID, None)`` oder ``(None, Fehlertext)``. ``tax_rate``:
+        ``Invoices.TaxRate``, ``revenue_coa_id``: die Wahl des Nutzers.
+
+        Trägt der Beleg die Momentaufnahme eines Steuersatzes aus den Stammdaten (``document_entry``) und ist dort ein Erlöskonto eingetragen – oder der Satz 0,
+        der nie ein Standardkonto hat und nie 4185 bekommt (``_entry_binds``) –, gilt das Konto der Momentaufnahme (``document_revenue_coa``), immer:
+        ``TAX_PAYMENT_NO_REVENUE``, wenn es keines (mehr) ist, eine Wahl des Nutzers gibt es nicht. Sonst (ohne Momentaufnahme, und mit einer ohne Erlöskonto)
+        ist es wie immer: das hinterlegte oder gelernte Erlöskonto des Satzes (``resolve_revenue_coa``), und fehlt das, die Wahl des Nutzers
+        (``_chosen_revenue_coa``). ``MixedNotBookable`` der Momentaufnahme wird zum Fehlertext."""
+        try:
+            revenue_coa = self.document_revenue_coa(invoice_id, tax_rate)
+            if revenue_coa is not None:
+                return revenue_coa, None
+            entry = self.document_entry(invoice_id, tax_rate)
+        except MixedNotBookable as exc:
+            return None, str(exc)
+        if self._entry_binds(entry):
+            return None, rate_sentence(TAX_PAYMENT_NO_REVENUE, entry[0], entry[1].exempt)
+        return self._chosen_revenue_coa(revenue_coa_id)
 
     def revenue_coa_choice_needed(self, tax_rate):
         """Muss der Nutzer das Erlöskonto wählen, weil für diesen Steuersatz keines hinterlegt
@@ -1014,8 +1198,9 @@ class InvoicePaymentsMixin:
         Das Erlöskonto ist das der Zahlungen (``_payment_revenue_coa`` über die markierten Sätze ihrer Zuordnungen), wenn alle
         dasselbe tragen; liegen sie auf **mehr als einem** Erlöskonto (ein Satz wurde im Editor geändert), wählt der Nutzer das
         der Erstattung (``revenue_coa_id``, ein Erlöskonto, sonst Ablehnung mit ``MIXED_REVENUE_MESSAGE``). Hat keine Zuordnung
-        markierte Sätze (Import), ist es das für den Steuersatz hinterlegte (``resolve_revenue_coa``), und gibt es auch das nicht,
-        wählt der Nutzer es (``revenue_coa_id``, ein Erlöskonto, sonst Ablehnung). Konten, die das Auflösen anlegen könnte,
+        markierte Sätze (Import), ist es das Erlöskonto der Momentaufnahme, wenn der Beleg einen Steuersatz aus den Stammdaten mit Erlöskonto trägt
+        (``_document_revenue``: es gilt immer, eine Wahl gibt es dann nicht), sonst das für den Steuersatz hinterlegte (``resolve_revenue_coa``), und gibt es
+        auch das nicht, wählt der Nutzer es (``revenue_coa_id``, ein Erlöskonto, sonst Ablehnung). Konten, die das Auflösen anlegen könnte,
         entstehen vor der Transaktion in eigenen Verbindungen – erst, wenn die Erstattung sich buchen lässt.
 
         **Ein Beleg mit Steuersatz je Position** (``Invoices.MixedTaxRates``, Stornorechnung und stornierte Rechnung tragen es beide) erstattet je Satz:
@@ -1059,11 +1244,10 @@ class InvoicePaymentsMixin:
             if error:
                 return _refused(MIXED_REVENUE_MESSAGE if error == NO_REVENUE_COA else error)
         elif plan.revenue_coa is None:
-            fallback = self.resolve_revenue_coa(plan.rate)
-            if fallback is None:
-                fallback, error = self._chosen_revenue_coa(revenue_coa_id)
-                if error:
-                    return _refused(error)
+            # ohne markierte Sätze der Zahlungen: das Konto der Momentaufnahme (Steuersatz aus den Stammdaten), sonst das für den Satz hinterlegte, sonst die Wahl
+            fallback, error = self._document_revenue(plan.original_id, plan.rate, revenue_coa_id)
+            if error:
+                return _refused(error)
         account_id, rate, mixed, parts = plan.account_id, plan.rate, plan.mixed, plan.parts
 
         with self.transaction() as tx:
@@ -1201,7 +1385,7 @@ class InvoicePaymentsMixin:
         income = {row[0] for row in self._income_coas(conn.cursor())}
         for pct, accounts in found.items():
             if len(accounts) > 1 or accounts[0] not in income:
-                raise MixedNotBookable(MIXED_REFUND_REVENUE_AMBIGUOUS.format(rate=pct_text(pct)))
+                raise MixedNotBookable(rate_sentence(MIXED_REFUND_REVENUE_AMBIGUOUS, pct, pct in self._exempt_pcts(conn, original_id)))
         return {pct: accounts[0] for pct, accounts in found.items()}
 
     def _refund_plan(self, conn, storno_id, booking_id, requested, bank_coa_ids):
@@ -1434,7 +1618,7 @@ class InvoicePaymentsMixin:
             if has_mixed_rates(original_flag) or has_mixed_rates(storno_flag):
                 pct = cls._unbalanced_rate_after_removal(conn, original_id, original_number, storno_id, storno_number, ids)
                 if pct is not None:
-                    return MIXED_REMOVAL_REFUSED.format(rate=pct_text(pct), number=storno_number)
+                    return rate_sentence(MIXED_REMOVAL_REFUSED, pct, pct in cls._exempt_pcts(conn, original_id), number=storno_number)
         return None
 
     @classmethod
@@ -1704,7 +1888,8 @@ class InvoicePaymentsMixin:
         Stand VOR dem ersten Umzug: Der Steuer-Rest des schließenden Teils hängt von den anderen Zuordnungen ab, die sich mit
         jedem Umzug ändern. Nichts zieht um, wenn Kunde oder Währung abweichen oder für den Steuersatz der neuen Rechnung kein
         Erlöskonto hinterlegt ist – und nie, wenn die stornierte oder die neue Rechnung einen Steuersatz je Position trägt
-        (``MixedTaxRates``): Die Zahlungen bleiben als Guthaben an der stornierten Rechnung. Der Hinweis ist ``MOVE_MIXED_HINT`` mit dem verbleibenden
+        (``MixedTaxRates``) oder ein Erlöskonto aus den Stammdaten (``InvoiceItems.RevenueCoaId``, ``_entry_accounts``): Die Zahlungen bleiben als Guthaben an der
+        stornierten Rechnung. Der Hinweis ist ``MOVE_MIXED_HINT`` bzw. ``MOVE_ENTRY_HINT`` mit dem verbleibenden
         Guthaben, bei einer Teilerstattung dazu ``MOVE_REFUNDED_HINT``; ist alles erstattet, sind es dieselben Sätze wie beim Beleg mit einem Satz
         (``MOVE_NONE_HINT``, ``MOVE_REFUNDED_HINT``) – ohne den Halbsatz zum Erstatten und Neu-Zuordnen, denn es gibt nichts mehr –, und ohne Zahlung
         gibt es gar keinen Hinweis.
@@ -1743,19 +1928,26 @@ class InvoicePaymentsMixin:
         def euro(minor):
             return fmt_eur(from_minor(minor))
 
-        if has_mixed_rates(old_mixed) or has_mixed_rates(row.get('MixedTaxRates')):
-            # Der Umzug vergleicht die Sätze der App mit ``payment_rows`` EINES Satzes (``_revenue_coa_if_as_written``, ``_same_payment_row``) und
-            # bucht sie mit EINEM Erlöskonto neu – je Satz zu verallgemeinern (Etappe 3) rührte an einer Regel, die nicht gelockert wird. Der Hinweis
-            # sagt, was bleibt – mit denselben Sätzen wie beim Beleg mit einem Satz (``MOVE_NONE_HINT``, ``MOVE_REFUNDED_HINT``): Ist das Guthaben
-            # erstattet, gibt es nichts mehr zu erstatten oder neu zuzuordnen (``total`` > 0: Dann ist ``refunded`` > 0); sonst bleibt es an der
-            # stornierten Rechnung, und eine Teilerstattung wird genannt
+        def stays(sentence):
+            """Nichts zieht um; der Hinweis sagt, was bleibt – mit denselben Sätzen wie beim Beleg mit einem Satz (``MOVE_NONE_HINT``, ``MOVE_REFUNDED_HINT``): Ist
+            das Guthaben erstattet, gibt es nichts mehr zu erstatten oder neu zuzuordnen (``total`` > 0: Dann ist ``refunded`` > 0); sonst bleibt es an der
+            stornierten Rechnung (``sentence``: ``MOVE_MIXED_HINT`` oder ``MOVE_ENTRY_HINT``), und eine Teilerstattung wird genannt."""
             credit = max(total - refunded, 0)
             if not credit:
                 return 0, ' '.join([MOVE_NONE_HINT.format(number=old_number), MOVE_REFUNDED_HINT.format(amount=euro(refunded))])
-            notes = [MOVE_MIXED_HINT.format(number=old_number, amount=euro(credit))]
+            notes = [sentence.format(number=old_number, amount=euro(credit))]
             if refunded:
                 notes.append(MOVE_REFUNDED_HINT.format(amount=euro(refunded)))
             return 0, ' '.join(notes)
+
+        if has_mixed_rates(old_mixed) or has_mixed_rates(row.get('MixedTaxRates')):
+            # Der Umzug vergleicht die Sätze der App mit ``payment_rows`` EINES Satzes (``_revenue_coa_if_as_written``, ``_same_payment_row``) und
+            # bucht sie mit EINEM Erlöskonto neu – je Satz zu verallgemeinern (Etappe 3) rührte an einer Regel, die nicht gelockert wird
+            return stays(MOVE_MIXED_HINT)
+        if self._entry_accounts(conn, old_id) or self._entry_accounts(conn, new_id):
+            # Ebenso bei einem Erlöskonto aus den Stammdaten (2.8.0): Der Umzug bucht neu mit dem Erlöskonto, das heute für den Satz hinterlegt ist
+            # (``resolve_revenue_coa``) – für die Momentaufnahme je Beleg gälte dieselbe Verallgemeinerung (Etappe 3), und ihre Bedingungen werden nicht gelockert
+            return stays(MOVE_ENTRY_HINT)
         if row['CustomerId'] != old_customer or (row['Currency'] or 'EUR') != (old_currency or 'EUR'):
             return 0, (f'Die Zahlungen der stornierten Rechnung {old_number} ({euro(total)}) bleiben dort: '
                        'Kunde oder Währung dieser Rechnung weichen ab.')
@@ -1908,7 +2100,13 @@ class InvoicePaymentsMixin:
         * ``unflagged_rate_mix`` ein Beleg OHNE dieses Kennzeichen, dessen Positionen verschiedene Steuersätze tragen (Positionen
                                  ohne Satz zählen nicht, ein Beleg ohne Steuerausweis ist nie betroffen): Er wird mit EINEM Satz
                                  geführt, und seine Buchungen rechnen mit dem Satz im Kopf. Ein Bestand aus einer Version vor
-                                 2.7.0 kann so etwas tragen; es wird nur genannt, nie umgedeutet.
+                                 2.7.0 kann so etwas tragen; es wird nur genannt, nie umgedeutet;
+        * ``tax_entry_mismatch`` die Momentaufnahmen eines Steuersatzes aus den Stammdaten (2.8.0, an den Positionen) widersprechen
+                                 sich oder passen nicht zusammen: verschiedene Angaben (Art, Befreiungsgrund, Erlöskonto) bei
+                                 gleichem Satz, ein Satz in Hundertstel Prozent, der nicht der Satz der Position ist, eine
+                                 steuerfreie Position mit Satz über 0 oder ohne Grund, ein Erlöskonto, das keines (mehr) ist, ein
+                                 Kopfsatz, der nicht zur Momentaufnahme passt (``_tax_entry_findings``). Kein Weg der App lässt es
+                                 entstehen; die Kategorie meldet Eingriffe an ihr vorbei. Ein Beleg ohne Momentaufnahme ist nie betroffen.
 
         ``no_settlement`` und ``transfer_mismatch`` betrachten nur Zuordnungen, deren Buchung
         eine Bankbewegung ohne Sätze mit Quellklammer (``SourceGroup``) ist: Der WISO-Import
@@ -2159,12 +2357,15 @@ class InvoicePaymentsMixin:
         return findings
 
     def _rate_findings(self, conn, invoice_id):
-        """Die Befunde zu den Steuersätzen der Belege (``rate_split_mismatch``, ``rate_refund_mismatch``, ``unflagged_rate_mix``) in der Form von
-        ``find_payment_inconsistencies`` – nur lesend, in der Verbindung oder Transaktion ``conn``, linear im Bestand: Für alle Belege mit dem Kennzeichen
+        """Die Befunde zu den Steuersätzen der Belege (``rate_split_mismatch``, ``rate_refund_mismatch``, ``unflagged_rate_mix``, ``tax_entry_mismatch``) in der
+        Form von ``find_payment_inconsistencies`` – nur lesend, in der Verbindung oder Transaktion ``conn``, linear im Bestand: Für alle Belege mit dem Kennzeichen
         (``invoice_id`` grenzt ein) je eine Abfrage über die Köpfe, die Positionen, die Zuordnungen, die Forderungszeilen der App und die markierten
         Umbuchungen, für alle Storno-Paare mit dem Kennzeichen je eine über die Köpfe samt Positionen der stornierten Rechnungen, die Zuordnungen je
-        Bankbewegung und die markierten Sätze, für alle ohne das Kennzeichen eine über die Sätze ihrer Positionen – die Zahl der Anweisungen wächst nicht
-        mit der Zahl der Belege. Ein Beleg mit einem Satz ist nie betroffen.
+        Bankbewegung und die markierten Sätze, für alle ohne das Kennzeichen eine über die Sätze ihrer Positionen, für alle Belege mit einer Momentaufnahme
+        eine über ihre Positionen – die Zahl der Anweisungen wächst nicht mit der Zahl der Belege. Ein Beleg mit einem Satz ist von den ersten drei nie
+        betroffen (``tests/test_single_rate_snapshots.py``). Die Positionen werden mit ihrem Satz in Hundertstel Prozent gelesen (``InvoiceItems.TaxRateBp``, die
+        Momentaufnahme eines Steuersatzes aus den Stammdaten): Die Gruppen rechnen so wie beim Speichern (einstufig, ``tax_groups.group_tax``), und eine steuerfreie
+        Gruppe heißt in den Meldungen „steuerfrei“ (``tax_groups.group_label``) – für jeden anderen Satz sind die Texte Zeichen für Zeichen die von 2.7.0.
 
         ``rate_split_mismatch`` (Rechnung wie Stornorechnung, jeder Status): (1) die Positionen passen nicht zu den Summen (``tax_groups.mixed_groups``) –
         dann lässt sich nichts weiter prüfen; (2) es gibt Forderungszeilen der App, und ihre Menge aus Satz, Betrag und Steuer ist nicht die der Satzgruppen
@@ -2175,8 +2376,16 @@ class InvoicePaymentsMixin:
         je Satz tragen – wird wie beim Schutz vor dem Entfernen einer Zahlung gelesen (``booked_by_rate``: ``_mixed_booked`` für alle Paare auf einmal) und
         mit ``tax_groups.booked_fault`` am Topf der Zahlungen (``refund_pool``) gemessen; lässt er sich nicht lesen (eine Zuordnung ohne die Sätze der App,
         von Hand geänderte Sätze, Positionen, die nicht zu den Summen passen), gibt es diesen Befund nicht. ``unflagged_rate_mix``:
-        die Positionen eines Belegs ohne das Kennzeichen tragen mehr als einen Satz (nach ``rate_pct``; ohne Satz zählt nicht; Kopf unter 0, der
-        Platzhalter für „ohne Steuerausweis“, nie)."""
+        die Positionen eines Belegs ohne das Kennzeichen tragen mehr als einen Satz (nach ``rate_pct``, bei einer Momentaufnahme nach ihrem Satz; ohne Satz
+        zählt nicht; Kopf unter 0, der Platzhalter für „ohne Steuerausweis“, nie).
+
+        ``tax_entry_mismatch`` (je Beleg und Art des Befundes ein Satz, ohne Beträge, mit dem Satz der Gruppe als ``group_label``; nur Rechnungen – eine
+        Stornorechnung wie jede –, jeder Status): Die Momentaufnahmen der Positionen (``group_snapshots``) widersprechen sich oder passen nicht zusammen –
+        (1) Positionen EINES Satzes tragen verschiedene Angaben (Art, Befreiungsgrund, Erlöskonto) oder teils eine Momentaufnahme, teils keine; (2) der Satz in
+        Hundertstel Prozent ist nicht der Satz der Position (``rate_pct`` mal 100) oder keine ganze Zahl von 0 bis 100 %; (3) eine steuerfreie Position (Art ``'E'``)
+        trägt einen Satz über 0 oder keinen Grund der Befreiung; (4) das Erlöskonto einer Position ist kein Erlöskonto (mehr: ``_income_coas``); (5) bei einem Beleg
+        ohne das Kennzeichen passt der Satz im Kopf nicht zum Satz der Momentaufnahme. Gelesen wird jede Position eines Belegs, der eine Momentaufnahme oder die
+        Art ``'E'`` trägt; ein Beleg ohne beides (der ganze Bestand) ist nie betroffen."""
         flagged = "typeof(i.MixedTaxRates) = 'integer' AND i.MixedTaxRates = 1"
         is_invoice = "(i.DocumentType = 'invoice' OR i.DocumentType IS NULL)"
         only = ' AND i.ID = ?' if invoice_id is not None else ''
@@ -2189,9 +2398,10 @@ class InvoicePaymentsMixin:
         def euro(minor):
             return fmt_eur(from_minor(minor))
 
-        def shown(entries):
-            """``19 %: 119,00 € (Steuer 19,00 €); 7 %: 53,50 € (Steuer 3,50 €)`` – nach Satz absteigend."""
-            return '; '.join(f'{pct_text(pct)} %: {euro(amount)} (Steuer {euro(tax)})'
+        def shown(entries, exempt=()):
+            """``19 %: 119,00 € (Steuer 19,00 €); 7 %: 53,50 € (Steuer 3,50 €)`` – nach Satz absteigend; ``exempt``: die Sätze der steuerfreien Gruppen
+            („steuerfrei: …“ statt „0 %: …“)."""
+            return '; '.join(f'{group_label(pct, pct in exempt)}: {euro(amount)} (Steuer {euro(tax)})'
                              for pct, amount, tax in sorted(entries, reverse=True)) or 'nichts'
 
         def pct_of(rate):
@@ -2206,11 +2416,15 @@ class InvoicePaymentsMixin:
             f'SELECT i.ID, i.InvoiceNumber, i.SumNet, i.TaxAmount, i.SumGross FROM Invoices i WHERE {flagged} AND {is_invoice}{only} '
             'ORDER BY i.InvoiceNumber, i.ID', only_params).fetchall()
         if heads:
-            positions = {}
-            for inv, rate, net in conn.execute(
-                    'SELECT p.InvoiceId, p.TaxRate, p.TotalNet FROM InvoiceItems p JOIN Invoices i ON i.ID = p.InvoiceId '
+            # Je Position (Satz, Netto, Satz in Hundertstel Prozent der Momentaufnahme – NULL ohne): ``mixed_groups`` rechnet damit wie das Speichern. ``exempt_of``:
+            # die Sätze der steuerfreien Gruppen eines Belegs (Art ``'E'``), nur für die Texte
+            positions, exempt_of = {}, {}
+            for inv, rate, net, bp, category in conn.execute(
+                    'SELECT p.InvoiceId, p.TaxRate, p.TotalNet, p.TaxRateBp, p.TaxCategory FROM InvoiceItems p JOIN Invoices i ON i.ID = p.InvoiceId '
                     f'WHERE {flagged} AND {is_invoice}{only} ORDER BY p.InvoiceId, p.Position, p.ID', only_params):
-                positions.setdefault(inv, []).append((rate, net))
+                positions.setdefault(inv, []).append((rate, net, bp))
+                if category == 'E' and type(bp) is int:
+                    exempt_of.setdefault(inv, set()).add(bp_pct(bp))
             paid = dict(conn.execute(
                 'SELECT ip.InvoiceID, SUM(ip.Amount) FROM InvoicePayments ip JOIN Invoices i ON i.ID = ip.InvoiceID '
                 f'WHERE {flagged} AND {is_invoice}{only} GROUP BY ip.InvoiceID', only_params))
@@ -2254,16 +2468,18 @@ class InvoicePaymentsMixin:
                         'Die Positionen der Rechnung passen nicht zu ihren Summen – die Steuersätze lassen sich nicht prüfen.')
                     continue
                 wanted = [(group.pct, group.gross, group.tax) for group in groups]
+                exempt = exempt_of.get(inv, ())
                 booked = receivables.get(number)
                 if booked and sorted(booked) != sorted(wanted):
                     add('rate_split_mismatch', inv, number,
-                        f'Die Forderungsbuchungen der App passen nicht zu den Steuersätzen der Rechnung: erwartet {shown(wanted)}, gebucht {shown(booked)}.')
+                        f'Die Forderungsbuchungen der App passen nicht zu den Steuersätzen der Rechnung: erwartet {shown(wanted, exempt)}, '
+                        f'gebucht {shown(booked, exempt)}.')
                 if sum_gross and paid.get(inv) == sum_gross:
                     done = moved.get(number, {})
                     if done != {pct: (gross, tax) for pct, gross, tax in wanted}:
                         add('rate_split_mismatch', inv, number,
                             'Die Rechnung ist ganz bezahlt, aber auf die Erlöskonten ist je Steuersatz nicht ihr Betrag umgebucht: '
-                            f'erwartet {shown(wanted)}, umgebucht {shown([(pct, amount, tax) for pct, (amount, tax) in done.items()])}.')
+                            f'erwartet {shown(wanted, exempt)}, umgebucht {shown([(pct, amount, tax) for pct, (amount, tax) in done.items()], exempt)}.')
 
         # Mehr erstattet als gezahlt, je Satz: die Storno-Paare, von denen die stornierte Rechnung oder die Stornorechnung das Kennzeichen trägt. Dieselben
         # Bausteine wie der Schutz beim Entfernen einer Zahlung (``booked_by_rate``, ``refund_pool``, ``booked_fault``), nur je Art EINE Abfrage für alle Paare:
@@ -2275,11 +2491,13 @@ class InvoicePaymentsMixin:
         refund_pairs = conn.execute('SELECT o.ID, o.InvoiceNumber, o.SumNet, o.TaxAmount, o.SumGross, s.ID, s.InvoiceNumber '
                                     f'{pair_from} ORDER BY o.InvoiceNumber, s.ID', pair_args).fetchall()
         if refund_pairs:
-            original_items = {}
-            for inv, rate, net in conn.execute(
-                    f'SELECT p.InvoiceId, p.TaxRate, p.TotalNet FROM InvoiceItems p WHERE p.InvoiceId IN (SELECT o.ID {pair_from}) '
+            original_items, original_exempt = {}, {}
+            for inv, rate, net, bp, category in conn.execute(
+                    f'SELECT p.InvoiceId, p.TaxRate, p.TotalNet, p.TaxRateBp, p.TaxCategory FROM InvoiceItems p WHERE p.InvoiceId IN (SELECT o.ID {pair_from}) '
                     'ORDER BY p.InvoiceId, p.Position, p.ID', pair_args):
-                original_items.setdefault(inv, []).append((rate, net))
+                original_items.setdefault(inv, []).append((rate, net, bp))
+                if category == 'E' and type(bp) is int:
+                    original_exempt.setdefault(inv, set()).add(bp_pct(bp))
             allocations = {}
             for inv, bank_id, total in conn.execute(
                     'SELECT ip.InvoiceID, ip.BookingID, SUM(ip.Amount) FROM InvoicePayments ip WHERE ip.InvoiceID IN '
@@ -2302,18 +2520,20 @@ class InvoicePaymentsMixin:
                 except (MixedNotBookable, RateGroupsMismatch):
                     continue                                    # der Stand je Satz lässt sich nicht lesen: Die Summe prüfen die anderen Kategorien
                 if booked_fault(refund_pool(paid), refunded):
+                    exempt = original_exempt.get(original_id, ())
                     add('rate_refund_mismatch', original_id, original_number,
                         'Je Steuersatz ist mehr erstattet als gezahlt (oder Betrag und Steuer gehen nicht auf): '
-                        f'gezahlt {shown([(pct, amount, tax) for pct, (amount, tax) in paid.items()])} – '
-                        f'erstattet {shown([(pct, amount, tax) for pct, (amount, tax) in refunded.items()])}.')
+                        f'gezahlt {shown([(pct, amount, tax) for pct, (amount, tax) in paid.items()], exempt)} – '
+                        f'erstattet {shown([(pct, amount, tax) for pct, (amount, tax) in refunded.items()], exempt)}.')
 
-        # Ein Beleg ohne das Kennzeichen, dessen Positionen verschiedene Sätze tragen: Er wird mit dem Satz im Kopf gebucht
+        # Ein Beleg ohne das Kennzeichen, dessen Positionen verschiedene Sätze tragen: Er wird mit dem Satz im Kopf gebucht. Der Satz einer Position ist bei einer
+        # Momentaufnahme der ihre (``tax_groups.item_rate_of``), sonst ``rate_pct`` ihres Satzes
         rates = {}
-        for inv, number, rate in conn.execute(
-                'SELECT DISTINCT i.ID, i.InvoiceNumber, p.TaxRate FROM InvoiceItems p JOIN Invoices i ON i.ID = p.InvoiceId '
+        for inv, number, rate, bp in conn.execute(
+                'SELECT DISTINCT i.ID, i.InvoiceNumber, p.TaxRate, p.TaxRateBp FROM InvoiceItems p JOIN Invoices i ON i.ID = p.InvoiceId '
                 f"WHERE NOT ({flagged}) AND {is_invoice} AND COALESCE(i.TaxRate, 0) >= 0 AND p.TaxRate IS NOT NULL AND p.TaxRate <> ''{only} "
                 'ORDER BY i.InvoiceNumber, i.ID', only_params):
-            pct = pct_of(rate)
+            pct = pct_of(rate) if type(bp) is not int else item_rate_of(rate, bp)
             if pct is not None:
                 rates.setdefault((inv, number), set()).add(pct)
         for (inv, number), found in rates.items():
@@ -2321,4 +2541,69 @@ class InvoicePaymentsMixin:
                 add('unflagged_rate_mix', inv, number,
                     'Die Positionen der Rechnung tragen verschiedene Steuersätze, die Rechnung wird aber mit einem Satz geführt – '
                     'ihre Buchungen rechnen mit dem Satz im Kopf.')
+
+        self._tax_entry_findings(conn, invoice_id, add, pct_of)
         return findings
+
+    def _tax_entry_findings(self, conn, invoice_id, add, pct_of):
+        """Der Befund ``tax_entry_mismatch`` (siehe ``_rate_findings``): EINE Abfrage über die Positionen aller Rechnungen, die eine Momentaufnahme eines Steuersatzes
+        aus den Stammdaten oder die Art ``'E'`` tragen (jede ihrer Positionen: ob eine Gruppe Positionen mit und ohne Momentaufnahme mischt, zeigt erst die ganze
+        Rechnung), dazu die Erlöskonten, die es gibt (``_income_coas``). Je Beleg, Art und Satz ein Befund, mit den festen Sätzen ``TAX_ENTRY_FINDINGS``.
+        ``add`` und ``pct_of`` gibt ``_rate_findings`` weiter, ``invoice_id`` grenzt auf einen Beleg ein."""
+        flagged = "typeof(i.MixedTaxRates) = 'integer' AND i.MixedTaxRates = 1"
+        only = ' AND i.ID = ?' if invoice_id is not None else ''
+        rows = conn.execute(
+            'SELECT i.ID, i.InvoiceNumber, i.TaxRate, p.TaxRate, p.TaxCategory, p.TaxRateBp, p.TaxExemptReason, p.RevenueCoaId, '
+            f'CASE WHEN {flagged} THEN 1 ELSE 0 END FROM InvoiceItems p JOIN Invoices i ON i.ID = p.InvoiceId '
+            "WHERE (i.DocumentType = 'invoice' OR i.DocumentType IS NULL) AND i.ID IN "
+            f"(SELECT InvoiceId FROM InvoiceItems WHERE TaxRateBp IS NOT NULL OR TaxCategory = 'E'){only} "
+            'ORDER BY i.InvoiceNumber, i.ID, p.Position, p.ID', [invoice_id] if invoice_id is not None else []).fetchall()
+        if not rows:
+            return
+        income = {row[0] for row in self._income_coas(conn.cursor())}
+        documents = {}
+        for inv, number, head_rate, rate, category, bp, reason, coa, mixed in rows:
+            documents.setdefault((inv, number, head_rate, mixed), []).append((rate, category, bp, reason, coa))
+        for (inv, number, head_rate, mixed), positions in documents.items():
+            problems = {}                 # (Art, Satz) → (steuerfrei?, Platzhalter des Satzes): je Art und Satz ein Befund, in der Reihenfolge ihres Auftretens
+            shots, plain = {}, set()      # Satz → die Momentaufnahmen seiner Positionen (Art, Grund, Erlöskonto); die Sätze der Positionen ohne eine
+            for rate, category, bp, reason, coa in positions:
+                position_pct = pct_of(rate)
+                exempt = category == 'E'
+                has_reason = isinstance(reason, str) and bool(reason.strip())
+                if bp is None:
+                    if position_pct is not None:
+                        plain.add(position_pct)
+                    if exempt:            # die Art „steuerfrei“ ohne Momentaufnahme: Der Satz 0 und ein Grund gehören trotzdem dazu
+                        if position_pct not in (None, 0):
+                            problems.setdefault(('exempt_rate', position_pct), (False, {}))
+                        if not has_reason:
+                            problems.setdefault(('exempt_reason', position_pct or Decimal(0)), (True, {}))
+                    continue
+                whole = type(bp) is int and 0 <= bp <= MAX_RATE_BP
+                pct = bp_pct(bp) if whole else (Decimal(0) if position_pct is None else position_pct)
+                if not whole or position_pct is None or bp != position_pct * 100:
+                    problems.setdefault(('rate', pct), (exempt, {'position': 'ohne lesbaren Satz' if position_pct is None
+                                                               else group_label(position_pct, False)}))
+                if exempt:
+                    if whole and bp != 0:
+                        problems.setdefault(('exempt_rate', pct), (False, {}))
+                    if not has_reason:
+                        problems.setdefault(('exempt_reason', pct), (True, {}))
+                if coa is not None and coa not in income:
+                    problems.setdefault(('revenue', pct), (exempt, {}))
+                shots.setdefault(pct, set()).add((exempt, reason, coa))
+            for pct, found in shots.items():
+                if len(found) > 1 or pct in plain:
+                    problems.setdefault(('differs', pct), (any(shot[0] for shot in found), {}))
+            if not mixed and len(shots) == 1:      # ein Beleg mit einem Satz: Der Kopf trägt genau diesen Satz (der Platzhalter −1 und jeder andere heißt: nein)
+                (pct,) = shots
+                try:
+                    head = rate_pct(head_rate)
+                except (ArithmeticError, ValueError):
+                    head = None
+                if head != pct:
+                    shown_head = 'ohne lesbaren Satz' if head is None else 'ohne Steuerausweis' if head < 0 else group_label(head, False)
+                    problems.setdefault(('head', pct), (any(shot[0] for shot in shots[pct]), {'head': shown_head}))
+            for (kind, pct), (exempt, names) in problems.items():
+                add('tax_entry_mismatch', inv, number, rate_sentence(TAX_ENTRY_FINDINGS[kind], pct, exempt, **names))

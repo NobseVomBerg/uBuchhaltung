@@ -42,6 +42,12 @@ class InvoiceCol:
     MIXED_TAX_RATES = 55     # NULL = ein Satz für den ganzen Beleg (Bestand), 1 = Satz je Position (seit 2.7.0); gelesen über ``has_mixed_rates``
 
 
+#: Die Standard-Erlöskonten der Sätze, für die es eines gibt – Prozentzahl → Kontonummer (SKR04): 19 % → 4400, 7 % → 4300. ``resolve_revenue_coa`` nimmt sie, wenn
+#: nichts gelernt ist; jeder andere Satz (5,5 % …) und jede steuerfreie Leistung hat keines, dort muss der Eintrag der Stammdaten ein Erlöskonto nennen
+#: (``tax_groups.check_tax_entry``, ``has_default_revenue``) – der Satz 0 bekommt nie ein Standardkonto (4185 ist das der Kleinunternehmer und gilt nur für
+#: einen Beleg ohne Steuerausweis).
+DEFAULT_REVENUE_ACCOUNT_NUMBERS = {19: 4400, 7: 4300}
+
 # Aus diesen Status wird ein Angebot in eine Rechnung umgewandelt – einmal: danach ist es „converted“.
 # Ein abgelehntes Angebot wird erst wieder angenommen.
 QUOTE_CONVERTIBLE_STATUSES = ('draft', 'sent', 'accepted')
@@ -805,6 +811,10 @@ class InvoicesMixin:
 
         Alles andere lehrt nichts – auch „Bank an Debitoren“ nicht, und kein Satz, den ein Nutzer
         im Split-Editor in eine andere Form gebracht hat (aus „4405 an 4400“ wurde „4736 an 4400“).
+        **Auch keine Rechnung, die ein Erlöskonto aus den Stammdaten trägt** (2.8.0, ``InvoiceItems.RevenueCoaId``): Ein ausdrücklich
+        gewähltes Konto ist keine Erfahrung – ein ganz steuerfreier Beleg (Kopf 0) läge sonst im Topf von „0 und § 19“ und lehrte der nächsten
+        Kleinunternehmer-Rechnung das Konto der Heilbehandlung. Die Zahlungen von Rechnungen mit 19 oder 7 % ohne Erlöskonto (die Vorbelegung der
+        Stammdaten) lehren weiter.
         Auch ein Satz mit negativem Betrag lehrt nichts: Die Sätze einer Erstattung
         (``assign_storno_refund``) nehmen den Erlös zurück, sie nennen kein Erlöskonto für künftige
         Zahlungen. Der jüngste passende Satz gewinnt. Das Konto der Bankzeile oder der Sätze eines Imports
@@ -833,6 +843,7 @@ class InvoicesMixin:
                     ELSE k.COA_ID END
                 WHERE k.Status = ? AND k.ParentBooking_ID IS NOT NULL AND k.Amount > 0
                   AND (i.DocumentType = 'invoice' OR i.DocumentType IS NULL)
+                  AND NOT EXISTS (SELECT 1 FROM InvoiceItems it WHERE it.InvoiceId = i.ID AND it.RevenueCoaId IS NOT NULL)
                   AND (own.AccountNumber IN ({waiting_marks})
                        OR k.CounterCOA_ID IN ({payment_marks}))
                   AND (CASE WHEN typeof(i.MixedTaxRates) = 'integer' AND i.MixedTaxRates = 1
@@ -850,10 +861,13 @@ class InvoicesMixin:
         Lernt zuerst aus der eigenen Historie (``_learned_revenue_coa``): das zuletzt von der
         App bei einer Zahlungs-Zuordnung gebuchte Erlöskonto einer Rechnung mit gleichem
         Steuersatz (0% und §19-Sentinel -1 bilden einen gemeinsamen "steuerfrei"-Topf).
-        Fallback auf die Standardkonten: 19% → 4400, 7% → 4300, steuerfrei/§19 → 4185
+        Fallback auf die Standardkonten: 19% → 4400, 7% → 4300 (``DEFAULT_REVENUE_ACCOUNT_NUMBERS``), steuerfrei/§19 → 4185
         (DATEV: "Erlöse als Kleinunternehmer nach § 19 Abs. 1 UStG"; wird in älteren DBs ohne
         dieses Seed-Konto automatisch nachgelegt, Vorbild ensure_kasse_exists).
         tax_rate wie in Invoices.TaxRate (0.19, 19, 0 oder -1).
+
+        Das ist die Regel für einen Beleg OHNE Erlöskonto aus den Stammdaten; trägt ein Beleg eines (die Momentaufnahme eines Steuersatzes,
+        2.8.0), gilt dieses Konto, immer (``document_revenue_coa``, ``_group_revenue_coa``).
 
         Für andere Sätze (z. B. 5 %, 16 %) gibt es ohne Historie kein Konto: ``None``. Dann
         wählt der Nutzer eines (``assign_invoice_payment(revenue_coa_id=…)``); die Sätze der
@@ -867,10 +881,9 @@ class InvoicesMixin:
         learned = self._learned_revenue_coa(key)
         if learned is not None:
             return learned
-        if key == 19:
-            return self.get_coa_id_by_account_number(4400)
-        if key == 7:
-            return self.get_coa_id_by_account_number(4300)
+        default = DEFAULT_REVENUE_ACCOUNT_NUMBERS.get(key)
+        if default is not None:
+            return self.get_coa_id_by_account_number(default)
         if key == 0:
             if create:
                 return self._ensure_tax_free_revenue_coa()
@@ -969,6 +982,18 @@ class InvoicesMixin:
             'Vortrags-, Kapital-, Korrektur- u. statistische Konten')
         return open_coa, debtor_coa
 
+    def _entry_receivable_accounts(self, pct):
+        """Wie ``_receivable_accounts``, für einen Beleg mit EINEM Satz, der die Momentaufnahme eines Steuersatzes aus den Stammdaten trägt (2.8.0): ``pct`` ist
+        sein Satz als Prozentzahl (``document_entry``). Das Wartekonto gibt es nur für GENAU diesen Satz (``_group_waiting_entry``: 19 → 4405, 7 → 4345,
+        0 → 4340 – eine steuerfreie Leistung wie ein Satz von 0 %), nicht über ``_tax_rate_key``, der auf ganze Prozent rundet (7,4 → 7 nähme das Wartekonto
+        der 7 %); jeder andere Satz (5,5 % …) hat keines, der Beleg bucht keine Forderung (``None``), und jede Zahlung schreibt „Erlöskonto an Bank“. Ein Beleg
+        ohne Momentaufnahme bleibt bei ``_receivable_accounts``. Legt fehlende Konten in eigenen Verbindungen an – also vor einer Transaktion, nie darin."""
+        entry = self._group_waiting_entry(pct)
+        if entry is None:
+            return None
+        return self._ensure_standard_coa(*entry), self._ensure_standard_coa(
+            self.DEBTOR_ACCOUNT_NUMBER, 'Debitoren', 'Vortrags-, Kapital-, Korrektur- u. statistische Konten')
+
     @classmethod
     def _group_waiting_entry(cls, pct):
         """``(Kontonummer, Name)`` des Wartekontos für den Satz einer Gruppe (``tax_groups.RateGroup.pct``) – die EINE Zuordnung Satz →
@@ -981,13 +1006,39 @@ class InvoicesMixin:
             return None
         return cls.OPEN_REVENUE_ACCOUNTS.get(key) if Decimal(key) == pct else None
 
-    def _group_revenue_coa(self, pct, create=True):
-        """Das Erlöskonto (COA-ID) für den Satz einer Gruppe (``resolve_revenue_coa`` über ``tax_groups.booking_rate``: die Form, in der der Satz in
-        ``Bookings.TaxRate`` steht) – oder ``None``. Ein Satz von 0 % hat bewusst KEIN Erlöskonto, nie 4185: Das ist das Konto der Kleinunternehmer
-        (§ 19 UStG), und ob ein steuerfreier Satz in einem Beleg mit mehreren Sätzen dorthin gehört, ist nicht entschieden. ``create`` wie bei
-        ``resolve_revenue_coa``."""
+    def _group_revenue_coa(self, pct, snapshot=None, create=True):
+        """Das Erlöskonto (COA-ID) für den Satz einer Gruppe – oder ``None``.
+
+        Trägt die Gruppe die Momentaufnahme eines Steuersatzes aus den Stammdaten mit einem Erlöskonto (``snapshot``: ``invoice_payments.Snapshot`` aus
+        ``group_snapshots``, ``revenue_coa_id`` nicht ``None``), gilt dieses Konto, immer – wenn es ein Erlöskonto ist (``get_revenue_coas``: 4000–4999 ohne
+        Wartekonten), sonst ``None`` (die Zahlung lehnt dann ab, ``TAX_PAYMENT_NO_REVENUE``): Es wird kein anderes untergeschoben. Sonst – ohne
+        Momentaufnahme oder mit einer ohne Erlöskonto, den 19 und 7 % der Vorbelegung – wie bisher: ``resolve_revenue_coa`` über ``tax_groups.booking_rate`` (die
+        Form, in der der Satz in ``Bookings.TaxRate`` steht). Ein Satz von 0 % hat dort bewusst KEIN Erlöskonto, nie 4185: Das ist das Konto der
+        Kleinunternehmer (§ 19 UStG), und ob ein steuerfreier Satz in einem Beleg mit mehreren Sätzen dorthin gehört, ist nicht entschieden – er braucht den
+        Eintrag mit eigenem Erlöskonto. ``create`` wie bei ``resolve_revenue_coa``."""
+        if snapshot is not None and snapshot.revenue_coa_id is not None:
+            return snapshot.revenue_coa_id if snapshot.revenue_coa_id in {row[0] for row in self.get_revenue_coas()} else None
         rate = booking_rate(pct)
         return None if rate is None else self.resolve_revenue_coa(rate, create)
+
+    def document_revenue_coa(self, invoice_id, tax_rate, create=True):
+        """Das Erlöskonto (COA-ID) eines Belegs mit EINEM Satz für eine Zahlung oder Erstattung – oder ``None``. ``tax_rate``: ``Invoices.TaxRate``.
+
+        Trägt der Beleg die Momentaufnahme eines Steuersatzes aus den Stammdaten (``document_entry``) mit einem Erlöskonto – oder mit dem Satz 0, der nie ein
+        Standardkonto hat –, gilt das Konto der Momentaufnahme (``_group_revenue_coa``), immer, und nie ein anderes. Sonst die Regel von heute:
+        ``resolve_revenue_coa(tax_rate, create)``. ``MixedNotBookable``, wenn die Momentaufnahmen des Belegs sich widersprechen. Die Wahl des Nutzers
+        (``_chosen_revenue_coa``) ist nicht Teil davon: Sie gilt nur, wenn der Beleg keine Momentaufnahme mit Erlöskonto trägt (``_document_revenue``)."""
+        entry = self.document_entry(invoice_id, tax_rate)
+        if self._entry_binds(entry):
+            return self._group_revenue_coa(entry[0], entry[1], create)
+        return self.resolve_revenue_coa(tax_rate, create)
+
+    @staticmethod
+    def _entry_binds(entry):
+        """Entscheidet die Momentaufnahme eines Belegs mit EINEM Satz (``document_entry``: ``(Satz, Snapshot)`` oder ``None``) über sein Erlöskonto – sie trägt eines,
+        oder ihr Satz ist 0 (nie ein Standardkonto, nie 4185)? Dann gibt es weder eine Wahl des Nutzers noch einen Rückgriff auf das gelernte oder
+        hinterlegte Konto des Satzes."""
+        return entry is not None and (entry[1].revenue_coa_id is not None or entry[0] == 0)
 
     def _mixed_receivable_accounts(self, groups):
         """Die Konten für die Forderungen eines Belegs mit Steuersatz je Position – ``{'debtor': COA-ID, 'waiting': {Satz: COA-ID}}`` für seine
@@ -1016,12 +1067,17 @@ class InvoicesMixin:
         mit dem festen Klartext) – vor dem Auflösen der Konten (es wird keines angelegt). Ändern sich Kennzeichen oder Satzgruppen zwischen
         dieser Vorprüfung und der Transaktion, lehnt ``ValueError(CHANGED_MESSAGE)`` ab, bevor etwas geschrieben ist.
 
+        Ein Beleg mit EINEM Satz, der die Momentaufnahme eines Steuersatzes aus den Stammdaten trägt (2.8.0), bucht über das Wartekonto genau dieses Satzes
+        (``_entry_receivable_accounts``; ohne eines – 5,5 % – keine Forderung); ändert sich die Momentaufnahme zwischen Vorprüfung und Transaktion, lehnt
+        ebenfalls ``CHANGED_MESSAGE`` ab.
+
         Returns: Booking-ID (bei mehreren Forderungszeilen die erste) oder None.
         """
         invoice = self.get_invoice_by_id(invoice_id)
         if not invoice or (len(invoice) > 45 and invoice[45] == 'quote'):
             return None
         mixed = has_mixed_rates(invoice[InvoiceCol.MIXED_TAX_RATES])
+        entry = None
         if mixed:
             conn = self._get_connection()
             try:
@@ -1030,7 +1086,8 @@ class InvoicesMixin:
                 conn.close()
             accounts = self._mixed_receivable_accounts(groups)
         else:
-            accounts = self._receivable_accounts(invoice[35])
+            entry = self.document_entry(invoice_id, invoice[35])
+            accounts = self._receivable_accounts(invoice[35]) if entry is None else self._entry_receivable_accounts(entry[0])
         with self.transaction() as tx:
             tx.conn.execute('BEGIN IMMEDIATE')
             row = invoice_row(tx.conn, invoice_id)
@@ -1040,6 +1097,8 @@ class InvoicesMixin:
                 raise ValueError(CHANGED_MESSAGE)
             if mixed and tuple(self._checked_mixed_groups(tx.conn, invoice_id)) != tuple(groups):
                 raise ValueError(CHANGED_MESSAGE)
+            if not mixed and self._single_snapshot(tx.conn, invoice_id, row['TaxRate']) != entry:
+                raise ValueError(CHANGED_MESSAGE)           # die Momentaufnahme des Steuersatzes hat sich inzwischen geändert
             return self._book_receivable(tx, row, accounts)
 
     def _book_receivable(self, tx, row, accounts):
