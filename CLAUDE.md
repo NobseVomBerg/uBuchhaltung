@@ -858,7 +858,12 @@ kein Subagent darauf:
   GET-Formular mit den Feldern `from`/`to`, kein „Anzeigen“-Knopf). Das PDF ist A4 quer, mehrseitig
   und landet nie auf der Platte (Download über `appDownload`; Dateiname `BWA_JJJJ-MM.pdf`, mit Anteilen `…_Anteile.pdf`). `/bwa` steht in der
   Positivliste des Diagnose-MCP (es schreibt nichts in den Bestand, Nachweis im Test), `/bwa/pdf` nicht. Fester Hinweis: keine Steuerberatung.
-  `tests/test_bwa.py`, `tests/test_bwa_pdf.py`
+  **CSV (seit 2.6.8, `export/csv_bwa.py`, `GET /bwa/csv`):** dieselben Zeilen und Zellen wie die Seite (`cells`), auf Wunsch mit Konten; UTF-8 mit BOM, Semikolon,
+  Dezimalkomma ohne Tausenderpunkte, Prozentwerte ohne Zeichen; die Adresse wird streng gelesen wie beim PDF, nichts landet auf der Platte. Texte aus der
+  Datenbank gehen nur über `csv_table.text_cell` (Steuerzeichen weg, höchstens 200 Zeichen, ein `'` vor `=`, `+`, `-`, `@` – auch hinter
+  jedem Komma des Textes, falls jemand die Datei mit dem Komma als Trenner öffnet, und auch vor den breiten Schreibweisen dieser Zeichen (verglichen wird
+  die Grundform, NFKC); sonst führte eine Tabellenkalkulation einen Kontonamen als Formel aus; nicht aufweichen).
+  `tests/test_bwa.py`, `tests/test_bwa_pdf.py`, `tests/test_report_csv.py`
 - **EÜR-Ansicht (seit 2.5.16, `db/euer.py`, `server/pages_euer.py`, `export/pdf_euer.py`; `GET /euer`, `GET /euer/pdf`):** EINE Aufbereitung für den
   Kasten der EÜR im Dashboard und die Seite (`db.euer.euer_statement`: die Zeilen von `get_euer_data` nach `reporting.euer_section` in Einnahmen,
   Ausgaben und „Sonstige Ausgaben“; Summen aus Minor Units, nie als Summe von `float`; die echte und die virtuelle 3806 bleiben zwei Zeilen;
@@ -916,7 +921,10 @@ kein Subagent darauf:
   setzt die Route wie bei jeder Seite mit Zeitraum) und leitet ihren Monat daraus ab (`period.period_month`); `year` und `month` liest sie nicht mehr, einen
   Hinweis „ungültig“ gibt es nicht. Sie schreibt nichts in den Bestand; das PDF liest `year` und `month` streng (`parse_year`/`parse_month`, ein doppelter
   Schlüssel ist ungültig, 400) und setzt kein Cookie (A4 quer, mehrseitig, `Summen_und_Salden_JJJJ-MM.pdf`, landet nie auf der Platte). Texte ohne Marken- und Produktnamen; fester Hinweis: keine Steuerberatung, ohne Zusicherung der
-  Richtigkeit. **Diese Regeln nicht still ändern.** `/susa` steht in der Positivliste des Diagnose-MCP (es schreibt nichts in den Bestand, Nachweis im Test), `/susa/pdf` nicht. `tests/test_susa.py`, `tests/test_susa_pdf.py`
+  Richtigkeit. **Diese Regeln nicht still ändern.** `/susa` steht in der Positivliste des Diagnose-MCP (es schreibt nichts in den Bestand, Nachweis im Test), `/susa/pdf` nicht.
+  **CSV (seit 2.6.8, `export/csv_susa.py`, `GET /susa/csv`):** je Konto und Gruppe die sechs Werte immer als Zahl, Salden als Betrag mit eigenem Kennzeichen S/H, am Ende
+  die Gesamtsumme; Hinweise und Bankabgleich stehen nur auf Seite und PDF.
+  `tests/test_susa.py`, `tests/test_susa_pdf.py`, `tests/test_report_csv.py`
 - **Liquiditätsrechnung (seit 2.6.3, `db/liquidity.py`, `Database.get_liquidity`, `server/pages_liquidity.py`, `export/pdf_liquidity.py`; `GET /liquiditaet`, `GET /liquiditaet/pdf`):** vom Ergebnis der
   BWA zur Veränderung der flüssigen Mittel – ein Monat und aufgelaufen seit dem 1. Januar, im Vorjahresvergleich (Standard, acht Wertspalten) oder als „Monat und Jahr“ (`variant=jahr`, zwei
   Spalten, **keine Anteile**: ein Anteil an Erlösen ergäbe bei Liquidität keinen Sinn). **Sie hat keine eigene Lesart der Buchungen:** Gerechnet wird nur mit den Zeilen von `get_euer_data` (ohne Kontofilter,
@@ -1269,7 +1277,7 @@ kein Subagent darauf:
   `check_page_path`) nicht aufweichen; neue Seiten und Schlüssel nur für GET-Handler, die
   nichts schreiben (Nachweis im Test). `/backup/download` steht bewusst nicht darin: Es liefert den ganzen Datenbestand
   (Gigabyte-Größe). `/receipts/search` und `/transactions/search` stehen bewusst nicht darin: JSON-Suchen der Seiten, keine
-  Anzeigeseiten; dasselbe liefert die SQL-Abfrage. `/bwa/pdf`, `/euer/pdf`, `/susa/pdf` und `/liquiditaet/pdf` stehen nicht darin (Dokumente).
+  Anzeigeseiten; dasselbe liefert die SQL-Abfrage. `/bwa/pdf`, `/bwa/csv`, `/euer/pdf`, `/susa/pdf`, `/susa/csv` und `/liquiditaet/pdf` stehen nicht darin (Dokumente).
   Ebenso nicht: `/receipts/suggestions` (JSON-Vorschläge der Seite eines Belegs) und
   `/receipts/read` (ein POST: liest die Datei eines Belegs und schreibt die Lesung)
 - Zugangsdaten aus der Windows-Anmeldeinformationsverwaltung, keyring oder Umgebung, nie im Repo; über `http://` gehen sie nur

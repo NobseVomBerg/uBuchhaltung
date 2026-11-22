@@ -4499,6 +4499,23 @@ def handle_bwa_pdf(db: Database, query, with_accounts: bool, today: datetime.dat
         return None, None
 
 
+def handle_bwa_csv(db: Database, query, with_accounts: bool):
+    """CSV der betriebswirtschaftlichen Auswertung für den Download erzeugen. Returns (csv_bytes, filename) oder (None, None).
+
+    ``query`` ist die geprüfte Abfrage (``pages_bwa.read_pdf_query``: ``year``, ``month``, ``variant``), ``with_accounts`` fügt unter jeder Zeile ihre Konten
+    ein. Die Zahlen sind die der Seite und des PDF (``Database.get_bwa``). Der Download ist ein GET: Er liest nur und legt nichts auf der Platte ab.
+    Ein Fehler steht nur im Server-Log."""
+    from db.bwa import bwa_filename
+    from export.csv_bwa import generate_bwa_csv
+    try:
+        report = db.get_bwa(query.year, query.month, query.variant)
+        return generate_bwa_csv(report, with_accounts), bwa_filename(query.year, query.month, query.variant, 'csv')
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None, None
+
+
 def handle_euer_pdf(db: Database, query, today: datetime.date):
     """PDF der Einnahmenüberschussrechnung für den Download erzeugen. Returns (pdf_bytes, filename) oder (None, None).
 
@@ -4535,6 +4552,23 @@ def handle_susa_pdf(db: Database, query, today: datetime.date):
         company = (own[0][3] if own else '') or ''
         pdf_bytes = generate_susa_pdf(report, company, today)
         return pdf_bytes, susa_filename(query.year, query.month)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None, None
+
+
+def handle_susa_csv(db: Database, query):
+    """CSV der Summen- und Saldenliste für den Download erzeugen. Returns (csv_bytes, filename) oder (None, None).
+
+    ``query`` ist die geprüfte Abfrage (``pages_susa.read_susa_pdf_query``: ``year``, ``month``). Die Zahlen sind die der Seite und des PDF
+    (``Database.get_susa``); die Hinweise und der Abgleich mit den Bankbewegungen stehen nicht darin. Der Download ist ein GET: Er liest nur – kein
+    Steuerdatum, keine Datei auf der Platte. Ein Fehler steht nur im Server-Log."""
+    from db.susa import susa_filename
+    from export.csv_susa import generate_susa_csv
+    try:
+        report = db.get_susa(query.year, query.month)
+        return generate_susa_csv(report), susa_filename(query.year, query.month, 'csv')
     except Exception:
         import traceback
         traceback.print_exc()

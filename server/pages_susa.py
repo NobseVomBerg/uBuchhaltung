@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 unsix IT Engineering
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """
-Summen- und Saldenliste (``GET /susa``, ``GET /susa/pdf``).
+Summen- und Saldenliste (``GET /susa``, ``GET /susa/pdf``, ``GET /susa/csv``).
 
 Die Seite zeigt je Konto den Anfangssaldo, Soll und Haben im Monat und aufgelaufen seit dem 1. Januar und den Endsaldo, nach Kontenklassen
 gruppiert, darunter den Abgleich der Bankkonten mit den Bankbewegungen und die Hinweise zu den Buchungen. Gerechnet wird in ``db.susa`` und
@@ -12,8 +12,8 @@ wie bei jeder Seite mit Zeitraum).
 
 Jeder Wert aus Datenbank oder Adresse steht maskiert im HTML (``html.escape``); die Daten des Skripts gehen über ``script_json``. Die Seite nimmt
 den gemeinsamen Zeitraum (``from``/``to`` in der Adresse, sonst das Cookie, sonst das laufende Jahr – ``period.resolve_period``) und leitet ihren
-Monat daraus ab (``period.period_month``); ihre Menüzeile ist ``period_filter_widget`` mit Monatsknöpfen der Art ``always``. Das PDF liest ``year``
-und ``month`` streng (``parse_year``, ``parse_month``): ein Schlüssel, der mehrfach vorkommt, ist ungültig.
+Monat daraus ab (``period.period_month``); ihre Menüzeile ist ``period_filter_widget`` mit Monatsknöpfen der Art ``always``. Das PDF und die CSV lesen
+``year`` und ``month`` streng (``parse_year``, ``parse_month``): ein Schlüssel, der mehrfach vorkommt, ist ungültig.
 """
 import html as _html
 from dataclasses import dataclass
@@ -29,6 +29,7 @@ from .pages import Footer, Header1, Header2, Header3, script_json
 from .pages_bwa import INVALID_PERIOD_ERROR, _single, parse_month, parse_year, report_period, reports_period_row, reports_submenu
 
 SUSA_PDF_FAILED_TEXT = 'Die Summen- und Saldenliste ließ sich nicht als PDF erstellen.'
+SUSA_CSV_FAILED_TEXT = 'Die Summen- und Saldenliste ließ sich nicht als CSV erstellen.'
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,7 @@ def _esc(value) -> str:
 # Der Download: Die Adresse steht nur im Skriptblock. Nur var und function.
 SUSA_JS = '''
 function susaPdf() { appDownload(SUSA_DATA.pdf); }
+function susaCsv() { appDownload(SUSA_DATA.csv); }
 '''
 
 
@@ -138,6 +140,7 @@ def PageSusa(db: Database, query: SusaQuery, date_from: str | None = None, date_
     s += f'<p class="hint">{_esc(SUSA_HINT_TEXT)} {_esc(SALDO_TEXT)}</p>'
     s += ('<div class="rowWithObjects">'
           '<button type="button" class="coloredButton bg-blue btn-sm" onclick="susaPdf()">PDF</button>'
+          '<button type="button" class="coloredButton bg-blue btn-sm" onclick="susaCsv()">CSV</button>'
           '</div>')
     s += f'<div class="splitScroll">{_table(report)}</div>'          # in einem schmalen Fenster rollt die Tabelle in sich
     s += _bank_block(report)
@@ -146,6 +149,7 @@ def PageSusa(db: Database, query: SusaQuery, date_from: str | None = None, date_
         s += f'<p class="hint">{_esc(text)}</p>'
     s += '</div>'
     pdf_url = f'/susa/pdf?year={query.year}&month={query.month}'
-    s += f'<script>\nvar SUSA_DATA = {script_json({"pdf": pdf_url})};{SUSA_JS}</script>'
+    csv_url = f'/susa/csv?year={query.year}&month={query.month}'
+    s += f'<script>\nvar SUSA_DATA = {script_json({"pdf": pdf_url, "csv": csv_url})};{SUSA_JS}</script>'
     s += Footer()
     return s

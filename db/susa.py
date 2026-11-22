@@ -514,9 +514,9 @@ def block_headers(year: int, month: int) -> tuple[str, str]:
     return f'{name} {year}', f'Januar bis {name} {year}'
 
 
-def susa_filename(year: int, month: int) -> str:
-    """``Summen_und_Salden_2026-10.pdf``."""
-    return f'Summen_und_Salden_{year:04d}-{month:02d}.pdf'
+def susa_filename(year: int, month: int, extension: str = 'pdf') -> str:
+    """``Summen_und_Salden_2026-10.pdf``; ``extension`` ersetzt das ``pdf`` (``Summen_und_Salden_2026-10.csv``)."""
+    return f'Summen_und_Salden_{year:04d}-{month:02d}.{extension}'
 
 
 # ── Texte (Seite und PDF) ─────────────────────────────────────────────────────

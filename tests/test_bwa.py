@@ -748,7 +748,7 @@ def test_the_pdf_address_stands_only_in_the_script_block(tmp_db):
     page = PageBwa(tmp_db, BwaQuery(2026, 3, 'jahr'))
     assert '/bwa/pdf' not in re.sub(r'<script>.*?</script>', '', page, flags=re.S)
     data = re.search(r'var BWA_DATA = (.*?);\n', Dom(page).scripts[1], re.S).group(1)
-    assert json.loads(data) == {'pdf': '/bwa/pdf?year=2026&month=3&variant=jahr'}
+    assert json.loads(data) == {'pdf': '/bwa/pdf?year=2026&month=3&variant=jahr', 'csv': '/bwa/csv?year=2026&month=3&variant=jahr'}       # seit 2.6.8 auch die CSV
 
 
 HOSTILE = '<script>alert(1)</script>"x'

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 unsix IT Engineering
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """
-Betriebswirtschaftliche Auswertung (``GET /bwa``, ``GET /bwa/pdf``).
+Betriebswirtschaftliche Auswertung (``GET /bwa``, ``GET /bwa/pdf``, ``GET /bwa/csv``).
 
 Die Seite zeigt einen Monat und – aufgelaufen – die Zeit seit dem 1. Januar, wahlweise mit Anteilen oder im Vergleich mit dem
 Vorjahr; unter jeder Zeile lassen sich ihre Konten aufklappen. Gerechnet wird in ``db.bwa`` (eine Umgruppierung der EÜR), hier
@@ -12,7 +12,7 @@ des gemeinsamen Zeitraums setzt die Route wie bei jeder Seite mit Zeitraum).
 Jeder Wert aus Datenbank oder Adresse steht maskiert im HTML (``html.escape``); die Daten des Skripts gehen über ``script_json``.
 Die Seite nimmt den gemeinsamen Zeitraum (``from``/``to`` in der Adresse, sonst das Cookie, sonst das laufende Jahr – ``period.resolve_period``)
 und leitet ihren Monat daraus ab (``period.period_month``); ihre Menüzeile ist ``period_filter_widget`` mit Monatsknöpfen der Art
-``always``. Nur die Darstellung (``variant``) liest ``read_variant`` aus der Adresse. Das PDF liest ``year``, ``month`` und ``variant`` streng
+``always``. Nur die Darstellung (``variant``) liest ``read_variant`` aus der Adresse. Das PDF und die CSV lesen ``year``, ``month`` und ``variant`` streng
 (``parse_year``, ``parse_month``, ``parse_variant``, ``read_pdf_query``): ein Schlüssel, der mehrfach vorkommt, ist ungültig.
 
 Das Untermenü der Auswertungen (``REPORT_PAGES``, ``reports_submenu``) steht hier und gilt für jede Seite darunter (BWA, EÜR, Summen- und
@@ -34,6 +34,7 @@ MIN_YEAR, MAX_YEAR = 1900, 2999
 INVALID_PERIOD_ERROR = 'Ungültiger Zeitraum.'
 INVALID_VARIANT_ERROR = 'Ungültige Darstellung.'
 PDF_FAILED_TEXT = 'Die Auswertung ließ sich nicht als PDF erstellen.'
+BWA_CSV_FAILED_TEXT = 'Die Auswertung ließ sich nicht als CSV erstellen.'
 
 # Die Seiten unter „Auswertungen“ (Schlüssel, Adresse, Bezeichnung im Untermenü); jede ruft Header1('bwa') auf, damit der Menüpunkt markiert bleibt
 REPORT_PAGES = (('bwa', '/bwa', 'BWA'), ('euer', '/euer', 'EÜR'), ('susa', '/susa', 'Summen- und Saldenliste'),
@@ -151,6 +152,10 @@ function bwaPdf() {
   var box = document.getElementById('bwaAccounts');
   appDownload(BWA_DATA.pdf + '&accounts=' + (box && box.checked ? '1' : '0'));
 }
+function bwaCsv() {
+  var box = document.getElementById('bwaAccounts');
+  appDownload(BWA_DATA.csv + '&accounts=' + (box && box.checked ? '1' : '0'));
+}
 function bwaSetGroup(key, open) {
   var rows = document.querySelectorAll('tr[data-bwa-parent="' + key + '"]');
   for (var i = 0; i < rows.length; i++) { rows[i].hidden = !open; }
@@ -227,6 +232,7 @@ def PageBwa(db: Database, query: BwaQuery, date_from: str | None = None, date_to
         s += f'<p class="hint">{_esc(UNASSIGNED_TEXT)}</p>'
     s += ('<div class="rowWithObjects">'
           '<button type="button" class="coloredButton bg-blue btn-sm" onclick="bwaPdf()">PDF</button>'
+          '<button type="button" class="coloredButton bg-blue btn-sm" onclick="bwaCsv()">CSV</button>'
           '<label><input type="checkbox" id="bwaAccounts" checked> mit Kontennachweis</label>'
           '<button type="button" class="coloredButton bg-gray btn-sm" onclick="bwaToggleAll()">Alle Konten auf-/zuklappen</button>'
           + variant_form('/bwa', date_from, date_to, query.variant, VARIANT_LABELS) +
@@ -234,6 +240,7 @@ def PageBwa(db: Database, query: BwaQuery, date_from: str | None = None, date_to
     s += f'<div class="splitScroll">{_table(report)}</div>'          # in einem schmalen Fenster rollt die Tabelle in sich
     s += '</div>'
     pdf_url = f'/bwa/pdf?year={query.year}&month={query.month}&variant={query.variant}'
-    s += f'<script>\nvar BWA_DATA = {script_json({"pdf": pdf_url})};{BWA_JS}</script>'
+    csv_url = f'/bwa/csv?year={query.year}&month={query.month}&variant={query.variant}'
+    s += f'<script>\nvar BWA_DATA = {script_json({"pdf": pdf_url, "csv": csv_url})};{BWA_JS}</script>'
     s += Footer()
     return s
