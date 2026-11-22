@@ -1285,12 +1285,15 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
         return None, ''
 
     def _fmt_rate(r):
-        """TaxRate (0.19) → '19%'; None/'' → ''."""
+        """TaxRate (0.19) → '19%', (0.055) → '5,5%' (ganze Prozent ohne Nachkommastellen, sonst bis zu zwei mit Komma); None/'' → ''."""
         if r is None or r == '':
             return ''
         try:
-            return f"{round(float(r) * 100)}%"
-        except (ValueError, TypeError):
+            pct = round(float(r) * 100, 2)
+            if pct == int(pct):
+                return f"{int(pct)}%"
+            return f"{pct:.2f}".rstrip('0').replace('.', ',') + '%'
+        except (ValueError, TypeError, OverflowError):
             return ''
 
 

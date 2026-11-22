@@ -85,7 +85,7 @@ Kontenrahmens an (`Database.add_missing_standard_accounts`) – nie der Start:
 
 | Tabelle | Quelle | Einträge |
 |---------|--------|----------|
-| ChartOfAccounts | `seed_data/chart_of_accounts_skr04.json` + optional `seed_data/private/` | 88 Standard + eigene |
+| ChartOfAccounts | `seed_data/chart_of_accounts_skr04.json` + optional `seed_data/private/` | 93 Standard + eigene |
 | AssetCategories | `seed_data/asset_categories.json` | 30 BMF-Kategorien |
 | TaxKeys | `seed_data/tax_keys.json` | 53 DATEV-BU-Schlüssel |
 
