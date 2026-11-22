@@ -34,8 +34,8 @@ import server.handlers as handlers
 from db.invoice_lock import LOCKED_MESSAGE, invoice_row
 from db.invoice_storno import InvoiceStornoMixin
 from money import to_minor
-from server.handlers import (TAX_ITEM_DIFFERS, TAX_ITEM_MISSING, TAX_ITEM_NOT_ALLOWED, TAX_MODE_INVALID,
-                             TAX_PER_ITEM_WITHOUT_TAX)
+from server.handlers import (TAX_ITEM_DIFFERS, TAX_ITEM_INVALID, TAX_ITEM_MISSING, TAX_ITEM_NOT_ALLOWED, TAX_MODE_INVALID,
+                             TAX_PER_ITEM_WITHOUT_TAX, TAX_RATE_INVALID)
 from tax_groups import MIXED_TAX_RATES
 from tests.invoice_world import (ITEMS, build_world, columns, force_status, make_invoice, make_payload, query_rows, save,
                                  save_raw, snapshot)
@@ -138,7 +138,7 @@ def test_the_rate_of_a_position_is_stored_as_the_form_sends_it(world):
 
 
 def test_a_rate_written_as_a_fraction_counts_as_the_same_rate(world):
-    """0,19 und 19 sind derselbe Satz (``tax_groups.rate_pct``); gespeichert wird, was kam."""
+    """0,19 und 19 sind derselbe Satz (``handlers._exact_rate``); gespeichert wird, was kam."""
     answer = save(mixed(world, [item(1, 'Beratung', 100.0, 0.19), item(2, 'Fachbuch', 50.0, 7)]))
 
     stored = head(world.db, answer['invoice_id'])
@@ -284,8 +284,9 @@ def test_a_mixed_form_without_the_key_is_refused_too_and_the_head_does_not_fill_
     assert text == 'Position 1: Bitte einen Steuersatz wählen.' and snapshot(world.db) == before
 
 
-@pytest.mark.parametrize('rate, shown', [(5, '5'), (16, '16'), (0, '0'), (10, '10'), (5.5, '5.5'), (20, '20'), (100, '100'), (1, '1'),
-                                         (0.5, '50'), (12.34, '12.34'), (19.5, '19.5'), (7.01, '7.01'), (1000000, '1000000')])
+@pytest.mark.parametrize('rate, shown', [(5, '5'), (16, '16'), (0, '0'), (10, '10'), (5.5, '5,5'), (20, '20'), (100, '100'), (1, '1'),
+                                         (0.5, '50'), (12.34, '12,34'), (19.5, '19,5'), (7.01, '7,01'), (1000000, '1000000'),
+                                         (18.995, '18,995'), (19.004, '19,004'), (7.004, '7,004'), (6.995, '6,995')])
 def test_a_rate_outside_the_allowed_ones_is_refused_with_its_name(world, rate, shown):
     """Der Satz steht in der Meldung, wie die Seite Prozentzahlen zeigt – ohne Exponent (``Decimal('10').normalize()`` ist ``1E+1``)."""
     before = snapshot(world.db)
@@ -309,7 +310,7 @@ def test_a_rate_that_is_no_number_is_refused_without_the_text_of_the_exception(w
 
     text, _status = refused(mixed(world, [item(1, 'Beratung', 100.0, 19), item(2, 'Fachbuch', 50.0, 'sieben')]))
 
-    assert text.startswith('Speichern fehlgeschlagen: ') and text.endswith('es wurde nichts gespeichert.')
+    assert text == 'Position 2: Ungültiger Steuersatz.'                # ein fester Satz, nie der Wert und nie der Text der Ausnahme
     for leak in ('Decimal', 'InvalidOperation', 'Traceback', 'sieben'):
         assert leak not in text
     assert snapshot(world.db) == before
@@ -608,3 +609,85 @@ def test_the_credit_note_and_the_replacement_of_an_invoice_with_one_rate_carry_n
 
     assert head(world.db, storno.storno_id)['MixedTaxRates'] is None
     assert head(world.db, reissue.invoice_id)['MixedTaxRates'] is None
+
+
+# ── Verglichen wird der Satz, mit dem gerechnet wird ─────────────────────────
+
+RATE_INVALID = 'Ungültiger Steuersatz – bitte 0 oder einen Satz von 1 bis 100 Prozent angeben.'
+
+
+def test_a_rate_that_only_rounds_to_an_allowed_one_is_not_that_rate(world):
+    """Der Fehlfall: 18,995 und 19,004 runden auf 19. Wer gerundet vergleicht, führt den Beleg unter 19 %, rechnet aber mit dem
+    Wert, der dasteht – bei 1 000 000,00 € netto 50,00 € Steuer daneben, und E-Rechnung und Buchungen passen nicht zum Kopf."""
+    before = snapshot(world.db)
+
+    alone, _ = refused(mixed(world, [item(1, 'Beratung', 1000000.0, 18.995)]))
+    beside, _ = refused(mixed(world, [item(1, 'Beratung', 1000000.0, 19.004), item(2, 'Fachbuch', 1000000.0, 7)]))
+
+    assert alone == TAX_ITEM_NOT_ALLOWED.format(n=1, rate='18,995')
+    assert beside == TAX_ITEM_NOT_ALLOWED.format(n=1, rate='19,004') and snapshot(world.db) == before
+
+
+def test_without_the_mode_the_positions_carry_exactly_one_rate(world):
+    """Ohne Häkchen: 19 und 19,004 sind zwei Sätze – der Beleg trüge sonst ohne Kennzeichen zwei Satzgruppen."""
+    before = snapshot(world.db)
+
+    text, _ = refused(make_payload(world, items=[item(1, 'Beratung', 1000000.0, 19), item(2, 'Fachbuch', 1000000.0, 19.004)]))
+
+    assert text == TAX_ITEM_DIFFERS.format(n=2) and snapshot(world.db) == before
+
+
+@pytest.mark.parametrize('head_rate, rate', [(0.19, 19), (0.07, 7), (7 / 100, 7), (4.35 / 100, 4.35), (0.06975, 6.975), (0, 0),
+                                             (1, 100), (0.01, 1), (19, 19), (0.19, 0.19), (0.055, 5.5), (18.905 / 100, 18.905)])
+def test_what_the_mask_sends_for_one_rate_is_taken_as_it_is(world, head_rate, rate):
+    """Die Maske schickt den Kopf als Bruch (im Browser durch 100 geteilt – auch mit dem Rauschen einer Kommazahl) und je Position
+    die Prozentzahl; gespeichert wird beides, wie es kam. 100 % kommt als Kopf 1."""
+    answer = save(make_payload(world, taxRate=head_rate, items=[item(1, 'Beratung', 100.0, rate), item(2, 'Fachbuch', 50.0, rate)]))
+
+    stored = head(world.db, answer['invoice_id'])
+    assert (stored['TaxRate'], stored['MixedTaxRates']) == (float(head_rate), None)
+    assert [r['TaxRate'] for r in stored_items(world.db, answer['invoice_id'])] == [float(rate), float(rate)]
+
+
+@pytest.mark.parametrize('head_rate, rate, message', [
+    (-1, -1, RATE_INVALID),                       # der Platzhalter „ohne Steuerausweis“ kommt nie vom Formular
+    (-0.19, 19, RATE_INVALID),
+    (150, 150, RATE_INVALID), (1.01, 101, 'Position 1: Der Steuersatz weicht vom Steuersatz des Belegs ab.'),
+    (None, 19, RATE_INVALID), ('', 19, RATE_INVALID), ('abc', 19, RATE_INVALID), ([0.19], 19, RATE_INVALID), (True, 19, RATE_INVALID),
+    (0.005, 0.5, RATE_INVALID),                   # zwischen 0 und 1 Prozent: die Position hieße 50 %, der Kopf 0,5 %
+    (1, 1, 'Position 1: Der Steuersatz weicht vom Steuersatz des Belegs ab.'),          # Kopf 1 heißt 100 %, die Position 1 %
+    (0.19, 7, 'Position 1: Der Steuersatz weicht vom Steuersatz des Belegs ab.'),
+    (0.19, 19.004, 'Position 1: Der Steuersatz weicht vom Steuersatz des Belegs ab.'),
+    (0.19, 'abc', 'Position 1: Ungültiger Steuersatz.'), (0.19, [19], 'Position 1: Ungültiger Steuersatz.'),
+    (0.19, True, 'Position 1: Ungültiger Steuersatz.'), (0.19, '19,0', 'Position 1: Ungültiger Steuersatz.'),
+])
+def test_a_head_or_position_rate_that_is_no_rate_is_refused_and_nothing_is_stored(world, head_rate, rate, message):
+    before = snapshot(world.db)
+
+    text, status = refused(make_payload(world, taxRate=head_rate, items=[item(1, 'Beratung', 100.0, rate),
+                                                                         item(2, 'Fachbuch', 50.0, rate)]))
+
+    assert text == message and status == 200 and snapshot(world.db) == before
+    assert RATE_INVALID == TAX_RATE_INVALID and TAX_ITEM_INVALID.format(n=1) == 'Position 1: Ungültiger Steuersatz.'
+
+
+@pytest.mark.parametrize('literal', ['NaN', 'Infinity', '-Infinity', '1e999'])
+def test_a_rate_that_is_not_a_finite_number_is_refused_in_both_places(world, literal):
+    """``json.loads`` liest ``NaN`` und ``Infinity``; ``1e999`` wird zu unendlich. Keines davon ist ein Satz – weder im Kopf noch an
+    einer Position, mit und ohne Häkchen –, und keine Antwort trägt einen Ausnahmetext."""
+    before = snapshot(world.db)
+    value = json.loads(literal)
+
+    in_head, _ = refused(make_payload(world, taxRate=value, items=[item(1, 'Beratung', 100.0, 19)]))
+    in_item, _ = refused(make_payload(world, items=[item(1, 'Beratung', 100.0, value)]))
+    in_mixed, _ = refused(mixed(world, [item(1, 'Beratung', 100.0, 19), item(2, 'Fachbuch', 50.0, value)]))
+
+    assert (in_head, in_item, in_mixed) == (RATE_INVALID, 'Position 1: Ungültiger Steuersatz.', 'Position 2: Ungültiger Steuersatz.')
+    assert snapshot(world.db) == before
+
+
+def test_with_the_mode_the_head_rate_of_the_form_does_not_matter(world):
+    """Mit Häkchen leitet der Server den Kopf ab – was das Formular dort schickt, wird nicht gelesen."""
+    answer = save(mixed(world, [item(1, 'Beratung', 100.0, 19), item(2, 'Fachbuch', 50.0, 7)], taxRate='abc'))
+
+    assert head(world.db, answer['invoice_id']) == {'TaxRate': 0.19, 'MixedTaxRates': 1, **minor('150.00', '22.50', '172.50')}

@@ -1650,11 +1650,13 @@ kein Subagent darauf:
   `db/invoice_payments.py`, dem untersten der Rechnungsmodule, `db.invoices` reicht sie weiter). Geschrieben wird nur NULL oder 1 (`insert_invoice`, sonst
   `ValueError`). **Der Satz im Kopf (`Invoices.TaxRate`) ist bei `MixedTaxRates = 1` nur ein Platzhalter: der höchste Satz der Positionen als Bruch (0,19)** – nie
   negativ, die Prüfungen auf § 19 (`TaxRate` < 0) bleiben richtig; was rechnet oder bucht, nimmt die Satzgruppen (`tax_groups.rate_groups`), nie den Kopfsatz für den
-  ganzen Beleg. **Speichern prüft EINE Funktion für beide Wege** (`handlers._tax_fields`; die Sätze werden nur zum Vergleichen normalisiert – `tax_groups.rate_pct` – und
-  gespeichert, wie das Formular sie schickt): `taxMode` fehlt oder ist leer (das Formular ohne Häkchen „Steuersatz je Position“) oder ist `'mixed'`, jeder andere Wert ist
+  ganzen Beleg. **Speichern prüft EINE Funktion für beide Wege** (`handlers._tax_fields`; **verglichen wird der Satz, mit dem gerechnet wird** – `_exact_rate`, ungerundet: 19,004 ist nicht 19, ein gerundeter Vergleich ließe Summen
+  entstehen, die nicht zum geführten Satz passen –, gespeichert wird, wie das Formular ihn schickt): `taxMode` fehlt oder ist leer (das Formular ohne Häkchen „Steuersatz je Position“) oder ist `'mixed'`, jeder andere Wert ist
   ungültig; dann drei Regeln in dieser Reihenfolge – (1) ohne Steuerausweis (`showTax` falsch) wird `'mixed'` abgelehnt, sonst ist der Kopf −1 und jede Position bekommt den Satz 0;
-  (2) mit Steuerausweis ohne `taxMode` wird abgelehnt, wenn der Satz einer Position vom Kopf abweicht – für das Formular von heute ändert sich in der Datenbank nichts;
-  (3) mit `'mixed'` braucht jede Position einen Satz aus `tax_groups.MIXED_TAX_RATES` (19 und 7 % – die EINE Stelle der erlaubten Sätze; kein Code nimmt „zwei Sätze“ oder „19 und 7“
+  (2) mit Steuerausweis ohne `taxMode` ist der Kopf eine Zahl von 0 bis 100 Prozent (nie negativ: −1 ist der Platzhalter von Regel 1), alle Positionen tragen GENAU denselben Satz, und er ist
+  der des Kopfs (bis auf das Rauschen der Kommazahl – die Maske schickt den Kopf als Bruch, 100 % als 1); ein Satz zwischen 0 und 1 Prozent lässt sich nicht eindeutig lesen und wird abgelehnt
+  (2.6.x rechnete dort still mit dem Hundertfachen) – für jeden anderen Satz des Formulars von heute ändert sich in der Datenbank nichts;
+  (3) mit `'mixed'` braucht jede Position GENAU einen Satz aus `tax_groups.MIXED_TAX_RATES` (19 und 7 % – die EINE Stelle der erlaubten Sätze; kein Code nimmt „zwei Sätze“ oder „19 und 7“
   fest an): alle gleich ist ein gewöhnlicher Beleg (Kopf = dieser Satz, Kennzeichen NULL), sonst ist der Kopf der höchste Satz und das Kennzeichen 1. Jede Ablehnung hat einen festen Klartext
   (`TAX_*` in `handlers.py`) und kommt vor dem ersten Schreiben (nichts gespeichert, keine Nummer verbraucht). Eine versendete Rechnung schickt keine Positionen; der Satz einer Position
   ist gesperrt (`_items_differ`), das Kennzeichen ein abgeleitetes, nie für sich verglichenes Feld (`invoice_lock.FIELDS`). Angebot → Rechnung (`convert_quote_to_invoice`),
