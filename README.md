@@ -24,14 +24,14 @@ documentation are in German.
 <details>
 <summary><b>Weitere Screenshots</b> (Auswertungen, Buchungen, Rechnungen, Anlagen, Fahrtenbuch, Arbeitszeiten)</summary>
 
-**Betriebswirtschaftliche Auswertung** – ein Monat und das laufende Jahr im Vergleich mit dem Vorjahr, auch als PDF
+**Betriebswirtschaftliche Auswertung** – ein Monat und das laufende Jahr im Vergleich mit dem Vorjahr, auch als PDF und CSV
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/bwa-dark.png">
   <img alt="Betriebswirtschaftliche Auswertung" src="docs/screenshots/bwa.png">
 </picture>
 
-**Summen- und Saldenliste** – je Konto Anfangssaldo, Soll, Haben und Endsaldo, auch als PDF
+**Summen- und Saldenliste** – je Konto Anfangssaldo, Soll, Haben und Endsaldo, auch als PDF und CSV
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/susa-dark.png">
@@ -126,7 +126,7 @@ Anmeldung). Vorher eine Datensicherung anlegen – Ablauf und Rückweg unter
 | **Buchen** | Bankbewegungen und Buchungssätze, Split-Buchungen, Kontierungs-Vorschlag aus der Historie, Belege verknüpfen |
 | **Belege** | Dateien hochladen, ansehen und mit Buchungen verknüpfen. Die App liest Belege aus (nach dem Hochladen gleich, vorhandene auf Knopfdruck): E-Rechnungen (XRechnung, ZUGFeRD) strukturiert, PDFs mit Textebene über feste Regeln. Die gelesenen Werte stehen mit ihrer Herkunft am Beleg, dazu Vorschläge für die passende Bankbewegung – verknüpft wird erst auf Klick. Keine Texterkennung für Scans und Fotos; die Regeln lesen nicht jede Rechnung, gelesene Werte sind zu prüfen |
 | **Kontenrahmen** | SKR04 vorbelegt, eigene Konten (auch weiterer Rahmen wie SKR03) anlegbar, DATEV-Steuerschlüssel |
-| **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR, auch als eigene Seite und PDF), monatliche betriebswirtschaftliche Auswertung, Summen- und Saldenliste und Liquiditätsrechnung (je Seite und PDF) |
+| **Auswertung** | Dashboard mit Monatsverlauf, Einnahmen-Überschuss-Rechnung (EÜR, auch als eigene Seite und PDF), monatliche betriebswirtschaftliche Auswertung, Summen- und Saldenliste und Liquiditätsrechnung (je Seite und PDF; die beiden ersten auch als CSV für eine Tabellenkalkulation) |
 | **Rechnungen & Angebote** | PDF als hybride E-Rechnung (ZUGFeRD/Factur-X, EN 16931) und XRechnung, E-Mail-Versand, Nummernkreise, Stornorechnung als eigener Beleg (auf Wunsch mit Entwurf der neuen Rechnung), offene Posten, Mahnwesen, Kleinunternehmerregelung (der Hinweis auf § 19 UStG steht automatisch im Dokument) |
 | **Anlagen** | Anlagenverzeichnis mit AfA (linear, degressiv, GWG) |
 | **Import & Export** | Kontoauszüge im Bankformat CAMT.053 (XML oder ZIP, jede Bank), als PDF (DKB, Volksbank Rottweil) oder als CSV (Umsatzliste der DKB) – bei einem gemischt genutzten Konto lassen sich einzelne Umsätze auswählen, [Datenübernahme aus WISO Mein Büro](#datenübernahme-aus-wiso-mein-büro), DATEV-Buchungsstapel |
@@ -404,13 +404,13 @@ Unter dem Menüpunkt „Auswertungen“ stehen vier Seiten (Untermenü), jede au
 Alle vier nehmen den Zeitraum, den auch die anderen Seiten benutzen, und wählen ihn in der dritten Menüzeile (Von/Bis, die letzten fünf Jahre, die Monate). Die Monatsauswertungen (BWA, Summen- und Saldenliste, Liquidität) zeigen darin einen Monat: bei einem einzelnen Monat diesen, sonst den Monat des Bis-Datums – bei einem ganzen Jahr also den Dezember, im laufenden Jahr den laufenden Monat.
 - **Betriebswirtschaftliche Auswertung** (`/bwa`): Ein Monat und – aufgelaufen – die Zeit seit dem 1. Januar, im Vergleich mit dem Vorjahr (Standard) oder
   mit Anteilen an Erlösen, Kosten und Betriebseinnahmen; unter jeder Zeile lassen sich die Konten aufklappen; als PDF (A4 quer, auf Wunsch mit
-  Kontennachweis). Übernimmt die Zahlen der EÜR unverändert und ordnet die Konten nach ihren SKR04-Nummern in Gruppen; ein Konto ohne Gruppe steht
+  Kontennachweis) und als CSV (UTF-8, Semikolon, Dezimalkomma – eine Tabellenkalkulation mit deutscher Einstellung öffnet sie direkt). Übernimmt die Zahlen der EÜR unverändert und ordnet die Konten nach ihren SKR04-Nummern in Gruppen; ein Konto ohne Gruppe steht
   unter „Nicht zugeordnet“
 - **Einnahmenüberschussrechnung** (`/euer`): ein frei gewählter Zeitraum (von – bis, auch über mehrere Monate); dieselben Zahlen wie der Kasten im
   Dashboard – Betriebseinnahmen, Betriebsausgaben, Ergebnis und „Sonstige Ausgaben“, die angezeigt werden, aber nicht im Ergebnis zählen –, aber ohne
   Kontofilter; als PDF (A4 hoch, mehrseitig). Kein amtliches Formular
 - **Summen- und Saldenliste** (`/susa`): je Konto Anfangssaldo, Soll und Haben im Monat und aufgelaufen seit dem 1. Januar und Endsaldo (Salden mit S oder H),
-  nach Kontenklassen gruppiert; als PDF (A4 quer, mehrseitig). Gerechnet aus denselben Buchungssätzen und mit derselben Lesart (Form, Soll und Haben) wie
+  nach Kontenklassen gruppiert; als PDF (A4 quer, mehrseitig) und als CSV (jeder Wert als Zahl, Salden mit eigener Spalte für S oder H). Gerechnet aus denselben Buchungssätzen und mit derselben Lesart (Form, Soll und Haben) wie
   der Export für das Steuerbüro; die Steuer steht auf den Steuerkonten 1401/1406 und 3801/3806. Bestandskonten tragen ihren Saldo ins Jahr vor, Erfolgskonten
   beginnen bei null (ihre Summe aus den Vorjahren steht als „Ergebnis der Vorjahre (rechnerisch)“ beim Eigenkapital); „Nicht kontiert“ nimmt die Gegenseite
   von Bankbewegungen ohne Buchungssatz und von Sätzen ohne Konto auf, so geht die Liste auf. Die Seite gleicht jedes Bankkonto mit seinen Bankbewegungen ab und
@@ -668,6 +668,9 @@ uBuchhaltung/
 │   ├── pdf_susa.py            #   PDF der Summen- und Saldenliste (A4 quer)
 │   ├── pdf_liquidity.py       #   PDF der Liquiditätsrechnung (A4 quer)
 │   ├── pdf_table.py           #   gemeinsame Bausteine der Tabellen-PDFs (Zelle, Linie, Kürzen, Umbruch, Seitenverteilung)
+│   ├── csv_table.py           #   gemeinsame Bausteine der CSV-Downloads (BOM, Semikolon, Dezimalkomma, Schutz vor Formeln)
+│   ├── csv_bwa.py             #   CSV der betriebswirtschaftlichen Auswertung
+│   ├── csv_susa.py            #   CSV der Summen- und Saldenliste
 │   ├── invoice_files.py       #   Ablage und Dateinamen der Rechnungs- und Angebotsdokumente
 │   ├── einvoice_model.py      #   neutrales E-Rechnungsmodell (EN 16931)
 │   ├── xrechnung_invoice.py   #   XRechnung XML (UBL)
@@ -766,9 +769,9 @@ uBuchhaltung/
 | `server/app.py` | Routing, Auth-Gate, CSRF, statische Dateien |
 | `server/pages.py` | Gemeinsame HTML (Header, Nav, Footer, CSRF-JS) |
 | `server/pages_dashboard.py` | Dashboard + EÜR |
-| `server/pages_bwa.py` | Betriebswirtschaftliche Auswertung (Seite; Gruppen und Berechnung in `db/bwa.py`, PDF in `export/pdf_bwa.py`) |
+| `server/pages_bwa.py` | Betriebswirtschaftliche Auswertung (Seite; Gruppen und Berechnung in `db/bwa.py`, PDF in `export/pdf_bwa.py`, CSV in `export/csv_bwa.py`) |
 | `server/pages_euer.py` | Einnahmenüberschussrechnung (Seite; Aufbereitung in `db/euer.py`, auch für den Kasten im Dashboard; PDF in `export/pdf_euer.py`) |
-| `server/pages_susa.py` | Summen- und Saldenliste (Seite; Regeln in `db/susa.py`, Berechnung in `Database.get_susa`; PDF in `export/pdf_susa.py`) |
+| `server/pages_susa.py` | Summen- und Saldenliste (Seite; Regeln in `db/susa.py`, Berechnung in `Database.get_susa`; PDF in `export/pdf_susa.py`, CSV in `export/csv_susa.py`) |
 | `server/pages_liquidity.py` | Liquiditätsrechnung (Seite; Aufbau in `db/liquidity.py`, Berechnung in `Database.get_liquidity`; PDF in `export/pdf_liquidity.py`) |
 | `server/pages_invoice.py` / `pages_quote.py` | Rechnungen / Angebote |
 | `server/pages_transactions.py` | Buchungen (Bank+Entry merged) |

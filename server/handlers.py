@@ -46,7 +46,8 @@ from db.invoice_repair import REBUILD_WARNING
 from db.numbering import NumberRangeError, number_format_error
 from db.matching import FORM_LIQUID_FIRST, FORM_TRANSFER, is_bank_effective, is_mirror_row, purpose_in_counter, read_entry_form
 from db.accounts import DEFAULT_CASH_ACCOUNT
-from money import to_minor, from_minor, multiply, tax_from_net, tax_from_gross, round_minor, fmt_eur
+from money import to_minor, from_minor, multiply, tax_from_gross, round_minor, fmt_eur
+from tax_groups import rate_groups
 from decimal import Decimal
 
 try:
@@ -1511,6 +1512,10 @@ MAX_LOGO_BYTES = 5 * 1024 * 1024
 LOGO_TYPE_ERROR = 'Nur Bilddateien (PNG, JPG, GIF, WEBP) sind als Logo erlaubt.'
 LOGO_SIZE_ERROR = f'Das Logo ist zu groß (höchstens {MAX_LOGO_BYTES // (1024 * 1024)} MB).'
 
+#: Im Demo-Modus nimmt die App keine Datei eines Besuchers an (alle teilen ein Verzeichnis): ``POST /masterdata/contacts/upload-logo``
+#: ist dort 403, bevor der Body gelesen wird; das Kontaktformular zeigt den Satz statt der Dateiauswahl
+LOGO_DEMO_REFUSED = 'Im Demo-Modus ist das Hochladen von Logos abgeschaltet.'
+
 
 def _logo_refusal(message, request_handler=None):
     """Ablehnung des Logo-Uploads als JSON. Mit ``request_handler`` wurde der Body NICHT gelesen: Die
@@ -1578,17 +1583,27 @@ def handle_logo_upload(request_handler):
 #: (nie der Text der Ausnahme – Fehlertexte der Importer können Pfade der Datei nennen).
 WISO_IMPORT_FAILED = 'Der Import ist fehlgeschlagen – Einzelheiten stehen im Server-Log.'
 
+#: Im Demo-Modus gibt es den Import der Textexporte nicht (wie den der WISO-Datenbank: keine Datei eines Besuchers auf dem Server):
+#: ``POST /wiso/import`` ist dort 403, bevor der Body gelesen wird; *Sonstiges* zeigt den Satz statt des Formulars
+WISO_TEXT_DEMO_REFUSED = 'Im Demo-Modus ist der Import aus Textexporten abgeschaltet.'
+
 
 def handle_wiso_import(request_handler, db: Database):
     """WISO Mein Büro CSV-Datei importieren (Multipart-Upload).
 
     Erwartet eine Datei im Formularfeld „csvfile" (enctype=multipart/form-data).
 
+    Im Demo-Modus wird vor allem anderen nichts gelesen und nichts importiert (``WISO_TEXT_DEMO_REFUSED``); die Route lehnt dort
+    schon vor diesem Aufruf mit 403 ab – das hier ist die zweite Schicht.
+
     Returns:
         (303, location_str) – immer ein Redirect zu /miscellaneous
     """
     from urllib.parse import quote
     from .multipart import parse_multipart
+
+    if demo.is_active():
+        return 303, '/miscellaneous?wiso_import=error&msg=' + quote(WISO_TEXT_DEMO_REFUSED, safe='')
 
     content_type = request_handler.headers.get('Content-Type', '')
     if 'multipart/form-data' not in content_type:
@@ -3245,7 +3260,7 @@ def recompute_invoice_totals(items, default_rate_pct):
     Den vom Client gelieferten Summen wird NICHT vertraut – sie werden hier aus
     Menge x Einzelpreis je Position neu berechnet (kaufmaennische Rundung auf
     Cent, exakte Integer-Addition in Minor Units). Die Steuer wird je
-    Steuersatz-Gruppe gerundet.
+    Steuersatz-Gruppe gerundet (``tax_groups.rate_groups``).
 
     Args:
         items: Liste der Positions-Dicts (quantity, unitPrice, taxRate).
@@ -3258,19 +3273,17 @@ def recompute_invoice_totals(items, default_rate_pct):
         (gleiche Reihenfolge wie items).
     """
     line_net_minors = []
-    net_by_rate = {}                      # Decimal(rate_pct) -> Netto-Summe (Minor)
+    taxed_lines = []                      # je Position: (Satz in Prozent, Netto in Minor)
     for item in items:
         qty = item.get('quantity')
         qty = 1 if qty in (None, '') else qty
         price_minor = to_minor(item.get('unitPrice') or 0)
         line_net = round_minor(multiply(price_minor, qty), 2)
         line_net_minors.append(line_net)
-        rate = _rate_to_pct(item.get('taxRate'), default_rate_pct)
-        net_by_rate[rate] = net_by_rate.get(rate, 0) + line_net
+        taxed_lines.append((_rate_to_pct(item.get('taxRate'), default_rate_pct), line_net))
 
     sum_net_minor = sum(line_net_minors)
-    tax_minor = sum(round_minor(tax_from_net(net, rate), 2)
-                    for rate, net in net_by_rate.items())
+    tax_minor = sum(group.tax for group in rate_groups(taxed_lines))
     gross_minor = sum_net_minor + tax_minor
 
     return (from_minor(sum_net_minor), from_minor(tax_minor),
@@ -4499,6 +4512,23 @@ def handle_bwa_pdf(db: Database, query, with_accounts: bool, today: datetime.dat
         return None, None
 
 
+def handle_bwa_csv(db: Database, query, with_accounts: bool):
+    """CSV der betriebswirtschaftlichen Auswertung für den Download erzeugen. Returns (csv_bytes, filename) oder (None, None).
+
+    ``query`` ist die geprüfte Abfrage (``pages_bwa.read_pdf_query``: ``year``, ``month``, ``variant``), ``with_accounts`` fügt unter jeder Zeile ihre Konten
+    ein. Die Zahlen sind die der Seite und des PDF (``Database.get_bwa``). Der Download ist ein GET: Er liest nur und legt nichts auf der Platte ab.
+    Ein Fehler steht nur im Server-Log."""
+    from db.bwa import bwa_filename
+    from export.csv_bwa import generate_bwa_csv
+    try:
+        report = db.get_bwa(query.year, query.month, query.variant)
+        return generate_bwa_csv(report, with_accounts), bwa_filename(query.year, query.month, query.variant, 'csv')
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None, None
+
+
 def handle_euer_pdf(db: Database, query, today: datetime.date):
     """PDF der Einnahmenüberschussrechnung für den Download erzeugen. Returns (pdf_bytes, filename) oder (None, None).
 
@@ -4535,6 +4565,23 @@ def handle_susa_pdf(db: Database, query, today: datetime.date):
         company = (own[0][3] if own else '') or ''
         pdf_bytes = generate_susa_pdf(report, company, today)
         return pdf_bytes, susa_filename(query.year, query.month)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None, None
+
+
+def handle_susa_csv(db: Database, query):
+    """CSV der Summen- und Saldenliste für den Download erzeugen. Returns (csv_bytes, filename) oder (None, None).
+
+    ``query`` ist die geprüfte Abfrage (``pages_susa.read_susa_pdf_query``: ``year``, ``month``). Die Zahlen sind die der Seite und des PDF
+    (``Database.get_susa``); die Hinweise und der Abgleich mit den Bankbewegungen stehen nicht darin. Der Download ist ein GET: Er liest nur – kein
+    Steuerdatum, keine Datei auf der Platte. Ein Fehler steht nur im Server-Log."""
+    from db.susa import susa_filename
+    from export.csv_susa import generate_susa_csv
+    try:
+        report = db.get_susa(query.year, query.month)
+        return generate_susa_csv(report), susa_filename(query.year, query.month, 'csv')
     except Exception:
         import traceback
         traceback.print_exc()

@@ -458,7 +458,8 @@ def visible_accounts(report: BwaReport, line: BwaLine) -> list[BwaAccount]:
     return [account for account in line.accounts if any(account.values.get(period) for period in line.values)]
 
 
-def bwa_filename(year: int, month: int, variant: str) -> str:
-    """``BWA_2026-10.pdf`` im Vorjahresvergleich (die Standarddarstellung), ``BWA_2026-10_Anteile.pdf`` mit Anteilen."""
+def bwa_filename(year: int, month: int, variant: str, extension: str = 'pdf') -> str:
+    """``BWA_2026-10.pdf`` im Vorjahresvergleich (die Standarddarstellung), ``BWA_2026-10_Anteile.pdf`` mit Anteilen; ``extension`` ersetzt das ``pdf``
+    (``BWA_2026-10.csv``)."""
     suffix = '' if variant == VARIANT_PREVIOUS else '_Anteile'
-    return f'BWA_{year:04d}-{month:02d}{suffix}.pdf'
+    return f'BWA_{year:04d}-{month:02d}{suffix}.{extension}'

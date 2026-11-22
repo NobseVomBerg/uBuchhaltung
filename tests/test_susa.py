@@ -1904,7 +1904,7 @@ def test_the_pdf_address_stands_only_in_the_script_block(susa_world):
     page = page_of(susa_world.db, 2026, 3)
     assert '/susa/pdf' not in re.sub(r'<script>.*?</script>', '', page, flags=re.S)
     data = re.search(r'var SUSA_DATA = (.*?);\n', Dom(page).scripts[1], re.S).group(1)
-    assert json.loads(data) == {'pdf': '/susa/pdf?year=2026&month=3'}
+    assert json.loads(data) == {'pdf': '/susa/pdf?year=2026&month=3', 'csv': '/susa/csv?year=2026&month=3'}       # seit 2.6.8 auch die CSV
 
 
 def test_names_with_markup_are_escaped_on_the_page(tmp_path):

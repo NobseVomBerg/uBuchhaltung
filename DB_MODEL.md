@@ -624,7 +624,7 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
 - **Entfernen:** `unassign_invoice_payment` löscht die markierten Sätze des Paars (nie Sätze mit
   `SourceGroup`, nie Sätze ohne Marke – Altbestand und WISO-Sätze bleiben stehen) und die Zuordnung,
   setzt eine durch Stufe 7 aufgelöste Forderung wieder auf offen, wenn die übrigen Sätze „… an Debitoren“
-  sie nicht mehr ausgleichen (Summe < Forderungsbetrag, `money.is_covered`), und rechnet die Rechnung
+  sie nicht mehr ausgleichen (Summe < Forderungsbetrag – bei mehreren Forderungszeilen der Beleg-Nr. deren Summe –, `money.is_covered`), und rechnet die Rechnung
   neu. War es die letzte Zahlung und ist der Status der Rechnung kein Forderungsstatus
   (`RECEIVABLE_STATUSES`: versendet, Teilzahlung, überfällig, bezahlt – also etwa storniert), geht auch
   die Forderung (die die App selbst gebucht hat, nie ein Satz mit `SourceGroup`), wie beim Statuswechsel:
@@ -655,7 +655,8 @@ Marke `Status='invoice_payment'`. Es gibt eine Stelle, die Zahlungen zuordnet
   `get_receivable_booking` suchen die Forderung so (nicht „erster Satz mit Konto 10000“, der einen
   WISO-Storno „10000 an 1810“ träfe). Stufe 7 des Auto-Abgleichs setzt die Forderung erst auf
   `resolved`, wenn die Summe der Sätze „… an 10000“ mit gleicher Beleg-Nr. den Forderungsbetrag erreicht
-  (`money.is_covered`) – nicht schon nach der ersten Teilzahlung.
+  (`money.is_covered`) – nicht schon nach der ersten Teilzahlung. Trägt die Beleg-Nr. mehrere eigenständige
+  Forderungszeilen, zählt die Summe aller; sie werden gemeinsam aufgelöst und gemeinsam zurückgesetzt (seit 2.6.8).
 - **Prüfung:** `find_payment_inconsistencies(invoice_id=None)` meldet, rein lesend, Zuordnungen ohne Satz
   „Bank an Debitoren“, Sätze „Bank an Debitoren“ ohne Forderung (10000 im Haben-Überhang), an einer
   Bankbewegung hängende Forderungen, Zahlungssätze ohne Zuordnung (die markierten Sätze der App und

@@ -47,9 +47,9 @@ from .pages_contacts import PageContacts, PageContactNew, PageContactEdit
 from .pages_miscellaneous import PageMiscellaneous
 from .pages_transactions import PageTransactions
 from .pages_dashboard import PageDashboard
-from .pages_bwa import PDF_FAILED_TEXT, BwaQuery, PageBwa, read_pdf_query, read_variant
+from .pages_bwa import BWA_CSV_FAILED_TEXT, PDF_FAILED_TEXT, BwaQuery, PageBwa, read_pdf_query, read_variant
 from .pages_euer import EUER_PDF_FAILED_TEXT, EuerQuery, PageEuer, read_euer_pdf_query
-from .pages_susa import SUSA_PDF_FAILED_TEXT, PageSusa, SusaQuery, read_susa_pdf_query
+from .pages_susa import SUSA_CSV_FAILED_TEXT, SUSA_PDF_FAILED_TEXT, PageSusa, SusaQuery, read_susa_pdf_query
 from .pages_liquidity import LIQUIDITY_PDF_FAILED_TEXT, PageLiquidity
 from .pages_receipts import PageReceipts, PageReceiptEdit
 from .pages_setup import PageSetup, PageSetupStart
@@ -1450,6 +1450,19 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                         self.respond(500, PDF_FAILED_TEXT, content_type="text/plain; charset=utf-8")
                     else:
                         self._send_document(pdf_bytes, filename, None, 'application/pdf', 'attachment')
+            elif route == "/bwa/csv":
+                # dieselbe Adresse wie das PDF, streng gelesen; liest nur, nichts landet auf der Platte, kein Cookie
+                qs = self._query()
+                query, error = read_pdf_query(qs)
+                if error:
+                    self.respond(400, error, content_type="text/plain; charset=utf-8")
+                else:
+                    with_accounts = qs.get('accounts', ['0'])[0] in ('1', 'true', 'on')
+                    csv_bytes, filename = handlers.handle_bwa_csv(db, query, with_accounts)
+                    if csv_bytes is None:
+                        self.respond(500, BWA_CSV_FAILED_TEXT, content_type="text/plain; charset=utf-8")
+                    else:
+                        self._send_document(csv_bytes, filename, None, 'text/csv; charset=utf-8', 'attachment')
             elif route == "/euer":
                 # Einnahmenüberschussrechnung: schreibt nichts in den Bestand. Der Zeitraum ist der gemeinsame der Seiten (Adresse >
                 # Cookie > laufendes Jahr, das Cookie wie überall); das heutige Datum bestimmt nur die Jahresknöpfe
@@ -1484,6 +1497,16 @@ class SimpleWebServer(BaseHTTPRequestHandler):
                         self.respond(500, SUSA_PDF_FAILED_TEXT, content_type="text/plain; charset=utf-8")
                     else:
                         self._send_document(pdf_bytes, filename, None, 'application/pdf', 'attachment')
+            elif route == "/susa/csv":
+                query, error = read_susa_pdf_query(self._query())
+                if error:
+                    self.respond(400, error, content_type="text/plain; charset=utf-8")
+                else:
+                    csv_bytes, filename = handlers.handle_susa_csv(db, query)
+                    if csv_bytes is None:
+                        self.respond(500, SUSA_CSV_FAILED_TEXT, content_type="text/plain; charset=utf-8")
+                    else:
+                        self._send_document(csv_bytes, filename, None, 'text/csv; charset=utf-8', 'attachment')
             elif route == "/liquiditaet":
                 # Liquiditätsrechnung: wie die BWA – gemeinsamer Zeitraum samt Cookie, der Monat folgt daraus, die Darstellung kommt aus der Adresse
                 qs = self._query()
@@ -1967,16 +1990,24 @@ class SimpleWebServer(BaseHTTPRequestHandler):
             self.respond(status_code, response, content_type="application/json")
             return
 
-        # Handle WISO CSV import (multipart file upload)
+        # Handle WISO CSV import (multipart file upload; das Token steckt im Body und wird erst im Handler geprüft)
         if self.path == "/wiso/import":
+            if demo.is_active():
+                # Demo-Modus: keine Dateien eines Besuchers auf dem Server – abgelehnt vor dem Lesen des Bodys, also auch vor dem Token
+                self._refuse_body(403, handlers.WISO_TEXT_DEMO_REFUSED)
+                return
             if not self._check_body_size(MAX_UPLOAD_BODY):
                 return
             status_code, location = handlers.handle_wiso_import(self, db)
             self.respond(status_code, "", headers={"Location": location})
             return
 
-        # Handle contact logo upload (multipart file upload)
+        # Handle contact logo upload (multipart file upload; das Token ist oben geprüft)
         if self.path == "/masterdata/contacts/upload-logo":
+            if demo.is_active():
+                # Demo-Modus: keine Dateien eines Besuchers auf dem Server – der Body bleibt ungelesen, die Verbindung geht zu
+                self._refuse_body(403, handlers.LOGO_DEMO_REFUSED, as_json=True)
+                return
             response_data = handlers.handle_logo_upload(self)
             self.send_response(200)
             self.send_header("Content-type", "application/json")

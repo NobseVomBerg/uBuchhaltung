@@ -10,9 +10,11 @@ Option C – normalized structure:
   PersonDetails    – 1:1  for EntityType='person'
 """
 import html as _html
+import demo
 from db import Database
 from db.contacts import VAT_METHOD_LABELS, vat_method
 from money import fmt_eur
+from .handlers import LOGO_DEMO_REFUSED
 
 
 def Header1(active_page=None):
@@ -319,6 +321,14 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
         logo_preview = ''
     logo = _esc(str(logo))
 
+    if demo.is_active():
+        # Im Demo-Modus nimmt der Server keine Datei eines Besuchers an (``POST /masterdata/contacts/upload-logo`` ist 403): statt der Dateiauswahl steht der Satz
+        logo_picker = f'<small class="muted">{_esc(LOGO_DEMO_REFUSED, quote=True)}</small>'
+    else:
+        logo_picker = ('<button type="button"\n'
+                       '                        onclick="document.getElementById(\'logo_file_input\').click()">Datei wählen</button>\n'
+                       '                <input type="file" id="logo_file_input" accept="image/*" style="display:none">')
+
     # Fachliche Rollen (nur für Personen) – muss vor entity_section stehen (wird darin referenziert)
     if entity_type == 'person':
         roles_grid = _checkbox_grid(PERSON_ROLES, 'role_keys', active_role_keys, wide=True)
@@ -444,9 +454,7 @@ def _contact_form(db: Database, form_action: str, entity_type: str = 'company',
         <tr><td>Logo / Bild:</td>
             <td><input type="text" name="logo" id="field_logo" value="{logo}"
                        placeholder="Pfad/URL oder Datei wählen">
-                <button type="button"
-                        onclick="document.getElementById('logo_file_input').click()">Datei wählen</button>
-                <input type="file" id="logo_file_input" accept="image/*" style="display:none">
+                {logo_picker}
                 <div id="logo_preview_div">{logo_preview}</div></td></tr>
         <tr><td>Notizen:</td>
             <td><textarea name="notes" rows="3">{notes}</textarea></td></tr>

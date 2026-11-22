@@ -30,9 +30,7 @@ steht in `git log`. Eine Zeile je Punkt; Details gehören in Commit oder Issue.
 - Umsatzsteuer-Voranmeldung (ELSTER)
 - Liquiditätsrechnung: einen unstimmigen Split neben einem Übertrag kenntlich machen – heute steht sein Rest nur nachrichtlich unter den Überträgen
 - BWA: vom Nutzer pflegbare Gruppen (braucht Schemaänderung)
-- BWA als CSV
 - Summen- und Saldenliste: Saldenvorträge bzw. Eröffnungsbilanz (heute beginnt ein Konto ohne Buchungen vor dem ersten Kontoauszug bei null; braucht Schemaänderung)
-- Summen- und Saldenliste als CSV
 - EÜR: Zuordnung der Steuer- und Verbindlichkeitskonten überprüfen
 - Soll-Versteuerung: Umsatzsteuer mit dem Leistungsdatum buchen und im DATEV-Stapel ausweisen (die Besteuerungsart ist seit 2.4.0 an der eigenen Firma gespeichert, wirkt aber noch nirgends)
 - GoBD-Modus, je Datenverzeichnis einstellbar (Ersteinrichtung fragt: Steuerbüro oder selbst?); vor der Umsetzung ein Entwurf:

@@ -858,7 +858,12 @@ kein Subagent darauf:
   GET-Formular mit den Feldern `from`/`to`, kein „Anzeigen“-Knopf). Das PDF ist A4 quer, mehrseitig
   und landet nie auf der Platte (Download über `appDownload`; Dateiname `BWA_JJJJ-MM.pdf`, mit Anteilen `…_Anteile.pdf`). `/bwa` steht in der
   Positivliste des Diagnose-MCP (es schreibt nichts in den Bestand, Nachweis im Test), `/bwa/pdf` nicht. Fester Hinweis: keine Steuerberatung.
-  `tests/test_bwa.py`, `tests/test_bwa_pdf.py`
+  **CSV (seit 2.6.8, `export/csv_bwa.py`, `GET /bwa/csv`):** dieselben Zeilen und Zellen wie die Seite (`cells`), auf Wunsch mit Konten; UTF-8 mit BOM, Semikolon,
+  Dezimalkomma ohne Tausenderpunkte, Prozentwerte ohne Zeichen; die Adresse wird streng gelesen wie beim PDF, nichts landet auf der Platte. Texte aus der
+  Datenbank gehen nur über `csv_table.text_cell` (Steuerzeichen weg, höchstens 200 Zeichen, ein `'` vor `=`, `+`, `-`, `@` – auch hinter
+  jedem Komma des Textes, falls jemand die Datei mit dem Komma als Trenner öffnet, und auch vor den breiten Schreibweisen dieser Zeichen (verglichen wird
+  die Grundform, NFKC); sonst führte eine Tabellenkalkulation einen Kontonamen als Formel aus; nicht aufweichen).
+  `tests/test_bwa.py`, `tests/test_bwa_pdf.py`, `tests/test_report_csv.py`
 - **EÜR-Ansicht (seit 2.5.16, `db/euer.py`, `server/pages_euer.py`, `export/pdf_euer.py`; `GET /euer`, `GET /euer/pdf`):** EINE Aufbereitung für den
   Kasten der EÜR im Dashboard und die Seite (`db.euer.euer_statement`: die Zeilen von `get_euer_data` nach `reporting.euer_section` in Einnahmen,
   Ausgaben und „Sonstige Ausgaben“; Summen aus Minor Units, nie als Summe von `float`; die echte und die virtuelle 3806 bleiben zwei Zeilen;
@@ -916,7 +921,10 @@ kein Subagent darauf:
   setzt die Route wie bei jeder Seite mit Zeitraum) und leitet ihren Monat daraus ab (`period.period_month`); `year` und `month` liest sie nicht mehr, einen
   Hinweis „ungültig“ gibt es nicht. Sie schreibt nichts in den Bestand; das PDF liest `year` und `month` streng (`parse_year`/`parse_month`, ein doppelter
   Schlüssel ist ungültig, 400) und setzt kein Cookie (A4 quer, mehrseitig, `Summen_und_Salden_JJJJ-MM.pdf`, landet nie auf der Platte). Texte ohne Marken- und Produktnamen; fester Hinweis: keine Steuerberatung, ohne Zusicherung der
-  Richtigkeit. **Diese Regeln nicht still ändern.** `/susa` steht in der Positivliste des Diagnose-MCP (es schreibt nichts in den Bestand, Nachweis im Test), `/susa/pdf` nicht. `tests/test_susa.py`, `tests/test_susa_pdf.py`
+  Richtigkeit. **Diese Regeln nicht still ändern.** `/susa` steht in der Positivliste des Diagnose-MCP (es schreibt nichts in den Bestand, Nachweis im Test), `/susa/pdf` nicht.
+  **CSV (seit 2.6.8, `export/csv_susa.py`, `GET /susa/csv`):** je Konto und Gruppe die sechs Werte immer als Zahl, Salden als Betrag mit eigenem Kennzeichen S/H, am Ende
+  die Gesamtsumme; Hinweise und Bankabgleich stehen nur auf Seite und PDF.
+  `tests/test_susa.py`, `tests/test_susa_pdf.py`, `tests/test_report_csv.py`
 - **Liquiditätsrechnung (seit 2.6.3, `db/liquidity.py`, `Database.get_liquidity`, `server/pages_liquidity.py`, `export/pdf_liquidity.py`; `GET /liquiditaet`, `GET /liquiditaet/pdf`):** vom Ergebnis der
   BWA zur Veränderung der flüssigen Mittel – ein Monat und aufgelaufen seit dem 1. Januar, im Vorjahresvergleich (Standard, acht Wertspalten) oder als „Monat und Jahr“ (`variant=jahr`, zwei
   Spalten, **keine Anteile**: ein Anteil an Erlösen ergäbe bei Liquidität keinen Sinn). **Sie hat keine eigene Lesart der Buchungen:** Gerechnet wird nur mit den Zeilen von `get_euer_data` (ohne Kontofilter,
@@ -1094,7 +1102,12 @@ kein Subagent darauf:
   (`Database.receivable_entry_ids`, EINE Abfrage je Seite; Gruppen- und Kindzeilen bleiben, wie sie waren,
   `tests/test_receivable_row.py`). Stufe 7 des
   Auto-Abgleichs setzt sie erst auf `resolved`, wenn die Summe der Sätze „… an 10000“ mit gleicher
-  Beleg-Nr. den Forderungsbetrag erreicht; `unassign` setzt das zurück. Die Forderung geht mit der
+  Beleg-Nr. den Forderungsbetrag erreicht – seit 2.6.8 ist das die Summe ALLER eigenständigen Forderungszeilen der Beleg-Nr.
+  (`COA` = Debitoren, ohne Bankbewegung, auch die schon `resolved`; heute genau eine je Rechnung, eine Rechnung mit mehreren
+  Steuersätzen bekommt je Satz eine; dieselbe Auswahl an beiden Stellen – `_after_payment_removed` über `_standalone_receivable_rows`, Stufe 7 liest sie für alle Nummern in EINER Abfrage, weil `DocumentNumber` keinen Index hat): Sie werden gemeinsam
+  `resolved` (der Zähler `resolved` des Abgleichs zählt die geänderten Zeilen), nie eine für sich – die kleinere gälte nach einer
+  Teilzahlung sonst zu früh als ausgeglichen –, und `unassign` (`_after_payment_removed`) setzt sie gemeinsam zurück, sobald die
+  Summe nicht mehr gedeckt ist; bei genau einer Zeile ist alles wie vorher (`tests/test_receivable_resolution.py`). Die Forderung geht mit der
   letzten Zahlung, wenn der Status der Rechnung kein Forderungsstatus ist (`RECEIVABLE_STATUSES`, z. B.
   eine von Hand stornierte Rechnung: Altbestand oder ohne positiven Betrag) – gleicher Endzustand, egal ob erst storniert oder erst
   entfernt wird; **entfernt wird nur die Forderung, die die App selbst gebucht hat** (`_receivable_removal`:
@@ -1269,7 +1282,7 @@ kein Subagent darauf:
   `check_page_path`) nicht aufweichen; neue Seiten und Schlüssel nur für GET-Handler, die
   nichts schreiben (Nachweis im Test). `/backup/download` steht bewusst nicht darin: Es liefert den ganzen Datenbestand
   (Gigabyte-Größe). `/receipts/search` und `/transactions/search` stehen bewusst nicht darin: JSON-Suchen der Seiten, keine
-  Anzeigeseiten; dasselbe liefert die SQL-Abfrage. `/bwa/pdf`, `/euer/pdf`, `/susa/pdf` und `/liquiditaet/pdf` stehen nicht darin (Dokumente).
+  Anzeigeseiten; dasselbe liefert die SQL-Abfrage. `/bwa/pdf`, `/bwa/csv`, `/euer/pdf`, `/susa/pdf`, `/susa/csv` und `/liquiditaet/pdf` stehen nicht darin (Dokumente).
   Ebenso nicht: `/receipts/suggestions` (JSON-Vorschläge der Seite eines Belegs) und
   `/receipts/read` (ein POST: liest die Datei eines Belegs und schreibt die Lesung)
 - Zugangsdaten aus der Windows-Anmeldeinformationsverwaltung, keyring oder Umgebung, nie im Repo; über `http://` gehen sie nur
@@ -1289,7 +1302,11 @@ kein Subagent darauf:
   `upload_handler.RECEIPTS_DEMO_REFUSED`; die Seite zeigt den Satz statt der Ablage) und – seit 2.6.7 – das Hochladen von
   Kontoauszügen auf der Seite *Buchungen* (`POST /upload_receipts`: 403 vor dem Lesen, `upload_handler.STATEMENTS_DEMO_REFUSED`; die
   Seite zeigt den Satz statt der Ablage, `POST /confirm_transactions` antwortet dort ebenfalls 403 – ein Import aus der Zeit davor lässt
-  sich im Demo-Modus nicht mehr bestätigen, gelöscht wird nichts; `tests/test_statement_upload_demo.py`)
+  sich im Demo-Modus nicht mehr bestätigen, gelöscht wird nichts; `tests/test_statement_upload_demo.py`) Seit 2.6.8 nimmt die App im
+  Demo-Modus **gar keine Datei eines Besuchers** mehr an: auch der Logo-Upload (`POST /masterdata/contacts/upload-logo`: 403 vor dem
+  Lesen, `handlers.LOGO_DEMO_REFUSED`) und der Import der Textexporte (`POST /wiso/import`: 403 vor dem Lesen,
+  `handlers.WISO_TEXT_DEMO_REFUSED`) sind abgeschaltet, die Seiten zeigen den Satz statt der Dateiauswahl. Ein neuer Upload-Weg braucht
+  dieselbe Sperre (`tests/test_demo_uploads_closed.py` zählt die Wege auf).
 - **Der große Bestand (seit 2.5.10):** Neben dem von Hand gepflegten Szenario (`demo_scenario.json`, bleibt unverändert) erzeugt
   `demo_history.build_history(today, profile)` mehrere Jahre – rein, ohne Datenbank, Zufall und Uhr (Auswahl je Monat über
   `zlib.crc32`, Tabellen in `seed_data/test/demo_history.json`, Kunden und Artikel aus den Test-Seeddaten). Profil `full` =
@@ -1608,6 +1625,16 @@ kein Subagent darauf:
   `cii_invoice.py` (eingebettet) und `xrechnung_invoice.py` (UBL, Download).
   Der PDF/A-Aufbau liegt in `export/pdfa.py` und gilt für **alle** PDFs
   (Angebot, Stundenzettel …); nur Rechnungen bekommen das XML
+- **Steuer je Satzgruppe (`tax_groups.py`, seit 2.6.8):** `rate_groups` ist die EINE Stelle, die die Steuer eines Belegs je Satz rechnet (rein:
+  nur `money`, keine Datenbank, keine Uhr; für beliebig viele und beliebige Sätze – nie „19 und 7“ fest): Steuer je Satz aus der Summe der
+  Nettobeträge der Gruppe, kaufmännisch auf den Cent gerundet (EN 16931, BR-CO-17), Belegsteuer = Summe der Gruppen, Satz absteigend.
+  `handlers.recompute_invoice_totals` (Summen beim Speichern) und `einvoice_model.build_einvoice` (die Steuer je Gruppe der Aufschlüsselung; die
+  Gruppe des Dokuments bleibt (Kategorie, Satz)) rechnen darüber. `rate_pct` ist die Regel von `einvoice_model.rate_to_pct` ohne Vorgabewert;
+  `handlers._rate_to_pct` ist davon bewusst nicht abgeleitet (sie rundet nicht auf zwei Stellen) – jede Stelle behält ihre Zahlen.
+  `tests/test_single_rate_snapshots.py` hält am Stand 2.6.6 fest, was ein Beleg mit einem Satz bucht und ausgibt – ändert sich ein
+  Schnappschuss, ist der Code zu ändern, nie die Datei (`tests/single_rate_golden_2_6_6.json`); `tests/test_tax_rate_readers.py` führt die
+  Lesestellen des Belegsteuersatzes (eine neue schlägt an: prüfen, ob sie mit einem Beleg mit mehreren Sätzen richtig umgeht);
+  `tests/test_tax_groups.py`
 - **Schriften:** Liberation Sans (2.x, OFL 1.1) aus `export/fonts/` – metrisch
   = Helvetica, daher Layout unverändert; als Untermenge per `fontTools`
   eingebettet, Content-Streams bleiben WinAnsi. sRGB-ICC für den OutputIntent
