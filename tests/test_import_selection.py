@@ -11,7 +11,9 @@
   legt nur die genannten Umsätze an, einer ohne wird ganz importiert. Die Duplikat-Zählung bleibt exakt wie sonst; geprüft wird
   streng und vor dem ersten Schreiben (ungültig → 400 „Ungültige Auswahl“, Konto ohne Auswahl → 400 „Für ein reines
   Geschäftskonto …“, nichts ist importiert).
-* Die Seite zeigt Kästchen, Suchfeld, „Alle“/„Keine“ und den Zähler nur bei ``selectable``; Datenwerte stehen maskiert.
+* Die Seite zeigt Kästchen, Suchfeld, „Alle“/„Keine“ und den Zähler nur bei ``selectable``; Datenwerte stehen maskiert. Bei
+  ``selectable`` steht die Liste beim Anzeigen der Vorschau aufgeklappt (Knopf „Umsätze auswählen“, er klappt sie weiter zu und
+  auf); ohne Auswahl bleibt sie hinter „Alle Einzelbuchungen“ zugeklappt, Zeichen für Zeichen wie vorher.
 * Das Bankkonto-Formular führt das Kennzeichen „Reines Geschäftskonto“ (Standard angehakt) mit einem versteckten Feld
   ``business_only_field``; ohne dieses Feld bleibt der gespeicherte Wert.
 
@@ -568,6 +570,13 @@ def _render(tmp_path, db, preview_files):
     return _node(tmp_path, _preview_source(db), {'preview': {'files': preview_files, 'other_files': []}})
 
 
+def _toggle_and_list(card):
+    """Der Knopf einer Karte, der die Einzelbuchungen auf- und zuklappt, und die Liste, auf die er zeigt."""
+    (button,) = _buttons(card, 'btnToggleDet')
+    (listing,) = [n for n in _walk(card) if n['attrs'].get('id') == button['attrs']['data-target']]
+    return button, listing
+
+
 @NO_NODE
 def test_a_selectable_card_has_a_checkbox_per_row_a_search_field_all_none_and_the_counter(tmp_path, books, preview):
     out = _render(tmp_path, books, preview['files'])
@@ -587,6 +596,29 @@ def test_a_selectable_card_has_a_checkbox_per_row_a_search_field_all_none_and_th
     (button,) = _buttons(card, 'btnImportBeleg')
     assert _text(button) == 'Importieren (3 ausgewählt)' and button['attrs']['id'] == 'btnimp-0' and button['attrs']['data-idx'] == '0'
     assert SELECT_NOTE not in _text(card)
+
+
+@NO_NODE
+def test_a_selectable_card_is_opened_when_the_preview_appears_and_its_button_says_select_rows(tmp_path, books, preview):
+    """Die Auswahl stand zugeklappt hinter „Alle Einzelbuchungen“ und wurde nicht gefunden, obwohl der Import-Knopf schon
+    „Importieren (n ausgewählt)“ sagte: Jetzt steht die Liste offen (kein ``display:none``), der Knopf heißt „Umsätze auswählen“."""
+    out = _render(tmp_path, books, preview['files'])
+    button, listing = _toggle_and_list(_cards(out)[0])
+    assert _text(button) == 'Umsätze auswählen' and listing['attrs'] == {'id': 'det-0'}
+    assert _by_class(listing, 'input', 'selBox') and _by_class(listing, 'input', 'selSearch')    # Kästchen und Suchfeld liegen darin
+    assert ('<button type="button" class="coloredButton btn-sm bg-gray btnToggleDet" data-target="det-0">Umsätze auswählen</button>'
+            '<div id="det-0">') in out['html']
+
+
+@NO_NODE
+def test_a_card_without_the_selection_keeps_the_closed_list_and_the_old_button_character_for_character(tmp_path, books, preview):
+    """Reines Geschäftskonto (Karte 1) und Datei ohne Konto (Karte 2): Knopf „Alle Einzelbuchungen“, Liste zugeklappt – wie bisher."""
+    out = _render(tmp_path, books, preview['files'])
+    for number in (1, 2):
+        button, listing = _toggle_and_list(_cards(out)[number])
+        assert _text(button) == 'Alle Einzelbuchungen' and listing['attrs'] == {'id': f'det-{number}', 'style': 'display:none'}
+        assert ('<button type="button" class="coloredButton btn-sm bg-gray btnToggleDet" data-target="det-%d">Alle Einzelbuchungen</button>'
+                '<div id="det-%d" style="display:none">' % (number, number)) in out['html']
 
 
 @NO_NODE
@@ -645,6 +677,8 @@ def test_a_preview_without_selectable_renders_like_before(tmp_path, books, previ
     assert Tree(out['html']).errors == []
     assert not _by_class(Tree(out['html']).root, 'input', 'selBox')
     assert _text(_buttons(_cards(out)[0], 'btnImportBeleg')[0]) == 'Importieren (3 neu)'
+    button, listing = _toggle_and_list(_cards(out)[0])
+    assert _text(button) == 'Alle Einzelbuchungen' and listing['attrs']['style'] == 'display:none'      # zugeklappt wie bisher
 
 
 def test_the_page_offers_csv_uploads_and_the_new_markup_adds_no_inline_style(tmp_db):
@@ -656,6 +690,17 @@ def test_the_page_offers_csv_uploads_and_the_new_markup_adds_no_inline_style(tmp
     card = script[script.index('function renderCard('):script.index("document.addEventListener('click'")]
     new_markup = card[card.index('const fileNo'):card.index("h += '</table></div>'")]
     assert new_markup.count('style=') == 1                                               # nur der bisherige Einklapp-Container
+
+
+def test_the_page_source_closes_the_list_and_keeps_the_old_label_only_for_a_card_without_the_selection(tmp_db):
+    """Ohne Node prüfbar (die Tests der gerenderten Karte oben laufen nur mit Node): Im Quelltext hängt das ``display:none`` der
+    Liste und die Beschriftung des Knopfes an ``f.selectable`` – nie wieder bedingungslos zugeklappt."""
+    from tests.test_import_upload_http import _page_script
+    script = _page_script(tmp_db)
+    card = script[script.index('function renderCard('):script.index("document.addEventListener('click'")]
+    assert "(f.selectable ? 'Umsätze auswählen' : 'Alle Einzelbuchungen')" in card
+    assert "(f.selectable ? '' : ' style=\"display:none\"')" in card
+    assert '" style="display:none">' not in card
 
 
 # ══ Die Seite: Verhalten im Skript (Node, mit kleinem DOM) ═══════════════════════════════════════════════════════
@@ -872,3 +917,62 @@ def test_a_checkbox_change_updates_the_counter_and_the_button(tmp_path, books):
     out = _dom(tmp_path, books, cards, "updateSelection('0')")
     assert out['elements']['selcount-0']['text'] == '1 von 3 ausgewählt'
     assert out['elements']['btnimp-0']['text'] == 'Importieren (1 ausgewählt)' and out['elements']['btnimp-0']['disabled'] is False
+
+
+TOGGLE_HARNESS = r"""
+const vm = require('vm');
+const fs = require('fs');
+const [, , sourceFile, scenarioFile] = process.argv;
+const scenario = JSON.parse(fs.readFileSync(scenarioFile, 'utf8'));
+const listeners = {};
+const lists = {};
+for (const [id, display] of Object.entries(scenario.lists)) lists[id] = {id, innerHTML: '', style: {display}};
+const sandbox = {
+  document: {
+    getElementById: id => lists[id] || (lists[id] = {id, innerHTML: '', style: {}}),
+    querySelectorAll: () => [],
+    addEventListener: (type, listener) => { (listeners[type] = listeners[type] || []).push(listener); },
+  },
+  window: {location: {href: 'http://127.0.0.1/transactions'}},
+  appMsg: () => {},
+  fetch: () => Promise.resolve({json: () => Promise.resolve({}), text: () => Promise.resolve('')}),
+  DOMParser: class { parseFromString() { return {getElementById: () => null}; } },
+  URLSearchParams, console,
+};
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(sourceFile, 'utf8'), sandbox);
+// Ein Klick auf den Knopf einer Karte: Der Hörer fragt e.target.closest('.btnToggleDet') und liest dataset.target
+const seen = {};
+for (const id of scenario.clicks) {
+  const button = {dataset: {target: id}};
+  const event = {target: {closest: selector => selector === '.btnToggleDet' ? button : null}};
+  (listeners.click || []).forEach(listener => listener(event));
+  (seen[id] = seen[id] || []).push(lists[id].style.display);
+}
+console.log(JSON.stringify(seen));
+"""
+
+
+def _clicks(tmp_path, db, displays, clicks):
+    """Klickt im Skript der Seite nacheinander auf die Knöpfe der Listen ``clicks`` (Ids) und nennt je Liste ihr ``style.display``
+    nach jedem Klick. ``displays`` ist der Stand beim Anzeigen: ``''`` für eine Liste ohne ``style``, sonst ``'none'``."""
+    harness, script, data = (tmp_path / name for name in ('toggle_harness.js', 'preview.js', 'toggle_scenario.json'))
+    harness.write_text(TOGGLE_HARNESS, encoding='utf-8')
+    script.write_text(_preview_source(db), encoding='utf-8')
+    data.write_text(json.dumps({'lists': displays, 'clicks': clicks}), encoding='utf-8')
+    done = subprocess.run([NODE, str(harness), str(script), str(data)], capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+@NO_NODE
+def test_the_button_closes_an_opened_list_with_the_first_click_and_opens_a_closed_one(tmp_path, books, preview):
+    """Der Hörer schaltet ``style.display`` zwischen ``none`` und ``block``. Eine offene Liste trägt kein ``style`` (``display`` ist
+    dort leer): Der erste Klick klappt sie zu – nicht „auf“, sonst bräuchte es zwei Klicks –, der zweite klappt sie wieder auf."""
+    start = {}
+    for card in _cards(_render(tmp_path, books, preview['files'])):
+        _button, listing = _toggle_and_list(card)
+        start[listing['attrs']['id']] = 'none' if listing['attrs'].get('style') == 'display:none' else ''
+    assert start == {'det-0': '', 'det-1': 'none', 'det-2': 'none'}                      # offen, zu, zu – wie die Karten sie schreiben
+    seen = _clicks(tmp_path, books, start, ['det-0', 'det-0', 'det-0', 'det-1', 'det-1'])
+    assert seen == {'det-0': ['none', 'block', 'none'], 'det-1': ['block', 'none']}

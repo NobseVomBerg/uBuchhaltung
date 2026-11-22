@@ -1455,7 +1455,7 @@ kein Subagent darauf:
   Kennzeichen am Bankkonto** (`Accounts.BusinessOnly`, Schema 2005): `selectable` = Konto gefunden UND
   `Database.account_allows_selection` (streng gelesen: nur die ganze Zahl 0 = gemischt genutzt; **Standard und jeder andere
   gespeicherte Wert – NULL, Text, 2 – ist „reines Geschäftskonto“, die Kasse nie**; `db.accounts.is_business_only`). Ohne Auswahl
-  (reines Geschäftskonto) sieht die Karte aus wie vorher; mit ihr: Kästchen je Zeile (Standard: jede importierbare angehakt, Duplikate und
+  (reines Geschäftskonto) sieht die Karte aus wie vorher (Knopf „Alle Einzelbuchungen“, Liste zugeklappt); mit ihr steht die Liste beim Anzeigen aufgeklappt (Knopf „Umsätze auswählen“, er klappt sie weiter zu und auf), darin: Kästchen je Zeile (Standard: jede importierbare angehakt, Duplikate und
   unvollständige deaktiviert), Suchfeld, „Alle“/„Keine“ (nur auf sichtbare, auswählbare Zeilen), „Importieren (n ausgewählt)“, bei 0
   gesperrt. `/confirm_transactions` nimmt das Feld `selection` (JSON-Objekt `{"<file_index>": [<index>, …]}`): ein Beleg MIT Eintrag
   legt nur die genannten Umsätze an, einer OHNE wird ganz importiert. **Streng und vor dem ersten Schreiben geprüft** (`_import_selection`):
@@ -1481,7 +1481,9 @@ kein Subagent darauf:
   des anderen oder leer, verglichen ohne Leerraum, mit `casefold` und ohne führendes „Storno:“): nur ein
   Hinweis, der Import bleibt beim Maximum.
   Ein Umsatz ohne Datum oder Betrag ist in Vorschau und Import gleich behandelt – nicht importierbar
-  (Befund `incomplete`; je Datei `skipped_invalid`), weder neu noch Duplikat
+  (Befund `incomplete`; je Datei `skipped_invalid`), weder neu noch Duplikat; ein Betrag von 0,00 € ist dagegen kein Befund (`amount` heißt nur
+  „Betrag fehlt“, also `None`): Die Zeile ist ein gewöhnlicher, importierbarer Umsatz und zählt bei den Duplikaten wie jede andere
+  (`tests/test_import_zero_amount.py`)
 
 ### WISO-Datenübernahme
 - Zwei Wege: die **Textexporte** (`db/wiso_import.py`, CSV) und die

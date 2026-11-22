@@ -53,7 +53,7 @@ Vorschau zeigt sie, entschieden wird vom Nutzer.
 
 | Befund | Bedeutung |
 |---|---|
-| `amount` | Betrag fehlt oder ist 0 |
+| `amount` | Betrag fehlt (ein Betrag von 0,00 € ist ein gewöhnlicher Umsatz) |
 | `date` | Datum fehlt oder ist unlesbar |
 | `daterange` | Datum liegt weit neben dem Belegdatum (Jahresdreher): mehr als 400 Tage davor oder mehr als 31 Tage danach |
 | `empty` | weder Empfänger noch Verwendungszweck |
@@ -116,7 +116,7 @@ Meldung nach dem Import nennt die so übersprungenen Umsätze.
 gekennzeichnet ist (Stammdaten → Bankkonten; `Accounts.BusinessOnly` genau 0, nie bei einer Kasse), zeigt die Vorschau je Zeile ein
 Kästchen – angehakt ist jede importierbare Zeile, Duplikate und unvollständige Zeilen sind deaktiviert –, dazu ein Suchfeld
 (Datum, Empfänger, Zweck, Betrag, ohne Rücksicht auf Groß-/Kleinschreibung), „Alle“ und „Keine“ (sie wirken auf die sichtbaren Zeilen)
-und den Zähler „n von m ausgewählt“; der Knopf heißt „Importieren (n ausgewählt)“. Auf einem reinen Geschäftskonto (der
+und den Zähler „n von m ausgewählt“; der Knopf heißt „Importieren (n ausgewählt)“. Die Liste steht dort beim Anzeigen aufgeklappt (Knopf „Umsätze auswählen“). Auf einem reinen Geschäftskonto (der
 Standard, auch für jeden Bestand und jeden unlesbaren Wert) wird der Auszug vollständig importiert. `/confirm_transactions`
 nimmt das Formularfeld `selection` (JSON-Objekt `{"<file_index>": [<index>, …]}`, `index` = Position des Umsatzes in der Liste
 des Belegs, wie die Vorschau sie nennt): Für einen Beleg mit Eintrag werden nur diese Umsätze angelegt, ein Beleg ohne Eintrag wird

@@ -89,7 +89,7 @@ class TestBuildImportPreview:
         assert out["problems"][0]["dup"] is True
 
     def test_parse_warnings_flagged(self, db_with_account):
-        bad = _txn(amount=0, recipient="", reference="", date="")
+        bad = _txn(amount=None, recipient="", reference="", date="")
         data = {"files": [_file(IBAN, [bad])]}
         out = build_import_preview(db_with_account, data)["files"][0]
         assert out["status"] == "warn"

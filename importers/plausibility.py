@@ -15,7 +15,7 @@ Import zu blockieren – die Entscheidung trifft der Nutzer in der Vorschau.
 Befund-Schlüssel (stabil, die Oberfläche zeigt sie an):
 
 ============  ===============================================================
-``amount``    Betrag fehlt oder ist 0
+``amount``    Betrag fehlt
 ``date``      Datum fehlt oder ist unlesbar
 ``daterange`` Datum liegt weit neben dem Belegdatum (Jahresdreher): mehr als
               400 Tage davor oder mehr als 31 Tage danach
@@ -104,7 +104,9 @@ def check_transaction(transaction, document_date=None):
     """
     found = []
     amount = transaction.amount
-    if amount is None or amount == 0:
+    # Nur ein fehlender Betrag ist ein Befund: Eine Bank bucht auch Zeilen über 0,00 € (etwa eine Quartalsabrechnung ohne
+    # Zinsen) – so eine Zeile ist ein gewöhnlicher Umsatz.
+    if amount is None:
         found.append('amount')
     elif abs(float(amount)) > IMPLAUSIBLE_AMOUNT:
         found.append('huge')
