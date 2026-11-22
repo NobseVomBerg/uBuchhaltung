@@ -274,7 +274,10 @@ button.active			{ background-color: #4facfe; color: #FFF; }	/* aktiver Jahres-/M
 .invoice-items .mixedTaxCol 			{ display: none; }
 .invoice-items.mixedTaxOn .mixedTaxCol 	{ display: table-cell; }
 .invoice-items th.mixedTaxCol 			{ width: 56px; }
-.invoice-items .item-tax 				{ width: 100%; }
+/* Steuersätze aus den Stammdaten: Die Auswahl je Zeile und das Feld „Mehrwertsteuer“ in der Steuerzeile zeigen Bezeichnungen von bis zu 60 Zeichen. Die Spalte „USt“ wächst mit der
+   längsten Bezeichnung, aber nie über max-width (bei kurzen Bezeichnungen wie „19 %“ bleibt sie schmal, wie sie war); mit width: 100% bliebe sie schmal und zeigte nur die ersten Buchstaben */
+.invoice-items .item-tax 				{ width: auto; max-width: 130px; }
+.invoice-items .taxChoice 				{ max-width: 260px; }
 .invoice-payment-terms 	{ margin: 20px 0; font-size: 0.9em; }
 /* Angebots-Fließtext (contenteditable) – passt sich in die .invoice-* Familie ein */
 .invoice-richtext-toolbar 	{ margin: 10px 0 2px 0; }

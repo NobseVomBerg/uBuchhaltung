@@ -6,8 +6,8 @@
 Mit dem Häkchen bekommt die Positionstabelle die Spalte „USt“ (ein Auswahlfeld je Zeile), und der Summenblock zeigt je Satz eine Zeile; das
 Speichern schickt dann ``taxMode: 'mixed'`` und je Position ihren Satz (``handlers._tax_fields``). **Ohne das Häkchen verhält sich die Maske wie
 vorher:** dasselbe Aussehen und genau der Payload, den sie bisher geschickt hat – kein ``taxMode``, je Position der Satz des Felds
-„Mehrwertsteuer“. Die wählbaren Sätze kommen vom Server (``tax_groups.MIXED_TAX_RATES``, als JSON im Skriptblock); im Quelltext der Maske steht
-kein Satz und keine Zahl von Sätzen.
+„Mehrwertsteuer“. Die wählbaren Sätze kommen vom Server (seit 2.8.0 die Einträge der Stammdaten, als JSON im Skriptblock – ``tests/test_tax_entries_mask.py``;
+ohne Liste ``tax_groups.MIXED_TAX_RATES``); im Quelltext der Maske steht kein Satz und keine Zahl von Sätzen.
 
 Geprüft wird in vier Schichten:
 
@@ -49,21 +49,12 @@ NO_NODE = pytest.mark.skipif(NODE is None, reason='Node.js nicht installiert –
                                                   'derselben Datei decken das Wichtigste ab')
 
 KINDS = ['invoice', 'quote']
-EXTENDED = (Decimal('19'), Decimal('7'), Decimal('5.5'))          # die Liste um einen Satz mit Nachkommastelle erweitert
 
 
 @pytest.fixture
 def world(tmp_db, monkeypatch):
     monkeypatch.setattr(handlers, 'Database', lambda *a, **k: tmp_db)
     return build_world(tmp_db)
-
-
-@pytest.fixture
-def extended_rates(monkeypatch):
-    """Die wählbaren Sätze um 5,5 % erweitert – an der EINEN Stelle (``tax_groups``) und dort, wo ``handlers`` sie beim Import festgehalten hat."""
-    monkeypatch.setattr(tax_groups, 'MIXED_TAX_RATES', EXTENDED)
-    monkeypatch.setattr(handlers, 'MIXED_TAX_RATES', EXTENDED)
-    return EXTENDED
 
 
 def item(position, description, price, rate, quantity=1):
@@ -683,29 +674,6 @@ def test_a_new_row_takes_the_first_rate_of_the_list_when_the_document_rate_is_no
     assert mixed_default_key(19) == '' and mixed_select_html(19).startswith('<select class="item-tax"><option value="19" selected>')
 
 
-@pytest.mark.parametrize('kind', KINDS)
-def test_with_a_list_extended_by_5_5_the_mask_shows_three_options_and_the_script_gets_all_three(world, extended_rates, kind):
-    html = page_of(kind, world)
-
-    (row,) = rows_of(html)
-    assert row['select']['options'] == [['19', '19 %', True], ['7', '7 %', False], ['5.5', '5,5 %', False]]
-    _dom, _main, mix = page_script(html, kind)
-    listed = json.loads(re.search(r'var MIX_RATES = (.*?);\n', mix, re.S).group(1))
-    assert listed == [{'value': '19', 'label': '19 %'}, {'value': '7', 'label': '7 %'}, {'value': '5.5', 'label': '5,5 %'}]
-    assert listed == [{'value': value, 'label': label} for value, label in mixed_rate_choices()]
-
-
-@pytest.mark.parametrize('kind', KINDS)
-def test_with_the_extended_list_a_document_at_5_5_saves_and_loads_without_any_odd_option(world, extended_rates, kind):
-    """Nichts ist fest verdrahtet: Kommt 5,5 % in die Liste, lässt sich der Beleg speichern, und die Maske zeigt den Satz als gewöhnliche Option."""
-    doc_id = make_doc(kind, world, [item(1, 'Beratung', 100.0, 19), item(2, 'Heft', 10.0, 5.5)])
-
-    html = page_of(kind, world, doc_id)
-
-    assert 'checked' in box_of(html) and rates_of(html) == ['19', '5.5']
-    assert all(values(row['select']) == ['19', '7', '5.5'] for row in rows_of(html))
-
-
 def test_no_rate_and_no_count_of_rates_is_named_in_the_source_of_the_mask_pieces():
     code = re.sub(r'//[^\n]*', '', MIXED_TAX_JS)                                     # die Kommentare zählen nicht
     assert not re.search(r'(?<![\d.])(19|7|5\.5)(?![\d.])', code), 'ein Satz steht im Quelltext des Skripts'
@@ -982,42 +950,6 @@ def test_the_new_cell_sits_before_the_price_and_the_row_keeps_its_other_cells(wo
 
 @NO_NODE
 @pytest.mark.parametrize('kind', KINDS)
-def test_a_new_row_takes_the_rate_of_the_field_if_the_list_knows_it_else_the_first(world, tmp_path, extended_rates, kind):
-    program = ("var got = []; ['7', '5.5', '16', '0.07', 'abc', '19'].forEach(function (text) {"
-               "  type($('tax_rate'), text); addFreeRow(); got.push(rows()[rows().length - 1].querySelector('.item-tax').value); });"
-               "emit('got', got);")
-
-    out = run_mask(tmp_path, page_of(kind, world), kind, program)
-
-    assert out['got'] == ['7', '5.5', '19', '7', '19', '19']                         # 16 und „abc“ kennt die Liste nicht: der erste Satz
-
-
-@NO_NODE
-@pytest.mark.parametrize('kind', KINDS)
-def test_an_article_row_takes_the_rate_of_the_article_if_the_list_knows_it_else_it_acts_like_a_new_row(world, tmp_path, extended_rates, kind):
-    for name, rate in (('Fachbuch', 7), ('Kurios', 5.5), ('Sechzehn', 16), ('Bruch', 0.07), ('Text', 'abc')):
-        world.db.insert_article(name, unit_price=10, tax_rate=rate)
-    html = page_of(kind, world)
-    by_name = {a['name']: key for key, a in data_block(Dom(html), 'articlesData').items()}
-    program = ("var got = []; type($('tax_rate'), '7'); " + ''.join(
-        f"addArticleRow('{by_name[name]}'); got.push(rows()[rows().length - 1].querySelector('.item-tax').value);"
-        for name in ('Fachbuch', 'Kurios', 'Sechzehn', 'Bruch', 'Text')) + "emit('got', got);")
-
-    out = run_mask(tmp_path, html, kind, program)
-
-    assert out['got'] == ['7', '5.5', '7', '7', '7']                                 # was die Liste nicht kennt, nimmt den Satz des Felds (7)
-
-
-@NO_NODE
-@pytest.mark.parametrize('kind', KINDS)
-def test_the_choices_of_a_new_row_come_from_the_list_of_the_server(world, tmp_path, extended_rates, kind):
-    out = run_mask(tmp_path, page_of(kind, world), kind, "addFreeRow(); emit('state', snap());")
-
-    assert out['state']['options'] == [[['19', '19 %'], ['7', '7 %'], ['5.5', '5,5 %']]] * 2
-
-
-@NO_NODE
-@pytest.mark.parametrize('kind', KINDS)
 def test_choosing_a_rate_updates_the_summary_and_a_removed_row_leaves_its_group(world, tmp_path, kind):
     doc_id = make_doc(kind, world, TWO_RATES)
     program = ("choose(rows()[1], '19'); emit('both19', snap());"
@@ -1027,19 +959,6 @@ def test_choosing_a_rate_updates_the_summary_and_a_removed_row_leaves_its_group(
 
     assert out['both19']['rateRows'] == [['Mehrwertsteuer 19 % auf 150,00 € netto:', '28,50 €']] and out['both19']['sumGross'] == '178,50 €'
     assert out['removed']['rateRows'] == [['Mehrwertsteuer 19 % auf 100,00 € netto:', '19,00 €']] and out['removed']['sumGross'] == '119,00 €'
-
-
-@NO_NODE
-@pytest.mark.parametrize('kind', KINDS)
-def test_switching_on_gives_every_row_the_user_did_not_choose_the_default_and_keeps_the_chosen(world, tmp_path, extended_rates, kind):
-    program = ("addFreeRow(); addFreeRow(); choose(rows()[1], '5.5');"                 # die mittlere Zeile hat der Nutzer selbst gewählt
-               "type($('tax_rate'), '7'); tick('mixed_tax', true); emit('on', snap());"
-               "tick('mixed_tax', false); type($('tax_rate'), '19'); tick('mixed_tax', true); emit('again', snap());")
-
-    out = run_mask(tmp_path, page_of(kind, world), kind, program)
-
-    assert out['on']['selects'] == ['7', '5.5', '7']                                 # die anderen beiden folgen dem Feld „Mehrwertsteuer“ (7)
-    assert out['again']['selects'] == ['19', '5.5', '19']                            # beim erneuten Einschalten wieder, die gewählte bleibt
 
 
 @NO_NODE

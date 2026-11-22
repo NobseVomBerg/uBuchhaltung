@@ -18,8 +18,8 @@ from money import fmt_eur
 from export.einvoice_model import unit_display
 from export.invoice_files import stored_invoice_path
 from .pages import Header1, Header2, Header3, Footer, logo_url, script_json
-from .pages_invoice import (MIXED_HEAD_CELL, TAX_PREFILL_NOTE, _json_for_script, document_submenu, mixed_cell_html,
-                            mixed_checkbox_html, mixed_default_key, mixed_tax_script, rate_key)
+from .pages_invoice import (ITEM_TAX_RATE, MIXED_HEAD_CELL, TAX_LINK_HTML, TAX_NOTE_HTML, TAX_PREFILL_NOTE, _json_for_script, document_submenu,
+                            entry_choices, head_select, item_snapshot, mixed_cell_html, mixed_checkbox_html, mixed_tax_script, rate_key)
 from .richtext import sanitize_richtext
 
 
@@ -257,6 +257,10 @@ def _quote_form_html(db: Database, quote_id=None):
 
     pdf_file_exists = bool(is_edit and stored_invoice_path(db, quote_id, 'pdf', existing)[0])
     mixed_attr = '' if show_tax else ' disabled'        # das Häkchen „Steuersatz je Position“ gibt es nur mit Steuerausweis
+    # Die wählbaren Steuersätze aus den Stammdaten und das Feld „Mehrwertsteuer“ im Kopf; eine neue Zeile startet wie das Feld
+    choices = entry_choices(db)
+    head = head_select(choices, existing_items, tax_pct, bool(existing), show_tax)
+    tax_pct = head.rate
 
     # Die ID gehört nur in den Bearbeiten-Modus (ein fremder oder unbekannter Beleg ergibt das
     # leere Formular, das beim Speichern ein neues Angebot anlegt)
@@ -378,7 +382,7 @@ def _quote_form_html(db: Database, quote_id=None):
                     <td><input type="number" class="item-quantity" value="{quantity}" min="0" step="0.01" style="width:60px;"></td>
                     <td><input type="text" class="item-unit" value="{unit}" style="width:60px;"></td>
                     <td><input type="text" class="item-description" value="{description}" style="width:100%;"></td>
-                    {mixed_cell_html(item[10])}
+                    {mixed_cell_html(item[ITEM_TAX_RATE], '', choices, item_snapshot(item))}
                     <td><input type="number" class="item-price" value="{price}" min="0" step="0.01" style="width:80px;"> €</td>
                     <td class="item-total" style="text-align:right;">{fmt_eur(total)}</td>
                     <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color:red;">✕</button></td>
@@ -390,7 +394,7 @@ def _quote_form_html(db: Database, quote_id=None):
                     <td><input type="number" class="item-quantity" value="1" min="0" step="0.01" style="width:60px;"></td>
                     <td><input type="text" class="item-unit" value="Stk." style="width:60px;"></td>
                     <td><input type="text" class="item-description" style="width:100%;"></td>
-                    ''' + mixed_cell_html(mixed_default_key(tax_pct)) + '''
+                    ''' + mixed_cell_html(head.row_state[0], '', choices, head.row_state[1]) + '''
                     <td><input type="number" class="item-price" value="0" min="0" step="0.01" style="width:80px;"> €</td>
                     <td class="item-total" style="text-align:right;">0,00 €</td>
                     <td class="no-pdf"><button type="button" onclick="removeRow(this)" style="color:red;">✕</button></td>
@@ -408,13 +412,14 @@ def _quote_form_html(db: Database, quote_id=None):
                     <td colspan="7" style="text-align:right; border:none;">
                         <label><input type="checkbox" id="show_tax" __SHOW_TAX_CHECKED__ onchange="calculateTotals()"> Umsatzsteuer ausweisen</label>
                         <small style="color:#888;">(aus = Kleinunternehmer §&nbsp;19 UStG; der Hinweis darauf wird automatisch gedruckt)</small>
-                        ''' + mixed_checkbox_html(mixed_on, mixed_attr) + '''
+                        ''' + mixed_checkbox_html(mixed_on, mixed_attr) + ' ' + TAX_LINK_HTML + '''
                         __TAX_PREFILL_NOTE__
+                        ''' + TAX_NOTE_HTML + '''
                     </td>
                 </tr>
                 <tr class="totals-row" id="tax_row">
-                    <td colspan="4" style="text-align:right; border:none;">Mehrwertsteuer</td>
-                    <td style="text-align:right; border:none;"><input type="number" id="tax_rate" value="__TAX_PCT__" min="0" max="100" step="0.1" style="width:50px;">% auf <span id="tax_base">0,00</span> € netto:</td>
+                    <td colspan="4" style="text-align:right; border:none;">Mehrwertsteuer ''' + head.html + '''<input type="hidden" id="tax_rate" value="__TAX_PCT__"></td>
+                    <td style="text-align:right; border:none;">auf <span id="tax_base">0,00</span> € netto:</td>
                     <td id="tax_amount" style="text-align:right; font-weight:bold;">0,00 €</td>
                     <td class="no-pdf" style="border:none;"></td>
                 </tr>
@@ -467,7 +472,7 @@ def _quote_form_html(db: Database, quote_id=None):
         'mixRate': rate_key(a[4]),  # Auswahlwert für „Steuersatz je Position“ (None: nicht lesbar)
         'description': a[5] or ''} for a in articles}
 
-    s += mixed_tax_script()
+    s += mixed_tax_script(choices)
     s += '<script>\n'
     s += 'const ownCompaniesData = ' + _json_for_script(own_dict) + ';\n'
     s += 'const customersData = ' + _json_for_script(cust_dict) + ';\n'
@@ -655,14 +660,18 @@ def _quote_form_html(db: Database, quote_id=None):
             const items = [];
             document.querySelectorAll('.invoice-item-row').forEach((row,i)=>{
                 const desc = row.querySelector('.item-description').value;
-                if (desc) items.push({
+                if (!desc) return;
+                const item = {
                     position: i+1,
                     quantity: parseFloat(row.querySelector('.item-quantity').value)||1,
                     unit: row.querySelector('.item-unit').value,
                     description: desc,
                     unitPrice: parseFloat(row.querySelector('.item-price').value)||0,
                     taxRate: mixed ? mixRowRate(row) : taxRate
-                });
+                };
+                // Ein Steuersatz aus den Stammdaten, den der Satz allein nicht trägt, geht mit seiner ID mit (als letzter Schlüssel der Position)
+                if (mixed && mixRowEntry(row) !== null) item.taxRateId = mixRowEntry(row);
+                items.push(item);
             });
             if (!items.length) { showMessage('Bitte mindestens eine Position hinzufügen.', 'error'); return; }
             const data = {
@@ -675,6 +684,8 @@ def _quote_form_html(db: Database, quote_id=None):
             };
             if (mixed) data.taxMode = 'mixed';
             if (isEdit) data.quoteId = parseInt(quoteId);
+            // Ohne das Häkchen schickt der Kopf den Eintrag, den der Satz allein nicht trägt, als letzten Schlüssel (alle Positionen tragen ihn); ohne Steuerausweis nie
+            if (!mixed && showTax && mixHeadEntry() !== null) data.taxRateId = mixHeadEntry();
             fetch('/quote/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)})
                 .then(r=>r.json())
                 .then(d=>{ if(d.success){ window.location.href='/quote?id='+(isEdit?quoteId:String(d.quote_id)); }
