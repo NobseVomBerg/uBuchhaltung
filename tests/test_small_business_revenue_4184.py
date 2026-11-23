@@ -815,6 +815,28 @@ def test_the_rebuild_over_the_switch_names_both_accounts_and_books_each_assignme
     assert rebuild(db, invoice).plan.actions == []                                          # danach gibt es nichts mehr zu tun
 
 
+@pytest.mark.parametrize('rows_first', [False, True])
+def test_an_assignment_with_its_own_rows_beside_one_without_is_passed_over_without_a_reason(db, acct, rows_first):
+    """Eine Zuordnung ohne Sätze (wie der Import sie schreibt) neben einer gewöhnlichen mit Sätzen: Aufgebaut wird die ohne, die andere wird
+    still übergangen – ihre Sätze tragen die Nummer der Rechnung. Das Erlöskonto nach dem Datum darf dabei nie die Rechnungsnummer der Schleife
+    verdrängen (sonst gälten die eigenen Sätze der zweiten Zuordnung als fremde, und der Plan nennte einen falschen Grund)."""
+    invoice = _sent(db, 'R-TWO', 100.00, rate=-1, tax_amount=0)
+    early, late = _bank(db, acct, 50.00, date='2025-12-10'), _bank(db, acct, 50.00, date='2025-12-20')
+    with_rows, bare = (early, late) if rows_first else (late, early)
+    db.link_invoice_to_transaction(invoice, bare, 50.00)
+    assert db.assign_invoice_payment(invoice, with_rows, 50.00).ok
+    booked = rows_under(db, with_rows)
+
+    plan = rebuild(db, invoice).plan
+
+    assert plan.skipped == []
+    assert [(effect.date, effect.account, effect.net) for effect in plan.euer] == [(_raw(db, 'SELECT DateBooking FROM Bookings WHERE ID = ?', bare)[0][0], 4185, 500000)]
+    done = rebuild(db, invoice, dry_run=False, confirmed_check=plan.check)
+    assert (done.ok, done.executed) == (True, True)
+    assert rows_under(db, with_rows) == booked and rows_under(db, bare) == [(1800, 10000, 500000), (4340, 4185, 500000)]
+    assert db.find_payment_inconsistencies() == []
+
+
 @pytest.mark.parametrize('days, number', [(('2025-12-20', '2025-12-31'), 4185), (('2026-01-01', '2026-01-10'), 4184)])
 def test_assignments_of_one_year_keep_the_plan_of_a_single_account(db, acct, days, number):
     """Nennt der Plan nur ein Konto, ist es dessen ID – wie bei einem festen Erlöskonto (die Prüfsumme der Pläne eines Jahres bleibt, wie sie war)."""

@@ -563,14 +563,14 @@ class InvoiceRepairMixin:
                 skip('cent', payment=payment_id, booking=booking_id)
             elif ctx['revenue_by_number'] is not None:
                 # ohne Steuerausweis: das Erlöskonto hängt am Datum der Bankbewegung (4185 bis 2025, 4184 ab 2026) – kein Datum, kein Konto, nichts wird geraten
-                number = small_business_revenue_number(bank[3])
-                if number is None:
+                revenue_number = small_business_revenue_number(bank[3])     # nie ``number``: das ist die Rechnungsnummer dieser Schleife
+                if revenue_number is None:
                     skip('revenue_date', payment=payment_id)
-                elif ctx['revenue_by_number'].get(number) is None:
-                    skip('revenue_missing', payment=payment_id, number=number)
+                elif ctx['revenue_by_number'].get(revenue_number) is None:
+                    skip('revenue_missing', payment=payment_id, number=revenue_number)
                 else:
                     candidates.append(RebuildCandidate(payment_id, booking_id, amount, notes, pay_date, bank[3], bank[2],
-                                                       ctx['revenue_by_number'][number]))
+                                                       ctx['revenue_by_number'][revenue_number]))
             else:
                 candidates.append(RebuildCandidate(payment_id, booking_id, amount, notes, pay_date, bank[3], bank[2]))
         return candidates
