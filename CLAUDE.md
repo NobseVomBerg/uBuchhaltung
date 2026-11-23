@@ -161,7 +161,11 @@ kein Subagent darauf:
   (`tests/test_test_isolation.py`) läuft auch dort, ohne Skip
 - Neuere Python-Versionen prüft `.github/workflows/tests-python-versions.yml` einmal in der Woche und
   von Hand (`workflow_dispatch`), nicht bei jedem Push: Je Version läuft die ganze Suite noch einmal.
-  Eine neue Python-Version dort in der Liste ergänzen
+  Eine neue Python-Version dort in der Liste ergänzen. Der Schritt „Python-Build nennen“ schreibt ins Log, ob der Build die Dezimalrechnung
+  kompiliert mitbringt (`_decimal`): Ohne sie rechnet `decimal` in reinem Python, rund zehnmal langsamer – so scheiterte der Lauf mit
+  Python 3.15 an der Zeitgrenze der Satzprobe (`tests/test_receipt_reading_text.py`, `RATE_PROOF_SECONDS`: 5 s mit, 60 s ohne das Modul;
+  hier nachgestellt: ohne `_decimal` scheitert genau dieser eine Test). Eine Zeitgrenze in einem Test, der fast nur rechnet, braucht
+  diesen Spielraum; die Ergebnisse sind in beiden Fällen dieselben
 - **CLA-Zustimmung** (`.github/workflows/cla.yml`, `tools/cla_check.py`, nur Standardbibliothek):
   Zugestimmt wird je Pull Request mit einem Kommentar, der den Satz aus `CLA.md` samt Fassung in
   einer eigenen Zeile trägt – vom Konto, das den Pull Request geöffnet hat, und von jedem weiteren
