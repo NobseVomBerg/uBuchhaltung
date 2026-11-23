@@ -1297,11 +1297,15 @@ def handle_toggle_skr_menu(db: Database, coa_id_val):
     db.toggle_coa_show_in_menu(coa_id_val)
     return 303, "/masterdata/skr"
 
-#: Feste Sätze für Sicherung und Wiederherstellung (Seite *Sonstiges*, ``msg=``): Klartext der Meldung kommt nur aus
+#: Feste Sätze für Sicherung und Wiederherstellung (Seite *Daten*, ``msg=``): Klartext der Meldung kommt nur aus
 #: ``backup.BackupRefused``, jeder andere Fehler wird zu diesem Satz, der volle Fehler steht im Server-Log.
 BACKUP_FAILED = 'Die Sicherung ist fehlgeschlagen – Einzelheiten stehen im Server-Log.'
 RESTORE_FAILED = 'Die Wiederherstellung ist fehlgeschlagen – Einzelheiten stehen im Server-Log.'
 RESTORE_NO_ARCHIVE = 'Kein Archiv ausgewählt.'
+#: Im Demo-Modus teilen alle Besucher ein Verzeichnis: ``POST /backup/delete`` ist dort 403 (die Seite zeigt den Knopf nicht).
+BACKUP_DELETE_DEMO_REFUSED = 'Im Demo-Modus lassen sich Sicherungen nicht löschen.'
+#: Der DB-Export hängt an der SQL-Konsole (About-Seite): Wer sie nicht benutzen darf, exportiert nichts – 403, nichts geschrieben.
+DB_EXPORT_REFUSED = 'Der DB-Export steht nur Administratoren zur Verfügung.'
 
 
 def handle_backup_create(db: Database, post_data):
@@ -1357,17 +1361,46 @@ def handle_backup_restore(db: Database, post_data):
         return 303, f"/miscellaneous?restore=error&msg={quote(RESTORE_FAILED, safe='')}"
 
 
+def handle_backup_delete(post_data):
+    """Eine Sicherung löschen (``POST /backup/delete``, Formularfeld ``file``) – nur, was ``backup.downloadable_backups`` für den
+    angemeldeten Benutzer nennt (``backup.delete_backup``). Im Demo-Modus ``(403, BACKUP_DELETE_DEMO_REFUSED)``; sonst eine Weiterleitung
+    auf die Seite Daten, ``msg=`` nennt bei Erfolg nur den Namen (aus der Liste, nicht aus der Anfrage; die Seite setzt „Sicherung gelöscht: “ davor), sonst
+    der Klartext einer ``BackupRefused`` oder ``backup.DELETE_FAILED`` – nie ein Pfad, nie der Text einer Ausnahme."""
+    import traceback
+    from . import backup as backup_mod
+    if demo.is_active():
+        return 403, BACKUP_DELETE_DEMO_REFUSED
+    names = post_data.get('file', [])
+    try:
+        if len(names) != 1:
+            raise backup_mod.BackupNotFound(backup_mod.DOWNLOAD_NOT_FOUND)
+        entry = backup_mod.delete_backup(userctx.user_data_dir(), names[0])
+        return 303, f"/miscellaneous?backup_delete=ok&msg={quote(entry.name, safe='')}"
+    except backup_mod.BackupRefused as refused:
+        if refused.__cause__ is not None:
+            traceback.print_exc()                   # worauf die Meldung („Einzelheiten stehen im Server-Log“) verweist
+        return 303, f"/miscellaneous?backup_delete=error&msg={quote(str(refused), safe='')}"
+    except Exception:
+        traceback.print_exc()
+        return 303, f"/miscellaneous?backup_delete=error&msg={quote(backup_mod.DELETE_FAILED, safe='')}"
+
+
 def handle_db_export(db: Database):
-    """Export all DB data as INSERT statements to <user-data>/db-export.sql"""
+    """Alle Tabellen als INSERT-Statements nach <Datenordner des Benutzers>/db-export.sql schreiben – nur für die, die die SQL-Konsole
+    benutzen dürfen (``auth.sql_console_allowed``): Sonst ``(403, DB_EXPORT_REFUSED)``, und es wird nichts geschrieben. Das Ergebnis steht
+    auf der About-Seite, bei der auch der Kasten des Exports steht: ``/about?export=ok&tables=…&rows=…`` bzw. ``/about?export=error``
+    (der volle Fehler steht im Server-Log, nie in der Adresse)."""
     import os
+    if not auth.sql_console_allowed():
+        return 403, DB_EXPORT_REFUSED
     filepath = os.path.join(userctx.user_data_dir(), 'db-export.sql')
     try:
         tables, rows = db.export_to_sql(filepath)
-        return 303, f"/miscellaneous?export=ok&tables={tables}&rows={rows}"
+        return 303, f"/about?export=ok&tables={tables}&rows={rows}"
     except Exception:
         import traceback
         traceback.print_exc()                       # der volle Fehler steht im Server-Log, nicht in der Adresse
-        return 303, f"/miscellaneous?export=error&msg={quote('Export fehlgeschlagen.')}"
+        return 303, "/about?export=error"
 
 
 #: Der Stapel kennt nur Tag und Monat des Belegdatums, und sein Wirtschaftsjahr beginnt am 1. Januar: Ein Zeitraum über den
@@ -1672,7 +1705,7 @@ def handle_logo_upload(request_handler):
 WISO_IMPORT_FAILED = 'Der Import ist fehlgeschlagen – Einzelheiten stehen im Server-Log.'
 
 #: Im Demo-Modus gibt es den Import der Textexporte nicht (wie den der WISO-Datenbank: keine Datei eines Besuchers auf dem Server):
-#: ``POST /wiso/import`` ist dort 403, bevor der Body gelesen wird; *Sonstiges* zeigt den Satz statt des Formulars
+#: ``POST /wiso/import`` ist dort 403, bevor der Body gelesen wird; die Seite *Daten* zeigt den Satz statt des Formulars
 WISO_TEXT_DEMO_REFUSED = 'Im Demo-Modus ist der Import aus Textexporten abgeschaltet.'
 
 

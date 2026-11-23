@@ -40,6 +40,9 @@ Herunterladen (``GET /backup/download``): ``downloadable_backups`` nennt die Dat
 sich holen lassen (die Archive und die Kopien vor einer Programm-Umstellung – nie restore_*, replaced_*,
 Teildateien oder Links), ``open_download`` öffnet eine davon und ``copy_to`` liefert sie in Stücken
 aus (nie ganz im Speicher: eine Sicherung kann Gigabyte groß sein).
+
+Löschen (``POST /backup/delete``): ``delete_backup`` entfernt genau eine Datei aus dieser Liste – dieselbe Positivliste,
+dieselben Prüfungen wie beim Herunterladen, und nur, solange keine Sicherung und keine Wiederherstellung läuft.
 """
 import collections
 import errno
@@ -654,7 +657,8 @@ _MIGRATION_NAME = re.compile(r'[0-9]{8}_vor_([0-9]+\.[0-9]+\.[0-9]+)(?:_[0-9]+)?
 BackupEntry = collections.namedtuple('BackupEntry', 'name kind size mtime version')
 
 DOWNLOAD_NOT_FOUND = 'Diese Sicherung gibt es nicht.'
-DOWNLOAD_FOREIGN = 'Sicherungen lassen sich nur über die Seite „Sonstiges“ herunterladen.'
+DOWNLOAD_FOREIGN = 'Sicherungen lassen sich nur über die Seite „Daten“ herunterladen.'
+DELETE_FAILED = 'Die Sicherung ließ sich nicht löschen – Einzelheiten stehen im Server-Log.'
 
 
 def _plain_name(name):
@@ -746,3 +750,29 @@ def copy_to(src, size, write, chunk=DOWNLOAD_CHUNK):
         write(block)
         sent += len(block)
     return sent
+
+
+# ── Löschen ──────────────────────────────────────────────────────────────────
+def delete_backup(user_dir, name):
+    """Eine Sicherung aus ``downloadable_backups`` löschen und ihren ``BackupEntry`` liefern (der Name darin stammt aus der Liste, nicht
+    aus der Anfrage). Alles, was nicht in der Liste steht – ein unbekannter Name, ein Pfadanteil, restore_*/replaced_*, eine Teildatei, ein
+    Ordner, ein Link –, ist ``BackupNotFound`` und bleibt unangetastet; ebenso eine Datei, die nicht direkt in backup/ liegt (``realpath``;
+    backup/ selbst darf ein Link sein). Läuft für das Verzeichnis gerade eine Sicherung oder Wiederherstellung (``_exclusive``), wird
+    abgelehnt (``BackupRefused``), ohne zu warten. Scheitert das Entfernen, hängt die Ursache an der Verkettung (``from e``: der Aufrufer
+    schreibt sie ins Server-Log), die Meldung ist ``DELETE_FAILED``."""
+    if not _plain_name(name):
+        raise BackupNotFound(DOWNLOAD_NOT_FOUND)
+    with _exclusive(user_dir):
+        entry = next((item for item in downloadable_backups(user_dir) if item.name == name), None)
+        if entry is None:
+            raise BackupNotFound(DOWNLOAD_NOT_FOUND)
+        path = os.path.join(user_dir, 'backup', name)
+        if os.path.dirname(os.path.realpath(path)) != os.path.realpath(os.path.join(user_dir, 'backup')):
+            raise BackupNotFound(DOWNLOAD_NOT_FOUND)
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            raise BackupNotFound(DOWNLOAD_NOT_FOUND) from None
+        except OSError as e:
+            raise BackupRefused(DELETE_FAILED) from e
+        return entry

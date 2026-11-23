@@ -138,9 +138,9 @@ class BigPage:
         self._used = False
         monkeypatch.setattr(server_app.pages, 'PageAbout', self)
 
-    def __call__(self):
+    def __call__(self, *args, **kwargs):
         if self._used:
-            return self._original()
+            return self._original(*args, **kwargs)
         self._used = True
         self.entered.set()
         return self.text

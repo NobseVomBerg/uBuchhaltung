@@ -106,8 +106,11 @@ def test_the_not_found_messages_are_the_known_ones(server_port, books):
 
 
 # ── Löschaktionen (POST) ─────────────────────────────────────────────────────
-# Aktionen, die gar keine ID nennen (die ID-Prüfung gilt dort nicht; ``_post_action_routes``)
-ACTIONS_WITHOUT_ID = frozenset({'/masterdata/skr/add_standard'})
+# Aktionen, die gar keine ID nennen (die ID-Prüfung gilt dort nicht; ``_post_action_routes``): wohin die Antwort führt, wenn die Adresse
+# keine ID trägt (``/backup/delete`` nennt die Sicherung im Formularfeld ``file``: ohne es steht die Meldung auf der Seite Daten)
+WITHOUT_ID_LOCATION = {'/masterdata/skr/add_standard': '/masterdata/skr?added=',
+                       '/backup/delete': '/miscellaneous?backup_delete=error&msg='}
+ACTIONS_WITHOUT_ID = frozenset(WITHOUT_ID_LOCATION)
 
 
 def action(port, csrf, path_and_query):
@@ -131,7 +134,7 @@ def test_an_action_without_a_valid_id_is_400_and_changes_nothing(server_port, bo
 @pytest.mark.parametrize('query', ['', '?id=abc', '?id=', '?id=1.5', '?id=1'])
 def test_an_action_without_an_id_runs_whatever_the_id_parameter_says(server_port, books, path, query):
     resp = action(server_port, books.csrf, path + query)
-    assert resp.status == 303 and resp.headers['Location'].startswith('/masterdata/skr?added=')
+    assert resp.status == 303 and resp.headers['Location'].startswith(WITHOUT_ID_LOCATION[path])
 
 
 def test_an_action_with_a_valid_id_still_runs(server_port, books):

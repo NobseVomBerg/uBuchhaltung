@@ -324,88 +324,95 @@ class _CoreMixin:
         except ImportError:
             pass  # Parser not available, skip logging
     def get_table_statistics(self):
-        """Get statistics about all tables in the database
-        
-        Returns:
-            list: List of tuples (table_name, row_count)
-        """
+        """Je Tabelle der Datenbank die Zahl ihrer Zeilen: ``[(Name, Anzahl)]``, nach Namen sortiert, ohne die internen Tabellen von SQLite.
+
+        Der Name steht als Bezeichner in Anführungszeichen in der Abfrage (ein ``"`` darin verdoppelt): Eine über die SQL-Konsole angelegte Tabelle
+        kann Leerzeichen oder Sonderzeichen im Namen tragen. Lässt sich eine Tabelle nicht zählen (etwa eine virtuelle Tabelle, deren Modul fehlt),
+        steht statt der Zahl ``'–'`` da – die Übersicht der anderen bleibt."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        
-        # Get all table names
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-        tables = cursor.fetchall()
-        
-        statistics = []
-        for table in tables:
-            table_name = table[0]
-            # Skip sqlite internal tables
-            if table_name.startswith('sqlite_'):
-                continue
-            
-            # Get row count for each table
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
-            count = cursor.fetchone()[0]
-            statistics.append((table_name, count))
-        
-        conn.close()
-        return statistics
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            statistics = []
+            for (table_name,) in cursor.fetchall():
+                name = str(table_name)
+                if name.startswith('sqlite_'):
+                    continue
+                quoted = '"' + name.replace('"', '""') + '"'
+                try:
+                    cursor.execute(f'SELECT COUNT(*) FROM {quoted}')
+                    count = cursor.fetchone()[0]
+                except sqlite3.Error:
+                    count = '–'
+                statistics.append((name, count))
+            return statistics
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _sql_identifier(name):
+        """Ein Tabellen- oder Spaltenname als Bezeichner in Anführungszeichen (ein ``"`` darin verdoppelt)."""
+        return '"' + str(name).replace('"', '""') + '"'
+
+    @staticmethod
+    def _sql_literal(value):
+        """Ein Wert aus der Datenbank als SQL-Literal für den DB-Export: NULL, Zahl, ``X'…'`` für Binärdaten, sonst Text in Hochkommas."""
+        if value is None:
+            return 'NULL'
+        if isinstance(value, bool):
+            return '1' if value else '0'
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, float):
+            if value != value:
+                return 'NULL'
+            if value in (float('inf'), float('-inf')):
+                return '9e999' if value > 0 else '-9e999'
+            return repr(value)
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return "X'" + bytes(value).hex() + "'"
+        return "'" + str(value).replace("'", "''") + "'"
+
     def export_to_sql(self, filepath: str) -> tuple[int, int]:
-        """Export all table data as INSERT statements to a .sql file.
-        Skips sqlite internal tables and tables with 0 rows.
-        Returns (tables_exported, rows_exported)."""
+        """Alle Tabellen als INSERT-Befehle in eine .sql-Datei schreiben (ohne die internen Tabellen von SQLite und ohne leere Tabellen).
+
+        Tabellen- und Spaltennamen stehen als Bezeichner in Anführungszeichen (``_sql_identifier``), Werte als Literale (``_sql_literal``) –
+        ein Name aus der SQL-Konsole mit Leerzeichen, Klammern oder einem Semikolon bleibt ein Name und wird nie ein eigener Befehl; die
+        Kommentarzeile je Tabelle nennt den Namen ohne Zeilenumbrüche. Returns ``(Tabellen, Zeilen)``."""
+        import datetime
         import os
         conn = self._get_connection()
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            tables = [str(row[0]) for row in cursor.fetchall() if not str(row[0]).startswith('sqlite_')]
 
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-        tables = [row[0] for row in cursor.fetchall() if not row[0].startswith('sqlite_')]
-
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-
-        tables_exported = 0
-        rows_exported = 0
-
-        with open(filepath, 'w', encoding='utf-8') as f:
-            import datetime
-            f.write(f"-- DB-Export {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("-- Direkt verwendbar im SQL-Konsolenbereich (INSERT-Statements)\n\n")
-
-            for table in tables:
-                cursor.execute(f"SELECT * FROM [{table}]")
-                rows = cursor.fetchall()
-                if not rows:
-                    continue
-
-                col_names = [d[0] for d in cursor.description]
-                cols_sql = ', '.join(f'[{c}]' for c in col_names)
-
-                f.write(f"-- {table}\n")
-                f.write(f"INSERT INTO {table} ({cols_sql}) VALUES\n")
-                
-                for idx, row in enumerate(rows):
-                    vals = []
-                    for v in row:
-                        if v is None:
-                            vals.append('NULL')
-                        elif isinstance(v, (int, float)):
-                            vals.append(str(v))
-                        else:
-                            escaped = str(v).replace("'", "''")
-                            vals.append(f"'{escaped}'")
-                    vals_sql = ', '.join(vals)
-                    
-                    # Letzte Zeile bekommt Semikolon, alle anderen ein Komma
-                    if idx == len(rows) - 1:
-                        f.write(f"({vals_sql});\n")
-                    else:
-                        f.write(f"({vals_sql}),\n")
-                    rows_exported += 1
-                f.write("\n")
-                tables_exported += 1
-
-        conn.close()
-        return tables_exported, rows_exported
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            tables_exported = 0
+            rows_exported = 0
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(f"-- DB-Export {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("-- Direkt verwendbar im SQL-Konsolenbereich (INSERT-Statements)\n\n")
+                for table in tables:
+                    quoted = self._sql_identifier(table)
+                    cursor.execute(f'SELECT * FROM {quoted}')
+                    rows = cursor.fetchall()
+                    if not rows:
+                        continue
+                    cols_sql = ', '.join(self._sql_identifier(d[0]) for d in cursor.description)
+                    f.write('-- ' + ' '.join(table.split()) + '\n')
+                    f.write(f'INSERT INTO {quoted} ({cols_sql}) VALUES\n')
+                    last = len(rows) - 1
+                    for idx, row in enumerate(rows):
+                        vals_sql = ', '.join(self._sql_literal(v) for v in row)
+                        # Letzte Zeile bekommt Semikolon, alle anderen ein Komma
+                        f.write(f'({vals_sql});\n' if idx == last else f'({vals_sql}),\n')
+                        rows_exported += 1
+                    f.write('\n')
+                    tables_exported += 1
+            return tables_exported, rows_exported
+        finally:
+            conn.close()
 
 
 # So viele Treffer liefern die Suchen der Belege und Buchungen höchstens – auch bei einem direkten Aufruf der Datenbankschicht.

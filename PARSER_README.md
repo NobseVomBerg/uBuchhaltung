@@ -275,7 +275,7 @@ einer Zeile keinen Treffer mit gleichem Betrag, aber einen Spiegel des Bestands 
 gleichem Beleg, Datum, Konto, Gegenkonto und dem Betrag −gross, den die Datei nicht selbst beansprucht
 (eine eigene Zeile mit diesem Betrag), ist die Zeile ein Duplikat: Kein zweiter Satz, der vorhandene
 bleibt, wie er ist. Der Import zählt solche Spiegel – mit gleichem wie mit umgekehrtem Vorzeichen –
-als `legacy_mirrors`; die Seite *Sonstiges* nennt die Zahl („noch nach der alten Lesart
+als `legacy_mirrors`; die Seite *Daten* nennt die Zahl („noch nach der alten Lesart
 gespeichert“).
 
 **Zeilen auf Konten 1000–1099 aus einer älteren Version:** Bis 2.0.x galten diese Konten als Kasse, die
@@ -286,7 +286,7 @@ zusätzlich mit dem Betrag der alten Regel: Gleiche Beleg-Nr. (auch leer), gleic
 Gegenkonto (ein im Kontenrahmen fehlendes Konto gilt auf beiden Seiten als gleich) – dann ist die Zeile
 ein Duplikat. Jede vorhandene Zeile zählt höchstens einmal, und nicht die, die eine andere Zeile der
 Datei mit ihrem eigenen Betrag beansprucht. Die Altzeile bleibt, wie sie ist (Form und Betrag); der
-Import zählt sie als `legacy_stock_rows`, und die Seite *Sonstiges* nennt die Zahl.
+Import zählt sie als `legacy_stock_rows`, und die Seite *Daten* nennt die Zahl.
 
 **Duplikat-Erkennung (zählbasiert):** REFERENZNUMMER + Datum + COA_ID + Betrag;
 ohne Referenznummer: Datum + COA_ID + Betrag (nur Entry-Buchungen, ohne Text —
@@ -336,14 +336,14 @@ Buchung als eine still falsch übernommene:
   wiedererkannt“) und listet die ersten 500 übernommenen Buchungen auf.
 - **Möglicherweise doppelt:** Hat der Import zu Datum, Betrag und Konto einen Satz neu angelegt,
   meldet er die dazu vorhandenen, nicht übernommenen Buchungen (Zähler und die ersten 500 auf der
-  Seite *Sonstiges*, ohne Rücksicht auf Text und Beleg-Nr.). Stimmt es, ist von beiden eine
+  Seite *Daten*, ohne Rücksicht auf Text und Beleg-Nr.). Stimmt es, ist von beiden eine
   zu löschen.
 
 **Re-Import der Datenbank:** Eine schon bekannte `SourceGroup` wird nicht mehr nur übersprungen: Der
 Satz wird mit der Zeile der Gruppe verglichen (Datum, Konto, Gegenkonto, |Betrag|). Ein
 `mirror_legacy`-Spiegel wird gezählt (`legacy_mirrors`) und bleibt, wie er ist. Weicht eine andere
 gespeicherte Form von der des frischen Imports ab (z. B. weil ein Konto inzwischen ein Geldkonto ist),
-wird das nur gemeldet (`form_conflicts`, die ersten 500 auf der Seite *Sonstiges*) – nichts wird
+wird das nur gemeldet (`form_conflicts`, die ersten 500 auf der Seite *Daten*) – nichts wird
 umgedeutet.
 
 **Neu angelegte Sätze (Datenbank-Import, seit 2.3.2):** Legt WISO die Buchungen eines Zeitraums neu an (nach einem
@@ -375,7 +375,7 @@ zwei werden umgehängt, eine bleibt verwaist).
   BU-Schlüssel kommt nur an die Zeile, wo er leer ist (`datev_keys_filled`; der Steuersatz gleicht hier immer). Gezählt wird
   `regrouped_rows`; die Zusammenfassung nach dem Import nennt sie und die verwaisten Zeilen.
 - Was nicht passt, wird neu angelegt wie bisher; die Zeile bleibt **verwaist**. Der Import meldet sie (`orphaned_rows_count`, die ersten
-  50 in `orphaned_rows` mit ID, Datum, Betrag in Euro, Konto- und Gegenkontonummer und Text), die Seite *Sonstiges* nennt sie mit
+  50 in `orphaned_rows` mit ID, Datum, Betrag in Euro, Konto- und Gegenkontonummer und Text), die Seite *Daten* nennt sie mit
   einem Link auf die Buchung: „… Buchungen aus einem früheren Import stehen nicht mehr in der WISO-Datenbank (dort gelöscht oder mit
   anderem Inhalt neu angelegt). Sie zählen in den Auswertungen weiter mit – bitte prüfen und löschen, was doppelt ist.“ **Gelöscht wird
   nichts.** Die Liste nennt Buchungen, deren Quelle (Quellgruppe) in der WISO-Datenbank nicht mehr steht. **Eine Änderung innerhalb einer
@@ -405,7 +405,7 @@ den TIP-Seiten, die `RDB$PAGES` nennt; ältere Versionen sind teils nur als Diff
 einer Datei, die bei geöffnetem WISO kopiert wurde, keine halbfertigen Änderungen in die Bücher. Das Ergebnis nennt
 `uncommitted_records` (oberste Version nicht abgeschlossen: letzter abgeschlossener Stand übernommen), `unreadable_versions`
 (Kette beschädigt: der Satz fehlt) und `unknown_tx_state` (Zustand nicht lesbar: gelesen, wie in der Datei); die Seite
-*Sonstiges* zeigt sie als Hinweise. Geprüft an zwei echten Firebird-3.0-Dateien (`tests/fixtures/firebird/`), nicht an einer
+*Daten* zeigt sie als Hinweise. Geprüft an zwei echten Firebird-3.0-Dateien (`tests/fixtures/firebird/`), nicht an einer
 großen WISO-Datei mit mehreren TIP-Seiten.
 
 **Die Dateien kommen als Upload** (seit 2.3.7, `server/wiso_upload.py`): `DB1.FDB` und optional `DB0.FDB` werden im Browser gewählt, je als
@@ -440,7 +440,7 @@ Betrag und Form nicht. Der Leser liefert dazu je Satz die Nummern nach der alten
 (`WisoBooking.legacy_account`/`legacy_counter_account`, nur wo sie abweichen); passt zu einem Satz einer
 bekannten Gruppe keine Zeile mit den heutigen Konten, wohl aber eine mit den alten (Datum, |Betrag| und
 Text gleich), zählt der Import sie (`subaccount_rows`, nur Fälle, in denen die alte Nummer die eines Basiskontos
-war), und die Seite *Sonstiges* nennt die Zahl. Grenze: Ein Satz ohne `ACCOUNTINGID` (leere Quellgruppe)
+war), und die Seite *Daten* nennt die Zahl. Grenze: Ein Satz ohne `ACCOUNTINGID` (leere Quellgruppe)
 wird nur über die Übernahmesuche wiedererkannt, und die hängt am Konto – auf einem Unterkonto entstünde beim
 Re-Import über einen älteren Import ein zweiter Satz. Die Übernahme CSV → Datenbank bleibt in ihren Regeln
 unverändert: Die CSV trägt die eigenen Nummern, das Konto passt jetzt von selbst. Eine vorhandene Anlage
@@ -491,7 +491,7 @@ zählt ihn). Einzige Ausnahme ist ein Bestand aus einem Import bis 2.2.4, der de
 geschrieben hat: Ist seine Quellgruppe bekannt und gleicht ihm eine Zeile der Gruppe (Datum, Konten, |Betrag|, wie bei jedem
 Re-Import; auch auf dem Basiskonto eines Unterkontos) – oder liegt, vom Nutzer geändert, eine freie Zeile der Gruppe in
 seinem Planjahr (siehe *Geänderter AfA-Satz*) –, bleibt die Zeile unverändert, sie zählt als gebucht
-(`future_depreciations_kept`, auch in `skipped`), und die Seite *Sonstiges* nennt die Zahl.
+(`future_depreciations_kept`, auch in `skipped`), und die Seite *Daten* nennt die Zahl.
 
 **Der Status eines Planjahrs in `AssetDepreciations` folgt der Buchung, nicht dem Datum:** `booked`, wenn der AfA-Satz der
 Anlage für das Jahr in den Büchern steht (neu angelegt, aus dem CSV-Import übernommen oder als Zeile seiner bekannten Gruppe
@@ -663,7 +663,7 @@ danach kein gültiges UTF-8 ist, wird abgelehnt.
 `SCHLUESSEL` wird in einen Steuersatz übersetzt: zuerst über die Regeln des Exports (`db/datev_keys.py`: die Schlüssel 401, 402, 7, 6,
 101, 102, 5, 4, 121 und 122, im zweiten Halbjahr 2020 mit den vertauschten Sätzen), sonst über die Tabelle `TaxKeys`. Ein Schlüssel, den
 beide nicht kennen, wird nicht geraten: Die Zeile kommt ohne Steuersatz und zählt in `unknown_tax_keys` (Hinweis auf der Seite
-*Sonstiges*). Ein Schlüssel von 1 bis 9999 wird am Satz gespeichert (`Bookings.DatevKey`); leer, 0 und alles andere bleibt ohne –
+*Daten*). Ein Schlüssel von 1 bis 9999 wird am Satz gespeichert (`Bookings.DatevKey`); leer, 0 und alles andere bleibt ohne –
 der Export leitet ihn dann ab. Der Import legt nur neue Zeilen an: Ein Duplikat bleibt, wie es ist (auch ohne Schlüssel).
 
 Beim Import aus der WISO-Datenbank liest `importers/wiso_fdb` den Schlüssel aus `DATEVVATKEY` (optionale Spalte) und die Berater- und

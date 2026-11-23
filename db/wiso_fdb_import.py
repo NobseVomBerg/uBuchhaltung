@@ -205,7 +205,7 @@ class WisoFdbImportMixin:
 
         ``bookings`` zählt alle Zeilen in ``Bookings``, ``wiso_rows`` die ``entry``-Zeilen mit nicht leerer
         ``SourceGroup`` (was ein früherer Import aus der WISO-Datenbank geschrieben hat). Der Import ist für einen leeren
-        Bestand gedacht: Das Formular auf *Verschiedenes* und ``server.handlers.handle_wiso_fdb_import`` fragen danach und
+        Bestand gedacht: Das Formular auf der Seite *Daten* und ``server.handlers.handle_wiso_fdb_import`` fragen danach und
         verlangen bei ``bookings`` > 0 eine ausdrückliche Bestätigung. :meth:`import_wiso_fdb` selbst prüft das nicht
         (Tests, Demodaten und Skripte rufen es direkt auf).
         """

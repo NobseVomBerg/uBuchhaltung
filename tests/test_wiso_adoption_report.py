@@ -5,7 +5,7 @@
 
 Gegenstück zu ``test_wiso_csv_then_database.py`` (dort stehen die Regeln der Übernahme): hier das
 Ergebnis (``adopted``, ``adopted_rows``, ``possible_duplicates``), das SQL-Protokoll, die
-Transaktion, die Weiterleitung des Handlers und die Seite „Verschiedenes“ samt ihrem Skript – mit
+Transaktion, die Weiterleitung des Handlers und die Seite „Daten“ samt ihrem Skript – mit
 feindlichen und kaputten Werten in der Ergebnisdatei.
 
 Die Sätze und Helfer sind die aus ``test_wiso_csv_then_database.py``; alle Daten sind erfunden.

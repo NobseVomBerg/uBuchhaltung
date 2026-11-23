@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 unsix IT Engineering
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
-"""SQL-Konsole (Sonstiges → „SQL-Befehle ausführen"): auf die eigene Datenbank beschränkt.
+"""SQL-Konsole (About-Seite → „SQL-Befehle ausführen"): auf die eigene Datenbank beschränkt.
 
 Drei Teile:
   1. handle_execute_sql(): Der SQLite-Authorizer sperrt ATTACH, DETACH, VACUUM (auch
@@ -13,8 +13,8 @@ Drei Teile:
      Schreibmodus läuft, ändert die eigene Datenbank (Modi: tests/test_sql_console_modes.py),
   2. auth.sql_console_allowed(): ohne eingerichtete Installation immer, danach nur
      Administratoren,
-  3. HTTP gegen einen echten Server: POST /execute_sql und die Seite Sonstiges (mit
-     automatischer Anmeldung, mit Sitzungen, vor der Ersteinrichtung), dazu der
+  3. HTTP gegen einen echten Server: POST /execute_sql und die About-Seite, auf der die Konsole steht
+     (mit automatischer Anmeldung, mit Sitzungen, vor der Ersteinrichtung), dazu der
      ursprüngliche Angriff – ein Administrator öffnet per ATTACH die Datenbank eines
      anderen Nutzers bzw. auth.db.
 
@@ -47,7 +47,7 @@ CONSOLE_DENIED = ("nicht erlaubt – ATTACH, DETACH, VACUUM sowie verändernde o
 NOTHING_CHANGED = ("Nichts wurde geändert – im Schreibmodus laufen alle Befehle einer Anfrage in "
                    "einer Transaktion.")
 ADMIN_ONLY = "Die SQL-Konsole steht nur Administratoren zur Verfügung."
-NOTICE = "nur Administratoren zur Verfügung"                     # Hinweis statt der Konsole
+NOTICE = "nur Administratoren zur Verfügung"                     # der frühere Hinweis statt der Konsole: gibt es nicht mehr
 EXPORT_HINT = "Ein kleinerer Export lässt sich im SQL-Konsolenbereich einfügen"
 FOREIGN_SECRET = "Fremdgeheimnis-4711"
 BOB_CONTACT = "Bobs Geheimkunde GmbH"
@@ -323,15 +323,15 @@ def test_non_admin_post_is_403_json_and_writes_nothing(server_port, console_user
     assert _query(bob.db, "SELECT DisplayName FROM Contacts") == [(BOB_CONTACT,)]
 
 
-def test_non_admin_page_shows_the_notice_instead_of_the_console(server_port, console_users):
-    resp = get(server_port, "/miscellaneous", headers=console_users.bob.cookie)
+def test_non_admin_page_shows_neither_the_console_nor_a_notice_nor_the_export(server_port, console_users):
+    """Wer die Konsole nicht benutzen darf, sieht den Kasten gar nicht – auch keinen Ersatz –, und der DB-Export hängt an ihr."""
+    resp = get(server_port, "/about", headers=console_users.bob.cookie)
     assert resp.status == 200
     assert 'id="sql_input"' not in resp.text
     assert "executeSql" not in resp.text
-    assert NOTICE in resp.text
-    # Der Kasten DB-Export bleibt, nur der Satz zur Konsole entfällt
-    assert "<h2>DB-Export</h2>" in resp.text
-    assert "db-export.sql" in resp.text
+    assert NOTICE not in resp.text
+    assert "<h2>DB-Export</h2>" not in resp.text
+    assert "db-export.sql" not in resp.text
     assert EXPORT_HINT not in resp.text
 
 
@@ -352,7 +352,7 @@ def test_admin_post_runs_in_the_own_database(server_port, console_users):
 
 
 def test_admin_page_shows_the_console(server_port, console_users):
-    resp = get(server_port, "/miscellaneous", headers=console_users.admin.cookie)
+    resp = get(server_port, "/about", headers=console_users.admin.cookie)
     assert resp.status == 200
     assert 'id="sql_input"' in resp.text
     assert "executeSql" in resp.text
@@ -422,7 +422,7 @@ def test_auto_login_console_without_valid_token_is_403_and_runs_nothing(server_p
 
 
 def test_auto_login_page_shows_the_console(server_port, auto_login):
-    resp = get(server_port, "/miscellaneous")
+    resp = get(server_port, "/about")
     assert resp.status == 200
     assert 'id="sql_input"' in resp.text
     assert "executeSql" in resp.text
@@ -436,5 +436,6 @@ def test_console_is_unreachable_before_setup(server_port):
     resp = post(server_port, "/execute_sql", form={"sql_commands": "SELECT 1"})
     assert resp.status == 303
     assert resp.headers["Location"] == "/setup"
-    assert get(server_port, "/miscellaneous").headers["Location"] == "/setup"
+    for page in ("/about", "/miscellaneous"):
+        assert get(server_port, page).headers["Location"] == "/setup"
     assert not os.path.exists(userctx.DATA_ROOT)

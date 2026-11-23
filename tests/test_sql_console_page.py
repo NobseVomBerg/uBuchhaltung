@@ -3,6 +3,9 @@
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """SQL-Konsole: die Seite (Kästchen „Schreiben erlauben“, Skript) und das Lösch-Skript „Zeitbereich löschen“ (2.3.11).
 
+Die Konsole steht auf der About-Seite (``pages.PageAbout``); bis dahin stand sie auf der Seite Sonstiges, ihr HTML und ihr Skript sind dabei
+unverändert mitgezogen (tests/test_data_page_cleanup.py hält fest, wo sie steht und wer sie sieht).
+
 Drei Teile:
   1. Die Seite zeigt unter dem SQL-Feld das Kästchen „Schreiben erlauben“ (nie angekreuzt beim Laden) mit dem Hinweis auf
      die beiden Modi; es braucht keine neue CSS-Klasse. Das Skript setzt Meldungen nur über ``textContent`` und sendet
@@ -29,7 +32,7 @@ from types import SimpleNamespace
 import pytest
 
 from server import handlers
-from server.pages_miscellaneous import PageMiscellaneous
+from server.pages import PageAbout
 from tests import installation
 from tests.document_helpers import add_contacts, add_document
 from tests.dom_helpers import Dom
@@ -54,7 +57,7 @@ def _console_scripts(page):
 
 # ── Teil 1: die Seite ────────────────────────────────────────────────────────
 def test_the_page_shows_the_unchecked_write_box_with_its_hint_below_the_sql_field(probe_db):
-    page = PageMiscellaneous(probe_db)
+    page = PageAbout(probe_db)
     box = Dom(page).one("input", id="sql_write")
     assert box["type"] == "checkbox" and "checked" not in box        # bei jedem Laden nicht angekreuzt
     assert box.get("autocomplete") == "off"                          # auch nicht vom Browser nach einem Neuladen wiederhergestellt
@@ -64,7 +67,7 @@ def test_the_page_shows_the_unchecked_write_box_with_its_hint_below_the_sql_fiel
 
 
 def test_the_write_box_needs_no_new_css_class(probe_db):
-    page = PageMiscellaneous(probe_db)
+    page = PageAbout(probe_db)
     with open(os.path.join(ROOT, "buch.css"), encoding="utf-8") as handle:
         css = handle.read()
     area = page[page.index('id="sql_input"'):page.index('onclick="executeSql()"')]
@@ -75,13 +78,13 @@ def test_the_write_box_needs_no_new_css_class(probe_db):
 
 
 def test_the_range_delete_template_names_the_box(probe_db):
-    page = PageMiscellaneous(probe_db)
+    page = PageAbout(probe_db)
     assert "Zum Ausführen „Schreiben erlauben“ ankreuzen und obigen Button klicken." in page
     assert "bitte prüfen, „Schreiben erlauben“ ankreuzen und „SQL ausführen“ klicken." in page
 
 
 def test_the_script_sets_messages_only_through_text_content_and_asks_before_writing(probe_db):
-    scripts = _console_scripts(PageMiscellaneous(probe_db))
+    scripts = _console_scripts(PageAbout(probe_db))
     assert len(scripts) == 2
     text = "\n".join(scripts)
     for forbidden in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
@@ -162,7 +165,7 @@ READ_ANSWER = {"success_count": 1, "total": 1, "errors": [], "output": "1\n1"}
 
 @needs_node
 def test_without_the_tick_the_script_sends_no_write_field_and_asks_nothing(probe_db, tmp_path):
-    log = _run_script(tmp_path, PageMiscellaneous(probe_db), input="SELECT 1", checked=False, response=READ_ANSWER)
+    log = _run_script(tmp_path, PageAbout(probe_db), input="SELECT 1", checked=False, response=READ_ANSWER)
     assert log["confirms"] == []
     (fetch,) = log["fetches"]
     assert (fetch["url"], fetch["method"]) == ("/execute_sql", "POST")
@@ -175,7 +178,7 @@ def test_without_the_tick_the_script_sends_no_write_field_and_asks_nothing(probe
 
 @needs_node
 def test_with_the_tick_the_script_asks_first_and_sends_write_1_only_after_the_answer_yes(probe_db, tmp_path):
-    log = _run_script(tmp_path, PageMiscellaneous(probe_db), input="INSERT INTO T VALUES (1)", checked=True, confirm="ok",
+    log = _run_script(tmp_path, PageAbout(probe_db), input="INSERT INTO T VALUES (1)", checked=True, confirm="ok",
                       response={"success_count": 1, "total": 1, "errors": [], "output": "", "rolled_back": False})
     assert log["confirms"] == [CONFIRM_TEXT]
     assert log["fetchesBeforeConfirm"] == 0 and log["checkedBeforeConfirm"] is True      # bis zur Antwort nichts gesendet
@@ -187,7 +190,7 @@ def test_with_the_tick_the_script_asks_first_and_sends_write_1_only_after_the_an
 
 @needs_node
 def test_cancelling_the_question_sends_nothing_and_keeps_the_tick(probe_db, tmp_path):
-    log = _run_script(tmp_path, PageMiscellaneous(probe_db), input="DELETE FROM T", checked=True, confirm="cancel")
+    log = _run_script(tmp_path, PageAbout(probe_db), input="DELETE FROM T", checked=True, confirm="cancel")
     assert log["confirms"] == [CONFIRM_TEXT] and log["fetches"] == []
     assert log["checked"] is True and log["status"] == []
 
@@ -198,7 +201,7 @@ def test_the_script_shows_errors_the_rolled_back_sentence_and_warnings_as_text(p
               "errors": ["Befehl 2: <img src=x onerror=alert(1)>", "Nichts wurde geändert – im Schreibmodus laufen alle "
                          "Befehle einer Anfrage in einer Transaktion."],
               "warnings": ["Die Änderungen sind gespeichert, ließen sich aber nicht ins SQL-Protokoll schreiben."]}
-    log = _run_script(tmp_path, PageMiscellaneous(probe_db), input="X", checked=True, confirm="ok", response=answer)
+    log = _run_script(tmp_path, PageAbout(probe_db), input="X", checked=True, confirm="ok", response=answer)
     assert log["status"] == [
         {"className": "errorColor", "text": "Befehl 2: <img src=x onerror=alert(1)>; Nichts wurde geändert – im "
                                             "Schreibmodus laufen alle Befehle einer Anfrage in einer Transaktion."},
@@ -209,7 +212,7 @@ def test_the_script_shows_errors_the_rolled_back_sentence_and_warnings_as_text(p
 
 @needs_node
 def test_a_failed_request_is_reported_and_the_tick_is_gone(probe_db, tmp_path):
-    log = _run_script(tmp_path, PageMiscellaneous(probe_db), input="X", checked=True, confirm="ok", fetchError="Netz weg")
+    log = _run_script(tmp_path, PageAbout(probe_db), input="X", checked=True, confirm="ok", fetchError="Netz weg")
     assert log["status"] == [{"className": "errorColor", "text": "Fehler: Netz weg"}]
     assert log["checked"] is False
 
@@ -217,7 +220,7 @@ def test_a_failed_request_is_reported_and_the_tick_is_gone(probe_db, tmp_path):
 @needs_node
 @pytest.mark.parametrize("checked", [False, True])
 def test_an_empty_field_sends_and_asks_nothing(probe_db, tmp_path, checked):
-    log = _run_script(tmp_path, PageMiscellaneous(probe_db), input="  \n ", checked=checked, confirm="ok")
+    log = _run_script(tmp_path, PageAbout(probe_db), input="  \n ", checked=checked, confirm="ok")
     assert log["confirms"] == [] and log["fetches"] == []
     assert log["status"] == [{"className": "errorColor", "text": "Keine SQL-Befehle eingegeben."}]
     assert log["checked"] is checked
@@ -225,7 +228,7 @@ def test_an_empty_field_sends_and_asks_nothing(probe_db, tmp_path, checked):
 
 @needs_node
 def test_the_template_fills_the_field_with_the_script_the_tests_evaluate_and_leaves_the_tick_alone(probe_db, tmp_path):
-    page = PageMiscellaneous(probe_db)
+    page = PageAbout(probe_db)
     log = _run_script(tmp_path, page, action="build", **{"from": "2026-01-01", "to": "2026-12-31"})
     assert log["input"] == _range_delete_script(probe_db, "2026-01-01", "2026-12-31")
     assert log["input"].startswith("-- Zeitbereich löschen: 2026-01-01 bis 2026-12-31\n")
@@ -241,7 +244,7 @@ def test_the_template_fills_the_field_with_the_script_the_tests_evaluate_and_lea
     pytest.param({"from": "2026-12-31", "to": "2026-01-01"}, "Von-Datum liegt nach dem Bis-Datum.", id="verdreht"),
 ])
 def test_the_template_asks_for_both_dates_in_order(probe_db, tmp_path, dates, message):
-    log = _run_script(tmp_path, PageMiscellaneous(probe_db), action="build", **dates)
+    log = _run_script(tmp_path, PageAbout(probe_db), action="build", **dates)
     assert log["status"] == [{"className": "errorColor", "text": message}] and log["input"] == ""
 
 

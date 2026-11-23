@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 unsix IT Engineering
 # Kommerzielle Lizenz ohne AGPL-Pflichten verfügbar – Kontakt: office@unsix.com
 """Der Textimport der WISO-Exporte (``Database.import_wiso_csv``): Kodierung, Formaterkennung,
-Steuerschlüssel und die Hinweise auf der Seite *Verschiedenes*.
+Steuerschlüssel und die Hinweise auf der Seite *Daten*.
 
 * Kodierung: BOM → strenges UTF-8 → cp1252 → latin-1. cp1252 darf nie zuerst stehen, denn es
   dekodiert fast jede Bytefolge: Eine UTF-8-Datei wurde so zu Mojibake, ein BOM zum Zeichenpräfix im
@@ -254,7 +254,7 @@ def test_a_table_export_with_only_the_footer_changes_nothing_and_counts_nothing(
     assert (result['errors'], result['not_found']) == ([], [])
 
 
-# ── Hinweise auf der Seite „Verschiedenes“ ───────────────────────────────────
+# ── Hinweise auf der Seite „Daten“ ───────────────────────────────────
 
 def test_negative_gross_notice_names_the_pattern_wiso_writes():
     html = _import_notices({'negative_gross': 2})
@@ -326,7 +326,7 @@ def _upload(db, csv_bytes, filename='export.csv'):
 
 
 def test_unknown_tax_keys_reach_the_page_through_the_upload_and_the_stored_result(db_with_coa):
-    """Der ganze Weg: Upload → Import → Ergebnisdatei (unverändert abgelegt) → Seite *Verschiedenes*."""
+    """Der ganze Weg: Upload → Import → Ergebnisdatei (unverändert abgelegt) → Seite *Daten*."""
     status, location = _upload(db_with_coa, csv_export(('6815', '1800', '119,00', 'P1', '181'),
                                                        ('6815', '1800', '59,50', 'P2', '181'),
                                                        ('6815', '1800', '29,75', 'P3', '401')))

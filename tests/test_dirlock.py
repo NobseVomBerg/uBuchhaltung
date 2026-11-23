@@ -441,7 +441,7 @@ def test_a_503_for_a_page_keeps_the_connection_open_and_everything_answers_again
     assert post(server_port, '/quote/delete?id=999', csrf=auto_login.csrf).status == 303
 
 
-PLAIN_POSTS = ['/quote/delete?id=999', '/masterdata/articles/add', '/backup/create', '/backup/restore', '/db_export',
+PLAIN_POSTS = ['/quote/delete?id=999', '/masterdata/articles/add', '/backup/create', '/backup/restore', '/backup/delete', '/db_export',
                '/backup/download?file=x']                    # an der Adresse des Downloads gilt die Ausnahme nur für GET
 
 

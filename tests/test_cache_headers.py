@@ -95,7 +95,8 @@ def test_a_page_carries_exactly_one_no_cache_header(server_port, books, path):
 @pytest.mark.parametrize('path, status', [
     ('/dashboard?x=.png', 200), ('/dashboard?x=.css', 200), ('/bwa?year=2026&month=3&x=.png', 200),
     ('/bwa/pdf?year=2026&month=3&accounts=.png', 200), ('/transactions?q=.png', 200), ('/invoice?x=.js', 200),
-    pytest.param('/about?a=1&b=.js', 404, id='about-kennt-keine-Query-404')])         # /about wird exakt verglichen: mit Query unbekannt
+    pytest.param('/about?a=1&b=.js', 200, id='about-ignoriert-die-Query'),             # /about liest nur das Ergebnis des DB-Exports aus der Query
+    pytest.param('/gibtsnicht?a=1&b=.js', 404, id='unbekannte-Adresse-404')])         # die Fehlerseite einer unbekannten Adresse (früher stand hier /about)
 def test_an_extension_at_the_end_of_the_address_never_makes_a_page_public(server_port, books, path, status):
     """Eine Seite wird nicht zur „statischen Datei“, weil ihre Adresse auf ``.png`` endet: Früher stand dort ``public, max-age=86400`` –
     auch bei der PDF-Auslieferung und bei der Fehlerseite einer unbekannten Adresse."""

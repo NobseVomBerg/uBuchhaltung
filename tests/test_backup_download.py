@@ -474,8 +474,8 @@ def test_the_page_lists_the_backups_with_link_date_and_size(server_port, auto_lo
     row = re.search(rf'<tr><td>{re.escape(MIGRATION)}</td>(.*?)</tr>', page).group(1)
     assert '<td>vor Umstellung auf 2.5.0 (nur Datenbank)</td>' in row and '<td class="num">5,0 MB</td>' in row
     assert datetime.fromtimestamp(os.path.getmtime(second)).strftime('%d.%m.%Y %H:%M') in row
-    assert 'Sicherungen vor einer Programm-Umstellung lassen sich nur herunterladen' in page
-    assert 'Vorhandene Sicherungen lassen sich unten herunterladen.' in page
+    assert 'Sicherungen vor einer Programm-Umstellung stehen nicht im Formular der Wiederherstellung' in page
+    assert 'Vorhandene Sicherungen stehen unten in der Liste.' in page
 
 
 def test_the_hint_on_copies_before_a_migration_only_comes_with_such_a_copy(server_port, auto_login):

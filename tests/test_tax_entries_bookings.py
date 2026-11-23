@@ -844,7 +844,7 @@ def test_every_contradiction_of_the_snapshots_makes_the_invoice_unbookable(world
 
 
 def test_the_fixed_sentence_of_a_contradiction_is_not_the_one_of_the_sums():
-    assert TAX_ENTRY_CONTRADICTION == ('Die Angaben aus den Stammdaten an den Positionen dieser Rechnung widersprechen sich – sie lässt sich so nicht buchen (Prüfung unter Sonstiges).')
+    assert TAX_ENTRY_CONTRADICTION == ('Die Angaben aus den Stammdaten an den Positionen dieser Rechnung widersprechen sich – sie lässt sich so nicht buchen (Prüfung unter Daten).')
     assert TAX_ENTRY_CONTRADICTION != MIXED_GROUPS_MISMATCH and 'Summen' not in TAX_ENTRY_CONTRADICTION
 
 
@@ -1455,7 +1455,7 @@ TAX_FREE_SENTENCES = {
     'MIXED_REMOVAL_REFUSED': ('Zu dieser Rechnung wurde bereits erstattet – für steuerfreie Leistungen wäre danach mehr erstattet als gezahlt (oder Betrag und Steuer gingen '
                               'nicht auf). Erst die Erstattung an der Stornorechnung 26R001 entfernen.'),
     'TAX_PAYMENT_NO_REVENUE': ('Das Erlöskonto, das diese Rechnung für steuerfreie Leistungen trägt, ist kein Erlöskonto (mehr) – die Zahlung lässt sich nicht kontieren. '
-                               'Bitte das Konto im Kontenrahmen prüfen (Prüfung unter Sonstiges).'),
+                               'Bitte das Konto im Kontenrahmen prüfen (Prüfung unter Daten).'),
     'TAX_SEND_NO_REVENUE': ('Für steuerfreie Leistungen hat die Rechnung kein gültiges Erlöskonto – bitte im Steuersatz der Stammdaten eines eintragen und die Rechnung danach '
                             'neu speichern.'),
     'differs': ('Für steuerfreie Leistungen tragen die Positionen der Rechnung verschiedene Angaben aus den Stammdaten (Art, Befreiungsgrund oder Erlöskonto) oder teils keine – '

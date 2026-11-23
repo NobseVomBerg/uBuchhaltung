@@ -291,6 +291,7 @@ _ACTION_QUERY = ("id=99999&number=nr-99999"
 _POST_LOCATION = {
     "/asset_categories/delete": r"/asset_categories",
     "/assets/delete": r"/assets",
+    "/backup/delete": r"/miscellaneous\?backup_delete=error&msg=[^&]+",                # kein Feld „file“: die Meldung steht auf der Seite Daten
     "/masterdata/articles/delete": r"/masterdata/articles",
     "/masterdata/bankaccounts/delete": r"/masterdata/bankaccounts",
     "/masterdata/contacts/delete": r"/masterdata/contacts",

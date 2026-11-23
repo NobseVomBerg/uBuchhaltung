@@ -418,7 +418,7 @@ kein Subagent darauf:
   `BackupRefused` …). Eine doppelte Kunden-/Kontaktnummer oder ein doppeltes Kürzel wirft `ContactRefused` (Rollback, Meldung
   auf der Kontaktseite). `tests/test_form_error_paths.py` prüft es und hält statisch fest, dass `handlers.py` weder
   `int(post_data…)`/`float(post_data…)` noch einen 5xx mit Ausnahmetext noch eine Weiterleitung (3xx) mit dem Text einer
-  Ausnahme aus einem breiten `except` enthält. **Die Meldungen auf *Sonstiges* (seit 2.5.5, `msg=`):** Sicherung,
+  Ausnahme aus einem breiten `except` enthält. **Die Meldungen auf *Daten* (seit 2.5.5, `msg=`):** Sicherung,
   Wiederherstellung, DATEV-Export und WISO-Import (Textexport wie Datenbank) geben nur den Klartext einer `BackupRefused`
   weiter, sonst einen festen Satz (`BACKUP_FAILED`, `RESTORE_FAILED`, `DATEV_FAILED`, `WISO_IMPORT_FAILED`); der volle Fehler
   steht im Server-Log. Die Seite liest `msg` nicht im Browser, sondern bekommt es vom Server als JSON im Skriptblock `miscMsg`
@@ -457,7 +457,7 @@ kein Subagent darauf:
   Anfragen aufzuhalten) – nicht verlängern bzw. streichen. Reihenfolge der Sperren: `dirlock` außen, `_exclusive` innen – nie umdrehen. Die Sperre gilt in einem Prozess; nicht
   erfasst sind ein zweiter Serverprozess auf demselben Datenordner, Zugriffe von Hand und der Umzug beim Start
   (`tests/test_dirlock.py`)
-- **Sicherungen herunterladen (seit 2.5.5, `GET /backup/download?file=<Name>`):** Die Seite *Sonstiges* listet die Sicherungen
+- **Sicherungen herunterladen (seit 2.5.5, `GET /backup/download?file=<Name>`):** Die Seite *Daten* listet die Sicherungen
   des angemeldeten Benutzers (Name, Art, Datum, Größe) mit einem Link. Angeboten wird allein, was `backup.downloadable_backups`
   nennt – eine Positivliste: die Archive und die Kopien vor einer Programm-Umstellung (`<Datum>_vor_<Version>[_n]_buch.db`, nur
   herunterladbar, nicht im Formular der Wiederherstellung), nur reguläre Dateien direkt in `backup/`, nie
@@ -473,6 +473,22 @@ kein Subagent darauf:
   (`request_is_same_origin`: eine fremde `Sec-Fetch-Site` ergibt 403) und steht **vor `_open_db()`**: Sicherungen lassen sich
   auch holen, wenn sich die Datenbank nicht öffnen lässt. Jeder angemeldete Benutzer, nur aus dem eigenen Ordner; im Demo-Modus
   wie Sichern und Wiederherstellen. Nicht aufweichen (`tests/test_backup_download.py`)
+- **Seite „Daten“ und About (seit 2.8.3):** Die Seite unter `/miscellaneous` heißt im Menü „Daten“ (die Adresse bleibt) und führt nur noch
+  Import, Export, Sicherung, Wiederherstellung und die Prüfung der Zahlungszuordnungen. Die **Datenbank-Übersicht** steht auf *About* unter
+  „Projekt in Zahlen“ (für jeden angemeldeten Benutzer; `Database.get_table_statistics` setzt jeden Tabellennamen als Bezeichner in
+  Anführungszeichen, eine nicht zählbare Tabelle zeigt `–`). **SQL-Konsole und DB-Export** stehen ganz unten auf *About* – Kästen und Skripte
+  nur für die, die die Konsole benutzen dürfen (`auth.sql_console_allowed`; `PageAbout(db, query)`). Der DB-Export (`POST /db_export`) prüft
+  dasselbe Recht selbst (403 `DB_EXPORT_REFUSED`, nichts geschrieben) und leitet auf `/about?export=ok&tables=N&rows=M` bzw. `export=error`;
+  die Seite liest die Zahlen streng (`pages.export_message`, nur Ziffern) und zeigt einen festen Satz. An den Regeln der Konsole selbst
+  (*SQL-Konsole*) ändert sich nichts. **Sicherungen löschen** (`POST /backup/delete`, `_ACTION_PATHS`, Formularfeld `file`; im Frontend
+  `appConfirmPost(url, text, fields)` nach Rückfrage): gelöscht wird allein, was `backup.downloadable_backups` nennt (`backup.delete_backup`:
+  reiner Dateiname, reguläre Datei direkt in `backup/`, gegen `realpath` geprüft, nie `restore_*`/`replaced_*`, Teildateien, Ordner oder Links
+  – alles andere ist dieselbe Meldung wie beim Download, nichts angefasst), unter `_exclusive` (läuft eine Sicherung oder Wiederherstellung:
+  abgelehnt, ohne zu warten); im Demo-Modus 403 (`BACKUP_DELETE_DEMO_REFUSED`, die Seite zeigt den Knopf nicht). Die Meldung nennt den Namen
+  aus der Liste, nie einen Pfad oder Ausnahmetext; der Vorspann („Sicherung gelöscht: “/„Sicherung nicht gelöscht: “) steht fest im Skript, `msg`
+  trägt nur Name bzw. Grund. **Der DB-Export** (`Database.export_to_sql`) schreibt Tabellen- und Spaltennamen als Bezeichner in Anführungszeichen
+  und Werte als Literale (`_sql_identifier`, `_sql_literal`: Binärdaten als `X'…'`) – ein Tabellenname wird nie ein eigener Befehl. Nicht
+  aufweichen (`tests/test_data_page_cleanup.py`)
 
 ### Belegerkennung (seit 2.6.0)
 - **Grundsatz:** Ein gelesener Wert ist eine Lesung der Datei, nicht der Inhalt des Belegs. Die Lesung steht in `DocumentReadings` (eine Zeile je
@@ -693,7 +709,7 @@ kein Subagent darauf:
   Löschmethode. Jede Löschmethode schließt ihre Verbindung auch im Fehlerfall (try/rollback/finally) – sonst bleibt die
   Datenbank gesperrt
 - **Testdaten lädt die Oberfläche nicht (seit 2.3.9):** Es gibt keinen Knopf und keine Route mehr (`POST /setup/load_testdata`
-  antwortet wie ein unbekannter Pfad), weder unter *Sonstiges* noch in der Ersteinrichtung – Beispieldaten gibt es im
+  antwortet wie ein unbekannter Pfad), weder unter *Daten* noch in der Ersteinrichtung – Beispieldaten gibt es im
   Demo-Modus, der sie beim Start selbst lädt. `Database.load_test_seed_data` bleibt für Demo-Modus und Tests
 - **Standardkonten ergänzt nur der Nutzer:** `_seed_chart_of_accounts` füllt allein eine leere Tabelle – der Kontenrahmen eines
   bestehenden Bestands bleibt beim Öffnen, wie er ist (ein Standardkonto lässt sich nach Entfernen des Hakens löschen und käme
@@ -773,7 +789,7 @@ kein Subagent darauf:
   Handler weiter). Belegfeld 1 ohne Leerzeichen, bis 36 Zeichen; im Buchungstext (Spalte 13) werden Zeilenumbrüche, Tabulatoren und andere
   Steuerzeichen vor dem Kürzen auf 60 Zeichen zu Leerzeichen. Der Vorlauf trägt Berater- und Mandantennummer der eigenen Firma
   (`CompanyDetails.DatevConsultantNo`/`DatevClientNo`, ganze Zahlen aus ASCII-Ziffern ohne führende Null: Berater 1001–9999999, Mandant 1–99999;
-  im Kontaktformular der eigenen Firma gepflegt, `Database.get_datev_numbers`), sonst Platzhalter und ein Hinweis auf *Sonstiges*. Jeder Wert, der in den Stapel geht, ist streng geprüft –
+  im Kontaktformular der eigenen Firma gepflegt, `Database.get_datev_numbers`), sonst Platzhalter und ein Hinweis auf *Daten*. Jeder Wert, der in den Stapel geht, ist streng geprüft –
   ein per SQL-Konsole gesetzter anderer Wert gilt als nicht vorhanden, nie roh ausgegeben. Die Schlüssel sind nicht gegen einen echten Stapel
   der Kanzlei geprüft (`docs/aufgaben.md`) – nicht als richtig voraussetzen. **Vollständigkeit (seit 2.3.4, `handle_datev_export`):** Ein
   Zeitraum über den Jahreswechsel wird abgelehnt (`DATEV_YEAR_REFUSED`: der Stapel kennt nur Tag und Monat, Wirtschaftsjahr =
@@ -806,7 +822,7 @@ kein Subagent darauf:
   Importe das Vorzeichen ausrichten und die Maske und `insert_booking` die Form **beim Schreiben**
   ableiten – und mit der eine Zeile ohne Form gelesen wird. **1000–1099 gehört nicht mehr dazu**
   (SKR04: Vorräte; früher der SKR03-Kassenbereich): Beide WISO-Importe melden Buchungen darauf
-  (`stock_range_accounts`, Hinweis auf *Sonstiges*: Buchungen gegen diese Konten werden als
+  (`stock_range_accounts`, Hinweis auf *Daten*: Buchungen gegen diese Konten werden als
   Umbuchung gelesen und erscheinen nicht in der EÜR), und `negative_gross` zählt jeden Satz mit negativem
   Brutto und genau einer liquiden Seite (dort bestimmt die Geldbewegung das Vorzeichen – **festgeschrieben** nach der
   Messung an echten Daten: WISO schreibt den Brutto nie negativ, Konto = Soll, Umkehrungen stehen als vertauschte Konten;
@@ -1156,7 +1172,7 @@ kein Subagent darauf:
   (`_drop_receivable`, auch für `remove_receivable_booking`) – was mit den Zahlungen geschieht, ändert daran nichts.
   Negative Zuordnungen kennen der WISO-Import (`link_invoice_to_transaction`, mit Vorzeichen, ohne
   Sätze) und die Erstattung einer Stornorechnung (`assign_storno_refund`, mit Sätzen).
-  `find_payment_inconsistencies` prüft nur lesend und linear im Bestand (Seite *Sonstiges*:
+  `find_payment_inconsistencies` prüft nur lesend und linear im Bestand (Seite *Daten*:
   nur auf Klick, `?check_payments=1`, nie beim Laden; Hinweis auf der Rechnungsseite); Zuordnungen auf
   Nicht-Bankbewegungen oder mit `SourceGroup`-Sätzen (WISO) löst `no_settlement`/`transfer_mismatch`
   nicht aus. Zwei Kategorien gelten dem Storno-Paar und zählen nur Forderungen, die die App selbst gebucht hat
@@ -1241,7 +1257,7 @@ kein Subagent darauf:
   `_POST_ONLY_JSON_PATHS`, GET → 405) liest die ID über `_json_positive_id`, `execute` als Wahrheitswert, `check` als 64 Hexziffern (nur mit
   `execute`) und `revenueCoaId` streng; ein unerwarteter Fehler ist 500 mit `REBUILD_FAILED`, nie ein Ausnahmetext. Die Seite der Rechnung
   zeigt Knopf und Plan unter der Befundliste (nur mit Befund, nicht an einer Stornorechnung; das Skript setzt Werte nur über `textContent`);
-  *Sonstiges* verweist darauf. `tests/test_invoice_payment_repair.py`
+  *Daten* verweist darauf. `tests/test_invoice_payment_repair.py`
 - **Kleinunternehmer-Erlöse (seit 2.8.2, `db/invoice_payments.py`):** Das Erlöskonto eines Belegs ohne Steuerausweis (Kopfsatz −1, § 19) hängt am
   Datum der **Bankbewegung** der Zahlung bzw. Erstattung – nicht am Rechnungsdatum: bis 31.12.2025 **4185**, ab 1.1.2026 **4184**
   (`small_business_revenue_number`, Stichtag `SMALL_BUSINESS_SWITCH`; der Kontenrahmen ab 2026 führt 4185 nicht mehr). Es gilt nur ein ISO-Datum
@@ -1329,7 +1345,7 @@ kein Subagent darauf:
   (`tests/test_vat_method_setting.py` hält EÜR, Dashboard und DATEV-Stapel mit `ist`, `soll` und ohne Angabe gleich). Angezeigt wird sie
   im Formular eines eigenen Kontakts (Auswahl „Besteuerungsart (Umsatzsteuer)“ mit festem Hinweistext, `server/pages_contacts.py`; ein neu
   angelegter Kontakt bekommt das Feld wie die DATEV-Nummern erst, wenn er als „Eigen“ gespeichert ist) und – nur bei `soll` – als fester
-  Hinweis unter dem DATEV-Formular auf *Sonstiges*. Keine Steuerberatung in den Texten. Die Umsetzung der Soll-Versteuerung
+  Hinweis unter dem DATEV-Formular auf *Daten*. Keine Steuerberatung in den Texten. Die Umsetzung der Soll-Versteuerung
   (Umsatzsteuer mit der Leistung) ist offen (`docs/aufgaben.md`) – die Einstellung nicht für Rechenlogik verwenden, bevor das entschieden ist.
 - Masken schreiben nur, was sie führen (`update_booking_fields`) – Gegenkonto,
   Kategorie und fremde Kontakte dürfen beim Speichern nicht verloren gehen. Der Block „Belege“ steht außerhalb des
@@ -1571,7 +1587,7 @@ kein Subagent darauf:
   abgeschlossenen; trägt die neuere Version `R_DELTA`, ist die Vorversion ein Differenzstrom (`apply_diff`, nach dem
   RLE-Entpacken). Kein Rückzeiger oder abgeschlossen gelöscht: den Satz gibt es nicht. Gezählt wird, nichts verschwiegen
   (`version_stats` → Ergebnis `uncommitted_records`, `unreadable_versions` [Kette beschädigt: der Satz fehlt, kein Blocker],
-  `unknown_tx_state` [TIP nicht lesbar: gelesen wie in der Datei]; feste Hinweise auf *Sonstiges*). Geprüft gegen echte
+  `unknown_tx_state` [TIP nicht lesbar: gelesen wie in der Datei]; feste Hinweise auf *Daten*). Geprüft gegen echte
   Firebird-3.0-Dateien mit offener Transaktion (`tests/fixtures/firebird/`, mit Firebird erzeugt – Fragmente, Blobs,
   Differenzketten); ungeprüft: `rhd_long_tranum` und mehrere TIP-Seiten an einer echten Datei. `tests/fdb_builder.py` schreibt
   eine TIP-Seite (Transaktion 1 abgeschlossen, 2 offen für `add_open`). Diese Regel nicht aufweichen
@@ -1604,7 +1620,7 @@ kein Subagent darauf:
   und der des Textexports erkennen einen `mirror_legacy`-Spiegel wieder – mit gleichem oder umgekehrtem
   Vorzeichen (Beleg-Nr., Datum, Konto, Gegenkonto gleich, von der Datei nicht selbst beansprucht) –, legen
   keinen zweiten Satz an und lassen Form und Betrag, wie sie sind; sie zählen ihn (`legacy_mirrors`, Hinweis
-  auf *Sonstiges*). Weicht eine andere gespeicherte Form von der des frischen Imports ab, wird das nur
+  auf *Daten*). Weicht eine andere gespeicherte Form von der des frischen Imports ab, wird das nur
   gemeldet (`form_conflicts`). **Zeilen auf Konten 1000–1099 aus 2.0.x** (dort als Kasse gelesen, also mit
   einem anderen Betrag gespeichert: „6815 an 1050“ −10, „1050 an 1800“ +30) erkennen beide Wege am Betrag der
   alten Regel wieder (Zahlungskonten einschließlich 1000–1099): der Re-Import des Textexports mit einer
@@ -1612,7 +1628,7 @@ kein Subagent darauf:
   die, die eine andere Zeile der Datei mit ihrem eigenen Betrag beansprucht), die Übernahme CSV → Datenbank
   über `WisoBooking.legacy_amount` unter denselben Schutzregeln wie sonst. Kein zweiter Satz, Form und Betrag
   der Altzeile bleiben, die Übernahme füllt nichts; der Zähler heißt `legacy_stock_rows` (Hinweis auf
-  *Sonstiges*)
+  *Daten*)
 - **Textimport** (`import_wiso_csv`): Kodierung in der Reihenfolge BOM → strenges UTF-8 → cp1252 (cp1252 dekodiert fast alles
   und darf deshalb nie zuerst stehen). **Beträge aus Dateien liest nur `money.parse_amount`** (seit 2.3.12; nie `float()`: das
   nähme `nan`, `inf`, `1e5`, `1_000` und Ziffern anderer Schriften an; Ausnahme: die DKB-CSV liest `money.parse_grouped_amount`, in der
@@ -1628,7 +1644,7 @@ kein Subagent darauf:
   Satz (`DatevKey`); der Steuersatz kommt zuerst aus der Tabelle der Regeln (`datev_keys.key_rate`: 401/101/121 Regelsatz, 402/102/122 ermäßigt,
   7/6/5/4 die anderen Sätze – im zweiten Halbjahr 2020 mit 16/5/19/7 %), sonst aus `TaxKeys` (2.3.0: 100, 120, 121 „Verwendung von Gegenständen“, 122
   ergänzt bzw. berichtigt, 490 ohne Satz). Ein Schlüssel, den beide nicht kennen, wird nicht geraten: Die Zeile kommt ohne Steuersatz und zählt
-  in `unknown_tax_keys` (Hinweis auf *Sonstiges*). Die stille 19 % bei „4405 an 4400“ gilt **nur ohne Schlüssel** (leer oder 0): Eine Zeile
+  in `unknown_tax_keys` (Hinweis auf *Daten*). Die stille 19 % bei „4405 an 4400“ gilt **nur ohne Schlüssel** (leer oder 0): Eine Zeile
   mit einem Schlüssel, auch einem ohne Satz (490), behält, was er sagt. Der Import schreibt nur neue Zeilen – ein Duplikat bleibt, wie es ist,
   auch ohne Schlüssel
 - **BU-Schlüssel und Nummern aus der WISO-Datenbank:** `DATEVVATKEY` (optionale Spalte; leer, 0 und alles außer 1–9999 ist keiner) steht beim neuen Satz
@@ -1637,7 +1653,7 @@ kein Subagent darauf:
   eine vom Nutzer geänderte Zeile bekommt nichts, ein vorhandener Schlüssel bleibt) – **und nur, wenn die vorhandene Zeile denselben Steuersatz
   trägt wie der WISO-Satz** (`_same_rate`: Prozentzahl, kein Satz = 0 %; bei der Übernahme gilt der Satz, den die Zeile nach dem UPDATE trägt –
   es füllt ihn, wenn Satz und Steuerbetrag leer sind): Sonst bleibt `DatevKey` leer, der Export leitet ihn aus dem Satz der App ab, und der Fall
-  zählt in `datev_key_rate_mismatches` (Hinweis auf *Sonstiges*) – der Schlüssel gehört zu dem Satz, für den WISO ihn geschrieben hat, und
+  zählt in `datev_key_rate_mismatches` (Hinweis auf *Daten*) – der Schlüssel gehört zu dem Satz, für den WISO ihn geschrieben hat, und
   der Nutzer kann ihn mit `update_booking_fields` geändert haben. Gleichen sich in einer Gruppe mehrere Zeilen in Datum, Konten und Betrag,
   bekommt der Satz zuerst die Zeile mit seinem Steuersatz: Ein Schlüssel hängt nie an der Zeile eines anderen Satzes. Berater- und Mandantennummer
   stehen in `SYS_FINACCSYSTEMS` (Satz `NAME` = „Datev-Format“; **nur** `NAME`, `CONSULTANT_NO`, `CLIENT_NO` – die Tabelle trägt auch Zugangsdaten
@@ -1682,7 +1698,7 @@ kein Subagent darauf:
   `legacy_mirrors`/`form_conflicts`, BU-Schlüssel nur wo leer). Gezählt wird `regrouped_rows`, bei abweichendem Text zusätzlich
   `regrouped_text_differs`; die Zusammenfassung nach dem Import nennt sie (`regrouped`, `orphans` in der Weiterleitung; angezeigt nur, wenn > 0).
   **Verwaiste Zeilen ohne Treffer** meldet der Lauf (`orphaned_rows_count`, die ersten 50 in `orphaned_rows`: ID, Datum, Betrag,
-  Kontonummern, Text) und die Seite *Sonstiges* mit Links auf die Buchungen: Die Liste nennt Buchungen, deren Quelle (Quellgruppe)
+  Kontonummern, Text) und die Seite *Daten* mit Links auf die Buchungen: Die Liste nennt Buchungen, deren Quelle (Quellgruppe)
   in der WISO-Datenbank nicht mehr steht – dort gelöscht oder mit anderem Inhalt neu angelegt. Sie zählen in den Auswertungen weiter mit,
   **gelöscht wird nichts**. **Eine Änderung innerhalb einer weiter bestehenden Buchungsgruppe (anderer Betrag, entfallene Teilbuchung)
   bemerkt der Import nicht: Die vorhandene Zeile bleibt, wie sie ist.** Grenzen: Die Suche braucht dieselben Konten (ein Bestand aus
@@ -1692,7 +1708,7 @@ kein Subagent darauf:
   Inhalt umgehängt werden – nicht unterstützt. Rechnet WISO den AfA-Plan eines schon importierten Jahres mit anderem Betrag unter neuer
   Gruppe neu, steht die alte AfA-Buchung in der Liste der nicht mehr vorhandenen Buchungen und die neue zusätzlich in den Büchern – bis
   zum Bereinigen zählt das Jahr doppelt. Die verwaisten Zeilen werden einmal gelesen und nach (Datum, Konto, Gegenkonto, Betrag) abgelegt (linear)
-- Bedienung über *Sonstiges* → „Import aus der Datenbank". **Die Dateien kommen als Upload (seit 2.3.7,
+- Bedienung über *Daten* → „Import aus der Datenbank". **Die Dateien kommen als Upload (seit 2.3.7,
   `server/wiso_upload.py`), einen Serverpfad nimmt der Import nicht mehr entgegen:** Der Browser legt `DB1.FDB` (Pflicht) und
   optional `DB0.FDB` je als rohen Body über `POST /wiso/fdb-upload?slot=client|standard[&upload=<Kennung>]` ab, das Formular
   nennt danach nur die Kennung (`upload`). Die Dateien liegen unter `<Datenordner>/upload_tmp/wiso_fdb/<Kennung>/` mit FESTEN
@@ -2407,7 +2423,7 @@ kein Subagent darauf:
 ## Governance
 
 - **Owner:** NobseVomBerg
-- **Letzte Aktualisierung:** 2026-11-22
+- **Letzte Aktualisierung:** 2026-11-23
 - **Modell-Versionen:** Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5 (Stand November 2026);
   `settings.json` und Agents nutzen Aliase (`fable`, `opus` …), die der neuesten Version folgen
 - **Bei Modell-Updates:** Modell-Routing oben, `.claude/settings.json` (`modelSettings`

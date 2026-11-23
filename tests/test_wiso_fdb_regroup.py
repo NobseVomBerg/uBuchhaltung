@@ -21,7 +21,7 @@ Jetzt gilt:
 * Ein Treffer ist **kein neuer Satz**: Die Zeile bekommt nur die neue ``SourceGroup`` (``regrouped_rows``; weicht der Text ab,
   zusätzlich ``regrouped_text_differs``) und gilt für alles Weitere wie eine in ihrer bekannten Gruppe wiedererkannte.
 * Was von früheren Importen übrig bleibt (in WISO gelöscht oder mit anderem Inhalt neu angelegt), meldet der Lauf
-  (``orphaned_rows_count``, die ersten 50 in ``orphaned_rows``), die Seite *Verschiedenes* und die Zusammenfassung nach dem Import
+  (``orphaned_rows_count``, die ersten 50 in ``orphaned_rows``), die Seite *Daten* und die Zusammenfassung nach dem Import
   (``regrouped``, ``orphans``); gelöscht wird nichts. Eine Änderung innerhalb einer weiter bestehenden Gruppe bemerkt der Import nicht.
 
 Dazu (Paket 2.3.2, Teil 2): Der Import aus der WISO-Datenbank ist für einen **leeren Bestand** gedacht. Ist ``Bookings`` nicht
