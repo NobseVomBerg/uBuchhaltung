@@ -8,18 +8,17 @@ Rein: kein Datenbankzugriff, keine Uhr. Die Zeilen liefert ``db/payment_suggesti
 bestehenden Weg (``Database.assign_invoice_payment``) – hier wird nichts geschrieben, nichts entschieden und nichts vorausgewählt.
 
 Eingabe sind Wörterbücher. Eine Bewegung: ``id``, ``date``, ``amount_minor`` (der FREIE Rest der Bankbewegung in Minor Units, größer 0),
-``recipient``, ``text``, ``document_number`` (Beleg-Nr.) und ``contact_id``. Eine Rechnung: ``id``, ``number``, ``date``, ``open_minor`` (der
-offene Betrag in Minor Units, größer 0), ``customer_id`` und ``customer_name``. Eine Zeile, deren ``id`` oder Betrag keine ganze Zahl (beim Betrag
+``recipient`` und ``text`` (Beleg-Nr. und Kontakt der Bankzeile zählen bewusst nicht, siehe ``_Movement``). Eine Rechnung: ``id``, ``number``, ``date``, ``open_minor`` (der
+offene Betrag in Minor Units, größer 0), und ``customer_name`` (die Firma, sonst der Name). Eine Zeile, deren ``id`` oder Betrag keine ganze Zahl (beim Betrag
 größer 0) ist, ist kein Kandidat; ein schiefer Text, ein fehlender Schlüssel und ein unlesbares Datum werfen nie – das Signal fällt weg.
 
 Signale je Paar (Bewegung, Rechnung), je eines mit festem Satz als Begründung und Punkten:
 
-* **NUMMER** (``REASON_NUMBER``, ``POINTS_NUMBER``): Die Rechnungsnummer steht im Verwendungszweck, in der Beleg-Nr. oder im Empfänger der
-  Bewegung (``_number_pattern``). Brauchbar ist eine Nummer wie bei den Belegen (``receipt_matching.usable_number``: normalisiert mindestens 4
+* **NUMMER** (``REASON_NUMBER``, ``POINTS_NUMBER``): Die Rechnungsnummer steht im Verwendungszweck oder im Empfänger der Bewegung
+  (``_number_pattern``: mit Zifferngrenzen, ein Trennzeichen zwischen zwei Ziffern nur, wo die Nummer selbst eines trägt). Brauchbar ist eine Nummer wie bei den Belegen (``receipt_matching.usable_number``: normalisiert mindestens 4
   Zeichen mit einer Ziffer, rein numerisch erst ab 5) und höchstens ``MAX_NUMBER_LENGTH`` Zeichen lang.
 * **BETRAG** (``REASON_AMOUNT``, ``POINTS_AMOUNT``): Der freie Rest der Bewegung ist der offene Betrag der Rechnung, auf den Minor-Wert.
-* **KUNDE** (``REASON_CUSTOMER``, ``POINTS_CUSTOMER``): Der Kontakt der Bewegung ist der Kunde der Rechnung, oder Empfänger und Kundenname haben
-  mindestens ein Namenswort gemeinsam (``receipt_matching.name_words``: ohne ``STOP_WORDS``, mindestens 4 Zeichen).
+* **KUNDE** (``REASON_CUSTOMER``, ``POINTS_CUSTOMER``): Empfänger und Kundenname haben mindestens ein Namenswort gemeinsam (``receipt_matching.name_words``: ohne ``STOP_WORDS``, mindestens 4 Zeichen).
 * **DATUM** zählt nur für die Reihenfolge (Abstand in Tagen zwischen Buchungs- und Rechnungsdatum; ein unlesbares Datum steht ganz hinten) und
   für eine Ausnahme: Liegt die Bewegung mehr als ``DAYS_BEFORE_INVOICE`` Tage VOR dem Rechnungsdatum, ist sie ohne NUMMER kein Vorschlag (mit
   NUMMER schon: eine Vorauszahlung).
@@ -60,6 +59,7 @@ REASON_SEPARATOR = ' · '
 # Zwischen zwei Zeichen der Rechnungsnummer darf höchstens EIN Trennzeichen stehen: Leerraum (auch ein Zeilenumbruch: Banken brechen
 # Zeilen um, ein Kunde schreibt ``R 26003`` oder ``R-26003``), Bindestrich, Unterstrich, Schrägstrich, Punkt.
 _GAP = r'[\s\-_/.]?'
+_GAP_NO_DOT = r'[\s\-_/]?'        # zwischen zwei Ziffern, wo die Nummer ein Trennzeichen trägt, aber keinen Punkt: ``26/001`` steht nicht in ``26.001,00``
 _NO_DISTANCE = 10 ** 9           # ein Paar ohne lesbares Datum steht in der Reihenfolge ganz hinten
 
 
@@ -82,11 +82,39 @@ def reason_text(suggestion: PaymentSuggestion) -> str:
     return REASON_SEPARATOR.join(suggestion.reasons + ((AMBIGUOUS_TEXT,) if suggestion.ambiguous else ()))
 
 
+_NOT_ALPHANUMERIC = re.compile(r'[^a-z0-9]+')
+_SPLIT_KEEPING_SEPARATORS = re.compile(r'([^a-z0-9]+)')
+
+
+def _number_parts(raw) -> tuple[str, tuple[int, ...]]:
+    """Die Rechnungsnummer zum Suchen: ihre normalisierte Form (wie ``normalize_number``: ``casefold``, nur ``[a-z0-9]``) und je Fuge zwischen
+    zwei ihrer Zeichen, ob die Nummer selbst dort ein Trennzeichen trägt: 0 = keines, 1 = eines ohne Punkt, 2 = eines mit Punkt
+    (``RE-2026/0042`` → ``re20260042`` mit einer Fuge hinter ``re`` und einer hinter ``2026``)."""
+    pieces, joints, pending = [], {}, 0
+    for token in _SPLIT_KEEPING_SEPARATORS.split(raw.casefold()):      # abwechselnd Stück und Trennzeichen (mit Klammer bleibt es erhalten)
+        if not token:
+            continue
+        if _NOT_ALPHANUMERIC.fullmatch(token):
+            pending = 2 if '.' in token else 1
+            continue
+        if pieces and pending:
+            joints[sum(len(piece) for piece in pieces)] = pending
+        pieces.append(token)
+        pending = 0
+    number = ''.join(pieces)
+    return number, tuple(joints.get(index, 0) for index in range(1, len(number)))
+
+
 @functools.lru_cache(maxsize=4096)
-def _number_pattern(number: str) -> re.Pattern:
-    """Der Ausdruck für eine normalisierte Rechnungsnummer (``number``: nicht leer, nur ``[a-z0-9]``): ihre Zeichen in dieser Reihenfolge, zwischen je
-    zwei höchstens ein Trennzeichen (``_GAP``), ohne Rücksicht auf die Schreibweise – gesucht wird im Originaltext, nicht im normalisierten
-    (in ``26re2026004211`` steckt ``re20260042`` als Teilzeichenkette, aber nicht als Nummer: Es folgen weitere Ziffern).
+def _number_pattern(number: str, joints: tuple[bool, ...] = ()) -> re.Pattern:
+    """Der Ausdruck für eine normalisierte Rechnungsnummer (``number``: nicht leer, nur ``[a-z0-9]``; ``joints``: ``_number_parts``): ihre Zeichen
+    in dieser Reihenfolge, ohne Rücksicht auf die Schreibweise – gesucht wird im Originaltext, nicht im normalisierten (in ``26re2026004211``
+    steckt ``re20260042`` als Teilzeichenkette, aber nicht als Nummer: Es folgen weitere Ziffern).
+
+    **Trennzeichen:** Zwischen zwei Zeichen darf höchstens EIN Trennzeichen stehen (``_GAP``) – aber **zwischen zwei Ziffern nur dort, wo die
+    Nummer selbst eines trägt**: ``26001`` steht nicht in ``26.001,00`` (ein Betrag), ``202601`` nicht in ``2026-01-15`` (ein Datum),
+    ``RE-2026/0042`` aber in ``RE 2026 0042``. Ein Punkt gilt zwischen zwei Ziffern nur, wo die Nummer selbst einen trägt (``26/001`` steht
+    nicht in ``26.001,00``). An einer Fuge mit einem Buchstaben stört ein Trennzeichen nie (``R 26003``, ``R-26003``).
 
     **Die Ziffernsperre** gilt an dem Rand, an dem die Nummer selbst mit einer Ziffer beginnt bzw. endet: Dort steht unmittelbar keine weitere
     ASCII-Ziffer, sonst wäre der Treffer nur das Stück einer längeren Ziffernfolge – eines Betrags, eines Datums, einer anderen Nummer (``R26001`` ist
@@ -97,43 +125,49 @@ def _number_pattern(number: str) -> re.Pattern:
     Linear: Die Zeichen der Nummer sind ``[a-z0-9]`` (mit ``IGNORECASE`` auch groß), das Trennzeichen nie eines davon – an jeder Stelle des Textes
     passt höchstens EIN Weg. Es gibt keine verschachtelten Quantoren, und der Aufwand je Fundstelle hängt nur von der Länge der Nummer ab (höchstens
     ``MAX_NUMBER_LENGTH``)."""
-    body = _GAP.join(re.escape(char) for char in number)
+    body = [re.escape(number[0])]
+    for index in range(1, len(number)):
+        joint = joints[index - 1] if index - 1 < len(joints) else 0
+        if not (number[index - 1].isdigit() and number[index].isdigit()):
+            body.append(_GAP)
+        elif joint:
+            body.append(_GAP if joint == 2 else _GAP_NO_DOT)      # ein Punkt zwischen Ziffern nur, wo die Nummer selbst einen trägt
+        body.append(re.escape(number[index]))
     before = r'(?<![0-9])' if number[0].isdigit() else ''
     after = r'(?![0-9])' if number[-1].isdigit() else ''
-    return re.compile(before + body + after, re.IGNORECASE)
+    return re.compile(before + ''.join(body) + after, re.IGNORECASE)
 
 
 class _Movement:
-    """Eine Bewegung, einmal für alle Paare vorbereitet: die gekappten Felder (Text, Beleg-Nr., Empfänger), ihre normalisierte Form, deren
-    Verbindung (``haystack``: ``|`` ist kein Zeichen einer Nummer, über die Grenze eines Feldes hinweg trifft also nichts) und die Namenswörter
-    des Empfängers."""
-    __slots__ = ('id', 'amount', 'contact_id', 'day', 'fields', 'normalized', 'haystack', 'words')
+    """Eine Bewegung, einmal für alle Paare vorbereitet: die gekappten Felder, **die von der Bank kommen** (Verwendungszweck und Empfänger), ihre
+    normalisierte Form, deren Verbindung (``haystack``: ``|`` ist kein Zeichen einer Nummer, über die Grenze eines Feldes hinweg trifft also nichts)
+    und die Namenswörter des Empfängers. Beleg-Nr. und Kontakt der Bankzeile zählen bewusst NICHT: Eine Zuordnung trägt beides aus der Rechnung
+    ein (``_backfill_booking_skr``), und es bleibt nach dem Entfernen stehen – eine falsch zugeordnete und wieder gelöste Rechnung wäre sonst der
+    stärkste Vorschlag, mit einer Begründung, die nicht stimmt."""
+    __slots__ = ('id', 'amount', 'day', 'fields', 'normalized', 'haystack', 'words')
 
     def __init__(self, raw: dict):
         self.id = raw['id']
         self.amount = raw['amount_minor']
-        contact = raw.get('contact_id')
-        self.contact_id = contact if is_int(contact) else None
         self.day = iso_day(raw.get('date'))
-        self.fields = tuple(text_field(raw, key) for key in ('text', 'document_number', 'recipient'))
+        self.fields = tuple(text_field(raw, key) for key in ('text', 'recipient'))
         self.normalized = tuple(normalize_number(field) for field in self.fields)
         self.haystack = '|'.join(self.normalized)
-        self.words = name_words(self.fields[2])
+        self.words = name_words(self.fields[1])
 
 
 class _Invoice:
     """Eine Rechnung, einmal für alle Paare vorbereitet: die normalisierte Nummer (``''``, wenn sie nicht brauchbar ist) und die Namenswörter
     des Kunden."""
-    __slots__ = ('id', 'number', 'open', 'customer_id', 'day', 'words')
+    __slots__ = ('id', 'number', 'joints', 'open', 'day', 'words')
 
     def __init__(self, raw: dict):
         self.id = raw['id']
         self.open = raw['open_minor']
-        customer = raw.get('customer_id')
-        self.customer_id = customer if is_int(customer) else None
         self.day = iso_day(raw.get('date'))
-        number = normalize_number(raw.get('number'))
-        self.number = number if usable_number(number) and len(number) <= MAX_NUMBER_LENGTH else ''
+        number, joints = _number_parts(text_field(raw, 'number'))
+        usable = usable_number(number) and len(number) <= MAX_NUMBER_LENGTH
+        self.number, self.joints = (number, joints) if usable else ('', ())
         self.words = name_words(text_field(raw, 'customer_name'))
 
 
@@ -150,7 +184,7 @@ def _invoices(raw: Iterable | None) -> list[_Invoice]:
 def _number_found(movement: _Movement, invoice: _Invoice) -> bool:
     """Steht die Nummer der Rechnung in einem Feld der Bewegung – der genaue Ausdruck, je Feld mit Treffer im normalisierten Text. Der billige Test
     auf allen Feldern zusammen (``invoice.number in movement.haystack``) macht der Aufrufer vorher."""
-    pattern = _number_pattern(invoice.number)
+    pattern = _number_pattern(invoice.number, invoice.joints)
     return any(invoice.number in normalized and pattern.search(field) is not None
                for field, normalized in zip(movement.fields, movement.normalized))
 
@@ -159,8 +193,7 @@ def _rate(movement: _Movement, invoice: _Invoice, by_number: bool) -> PaymentSug
     """Das Paar bewerten – ``None``, wenn es kein Vorschlag ist (weder NUMMER noch BETRAG und KUNDE, oder eine Bewegung mehr als
     ``DAYS_BEFORE_INVOICE`` Tage vor dem Rechnungsdatum ohne NUMMER). ``by_number``: Die Nummer steht im Text (``_number_found``)."""
     amount = movement.amount == invoice.open
-    customer = ((movement.contact_id is not None and movement.contact_id == invoice.customer_id)
-                or not movement.words.isdisjoint(invoice.words))
+    customer = not movement.words.isdisjoint(invoice.words)
     if not (by_number or (amount and customer)):
         return None
     distance = None

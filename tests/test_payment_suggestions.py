@@ -9,8 +9,12 @@ Die Seite schlägt jetzt vor, was zusammengehört – **es wird nur vorgeschlage
 ``tests/test_payment_matching.py``; hier:
 
 * die Datenbankschicht (``Database.suggest_invoice_payments``, ``suggest_invoices_for_booking``, ``suggest_bookings_for_invoice``): rein lesend, offene
-  Rechnungen und Bewegungen ohne Kind und Zuordnung, der freie Rest einer einzelnen Bewegung nach ``_free_minor_sql``, schon zugeordnete Paare fehlen,
-  kaputte Werte sind kein Kandidat und kein Fehler, die Übersicht ist nicht an den Zeitraum der Seite gebunden;
+  Rechnungen und Bewegungen ohne Kind und Zuordnung (EINE Abfrage, die die Zuordnungen einmal liest), der freie Rest einer einzelnen Bewegung nach
+  ``_free_minor_sql``, schon zugeordnete Paare fehlen, kaputte Werte sind kein Kandidat und kein Fehler, die Übersicht ist nicht an den Zeitraum der
+  Seite gebunden; **nur Euro** (eine Rechnung oder Bewegung in einer anderen Währung ist nie Teil eines Vorschlags);
+* **nur, was von der Bank kommt, zählt:** Beleg-Nr. und Kontakt einer Bankzeile trägt eine Zuordnung dort ein und lässt sie beim Entfernen stehen – sie
+  sind kein Beweis. Der Fall dazu über die echten Wege (falsch zuordnen, wieder entfernen: danach ist der Vorschlag wieder der erste) und der Kundenname
+  (die Firma, sonst der Name – nicht der Ansprechpartner neben der Firma);
 * der Kasten „Zahlungseingänge zu offenen Rechnungen“ auf der Seite *Buchungen* (nur mit Vorschlägen, links über der Liste, maskiert, höchstens 20
   Zeilen und „… und n weitere“) und sein Skript (``payAssign``: der bestehende Weg, bei Erfolg neu laden, bei einem Fehler die Meldung und die
   Zeile bleibt);
@@ -34,7 +38,7 @@ import pytest
 
 from db import Database
 from db.payment_matching import AMBIGUOUS_TEXT, MAX_SUGGESTIONS, REASON_AMOUNT, REASON_CUSTOMER, REASON_NUMBER
-from db.payment_suggestions import MAX_INVOICES, MAX_MOVEMENTS, PaymentOverview
+from db.payment_suggestions import _UNBOOKED_MOVEMENTS, MAX_INVOICES, MAX_MOVEMENTS, PaymentOverview
 from money import fmt_eur
 from server import handlers
 from server.handlers import PAYMENT_NOT_ASSIGNED, handle_add_transaction
@@ -368,6 +372,347 @@ def test_the_candidates_are_the_newest_first_and_limited(tmp_db):
         assert [i['number'] for i in tmp_db._open_invoices(conn, 2)] == ['R40003', 'R40002']
 
 
+# ── Nur was von der Bank kommt, zählt ────────────────────────────────────────
+
+def lone_world(db, number=None, with_contact=False, recipient='Jemand Anderes', text='Spende'):
+    """Ein Bankkonto, der Kunde „Käufer AG“ mit der offenen Rechnung R26001 über 119,00 € und ein Zahlungseingang über 119,00 € ohne Rechnungsnummer im
+    Verwendungszweck, von ``recipient``. Die Bankzeile trägt, was eine Zuordnung dort zurücklässt: die Beleg-Nr. (``number``) und den Kontakt des Kunden
+    (``with_contact``). Liefert ``account``, ``buyer``, ``invoice``, ``payment``."""
+    account = bank_account(db)
+    buyer = customer(db, 'Käufer AG')
+    invoice_id = add_invoice(db, 'R26001', 119.00, name='Käufer AG', customer_id=buyer)
+    payment = add_payment(db, account, 119.00, '2026-03-10', recipient, text, document_number=number, contact_id=buyer if with_contact else None)
+    return {'account': account, 'buyer': buyer, 'invoice': invoice_id, 'payment': payment}
+
+
+def bank_row_trace(db, booking_id):
+    """Was die Bankzeile an Kontakt und Beleg-Nr. trägt: ``(Contact_ID, DocumentNumber)``."""
+    with closing(sqlite3.connect(db.db_name)) as conn:
+        return conn.execute('SELECT Contact_ID, DocumentNumber FROM Bookings WHERE ID = ?', (booking_id,)).fetchone()
+
+
+def assert_nowhere_suggested(db, w):
+    """Weder die Übersicht (Daten und Kasten) noch die Maske der Bewegung noch die Rechnungsseite nennen einen Vorschlag zu dieser Bewegung und Rechnung."""
+    assert overview_pairs(db) == [] and box_rows(period_page(db)) == []
+    assert db.suggest_invoices_for_booking(w['payment']) == [] and db.suggest_bookings_for_invoice(w['invoice']) == []
+    mask = PageTransactions(db, edit_transaction_id=w['payment'])
+    assert 'invoiceSuggestion' not in mask and not any('Vorschlag' in text for _v, text, _s in option_labels(mask))
+    assert [value for value, _t, _s in option_labels(mask)] == ['', str(w['invoice'])]            # die Rechnung steht weiter in der Auswahl – ohne Vorschlag
+    page = PageInvoice(db, {}, w['invoice'])
+    assert 'Betrag stimmt' not in page and 'Kunde passt' not in page and 'Rechnungsnummer im Verwendungszweck' not in page
+
+
+@pytest.mark.parametrize('number, with_contact', [('R26001', False), ('Rechnung R26001 bezahlt', False), (None, True), ('R26001', True)],
+                         ids=['Beleg-Nr.', 'Beleg-Nr. mit Text', 'Kontakt', 'beides'])
+def test_the_document_number_and_the_contact_of_the_bank_row_are_no_evidence(tmp_db, number, with_contact):
+    """Eine Zuordnung trägt Beleg-Nr. und Kontakt der Rechnung in die Bankzeile ein (``handlers._backfill_booking_skr``), und beides bleibt nach dem Entfernen
+    stehen: Es stammt nicht von der Bank. Gleicher Betrag und eine Bankzeile, die die Nummer der Rechnung oder ihren Kunden als Kontakt trägt, sind ohne
+    Namen und Nummer im Verwendungszweck und im Empfänger kein Vorschlag – auf keiner der Seiten."""
+    w = lone_world(tmp_db, number, with_contact)
+    assert bank_row_trace(tmp_db, w['payment']) == (w['buyer'] if with_contact else None, number)          # Voraussetzung: Die Zeile trägt, was der Test sagt
+    assert_nowhere_suggested(tmp_db, w)
+
+
+def test_the_document_number_and_the_contact_of_the_bank_row_add_nothing_to_a_suggestion(tmp_db):
+    """Passt der Empfänger der Bankzeile zum Kunden, ist es ein Vorschlag – wegen Betrag und Name, mit genau diesen Punkten und Begründungen: Die Nummer in der
+    Beleg-Nr. gibt weder die 100 Punkte noch die Begründung „Rechnungsnummer im Verwendungszweck“."""
+    w = lone_world(tmp_db, 'R26001', True, recipient='Käufer AG')
+    reasons = (REASON_AMOUNT, REASON_CUSTOMER)
+    assert [(i['id'], s.score, s.reasons) for s, i in tmp_db.suggest_invoices_for_booking(w['payment'])] == [(w['invoice'], 80, reasons)]
+    assert [(m['id'], s.score, s.reasons) for s, m in tmp_db.suggest_bookings_for_invoice(w['invoice'])] == [(w['payment'], 80, reasons)]
+    assert [(m['id'], i['id'], s.score, s.reasons) for s, m, i in tmp_db.suggest_invoice_payments().items] == [(w['payment'], w['invoice'], 80, reasons)]
+    assert [row[6] for row in box_rows(period_page(tmp_db))] == [AMOUNT_AND_NAME]
+    page = PageTransactions(tmp_db, edit_transaction_id=w['payment'])
+    assert f'Vorschlag: Rechnung R26001 ({AMOUNT_AND_NAME}) ' in page and NUMBER_AND_NAME not in page
+
+
+# ── Der Fall der Prüfung: falsch zugeordnet und wieder gelöst ────────────────
+
+def examination_world(db):
+    """Kunde A („Käufer AG“) mit der offenen Rechnung 1 über 119,00 €, Kunde B („Müller GmbH“) mit der offenen Rechnung 2 über denselben Betrag und ein
+    Zahlungseingang von „Käufer AG“ über 119,00 € ohne Rechnungsnummer im Verwendungszweck."""
+    account = bank_account(db)
+    buyer, miller = customer(db, 'Käufer AG'), customer(db, 'Müller GmbH')
+    one = add_invoice(db, 'R26001', 119.00, name='Käufer AG', person='Kim Käufer', customer_id=buyer)
+    two = add_invoice(db, 'R26002', 119.00, name='Müller GmbH', person='Mia Müller', customer_id=miller)
+    payment = add_payment(db, account, 119.00, '2026-03-10', 'Käufer AG', 'Vielen Dank für den Auftrag')
+    return {'account': account, 'buyer': buyer, 'miller': miller, 'one': one, 'two': two, 'payment': payment}
+
+
+def surfaces(db, w):
+    """Was die Datenbankschicht und die Seiten (Kasten, Maske der Bewegung, Seiten der beiden Rechnungen) vorschlagen – zum Vergleichen vorher/nachher."""
+    mask = PageTransactions(db, edit_transaction_id=w['payment'])
+    pages = {name: PageInvoice(db, {}, w[name]) for name in ('one', 'two')}
+    return {
+        'overview': [(m['id'], i['id'], s.score, s.reasons, s.ambiguous) for s, m, i in db.suggest_invoice_payments().items],
+        'for the payment': [(i['id'], s.score, s.reasons) for s, i in db.suggest_invoices_for_booking(w['payment'])],
+        'for invoice 1': [(m['id'], s.score, s.reasons) for s, m in db.suggest_bookings_for_invoice(w['one'])],
+        'for invoice 2': [(m['id'], s.score, s.reasons) for s, m in db.suggest_bookings_for_invoice(w['two'])],
+        'box': box_rows(period_page(db)),
+        'mask options': [(value, text) for value, text, _selected in option_labels(mask)],
+        'mask line': re.findall(r'<div class="hint" id="invoiceSuggestion">Vorschlag: Rechnung (\S+) \((.*?)\) ', mask),
+        'invoice pages': {name: (candidate_buttons(page), re.findall(r'<td style="padding:6px 8px;">[^<]*<div class="hint">(.*?)</div>', page))
+                          for name, page in pages.items()},
+    }
+
+
+def assert_the_first_invoice_is_the_suggestion(w, state):
+    """Der Vorschlag ist Rechnung 1 (Betrag und Name, 80 Punkte, Begründung „Betrag stimmt · Kunde passt“) auf jeder Seite – und Rechnung 2 ist keiner."""
+    reasons = (REASON_AMOUNT, REASON_CUSTOMER)
+    assert state['overview'] == [(w['payment'], w['one'], 80, reasons, False)]
+    assert state['for the payment'] == [(w['one'], 80, reasons)] and state['for invoice 1'] == [(w['payment'], 80, reasons)]
+    assert state['for invoice 2'] == []
+    assert [row[3] for row in state['box']] == ['R26001'] and [row[6] for row in state['box']] == [AMOUNT_AND_NAME]
+    assert [value for value, text in state['mask options'] if 'Vorschlag' in text] == [str(w['one'])]
+    assert state['mask line'] == [('R26001', AMOUNT_AND_NAME)]
+    assert state['invoice pages']['one'][1] == [AMOUNT_AND_NAME] and state['invoice pages']['two'][1] == []
+
+
+def test_a_wrong_assignment_that_was_removed_again_leaves_the_first_suggestion_over_the_routes(server_port, auto_login):
+    """Der Fall der Prüfung: Eine Zahlung ohne Nummer im Text passt nach Betrag und Name zu Rechnung 1. Wird sie über die Route der Seite FALSCH Rechnung 2 zugeordnet
+    und die Zuordnung wieder entfernt, bleiben in der Bankzeile der Kontakt und die Beleg-Nr. der Rechnung 2 stehen – und früher war Rechnung 2 danach der stärkste
+    Vorschlag („Rechnungsnummer im Verwendungszweck“, 180 Punkte), obwohl sie dort nicht steht. Jetzt ist es wieder Rechnung 1 mit denselben Punkten und derselben
+    Begründung wie vorher, auf allen Seiten."""
+    db = auto_login.db
+    w = examination_world(db)
+    before = surfaces(db, w)
+    assert_the_first_invoice_is_the_suggestion(w, before)
+    headers = {'Origin': own_origin(server_port)}
+    answer = post_json(server_port, '/invoice/link-payment', {'invoice_id': w['two'], 'transaction_id': w['payment']}, auto_login.csrf, headers=headers)
+    assert (answer.status, json.loads(answer.text)) == (200, {'success': True})                  # der Nutzer ordnet die falsche Rechnung zu …
+    assert overview_pairs(db) == [] and db.suggest_invoices_for_booking(w['payment']) == []       # … die Zahlung ist vergeben
+    payment_id = db.get_invoice_payments(w['two'])[0][0]
+    answer = post_json(server_port, '/invoice/delete-payment', {'payment_id': payment_id}, auto_login.csrf, headers=headers)
+    assert (answer.status, json.loads(answer.text)) == (200, {'success': True})                  # … und löst sie wieder
+    assert db.get_invoice_payments(w['two']) == [] and db.get_booking_allocations(w['payment']) == []
+    assert bank_row_trace(db, w['payment']) == (w['miller'], 'R26002')                           # Voraussetzung: Die Zuordnung hat Kontakt und Beleg-Nr. hinterlassen
+    after = surfaces(db, w)
+    assert_the_first_invoice_is_the_suggestion(w, after)
+    assert after == before
+
+
+def test_a_wrong_assignment_through_the_mask_that_was_removed_again_leaves_the_first_suggestion(tmp_db):
+    """Derselbe Fall über die Maske der Bankbewegung: Der Nutzer wählt dort die falsche Rechnung (Feld ``invoice_id``) und speichert."""
+    w = examination_world(tmp_db)
+    before = surfaces(tmp_db, w)
+    assert_the_first_invoice_is_the_suggestion(w, before)
+    post, _adopt = open_form(tmp_db, w['payment'])
+    post['invoice_id'] = [str(w['two'])]
+    assert handle_add_transaction(tmp_db, post) == (303, f'/invoice/edit?id={w["two"]}')
+    assert overview_pairs(tmp_db) == []
+    tmp_db.unassign_invoice_payment(tmp_db.get_invoice_payments(w['two'])[0][0])
+    assert bank_row_trace(tmp_db, w['payment']) == (w['miller'], 'R26002')
+    after = surfaces(tmp_db, w)
+    assert_the_first_invoice_is_the_suggestion(w, after)
+    assert after == before
+
+
+def test_the_other_invoice_stays_no_suggestion_while_the_first_is_taken(tmp_db):
+    """Ist Rechnung 1 schon zugeordnet, gibt es für diese Zahlung keinen Vorschlag mehr – Rechnung 2 wird nicht zum Ersatz: Name und Kunde gehören ihr nicht."""
+    w = examination_world(tmp_db)
+    assert tmp_db.assign_invoice_payment(w['one'], w['payment']).ok
+    assert overview_pairs(tmp_db) == [] and tmp_db.suggest_invoices_for_booking(w['payment']) == []
+    assert tmp_db.suggest_bookings_for_invoice(w['two']) == []
+
+
+# ── Der Kundenname: die Firma, sonst der Name ────────────────────────────────
+
+def test_the_customer_name_of_an_open_invoice_is_the_company_or_else_the_name(tmp_db):
+    add_invoice(tmp_db, 'R26001', 119.00, name='Alpha Bau GmbH', person='Katharina Müller')            # Firma und Ansprechpartner
+    add_invoice(tmp_db, 'R26002', 238.00, name='', person='Mia Schmidt')                                # ohne Firma
+    add_invoice(tmp_db, 'R26003', 357.00, name='  Beta Handel AG  ', person='Otto Meier')               # Leerraum am Rand zählt nicht
+    with closing(tmp_db._get_connection()) as conn:
+        found = {i['number']: (i['customer_name'], i['label']) for i in tmp_db._open_invoices(conn)}
+    assert found == {'R26001': ('Alpha Bau GmbH', 'Alpha Bau GmbH'), 'R26002': ('Mia Schmidt', 'Mia Schmidt'), 'R26003': ('Beta Handel AG', 'Beta Handel AG')}
+
+
+def test_the_name_of_a_contact_person_beside_a_company_is_no_customer(tmp_db):
+    """Der Vor- oder Nachname des Ansprechpartners ist kein Beweis für den Kunden: Ein Empfänger, der nur ihn teilt, ergibt kein „Kunde passt“ – mit einem Wort der Firma
+    schon."""
+    account = bank_account(tmp_db)
+    company = add_invoice(tmp_db, 'R26001', 119.00, name='Alpha Bau GmbH', person='Katharina Müller')
+    by_surname = add_payment(tmp_db, account, 119.00, '2026-03-10', 'Müller Elektro', 'Danke')
+    by_first_name = add_payment(tmp_db, account, 119.00, '2026-03-11', 'Katharina Elektro', 'Danke')
+    for payment in (by_surname, by_first_name):
+        assert tmp_db.suggest_invoices_for_booking(payment) == []
+    assert overview_pairs(tmp_db) == [] and tmp_db.suggest_bookings_for_invoice(company) == [] and box_rows(period_page(tmp_db)) == []
+    by_company = add_payment(tmp_db, account, 119.00, '2026-03-12', 'Alpha Elektro', 'Danke')
+    assert [(i['id'], s.reasons) for s, i in tmp_db.suggest_invoices_for_booking(by_company)] == [(company, (REASON_AMOUNT, REASON_CUSTOMER))]
+    assert [m['id'] for _s, m in tmp_db.suggest_bookings_for_invoice(company)] == [by_company]
+    assert overview_pairs(tmp_db) == [(by_company, company)]
+
+
+def test_without_a_company_the_name_of_the_buyer_is_the_customer(tmp_db):
+    account = bank_account(tmp_db)
+    private = add_invoice(tmp_db, 'R26002', 238.00, name='', person='Mia Schmidt')
+    payment = add_payment(tmp_db, account, 238.00, '2026-03-10', 'Schmidt Haustechnik', 'Danke')
+    found = tmp_db.suggest_invoices_for_booking(payment)
+    assert [(i['id'], i['label'], s.reasons) for s, i in found] == [(private, 'Mia Schmidt', (REASON_AMOUNT, REASON_CUSTOMER))]
+    assert overview_pairs(tmp_db) == [(payment, private)]
+    assert [row[4] for row in box_rows(period_page(tmp_db))] == ['Mia Schmidt']
+
+
+# ── Nur Euro ─────────────────────────────────────────────────────────────────
+
+def euro_world(db, invoice_currency, payment_currency):
+    """Eine Rechnung R26001 über 119,00 € („Käufer AG“) und ein Zahlungseingang von „Käufer AG“ über 119,00 € mit der Nummer im Verwendungszweck, mit diesen
+    Währungsangaben (roh gespeichert, ``None`` ist NULL)."""
+    account = bank_account(db)
+    buyer = customer(db)
+    invoice_id = add_invoice(db, 'R26001', 119.00, customer_id=buyer)
+    payment = add_payment(db, account, 119.00, '2026-03-10', 'Käufer AG', 'Rechnungs-Nr R26001')
+    run_sql(db, 'UPDATE Invoices SET Currency = ? WHERE ID = ?', invoice_currency, invoice_id)
+    run_sql(db, 'UPDATE Bookings SET Currency = ? WHERE ID = ?', payment_currency, payment)
+    return {'account': account, 'buyer': buyer, 'invoice': invoice_id, 'payment': payment}
+
+
+def suggested_on(db, w):
+    """Ob das Paar auf jeder Fläche vorgeschlagen wird: Übersicht, Kasten, einzelne Bewegung, einzelne Rechnung, Maske (Zeile und Auswahl), Rechnungsseite."""
+    mask = PageTransactions(db, edit_transaction_id=w['payment'])
+    page = PageInvoice(db, {}, w['invoice'])
+    return {
+        'overview': overview_pairs(db) == [(w['payment'], w['invoice'])],
+        'box': [row[3] for row in box_rows(period_page(db))] == ['R26001'],
+        'for the payment': bool(db.suggest_invoices_for_booking(w['payment'])),
+        'for the invoice': bool(db.suggest_bookings_for_invoice(w['invoice'])),
+        'mask line': 'id="invoiceSuggestion"' in mask,
+        'mask option': any('Vorschlag' in text for _v, text, _s in option_labels(mask)),
+        'invoice page': f'<div class="hint">{NUMBER_AND_NAME}</div>' in page,
+    }
+
+
+@pytest.mark.parametrize('invoice_currency, payment_currency, expected', [
+    ('EUR', 'EUR', True), ('eur', 'EUR', True), (' EUR ', 'EUR', True), ('Eur', 'EUR', True), ('', 'EUR', True), (None, 'EUR', True),
+    ('EUR', 'eur', True), ('EUR', ' EUR ', True), ('EUR', '', True), ('EUR', None, True), (None, None, True),
+    ('USD', 'EUR', False), ('usd', 'EUR', False), (' USD ', 'EUR', False), ('CHF', 'EUR', False), ('EURO', 'EUR', False), ('€', 'EUR', False),
+    ('EUR', 'USD', False), ('EUR', 'usd', False), ('EUR', 'GBP', False), ('USD', 'USD', False),
+])
+def test_only_euro_invoices_and_payments_are_part_of_a_suggestion(tmp_db, invoice_currency, payment_currency, expected):
+    """Eine Rechnung oder Bewegung in einer anderen Währung als leer/``EUR`` (ohne Rücksicht auf Schreibweise und Leerzeichen am Rand) ist nie Teil eines
+    Vorschlags – auf keiner Fläche; das Paar mit gleichem Betrag, Namen und der Nummer im Text wäre sonst ein 180-Punkte-Vorschlag."""
+    w = euro_world(tmp_db, invoice_currency, payment_currency)
+    found = suggested_on(tmp_db, w)
+    assert set(found.values()) == {expected}, found
+
+
+@pytest.mark.parametrize('invoice_currency, payment_currency', [('USD', 'EUR'), ('EUR', 'USD')], ids=['Rechnung-USD', 'Bewegung-USD'])
+def test_a_pair_in_a_foreign_currency_stays_in_the_old_lists_of_the_pages_just_without_a_suggestion(tmp_db, invoice_currency, payment_currency):
+    """Die Auswahl der Maske und die Liste der Rechnungsseite zeigen weiter alles, was offen ist – nur ohne Vorschlag und ohne Begründung."""
+    w = euro_world(tmp_db, invoice_currency, payment_currency)
+    mask = PageTransactions(tmp_db, edit_transaction_id=w['payment'])
+    assert [value for value, _t, _s in option_labels(mask)] == ['', str(w['invoice'])]
+    assert candidate_buttons(PageInvoice(tmp_db, {}, w['invoice'])) == [w['payment']]
+
+
+# ── Bewegungen ohne Kind und ohne Zuordnung: EINE Abfrage ────────────────────
+
+def unbooked_ids(db):
+    with closing(db._get_connection()) as conn:
+        return [m['id'] for m in db._unbooked_movements(conn)]
+
+
+def mixed_movements(db):
+    """Eine Bestandsprobe: Bewegungen mit und ohne Kind, mit und ohne Zuordnung (eine ohne Sätze, wie der Import der WISO-Datenbank sie schreibt), mit
+    Betrag ≤ 0, mit einem Betrag, der keine ganze Zahl ist, und eine Buchung, die keine Bankbewegung ist. Liefert die IDs je Art."""
+    account = bank_account(db)
+    invoice_id = add_invoice(db, 'R26001', 119.00, customer_id=customer(db))
+    other_invoice = add_invoice(db, 'R26002', 59.00, name='Müller GmbH', customer_id=customer(db, 'Müller GmbH'))
+    ids = {'free': add_payment(db, account, 10.00, '2026-03-01'), 'free too': add_payment(db, account, 11.00, '2026-03-05')}
+    ids['with child'] = add_payment(db, account, 20.00, '2026-03-02')
+    db.insert_booking('2026-03-02', 20.00, booking_type='entry', parent_booking_id=ids['with child'],
+                      coa_id=db.get_coa_id_by_account_number(4400), counter_coa_id=db.get_coa_id_by_account_number(1800))
+    ids['assigned'] = add_payment(db, account, 119.00, '2026-03-03')
+    run_sql(db, 'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) VALUES (?, ?, ?, ?)', invoice_id, ids['assigned'], 1190000, '2026-03-03')
+    ids['assigned elsewhere'] = add_payment(db, account, 59.00, '2026-03-04')
+    run_sql(db, 'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) VALUES (?, ?, ?, ?)', other_invoice, ids['assigned elsewhere'], 590000, '2026-03-04')
+    ids['child and assignment'] = add_payment(db, account, 30.00, '2026-03-06')
+    db.insert_booking('2026-03-06', 30.00, booking_type='entry', parent_booking_id=ids['child and assignment'],
+                      coa_id=db.get_coa_id_by_account_number(4400), counter_coa_id=db.get_coa_id_by_account_number(1800))
+    run_sql(db, 'INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) VALUES (?, ?, ?, ?)', invoice_id, ids['child and assignment'], 300000, '2026-03-06')
+    ids['outgoing'] = add_payment(db, account, -12.00, '2026-03-07')
+    ids['zero'] = add_payment(db, account, 0.00, '2026-03-08')
+    ids['text amount'] = add_payment(db, account, 13.00, '2026-03-09')
+    run_sql(db, "UPDATE Bookings SET Amount = 'viel' WHERE ID = ?", ids['text amount'])
+    ids['fraction'] = add_payment(db, account, 14.00, '2026-03-10')
+    run_sql(db, 'UPDATE Bookings SET Amount = 140000.5 WHERE ID = ?', ids['fraction'])
+    ids['no bank row'] = db.insert_booking('2026-03-11', 15.00, booking_type='entry', recipient_client='Käufer AG')
+    return ids
+
+
+def test_a_movement_with_a_child_or_an_assignment_is_not_unbooked(tmp_db):
+    """Bewegung mit Kind fehlt, Bewegung mit Zuordnung fehlt (auch eine ohne Sätze, auch eine an einer anderen Rechnung), eine ohne beides ist da – jüngste zuerst."""
+    ids = mixed_movements(tmp_db)
+    assert unbooked_ids(tmp_db) == [ids['free too'], ids['free']]
+    for name in ('with child', 'assigned', 'assigned elsewhere', 'child and assignment', 'outgoing', 'zero', 'text amount', 'fraction', 'no bank row'):
+        assert ids[name] not in unbooked_ids(tmp_db), name
+
+
+PREVIOUS_UNBOOKED_MOVEMENTS = '''
+    SELECT b.ID, b.DateBooking, b.RecipientClient, b.Text, b.DocumentNumber, b.Contact_ID, b.Amount, b.Amount
+    FROM Bookings b
+    WHERE b.BookingType = 'bank' AND typeof(b.Amount) = 'integer' AND b.Amount > 0
+      AND CASE WHEN EXISTS (SELECT 1 FROM Bookings k WHERE k.ParentBooking_ID = b.ID) THEN 0
+               ELSE NOT EXISTS (SELECT 1 FROM InvoicePayments ip WHERE ip.BookingID = b.ID) END
+    ORDER BY b.DateBooking DESC, b.ID DESC
+    LIMIT ?'''
+
+
+def test_the_single_read_of_the_assignments_gives_the_rows_of_the_version_before(tmp_db):
+    """Die Zuordnungen werden einmal gelesen (``NOT IN``) statt je Bewegung (``CASE`` mit ``NOT EXISTS``): in Euro dieselben Zeilen in derselben Reihenfolge, auch mit
+    dem ``LIMIT``."""
+    mixed_movements(tmp_db)
+    with closing(sqlite3.connect(tmp_db.db_name)) as conn:
+        for limit in (500, 1):
+            assert conn.execute(_UNBOOKED_MOVEMENTS, (limit,)).fetchall() == conn.execute(PREVIOUS_UNBOOKED_MOVEMENTS, (limit,)).fetchall()
+        assert len(conn.execute(_UNBOOKED_MOVEMENTS, (500,)).fetchall()) == 2
+
+
+def test_the_assignments_are_read_once_and_not_once_per_movement(tmp_db):
+    """``InvoicePayments`` hat keinen Index auf ``BookingID``: Eine Unterabfrage je Bewegung läse die ganze Tabelle für jede unkontierte Bewegung neu (gemessen an 20 000
+    Eingängen und 3 700 Zuordnungen: 1,2 s statt 28 ms). Gezählt werden die Schritte der Datenbank, nicht die Zeit: Sie wachsen mit der Zahl der Zeilen, nicht mit ihrem
+    Produkt (3 000 Bewegungen und 1 800 Zuordnungen: gemessen rund 80 000 Schritte, die Fassung davor gut 15 Millionen; die Grenze liegt bei 1,5 Millionen)."""
+    account = bank_account(tmp_db)
+    invoice_id = add_invoice(tmp_db, 'R26001', 119.00, customer_id=customer(tmp_db))
+    with closing(sqlite3.connect(tmp_db.db_name)) as conn:
+        conn.executemany('INSERT INTO Bookings (DateBooking, Amount, BookingType, Account_ID) VALUES (?, ?, ?, ?)',
+                         [(f'2026-03-{n % 28 + 1:02d}', 10000 + n, 'bank', account) for n in range(3000)])
+        first = conn.execute("SELECT MIN(ID) FROM Bookings WHERE BookingType = 'bank'").fetchone()[0]
+        conn.executemany('INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) VALUES (?, ?, ?, ?)',
+                         [(invoice_id, first + n, 1, '2026-03-01') for n in range(1800)])
+        conn.commit()
+        ticks = []
+
+        def tick():
+            ticks.append(1)
+            return 0                                              # 0 = weiterrechnen
+        conn.set_progress_handler(tick, 1000)                     # alle 1 000 Schritte der Datenbank einmal
+        rows = conn.execute(_UNBOOKED_MOVEMENTS, (MAX_MOVEMENTS,)).fetchall()
+        conn.set_progress_handler(None, 0)
+    assert len(rows) == MAX_MOVEMENTS and all(first + 1800 <= row[0] for row in rows)       # die ersten 1 800 sind vergeben
+    assert len(ticks) * 1000 < 1_500_000, f'{len(ticks) * 1000} Schritte'
+
+
+def test_a_null_in_the_assignments_cannot_empty_the_list():
+    """Das ``NOT IN`` einer Unterabfrage mit einem NULL ergibt für jede Zeile NULL: Die Liste wäre leer. Die Abfrage nimmt NULL deshalb aus der Unterabfrage. Auf der Tabelle der
+    App kann es kein NULL geben (``BookingID`` ist ``NOT NULL``, siehe der nächste Test) – geprüft wird die Abfrage selbst, auf einer kleinen Tabelle ohne die Sperre."""
+    with closing(sqlite3.connect(':memory:')) as conn:
+        conn.executescript('''
+            CREATE TABLE Bookings (ID INTEGER PRIMARY KEY, DateBooking TEXT, RecipientClient TEXT, Text TEXT, DocumentNumber TEXT, Contact_ID INTEGER,
+                                   Amount, BookingType TEXT, Currency TEXT, ParentBooking_ID INTEGER);
+            CREATE TABLE InvoicePayments (ID INTEGER PRIMARY KEY, InvoiceID INTEGER, BookingID INTEGER);
+            INSERT INTO Bookings (ID, DateBooking, Amount, BookingType) VALUES (1, '2026-03-01', 100, 'bank'), (2, '2026-03-02', 200, 'bank'), (3, '2026-03-03', 300, 'bank');
+            INSERT INTO InvoicePayments (InvoiceID, BookingID) VALUES (1, 1), (1, NULL), (2, NULL);''')
+        assert [row[0] for row in conn.execute(_UNBOOKED_MOVEMENTS, (500,))] == [3, 2]
+
+
+def test_the_table_of_the_app_has_no_null_booking_id_in_its_assignments(tmp_db):
+    """Der Grund, warum es keine Zeile mit NULL zu prüfen gibt: Das Schema verlangt ``BookingID`` (``NOT NULL``) – die Zeile ließe sich nicht anlegen."""
+    invoice_id = add_invoice(tmp_db, 'R26001', 119.00, customer_id=customer(tmp_db))
+    with closing(sqlite3.connect(tmp_db.db_name)) as conn:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute('INSERT INTO InvoicePayments (InvoiceID, BookingID, Amount, PaymentDate) VALUES (?, NULL, 1, ?)', (invoice_id, '2026-03-01'))
+
+
 # ── Der Kasten auf der Seite Buchungen ───────────────────────────────────────
 
 def test_without_suggestions_there_is_no_box(tmp_db):
@@ -439,8 +784,13 @@ def test_the_box_refreshes_with_the_table_after_an_import(tmp_db):
 
 
 def test_the_script_of_the_box_has_only_var_and_function_and_nothing_that_sets_markup():
-    assert re.findall(r'^[ \t]*(var|let|const|function)\s+(\w+)', PAY_SUGGEST_JS, re.M) == [('function', 'payAssign')]
+    """Wie bei den übrigen Skripten der Seiten nur ``var`` und ``function`` (kein ``let``/``const``) und außerhalb der Funktion nichts Globales; in der Funktion gibt es
+    lokale ``var`` (die Adresse für das Neuladen ohne ``err``)."""
+    declarations = re.findall(r'^[ \t]*(var|let|const|function)\s+(\w+)', PAY_SUGGEST_JS, re.M)
+    assert re.findall(r'^(var|let|const|function)\s+(\w+)', PAY_SUGGEST_JS, re.M) == [('function', 'payAssign')]            # nichts steht außerhalb der Funktion
+    assert declarations[0] == ('function', 'payAssign') and {kind for kind, _name in declarations[1:]} <= {'var'}         # innen nur ``var`` (kein let, const)
     assert 'innerHTML' not in PAY_SUGGEST_JS and 'insertAdjacentHTML' not in PAY_SUGGEST_JS and 'document.write' not in PAY_SUGGEST_JS
+    assert 'outerHTML' not in PAY_SUGGEST_JS and 'eval(' not in PAY_SUGGEST_JS
 
 
 def test_the_page_carries_the_failure_sentence_only_as_json_in_its_own_script_block(tmp_db):
@@ -456,11 +806,15 @@ def test_the_page_carries_the_failure_sentence_only_as_json_in_its_own_script_bl
 HARNESS = r"""
 const vm = require('vm');
 const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
-const calls = {fetch: [], msg: [], reload: 0};
+const calls = {fetch: [], msg: [], reload: 0, navigations: []};
 const button = {disabled: false};
 const scenario = input.scenario;
+// window.location wie im Browser: Pfad und Query der Seite; ein Zuweisen von href ist eine Navigation (hier nur festgehalten), reload() ein Neuladen derselben Adresse
+const location = {pathname: scenario.pathname, search: scenario.search, reload: () => { calls.reload += 1; }};
+Object.defineProperty(location, 'href', {set: value => { calls.navigations.push(value); }});
 const context = {
-  window: {location: {reload: () => { calls.reload += 1; }}},
+  window: {location},
+  URLSearchParams,
   fetch: (url, init) => {
     calls.fetch.push({url, method: init.method, headers: init.headers, body: init.body, disabledWhileSending: button.disabled});
     if (scenario.reject) return Promise.reject(new Error('Netz'));
@@ -475,38 +829,72 @@ context.payAssign(12, 34, button);
 setTimeout(() => { calls.disabledAtEnd = button.disabled; console.log(JSON.stringify(calls)); }, 30);
 """
 
+PAGE = {'pathname': '/transactions', 'search': '?from=2026-01-01&to=2026-12-31'}            # die Adresse der Seite *Buchungen*, auf der der Kasten steht
+
 
 def run_script(scenario):
     source = f'var PAY_FAILED = {script_json(PAY_FAILED)};\n{PAY_SUGGEST_JS}'
-    result = subprocess.run([NODE, '-e', HARNESS], input=json.dumps({'source': source, 'scenario': scenario}), capture_output=True, text=True, timeout=30)
+    result = subprocess.run([NODE, '-e', HARNESS], input=json.dumps({'source': source, 'scenario': {**PAGE, **scenario}}), capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 
 
 @NO_NODE
-def test_assign_calls_the_existing_route_with_both_ids_and_no_amount_and_reloads_on_success():
+def test_assign_calls_the_existing_route_with_both_ids_and_no_amount_and_loads_the_page_again_on_success():
     calls = run_script({'data': {'success': True}})
     assert len(calls['fetch']) == 1
     fetched = calls['fetch'][0]
     assert (fetched['url'], fetched['method']) == ('/invoice/link-payment', 'POST')
     assert fetched['headers'] == {'Content-Type': 'application/json'} and json.loads(fetched['body']) == {'invoice_id': 12, 'transaction_id': 34}
     assert fetched['disabledWhileSending'] is True                 # ein Doppelklick ordnet nicht doppelt zu
-    assert calls['reload'] == 1 and calls['msg'] == [] and calls['disabledAtEnd'] is True
+    assert calls['navigations'] == ['/transactions?from=2026-01-01&to=2026-12-31'] and calls['msg'] == [] and calls['disabledAtEnd'] is True
+    assert calls['reload'] == 0                                    # nicht ``reload()``: Das behielte eine alte Meldung (``err``) in der Adresse
+
+
+@NO_NODE
+@pytest.mark.parametrize('search, target', [
+    ('', '/transactions'),                                                                               # nichts in der Adresse: der Pfad allein
+    ('?from=2026-01-01&to=2026-12-31', '/transactions?from=2026-01-01&to=2026-12-31'),                  # ohne ``err`` bleibt alles
+    ('?from=2026-01-01&to=2026-12-31&err=Alte+Meldung', '/transactions?from=2026-01-01&to=2026-12-31'),   # eine alte Meldung fällt weg, der Zeitraum bleibt
+    ('?err=Die+Zahlung+konnte+nicht+zugeordnet+werden.', '/transactions'),                              # nur ``err``: keine Query, kein ``?``
+    ('?err=a&from=2026-01-01&err=b', '/transactions?from=2026-01-01'),                                  # jedes ``err``
+    ('?acct=1&acct=2&err=x&to=2026-12-31', '/transactions?acct=1&acct=2&to=2026-12-31'),                # eine Liste (wiederholter Schlüssel) bleibt, auch die Reihenfolge
+    ('?error=x&errx=1&xerr=2&from=2026-01-01', '/transactions?error=x&errx=1&xerr=2&from=2026-01-01'),   # nur der Schlüssel ``err`` selbst, nicht ähnliche
+    ('?note=%C3%A4%C3%B6&err=x', '/transactions?note=%C3%A4%C3%B6'),                                    # Umlaute bleiben prozentkodiert
+], ids=['ohne-Adresse', 'ohne-err', 'mit-err', 'nur-err', 'zwei-err', 'Liste', 'ähnliche-Schlüssel', 'Umlaute'])
+def test_after_success_the_page_loads_again_at_its_path_and_query_without_err(search, target):
+    calls = run_script({'data': {'success': True}, 'search': search})
+    assert calls['navigations'] == [target] and calls['reload'] == 0 and calls['msg'] == []
+
+
+@NO_NODE
+def test_after_success_the_path_of_the_page_is_kept():
+    calls = run_script({'data': {'success': True}, 'pathname': '/transactions/', 'search': '?err=x'})
+    assert calls['navigations'] == ['/transactions/']
 
 
 @NO_NODE
 def test_assign_shows_the_reason_of_the_answer_as_an_error_and_keeps_the_row_usable():
     calls = run_script({'data': {'success': False, 'error': 'Die Rechnung ist nicht (mehr) zahlbar.'}})
-    assert calls['msg'] == [['Die Rechnung ist nicht (mehr) zahlbar.', 'error']] and calls['reload'] == 0 and calls['disabledAtEnd'] is False
+    assert calls['msg'] == [['Die Rechnung ist nicht (mehr) zahlbar.', 'error']] and calls['navigations'] == [] and calls['reload'] == 0
+    assert calls['disabledAtEnd'] is False
     calls = run_script({'data': {'success': False}})
-    assert calls['msg'] == [[PAY_FAILED, 'error']] and calls['reload'] == 0 and calls['disabledAtEnd'] is False
+    assert calls['msg'] == [[PAY_FAILED, 'error']] and calls['navigations'] == [] and calls['reload'] == 0 and calls['disabledAtEnd'] is False
 
 
 @NO_NODE
 @pytest.mark.parametrize('scenario', [{'reject': True}, {'badJson': True}], ids=['kein-Netz', 'kein-JSON'])
 def test_assign_names_a_failure_without_an_answer_with_the_fixed_sentence(scenario):
     calls = run_script(scenario)
-    assert calls['msg'] == [[PAY_FAILED, 'error']] and calls['reload'] == 0 and calls['disabledAtEnd'] is False
+    assert calls['msg'] == [[PAY_FAILED, 'error']] and calls['navigations'] == [] and calls['reload'] == 0 and calls['disabledAtEnd'] is False
+
+
+@NO_NODE
+def test_the_script_of_the_box_parses_in_node(tmp_path):
+    source = tmp_path / 'pay_assign.js'
+    source.write_text(PAY_SUGGEST_JS, encoding='utf-8')
+    done = subprocess.run([NODE, '--check', str(source)], capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
 
 
 # ── Der bestehende Weg: Zuordnen über die Route ──────────────────────────────

@@ -146,7 +146,14 @@ PAY_SUGGEST_JS = '''function payAssign(invoiceId, bookingId, button) {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({invoice_id: invoiceId, transaction_id: bookingId})
     }).then(function (r) { return r.json(); }).then(function (data) {
-        if (data.success) { window.location.reload(); return; }
+        if (data.success) {
+            // ohne eine alte Meldung in der Adresse neu laden (``err`` eines früheren, gescheiterten Speicherns)
+            var query = new URLSearchParams(window.location.search);
+            query.delete('err');
+            var rest = query.toString();
+            window.location.href = window.location.pathname + (rest ? '?' + rest : '');
+            return;
+        }
         button.disabled = false;
         appMsg(data.error || PAY_FAILED, 'error');
     }).catch(function () {
@@ -646,8 +653,11 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
 
         rows_html = ''.join(_split_row(r) for r in split_rows)
         bank_amount = float(edit_trans[11] or 0)
-        bank_docnr = _attr(edit_trans[16])
-        bank_text = _attr(edit_trans[15])
+        # Als JSON in den Skriptblock (nie nur maskiert in Anführungszeichen): Ein Zeilenumbruch im Verwendungszweck – der Import eines
+        # PDF-Auszugs verbindet dessen Zeilen damit – oder ein Backslash am Ende beendete sonst die Zeichenkette, und der ganze Block des
+        # Editors fiel mit einem Syntaxfehler aus; ein ``&`` stand als ``&amp;`` in der neuen Zeile
+        bank_docnr_js = script_json('' if edit_trans[16] is None else str(edit_trans[16]))
+        bank_text_js = script_json('' if edit_trans[15] is None else str(edit_trans[15]))
 
         # Auswahl bestehender Buchungen (Zuordnung läuft über die ID)
         adopt_widget = ''
@@ -704,8 +714,8 @@ def PageTransactions(db: Database, edit_transaction_id=None, date_from=None, dat
                 // geöffneten Maske erneut ein. Ein zweites const im selben
                 // globalen Scope wirft und riss den ganzen Block mit sich.
                 var SPLIT_BANK_AMOUNT = {bank_amount};
-                var SPLIT_BANK_DOCNR = "{bank_docnr}";
-                var SPLIT_BANK_TEXT = "{bank_text}";
+                var SPLIT_BANK_DOCNR = {bank_docnr_js};
+                var SPLIT_BANK_TEXT = {bank_text_js};
                 var SPLIT_SUFFIX = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
                 function splitRows() {{

@@ -1245,26 +1245,36 @@ kein Subagent darauf:
 - **Zahlungsvorschläge (seit 2.8.1, `db/payment_matching.py` rein, `db/payment_suggestions.py` nur lesend):** Zu einem Zahlungseingang wird die
   passende offene Rechnung **vorgeschlagen – zugeordnet wird allein auf Klick** über die bestehenden Wege (`POST /invoice/link-payment`, Feld
   `invoice_id` der Maske → `assign_invoice_payment`), nichts ist vorausgewählt; nicht einführen, dass ein Speichern still zuordnet. **Vorschlag** =
-  die Rechnungsnummer steht in Verwendungszweck, Beleg-Nr. oder Empfänger der Bewegung ODER (freier Betrag = offener Betrag UND Kunde: gleicher Kontakt
-  oder ein gemeinsames Namenswort); ein gleicher Betrag allein ist nie ein Vorschlag. Punkte 100/50/30, feste Begründungen (`reason_text`, „ · “), eine
-  Zahlung mehr als 7 Tage vor dem Rechnungsdatum nur mit Nummer, höchstens 5 je Bewegung bzw. Rechnung. **Nummer im Text:** gesucht im Originaltext ohne
-  Rücksicht auf die Schreibweise, zwischen zwei Zeichen höchstens EIN Trennzeichen (Leerraum, `-`, `_`, `/`, `.` – `R 26003`, ein Zeilenumbruch der Bank),
-  Ziffernsperre an dem Rand, an dem die Nummer selbst mit einer Ziffer beginnt oder endet (`R26001` steht nicht in `R260010`, wohl aber in
-  `RE-Nr.R26001.KD-Nr.` und `1R26001`); brauchbar wie bei den Belegen (mindestens 4 Zeichen mit einer Ziffer, rein numerisch ab 5), höchstens 40 Zeichen,
-  Felder auf 2000 Zeichen gekappt, linear. **`pair_up`** ist die Eins-zu-eins-Liste der Übersicht: Paare nach (−Punkte, Datumsabstand, IDs), jede
+  die Rechnungsnummer steht im Verwendungszweck oder im Empfänger der Bewegung ODER (freier Betrag = offener Betrag UND gemeinsames Namenswort von
+  Empfänger und Kunde); ein gleicher Betrag allein ist nie ein Vorschlag. **Es zählt nur, was von der Bank kommt:** Beleg-Nr. und Kontakt der
+  Bankzeile zählen bewusst nicht – eine Zuordnung trägt beides aus der Rechnung ein (`_backfill_booking_skr`), und es bleibt nach dem Entfernen
+  stehen; eine falsch zugeordnete und wieder gelöste Rechnung wäre sonst der stärkste Vorschlag. Kundenname ist die Firma, sonst der Name (nie der
+  Ansprechpartner neben der Firma). Nur in Euro (Währung leer oder `EUR`, auf beiden Seiten). Punkte 100/50/30, feste Begründungen (`reason_text`,
+  „ · “), eine Zahlung mehr als 7 Tage vor dem Rechnungsdatum nur mit Nummer, höchstens 5 je Bewegung bzw. Rechnung. **Nummer im Text:** gesucht im
+  Originaltext ohne Rücksicht auf die Schreibweise; an einer Fuge mit einem Buchstaben darf EIN Trennzeichen stehen (Leerraum, `-`, `_`, `/`, `.` –
+  `R 26003`, `R-26003`), **zwischen zwei Ziffern nur dort, wo die Nummer selbst eines trägt** (`_number_parts`: `RE-2026/0042` steht in
+  `RE 2026 0042`; `26001` nicht in `26.001,00`, `202601` nicht in `2026-01-15`, `R26003` nicht in `R26 003`), ein Punkt dort nur, wo die Nummer
+  selbst einen Punkt trägt (`26/001` nicht in `26.001,00`); Ziffernsperre an dem Rand, an dem die Nummer selbst mit einer Ziffer beginnt oder endet
+  (`R26001` steht nicht in `R260010`, wohl aber in `RE-Nr.R26001.KD-Nr.` und `1R26001`); brauchbar wie bei den Belegen (mindestens 4 Zeichen mit
+  einer Ziffer, rein numerisch ab 5), höchstens 40 Zeichen, Felder auf 2000 Zeichen gekappt, linear. Diese Regeln nicht lockern – lieber ein
+  Vorschlag weniger als ein falscher. **`pair_up`** ist die Eins-zu-eins-Liste der Übersicht: Paare nach (−Punkte, Datumsabstand, IDs), jede
   Bewegung und jede Rechnung höchstens einmal – zwei gleich hohe Rechnungen und Zahlungen desselben Kunden bekommen so je die zeitlich nächste –,
   `ambiguous` („mehrere möglich – bitte prüfen“) bei einem weiteren Paar gleicher Punktzahl; ein Paar, das schon in `InvoicePayments` steht, ist nie
   ein Vorschlag. **Bewegungen:** Übersicht und Rechnungsseite lesen nur Bankbewegungen mit Betrag > 0 ohne Kind und ohne Zuordnung (frei = Betrag;
-  15 ms statt 4,3 s bei 200 000 Buchungen – die Reihenfolge im `CASE` von `_UNBOOKED_MOVEMENTS` ist Absicht: erst das Kind über den Index, dann die
-  Zuordnung); der freie Rest nach `_free_minor_sql` gilt für die EINE Bewegung der Maske. Kaputte Werte (Betrag als Text, unlesbares Datum) sind kein
-  Kandidat, nie ein Fehler. **Seiten:** Kasten `#paySuggest` „Zahlungseingänge zu offenen Rechnungen“ links über der Buchungsliste (aus allen
-  Zeiträumen, höchstens 20 Zeilen, „Zuordnen“ = `payAssign`; `refreshTable()` erneuert ihn nach einem Import; nicht im Bereich, den `openEditForm`
+  `_UNBOOKED_MOVEMENTS` liest die Zuordnungen EINMAL über `NOT IN` – `InvoicePayments` hat keinen Index auf `BookingID`, eine Unterabfrage je
+  Bewegung kostete bei 20 000 unkontierten Eingängen 1,2 s statt 28 ms; ein Test zählt die SQLite-Schritte); der freie Rest nach `_free_minor_sql`
+  gilt für die EINE Bewegung der Maske. Kaputte Werte (Betrag als Text, unlesbares Datum) sind kein Kandidat, nie ein Fehler. **Seiten:** Kasten
+  `#paySuggest` „Zahlungseingänge zu offenen Rechnungen“ links über der Buchungsliste (aus allen Zeiträumen, höchstens 20 Zeilen, „Zuordnen“ =
+  `payAssign`, lädt danach die Adresse ohne `err` neu; `refreshTable()` erneuert ihn nach einem Import; nicht im Bereich, den `openEditForm`
   austauscht), Maske einer Bankbewegung mit freiem Rest (Vorschläge zuerst in der Auswahl „Rechnung“, „Übernehmen“ setzt nur den Wert), Rechnungsseite
   (Vorschläge zuerst, Begründung unter dem Auftraggeber, der Haken bei gleichem Betrag bleibt). Scheitert eine der Abfragen, bleibt die Seite stehen
   (leer, Fehler im Server-Log). **Fehlerweg der Maske:** Scheitert die Zuordnung nach dem Speichern, bleibt der Nutzer bei der Buchung
   (303 auf `/transactions/edit?id=<ID>&err=…`, `PAYMENT_NOT_ASSIGNED`: „Die Buchung ist gespeichert, die Zahlung wurde aber nicht zugeordnet: …“),
-  nicht mehr auf der Rechnung. Bekannte Grenzen: Skonto und Währung zählen nicht; eine Rechnung, die eine Erlöskonto-Wahl braucht, lässt sich im
-  Kasten nicht zuordnen (die Meldung sagt es, die Wahl gibt es auf Rechnungsseite und Maske). `tests/test_payment_matching.py`,
+  nicht mehr auf der Rechnung. Bekannte Grenzen: Skonto zählt nicht; ein Umbruch der Bank mitten in den Ziffern der Nummer ist kein Treffer; eine
+  Rechnung, die eine Erlöskonto-Wahl braucht, lässt sich im Kasten nicht zuordnen (die Wahl gibt es auf Rechnungsseite und Maske); vorgeschlagen
+  wird auch eine Bewegung, deren Bankkonto kein Konto im Kontenrahmen hat (der Klick meldet es). **Werte im Skript des Buchungssatz-Editors**
+  (`SPLIT_BANK_TEXT`, `SPLIT_BANK_DOCNR`) stehen als JSON (`script_json`): Ein Zeilenumbruch im Verwendungszweck – der Import eines PDF-Auszugs
+  verbindet Zeilen damit – ließ den Block sonst ausfallen (`tests/test_split_editor_script_values.py`). `tests/test_payment_matching.py`,
   `tests/test_payment_suggestions.py`
 - **Konto im Kontenrahmen eines Bankkontos (seit 2.8.1, `Accounts.SKRAccount`):** Das Formular Stammdaten → Bankkonten bietet eine **Auswahl**
   (`pages_masterdata._skr_select`): die Konten des Kontenrahmens im Bereich der Art – Bank 1700–1899, Kasse 1600–1699

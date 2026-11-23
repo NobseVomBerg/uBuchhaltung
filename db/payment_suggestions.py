@@ -42,17 +42,19 @@ _OPEN_INVOICES = f'''
       AND i.InvoiceKind IS NOT ?
       AND i.Status IN ({','.join('?' * len(PAYABLE_STATUSES))})
       AND typeof(COALESCE(i.AmountDue, i.SumGross, 0)) = 'integer'
-      AND COALESCE(i.AmountDue, i.SumGross, 0) > 0'''
+      AND COALESCE(i.AmountDue, i.SumGross, 0) > 0
+      AND UPPER(TRIM(COALESCE(i.Currency, ''))) IN ('', 'EUR')'''
 
-# Bewegungen ohne Kind und ohne Zuordnung. Das ``CASE`` legt die Reihenfolge fest: Erst die billige Frage nach einem Kind (Index auf
-# ``ParentBooking_ID``), nur bei einer Bewegung ohne Kind die nach einer Zuordnung (liest ``InvoicePayments`` ohne Index) – ein ``CASE`` wertet nur
-# den gewählten Zweig aus, zwei ``AND``-Bedingungen in der falschen Reihenfolge ließen die Abfrage 4 s statt 15 ms dauern. Der freie Rest ist der Betrag.
+# Bewegungen ohne Kind und ohne Zuordnung, in Euro. Die Zuordnungen werden EINMAL gelesen (``NOT IN`` über eine Unterabfrage ohne Bezug zur
+# Zeile): ``InvoicePayments`` hat keinen Index auf ``BookingID``, eine Unterabfrage je Bewegung läse die ganze Tabelle für jede unkontierte
+# Bewegung neu (gemessen an 20 000 unkontierten Eingängen und 3 700 Zuordnungen: 1,2 s statt 28 ms). Der freie Rest ist der Betrag.
 _UNBOOKED_MOVEMENTS = '''
     SELECT b.ID, b.DateBooking, b.RecipientClient, b.Text, b.DocumentNumber, b.Contact_ID, b.Amount, b.Amount
     FROM Bookings b
     WHERE b.BookingType = 'bank' AND typeof(b.Amount) = 'integer' AND b.Amount > 0
-      AND CASE WHEN EXISTS (SELECT 1 FROM Bookings k WHERE k.ParentBooking_ID = b.ID) THEN 0
-               ELSE NOT EXISTS (SELECT 1 FROM InvoicePayments ip WHERE ip.BookingID = b.ID) END
+      AND UPPER(TRIM(COALESCE(b.Currency, ''))) IN ('', 'EUR')
+      AND NOT EXISTS (SELECT 1 FROM Bookings k WHERE k.ParentBooking_ID = b.ID)
+      AND b.ID NOT IN (SELECT ip.BookingID FROM InvoicePayments ip WHERE ip.BookingID IS NOT NULL)
     ORDER BY b.DateBooking DESC, b.ID DESC
     LIMIT ?'''
 
@@ -62,12 +64,12 @@ def _name(value) -> str:
 
 
 def _invoice_dict(row) -> dict:
-    """Eine Zeile von ``_OPEN_INVOICES`` als Eingabe der reinen Funktionen. ``customer_name``: Firma und Name des Käufers, beides zum Vergleichen
-    der Namenswörter; ``label``: was die Seiten zeigen (die Firma, sonst der Name – wie die Auswahl der Maske)."""
+    """Eine Zeile von ``_OPEN_INVOICES`` als Eingabe der reinen Funktionen. ``customer_name``: die Firma des Käufers, sonst sein Name – zum
+    Vergleichen der Namenswörter (nicht beides: Der Vorname eines Ansprechpartners ist kein Beweis für den Kunden); ``label``: dasselbe für die Seiten."""
     ident, number, date, open_minor, customer_id, company, name = row
     company, name = _name(company), _name(name)
     return {'id': ident, 'number': number, 'date': date, 'open_minor': open_minor, 'customer_id': customer_id,
-            'customer_name': f'{company} {name}'.strip(), 'label': company or name}
+            'customer_name': company or name, 'label': company or name}
 
 
 def _movement_dicts(rows) -> list:
@@ -103,6 +105,7 @@ class PaymentSuggestionsMixin:
                 SELECT b.ID, b.DateBooking, b.RecipientClient, b.Text, b.DocumentNumber, b.Contact_ID, b.Amount, {free_sql} AS FreeMinor
                 FROM Bookings b
                 WHERE b.ID = ? AND b.BookingType = 'bank' AND typeof(b.Amount) = 'integer' AND b.Amount > 0
+                  AND UPPER(TRIM(COALESCE(b.Currency, ''))) IN ('', 'EUR')
             )
             WHERE FreeMinor > 0''', free_params + [booking_id]).fetchall()
         return _movement_dicts(rows)

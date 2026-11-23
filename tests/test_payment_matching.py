@@ -5,10 +5,15 @@
 
 Rein: kein Datenbankzugriff, keine Uhr. Geprüft wird
 
-* jede Regel einzeln: die Rechnungsnummer im Text (die vier Schreibweisen aus der Praxis, Trennzeichen, Zeilenumbruch, Groß-/Kleinschreibung, die
-  Ziffernsperre an dem Rand, an dem die Nummer mit einer Ziffer beginnt oder endet, zu kurze und zu lange Nummern), Betrag und Kunde, die Regel
-  „NUMMER oder (BETRAG und KUNDE)“ – ein gleicher Betrag allein ist nie ein Vorschlag –, Punkte und Begründungen in fester Reihenfolge, die
-  Datumsregel (mehr als 7 Tage vor dem Rechnungsdatum nur mit Nummer, ein unlesbares Datum steht hinten);
+* jede Regel einzeln: die Rechnungsnummer im Text (die vier Schreibweisen aus der Praxis, Zeilenumbruch, Groß-/Kleinschreibung, die
+  Ziffernsperre an dem Rand, an dem die Nummer mit einer Ziffer beginnt oder endet, zu kurze und zu lange Nummern), **Trennzeichen zwischen zwei
+  Ziffern nur dort, wo die Nummer selbst eines trägt** (``26001`` steht nicht in dem Betrag ``26.001,00``, ``202601`` nicht in dem Datum
+  ``2026-01-15``), Betrag und Kunde, die Regel „NUMMER oder (BETRAG und KUNDE)“ – ein gleicher Betrag allein ist nie ein Vorschlag –, Punkte und
+  Begründungen in fester Reihenfolge, die Datumsregel (mehr als 7 Tage vor dem Rechnungsdatum nur mit Nummer, ein unlesbares Datum steht hinten);
+* **nur, was von der Bank kommt, zählt:** Die Nummer wird in Verwendungszweck und Empfänger gesucht, nie in der Beleg-Nr. der Bankzeile, und „Kunde
+  passt“ gibt es nur über gemeinsame Namenswörter von Empfänger und Kundenname, nie über den Kontakt der Bankzeile – eine Zuordnung trägt Beleg-Nr.
+  und Kontakt der Rechnung in die Bankzeile ein, und beides bleibt nach dem Lösen stehen (der Fall dazu mit den echten Wegen steht in
+  ``tests/test_payment_suggestions.py``);
 * die Rangfolge (``rank_invoices``, ``rank_movements``: höchstens fünf, nach Punkten, Abstand der Daten, ID) und die Eins-zu-eins-Liste
   (``pair_up``: jede Bewegung und jede Rechnung höchstens einmal, zwei gleich hohe Rechnungen und Zahlungen eines Kunden paaren sich nach dem
   Datum, ``ambiguous`` bei gleicher Punktzahl, unabhängig von der Reihenfolge der Eingabe, ``linked`` schließt Paare aus);
@@ -31,6 +36,8 @@ from db.receipt_matching import MAX_FIELD_LENGTH
 
 DAY = '2026-03-04'                          # das Rechnungsdatum der Tests
 OPEN = 1190000                              # 119,00 EUR in Minor Units (money.SCALE = 4)
+BUYER = 'Käufer AG'                         # der Empfänger einer Bewegung und der Kunde einer Rechnung, die ein Namenswort teilen: „Kunde passt“
+OTHER = 'Müller KG'                         # ein anderer Kunde: kein gemeinsames Namenswort mit BUYER
 
 
 # ── Hilfen ───────────────────────────────────────────────────────────────────
@@ -100,16 +107,22 @@ def test_the_spellings_from_practice_find_their_invoice(number, text):
 
 HITS = [
     ('R26001', 'R26001'), ('R26001', 'r26001'), ('R26001', 'RECHNUNG R26001 VOM 12.11.2026'), ('R26001', '(R26001)'),
-    # höchstens EIN Trennzeichen zwischen zwei Zeichen der Nummer: Leerraum, Bindestrich, Unterstrich, Schrägstrich, Punkt
+    # höchstens EIN Trennzeichen an einer Fuge mit einem Buchstaben: Leerraum, Bindestrich, Unterstrich, Schrägstrich, Punkt
     ('R26003', 'R 26003'), ('R26003', 'R-26003'), ('R26003', 'R_26003'), ('R26003', 'R/26003'), ('R26003', 'R.26003'),
-    ('R26001', 'R26 001'), ('R26001', 'R2-6-0-0-1'), ('R26001', 'R260\n01'), ('R26001', 'R26 001'),
+    ('R26001', 'R\n26001'), ('R26001', 'R\xa026001'),                      # der Zeilenumbruch einer Bank, ein geschütztes Leerzeichen
+    ('26R001', '26 R001'), ('26R001', '26-R-001'), ('R26A01', 'R 26 A 01'),   # Buchstaben mitten in der Nummer: beide Fugen daneben sind offen
+    # die Nummer, wie sie im Buch steht, bestimmt die Fugen zwischen zwei Ziffern: Dort steht ein Trennzeichen, wo sie selbst eines trägt
+    ('R26 001', 'R26001'), ('R26 001', 'R26 001'), ('R26 001', 'R26-001'), ('R26 001', 'R26\n001'), ('R26 001', 'R 26 001'),
     # ein Buchstabe oder Satzzeichen davor und dahinter stört nicht, ein Datum hinter der Nummer auch nicht
     ('R26003', 'RGNR26003'), ('R26003', 'RE-Nr.R26003.KD-Nr.'), ('R26003', 'R26003 12.11.2026'), ('R26001', 'R26001A'), ('R26001', 'ER26001'),
     # beginnt die Nummer mit einem Buchstaben, bleibt der Rand davor offen (auch eine Ziffer davor stört nicht): ``1R26001`` trifft ``R26001``
     ('R26001', '1R26001'), ('R26001', 'Kd 12R26001'),
     # eine Nummer mit eigenen Trennzeichen: nur ihre Zeichen zählen
     ('RE-2026/0042', 'RE20260042'), ('RE-2026/0042', 're 2026 0042 bitte'), ('RE-2026/0042', 'RE-2026-0042'), ('RE-2026/0042', 'Rechnung RE_2026_0042'),
-    ('20260042', '2026-0042'), ('20260042', 'Rechnung 20260042-01'), ('20260042', 'Nr.20260042'), ('20260042', 'NR20260042'),
+    ('RE-2026/0042', 'RE 2026 0042'), ('RE-2026/0042', 're2026-0042'), ('RE-2026/0042', 'RE-2026/0042'),
+    ('2026-0042', '2026-0042'), ('2026-0042', '2026 0042'), ('2026-0042', '2026/0042'), ('2026-0042', '20260042'),     # an ihrer eigenen Fuge
+    ('26/001', '26/001'), ('26/001', '26 001'), ('26/001', '26-001'), ('26/001', '26001'),
+    ('20260042', 'Rechnung 20260042-01'), ('20260042', 'Nr.20260042'), ('20260042', 'NR20260042'), ('20260042', '20260042'),
     ('26R001', 'Zahlung 26R001'), ('26R001', 'RG26R001'), ('26R001', '26R001/2026'),
     ('R2026', 'R2026'),                                      # fünf Zeichen mit einer Ziffer: brauchbar
 ]
@@ -117,9 +130,17 @@ MISSES = [
     # ein Stück einer längeren Ziffernfolge: an dem Rand, an dem die Nummer mit einer Ziffer endet bzw. beginnt, schließt keine Ziffer an
     ('R26001', 'R260010'), ('R26001', 'R2600100'), ('R26001', 'R26 0010'),
     ('26R001', '26R0010'), ('26R001', '126R001'), ('20260042', '120260042'), ('20260042', '202600421'),
-    # mehr als ein Trennzeichen oder ein anderes Zeichen zwischen den Zeichen der Nummer
-    ('R26003', 'R  26003'), ('R26003', 'R--26003'), ('R26003', 'R - 26003'), ('R26003', 'R260  03'), ('R26003', 'R,26003'), ('R26003', 'R:26003'),
+    # mehr als ein Trennzeichen oder ein anderes Zeichen an einer Fuge mit einem Buchstaben
+    ('R26003', 'R  26003'), ('R26003', 'R--26003'), ('R26003', 'R - 26003'), ('R26003', 'R,26003'), ('R26003', 'R:26003'),
     ('R26003', 'R+26003'), ('R26003', 'R#26003'), ('R26003', 'R2ä6003'),
+    # zwischen zwei Ziffern ein Trennzeichen, das die Nummer selbst nicht trägt: ein Umbruch mitten in den Ziffern, ein Leerzeichen, ein Gedankenstrich
+    ('R26001', 'R26 001'), ('R26001', 'R2-6-0-0-1'), ('R26001', 'R260\n01'), ('R26001', 'R26\xa0001'), ('R26003', 'R260  03'), ('R26003', 'R26 003'),
+    ('20260042', '2026-0042'), ('26R001', '2 6R001'), ('26R001', '26R0 01'),
+    # … und eine Nummer mit eigenen Fugen trifft nur an diesen, nicht an anderen und nicht ohne Trennzeichen verdoppelt
+    ('R26 001', 'R2 6001'), ('R26 001', 'R260 01'), ('R26 001', 'R2-6-0-0-1'), ('R26 001', 'R26  001'), ('R26 001', 'R26,001'),
+    ('RE-2026/0042', 'RE 20 260042'), ('RE-2026/0042', 'RE 202 60042'), ('RE-2026/0042', 'RE 2026  0042'), ('RE-2026/0042', 'RE 2026,0042'),
+    ('2026-0042', '20.260.042'), ('2026-0042', '202 60042'), ('2026-0042', '2026  0042'), ('2026-0042', '2-0-2-6-0-0-4-2'), ('2026-0042', '2026-00421'),
+    ('26/001', '2 6001'), ('26/001', '260 01'), ('26/001', '26 0 01'), ('26/001', '260012'),
     # nicht die Nummer
     ('R26001', 'R26002'), ('R26001', 'R2600'), ('R26001', 'R'), ('R26001', ''), ('R26001', '26001'), ('R26001', 'Rechnung Nr. 26001'),
     ('R26001', 'R２６００１'),                                # Ziffern anderer Schriften sind keine
@@ -139,15 +160,34 @@ def test_the_number_is_not_found(number, text):
     assert not found_by_text(number, text)
 
 
-def test_the_number_may_stand_in_the_text_the_document_number_or_the_recipient():
-    for field in ('text', 'number', 'recipient'):
-        found = rank_invoices(movement(amount=1, **{field: 'Zahlung R26001'}), [invoice()])
-        assert [s.invoice_id for s in found] == [1], field
+@pytest.mark.parametrize('field', ['text', 'recipient'])
+def test_the_number_may_stand_in_the_text_or_the_recipient(field):
+    found = rank_invoices(movement(amount=1, **{field: 'Zahlung R26001'}), [invoice()])
+    assert [s.invoice_id for s in found] == [1]
+
+
+def test_the_number_in_the_document_number_of_the_bank_row_is_no_evidence():
+    """Eine Zuordnung trägt die Rechnungsnummer in die Beleg-Nr. der Bankzeile ein (``handlers._backfill_booking_skr``), und sie bleibt nach dem
+    Entfernen der Zuordnung dort stehen: Eine falsch zugeordnete und wieder gelöste Rechnung wäre sonst der stärkste Vorschlag (mit der Begründung
+    „Rechnungsnummer im Verwendungszweck“, obwohl sie dort nicht steht). Gelesen wird nur, was von der Bank kommt: Verwendungszweck und Empfänger."""
+    for number in ('R26001', 'Zahlung R26001', 'RE-Nr. R26001.KD-Nr.', 'r 26001'):
+        assert rank_invoices(movement(amount=1, number=number), [invoice()]) == [], number
+        assert rank_movements(invoice(), [movement(amount=1, number=number)]) == [], number
+        assert pair_up([movement(amount=1, number=number)], [invoice()]) == [], number
+    assert rank_invoices(movement(number='R26001'), [invoice()]) == []                  # auch mit gleichem Betrag nicht: der Betrag allein beweist nichts
+    assert rank_invoices(movement(number='R26001', contact=7), [invoice(customer=7)]) == []
+    # mit Betrag und Kunde ist es ein Vorschlag – die Nummer in der Beleg-Nr. gibt ihm weder Punkte noch die Begründung
+    found = rank_invoices(movement(number='R26001', recipient=BUYER), [invoice(name=BUYER)])
+    assert [(s.reasons, s.score) for s in found] == [((REASON_AMOUNT, REASON_CUSTOMER), POINTS_AMOUNT + POINTS_CUSTOMER)]
+    # steht sie auch im Verwendungszweck, zählt der Verwendungszweck – und nur er
+    found = rank_invoices(movement(number='R26001', text='Zahlung R26001', recipient=BUYER), [invoice(name=BUYER)])
+    assert [(s.reasons, s.score) for s in found] == [((REASON_NUMBER, REASON_AMOUNT, REASON_CUSTOMER), 180)]
 
 
 def test_the_parts_of_a_number_in_two_fields_are_not_the_number():
-    assert not rank_invoices(movement(amount=1, text='R260', number='01'), [invoice()])
+    assert not rank_invoices(movement(amount=1, text='R260', recipient='01'), [invoice()])
     assert not rank_invoices(movement(amount=1, text='Zahlung R260', recipient='01 Käufer'), [invoice()])
+    assert not rank_invoices(movement(amount=1, text='R260', number='01'), [invoice()])          # die Beleg-Nr. wird nicht gelesen: auch nicht als Rest einer Nummer
 
 
 def test_the_digit_rule_holds_at_the_edge_where_the_number_itself_has_a_digit():
@@ -177,96 +217,178 @@ def test_the_number_of_the_invoice_is_read_as_it_stands_in_the_book():
     assert found_by_text('RE 2026 0042', 'Zahlung re-2026-0042')
 
 
+# ── NUMMER: Trennzeichen zwischen zwei Ziffern nur an den Fugen der Nummer ───
+
+# Ein Betrag, ein Datum, eine Folge von Zahlen: Eine Ziffernfolge mit Trennzeichen ist nicht die Rechnungsnummer, die selbst keine Trennzeichen trägt. Ohne
+# diese Regel stand eine Nummer wie ``26001`` in jedem Betrag ``26.001,00`` und ``202601`` in jedem Datum ``2026-01-15`` (und ``R26 003`` hätte ``R26003`` getroffen).
+NOT_IN_AMOUNTS_AND_DATES = [
+    ('26001', 'Rechnung über 26.001,00 EUR'), ('26001', '26.001,00'), ('26001', 'Summe 26,001'), ('26001', 'Betrag 26 001'), ('26001', '26-001'),
+    ('10001', 'Überweisung 10.001,50 EUR'), ('10001', '10.001,50'), ('10001', '1.0001'),
+    ('202601', 'Datum 2026-01-15'), ('202601', 'vom 2026-01'), ('202601', 'Monat 2026/01'), ('202601', '2026 01'), ('202601', '2026.01.'),
+    ('260120', 'am 26.01.20'), ('260120', '26-01-20'), ('260120', '26/01/20'), ('260120', '26 01 20'),
+]
+IN_PLAIN_FORM = [
+    ('26001', 'Rechnung 26001'), ('26001', 'Nr.26001'), ('26001', 'Rechnung 26001 vom 12.11.2026'), ('26001', '26001.'),
+    ('10001', 'Rechnung 10001'), ('202601', 'Rechnung 202601'), ('202601', 'Rechnung 202601-A'), ('260120', 'RG 260120 bezahlt'),
+]
+
+
+@pytest.mark.parametrize('number, text', NOT_IN_AMOUNTS_AND_DATES)
+def test_a_number_without_separators_is_not_in_an_amount_or_a_date(number, text):
+    assert not found_by_text(number, text)
+
+
+@pytest.mark.parametrize('number, text', IN_PLAIN_FORM)
+def test_a_number_without_separators_is_in_its_plain_form(number, text):
+    assert found_by_text(number, text)
+
+
+def test_a_separator_inside_the_digits_hits_only_where_the_number_carries_one():
+    """``R26 003`` – ein Umbruch mitten in den Ziffern – trifft ``R26003`` nicht mehr: Die Nummer trägt dort kein Trennzeichen. Trägt sie eines (so, wie sie im
+    Buch steht), trifft es – und nur dort."""
+    assert not found_by_text('R26003', 'R26 003') and not found_by_text('R26003', 'R26\n003') and not found_by_text('R26003', 'R2-6003')
+    assert found_by_text('R 26003', 'R26003') and found_by_text('R 26003', 'R-26003') and not found_by_text('R 26003', 'R26 003')   # die Fuge mit dem Buchstaben
+    assert found_by_text('R26 003', 'R26 003') and found_by_text('R26 003', 'R26\n003') and found_by_text('R26 003', 'R26003')
+    assert not found_by_text('R26 003', 'R2 6003') and not found_by_text('R26 003', 'R260 03')
+    assert found_by_text('RE-2026/0042', 'RE 2026 0042') and found_by_text('RE-2026/0042', 're2026-0042')
+    assert not found_by_text('RE-2026/0042', 'RE 20 260042') and not found_by_text('RE-2026/0042', 'RE 202 60042')
+
+
+def test_the_joints_of_the_number_hold_for_every_ranking_function():
+    """Die Fugen gelten für jede Rangfolge – ``rank_invoices``, ``rank_movements`` und ``pair_up`` lesen dieselbe Nummer."""
+    for number, text, expected in (('2026-0042', 'Zahlung 2026 0042', True), ('2026-0042', 'Zahlung 20.260.042', False),
+                                   ('20260042', 'Zahlung 2026 0042', False), ('20260042', 'Zahlung 20260042', True)):
+        paid, billed = movement(amount=1, text=text), invoice(number=number)
+        assert bool(rank_invoices(paid, [billed])) is expected, (number, text)
+        assert bool(rank_movements(billed, [paid])) is expected, (number, text)
+        assert bool(pair_up([paid], [billed])) is expected, (number, text)
+
+
+def test_two_invoices_with_the_same_characters_but_another_raw_form_do_not_share_a_pattern():
+    """Der Ausdruck einer Nummer wird zwischengespeichert (``lru_cache``): Der Schlüssel muss die Fugen tragen, nicht nur die Zeichen – ``R26001`` und ``R26 001``
+    ergeben dieselbe normalisierte Nummer, aber nicht dasselbe Muster. Gleich, welche Rechnung zuerst gelesen wird."""
+    plain, spaced = invoice(ident=1, number='R26001'), invoice(ident=2, number='R26 001')
+    for invoices in ([plain, spaced], [spaced, plain]):
+        for text, expected in (('Zahlung R26 001', [2]), ('Zahlung R26001', [1, 2]), ('Zahlung R2 6001', [])):
+            found = rank_invoices(movement(amount=1, text=text), invoices)
+            assert sorted(s.invoice_id for s in found) == expected, (text, [i['id'] for i in invoices])
+
+
+def test_an_amount_that_looks_like_the_number_is_still_an_amount():
+    """Eine Rechnung 26001 über 119,00 € und ein Zahlungseingang von 26.001,00 € eines Fremden: Der Betrag im Text ist nicht die Rechnungsnummer."""
+    assert rank_invoices(movement(amount=260010000, text='Zahlung 26.001,00 EUR', recipient='Fremde GmbH'), [invoice(number='26001')]) == []
+
+
 # ── BETRAG und KUNDE ─────────────────────────────────────────────────────────
 
 def test_an_equal_amount_alone_is_no_suggestion():
     assert rank_invoices(movement(), [invoice()]) == []
-    assert rank_invoices(movement(contact=7), [invoice(customer=8)]) == []           # ein anderer Kunde
+    assert rank_invoices(movement(recipient=BUYER), [invoice(name=OTHER)]) == []           # ein anderer Kunde
     assert rank_invoices(movement(recipient='Müller'), [invoice(name='Meier GmbH')]) == []
     assert rank_movements(invoice(), [movement()]) == []
 
 
 def test_a_customer_alone_is_no_suggestion_either():
-    assert rank_invoices(movement(amount=1, contact=7), [invoice(customer=7)]) == []
-    assert rank_invoices(movement(amount=1, recipient='Käufer AG'), [invoice(name='Käufer AG')]) == []
-
-
-def test_amount_and_customer_by_the_contact_is_a_suggestion():
-    found = rank_invoices(movement(contact=7), [invoice(customer=7)])
-    assert [(s.reasons, s.score) for s in found] == [((REASON_AMOUNT, REASON_CUSTOMER), POINTS_AMOUNT + POINTS_CUSTOMER)]
+    assert rank_invoices(movement(amount=1, recipient=BUYER), [invoice(name=BUYER)]) == []
+    assert rank_invoices(movement(amount=1, recipient='Käufer Handels GmbH'), [invoice(name='Handels-Käufer AG')]) == []
 
 
 def test_amount_and_customer_by_a_shared_name_word_is_a_suggestion():
+    found = rank_invoices(movement(recipient=BUYER), [invoice(name=BUYER)])
+    assert [(s.reasons, s.score) for s in found] == [((REASON_AMOUNT, REASON_CUSTOMER), POINTS_AMOUNT + POINTS_CUSTOMER)]
     found = rank_invoices(movement(recipient='Käufer Handels GmbH'), [invoice(name='Handels-Käufer AG')])
     assert [s.reasons for s in found] == [(REASON_AMOUNT, REASON_CUSTOMER)]
     assert [s.reasons for s in rank_invoices(movement(recipient='Abc Handel'), [invoice(name='Xyz Handel e. K.')])] == [(REASON_AMOUNT, REASON_CUSTOMER)]
 
 
-def test_a_missing_contact_is_never_the_same_customer_as_a_missing_customer():
-    assert rank_invoices(movement(contact=None), [invoice(customer=None)]) == []
+def test_the_contact_of_the_bank_row_is_never_the_customer():
+    """Eine Zuordnung trägt den Kunden der Rechnung als Kontakt in die Bankzeile ein (``handlers._backfill_booking_skr``), und er bleibt nach dem Entfernen
+    stehen: Der Kontakt der Bewegung beweist nichts. Gleicher Betrag und gleicher Kontakt allein sind kein Vorschlag – „Kunde passt“ gibt es nur über
+    gemeinsame Namenswörter von Empfänger und Kundenname."""
+    assert rank_invoices(movement(contact=7), [invoice(customer=7)]) == []
+    assert rank_movements(invoice(customer=7), [movement(contact=7)]) == []
+    assert pair_up([movement(contact=7)], [invoice(customer=7)]) == []
+    # ein Kontakt ändert an einem Vorschlag nichts: nicht, wenn er mit dem Kunden übereinstimmt, und nicht, wenn er abweicht
+    plain = rank_invoices(movement(recipient=BUYER), [invoice(name=BUYER)])
+    assert [(s.reasons, s.score) for s in plain] == [((REASON_AMOUNT, REASON_CUSTOMER), 80)]
+    assert rank_invoices(movement(recipient=BUYER, contact=7), [invoice(name=BUYER, customer=7)]) == plain
+    assert rank_invoices(movement(recipient=BUYER, contact=8), [invoice(name=BUYER, customer=7)]) == plain
+    assert rank_invoices(movement(recipient=OTHER, contact=7), [invoice(name=BUYER, customer=7)]) == []            # der gleiche Kontakt rettet keinen anderen Namen
+    # mit der Nummer im Verwendungszweck bleiben es die Punkte der Nummer und des Betrags: Der Kontakt gibt keine
+    found = rank_invoices(movement(text='R26001', contact=7), [invoice(customer=7)])
+    assert [(s.reasons, s.score) for s in found] == [((REASON_NUMBER, REASON_AMOUNT), POINTS_NUMBER + POINTS_AMOUNT)]
+
+
+def test_a_missing_name_is_never_the_same_customer_as_a_missing_name():
+    assert rank_invoices(movement(recipient=''), [invoice(name='')]) == []
+    assert rank_invoices(movement(recipient=None), [invoice(name=None)]) == []
+    assert rank_invoices(movement(recipient=''), [invoice(name=BUYER)]) == [] and rank_invoices(movement(recipient=BUYER), [invoice(name='')]) == []
+    assert rank_invoices(movement(contact=None), [invoice(customer=None)]) == []             # fehlende Kontakte gelten ohnehin nicht
     assert rank_invoices(movement(contact=0), [invoice(customer=None)]) == []
 
 
 @pytest.mark.parametrize('recipient, name', [
     ('Rechnung Zahlung GmbH', 'Müller Rechnung GmbH'),                  # nur Wörter aus ``STOP_WORDS``
     ('Abc AG', 'Abc AG'),                                               # unter vier Zeichen zählt kein Wort
-    ('', 'Käufer AG'), ('Käufer AG', ''), ('12345 6789', '12345 6789'),  # nichts, oder nur Zahlen
-], ids=['Stoppwörter', 'kurz', 'leer-links', 'leer-rechts', 'Zahlen'])
+    ('', 'Käufer AG'), ('Käufer AG', ''), ('', ''), ('12345 6789', '12345 6789'),  # nichts, oder nur Zahlen
+], ids=['Stoppwörter', 'kurz', 'leer-links', 'leer-rechts', 'leer-beide', 'Zahlen'])
 def test_stop_words_short_words_numbers_and_empty_names_are_no_customer(recipient, name):
     assert rank_invoices(movement(recipient=recipient), [invoice(name=name)]) == []
 
 
 def test_the_name_words_come_from_the_recipient_not_from_the_text():
     assert rank_invoices(movement(text='Käufer AG', recipient=''), [invoice(name='Käufer AG')]) == []
+    assert rank_invoices(movement(number='Käufer AG', recipient=''), [invoice(name='Käufer AG')]) == []         # und nicht aus der Beleg-Nr.
 
 
 @pytest.mark.parametrize('kwargs, reasons, score', [
-    ({'text': 'R26001', 'contact': 7}, (REASON_NUMBER, REASON_AMOUNT, REASON_CUSTOMER), 180),
+    ({'text': 'R26001', 'recipient': BUYER}, (REASON_NUMBER, REASON_AMOUNT, REASON_CUSTOMER), 180),
     ({'text': 'R26001'}, (REASON_NUMBER, REASON_AMOUNT), 150),
-    ({'text': 'R26001', 'amount': 500, 'contact': 7}, (REASON_NUMBER, REASON_CUSTOMER, REASON_PARTIAL), 130),
+    ({'text': 'R26001', 'amount': 500, 'recipient': BUYER}, (REASON_NUMBER, REASON_CUSTOMER, REASON_PARTIAL), 130),
     ({'text': 'R26001', 'amount': 500}, (REASON_NUMBER, REASON_PARTIAL), 100),
-    ({'contact': 7}, (REASON_AMOUNT, REASON_CUSTOMER), 80),
+    ({'recipient': BUYER}, (REASON_AMOUNT, REASON_CUSTOMER), 80),
 ], ids=['alles', 'Nummer+Betrag', 'Nummer+Kunde', 'nur Nummer', 'Betrag+Kunde'])
 def test_points_and_reasons_come_in_a_fixed_order(kwargs, reasons, score):
-    found = rank_invoices(movement(**kwargs), [invoice(customer=7)])
+    found = rank_invoices(movement(**kwargs), [invoice(name=BUYER)])
     assert [(s.reasons, s.score) for s in found] == [(reasons, score)]
 
 
 def test_a_number_with_another_amount_names_the_partial_payment_a_number_with_the_amount_does_not():
     assert REASON_PARTIAL in rank_invoices(movement(amount=500, text='R26001'), [invoice()])[0].reasons
     assert REASON_PARTIAL not in rank_invoices(movement(text='R26001'), [invoice()])[0].reasons
-    assert REASON_PARTIAL not in rank_invoices(movement(contact=7), [invoice(customer=7)])[0].reasons
+    assert REASON_PARTIAL not in rank_invoices(movement(recipient=BUYER), [invoice(name=BUYER)])[0].reasons
 
 
 def test_the_amount_is_compared_to_the_minor_value():
-    assert rank_invoices(movement(amount=OPEN + 1, contact=7), [invoice(customer=7)]) == []
-    assert rank_invoices(movement(amount=OPEN - 1, contact=7), [invoice(customer=7)]) == []
+    assert pair_ids(rank_invoices(movement(amount=OPEN, recipient=BUYER), [invoice(name=BUYER)])) == [(1, 1)]      # Kontrolle: derselbe Betrag ist ein Vorschlag
+    assert rank_invoices(movement(amount=OPEN + 1, recipient=BUYER), [invoice(name=BUYER)]) == []
+    assert rank_invoices(movement(amount=OPEN - 1, recipient=BUYER), [invoice(name=BUYER)]) == []
 
 
 # ── DATUM ────────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize('days, expected', [(-30, False), (-8, False), (-7, True), (-1, True), (0, True), (3, True), (400, True)])
 def test_a_payment_more_than_seven_days_before_the_invoice_is_no_suggestion_without_the_number(days, expected):
-    found = rank_invoices(movement(date=shifted(days), contact=7), [invoice(customer=7)])
+    found = rank_invoices(movement(date=shifted(days), recipient=BUYER), [invoice(name=BUYER)])
     assert bool(found) is expected
     assert (found[0].day_distance if found else days) == days
 
 
 @pytest.mark.parametrize('days', [-8, -60, -365])
 def test_a_payment_long_before_the_invoice_is_still_a_suggestion_with_the_number(days):
-    found = rank_invoices(movement(date=shifted(days), text='Vorauszahlung R26001', contact=7), [invoice(customer=7)])
+    found = rank_invoices(movement(date=shifted(days), text='Vorauszahlung R26001', recipient=BUYER), [invoice(name=BUYER)])
     assert [(s.reasons, s.day_distance) for s in found] == [((REASON_NUMBER, REASON_AMOUNT, REASON_CUSTOMER), days)]
 
 
 @pytest.mark.parametrize('bad', [None, '', 'gestern', '2026-13-40', '2026-02-30', '04.03.2026', 20260304, 4.5, b'2026-03-04', ['2026-03-04']], ids=stable_id)
 def test_an_unreadable_date_is_no_error_and_stands_last(bad):
-    near = movement(ident=1, date=shifted(2), contact=7)
-    broken = movement(ident=2, date=bad, contact=7)
-    found = rank_invoices(broken, [invoice(customer=7)])
+    near = movement(ident=1, date=shifted(2), recipient=BUYER)
+    broken = movement(ident=2, date=bad, recipient=BUYER)
+    found = rank_invoices(broken, [invoice(name=BUYER)])
     assert [(s.movement_id, s.day_distance) for s in found] == [(2, None)]           # kein Datum: die Datumsregel gilt nicht, der Vorschlag bleibt
-    found = rank_movements(invoice(customer=7), [broken, near])
+    found = rank_movements(invoice(name=BUYER), [broken, near])
     assert [s.movement_id for s in found] == [1, 2]                                    # … und steht hinter dem mit lesbarem Datum
-    found = rank_movements(invoice(customer=7, date=bad), [broken, near])
+    found = rank_movements(invoice(name=BUYER, date=bad), [broken, near])
     assert [(s.movement_id, s.day_distance) for s in found] == [(1, None), (2, None)]  # beide ohne Abstand: nach der ID
 
 
@@ -274,44 +396,44 @@ def test_an_unreadable_date_is_no_error_and_stands_last(bad):
 
 def test_more_points_come_first_then_the_nearer_date_then_the_id():
     invoices = [
-        invoice(ident=2, number='K-7777', date=shifted(-5), customer=7),                              # Betrag + Kunde (80), 5 Tage Abstand
-        invoice(ident=4, number='K-9999', date=shifted(-2), customer=7),                              # Betrag + Kunde (80), 2 Tage
-        invoice(ident=3, number='K-8888', date=shifted(-2), customer=7),                              # dasselbe, kleinere ID
-        invoice(ident=6, number='K-6666', date=shifted(-1), customer=7),                              # Betrag + Kunde (80), 1 Tag
-        invoice(ident=9, number='R26001', date=shifted(-40), customer=7, open_minor=1),               # Nummer + Kunde (130): 40 Tage, aber mehr Punkte
+        invoice(ident=2, number='K-7777', date=shifted(-5), name=BUYER),                              # Betrag + Kunde (80), 5 Tage Abstand
+        invoice(ident=4, number='K-9999', date=shifted(-2), name=BUYER),                              # Betrag + Kunde (80), 2 Tage
+        invoice(ident=3, number='K-8888', date=shifted(-2), name=BUYER),                              # dasselbe, kleinere ID
+        invoice(ident=6, number='K-6666', date=shifted(-1), name=BUYER),                              # Betrag + Kunde (80), 1 Tag
+        invoice(ident=9, number='R26001', date=shifted(-40), name=BUYER, open_minor=1),               # Nummer + Kunde (130): 40 Tage, aber mehr Punkte
     ]
-    found = rank_invoices(movement(text='Danke R26001', contact=7), invoices)
+    found = rank_invoices(movement(text='Danke R26001', recipient=BUYER), invoices)
     assert [(s.invoice_id, s.score) for s in found] == [(9, 130), (6, 80), (3, 80), (4, 80), (2, 80)]       # Abstand, nicht die ID, bestimmt die Reihenfolge
 
 
 def test_rank_movements_orders_by_points_then_date_then_the_id_of_the_movement():
     movements = [
-        movement(ident=3, date=shifted(5), contact=7), movement(ident=5, date=shifted(2), contact=7), movement(ident=4, date=shifted(2), contact=7),
-        movement(ident=6, date=shifted(1), contact=7), movement(ident=8, date=shifted(30), amount=1, text='R26001'),
+        movement(ident=3, date=shifted(5), recipient=BUYER), movement(ident=5, date=shifted(2), recipient=BUYER), movement(ident=4, date=shifted(2), recipient=BUYER),
+        movement(ident=6, date=shifted(1), recipient=BUYER), movement(ident=8, date=shifted(30), amount=1, text='R26001'),
     ]
-    found = rank_movements(invoice(customer=7), movements)
+    found = rank_movements(invoice(name=BUYER), movements)
     assert [(s.movement_id, s.score) for s in found] == [(8, 100), (6, 80), (4, 80), (5, 80), (3, 80)]
 
 
 def test_at_most_five_suggestions_come_back():
-    invoices = [invoice(ident=n, number=f'K-{n}000', customer=7) for n in range(1, 9)]
-    found = rank_invoices(movement(contact=7), invoices)
+    invoices = [invoice(ident=n, number=f'K-{n}000', name=BUYER) for n in range(1, 9)]
+    found = rank_invoices(movement(recipient=BUYER), invoices)
     assert [s.invoice_id for s in found] == [1, 2, 3, 4, 5] and len(found) == MAX_SUGGESTIONS
-    movements = [movement(ident=n, contact=7) for n in range(1, 9)]
-    assert [s.movement_id for s in rank_movements(invoice(customer=7), movements)] == [1, 2, 3, 4, 5]
+    movements = [movement(ident=n, recipient=BUYER) for n in range(1, 9)]
+    assert [s.movement_id for s in rank_movements(invoice(name=BUYER), movements)] == [1, 2, 3, 4, 5]
 
 
 def test_the_best_five_are_chosen_by_the_ranking_not_by_the_order_of_the_input():
-    invoices = [invoice(ident=n, number=f'K-{n}000', customer=7, date=shifted(n - 9)) for n in range(1, 9)]      # die ID 8 liegt dem Datum am nächsten
+    invoices = [invoice(ident=n, number=f'K-{n}000', name=BUYER, date=shifted(n - 9)) for n in range(1, 9)]      # die ID 8 liegt dem Datum am nächsten
     random.Random(7).shuffle(invoices)
-    assert [s.invoice_id for s in rank_invoices(movement(contact=7), invoices)] == [8, 7, 6, 5, 4]
+    assert [s.invoice_id for s in rank_invoices(movement(recipient=BUYER), invoices)] == [8, 7, 6, 5, 4]
 
 
 def test_the_distance_counts_in_both_directions():
-    before = invoice(ident=3, number='K-3000', date=shifted(-3), customer=7)
-    after = invoice(ident=4, number='K-4000', date=shifted(+3), customer=7)
-    farther = invoice(ident=1, number='K-1000', date=shifted(+4), customer=7)
-    found = rank_invoices(movement(contact=7), [farther, after, before])
+    before = invoice(ident=3, number='K-3000', date=shifted(-3), name=BUYER)
+    after = invoice(ident=4, number='K-4000', date=shifted(+3), name=BUYER)
+    farther = invoice(ident=1, number='K-1000', date=shifted(+4), name=BUYER)
+    found = rank_invoices(movement(recipient=BUYER), [farther, after, before])
     assert [(s.invoice_id, s.day_distance) for s in found] == [(3, 3), (4, -3), (1, -4)]        # Buchungsdatum minus Rechnungsdatum; gleich weit: die ID
 
 
@@ -328,8 +450,8 @@ def test_a_pair_that_is_already_linked_is_never_a_suggestion():
 
 def two_and_two():
     """Ein Kunde, zwei gleich hohe Rechnungen (1. Januar, 1. Februar) und zwei gleich hohe Zahlungen (10. Januar, 10. Februar), ohne Nummer im Text."""
-    invoices = [invoice(ident=1, number='K-1001', date='2026-01-01', customer=7), invoice(ident=2, number='K-1002', date='2026-02-01', customer=7)]
-    movements = [movement(ident=1, date='2026-01-10', contact=7), movement(ident=2, date='2026-02-10', contact=7)]
+    invoices = [invoice(ident=1, number='K-1001', date='2026-01-01', name=BUYER), invoice(ident=2, number='K-1002', date='2026-02-01', name=BUYER)]
+    movements = [movement(ident=1, date='2026-01-10', recipient=BUYER), movement(ident=2, date='2026-02-10', recipient=BUYER)]
     return movements, invoices
 
 
@@ -342,8 +464,8 @@ def test_two_equal_invoices_and_two_equal_payments_pair_by_the_date():
 
 def test_the_pairing_does_not_depend_on_the_order_of_the_input():
     movements, invoices = two_and_two()
-    movements.append(movement(ident=3, date='2026-03-20', contact=7))
-    invoices.append(invoice(ident=3, number='K-1003', date='2026-03-01', customer=7))
+    movements.append(movement(ident=3, date='2026-03-20', recipient=BUYER))
+    invoices.append(invoice(ident=3, number='K-1003', date='2026-03-01', name=BUYER))
     expected = pair_up(movements, invoices)
     assert pair_ids(expected) == [(1, 1), (2, 2), (3, 3)]
     for permuted_movements in itertools.permutations(movements):
@@ -352,18 +474,18 @@ def test_the_pairing_does_not_depend_on_the_order_of_the_input():
 
 
 def test_every_movement_and_every_invoice_is_used_at_most_once():
-    invoices = [invoice(ident=n, number=f'K-{n}000', customer=7, date=shifted(-n)) for n in range(1, 6)]
-    movements = [movement(ident=n, contact=7, date=shifted(n)) for n in range(1, 4)]
+    invoices = [invoice(ident=n, number=f'K-{n}000', name=BUYER, date=shifted(-n)) for n in range(1, 6)]
+    movements = [movement(ident=n, recipient=BUYER, date=shifted(n)) for n in range(1, 4)]
     result = pair_up(movements, invoices)
     assert len(result) == 3
     assert len({s.movement_id for s in result}) == 3 and len({s.invoice_id for s in result}) == 3
-    result = pair_up([movement(ident=n, contact=7) for n in range(1, 6)], [invoice(customer=7)])
+    result = pair_up([movement(ident=n, recipient=BUYER) for n in range(1, 6)], [invoice(name=BUYER)])
     assert len(result) == 1                                                             # eine Rechnung nimmt nur eine Zahlung
 
 
 def test_a_number_beats_a_pair_that_only_has_the_amount_and_the_customer():
-    invoices = [invoice(ident=1, number='K-1001', date=shifted(-1), customer=7), invoice(ident=2, number='R26002', date=shifted(-1), customer=7)]
-    movements = [movement(ident=1, contact=7, text='Rechnung R26002'), movement(ident=2, contact=7)]
+    invoices = [invoice(ident=1, number='K-1001', date=shifted(-1), name=BUYER), invoice(ident=2, number='R26002', date=shifted(-1), name=BUYER)]
+    movements = [movement(ident=1, recipient=BUYER, text='Rechnung R26002'), movement(ident=2, recipient=BUYER)]
     result = pair_up(movements, invoices)
     assert [(s.movement_id, s.invoice_id, s.score) for s in result] == [(1, 2, 180), (2, 1, 80)]
     # Bewegung 2 hätte auch zur Rechnung 2 gepasst (80 Punkte, aber an Bewegung 1 vergeben): mehrdeutig; das Paar mit der Nummer ist es nicht
@@ -372,30 +494,30 @@ def test_a_number_beats_a_pair_that_only_has_the_amount_and_the_customer():
 
 def test_ambiguous_means_another_pair_with_the_same_points_for_the_movement_or_for_the_invoice():
     # eine Bewegung, zwei Rechnungen mit gleichen Punkten: die genommene Zeile ist mehrdeutig, auch wenn die zweite Rechnung leer ausgeht
-    result = pair_up([movement(contact=7)], [invoice(ident=1, number='K-1001', customer=7), invoice(ident=2, number='K-1002', customer=7)])
+    result = pair_up([movement(recipient=BUYER)], [invoice(ident=1, number='K-1001', name=BUYER), invoice(ident=2, number='K-1002', name=BUYER)])
     assert [(s.movement_id, s.invoice_id, s.ambiguous) for s in result] == [(1, 1, True)]
     # eine Rechnung, zwei Bewegungen
-    result = pair_up([movement(ident=1, contact=7), movement(ident=2, contact=7)], [invoice(customer=7)])
+    result = pair_up([movement(ident=1, recipient=BUYER), movement(ident=2, recipient=BUYER)], [invoice(name=BUYER)])
     assert [(s.movement_id, s.invoice_id, s.ambiguous) for s in result] == [(1, 1, True)]
     # eine zweite Rechnung mit anderen Punkten macht die erste nicht mehrdeutig
-    result = pair_up([movement(contact=7, text='R26001')], [invoice(ident=1, number='R26001', customer=7), invoice(ident=2, number='K-1002', customer=7)])
+    result = pair_up([movement(recipient=BUYER, text='R26001')], [invoice(ident=1, number='R26001', name=BUYER), invoice(ident=2, number='K-1002', name=BUYER)])
     assert [(s.invoice_id, s.score, s.ambiguous) for s in result] == [(1, 180, False)]
     # ein einziges Paar
-    assert [s.ambiguous for s in pair_up([movement(contact=7)], [invoice(customer=7)])] == [False]
+    assert [s.ambiguous for s in pair_up([movement(recipient=BUYER)], [invoice(name=BUYER)])] == [False]
 
 
 def test_a_linked_pair_is_never_a_suggestion_in_the_overview():
-    movements = [movement(ident=1, text='R26001', contact=7)]
-    invoices = [invoice(ident=1, number='R26001', customer=7), invoice(ident=2, number='K-1002', customer=7)]
+    movements = [movement(ident=1, text='R26001', recipient=BUYER)]
+    invoices = [invoice(ident=1, number='R26001', name=BUYER), invoice(ident=2, number='K-1002', name=BUYER)]
     assert pair_ids(pair_up(movements, invoices)) == [(1, 1)]
     assert pair_ids(pair_up(movements, invoices, linked=frozenset({(1, 1)}))) == [(1, 2)]        # die Bewegung geht an die andere Rechnung
     assert pair_up(movements, invoices[:1], linked=frozenset({(1, 1)})) == []
 
 
 def test_the_result_is_sorted_by_points_then_the_distance_then_the_ids():
-    invoices = [invoice(ident=1, number='K-1001', date=shifted(-10), customer=7),
-                invoice(ident=2, number='R26002', date=shifted(-1), customer=8, open_minor=999)]
-    movements = [movement(ident=1, contact=7), movement(ident=2, text='R26002', amount=1)]
+    invoices = [invoice(ident=1, number='K-1001', date=shifted(-10), name=BUYER),
+                invoice(ident=2, number='R26002', date=shifted(-1), name=OTHER, open_minor=999)]
+    movements = [movement(ident=1, recipient=BUYER), movement(ident=2, text='R26002', amount=1)]
     assert pair_ids(pair_up(movements, invoices)) == [(2, 2), (1, 1)]
 
 
@@ -420,22 +542,23 @@ INVOICE_KEYS = ('id', 'number', 'date', 'open_minor', 'customer_id', 'customer_n
 
 @pytest.mark.parametrize('value', GARBAGE, ids=stable_id)
 def test_broken_values_in_any_field_never_raise(value):
+    good_movement = movement(text='R26001', recipient=BUYER, number='R26001', contact=7)         # auch Beleg-Nr. und Kontakt: Sie werden nicht gelesen, dürfen aber nie stören
+    good_invoice = invoice(name=BUYER, customer=7)
     for key in MOVEMENT_KEYS:                                       # ein kaputtes Feld, die übrigen heil – und alle zugleich kaputt
-        for broken in (dict(movement(text='R26001', contact=7), **{key: value}), dict.fromkeys(MOVEMENT_KEYS, value)):
-            for result in (rank_invoices(broken, [invoice(customer=7)]), rank_movements(invoice(customer=7), [broken]),
-                           pair_up([broken], [invoice(customer=7)])):
+        for broken in (dict(good_movement, **{key: value}), dict.fromkeys(MOVEMENT_KEYS, value)):
+            for result in (rank_invoices(broken, [good_invoice]), rank_movements(good_invoice, [broken]), pair_up([broken], [good_invoice])):
                 assert isinstance(result, list)
     for key in INVOICE_KEYS:
-        for broken in (dict(invoice(customer=7), **{key: value}), dict.fromkeys(INVOICE_KEYS, value)):
-            for result in (rank_invoices(movement(text='R26001', contact=7), [broken]), rank_movements(broken, [movement(text='R26001', contact=7)]),
-                           pair_up([movement(text='R26001', contact=7)], [broken])):
+        for broken in (dict(good_invoice, **{key: value}), dict.fromkeys(INVOICE_KEYS, value)):
+            for result in (rank_invoices(good_movement, [broken]), rank_movements(broken, [good_movement]), pair_up([good_movement], [broken])):
                 assert isinstance(result, list)
 
 
 @pytest.mark.parametrize('value', [None, '', 'text', 1.5, 1.0, True, b'bytes', [], float('nan')], ids=stable_id)
 def test_a_row_without_a_whole_id_is_no_candidate(value):
-    good_invoice, good_movement = invoice(customer=7), movement(contact=7)
+    good_invoice, good_movement = invoice(name=BUYER), movement(recipient=BUYER)
     bad_id, bad_invoice_id = dict(good_movement, id=value), dict(good_invoice, id=value)
+    assert pair_ids(rank_invoices(good_movement, [good_invoice])) == [(1, 1)]                    # Kontrolle: Die heilen Zeilen sind ein Vorschlag – nur die ID nimmt ihn
     assert rank_invoices(bad_id, [good_invoice]) == [] and rank_movements(good_invoice, [bad_id]) == []
     assert rank_invoices(good_movement, [bad_invoice_id]) == [] and rank_movements(bad_invoice_id, [good_movement]) == []
     assert pair_up([bad_id], [good_invoice]) == [] and pair_up([good_movement], [bad_invoice_id]) == []
@@ -443,8 +566,10 @@ def test_a_row_without_a_whole_id_is_no_candidate(value):
 
 @pytest.mark.parametrize('value', [None, '', 'text', 0, -5, 1.5, 1190000.0, True, b'bytes', [], float('nan')], ids=stable_id)
 def test_an_amount_that_is_no_positive_whole_number_makes_the_row_no_candidate(value):
-    good_invoice, good_movement = invoice(customer=7), movement(contact=7)
+    good_invoice, good_movement = invoice(name=BUYER), movement(recipient=BUYER)
     bad_amount, bad_open = dict(good_movement, amount_minor=value), dict(good_invoice, open_minor=value)
+    assert pair_ids(rank_invoices(good_movement, [good_invoice])) == [(1, 1)]                    # Kontrolle: Die heilen Zeilen sind ein Vorschlag – nur der Betrag nimmt ihn
+    assert pair_ids(rank_invoices(dict(good_movement, text='R26001'), [good_invoice])) == [(1, 1)]
     assert rank_invoices(bad_amount, [good_invoice]) == [] and rank_movements(good_invoice, [bad_amount]) == []
     assert rank_invoices(good_movement, [bad_open]) == [] and rank_movements(bad_open, [good_movement]) == []
     assert pair_up([bad_amount], [good_invoice]) == [] and pair_up([good_movement], [bad_open]) == []
@@ -454,17 +579,18 @@ def test_an_amount_that_is_no_positive_whole_number_makes_the_row_no_candidate(v
 
 @pytest.mark.parametrize('amount', [0, -1, -OPEN])
 def test_a_payment_or_an_invoice_without_a_positive_rest_is_no_candidate(amount):
-    assert rank_invoices(movement(amount=amount, contact=7), [invoice(open_minor=amount, customer=7)]) == []
+    assert pair_ids(rank_invoices(movement(recipient=BUYER), [invoice(name=BUYER)])) == [(1, 1)]      # Kontrolle: Mit einem positiven Rest wäre es ein Vorschlag
+    assert rank_invoices(movement(amount=amount, recipient=BUYER), [invoice(open_minor=amount, name=BUYER)]) == []
     assert rank_invoices(movement(amount=amount, text='R26001'), [invoice()]) == []
     assert rank_invoices(movement(text='R26001'), [invoice(open_minor=amount)]) == []
 
 
 @pytest.mark.parametrize('row', [None, 5, 'zeile', [], (1, 2), object()], ids=stable_id)
 def test_a_row_that_is_no_dict_is_skipped(row):
-    assert rank_invoices(movement(contact=7), [row, invoice(customer=7)])[0].invoice_id == 1
-    assert rank_movements(invoice(customer=7), [row, movement(contact=7)])[0].movement_id == 1
-    assert rank_invoices(row, [invoice(customer=7)]) == [] and rank_movements(row, [movement(contact=7)]) == []
-    assert pair_ids(pair_up([row, movement(contact=7)], [row, invoice(customer=7)])) == [(1, 1)]
+    assert rank_invoices(movement(recipient=BUYER), [row, invoice(name=BUYER)])[0].invoice_id == 1
+    assert rank_movements(invoice(name=BUYER), [row, movement(recipient=BUYER)])[0].movement_id == 1
+    assert rank_invoices(row, [invoice(name=BUYER)]) == [] and rank_movements(row, [movement(recipient=BUYER)]) == []
+    assert pair_ids(pair_up([row, movement(recipient=BUYER)], [row, invoice(name=BUYER)])) == [(1, 1)]
 
 
 def test_missing_keys_are_no_error():
@@ -482,10 +608,12 @@ def test_a_value_that_is_no_text_is_read_as_its_text():
 
 @pytest.mark.parametrize('text', [
     'R-2-6-0-0-' * 400, 'R 2 6 0 0 ' * 400, 'R' + '-' * 5000, 'R26001' * 1000, 'R26001 0 ' * 500, ('R' + ' ' * 2) * 1000, '1' * 9000 + 'R26001',
-    ('R2600' + '\n') * 700,
-], ids=['Bindestriche', 'Leerzeichen', 'Strichreihe', 'Wiederholungen', 'Sperrtreffer', 'Doppelleerraum', 'Ziffern-davor', 'Zeilenumbrüche'])
+    ('R2600' + '\n') * 700, 'RE 20 260042 ' * 700, '26.001,00 ' * 900, '2026 0042-' * 800,
+], ids=['Bindestriche', 'Leerzeichen', 'Strichreihe', 'Wiederholungen', 'Sperrtreffer', 'Doppelleerraum', 'Ziffern-davor', 'Zeilenumbrüche',
+        'Fugen-Fehlgriffe', 'Beträge', 'Nummernreihe'])
 def test_a_long_hostile_text_is_read_in_linear_time(text):
-    invoices = [invoice(), invoice(ident=2, number='26R001'), invoice(ident=3, number='RE-2026/0042'), invoice(ident=4, number='R' + '1' * 39)]
+    invoices = [invoice(), invoice(ident=2, number='26R001'), invoice(ident=3, number='RE-2026/0042'), invoice(ident=4, number='R' + '1' * 39),
+                invoice(ident=5, number='26001'), invoice(ident=6, number='2026-0042'), invoice(ident=7, number='20260042')]
     started = time.perf_counter()
     for _ in range(20):
         rank_invoices(movement(amount=1, text=text, number=text, recipient=text), invoices)
@@ -493,11 +621,27 @@ def test_a_long_hostile_text_is_read_in_linear_time(text):
 
 
 def test_five_hundred_by_five_hundred_is_fast_enough_for_a_page():
-    invoices = [invoice(ident=n, number=f'26R{n:05d}', open_minor=1000 * n, customer=n % 50) for n in range(1, 501)]
+    invoices = [invoice(ident=n, number=f'26R{n:05d}', open_minor=1000 * n, name=f'Firma{n % 50:02d}') for n in range(1, 501)]
     filler = 'SEPA-Überweisung Verwendungszweck Vielen Dank für Ihren Auftrag mit freundlichen Grüßen Musterfirma Referenz 20261112 Mandat 4711 '
-    movements = [movement(ident=n, amount=1000 * n if n % 2 else 777, contact=n % 50, text=filler * 2 + f'Rechnungs-Nr 26R{n:05d} Danke')
+    movements = [movement(ident=n, amount=1000 * n if n % 2 else 777, recipient=f'Firma{n % 50:02d}', text=filler * 2 + f'Rechnungs-Nr 26R{n:05d} Danke')
                  for n in range(1, 501)]
     started = time.perf_counter()
     result = pair_up(movements, invoices)
     assert time.perf_counter() - started < 3                                            # gemessen: unter 0,2 s – die Grenze ist großzügig
     assert len(result) == 500 and all(s.invoice_id == s.movement_id for s in result)   # jede Zahlung findet ihre Nummer
+
+
+# ── Ein Punkt zwischen zwei Ziffern gilt nur, wo die Nummer selbst einen trägt ──
+@pytest.mark.parametrize('raw, text, found', [
+    ('26/001', 'Miete 26.001,00 EUR', False),          # die Fuge der Nummer nimmt keinen Tausenderpunkt
+    ('26/001', 'Rechnung 26/001', True),
+    ('26/001', 'Rechnung 26-001 danke', True),
+    ('26/001', 'Rechnung 26 001', True),
+    ('2026-0042', 'Betrag 2026.0042', False),
+    ('26.001', 'Rechnung 26.001', True),               # die Nummer trägt den Punkt selbst
+    ('26.001', 'Rechnung 26/001', True),
+], ids=['betrag', 'schraegstrich', 'bindestrich', 'leerraum', 'punkt-statt-strich', 'eigener-punkt', 'eigener-punkt-anders'])
+def test_a_dot_between_two_digits_counts_only_where_the_number_itself_has_one(raw, text, found):
+    from db.payment_matching import _number_parts, _number_pattern
+    number, joints = _number_parts(raw)
+    assert (_number_pattern(number, joints).search(text) is not None) is found
